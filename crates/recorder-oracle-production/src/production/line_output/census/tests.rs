@@ -2,7 +2,6 @@ use super::*;
 use replay_data::{rows::ProductionLineOutputRow, rows::Recorded, rows::TableRows};
 use replay_frame::frame::TableView;
 
-/// A publication of `lines` in the census and of output rows `(line, ended)`.
 fn frame(hour: Hour, read: bool, lines: &[u64], output: &[(u64, bool)]) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
@@ -14,7 +13,6 @@ fn frame(hour: Hour, read: bool, lines: &[u64], output: &[(u64, bool)]) -> Decod
         .map(Into::into),
     };
     if read {
-        // The collector marks every table of the production slot's walk read.
         let slot = replay_data::cadence::cadence(TableId::ProductionLines);
         for table in TableId::ALL {
             if replay_data::cadence::cadence(table) == slot {
@@ -63,9 +61,7 @@ fn check(frames: &[DecodedFrame]) -> io::Result<Report> {
 fn each_publication_pairs_live_output_with_its_census() {
     let report = check(&[
         frame(100, true, &[1, 2], &[(1, false), (2, false)]),
-        // Carried: not a publication, whatever its view holds.
         frame(101, false, &[1], &[(3, false)]),
-        // Line 2 ended: its row has left the census.
         frame(124, true, &[1], &[(1, false), (2, true)]),
     ])
     .unwrap();
@@ -74,7 +70,6 @@ fn each_publication_pairs_live_output_with_its_census() {
         report.compared_tables["ProductionLineOutput census self-check"],
         3
     );
-    // A census line without output and a live row outside the census.
     let report = check(&[frame(124, true, &[1, 2], &[(1, false), (3, false)])]).unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert!(report.differences[0].starts_with("ProductionLineOutput 2 at hour 124"));
@@ -109,8 +104,6 @@ fn restarted_observation_duplicates_and_unavailable_reads_are_not_passed() {
     );
 }
 
-/// Each live row's purpose must be one its census line's kind produces; an
-/// unclassified row is a counted limitation, not a pass.
 #[test]
 fn live_row_purposes_follow_their_line_kind() {
     use engine_native::cequipment_production_line::{

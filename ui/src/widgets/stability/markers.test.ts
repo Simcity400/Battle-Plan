@@ -32,7 +32,6 @@ test('wars, capitulations and faction changes are dated as recorded; a gap is no
     [300, '⚑', 'Joined Pact'],
     [450, '⚔', 'France capitulated'],
   ]);
-  // Only the kinds switched on, only inside the hours shown.
   assert.deepEqual(stabilityMarkers({ ...base, groups, extent: [150, 250] }, new Set(['wars'])).map(badge => badge.label), ['War with Poland began', 'War with France began']);
 });
 
@@ -55,14 +54,12 @@ test('laws and advisors taken on while recorded are government changes; focuses 
   const focus: FocusMarks = { staticText: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null }],
     completed: [{ ordinal: 0, token: 'GER_rhineland', completedByHour: 50 }, { ordinal: 1, token: 'GER_old', completedByHour: null }] } as unknown as FocusMarks;
   const badges = stabilityMarkers({ ...base, ideas, focus }, ALL);
-  // The branch-start law and the one after an unrecorded hour are not changes.
   assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph, badge.label]), [
     [50, '★', 'Focus: Rhineland (completed by then)'],
     [500, '⚙', 'Law: War Economy (taken on by then)'],
     [700, '⚙', 'Advisor: Albert Speer (appointed by then)'],
   ]);
   assert.ok(badges.every(badge => !badge.approximate), 'exact idea spans give exact markers');
-  // Only a focus without a static title asks for its dated title.
   const asked: string[] = [];
   const read = stabilityMarkers({ ...base, focus, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated'; } }, new Set(['focus']));
   assert.deepEqual(read.map(badge => badge.label), ['Focus: Rhineland (completed by then)']);
@@ -93,20 +90,15 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
   const shared: CountryGroupReply = { ...groups, factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Pact', reason: null }],
     members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }], warStarts: [], capitulations: [], wars: [] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: shared }, ALL).map(badge => badge.label), ['Joined Pact']);
-  // A sole first member of an incomplete first roster (another member not resolved) only joined.
   const partial: CountryGroupReply = { ...shared, factions: [{ ...shared.factions[0], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }],
     unobserved: { humans: [], factions: [{ firstHour: 100, lastHour: 100 }], wars: [] } };
   assert.deepEqual(stabilityMarkers({ ...base, groups: partial }, ALL).map(badge => badge.label), ['Joined Pact']);
-  // The same when only this faction's roster was incomplete then.
   const partialOwn: CountryGroupReply = { ...shared, factions: [{ ...shared.factions[0], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [{ firstHour: 100, lastHour: 100 }] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: partialOwn }, ALL).map(badge => badge.label), ['Joined Pact']);
-  // A country whose id changes tag while in the faction neither leaves nor joins it.
   const renamed: CountryGroupReply = { ...shared, identityChanges: [{ hour: 500, from: 'AAA', to: 'GER' }],
     factions: [{ id: '3', name: 'Pact', recordedName: 'Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Pact', reason: null }], members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'GER', firstHour: 500, lastHour: 1000 }], leaders: [], incomplete: [] }] };
   assert.deepEqual(stabilityMarkers({ ...base, groups: renamed }, ALL), []);
-  // AAA founded it (its sole first member) and never left: the change of tag is no leave.
   assert.deepEqual(stabilityMarkers({ ...base, tag: 'AAA', groups: renamed }, ALL).map(badge => badge.label), ['Founded Pact']);
-  // A tag change in the same hour as a real move between factions hides neither.
   const switched: CountryGroupReply = { ...shared, identityChanges: [{ hour: 500, from: 'AAA', to: 'GER' }], factions: [
     { id: '3', name: 'First Pact', recordedName: 'First Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'First Pact', reason: null }], members: [{ tag: 'AAA', firstHour: 100, lastHour: 499 }, { tag: 'ITA', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] },
     { id: '4', name: 'Second Pact', recordedName: 'Second Pact', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Second Pact', reason: null }], members: [{ tag: 'GER', firstHour: 500, lastHour: 1000 }, { tag: 'HUN', firstHour: 100, lastHour: 1000 }], leaders: [], incomplete: [] }] };
@@ -121,49 +113,39 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
     ideas: [], categories: [{ token: 'government', name: null, kind: null, hidden: false, politicsTab: true, slots: [
       { token: 'political_advisor', name: null, character: true, seats: 3, laws: [] }] }],
   } as unknown as IdeaHistoryReply;
-  // Appointed at 100 (not identified then); its details arriving at 200 is no new appointment.
   assert.deepEqual(stabilityMarkers({ ...base, ideas }, ALL).map(badge => [badge.hour, badge.label]), [[100, 'Advisor: holder not recorded (appointed by then)']]);
-  // A holder is matched by script token too: a later identified holder never names an earlier unidentified one.
   const unnamed = { ...ideas, spans: [
     { token: 'speer', firstHour: 100, lastHour: 300, slot: 'political_advisor', character: { id: 7, token: '', name: '' } }],
   holders: [{ token: 'speer', character: 7, characterToken: 'GER_albert_speer', name: '', artwork: { token: 'speer', name: 'Albert Speer', description: null, baseDurationDays: null, icon: null } }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: unnamed }, ALL).map(badge => badge.label), ['Advisor: holder not recorded (appointed by then)']);
-  // Each dated completion once, by occurrence: a repeatable focus completed twice is two events.
   const completions = { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }, { ordinal: 1, token: 'repeatable', completedByHour: 200 }] };
   assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus: completions }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: Focus name unavailable (completed by then)']]);
-  // Two completions seen at one hour after a gap: both kept, each marked as a bound.
   const twice = { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 300 }, { ordinal: 1, token: 'repeatable', completedByHour: 300 }] };
   assert.deepEqual(stabilityMarkers({ ...base, focus: twice }, ALL).map(badge => badge.label), ['Focus: Focus name unavailable (completed by then)', 'Focus: Focus name unavailable (completed by then)']);
-  // A law continuing across a change of country identity is no new law.
   const kept = { ...ideas, holders: [], spans: [
     { token: 'law', firstHour: 0, lastHour: 149, slot: 'economy', character: null }, { token: 'law', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],
     categories: [{ token: 'government', name: null, kind: null, hidden: false, politicsTab: true, slots: [{ token: 'economy', name: null, character: false, seats: 1, laws: ['law'] }] }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: kept }, ALL), []);
-  // A new country identity's initial law is its starting state, not a change.
   const replaced = { ...kept, spans: [
     { token: 'other', firstHour: 0, lastHour: 99, slot: 'economy', character: null }, { token: 'law', firstHour: 100, lastHour: 300, slot: 'economy', character: null }],
     identityStarts: [0, 100] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: replaced }, ALL), []);
   assert.equal(stabilityMarkers({ ...base, ideas: { ...replaced, identityStarts: [0] } }, ALL).length, 1);
-  // The same character moving to another role in its seat is no new appointment.
   const moved = { ...ideas, spans: [
     { token: 'role_a', firstHour: 100, lastHour: 199, slot: 'political_advisor', character: { id: 7, token: 'GER_a', name: 'GER_a' } },
     { token: 'role_b', firstHour: 200, lastHour: 300, slot: 'political_advisor', character: { id: 7, token: 'GER_a', name: 'GER_a' } }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: moved }, ALL).map(badge => badge.hour), [100]);
-  // A designer in a law slot is not a law.
   const designer = { ...kept, spans: [{ token: 'designer', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],
     ideas: [{ token: 'designer', category: 'government', slot: 'economy', law: false, designer: true, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null }] } as unknown as IdeaHistoryReply;
   assert.deepEqual(stabilityMarkers({ ...base, ideas: designer }, ALL), []);
 });
 
 test('an enemy capitulation after an unrecorded war hour, and events outside the group, are left out', () => {
-  // The war with Norway ended at 600; hour 601 went unrecorded, so a capitulation then is not known to be an enemy's.
   const gap: CountryGroupReply = { ...groups, factions: [], warStarts: [], wars: [{ first: 'GER', second: 'NOR', firstHour: 500, lastHour: 600 }, { first: 'GER', second: 'DEN', firstHour: 500, lastHour: 600 }],
     capitulations: [{ hour: 601, tag: 'NOR' }, { hour: 700, tag: 'DEN' }, { hour: 601, tag: 'DEN' }], unobserved: { humans: [], factions: [], wars: [{ firstHour: 601, lastHour: 601 }] } };
   assert.deepEqual(stabilityMarkers({ ...base, groups: gap }, ALL), []);
   const seen: CountryGroupReply = { ...gap, unobserved: { humans: [], factions: [], wars: [] } };
   assert.deepEqual(stabilityMarkers({ ...base, groups: seen }, ALL).map(badge => badge.hour), [601, 601]);
-  // In a group only while a member: the war at 180 is outside hours 190-1000.
   const member = (hour: number) => hour >= 190;
   assert.ok(!stabilityMarkers({ ...base, groups, member }, ALL).some(badge => badge.hour < 190));
   assert.ok(stabilityMarkers({ ...base, groups }, ALL).some(badge => badge.hour === 180));
@@ -199,7 +181,6 @@ test('faction events use dated names and display overrides without backfilling g
   assert.deepEqual(events(data).map(badge => badge.label), ['Joined Opening pact', 'Left Later pact']);
   const gap = { ...data, factions: [{ ...faction, names: [faction.names[0], { ...faction.names[1], firstHour: 301 }] }] };
   assert.deepEqual(events(gap).map(badge => badge.label), ['Joined Opening pact', 'Left Unnamed faction']);
-  // A dissolved faction has no read at the leaving hour; identify it from its final membership read.
   const dissolved = { ...data, factions: [{ ...faction, lastHour: 299, names: [faction.names[0]] }] };
   assert.deepEqual(events(dissolved).map(badge => badge.label), ['Joined Opening pact', 'Left Opening pact']);
   const custom = stabilityMarkers({ ...base, groups: gap, factionName: () => ({ name: 'My pact', reason: null }) }, new Set<MarkerKind>(['factions']));

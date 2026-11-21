@@ -210,7 +210,6 @@ fn append_footer(frame: &DecodedFrame, railway_gun: bool, members: &[u64], body:
             body: body.into(),
             ..Default::default()
         };
-        // The counter's supply child, through the shared-vision gate.
         super::super::children::append(context, &input, &mut out);
         out
     })
@@ -219,8 +218,6 @@ fn append_footer(frame: &DecodedFrame, railway_gun: bool, members: &[u64], body:
 #[test]
 fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disruption() {
     use replay_data::rows::RailwayGunCounterInputRow;
-    // Divisions and railway guns record the same footers, at the printed
-    // hundredth.
     let first = UnitSupplyInputs {
         asked: 100_000,
         received: 50_000,
@@ -303,8 +300,6 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
         assert_eq!(unknown.body, "arrival 2h\n");
         assert_eq!(unknown.refused.values().sum::<usize>(), 1);
     }
-    // A recording without the division footer refuses it by name and keeps
-    // the rest of the hover.
     let mut older = frame.clone();
     if let TableView::Complete(TableRows::DivisionStatus(rows)) =
         &mut *older.tables[TableId::DivisionStatus.index()]
@@ -329,8 +324,6 @@ fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disrupt
 
 #[test]
 fn a_division_footer_sums_its_recorded_hundredths() {
-    // Two divisions as DivisionStatus stores them: the game holds 1.23456
-    // and 0.01499 needed, which print 1.23 and 0.01 and sum to 1.24.
     let footers = [
         DivisionSupplyFooter {
             asked: 123_000,
@@ -359,7 +352,6 @@ fn a_division_footer_sums_its_recorded_hundredths() {
         },
     ];
     let mut frame = division_frame(footers);
-    // The hub's province resolves as null: an empty label, no refusal.
     put(&mut frame, TableRows::Provinces(Vec::new()));
     let out = append_footer(&frame, false, &[1, 2], "");
     assert!(out.refused.is_empty(), "{:?}", out.refused);

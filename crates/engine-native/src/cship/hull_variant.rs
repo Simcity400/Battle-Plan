@@ -1,9 +1,3 @@
-//! Current raw tie-breaking operands of the ship's already selected variant.
-//!
-//! Equal-strength distinct variants use mutable simulation terms. Commands
-//! can rebuild the same variant and refresh its retained organisation marker,
-//! so daily variant tables cannot replace this current observation.
-//! No game pointer is returned in the packet and no getter is called.
 
 use engine_sites::Rva;
 use super::{ModelMemo, SelectedModelVariant};
@@ -12,30 +6,16 @@ use crate::{
     memory::Raw, read,
 };
 
-/// Module comparison reads the live count. Rebuilding derives summary fields
-/// from upgrade levels and signed module priorities.
 const MODULE_COUNT: usize = 0xc4;
 const UPGRADE_LEVEL_SUM: usize = 0x414;
 const MODULE_PRIORITY_SUM: usize = 0x418;
-/// Organisation-bonus refresh stores the linked organisation's marker marker here; serialization
-/// writes its nonzero signed value.
 const ORGANISATION_MARKER: usize = 0x4b0;
-/// General definition ordinal. Construction stores the current database
-/// count, null construction stores -1, and copying preserves the field.
 const DEFINITION_INDEX: usize = 0x478;
-/// The database begins with the null definition at slot zero. Loading and
-/// copying append at their supplied index.
 const DEFINITIONS: usize = 0x68;
-/// The database installs the null-definition vtable, clears ACTIVE and
-/// publishes its sole pointer. Null type construction supplies the null
-/// definition token and ordinal -1. This is not a null variant reference.
 pub(super) const NULL_DEFINITION_VTABLE_RVA: Rva = Rva(0x029b_5f70);
 pub(super) const NULL_DEFINITION_SINGLETON_RVA: Rva = Rva(0x033e_75a8);
 pub(super) const NULL_DEFINITION_TOKEN: u32 = 0x165;
 
-/// Only the actual native singleton may widen the ordinary CType guard.
-/// An equal-header clone or unreadable global/active byte is not that source.
-/// Ordinary definitions never execute these extra null-source reads.
 pub(super) fn native_null_definition(
     memory: &impl Memory,
     base: usize,
@@ -57,8 +37,6 @@ pub(super) fn native_null_definition(
         && scalar::<u8>(memory, pointer, cequipment_type::ACTIVE) == Some(0)
 }
 
-/// Independent guarded fields; arithmetic and content classification belong
-/// to the reached consumer. None is unreadable/refused, never a numeric zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HullVariantInputs {
     pub definition_index: Option<i32>,
@@ -69,12 +47,6 @@ pub struct HullVariantInputs {
     pub organisation_marker: Option<i32>,
 }
 
-/// One consecutive selected-source observation within this stopped capture.
-/// Both healthy and failed fields remain frozen while this exact key repeats;
-/// a different key begins the next observation. It also keeps every
-/// packet whose six fields all succeeded, keyed by the same exact source, so
-/// a variant seen earlier in the capture is not acquired again; refused or
-/// partial packets never enter that map. No global cache.
 #[derive(Default)]
 pub(super) struct Memo {
     last: Option<(Key, Option<HullVariantInputs>)>,
@@ -112,8 +84,6 @@ impl Memo {
         self.complete.capacity() * std::mem::size_of::<(Key, HullVariantInputs)>()
     }
 
-    /// A successful different/null model source breaks adjacency even when
-    /// no optional tuple is requested for that row. This performs no reads.
     pub(super) fn retain_source(&mut self, base: usize, source: Option<&SelectedModelVariant>) {
         let current = source.map(|source| Key::new(base, source));
         if self
@@ -126,20 +96,6 @@ impl Memo {
     }
 }
 
-/// Acquire only after the original model and maximum-organisation reads have
-/// succeeded, during their same stopped/caller-owned census observation.
-/// The source is minted by read_model_with_selection, never by a daily join.
-/// A changed selected identity/token/definition refuses the whole packet.
-/// Definition/DB faults withhold only the ordinal; every raw term is independent.
-///
-/// At most14 fixed guarded spans/101 bytes per nonnull selection, without
-/// retries or a definition walk. Consecutive same-key observations retain
-/// their completed/failed packet without reading again, and any earlier
-/// complete packet of the same key is reused. Reset ModelMemo at every
-/// capture; a different key replaces the last observation. The caller
-/// admits this separately from the old budget. Empty selection has no reads.
-/// A registered variant can reference the native null CType: its exact
-/// singleton yields ordinal-1 (12 spans/70 bytes), never recorded Equipment[0].
 pub fn read_hull_variant(
     memory: &impl Memory,
     base: usize,
@@ -156,8 +112,6 @@ pub fn read_hull_variant(
         None => {
             let packet = acquire(memory, base, source);
             if let Some(complete) = packet.filter(complete)
-                // An allocation failure is already terminal for the capture;
-                // it only forgoes this reuse.
                 && crate::allocation::reserve_map(&mut state.complete, 1).is_ok()
             {
                 state.complete.insert(key, complete);
@@ -223,8 +177,6 @@ fn definition_index(
             .filter(|index| *index == -1);
     }
     let index: i32 = scalar(memory, source.definition, DEFINITION_INDEX)?;
-    // A real positive N maps to recorded Equipment[N-1]. An ordinary-vptr
-    // nonpositive index cannot claim the separately authenticated null source.
     let slot = u32::try_from(index).ok().filter(|index| *index != 0)?;
     let global = engine_sites::at(base, cequipment_database::SINGLETON_RVA)?;
     let database = usize::try_from(read::<u64>(memory, global)?).ok()?;
@@ -243,7 +195,6 @@ fn definition_index(
 
 #[inline]
 fn scalar<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Option<T> {
-    // read also checks the complete span, not just its first address.
     pointer
         .checked_add(offset)
         .filter(|_| pointer != 0)

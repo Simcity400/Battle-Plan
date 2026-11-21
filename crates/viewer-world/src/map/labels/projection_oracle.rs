@@ -1,6 +1,4 @@
 use super::*;
-/// The camera-independent tables the labels read, built once per hour and
-/// viewing country and reused by every camera's [`prepare`].
 #[derive(Clone, Debug, Default)]
 pub struct LabelTables {
     links: BTreeMap<u32, u32>,
@@ -8,22 +6,14 @@ pub struct LabelTables {
     ours: u32,
     allegiances: BTreeMap<u32, Allegiance>,
     capitals: BTreeSet<u32>,
-    /// Positive victory points and capitals in the hour's province row order.
     candidates: Vec<usize>,
     names: BTreeMap<u32, Result<Option<Arc<str>>, String>>,
-    /// State id to its raw owner link, from `States`.
     state_owners: BTreeMap<u32, u32>,
-    /// Why a state the `States` rows lack has no known owner.
     states_gap: String,
-    /// Canonical slot to exact original tag or tag bytes or its local refusal.
-    /// Slot zero comes from the authenticated ReservedCountryNaming singleton.
     original_tags: BTreeMap<u32, Result<String, String>>,
-    /// Why a country the `CountryAppearance` rows lack has no known one.
     appearance_gap: String,
 }
 
-/// Why a table's rows lack an entry: a complete table lacks it, a truncated
-/// or unavailable one may not have reached it.
 fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> String {
     match available {
         Available::Complete(_) => "the complete table has no row for it".into(),
@@ -38,7 +28,6 @@ fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> Strin
 }
 
 impl LabelTables {
-    /// Reads one hour's links, tags, war sides and capitals for `ours`.
     pub fn read(frame: &DecodedFrame, ours: u32, localisation: &Localisation) -> io::Result<Self> {
         let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
             .iter()
@@ -122,8 +111,6 @@ impl LabelTables {
         Ok(tables)
     }
 
-    /// State-owner tag operands used by victory-point localisation. The original
-    /// tag and own tag remain separate recorded fields.
     fn victory_point_tag(&self, state: u32) -> Result<&str, String> {
         let slot = if state == 0 {
             0
@@ -155,12 +142,6 @@ impl LabelTables {
     }
 }
 
-/// Select the one province with the most positive victory points in the
-/// controller's current capital state. A tie needs the unrecorded state order
-/// and a state without victory points the unrecorded fallback anchor, so
-/// neither carries a star. Missing `Politics` or `States` rows cannot establish
-/// a capital; table limitations report those gaps while ordinary labels remain
-/// available.
 fn capital_provinces(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -176,8 +157,6 @@ fn capital_provinces(
                 .map(|&slot| (slot, politics.capital as u32))
         })
         .collect();
-    // A capital icon is created only when the state controller has this state
-    // as its current capital. `States` records the controller independently.
     let wanted: BTreeSet<u32> = rows::<tables::States>(frame)?
         .rows()
         .iter()
@@ -209,18 +188,6 @@ fn capital_provinces(
         .collect())
 }
 
-/// The recorded `ProvinceNames` rows of one hour, by province.
-///
-/// The table is sparse: a province with no row has no override, which is the
-/// whole meaning of absence **from a complete table**. Absence from a truncated
-/// or unavailable one means nothing at all, and this function cannot tell the
-/// two apart — nor does it have to. Either way the province falls through to the
-/// static ladder and keeps the name it had; what changes is whether the hour is
-/// entitled to be silent about it, and that is `viewer_foundation::map::tables::limitations`'
-/// judgement, not this one's.
-///
-/// A later row wins over an earlier one for the same province, which is the only
-/// reading a table keyed by province admits.
 fn province_overrides(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, &[u8]>> {
     Ok(rows::<tables::ProvinceNames>(frame)?
         .rows()

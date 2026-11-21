@@ -12,7 +12,6 @@ export const RULES: readonly { value: TerritoryRule; label: string }[] = [
   { value: 'controlled', label: 'Controlled' }, { value: 'owned', label: 'Owned' }, { value: 'occupied', label: 'Occupied' },
 ];
 
-/** The land area the recorder counts: cells of the recorded map's province raster. */
 export const AREA_UNIT = 'map cells';
 
 export function measureOf(value: unknown): TerritoryMeasure {
@@ -23,7 +22,6 @@ export function ruleOf(value: unknown): TerritoryRule {
   return value === 'owned' || value === 'occupied' ? value : 'controlled';
 }
 
-/** The declared `territory` series' measure of a measure counted by a rule, such as `controlledStates`. */
 export function territorySeriesMeasure(measure: TerritoryMeasure, rule: TerritoryRule): string {
   return `${rule}${measure[0].toUpperCase()}${measure.slice(1)}`;
 }
@@ -32,7 +30,6 @@ export function formatTerritory(value: number): string {
   return usWhole.format(value);
 }
 
-/** Map cells describe the authored raster, whose projection enlarges the north. */
 export function territoryNote(measure: TerritoryMeasure): string | undefined {
   return measure === 'area' ? 'Map area exaggerates territory near the poles.' : undefined;
 }

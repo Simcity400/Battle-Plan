@@ -33,7 +33,6 @@ test('unclassified holdings keep their own named bucket', () => {
 });
 
 test('a type fills by each division’s capped fulfilment, never by aggregate holdings', () => {
-  // Needs of 100 and 100 against holdings of 150 and 50: 200 held, 150 filled.
   const row = type({ heldRaw: '20000000', neededRaw: '20000000', filledRaw: '15000000', missingRaw: '5000000' });
   assert.equal(typeFill(row), 0.75, 'not 100%');
   assert.equal(typeFill(type({ filledRaw: null, neededRaw: null })), null);

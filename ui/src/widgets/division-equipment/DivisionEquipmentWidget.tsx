@@ -48,7 +48,6 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [storedDrill, setStoredDrill] = useState<{ owner: object; drill: Drill } | null>(null);
   const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
-  // The country is resolved at an hour that moves only when its identity does; the equipment is the followed panel's.
   const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
     clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
   const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
@@ -67,12 +66,10 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const state = useHeadProduct(runtime, widget, 'division-equipment', asked, { active, validate: validateDivisionEquipment, structure: equipmentStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;
-  // A drill holds one recording's native template or division handle: another recording, subject or view closes it.
   const drillOwner = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, subject, view]);
   const drill = storedDrill?.owner === drillOwner ? storedDrill.drill : null;
   const setDrill = (next: Drill | null) => setStoredDrill(next && { owner: drillOwner, drill: next });
   const drillParams = drill?.kind === 'template' ? { template: drill.template } : drill?.kind === 'division' ? { division: drill.division } : null;
-  // A drill is its own panel: the template's divisions or the division's pool at the head, or at the asked hour.
   const detail = useHeadProduct(runtime, widget, 'division-equipment', asked && drillParams && { ...asked, ...drillParams },
     { active: active && drillParams !== null, validate: validateDivisionEquipment, structure: equipmentStructure });
   const viewportHeight = useViewportHeight();
@@ -158,7 +155,6 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
         onRowClick={row => setDrill({ kind: 'template', template: row.template })} tooltip={templateTip} menu={menu} />}</>;
   const type = drill?.kind === 'type' ? data?.types.find(row => typeKey(row) === drill.key) : undefined;
   const drillData = detail.data;
-  // Template and division drills show their own reply, which can answer another hour than the overview.
   const drillMenu = () => drillData?.poolHour == null || !track ? [] : [jumpItem(runtime, track.id, drillData.poolHour)];
   const drillHour = drill && drill.kind !== 'type' ? detail.hour : state.hour;
   let body = null;
@@ -191,7 +187,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const back = drill?.kind === 'division' && drill.template ? { kind: 'template' as const, template: drill.template } : null;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; state.root(element); detail.root(element); }, [state.root, detail.root]);
   return <div ref={root} className="division-equipment" data-detail={countryLabel.nameFailure?.message}>{header}
-    {/* Outside the drill, so an open breakdown never hides a later failure. */}
+    { }
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill !== null}
       title={drill?.kind === 'type' ? type ? typeName(type) : 'Equipment' : drill?.kind === 'template'

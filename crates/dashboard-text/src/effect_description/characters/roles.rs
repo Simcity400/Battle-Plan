@@ -1,4 +1,3 @@
-//! Country leader roles and advisors with parsed effect operands.
 
 use super::*;
 use installed_content_core::{characters::Authored, modifiers::Modifiers};
@@ -10,7 +9,6 @@ use replay_data::rows::{
     PartyLeaderRow, PoliticalPartyRow,
 };
 
-/// The fields of each table the role descriptions read.
 const LEADER_ROLE: u64 = tables::CountryLeaderRoles::ID.full_mask();
 const PARTY_PICK: u64 = mask::<PoliticalPartyRow>(&["token", "is_ruling"]);
 const PARTY_LEADER: u64 = tables::PartyLeaders::ID.full_mask();
@@ -59,9 +57,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Evaluate arguments in authored order with the original supplied array
-    // (empty here), then the key with its own argument array.
-    // Use scoped localisation for every key; faction names use unscoped localisation.
     fn bound_node(
         &mut self,
         bound: &BoundLocalization,
@@ -111,8 +106,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             FormattedLocalization::Key(key) => self
                 .localised(key, arguments, scopes, scoped)
                 .map(BoundResult::Text),
-            // Intern token: payloads and return the integer variant
-            // for the containing localiser to format.
             FormattedLocalization::Token(token) => self
                 .context
                 .world()?
@@ -129,8 +122,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 let token =
                     std::str::from_utf8(token).map_err(|_| "bound formatter token is not UTF-8")?;
                 let text = match formatter.as_slice() {
-                    // The registry's no-context callbacks return literal NULL.
-                    // A scoped callback keeps the caller's event scope carrier.
                     b"idea_desc" if scoped => self.bound_idea_description(token, scopes)?,
                     b"tech_effect" if scoped => self.bound_technology_effect(token, scopes)?,
                     b"idea_desc" | b"tech_effect" => "NULL".to_owned(),
@@ -150,16 +141,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         crate::scripted_text::spelled(&self.character_lexical()?, token)?
             .ok_or_else(|| format!("lexical tokens lacks token {token}"))
     }
-    // Search the signed ideology-token map; an empty selector chooses its
-    // sole entry rather than the first of several. The ideology token
-    // is the lexical token recorded for its authored name.
     pub(super) fn char_country_leader_scope(
         &self,
         character: &CharacterRow,
         ideology: Option<&[u8]>,
     ) -> Result<Option<Cow<'f, CountryLeaderRoleRow>>, String> {
         let roles = self.character_table::<tables::CountryLeaderRoles>(LEADER_ROLE)?;
-        // The character is the key's high word, the ideology its low word.
         let low = u128::from(character.id) << 32;
         let mut found = each(roles.span(low, low | u128::from(u32::MAX)));
         let Some(ideology) = ideology.filter(|ideology| !ideology.is_empty()) else {
@@ -192,7 +179,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(None)
     }
 
-    // Select the first entry of the political status's party vector.
     pub(super) fn char_ruling_leader(
         &self,
         country: u32,
@@ -223,8 +209,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<Cow<'f, PartyLeaderRow>>, String> {
         let world = self.context.world()?;
         let parties = self.character_table::<tables::PoliticalParties>(PARTY_PICK)?;
-        // PoliticalParties' key is country then party id; PartyLeaders' is country, party and
-        // ordinal.
         let mut selected = None;
         for party in parties.keyed(|key| world.slot((key >> 32) as u32) == Some(country)) {
             let party = party.map_err(built)?;
@@ -257,7 +241,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         keyed(&leaders.with_mask(PARTY_LEADER), key)
     }
 
-    // Use the stored name, otherwise localise the original name string.
     pub(super) fn char_country_leader_display_name(
         &self,
         character: &CharacterRow,
@@ -278,14 +261,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         traits: &[String],
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Use the ideology subgroup's localised group name.
         let token = String::from_utf8_lossy(ideology).to_ascii_lowercase();
         let db = self.politics_ideologies()?;
         let group = db.group_of(&token).map_err(ToString::to_string)?;
         let ideology = match group {
             Some(group) => self.localised(group.token.as_bytes(), &[], scopes, false)?,
-            // An empty template-promote selector reaches the shared null ideology.
-            // Its null group has an empty name; this default needs no runtime input.
             None if token.is_empty() => self.localised(b"", &[], scopes, false)?,
             None => {
                 return Err(format!(
@@ -304,8 +284,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )?;
         text.push('\n');
         for token in traits {
-            // Use four-space indentation with highlight controls;
-            // use a LF and six-space bullet as the nested numeric separator.
             let Some(body) = self.char_country_trait_description_with_prefix(
                 token.as_bytes(),
                 scopes,
@@ -328,7 +306,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Describe legacy country-leader creation.
     pub(in crate::effect_description) fn char_create_country_leader(
         &self,
         item: &Item,
@@ -336,8 +313,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         let raw = operand(item, "name").unwrap_or_default();
         let country = self.current_country(scopes)?;
-        // Add a country prefix unless the fourth byte is an underscore. Lowercase ASCII,
-        // turn spaces into underscores, and remove hyphens/apostrophes.
         let key = if !raw.is_empty() && raw.get(3) != Some(&b'_') {
             let mut key = self.tag(country)?.as_bytes().to_vec();
             key.push(b'_');
@@ -358,7 +333,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         };
         let mut name = self.localised(&key, &[], scopes, false)?;
         if name.is_empty() {
-            // Search only the active roster, without a current-character fallback.
             if let Some(token) = operand(item, "token")
                 && let Some(token) = self
                     .context
@@ -405,7 +379,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Describe the authored country-leader role, with a promotion-specific wrapper.
     pub(in crate::effect_description) fn char_add_country_leader_role(
         &self,
         item: &Item,
@@ -435,15 +408,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Use the recorded role before template fallback; traits keep runtime order.
-    // Accept empty ideology only for a single role.
     pub(in crate::effect_description) fn char_promote_character(
         &self,
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // A character scope reads a scalar as ideology (exact yes means empty).
-        // Its block accepts ideology but not character.
         let character_scope = matches!(
             scopes.this,
             Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
@@ -502,9 +471,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .as_ref()
             .map_err(Clone::clone)?;
         let roles = catalogue.leader_roles(&token)?;
-        // Only startup-allowed templates are registered after clearing the maps.
-        // Agreement cannot prove presence: absent authored entries
-        // may also fall through to generated templates.
         if !catalogue.template_has_unconditional_startup(&token) {
             return Err(format!(
                 "character template {token} selected identity/presence is unrecorded"
@@ -524,8 +490,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let name = match catalogue.name(&token).map_err(ToString::to_string)? {
-            // Localise the authored template name without an event scope.
-            // Promotion copies that stored name without event-scope expansion.
             Some(Authored::Asset(key)) => self.localised(key.as_bytes(), &[], scopes, false)?,
             Some(Authored::Ambiguous(_)) => {
                 return Err(format!(
@@ -544,7 +508,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the character and its country, expand, then append LF.
     pub(in crate::effect_description) fn char_retire_character(
         &self,
         item: &Item,
@@ -576,7 +539,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the ruling or selected ideology leader, then expand and append LF.
     pub(in crate::effect_description) fn char_remove_party_leader(
         &self,
         item: &Item,
@@ -612,8 +574,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // A missing character or undefined ideology returns empty.
-    // IDEOLOGY is the subgroup's group name; append no LF.
     pub(in crate::effect_description) fn char_remove_country_leader_role(
         &self,
         item: &Item,
@@ -642,7 +602,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Localise and expand SLOT first, then the containing line.
     pub(in crate::effect_description) fn char_remove_advisor_role(
         &self,
         item: &Item,
@@ -665,8 +624,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // A temporary accumulator sums each trait modifier, then the template modifier.
-    // It supplies no trait names or bonuses.
     pub(in crate::effect_description) fn char_add_advisor_role(
         &self,
         item: &Item,
@@ -706,8 +663,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 return Err(why.to_owned());
             }
             for value in &source.values {
-                // Multiply in signed 64-bit arithmetic before dividing by fixed5,
-                // even at the unit scale.
                 let contribution = value.value.wrapping_mul(100_000) / 100_000;
                 if let Some(previous) = modifiers
                     .values
@@ -722,8 +677,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 }
             }
         }
-        // Format plain modifiers with the full category mask and precision 2,
-        // then expand only the containing line.
         let modifiers = self.modifier_description_with(
             &modifiers,
             "",
@@ -748,9 +701,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Search exact primary names in roster order, then retired names and advisor
-    // maps without case. Format 98 keeps the raw accumulator numbers;
-    // never rebuild them from current traits.
     pub(in crate::effect_description) fn char_activate_advisor(
         &self,
         item: &Item,
@@ -761,14 +711,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         ))
         .map_err(|_| "advisor idea token is not UTF-8")?;
         let Some(character_id) = self.advisor_idea_character(idea, scopes)? else {
-            return Ok(String::new()); // Native diagnostic only when lookup is null.
+            return Ok(String::new());
         };
-        // Retain the selected advisor's exact cache without looking up its role again.
-        // Retired lookup selects the first folded match in recorded tree order.
-        // A unique exact match at that same ordinal is safe for the primary path.
-        // Other exact matches lose role identity in the character-only result;
-        // do not rescan the roster.
-        // The character is the key's high word, the role's ordinal its low word.
         let low = u128::from(character_id) << 32;
         let mut matching = Vec::new();
         for role in each(
@@ -806,8 +750,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             advisor.tooltip_keys,
             replay_data::rows::Recorded::NotRecorded
         ) {
-            // Older recordings can prove zero/one trait key only when the own
-            // block has no tooltips. Recorded keys always supersede this fallback.
             let catalogue = self
                 .character_content()?
                 .catalogue
@@ -819,8 +761,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let role = catalogue
                 .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
                 .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
-            // Construction and loading add the own block after rebuilding, which omits it.
-            // Its cached tooltip membership therefore depends on refresh history.
             let mut own_blocks = vec![&role.modifiers];
             while let Some(block) = own_blocks.pop() {
                 if let Some(why) = block.unheld.cause() {
@@ -834,10 +774,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 }
                 own_blocks.extend(&block.children);
             }
-            // With no own-block tooltips, rebuilding copies current trait tooltip keys.
-            // Clearing retains table capacity and therefore slot order.
-            // Zero or one distinct key is independent of that order; two or more
-            // need the unrecorded order. Reuse the catalogue's set.
             let mut modifiers = Modifiers::default();
             let mut tooltip_key: Option<String> = None;
             let role_key = u128::from(advisor.character) << 40
@@ -875,9 +811,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             modifiers.values.clear();
             modifiers.hidden.clear();
             modifiers.children.clear();
-            // Format raw modifiers with the full category mask and no prefix.
-            // Recorded numeric order and definition IDs need no lexer lookup.
-            // DESC expands only after substitution into the wrapper.
             let options = ModifierListOptions {
                 category_mask: u32::MAX,
                 ..Default::default()
@@ -886,8 +819,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 self.cached_modifier_description_with(&cache.entries, "", options)?;
             if tooltip_key.is_some() {
                 let tooltip = self.modifier_description_with(&modifiers, "", options)?;
-                // Add one LF before a nonempty tooltip only when the numeric text
-                // is nonempty and does not already end in LF.
                 if !tooltip.is_empty() {
                     if !description.is_empty() && !description.ends_with('\n') {
                         description.push('\n');
@@ -915,9 +846,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // A THIS character omits its name; a resolved explicit character
-    // without a THIS character adds a trailing space.
-    // Wrap nonempty SLOT text in parentheses followed by a space.
     pub(in crate::effect_description) fn char_set_can_be_fired(
         &self,
         item: &Item,
@@ -950,8 +878,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Look up the copied lexer-token ID in the registry rather than the country
-    // roster. Substitute the character name, expand and append LF.
     pub(in crate::effect_description) fn char_recruit_character(
         &self,
         item: &Item,
@@ -989,7 +915,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Copy the authored name, surname and callsign without a naming lookup or LF.
     pub(in crate::effect_description) fn char_add_ace(
         &self,
         item: &Item,
@@ -1010,8 +935,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Require a positive country in a faction, excluding its first member.
-    // Expand the faction display name and append LF.
     pub(in crate::effect_description) fn char_set_faction_leader(
         &mut self,
         scopes: Scopes,

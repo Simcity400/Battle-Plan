@@ -1,22 +1,3 @@
-//! Faction-theatre pins, one per admitted theatre of the viewing country's faction.
-//!
-//! The first theatre region owns its pin. Only the political, air and navy map modes
-//! show it ([`Visibility::faction_pins`]); hidden-country entries compare raw tags or
-//! canonical country slots. Fog, camera height and armies are not gates.
-//! The count uses the recorded theatre country count.
-//!
-//! Pins live while a province of their first region is in the shared update schedule.
-//! Camera admission, dirty bits and selection can retain an off-camera pin through
-//! the rotating province phase. Selection cannot add a clean off-camera province.
-//! Each presented frame refreshes reached owners and erases unreached owners.
-//!
-//! The anchor is an f32 arithmetic mean of the theatre regions' icon positions,
-//! without seam handling. Pins have no grouping layer. Resolved window resources
-//! supply position, size, sprite, frame and font; the recorded emblem appends
-//! [`EMBLEM_SUFFIX`]. Interface pixels use [`super::super::ui_scale`]. Pins retain
-//! [`PING_PRIORITY`] across map modes and nearer pins draw over farther ones.
-//! Hover highlights the union of theatre regions and leaving clears it; the hover
-//! carries the theatre's key for its tooltip. Pointer state belongs to the view.
 
 use replay_data::rows::FactionTheatreRow;
 use std::collections::HashMap;
@@ -39,16 +20,11 @@ use viewer_foundation::map::native_gui;
 
 const COUNT: &str = "count";
 const FACTION_ICON: &str = "faction_icon";
-// The hover and leave callbacks attach to this button.
 const BUTTON: &[u8] = b"button";
 
 use viewer_foundation::map::native_windows::FACTION_PING_WINDOW;
-/// Append this to the emblem name.
 pub const EMBLEM_SUFFIX: &str = "_miniature";
-/// Faction-ping priority: the game leaves the constructed value unchanged.
 pub const PING_PRIORITY: i8 = 0;
-/// moves `x` by whole map widths until it is within half a width (integer
-/// division) of `reference`.
 fn unwrap(reference: i32, x: i32, width: i32) -> i32 {
     if width <= 0 {
         return x;
@@ -61,8 +37,6 @@ fn unwrap(reference: i32, x: i32, width: i32) -> i32 {
     x as i32
 }
 
-/// Region icon position is the arithmetic mean of its province icon positions.
-/// Terrain sampling supplies its height; missing region geometry stays unavailable.
 pub fn region_icon_position(
     centroids: &[[i32; 2]],
     width: i32,
@@ -85,8 +59,6 @@ pub fn region_icon_position(
     Some([x, height(x, z), z])
 }
 
-/// the `f32` sum of the theatre's region
-/// positions, in theatre order, times `1 / count`. There is no seam handling.
 pub fn theatre_anchor(positions: &[[f32; 3]]) -> Option<[f32; 3]> {
     if positions.is_empty() {
         return None;
@@ -101,37 +73,25 @@ pub fn theatre_anchor(positions: &[[f32; 3]]) -> Option<[f32; 3]> {
     Some(sum.map(|total| total * inverse))
 }
 
-/// One pin the hour and perspective call for, before the camera's admission.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pin {
-    /// The theatre's first region, whose listed provinces keep the pin.
     pub(crate) first_region: u32,
-    /// The theatre's FactionTheatres key: faction and ordinal.
     pub(crate) theatre: (u64, u32),
     pub(crate) regions: Arc<[u32]>,
     pub(crate) anchor: [f32; 3],
-    /// The emblem sprite name.
     pub(crate) emblem: Vec<u8>,
-    /// The count box's text.
     pub(crate) count: String,
 }
 
-/// What kept pins of this hour from being decided or placed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PinReport {
-    /// Why no theatre could be decided at all, when none could.
     pub undecided: Option<String>,
-    /// Theatres whose first region another theatre of the faction also lists: which theatre
-    /// the byte map names there is not recorded, so neither pin is drawn.
     pub ambiguous: usize,
-    /// Theatres naming a region the content has no icon position for.
     pub unplaced: usize,
-    /// `hidden_for` links `CountryLinks` does not resolve; they hide nothing.
     pub unresolved_hidden: usize,
 }
 
 impl PinReport {
-    /// `*self = source.clone()`, reusing this report's storage.
     pub fn assign(&mut self, source: &Self) {
         let Self {
             undecided,
@@ -146,15 +106,12 @@ impl PinReport {
     }
 }
 
-/// The camera-independent pins of one hour and perspective.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HourPins {
     pub(crate) pins: Vec<Pin>,
     pub(crate) report: PinReport,
 }
 
-/// Admitted theatres for the viewing country, in recorded theatre order.
-/// The first region owns the pin; a nonpositive region id is refused.
 pub(crate) fn shown<'a>(
     theatres: &'a [FactionTheatreRow],
     faction: u64,
@@ -203,7 +160,6 @@ pub(crate) fn shown<'a>(
 }
 
 impl HourPins {
-    /// The pins of one hour for the viewing country `viewer` (a canonical slot).
     pub(crate) fn read(
         frame: &DecodedFrame,
         links: &BTreeMap<u32, u32>,
@@ -262,7 +218,6 @@ impl HourPins {
     }
 }
 
-/// A camera's pin owners; preparation never touches the presented pool.
 #[derive(Default)]
 pub(super) struct PreparedPins {
     placed: Vec<PlacedPin>,
@@ -276,15 +231,11 @@ struct PlacedPin {
     screen: [f32; 2],
     emblem: Vec<u8>,
     count: String,
-    /// Where the pin stands for a free eye; pins have no distance cutoff of their own.
     anchor: Option<IconAnchor>,
 }
 
-/// All hour candidates projected for this camera; the shared province list decides
-/// owner admission on each presented frame, not while this overlay is prepared.
 pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &mut CounterFrame) {
     out.report.faction_ping_limits = hour.report.clone();
-    // Only the political, air and navy map modes show faction pins.
     if !inputs.visibility.faction_pins {
         return;
     }
@@ -313,11 +264,9 @@ pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &m
         .sort_by(|a, b| b.depth.total_cmp(&a.depth));
 }
 
-/// A successfully drawn pin's native button, in interface pixels and paint order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PinHover {
     pub rect: [f32; 4],
-    /// The theatre's FactionTheatres key: faction and ordinal.
     pub theatre: (u64, u32),
     pub regions: Arc<[u32]>,
     pub layer: u64,
@@ -383,7 +332,6 @@ fn refresh(
     sprite: &[u8],
     resources: &dyn Resources,
 ) -> Result<(), String> {
-    // Find inherited controls recursively, then write the theatre count and emblem.
     let count = root
         .find_recursive(native::Kind::TextBox, COUNT.as_bytes())
         .ok_or_else(|| format!("no text box named {COUNT}"))?;
@@ -401,8 +349,6 @@ fn refresh(
     instance.set_sprite(root, emblem, sprite, SpriteSetter::Icon)
 }
 
-/// A province cleared by this frame's off-screen update remains listed for
-/// this frame's region call; the next frame can erase the region's pin.
 fn region_listed(provinces: &[u32], schedule: &Schedule) -> bool {
     provinces.iter().any(|&province| schedule.listed(province))
 }
@@ -439,9 +385,6 @@ impl PreparedPins {
                 .filter(|pin| region_listed(inputs.content.region_provinces(pin.region), &schedule))
                 .collect::<Vec<_>>()
         };
-        // Only the next-frame request decision needs camera admission here. Actual owners
-        // come solely from the shared list. Include the final off-screen cleanup frame so
-        // the following presentation can erase its region's pool owner at a still camera.
         let admission = Admission::new(inputs.camera, inputs.viewport);
         let keep_running = reached.iter().any(|pin| {
             !inputs
@@ -450,7 +393,6 @@ impl PreparedPins {
                 .iter()
                 .any(|&province| admission.admits_province(&inputs.content.bounds, province))
         });
-        // Preserve the existing depth request order; native sort fidelity is separate.
         let owners: Vec<_> = reached
             .iter()
             .map(|pin| Owner {
@@ -500,8 +442,6 @@ impl PreparedPins {
                 .guis
                 .template(FACTION_PING_WINDOW)
                 .expect("drawn template");
-            // A refused native hit shape cannot draw an observer that would let
-            // pointer input reach a lower map icon through its visible button.
             let hover = match hover_rect(root, &drawn.layout, drawn.origin, context.resources) {
                 Ok(hover) => hover,
                 Err(why) => {
@@ -659,7 +599,6 @@ mod tests {
             panic!("emblem sprite");
         };
         assert_eq!(sprite, b"GFX_odd");
-        // Ignore parent; this icon keeps its defaults.
         assert_eq!(&geometry.rect[..2], &[0., 0.]);
         let text = root
             .find_recursive(native::Kind::TextBox, COUNT.as_bytes())
@@ -694,17 +633,13 @@ mod tests {
 
     #[test]
     fn a_region_position_unwraps_against_the_first_province_and_wraps_once() {
-        // Two provinces either side of the seam of a 100-wide map: 98 and 2 (unwrapped to 102)
-        // average to 100, which wraps to 0.
         let at = region_icon_position(&[[98, 10], [2, 20]], 100, |x, z| x + z).unwrap();
         assert_eq!(at, [0.0, 15.0, 15.0]);
-        // Without a seam the mean is plain, and a single province is its own centroid.
         assert_eq!(
             region_icon_position(&[[10, 4], [21, 5]], 100, |_, _| 9.5).unwrap(),
             [15.5, 9.5, 4.5]
         );
         assert_eq!(region_icon_position(&[], 100, |_, _| 0.0), None);
-        // The reference is the first province, not the smallest x.
         assert_eq!(unwrap(2, 98, 100), -2);
         assert_eq!(unwrap(98, 2, 100), 102);
         assert_eq!(unwrap(50, 0, 100), 0, "exactly half a width stays");
@@ -730,17 +665,12 @@ mod tests {
         let rows = vec![
             theatre(2, &[5, 6], &[]),
             theatre(0, &[1, 2, 3], &[]),
-            // Hidden for raw 101, which is slot 2, not the viewer.
             theatre(1, &[4], &[101, 555]),
-            // Hidden for the viewer.
             theatre(3, &[8], &[100]),
-            // No regions, and region 0.
             theatre(4, &[], &[]),
             theatre(5, &[0, 9], &[]),
-            // First region 20 is also listed by theatre 7: ambiguous, both refused.
             theatre(6, &[20, 21], &[]),
             theatre(7, &[22, 20], &[]),
-            // Native lookup cannot return this row through its signed byte.
             theatre(128, &[30], &[]),
             other,
         ];

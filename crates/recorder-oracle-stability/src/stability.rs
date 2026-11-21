@@ -1,13 +1,3 @@
-//! CountryStabilityInputs against each country's saved stability terms, and
-//! CountryStabilityLines as an explicit limitation.
-//!
-//! The country save writer saves the stored words stability and
-//! war-support calculations read: the bases (`stability`, `war_support`), the Q15
-//! penalties as five decimals truncated toward zero (a live
-//! save proved they are decimals, not raw words, and that the writer truncates)
-//! and the coastal term through the fixed5 writer, each penalty and the coastal term only when
-//! nonzero. Everything else the table records is computed, cached outside
-//! the country or engine state no writer serializes.
 
 use super::{Report, complete, invalid, required_country_tag};
 use installed_content_save::Save;
@@ -48,7 +38,6 @@ fn inputs(
     let rows = complete::<tables::CountryStabilityInputs>(frame)?;
     let reads = complete::<tables::SliceReads>(frame)?;
     let full = report.full_refresh();
-    // Each country read now has one row; a forced full walk reads all but the reserved one.
     let mut unrecorded = BTreeSet::new();
     for read in reads.iter().filter(|read| {
         read.table == TableId::CountryStabilityInputs.index() as u32
@@ -67,8 +56,6 @@ fn inputs(
     let mut compared = 0;
     let mut stale = 0;
     for row in rows {
-        // A row keeps the hour its country's slice read it; only rows read at
-        // the oracle hour describe the saved instant.
         if !full
             && replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
                 != Some(frame.hour)
@@ -172,7 +159,6 @@ fn inputs(
         }
         let terms = &saved.stability_terms;
         let fixed = |value: &Option<installed_content_save::Decimal>| value.as_ref().map(|value| value.raw);
-        // The save truncates a Q15 word to five decimals (see `q15_to_saved_fixed5`).
         let q15 = replay_data::fixed_point::q15_to_saved_fixed5;
         for (field, captured, saved) in [
             (
@@ -206,7 +192,6 @@ fn inputs(
                 fixed(&terms.propaganda_war_support_penalty),
             ),
         ] {
-            // The writer omits a zero value, so absence is zero.
             let expected = saved.unwrap_or(0);
             report.scalar_checks += 1;
             if captured != expected {
@@ -287,7 +272,6 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
         run_rows(vec![row], read_at, false)
     }
 
-    /// `rows` with country 102's SliceReads hour `read_at`, at a forced full walk when `full`.
     fn run_rows(rows: Vec<CountryStabilityInputRow>, read_at: i32, full: bool) -> Report {
         let mut frame = DecodedFrame {
             branch: 1,
@@ -323,15 +307,11 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
 
     #[test]
     fn a_country_read_at_this_hour_needs_its_row() {
-        // SliceReads dates GER's read to this hour, yet the table holds no row for it.
         let report = run_rows(Vec::new(), HOUR, false);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].contains("country GER stability inputs"));
-        // A country read earlier is carried, not expected now.
         let report = run_rows(Vec::new(), HOUR - 3, false);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
-        // A forced full walk reads every country of the census, whatever SliceReads says,
-        // and its rows are current.
         let report = run_rows(Vec::new(), HOUR - 3, true);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         let mut changed = row();

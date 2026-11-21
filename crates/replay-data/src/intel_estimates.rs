@@ -1,5 +1,3 @@
-//! Deterministic intelligence ranges from game-state operands and content.
-//! No panel, holder, local selection, RNG cursor or captured caption is used.
 use crate::rows::ClockRow;
 
 const SCALE: i64 = 100_000;
@@ -30,8 +28,6 @@ pub fn normalized(value: i64, maximum: i64) -> Result<i64, &'static str> {
 fn fixed_to_q15(value: i64) -> i64 {
     (value % SCALE).wrapping_mul(Q15) / SCALE + (value / SCALE).wrapping_mul(Q15)
 }
-// Fixed5 square root uses the native integer convergence criterion; a float
-// square root rounded afterwards can move an endpoint across an integer.
 fn square_root(value: i64) -> Result<i64, &'static str> {
     if value < 2 {
         return Ok(0);
@@ -92,8 +88,6 @@ pub struct Range {
     pub lower_q15: i64,
     pub upper_q15: i64,
 }
-/// Whether a positive truth operand reaches monthly jitter. Exact paths do
-/// not require a recorded seed or an unused lowest-spread define.
 pub fn needs_jitter(intel: i64, minimum: i64, maximum: i64) -> Result<bool, &'static str> {
     let numerator = intel.wrapping_sub(minimum);
     let denominator = maximum.wrapping_sub(minimum);
@@ -101,8 +95,6 @@ pub fn needs_jitter(intel: i64, minimum: i64, maximum: i64) -> Result<bool, &'st
         && finite(numerator)
         && divide(numerator.wrapping_mul(SCALE), denominator)? < SCALE)
 }
-/// True quantities enter in Q15. Count getters round the two returned bounds;
-/// the fuel getter retains Q15. Availability is independent of a zero quantity.
 pub fn range(
     value_q15: i64,
     intel: i64,
@@ -153,7 +145,6 @@ pub fn range(
         upper_q15: upper.max(Q15),
     })
 }
-/// The native integer getters round Q15, then keep the signed low 32 bits.
 pub fn count_bounds(range: Range) -> (i32, i32) {
     (
         (range.lower_q15.wrapping_add(Q15 / 2) >> 15) as i32,

@@ -29,7 +29,6 @@ impl FirstReason {
     pub fn get(&self) -> Option<&'static str> {
         let length = self.length.load(Ordering::Acquire).checked_sub(1)?;
         let code = self.code.load(Ordering::Relaxed);
-        // Only the winning static string publishes its length, after its address code.
         Some(unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(code, length)) })
     }
 }

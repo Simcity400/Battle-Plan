@@ -166,7 +166,6 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
 #[test]
 fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
     use engine_native::csubject_relation::Name;
-    // The retired split tables are no longer this pack's tables.
     assert_eq!(
         TABLES,
         [TableId::CountryAppearance, TableId::ReservedCountryNaming]
@@ -197,8 +196,6 @@ fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
     else {
         panic!("complete singleton");
     };
-    // The naval movement, raw country and selected transport fields are
-    // retired tombstones; Country0's attack operands are not witnessed.
     for retired in [
         &rows[0].movement,
         &rows[0].raw_country_observations,
@@ -530,7 +527,6 @@ fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries
             data: 0x100c,
             count: 1,
         };
-        // Include a row omitted by the country walker before subject capture.
         capture.rows.outcome = Outcome::Truncated {
             len: 3,
             unread_rows: 1,

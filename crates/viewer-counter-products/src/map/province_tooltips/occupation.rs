@@ -1,4 +1,3 @@
-//! The occupied-state hover's target, daily rates and effects, in native section order.
 use super::{
     Context,
     mode_lines::{FIXED5 as ONE, OccupationDefines, mul, percent},
@@ -35,7 +34,6 @@ fn ratio(legitimacy: i64, maximum: i64) -> i64 {
     }
 }
 
-// The displayed branch uses the freshly derived target, independently of stored speeds.
 fn resistance_rate_section(level: i64, target: i64, reenable: i64) -> Option<u8> {
     if (level == 0 && target < reenable) || level == target {
         None
@@ -52,7 +50,6 @@ fn resistance_decay_low(d: &OccupationDefines, level: i64) -> Option<i64> {
         .filter(|&factor| factor != 0)
 }
 
-/// Numeric rates keep the native clamp order: configured bounds, then distance to target.
 fn resistance_rate(
     d: &OccupationDefines,
     level: i64,
@@ -348,7 +345,6 @@ impl Context<'_> {
         lines.extend(terms);
         gap(&mut lines);
         if let Some(target) = target {
-            // The rate formatter emits no lines when resistance already equals its target.
             if row.level == 0 && target < d.reenable {
                 lines.push(self.loc(
                     "RESISTANCE_DISABLED_INFO",
@@ -662,9 +658,6 @@ impl Context<'_> {
     }
 }
 
-/// The native effect description emits the root's aggregate entries, then
-/// custom tooltips. Children affect the nonempty gate, not the printed list:
-/// their contributions are already in those aggregate values.
 fn append_effect_block(
     key: &'static str,
     effects: &[rows::OccupationEffect],
@@ -765,7 +758,6 @@ mod tests {
             assert!(refused.is_empty());
             assert_eq!(expected.get_or_insert_with(|| lines.clone()), &lines);
         }
-        // A child retains the native heading even if no numeric key prints.
         let mut lines = Vec::new();
         let mut refused = Vec::new();
         append_effect_block(
@@ -815,7 +807,6 @@ mod tests {
         let why = source_total(&sources, 2).unwrap_err();
         assert!(why.contains("section 2, source 0"));
         assert!(why.contains("fixture root value unreadable"));
-        // Absence is never treated as a known zero, even if its error text is empty.
         sources
             .iter_mut()
             .find(|source| source.section == 2 && source.source == 0)
@@ -842,7 +833,6 @@ mod tests {
         let target = 2 * ONE;
         assert!(row.speed < 0);
         assert_eq!(resistance_rate_section(row.level, target, ONE), Some(1));
-        // Modded bounds can make the calculated rate zero while its growth branch still prints.
         let d = OccupationDefines::default();
         assert_eq!(resistance_rate(&d, row.level, target, false, 0).0, 0);
         row.speed = 1_000;

@@ -1,61 +1,14 @@
-//! The controller and owner areas behind each province, which the selected army
-//! route search reads for land-area paths and costs, held between hours and
-//! read again only where a native writer may have changed them.
-//!
-//! - The province's controller-area pointer names the province's controller area (vtable
-//!   [`ccontroller_area::VTABLE_RVA`]). Its pointer setter is reached at run
-//!   time only by controller changes and their split and join operations; only
-//!   province controller notifications reach those changes. Load construction
-//!   and flood fill, reached from the game-state header loader and in-game
-//!   initialization, and world clearing run only around a load.
-//!
-//! - An area's members are its province vector (`ccontroller_area::PROVINCE_DATA`). Insertion
-//!   uses binary order by province id (the province's id), and removal operates
-//!   in place, so the first member has the smallest id: that id labels the area
-//!   here. Both operations keep the representative (`ccontroller_area::REPRESENTATIVE_PROVINCE`) used for path costs
-//!   and ordering: the first land province (the definition's land bit) added,
-//!   chosen again when it leaves.
-//!
-//! - Contacts (`CONTACTS`): first and last node, signed count and
-//!   deferred-removal byte. Each 0x20-byte node holds the payload,
-//!   previous, next and removal mark; each payload is
-//!   `{area, signed count}`. Land-area search follows the list in
-//!   order. Contact insertion appends a new target and counts an existing one;
-//!   it and removal run only from controller changes, splitting and joining,
-//!   between the area of a province whose area changes and a neighbour's area
-//!   (the definition's adjacency list, 0x30-byte entries keyed by id).
-//!
-//! - The province's owner-area pointer names its owner area; only the global rebuild writes it
-//!   at run time, and only equality and null are read.
-//!
-//! Every province's two area pointers arrive with the province walk's movement
-//! gather. A carried row ([`cprovince::carry`]) brings its held pointers, which
-//! the collector reads again for every capture that compares them
-//! ([`Store::carries_quietly`]). An hour on which no province was marked
-//! ([`Store::marks`]: the territory family's province writers, including
-//! controller notification) publishes the held areas. A marked hour compares
-//! the pointers of every province a controller change can re-point
-//! ([`Store::repointable`]; every province when that is not bounded) with the
-//! held ones and reads again the area of every marked or re-pointed province,
-//! the area it left and its neighbours' areas. This covers
-//! every area whose members, representative or contacts a controller change
-//! touches. Areas are labelled by their smallest member, owner areas likewise;
-//! no pointer leaves the collector.
 
 use crate::{
     Memory, allocation, ccontroller_area, cpdx_array::Array, cprovince, province_definition,
     province_neighbour, read, read_slice,
 };
 
-/// From the representative on: representative, member data, capacity and count.
 const MEMBERS: usize = ccontroller_area::REPRESENTATIVE_PROVINCE;
-/// Contacts: first and last contact, signed count, deferred byte.
 const CONTACTS: usize = 0x90;
 const CONTACT_HEADER: usize = 21;
 const CONTACT_NODE: usize = 25;
 
-/// What the province walk gathers for the areas, in row order: the province,
-/// its definition and both area pointers (null is zero).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pointers {
     pub province: usize,
@@ -64,19 +17,13 @@ pub struct Pointers {
     pub owner: usize,
 }
 
-/// One controller area as recorded: it lives on the province whose id is its
-/// label (its smallest member).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Node {
     pub label: u32,
-    /// The representative as an authenticated member; None refused.
     pub first_land: Option<u32>,
-    /// The contacts' labels in native order, a range of
-    /// [`Output::neighbours`]; None refused.
     pub neighbours: Option<(usize, usize)>,
 }
 
-/// The hour's nodes, sorted by label, and their contacts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Output {
     pub nodes: Vec<Node>,
@@ -109,18 +56,12 @@ impl Output {
     }
 }
 
-/// One capture's work, for status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Every area was read: nothing held certified the hour.
     pub full: bool,
-    /// No province was marked: the held areas were published.
     pub quiet: bool,
-    /// Provinces whose controller area changed.
     pub changed: u64,
-    /// Areas read.
     pub read: u64,
-    /// Areas published from the held capture.
     pub carried: u64,
 }
 
@@ -141,12 +82,9 @@ struct Held {
 struct Area {
     pointer: usize,
     label: u32,
-    /// Provinces whose controller-area pointer names this area.
     members: u32,
-    /// Why the node was refused: it is published without either operand.
     failure: Option<&'static str>,
     first_land: Option<u32>,
-    /// Contact areas in native order, valid when `contacts_failure` is None.
     contacts: Vec<usize>,
     contacts_failure: Option<&'static str>,
 }
@@ -165,18 +103,12 @@ impl Area {
     }
 }
 
-/// The held capture, lent to the province walk's job each hour.
 #[derive(Debug, Default)]
 pub struct Store {
-    /// The dirty-set epochs the held capture was taken under; None when
-    /// nothing is held, so the next capture reads every area.
     epochs: Option<[u64; 2]>,
-    /// By province id; index zero is no province.
     provinces: Vec<Held>,
     present: usize,
-    /// Sorted by pointer.
     areas: Vec<Area>,
-    /// The held capture's published nodes, current while `published_current`.
     published: Output,
     published_current: bool,
     marks: Vec<u32>,
@@ -186,12 +118,8 @@ pub struct Store {
     pairs: Vec<(usize, u32)>,
     neighbour_ids: Vec<u32>,
     neighbour_bytes: Vec<u8>,
-    /// [`Self::allocated_bytes`] as of the latest capture.
     bytes: usize,
-    /// A requested full refresh: the next capture reads every area.
     pub force_full: bool,
-    /// Storage for the hour's [`Self::repointable`] province ids, lent to the
-    /// caller while it reads their pointers.
     pub scope: Vec<u32>,
 }
 
@@ -200,23 +128,16 @@ impl Store {
         Self::default()
     }
 
-    /// The province ids the hour's take marked; [`Self::capture`] consumes
-    /// them.
     pub fn marks(&mut self) -> &mut Vec<u32> {
         &mut self.marks
     }
 
-    /// A failed job or an incomplete walk: nothing is held.
     pub fn forget(&mut self) {
         self.epochs = None;
         self.marks.clear();
         self.published_current = false;
     }
 
-    /// Whether [`Self::capture`] of `rows` rows under `take` would publish
-    /// the held areas without comparing any pointer: nothing marked
-    /// ([`Self::marks`]), nothing refused and no full read requested. Every
-    /// other capture compares or reads every province's pointers.
     pub fn carries_quietly(&self, take: Option<[u64; 2]>, rows: usize) -> bool {
         !self.force_full
             && take.is_some()
@@ -225,17 +146,6 @@ impl Store {
             && self.marks.is_empty()
     }
 
-    /// The province ids whose area pointers a marked capture must compare, into `scope` (sorted):
-    /// the marked provinces, their neighbours and every held member of the held controller area of
-    /// a marked province or of one of its neighbours. A controller change re-points no other
-    /// province: a controller change stores only the changed province's controller-area pointer
-    /// (through the pointer setter), splitting clears and re-fills only the members of the area the
-    /// province left, and joining moves the members of one area into another, both areas of the
-    /// changed province or of its neighbours; by induction over the hour's changes every area a
-    /// later change touches is a union of members of those held areas. The split's flood fill also
-    /// takes a null-area province of the new controller, so a marked province whose controller
-    /// `rows` give as zero or a held null area of a nonzero controller answers false: compare every
-    /// province. False too when nothing is held or a province or its neighbours do not read.
     pub fn repointable(
         &mut self,
         memory: &impl Memory,
@@ -308,8 +218,6 @@ impl Store {
         result
     }
 
-    /// The storage the store held after its latest capture; constant time,
-    /// for the callback that takes it back.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -331,10 +239,6 @@ impl Store {
             + self.neighbour_bytes.capacity()
     }
 
-    /// Labels `rows` and writes the hour's nodes. `pointers` holds each
-    /// row's areas in row order from the same complete walk; `take` the
-    /// territory family's province and province-state epochs, None when it
-    /// refused. On an error no row is labelled and nothing is held.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -386,7 +290,6 @@ impl Store {
         Ok(counts)
     }
 
-    /// Reads every area afresh.
     fn full(
         &mut self,
         memory: &impl Memory,
@@ -439,8 +342,6 @@ impl Store {
         Ok(())
     }
 
-    /// Groups the provinces by controller-area pointer: each group is one area, labelled by its
-    /// smallest province id.
     fn group_controllers(&mut self) -> Result<(), &'static str> {
         self.fill_pairs(false)?;
         let Self {
@@ -464,7 +365,6 @@ impl Store {
         Ok(())
     }
 
-    /// Labels the provinces by owner-area group, each by its smallest province id.
     fn group_owners(&mut self) -> Result<(), &'static str> {
         self.fill_pairs(true)?;
         let Self {
@@ -510,8 +410,6 @@ impl Store {
         self.find(pointer).map_or(0, |at| self.areas[at].label)
     }
 
-    /// Publishes the held capture when nothing marked a province, otherwise
-    /// follows the marks. False when the hour must read every area afresh.
     fn carry(
         &mut self,
         memory: &impl Memory,
@@ -555,7 +453,6 @@ impl Store {
         if owners {
             self.group_owners()?;
         }
-        // Membership follows the re-pointed provinces.
         for index in 0..self.changed.len() {
             let (id, old) = self.changed[index];
             let new = self.provinces[id as usize].controller;
@@ -578,7 +475,6 @@ impl Store {
                 }
             }
         }
-        // Every area a controller change can touch.
         self.affected.clear();
         for index in 0..self.changed.len() + self.marks.len() {
             let (id, old) = match self.changed.get(index) {
@@ -617,7 +513,6 @@ impl Store {
                 continue;
             };
             let before = self.areas[at].label;
-            // An area's label is its first member: member insertion keeps id order.
             let Some(first) = self.read_area(memory, base, at)? else {
                 return Ok(false);
             };
@@ -655,8 +550,6 @@ impl Store {
         Ok(true)
     }
 
-    /// The definition's neighbour ids in native order, into `neighbour_ids`.
-    /// False when the definition does not read.
     fn neighbours(
         &mut self,
         memory: &impl Memory,
@@ -690,9 +583,6 @@ impl Store {
         Ok(true)
     }
 
-    /// Reads area `at`'s node; a fault the node alone carries stays on it.
-    /// Returns the id of its first member when that member authenticates as
-    /// a province linking to it.
     fn read_area(
         &mut self,
         memory: &impl Memory,
@@ -740,7 +630,6 @@ impl Store {
             area.failure = Some("controller area member count differs from its provinces' links");
             return Ok(None);
         }
-        // A member authenticates through its id slot of the same walk.
         let member = |province: usize| -> Option<u32> {
             if province == 0 {
                 return None;
@@ -774,8 +663,6 @@ impl Store {
                 let payload = word(&node, 0);
                 let back = word(&node, 8);
                 let next = word(&node, 16);
-                // Contact removal marks instead of unlinking under the deferred
-                // byte; a marked node's payload may already be freed.
                 if node[24] != 0 {
                     return Err("controller area contact marked for removal");
                 }
@@ -801,7 +688,6 @@ impl Store {
         Ok(first)
     }
 
-    /// Writes the held labels into `rows` and the nodes into `output`.
     fn publish(
         &mut self,
         rows: &mut [cprovince::Row],
@@ -838,7 +724,6 @@ impl Store {
             areas, published, ..
         } = self;
         published.clear();
-        // A failed build leaves nothing current; the next publish rebuilds.
         allocation::reserve(&mut published.nodes, areas.len()).map_err(|_| ALLOCATION)?;
         for area in areas.iter() {
             let mut node = Node {
@@ -854,7 +739,6 @@ impl Store {
                         .map_err(|_| ALLOCATION)?;
                     let mut complete = true;
                     for &contact in &area.contacts {
-                        // A contact outside the provinces' areas has no label.
                         match areas.binary_search_by_key(&contact, |area| area.pointer) {
                             Ok(at) => published.neighbours.push(areas[at].label),
                             Err(_) => {

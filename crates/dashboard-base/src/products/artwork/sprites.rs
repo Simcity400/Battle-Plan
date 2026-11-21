@@ -1,7 +1,3 @@
-//! Sprite artwork: images for exact authored sprite keys that a product
-//! returned (doctrine icons, for one), with no inferred suffix, localisation or
-//! recorded hour. It shares the catalogue's sprite renderer with focus and
-//! technology artwork.
 
 use crate::{
     Source,
@@ -18,20 +14,19 @@ use ts_rs::TS;
 
 pub struct SpriteArtwork;
 
-/// One frame of an authored sprite, as a product returned it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpriteFrame {
-    /// The exact sprite key (doctrine mastery's `icon`, for one).
+    #[doc = " The exact sprite key (doctrine mastery's `icon`, for one)."]
     pub key: String,
-    /// The zero-based native frame; offsets may continue past the authored strip.
+    #[doc = " The zero-based native frame; offsets may continue past the authored strip."]
     #[serde(default)]
     pub frame: u32,
-    /// Where the visual mods' interface chose `key`, the sprite the recording's own interface
-    /// chooses in its place: drawn, named, when the selection cannot draw `key`. Equal to `key`
-    /// when the selection could not make its own choice, so the recording's is drawn alone.
-    /// Absent where recorded facts name the sprite (or both choose the same one); a sprite the
-    /// selection cannot draw is then the recording's of that name.
+    #[doc = " Where the visual mods' interface chose `key`, the sprite the recording's own interface"]
+    #[doc = " chooses in its place: drawn, named, when the selection cannot draw `key`. Equal to `key`"]
+    #[doc = " when the selection could not make its own choice, so the recording's is drawn alone."]
+    #[doc = " Absent where recorded facts name the sprite (or both choose the same one); a sprite the"]
+    #[doc = " selection cannot draw is then the recording's of that name."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recorded: Option<String>,
@@ -48,11 +43,11 @@ pub struct SpriteArtworkParams {
 pub struct SpriteImage {
     pub key: String,
     pub frame: u32,
-    /// The asked frame's `recorded` choice, as it was asked.
+    #[doc = " The asked frame's `recorded` choice, as it was asked."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recorded: Option<String>,
-    /// An artwork URL, or null with a named, counted refusal.
+    #[doc = " An artwork URL, or null with a named, counted refusal."]
     pub icon: Option<String>,
 }
 
@@ -65,8 +60,6 @@ pub struct SpriteArtworkReply {
 
 crate::reply_warnings!(SpriteArtworkReply);
 
-/// Validate a lazy route key without decoding any image. Absent authored keys,
-/// refused declarations and declarations without textures remain distinct errors.
 pub fn icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String> {
     let key = std::str::from_utf8(installed_content_core::parser::c_string(authored))
         .map_err(|_| "authored icon key is not UTF-8".to_owned())?;
@@ -83,10 +76,6 @@ pub fn icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String
     Ok(key.to_owned())
 }
 
-/// [`icon_key`] as the request's catalogue shows it: a key the selection cannot draw that the
-/// recording's own catalogue declares with a texture is valid, since the sprite route draws the
-/// recording's sprite of that name in its place ([`catalogue::draw`]). When neither declares
-/// it, why is the recording's.
 pub fn shown_icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String> {
     icon_key(catalogue, authored).or_else(|why| match catalogue.recorded() {
         Some(recorded) => icon_key(recorded, authored),
@@ -94,7 +83,6 @@ pub fn shown_icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, 
     })
 }
 
-/// `key`'s `frame` drawn through `catalogue`, validated as [`icon_key`] validates it.
 fn frame_png(catalogue: &Catalogue, key: &str, frame: u32) -> io::Result<String> {
     icon_key(catalogue, key.as_bytes()).map_err(crate::invalid)?;
     let sprite = catalogue
@@ -171,12 +159,9 @@ fn images(
         crate::metadata::check_cancel(cancelled)?;
         let key = &asked.key;
         let result = match &asked.recorded {
-            // The selection could not make its own choice: the recording's is drawn alone.
             Some(recorded) if recorded == key => {
                 frame_png(catalogue.recorded().map_or(catalogue, |recorded| &**recorded), key, asked.frame)
             }
-            // The key drawn as the selection shows it; where it cannot be, the recording's own
-            // choice (or its sprite of that name) is drawn, named.
             recorded => catalogue::draw(
                 || format!("sprite {key}"),
                 catalogue,
@@ -208,7 +193,6 @@ fn images(
             recorded: asked.recorded.clone(),
             icon,
         });
-        // Refuse the complete ask, never omit later requested sprites to fit it.
         check_reply_budget(&reply)?;
     }
     reply.warnings.extend(
@@ -285,7 +269,6 @@ mod tests {
             .collect(),
         };
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
-        // Repeats are asked once; past-strip frames use the native sampler.
         assert_eq!(reply.items.len(), 4);
         let art = reply
             .items
@@ -337,7 +320,6 @@ mod tests {
         assert!(images(&catalogue, &params, &AtomicBool::new(true)).is_err());
     }
 
-    /// A mod's two-frame strip replacing a base declaration of four frames.
     fn shortened_strip() -> (Catalogue, String, Box<dyn std::any::Any>) {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, base) = folder_catalogue(&[(
@@ -370,7 +352,6 @@ mod tests {
             super::super::ICON_EDGE,
         )
         .unwrap();
-        // The folders must outlive the catalogue's lazy reads.
         (catalogue, expected, Box::new((base, folder)))
     }
 
@@ -517,12 +498,6 @@ mod tests {
         );
     }
 
-    /// A product asks for sprite B, naming A as the recording's own choice, and the selected
-    /// mod's art for B does not load (the recording's B would draw): the recording's own choice,
-    /// A, is drawn and named, never B patched with the recording's art. Where the selection made
-    /// no choice of its own, the recording's is drawn alone, named by the product that chose it.
-    /// A recorded-facts key whose art the mod breaks is the recording's of that name; without a
-    /// selection every key is drawn as it is.
     #[test]
     fn a_sprite_the_mod_chose_and_cannot_draw_is_the_recordings_own_choice() {
         use crate::test_fixtures::visual_mods::{

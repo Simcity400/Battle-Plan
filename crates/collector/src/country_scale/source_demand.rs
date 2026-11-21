@@ -1,4 +1,3 @@
-//! Advisory source storage from native headers before attach and on demand cadence.
 use super::{Sizing, demand_game_state, raise, table_demand};
 use crate::extended;
 use engine_native::{Memory, cgame_state, cpdx_array::Array};
@@ -28,8 +27,6 @@ impl Demand {
         let Some(state) = demand_game_state(memory, base)? else {
             return Ok(None);
         };
-        // World reset and province initialization
-        // size the indexed live registries; slot zero supplies no source row.
         let indexed = |offset, width| {
             state
                 .checked_add(offset)
@@ -38,15 +35,11 @@ impl Demand {
                 .map(|array| array.count.saturating_sub(1) as usize)
                 .ok_or("source demand indexed registry invalid")
         };
-        // CountryLinks preserves its zero entry as an independent replay row.
         let links = state
             .checked_add(cgame_state::COUNTRY_LINKS)
             .and_then(|address| Array::read(memory, address, 4))
             .map(|array| array.count as usize)
             .ok_or("source demand country links invalid");
-        // Faction names share the observer-owner census. Indexed registry
-        // floors and conflict groups still feed fixed consumers; keep these
-        // reads on the fast cadence, unlike the independent worker-only walks.
         let factions = engine_native::cfaction::count(memory, base, state);
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
@@ -118,8 +111,6 @@ impl Demand {
                 raise(&mut core[index], required);
             }
         }
-        // These independent worker walks grow before publication. A skipped
-        // hint is not a failed observation and preserves its previous floor.
         for (index, demand) in [
             (5, self.wars),
             (7, self.faction_members),
@@ -166,7 +157,6 @@ mod tests {
         assert!(skipped.state_names.is_none());
         assert!(skipped.faction_members.is_none());
         assert!(skipped.wars.is_none());
-        // Unreadable prompt/fixed inputs still request the original retry rate.
         assert!(skipped.refused());
         let mut sizing = Sizing::for_slots(1);
         let previous = sizing.core;

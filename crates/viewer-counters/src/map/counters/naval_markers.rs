@@ -1,15 +1,3 @@
-//! Naval combat and retained naval result map icons.
-//!
-//! Combat placement is per province ([`crate::map::naval_combat_occurrences`]).
-//! Engaged combats update the icon bound to their own province. HQ frame selection
-//! also runs for every live-combat icon. Each province has one visible retained-result
-//! icon. Engagement comes from the viewing country's shared index.
-//!
-//! Persistent pooled windows retain the background frame from their last engaged
-//! update. A new view can establish it from [`viewer_foundation::engagement_history::kept_frames`];
-//! otherwise the binding's initial frame one is used with a counted history gap.
-//! Placement, censuses, HQ frames and results are prepared per hour and perspective;
-//! camera changes only place and draw the prepared icons.
 
 use super::*;
 use replay_data::{
@@ -38,8 +26,6 @@ use {
     },
 };
 
-/// The sprite literals: every visible
-/// result a naval strike, every one a port strike, a plain battle, a convoy battle.
 pub const NAVAL_RESULT_SPRITES: [&str; 4] = [
     "GFX_naval_combat_result_navalstrikes",
     "GFX_naval_combat_result_portstrikes",
@@ -47,21 +33,14 @@ pub const NAVAL_RESULT_SPRITES: [&str; 4] = [
     "GFX_naval_combat_result_convoys",
 ];
 
-/// The inputs both icon kinds share for one hour and perspective.
 pub(super) struct MarkerContext<'a> {
     pub(super) vision: &'a Vision,
     pub(super) owner: &'a dyn Fn(u32) -> Option<u32>,
-    /// The naval counter operands the grid tiles share with the port items: the unit passes'
-    /// context, or, when no unit counter draws (`units_shown`, which does not gate the combat
-    /// icons), what the grids build it from the first time a large icon needs them.
     pub(super) naval: Result<&'a NavalContext<'a>, NavalSources<'a>>,
     pub(super) countries: &'a Countries,
-    /// This hour's engaged flag of every naval, land and border-war combat for the viewer.
     pub(super) flags: &'a CombatFlags,
 }
 
-/// The viewing country and how a raw country reference resolves: all a per-hour decision
-/// ([`NavalMarkerTables`]) needs of the perspective.
 #[derive(Clone, Copy)]
 pub(super) struct Viewer<'a> {
     pub(super) vision: &'a Vision,
@@ -69,8 +48,6 @@ pub(super) struct Viewer<'a> {
 }
 
 impl Viewer<'_> {
-    /// Whether any raw country reference resolves to the viewer's canonical slot.
-    /// `None` when no match is found and a reference does not resolve.
     fn contains_viewer(&self, list: &[u32]) -> Option<bool> {
         let mut unresolved = false;
         for &raw in list {
@@ -85,7 +62,6 @@ impl Viewer<'_> {
 }
 
 impl MarkerContext<'_> {
-    /// Side allegiance used for progress direction and background selection.
     fn side_allegiance(&self, side: &str, countries: &[u32]) -> Result<Allegiance, String> {
         let ours = self.vision.ours();
         for &raw in countries {
@@ -112,10 +88,6 @@ impl MarkerContext<'_> {
         Ok(Allegiance::Other)
     }
 
-    /// the convoy addition's background: by `allegiance` (the walk
-    /// above) when `counter_color_mode` is 1; otherwise the UI colour of the side's first
-    /// country, or `COUNTER_MODE_ALLEGIANCE_OTHER` for an
-    /// empty list.
     fn convoy_tint(
         &self,
         inputs: &CounterInputs<'_>,
@@ -132,8 +104,6 @@ impl MarkerContext<'_> {
         )
     }
 
-    /// The flip, [`Vision::turns_naval_progress`] over the
-    /// attacker's primary countries in order. Undecided, it names why.
     fn flip(&self, detail: &NavalCombatDetailsRow) -> Result<bool, String> {
         self.vision
             .turns_naval_progress(
@@ -147,9 +117,6 @@ impl MarkerContext<'_> {
     }
 }
 
-/// A convoy addition uses the side's allegiance colour in allegiance mode. In
-/// country mode it uses the first country's UI colour (`first`, its slot or an
-/// unresolved raw reference), or `COUNTER_MODE_ALLEGIANCE_OTHER` for an empty list.
 fn convoy_color(
     mode: CounterColorMode,
     tints: &allegiance::Tints,
@@ -167,9 +134,6 @@ fn convoy_color(
     }
 }
 
-/// Each cause a naval combat icon or icon part is omitted or undecided for, with the combats it
-/// affects: the `("Naval", cause)` entries of [`CounterReport::combat_gaps`], which the windowed
-/// diagnostics, the map details and `--dump` print as one line per cause naming its combats.
 pub(super) fn naval_gap(
     report: &mut CounterReport,
     cause: String,
@@ -182,7 +146,6 @@ pub(super) fn naval_gap(
         .extend(combats);
 }
 
-/// Why `table` is not whole this hour, if it is not.
 fn whole<T: replay_data::rows::TableSchema>(
     table: &Available<'_, T>,
     name: &str,
@@ -190,7 +153,6 @@ fn whole<T: replay_data::rows::TableSchema>(
     whole_of(held(table), name)
 }
 
-/// How `table` holds its rows, for its gaps' wording.
 fn held<'a, T: replay_data::rows::TableSchema>(table: &Available<'a, T>) -> Held<'a> {
     match table {
         Available::Complete(_) => Held::Complete,
@@ -200,18 +162,9 @@ fn held<'a, T: replay_data::rows::TableSchema>(table: &Available<'a, T>) -> Held
     }
 }
 
-/// A task force the HQ frame reads: the row and its attached naval-HQ count, or which census
-/// lacks it.
 #[cfg(test)]
 type ForceInput<'a> = Result<(&'a replay_data::rows::TaskForceRow, i32), String>;
 
-/// The side whose primary list holds the viewer (attacker first) shows the HQ
-/// frame when any live ship in its forward groups belongs to a viewer-owned task
-/// force with attached naval headquarters. `members` are the combat's forward members
-/// ([`grid::forward_members`]). The game collects all forward members' task forces
-/// before testing them, so their order cannot change the positive result.
-/// A known qualifying force decides it; otherwise unresolved members leave it
-/// undecided, named by the first such member's cause.
 #[cfg(test)]
 fn hq_frame<'a>(
     viewer: Viewer<'_>,
@@ -232,7 +185,6 @@ fn hq_frame<'a>(
     hq_frame_of(viewer, &DetailFacts::of(detail).countries, members.iter(), &HqForces { ship_force: &ship_force, force: &force })
 }
 
-/// [`hq_frame`] from values: the combat's side countries, its forward members, and the forces.
 fn hq_frame_of<'a>(
     viewer: Viewer<'_>,
     countries: &[Vec<u32>; 2],
@@ -287,19 +239,12 @@ fn hq_frame_of<'a>(
     unresolved.map_or(Ok(false), Err)
 }
 
-/// Each detailed combat's [`hq_frame`], or why a census it reads is incomplete.
 pub type HqFrames = Result<BTreeMap<u64, Result<bool, String>>, String>;
 
-/// Run only for an icon whose bound province equals its combat's province. The
-/// bound province comes from the call's anchor, independently of the bucket that
-/// owns the icon.
 fn rotates(home: u32, occurrence: &Occurrence) -> bool {
     home == occurrence.anchor_province
 }
 
-/// The widget size off the coarse zoom: the small one once two
-/// entries of the combat province's whole combat vector are engaged, whatever
-/// their class. Undecided, it names why.
 fn two_engaged(
     flags: &CombatFlags,
     province: u32,
@@ -319,35 +264,20 @@ fn two_engaged(
         })
 }
 
-/// Where a placed icon's `bg_btn` frame comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameSource {
-    /// Frame written this hour for a rotating icon of an engaged combat.
     Engaged,
-    /// A rotating icon of an unengaged combat keeps its last engaged update's frame: its pool
-    /// slot's when the view established it, else the engaged index's answer for the combat
-    /// ([`viewer_foundation::engagement_history::kept_frames`]); an unknown history uses the binding's initial
-    /// frame with a limitation ([`naval_windows`]).
     Kept(Kept),
-    /// A spill-over icon, which the game never rotates: its pool slot's last frame.
     Spillover,
 }
 
-/// What one placed combat icon shows, before any camera: the game for its
-/// background frame and progress, then the game for its HQ frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decision {
-    /// `bg_btn`'s frame.
     variant: u32,
-    /// Whether the progress children are filled: a rotating icon of an engaged combat.
     progress: bool,
     frame: FrameSource,
 }
 
-/// A spill-over icon keeps its initial state (no children; its frame [`FrameSource::Spillover`]);
-/// a rotating one of an unengaged combat hides its progress and keeps its frame, which `kept`
-/// (the index's answer, [`Kept::Undecided`] when it holds none) gives; an engaged one takes
-/// The variant. Undecided, it names why.
 fn decide(
     rotates: bool,
     engaged: Engaged,
@@ -380,90 +310,52 @@ fn decide(
             progress: true,
             frame: FrameSource::Engaged,
         }),
-        // The icon is omitted with the ambiguity's cause, as the land marker names it.
         Engaged::Ambiguous(cause) => Err(cause.reason().into()),
         Engaged::Unknown => Err("the combat's engaged flag for the viewer is unknown".into()),
     }
 }
 
-/// The naval icon decisions no camera moves, made once per hour and perspective and kept in the
-/// hour tables; a camera's rebuild only places and draws them.
 pub(super) struct NavalMarkerTables {
-    /// `None` for an hour without a naval combat to place: a complete, empty combat census and
-    /// no province vector naming a naval combat.
     combats: Option<CombatTables>,
-    /// The hour's retained results.
     results: Arc<ResultTables>,
-    /// Each province whose `NavalProvinceCombats` row lists a combat vector.
     vectors: BTreeSet<u32>,
     direct_complete: bool,
-    /// Every combat the hour holds.
     live: BTreeSet<u64>,
-    /// Why [`Self::live`] is not every combat: the `NavalCombats` census is not whole, so whether
-    /// a kept icon's combat still resolves is undecided.
     live_undecided: Option<String>,
-    /// Combats with a side of no countries: the game erases their icons.
     gated: BTreeSet<u64>,
 }
 
-/// One placed combat icon, decided before any camera.
 #[derive(Debug, PartialEq)]
 struct Icon {
     combat: u64,
-    /// The province whose graphics own it.
     province: u32,
-    /// Pass its early returns: the icon stands in its
-    /// combat's own province.
     rotates: bool,
-    /// The combat's own province.
     home: u32,
-    /// The bound province's `Standstill` unit-stack anchor.
     anchor: [f32; 3],
-    /// Its place in its province's icon stack.
     ordinal: u32,
     decision: Decision,
-    /// [`hq_frame`], or why it is undecided.
     hq: Result<bool, String>,
 }
 
-/// An admitted icon the passes placed whose decision the hour cannot make: its owner, whether it
-/// rotates, where it stands when that is known, and why.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Omitted {
     pub combat: u64,
     pub province: u32,
     pub rotates: bool,
-    /// Its anchor and stack place, when the hour decides them.
     pub place: Option<([f32; 3], u32)>,
     pub cause: String,
 }
 
-/// The placed combat icons and what each shows before any camera, with every cause one is
-/// omitted or undecided for.
 struct CombatTables {
-    /// Every admitted icon the passes placed, in bucket order: decided, or omitted with its
-    /// owner and cause.
     icons: Vec<Result<Icon, Omitted>>,
-    /// The placement passes' own causes with the combats each affects: a direct call whose
-    /// combat the census lacks or whose side countries are unknown (each an omitted icon), and a
-    /// stopped spillover pass.
     placement: Vec<(String, Vec<u64>)>,
-    /// Direct calls that placed no icon.
     unplaced: usize,
-    /// Missing live-combat details leave icon existence undecided. Retain the
-    /// known distinction between erased icons and icons awaiting their next update.
     undecided: Vec<Omitted>,
-    /// Every combat's naval-HQ frame ([`hq_frame`]), which an icon the hour no longer places
-    /// still takes.
     hq: HqFrames,
-    /// Why this hour's naval engaged flags are load-rebuilt
-    /// ([`viewer_foundation::engagement_history::Provenance::limitation`]), if they are.
     provenance: Option<&'static str>,
 }
 
 impl NavalMarkerTables {
-    /// `kept` is what each live icon keeps for its frame
-    /// ([`viewer_foundation::engagement_history::kept_frames`] of the naval icons).
     pub(super) fn read(
         frame: &DecodedFrame,
         viewer: Viewer<'_>,
@@ -484,7 +376,6 @@ impl NavalMarkerTables {
                 registry_ordinal: row.registry_ordinal,
             })
             .collect();
-        // The direct pass admits only a vector's naval entries (combat type 2).
         let direct_refs: Vec<Direct> = direct
             .rows()
             .iter()
@@ -611,7 +502,6 @@ impl NavalMarkerTables {
         })
     }
 
-    /// The tables of an hour whose naval icons a layer decides: none of today's.
     pub(super) fn empty() -> Self {
         Self {
             combats: None,
@@ -624,9 +514,6 @@ impl NavalMarkerTables {
         }
     }
 
-    /// The naval markers layer's decisions laid out over `frame`, the hour on screen, whose rows
-    /// the draw reads (each icon's `NavalCombatDetails` row and the province vectors). An icon
-    /// whose combat that hour holds no details row is omitted and named.
     pub(super) fn of_values(values: &NavalMarkerValues, frame: &DecodedFrame) -> io::Result<Self> {
         let direct = rows::<tables::NavalProvinceCombats>(frame)?;
         Ok(Self {
@@ -663,7 +550,6 @@ impl NavalMarkerTables {
         })
     }
 
-    /// Its decisions as values: what the naval markers layer is compared with.
     pub(super) fn values(&self) -> NavalMarkerValues {
         NavalMarkerValues {
             combats: self.combats.as_ref().map(|combats| CombatValues {
@@ -699,14 +585,11 @@ impl NavalMarkerTables {
 }
 
 impl HourTables {
-    /// The hour's naval icon decisions as values.
     pub fn naval_marker_values(&self) -> NavalMarkerValues {
         self.naval_markers.values()
     }
 }
 
-/// A combat's side countries, as its `NavalCombatDetails` row holds them: what admission, the
-/// gate and the HQ frame read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DetailFacts {
     pub countries: [Vec<u32>; 2],
@@ -722,15 +605,11 @@ impl DetailFacts {
     }
 }
 
-/// What the HQ frames read of the whole Ships, TaskForces and TaskForceCounterInputs censuses.
 pub struct HqForces<'a> {
-    /// A member ship's task force, when the Ships census holds the ship.
     pub ship_force: &'a dyn Fn(u64) -> Option<u64>,
-    /// A task force's roster owner and attached naval-HQ count, or which census lacks it.
     pub force: &'a dyn Fn(u64) -> Result<(u32, i32), String>,
 }
 
-/// One `NavalResults` row's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResultFields {
     pub id: u64,
@@ -760,7 +639,6 @@ impl ResultFields {
     }
 }
 
-/// Each result's country lists by list, in ordinal order, from (result, list, ordinal, country).
 pub fn result_country_lists(rows: impl IntoIterator<Item = (u64, u8, u32, u32)>) -> BTreeMap<(u64, u8), Vec<u32>> {
     let mut countries: BTreeMap<(u64, u8), Vec<(u32, u32)>> = BTreeMap::new();
     for (result, list, ordinal, country) in rows {
@@ -775,39 +653,31 @@ pub fn result_country_lists(rows: impl IntoIterator<Item = (u64, u8, u32, u32)>)
         .collect()
 }
 
-/// Everything the naval icons' hour part reads, as values.
 pub struct NavalMarkerInputs<'a> {
     pub vision: &'a Vision,
     pub owner: &'a dyn Fn(u32) -> Option<u32>,
     pub combats: &'a [Combat],
     pub combats_held: Held<'a>,
-    /// Each province's naval combat entries, in its vector's order.
     pub direct: &'a [Direct],
     pub direct_complete: bool,
     pub details: &'a BTreeMap<u64, DetailFacts>,
     pub details_held: Held<'a>,
-    /// `None` while the census is not whole.
     pub transfers: Option<&'a [Transfers]>,
     pub units: Option<&'a [Units]>,
     pub locations: Option<&'a BTreeMap<u64, u32>>,
-    /// The member census in stored order, or why it is not whole.
     pub members: Result<&'a [CensusMember], String>,
-    /// What the HQ frames read, or why a census of it is not whole.
     pub hq: Result<HqForces<'a>, String>,
     pub flag: &'a dyn Fn(u64) -> Engaged,
-    /// Why the naval flags are load-rebuilt, if they are.
     pub provenance: Option<&'static str>,
     pub kept: &'a dyn Fn(u64) -> Option<Kept>,
     pub province_kind: &'a dyn Fn(u32) -> Option<ProvinceKind>,
     pub anchor: &'a dyn Fn(u32) -> Option<[f32; 3]>,
     pub results: &'a [ResultFields],
     pub result_countries: &'a BTreeMap<(u64, u8), Vec<u32>>,
-    /// Results with a member holding a copied sinking string.
     pub present: &'a BTreeSet<u64>,
     pub results_complete: bool,
 }
 
-/// One placed combat icon, decided before any camera.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IconValues {
     pub combat: u64,
@@ -820,7 +690,6 @@ pub struct IconValues {
     pub hq: Result<bool, String>,
 }
 
-/// The placed combat icons and what each shows, with every cause one is omitted for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatValues {
     pub icons: Vec<Result<IconValues, Omitted>>,
@@ -831,7 +700,6 @@ pub struct CombatValues {
     pub provenance: Option<&'static str>,
 }
 
-/// The naval icons' hour part, decided before any camera.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavalMarkerValues {
     pub combats: Option<CombatValues>,
@@ -841,7 +709,6 @@ pub struct NavalMarkerValues {
     pub gated: BTreeSet<u64>,
 }
 
-/// The naval icons' hour part from values.
 pub fn naval_marker_values(inputs: &NavalMarkerInputs<'_>) -> NavalMarkerValues {
     let viewer = Viewer { vision: inputs.vision, owner: inputs.owner };
     NavalMarkerValues {
@@ -855,7 +722,6 @@ pub fn naval_marker_values(inputs: &NavalMarkerInputs<'_>) -> NavalMarkerValues 
 
 fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<CombatValues> {
     let combats_complete = matches!(inputs.combats_held, Held::Complete);
-    // A complete, empty census ends the spillover pass before it reads a transfer.
     let empty_census = combats_complete && inputs.combats.is_empty();
     if empty_census && inputs.direct.iter().all(|row| row.combats.is_empty()) {
         return None;
@@ -902,14 +768,11 @@ fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<C
         placement.push((cause, vec![combat]));
     }
     if let Some(reason) = placed.spillover_gap {
-        // The pass commits no spillover until every chain is proven, so a stop omits every
-        // combat's spillover icons.
         placement.push((
             format!("spillover icons omitted: {reason}"),
             inputs.combats.iter().map(|combat| combat.id).collect(),
         ));
     }
-    // The forward members the HQ frames walk, grouped once per hour.
     let forward: Result<BTreeMap<u64, Vec<&CensusMember>>, String> = inputs.members.as_ref().map_err(Clone::clone).map(|members| {
         let mut forward: BTreeMap<u64, Vec<&CensusMember>> = BTreeMap::new();
         for member in members.iter().filter(|member| member.member_source == 0 && member.group_index != viewer_foundation::map::unit_rules::PAIRED_ONLY_GROUP) {
@@ -957,8 +820,6 @@ fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<C
         let icon = (|| {
             let ordinal = ordinal?;
             let anchor = anchored?;
-            // Engagement uses either side's derived viewer flag. A combat absent from
-            // this hour is unknown.
             let engaged = if rotating {
                 (inputs.flag)(combat)
             } else {
@@ -969,7 +830,6 @@ fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<C
                 Ok(censuses) => match censuses.get(&combat) {
                     Some(Err(cause)) => Err(cause.as_str()),
                     Some(Ok(census)) => Ok(*census),
-                    // A combat with no forward member has empty sides.
                     None => Ok(Default::default()),
                 },
             };
@@ -1006,9 +866,6 @@ fn combat_values(inputs: &NavalMarkerInputs<'_>, viewer: Viewer<'_>) -> Option<C
 }
 
 impl CombatTables {
-    /// Counts the icons the hour omits, by cause with their combats, into `report`: the
-    /// placement passes' causes, then each omitted icon's. `refused` names a layout refusal that
-    /// omits every placed icon instead.
     fn report_omitted(&self, refused: Option<&str>, report: &mut CounterReport) {
         report.unavailable_naval_combats += self.unplaced;
         for (cause, combats) in &self.placement {
@@ -1020,9 +877,6 @@ impl CombatTables {
                 (Err(omitted), Some(refused)) => (omitted.combat, refused.to_owned()),
                 (Err(omitted), None) => (omitted.combat, omitted.cause.clone()),
                 (Ok(icon), None) => {
-                    // A load-rebuilt engaged flag is this hour's limitation for every placed
-                    // icon; the frame an unengaged icon keeps is its pool's
-                    // ([`naval_windows`]).
                     if let Some(limit) = self.provenance {
                         report
                             .combat_limits
@@ -1039,9 +893,6 @@ impl CombatTables {
     }
 }
 
-/// The current province of every unit a transfer names, found in the three
-/// key-sorted unit censuses, or `None` while any census is incomplete. The spillover
-/// pass looks up no other unit.
 fn unit_locations(frame: &DecodedFrame, units: &[Units]) -> io::Result<Option<BTreeMap<u64, u32>>> {
     let divisions = rows::<tables::Divisions>(frame)?;
     let forces = rows::<tables::TaskForces>(frame)?;
@@ -1069,7 +920,6 @@ fn unit_locations(frame: &DecodedFrame, units: &[Units]) -> io::Result<Option<BT
     ))
 }
 
-/// Draws the hour's naval combat icons and retained result icons.
 pub(super) fn naval_markers(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -1082,19 +932,14 @@ pub(super) fn naval_markers(
     Ok(())
 }
 
-/// Naval-combat icons are shown strictly below their content distance cutoff
-/// and only when the corresponding display flag permits the pass.
 fn combat_pass(height: f32, defines: &CounterDefines) -> bool {
     visible(height, defines.naval_combat_cutoff)
 }
 
-/// Counts one undecided icon or icon part under `reason`.
 fn gap<K: Ord + From<&'static str>>(gaps: &mut BTreeMap<K, usize>, reason: &'static str) {
     *gaps.entry(reason.into()).or_default() += 1;
 }
 
-/// The cause every placed icon is omitted for when the naval combat window the map places does
-/// not resolve.
 fn unconstructed(reason: &str) -> String {
     format!("icon omitted: {NAVAL_COMBAT_WINDOW} does not lay out: {reason}")
 }
@@ -1110,12 +955,9 @@ fn combat_icons(
     let window = windows.naval_combat();
     let resources = gui_windows::gui_assets(inputs, None);
     let defines = &inputs.content.defines;
-    // Off its cutoff, or in the raids map mode, the pass erases every icon: no pass is planned.
     if !inputs.visibility.province_icons || !inputs.passes(|height| combat_pass(height, defines)) {
         return Ok(());
     }
-    // Resolve the map window's size in the GUI viewport. It determines every
-    // icon's placement; failure omits every placed icon.
     let window_frame = match windows.naval_combat_frame(viewport(inputs.viewport, inputs.ui_scale))
     {
         Ok(window_frame) => window_frame,
@@ -1137,14 +979,12 @@ fn combat_icons(
         hq: Ok(BTreeMap::new()),
         size: window_frame.size,
     };
-    // An hour without a naval combat places nothing; every kept icon is then empty.
     let Some(combats) = &tables.combats else {
         out.naval.combat = Some(pass);
         return Ok(());
     };
     combats.report_omitted(None, &mut out.report);
     pass.hq = combats.hq.clone();
-    // Counted with the placement causes already.
     for omitted in &combats.undecided {
         pass.icons.push(naval_windows::CombatIcon::omitted(
             (omitted.province, omitted.combat),
@@ -1156,12 +996,8 @@ fn combat_icons(
     let height = window_frame.size[1] as f32;
     let details = rows::<tables::NavalCombatDetails>(frame)?.rows();
     let direct = rows::<tables::NavalProvinceCombats>(frame)?.rows();
-    // The rows of the hour drawn, by handle: an icon decided for another hour names its combat and
-    // its province, and is joined to this hour's rows by them, never by that hour's row positions.
     let details_of: BTreeMap<u64, &NavalCombatDetailsRow> = details.iter().map(|row| (row.combat, row)).collect();
     let vector_of: BTreeMap<u32, &NavalProvinceCombatRow> = direct.iter().map(|row| (row.province, row)).collect();
-    // The rosters the grids read, indexed the first time a large icon needs its grids, then
-    // shared by every combat.
     let members = rows::<tables::NavalCombatShips>(frame)?;
     let ships = rows::<tables::Ships>(frame)?;
     let forces = rows::<tables::TaskForces>(frame)?;
@@ -1171,8 +1007,6 @@ fn combat_icons(
     for icon in &combats.icons {
         let icon = match icon {
             Ok(icon) => icon,
-            // The game places and updates it all the same: it keeps its identity, and what its
-            // update writes is unknown (counted with its cause by `report_omitted`).
             Err(omitted) => {
                 pass.icons.push(naval_windows::CombatIcon::omitted(
                     (omitted.province, omitted.combat),
@@ -1183,8 +1017,6 @@ fn combat_icons(
                 continue;
             }
         };
-        // Move the icon down by its ordinal times the window's
-        // integer height.
         if occurrences::screen_y_offset(icon.ordinal, height).is_none() {
             let cause =
                 "icon omitted: the naval combat window height is not a whole number of pixels";
@@ -1205,9 +1037,6 @@ fn combat_icons(
             pass.icons.push(naval_windows::CombatIcon::omitted((icon.province, icon.combat), Some((icon.anchor, icon.ordinal)), icon.rotates, cause));
             continue;
         };
-        // A rotating icon of an engaged combat fills its progress: the small one when the
-        // camera is coarse or two engaged combats share the combat province's vector, the large
-        // one otherwise.
         let engaged = icon.rotates && icon.decision.progress;
         let small = if !engaged || coarse(inputs) {
             Ok(true)
@@ -1219,7 +1048,6 @@ fn combat_icons(
                 tables.direct_complete,
             )
         };
-        // Which bar and how: undecided, the shown bar is the update's unknown part.
         let progress = || match (&small, context.flip(detail)) {
             (Ok(small), Ok(flip)) => Ok(gui_windows::CombatProgress {
                 small: *small,
@@ -1236,16 +1064,10 @@ fn combat_icons(
                     progress: progress(),
                 }),
             }),
-            // Update the HQ frame after combat rotation for every live-combat icon.
             hq: icon.hq.clone(),
         };
-        // A part it leaves unknown is counted where the icon would draw ([`naval_windows`]), for
-        // as long as its window keeps it.
         let mut update = gui_windows::combat_calls(window, &state, &resources);
         update.wrote.push(naval_windows::PLACE);
-        // A rotation clears the grids; the game fills an engaged large
-        // icon's alongside its progress, a small icon never. Grids the hour cannot decide are the
-        // update's unknown part.
         let grids = match small {
             _ if !engaged => Ok(Vec::new()),
             Err(cause) => Err(cause),
@@ -1263,10 +1085,7 @@ fn combat_icons(
                 };
                 let index = grid_index.get_or_insert_with(|| {
                     grid::Index::new(grid::Sources {
-                        // The rows of the hour drawn: the grids group their forward members from
-                        // them, never from another hour's.
                         combat_ships: members.is_complete().then(|| members.rows()),
-                        // The census the naval context indexed for this hour, not another.
                         ships: ships.is_complete().then(|| grid::ShipCensus {
                             task_forces: Cow::Borrowed(&naval.ship_task_forces),
                             counts: Cow::Borrowed(&naval.ships),
@@ -1319,14 +1138,11 @@ fn combat_icons(
     Ok(())
 }
 
-/// The screen rectangle `bg_btn` covers as drawn in `layout` (what a click hits): its quad's
-/// footprint, relative to the window's origin.
 #[cfg(test)]
 pub(super) fn background_footprint(
     window: &native::Element,
     layout: &native_gui::Layout,
 ) -> Option<[f32; 4]> {
-    // Find combat-window controls through local typed lookup.
     let background = window.find(native::Kind::Button, "bg_btn")?;
     layout
         .parts
@@ -1338,9 +1154,6 @@ pub(super) fn background_footprint(
         })
 }
 
-/// The game binds the tooltip handler to both buttons and both progress
-/// icons, but the click observer only to bg_btn/frame_btn. Keep the actual
-/// visible controls separate: the progress icon alone does not open a battle.
 pub(super) fn combat_footprints(
     window: &native::Element,
     layout: &native_gui::Layout,
@@ -1365,8 +1178,6 @@ pub(super) fn combat_footprints(
     hits
 }
 
-/// Append attacker task-force tiles in allegiance runs, then its convoy
-/// addition when present, followed by the corresponding defender items.
 fn grid_fills(
     inputs: &CounterInputs<'_>,
     context: &MarkerContext<'_>,
@@ -1466,7 +1277,6 @@ fn grid_fills(
     fills
 }
 
-/// The screen rectangle a drawn quad covers: its turned corners' bounds.
 #[cfg(test)]
 fn footprint(geometry: &native_gui::Geometry) -> [f32; 4] {
     let corners = geometry.corners();
@@ -1481,7 +1291,6 @@ fn footprint(geometry: &native_gui::Geometry) -> [f32; 4] {
     [x0, y0, x1 - x0, y1 - y0]
 }
 
-/// Prepared naval-combat grid items: side convoy additions and task-force tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GridRole {
     Adds(usize),
@@ -1495,14 +1304,9 @@ const GRID_ROLES: [(&str, GridRole); 4] = [
     ("defender_grid", GridRole::Tiles(1)),
 ];
 
-/// Count each convoy addition or task-force tile beyond its grid's slot limits,
-/// which the game does not add.
 pub(super) const GRID_FULL: &str =
     "a naval combat grid item is past its grid's slot limits, which do not add it; not drawn";
 
-/// Each grid group becomes a mission-list unit item, built like a port item from
-/// the first member's visibility byte. An unresolved expeditionary owner refuses
-/// the grids.
 fn combat_tiles(
     context: &MarkerContext<'_>,
     naval: &NavalContext<'_>,
@@ -1521,7 +1325,6 @@ fn combat_tiles(
                         ordinal: 0,
                         slot: member.country,
                         logical: (context.owner)(force.logical_owner),
-                        // the expeditionary owner when positive.
                         flag_owner: if (force.expeditionary_owner as i32) > 0 {
                             (context.owner)(force.expeditionary_owner)
                                 .ok_or("a grid task force's expeditionary owner is unresolved")?
@@ -1534,11 +1337,8 @@ fn combat_tiles(
                             Sight::Partial
                         },
                         byte: member.visibility,
-                        // The grid exists only over a complete census.
                         ships: Some(member.ships),
                         position: None,
-                        // The mixed-owner flag rule reads each task force's summed strength
-                        // As a port item's does.
                         strength: naval
                             .ships
                             .get(&force.id)
@@ -1546,18 +1346,14 @@ fn combat_tiles(
                     })
                 })
                 .collect::<Result<Vec<_>, &'static str>>()?;
-            // `derive` starts a group only with a task force.
             tiles[side].push(naval.flotilla(&units.iter().collect::<Vec<_>>(), true, false));
         }
     }
     Ok(tiles)
 }
 
-/// When the content does not define [`CONVOY_ADDITION_ICON`], keep and draw
-/// the icon's authored sprite.
 pub(super) const CONVOY_ICON_GAP: &str = "a convoy addition's GFX_unit_transport_icon_medium_white is not defined; drawn with the icon's authored sprite";
 
-/// Whether `list` of result `result` holds the viewer; `None` for an unresolved reference.
 fn result_list_contains(
     viewer: Viewer<'_>,
     countries: &BTreeMap<(u64, u8), Vec<u32>>,
@@ -1567,29 +1363,19 @@ fn result_list_contains(
     viewer.contains_viewer(countries.get(&(result, list)).map_or(&[], Vec::as_slice))
 }
 
-/// One retained naval result as read by the result icon for the viewing country.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResultFacts {
-    /// Whether country lists 0, 1 and 2 hold the viewer; `None` for an unresolved reference.
     lists: [Option<bool>; 3],
-    /// Whether this is a port strike.
     flag_a: bool,
-    /// Whether this is a naval strike.
     flag_b: bool,
-    /// Whether this is a convoy battle.
     subtype: bool,
-    /// Whether the result uses the neutral readiness frame.
     readiness: bool,
     winning_side: u8,
     losing_side: u8,
-    /// A member with a copied sinking string.
     present: bool,
 }
 
 impl ResultFacts {
-    /// the viewer is admitted (list 2), is
-    /// on a side (list 0 or 1), and the result is a strike or has a present member; `None` when a
-    /// list it reaches is unresolved.
     fn visible(&self) -> Option<bool> {
         if !self.lists[2]? {
             return Some(false);
@@ -1600,21 +1386,11 @@ impl ResultFacts {
         Some(self.flag_a || self.flag_b || self.present)
     }
 
-    /// which the game asks of each result
-    /// its icon holds: list 2 holds the viewer.
     pub(super) fn admitted(&self) -> Option<bool> {
         self.lists[2]
     }
 }
 
-/// Select the sprite and zero-based frame from the icon's still-resolving `results`.
-/// Expired references are skipped but remain in `held`, the convoy-majority
-/// denominator. All naval strikes select that sprite, then all port strikes;
-/// otherwise use a plain battle unless more than half of `held` are convoy battles.
-/// The frame is 2 when every resolving result has its readiness flag; otherwise
-/// it is lost 0, won 1 or mixed 2. A result where the viewer is only on the losing
-/// side clears "won", and one where it is only on the winning side clears "lost".
-/// With none resolving, every test holds vacuously. `Err` names the unresolved country.
 pub(super) fn result_presentation(
     results: &[ResultFacts],
     held: usize,
@@ -1658,7 +1434,6 @@ pub(super) fn result_presentation(
     Ok((sprite, frame))
 }
 
-/// An ordinary convoy battle the viewer won, for other modules' tests.
 #[cfg(test)]
 pub(super) fn convoy_result_for_test() -> ResultFacts {
     ResultFacts {
@@ -1671,22 +1446,14 @@ pub(super) fn convoy_result_for_test() -> ResultFacts {
     }
 }
 
-/// The hour's retained naval results, decided once
-/// per hour and perspective.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResultTables {
-    /// Each province holding a result, its results in bucket order (`province_ordinal`).
     pub provinces: BTreeMap<u32, Vec<u64>>,
-    /// Every result's facts for the viewer.
     pub facts: BTreeMap<u64, ResultFacts>,
-    /// Why the tables are not whole (`NavalResults`, `NavalResultMembers`,
-    /// `NavalResultCountries`): a missing row could change which results a province shows, and
-    /// every result icon's decision is then undecided.
     pub undecided: Option<&'static str>,
 }
 
 impl ResultTables {
-    /// Results admitted for `province` in bucket order; `Err` when one is undecided.
     pub(super) fn visible(&self, province: u32) -> Result<Vec<u64>, &'static str> {
         if let Some(why) = self.undecided {
             return Err(why);
@@ -1703,7 +1470,6 @@ impl ResultTables {
     }
 }
 
-/// The retained results by province, with their facts for the viewer.
 pub(super) fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Result<ResultTables> {
     let results = rows::<tables::NavalResults>(frame)?;
     let members = rows::<tables::NavalResultMembers>(frame)?;
@@ -1719,7 +1485,6 @@ pub(super) fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Res
     Ok(result_values(viewer, &fields, &countries, &present, results.is_complete() && members.is_complete() && country_rows.is_complete()))
 }
 
-/// [`result_tables`] from values.
 fn result_values(
     viewer: Viewer<'_>,
     results: &[ResultFields],
@@ -1763,12 +1528,9 @@ fn result_values(
     }
 }
 
-/// The result window's refusal every shown result icon is omitted for: the game finds
-/// `bg_btn` as a button, and the game fails without one.
 const REFUSED_RESULT_WINDOW: &str =
     "the naval result window or its buttonType bg_btn is refused or not declared";
 
-/// Result icons use the province's applicable land or sea anchor.
 pub(super) fn result_anchor(
     inputs: &CounterInputs<'_>,
     raised: &BTreeSet<u32>,
@@ -1800,9 +1562,6 @@ pub(super) fn result_anchor(
     }
 }
 
-/// Every result icon a content without a usable result window omits, counted by that refusal:
-/// each province whose visible results the hour holds or cannot decide (a hidden icon is not
-/// counted).
 fn refused_results(tables: &ResultTables, report: &mut CounterReport) {
     for &province in tables.provinces.keys() {
         if tables
@@ -1816,14 +1575,7 @@ fn refused_results(tables: &ResultTables, report: &mut CounterReport) {
     }
 }
 
-/// The naval result icons' pass for this camera ([`naval_windows::ResultPass`]): the hour's
-/// result tables with their completeness, the combat vectors the anchors read, and the window's
-/// frame. An hour whose result census is complete and empty plans no pass (every icon is then
-/// empty); an incomplete one plans one even when it holds no row, so an icon the census may lack
-/// stays undecided rather than known empty. The owner and the manager's pass run
-/// on the presented frame. A content with no result window places none, counted.
 fn result_pass(inputs: &CounterInputs<'_>, tables: &NavalMarkerTables, out: &mut CounterFrame) {
-    // The raids map mode clears naval combat result icons with the other province icons.
     if !inputs.visibility.province_icons
         || tables.results.provinces.is_empty() && tables.results.undecided.is_none()
     {

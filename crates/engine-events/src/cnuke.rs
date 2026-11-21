@@ -1,45 +1,25 @@
-//! CNuke entries are inline in CCountry's two-type array, not pointers to rows.
-//! The raw amount is a signed i64 progress quantity; it is not the ready count.
 
 use crate::{Memory, ccountry, cpdx_array::Array, walk::Outcome};
 use engine_sites::Rva;
 
-/// Nuke primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_4640);
-/// CNuke inline array stride.
 pub const STRIDE: usize = 0x48;
-/// CNuke owning CCountry pointer.
 pub const COUNTRY: usize = 0x10;
-/// CNuke signed i64 raw amount.
 pub const AMOUNT: usize = 0x18;
-/// CNuke type u32.
 pub const TYPE: usize = 0x38;
-/// Ready nuke count, signed i32; reset and increments are independent of amount.
 pub const READY: usize = 0x3c;
-/// The country nuke array can have any valid count. Loading clears it and appends a default object
-/// per saved entry without checking the total. The persistent name token is set by ordinary
-/// construction; loading uses the base default.
 pub const SERIAL_TYPE: usize = 8;
-/// Normal-construction nuke name token, shared with its parent array.
 pub const SERIAL_TYPE_VALUE: u32 = 0x34cd;
-/// Loaded-construction nuke name token from the persistent-base default.
 pub const LOADED_SERIAL_TYPE_VALUE: u32 = 0x165;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Authenticated owner's raw country reference, including engine aliases.
     pub country: u32,
-    /// Native type ordinal, not a collector-assigned row identifier.
     pub nuke_type: u32,
     pub amount_raw: i64,
-    /// This hour's ready launch count. Post-hour queue consumption retains it;
-    /// it is not an independently derived available-stockpile count.
     pub ready: i32,
 }
 
-/// Copies the two inline CNuke entries for every canonical country. The row key
-/// is (country, nuke_type); amount and ready retain their native signed widths.
-/// No totals or progress-to-ready conversion are substituted for either field.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -171,7 +151,6 @@ mod tests {
     use super::*;
     use crate::{cgame_state, memory::SliceMemory};
 
-    /// Types written by the fixture; the reader accepts any native count.
     const TYPE_COUNT: u32 = 2;
     const GAME: usize = 0x1000;
     const COUNTRIES: usize = 0x2000;
@@ -197,7 +176,6 @@ mod tests {
         let mut bytes = vec![0; 0x6000];
         array(&mut bytes, GAME + cgame_state::COUNTRIES, COUNTRIES, 4);
         array(&mut bytes, GAME + cgame_state::COUNTRY_LINKS, LINKS, 4);
-        // Slot 3 aliases slot 1, and the native owner id is the alias.
         u64_at(&mut bytes, COUNTRIES + 8, OWNER as u64);
         u64_at(&mut bytes, COUNTRIES + 24, OWNER as u64);
         u32_at(&mut bytes, LINKS + 4, 1);
@@ -319,14 +297,12 @@ mod tests {
 
     #[test]
     fn any_native_type_count_emits_exactly_the_entries_that_exist() {
-        // A save-loaded array can hold any count; zero is a readable empty.
         let mut bytes = fixture();
         u32_at(&mut bytes, OWNER + ccountry::NUKES + 12, 0);
         assert_eq!(
             capture(&bytes, &mut vec![Row::default(); 2]),
             Outcome::Rows { len: 0 }
         );
-        // A third entry is read and authenticated like the first two.
         let mut bytes = fixture();
         array(&mut bytes, OWNER + ccountry::NUKES, NUKES, 3);
         let at = NUKES + 2 * STRIDE;

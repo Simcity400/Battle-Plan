@@ -109,7 +109,6 @@ fn character_scopes() -> EventScopes {
     EventScopes::new(vec![character, EventScope::of(EventObject::Country(1))])
 }
 
-// A scalar country selects nationality.
 #[test]
 fn set_nationality() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -149,7 +148,6 @@ fn nationality_character_selector_uses_root_roster_then_current_fallback() {
     }
 }
 
-// The retirement boolean is execution-only.
 #[test]
 fn retire() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -160,7 +158,6 @@ fn retire() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// A scalar country selects the capturer.
 #[test]
 fn capture_by() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -175,8 +172,6 @@ fn capture_by() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// The block reads country/province; province is execution-only
-// and target is an unexpected key.
 #[test]
 fn capture_by_block_reads_country_without_target_leak() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -195,9 +190,6 @@ fn capture_by_block_reads_country_without_target_leak() {
     }
 }
 
-// Require a signed positive capturer or nationality.
-// Capital/random selectors keep country zero, while linked states
-// supply their owner.
 #[test]
 fn country_target_zero_and_state_owner_follow_character_gates() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -264,8 +256,6 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
     {
-        // This character has only the reference role. Another direct role
-        // independently acquired the same native leader, including its name.
         rows[0].character_id = 8;
     }
     let out = fixture.render(
@@ -317,7 +307,6 @@ fn add_nationality() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
-    // Native early gate: an army leader is not an operative.
     let out = fixture.render(
         "add_nationality=BBB",
         &mut character_scopes(),
@@ -357,8 +346,6 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// The format-98 registry-only name belongs to the selected role
-// rather than another character's display name.
 #[test]
 fn capture_by_uses_format98_referenced_name_and_capture_status() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -398,8 +385,6 @@ fn capture_by_uses_format98_referenced_name_and_capture_status() {
     assert_eq!(out.refusals, BTreeMap::from([("synthetic effect capture_by: key capture_by: character 7 referenced unit leader name capture unavailable".into(), 1)]));
 }
 
-// Substitute NAME, CODENAME and NATIONALITY for a scalar country,
-// then expand without appending LF.
 #[test]
 fn add_nationality_uses_format98_selected_codename() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -439,7 +424,6 @@ fn add_nationality_uses_format98_selected_codename() {
     }
 }
 
-// History effects produce no description outside their required UNIT or RAID carrier.
 #[test]
 fn history_entries_are_empty_without_their_reference() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -598,7 +582,6 @@ fn character_lookup_keeps_a_late_country() {
         scope_id: 1_024,
         ..Default::default()
     });
-    // A recorded table is in key order: scope kind, then id.
     stores.sort_by_key(|row| (row.scope_kind, row.scope_id));
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(24))]);
     let out = fixture.render(

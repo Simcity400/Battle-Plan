@@ -1,12 +1,3 @@
-//! Measurement-only thread CPU accounting. Off unless a measurement harness
-//! calls [`enable`]; then every thread that enters a [`scope`] keeps a stack
-//! of (category, family) labels and charges its own CPU time (thread cycle
-//! time, which a thread blocked on a lock, a condition or a channel does not
-//! accrue) to the label on top. A thread's time before its first scope is
-//! charged to its base label, named from its thread name. Section decodes
-//! are also counted per (block, table), and reconstructed table-hours per
-//! (hour, table), so repeated work by different families shows apart from
-//! first work. Nothing here changes what is decoded or published.
 
 use serde_json::{Value, json};
 use std::{
@@ -51,18 +42,11 @@ thread_local! {
     static FRAME_LOG: RefCell<HashMap<&'static str, [u64; 2]>> = RefCell::new(HashMap::new());
 }
 
-/// This thread's frame log work by kind ([`logged`]): how many times, and the
-/// rows each moved or compared.
 #[cfg(any(test, feature = "test-support"))]
 pub fn frame_log_counts() -> HashMap<&'static str, [u64; 2]> {
     FRAME_LOG.with(|counts| counts.borrow().clone())
 }
 
-/// Frame log work, charged to the family on top of this thread's labels:
-/// `diff` a table compared on keeping a frame, `diff-shared` one another log
-/// on this thread had just compared, `rebuild-in-place` a table changed in
-/// place on reading back, `rebuild-reused` one caught up from a view the
-/// reader let go, and `rebuild-copied` one copied because the reader held it.
 pub(crate) fn logged(kind: &'static str, rows: usize) {
     #[cfg(any(test, feature = "test-support"))]
     FRAME_LOG.with(|counts| {
@@ -84,8 +68,6 @@ pub(crate) fn logged(kind: &'static str, rows: usize) {
     value[1] += rows as u64;
 }
 
-/// This thread's shared-baseline delta applications and the baseline rows
-/// each traversed, by table. Counts exclude snapshots and owned deltas.
 #[cfg(any(test, feature = "test-support"))]
 pub fn delta_copies() -> [[u64; 2]; TABLE_COUNT] {
     DELTA_COPIES.with(|counts| *counts.borrow())
@@ -101,8 +83,6 @@ pub(crate) fn copied(table: TableId, rows: usize, started: u64) {
     charge(&COPIES, table, rows, started);
 }
 
-/// This thread's shared-baseline deltas that reused a replaced view instead
-/// of copying, and the rows each reused, by table.
 #[cfg(any(test, feature = "test-support"))]
 pub fn delta_reuses() -> [[u64; 2]; TABLE_COUNT] {
     DELTA_REUSES.with(|counts| *counts.borrow())
@@ -132,14 +112,11 @@ fn charge(totals: &Mutex<Option<Vec<[u64; 3]>>>, table: TableId, rows: usize, st
 
 type Label = (&'static str, &'static str);
 
-/// Whether accounting is on.
 #[inline]
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Turn accounting on for the rest of the process, calibrating the cycle
-/// counter's rate first.
 pub fn enable() {
     TSC_HZ.get_or_init(calibrate);
     CYCLE_READ_NS.get_or_init(|| {
@@ -275,8 +252,6 @@ pub fn block_snapshot() -> Value {
     )
 }
 
-/// The recording's hours, so reconstructed table-hours can be told first
-/// from repeated. Reconstructions before this call are counted as untracked.
 pub fn set_hours(first: i32, last: i32) {
     if last < first {
         return;
@@ -293,7 +268,6 @@ pub fn set_hours(first: i32, last: i32) {
     });
 }
 
-/// A label held until dropped.
 #[must_use]
 pub struct Scope(bool);
 
@@ -306,8 +280,6 @@ impl Drop for Scope {
     }
 }
 
-/// Charge this thread's CPU to `category` (and `family`, or the current
-/// family when None) until the returned scope drops.
 #[inline]
 pub fn scope(category: &'static str, family: Option<&'static str>) -> Scope {
     if !enabled() {
@@ -316,8 +288,6 @@ pub fn scope(category: &'static str, family: Option<&'static str>) -> Scope {
     Scope(with_local(|acc| acc.push(category, family)).is_some())
 }
 
-/// Label a phase within the current category. Shared observers retain their
-/// caller's fold, extract or commit attribution.
 #[inline]
 pub fn scope_phase(family: &'static str) -> Scope {
     if !enabled() {
@@ -332,7 +302,6 @@ pub fn scope_phase(family: &'static str) -> Scope {
     )
 }
 
-/// An exclusive reader phase labelled by table, with nested native operation attribution.
 pub struct ReaderScope {
     active: bool,
     _table: replay_data::measurement::TableScope,
@@ -372,8 +341,6 @@ pub fn reader(phase: &'static str, table: TableId) -> ReaderScope {
     }
 }
 
-/// [`scope`] with a family named at run time (a product's name), kept
-/// once per distinct name.
 pub fn scope_named(category: &'static str, family: &str) -> Scope {
     if !enabled() {
         return Scope(false);
@@ -382,7 +349,6 @@ pub fn scope_named(category: &'static str, family: &str) -> Scope {
     Scope(with_local(|acc| acc.push(category, Some(family))).is_some())
 }
 
-/// The caller's exclusive owner, phase and block for synchronous helper work.
 #[derive(Clone, Default)]
 pub struct Context(Option<(Vec<Label>, Option<usize>)>);
 
@@ -430,8 +396,6 @@ impl Drop for ContextScope {
     }
 }
 
-/// The family on top of this thread's labels, for work handed to other
-/// threads.
 pub fn family() -> Option<&'static str> {
     if !enabled() {
         return None;
@@ -439,24 +403,19 @@ pub fn family() -> Option<&'static str> {
     with_local(|acc| acc.stack.last().map(|label| label.1)).flatten()
 }
 
-/// How many times this thread has read its cycle time: the accounting's own cost, each read
-/// taking about [`cycle_read_ns`].
 pub fn cycle_reads() -> u64 {
     CYCLE_READS.with(std::cell::Cell::get)
 }
 
-/// One read of a thread's cycle time, in wall nanoseconds, measured when accounting was turned on.
 pub fn cycle_read_ns() -> Option<f64> {
     CYCLE_READ_NS.get().copied()
 }
 
-/// This thread's cycle time, 0 when accounting is off.
 #[inline]
 pub fn thread_cycles() -> u64 {
     if enabled() { current_cycles() } else { 0 }
 }
 
-/// The cycle counter, for short spans with no waits inside.
 #[inline]
 pub fn stamp() -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -469,9 +428,6 @@ pub fn stamp() -> u64 {
     }
 }
 
-/// Count this thread's cycles since `started` ([`thread_cycles`]) under
-/// `category` and `family`, apart from the exclusive labels: work that the
-/// labels already hold, told apart by its outcome.
 pub fn note(category: &'static str, family: &'static str, started: u64) {
     if !enabled() {
         return;
@@ -492,7 +448,6 @@ pub fn note_named(category: &'static str, family: &str, started: u64) {
     }
 }
 
-/// One table section of one block decoded, taking `cycles` of thread time.
 pub fn decoded(branch: u64, block_first_hour: i32, table: TableId, cycles: u64) {
     if !enabled() {
         return;
@@ -529,7 +484,6 @@ pub fn decoded(branch: u64, block_first_hour: i32, table: TableId, cycles: u64) 
     by[1] += 1;
 }
 
-/// One hour's tables reconstructed, each with the counter cycles it took.
 pub fn reconstructed(hour: i32, tables: &[(usize, u64)]) {
     if !enabled() || tables.is_empty() {
         return;
@@ -560,8 +514,6 @@ pub fn reconstructed(hour: i32, tables: &[(usize, u64)]) {
     });
 }
 
-/// One label of the calling thread as [`snapshot`] gives it: its category and family, CPU and wall
-/// nanoseconds (the open label's span so far included) and how many times it was entered.
 pub struct OwnLabel {
     pub category: &'static str,
     pub family: &'static str,
@@ -570,9 +522,6 @@ pub struct OwnLabel {
     pub calls: u64,
 }
 
-/// The calling thread's labels, as [`snapshot`] gives that thread's: what a harness reads of its own
-/// thread every frame without the whole snapshot (every thread's accounts locked, read and written
-/// out).
 pub fn own_labels() -> Vec<OwnLabel> {
     if !enabled() {
         return Vec::new();
@@ -595,9 +544,6 @@ pub fn own_labels() -> Vec<OwnLabel> {
     .unwrap_or_default()
 }
 
-/// This thread's labels and every thread's notes, keyed `family/category` as a frame record names
-/// them: each one's CPU nanoseconds, its wall nanoseconds (a label's only; a note has none) and
-/// how many times it was entered.
 pub fn own_totals() -> HashMap<String, [Option<u64>; 3]> {
     own_labels()
         .into_iter()
@@ -613,7 +559,6 @@ pub fn own_totals() -> HashMap<String, [Option<u64>; 3]> {
         .collect()
 }
 
-/// Every note so far ([`note`]): category, family, nanoseconds and how many.
 pub fn notes() -> Vec<(&'static str, &'static str, u64, u64)> {
     let hz = *TSC_HZ.get_or_init(calibrate);
     NOTES
@@ -624,8 +569,6 @@ pub fn notes() -> Vec<(&'static str, &'static str, u64, u64)> {
         .unwrap_or_default()
 }
 
-/// Every thread's charged time so far, by label, with the per-table
-/// decode and reconstruct breakdowns.
 pub fn snapshot() -> Value {
     let hz = *TSC_HZ.get_or_init(calibrate);
     let ns = |cycles: u64| (cycles as f64 / hz * 1e9).round() as u64;
@@ -848,7 +791,6 @@ pub fn snapshot() -> Value {
 #[derive(Default)]
 struct Decodes {
     seen: HashMap<(u64, i32, u16), Vec<&'static str>>,
-    /// first cycles, count; another family's repeat; the same family's repeat.
     tables: HashMap<usize, [u64; 6]>,
     by_family: HashMap<&'static str, [u64; 2]>,
     by_family_table: HashMap<(&'static str, usize), [u64; 2]>,
@@ -879,11 +821,8 @@ struct ThreadAcc {
     totals: HashMap<Label, [u64; 2]>,
     block: Option<usize>,
     blocks: HashMap<BlockLabel, [u64; 2]>,
-    /// Reconstruct cycles and counts: first, repeated, untracked.
     tables: Vec<[u64; 6]>,
     reader_phases: HashMap<Label, [u64; 2]>,
-    /// Wall nanoseconds each label was on top, beside its CPU cycles: the difference is the
-    /// thread off its CPU inside the label (a lock, the driver, descheduled).
     walls: HashMap<Label, u64>,
     last_wall: Instant,
 }
@@ -1028,7 +967,6 @@ fn register() -> Local {
         role,
         stack: vec![base],
         reader_stack: Vec::new(),
-        // From the thread's start: its time before this is its base label's.
         last: 0,
         totals,
         block: None,
@@ -1083,7 +1021,6 @@ unsafe extern "system" {
 #[cfg(windows)]
 struct Handle(windows_sys::Win32::Foundation::HANDLE);
 
-// SAFETY: a thread handle is a kernel object reference usable from any thread.
 #[cfg(windows)]
 unsafe impl Send for Handle {}
 

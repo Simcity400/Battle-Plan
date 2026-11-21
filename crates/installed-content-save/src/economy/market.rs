@@ -1,4 +1,3 @@
-//! Literal market manifests and agreement terms, with serializer omission intact.
 use super::*;
 use crate::{
     SavedDate,

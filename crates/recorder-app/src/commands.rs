@@ -1,4 +1,3 @@
-//! Commands the panel invokes.
 use crate::{
     compress::Jobs,
     panel,
@@ -28,8 +27,6 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| error.to_string())?
 }
 
-/// The settings with the folder recordings are actually saved to, and whether Windows starts
-/// the recorder: its Run entry, which the installer also writes, is that setting.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
@@ -65,13 +62,11 @@ pub fn recorder_status(recorder: State<'_, Arc<Recorder>>) -> Snapshot {
 #[serde(rename_all = "camelCase")]
 pub struct PanelOpened {
     ask_stop: bool,
-    /// The window is the Stop prompt alone, beside the tray icon.
     compact: bool,
     #[serde(flatten)]
     ask: panel::Ask,
 }
 
-/// The panel has drawn: it learns whether to open on the Stop prompt.
 #[tauri::command]
 pub fn panel_opened(
     app: AppHandle,
@@ -87,7 +82,6 @@ pub fn panel_opened(
     }
 }
 
-/// The panel's content height changed: resize, place and (first time) show it.
 #[tauri::command]
 pub fn panel_fit(app: AppHandle, window: WebviewWindow, height: f64) -> Result<(), String> {
     panel::fit(&app, &window, height).map_err(|error| error.to_string())
@@ -108,7 +102,6 @@ pub fn stop_recording(app: AppHandle, recorder: State<'_, Arc<Recorder>>, discar
     recorder.stop(&app, discard);
 }
 
-/// The Stop prompt was cancelled by pressing Stop again.
 #[tauri::command]
 pub fn cancel_stop_prompt(recorder: State<'_, Arc<Recorder>>) {
     recorder.cancel_stop_prompt();
@@ -178,7 +171,6 @@ pub async fn update_recorder_settings(
     Ok(view)
 }
 
-/// One campaign's Record automatically and Next time it loads.
 #[tauri::command]
 pub async fn set_campaign_choice(
     app: AppHandle,
@@ -239,7 +231,6 @@ pub async fn choose_save_folder(
     .await
 }
 
-/// `choose` picks a Paradox user folder; otherwise it is found automatically.
 #[tauri::command]
 pub async fn set_user_folder(
     app: AppHandle,
@@ -287,7 +278,6 @@ pub async fn open_recordings_folder() -> Result<(), String> {
     .await
 }
 
-/// The recordings not saved yet and the saved ones, listed while the panel asks.
 #[tauri::command]
 pub async fn recordings(
     app: AppHandle,
@@ -328,7 +318,6 @@ pub async fn recordings(
     .await
 }
 
-/// Compresses a saved recording to the smaller High size in the background, after any queued.
 #[tauri::command]
 pub async fn compress_recording(app: AppHandle, path: String) -> Result<(), String> {
     let jobs = Arc::clone(app.state::<Arc<Jobs>>().inner());
@@ -337,9 +326,6 @@ pub async fn compress_recording(app: AppHandle, path: String) -> Result<(), Stri
     Ok(())
 }
 
-/// The running session, or a session folder of this recorder's save folder or of one it saved
-/// into before whose hours still wait, and a recorded campaign in it; with the folder the
-/// running session saves into.
 fn waiting_part(
     recorder: &Recorder,
     session: &str,
@@ -351,7 +337,6 @@ fn waiting_part(
     if !is_campaign_uuid(campaign.as_bytes()) {
         return Err("Unknown recording".into());
     }
-    // The running session keeps the save folder it started with, even after it is changed.
     if let Some(target) = recorder.live_target(&session) {
         return Ok((session, Some(target)));
     }
@@ -367,8 +352,6 @@ fn waiting_part(
     Ok((session, None))
 }
 
-/// Through the running session when it saves into the same folder. Returns why a save named its
-/// countries by tag, when it did.
 #[tauri::command]
 pub async fn act_on_waiting(
     app: AppHandle,
@@ -377,7 +360,6 @@ pub async fn act_on_waiting(
     discard: bool,
 ) -> Result<Option<String>, String> {
     let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
-    // An update waits until the save or discard is done.
     let _acting = recorder.acting()?;
     let (session, live) = waiting_part(&recorder, &session, &campaign)?;
     let target = match live {
@@ -410,7 +392,6 @@ pub async fn act_on_waiting(
     result
 }
 
-/// Show a saved recording selected in its folder.
 #[tauri::command]
 pub async fn reveal_recording(path: String) -> Result<(), String> {
     blocking(move || {
@@ -438,7 +419,6 @@ fn recording_file(path: &str) -> Result<PathBuf, String> {
     Ok(plain_path(path))
 }
 
-/// The plain path Explorer and the replay app take: `\\?\C:\…` as `C:\…`, `\\?\UNC\…` as `\\…`.
 fn plain_path(path: PathBuf) -> PathBuf {
     let text = path.display().to_string();
     if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
@@ -447,7 +427,6 @@ fn plain_path(path: PathBuf) -> PathBuf {
     text.strip_prefix(r"\\?\").map_or(path, PathBuf::from)
 }
 
-/// Details: the session folder holding the collector's status and completion records.
 #[tauri::command]
 pub async fn open_details(recorder: State<'_, Arc<Recorder>>) -> Result<(), String> {
     let session = recorder.snapshot().session;
@@ -461,7 +440,6 @@ pub async fn open_details(recorder: State<'_, Arc<Recorder>>) -> Result<(), Stri
     .await
 }
 
-/// Start Battle Plan, the sibling executable, optionally on one recording.
 pub fn launch_replay(recording: Option<&Path>) -> Result<(), String> {
     let executable = std::env::current_exe()
         .map_err(|error| error.to_string())?
@@ -486,7 +464,6 @@ pub fn launch_replay(recording: Option<&Path>) -> Result<(), String> {
         .map_err(|error| format!("Could not start Battle Plan: {error}"))
 }
 
-/// Open Battle Plan; with a path, on that finished recording.
 #[tauri::command]
 pub async fn open_replay(path: Option<String>) -> Result<(), String> {
     blocking(move || {

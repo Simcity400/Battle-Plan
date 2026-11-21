@@ -1,10 +1,7 @@
-//! Windows `.cur` files holding one 32-bit image, and `.ani` files of such frames; others have no
-//! RGBA form and are refused.
 
 use super::{Rgba8Image, invalid};
 use std::io;
 
-/// A cursor image and the pixel the pointer position names in it, from the top-left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cursor {
     pub image: Rgba8Image,
@@ -25,7 +22,6 @@ fn u32_at(input: &[u8], at: usize) -> io::Result<u32> {
         .ok_or_else(|| invalid("cursor is truncated"))
 }
 
-/// Decodes a `.cur` holding one uncompressed 32-bit image.
 pub fn decode(input: &[u8]) -> io::Result<Cursor> {
     if u16_at(input, 0)? != 0 || u16_at(input, 2)? != 2 {
         return Err(invalid("is not a cursor resource file"));
@@ -49,7 +45,6 @@ pub fn decode(input: &[u8]) -> io::Result<Cursor> {
     }
     let header = u32_at(image, 0)? as usize;
     let width = u32_at(image, 4)? as i32;
-    // The height covers the colour bitmap and the AND mask below it.
     let height = u32_at(image, 8)? as i32 / 2;
     let bits = u16_at(image, 14)?;
     let compression = u32_at(image, 16)?;
@@ -72,7 +67,6 @@ pub fn decode(input: &[u8]) -> io::Result<Cursor> {
     let alpha = (0..width * height).any(|pixel| image[colour + pixel * 4 + 3] != 0);
     let mut pixels = vec![0; width * height * 4];
     for row in 0..height {
-        // Rows are stored bottom-up.
         let stored = height - 1 - row;
         for column in 0..width {
             let at = colour + (stored * width + column) * 4;
@@ -102,15 +96,12 @@ pub fn decode(input: &[u8]) -> io::Result<Cursor> {
     })
 }
 
-/// An animated cursor's frames and the steps that show them: each a frame index and how long it
-/// shows in jiffies (sixtieths of a second), in play order. The animation repeats.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnimatedCursor {
     pub frames: Vec<Cursor>,
     pub steps: Vec<(u32, u32)>,
 }
 
-/// The chunks of a RIFF list body, as (id, body).
 fn chunks(input: &[u8]) -> io::Result<Vec<(&[u8], &[u8])>> {
     let mut found = Vec::new();
     let mut at = 0;
@@ -127,7 +118,6 @@ fn chunks(input: &[u8]) -> io::Result<Vec<(&[u8], &[u8])>> {
     Ok(found)
 }
 
-/// Decodes a `.ani` (RIFF `ACON`) whose frames are each a one-image 32-bit `.cur`.
 pub fn decode_ani(input: &[u8]) -> io::Result<AnimatedCursor> {
     if input.get(0..4) != Some(b"RIFF") || input.get(8..12) != Some(b"ACON") {
         return Err(invalid("is not an animated cursor (RIFF ACON) file"));
@@ -218,7 +208,6 @@ pub fn decode_ani(input: &[u8]) -> io::Result<AnimatedCursor> {
 mod tests {
     use super::*;
 
-    /// A one-pixel 32-bit `.cur` of `colour` with its hotspot at `hotspot`.
     fn cur(colour: [u8; 4], hotspot: [u16; 2]) -> Vec<u8> {
         let mut image = Vec::new();
         for value in [40u32, 1, 2] {

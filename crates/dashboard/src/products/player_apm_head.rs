@@ -1,9 +1,3 @@
-//! eAPM over a trailing window and the campaign clock since the branch start, followed at the head
-//! (`dashboard_follow::head`), and eAPM as chart tiles: all from the command index, which keeps
-//! prefix sums of every count and of unpaused ticks. A step's answer is a difference of prefixes
-//! at the window's two edges for each part a series has in the window: it reads no command and no
-//! hour inside the window, so its cost is the parts that meet the window, not the window's length
-//! or its commands. Who played, as whom and over which spans is laid out once, when followed.
 
 use super::{Amount, ApmBucket, ApmGroup, ApmMembership, ApmParams, ApmValue, Coverage, index, merge_intervals, player_id, query, tag};
 use crate::{Source, products::campaign_clock};
@@ -23,11 +17,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-/// The family `series-tiles` answers from the command index.
 pub const SERIES: &str = "player-apm";
 
-/// What a followed eAPM names: the widget's request without its hours, the branch's hours and the
-/// window the rate is taken over, ending at the head.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApmHeadParams {
@@ -42,7 +33,6 @@ pub struct ApmHeadParams {
     pub window_hours: i32,
 }
 
-/// One version of an actor: its counts' key and the capture time it held its tag over.
 struct Version {
     actor: u64,
     version: usize,
@@ -50,7 +40,6 @@ struct Version {
     to: u64,
 }
 
-/// One series' presence in one timeline as one tag: its versions and their merged capture time.
 struct Part {
     series: usize,
     tag: String,
@@ -59,14 +48,12 @@ struct Part {
     display_at: (u64, u64),
 }
 
-/// A timeline's parts, over the hours it counts for.
 struct Piece {
     timeline: usize,
     hours: (i32, i32),
     parts: Vec<Part>,
 }
 
-/// One series over a window: its amount, and the tag it last played as there (with when).
 #[derive(Default)]
 struct Played {
     amount: Amount,
@@ -74,25 +61,20 @@ struct Played {
     tag: String,
 }
 
-/// Parts by (series id, tag), while one timeline is laid out.
 type Laid = BTreeMap<(String, String), Part>;
 
-/// The cells of a followed eAPM row, in order.
 pub const APM_COLUMNS: [&str; 9] = ["apm", "confirmedApm", "orders", "pausedOrders", "unpausedMinutes", "complete", "gaps", "tag", "hour"];
 
 pub struct ApmHead {
     index: Arc<Index>,
-    /// Series ids, sorted: a row's key is its place here.
     ids: Vec<String>,
     pieces: Vec<Piece>,
-    /// The greatest last hour of the pieces up to each: the first piece meeting a window.
     reach: Vec<i32>,
     memberships: Option<BTreeMap<String, Vec<(i32, i32)>>>,
     coverage: Coverage,
     first: i32,
     last: i32,
     window: i32,
-    /// Lookups into the index's prefixes, each a binary search: what a step costs.
     visits: u64,
 }
 
@@ -156,12 +138,10 @@ impl ApmHead {
         Ok(Self { index, ids, pieces, reach, memberships, coverage, first: params.first_hour, last: params.last_hour, window: params.window_hours, visits: 0 })
     }
 
-    /// Lookups made since it was made.
     pub fn visits(&self) -> u64 {
         self.visits
     }
 
-    /// Each series' amount over `first..=last` (inside the branch) and the tag it last played as there.
     fn amounts(&mut self, first: i32, last: i32) -> BTreeMap<usize, Played> {
         let mut out: BTreeMap<usize, Played> = BTreeMap::new();
         let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
@@ -235,7 +215,6 @@ impl ApmHead {
         out
     }
 
-    /// The window ending at `hour` inside the branch, as the widget's request names it.
     fn window_at(&self, hour: Hour) -> Option<(i32, i32)> {
         let last = hour.min(self.last);
         let first = self.first.max(hour.saturating_sub(self.window - 1));
@@ -270,7 +249,6 @@ impl HeadValue for ApmHead {
     }
 }
 
-/// Why a bin with a part present holds no rate, as the widget's note says it.
 fn unknown_rate(value: &ApmValue) -> String {
     if !value.complete {
         "Player orders or unpaused time were not fully recorded for this period; the rate is unknown.".into()
@@ -281,12 +259,10 @@ fn unknown_rate(value: &ApmValue) -> String {
     }
 }
 
-/// A tag's bytes as one number, first byte lowest, as the UI reads it back.
 fn packed(tag: &str) -> i64 {
     tag.bytes().take(8).enumerate().fold(0i64, |out, (at, byte)| out | i64::from(byte) << (8 * at))
 }
 
-/// The campaign clock from the branch start to the head.
 pub struct ClockHead {
     index: Arc<Index>,
     branch_id: String,
@@ -294,7 +270,6 @@ pub struct ClockHead {
     last: i32,
 }
 
-/// What a followed clock names: its branch and the branch's hours.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClockHeadParams {
@@ -303,7 +278,6 @@ pub struct ClockHeadParams {
     pub last_hour: i32,
 }
 
-/// The cells of the followed clock's row.
 pub const CLOCK_COLUMNS: [&str; 4] = ["recordedSeconds", "playingSeconds", "pausedSeconds", "complete"];
 
 impl HeadValue for ClockHead {
@@ -311,7 +285,6 @@ impl HeadValue for ClockHead {
         CLOCK_COLUMNS.len()
     }
 
-    /// The request path's fold (each timeline's clock is a difference of its prefixes), at the head.
     fn answer(&mut self, hour: Hour, _reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
         let last = hour.min(self.last);
         if last < self.first {
@@ -334,8 +307,6 @@ impl HeadValue for ClockHead {
     }
 }
 
-/// The head value a follow query names (`{"head": "player-apm" | "campaign-clock", "params": ..}`); none
-/// when it names none.
 pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
     let kind = asked.get("head")?.as_str()?;
     let params = asked.get("params").cloned().unwrap_or(Value::Null);
@@ -358,7 +329,6 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
     Some(build().map_err(|error| error.to_string()))
 }
 
-/// What a tile of the `player-apm` family asks besides its bins.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TileFamily {
@@ -367,7 +337,6 @@ struct TileFamily {
     membership: Option<Vec<ApmMembership>>,
     #[serde(default)]
     players: Vec<String>,
-    /// `apm` or `pausedOrders`.
     value: String,
 }
 
@@ -379,10 +348,6 @@ struct TileAsk {
     tags: Vec<String>,
 }
 
-/// Tile `index` of eAPM bins of `bin_hours` for the series `tags` names: the request path's buckets
-/// over the tile's 256 bins, each a level bin (a rate over its bin). It reads each series' parts in
-/// the tile's timelines once per bin (a difference of prefixes each) and the tile's span hours once
-/// for its coverage: it scales with series x parts x 256 and with the tile's hours, not its commands.
 pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) -> io::Result<SeriesTileReply> {
     let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_owned());
     let family: TileFamily = serde_json::from_value(params.get("family").cloned().ok_or_else(|| invalid("A tile names no family"))?)?;

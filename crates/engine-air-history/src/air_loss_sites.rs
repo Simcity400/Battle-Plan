@@ -1,30 +1,3 @@
-//! Aircraft-loss bookkeeping retaining each event's hour, region, family, cause
-//! and opponent. Midnight differences can recover totals only when both advances
-//! are witnessed; overlapping field ordinals prevent recovery of event context.
-//! The daily pass advances only its retained country roster. A normal midnight
-//! advance finalizes the preceding daily bucket after hourly writes. Advances
-//! wrap at capacity and zero the new current record. The initial incomplete slot,
-//! attach/load and partial-day roster membership prevent assigning dates to every
-//! previous slot. Roll-ups modify higher windows, independently of completed
-//! daily records.
-//!
-//! Each event writes the signed fixed5 count to its selected family total and
-//! the total-plus-cause field. Unknown families select base zero. The reader
-//! retains both fields with family, cause and own/credited context because field
-//! indices overlap across families and other channels. Credited accident losses
-//! perform no write; own losses still include them. Causes retain their raw
-//! integers: aircraft combat, anti-air or raid damage, accident, airbase bombing,
-//! train anti-air and naval anti-air against kamikaze.
-//!
-//! The count is bookkeeping rather than an independent inventory-removal witness.
-//! Removal can exhaust a variant bank before fulfilling the request, yet loss
-//! bookkeeping receives the original count. A saturated counter cannot certify
-//! the missing amount. Airbase bombing can remove aircraft without loss
-//! bookkeeping when no attacking wing exists. The collector refuses increments
-//! that disagree with the two expected signed writes, including positive counts
-//! at the clamp, and validates field indices independently. Synthetic coverage
-//! establishes layouts and arithmetic; live hook behavior, fresh-save agreement
-//! and gameplay cost are unverified.
 
 use crate::{
     Memory, cair_wing, cair_wing_pool, ccountry, cloop_history, cpdx_array::Array, cstrategic_air,
@@ -32,11 +5,8 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Seven-argument writer: manager entry, wing, count, enemy, region, selection, cause.
 pub const WRITER_RVA: Rva = Rva(0x00cb_96a0);
-/// Field count used by air-history construction.
 pub const FIELD_COUNT: usize = cloop_history::air_stats::FIELD_COUNT as usize;
-/// Own/enemy family bases; unknown families select zero.
 pub use engine_executable::native_values::air_loss::FAMILY_BASES;
 
 pub struct Site {
@@ -44,8 +14,6 @@ pub struct Site {
     pub rva: Rva,
 }
 
-/// Both direct callsites in the loss dispatcher. Tapping these calls
-/// preserves the writer prologue and system unwind metadata.
 pub const SITES: [Site; 2] = [
     Site {
         name: "own_air_loss",
@@ -57,9 +25,6 @@ pub const SITES: [Site; 2] = [
     },
 ];
 
-/// Read family-base selection in its original predicate order. Masks describe
-/// content-independent predicates. A fully readable unknown family returns
-/// zero, as bookkeeping does when its assertion does not terminate execution.
 pub fn selected_family(
     memory: &impl Memory,
     base: usize,
@@ -87,25 +52,19 @@ pub fn selected_family(
 
 fn family_base(flags: u64, enemy: u8) -> u32 {
     if flags & 0x1_0000_0c00 != 0 {
-        // Fighter-family predicate.
         [3, 44][enemy as usize]
     } else if flags & 0x0020_b000 != 0 || flags & (1 << 17) != 0 {
-        // Bomber-family predicates.
         [10, 51][enemy as usize]
     } else if flags & (1 << 14) != 0 {
-        // Close-air-support predicate.
         [17, 58][enemy as usize]
     } else if flags & (1 << 20) != 0 {
-        // Transport predicate.
         [24, 65][enemy as usize]
     } else if flags & (1 << 18) != 0 {
-        // Scout predicate.
         [30, 71][enemy as usize]
     } else if flags & 0x1c_0001_0000 != 0 {
-        // Missile-family predicate.
         [40, 81][enemy as usize]
     } else {
-        0 // Unknown families retain the initial zero base.
+        0
     }
 }
 
@@ -122,7 +81,6 @@ pub struct Snapshot {
     window: usize,
     record: usize,
     slot: u32,
-    /// The two selected words of `record`.
     addresses: [usize; 2],
 }
 
@@ -130,18 +88,12 @@ pub struct Snapshot {
 pub struct Change {
     pub country: u32,
     pub region: u32,
-    /// Authenticated post-call daily cursor, including a history newly allocated
-    /// by this call.
     pub daily_slot: u32,
     pub enemy: u8,
     pub cause: i32,
-    /// Actual after-minus-before native fields, including native clamp effects.
     pub fields: [i64; 2],
 }
 
-/// Called immediately before the writer. A missing history is a known zero
-/// only here: construction zeroes its current record before the first add.
-/// A null region or credited accident performs no field write.
 #[allow(clippy::too_many_arguments)]
 pub fn before(
     memory: &impl Memory,
@@ -184,18 +136,6 @@ pub fn before(
     Ok(snapshot)
 }
 
-/// Called immediately after the same synchronous native writer returns. A
-/// current-record change refuses the event instead of assigning an unrelated
-/// record's values to the writer. This function allocates nothing.
-///
-/// With a history before the call, the writer performs clamped additions to only the two selected
-/// words of its current record. History lookup returns the existing history unchanged;
-/// region-combat lookup writes only the country air object's region-combat table, and the record
-/// updater writes only its region-combat data. None touches the receiver, its history table or that
-/// history. One guarded copy therefore takes the window's current slot and record again as the
-/// witness that no daily advance ran, and a second takes the two words. Each copies exactly those
-/// fields in their old order. A history the call created is authenticated in full, as `before`
-/// would.
 pub fn after(
     memory: &impl Memory,
     base: usize,
@@ -211,8 +151,6 @@ pub fn after(
         fields: [0; 2],
     };
     let (slot, fields) = if before.history != 0 {
-        // The slot and record pointer, in order, in one guarded copy of
-        // exactly those spans.
         let mut slot = [0; 4];
         let mut record = [0; 8];
         const UNREADABLE: &str = "air loss writer field unreadable or address overflow";
@@ -250,12 +188,6 @@ pub fn after(
     Ok(change)
 }
 
-/// One healthy writer call's operands, as the hook's serial reads take them
-/// ([`selected_family`], [`before`], [`opponent`] and the region and game
-/// roots): the same values in six gathered guarded copies plus the country
-/// resolution. Each object's fields are copied together, and fields a later
-/// object needs are read ahead of the checks the serial reads make first;
-/// every value is used only after the serial checks pass, in their order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gathered {
     pub region: u32,
@@ -266,11 +198,6 @@ pub struct Gathered {
     pub opponent: Option<u32>,
 }
 
-/// [`Gathered`] for one call: `region` is the region pointer argument,
-/// `singleton` the game root's address. `None` when any copy fails or any
-/// check the serial reads make refuses, a new history included: the caller
-/// then takes the serial reads once, which meet a persistent fault where
-/// they always did, so a fault never refuses more than they would.
 #[allow(clippy::too_many_arguments)]
 pub fn gather(
     memory: &impl Memory,
@@ -290,8 +217,6 @@ pub fn gather(
     let word = |bytes: &[u8]| u64::from_le_bytes(bytes[..8].try_into().unwrap());
     let half = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
 
-    // The arguments' objects: region identity, game root, wing, receiver,
-    // and the opponent tag word.
     let (mut region_vtable, mut region_id, mut game) = ([0; 8], [0; 4], [0; 8]);
     let (mut wing_vtable, mut pool) = ([0; 8], [0; 8]);
     let (mut receiver_vtable, mut country, mut histories) = ([0; 8], [0; 4], [0; 16]);
@@ -333,7 +258,6 @@ pub fn gather(
         return None;
     }
 
-    // The hour, the pool and the receiver's history slot.
     let (mut hour, mut pool_vtable, mut definition, mut history) = ([0; 4], [0; 8], [0; 8], [0; 8]);
     let copied = memory.copy_scattered(
         [
@@ -350,7 +274,6 @@ pub fn gather(
     let definition = usize::try_from(word(&definition)).ok()?;
     let history = usize::try_from(word(&history)).ok().filter(|&h| h != 0)?;
 
-    // The definition and the history.
     let (mut definition_vtable, mut flags) = ([0; 8], [0; 8]);
     let (mut history_vtable, mut own, mut count, mut window) = ([0; 8], [0; 8], [0; 4], [0; 8]);
     let copied = memory.copy_scattered(
@@ -381,7 +304,6 @@ pub fn gather(
     }
     let family = family_base(word(&flags), enemy);
     let indices = selected_indices(family, cause).ok()?;
-    // The serial owner: authentication, then the country's resolution.
     if word(&receiver_vtable) != vtable(cstrategic_air::VTABLE_RVA)? {
         return None;
     }
@@ -397,7 +319,6 @@ pub fn gather(
     }
     let window = usize::try_from(word(&window)).ok().filter(|&w| w != 0)?;
 
-    // The daily window.
     let (mut window_vtable, mut records, mut capacity, mut slot) =
         ([0; 8], [0; 16], [0; 4], [0; 4]);
     let (mut wrapped, mut owner, mut record) = ([0; 1], [0; 8], [0; 8]);
@@ -435,7 +356,6 @@ pub fn gather(
     }
     let record = usize::try_from(word(&record)).ok().filter(|&r| r != 0)?;
 
-    // The current slot's record pointer and the record.
     let (mut current, mut record_history, mut values) = ([0; 8], [0; 8], [0; 16]);
     let copied = memory.copy_scattered(
         [
@@ -480,7 +400,6 @@ pub fn gather(
     })
 }
 
-/// The writer adds to family and family-plus-cause, twice for cause zero.
 pub fn selected_indices(family: u32, cause: i32) -> Result<[u32; 2], &'static str> {
     let second = i64::from(family) + i64::from(cause);
     if family as usize >= FIELD_COUNT || !(0..FIELD_COUNT as i64).contains(&second) {
@@ -489,9 +408,6 @@ pub fn selected_indices(family: u32, cause: i32) -> Result<[u32; 2], &'static st
     Ok([family, second as u32])
 }
 
-/// The credited tag pointer is retained in RDI and the effective tag pointer
-/// in RSI. Neither changes before either tap. Follow only the opposite tag
-/// word, using the signed-positive gate.
 pub fn opponent(
     memory: &impl Memory,
     tags: [usize; 2],
@@ -590,8 +506,6 @@ fn current(
     })
 }
 
-/// The two selected words, in order, in one guarded copy of exactly those
-/// spans: the first unreadable word refuses, as two reads would.
 fn words(memory: &impl Memory, addresses: [usize; 2]) -> Result<[i64; 2], &'static str> {
     let mut words = [[0; 8]; 2];
     let [first, second] = &mut words;
@@ -638,10 +552,6 @@ fn array(memory: &impl Memory, object: usize, offset: usize) -> Result<Array, &'
         .ok_or("air loss writer array unreadable or invalid")
 }
 
-/// Queue sizing only. Read every country's pool and wing-vector headers,
-/// including countries omitted from the daily pass. A malformed header
-/// refuses sizing; no wing is followed and no player/AI filter applies.
-/// This does not establish complete event-count demand.
 pub fn wing_count(memory: &impl Memory, base: usize, game: usize) -> Result<usize, &'static str> {
     let mut total = 0_usize;
     cstrategic_air::visit(memory, base, game, |root| {
@@ -672,10 +582,6 @@ pub struct RosterRow {
     pub eligible: bool,
 }
 
-/// Read the retained signed country-slot roster used by the daily air pass,
-/// without recomputing its owned-state or diplomacy predicate after other
-/// daily work could change it. Every canonical country receives a true/false
-/// membership witness.
 pub fn roster(
     memory: &impl Memory,
     base: usize,

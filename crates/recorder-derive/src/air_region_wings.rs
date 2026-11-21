@@ -1,7 +1,3 @@
-//! `AirRegionWings`: the wings of every owner flying in each strategic region (their mission
-//! region), what the air superiority view shows beside a region's scores. Its own writer so that
-//! the registrations' joins never withhold it. State is the tables: each wing's region, applied as
-//! the hour changes it; a fresh hour or a resume reads the wings whole.
 
 use crate::{
     forces::{invalid, written},
@@ -21,7 +17,6 @@ const REGION: [usize; 1] = columns::<AirWingRow, 1>(["mission_region"]);
 
 const READS: &[Read] = &[Read { table: TableId::AirWings, columns: Columns::These(&REGION), watch: Watch::Changed, required: true }];
 
-/// The wing at AirWings `slot`: its id and mission region, none for a wing with none.
 fn wing(view: &TableView<'_>, slot: u32) -> io::Result<(u64, Option<u32>)> {
     let id = view.key(slot).ok_or_else(|| invalid(format!("AirWings slot {slot} holds no row")))? as u64;
     match view.value(REGION[0], slot) {
@@ -33,9 +28,7 @@ fn wing(view: &TableView<'_>, slot: u32) -> io::Result<(u64, Option<u32>)> {
 
 #[derive(Default)]
 pub struct AirRegionWings {
-    /// The writer must read the wings whole before its next hour: a resume.
     rebuild: bool,
-    /// Each wing with a mission region, and that region.
     regions: HashMap<u64, u32>,
     counts: HashMap<u32, i64>,
     dirty: HashSet<u32>,
@@ -126,7 +119,6 @@ impl Writer for AirRegionWings {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads the wings whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

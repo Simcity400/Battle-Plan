@@ -1,10 +1,3 @@
-//! Exact positive awards at the six native experience bank additions. Storage
-//! grows from the live country census off-thread; observers never allocate,
-//! wait, take the store lock or call a game getter. Awards are summed per
-//! authenticated owner and branch in lock-free accumulators, so concurrent
-//! native writers neither exclude one another nor change a total by their
-//! order. A failed interval is unavailable; a fresh authenticated boundary can
-//! start the next complete interval.
 use crate::hook::{Hook, Registers, Tap};
 type Clock = engine_native::cgame_state::Clock<u64>;
 use engine_events::experience_gain_sites as native;
@@ -18,10 +11,6 @@ use std::{
     },
 };
 
-/// Writer-side interval state shared without the store lock. A writer leases
-/// `active` before it tests `closed`; exclusive drain/boundary work closes
-/// `closed` before it tests `active` (all SeqCst). Either the reset sees the
-/// lease, or the writer sees the gate and refuses without touching the table.
 struct Lanes {
     active: AtomicUsize,
     poisoned: AtomicBool,
@@ -37,7 +26,6 @@ impl Lanes {
             table: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
-    /// True when no writer holds a lease; new writers stay out until `open`.
     fn close(&self) -> bool {
         self.closed.store(true, Ordering::SeqCst);
         self.active.load(Ordering::SeqCst) == 0
@@ -49,7 +37,6 @@ impl Lanes {
         self.table
             .store(std::ptr::from_ref(table).cast_mut(), Ordering::SeqCst);
     }
-    /// One native award, inside the caller's `active` lease.
     fn record(
         &self,
         memory: &impl Memory,
@@ -65,13 +52,10 @@ impl Lanes {
         };
         let amount = read::<i64>(memory, amount_pointer)
             .ok_or("experience accepted adjustment unreadable")?;
-        // Spending/corrections never enter the income sum. The native gain
-        // modifier has already run and clamped a negative product to zero.
         if amount <= 0 {
             return Ok(());
         }
         let (owner, _) = native::owner(memory, base, registers.rbx)?;
-        // An award racing the hourly reset belongs to neither side of it.
         if self.closed.load(Ordering::SeqCst) {
             return Err("experience gain writer overlaps drain");
         }
@@ -79,8 +63,6 @@ impl Lanes {
         if table.is_null() {
             return Err("experience gain storage not prepared");
         }
-        // SAFETY: a published table is replaced only while the gate is closed
-        // with no lease, and released only after hook quiescence.
         unsafe { &*table }.add(owner, source.branch, amount)
     }
 }
@@ -103,20 +85,12 @@ impl Slot {
     }
 }
 
-/// Open-addressed per-owner sums. A slot's pointer and current link words each
-/// leave vacancy at most once per interval and never change again until an
-/// exclusive reset, so writers racing for one owner settle on the same slot by
-/// compare-exchange alone, and additions commute. `claims` lists the slots
-/// taken this interval so a reset touches only those.
 struct Table {
     slots: Vec<Slot>,
     claims: Vec<AtomicUsize>,
     claimed: AtomicUsize,
 }
 impl Table {
-    /// At most half full at the live census. Births and replacements within
-    /// one interval take further slots; only beyond every slot does a writer
-    /// refuse.
     fn slots_for(countries: usize) -> Result<usize, &'static str> {
         if countries == 0 {
             return Ok(0);
@@ -141,15 +115,10 @@ impl Table {
     fn bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.slots) + crate::raw_memory::vector_bytes(&self.claims)
     }
-    /// Callers ensure a nonempty, power-of-two table. Countries allocated
-    /// one after another spread like random keys (`table_hash`), so probe
-    /// chains stay short at any object size.
     fn start(&self, owner: native::Owner) -> usize {
         let key = owner.pointer as u64 ^ u64::from(owner.country).rotate_left(32);
         crate::table_hash::slot(key, self.slots.len())
     }
-    /// Lock-free; each probe is one or two compare-exchanges. `native::owner`
-    /// never yields the null owner pointer that marks a vacant slot.
     fn add(&self, owner: native::Owner, branch: usize, amount: i64) -> Result<(), &'static str> {
         if amount <= 0 {
             return Ok(());
@@ -168,7 +137,6 @@ impl Table {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    // Each slot leaves vacancy once per interval: in bounds.
                     let at = self.claimed.fetch_add(1, Ordering::Relaxed);
                     if let Some(claim) = self.claims.get(at) {
                         claim.store(index, Ordering::Relaxed);
@@ -200,7 +168,6 @@ impl Table {
         }
         Err("experience gain country storage overflow")
     }
-    /// Exclusive only: no writer holds a lease.
     fn get(&self, owner: native::Owner) -> [i64; 3] {
         if self.slots.is_empty() {
             return [0; 3];
@@ -225,7 +192,6 @@ impl Table {
         }
         [0; 3]
     }
-    /// Exclusive only: no writer holds a lease.
     fn clear(&self) {
         let claimed = self
             .claimed
@@ -249,18 +215,14 @@ impl Table {
 
 struct Store {
     lanes: &'static Lanes,
-    /// Published at `lanes.table`; replaced only by an exclusive reset.
     table: Option<Box<Table>>,
-    /// A larger successor adopted at the next exclusive reset.
     offered: Option<Box<Table>>,
-    /// The predecessor, freed off the game thread once the gate reopens.
     retired: Option<Box<Table>>,
     owners: Vec<Option<native::Owner>>,
     census: usize,
     clock: Option<Clock>,
     world_generation: u64,
     partial: bool,
-    /// A lost interval's awards still await an exclusive reset.
     discard: bool,
     refusal: Option<&'static str>,
     charge: crate::raw_memory::Charge,
@@ -294,12 +256,10 @@ impl Store {
             .map(|table| table.bytes())
             .sum()
     }
-    /// Off the game thread only.
     fn prepare(&mut self, countries: usize) -> Result<(), &'static str> {
         let result = self
             .prepare_owners(countries)
             .and_then(|()| self.prepare_table(countries));
-        // Growth can retain the first allocation even if the second refuses.
         self.charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: crate::raw_memory::vector_bytes(&self.owners) + self.table_bytes(),
             ..Default::default()
@@ -315,9 +275,6 @@ impl Store {
         }
         Ok(())
     }
-    /// Off the game thread only. The first table is published at once, since
-    /// no writer can hold a table that does not exist yet. A larger table
-    /// waits for an exclusive reset; its predecessor is freed here afterwards.
     fn prepare_table(&mut self, countries: usize) -> Result<(), &'static str> {
         drop(self.retired.take());
         let slots = Table::slots_for(countries)?;
@@ -339,9 +296,6 @@ impl Store {
         }
         Ok(())
     }
-    /// Exclusive only: the gate is closed and no lease remains. Clears this
-    /// interval's slots and adopts an offered successor once the previous
-    /// predecessor has been freed.
     fn reset(&mut self) {
         if let Some(table) = &self.table {
             table.clear();
@@ -367,8 +321,6 @@ impl Store {
             self.owners.fill(None);
             self.refusal = None;
             self.discard = true;
-            // A writer still inside the table defers the discard to the
-            // drain, which resets before its census.
             if self.lanes.close() {
                 self.reset();
             }
@@ -411,9 +363,6 @@ impl Store {
     ) -> Result<usize, &'static str> {
         let countries = ccountry::Reader::new(memory, base, state)?;
         self.census = countries.count() as usize;
-        // Pre-hourly update visits the live country roster and its count. The worker sizes row and
-        // owner storage from this original census before publication; the next interval's table is
-        // offered after the gate reopens.
         if rows.is_growing() {
             self.prepare_owners(countries.count() as usize)?;
         }
@@ -425,8 +374,6 @@ impl Store {
         let mut len = 0;
         let mut slot = 1;
         while slot < countries.count() {
-            // Fixed batch width bounds stack and guarded-copy overhead, never
-            // country cardinality. The callback roster supplies authentication.
             const BATCH: usize = 16;
             let count = (countries.count() - slot).min(BATCH as u32) as usize;
             let mut batch = [None; BATCH];
@@ -480,8 +427,6 @@ impl Store {
             }
             slot += count as u32;
         }
-        // Awards to deleted native instances have no current country row.
-        // They cannot be reassigned to a replacement or another raw alias.
         Ok(len)
     }
 
@@ -502,9 +447,6 @@ impl Store {
             refused,
         )
     }
-    /// Awards whose lease ended before the gate closed belong to this
-    /// interval; awards leased after it reopens belong to the next. A lease
-    /// spanning the gate, or a writer refused at it, fails the interval.
     fn snapshot_interval_buffer(
         &mut self,
         memory: &impl Memory,
@@ -514,7 +456,6 @@ impl Store {
         refused: bool,
     ) -> Result<usize, &'static str> {
         if refused {
-            // A new boundary cannot claim awards retained from a lost hour.
             self.owners.fill(None);
             self.partial = true;
             self.discard = true;
@@ -537,8 +478,6 @@ impl Store {
         if exclusive {
             self.reset();
         } else {
-            // The leaseholder may still be adding: the next exclusive reset
-            // discards this table before any census can certify it.
             self.discard = true;
         }
         lanes.open();
@@ -546,7 +485,6 @@ impl Store {
     }
 }
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
-/// One more than the largest census already prepared; 0 before preparation.
 static PREPARED: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -556,7 +494,6 @@ static FIRST_REFUSAL: collector_primitives::first_reason::FirstReason =
 static CALLS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 
-/// Callbacks in flight, including those that record nothing.
 pub fn active() -> usize {
     LIVE.active.load(Ordering::SeqCst)
 }
@@ -572,7 +509,6 @@ fn refuse(reason: &'static str) {
     LIVE.poisoned.store(true, Ordering::SeqCst);
 }
 
-/// Off the game thread, under the store lock.
 fn prepare_store(store: &mut Store, countries: usize) {
     match store.prepare(countries) {
         Ok(()) => {
@@ -585,10 +521,6 @@ fn prepare_store(store: &mut Store, countries: usize) {
     }
 }
 
-/// Loader/spool only. No cardinality ceiling is chosen. Demand already
-/// prepared returns without the store lock, so the hourly drain rarely meets
-/// it. A failed try-lock defers growth, and a writer that outgrows the current
-/// capacity refuses.
 pub fn prepare(countries: usize) {
     if countries < PREPARED.load(Ordering::Acquire) {
         return;
@@ -643,9 +575,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     }
 }
 
-/// Every current country gets a row. Only the same authenticated native owner
-/// at both boundaries certifies a complete interval, including exact zero.
-/// A birth/replacement's first interval cannot complete a daily window.
 pub fn drain(
     memory: &impl Memory,
     base: usize,
@@ -679,17 +608,12 @@ pub fn drain(
         store.refusal.get_or_insert(reason);
         refuse(reason);
     }
-    // This acquisition worker offers a table for the census just read and
-    // frees a predecessor the reset retired; the next reset adopts the offer.
     let census = store.census;
     prepare_store(store, census);
-    // A successfully reseeded census cannot repair the lost interval. Its
-    // next interval can be complete, and the viewer still needs a whole day.
     result.and_then(|len| refused.map_or(Ok(len), Err))
 }
 
 
-/// Only once no published tap can run: writers never load the table again.
 fn release(store: &Mutex<Option<Store>>) {
     let store = store
         .lock()
@@ -713,11 +637,11 @@ pub struct Hooks {
     publication_attempted: bool,
 }
 impl Hooks {
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         let result = (|| {
             let mut located = [(0, [0; 16]); native::SITES.len()];
@@ -765,7 +689,6 @@ impl Hooks {
         let result = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome.map_err(|_| "experience gain hook publication failed")?,
             None => {
-                // A failed batch may have published a tap; retain storage until quiet.
                 self.publication_attempted |= enabled;
                 Hook::set_enabled_iter(
                     self.taps.iter_mut().map(Tap::publication_hook),
@@ -782,8 +705,6 @@ impl Hooks {
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.taps.iter().flat_map(Tap::executable_ranges)
     }
-    /// Runtime only, after restoring every tap and the final IP/callback quiet
-    /// check, with acquisition, decode, spool and status workers joined.
     pub fn release_after_quiet(&mut self) {
         self.publication_attempted = false;
         release(self.store);
@@ -791,8 +712,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // Bootstrap errors never published these taps. Published storage is
-        // retained unless runtime explicitly proved its complete teardown.
         if !self.publication_attempted {
             release(self.store);
         }
@@ -824,8 +743,6 @@ mod tests {
     const AMOUNTS: usize = 0x9000;
     const COUNTRIES: usize = 0x10000;
     const STRIDE: usize = 0x1600;
-    /// Live countries in slots 1..slots (raw id = slot, instance = 7 * slot),
-    /// each with an authenticated experience status, plus award cells.
     fn native_fixture(slots: usize, amounts: &[i64]) -> Vec<u8> {
         use engine_events::ccountry_experience_status as status;
         use engine_native::cgame_state;
@@ -861,7 +778,6 @@ mod tests {
         }
         bytes
     }
-    /// The tapped registers: RBX is the status, RDI (RSI for air) the amount.
     fn registers(slot: usize, amount: usize) -> Registers {
         let amount = AMOUNTS + amount * 8;
         Registers {
@@ -883,7 +799,6 @@ mod tests {
             flags: 0,
         }
     }
-    /// The observer's own lease around one native award.
     fn award(
         lanes: &Lanes,
         memory: &impl Memory,
@@ -904,7 +819,6 @@ mod tests {
         const SLOTS: usize = 17;
         const THREADS: usize = 8;
         const ROUNDS: usize = 40;
-        // Zero and spending are read but never enter a sum.
         let amounts = [1_i64, 32_768, 5, 0, -9, 77_777, 3];
         let bytes = native_fixture(SLOTS, &amounts);
         let memory = SliceMemory {
@@ -923,10 +837,6 @@ mod tests {
         store.boundary(clock(11));
         *LOCAL_STORE.lock().unwrap() = Some(store);
         {
-            // The previous observer refused every award that met another
-            // writer, or the spool's preparation, holding this lock; and a
-            // writer preempted inside the table holds a lease. Both persist
-            // across the whole race.
             let _held = LOCAL_STORE.lock().unwrap();
             LANES.active.fetch_add(1, Ordering::SeqCst);
             let start = std::sync::Barrier::new(THREADS);
@@ -984,7 +894,6 @@ mod tests {
 
     #[test]
     fn racing_claims_for_shared_and_replaced_owners_converge_on_one_slot_each() {
-        // Reuse publishes a different country link at the same pointer.
         let owners = [
             owner(0x1000, 1),
             owner(0x1000, 2),
@@ -993,7 +902,6 @@ mod tests {
         ];
         const THREADS: usize = 8;
         const ADDS: usize = 32;
-        // Eight slots for four owners: probe chains collide.
         let table = Table::new(Table::slots_for(owners.len()).unwrap()).unwrap();
         assert_eq!(table.slots.len(), 8);
         for _ in 0..200 {
@@ -1023,7 +931,6 @@ mod tests {
                 }
                 assert_eq!(table.get(*owner), expected);
             }
-            // No racing claim split an owner across two slots.
             assert_eq!(table.claimed(), owners.len());
             table.clear();
             assert!(owners.iter().all(|owner| table.get(*owner) == [0; 3]));
@@ -1054,15 +961,11 @@ mod tests {
         store.boundary(clock(10));
         assert_eq!(drain(&mut store, false).0, Ok(2));
         store.boundary(clock(11));
-        // Awards leased and finished before the drain belong to its interval.
         award(&LANES, &memory, 1, 0, 0).unwrap();
         assert_eq!(drain(&mut store, false), (Ok(2), [(1, 5), (1, 0)]));
-        // Awards leased after it reopens belong to the next interval.
         store.boundary(clock(12));
         award(&LANES, &memory, 2, 0, 3).unwrap();
         assert_eq!(drain(&mut store, false), (Ok(2), [(1, 0), (1, 5)]));
-        // A lease spanning the drain fails it, and the table is not reset
-        // under the leaseholder.
         store.boundary(clock(13));
         award(&LANES, &memory, 1, 0, 0).unwrap();
         LANES.active.fetch_add(1, Ordering::SeqCst);
@@ -1073,14 +976,11 @@ mod tests {
         assert!(store.discard && !store.table_is_empty());
         award(&LANES, &memory, 2, 0, 0).unwrap();
         LANES.active.fetch_sub(1, Ordering::SeqCst);
-        // The refused next interval discards both before its census.
         store.boundary(clock(14));
         assert_eq!(drain(&mut store, true), (Ok(2), [(0, 0), (0, 0)]));
         store.boundary(clock(15));
         award(&LANES, &memory, 1, 0, 0).unwrap();
         assert_eq!(drain(&mut store, false), (Ok(2), [(1, 5), (1, 0)]));
-        // A writer reaching the closed gate refuses without touching the
-        // table; its refusal fails the drain it raced.
         store.boundary(clock(16));
         assert!(LANES.close());
         assert_eq!(
@@ -1095,8 +995,6 @@ mod tests {
             Err("experience gain writer overlaps drain")
         );
         LANES.poisoned.store(false, Ordering::SeqCst);
-        // A partial boundary meeting a writer inside the table defers the
-        // discard to the drain's exclusive reset.
         award(&LANES, &memory, 1, 0, 0).unwrap();
         LANES.active.fetch_add(1, Ordering::SeqCst);
         let mut reloaded = clock(17);
@@ -1106,7 +1004,6 @@ mod tests {
         LANES.active.fetch_sub(1, Ordering::SeqCst);
         assert_eq!(drain(&mut store, false), (Ok(2), [(0, 0), (0, 0)]));
         assert!(store.table_is_empty() && !store.discard);
-        // Every reset left the gate open.
         assert!(!LANES.closed.load(Ordering::SeqCst));
     }
 
@@ -1139,8 +1036,6 @@ mod tests {
         let retained = expected(&store);
         assert!(retained.auxiliary_vectors > initial.auxiliary_vectors);
         assert_eq!(LOCAL.snapshot().current, retained);
-        // Writers keep the published table until an exclusive reset adopts
-        // the larger one; the predecessor is retained, not freed, there.
         assert_eq!(store.table.as_ref().unwrap().slots.len(), 4096);
         assert!(published(&store));
         assert!(LANES.close());
@@ -1154,15 +1049,12 @@ mod tests {
         for pointer in 1..=5000 {
             store.add(owner(pointer, 0), 1, 1).unwrap();
         }
-        // Off-thread preparation frees the predecessor.
         store.prepare(5000).unwrap();
         assert!(store.retired.is_none());
         let settled = expected(&store);
         assert!(settled.auxiliary_vectors < retained.auxiliary_vectors);
         assert_eq!(LOCAL.snapshot().current, settled);
         *LOCAL_STORE.lock().unwrap() = Some(store);
-        // A failed/partial publication cannot certify quiet just by dropping
-        // the hook owner. The allocation, its publication and charge remain.
         drop(Hooks {
             taps: Vec::new(),
             store: &LOCAL_STORE,
@@ -1187,7 +1079,6 @@ mod tests {
         };
         store.prepare(5000).unwrap();
         *LOCAL_STORE.lock().unwrap() = Some(store);
-        // The same production Drop covers any bootstrap return before enable.
         drop(Hooks {
             taps: Vec::new(),
             store: &LOCAL_STORE,
@@ -1209,11 +1100,9 @@ mod tests {
             table.add(owner(1, 2), 0, i64::MAX),
             Err("experience hourly gain overflow")
         );
-        // The refused interval is never certified; later awards keep refusing.
         assert!(table.add(owner(1, 2), 0, 1).is_err());
     }
 
-    // regression: 0cc3f98ca5 Spread strided native addresses with the SplitMix64 finalizer in three hash tables
     #[test]
     fn strided_countries_at_5000_countries_probe_short_chains() {
         const COUNTRIES: usize = 5_000;
@@ -1260,8 +1149,6 @@ mod tests {
             (1..=20)
                 .all(|pointer| table.get(owner(pointer, pointer as u32)) == [0, 0, pointer as i64])
         );
-        // Births and replacements within the interval may take every slot;
-        // only then does a writer refuse.
         let slots = table.slots.len();
         for pointer in 21..=slots {
             table.add(owner(pointer, 0), 0, 1).unwrap();
@@ -1343,7 +1230,6 @@ mod tests {
                 LAST
             );
             assert_eq!(growing_rows[LAST - 1].country, 10001);
-            // An undersized returned worker frame grows within this acquisition.
             growing_rows.truncate(1);
             growing_store.owners.truncate(1);
         }
@@ -1388,7 +1274,6 @@ mod tests {
             (10001, 9)
         );
         assert!(rows[..LAST - 1].iter().all(|row| row.army_raw == 0));
-        // Deletion does not poison the surviving countries' exact-zero proof.
         bytes[POINTERS + 7 * 8..POINTERS + 8 * 8].fill(0);
         let memory = SliceMemory {
             base: 0,
@@ -1401,7 +1286,6 @@ mod tests {
             LAST - 1
         );
         assert!(rows[..LAST - 1].iter().all(|row| row.complete == 1));
-        // Dynamic reuse publishes a new link even when its pointer and surrender target recur.
         bytes[POINTERS + 7 * 8..POINTERS + 8 * 8]
             .copy_from_slice(&((COUNTRIES + 7 * 32) as u64).to_le_bytes());
         bytes[last + 8..last + 12].copy_from_slice(&10000_u32.to_le_bytes());
@@ -1427,9 +1311,6 @@ mod tests {
             Err("experience gain country surrender target unreadable")
         );
 
-        // Exercise the actual interval core without touching global observers:
-        // lost publication discards awards, successful reseed starts afresh,
-        // and a failed census or insufficient capacity cannot certify zero.
         let mut clock = Clock {
             game_state: 0,
             hour: 10,

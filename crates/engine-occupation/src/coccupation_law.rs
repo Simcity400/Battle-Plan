@@ -1,12 +1,8 @@
-//! COccupationLaw layout. Preserve its string token as identity.
 
 use engine_sites::Rva;
-/// COccupationLaw vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029b_c290);
-/// COccupationLaw embedded MSVC string token.
 pub const NAME: usize = 0x10;
 
-/// Occupation-policy database singleton pointer.
 pub const DATABASE_RVA: Rva = Rva(0x033d_d3e0);
 pub const DATABASE_FALLBACK: usize = 0x48;
 
@@ -27,7 +23,6 @@ pub(crate) fn fallback(memory: &impl Memory, base: usize) -> Result<Literal, &'s
     literal(memory, base, law)
 }
 
-/// A literal law token in game memory, authenticated before any byte copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Literal {
     pub address: usize,
@@ -75,7 +70,6 @@ pub(crate) fn literal(
     })
 }
 
-/// Shared preallocated arena for default and state-override law tokens.
 pub(crate) struct Names<'a> {
     bytes: crate::walk::Buffer<'a, u8>,
     pub len: usize,

@@ -2,14 +2,12 @@ use super::*;
 use installed_content_core::mio_traits::TraitName;
 
 impl Renderer<'_, '_, '_> {
-    // Trait tooltip and completion descriptions substitute TRAIT, then expand.
     pub(in crate::effect_description) fn char_mio_trait(
         &mut self,
         item: &Item,
         scopes: Scopes,
         complete: bool,
     ) -> Result<String, String> {
-        // Accept either the scalar value or the trait field.
         let operand = item
             .value
             .scalar()
@@ -25,10 +23,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(|_| "MIO trait token is not UTF-8")?;
         let world = self.context.world()?;
         let mut definition = None;
-        let mut name = token.to_owned(); // Keep the authored spelling.
-        // A missing MIO or ordinary trait returns the raw lexer spelling,
-        // without localisation. Scope setters clear the other arms;
-        // the shared graph retains each full handle.
+        let mut name = token.to_owned();
         if let Scope::IndustrialOrganisation(reference) = scopes.this
             && reference != 0
         {
@@ -47,8 +42,6 @@ impl Renderer<'_, '_, '_> {
                 .as_ref()
                 .map_err(Clone::clone)?;
             if let Some(trait_) = catalogue.trait_definition(organisation, token)? {
-                // Use recorded lexer spellings and the owner country for localisation.
-                // The name itself stays plain.
                 let owner = if row.owner == 0 {
                     0
                 } else {
@@ -89,7 +82,6 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )?;
-        // show_modifiers defaults to yes.
         let show = installed_content_core::parser::read_bool_field(children(item), "show_modifiers", true);
         if show && let Some(trait_) = definition {
             let class = if complete {
@@ -97,22 +89,17 @@ impl Renderer<'_, '_, '_> {
             } else {
                 "MIO trait tooltip"
             };
-            // Append one complete parenthetical to the header.
             let body = self.char_mio_modifiers(&trait_, scopes, class);
             text.push_str(" (");
             text.push_str(&body);
-            text.push(')'); // Even when the body is empty.
+            text.push(')');
         }
-        // Append LF only for a nonempty result lacking a terminal LF.
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
         Ok(text)
     }
 
-    // Use comma separators without equipment-type or organisation headings.
-    // Remove zero bonuses in stored order. Append this raw body
-    // after expanding the wrapper's scope.
     fn char_mio_modifiers(&mut self, trait_: &TraitName, scopes: Scopes, class: &str) -> String {
         let mut text = self.char_mio_bonus_list(&trait_.bonuses, scopes, class);
         let modifiers = match trait_
@@ -144,8 +131,6 @@ impl Renderer<'_, '_, '_> {
                 },
             ) {
                 Ok(body) => {
-                    // Add a separator before formatting even if visibility
-                    // later makes the description empty.
                     if !text.is_empty() {
                         text.push_str(", ");
                     }
@@ -156,7 +141,7 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        text.trim_matches([' ', '\t', '\n', '\r']).to_owned() // Trim these four whitespace bytes.
+        text.trim_matches([' ', '\t', '\n', '\r']).to_owned()
     }
 
     fn char_mio_bonus_list(
@@ -171,8 +156,6 @@ impl Renderer<'_, '_, '_> {
                 if let Some(index) = installed_content_core::equipment::stat_index(bonus.name.as_bytes()) {
                     self.char_equipment_stat_difference(index, bonus.value, scopes)
                 } else if installed_content_core::mio_traits::is_production_stat(&bonus.name) {
-                    // Prefix BONUS_ and uppercase the token for its label.
-                    // Append a colon and space after the label.
                     let key = format!("BONUS_{}", bonus.name.to_ascii_uppercase());
                     let label = self.char_native_text(key.as_bytes(), &[], scopes, false)?;
                     let bad_positive = matches!(
@@ -180,13 +163,13 @@ impl Renderer<'_, '_, '_> {
                         "production_cost_factor"
                             | "production_resource_need_factor"
                             | "production_resource_penalty_factor"
-                    ); // Cost and resource penalties treat positive values as bad.
+                    );
                     Ok(format!(
                         "{label}: {}",
                         mio_production_percent(bonus.value, bad_positive)
                     ))
                 } else {
-                    Ok(String::new()) // No recognised bonus yields no text.
+                    Ok(String::new())
                 }
             })();
             match part {
@@ -198,8 +181,6 @@ impl Renderer<'_, '_, '_> {
         parts.join(", ")
     }
 
-    // Walk the policy's grouped bonus map, then its modifier cache.
-    // The short form trims and replaces literal LFs with commas and spaces.
     pub(in crate::effect_description) fn char_mio_policy_modifiers(
         &mut self,
         policy: &installed_content_core::industrial_organisations::policies::Policy,
@@ -250,9 +231,6 @@ impl Renderer<'_, '_, '_> {
     }
 }
 
-// Convert fixed5 to Q15 before choosing sign and colour.
-// The magnitude's percent multiplication wraps, then formatting uses
-// the exact binary scale 2^-15 and two decimal places.
 fn mio_production_percent(value: i64, bad_positive: bool) -> String {
     let value = replay_data::fixed_point::fixed5_to_q15(value);
     let (sign, colour) = match value.signum() {

@@ -6,7 +6,6 @@
 .war-goals-section h3 small { color: var(--muted); font-weight: 400; opacity: .75; }
 .war-goals-empty { margin: 0; padding: 8px 0 4px; color: var(--muted); font-size: var(--type-sm); }
 
-/* A goal is two plain lines; a hairline separates it from the next. */
 .war-goal { padding: 9px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .war-goal:last-child { border-bottom: 0; }
 .war-goal-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; font-size: var(--type-md); }

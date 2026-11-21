@@ -1,26 +1,17 @@
-//! Stored division experience carried under its own writer certificate.
-//! Each observation uses the existing authenticated census seed. There is no
-//! independent roster walk. Daily display samples may ignore sequence changes
-//! within an epoch, but never replace their original writer certificate. Both
-//! cache vectors reserve from census demand before any entity is visited.
 use engine_native::carmy::{self, DivisionSeed};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 #[cfg(test)]
 mod oracle;
 
-// Range scratch can outlive or move between stores. Complete baselines get
-// distinct stamps; exhaustion disables index reuse rather than reusing a stamp.
 static NEXT_BASELINE: AtomicU64 = AtomicU64::new(1);
 
-/// A distinct stamp for a new complete baseline; `None` once stamps run out.
 pub(crate) fn next_baseline() -> Option<u64> {
     NEXT_BASELINE
         .fetch_update(Relaxed, Relaxed, |next| next.checked_add(1))
         .ok()
 }
 
-/// Reusable range-local index into one complete scalar baseline.
 #[derive(Default)]
 pub struct Order {
     baseline: Option<u64>,
@@ -42,9 +33,6 @@ impl Order {
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<(u64, usize)>()
     }
-    /// Where `division` is held in the complete baseline stamped `baseline`,
-    /// whose divisions in held order are `divisions`. `None` when no index can
-    /// be built: the caller keeps its ordered lookup.
     pub(crate) fn position(
         &mut self,
         baseline: Option<u64>,
@@ -86,10 +74,8 @@ struct Held<T> {
     army: usize,
     certificate: (u64, u64),
     value: T,
-    /// The certificate is the receiver's current one: a daily carry under a later sequence is not.
     current: bool,
 }
-/// Whether `seen` is the live address of a located vtable.
 fn is_vtable(base: usize, key: engine_sites::Rva, seen: Option<u64>) -> bool {
     engine_sites::at(base, key).is_some_and(|vtable| seen == Some(vtable as u64))
 }
@@ -124,7 +110,6 @@ impl<T: Clone> Store<T> {
     fn matches(&self, held: &Held<T>, certificate: (u64, u64)) -> bool {
         held.certificate == certificate || self.daily && held.certificate.0 == certificate.0
     }
-    /// Only an exact writer certificate can lend XP to the hourly exercise predicate.
     pub fn current(&self, seed: &DivisionSeed) -> Option<T> {
         self.next
             .last()
@@ -170,9 +155,6 @@ impl<T: Clone> Store<T> {
         Ok(value)
     }
 
-    /// Where the held entry of the next observed division is. Census order normally stays
-    /// unchanged: only a membership or order change builds the reusable index, so a quiet hour
-    /// does no sort or second pass.
     fn locate(&mut self, division: u64) -> Result<Option<usize>, &'static str> {
         let guess = self.next.len().checked_add_signed(self.shift);
         let at = if guess.is_some_and(|at| {
@@ -224,10 +206,6 @@ impl<T: Clone> Store<T> {
         Ok(())
     }
 
-    /// The held entry the next [`Self::observe_with`] of `seed` would carry without a
-    /// certificate query: it holds the seed's army, and `taken` saw no writer touch `receiver`
-    /// since it was held (a daily store needs only the take's epoch to be the held one). Its
-    /// position and certificate; `None` leaves the ordered observation to query the receiver.
     pub fn quiet(
         &mut self,
         seed: &DivisionSeed,
@@ -249,8 +227,6 @@ impl<T: Clone> Store<T> {
         quiet.then_some((at, held.certificate))
     }
 
-    /// Carries the held entry at `at` that [`Self::quiet`] found, as a certificate query would
-    /// have. A writer touch keeps a daily sample but no longer certifies it current.
     pub fn keep(
         &mut self,
         base: usize,
@@ -263,8 +239,6 @@ impl<T: Clone> Store<T> {
         self.push(seed, held.certificate, held.value.clone(), held.current && !touched)?;
         Ok(held.value)
     }
-    /// Read-only range acquisition. The ordered observer still owns admission,
-    /// next-entry order and failure accounting when it consumes this result.
     #[cfg(test)]
     pub(super) fn prefetch(
         &self,
@@ -345,8 +319,6 @@ impl<T: Clone> Store<T> {
                         order.rebuilds += 1;
                     }
                 } else {
-                    // A refused advisory index must not turn a carry into a
-                    // fresh native read (and potentially a different refusal).
                     return self.held.iter().find(|held| {
                         #[cfg(test)]
                         {
@@ -378,9 +350,6 @@ impl<T: Clone> Store<T> {
             .filter(|held| held.army == seed.pointer && self.matches(held, certificate))
     }
 
-    /// The certificate and value a certificate query would give the ordered observation of
-    /// `seed`, seen from a read-only range with no query: its held entry is current, holds its
-    /// army, and the hour's `taken` saw no writer touch `receiver` since it was held.
     pub(super) fn prefetch_quiet(
         &self,
         index: usize,
@@ -395,7 +364,6 @@ impl<T: Clone> Store<T> {
             .then(|| (held.certificate, held.value.clone()))
     }
 
-    /// The held entry of `seed`'s army whatever its certificate.
     fn prefetch_held_any(
         &self,
         index: usize,
@@ -417,8 +385,6 @@ impl<T: Clone> Store<T> {
             .filter(|held| held.division == seed.division && held.army == seed.pointer)
     }
 
-    /// Owned range result, including carries. Cache admission stays ordered;
-    /// the common census ordinal avoids another index on unchanged rosters.
     pub(super) fn prefetch_value(
         &self,
         base: usize,
@@ -429,8 +395,6 @@ impl<T: Clone> Store<T> {
         read: impl FnOnce() -> Result<T, &'static str>,
     ) -> Option<Result<T, &'static str>> {
         let certificate = certificate?;
-        // The carry verdict and value use the same lookup. In particular a
-        // reordered census must not binary-search its scalar baseline twice.
         if let Some(held) = self.prefetch_held(index, seed, certificate, order) {
             return Some(Ok(held.value.clone()));
         }
@@ -544,7 +508,6 @@ mod tests {
             Err("fresh scalar fault")
         });
         assert_eq!(staged, Some(Err("fresh scalar fault")));
-        // Ordered registration can still refuse this provisional observation.
         assert_eq!(
             store.observe_with(0, &seed, None, || panic!(
                 "failed admission must not consume a staged read"
@@ -618,7 +581,6 @@ mod tests {
         }
     }
 
-    // regression: 54dd3b8940 Fix the daily footer lookup panic and the PR's collector test failures
     #[test]
     fn range_scalar_indexes_rebuild_once() {
         const COUNT: usize = 64;
@@ -642,8 +604,6 @@ mod tests {
                 );
             }
             assert_eq!(order.rebuilds - before.0, rebuilds);
-            // One lookup supplies both the carry verdict and owned value.
-            // Count probes rather than timing so a duplicate search fails.
             let limit = COUNT * (COUNT.ilog2() as usize + 4);
             assert!(order.probes - before.1 <= limit);
         };
@@ -675,8 +635,6 @@ mod tests {
         check(&store, &mut order, 1, 0);
         assert_eq!(order.allocated_bytes(), bytes);
 
-        // A same-length replacement changes every hint without clearing the
-        // caller's scratch. Its first miss must rebuild only once.
         store.begin(COUNT).unwrap();
         for index in 0..COUNT {
             let id = 1 + (index + COUNT / 2) % COUNT;
@@ -707,8 +665,6 @@ mod tests {
         assert_eq!(order.rebuilds, before.0);
         assert_eq!(order.probes - before.1, COUNT);
 
-        // All keys are absent from the stale same-sized index. A search miss
-        // must not silently miss a new baseline's carry or rebuild per lookup.
         store.begin(COUNT).unwrap();
         for id in COUNT + 1..=2 * COUNT {
             store
@@ -793,7 +749,6 @@ mod tests {
 
     #[test]
     fn daily_scalars_keep_the_sample_but_never_certify_stale_exercise_xp() {
-        // The same store policy supplies recorded XP and officer XP.
         let mut store = Store::<i64>::default();
         let original = seed(1, 0x1000);
         store.daily(true);

@@ -1,19 +1,12 @@
-//! Guarded, exact-field batches of the serial stability walk's operands. Values
-//! still pass the serial vtable, owner, array and string checks before use.
-//! Filtered modifier addition, child cloning and modifier copying establish the
-//! owned entry arrays and display strings.
 
 use super::*;
 
-/// One original nonzero() entry window, never an enclosing allocation span.
 fn entry_span(header: [u8; 16]) -> Option<(usize, usize)> {
     let entries = Array::from_header(header, modifier_entry::STRIDE)?;
     let count = (entries.count as usize).min(ENTRY_BATCH);
     (count != 0).then_some((entries.data, count * modifier_entry::STRIDE))
 }
 
-/// The original display_digest() heap terminator and first payload window.
-/// Inline text is owned by the acquired header and needs no native read.
 fn display_spans(header: [u8; 32]) -> [Option<(usize, usize)>; 2] {
     let word = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
     let length = word(crate::msvc_string::LENGTH);
@@ -72,9 +65,6 @@ fn source_payload(
     [entries, text[0], text[1]]
 }
 
-/// Fixed source blocks across objects, then dependent exact payload windows.
-/// Static modifier binding authenticates Context's shared slots; Scaled static
-/// modifier addition reads those same CModifier fields.
 pub(super) fn sources(
     memory: &Observed<'_, impl Memory>,
     modifiers: &[usize],
@@ -95,10 +85,6 @@ pub(super) fn sources(
     memory.gather(spans, shared);
 }
 
-/// Heads and source fields belong to the same reached native object. Advisor
-/// contributions use the advisor modifier offset; political contributions use
-/// the idea and leader/ideology offsets. No record spans an object's gaps or
-/// another allocation.
 pub(super) fn objects(
     memory: &Observed<'_, impl Memory>,
     pointers: &[usize],
@@ -120,8 +106,6 @@ pub(super) fn objects(
     );
 }
 
-/// Child heads were acquired by the original page gather. Payload selection
-/// uses only complete, authenticated heads and individually bounded headers.
 pub(super) fn children(
     memory: &Observed<'_, impl Memory>,
     pointers: &[usize],
@@ -148,8 +132,6 @@ pub(super) fn children(
     );
 }
 
-/// Pointer pages preserve null/overflow refusal order. The serial object
-/// readers visit the validated prefix even when a later pointer is invalid.
 pub(super) fn pointer_pages(
     memory: &impl Memory,
     array: Array,

@@ -6,7 +6,6 @@ use replay_frame::frame::{DecodedFrame, TableView};
 
 const FIRST: i32 = 1_000;
 const LAST: i32 = 2_600;
-/// Templates are not readable through these hours: every composition is unknown.
 const UNREAD: (i32, i32) = (1_300, 1_340);
 const TOKENS: [(u32, &str); 4] = [(10, "infantry"), (11, "artillery_brigade"), (12, "engineer"), (13, "recon")];
 
@@ -22,9 +21,6 @@ fn division(id: u64, roster: u32, expeditionary: u32, template: u64) -> Division
     DivisionRow { id, roster_owner: roster, logical_owner: roster, expeditionary_owner: expeditionary, template, hit_points: 100_000, ..Default::default() }
 }
 
-/// GER (9001, slot 7) and ITA (9002, slot 8) from the first hour. GER's divisions: one of template
-/// 1 throughout, one of template 2 from 1,100 to 1,900, one sent to ITA from 1,700 (GER's by owner,
-/// ITA's by host); ITA's own of template 2 from 1,200. Template 2 gains a sub-unit at 1,500.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
@@ -61,8 +57,6 @@ fn recording() -> Source {
     Source::from_replay(crate::SourceKey { source_id: "army".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
-/// The composition as it was read before keyed runs: every row of `ArmyMix` and the battalions
-/// column walked hour by hour through each part, a slot's mix rebuilt at each hour either moves.
 fn walked(recording: &Recording, attribution: u128, parts: &BTreeMap<Country, Vec<Part>>) -> (HashMap<(u32, i32, i32, u32), MixRuns>, HashMap<u32, String>) {
     let battalions = dashboard_declare::field(TableId::ArmyTotals, if attribution == 0 { "owner_battalions" } else { "host_battalions" }).unwrap();
     let mut by_stretch: BTreeMap<(u32, i32, i32), BTreeSet<u32>> = BTreeMap::new();

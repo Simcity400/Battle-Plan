@@ -13,7 +13,6 @@ import { detailsStructure, detailTexts, effectsStructure, validateProjectDetails
 import type { ProgramDetails, ProjectEffects, ProjectLabel, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const Name = ({ label }: { label: ProjectLabel }) => <span data-tooltip={contentTitleHint(label.token)}>{contentTitle(label.name, label.token, 'Name unavailable')}</span>;
-/** A value the game refreshes daily: its text is written by the painter, never by a render. */
 const DetailValues = createContext<ReadonlyMap<string, string>>(new Map());
 const Painted = ({ at }: { at: string }) => <span data-paint={at}>{useContext(DetailValues).get(at)}</span>;
 
@@ -25,7 +24,6 @@ function Effects({ prefix, value, state }: { prefix: string; value: ProjectEffec
     {Object.entries(value.refusals).map(([reason, count]) => <p className="project-detail-missing" key={reason}>
       <span data-paint={prefix + ':reason:' + reason} data-prose="">{reason} ({count})</span></p>)}</div>;
 }
-/** An unavailable roster shows no count: it is unknown, not empty. */
 const Count = ({ roster, label }: { roster: readonly unknown[] | null; label: string }) => roster === null ? null : <span className="pill" data-panel-label={label}>{roster.length}</span>;
 
 function Facility({ program }: { program: ProgramDetails }) {
@@ -43,8 +41,6 @@ function Facility({ program }: { program: ProgramDetails }) {
 
 interface Asked { runtime: WidgetRuntime; widget: WidgetSpec; tag: string; active: boolean }
 
-/** One project's rewards, choices, output and variables; its effects text is asked only while it is open, as it reads
- * every table scripted effects can name. */
 function Project(props: Asked & { project: ProjectRuntimeDetails }) {
   const { project } = props;
   const box = useRef<HTMLDetailsElement>(null);
@@ -121,8 +117,6 @@ function Shown({ details, asked }: { details: SpecialProjectDetails; asked: Aske
   </>;
 }
 
-/** The scientists, facilities and project rewards of `tag` at the widget's hour: a pushed panel while following, which
- * renders only when its structure changes; the values the game refreshes daily are painted ([`detailTexts`]). */
 export default function ProjectDetails({ runtime, widget, tag, active, onWarnings }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
   const box = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },

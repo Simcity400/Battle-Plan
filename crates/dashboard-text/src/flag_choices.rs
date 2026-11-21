@@ -1,6 +1,3 @@
-//! Flag asset candidates per recorded country: one chain from a country's recorded operands
-//! ([`Operands::chain`]), which preparation reads from the walk's flag inputs and the map's
-//! combat and raid tooltips from one decoded hour ([`choices`]).
 
 use crate::metadata::recorded_rows_in;
 use replay_data::rows::{
@@ -10,7 +7,6 @@ use replay_data::rows::{
 use replay_frame::frame::{DecodedSource, HourFrame, Rowset};
 use std::{borrow::Cow, collections::BTreeMap, io};
 
-/// The fields of each table the flag chains read.
 const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
 const RULING: u64 = mask::<PoliticsRow>(&["ruling_party"]);
 const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
@@ -21,7 +17,6 @@ const LOOK: u64 = mask::<CountryAppearanceRow>(&[
     "original_tag",
 ]);
 
-/// Each row of `rows`, keyed by `key`.
 fn by<'a, R: replay_data::rows::RowCodec + Clone, K: Ord>(
     rows: Rowset<'a, R>,
     key: impl Fn(&R) -> K,
@@ -35,8 +30,6 @@ pub struct FlagChoice {
     pub raw: u32,
     pub tag: String,
     pub candidates: Vec<String>,
-    /// Why the native candidate chain is unknown. A known cosmetic candidate
-    /// can still supply the complete flag when only its later tag is unknown.
     pub refusal: Option<String>,
 }
 
@@ -54,39 +47,27 @@ impl FlagChoice {
     }
 }
 
-/// The candidates the game searches a country's flag file by, in order, and why they are not
-/// the whole chain.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Chain {
     pub candidates: Vec<String>,
-    /// As [`FlagChoice::refusal`].
     pub refusal: Option<String>,
 }
 
-/// A country object's CountryAppearance operands of its flag, as recorded.
 #[derive(Clone, Copy, Debug)]
 pub struct Appearance<'a> {
     pub cosmetic: &'a [u8],
-    /// Positive: `original` is the original tag; otherwise the country's own tag is.
     pub reference: Recorded<Option<i32>>,
     pub original: Recorded<Option<&'a [u8]>>,
 }
 
-/// One country's flag operands, each its text or why it is unknown.
 pub struct Operands<'a> {
-    /// Empty without a cosmetic tag.
     pub cosmetic: Result<&'a str, String>,
-    /// The original-or-own tag: unknown, it withholds only the chain's tag tail.
     pub original: Result<&'a str, String>,
-    /// The ruling party's ideology group token.
     pub group: Result<Option<&'a str>, String>,
 }
 
 impl<'a> Operands<'a> {
-    /// Country object `owner`'s operands from its own tag, its appearance, its
-    /// `Politics.ruling_party` (the inner None a null pointer) and the ruling party's token;
-    /// a part it has no row of is None.
     pub fn of(
         owner: u32,
         own: &'a [u8],
@@ -107,7 +88,6 @@ impl<'a> Operands<'a> {
         }
     }
 
-    /// The chain every reader searches.
     pub fn chain(self) -> Chain {
         let candidates = match (&self.cosmetic, &self.group) {
             (Ok(cosmetic), Ok(group)) => installed_content_country_names::country_names::flag_keys(
@@ -129,8 +109,6 @@ impl<'a> Operands<'a> {
     }
 }
 
-/// The original-or-own tag: the positive reference's original tag, else `own`. An unread or
-/// historically absent original cannot be inferred from the name tag.
 fn original<'a>(own: &'a [u8], appearance: Appearance<'a>) -> Result<&'a str, String> {
     let reference = (*appearance
         .reference
@@ -147,10 +125,6 @@ fn original<'a>(own: &'a [u8], appearance: Appearance<'a>) -> Result<&'a str, St
     std::str::from_utf8(bytes).map_err(|_| "country original-or-own tag is not UTF-8".into())
 }
 
-/// The ruling ideology group: the capture authenticates the ordinary group, whose active flag is
-/// initialized to 1 and never changed by authored content, and refuses the null group. Even an
-/// empty accepted token is an active group, so the qualified candidate still appends its
-/// underscore.
 fn group(
     owner: u32,
     ruling: Option<Option<u32>>,
@@ -167,7 +141,6 @@ fn group(
         .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))
 }
 
-/// Each country's `Politics.ruling_party` and the party, by country object.
 #[allow(clippy::type_complexity)]
 fn ruling_rows(
     frame: HourFrame<'_>,
@@ -186,20 +159,16 @@ fn ruling_rows(
     Ok((politics, parties))
 }
 
-/// The flag's ruling ideology group, retaining a missing or unsupported join
-/// instead of skipping the group-qualified candidate.
 pub fn ruling_groups(
     frame: &dyn DecodedSource,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
     ruling_groups_in(HourFrame::Decoded(frame))
 }
 
-/// [`ruling_groups`] of any frame's tables, a walk's views among them.
 pub fn ruling_groups_in(
     frame: HourFrame<'_>,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
     let (politics, parties) = ruling_rows(frame)?;
-    // A country's object is its key.
     Ok(recorded_rows_in::<tables::Countries>(frame, 0)?
         .keys()
         .map(|key| {
@@ -215,12 +184,10 @@ pub fn ruling_groups_in(
         .collect())
 }
 
-/// Flag asset candidates per country at one hour, shared with the combat UI.
 pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
     choices_in(HourFrame::Decoded(frame))
 }
 
-/// [`choices`] of any frame's tables, a walk's views among them.
 pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Vec<FlagChoice>> {
     let links: BTreeMap<_, _> = recorded_rows_in::<tables::CountryLinks>(frame, LINK)?
         .iter()
@@ -245,12 +212,9 @@ pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Vec<FlagChoice>> {
                         Some(crate::triggers::Store::Country(slot)),
                     )
                 })?;
-            // Atlas population tests the object's own country reference.
             if (country.id as i32) <= 0 {
                 return None;
             }
-            // Atlas cells belong to the resolved country object. An alias link
-            // supplies the same object's captured appearance and party.
             let owner = country.id;
             let appearance = appearances.get(&owner).map(|row| Appearance {
                 cosmetic: &row.cosmetic_tag,

@@ -1,0 +1,9 @@
+# 0706. Capture the supply footer's stored operands
+
+Supply footer rows use observations of the member's existing supply-consumer data after the owner passes the shared-vision gate. They retain the game's signed fixed-point demand and ordered stored origins, including duplicate and nonpositive entries. Substituting supply nodes, weather, origin sort metadata or the retained ratio would calculate a different value. Per-member aggregation overwrites its designated field. Division consumers fill their own demand pair, and allocation can populate the other pairs. The total received is bounded by demand. A save writes disruption only when positive, so omission establishes nonpositive disruption and does not recover the ordinary unsaved footer caches.
+
+An authenticated railway gun or task force reads one footer. A division census batches the scalar spans and origin headers, then the admitted origin rows, then witnesses the same headers again. An untrusted native count is demand for the caller's buffer, and the buffer retains admitted rows in unit order. A scalar fault withholds the unit's scalar pack. An invalid, unreadable or changed origin header, insufficient capacity or a faulting origin payload withholds only the affected unit's origins. A guarded copy can modify its copied prefix on failure. The reader never publishes that prefix as a successful fragment and resumes the batch after the fault to serve other units. Individual and batched observations follow the same contract.
+
+A selected-unit capture skips all reads for a carried footer, including its origin witness. Off-hour origin hints observe the header for sizing only and cannot supply payload or scalar values.
+
+[Supply readers](../../crates/engine-native/src/cunit_supply_inputs.rs) · [Supply reader fixtures](../../crates/engine-native/src/cunit_supply_inputs/tests.rs)

@@ -18,12 +18,9 @@ impl<R> NativeShadow<R> {
     }
 }
 
-/// Spool-owned exact conversion memo, never a substitute for current capture.
-/// Copies only used typed fields/bytes; no live pointer or Captured lease.
 #[derive(Default)]
 pub(crate) struct CharacterShadow {
     branch: Option<BranchId>,
-    /// The globally unique held-leader layout certifies the complete training table.
     pub(super) training: Option<((u64, u64), Weak<TableRows>)>,
     pub(super) characters: NativeShadow<ccharacter::Row>,
     pub(super) leaders: NativeShadow<ccountry_leader::Row>,
@@ -31,8 +28,6 @@ pub(crate) struct CharacterShadow {
     pub(super) traits: NativeShadow<cunit_leader::TraitRow>,
 }
 
-/// Cache references must come from this branch's current complete spool cache.
-/// Weak identity prevents reuse after replacement, partial rows or invalidation.
 pub(crate) struct CharacterConversion<'a> {
     pub(super) shadow: &'a mut CharacterShadow,
     pub(super) cached: [Option<&'a Arc<TableRows>>; 4],
@@ -74,7 +69,6 @@ pub(super) fn shadow_input<R: Copy + PartialEq>(
         && cached.table() == table
         && let Some(previous) = shadow.output.upgrade()
         && Arc::ptr_eq(cached, &previous)
-        // Fieldwise equality excludes padding. Changed native order misses.
         && shadow.rows == rows
         && shadow.required == buffer.bytes.required
         && shadow.bytes == bytes
@@ -87,8 +81,6 @@ pub(super) fn shadow_input<R: Copy + PartialEq>(
             reason: replay_data::cadence::SKIPPED_REASON
         }
     );
-    // An exact hit above has the same ranges and arena as the previously
-    // validated output. Only changed input needs another row-validation pass.
     let source = source.filter(|(rows, bytes)| rows.iter().all(|row| valid_row(row, bytes)));
     match (source, convert()) {
         (Some((rows, bytes)), TableView::Complete(output)) => {

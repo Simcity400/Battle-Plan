@@ -1,9 +1,3 @@
-//! Class-1 facts behind a task force's counter arrival speed: the task force,
-//! its map motion and fresh speed packet, its ships and their class tokens.
-//! The counter's route admission (range, submarine rules and hostile strength)
-//! reads owner
-//! navy, theatre and nearest-base caches the recording does not hold; see
-//! [`super::task_force`].
 
 use super::fresh_search::{available, index};
 use installed_content_unit_path::unit_path::Fact;
@@ -27,12 +21,10 @@ fn rows<'s, 'a, T: TableSchema, K: Ord>(
     available(cell.get_or_init(|| index::<T, _>(frame, key)))
 }
 
-/// Borrowed immutable frame domains, indexed at first demand once per batch.
 pub(super) struct NavalInputs<'a> {
     frame: &'a DecodedFrame,
     forces: Index<'a, u64, TaskForceRow>,
     motions: Index<'a, u64, TaskForceMapMotionRow>,
-    /// Each task force's ships in census order.
     ships: OnceLock<Fact<BTreeMap<u64, Vec<&'a ShipRow>>>>,
     tokens: OnceLock<Fact<TokenNames<'a>>>,
 }

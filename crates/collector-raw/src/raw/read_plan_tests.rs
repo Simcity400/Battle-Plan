@@ -130,7 +130,6 @@ fn complete_plan_loans_geometry_for_decode_and_returns_it_before_reuse_or_retire
         assert!(recorded.copy(0x2000, &mut bytes));
         assert_eq!(bytes, [value; 4]);
         drop(recorded);
-        // Both normal recycle and clear without preparation return the loan.
         if value == 2 {
             log.prepare_read_plan();
         }
@@ -343,7 +342,6 @@ fn planned_prefix_then_torn_payload_is_unreadable_and_retires_the_plan() {
     let root = log.take(&changed, 0x10, 1, 1).unwrap();
     assert_eq!(log.bytes[root], 2);
     let torn_len = u32::MAX as usize + 1;
-    // The torn payload reads nothing: its table fails as unreadable.
     assert_eq!(log.take(&changed, 0x20, torn_len, 1), None);
     log.finish_planned_capture();
     changed.complete();
@@ -357,7 +355,6 @@ fn planned_prefix_then_torn_payload_is_unreadable_and_retires_the_plan() {
     log.clear();
     assert!(!log.planned_capture_requires_no_retry());
 
-    // An unplanned capture refuses it the same way.
     let ordinary = Script::new(vec![(0x10, Some(vec![2]))]);
     assert!(!log.begin_planned_capture(&ordinary, [0; 4]));
     log.take(&ordinary, 0x10, 1, 1);

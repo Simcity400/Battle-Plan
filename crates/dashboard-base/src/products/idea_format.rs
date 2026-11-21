@@ -1,13 +1,3 @@
-//! How an idea's tooltip shows its effects, as the game formats them.
-//!
-//! Every built-in modifier's display lives in the executable's modifier
-//! definition table, which the recording keeps (`ModifierDefinitions`): its
-//! localisation key and argument, postfix, precision and flags. A scripted
-//! modifier the table does not hold is read from content
-//! (`common/modifier_definitions`) with the engine's defaults. A key found in
-//! neither has no format: the viewer shows it as authored, marked unformatted.
-//! The formatting rules themselves are applied by the
-//! viewer; see `ui/src/dashboard/ideaTooltip.ts`.
 
 use super::politics_content::PoliticsContent;
 use crate::{catalogue, metadata::validate_campaign};
@@ -25,47 +15,41 @@ use std::{
 };
 use ts_rs::TS;
 
-/// How the game shows one modifier (CModifierDefinition).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModifierFormat {
     pub key: String,
-    /// The engine's key index: the game lists an idea's lines in this order.
-    /// None for a definition only content gives (registered after every built-in one).
+    #[doc = " The engine's key index: the game lists an idea's lines in this order."]
+    #[doc = " None for a definition only content gives (registered after every built-in one)."]
     pub index: Option<u32>,
-    /// The modifier's name in the viewer's language; None when it cannot be localised.
+    #[doc = " The modifier's name in the viewer's language; None when it cannot be localised."]
     pub label: Option<String>,
-    /// The localised postfix shown after the value (days, hours, daily), if any.
+    #[doc = " The localised postfix shown after the value (days, hours, daily), if any."]
     pub postfix: Option<String>,
-    /// The postfix's localisation key, when the definition has one: with `postfix`
-    /// empty, the unit exists but its text could not be read.
+    #[doc = " The postfix's localisation key, when the definition has one: with `postfix`"]
+    #[doc = " empty, the unit exists but its text could not be read."]
     pub postfix_key: Option<String>,
-    /// Definition flags: 0x1 percent (value ×100), 0x2 good, 0x4 neutral colour,
-    /// 0x8 no plus sign, 0x20 yes/no, 0x80 percent as written, 0x100 shown when zero.
+    #[doc = " Definition flags: 0x1 percent (value ×100), 0x2 good, 0x4 neutral colour,"]
+    #[doc = " 0x8 no plus sign, 0x20 yes/no, 0x80 percent as written, 0x100 shown when zero."]
     pub flags: u32,
-    /// Decimal places at most (the caller's precision may lower it).
+    #[doc = " Decimal places at most (the caller's precision may lower it)."]
     pub precision: i32,
-    /// The game feature the modifier needs (`feature_selector`); zero for none. The
-    /// game shows and applies such a modifier only while that feature is on, which
-    /// the recording does not say.
+    #[doc = " The game feature the modifier needs (`feature_selector`); zero for none. The"]
+    #[doc = " game shows and applies such a modifier only while that feature is on, which"]
+    #[doc = " the recording does not say."]
     pub feature: u32,
-    /// `recorded` (the game's own table) or `content` (a scripted definition).
+    #[doc = " `recorded` (the game's own table) or `content` (a scripted definition)."]
     pub source: String,
 }
 
-/// A localisation key a tooltip needs, with its text in the viewer's language.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalisedText {
     pub key: String,
-    /// None when the key has no text, or its text needs runtime scope.
+    #[doc = " None when the key has no text, or its text needs runtime scope."]
     pub text: Option<String>,
 }
 
-/// The recorded definitions by the modifier each names (its script name
-/// folded for lookup), from the branch's last
-/// hour that holds both the definitions and the lexer names complete. Blocks
-/// are read from the last back, decoding only those two tables.
 pub(crate) fn recorded(
     replay: &Replay,
     branch: u64,
@@ -88,8 +72,6 @@ pub(crate) fn recorded(
                 "Idea request cancelled",
             ));
         }
-        // The block's last hour holding both tables complete, kept as shared views;
-        // the lookup is built once, from that hour only.
         let mut last: Option<(SharedView, SharedView)> = None;
         let read = replay.visit_blocks(
             &[block],
@@ -132,7 +114,6 @@ pub(crate) fn recorded(
     Ok(None)
 }
 
-/// Index one supplying read's definitions by its folded lexer names.
 pub fn index_recorded(
     rows: &[ModifierDefinitionRow],
     lexical: &[LexicalTokenRow],
@@ -150,7 +131,6 @@ pub fn index_recorded(
         .collect()
 }
 
-/// [`index_recorded`] of any frame's tables, a walk's views among them: `rows` built whole.
 pub fn index_rowsets(
     rows: replay_frame::frame::Rowset<'_, ModifierDefinitionRow>,
     lexical: replay_frame::frame::Rowset<'_, LexicalTokenRow>,
@@ -170,9 +150,6 @@ pub fn index_rowsets(
     Ok(index)
 }
 
-/// Localise `key` through the shared localiser with its stored argument as the string
-/// `ARG` (type 1) when it has one, else with none. A key the content lacks is
-/// its own bytes; the error names why the text cannot be shown.
 fn name_arguments(argument: &str) -> Vec<(&str, Argument<'_>)> {
     if argument.is_empty() {
         Vec::new()
@@ -181,34 +158,28 @@ fn name_arguments(argument: &str) -> Vec<(&str, Argument<'_>)> {
     }
 }
 
-/// The same argument selection, with recoveries and refusals noted by key.
 fn label(content: &PoliticsContent, key: &str, argument: &str) -> Option<String> {
     content
         .catalogue
         .localised_with(key, &name_arguments(argument), catalogue::View::Scripted)
 }
 
-/// A scripted modifier's display, shared by the reply and offline preparation.
 pub(crate) fn content_format(content: &PoliticsContent, key: &str) -> Option<ModifierFormat> {
     let definition = content.modifier_definitions.get(key)?;
     let postfix = definition.postfix_key();
     Some(ModifierFormat {
         key: key.to_owned(),
         index: None,
-        // Its name is its localisation key, as first registered.
         label: label(content, &definition.token, ""),
         postfix: postfix.and_then(|key| content.localised(key, catalogue::View::Scripted)),
         postfix_key: postfix.map(str::to_owned),
         flags: definition.flags,
-        // Scripted definitions register with no feature (FindOrRegisterDynamicModifierDefinition).
         feature: 0,
         precision: definition.precision,
         source: "content".into(),
     })
 }
 
-/// Formats available without a recording. A built-in key names the missing
-/// recorded table rather than acquiring a guessed display definition.
 pub fn content_formats(
     content: &PoliticsContent,
     keys: &BTreeSet<String>,
@@ -223,11 +194,6 @@ pub fn content_formats(
     findings
 }
 
-/// The formats of `keys`, each a modifier as the game identifies it (its
-/// name folded, installed_content_core::modifiers::Modifier::name): recorded first, else
-/// scripted in content, whose definition the lexer finds whatever its case.
-/// Also says whether a recorded argument (text the game localised in its own
-/// language when it loaded) was used.
 pub fn modifier_formats(
     replay: &Replay,
     branch: u64,
@@ -247,7 +213,6 @@ pub fn modifier_formats(
     ))
 }
 
-/// Formats from a caller's already indexed supplying read, without rescanning.
 pub fn modifier_formats_from_recorded(
     recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
     keys: &BTreeSet<String>,
@@ -282,8 +247,6 @@ pub fn modifier_formats_from_recorded(
             });
             continue;
         }
-        // Use the first definition registered under the key's name,
-        // with folded lookup.
         if let Some(format) = content_format(content, key) {
             formats.push(format);
         }
@@ -297,12 +260,10 @@ pub fn modifier_formats_from_recorded(
     (formats, warnings)
 }
 
-/// The texts of `keys` in the viewer's language.
 pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<LocalisedText> {
     keys.iter()
         .map(|key| LocalisedText {
             key: key.clone(),
-            // Idea tooltip lines use scoped localisation.
             text: content.localised(key, catalogue::View::Scripted),
         })
         .collect()
@@ -312,10 +273,6 @@ pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<Localise
 mod tests {
     use super::{catalogue, name_arguments};
 
-    /// The localiser fills `ARG` at every nested level, a
-    /// `$KEY|format$` that is no argument looks up the whole operand, which no
-    /// key is, and writes nothing, and a key the content lacks is its own
-    /// bytes.
     #[test]
     fn a_modifier_label_is_localised_with_its_argument() {
         let localisation = crate::catalogue::tests::loaded(concat!(

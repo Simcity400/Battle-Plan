@@ -1,4 +1,3 @@
-//! Owned-memory regression of the actual shared census and land consumer.
 use crate::{
     division_census::Census, extended::division_land::Captured,
     unit_scale_tests::fixture as unit_world,
@@ -10,8 +9,6 @@ fn run(countries: usize) {
     let mut world = unit_world::build(unit_world::Shape {
         countries,
         divisions: count,
-        // The shared fixture requires a nonzero wing shape; this incidental
-        // wing is never read by the division census or land measurement.
         wings: 1,
         planes: 1,
         ships: 0,
@@ -39,8 +36,6 @@ fn run(countries: usize) {
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut census = Census::new();
-    // Follow the production demand/growth path. Reserving only
-    // division sources does not size the independently retained roster slots.
     for _ in 0..3 {
         census.capture_inputs(&memory, world.base, world.state);
         if !census.overflowed {
@@ -70,7 +65,6 @@ fn verify(land: &Captured, count: usize) {
         panic!("complete shared census must produce complete land input rows")
     };
     assert_eq!(rows.len(), count);
-    // The grace the census holds is DivisionStatus's record, never a land copy.
     assert_eq!(
         rows[count - 1].remaining_grace,
         replay_data::rows::RetiredI64::default()

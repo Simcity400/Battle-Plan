@@ -4,7 +4,6 @@ use replay_data::{rows::CountryCounterInputRow, rows::Recorded, rows::ZeroSubjec
 #[test]
 fn zero_subject_reports_history_capture_refusal_and_unsaved_native_branches() {
     let (_, mut save, _, _) = super::super::fixtures::fixture();
-    // The runtime limitation must survive a missing positive save-country join.
     save.countries.remove(b"GER".as_slice());
     let tags = [(101, b"GER".as_slice())].into();
     for (value, expected) in [
@@ -50,7 +49,6 @@ fn zero_subject_reports_history_capture_refusal_and_unsaved_native_branches() {
         )
         .unwrap();
         if expected == "not recorded" {
-            // Historical field identity is in the reason; the subject names the row.
             assert_eq!(
                 report.limitations["CountryCounterInputs.zero_subject not recorded"],
                 vec!["CountryCounterInputs GER".to_string()],

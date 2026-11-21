@@ -142,7 +142,6 @@ fn identical_title_keys_survive_a_trigger_that_cannot_be_decided() {
             unsettled: Some("unrecorded operand".into()),
         })
     );
-    // The walk stops where the game's state stops being known.
     assert_eq!(calls, 2);
 }
 
@@ -198,7 +197,7 @@ fn border_event_identifiers_reduce_suffix_and_refuse_namespace_slot_aliases() {
         identifier_key(b"Synthetic.00001\0tail").unwrap(),
         b"synthetic.1"
     );
-    assert_eq!(identifier_key(b"s.A").unwrap(), b"s.17"); // Native does not validate digits.
+    assert_eq!(identifier_key(b"s.A").unwrap(), b"s.17");
     assert_eq!(identifier_key(b"s.").unwrap(), b"s.0");
     assert!(
         identifier_key(b"s.100000")
@@ -326,8 +325,6 @@ fn operative_event_immediate_and_after_forward_character_parse_scope() {
         let event = events.get(b"s.5").unwrap();
         assert!(event.refused.is_none(), "{block}: {:?}", event.refused);
         assert!(events.refused.is_empty(), "{block}: {:?}", events.refused);
-        // Character-scope blocks skip in mask 8, so their variables never
-        // enter the shared reader dictionary.
         assert_eq!(event.titles[0].value.scalar(), Some(b"@ignored".as_slice()));
     }
 }
@@ -378,7 +375,6 @@ fn operative_option_refuses_only_nested_readers_missing_inherited_scope() {
         "events/synthetic.txt",
         &KeyNames::default(),
     );
-    // This class's authoritative ScopePolicy sets mask 8 independently.
     assert!(events.get(b"s.5").unwrap().refused.is_none());
     assert!(events.refused.is_empty(), "{:?}", events.refused);
 }
@@ -408,7 +404,6 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
     assert!(parsed.namespaces.contains(b"s".as_slice()));
     assert!(parsed.get(b"s.2").is_ok());
     let events = LazyEvents::new(Arc::new(layers));
-    // Construction performs no event/header I/O.
     assert!(events.cache.lock().unwrap().index.is_none());
     let first = events.get(b"S.01").unwrap();
     assert!(Arc::ptr_eq(&first, &events.get(b"s.1").unwrap()));
@@ -443,8 +438,6 @@ fn option_index_fixture(files: &[(&str, &[u8])]) -> (LazyEvents, std::path::Path
     (LazyEvents::new(Arc::new(layers)), root)
 }
 
-/// A page's events are read together: each file holding one of them once, after which their
-/// lookups read no file and give what single lookups give, a refused one included.
 #[test]
 fn prefetched_events_read_each_file_once_and_look_up_as_single_lookups_do() {
     let (single, root) = option_index_fixture(&[
@@ -466,7 +459,6 @@ fn prefetched_events_read_each_file_once_and_look_up_as_single_lookups_do() {
     let batched = LazyEvents::new(Arc::new(traced));
     let ids: [&[u8]; 4] = [b"s.1", b"s.3", b"t.1", b"x.9"];
     batched.prefetch(ids, &AtomicBool::new(false));
-    // The index read every file once; the prefetch each file holding a wanted event once more.
     let prefetched = reads.lock().unwrap().clone();
     for file in ["events/a.txt", "events/b.txt"] {
         assert_eq!(prefetched.iter().filter(|path| *path == file).count(), 2, "{prefetched:?}");
@@ -478,9 +470,6 @@ fn prefetched_events_read_each_file_once_and_look_up_as_single_lookups_do() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// An event whose body stops a shared reader leaves every other one of its file to read as its
-/// own lookup reads it. A definition in an unregistered namespace, which a lookup refuses unread,
-/// is never read, and nothing at all is when no id is asked or the request is cancelled.
 #[test]
 fn prefetched_events_read_apart_and_leave_unread_what_a_lookup_refuses_unread() {
     let (single, root) = option_index_fixture(&[
@@ -504,7 +493,6 @@ fn prefetched_events_read_apart_and_leave_unread_what_a_lookup_refuses_unread() 
     batched.prefetch([b"s.1".as_slice()], &AtomicBool::new(true));
     assert!(reads.lock().unwrap().is_empty());
     assert!(batched.cache.lock().unwrap().index.is_none());
-    // Cancelled while the index is read, the rest of its files are left and nothing is kept.
     let cancel = Arc::new(AtomicBool::new(false));
     let cancelling = {
         let (cancel, reads) = (Arc::clone(&cancel), Arc::clone(&reads));
@@ -522,7 +510,6 @@ fn prefetched_events_read_apart_and_leave_unread_what_a_lookup_refuses_unread() 
     reads.lock().unwrap().clear();
     let ids: [&[u8]; 3] = [b"s.0", b"s.1", b"orphan.1"];
     batched.prefetch(ids, &AtomicBool::new(false));
-    // The index read each file once; the prefetch read only the registered one again.
     let prefetched = reads.lock().unwrap().clone();
     for (file, count) in [("events/a.txt", 2), ("events/b.txt", 1)] {
         assert_eq!(
@@ -546,8 +533,6 @@ fn lazy_option_index_uses_raw_names_and_registration_order() {
         ("a.txt", b"add_namespace=s country_event={id=s.9 option={name=Choice custom_effect_tooltip=FIRST} option={name=Choice custom_effect_tooltip=SECOND}} state_event={id=s.1 option={name=Choice custom_effect_tooltip=STATE}} news_event={id=s.2 option={name=Choice custom_effect_tooltip=NEWS}}"),
         ("z.txt", b"country_event={id=s.9 option={name=Choice custom_effect_tooltip=DUPLICATE}} unit_leader_event={id=bare option={name=Choice custom_effect_tooltip=LEADER}} operative_leader_event={id=unregistered.4 option={name=Choice custom_effect_tooltip=OPERATIVE}} country_event={id=s.100000 option={name=Choice custom_effect_tooltip=CROSSES_SLOT}} country_event={option={name=Choice custom_effect_tooltip=NO_ID}}"),
     ]);
-    // Registration order retains duplicate-ID objects; state events use
-    // a separate manager array.
     let choices = events.options(b"Choice\0ignored").unwrap();
     assert_eq!(
         choices
@@ -567,7 +552,7 @@ fn lazy_option_index_uses_raw_names_and_registration_order() {
     );
     assert!(Arc::ptr_eq(&choices[0].0, &choices[1].0));
     assert!(choices.iter().all(|(event, _)| event.refused.is_none()));
-    assert!(events.options(b"choice").unwrap().is_empty()); // Byte-exact.
+    assert!(events.options(b"choice").unwrap().is_empty());
     assert!(
         events
             .get(b"s.9")
@@ -591,8 +576,6 @@ fn lazy_option_index_preserves_macro_names_last_name_and_empty_name() {
     let (events, root) = option_index_fixture(&[
         ("a.txt", b"@first=Choice country_event={id=7 option={name=old name=@first @later=Later custom_effect_tooltip=ONE} option={name=@later custom_effect_tooltip=TWO} option={custom_effect_tooltip=EMPTY}}"),
     ]);
-    // Names resolve through the shared dictionary, including earlier options;
-    // repeated string fields retain the last authored name.
     let first = events.options(b"Choice").unwrap();
     let later = events.options(b"Later").unwrap();
     let empty = events.options(b"").unwrap();
@@ -624,7 +607,6 @@ fn lazy_option_index_shares_requested_trees_and_keeps_other_files_header_only() 
     assert_eq!(events.cache.lock().unwrap().trees.len(), 1);
     let by_id = events.get(b"S.01").unwrap();
     assert!(Arc::ptr_eq(&first[0].0, &by_id));
-    // Neither lookup re-reads the shared tree after its first demand.
     std::fs::write(root.join("events/a.txt"), b"invalid replacement").unwrap();
     assert!(Arc::ptr_eq(
         &first[0].0,
@@ -640,8 +622,6 @@ fn lazy_option_index_skips_unrelated_unsettled_bodies_in_the_same_static_file() 
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bytes = b"add_namespace=s country_event={id=s.0 option={name=Other promote_character={character={ignored}}}} country_event={id=s.1 option={name=Chosen custom_effect_tooltip=ONE}} country_event={id=s.2 option={name=Chosen custom_effect_tooltip=TWO}} country_event={id=s.3 option={name=Later custom_effect_tooltip=THREE}}";
     let (events, root) = option_index_fixture(&[("a.txt", bytes)]);
-    // The unsupported parse-scope branch stops the full read. Other requested
-    // ordinals must skip that body before effect dispatch.
     let full = read_events(bytes, &KeyNames::default(), None);
     assert!(full.read.unsettled.is_some());
     let chosen = events.options(b"Chosen").unwrap();
@@ -663,7 +643,6 @@ fn lazy_option_index_skips_unrelated_unsettled_bodies_in_the_same_static_file() 
     );
     assert_eq!(events.cache.lock().unwrap().trees.len(), 3);
     assert!(events.cache.lock().unwrap().files.is_empty());
-    // Both matched ordinals are projected by one demand and then shared.
     std::fs::write(root.join("events/a.txt"), b"invalid replacement").unwrap();
     assert!(Arc::ptr_eq(&chosen[0].0, &events.get(b"s.1").unwrap()));
     assert!(Arc::ptr_eq(&chosen[1].0, &events.get(b"s.2").unwrap()));

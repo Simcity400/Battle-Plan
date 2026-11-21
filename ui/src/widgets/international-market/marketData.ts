@@ -7,7 +7,6 @@ export type MarketTab = 'contracts' | 'requests' | 'inventory';
 
 export interface MarketItemAt { variant: string; name: string | null; icon: string | null; missing: string | null; amount: bigint }
 
-/** A request or accepted contract at the hour shown; its purchase progress is the live cells of `key`. */
 export interface ContractRow {
   key: string;
   terms: MarketTerms;
@@ -18,7 +17,6 @@ export interface ContractRow {
   levels: { variant: string; level: number }[];
 }
 
-/** One listed variant of a seller's inventory. */
 export interface OfferRow {
   key: string;
   offer: MarketOffer;
@@ -34,8 +32,6 @@ export interface OfferRow {
 const items = (equipment: ReturnType<typeof equipmentOf>, list: readonly MarketItem[]): MarketItemAt[] =>
   list.map(item => ({ ...equipment(item.variant), name: item.name ?? equipment(item.variant).name, variant: item.variant, amount: BigInt(item.amountRaw) }));
 
-/** The requests or contracts at the reply's hour that `matches` keeps (either party), and how many others it cannot rule
- * out: a party with no tag then may be a country it keeps. */
 export function contractRows(reply: MarketAt, tab: 'contracts' | 'requests', matches: (tag: string, hour: number) => boolean): { rows: ContractRow[]; unattributed: number } {
   const rows: ContractRow[] = [];
   let unattributed = 0;
@@ -53,7 +49,6 @@ export function contractRows(reply: MarketAt, tab: 'contracts' | 'requests', mat
   return { rows, unattributed };
 }
 
-/** Every listed variant of the matching sellers at the reply's hour, in their native order. */
 export function offerRows(reply: MarketAt, matches: (tag: string, hour: number) => boolean): OfferRow[] {
   const rows: OfferRow[] = [];
   const equipment = equipmentOf(reply);
@@ -71,11 +66,9 @@ export function offerRows(reply: MarketAt, matches: (tag: string, hour: number) 
 
 export const units = (raw: bigint | null) => raw === null ? '—' : fixedText(raw);
 export const cic = (raw: bigint | null) => raw === null ? '—' : `${fixedText(raw)} CIC`;
-/** Table cells round to two decimals; tooltips keep `units` and `cic` exact. */
 export const unitsLabel = (raw: bigint | null) => raw === null ? '—' : formatAmount(raw, 5);
 export const cicLabel = (raw: bigint | null) => raw === null ? '—' : `${formatAmount(raw, 5)} CIC`;
 export const levelText = (level: number | null) => priceLevel(level);
 export const firstWithMore = (list: readonly unknown[]) => list.length > 1 ? `+${list.length - 1}` : null;
 
-/** A painted CIC cell: the live value is the raw fixed5 number. */
 export const collectedText = (value: number) => cicLabel(BigInt(Math.trunc(value)));

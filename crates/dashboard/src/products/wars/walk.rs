@@ -1,7 +1,3 @@
-//! War continuity, an app observation: the game stores no grouped war identity, start or end,
-//! nor any participant's join or leave hour. A walk observes the viewpoint's native groups at
-//! the hours what they read changes, carries each group into the open war it continues or joins
-//! ([`assignment`]), and extends the wars unchanged between those hours.
 
 use super::{
     WarCapitulation, WarName, WarObservation, WarParticipantRun, WarRelationKey, WarRelationMembership, WarSide, WarTimeline, WarsReply,
@@ -15,7 +11,6 @@ use std::{
     sync::Arc,
 };
 
-/// A walk's only warning that is not an hour it refused.
 const CAPITULATIONS_UNOBSERVED: &str = "Capitulations whose country identity at the event hour is unobserved are omitted.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -24,7 +19,6 @@ pub(crate) struct RelationRun {
     second: String,
     start: i32,
     identity: WarRelationKey,
-    /// Whether `identity.first` is on the group's first side.
     oriented: bool,
 }
 
@@ -32,11 +26,9 @@ pub(crate) struct RelationRun {
 pub(crate) struct Observed {
     data: WarObservation,
     relations: Vec<RelationRun>,
-    /// The relation the game names the group by.
     representative: Option<WarRelationKey>,
 }
 
-/// A war continued at the walk's last hour, with every native group it holds.
 #[derive(Clone, Debug)]
 struct OpenWar {
     id: usize,
@@ -44,24 +36,18 @@ struct OpenWar {
     relations: Vec<RelationRun>,
 }
 
-/// The countries a walk's hour read, and its viewpoint's slot among them.
 #[derive(Clone)]
 pub(crate) struct Viewed {
     pub countries: Arc<Countries>,
     pub view: u32,
 }
 
-/// An hour a walk observes: what its viewpoint reads there and the groups it sees, or why it
-/// cannot; and the capitulations (each capitulated country's raw id and date), or none where
-/// they were not read.
 pub(crate) struct Seen<'a> {
     pub hour: i32,
     pub read: Result<(Viewed, Vec<Observed>), String>,
     pub capitulations: Result<&'a [(u32, i32)], ()>,
 }
 
-/// The group `blob` that `view` observes at `hour` in `world`, named for its representative or
-/// why it has none.
 pub(crate) fn observed(
     world: &World,
     (tags, identities): (&HashMap<u32, String>, &HashMap<u32, (u32, u32)>),
@@ -109,7 +95,6 @@ pub(crate) fn observed(
     }
 }
 
-/// Each group `observed` at `hour`, as a structural change opens it.
 fn opening(observed: &[Observed], hour: i32) -> Vec<Observed> {
     observed
         .iter()
@@ -117,7 +102,6 @@ fn opening(observed: &[Observed], hour: i32) -> Vec<Observed> {
         .collect()
 }
 
-/// Whether `held`, an hour read again, observes exactly the groups `before` held.
 fn same_groups(before: &[Observed], held: &[Observed]) -> bool {
     before.len() == held.len()
         && before.iter().zip(held).all(|(a, b)| {
@@ -184,7 +168,6 @@ fn add_observation(war: &mut WarTimeline, mut data: WarObservation, previous: Op
         data.last_hour = hour;
     }
     let existing = std::mem::take(&mut war.open_participants);
-    // New runs follow native side order; the set only removes repeats.
     let mut current = HashSet::new();
     let ordered: Vec<_> = sides(&data).map(|(tag, side)| (tag.clone(), side)).filter(|key| current.insert(key.clone())).collect();
     for (key, index) in &existing {
@@ -206,7 +189,6 @@ fn add_observation(war: &mut WarTimeline, mut data: WarObservation, previous: Op
 }
 
 fn append_relations(war: &mut WarTimeline, hour: i32, relations: &[RelationRun]) {
-    // One indexed tail per lifetime keeps long, wide wars linear in their edges.
     for relation in relations {
         let open = (relation.identity.clone(), relation.oriented);
         if let Some(&index) = war.open_relations.get(&open)
@@ -220,8 +202,6 @@ fn append_relations(war: &mut WarTimeline, hour: i32, relations: &[RelationRun])
     }
 }
 
-/// One war's native groups at an hour as one observation: the first group's name and
-/// orientation, every member once, and each relation once.
 fn merge_groups(mut groups: Vec<Observed>) -> Observed {
     let mut merged = groups.remove(0);
     if groups.is_empty() {
@@ -238,12 +218,7 @@ fn merge_groups(mut groups: Vec<Observed>) -> Observed {
     merged
 }
 
-/// Each of `current`'s groups' war: the open war it continues or joins, or a new one, numbered
-/// from `wars` in group order.
 fn assignment(wars: usize, open: &[OpenWar], current: &[Observed]) -> Vec<usize> {
-    // App rule: greedy one-to-one in native group order. Choose the earlier group's most
-    // continuing relations; tie: lowest id. A relation continues by its native identities, so a
-    // renamed country keeps its war.
     let mut inverted: HashMap<&WarRelationKey, Vec<usize>> = HashMap::new();
     for war in open {
         for relation in &war.relations {
@@ -267,9 +242,6 @@ fn assignment(wars: usize, open: &[OpenWar], current: &[Observed]) -> Vec<usize>
             Some(id)
         })
         .collect();
-    // The game lists a new declaration as its own group beside the war it joins, named for that
-    // war, for a day or more. A group no open war continues joins the war this hour that holds
-    // the relation the group is named for, the one sharing most relations; tie: lowest id.
     let mut held: HashMap<usize, HashSet<&WarRelationKey>> = HashMap::new();
     for (observation, id) in current.iter().zip(&continued) {
         if let Some(id) = id {
@@ -301,7 +273,6 @@ fn assignment(wars: usize, open: &[OpenWar], current: &[Observed]) -> Vec<usize>
 fn continue_wars(wars: &mut Vec<WarTimeline>, open: &[OpenWar], current: Vec<Observed>, previous: Option<i32>) -> Vec<OpenWar> {
     let continued = assignment(wars.len(), open, &current);
     let used: HashSet<usize> = continued.iter().copied().collect();
-    // Wars in the native order of their first group; new wars are numbered in group order.
     let mut order: Vec<usize> = Vec::new();
     let mut groups: HashMap<usize, Vec<Observed>> = HashMap::new();
     for (observation, id) in current.into_iter().zip(continued) {
@@ -352,7 +323,6 @@ fn continue_wars(wars: &mut Vec<WarTimeline>, open: &[OpenWar], current: Vec<Obs
 pub(crate) struct Walk {
     pub reply: WarsReply,
     previous: Option<i32>,
-    /// The viewpoint's native identity, so a rename keeps its wars.
     previous_view: Option<(u32, u32)>,
     open: Vec<OpenWar>,
     seen_caps: HashSet<(String, i32)>,
@@ -360,12 +330,8 @@ pub(crate) struct Walk {
     identity_since: HashMap<u32, (String, i32)>,
     pub warnings: BTreeSet<String>,
     last_frame: Option<i32>,
-    /// What the last hour observed read and the groups it saw, while it read.
     held: Option<(Viewed, Vec<Observed>)>,
-    /// The countries identities were last refreshed from: an hour holding the same ones refreshes
-    /// none again.
     identified: Option<Arc<Countries>>,
-    /// Each held group's war as the last structural change assigned it.
     assigned: Vec<usize>,
     settled: bool,
 }
@@ -403,7 +369,6 @@ impl Walk {
         }
     }
 
-    /// Each open war's open participants end at its last hour.
     fn settle_open(&mut self) {
         for OpenWar { id, .. } in &self.open {
             let war: &mut WarTimeline = &mut self.reply.wars[*id];
@@ -450,8 +415,6 @@ impl Walk {
             self.open.clear();
         }
         self.previous_view = viewpoint;
-        // The very groups held before continue unchanged only while continuing them would assign
-        // each to the war it holds: overlapping groups can trade wars.
         if regrouped && self.settled && self.previous.is_some() && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len() {
             for open in &self.open {
                 let war = &mut self.reply.wars[open.id];
@@ -460,8 +423,6 @@ impl Walk {
                 war.observations.last_mut().expect("open war observation").last_hour = hour;
             }
         } else {
-            // A structural change settles the held participant bounds before splitting, merging
-            // or ending the previous groups.
             if let Some(last) = self.previous {
                 for OpenWar { id, .. } in &self.open {
                     let war = &mut self.reply.wars[*id];
@@ -507,7 +468,6 @@ impl Walk {
         self.held = Some((viewed, observed));
     }
 
-    /// Extends unchanged inputs across hours through `last` without observing them.
     pub fn extend(&mut self, last: i32) {
         let Some(first) = self.last_frame else { return };
         if last <= first {
@@ -518,7 +478,6 @@ impl Walk {
                 let mut at = first;
                 while at < last && !self.settled {
                     at += 1;
-                    // Unchanged groups still read the wars assigned at the previous hour.
                     for OpenWar { id, .. } in &self.open {
                         let war = &mut self.reply.wars[*id];
                         for &index in war.open_participants.values() {
@@ -541,7 +500,6 @@ impl Walk {
                 if let Some(observation) = war.observations.last_mut() {
                     observation.last_hour = last;
                 }
-                // Only the relations the war holds now: one that left it keeps its last hour.
                 for relation in relations {
                     if let Some(&index) = war.open_relations.get(&(relation.identity.clone(), relation.oriented)) {
                         war.relations[index].last_hour = last;
@@ -559,8 +517,6 @@ impl Walk {
         self.last_frame = Some(last);
     }
 
-    /// The reply through `last`: hours after the last observed unobserved, each war's open
-    /// participants ended at its last hour, capitulations placed in the runs they fall in.
     pub fn finish(mut self, last: i32) -> WarsReply {
         if let Some(before) = self.last_frame {
             span(&mut self.reply.unobserved, before.saturating_add(1), last);

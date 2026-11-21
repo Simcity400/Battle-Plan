@@ -1,19 +1,3 @@
-//! The raid layer's per-hour cost on a synthetic world.
-//!
-//! `cargo test -p viewer --release raids::test_support::bench -- --ignored --nocapture`
-//!
-//! Countries stand in columns of six coastal land provinces over one sea
-//! province, one state each, in factions of fifty neighbours: a faction holds
-//! 300 naval bases, 50 air bases and, for its leader, 20 marine and commando
-//! divisions. Every other country has 20 infantry divisions and three wings.
-//! Four raid types (naval commando, airborne, bomber, sabotage) are offered
-//! against every country's first naval base and every fifth air base. The
-//! session memo holds every pair the leader's naval-base and building sources
-//! ask, as a recording of that leader holds it. The viewing country is the
-//! first faction's leader; each of 96 prefetched hours changes its command
-//! power and reads every launch input afresh (the worst case: nothing is
-//! left unknown by a lagging input), as a decoded hour shares its other
-//! tables with the one before.
 
 use std::time::{Duration, Instant};
 
@@ -37,7 +21,6 @@ const DIVISIONS: u32 = 20;
 const WINGS: u32 = 3;
 const HOURS: i32 = 96;
 
-// Tokens.
 const NAVAL_COMMANDO: u32 = 1;
 const AIRBORNE: u32 = 2;
 const BOMBER: u32 = 3;
@@ -71,7 +54,6 @@ fn kinds() -> Vec<RaidType> {
             },
         )],
         command_power_raw: 10 * 100_000,
-        // Near targets only: the others ask every source.
         max_distance_raw: Some(400 * 100_000),
         ..Default::default()
     };
@@ -345,7 +327,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             })
             .collect(),
     );
-    // Buildings: a naval base on every land province, an air base per state.
     put::<tables::ProvinceBuildings>(
         &mut frame,
         slots
@@ -405,7 +386,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             })
             .collect(),
     );
-    // Each country's own base; a leader's faction's bases.
     put::<tables::RaidAirSites>(
         &mut frame,
         slots
@@ -429,7 +409,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             })
             .collect(),
     );
-    // Templates: infantry, marines, paratroopers.
     let template = |kind: u32| 0x0000_0005_0000_0000 | u64::from(kind);
     put::<tables::DivisionTemplateIcons>(
         &mut frame,
@@ -487,7 +466,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             .collect(),
     );
     put::<tables::Divisions>(&mut frame, divisions);
-    // Wings: three per country, with a bomber pool for a leader's.
     let wing_id = |slot: u32, index: u32| (u64::from(slot * WINGS + index) << 32) | 0x45;
     let variant = |slot: u32, index: u32| (u64::from(slot * 4 + index) << 32) | 0x46;
     put::<tables::AirWings>(
@@ -520,7 +498,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             })
             .collect(),
     );
-    // Four variants a country: a bomber, a transport and two others.
     put::<tables::VariantDefinitions>(
         &mut frame,
         slots
@@ -577,7 +554,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             })
             .collect(),
     );
-    // Targets: every country's first naval base and every fifth air base.
     let mut targets = Vec::new();
     for slot in slots.clone() {
         let mut target = |scope: RaidScope| {
@@ -603,7 +579,6 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             });
         }
     }
-    // The leader's memo: each of its faction's naval bases to each target.
     let mut memo = Vec::new();
     for member in 0..FACTION.min(countries) {
         for row in 0..LAND {
@@ -629,14 +604,12 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     (assets, frame)
 }
 
-/// The hour's path searches, timing army reach apart from the rest.
 pub(super) struct Timed<'a> {
     pub(super) paths: paths::HourPaths<'a>,
     pub(super) reach: Tally,
     pub(super) distance: Tally,
 }
 
-/// Time spent, added up from any thread.
 #[derive(Default)]
 pub(super) struct Tally(std::sync::atomic::AtomicU64);
 
@@ -685,7 +658,6 @@ impl launch::RaidPaths for Timed<'_> {
         result
     }
 
-    /// A split batch's parts search the hour's paths untimed.
     fn hour(&self) -> Option<&paths::HourPaths<'_>> {
         Some(&self.paths)
     }
@@ -706,7 +678,6 @@ fn bench_raid_icons() {
         let built = Instant::now();
         let (assets, base) = world(countries);
         let setup = built.elapsed();
-        // Prefetched hours share every table but the one that changed.
         let hours: Vec<DecodedFrame> = (0..HOURS)
             .map(|hour| {
                 let mut frame = base.clone();
@@ -714,7 +685,6 @@ fn bench_raid_icons() {
                 let mut rows = frame.complete::<tables::Countries>().unwrap().to_vec();
                 rows[0].command_power_raw = (50 + i64::from(hour % 3)) * 100_000;
                 put::<tables::Countries>(&mut frame, rows);
-                // Every launch input read this hour: the gates decide in full.
                 frame
             })
             .collect();
@@ -755,7 +725,6 @@ fn bench_raid_icons() {
         for (reason, count) in last.reasons.iter().take(5) {
             println!("  {reason} ({count})");
         }
-        // Of the rest: the hour's trigger world, alone.
         let start = Instant::now();
         for frame in &hours {
             std::hint::black_box(World::new(frame, assets.trigger_content.facts()).unwrap());

@@ -1,9 +1,3 @@
-//! Raw reinforcement movement-speed dependencies.
-//!
-//! The caller passes (ignore_terrain=1, ignore_combat=1); effective route speed
-//! and its organisation/fuel factors are NOT this getter. The readers here
-//! compose nothing; [`speed`] composes the reinforcement speed share from what
-//! they read.
 
 use crate::combat_sources::{Run, Sources, share};
 use crate::{
@@ -12,9 +6,6 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Scopes:0 country;1 selected contextual leader;2 location-state;
-///3 province weather;4 region weather;5 priority subunit;6 category;
-///7 transport weather;8 transport static source;9 transport country reduction.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ModifierTerm {
     pub scope: u8,
@@ -32,16 +23,12 @@ pub struct SupplyTerm {
     pub special: u8,
 }
 
-/// `active` is a reference join: this entry's definition equals the currently
-/// selected acclimatization definition. Native order and ties are retained.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AcclimatizationTerm {
     pub weight: i64,
     pub active: u8,
 }
 
-/// Each eligible enemy in native diplomacy order; all three signed values
-/// are copied before any difference, product, total or mean is evaluated.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportTerm {
     pub country: u32,
@@ -52,22 +39,8 @@ pub struct TransportTerm {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
-    /// Scalar slots: acclimatization maximum and active coefficient; stored supply
-    /// amounts and durations; loaded supply penalties and bypass terms; air supply;
-    /// retreat and shattered factors; friendly/hostile air, impact and anti-air
-    /// factors; infrastructure limits, fallback, per-level and healthy levels;
-    /// transport maximum and intel bounds/reduction; static category mask.
-    /// Slots thirty and thirty-one are reserved zeroes. Absent branches have zero
-    /// operands with separate presence flags; zero does not assert zero game storage.
     pub scalar_values: [i64; 32],
-    /// 0 raw retreat;1 raw shattered byte;2 raw supply-bypass byte; 3 raw core-bypass byte;4
-    /// active-acclimatization reference present; 5 route-attack branch;6 controller branch(0
-    /// neither,1 friendly,2 enemy); 7 air-cache branch;8 noncore branch;9 infrastructure branch; 10
-    /// raw infrastructure lookup byte;11 normal supply branch=1, naval transfer=2.
     pub flags: [u8; 12],
-    ///0 location province;1 next route province(0 null);2 location state;
-    ///3 infrastructure state;4 selected subunit lexer id;5 feature flags;
-    ///6 eligibility callback(0 null,1 authenticated getter);7 region index.
     pub ids: [u32; 8],
     pub modifier_count: usize,
     pub supply_term_count: usize,
@@ -85,8 +58,6 @@ fn field<T: crate::memory::Raw>(
         .ok_or("reinforcement input unreadable")
 }
 
-/// Preserve the original field order, including a late checked-address failure.
-/// A failed field may be partial; no later span is read and nothing is retried.
 fn copy_input_spans<const N: usize>(
     memory: &impl Memory,
     sources: [(usize, usize); N],
@@ -94,8 +65,6 @@ fn copy_input_spans<const N: usize>(
 ) -> Result<(), &'static str> {
     let addresses = sources.map(|(pointer, offset)| pointer.checked_add(offset));
     if addresses.iter().any(Option::is_none) {
-        // No read has started. Preserve the scalar prefix instead of turning
-        // an arithmetic failure into a request at a sentinel address.
         for (address, destination) in addresses.into_iter().zip(destinations) {
             let address = address.ok_or("reinforcement input unreadable")?;
             if !crate::read_slice(memory, address, destination) {
@@ -161,10 +130,6 @@ fn pointer(memory: &impl Memory, p: usize, o: usize) -> Result<usize, &'static s
     field::<u64>(memory, p, o).map(|p| p as usize)
 }
 
-/// Bounded only by the live native header (count <= capacity <= i32::MAX and
-/// an in-range extent, validated by `Array::from_header`). Several of these
-/// arrays are indexed by canonical country slot (country links, air manager
-/// countries, intel rows), so no reader-chosen count may refuse them.
 fn array(memory: &impl Memory, p: usize, o: usize, stride: usize) -> Result<Array, &'static str> {
     let header = field(memory, p, o)?;
     Array::from_header(header, stride).ok_or("reinforcement array invalid")
@@ -185,9 +150,6 @@ fn auth(memory: &impl Memory, base: usize, p: usize, rva: Rva) -> Result<(), &'s
 
 const UNREADABLE: &str = "reinforcement input unreadable";
 
-/// The raw values of `keys` in one accumulator, with each present key's
-/// definition flags. The accumulator's census and each key's flags are read
-/// once per pass (`sources`), by main's reads and with main's failures.
 #[allow(clippy::too_many_arguments)]
 fn append_modifiers(
     memory: &impl Memory,
@@ -220,8 +182,6 @@ fn append_modifiers(
         };
         *len += 1;
     }
-    // The owning pass supplies this authenticated complete raw country snapshot.
-    // Never memoize a derived effective value.
     let mut shared = true;
     for term in &mut output[start..*len] {
         if let Some(value) = memory.modifier_accumulator_value(accumulator, term.key) {
@@ -242,7 +202,6 @@ fn append_modifiers(
         })?;
         let entries = run.of(&sources.census_entries);
         for term in &mut output[start..*len] {
-            // Keys strictly increase, so each key is present at most once.
             if let Ok(index) = entries.binary_search_by_key(&term.key, |entry| entry.0) {
                 term.present = 1;
                 term.raw = entries[index].1;
@@ -273,9 +232,6 @@ fn append_modifiers(
     Ok(())
 }
 
-/// One accumulator's complete census into the pass's arena, by main's direct
-/// reads (the header, then 64-entry copies) and with main's failures. Keys
-/// strictly increase.
 fn census(
     memory: &impl Memory,
     accumulator: usize,
@@ -314,16 +270,12 @@ fn census(
             len: arena.len() - start,
         }),
         Err(reason) => {
-            // A census that fails partway leaves nothing behind in the arena.
             arena.truncate(start);
             Err(reason)
         }
     }
 }
 
-/// Raw state modifier-accumulator selection; hashing selects a source rather
-/// than computing a displayed result. Keep all four speed keys so controller
-/// and attacker choices cannot discard operands.
 fn state_accumulator(
     memory: &impl Memory,
     base: usize,
@@ -393,7 +345,6 @@ fn acclimatization(
     }
     let entries = array(memory, object, 8, 16)?;
     let count = entries.count as usize;
-    // Visit every signed vector entry before selecting the matching definition.
     if !output.ensure(count)? {
         return Err("reinforcement acclimatization arena full");
     }
@@ -475,7 +426,6 @@ fn infrastructure(
     Ok(())
 }
 
-/// One infrastructure state's operands, shared by every division it serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Infrastructure {
     id: u32,
@@ -483,18 +433,12 @@ pub(crate) struct Infrastructure {
     scalars: [i64; 5],
 }
 
-/// One template's supply entries: the header's count, then the entries in
-/// order up to the first failure. Each division checks its arena between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SupplyEntries {
     count: usize,
     entries: Result<Run, &'static str>,
 }
 
-/// One template's priority sub-unit: its lexer id and token, then its category
-/// tokens. Main reads the category header after the token's modifier and each
-/// category after the previous category's modifier, so the header's outcome
-/// and each token's failure are kept for the division to meet in that order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Priority {
     id: u32,
@@ -505,15 +449,10 @@ pub(crate) struct Priority {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Categories {
     count: u32,
-    /// The tokens read, in order, in the pass's `category_tokens`.
     tokens: Run,
-    /// The read that stopped them, when fewer than `count` were read.
     failure: Option<&'static str>,
 }
 
-/// One eligible transport enemy: its raw tag, its country and both intel
-/// lanes, or the lanes' failure. Main reads the enemy's regional operand,
-/// which depends on the division's region, between these reads and the lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TransportEnemy {
     raw: u32,
@@ -521,15 +460,12 @@ pub(crate) struct TransportEnemy {
     lanes: Result<(i64, i64), &'static str>,
 }
 
-/// One transport owner's enemy walk: the eligible enemies in native diplomacy
-/// order, up to the enemy whose reads failed, and that failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TransportOwner {
     enemies: Run,
     failure: Option<&'static str>,
 }
 
-/// [`auth`] of a shared object: its identity word is read once per pass.
 fn auth_shared(
     memory: &impl Memory,
     base: usize,
@@ -574,7 +510,6 @@ fn infrastructure_shared(
     Ok(())
 }
 
-/// Supply operands retain every live template supply-entry occurrence.
 fn supply_entries(
     memory: &impl Memory,
     base: usize,
@@ -603,8 +538,6 @@ fn supply_entries(
     })
 }
 
-/// The template's supply terms: its header, main's arena check, then its
-/// entries, each failing where main fails.
 fn supply_terms(
     memory: &impl Memory,
     base: usize,
@@ -636,7 +569,6 @@ fn priority(
     let token = field::<u32>(memory, selected, 0x5d8)?;
     let categories = array(memory, selected, 0x508, 8).map(|categories| {
         let start = arena.len();
-        // Visit the complete selected category vector.
         let failure = crate::allocation::reserve_push_batch(arena, categories.count as usize)
             .map_err(|_| "reinforcement category allocation failed")
             .and_then(|()| {
@@ -663,10 +595,6 @@ fn priority(
     })
 }
 
-/// Whether an owned relation has the war type, retaining list order. Large
-/// country relation rosters use one pointer gather and one type gather per
-/// batch. The first failing lane preserves one-by-one outcomes: return a war
-/// before that lane, otherwise its failure. No read is repeated.
 pub(crate) fn owned_war_relation(
     memory: &impl Memory,
     relations: Array,
@@ -697,8 +625,6 @@ pub(crate) fn owned_war_relation(
     let mut first = 0_u32;
     while first < relations.count {
         let len = ((relations.count - first) as usize).min(BATCH);
-        // `element` fails only past the header's extent; the one-by-one walk
-        // would fail there before reading that relation.
         let base = element(relations, first, 8)?;
         let mut addressable = len;
         for lane in 1..len {
@@ -722,8 +648,6 @@ pub(crate) fn owned_war_relation(
             *pointer =
                 u64::from_le_bytes(words[lane * 8..lane * 8 + 8].try_into().unwrap()) as usize;
         }
-        // A null or overflowing relation stops the gather at its lane, where
-        // the one-by-one read of its type fails.
         let typed = memory
             .copy_records(
                 RecordSources::Pointers(&pointers[..read]),
@@ -748,8 +672,6 @@ pub(crate) fn owned_war_relation(
     Ok(false)
 }
 
-/// Air-supply operands; owner diplomacy and relation walks occur once per
-/// owner in the pass, while regional entries occur once per owner and region.
 #[allow(clippy::too_many_arguments)]
 fn air(
     memory: &impl Memory,
@@ -841,10 +763,6 @@ fn transport_intel_lane(
     Ok(value)
 }
 
-/// Transport-owner enemies, once per owner per pass, in diplomacy order.
-/// An enemy's failure before its regional operand stops the shared walk.
-/// Intel-lane failures stay in that entry after its regional read, preserving
-/// each region's original failure order.
 fn transport_owner(
     memory: &impl Memory,
     base: usize,
@@ -862,8 +780,6 @@ fn transport_owner(
     if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
         return Err("reinforcement transport diplomacy backlink mismatch");
     }
-    // Visit every enemy reference from the live header. Its count alone
-    // bounds the growable destination.
     let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
     let start = arena.len();
     let mut failure = None;
@@ -899,7 +815,6 @@ fn transport_owner(
                 transport_intel_lane(memory, base, countries, enemy_intel, owner_intel, owner)
                     .map(|other| (own, other))
             });
-        // Native eligibility determines the actual count without a second walk.
         if arena.len() == arena.capacity() {
             crate::allocation::reserve(arena, 1)
                 .map_err(|_| "reinforcement enemy allocation failed")?;
@@ -1048,7 +963,6 @@ fn transport_context(
                     .checked_add(row.transport_term_count)
                     .ok_or("reinforcement transport term index overflow")?;
                 if terms.len() <= slot {
-                    // The acquired enemy run bounds this capacity-proven admission.
                     terms.resize_with(slot + 1, TransportTerm::default);
                 }
                 terms[slot] = TransportTerm {
@@ -1105,8 +1019,6 @@ fn transport_context(
     Ok(row)
 }
 
-/// Worker storage follows each original movement operand, including template,
-/// acclimatization and selected-category vectors.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
@@ -1127,8 +1039,6 @@ pub fn capture_context_buffer(
     transport_terms: &mut Vec<TransportTerm>,
     transport_start: usize,
 ) -> Result<ContextRow, &'static str> {
-    // `capture_stats` authenticated this division, its handle and its stat
-    // block moments ago in the same pass; those reads are not repeated.
     let verified = sources
         .verified
         .filter(|(pointer, handle, _)| *pointer == army && *handle == expected_handle);

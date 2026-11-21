@@ -1,17 +1,12 @@
 import type { DashboardMapState } from '../../dashboard/client';
 import type { MapTarget } from '../../dashboard/geometry';
 
-/** Whether the acknowledged frame answers the target. Paused, it must be the
- * target's hour at its sequence. Playing, the clock moves on every hour, so any
- * ready frame of the same branch answers it, including a native clock between host updates. */
 export function mapPresentationMatches(state: DashboardMapState | null, desired: MapTarget | null): boolean {
   if (!desired || !state || state.loading || state.error || state.hour == null) return false;
   if (state.sourceId !== desired.sourceId || state.revision !== desired.revision || state.branchId !== desired.branchId) return false;
   return desired.playing || state.hour === desired.hour && state.sequence >= desired.sequence;
 }
 
-/** Whether the map has a frame on screen, of any hour: the viewer keeps presenting it while it builds the next, so the
- * widget labels it as not yet current rather than covering it with a loading placeholder. */
 export function mapFrameOnScreen(state: DashboardMapState | null): boolean {
   return !!state && !state.error && state.hour != null && state.branchId != null;
 }

@@ -1,5 +1,3 @@
-//! Field-specific certificates carried inside the existing asynchronous wing
-//! census. The shared observer's field keys never touch equipment-pool keys.
 use engine_allocation as allocation;
 use engine_mutations::{
     air_wing_equipment_mutations::ATTACHMENT_COVERAGE, air_wing_equipment_mutations::TRAINING_STOP,
@@ -29,7 +27,6 @@ impl Store {
     ) -> Option<engine_native::cair_wing::transport_operands::RaidReference> {
         self.raid.reference(pointer, wing)
     }
-    /// Called only by the asynchronous census, once before visiting wings.
     pub fn begin(&mut self, wings: usize, invalidate: bool) {
         self.raid.begin(wings, invalidate);
         if invalidate {
@@ -40,8 +37,6 @@ impl Store {
         self.training_groups.clear();
         self.ensure_capacity(wings);
     }
-    /// Growing census parts have no initial row grant. Prepare their existing
-    /// field certificates from the wing count already admitted by that walk.
     pub fn ensure_capacity(&mut self, wings: usize) -> bool {
         let flags = wings.checked_mul(2).is_some_and(|demand| {
             let additional = demand.saturating_sub(self.current.len());
@@ -74,8 +69,6 @@ impl Store {
             return None;
         }
         let Some(before) = certificate(address) else {
-            // No receiver certified (no table before the first walk's offer
-            // installs): a read no observed writer crossed, kept for no carry.
             let token = quiet()?;
             let value = read(address)?;
             return (quiet() == Some(token)).then_some(value != 0);
@@ -149,9 +142,6 @@ impl Store {
         {
             self.training_groups.insert(key);
         }
-        // An accumulated training flag makes later members test their stop
-        // byte too. Selection can make any earlier training wing the first
-        // member; type filtering would need another native type lookup.
         training || self.training_groups.contains(&key)
     }
     fn capture_with(
@@ -184,7 +174,6 @@ impl Store {
     pub fn finish(&mut self) {
         self.raid.finish();
         self.current.sort_unstable_by_key(|entry| entry.address);
-        // Duplicate admission cannot prove a single held identity.
         let mut index = 0;
         while index < self.current.len() {
             let mut end = index + 1;
@@ -238,9 +227,6 @@ mod tests {
             Some(true)
         );
     }
-    /// The attach hour: the wing writers are observed, but the registry has
-    /// no table until the first walk's offer installs, so no receiver is
-    /// certified. The game holds the stop byte.
     #[test]
     fn an_observed_registry_without_a_table_reads_flags_between_quiet_tokens() {
         let registry = WatchRegistry::new();

@@ -1,6 +1,3 @@
-//! Army reach for one recorded hour. Join facts requested by
-//! `installed_content_unit_path::unit_path` through `CountryLinks` to canonical slots.
-//! An incomplete required table gives a named error and leaves reach unknown.
 
 use crate::map::allegiance::NativeRelations;
 use crate::map::allegiance::ongoing;
@@ -26,7 +23,6 @@ use replay_data::{
 
 use dashboard_text::triggers::{Eval, Scope, Scopes, World};
 
-/// Immutable movement reads shared by raid reach and counter hover queries.
 #[derive(Clone, Copy)]
 pub struct ReadOperands<'a> {
     pub moves: &'a Result<installed_content_unit_path::unit_path::MoveGraph, String>,
@@ -40,7 +36,6 @@ pub struct ReadOperands<'a> {
 }
 
 impl ReadOperands<'_> {
-    /// Selected hover reuses the already parsed graph and region map.
     pub fn selected_neighbour(
         &self,
         from: u32,
@@ -61,8 +56,6 @@ impl ReadOperands<'_> {
             .ok_or_else(|| format!("province {province} has no recorded-content strategic region"))
     }
 
-    /// The day/night clock written into `province`'s record at date `hour`,
-    /// from its day/night geometry constants.
     pub fn updated_clock(
         &self,
         province: u32,
@@ -97,14 +90,10 @@ pub use installed_content_unit_path::unit_path::order_cursor::OrderCursor;
 pub use order_cursor::{order_cursor, rule_relation};
 pub use installed_content_unit_path::unit_path::RuleReason;
 
-/// One country's `CountryWars` row in canonical slots.
 struct Wars {
     can_occupy_non_war: bool,
-    /// The read enemy vector, when the collector read it.
     enemies: Option<Vec<u32>>,
 }
-/// Each division's land combats, with where their attacking units stand or why that is
-/// unknown, and the provinces holding one.
 type Combats = (
     BTreeMap<u64, Vec<(ArmyCombat, Arc<Fact<Vec<u32>>>)>>,
     BTreeSet<u32>,
@@ -114,48 +103,33 @@ fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<
     cell.get_or_init(build).as_ref().map_err(Clone::clone)
 }
 
-/// One hour's movement indexes and reach answers, built on first use.
 #[derive(Default)]
-/// Rows are held as their positions in the hour's tables.
 pub struct Cells {
     native_relations: Index<NativeRelations>,
     divisions: Index<BTreeMap<u64, usize>>,
     movement: Index<BTreeMap<u64, usize>>,
     armies: Index<BTreeMap<u32, Vec<Occupant>>>,
-    /// Each division's land combats, and the provinces holding one.
     combats: Index<Combats>,
     naval_bases: Index<BTreeMap<u32, bool>>,
     demilitarized: Index<BTreeSet<u32>>,
     subjects: Index<BTreeSet<(u32, u32)>>,
     task_forces: Index<BTreeMap<u64, usize>>,
-    /// Each task force's ships and whether every one has formation flag 7.
     fleets: Index<BTreeMap<u64, (usize, bool)>>,
     occupants: Index<BTreeMap<u32, usize>>,
     intel: Index<BTreeMap<(u64, u32), i8>>,
-    /// Each canonical slot's raw country references, descending.
     slot_raws: Index<BTreeMap<u32, Vec<u32>>>,
-    /// The target slots of `RelationLinks` rows whose country links to no
-    /// slot, with one such country.
     unlinked_links: Index<BTreeMap<u32, u32>>,
-    /// `CountryWars` by country slot.
     country_wars: Index<BTreeMap<u32, Wars>>,
     border_conflicts: Index<BTreeMap<u32, Vec<u64>>>,
     war_sets: Index<BTreeMap<u32, BTreeSet<u32>>>,
     region_access: Index<BTreeMap<(u32, u32), u8>>,
     move_flags: Index<BTreeMap<u64, u8>>,
-    /// Provinces per controller-area label (`Provinces.controller_area`).
     area_members: Index<BTreeMap<u32, i32>>,
     reach: Mutex<HashMap<(u64, u32), Eval>>,
-    /// One search per distinct army key, run as far as its sources need.
-    /// Threads evaluating parts of one batch share them: each search has
-    /// its own lock, so different armies' searches run side by side, and a
-    /// search answers every source alike however far it was run before.
     searches: Mutex<HashMap<ReachKey, Arc<Mutex<Option<Search>>>>>,
-    /// The hour's reachable components, by whether the army exfiltrates.
     reachable: [OnceLock<Reachable>; 2],
 }
 
-/// Steps [`Moves::run_ahead`] took, for the tests.
 #[cfg(any(test, feature = "test-support"))]
 pub static RAN_AHEAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -167,8 +141,6 @@ impl Cells {
     }
 }
 
-/// The hour's facts as `unit_path` asks for them: the hour's [`World`] and
-/// its [`Cells`].
 pub struct Moves<'w, 'a> {
     world: &'w World<'a>,
     assets: ReadOperands<'w>,
@@ -177,8 +149,6 @@ pub struct Moves<'w, 'a> {
     common: Option<&'w CommonCells<'a>>,
 }
 
-/// Only reached fresh-counter class facts; the existing movement world owns
-/// shared diplomacy, content adjacency and visibility predicates.
 pub trait CounterFacts: Sync {
     fn rail_connected(&self, from: u32, to: u32) -> Fact<bool>;
     fn rail_orders_group(&self, handle: u64) -> Fact<u64>;
@@ -213,7 +183,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         }
     }
 
-    /// Shared rule verdict, selecting the submarine or navy bit.
     pub fn naval_rule(
         &self,
         rule: &installed_content_core::adjacency_rules::AdjacencyRule,
@@ -241,8 +210,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(mover.invasion_sea(source)?.zip(mover.invasion_sea(target)?))
     }
 
-    /// Fresh counter cache-miss request. It does not demand the raid's
-    /// retreat, strength, organisation, combat roster or commander bans.
     pub fn counter_route(&self, division: u64, to: u32, request: CounterRequest) -> Fact<Vec<u32>> {
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
         let row = self
@@ -283,11 +250,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         Mover { graph, world: self }.counter_route(&unit, row.province, to, request)
     }
 
-    /// The invasion's forced-transfer request uses only these army operands;
-    /// it does not run the raid gate, combat admission or region-avoid filter.
-    /// Endpoints are already resolved by invasion_seas. `recorded_owner` is
-    /// the order's InvasionPreparations `unit_owner`, whose cost operands
-    /// the search reads, so it must be this unit's owner.
     pub fn invasion_route(
         &self,
         division: u64,
@@ -298,7 +260,6 @@ impl<'w, 'a> Moves<'w, 'a> {
     ) -> Fact<Vec<u32>> {
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
         let mover = Mover { graph, world: self };
-        // Require a unit even when both ports open onto one sea.
         let row = self
             .division(division)?
             .ok_or_else(|| format!("invasion unit {division:#x} is not a recorded army"))?;
@@ -380,7 +341,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             let mut provinces = BTreeSet::new();
             for row in self.table::<tables::LandCombats>()? {
                 provinces.insert(row.province);
-                // Only its defenders' movement reads these, so an unknown one stays theirs.
                 let attackers: Arc<Fact<Vec<u32>>> = Arc::new(
                     self.attacker_locations(row)
                         .and_then(|locations| locations.into_iter().collect()),
@@ -404,8 +364,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// Where each attacking unit of a land combat stands, in order, read from the rows of
-    /// its recorded class: the game compares every attacker's own location.
     fn attacker_locations(&self, row: &replay_data::rows::LandCombatRow) -> Fact<Vec<Fact<u32>>> {
         if row.attacker_classes.len() != row.attackers.len() {
             return Err(format!(
@@ -445,7 +403,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// The recorded state of a division as `unit_path` reads it.
     pub fn army(&self, division: u64) -> Fact<Army> {
         let row = self
             .division(division)?
@@ -472,7 +429,6 @@ impl<'w, 'a> Moves<'w, 'a> {
                 combats.len()
             ));
         }
-        // Read commander bans only for a division on a side of one of its combats.
         let bans = if combats.is_empty() {
             0
         } else {
@@ -504,9 +460,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// Cache once per division, source, perspective and hour; the answer depends
-    /// on neither target nor viewer. Search once per [`ReachKey`] from the army
-    /// fields it reads and answer every source from that flood fill.
     pub fn reaches(&self, division: u64, source: u32) -> Eval {
         if let Some(answer) = self.cells.reach().get(&(division, source)) {
             return answer.clone();
@@ -536,7 +489,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// The hour's search for `army`'s key.
     fn search_of(&self, army: &Army) -> Arc<Mutex<Option<Search>>> {
         Arc::clone(
             self.cells
@@ -548,13 +500,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         )
     }
 
-    /// Runs the army searches of `divisions`' keys (each key once) further,
-    /// a few edges at a time and in turn, until `done` or every one has
-    /// reached its end. A query of them answers alike however far they ran
-    /// before ([`Mover::advance_by`]), so running them ahead only saves the
-    /// queries the time.
     pub fn run_ahead(&self, divisions: &[u64], done: &dyn Fn() -> bool) {
-        /// Edges between two looks at `done`.
         const STEP: usize = 256;
         let Ok(graph) = self.assets.moves.as_ref() else {
             return;
@@ -583,8 +529,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         }
     }
 
-    /// Whether the armies of `divisions` exfiltrate, each value once; a
-    /// division whose army is not decided is left out.
     pub fn exfiltrates(&self, divisions: impl IntoIterator<Item = u64>) -> BTreeSet<bool> {
         divisions
             .into_iter()
@@ -592,8 +536,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .collect()
     }
 
-    /// Builds the hour's reachable components for armies that do or do not
-    /// exfiltrate, which every search query first reads.
     pub fn reachable(&self, exfiltrates: bool) {
         if let Ok(graph) = self.assets.moves.as_ref() {
             let mover = Mover { graph, world: self };
@@ -621,8 +563,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("province {province} is not recorded"))
     }
 
-    /// The division's commander retreat bans as of its owner's daily read
-    /// (DivisionRetreatBans); a division without a row has none.
     fn retreat_bans(&self, division: u64) -> Fact<u8> {
         let rows = self.table::<tables::DivisionRetreatBans>()?;
         Ok(rows
@@ -630,7 +570,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .map_or(0, |at| rows[at].bans))
     }
 
-    /// `DivisionStatus.move_flags`; a division without a status row is refused.
     fn move_flags(&self, division: u64) -> Fact<u8> {
         let flags = get(&self.cells.move_flags, || {
             Ok(self
@@ -645,13 +584,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("division {division:#x} has no status row"))
     }
 
-    /// The `RelationLinks` bits `a`'s matrix holds toward slot `b`, read
-    /// only for the owner asked: the table is in key order (raw country,
-    /// target slot), so each of `a`'s raw references is one binary search.
-    /// A slot with several raw references answers from the highest that has
-    /// a row, as an index built in table order would. A row whose country
-    /// links to no slot may be `a`'s: toward the same target it leaves an
-    /// absent answer unknown.
     fn relation_link(&self, a: Country, b: Country) -> Fact<u8> {
         let rows = self.table::<tables::RelationLinks>()?;
         let raws = get(&self.cells.slot_raws, || {
@@ -673,7 +605,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             }
         }
         let unlinked = get(&self.cells.unlinked_links, || {
-            // One lookup per distinct country: the rows are in key order.
             let mut out = BTreeMap::new();
             let mut at = 0;
             while let Some(first) = rows.get(at) {
@@ -721,7 +652,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// Each country's active war opponents from `WarRelations`.
     fn war_sets(&self) -> Result<&BTreeMap<u32, BTreeSet<u32>>, String> {
         get(&self.cells.war_sets, || {
             let hour = self.world.hour();
@@ -761,9 +691,6 @@ impl<'w, 'a> Moves<'w, 'a> {
 }
 
 impl MoveWorld for Moves<'_, '_> {
-    /// Read the route owner's directed relation cache. Target zero also has
-    /// independently recorded war-pointer operands. A known true arm suffices
-    /// even if the other input was refused.
     fn path_friendly(&self, owner: Country, target: Country) -> Fact<bool> {
         let co_belligerent = self
             .native_relations()
@@ -771,7 +698,6 @@ impl MoveWorld for Moves<'_, '_> {
         if matches!(co_belligerent, Ok(true)) {
             return Ok(true);
         }
-        // The signed-positive receiver-ID gate applies to every target.
         let at_war = self
             .world
             .raw_country(owner)
@@ -848,8 +774,6 @@ impl MoveWorld for Moves<'_, '_> {
             .hostile_allows(self, handle, to)
     }
 
-    /// A subject relation in force this hour, as `World::overlord` reads
-    /// the table: ended relations stay in it.
     fn subject_tie(&self, a: Country, b: Country) -> Fact<bool> {
         let subjects = get(&self.cells.subjects, || {
             let hour = self.world.hour();
@@ -878,7 +802,6 @@ impl MoveWorld for Moves<'_, '_> {
             .unwrap_or(0))
     }
 
-    /// A missing `CountryWars` row means the byte is 0.
     fn can_occupy_non_war(&self, country: Country) -> Fact<bool> {
         Ok(self
             .country_wars()?
@@ -886,9 +809,6 @@ impl MoveWorld for Moves<'_, '_> {
             .is_some_and(|wars| wars.can_occupy_non_war))
     }
 
-    /// Use a recorded vector when read directly (civil-war revolter or retired
-    /// war-relation owner). Otherwise build the set of other endpoints of the
-    /// country's active war relations; compare sets.
     fn enemies(&self, country: Country) -> Fact<Vec<Country>> {
         if let Some(read) = self
             .country_wars()?
@@ -967,8 +887,6 @@ impl MoveWorld for Moves<'_, '_> {
         Ok(self.province(province)?.move_gate & ProvinceRow::MOVE_BORDER_CONFLICT != 0)
     }
 
-    /// The recorded groups resolved by sides of the province's conflicts
-    /// that are border wars.
     fn border_conflict_admits(&self, province: u32, orders_group: u64) -> Fact<bool> {
         let conflicts = get(&self.cells.border_conflicts, || {
             Ok(self
@@ -1122,7 +1040,6 @@ impl<'a> Moves<'_, 'a> {
                     .ok_or_else(|| format!("ship {:#x} has no model row", ship.id))?;
                 let entry = out.entry(ship.task_force).or_insert((0, true));
                 entry.0 += 1;
-                // Formation flag is bit 7 of the raw ship flags.
                 entry.1 &= formation & 0x80 != 0;
             }
             Ok(out)
@@ -1133,7 +1050,6 @@ impl<'a> Moves<'_, 'a> {
         get(&self.cells.intel, || {
             let mut out = BTreeMap::new();
             for row in self.table::<tables::UnitIntel>()? {
-                // The first entry for a viewer answers.
                 out.entry((row.unit, row.viewer)).or_insert(row.level);
             }
             Ok(out)
@@ -1158,8 +1074,6 @@ mod combat_location_tests {
     const GUN: u64 = 0x500;
     const UNKNOWN_CLASS: u64 = 0x600;
 
-    /// Combat 7 in province 1: a division, a task force and a railway gun attack division
-    /// 0x100. Combat 8 in province 2: a class-5 unit and division 0x300 attack 0x800.
     fn mixed_frame() -> replay_frame::frame::DecodedFrame {
         let mut frame = frame();
         let divisions = [
@@ -1261,7 +1175,6 @@ mod combat_location_tests {
         let world = World::read(&frame, assets.trigger_content.facts());
         let cells = Cells::default();
         let moves = Moves::new(&world, assets.movement_reads(), &cells);
-        // A defender sees every attacking unit's own location.
         assert_eq!(
             moves.army(0x100).unwrap().combats,
             [ArmyCombat {
@@ -1273,13 +1186,11 @@ mod combat_location_tests {
                 minimum_duration: true,
             }]
         );
-        // An attacker never reads its own side's locations, known or not.
         for division in [0x200, 0x300] {
             let combats = moves.army(division).unwrap().combats;
             assert_eq!(combats.len(), 1);
             assert!(combats[0].attacking && combats[0].attacker_locations.is_empty());
         }
-        // Only the defender facing the unlocated unit is unknown, and says why.
         let unknown = moves.army(0x800).unwrap_err();
         assert!(unknown.contains("native class 5"), "{unknown}");
         assert!(moves.army(0x900).unwrap().combats.is_empty());
@@ -1300,7 +1211,6 @@ mod combat_location_tests {
         assert_eq!(moves.combat_attacker_at(land(7), 2), Ok(true));
         assert_eq!(moves.combat_attacker_at(land(7), 4), Ok(true));
         assert_eq!(moves.combat_attacker_at(land(7), 1), Ok(false));
-        // A located attacker there decides; elsewhere the unlocated one leaves it unknown.
         assert_eq!(moves.combat_attacker_at(land(8), 4), Ok(true));
         let unknown = moves.combat_attacker_at(land(8), 1).unwrap_err();
         assert!(unknown.contains("native class 5"), "{unknown}");

@@ -275,8 +275,6 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
     let mut store = drift::Store::default();
     let mut serial = serial::Store::default();
     hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
-    // Fresh drift differs from the held values, so publishing stale held rows
-    // instead of the fallback's live reads cannot satisfy the comparison.
     for position in 0..3 {
         world.put(
             country + SLOT + position * 0x80 + cresearch_slot::BANKED_DAYS,
@@ -289,9 +287,6 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
             (600_013_i64 + position as i64).to_le_bytes(),
         );
     }
-    // Daily research slot progress banks into the slot; the technology progress adder technology
-    // research progress adder stores the technology's progress. Exercise both research gathers and
-    // the roster gather, with faults on later records to discard partial bytes.
     for (address, calls) in [
         (country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS, 9),
         (country + TECH + 0x400 + ctechnology::LIVE_PROGRESS, 10),
@@ -304,13 +299,11 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
                 .iter()
                 .all(|o| matches!(o, Outcome::Rows { .. }))
         );
-        // The relaxed rule permits the optional gather to consume a one-shot
-        // fault; withholding successful fallback rows would be harsher.
         assert_eq!(research(&store, &after, 1), old);
         assert_eq!(before.remaining.get(), Some(1));
         assert_eq!(after.remaining.get(), Some(0));
         assert_eq!(&*after.fallbacks.witnesses(), &["research_drift"]);
-        assert_eq!(after.count(), calls); // Exactly one serial drift pass.
+        assert_eq!(after.count(), calls);
     }
     let address = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
     let before = Trace::gather_fault(&world, "Technology serial", address);
@@ -321,7 +314,7 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
     assert_eq!(before.remaining.get(), Some(1));
     assert_eq!(after.remaining.get(), Some(0));
     assert_eq!(&*after.fallbacks.witnesses(), &["technology_drift"]);
-    assert_eq!(after.count(), 6); // Three identity reads, one gather, two scalars.
+    assert_eq!(after.count(), 6);
 }
 #[test]
 fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
@@ -383,14 +376,11 @@ fn governance_batch_carried_assigned_aliases_keep_one_technology_progress_read()
 }
 #[test]
 fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason() {
-    // Persistent slot and technology faults coexist. The serial pass finds
-    // the first in slot order rather than blaming the earlier banked gather.
     let world = World::new(1);
     let country = World::country(1);
     let mut store = drift::Store::default();
     let mut serial = serial::Store::default();
     hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
-    // A nested persistent overlay is a second independent unreadable span.
     let inner = Trace::fault(
         &world,
         "second banked fault",
@@ -442,7 +432,6 @@ fn governance_batch_rehold_refills_storage_without_earlier_rows() {
     let mut serial = serial::Store::default();
     let mut rows = full(&world, 1);
     hold(&mut store, &mut serial, &world, 1, &rows);
-    // A later complete read with fewer and different rows replaces the hold.
     rows.inputs[0].cost_raw += 1;
     rows.bonuses.truncate(1);
     rows.modifiers.truncate(1);
@@ -463,7 +452,6 @@ fn governance_batch_rehold_refills_storage_without_earlier_rows() {
         new.1[0].ahead_reduction_years_raw,
         rows.technologies[0].ahead_reduction_years_raw
     );
-    // A read that cannot be held whole leaves nothing held, as before.
     rows.inputs.pop();
     store.hold_research(
         &world,

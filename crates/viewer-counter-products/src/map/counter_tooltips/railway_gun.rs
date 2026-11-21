@@ -1,4 +1,3 @@
-//! Railway-gun tooltips; coarse member counts stay in the counter body.
 
 use super::*;
 use replay_data::rows::RailwayGunCounterInputRow;
@@ -22,8 +21,6 @@ fn members<'a>(
     Ok(input
         .members
         .iter()
-        // The generic vector gather skips unresolved later refs.
-        // The dispatcher has already resolved the first representative.
         .filter_map(|id| {
             rows.binary_search_by_key(id, |row| row.gun)
                 .map(|index| &rows[index])
@@ -55,8 +52,6 @@ fn header(
     first: &RailwayGunCounterInputRow,
     count: i32,
 ) -> Result<String, String> {
-    // Use the first original pointer, even when a different gun is
-    // the sole known member. Country is the roster owner, independently of the logical owner.
     let country = context.country_name(context.slot(first.roster_owner)?)?;
     if count == 1 {
         let bytes = first
@@ -64,7 +59,6 @@ fn header(
             .require("RailwayGunCounterInputs.name")?
             .as_ref()
             .ok_or("RailwayGunCounterInputs.name was unreadable when recorded")?;
-        // Use the cached unit name. Recorded names do not distinguish arbitrary and generated text.
         let name = dashboard_text::scripted_text::stored_text(
             context.loc,
             context.recorded_language,
@@ -253,7 +247,6 @@ pub(super) fn build(
             )
         }))
         .expect("known railway guns are nonempty");
-        // Append no newline after this statistic.
         append(
             &mut out,
             context,

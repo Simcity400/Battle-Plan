@@ -5,7 +5,6 @@ use crate::{
     script_constants::Constants,
 };
 
-/// Project output fields are read from the template output object.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Output {
     pub country_effects: Vec<Item>,
@@ -19,7 +18,6 @@ pub struct Output {
 }
 
 impl Output {
-    // Effects and uniform output lists append on every read.
     pub(super) fn read(&mut self, fields: &[Item]) {
         for field in fields {
             let destination = match field.keyword().map(|key| key.folded()).as_deref() {
@@ -33,8 +31,6 @@ impl Output {
                 Some(b"enable_equipment_modules") => &mut self.enable_equipment_modules,
                 _ => continue,
             };
-            // Unlock lists retain their containing block: its limit applies
-            // to every listed entry, regardless of the limit's position.
             if field.keyword_is("enable_subunits")
                 || field.keyword_is("enable_equipments")
                 || field.keyword_is("enable_equipment_modules")
@@ -55,8 +51,6 @@ fn constant(
     let bytes = field.value.read_string().unwrap_or_default();
     let text = std::str::from_utf8(crate::parser::c_string(bytes))
         .map_err(|_| "project integer constant is not UTF-8")?;
-    // Strip the exact constant: prefix, split at every dot, then
-    // append the caller's keyword path (complexity min/max).
     let mut parts: Vec<_> = text
         .strip_prefix("constant:")
         .unwrap_or(text)
@@ -71,14 +65,12 @@ fn constant(
 }
 
 impl Project {
-    /// Integer token first, otherwise an integer-only script constant,
-    /// default zero.
     pub fn prototype_time(&self, constants: Option<&Constants>) -> Result<i32, String> {
         let mut stored = 0;
         for field in &self.prototype_time {
             match scan_i32(field.value.read_string().unwrap_or_default()) {
                 Scanned::Stored(value) => stored = value,
-                Scanned::End => {} // Nonzero CRT EOF succeeds without a store.
+                Scanned::End => {}
                 Scanned::NoMatch => {
                     if let Some(value) = constant(field, None, constants)? {
                         stored = value;
@@ -89,8 +81,6 @@ impl Project {
         Ok(stored)
     }
 
-    /// Initialized to the caller's shared NProject.DEFAULT_COMPLEXITY define.
-    /// Reads scalar constants or min/max integers, then normalizes the range.
     pub fn complexity(
         &self,
         constants: Option<&Constants>,

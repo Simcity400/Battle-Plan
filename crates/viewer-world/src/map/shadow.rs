@@ -1,31 +1,3 @@
-//! The cast-shadow depth map, screen-space receivers and two blur passes.
-//!
-//! Casters and blurs require enabled shadows and a camera below the shadow
-//! cutoff. Receivers also run below the fog cutoff without casters.
-//!
-//! The orthographic depth target is 2_FLOAT with depth/stencil and a clear
-//! value of one. Each world-wrap view submits mesh casters, tree casters and
-//! admitted late arrows in that order; terrain casts none. The map is kept from
-//! the frame before while its [`CasterKey`] holds and every caster repeats.
-//! The light matrix replaces the scene view-projection for these draws.
-//!
-//! Tree and terrain receivers draw their ordinary geometry into a BGRA8 UNORM
-//! target with depth/stencil. Its clear colour is fully lit with zero fog.
-//! Horizontal and vertical blur passes filter the shadow channel and preserve
-//! the centre sample's fog factors. Blur offsets scale with camera height.
-//!
-//! The game's screen buffer is backbuffer-sized; ours is half that on each
-//! side, rounded up ([`Screen::Half`]), to save fill on integrated GPUs. The
-//! vanilla readers sample it with the authored linear filter at normalised
-//! screen coordinates, so it upsamples bilinearly where it is read, and shadow
-//! and fog edges are slightly softer than the game's. A reader that reads it by
-//! texel ([`texel_reads`]) keeps it full size. The blur keeps the game's reach
-//! on screen: its offsets are taken from the view's own size.
-//!
-//! One ShadowMap binding carries either depth or screen-space data as required
-//! by the current pass. The depth texture retains authored linear sampling;
-//! unsupported FLOAT32_FILTERABLE capability is a named refusal. The casters are
-//! the figures the main camera's cull passed, as the game's are: none off screen.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -40,17 +12,12 @@ use viewer_foundation::map::frame::FrameConstants;
 use viewer_foundation::map::gpu_contract::extent;
 use viewer_foundation::map::textures::{Content, Sampled};
 
-/// Depth-map side length required by the receiver's fixed texel span.
 pub const DEPTH_MAP_SIZE: u32 = 2048;
 
-/// Single-channel 32-bit floating-point depth target.
 pub const DEPTH_MAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
-/// The screen-space buffer's format. The engine's is an RGBA target, and the
-/// three values it carries are all in the unit interval.
 pub const BUFFER_FORMAT: wgpu::TextureFormat = super::shadow_blur::COLOR_FORMAT;
 
-/// the screen-space buffer's clear value: fully lit, no fog.
 pub const BUFFER_CLEAR: wgpu::Color = wgpu::Color {
     r: 1.0,
     g: 0.0,
@@ -58,42 +25,21 @@ pub const BUFFER_CLEAR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-/// The engine's padding of the light box, in world units, on all six sides.
 const LIGHT_BOX_PAD: f32 = 10.0;
-/// Extra distance behind the light's box, so a caster standing above the ground
-/// plane the box is fitted to is still in front of the near plane.
 const LIGHT_BOX_BACKOFF: f32 = 30.0;
 
-/// A footprint ray falling less steeply than this meets no water plane, and stops at the cap.
 const DOWNWARD: f32 = 0.001;
 
-/// A footprint ray stops at this many eye heights from the eye.
 const RAY_CAP: f32 = 5.0;
 
-/// The light's orthographic box, in light space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightBox {
-    /// `(left, bottom, near)` of the off-centre orthographic box.
     pub min: [f32; 3],
-    /// `(right, top, far)` of the same box.
     pub max: [f32; 3],
-    /// The light-space basis as world rows: right, up, forward.
     pub basis: [[f32; 3]; 3],
-    /// The light-space view's eye position.
     pub eye: [f32; 3],
 }
 
-/// The direction the shadow light travels in.
-///
-/// The light direction uses fixed-point seasonal rotation and the current hour.
-/// Its virtual position derives from map dimensions and configured latitude;
-/// normalization preserves the component evaluation order.
-///
-/// The light is anchored where the camera's look reaches the ground, `|eye.y / look.y|` along it,
-/// as the game anchors its camera's, however far that is under the content's camera defines. A
-/// free eye's anchor stops where its footprint's rays do ([`RAY_CAP`] eye heights), so one
-/// looking at the horizon or above anchors it at the end of its capped look, which moves
-/// continuously as the eye tilts.
 pub fn light_direction(camera: Camera, frame: &FrameConstants) -> [f32; 3] {
     let eye = camera.eye();
     let look = camera.look_direction();
@@ -112,8 +58,6 @@ pub fn light_direction(camera: Camera, frame: &FrameConstants) -> [f32; 3] {
     } else {
         sun
     };
-    // The map wraps in x, so the light is taken at whichever of its three
-    // copies is nearest the ground point.
     let width = camera.map.x();
     let x = [light[0] - width, light[0], light[0] + width]
         .into_iter()
@@ -122,26 +66,11 @@ pub fn light_direction(camera: Camera, frame: &FrameConstants) -> [f32; 3] {
     normalize([ground[0] - x, -light[1], ground[2] - light[2]])
 }
 
-/// Fit an orthographic light view to the camera footprint's centre and four water-plane corners.
-/// Preserve capped f32 corner rays and axis order. The fit axis zeroes its vertical component
-/// before normalization; the eye uses the independently normalized full light direction. Form
-/// all three raw target-eye axes before normalizing them. Transform corners with the rounded
-/// view translation before projection and texel snapping; subtracting the eye first can cross
-/// a snap boundary.
-///
-/// `None` when the camera footprint is nonfinite.
-///
-/// A free eye's box is fitted exactly the same way, to its own capped footprint: a corner ray
-/// that misses the water plane, as one at or above the horizon does, stops at five times the
-/// eye's height. The box is never extended for a caster standing outside it; the game clips
-/// such a caster.
 pub fn light_box(camera: Camera, viewport: [u32; 2], light: [f32; 3]) -> Option<LightBox> {
     let [a, b, c, d, middle] = footprint(camera, viewport)?;
     Some(light_box_from_footprint([a, b, c, d], middle, light))
 }
 
-/// The camera's capped water-plane footprint: its four corner rays' points, then its centre ray's.
-/// `None` when any is nonfinite.
 fn footprint(camera: Camera, viewport: [u32; 2]) -> Option<[[f32; 3]; 5]> {
     let points = [
         [-1.0, 1.0],
@@ -203,8 +132,6 @@ fn light_box_from_footprint(corners: [[f32; 3]; 4], middle: [f32; 3], light: [f3
     });
     let mut min = [0.0; 3];
     let mut max = [0.0; 3];
-    // MINSS/MAXSS keep the second operand on unordered or equal inputs.
-    // X fitting starts at a different corner from Y/Z.
     for (axis, order) in [[0, 2, 3, 1], [2, 0, 3, 1], [2, 0, 3, 1]]
         .into_iter()
         .enumerate()
@@ -232,10 +159,7 @@ fn native_max(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
 }
 
-/// Truncate to a signed integer and snap to a ten-unit multiple with division toward zero.
-/// Negative values therefore snap upward.
 fn snap10(value: f32) -> f32 {
-    // NaN and out-of-range conversion produce i32::MIN; a saturating cast differs.
     let integer = if (-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         value as i32
     } else {
@@ -245,9 +169,6 @@ fn snap10(value: f32) -> f32 {
 }
 
 impl LightBox {
-    /// The light's view-projection combines a left-handed view with an off-centre orthographic
-    /// projection. Depth spans `[0, 1]`, using the same row-vector `[row][column] convention as
-    /// `Camera::view_projection`.
     pub fn view_projection(&self) -> [[f32; 4]; 4] {
         let [right, up, forward] = self.basis;
         let view = [
@@ -273,9 +194,6 @@ impl LightBox {
         multiply(view, ortho)
     }
 
-    /// `ShadowMapTextureMatrix`: the view-projection with texture bias folded in, mapping world
-    /// positions directly to `(u, v, depth, 1)`. Flip `v` from upward clip space to downward texture
-    /// space. Keep projected depth in `[0, 1]` for comparison with the stored depth.
     pub fn texture_matrix(&self) -> [[f32; 4]; 4] {
         let bias = [
             [0.5, 0.0, 0.0, 0.0],
@@ -287,21 +205,13 @@ impl LightBox {
     }
 }
 
-/// Whether the engine admits casters at this camera height.
-///
-/// Caster admission requires a camera strictly below DRAW_SHADOWS_CUTOFF. At or above it, shadow
-/// fading produces a fully lit term.
 pub fn draws_shadows(camera: &Camera) -> bool {
     camera.height < camera.defines.shadows[0]
 }
 
-/// How large the screen buffer, its depth and the blur's scratch are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// Half the view on each side, rounded up, so an odd side's last column or row has a texel
-    /// of its own: enough for readers that sample it only at normalised screen UVs.
     Half,
-    /// The view's size, while a program drawn reads the buffer by texel.
     Full,
 }
 
@@ -314,16 +224,11 @@ impl Screen {
     }
 }
 
-/// The terrain modes that sample the screen buffer at `high` graphics: the sea bed under the
-/// water, which reads the last frame's, and the lit terrain.
 pub fn terrain_readers(high: bool) -> [super::terrain_shader::Mode; 2] {
     use super::terrain_shader::Mode;
     [Mode::Underwater, Mode::Lit(high)]
 }
 
-/// Why a program that binds the screen buffer at pixel `slot` keeps it full size: how its
-/// `technique` reads the buffer by texel, which a half-size buffer answers wrongly. `None` when
-/// it only samples the buffer at normalised UVs.
 pub fn texel_reads(
     compiled: &shader_pipeline::Compiled,
     slot: u32,
@@ -339,35 +244,24 @@ pub fn texel_reads(
     ))
 }
 
-/// Caster and receiver camera gates. Blurs share the caster gate; receivers also run below
-/// DRAW_FOW_CUTOFF with draw_shadows disabled.
 pub fn stages(camera: &Camera, shadows_enabled: bool) -> [bool; 2] {
     let casters = shadows_enabled && draws_shadows(camera);
     [casters, casters || camera.height < camera.defines.fog[0]]
 }
 
-/// The per-size resources: the depth map, the screen-space buffer and the
-/// buffer the horizontal blur writes on its way to the vertical one, both at [`Self::screen`].
 struct Buffers {
     depth_map: wgpu::TextureView,
     depth_map_depth: wgpu::TextureView,
     buffer: wgpu::TextureView,
     buffer_depth: wgpu::TextureView,
     scratch: wgpu::TextureView,
-    /// The view's size, which the blur's offsets are scaled by.
     size: [u32; 2],
     screen: Screen,
-    /// What `buffer` holds, for the next frame's sea-bed pass, which samples it and is drawn
-    /// only while what it reads changes.
     content: Cell<Content>,
-    /// Whether `buffer` holds [`BUFFER_CLEAR`] in every texel, so clearing it again leaves the
-    /// same bytes and the content it holds is the content it held.
     cleared: Cell<bool>,
     depth_map_held: RefCell<Held>,
 }
 
-/// One caster pass, never shared with another: a pass made afresh is another caster, so a map
-/// another pass drew is never taken for its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CasterId(u64);
 
@@ -378,9 +272,6 @@ impl CasterId {
     }
 }
 
-/// What the casters drew the depth map from beyond what each caster says of itself: the light,
-/// the camera and viewport their admission, levels of detail and wrap copies follow, which
-/// casters drew, in order, and whether arrows did.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CasterKey {
     light: [[u32; 4]; 4],
@@ -411,34 +302,23 @@ impl CasterKey {
     }
 }
 
-/// What the depth map holds.
 #[derive(Debug, Default, PartialEq)]
 enum Held {
-    /// Unknown: just made, or a frame's commands never reached the queue.
     #[default]
     Unknown,
-    /// White, and depth one, in every texel.
     Clear,
-    /// What the casters drew for this key.
     Drawn(CasterKey),
 }
 
-/// What a frame does to the depth map before its receivers sample it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ready {
-    /// Cleared, and the casters draw into it.
     Draw,
-    /// It holds this frame's casters already: neither cleared nor drawn.
     Keep,
-    /// No casters, and it is cleared.
     Clear,
-    /// No casters, and it is clear already.
     Nothing,
 }
 
 impl Held {
-    /// `casters` is the frame's key, and whether every caster draws what it drew the frame
-    /// before, byte for byte; none when no casters draw.
     fn ready(&mut self, casters: Option<(CasterKey, bool)>) -> Ready {
         match casters {
             None if *self == Held::Clear => Ready::Nothing,
@@ -534,8 +414,6 @@ impl Buffers {
                     load,
                     store: wgpu::StoreOp::Store,
                 }),
-                // Clear colour/depth (flags3), preserving stencil.
-                // Arrow mode2 may read/write it through its authored state.
                 stencil_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -567,10 +445,6 @@ impl Buffers {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            // The two unlit effects keep their lit twins' depth state, so the
-            // pre-pass needs a depth buffer of its own: the grid is drawn from
-            // the near row outwards and a far ridge would otherwise paint over
-            // the near one that hides it.
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.buffer_depth,
                 depth_ops: Some(wgpu::Operations {
@@ -585,14 +459,11 @@ impl Buffers {
         })
     }
 
-    /// Something other than its clear may have reached the screen buffer.
     fn changed(&self) {
         self.content.set(Content::next());
         self.cleared.set(false);
     }
 
-    /// Clears the screen buffer to [`BUFFER_CLEAR`] unless it holds that already; the same
-    /// bytes are not new content.
     fn clear_buffer(&self, encoder: &mut wgpu::CommandEncoder) {
         if !self.cleared.replace(true) {
             drop(self.buffer_pass(encoder, wgpu::LoadOp::Clear(1.0)));
@@ -600,7 +471,6 @@ impl Buffers {
         }
     }
 
-    /// Readies the depth map for this frame's casters ([`ShadowPass::ready_depth_map`]).
     fn ready_depth_map(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -620,22 +490,16 @@ impl Buffers {
     }
 }
 
-/// Matrices prepared once for native casters and screen-space receivers.
 #[derive(Clone, Copy)]
 pub struct Prepared {
     pub texture_matrix: [[f32; 4]; 4],
     pub view_projection: [[f32; 4]; 4],
 }
 
-/// The depth pass, the pre-pass target and the two blurs.
 pub struct ShadowPass {
-    /// A one-texel stand-in holding the buffer's clear value, bound wherever
-    /// the real buffer is not wanted: when no receivers run, and in the depth
-    /// pass itself, which samples nothing.
     clear_view: wgpu::TextureView,
     compiled_blur: super::shadow_blur::Blur,
     buffers: Option<Buffers>,
-    /// Whether the last frame ran the chain, for reporting.
     drawn: Cell<bool>,
 }
 
@@ -667,8 +531,6 @@ impl ShadowPass {
             view_formats: &[],
         });
         let clear_view = clear.create_view(&Default::default());
-        // The one texel is written by clearing it, which needs no queue write
-        // path for a format wgpu may not let us `write_texture` into.
         Ok(Self {
             clear_view,
             compiled_blur: super::shadow_blur::Blur::new(device, effect)?,
@@ -677,19 +539,16 @@ impl ShadowPass {
         })
     }
 
-    /// Lets go of the view-sized targets; the next [`Self::resize`] makes them again.
     pub fn release(&mut self) {
         self.buffers = None;
     }
 
-    /// Whether the targets are made for a view of `size` with the screen buffer at `screen`.
     pub fn sized(&self, size: [u32; 2], screen: Screen) -> bool {
         self.buffers
             .as_ref()
             .is_some_and(|b| b.size == size && b.screen == screen)
     }
 
-    /// Rebuilds the targets for a view of `size` with the screen buffer at `screen`.
     pub fn resize(&mut self, device: &wgpu::Device, size: [u32; 2], screen: Screen) {
         if self.sized(size, screen) {
             return;
@@ -697,18 +556,14 @@ impl ShadowPass {
         self.buffers = Some(Buffers::new(device, size, screen));
     }
 
-    /// How large the screen buffer is made, once it is.
     pub fn screen(&self) -> Option<Screen> {
         self.buffers.as_ref().map(|buffers| buffers.screen)
     }
 
-    /// How the blur's techniques read the buffer they blur by texel ([`texel_reads`]).
     pub fn texel_reads(&self) -> impl Iterator<Item = &str> {
         self.compiled_blur.texel_reads()
     }
 
-    /// Forgets what the targets hold after a frame whose commands were never submitted: the
-    /// clears it recorded did not happen.
     pub fn abandon(&self) {
         if let Some(buffers) = &self.buffers {
             buffers.changed();
@@ -716,10 +571,6 @@ impl ShadowPass {
         }
     }
 
-    /// Computes the light matrices for native casters and receivers.
-    ///
-    /// calls BeginRender even with no casters or receivers.
-    /// Returns `None` only when resources or finite light matrices are absent.
     pub fn prepare(
         &self,
         frame: &FrameConstants,
@@ -736,8 +587,6 @@ impl ShadowPass {
         })
     }
 
-    /// The depth pass the casters draw into, cleared this frame by
-    /// [`Self::ready_depth_map`] to the "nothing here" depth of 1.
     pub fn depth_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
@@ -746,10 +595,6 @@ impl ShadowPass {
         Some(self.buffers.as_ref()?.depth_pass(encoder, load))
     }
 
-    /// Readies the depth map for this frame; whether the casters draw into it. `casters` is the
-    /// frame's key and whether every caster draws what it drew the frame before, byte for byte;
-    /// none when no casters draw. A map that holds this key's casters already is left as it is,
-    /// and one that holds its clear values while none draw; otherwise it is cleared.
     pub fn ready_depth_map(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -760,8 +605,6 @@ impl ShadowPass {
             .is_some_and(|buffers| buffers.ready_depth_map(encoder, casters))
     }
 
-    /// The screen-space pre-pass the `terrainunlit` and `treeunlit` draws fill.
-    /// Bind `ShadowPass::prepass` as group 0.
     pub fn prepass_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
@@ -770,7 +613,6 @@ impl ShadowPass {
         Some(self.buffers.as_ref()?.buffer_pass(encoder, load))
     }
 
-    /// The two native `shadowblur.shader` passes, buffer to scratch and back.
     pub fn blur(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -805,8 +647,6 @@ impl ShadowPass {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                // Clear colour only. The vertical native quad writes z0
-                // against the receiver's retained LESS_EQUAL/write depth state.
                 depth_stencil_attachment: (axis == 1).then_some(
                     wgpu::RenderPassDepthStencilAttachment {
                         view: &buffers.buffer_depth,
@@ -830,7 +670,6 @@ impl ShadowPass {
         Ok(())
     }
 
-    /// Receiver-only frames still bind the fog target.
     pub fn finish_receivers(&self) {
         self.drawn.set(true);
         if let Some(buffers) = &self.buffers {
@@ -838,12 +677,8 @@ impl ShadowPass {
         }
     }
 
-    /// Clears the one-texel stand-in to the buffer's own clear value, which is
-    /// what a frame with neither casters nor fog receivers sees.
     pub fn clear_stand_in(&self, encoder: &mut wgpu::CommandEncoder) {
         self.drawn.set(false);
-        // Clear the screen target even when receiver draws are skipped.
-        // Next frame's underwater pass still binds that target.
         if let Some(buffers) = &self.buffers {
             buffers.clear_buffer(encoder);
         }
@@ -878,10 +713,6 @@ impl ShadowPass {
         }
     }
 
-    /// Pre-frame binds the retained shadow-screen target regardless of the current cutoff, with
-    /// what it holds, so the sea-bed pass that samples it is drawn again only when it changed.
-    /// Native allocation supplies no initial data. wgpu's first-frame
-    /// zero initialization is not a native colour claim; dumps warm up first.
     pub fn refraction_sampled(&self) -> Sampled<'_> {
         let buffers = self.buffers.as_ref().expect("resized before rendering");
         Sampled {
@@ -890,7 +721,6 @@ impl ShadowPass {
         }
     }
 
-    /// Whether the last frame ran the chain, for reporting.
     pub fn drawn(&self) -> bool {
         self.drawn.get()
     }
@@ -898,7 +728,6 @@ impl ShadowPass {
 
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let length = dot(v, v).sqrt();
-    // Skip only an exactly zero length. NaNs divide, and small finite vectors normalize.
     if length == 0.0 {
         return v;
     }
@@ -957,7 +786,6 @@ mod tests {
 
     const VIEWPORT: [u32; 2] = [2048, 1152];
 
-    /// Reference fixture at hour 60828490, 11:00 on 22 November 1943.
     fn reference() -> (Camera, FrameConstants) {
         let camera = Camera {
             center: [3009.83, 1568.00],
@@ -980,7 +808,6 @@ mod tests {
         out
     }
 
-    /// An orthographic light keeps clip w equal to one throughout the footprint.
     #[test]
     fn the_light_projection_is_orthographic() {
         let (camera, frame) = reference();
@@ -996,9 +823,6 @@ mod tests {
         }
     }
 
-    /// The box is fitted to the four screen corners on the water plane, so
-    /// every one of them lands inside the unit square with a depth in `[0, 1]`,
-    /// and so does the ground under the screen centre.
     #[test]
     fn the_box_covers_the_visible_ground() {
         let (camera, frame) = reference();
@@ -1021,9 +845,6 @@ mod tests {
         }
     }
 
-    /// A free eye fits its light to its capped water-plane footprint and anchors it where its look
-    /// reaches the ground, as the game's camera does: looking as the game's camera looks, it has
-    /// the game camera's light direction, footprint and box.
     #[test]
     fn a_free_eye_looking_as_the_game_camera_gets_its_light() {
         use viewer_foundation::map::camera::{Free, Pose};
@@ -1041,7 +862,6 @@ mod tests {
                 assert!((game[axis] - own[axis]).abs() < 1e-2, "{game:?} {own:?}");
             }
         }
-        // Each takes its own light, the same one.
         let [game_light, own_light] = [map, free].map(|camera| {
             let frame =
                 FrameConstants::try_new(camera, VIEWPORT, DayNight::at_hour(60828490), 0.0, false)
@@ -1055,7 +875,6 @@ mod tests {
             );
         }
         assert_eq!(game_light, light_direction(map, &frame));
-        // Each fits the same box with its own light, to within one of its ten-unit snaps.
         let [game, own] = [(map, game_light), (free, own_light)]
             .map(|(camera, light)| light_box(camera, VIEWPORT, light).unwrap());
         for axis in 0..3 {
@@ -1070,14 +889,10 @@ mod tests {
         }
     }
 
-    /// The game's camera anchors its light exactly `|eye.y / look.y|` along its look, uncapped, at
-    /// every height its content allows, the test content's and a mod's that lets it stand low
-    /// under a steep tilt, where that reach passes a free eye's cap.
     #[test]
     fn the_game_camera_s_light_anchor_is_never_capped() {
         let (reference, frame) = reference();
         let modded = MapDefines {
-            // CAMERA_MIN_HEIGHT 10 and camera_tilt 100.
             tilt_lead: 100.0 * 0.3,
             heights: [10.0, reference.defines.heights[1]],
             ..reference.defines
@@ -1095,7 +910,6 @@ mod tests {
                 let look = camera.look_direction();
                 let reach = (eye[1] / look[1]).abs();
                 capped |= reach > eye[1] * RAY_CAP;
-                // The light the game's own uncapped anchor gives.
                 let ground = [eye[0] + reach * look[0], 0.0, eye[2] + reach * look[2]];
                 let sun = frame.virtual_sun_pos;
                 let moon = frame.virtual_moon_pos;
@@ -1126,8 +940,6 @@ mod tests {
         );
     }
 
-    /// A free eye tilting through the horizon keeps its light: the anchor ends at its capped look
-    /// on both sides of the footprint's water-plane threshold, so a caster's shadow barely moves.
     #[test]
     fn a_free_eye_s_light_moves_continuously_through_the_horizon() {
         use viewer_foundation::map::camera::{Free, Lens, Pose};
@@ -1156,15 +968,12 @@ mod tests {
                 "{steeper:?} {shallower:?}"
             );
         }
-        // A 20-unit caster's shadow lies the same way within a hundredth of a unit.
         let shadow = |light: [f32; 3]| {
             let run = 20.0 / light[1].abs();
             [light[0] * run, light[2] * run]
         };
         let [a, b] = [shadow(steeper), shadow(shallower)];
         assert!((a[0] - b[0]).hypot(a[1] - b[1]) < 1e-2, "{a:?} {b:?}");
-        // Looking level, whose look never reaches the ground, anchors it at the end of the
-        // capped look, where the shallowest downward look already had it.
         let level = at(0.0);
         for axis in 0..3 {
             assert!(
@@ -1174,8 +983,6 @@ mod tests {
         }
     }
 
-    /// A free eye looking up at the sky still has a finite light: its corner rays miss the water
-    /// and stop at five times its height, and the light covers them and nothing farther.
     #[test]
     fn a_free_eye_looking_at_the_sky_fits_its_capped_footprint() {
         use viewer_foundation::map::camera::{Free, Lens, Pose};
@@ -1207,15 +1014,6 @@ mod tests {
         }
     }
 
-    /// At the reference hour the virtual sun is south of the camera and east of
-    /// it, so the light travels north-north-west and the shadows lie that way.
-    ///
-    /// The numbers: the hour is 60828490, whose `hour mod 24` is 10, so
-    /// `vVirtualSunPos` is `((1 - 10/24) * MAP_SIZE_X, 600, 848)` =
-    /// `(3285.3, 600, 848)`, and the ground point under the camera is
-    /// `(3009.8, 0, 1569.8)`. The difference normalises to
-    /// `(-0.282, -0.613, 0.738)`: a caster leans 1.29 times its own height, in
-    /// a direction 21 degrees west of north.
     #[test]
     fn the_reference_hour_throws_shadows_north_and_west() {
         let (camera, frame) = reference();
@@ -1228,8 +1026,6 @@ mod tests {
         );
         let lean = light[0].hypot(light[2]) / -light[1];
         assert!((lean - 1.288).abs() < 0.01, "lean {lean}");
-        // A caster and the ground point its shadow falls on share a texel in
-        // the depth map, and the ground point is behind the caster in depth.
         let matrix = light_box(camera, VIEWPORT, light)
             .expect("visible")
             .texture_matrix();
@@ -1248,11 +1044,8 @@ mod tests {
         assert!(b[2] > a[2] + SHADOW_BIAS, "{a:?} {b:?}");
     }
 
-    /// Depth-comparison bias used to separate the caster and receiver in the test above.
     const SHADOW_BIAS: f32 = 0.001;
 
-    /// The light swings with the hour, because it is the virtual sun and not
-    /// the `LIGHT_SHADOW_DIRECTION` define.
     #[test]
     fn the_light_swings_with_the_hour() {
         let camera = Camera {
@@ -1273,16 +1066,12 @@ mod tests {
         let noon = at(60828490);
         let afternoon = at(60828494);
         assert!(morning[0] != noon[0] && noon[0] != afternoon[0]);
-        // The sun runs from east to west over the day, so the shadow's
-        // horizontal component runs the other way.
         assert!(
             morning[0] < noon[0] && noon[0] < afternoon[0],
             "{morning:?} {noon:?} {afternoon:?}"
         );
     }
 
-    /// The centre and the box are snapped to the engine's ten-unit grid, which
-    /// is what keeps the shadows from crawling as the camera pans.
     #[test]
     fn the_box_is_snapped_to_ten_units() {
         let (camera, frame) = reference();
@@ -1301,8 +1090,6 @@ mod tests {
         let viewport = [2049, 1153];
         let centre = water_plane_point(camera, viewport, [0.0, 0.0]);
         assert_eq!(centre[0].to_bits(), camera.center[0].to_bits());
-        // The native picking path still rounds its screen coordinate first.
-        // Reusing it directly would move the shadow centre left on odd sizes.
         let picking = camera.pick_ray([1024.5, 576.5], viewport);
         assert!(picking[0] < 0.0, "integer-screen ray {picking:?}");
         assert_eq!(
@@ -1311,8 +1098,6 @@ mod tests {
         );
     }
 
-    /// This binary32 fixture lies on a snap boundary. Subtracting the eye first or forming axes from
-    /// normalized light shifts x from -300 to -290. Fitting with the full light preserves z at 20..380.
     #[test]
     fn the_native_light_fit_preserves_axis_and_world_transform_order() {
         let corners = [
@@ -1374,14 +1159,11 @@ mod tests {
         assert_eq!(native_max(f32::NAN, 1.0), 1.0);
         assert_eq!(native_min(0.0, -0.0).to_bits(), (-0.0f32).to_bits());
         assert_eq!(native_max(-0.0, 0.0).to_bits(), 0.0f32.to_bits());
-        // CVTTSS2SI's indefinite word, divided by ten and multiplied back,
-        // rounds to -2^31 on conversion to f32.
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2_147_483_648.0] {
             assert_eq!(snap10(value).to_bits(), 0xcf00_0000);
         }
     }
 
-    /// The caster gate is the same gate as a nonzero shadow fade factor.
     #[test]
     fn casters_stop_at_the_shadow_cutoff() {
         assert!(draws_shadows(&at(50.178)));
@@ -1414,7 +1196,6 @@ mod tests {
         assert_eq!(stages(&camera, false), [false, false]);
     }
 
-    /// The blur is a partition of unity, so a uniformly lit buffer survives it.
     #[test]
     fn the_blur_weights_sum_to_one() {
         let constants = super::super::shadow_blur::constants(100, 0.0);
@@ -1422,10 +1203,6 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-6, "{sum}");
     }
 
-    /// The depth map is kept only for the key it was drawn for while every caster repeats its
-    /// draws; any change of light, camera, viewport, wrap copies, casters or arrows draws it
-    /// again, as does a caster that changed, a pass made afresh under the same name, a frame
-    /// without casters and a frame that was never submitted.
     #[test]
     fn the_depth_map_is_drawn_again_whenever_anything_it_was_drawn_from_changes() {
         use crate::map::models::{ModelLibrary, ModelPass};
@@ -1466,8 +1243,6 @@ mod tests {
             assert_eq!(held.ready(Some((key(), true))), Ready::Draw, "{what}, and back");
             assert_eq!(held.ready(Some((key(), true))), Ready::Keep, "{what}, then kept");
         }
-        // A pass made afresh under the same name, as a reinstalled map or a new player makes,
-        // says an empty field repeats: it is another caster all the same.
         let drew = ModelPass::new(&library, "player");
         let player = |pass: &ModelPass| at(light, camera, VIEWPORT, &[0.0], vec![pass.caster_id()], false);
         assert_eq!(held.ready(Some((player(&drew), true))), Ready::Draw);
@@ -1491,9 +1266,6 @@ mod tests {
         assert_eq!(Screen::Full.size([2049, 1153]), [2049, 1153]);
     }
 
-    /// A lit program or the blur that reads the screen buffer at its slot by texel offset or by
-    /// its size keeps it full size, named; plain sampling, or texel reads of another texture, do
-    /// not.
     #[test]
     fn a_program_reading_the_screen_buffer_by_texel_keeps_it_full_size() {
         use installed_content_core::pdxshader::program::Stage;
@@ -1587,9 +1359,6 @@ mod tests {
         }
     }
 
-    /// The receivers' targets and the blur's are made at the screen size, the depth map at its
-    /// own fixed size, and a view whose half rounds the same still makes its own: the blur's
-    /// reach is the view's.
     #[test]
     fn the_screen_targets_follow_the_view_at_the_screen_size() {
         let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
@@ -1614,19 +1383,15 @@ mod tests {
         }
     }
 
-    /// A screen buffer that holds its clear value is not cleared again, and keeps its content,
-    /// until something else may have reached it.
     #[test]
     fn a_clear_screen_buffer_is_not_cleared_again_while_it_stays_clear() {
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
-        // An odd view, whose half-size buffer still holds the texel read below.
         let buffers = Buffers::new(&device, [7, 5], Screen::Half);
         let submit = |record: &dyn Fn(&mut wgpu::CommandEncoder)| {
             let mut encoder = device.create_command_encoder(&Default::default());
             record(&mut encoder);
             queue.submit([encoder.finish()]);
         };
-        // Writes the buffer behind its flag's back, so a clear that runs shows.
         let paint = || {
             submit(&|encoder: &mut wgpu::CommandEncoder| {
                 drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

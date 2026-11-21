@@ -1,4 +1,3 @@
-//! Certified key-range replacements, including insertions and deletions.
 use crate::{
     codec::{invalid_static as invalid, put_varint},
     rows::{ChangedRows, RowCodec},
@@ -20,8 +19,6 @@ pub fn fits<R: RowCodec>(_old: &[R], fresh: &[R], ranges: &[Range<u128>]) -> boo
                 .is_some_and(|range| range.contains(&row.key()))
         })
 }
-/// Records in `changed` each written row (its index in `fresh` beside its baseline row's in `old`)
-/// and each deleted key, in key order.
 pub fn encode<R: RowCodec>(
     old: &[R],
     fresh: &[R],
@@ -60,7 +57,6 @@ pub fn encode<R: RowCodec>(
                 count += 1;
                 last = row.key();
                 if let Some(changed) = changed.as_deref_mut() {
-                    // Both lengths were checked to fit 32 bits above.
                     changed.pair(
                         (fresh_span.start + at) as u32,
                         baseline.map(|(before, _)| (old_span.start + before) as u32),
@@ -95,8 +91,6 @@ pub fn apply<R: RowCodec>(
     let (removed, peak) = growth(old, &fresh, ranges);
     let mut retired = allocation::vec(removed)?;
     allocation::reserve(old, peak)?;
-    // Reverse ranges leave the indices before each replacement unchanged. Moving
-    // suffixes happens only on the spool thread; unchanged rows keep ownership.
     for range in ranges.iter().rev() {
         let old_span = span(old, range);
         let new_span = span(&fresh, range);
@@ -105,7 +99,6 @@ pub fn apply<R: RowCodec>(
     Ok(retired)
 }
 
-/// Returns removed rows and peak growth while reverse splices precede earlier deletions.
 fn growth<R: RowCodec>(old: &[R], fresh: &[R], ranges: &[Range<u128>]) -> (usize, usize) {
     let (mut removed, mut inserted, mut peak) = (0, 0, 0);
     for range in ranges.iter().rev() {
@@ -131,7 +124,6 @@ mod tests {
             .collect()
     }
 
-    /// Reverse splicing inserts a later range before an earlier range frees space.
     #[test]
     fn replacement_reserves_the_largest_intermediate_length() {
         let ranges = [1..3, 10..12];

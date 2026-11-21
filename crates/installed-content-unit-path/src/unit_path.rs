@@ -1,17 +1,3 @@
-//! Division movement admission and army paths to raid launch sources:
-//! may this army move to the source province, and does a path reach it?
-//!
-//! Every live fact comes from a [`MoveWorld`], answered from recorded state.
-//! Countries are canonical slots, with 0 the zero link (no country). A fact
-//! the world cannot give is an `Err` naming it; the answer remains unknown.
-//!
-//! Army units (class 0) support raid reach in mode 2, with hostile-node and
-//! region checks enabled and coastal exfiltration taken from the army.
-//! They also support mode-0 forced-transfer invasion routes. Armies, task
-//! forces (1) and railway guns (13) support counter routes in mode 0 or 2
-//! with a forced-transfer retry. Requests share adjacency predicates;
-//! invasion and counter routes share A* costs, heuristic, heap ties and
-//! predecessor paths.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -38,62 +24,36 @@ pub use selected::{
 
 pub type Fact<T> = Result<T, String>;
 
-/// A country's canonical slot; 0 is none.
 pub type Country = u32;
 
-/// One of the army's combats, in recorded order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArmyCombat {
     pub province: u32,
-    /// Whether this is a land combat.
     pub land: bool,
-    /// Whether the army belongs to the attacking or defending side.
     pub attacking: bool,
     pub defending: bool,
-    /// Locations of the attacking side's units, of every class. Only a defending
-    /// army's movement reads them, so an attacking army's may be left empty.
     pub attacker_locations: Vec<u32>,
-    /// Whether the combat has reached its minimum duration.
     pub minimum_duration: bool,
 }
 
-/// The army's own state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Army {
-    /// Current province, 0 when nowhere.
     pub location: u32,
-    /// The logical owner.
     pub owner: Country,
-    /// The strategic navy's country: the logical owner when an
-    /// expeditionary owner is set, otherwise the roster owner.
     pub navy_country: Country,
-    /// The opaque orders-group handle, 0 when none; border-conflict
-    /// admission compares this group with combat membership.
     pub orders_group: u64,
-    /// Whether the army is retreating.
     pub retreating: bool,
-    /// Whether the army has a naval transfer.
     pub naval_transfer: bool,
-    /// Whether the army is exiled.
     pub exiled: bool,
-    /// The army has `can_exfiltrate_from_coast`.
     pub exfiltrates: bool,
-    /// Army strength, fixed5.
     pub strength: i64,
-    /// Army organisation, fixed5.
     pub organisation: i64,
-    /// The route's first province while the route is not empty.
     pub route_first: Option<u32>,
     pub combats: Vec<ArmyCombat>,
-    /// The commander's `cannot_retreat_while_defending` and
-    /// `cannot_retreat_while_attacking` modifiers are positive, preventing
-    /// retreat on the corresponding combat side.
     pub no_retreat_defending: bool,
     pub no_retreat_attacking: bool,
 }
 
-/// The army fields the path search reads. Armies with equal keys reach the
-/// same provinces in one world, so they can share one [`Reach`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ReachKey {
     pub location: u32,
@@ -119,17 +79,13 @@ impl Army {
     }
 }
 
-/// A class-0 (army) occupant of a province.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Occupant {
     pub owner: Country,
     pub retreating: bool,
-    /// Occupant strength, fixed5.
     pub strength: i64,
 }
 
-/// Strait fleet classification after the content test: a visible enemy
-/// fleet, an unseen enemy fleet, or no qualifying enemy fleet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StraitFleet {
     Visible,
@@ -137,115 +93,64 @@ pub enum StraitFleet {
     None,
 }
 
-/// Live facts, answered from recorded state.
 pub trait MoveWorld {
-    /// Path cost exemption: an active pair war or the stored path-friendly
-    /// relation. Target 0 uses the real sentinel status.
     fn path_friendly(&self, owner: Country, target: Country) -> Fact<bool>;
-    /// An active, unretired war in A's relation to B; false for the same
-    /// country or when A is none.
     fn at_war(&self, a: Country, b: Country) -> Fact<bool>;
-    /// A has military access in B.
     fn military_access(&self, a: Country, b: Country) -> Fact<bool>;
-    /// A has docking rights in B. Only naval move access demands this
-    /// independent relation operand.
     fn docking_rights(&self, a: Country, b: Country) -> Fact<bool> {
         Err(format!("counter docking rights {a}->{b} are unavailable"))
     }
-    /// Either country is a party to a subject relation between them.
     fn subject_tie(&self, a: Country, b: Country) -> Fact<bool>;
-    /// The opaque faction key.
     fn faction(&self, country: Country) -> Fact<Option<u64>>;
-    /// The overlord, 0 when none.
     fn overlord(&self, country: Country) -> Fact<Country>;
-    /// The `CAN_OCCUPY_NON_WAR` rule.
     fn can_occupy_non_war(&self, country: Country) -> Fact<bool>;
-    /// The country's enemies.
     fn enemies(&self, country: Country) -> Fact<Vec<Country>>;
-    /// The province's controller.
     fn controller(&self, province: u32) -> Fact<Country>;
-    /// The unlinked raw controller reference is signed-positive. The
-    /// land-edge war gate tests this before resolving its canonical slot.
     fn controller_raw_positive(&self, province: u32) -> Fact<bool>;
-    /// The province state owner, 0 for a stateless province.
     fn state_owner(&self, province: u32) -> Fact<Country>;
-    /// The state owner's unlinked raw reference is signed-positive.
-    /// Access gates test it before resolving its canonical country slot.
     fn state_owner_raw_positive(&self, province: u32) -> Fact<bool>;
-    /// The province's state is demilitarized.
     fn demilitarized(&self, province: u32) -> Fact<bool>;
-    /// The province's state is impassable.
     fn impassable(&self, province: u32) -> Fact<bool>;
-    /// The province's owner area is absent.
     fn owner_area_missing(&self, province: u32) -> Fact<bool>;
-    /// The province is in a border conflict.
     fn border_conflict(&self, province: u32) -> Fact<bool>;
-    /// The nonzero orders group is in a border war and belongs to a side
-    /// of one of the province's conflict combats.
     fn border_conflict_admits(&self, province: u32, orders_group: u64) -> Fact<bool>;
-    /// The naval-base map contains the province.
     fn has_naval_base(&self, province: u32) -> Fact<bool>;
-    /// The naval base's level is positive.
     fn naval_base_active(&self, province: u32) -> Fact<bool>;
-    /// Both railway nodes exist, both cooldowns are zero, both selected
-    /// buildings have positive signed levels, and the departure's directed
-    /// neighbor array contains the destination.
     fn counter_rail_connected(&self, from: u32, to: u32) -> Fact<bool> {
         Err(format!(
             "counter railway connection {from}->{to} is unavailable"
         ))
     }
-    /// Actual orders-group membership, independent of a railway gun's
-    /// assignee. Demanded only by its border-conflict access gate.
     fn counter_railway_orders_group(&self, handle: u64) -> Fact<u64> {
         Err(format!(
             "counter railway gun {handle} orders group is unavailable"
         ))
     }
-    /// Task-force target access and current range, including theatre,
-    /// home/hub and physical nearest-slot rules.
     fn counter_task_force_access(&self, handle: u64, to: u32) -> Fact<bool> {
         Err(format!(
             "counter task force {handle} access to {to} is unavailable"
         ))
     }
-    /// Every ship's raw formation flag 7 is set; true for no ships.
     fn counter_task_force_submarine(&self, handle: u64) -> Fact<bool> {
         Err(format!(
             "counter task force {handle} submarine predicate is unavailable"
         ))
     }
-    /// Mode-2 hostile occupant strength, using occupant-to-query war
-    /// direction and wrapping/truncation, does not exceed this task force's
-    /// raw untruncated strength.
     fn counter_task_force_hostile_allows(&self, handle: u64, to: u32) -> Fact<bool> {
         Err(format!(
             "counter task force {handle} hostile strength at {to} is unavailable"
         ))
     }
-    /// The sea province the port opens onto.
     fn port_sea(&self, province: u32) -> Fact<u32>;
-    /// Army (class 0) occupants in recorded order.
     fn armies(&self, province: u32) -> Fact<Vec<Occupant>>;
-    /// Whether the province has a land combat.
     fn land_combat(&self, province: u32) -> Fact<bool>;
-    /// The first enemy task force of `owner` in the sea province `through`
-    /// that has ships, no route, no mission and not every ship formation
-    /// flag 7, and whether `owner` sees it.
     fn strait_fleet(&self, through: u32, owner: Country) -> Fact<StraitFleet>;
-    /// The province's strategic region, if any.
     fn strategic_region(&self, province: u32) -> Option<u32>;
-    /// Region access mode: 0 ordinary, 1 avoid, 2 block.
     fn region_access(&self, country: Country, region: u32) -> Fact<u8>;
-    /// A trigger block in a scope whose THIS is `country` and FROM unset.
     fn evaluate(&self, triggers: &[Item], country: Country) -> Fact<bool>;
-    /// Whether a trigger block contains a recognised child. Rule verdicts
-    /// test the conjunction's child count; an unknown key adds no child.
     fn has_children(&self, triggers: &[Item]) -> Fact<bool>;
 }
 
-/// Both hold, or one surely fails: an unknown part leaves the answer unknown
-/// only when the other does not decide it.
 fn and(first: Fact<bool>, second: impl FnOnce() -> Fact<bool>) -> Fact<bool> {
     match first {
         Ok(false) => Ok(false),
@@ -257,7 +162,6 @@ fn and(first: Fact<bool>, second: impl FnOnce() -> Fact<bool>) -> Fact<bool> {
     }
 }
 
-/// Either holds, or both surely fail.
 fn or(first: Fact<bool>, second: impl FnOnce() -> Fact<bool>) -> Fact<bool> {
     match first {
         Ok(true) => Ok(true),
@@ -269,7 +173,6 @@ fn or(first: Fact<bool>, second: impl FnOnce() -> Fact<bool>) -> Fact<bool> {
     }
 }
 
-/// The same country, otherwise full country visibility with access.
 pub fn discloses<W: MoveWorld + ?Sized>(
     world: &W,
     country: Country,
@@ -293,10 +196,8 @@ pub fn discloses<W: MoveWorld + ?Sized>(
     world.subject_tie(country, other)
 }
 
-/// Dense index of a province with none.
 const NONE: u32 = u32::MAX;
 
-/// What an edge's distance tells the search: only a raw zero is a gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cost {
     Zero,
@@ -304,72 +205,54 @@ enum Cost {
     Unknown,
 }
 
-/// A strait crossing's content test.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Strait {
     None,
-    /// The sea province a fleet can hold the strait from.
     Through(u32),
     Invalid(String),
 }
 
-/// A neighbour record's authored fields, resolved against the content.
 #[derive(Clone, Debug)]
 struct Crossing {
     impassable: bool,
     strait: Strait,
-    /// The rule's index, or why it has none.
     rule: Option<Result<usize, String>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Edge {
-    /// Dense index of the neighbour.
     to: u32,
     cost: Cost,
-    /// Index into [`MoveGraph::crossings`], or [`NONE`].
     crossing: u32,
     distance: Option<i64>,
 }
 
-/// The first neighbour record's strait operand, independently of edge cost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedNeighbour {
     pub through: Fact<Option<u32>>,
 }
 
-/// Content resolved once for searches: every province's kind and ordered
-/// neighbours, with each edge's cost gate, crossing kind, strait and rule
-/// in dense arrays.
 #[derive(Clone, Debug, Default)]
 pub struct MoveGraph {
     width: i32,
     centroids: Vec<Option<[i32; 2]>>,
-    /// Dense index by province id; [`NONE`] for an unknown id.
     index: Vec<u32>,
     ids: Vec<u32>,
-    /// Definition flags (bit 0 land, bit 1 lake); `None` when undefined.
     kinds: Vec<Option<u8>>,
-    /// Land mass derived from all land edges except kind 4.
     land_masses: Vec<u16>,
     land_mass_refusal: Option<String>,
-    /// Each province's edge range; `None` without a neighbour table.
     ranges: Vec<Option<(u32, u32)>>,
     edges: Vec<Edge>,
     crossings: Vec<Crossing>,
-    /// Crossing index by (from, to) province id.
     pairs: HashMap<(u32, u32), u32>,
     rules: Vec<AdjacencyRule>,
     unavailable: BTreeMap<(u32, u32), String>,
 }
 
 impl MoveGraph {
-    /// The definition's land bit, through the content graph.
     pub fn selected_land(&self, province: u32) -> Fact<bool> {
         Ok(self.kind(province)? & 1 != 0)
     }
-    /// The first matching neighbour ordinal, without demanding distance,
-    /// crossing validity or route admission.
     pub fn selected_neighbour_index(&self, from: u32, to: u32) -> Fact<Option<usize>> {
         let source = self
             .dense(from)
@@ -407,7 +290,6 @@ impl MoveGraph {
         Ok(Some(SelectedNeighbour { through }))
     }
 
-    /// A deterministic view of content values; the runtime lookup stays hashed.
     pub fn debug_values(&self) -> impl std::fmt::Debug + '_ {
         struct View<'a>(&'a MoveGraph);
         impl std::fmt::Debug for View<'_> {
@@ -523,8 +405,6 @@ impl MoveGraph {
     }
 
     fn derive_land_masses(&self) -> Fact<Vec<u16>> {
-        // Visit province definition positions in order when deriving land masses.
-        // Terrain cost, controller, adjacency rule and continent do not enter.
         let mut labels = vec![0; self.ids.len()];
         let mut seen = vec![false; self.ids.len()];
         let mut label = 0_u16;
@@ -580,7 +460,6 @@ impl MoveGraph {
             .ok_or_else(|| format!("province {province} is not defined"))
     }
 
-    /// A province's neighbours, or `None` without a neighbour table.
     fn neighbours(&self, at: usize) -> Option<&[Edge]> {
         self.ranges[at].map(|(start, end)| &self.edges[start as usize..end as usize])
     }
@@ -591,26 +470,20 @@ impl MoveGraph {
             .map(|&at| &self.crossings[at as usize])
     }
 
-    /// The rules crossings name, in file order.
     pub fn rules(&self) -> &[AdjacencyRule] {
         &self.rules
     }
 }
 
 const UNSEEN: u8 = 0;
-/// Reached only if some unknown fact admits an edge.
 const POSSIBLE: u8 = 1;
 const REACHED: u8 = 2;
 
-/// Where one army's path search reaches, for every target at once.
 #[derive(Clone, Debug)]
 pub struct Reach {
     key: ReachKey,
     state: Vec<u8>,
-    /// The first fact the search could not know.
     unknown: Option<String>,
-    /// Why any province could be reached: a reached province whose
-    /// neighbours are unknown.
     open: Option<String>,
 }
 
@@ -619,7 +492,6 @@ impl Reach {
         self.unknown.get_or_insert(reason);
     }
 
-    /// Whether the search reaches `province`.
     fn answer(&self, graph: &MoveGraph, province: u32) -> Fact<bool> {
         let state = graph.dense(province).map_or(UNSEEN, |at| self.state[at]);
         match state {
@@ -633,45 +505,26 @@ impl Reach {
     }
 }
 
-/// One search's memo of per-province and per-rule facts.
 struct Memo {
-    /// The node test and the access test of each neighbour.
     nodes: Vec<Option<Fact<bool>>>,
-    /// Each rule's army permission.
     rules: Vec<Option<Fact<bool>>>,
 }
 
-/// Which branch of an adjacency rule's relation decided it, with the
-/// countries its reason names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuleReason {
-    /// The `is_disabled` trigger holds: no relation.
     Disabled,
-    /// Two required provinces' controllers are at war: the matched country of
-    /// the first's chain, then of the second's.
     Contested(Country, Country),
-    /// The verdict's own trigger holds.
     Held(Verdict),
-    /// Neither of the other two verdicts' triggers holds, which leaves this one.
     Excluded(Verdict),
-    /// A required province's controller chain is at war with the country's:
-    /// the matched country of the controller's chain.
     Enemy(Country),
-    /// Neutral, as `is_enemy` has children that did not hold.
     NotEnemy,
-    /// A required province's controller chain discloses to the country's with
-    /// access: the matched country of the controller's chain.
     Friend(Country),
-    /// Neutral, as `is_friend` has children that did not hold.
     NotFriendly,
-    /// No controller is at war with or friendly to the country.
     Neutral,
-    /// Enemy, as `is_neutral` has children that did not hold.
     NotNeutral,
 }
 
 impl RuleReason {
-    /// The verdict, or `None` when the rule is disabled.
     pub fn verdict(self) -> Option<Verdict> {
         Some(match self {
             Self::Disabled => return None,
@@ -698,9 +551,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(self.graph.kind(province)? & 1 != 0)
     }
 
-    /// One-source army raid reach, stopping at that source: the reference
-    /// used to check [`Mover::army_reaches_in`] and
-    /// [`Mover::army_reaches_resumed`].
     #[cfg(test)]
     fn army_reaches(&self, army: &Army, source: u32, avoid_enemy: bool) -> Fact<bool> {
         let reachable = self.reachable(army.exfiltrates);
@@ -709,19 +559,12 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// Every province the army's search reaches, to answer many sources
-    /// with [`Mover::army_reaches_in`].
     pub fn reach(&self, army: &Army) -> Reach {
         let mut search = self.search(army);
         self.advance(army, &mut search, None);
         search.reach
     }
 
-    /// Answer from the army's `search`, advanced only as far as `source`
-    /// needs. A resumed query continues where the previous one stopped, so
-    /// every answer equals a full search's answer. A source excluded by
-    /// `reachable` for this army's `exfiltrates` is not searched: no admitted
-    /// route could reach it or encounter a missing neighbour table.
     pub fn army_reaches_resumed<'r>(
         &self,
         army: &Army,
@@ -745,10 +588,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         }
     }
 
-    /// The most any army search with this `exfiltrates` can reach at this
-    /// hour: undirected components of edges not surely refused for every
-    /// such army. Zero-cost, impassable and self edges are excluded, as are
-    /// embarkation or landing edges lacking their required port or naval base.
     pub fn reachable(&self, exfiltrates: bool) -> Reachable {
         let graph = self.graph;
         let mut parent: Vec<u32> = (0..graph.ids.len() as u32).collect();
@@ -788,9 +627,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Reachable { component, open }
     }
 
-    /// Whether `class_admits` surely refuses the edge for every army with
-    /// this `exfiltrates`: an embarkation or landing without its port and
-    /// active naval base, as far as the hour's facts decide.
     fn class_refused(&self, exfiltrates: bool, from: usize, to: usize) -> bool {
         let world = self.world;
         let (from, to) = (self.graph.ids[from], self.graph.ids[to]);
@@ -812,10 +648,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         admits == Ok(false)
     }
 
-    /// Answer from a [`Reach`] for an army with the same [`ReachKey`],
-    /// provided only when prechecks do not decide the result. `avoid_enemy`
-    /// is `NDefines.NRaids.ARMY_TRANSFER_AVOID_ENEMY`;
-    /// `ARMY_TRANSFER_MOVE_SAFELY` is passed but never read.
     pub fn army_reaches_in<R: Deref<Target = Reach>>(
         &self,
         army: &Army,
@@ -835,12 +667,10 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         }
     }
 
-    /// The tests before the search: `Some` when they decide.
     fn gate(&self, army: &Army, source: u32, avoid_enemy: bool) -> Fact<Option<bool>> {
         if !self.check_move_admission(army, source, avoid_enemy)? {
             return Ok(Some(false));
         }
-        // The source must exist, and the army must first admit moving there.
         if army.location == 0 {
             return Ok(Some(false));
         }
@@ -850,8 +680,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         if self.is_sea(army.location)? {
             return Ok(Some(false));
         }
-        // The request precheck skips its landmass test because this raid
-        // request enables hostile-node checking.
         if !self.province_access_for_move(army, source, false)?
             || !self.node_admissible(army, source)?
         {
@@ -860,7 +688,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(None)
     }
 
-    /// Army move admission, followed by advance and existing-enemy checks.
     pub fn check_move_admission(&self, army: &Army, to: u32, avoid_enemy: bool) -> Fact<bool> {
         let world = self.world;
         if !self.can_move_to_province(army, to)? {
@@ -884,7 +711,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(false)
     }
 
-    /// Common movement admission, without a retreat allowance.
     fn can_move_to_province(&self, army: &Army, to: u32) -> Fact<bool> {
         if to == army.location {
             return Ok(true);
@@ -898,7 +724,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         {
             return Ok(false);
         }
-        // Apply the additional army province-class gate.
         if !self.can_enter_province(army, to)? {
             return Ok(false);
         }
@@ -908,7 +733,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(true)
     }
 
-    /// The first neighbour record naming `other`, unless it is impassable.
     fn passable_adjacency(&self, of: u32, other: u32) -> bool {
         let graph = self.graph;
         let Some((start, end)) = graph.dense(of).and_then(|at| graph.ranges[at]) else {
@@ -920,7 +744,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
             && graph.crossing(of, other).is_none_or(|c| !c.impassable)
     }
 
-    /// Whether the army may disengage from its recorded combats.
     fn can_disengage(&self, army: &Army) -> bool {
         if army.no_retreat_defending && army.combats.iter().any(|combat| combat.defending) {
             return false;
@@ -931,12 +754,10 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         army.combats.iter().any(|combat| combat.minimum_duration)
     }
 
-    /// Advance requires fixed5 strength 0.1 and organisation 1.0.
     fn can_advance(&self, army: &Army) -> bool {
         army.strength >= 10_000 && army.organisation >= 100_000
     }
 
-    /// Whether a non-retreating enemy army occupies the province.
     fn enemy_army_in(&self, army: &Army, province: u32) -> Fact<bool> {
         for occupant in self.world.armies(province)? {
             if !occupant.retreating && self.world.at_war(occupant.owner, army.owner)? {
@@ -946,7 +767,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(false)
     }
 
-    /// Common province-entry admission for an army.
     fn can_enter_province(&self, army: &Army, to: u32) -> Fact<bool> {
         let world = self.world;
         if !self.province_access_for_move(army, to, false)? {
@@ -1004,7 +824,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         }
     }
 
-    /// Retreat admission into the province.
     fn can_retreat_to(&self, army: &Army, to: u32) -> Fact<bool> {
         let world = self.world;
         if to == army.location || self.passable_adjacency(army.location, to) {
@@ -1022,9 +841,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(world.has_naval_base(to)? && (world.has_naval_base(army.location)? || army.exfiltrates))
     }
 
-    /// Army move access with both optional gates disabled, as all callers
-    /// here request. The controller-area test reduces to controller equality:
-    /// each area has one controller, and a nonpositive controller has no area.
     fn province_access_for_move(&self, army: &Army, to: u32, naval: bool) -> Fact<bool> {
         self.province_access_for_move_with_group(army, to, naval, || Ok(army.orders_group))
     }
@@ -1063,7 +879,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(true)
     }
 
-    /// Country province access in mode 0.
     fn has_province_access(&self, country: Country, province: u32) -> Fact<bool> {
         let world = self.world;
         let kind = self.graph.kind(province)?;
@@ -1089,7 +904,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         self.faction_or_overlord(country, controller)
     }
 
-    /// Same faction, or either is the other's overlord.
     fn faction_or_overlord(&self, country: Country, other: Country) -> Fact<bool> {
         let world = self.world;
         if let Some(faction) = world.faction(country)?
@@ -1103,13 +917,10 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(world.overlord(country)? == other)
     }
 
-    /// The land output of country province move access.
     fn move_access(&self, country: Country, province: u32) -> Fact<bool> {
         self.move_access_output(country, province, false)
     }
 
-    /// The naval move-access output. Common access conditions are shared;
-    /// foreign sea and otherwise inaccessible land differ by output.
     fn naval_move_access(&self, country: Country, province: u32) -> Fact<bool> {
         self.move_access_output(country, province, true)
     }
@@ -1136,8 +947,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         if kind & 3 == 0 {
             return Ok(naval);
         }
-        // Slots compare here, so a missing overlord (0) matches a missing
-        // controller (0).
         if self.faction_or_overlord(country, controller)? {
             return Ok(true);
         }
@@ -1152,7 +961,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         discloses(self.world, country, other, access)
     }
 
-    /// At war, or allowed to occupy and sharing an enemy.
     fn occupies_non_war(&self, country: Country, other: Country) -> Fact<bool> {
         let world = self.world;
         if country != other && country != 0 && world.at_war(country, other)? {
@@ -1168,7 +976,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
             .any(|enemy| theirs.contains(enemy)))
     }
 
-    /// A crossing's rule, unless it is missing or refused.
     fn rule(&self, rule: &Result<usize, String>) -> Fact<&'a AdjacencyRule> {
         let rule = &self.graph.rules[*rule.as_ref().map_err(Clone::clone)?];
         match &rule.unsupported {
@@ -1177,17 +984,14 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         }
     }
 
-    /// The army permission from a crossing rule verdict.
     fn rule_admits_army(&self, rule: &AdjacencyRule, country: Country) -> Fact<bool> {
         Ok(rule.permits(self.verdict(rule, country)?, adjacency_rules::ARMY))
     }
 
-    /// The rule verdict, or `None` when disabled.
     pub fn verdict(&self, rule: &AdjacencyRule, country: Country) -> Fact<Option<Verdict>> {
         Ok(self.relation(rule, country)?.verdict())
     }
 
-    /// [`Self::verdict`] with the branch that decided it.
     pub fn relation(&self, rule: &AdjacencyRule, country: Country) -> Fact<RuleReason> {
         self.relation_with(rule, country, &|first, second, friendly| {
             if friendly {
@@ -1198,7 +1002,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// The rule's relation for `country`, with the branch that decided it.
     pub(crate) fn relation_with(
         &self,
         rule: &AdjacencyRule,
@@ -1241,9 +1044,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// The first two required provinces, in order, whose controllers oppose
-    /// one another through their country and overlord chains, as the pair of
-    /// countries that matched.
     fn contested(
         &self,
         rule: &AdjacencyRule,
@@ -1263,8 +1063,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(None)
     }
 
-    /// The relation from the required provinces' controllers and the
-    /// triggers' children.
     fn fallback_relation(
         &self,
         rule: &AdjacencyRule,
@@ -1297,9 +1095,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// War or disclosure with access, between any of `country` and its
-    /// overlords and any of `other` and its overlords: the first pair that
-    /// matches, `country`'s side first.
     fn chain_witness(
         &self,
         country: Country,
@@ -1337,8 +1132,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         }
     }
 
-    /// Mode-2 node admission for an army. This request enables region
-    /// checks, so an avoided region blocks just as a blocked region does.
     fn node_admissible(&self, army: &Army, to: u32) -> Fact<bool> {
         let world = self.world;
         if self.is_sea(to)?
@@ -1356,8 +1149,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         Ok(!world.land_combat(to)?)
     }
 
-    /// Destination-only edge admission: the node test and the province
-    /// access test.
     fn destination(&self, army: &Army, to: u32) -> Fact<bool> {
         and(self.node_admissible(army, to), || {
             and(
@@ -1367,8 +1158,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// The land-edge war gate: entering a war fought by the army's owner
-    /// when the two province controllers do not fight each other.
     fn crosses_other_war(&self, owner: Country, from: u32, to: u32) -> Fact<bool> {
         let world = self.world;
         if !world.controller_raw_positive(from)? || !world.controller_raw_positive(to)? {
@@ -1381,10 +1170,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
             && !world.at_war(owner, here)?)
     }
 
-    /// Edge classes for this request: land-to-land and sea-to-sea admit;
-    /// landing needs the destination's active port on that sea; embarking
-    /// needs the origin's port on that sea and an active base unless the
-    /// army can exfiltrate.
     fn class_admits(&self, army: &Army, from: u32, to: u32, lands: [bool; 2]) -> Fact<bool> {
         let world = self.world;
         match lands {
@@ -1395,7 +1180,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         }
     }
 
-    /// Edge admission combines access, node admission and the raw zero-cost gate.
     fn admit(&self, army: &Army, memo: &mut Memo, from: usize, edge: &Edge) -> Fact<bool> {
         let graph = self.graph;
         if edge.cost == Cost::Zero {
@@ -1458,8 +1242,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// Prepare the mode-2 request as a flood fill ([`Search`]), with no
-    /// state-owner stop; the search has not yet run.
     pub fn search(&self, army: &Army) -> Search {
         let graph = self.graph;
         let mut search = Search {
@@ -1493,23 +1275,16 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         search
     }
 
-    /// Runs `search` further by at most `edges` edges, as a query would run
-    /// it: whether it reached its end. A later query answers alike however
-    /// far it ran before ([`Search`]).
     pub fn advance_by(&self, army: &Army, search: &mut Search, edges: usize) -> bool {
         let mut budget = edges;
         self.advance_within(army, search, None, &mut budget)
     }
 
-    /// Runs `search` until `target` is decided, or to its end.
     fn advance(&self, army: &Army, search: &mut Search, target: Option<usize>) {
         let mut unbounded = usize::MAX;
         self.advance_within(army, search, target, &mut unbounded);
     }
 
-    /// [`Self::advance`] examining at most `budget` more edges: whether the
-    /// search reached its end. A search stopped by the budget resumes at the
-    /// edge it stopped before, as one stopped at its target does.
     fn advance_within(
         &self,
         army: &Army,
@@ -1533,7 +1308,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
             unproved,
             expanding,
         } = search;
-        // Proved moves first: the target is reached once one reaches it.
         while let Some(&at) = queue.get(*head) {
             let Some(edges) = graph.neighbours(at) else {
                 open(reach, at);
@@ -1570,8 +1344,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
             }
             (*head, *edge) = (*head + 1, 0);
         }
-        // Then the moves an unknown fact may admit, unless a province has no
-        // neighbour table, which leaves every unreached province open.
         if !*unproved {
             *unproved = true;
             if reach.open.is_some() {
@@ -1590,8 +1362,6 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
                     None => return true,
                 },
             };
-            // The target may still be reached through a later possible
-            // province: the full search's answer names the unknown fact then.
             let Some(edges) = graph.neighbours(at) else {
                 open(reach, at);
                 continue;
@@ -1622,16 +1392,12 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
     }
 }
 
-/// Each province's component of [`Mover::reachable`], and each component's
-/// holding a province without a neighbour table.
 pub struct Reachable {
     component: Vec<u32>,
     open: Vec<bool>,
 }
 
 impl Reachable {
-    /// Whether no search from `from` reaches `to` or meets a province
-    /// without a neighbour table, which would leave the answer open.
     fn apart(&self, graph: &MoveGraph, from: u32, to: u32) -> bool {
         let Some(from) = graph.dense(from) else {
             return false;
@@ -1644,29 +1410,14 @@ impl Reachable {
     }
 }
 
-/// One army's reach search, run only as far as queried provinces need
-/// ([`Mover::army_reaches_resumed`]).
-///
-/// The game's A* has no node limit and drains its heap. Its closed set is
-/// per province; edge admission depends only on the node, neighbour,
-/// start province and request. Its only cost gate is a raw zero edge,
-/// tested before doubling. It therefore reaches exactly the provinces
-/// of a flood fill over admitted edges; costs and heuristic order visits.
-///
-/// Unknown admission makes a neighbour only possibly reachable: a target
-/// is reached by known admitted edges, unreached when even unknown edges
-/// cannot reach it, and unknown otherwise.
 pub struct Search {
     reach: Reach,
     memo: Memo,
     queue: Vec<usize>,
-    /// The next queued province, and the next of its edges.
     head: usize,
     edge: usize,
     possible: Vec<usize>,
-    /// The proved moves are all made.
     unproved: bool,
-    /// The possible province being expanded, and its next edge.
     expanding: Option<(usize, usize)>,
 }
 

@@ -9,7 +9,6 @@ const reply = validateMinefields({
   choices: [{ id: '3', name: 'North Sea' }, { id: '5', name: 'Baltic' }, { id: '7', name: 'Channel' }, { id: '9', name: 'Adriatic' }],
   scale: 100000, warnings: [],
 });
-/** The amounts as the live cells hold them at an hour. */
 const cells = (amounts: Record<string, number>) => valuesOf(new Map(Object.entries(amounts)), 'Not recorded at this hour');
 const at = cells({ [liveKey('3', 'ENG')]: 900000, [liveKey('3', 'GER')]: 500000, [liveKey('3', 'total')]: 1400000,
   [liveKey('9', 'GER')]: 700000, [liveKey('9', 'total')]: 700000 });

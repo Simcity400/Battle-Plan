@@ -1,4 +1,3 @@
-//! Bounded explicit little-endian decoding. No Rust memory layout is on disk.
 
 use std::io;
 
@@ -6,9 +5,6 @@ thread_local! {
     static ERROR_DETAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Retain validation diagnostics until this output-worker guard is dropped.
-/// Never enter this scope from an acquisition callback: constructing an I/O
-/// error can allocate. The guard must stay on the thread that entered it.
 #[must_use = "hold the guard until output work completes"]
 pub fn error_details_scope() -> impl Drop {
     struct Restore(bool, std::marker::PhantomData<*mut ()>);
@@ -20,13 +16,11 @@ pub fn error_details_scope() -> impl Drop {
     Restore(ERROR_DETAILS.replace(true), std::marker::PhantomData)
 }
 
-/// Run output-worker work with validation diagnostics, restoring any outer scope.
 pub fn with_error_details<T>(work: impl FnOnce() -> T) -> T {
     let _restore = error_details_scope();
     work()
 }
 
-/// Attach output-worker context without formatting on capture callbacks.
 pub fn error_context(error: io::Error, context: std::fmt::Arguments<'_>) -> io::Error {
     if error.kind() != io::ErrorKind::InvalidData || !ERROR_DETAILS.get() {
         return error;
@@ -37,8 +31,6 @@ pub fn error_context(error: io::Error, context: std::fmt::Arguments<'_>) -> io::
     }
 }
 
-/// Diagnostic excerpts never copy a recording-sized string. Data itself is
-/// preserved; only the diagnostic shown to a caller is shortened.
 pub fn diagnostic_text(text: &str) -> &str {
     let mut end = text.len().min(1024);
     while !text.is_char_boundary(end) {
@@ -47,7 +39,6 @@ pub fn diagnostic_text(text: &str) -> &str {
     &text[..end]
 }
 
-/// Formatting with checked growth, including errors whose fields are recorded.
 pub fn try_format(args: std::fmt::Arguments<'_>) -> io::Result<String> {
     struct Writer(String);
     impl std::fmt::Write for Writer {
@@ -67,8 +58,6 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Capture callbacks keep static diagnostics allocation-free; output-worker
-/// scopes retain their text.
 pub fn invalid_static(message: &'static str) -> io::Error {
     invalid_for_capture(message, engine_allocation::capture_active())
 }
@@ -141,7 +130,6 @@ pub fn put_string(out: &mut Vec<u8>, value: &str) -> io::Result<()> {
     put_bytes(out, value.as_bytes())
 }
 
-/// Canonical unsigned LEB128, including the 65 bits needed by native numeric differences.
 pub fn put_varint(out: &mut Vec<u8>, mut value: u128) {
     while value >= 0x80 {
         out.push((value as u8 & 0x7f) | 0x80);
@@ -177,7 +165,6 @@ impl<'a> Decoder<'a> {
     pub fn remaining(&self) -> usize {
         self.bytes.len()
     }
-    /// The unread bytes, for callers that report the exact span a read consumed.
     pub fn rest(&self) -> &'a [u8] {
         self.bytes
     }
@@ -206,9 +193,7 @@ impl<'a> Decoder<'a> {
     number!(u64, u64);
     number!(i32, i32);
     number!(i64, i64);
-    /// Decode one canonical unsigned LEB128 value without consuming the next field.
     pub fn varint(&mut self) -> io::Result<u128> {
-        // One group below 0x80 is a whole canonical value, and most are one group.
         if let Some((&byte, rest)) = self.bytes.split_first()
             && byte < 0x80
         {
@@ -218,7 +203,6 @@ impl<'a> Decoder<'a> {
         self.varint_groups()
     }
 
-    /// [`Self::varint`] read group by group.
     fn varint_groups(&mut self) -> io::Result<u128> {
         let mut value = 0_u128;
         for index in 0..19 {
@@ -245,7 +229,6 @@ impl<'a> Decoder<'a> {
             _ => Err(invalid_static("invalid boolean")),
         }
     }
-    /// Bound collection allocation by the bytes actually present before allocating.
     pub fn count(&mut self, minimum_item_bytes: usize) -> io::Result<usize> {
         let n = self.u32()? as usize;
         if minimum_item_bytes == 0 || n > self.remaining() / minimum_item_bytes {

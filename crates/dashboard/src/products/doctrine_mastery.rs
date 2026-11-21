@@ -1,7 +1,3 @@
-//! One country's doctrine folders at an hour: each folder's grand doctrine and completed
-//! subdoctrines, each track's subdoctrine with its rewards' thresholds, and the track's mastery,
-//! bank, gains and unlocked rewards as recorded. A rows-at-an-hour product ([`AtHour`]): names,
-//! icons and thresholds come from the recorded content, the numbers from `DoctrineTracks`.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -36,8 +32,6 @@ pub struct DoctrineMasteryParams {
     pub country: Country,
 }
 
-/// A grand doctrine or subdoctrine: its token's spelling, and its name and sprite where the
-/// content has them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -47,8 +41,6 @@ pub struct MasteryChoice {
     pub icon: Option<String>,
 }
 
-/// A reward of a track's subdoctrine, in authored order: the mastery it adds to the track's
-/// requirement (fixed5 decimal), none where the content gives none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -58,9 +50,6 @@ pub struct MasteryReward {
     pub threshold: Option<String>,
 }
 
-/// A track as recorded: its subdoctrine (none chosen when absent), the rewards that subdoctrine
-/// authors and how many are unlocked. Its numbers move daily: they are the live cells of row
-/// `"<folder ordinal>|<track ordinal>"`, columns [`TRACK_CELLS`], raw fixed5.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +61,6 @@ pub struct MasteryTrack {
     pub unlocked: i32,
 }
 
-/// A track's live cells: the cell's column id and the `DoctrineTracks` field it reads.
 pub const TRACK_CELLS: [(&str, &str); 4] = [("mastery", "mastery"), ("bank", "mastery_bank"), ("daily", "daily_mastery"), ("effective", "effective_daily_mastery")];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -80,11 +68,11 @@ pub const TRACK_CELLS: [(&str, &str); 4] = [("mastery", "mastery"), ("bank", "ma
 #[serde(rename_all = "camelCase")]
 pub struct MasteryFolder {
     pub ordinal: u32,
-    /// The folder token's spelling: stable across hours, for settings that choose folders.
+    #[doc = " The folder token's spelling: stable across hours, for settings that choose folders."]
     pub id: String,
     pub name: Option<String>,
     pub icon: Option<String>,
-    /// None where no grand doctrine is chosen.
+    #[doc = " None where no grand doctrine is chosen."]
     pub grand: Option<MasteryChoice>,
     pub completed: Vec<MasteryChoice>,
     pub tracks: Vec<MasteryTrack>,
@@ -103,14 +91,11 @@ dashboard_base::reply_warnings!(DoctrineMasteryReply);
 pub struct Context {
     database: Arc<Database>,
     localisation: Arc<Localisation>,
-    /// The mastery a reward authored without one requires.
     default_reward: Result<i64, String>,
 }
 
 const TABLES: [TableId; 3] = [TableId::DoctrineFolders, TableId::DoctrineTracks, TableId::LexicalTokens];
 
-/// The default reward mastery of the content last resolved: its defines are parsed once per
-/// resolved content, not once per reply.
 #[derive(Default)]
 struct DefaultReward(Option<(Arc<ResolvedContent>, Result<i64, String>)>);
 
@@ -124,7 +109,6 @@ fn default_reward(source: &Source, resolved: &Arc<ResolvedContent>) -> Result<i6
     held.0.as_ref().map(|(_, read)| read.clone()).expect("default reward read")
 }
 
-/// The doctrine content a reply names from: each part read once per resolved content.
 fn context(source: &Source, load: &LoadContext, title: &str) -> io::Result<Context> {
     let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused(format!("{title} needs the recorded content stack")))?;
     let resolved = source.content(&options.options)?;
@@ -132,7 +116,6 @@ fn context(source: &Source, load: &LoadContext, title: &str) -> io::Result<Conte
     Ok(Context { database, localisation: dashboard_base::content::localisation(source, options)?, default_reward: default_reward(source, &resolved) })
 }
 
-/// The owner's folder and track rows: the reads every doctrine reply starts with.
 fn owner_reads(owner: Owner) -> Vec<Read> {
     let slot = u128::from(owner.slot);
     vec![
@@ -145,7 +128,6 @@ fn spelled(bytes: &[u8]) -> String {
     String::from_utf8_lossy(installed_content_core::parser::c_string(bytes)).into_owned()
 }
 
-/// Names and sprites of one reply, each failure counted by reason.
 struct Naming<'c> {
     context: &'c Context,
     tokens: HashMap<u32, &'c [u8]>,
@@ -201,7 +183,6 @@ impl<'c> Naming<'c> {
         }
     }
 
-    /// Grand doctrine (`kind` 0) or subdoctrine (1) of token id `id`.
     fn choice(&mut self, kind: u8, id: u32) -> MasteryChoice {
         let Some(token) = self.token(id) else { return MasteryChoice { id: id.to_string(), name: None, icon: None } };
         let context: &'c Context = self.context;
@@ -209,7 +190,6 @@ impl<'c> Naming<'c> {
         MasteryChoice { id: spelled(token), name: self.name(kind, token), icon: self.icon(presentation, token) }
     }
 
-    /// Subdoctrine `token`'s rewards: each reward's name and the mastery it adds.
     fn rewards(&mut self, token: &[u8]) -> Vec<MasteryReward> {
         let context: &'c Context = self.context;
         let Some(source) = context.database.tactic_sources.sub.get(&Token::c_str(token)) else {
@@ -237,8 +217,6 @@ impl<'c> Naming<'c> {
     }
 }
 
-/// The folders of the country in doctrine slot `slot` in `frame`, each track's numbers named in
-/// `live`.
 fn folders(frame: &DecodedFrame, slot: u32, context: &Context, live: &Cells) -> io::Result<(Vec<MasteryFolder>, Refusals)> {
     let mut columns = [0; TRACK_CELLS.len()];
     for (column, (_, field)) in columns.iter_mut().zip(TRACK_CELLS) {
@@ -347,7 +325,6 @@ impl AtHour for DoctrineMastery {
         TABLES.to_vec()
     }
 
-    /// The owner's folders and tracks, then the tokens they name.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {

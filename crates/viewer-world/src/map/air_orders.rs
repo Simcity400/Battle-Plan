@@ -1,4 +1,3 @@
-//! Ordinary Air mission arrows, grouped in the stored all-active order.
 use installed_content_core::defines::Defines;
 use replay_data::{rows::AirBaseRow, rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -45,7 +44,6 @@ pub struct Prepared {
     pub transfers: super::air_transfers::Prepared,
 }
 impl Prepared {
-    /// Geometry stays prepared while hovering changes only the transient tint.
     pub fn highlighted(&self, bases: &[u64]) -> OrderField {
         let mut field = self.field.clone();
         if let Some(selected) = self.selected_color {
@@ -101,8 +99,6 @@ fn fold<'a>(wings: impl IntoIterator<Item = &'a AirWingRow>) -> Vec<Mission> {
     missions
 }
 
-/// The strict half-width test moves the smaller x forward one world, even
-/// when the two controls arrived in the opposite direction.
 fn controls(from: [f32; 3], to: [f32; 3], width: u32) -> [[i64; 2]; 2] {
     let mut points = [unit_pose::fixed(from), unit_pose::fixed(to)];
     if (i64::from(width as i32 / 2) * 100_000)
@@ -119,9 +115,7 @@ pub struct Inputs<'a> {
     pub colors: Result<Colors, &'a str>,
     pub heights: HeightField<'a>,
     pub viewer: u32,
-    /// Transient bases reached by this frame's range preparation.
     pub highlighted_bases: &'a [u64],
-    // The caller resolves positions on demand, including absent bases and named refusals.
     #[allow(clippy::type_complexity)]
     pub base_position: &'a dyn Fn(&AirBaseRow) -> Result<Option<[f32; 3]>, String>,
     pub region_position: &'a dyn Fn(u32) -> Option<[f32; 3]>,

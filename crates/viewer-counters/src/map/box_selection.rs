@@ -1,14 +1,9 @@
-//! The game's primary-drag box selection: when a press becomes a drag and a release a box, the
-//! order its member kinds are tried in, and the one kind a box takes.
 use viewer_foundation::map::counter_hovers::unit_hits::Kind;
 use viewer_foundation::unit_handle::Unit;
 
-/// Executable constants, in window pixels: a press is a drag from this distance, and its release a
-/// box when the drag's width plus height reaches the extent as well.
 pub const DRAG_START: f32 = 1.0;
 pub const MIN_EXTENT: f32 = 30.0;
 
-/// Why a box or a model click takes no division or railway gun: a unit's theatre is not known.
 pub const THEATRE_NOT_RECORDED: &str =
     "unit selection: units' theatres are not recorded, so a box or a model click takes no division or railway gun";
 pub const THEATRE_REFUSED: &str =
@@ -26,17 +21,14 @@ pub fn boxes(from: [f32; 2], to: [f32; 2]) -> bool {
     dragging(from, to) && (to[0] - from[0]).abs() + (to[1] - from[1]).abs() >= MIN_EXTENT
 }
 
-/// A kind of object a box can take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Member {
     AirWing,
     Operative,
     Unit(Kind),
-    /// A fleet is never boxed; a fleet selected first admits nothing under Shift.
     Fleet,
 }
 
-/// The map modes that change the order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     StrategicAir,
@@ -45,9 +37,6 @@ pub enum Mode {
     Other,
 }
 
-/// The kinds in the order the game tries them: air wings first in the Strategic Air mode,
-/// operatives first in the Operatives mode, then land before naval, or naval first when Ctrl
-/// differs from being in the Strategic Navy mode.
 pub fn order(mode: Mode, ctrl: bool) -> Vec<Member> {
     let mut order = match mode {
         Mode::StrategicAir => vec![Member::AirWing],
@@ -61,16 +50,13 @@ pub fn order(mode: Mode, ctrl: bool) -> Vec<Member> {
     order
 }
 
-/// A drawn object a box can take, in screen interface pixels `[x, y, width, height]`.
 pub struct Candidate<'a> {
     pub rect: [f32; 4],
     pub member: Member,
     pub members: &'a [u64],
-    /// Only the viewing country's units are admitted.
     pub ours: bool,
 }
 
-/// What a box takes: one kind and its members in draw order, and the rule it withheld, if any.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Taken {
     pub member: Option<Member>,
@@ -86,17 +72,10 @@ fn unselected(_: u64) -> bool {
     false
 }
 
-/// The box `[x, y, width, height]` from two corners.
 pub fn rect(from: [f32; 2], to: [f32; 2]) -> [f32; 4] {
     [from[0].min(to[0]), from[1].min(to[1]), (to[0] - from[0]).abs(), (to[1] - from[1]).abs()]
 }
 
-/// The members a box takes. Without Shift the selection is cleared first, so it takes the first
-/// kind in `order` with any member; with Shift and a selection, only the selected kind
-/// (`selected`, the first selected object's) is admitted and already-selected members are skipped.
-/// `theatre` answers a unit's own land-theatre handle (0 for none, which matches only none): the
-/// game admits only divisions and railway guns of the anchor's theatre, and where any answer is
-/// missing the box takes none of them and says why.
 pub fn take(
     candidates: &[Candidate<'_>],
     area: [f32; 4],

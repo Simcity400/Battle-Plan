@@ -1,0 +1,23 @@
+# Read game settings in native order
+
+## Decision
+
+Read settings from the game user folder without writing it. `SettingsKeys` owns `settings.txt` because that file dispatches on registered keywords before dynamic token registration. The generic Clausewitz parser reads the launcher's `pdx_settings.txt`.
+
+Preserve every write in source order, including writes in repeated sub-objects. Bare keys are case-insensitive and quoted keys dispatch to no case. Quoted values still supply conversion text. Unknown keys skip their whole block. A scalar reader given an opening brace takes only the value token, exposing the contents to the enclosing reader. Point fields consume their own tokens and update their axes independently. Refuse an unsuccessful first scan of an axis because the engine's uninitialized word is unknowable. Later unsuccessful scans retain the previous value. Text stops at the first NUL and the native string reader reports a line feed as `Unreadable String`.
+
+An absent file preserves the constructed state and reads no graphics blocks. A present file is a separate case. Consumers requiring a field must establish that the file read it. The map options use constructed defaults and report any unreadable line. A failed yes/no conversion retains the previous value. An integer scan that stores nothing leaves the native value unknown until the next successful write. The reader returns the option default with the diagnostic when no later write settles it. Integer loading follows C `%i` with radix prefixes and the low 32 bits, then clamps the counter mode to 0 or 1. Mode zero selects country colours over allegiance colours. Template counter value one selects the NATO frame. Power-of-two texture padding starts disabled and uses the last stored yes/no. Language preserves the request verbatim. The content loader chooses its first language when the request is absent or cannot be matched.
+
+## Display layout
+
+Video starts borderless with GUI scale 1.0, the primary desktop as its frame, and a 1280 by 720 minimum GUI size. Each `graphics` block reuses prior fields and closes with a clamp. A new specified scale replaces the prior result. The closing clamp raises a value below 0.5 immediately. Otherwise it caps the scale at the smaller axis ratio against 1280 by 720, truncated to tenths. That cap can itself be below 0.5. A borderless block takes the primary virtualized desktop for the clamp. Other blocks use their configured size. Applying one final clamp would lose the history of smaller intervening frames. Invalid size axes, mixed configured and desktop axes, non-finite scale and uninitialized point reads are refused.
+
+Launcher `Graphics` entries run after the block clamps. They may update the display index, mode or size while retaining the clamped scale. Each resolution applies in the mode current when it is read. It must split on lower-case `x` into two parts and each part uses decimal-prefix conversion. An entry without a value reads as empty text. The mode words `windowed` and `borderless_fullscreen` have their named meanings and other words select exclusive full screen. The viewer does not have the game's launch arguments, so it cannot apply those overrides.
+
+A borderless window renders to the chosen monitor's virtualized desktop and the other modes render at the configured size. A failed desktop lookup for borderless falls back to an ordinary window on the primary display. A DPI-unaware game sees `MulDiv(physical pixels, 96, dpi)` as its desktop, so ordinary or borderless rendering is stretched by monitor DPI. The interface uses at least the minimum GUI frame expanded to the actual frame aspect, divides by scale and truncates to layout pixels. The effective screen scale combines that layout ratio with frame stretch. Query physical monitor modes and DPI off the frame path on a per-monitor DPI-aware thread. An unreadable DPI is reported. Refresh measurements ignore the Windows special values 0 and 1 for hardware defaults.
+
+Exclusive full screen models the aspect-preserving stretch as the smaller ratio of physical monitor pixels to configured frame pixels. This is a rendering assumption. The secondary monitor index and unavailable-slot issues are tracked separately. [Issue #1523](Simcity400/battle-plan/issues/1523)
+
+The Win32 calls rely on `cb` and `dmSize` initialization, the device name termination guaranteed by enumeration, writable DPI outputs and the display position arm of the mode union. Window refresh obtains the extended monitor info with its full structure size before passing its terminated device name back to the mode API.
+
+[Settings reader and tests](../../crates/installed-content-settings/src/settings.rs)

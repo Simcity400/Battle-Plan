@@ -15,11 +15,9 @@ import type { CatalogueEntry, WidgetGroup } from './widgetCategories';
 
 type Add = (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
 type Entry = CatalogueEntry<WidgetDefinition>;
-/** Views and presets carry the widget spec's own title and options (see WidgetPreset). */
 const initialOf = (entry: Entry) => entry.initial as Pick<WidgetSpec, 'title' | 'options'> | undefined;
 interface Shared { runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; disabled: boolean; onAdd: Add }
 
-/** Briefly true after each call to `mark`: the catalogue stays open after an add, so the control confirms it. */
 function useAdded(): [boolean, () => void] {
   const [added, setAdded] = useState(0);
   useEffect(() => {
@@ -30,14 +28,12 @@ function useAdded(): [boolean, () => void] {
   return [added > 0, () => setAdded(count => count + 1)];
 }
 
-/** Why a gated widget cannot be added to this recording, or null. */
 function useUnavailable(definition: WidgetDefinition, { runtime, track, active }: Shared) {
   const scoped = scopeReason(definition, track?.source.metadata.captureMode);
   const { data, error } = useProduct(runtime.client, scoped ? null : availabilityRequest(definition, track), active, validateWidgetAvailability, track?.source);
   return { reason: scoped ?? availabilityReason(!!definition.availability, !!track, data, error), detail: error?.message };
 }
 
-/** A group's colour is its Analytics page's icon colour, so the catalogue matches the sidebar. */
 const groupColour = (group: WidgetGroup<unknown>) => ({ '--group-colour': group.page ? `var(--sidebar-icon-${group.page})` : 'var(--muted)' }) as CSSProperties;
 
 function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry: Entry; placed: number; selected: boolean; onSelect: () => void }) {
@@ -50,7 +46,7 @@ function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry
     <button type="button" className="widget-card-main" aria-pressed={selected} data-tooltip={entry.title} onClick={onSelect}
       onDoubleClick={() => { if (!shared.disabled && reason === null) add(); }}>
       <span className="widget-card-icon" aria-hidden="true"><StyledIcon icon={icon.icon} fallback={definition.icon} colour={icon.colour} /></span>
-      {/* The description lives in the details pane; a card says only what it adds: why it is unavailable, or how many the page has. */}
+      { }
       <span className="widget-card-text"><strong>{entry.title}</strong>
         {reason ? <small data-detail={detail}>{reason}</small> : placed > 0 && <small className="widget-card-placed">{placed > 1 ? `On page ×${placed}` : 'On page'}</small>}</span>
     </button>
@@ -84,11 +80,8 @@ function Details({ entry, ...shared }: Shared & { entry: Entry }) {
   </aside>;
 }
 
-/** The rail's view of the widgets already on the page, beside All and each category. */
 const ON_PAGE = Symbol('on this page');
 
-/** The catalogue: categories, search, a card per widget and a live preview of the selected one.
- * It stays open while widgets are added. */
 function Catalogue({ open, placed, ...shared }: Shared & { open: boolean; placed: readonly WidgetSpec[] }) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string | typeof ON_PAGE | null>(null);
@@ -97,7 +90,6 @@ function Catalogue({ open, placed, ...shared }: Shared & { open: boolean; placed
   useEffect(() => { if (!open) setQuery(''); }, [open]);
   const definitions = useMemo(() => widgetDefinitions(), [open]);
   const groups = useMemo(() => widgetGroups(definitions), [definitions]);
-  // The registry is fixed once widgets register, so these hook calls keep one order.
   const presets = new Map<string, WidgetPresets>();
   for (const definition of definitions) if (definition.usePresets) presets.set(definition.kind, definition.usePresets(definition, shared.runtime, shared.track, shared.active));
   const byGroup = catalogueEntries(groups, presets).map(entries => entries.filter(entry =>
@@ -139,7 +131,6 @@ function Catalogue({ open, placed, ...shared }: Shared & { open: boolean; placed
 
 export default function WidgetPicker({ disabled, onAdd, onOpen, runtime, placed = [] }: {
   disabled: boolean; onAdd: Add; onOpen: () => void; runtime: WidgetRuntime;
-  /** The page's widgets, so each card shows how many it already has. */
   placed?: readonly WidgetSpec[];
 }) {
   const id = useId();

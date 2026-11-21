@@ -1,13 +1,3 @@
-//! Each country's RaidIntelInputs modifier answers (its accumulator's `CRYPTO_STRENGTH` and
-//! `INTELLIGENCE_AGENCY_DEFENSE` raw values), held between the Projects job's hourly walks
-//! ([`engine_raid_inputs::raid_intel_inputs::Carry`]). The walk still reads each country's accumulator header;
-//! a country whose header is the held one, whose CCountry and id are the held ones and whose
-//! certificate is the one taken before the held read skips its entries copy and answers from the
-//! held values. The certificate is the naval tree family's
-//! ([`crate::naval_tree_changes::sequence`]): its country sites, country modifier recalculation and
-//! country appearance reset, are the native writers of `ccountry::MODIFIER_ACCUMULATOR`. A read is
-//! held only when the certificate stood still across it; a walk that does not complete forgets the
-//! store.
 use engine_native::ccountry::Country;
 use engine_raid_inputs::{raid_intel_inputs::Carry, raid_intel_inputs::RawAnswer};
 use std::sync::{
@@ -17,18 +7,13 @@ use std::sync::{
 
 type Certificate = (u64, u64);
 
-/// Carried and read countries; walks that did not complete.
 static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static STORE: Mutex<Store> = Mutex::new(Store { held: Vec::new() });
 
-/// The certificates as a walk consults them; tests substitute their own.
 pub trait Certificates {
-    /// A CCountry's certificate, registering it; `None` when it cannot be
-    /// observed.
     fn certificate(&self, country: usize) -> Option<Certificate>;
 }
 
-/// The naval tree family's country certificates.
 pub struct Observer;
 impl Certificates for Observer {
     fn certificate(&self, country: usize) -> Option<Certificate> {
@@ -36,7 +21,6 @@ impl Certificates for Observer {
     }
 }
 
-/// One country's latest complete read.
 #[derive(Clone, Copy)]
 struct Held {
     id: u32,
@@ -46,7 +30,6 @@ struct Held {
     answers: [RawAnswer; 2],
 }
 
-/// Held countries by canonical slot.
 pub struct Store {
     held: Vec<Option<Held>>,
 }
@@ -71,26 +54,20 @@ impl Store {
     }
 }
 
-/// The country a walk asked about last: its certificate before its entries
-/// copy.
 struct Pending {
     pointer: usize,
     certificate: Option<Certificate>,
 }
 
-/// One walk's use of the store.
 pub struct Walk<'a, C: Certificates> {
     store: MutexGuard<'a, Store>,
     certificates: &'a C,
     pending: Option<Pending>,
-    /// Countries asked about (watch receivers), carried and read.
     receivers: u64,
     carried: u64,
     read: u64,
 }
 
-/// The production walk, when `raid_intel_changes` is configured and no other
-/// walk holds the store.
 pub fn begin() -> Option<Walk<'static, Observer>> {
     if !cfg!(feature = "raid_intel_changes") {
         return None;
@@ -102,7 +79,6 @@ impl<'a, C: Certificates> Walk<'a, C> {
     pub fn begin_in(store: &'a Mutex<Store>, certificates: &'a C) -> Option<Self> {
         let store = match store.try_lock() {
             Ok(store) => store,
-            // A walk that panicked left it: hold nothing it held.
             Err(TryLockError::Poisoned(poisoned)) => {
                 let mut store = poisoned.into_inner();
                 store.held.clear();
@@ -120,8 +96,6 @@ impl<'a, C: Certificates> Walk<'a, C> {
         })
     }
 
-    /// The walk ended; `complete` when it produced its rows. One that did not
-    /// forgets every held country.
     pub fn finish(mut self, complete: bool) {
         if !complete {
             self.store.held.clear();
@@ -178,8 +152,6 @@ impl<C: Certificates> Carry for Walk<'_, C> {
             return;
         };
         self.read += 1;
-        // A read across an observed write (or while observation failed) is
-        // not held.
         let steady = pending.certificate.filter(|&certificate| {
             self.certificates.certificate(country.pointer) == Some(certificate)
         });
@@ -200,7 +172,6 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    /// Sequences a test bumps.
     #[derive(Default)]
     struct Sequences {
         sequence: Cell<u64>,
@@ -218,9 +189,6 @@ mod tests {
     };
     const HEADER: [u8; 16] = [1; 16];
 
-    /// One walk over `COUNTRY` as the engine drives the carry: the held
-    /// answers, or a copy whose answers are `fresh` (`write` bumps the
-    /// certificate during the copy).
     fn hour(
         store: &Mutex<Store>,
         sequences: &Sequences,
@@ -240,9 +208,6 @@ mod tests {
         held
     }
 
-    /// A country no writer touched answers from its held read; a certificate
-    /// bump, a different header, a write across the read and another country
-    /// in the slot each read afresh.
     #[test]
     fn a_country_is_carried_until_its_accumulator_may_have_changed() {
         let store = Mutex::new(Store::new());
@@ -255,20 +220,16 @@ mod tests {
             "first read"
         );
         assert_eq!(hour(&store, &sequences, HEADER, b, false), Some(a));
-        // Modifier recalculation ran: read afresh, then carried.
         sequences.sequence.set(sequences.sequence.get() + 1);
         assert_eq!(hour(&store, &sequences, HEADER, b, false), None);
         assert_eq!(hour(&store, &sequences, HEADER, a, false), Some(b));
-        // Another header (array moved or resized): read afresh.
         let moved = [2; 16];
         assert_eq!(hour(&store, &sequences, moved, a, false), None);
         assert_eq!(hour(&store, &sequences, moved, b, false), Some(a));
-        // A writer ran during the read: not held.
         sequences.sequence.set(sequences.sequence.get() + 1);
         assert_eq!(hour(&store, &sequences, HEADER, b, true), None);
         assert_eq!(hour(&store, &sequences, HEADER, b, false), None);
         assert_eq!(hour(&store, &sequences, HEADER, a, false), Some(b));
-        // Another country in the slot: read afresh.
         let other = Country { id: 8, ..COUNTRY };
         let mut walk = Walk::begin_in(&store, &sequences).unwrap();
         assert_eq!(walk.held(&other, &HEADER), None);
@@ -305,7 +266,6 @@ mod tests {
         };
         let store = Mutex::new(Store::new());
         let certificates = PerCountry(std::cell::RefCell::new(vec![0; COUNTRIES as usize + 1]));
-        // One walk over every country: its carried and read counts.
         let pass = |moved: &dyn Fn(u32) -> bool| {
             let mut walk = Walk::begin_in(&store, &certificates).unwrap();
             for slot in 1..=COUNTRIES {
@@ -323,8 +283,6 @@ mod tests {
         let eleventh = |slot: u32| slot.is_multiple_of(11);
         assert_eq!(pass(&|_: u32| false), (0, all));
         assert_eq!(pass(&|_: u32| false), (all, 0));
-        // A writer touched every seventh country; every eleventh one's array
-        // moved.
         for slot in (7..=COUNTRIES).step_by(7) {
             certificates.0.borrow_mut()[slot as usize] += 1;
         }
@@ -335,7 +293,6 @@ mod tests {
         assert_eq!(pass(&eleventh), (all, 0));
     }
 
-    /// A walk that does not complete forgets every held country.
     #[test]
     fn an_incomplete_walk_forgets_the_store() {
         let store = Mutex::new(Store::new());

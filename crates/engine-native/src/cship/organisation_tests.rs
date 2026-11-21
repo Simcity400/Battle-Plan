@@ -273,8 +273,6 @@ fn weather_fixture() -> Fixture {
             ],
         );
     }
-    // Include a critical effect so the fourth weather operand affects the
-    // final result, too, rather than testing only the first three keys.
     f.array(SHIP + 0x918, 0x36000, 1);
     f.word(0x36000, 0x7400);
     f.dword(0x36008, 1);
@@ -330,8 +328,6 @@ fn organisation_certified_operands_match_direct_after_task_terms_change() {
         let carried_calls = census.calls();
         assert_eq!(memo.organisation_operands(SHIP), Some(held));
 
-        // Every ship-owned field and array was certified before this fault;
-        // the changed task needs none of their foreign bytes again.
         for address in [
             SHIP,
             SHIP + HANDLE,
@@ -357,8 +353,6 @@ fn organisation_certified_operands_match_direct_after_task_terms_change() {
         );
         let fresh = weather_fixture();
         let census = ReadCensus::new(&fresh);
-        // Use a separate full reader's count, with every selector and array
-        // read rather than supplied by a certificate and current task terms.
         assert!(maximum_organisation(&census, IMAGE, SHIP).is_ok());
         assert!(carried_calls < census.calls());
     }
@@ -494,8 +488,6 @@ fn organisation_certified_operands_apply_current_own_only_feature_eligibility() 
     let before = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
     let held = memo.organisation_operands(SHIP).unwrap();
     let old_terms = current_task_terms(&f, &mut OrganisationMemo::default());
-    // The native command resets the world and revokes the certificate.
-    // This fixture isolates the packet's raw-versus-effective dependency.
     f.dword(IMAGE + md::TRADE_FEATURE_FLAGS_RVA.0, 4);
     let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
     assert_ne!(before, expected);
@@ -580,14 +572,12 @@ fn organisation_weather_packet_preserves_every_ship_factor_and_critical_operand(
             "fresh factor {factor}"
         );
     }
-    // The original location-null branch never consults any weather source.
     f.word(TASK + cunit::LOCATION, 0);
     f.bytes.remove(&WEATHER);
     assert_eq!(
         read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
         maximum_organisation(&f, IMAGE, SHIP)
     );
-    // Same addresses on the next callback must reacquire mutable weather.
     f.word(TASK + cunit::LOCATION, PROVINCE as u64);
     f.word(
         WEATHER,
@@ -636,8 +626,6 @@ fn organisation_weather_packet_removes_graph_reads_and_thirteen_existing_snapsho
         census.bytes(),
         snapshot.lookups.get(),
     );
-    // Every prior memo and raw snapshot remains warm; only the new complete
-    // weather packet is removed. This measures no previously retained work.
     memo.weather = None;
     census.reset();
     snapshot.lookups.set(0);
@@ -658,7 +646,6 @@ fn organisation_weather_packet_removes_graph_reads_and_thirteen_existing_snapsho
 
 #[test]
 fn organisation_weather_packet_keeps_zero_scale_reads_and_never_stores_failed_graphs() {
-    // Building the byte map dominates this test; every case starts from the same fixture.
     let base = weather_fixture();
     for factor in [25000_i64, 0, -200000] {
         for (failed, reason) in [
@@ -741,7 +728,6 @@ fn organisation_weather_packet_rejects_changed_location_and_definition_sources()
             f.word(PROVINCE + 0xc8, OTHER as u64);
             f.word(OTHER + 0x30, TERRAIN_SOURCE as u64);
             f.dword(OTHER + 0x58, 1);
-            // A province keeps its definition; the memo holds it as read.
             memo.location = None;
         } else {
             f.word(TASK + cunit::LOCATION, OTHER as u64);
@@ -758,7 +744,6 @@ fn organisation_weather_packet_rejects_changed_location_and_definition_sources()
             read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo),
             Err(expected)
         );
-        // The failed new source never replaces the previous complete packet.
         assert_eq!(
             memo.weather.as_ref().unwrap().sources,
             [GAME, TASK, COUNTRY, PROVINCE, PROVINCE_DEFINITION]
@@ -782,8 +767,6 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
         Ok(expected)
     );
     let warm = (census.calls(), census.spans(), census.bytes());
-    // Keep the pre-existing country/doctrine/support/metadata memos warm;
-    // this isolates just the four new successful-source slots.
     memo.terrain = Recent::default();
     memo.terrain_class = Recent::default();
     memo.fleet = None;
@@ -802,8 +785,6 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
         (25, 34, 405),
     );
 
-    // The production adapter already shares raw modifier payloads. Isolate
-    // the additional graph work saved with that existing optimization active.
     let snapshot = Snapshotted {
         source: &census,
         lookups: Cell::new(0),
@@ -843,8 +824,6 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
         (19, 19, 165),
     );
 
-    // Each selector is still read from this ship and its current graph.
-    // A different class picks the independently validated empty fallback.
     f.dword(SHIP + 0x60c, 1);
     f.dword(SHIP + CLASS_DATABASE_ID, 8);
     f.word(SHIP + BASE_ORGANISATION, 4_000_003);
@@ -865,7 +844,6 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
     );
     assert_eq!(memo.fleet, Some((0, None, [0; 4])));
 
-    // The next callback must acquire changes even when source pointers match.
     f.word(TASK + ctask_force::FLEET, FLEET as u64);
     f.word(TASK + cunit::LOCATION, PROVINCE as u64);
     f.modifier(LEADER + 0x418, 0x33000, &[(0x46, -1111)]);
@@ -878,10 +856,6 @@ fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_te
     assert_eq!(memo.fleet, Some((FLEET, Some(LEADER), [-1111, 0, 0, 0])));
 }
 
-/// A task force's ships alternate classes and subunits. Within a capture a
-/// ship after a different one reads no terrain-class, commander-class or
-/// pride-ship source again: each is kept by its own selector, not as the
-/// last ship's.
 #[test]
 fn organisation_memo_keeps_recent_selectors_across_alternating_ships() {
     use super::gathered::FaultAt;
@@ -955,7 +929,6 @@ fn organisation_shared_sources_never_cache_failed_terrain_fleet_or_class_observa
         );
     }
     let mut f = shared_sources_fixture();
-    // A matching class in the first row cannot hide a malformed suffix.
     f.dword(SHIP + 0x60c, 2);
     f.dword(CLASS_ROWS + 8, 2);
     let mut memo = OrganisationMemo::default();
@@ -984,8 +957,6 @@ fn organisation_memo_shares_country_and_support_but_reads_current_ship_terms() {
     );
     assert!(f.calls.get() < cold);
 
-    // Shared task/country terms cannot conceal a different ship's own base,
-    // modifiers, experience or critical effects within this same capture.
     f.word(SHIP + BASE_ORGANISATION, 5_000_001);
     f.modifier(SHIP + 0x750, 0x6100, &[(0x46, 33333), (0x1bb, -50000)]);
     f.modifier(0x7000 + 0x1b0, 0x6200, &[(0x47, 777)]);
@@ -1000,7 +971,6 @@ fn organisation_memo_shares_country_and_support_but_reads_current_ship_terms() {
         Ok(current)
     );
 
-    // A different task force cannot reuse the old support maximum.
     const OTHER_TASK: usize = 0x22000;
     f.put(OTHER_TASK, &[0; 0x900]);
     f.word(OTHER_TASK, (IMAGE + ctask_force::VTABLE_RVA.0) as u64);
@@ -1015,8 +985,6 @@ fn organisation_memo_shares_country_and_support_but_reads_current_ship_terms() {
     );
     assert_eq!(memo.support, Some((OTHER_TASK, [0; 4])));
 
-    // Keep the task pointer but change its freshly resolved owner. A last
-    // country slot is keyed by the actual country, never by ship order.
     const OTHER_COUNTRY: usize = 0x24000;
     f.put(OTHER_COUNTRY, &[0; 0xc00]);
     f.array(GAME + cgame_state::COUNTRIES, 0x4000, 3);
@@ -1039,8 +1007,6 @@ fn organisation_memo_reacquires_mutable_terms_and_never_retains_failed_support()
     let mut f = support_fixture();
     let mut memo = OrganisationMemo::default();
     let first = read_maximum_organisation_memo(&f, IMAGE, SHIP, &mut memo).unwrap();
-    // The collector starts each capture with a fresh memo. Both the country
-    // and the same task force's influence definitions may have changed.
     f.modifier(COUNTRY + 0x5b8, 0x6000, &[(0x46, -33333), (0x47, 777)]);
     f.dword(METADATA + 0x46 * md::STRIDE + md::FLAGS, md::CLAMP_MAXIMUM);
     f.modifier(0x1a000 + 0xe0, 0x1a000 + 0x100, &[(0x46, 55555)]);
@@ -1145,8 +1111,6 @@ fn organisation_batch_keeps_native_order_and_removes_three_full_censuses() {
         ),
         scalar
     );
-    // Metadata observations are identical. Only three entry censuses and
-    // their initial 16-byte headers disappear.
     let saved_reads = 3 * (entries.len() + 1);
     assert_eq!(scalar_reads - f.calls.get(), saved_reads);
     assert_eq!(scalar_bytes - f.copied.get(), saved_reads * 16);
@@ -1327,8 +1291,6 @@ fn organisation_batch_rejects_bad_headers_suffixes_and_entry_faults_before_metad
             ENTRIES,
             &[(0x46, 7), (0x47, 11), (0x1bb, 13), (0x27e, 17), (0x300, 19)],
         );
-        // A full census must fail before consulting even the first key's
-        // unreadable metadata, including when all four keys were found.
         f.bytes.remove(&(IMAGE + md::TABLE_RVA.0));
         let expected = match fault {
             0 => {
@@ -1382,8 +1344,6 @@ fn organisation_batch_preserves_metadata_rules_and_full_graph_fixed5_results() {
             address: usize,
             key: u32,
         ) -> Option<Result<Value, &'static str>> {
-            // Independent full scalar census for every operand, as before
-            // batching; the immutable fixture needs no terminal cache.
             Some(modifier_accumulator::lookup_at(self.0, address, key))
         }
     }
@@ -1465,7 +1425,6 @@ fn derives_country_ship_experience_and_per_entry_critical_terms_with_fixed5_clam
         f.dword(0x6308 + i * 16, 1);
         f.modifier(p + 0x98, 0x6400 + i * 32, &[(0x46, 1)]);
     }
-    // Each 1*0.5 truncates to0; summing before scaling would incorrectly add1.
     assert_eq!(maximum_organisation(&f, IMAGE, SHIP), Ok(13_130_006));
     f.word(SHIP + BASE_ORGANISATION, (-200000i64) as u64);
     assert_eq!(maximum_organisation(&f, IMAGE, SHIP), Ok(100));
@@ -1543,7 +1502,6 @@ fn rejects_unreadable_sources_bad_identity_and_doctrine_cycles() {
 fn organisation_arrays_use_original_counts_above_former_limits() {
     let mut f = fixture();
     f.array(SHIP + 0x918, 0x22000, 4_097);
-    // Repeated native effects are meaningful occurrences, even if all zero.
     f.modifier(0x7400 + 0x98, 0, &[]);
     for index in 0..4_097 {
         f.word(0x22000 + index * 16, 0x7400);
@@ -1559,7 +1517,6 @@ fn organisation_arrays_use_original_counts_above_former_limits() {
     let mut weather = weather_fixture();
     weather.array(WEATHER + 0x40, 0x29000, 65_537);
     weather.array(WEATHER + 0x370, 0x2a000, 65_537);
-    // The native getters select a single region/province within the live arrays.
     assert!(maximum_organisation(&weather, IMAGE, SHIP).is_ok());
 }
 
@@ -1592,11 +1549,6 @@ fn organisation_doctrine_uses_native_map_size_and_deep_successors() {
     );
 }
 
-/// The organisation reader through gathered ship, task-force, province and
-/// game-singleton fields ([`ShipFields`]) computes the direct reader's
-/// maximum, and for a fault at the first or last byte of any read either
-/// makes its exact failure, never reading a failed span again, in fewer
-/// guarded calls.
 #[test]
 fn gathered_organisation_reads_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;
@@ -1644,8 +1596,6 @@ fn gathered_organisation_reads_equal_the_direct_reader_at_every_fault() {
     }
 }
 
-/// Task forces of a fleet share their headquarters: a second task force with
-/// the same influence reads its list but not its commander again.
 #[test]
 fn organisation_memo_shares_an_influence_across_task_forces() {
     use super::gathered::FaultAt;
@@ -1676,9 +1626,6 @@ fn organisation_memo_shares_an_influence_across_task_forces() {
     );
 }
 
-/// A later capture served the held location's definition and terrain and the
-/// held fleet's leader terms reads neither the province, its terrain graph,
-/// the fleet, its leader binding nor the leader's tree.
 #[test]
 fn held_location_and_fleet_terms_read_no_province_fleet_or_leader() {
     use super::gathered::FaultAt;

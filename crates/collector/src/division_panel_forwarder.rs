@@ -1,5 +1,3 @@
-//! Receiver for the design family's sole variant writer patches: division
-//! panel operands and ShipModels' held variants.
 use crate::design_changes::{self, Availability, Forwarder, Phase, Writer};
 use crate::ship_model_changes as ships;
 use collector_observers::division_panel_changes as changes;
@@ -37,7 +35,6 @@ unsafe fn receive(writer: Writer, receiver: usize, phase: Phase) {
         (false, Phase::Unwound) => ships::variant_after(receiver, true),
     }
     match writer {
-        // Division operands keep their earlier writer set.
         Writer::Edit | Writer::Roster => return,
         Writer::SourceInvalidation
         | Writer::IdeaInvalidation
@@ -110,7 +107,6 @@ mod tests {
             assert_ne!(changes::variant_sequence(0x200), Some(old));
             assert_eq!(changes::sequence(0x100), Some(pool));
         }
-        // Edits and bulk upgrades are forwarded for ShipModels only.
         for writer in [Writer::Edit, Writer::Roster] {
             let old = changes::variant_sequence(0x200).unwrap();
             unsafe {
@@ -135,7 +131,6 @@ mod tests {
             let old = changes::variant_sequence(0x200).unwrap();
             let old_other = changes::variant_sequence(other).unwrap();
             collector_test_support::with_allocations_denied(|| unsafe {
-                // This is a source/provider/country identity, not a variant.
                 receive(writer, usize::MAX, Phase::Before);
                 assert!(changes::variant_sequence(0x200).is_none());
                 assert!(changes::variant_sequence(other).is_none());
@@ -146,8 +141,6 @@ mod tests {
             assert_eq!(changes::sequence(0x100), Some(pool));
             changes::take_lifetimes(|_| panic!("a source is not a retired variant")).unwrap();
         }
-        // Move notifications bracket destination then source, and terminate
-        // in reverse order. Neither terminal callback dereferences storage.
         collector_test_support::with_allocations_denied(|| unsafe {
             receive(Writer::MoveAssign, 0x200, Phase::Before);
             receive(Writer::MoveAssign, other, Phase::Before);

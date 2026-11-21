@@ -1,4 +1,3 @@
-//! Fixed-byte/state draw proofs, independent of the presentation simulation.
 use super::*;
 use crate::map::shader_scene::State;
 use shader_pipeline::{Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput};
@@ -131,8 +130,6 @@ fn actor_packing_subranges_equal_each_packet_over_ring_discard_and_append() {
     }
 }
 
-/// Compare every applied command, including commands made by actors with no draw.
-/// The reference issues the original binds directly, independently of Applied.
 #[test]
 fn weather_noop_binds_match_bytes_ranges_and_handles_over_many_frames() {
     let quad: Arc<[u8]> = bytemuck::cast_slice(&particle_shader::QUAD).into();
@@ -149,7 +146,6 @@ fn weather_noop_binds_match_bytes_ranges_and_handles_over_many_frames() {
     let mut skipped = 0;
     for frame in 0..512 {
         let mut applied = Applied::default();
-        // The preceding producer's PS b2 can have the same bytes but different known ranges.
         let light = [frame as u8; 16];
         for state in [&mut old, &mut new] {
             state.stream.bind_constants(2, Stage::Pixel, Some(&light));
@@ -184,7 +180,6 @@ fn weather_noop_binds_match_bytes_ranges_and_handles_over_many_frames() {
                 old.bind_vertex(0, 8, quad.clone());
                 skipped += usize::from(applied.quad(&mut new, &quad));
                 assert!(old.same_bindings(&new), "quad frame {frame}, actor {actor}");
-                // Empty actors stop after their scale/quad binds.
                 if actor % 3 == 1 {
                     continue;
                 }
@@ -200,8 +195,6 @@ fn weather_noop_binds_match_bytes_ranges_and_handles_over_many_frames() {
                     "object frame {frame}, actor {actor}"
                 );
                 if repeat == 1 {
-                    // A trail replaces slot zero. The next enabled actor must restore the quad
-                    // even when that actor has no instances. Its live allocation stays mutable.
                     let allocation = allocation(56 * 28);
                     for state in [&mut old, &mut new] {
                         state.bind_partial_vertex(0, 28, allocation.clone(), 0);
@@ -417,7 +410,6 @@ fn frame_packets(frame: usize) -> Vec<DrawPacket> {
             }
             packets.push(p);
         }
-        // An empty packet still establishes actor binds, without breaking the prior draw.
         packets.push(packet(frame, actor, "Missing", 0));
         let mut p = packet(frame, actor, "Fixture", frame % 4);
         p.descriptor.trail = true;
@@ -434,7 +426,6 @@ fn frame_packets(frame: usize) -> Vec<DrawPacket> {
         0.5,
     ];
     packets.push(empty);
-    // Missing techniques exercise the original path through both kinds of inherited layouts.
     let mut p = packet(frame, 5, "Missing", 3);
     if frame.is_multiple_of(2) {
         p.descriptor.trail = true;
@@ -551,8 +542,6 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
         let mut renderer = Renderer::new(&device, effect.clone(), pages.clone(), 1, 16);
         let mut retained = State::default();
         let mut expected_retained = State::default();
-        // This is the ordinary, permanent Stream consumer of fixed fixture states,
-        // not a switch selecting a second weather drawing implementation.
         let mut expected_consumer = State::default();
         for frame in 0..48 {
             let packets = if frame % 13 == 12 {
@@ -730,8 +719,6 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
     assert!(visible > 0, "pixel proof includes visible geometry");
 }
 
-/// A successful resource bind is not yet a successful native draw: geometry staging can
-/// still exceed the device limit. A failed draw must not publish a new immutable program.
 #[test]
 #[ignore = "requires a GPU"]
 fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures() {
@@ -802,8 +789,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
         instanced: 0,
         stream: None,
     };
-    // Each path owns its frame arena. An intentional upload refusal ends that frame,
-    // so the next retry resets it before staging rather than continuing a failed frame.
     let old_arena = gpu::Arena::new(&device);
     let arena = gpu::Arena::new(&device);
     let mut cache = shader_pipeline::stream::NativePassCache::default();
@@ -941,7 +926,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
         assert_eq!(a.pass.stencil_reference, b.pass.stencil_reference);
         assert_eq!(a.pass.scissor_enabled, b.pass.scissor_enabled);
     }
-    // Both pages are live every frame, just as a particle actor's pages alternate.
     for frame in 0..32 {
         for draw in 0..4 {
             let mut constants =
@@ -969,8 +953,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     );
     assert_eq!(warm[0][&binding(0, Stage::Pixel)], Some(views[0].clone().into()));
     assert_eq!(warm[1][&binding(0, Stage::Pixel)], Some(views[1].clone().into()));
-    // Several warm entries must survive a later bind whose geometry fails. Retry in
-    // the same frame/Arena: refusal must not publish the third page or disturb A/B.
     let third = image.create_view(&Default::default());
     state
         .stream
@@ -1020,7 +1002,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     );
     assert!(same_snapshots(&warm, &recovered[..2]));
     assert_eq!(recovered[2][&binding(0, Stage::Pixel)], Some(third.clone().into()));
-    // All three entries expire after a whole frame without use, as ordinary groups do.
     for _ in 0..2 {
         old_arena.reset();
         arena.reset();
@@ -1042,8 +1023,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     state
         .stream
         .bind_texture(0, Stage::Pixel, Some(views[0].clone()), None);
-    // The complete retained map is the gate, including unread slots, distinct views of
-    // the same image, explicit nulls and missing entries. None may alias another key.
     for frame in 0..16 {
         for draw in 0..4 {
             match draw {
@@ -1080,8 +1059,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
         arena.reset();
     }
     assert_eq!(cache.binding_textures().count(), 4);
-    // Warm caches must still observe every ordered pass key, known range, null/missing
-    // binding and live byte change. Compare the ordinary stream route after each command.
     for frame in 0..128 {
         let mut template = template.clone();
         template.primitive.topology = if frame % 3 == 0 {
@@ -1221,8 +1198,6 @@ fn weather_ring_append_matches_expected_generations_ranges_bytes_and_errors() {
     }
 }
 
-/// Exercise geometry staging refusal without retrying OrdinaryUploads after a handled
-/// refusal. Both paths keep the same warm quad and same-frame retry allocation order.
 fn packing_upload_refusal_and_retry(device: &wgpu::Device, program: &Program) {
     let old_arena = gpu::Arena::new(device);
     let arena = gpu::Arena::new(device);
@@ -1265,12 +1240,10 @@ fn packing_upload_refusal_and_retry(device: &wgpu::Device, program: &Program) {
                 assert_eq!((a.offset, a.size), (b.offset, b.size));
             }
         }
-        // Following work in the same Arena must encounter identical remaining room.
         let a = old_arena.vertices(&[0x5a; 16]).unwrap();
         let b = arena.vertices(&[0x5a; 16]).unwrap();
         assert_eq!((a.offset, a.size), (b.offset, b.size));
     }
-    // A stronger prefix proof must defer a valid narrower read, not invent unknown bytes.
     let p = packet(0, 0, "Fixture", 1);
     let start = ring.append(p.instances.iter()).unwrap();
     new.begin(start, ring.cursor);

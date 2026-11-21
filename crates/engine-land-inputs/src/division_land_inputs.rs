@@ -1,7 +1,3 @@
-//! Hourly land manpower and naval-transfer operands for every division in the
-//! census. Fixed fields are owned DivisionSeed copies; only contributor entries
-//! remain live here. The division's supply ratio and grace are DivisionStatus's
-//! (`carmy::StatusPacket`), taken from the same seed.
 use crate::{
     Memory, carmy, carmy_manpower_values,
     cpdx_array::Array,
@@ -29,15 +25,12 @@ pub struct Walk {
     pub required_contributors: usize,
 }
 
-/// Caller-owned gather scratch, sized with the live division census off-thread.
 pub struct Scratch<'a> {
     pub pointers: &'a mut [usize],
     pub ordinals: &'a mut [usize],
     pub first: &'a mut [[u8; 2 * manpower_value_entry::STRIDE]],
 }
 
-/// Contributor headers are retained in the original census. Visit their complete
-/// stored count without applying a country ratio.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -88,8 +81,6 @@ fn capture_buffer(
         use crate::memory::{RecordLayout, RecordSources, packed_fields};
         const ENTRY: usize = manpower_value_entry::STRIDE;
         const PAIR: usize = 2 * ENTRY;
-        // Typical arrays fit two entries. A single-entry array uses a shorter
-        // layout, never reads past its count. Zero entries need no child read.
         const ONE: [crate::memory::RecordField; 1] = packed_fields([(0, ENTRY)]);
         const TWO: [crate::memory::RecordField; 1] = packed_fields([(0, PAIR)]);
         const ONE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ONE, PAIR).unwrap();
@@ -155,9 +146,6 @@ fn capture_buffer(
             used += array.count as usize;
             len += 1;
         }
-        // One gather for all two-or-more-entry pointers, with a separate
-        // short gather only when single-entry arrays exist. Above two,
-        // only that division's remainder uses ordinary guarded copies.
         for (count, layout) in [(2, &TWO_LAYOUT), (1, &ONE_LAYOUT)] {
             let mut gathered = 0;
             for (n, row) in rows[..len].iter().enumerate() {
@@ -213,8 +201,6 @@ fn capture_buffer(
                         std::mem::offset_of!(Contributor, amount) == manpower_value_entry::COUNT
                     );
                 };
-                // C representation has no padding; every u32/i32 pattern is valid.
-                // ENTRY covers the complete eight-byte element stride.
                 let bytes = unsafe {
                     std::slice::from_raw_parts_mut(
                         entries.as_mut_ptr().cast::<u8>(),
@@ -272,8 +258,6 @@ mod sizing_tests {
                 division: ((ordinal as u64 + 1) << 32) | 1,
                 primary_vtable: Some(carmy::VTABLE_RVA.0 as u64),
                 handle: Some(((ordinal as u64 + 1) << 32) | 1),
-                // The supply operands are DivisionStatus's; an unread one
-                // never withholds the land row.
                 counter_supply_status: None,
                 supply_grace_maximum: None,
                 supply_grace_remaining: None,

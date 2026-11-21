@@ -63,8 +63,6 @@ impl ReferenceReads {
         block: Option<(usize, bool)>,
     ) {
         self.membership_observation = None;
-        // A reset may retire every retained pointer. Selection observations are
-        // independently authenticated, but held row/membership hints cannot carry.
         if !store.can_settle_owned() {
             self.complete = false;
         }
@@ -155,8 +153,6 @@ impl ReferenceReads {
             std::collections::hash_map::Entry::Occupied(_) => return,
             std::collections::hash_map::Entry::Vacant(slot) => slot.insert(None),
         };
-        // Cold/full admissions stay in the original ordered slow path. Warm
-        // receivers are already registered; a slot hint never trusts a table pointer.
         let held = store.roots.get(&identity);
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = changes::sequence_at(receiver, hint);
@@ -191,8 +187,6 @@ impl ReferenceReads {
         read.certificate = certificate;
         read.ready = true;
         read.result = modifier_breakdown::source_nodes(memory, accumulator, |ordinal, node| {
-            // Staging shortage is not a native refusal. Before observing a
-            // refusal, ordinary ordered acquisition can still consume the tree.
             if engine_allocation::advisory(|| engine_allocation::reserve(&mut read.rows, 1))
                 .is_err()
             {
@@ -436,8 +430,6 @@ impl ReferenceReads {
     }
 }
 
-/// The original's two maps of a pair hold both halves of an observation or
-/// neither, and only for an observed key, so zipping them loses nothing.
 fn assert_paired<K: Eq + std::hash::Hash, A, B, V>(
     observed: &Map<K, V>,
     first: &Map<K, A>,

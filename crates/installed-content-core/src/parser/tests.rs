@@ -26,7 +26,6 @@ fn boolean_tokens_compare_exact_c_strings_whatever_the_kind() {
     );
 }
 
-/// The word scan reads what the parser's lexer reads, past any error.
 #[test]
 fn scalars_follow_the_lexer_past_errors() {
     let words = |text: &[u8]| {
@@ -35,9 +34,6 @@ fn scalars_follow_the_lexer_past_errors() {
             .map(|word| String::from_utf8(word).unwrap())
             .collect::<Vec<_>>()
     };
-    // A bare CR ends a comment; escapes are decoded; a structural error
-    // and a NUL byte do not stop the scan; an unterminated quote runs
-    // to the end.
     assert_eq!(
         words(b"# note\rentity = { name = \"a\\\"b\\\\c\" } } = x\0y # z\n\"open"),
         ["entity", "name", "a\"b\\c", "x", "y", "open"]
@@ -58,7 +54,6 @@ fn block_lines_follow_the_braces_in_preorder() {
         .iter()
         .map(|lines| (lines.open, lines.first_token, lines.close))
         .collect();
-    // a, b, the tagged colour, d, then e; EOF closes d.
     assert_eq!(
         spans,
         [(1, 2, 4), (2, 2, 2), (3, 3, 3), (5, 7, 8), (7, 8, 8)]
@@ -164,8 +159,6 @@ fn items_record_whether_their_value_is_quoted() {
     assert_eq!(quoted, [true, false, true, false, false, false]);
 }
 
-/// Quoted keys bypass keyword lookup, while bare keys fold case. Keys starting with a
-/// digit or `-` are never looked up.
 #[test]
 fn keys_keep_their_token_kind_and_only_bare_keys_are_keywords() {
     let document =
@@ -181,7 +174,6 @@ fn keys_keep_their_token_kind_and_only_bare_keys_are_keywords() {
     }
 }
 
-/// Grammar fields fold bare keywords, while quoted fields use authored-name dispatch.
 #[test]
 fn content_dispatch_distinguishes_keywords_from_authored_names() {
     let traits = crate::leader_traits::parse(
@@ -207,7 +199,6 @@ fn content_dispatch_distinguishes_keywords_from_authored_names() {
     assert!(crate::ideologies::parse(b"\"ideologies\"={synthetic={}}").is_empty());
 }
 
-/// Keyword matching folds ASCII only, preserving authored non-ASCII bytes.
 #[test]
 fn keyword_identity_preserves_non_ascii_and_quoted_text() {
     let document = parse(b"Name=one \"name\"=two N\xc4ME=three n\xe4me=four").unwrap();
@@ -218,8 +209,6 @@ fn keyword_identity_preserves_non_ascii_and_quoted_text() {
     assert_ne!(document.items[2].keyword(), document.items[3].keyword());
 }
 
-/// `<`, `>` and `=` are single-character tokens ending a bare token, and each is
-/// accepted as an operator.
 #[test]
 fn comparisons_are_keys_with_their_operator_and_value_token() {
     let document = parse(b"t = { skill>@x phase > 99 a<\"010\" b >= 5 c = d } < 3").unwrap();
@@ -246,7 +235,6 @@ fn comparisons_are_keys_with_their_operator_and_value_token() {
             keyed("skill", Operator::Greater, "@x", false),
             keyed("phase", Operator::Greater, "99", false),
             keyed("a", Operator::Less, "010", true),
-            // `>=` is `>` and then `=`: the game reads `=` as the value.
             (
                 Some("b".to_owned()),
                 Operator::Greater,
@@ -260,14 +248,10 @@ fn comparisons_are_keys_with_their_operator_and_value_token() {
     let doubled = parse(b"a == b").unwrap();
     assert_eq!(doubled.items[0].value.scalar(), Some(b"=".as_slice()));
     assert_eq!(doubled.items[1].value.scalar(), Some(b"b".as_slice()));
-    // A stray operator stays a value without a key.
     assert_eq!(document.items[1].key, None);
     assert_eq!(document.items[1].value.scalar(), Some(b"<".as_slice()));
 }
 
-/// A bare token is numeric when it starts with a digit or `-`, or its C-string text
-/// contains only digits, `-` and `.`. A leading NUL therefore makes a number token; a
-/// slot with no byte stays the initial token kind.
 #[test]
 fn number_tokens_follow_the_lexer() {
     for (text, quoted, number) in [
@@ -280,7 +264,6 @@ fn number_tokens_follow_the_lexer() {
         (b"x1", false, false),
         (b"yes", false, false),
         (b"", false, false),
-        // The loop stops at the NUL: an empty C string, and `.5`.
         (b"\0x", false, true),
         (b".5\0x", false, true),
         (b"x\0", false, false),
@@ -294,7 +277,6 @@ fn number_tokens_follow_the_lexer() {
     }
 }
 
-/// Reader loops stop at EOF like `}`, wherever the end falls.
 #[test]
 fn the_end_of_a_script_file_closes_what_it_leaves_open() {
     for source in [

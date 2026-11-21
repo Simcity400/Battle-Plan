@@ -1,4 +1,3 @@
-//! Shared game content reader paths for recording and playback.
 
 pub use installed_content_abilities::abilities;
 pub use installed_content_core::adjacencies;

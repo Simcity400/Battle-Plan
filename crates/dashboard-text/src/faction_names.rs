@@ -1,4 +1,3 @@
-//! The faction display-name rule, shared by products and scripted text.
 
 use installed_content_core::{
     faction_templates::Catalog, gui::native::BoundLocalization, gui::native::BoundNode,
@@ -19,8 +18,6 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
-/// Spell the template operand recorded at this hour. A null template needs no
-/// dictionary; unread tokens remain errors. Lexer tokens are sorted by token.
 pub fn template_spelling(
     frame: &dyn replay_frame::frame::RecordedSource,
     token: Option<u32>,
@@ -39,12 +36,9 @@ pub fn template_spelling(
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
 }
 
-/// The LexicalTokens fields a name reads: each token's literal.
 const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
 const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
 
-/// [`template_spelling`] of any frame's tables, a walk's views among them: the literal read by
-/// its token, never a copy of the table.
 pub fn template_spelling_in<F: Tables + ?Sized>(
     frame: &F,
     token: Option<u32>,
@@ -64,7 +58,6 @@ pub fn template_spelling_in<F: Tables + ?Sized>(
         .map_err(|_| format!("Faction template token {token} is not UTF-8"))
 }
 
-/// The reverse index of `rows`, each token by its literal in token order.
 fn reverse<'r>(
     rows: impl IntoIterator<Item = io::Result<(u32, &'r [u8])>>,
 ) -> Result<BTreeMap<Vec<u8>, Result<u32, String>>, String> {
@@ -86,7 +79,6 @@ fn reverse<'r>(
     Ok(names)
 }
 
-/// Why a LexicalTokens of `status` holds no rows a name reads, as [`LexicalNames`] says it.
 fn unrecorded(status: OperandStatus<'_>) -> Option<String> {
     match status {
         OperandStatus::Complete => None,
@@ -100,9 +92,6 @@ fn unrecorded(status: OperandStatus<'_>) -> Option<String> {
     }
 }
 
-/// [`LexicalNames`] of any frame's tables: its reverse index built from the hour's own
-/// LexicalTokens at the first bound token argument, never a copy of the table. Hold it only
-/// while the table is unchanged, and ask it of frames holding that table.
 #[derive(Debug, Default)]
 pub struct LexicalIndex {
     names: OnceLock<ReverseIndex>,
@@ -138,10 +127,6 @@ impl LexicalIndex {
     }
 }
 
-/// A nonempty literal is copied unchanged; otherwise the template's
-/// bound name is resolved. A recorded null template returns empty text
-/// without reading content or lexer tokens.
-/// The bound scalar may be a key or text: the localiser copies undefined keys.
 pub fn name(
     literal: &[u8],
     template: Result<Option<&str>, String>,
@@ -165,26 +150,20 @@ pub fn name(
         .get(token)?
         .ok_or_else(|| format!("Faction template {token:?} is not in the recorded content"))?;
     if bound.is_empty() {
-        // Zero entries return a valid empty string.
         return Ok(String::new());
     }
-    // The string variant is accepted without a length guard.
     bound_name(bound, localisation, token_of)
         .map_err(|why| format!("Faction template {token:?}: {why}"))
 }
 
-/// Each folded lexer name to its one token, or why it names none.
 type ReverseIndex = Result<BTreeMap<Vec<u8>, Result<u32, String>>, String>;
 
-/// The lexical dictionary behind a name read. Its reverse index is built only
-/// for bound token arguments and shared by factions from the same table read.
 pub struct LexicalNames<'a> {
     table: Lexicon<'a>,
     identity: Option<replay_frame::frame::ViewIdentity>,
     names: OnceLock<ReverseIndex>,
 }
 
-/// Where [`LexicalNames`] reads its spellings: a shared decoded view.
 enum Lexicon<'a> {
     Shared(replay_frame::frame::SharedLexical, std::marker::PhantomData<&'a ()>),
 }
@@ -223,7 +202,6 @@ impl<'a> LexicalNames<'a> {
         }
     }
 
-    /// [`Self::from_source`] of any frame's tables.
     pub fn from_tables(frame: HourFrame<'a>) -> Self {
         match frame {
             HourFrame::Decoded(decoded) => Self::from_source(decoded),
@@ -260,11 +238,9 @@ impl<'a> LexicalNames<'a> {
     }
 }
 
-/// Every complete dictionary names read, as versions sharing unchanged spellings.
 #[derive(Clone, Default)]
 pub struct DictionaryHistory {
     shared: Arc<Mutex<Versions>>,
-    /// The versions this holder added or read; a clone may have added more.
     count: u32,
 }
 
@@ -274,18 +250,15 @@ pub struct HistoricalDictionary {
     version: u32,
 }
 
-/// Each version that changed a token, with its new literal or none once deleted.
 type Spellings = Vec<(u32, Option<Box<[u8]>>)>;
 
 #[derive(Default)]
 struct Versions {
     count: u32,
     spellings: BTreeMap<u32, Spellings>,
-    /// Built by the first lookup.
     folded: Option<HashMap<Box<[u8]>, Folded>>,
 }
 
-/// The tokens one folded name spells now, and what it named from each version on.
 #[derive(Default)]
 struct Folded {
     tokens: Vec<u32>,
@@ -296,11 +269,9 @@ struct Folded {
 enum Outcome {
     None,
     One(u32),
-    /// The highest token: a table's last row of that name is the one refused.
     Several(u32),
 }
 
-/// A token whose folded name changed at a version.
 type Refold = (u32, Option<Box<[u8]>>, Option<Box<[u8]>>);
 
 impl std::fmt::Debug for DictionaryHistory {
@@ -336,9 +307,6 @@ fn lock(shared: &Mutex<Versions>) -> MutexGuard<'_, Versions> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The bytes of a `BTreeMap` leaf and internal node of `K` and `V`, at the
-/// least their fields take: a parent link, its index and length, eleven
-/// keys and values, and an internal node's twelve child links.
 fn tree_nodes<K, V>() -> (usize, usize) {
     use std::mem::size_of;
     let leaf = size_of::<usize>() + 2 * size_of::<u16>() + 11 * (size_of::<K>() + size_of::<V>());
@@ -358,7 +326,6 @@ fn held(spellings: &Spellings, count: u32) -> &[(u32, Option<Box<[u8]>>)] {
     &spellings[..spellings.partition_point(|(version, _)| *version < count)]
 }
 
-/// Moves each token between its old and new folded names at `version`.
 fn refold(folded: &mut HashMap<Box<[u8]>, Folded>, version: u32, changes: Vec<Refold>) {
     let mut touched = Vec::new();
     for (token, old, new) in changes {
@@ -439,7 +406,6 @@ impl Versions {
 }
 
 impl DictionaryHistory {
-    /// `table` as the next version, when complete; equal rows read again are another.
     pub fn add(&mut self, table: &SharedView) -> io::Result<Option<HistoricalDictionary>> {
         let TableView::Complete(TableRows::LexicalTokens(rows)) = &**table else {
             return Ok(None);
@@ -451,8 +417,6 @@ impl DictionaryHistory {
         )
     }
 
-    /// [`Self::add`] of any frame's LexicalTokens, a walk's views among them: each literal read
-    /// where the frame holds it.
     pub fn add_in<F: Tables + ?Sized>(
         &mut self,
         frame: &F,
@@ -529,22 +493,12 @@ impl DictionaryHistory {
         self.count
     }
 
-    /// What the shared versions hold, with the lookup a first name builds
-    /// counted as if built at the most it can reach: each named spelling may
-    /// fold to a name of its own, a name takes at most four table slots as the
-    /// table grows, and each name's tokens and outcomes start at four elements
-    /// and at most double what reaches them: a token per named spelling, an
-    /// outcome for each name every spelling leaves or joins.
     pub fn held_bytes(&self) -> usize {
         use std::mem::size_of;
-        // An allocation of `len` bytes, with room for its allocator's rounding.
         let allocated = |len: usize| if len == 0 { 0 } else { len + len / 4 + 16 };
         let versions = lock(&self.shared);
         let (mut spellings, mut named) = (0, 0);
-        // The shared allocation's counts beside the mutex and its versions.
         let mut bytes = allocated(2 * size_of::<usize>() + size_of::<Mutex<Versions>>());
-        // Every node is a full allocation; a leaf but a lone root holds at
-        // least five entries, and an internal node at least two children.
         let (leaf, internal) = tree_nodes::<u32, Spellings>();
         let leaves = versions.spellings.len().div_ceil(5);
         bytes += leaves * allocated(leaf) + leaves.saturating_sub(1) * allocated(internal);
@@ -554,7 +508,6 @@ impl DictionaryHistory {
                 spellings += 1;
                 if let Some(literal) = literal {
                     named += 1;
-                    // The literal, and its folded name in the lookup.
                     bytes += 2 * allocated(literal.len());
                 }
             }
@@ -568,9 +521,6 @@ impl DictionaryHistory {
             + 2 * named * 16
     }
 
-    /// The least the shared versions can hold now, from their allocations'
-    /// capacities and the map's node layout: at least one full leaf per
-    /// eleven entries and the internal nodes joining them, twelve to a node.
     #[cfg(test)]
     fn measured_bytes(&self) -> usize {
         use std::mem::size_of;
@@ -587,7 +537,6 @@ impl DictionaryHistory {
                     .sum::<usize>();
         }
         if let Some(folded) = &versions.folded {
-            // A power of two buckets, seven eighths of which a table fills.
             let capacity = folded.capacity();
             let buckets = if capacity < 8 {
                 capacity + 1
@@ -612,7 +561,6 @@ impl DictionaryHistory {
         })
     }
 
-    /// Token by token, each spelling and the version that set it.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         let versions = lock(&self.shared);
         let tokens = || {
@@ -714,8 +662,6 @@ impl HistoricalDictionary {
         self.version
     }
 
-    /// Whether `frame`'s LexicalTokens, a walk's views among them, holds exactly this
-    /// version's rows.
     pub fn spells_in<F: Tables + ?Sized>(&self, frame: &F) -> bool {
         let Ok(rows) = frame.complete_rows::<tables::LexicalTokens>(LITERAL) else {
             return false;
@@ -733,7 +679,6 @@ impl HistoricalDictionary {
         }) && rows.next().is_none()
     }
 
-    /// [`LexicalNames::token_of`] on this version's rows.
     pub fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
         let mut versions = lock(&self.shared);
         let outcome = versions
@@ -773,8 +718,6 @@ fn formatted(
             .localise_with(key, arguments)
             .map(BoundArgument::Text)
             .map_err(|why| why.to_string()),
-        // Interned token: payloads return the integer variant.
-        // The payload's spelling is never parsed as a number.
         FormattedLocalization::Token(token) => token_of(token)?
             .map(|token| BoundArgument::Token(token as i32))
             .ok_or_else(|| {
@@ -790,8 +733,6 @@ fn formatted(
     }
 }
 
-/// Arguments in authored order, then the core localiser.
-/// The work stack sizes from the parsed tree, without a private depth limit.
 pub fn bound_name(
     bound: &BoundLocalization,
     localisation: &Localisation,
@@ -880,7 +821,6 @@ pub fn bound_name(
 mod tests {
     use super::*;
 
-    /// Whether `dictionary` spells `table`, read as a frame holding it.
     fn spells(dictionary: &HistoricalDictionary, table: &SharedView) -> bool {
         let mut frame = replay_frame::frame::DecodedFrame {
             branch: 0,
@@ -1001,8 +941,6 @@ mod tests {
 
     #[test]
     fn dictionary_charges_hold_what_the_versions_and_their_lookup_take() {
-        // Distinct short names on each side of the lookup table's growth, then
-        // respellings that move tokens between names and add outcomes.
         for count in [1_u32, 3, 4, 7, 8, 14, 15, 28, 29, 56, 57, 112, 113, 224, 225, 448, 449] {
             let mut history = DictionaryHistory::default();
             let mut dictionary = history
@@ -1047,7 +985,6 @@ mod tests {
             if random(seed, 2) == 0 {
                 return format!("unique_{token}_{version}").into_bytes();
             }
-            // A few words in any case, so tokens share folded names.
             let mut word = format!("word{}", random(seed, 24)).into_bytes();
             for byte in &mut word {
                 if random(seed, 2) == 0 {
@@ -1092,7 +1029,6 @@ mod tests {
         let mut history = DictionaryHistory::default();
         let mut read = Vec::new();
         for version in 0..48 {
-            // Equal rows read again are a version too.
             for _ in 0..random(&mut seed, 6) * usize::from(version > 0) {
                 let present: Vec<u32> = rows.keys().copied().collect();
                 let token = present[random(&mut seed, present.len())];
@@ -1118,7 +1054,6 @@ mod tests {
             assert_eq!(dictionary.version(), version as u32);
             read.push((table, dictionary));
             if version == 20 {
-                // Lookups build the folded index; later versions extend it.
                 check(&read);
             }
         }
@@ -1248,7 +1183,6 @@ mod tests {
                 lookups += 1;
             }
         }
-        // Two binary searches of at most 4,096 entries per lookup.
         let searched = SEARCHED.with(std::cell::Cell::get);
         assert!(searched <= lookups * 2 * 13, "{searched} for {lookups}");
     }
@@ -1278,7 +1212,6 @@ mod tests {
             DictionaryHistory::decode(&mut Decoder::new(&bytes))
         };
         let top = u128::from(u32::MAX);
-        // Literal bytes below 0x80 are their own varints: 97 is `a`.
         assert!(decode(&[1, 1, 5, 1, 0, 2, 97]).is_ok());
         assert!(decode(&[1, 1, 5, 1, 0, 9, 97, 97]).is_err());
         assert!(decode(&[1, 1, 5, 1_000, 0, 2, 97]).is_err());
@@ -1314,7 +1247,6 @@ mod tests {
         };
         let a = Some(&b"a"[..]);
         assert_eq!(decode(2, &[a, None]).unwrap(), 2);
-        // Deleted before spelled, spelled again unchanged, or past the versions.
         assert!(decode(1, &[None]).is_err());
         assert!(decode(2, &[a, a]).is_err());
         assert!(decode(1, &[a, None]).is_err());

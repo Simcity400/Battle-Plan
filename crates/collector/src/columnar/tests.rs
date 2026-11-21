@@ -9,12 +9,10 @@ use replay::columnar_journal::{Journal, Record as Journaled, Source};
 use replay::columnar_frames::{Recording, Segment};
 use replay::native_frame::{OneThread, RowFrame};
 
-/// A session's journal thread, as the spool's processor starts it.
 fn journal_thread() -> Arc<JournalThread> {
     JournalThread::start().unwrap()
 }
 
-/// A row encoder's view of an hour that is no keyframe, lending no baselines.
 fn row() -> RowFrame<'static> {
     RowFrame {
         baselines: None,
@@ -29,7 +27,6 @@ use replay_data::{
 };
 use replay_frame::frame::{Metrics, TableInput, TableView};
 
-/// Writes every branch, saving each revision.
 struct Every;
 
 impl Host for Every {
@@ -42,8 +39,6 @@ impl Host for Every {
     }
 }
 
-/// A capture's journal read as the recorder reads it: the control records it holds, in
-/// order, and the recording the recorder writes of it.
 struct Recorded {
     controls: Vec<Vec<u8>>,
     replay: Replay,
@@ -57,7 +52,6 @@ impl std::ops::Deref for Recorded {
     }
 }
 
-/// The control records capture `capture`'s journal in `folder` holds.
 fn journaled_controls(folder: &Path, capture: u32) -> Vec<Vec<u8>> {
     let mut journal = Journal::open(folder, capture);
     journal.start(0).unwrap();
@@ -71,8 +65,6 @@ fn journaled_controls(folder: &Path, capture: u32) -> Vec<Vec<u8>> {
     controls
 }
 
-/// Capture `capture`'s journal in `folder` written into a recording as the recorder writes
-/// it, once its collector finished it.
 fn recorded_capture(folder: &Path, capture: u32) -> Recorded {
     let controls = journaled_controls(folder, capture);
     let path = folder.join(format!("recorded.{capture}.battleplan"));
@@ -92,7 +84,6 @@ fn recorded(folder: &Path) -> Recorded {
     recorded_capture(folder, 0)
 }
 
-/// Removes the directory even when an assertion fails.
 struct Folder(PathBuf);
 
 impl Folder {
@@ -134,7 +125,6 @@ fn session() -> SessionStart {
     }
 }
 
-/// Hour `hour` of `branch`: two countries read complete, every other table unavailable.
 fn frame(branch: u64, hour: i32) -> FrameInput {
     let rows = (1..=2)
         .map(|id| CountryRow {
@@ -173,8 +163,6 @@ fn frame(branch: u64, hour: i32) -> FrameInput {
     }
 }
 
-/// Gives the capture its session and `branch`'s start at `first_hour`, as the rows give them
-/// before the branch's first hour.
 fn start(columnar: &mut Columnar, branch: u64, first_hour: i32) {
     use replay::spool::Record;
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
@@ -202,9 +190,6 @@ fn write(columnar: &mut Columnar, branch: u64, hours: std::ops::RangeInclusive<i
     }
 }
 
-/// A branch's hours, a gap, then another branch: three runs, the first crossing a block and
-/// every run reading back from its start, journaled in a campaign directory the first hour
-/// creates, as the row spool creates it only later, and finished under the finished name.
 #[test]
 fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     let root = Folder::new("runs");
@@ -250,8 +235,6 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     assert_eq!(read, first as usize + 3);
 }
 
-/// A row write failure, or an hour the recording could not take, starts the next hour's run
-/// even when the hours continue; neither stops the file.
 #[test]
 fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     let folder = Folder::new("interrupt");
@@ -270,7 +253,6 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     start(&mut columnar, 1, 1);
     write(&mut columnar, 1, 1..=2);
     let _uncommitted = columnar.prepare(&frame(1, 3), row(), &OneThread).unwrap().expect("prepared");
-    // Preparing the hour again before its commit would lose the first preparation's strings.
     assert!(columnar.prepare(&frame(1, 3), row(), &OneThread).is_err());
     let status = columnar.status().unwrap();
     assert_eq!((&status["stopped"], &status["failed_hours"]), (&Value::Null, &json!(1)));
@@ -283,12 +265,9 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     assert!(recording.replay.stops.is_empty());
 }
 
-/// A file that fails stops the recording with its reason once the journal thread reports it,
-/// every later hour fails, and a recording that stopped before holding an hour leaves no file.
 #[test]
 fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
     let folder = Folder::new("blocked");
-    // The campaign's directory cannot be made under a file, so the first hour's file fails.
     let blocker = folder.0.join("blocker");
     fs::write(&blocker, b"").unwrap();
     let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session(), &journal_thread());
@@ -303,9 +282,6 @@ fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
     assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 1);
 }
 
-/// Queued hours reach the file only once their rows' write completes; a write failure drops
-/// the hours still waiting and starts the next run, so the file never holds an hour the rows
-/// lost.
 #[test]
 fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     let folder = Folder::new("queued");
@@ -318,7 +294,6 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     assert_eq!(columnar.status().unwrap()["pending"], 4);
     columnar.complete(1, 2);
     assert_eq!(columnar.status().unwrap()["pending"], 2);
-    // Hours 3 and 4 were cancelled with the rows' failed write.
     columnar.interrupt();
     for hour in 5..=6 {
         let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
@@ -333,8 +308,6 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
 }
 
-/// The capture keeps the records the rows take but clock witnesses, in order: a context given
-/// again after a failed write once, and every gap summary, since each counts its own frames.
 #[test]
 fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     use replay::spool::{ControlRecord, Record};
@@ -375,8 +348,6 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     );
 }
 
-/// Each hour's journal record carries the clock witness the rows were given with it, with its
-/// load signal or without; a witness given for another hour is no hour's.
 #[test]
 fn an_hour_s_journal_record_carries_the_clock_witness_given_with_it() {
     use replay::columnar_journal::{self, Witness};
@@ -423,8 +394,6 @@ fn an_hour_s_journal_record_carries_the_clock_witness_given_with_it() {
     );
 }
 
-/// Records given with no hour or command after them reach the recorder in a journal the
-/// recording's finish opens for them; a recording given nothing has none.
 #[test]
 fn records_no_hour_followed_reach_a_journal_when_the_recording_finishes() {
     use replay::spool::Record;
@@ -461,9 +430,6 @@ fn records_no_hour_followed_reach_a_journal_when_the_recording_finishes() {
     assert!(replay::columnar_journal::segments(&empty.0).unwrap().is_empty());
 }
 
-/// A queued frame's records reach the capture once its write completes, before records given
-/// after it; a failed write drops its frame's, which the next frame gives again, so a loss's
-/// gap summary is held once.
 #[test]
 fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() {
     use replay::spool::{ControlRecord, Record};
@@ -505,8 +471,6 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     );
 }
 
-/// Each capture in the campaign's directory takes the next capture number, so a later one
-/// never overwrites an earlier one's file.
 #[test]
 fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
     let folder = Folder::new("captures");
@@ -531,7 +495,6 @@ fn an_off_recording_holds_nothing_and_reports_nothing() {
     assert!(columnar.status().is_none());
 }
 
-/// A recording that could not be opened fails every hour and says why.
 #[test]
 fn an_unopened_recording_fails_every_hour() {
     let mut columnar = Columnar::Unopened;
@@ -539,8 +502,6 @@ fn an_unopened_recording_fails_every_hour() {
     assert!(columnar.status().unwrap()["stopped"].is_string());
 }
 
-/// A branch change while the old branch's hours still wait for their rows starts the file's
-/// next run only once those hours are written.
 #[test]
 fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     let folder = Folder::new("queued-runs");
@@ -567,8 +528,6 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     assert_eq!(runs, [(1, envelope::epoch::START, 1), (2, envelope::epoch::BRANCH, 3)]);
 }
 
-/// Paused commands, with no hour to hold them, still reach the journal at once, so a capture
-/// its collector never finished keeps them.
 #[test]
 fn commands_without_an_hour_reach_the_journal_at_once() {
     use replay::{
@@ -585,7 +544,6 @@ fn commands_without_an_hour_reach_the_journal_at_once() {
     drop(columnar);
 }
 
-/// The hours capture `capture`'s journal in `folder` holds now, in order.
 fn journaled_hours(folder: &Path, capture: u32) -> Vec<i32> {
     let mut journal = Journal::open(folder, capture);
     journal.start(0).unwrap();
@@ -605,10 +563,6 @@ fn journaled_hours(folder: &Path, capture: u32) -> Vec<i32> {
     hours
 }
 
-/// A journal held by a slow disk never holds the spool thread: its hours are queued and the
-/// spool goes on. Whatever is on disk is a whole-record prefix of what was queued, so a
-/// collector killed while hours wait leaves a journal the recorder takes as before, holding
-/// every hour written; once the disk is free every queued hour is written in order.
 #[test]
 fn a_held_journal_never_holds_the_spool_and_stays_a_whole_record_prefix() {
     let folder = Folder::new("held");
@@ -622,7 +576,6 @@ fn a_held_journal_never_holds_the_spool_and_stays_a_whole_record_prefix() {
     };
     let lane = Arc::clone(&live.lane);
     let last = envelope::UNIT_ORDINALS as i32 + 5;
-    // A slow disk: the journal thread's next write waits until released, or the deadline.
     let (held, holding) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let holder = {
@@ -652,9 +605,6 @@ fn a_held_journal_never_holds_the_spool_and_stays_a_whole_record_prefix() {
     assert_eq!(recording.hours(), last as u64);
 }
 
-/// A journal whose stop the full queue could not take still ends once the work queued before
-/// it settles: the capture opened after the failure's wait journals every hour it is given,
-/// instead of refusing each one without a failure to restart from.
 #[test]
 fn a_stop_the_journal_queue_refused_still_ends_the_capture_and_the_next_one_records() {
     let folder = Folder::new("refused-end");
@@ -663,7 +613,6 @@ fn a_stop_the_journal_queue_refused_still_ends_the_capture_and_the_next_one_reco
     start(&mut columnar, 1, 1);
     write(&mut columnar, 1, 1..=3);
     columnar.settle();
-    // The queue cannot grow for hour 4, then for the stop its failure queues.
     thread.refuse_queues(2);
     write(&mut columnar, 1, 4..=4);
     assert!(columnar.prepare(&frame(1, 5), row(), &OneThread).is_err());

@@ -1,7 +1,3 @@
-//! The land markers layer's line of the proof tool (`playback_cost::proof`): how it is made from
-//! the loaded recording and the engaged index, and how its outcomes compare with today's land
-//! markers of the same hour (today's index folded over the same hours) and with the layer composed
-//! anew.
 
 use super::{Front, LandMarkers};
 use crate::{document::Document, layers::{Layer, engagements::Index}, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -31,11 +27,8 @@ fn note(compared: &mut Compared, what: String) {
     compared.first.get_or_insert(what);
 }
 
-/// One combat as compared: its marker, and its gaps and limitations, sorted.
 type Entry = (Option<LandMarker>, Vec<String>, Vec<String>);
 
-/// The layer's outcomes against today's land markers at the document's hour, with today's index
-/// `today`, for the combats the layer's camera admits.
 pub fn today_with(layer: &dyn Layer, document: &Document, today: &History) -> io::Result<Compared> {
     let layer = of(layer);
     let mut compared = Compared::default();

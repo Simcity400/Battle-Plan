@@ -13,7 +13,6 @@ fn writers() -> Vec<Box<dyn Writer>> {
     vec![Box::new(SupplyHealth::default())]
 }
 
-/// Synthetic content, deliberately unlike the shipped thresholds.
 const THRESHOLDS: Thresholds = Thresholds { grace: 10, low: 60_000, very_low_icon: 15_000, low_icon: 40_000 };
 
 fn definitions() -> Definitions {
@@ -34,7 +33,6 @@ fn land(division: u64, naval_transfer: bool) -> DivisionLandInputsRow {
     DivisionLandInputsRow { division, naval_transfer, ..Default::default() }
 }
 
-/// A status row of a maximum grace of ten hours.
 fn status(division: u64, received: Option<i64>, remaining: i64) -> DivisionStatusRow {
     DivisionStatusRow {
         division,
@@ -46,7 +44,6 @@ fn status(division: u64, received: Option<i64>, remaining: i64) -> DivisionStatu
     }
 }
 
-/// Division `id` of raw owners `roster` and `expeditionary`, its land and status rows.
 fn deployed(edits: &mut Edits, id: u64, roster: u32, expeditionary: u32, transfer: bool, received: i64, remaining: i64) {
     edits
         .put(TableId::Divisions, division(id, roster, roster, expeditionary, 7))
@@ -54,9 +51,6 @@ fn deployed(edits: &mut Edits, id: u64, roster: u32, expeditionary: u32, transfe
         .put(TableId::DivisionStatus, status(id, Some(received), remaining));
 }
 
-/// Hour 0: GER holds one division in supply on its grace, one with no supply (on its alias), one
-/// strained under the low icon, and ITA's division it sends as an expeditionary, strained by low
-/// supply alone; ITA one in a naval transfer, never low; ROM none.
 fn forces() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits);
@@ -70,7 +64,6 @@ fn forces() -> Edits {
 
 const U: Option<[i64; 3]> = None;
 
-/// Each row as (slot, [no supply, strained, in supply]), its three cells known or not together.
 fn health(run: &Run) -> Vec<(u32, Option<[i64; 3]>)> {
     run.rows::<SupplyHealthRow>(TableId::SupplyHealth)
         .iter()
@@ -85,9 +78,6 @@ fn health(run: &Run) -> Vec<(u32, Option<[i64; 3]>)> {
         .collect()
 }
 
-/// The icon's arms in order, with the content's own thresholds: grace covers low received supply,
-/// a naval transfer is never low, no positive maximum grace leaves only the received ratio to the
-/// icon, a sentinel or a zero grace define reads as unbounded grace.
 #[test]
 fn supply_states_follow_the_counter_icon() {
     let operands = |received, maximum_grace, remaining_grace, naval_transfer| Operands { received, maximum_grace, remaining_grace, naval_transfer };
@@ -109,8 +99,6 @@ fn supply_states_follow_the_counter_icon() {
     assert_eq!(no_grace.state(&operands(0, 1_000_000, 0, false)), IN_SUPPLY, "a zero SUPPLY_GRACE");
 }
 
-/// Each live country's divisions by state, a division for its owner (its expeditionary owner, else
-/// its roster owner, through any alias); each hour moves only the divisions it changed.
 #[test]
 fn supply_health_counts_each_country_s_divisions_by_state() {
     let mut run = run();
@@ -136,9 +124,6 @@ fn supply_health_counts_each_country_s_divisions_by_state() {
     assert_eq!(health(&run).iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2], "a slot no live country holds loses its row");
 }
 
-/// A division whose supply is not known makes its country's counts not recorded; an owner no link
-/// resolves makes every country's; an input not complete makes the table unavailable with its rows
-/// as they were, until it returns.
 #[test]
 fn what_supply_health_cannot_know_is_not_recorded() {
     let mut run = run();
@@ -178,8 +163,6 @@ fn what_supply_health_cannot_know_is_not_recorded() {
     assert_eq!(health(&run)[0], (1, Some([2, 2, 0])), "division 1 out of supply, read whole again");
 }
 
-/// While a supply define is not held the table is unavailable naming it and holds no row; from the
-/// hour the content's defines are held, it is counted.
 #[test]
 fn supply_health_waits_for_its_defines_by_name() {
     let mut run = Run::new(writers, INPUTS);
@@ -201,8 +184,6 @@ fn supply_health_waits_for_its_defines_by_name() {
     assert_eq!(health(&run), [(1, Some([1, 2, 1])), (2, Some([0, 0, 1])), (3, Some([0, 0, 0]))]);
 }
 
-/// Among ITA's 200 divisions, an hour moving one GER division's supply sets GER's row alone, and
-/// one moving a division's supply within its state sets nothing.
 #[test]
 fn one_division_s_supply_among_many_sets_its_country_s_row_alone() {
     fn noted() -> Vec<Box<dyn Writer>> {
@@ -228,7 +209,6 @@ fn one_division_s_supply_among_many_sets_its_country_s_row_alone() {
     assert_eq!(noting::take(), [Noted::new()]);
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes.
 #[test]
 fn a_resumed_supply_writer_writes_the_table_of_one_never_stopped() {
     let mut unbroken = run();

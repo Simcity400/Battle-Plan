@@ -1,24 +1,3 @@
-//! Allocation-free notifications from the native writers of the character
-//! roster and of scientist roles ([`engine_mutations::character_roster_mutations`]).
-//! A detour only moves its domain's quiet token, counts its site and calls
-//! the original; it never changes game behaviour. Neither domain registers
-//! receivers: a capture compares the token it took before its latest complete
-//! read with this hour's, and equal tokens prove that no observed writer ran
-//! in between ([`WatchRegistry::quiet`]).
-//!
-//! - The roster domain covers the `CCharacterManager` arrays every roster
-//!   walk visits, so the roster's occurrences, their order and their ids
-//!   stand still while its token does: its own sites (push, clear), the
-//!   manager constructor the advisor-pool family patches and forwards
-//!   ([`manager_constructed`]), and `repair_containers`, the only writer of a
-//!   rostered character's id, which the advisor family patches and forwards
-//!   ([`character_repaired`]). It observes only while both forwarders are
-//!   installed and enabled.
-//! - The scientist domain covers every scientist's trait array and the
-//!   creation, replacement and removal of scientist roles.
-//!
-//! Anything unobserved (disabled, poisoned, an epoch change, a running
-//! writer) yields no token, and the capture reads afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -34,21 +13,15 @@ const SITES: usize = MUTATIONS.len();
 static ROSTER: WatchRegistry = WatchRegistry::new();
 static SCIENTISTS: WatchRegistry = WatchRegistry::new();
 static CALLS: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
-/// Forwarded calls: the manager constructor, then `repair_containers`.
 static FORWARDED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// This family's own patches are enabled.
 static OWN: AtomicBool = AtomicBool::new(false);
-/// The advisor-pool family forwards the manager constructor.
 static MANAGER_FORWARD: AtomicBool = AtomicBool::new(false);
-/// The advisor family forwards `repair_containers`.
 static REPAIR_FORWARD: AtomicBool = AtomicBool::new(false);
 
-/// Per table: quiet hours (carried without the walk) and full reads.
 static READS: [[AtomicU64; 2]; TABLES.len()] =
     [const { [const { AtomicU64::new(0) }; 2] }; TABLES.len()];
 
-/// The captures that rely on these domains.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
     Characters,
@@ -57,36 +30,25 @@ pub enum Table {
 }
 const TABLES: [&str; 3] = ["Characters", "ScriptFlags", "CharacterRoleTraits"];
 
-/// The roster domain's token: `(epoch, revision)` while observed with no
-/// writer running.
 pub fn roster() -> Option<(u64, u64)> {
     ROSTER.quiet()
 }
 
-/// The scientist domain's token.
 pub fn scientists() -> Option<(u64, u64)> {
     SCIENTISTS.quiet()
 }
 
-/// One capture's use of a domain.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Carried from a quiet domain without the walk.
     pub quiet: bool,
-    /// Read afresh.
     pub read: bool,
 }
 
-/// The roster domain as a capture consults it; tests substitute a domain of
-/// their own, so parallel tests never share the hooks' token.
 pub trait Roster: Sync {
-    /// [`roster`].
     fn token(&self) -> Option<(u64, u64)>;
-    /// [`record`].
     fn record(&self, table: Table, counts: &Counts);
 }
 
-/// The hooks' domain. Tests use domains of their own.
 #[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub struct Observer;
 impl Roster for Observer {
@@ -98,12 +60,9 @@ impl Roster for Observer {
     }
 }
 
-/// Tests: a roster domain of one test's own, which counts what its captures
-/// record.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Isolated {
     pub registry: WatchRegistry,
-    /// Quiet hours and read hours.
     counts: [AtomicU64; 2],
 }
 
@@ -123,12 +82,10 @@ impl Isolated {
         }
     }
 
-    /// Observe, as installed hooks would.
     pub fn enable(&self) {
         self.registry.set_enabled(true);
     }
 
-    /// A roster writer runs and returns.
     pub fn write(&self) {
         drop(self.registry.notify(0));
     }
@@ -137,7 +94,6 @@ impl Isolated {
         self.registry.poisoned()
     }
 
-    /// Quiet hours and read hours recorded.
     pub fn counts(&self) -> [u64; 2] {
         self.counts
             .each_ref()
@@ -170,13 +126,10 @@ pub fn record(table: Table, counts: &Counts) {
     }
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     ROSTER.active() + SCIENTISTS.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery.
 pub fn boundary(invalidate: bool) {
     ROSTER.boundary(invalidate);
     SCIENTISTS.boundary(invalidate);
@@ -190,33 +143,26 @@ fn refresh() {
     SCIENTISTS.set_enabled(own);
 }
 
-/// The advisor-pool family's patch of the manager constructor is enabled.
 pub fn set_manager_forward(enabled: bool) {
     MANAGER_FORWARD.store(enabled, Ordering::SeqCst);
     refresh();
 }
 
-/// The advisor family's patch of `repair_containers` is enabled.
 pub fn set_repair_forward(enabled: bool) {
     REPAIR_FORWARD.store(enabled, Ordering::SeqCst);
     refresh();
 }
 
-/// Hook path: the `CCharacterManager` constructor is about to
-/// build a manager. Dropping the guard notifies its return.
 pub fn manager_constructed() -> Notification<'static> {
     FORWARDED[0].fetch_add(1, Ordering::Relaxed);
     ROSTER.notify(0)
 }
 
-/// Hook path: character identity repair may give a rostered
-/// character a new id.
 pub fn character_repaired() -> Notification<'static> {
     FORWARDED[1].fetch_add(1, Ordering::Relaxed);
     ROSTER.notify(0)
 }
 
-/// Hook path: a writer of `site` ([`MUTATIONS`] index) is about to run.
 fn notify(site: usize) -> Notification<'static> {
     CALLS[site].fetch_add(1, Ordering::Relaxed);
     match MUTATIONS[site].1 {
@@ -230,14 +176,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; every capture then
-    /// reads afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled; every capture then"]
+    #[doc = " reads afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "roster_changes")
@@ -276,10 +222,6 @@ impl Hooks {
             );
             crate::census_changes::forwarder(crate::census_changes::Forwarder::Roster, false);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -287,12 +229,10 @@ impl Hooks {
         }
         OWN.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         refresh();
-        // The research inputs observe the scientist roles here.
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::Roster,
             enabled && !self.hooks.is_empty(),
         );
-        // The role census observes the scientist attach and clear here.
         crate::census_changes::forwarder(
             crate::census_changes::Forwarder::Roster,
             enabled && !self.hooks.is_empty(),
@@ -305,8 +245,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the domains hold no table; release
-        // only starts an epoch once the hooks were removed and drained.
         unsafe {
             ROSTER.release();
             SCIENTISTS.release();
@@ -314,9 +252,6 @@ impl Drop for Hooks {
     }
 }
 
-// Each site takes at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original. The notification covers the
-// original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -344,19 +279,11 @@ macro_rules! callback {
     };
 }
 use engine_mutations::character_roster_mutations as sites;
-// Roster push (array, unique_ptr).
 callback!(roster_push, sites::PUSH);
-// Roster clear (array).
 callback!(roster_clear, sites::CLEAR);
-// Scientist build (out, character, definition, _).
 callback!(scientist_build, sites::SCIENTIST_BUILD);
-// Scientist attach (character).
 callback!(scientist_attach, sites::SCIENTIST_ATTACH);
-// Scientist clear (character).
 callback!(scientist_clear, sites::SCIENTIST_CLEAR);
-// Scientist trait add (scientist, trait).
 callback!(scientist_trait_add, sites::SCIENTIST_TRAIT_ADD);
-// Scientist trait remove (scientist, trait).
 callback!(scientist_trait_remove, sites::SCIENTIST_TRAIT_REMOVE);
-// Scientist trait reset (scientist, tokens).
 callback!(scientist_trait_reset, sites::SCIENTIST_TRAIT_RESET);

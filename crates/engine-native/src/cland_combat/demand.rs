@@ -1,6 +1,3 @@
-//! Off-thread sizing hints, never recorded facts. Combat roster and side
-//! vector headers supply demand; the detail reader owns all counts and
-//! commander selection.
 use super::{Commanders, DetailArenas, DetailCounts, Members, Reader, Source, read_details};
 use crate::{Memory, cgame_state, cpdx_array::Array};
 
@@ -11,10 +8,6 @@ pub struct DetailDemand {
     pub arenas: DetailCounts,
 }
 
-/// Exact demand at this observation, including border wars and repeated
-/// commander occurrences. Empty storage runs the ordinary authenticated detail
-/// census; mutable headers are checked again after their selected walks.
-/// A fault or concurrent change discards this hint, never a recorded value.
 pub fn detail_demand(
     memory: &impl Memory,
     base: usize,

@@ -5,7 +5,6 @@ fn content() -> Content {
     content_with(b"")
 }
 
-/// [`content`] with `extra` read after it, as a later file would be.
 fn content_with(extra: &[u8]) -> Content {
     from_documents(&[
         &br#"
@@ -27,8 +26,6 @@ fn content_with(extra: &[u8]) -> Content {
     ])
 }
 
-/// Sub-units and equipment from documents read in order, as
-/// [`Content::load`] reads the files.
 fn from_documents(documents: &[&[u8]]) -> Content {
     Content::from_test_documents(documents)
 }
@@ -64,7 +61,6 @@ fn sources(local: &Overrides) -> Sources<'static> {
     }
 }
 
-/// Equipment type spellings for token resolution.
 fn names() -> TokenNames<'static> {
     let rows: &'static [LexicalTokenRow] = Box::leak(
         [
@@ -115,11 +111,8 @@ fn an_archetype_lists_the_subunits_needing_it_in_database_order() {
             .map(|unit| unit.key.clone())
             .collect()
     };
-    // Authored order, not key order; a need of a rifles type counts as
-    // rifles, the canonical archetype.
     assert_eq!(keys("rifles"), ["infantry", "armor", "support", "militia"]);
     assert_eq!(keys("tanks"), ["armor"]);
-    // Only archetypes carry the list.
     assert!(keys("rifles_1").is_empty());
     assert!(content.archetype_subunits("zeppelins").is_err());
 }
@@ -166,9 +159,6 @@ fn equipment_types_resolve_their_token_under_the_lexers_fold() {
         refused(105),
         "variant 1 equipment type: token 105 is not in lexical tokens"
     );
-    // A later key equal under the fold redefines the same type
-    // (lookup uses its hash and case-insensitive name), which keeps its
-    // first spelling.
     let redefined = content_with(b"equipments = { Tanks_1 = { archetype = rifles } }");
     assert_eq!(
         redefined.equipment_key(&names, &variant(102)),
@@ -219,17 +209,14 @@ fn duplicate_archetypes_copy_model_inputs_and_remap_the_parent_chain() {
         content.equipment_category("amphibious_0").unwrap(),
         (1 << 2) | (1 << 26)
     );
-    // An original parent outside the cloned family becomes a native self-link.
     let outside = content.equipment_content().get("flameold_tank").unwrap();
     assert_eq!(content.equipment("flameold_tank").unwrap().parent, outside);
-    // An authored type is its own family.
     assert_eq!(
         content.equipment_model("tanks_1").unwrap().family,
         "tanks_1"
     );
     assert!(content.equipment_model("root_only").is_ok());
     assert!(content.equipment_model("root_only_0").is_err());
-    // A generated copy is authored equipment its own token names.
     let rows = [LexicalTokenRow {
         token: 7,
         literal: b"Flame_1".to_vec(),
@@ -296,7 +283,6 @@ fn requirement_aliases_overwrite_in_source_order_after_archetype_resolution() {
             ("tanks".to_owned(), 900_000)
         ]
     );
-    // An unknown category is reported and sets no flag, as the game reads it.
     let unknown = content_with(b"sub_units = { bad = { type = 4 } }");
     assert_eq!(unknown.subunit("bad").unwrap().category, 0);
 }
@@ -306,7 +292,6 @@ fn local_clones_group_apart_and_take_their_recorded_requirements() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
-    // Local infantry needs tanks, not rifles.
     let local = sources(&[((7, 1), vec![(5, 200_000)])]);
     let template = content
         .template(&row((1, 1), &[(1, 0, 1), (1, 1, 1), (2, 0, 1)]), &local)
@@ -320,8 +305,6 @@ fn local_clones_group_apart_and_take_their_recorded_requirements() {
     );
     let representative = template.representative.as_ref().unwrap();
     assert_eq!(Template::first_requirement(representative), Some("tanks"));
-    // A clone absent from a complete table has the global requirements;
-    // from an incomplete one it is unknown.
     let equal = content.template(&row((1, 1), &[]), &sources(&[])).unwrap();
     assert_eq!(
         Template::first_requirement(equal.representative.as_ref().unwrap()),
@@ -337,7 +320,6 @@ fn local_clones_group_apart_and_take_their_recorded_requirements() {
         ..complete
     };
     assert!(content.template(&row((1, 1), &[]), &incomplete).is_err());
-    // Two tokens resolving to one archetype cannot come from a native pool.
     let repeated = sources(&[((7, 1), vec![(4, 1), (6, 2)])]);
     assert!(content.template(&row((1, 1), &[]), &repeated).is_err());
 }
@@ -347,8 +329,6 @@ fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
-    // The hour spells each token as the lexer first saw it, which may
-    // differ in ASCII case from the authored key.
     let rows: &'static [LexicalTokenRow] = Box::leak(Box::new([
         LexicalTokenRow {
             token: 1,
@@ -379,7 +359,6 @@ fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
     let representative = template.representative.as_ref().unwrap();
     assert_eq!(representative.subunit.key, "infantry");
     assert_eq!(Template::first_requirement(representative), Some("tanks"));
-    // A spelling no authored key folds to, or an absent token, is refused.
     let unknown = folded(&[((7, 1), vec![(8, 1)])]);
     assert_eq!(
         content
@@ -395,7 +374,6 @@ fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
             .to_string(),
         "sub-unit: token 3 is not in lexical tokens"
     );
-    // Case-only redeclarations reuse the first spelling in both databases.
     let redeclared = content_with(
         br#"
         sub_units = { ARMOR = { type = armor need = { tanks = 50 } } }
@@ -442,7 +420,6 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
         "common/units/armor.txt",
         "sub_units = { armor = { } }",
     );
-    // Child directories hold equipment and unrelated data, not sub-units.
     write(
         "base",
         "common/units/equipment/tanks.txt",
@@ -453,13 +430,11 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
         "common/units/names_divisions/names.txt",
         "sub_units = { names_child = { } }",
     );
-    // The mod's file of the same path replaces the base's whole.
     write(
         "mod",
         "common/units/infantry.txt",
         "sub_units = { infantry = { } Railway_Gun = { } }",
     );
-    // The sub-unit database's other directories, one with its root key in another case.
     write(
         "mod",
         "common/units/unit_modifiers/modifiers.txt",
@@ -475,7 +450,6 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
         "common/units/critical_parts/parts.txt",
         "sub_units = { parted = { } }",
     );
-    // A quoted root key names no keyword.
     write(
         "mod",
         "common/units/quoted.txt",
@@ -496,9 +470,6 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// A mod's own sub-unit reads its stat words as authored (here one stat no shipped sub-unit
-/// authors), width, manpower, training, group, categories, critical equipment and grants, with
-/// no executable metadata; an unreadable flag is refused by name.
 #[test]
 fn a_mod_sub_unit_reads_its_stat_sheet() {
     let content = content_with(
@@ -557,16 +528,13 @@ fn a_mod_sub_unit_reads_its_stat_sheet() {
     assert_eq!(ranger.can_be_parachuted, Ok(true));
     let broken = content.subunit("synthetic_broken").unwrap();
     assert!(broken.can_be_parachuted.is_err());
-    // Its grant keeps the unknown word; the calculator refuses it by name.
     assert_eq!(
         broken.sheet.grants[0].words,
         [("synthetic_unknown".to_owned(), "1".to_owned())]
     );
-    // A key the lexer folds names the same sub-unit.
     assert!(content.subunit("SYNTHETIC_RANGER").is_some());
 }
 
-/// A quoted category is no token and sets no flag; a bare one in any case does.
 #[test]
 fn a_quoted_type_sets_no_category() {
     let content = content_with(
@@ -583,7 +551,6 @@ fn a_quoted_type_sets_no_category() {
     assert_eq!(content.subunit("bare").unwrap().category, support);
 }
 
-/// A redefinition keeps what the game's reset leaves and starts the type mask, needs and stat words again.
 #[test]
 fn a_redefinition_keeps_what_the_reset_leaves() {
     let content = content_with(
@@ -614,7 +581,6 @@ fn a_redefinition_keeps_what_the_reset_leaves() {
     assert_eq!(ranger.category, 0);
     assert!(ranger.sheet.words.is_empty());
     assert_eq!(ranger.requirements, [("tanks".to_owned(), 500_000)]);
-    // A later explicit group replaces it.
     let regrouped = content_with(
         b"sub_units = { ranger = { group = support } } sub_units = { ranger = { group = mobile } }",
     );
@@ -624,8 +590,6 @@ fn a_redefinition_keeps_what_the_reset_leaves() {
     );
 }
 
-/// What else a redefinition keeps, as the game's reset leaves it: transport, the own-fuel
-/// multiplier and the kept scalars stay; battalion multipliers add up; the stats start again.
 #[test]
 fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipliers() {
     let content = content_with(
@@ -659,7 +623,6 @@ fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipl
         .iter()
         .map(|(word, value)| (word.as_str(), value.as_str()))
         .collect();
-    // The kept words first, the new declaration's after; the earlier soft attack is gone.
     assert_eq!(
         words,
         [
@@ -672,9 +635,7 @@ fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipl
     );
     assert_eq!(ranger.sheet.combat_width, 0);
     assert_eq!(ranger.sheet.manpower, 0);
-    // Each block adds an entry, a repeated one included.
     assert_eq!(ranger.sheet.grants.len(), 2);
-    // A refused kept field stays refused; a refused reset field is read again.
     let refused = content_with(
         br#"sub_units = { ranger = { battalion_mult = yes combat_width = wide } }
         sub_units = { ranger = { combat_width = 1 } }"#,
@@ -682,14 +643,11 @@ fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipl
     let ranger = refused.subunit("ranger").unwrap();
     let whys = |subunit: &SubUnit| subunit.sheet.refused.iter().map(|refusal| refusal.why.clone()).collect::<Vec<_>>();
     assert_eq!(whys(ranger), ["sub-unit ranger: battalion_mult is not a block"]);
-    // A list entry that cannot be read stays refused, by its field.
-    // Equipment files are read as text, so the raw-byte declarations go to the sub-unit reader alone.
     let mut entry = content_with(b"");
     for document in [&b"sub_units = { ranger = { categories = { \xff } } }"[..], b"sub_units = { ranger = { } }"] {
         entry.read_subunits(&parser::parse(document).unwrap()).unwrap();
     }
     assert_eq!(whys(entry.subunit("ranger").unwrap()), ["sub-unit ranger: a categories entry is not UTF-8"]);
-    // A kept scalar's refusal stays until the new declaration assigns it, which replaces it.
     let fuel = |second: &[u8]| {
         let mut source = b"sub_units = { ranger = { own_equipment_fuel_consumption_mult = broken } } ".to_vec();
         source.extend_from_slice(second);
@@ -701,16 +659,12 @@ fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipl
     let ranger = corrected.subunit("ranger").unwrap();
     assert!(ranger.sheet.refused.is_empty(), "{:?}", ranger.sheet.refused);
     assert_eq!(ranger.sheet.own_fuel_consumption, Some(50_000));
-    // A kept scalar word assigned again replaces the earlier one, so only the new is read.
     let speed = content_with(
         b"sub_units = { ranger = { affects_speed = invalid } } sub_units = { ranger = { affects_speed = no } }",
     );
     assert_eq!(speed.subunit("ranger").unwrap().sheet.words, [("affects_speed".to_owned(), "no".to_owned())]);
 }
 
-/// A key that differs only in ASCII case declares the same sub-unit again: one definition,
-/// under its first spelling and in its first place, read on with the later body's rules, which
-/// every spelling of its token names.
 #[test]
 fn a_case_only_redefinition_is_the_same_sub_unit() {
     let content = content_with(
@@ -740,7 +694,6 @@ fn a_case_only_redefinition_is_the_same_sub_unit() {
     assert_eq!(armored, ["armor", "ranger"]);
 }
 
-/// A bare key in another ASCII case is the field; a quoted one is no keyword and reads nothing.
 #[test]
 fn sub_unit_fields_dispatch_by_keyword() {
     let content = content_with(
@@ -762,7 +715,6 @@ fn sub_unit_fields_dispatch_by_keyword() {
     assert!(quoted.sheet.words.is_empty());
 }
 
-/// Content reads every sub-unit database directory in its order, as the database does.
 #[test]
 fn content_reads_every_sub_unit_database_directory_in_order() {
     engine_executable::executable_tables::initialize_for_tests()

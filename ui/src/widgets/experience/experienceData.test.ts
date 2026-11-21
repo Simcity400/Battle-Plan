@@ -42,7 +42,6 @@ test('the card shows each value in points and a value not recorded says why, nev
 });
 
 test("while followed, each line's head is the followed value the legend shows, never the bin before's last value", () => {
-  // Bins of 6 hours: the bin before the head's ends at 71.09 points, the followed value at the head is 75.34.
   const before = Math.round(71.09 * 32768), atHead = Math.round(75.34 * 32768), army = Math.round(27.99 * 32768);
   const summary = { from: 0, buckets: [{ firstHour: 0, lastHour: 5, firstValue: 0, lastValue: before, minValue: 0, maxValue: before }, null] };
   const tiled = (head: string) => pointsSummary({ ...summary, to: 11, width: 2, tiles: { binHours: 6, valueAt: (hour: number) => valueAtHead(head, summary as never, 6, hour) } } as never);

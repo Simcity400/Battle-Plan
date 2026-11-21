@@ -1,16 +1,3 @@
-//! Strait and canal (adjacency-rule) map icons.
-//!
-//! Every rule of the content's `adjacency_rules` file that names an `icon` province links that
-//! province to its icon; a later rule naming the same province replaces the link. The icon is the
-//! content's `adjacency_rule_mapicon` window, placed at the province's position plus the rule's
-//! authored `offset` through the shared map-icon projection, left-aligned and vertically centred on that point, with the map
-//! icon admission every pooled family uses.
-//!
-//! It shows in a map mode with adjacency-rule icons ([`Visibility::adjacency_rules`]: navy,
-//! supply and resources) while the camera is strictly below
-//! `NGraphics.ADJACENCY_RULE_DISTANCE_CUTOFF` (a free eye: nearer the icon than that), whatever
-//! the rule's open, closed or trade state.
-//! It draws at the mode's `NMapIcons.<table>_PRIORITY_ADJACENCY_RULE`.
 
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Arc};
 
@@ -27,24 +14,19 @@ use viewer_foundation::map::{
     sprites::{self, Batch},
 };
 
-/// The native adjacency window is left-aligned and vertically centred.
 const ALIGNMENT: u8 = 0x0a;
 
-/// One province's icon.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Icon {
     pub province: u32,
     pub offset: [f32; 3],
 }
 
-/// The content's rule icons and their camera cutoff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdjacencyIcons {
     pub icons: Vec<Icon>,
     pub areas: BTreeMap<u32, Arc<[u32]>>,
-    /// `NGraphics.ADJACENCY_RULE_DISTANCE_CUTOFF`, or why it cannot be read.
     pub cutoff: Result<f32, String>,
-    /// Rules whose icon cannot be read, by reason.
     pub refused: BTreeMap<String, usize>,
 }
 
@@ -105,20 +87,15 @@ impl AdjacencyIcons {
     }
 }
 
-/// Whether a mode shows an icon at `distance` from the camera ([`Camera::icon_distance`]: the
-/// game's camera's height).
 pub fn shown(visibility: &Visibility, distance: f32, cutoff: f32) -> bool {
     visibility.adjacency_rules && distance < cutoff
 }
 
-/// The icons' priority in a mode.
 pub fn priority(priorities: &Priorities, visibility: &Visibility) -> i8 {
     priorities.get(visibility.priorities, PriorityIcon::AdjacencyRule)
 }
 
-/// What [`AdjacencyIcons::prepare`] needs.
 pub struct Inputs<'a> {
-    /// A province's map position.
     pub anchor: &'a dyn Fn(u32) -> Option<[f32; 3]>,
     pub camera: Camera,
     pub viewport: [u32; 2],
@@ -139,21 +116,17 @@ pub struct Hit {
     pub area: Arc<[u32]>,
 }
 
-/// The icons to present this frame, farthest first.
 #[derive(Default)]
 pub struct PreparedAdjacencyIcons {
     placed: Vec<Placed>,
-    /// What is not drawn and why.
     pub report: BTreeMap<String, usize>,
 }
 
 impl PreparedAdjacencyIcons {
-    /// The provinces whose icons are placed, in draw order.
     pub fn provinces(&self) -> impl Iterator<Item = u32> + '_ {
         self.placed.iter().map(|placed| placed.province)
     }
 
-    /// Where each placed icon's anchor projects, in draw order.
     pub fn screens(&self) -> impl Iterator<Item = [f32; 2]> + '_ {
         self.placed.iter().map(|placed| placed.screen)
     }
@@ -177,7 +150,6 @@ impl AdjacencyIcons {
                 return out;
             }
         };
-        // The game's camera shows every icon by its height; a free eye, each by its own distance.
         if inputs.camera.free().is_none()
             && !shown(&inputs.visibility, inputs.camera.height, cutoff)
         {
@@ -226,8 +198,6 @@ impl AdjacencyIcons {
 }
 
 impl PreparedAdjacencyIcons {
-    /// Presents the icons through `view`'s pool and draws the visible windows at `priority`.
-    /// Returns how many were drawn.
     pub fn draw(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,

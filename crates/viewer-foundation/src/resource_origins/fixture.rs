@@ -1,20 +1,3 @@
-//! A synthetic hour of resource origins for the resources map mode's tests.
-//!
-//! Countries: `GER` (raw 5, also reached as raw 15) and `AFG` (raw 9). Resources in database
-//! order: oil (frame 1), steel (frame 2), rubber (frame 3). `INFRASTRUCTURE_RESOURCE_BONUS` is
-//! 0.15 and `SUPPLY_ROUTE_RESOURCE_BONUS` 0.2.
-//!
-//! - [`MIXED`] (GER): infrastructure 4 with 2 levels damaged; GER's own origin at efficiency 0.8
-//!   and local resources +10%. Steel 4 in its template; oil 2 in its template plus a refinery
-//!   granting 1, GER's oil factor +50% and 0.9 temporary oil, its rights given to AFG, whose
-//!   origin has efficiency 1; rubber only costs 0.3.
-//! - [`EMPTY`] (GER): no resources, no gate.
-//! - [`GATED`] (GER): no resources, its additive gate set.
-//! - [`COSTED`] (AFG): only a rubber cost.
-//! - [`ORPHAN`] (AFG): steel in its template, but AFG holds no origin for it.
-//! - [`GRANTED`] (GER): only a refinery's oil grants.
-//! - [`GIVEN`] (GER): steel 1, its rights given to AFG.
-//! - [`ALIASED`] (GER): steel 1, its rights given to GER itself under another reference.
 
 use replay_data::{
     rows::BuildingRow, rows::CountryLinkRow, rows::CountryOilFactorRow, rows::LexicalTokenRow,
@@ -30,7 +13,6 @@ use super::Content;
 pub const GER: u32 = 5;
 pub const GER_ALIAS: u32 = 15;
 pub const AFG: u32 = 9;
-/// The canonical slots of GER and AFG.
 pub const GER_SLOT: u32 = 0;
 pub const AFG_SLOT: u32 = 1;
 
@@ -49,8 +31,6 @@ pub const GRANTED: u32 = 6;
 pub const GIVEN: u32 = 7;
 pub const ALIASED: u32 = 8;
 
-/// The content: three resources, an infrastructure building and a refinery granting one oil
-/// per healthy level.
 pub fn content() -> Content {
     let mut buildings = installed_content_core::buildings::Buildings::default();
     for (name, grants) in [
@@ -82,7 +62,6 @@ pub fn content() -> Content {
     }
 }
 
-/// Replaces one table of `frame` with `rows`.
 pub fn put(frame: &mut DecodedFrame, rows: TableRows) {
     let table = rows.table();
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -129,7 +108,6 @@ fn building(location: u32, building_type: u32, level: i16, healthy_level: i16) -
     }
 }
 
-/// The synthetic hour described in the module documentation.
 pub fn frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 0,

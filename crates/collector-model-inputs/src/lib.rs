@@ -1,4 +1,3 @@
-//! Local sub-unit capture: each country's local sub-unit clones and requirements, and the writer observer that lets a quiet country carry them. The host owns dispatch, loans and table assembly.
 
 use collector_certificates::watch_registry;
 use collector_extended_support::outcomes::failed_capture;
@@ -14,7 +13,6 @@ use collector_timing::hook_timing;
 pub mod local_subunit_changes;
 pub mod model_inputs;
 
-/// A hook site located with the 16 bytes its hook replaces, refused like a differing sentinel.
 fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)
         .and_then(|code| code.sentinel::<16>().map(drop))

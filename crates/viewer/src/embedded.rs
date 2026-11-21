@@ -1,7 +1,3 @@
-//! The map's link to the desktop host in the same process, and the geometry of its window.
-//!
-//! A command wakes the map's thread only for work; the map's UI and GPU path can stay idle.
-//! The map's window belongs to the host's thread, so its geometry changes are posted to it.
 
 use job_priority::SpawnCarried as _;
 use dashboard::protocol::{
@@ -56,11 +52,9 @@ impl Seek {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpenRequest {
     pub path: PathBuf,
-    // Native picker/CLI requests establish their own snapshot at load time.
     pub revision: Option<String>,
 }
 
-/// A command's recording and, where the page expects one, the revision its analysis read.
 fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
     if path.is_empty() || path.contains('\0') {
         return Err("A replay path must be nonempty and contain no NUL".into());
@@ -71,20 +65,15 @@ fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// One slot per command kind. A new open invalidates seeks for the old replay;
-/// a close is terminal, including if more commands were sent after it.
 #[derive(Default)]
 pub struct Pending {
     pub actions: VecDeque<dashboard::protocol::MapAction>,
-    /// The Campaign map takes the window back from the dashboard's maps.
     pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
     pub close: bool,
     pub error: Option<String>,
     pub map_views: Option<Vec<DashboardMapView>>,
-    /// The host's controller message, merged with any after it
-    /// ([`GamepadMessage::merge`]).
     pub gamepad: Option<GamepadMessage>,
     bounds: Option<ViewBounds>,
     visibility: Option<bool>,
@@ -229,55 +218,39 @@ impl ReportedState {
 #[derive(Default)]
 struct Outgoing {
     details: Option<dashboard::protocol::MapDetails>,
-    /// The window handle, and the map device's sample counts as attaching found them.
     ready: Option<(String, Option<Vec<u32>>)>,
     state: Option<ReportedState>,
     error: Option<String>,
     maps: BTreeMap<String, DashboardMapState>,
     map_order: VecDeque<String>,
-    /// An odd number of diagnostics-shortcut presses not yet sent; two presses
-    /// between sends cancel out.
     toggle_diagnostics: bool,
-    /// The full map's camera mode and overlay choice to report; a newer pair replaces it.
     camera_mode: Option<(CameraMode, bool)>,
-    /// The chosen aircraft's latest status not yet sent.
     fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
-    /// Each view's latest picker options; a newer change replaces an unsent one.
     view_options: BTreeMap<String, dashboard::protocol::MapOptions>,
-    /// Picker toggle clicks in order; each is one flip of a host setting.
     view_toggles: VecDeque<(String, dashboard::protocol::MapToggle)>,
-    /// Each view's latest mode list not yet sent; a newer list replaces it.
     view_modes: BTreeMap<String, Vec<dashboard::protocol::MapModeChoice>>,
-    /// Each view's latest Ctrl+click country not yet sent; a newer one replaces it.
     view_observes: BTreeMap<String, dashboard::protocol::ObservedCountry>,
 }
 
 impl Outgoing {
-    /// Records one diagnostics-shortcut press; a second press before the
-    /// writer sends it cancels the first.
     fn toggle_diagnostics(&mut self) {
         self.toggle_diagnostics = !self.toggle_diagnostics;
     }
 
-    /// The toggle event to send, if an odd number of presses is pending.
     fn take_toggle_diagnostics(&mut self) -> Option<NativeEvent> {
         std::mem::take(&mut self.toggle_diagnostics).then_some(NativeEvent::ToggleDiagnostics)
     }
 
-    /// Records the camera mode and overlay choice to report; a newer pair replaces one not yet
-    /// sent.
     fn report_camera_mode(&mut self, mode: CameraMode, overlays: bool) {
         self.camera_mode = Some((mode, overlays));
     }
 
-    /// The camera mode event to send, once.
     fn take_camera_mode(&mut self) -> Option<NativeEvent> {
         self.camera_mode
             .take()
             .map(|(mode, overlays)| NativeEvent::CameraMode { mode, overlays })
     }
 
-    /// Whether the event queue has nothing to send; map states have a queue of their own.
     fn is_empty(&self) -> bool {
         !self.toggle_diagnostics
             && self.camera_mode.is_none()
@@ -292,7 +265,6 @@ impl Outgoing {
             && self.error.is_none()
     }
 
-    /// Every pending map state, oldest first, as one event.
     fn take_maps(&mut self) -> Option<NativeEvent> {
         let states: Vec<_> = std::mem::take(&mut self.map_order)
             .into_iter()
@@ -341,7 +313,6 @@ impl Shared {
         self.output_ready.notify_one();
     }
 
-    /// Queues the map's detail report whole.
     fn details(&self, details: dashboard::protocol::MapDetails) {
         self.outgoing
             .lock()
@@ -350,9 +321,6 @@ impl Shared {
         self.output_ready.notify_one();
     }
 
-    /// Queues each map whose acknowledgement changed since `sent` held it, and keeps what it sent
-    /// there. A view whose clock alone moved waits until [`STATE_INTERVAL`] after its last report;
-    /// the wait it still owes is returned, so the map draws again and offers its newest state then.
     fn maps(&self, sent: &mut Sent, states: Vec<DashboardMapState>, now: Instant) -> Option<Duration> {
         let mut outgoing = self
             .outgoing
@@ -369,13 +337,9 @@ impl Shared {
             if held.is_some_and(|(old, _)| same_ack(old, &state)) {
                 continue;
             }
-            // The clock's own progress is read at a fixed rate; everything else a frame draws is
-            // what the page must not wait for, so it goes at once.
             let urgent = held.is_none_or(|(old, _)| !clock_only(old, &state));
             let waited = held.map(|(_, at)| now.duration_since(*at));
             if urgent || waited.is_none_or(|waited| waited >= STATE_INTERVAL) {
-                // Updating a pending view preserves its FIFO position, so a fast
-                // clock cannot starve another map's first ready/error response.
                 if !outgoing.maps.contains_key(&state.id) {
                     outgoing.map_order.push_back(state.id.clone());
                 }
@@ -395,13 +359,9 @@ impl Shared {
     }
 }
 
-/// Each view's last reported acknowledgement and when it was reported.
 #[derive(Default)]
 struct Sent(BTreeMap<String, (DashboardMapState, Instant)>);
 
-/// Whether two map states acknowledge the same: the frame's fraction, how far it is behind the
-/// clock and when it was drawn change with every frame, and the host shows none of them. So the
-/// first state of a new hour or mode keeps the time of the frame that first drew it.
 fn same_ack(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     let bare = |state: &DashboardMapState| DashboardMapState {
         fraction: None,
@@ -412,10 +372,6 @@ fn same_ack(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     bare(old) == bare(new)
 }
 
-/// Whether the only thing that changed is where the clock stands: the hour drawn, its sequence and
-/// how far behind it is. Everything else a frame reports — a seek's acknowledgement, the mode it
-/// drew, what it highlights, its tooltip, its camera, its options, loading and refusals — is what
-/// the page must not wait for.
 fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     let clockless = |state: &DashboardMapState| DashboardMapState {
         hour: None,
@@ -428,9 +384,6 @@ fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     clockless(old) == clockless(new)
 }
 
-/// Followed answers go to `send` from a thread of their own, so the stepper only queues: the
-/// desktop installs the playheads once for its process. Until a playhead exists every follow is
-/// "not available" by name and the widgets keep asking.
 pub fn install_follow(send: impl Fn(u8, Vec<u8>) + Send + 'static) -> io::Result<bool> {
     let push = Arc::new(dashboard_follow::push::Push::default());
     let drained = Arc::clone(&push);
@@ -444,16 +397,11 @@ pub fn install_follow(send: impl Fn(u8, Vec<u8>) + Send + 'static) -> io::Result
 
 type FollowHost = dashboard_follow::host::PlayheadHost<crate::playhead_host::Entry>;
 
-/// A follow host's recording, timeline and clock mapping.
 type FollowKey = (String, u64, i32);
 
-/// Follow on the map's playheads: one `Follow` a playhead, its hook in the host's slot, its reader
-/// bound to `redeclare`, and its driver standing its reader at the clock's head.
 struct FollowPlayheads {
     push: Arc<dashboard_follow::push::Push>,
     hosts: Mutex<BTreeMap<FollowKey, std::sync::Weak<FollowHost>>>,
-    /// Hosts being built, by key: a caller of the same key waits for that build, one of another
-    /// key or recording never does.
     building: Mutex<BTreeMap<FollowKey, std::sync::Weak<Mutex<()>>>>,
 }
 
@@ -493,11 +441,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         if let Some(host) = self.hosted(&key) {
             return Ok(host as Arc<dyn dashboard_follow::registry::Hosted>);
         }
-        // The map's read of the same recording is shared, never repeated ([`units::shared`]).
         let (units, _) = crate::playhead_host::units::at_path(path, Some(branch)).map_err(|error| error.to_string())?;
-        // Follow runs a playhead of its own, never the map's: its hook evaluates the followed
-        // queries on that playhead's stepper, and no map's frame takes steps from it. Its steps
-        // are built at the display's rate, so it answers no more often than the display refreshes.
         let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock, crate::playhead_host::Side::Follow).map_err(|error| error.to_string())?;
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
@@ -515,10 +459,6 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
     }
 }
 
-/// Rows at the head of a follow host's playhead for its panels, at a panel's cadence. No map
-/// draws this playhead, so its views are made by a store of its own, stepped to the playhead's
-/// head by one thread ([`crate::playhead_host::views::apart::Following`]), opened with the first
-/// panel that asks and stopped when the last one closes.
 struct FollowRows {
     hook: u64,
     entry: Arc<crate::playhead_host::Entry>,
@@ -554,7 +494,6 @@ impl dashboard_follow::panel::PanelRows for FollowRows {
 struct FollowRowReader {
     reader: crate::playhead_host::views::Reader,
     entry: Arc<crate::playhead_host::Entry>,
-    /// The store's stepping thread, kept while a panel reads it; dropped after the reader.
     _following: Arc<crate::playhead_host::views::apart::Following>,
 }
 
@@ -567,7 +506,6 @@ impl dashboard_follow::panel::PanelReader for FollowRowReader {
         self.reader.frame()
     }
 
-    /// The playhead's error, at the hour of the last rows it gave: no later rows will come.
     fn stopped(&self) -> Option<(replay_data::Hour, String)> {
         let playhead = self.entry.playhead();
         let error = playhead.error()?;
@@ -576,8 +514,6 @@ impl dashboard_follow::panel::PanelReader for FollowRowReader {
     }
 }
 
-/// The map's window, a child of the host's, and the map's link to its host: the commands it sends
-/// and where the map's events go.
 pub struct Parent {
     window: crate::host::Window,
     commands: mpsc::Receiver<NativeCommand>,
@@ -624,7 +560,6 @@ impl Parent {
             .name("viewer-commands".into())
             .spawn_carried(move || {
                 while !input.stopped.load(Ordering::Acquire) {
-                    // The host dropping its end closes the map.
                     let Ok(command) = commands.recv() else { break };
                     let close = matches!(command, NativeCommand::Close);
                     input.input(command);
@@ -639,8 +574,6 @@ impl Parent {
         thread::Builder::new()
             .name("viewer-events".into())
             .spawn_carried(move || {
-                // Disconnecting this zero-capacity channel signals that all
-                // queued events were sent, without blocking the sender.
                 let _finished = output_finished;
                 loop {
                     let mut outgoing = output
@@ -704,8 +637,6 @@ impl Parent {
                     }
                 }
             })?;
-        // Map acknowledgements go on a thread of their own, so a burst of events never queues
-        // ahead of them.
         let maps = Arc::clone(&shared);
         thread::Builder::new()
             .name("viewer-map-states".into())
@@ -734,7 +665,6 @@ impl Parent {
             .unwrap_or_else(|error| error.into_inner())
             .ready = Some((
             controller.window.window.hwnd().to_string(),
-            // Recorded as the map opened its device ([`crate::render::configuration`]).
             dashboard::map_settings::sample_counts(),
         ));
         shared.output_ready.notify_one();
@@ -752,8 +682,6 @@ pub struct Controller {
     output_done: mpsc::Receiver<()>,
     service: Arc<dashboard::Service>,
     sent_maps: Sent,
-    /// The host's events, which an export's answer reaches on the map's own thread: so before the
-    /// map ends and the host refuses what it never answered.
     events: crate::host::Events,
 }
 
@@ -819,7 +747,6 @@ impl Controller {
         self.shared.details(details);
     }
 
-    /// Sends the chosen aircraft's status; one not yet sent is replaced.
     pub fn report_fly_aircraft(&self, status: dashboard::protocol::FlyAircraftStatus) {
         self.shared
             .outgoing
@@ -829,8 +756,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Asks the host to flip its diagnostics choice; it answers with
-    /// `MapAction::Diagnostics`.
     pub fn toggle_diagnostics(&self) {
         let mut outgoing = self
             .shared
@@ -842,14 +767,10 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Answers export `request` to the host, with what it saved or why it was refused, on this
-    /// thread.
     pub fn report_export(&self, request: u64, answer: Result<String, String>) {
         (self.events)(NativeEvent::Export { request, answer });
     }
 
-    /// Reports the full map's camera mode and overlay choice to the host, whose controls follow
-    /// them.
     pub fn report_camera_mode(&self, mode: CameraMode, overlays: bool) {
         let mut outgoing = self
             .shared
@@ -861,7 +782,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Reports a view's options after the picker changed them; the host stores them.
     pub fn report_view_options(&self, view_id: &str, options: dashboard::protocol::MapOptions) {
         let mut outgoing = self
             .shared
@@ -873,7 +793,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Reports the country a view's Ctrl+click chose; the host owns the choice.
     pub fn report_view_observe(&self, view_id: &str, country: dashboard::protocol::ObservedCountry) {
         let mut outgoing = self
             .shared
@@ -885,7 +804,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Reports the modes a view's picker offers, for the host's own map mode control.
     pub fn report_view_modes(&self, view_id: &str, modes: Vec<dashboard::protocol::MapModeChoice>) {
         let mut outgoing = self
             .shared
@@ -897,7 +815,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Reports a picker toggle click whose setting the host owns.
     pub fn report_view_toggle(&self, view_id: &str, toggle: dashboard::protocol::MapToggle) {
         let mut outgoing = self
             .shared
@@ -911,9 +828,6 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    /// Reports each map's newest acknowledgement. A view whose clock alone moved reports at
-    /// [`STATE_INTERVAL`]; the map is asked to draw again when one is held back, so the page gets
-    /// the newest state of every view it did not already have.
     pub fn report_maps(&mut self, states: Vec<DashboardMapState>, ctx: &egui::Context) {
         if let Some(remaining) = self.shared.maps(&mut self.sent_maps, states, Instant::now()) {
             ctx.request_repaint_after(remaining);
@@ -957,8 +871,6 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         {
-            // Pair shutdown with the condition variable's mutex so a writer
-            // entering its wait cannot miss the final notification.
             let _outgoing = self
                 .shared
                 .outgoing
@@ -968,16 +880,10 @@ impl Drop for Controller {
         }
         self.shared.output_ready.notify_one();
         self.shared.maps_ready.notify_one();
-        // The service is the host's: it outlives this map and ends with the host.
-        // Let the host receive the final error/state before the map ends, but never hang the
-        // map's thread on a host that stopped taking events.
         let _ = self.output_done.recv_timeout(Duration::from_millis(100));
-        // Close ends the command thread; a close from the window itself leaves it waiting until
-        // the host drops its end. Never join it on the map's thread.
     }
 }
 
-/// Where the host placed the map's window: shown only once it is both visible and placed.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Placement {
     visible: bool,
@@ -990,7 +896,6 @@ impl Placement {
     }
 }
 
-/// The map's window as its host places it.
 struct NativeWindow {
     window: crate::host::Window,
     placement: Cell<Placement>,
@@ -999,7 +904,6 @@ struct NativeWindow {
 
 impl NativeWindow {
     fn new(window: crate::host::Window) -> io::Result<Self> {
-        // SAFETY: a query on the map's window handle.
         if unsafe { GetParent(window.hwnd() as HWND) }.is_null() {
             return Err(io::Error::other("The map's window has no host window"));
         }
@@ -1015,7 +919,6 @@ impl NativeWindow {
         let placement = Placement { bounds: Some(bounds), ..self.placement.get() };
         self.placement.set(placement);
         let visibility = if placement.show() { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
-        // SAFETY: an asynchronous call on the map's window; its own thread applies it.
         let success = unsafe {
             SetWindowPos(
                 self.hwnd(),
@@ -1033,7 +936,6 @@ impl NativeWindow {
     fn visibility(&self, visible: bool) {
         let placement = Placement { visible, ..self.placement.get() };
         self.placement.set(placement);
-        // SAFETY: asynchronous calls on the map's window; its own thread applies them.
         unsafe {
             ShowWindowAsync(self.hwnd(), if placement.show() { SW_SHOWNOACTIVATE } else { SW_HIDE });
             if placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {
@@ -1044,7 +946,6 @@ impl NativeWindow {
 
     fn map_views(&self, views: &[DashboardMapView]) -> io::Result<()> {
         let mut client = RECT::default();
-        // SAFETY: a query on the host's window, the map window's parent.
         if unsafe { GetClientRect(GetParent(self.hwnd()), &mut client) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -1064,8 +965,6 @@ impl NativeWindow {
             self.bounds(root)?;
         }
         if self.region.borrow().as_ref() != Some(&regions) {
-            // The window is borderless: client and window-relative origins agree.
-            // Windows owns the final HRGN only after SetWindowRgn succeeds.
             unsafe {
                 let region = CreateRectRgn(0, 0, 0, 0);
                 if region.is_null() {
@@ -1241,7 +1140,6 @@ mod tests {
             outgoing.take_toggle_diagnostics(),
             Some(NativeEvent::ToggleDiagnostics)
         ));
-        // Sent once: the press is consumed.
         assert!(outgoing.is_empty() && outgoing.take_toggle_diagnostics().is_none());
     }
 
@@ -1254,18 +1152,13 @@ mod tests {
             drawn_at: Some(at),
             ..Default::default()
         };
-        // Later frames of the same hour and mode acknowledge nothing new.
         assert!(same_ack(&drawn(5, "default", 10.0), &drawn(5, "default", 20.0)));
         assert!(!same_ack(&drawn(5, "default", 10.0), &drawn(5, "terrain", 20.0)));
         assert!(!same_ack(&drawn(5, "default", 10.0), &drawn(6, "default", 20.0)));
-        // Only the hour moved: the clock, which the page reads at a fixed rate.
         assert!(clock_only(&drawn(5, "default", 10.0), &drawn(6, "default", 20.0)));
         assert!(!clock_only(&drawn(5, "default", 10.0), &drawn(6, "terrain", 20.0)));
     }
 
-    /// Playing, a view's hour reaches the page once every [`STATE_INTERVAL`] however many frames
-    /// it draws, and the map is asked to draw again when a state is held back. Everything else a
-    /// frame reports goes at once, and never costs the clock its own next report.
     #[test]
     fn a_views_clock_reports_at_a_fixed_rate_and_everything_else_at_once() {
         let shared = shared();
@@ -1287,23 +1180,17 @@ mod tests {
             let _ = outgoing.take_maps();
             count
         };
-        // The first frame reports at once: the page has nothing yet.
         assert_eq!(shared.maps(&mut sent, drawn(10, None), at(0)), None);
         assert_eq!(queued(&shared), 1);
-        // Frames through the interval only move the clock, so they are held, and the map is told
-        // how long it still owes.
         assert_eq!(shared.maps(&mut sent, drawn(11, None), at(16)), Some(Duration::from_millis(234)));
         assert_eq!(shared.maps(&mut sent, drawn(12, None), at(32)), Some(Duration::from_millis(218)));
         assert_eq!(queued(&shared), 0);
-        // A frame that highlights something is what the page must not wait for.
         assert_eq!(shared.maps(&mut sent, drawn(13, Some("division:7")), at(48)), None);
         assert_eq!(queued(&shared), 1);
-        // That report does not buy the clock an earlier one.
         assert_eq!(shared.maps(&mut sent, drawn(14, Some("division:7")), at(100)), Some(Duration::from_millis(198)));
         assert_eq!(queued(&shared), 0);
         assert_eq!(shared.maps(&mut sent, drawn(15, Some("division:7")), at(300)), None);
         assert_eq!(queued(&shared), 1);
-        // A frame that acknowledges nothing new is never queued, however late.
         assert_eq!(shared.maps(&mut sent, drawn(15, Some("division:7")), at(900)), None);
         assert_eq!(queued(&shared), 0);
     }
@@ -1347,7 +1234,6 @@ mod tests {
         assert!(outgoing.maps.is_empty() && outgoing.take_maps().is_none());
     }
 
-    /// The host hears the latest camera mode and overlay choice once.
     #[test]
     fn the_latest_camera_mode_is_reported_once() {
         let mut outgoing = Outgoing::default();
@@ -1364,9 +1250,6 @@ mod tests {
         assert!(outgoing.is_empty() && outgoing.take_camera_mode().is_none());
     }
 
-    /// A take waits with its newest state; a state outside its ranges is refused and the waiting
-    /// message kept; a release queued after a state wins over it; a camera mode passes as a map
-    /// action.
     #[test]
     fn controller_messages_wait_merged_and_camera_modes_reach_the_map() {
         use dashboard::protocol::{
@@ -1464,7 +1347,6 @@ mod tests {
             line,
             r#"{"command":"map_action","action":{"kind":"cameraMode","mode":"walk","overlays":true}}"#
         );
-        // A host that leaves the choice out asks for the terrain alone.
         let terse: NativeCommand = serde_json::from_str(
             r#"{"command":"map_action","action":{"kind":"cameraMode","mode":"fly"}}"#,
         )
@@ -1609,8 +1491,6 @@ mod tests {
             assert_eq!(seek.branch, u64::MAX);
             assert_eq!(seek.hour, 12);
         }
-        // The app can supersede the earlier open using the seek's target;
-        // neither the earlier open nor another replay's position identifies it.
         assert_eq!(
             pending.seek.as_ref().unwrap().open_request(),
             OpenRequest {
@@ -1699,7 +1579,6 @@ mod tests {
 
     const FAILURE: &str = "the follow test's recording could not be read";
 
-    /// A recording's pages whose every read fails once `broken` is set.
     struct Breaking {
         inner: Arc<dyn playhead::pages::Pages>,
         runs: Vec<BreakingRun>,
@@ -1742,8 +1621,6 @@ mod tests {
         }
     }
 
-    /// A follow panel whose playhead stops on a read error says so, at the hour of the last rows
-    /// it was given, instead of showing them as current; its last reader closing stops the store.
     #[test]
     fn a_follow_panel_reports_its_playheads_read_error_at_its_last_rows_and_its_last_reader_retires_the_store() {
         use crate::playhead_host::views::tests::{RECORDING, hourly_steps, record};

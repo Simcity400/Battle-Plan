@@ -18,7 +18,6 @@ use viewer_foundation::{
 pub struct Loader {
     layers: ResolvedLayers,
     pub reads: ContentReads,
-    /// Where the localisation's parses are kept between runs, if anywhere.
     cache_dir: Option<PathBuf>,
 }
 
@@ -31,8 +30,6 @@ impl Loader {
         }
     }
 
-    /// Keeps the localisation's parses in `cache_dir` between runs
-    /// ([`installed_content_localisation::localisation::read_cached`]).
     pub fn with_cache(mut self, cache_dir: &Path) -> Self {
         self.cache_dir = Some(cache_dir.to_path_buf());
         self
@@ -518,9 +515,6 @@ pub fn continents(layers: &ResolvedLayers) -> Result<Vec<String>, String> {
         })
         .map_err(|why| why.to_string())
 }
-/// The content's sound definitions. Unreadable definitions leave the maps
-/// silent with a warning; unreadable `NSound` defines leave the height and
-/// voice categories at full volume, named in the warnings.
 fn audio_source(
     layers: &installed_content_core::ResolvedLayers,
     defines: &installed_content_core::defines::Defines,
@@ -587,7 +581,6 @@ fn audio_source(
             Default::default()
         }
     };
-    // The user's enabled stations; without the playlist file every station plays.
     let stations = installed_content_sound::music::enabled_stations_with(user, |path| {
         let result = std::fs::read(path);
         if let Some(reads) = reads {

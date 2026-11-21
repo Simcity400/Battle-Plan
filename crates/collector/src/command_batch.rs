@@ -1,11 +1,3 @@
-//! The game's per-frame command batch: it runs every queued command, the hourly update among
-//! them, and is the only place the game writes its simulation. A thread entering its outermost
-//! batch counts itself, then passes the capture gate; every capture closes the gate, then requires
-//! that no other thread is counted ([`crate::capture_point`]). The hook is published while no
-//! thread may be inside the batch, where that can be shown within its attempts: every batch since
-//! is then observed, and a batch's return with no observed batch around it on its thread tells the
-//! capture point nothing writes until the next. Published without that proof, its returns are not
-//! trusted and an hour is read straight after its update.
 use crate::hook::Hook;
 use engine_native::{Memory, cgame_state};
 use std::{
@@ -14,15 +6,11 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
-/// Every batch since the hook's publication is observed: captures may run beside the game.
 static ENABLED: AtomicBool = AtomicBool::new(false);
-/// The hook is published and every batch is observed: an hour can wait for its batch's return.
 static OBSERVED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// Threads inside an observed batch; one waiting at the capture gate writes nothing and is not.
 static BATCHING: AtomicUsize = AtomicUsize::new(0);
-/// Publications held because a thread may have been inside the batch.
 static HELD: AtomicU32 = AtomicU32::new(0);
 static PROOF: AtomicU32 = AtomicU32::new(UNPUBLISHED);
 
@@ -30,12 +18,9 @@ const UNPUBLISHED: u32 = 0;
 const PROVEN: u32 = 1;
 const EXHAUSTED: u32 = 2;
 const NO_RANGE: u32 = 3;
-/// Held publications before the hook is published without the proof. The game leaves the batch
-/// every frame and the runtime retries about every millisecond, so a few attempts normally do.
 const ATTEMPTS: u32 = 200;
 
 thread_local! {
-    /// Observed batches this thread entered and has not left.
     static DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -46,14 +31,11 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let (at, original) = crate::located_hook(base, cgame_state::COMMAND_BATCH_RVA)?;
         let mut hook = unsafe { Hook::new(at, batch as *const () as usize, original) }
             .map_err(|_| "native hook construction failed")?;
         ORIGINAL.store(hook.trampoline(), Ordering::Release);
-        // Located only where the whole function matches the reference: one block with one return
-        // and no jump out, so every return its own calls leave lies in this range, and only there.
         let range = engine_sites::hook(base, cgame_state::COMMAND_BATCH_RVA)
             .ok()
             .map(|code| code.function..code.end)
@@ -96,7 +78,6 @@ impl Hooks {
         }
         PROOF.store(proof, Ordering::Release);
         ENABLED.store(proof == PROVEN, Ordering::SeqCst);
-        // An unproven publication may sit inside a running batch: its returns are not trusted.
         OBSERVED.store(proof == PROVEN, Ordering::SeqCst);
         Ok(true)
     }
@@ -106,18 +87,14 @@ impl Hooks {
     }
 }
 
-/// Whether every batch since the hook's publication is observed, so captures may run beside the
-/// game.
 pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::SeqCst)
 }
 
-/// Whether every batch is observed, so an hour can wait for its batch's return.
 pub(crate) fn observed() -> bool {
     OBSERVED.load(Ordering::SeqCst)
 }
 
-/// Whether the hook was published with no thread inside the batch, and if not why, for status.
 pub(crate) fn publication_status() -> &'static str {
     match PROOF.load(Ordering::Acquire) {
         PROVEN => {
@@ -133,12 +110,10 @@ pub(crate) fn publication_status() -> &'static str {
     }
 }
 
-/// Publications held because a thread may have been inside the batch.
 pub(crate) fn publications_held() -> u32 {
     HELD.load(Ordering::Relaxed)
 }
 
-/// Whether a thread other than this one is inside an observed batch.
 pub(crate) fn others_batching() -> bool {
     BATCHING.load(Ordering::SeqCst) > usize::from(DEPTH.get() > 0)
 }
@@ -164,8 +139,6 @@ unsafe extern "system" fn batch(session: usize) -> usize {
     result
 }
 
-/// Counted, then the gate; a capture closes the gate, then looks at the count: one of the two
-/// sees the other.
 fn enter() {
     loop {
         BATCHING.fetch_add(1, Ordering::SeqCst);
@@ -186,7 +159,6 @@ pub(crate) mod tests {
         OBSERVED.store(observed, Ordering::SeqCst);
     }
 
-    /// Another thread is inside an observed batch, or leaves it.
     pub(crate) fn batching_elsewhere(inside: bool) {
         if inside {
             BATCHING.fetch_add(1, Ordering::SeqCst);
@@ -223,7 +195,6 @@ pub(crate) mod tests {
         static RELEASE: AtomicBool = AtomicBool::new(false);
         static OTHERS: AtomicBool = AtomicBool::new(true);
         extern "system" fn native(session: usize) -> usize {
-            // A capture inside its own thread's batches is not refused for them.
             if session == 1 {
                 return unsafe { batch(2) };
             }

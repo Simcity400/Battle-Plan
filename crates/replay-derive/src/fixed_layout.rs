@@ -1,8 +1,3 @@
-//! Consumers of fixed modifier and token identities. Expected names come from
-//! verified executable metadata. Recording refuses a family's tables when
-//! the built-in modifier layout or one of its tokens fails; playback checks
-//! the expected names against the recording. Dynamic modifier keys are not
-//! constrained.
 
 use crate::{
     frame::DecodedSource,
@@ -15,12 +10,8 @@ use engine_research::cresearch_slot;
 #[derive(Clone, Copy, Debug)]
 pub struct Family {
     pub name: &'static str,
-    /// Built-in modifier indices.
     pub keys: &'static [u32],
-    /// Static lexer token ids.
     pub tokens: &'static [u32],
-    /// Recorded tables the collector computes with them; empty for field-local
-    /// capture guards or when only playback or the save oracle uses them.
     pub tables: &'static [TableId],
 }
 
@@ -41,11 +32,9 @@ pub const MOVEMENT: Family = Family {
         keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
     ],
     tokens: &[],
-    // The retired speed-graph table was its only recorded dependent.
     tables: &[],
 };
 
-/// Current-hour class-0 counter action operands.
 pub const STRATEGIC_ACTION: Family = Family {
     name: "division strategic action",
     keys: &[
@@ -60,12 +49,9 @@ pub const NAVAL_TRANSFER: Family = Family {
     name: "naval transfer speed",
     keys: &[keys::NAVAL_SPEED_FACTOR, keys::NAVAL_MINES_EFFECT_REDUCTION],
     tokens: &[],
-    // The retired speed-graph table was its only recorded dependent.
     tables: &[],
 };
 
-/// Fresh task-force counter speed and range; guard only the derived suffix
-/// components so stored motion and independent raw operands remain available.
 pub const TASK_FORCE_COUNTER_ETA: Family = Family {
     name: "fresh task-force counter ETA",
     keys: &[
@@ -79,9 +65,6 @@ pub const TASK_FORCE_COUNTER_ETA: Family = Family {
     tables: &[],
 };
 
-/// The selected transport risk graph's keys. Its only dependents, the
-/// selected transport preview's receiver leaves, retired; the family keeps
-/// the keys authenticated.
 pub const TRANSPORT_RISK: Family = Family {
     name: "selected transport risk",
     keys: &[
@@ -97,9 +80,6 @@ pub const TRANSPORT_RISK: Family = Family {
     tables: &[],
 };
 
-/// The air-transport calculation's separate air-wing, ace and country modifier graph. Its
-/// only dependents, the selected transport preview's air leaves, retired; the family
-/// keeps the keys authenticated.
 pub const TRANSPORT_AIR: Family = Family {
     name: "selected transport air normalization",
     keys: &engine_executable::modifier_keys::TRANSPORT_AIR_NORMALIZATION,
@@ -107,8 +87,6 @@ pub const TRANSPORT_AIR: Family = Family {
     tables: &[],
 };
 
-/// Regional Air detection and base fuel/volunteer terms. Raw fields remain
-/// available when a playback modifier identity cannot be proved.
 pub const AIR_MAP: Family = Family {
     name: "Air map detection and base modifiers",
     keys: &[
@@ -128,8 +106,6 @@ pub const AIR_MAP: Family = Family {
     tables: &[],
 };
 
-/// The railway-gun tooltip reads the current variant's stat 0x3E through
-/// this token. Its guard withholds only the ETA suffix, preserving the row.
 pub const RAILWAY_SPEED: Family = Family {
     name: "railway gun speed",
     keys: &[],
@@ -137,8 +113,6 @@ pub const RAILWAY_SPEED: Family = Family {
     tables: &[],
 };
 
-/// The division context's three modifier slots (reinforce rate, width and
-/// initiative).
 pub const LAND_COMBAT_DIVISIONS: Family = Family {
     name: "land combat divisions",
     keys: &[
@@ -160,8 +134,6 @@ pub const DIVISION_STATUS: Family = Family {
     tables: &[TableId::DivisionStatus],
 };
 
-/// The fresh attrition operands retired with their breakdown table; the
-/// counter's cached attrition values do not depend on these literals.
 pub const ATTRITION: Family = Family {
     name: "fresh army attrition",
     keys: &engine_land_inputs::carmy_attrition::KEYS,
@@ -169,8 +141,6 @@ pub const ATTRITION: Family = Family {
     tables: &[],
 };
 
-/// Cached region attack uses `keys::ARMY_ATTACK_FACTOR`. Field-local capture and playback guard; no
-/// table-wide refusal.
 pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
     name: "selected attack weather attack",
     keys: &[keys::ARMY_ATTACK_FACTOR],
@@ -178,7 +148,6 @@ pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
     tables: &[],
 };
 
-/// Cached region breakthrough uses `keys::BREAKTHROUGH_FACTOR`.
 pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
     name: "selected attack weather breakthrough",
     keys: &[keys::BREAKTHROUGH_FACTOR],
@@ -186,7 +155,6 @@ pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
     tables: &[],
 };
 
-/// Country night term uses `keys::LAND_NIGHT_ATTACK`.
 pub const SELECTED_ATTACK_NIGHT: Family = Family {
     name: "selected attack night",
     keys: &[keys::LAND_NIGHT_ATTACK],
@@ -194,7 +162,6 @@ pub const SELECTED_ATTACK_NIGHT: Family = Family {
     tables: &[],
 };
 
-/// Country/state fort term uses `keys::LAND_BUNKER_EFFECTIVENESS_FACTOR`.
 pub const SELECTED_ATTACK_FORT: Family = Family {
     name: "selected attack fort",
     keys: &[keys::LAND_BUNKER_EFFECTIVENESS_FACTOR],
@@ -278,8 +245,6 @@ pub const NAVAL_AIR: Family = Family {
     tables: &[TableId::NavalCombatDetails],
 };
 
-/// The naval hovers' source trees: side trees, and ship and carrier trees, recorded for
-/// these native keys ([`crate::naval_trees`]).
 pub const NAVAL_TREES: Family = Family {
     name: "naval modifier trees",
     keys: &engine_naval_history::naval_modifier_trees::KEYS,
@@ -290,9 +255,6 @@ pub const NAVAL_TREES: Family = Family {
     ],
 };
 
-/// The combat window's positioning recomputation: surface detection and
-/// carrier sortie keys, read through the ship modifier calculation, which
-/// also reads weather and critical keys.
 pub const NAVAL_POSITIONING: Family = Family {
     name: "naval positioning modifiers",
     keys: &[
@@ -306,8 +268,6 @@ pub const NAVAL_POSITIONING: Family = Family {
     tables: &[],
 };
 
-/// The combat window's anti-air recomputation, through the same ship
-/// modifier calculation.
 pub const NAVAL_ANTI_AIR: Family = Family {
     name: "naval anti-air modifiers",
     keys: &[
@@ -365,7 +325,6 @@ pub const STATE_RESOURCES: Family = Family {
     tables: &[TableId::StateResourceInputs],
 };
 
-/// Country recruitment and mobilisation operands in the existing counter census.
 pub const COUNTRY_RECRUITMENT: Family = Family {
     name: "country recruitment",
     keys: &engine_native::ccountry::RECRUITMENT_MODIFIER_KEYS,
@@ -373,7 +332,6 @@ pub const COUNTRY_RECRUITMENT: Family = Family {
     tables: &[TableId::CountryCounterInputs],
 };
 
-/// Effective state recruitment operands in the existing resource census.
 pub const STATE_RECRUITMENT: Family = Family {
     name: "state recruitment",
     keys: &[
@@ -386,8 +344,6 @@ pub const STATE_RECRUITMENT: Family = Family {
     tables: &[TableId::StateResourceInputs],
 };
 
-/// The raid launch gate's daily range terms: key 5 on the country and,
-/// in AceRangeInputs, on the ace and its type, plus the raid unit range limit.
 pub const RAID_LAUNCH: Family = Family {
     name: "raid launch",
     keys: &[keys::AIR_RANGE_FACTOR, keys::NAVAL_COMMANDO_RAID_DISTANCE],
@@ -395,7 +351,6 @@ pub const RAID_LAUNCH: Family = Family {
     tables: &[TableId::RaidCountryInputs, TableId::AceRangeInputs],
 };
 
-/// The command-power affordability gate's capacity pair.
 pub const COMMAND_POWER: Family = Family {
     name: "command power",
     keys: &[keys::MAX_COMMAND_POWER, keys::MAX_COMMAND_POWER_MULT],
@@ -403,9 +358,6 @@ pub const COMMAND_POWER: Family = Family {
     tables: &[TableId::CountryCommandPower],
 };
 
-/// Ace country modifiers every raid reads live, recorded hourly per
-/// country beside the command-power pair: 0x25a on an ace's owner and 0x72
-/// on a wing's country, used by ace range and maximum-speed terms.
 pub const COUNTRY_ACE_MODIFIERS: Family = Family {
     name: "country ace modifiers",
     keys: &[keys::AIR_ACE_BONUSES_FACTOR, keys::ACE_EFFECTIVENESS_FACTOR],
@@ -413,8 +365,6 @@ pub const COUNTRY_ACE_MODIFIERS: Family = Family {
     tables: &[TableId::CountryCommandPower],
 };
 
-/// Raid unit ace-speed terms: key 2 on the ace and its type. Country terms
-/// come from [`COUNTRY_ACE_MODIFIERS`].
 pub const RAID_UNIT_SPEED: Family = Family {
     name: "raid unit speed",
     keys: &[keys::AIR_MAXIMUM_SPEED_FACTOR],
@@ -422,8 +372,6 @@ pub const RAID_UNIT_SPEED: Family = Family {
     tables: &[TableId::RaidSpeedInputs],
 };
 
-/// Naval invasion preparation terms: 0x1a on the country, relation and
-/// leader, 0x184 on the country, 0x1ce on the relation.
 pub const INVASION_PREPARATION: Family = Family {
     name: "invasion preparation",
     keys: &[
@@ -435,8 +383,6 @@ pub const INVASION_PREPARATION: Family = Family {
     tables: &[TableId::InvasionPreparations],
 };
 
-/// Type4 preparation terms in ArmyOrderPlans.execution. A field-local
-/// refusal preserves the stored route and progress prefix.
 pub const PARADROP_PREPARATION: Family = Family {
     name: "paradrop preparation",
     keys: &[keys::AIR_INVASION_PREPARATION, keys::AIR_INVASION_PREP_DAYS],
@@ -444,8 +390,6 @@ pub const PARADROP_PREPARATION: Family = Family {
     tables: &[],
 };
 
-/// Country/commander transport-weight terms reached by order transport
-/// calculation. Refusal stays in DivisionMovement.order_transport.
 pub const PARADROP_TRANSPORT: Family = Family {
     name: "paradrop transport weight",
     keys: &[keys::PARATROOPER_WEIGHT_FACTOR],
@@ -453,9 +397,6 @@ pub const PARADROP_TRANSPORT: Family = Family {
     tables: &[],
 };
 
-/// Naval mission icon active counts and efficiencies: combined task-force
-/// keys, mission-owner escort, roster-owner weather and
-/// expeditionary/roster-owner underway range.
 pub const NAVAL_MISSIONS: Family = Family {
     name: "naval mission active counts and efficiencies",
     keys: &engine_native::naval_mission_inputs::COUNTRY_KEYS,
@@ -480,7 +421,6 @@ pub const RESEARCH_IDLE: Family = Family {
     ],
 };
 
-/// The save oracle compares recorded tokens against fixed15 save text.
 pub const ORACLE_FIXED15: Family = Family {
     name: "save oracle fixed15 tokens",
     keys: &[],
@@ -488,7 +428,6 @@ pub const ORACLE_FIXED15: Family = Family {
     tables: &[],
 };
 
-/// Success operands for raid, bombing and mission calculations.
 pub const RAID_SUCCESS: Family = Family {
     name: "raid success operands",
     keys: &[
@@ -512,7 +451,6 @@ pub const RAID_SUCCESS: Family = Family {
     tables: &[TableId::RaidTooltipOperands],
 };
 
-/// Counterintelligence and cryptology terms.
 pub const RAID_INTEL: Family = Family {
     name: "raid target intel",
     keys: &[keys::INTELLIGENCE_AGENCY_DEFENSE, keys::CRYPTO_STRENGTH],
@@ -520,7 +458,6 @@ pub const RAID_INTEL: Family = Family {
     tables: &[TableId::RaidIntelInputs],
 };
 
-/// State-resource save comparison selects the engine's infrastructure token.
 pub const ORACLE_INFRASTRUCTURE: Family = Family {
     name: "save oracle infrastructure",
     keys: &[],
@@ -538,7 +475,6 @@ pub const PRODUCTION_MODIFIERS: Family = Family {
     ],
 };
 
-/// The organisation owner's design-change factor, demanded beside the designs' content keys.
 pub const DESIGN_ORGANISATION_CHANGE: Family = Family {
     name: "design organisation change cost",
     keys: &[keys::MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST],
@@ -546,7 +482,6 @@ pub const DESIGN_ORGANISATION_CHANGE: Family = Family {
     tables: &[TableId::DesignCountryModifiers],
 };
 
-/// Each country's effective policy-cost modifier, recorded with its policy roster.
 pub const ORGANISATION_POLICY_COST: Family = Family {
     name: "organisation policy cost",
     keys: &[keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST],
@@ -603,8 +538,6 @@ pub const FAMILIES: &[Family] = &[
     ORACLE_INFRASTRUCTURE,
 ];
 
-/// Playback authenticates expected modifier names against recorded definitions.
-/// A partial or absent table is not evidence of a matching layout.
 pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(), String> {
     let definitions = frame
         .complete::<tables::ModifierDefinitions>()
@@ -630,10 +563,6 @@ pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(
     )
 }
 
-/// [`validate_recording`] over any reading of the recorded definitions: `whole`, whether
-/// ModifierDefinitions and LexicalTokens are both complete (the first's gap first); `token`, the
-/// token of the definition at a modifier index; `spells`, whether a token's literal is a script
-/// name, none when LexicalTokens has no row for the token.
 pub fn validate_definitions(
     family: Family,
     whole: Result<(), String>,

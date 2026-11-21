@@ -1,6 +1,3 @@
-//! Value types of the retired TransportAirRegions table's air-transport operands
-//! ([`super::RESERVED_SPLIT_TABLES`]): wire tombstones that keep the table's framing.
-//! Nothing reads or writes them.
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +24,6 @@ pub struct TransportAirAce {
     pub modifiers: Option<TransportAirModifiers>,
     pub type_modifiers: Option<TransportAirModifiers>,
     pub owner_effectiveness: Option<i64>,
-    /// Ordered raw occurrences: multiply and truncate each before adding.
     pub combat: Option<Vec<TransportAirCombatModifier>>,
 }
 value_struct!(TransportAirAce {

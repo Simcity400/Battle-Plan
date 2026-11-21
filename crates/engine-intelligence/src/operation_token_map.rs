@@ -1,17 +1,9 @@
-//! Robin-hood header shared by operation-token database and manager maps.
-//! A census includes empty slots through mask plus overflow, stopping before
-//! the separate end sentinel. Slot extent is distinct from live entry count.
 
 use engine_sites::Rva;
-/// Operation-token slot-array pointer.
 pub const TABLE: usize = 0x08;
-/// Signed i32 live entry count, incremented only for a new target.
 pub const COUNT: usize = 0x10;
-/// Bucket mask derived from the bucket exponent.
 pub const MASK: usize = 0x14;
-/// Overflow u8 extent, with a separate end sentinel after the slot extent.
 pub const OVERFLOW: usize = 0x18;
-/// Shared static empty-target storage, excluded from deallocation.
 pub const EMPTY_TARGET_STORAGE_RVA: Rva = Rva(0x0312_b8c0);
 
 use crate::{Memory, read};
@@ -20,7 +12,6 @@ use crate::{Memory, read};
 pub(crate) struct Header {
     pub data: usize,
     pub count: u32,
-    /// Excludes the separate end sentinel; zero for the static empty table.
     pub slots: usize,
     pub mask: u32,
     pub overflow: u8,
@@ -45,8 +36,6 @@ impl Header {
         }
         if mask == 0 && overflow == 0 {
             return if count == 0 && data == empty_storage {
-                // The constructor points at shared static storage. Its unused
-                // bucket bytes are not a membership census or a required read.
                 Ok(Self {
                     data,
                     count: 0,

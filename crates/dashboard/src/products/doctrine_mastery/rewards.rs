@@ -1,6 +1,3 @@
-//! One track's subdoctrine rewards at an hour, each described as the game words it for the
-//! country then (its scripted values and flags read at that hour): asked when a reward is hovered.
-//! An effect may read any scope, so the effect operands' tables are read whole at the hour.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Owner, owner_reads, spelled};
@@ -27,13 +24,11 @@ pub struct DoctrineRewards;
 pub struct DoctrineRewardsParams {
     pub branch_id: String,
     pub country: Country,
-    /// The folder's and the track's ordinals, as `doctrine-mastery` lists them.
+    #[doc = " The folder's and the track's ordinals, as `doctrine-mastery` lists them."]
     pub folder: u32,
     pub track: u32,
 }
 
-/// A reward of the track's subdoctrine, in authored order; its description none where the game
-/// words nothing for it, its name and threshold none where the content gives none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -48,7 +43,7 @@ pub struct DescribedReward {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineRewardsReply {
-    /// The track's subdoctrine's spelling at the hour; none where none is chosen.
+    #[doc = " The track's subdoctrine's spelling at the hour; none where none is chosen."]
     pub sub: Option<String>,
     pub rewards: Vec<DescribedReward>,
     pub warnings: Vec<String>,
@@ -62,14 +57,12 @@ pub struct Context {
     default_reward: Result<i64, String>,
 }
 
-/// Every table a description reads, with the owner's doctrine rows and the token dictionary.
 fn tables() -> BTreeSet<TableId> {
     let mut out: BTreeSet<TableId> = effect_description::recorded_tables().collect();
     out.extend([TableId::DoctrineFolders, TableId::DoctrineTracks, TableId::LexicalTokens]);
     out
 }
 
-/// The localisation key of reward `reward` of subdoctrine `sub`.
 pub(super) fn reward_key(sub: &[u8], reward: &[u8]) -> Vec<u8> {
     let mut key = installed_content_core::parser::c_string(sub).to_vec();
     key.push(b'_');
@@ -77,8 +70,6 @@ pub(super) fn reward_key(sub: &[u8], reward: &[u8]) -> Vec<u8> {
     key
 }
 
-/// A reward's benefits with its authored `<key>_desc` prose where it gives none of its own, as
-/// the game's reward tooltip adds it.
 fn benefits(reward: &installed_content_core::doctrines::RewardSource, key: &[u8], catalogue: &Catalogue) -> installed_content_core::doctrines::Benefits {
     let mut benefits = reward.benefits.clone();
     let mut description = key.to_vec();
@@ -117,7 +108,6 @@ impl AtHour for DoctrineRewards {
         tables().into_iter().collect()
     }
 
-    /// The owner's doctrine rows, and every other table a description reads whole.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         if step > 0 {
@@ -142,7 +132,6 @@ impl AtHour for DoctrineRewards {
     }
 }
 
-/// The rewards of track `params.track` of folder `params.folder` of the country in slot `slot`.
 fn rewards(frame: &DecodedFrame, params: &DoctrineRewardsParams, slot: u32, context: &Context) -> io::Result<DoctrineRewardsReply> {
     let unrecorded = |error: io::Error| dashboard_core::refused(format!("Doctrine rewards are not recorded at this hour: {error}"));
     let track = frame

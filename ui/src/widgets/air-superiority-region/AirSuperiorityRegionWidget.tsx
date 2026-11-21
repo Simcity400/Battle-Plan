@@ -22,18 +22,13 @@ import { useAirChoicesReply, useAirMoment } from '../../dashboard/useAirSuperior
 import { OPTIONS } from './definition';
 import './airSuperiorityRegion.css';
 
-/** Pixels a segment must exceed to show its share, and to be set off from the next by a seam. */
 const LABEL_MIN = 34, SEAM_MIN = 3;
 
 type Order = 'name' | 'active' | 'contested';
 
-/** The rows shown and their order, as one key: what a structural render changes. */
 const rowsKey = (rows: readonly AirRegionView[]) => rows.map(row => row.region.id).join(',');
 const sameAdopted = (held: { source: unknown; key: string }, next: { source: unknown; key: string }) => held.source === next.source && held.key === next.key;
 
-/** Each region's bar at the moment shown: its structure (which regions, which sides) renders when it changes; its
- * shares, labels and wings are painted from the followed values each frame, and the order by activity or contest
- * changes with the readings. */
 export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -45,11 +40,9 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   const viewport = useViewportHeight();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const { data, live, looks, tokens } = air;
-  // By name, every region is listed (the chosen ones only, when regions are chosen), as main's choices gave them.
   const chosenRegions = air.mode.regions;
   const choiceRegions = useMemo(() => order === 'name' ? choices.data?.regions.map(region => ({ id: Number(region.id), name: region.name }))
     .filter(region => !chosenRegions.length || chosenRegions.includes(region.id)) : undefined, [order, choices.data, chosenRegions]);
-  // Painted from the newest push: a region's activity, wings and shares move without a render.
   const current = air.current;
   const viewsAt = useCallback(() => { const now = current(); return now ? momentViews(now, live.read(), looks, choiceRegions) : []; }, [current, live, looks, choiceRegions]);
   const [adopted, setAdopted] = useDistinctState<{ source: unknown; key: string }>({ source: null, key: '' }, sameAdopted);
@@ -69,7 +62,7 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   const onMenu = useCallback((_: number, x: number, y: number) => {
     const hour = air.shownAt() ?? air.at;
     if (air.track && hour != null) menu.open(x, y, [jumpItem(runtime, air.track.id, hour)]);
-  }, [air.track, air.shownAt, air.at, menu.open, runtime]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [air.track, air.shownAt, air.at, menu.open, runtime]);
   const owner = `air-regions:${widget.id}`;
   const tips = useRowTooltips({ owner, active, content: tooltip, revision: `${air.at}`, onMenu });
   const pointer = useRef<{ id: number; x: number; y: number } | null>(null);
@@ -82,11 +75,9 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
       return text;
     };
   }, [tokens.surface]);
-  // Bar widths, kept for the painter: a label shows only where its segment has room.
   const widths = useRef(new Map<number, number>());
   const bars = useRef(new Map<number, HTMLDivElement>());
   const wingsCells = useRef(new Map<number, HTMLSpanElement>());
-  // A bar measured or resized is painted again at once: its labels follow its width, not the next value to land.
   const repaint = useRef<(() => void) | null>(null);
   const observer = useMemo(() => typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {
     let moved = false;
@@ -173,7 +164,6 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   </div>;
 }
 
-/** Writes a region's bar at its view: one segment a part, its share as its width and label, or the state named. */
 function paintBar(element: HTMLDivElement, view: AirView, width: number | undefined, inactive: string, textOn: (colour: string) => string, hatch: CSSProperties) {
   const parts = view.state === 'known' ? view.parts : [];
   const signature = view.state === 'known' ? parts.map(part => `${part.id}|${part.color}`).join(';') : `state:${airState(view)}:${view.state}`;

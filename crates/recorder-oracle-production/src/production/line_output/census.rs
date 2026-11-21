@@ -1,15 +1,6 @@
 use super::*;
 use replay_data::rows::OutputPurpose;
 
-/// Each publication's ProductionLineOutput against the same read's
-/// ProductionLines census. ProductionLineOutputRow's live-line contract and
-/// the spool's Totals::rows seed every census line before publication, so
-/// every live line holds output rows and every live row's line is in the
-/// census; ended rows have left it. Each live row's purpose must be one its
-/// line's kind produces: ship refit lines only refit, military lines build
-/// new equipment or convert, naval and railway-gun lines only build new. The
-/// save keeps no per-line output, so this is a recording self-check along the
-/// branch.
 pub(super) struct CensusCheck {
     since: Hour,
     branch: Option<replay_data::BranchId>,
@@ -18,7 +9,6 @@ pub(super) struct CensusCheck {
     unclassified: usize,
 }
 
-/// Whether a line of census `kind` can produce for `purpose`.
 fn produces(kind: u8, purpose: OutputPurpose) -> bool {
     use engine_native::cequipment_production_line::{KIND_MILITARY, KIND_SHIP_REFIT};
     match purpose {
@@ -40,9 +30,6 @@ impl CensusCheck {
         }
     }
 
-    /// A frame at or after the observation start. Only frames that read the
-    /// lines' daily slot published the table; carried hours repeat the last
-    /// read.
     pub(super) fn observe(&mut self, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
         if !daily_read(&frame.metrics, TableId::ProductionLineOutput) {
             return Ok(());

@@ -1,13 +1,3 @@
-//! Passive DLC/mod observations used by the engine's startup roster report.
-//!
-//! `reported_active` is a DLC entry's own flag before exclusion: the game's
-//! rules (`has_dlc`, the runtime DLC mask) count a DLC only while it is set and
-//! the entry's descriptor is byte-equal to none of `dlc_filter_strings`. Those
-//! begin as the launcher's disabled descriptors (and `-exclude_dlc`); startup
-//! then appends the counted DLC's display names. Entries retain map enumeration
-//! order; that order establishes neither VFS mounting order nor successful
-//! mounts. `observe_search_path` reads successful PhysicsFS mounts in search
-//! order, highest priority first.
 
 use crate::{
     Memory,
@@ -20,18 +10,11 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CDLCManager singleton pointer.
 pub const SINGLETON_RVA: Rva = Rva(0x034f_83a8);
-/// Cached successful mount-path pointer array, refreshed after mounts
-/// in highest-priority-first order.
 pub const SEARCH_PATH_RVA: Rva = Rva(0x0369_17a8);
-/// CDLCManager mutable DLC filter strings.
 pub const DLC_FILTER_STRINGS: usize = 0x50;
-/// Requested mod strings, data and count.
 pub const REQUESTED_MODS: usize = 0x68;
-/// CDLCManager DLC std::map.
 pub const DLCS: usize = 0xa0;
-/// CDLCManager mod std::map.
 pub const MODS: usize = 0xb0;
 
 pub type Descriptor = Text<1024>;
@@ -70,15 +53,10 @@ impl Observation {
     }
 }
 
-/// Call at an established consistent boundary. No game function is called, no
-/// allocation occurs, and a partial requested list cannot prove mod membership.
-/// Descriptor observations can contain local paths; they are not replay IDs.
 pub fn observe(memory: &impl Memory, base: usize, buffers: Buffers<'_>) -> Observation {
     observe_inner(memory, base, buffers, false)
 }
 
-/// Prepare exact text payloads on the loader worker before sampling.
-/// Counted std::strings have no text-width gates.
 pub fn prepare(
     memory: &impl Memory,
     base: usize,
@@ -87,8 +65,6 @@ pub fn prepare(
     observe_inner(memory, base, buffers, true)
 }
 
-/// Read the current native roster using its previously prepared text storage.
-/// This callback path neither allocates nor replaces an owned text buffer.
 pub fn observe_prepared(
     memory: &impl Memory,
     base: usize,
@@ -154,10 +130,6 @@ fn observe_inner<N: Value, D: Value>(
     }
 }
 
-/// Live list sizes from headers and the mount terminator only, for sizing the
-/// owned sample buffers before the hourly hook is installed. These are sizing
-/// hints, not observations: an unreadable source reports zero, and `observe`
-/// and `observe_search_path` still report their own truncation or failure.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     pub dlc_filter_strings: usize,
@@ -167,8 +139,6 @@ pub struct Counts {
     pub mounts: usize,
 }
 
-/// No game function is called and nothing is allocated. Native map sizes and
-/// the successful mount terminator supply the live populations.
 pub fn observe_counts(memory: &impl Memory, base: usize) -> Counts {
     let manager = engine_sites::at(base, SINGLETON_RVA)
         .and_then(|p| read::<u64>(memory, p))
@@ -210,11 +180,6 @@ pub fn observe_counts(memory: &impl Memory, base: usize) -> Counts {
     }
 }
 
-/// Reads the cached, null-terminated char-pointer array without calling the
-/// engine or allocating. Paths remain raw bytes in highest-priority-first order.
-/// A null cache root is unavailable; a non-null list may legitimately be empty.
-/// After output fills, count pointers through the terminator without reading the
-/// omitted strings. A truncated result cannot prove the complete mount list.
 pub fn observe_search_path(
     memory: &impl Memory,
     base: usize,
@@ -226,8 +191,6 @@ pub fn observe_search_path(
     })
 }
 
-/// The cached search path is a NUL-terminated pointer array. Each path's
-/// terminator supplies its length. Preparation grows on the loader; sampling reuses bytes.
 pub fn observe_search_path_owned(
     memory: &impl Memory,
     base: usize,
@@ -310,22 +273,14 @@ fn search_path_inner<M: Memory, T>(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Whether an observed successful search path is the expected mounts in
-/// membership and priority order. Shared by the collector's roster check and
-/// the recorder's out-of-process witnesses.
 pub fn mounts_match<T: Value>(observed: &[T], expected: &[String]) -> bool {
     mount_difference(observed, expected).is_none()
 }
 
-/// Where an observed successful search path first departs from the expected
-/// mounts, positions counted from 0, highest priority first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountDifference<'a> {
-    /// Nothing was expected, so not even the vanilla content root is proven.
     NoneExpected,
-    /// The observed list ends where `expected` is due.
     Missing { position: usize, expected: &'a str },
-    /// The observed list goes on past every expected mount.
     Extra { position: usize, observed: &'a [u8] },
     Differs {
         position: usize,
@@ -335,20 +290,13 @@ pub enum MountDifference<'a> {
     },
 }
 
-/// What the disk says of two mount paths that differ as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Folders {
-    /// One is no path: empty, not UTF-8, or holding a control character.
     Unreadable,
-    /// Whether each opened as a folder; one at least did not.
     Unopened { observed: bool, expected: bool },
-    /// Both open as folders, different ones.
     Different,
 }
 
-/// `None` when the observed search path is the expected mounts, position by
-/// position: two paths are one mount when they are equal in Windows notation or
-/// open the same folder (another spelling: 8.3 names, a junction, a `subst` drive).
 pub fn mount_difference<'a, T: Value>(
     observed: &'a [T],
     expected: &'a [String],
@@ -382,7 +330,6 @@ pub fn mount_difference<'a, T: Value>(
 
 fn same_mount(observed: &[u8], expected: &str) -> Result<(), Folders> {
     let observed = std::str::from_utf8(observed).map_err(|_| Folders::Unreadable)?;
-    // Equal notation needs no disk, so a mount the recorder cannot open still matches.
     match (mount_path(observed), mount_path(expected)) {
         (Some(actual), Some(wanted)) if actual == wanted => return Ok(()),
         (Some(_), Some(_)) => {}
@@ -398,7 +345,6 @@ fn same_mount(observed: &[u8], expected: &str) -> Result<(), Folders> {
     }
 }
 
-/// The volume serial number and file index of the folder `path` opens, links followed.
 fn folder(path: &str) -> Option<(u32, u64)> {
     use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
     use windows_sys::Win32::Storage::FileSystem::{
@@ -437,7 +383,7 @@ fn mount_path(path: &str) -> Option<String> {
         && bytes[1] == b':'
         && bytes[2] == b'/'
     {
-        3 // C:/ must never become the drive-relative path C:.
+        3
     } else {
         usize::from(normalized.starts_with('/'))
     };
@@ -563,8 +509,6 @@ fn walk_map_inner<N: Value, D: Value>(
         if pointer(memory, field(cursor, tree_node::PARENT)?)? != head {
             return Err("content map root parent is not its sentinel");
         }
-        // Active-content enumeration follows MSVC successors to the sentinel.
-        // The stored u64 map size bounds malformed cycles only.
         let mut steps = 0_u64;
         while cursor != head {
             steps += 1;
@@ -664,8 +608,6 @@ fn walk_map_inner<N: Value, D: Value>(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Split first on backslash, then slash only if no backslash was found.
-/// Compare the final two components joined by slash, case-sensitively.
 fn requested_matches(requested: &[u8], descriptor: &[u8]) -> bool {
     let separator = if requested.contains(&b'\\') {
         b'\\'

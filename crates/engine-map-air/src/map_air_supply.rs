@@ -1,9 +1,3 @@
-//! Regional Air supply: every country's supply consumers summed by strategic
-//! region. The game rebuilds and propagates every country's supply each hour,
-//! so the consumers are read each hour, in batched gathers: one exact span per
-//! consumer, one gather for all of a batch's origins, provinces, regions and
-//! owners. Rows are sorted by (country, region), each supply country's
-//! whole-country row (region `u32::MAX`) last.
 
 use engine_native::allocation as engine_allocation;
 use engine_native::{
@@ -39,8 +33,6 @@ const VERY_LOW_THRESHOLD: Rva = Rva(0x033e_34c0);
 const LOW_THRESHOLD: Rva = Rva(0x033e_35c0);
 const BATCH: usize = 64;
 
-// Every consumer kind holds its own from-state amount, so [PROVINCE, FROM_STATE + 8)
-// lies inside every consumer and covers each per-consumer field but the owner.
 const SPAN_START: usize = PROVINCE;
 const SPAN: usize = FROM_STATE + 8 - SPAN_START;
 const SPAN_FIELDS: [RecordField; 1] = packed_fields([(SPAN_START, SPAN)]);
@@ -97,14 +89,11 @@ impl Summary {
     }
 }
 
-/// Buffers kept across hours; a steady hour allocates nothing.
 #[derive(Default)]
 struct Scratch {
-    /// This country's region rows as (region, row index), by region.
     regions: Vec<(u32, usize)>,
     origins: Vec<usize>,
     origin_bytes: Vec<u8>,
-    /// Strategic region identities resolved this read, by pointer.
     region_ids: Vec<(usize, Result<Option<u32>, &'static str>)>,
 }
 
@@ -162,7 +151,6 @@ fn i64_at(bytes: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(span(bytes, offset))
 }
 
-/// One gather of a fixed field from each source; every one must complete.
 fn gather(
     memory: &impl Memory,
     sources: &[usize],
@@ -182,8 +170,6 @@ fn gather(
     Ok(())
 }
 
-/// A strategic-air base consumer's owner: its country unless the base sits in
-/// a province whose controller gives that country access.
 fn air_base_owner<M: Memory>(
     memory: &M,
     base: usize,
@@ -280,7 +266,6 @@ impl Scratch {
         }
     }
 
-    /// One country's rows, appended to `rows`; on error the caller drops them.
     fn country<M: Memory>(
         &mut self,
         context: &Context<'_, '_, M>,
@@ -304,7 +289,6 @@ impl Scratch {
             if !memory.copy(source, &mut handles[..count * CONSUMER_STRIDE]) {
                 return Err("regional Air supply membership unreadable");
             }
-            // Each handle's first registry bucket in one gather, then each probe from it.
             let mut probes = [(0u64, None::<Header>); BATCH];
             let mut cells = [0usize; BATCH];
             let mut probed = 0;
@@ -418,7 +402,6 @@ impl Scratch {
                 }
             }
         }
-        // Consumers needing supply in a province, then their provinces' regions.
         let mut candidates = [Consumer::default(); BATCH];
         let mut addresses = [0usize; BATCH];
         let mut count = 0;
@@ -467,7 +450,6 @@ impl Scratch {
             };
             kept += 1;
         }
-        // Owners: one gather for the plain kinds, the base path for air bases.
         let mut plain = [0usize; BATCH];
         let mut owners = [0usize; BATCH];
         let mut plains = 0;

@@ -45,7 +45,6 @@ test('a set of follows asked again for new members stays drawn from the last ans
     entry: status === 'off' ? null : { id: n, status, answer: answered ? rows : undefined, hour: 0, through: 0, version: 0 } as FollowEntry });
   const first = handoffLives([item('followed', true, 1), item('followed', true, 2)], true, null, [store, '1']);
   assert.deepEqual(first.lives.map(source => source?.read()), [1, 2], 'every one answered: drawn from them');
-  // The top's members changed: the measures are followed under new queries, one waiting for its follow, one for its answer.
   const waiting = handoffLives([item('pending', false, 3), item('followed', false, 4)], true, first.held, [store, '1']);
   assert.deepEqual(waiting.lives.map(source => source?.read()), [1, 2], 'until each new one answers, the last answered set is drawn');
   assert.equal(waiting.held, first.held);

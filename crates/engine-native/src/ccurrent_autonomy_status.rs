@@ -1,5 +1,3 @@
-//! CCurrentAutonomyStatus raw-score layout. The observed 0x88-byte span
-//! does not establish the complete allocation size.
 
 use crate::{
     Memory, cdiplomacy_status,
@@ -9,36 +7,24 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CCurrentAutonomyStatus primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_1030);
-/// CCurrentAutonomyStatus current score raw i64.
 pub const SCORE: usize = 0x08;
-/// CCurrentAutonomyStatus current autonomy-state definition pointer.
 pub const STATE: usize = 0x28;
-/// CCurrentAutonomyStatus previous autonomy-state definition pointer.
 pub const PREVIOUS_STATE: usize = 0x30;
-/// CCurrentAutonomyStatus lower score raw i64.
 pub const LOWER_SCORE: usize = 0x38;
-/// CCurrentAutonomyStatus next autonomy-state definition pointer.
 pub const NEXT_STATE: usize = 0x40;
-/// CCurrentAutonomyStatus upper score raw i64.
 pub const UPPER_SCORE: usize = 0x48;
-/// CCurrentAutonomyStatus subject CCountry pointer.
 pub const SUBJECT_COUNTRY: usize = 0x50;
-/// Last-modified raw date word read as u32; signedness remains unproven.
 pub const LAST_MODIFIED_HOUR: usize = 0x60;
-/// CCurrentAutonomyStatus writer Save.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x006c_2010;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Native current country id, including an alias if the object uses one.
     pub subject: u32,
     pub score: i64,
     pub lower_score: i64,
     pub upper_score: i64,
-    /// Raw CGameDate word. No calendar projection or signedness inference.
     pub last_modified_bits: u32,
     pub state: Name,
     pub previous: Option<Name>,
@@ -49,10 +35,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Independent country-rooted census of current autonomy statuses. A null root
-/// is absence; a bad non-null root makes the table unavailable. Values and exact
-/// definition-name bytes remain native, including nullable previous/next states.
-/// Capacity omits whole rows and counts all required name bytes without allocating.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

@@ -1,4 +1,3 @@
-//! The sole entry patch owner for division-pool membership primitives.
 use crate::hook::Hook;
 use collector_observers::division_panel_changes as changes;
 use engine_mutations::division_panel_mutations::MUTATIONS;
@@ -24,8 +23,8 @@ fn failure(site: Option<usize>, reason: &str) -> &'static str {
     Box::leak(format!("division_panel_changes [{sites}]: {reason}").into_boxed_str())
 }
 impl Hooks {
-    /// # Safety
-    /// The enclosing family owns the authenticated executable and patch lifetime.
+    #[doc = " # Safety"]
+    #[doc = " The enclosing family owns the authenticated executable and patch lifetime."]
     pub unsafe fn new(base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         let callbacks = [

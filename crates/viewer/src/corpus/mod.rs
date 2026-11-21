@@ -1,7 +1,3 @@
-//! `viewer --mod-corpus`: every content reader over vanilla and over each
-//! installed mod on its own, with every diagnostic the readers give, so a
-//! change's effect on real content can be read off two runs
-//! (`viewer --mod-corpus-diff`). See the viewer README.
 
 mod readers;
 mod report;
@@ -22,14 +18,12 @@ pub const USAGE: &str =
          [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>] [--values[=text]] [--sounds-only | --maps-only]
 viewer --mod-corpus-diff <base run> <head run> [--out <file.md>] [--examples <n>]";
 
-/// The stack with no mod, which every other stack mounts beneath its mod.
 const VANILLA: &str = "vanilla";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Runs `--mod-corpus` or `--mod-corpus-diff` if `args` start with one.
 pub fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
     let rest = args.get(1..).unwrap_or_default();
     match args.first()?.to_str()? {
@@ -48,7 +42,6 @@ struct Options {
     only: Option<Vec<String>>,
     jobs: usize,
     values: Option<values::Mode>,
-    /// Runs only the defines and the map audio's readers.
     sounds_only: bool,
     maps_only: bool,
 }
@@ -106,7 +99,6 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
     if sounds_only && maps_only {
         return Err(invalid("give one of --sounds-only and --maps-only"));
     }
-    // The desktop app's saved folders, unless named.
     let config = dashboard::Config::load().ok();
     let configured = |path: Option<PathBuf>, pick: fn(&dashboard::Config) -> &PathBuf| {
         path.or_else(|| config.as_ref().map(|config| pick(config).clone()))
@@ -133,7 +125,6 @@ fn run(args: &[OsString]) -> io::Result<()> {
     engine_executable::executable_tables::initialize(&options.game_dir)?;
     let started = Instant::now();
     let language = stacks::language(&options.user_dir)?;
-    // The reading client's texture decode state, which font pages load under.
     let decode = installed_content_settings::settings::read_keys(&options.user_dir)?.texture_decode();
     let (candidates, refused) = stacks::candidates(&options.user_dir, options.workshop.as_deref())?;
     for unusable in &refused {
@@ -154,7 +145,6 @@ fn run(args: &[OsString]) -> io::Result<()> {
     }
     fs::create_dir_all(&options.out)?;
     let value_dir = options.out.join("values");
-    // Do not let a reused run directory advertise stale values.
     if options.values.is_some() {
         if value_dir.exists() {
             fs::remove_dir_all(&value_dir)?;
@@ -236,7 +226,6 @@ fn run(args: &[OsString]) -> io::Result<()> {
     Ok(())
 }
 
-/// Gathers one stack and runs every reader over it.
 fn stack(
     options: &Options,
     (language, decode): (&str, installed_content_image::native::Decode),
@@ -254,7 +243,6 @@ fn stack(
     };
     if let Some(candidate) = candidates.iter().find(|candidate| candidate.id == plan.id) {
         report.descriptor_file = Some(candidate.file.clone());
-        // The rewritten descriptor has already been checked to parse back identically.
         if let Ok(descriptor) = installed_content_core::parser::parse(candidate.descriptor.as_bytes()) {
             let field = |key: &[u8]| {
                 descriptor
@@ -268,7 +256,6 @@ fn stack(
         }
     }
     let started = Instant::now();
-    // Each stack keeps its own hash cache: gather rewrites the whole file.
     let gathered = stacks::user_folder(&scratch.join(&plan.id), language, candidates, &plan.mods)
         .and_then(|user_dir| {
             installed_content_core::gather(&installed_content_core::GatherOptions {

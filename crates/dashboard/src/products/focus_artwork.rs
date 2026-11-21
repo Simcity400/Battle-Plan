@@ -1,4 +1,3 @@
-//! Hour-specific focus presentation; history consumers share the native selector.
 use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Product, artwork};
 use crate::{
@@ -25,7 +24,7 @@ pub struct FocusArtworkParams {
     pub branch_id: String,
     pub hour: i32,
     pub country: Country,
-    /// The database every token is looked up in.
+    #[doc = " The database every token is looked up in."]
     pub database: FocusDatabase,
     pub tokens: Vec<String>,
     #[serde(default)]
@@ -57,8 +56,6 @@ pub struct FocusArtworkReply {
     pub warnings: Vec<String>,
 }
 
-/// Each projection's context over one focus database, so no cached art of a
-/// national focus answers for a continuous focus of the same id.
 #[derive(Default)]
 struct Contexts {
     artwork: Arc<Mutex<Option<artwork::Context>>>,
@@ -75,8 +72,6 @@ struct State {
 
 const BASIC_TABLES: [TableId; 3] = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
 
-/// Cached hours remain available while another request reconstructs a miss.
-/// Misses serialize and recheck the cache so identical reads still share rows.
 #[derive(Default)]
 struct SharedFrames {
     cache: Arc<Mutex<FrameCache>>,
@@ -136,7 +131,6 @@ impl SharedFrames {
     }
 }
 
-/// The frames focus presentation reads: each branch's latest one read.
 #[derive(Default)]
 struct FrameCache {
     frames: VecDeque<CachedFrame>,
@@ -150,7 +144,6 @@ struct CachedFrame {
 }
 
 impl FrameCache {
-    /// Keeps `frame`, read for a request, as its branch's latest.
     fn retain(
         &mut self,
         frame: DecodedFrame,
@@ -163,7 +156,6 @@ impl FrameCache {
         Ok(())
     }
 
-    /// Cloning shares row allocations; scoped frames also satisfy basic reads.
     fn cached(
         &mut self,
         branch: u64,
@@ -203,8 +195,6 @@ impl FrameCache {
     }
 }
 
-/// Reconstruct one exact hour without holding the shared cache mutex, reading its block only
-/// through that hour.
 fn read_frame(
     replay: &Replay,
     branch: u64,
@@ -226,7 +216,6 @@ fn read_frame(
         .seek_selected_with(branch, hour, Some(&selected), || check_cancel(cancelled))?
     {
         SeekResult::Frame(decoded) => decoded,
-        // The seek names a frame of another campaign, or a block it cannot read, as a gap.
         SeekResult::Gap { reason, .. } => {
             return Err(dashboard_base::gap_error(
                 &reason,
@@ -239,8 +228,6 @@ fn read_frame(
     Ok(*decoded)
 }
 
-/// Refuses an hour whose run holds Campaign rows naming another campaign than the replay's: the
-/// rows it read last at or before the hour, which an hour saying the table is unavailable keeps.
 fn held_campaign(replay: &Replay, branch: u64, hour: i32) -> io::Result<()> {
     let Some(block) = replay.block_at(branch, hour) else {
         return Ok(());
@@ -352,7 +339,6 @@ impl Product for FocusArtwork {
         } else {
             art.requested_focus_needs_frame(&params.tokens)
         };
-        // Reconstruction misses never hold the cache lock needed by cached icons.
         let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
         check_cancel(cancelled)?;
         let tag = crate::answer::query(source, branch)?.holders.name(&params.country, params.hour);
@@ -360,7 +346,6 @@ impl Product for FocusArtwork {
     }
 }
 
-/// The same presentation boundary for already verified preparation frames.
 pub(crate) fn present_decoded(
     art: &mut artwork::Context,
     params: &FocusArtworkParams,
@@ -400,7 +385,6 @@ pub(crate) fn present_decoded(
     }
 }
 
-/// Measure the actual escaped JSON before retaining each lazy artwork item.
 fn reply_within(
     params: &FocusArtworkParams,
     tag: &str,
@@ -582,7 +566,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(old.database, FocusDatabase::National);
-        // Every request names the database its tokens are looked up in.
         assert!(
             serde_json::from_value::<FocusArtworkParams>(serde_json::json!({
                 "branchId": "1", "hour": 100, "country": "synthetic", "tokens": ["static"]
@@ -673,8 +656,6 @@ mod tests {
                 24
             );
         }
-        // The same authored title, when requested, still needs the dated kit
-        // and keeps its missing-party refusal rather than inventing a value.
         let title = FocusArtwork::load(
             &source,
             &FocusArtworkParams {
@@ -729,9 +710,6 @@ mod tests {
         }
     }
 
-    /// One id naming a national focus and a different continuous focus; with
-    /// `refused`, a later continuous file the reader refuses, which could
-    /// redefine any continuous focus.
     fn database_files(refused: bool) -> Vec<(&'static str, &'static str)> {
         let mut files = vec![
             (
@@ -760,10 +738,6 @@ mod tests {
         files
     }
 
-    /// A tree focus is asked for as national and a continuous focus as
-    /// continuous. One id names a different focus in each database: neither
-    /// answers for the other, though the national reply is kept first, and a
-    /// refused continuous file leaves the national focus answered.
     #[test]
     fn each_focus_database_answers_its_own_art_and_names() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -847,9 +821,6 @@ mod tests {
         }
     }
 
-    /// The focus history's text names its completed focuses from the national
-    /// database and its continuous focus from the continuous one, even where
-    /// one id names both.
     #[test]
     fn focus_history_text_keeps_each_database_apart() {
         use crate::products::{CountryParams, national_focus::NationalFocus};
@@ -890,7 +861,6 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
             };
-            // A refused continuous file leaves the national focus as it was.
             assert_eq!(
                 texts(reply.static_text.as_deref().unwrap()),
                 [(
@@ -907,7 +877,6 @@ mod tests {
                     .collect::<Vec<_>>(),
                 [("shared", Some(14.0))]
             );
-            // The continuous focus never takes the national focus's title or cost.
             assert_eq!(
                 texts(&reply.continuous_static_text),
                 [(
@@ -1289,9 +1258,6 @@ mod tests {
             &[records(1, vec![source(1, 10, Some(100)), target.clone()])],
         )
         .unwrap();
-        // Alter the header identity after constructing a valid recording. The
-        // target's unavailable identity passes the guard, but the earlier
-        // complete campaign read must still refuse this block.
         replay.campaign_id = b"different-synthetic-campaign".to_vec();
         validate_campaign(&target, &replay).unwrap();
         let mut cache = FrameCache::default();

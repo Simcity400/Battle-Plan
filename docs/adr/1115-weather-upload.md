@@ -1,0 +1,9 @@
+# 1115. Publish weather textures from camera-visible differences
+
+The weather fold owns a copy of WeatherProvinces on a worker. It applies step changes in order and shares pages for cells that have the same texel and unknown flag as the preceding grid. Texel channels carry previous mud, snow, previous snow, and mud. Unavailable, unrecorded, and gap tables observe no provinces. Truncated tables observe the rows they contain. Rows outside map bounds refuse the hour. A missing retained display boundary draws bare and unhatched.
+
+The frame accepts grids through the applied hour, accumulates their differences even when an intermediate grid is skipped, and owns the only GPU upload. Giving a worker its own submission queue previously let a descheduled worker delay the frame. Ordinary playback takes due products without waiting. A whole settle can wait for the applied hour. A reset rejects products from older epochs and requires a fresh whole upload. A refusal also makes the previous GPU contents unusable for the next difference.
+
+Changed sets record bounding column ranges for fixed bands of rows. An unknown difference forces a whole upload. Contiguous changed bands are written as bounded rectangles to amortize the cost of GPU write calls. Out-of-view bands stay owed and draw from the newest grid when they enter view. The visible window includes one band of margin and can span both ends of the map's horizontal seam. Without a useful camera window, the upload covers the whole grid. This limits queue traffic while preserving the effect of a full write for every visible texel, including while the hour is paused and the camera moves.
+
+[Weather layer](../../crates/viewer-playback/src/layers/snow.rs) · [Fold](../../crates/viewer-playback/src/layers/snow/fold.rs) · [Tests](../../crates/viewer-playback/src/layers/snow/tests.rs)

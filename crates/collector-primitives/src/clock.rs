@@ -1,4 +1,3 @@
-//! Session clock ticks shared by native observation and capture workers.
 
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 

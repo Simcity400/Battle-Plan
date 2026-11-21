@@ -1,5 +1,3 @@
-//! Stored directional participation accounting. Callers supply a ledger from
-//! an authenticated relation and read it only when its writer certificate changes.
 
 use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::{Memory, allocation, read};
@@ -46,12 +44,9 @@ pub use game_model::war_participation::Scores;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ledger {
     pub scores: Scores,
-    /// Native signed-key order, including captures before attachment.
     pub captured_provinces: Vec<i32>,
 }
 
-/// Acquire one changed ledger into reusable worker-owned storage. A failure
-/// retains its reason; partial destination bytes never certify a ledger.
 pub fn read_into(
     memory: &impl Memory,
     base: usize,
@@ -62,8 +57,6 @@ pub fn read_into(
     read_captured_provinces(memory, ledger, &mut output.captured_provinces)
 }
 
-/// Read just the fixed-width score columns after a scalar writer. Never walks
-/// the captured-province set.
 pub fn read_scores(
     memory: &impl Memory,
     base: usize,
@@ -94,10 +87,6 @@ pub fn read_scores(
     })
 }
 
-/// Refresh only the columns named by observed writers. The caller's complete
-/// writer/lifetime certificate must authenticate the ledger and the carried
-/// columns. This does not reauthenticate a seed, read endpoints, or follow
-/// membership. A failed gather leaves all destination scores unchanged.
 pub fn read_changed_scores(
     memory: &impl Memory,
     ledger: usize,
@@ -151,8 +140,6 @@ pub fn read_changed_scores(
     Ok(())
 }
 
-/// Read membership at the initial seed or after whole-ledger replacement.
-/// Ordinary capture events supply their inserted province without a set walk.
 pub fn read_captured_provinces(
     memory: &impl Memory,
     ledger: usize,
@@ -255,7 +242,6 @@ pub use game_model::war_participation::DeliveryHistory;
 
 pub const DELIVERY_FIELDS: [usize; 4] = [0x240, 0x248, 0x250, 0x258];
 
-/// Actual native entries visited while seeding an authenticated owner root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeliverySeedWork {
     pub matrix_entries: usize,
@@ -263,9 +249,6 @@ pub struct DeliverySeedWork {
     pub nonzero_histories: usize,
 }
 
-/// Walk the existing per-pair status container, never synthetic roster pairs.
-/// Zero histories allocate nothing. The visitor receives only exact nonzero
-/// histories after receiver authentication and canonical target validation.
 pub fn walk_delivery_histories(
     memory: &impl Memory,
     base: usize,

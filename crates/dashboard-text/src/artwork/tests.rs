@@ -64,7 +64,6 @@ fn names_are_validated_strictly() {
     }
     assert!(table.url_bytes(&format!("http://artwork.localhost/{name}")).is_none());
     assert!(table.url_bytes(&url).is_some());
-    // Well formed, but never kept.
     assert!(table.bytes(&format!("{}.png", "0".repeat(32))).is_none());
 }
 
@@ -86,7 +85,6 @@ fn text_carries_each_image_it_names_once() {
     let second = encode(&image(2, 1, 4)).unwrap();
     let (one, two) = (table.put(first.clone()), table.put(second.clone()));
     assert_eq!(table.images("no images").unwrap(), Vec::<Arc<[u8]>>::new());
-    // Text that only looks like a URL names nothing.
     assert!(table.images("test:not-an-image test:").unwrap().is_empty());
     let mut carried = table
         .images(&format!(r#"["{one}","{two}","{one}"]"#))
@@ -113,7 +111,6 @@ fn restoring_keeps_only_the_images_the_text_names() {
     assert!(fresh.restore([other.clone(), shown.clone()], &text));
     assert_eq!(*fresh.url_bytes(&text[9..text.len() - 2]).unwrap(), *shown);
     assert_eq!(fresh.read().len(), 1, "an image the text does not name is not kept");
-    // A damaged image is another name, so it restores nothing.
     let mut damaged = shown;
     *damaged.last_mut().unwrap() ^= 1;
     assert!(!Table::new("test:").restore([damaged], &text));
@@ -136,11 +133,9 @@ fn a_later_table_serves_the_names_an_earlier_one_kept() {
     let png = encode(&image(2, 2, 9)).unwrap();
     let url = Table::kept_in("test:", &folder).put(png.clone());
     let name = url.strip_prefix("test:").unwrap();
-    // A new process: nothing in memory, the name read from the folder.
     let later = Table::kept_in("test:", &folder);
     assert_eq!(&*later.bytes(name).unwrap(), &png[..]);
     assert!(later.restore(Vec::new(), &url), "a reply naming it is whole");
-    // A file whose bytes are not its name's is never served.
     let other = Name::of(&encode(&image(2, 2, 10)).unwrap()).to_string();
     std::fs::write(folder.join(&other), &png).unwrap();
     assert!(later.bytes(&other).is_none());
@@ -154,7 +149,6 @@ fn an_embedded_viewers_images_are_named_and_served_as_the_desktops() {
     std::fs::create_dir_all(&folder).unwrap();
     let png = encode(&image(2, 2, 5)).unwrap();
     let url = Table::kept_in(DESKTOP_BASE, &folder).put(png.clone());
-    // The one form the dashboard accepts (`ui/src/dashboard/payload.ts`, `artworkUrlValue`).
     let name = url.strip_prefix("http://artwork.localhost/").unwrap();
     assert!(Name::parse(name).is_some(), "{url}");
     let desktop = Table::kept_in(DESKTOP_BASE, &folder);

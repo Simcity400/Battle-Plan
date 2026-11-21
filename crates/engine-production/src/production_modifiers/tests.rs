@@ -10,7 +10,6 @@ struct Fixture {
     globals: BTreeMap<usize, Vec<u8>>,
     global_reads: Cell<usize>,
     fault: Option<usize>,
-    /// The fault fails only its first read.
     once: bool,
     spent: Cell<bool>,
     lines: Vec<usize>,
@@ -37,8 +36,6 @@ impl Fixture {
         for (index, value) in [-1_i64, 3276800, 123456].into_iter().enumerate() {
             world.u64(factories + index * 8, value as u64);
         }
-        // First equal category-3 value wins; the unreadable tail is unnecessary
-        // once every requested runtime token has its first match.
         for (index, (category, value)) in [
             (3, -7_i64),
             (3, 999),
@@ -263,7 +260,6 @@ fn idle_rosters_do_not_require_global_defines_or_hover_operands() {
 }
 #[test]
 fn header_demand_presizes_retained_factory_arrays() {
-    // regression: cbb071fb60 Retry live sizing and grow observer storage from independent pressure
     let mut fixture = Fixture::new(2, true);
     for &pointer in &fixture.lines {
         fixture
@@ -354,9 +350,6 @@ fn reader_keeps_type_classifier_variant_flags_dlc_conversion_and_virtual_refit_s
     );
 }
 
-/// One growing capture of `slots` with `provided` defines: its result,
-/// context, countries, lines (each with its factory efficiencies) and
-/// requests.
 #[allow(clippy::type_complexity)]
 fn growing(
     fixture: &Fixture,
@@ -416,12 +409,6 @@ fn growing(
     (result, context, countries, lines, requests)
 }
 
-/// Consecutive slot ranges, with the defines read once and handed to each,
-/// concatenate to the whole walk: its countries, lines and requests in
-/// order and its context. A persistent fault fails the part holding its
-/// country with the whole walk's reason, the parts before it whole, and a
-/// failed define read fails the first part with lines with the whole walk's
-/// reason.
 #[test]
 fn slot_parts_concatenate_to_the_whole_walk_and_meet_its_first_failure() {
     let mut fixture = Fixture::new(200, true);
@@ -463,7 +450,6 @@ fn slot_parts_concatenate_to_the_whole_walk_and_meet_its_first_failure() {
             .collect::<Vec<_>>(),
         whole.4
     );
-    // Country 120's line, in the third part.
     fixture.fault = Some(fixture.lines[119]);
     let whole = growing(&fixture, 1..u32::MAX, None);
     assert!(whole.0.is_err());
@@ -478,13 +464,6 @@ fn slot_parts_concatenate_to_the_whole_walk_and_meet_its_first_failure() {
     assert_eq!(parts(&fixture)[0].0, whole.0);
 }
 
-/// At 5,000 countries, with an idle range (its countries' rosters empty),
-/// every seventh country holding its line three times and an empty range,
-/// slot parts concatenate to the whole walk. Under a persistent fault on a
-/// country's, a line's or a define's operand, and under a one-shot fault on
-/// each, the part holding it gives the whole walk's result and the parts
-/// before it are whole and the whole walk's rows, so the combined capture
-/// (the first failure in slot order) refuses no more than the whole walk.
 #[test]
 fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
     let mut fixture = Fixture::new(5_000, true);
@@ -533,9 +512,6 @@ fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
     assert_eq!(healthy.2.len(), 5_000 - 600);
     let parts = split(&fixture);
     assert!(parts[2].2.is_empty() && parts[3].2.is_empty());
-    // A range without a country with lines reads no defines, as the whole
-    // walk reads them only at its first such country; the collector takes
-    // the defines of the first part with requests.
     for part in &parts {
         assert_eq!(part.0, Ok(()));
         let expected = if part.2.is_empty() { None } else { healthy.1 };
@@ -562,8 +538,6 @@ fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
             .collect::<Vec<_>>(),
         healthy.4
     );
-    // The part of each slot, and the faults: country 1,500's stored power,
-    // country 3,500's line's factories, the first define.
     let part_of = |slot: u32| {
         bounds
             .windows(2)
@@ -581,12 +555,9 @@ fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
             let at = part_of(slot);
             assert!(serial.0.is_err(), "{fault:x} once {once}");
             assert_eq!(parts[at].0, serial.0, "{fault:x} once {once}");
-            // The parts before it are whole; later parts are not published
-            // past the first failure, as the whole walk stops there.
             for (index, part) in parts[..at].iter().enumerate() {
                 assert_eq!(part.0, Ok(()), "{fault:x} once {once} part {index}");
             }
-            // The parts before the fault are the whole walk's rows there.
             let before: Vec<_> = parts[..at].iter().flat_map(|part| part.2.clone()).collect();
             assert_eq!(
                 before[..],

@@ -1,4 +1,3 @@
-//! The callback copies prepared, exact native roster bytes; the spool worker verifies IDs.
 
 use engine_allocation as allocation;
 use engine_dlc::cdlc_manager::{self, Folders, MountDifference, mount_difference};
@@ -33,7 +32,6 @@ struct Pass {
     mount_outcome: Outcome,
 }
 
-/// Exact native row counts are prepared before the once-only callback.
 fn buffer<T: Default>(count: usize) -> Vec<T> {
     allocation::owned_vec(allocation::default_vec(count))
 }
@@ -118,15 +116,11 @@ impl Default for Roster {
 }
 
 impl Roster {
-    /// Empty roster for synthetic tests; the loader prepares live counts and text.
     #[cfg(test)]
     pub fn new() -> Self {
         Self::with_counts(cdlc_manager::Counts::default())
     }
 
-    /// Size each list from live counts read before the hook is installed
-    /// (`cdlc_manager::observe_counts`), so a large DLC/mod roster is sampled
-    /// whole. Allocation happens here, never in the once-only callback read.
     pub fn with_counts(counts: cdlc_manager::Counts) -> Self {
         Self {
             pass: Pass::new(counts),
@@ -136,8 +130,6 @@ impl Roster {
         }
     }
 
-    /// Loader only, before Shared is published. These bytes prepare storage;
-    /// sample reauthenticates and acquires current roster values on the callback.
     pub fn prepare(&mut self, memory: &impl Memory, base: usize) {
         allocation::advisory(|| {
             let pass = &mut self.pass;
@@ -163,7 +155,6 @@ impl Roster {
         self.sampled
     }
 
-    /// No allocation, normalization, or I/O occurs in this once-only callback read.
     pub fn sample(&mut self, memory: &impl Memory, base: usize, hour: Option<i32>) {
         if self.sampled {
             return;
@@ -187,13 +178,6 @@ impl Roster {
         self.ticks = qpc() - start;
     }
 
-    /// Worker only. `expected_mounts` is the complete successful search path in
-    /// highest-priority-first order, resolved from the identity's content layers
-    /// and known roots with no covered content. Paths never enter the replay.
-    /// `mod_descriptors` names the descriptor file each of the identity's mods
-    /// was resolved and hashed from, in the same order.
-    /// `None` means the caller found no unresolved ordering or coverage limitation.
-    /// Every failure is recorded and returned without discarding captured state.
     pub fn verify(
         &self,
         identity: &mut Identity,
@@ -232,7 +216,6 @@ impl Roster {
                 dlc_id,
                 "DLC",
                 true,
-                // The game's rules count a DLC only while its descriptor is not excluded.
                 |row| {
                     row.reported_active
                         && !excluded
@@ -251,7 +234,6 @@ impl Roster {
                 &mut reasons,
             )?,
         };
-        // Descriptor membership plus successful mount order proves the content stack.
         if mod_descriptors.len() != launcher.mods.len() {
             add_reason(
                 &mut reasons,
@@ -298,8 +280,6 @@ impl Roster {
         }
     }
 
-    /// Worker-only local sidecar data. Contains machine paths and must never be
-    /// included in the replay identity or in any spool/replay control record.
     pub fn diagnostics<'a>(
         &'a self,
         expected_mounts: &'a [String],
@@ -319,7 +299,6 @@ fn qpc() -> i64 {
     ticks
 }
 
-/// The first differing mount without its paths, which stay in the local `content.json`.
 struct Unlike<'a>(MountDifference<'a>);
 impl fmt::Display for Unlike<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -356,7 +335,6 @@ fn differs(folders: Folders) -> &'static str {
     }
 }
 
-/// Names each ID only one side lists; `game` holds no repeats.
 fn membership(
     kind: &str,
     launcher: &[String],
@@ -628,7 +606,6 @@ impl Serialize for Read {
         map.end()
     }
 }
-/// The first differing mount with both paths, positions counted from 1.
 struct Difference<'a>(MountDifference<'a>);
 impl Serialize for Difference<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -847,8 +824,6 @@ mod tests {
         value.validate().unwrap();
     }
 
-    /// The game's filter strings after startup: the launcher's disabled descriptors, then the
-    /// eligible DLC's display names.
     fn excluded(roster: &mut Roster, filters: &[&[u8]]) {
         let pass = &mut roster.pass;
         pass.dlc_filter_strings = filters.iter().map(|filter| text(filter)).collect();
@@ -1016,7 +991,6 @@ mod tests {
         roster.pass.mounts = mounts.iter().map(|path| text(path.as_bytes())).collect();
         roster.pass.mods.resize_with(2, Default::default);
         roster.pass.observation.mods = Outcome::Rows { len: 2 };
-        // The mod map is ordered by display name and holds descriptor files.
         for (row, descriptor) in roster
             .pass
             .mods
@@ -1141,8 +1115,6 @@ mod tests {
         );
     }
 
-    /// A synthetic DLC manager and search path with `dlcs` DLC map entries,
-    /// `filters` filter strings, no mods and one mount per DLC plus the root.
     struct Live {
         bytes: Vec<u8>,
         heap: usize,
@@ -1159,7 +1131,6 @@ mod tests {
             self.heap += text.len() + 1;
             at
         }
-        /// Heap-backed MSVC std::string (capacity above the inline 15).
         fn string(&mut self, at: usize, text: &[u8]) {
             let data = self.c_string(text);
             self.u64(at, data);
@@ -1195,11 +1166,9 @@ mod tests {
                 let text = format!("filter_{index:04}");
                 live.string(strings + index * 32, text.as_bytes());
             }
-            // Empty mod map: a sentinel linked to itself.
             let mods = 0x20000;
             live.u64(manager + cdlc_manager::MODS + msvc_map::HEAD, mods);
             live.node(mods, mods, mods, mods, true);
-            // DLC map as a right-leaning chain, in id order.
             let head = 0x30000;
             let node = |index: usize| 0x40000 + index * 0x300;
             let last = node(ids.len() - 1);
@@ -1290,7 +1259,6 @@ mod tests {
         assert_eq!(diagnostics["sample"]["dlcs"].as_array().unwrap().len(), 150);
         assert!(diagnostics["sample"]["capacities"]["DLC map"].as_u64() >= Some(150));
 
-        // Without preparation the empty storage reports a counted shortage.
         let mut floor = Roster::new();
         floor.sample(&live, 0, Some(100));
         assert_eq!(
@@ -1306,7 +1274,6 @@ mod tests {
                 .unwrap_err()
                 .contains("150 rows unread")
         );
-        // An unreadable manager supplies no invented fallback population.
         assert_eq!(
             Roster::with_counts(cdlc_manager::Counts::default())
                 .pass
@@ -1349,7 +1316,6 @@ mod tests {
         let mut roster = Roster::with_counts(counts);
         roster.prepare(&live, 0);
         let bytes = roster.allocated_bytes();
-        // Preparation is storage only: the callback reads a later native value.
         live.string(
             node + content::VALUE + entry::NAME,
             "z".repeat(TEXT).as_bytes(),

@@ -1,11 +1,7 @@
-# Authenticode-signs one file of a release build; Tauri runs it for every binary it bundles and
-# for the installer and uninstaller. The release workflow passes --authenticode only once the
-# Azure Artifact Signing secrets exist, and prepares the signing client this script names.
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Path)
 $ErrorActionPreference = 'Stop'
 
-# Files that already carry a valid signature, like the shader compiler's, keep their publisher's.
 if ((Get-AuthenticodeSignature -LiteralPath $Path).Status -eq 'Valid') {
     Write-Output "Already signed: $Path"
     exit 0

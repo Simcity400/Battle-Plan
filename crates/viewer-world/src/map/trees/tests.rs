@@ -7,19 +7,14 @@ const MAP_SIZE_X: f32 = 5632.0;
 const TILE: f32 = 256.0;
 const MAP_SIZE_Y: f32 = 2048.0;
 
-/// Cells of the test bitmaps, which are 11 x 4 so that they carry the
-/// map's own aspect and one lattice pitch, as `map/trees.bmp` does.
 const TEST_CELL: f32 = MAP_SIZE_X / 11.0;
 
-/// An 11 x 4 tree bitmap over a flat height field of the map's size.
 fn field(indices: &[u8], heights: &[u8]) -> TreeField {
     let image = TreeImage {
         width: 11,
         height: 4,
         indices,
     };
-    // The generator scales the bitmap onto the whole map, so the height
-    // field has to be the map's own size.
     generate(
         &image,
         &HeightField {
@@ -40,7 +35,6 @@ fn the_fade_matches_the_reference_camera_and_closes_the_pass_above_the_far_dista
     let defines = MapDefines::test();
     assert_eq!(tree_fade(&defines, 100.0), 1.0);
     assert_eq!(tree_fade(&defines, 250.0), 1.0);
-    // 0.398 at the reference height 310.178.
     assert!((tree_fade(&defines, 310.178) - 0.398_22).abs() < 1e-4);
     assert_eq!(tree_fade(&defines, 350.0), 0.0);
     assert_eq!(tree_fade(&defines, 400.0), 0.0);
@@ -52,8 +46,6 @@ fn the_fade_matches_the_reference_camera_and_closes_the_pass_above_the_far_dista
     assert_eq!(tree_fade(&changed, 81.0), 0.0);
 }
 
-/// Places palette indices at `(column, row)` of an 11 x 4 bitmap, row 0 at
-/// the top as the loader returns it.
 fn bitmap(pixels: &[(usize, usize, u8)]) -> Vec<u8> {
     let mut indices = vec![0u8; 11 * 4];
     for &(column, row, palette) in pixels {
@@ -77,8 +69,6 @@ fn every_non_zero_pixel_becomes_one_instance_on_the_brick_lattice() {
         .map(|instance| (instance.position[0], instance.position[2]))
         .collect::<Vec<_>>();
     positions.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // Native 4 is the north-first row: row 0 has no offset, row 1
-    // takes half a cell. World z still follows the bottom-up row.
     let expected = [
         (0.0, 3.0 * TEST_CELL),
         (1.5 * TEST_CELL, 2.0 * TEST_CELL),
@@ -105,8 +95,6 @@ fn a_flat_height_field_gives_a_flat_lattice_and_no_slope() {
 
 #[test]
 fn the_slope_follows_the_four_corner_heights() {
-    // A height field that rises with world x by one byte per pixel, so the
-    // x slope is the byte scale and the z slope is zero.
     let width = MAP_SIZE_X as usize;
     let mut heights = vec![0u8; width * MAP_SIZE_Y as usize];
     for row in 0..MAP_SIZE_Y as usize {
@@ -114,8 +102,6 @@ fn the_slope_follows_the_four_corner_heights() {
             heights[row * width + column] = (column % 256) as u8;
         }
     }
-    // A 1408 x 512 bitmap carries the map's aspect at a 4-unit pitch;
-    // place one instance well inside the first 256-byte ramp.
     let image = TreeImage {
         width: 1408,
         height: 512,
@@ -135,7 +121,6 @@ fn the_slope_follows_the_four_corner_heights() {
     )
     .unwrap();
     let instance = field.instances[0];
-    // One byte per world unit at the 0.1 height scale.
     assert!((instance.slope[0] - 0.1).abs() < 1e-3, "{instance:?}");
     assert!(instance.slope[1].abs() < 1e-6, "{instance:?}");
 }
@@ -143,8 +128,6 @@ fn the_slope_follows_the_four_corner_heights() {
 #[test]
 fn instances_are_bucketed_by_palette_and_tile_and_stay_contiguous() {
     let heights = flat();
-    // 22 columns over the map means a bitmap column of 22 cells is one
-    // tile wide; a 4-wide bitmap puts each pixel in its own tile.
     let field = field(
         &bitmap(&[(0, 0, 5), (1, 0, 5), (2, 0, 6), (3, 0, 6)]),
         &heights,
@@ -182,7 +165,6 @@ fn height_sampling_interpolates_bytes_before_scaling_and_flips_rows() {
 fn empty_pixels_do_not_consume_rotation_and_buckets_do_not_reseed_it() {
     let heights = flat();
     let field = field(&bitmap(&[(2, 0, 6), (0, 1, 5), (3, 1, 6)]), &heights);
-    // The second bitmap instance is first in the palette-sorted output.
     assert_eq!(field.instances[0].rotation, rotation_for(1));
     assert_eq!(field.instances[1].rotation, rotation_for(2));
     assert_eq!(field.instances[2].rotation, rotation_for(0));
@@ -228,7 +210,6 @@ fn a_ragged_bitmap_is_refused_but_independent_pitches_are_allowed() {
         )
         .is_err()
     );
-    // A bitmap whose aspect does not match the map has two lattice pitches.
     let indices = vec![0u8; 8];
     let image = TreeImage {
         width: 8,
@@ -266,7 +247,6 @@ fn nonmultiple_map_dimensions_use_integer_partitions_and_independent_bitmap_pitc
     assert_eq!(field.buckets[0].pitch, [256, 260]);
     assert_eq!(field.buckets[0].x_span(), (256.0, 512.0));
     assert_eq!(field.buckets[0].z_span(), (260.0, 520.0));
-    // Assigned at x510, before the odd-row half-cell shift crosses x512.
     assert_eq!(field.instances[0].position, [515.0, 8.5, 260.0]);
     for slope in field.instances[0].slope {
         assert!((slope - 0.1).abs() < 1e-6);
@@ -299,8 +279,6 @@ fn the_lod_takes_the_last_threshold_at_or_below_the_distance() {
     assert_eq!(lod_for_distance(&distances, 100.0, 4), 1);
     assert_eq!(lod_for_distance(&distances, 310.0, 4), 2);
     assert_eq!(lod_for_distance(&distances, 500.0, 4), 3);
-    // The clamp to the shape count is what keeps a `loddist` longer than
-    // the shape list from indexing past its end.
     assert_eq!(lod_for_distance(&distances, 500.0, 3), 2);
     assert_eq!(lod_for_distance(&[], 10.0, 1), 0);
 }
@@ -309,7 +287,6 @@ fn the_lod_takes_the_last_threshold_at_or_below_the_distance() {
 fn native_lod_squares_authored_thresholds_and_stops_at_the_first_failure() {
     assert_eq!(lod_for_squared_distance(&[0.0, -100.0], 1.0, 2), 0);
     assert_eq!(lod_for_squared_distance(&[0.0, 100.0, 10.0], 400.0, 3), 0);
-    // Taking sqrt first rounds the distance up to the next LOD boundary.
     let threshold = 5.0f32;
     let below = f32::from_bits((threshold * threshold).to_bits() - 1);
     assert_eq!(below.sqrt(), threshold);
@@ -319,9 +296,6 @@ fn native_lod_squares_authored_thresholds_and_stops_at_the_first_failure() {
 
 #[test]
 fn the_blend_mesh_crosses_its_last_threshold_inside_the_reference_frame() {
-    // at the reference camera the eye-to-tile distances run
-    // about 260 to 450, `forest_dunge` stays on LOD 2 throughout and
-    // `forest_dunge_blend` falls to its degenerate LOD on the farther tiles.
     let dunge = [0.0, 100.0, 200.0, 500.0];
     let blend = [0.0, 100.0, 200.0, 300.0];
     for distance in [260.0, 350.0, 450.0] {
@@ -342,19 +316,13 @@ fn tile(x: u32, z: u32) -> TreeBucket {
 
 #[test]
 fn the_lod_distance_is_measured_to_the_nearest_point_of_the_tile() {
-    // the camera's x and z are clamped into the tile's own
-    // square and the height is taken from the water plane, so a camera
-    // standing inside the tile is exactly `height - 9.5` away from it.
     let inside = tile(11, 6);
     let camera = [3010.01, 50.178, 1539.65];
     assert!((bucket_distance(&inside, 0.0, camera) - (50.178 - WATER_HEIGHT)).abs() < 1e-3);
-    // Two tiles west: the x gap is measured to the tile's near edge, 3072 -
-    // 2 * 256 = 2560 away from a camera at 3010.01.
     let west = tile(9, 6);
     let gap = 3010.01 - (10.0 * TILE);
     let expected = (gap * gap + (50.178 - WATER_HEIGHT).powi(2)).sqrt();
     assert!((bucket_distance(&west, 0.0, camera) - expected).abs() < 1e-3);
-    // The wrap offset moves the tile, not the camera.
     assert!(
         (bucket_distance(&inside, MAP_SIZE_X, camera)
             - bucket_distance(&inside, 0.0, [camera[0] - MAP_SIZE_X, camera[1], camera[2]]))
@@ -368,16 +336,12 @@ fn the_close_cameras_reach_the_detailed_lods_and_the_reference_camera_does_not()
     let dunge = [0.0, 100.0, 200.0, 500.0];
     let blend = [0.0, 100.0, 200.0, 300.0];
     let under = tile(11, 6);
-    // The minimum camera height selects LOD 0 for both meshes.
     let close = [3010.01, 50.178, 1569.65 - 30.0];
     assert_eq!(bucket_lod(&under, 0.0, &dunge, 4, close), 0);
     assert_eq!(bucket_lod(&under, 0.0, &blend, 4, close), 0);
-    // Height 115.293 lies beyond the first threshold and below the second.
     let mid = [3009.91, 115.293, 1569.65 - 30.0];
     assert_eq!(bucket_lod(&under, 0.0, &dunge, 4, mid), 1);
     assert_eq!(bucket_lod(&under, 0.0, &blend, 4, mid), 1);
-    // At this height, the blend mesh lies just inside its last LOD threshold beneath the camera and
-    // falls outside it on neighbouring tiles.
     let far = [3010.09, 302.960, 1568.21 - 30.0];
     assert_eq!(bucket_lod(&under, 0.0, &dunge, 4, far), 2);
     assert_eq!(bucket_lod(&under, 0.0, &blend, 4, far), 2);
@@ -521,7 +485,6 @@ fn the_geometry_builder_bakes_the_mesh_scale_and_ranges_every_lod() {
     assert_eq!(geometry.vertices[2].uv1, [0.0, 0.0]);
     assert_eq!(geometry.ranges[&(6, 0)], 0..3);
     assert_eq!(geometry.ranges[&(6, 1)], 3..6);
-    // Each selected LOD has its own vertex range.
     assert_eq!(geometry.indices[3..6], [3, 4, 5]);
     assert_eq!(geometry.lods[&6], (vec![0.0, 100.0], 2));
 }
@@ -613,14 +576,10 @@ fn tree_lookup_uses_direct_pdxmesh_even_when_an_entity_has_the_same_name() {
 
 #[test]
 fn the_tree_mask_box_filters_the_river_pixels() {
-    // A 4 x 4 river bitmap: 254 is land and 255 is sea, everything below
-    // is a river. Each texel takes the LAST 2 x 2 window written to it,
-    // which is the one at (2m + 1, 2n + 1) clamped to the bitmap, not the
-    // aligned quad at (2m, 2n).
     let indices = vec![
-        3, 254, 255, 11, //
-        254, 254, 5, 254, //
-        255, 254, 0, 1, //
+        3, 254, 255, 11,
+        254, 254, 5, 254,
+        255, 254, 0, 1,
         254, 255, 2, 3,
     ];
     let mask = tree_mask(&IndexedImage {
@@ -631,11 +590,7 @@ fn the_tree_mask_box_filters_the_river_pixels() {
     })
     .unwrap();
     assert_eq!((mask.width, mask.height), (2, 2));
-    // The engine's own `(sum of four bytes) >> 2` over the offset windows:
-    // rows 1..2 x columns 1..2, 1..2 x 2..3, 2..3 x 1..2 and 2..3 x 2..3.
     assert_eq!(mask.data, [127, 191, 127, 255]);
-    // One river pixel in a window gives 63, which is 0.247 and already over
-    // `tree.shader`'s lit/receiver mask cutoff of 0.17.
     assert!(f32::from(mask.data[0]) / 255.0 > 0.17);
 }
 

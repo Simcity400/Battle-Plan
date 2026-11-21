@@ -39,9 +39,6 @@ const sameCountries = (a: OperativeRow, b: OperativeRow) => a.key === b.key && a
 const sameCountryRows = (held: readonly OperativeRow[], next: readonly OperativeRow[]) => held.length === next.length
   && held.every((row, index) => sameCountries(row, next[index]));
 
-/** Agencies' operatives at the hour shown: the census's rows, followed at the head as a pushed panel that renders only when an
- * operative's name, assignment, target or captivity changes; experience and an assignment's days are painted from each push.
- * Over the whole campaign, the operatives that left are listed too, muted. */
 export default function OperativesRosterWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -55,7 +52,6 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     [widget.countries, fallback, groups.data, lastHour]);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const tagsKey = JSON.stringify(resolved.tags);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const params = useMemo(() => track && resolved.tags.length ? { countries: resolved.tags.map(countryFromKey) } : null, [track?.branch.id, tagsKey]);
   const root = useRef<HTMLDivElement | null>(null);
   const painted = useRef<Map<string, Painted>>(new Map());
@@ -67,12 +63,10 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;
-  // The reply names an unheld country by the key it was asked by: a slot is named by the tag it goes by then.
   const unheldSlots = useSlotTags(runtime.client, track, active && !!head.data?.unheld.some(isSlotKey));
   const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? head.hour : null;
   const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } } : null, active, validateDeparted, track?.source);
-  // The tenures cover the stretch the hour is in: asked again only when the hour shown leaves it.
   const tenureHour = useRef<number | null>(null);
   const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureHour.current !== null ? { sourceId: track.source.id,
     revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureHour.current } } : null,
@@ -81,7 +75,6 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   if (head.data && (tenureHour.current === null || (tenures && (hour < tenures.firstHour || hour > tenures.lastHour)))) tenureHour.current = hour;
   const rows = useMemo(() => match.ready ? rosterRows(head.data, departedAt !== null ? departed.data : undefined, tenures, hour, match.matches) : NO_ROWS,
     [head.data, departed.data, departedAt, tenures, hour, match]);
-  // A push redraws the rows as new objects: only rows naming other countries are news, so a push is one commit.
   const [visible, onVisibleRows] = useChangedState<readonly OperativeRow[]>(NO_ROWS, sameCountryRows);
   const wanted = useMemo(() => {
     const unique = new Map<string, { tag: string; hour: number }>();
@@ -162,7 +155,6 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading operatives…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
-  // A group with no member found yet asks for nothing, so no reply will come.
   else if (none) body = <NoMembersState reason={none.reason} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
   else if (!rows.length && data.agencyFeature === false) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;

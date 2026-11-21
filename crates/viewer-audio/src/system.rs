@@ -1,12 +1,3 @@
-//! The process's audio threads and output device.
-//!
-//! One [`System`] serves every map view of a process. Exactly one view owns
-//! it at a time ([`Owner::claim`]); frames from other views are dropped
-//! before they are sent. The control thread applies the owner's frames to
-//! the [`Engine`], asks the loader thread for samples, and renders about
-//! [`AHEAD`] of audio into the queue the device callback drains. Decoded
-//! samples stay while voices use them and for [`RETAIN`] after their last
-//! use.
 
 use job_priority::SpawnCarried as _;
 use crate::{
@@ -27,24 +18,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Audio rendered ahead of the device.
 const AHEAD: Duration = Duration::from_millis(60);
-/// How long an unused decoded sample stays.
 const RETAIN: Duration = Duration::from_secs(60);
-/// Frames rendered per control step: one callback of the game's mixer.
 const STEP: usize = CALLBACK_FRAMES;
-/// Steps one control iteration renders at most without a device (116 ms).
 const CATCH_UP: usize = 5;
-/// The wait before the default device is opened again after it failed to
-/// open or was lost.
 const REOPEN: Duration = Duration::from_secs(3);
-/// A device that takes no samples for this long while some wait is lost.
 const STALLED: Duration = Duration::from_secs(1);
-/// The longest a song's handoff waits for the next track to open.
 const MUSIC_OPEN: Duration = Duration::from_secs(2);
 
-/// One content stack's audio: its definitions and the layers its samples
-/// are read from.
 pub struct Source {
     pub content: Arc<Content>,
     pub layers: installed_content_core::ResolvedLayers,
@@ -52,8 +33,6 @@ pub struct Source {
 
 enum Command {
     Frame(u64, Arc<Source>, Frame),
-    /// The owner's volumes and mute, applied at once rather than with its
-    /// next frame.
     Mix(u64, Mix),
     Claim(u64),
     Release(u64),
@@ -61,9 +40,7 @@ enum Command {
 
 #[derive(Clone, Debug, Default)]
 pub struct Status {
-    /// The output device's name, or why none is open.
     pub device: Option<Result<String, String>>,
-    /// Named, counted refusals: missing effects, unreadable samples.
     pub notes: Vec<String>,
 }
 
@@ -74,25 +51,19 @@ pub struct System {
     status: Arc<Mutex<Status>>,
 }
 
-/// A view's handle on the process audio.
 pub struct Owner {
     token: u64,
     system: Arc<System>,
     last: Option<Instant>,
 }
 
-/// Set before the first [`System::shared`]: the process never opens an
-/// output device and only logs (window captures with `BATTLE_PLAN_VIEWER_AUDIO_LOG`).
 static SILENT: AtomicBool = AtomicBool::new(false);
 
 impl System {
-    /// Makes this process's audio a silent trace: voices start, advance and
-    /// log, but no device opens. It must precede the first [`System::shared`].
     pub fn silent() {
         SILENT.store(true, Ordering::Release);
     }
 
-    /// The process's audio, started on first use.
     pub fn shared() -> Arc<Self> {
         static SHARED: std::sync::OnceLock<Arc<System>> = std::sync::OnceLock::new();
         Arc::clone(SHARED.get_or_init(Self::start))
@@ -102,7 +73,6 @@ impl System {
         Self::spawn(SILENT.load(Ordering::Acquire))
     }
 
-    /// A system whose control thread never opens a device when `silent`.
     fn spawn(silent: bool) -> Arc<Self> {
         let (sender, receiver) = mpsc::channel();
         let status = Arc::new(Mutex::new(Status::default()));
@@ -154,7 +124,6 @@ impl System {
 }
 
 impl Owner {
-    /// Makes this view the one that sounds; the previous owner falls silent.
     pub fn claim(&mut self) {
         if self.system.owner.swap(self.token, Ordering::AcqRel) != self.token {
             self.last = None;
@@ -166,8 +135,6 @@ impl Owner {
         self.system.owner.load(Ordering::Acquire) == self.token
     }
 
-    /// Gives the audio up when this view owns it: everything it played,
-    /// music included, stops. A later [`Owner::claim`] takes it again.
     pub fn release(&mut self) {
         if self
             .system
@@ -180,15 +147,12 @@ impl Owner {
         }
     }
 
-    /// Applies volumes and mute now, between frames: a view that stops
-    /// drawing still silences what it plays.
     pub fn set_mix(&self, mix: Mix) {
         if self.owns() {
             self.system.send(Command::Mix(self.token, mix));
         }
     }
 
-    /// Sends one presented frame when this view owns the audio.
     pub fn frame(&mut self, source: &Arc<Source>, mut frame: Frame) {
         if !self.owns() {
             return;
@@ -213,21 +177,14 @@ impl Drop for Owner {
     }
 }
 
-/// A single-producer, single-consumer queue of whole frames: the control
-/// thread pushes and the device callback pops, and neither ever waits for
-/// the other. Both ends move a frame's samples at once, so the channels
-/// never shift, whatever the callback interrupts or finds missing.
 struct Ring {
     slots: Box<[AtomicU32]>,
     channels: usize,
-    /// Samples ever popped and pushed, always whole frames; their difference
-    /// is the length.
     read: AtomicUsize,
     write: AtomicUsize,
 }
 
 impl Ring {
-    /// Room for `frames` frames of `channels` samples.
     fn new(frames: usize, channels: usize) -> Self {
         let channels = channels.max(1);
         Self {
@@ -240,19 +197,15 @@ impl Ring {
         }
     }
 
-    /// Queued samples, a whole number of frames.
     fn len(&self) -> usize {
         let read = self.read.load(Ordering::Acquire);
         self.write.load(Ordering::Acquire).wrapping_sub(read)
     }
 
-    /// Samples the consumer has taken so far.
     fn consumed(&self) -> usize {
         self.read.load(Ordering::Acquire)
     }
 
-    /// The producer side: one frame of exactly `channels` samples, published
-    /// at once; `false` when the queue has no room for it.
     fn push_frame(&self, frame: &[f32]) -> bool {
         debug_assert_eq!(frame.len(), self.channels);
         let write = self.write.load(Ordering::Relaxed);
@@ -269,8 +222,6 @@ impl Ring {
         true
     }
 
-    /// The consumer side: hands one whole frame to `take` (channel, sample);
-    /// `false`, taking nothing, when no whole frame is queued.
     fn pop_frame(&self, mut take: impl FnMut(usize, f32)) -> bool {
         let read = self.read.load(Ordering::Relaxed);
         if self.write.load(Ordering::Acquire).wrapping_sub(read) < self.channels {
@@ -286,16 +237,12 @@ impl Ring {
     }
 }
 
-/// Stream errors that leave the stream playing: a reroute to the new default
-/// device, an underrun and a refused real-time priority.
 const STREAM_CONTINUES: [cpal::ErrorKind; 3] = [
     cpal::ErrorKind::DeviceChanged,
     cpal::ErrorKind::Xrun,
     cpal::ErrorKind::RealtimeDenied,
 ];
 
-/// The stream error kinds a failure code names, by code minus one; a kind
-/// not listed is reported as [`cpal::ErrorKind::Other`].
 const STREAM_FAILURES: [cpal::ErrorKind; 11] = [
     cpal::ErrorKind::DeviceBusy,
     cpal::ErrorKind::DeviceNotAvailable,
@@ -310,9 +257,6 @@ const STREAM_FAILURES: [cpal::ErrorKind; 11] = [
     cpal::ErrorKind::Other,
 ];
 
-/// The stream error callback: it runs on the device's thread, so it only
-/// records the first failure's kind in an atomic, without locking or
-/// allocating. Errors after which the stream plays on are ignored.
 fn record_failure(failure: &AtomicU8, kind: cpal::ErrorKind) {
     if STREAM_CONTINUES.contains(&kind) {
         return;
@@ -325,23 +269,17 @@ fn record_failure(failure: &AtomicU8, kind: cpal::ErrorKind) {
     let _ = failure.compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire);
 }
 
-/// The device side: a queue of interleaved frames at the device's rate and
-/// channel count, and the stream's reported failure.
 struct Output {
     ring: Arc<Ring>,
     rate: u32,
     channels: usize,
     format: DeviceFormat,
     alive: Arc<AtomicBool>,
-    /// The first stream failure's code ([`record_failure`]); 0 for none.
     failure: Arc<AtomicU8>,
-    /// The consumed count last seen and when it last moved.
     progress: (usize, Instant),
 }
 
 impl Output {
-    /// Why the device can no longer play: a failure the stream reported, or
-    /// samples waiting that nothing has taken for [`STALLED`].
     fn lost(&mut self) -> Option<String> {
         let code = self.failure.swap(0, Ordering::AcqRel);
         if code != 0 {
@@ -365,7 +303,6 @@ fn open_output() -> Result<(Output, String), String> {
     let alive = Arc::new(AtomicBool::new(true));
     let failure = Arc::new(AtomicU8::new(0));
     let (thread_alive, thread_failure) = (Arc::clone(&alive), Arc::clone(&failure));
-    // The stream stays on its own thread: it is not sent between threads.
     thread::Builder::new()
         .name("map audio output".into())
         .spawn_carried(move || {
@@ -385,7 +322,6 @@ fn open_output() -> Result<(Output, String), String> {
                 let rate = config.sample_rate();
                 let format = config.sample_format();
                 let config = config.config();
-                // A second of audio: far more than is ever rendered ahead.
                 let ring = Arc::new(Ring::new(rate as usize, channels));
                 let error = move |error: cpal::Error| record_failure(&thread_failure, error.kind());
                 let stream = match format {
@@ -402,7 +338,6 @@ fn open_output() -> Result<(Output, String), String> {
                         let ring = Arc::clone(&ring);
                         device.build_output_stream(
                             config,
-                            // The stream's 16-bit samples, held as steps of 1/32768.
                             move |out: &mut [i16], _| drain(&ring, out, |v| (v * 32_768.0) as i16),
                             error,
                             None,
@@ -449,11 +384,8 @@ fn open_output() -> Result<(Output, String), String> {
     ))
 }
 
-/// Opens the default device, recording the outcome in the status. The
-/// status lock is not held while the device opens, which can take seconds.
 fn open_device(status: &Mutex<Status>) -> Option<(Output, Stream)> {
     let opened = open_output().and_then(|(device, name)| {
-        // The mixer's stereo converts to the device as SDL's stream does.
         match Stream::new(device.rate, device.channels, device.format) {
             Some(stream) => Ok((device, stream, name)),
             None => Err(format!(
@@ -475,9 +407,6 @@ fn open_device(status: &Mutex<Status>) -> Option<(Output, Stream)> {
     }
 }
 
-/// The device callback: it never blocks, and takes whole frames only; a
-/// frame not yet rendered, or a partial frame at the end of `out`, is
-/// silence.
 fn drain<T: Default + Copy>(ring: &Ring, out: &mut [T], convert: impl Fn(f32) -> T) {
     for frame in out.chunks_mut(ring.channels) {
         let complete = frame.len() == ring.channels
@@ -500,8 +429,6 @@ struct Loaded {
     payload: Result<Payload, String>,
 }
 
-/// What a loader hands over: a sound's decoded samples, or a track's stream
-/// that keeps filling as the music loader decodes it.
 enum Payload {
     Sound(Arc<Samples>),
     Track(crate::music::TrackStream),
@@ -509,7 +436,6 @@ enum Payload {
 
 type Request = (u64, Arc<Source>, Load);
 
-/// The content path of a requested sample file.
 fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
     match load {
         Load::Sound(sound) => source
@@ -529,7 +455,6 @@ fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
     }
 }
 
-/// Reads a requested file's bytes through the content stack.
 fn read_bytes(source: &Source, load: Load) -> Result<installed_content_core::content::Bytes, String> {
     let path = sample_path(source, load)?;
     source
@@ -538,7 +463,6 @@ fn read_bytes(source: &Source, load: Load) -> Result<installed_content_core::con
         .map_err(|error| format!("{path}: {error}"))
 }
 
-/// Reads and decodes one sound's WAVE file whole.
 fn decode(source: &Source, load: Load) -> Result<Arc<Samples>, String> {
     let path = sample_path(source, load)?;
     let pcm = installed_content_sound::wav::decode(&read_bytes(source, load)?)
@@ -546,14 +470,11 @@ fn decode(source: &Source, load: Load) -> Result<Arc<Samples>, String> {
     Ok(Arc::new(Samples::from_pcm(&pcm)))
 }
 
-/// Opens one music track to stream it.
 fn open_track(source: &Source, load: Load) -> Result<installed_content_sound::ogg::Stream, String> {
     let path = sample_path(source, load)?;
     installed_content_sound::ogg::open(read_bytes(source, load)?).map_err(|why| format!("{path}: {why}"))
 }
 
-/// Runs `decode` on one file; a decoder that panics refuses that file by
-/// name and leaves the loader running.
 fn guarded<T>(
     source: &Source,
     load: Load,
@@ -567,10 +488,6 @@ fn guarded<T>(
     )
 }
 
-/// A loader thread; sounds and music load on separate ones, so a long track
-/// never delays a sound effect. A sound decodes whole; a track is handed
-/// over as a stream once it opens, then decoded into it a packet at a time
-/// until it ends or the player lets go of it, before the next request.
 fn loader(name: &str, requests: mpsc::Receiver<Request>, done: mpsc::Sender<Loaded>) {
     let _ = thread::Builder::new().name(name.into()).spawn_carried(move || {
         for (generation, source, load) in requests {
@@ -622,28 +539,22 @@ fn control(commands: mpsc::Receiver<Command>, status: Arc<Mutex<Status>>, silent
     Control::new(status, log_file, silent).run(commands);
 }
 
-/// The control thread's state: the engine, the owner's content, the loaders
-/// and the device.
 struct Control {
     engine: Engine,
     status: Arc<Mutex<Status>>,
     log_file: Option<std::fs::File>,
     source: Option<Arc<Source>>,
     owner: u64,
-    /// No device is ever opened (window captures).
     silent: bool,
     output: Option<(Output, Stream)>,
-    /// When the default device may be opened (again).
     next_open: Instant,
     generation: u64,
     done: mpsc::Receiver<Loaded>,
     sounds: mpsc::Sender<Request>,
     music: mpsc::Sender<Request>,
     block: Vec<i16>,
-    /// The draw count and track the last music handoff waited for.
     handed_off: Option<(u64, Option<usize>)>,
     last_evict: Instant,
-    /// Without a device, voices still advance in time and finish.
     unplayed: Instant,
 }
 
@@ -699,7 +610,6 @@ impl Control {
         }
     }
 
-    /// One command, in arrival order: a reset is never coalesced away.
     fn apply(&mut self, command: Command) {
         match command {
             Command::Claim(token) => {
@@ -740,7 +650,6 @@ impl Control {
         }
     }
 
-    /// Everything between commands: loads, the device, mixing and the log.
     fn step(&mut self) {
         self.receive_loads();
         self.request_loads();
@@ -757,7 +666,6 @@ impl Control {
 
     fn handle_loaded(&mut self, loaded: Loaded) {
         {
-            // Samples of a replaced content are dropped.
             if loaded.generation != self.generation {
                 return;
             }
@@ -781,8 +689,6 @@ impl Control {
         }
     }
 
-    /// Asks the loaders for what the engine wants. A loader that is gone
-    /// refuses the file by name, so no voice waits for it forever.
     fn request_loads(&mut self) {
         let Some(source) = &self.source else {
             return;
@@ -808,9 +714,6 @@ impl Control {
         }
     }
 
-    /// Opens the default device while a view owns the audio, and drops a
-    /// device that failed: the status says why, mixing goes on by the clock
-    /// and the default device is opened again after [`REOPEN`].
     fn keep_device(&mut self) {
         if self.silent {
             return;
@@ -835,8 +738,6 @@ impl Control {
 
     fn mix(&mut self) {
         if self.output.is_none() {
-            // Mixing that cannot keep up drops the backlog, as a device
-            // underrun does, so the thread keeps taking frames.
             let due = (self.unplayed.elapsed().as_secs_f64() * f64::from(RATE)) as usize;
             let steps = due / STEP;
             for _ in 0..steps.min(CATCH_UP) {
@@ -850,8 +751,6 @@ impl Control {
             }
             return;
         }
-        // At most a bounded amount per pass: frames are taken between passes
-        // even when mixing falls behind the device.
         for _ in 0..CATCH_UP {
             self.hand_off_music();
             let Some((device, stream)) = &mut self.output else {
@@ -876,11 +775,7 @@ impl Control {
         }
     }
 
-    /// A song drawn when the last one ended opens and decodes its first
-    /// samples before the next callback mixes, as the game's player opens
-    /// its next track at once, so the handoff adds no wait for a load.
     fn hand_off_music(&mut self) {
-        // One wait per drawn track: a slow decoder then plays in when it can.
         let drawn = (self.engine.music_draws(), self.engine.music_playing());
         if !self.engine.music_waiting() || self.handed_off == Some(drawn) {
             return;
@@ -889,8 +784,6 @@ impl Control {
         self.request_loads();
         let deadline = Instant::now() + MUSIC_OPEN;
         loop {
-            // An opened track waits for its first samples; otherwise the
-            // loader's answer is awaited.
             self.engine
                 .prime_music(deadline.saturating_duration_since(Instant::now()));
             if !self.engine.music_waiting() {

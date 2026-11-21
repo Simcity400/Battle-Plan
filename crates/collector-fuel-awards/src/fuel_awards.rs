@@ -1,7 +1,3 @@
-//! Passive applied-fuel observations. Depends on the shared interior Tap;
-//! no game function is called. A receipt the live buffer has no room for gets
-//! storage of its own on a lock-free spill, so the callback never waits for the
-//! drain; only a failed allocation loses it.
 use crate::{
     hook::{Hook, Registers, Tap},
     output_log::{Call, Drained, Log, raise},
@@ -21,7 +17,6 @@ use std::{
 
 static LOG: Log = Log::new(0);
 static SPILL: Spill = Spill::new();
-/// The taps in tag order: begin, end, five land receipts, naval, air, reset.
 const SITES: usize = 10;
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ROOT: AtomicU64 = AtomicU64::new(1);
@@ -30,9 +25,6 @@ static REFUSAL: collector_primitives::first_reason::FirstReason =
     collector_primitives::first_reason::FirstReason::new();
 static CENSUS_LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
 static COUNTERS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
-// The live buffer and its sealed predecessor belong to the hourly drain and
-// boundary installation. Callbacks publish into unconsumed slots through a
-// stable pointer, without taking any lock.
 static CURRENT: Mutex<Domains> = Mutex::new(Domains {
     current: None,
     retired: None,
@@ -65,10 +57,6 @@ static FIRST_APPEND_REFUSAL: AtomicUsize = AtomicUsize::new(0);
 static LOST_DRAINS: AtomicU64 = AtomicU64::new(0);
 static DRAIN_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static FIRST_DRAIN_REFUSAL: OnceLock<&'static str> = OnceLock::new();
-// Sizing hands storage to the boundary through atomics only: the prepared
-// successor moves by swap with its shape published beside it, and consumed
-// predecessors return through a lock-free release list. The drain and
-// boundary installation never share a lock with spool sizing.
 static SIZING: Mutex<()> = Mutex::new(());
 static OFFERED: AtomicPtr<Buffer> = AtomicPtr::new(std::ptr::null_mut());
 static OFFERED_ENTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -90,16 +78,11 @@ pub struct Entry {
     pub name: Option<(usize, usize)>,
     pub name_reason: Option<&'static str>,
 }
-/// Receipts the live buffer had no slot or name room for, or that came while no
-/// buffer was installed, with their names, until a drain takes them.
 struct Spill {
     pushed: SpillStack<Pushed>,
-    /// Taken from `pushed`; only the drain locks it.
     held: Mutex<Spilled>,
-    /// The lowest index no storage could take, or `u64::MAX`.
     lost: AtomicU64,
 }
-/// One spilled receipt with its own copy of its stored name.
 struct Pushed {
     index: u64,
     entry: Entry,
@@ -107,7 +90,6 @@ struct Pushed {
     name: Vec<u8>,
 }
 struct Spilled {
-    /// Index, receipt (its name in `names`) and stored name length.
     entries: Vec<(u64, Entry, usize)>,
     names: Vec<u8>,
 }
@@ -130,7 +112,6 @@ impl Spill {
             lost: AtomicU64::new(u64::MAX),
         }
     }
-    /// Drain path: the held receipts with every pushed one taken in.
     fn held(&self) -> MutexGuard<'_, Spilled> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         let Spilled { entries, names } = &mut *held;
@@ -151,7 +132,6 @@ impl Spill {
         }
         held
     }
-    /// Callback path: lock-free; false only when the storage could not be allocated.
     fn push(
         &self,
         index: u64,
@@ -194,7 +174,6 @@ impl Spill {
         }
         true
     }
-    /// After every writer and drain has left: frees the storage.
     fn release(&self) {
         drop(self.pushed.take());
         *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Spilled {
@@ -211,8 +190,6 @@ struct Slot {
     name_required: UnsafeCell<usize>,
     published: AtomicU64,
 }
-// Each reserved index has one producer. A slot is never overwritten until the
-// consumer has copied both its entry and name and released LOG.consumed.
 unsafe impl Sync for Slot {}
 struct Buffer {
     entries: Vec<Slot>,
@@ -292,8 +269,6 @@ fn publishing(mut buffer: &Buffer) -> Option<Publishing<'_>> {
             }) {
             Ok(_) => return Some(Publishing(buffer)),
             Err(usize::MAX) => {
-                // A stale callback follows the same sealed-successor handoff as
-                // politics_changes; the active guard retains the old allocation.
                 buffer = successor(buffer)?;
             }
             Err(_) => return None,
@@ -302,8 +277,6 @@ fn publishing(mut buffer: &Buffer) -> Option<Publishing<'_>> {
 }
 fn successor(buffer: &Buffer) -> Option<&Buffer> {
     let next = unsafe { buffer.next.load(Ordering::Acquire).as_ref() }?;
-    // Closing succeeded with no publishers: the old frontier is now immutable.
-    // Either the boundary or a stale publisher can initialize the successor.
     let frontier = buffer.cursor.load(Ordering::Acquire);
     next.base.fetch_max(frontier, Ordering::Release);
     next.cursor.fetch_max(frontier, Ordering::Release);
@@ -318,8 +291,6 @@ struct Pending {
     root: u64,
     epoch: u64,
     started: native::Started,
-    /// Where the root's start found its country, in the world and hour of
-    /// `stamp`: its settle and air recipients take it ([`held`]).
     located: native::Located,
     stamp: Stamp,
     received: [i64; 3],
@@ -328,31 +299,18 @@ struct Pending {
 }
 thread_local! {
     static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
-    /// The registry headers the pending root's unit recipients share, reset
-    /// at each root's start.
     static REGISTRY: RefCell<native::Registry> = RefCell::new(native::Registry::default());
 }
 
-/// Stop admitting receipts before testing callback quiescence. Callbacks
-/// enter LOG before testing admission, so an admitted callback cannot race
-/// past this check while the taps are restored.
 fn stop_admission_and_drained() -> bool {
     LOG.enabled.store(false, Ordering::SeqCst);
     LOG.active.load(Ordering::SeqCst) == 0
 }
 
-/// The world generation and hourly boundary a located root belongs to.
 type Stamp = (u64, u64);
-/// Hourly boundaries seen ([`boundary`]).
 static HOURS: AtomicU64 = AtomicU64::new(0);
-/// Calls that took their root's located country or registry headers: the
-/// settle, the air recipients and the unit recipients.
-// Diagnostic only: writer epochs, stamps and payload publication retain their
-// own atomic ordering. The callback already owns its hook-timing thread slot.
 static HELD: crate::hook_timing::CallCounters<3> = crate::hook_timing::CallCounters::new();
 
-/// Game thread, at each hourly boundary: nothing located before it is taken
-/// after it.
 pub fn boundary() {
     HOURS.fetch_add(1, Ordering::Relaxed);
 }
@@ -364,13 +322,6 @@ fn stamp() -> Stamp {
     )
 }
 
-/// The pending root's located country, for the calls of the same fuel update
-/// invocation (`engine_fuel::fuel_awards::start_held`), which writes no country
-/// object, id, link or slot and registers no reference. Only a root still
-/// standing is taken: one already refused (a reset of its status, a nested
-/// award, a lost receipt) or from another log epoch is read afresh, as is
-/// one from another world generation or from before an admitted recording
-/// callback's boundary (the stamp).
 fn held(pending: &Pending) -> Option<native::Located> {
     (!pending.refused
         && pending.epoch == LOG.epoch.load(Ordering::SeqCst)
@@ -379,15 +330,11 @@ fn held(pending: &Pending) -> Option<native::Located> {
     .then_some(pending.located)
 }
 
-/// Off-thread live census and allocation. Two passes leave room for an hour
-/// still waiting in a short drain; these are capacities, never population caps.
 pub fn presize(memory: &impl Memory, base: usize) {
     engine_allocation::advisory(|| presize_storage(memory, base));
 }
 
 fn presize_storage(memory: &impl Memory, base: usize) {
-    // Country reset also runs before strategic air exists.
-    // Its reset receipts need only the live country registry, not air rosters.
     offer(crate::country_scale::census_rows(0).max(1), 0);
     let observed = collector_extended_support::demand::demand_air_game_state(memory, base)
         .and_then(|state| {
@@ -425,7 +372,6 @@ fn refuse_census(reason: &'static str) {
 }
 
 fn offer(entries: usize, names: usize) {
-    // Only sizing callers serialise here; the drain never waits on this lock.
     let Ok(sizing) = SIZING.lock() else { return };
     let entries = entries.max(ENTRY_DEMAND.load(Ordering::Acquire));
     let names = names.max(NAME_DEMAND.load(Ordering::Acquire));
@@ -438,13 +384,11 @@ fn offer(entries: usize, names: usize) {
             && bytes.load(Ordering::Acquire) >= names
             && width.load(Ordering::Acquire) >= stride
     };
-    // The latest offer is either still pending or already live.
     if fits(&CURRENT_ENTRIES, &CURRENT_NAMES, &CURRENT_STRIDE)
         || fits(&OFFERED_ENTRIES, &OFFERED_NAMES, &OFFERED_STRIDE)
     {
         return;
     }
-    // Independent entry/name pressure must preserve both pending offers.
     let mut entry_capacity = CURRENT_ENTRIES
         .load(Ordering::Acquire)
         .max(OFFERED_ENTRIES.load(Ordering::Acquire));
@@ -453,7 +397,6 @@ fn offer(entries: usize, names: usize) {
         .max(OFFERED_NAMES.load(Ordering::Acquire));
     crate::table_capture::grow_capacity(&mut entry_capacity, entries);
     crate::table_capture::grow_capacity(&mut name_capacity, names);
-    // Allocation and displaced offers are entirely worker-owned.
     let Ok(buffer) = Buffer::with_stride(entry_capacity, name_capacity, stride, Default::default())
         .and_then(engine_allocation::boxed)
     else {
@@ -468,12 +411,9 @@ fn offer(entries: usize, names: usize) {
     OFFERED_STRIDE.store(shape.2, Ordering::Release);
     drop(sizing);
     if !displaced.is_null() {
-        // Never live: the boundary takes an offer only through the same swap.
         drop(unsafe { Box::from_raw(displaced) });
     }
 }
-/// Consumed predecessors and superseded offers wait here for the spool. Only
-/// the boundary pushes, under its own lock; release takes the whole list.
 fn dispose(buffer: Box<Buffer>) {
     let node = Box::into_raw(buffer);
     let mut head = DISPOSED.load(Ordering::Acquire);
@@ -493,14 +433,11 @@ fn release_disposed() {
         drop(buffer);
     }
 }
-/// Hourly boundary after the drain, on the same worker; replaced storage is
-/// freed by collect off-thread.
 pub fn install_offered() {
     let Ok(mut domains) = CURRENT.try_lock() else {
         return;
     };
     retire_consumed(&mut domains);
-    // Every receipt before the first buffer spilled, so it installs over them.
     if domains.retired.is_some()
         || LOG.active.load(Ordering::SeqCst) != 0
         || (domains.current.is_some()
@@ -510,8 +447,6 @@ pub fn install_offered() {
     }
     install_prepared(&mut domains);
 }
-/// A sealed predecessor whose receipts are all consumed, with no callback
-/// inside the log, is unreachable by every publisher.
 fn retire_consumed(domains: &mut Domains) {
     if LOG.active.load(Ordering::SeqCst) == 0
         && domains.retired.as_ref().is_some_and(|buffer| {
@@ -535,13 +470,9 @@ fn install_prepared(domains: &mut Domains) {
             .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
-            // Unsealed, so no publisher follows next.
             return_offer(offered);
             return;
         }
-        // An old publisher can finish between the quiet/empty check and seal,
-        // and a stale pointer can already publish into the successor. Keep the
-        // sealed predecessor readable instead of reopening or losing either.
         let _ = successor(old);
     } else {
         let frontier = LOG.cursor.load(Ordering::SeqCst);
@@ -556,8 +487,6 @@ fn install_prepared(domains: &mut Domains) {
     domains.retired = domains.current.replace(offered);
     LOG.capacity.store(capacity, Ordering::Release);
 }
-/// Sizing grows every offer from the largest prepared shape, so an offer it
-/// made while the boundary held this one is at least as large in each part.
 fn return_offer(offered: Box<Buffer>) {
     let pointer = Box::into_raw(offered);
     if OFFERED
@@ -574,15 +503,12 @@ fn return_offer(offered: Box<Buffer>) {
 }
 pub fn collect() {
     release_disposed();
-    // Captured shortfalls are independent of a readable population census.
     offer(0, 0);
 }
 pub fn active() -> usize {
     LOG.active.load(Ordering::SeqCst)
 }
 
-/// Off-thread, after hook/IP quiescence and spool drain. Unflushed samples keep
-/// their buffers until then; moving offers never charges or frees on callback.
 pub fn release() -> Result<(), &'static str> {
     if LOG.enabled.load(Ordering::SeqCst) || active() != 0 {
         return Err("fuel storage release before callback quiescence");
@@ -641,19 +567,14 @@ fn refuse_append(entry: Entry, absent: bool) {
     if absent {
         COUNTERS[11].fetch_add(1, Ordering::Relaxed);
     }
-    // Losing a terminal record must not leave earlier recipient rows looking
-    // like an observed complete interval. Diagnostics use only atomics here.
     LOG.invalidate();
 }
-/// Within the callback's `_call`, which keeps the log active.
 fn append(
     _call: &Call<'_>,
     entry: Entry,
     name: Option<native::StoredName>,
     memory: &impl Memory,
 ) -> bool {
-    // Land fuel receipt writer, naval fuel receipt writer and hourly air fuel update write each native award once.
-    // Rejected receipts still belong to the full observed interval demand.
     let attempted = ENTRY_ATTEMPTS
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
@@ -662,8 +583,6 @@ fn append(
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    // A receipt without a name adds no bytes but still refreshes the demand:
-    // a named callback may have added its bytes and not yet raised it.
     let attempted = match &name {
         Some(name) => {
             let bytes = name.byte_len() as u64;
@@ -739,8 +658,6 @@ fn append_buffer(
         usize::try_from(pending).unwrap_or(usize::MAX),
         Ordering::Relaxed,
     );
-    // A slot is taken only when every earlier receipt in it was consumed; the
-    // whole attempted frontier remains growth demand.
     if pending > buffer.entries.len() as u64
         || name
             .as_ref()
@@ -779,14 +696,10 @@ fn append_buffer(
     true
 }
 
-/// The taps in [`Hooks::new`]'s order: BEGIN, END, the five land receipt
-/// writes, the naval and air receipts and the reset.
 #[cfg(feature = "callback_profile")]
 const TAG_NAMES: [&str; 10] = [
     "begin", "end", "land_0", "land_1", "land_2", "land_3", "land_4", "naval", "air", "reset",
 ];
-/// Diagnostic cost of every [`observe`] call by tag (`callback_profile`):
-/// calls and TSC ticks, every call timed rather than one in 64.
 #[cfg(feature = "callback_profile")]
 static TAG_COST: [[AtomicU64; 2]; TAG_NAMES.len()] =
     [const { [const { AtomicU64::new(0) }; 2] }; TAG_NAMES.len()];
@@ -798,7 +711,6 @@ struct TagTimer {
 #[cfg(feature = "callback_profile")]
 impl TagTimer {
     fn new(tag: usize) -> Self {
-        // SAFETY: RDTSC has no preconditions on x86-64.
         let start = unsafe { core::arch::x86_64::_rdtsc() };
         Self { tag, start }
     }
@@ -806,7 +718,6 @@ impl TagTimer {
 #[cfg(feature = "callback_profile")]
 impl Drop for TagTimer {
     fn drop(&mut self) {
-        // SAFETY: as above.
         let ticks = unsafe { core::arch::x86_64::_rdtsc() }.saturating_sub(self.start);
         if let Some([calls, total]) = TAG_COST.get(self.tag) {
             calls.fetch_add(1, Ordering::Relaxed);
@@ -814,8 +725,6 @@ impl Drop for TagTimer {
         }
     }
 }
-/// `{tag: [calls, ns]}` of every [`observe`] call since attach
-/// (`callback_profile`); ticks convert with the hook timer's TSC rate.
 #[cfg(feature = "callback_profile")]
 pub fn tag_profile() -> impl serde::Serialize {
     let hz = crate::hook_timing::tsc_hz().unwrap_or(0);
@@ -845,7 +754,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     let memory = unsafe { LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     if tag == 9 {
-        // The reset body retains its original receiver in RSI.
         let status = registers.rsi;
         if let Some(mut pending) = PENDING.get()
             && pending.started.status == status
@@ -854,8 +762,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             pending.cause.get_or_insert(1);
             PENDING.set(Some(pending));
         }
-        // Initialization may not yet have a resolvable country. The status
-        // pointer still invalidates its previously authenticated local history.
         if status == 0
             || !append(
                 &call,
@@ -1052,8 +958,6 @@ fn drain_domains(
     entries: engine_native::walk::Buffer<'_, Entry>,
     names: engine_native::walk::Buffer<'_, u8>,
 ) -> Result<(Drained, usize, usize), &'static str> {
-    // Shared only with boundary installation (the same worker) and detach;
-    // spool sizing and capacity reads never take it.
     let Ok(domains) = CURRENT.try_lock() else {
         COUNTERS[6].fetch_add(1, Ordering::Relaxed);
         return Err("fuel observation storage busy");
@@ -1061,8 +965,6 @@ fn drain_domains(
     let Some(buffer) = domains.current.as_deref() else {
         return Err("fuel observation storage absent");
     };
-    // Snapshot before the drain: a later rejected callback belongs to the next
-    // interval and its pressure cannot be cleared by this handover.
     let name_cursor = NAME_ATTEMPTS.load(Ordering::SeqCst);
     let names_required = attempted_since(name_cursor, &NAME_CONSUMED);
     let result = handover_buffers(
@@ -1085,9 +987,6 @@ fn drain_domains(
         Ordering::Release,
     );
     result.map(|(drained, len, required)| {
-        // A callback can publish while entries are copied. Consume only an
-        // attempt frontier whose earlier publishers are settled and whose
-        // entries all belong to this drain, including discarded shortages.
         let entry_cursor = ENTRY_ATTEMPTS.load(Ordering::SeqCst);
         let name_cursor = NAME_ATTEMPTS.load(Ordering::SeqCst);
         if LOG.active.load(Ordering::SeqCst) == 0
@@ -1134,7 +1033,6 @@ fn handover_buffers(
     if log.active.load(Ordering::SeqCst) != 0 {
         return Ok((drained, 0, 0));
     }
-    // Every spilled receipt before `cursor` is pushed once no callback is active.
     let mut held = spill.held();
     if spill.lost.load(Ordering::Acquire) < cursor {
         let _ = spill
@@ -1159,8 +1057,6 @@ fn handover_buffers(
             .ok_or("fuel receipt publication incomplete")?;
         Ok::<_, &'static str>((domain, slot))
     };
-    // Worker destinations follow the original settled cursor, including a
-    // sealed predecessor. Fixed callback fixtures retain short-drain semantics.
     entries.ensure(pending)?;
     let copied = pending.min(entries.len());
     held.entries.sort_unstable_by_key(|&(index, ..)| index);
@@ -1237,7 +1133,6 @@ fn handover_buffers(
     if log.epoch.load(Ordering::SeqCst) != epoch {
         return Err("fuel award observation restarted");
     }
-    // Release slots only after their names have also become owned frame bytes.
     log.consumed.store(first + copied as u64, Ordering::Release);
     held.discard_before(first + copied as u64);
     drained.copied = copied;
@@ -1248,7 +1143,6 @@ fn handover_buffers(
 #[cfg(test)]
 #[path = "fuel_awards/tests.rs"]
 mod tests;
-/// Lock-free, so the spool's per-pass size reads never contend with a drain.
 pub fn capacities() -> (usize, usize) {
     (
         CURRENT_ENTRIES
@@ -1265,11 +1159,11 @@ pub struct Hooks {
     publication_attempted: bool,
 }
 impl Hooks {
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         let sites: [Rva; SITES] = [
             native::BEGIN,
@@ -1316,13 +1210,10 @@ impl Hooks {
         }
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        // Even a failed batch may have reached native code. Its buffers stay
-        // owned until runtime has drained and checked relay/IP quiescence.
         if enabled {
             self.publication_attempted = true;
         }
         if !enabled && !stop_admission_and_drained() {
-            // Keep the taps published until admitted callbacks complete.
             return Ok(false);
         }
         let ready = match crate::hook::shared::attach_outcome() {
@@ -1346,7 +1237,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // Bootstrap failures before any publication have no native writers.
         if !self.publication_attempted {
             let _ = release();
         }

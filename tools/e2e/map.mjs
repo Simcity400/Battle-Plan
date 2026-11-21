@@ -1,7 +1,3 @@
-// The map's cases. Everything is judged by what the viewer reports it drew (DashboardMapState:
-// hour, mapMode, hover, zoom and the frame's drawnAt), received in the page by the probe. Pointer input
-// to the native map goes through tools/e2e/native_input.py on the suite's own desktop; map modes go as
-// the host sends them, in a view's options.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, unlink } from 'node:fs/promises';
@@ -11,23 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { log, sleep } from './cdp.mjs';
 import { Session } from './session.mjs';
 
-/** Hover targets. `field` is the map-state report the case reads (`hover`: what the frame highlights;
- * `tooltip`: the map tooltip it drew) and `match` tests it. A highlight must be drawn by the next frame;
- * a tooltip, by the first frame after the game's own tooltip delay, which the viewer reports. Each
- * within 100 ms. To add a hover case, add one (the map-input lane's hook). */
 export const HOVER_CASES = [
   { id: 'division counter', field: 'hover', match: value => /^division:/.test(value ?? '') },
-  // The game draws no province highlight, only its tooltip.
   { id: 'province tooltip', field: 'tooltip', match: value => /^province:/.test(value ?? '') },
   { id: 'map GUI button', field: 'hover', match: value => /^button:/.test(value ?? '') },
 ];
 
-/** Map interactions, each run paused and while playing fast, and judged on the viewer's own window-thread
- * frames at 120 Hz. `where` is the Overview page's map widget or the full campaign map; `camera` is the full
- * map's camera the case runs in, chosen before it so no case inherits the camera the case before it left (the
- * walking camera's frames cost several times the map camera's, so an inherited camera measures the wrong view);
- * `moves` marks a case whose own camera movement is judged; `run(c)` sends the input through `c` (wheel, keys,
- * drag, click, at the map's centre by default). To add one, add an entry (the map lanes' hook). */
 export const MAP_INTERACTIONS = [
   { id: 'zoom: continuous', where: 'widget', run: async c => { await c.wheel(12, 16); await c.wheel(-12, 16); } },
   { id: 'zoom: wheel bursts', where: 'widget', run: async c => {
@@ -35,14 +20,11 @@ export const MAP_INTERACTIONS = [
   { id: 'pan: arrow keys', where: 'widget', run: async c => { await c.keys(['ArrowRight'], 1500); await c.keys(['ArrowLeft'], 1500); } },
   { id: 'pan: middle drag', where: 'widget', run: async c => { await c.drag(-250, 0); await c.drag(250, 0); } },
   { id: 'playback', where: 'widget', run: async () => { await sleep(4000); } },
-  // The campaign map's own camera first: the cases that move the camera run after it, so the view the
-  // owner looks at is measured from the camera the tab opens in.
   { id: 'playback', where: 'campaign', camera: 'Map', run: async () => { await sleep(4000); } },
   { id: 'fly', where: 'campaign', camera: 'Fly', moves: true, run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'D'], 1000); await c.keys(['Escape'], 50); } },
   { id: 'walk', where: 'campaign', camera: 'Walk', moves: true, run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'A'], 1000); await c.keys(['Escape'], 50); } },
 ];
 
-/** The suite's input to the native map, one long-lived helper process. */
 export class NativeInput {
   constructor(desktop, appPid, input) {
     this.process = spawn('python', [fileURLToPath(new URL('./native_input.py', import.meta.url)), '--desktop', desktop, '--app-pid', String(appPid), '--input', input],
@@ -62,7 +44,6 @@ export class NativeInput {
   close() { this.process.stdin.end(); }
 }
 
-/** The Overview map widget's view id and its map's area in client pixels, inset from its edges. */
 async function mapArea(s, dpr) {
   const area = await s.app.evaluate(`(() => { const a = document.querySelector('article.dash-widget.kind-map'); if (!a) return null;
     a.scrollIntoView({ block: 'nearest' }); const r = a.querySelector('.dash-widget-content').getBoundingClientRect();
@@ -73,7 +54,6 @@ async function mapArea(s, dpr) {
 
 const stateAfter = (view, after, test) => `__e2e.mapState(${JSON.stringify(view)}, ${after}, ${test})`;
 
-/** Waits until the map draws a state after `after` that `test` accepts; that state, or null. */
 async function drawnState(s, view, after, test, timeout) {
   for (const end = Date.now() + timeout; Date.now() < end; await sleep(16)) {
     const state = await s.app.evaluate(stateAfter(view, after, test));
@@ -82,9 +62,6 @@ async function drawnState(s, view, after, test, timeout) {
   return null;
 }
 
-/** Map modes: each mode the viewer offers, sent to it as the host sends any view's options (the views the app
- * last sent, with only this view's mode changed); finished when the viewer draws a frame in that mode. Then the
- * app's own views go back, so its next layout is its own. */
 export async function mapModes(s, dpr) {
   const { view } = await mapArea(s, dpr);
   const modes = await s.app.evaluate(`__e2e.mapModes[${JSON.stringify(view)}] ?? null`);
@@ -108,7 +85,6 @@ export async function mapModes(s, dpr) {
   await send(views);
 }
 
-/** The full campaign map's area in client pixels: the page's region the native map draws in. */
 async function campaignArea(s, dpr) {
   const area = await s.app.evaluate(`(() => { const r = document.querySelector('.map-panel:not([hidden])')?.getBoundingClientRect(); if (!r) return null;
     return { left: r.left + 12, top: r.top + 12, right: r.right - 12, bottom: r.bottom - 12 }; })()`);
@@ -116,7 +92,6 @@ async function campaignArea(s, dpr) {
   return { ...area, view: null, px: (x, y) => [x * dpr, y * dpr] };
 }
 
-/** Each MAP_INTERACTIONS case, paused then playing at `speedIndex`; recorded with its window for the report. */
 export async function interactions(s, input, dpr, speedIndex, { label = null, only = null } = {}) {
   for (const where of ['widget', 'campaign']) {
     const cases = MAP_INTERACTIONS.filter(entry => entry.where === where && (only === null || only.includes(entry.id)));
@@ -135,7 +110,6 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
         await s.click('.header-speed');
         await s.until(`document.querySelector('.playback-speed-menu:popover-open .playback-speed-presets button')`, 3000);
         await s.click('.playback-speed-menu:popover-open .playback-speed-presets button', { index: speedIndex });
-        // Far enough from the end that fast playback lasts through every case.
         const line = await s.timeline();
         await s.app.click(Session.timelineX(line, 0.1), line.y);
         await sleep(1000);
@@ -144,13 +118,9 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
       }
       for (const entry of cases) {
         if (entry.id === 'playback' && !playing) continue;
-        // The full map's own cases keep their names; a case the map camera shares with the widget says
-        // which map it ran on.
         const item = `interaction: ${entry.id}${where === 'campaign' && !entry.moves ? ' (campaign map)' : ''}`;
         const while_ = `${label ? `${label}, ` : ''}${playing ? 'playing' : 'paused'}`;
         try {
-          // Every campaign case names its camera and is given it here, so a case never measures the
-          // camera the case before it left behind.
           if (entry.camera) { await s.click('.segmented[aria-label="Camera"] button', { text: entry.camera }); await sleep(1500); }
           await s.watch();
           const from = Date.now();
@@ -171,8 +141,6 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
         } catch (error) {
           await s.fail(label ? 'mapfps' : 'map', item, while_, `could not send its input: ${error.message}`);
         } finally {
-          // The map's own camera again, so the next case starts from it; a camera that will not change
-          // is this case's failure, never a silence.
           if (entry.moves) {
             await s.click('.segmented[aria-label="Camera"] button', { text: 'Map' })
               .catch(error => s.fail(label ? 'mapfps' : 'map', item, while_, `the map camera could not be chosen again after it: ${error.message}`));
@@ -191,7 +159,6 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
   await s.openPage('Overview');
 }
 
-/** Hover: finds a point over each HOVER_CASES target, then times moving onto it to the frame that highlights it. */
 export async function hover(s, input, dpr) {
   const area = await mapArea(s, dpr);
   const from = Date.now();
@@ -202,7 +169,6 @@ export async function hover(s, input, dpr) {
     const state = await drawnState(s, area.view, posted, 'x => true', 400);
     return { posted, state, point: [px, py] };
   };
-  // A coarse grid over the map, then a fine strip along its bottom edge, where the map's own buttons sit.
   const points = [];
   for (let row = 0; row < 12; row++) for (let column = 0; column < 20; column++)
     points.push([area.left + (area.right - area.left) * (column + 0.5) / 20, area.top + (area.bottom - area.top) * (row + 0.5) / 12]);
@@ -212,8 +178,6 @@ export async function hover(s, input, dpr) {
     if (HOVER_CASES.every(hoverCase => seen.has(hoverCase.id)) && neutral) break;
     const { state, point } = await at(x, y);
     if (state && !state.hover && !state.tooltip && !neutral) {
-      // A province's tooltip waits the game's delay: the point is neutral only if it is still clear after it.
-      // The map acknowledges only changes, so what it shows now is its latest acknowledgement.
       await sleep((state.tooltipDelayMs ?? 0) + 200);
       const now = await s.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(area.view)}).at(-1) ?? null`);
       if (now && !now.hover && !now.tooltip) neutral = [x, y];
@@ -224,7 +188,6 @@ export async function hover(s, input, dpr) {
   for (const hoverCase of HOVER_CASES) {
     const target = seen.get(hoverCase.id);
     if (!target) { await s.fail('map', `hover: ${hoverCase.id}`, null, `no ${hoverCase.id} under any of ${points.length} points over the map`); continue; }
-    // From a point the map was seen to draw with no highlight and no tooltip, so what follows is this move's alone.
     if (!neutral) { await s.fail('map', `hover: ${hoverCase.id}`, null, `no point over the map drew without a highlight or tooltip, so its appearance cannot be timed`); continue; }
     const cleared = await at(...neutral);
     if (!cleared.state || cleared.state.hover || cleared.state.tooltip) {
@@ -236,7 +199,6 @@ export async function hover(s, input, dpr) {
     const [posted] = (await input.ask({ op: 'move', points: [[px, py]], interval_ms: 0 })).posted;
     const state = await drawnState(s, area.view, posted, `x => x.${hoverCase.field} === ${JSON.stringify(target.hovered)}`, 4000);
     const flashed = await s.unwatch();
-    // A tooltip waits the game's own delay on purpose; the rule applies after it.
     const delay = hoverCase.field === 'tooltip' ? state?.tooltipDelayMs ?? null : 0;
     const ms = state ? state.drawnAt - posted - (delay ?? 0) : null;
     const reasons = !state ? [`never ${hoverCase.field === 'tooltip' ? 'showed its tooltip' : 'highlighted'} within 4 s`]
@@ -245,11 +207,9 @@ export async function hover(s, input, dpr) {
     await s.record({ area: 'map', item: `hover: ${hoverCase.id}`, label: target.hovered, ms, posted, delay, drawnAt: state?.drawnAt ?? null, pass: true, reasons, screenshot: false });
   }
   await input.ask({ op: 'move', points: [area.px(area.left + 2, area.top + 2)], interval_ms: 0 }).catch(() => {});
-  // Every pointer move above was a hover too: its frames are judged as the other interactions' are.
   await s.record({ area: 'map', item: 'interaction: hover', label: 'paused', pass: true, reasons: [], from, to: Date.now(), screenshot: false });
 }
 
-/** The map's own exports at fixed hours and cameras, for the visual check. */
 export async function mapPictures(s, input, visual, dpr, work, seeks) {
   const area = await mapArea(s, dpr);
   const exportAs = caseId => exportPicture(s, input, visual, work, caseId);
@@ -264,13 +224,10 @@ export async function mapPictures(s, input, visual, dpr, work, seeks) {
   log('map pictures', visual.items.filter(item => item.kind === 'map').length);
 }
 
-/** The map at a closer camera cannot be pictured repeatably: the wheel moves the camera by each frame's duration, as the
- * game's does, and no command sets a camera. It fails by name until one does. */
 export function zoomedMapPicture(visual, [label]) {
   visual.fail(`map/zoomed camera/${label}`, 'map', "no repeatable close camera: wheel zoom moves by frame time, as the game's does, and no command sets the camera");
 }
 
-/** Exports the Overview map as the user does, through Map settings and the host's save dialog. */
 async function exportPicture(s, input, visual, work, caseId) {
   const folder = path.join(work, 'map-exports');
   await mkdir(folder, { recursive: true });

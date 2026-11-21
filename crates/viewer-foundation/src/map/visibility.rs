@@ -1,6 +1,3 @@
-//! Province fog rebuilt for the viewing country from recorded simulation. Walk admitted countries in
-//! order, stamp neighbours and add radar/occupied-state terms with saturation, preserving addition
-//! order.
 
 use installed_content_core::{ResolvedLayers, map::MapData, map::ProvinceKind};
 use installed_content_save::naval_history::RailwayAdjacency;
@@ -26,7 +23,6 @@ use std::{
 
 pub mod template_reveal;
 
-/// The content half of the fog: province topology and the `NIntel` defines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FogContent {
     pub topology: Topology,
@@ -34,7 +30,6 @@ pub struct FogContent {
 }
 
 impl FogContent {
-    /// The fog operands, or the shared refusal for a failed content load.
     pub fn loaded(content: &Result<Self, String>) -> Result<&Self, &'static str> {
         content
             .as_ref()
@@ -53,7 +48,6 @@ impl FogContent {
     }
 }
 
-/// Province land/sea sets and native neighbour vectors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Topology {
     pub land: BTreeSet<u32>,
@@ -93,22 +87,14 @@ impl Topology {
     }
 }
 
-/// The `NIntel` and `NBuildings` defines the visibility laws read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Defines {
-    /// `COUNTRY_LEVEL_INTEL_MAXIMUMS`: civilian, army, navy, air.
     pub intel_maximums: [i64; 4],
-    /// `NBuildings.RADAR_INTEL_EFFECT`, the native integer define.
     pub radar_effect: i32,
-    /// `MAP_INTEL_VISIBILITY_CUTOFFS` threshold/value pairs.
     pub map_cutoffs: Vec<i64>,
-    /// `AIR_MAPICON_SHOW_ALL_AIR_PORTS`.
     pub air_icon_threshold: i64,
-    /// `AIR_MAPICON_AIR_PORT_VISIBILITY_DETAIL_THRESHOLDS`.
     pub air_detail_thresholds: [i64; 4],
-    /// `AIR_MAPICON_AIR_PORT_PLANE_FUZZY_THRESHOLD`, the independent count spread.
     pub air_plane_fuzzy_range: i64,
-    /// `NAVY_MAPICON_NAVAL_PORT_VISIBILITY_DETAIL_THRESHOLDS`; the engine asserts five.
     pub naval_detail_thresholds: [i64; 5],
 }
 
@@ -120,8 +106,6 @@ impl Defines {
                 .try_into()
                 .map_err(|_| invalid(format!("NDefines.NIntel.{name} must hold four values")))
         };
-        // Lua integer conversion truncates the double, then the loader keeps
-        // the low signed dword.
         let radar = defines.number("NBuildings", "RADAR_INTEL_EFFECT")?;
         if !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&radar) {
             return Err(invalid(
@@ -166,12 +150,9 @@ fn complete<'a, T: replay_data::rows::TableSchema>(
 pub(crate) fn saturate(current: u8, term: i32) -> u8 {
     i32::from(current).wrapping_add(term).clamp(0, 255) as u8
 }
-/// Fixed-point technology rounding.
 pub(crate) fn rounded(value: i64) -> i32 {
     (value.wrapping_add(if value < 0 { -50_000 } else { 50_000 }) / 100_000) as i32
 }
-/// The air-base icon intel gates with the
-/// loaded defines and the simulation's DLC feature `0x1C` (mask bit 5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AirDefines {
     maximum: i64,
@@ -189,7 +170,6 @@ impl AirDefines {
         };
         Ok(Self::of(defines, features.dlc_mask))
     }
-    /// From the defines and the simulation's DLC feature mask.
     pub fn of(defines: &Defines, dlc_mask: u32) -> Self {
         Self {
             maximum: defines.intel_maximums[3],
@@ -206,8 +186,6 @@ impl AirDefines {
             intel_fraction(raw?, self.maximum).ok()
         }
     }
-    /// Detail level zero through three. Search thresholds from the highest index downward; authored
-    /// values need not be sorted.
     pub fn level(&self, raw: Option<i64>, shared: bool, fog: bool) -> Option<u8> {
         if !self.enabled {
             return Some(if shared || !fog { 3 } else { 0 });
@@ -220,14 +198,10 @@ impl AirDefines {
                 .unwrap_or(0) as u8,
         )
     }
-    /// Whether the detail level is above zero.
     #[cfg(any(test, feature = "test-support"))]
     pub fn port_detail(&self, raw: Option<i64>, shared: bool, fog: bool) -> Option<bool> {
         self.level(raw, shared, fog).map(|level| level > 0)
     }
-    /// Use detail thresholds one and two with an independent fuzzy spread. The caller's seed combines
-    /// the wrapping clock seed with its country or base numeric ID; the count wrapper adds its fixed
-    /// jitter salt. This query is not DLC-gated.
     pub(crate) fn count_range(
         &self,
         count: i32,
@@ -250,7 +224,6 @@ impl AirDefines {
             known,
         ))
     }
-    /// The result is false without the simulation feature.
     pub fn show_ports(&self, raw: Option<i64>, shared: bool, fog: bool) -> Option<bool> {
         if !self.enabled {
             return Some(false);
@@ -260,8 +233,6 @@ impl AirDefines {
     }
 }
 
-/// Naval-base port detail level zero through four, from the viewer's navy intel lane and simulation
-/// feature 0x1C.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavalDefines {
     maximum: i64,
@@ -277,7 +248,6 @@ impl NavalDefines {
         };
         Ok(Self::of(defines, features.dlc_mask))
     }
-    /// From the defines and the simulation's DLC feature mask.
     pub fn of(defines: &Defines, dlc_mask: u32) -> Self {
         Self {
             maximum: defines.intel_maximums[2],
@@ -286,9 +256,6 @@ impl NavalDefines {
         }
     }
 
-    /// Without the feature: 4 when the viewer shares vision with the owner or fog is off,
-    /// else 0. With it: the highest threshold index at or below the intel fraction, searched
-    /// from the top; authored values need not be sorted.
     pub fn level(&self, raw: Option<i64>, shared: bool, fog: bool) -> Option<u8> {
         if !self.enabled {
             return Some(if shared || !fog { 4 } else { 0 });
@@ -314,7 +281,6 @@ pub(crate) fn network_term(cutoff: i32, modifier: i64) -> i32 {
         / 10_000_000_000) as i32
 }
 
-/// Apply the unit-intel modifier to the base byte.
 pub fn unit_byte(base: u16, modifier: i64) -> u16 {
     let value = i64::from(base)
         .wrapping_mul(modifier.wrapping_add(100_000))
@@ -323,8 +289,6 @@ pub fn unit_byte(base: u16, modifier: i64) -> u16 {
     (value as i32).clamp(0, 255) as u16
 }
 
-/// Counters test raw self-reference before the directed shared-visibility veto, which has no signed
-/// receiver gate. Zero endpoints retain recorded per-cell subject operands.
 pub fn counter_shared(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -362,16 +326,12 @@ struct Rebuild<'a> {
 }
 
 impl Rebuild<'_> {
-    /// Army intel cutoff: choose the value of the first pair whose threshold exceeds the intel
-    /// fraction, otherwise the last value.
     fn cutoff(&self, raw_a: u32, raw_b: u32) -> Result<i32, &'static str> {
         if self.cutoffs.len() < 2 {
             return Ok(0);
         }
         let a = map_intel_slot(self.links, raw_a)?;
         let b = map_intel_slot(self.links, raw_b)?;
-        // The resolved receiver's own ID is zero, even for a positive source
-        // alias. A positive target alias0 still queries matrix[0].
         let shared = if a == 0 {
             raw_b == 0 || reverse_zero_shared(self.frame, self.links, b)?
         } else if b == 0 {
@@ -390,7 +350,6 @@ impl Rebuild<'_> {
             intel_fraction(army, self.maximum)?
         };
         let mut result = 0;
-        // An odd trailing value is dropped, as the native loader warns.
         for pair in self.cutoffs.chunks_exact(2) {
             result = rounded(pair[1]);
             if pair[0] > fraction {
@@ -447,7 +406,6 @@ impl Rebuild<'_> {
     }
 }
 
-/// Rows grouped by a key, in their table order.
 fn group<'a, T, K: Ord>(
     rows: impl IntoIterator<Item = &'a T>,
     mut key: impl FnMut(&T) -> Result<Option<K>, &'static str>,
@@ -461,9 +419,6 @@ fn group<'a, T, K: Ord>(
     Ok(out)
 }
 
-/// The viewing country's province bytes. Every input is indexed by owner
-/// once, so the country loop reads only what each country contributes. Any
-/// missing or unresolvable input fails with its name.
 pub fn derive(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -540,7 +495,6 @@ pub fn derive(
         cutoffs: &defines.map_cutoffs,
         bytes: provinces.iter().map(|p| (p.id, 0)).collect(),
     };
-    // Divisions and task forces are key-sorted by id.
     let unit = |id: u64| {
         divisions
             .binary_search_by_key(&id, |d| d.id)
@@ -562,7 +516,6 @@ pub fn derive(
     for (country, raw_country) in order {
         let own = country == ours;
         if !own && !relations.allied_for_fog(country, ours) {
-            // Volunteers of another country stationed in our theatre.
             let theatre = volunteers_here
                 .get(&country)
                 .and_then(|theatres| theatres.iter().min_by_key(|t| t.ordinal));
@@ -584,7 +537,6 @@ pub fn derive(
                 let mut ordered = areas.get(&theatre.id).cloned().unwrap_or_default();
                 ordered.sort_by_key(|a| a.ordinal);
                 for area in ordered {
-                    // The native iterator stops at the first empty area.
                     if area.provinces.is_empty() {
                         break;
                     }
@@ -600,7 +552,6 @@ pub fn derive(
             }
         }
         for state in occupied.get(&country).into_iter().flatten() {
-            // Absent from the sparse table: a zero modifier adds nothing.
             let Some(network) = networks.get(&state.id) else {
                 continue;
             };
@@ -642,7 +593,6 @@ pub fn derive(
     Ok(rebuild.bytes)
 }
 
-/// Synthetic defines for viewer fixtures.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_defines() -> Defines {
     Defines {
@@ -670,8 +620,6 @@ pub(crate) mod tests {
     };
     use replay_frame::{frame::Metrics, frame::TableView};
 
-    /// Three countries (slots 1..=3, raw 101..=103), provinces 1..=5 with
-    /// province 4 at sea; every input table complete and empty.
     pub(crate) fn fixture() -> (DecodedFrame, BTreeMap<u32, u32>, FogContent) {
         let mut tables = std::array::from_fn(|_| TableView::Unavailable {
             reason: "unused in fixture".into(),
@@ -1045,8 +993,6 @@ pub(crate) mod tests {
         assert_eq!(d.level(Some(999_999), false, true), Some(0));
         assert_eq!(d.level(Some(1_000_000), false, true), Some(2));
         assert_eq!(d.port_detail(Some(1_000_000), false, true), Some(true));
-        // Shared vision supplies full intel, which still takes the authored
-        // threshold search. An unsorted threshold above full intel is not reached.
         assert_eq!(d.level(None, true, true), Some(2));
         assert_eq!(d.level(None, false, false), Some(2));
         assert_eq!(d.level(None, false, true), None);
@@ -1088,7 +1034,6 @@ pub(crate) mod tests {
             d.count_range(100, Some(30_000), false, true, 123, hour),
             Some(([100; 2], true))
         );
-        // The independent count spread does not alter the four-tier law.
         assert_eq!(d.level(Some(30_000), false, true), Some(1));
         d.detail[2] = d.detail[1];
         d.fuzzy_range = 100_000;
@@ -1127,7 +1072,6 @@ pub(crate) mod tests {
             d.count_range(-1, Some(30_000), false, true, 123, hour),
             Some(([0; 2], true))
         );
-        // Native decides its known byte before returning on a nonpositive count.
         assert_eq!(
             d.count_range(0, Some(29_999), false, true, 123, hour),
             Some(([0; 2], false))

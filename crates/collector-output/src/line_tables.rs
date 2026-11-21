@@ -1,14 +1,3 @@
-//! ProductionLineOutput: the units each production line has completed, totalled
-//! per recording branch from the production ticks the `line_output` hooks
-//! observe.
-//!
-//! Nothing is read from the game for it. Every clocked hour the callback hands
-//! the hook log over into this pack's preallocated entries ([`Captured::drain`]);
-//! the spool adds them to the branch's [`Totals`] and publishes the table with
-//! that hour's ProductionLines census, which decides which lines ended and
-//! which were created after the observation began. The table shares the
-//! census's daily slot: off it, the spool carries the last publication, until
-//! a tick goes unobserved.
 use super::output_continuity::OutputMap;
 use super::output_continuity::{self, Progress, Reasons, State};
 pub use super::output_continuity::{Receipt, holds_publication};
@@ -29,7 +18,6 @@ pub const TABLES: [TableId; N] = [
     TableId::RocketProductionOutput,
 ];
 
-/// The spool replaces this placeholder with the published table.
 pub const ASSEMBLED_BY_SPOOL: &str =
     "assembled by the spool from the production ticks the line output hooks observed";
 
@@ -44,8 +32,6 @@ impl output_continuity::Observation for Observation {
 }
 pub type Captured = output_continuity::Captured<Observation, N>;
 
-/// What a line produced under one (country, variant, organisation, purpose),
-/// in first-seen order: one row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Output {
     country: u32,
@@ -59,15 +45,12 @@ struct Output {
 
 #[derive(Debug)]
 struct Line {
-    /// The first hour whose drain or census showed the line.
     first_hour: i32,
     outputs: Vec<Output>,
-    /// The publication that first showed it ended; dropped once one written did.
     ended: Option<u64>,
     pending: usize,
 }
 
-/// The branch's per-line totals, owned by the spool for one campaign.
 #[derive(Debug, Default)]
 pub struct Totals {
     shared: output_continuity::Totals<Line>,
@@ -76,9 +59,6 @@ pub struct Totals {
 }
 
 impl Totals {
-    /// Account this frame's drain and publish ProductionLineOutput into
-    /// `tables`, beside the frame's ProductionLines. Runs before the staggered
-    /// carry, so an off-slot hour's skip is carried like any daily table's.
     pub fn assemble(
         &mut self,
         branch: BranchId,
@@ -106,7 +86,6 @@ impl Totals {
         tables[TableId::RocketProductionOutput.index()] = TableInput::Sampled(rockets);
     }
 
-    /// The same retained rows are used by the source regressions.
     #[cfg(any(test, feature = "test-support"))]
     pub fn rocket_publication(
         &self,
@@ -114,11 +93,9 @@ impl Totals {
     ) -> io::Result<Result<Vec<replay_data::rows::RocketProductionOutputRow>, &'static str>> {
         self.rocket.publication(production_lines)
     }
-    /// Taken after a frame's assembly, before it is queued, from its scoped table.
     pub fn receipt(&self, output: &TableInput) -> Receipt {
         self.shared.receipt(output)
     }
-    /// After the frame of `receipt` was actually written.
     pub fn written(&mut self, receipt: Receipt) {
         self.shared.written(receipt);
     }
@@ -164,7 +141,6 @@ impl Totals {
                         ended: None,
                         pending: 0,
                     });
-                    // New output is in no publication yet.
                     line.ended = None;
                     line.pending = line.pending.saturating_add(1);
                 }
@@ -183,7 +159,6 @@ impl Totals {
     }
 
     fn publish(&mut self, hour: i32, lines: &TableInput) -> TableView {
-        // A lost tick shows from the hour it is seen, not the next census.
         let since_hour = match &self.shared.state {
             State::Observing { since_hour, .. } => *since_hour,
             State::Withheld(reason) => return unavailable(reason),
@@ -232,8 +207,6 @@ impl Totals {
                 ended: None,
                 pending: 0,
             });
-            // Every live line has a row, zero until it produces, with the
-            // purpose its kind builds new equipment for (or refits).
             if line.outputs.is_empty() {
                 reserve(&mut line.outputs, 1)?;
                 line.outputs.push(Output {
@@ -263,8 +236,6 @@ impl Totals {
             } else {
                 line.ended.or(Some(publication))
             };
-            // Absent from the first census and first seen after it: created
-            // after that census, so every tick of its life was observed.
             let observed_since_creation = baseline.observed_since_creation(handle, line.first_hour);
             rows.extend(line.outputs.iter().enumerate().map(|(ordinal, output)| {
                 ProductionLineOutputRow {
@@ -317,16 +288,12 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
         }
     };
     let output = &mut line.outputs[index];
-    // The organisation credit and the instant progress are not recorded;
-    // only the delivered units and the factory spending accumulate.
     if let Some(next) = output.units.checked_add(i64::from(entry.units)) {
         output.units = next;
     } else {
         output.exact = false;
     }
     output.exact &= entry.exact;
-    // Classification is coupled by the native instant predicate. Once known,
-    // branch-total overflow is field-local and can never recover to zero.
     let spent = entry.spending.map(|(spent, _instant)| spent);
     let next = output
         .spent
@@ -344,7 +311,6 @@ mod tests {
     use replay_data::rows::TABLE_COUNT;
     use replay_data::{rows::RetiredI64, rows::RetiredOptionalI64};
 
-    /// The retired instant spending every row publishes.
     fn no_instant() -> Recorded<RetiredOptionalI64> {
         Recorded::Value(RetiredOptionalI64::default())
     }
@@ -393,7 +359,6 @@ mod tests {
         }
     }
 
-    /// A frame's drain of `entries`, continuing the log at `first`.
     fn frame(epoch: u64, first: u64, entries: &[Entry]) -> Captured {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let end = first + entries.len() as u64;
@@ -410,7 +375,6 @@ mod tests {
         captured
     }
 
-    /// One frame through the totals, written.
     fn assemble(
         totals: &mut Totals,
         branch: BranchId,
@@ -423,7 +387,6 @@ mod tests {
         output
     }
 
-    /// One frame through the totals whose write failed.
     fn unwritten(
         totals: &mut Totals,
         branch: BranchId,
@@ -478,9 +441,6 @@ mod tests {
         }
     }
 
-    /// A line that switches between new production and conversion of the
-    /// same design keeps each purpose's input in its own row, so neither
-    /// relabels the other; a refit line's census seed is a refit row.
     #[test]
     fn purpose_changes_open_their_own_rows_and_seeds_follow_the_line_kind() {
         let mut totals = Totals::default();
@@ -537,9 +497,6 @@ mod tests {
         let mut totals = Totals::default();
         let lines = [(LINE_A, TANK, ORG)];
         assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
-        // Credits and instant progress that would overflow their running
-        // totals: neither is recorded, so units stay exact and spending
-        // stays known.
         let ticks: Vec<Entry> = (0..3)
             .map(|_| Entry {
                 spending: Some((5, i64::MAX)),
@@ -633,16 +590,10 @@ mod tests {
         assert_eq!(known[0].instant_raw, no_instant());
     }
 
-    /// Ticks drained at the branch's first frame came before its sample; later
-    /// ticks add up per line and row; a pre-existing line counts from the
-    /// observation start, a line created later since its creation; an ended
-    /// line is published once and dropped; a line that produced nothing still
-    /// has a zero row.
     #[test]
     fn totals_count_from_the_branch_start_and_publish_ended_lines_once() {
         let mut totals = Totals::default();
         let lines = [(LINE_A, TANK, ORG), (LINE_B, SHIP, 0)];
-        // The branch's first frame: its entries precede the observation.
         let first = frame(1, 10, &[entry(LINE_A, TANK, ORG, 9, 9)]);
         let published = assemble(&mut totals, 7, 100, &first, census(&lines));
         assert_eq!(
@@ -652,15 +603,12 @@ mod tests {
                 row(LINE_B, 0, (SHIP, 0), 0, (false, false)),
             ]
         );
-        // A day of production, off the census slot: carried, still counted.
         let day = frame(
             1,
             11,
             &[
                 entry(LINE_A, TANK, ORG, 3, 3),
-                // A blocked ship credits without delivering.
                 entry(LINE_B, SHIP, 0, 0, 2),
-                // A new line produces before any census sees it.
                 entry(LINE_C, TANK, ORG, 1, 1),
             ],
         );
@@ -668,7 +616,6 @@ mod tests {
             reason(assemble(&mut totals, 7, 120, &day, skipped())),
             replay_data::cadence::SKIPPED_REASON
         );
-        // The line switches variant; line B completes and is deleted.
         let next = frame(
             1,
             14,
@@ -687,7 +634,6 @@ mod tests {
                 row(LINE_C, 0, (TANK, ORG), 1, (true, false)),
             ]
         );
-        // The ended line was published once.
         let quiet = frame(1, 16, &[]);
         assert_eq!(
             rows(assemble(&mut totals, 7, 148, &quiet, census(&lines)))
@@ -698,9 +644,6 @@ mod tests {
         );
     }
 
-    /// A publication lost with its frame's write keeps its ended lines, so the
-    /// next publication, even a census at the next hour, repeats their final
-    /// totals; a written carry of the publication is their publication too.
     #[test]
     fn ended_lines_repeat_until_a_written_frame_holds_their_publication() {
         let mut totals = Totals::default();
@@ -708,7 +651,6 @@ mod tests {
         let only_a = [(LINE_A, TANK, ORG)];
         assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&both));
         let ended_b = row(LINE_B, 0, (SHIP, 0), 1, (false, true));
-        // Line B completes and is deleted; that publication is not written.
         let day = frame(1, 10, &[entry(LINE_B, SHIP, 0, 1, 1)]);
         let lost = rows(unwritten(&mut totals, 7, 124, &day, census(&only_a)));
         assert_eq!(lost[1], ended_b);
@@ -722,7 +664,6 @@ mod tests {
         assert_eq!(again[1], ended_b);
         let later = assemble(&mut totals, 7, 148, &frame(1, 11, &[]), census(&only_a));
         assert_eq!(rows(later).len(), 1);
-        // Line A ends unwritten too, but a written carry holds its publication.
         let day = frame(1, 11, &[entry(LINE_A, TANK, ORG, 2, 2)]);
         let lost = rows(unwritten(&mut totals, 7, 172, &day, census(&[])));
         assert!(lost[0].ended);
@@ -737,8 +678,6 @@ mod tests {
         assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&[]));
         let mut delivered = entry(LINE_A, TANK, 0, 3, 3);
         delivered.country = 6001;
-        // Created, completed and deleted between censuses. Neither its MIO
-        // nor a ProductionLines row can supply this country.
         assemble(&mut totals, 7, 101, &frame(1, 10, &[delivered]), skipped());
         let ended = rows(assemble(
             &mut totals,
@@ -766,9 +705,6 @@ mod tests {
         );
     }
 
-    /// The game never moves a line to another country (the oracle's producer
-    /// check says why), but a tick naming another producer still gets its own
-    /// row rather than relabelling earlier output.
     #[test]
     fn producer_change_does_not_relabel_earlier_output() {
         let mut totals = Totals::default();
@@ -794,8 +730,6 @@ mod tests {
         );
     }
 
-    /// A lost drain, a new epoch or an unobserved drain withholds the table
-    /// from that hour until the next branch; the next branch starts afresh.
     #[test]
     fn lost_ticks_withhold_the_table_until_the_next_branch_resets_it() {
         let lines = [(LINE_A, TANK, ORG)];
@@ -815,12 +749,10 @@ mod tests {
                 &frame(1, 10, &[entry(LINE_A, TANK, ORG, 4, 4)]),
                 skipped(),
             );
-            // Seen off the census slot, the loss is not hidden behind a carry.
             assert_eq!(
                 reason(assemble(&mut totals, 7, 102, &broken, skipped())),
                 expected
             );
-            // Still withheld at the census, even with a continuous drain.
             assert_eq!(
                 reason(assemble(
                     &mut totals,
@@ -831,7 +763,6 @@ mod tests {
                 )),
                 expected
             );
-            // A load: the new branch counts from its own first sample.
             let reset = assemble(
                 &mut totals,
                 8,
@@ -859,14 +790,10 @@ mod tests {
         );
     }
 
-    /// Entries left in the log by short storage make the hour incomplete; they
-    /// arrive with a later drain and count once. Entries below the branch's
-    /// first cursor, handed over late, never count.
     #[test]
     fn deferred_entries_count_once_and_leave_the_hour_unpublished_until_then() {
         let lines = [(LINE_A, TANK, ORG)];
         let mut totals = Totals::default();
-        // At the branch start two old entries are still waiting (cursor 12).
         let mut start = Captured::with_capacities(&Capacities::default());
         start.set_drained_for_test(
             Ok(Drained {
@@ -879,7 +806,6 @@ mod tests {
             &[],
         );
         assemble(&mut totals, 7, 100, &start, census(&lines));
-        // Two new ticks arrive; storage takes three of the four waiting.
         let mut short = Captured::with_capacities(&Capacities::default());
         short.set_drained_for_test(
             Ok(Drained {
@@ -907,15 +833,10 @@ mod tests {
         );
     }
 
-    /// A line absent from the first census whose ticks were drained no later
-    /// than it ended before that census: it may have existed before the
-    /// observation, so it is not observed since creation. An inexact tick
-    /// marks its row.
     #[test]
     fn lines_that_ended_before_the_first_census_are_not_observed_since_creation() {
         let mut totals = Totals::default();
         let lines = [(LINE_A, TANK, ORG)];
-        // The first frame's census is unavailable: no census yet.
         let start = frame(1, 10, &[]);
         let incomplete = TableInput::Sampled(unavailable("walk failed"));
         assert_eq!(
@@ -997,7 +918,7 @@ mod tests {
             &frame(1, 0, &mixed),
             census(&lines),
         ));
-        assert_eq!(equipment.len(), 1); // no Rocket/fake line0 in equipment
+        assert_eq!(equipment.len(), 1);
         assert_eq!(
             (equipment[0].units, equipment[0].mio_credit),
             (7, RetiredI64::default())
@@ -1017,7 +938,6 @@ mod tests {
         let design = rocket.iter().find(|row| row.variant == SHIP).unwrap();
         assert_eq!((design.spent_raw, design.units), (-7, -2));
         assert!(design.exact && design.units_exact);
-        // Replay of already-consumed common indices never duplicates either arm.
         let repeated = rows(assemble(
             &mut totals,
             7,
@@ -1046,7 +966,6 @@ mod tests {
                 .deliveries,
             2
         );
-        // Synthetic admitted branch input resets observation; it does not prove a load.
         let reset = rows(assemble(
             &mut totals,
             8,
@@ -1116,7 +1035,6 @@ mod tests {
         assert_eq!((design.spent_raw, design.units), (17, 1));
     }
 
-    /// One frame through the totals, with the receipt its queued write carries.
     fn queue(
         totals: &mut Totals,
         hour: i32,
@@ -1134,7 +1052,6 @@ mod tests {
             .collect()
     }
 
-    /// Each late write retires only the ends its own publication showed.
     #[test]
     fn backlogged_writes_retire_only_the_ends_their_publication_showed() {
         let mut totals = Totals::default();
@@ -1142,7 +1059,6 @@ mod tests {
         assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&all));
         let (first, ended_a) = queue(&mut totals, 124, &all[1..]);
         let (second, ended_b) = queue(&mut totals, 148, &all[2..]);
-        // This frame's write fails: its receipt is lost.
         let (third, _lost) = queue(&mut totals, 172, &[]);
         assert_eq!(ended(&first), [LINE_A]);
         assert_eq!(ended(&second), [LINE_A, LINE_B]);
@@ -1157,7 +1073,6 @@ mod tests {
         assert!(queue(&mut totals, 244, &[]).0.is_empty());
     }
 
-    /// Ticks after an end still queued are in no written publication.
     #[test]
     fn ticks_after_an_unwritten_end_survive_its_late_write() {
         let mut totals = Totals::default();
@@ -1178,7 +1093,6 @@ mod tests {
         assert_eq!((after[0].units, after[0].ended), (2, true));
     }
 
-    /// A late write leaves a reused handle and a later branch's line alone.
     #[test]
     fn a_late_write_never_retires_a_reused_handle_or_a_new_branch_line() {
         let mut totals = Totals::default();
@@ -1198,7 +1112,6 @@ mod tests {
         );
         queue(&mut totals, 196, &[]);
         let (_, gone) = queue(&mut totals, 220, &[]);
-        // A load before those writes complete: the new branch's line ends too.
         let output = unwritten(&mut totals, 8, 300, &frame(1, 10, &[]), census(&lines));
         assert!(!rows(output)[0].ended);
         let new_branch = unwritten(&mut totals, 8, 324, &frame(1, 10, &[]), census(&[]));
@@ -1209,7 +1122,6 @@ mod tests {
         assert_eq!(ended(&rows(output)), [LINE_A]);
     }
 
-    /// A skip holds the publication it carries, if any; an unrecorded table none.
     #[test]
     fn a_skip_holds_only_a_carried_publication() {
         let mut totals = Totals::default();

@@ -1,5 +1,3 @@
-//! The base summary's dense country order, independent of indexed row order.
-//! The collector invokes this only against an owned registration snapshot.
 use super::*;
 
 pub fn state_country_order_demand(
@@ -11,9 +9,6 @@ pub fn state_country_order_demand(
         .map(|array| array.count as usize)
 }
 
-/// Full reference and indexed-container witnesses authenticate every dense
-/// occurrence. Repeats and zero-capacity containers remain in native order.
-/// Caller storage and the country's existing resolver are reused.
 #[allow(clippy::too_many_arguments)]
 pub fn state_country_order<M: Memory>(
     memory: &M,

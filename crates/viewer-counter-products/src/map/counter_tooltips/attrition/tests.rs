@@ -23,9 +23,6 @@ fn status(frame: &mut DecodedFrame) -> &mut DivisionStatusRow {
     &mut rows[0]
 }
 
-/// Division 1 at `province` with a cached attrition total of 2.5% and no
-/// upkeep (vanilla's UNIT_UPKEEP_ATTRITION is zero), on `path`, in full
-/// supply: a whole received ratio with a positive maximum grace.
 fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 0,
@@ -58,7 +55,6 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
             ..Default::default()
         }]),
     );
-    // The owner's country terms and the recorded defines the supply line reads.
     put(
         &mut frame,
         TableRows::CountryLinks(vec![CountryLinkRow {
@@ -125,7 +121,6 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
             ..Default::default()
         }]),
     );
-    // Moving fixtures exercise the native mode-zero owned-war fallback.
     put(
         &mut frame,
         TableRows::WarOwnedRelations(vec![replay_data::rows::WarOwnedRelationRow {
@@ -134,7 +129,6 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
             ..Default::default()
         }]),
     );
-    // Every built-in modifier, each token spelling its script name.
     engine_executable::executable_tables::initialize_for_tests()
         .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut keys = engine_executable::modifier_keys::all()
@@ -230,9 +224,6 @@ fn render(frame: &DecodedFrame) -> Tooltip {
     render_with(frame, Err("the counter content is unavailable".into()))
 }
 
-/// With every lookup available: province 7 is a mountain (ordinal 2), 8
-/// plains, anything else the null terrain; state 3's border war gives the
-/// unit's logical owner (100) a 40% enemy share.
 fn rendered(frame: &DecodedFrame) -> Tooltip {
     let content = content();
     let terrain = |province: u32| -> Result<i32, String> {
@@ -254,8 +245,6 @@ fn rendered(frame: &DecodedFrame) -> Tooltip {
     render_with(frame, Ok(&lookups))
 }
 
-/// The division's template (0, as its row holds it): one `marine` and one `infantry`,
-/// `unreadable` its model-unreadable flag; the hour's lexical tokens name both.
 fn composition(frame: &mut DecodedFrame, unreadable: u8) {
     const MARINE: u32 = 900_002;
     const INFANTRY: u32 = 900_003;
@@ -291,7 +280,6 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
     put(frame, TableRows::LexicalTokens(tokens));
 }
 
-/// [`rendered`] with a sub-unit database naming `marine` special forces.
 fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
     let mut units = installed_content_core::unit_leader::SubUnits::default();
     units.read(
@@ -324,10 +312,6 @@ fn refused(out: &Tooltip, line: &str) -> bool {
         .any(|key| key.starts_with(&format!("counter {line}:")))
 }
 
-/// A moving unit's upkeep and terrain lines: the route's first province is
-/// the mountain, whose
-/// `attrition` adds to the upkeep; the location's state has no line.
-/// Retired-capture builds showed the cached total alone.
 #[test]
 fn a_moving_unit_shows_its_upkeep_and_route_terrain() {
     let mut frame = frame(5, 2, vec![7, 8]);
@@ -344,7 +328,6 @@ fn a_moving_unit_shows_its_upkeep_and_route_terrain() {
     ] {
         assert!(refused(&out, line), "{line}: {:?}", out.refused);
     }
-    // The route province has no weather record: no weather line.
     for line in [
         "attrition state",
         "attrition supply",
@@ -353,7 +336,6 @@ fn a_moving_unit_shows_its_upkeep_and_route_terrain() {
     ] {
         assert!(!refused(&out, line), "{line}: {:?}", out.refused);
     }
-    // Plains has no attrition entry: upkeep alone is its nonzero sum.
     let mut plains = frame.clone();
     put(
         &mut plains,
@@ -368,7 +350,6 @@ fn a_moving_unit_shows_its_upkeep_and_route_terrain() {
         rendered(&plains).title,
         "total 2.50%\nupkeep 10.00%\nterrain plains 10.00%"
     );
-    // Strategic redeployment and the null terrain skip the branch.
     let mut redeploying = frame.clone();
     let TableView::Complete(TableRows::DivisionMovement(rows)) =
         &mut *redeploying.tables[TableId::DivisionMovement.index()]
@@ -379,9 +360,6 @@ fn a_moving_unit_shows_its_upkeep_and_route_terrain() {
     assert_eq!(rendered(&redeploying).title, "total 2.50%\nupkeep 10.00%");
 }
 
-/// A stationary exercising unit in a border-war state: the training line,
-/// then the border war heading and its share times the factor; the state
-/// term itself is refused by name.
 #[test]
 fn training_and_border_war_lines_follow_the_native_order() {
     let mut frame = frame(5, 0, vec![]);
@@ -404,25 +382,18 @@ fn training_and_border_war_lines_follow_the_native_order() {
     assert!(!refused(&out, "attrition training"));
 }
 
-/// The supply line is the threshold-normalized out-of-supply severity times
-/// the out-of-supply attrition define, from the exact recorded supply, days
-/// out of supply and country factors; a whole availability writes none.
 #[test]
 fn the_supply_line_follows_the_recorded_supply_and_days() {
-    // Full supply: no line and nothing refused.
     let mut frame = frame(5, 0, vec![]);
     let out = rendered(&frame);
     assert_eq!(out.title, "total 2.50%");
     assert!(!refused(&out, "attrition supply"), "{:?}", out.refused);
-    // A 0.1 exact received ratio is 2/7 of the 0.35 threshold: 5/7 unsupplied, half
-    // the supply days, times 0.2: 7.14%. The displayed ratio is not the operand.
     status(&mut frame).supply_ratio = None;
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(15));
     status(&mut frame).supply_ratio_exact = Recorded::Value(Some(10_000));
     status(&mut frame).supply_grace_exact = Recorded::Value(Some(0));
     let out = rendered(&frame);
     assert_eq!(out.title, "total 2.50%\nsupply \u{11}R+7.14%\u{11}!");
-    // The country's out-of-supply factor scales the severity: -0.5 halves it.
     put(
         &mut frame,
         TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
@@ -438,9 +409,6 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
         rendered(&frame).title,
         "total 2.50%\nsupply \u{11}R+3.57%\u{11}!"
     );
-    // A special-forces factor applies at the template's special-forces share: one
-    // marine and one infantry give 0.5, so -0.5 scales the severity as a -0.25 country
-    // factor does.
     let factors = |frame: &mut DecodedFrame, country: Option<i64>, special: Option<i64>| {
         put(
             frame,
@@ -466,7 +434,6 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
         special.refused
     );
     assert_eq!(special.title, country);
-    // A composition unreadable when recorded refuses the line by name.
     composition(&mut frame, 1);
     let unreadable = rendered_with_sub_units(&frame);
     assert!(
@@ -478,23 +445,17 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
         "{:?}",
         unreadable.refused
     );
-    // No days out of supply: no line.
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(0));
     assert!(!refused(&rendered(&frame), "attrition supply"));
-    // Days out of supply without the exact supply refuse the line by name.
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(15));
     status(&mut frame).supply_ratio_exact = Recorded::Value(None);
     status(&mut frame).supply_grace_exact = Recorded::Value(None);
     assert!(refused(&rendered(&frame), "attrition supply"));
-    // A refused day count refuses the line by name.
     status(&mut frame).supply_ratio = Some(10_000);
     status(&mut frame).out_of_supply_days = Recorded::Value(None);
     assert!(refused(&rendered(&frame), "attrition supply"));
 }
 
-/// A moving unit's province weather writes no line where its recorded
-/// attrition entry is zero and its heat and winter entries are not
-/// positive; nonzero entries need their source trees, refused by name.
 #[test]
 fn a_moving_unit_without_weather_attrition_has_no_weather_lines() {
     let mut frame = frame(5, 2, vec![7, 8]);
@@ -521,13 +482,10 @@ fn a_moving_unit_without_weather_attrition_has_no_weather_lines() {
         }]),
     );
     assert!(refused(&rendered(&frame), "attrition weather"));
-    // A fully acclimatized unit scales the winter entry to zero: no line.
     status(&mut frame).weather_factor = Recorded::Value(Some(0));
     assert!(!refused(&rendered(&frame), "attrition weather"));
 }
 
-/// Without the content, the total stands and every line that needs it is
-/// refused by name.
 #[test]
 fn missing_content_refuses_the_lines_it_feeds() {
     let mut frame = frame(5, 2, vec![7]);
@@ -538,8 +496,6 @@ fn missing_content_refuses_the_lines_it_feeds() {
     assert!(refused(&out, "attrition supply"));
 }
 
-/// The game writes nothing without a route province or a location; a
-/// route province alone still words the total.
 #[test]
 fn the_total_needs_a_location_or_a_route_province() {
     let out = render(&frame(0, 0, vec![]));

@@ -1,10 +1,3 @@
-//! Callback-local demand for border-event targeted-decision descriptions.
-//!
-//! Resolve each side's win/lose identifier. Describe immediate and single-option
-//! bodies only when the option count is below two. Union branches and scope
-//! selections conservatively; extra matching decisions are safe to record.
-//! Unsupported effect subtrees demand nothing. Game pointers never survive the
-//! capture callback.
 
 use engine_sites::Rva;
 use crate::{
@@ -14,24 +7,17 @@ use crate::{
     read_slice, walk::Outcome,
 };
 
-/// Event and event-option vtables.
 const EVENT_VTABLE: Rva = Rva(0x02a1_6008);
 const OPTION_VTABLE: Rva = Rva(0x02a1_5f68);
-/// Packed event reference type combined with the resolved identifier.
 const EVENT_TYPE: u32 = 0x32;
-/// Embedded option and its effect selector.
 const IMMEDIATE: usize = 0x118;
 const OPTION_EFFECT: usize = 0x120;
-/// Effect vtables and attached else-branch field.
 const EFFECT_VTABLE: Rva = Rva(0x0285_26e0);
 const IF_VTABLE: Rva = Rva(0x0285_27b0);
 const ELSE: usize = 0xb0;
-/// Targeted-decision removal vtable and name field.
 const REMOVE_VTABLE: Rva = Rva(0x027f_1ff0);
 const DECISION_NAME: usize = 0x58;
 
-/// Supported effect-description vtables. These authenticate objects and do
-/// not enumerate authored effect keys or content.
 const DESCRIBED: &[Rva] = &[
     EFFECT_VTABLE,
     IF_VTABLE,
@@ -63,14 +49,12 @@ const DESCRIBED: &[Rva] = &[
     Rva(0x02a3_1fe8),
 ];
 
-/// Validated native bytes, usable only inside this quiescent callback.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Token {
     pub address: usize,
     pub len: usize,
 }
 
-/// A name copied once into the callback's caller-owned byte arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Name {
     pub start: usize,
@@ -133,7 +117,6 @@ pub fn matches_name(name: Name, bytes: &[u8], wanted: &[u8]) -> Result<bool, &'s
     unreachable!("name has a terminating zero")
 }
 
-/// Reusable DFS storage; no allocation or arbitrary recursion limit.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Frame {
     effect: usize,
@@ -147,8 +130,6 @@ pub struct Walk {
     pub outcome: Outcome,
     pub len: usize,
     pub required_rows: usize,
-    /// Largest observed depth, or the next required depth on stack shortage.
-    /// A shortage withholds the demand census; grow off-thread and try next hour.
     pub required_stack: usize,
     pub required_events: usize,
 }
@@ -173,8 +154,6 @@ impl Walk {
     }
 }
 
-/// Demand tokens only from active border combats; ordinary combat participants
-/// are never read. A native read fault is an unavailable census, never no demand.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -241,8 +220,6 @@ fn acquire(reader: &mut Reader<'_, impl Memory>, game_state: usize) -> Result<()
         )? {
             Some(cland_combat::VTABLE_RVA | cnaval_combat::VTABLE_RVA) => continue,
             Some(combat::VTABLE_RVA) => {}
-            // This census needs only border-war classes. Other combat classes
-            // cannot supply a border side's win/lose events.
             _ => continue,
         }
         let identity = field::<[u8; 16]>(memory, pointer, cland_combat::BODY)?;
@@ -276,8 +253,6 @@ fn acquire(reader: &mut Reader<'_, impl Memory>, game_state: usize) -> Result<()
     Ok(())
 }
 
-/// Case-insensitive comparison through the first NUL. Non-ASCII comparison
-/// requires the recording client's unrecorded locale.
 pub fn matches(memory: &impl Memory, token: Token, bytes: &[u8]) -> Result<bool, &'static str> {
     let mut chunk = [0; 128];
     let mut first = 0;
@@ -381,7 +356,6 @@ impl<M: Memory> Reader<'_, M> {
         if field::<u64>(self.memory, event, 8)? != handle {
             return Err("border demand event identity invalid");
         }
-        // Operative events retain their named viewer refusal.
         if field::<u8>(self.memory, event, cevent::OPERATIVE_CHROME)? != 0 {
             return Ok(());
         }
@@ -511,7 +485,6 @@ fn token(memory: &impl Memory, address: usize) -> Result<Token, &'static str> {
     Ok(Token { address, len })
 }
 
-/// Passive event resolution retaining signed suffix wrapping.
 fn event_id(memory: &impl Memory, base: usize, name: Token) -> Result<Option<u32>, &'static str> {
     let mut identifier = [0; 128];
     let buffered = name.len <= identifier.len();

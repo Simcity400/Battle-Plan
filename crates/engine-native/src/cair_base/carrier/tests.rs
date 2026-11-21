@@ -102,7 +102,6 @@ impl Fixture {
         result.qword(POOL + cair_wing_pool::AIR_BASE_REFERENCE, BASE_HANDLE);
         result.qword(POOL + cair_wing_pool::OWNER, OWNER as u64);
         result.qword(OWNER, cstrategic_air::VTABLE_RVA.0 as u64);
-        // Alias raw2 resolves to the same canonical country as container raw9.
         result.dword(OWNER + cstrategic_air::COUNTRY, 2);
         result.qword(POOL + cair_wing_pool::DEFINITION, DEFINITION as u64);
         result.definition(DEFINITION, 987, true);
@@ -284,8 +283,6 @@ fn dense_missing_slot_wrong_base_and_null_never_become_empty() {
     assert_eq!(dense(&memory, &[], &mut rows), (Ok(()), 0, 0));
 }
 
-/// One container span ends at the 0xF8-byte container's end and holds the
-/// capacity word and both signed fuel scalars at their native offsets.
 #[test]
 fn the_container_span_holds_capacity_and_both_signed_fuel_scalars() {
     use crate::cair_base::{CONTAINER_SPAN, container_span_words};

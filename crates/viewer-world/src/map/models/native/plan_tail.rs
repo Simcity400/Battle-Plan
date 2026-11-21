@@ -1,8 +1,6 @@
-//! Compact live supplies and source order from the actual successful native program.
 use super::*;
 use shader_pipeline::gpu::BindingProgram;
 
-/// Selection is pure; unavailable callers do not refuse until evaluate is reached.
 #[derive(Clone, Copy)]
 pub(super) enum Caller<'a> {
     Unchanged,
@@ -22,7 +20,6 @@ impl<'a> Caller<'a> {
         }
     }
 
-    // Called ONLY at the post-queue/root/userdata checkpoint, never in layout install.
     pub fn evaluate(
         self,
         source: &mesh_pose::Source,
@@ -63,8 +60,6 @@ impl<'a> Caller<'a> {
     }
 }
 
-// Five source families, NOT an allocation cap: two frame slots share one source.
-// Optional supplies preserve absent VS/PS/skin/grid rather than filling missing bytes.
 pub(super) const FRAME: usize = 0;
 pub(super) const VERTEX: usize = 1;
 pub(super) const PIXEL: usize = 2;
@@ -89,7 +84,6 @@ impl<'a> Supplies<'a> {
             | if self.bytes[SKIN].is_some() { 1 << 4 } else { 0 }
             | if self.bytes[GRID].is_some() { 1 << 5 } else { 0 }
     }
-    /// Direct lookup remains the cold/error/diagnostic fallback, not a warm reflected dispatch.
     pub fn get(self, binding: u32) -> Option<&'a [u8]> {
         selector(binding).and_then(|source| self.bytes[source])
     }
@@ -110,14 +104,10 @@ pub(super) fn selector(binding: u32) -> Option<usize> {
     }
 }
 
-/// Created from the ACTUAL successful effective BindingProgram, not Resident's
-/// requested program or a guessed vertex/pixel traversal order. Published only
-/// alongside that descriptor's successful capture. No per-bind allocation.
 pub(super) struct Recipe {
     sources: Vec<Option<usize>>,
 }
 impl Recipe {
-    // Optional accelerator failure must not add a new content/device refusal.
     pub fn new(program: &BindingProgram) -> Option<Self> {
         Self::from_bindings(program.constant_reads().iter().map(|spec| spec.binding))
     }
@@ -134,8 +124,6 @@ impl Recipe {
     }
 }
 
-/// Binding and recipe cannot be replaced independently. If optional recipe allocation
-/// fails, the successful program still binds by direct source lookup.
 pub(super) struct Program {
     bindings: BindingProgram,
     recipe: Option<Recipe>,

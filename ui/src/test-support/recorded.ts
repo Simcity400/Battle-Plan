@@ -1,6 +1,3 @@
-/** Real replies served to widgets in browser fixtures: what the acceptance sweep recorded from the app on the 13-year
- * recording (`tools/e2e/replies.mjs`), served by request, and followed messages played as the app received them. A file
- * recorded with another recording format is refused, naming the tables that differ: such replies are not this tree's. */
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from '../dashboard/client';
 import { queryFailure } from '../dashboard/queryError.ts';
 import type { QueryError, SourceReply } from '../generated/dashboard';
@@ -31,8 +28,6 @@ type FollowEntry = Extract<RecordedEntry, { t: 'follow' }>;
 type ReplyEntry = Extract<RecordedEntry, { t: 'product' }>;
 export interface RecordedFormat { file: string | null; formatFile: string; digest: string; lines: string[] }
 
-/** Why replies recorded under `header` cannot be served in a tree whose format is `tree`, the tables that differ named;
- * null when they can. */
 export function recordedRefusal(file: string, header: Partial<RecordedHeader>, tree: RecordedFormat): string | null {
   if (header.kind !== RECORDED_KIND || header.version !== RECORDED_VERSION)
     return `${file} is not recorded replies of version ${RECORDED_VERSION} (it says ${JSON.stringify(header.kind ?? null)} version ${JSON.stringify(header.version ?? null)})`;
@@ -47,7 +42,6 @@ export function recordedRefusal(file: string, header: Partial<RecordedHeader>, t
     + `(${tree.formatFile}: ${differences.join('; ') || 'the same tables in another order'}): record the replies again from the current format's 13-year recording`;
 }
 
-/** Recorded replies the test server serves (`tools/native-page.ts`), refused by name when another format's. */
 export async function loadRecorded(url = '/recorded-replies'): Promise<Recorded> {
   const formatReply = await fetch(`${url}/format`);
   if (!formatReply.ok) throw new Error(await formatReply.text());
@@ -81,7 +75,6 @@ function bytesOf(base64: string): Uint8Array {
   return bytes;
 }
 
-/** The hour a followed message is of: its step's, or its panels' latest. */
 export function messageHour(bytes: Uint8Array): number | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 4) return null;
@@ -92,9 +85,6 @@ export function messageHour(bytes: Uint8Array): number | null {
   return panels.length ? Math.max(...panels.map(panel => panel.hour)) : null;
 }
 
-/** `bytes` with each id the app followed under turned into the id this page follows the same query under; answers and
- * panels of queries this page does not follow are left out (null when nothing is left). The service's own ids (live
- * cells) are the recording's on both sides and stay. */
 export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => number | undefined): Uint8Array | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 4) return bytes;
@@ -124,12 +114,8 @@ export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => numb
   return out;
 }
 
-/** `value` as JSON with every object's keys sorted: one text for one request however its params were built. */
 const stableJson = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item);
-/** Products whose request lists items each answered for itself in the reply, batched by when a widget wanted them: an
- * item is answered as the app's reply answered it, in whatever batch. An answer names its item by its place in the list
- * (`place`) or by the item itself (`item`). */
 const ITEMIZED: Record<string, { asks: string; answers: string[]; place?: string; item?: string }> = {
   'country-flags': { asks: 'flags', answers: ['flags', 'unavailable'], place: 'flag' },
   'unit-leader-portraits': { asks: 'references', answers: ['portraits'], item: 'reference' },
@@ -141,20 +127,14 @@ type FollowParams = { id?: number; branchId: string; clock: number; query?: unkn
 const followKey = (params: unknown) => { const { branchId, clock, query } = params as FollowParams; return stableJson({ branchId, clock, query }); };
 const clockKey = (params: unknown) => { const { branchId, clock } = params as FollowParams; return stableJson({ branchId, clock }); };
 
-/** A request a fixture's widgets made of the recorded client. */
 export interface RecordedAsk { product: string; params: unknown; asksFrom?: number; served: boolean; at: number; lane: boolean; head: number | null }
 
-/** A dashboard client answering from recorded replies: a request the app made is answered as the app was; one it never
- * made fails by name and is counted (`misses`). */
 export class RecordedClient implements DashboardClient {
   readonly available = true;
   readonly asked: RecordedAsk[] = [];
-  /** The messages the app received around the moment shown: a query followed here is answered from them, in order, as the
-   * service answers a new follow with what it holds at the head. */
   window: readonly Uint8Array[] = [];
   at = 0;
   windowEnd = 0;
-  /** The clock's hour, stamped on each ask (the head it was sent at). */
   hourOf: () => number | null = () => null;
   private readonly replies = new Map<string, ReplyEntry>();
   private readonly items = new Map<string, Itemized>();
@@ -189,7 +169,6 @@ export class RecordedClient implements DashboardClient {
         });
       } else {
         const key = productKey(product, params), held = this.replies.get(key);
-        // An answer is kept over a refusal of the same request (one cancelled as the app moved on).
         if (!held || (!held.ok && entry.ok)) this.replies.set(key, entry);
       }
     }
@@ -198,8 +177,6 @@ export class RecordedClient implements DashboardClient {
 
   get misses(): RecordedAsk[] { return this.asked.filter(ask => !ask.served); }
 
-  /** In flight from the ask until answered, as the native client counts it; one the prepare lane sends unseen counts as
-   * the lane's (`lane`), apart from what the page shown asks. */
   async product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>> {
     const before = busyPreparing(), done = busy('requests');
     try { return await this.answer<T>(request, signal, busyPreparing() > before); } finally { done(); }
@@ -212,7 +189,6 @@ export class RecordedClient implements DashboardClient {
       const held = this.follows.get(followKey(params));
       if (held?.entry.ok && (held.entry.reply as ProductReply<{ available: boolean }>).data.available) {
         for (const id of held.ids) this.ids.set(id, (params as { id: number }).id);
-        // Once the follow's reply is taken, as the service's first push comes after it.
         setTimeout(() => this.replay(held.ids), 0);
       }
       entry = held?.entry;
@@ -248,8 +224,6 @@ export class RecordedClient implements DashboardClient {
     return { ...(entry.reply as ProductReply<T>), sourceId: request.sourceId, revision: request.revision };
   }
 
-  /** An itemized request answered item by item from the replies that answered each, renumbered to its place here; null
-   * when an item was never asked. */
   private itemized<T>(request: ProductRequest): ProductReply<T> | null {
     const { asks, answers, place, item: named } = ITEMIZED[request.product]!;
     const { [asks]: listed, ...rest } = request.params as Record<string, unknown>;
@@ -278,7 +252,6 @@ export class RecordedClient implements DashboardClient {
     port.onmessage = ({ data }: MessageEvent<Release>) => this.decoder.release(data);
   }
 
-  /** The window's messages for the app's follows `ids`, under this page's ids, in order. */
   private replay(ids: ReadonlySet<number>): void {
     for (const bytes of this.window) {
       const mapped = remapMessage(bytes, id => ids.has(id) ? this.ids.get(id) : undefined);
@@ -286,8 +259,6 @@ export class RecordedClient implements DashboardClient {
     }
   }
 
-  /** Hands a recorded message to the page as its channel would, under this page's follow ids; false when it held
-   * nothing this page follows. */
   deliver(bytes: Uint8Array): boolean {
     const mapped = remapMessage(bytes, id => this.ids.get(id));
     if (!mapped) return false;
@@ -301,14 +272,12 @@ export class RecordedClient implements DashboardClient {
   async onMapStates(): Promise<() => void> { return () => {}; }
 }
 
-/** One recorded run: its source, its marks and replies. */
 export class Recorded {
   readonly file: string;
   readonly header: RecordedHeader;
   readonly entries: readonly RecordedEntry[];
   constructor(file: string, header: RecordedHeader, entries: readonly RecordedEntry[]) { this.file = file; this.header = header; this.entries = entries; }
 
-  /** The recording as the app opened it. */
   get source(): DashboardSource {
     const open = this.entries.find((entry): entry is Extract<RecordedEntry, { t: 'open' }> => entry.t === 'open' && entry.ok);
     if (!open) throw new Error(`${this.file} holds no opened recording`);
@@ -320,7 +289,6 @@ export class Recorded {
     return this.entries.filter((entry): entry is RecordedMark => entry.t === 'mark' && entry.label === label && (page === undefined || entry.page === page));
   }
 
-  /** The first mark `label` of `page`, refused by name when the run made none. */
   mark(label: string, page: string, where: (mark: RecordedMark) => boolean = () => true): RecordedMark {
     const found = this.marks(label, page).find(where);
     if (!found) throw new Error(`${this.file} holds no "${label}" of ${page}: record the replies again with the quick tier's glance and playback`);
@@ -329,7 +297,6 @@ export class Recorded {
 
   client(): RecordedClient { return new RecordedClient(this.entries); }
 
-  /** The followed messages received from `from` to `to` (marks), in pull order, each with its hour. */
   messages(from: RecordedMark, to: RecordedMark): { at: number; hour: number | null; bytes: Uint8Array }[] {
     return this.entries.filter((entry): entry is FollowEntry => entry.t === 'follow' && entry.at >= from.at && entry.at <= to.at)
       .map(entry => { const bytes = bytesOf(entry.bytes); return { at: entry.at, hour: messageHour(bytes), bytes }; });

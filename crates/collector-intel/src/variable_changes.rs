@@ -1,29 +1,3 @@
-//! Allocation-free notifications from the native writers of every script
-//! variable store ([`engine_mutations::script_variable_mutations`]). A detour only
-//! notifies the shared watch registry ([`WatchRegistry`]) for the store its
-//! arguments name, counts its site and calls the original; it never changes
-//! game behaviour. Receivers are the `CVariables` addresses a ScriptVariables
-//! capture registered; a notification never infers a scope. Anything
-//! unobserved (disabled, poisoned, a refused registration, an epoch change, a
-//! running writer) makes the capture read that store afresh.
-//!
-//! The registry marks each notified store ([`WatchRegistry::marking`]), so a
-//! capture finds the stores writers touched with one take an hour instead of
-//! looking up every store. The release, which destroys a store, also moves
-//! the domain's structure token, so a capture walks every scope after one.
-//! The ends of the scripted contexts that may rewrite a store's seed notify
-//! that store.
-//!
-//! An exception unwinding one of those contexts ends it unobserved: the
-//! seven functions that begin one name the context-ending helper in their
-//! C++ unwind maps. While the family observes, a vectored exception handler
-//! moves the structure token at every first-chance C++ exception in the
-//! Process  (`0xE06D7363`, the collector's own caught panics included), so the
-//! next capture walks every scope and reads every seed. A seed-changing
-//! context must begin on the main thread, enforced by an assertion. The
-//! hourly callback parks that thread, so the raise and its unwinding both
-//! fall on one side of a
-//! capture's take. The handler never handles an exception.
 use crate::{
     hook::{Hook, Tap},
     watch_registry::{Notification, WatchRegistry},
@@ -40,7 +14,6 @@ use std::{
 };
 
 const SITES: usize = MUTATIONS.len();
-/// The variable release site's index in [`MUTATIONS`].
 const RELEASE: usize = 3;
 const _: () = assert!(
     matches!(MUTATIONS[RELEASE].1, Receiver::Table),
@@ -48,35 +21,21 @@ const _: () = assert!(
 );
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read stores; reused and read rows; quiet hours and the stores
-/// they visited.
 static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-/// Ordinary scopes from live sizing and the latest complete capture.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
-/// MIO stores, disjoint from the ordinary and faction store censuses.
 static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
 static FACTION_SCOPES: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the watched stores, the structure token and each
-/// writer site's calls.
 pub struct Watches {
     registry: WatchRegistry,
-    /// Moves on entry to and return from every release, and at every C++
-    /// exception.
     structure: AtomicU64,
-    /// First-chance C++ exceptions the installed handler saw.
     exceptions: AtomicU64,
     calls: [AtomicU64; SITES],
-    /// Context ends whose context did not read: each revoked every
-    /// certificate.
     unread_contexts: AtomicU64,
-    /// Tests: stands in for the roster domain ([`crate::roster_changes`]).
     #[cfg(any(test, feature = "test-support"))]
     roster: WatchRegistry,
 }
 
-/// A running release; its drop moves the structure token again before the
-/// notification returns.
 pub struct Released<'a> {
     structure: &'a AtomicU64,
     _notification: Notification<'a>,
@@ -95,8 +54,6 @@ impl Default for Watches {
 }
 
 impl Watches {
-    /// Non-consuming ownership for embedded stores outside ScriptVariables.
-    /// Taking the ordinary dirty stream never changes these certificates.
     pub fn embedded_quiet(&self) -> Option<(u64, u64, u64)> {
         let structure = self.structure.load(Ordering::SeqCst);
         let (epoch, sequence) = self.registry.quiet()?;
@@ -120,16 +77,11 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `store`. Dropping the guard notifies its return.
     pub fn notify(&self, store: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(store)
     }
 
-    /// Hook path, allocation-free: the release is about to destroy `store`.
-    /// It moves the structure token while its notification runs, on entry
-    /// and on return.
     pub fn release(&self, store: usize) -> Released<'_> {
         self.calls[RELEASE].fetch_add(1, Ordering::Relaxed);
         let notification = self.registry.notify(store);
@@ -140,17 +92,12 @@ impl Watches {
         }
     }
 
-    /// Allocation-free, on any thread: a C++ exception was raised, and its
-    /// unwinding may end a seed-changing context unobserved. Moving the
-    /// structure token makes the next capture walk every scope.
     pub fn exception(&self) {
         self.exceptions.fetch_add(1, Ordering::Relaxed);
         self.structure.fetch_add(1, Ordering::SeqCst);
         collector_observers::project_variable_changes::invalidate();
     }
 
-    /// Hook path, allocation-free: a context end of `site` whose context did
-    /// not read is about to run; no certificate survives it.
     fn unread_context(&self, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.unread_contexts.fetch_add(1, Ordering::Relaxed);
@@ -169,7 +116,6 @@ impl Watches {
         (self.structure.load(Ordering::SeqCst) == structure).then_some(Taken { epoch, structure })
     }
 
-    /// An enabled domain with a table for `stores` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(stores: usize) -> Self {
         let watches = Self::new();
@@ -180,7 +126,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -192,35 +137,21 @@ impl Watches {
         self.registry.poisoned()
     }
 
-    /// Tests: a roster writer runs and returns.
     #[cfg(any(test, feature = "test-support"))]
     pub fn roster_write(&self) {
         drop(self.roster.notify(0));
     }
 }
 
-/// The take before an hour's walk: the marks' epoch and the structure token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Taken {
     pub epoch: u64,
     pub structure: u64,
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// `(epoch, sequence)` of one store, registering it, and whether this
-    /// call registered it; `None` when it cannot be observed. Equal values
-    /// across hours prove that no observed writer touched it since the
-    /// first.
     fn register(&self, store: usize) -> Option<((u64, u64), bool)>;
-    /// Before any read of the hour: visits every store a hooked writer
-    /// touched since the previous take, clearing its mark, and returns the
-    /// marks' epoch with the structure token. `None` when nothing taken
-    /// certifies anything (observation off, a writer or release running, the
-    /// epoch or structure moving during the take).
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<Taken>;
-    /// The character roster's token ([`crate::roster_changes::roster`]):
-    /// equal values prove the roster's occurrences, order and ids unchanged.
     fn roster(&self) -> Option<(u64, u64)>;
 }
 
@@ -241,7 +172,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Observer {
     pub fn embedded_quiet(&self) -> Option<(u64, u64, u64)> {
@@ -250,7 +180,6 @@ impl Observer {
     pub fn embedded_sequence(&self, store: usize) -> Option<(u64, u64, u64)> {
         WATCHES.embedded_sequence(store)
     }
-    /// Faction ownership, supplied by the existing faction census.
     pub fn demand_embedded(&self, count: usize) {
         FACTION_SCOPES.fetch_max(count, Ordering::Relaxed);
     }
@@ -267,25 +196,17 @@ impl Changes for Observer {
     }
 }
 
-/// A non-consuming store certificate for embedded MIO stores. The exception/
-/// release structure word also certifies seed changes during unwinding.
 pub fn embedded_certificate(store: usize) -> Option<(u64, u64, u64)> {
     WATCHES.embedded_certificate(store)
 }
 
-/// Notifications and exception-handler calls running now.
 pub fn active() -> usize {
     WATCHES.registry.active() + HANDLING.load(Ordering::SeqCst)
 }
 
-/// `EXCEPTION_RECORD.ExceptionCode` of an MSVC C++ throw
-/// (`_CxxThrowException`, `'msc' | 0xE0000000`).
 const CXX_EXCEPTION: u32 = 0xe06d_7363;
-/// A vectored handler's verdict that passes the exception on unchanged.
 const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 
-/// The prefixes of `EXCEPTION_RECORD` (`ExceptionCode` first) and
-/// `EXCEPTION_POINTERS` the handler reads.
 #[repr(C)]
 struct ExceptionRecord {
     code: u32,
@@ -296,8 +217,6 @@ struct ExceptionPointers {
     _context: *const c_void,
 }
 
-// https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-addvectoredexceptionhandler
-// https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-removevectoredexceptionhandler
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn AddVectoredExceptionHandler(
@@ -307,20 +226,12 @@ unsafe extern "system" {
     fn RemoveVectoredExceptionHandler(handle: *mut c_void) -> u32;
 }
 
-/// The installed handler's handle; null while none is installed.
 static HANDLER: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-/// Handler calls running now: detach waits for them ([`active`]); the DLL
-/// image's IP check covers the instructions around the count.
 static HANDLING: AtomicUsize = AtomicUsize::new(0);
-/// Installations the system refused: the family then observes nothing.
 static HANDLER_FAILURES: AtomicU64 = AtomicU64::new(0);
 
-/// Every exception dispatched in the process, first, before any frame
-/// handler; allocation-free and lock-free. A C++ exception moves the
-/// structure token; nothing is ever handled.
 unsafe extern "system" fn vectored(pointers: *mut ExceptionPointers) -> i32 {
     HANDLING.fetch_add(1, Ordering::SeqCst);
-    // SAFETY: the dispatcher passes its live exception pointers.
     let code = unsafe {
         pointers
             .as_ref()
@@ -335,15 +246,10 @@ unsafe extern "system" fn vectored(pointers: *mut ExceptionPointers) -> i32 {
     EXCEPTION_CONTINUE_SEARCH
 }
 
-/// Installs the handler, first in the vectored chain; `false` when the
-/// system refuses it.
 fn install_handler() -> bool {
     if !HANDLER.load(Ordering::SeqCst).is_null() {
         return true;
     }
-    // SAFETY: `vectored` is a function of this DLL, removed before the DLL
-    // unloads ([`remove_handler`]), and only reads what the dispatcher
-    // passes.
     let handle = unsafe { AddVectoredExceptionHandler(1, vectored) };
     if handle.is_null() {
         HANDLER_FAILURES.fetch_add(1, Ordering::Relaxed);
@@ -353,14 +259,11 @@ fn install_handler() -> bool {
     true
 }
 
-/// Removes the installed handler; calls already running finish under
-/// [`HANDLING`].
 fn remove_handler() -> Result<(), &'static str> {
     let handle = HANDLER.load(Ordering::SeqCst);
     if handle.is_null() {
         return Ok(());
     }
-    // SAFETY: the handle is the one installation returned.
     if unsafe { RemoveVectoredExceptionHandler(handle) } == 0 {
         return Err("variable exception handler removal failed");
     }
@@ -368,21 +271,15 @@ fn remove_handler() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: prepare the ordinary stores from the existing live
-/// sizing walk before the first boundary installs a watch table.
 pub fn offer_scopes(scopes: usize) {
     SCOPES.fetch_max(scopes, Ordering::Relaxed);
     presize();
 }
 
-/// Existing daily MIO sizing contributes its distinct embedded stores.
 pub fn offer_embedded(scopes: usize) {
     EMBEDDED_SCOPES.fetch_max(scopes, Ordering::Relaxed);
     presize();
@@ -410,26 +307,20 @@ fn presize_watches(registry: &WatchRegistry, scopes: usize, embedded: usize, fac
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's stores and rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
-    /// The capture published the held walk without walking a scope.
     pub quiet: bool,
-    /// Stores a quiet hour visited: marked, freshly registered or unobserved.
     pub visited: u64,
 }
 
-/// A worker publishes one capture's counts and, when it captured every
-/// scope, their number for sizing.
 pub fn record(counts: &Counts, scopes: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -447,26 +338,15 @@ pub fn record(counts: &Counts, scopes: Option<usize>) {
 }
 
 
-/// The game's static TLS index, read at installation; `usize::MAX` before.
 static TLS_INDEX: AtomicUsize = AtomicUsize::new(usize::MAX);
-/// The variable-store clear function the callsites invoke.
 static CLEAR: AtomicUsize = AtomicUsize::new(0);
-/// The context-ending helper invoked by the context callsites.
 static END_CONTEXT: AtomicUsize = AtomicUsize::new(0);
-/// Threads whose temporary store could not be located: their calls all
-/// notify.
 static UNLOCATED_THREADS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    /// This thread's temporary store; zero until located, `usize::MAX` when
-    /// it cannot be.
     static TEMPORARY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-// Installed ntdll NtQueryInformationThread dispatches directly to its system
-// call without user-mode allocation. ThreadBasicInformation (0) writes the
-// caller's THREAD_BASIC_INFORMATION (x64: TebBaseAddress@8, 48 bytes).
-// https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationthread
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtQueryInformationThread(
@@ -478,9 +358,6 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-/// Hook path: the calling thread's temporary store (thread-local variable store lookup: the
-/// thread's TLS slot array, indexed by the module's TLS index, then the store's slot in it),
-/// located once per thread; `usize::MAX` when it cannot be.
 #[inline(always)]
 fn temporary() -> usize {
     let cached = TEMPORARY.get();
@@ -512,8 +389,6 @@ fn locate_temporary() -> Option<usize> {
         return None;
     }
     let mut information = std::mem::MaybeUninit::<ThreadBasicInformation>::zeroed();
-    // SAFETY: the pseudo-handle names the calling thread; the buffer is the
-    // documented structure's size.
     let status = unsafe {
         NtQueryInformationThread(
             windows_sys::Win32::System::Threading::GetCurrentThread(),
@@ -526,9 +401,7 @@ fn locate_temporary() -> Option<usize> {
     if status < 0 {
         return None;
     }
-    // SAFETY: the query succeeded, so it wrote the structure.
     let teb = unsafe { information.assume_init() }.teb;
-    // SAFETY: guarded reads of the calling thread's own TEB and TLS array.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let array = engine_native::read::<u64>(&memory, teb.checked_add(0x58)?)?;
     let slot = usize::try_from(array)
@@ -555,14 +428,14 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A withheld site or an unreadable TLS index leaves the family
-    /// uninstalled; ScriptVariables then reads every store afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A withheld site or an unreadable TLS index leaves the family"]
+    #[doc = " uninstalled; ScriptVariables then reads every store afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         use engine_mutations::{
             script_variable_mutations::CLEAR_RVA, script_variable_mutations::END_CONTEXT_RVA,
@@ -661,10 +534,6 @@ impl Hooks {
             collector_observers::market_changes::observe_variables(false);
             remove_handler()?;
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_enabled_iter(
             self.hooks
                 .iter_mut()
@@ -680,8 +549,6 @@ impl Hooks {
         })? {
             return Ok(false);
         }
-        // The exception handler is live before observation starts; without
-        // it nothing is observed and every store is read afresh.
         let observing = enabled && !self.hooks.is_empty() && install_handler();
         collector_observers::project_variable_changes::enabled(observing);
         WATCHES.registry.set_enabled(observing);
@@ -701,21 +568,11 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // Normally already removed with the family.
         let _ = remove_handler();
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-// Each entry site takes at most four integer or pointer arguments (RCX..R9)
-// and returns RAX unchanged from its original; the first two name the store
-// as its [`engine_mutations::script_variable_mutations::Receiver`] says. The
-// notification covers the original in flight. A `$filter` site also serves
-// every thread's temporary store, which no scope records: a call on the
-// calling thread's own temporary store runs the original without one.
 macro_rules! callback {
     ($name:ident, $site:expr, $filter:expr, ($first:ident, $second:ident $(, $arg:ident)*)) => {
         unsafe extern "system" fn $name($first: usize, $second: usize $(, $arg: usize)*) -> usize {
@@ -733,20 +590,15 @@ macro_rules! callback {
         }
     };
 }
-// Get mutable value (variable, store, scope, fallback).
 callback!(
     get_mutable_value,
     0,
     true,
     (variable, store_, scope, fallback)
 );
-// Erase variable (store, key).
 callback!(erase_variable, 1, true, (store_, key));
-// Read variables (store, reader).
 callback!(read_variables, 2, false, (store_, reader));
 
-// The release (of the store's lock); RDX passes through unused. It moves the structure token around
-// the original as well.
 unsafe extern "system" fn release_variables(table: usize, unused: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
     let written = store(MUTATIONS[RELEASE].1, table, unused);
@@ -758,8 +610,6 @@ unsafe extern "system" fn release_variables(table: usize, unused: usize) -> usiz
     timing.original(|| unsafe { original(table, unused) })
 }
 
-// A replaced CALL of the clear (store): the detour calls the clear
-// itself, which returns to the site's next instruction through the relay.
 macro_rules! call_site {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -778,18 +628,10 @@ macro_rules! call_site {
         }
     };
 }
-// Country appearance reset clears its variables.
 call_site!(reset_country_variables, 4);
-// State reset clears its variables.
 call_site!(reset_state_variables, 5);
-// Runtime state reset clears global variables.
 call_site!(reset_global_variables, 6);
 
-// A replaced context-ending call: the detour reads the context passed by
-// the call, as the original does, and notifies the store whose seed it may
-// rewrite around the original. A context that cannot change a seed runs
-// the original without a notification; an unreadable context revokes every
-// certificate.
 macro_rules! context_site {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -801,7 +643,6 @@ macro_rules! context_site {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let end: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(END_CONTEXT.load(Ordering::Acquire)) };
-            // SAFETY: a guarded read of the context the native call passes.
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
             let written =
                 engine_mutations::script_variable_mutations::context_store(&memory, context);
@@ -832,20 +673,13 @@ macro_rules! context_site {
         }
     };
 }
-// The scripted-effect console command ends two seed-changing contexts.
 context_site!(end_effect_command, 7);
 context_site!(end_effect_command_run, 8);
-// Validated effect execution ends its seed-changing context.
 context_site!(end_effect_execute, 9);
-// Daily country update ends its seed-changing context.
 context_site!(end_country_daily, 10);
-// Delayed country events end their seed-changing context.
 context_site!(end_delayed_events, 11);
-// Daily state update ends its seed-changing context.
 context_site!(end_state_daily, 12);
-// The scripted window effect ends its seed-changing context.
 context_site!(end_scripted_window, 13);
-// Event effect execution ends its seed-changing context.
 context_site!(end_fire_event, 14);
 
 #[cfg(test)]
@@ -855,8 +689,6 @@ mod tests {
     #[test]
     fn live_scope_and_disjoint_embedded_demands_prepare_the_first_watch_table() {
         let watches = Watches::new();
-        // MIO sizing runs first. Ordinary scope sizing and faction ownership
-        // must contribute before the first hourly boundary, not after capture.
         presize_watches(&watches.registry, 0, 3_000, 0);
         presize_watches(&watches.registry, 5_000, 3_000, 1_500);
         assert!(watches.registry.boundary(false).installed());
@@ -872,8 +704,6 @@ mod tests {
             })
             .collect();
         let quiet = watches.embedded_quiet().unwrap();
-        // The next ordinary boundary keeps every certificate and performs no
-        // epoch reset or dirty-stream read to make room for embedded owners.
         assert!(!watches.registry.boundary(false).installed());
         assert_eq!(watches.embedded_quiet(), Some(quiet));
         for (&store, &certificate) in stores.iter().zip(&certificates) {
@@ -916,8 +746,6 @@ mod tests {
         assert_ne!(before, watches.embedded_sequence(8).unwrap());
     }
 
-    /// The handler moves the hooks' structure token and counts the
-    /// exception only for a C++ throw, and passes every exception on.
     #[test]
     fn the_vectored_handler_moves_the_structure_only_for_a_cxx_exception() {
         let call = |code: u32| {
@@ -926,7 +754,6 @@ mod tests {
                 record: &record,
                 _context: std::ptr::null(),
             };
-            // SAFETY: the pointers name a live record.
             unsafe { vectored(&mut pointers) }
         };
         let token = || {
@@ -936,20 +763,16 @@ mod tests {
             )
         };
         let before = token();
-        // An access violation, as a guarded read's.
         assert_eq!(call(0xc000_0005), EXCEPTION_CONTINUE_SEARCH);
         assert_eq!(token(), before);
         assert_eq!(call(CXX_EXCEPTION), EXCEPTION_CONTINUE_SEARCH);
         assert_eq!(token(), (before.0 + 1, before.1 + 1));
         assert_eq!(HANDLING.load(Ordering::SeqCst), 0);
-        // SAFETY: a null record pointer reads nothing.
         let empty = unsafe { vectored(std::ptr::null_mut()) };
         assert_eq!(empty, EXCEPTION_CONTINUE_SEARCH);
         assert_eq!(token(), (before.0 + 1, before.1 + 1));
     }
 
-    /// An exception moves the structure token the next take returns, and
-    /// leaves the marks' epoch and every certificate alone.
     #[test]
     fn an_exception_moves_the_takes_structure_token() {
         let watches = Watches::enabled(16);

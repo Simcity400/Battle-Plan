@@ -33,21 +33,17 @@ const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly GameScoreRow[] = [];
 const PARAMS = {};
 const rowKey = (row: GameScoreRow) => row.tag;
-/** What renders the table: its rows and why a score is not known, never a score. */
 const scoreStructure = (reply: GameScoreReply) => reply.rows.map(row => [row.tag, ...SCORE_PARTS.map(part => row[part].missing ?? '')].join('|')).join('\n');
 const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
 const formatValue = (value: number) => Math.round(value).toLocaleString('en-US');
-/** Total score split into its army, navy and air parts, in proportion: the game multiplies after adding them. */
 const SCORE_SPLIT = scoreParts();
 
-/** The game's end-screen scores: a table of every country at an hour (a rows-at-an-hour product, followed as a panel
- * at the head), or a race and lines of one score (the declared, ranked `country-game-scores` series). */
 export default function GameScoreWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, props.widget.options);
   const by = scorePart(options.topMeasure);
   const view = options.view === 'race' ? 'race' : options.view === 'lines' ? 'lines' : 'table';
   const measure = useMemo(() => ({ kind: 'country-game-scores', measure: by }), [by]);
-  const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]); // eslint-disable-line react-hooks/exhaustive-deps
+  const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]);
   if (view === 'table') return <ScoreTable {...props} />;
   return <MeasureRace widget={props.widget} runtime={props.runtime} active={props.active} measure={measure} decimals={5} view={view} options={options}
     label={SCORE_LABELS[by]} icon="grid" format={format} formatValue={formatValue} onWarnings={onWarnings}
@@ -74,7 +70,6 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   shownAt.current = head.shownAt;
   const score = useCallback<ScoreOf>((tag, part) => live.read().get(liveKey(tag, part)), [live]);
   const hour = head.at ?? lastHour;
-  // Rows name their countries by tag: a chosen slot is matched by the tag it holds at the rows' hour.
   const bySlot = resolved.tags.some(isSlotKey);
   const slots = useSlotTags(runtime.client, track, active && bySlot);
   const chosenTags = useMemo(() => bySlot ? resolved.tags.flatMap(key => countryTagAt(slots, countryFromKey(key), hour) ?? []) : resolved.tags,
@@ -82,34 +77,23 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   const membership = resolved.membership;
   const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
   const top = resolved.top ?? null;
-  // A top N's members are its structure: it renders when they change and
-  // as scores land (paused, the scores of a push land after it). The table orders them by the painted scores.
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => live.subscribe(() => { for (const wake of [...woken]) wake(); }), [live, woken]);
   const ranked = useHeadHour(runtime.clock, active && top != null && !!reply, () => reply && top != null
     ? scoreRows(reply, { all, tags: chosenTags, top, hour }, member, by, score).map(row => row.tag).sort().join(',') : '', woken);
-  // The scores are painted from the live cells, each frame they move; the table renders only for its rows. A new source
-  // for each set of a top's members: the table sorts the rows it is given by the scores now, in the commit that shows
-  // them, never by the last order it took (which lacks a new member) and again a slot later.
-  const tableLive = useMemo(() => reporting(live, () => shown(shownAt.current())), [live, shown, ranked]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A top's rows are its members as this render reads them (paused, `ranked`'s hour holds while they change).
+  const tableLive = useMemo(() => reporting(live, () => shown(shownAt.current())), [live, shown, ranked]);
   const members = reply && top != null ? scoreRows(reply, { all, tags: chosenTags, top, hour }, member, by, score) : null;
   const membersKey = members?.map(row => row.tag).sort().join(',') ?? '';
   const rows = useMemo(() => members ?? (reply ? scoreRows(reply, { all, tags: chosenTags, top, hour }, member, by, score) : NO_ROWS),
-    [reply, all, chosenTags, top, member, by, score, membersKey, hour]); // eslint-disable-line react-hooks/exhaustive-deps
+    [reply, all, chosenTags, top, member, by, score, membersKey, hour]);
   const [visible, setVisible] = useState<readonly GameScoreRow[]>(NO_ROWS);
-  // Pushed at the head, every row is named, so the table re-sorting as scores move renders nothing more.
   const pushed = head.read === 'followed';
-  // Pushed, the rows are named at the last hour one of them changed, never at each push's hour (a request and a commit
-  // a push).
-  // Rows are made again at each push's hour: the countries they name are the same list while their order and set hold.
   const rowTagsKey = (pushed ? rows : visible).map(row => row.tag).sort().join(',');
   const rowTags = useMemo(() => rowTagsKey ? rowTagsKey.split(',') : [], [rowTagsKey]);
   const nameHour = usePushedLooksHour(runtime, widget, track, rowTags, active && pushed, hour).hour;
   const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => rowTags.map(tag => ({ tag, hour: nameHour })), [rowTags, nameHour]), active);
   const label = labels.labelAt(nameHour);
   useWhyCommit('ScoreTable', { reply, at: head.at, read: head.read, live, ranked, groups: groups.data, visible, nameHour, labels: labels.labelAt });
-  // The columns change with their hints, never with a push that carries the same ones.
   const hints = reply?.hints;
   const hintsKey = JSON.stringify(hints ?? null);
   const columns = useMemo<readonly TableColumn<GameScoreRow>[]>(() => [
@@ -119,7 +103,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
     ...SCORE_PARTS.map((part, index) => ({ key: part, header: SCORE_LABELS[part], label: SCORE_LABELS[part], numeric: true, width: 'max-content',
       bar: 'visible' as const, priority: index + 1, inTooltip: true, hint: scoreHint(hints && { hints }, part),
       value: () => null, paint: (value: unknown) => formatScore(value as number) })),
-  ], [label, hintsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [label, hintsKey]);
   const tooltip = useCallback((row: GameScoreRow) => fitTooltip([scoreTooltip(reply!, row, label(row.tag).name, dayLabel(hour), factionGroup(groups.data, row.tag, hour).label, score)],
     viewport, { keep: SCORE_PARTS.length }), [reply, label, hour, groups.data, viewport, score]);
   useEffect(() => {

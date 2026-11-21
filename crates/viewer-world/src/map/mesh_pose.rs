@@ -1,4 +1,3 @@
-//! Ordered animation palettes and quaternion matrices.
 use installed_content_core::{mesh::Animation, mesh::JointPose, mesh::NativeJoint};
 use std::io;
 use std::sync::Arc;
@@ -16,7 +15,6 @@ pub const IDENTITY: Matrix = [
     [0., 0., 0., 1.],
 ];
 
-/// Multiply four complete columns in this addition order.
 pub fn multiply(parent: Matrix, local: Matrix) -> Matrix {
     std::array::from_fn(|column| {
         std::array::from_fn(|row| {
@@ -37,15 +35,11 @@ pub fn scale(value: f32) -> Matrix {
     ]
 }
 
-/// The importer scale is baked into positions and skeleton translations only.
 #[derive(Debug, Clone)]
 pub struct Source {
-    /// Native registered pdxmesh kind (0x180), independent of joint count.
     pub pdxmesh: bool,
     pub skeleton: Vec<NativeJoint>,
-    /// Retained registration order, including duplicate names.
     pub entity_locators: Vec<Locator>,
-    /// Imported source order, including duplicate names.
     pub binary_locators: Vec<Locator>,
     pub mesh_scale: f32,
     pub entity_scale: f32,
@@ -81,8 +75,6 @@ fn parent_world(
     } else {
         LookupMode::AttachmentDummy
     };
-    // The native miss logs once at attachment creation and leaves type zero,
-    // which follows the parent root instead of removing the child.
     let local = lookup(source, joint, mode).map_or(Ok(IDENTITY), |binding| {
         binding.local(
             actor
@@ -98,8 +90,6 @@ fn parent_world(
     ))
 }
 
-/// Bind matrices stay actor-local. Attachment actors use joint world matrices,
-/// not skin matrices.
 pub fn actors(
     rig: &super::entity_animation::Rig,
     player: Option<&super::entity_animation::Player>,
@@ -111,10 +101,6 @@ pub fn actors(
     }
 }
 
-/// The actors of `rig` posed at `samples`, away from the player whose play left them: a pose is
-/// a function of its rig and its samples and of nothing else, which is what lets the pose worker
-/// make it ([`crate::map::poses`]). A played actor reads its locals from the samples, so the
-/// frozen choice of [`actors_with`] never applies.
 pub(super) fn actors_at(
     rig: &super::entity_animation::Rig,
     samples: &[Option<super::entity_animation::NativeSample>],
@@ -135,7 +121,6 @@ pub(super) fn actors_uncached(
     }
 }
 
-/// [`actors_uncached`] with each node's played local poses from `locals` (none: frozen or none).
 pub(super) fn actors_with(
     rig: &super::entity_animation::Rig,
     frozen_animation: bool,
@@ -191,7 +176,6 @@ pub(super) fn actors_with(
     actors
 }
 
-/// Only the near-linear branch normalizes. Static channels never call it.
 pub fn slerp(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
     let mut dot = b[1] * a[1] + b[0] * a[0] + b[2] * a[2] + b[3] * a[3];
     if dot < 0. {
@@ -215,8 +199,6 @@ pub fn slerp(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
     }
 }
 
-/// The game uses double sample intervals, wraps the next index even when the
-///playback time is clamped, and blends channels in source order.
 pub fn sample(animation: &Animation, seconds: f32, looping: bool) -> io::Result<Vec<JointPose>> {
     if !animation.fps.is_finite()
         || animation.fps <= 0.
@@ -266,7 +248,6 @@ pub fn sample(animation: &Animation, seconds: f32, looping: bool) -> io::Result<
         .collect())
 }
 
-/// State crossfade also follows skeleton order, never name-remapped.
 pub fn blend(a: JointPose, b: JointPose, t: f32) -> JointPose {
     JointPose {
         translation: std::array::from_fn(|i| (1. - t) * a.translation[i] + t * b.translation[i]),
@@ -277,7 +258,6 @@ pub fn blend(a: JointPose, b: JointPose, t: f32) -> JointPose {
 
 pub(super) fn local(pose: JointPose, mesh_scale: f32) -> Matrix {
     let [x, y, z, w] = pose.rotation;
-    // The game consumes the quaternion verbatim; no normalization.
     let twice = |value: f32| value + value;
     let basis = [
         [
@@ -343,13 +323,9 @@ pub fn assemble(
             skeleton.len()
         )));
     }
-    //Native writes all locals first. A forward parent therefore reads that
-    //parent's local value, not a recursively evaluated future world value.
     let mut joints: Vec<_> = locals
         .iter()
         .take(skeleton.len())
-        // Scale crossfade translation by joint scale;
-        //the single-clip branch uses meshscale.
         .map(|v| local(*v, if crossfade { v.scale } else { mesh_scale }))
         .collect();
     let mut bones = Vec::with_capacity(joints.len());
@@ -469,7 +445,6 @@ mod tests {
             sample(&animation, 0., false).unwrap()[0].rotation,
             [0., 0., 0., 1.]
         );
-        // The game's spherical branch does not normalize a nonunit result.
         assert_eq!(
             slerp([0., 0., 0., 0.5], [0.5, 0., 0., 0.], 0.),
             [0., 0., 0., 0.5]

@@ -14,7 +14,6 @@ import { countryMatch, membershipUnrecordedAt } from '../../dashboard/groups.ts'
 import type { CountryGroupReply } from '../../generated/dashboard';
 
 const run = (firstHour: number, lastHour: number, value: string) => ({ firstHour, lastHour, value });
-/** A mod's own balance: every token and name here is the synthetic content's, none from vanilla. */
 const balance = (token: string, values: ReturnType<typeof run>[], extra: Partial<BalanceHistory> = {}): BalanceHistory => ({
   token, name: null, left: { token: `${token}_left`, name: null }, right: { token: `${token}_right`, name: null },
   ranges: [
@@ -36,9 +35,7 @@ const record = (ordinal: number, token: string, members: (string | null)[], extr
 });
 const detail = (balances: BalanceRecord[], extra: Record<string, unknown> = {}) =>
   ({ branchId: '1', view: 'balances', exiles: [], balances, current: [{ tag: 'MOD', record: 0 }], unavailable: [], warnings: [] as string[], ...extra });
-/** A validated reply at `hour`, as the widget joins the hour it is of. */
 const listAt = (hour: number, value: unknown) => ({ ...validateBalanceList(value), hour });
-/** Records' values as live cells, by ordinal. */
 const values = (byOrdinal: Record<number, number>) => valuesOf(new Map(Object.entries(byOrdinal).map(([ordinal, value]) => [liveKey(ordinal, 'value'), value])),
   'Not recorded at this hour');
 const all = () => true;
@@ -66,18 +63,15 @@ test('the shown balance is the saved one, else the one the game shows, and its s
   assert.equal(chooseBalance(subject, 'gone', 150, 400).missing, 'gone');
   assert.deepEqual(lifetimeSpans(guild), [{ firstHour: 0, lastHour: 99 }, { firstHour: 200, lastHour: 400 }]);
   assert.deepEqual(plotRuns(guild).map(item => item.value), [0.3, -0.3]);
-  // Range and leaning at any hour come from their runs in the history, as the value does.
   const active = balanceStatusAt(guild, 10, 400, []);
   assert.deepEqual(active, { kind: 'active', value: '30000', range: 'guild_high', trending: 'guild_right' });
   assert.equal(statusText(active, guild, {}), 'High · 0.30 · toward Side name unavailable');
   assert.deepEqual(balanceStatusAt(guild, 250, 400, []), { kind: 'active', value: '-30000', range: 'guild_low', trending: 'guild_right' });
   assert.deepEqual(balanceStatusAt(guild, 150, 400, []), { kind: 'ended', hour: 100, by: false, range: 'guild_high' });
-  // Not read after hour 99: the balance is last recorded then, not ended.
   const unread = [{ firstHour: 100, lastHour: 199 }];
   const status = balanceStatusAt(guild, 150, 400, unread);
   assert.deepEqual(status, { kind: 'last-recorded', hour: 99, range: 'guild_high' });
   assert.equal(statusText(status, guild, {}), `Last recorded ${dayLabel(99)} in High`);
-  // A history without range and trending runs is malformed: they are read, never assumed.
   assert.throws(() => validateCountryBalances(history({ holderBalances: [holder('1', [[0, 'MOD']], [{ ...guild, range: undefined } as unknown as BalanceHistory])] })));
   assert.deepEqual(balanceAbsence([{ firstHour: 0, lastHour: 99 }], 150, 400, unread), { kind: 'unread' });
   assert.deepEqual(balanceAbsence([{ firstHour: 0, lastHour: 400 }], 150, 400, []), { kind: 'none', recorded: false });
@@ -91,13 +85,11 @@ test('the list is the hour\'s records, one row each, kept when a member is chose
   assert.equal(view.untagged, 1);
   assert.deepEqual(balanceRows(reply, tag => tag === 'OTH').rows.map(row => row.token), ['guild']);
   assert.deepEqual(rowHolder(view.rows[0], 120, tag => tag === 'OTH'), { tag: 'OTH' });
-  // Value sorts by strength of lean, read from the live cells; a value not recorded is missing, never zero.
   const live = values({ 0: -60000, 1: 1000 });
   const table = balanceTableValues(live);
   assert.equal(sortRows(view.rows, (row: BalanceRow) => table.get(liveKey(row.key, 'value')), 'descending', (row: BalanceRow) => row.key)[0].token, 'guild');
   assert.equal(recordValue(live, { ordinal: 0 }), -60000n, 'signed and exact');
   assert.equal(recordValue(values({ 1: 1000 }), { ordinal: 0 }), null);
-  // Values move without a render; a record's range moving renders.
   const same = validateBalanceList(detail([record(0, 'guild', ['MOD', 'OTH']), record(1, 'court', ['ANO', null])]));
   assert.equal(balanceStructure(same), balanceStructure(reply));
   const moved = validateBalanceList(detail([record(0, 'guild', ['MOD', 'OTH'], { range: null }), record(1, 'court', ['ANO', null])]));
@@ -119,7 +111,6 @@ test('the weekly change reads the holder\'s record at the detail\'s hour, member
   const unread = listAt(100, detail([], { unavailable: [{ label: 'balances of power', reason: 'not read', count: 1 }] }));
   assert.equal(weeklyState(data, 'MOD', 100, unread, null).kind, 'unread');
   assert.deepEqual(nameWarnings([balance('guild', [])], {}, ['guild:guild_high']), ['1 balance name unavailable', '1 range name unavailable']);
-  // A range the history names that the content leaves unnamed is counted beside the hour's, each once.
   assert.deepEqual(nameWarnings([balance('guild', [run(0, 10, '0'), run(11, 20, '30000')])], {}, ['guild:guild_mid']),
     ['1 balance name unavailable', '1 range name unavailable']);
 });
@@ -137,7 +128,6 @@ test('a row has been held since its first member was listed under its balance wi
 });
 
 const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
-/** Humans holding `tags` every hour of 0..200, their group's history not recorded over `gap`. */
 const gapGroups = (tags: readonly string[], gap = { firstHour: 110, lastHour: 120 }): CountryGroupReply => ({ branchId: '1', warnings: [],
   humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })), factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
   countryIdentities: tags.map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 1 }] })),

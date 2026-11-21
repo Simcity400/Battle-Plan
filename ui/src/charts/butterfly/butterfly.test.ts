@@ -11,14 +11,11 @@ import { approachAcrossGap } from '../easing.ts';
 test('names sit left of one centred axis, with each side’s exact value and the ratio clear of each other', () => {
   const l = butterflyLayout(640, 360, 10, 150, 70, 65);
   assert.equal(l.labelWidth, 150);
-  // The axis is midway between the name column and the ratio column's room.
   assert.equal(l.axis - l.labelWidth, l.ratioX - 65 - 2 * VALUE_GAP - l.axis);
-  // A full left bar's value ends after the names; a full right bar's before the ratio.
   assert(l.axis - l.half - VALUE_GAP - 70 > l.labelWidth);
   assert(l.axis + l.half + VALUE_GAP + 70 < l.ratioX - 65);
   assert(l.barHeight < l.slot);
   assert.equal(butterflyLayout(120, 100, 0, 120, 70, 65).half, 0);
-  // Without a ratio column the right side reaches the chart's edge.
   assert(butterflyLayout(640, 360, 10, 150, 70, 0).half > l.half);
 });
 test('the chart scrolls sideways only once each bar would be shorter than its least length', () => {
@@ -88,7 +85,6 @@ test('the name column is the race’s: flag, name and padding, at most a third o
 test('rows take the race’s height and bar thickness for the same room and slots', () => {
   for (const [height, slots] of [[274, 10], [600, 2], [600, 3], [400, 10], [100, 30]]) {
     const layout = butterflyLayout(800, height, slots, 200, 60, 50);
-    // The race keeps 8 px above its rows; the butterfly keeps its headings there.
     const race = raceLayout(800, height - BUTTERFLY_HEADER + 8, slots, 200, 60);
     assert.equal(layout.slot, race.slot);
     assert.equal(layout.barHeight, race.thickness);
@@ -105,7 +101,6 @@ test('3, 10 and 30 rows fit or scroll only at the race’s least row height', ()
     assert(layout.slot >= MIN_SLOT);
     assert.equal(minimum > 282, count === 30);
   }
-  // The gap note leaves less room, but ten least-height rows still fit.
   assert(butterflyMinimumHeight(10) <= 255);
 });
 
@@ -122,7 +117,6 @@ test('5000 rows retain their full scroll extent with a viewport-sized canvas and
     assert(lastY + layout.slot / 2 <= visible.end + 0.001);
     assert(scrollTop <= surface.contentHeight - surface.canvasHeight + 0.001);
     assert.equal(scrollTop === 0, count <= 10);
-    // Home reveals the first row below the header after End scrolled to the last.
     const firstScroll = revealRow(0, scrollTop, rowsHeight, layout.slot);
     assert.equal(firstScroll, 0);
     assert.equal(butterflyRowViewport(layout.top, surface.canvasHeight, firstScroll).start, layout.top);

@@ -1,8 +1,3 @@
-//! One country's factories at an hour, part by part, as the game recalculated its three groups
-//! (`CountryFactories`): each group's total, controlled, owned and damaged factories as every game
-//! view truncates them, what it receives from subjects and others and gives to its overlord and
-//! others, and the civilian group's exports and consumers. A rows-at-an-hour product reading the
-//! country's one row. The counts the widget ranks are the declared `country-factories` series.
 
 use dashboard_base::products::{Country, validate_country};
 use super::rows;
@@ -30,12 +25,11 @@ pub struct FactoryPartsParams {
     pub country: Country,
 }
 
-/// One recorded part of a group, in whole factories.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryPartValue {
-    /// `military`, `naval` or `civilian`.
+    #[doc = " `military`, `naval` or `civilian`."]
     pub group: String,
     pub part: String,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
@@ -49,9 +43,9 @@ pub struct FactoryPartsReply {
     pub hour: i32,
     pub tag: String,
     pub parts: Vec<FactoryPartValue>,
-    /// Groups whose recorded `unavailable` is not the sum of what they withhold.
+    #[doc = " Groups whose recorded `unavailable` is not the sum of what they withhold."]
     pub unexplained: Vec<String>,
-    /// Why the country's factories are not known at the hour.
+    #[doc = " Why the country's factories are not known at the hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -60,13 +54,10 @@ dashboard_base::reply_warnings!(FactoryPartsReply);
 
 pub(super) const GROUPS: [&str; 3] = ["military", "naval", "civilian"];
 
-/// A fixed5 total as the game shows it; none when it does not fit.
 fn shown(raw: i64) -> Option<i64> {
     i32::try_from(raw / 100_000).ok().map(i64::from)
 }
 
-/// `row`'s parts, and which groups' `unavailable` is not what they withhold; none when a total
-/// does not fit a whole number the game shows.
 pub(super) fn parts(row: &CountryFactoriesRow) -> Option<(Vec<FactoryPartValue>, Vec<String>)> {
     let groups = [
         (row.military_total_raw, row.military_controlled_raw, row.military_owned_raw, row.military_damaged_raw, row.military_unavailable, row.military_from_subjects, row.military_to_overlord, row.military_from_others, row.military_to_others),

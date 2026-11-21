@@ -1,14 +1,9 @@
-//! CPdxArray header used by the pinned engine; capacity and count are distinct u32 fields.
 
 use crate::{Memory, read, read_slice};
 
-/// Array element pointer.
 pub const DATA: usize = 0;
-/// Allocated element capacity, u32 after the data pointer, checked before growth.
 pub const CAPACITY: usize = 8;
-/// Live element count, u32 after the capacity, incremented on insertion.
 pub const COUNT: usize = 12;
-/// Header byte stride in nested draw and binding arrays.
 pub const STRIDE: usize = 0x18;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -19,13 +14,10 @@ pub struct Array {
 
 impl Array {
     pub fn read(memory: &impl Memory, address: usize, stride: usize) -> Option<Self> {
-        // The pointer, capacity and count fill these 16 bytes exactly. One
-        // guarded copy reads the same bytes as the three individual fields.
         let header = read::<[u8; 16]>(memory, address)?;
         Self::from_header(header, stride)
     }
 
-    /// Decode an exact header already acquired in a shared guarded field batch.
     pub fn from_header(header: [u8; 16], stride: usize) -> Option<Self> {
         let data =
             usize::try_from(u64::from_le_bytes(header[DATA..CAPACITY].try_into().ok()?)).ok()?;
@@ -42,7 +34,6 @@ impl Array {
         Some(Self { data, count })
     }
 
-    /// A bounded window of this array as its own header, for batch copies.
     pub fn slice(self, first: u32, count: u32, stride: usize) -> Result<Self, &'static str> {
         let end = first
             .checked_add(count)
@@ -65,9 +56,6 @@ impl Array {
     }
 }
 
-/// Copies a four-byte-element array in bulk batches instead of one read per
-/// element. The destination length must equal the header's live count, so a
-/// short or long buffer is a caller error rather than a silent partial census.
 pub fn copy_u32s(
     memory: &impl Memory,
     source: Array,
@@ -80,8 +68,6 @@ pub fn copy_u32s(
     copy_u32_prefix(memory, source, output, unreadable)
 }
 
-/// The same bulk copy for a capped prefix of the header's live count, so a
-/// truncating caller needs no staging buffer of its own.
 pub(crate) fn copy_u32_prefix(
     memory: &impl Memory,
     source: Array,
@@ -108,9 +94,6 @@ pub(crate) fn copy_u32_prefix(
     Ok(())
 }
 
-/// Calls `each` for every pointer of an eight-byte-element array, copied in batches.
-/// Null elements are passed to the caller. Earlier complete elements retain failure precedence
-/// over a later unreadable pointer in the batch.
 pub fn pointers(
     memory: &impl Memory,
     array: Array,
@@ -125,13 +108,8 @@ pub fn pointers(
     })
 }
 
-/// Pointers per [`pointer_pages`] page.
 pub const POINTER_PAGE: usize = 64;
 
-/// [`pointers`] a page at a time: `each` receives the ordinal of a page's
-/// first element and its copied pointers in order, so a caller can batch
-/// what the page points at. A page whose pointers were not all copied passes
-/// its copied prefix, then fails with `what`.
 pub fn pointer_pages(
     memory: &impl Memory,
     array: Array,
@@ -249,7 +227,6 @@ mod tests {
                 count: 3
             })
         );
-        // An empty window at the end is the loop's natural exit, not a fault.
         assert_eq!(
             array.slice(5, 0, 8),
             Ok(Array {
@@ -284,7 +261,6 @@ mod tests {
         let mut output = vec![0; 300];
         copy_u32s(&memory, array, &mut output, "unreadable").unwrap();
         assert_eq!(output, (0..300).collect::<Vec<u32>>());
-        // The 64-element batch loop must not stop at its first boundary.
         assert_eq!(output[63..66], [63, 64, 65]);
         assert_eq!(
             copy_u32s(&memory, array, &mut output[..299], "unreadable"),

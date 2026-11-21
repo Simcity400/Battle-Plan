@@ -1,15 +1,3 @@
-//! The entries `common/scripted_localisation` defines.
-//!
-//! A bracket's last segment that is no built-in property is looked up among
-//! these names, exactly, using FNV-1a hash and byte comparison. The entry's
-//! first text block whose trigger passes is rendered. An undefined name is
-//! empty; an uncertain file suffix is refused. Ordered text alternatives
-//! and triggers are retained for the shared recorded evaluator.
-//!
-//! Each `.txt` file gets its own reader through [`native`]. Until the end
-//! token, each key/operator/value creates a new entry, whatever the key
-//! was; `defined_text` is not a required keyword. The entry is stored under
-//! its `name`.
 
 use std::{collections::BTreeMap, io};
 
@@ -25,37 +13,25 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    /// The file loop.
     Top,
-    /// A localisation entry.
     Localization,
-    /// A `text` block.
     Text,
-    /// A random localisation list.
     RandomList,
-    /// A random localisation list member.
     Member,
-    /// A trigger body's field, the one trigger dispatch
-    /// ([`combat_tactics::Shaper`]).
     Trigger(combat_tactics::Node),
 }
 
-/// One file as its reader reads it.
 struct File {
-    /// Each entry's name, up to the first one the port cannot read.
     entries: Vec<(Vec<u8>, Entry)>,
     misreads: Vec<Misread>,
-    /// Where the port stops knowing the file, and why.
     unknown: Option<Misread>,
 }
 
 fn read_file(input: &[u8], names: &KeyNames) -> File {
     let mut entries = 0;
-    // The pair already holds a localisation key or list.
     let mut holds = false;
     let mut untraced: Option<(usize, Misread)> = None;
     let mut shaper = combat_tactics::Shaper::new(Some(names));
-    // Each file constructs the lexer in mode 0.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -66,8 +42,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                 entries += 1;
                 Shape::Object(Node::Localization)
             }
-            // `name` reads one string; `text` reads a text/trigger pair.
-            // Any other key is reported and its block skipped.
             Node::Localization => match field.keyword().as_deref() {
                 Some(b"name") => Shape::One,
                 Some(b"text") => {
@@ -76,10 +50,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                 }
                 _ => Shape::Skip,
             },
-            // `localization_key` takes the value token; `random_list` reads a list.
-            // Either one on a pair that holds one is reported and skipped.
-            // `trigger` reads a conjunction body; any other key is reported
-            // and its block skipped.
             Node::Text => match field.keyword().as_deref() {
                 Some(b"localization_key" | b"random_list") if holds => Shape::Skip,
                 Some(b"localization_key") => {
@@ -93,8 +63,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                 Some(b"trigger") => Shape::Body(Node::Trigger(combat_tactics::Node::Trigger)),
                 _ => Shape::Skip,
             },
-            // A number key is a member object; `seed` reads a scoped-variable
-            // value token. Any other key is reported and its block skipped.
             Node::RandomList
                 if field.key.kind == Kind::Bare && parser::number_token(&field.key.text, false) =>
             {
@@ -102,9 +70,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
             }
             Node::RandomList if field.keyword_is("seed") => Shape::One,
             Node::RandomList => Shape::Skip,
-            // `localization_key` takes a value token or a bound localisation
-            // block, whose reader is unsupported; `modifier` reads a scriptable
-            // value modifier body. Any other key is reported and its block skipped.
             Node::Member => match field.keyword().as_deref() {
                 Some(b"localization_key") if field.opens() => {
                     untraced.get_or_insert_with(|| {
@@ -121,7 +86,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                     Shape::SkipIfOpen
                 }
                 Some(b"localization_key") => Shape::One,
-                // Scriptable value modifiers share the mean-time modifier key reader.
                 Some(b"modifier") => Shape::Body(Node::Trigger(combat_tactics::Node::Modifier)),
                 _ => Shape::Skip,
             },
@@ -129,7 +93,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
         },
     );
     let (known, unknown, misreads) = match (untraced, read.unsettled) {
-        // Everything from the entry holding it on is unknown.
         (Some((entry, unknown)), _) => {
             let misreads = read
                 .misreads
@@ -138,7 +101,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
                 .collect();
             (entry, Some(unknown), misreads)
         }
-        // The reading stopped inside the last entry read.
         (None, Some(unsettled)) => (
             read.items.len().saturating_sub(1),
             Some(unsettled),
@@ -156,8 +118,6 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
     }
 }
 
-/// An entry's name: its last `name` string, with newline checking;
-/// the empty name without one.
 fn name(item: &Item) -> Vec<u8> {
     item.value
         .items()
@@ -167,7 +127,6 @@ fn name(item: &Item) -> Vec<u8> {
         .to_vec()
 }
 
-/// Ordered alternatives of localisation resolution.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub texts: Vec<Text>,
@@ -175,13 +134,8 @@ pub struct Entry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Text {
-    /// Absent value pointers are skipped before their trigger is checked.
     pub value: Option<TextValue>,
-    /// The text's conjunction reads nothing of a value that opens no block,
-    /// which leaves it empty.
     pub trigger: crate::triggers::Triggers,
-    /// Even an empty trigger object starts a scoped-variable context when
-    /// checked; an absent trigger starts none.
     pub trigger_present: bool,
 }
 
@@ -191,9 +145,6 @@ pub enum TextValue {
     RandomList(RandomList),
 }
 
-/// A random localisation list, in authored member order. The seed's
-/// assignments remain ordered because reassignment does not reset every
-/// operand field.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RandomList {
     pub seed: Vec<Item>,
@@ -202,12 +153,8 @@ pub struct RandomList {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RandomMember {
-    /// Signed integer conversion of the number key, times 100000.
     pub weight: i64,
-    /// Scriptable value modifiers, read through shared mean-time modifier
-    /// field dispatch.
     pub modifiers: Vec<Vec<Item>>,
-    /// Bound localisation; an absent key is empty.
     pub key: Vec<u8>,
 }
 
@@ -277,26 +224,16 @@ fn entry(item: &Item) -> Entry {
     Entry { texts }
 }
 
-/// The scripted localisation names the port knows the content stack to
-/// define, and where it cannot know.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Names {
-    /// Every entry read, by its exact name; a later file's entry of a name
-    /// replaces the earlier one.
     pub entries: BTreeMap<Vec<u8>, Entry>,
-    /// Each file the port cannot read to its end, with where and why: a
-    /// name `entries` lacks may be defined, or one it holds redefined, in the
-    /// rest of it ([`Self::uncertain`]).
     pub unknown: Vec<String>,
-    /// Places the reading left the text, and the unknown files, by file.
     pub warnings: Vec<crate::Diagnostic>,
     defined_in: BTreeMap<Vec<u8>, usize>,
-    /// Parallel to `unknown`, preserving load order.
     unknown_in: Vec<usize>,
 }
 
 impl Names {
-    /// Later definitions settle earlier unread files; only unread files from this entry onward matter.
     pub fn uncertain(&self, name: &[u8]) -> Option<String> {
         let defined = self.defined_in.get(name).copied();
         let unknown: Vec<&str> = self
@@ -310,8 +247,6 @@ impl Names {
     }
 }
 
-/// Every scripted localisation name in the content stack, as its files'
-/// readers read them.
 pub fn names(layers: &ResolvedLayers) -> io::Result<Names> {
     let files = script_files::paths(layers, "common/scripted_localisation/", Some(".txt"))?
         .into_iter()
@@ -320,8 +255,6 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<Names> {
     Ok(read_files(&files, &*layers.key_names()?))
 }
 
-/// The database's files in load order, each with its path, their triggers
-/// read against `key_names`.
 fn read_files<B: AsRef<[u8]>>(files: &[(B, String)], key_names: &KeyNames) -> Names {
     let mut names = Names::default();
     for (index, (bytes, path)) in files.iter().enumerate() {
@@ -405,8 +338,6 @@ mod tests {
         assert!(text.trigger_present);
     }
 
-    /// The files as [`names`] reads them after listing them; the
-    /// dashboard's catalogue tests read them from a content folder.
     fn read(files: &[(&str, &str)]) -> Names {
         let files: Vec<_> = files
             .iter()
@@ -423,8 +354,6 @@ mod tests {
             .collect()
     }
 
-    /// A text's trigger is read by the one trigger dispatch: a later limit
-    /// in a conditional is skipped, defining nothing.
     #[test]
     fn a_text_trigger_skips_a_later_limit() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -440,8 +369,6 @@ mod tests {
         assert!(names.unknown.is_empty(), "{:?}", names.unknown);
     }
 
-    /// Every top-level key is read as a localisation entry; keywords fold,
-    /// a quoted key is none; an entry without a `name` is the empty name.
     #[test]
     fn every_entry_of_the_file_loop_is_read_by_keyword() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -456,15 +383,11 @@ mod tests {
             listed(&names),
             ["", "AnyKey", "GetOther", "GetTitle", "Quoted"]
         );
-        // Names match exactly.
         assert!(names.entries.contains_key(b"GetOther".as_slice()));
         assert!(!names.entries.contains_key(b"getother".as_slice()));
         assert!(!names.entries.contains_key(b"NotAName".as_slice()));
     }
 
-    /// Text-pair and random-list readers skip a key they do not know, so
-    /// a variable defined in its block is never defined; a second key or list
-    /// in one pair is skipped the same way.
     #[test]
     fn text_blocks_are_read_by_their_own_readers() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -482,9 +405,6 @@ mod tests {
         assert!(names.unknown.is_empty(), "{:?}", names.unknown);
     }
 
-    /// A file ending in a definition: no key is read and the file loop reads
-    /// an entry for the key slot as it stands, whose block is empty at the
-    /// end of the text: the empty name registers.
     #[test]
     fn a_file_ending_in_a_definition_registers_the_empty_name() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -496,9 +416,6 @@ mod tests {
         assert_eq!(listed(&names), ["", "A"]);
     }
 
-    /// A string reader stores `Unreadable String` for a name holding a line
-    /// feed; a name read where the reader takes one value reads a block
-    /// as the entry's fields.
     #[test]
     fn names_are_stored_as_read_string_into_stores_them() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -507,14 +424,10 @@ mod tests {
             "common/scripted_localisation/mod.txt",
             "a = { name = \"Two\nLines\" } @n = Named b = { name = @n } c = { name = { name = Inner } }",
         )]);
-        // The `}` left over is a key the file loop reads an entry for.
         assert_eq!(listed(&names), ["", "Inner", "Named", "Unreadable String"]);
         assert!(names.warnings[0].1.contains("field `name` is a block"));
     }
 
-    /// A member's `localization_key` block has an unsupported bound
-    /// localisation reader: its entry and everything after it in the file are
-    /// unknown, so a name no read entry defines is not proven undefined.
     #[test]
     fn an_untraced_reader_leaves_the_rest_of_its_file_unknown() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -560,7 +473,6 @@ mod tests {
         }
     }
 
-    /// The end of the text closes every loop.
     #[test]
     fn the_end_of_the_text_closes_the_entry() {
         engine_executable::executable_tables::initialize_for_tests()

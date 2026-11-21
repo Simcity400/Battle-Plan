@@ -1,5 +1,3 @@
-//! The points where the spool, helper and sizing threads start a step of their loop: each step
-//! but the idle wait waits out the game's hourly tick first.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -49,18 +47,13 @@ const PHASES: [Phase; Phase::Wait as usize + 1] = [
 const STEPS: usize = Phase::Wait as usize + 1;
 
 pub(crate) struct Steps {
-    /// The step last started, for naming what a waiting hour's frames wait on.
     current: std::sync::atomic::AtomicU8,
-    /// Cumulative wall per step, and spent waiting out the game's tick before a step, in QPC
-    /// ticks: the spool diffs them across a frame to name a slow one.
     walls: [std::sync::atomic::AtomicU64; STEPS],
     gated: std::sync::atomic::AtomicU64,
-    /// Steps started, so tests can see which thread took a step.
     #[cfg(test)]
     started: [std::sync::atomic::AtomicU64; Phase::Wait as usize + 1],
     #[cfg(feature = "phase_cpu")]
     cycles: [std::sync::atomic::AtomicU64; Phase::Wait as usize + 1],
-    /// Steps whose cycle query failed, so their cycles are absent from `cycles`.
     #[cfg(feature = "phase_cpu")]
     cycle_failures: std::sync::atomic::AtomicU64,
 }
@@ -120,7 +113,6 @@ impl Steps {
         PHASES[usize::from(self.current.load(std::sync::atomic::Ordering::Relaxed))]
     }
 
-    /// Starts `phase` once the game's tick is out of the way, unless it is the idle wait.
     pub(crate) fn span(&self, phase: Phase) -> Span<'_> {
         if phase != Phase::Wait {
             let begin = crate::clock::qpc();
@@ -133,7 +125,6 @@ impl Steps {
         self.span_now(phase)
     }
 
-    /// Every step's cumulative wall, then the tick-gate wait, in QPC ticks.
     pub(crate) fn walls(&self) -> [u64; STEPS + 1] {
         let mut out = [0; STEPS + 1];
         for (out, wall) in out.iter_mut().zip(&self.walls) {
@@ -143,7 +134,6 @@ impl Steps {
         out
     }
 
-    /// [`Self::span`] started at once, also in the game's tick.
     pub(crate) fn span_now(&self, _phase: Phase) -> Span<'_> {
         self.current
             .store(_phase as u8, std::sync::atomic::Ordering::Relaxed);
@@ -158,7 +148,6 @@ impl Steps {
         )
     }
 
-    /// How many `phase` steps started.
     #[cfg(test)]
     pub(crate) fn phase(&self, phase: Phase) -> (u64,) {
         (self.started[phase as usize].load(std::sync::atomic::Ordering::Relaxed),)
@@ -172,7 +161,6 @@ pub(crate) static SIZING: Steps = Steps::new();
 #[must_use = "a step ends when finished or dropped"]
 pub(crate) struct Span<'a>(&'a Steps, Phase, i64, #[cfg(feature = "phase_cpu")] Option<u64>);
 
-/// This thread's cycles so far; none when the query fails.
 pub(crate) fn thread_cycles() -> Option<u64> {
     unsafe extern "system" {
         fn QueryThreadCycleTime(thread: windows_sys::Win32::Foundation::HANDLE, cycles: *mut u64) -> i32;
@@ -183,7 +171,6 @@ pub(crate) fn thread_cycles() -> Option<u64> {
     };
     (ok != 0).then_some(cycles)
 }
-/// The cycles since `begin`; none when either query failed.
 pub(crate) fn cycles_since(begin: Option<u64>) -> Option<u64> {
     Some(thread_cycles()?.saturating_sub(begin?))
 }
@@ -207,7 +194,6 @@ impl Drop for Span<'_> {
     }
 }
 
-/// The steps a slow spool frame spent its wall in: names and QPC ticks, `Gate` last.
 pub(crate) const WALL_NAMES: [&str; STEPS + 1] = [
     "Receive", "Observe", "ConvertCore", "ConvertPacks", "HelperWait", "Merge", "Statistics",
     "Recycle", "Compare", "Encode", "Columnar", "Write", "Commit", "Observers", "Sizing",
@@ -217,7 +203,6 @@ pub(crate) const WALL_NAMES: [&str; STEPS + 1] = [
 impl<'a> Span<'a> {
     pub(crate) fn finish(self) {}
 
-    /// Ends this step and starts the next.
     pub(crate) fn switch(self, phase: Phase) -> Span<'a> {
         let steps = self.0;
         drop(self);

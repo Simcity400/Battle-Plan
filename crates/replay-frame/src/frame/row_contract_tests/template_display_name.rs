@@ -1,4 +1,3 @@
-//! Private codec/history/seek fixtures.
 use super::*;
 use crate::value::Value;
 use crate::{
@@ -141,8 +140,6 @@ fn fresh_same_frame_certificate_has_no_guessed_daily_origin() {
             .literal,
         b"Dictionary"
     );
-    // A host packet was read with its hourly icon row; only a historical
-    // stamp names another hour.
     assert!(row.display_name_inputs(78, Some(&dictionary)).is_ok());
     let mut historical = row.clone();
     if let Recorded::Value(Some(packet)) = &mut historical.display_name {

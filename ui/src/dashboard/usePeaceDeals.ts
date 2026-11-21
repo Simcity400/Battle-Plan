@@ -4,7 +4,6 @@ import { useProduct } from './products.ts';
 import { validatePeaceDealsReply } from './peaceDealsData.ts';
 import type { PeaceDealsReply } from '../generated/dashboard';
 
-/** The timeline's peace deals: one reply, read once, which both peace widgets share. */
 export function usePeaceDeals(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'peace-deals', params: { branchId: track.branch.id } } : null;

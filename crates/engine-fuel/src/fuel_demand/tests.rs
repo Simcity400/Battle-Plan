@@ -193,7 +193,6 @@ fn captured_empty_and_negative_region_counts_do_not_dereference_weather_manager(
             crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA.0,
             &50_000_i64.to_le_bytes(),
         );
-        // The manager pointer is readable and null; its object is absent.
         let mut contexts = Vec::new();
         let mut slots = Vec::new();
         let mut out = buffers(
@@ -420,7 +419,6 @@ fn context_keeps_native_slot_province_multiplicity_threshold_and_period_law() {
             ..Default::default()
         })
         .collect();
-    // MAX*2 truncates -2/ONE to zero; MAX*ONE truncates to -1.
     assert_eq!(context_sums(&[1; 24], &wrapped), Ok([100_000; 24]));
     for count in [i32::MIN, -1, 0, 2] {
         input.context_counts = [count; 24];

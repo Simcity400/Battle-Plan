@@ -40,8 +40,6 @@ import { warsColourPlan, warsCountryColours, warsFixedColourKey, warsLookStart, 
 
 const NO_WARNINGS: string[] = [];
 const pendingCountry = () => ({ name: NAME_WORDS.pending });
-/** While growing with playback, the axis ends this many steps of the branch ahead of the lanes' hour: it moves by a
- * step, never every hour. */
 const GROWTH_STEPS = 64;
 
 export default function WarsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
@@ -51,7 +49,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  // The viewpoint is the widget's country: the dashboard's unless one is picked.
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const product = useProduct<WarsReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
     params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, validateWarsReply, track?.source);
@@ -61,7 +58,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : undefined, [groups.data]);
   const prepared = useMemo(() => data && identities ? prepareWars(data, undefined, identities) : null, [data, identities]);
   const structure = useMemo(() => prepared ? structureHours(prepared) : [], [prepared]);
-  // The track hour the clock's hour shows; null outside the widget's time.
   const trackHour = useCallback((clockHour: number) => {
     const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
     return window ? Math.floor(window.lastHour) : null;
@@ -69,7 +65,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const branchFirst = track?.branch.firstHour ?? 0, branchLast = track?.branch.lastHour ?? 1;
   const growth = Math.max(24, Math.ceil((branchLast - branchFirst + 1) / GROWTH_STEPS));
   const grow = options.grow === true;
-  // Following, the widget renders only where the lanes change (and, growing, where the axis takes its next step).
   const clockHour = useHeadHour(clock, active && following, hour => {
     const at = trackHour(hour);
     return at === null ? '' : `${structureAt(structure, at)}${grow ? `:${Math.ceil((at - branchFirst + 1) / growth)}` : ''}`;
@@ -82,8 +77,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const growEnd = following ? Math.min(branchLast + 1, branchFirst + Math.ceil((at - branchFirst + 1) / growth) * growth) : at;
   const extent: [number, number] = [first, Math.max(first + 1, grow && playhead != null ? growEnd : last + 1)];
   const shown = useShownHour();
-  // The playhead moves with the clock every frame, between renders; the hour it reaches is the hour shown, reported each
-  // frame whether or not the timeline draws (it draws nothing while no war is in view).
   useShownEachFrame(clock, () => following && data ? trackHour(clock.getHour()) ?? at : null);
   const liveHead = useMemo<Live<number> | undefined>(() => following ? {
     read: () => trackHour(clock.getHour()) ?? at,
@@ -93,7 +86,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
     },
   } : undefined, [following, trackHour, clock, at]);
   useEffect(() => { if (!following) shown(data ? at : null); }, [following, data, at, shown]);
-  // The hour a tooltip ends ongoing runs at: the head now, never the hour the lanes were made at.
   const until = () => following ? trackHour(clock.getHour()) ?? at : at;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hourParams = track && hoverHour !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverHour } : null;
@@ -102,7 +94,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'war-contributions', params: hourParams } : null, active, validateWarContributions, track?.source);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  // War ids are small integers local to one recording, timeline and viewpoint, including its refetches.
   useEffect(() => { setExpanded(new Set()); }, [track?.source.id, track?.branch.id, viewpointTag]);
   useEffect(() => {
     if (prepared) setExpanded(previous => retainExpandedWars(previous, prepared.byId));
@@ -115,7 +106,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const looks = useCountryLooks(runtime.client, track, named, at, active, segmentAt);
   const fixed = tokens.countryColours === 'fixed';
   const stylePlan = useMemo(() => warsColourPlan(prepared, track?.branch, at, fixed), [prepared, track?.branch, at, fixed]);
-  // Fixed colours need the full stable participant set; artwork still reads visible lanes only.
   const styles = useCountryFactsByKey(runtime.client, track, stylePlan.wanted, active, STYLES, stylePlan.maxHours);
   const fixedColourKey = fixed ? warsFixedColourKey(stylePlan, styles) : null;
   const fixedColours = useMemo(() => {
@@ -143,7 +133,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
     palette: tokens.categories, country: countries, named: namedSet, neutral, sideColours,
   }) : { lanes: [], info: new Map<string, WarsLaneInfo>() }, [prepared, at, options.view, options.colour, expanded, tokens.categories, countries, namedSet, neutral, sideColours]);
   const viewpoint = data ? viewpointAt(data, at) : null;
-  // Both names and flags ask only for visible lanes, with the shared margin.
   const requests = laneRequests(lanes, inView);
   const wantedKey = JSON.stringify([...new Set([...laneCountries(requests.looks, info, at), ...(viewpoint ? [viewpoint] : [])])]);
   useEffect(() => { setNamed(JSON.parse(wantedKey) as string[]); }, [wantedKey]);
@@ -179,7 +168,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   if (groupFailure && !groups.data) return groupFailure;
   if (!data || !prepared) return <>{groupFailure}<WidgetState kind="loading" label="Loading wars…" /></>;
 
-  // The hovered hour's casualties and contributions, once their replies are of that hour.
   const lossesAt = (hour: number) => losses.data?.hour === Math.floor(hour) ? losses.data : undefined;
   const contributionsAt = (hour: number) => contributions.data?.hour === Math.floor(hour) ? contributions.data : undefined;
   const tooltip = (lane: TimelineLane, span: TimelineSpan | null, hour: number, full = false): TooltipContent | null => {

@@ -12,7 +12,6 @@ const LENS: Lens = Lens {
     far: 3000.0,
 };
 
-/// A free eye at `eye` looking at `target` over the vanilla-shaped test map.
 fn free(eye: [f32; 3], target: [f32; 3]) -> Camera {
     Placement {
         center: [eye[0], eye[2]],
@@ -53,18 +52,14 @@ fn distance_keeps_size_near_then_shrinks_gently_and_fades_by_the_cutoff() {
     let range = 1100.0;
     let (scale, alpha) = distance_look(20.0, 900.0, range);
     assert_eq!((scale, alpha), (1.0, 1.0));
-    // Smallest by the shrink's end, still whole before the fade.
     let (scale, alpha) = distance_look(SHRINK_TO * range, 900.0, range);
     assert!((scale - SMALLEST).abs() < 1e-6, "{scale}");
     assert_eq!(alpha, 1.0);
-    // Halfway through the fade, half gone; gone at the cutoff.
     let middle = 900.0 * (1.0 - FADE_SPAN * 0.5);
     let (_, alpha) = distance_look(middle, 900.0, range);
     assert!((alpha - 0.5).abs() < 1e-4, "{alpha}");
     assert_eq!(distance_look(900.0, 900.0, range).1, 0.0);
-    // A cutoff beyond the eye's object range ends at the range instead.
     assert_eq!(distance_look(range, 1500.0, range).1, 0.0);
-    // Scale never grows with distance.
     let mut last = 1.0;
     for step in 0..=110 {
         let (scale, _) = distance_look(step as f32 * 10.0, 900.0, range);
@@ -94,7 +89,6 @@ fn the_game_s_camera_keeps_every_quad_as_laid_out() {
     let looks = present(&camera, VIEWPORT, 1.0, None, &laid_out, Head::default(), &mut out);
     assert!(looks.is_empty());
     assert_eq!(out.quads, laid_out.quads);
-    // The map camera's icon distance is its height.
     assert_eq!(camera.icon_distance([0.0, 0.0, 0.0]), 300.0);
 }
 
@@ -107,7 +101,6 @@ fn a_free_eye_ranks_icons_farthest_first_and_drops_what_it_cannot_show() {
     let behind = [1000.0, 10.0, 800.0];
     let beyond = [1000.0, 10.0, 2000.0];
     let laid_out = batch(vec![
-        // Screen interface, pushed first, stays last.
         Quad {
             anchor: None,
             ..anchored(near, 900.0, sprites::TOOLTIP_LAYER, [0.0; 4])
@@ -125,8 +118,6 @@ fn a_free_eye_ranks_icons_farthest_first_and_drops_what_it_cannot_show() {
         .iter()
         .map(|quad| quad.present.map(|present| present.rank))
         .collect();
-    // The far icon's two quads, then the near icon, then the tooltip; behind and beyond the
-    // cutoff are gone.
     assert_eq!(ranks, [Some(1), Some(0), Some(0), None]);
     assert_eq!(out.quads[0].layer, layer(20, 0, 0));
     assert_eq!(out.quads[3].layer, sprites::TOOLTIP_LAYER);
@@ -136,7 +127,6 @@ fn a_free_eye_ranks_icons_farthest_first_and_drops_what_it_cannot_show() {
     assert!(near_look.scale > far_look.scale);
     assert!(looks.of(IconFamily::Columns, layer(10, 0, 0)).is_none());
     assert!(looks.of(IconFamily::Columns, layer(10, 1, 0)).is_none());
-    // The pivot is the anchor on screen: the near anchor lies on the view's vertical centre line.
     assert!((near_look.pivot[0] - VIEWPORT[0] as f32 / 2.0).abs() < 1.0);
 }
 
@@ -148,7 +138,6 @@ fn hits_reach_back_into_the_icon_s_own_layout() {
         alpha: 0.8,
         rank: 3,
     };
-    // A point 10 pixels right of the pivot on screen is 20 pixels right in the layout.
     assert_eq!(present.unscale([110.0, 190.0]), [120.0, 180.0]);
     let mut looks = Looks::default();
     looks.show(IconFamily::Columns, layer(10, 4, 0), present);
@@ -164,7 +153,6 @@ fn hits_reach_back_into_the_icon_s_own_layout() {
         looks.hit(IconFamily::Columns, layer(10, 4, 7), [110.0, 190.0]),
         Some(([120.0, 180.0], 3))
     );
-    // A faint icon no longer owns the pointer; an unknown one never did.
     assert_eq!(
         looks.hit(IconFamily::Columns, layer(10, 5, 0), [110.0, 190.0]),
         None
@@ -173,7 +161,6 @@ fn hits_reach_back_into_the_icon_s_own_layout() {
         looks.hit(IconFamily::Columns, layer(10, 6, 0), [110.0, 190.0]),
         None
     );
-    // The same layer key of another family names another icon.
     assert_eq!(
         looks.hit(IconFamily::Combats, layer(10, 4, 0), [110.0, 190.0]),
         None
@@ -200,7 +187,6 @@ fn hits_reach_back_into_the_icon_s_own_layout() {
 #[test]
 fn terrain_hiding_the_anchor_fades_the_whole_icon() {
     let (width, rows) = (MapSize::TEST.width, MapSize::TEST.height);
-    // Open sea, with a ridge across the view between the eye and the far anchor.
     let mut values = vec![95u8; (width * rows) as usize];
     for bottom in 0..rows {
         let row = (rows - 1 - bottom) as usize;
@@ -238,15 +224,10 @@ fn terrain_hiding_the_anchor_fades_the_whole_icon() {
         Some(1.0)
     );
     assert!(looks.of(IconFamily::Columns, layer(10, 1, 0)).is_none());
-    // From high above, the ridge hides nothing.
     let high = [1200.0, 300.0, 1000.0];
     assert_eq!(sight_alpha(&ground, high, hidden, 316.0), 1.0);
 }
 
-/// A replay hour is about sixty million, and between 2^25 and 2^26 neighbouring `f32` values are
-/// four hours apart: an absolute hour cast to one loses the head's fraction, and a mover could
-/// only stand on every fourth hour. The hours are differenced as integers
-/// before anything is cast, so heads a quarter of an hour apart are four different places.
 #[test]
 fn heads_a_quarter_of_an_hour_apart_place_a_mover_four_different_places_at_sixty_million() {
     const HOUR: i32 = 60_800_000;
@@ -256,13 +237,9 @@ fn heads_a_quarter_of_an_hour_apart_place_a_mover_four_different_places_at_sixty
         .map(|fraction| track.at(Head { hour: HOUR, fraction })[0])
         .collect();
     assert_eq!(places, vec![0.0, 0.25, 0.5, 0.75]);
-    // And an hour later is an hour further along, not four.
     assert_eq!(track.at(Head { hour: HOUR + 1, fraction: 0.0 })[0], 1.0);
 }
 
-/// A mover crossing the map's seam travels the short way across it: its places are unwrapped
-/// against each other and the interpolated place is folded onto the map once, so the counter does
-/// not travel through the middle of the world halfway between them.
 #[test]
 fn a_mover_crossing_the_map_s_seam_travels_across_it_and_not_through_the_world() {
     const WIDTH: f32 = 1000.0;
@@ -271,16 +248,11 @@ fn a_mover_crossing_the_map_s_seam_travels_across_it_and_not_through_the_world()
     assert_eq!(halfway, [0.0, 0.0, 5.0], "the seam itself, not {}", WIDTH / 2.0);
     assert_eq!(track.at(Head { hour: 100, fraction: 0.5 })[0], WIDTH - 0.5);
     assert_eq!(track.at(Head { hour: 101, fraction: 0.5 })[0], 0.5);
-    // A track reaching more than half the map from its newest place still takes each segment the
-    // short way. Before, every place was unwrapped against the newest and the first segment went
-    // the long way round.
     let places: Vec<Place> = [0.0, 200.0, 400.0, 600.0].iter().zip(100..).map(|(&x, hour)| Place { hour, at: [x, 0.0, 0.0] }).collect();
     let track = Track::new(&places, WIDTH);
     assert_eq!(track.at(Head { hour: 100, fraction: 0.5 })[0], 100.0);
 }
 
-/// A head before the first place or past the last holds the mover at that end, and says so: those
-/// are the frames the publications gave nothing to move it on.
 #[test]
 fn a_head_outside_the_two_hours_holds_the_mover_at_an_end() {
     let track = Track::new(&[Place { hour: 100, at: [10.0, 0.0, 0.0] }, Place { hour: 148, at: [58.0, 0.0, 0.0] }], 0.0);
@@ -296,16 +268,12 @@ fn a_head_outside_the_two_hours_holds_the_mover_at_an_end() {
     );
 }
 
-/// A publication's rows stand up to one and a half intervals ahead of the heads of the frames that
-/// draw it, so the pair bracketing a frame's own hour is two or three publications back: the track
-/// carries the chain and a frame reads the two places that bracket it.
 #[test]
 fn a_head_behind_the_newest_places_reads_the_pair_that_brackets_it() {
     let places: Vec<Place> = (0..4)
         .map(|at| Place { hour: 60_800_000 + at * 48, at: [at as f32 * 48.0, 0.0, 0.0] })
         .collect();
     let track = Track::new(&places, 0.0);
-    // The head stands between the first two places: one interval and a half behind the newest.
     let at = |hour, fraction| track.at(Head { hour, fraction })[0];
     assert_eq!(at(60_800_000, 0.0), 0.0);
     assert_eq!(at(60_800_024, 0.0), 24.0);

@@ -1,16 +1,3 @@
-//! `LeaderBattles`: each leader first read commanding a land or naval combat, and that combat's
-//! result, a row of the log appended the hour it was read and forgotten at the writer's next
-//! hour. A combat's commanders are those its sides name while it lives in LandCombatDetails or
-//! NavalCombatDetails, and those its result names: a land result in
-//! LandCombatResults, a naval one in NavalResults joined to its combat by NavalResultSources (kept
-//! until the result is read, at most a day) with its sides' leaders in NavalCombatResultDetails. A
-//! result is written for every leader who commanded the combat. Two results of one combat that
-//! disagree leave its winners not recorded. A run's first hour is its baseline: what it reads
-//! then is held, not written. `LeaderBattleTotals` counts each leader's rows of the run through
-//! the hour (fought, won, lost), its row deleted with the leader's UnitLeaders row.
-//!
-//! State: each live combat's commanders (and a combat's for the hour after it ends, for a result
-//! read then) and the naval results awaiting their result row.
 
 mod inputs;
 #[cfg(test)]
@@ -38,11 +25,8 @@ const READS: &[Read] = &[
     Read { table: TableId::UnitLeaders, columns: Columns::These(&[]), watch: Watch::Changed, required: false },
 ];
 
-/// How long a naval result's link to its combat waits for its result row.
 const LINK_HOURS: i32 = 24;
 
-/// A leader commanding a combat: the sides it commanded, the hour its participation starts and
-/// whether the combat was not known absent the hour before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Commander {
     leader: u64,
@@ -54,13 +38,10 @@ struct Commander {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Combat {
     commanders: Vec<Commander>,
-    /// The hour its details row was gone.
     ended: Option<i32>,
-    /// Its result's date and winners, none when two results disagree or the selector is unread.
     result: Option<(i32, Option<u8>)>,
 }
 
-/// A naval result's combat and the date of the transition, and the hour the link was read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Link {
     combat: u64,
@@ -70,20 +51,16 @@ struct Link {
 
 #[derive(Default)]
 pub struct LeaderBattles {
-    /// By kind and combat handle.
     combats: HashMap<(u8, u64), Combat>,
-    /// By naval result.
     links: HashMap<u64, Link>,
 }
 
-/// A combat's result: its date, its winners (none when not known) and the leaders its sides name.
 struct Outcome {
     date: i32,
     winners: Option<u8>,
     named: [u64; 2],
 }
 
-/// One row of the hour, before its place among its leader's rows.
 struct Entry {
     leader: u64,
     kind: u8,
@@ -133,8 +110,6 @@ fn result(kind: u8, combat: u64, commander: &Commander, date: i32, winners: Opti
     }
 }
 
-/// Adds `leader` as commanding side `side` of `combat` from `start`: a participation when it is
-/// new to the combat.
 fn command(combat: &mut Combat, kind: u8, handle: u64, leader: u64, side: usize, start: i32, unknown: bool) -> Option<Entry> {
     if leader == 0 {
         return None;
@@ -153,7 +128,6 @@ fn command(combat: &mut Combat, kind: u8, handle: u64, leader: u64, side: usize,
     }
 }
 
-/// What `entry` adds to its leader's totals: fought, won, lost.
 fn counted(entry: &Entry) -> [u32; 3] {
     match (entry.entry, entry.cells.get(8)) {
         (LeaderBattleRow::PARTICIPATION, _) => [1, 0, 0],
@@ -163,8 +137,6 @@ fn counted(entry: &Entry) -> [u32; 3] {
     }
 }
 
-/// Adds the hour's entries to their leaders' totals, and deletes the totals of leaders the hour
-/// took from UnitLeaders. A leader taken in hours the writer did not run keeps its row.
 fn total(hour: &Hour<'_>, out: &mut Rows, entries: &[Entry]) {
     let table = TableId::LeaderBattleTotals;
     let leaders = hour.table(TableId::UnitLeaders);
@@ -196,8 +168,6 @@ fn total(hour: &Hour<'_>, out: &mut Rows, entries: &[Entry]) {
 }
 
 impl LeaderBattles {
-    /// The combats of `kind` the hour's details table moved: their commanders, any new one a
-    /// participation.
     fn live(&mut self, hour: &Hour<'_>, kind: u8, entries: &mut Vec<Entry>) -> io::Result<()> {
         let naval = kind == LeaderBattleRow::NAVAL;
         let (table, sides) = if naval { (TableId::NavalCombatDetails, &inputs::NAVAL_SIDES) } else { (TableId::LandCombatDetails, &inputs::LAND_SIDES) };
@@ -238,8 +208,6 @@ impl LeaderBattles {
         Ok(())
     }
 
-    /// A result of combat `handle` read at `at`: a participation for each leader its sides name
-    /// new to the combat, then a result for each of the combat's leaders.
     fn resulted(&mut self, kind: u8, handle: u64, outcome: Outcome, at: i32, entries: &mut Vec<Entry>) {
         let combat = self.combats.entry((kind, handle)).or_insert_with(|| Combat { ended: Some(at), ..Combat::default() });
         let Outcome { date, winners, named } = outcome;
@@ -259,8 +227,6 @@ impl LeaderBattles {
         }
     }
 
-    /// The hour's results: land results, then naval results whose combat and result row are both
-    /// read.
     fn results(&mut self, hour: &Hour<'_>, entries: &mut Vec<Entry>) -> io::Result<()> {
         let at = hour.hour;
         if hour.complete(TableId::LandCombatResults) {
@@ -308,7 +274,6 @@ impl Writer for LeaderBattles {
         READS
     }
 
-    // Hourly: its rows are forgotten at its next hour.
     fn hourly(&self) -> bool {
         true
     }
@@ -318,7 +283,6 @@ impl Writer for LeaderBattles {
     }
 
     fn hour(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
-        // Its tables keep their own status: a result not logged is a battle without its result.
         for table in [TableId::LeaderBattles, TableId::LeaderBattleTotals] {
             out.status(table, Status::Complete);
         }

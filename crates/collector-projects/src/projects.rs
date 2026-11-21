@@ -1,4 +1,3 @@
-//! Strategic state acquisition. Replay conversion and buffer growth run off-thread.
 
 use crate::{
     clock::qpc,
@@ -59,7 +58,6 @@ pub fn scientist_active_data() -> impl serde::Serialize {
     })
 }
 
-/// Assemble captured variable bytes without any native-memory capability.
 fn freeze_project_variables(
     entries: &[engine_scripts::cvariables::Row],
     names: &[u8],
@@ -112,10 +110,8 @@ pub const TABLES: [TableId; N] = [
     TableId::ScientistDaily,
 ];
 
-/// Indices of the `projects` sliced family's tables in `TABLES`.
 pub const FAMILY: [usize; 2] = [1, 2];
 
-/// The daily tables the raw-copy job acquires, in calibration order.
 pub const RAW: [TableId; 2] = [TableId::ProjectPrograms, TableId::ProjectBreakthroughs];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -123,14 +119,10 @@ pub struct Capacities {
     pub rows: [usize; N],
     pub program_names: usize,
     pub program_candidates: usize,
-    /// Eligible and used raid type tokens, and raid `show_for` handles.
     pub raid_type_tokens: usize,
     pub raid_show_for: usize,
-    /// RaidSpeedInputs' transport speeds, every live raid's.
     pub raid_transports: usize,
-    /// RaidEquipment's pool entries, every recorded raid's.
     pub raid_equipment_items: usize,
-    /// RaidEquipment's per-archetype pool totals, every recorded raid's.
     pub raid_equipment_archetypes: usize,
     pub counteroperatives: usize,
 }
@@ -148,9 +140,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// The live pool extent and each project's reward-history array set demand.
-    /// Empty outputs count every authenticated pool/header without reading
-    /// lifecycle children.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -166,7 +155,6 @@ impl Capacities {
                 .ok_or("project row demand overflow"),
             Outcome::Unavailable { reason } => Err(reason),
         };
-        // The rooted program pointer vectors bound their own demand.
         let programs = nproject_cprogram::count(memory, base, state);
         if let Outcome::Unavailable { reason } = programs.outcome
             && reason != "program pointer scratch capacity insufficient"
@@ -180,8 +168,6 @@ impl Capacities {
         Ok(())
     }
 
-    /// RaidCountries has one row per canonical slot and Nukes exactly two
-    /// per country (`cnuke::TYPE_COUNT`). Project pools use live demand.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[4], rows(slots, 2));
@@ -189,9 +175,6 @@ impl Capacities {
         raise(&mut self.rows[17], rows(slots, 1));
     }
 
-    /// The live type-token demand of every raid parent and the player cache
-    /// ([`crate::country_scale::observe_raid_arenas`]), so a full hour reads
-    /// every parent however many types each lists.
     pub fn raise_for_raid_type_tokens(&mut self, tokens: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.raid_type_tokens, rows(tokens, 1));
@@ -237,7 +220,6 @@ pub struct Captured {
     scientist_names: Vec<u8>,
     raid_cooldowns: CaptureRows<craid_system::CooldownRow>,
     raid_paths: [CaptureRows<raid_path_memo::Row>; 2],
-    /// The player raid cache; its tokens follow the parents' in the arena.
     raid_player: CaptureRows<cplayer_status_cache::Row>,
     raid_speeds: CaptureRows<raid_speed_inputs::Row>,
     raid_transports: Arena<i64>,
@@ -246,45 +228,26 @@ pub struct Captured {
     raid_equipment_amounts: Arena<i64>,
     raid_equipment_archetype_tokens: Arena<u32>,
     raid_equipment_archetype_amounts: Arena<i64>,
-    /// Modifier metadata for the speed inputs' getters, read once per walk.
     speed_memo: engine_native::modifier_definition::DefinitionMemo,
-    /// This hour's torn memo copies and refused raid rows.
     raid_reads: super::RaidReadCounts,
     raid_type_tokens: Arena<u32>,
     raid_show_for: Arena<u32>,
-    /// Raid type tokens by definition, sized from the raid database.
     raid_type_memo: ccountry_raid_status::TypeTokens,
     names: Arena<u8>,
     candidates: Vec<usize>,
     required_candidates: usize,
-    /// Raw-copy split gate for the daily ProjectPrograms and
-    /// ProjectBreakthroughs. Set when an acquisition job returns a valid
-    /// refresh payload; `capture` then skips their typed walks and the decode
-    /// worker fills these rows before the ready handoff. Preserved across
-    /// `reset` (set per refresh, cleared by the worker after decode). Hourly
-    /// and sliced tables are never gated by this flag.
     pub raw_mode: bool,
-    /// Which owners the Projects and ProjectHistory rows cover: the
-    /// `projects` sliced family ([`Self::capture_project_family`]).
     project_selection: SliceSelection,
-    /// This hour's project marks and comparisons.
     project_changed: crate::slicing::Changed,
-    /// The country link table's words, read once per hour.
     project_links: Vec<u8>,
-    /// (canonical slot, raw id) for every linked raw id, by slot.
     project_owners: Vec<(u32, u32)>,
-    /// (native country id, owner raw id) of every country this hour read,
-    /// grouped by country: the country's own id first, then its other raw
-    /// ids ascending.
     project_read: Vec<(u32, u32)>,
     project_runtime: runtime::Runtime,
     scientist_injury_read: bool,
-    /// The walks after the project family are out on a worker ([`Rest`]).
     rest_lent: bool,
 }
 
 impl Captured {
-    /// Fail the typed job's tables without erasing its separately staged projects.
     pub fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         let outcomes = TABLES.map(|table| super::failed_capture(table, hour, force_full, reason));
         if !self.raw_mode {
@@ -314,7 +277,6 @@ impl Captured {
         self.tooltip_operands.fail(outcomes[18]);
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -329,7 +291,6 @@ impl Captured {
         })
     }
 
-    /// All capacity, outcome and cost arrays use local TABLES order.
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             programs: CaptureRows::new(capacity.rows[0]),
@@ -392,12 +353,10 @@ impl Captured {
         self.profile_acquisition.then_some(self.acquisition_phases)
     }
 
-    /// The owners whose project rows this frame's read replaced.
     pub fn project_selection(&self) -> &SliceSelection {
         &self.project_selection
     }
 
-    /// This hour's torn memo copies and refused raid rows.
     pub fn raid_reads(&self) -> super::RaidReadCounts {
         self.raid_reads
     }
@@ -541,7 +500,6 @@ impl Captured {
         grow_vec(&mut self.candidates, capacity.program_candidates);
     }
 
-    /// A capture whose project store is new: every country is first seen.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
         &mut self,
@@ -563,12 +521,7 @@ impl Captured {
         )
     }
 
-    /// Worker acquisition grows from original headers while the callback waits.
-    /// Definition/reward/specialization tokens retain their native u32 bits.
-    /// ProjectPrograms and ProjectBreakthroughs follow their daily slot;
-    /// Projects and ProjectHistory read the owners `projects` and
-    /// `changes` select ([`Self::capture_project_family`]).
-    #[allow(clippy::too_many_arguments)] // The capture context, the family's store and its marks.
+    #[allow(clippy::too_many_arguments)]
     pub fn capture_selected(
         &mut self,
         memory: &impl Memory,
@@ -585,7 +538,6 @@ impl Captured {
         )
     }
 
-    /// Copy every selected native value now; freeze variable rows on the FIFO worker.
     #[allow(clippy::too_many_arguments)]
     pub fn acquire_selected(
         &mut self,
@@ -629,7 +581,6 @@ impl Captured {
         )
     }
 
-    /// Owns all source bytes and accepts no native-memory capability.
     pub fn decode_owned(&mut self) {
         self.project_runtime.decode();
     }
@@ -653,7 +604,6 @@ impl Captured {
         let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
         let walk = active[0] && !self.raw_mode;
         if self.raw_mode && active[0] {
-            // The owned refresh supplies these rows before publication.
         } else if !walk {
             let skipped = Outcome::Unavailable {
                 reason: replay_data::cadence::SKIPPED_REASON,
@@ -859,7 +809,6 @@ impl Captured {
                     experience_raw: r.experience_raw,
                 }
             }),
-            // The raid instance rows carry the map icon's own operands.
             table::<tables::RaidTargets, _>(outcomes[10], &self.raids.rows, |r| {
                 rows::RaidTargetRow {
                     reference_type: r.reference_type,
@@ -1216,12 +1165,6 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 impl Captured {
-    /// Projects and ProjectHistory, the `projects` sliced family: every country at the daily
-    /// boundary, whose pool pass advances every project, and on a full hour; in between the new and
-    /// unpublished countries and those a hooked project writer marked
-    /// ([`crate::country_input_changes`]). A row's owner is its project's stored owner tag (in the
-    /// project), any raw id linking to the pool's country, so a read country selects, and the
-    /// census keeps alive, every raw id its link table entries name.
     #[allow(clippy::too_many_arguments)]
     fn capture_project_family(
         &mut self,
@@ -1348,10 +1291,6 @@ impl Captured {
         }
     }
 
-    /// The hour's census: every raw id linking to each live country is an
-    /// owner the family keeps; a country is read when its native id or any of
-    /// its raw ids is selected, and then all of them are. Ok(false) when a
-    /// census slot could not be read (no owner is known gone).
     fn select_project_owners(
         &mut self,
         memory: &impl Memory,
@@ -1402,10 +1341,6 @@ impl Captured {
                 .project_owners
                 .partition_point(|&(owner, _)| owner <= slot);
             let raws = &self.project_owners[start..end];
-            // Only a country that owns a state runs the daily pool pass
-            // ([`crate::country_input_changes::drifts`]); its print is
-            // whether it does, checked at the daily boundary, so a change
-            // since the last boundary is read there.
             let drift = std::cell::OnceCell::new();
             let drifts = || {
                 *drift.get_or_init(|| crate::country_input_changes::drifts(memory, country.pointer))
@@ -1433,7 +1368,6 @@ impl Captured {
         Ok(census)
     }
 
-    /// Each read country's owner raw ids, its own id first.
     fn project_countries(&self) -> impl Iterator<Item = &[(u32, u32)]> {
         self.project_read
             .chunk_by(|first, second| first.0 == second.0)
@@ -1510,10 +1444,6 @@ fn valid_names(
         })
 }
 
-/// Shared synthetic address space for the projects copy/decode split
-/// harness: two countries, one program with a heap building string, one
-/// project with a valid state machine and history context, and a single
-/// breakthrough node.
 #[cfg(any(test, feature = "test-support"))]
 pub mod projects_test_kit;
 
@@ -1524,7 +1454,6 @@ mod tests;
 #[path = "projects_scale_tests.rs"]
 mod scale_tests;
 
-/// Actual converter output for spool integration regressions.
 #[cfg(any(test, feature = "test-support"))]
 pub fn scientist_spool_fixture(daily: bool, ordinal: u32) -> [TableView; N] {
     let mut captured = Captured::with_capacities(&Capacities {
@@ -1550,11 +1479,8 @@ pub fn scientist_spool_fixture(daily: bool, ordinal: u32) -> [TableView; N] {
     captured.tables()
 }
 
-/// Declares [`Rest`] and moves its fields between it and [`Captured`].
 macro_rules! rest {
     ($($field:ident: $ty:ty = $vacant:expr),* $(,)?) => {
-        /// The family's walks after its projects: independent tables, so a worker can walk them
-        /// while the project family runs ([`Captured::take_rest`]).
         pub struct Rest {
             game_state: usize,
             hour: i32,
@@ -1564,8 +1490,6 @@ macro_rules! rest {
         }
 
         impl Captured {
-            /// The rest's tables, already reset, for a worker; [`Self::restore_rest`] returns
-            /// them before conversion.
             pub fn take_rest(&mut self, game_state: usize, hour: i32, force_full: bool) -> Rest {
                 self.rest_lent = true;
                 Rest {
@@ -1577,7 +1501,6 @@ macro_rules! rest {
                 }
             }
 
-            /// The rest's tables back; returns their ticks by table.
             pub fn restore_rest(&mut self, rest: Rest) -> [u64; N] {
                 self.rest_lent = false;
                 $(self.$field = rest.$field;)*
@@ -1620,7 +1543,6 @@ rest!(
 );
 
 impl Rest {
-    /// Walks the rest's tables; reads only `memory`.
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
         let (game_state, hour, force_full) = (self.game_state, self.hour, self.force_full);
         let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
@@ -1642,7 +1564,6 @@ impl Rest {
             }};
         }
         plain!(nukes, 4, cnuke);
-        // Slot 10 (RaidTargets) is the same walk as slot 6: one read, two tables.
         if active[5] || active[10] || active[11] {
             let begin = qpc();
             let _reads = read_accounting::table(TABLES[5]);
@@ -1678,7 +1599,6 @@ impl Rest {
         if active[13] {
             let _reads = read_accounting::table(TABLES[13]);
             let begin = qpc();
-            // The cache's tokens follow the parents' in the shared arena.
             let start = self
                 .raid_type_tokens
                 .len
@@ -1890,7 +1810,6 @@ impl Rest {
 }
 
 impl Captured {
-    /// The rest's tables, lost with a worker that did not return them: none is recorded.
     pub fn fail_rest(&mut self, reason: &'static str) {
         self.rest_lent = false;
         self.scientist_injury_read = false;

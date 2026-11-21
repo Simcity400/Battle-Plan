@@ -1,22 +1,3 @@
-//! The map's script-driven readers at the head as a layer of the map's side: the raid lane's offer
-//! cycle and the viewing country's music chances, evaluated through the content's trigger evaluator
-//! over rows at the head ([`crate::playhead_host::views`]) on a worker of their own, never on the
-//! frame thread.
-//!
-//! The layer asks its worker at the step's apply and joins what it published inside the same step
-//! ([`Layer::ask`], [`Layer::join`]), so the picture the side publishes carries the raid icons of
-//! its own hour and a publication the head stands still for and a whole settle (a saved frame, a
-//! seek's first picture, the proof) wait for the icons of exactly the hour they show, with the
-//! offer cycle complete, as a paused frame did.
-//!
-//! The raid offer cycle is evaluated at the publication's rate, as it was: its icons are on screen
-//! and an icon may not appear later than one publication after its hour. The **music chances** have
-//! no picture at all and a track is chosen minutes apart, so they are evaluated at most
-//! [`MUSIC_RATE`] times a second, from the newest rows. The cycle is the layer's own state: it
-//! carries from evaluation to
-//! evaluation and starts again at a playhead reset (a seek, a piece's first hour), a new viewing
-//! country, new content or a step back. A table read undeclared is learned and the evaluation that
-//! read it published nothing, as the other readers of rows at the head do.
 
 use super::{Carried, Inputs, Layer, Published, Rate, Settling, View};
 use crate::{
@@ -47,25 +28,14 @@ use viewer_raids::map::raids::{HourLayer, IconCache, RaidAssets, RaidIcons, Raid
 
 pub const NAME: &str = "scripts at the head";
 
-/// How often the viewing country's music chances are evaluated while the hours run. Their result
-/// is never on screen and a track is chosen minutes apart, so this is the one rated product here;
-/// the raid cycle, whose icons are drawn, is evaluated at the publication's rate.
 pub const MUSIC_RATE: Rate = Rate::a_second(4);
 
-/// How long a settle that waits (a stopped picture's, a whole settle's) waits for the icons of the
-/// hour applied.
 const CATCH_UP: Duration = Duration::from_secs(120);
 
-/// The core of the trigger evaluator, declared by its keys before any script runs: the columns
-/// come from the reads, as every other table's do.
 const CORE: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::Provinces, TableId::States];
 
-/// What was read undeclared: each table with the fields it was read for.
 type Missed = Vec<(TableId, u64)>;
 
-/// The clock the music chances' rate is read against ([`MUSIC_RATE`]). The viewer reads the
-/// machine's, from when the layer was made; a test hands in one of its own and steps it, so what
-/// the rate withholds is decided by the test's steps and never by how long the test took.
 pub enum Clock {
     Machine(Instant),
     #[cfg(any(test, feature = "test-support"))]
@@ -79,7 +49,6 @@ impl Default for Clock {
 }
 
 impl Clock {
-    /// How long the layer has been drawn, as the rate reads it.
     fn now(&self) -> Duration {
         match self {
             Self::Machine(from) => from.elapsed(),
@@ -88,7 +57,6 @@ impl Clock {
         }
     }
 
-    /// Moves a stepped clock on.
     #[cfg(any(test, feature = "test-support"))]
     pub fn step(&mut self, by: Duration) {
         match self {
@@ -98,17 +66,12 @@ impl Clock {
     }
 }
 
-/// The needs the layer declares from the start, when a tool names them (the proof's
-/// `--scripts on@tables.txt`, whose head holds still at every comparison, where a table learned
-/// would arrive only later).
 static PRIMED: std::sync::OnceLock<Vec<Need>> = std::sync::OnceLock::new();
 
-/// Every scripts layer made from now on declares `needs` from the start.
 pub fn prime(needs: Vec<Need>) {
     let _ = PRIMED.set(needs);
 }
 
-/// `needs` with `missed` joined in: a table once, with the union of the fields read of it.
 fn joined(needs: &mut Vec<Need>, missed: impl IntoIterator<Item = (TableId, u64)>) {
     for (table, fields) in missed {
         match needs.iter_mut().find(|need| need.table == table) {
@@ -119,8 +82,6 @@ fn joined(needs: &mut Vec<Need>, missed: impl IntoIterator<Item = (TableId, u64)
     needs.sort_unstable_by_key(|need| need.table.index());
 }
 
-/// What the scripts evaluate with: the content's raid assets, its trigger facts for music, its
-/// music and the executable tables its work reads.
 #[derive(Clone)]
 pub struct Held {
     raids: Arc<RaidAssets>,
@@ -140,89 +101,64 @@ impl Held {
     }
 }
 
-/// What the scripts published for one frame of rows.
 #[derive(Clone)]
 pub struct Product {
-    /// The raid icons, with the branch, hour and canonical viewing country they were built for.
     pub raids: Option<Arc<RaidIcons>>,
-    /// The raid arrows' limitation notes in today's words, with the canonical viewing country
-    /// they are for.
     pub notes: Option<(u32, Arc<Vec<String>>)>,
-    /// The music chances with the hour of the rows they were evaluated over.
     pub music: Option<(Hour, Arc<viewer_audio::Chances>)>,
-    /// The hour of the rows it was evaluated over.
     pub hour: Hour,
-    /// Every target of the offer cycle has been evaluated at this hour.
     pub complete: bool,
 }
 
-/// One evaluation asked of the worker.
 struct Job {
     frame: Arc<DecodedFrame>,
     choice: perspective::Choice,
     content: Held,
     raids: bool,
     music: bool,
-    /// The offer cycle run to its end before it answers: a stopped picture's.
     whole: bool,
     epoch: u64,
-    /// The seek its rows were made at: a cycle of an older one starts again.
     resets: u64,
 }
 
-/// What the worker is handed: an evaluation, or something to free off the side's thread (old rows
-/// can be the last reference to megabytes of row structs).
 enum Work {
     Evaluate(Box<Job>),
     Free(Box<dyn Send>),
 }
 
 struct Done {
-    /// None when the evaluation read a table not declared yet, named in `missed`.
     product: Option<Product>,
     missed: Missed,
     ns: u64,
     epoch: u64,
 }
 
-/// The offer cycle since its last start, and what started it.
 struct Chain {
     resets: u64,
     content: std::sync::Weak<RaidAssets>,
     country: perspective::Country,
-    /// The hour of the frame it last evaluated.
     hour: Hour,
     cycle: Cycle,
     icons: IconCache,
 }
 
-/// The reader of the view store and the worker, while the scripts are drawn.
 struct Open {
     reader: ViewReader,
     jobs: mpsc::Sender<Work>,
     done: mpsc::Receiver<Done>,
-    /// An evaluation is running.
     busy: bool,
-    /// The newest rows seen, whether they were handed to the worker, and whether that job was to
-    /// run the offer cycle to its end: rows handed for one batch are handed again, once, for a
-    /// picture that waits for the whole cycle.
     seen: Option<Arc<DecodedFrame>>,
     handed: bool,
     handed_whole: bool,
-    /// The hour of the rows the worker is reading now; none while it reads none.
     evaluating: Option<Hour>,
 }
 
 impl Open {
     fn new(views: &Views, needs: &[Need]) -> io::Result<Self> {
-        // Its sets are made for the steps it asks for them at, which is its rate: the evaluator
-        // is slower than a step, so a step it will never read makes it nothing.
         let reader = views.reader_at(NAME, needs, Pace::Ready);
         let (jobs, receive) = mpsc::channel::<Work>();
         let (send, done) = mpsc::channel();
-        // Not joined: closing drops the sender, and the thread ends after the job it holds.
         std::thread::Builder::new().name(NAME.into()).spawn(move || {
-            // The step's join takes its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             let mut evaluating = Evaluating::default();
             for work in receive {
@@ -260,12 +196,10 @@ impl Open {
         Ok(Self { reader, jobs, done, busy: false, seen: None, handed: false, handed_whole: false, evaluating: None })
     }
 
-    /// Frees `held` on the worker.
     fn free(&self, held: impl Send + 'static) {
         let _ = self.jobs.send(Work::Free(Box::new(held)));
     }
 
-    /// The newest rows seen from now on; the ones before are freed on the worker.
     fn see(&mut self, frame: Option<Arc<DecodedFrame>>) {
         if let Some(old) = std::mem::replace(&mut self.seen, frame) {
             self.free(old);
@@ -273,15 +207,12 @@ impl Open {
     }
 }
 
-/// `read`, the tables it read undeclared, with the fields it read, added to `missed`.
 fn learning<T>(missed: &mut Missed, read: impl FnOnce() -> T) -> T {
     let (value, tables) = discovering_fields(read);
     missed.extend(tables);
     value
 }
 
-/// The raid arrows' limitation notes of canonical viewing country `ours` at `frame`, in today's
-/// words: stated from a wholly recorded raid census only.
 fn raid_notes(frame: &DecodedFrame, ours: u32) -> Vec<String> {
     let mut out = viewer_foundation::map::tables::Limitations::default();
     if let Ok(raids) = frame.complete_fields::<tables::Raids>(replay_data::rows::mask::<replay_data::rows::RaidRow>(&["parent_slot", "phase"])) {
@@ -291,24 +222,20 @@ fn raid_notes(frame: &DecodedFrame, ours: u32) -> Vec<String> {
     out.into_lines()
 }
 
-/// The canonical slot `choice` views the map as at `frame`'s hour.
 fn ours(frame: &DecodedFrame, choice: &perspective::Choice) -> io::Result<u32> {
     let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
     let tags: BTreeMap<u32, String> = core::<tables::Countries>(frame)?.iter().map(|country| (country.canonical_slot, String::from_utf8_lossy(&country.tag).into_owned())).collect();
     perspective::viewer(frame, &links, &tags, &choice.country).map(|(slot, _)| slot)
 }
 
-/// What the worker keeps between evaluations: the offer cycle and the music memo.
 #[derive(Default)]
 struct Evaluating {
     chain: Option<Chain>,
     memo: Memo,
     kept: Option<map_products::music_inputs::Kept>,
-    /// A seek whose evaluation panicked: nothing more is evaluated for it.
     failed: Option<u64>,
 }
 
-/// The music memo, made by identity as the window's was.
 struct Memo(map_products::music_inputs::Memo);
 
 impl Default for Memo {
@@ -318,15 +245,12 @@ impl Default for Memo {
 }
 
 impl Evaluating {
-    /// A panicked evaluation: its cycle is dropped and the seek is left alone.
     fn failed(&mut self, job: &Job) {
         self.chain = None;
         self.kept = None;
         self.failed = Some(job.resets);
     }
 
-    /// The music chances and the offer cycle at `job`'s rows; none while a table it read is being
-    /// learned.
     fn evaluate(&mut self, job: &Job, missed: &mut Missed) -> Option<Product> {
         let frame: &DecodedFrame = &job.frame;
         let ours = learning(missed, || ours(frame, &job.choice)).map_err(|error| error.to_string());
@@ -343,8 +267,6 @@ impl Evaluating {
         Some(Product { raids, notes, music, hour: frame.hour, complete })
     }
 
-    /// The music chances of the viewing country at `job`'s rows, with the hour the memo kept them
-    /// for.
     fn music(&mut self, job: &Job, ours: Result<u32, String>, missed: &mut Missed) -> Option<(Hour, Arc<viewer_audio::Chances>)> {
         let frame: &DecodedFrame = &job.frame;
         let audio = job.content.audio.as_ref().filter(|audio| !audio.music.songs.is_empty());
@@ -364,9 +286,6 @@ impl Evaluating {
         Some((at, Arc::new(chances)))
     }
 
-    /// The offer cycle at `job`'s rows: one batch from the cycle the evaluation before left, or
-    /// every batch until each target is current for a stopped picture. The icons, the raid arrows'
-    /// notes, and whether the cycle is complete.
     fn raids(&mut self, job: &Job, ours: Result<u32, String>, missed: &mut Missed) -> (Option<Arc<RaidIcons>>, Option<(u32, Arc<Vec<String>>)>, bool) {
         let frame: &DecodedFrame = &job.frame;
         let assets = &job.content.raids;
@@ -398,12 +317,9 @@ impl Evaluating {
         let icons = learning(missed, || {
             if let Err(reason) = cycle.begin(assets, &layer.sweep) {
                 cycle = Cycle::restarted(frame.branch, ours, reason);
-                // A cycle with no row always begins.
                 let _ = cycle.begin(assets, &layer.sweep);
             }
             cycle.step(&layer.sweep);
-            // A stopped picture shows every target evaluated, as a paused frame did; a batch that
-            // evaluates none (a mod whose batch is zero) ends the round rather than spinning.
             while job.whole && !cycle.complete() {
                 let before = cycle.progress();
                 cycle.step(&layer.sweep);
@@ -425,24 +341,15 @@ impl Evaluating {
     }
 }
 
-/// What the layer measured while drawn, each bounded by the values it takes, not by hours played.
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
-    /// Evaluations by milliseconds, a tenth wide.
     pub evaluations: BTreeMap<u32, u64>,
-    /// Evaluations of the whole cycle (a stopped picture's), by milliseconds, a tenth wide.
     pub whole: BTreeMap<u32, u64>,
-    /// Evaluations the music chances' rate left the chances out of.
     pub rated: u64,
-    /// Settles that waited and found the rows of the hour shown not made yet.
     pub rows_behind: u64,
-    /// Rows passed over: newer rows came before the worker was free for them.
     pub skipped: u64,
-    /// Evaluations discarded because they read a table not declared yet.
     pub learning: u64,
-    /// Results dropped because a reset or a new perspective came after their job.
     pub stale: u64,
-    /// Settles that waited for the icons of the hour applied, and those the wait ran out on.
     pub waited: u64,
     pub ran_out: u64,
     pub opened: u64,
@@ -472,24 +379,17 @@ impl Stats {
     }
 }
 
-/// The map's scripts at the head.
 pub struct Scripts {
     content: Held,
-    /// The map side's view store, given as the side is made; nothing is read before it.
     views: Option<Views>,
-    /// Raid icons are drawn, and this map plays music.
     shown: (bool, bool),
     choice: perspective::Choice,
-    /// Learned by discovery; kept when closed, so it opens with them.
     needs: Vec<Need>,
     open: Option<Open>,
     product: Option<Product>,
     applied: Option<Hour>,
-    /// When the music chances were last read, on [`Self::clock`].
     asked_at: Option<Duration>,
-    /// The clock their rate is held to.
     pub clock: Clock,
-    /// Bumped by a reset and a new perspective: results of earlier jobs are dropped.
     epoch: u64,
     stats: Stats,
 }
@@ -499,22 +399,16 @@ impl Scripts {
         Self::with(Held::of(content), PRIMED.get().cloned().unwrap_or_default())
     }
 
-    /// The layer over `content`, declaring `needs` from the start beside the evaluator's core.
     pub fn with(content: Held, mut needs: Vec<Need>) -> Self {
         joined(&mut needs, CORE.iter().map(|&table| (table, 0)));
-        // The scripts compare dates: their rows come with every hour the clock moves.
         joined(&mut needs, [(TableId::Clock, u64::MAX)]);
         Self { content, views: None, shown: (false, false), choice: perspective::Choice::default(), needs, open: None, product: None, applied: None, asked_at: None, clock: Clock::default(), epoch: 0, stats: Stats::default() }
     }
 
-    /// What it published: the raid icons, their notes and the music chances of one hour's rows;
-    /// none while loading or while neither is asked for.
     pub fn product(&self) -> Option<&Product> {
         self.product.as_ref()
     }
 
-    /// The newest raid icons for `branch` and canonical viewing country `ours`; none while loading
-    /// or for another country.
     pub fn raids(&self, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
         self.product.as_ref()?.raids.clone().filter(|icons| match icons.built_for {
             Some((built, _, country)) => (built, country) == (branch, ours),
@@ -522,13 +416,10 @@ impl Scripts {
         })
     }
 
-    /// The raid arrows' limitation notes in today's words for canonical viewing country `ours`;
-    /// none while loading, for another country, or while raid icons are not drawn.
     pub fn notes(&self, ours: u32) -> Option<Arc<Vec<String>>> {
         self.product.as_ref()?.notes.as_ref().filter(|(country, _)| *country == ours).map(|(_, notes)| Arc::clone(notes))
     }
 
-    /// The newest music chances with the hour they were evaluated at.
     pub fn music_at(&self) -> Option<(Hour, Arc<viewer_audio::Chances>)> {
         self.product.as_ref()?.music.clone()
     }
@@ -537,19 +428,14 @@ impl Scripts {
         &self.stats
     }
 
-    /// The tables the reader declares now, each with the fields its reads named.
     pub fn needs(&self) -> &[Need] {
         &self.needs
     }
 
-    /// Lets the reader and the worker go, on a thread of their own. The thread that frees them
-    /// is handed back, so a caller that must see the rows let go (a test) waits for that
-    /// hand-over itself; the viewer drops it and never waits.
     fn close(&mut self) -> Option<std::thread::JoinHandle<()>> {
         let product = self.product.take();
         let closing = self.open.take().and_then(|open| {
             self.stats.closed += 1;
-            // The last reader of a playhead's rows joins their worker when dropped: never here.
             std::thread::Builder::new().name("scripts closing".into()).spawn(move || {
                 viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
                 drop((open, product));
@@ -560,7 +446,6 @@ impl Scripts {
         closing
     }
 
-    /// Sets what is published; what was there is freed on the worker.
     fn show(&mut self, product: Option<Product>) {
         if let Some(old) = std::mem::replace(&mut self.product, product) {
             match &self.open {
@@ -570,7 +455,6 @@ impl Scripts {
         }
     }
 
-    /// Opens the reader and the worker when drawn and the store is given; a refusal is printed.
     fn ensure_open(&mut self) {
         if self.open.is_some() || self.shown == (false, false) {
             return;
@@ -585,14 +469,12 @@ impl Scripts {
         }
     }
 
-    /// Takes the worker's finished evaluations; never waits.
     fn receive(&mut self) {
         while let Some(done) = self.open.as_ref().and_then(|open| open.done.try_recv().ok()) {
             let _ = self.take(done);
         }
     }
 
-    /// Whether it was discarded to learn a table.
     fn take(&mut self, done: Done) -> bool {
         let Some(open) = &mut self.open else { return false };
         (open.busy, open.evaluating) = (false, None);
@@ -619,18 +501,12 @@ impl Scripts {
         false
     }
 
-    /// Asks the view store for rows of the hour the side has applied: its reader's sets are made
-    /// at the steps it asks at, and the raid cycle is evaluated at every publication, so it asks
-    /// at every one.
     fn ask_rows(&mut self) {
         if let Some(open) = &self.open {
             open.reader.ready();
         }
     }
 
-    /// Whether this evaluation reads the music chances: they are rated, and the rate holds here
-    /// alone ([`MUSIC_RATE`]). A picture that is waited for reads them whatever the rate, so a
-    /// stopped picture's chances are its own hour's.
     fn music_due(&mut self, whole: bool) -> bool {
         if !self.shown.1 {
             return false;
@@ -644,9 +520,6 @@ impl Scripts {
         true
     }
 
-    /// Hands the newest rows to the worker when it is free; rows a newer frame replaces before
-    /// that are counted as passed over. `whole`: the offer cycle run to its end, for a picture
-    /// that is waited for.
     fn offer(&mut self, whole: bool) {
         let Some(open) = self.open.as_mut() else { return };
         if let Some((frame, _, _)) = open.reader.newest_seek()
@@ -671,12 +544,6 @@ impl Scripts {
         }
     }
 
-    /// Waits for what is published to be of the hour applied, with the offer cycle complete: a
-    /// publication the head stands still for, a saved frame, the proof. It waits for its own
-    /// worker, never for its rows: the rows of an hour are made by the step that asks for them and
-    /// this runs inside that step, so when they are not there yet it asks for them and the
-    /// publication after shows them (a stepped frame takes its whole settle again until its
-    /// picture stands whole). A whole settle names the hour its worker never answered for.
     fn catch_up(&mut self, settling: Settling) -> io::Result<()> {
         let Some(hour) = self.applied else { return Ok(()) };
         if self.shown == (false, false) {
@@ -684,13 +551,10 @@ impl Scripts {
         }
         self.stats.waited += 1;
         let until = Instant::now() + settling.waiting(CATCH_UP);
-        // Out of the step's budget, what it has stands and the publication after makes the hour's.
         let ran_out = |why: String, stats: &mut Stats| {
             stats.ran_out += 1;
             if settling.strict() { Err(io::Error::other(why)) } else { Ok(()) }
         };
-        // The hour's product is whole when its offer cycle is complete and, where music plays, it
-        // carries that hour's chances: an evaluation the rate let go without them is not.
         let music = self.shown.1;
         loop {
             let whole = self.product.as_ref().is_some_and(|product| {
@@ -709,19 +573,15 @@ impl Scripts {
                     return ran_out(format!("The {NAME} layer's worker did not answer for hour {hour}"), &mut self.stats);
                 };
                 if self.take(done) {
-                    // A table learned joins at a step past this head, which never comes while it is held.
                     return Ok(());
                 }
                 continue;
             }
             let Some(frame) = open.reader.frame() else {
-                // Its tables are arriving in the side's mirrors.
                 self.ask_rows();
                 return Ok(());
             };
             if frame.hour != hour {
-                // The rows of the hour shown are not made yet, or the head has moved past it:
-                // asked for here, and the publication after this one waits for the evaluation.
                 self.stats.rows_behind += 1;
                 self.ask_rows();
                 return Ok(());
@@ -743,8 +603,6 @@ impl Layer for Scripts {
         Some(0)
     }
 
-    /// Drawn while the map draws raid icons or plays music; nothing otherwise. Countries' keys, so
-    /// a reset tells it the hour: its own tables come through rows at the head.
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
         let shown = (view.graphics.counter(view.graphics.raid_icons), view.sound);
         if shown != (false, false) && view.perspective != self.choice {
@@ -786,22 +644,14 @@ impl Layer for Scripts {
         self.applied = Some(step.last());
     }
 
-    /// A saved frame, the proof and a publication the head stands still for wait for the icons of
-    /// the hour they show ([`Self::catch_up`]); there is nothing to wait for while neither the
-    /// icons nor the music are asked for.
     fn made_at(&self, head: Hour) -> bool {
         self.shown == (false, false) || self.product.as_ref().is_some_and(|product| product.hour == head && product.complete)
     }
 
-    /// The rows it reads are made by the step that asks for them, so its evaluation of a
-    /// publication's hour lands in the publication after it: one publication behind is its own
-    /// pace, and the step waits for it only past that.
     fn behind_bound(&self) -> u32 {
         Rate::a_publication().behind()
     }
 
-    /// The worker asked for the newest rows at the apply, so its evaluation runs while the layers
-    /// of the step settle.
     fn ask(&mut self, _mirrors: &Mirrors, _upstream: &super::Upstream<'_>) -> io::Result<bool> {
         if self.shown == (false, false) {
             return Ok(false);
@@ -809,7 +659,6 @@ impl Layer for Scripts {
         self.ensure_open();
         self.receive();
         self.offer(false);
-        // The rows the step after this one makes, at the rate: its sets are made where it asks.
         self.ask_rows();
         Ok(true)
     }
@@ -823,31 +672,21 @@ impl Layer for Scripts {
         if settling.waits() {
             self.offer(true);
             self.catch_up(settling)?;
-            // The hours stand still: the publication after this one is given the hour's rows.
             self.ask_rows();
         }
         Ok(())
     }
 
-    /// Asked and joined ([`Self::ask`]); a whole settle asks and joins in one.
     fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
         let upstream = super::Upstream::new(&[]);
         self.ask(mirrors, &upstream)?;
         self.join(mirrors, &upstream, settling)
     }
 
-    /// Nothing: its evaluation is published, not carried.
     fn carried(&self) -> Carried {
         Carried::default()
     }
 
-    /// The hour its icons stand at, and what the picture's own hour owes it. The rows it reads are
-    /// made by the step that asks for them and its evaluation is longer than a step, so an hour's
-    /// icons land one publication after it: that is this product's own pace, and at it the picture
-    /// owes nothing and says [`Published::Current`], which is a claim about the step and not about
-    /// an hour, so the hour a watcher reads off the map stays the fills' and the counters'. Further
-    /// behind than its pace — the rows have moved on and no evaluation of the newest is running —
-    /// it says the hour it stands at, so its lateness is counted and the bound can see it.
     fn published(&self) -> Published {
         let Some(open) = &self.open else {
             return self.product.as_ref().map_or(Published::Nothing, |product| Published::Cadence(product.hour));
@@ -875,27 +714,22 @@ impl Layer for Scripts {
     }
 }
 
-/// The layer while it draws.
 pub fn drawn(side: &MapSide) -> Option<&Scripts> {
     super::drawn_layer::<Scripts>(side, NAME)
 }
 
-/// The raid icons the map's scripts built for `branch` and canonical viewing country `ours`.
 pub fn raids(side: &MapSide, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
     drawn(side)?.raids(branch, ours)
 }
 
-/// The raid arrows' limitation notes for canonical viewing country `ours`.
 pub fn notes(side: &MapSide, ours: u32) -> Option<Arc<Vec<String>>> {
     drawn(side)?.notes(ours)
 }
 
-/// The music chances at the head.
 pub fn music(side: &MapSide) -> Option<Arc<viewer_audio::Chances>> {
     drawn(side)?.music_at().map(|(_, music)| music)
 }
 
-/// The layer's figures for a report: what it measured, and the tables its reads declare.
 pub fn summary(side: &MapSide) -> Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Scripts>())) else { return Value::Null };
     json!({

@@ -3,9 +3,6 @@ use std::io;
 use super as native;
 use crate::fields::invalid;
 
-/// A window's own button, found through the shared GUI template registry and local button
-/// lookup. Files follow the game's order, EOF closure and later replacements; no fixed GUI
-/// filename or independent registry is used.
 fn window_button<'a>(
     guis: &'a native::Guis,
     window: &str,
@@ -32,7 +29,6 @@ fn window_button<'a>(
     Ok(child)
 }
 
-/// The localisation key of the tooltip of a window's own button, found as its sprite is.
 pub fn window_button_tooltip(
     guis: &native::Guis,
     window: &str,
@@ -48,8 +44,6 @@ pub fn window_button_tooltip(
     Ok(key.to_owned())
 }
 
-/// The sprite of a window's own button, found through the shared GUI template registry and
-/// local button lookup.
 pub fn window_button_sprite(
     guis: &native::Guis,
     window: &str,
@@ -69,8 +63,6 @@ pub fn window_button_sprite(
     Ok(name.to_owned())
 }
 
-/// The native registry's kept container declaration, shared by window-local
-/// artwork and static text lookup. A later unread suffix can replace it.
 pub fn kept_container_window<'a>(
     guis: &'a native::Guis,
     window: &str,
@@ -101,8 +93,6 @@ pub fn kept_container_window<'a>(
         .files
         .iter()
         .rposition(|(_, gui)| gui.template(window).is_some());
-    // An unread suffix can register this name again. A later readable declaration
-    // settles earlier files; unrelated refusals cannot change this lookup.
     for (path, gui) in &guis.files[kept.unwrap_or(0)..] {
         if let Some(why) = gui
             .refusals()
@@ -129,10 +119,6 @@ pub fn kept_container_window<'a>(
     Ok((path, element))
 }
 
-/// The localisation keys of a kept container's direct text boxes through the shared GUI
-/// registry. Each (child, field) requests `text` or `pdx_tooltip`; missing, empty or refused
-/// fields retain their own reason. The first child of a name in the container's map must be an
-/// `instantTextBoxType`.
 pub fn window_texts(
     guis: &native::Guis,
     window: &str,
@@ -193,7 +179,6 @@ mod tests {
     mod layered {
         use super::*;
 
-        /// A content stack of `layers`, each a list of (path, text) files.
         fn stack(name: &str, layers: &[&[(&str, &str)]]) -> ResolvedLayers {
             let root = std::env::temp_dir().join(format!(
                 "hoi4_gui_{name}_{}_{:?}",
@@ -289,7 +274,6 @@ mod tests {
                 ],
             );
             assert_eq!(texts(&layers).0[0].as_deref(), Ok("MOD_LOST_IN_BATTLE"));
-            // A later file's declaration replaces the earlier one, with a warning.
             let redeclared = combat_log_gui("MOD_LOST_IN_BATTLE", "iconType");
             let layers = stack(
                 "redeclared",
@@ -308,7 +292,6 @@ mod tests {
             );
             assert_eq!(warnings.len(), 1, "{warnings:?}");
             assert!(warnings[0].contains("interface/zz_losses.gui"));
-            // No declaration at all: refused.
             let layers = stack("absent", &[&[("interface/other.gui", "guiTypes = { }")]]);
             assert!(
                 window_texts(

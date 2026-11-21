@@ -1,4 +1,3 @@
-//! Particle space selection, birth and motion.
 use installed_content_core::mesh::Transform;
 
 #[derive(Clone, Copy)]
@@ -15,8 +14,6 @@ impl Space {
                 scale: 1.,
             }
         } else {
-            // Update displacement scale only for a local top-level subsystem. Every world-space subsystem
-            // shares it.
             let scale = authored
                 * if any_local {
                     crate::map::particle_shader::world_scale(world.basis)
@@ -57,8 +54,6 @@ impl Space {
         mass: f32,
         dt: f32,
     ) {
-        //Scale applies to displacement, independently of the unscaled dt/mass
-        //force integration. Scaling a finished position cannot reproduce this.
         let motion_dt = self.scale * dt;
         let force_dt = dt / mass;
         for i in 0..3 {
@@ -121,8 +116,6 @@ mod tests {
         let mut position = [0.; 3];
         let mut velocity = [0.; 3];
         space.integrate(&mut position, &mut velocity, [3.1; 3], 0.3, 0.1);
-        // Divide time by mass before applying force. Multiplying force by time first is one ULP higher
-        // in this fixture.
         assert_eq!(velocity[0].to_bits(), 1_065_632_835);
         assert_eq!(velocity, [velocity[0]; 3]);
     }

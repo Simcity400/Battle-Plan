@@ -6,12 +6,9 @@ use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
 
 const W: f32 = 5632.0;
 
-/// One place of a publication's own hour, which is what a layout hands for a mover whose hours did
-/// not move it inside the interval.
 fn at_hour(hour: i32, at: [f32; 3]) -> crate::map::free_icons::Place {
     crate::map::free_icons::Place { hour, at }
 }
-/// The height [`Motion::new`]'s flat field samples.
 const FLOOR: f32 = WATER_HEIGHT;
 
 #[test]
@@ -36,7 +33,6 @@ fn scale_interpolates_over_the_next_anchor_arc_not_the_current_segment() {
         sample.interpolate_scale(0.22, 0.44),
         (0.44 - 0.22) * 0.1 + 0.22
     );
-    // A native zero-length next-anchor sample takes the destination scale.
     let zero = [
         Sample {
             at: [0.0; 3],
@@ -49,8 +45,6 @@ fn scale_interpolates_over_the_next_anchor_arc_not_the_current_segment() {
     ];
     let sample = RouteSample::from_samples(W, &zero, [[0.0; 3], [1.0, 0.0, 0.0]]);
     assert_eq!(sample.interpolate_scale(0.22, 0.44), 0.44);
-    // If the next anchor is sample zero there is no positional motion, but
-    // the initialized route still changes scale to the next province's.
     let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
     let values = flat(0);
     let world = RouteWorld {
@@ -75,8 +69,6 @@ fn a_nonempty_route_can_initialize_no_animator_samples() {
         heights: field(&values),
         width: W,
     };
-    // The skipped final hop leaves three controls. Initialization clears the
-    // animator's count even though the unit's ordinary route remains nonempty.
     let sample = Motion::route_sample(1, &[2, 3, 9], &line_anchor, &world).unwrap();
     assert_eq!(sample.sample_count, 0);
     assert!(sample.motion.is_none());
@@ -87,8 +79,6 @@ fn a_nonempty_route_can_initialize_no_animator_samples() {
         path: &[2, 3, 9],
         ..Default::default()
     };
-    // Main used route length and returned kind 20 here; native admits a
-    // docked plate without any ordinary formation.
     assert_eq!(
         route.stack_kind_from_animator(1, &map, sample.sample_count),
         Some(19)
@@ -107,8 +97,6 @@ fn cleared_animator_uses_the_ordinary_route_for_direction() {
         alternate_path: &[3],
         ..Default::default()
     };
-    // An empty animator route falls back to
-    // ordinary[0]. With samples, the animator supplies display[0] instead.
     assert_eq!(route.stack_kind_from_animator(1, &map, 0), Some(1));
     assert_eq!(route.stack_kind_from_animator(1, &map, 8), Some(2));
 }
@@ -179,8 +167,6 @@ fn native_route_inserts_only_admitted_crossings_before_spline_sampling() {
     assert_eq!(controls(&anchors, &[]), None);
 }
 
-/// A line of provinces 1-2-3-4-5, where 8 neighbours 2 but has no anchor
-/// and 9 has an anchor but no neighbour.
 fn line_map() -> MovementMap {
     MovementMap::from_parts(&[
         (1, LAND, land(&[2])),
@@ -213,7 +199,6 @@ fn a_later_hop_without_a_neighbour_or_an_anchor_is_skipped() {
     let whole = walk_route(&map, 1, &[2, 3], &line_anchor);
     assert_eq!(whole.skipped, 0);
     for gap in [9, 8] {
-        // The next hop is tested against the same province, 2.
         let walk = walk_route(&map, 1, &[2, gap, 3], &line_anchor);
         assert_eq!(walk.skipped, 1, "{gap}");
         assert_eq!(walk.hops, whole.hops, "{gap}");
@@ -225,19 +210,15 @@ fn a_later_hop_without_a_neighbour_or_an_anchor_is_skipped() {
 #[test]
 fn a_skipped_end_hop_leaves_its_end_of_the_polyline_without_a_handle() {
     let map = line_map();
-    // The first hop skipped: no phantom handle before the unit's anchor.
     let walk = walk_route(&map, 1, &[9, 2, 3], &line_anchor);
     assert_eq!(walk.skipped, 1);
     let points = route_control_points(W, &walk.hops);
     assert_eq!(points[0], [10.0, 0.0, 5.0]);
     assert_eq!(points.len(), 4);
-    // The last hop skipped: 3's anchor is never appended, and three
-    // controls are no movement at all.
     let walk = walk_route(&map, 1, &[2, 3, 9], &line_anchor);
     assert_eq!(walk.skipped, 1);
     assert_eq!(route_control_points(W, &walk.hops).len(), 3);
     assert_eq!(line_motion(&map, &[2, 3, 9]), None);
-    // No province of the route kept: nothing to draw.
     assert_eq!(walk_route(&map, 1, &[9, 8], &line_anchor).hops, []);
     assert_eq!(line_motion(&map, &[9, 8]), None);
     assert_eq!(
@@ -249,8 +230,6 @@ fn a_skipped_end_hop_leaves_its_end_of_the_polyline_without_a_handle() {
 #[test]
 fn the_walk_stops_once_the_settled_controls_are_fixed() {
     let map = line_map();
-    // Two controls past 2's anchor are fixed by hop 5; the unreachable
-    // last hop is never examined and does not move the point.
     let walk = walk_route(&map, 1, &[2, 3, 4, 5, 9], &line_anchor);
     assert_eq!((walk.hops.len(), walk.skipped), (4, 0));
     assert!(walk.hops.iter().all(|hop| !hop.last));
@@ -258,7 +237,6 @@ fn the_walk_stops_once_the_settled_controls_are_fixed() {
         line_motion(&map, &[2, 3, 4, 5, 9]),
         line_motion(&map, &[2, 3, 4, 5])
     );
-    // Until then a skipped hop is examined and counted.
     assert_eq!(walk_route(&map, 1, &[2, 3, 4, 9], &line_anchor).skipped, 1);
 }
 
@@ -269,16 +247,12 @@ fn route_height_is_sampled_after_flat_control_points() {
     let motion = Motion::new_with_crossings(W, &anchors, &[Some([1, 1])], &field(&values))
         .expect("valid crossing route");
     let at = motion.position();
-    // One world unit along the flat hop, on the terrain rather than the anchors' height.
     assert!((at[0] - 1.0).abs() < 0.05, "{at:?}");
     assert_eq!(at[1], 12.0);
 }
 
 #[test]
 fn the_settled_counter_sits_one_world_unit_along_its_route() {
-    // `g_TickThreshold` clamps the free arc while the unit is still in its
-    // province: however far the simulation has moved it, the counter stands
-    // 1.0 along the spline from its own anchor.
     close(
         settled(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]]).expect("moves"),
         [1.0, FLOOR, 0.0],
@@ -293,8 +267,6 @@ fn the_settled_counter_sits_one_world_unit_along_its_route() {
 
 #[test]
 fn a_hop_shorter_than_the_clamp_runs_past_its_next_anchor() {
-    // The interpolation parameter is not clamped: with t[A] < 1.0 the
-    // search stops at A and the engine's lerp carries on past it.
     let at = settled(&[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]).expect("moves");
     assert!(at[0] > 0.5, "{at:?}");
     close(at, [1.0, FLOOR, 0.0], 0.05);
@@ -310,7 +282,6 @@ fn the_turn_ahead_bends_the_first_world_unit_and_sets_the_heading() {
         at[2] <= 0.0,
         "the corner ahead bows the start away from it: {at:?}"
     );
-    // Heading is the segment's own atan2(dz, dx): almost straight along +x.
     assert!(heading.abs() < 0.1, "{heading}");
 }
 
@@ -325,7 +296,6 @@ fn a_one_province_route_leaves_the_counter_where_it_stands() {
 fn a_route_across_the_map_seam_takes_the_short_way() {
     let west = [4.0, 0.0, 500.0];
     let east = [W - 4.0, 0.0, 500.0];
-    // Unwrapped, the eastern anchor is eight units to the *west* of the western one.
     let brought = unwrap_x(W, east, west);
     assert!((brought[0] - -4.0).abs() < 1e-3, "{brought:?}");
     close(
@@ -383,9 +353,7 @@ fn the_segment_search_stops_at_the_next_anchor_and_does_not_clamp() {
     assert_eq!(segment(&samples, 2, 1.0), Some(2));
     assert_eq!(segment(&samples, 0, 1.0), None);
     close(point_on(&samples, 3, 1.0), [1.0, 0.0, 0.0], 1e-5);
-    // Capped at A = 2 (arc 0.8), the lerp runs on to 1.0 along the last segment.
     close(point_on(&samples, 2, 1.0), [1.0, 0.0, 0.0], 1e-5);
-    // A degenerate segment snaps to its end.
     let flat = [sample(0.0, 0.0), sample(0.5, 0.00001)];
     assert_eq!(point_on(&flat, 1, 1.0), [0.5, 0.0, 0.0]);
 }
@@ -404,7 +372,6 @@ fn native_stack_kind_uses_viewer_animation_and_native_neighbor_ordinal() {
         }),
         19
     );
-    // A rebuilt route is moving before its simulation progress advances.
     let moving = StackKindInputs {
         display_moving: true,
         direction: Some(3),
@@ -441,8 +408,6 @@ fn native_stack_kind_uses_viewer_animation_and_native_neighbor_ordinal() {
     );
 }
 
-/// Only a kind rebuilt from content is marked native: the combat wedge
-/// must not take the standstill fallback of a route content cannot place.
 #[test]
 fn routes_mark_which_stack_kinds_are_native() {
     use replay_data::{
@@ -458,8 +423,6 @@ fn routes_mark_which_stack_kinds_are_native() {
         .map(Into::into),
         metrics: Metrics::default(),
     };
-    // 1 attacks toward 2; 2 defends; 3 attacks with an unplaceable first
-    // hop; 4 attacks with no Divisions row, so no location.
     let located = [(1, 1), (2, 2), (3, 1)];
     *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
         located
@@ -505,9 +468,6 @@ fn routes_mark_which_stack_kinds_are_native() {
         TableView::Complete(TableRows::DivisionPanelStats(vec![panel]));
     let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
     let anchor = |id: u32| Some([id as f32, 0.0, 0.0]);
-    // Timing content knows provinces 1 and 9 without an edge between them,
-    // so 3's first hop takes the native 100000 distance; the counter map
-    // below still cannot place it.
     let timing = MovementContent {
         map: MovementMap::from_parts(&[(1, LAND, Vec::new()), (9, LAND, Vec::new())]),
         defines: replay_derive::eta_derive::Defines {
@@ -524,7 +484,6 @@ fn routes_mark_which_stack_kinds_are_native() {
             ..Default::default()
         }),
     };
-    // Stateless provinces: no infrastructure term.
     *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
         [1, 9]
             .map(|id| replay_data::rows::ProvinceRow {
@@ -539,8 +498,6 @@ fn routes_mark_which_stack_kinds_are_native() {
         ]));
     crate::movement_timing::test_support::neutral_world(&mut frame, 1);
     let etas = Etas::read(&frame, Some(&timing)).unwrap();
-    // Only 3 moves with a base speed: one hour at 1 km/h. 1 and 2 have no
-    // route and 4 has no location.
     assert_eq!(etas.get(3), Some((100_000, 100_000)));
     assert_eq!(etas.get(1), None);
     assert_eq!(etas.get(4), None);
@@ -553,12 +510,10 @@ fn routes_mark_which_stack_kinds_are_native() {
         })
     };
     let [first, defending, unplaced, unlocated] = kinds(Some(&map));
-    // The attacker's directional kind toward the combat province.
     assert_eq!(first, (1, true));
     assert_eq!(defending, (10, true));
     assert!(!unplaced.1);
     assert!(!unlocated.1);
-    // Without movement content only the defending kind is native.
     let [first, defending, unplaced, unlocated] = kinds(None);
     assert_eq!(defending, (10, true));
     assert!([first, unplaced, unlocated].iter().all(|kind| !kind.1));
@@ -599,7 +554,6 @@ fn cold_stack_uses_alternate_route_and_requires_complete_geometry() {
     row.combat_role = 0;
     row.combat_count = 0;
     assert_eq!(kind(&row, &anchor), Some(0));
-    // A province without content terrain is not a stationary land unit.
     assert_eq!(UnitRoute::division(&row).stack_kind(9, &map, &anchor), None);
     assert!(snaps_to_stack(CounterClass::Division, 2, 1, 1));
     assert!(!snaps_to_stack(CounterClass::Division, 12, 1, 1));
@@ -612,7 +566,6 @@ const SEA: ProvinceTerrain = ProvinceTerrain { flags: 0, index: 1 };
 #[test]
 fn a_task_force_takes_the_class1_kinds_and_its_port_slot() {
     use replay_data::rows::TaskForceMapMotionRow as Row;
-    // 1 is a land (port) province and 6 sea, each with neighbours 2, 3, 4 in native order.
     let map = MovementMap::from_parts(&[
         (1, LAND, land(&[2, 3, 4])),
         (2, SEA, land(&[1, 6])),
@@ -625,14 +578,11 @@ fn a_task_force_takes_the_class1_kinds_and_its_port_slot() {
     let navy = CounterClass::TaskForce;
     assert_eq!((navy.standstill(true), navy.standstill(false)), (19, 0));
     let mut row = Row::default();
-    // Standing: docked in a land province, slot 0 at sea.
     assert_eq!(kind(&row, 1), Some(19));
     assert_eq!(kind(&row, 6), Some(0));
-    // Moving: 20 out of a land province, the division's land kinds from sea.
     row.path = vec![3];
     assert_eq!(kind(&row, 1), Some(20));
     assert_eq!(kind(&row, 6), Some(2));
-    // In combat: 9 attacking, 10 defending, both snapped to their stack anchor.
     row.combat_role = 1;
     assert_eq!(kind(&row, 6), Some(9));
     row.combat_role = 2;
@@ -644,7 +594,6 @@ fn a_task_force_takes_the_class1_kinds_and_its_port_slot() {
 #[test]
 fn a_railway_gun_takes_the_class13_kinds() {
     use replay_data::rows::RailwayGunCounterInputRow as Row;
-    // 1 is land and 6 sea, each with neighbours 2, 3, 4 in that native order.
     let map = MovementMap::from_parts(&[
         (1, LAND, land(&[2, 3, 4])),
         (2, LAND, land(&[1, 6])),
@@ -652,7 +601,6 @@ fn a_railway_gun_takes_the_class13_kinds() {
         (4, LAND, land(&[1, 6])),
         (6, SEA, land(&[2, 3, 4])),
     ]);
-    // Every province but 9 has a `Standstill RG` anchor.
     let anchor = |id: u32| (id != 9).then_some([id as f32, 0.0, 0.0]);
     let kind =
         |row: &Row, province| UnitRoute::railway_gun(row).stack_kind(province, &map, &anchor);
@@ -667,10 +615,8 @@ fn a_railway_gun_takes_the_class13_kinds() {
     row.naval_transfer = 0;
     assert_eq!(kind(&row, 1), Some(23));
     assert_eq!(kind(&row, 6), Some(31));
-    // The alternate route is the displayed one.
     row.alternate_path = vec![4];
     assert_eq!(kind(&row, 1), Some(24));
-    // A set movement target with no displayed route stands.
     row.alternate_path.clear();
     row.ordinary_path.clear();
     row.target = 3;
@@ -681,7 +627,6 @@ fn a_railway_gun_takes_the_class13_kinds() {
     row.combat_count = 1;
     assert_eq!(kind(&row, 1), Some(22));
     assert!(snaps_to_stack(gun, 22, 1, 1));
-    // A gun has no stand-off kind 9, and a division's directional kinds are not a gun's.
     assert!(!snaps_to_stack(gun, 9, 1, 1));
     assert!(!snaps_to_stack(gun, 2, 1, 1));
     assert!(!snaps_to_stack(gun, 30, 1, 1));
@@ -689,7 +634,6 @@ fn a_railway_gun_takes_the_class13_kinds() {
     row.combat_role = 2;
     assert_eq!(kind(&row, 1), Some(10));
     assert!(snaps_to_stack(gun, 10, 2, 1));
-    // Only the first hop is checked: 5 is not a neighbour of 1 and 9 has no gun anchor.
     for (path, expected) in [
         (vec![5], None),
         (vec![9], None),
@@ -702,7 +646,6 @@ fn a_railway_gun_takes_the_class13_kinds() {
         };
         assert_eq!(kind(&row, 1), expected);
     }
-    // A province without content terrain is not standing still.
     assert_eq!(kind(&Row::default(), 12), None);
 }
 
@@ -723,8 +666,6 @@ fn a_railway_gun_stands_and_moves_on_its_own_slot_unless_it_snaps() {
     };
     let route = UnitRoute::railway_gun(&moving);
     assert_eq!(route.stack_kind(1, &map, &|id| anchor(id, 21)), Some(22));
-    // Moving without attacking: the animator's point over the slot-21 anchors, never the
-    // directional kind's anchor.
     let position = route.position(1, 22, &world, &anchor).expect("anchored");
     assert_eq!(position.standing, [121.0, 0.0, 1.0]);
     let at = position.at();
@@ -733,7 +674,6 @@ fn a_railway_gun_stands_and_moves_on_its_own_slot_unless_it_snaps() {
         route.standing(1, true, 22, &anchor),
         Some([121.0, 0.0, 1.0])
     );
-    // Attacking from land it snaps to its directional stack anchor.
     let attacking = Row {
         combat_role: 1,
         combat_count: 1,
@@ -745,7 +685,6 @@ fn a_railway_gun_stands_and_moves_on_its_own_slot_unless_it_snaps() {
         .expect("anchored");
     assert!(snapped.motion.is_none());
     assert_eq!(snapped.at(), [122.0, 0.0, 1.0]);
-    // Defending, it takes the stand-off anchor.
     let defending = Row {
         combat_role: 2,
         ..attacking.clone()
@@ -776,7 +715,6 @@ fn a_division_moves_to_its_settled_point_and_a_snapped_one_stands() {
     assert_eq!(moving.standing, [100.0, 0.0, 1.0]);
     let at = moving.at();
     assert!((at[0] - 101.0).abs() < 1e-3, "{at:?}");
-    // A defender's stand-off slot snaps to its stack anchor.
     let defending = UnitRoute {
         combat_role: 2,
         ..route
@@ -848,7 +786,6 @@ fn live_position(province: u32, path: &[u32], start: f32, combat: bool) -> Posit
     }
 }
 
-/// The same route with its stack snapped to its combat anchor.
 fn snapped(position: &Position, combat: bool) -> Position {
     let mut movement = Movement::clone(position.movement.as_ref().unwrap());
     movement.snapped = true;
@@ -874,9 +811,6 @@ fn movement_frame(time: f32, hour: i32, speed: f32) -> MovementFrame {
     }
 }
 
-/// A history whose render delta has settled on 0.1 s frames (the sorted ring takes about 160 to
-/// fill), in which `units` have run from their anchors to the settled arc of `old` at hour 100,
-/// its last frame at time zero.
 fn settled_on(old: &Position, units: &[Unit]) -> MovementHistory {
     let mut history = MovementHistory::default();
     for frame in -256..=0 {
@@ -904,9 +838,7 @@ fn drawn(history: &mut MovementHistory, unit: Unit, position: &Position) -> [f32
 #[test]
 fn the_render_delta_averages_the_middle_of_its_sorted_frame_times_and_caps_at_half_a_second() {
     let mut delta = RenderDelta::default();
-    // One time among 31 zeros sorts to the top, outside the middle 26.
     assert_eq!(delta.step(0.1), 0.05);
-    // The cursor writes over the sorted ring, so a steady rate fills it in about five sweeps.
     for _ in 0..32 {
         delta.step(0.1);
     }
@@ -943,14 +875,9 @@ fn arrivals_keep_the_old_route_and_move_each_frame_without_advancing_twice() {
     }
 }
 
-/// What moves is placed at the frame's own head, not at the publication's: between two
-/// publications the hour stands still and the counter is still advanced every display frame, and
-/// the same frames leave it in the same place whether the publication before it covered 6 game
-/// hours or 24. So the simulation's rate never places anything that moves.
 #[test]
 fn a_gliding_counter_is_placed_at_every_display_frame_between_two_publications() {
     for unit in [Unit::Division(7), Unit::TaskForce(7)] {
-        // Four display frames to one publication, each covering `hours` of the clock.
         let placed = |hours: i32| {
             let old = live_position(1, &[2, 3], 0.0, false);
             let next = live_position(2, &[3], 10.0, false);
@@ -974,7 +901,6 @@ fn a_gliding_counter_is_placed_at_every_display_frame_between_two_publications()
 fn layers_placing_one_unit_share_its_advance() {
     let unit = Unit::Division(7);
     let old = live_position(1, &[2, 3], 0.0, false);
-    // The counter and the figure build their own copies of the same route.
     let counter = live_position(2, &[3], 10.0, false);
     let figure = live_position(2, &[3], 10.0, false);
     let mut history = settled_on(&old, &[unit]);
@@ -1025,7 +951,6 @@ fn entering_combat_on_the_same_route_keeps_the_arc_and_stops_it() {
     let route = live_position(5, &[6], 50.0, false);
     let fighting = live_position(5, &[6], 50.0, true);
     let mut history = settled_on(&old, &[unit]);
-    // A reroute rebuilds at the province's anchor and climbs toward the settled arc.
     next_frame(&mut history, 1, 101, 2.0);
     assert!((drawn(&mut history, unit, &route)[0] - 50.2).abs() < 1e-4);
     next_frame(&mut history, 2, 101, 2.0);
@@ -1080,7 +1005,6 @@ fn movement_arrival_deadlines_and_unit_classes_remain_independent() {
     }
     assert_eq!(history.units.len(), 3);
     assert!(history.running());
-    // Six days after the glide's first advance it gives up and rebuilds at the new anchor.
     next_frame(&mut history, 3, 101 + 6 * 24, 0.1);
     let at = drawn(&mut history, Unit::Division(7), &next);
     assert!((at[0] - 10.01).abs() < 1e-5, "{at:?}");
@@ -1159,7 +1083,6 @@ fn a_glide_interpolates_the_drawn_routes_stack_scale_over_its_next_anchor() {
     let mut history = settled_on(&old, &[unit]);
     next_frame(&mut history, 1, 101, 10.0);
     next_frame(&mut history, 2, 101, 10.0);
-    // One world unit plus one frame along the old route's ten: a fifth of its scale step.
     let glide = history.sample(unit, &next).unwrap();
     assert!((glide.motion.position()[0] - 2.0).abs() < 1e-4);
     assert!((glide.scale - 1.2).abs() < 1e-4, "{}", glide.scale);
@@ -1199,14 +1122,6 @@ fn a_new_animator_starts_at_its_anchor_as_the_naval_one_does() {
     assert_eq!(history.sample(unit, &old), None);
 }
 
-/// A mover is placed from the recording's own rows, never from a prediction: its publication
-/// carries where this hour's rows put it and where the publication before read it, and the display
-/// frame interpolates between the two at its own head. The first publication to place a unit
-/// carries no pair, so its counter stands exactly where its rows put it until the next one lands.
-///
-/// The places a route and its recorded estimate predict stand 14.87 world units from the next
-/// publication's own placement at the top speed, 227 pixels at the stress test's camera. So the
-/// places are read, not computed.
 #[test]
 fn a_mover_carries_the_two_publications_own_places_and_no_prediction() {
     let unit = Unit::Division(7);
@@ -1217,8 +1132,6 @@ fn a_mover_carries_the_two_publications_own_places_and_no_prediction() {
         None,
         "the first publication to place it has nothing to move it from"
     );
-    // The same publication's layout made again (the art it was waiting for arrived) is the same
-    // hour's placement, not a second one.
     assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
     let track = history
         .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
@@ -1226,24 +1139,16 @@ fn a_mover_carries_the_two_publications_own_places_and_no_prediction() {
     assert_eq!(track.places().len(), 2);
     assert_eq!((track.places()[0].hour, track.places()[0].at), (100, [10.0, 0.0, 0.0]));
     assert_eq!((track.places()[1].hour, track.places()[1].at), (148, [58.0, 0.0, 0.0]));
-    // Every display frame of the interval stands between the two, by its own hour.
     let at = |hour, fraction| track.at(crate::map::anchored::Head { hour, fraction })[0];
     assert_eq!([at(100, 0.0), at(124, 0.0), at(148, 0.0)], [10.0, 34.0, 58.0]);
     assert!((at(100, 0.5) - 10.5).abs() < 1e-3, "{}", at(100, 0.5));
-    // The layout of the publication before is still asked for while the frame draws it.
     let held = history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
     assert_eq!(held, None, "hour 100 has only hour 100's own place before it");
-    // A third publication carries all three places, so a head anywhere among them has a pair.
     let longer = history.track(unit, &[at_hour(196, [106.0, 0.0, 0.0])], 196, 0.0).expect("three places");
     assert_eq!(longer.places().len(), 3);
     assert_eq!(longer.at(crate::map::anchored::Head { hour: 124, fraction: 0.0 })[0], 34.0);
 }
 
-/// A mover's places are the hours its own rows moved it at, so a display frame stands it where the
-/// recording had it at that frame's hour. The publication's own rows give one place for the
-/// interval's end: on them alone a unit that crossed a province in the middle of an interval is
-/// glided evenly across the whole of it, and a frame at any hour inside it stands the unit
-/// somewhere the recording never put it.
 #[test]
 fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
     use crate::map::anchored::Head;
@@ -1255,8 +1160,6 @@ fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
     let mut hourly = MovementHistory::default();
     next_frame(&mut hourly, 0, 100, 2.0);
     at(&mut hourly, &[at_hour(100, first)], 100);
-    // The recording moved it into its new province at hour 130, a third of the way through the
-    // interval the publication of hour 148 covers, and left it there.
     let track = at(&mut hourly, &[at_hour(130, second), at_hour(148, second)], 148).expect("the hours' places");
     let place = |hour, fraction| track.at(Head { hour, fraction })[0];
     assert_eq!(place(100, 0.0), first[0], "the hour it was read in its old province");
@@ -1266,8 +1169,6 @@ fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
     assert!(track.held_still(Head { hour: 140, fraction: 0.0 }), "standing there is the recording's own");
     assert!(!track.held_still(Head { hour: 115, fraction: 0.0 }), "the hours move it there");
 
-    // The same two publications without the hours: every hour of the interval is a place the
-    // recording never read, and the unit is still moving at hour 140, where it had arrived.
     let mut coarse = MovementHistory::default();
     next_frame(&mut coarse, 0, 100, 2.0);
     at(&mut coarse, &[at_hour(100, first)], 100);
@@ -1277,8 +1178,6 @@ fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
     assert!(evenly(140) < second[0], "still gliding at an hour it had arrived at");
 }
 
-/// A publication whose steps carried no hours — a seek's reset, a piece's crossing, a catch-up —
-/// places its movers at its own hour and nothing is invented for the hours between.
 #[test]
 fn a_publication_without_hours_places_its_movers_at_its_own_hour_alone() {
     use crate::map::anchored::Head;
@@ -1294,9 +1193,6 @@ fn a_publication_without_hours_places_its_movers_at_its_own_hour_alone() {
     assert_eq!(track.at(Head { hour: 148, fraction: 0.0 })[0], 58.0);
 }
 
-/// A seek starts a chain of its own: the hour before the seek and the hour after it are two
-/// histories, and pairing them would carry a counter across whatever lies between. The mover
-/// stands exactly where the hour sought puts it until the next publication lands.
 #[test]
 fn a_seek_backwards_starts_the_places_afresh_instead_of_pairing_two_histories() {
     let unit = Unit::Division(7);
@@ -1309,10 +1205,6 @@ fn a_seek_backwards_starts_the_places_afresh_instead_of_pairing_two_histories() 
     assert_eq!((track.places().len(), track.places()[0].hour, track.places()[1].hour), (2, 40, 42));
 }
 
-/// A figure's root is its counter's: both are the place the recording's own rows put the unit at
-/// the display frame's own head, read from one chain of places cut at the publication the frame
-/// draws. So a figure advances on every display frame of an interval instead of standing until a
-/// publication re-slots it (which left 71 to 75% of frames moving no figure's root).
 #[test]
 fn a_figure_stands_where_its_counters_track_puts_it_at_the_frames_own_head() {
     use crate::map::anchored::Head;
@@ -1341,12 +1233,9 @@ fn a_figure_stands_where_its_counters_track_puts_it_at_the_frames_own_head() {
         );
         let figure = history.at_head(unit, &moving).expect("the hours place it");
         assert_eq!(figure.at, counter.at(Some(&track), head), "head {hour}");
-        // Two publications' places say nothing of the facing: it stays the hour's own.
         assert_eq!(figure.heading, None, "head {hour}");
         walked.push(figure.at[0]);
     }
-    // The places are a game hour of travel apart, so each head inside them stands further along
-    // than the one before, and a head past the newest holds at it rather than running on.
     let wanted = [10.0, 22.5, 34.0, 58.0];
     assert!(
         walked.iter().zip(wanted).all(|(walked, wanted)| (walked - wanted).abs() < 1e-3),
@@ -1354,8 +1243,6 @@ fn a_figure_stands_where_its_counters_track_puts_it_at_the_frames_own_head() {
     );
 }
 
-/// Where a figure stands is a function of the places and the head alone: a frame that has just
-/// sought to an hour draws every figure where the frames that walked to it draw it.
 #[test]
 fn a_cold_seek_places_every_figure_where_the_walk_to_the_same_hour_does() {
     use crate::map::anchored::Head;
@@ -1390,8 +1277,6 @@ fn a_cold_seek_places_every_figure_where_the_walk_to_the_same_hour_does() {
     assert_eq!(walked, sought);
 }
 
-/// A window dump draws every unit settled at one hour, so no figure is carried off the placement
-/// its own rows give: a stopped picture is exact.
 #[test]
 fn a_steady_frame_leaves_every_figure_on_its_hours_placement() {
     let unit = Unit::Division(7);
@@ -1410,10 +1295,6 @@ fn a_steady_frame_leaves_every_figure_on_its_hours_placement() {
     assert_eq!(history.at_head(unit, &moving), None);
 }
 
-/// A display frame draws one publication's layout while the maker lays the next one out, so a
-/// figure stands on the track that layout was handed for its unit — not on a newer one, and not on
-/// a chain of places the counters on screen never saw. A unit that layout left where its rows put
-/// it stands there, which is where its counter stands.
 #[test]
 fn a_figure_stands_on_the_track_of_the_layout_its_frame_draws() {
     use crate::map::anchored::Head;
@@ -1441,7 +1322,6 @@ fn a_figure_stands_on_the_track_of_the_layout_its_frame_draws() {
     assert_eq!(at(&mut history, 4, 148), older.at(head));
     assert_eq!(at(&mut history, 5, 196), newer.at(head));
     assert_ne!(older.at(head), newer.at(head), "the two layouts place it apart");
-    // A layout no track was handed for leaves the figure where its own animator draws it.
     let standing = at(&mut history, 6, 60);
     let drawn = history.sample(unit, &moving).expect("its animator draws it");
     assert_eq!(standing, drawn.motion.position());

@@ -15,7 +15,6 @@ impl Mode {
             let speed = speed.parse::<f64>().ok()?;
             return (speed.is_finite() && speed > 0.0).then_some(Self::Wall(speed));
         }
-        // Keep the existing nominal parser and its fixed step unchanged.
         text.strip_prefix("play:")?.parse().ok().map(Self::Nominal)
     }
     pub(super) fn speed(self) -> f64 {
@@ -41,7 +40,6 @@ pub(super) struct Sample {
     pub(super) seconds: f64,
 }
 impl Clock {
-    /// No clock is sampled before the active capture sweep or in other modes.
     pub(super) fn configure(&mut self, mode: Option<Mode>, active: bool) {
         let mode = mode.filter(|_| active);
         if mode != self.mode {
@@ -51,7 +49,6 @@ impl Clock {
             };
         }
     }
-    /// Whether the active sweep uses elapsed wall time, without sampling the clock.
     pub(super) fn wall_active(&self) -> bool {
         self.mode.is_some_and(Mode::wall)
     }
@@ -66,7 +63,6 @@ impl Clock {
         self.elapsed = now.duration_since(start);
         Some(Sample { now, seconds })
     }
-    // The tick and shown stamp have independent origins; report the tick's own elapsed sample.
     pub(super) fn stamp(&self, head: Option<Playhead>, active: bool) -> Stamp {
         Stamp(
             self.mode

@@ -1,26 +1,11 @@
-//! Sight lines from a free eye over the drawn terrain.
-//!
-//! A free eye sees a map icon's anchor unless the drawn ground or water stands between them. The
-//! test is one sight line per anchor: it walks the line over a pyramid of block maxima of the
-//! height bytes, passes every block the line clears by at least the caller's band, and samples the
-//! drawn triangle surface ([`HeightField::surface_height`]) only where the line comes closer than
-//! that. The map wraps in `x` and the line walks the wrapped cells; rows beyond the map's top and
-//! bottom read its edge rows, as the surface does.
 
 use super::province_map::{HEIGHT_SCALE, HeightField, WATER_HEIGHT};
 
-/// Block maxima of a height field: level `k` holds the highest byte under each block of `2^k` by
-/// `2^k` terrain cells, a cell being the square between four neighbouring height samples.
 #[derive(Clone, Debug, Default)]
 pub struct TerrainSight {
-    /// Height samples a row, which is also the number of cells a row: the last cell joins the
-    /// last column to the first, as the map wraps.
     width: u32,
-    /// Height sample rows; cells span one row fewer.
     rows: u32,
-    /// Levels 1, 2, ... up to a single block.
     levels: Vec<Level>,
-    /// The highest drawn surface anywhere, water included.
     ceiling: f32,
 }
 
@@ -38,19 +23,16 @@ impl Level {
 }
 
 impl TerrainSight {
-    /// The pyramid of `field`; empty (every line clear) when the field holds no full raster.
     pub fn new(field: &HeightField<'_>) -> Self {
         let (width, rows) = (field.width, field.height);
         if width == 0 || rows < 2 || field.values.len() < (width as usize) * (rows as usize) {
             return Self::default();
         }
-        // A sample by column and bottom-up row; bitmap rows run down.
         let sample = |column: u32, bottom: u32| {
             let row = (rows - 1 - bottom) as usize;
             field.values[row * width as usize + (column % width) as usize]
         };
         let cell_rows = rows - 1;
-        // Level 1 reads the 3 by 3 samples around each 2 by 2 block of cells.
         let first_columns = width.div_ceil(2);
         let first_rows = cell_rows.div_ceil(2);
         let mut max = Vec::with_capacity((first_columns * first_rows) as usize);
@@ -105,16 +87,10 @@ impl TerrainSight {
         }
     }
 
-    /// The highest drawn surface anywhere on the map.
     pub fn ceiling(&self) -> f32 {
         self.ceiling
     }
 
-    /// How far the sight line from `eye` to `target` passes above the drawn surface at its
-    /// lowest, the part within `skip` of the target left out (the target's own ground), and held
-    /// within `[-band, band]`: anything clearer than `band` reads `band`, and the walk stops as
-    /// soon as the line is `band` below the surface. Both points are world positions; `target`
-    /// is taken on the map copy nearest the eye.
     pub fn clearance(
         &self,
         field: &HeightField<'_>,
@@ -140,7 +116,6 @@ impl TerrainSight {
         let direction = [dx / length, dz / length];
         let height = |u: f32| eye[1] + slope * u;
         let point = |u: f32| [eye[0] + direction[0] * u, eye[2] + direction[1] * u];
-        // Nothing stands above the ceiling: start where the line comes down to it.
         let roof = self.ceiling + band;
         let mut u = if eye[1] <= roof {
             0.0
@@ -160,10 +135,6 @@ impl TerrainSight {
                     continue 'walk;
                 }
             }
-            // Within the band of the blocks, for about a cell: walk the drawn surface plane by
-            // plane. Between the points where the line enters and leaves a triangle the clearance
-            // is linear (or the least of two linear terms over water), so those points hold its
-            // lowest values and no crest falls between them.
             let stop = past(u, (u + 1.0).min(end));
             let mut at = u;
             loop {
@@ -182,10 +153,6 @@ impl TerrainSight {
         least
     }
 
-    /// The highest surface under every block of the level that the cells between `from` and `to`
-    /// touch: each block column the cells' `x` range passes, taken across the map's seam (where
-    /// the last block, which may be narrower, meets the first), by each block row their `z` range
-    /// spans.
     fn block_high(&self, index: usize, level: &Level, from: [f32; 2], to: [f32; 2]) -> f32 {
         let shift = index + 1;
         let width = i64::from(self.width);
@@ -203,7 +170,6 @@ impl TerrainSight {
             for row in low_row..=high_row {
                 high = high.max(level.get(block, row));
             }
-            // On to the next block's first cell, or the first cell past the seam.
             let block_end = (i64::from(block + 1) << shift).min(width);
             cell += block_end - column;
             if cell > last_cell {
@@ -214,11 +180,7 @@ impl TerrainSight {
     }
 }
 
-/// How far along `direction` (a horizontal unit vector) from `from` the drawn surface next changes
-/// plane: the next edge of the cell the line runs through, or the diagonal the terrain's index
-/// pattern splits that cell along ([`HeightField::surface_height`]).
 fn next_break(from: [f32; 2], direction: [f32; 2]) -> f32 {
-    // A negative-axis cell-edge nudge can round away; the line still enters the lower cell.
     let [column, bottom] = [0, 1].map(|axis| {
         let ahead = from[axis] + direction[axis] * BREAK_EPSILON;
         if direction[axis] < 0.0 {
@@ -251,15 +213,12 @@ fn next_break(from: [f32; 2], direction: [f32; 2]) -> f32 {
     step.max(BREAK_EPSILON)
 }
 
-/// The least step the surface walk takes, past a break it stands on.
 const BREAK_EPSILON: f32 = 1.0e-4;
 
-/// Far along the line, steps can round away; advance by at least one representable value.
 fn past(from: f32, to: f32) -> f32 {
     if to > from { to } else { from.next_up() }
 }
 
-/// The drawn surface over a height byte: the byte's height or the water above it.
 fn surface(byte: u8) -> f32 {
     (f32::from(byte) * HEIGHT_SCALE).max(WATER_HEIGHT)
 }

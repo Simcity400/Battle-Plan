@@ -1,5 +1,3 @@
-/** Recorded lines adapted to a race once per reply. An interval index keeps the
- * active set small when thousands of countries took turns in a top-N reply. */
 import { IntervalIndex } from '../intervalIndex.ts';
 import { runAt, stretchAt, stretchStarts } from '../series.ts';
 import type { Run } from '../series';

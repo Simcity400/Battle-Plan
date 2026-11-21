@@ -1,20 +1,3 @@
-//! Publication lanes for map events.
-//!
-//! A generation gives each registered native thread its own single-producer
-//! byte ring and shares one [`SharedLane`] among threads that register after
-//! every ring is taken. A callback copies its event into a frame in bounded
-//! synchronous steps, without allocating, locking or calling the game, then
-//! takes the next number of the one global sequence and publishes the frame
-//! with a release store. An event that does not fit goes whole to storage of
-//! its own on its generation's lock-free spill, so no callback waits for the
-//! spool, and its demand sizes the next generation; nothing is overwritten, and
-//! only a refused allocation refuses an event.
-//!
-//! The hourly cut ([`seal`]) reads two counters: when every sequence number
-//! taken has been published, the interval is exactly the events numbered up
-//! to the last one taken; admission skips copied events, but only writing frees their space.
-//! The sizing thread offers a larger generation ([`grow`]); callbacks move to
-//! it, the older one is drained until empty and kept until [`release`].
 use crate::shared_lane::SharedLane;
 use collector_primitives::spill_stack::SpillStack;
 use std::{
@@ -25,36 +8,24 @@ use std::{
     },
 };
 
-/// Frame header: payload length, sequence, hour, family and the native world
-/// occurrence the event happened in.
 pub const HEADER: usize = 4 + 8 + 4 + 1 + 8;
-/// The smallest ring a dedicated lane gets.
 pub const MINIMUM_LANE_BYTES: usize = 64 * 1024;
 
-/// Why a publication was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// No generation is installed.
     Staging,
-    /// The allocator refused the spill an event that did not fit needed.
     Allocation,
-    /// The writer could not read the event's operands.
     Read(&'static str),
 }
 
 struct Lane {
     bytes: Box<[UnsafeCell<u8>]>,
-    /// Producer-owned write position.
     write: UnsafeCell<u64>,
     published: AtomicU64,
     consumed: AtomicU64,
-    /// Spool-owned: where the next interval's copy starts, at least `consumed`.
     assembled: AtomicU64,
-    /// The largest pending byte count a refused frame needed.
     demand: AtomicUsize,
 }
-// One producer writes a lane's bytes ahead of `published`; the consumer reads
-// only behind it and frees only through `consumed`.
 unsafe impl Sync for Lane {}
 
 impl Lane {
@@ -98,7 +69,6 @@ impl Lane {
     }
 }
 
-/// A shared-lane slot's header; its payload is in the slot's byte span.
 #[derive(Clone, Copy, Default)]
 struct SharedRecord {
     sequence: u64,
@@ -108,14 +78,12 @@ struct SharedRecord {
     len: u32,
 }
 
-/// An event no lane or shared slot had room for, with its payload.
 struct Spilled {
     sequence: u64,
     hour: i32,
     family: u8,
     world: u64,
     payload: Vec<u8>,
-    /// A queued interval holds it.
     admitted: bool,
 }
 
@@ -123,16 +91,11 @@ struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
     shared: SharedLane<SharedRecord>,
-    /// Spilled events callbacks pushed and the spool has not taken.
     pushed: SpillStack<Spilled>,
-    /// Taken from `pushed`, sorted by sequence and held until the interval that
-    /// copied it is written; callbacks never lock it.
     spill: Mutex<Vec<Spilled>>,
-    /// Per shared slot: its index + 1 while a queued interval holds it.
     admitted: Box<[AtomicU64]>,
     registered: AtomicUsize,
     publishers: AtomicUsize,
-    /// The generation this one replaced, while it still holds events.
     previous: AtomicPtr<Log>,
 }
 
@@ -185,9 +148,6 @@ impl Log {
     fn admission(&self, slot: u64) -> &AtomicU64 {
         &self.admitted[slot as usize & (self.admitted.len() - 1)]
     }
-    /// Spool side: every spilled event, sorted by sequence, the pushed ones taken
-    /// in. A refused allocation loses the taken events, and the next interval
-    /// reports lost output.
     fn spill(&self) -> std::sync::MutexGuard<'_, Vec<Spilled>> {
         let mut spill = self
             .spill
@@ -205,27 +165,19 @@ impl Log {
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
 static CURRENT: AtomicPtr<Log> = AtomicPtr::new(std::ptr::null_mut());
-#[allow(clippy::vec_box)] // Published pointers stay stable through vector growth.
+#[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
-/// The last sequence number taken; the first event takes 1.
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-/// How many events have been published.
 static PUBLISHED: AtomicU64 = AtomicU64::new(0);
-/// The longest payload the shared lane refused.
 static SHARED_DEMAND: AtomicUsize = AtomicUsize::new(0);
-/// Threads that registered after a generation's lanes were all taken.
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(0);
-/// Intervals admitted to the writer queue and not yet written.
 static ADMITTED: AtomicUsize = AtomicUsize::new(0);
-/// Events that went to a spill since attach.
 static SPILLED: AtomicU64 = AtomicU64::new(0);
 
 std::thread_local! {
-    /// (generation address, its serial, this thread's lane index).
     static LANE: Cell<(usize, u64, usize)> = const { Cell::new((0, 0, 0)) };
 }
 
-/// Where a frame's bytes go. `put` copies the payload in order.
 pub struct Writer<'a> {
     target: Target<'a>,
     written: usize,
@@ -233,7 +185,6 @@ pub struct Writer<'a> {
 }
 
 enum Target<'a> {
-    /// A lane and the position of the writer's first byte.
     Lane(&'a Lane, u64),
     Slot(*mut u8),
 }
@@ -288,8 +239,6 @@ fn lease() -> Option<Lease> {
         }
         let log = unsafe { &*log };
         log.publishers.fetch_add(1, Ordering::SeqCst);
-        // A generation replaced after this check is drained only once no
-        // publisher holds it, so this frame is never lost with it.
         if std::ptr::eq(CURRENT.load(Ordering::SeqCst), log) {
             return Some(Lease(log));
         }
@@ -313,9 +262,6 @@ fn lane_index(log: &Log) -> usize {
     })
 }
 
-/// Publish one event of `len` payload bytes that `write` copies, in the
-/// native world occurrence `world`. A writer that returns an error publishes
-/// nothing.
 pub fn publish(
     family: u8,
     hour: i32,
@@ -393,9 +339,6 @@ pub fn publish(
     Ok(sequence)
 }
 
-/// An event its lane or the shared lane has no room for: its payload is copied into storage
-/// of its own, numbered only once that storage is held, and pushed before it counts as
-/// published, so a sealed interval's spilled events are all on the spill.
 #[cold]
 fn spill(
     log: &Log,
@@ -437,19 +380,14 @@ fn spill(
     Ok(sequence)
 }
 
-/// The hourly cut: the last sequence number of the interval, and whether
-/// every number up to it had been published.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Seal {
     pub last: u64,
     pub complete: bool,
 }
 
-/// Game thread, constant time.
 pub fn seal() -> Seal {
     for _ in 0..64 {
-        // Published first: every publication it counts took a number no
-        // later than the sequence read after it.
         let published = PUBLISHED.load(Ordering::SeqCst);
         let last = SEQUENCE.load(Ordering::SeqCst);
         if published == last {
@@ -466,7 +404,6 @@ pub fn seal() -> Seal {
     }
 }
 
-/// The next sequence number, for a recording that continues a history.
 pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     if !CURRENT.load(Ordering::SeqCst).is_null() {
         return Err("map event sequence restoration requires no staging");
@@ -479,7 +416,6 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// One copied event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame {
     pub sequence: u64,
@@ -490,7 +426,6 @@ pub struct Frame {
     pub len: usize,
 }
 
-/// An interval's copied events and what committing it frees.
 #[derive(Default)]
 pub struct Assembled {
     pub frames: Vec<Frame>,
@@ -498,7 +433,6 @@ pub struct Assembled {
     lanes: Vec<(usize, usize, u64)>,
     shared: Vec<(usize, u64)>,
     rejected: Vec<(usize, u64)>,
-    /// (generation, sequence) of each spilled event copied, ascending per generation.
     spilled: Vec<(usize, u64)>,
     admitted: AtomicBool,
 }
@@ -515,8 +449,6 @@ fn generations() -> impl Iterator<Item = &'static Log> {
     })
 }
 
-/// Spool thread: copy every published event numbered up to `seal.last`
-/// that no earlier interval has committed or queued, in sequence order.
 pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
     output.frames.clear();
     output.bytes.clear();
@@ -629,7 +561,6 @@ fn copy_spilled(
     Ok(())
 }
 
-/// The positions in a generation's spill of the events `copied` lists for it.
 fn spilled_in<'a>(
     spill: &'a mut [Spilled],
     generation: usize,
@@ -645,7 +576,6 @@ fn spilled_in<'a>(
         })
 }
 
-/// Generations stay allocated until `release`, including after replacement.
 fn generation(address: usize) -> &'static Log {
     unsafe { &*(address as *const Log) }
 }
@@ -659,7 +589,6 @@ impl Assembled {
                 * size_of::<(usize, u64)>()
     }
 
-    /// The generations this interval copied spilled events from.
     fn spilled_generations(&self) -> impl Iterator<Item = usize> + '_ {
         self.spilled
             .iter()
@@ -670,7 +599,6 @@ impl Assembled {
             .map(|(_, &(address, _))| address)
     }
 
-    /// Allocation-free admission skips these events without freeing their space.
     pub fn admitted(&self) {
         if self.admitted.swap(true, Ordering::AcqRel) {
             return;
@@ -694,9 +622,6 @@ impl Assembled {
         }
     }
 
-    /// After the interval's frame is written: free what it copied, and
-    /// unlink older generations that are empty and that no callback holds.
-    /// A frame written without admission counts as admitted too.
     pub fn commit(&self) {
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
@@ -749,7 +674,6 @@ impl Assembled {
     }
 }
 
-/// After draining lost frames, copy from the last write and report their lost output.
 pub fn reset_admitted() {
     for log in generations() {
         for lane in log.lanes.iter() {
@@ -764,14 +688,10 @@ pub fn reset_admitted() {
         }
     }
     if ADMITTED.swap(0, Ordering::AcqRel) != 0 {
-        // The row and the faults its seal took were never written.
         crate::interval::lost_output();
     }
 }
 
-/// Sizing thread: install a generation with at least `lanes` thread lanes
-/// of `lane_bytes`, raised by every refusal's recorded demand. Returns
-/// whether a generation was installed.
 pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let current = CURRENT.load(Ordering::SeqCst);
     let lanes = lanes.max(REQUIRED_LANES.load(Ordering::Relaxed));
@@ -799,8 +719,6 @@ pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
             }
             (bytes, (slots, stride))
         }
-        // Room for every thread past the rings to publish once per interval
-        // before growth sizes the shared lane from what it refused.
         None => (
             lane_bytes,
             (lanes.saturating_mul(4).max(16), lane_bytes / 8),
@@ -819,7 +737,6 @@ pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     Ok(true)
 }
 
-/// Bytes every retained generation holds.
 pub fn allocated_bytes() -> usize {
     LOGS.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -840,7 +757,6 @@ pub struct Capacity {
     pub shared_rejected: u64,
     pub sequence: u64,
     pub published: u64,
-    /// Events that went to a spill since attach, and those every generation's spill holds.
     pub spilled: u64,
     pub spill_pending: usize,
 }
@@ -866,11 +782,11 @@ pub fn capacity() -> Capacity {
     capacity
 }
 
-/// Free every generation.
-///
-/// # Safety
-/// No callback can publish: the hooks are restored, no native call holds
-/// one, and every reader of an assembled interval has finished.
+#[doc = " Free every generation."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " No callback can publish: the hooks are restored, no native call holds"]
+#[doc = " one, and every reader of an assembled interval has finished."]
 pub unsafe fn release() {
     CURRENT.store(std::ptr::null_mut(), Ordering::SeqCst);
     ADMITTED.store(0, Ordering::SeqCst);

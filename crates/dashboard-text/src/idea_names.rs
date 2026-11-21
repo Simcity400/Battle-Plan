@@ -1,13 +1,8 @@
-//! Country-specific idea naming, shared by the politics products and effect
-//! descriptions: an idea's selected localisation key, or its generated advisor name.
 
 use crate::catalogue::{self, View};
 use installed_content_core::{ideas::Idea, ideas::IdeaContent};
 use installed_content_localisation::localisation::Argument;
 
-/// The country an idea is named for: its tag,
-/// canonical slot (CountryLinks) and appearance, `None` when the hour does
-/// not hold its CountryAppearance row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IdeaCountry<'a> {
     pub tag: &'a str,
@@ -15,34 +10,22 @@ pub struct IdeaCountry<'a> {
     pub look: Option<CountryLook<'a>>,
 }
 
-/// A country's CountryAppearance fields the naming reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CountryLook<'a> {
-    /// The original tag of a dynamic country, empty for any other country.
     pub name_tag: &'a str,
-    /// The positive original reference's
-    /// bytes, else the own tag, or why the exact operand is unavailable.
-    /// Generated advisors demand it only after the cosmetic names lookup misses.
     pub original_or_own_tag: Result<&'a str, &'a str>,
-    /// The cosmetic tag.
     pub cosmetic_tag: &'a str,
-    /// Whether a dynamic country is in civil war
-    /// ([`crate::identity::civil_war`]), or why the hour cannot say; `Ok(false)` for
-    /// any other country, whose name selection never needs this check.
     pub civil_war: Result<bool, &'a str>,
 }
 
-/// An idea's selected localisation key or generated name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IdeaName {
     Key(String),
     Generated(String),
 }
 
-/// The localisation pattern for a generated advisor name.
 const ADVISOR_NAME_PATTERN: &str = "POLITICS_ADVISOR_NAME_PATTERN";
 
-/// An idea's name for a country: its selected localisation key, or a generated advisor name.
 pub fn idea_name(
     ideas: &IdeaContent,
     names: &installed_content_core::names::NameLists,
@@ -51,14 +34,9 @@ pub fn idea_name(
     country: IdeaCountry<'_>,
 ) -> Result<IdeaName, String> {
     let Some(idea) = ideas.idea(token).map_err(|gap| gap.to_string())? else {
-        // Without an idea definition, an advisor's idea is its character, and an unknown
-        // token is copied.
         return Ok(IdeaName::Key(token.to_owned()));
     };
-    // Use the selected definition's key, not the recorded case alias.
     let token = idea.token.as_str();
-    // An empty override, including one beginning with a NUL terminator,
-    // continues down the naming ladder.
     if let Some(name) = idea.name.as_deref().filter(|name| !name.is_empty()) {
         return Ok(IdeaName::Key(name.to_owned()));
     }
@@ -68,7 +46,6 @@ pub fn idea_name(
             country.tag
         ));
     };
-    // The recorded name tag distinguishes dynamic countries.
     let civil_war = match (look.name_tag.is_empty(), look.civil_war) {
         (true, _) => false,
         (false, Ok(civil_war)) => civil_war,
@@ -89,7 +66,6 @@ pub fn idea_name(
         }
     }
     if !idea.law && !idea.designer {
-        // Resolve the category by its authored group name.
         let kind = match ideas.tags.resolve(&idea.group) {
             Ok(Some(category)) => category.kind.as_deref(),
             Ok(None) => {
@@ -108,11 +84,6 @@ pub fn idea_name(
     Ok(IdeaName::Key(token.to_owned()))
 }
 
-/// Draw a male first name and surname from the country's cosmetic names,
-/// then its original-or-own tag's names, then the default entry. Seed the
-/// draw with [`Idea::position`], the country's canonical slot and the idea's
-/// `level`. Localise the pattern with `NAME` and `SURNAME` text arguments.
-/// No draw gives empty text; unreadable drawn names retain their refusal.
 fn generated_idea_name(
     names: &installed_content_core::names::NameLists,
     localisation: &installed_content_localisation::localisation::Localisation,

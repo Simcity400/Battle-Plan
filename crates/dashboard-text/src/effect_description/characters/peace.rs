@@ -1,7 +1,6 @@
 use super::*;
 
 impl Renderer<'_, '_, '_> {
-    // A nonempty tooltip suppresses target resolution; both paths expand and append LF.
     pub(in crate::effect_description) fn char_peace(
         &self,
         item: &Item,
@@ -85,7 +84,6 @@ mod tests {
         }
     }
 
-    // Scalar/block targets and tooltip overrides share the peace-effect reader.
     #[test]
     fn peace_effect_targets_and_tooltip_overrides() {
         engine_executable::executable_tables::initialize_for_tests()

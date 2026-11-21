@@ -1,6 +1,3 @@
-//! Content-selected compiled meshes and their shared actor/material library.
-//! Native geometry, skin palettes, states and submission live in `models/native`.
-//! Presentation clocks and historical actor admission remain reconstructed.
 
 use super::entity_animation::{self, Rig};
 use std::cell::Cell;
@@ -62,28 +59,14 @@ pub(crate) fn map_effects(state: &mesh::EntityState) -> usize {
         .sum()
 }
 
-// ------------------------------------------------------------------ constants
 
-/// `WATER_HEIGHT`. The map-object update compares `camera height - WATER_HEIGHT`
-/// against the sprawl and building cutoffs.
 pub const WATER_HEIGHT: f32 = 9.5;
-/// Update city sprawl below CITY_SPRAWL_SHRINK_DISTANCE,
-/// water-relative. DRAW_MAP_OBJECTS_CUTOFF gates only the separate transient
-/// province entity, not the city list.
 pub fn draws_city_sprawl(camera: &Camera) -> bool {
     camera.height - WATER_HEIGHT < camera.defines.sprawl_cutoff
 }
 
-// -------------------------------------------------------------------- effects
 
-// -------------------------------------------------------------------- library
 
-/// One joint of a skinning palette as the shader reads it: three rows of four,
-/// the last column the translation.
-///
-/// The rows are what a `dot` with `(position, 1)` needs, and the 16-byte
-/// alignment of a `vec4` is what a storage array of them wants, so the
-/// [`mesh::Transform`]'s column form is transposed once here at load.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct PaletteJoint {
@@ -113,36 +96,22 @@ impl PaletteJoint {
     }
 }
 
-/// One placed entity. The engine's own transform for a map object is a
-/// translation, a rotation about Y and a uniform scale; nothing in
-/// `map/buildings.txt`, `map/unitstacks.txt` or the sprawl generator carries
-/// more than that.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct ModelInstance {
     pub position: [f32; 3],
-    /// Radians about +Y.
     pub rotation: f32,
     pub scale: f32,
-    /// Pitch around local X, used by wagons following a sloping rail.
     pub pitch: f32,
-    /// Roll around local Z, used by flying aircraft; paired with pitch at location 9.
     pub roll: f32,
-    /// TrainAlphaStart.xy / TrainAlphaDir.xy; zero for an interior wagon.
     pub train_clip: [f32; 4],
     pub palette_offset: u32,
     pub animation: u32,
     pub animation_seed: u32,
     pub animation_phase: f32,
-    /// Scene-owned incarnation: recreating an entity restarts its state clock
-    /// even when the same mesh and seed are selected again.
     pub animation_epoch: u32,
-    /// Native object-data caller: bit0 is a land figure, bit1 permits UV motion,
-    /// bit2 preserves a caller-supplied basis instead of reconstructing Euler angles;
-    /// bit3 supplies a native state-request random range in `animation_phase`.
     pub native_flags: u32,
     pub native_basis: [[f32; 3]; 3],
-    /// Actor identity independent of the seed and dump sampling epoch.
     pub animation_identity: u32,
 }
 
@@ -158,7 +127,6 @@ impl ModelInstance {
         )
     }
 
-    /// The game copies the caller's matrix and queues it unchanged.
     fn native_transform(self) -> io::Result<mesh::Transform> {
         if self.native_flags & 4 != 0 {
             return Ok(mesh::Transform {
@@ -175,98 +143,50 @@ impl ModelInstance {
     }
 }
 
-/// One `[material]`: the effect's defines and the three textures.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelMaterial {
-    /// Indices into [`ModelLibrary::textures`].
     pub diffuse: usize,
     pub normal: usize,
     pub specular: usize,
 }
 
-/// One resolved mesh: its LOD ladder and the bounding radius a cull needs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelMesh {
     pub asset: AssetKey,
-    /// The name the layer asked for: an entity name or a pdxmesh name.
     pub name: String,
-    /// The `.mesh` the descriptor named.
     pub path: String,
-    /// `entity.scale * pdxmesh.scale`, applied by the actor matrix and mesh import.
     pub scale: f32,
-    /// `loddist`, ascending.
     pub lod_distances: Vec<f32>,
     native: Vec<native::Descriptor>,
-    /// Horizontal radius of LOD 0's bounds, after `scale` and with every
-    /// attachment composed in, for culling.
     pub radius: f32,
-    /// Height of LOD 0's bounds above its own origin, after `scale`.
     pub height: f32,
-    /// Whether a visual mod supplied any file this entity is drawn from (a mesh, animation,
-    /// texture or descriptor, its attachments' included): such an entity keeps a recorded
-    /// counterpart to draw when its own draw is refused ([`ModelLibrary::alternatives`]).
     pub visual: bool,
-    /// The same radius over the entity's **own** geometry only. An attachment
-    /// rig's is a fraction of a world unit while its composed one is metres.
     pub own_radius: f32,
-    /// The farthest any point of LOD 0's bounds, attachments composed in, lies
-    /// from its own origin, after `scale`: the radius of the sphere around the
-    /// origin that encloses it.
     pub bound: f32,
-    /// Creation-time runtime-bounds sphere for convoy launch collision.
     pub convoy_radius: Option<f32>,
-    /// How many attached entities were composed into this mesh, at any depth.
     pub attachments: usize,
-    /// The root mesh's squared cull distance (`cull_distance`, or the engine's default): a figure
-    /// whose bounding sphere's centre lies this far from the eye or farther is not drawn.
     pub cull_distance_squared: f32,
 }
 
-/// Every entity, shared sub-mesh, material and texture one layer draws.
 #[derive(Default)]
 pub struct ModelLibrary {
     layers: Option<Arc<ResolvedLayers>>,
-    /// The client's texture decode every texture file loads under ([`viewer_foundation::map::textures::load_file`])
-    /// and the compiled mesh effects' global defines.
     decode: Decode,
-    /// Every composed entity's joint palette, end to end;
-    /// actor rigs index it directly.
     pub palette: Vec<PaletteJoint>,
     pub meshes: Vec<ModelMesh>,
     pub materials: Vec<ModelMaterial>,
     pub textures: Vec<dds::Texture>,
-    /// The colour space each of [`textures`](ModelLibrary::textures) uploads
-    /// in, from the material slot that asked for it: the capture has every
-    /// `pdxmesh` `DiffuseMap` created `..._UNORM_SRGB` and its `SpecularMap`
-    /// and `NormalMap` created `..._UNORM` (`viewer_foundation::map::textures::ColorSpace`).
     pub spaces: Vec<ColorSpace>,
-    /// Requested name to slot in [`meshes`](ModelLibrary::meshes).
     pub index: BTreeMap<String, usize>,
-    /// Texture path and colour space to slot in
-    /// [`textures`](ModelLibrary::textures), so the shared `city_d.dds` of
-    /// sixteen sprawl meshes is uploaded once. The space is part of the key
-    /// because one file read as a diffuse and as a specular is two textures.
     paths: BTreeMap<(String, ColorSpace), usize>,
-    /// `.anim` path to its decoded rest pose; `None` for a file that does not
-    /// read, so it is tried once. Every rifleman entity shares one idle file.
     animations: BTreeMap<String, Option<Arc<mesh::Animation>>>,
-    /// Each `.anim` a descriptor names that neither stack reads, and why: its entity stands in
-    /// its bind pose, reported, never taken for an entity without an animation.
     pub animation_refusals: BTreeMap<String, String>,
     rigs: Vec<Arc<Rig>>,
-    /// The game imports each mesh type once; the game instantiates actors
-    /// against it. Geometry is local to the mesh and shared by all its users.
     geometry_cache: BTreeMap<native::GeometryKey, Arc<super::mesh_shader::Geometry>>,
     attachment_refusals: BTreeMap<String, usize>,
-    /// Each requested name that did not bake, and why.
     pub failed: BTreeMap<String, String>,
-    /// Whether the entity under composition uses a file a visual mod supplies.
     composing_visual: bool,
-    /// A visual mod's entity slot to its recorded counterpart's, drawn when the mod's draw is
-    /// refused ([`ModelPass`]); the counterparts are in no name's slot.
     pub alternatives: BTreeMap<usize, usize>,
-    /// Whether this library's entities stand in for the same names' entities they are merged
-    /// with ([`Self::isolated`]).
     alternative: bool,
     asset_namespace: Option<Arc<[identity::ContentLayer]>>,
 }
@@ -276,7 +196,6 @@ debug_fields!(ModelLibrary(this) {
     geometry => this.geometry_cache
 });
 
-/// One entity under composition: actor descriptors, rig, reach and refusals.
 #[derive(Default)]
 struct Composition {
     native: Vec<native::Descriptor>,
@@ -285,29 +204,18 @@ struct Composition {
     refusals: BTreeMap<String, usize>,
 }
 
-/// How far one composed entity, attachments included, reaches around and above
-/// its own origin. The pass culls on the radius and no layer reads the height
-/// for anything but reporting.
 #[derive(Clone, Copy, Debug, Default)]
 struct Reach {
     collision_unsupported: bool,
     collision_bounds: Option<([f32; 3], [f32; 3])>,
     radius: f32,
     height: f32,
-    /// The farthest point from the origin, in every direction.
     bound: f32,
-    /// The radius of the root entity's own geometry, attachments excluded.
     own_radius: f32,
-    /// Attached entities composed in, at any depth.
     attachments: usize,
 }
 
 impl Reach {
-    /// Widens by one sub-mesh's bounds, already placed by `transform`.
-    ///
-    /// The eight corners are transformed rather than the two extremes, because
-    /// an attachment's placement rotates: a rifle's box turned 90 degrees about
-    /// Y reaches where its unrotated box does not.
     fn widen(&mut self, transform: &mesh::Transform, bounds: &mesh::Bounds, own: bool) {
         for corner in 0..8u8 {
             self.widen_point(
@@ -352,13 +260,6 @@ impl Reach {
             .then_some(radius)
     }
 
-    /// Widens by one already-placed point.
-    ///
-    /// A skinned sub-mesh widens by its posed vertices rather than by its
-    /// `[aabb]`, because the `[aabb]` is the **bind** box and a pose is not
-    /// inside it: `cavalry_horse.mesh` is 6.6 wide in x bound and 16.0 posed,
-    /// and `GER_infantry.mesh` is 5.46 bound and 2.55 posed. Culling on the
-    /// bind box would clip a horse at the edge of the screen.
     fn widen_point(&mut self, point: [f32; 3], own: bool) {
         let radius = (point[0] * point[0] + point[2] * point[2]).sqrt();
         self.radius = self.radius.max(radius);
@@ -370,12 +271,8 @@ impl Reach {
     }
 }
 
-/// Entity shards one library build spreads over. Bounds total threads while
-/// the document loader already fans out across loaders; file reads dominate
-/// and parallelize cleanly.
 const BAKE_SHARDS: usize = 4;
 
-/// Source labels stay explicit across recorded retries and counterparts.
 #[derive(Clone, Copy)]
 struct BakeLabels {
     worker: &'static str,
@@ -397,7 +294,6 @@ impl BakeLabels {
 }
 
 impl ModelLibrary {
-    /// The layers its entities were read through; none before the first.
     pub fn layers(&self) -> Option<&ResolvedLayers> {
         self.layers.as_deref()
     }
@@ -406,15 +302,12 @@ impl ModelLibrary {
         &self.rigs[slot]
     }
 
-    /// A slot's rig, shared, and its default joint palette, for a player
-    /// that runs outside the pass.
     pub fn rig_source(&self, slot: usize) -> (Arc<Rig>, Vec<PaletteJoint>) {
         let rig = Arc::clone(&self.rigs[slot]);
         let palette = self.palette[rig.start..rig.end].to_vec();
         (rig, palette)
     }
 
-    /// A library with nothing baked yet whose later bakes load under `decode`.
     pub fn empty(decode: Decode) -> Self {
         Self {
             decode,
@@ -422,17 +315,10 @@ impl ModelLibrary {
         }
     }
 
-    /// The client's texture decode this library loads under.
     pub fn decode(&self) -> Decode {
         self.decode
     }
 
-    /// Resolves and loads every name, appending one warning per name that does
-    /// not resolve rather than refusing the document.
-    ///
-    /// `gfx/entities` and `gfx/models` are outside the content coverage policy
-    /// so every file here goes through
-    /// [`ResolvedLayers::read_uncovered`] and is not hash-verified.
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -443,8 +329,6 @@ impl ModelLibrary {
         Self::load_with(layers, decode, descriptors, names, warnings, |_, _| None)
     }
 
-    /// The same load with job-local baker CPU and caller join/merge scopes.
-    /// Worker wall scopes overlap; their CPU is not included in caller CPU.
     pub(crate) fn load_profiled(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -466,8 +350,6 @@ impl ModelLibrary {
         )
     }
 
-    /// Loads admitted names, applying their owner's declaration check to recorded retries
-    /// and draw counterparts too. Other model owners keep their own admission rules.
     pub fn load_with(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -489,7 +371,6 @@ impl ModelLibrary {
         )
     }
 
-    // Keep the owner's declaration check and profiling source explicit.
     #[allow(clippy::too_many_arguments)]
     fn load_with_spans(
         layers: &ResolvedLayers,
@@ -502,17 +383,12 @@ impl ModelLibrary {
         spans: &mut BuilderSpans,
         labels: BakeLabels,
     ) -> io::Result<Self> {
-        // Stable de-duplication first: the serial loop skipped later
-        // duplicates via the index, so keeping each name's first occurrence
-        // bakes exactly the serial set in the serial order.
         let mut seen = BTreeSet::new();
         let unique: Vec<&String> = names
             .iter()
             .filter(|name| seen.insert(name.as_str()))
             .collect();
         let shards = unique.len().clamp(1, BAKE_SHARDS);
-        // An empty list bakes an empty library: `chunks` needs a nonzero
-        // size and then yields no shard.
         let chunk = unique.len().div_ceil(shards).max(1);
         let asset_namespace = identity::namespace_for(layers, session);
         let baked = std::thread::scope(|scope| {
@@ -563,11 +439,6 @@ impl ModelLibrary {
                 library.merge(shard);
             }
         });
-        // With visual mods mounted, an entity that does not bake is baked from the recording
-        // instead, by the recording's own descriptors apart from the mod's files, and named;
-        // and each entity a visual mod supplies keeps its recorded counterpart, baked the same
-        // way, so a refused draw of the mod's entity draws the recorded one instead. The
-        // recorded stack bakes no counterparts.
         if let Some(recorded) = layers.without_overlays()
             && let Some(roster) = layers.recorded_descriptor_roster()?
         {
@@ -594,7 +465,6 @@ impl ModelLibrary {
                 missing.retain(|(name, error)| {
                     let drawn = library.slot(name).is_some();
                     if drawn {
-                        // Drawn from the recording: no longer a failure of this library.
                         library.failed.remove(name);
                         layers.note_overlay_refusal(format!("model {name} ({error})"));
                     }
@@ -685,8 +555,6 @@ impl ModelLibrary {
                 ),
             ));
         }
-        // The game logs a locator whose parent_joint the skeleton lacks and
-        // keeps it in entity space; say so here.
         let mut unjointed = BTreeSet::new();
         for (mesh, rig) in library.meshes.iter().zip(&library.rigs) {
             for node in &rig.nodes {
@@ -708,10 +576,6 @@ impl ModelLibrary {
         Ok(library)
     }
 
-    /// `names` the visual mods' descriptors leave refused, though the recording's own descriptors
-    /// do not (a mod's descriptor file that does not parse may declare them), baked from the
-    /// recording instead, apart from the mod's files, each named; an empty library without
-    /// visual mods.
     pub fn load_recorded(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -721,7 +585,6 @@ impl ModelLibrary {
         Self::load_recorded_profiled(layers, decode, names, why, &mut BuilderSpans::new(false))
     }
 
-    /// Recorded-only bakes retain the same source labels, including worker CPU.
     pub(crate) fn load_recorded_profiled(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -752,9 +615,6 @@ impl ModelLibrary {
         Ok(baked.isolated(false))
     }
 
-    /// Whether a name resolved.
-    /// Whether the entity in `slot` declares `state` on its root node
-    /// (the game finds it), as the animation player looks it up.
     pub fn has_state(&self, slot: usize, state: &str) -> bool {
         self.rigs
             .get(slot)
@@ -766,7 +626,6 @@ impl ModelLibrary {
         self.index.get(name).copied()
     }
 
-    /// Whether the baked entity draws geometry, including its attached actors.
     pub fn has_geometry(&self, slot: usize) -> bool {
         self.meshes[slot]
             .native
@@ -774,21 +633,15 @@ impl ModelLibrary {
             .any(|descriptor| descriptor.lods.iter().any(|lod| !lod.is_empty()))
     }
 
-    // Canonical draw bytes retain authored order and replace merge-local slots with texture identities.
     pub fn native_draw_snapshot(&self, slot: usize, texture_identities: &[String]) -> Vec<u8> {
         draw_snapshot::snapshot(self, slot, texture_identities)
     }
 
-    /// Merges a shard baked on another thread. Shards hold contiguous name
-    /// ranges merged in order, so first-seen dedup matches the serial loop
-    /// and every rebased index lands exactly where the serial bake put it.
     pub fn merge(&mut self, mut shard: ModelLibrary) {
         if self.layers.is_none() {
             self.layers = shard.layers.clone();
             self.decode = shard.decode;
         }
-        // Textures first: materials reference their slots. First seen in
-        // shard order wins, as serially.
         let mut texture_keys: Vec<Option<&(String, ColorSpace)>> = vec![None; shard.textures.len()];
         for (key, slot) in &shard.paths {
             texture_keys[*slot] = Some(key);
@@ -808,7 +661,6 @@ impl ModelLibrary {
                 }
             });
         }
-        // Materials by value, first seen wins, as serially.
         let mut material_map = Vec::with_capacity(shard.materials.len());
         for material in &shard.materials {
             let mut material = material.clone();
@@ -823,7 +675,6 @@ impl ModelLibrary {
                 }
             });
         }
-        // Animations by path, first wins, as serially.
         for (path, animation) in shard.animations {
             self.animations.entry(path).or_insert(animation);
         }
@@ -850,9 +701,6 @@ impl ModelLibrary {
                 rig.start += palette_base;
                 rig.end += palette_base;
                 for node in &mut rig.nodes {
-                    // `rigid` is a palette index like `skin_base` and moves with it; leaving it
-                    // behind makes `node.rigid - rig.start` underflow the moment a shard-built rig
-                    // is evaluated, which is every frame with a running presentation clock.
                     node.rigid += palette_base as u32;
                     if let Some(skin_base) = node.skin_base.as_mut() {
                         *skin_base += palette_base as u32;
@@ -882,10 +730,6 @@ impl ModelLibrary {
         }
     }
 
-    /// This library with its file caches renamed apart, so merging it shares no texture,
-    /// animation or geometry with entities baked from another stack's files of the same path;
-    /// `alternative` makes its entities the merged library's counterparts of the same names
-    /// rather than their slots.
     pub fn isolated(mut self, alternative: bool) -> Self {
         let apart = |path: &str| format!("recorded:{path}");
         self.paths = std::mem::take(&mut self.paths)
@@ -915,9 +759,6 @@ impl ModelLibrary {
         self
     }
 
-    /// Adds one entity, or on failure removes everything its composition
-    /// added so far, attachments included, so no partial rig or LOD survives.
-    /// Decoded textures stay cached: another entity may use them.
     fn add(
         &mut self,
         layers: &ResolvedLayers,
@@ -1002,14 +843,7 @@ impl ModelLibrary {
         Ok(())
     }
 
-    /// Builds one entity and its attached actor nodes against shared mesh geometry.
-    ///
-    /// `placement` carries the composed joint transforms of the rig chain above
-    /// this entity, already in the **root** entity's own object space and
-    /// before the root's own scale. The engine composes the same chain per
-    /// frame from the posed skeleton; geometry stays mesh-local.
-    /// Returns the root's mesh path, its world scale and its LOD distances.
-    #[allow(clippy::too_many_arguments)] // Recursive rig traversal carries its parent placement.
+    #[allow(clippy::too_many_arguments)]
     fn compose(
         &mut self,
         layers: &ResolvedLayers,
@@ -1045,8 +879,6 @@ impl ModelLibrary {
         if entity.is_none() && inherited.is_none() {
             return Err(invalid("no pdxmesh or entity declares it"));
         }
-        // Supply a dummy object when no binding survives;
-        // The game still runs its states and events through the same player.
         let (path, decoded, native_skeleton, binary_locators) = if let Some(entity) = &entity {
             let path = entity.definition.file.clone();
             let count: usize = inherited
@@ -1069,7 +901,6 @@ impl ModelLibrary {
             let locators =
                 super::mesh_pose::binary_locators(&tree, &skeleton, entity.definition.scale)
                     .map_err(cannot_load)?;
-            // Project only after the native skeleton and locators have validated the same tree.
             let decoded = mesh::read_tree(&tree).map_err(cannot_load)?;
             (path, decoded, skeleton, locators)
         } else {
@@ -1081,14 +912,10 @@ impl ModelLibrary {
         );
         let mesh_scale = entity.as_ref().map_or(1., |entity| entity.definition.scale);
         let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
-        // The entity's own vertices sit at `placement * scale`.
         let own = placement.compose(&mesh::Transform {
             basis: [[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, scale]],
             translation: [0.0; 3],
         });
-        // The pose the entity's selected default state holds. `None` leaves
-        // every sub-mesh in its bind pose. Building damaged-state aliases
-        // select their authored animation through the same descriptor path.
         let animation = entity
             .as_ref()
             .and_then(|entity| entity.animation)
@@ -1119,8 +946,6 @@ impl ModelLibrary {
                 }
             }
         }
-        // Some attachments have no default animation but do animate on firing.
-        // Retain their influences without changing the frozen baked geometry.
         if skin_base.is_none() {
             skin_base = clips
                 .iter()
@@ -1211,11 +1036,7 @@ impl ModelLibrary {
             self.geometry_cache = geometry_cache;
             out.native.push(descriptor?);
             let shape_lods = decoded.lods();
-            // Static-resource spheres and multiple-LOD unions have a different construction.
-            // Do not substitute a runtime-bounds sphere for those forms.
             out.reach.collision_unsupported |= !frozen_skin || shape_lods.len() != 1;
-            // Any LOD may be drawn, so culling reaches around them all. Only the first feeds
-            // the collision sphere, which is unsupported with several anyway.
             for (lod, shapes) in shape_lods.iter().enumerate() {
                 for (_, sub) in shapes
                     .iter()
@@ -1223,9 +1044,6 @@ impl ModelLibrary {
                     .filter(|(_, sub)| super::mesh_effect::candidate(sub))
                 {
                     if lod == 0 {
-                        // Runtime bounds transform each bone's bind-space box, rather than a
-                        // box fitted to the weighted, posed vertices. The sphere is half the
-                        // resulting bounds' diagonal. Keep this independent of culling reach.
                         let mut bone_bounds: BTreeMap<i32, ([f32; 3], [f32; 3])> =
                             BTreeMap::new();
                         for (vertex, &position) in sub.positions.iter().enumerate() {
@@ -1293,8 +1111,6 @@ impl ModelLibrary {
             }
         }
         {
-            // The attachments are collected before the recursion so the
-            // borrow of `descriptors` through `entity` ends first.
             let attachments: Vec<(String, String, String)> = inherited
                 .as_ref()
                 .into_iter()
@@ -1367,11 +1183,7 @@ impl ModelLibrary {
                     ],
                     translation: world[3][..3].try_into().unwrap(),
                 };
-                // A joint the animation scales to zero is the engine's own
-                // switch for an attachment it is not showing.
 
-                // A refused child leaves its parent drawn, but no partial
-                // child rig, palette, geometry or reach survives.
                 let mark = (
                     self.palette.len(),
                     self.materials.len(),
@@ -1411,18 +1223,6 @@ impl ModelLibrary {
         Ok((path, scale, decoded.lod_distances.clone()))
     }
 
-    /// Appends one composed entity's joint palette and returns the slot its
-    /// joint 0 landed on, or `None` when the entity has no pose to skin by.
-    ///
-    /// `own` is folded in, so a palette entry maps a bind-pose vertex of this
-    /// entity straight into the **root** entity's object space, attachment
-    /// chain and world scale included.
-    ///
-    /// An entity whose default state resolves no `.anim` gets no palette at
-    /// all, rather than one of identity matrices. The two are the same picture
-    /// â€” a skinning matrix is `pose * inverse_bind` and the bind pose's own
-    /// composition is the identity â€” but only the first is the *same bits*, and
-    /// the sprawl, the map buildings and the map frame are all in that case.
     fn push_palette(
         &mut self,
         decoded: &mesh::Mesh,
@@ -1443,7 +1243,6 @@ impl ModelLibrary {
         Some(base)
     }
 
-    /// One `.anim`'s rest pose, read once per file.
     fn animation(&mut self, layers: &ResolvedLayers, path: &str) -> Option<&Arc<mesh::Animation>> {
         self.composing_visual |= layers.supplied_by_visual_mod(path);
         if !self.animations.contains_key(path) {
@@ -1453,8 +1252,6 @@ impl ModelLibrary {
             let decoded = match read(layers) {
                 Ok(animation) => Some(animation),
                 Err(why) => {
-                    // An animation the visual mods break is the recording's own, named; one
-                    // neither stack reads is refused by name.
                     match layers.without_overlays().map(|recorded| read(&recorded)) {
                         Some(Ok(animation)) => {
                             layers.note_overlay_refusal(format!("animation {path} ({why})"));
@@ -1494,10 +1291,6 @@ impl ModelLibrary {
         Ok(self.materials.len() - 1)
     }
 
-    /// A material's texture at the one path the engine requests
-    /// ([`installed_content_core::mesh::TextureIndex`]); the texture constructor adopts
-    /// the `.dds` spelling of a `.tga` path when it exists. A texture that
-    /// resolves nowhere refuses the mesh. An empty name is a blank texel.
     fn texture(
         &mut self,
         layers: &ResolvedLayers,
@@ -1543,11 +1336,6 @@ impl ModelLibrary {
     }
 }
 
-/// An entity-file locator in the node's frame, whose scale includes the
-/// pdxmesh scale. The engine bakes that scale into the mesh at import
-/// so the entity's world matrix lacks it. Entity updates place
-/// an entity locator's particles at `locator * that matrix`: position, size
-/// and emitter spread all without the pdxmesh scale.
 fn entity_locator(locator: &mesh::Transform, mesh_scale: f32) -> mesh::Transform {
     mesh::Transform::from_trs(
         [0.0; 3],
@@ -1557,13 +1345,6 @@ fn entity_locator(locator: &mesh::Transform, mesh_scale: f32) -> mesh::Transform
     .compose(locator)
 }
 
-/// Where one vertex lands, the way the pdxmesh skinning puts it there: a linear
-/// blend of the palette matrices its four slots name, or its own position when
-/// it carries no weight at all.
-///
-/// The pass only needs this on the CPU for the cull radius, but it is the same
-/// arithmetic, so a figure that is culled wrong is a figure that is drawn
-/// wrong.
 fn skinned(
     palette: &[PaletteJoint],
     position: [f32; 3],
@@ -1588,31 +1369,22 @@ fn skinned(
     if any { out } else { position }
 }
 
-// ---------------------------------------------------------------- the field
 
-/// One group of instances of one mesh, the pass's cull and LOD granularity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelGroup {
     pub mesh: usize,
     pub asset: AssetKey,
-    /// Slice of [`ModelField::instances`].
     pub range: Range<u32>,
-    /// World bounds of the group's instances, `[x0, z0, x1, z1]`, already
-    /// widened by the mesh radius.
     pub bounds: [f32; 4],
-    /// Centroid used for the LOD decision.
     pub centroid: [f32; 3],
 }
 
-/// A placed instance keyed by its mesh and cull tile, as [`ModelField::rebuild`] sorts it.
 pub type KeyedInstance = ((usize, i32, i32), ModelInstance, usize);
 
-/// The placed instances of one layer.
 #[derive(Clone, Debug, Default)]
 pub struct ModelField {
     pub instances: Vec<ModelInstance>,
     pub groups: Vec<ModelGroup>,
-    /// (group, instance) in submission order, before the port's mesh/tile sort.
     pub native_order: Vec<(usize, usize)>,
     tile: Option<f32>,
     bindings: BTreeMap<usize, AssetKey>,
@@ -1627,8 +1399,6 @@ pub struct ModelField {
     #[cfg(test)]
     producer_sorts: usize,
     pub clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>,
-    /// This frame's default-state actors and the state request each plays
-    /// ([`ModelPass::prepare_default_states`]).
     pub default_states: BTreeMap<(usize, u32, u32), u32>,
 }
 
@@ -1728,18 +1498,10 @@ impl ModelField {
         self.ordered_clocks.iter().map(|entry| entry.0)
     }
 
-    /// Sorts placed instances into one group per (mesh, tile) and records each
-    /// group's bounds.
-    ///
-    /// `tile` is the side of the cull grid in world units. The engine buckets
-    /// its trees on 256-unit tiles; no recorded input ties
-    /// the other layers to a particular size, so this is the viewer's own cull
-    /// and not a claim about the engine.
     pub fn build(library: &ModelLibrary, placed: Vec<(usize, ModelInstance)>, tile: f32) -> Self {
         Self::build_meshes(&library.meshes, placed, tile)
     }
 
-    /// [`Self::build`] from the mesh metadata a pass keeps.
     pub fn build_meshes(
         meshes: &[ModelMesh],
         mut placed: Vec<(usize, ModelInstance)>,
@@ -1751,9 +1513,6 @@ impl ModelField {
         field
     }
 
-    /// [`Self::build`] into this field, reusing its storage: a per-frame
-    /// layer keeps `placed`, `keyed` and the field between frames. `placed`
-    /// is drained; `keyed` is scratch.
     pub fn rebuild(
         &mut self,
         library: &ModelLibrary,
@@ -1764,7 +1523,6 @@ impl ModelField {
         self.rebuild_meshes(&library.meshes, placed, keyed, tile);
     }
 
-    /// [`Self::rebuild`] from the mesh metadata a pass keeps.
     pub fn rebuild_meshes(
         &mut self,
         meshes: &[ModelMesh],
@@ -1783,7 +1541,6 @@ impl ModelField {
         tile: f32,
         regroup: bool,
     ) {
-        // Binding slots never decide storage or submission order.
         keyed.clear();
         keyed.extend(
             placed
@@ -1801,8 +1558,6 @@ impl ModelField {
                     )
                 }),
         );
-        // Order by asset, unknown meshes first by slot, then tile and placement; each placed
-        // mesh's asset is ranked once rather than compared per instance pair.
         let mut ranked: Vec<usize> = keyed
             .iter()
             .map(|((mesh, _, _), _, _)| *mesh)
@@ -1882,7 +1637,6 @@ impl ModelField {
         field.native_order.resize(keyed.len(), (0, 0));
         let mut cursor = 0;
         while cursor < keyed.len() {
-            // Equal effective assets and tiles retain producer placement order.
             let (mesh, _, _) = keyed[cursor].0;
             let start = cursor;
             while cursor < keyed.len() {
@@ -1933,23 +1687,12 @@ impl ModelField {
     }
 }
 
-/// World units a figure standing above the water plane leans past its own ground position, per
-/// unit of its height: the cotangent of the shallowest pitch the game's camera allows (53.5
-/// degrees below the horizon), rounded up. The visible rectangle is already grown by
-/// [`crate::map::terrain::MARGIN`], which is the lean of everything that stands on the ground, so
-/// only what flies higher than that carries a lean of its own.
 const LEAN: f32 = 0.75;
 
-/// How far past its ground position a figure at `height` can appear, beyond the margin the
-/// visible rectangle already carries.
 fn lean(height: f32) -> f32 {
     (height.max(0.0) * LEAN - crate::map::terrain::MARGIN).max(0.0)
 }
 
-/// The world bounds, `[x0, z0, x1, z1]`, of `instances` of an entity reaching `radius` around
-/// its origin at their scale, widened where an instance stands above the plane by how far it can
-/// lean past its own ground position: the ground rectangle must never drop a figure the game's
-/// own cull admits.
 fn reach_bounds<'a>(radius: f32, instances: impl Iterator<Item = &'a ModelInstance>) -> [f32; 4] {
     let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
     for instance in instances {
@@ -1962,11 +1705,6 @@ fn reach_bounds<'a>(radius: f32, instances: impl Iterator<Item = &'a ModelInstan
     bounds
 }
 
-/// A deterministic hash of an index to `[0, 1)`, for the rotations and mesh
-/// choices the engine makes from unrecorded random state.
-///
-/// Remaining callers lack recorded random state.
-/// Sprawl uses its recovered province/x/z mixer in `sprawl.rs`.
 pub fn hash01(index: u32) -> f32 {
     let mut x = index.wrapping_mul(0x9E37_79B1);
     x ^= x >> 16;
@@ -1974,44 +1712,23 @@ pub fn hash01(index: u32) -> f32 {
     x ^= x >> 13;
     x = x.wrapping_mul(0xC2B2_AE35);
     x ^= x >> 16;
-    // 2^24 keeps every value exactly representable in f32.
     (x >> 8) as f32 / 16_777_216.0
 }
 
-/// A deterministic rotation in `[0, TAU)`.
 pub fn hash_rotation(index: u32) -> f32 {
     hash01(index) * TAU
 }
 
-// ------------------------------------------------------------------- the pass
 
-/// What one frame of the pass needs beyond its own geometry.
 #[derive(Clone, Copy)]
 pub struct ModelFrame<'a> {
     pub camera: Camera,
-    /// World x translations of the wrap copies to submit.
     pub offsets: &'a [f32],
-    /// The ground rectangle a list gathers its groups in: the held camera's
-    /// ([`viewer_foundation::map::camera::Hold`]), which only gathers.
     pub visible: Option<[f32; 4]>,
-    /// The ground rectangle the frame's own camera reaches: a gathered group outside it draws
-    /// nothing.
     pub seen: Option<[f32; 4]>,
-    /// Layer opacity. Every gate in `00_graphics.lua` is a hard switch rather
-    /// than a fade, so this is 1.0 for the mesh layers; the railway layer has
-    /// a real fade and does not use this pass.
     pub alpha: f32,
 }
 
-/// The game's per-figure cull for one frame, for the lit figures and the shadow casters alike: the
-/// camera's eye and its four side planes, each of unit normal and inside non-negative. A figure
-/// is drawn only when its bounding sphere's centre lies nearer the eye than its mesh's cull
-/// distance and the sphere is inside all four planes: no near or far plane, as the game tests.
-/// `x` is the x of the camera it was made for: a traversal whose camera stands on another map copy
-/// moves its figures onto this one before the test ([`ModelPass::game_culled`]).
-/// `pad` moves every side out and the cull distance further by that many world units, so a camera
-/// that travels up to `pad` from this one culls in nothing this cull leaves out
-/// ([`viewer_foundation::map::camera::Hold`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GameCull {
     pub eye: [f32; 3],
@@ -2020,7 +1737,6 @@ pub struct GameCull {
     pub pad: f32,
 }
 
-/// Why a figure is not drawn by the game's cull.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Culled {
     Distance,
@@ -2028,19 +1744,15 @@ pub enum Culled {
 }
 
 impl GameCull {
-    /// The frame's cull for `camera` seen through `viewport`.
     pub fn of(camera: &Camera, viewport: [u32; 2]) -> Self {
         Self::padded(camera, viewport, 0.0)
     }
 
-    /// [`Self::of`] with every side and the cull distance `pad` further out.
     pub fn padded(camera: &Camera, viewport: [u32; 2], pad: f32) -> Self {
         let planes = view_cone(camera, viewport);
         Self { eye: camera.eye(), sides: [planes[0], planes[1], planes[2], planes[3]], x: camera.center[0], pad }
     }
 
-    /// Whether a figure whose bounding sphere has `centre` and `radius`, of a mesh culled beyond
-    /// `cull_distance_squared`, is culled, and why.
     pub fn test(&self, centre: [f32; 3], radius: f32, cull_distance_squared: f32) -> Option<Culled> {
         let [dx, dy, dz] = [centre[0] - self.eye[0], centre[1] - self.eye[1], centre[2] - self.eye[2]];
         let distance = cull_distance_squared.sqrt() + self.pad;
@@ -2055,8 +1767,6 @@ impl GameCull {
     }
 }
 
-/// The view volume's planes, inside non-negative and each of unit normal, so a sphere's centre
-/// stands its radius outside a plane it is wholly behind.
 pub fn view_cone(camera: &Camera, viewport: [u32; 2]) -> [[f32; 4]; 6] {
     camera.frustum_planes(viewport).map(|[a, b, c, d]| {
         let length = (a * a + b * b + c * c).sqrt().max(f32::MIN_POSITIVE);
@@ -2064,11 +1774,9 @@ pub fn view_cone(camera: &Camera, viewport: [u32; 2]) -> [[f32; 4]; 6] {
     })
 }
 
-/// One frame's refused actors by instance and node, with the reason.
 type ActorRefusals = BTreeSet<(usize, usize, String)>;
 type ActorPoses = Arc<[super::mesh_pose::Actor]>;
 
-/// A producer clock whose requests and origin stay unchanged between presentation frames.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClockRecord {
     pub key: (usize, u32, u32),
@@ -2105,7 +1813,6 @@ struct ClockRoute {
 
 struct ClockRecords {
     source: Arc<[ClockRecord]>,
-    /// Source indices in key order, retaining the last occurrence of duplicate keys.
     order: Vec<usize>,
 }
 
@@ -2180,11 +1887,9 @@ mod clock_record_tests {
                     pass.replace_field(&ModelLibrary::default(), &mut field);
                 }
                 if frame.is_multiple_of(7) {
-                    // The ordinary installer must invalidate retained input, even for equal keys.
                     pass.set_clocks(BTreeMap::new());
                     assert!(pass.clock_records.is_none());
                 } else if frame.is_multiple_of(5) {
-                    // Stand in for defaults or another field owner overwriting producer clocks.
                     pass.field.clocks.insert(
                         (99, 0, 0),
                         entity_animation::Clock {
@@ -2201,8 +1906,6 @@ mod clock_record_tests {
             }
             let time = [0.0, -0.0, 1.0e-30, 1.0e30, frame as f32 * 0.125][roll as usize % 5];
             retained.set_clock_records(&records, time);
-            // Duplicate original keys resolve last, before one-hop redirects resolve
-            // collisions in original key order. No alternate pass is needed.
             let originals: BTreeMap<_, _> =
                 records.iter().map(|record| (record.key, record)).collect();
             let expected: BTreeMap<_, _> = originals
@@ -2270,17 +1973,11 @@ pub struct ModelPass {
     native_walk: native::walk::Layout,
     layers: Option<Arc<ResolvedLayers>>,
     decode: Decode,
-    /// Uploaded when a resident mesh first needs one.
     textures: Vec<Option<Bound>>,
     materials: Vec<ModelMaterial>,
-    /// Whether a material's textures are uploaded.
     ready: Vec<bool>,
-    /// Meshes whose every material, and counterpart's, is uploaded or refused.
     resident: Vec<bool>,
-    /// Whether shader and pipeline builds run in place, as a capture needs, rather than off the
-    /// window thread while the frame draws without the part.
     settled: Cell<bool>,
-    /// Meshes whose builds are made or under way ([`ModelPass::warm_pipelines`], [`ModelPass::warm_added`]).
     warmed: Cell<usize>,
     material_refusals: BTreeMap<usize, String>,
     meshes: Vec<ModelMesh>,
@@ -2289,85 +1986,42 @@ pub struct ModelPass {
     clock_routes: ClockRoutes,
     redirect_placed: Vec<(usize, ModelInstance)>,
     animation_dispatch: animation_dispatch::Dispatch,
-    /// Placement and live-player keys, rebuilt in retained storage each frame.
     keyed: Vec<KeyedInstance>,
     alive: Vec<(usize, u32, u32)>,
     drawn: Cell<u32>,
-    /// The cull of the camera every list is gathered and kept against, set by the scene
-    /// ([`ModelPass::set_cull`]). It decides nothing that is drawn.
     cull: Cell<Option<GameCull>>,
-    /// The frame's own camera's cull: a figure is drawn exactly when it passes it.
     seen: Cell<Option<GameCull>>,
     refusals: RefCell<(u64, ActorRefusals)>,
-    /// Actor refusals made, ever: a caster walk that made one is walked again.
     refused: Cell<u64>,
-    /// Whether the last frame's casters placed any figure.
     cast: Cell<bool>,
     caster: crate::map::shadow::CasterId,
-    /// Raised by every change a caster walk reads beyond the camera, actor poses and the
-    /// figures placed: hidden actors, redirects, the content stack, a library that did more than
-    /// grow, too many actors given a player unread.
     revision: u64,
-    /// Actors given a player since the caster list last read them: each such figure is walked
-    /// again alone, its pose now moving.
     born: RefCell<Vec<(usize, u32, u32)>>,
-    /// The field as the caster list last read it.
     walked: RefCell<WalkedField>,
-    /// Whether a writer placed the field since the caster list last read it.
     written: Cell<bool>,
-    /// The field's change for this frame's retained lists.
     frame_change: RefCell<FrameChange>,
-    /// Actor poses by instance for one arena frame: animation happens before encoding, so
-    /// the caster, regular and alternate queues and every wrap view share them.
     poses: RefCell<(u64, Vec<Option<ActorPoses>>)>,
-    /// This pass among the scene's, which the pose worker's batches are keyed by.
     id: u64,
-    /// The animation history this pass stands in, raised whenever one starts again: a pose batch
-    /// in flight for the history that ended is of other samples, so it is never installed over
-    /// the new one's figures ([`Self::reset_animation`]).
     history: u64,
-    /// Whether this pass's figures are posed on the frame that draws them rather than taken from
-    /// the worker ([`Self::pose_on_the_frame`]).
     pose_on_the_frame: bool,
-    /// The poses the worker last finished for this pass, and which of its sets it is: a frame
-    /// takes them by this swap and never waits ([`crate::map::poses`]). An actor the set does
-    /// not hold is posed where it is read.
     posed: Arc<super::poses::Set>,
-    /// Raised by every set installed: the rows of standing figures are written again when it
-    /// moves, and not otherwise.
     pose_epoch: u64,
-    /// Actor-local results for an immutable rig without a live player, keyed by
-    /// mesh slot and whether its frozen animation is played. Placements are separate.
     static_actors: RefCell<BTreeMap<(usize, bool), ActorPoses>>,
     label: &'static str,
     rigs: Vec<Arc<Rig>>,
     default_palette: Vec<PaletteJoint>,
     players: BTreeMap<(usize, u32, u32), entity_animation::Player>,
-    /// When each default-state actor appeared on the presentation clock
-    /// ([`ModelPass::prepare_default_states`]).
     default_appeared: BTreeMap<(usize, u32, u32), f32>,
-    /// Each mesh's default-state play, worked out when its first actor needs it.
     default_plays: Vec<Option<(Option<Arc<Rig>>, Option<DefaultPlay>)>>,
-    /// This frame's default-state actors refused, by why, with their count.
     pub default_state_refusals: BTreeMap<String, usize>,
     pub events: Vec<entity_animation::Event>,
     event_namespace: u64,
-    /// Placed actors, by animation key, that keep animating but draw and cast nothing.
     hidden: BTreeSet<(usize, u32, u32)>,
     hidden_actors: BTreeSet<ActorAddress>,
-    /// The library's visual mod entities and their recorded counterparts
-    /// ([`ModelLibrary::alternatives`]).
     alternatives: BTreeMap<usize, usize>,
-    /// Mod entities drawn from their recorded counterparts since a draw was refused.
     redirects: BTreeMap<usize, usize>,
-    /// Mod entities refused this frame that have a counterpart, with why; redirected before
-    /// the next frame animates ([`Self::fall_back`]).
     falling_back: RefCell<BTreeMap<usize, String>>,
-    /// Each redirected entity's name and why, for its warning line.
     from_recording: BTreeMap<String, String>,
-    /// Whether its lit queues are drawn straight into a pass of their own, rather than kept as
-    /// retained lists: such a pass stages each draw's constants in the frame's arena and so
-    /// reads none of them per instance ([`ModelPass::drawn_directly`]).
     direct: bool,
 }
 
@@ -2382,8 +2036,6 @@ impl ModelPass {
         &self.field.groups
     }
 
-    /// The entity player of a placed instance, under the key every producer
-    /// and draw shares ([`ModelInstance::animation_key`]).
     pub fn player(
         &self,
         mesh: usize,
@@ -2402,8 +2054,6 @@ impl ModelPass {
         frozen_animation: bool,
     ) -> ActorPoses {
         use viewer_foundation::view_record::add;
-        // What a figure's actors cost this frame: taken from the worker's set, evaluated here,
-        // held from an earlier frame (its samples draw the same), or its mesh's static actors.
         if let Some(player) = player {
             if let Some(posed) = self.posed.get((key, mesh)) {
                 add(self.label, "poses_worked", 1);
@@ -2422,9 +2072,6 @@ impl ModelPass {
         )
     }
 
-    /// Every placed actor whose group the view reaches, as this frame shows it: its player's
-    /// key, its root on the map copy the view reaches, and a number that changes when its play's
-    /// samples do. The first gate's count reads it ([`crate::map::actor_motion`]).
     pub(crate) fn shown_actors(
         &self,
         rectangle: Option<[f32; 4]>,
@@ -2461,11 +2108,6 @@ impl ModelPass {
         }
     }
 
-    /// The player an instance placed in `mesh` is animated by ([`ModelInstance::animation_key`]).
-    /// Where this frame poses the root entity's skeleton joints of a placed instance, in its own
-    /// space after its entity scale, before the instance's scale and place: what the engine's
-    /// animated bounds are made of. Empty for an entity without a skeleton; `None` when the
-    /// instance has no player this frame, so nothing of it is posed.
     pub fn root_joints(&self, mesh: usize, instance: &ModelInstance) -> Option<Result<Vec<[f32; 3]>, String>> {
         let slot = self.drawn_slot(mesh);
         let rig = self.rigs.get(slot)?;
@@ -2492,17 +2134,10 @@ impl ModelPass {
         (self.drawn_slot(mesh), seed, identity)
     }
 
-    /// This pass and the animation history it stands in, which the pose worker's jobs and sets
-    /// are keyed by ([`crate::map::poses::Pass`]).
     pub(crate) fn pose_pass(&self) -> super::poses::Pass {
         (self.id, self.history)
     }
 
-    /// Whether this pass's figures are posed on the frame that draws them, from exactly the
-    /// samples it draws, rather than taken from the worker's newest set by a swap: a stopped
-    /// picture (a saved frame, a picture the hours have stopped on) is exact, and the worker's
-    /// set is of the frame that asked for it ([`crate::map::poses`]). Turning it on drops the set
-    /// standing, so nothing of an earlier frame is left to draw.
     pub(crate) fn pose_on_the_frame(&mut self, on: bool) {
         if self.pose_on_the_frame == on {
             return;
@@ -2513,9 +2148,6 @@ impl ModelPass {
         }
     }
 
-    /// Takes `made`'s set for this pass, which it holds only when the batch was made for the
-    /// animation history the pass stands in now. Nothing while its figures are posed on the
-    /// frame that draws them.
     pub(crate) fn take_poses(&mut self, made: &super::poses::Made) {
         if self.pose_on_the_frame {
             return;
@@ -2523,16 +2155,6 @@ impl ModelPass {
         self.install_poses(made.set_for(self.pose_pass()));
     }
 
-    /// Every pose this pass's placed actors need, for the worker to make: one job a placement.
-    /// An actor placed many times is asked for many times and posed once, by the worker, so the
-    /// frame does not pay to find that out. An actor whose player holds samples of another rig
-    /// is left to be posed where it is read, as one with no player is. A pass whose figures are
-    /// posed on the frame asks for none.
-    ///
-    /// `rectangle` is the ground this frame admits its figures against and `offsets` its wrap
-    /// copies ([`ModelFrame`]): an actor whose group no copy of the view reaches is not asked for,
-    /// because no draw of this frame reads its limbs. One the camera reaches before the worker
-    /// has it is posed where it is read, as a figure an hour has just brought is.
     pub(crate) fn pose_jobs(
         &self,
         into: &mut super::poses::Jobs,
@@ -2563,37 +2185,23 @@ impl ModelPass {
         }
     }
 
-    /// Takes a finished set of poses: the worker's, or an empty one where the poses are made on
-    /// the frame. Every standing figure's row is written again for the set once, and not again
-    /// until the next one.
     pub(crate) fn install_poses(&mut self, posed: Arc<super::poses::Set>) {
         self.posed = posed;
         self.pose_epoch += 1;
     }
 
-    /// The bound judge of this pass's poses ([`crate::map::poses::judge`]).
     pub(crate) fn judge_poses(&self, animation_time: f32, interval: f32) {
         super::poses::judge(self.label, &self.posed, animation_time, interval);
     }
 
-    /// Which of the renderer's shader libraries the entity in `mesh` draws with: 1, the
-    /// recording's own, for a visual mod entity's recorded counterpart, so it draws as the
-    /// recording draws it; 0, the stack it was baked from, for every other.
     fn shader_library(&self, mesh: usize) -> usize {
         usize::from(self.alternatives.values().any(|&slot| slot == mesh))
     }
 
-    /// The slot an entity placed in `mesh` draws from: its recorded counterpart once the mod's
-    /// draw was refused ([`Self::fall_back`]).
     fn drawn_slot(&self, mesh: usize) -> usize {
         self.redirects.get(&mesh).copied().unwrap_or(mesh)
     }
 
-    /// The root play position of the player keyed `(mesh, seed, identity)`
-    /// ([`entity_animation::Player::root_play_position`]): `Some(None)` when
-    /// its root plays no animation, including an entity without any clip,
-    /// which never gets a player; `None` before an animated entity's player
-    /// exists.
     pub fn root_play_position(&self, key: (usize, u32, u32)) -> Option<Option<(f32, f32)>> {
         let key = (self.drawn_slot(key.0), key.1, key.2);
         let rig = self.rigs.get(key.0)?;
@@ -2603,7 +2211,6 @@ impl ModelPass {
         Some(self.players.get(&key)?.root_play_position(rig))
     }
 
-    /// Installs producer-owned state requests on the shared entity player.
     pub fn set_clocks(&mut self, clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>) {
         self.clock_records = None;
         self.install_clocks(clocks, false);
@@ -2740,14 +2347,10 @@ impl ModelPass {
         }
     }
 
-    /// Replaces all producer clocks, retaining their key order and request storage while the
-    /// records are shared. Times use the same single f32 subtraction as ordinary producer clocks.
-    /// Duplicate keys retain the last source record, just as collecting them into a map does.
     pub fn set_clock_records(&mut self, records: &Arc<[ClockRecord]>, time: f32) {
         let _span = viewer_foundation::profiling::span("set_clock_records");
         viewer_foundation::view_record::add(self.label, "clock_records", records.len() as u64);
         if !self.redirects.is_empty() {
-            // Collect duplicate producer keys first, then resolve redirects in producer order.
             self.set_clocks(
                 records
                     .iter()
@@ -2792,8 +2395,6 @@ impl ModelPass {
         {
             return;
         }
-        // A placement rebuild, default-state insertion or another field owner may have changed
-        // the clock map since the last install. Replace it completely, not just the reached keys.
         let clocks = installed
             .order
             .iter()
@@ -2805,8 +2406,6 @@ impl ModelPass {
         self.install_clocks(clocks, false);
     }
 
-    /// Samples visible entity palettes; meshes and material buffers are immutable.
-    /// Placements, event packets and palette ranges keep their traversal order.
     pub fn animate(&mut self, time: f32, rectangle: Option<[f32; 4]>, offsets: &[f32]) {
         self.fall_back();
         static PROFILE: OnceLock<bool> = OnceLock::new();
@@ -2868,7 +2467,6 @@ impl ModelPass {
             )
         };
         born.extend_from_slice(self.animation_dispatch.created());
-        // Never read while the casters are not drawn: past one a figure, it is a whole change.
         if born.len() > self.field.instances.len() {
             born.clear();
             self.raise();
@@ -2888,18 +2486,6 @@ impl ModelPass {
         }
     }
 
-    /// Turns this frame's [`entity_animation::DEFAULT_STATE`] actors into
-    /// requests of their entity's `default_state` on a clock from when each
-    /// appeared: the game creates every entity instance in that state, and
-    /// `use_animation = no` only spares an ambient object the `idle` request
-    /// that would follow. A state with one variant is entered whatever its
-    /// chance, as the game's state setter draws only among several. An actor
-    /// that can reach a state with several variants, on its root or an
-    /// attached entity, stays still and is counted in
-    /// [`ModelPass::default_state_refusals`]: the game draws that variant from
-    /// a random counter that every earlier draw for the entity has advanced
-    /// since the session began, which no recording holds. Returns each
-    /// played actor's state request; it chooses states by the game's rule.
     fn prepare_default_states(&mut self, time: f32) -> BTreeMap<(usize, u32, u32), u32> {
         self.default_state_refusals.clear();
         let mut native = BTreeMap::new();
@@ -2920,7 +2506,6 @@ impl ModelPass {
             if self.default_plays.len() <= group.mesh {
                 self.default_plays.resize_with(group.mesh + 1, || None);
             }
-            // A mesh's play is made from the rig the pass holds for it, and again when it holds another.
             let rig = self.rigs.get(group.mesh);
             let made = &mut self.default_plays[group.mesh];
             if made.as_ref().is_none_or(|(from, _)| !same_rig(from.as_ref(), rig)) {
@@ -2936,7 +2521,6 @@ impl ModelPass {
             let (seed, identity) = instance.animation_key();
             let key = (group.mesh, seed, identity);
             let appeared = self.default_appeared.entry(key).or_insert(time);
-            // A presentation clock that starts again starts the state with it.
             *appeared = appeared.min(time);
             clocks.insert(
                 key,
@@ -2965,8 +2549,6 @@ impl ModelPass {
         native
     }
 
-    /// Moving layers retain mesh buffers and replace only their small instance stream.
-    /// A seek or a branch change starts new entity histories.
     pub fn reset_animation(&mut self) {
         self.event_namespace = event_namespace();
         self.history += 1;
@@ -2974,18 +2556,12 @@ impl ModelPass {
         self.players.clear();
         self.default_appeared.clear();
         self.events.clear();
-        // A new history poses nothing yet: the worker's set, and any batch still in flight, are
-        // of the history that ended, and its generation leaves them behind.
         self.install_poses(Default::default());
     }
 
-    /// A display frame's placements where figures move between the ones their hours give: the
-    /// whole field where [`Moving::standing`] carries it, then the parts the frame moves written
-    /// at their own place in the field, which a frame that moves none leaves as it stands.
     pub fn update_moving(&mut self, placed: Moving, tile: f32) {
         match placed.standing {
             Some(standing) => self.update_placed(standing, tile),
-            // The field stands; what a placement makes afresh for the frame does not.
             None => {
                 self.events.clear();
                 self.field.default_states.clear();
@@ -2994,9 +2570,6 @@ impl ModelPass {
         self.move_placed(&placed.moved);
     }
 
-    /// Writes `moved`'s parts, each at its own ordinal in the field's walk order, and the bounds
-    /// and centroid of the groups they stand in. A part's group, its order, its actor and its
-    /// pose are its hour's and do not move with it, so nothing of them is made again.
     fn move_placed(&mut self, moved: &[(usize, ModelInstance)]) {
         if moved.is_empty() {
             return;
@@ -3010,7 +2583,6 @@ impl ModelPass {
             let Some(held) = self.field.instances.get_mut(index) else {
                 continue;
             };
-            // Animation's own palette offset is this frame's; a root that moves does not move it.
             *held = ModelInstance {
                 palette_offset: held.palette_offset,
                 ..instance
@@ -3044,7 +2616,6 @@ impl ModelPass {
         self.written.set(true);
     }
 
-    /// Replaces placements while preserving the players of surviving actors.
     pub fn update_placed(&mut self, mut placed: Vec<(usize, ModelInstance)>, tile: f32) {
         self.alive.clear();
         self.alive.extend(placed.iter().map(|(mesh, instance)| {
@@ -3072,12 +2643,8 @@ impl ModelPass {
         self.rebuild_native_walk();
     }
 
-    /// Installs a producer's whole field, which needs no GPU; `field` receives the previous one,
-    /// so the producer can reuse its buffers. Its meshes are made resident before they draw
-    /// ([`Self::make_field_resident`]).
     pub fn replace_field(&mut self, library: &ModelLibrary, field: &mut ModelField) {
         self.sync(library);
-        // Clock caches belong to the pass; installs validate their dependency values.
         std::mem::swap(
             &mut self.field.clock_priorities,
             &mut field.clock_priorities,
@@ -3097,7 +2664,6 @@ impl ModelPass {
         self.rebuild_native_walk();
     }
 
-    /// Uploads what the installed field's meshes need to draw.
     pub fn make_field_resident(
         &mut self,
         device: &wgpu::Device,
@@ -3170,14 +2736,10 @@ impl ModelPass {
         }
     }
 
-    /// The pass's lit queues are drawn straight into a pass of their own, from constants staged
-    /// in the frame's arena: its lit draws read nothing per instance. Its casters are retained as
-    /// every pass's are, and read their rows per instance.
     pub fn drawn_directly(&mut self) {
         self.direct = true;
     }
 
-    /// A pass over `rigs` with no meshes, for stepping animation events without a GPU.
     #[cfg(test)]
     pub(crate) fn with_rigs_for_tests(rigs: Vec<Arc<Rig>>, label: &'static str) -> Self {
         let mut library = ModelLibrary::default();
@@ -3205,8 +2767,6 @@ impl ModelPass {
         pass
     }
 
-    /// The installed field and every player's root play position, for comparing two passes
-    /// stepped alike.
     #[cfg(test)]
     pub(crate) fn presentation_state(&self) -> impl PartialEq + std::fmt::Debug {
         (
@@ -3218,8 +2778,6 @@ impl ModelPass {
         )
     }
 
-    /// Placed actors, keyed `(mesh, seed, identity)`, that keep their players, clocks and
-    /// events but neither draw nor cast shadows until shown again.
     pub fn set_hidden(&mut self, hidden: BTreeSet<(usize, u32, u32)>) {
         if hidden != self.hidden {
             self.raise();
@@ -3230,7 +2788,6 @@ impl ModelPass {
         self.native_walk.set_hidden(&self.hidden);
     }
 
-    /// Resolves a producer's binding handle to its live pass-local actor address.
     pub fn actor_address(&self, key: (usize, u32, u32)) -> ActorAddress {
         let asset = self.meshes[self.drawn_slot(key.0)].asset.clone();
         (self.event_namespace, asset, key.1, key.2)
@@ -3244,28 +2801,19 @@ impl ModelPass {
             .collect();
     }
 
-    /// Whether an actor is placed but hidden.
     pub fn hides(&self, key: ActorAddress) -> bool {
         self.hidden_actors.contains(&key)
     }
 
-    /// Follows a library that grew since the pass last saw it (the unit
-    /// library bakes entities as hours first place them). Every library only
-    /// ever appends, so existing slots keep their meaning.
-    /// Takes the entities `library` gained, as the next field install would.
     pub fn sync_library(&mut self, library: &ModelLibrary) {
         self.sync(library);
     }
 
     fn sync(&mut self, library: &ModelLibrary) {
-        // A library built empty takes its content stack with its first bake, after this pass was
-        // made over it; its entities draw from that stack.
         if self.layers.is_none() && library.layers.is_some() {
             self.layers = library.layers.clone();
             self.raise();
         }
-        // A library that only grew leaves every drawn figure's draw as it was: a figure of a new
-        // entity is walked as it joins.
         let grew = self.meshes.len() <= library.meshes.len()
             && self.textures.len() <= library.textures.len()
             && appended_only(
@@ -3275,7 +2823,6 @@ impl ModelPass {
         if !grew || self.alternatives.len() != library.alternatives.len() {
             self.raise();
         }
-        // Recorded before the mesh arrays are extended below.
         let known_meshes = self.meshes.len();
         let route_change = known_meshes < library.meshes.len()
             || self.alternatives.len() != library.alternatives.len();
@@ -3296,8 +2843,6 @@ impl ModelPass {
             self.ready.resize(library.materials.len(), false);
         }
         if self.default_palette.len() != library.palette.len() {
-            // A library that only grew keeps every entity's history: a
-            // newly seen entity must not restart a raid unit's intro.
             retain_players(
                 &mut self.players,
                 (&self.default_palette, known_meshes),
@@ -3349,7 +2894,6 @@ impl ModelPass {
         self.field.clock_sources.clear();
         self.field.ordered_clocks.clear();
         self.field.clock_priorities.clear();
-        // Keep each producer's ordinal and effective route while refreshing its asset tie-break.
         for route in &mut self.clock_routes.routes {
             route.asset = self.field.bindings.get(&route.source.0).cloned();
         }
@@ -3366,7 +2910,6 @@ impl ModelPass {
         self.poses.get_mut().1.clear();
     }
 
-    /// Material content failures are actor refusals; other upload failures stay fatal.
     fn make_resident(
         &mut self,
         device: &wgpu::Device,
@@ -3377,10 +2920,6 @@ impl ModelPass {
         if self.resident.get(mesh).copied().unwrap_or(false) {
             return Ok(());
         }
-        // No kept caster draw changes: one drawn before its textures were made refused, and a
-        // list a walk refused in is never kept.
-        // A mod entity's recorded counterpart is resident with it, to draw the moment the mod's
-        // draw is refused.
         if let Some(&counterpart) = self.alternatives.get(&mesh) {
             self.make_resident(device, queue, library, counterpart)?;
         }
@@ -3438,10 +2977,6 @@ impl ModelPass {
         Ok(())
     }
 
-    /// Uploads every mesh of the library, chunked within the device's limits.
-    /// Warm paths call this before any hour data exists so first use never
-    /// pays the library upload on a frame; a library that grows as hours place
-    /// its entities uploads each one when a field first places it.
     pub fn upload_library(
         &mut self,
         device: &wgpu::Device,
@@ -3455,7 +2990,6 @@ impl ModelPass {
         Ok(())
     }
 
-    /// Resolves placed materials; the compiled adapter owns native geometry uploads.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -3474,17 +3008,11 @@ impl ModelPass {
         Ok(())
     }
 
-    /// This frame's culls: the held camera's (`cull`), which keys a kept list, and the frame's own
-    /// camera's (`seen`), which every figure is tested by before anything is prepared for it.
     pub fn set_cull(&self, cull: Option<GameCull>, seen: Option<GameCull>) {
         self.cull.set(cull);
         self.seen.set(seen);
     }
 
-    /// Whether the figure of `instance` (of `mesh`, in the view moved by `offset` from the
-    /// traversal's `camera`) is culled by this frame's game cull, and why; none without one. The
-    /// sphere is centred half the bounds' height above the origin and reaches every point of them
-    /// from there.
     pub(super) fn game_culled(&self, mesh: usize, instance: &ModelInstance, offset: f32, camera: &Camera) -> Option<Culled> {
         let cull = self.seen.get()?;
         let mesh = self.meshes.get(mesh)?;
@@ -3493,15 +3021,10 @@ impl ModelPass {
         cull.test(centre, (mesh.bound + mesh.height * 0.5) * scale, mesh.cull_distance_squared)
     }
 
-    /// Instances the last frame drew, for reporting.
     pub fn drawn(&self) -> u32 {
         self.drawn.get()
     }
 
-    /// Counts a refused actor draw of the entity in slot `mesh` (`None` for a refusal of the
-    /// instance itself). A visual mod's entity ([`ModelMesh::visual`]) is drawn from its
-    /// recorded counterpart from the next frame on, named; any other refusal is recorded in the
-    /// frame's arena by name ([`shader_pipeline::gpu::Arena::refuse`]).
     fn refuse_actor(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -3512,7 +3035,6 @@ impl ModelPass {
         why: impl std::fmt::Display,
     ) {
         let reason = why.to_string();
-        // Each refusal by its reason and by its entity, for the flight record.
         if viewer_foundation::view_record::on() {
             viewer_foundation::view_record::add_named(self.label, &format!("refused: {reason}"), 1);
             viewer_foundation::view_record::add_named(self.label, &format!("refused {name}: {reason}"), 1);
@@ -3533,7 +3055,6 @@ impl ModelPass {
                     .entry(mesh)
                     .or_insert_with(|| why.clone());
             }
-            // By what was refused, not why: the message can differ between loads.
             None => arena.refuse(&format!("Map shader {}: refused actor {name}", self.label)),
         }
         let mut refusals = self.refusals.borrow_mut();
@@ -3544,7 +3065,6 @@ impl ModelPass {
         self.refused.set(self.refused.get() + 1);
     }
 
-    /// Draws each mod entity refused since the last frame from its recorded counterpart, named.
     fn fall_back(&mut self) {
         let refused = self.falling_back.get_mut();
         if refused.is_empty() {
@@ -3571,7 +3091,6 @@ impl ModelPass {
         }
     }
 
-    /// Points every placed group of a redirected entity at its recorded counterpart.
     fn redirect_field(&mut self) {
         if self.redirects.is_empty() {
             return;
@@ -3654,14 +3173,10 @@ impl ModelPass {
         self.written.set(true);
     }
 
-    /// A change a caster walk reads that only a new walk can follow.
     fn raise(&mut self) {
         self.revision += 1;
     }
 
-    /// How the field differs from the one the caster list last read, with the instances and
-    /// groups that changed. Compared only when a writer placed the field since, so a field
-    /// handed over and placed again in one frame is compared once, as drawn.
     fn field_change(&self, changed: &mut Changed) -> Change {
         changed.clear();
         if !self.written.replace(false) {
@@ -3710,8 +3225,6 @@ impl ModelPass {
         change
     }
 
-    /// How the field changed for this frame's retained lists, against the field they last read:
-    /// made by the first list that asks in `frame`, then the same for every other.
     fn frame_change(&self, frame: u64) -> std::cell::Ref<'_, FrameChange> {
         if self.frame_change.borrow().frame != Some(frame) {
             let mut cached = self.frame_change.borrow_mut();
@@ -3724,7 +3237,6 @@ impl ModelPass {
         self.frame_change.borrow()
     }
 
-    /// The actors given a player since the casters last read them, sorted, into `born`.
     fn take_born(&self, born: &mut Vec<(usize, u32, u32)>) {
         born.clear();
         std::mem::swap(born, &mut *self.born.borrow_mut());
@@ -3757,9 +3269,6 @@ impl ModelPass {
             .collect()
     }
 
-    /// Readies this frame's shadow casters (native material-selected shadow techniques,
-    /// declarations and actor palettes); whether they draw what the last frame's drew, byte for
-    /// byte.
     pub fn ready_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -3773,46 +3282,31 @@ impl ModelPass {
         self.caster
     }
 
-    /// Draws the casters [`Self::ready_casters`] readied this frame.
     pub fn draw_casters(&self, arena: &shader_pipeline::gpu::Arena, pass: &mut wgpu::RenderPass<'_>) {
         self.record_casters(arena, pass);
     }
 }
 
-/// What a caster walk reads of a field: each instance but its palette offset (which animation
-/// writes every frame and native draws never read), the walk order and each group's mesh, range
-/// and bounds. Placements made again unchanged every frame leave it as it was.
 #[derive(Default)]
 struct WalkedField {
     instances: Vec<ModelInstance>,
     order: Vec<(usize, usize)>,
     groups: Vec<(usize, Range<u32>, [u32; 4])>,
-    /// The last whole change's instances joined, left and out of their order, for the counts.
     reshaped: [u64; 3],
-    /// What made the last change whole ([`FIELD_WHOLE`]).
     whole: usize,
 }
 
-/// What makes a field's change whole, in the flight record: another count of instances, of groups
-/// or a group's mesh or range, another walk order, or an instance placed for another actor.
 const FIELD_WHOLE: [&str; 4] = ["field_whole_count", "field_whole_groups", "field_whole_order", "field_whole_actor"];
 
-/// How a field differs from the last one a caster walk read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Change {
     Same,
-    /// The same instances, actors and groups in the same order; some instances' own values
-    /// (transform, animation state, flags) changed: listed in [`Changed`].
     Changed,
-    /// Instances joined, left or changed their order, group or actor. The actors in both fields
-    /// whose own values changed are listed in [`Changed`], by their index in the new field.
     Whole,
 }
 
-/// How the field changed for one frame's retained lists ([`ModelPass::frame_change`]).
 struct FrameChange {
     frame: Option<u64>,
-    /// The frame the field was read before: a list that followed that change follows this one.
     pub since: Option<u64>,
     pub change: Change,
     pub changed: Changed,
@@ -3831,21 +3325,12 @@ impl Default for FrameChange {
     }
 }
 
-/// A display frame's placements for a field whose figures move between the ones their hours
-/// give ([`ModelPass::update_moving`]).
 #[derive(Default)]
 pub struct Moving {
-    /// Every part where its hour places it, as `(mesh, instance)`: given only where the hours'
-    /// own placements changed, so the field is built again for them and for nothing else.
     pub standing: Option<Vec<(usize, ModelInstance)>>,
-    /// The parts this frame places elsewhere, as `(ordinal, instance)`, by their ordinal in the
-    /// field's walk order. A part the frame before moved and this one does not carries the
-    /// placement its hour gives, so it stands again.
     pub moved: Vec<(usize, ModelInstance)>,
 }
 
-/// The instances whose own values changed, and the groups whose bounds moved (in a whole
-/// change, every group is new and none is listed).
 #[derive(Default)]
 pub(super) struct Changed {
     pub instances: Vec<usize>,
@@ -3859,7 +3344,6 @@ impl Changed {
     }
 }
 
-/// The actor an instance is: what its player, hidden state and identity follow.
 fn actor(instance: &ModelInstance) -> (u32, u32, u32) {
     (
         instance.animation_seed,
@@ -3869,8 +3353,6 @@ fn actor(instance: &ModelInstance) -> (u32, u32, u32) {
 }
 
 impl WalkedField {
-    /// Takes `field`, listing the instances and groups that changed when the instances, their
-    /// actors and their order are the same.
     fn note(&mut self, field: &ModelField, changed: &mut Changed) -> Change {
         let walked = |instance: &ModelInstance| ModelInstance {
             palette_offset: 0,
@@ -3921,9 +3403,6 @@ impl WalkedField {
         }
     }
 
-    /// Takes a field of other instances or order, counting what joined, left and moved in it
-    /// and listing the actors in both whose own values changed. An actor placed twice is
-    /// matched by its place in each field.
     fn reshape(&mut self, field: &ModelField, changed: &mut Changed) {
         changed.clear();
         let keyed = |instances: &[ModelInstance], groups: &mut dyn Iterator<Item = (usize, Range<u32>)>| {
@@ -3976,7 +3455,6 @@ impl WalkedField {
                 }
             }
         }
-        // Out of order: the kept instances outside the longest run that keeps its order.
         kept.sort_unstable();
         let mut tails: Vec<usize> = Vec::new();
         for &(_, new) in &kept {
@@ -4009,7 +3487,6 @@ impl WalkedField {
     }
 }
 
-/// What the paced report counts of the retained casters, each frame ([`take_counts`]).
 #[derive(Clone, Copy)]
 pub(super) enum Count {
     CasterWalks,
@@ -4072,33 +3549,22 @@ pub(super) fn count(what: Count, n: u64) {
     COUNTS[what as usize].fetch_add(n, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Actor refusals met since the last [`take_refusals`], by pass, entity and reason.
 static REFUSALS: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
 
-/// Whether refusals are named for the paced report (while the harness profiles).
 fn profiling_refusals() -> bool {
     viewer_foundation::profile_writer::profiling()
 }
 
-/// The actor refusals met since the last call, by pass, entity and reason, with how often: a
-/// refusal met every frame is a part walked again every frame, and possibly a model missing.
 pub fn take_refusals() -> BTreeMap<String, u64> {
     std::mem::take(&mut *REFUSALS.lock().unwrap_or_else(|error| error.into_inner()))
 }
 
-/// The retained lists' counts since the last call, by name: walks and kept frames of every
-/// pass's casters and lit walks, nodes rewritten in kept frames, lists spliced by figure with
-/// the figures walked into them and left out, and how the unit models' field changed (same, by
-/// instance, whole) with its instances changed, joined, left and out of order.
 pub fn take_counts() -> impl Iterator<Item = (&'static str, u64)> {
     COUNT_NAMES.iter().zip(&COUNTS).map(|(name, count)| {
         (*name, count.swap(0, std::sync::atomic::Ordering::Relaxed))
     })
 }
 
-/// [`ModelPass::sync`]'s history rule for a library that changed from
-/// `before` to `after` (default palette, mesh count): the players stay when
-/// it only grew ([`appended_only`]) and all start again otherwise.
 fn retain_players(
     players: &mut BTreeMap<(usize, u32, u32), entity_animation::Player>,
     before: (&[PaletteJoint], usize),
@@ -4109,32 +3575,11 @@ fn retain_players(
     }
 }
 
-/// Whether a library went from `before` to `after` (default palette, mesh
-/// count) by appending alone, so each known mesh keeps its index, rig and
-/// palette range and its players stay valid. [`ModelLibrary::merge`] and
-/// `ModelLibrary::add` append meshes, rigs and palette joints (`add` rolls
-/// back only what it appended), and [`ModelPass::sync`] extends its rigs
-/// from the library's tail, so this holds for every growth; anything else,
-/// such as another library, starts every history again.
 fn appended_only(before: (&[PaletteJoint], usize), after: (&[PaletteJoint], usize)) -> bool {
     let ((old, old_meshes), (new, new_meshes)) = (before, after);
     new_meshes >= old_meshes && new.len() >= old.len() && new[..old.len()] == *old
 }
 
-/// The CPU half of [`ModelPass::animate`]: evaluates the players of the
-/// shown groups' animated instances (a default-state actor in the field's
-/// `default_states` plays its request and chooses states by the game's
-/// rule, [`entity_animation::Player::native_choice`]) into a palette (the default one
-/// followed by one rig range per such instance, whose offset the instance
-/// takes) and retires every other player.
-///
-/// The game's entity clocks advance off screen:
-/// The game walks every quadtree node
-/// through entity-event updates. The frustum test only decides visible-entity
-/// work, while clip phase and elapsed time advance for every entity. So the
-/// unit pass shows every group it places and the unit history, not render
-/// culling, ends a figure's, hull's or raid unit's player when the game
-/// destroys the entity ([`super::unit_history`]).
 pub fn animate_players(
     players: &mut BTreeMap<(usize, u32, u32), entity_animation::Player>,
     rigs: &[Arc<Rig>],
@@ -4157,8 +3602,6 @@ pub fn animate_players(
     )
 }
 
-/// [`animate_players`] and, when `native_only`, without sampling the name-joined palette
-/// of a rig every node of which draws natively.
 #[allow(clippy::too_many_arguments)]
 fn animate_players_native(
     players: &mut BTreeMap<(usize, u32, u32), entity_animation::Player>,
@@ -4206,8 +3649,6 @@ fn animate_players_native(
         )
     }));
     let mut calls = Vec::new();
-    // Native actors do not read the optional name-joined palette. Keep the logical
-    // offsets identical, but do not allocate or copy unused per-instance ranges.
     let mut palette = if native_only {
         Vec::new()
     } else {
@@ -4243,8 +3684,6 @@ fn animate_players_native(
         if phase_only && clocks.get(&key).is_none_or(|clock| clock.phase.is_none()) {
             continue;
         }
-        // A default-state actor plays its request; one refused, or whose
-        // entity has no default state, stays still.
         let request = default_states.get(&key).copied();
         if instance.animation == entity_animation::DEFAULT_STATE && request.is_none() {
             continue;
@@ -4270,8 +3709,6 @@ fn animate_players_native(
         };
         let mut emitted = Vec::new();
         let clock = clocks.get(&key);
-        // Clock callbacks intern content-named states. Keep those callbacks
-        // in placement order; ordinary players only read registered names.
         if let Some(clock) = clock {
             let palette = if count == 0 {
                 &mut []
@@ -4310,7 +3747,6 @@ fn animate_players_native(
                 });
             }
         }
-        // A repeated animation key shares one player: its calls stay in their original order.
         let mut tasks: Vec<_> = players
             .iter_mut()
             .filter_map(|(key, player)| by_player.remove(key).map(|work| (player, work)))
@@ -4334,9 +3770,6 @@ fn animate_players_native(
             event
         }));
     }
-    // A deactivated shared naval wrapper is absent from placements but keeps
-    // its producer-owned clock. Initialize even an actor hidden before its
-    // first draw, and advance only its phase/explicit requests while hidden.
     for key in field.clock_order() {
         let clock = &field.clocks[&key];
         if clock.phase.is_none() || alive.contains(&key) {
@@ -4359,7 +3792,6 @@ fn animate_players_native(
     palette
 }
 
-/// Whether a group reaches the visible ground rectangle at this wrap offset.
 fn visible(group: &ModelGroup, offset: f32, rectangle: Option<[f32; 4]>) -> bool {
     let Some([x0, z0, x1, z1]) = rectangle else {
         return true;
@@ -4368,15 +3800,12 @@ fn visible(group: &ModelGroup, offset: f32, rectangle: Option<[f32; 4]>) -> bool
     gx0 + offset <= x1 && gx1 + offset >= x0 && gz0 <= z1 && gz1 >= z0
 }
 
-/// What a mesh's [`entity_animation::DEFAULT_STATE`] actors do, the same every frame: play
-/// the entity's default state, or stay still for the reason given.
 struct DefaultPlay {
     requests: Arc<Vec<entity_animation::Request>>,
     native: u32,
     refusal: Option<String>,
 }
 
-/// Whether a play was made from `rig`: the same rig, or none for none.
 fn same_rig(made: Option<&Arc<Rig>>, rig: Option<&Arc<Rig>>) -> bool {
     match (made, rig) {
         (Some(made), Some(rig)) => Arc::ptr_eq(made, rig),
@@ -4386,7 +3815,6 @@ fn same_rig(made: Option<&Arc<Rig>>, rig: Option<&Arc<Rig>>) -> bool {
 }
 
 impl DefaultPlay {
-    /// `None` when the entity has no clip of its default state.
     fn of(rig: Option<&Rig>, mesh: Option<&ModelMesh>) -> Option<Self> {
         let rig = rig?;
         let root = rig.nodes.first()?;
@@ -4420,9 +3848,6 @@ impl DefaultPlay {
     }
 }
 
-/// The first state with several variants an actor of `rig` can reach from
-/// its nodes' default states through `next_state`: the node, the state and
-/// its variant count.
 fn drawn_variants(rig: &entity_animation::Rig) -> Option<(usize, String, usize)> {
     for (index, node) in rig.nodes.iter().enumerate() {
         let mut seen = BTreeSet::new();
@@ -4458,9 +3883,6 @@ pub(crate) mod tests;
 mod parallel_animation_tests {
     use super::*;
 
-    /// The pose worker makes a figure's limbs away from its player, from the rig and the samples
-    /// the play left and nothing else ([`crate::map::poses`]): the pose it makes is bit for bit
-    /// the pose the player makes, on every frame of a play.
     #[test]
     fn a_pose_made_from_its_samples_is_the_pose_its_player_makes() {
         use super::super::mesh_pose;
@@ -4501,7 +3923,6 @@ mod parallel_animation_tests {
             last = Some(worked);
         }
         assert!(moved, "the fixture never poses differently, so it proves nothing");
-        // Samples of another rig play nothing rather than reaching past their end.
         assert_eq!(mesh_pose::actors_at(&rig, &[]).len(), rig.nodes.len());
     }
 
@@ -4792,7 +4213,6 @@ mod parallel_animation_tests {
             for mesh in [2, 0, 1] {
                 let start = field.instances.len() as u32;
                 for ordinal in 0..20 {
-                    // Repeated keys must step the same player twice, not fork it.
                     let seed = (ordinal % 17) as u32;
                     field.instances.push(ModelInstance {
                         scale: 1.,

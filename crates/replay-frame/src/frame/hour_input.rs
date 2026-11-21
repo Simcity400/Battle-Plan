@@ -1,7 +1,6 @@
 use super::{ChangeFacts, DecodedFrame, TableView, ViewIdentity};
 use crate::rows::TableId;
 
-/// Borrowed source and its decoder-owned edits; neither retains another hour.
 #[derive(Clone, Copy)]
 pub struct HourInput<'a> {
     frame: &'a DecodedFrame,
@@ -43,7 +42,6 @@ impl<'a> HourChanges<'a> {
     pub fn input(self) -> HourInput<'a> {
         HourInput::new(self.frame)
     }
-    /// Certify against the dependent's own predecessor, never another worker's cursor.
     pub fn since(
         self,
         table: TableId,

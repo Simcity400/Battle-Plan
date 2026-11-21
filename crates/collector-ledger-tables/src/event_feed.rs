@@ -1,4 +1,3 @@
-//! Hourly pointer-free Event feed handoff; the spool encodes and acknowledges it.
 use engine_native::{Memory, walk::Outcome};
 use replay_data::rows::TableId;
 use replay_frame::frame::TableView;
@@ -16,7 +15,6 @@ const ASSEMBLED: &str = "Event feed assembled by spool";
 pub struct Captured {
     snapshot: collector_observers::event_feed_history::Snapshot,
     sampled: bool,
-    /// The hour and partial flag `drain` prepared, until sealed.
     prepared: Option<(i32, bool)>,
 }
 
@@ -31,8 +29,6 @@ impl Captured {
             .refuse(crate::world_lifetime::generation(), hour, reason);
         self.sampled = true;
     }
-    /// Refuses a prepared hour that will not be sealed; an hour already
-    /// refused keeps its own reason.
     pub fn fail_prepared(&mut self, reason: &'static str) {
         if let Some((hour, _)) = self.prepared {
             self.fail(hour, reason);
@@ -56,8 +52,6 @@ impl Captured {
         crate::table_capture::grow_capacity(&mut capacity.events, self.snapshot.required);
         let _ = self.snapshot.grow(capacity.events);
     }
-    /// Prepares the hour at the observer boundary; [`Self::seal`]
-    /// publishes it.
     pub fn drain(&mut self, hour: i32, partial: bool) {
         self.prepared = None;
         match collector_observers::event_feed_observer::prepare_growing(hour, partial) {
@@ -65,8 +59,6 @@ impl Captured {
             Err(reason) => self.fail(hour, reason),
         }
     }
-    /// The seal follows the country census, so its markers belong to the
-    /// hour they were read. An hour already refused stays refused.
     pub fn seal(&mut self) {
         if let Some((hour, partial)) = self.prepared {
             collector_observers::event_feed_observer::seal(
@@ -74,7 +66,6 @@ impl Captured {
                 hour,
                 partial,
             );
-            // Kept until sealed: a seal that unwinds still refuses its hour.
             self.prepared = None;
             self.sampled = true;
         }
@@ -109,8 +100,6 @@ mod tests {
     use super::*;
     use replay_data::event_feed_rows::EventFeedCoverage;
 
-    // This process installs no Event feed owner, so the boundary refuses
-    // the hour's preparation.
     #[test]
     fn a_refused_preparation_is_sampled_and_no_seal_or_join_failure_replaces_it() {
         let mut captured = Captured::vacant();
@@ -122,8 +111,6 @@ mod tests {
         assert!(captured.prepared.is_none());
         assert!(captured.prepare_pack().unwrap().is_some());
 
-        // Nothing was prepared: the seal and a failed seal job keep the
-        // boundary's own refusal.
         captured.seal();
         captured.fail_prepared("event feed seal job failed");
         let kept = captured.snapshot.boundary;

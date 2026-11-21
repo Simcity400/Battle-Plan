@@ -115,9 +115,6 @@ fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
     }
 }
 
-/// Production reads each record's source roster and no cached tree: playback derives the trees
-/// ([`replay_derive::power_balance_derive`]). A record whose description tree cannot be read still
-/// publishes its sources, which the hourly tree walk this replaced refused.
 #[test]
 fn breakdown_capture_reads_sources_without_the_cached_trees() {
     use engine_native::memory::SliceMemory;
@@ -130,7 +127,6 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
         bytes[at..at + value.len()].copy_from_slice(value);
     }
     fn name(bytes: &mut [u8], at: usize, text: &[u8]) {
-        // An inline MSVC string: bytes, then size and capacity.
         put(bytes, at, text);
         put(bytes, at + 0x10, &(text.len() as u64).to_le_bytes());
         put(bytes, at + 0x18, &15_u64.to_le_bytes());
@@ -151,7 +147,6 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
         MANAGER + power_balance_manager::RECORDS + 8,
         &((1_u64 << 32) | 1).to_le_bytes(),
     );
-    // Two occurrences of the first source and one of the second, in order.
     put(&mut bytes, RECORDS + 0x50, &(SOURCES as u64).to_le_bytes());
     put(
         &mut bytes,
@@ -167,7 +162,6 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
     }
     name(&mut bytes, STATICS + 0x1a8, b"first");
     name(&mut bytes, STATICS + 0x200 + 0x1a8, b"second");
-    // The cached tree's children header lists a child at a null array.
     put(
         &mut bytes,
         RECORDS + 0xc8 + 0x18 + 8,
@@ -180,8 +174,6 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
     assert!(engine_native::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
     let mut captured = Captured::vacant();
     captured.balances.outcome = Outcome::Rows { len: 1 };
-    // An hour whose slice record 0 is not in: no witness even in a
-    // `breakdown_witness` build.
     captured.capture_breakdowns(&memory, 0, STATE, 1);
     assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: 1 });
     assert_eq!(
@@ -247,7 +239,7 @@ fn party_leader_role_identity_survives_capture_at_country_scale() {
     word(0x1800, ccountry_leader::VTABLE_RVA.0 as u64);
     word(0x1800 + ccountry_leader::CHARACTER, 0x1a00);
     word(0x1800 + ccountry_leader::LEADER_ID, 12);
-    word(0x1800 + 0x140, 0x2500); // Changed ideology; the role key is still -7.
+    word(0x1800 + 0x140, 0x2500);
     word(0x1a00, ccharacter::VTABLE_RVA.0 as u64);
     word(
         0x1a00 + ccharacter::TYPE,
@@ -519,13 +511,7 @@ fn native_decision_source_keys_and_non_utf8_literals_survive_conversion() {
     ));
 }
 
-/// Shared synthetic address space for the copy/decode split harness.
-/// Two countries share one template object; rosters hold native holes and
-/// unsorted acquisition order; ids cover heap and inline storage.
 #[cfg(test)]
-/// Shared synthetic address space for the governance walks: two authenticated
-/// countries with inline, absent and heap focus tokens plus one- and
-/// two-entry completed rosters.
 pub mod focus_test_kit {
     use super::{Capacities, Captured};
     use engine_focus::{
@@ -540,14 +526,11 @@ pub mod focus_test_kit {
     const CTAB: usize = 0x1_1000;
     const LTAB: usize = 0x1_1200;
     const C1: usize = 0x1_2000;
-    /// Country 2's object.
     pub const C2: usize = 0x1_4000;
-    /// The two countries' focus progress objects.
     pub const R1: usize = 0x1_6000;
     pub const R2: usize = 0x1_7000;
     const TT1: usize = 0x1_8000;
     const FC1: usize = 0x1_8200;
-    /// Country 2's selected focus.
     pub const FC2: usize = 0x1_8300;
     const CC1: usize = 0x1_8400;
     const FA: usize = 0x1_8500;
@@ -596,7 +579,6 @@ pub mod focus_test_kit {
         fn country(&mut self, country: usize, id: u32, tree: usize, root: usize) {
             self.w64(country, (BASE + ccountry::VTABLE_RVA.0) as u64);
             self.w32(country + ccountry::ID, id);
-            // Each country owns a state, so its focus drifts daily.
             self.w32(country + ccountry::OWNED_STATE_COUNT, 1);
             self.w64(country + ccountry::FOCUS_TREE, tree as u64);
             self.w64(country + ccountry::FOCUS_PROGRESS, root as u64);
@@ -731,9 +713,7 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
             let counts = accounting.finish();
             assert_eq!(captured.politics.outcome, Outcome::Rows { len: 2 });
             assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
-            // Ideas are hourly (replay_data::cadence).
             assert!(memory.0.ideas.get() > 0, "hour={hour}");
-            // ResearchSlots reads on its daily slot.
             let (index, slot) = (3, 11);
             assert_eq!(
                 counts[TABLES[index].index()].spans > 0,
@@ -741,8 +721,6 @@ fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
                 "table={:?} hour={hour}",
                 TABLES[index]
             );
-            // Technologies and focus are sliced; a new store reads every
-            // country at once.
             for index in [0, 2] {
                 assert!(counts[TABLES[index].index()].spans > 0, "hour={hour}");
             }
@@ -828,8 +806,6 @@ fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
     assert_eq!(captured.definition_text.first.capacity(), 0);
 }
 
-/// Countries 1 and 2 (`Fixture::world`), each with a two-technology roster
-/// reaching the same two templates.
 fn technology_fixture() -> focus_test_kit::Fixture {
     use focus_test_kit::{BASE, Fixture};
     let mut fixture = Fixture::world();
@@ -874,14 +850,10 @@ fn technology_fixture() -> focus_test_kit::Fixture {
     fixture
 }
 
-/// Technology `index` of the `owner`th roster in [`technology_fixture`].
 fn fixture_technology(owner: usize, index: usize) -> usize {
     0x1_b000 + (owner * 2 + index) * 0x200
 }
 
-/// Gives the `owner`th country of [`technology_fixture`] one authenticated
-/// research slot per technology in `assigned`, in that roster order, each
-/// with its roster position as its index.
 fn assign_slots(fixture: &mut focus_test_kit::Fixture, owner: usize, assigned: &[usize]) {
     use focus_test_kit::BASE;
     let status = 0x1_a000 + owner * 0x200;
@@ -986,9 +958,6 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
                         16
                     ))
                 .count(),
-            // The walk's read only: without the same pass's ResearchSlots
-            // rows (not enabled here) no roster is held, so the hold re-reads
-            // no identity.
             1
         );
         assert_eq!(
@@ -1000,8 +969,6 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
         );
     }
     drop(spans);
-    // Later hours read only their slice, new owners and unpublished reads;
-    // every roster read reaches both templates.
     fn read(
         captured: &mut Captured,
         memory: &impl Memory,
@@ -1031,9 +998,6 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
             .collect();
         (owners, result.outcomes[4].len())
     }
-    // With the same pass's ResearchSlots rows a full hour holds both
-    // rosters, and country 1's slice carries its held roster, admitting no
-    // definition.
     enabled[3] = true;
     let mut at = |hour, force_full, store: &mut SliceFingerprints| {
         read(
@@ -1048,9 +1012,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     assert_eq!(at(1, true, &mut store), (vec![1, 1, 2, 2], 2));
     assert_eq!(at(25, false, &mut store), (vec![1, 1], 0));
     assert_eq!(at(3, false, &mut store), (vec![], 0));
-    // An unpublished full hour is read again at the next hour.
     assert_eq!(at(4, true, &mut store), (vec![1, 1, 2, 2], 2));
-    // The complete census saw only countries 1 and 2.
     let selection = &captured.technology_selection;
     assert!(selection.live(1) && selection.live(2) && !selection.live(3));
     selection.invalidate(&mut store);
@@ -1067,15 +1029,10 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     };
     assert_eq!(at(5, false, &mut store), [1, 1, 2, 2]);
     assert!(at(6, false, &mut store).is_empty());
-    // A forgotten store makes every country new: read at once.
     store.forget();
     assert_eq!(at(7, false, &mut store), [1, 1, 2, 2]);
 }
 
-/// A hooked technology writer's mark reads its country within the hour,
-/// alone. Daily progress moves without a mark and the country's slice
-/// carries its held roster with its assigned technologies' progress read
-/// afresh; a level written without a mark is carried as held.
 #[test]
 fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_is_carried() {
     use crate::country_input_changes::{Domain, Table};
@@ -1109,19 +1066,14 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_is_
         owners.dedup();
         (owners, rows)
     };
-    // Nothing held yet: every country is read, outside its slice.
     assert_eq!(at(&fixture, 5).0, [1, 2]);
     assert!(at(&fixture, 6).0.is_empty());
-    // A level setter marks country 2: read at once, then not again.
     changes.write(Table::Technologies, 2);
     assert_eq!(at(&fixture, 7).0, [2]);
     assert!(at(&fixture, 8).0.is_empty());
-    // A research writer leaves the technology rows alone.
     changes.write(Table::Research, 1);
     changes.write_every(Table::Research);
     assert!(at(&fixture, 9).0.is_empty());
-    // Daily progress moves unmarked on the technology a slot researches:
-    // slice 1 carries the roster with that progress read afresh.
     fixture.w64(
         fixture_technology(0, 0) + ctechnology::LIVE_PROGRESS,
         260_000,
@@ -1129,8 +1081,6 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_is_
     let (owners, rows) = at(&fixture, 25);
     assert_eq!(owners, [1]);
     assert_eq!(rows[0].progress_raw, 260_000);
-    // A level changed with no mark is not read early, and slice 2 carries
-    // the held level.
     fixture.w32(fixture_technology(1, 1) + ctechnology::LEVEL, 3);
     assert!(at(&fixture, 27).0.is_empty());
     let (owners, rows) = at(&fixture, 50);
@@ -1138,8 +1088,6 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_is_
     assert_eq!(rows[1].level, 0);
 }
 
-/// One hour's focus read through the family's stores: the countries whose
-/// rows it returned, in census order.
 fn focus_hour(
     captured: &mut Captured,
     fixture: &focus_test_kit::Fixture,
@@ -1172,10 +1120,6 @@ fn focus_hour(
         .collect()
 }
 
-/// A country that owns no state runs no daily focus step
-/// (daily country update returns first), so the boundary does
-/// not read it; whether it owns one is checked at the boundary, which reads
-/// a country that gained or lost its last state since the previous one.
 #[test]
 fn the_focus_boundary_reads_only_countries_owning_a_state() {
     use crate::country_input_changes::Domain;
@@ -1188,8 +1132,6 @@ fn the_focus_boundary_reads_only_countries_owning_a_state() {
         focus_hour(&mut captured, &fixture, 5, &mut store, &changes),
         [1, 2]
     );
-    // Country 2 loses its last state: nothing until the boundary, which
-    // reads it once for the change, then the next boundary skips it.
     fixture.w32(C2 + ccountry::OWNED_STATE_COUNT, 0);
     assert!(focus_hour(&mut captured, &fixture, 6, &mut store, &changes).is_empty());
     assert_eq!(
@@ -1201,7 +1143,6 @@ fn the_focus_boundary_reads_only_countries_owning_a_state() {
         focus_hour(&mut captured, &fixture, 48, &mut store, &changes),
         [1]
     );
-    // It gains a state: read at the next boundary.
     fixture.w32(C2 + ccountry::OWNED_STATE_COUNT, 3);
     assert!(focus_hour(&mut captured, &fixture, 50, &mut store, &changes).is_empty());
     assert_eq!(
@@ -1210,11 +1151,6 @@ fn the_focus_boundary_reads_only_countries_owning_a_state() {
     );
 }
 
-/// Focus is read for every country at the first hour after the daily tick,
-/// which advances every country's progress, and between those only for the
-/// countries a hooked focus writer marked: a selection made at hour 5 is
-/// read at the next hour, not at the next day. A selection no hook saw is
-/// read at the boundary.
 #[test]
 fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     use crate::country_input_changes::{Domain, Table};
@@ -1224,15 +1160,12 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     let changes = Domain::enabled(64);
     let mut captured = focus_test_kit::Fixture::captured();
     let mut store = SliceFingerprints::new();
-    // Nothing held: every country, off the boundary too.
     assert_eq!(
         focus_hour(&mut captured, &fixture, 5, &mut store, &changes),
         [1, 2]
     );
-    // No rotating slice: a quiet hour reads nobody, country 1's slot too.
     assert!(focus_hour(&mut captured, &fixture, 1, &mut store, &changes).is_empty());
     assert!(focus_hour(&mut captured, &fixture, 6, &mut store, &changes).is_empty());
-    // A selection marks country 2: read at the next hour, alone.
     fixture.w64(R2 + progress::PROGRESS, 4_000);
     changes.write(Table::Focus, 2);
     assert_eq!(
@@ -1241,8 +1174,6 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     );
     assert_eq!(captured.focus.rows[0].progress, 4_000);
     assert!(focus_hour(&mut captured, &fixture, 8, &mut store, &changes).is_empty());
-    // The daily tick advances both countries' progress: every country is
-    // read at the boundary.
     fixture.w64(R1 + progress::PROGRESS, 99_000);
     fixture.w64(R2 + progress::PROGRESS, 9_000);
     assert_eq!(
@@ -1250,7 +1181,6 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
         [1, 2]
     );
     assert_eq!(captured.focus.rows[0].progress, 99_000);
-    // A selection no hook marked waits for the boundary.
     fixture.w64(R1 + progress::CURRENT, FC2 as u64);
     assert!(focus_hour(&mut captured, &fixture, 25, &mut store, &changes).is_empty());
     assert_eq!(
@@ -1260,11 +1190,6 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     assert!(focus_hour(&mut captured, &fixture, 49, &mut store, &changes).is_empty());
 }
 
-/// A drifting country no writer marked is carried at its slice: of its
-/// roster only the status, roster and slot headers, its slots and their
-/// assigned technology's progress are read, and its rows equal a full read
-/// of the same memory. Before, the slice read every technology's fields and
-/// template again.
 #[test]
 fn an_unmarked_technology_slice_reads_only_progress() {
     use crate::country_input_changes::{Domain, Table};
@@ -1309,17 +1234,13 @@ fn an_unmarked_technology_slice_reads_only_progress() {
         let rows = captured.technologies.rows[..result.outcomes[2].len()].to_vec();
         (rows, memory.addresses.into_inner())
     };
-    // Country 1's one research slot is assigned its second technology.
     assign_slots(&mut fixture, 0, &[fixture_technology(0, 1)]);
-    // The first hour reads and holds both rosters.
     at(&fixture, 5);
     fixture.w64(
         fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS,
         310_000,
     );
     let (carried, addresses) = at(&fixture, 25);
-    // The unassigned technology and the definitions are not read at all;
-    // the assigned one only by the ResearchSlots walk and its progress.
     let unassigned = fixture_technology(0, 0);
     assert!(
         addresses.iter().all(|&address| {
@@ -1332,15 +1253,11 @@ fn an_unmarked_technology_slice_reads_only_progress() {
     );
     assert_eq!(carried.len(), 2);
     assert_eq!(carried[1].progress_raw, 310_000);
-    // The same rows as a full read of the same memory: a mark reads the
-    // country whole.
     changes.write(Table::Technologies, 1);
     let (full, _) = at(&fixture, 27);
     assert_eq!(carried, full);
 }
 
-/// Memory that fails reads of `address` while `remaining` lasts, recording
-/// the progress reads in order.
 struct Faulty<'a> {
     memory: engine_native::memory::SliceMemory<'a>,
     address: usize,
@@ -1363,16 +1280,10 @@ impl Memory for Faulty<'_> {
     }
 }
 
-/// A carried roster reads its assigned technologies' progress in roster
-/// order, whatever the slots' order. A progress read that fails is the
-/// country's failure when its bounded serial fallback also fails. The
-/// relaxed read-order rule permits a gather to consume a transient fault
-/// and publish the successful serial fallback's rows.
 #[test]
 fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failure() {
     use crate::country_input_changes::Domain;
     let mut fixture = technology_fixture();
-    // Slot 0 researches the second technology, slot 1 the first.
     assign_slots(
         &mut fixture,
         0,
@@ -1409,20 +1320,15 @@ fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failur
         );
         (result.outcomes[2], memory.progress.into_inner())
     };
-    // Held at hour 5.
     assert!(matches!(at(&fixture, 5, 0, 0).0, Outcome::Rows { .. }));
     let first = fixture_technology(0, 0) + ctechnology::LIVE_PROGRESS;
     let second = fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS;
-    // Slice 1 carries: the first technology's progress before the second's
-    // (the ResearchSlots walk then reads them in slot order).
     let (outcome, progress) = at(&fixture, 25, 0, 0);
     assert_eq!(outcome, Outcome::Rows { len: 2 });
     assert_eq!(progress[..2], [first, second]);
-    // A transient gather fault is consumed; the one serial fallback succeeds.
     let (outcome, progress) = at(&fixture, 49, first, 1);
     assert_eq!(outcome, Outcome::Rows { len: 2 });
     assert_eq!(progress[..3], [first, first, second]);
-    // The held country remains usable, but a persistent fault still fails.
     let (outcome, _) = at(&fixture, 73, first, u32::MAX);
     assert!(
         matches!(outcome, Outcome::Unavailable { .. }),
@@ -1430,10 +1336,6 @@ fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failur
     );
 }
 
-/// A persistent fault at each operand a carried roster of country 1 reads
-/// (its status pointer and identity, roster header and assigned
-/// technology's progress) gives the carried slice exactly the
-/// ResearchTechnologies outcome a full read meets at the same fault.
 #[test]
 fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
     use crate::country_input_changes::Domain;
@@ -1501,8 +1403,6 @@ fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
     }
 }
 
-/// Memory that fails the `nth` read (from one) of `address`, and every later
-/// read when `persistent` is set, counting every read of it.
 struct NthFault<'a> {
     memory: engine_native::memory::SliceMemory<'a>,
     address: usize,
@@ -1524,12 +1424,6 @@ impl Memory for NthFault<'_> {
     }
 }
 
-/// Two research slots assigned one technology: the carried roster reads
-/// its progress once, as the full walk's roster row does, so the progress
-/// reads give the carried slice the full walk's outcomes. Under the relaxed
-/// rule, the slot gather may consume a one-shot second-read fault and publish
-/// its successful fallback; a persistent second-read fault still refuses
-/// ResearchSlots. The carried technology roster itself reads progress once.
 #[test]
 fn two_slots_on_one_technology_read_its_progress_once_in_the_carried_roster() {
     use crate::country_input_changes::Domain;
@@ -1588,10 +1482,6 @@ fn two_slots_on_one_technology_read_its_progress_once_in_the_carried_roster() {
         let (carried, carried_reads) =
             capture(&mut store, &changes, (25, false), (nth, persistent));
         assert_eq!(carried_reads, full_reads, "progress reads, fault {nth}");
-        // A slice hour publishes only its countries' technology rows, so
-        // complete ResearchTechnologies rows differ in length from the full
-        // hour's; any other outcome must be the full walk's. ResearchSlots is
-        // walked whole in both.
         match (full[0], carried[0]) {
             (Outcome::Rows { .. }, Outcome::Rows { .. }) => {}
             (full, carried) => assert_eq!(carried, full, "fault {nth}"),

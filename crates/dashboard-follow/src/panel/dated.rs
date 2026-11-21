@@ -92,25 +92,21 @@ fn head(count: usize, clock: i32, (route, seek): (u32, u32)) -> Vec<u8> {
     out
 }
 
-/// The clock a message says its hours are on.
 pub fn clock(bytes: &[u8]) -> i32 {
     bytes.get(12..16).and_then(|clock| clock.try_into().ok()).map_or(0, i32::from_le_bytes)
 }
 
-/// The native route and seek of every panel in this message.
 pub fn stamp(bytes: &[u8]) -> Option<(u32, u32)> {
     (bytes.len() >= HEAD && bytes[..4] == MAGIC[..] && bytes[4..6] == VERSION.to_le_bytes())
         .then(|| (u32_at(bytes, 16), u32_at(bytes, 20)))
 }
 
-/// One panel's dated reading, refusal or confirmation.
 #[derive(Clone, Copy, Debug)]
 pub struct Record<'a> {
     pub id: u32,
     pub hour: Hour,
     pub kind: u8,
     pub body: &'a [u8],
-    /// The whole record, padding included.
     bytes: &'a [u8],
 }
 
@@ -118,7 +114,6 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
 }
 
-/// The panels of a message, in order.
 pub fn records(bytes: &[u8]) -> io::Result<Vec<Record<'_>>> {
     if bytes.len() < HEAD || &bytes[..4] != MAGIC {
         return Err(crate::invalid("A panel message does not start with PNL2"));

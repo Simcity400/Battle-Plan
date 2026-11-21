@@ -1,6 +1,3 @@
-//! Hourly CNavyLeader window operands. No localized text, percentage, modifier
-//! sum or portrait selection is evaluated by these readers. Text storage
-//! follows native string lengths during worker acquisition.
 
 use crate::cland_combat::{CommanderLearningTrait, CommanderTrait};
 use crate::memory::Raw;
@@ -10,13 +7,10 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Portrait-tooltip minimum fraction for displaying learning traits.
 pub const LEARNING_THRESHOLD_RVA: Rva = Rva(0x033e_4ce0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommanderPortraitModifier {
-    /// 0: its own accumulator; 1..4: the accumulators inside the parent's four CModifier objects,
-    /// in their native order.
     pub source: u8,
     pub id: u32,
     pub value: i64,
@@ -49,13 +43,11 @@ pub struct PortraitEntry {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Presentation {
     pub character: u64,
-    /// 0: no reference; 1: unresolved native reference; 2: authenticated character.
     pub character_state: u8,
     pub character_country: u32,
     pub character_gender: u32,
     pub character_role_leader: u64,
     pub character_fallback_leader: u64,
-    /// 0 absent, 1 the direct unit leader (`CHARACTER_UNIT_LEADER`), 2 the resolved reference fallback.
     pub character_role_source: u8,
     pub fallback_text: [Vec<u8>; 3],
     pub fallback_text_len: [usize; 3],
@@ -70,7 +62,6 @@ pub struct Presentation {
 }
 
 impl Presentation {
-    /// A copy whose vectors are allocated fallibly, as a capture's are.
     pub fn copied(&self) -> std::io::Result<Self> {
         use crate::allocation::copy_vec;
         let [first, second, third] = &self.fallback_text;
@@ -108,7 +99,6 @@ pub struct Row {
     pub country: u32,
     pub category: i32,
     pub experience: i64,
-    /// Overall level, attack, defense, maneuvering, coordination.
     pub skills: [i32; 5],
     pub skill_definitions: [SkillDefinition; 5],
     pub next_skill: SkillDefinition,
@@ -121,19 +111,15 @@ pub struct Row {
     pub traits_len: usize,
     pub trait_text: Vec<u8>,
     pub trait_text_len: usize,
-    /// Timed-trait operands shared by live and retained-result hovers.
-    /// Start/count in the caller's live-sized timed-trait arena.
     pub timed_traits: [usize; 2],
     pub learning_traits: Vec<CommanderLearningTrait>,
     pub learning_traits_len: usize,
     pub learning_text: Vec<u8>,
     pub learning_text_len: usize,
     pub learning_threshold: i64,
-    /// Sources0..4: overall/attack/defense/maneuver/coordination definitions' accumulators.
     pub modifiers: Vec<CommanderPortraitModifier>,
     pub modifiers_len: usize,
     pub modifier_feature_flags: u32,
-    /// 0: null callback; 1: authenticated feature-flags callback.
     pub modifier_callback_kind: u8,
     pub tooltips: Vec<CommanderPortraitTooltip>,
     pub tooltips_len: usize,
@@ -156,8 +142,6 @@ impl Row {
     }
 }
 
-/// Full-handle entry point also usable for retained results. A zero handle is
-/// the native no-leader branch. A nonzero unresolved leader is unavailable.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -221,8 +205,6 @@ pub fn capture(
     let end = start
         .checked_add(timed.count as usize)
         .ok_or("naval commander timed trait demand overflow")?;
-    // Naval details run on the acquisition worker: admit the original native
-    // demand once, with checked growth and no chosen trait-count ceiling.
     if timed_traits.len() < end {
         crate::allocation::resize_default(timed_traits, end)
             .map_err(|_| "collector allocation failed")?;
@@ -236,7 +218,6 @@ pub fn capture(
     }
     row.timed_traits = [start, timed.count as usize];
     let learning = r.array(pointer, cunit_leader::TRAIT_EXPERIENCE_DATA, 16)?;
-    // Serialization visits the complete signed trait count.
     crate::allocation::resize_default(&mut row.learning_traits, learning.count as usize)
         .map_err(|_| "commander learning allocation failed")?;
     row.learning_traits_len = learning.count as usize;
@@ -265,8 +246,6 @@ pub fn capture(
     Ok(row)
 }
 
-/// Portrait and character-role association operands shared by land and naval
-/// commanders. The pointer is transient and is authenticated before reading.
 pub fn capture_presentation(
     memory: &impl Memory,
     base: usize,
@@ -315,7 +294,6 @@ pub fn capture_presentation(
             })();
             let array = character.wrapping_add(ccharacter::PORTRAIT_DATA);
             crate::portrait_cache::settled(array, live, |image| {
-                // A writer changed this holder during the capture: its entries as they were.
                 let count = crate::cpdx_array::Array::from_header(image.header, 0x38)
                     .ok_or("commander array invalid")?
                     .count as usize;
@@ -370,7 +348,6 @@ pub fn capture_presentation(
             }
         }
     }
-    // These operands are consumed only when the character reference does not resolve.
     if row.character_state != 2 {
         for (index, offset) in [0xc0, 0xe0, 0x100].into_iter().enumerate() {
             row.fallback_text_len[index] =
@@ -444,7 +421,6 @@ impl<M: Memory> Reader<'_, M> {
         let len = usize::try_from(u64::from_le_bytes(h[16..24].try_into().unwrap()))
             .map_err(|_| "commander text length overflow")?;
         let cap = u64::from_le_bytes(h[24..].try_into().unwrap());
-        // Copy the stored name length; capacity above fifteen selects heap storage.
         if cap < 15 || len as u64 > cap || len > isize::MAX as usize {
             return Err("commander text header invalid");
         }
@@ -476,7 +452,6 @@ impl<M: Memory> Reader<'_, M> {
         text: &mut Vec<u8>,
     ) -> Result<(usize, usize), &'static str> {
         let a = self.array(p, cunit_leader::TRAIT_DATA, 8)?;
-        // Trait addition and serialization retain every occurrence.
         crate::allocation::resize_default(output, a.count as usize)
             .map_err(|_| "commander trait allocation failed")?;
         let mut used = 0;
@@ -631,7 +606,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Raw tooltip metadata operands: flags and feature selector, plus category when filtering.
 pub(crate) fn capture_modifier_metadata(
     memory: &impl Memory,
     base: usize,
@@ -656,8 +630,6 @@ pub(crate) fn capture_modifier_metadata(
     }))
 }
 
-/// Preserve flags without invoking the callback or applying its result.
-/// Only null and the authenticated feature-flags callback are supported.
 pub(crate) fn capture_modifier_gate(
     memory: &impl Memory,
     base: usize,
@@ -996,8 +968,6 @@ mod tests {
             COUNT.div_ceil(64)
         );
         drop(reads);
-        // A failed batch has one attempted read and withholds the whole context;
-        // the caller-owned prefix does not become an empty/complete commander.
         let fail = TIMED + 64 * cunit_leader::TIMED_TRAIT_STRIDE;
         f.fail = Some(fail);
         f.reads.borrow_mut().clear();
@@ -1092,7 +1062,6 @@ mod tests {
         }
     }
 
-    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
     fn commander_collections_follow_every_native_occurrence() {
         const COUNT: usize = 65;
@@ -1251,8 +1220,6 @@ mod tests {
                 b"portrait"
             );
         }
-        // A writer is changing the holder during the capture, so the live array is torn: the
-        // capture takes the entries the writer logged as they were when the capture began.
         use crate::portrait_cache::{EntryImage, HolderImage, test_images};
         f.u32(CHARACTER + ccharacter::PORTRAIT_DATA + 12, COUNT as u32 + 1);
         assert!(capture(&f, 0, HANDLE).is_err());

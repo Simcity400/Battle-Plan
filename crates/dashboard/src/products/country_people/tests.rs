@@ -77,7 +77,6 @@ fn a_countrys_people_join_its_pools_recruitment_elections_exiles_and_the_recorde
     assert_eq!(value(&reply.manpower, "Required navy crews"), Some("77"));
     assert_eq!(value(&reply.manpower, "Deployed air force"), Some("22"));
     assert_eq!(value(&reply.manpower, "Deployed exile air force"), Some("100"));
-    // The election row is keyed by an alias of the country's id.
     assert_eq!(value(&reply.politics, "Election interval"), Some("47"));
     assert_eq!(value(&reply.politics, "Elections"), Some("Allowed"));
     assert_eq!(reply.exiles.len(), 1);
@@ -85,7 +84,6 @@ fn a_countrys_people_join_its_pools_recruitment_elections_exiles_and_the_recorde
     assert_eq!(reply.exiles[0].deployed_air, Some(100));
     assert_eq!((reply.exiles[0].manpower, reply.exiles[0].cap, reply.exiles[0].leaders), (Some(400), Some(900), Some(2)));
     assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
-    // The host sees the exile it hosts.
     let host = read(&frame(), "1", &Country::Slot(2), "HST", Owner { slot: 2, id: 201 }, None).unwrap();
     assert_eq!(host.exiles.len(), 1);
     assert_eq!(value(&host.manpower, "Deployed exile air force"), None, "an unrecorded sum is missing, never zero");

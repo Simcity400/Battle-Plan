@@ -4,7 +4,6 @@ use replay::campaign::Replay;
 use replay_data::{rows::LexicalTokenRow, rows::TableRows, rows::VariantDefinitionRow};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
-/// A frame whose variant table holds `variants`, read this hour when `read`.
 fn frame(branch: u64, hour: i32, read: bool, variants: &[(u64, u32, &str)]) -> DecodedFrame {
     spelled(
         branch,
@@ -15,7 +14,6 @@ fn frame(branch: u64, hour: i32, read: bool, variants: &[(u64, u32, &str)]) -> D
     )
 }
 
-/// [`frame`] with this hour's lexical tokens `spellings`.
 fn spelled(
     branch: u64,
     hour: i32,
@@ -83,7 +81,6 @@ fn recorded_designs_are_every_saved_model_of_every_branch_read() {
                     (3, 8, "rifle_entity"),
                 ],
             ),
-            // Not a read of the table: what it carries is not a new reading.
             frame(1, 101, false, &[(1, 7, "carried_entity")]),
         ],
         vec![frame(
@@ -113,8 +110,6 @@ fn recorded_designs_are_every_saved_model_of_every_branch_read() {
     );
 }
 
-/// Each session numbers its variants and tokens itself: the same id, token and saved model in
-/// two sessions can be two designs of different types, and each is spelled by its own hour.
 #[test]
 fn recorded_designs_are_told_apart_by_their_spelling_not_their_session_numbers() {
     let source = recording(vec![
@@ -233,9 +228,7 @@ fn pages_list_flyable_aircraft_first_with_their_titles_and_counted_refusals() {
         ]
     );
     assert_eq!((reply.matching, reply.aircraft, reply.first), (5, 5, 0));
-    // Every registered entity and mesh, and the names references make.
     assert_eq!(reply.all, 8);
-    // The ladder's country prefix names the country's own equipment name first.
     assert_eq!(reply.entries[0].titles, ["Spitfire"]);
     assert_eq!(reply.entries[1].titles, ["Fighter"]);
     assert_eq!(
@@ -291,7 +284,6 @@ fn queries_match_names_titles_and_references_without_case_and_pages_slice_them()
             "missing_plane_entity"
         ]
     );
-    // The complete listing has what nothing references, a bare mesh among them.
     let all = page(&built, AircraftScope::All, "", 0, 100);
     for name in ["bare_mesh", "fighter_mesh", "rifle_entity"] {
         let entry = all.entries.iter().find(|entry| entry.name == name).unwrap();
@@ -308,7 +300,6 @@ fn queries_match_names_titles_and_references_without_case_and_pages_slice_them()
             .kind,
         AircraftKind::Mesh
     );
-    // Pages cover the matching entries in order, and past the end answer none.
     let whole = names(&all).join(" ");
     let mut paged = Vec::new();
     for first in (0..all.matching).step_by(3) {

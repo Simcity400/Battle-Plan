@@ -18,23 +18,15 @@ import './mapControls.css';
 
 export default function MapControls({ source, client, metadata, branchId, onBranch, onChooseHistory, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode, popoutCameraOverlays = false, aircraft = null, onAircraft, popoutFlyAircraft = null, aircraftHost = null }: {
   compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
-  /** The campaign map's pop-out window state; widget maps omit it. */
   poppedOut?: boolean;
-  /** The generation of the pop-out window shown, which its restart and close name. */
   popoutGeneration?: number;
-  /** Why the pop-out shows nothing, and whether its viewer exited and can be restarted. */
   popoutProblem?: string | null; popoutStopped?: boolean;
-  /** The pop-out map's camera mode, as its viewer reports it while it runs. */
   popoutCameraMode?: CameraMode | null;
   popoutCameraOverlays?: boolean;
-  /** The campaign's aircraft for Fly mode, how to choose another, and what the pop-out's map
-   * answered for it; the pop-out offers the choice while its camera flies. */
   aircraft?: string | null; onAircraft?: (aircraft: string | null) => void; popoutFlyAircraft?: FlyAircraftStatus | null;
-  /** Where the aircraft list docks, beside the workspace. */
   aircraftHost?: HTMLElement | null;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
-  /** Joins a recorded stretch of play to the earlier one chosen for it, or (null) as the recording decides. */
   onChooseHistory?: (segmentId: string, parentId: string | null) => Promise<void>;
   options: MapOptions; onOptions: (options: MapOptions) => void;
 }) {
@@ -52,8 +44,6 @@ export default function MapControls({ source, client, metadata, branchId, onBran
     catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
-  // The open menu hides the native map, which refuses an export: it closes, and the map shows
-  // again, before the export is asked for. A refusal opens the menu again to say why.
   const exportImage = async (view?: string) => {
     menu.close();
     setBusy(true); setError(null);
@@ -101,7 +91,6 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   </>;
 }
 
-/** A join the recording can't prove, or that was chosen: what it means, and the earlier play it may go on from. */
 function JoinNote({ join, busy, onChoose }: { join: BranchJoin; busy: boolean; onChoose?: (parentId: string | null) => void }) {
   const at = formatDateTime(join.hour);
   const text = join.evidence === 'unconfirmed' ? `From ${at}: the recording can't tell which save this play was loaded from, so it goes on from the latest play.`
@@ -117,7 +106,6 @@ function JoinNote({ join, busy, onChoose }: { join: BranchJoin; busy: boolean; o
   </>;
 }
 
-/** Resolves once the frame after the next has painted: layout effects and the map's placement have run. */
 function afterPaint(): Promise<void> {
   return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }

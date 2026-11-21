@@ -1,4 +1,3 @@
-/// Effective operands; nested absence means the native read was skipped.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct StrategicRedeploymentInputs {
@@ -15,7 +14,6 @@ impl StrategicRedeploymentInputs {
     }
 }
 
-/// The failed native query, independently of the movement row's availability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub enum StrategicActionFailure {

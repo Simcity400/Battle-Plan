@@ -25,8 +25,6 @@ impl Memory for CarrierMemory<'_> {
             }
             return true;
         }
-        // The selected ship root is authentically null in this synthetic
-        // world: the nonzero host reference is known stale, hence empty text.
         if address
             == IMAGE
                 + crate::creference_registry::LOW_ROOTS_RVA.0
@@ -93,8 +91,6 @@ fn carrier_globals() -> std::collections::BTreeMap<usize, u8> {
                 .map(|(index, byte)| (pointer + index, byte)),
         );
     }
-    // The native define stores a full PDX header. Its nineteenth cost is
-    // deliberately larger than all first eighteen; maximum must exclude it.
     for (pointer, value) in [
         (
             IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA.0 + 8,
@@ -162,8 +158,6 @@ fn host_registration_fixture() -> Vec<u8> {
         CONTAINER_B + ccountry_air_container::FUEL_ALLOCATED_RAW,
         29,
     );
-    // Source helper's real country-local clone and independently authenticated
-    // global entry, followed by the exact native null singleton in empty pool B.
     array(
         &mut bytes,
         CARRIER_DATABASE + crate::csub_unit_definition::DATABASE_VECTOR,
@@ -210,8 +204,6 @@ fn host_registration_fixture() -> Vec<u8> {
         );
         dword(&mut bytes, owner + crate::cstrategic_air::COUNTRY, country);
     }
-    // First pool retains A, A, B as three authentic primary occurrences;
-    // second pool is empty. The new addresses do not overlap wing records.
     array(
         &mut bytes,
         POOL_A + cair_wing_pool::WINGS,
@@ -257,8 +249,6 @@ fn host_registration_fixture() -> Vec<u8> {
             0,
         );
     }
-    // No matching modifier entry is present, so the passive getter returns
-    // native zero without reading modifier metadata or fabricating a value.
     for country in [COUNTRY_A, COUNTRY_B] {
         array(
             &mut bytes,
@@ -398,9 +388,6 @@ fn carrier_walk_fixture_with_storage(
     }
 }
 
-/// Both container fuel scalars arrive through the walk's own container span, with the values
-/// separate reads of the fuel demand and allocated fuel return: the observer reads neither word
-/// itself, so a fault its own memory would meet there changes nothing.
 #[test]
 fn carrier_fuel_arrives_through_the_container_span_and_an_optional_fault_preserves_membership() {
     let bytes = host_registration_fixture();
@@ -445,8 +432,6 @@ fn carrier_fuel_arrives_through_the_container_span_and_an_optional_fault_preserv
     }
     assert_eq!(observed.bases[0].countries, Ok((0, 2)));
     assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
-    // Both pool metadata records and the actual per-wing callback path are
-    // admitted, independently of the container demand scalar failure.
     assert_eq!(observed.registrations[0].pools, Ok((0, 1)));
     assert_eq!(observed.registrations[1].pools, Ok((1, 1)));
     assert_eq!(observed.rows[1].wings_len, 0);
@@ -552,8 +537,6 @@ fn failed_original_carrier_plane_leaf_preserves_membership_and_current_fuel() {
 #[test]
 fn denied_transport_carrier_demand_keeps_legacy_fuel_and_never_reads_unreached_planes() {
     let bytes = host_registration_fixture();
-    // This ORIGINAL cost-header refusal prevents both legacy fuel branches from reaching the plane
-    // count. An admitted transport suffix would add those leaves.
     let fault = Some(IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA.0);
     let denied = carrier_walk_fixture_with_transport(
         &bytes,
@@ -963,12 +946,8 @@ fn wing(bytes: &mut [u8], at: usize, handle: u64, pool: usize) {
     qword(bytes, at + cair_wing::POOL, pool as u64);
 }
 
-/// The state base carries two containers: reserved slot zero, which the
-/// draw never selects but which the engine can still create, and slot two
-/// with two pools. The host base carries no container at all.
 fn registration_fixture() -> Vec<u8> {
     let mut bytes = fixture();
-    // Two canonical countries: id 5 at slot 1 and id 9 at slot 2.
     array(
         &mut bytes,
         GAME + cgame_state::COUNTRIES,
@@ -1057,8 +1036,6 @@ fn registered(
     arena: usize,
 ) -> (RegistrationWalk, Vec<RegistrationRow>, Vec<u64>) {
     let memory = SliceMemory { base: GAME, bytes };
-    // Every resolver length, from none through the full live link count,
-    // must publish the same walk; only the number of repeated resolves differs.
     let [first, rest @ ..] = [0, 1, 3, 10, 16].map(|cache| {
         let mut registrations = vec![RegistrationRow::default(); rows];
         let mut wings = vec![0; arena];
@@ -1081,7 +1058,6 @@ fn registered(
     first
 }
 
-/// A cell left over from an earlier walk; it must never be served.
 fn stale_country() -> ccountry::Country {
     ccountry::Country {
         pointer: 0xdead,
@@ -1105,7 +1081,6 @@ fn registered_slots_keep_native_order_reserved_slots_and_empty_containers() {
             wings_len: 2,
         }
     );
-    // A present but empty container is a registration with no wings.
     assert_eq!(
         rows[1],
         RegistrationRow {
@@ -1133,8 +1108,6 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
     const POOL: usize = 0x3d00;
     const WING: usize = 0x3e00;
     let mut bytes = registration_fixture();
-    // The first base fills longer container, pool and wing prefixes. Keep
-    // duplicate wing occurrences, then use only one entry of each on host.
     array(
         &mut bytes,
         CONTAINER_A + ccountry_air_container::POOLS,
@@ -1299,14 +1272,11 @@ fn registration_capacity_releases_staged_wings_and_reports_full_demand() {
             unread_rows: 1
         }
     );
-    // The oversized container is omitted whole; its first wing is released.
     assert_eq!((walk.wings_len, walk.required_wings), (0, 2));
     assert_eq!(
         (rows[0].slot, rows[0].wings_start, rows[0].wings_len),
         (2, 0, 0)
     );
-    // The omitted container's staged wing is released, so nothing it wrote
-    // can be published by the surviving row.
     assert!(wings[..walk.wings_len].is_empty());
     let (walk, _, _) = registered(&registration_fixture(), 0, 8);
     assert_eq!(
@@ -1453,7 +1423,6 @@ fn registration_faults_never_become_absence() {
         );
     }
     let mut bytes = registration_fixture();
-    // A pool count above its own capacity is a torn vector header.
     dword(&mut bytes, POOL_A + cair_wing_pool::WINGS_COUNT, 9);
     assert_eq!(
         registered(&bytes, 4, 8).0.outcome,
@@ -1466,7 +1435,6 @@ fn registration_faults_never_become_absence() {
 #[test]
 fn a_reserved_slot_accepts_an_unlinked_reference_and_keeps_its_capacity() {
     let mut bytes = registration_fixture();
-    // Link entry seven is zero: an id the engine has not filed anywhere.
     dword(&mut bytes, CONTAINER_A + ccountry_air_container::COUNTRY, 7);
     qword(
         &mut bytes,
@@ -1479,8 +1447,6 @@ fn a_reserved_slot_accepts_an_unlinked_reference_and_keeps_its_capacity() {
         (rows[0].slot, rows[0].capacity_raw),
         (0, ccountry_air_container::INITIAL_CAPACITY_RAW)
     );
-    // A link entry naming a slot outside the country table is a torn read,
-    // not an unlinked id, so it refuses instead of publishing the row.
     dword(&mut bytes, LINK_TABLE + 7 * 4, 4);
     assert_eq!(
         registered(&bytes, 4, 8).0.outcome,
@@ -1499,8 +1465,6 @@ fn a_base_without_containers_is_an_honest_empty_registration_table() {
     assert_eq!((walk.wings_len, walk.required_wings), (0, 0));
 }
 
-/// Guarded rounds: one per `copy` and one per `copy_records`, as in
-/// `LiveMemory`. Batched element copies go through the trait default.
 struct Rounds<'a> {
     inner: SliceMemory<'a>,
     rounds: std::cell::RefCell<Vec<usize>>,
@@ -1531,9 +1495,6 @@ impl Memory for Rounds<'_> {
     }
 }
 
-/// Every country slot of one host base holds a container, and a second base
-/// shares every seventh. Odd slots store an alias id, so the link table is
-/// twice the census.
 #[test]
 fn country_registrations_match_with_any_resolver_length() {
     const COUNTRIES: u32 = 129;
@@ -1671,7 +1632,6 @@ fn country_registrations_match_with_any_resolver_length() {
         expected
     );
     assert!(rows.iter().all(|row| row.wings_len == 0));
-    // Each base's country-slot vector costs one guarded round per 64 slots.
     let chunk_rounds = rounds
         .iter()
         .filter(|&&at| {
@@ -1680,13 +1640,11 @@ fn country_registrations_match_with_any_resolver_length() {
         })
         .count();
     assert_eq!(chunk_rounds, 2 * (COUNTRIES as usize).div_ceil(BATCH));
-    // A short or absent cache resolves the extra ids again, never differently.
     for cache in [0, 64, COUNTRIES as usize] {
         let (short, short_rows, short_rounds) = run(cache);
         assert_eq!((short, &short_rows), (walk, &rows), "cache {cache}");
         assert!(short_rounds.len() > rounds.len(), "cache {cache}");
     }
-    // The second base reuses every resolution made for the first.
     let resolves = |rounds: &[usize]| {
         rounds
             .iter()
@@ -1706,16 +1664,12 @@ const SPARSE_LINK: usize = 0x10000;
 const SPARSE_OBJECTS: usize = 0x20000;
 const SPARSE_SLOTS: usize = 0x40000;
 const SPARSE_CONTAINERS: usize = 0x60000;
-/// The slots of the three containers a mod-sized base holds.
 const SPARSE_OCCUPIED: [u32; 3] = [1, 70, 128];
 
 fn sparse_container(index: usize) -> usize {
     SPARSE_CONTAINERS + index * 0x100
 }
 
-/// One host base whose 5,001-slot country-container vector holds three containers, each filed at
-/// its own country's slot, with its dense list `REGISTERED_CONTAINERS` naming `listed` (container
-/// indices) in that order.
 fn sparse_slot_fixture(listed: &[usize]) -> Vec<u8> {
     let mut bytes = vec![0; sparse_container(SPARSE_OCCUPIED.len()) - GAME];
     qword(
@@ -1809,8 +1763,6 @@ fn sparse_slot_fixture(listed: &[usize]) -> Vec<u8> {
     bytes
 }
 
-/// One registration walk of `bytes`, the dense list consulted or not: its
-/// result, rows and every guarded round's first address.
 fn sparse_walk(bytes: &[u8], dense: bool) -> (RegistrationWalk, Vec<RegistrationRow>, Vec<usize>) {
     let memory = Rounds {
         inner: SliceMemory { base: GAME, bytes },
@@ -1834,7 +1786,6 @@ fn sparse_walk(bytes: &[u8], dense: bool) -> (RegistrationWalk, Vec<Registration
     (walk, registrations, memory.rounds.into_inner())
 }
 
-/// Rounds that read the base's country-container vector.
 fn slot_vector_rounds(rounds: &[usize]) -> Vec<usize> {
     let mut rounds: Vec<usize> = rounds
         .iter()
@@ -1845,12 +1796,8 @@ fn slot_vector_rounds(rounds: &[usize]) -> Vec<usize> {
     rounds
 }
 
-/// A base of many slots with three containers: its dense list names them,
-/// so the walk reads only each one's slot word instead of every chunk, and
-/// publishes the full scan's rows.
 #[test]
 fn a_sparse_base_reads_only_the_slot_words_of_its_listed_containers() {
-    // Listed out of slot order: the plan sorts by slot.
     let bytes = sparse_slot_fixture(&[2, 0, 1]);
     let (full, full_rows, full_rounds) = sparse_walk(&bytes, false);
     assert_eq!(full.outcome, Outcome::Rows { len: 3 });
@@ -1881,8 +1828,6 @@ fn a_sparse_base_reads_only_the_slot_words_of_its_listed_containers() {
     assert_eq!(slot_vector_rounds(&dense_rounds), expected);
 }
 
-/// A list that does not prove the occupied slots leaves the base to the full
-/// scan, whose outcome, reasons and rows stand unchanged.
 #[test]
 fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
     let check = |bytes: &[u8], what: &str| {
@@ -1896,10 +1841,8 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
         );
         full.outcome
     };
-    // A container listed twice.
     let bytes = sparse_slot_fixture(&[0, 0, 2]);
     assert_eq!(check(&bytes, "listed twice"), Outcome::Rows { len: 3 });
-    // A list naming more containers than the vector has slots.
     let mut bytes = sparse_slot_fixture(&[0, 1, 2]);
     array(
         &mut bytes,
@@ -1909,9 +1852,6 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
         SPARSE_COUNTRIES + 1,
     );
     assert_eq!(check(&bytes, "longer than slots"), Outcome::Rows { len: 3 });
-    // A stale entry: the second container sits one slot past the slot its
-    // country names, so its slot word does not hold it. The full scan then
-    // refuses that container exactly as before.
     let mut bytes = sparse_slot_fixture(&[0, 1, 2]);
     qword(&mut bytes, SPARSE_SLOTS + 70 * 8, 0);
     qword(
@@ -1925,7 +1865,6 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
             reason: "air base container country differs from its slot"
         }
     );
-    // A listed container whose country names a slot beyond a shorter vector.
     let mut bytes = sparse_slot_fixture(&[0, 1, 2]);
     array(
         &mut bytes,
@@ -1936,8 +1875,6 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
     );
 
     assert_eq!(check(&bytes, "slot out of range"), Outcome::Rows { len: 2 });
-    // An empty list where containers occupy slots is no proof the walk can
-    // check: the fast path trusts it.
     let bytes = sparse_slot_fixture(&[]);
     let (dense, _, _) = sparse_walk(&bytes, true);
     assert_eq!(
@@ -2031,7 +1968,6 @@ fn carrier_advisory_denial_keeps_capture_active_and_original_rows_readable() {
     assert_eq!(FAILURES.load(Ordering::SeqCst), 0);
 }
 
-/// One state base a [`Keep`] walk produced.
 struct KeptBase {
     handle: u64,
     pointer: usize,
@@ -2045,7 +1981,6 @@ struct KeptBase {
     required_wings: usize,
 }
 
-/// Keeps every state base a walk completes and offers each back.
 #[derive(Default)]
 struct Keep {
     bases: Vec<KeptBase>,
@@ -2113,8 +2048,6 @@ impl RegistrationReuse for Keep {
     }
 }
 
-/// One walk of `bytes` with `keep` and the arenas given: its result, rows,
-/// wings and every guarded round's first address.
 fn kept_walk(
     bytes: &[u8],
     keep: &mut Keep,
@@ -2144,8 +2077,6 @@ fn kept_walk(
     (walk, registrations, wings, memory.rounds.into_inner())
 }
 
-/// A walk's result with every reuse count cleared, to compare with a walk
-/// that reused nothing.
 fn without_reuse(walk: RegistrationWalk) -> RegistrationWalk {
     RegistrationWalk {
         reused_bases: 0,
@@ -2153,9 +2084,6 @@ fn without_reuse(walk: RegistrationWalk) -> RegistrationWalk {
     }
 }
 
-/// A state base the caller kept from a walk of the same bytes appends that
-/// output, reading none of its containers, pools or wings, and the walk
-/// publishes exactly what walking it would.
 #[test]
 fn a_kept_state_base_appends_its_output_without_reading_its_subtree() {
     let bytes = registration_fixture();
@@ -2164,7 +2092,6 @@ fn a_kept_state_base_appends_its_output_without_reading_its_subtree() {
     let (first, rows, wings, _) = kept_walk(&bytes, &mut keep, 4, 8, false);
     assert_eq!((first, &rows, &wings), (plain, &plain_rows, &plain_wings));
     assert_eq!(first.reused_bases, 0);
-    // Only the state base is kept: the host base feeds the carrier observer.
     assert_eq!(
         keep.bases
             .iter()
@@ -2199,16 +2126,12 @@ fn a_kept_state_base_appends_its_output_without_reading_its_subtree() {
     }
 }
 
-/// A kept output whose container country no longer names its slot, whose
-/// plan differs or that does not fit the arenas is walked, with the walk's
-/// own outcome.
 #[test]
 fn a_kept_state_base_is_walked_when_its_countries_plan_or_arenas_differ() {
     let bytes = registration_fixture();
     let mut keep = Keep::default();
     kept_walk(&bytes, &mut keep, 4, 8, false);
 
-    // Country 9 now links to slot 1, so slot two's container is refused.
     let mut moved = bytes.clone();
     dword(&mut moved, LINK_TABLE + 9 * 4, 1);
     let (plain, plain_rows, _) = registered(&moved, 4, 8);
@@ -2219,13 +2142,11 @@ fn a_kept_state_base_is_walked_when_its_countries_plan_or_arenas_differ() {
     assert_eq!(walk.reused_bases, 0);
     assert_eq!((walk, &rows), (plain, &plain_rows));
 
-    // Kept from the whole scan, offered to a walk that seeks the plan.
     let mut offered = Keep::default();
     kept_walk(&bytes, &mut offered, 4, 8, false);
     let (walk, _, _, _) = kept_walk(&bytes, &mut offered, 4, 8, true);
     assert_eq!(walk.reused_bases, 0);
 
-    // One row of room: the walk truncates exactly as without the offer.
     let (plain, plain_rows, plain_wings) = registered(&bytes, 1, 8);
     let mut offered = Keep::default();
     kept_walk(&bytes, &mut offered, 4, 8, false);

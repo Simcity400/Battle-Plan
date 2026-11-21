@@ -1,4 +1,3 @@
-//! Bounded job-local totals for coarse unit-selection stages, not equipment rows.
 use std::{cell::Cell, time::Instant};
 use viewer_foundation::profiling::{BuilderSpan, BuilderSpans, current_thread_cpu_time};
 
@@ -42,9 +41,6 @@ struct Total {
     cpu_ms: Option<f64>,
 }
 
-/// Only completed stage invocations are summed. Nested stages are inclusive;
-/// new aggregate records are appended in first-completion order once per pass.
-/// No shared borrow is held while selection demands a lazy join.
 pub(crate) struct Stages {
     enabled: Cell<bool>,
     next: Cell<usize>,
@@ -83,7 +79,6 @@ impl Stages {
             self.next.set(self.next.get() + 1);
             total.cpu_ms = cpu_ms;
         } else {
-            // Unknown samples are not silently treated as zero CPU.
             total.cpu_ms = total.cpu_ms.zip(cpu_ms).map(|(a, b)| a + b);
         }
         total.ms += ms;
@@ -91,8 +86,6 @@ impl Stages {
     }
 
     pub(crate) fn append_to(&self, spans: &mut BuilderSpans) {
-        // Only land selection is attributed here. Shared graphics helpers can
-        // still run in naval preparation without entering land's stage totals.
         self.enabled.set(false);
         for first in 0..self.next.replace(0) {
             let (at, slot) = self
@@ -144,7 +137,6 @@ mod tests {
         let mut spans = BuilderSpans::new(true);
         spans.measure("existing", |_| ());
         stages.append_to(&mut spans);
-        // Draining twice adds nothing; subsequent shared helpers read no clocks.
         stages.append_to(&mut spans);
         assert_eq!(stages.measure(Stage::Template, || 7), 7);
         assert_eq!(stages.next.get(), 0);
@@ -164,13 +156,11 @@ mod tests {
         assert_eq!((records[1].ms, records[1].cpu_ms), (5.0, None));
         assert_eq!((records[2].ms, records[2].cpu_ms), (6.0, Some(1.0)));
         assert_eq!((records[3].ms, records[3].cpu_ms), (7.0, Some(2.0)));
-        // An enabled producer cannot allocate on a disabled sink.
         let mut disabled_sink = BuilderSpans::new(false);
         let stages = Stages::new(true);
         stages.add(Stage::Template, 1.0, None);
         stages.append_to(&mut disabled_sink);
         assert!(disabled_sink.into_records().is_empty());
-        // Real error results finish a scope without fabricating success.
         let stages = Stages::new(true);
         let result = stages.measure(Stage::Template, || Err::<(), _>("kept"));
         assert_eq!(result, Err("kept"));

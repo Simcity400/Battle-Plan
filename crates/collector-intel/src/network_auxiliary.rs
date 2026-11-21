@@ -1,6 +1,3 @@
-//! Independent saved-network writer certificate. Native callbacks publish only
-//! receiver marks. Membership comes from the existing authenticated census;
-//! quiet cuts neither visit owners nor read their payloads.
 
 use crate::{hook::Hook, hook_errors};
 use collector_primitives::shared_lane::SharedLane;
@@ -28,7 +25,6 @@ static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
 static STORE: Mutex<Store> = Mutex::new(Store::new());
 thread_local! {static DEPTH:Cell<usize>=const{Cell::new(0)};}
 
-/// Synthetic captures take this before touching process-wide observation state.
 #[cfg(test)]
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -147,8 +143,6 @@ impl Store {
         states: &[network::Row],
         lifetime_changed: bool,
     ) -> Result<(), &'static str> {
-        // One census grants one attempt. A partial preparation cannot leave
-        // an earlier grant live for later ordinary-hour retries.
         let was_valid = self.valid;
         self.membership = false;
         self.valid = false;
@@ -349,8 +343,6 @@ fn capture_store(
             .map(|lane| lane.required_entries())
             .max()
             .unwrap_or(1);
-        // Reserve only on a worker after actual overflow demand. Old lanes
-        // remain pinned until detach, so callbacks never follow freed storage.
         store.prepare(demand.max(1))?;
         for lane_index in 0..store.lanes.len() {
             for (_, index) in store.lanes[lane_index].published(|event| event.order)? {
@@ -514,8 +506,8 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// Host authenticates the executable and restores/quiesces before unload.
+    #[doc = " # Safety"]
+    #[doc = " Host authenticates the executable and restores/quiesces before unload."]
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,
@@ -630,8 +622,6 @@ mod tests {
             });
             assert_eq!(memory.0.get(), reads);
         }
-        // A new existing census grants one new attempt, including after a
-        // partial membership failure. A duplicate header never grants one.
         store.membership(&[seed], &[], false).unwrap();
         assert!(store.membership(&[seed, seed], &[], false).is_err());
         assert!(!store.membership && !store.valid);
@@ -745,7 +735,6 @@ mod tests {
         store.epoch = EPOCH.load(Ordering::SeqCst);
         store.failure = FAILED.load(Ordering::SeqCst);
         store.published = ORDER.load(Ordering::SeqCst).wrapping_sub(1);
-        // A burst past the prepared lane: every destroy is read and sizes the next lane.
         let burst = 4 * store.lanes[0].len() + 3;
         for _ in 0..burst {
             store.lanes[0].reserve().unwrap().publish(Event {

@@ -1,4 +1,3 @@
-//! pass inputs save comparisons and recorded consistency checks.
 use installed_content_save::Save;
 use recorder_oracle_counters::counters;
 use recorder_oracle_country_rosters::country_rosters;

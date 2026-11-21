@@ -5,8 +5,6 @@ use replay_data::{
 use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::map::unit_rules::ATTACKING;
 
-/// Exclude combat task forces from counter sources after preparing their
-/// model buckets.
 #[test]
 fn combat_task_forces_never_offer_sea_counter_sources() {
     let skips = viewer_foundation::map::task_force_visual::MissionSkips::fixture([(7, (0, 0))], []);
@@ -27,8 +25,6 @@ fn combat_task_forces_never_offer_sea_counter_sources() {
     }
 }
 
-/// Combat task forces are excluded before sea-source grouping, while their
-/// model buckets remain available.
 #[test]
 fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
     use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow, rows::ShipRow};
@@ -51,8 +47,6 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
         combat_references: 1,
         ..Default::default()
     };
-    // The CL wins by individual strength even over greater combined DD strength.
-    // Distinct anchors expose a wrong group mean.
     let rosters: Vec<(ShipRow, ShipModelRow)> = [
         (eng.id, b"CL".as_slice()),
         (eng.id, b"DD".as_slice()),
@@ -152,8 +146,6 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
     }
 }
 
-/// Runs `body` with a port context over `forces`, every one with default engagement
-/// operands, viewed by the default vision (slot 0).
 fn with_port_context<R>(
     forces: &[TaskForceRow],
     body: impl FnOnce(&mut NavalContext<'_>) -> R,
@@ -214,9 +206,6 @@ fn port_unit(force: &TaskForceRow, slot: u32) -> NavalUnit<'_> {
     }
 }
 
-/// The political map's coarse sorter the game has no mission tie-break and the sort is
-/// stable: three otherwise equal own task forces in one fleet keep their roster missions
-/// `[1, 0, 1]`, so the port item's first and last missions agree and its mission icon draws.
 #[test]
 fn the_port_sort_keeps_roster_order_between_equal_missions() {
     let forces: Vec<TaskForceRow> = [1, 0, 1]
@@ -240,9 +229,6 @@ fn the_port_sort_keeps_roster_order_between_equal_missions() {
     });
 }
 
-/// A camera that hides the unit counters reads no naval table: an hour whose `Ships` table
-/// holds another table's rows builds no context and no error, while a shown hour meets the
-/// corrupt table.
 #[test]
 fn a_hidden_unit_pass_reads_no_naval_table() {
     let mut frame = DecodedFrame {
@@ -280,9 +266,6 @@ fn a_hidden_unit_pass_reads_no_naval_table() {
     );
 }
 
-/// Subtract two fleet handles' words in `i32` and the game sorts on whatever
-/// order that gives: a roster of 100 task forces whose fleet low words wrap sorts as the
-/// game's `std::stable_sort` does, own task forces first, with nothing refused.
 #[test]
 fn a_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
     let forces: Vec<TaskForceRow> = (1..=100_u64)
@@ -292,8 +275,6 @@ fn a_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
             mission: (id % 3) as u32,
             ..Default::default()
         })
-        // Own (its id is not a multiple of three), with fleet low words whose differences
-        // from the others' 61 and from each other wrap.
         .chain(
             [(102, i32::MIN), (103, i32::MAX), (104, 0)].map(|(id, low)| TaskForceRow {
                 id: (id << 32) | 51,
@@ -302,12 +283,10 @@ fn a_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
             }),
         )
         .collect();
-    // The default vision views as slot 0; every third task force is foreign.
     let unit = |force| port_unit(force, u32::from((force.id >> 32) % 3 == 0));
     with_port_context(&forces, |context| {
         let mut units: Vec<NavalUnit<'_>> = forces.iter().map(unit).collect();
         sort_port_units(&mut units, context).unwrap();
-        // Own task forces sort first, and every task force is kept once.
         assert!(units.windows(2).all(|pair| pair[0].slot <= pair[1].slot));
         let mut ids: Vec<u64> = units.iter().map(|unit| unit.force.id).collect();
         let mut expected: Vec<u64> = forces.iter().map(|force| force.id).collect();
@@ -317,9 +296,6 @@ fn a_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
     });
 }
 
-/// The comparator wraps as the game's does: low word `i32::MIN` precedes 0, 0 precedes
-/// `i32::MAX`, and `i32::MAX` precedes `i32::MIN`; three such own task forces keep the
-/// order the game's insertion sort gives them.
 #[test]
 fn the_port_comparator_wraps_and_the_insertion_sort_orders_the_cycle() {
     let key = |low: i32| PortSortKey {
@@ -336,7 +312,6 @@ fn the_port_comparator_wraps_and_the_insertion_sort_orders_the_cycle() {
     assert!(port_sort_compare(&bottom, &middle) < 0);
     assert!(port_sort_compare(&middle, &top) < 0);
     assert!(port_sort_compare(&top, &bottom) < 0);
-    // Equal low words compare the high words the same way.
     use crate::map::naval_combat_grid::fleet_difference;
     assert_eq!(fleet_difference(7 << 32, 5 << 32), 2);
     assert_eq!(
@@ -360,15 +335,10 @@ fn the_port_comparator_wraps_and_the_insertion_sort_orders_the_cycle() {
             .iter()
             .map(|unit| unit.force.fleet as u32 as i32)
             .collect();
-        // `i32::MAX` stays after 0; `i32::MIN` precedes the first (0) and goes to the front.
         assert_eq!(lows, [i32::MIN, 0, i32::MAX]);
     });
 }
 
-/// S4: a task force at a naval base that the port pass drops for an operand the hour lacks
-/// (its ships not in an incomplete Ships census, its route row unrecorded, its roster owner
-/// unlinked) leaves the base's roster undecided rather than dropping it from the roster; one
-/// the game itself leaves out (no ships, not in the occupant array, under way) is out.
 #[test]
 fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
     let force = TaskForceRow {
@@ -393,7 +363,6 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
         linked,
         ..naval_members::Fake::new(&forces[0])
     };
-    // What the admission decides: in at its ordinal, out, or undecided by why.
     let admit = |joins: naval_members::Fake<'_>| match joins.port() {
         naval_members::Port::In(ordinal) => format!("in {ordinal}"),
         naval_members::Port::Out => "out".to_owned(),
@@ -408,8 +377,6 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
     assert_eq!(admit(joins(Ok(true), true, &[], false)), PORT_SHIPS_UNRECORDED);
 }
 
-/// A Ships census that may lack a task force's ships leaves its count, and every sum over it,
-/// unknown rather than zero or the part the hour holds.
 #[test]
 fn an_incomplete_ship_census_leaves_task_force_counts_unknown() {
     let force = TaskForceRow {
@@ -446,8 +413,6 @@ fn an_incomplete_ship_census_leaves_task_force_counts_unknown() {
     });
 }
 
-/// A complete census, or an occupant array whose every task force is recorded,
-/// settles port membership. An unavailable reached member leaves it unknown.
 #[test]
 fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
     let recorded = TaskForceRow {
@@ -474,7 +439,6 @@ fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
             naval: vec![9],
         },
     ]);
-    // Province 14 holds no naval base.
     let bases = BTreeSet::from([12, 13]);
     with_port_context(&forces, |context| {
         assert!(unrecorded_port_forces(&bases, &order, context).is_empty());
@@ -486,8 +450,6 @@ fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
     });
 }
 
-/// Strategic views below the content region-group distance must not merge all
-/// own fleets into the political map's single allegiance plate.
 #[test]
 fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
     let mut defines = CounterDefines::VANILLA;
@@ -539,14 +501,12 @@ fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
             ),
             [vec![1], vec![3], vec![2], vec![4]]
         );
-        // Level equality selects allegiance grouping; selected own members remain a separate run.
         let far = port_grouping(&defines, strategic, 420.0);
         assert_eq!(prepare(far, &BTreeSet::new()), [vec![2, 1, 3, 4]]);
         assert_eq!(
             prepare(far, &BTreeSet::from([Unit::TaskForce(1)])),
             [vec![1], vec![2, 3, 4]]
         );
-        // Political mode keeps its coarse stable order even at a close camera.
         let political = port_grouping(&defines, Visibility::POLITICAL, 80.0);
         assert_eq!(prepare(political, &BTreeSet::new()), [vec![1, 2, 3, 4]]);
         assert!(!port_grouping(&defines, Visibility::POLITICAL, 100.0).cleared);
@@ -555,13 +515,11 @@ fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
             !port_grouping(&defines, strategic, 701.0).cleared,
             "coarse strategic ports retain their grids; only political mode clears boxes"
         );
-        // The priority table alone does not turn another mode into political mode.
         let other = Visibility {
             priorities: PriorityTable::Default,
             ..strategic
         };
         assert!(!port_grouping(&defines, other, 310.0).allegiance);
-        // Coarse and geographical group cutoffs are independent and content-defined.
         defines.coarse_distance[1] = 250.0;
         let coarse = port_grouping(&defines, strategic, 310.0);
         assert_eq!(
@@ -668,12 +626,6 @@ fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
     );
 }
 
-/// A base's port roster is read once for its hour and drawn over the rows of whatever hour the
-/// window shows, so it names its task forces by handle and the draw joins them to that hour's
-/// rows. A task force those rows no longer hold refuses the base's items by name; it is never
-/// another row taken at the gone one's place, and never a read past the rows. On the base the
-/// roster held positions into the hour it was read from and the draw indexed the drawn hour's
-/// rows with them, which panicked in zoomed playback ("len is 68 but the index is 68").
 #[test]
 fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -716,13 +668,10 @@ fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
                 metrics: Default::default(),
                 tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
             };
-            // The hour the roster was read at: task forces 1, 2 and 3 docked at base 7.
             let ports = PortTables {
                 rosters: [(7, vec![(1, 0), (2, 1), (3, 2)])].into(),
                 ..Default::default()
             };
-            // Drawn over `held` of those rows, as the window draws an hour's tables over the rows
-            // at the head: every one of them, then an hour that has lost the last two.
             let items = |held: usize| {
                 with_port_context(&forces[..held], |context| {
                     context.ships = Arc::new(forces.iter().map(|force| (force.id, (1, 100_000))).collect());
@@ -759,7 +708,6 @@ fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
     );
 }
 
-/// The semantic memo may skip the sort/fold, never the resource-bearing update generation.
 #[test]
 fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occurrences() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
@@ -841,7 +789,6 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
                     tables: TableId::ALL
                         .map(|table| TableView::Complete(TableRows::empty(table)).into()),
                 };
-                // The task forces by handle (ids 1 to 3), in ordinal order; handle 3 twice.
                 let mut ports = PortTables {
                     rosters: [(7, vec![(3, 0), (1, 1), (3, 2), (2, 3)])].into(),
                     ..Default::default()
@@ -856,7 +803,6 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
                     inputs.camera.height = height;
                     inputs.camera.center[0] += 0.125;
                     if step == 4 {
-                        // Same set, different order; the repeated handle's occurrences stay distinct.
                         ports.rosters.get_mut(&7).unwrap().rotate_left(1);
                     }
                     let mut a = CounterFrame::default();
@@ -921,10 +867,6 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
     );
 }
 
-/// A view sought back from 14 Sep 1940 to 8 Jun 1940 still holds the counter tables made at the
-/// later hour while the rows at the head are the earlier hour's. Its counters lay out the rows
-/// their tables were made from, never one hour's port rosters over another hour's task forces,
-/// and its retained memory never carries a port plan from one hour's tables to another's.
 #[test]
 fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another() {
     use replay_data::rows::TaskForceCounterInputRow;
@@ -996,7 +938,6 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
                 tables.ports = PortTables { rosters, ..Default::default() };
                 tables
             };
-            // Each port's items, by the task forces each item holds.
             let members = |prepared: &PreparedCounters| -> BTreeMap<u32, Vec<Vec<u64>>> {
                 let pass = prepared.fixed.naval.bases.as_ref().expect("the naval base windows are planned");
                 let ports = pass.ports.as_ref().expect("the port items are decided").as_ref().expect("and filled");
@@ -1008,15 +949,11 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
                     })
                     .collect()
             };
-            // Three task forces in port at the later hour; one, the third, at the earlier hour. Port 8's
-            // roster names a different task force at each.
             let late = frame(60_800_559, &[1, 2, 3]);
             let early = frame(60_798_213, &[3]);
             let late_tables = tables(&late, [(7, vec![(2, 0), (3, 1)]), (8, vec![(1, 0)])].into());
             let early_tables = tables(&early, [(8, vec![(3, 0)])].into());
             let mut memo = Preparation::default();
-            // Played, then sought back: the view lays out the later hour's tables again (art loaded
-            // meanwhile) until the earlier hour's arrive, and nothing of their plans is taken over.
             for resources in [0, 1] {
                 let played = prepare_retained(&inputs, &late_tables, resources, &mut memo).unwrap();
                 assert_eq!(members(&played), [(7, vec![vec![2, 3]]), (8, vec![vec![1]])].into());

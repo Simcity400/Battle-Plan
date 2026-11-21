@@ -1,4 +1,3 @@
-//! Each row's sparse endpoint fixture, for the registry's tests of every table.
 use super::*;
 use crate::rows::checkpoint::Native;
 use crate::rows::{Kind, Recorded, RowCodec};
@@ -45,7 +44,6 @@ pub fn different<T: Native>(value: &T, kind: Kind, field: usize) -> T {
             }
         }
     }
-    // Zero-width retired values have only one possible prepared representation.
     assert!(
         bytes.is_empty(),
         "no distinct fixture for {} field {field}",

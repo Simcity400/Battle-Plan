@@ -1,0 +1,11 @@
+# 0903. Resolve visibility from the directed evidence each query reaches
+
+Equipment-detail visibility is an observer-to-target query. An explicit bypass and disabled fog compare the full fraction against the authored threshold, which a mod can set above full. The native intel getter handles the signed raw target before reading its vector. A zero maximum or reserved raw fraction lane yields the native zero-extended sentinel. CountryIntel retains each owner's sorted target slice, which readers borrow by key.
+
+Only the maps' native reserved-country paths admit literal zero. The general positive link reader still requires evidence for every alias. Actual receiver0 uses its own timed vector and fresh reverse-visibility cell, and does not infer those from the symmetric relation summaries. A positive receiver first uses its same-hour directed status0 packet. Only an older layout without that field can use the established exact-zero fallback. A fresh refused packet remains refused. Genuine zero membership belongs in the faction roster, while an unknown positive alias stays unknown.
+
+The war and directed military gates run before reading a raw target or subject. Subject identity uses raw equality first, then nonzero canonical references, and only after proving a reached pointer has the required type. An independently proven positive second party can decide an OR after an unknown first. Installed pointers answer current status without inferring a historical subject date. Map text admits paradrop military access and does not use docking. Receiver identity is the resolved object's own country ID, including when a positive raw reference names receiver0.
+
+Full-country sharing considers the same country, faction partners and the directly installed subject relationship, with active war vetoing the nonself cases. Counter sharing excludes null factions. Fog attaché sharing uses the source's directed attaché slot with no war veto. Port knowledge has its own directed military or docking predicate and live-war veto. Province access excludes lakes, allows sea and unowned states, and applies the recorded owner, controller, war and access evidence to owned land.
+
+[Visibility and intel](../../crates/replay-derive/src/visibility.rs) · [Transport subject access](../../crates/replay-derive/src/transport_subject_access.rs)

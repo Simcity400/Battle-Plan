@@ -173,9 +173,6 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 ..Default::default()
             },
         ]));
-    // Character resolution evaluates the operand as a scoped variable before
-    // its named-character fallback. A recorded empty store
-    // proves that no variable shadows either registered scientist token.
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
             scope_kind: 1,
@@ -196,7 +193,6 @@ fn render(fixture: &Fixture, body: &str) -> Description {
     fixture.render_native(body, &mut fresh(), content.view(None))
 }
 
-// Output blocks default show_modifiers to yes.
 #[test]
 fn template_output_header_unlocks_limits_and_module_country_gate() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -231,7 +227,6 @@ fn country_effects_use_fresh_owner_root_and_prev() {
     let (fixture, _folder) = fixture("country_effects={custom_effect_tooltip=PROJECT_COUNTRY}");
     let output = render(
         &fixture,
-        // reads reward/option statements, not output effects.
         "complete_special_project={project=sp:mod_project show_modifiers=yes iteration_output={mod_reward=mod_option}}",
     );
     assert_eq!(
@@ -245,7 +240,6 @@ fn country_effects_use_fresh_owner_root_and_prev() {
 fn country_output_from_link_preserves_the_project_carrier() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // enters FROM; installs the project there.
     let (fixture, _folder) = fixture("country_effects={FROM={add_project_progress_ratio=0.37}}");
     let output = render(&fixture, "complete_special_project=sp:mod_project");
     assert_eq!(

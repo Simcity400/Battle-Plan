@@ -1,7 +1,3 @@
-//! Shared readers for the scalars inside a parsed Clausewitz document.
-//!
-//! Every reader names the field it could not read, so a content error points at
-//! the key rather than at a byte offset in a file the caller no longer holds.
 
 use std::io;
 
@@ -14,17 +10,14 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The scalar text of a value.
 pub(crate) fn text<'a>(value: &'a Value, what: &str) -> io::Result<&'a str> {
     value
         .scalar_str()
         .ok_or_else(|| invalid(format!("{what} is not a text scalar")))
 }
 
-/// A scalar parsed as a finite decimal number.
 pub(crate) fn number(value: &Value, what: &str) -> io::Result<f32> {
     let scalar = text(value, what)?;
-    // Float fields use the shared C-runtime `%f` scanner.
     let parsed = crt::scan_f32(scalar.as_bytes())
         .ok_or_else(|| invalid(format!("{what} is not a number: {scalar:?}")))?;
     if !parsed.is_finite() {
@@ -33,24 +26,18 @@ pub(crate) fn number(value: &Value, what: &str) -> io::Result<f32> {
     Ok(parsed)
 }
 
-/// A `yes` or `no` flag; anything else is an error rather than a default.
 pub(crate) fn boolean(value: &Value, what: &str) -> io::Result<bool> {
-    // Boolean fields and standalone tokens share exact yes/no conversion. Keep this
-    // adapter's named refusal when its consumer cannot follow a read.
     let scalar = text(value, what)?;
     crate::parser::read_bool(scalar.as_bytes())
         .ok_or_else(|| invalid(format!("{what} is not yes or no: {scalar:?}")))
 }
 
-/// The items of a block value.
 pub fn block<'a>(value: &'a Value, what: &str) -> io::Result<&'a [Item]> {
     value
         .items()
         .ok_or_else(|| invalid(format!("{what} is not a block")))
 }
 
-/// The last value under a key. The game's own files assign a key twice and
-/// expect the later assignment to win, as `433-Rajputana.txt` does.
 pub(crate) fn last<'a>(items: &'a [Item], key: &[u8]) -> Option<&'a Value> {
     items
         .iter()
@@ -59,7 +46,6 @@ pub(crate) fn last<'a>(items: &'a [Item], key: &[u8]) -> Option<&'a Value> {
         .map(|item| &item.value)
 }
 
-/// Every value under a key, in source order.
 pub(crate) fn all<'a>(items: &'a [Item], key: &'a [u8]) -> impl Iterator<Item = &'a Value> {
     items
         .iter()
@@ -67,12 +53,10 @@ pub(crate) fn all<'a>(items: &'a [Item], key: &'a [u8]) -> impl Iterator<Item = 
         .map(|item| &item.value)
 }
 
-/// A required value under a key.
 pub(crate) fn require<'a>(items: &'a [Item], key: &str, what: &str) -> io::Result<&'a Value> {
     last(items, key.as_bytes()).ok_or_else(|| invalid(format!("{what} has no {key}")))
 }
 
-/// An unkeyed list of scalars, as `provinces = { 1 2 3 }` stores them.
 pub(crate) fn scalar_list(value: &Value, what: &str) -> io::Result<Vec<u32>> {
     let mut list = Vec::new();
     for item in block(value, what)? {
@@ -83,13 +67,11 @@ pub(crate) fn scalar_list(value: &Value, what: &str) -> io::Result<Vec<u32>> {
             .value
             .scalar()
             .ok_or_else(|| invalid(format!("{what} holds a non-scalar entry")))?;
-        // Append a zeroed slot before scanning each signed integer token.
         list.push(crt::scan_i32(scalar).stored().unwrap_or(0) as u32);
     }
     Ok(list)
 }
 
-/// The key of an item as text, for keys the game writes as identifiers.
 pub fn key_str<'a>(item: &'a Item, what: &str) -> io::Result<&'a str> {
     let key = item
         .key

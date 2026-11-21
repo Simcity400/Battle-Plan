@@ -1,4 +1,3 @@
-//! Final scene restore, retaining the seed's b1.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -21,7 +20,6 @@ pub(super) fn load(
     decode: Decode,
 ) -> io::Result<Arc<Effect>> {
     let (mut library, mut defines) = fullscreen::library(layers, map, decode);
-    // Restore-pass variants; the viewer's HDR scene has a resolved LUT.
     defines.extend(["HDR".into(), "COLOR_LUT".into()]);
     library
         .load(b"gfx/FX/restorescene.shader", &defines)
@@ -36,7 +34,6 @@ impl Restore {
         effect: &Arc<Effect>,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, format)
         })
@@ -51,8 +48,6 @@ impl Restore {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // Bind program/blend and four physical PS textures/samplers.
-        // b1 and raster retain; depth remains disabled. Extra reads refuse.
         state
             .samplers
             .retain(|key, _| (0..4).any(|slot| *key == binding(slot, Stage::Pixel)));
@@ -61,8 +56,6 @@ impl Restore {
             .map_err(refuse)
     }
 
-    /// Native texture order: scene, bloom, colour cube, current adapted luminance. The block is
-    /// the seed's own b1, kept in the chain's buffer.
     pub(super) fn kept(
         &self,
         device: &wgpu::Device,

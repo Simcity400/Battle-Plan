@@ -1,6 +1,5 @@
 use super::*;
 
-/// The glyph the order children show for `status`, as `gui_windows::bind_orders` writes them.
 fn order_glyph(status: &NavalStatus) -> Option<OrderGlyph> {
     match status.no_orders? {
         true => Some(OrderGlyph::NoOrders),
@@ -11,7 +10,6 @@ fn order_glyph(status: &NavalStatus) -> Option<OrderGlyph> {
     }
 }
 
-/// The naval counter's order child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OrderGlyph {
     None,
@@ -21,28 +19,22 @@ enum OrderGlyph {
 
 #[test]
 fn the_strength_ratio_sums_the_roster_and_floors_each_raw_maximum() {
-    // Two destroyers at 9/10 and 1/10 strength: (9 + 1) / (10 + 10).
     assert_eq!(
         strength_ratio([(900_000, 1_000_000), (100_000, 1_000_000)]),
         50_000
     );
-    // A synthetic ship at 618182 of 1500000 strength truncates to 41212.
     assert_eq!(strength_ratio([(618_182, 1_500_000)]), 41_212);
-    // A zero raw maximum is floored at 100, not divided by.
     assert_eq!(strength_ratio([(50, 0)]), 50_000);
-    // An empty roster keeps the zero seed.
     assert_eq!(strength_ratio(std::iter::empty()), 0);
     assert_eq!(strength_ratio([(i64::MAX, 1)]), UNDEFINED);
 }
 
 #[test]
 fn the_organisation_ratio_is_the_mean_of_each_ships_own_ratio() {
-    // 30 of 33 (90909) and 33 of 33 (100000): the mean of the two ratios, not 63/66.
     assert_eq!(
         organisation_ratio([(3_000_000, 3_300_000), (3_300_000, 3_300_000)]),
         95_454
     );
-    // A zero maximum makes that ship's term the sentinel.
     assert_eq!(ship_organisation_ratio(10, 0), UNDEFINED);
     assert_eq!(organisation_ratio(std::iter::empty()), 0);
 }
@@ -57,19 +49,13 @@ fn the_counter_mean_divides_by_the_members_it_summed() {
 
 #[test]
 fn a_bar_steps_by_half_its_length_and_draws_two_pixels_a_step() {
-    // A fill of 0.8487 produces step seven and sixteen pixels; full fill produces
-    // step eight and eighteen pixels.
     assert_eq!(bar_step(bar_fill(84_870), 17.0), 7);
     assert_eq!(bar_pixels(bar_fill(84_870), 17.0), 16.0);
-    // Full is step 8, eighteen pixels; 0.9411 stays below it, 0.9412 reaches it.
     assert_eq!(bar_pixels(1.0, 17.0), 18.0);
     assert_eq!(bar_step(bar_fill(94_110), 17.0), 7);
     assert_eq!(bar_step(bar_fill(94_120), 17.0), 8);
-    // Every step is two pixels: 0.8088 is step 6, fourteen pixels.
     assert_eq!(bar_pixels(bar_fill(80_880), 17.0), 14.0);
-    // Empty is step 0 and still two pixels; nothing hides the bar.
     assert_eq!(bar_pixels(0.0, 17.0), 2.0);
-    // The undefined mean is far past full and clamps to the full bar.
     assert_eq!(bar_pixels(bar_fill(UNDEFINED), 17.0), 18.0);
 }
 
@@ -95,7 +81,6 @@ fn engagement_refusal_reads_the_aggression_table_and_the_unsaved_byte() {
     assert_eq!(engagement_refused(0, 0, 2, &table), Some(true));
     assert_eq!(engagement_refused(0, 1, 2, &table), Some(false));
     assert_eq!(engagement_refused(1, 4, 3, &table), Some(true));
-    // Only strike force and convoy raiding refuse.
     assert_eq!(engagement_refused(1, 0, 1, &table), Some(false));
     assert_eq!(engagement_refused(0, 5, 2, &table), None);
     assert_eq!(engagement_refused(0, -1, 2, &table), None);
@@ -149,18 +134,15 @@ fn port_supply_takes_every_member_minimum_while_sea_takes_the_last_visible() {
 fn the_at_sea_counter_takes_order_glyphs_from_visible_own_unlinked_members() {
     let table = [0, 60_000, 125_000, 200_000, 1_000_000_000];
     let patrol = inputs();
-    // A patrol with regions: nothing to report, and the plate goes to its active frame.
     let status = at_sea_status(&[member(&patrol, 1)], &table);
     assert_eq!(order_glyph(&status), Some(OrderGlyph::None));
     assert_eq!(status.active, Some(true));
-    // No accessible region: no orders.
     let empty = TaskForceCounterInputRow {
         mission_region_count: 0,
         ..inputs()
     };
     let status = at_sea_status(&[member(&empty, 1)], &table);
     assert_eq!(order_glyph(&status), Some(OrderGlyph::NoOrders));
-    // A strike force set to "do not engage": invalid orders.
     let passive = TaskForceCounterInputRow {
         engagement_rule: 0,
         ..inputs()
@@ -168,14 +150,12 @@ fn the_at_sea_counter_takes_order_glyphs_from_visible_own_unlinked_members() {
     let status = at_sea_status(&[member(&passive, 2)], &table);
     assert_eq!(order_glyph(&status), Some(OrderGlyph::InvalidOrders));
     assert_eq!(status.active, Some(false));
-    // A fleet with mission regions and a holding task force: invalid orders.
     let mut holding = member(&patrol, 0);
     holding.fleet_regions = Some(2);
     assert_eq!(
         order_glyph(&at_sea_status(&[holding], &table)),
         Some(OrderGlyph::InvalidOrders)
     );
-    // A repair link, a foreign owner or an invisible member takes no part.
     let linked = TaskForceCounterInputRow {
         repair_parent: 5,
         ..empty.clone()
@@ -192,12 +172,10 @@ fn the_at_sea_counter_takes_order_glyphs_from_visible_own_unlinked_members() {
         order_glyph(&at_sea_status(&[foreign, hidden], &table)),
         Some(OrderGlyph::None)
     );
-    // The port counter reads every member, visible or not.
     assert_eq!(
         order_glyph(&port_status(&[hidden], &table)),
         Some(OrderGlyph::NoOrders)
     );
-    // An unrecorded row settles nothing.
     let mut unknown = member(&patrol, 1);
     unknown.inputs = None;
     let status = at_sea_status(&[unknown], &table);
@@ -209,15 +187,12 @@ fn the_at_sea_counter_takes_order_glyphs_from_visible_own_unlinked_members() {
 fn unrecorded_fleet_regions_and_aggression_leave_the_order_terms_unknown() {
     let table = [0, 60_000, 125_000, 200_000, 1_000_000_000];
     let patrol = inputs();
-    // A holding task force whose fleet regions are not recorded: the hold term is unknown,
-    // so invalid orders is unknown rather than clear, and no glyph draws.
     let mut holding = member(&patrol, 0);
     holding.fleet_regions = None;
     let status = at_sea_status(&[holding], &table);
     assert_eq!(status.invalid_orders, None);
     assert_eq!(status.no_orders, Some(false));
     assert_eq!(order_glyph(&status), None);
-    // A strike force whose rule is outside the aggression table: unknown too.
     let passive = TaskForceCounterInputRow {
         engagement_rule: 0,
         ..inputs()
@@ -225,9 +200,7 @@ fn unrecorded_fleet_regions_and_aggression_leave_the_order_terms_unknown() {
     let status = at_sea_status(&[member(&passive, 2)], &[]);
     assert_eq!(status.invalid_orders, None);
     assert_eq!(order_glyph(&status), None);
-    // The port counter propagates the same unknowns from every member.
     assert_eq!(order_glyph(&port_status(&[holding], &table)), None);
-    // But a settled pair still draws through an unknown sibling term.
     let settled = member(&patrol, 1);
     let status = at_sea_status(&[settled, holding], &table);
     assert_eq!(status.no_orders, Some(false));
@@ -358,7 +331,6 @@ fn order_membership_frame() -> DecodedFrame {
 fn order_membership_preserves_native_list_and_parent_precedence() {
     let frame = order_membership_frame();
     let mut index = OrdersIndex::read(&frame).unwrap();
-    // List order beats numeric instance order; parent primary beats own fallback.
     for (division, expected) in [(1, (10, 9)), (2, (20, 3)), (3, (10, 2)), (4, (20, 4))] {
         assert_eq!(resolved_order(&index, division, 10), Some(Some(expected)));
     }
@@ -441,7 +413,6 @@ fn truncated_order_memberships_use_only_proven_prefix_matches() {
     let index = OrdersIndex::read(&frame).unwrap();
     assert_eq!(resolved_order(&index, 2, 10), Some(Some((20, 3))));
     assert_eq!(resolved_order(&index, 6, 10), Some(None));
-    // The earlier root remains usable; a missing later root blocks only unresolved members.
     let TableView::Truncated {
         rows: TableRows::ArmyOrderPlans(plans),
         ..
@@ -453,7 +424,6 @@ fn truncated_order_memberships_use_only_proven_prefix_matches() {
     let index = OrdersIndex::read(&frame).unwrap();
     assert_eq!(resolved_order(&index, 1, 10), Some(Some((10, 9))));
     assert_eq!(resolved_order(&index, 2, 10), None);
-    // A missing earlier root prevents a later matching root from winning.
     let TableView::Truncated {
         rows: TableRows::OrdersGroupPlans(groups),
         ..
@@ -556,7 +526,6 @@ fn the_marker_hides_without_a_group_or_a_colour() {
     assert_eq!(index.marker(0, Some(false)), None);
     assert_eq!(index.marker(10, Some(false)), None);
     assert_eq!(index.marker(10, None), None);
-    // Positive control: a recorded group with a recorded colour draws it.
     let index = OrdersIndex {
         groups: [(
             10,

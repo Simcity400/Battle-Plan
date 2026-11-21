@@ -20,8 +20,6 @@ fn reserved_observation_does_not_preauthenticate_unrelated_positive_objects() {
     );
     assert!(reader.reserved().is_ok());
 
-    // ID zero is exempt only at the actual selected address. An unrelated
-    // positive ID-zero object keeps the ordinary strict failure and reads.
     source.put(0x2000 + ccountry::ID, &0_u32.to_le_bytes());
     source.observations.borrow_mut().clear();
     assert_eq!(reader.at(1), Err("country id is zero"));
@@ -73,8 +71,6 @@ fn lazy_physical_id_zero_preserves_only_the_equal_selected_root_error() {
             attempts: Cell::new(0),
         };
         let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
-        // The physical country's own vtable and ID-zero are read first. Only
-        // the existing ID-zero fallback acquires the reserved observation.
         assert_eq!(memory.attempts.get(), 0);
         assert_eq!(reader.at(1), Err(expected));
         assert_eq!(
@@ -86,8 +82,6 @@ fn lazy_physical_id_zero_preserves_only_the_equal_selected_root_error() {
             (selected == 0x2800).then_some(Err("reserved country object identity mismatch"))
         );
         assert_eq!(memory.attempts.get(), fault_attempt);
-        // A would-succeed later identity read must never replace the first
-        // equal-pointer failure; a different pointer stays ordinary ID-zero.
         assert_eq!(reader.at(1), Err(expected));
         assert_eq!(memory.attempts.get(), fault_attempt);
     }
@@ -102,8 +96,6 @@ fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
     source.fault.set(Some(0x2800));
     let mut cache = Cache::with_capacity(64);
     let view = cache.prepare(&source, 0, 0x1000);
-    // No physical positive alias: independent root failure preserves the
-    // complete healthy positive census and its Ready status.
     assert_eq!(view.seed_status(), SeedStatus::Ready);
     assert!(view.authenticated_countries(0, 0x1000).is_some());
     let root = view
@@ -122,7 +114,6 @@ fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
             .is_none()
     );
 
-    // A failed next header cannot carry the previous selected address.
     source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
     let view = cache.prepare(&source, 0, 0x1000);
     assert!(matches!(view.seed_status(), SeedStatus::Unavailable { .. }));
@@ -132,8 +123,6 @@ fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
     assert_eq!(root.result(), Err("country array unreadable or invalid"));
     assert_eq!(root.physical_alias(0x2800), None);
 
-    // The next valid callback selects a different object; no old equal-pointer
-    // refusal can survive into its new immutable snapshot.
     source.fault.set(None);
     source.put(0x1500, &0x2c00_u64.to_le_bytes());
     source.put(0x2c00, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
@@ -225,7 +214,6 @@ fn roster_view_keeps_scoped_authentication_and_fresh_faulted_byte_reads() {
         assert_eq!(later, [0x66; 4]);
     }
     source.fault.set(None);
-    // An unavailable next census cannot keep the previous capability.
     source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
     cache.prepare(&source, 0, 0x1000);
     assert!(
@@ -265,14 +253,10 @@ fn roster_headers_and_proved_links_remove_guards_without_reading_ordinary_fields
     source.observations.borrow_mut().clear();
     let memory = cache.roster_view(&source);
     assert_eq!(queries(&memory), expected);
-    // Only raw id 7 lies outside the roster-indexed links. The alias at
-    // slot 2 is proved by the seed, but remains absent from at(2)'s output.
     assert_eq!(source.guards.get(), 1);
     assert_eq!(&*source.observations.borrow(), &[(0x171c, 4)]);
     let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
     for raw in [3_u32, 4] {
-        // Slot 3 is null and raw 4 is outside the roster. Neither may be
-        // inferred absent or cached merely because the seed was complete.
         let address = 0x1700 + raw as usize * 4;
         for value in [0_u32, 1, 4] {
             source.put(address, &value.to_le_bytes());
@@ -302,8 +286,6 @@ fn roster_headers_and_proved_links_remove_guards_without_reading_ordinary_fields
     );
     assert!(source.observations.borrow().is_empty());
 
-    // A later callback publishes new headers, even with the same country
-    // object and slot count. An unseeded link must use the new link array.
     source.put(0x1000 + cgame_state::COUNTRIES, &0x1580_u64.to_le_bytes());
     source.put(
         0x1000 + cgame_state::COUNTRY_LINKS,
@@ -487,7 +469,6 @@ impl Synthetic {
             memory.put(0x1000 + offset + 8, &count.to_le_bytes());
             memory.put(0x1000 + offset + 12, &count.to_le_bytes());
         }
-        // Slots 1 and 2 alias one object with native id 7; slot 3 is null.
         for slot in [1, 2] {
             memory.put(0x1500 + slot * 8, &0x2000_u64.to_le_bytes());
         }
@@ -584,8 +565,6 @@ fn shared_walks(memory: &impl Memory) -> (Vec<ccountry::Country>, Vec<ccountry::
 
 #[test]
 fn negative_filter_collisions_and_saturation_still_require_exact_keys() {
-    // Pigeonhole-bounded search: page-aligned addresses exercise the same
-    // existing full-address hash; two keys must share one filter bit.
     let mut cache = Cache::with_capacity(64);
     let filter_bits = cache.filter_mask + 1;
     let mut seen = vec![None; filter_bits];
@@ -612,8 +591,6 @@ fn negative_filter_collisions_and_saturation_still_require_exact_keys() {
     assert_eq!(&cache.find(first, 8).unwrap().bytes[..8], &[0x41; 8]);
     assert_eq!(&cache.find(second, 8).unwrap().bytes[..8], &[0x72; 8]);
 
-    // Even a saturated filter may only increase exact-lookup work. It
-    // cannot serve an overlapping key, a different width, or an empty span.
     cache.filter.fill(u64::MAX);
     cache.lengths = u64::MAX;
     for length in [0, 1, 4, 7, 8, 16, 32, 33, 64, usize::MAX] {
@@ -704,7 +681,6 @@ fn preparations_replace_all_negative_filter_bits_and_old_keys() {
     assert_eq!(read::<u32>(&memory, usize::MAX - 3), None);
     assert_eq!(source.scalar_reads.get(), scalar_before + 1);
 
-    // An immediate failed census cannot retain bits from the previous one.
     source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
     let memory = cache.prepare(&source, 0, 0x1000);
     assert!(matches!(
@@ -728,8 +704,6 @@ fn repeated_walkers_share_authentication_but_scalars_and_unseeded_links_stay_liv
     for _ in 0..32 {
         assert_eq!(shared_walks(&memory), expected);
     }
-    // Only four unused zero link slots were absent from Reader's seed
-    // census. They stay direct reads in the independent links walker.
     assert_eq!(source.guards.get() - seed_cost, 4 * 32);
     assert!(source.guards.get() < direct_cost * 32);
     let scalar = i64::MIN + 987;
@@ -738,7 +712,6 @@ fn repeated_walkers_share_authentication_but_scalars_and_unseeded_links_stay_liv
         read::<i64>(&memory, 0x2000 + ccountry::COMMAND_POWER),
         Some(scalar)
     );
-    // A wider or overlapping read cannot be assembled from cached pieces.
     source.put(0x2000 + ccountry::SURRENDER_TARGET, &u32::MAX.to_le_bytes());
     assert_eq!(read::<u64>(&memory, 0x2008), Some(0xffff_ffff_0000_0007));
 }
@@ -842,7 +815,6 @@ fn failed_censuses_and_capacity_never_serve_a_cached_prefix() {
     source.fault.set(None);
     source.put(0x2008, &2_u32.to_le_bytes());
     assert_eq!(read::<u32>(&memory, 0x2008), Some(2));
-    // The next preparation forgets both a failed prefix and all old ids.
     let memory = cache.prepare(&source, 0, 0x1000);
     assert_eq!(memory.seed_status(), SeedStatus::Ready);
     assert_eq!(read::<u32>(&memory, 0x2008), Some(2));
@@ -882,8 +854,6 @@ fn individually_valid_aliases_that_change_during_seeding_disable_the_cache() {
     assert_eq!(source.scalar_reads.get(), scalar_before + 1);
 }
 
-/// The byte-cache-only reference deliberately does not forward the new
-/// capability. It otherwise keeps the original source and batch semantics.
 struct ByteOnly<'a, M>(&'a M);
 
 impl<M: Memory> Memory for ByteOnly<'_, M> {
@@ -958,9 +928,6 @@ fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
         let reference_census = (|| {
             let countries = Array::read(&original, 0x1000 + cgame_state::COUNTRIES, 8)
                 .ok_or("country array unreadable or invalid");
-            // Preparation now observes actual slot zero before unrelated link
-            // failures, independently of the positive-only census. Preserve
-            // exact source read order and compare that separate result too.
             expected_reserved = Some(match countries {
                 Ok(array) => ccountry::observe_reserved_from_array(&original, 0, array),
                 Err(reason) => ccountry::ReservedCountryObservation::from_result(Err(reason)),
@@ -1097,7 +1064,6 @@ fn authenticated_roster_keeps_arbitrary_link_reads_and_context_identity() {
         (4, Err("country link unreadable or outside country table")),
         (1, Ok(country)),
     ] {
-        // Raw id 4 was never seeded; each requested observation stays live.
         source.put(0x1710, &slot.to_le_bytes());
         source.observations.borrow_mut().clear();
         assert_eq!(reader.resolve(4), expected);
@@ -1122,7 +1088,6 @@ fn authenticated_roster_reprepare_replaces_aliases_nulls_and_short_storage() {
     let memory = cache.prepare(&source, 0, 0x1000);
     assert!(memory.authenticated_countries(0, 0x1000).is_some());
 
-    // A new object/id with one now-null alias cannot retain the old object.
     source.put(0x1508, &0x2800_u64.to_le_bytes());
     source.put(0x1510, &0_u64.to_le_bytes());
     source.put(0x2800, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
@@ -1160,8 +1125,6 @@ fn authenticated_roster_reprepare_replaces_aliases_nulls_and_short_storage() {
     ));
     source.fault.set(None);
 
-    // Metadata pressure disables only this optional capability, leaving
-    // the byte cache, its status and source delegation unchanged.
     cache.roster = vec![None; 1].into_boxed_slice();
     let memory = cache.prepare(&source, 0, 0x1000);
     assert_eq!(memory.seed_status(), SeedStatus::Ready);

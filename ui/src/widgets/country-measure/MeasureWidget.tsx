@@ -57,26 +57,17 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
 const NO_PAINT = () => {};
-/** Beyond this many countries the tooltip lists balances only, so it fits the window. */
 const CEILING_ROWS_MAX = 4;
 
-/** Which balance a widget charts, and how it names it. */
 export interface MeasureConfig {
   measure: 'politicalPower' | 'commandPower';
-  /** The chart's name, such as "Political power". */
   title: string;
-  /** The measure in running text, such as "political power". */
   noun: string;
-  /** The unit a single country's end label names, such as "PP". */
   unit: string;
-  /** The widget's settings, when it adds to the shared ones. */
   options?: readonly OptionField[];
-  /** Draws the recorded maximum dashed (command power), named in running text. */
   ceiling?: string;
 }
 
-/** Each country's balance from the recording's own country table, its maximum (command power)
- * dashed beside it, and the days it fell as markers whose list reaches each change. */
 export default function MeasureWidget({ widget, runtime, active, onDiagnostics, config }: WidgetProps & { config: MeasureConfig }) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -96,14 +87,12 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, lastHour]);
   const following = widget.time.mode === 'follow';
-  // The values at the head are followed: pushed each step and painted, never asked for because the hour moved.
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = useMemo(() => following && active && track && resolved.tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
     family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
   [following, active, track?.branch.id, config.measure, resolved.tags]);
-  // The hour of the values shown, told from the painter of the followed head.
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const followedHead = followsHead(followed);
@@ -112,7 +101,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   [following, active, showCeiling, track?.branch.id, resolved.tags]);
   const ceilingFollowed = useFollow(store, ceilingQuery, root, NO_PAINT);
   const ceilingHead = followsHead(ceilingFollowed);
-  // Every value at the head is followed, or the widget asks by the fallback's clock.
   const headFollowed = followedHead && (!showCeiling || ceilingHead);
   const playbackHour = useFallbackHour(runtime.clock, active && following && !headFollowed);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
@@ -121,7 +109,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = playhead ?? extent[1];
   const axisOffset = track?.axisOffset ?? 0;
-  // The chart moves with the clock every frame while following; its data is tiles, so the head asks nothing.
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
   const membership = resolved.membership ?? undefined;
@@ -130,13 +117,10 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const ceiling = useMeasureSeries(runtime.client, showCeiling ? track?.source : undefined, track?.branch.id, 'country-stability', 'maxCommandPower',
     resolved.tags, ceilingHead ? null : head, hoverHour, active && showCeiling, false, membership, lastHour, following);
   const [hoverCluster, setHoverCluster] = useChangedState<{ owner: unknown; cluster: MarkCluster | null } | null>(null);
-  // Each opening is its own list (`id`), so its country and page start afresh.
   const [changeList, setChangeList] = useState<{ owner: unknown; id: number; tag: string; first: string; end?: string } | null>(null);
   const [changeLists, setChangeLists] = useState(0);
   const onMarkHover = useCallback((cluster: MarkCluster | null) => setHoverCluster(previous => previous?.owner === balances.owner && previous.cluster === cluster
     ? previous : { owner: balances.owner, cluster }), [balances.owner]);
-  // Names and colours as they were at the moment shown: the playhead, the end of a date range, or the branch end.
-  // A followed head reads them at the hour one last changed, so the widget renders only then.
   const identityHour = useIdentityHour(runtime.client, track, resolved.tags, runtime.clock, active && following && headFollowed,
     useCallback(hour => track ? resolveWindow(widget, track, runtime.tracks, hour)?.lastHour ?? null : null, [widget, track, runtime.tracks]));
   const styleAt = following && headFollowed && identityHour !== null ? identityHour
@@ -164,7 +148,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   }, [resolved.tags, styles.data, styles.error, known, groups.data, groups.error, widget.countries.kind, onDiagnostics, showCeiling, ceiling.error, config.ceiling]);
 
   const decimals = balances.decimals;
-  // Unfollowed, the values shown are the state read's at the head once every tag's has landed.
   const readHead = !followedHead && resolved.tags.length > 0 && resolved.tags.every(tag => balances.hourLoaded(tag, Math.floor(head)));
   useEffect(() => { if (!followedHead) shown(readHead ? head : null); }, [followedHead, readHead, head, shown]);
   const series = useMemo(() => {
@@ -179,7 +162,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   }, [resolved.tags, known, tokens, lineByTag, ceilingByTag, membership]);
 
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
-  // The last hour drawn: the playhead, unless whole-campaign playback shows past it.
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const wantedLabels = useMemo(() => series.flatMap(item => [
     { tag: item.tag, hour: Math.floor(styleAt) },
@@ -194,7 +176,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
     return { ...hoverLabels.labelAt(hour)(tag), ...(name ? nameReadMetadata(name) : {}) };
   }, [names, hoverLabels.labelAt]);
 
-  // Joins and leaves of a group counted at each hour, as badges in the country's colour.
   const badges = useMemo<EventBadge[]>(() => series.flatMap(item => item.membership
     ? membershipChanges(item.membership, extent[0], extent[1], resolved.unobserved).map(change => ({
       hour: change.hour, glyph: change.change === 'joined' ? '+' : '−', label: `${labelAt(change.hour)(item.tag).name} ${change.change}`, color: item.hex })) : []),
@@ -202,7 +183,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const menu = useContextMenu('Chart actions');
   const followedEntry = followedHead ? followed.entry : null;
   const ceilingEntry = ceilingHead ? ceilingFollowed.entry : null;
-  // Each line's last bin to the head is drawn at its followed value: registered once per line, not per tile landed.
   useEffect(() => {
     const heads = [[followedEntry, balances.head, decimals], [ceilingEntry, ceiling.head, ceiling.decimals]] as const;
     const stops = heads.flatMap(([entry, head, places]) => entry && places !== null
@@ -220,7 +200,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
       flag: <CountryFlagUrl className="country-flag" url={legendLooks.flag(item.tag, shownAt)}
         pending={legendLooks.flagPending(item.tag, shownAt)} detail={legendLooks.flagDetail?.(item.tag, shownAt)} reason={legendLooks.flagReason(item.tag, shownAt)} /> };
   }), [series, head, shownAt, labelAt, legendLooks, digits, decimals, balances, followedEntry, store]);
-  // Read as the chart draws: the same objects until new lines land.
   const markSummaries = useMemo(() => {
     if (!options.spendTicks) return undefined;
     const drawn = new WeakMap<MarkSummary, MarkSummary>();
@@ -257,7 +236,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
       },
     });
     const list: ChartLayer[] = series.map(item => line(() => balances.lineOf(item.tag), item.hex, undefined, single && options.areaFill === true));
-    // Each country's maximum, dashed in its colour.
     if (showCeiling) for (const item of series) list.push(line(() => ceiling.lineOf(item.tag), item.hex, SECONDARY_DASH));
     return list;
   }, [series, options.areaFill, until, balances.lineOf, ceiling.lineOf, showCeiling]);
@@ -272,7 +250,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   return <div className="country-measure" ref={setRoot}><div className="country-measure-view">
     {balances.error && <WidgetState kind="error" failure={balances.error} onRetry={balances.retry} />}
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
-    {/* The dashed line is named, so it never rests on its dash pattern alone. */}
+    { }
     {showCeiling && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Dashed line: {config.ceiling}</p>}
     <div className="country-measure-chart">
       <TimeChart label={`${config.title} of ${series.map(item => labelAt(shownAt)(item.tag).name).join(', ')}`} extent={extent} playhead={playhead}
@@ -300,7 +278,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
         formatValue={value => Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : String(Math.round(value))}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
-          // A value or a drop read at an hour came with its state read's decimals.
           const rows: TooltipRow[] = series.flatMap(item => {
             const raw = item.valueAt(hour);
             const label = labelAt(hour)(item.tag);
@@ -321,13 +298,11 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
         }}
         overlay={(ctx, frame, chartTokens) => {
           if (!options.endLabels) return;
-          // At the end of the lines drawn, never past the recorded hours.
           const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
           const ends = decimals === null ? [] : series.flatMap(item => {
             const value = summaryEnd(balances.lineOf(item.tag), at);
             if (value == null) return [];
             const raw = rawOf(value, decimals);
-            // One country: its value and unit; several: each named.
             const text = series.length === 1 ? { text: `${formatBalance(raw, decimals, digits)} ${config.unit}` }
               : { text: labelAt(shownAt)(item.tag).name, suffix: formatBalance(raw, decimals, digits) };
             return [{ id: item.tag, y: frame.toY(value), ...text, color: item.hex }];
@@ -337,7 +312,6 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour), ...(series.length ? [{ label: 'Balance changes', run: () => {
           const cluster = hoverCluster?.owner === balances.owner ? hoverCluster.cluster : null;
           const tag = cluster?.tag ?? series[0].tag;
-          // The head as drawn now: the chart's live head while following.
           const drawnUntil = shownUntil(liveHead && playhead != null ? liveHead.read() : playhead, playback, options.afterPlayhead === true);
           const { first, end } = changesRange(balances.marksOf(tag), cluster, drawnUntil);
           setChangeLists(count => count + 1);

@@ -1,11 +1,3 @@
-//! The naval layer: the sea regions' naval control, contested side and gradient flag toward the
-//! viewing country, the values today's political part reads through
-//! `naval_dominance::Content::read`, kept per strategic region from the mirrors. The political
-//! fill carries them to the water.
-//!
-//! A region is settled again when its supremacy rows change; every region when the viewer, the
-//! NavalSupremacy cache epoch or status, or a relation a side was read from moves. Sides (friendly,
-//! enemy, neutral) are kept per source country until then.
 
 mod reads;
 #[cfg(test)]
@@ -30,11 +22,8 @@ use viewer_world::map::{
     naval_dominance::{self, Content, Fact, Relations, Sides},
 };
 
-/// Each positive receiver slot's direct-war targets (ascending), or why they are not known.
 type Wars = HashMap<u32, Fact<Vec<u32>>>;
 
-/// The relations read whole when their tables change: links, native ids by slot, faction rosters,
-/// subject pairs, each receiver's wars and blockade tuples.
 #[derive(Clone, Debug)]
 struct Derived {
     links: Fact<BTreeMap<u32, u32>>,
@@ -54,7 +43,6 @@ impl Default for Derived {
     }
 }
 
-/// Why a table is not read whole, worded as today's frame words it.
 fn absent(mirrors: &Mirrors, table: TableId, hour: Hour) -> String {
     match mirrors.get(table).and_then(Mirror::not_recorded) {
         Some(why) => format!("hour {hour} {why}"),
@@ -67,7 +55,6 @@ fn whole(mirrors: &Mirrors, table: TableId) -> Option<&Mirror> {
 }
 
 impl Derived {
-    /// Reads again the parts named; returns those whose values moved.
     fn read(&mut self, parts: u16, mirrors: &Mirrors, columns: &Columns, hour: Hour) -> u16 {
         fn put<T: PartialEq>(held: &mut T, new: T, part: u16, moved: &mut u16) {
             if *held != new {
@@ -153,9 +140,6 @@ impl Derived {
     }
 }
 
-/// Every positive receiver's direct-war cells from the hour's whole WarRelations, as today's
-/// `ReceiverWars::from_rows` derives one receiver's: a war joining a receiver to itself, naming a
-/// country CountryLinks lacks, or linking to the reserved slot refuses that receiver.
 fn wars(rows: &Mirror, links: &BTreeMap<u32, u32>) -> Wars {
     let mut wars: Wars = HashMap::new();
     let refuse = |wars: &mut Wars, receiver: u32, why: String| {
@@ -194,7 +178,6 @@ fn wars(rows: &Mirror, links: &BTreeMap<u32, u32>) -> Wars {
     wars
 }
 
-/// The relations read from the mirrors at one hour, with the parts every answer read.
 struct MirrorRelations<'a> {
     mirrors: &'a Mirrors,
     columns: &'a Columns,
@@ -208,13 +191,11 @@ impl MirrorRelations<'_> {
         self.used.set(self.used.get() | part);
     }
 
-    /// Why `table` is not read whole: worded with the hour, so read again at every hour.
     fn absent(&self, table: TableId) -> String {
         self.uses(reads::HOUR);
         absent(self.mirrors, table, self.hour)
     }
 
-    /// ReservedCountryNaming's one row, or why not: none when it does not hold exactly one.
     fn naming(&self, part: u16) -> Result<Option<(&Mirror, u32)>, String> {
         self.uses(part);
         let rows = whole(self.mirrors, TableId::ReservedCountryNaming).ok_or_else(|| self.absent(TableId::ReservedCountryNaming))?;
@@ -225,7 +206,6 @@ impl MirrorRelations<'_> {
         })
     }
 
-    /// The native ids of Countries rows with canonical slot `slot`, ascending.
     fn natives(&self, slot: u32) -> Result<&[u32], String> {
         self.uses(reads::COUNTRIES);
         let natives = self.derived.natives.as_ref().map_err(|why| {
@@ -243,7 +223,6 @@ impl MirrorRelations<'_> {
         })
     }
 
-    /// Country0's subject pointer toward or from the viewer, from the hourly visibility packets.
     fn zero_subject(&self, links: &BTreeMap<u32, u32>, source: u32, viewer: u32) -> Fact<bool> {
         if source == 0 {
             let (rows, slot) = self.naming(reads::NAMING_REVERSE)?.ok_or("Country0 naval family naming singleton missing or duplicated")?;
@@ -267,7 +246,6 @@ impl MirrorRelations<'_> {
         naval_dominance::subject(subject, packet.target.ok_or_else(|| "naval family target refused".into()), links)
     }
 
-    /// Positive receiver `slot`'s direct-war cell toward `target`, derived from WarRelations.
     fn derived_war(&self, slot: u32, target: u32) -> Fact<bool> {
         self.uses(reads::WARS | reads::LINKS);
         let wars = self.derived.wars.as_ref().map_err(|why| {
@@ -372,18 +350,12 @@ impl Relations for MirrorRelations<'_> {
     }
 }
 
-/// Every part a status change reaches: a table's rows as a whole.
 const ALL_PARTS: u16 = u16::MAX;
 
-/// The parts whose move settles every region again: the blockade tuples (read by no kept side)
-/// and the links every side and blockade resolves through.
 const WHOLE: u16 = reads::LINKS | reads::TUPLES;
 
-/// The parts read whole into [`Derived`].
 const DERIVED: u16 = reads::LINKS | reads::COUNTRIES | reads::FACTIONS | reads::SUBJECTS | reads::WARS | reads::TUPLES;
 
-/// A status as the layer reacts to it: a truncated table's missing count moves every hour, and
-/// what it words is read again at every hour anyway.
 fn kind(status: Option<Status>) -> Option<Status> {
     status.map(|status| match status {
         Status::Truncated { .. } => Status::Truncated { missing: 0 },
@@ -391,39 +363,28 @@ fn kind(status: Option<Status>) -> Option<Status> {
     })
 }
 
-/// The naval layer's arrays.
 pub struct Naval {
     content: Arc<Content>,
     columns: Option<Columns>,
     choice: Choice,
-    /// The viewing country's canonical slot, from the vision layer; none without a vision.
     viewer: Option<u32>,
     hour: Option<Hour>,
-    /// Per region: its countries' NavalSupremacy rows, by country.
     groups: HashMap<u32, Vec<(u32, u32)>>,
-    /// Per region key (region id plus one, as the political fill keys them).
     attributes: Arc<BTreeMap<u32, Attributes>>,
-    /// Per region id: why its attributes are withheld.
     refusals: BTreeMap<u32, String>,
     regions: Dirty,
     sides: Sides,
-    /// The parts the kept sides were read from, and the parts steps touched since the last settle.
     uses: u16,
     touched: u16,
-    /// The derived relations to read again.
     stale: u16,
     derived: Derived,
     epoch: Fact<()>,
     supremacy: Option<String>,
     statuses: HashMap<usize, Option<Status>>,
     gap: bool,
-    /// The attributes changed since the fill last took them.
     handed: bool,
     frame: u64,
-    /// Regions marked, regions settled, sides read.
     marked: [u64; 3],
-    /// Every region marked by the viewer moving, a relation read moving, the epoch or status
-    /// moving; and the parts that moved.
     clears: [u64; 3],
     moved: u16,
 }
@@ -457,25 +418,20 @@ impl Naval {
         }
     }
 
-    /// The layer composed anew from `mirrors` at the viewer it is drawn for.
     pub fn composed(&self, mirrors: &Mirrors) -> Self {
         let mut fresh = Self { columns: self.columns, choice: self.choice.clone(), ..Self::new(Arc::clone(&self.content)) };
         fresh.compose_at(mirrors, self.viewer);
         fresh
     }
 
-    /// The attributes by region key: what the political fill carries to the water. Empty while
-    /// there is no vision, as today's political part is refused then.
     pub fn attributes(&self) -> &Arc<BTreeMap<u32, Attributes>> {
         &self.attributes
     }
 
-    /// The attributes when they changed since last taken.
     pub fn take_changed(&mut self) -> Option<Arc<BTreeMap<u32, Attributes>>> {
         std::mem::take(&mut self.handed).then(|| Arc::clone(&self.attributes))
     }
 
-    /// Today's warning for the regions withheld, if any.
     pub fn warnings(&self) -> Vec<String> {
         let refused: Vec<String> = self.refusals.values().cloned().collect();
         naval_dominance::withheld(&refused).into_iter().collect()
@@ -485,7 +441,6 @@ impl Naval {
         self.viewer
     }
 
-    /// Whether it draws at the view: declared, at the default map mode.
     pub fn drawn(&self) -> bool {
         self.columns.is_some()
     }
@@ -498,7 +453,6 @@ impl Naval {
         self.marked
     }
 
-    /// Every region marked by the viewer, a relation, the epoch or status; and the parts moved.
     pub fn clears(&self) -> ([u64; 3], u16) {
         (self.clears, self.moved)
     }
@@ -521,7 +475,6 @@ impl Naval {
     fn compose_at(&mut self, mirrors: &Mirrors, viewer: Option<u32>) {
         let (marked, clears, moved) = (self.marked, self.clears, self.moved);
         *self = Self { columns: self.columns, choice: self.choice.clone(), ..Self::new(Arc::clone(&self.content)) };
-        // Declared nothing (another map mode): a region marked here would never settle.
         if self.columns.is_none() {
             (self.marked, self.clears, self.moved) = (marked, clears, moved);
             return;
@@ -565,7 +518,6 @@ impl Naval {
         let read = std::mem::take(&mut self.stale) & DERIVED;
         if read != 0 {
             let moved = self.derived.read(read, mirrors, &columns, hour);
-            // A derived part read again to the same values moves nothing a side read.
             self.touched &= !(read & DERIVED & !moved);
         }
         let moved = std::mem::take(&mut self.touched) & self.uses;
@@ -579,8 +531,6 @@ impl Naval {
         } else if moved != 0
             && let Some(viewer) = viewer
         {
-            // A relation a side was read from moved: the kept sides are read again, and only the
-            // regions holding a source whose side moved settle again.
             self.clears[1] += 1;
             self.moved |= moved;
             let relations = MirrorRelations { mirrors, columns: &columns, derived: &self.derived, hour, used: Used::new(0) };
@@ -660,7 +610,6 @@ impl Layer for Naval {
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        // The fill that carries these is drawn by the political layer at the default mode only.
         if view.map_mode != MapMode::default() {
             *self = Self { choice: view.perspective.clone(), ..Self::new(Arc::clone(&self.content)) };
             return Ok(());
@@ -703,7 +652,6 @@ impl Layer for Naval {
             {
                 parts |= columns.part(table, None);
             }
-            // Of RelationTuples only the blockade tuples are read.
             let read = |key: Option<u128>| table != TableId::RelationTuples || key.is_some_and(|key| reads::tuple_kind(key) == naval_dominance::BLOCKADE);
             let keys = |keys: Option<&[u128]>, slots: &[u32]| match keys {
                 Some(keys) => keys.iter().any(|&key| read(Some(key))),

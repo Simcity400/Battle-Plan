@@ -1,6 +1,3 @@
-//! Current required-use operands for the fuel breakdown.
-//! This is a supplying-read rate, not preceding-day applied consumption.
-//! Country roots reuse only the current quiescent callback's certified census.
 
 use crate::{Memory, memory::Raw, read};
 use engine_sites::Rva;
@@ -33,7 +30,6 @@ pub struct Country {
     pub sites: Span,
 }
 
-/// Native roster occurrences are retained, including a repeated unit handle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CachedUnit {
     pub country: u32,
@@ -82,14 +78,10 @@ pub struct Wing {
     pub reason: Option<&'static str>,
 }
 
-/// Effective modifier operands use the shared passive modifier reader.
-/// Raw value/presence remain distinct from feature/clamp eligibility.
 pub use crate::modifier_accumulator::RequestedOperand as Modifier;
 
 pub use game_model::fuel_demand::{AirInputs, Weather};
 
-/// One current callback's context closure. Reuse is permitted only within
-/// this pack; no native pointer or prior-read result survives reset.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Context {
     pub region: u32,

@@ -1,18 +1,3 @@
-//! `NavalLossTotals`: by country identity, attribution and kind, the ships and convoys counted
-//! since each kind's baseline read. SunkShips entries have no identity and the game swap-erases
-//! them, so a ship is an entry whose whole-entry multiplicity rose between consecutive complete
-//! reads; a convoy loss is each (month, killer, owner) bucket's signed change. A kind's first
-//! complete read in the run is its baseline, never losses; an entry dated before it counts none.
-//!
-//! Countries resolve at the read through CountryLinks; a loss goes to every identity of the slot.
-//! Hours a kind's table was not read complete leave its totals unknown for those hours; the next
-//! read still finds every sinking the game retained, so its totals go on, but when the unread
-//! hours reach the game's retention (its define), or the define is not held, sinkings may have
-//! been pruned unseen and the kind's totals are lower bounds from that read.
-//!
-//! State is the last read's entry multiset and bucket counts (the two tables as they stand) and
-//! the identities, read again from the tables at a resume; the resume blob holds each kind's
-//! unread hours since its last read.
 
 use crate::framework::{
     Columns, Definition, Hour, Output, Read, Rows, Uses, Value, Watch, Writer,
@@ -43,7 +28,6 @@ const CONVOY_RETENTION: Define = Define { section: "NNavy", name: "CONVOY_LOSS_H
 
 const USES: &[Uses] = &[Uses { definition: Definition::Define(SHIP_RETENTION), required: false }, Uses { definition: Definition::Define(CONVOY_RETENTION), required: false }];
 
-/// Hours in a game year.
 const YEAR: i64 = 365 * 24;
 
 fn key(slot: u32, country: u32, attribution: u8, kind: u8) -> u128 {
@@ -54,7 +38,6 @@ fn run_key(kind: u8) -> u128 {
     key(Total::RUN, Total::RUN, Total::LOST, kind)
 }
 
-/// A seeded 64-bit hash of a whole sunk ship entry.
 fn signature(entry: &SunkShipEntry, seed: u64) -> u64 {
     let mut hash = seed;
     let mut eat = |bytes: &[u8]| {
@@ -82,16 +65,11 @@ fn signature(entry: &SunkShipEntry, seed: u64) -> u64 {
 const SIGNATURE_SEED: u64 = 0xCBF2_9CE4_8422_2325;
 const CHECK_SEED: u64 = 0x6C62_272E_07BB_0142;
 
-/// What the run holds of one kind.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Kind {
-    /// Its baseline read.
     counted_from: Option<i32>,
-    /// The first read whose totals may miss sinkings pruned unseen.
     lost_from: Option<i32>,
-    /// Its table was complete at the hour.
     known: bool,
-    /// The first and last hour since its last read it was not read complete.
     unread: Option<(i32, i32)>,
 }
 
@@ -110,16 +88,13 @@ impl Kind {
 #[derive(Default)]
 pub struct NavalLosses {
     links: HashMap<u32, u32>,
-    /// Each slot's raw ids whose Countries row it is and whose link resolves to it, ascending.
     identities: HashMap<u32, Vec<u32>>,
-    /// Each entry of the last ship read by signature: how many it listed, and the check hash.
     ships: HashMap<u64, (u32, u64)>,
     convoys: HashMap<u128, i32>,
     kinds: [Kind; 2],
     last: Option<i32>,
 }
 
-/// What the hour adds to each total: to its count and to its refused entries.
 type Pending = HashMap<u128, (i64, u32)>;
 
 impl NavalLosses {
@@ -137,7 +112,6 @@ impl NavalLosses {
         self.identities.values_mut().for_each(|ids| ids.sort_unstable());
     }
 
-    /// The totals a loss of country reference `raw` goes to.
     fn targets(&self, raw: u32, attribution: u8, kind: u8) -> Vec<u128> {
         match self.links.get(&raw) {
             None => vec![key(Total::NONE, raw, attribution, kind)],
@@ -159,8 +133,6 @@ impl NavalLosses {
         }
     }
 
-    /// `kind`'s table this hour: whether it is complete and read at the hour, and its read hour;
-    /// marks unread hours.
     fn state(&mut self, hour: &Hour<'_>, table: TableId, kind: u8) -> (bool, Option<i32>) {
         let view = hour.table(table);
         let held = &mut self.kinds[usize::from(kind)];
@@ -173,9 +145,6 @@ impl NavalLosses {
         (read, view.sampled_at())
     }
 
-    /// At `kind`'s read after unread hours: whether they reach the game's retention (years of
-    /// hours for ships, calendar months for convoys), or no retention is held; then its totals
-    /// are lower bounds from this read.
     fn retained(&mut self, hour: &Hour<'_>, kind: u8) {
         let Some((first, last)) = self.kinds[usize::from(kind)].unread.take() else { return };
         let (define, ships) = if kind == Total::SHIPS { (SHIP_RETENTION, true) } else { (CONVOY_RETENTION, false) };
@@ -293,7 +262,6 @@ impl NavalLosses {
         Ok(())
     }
 
-    /// The run's facts of each kind from its run row as the store holds it.
     fn read_kinds(&mut self, hour: &Hour<'_>) {
         let view = hour.table(TableId::NavalLossTotals);
         for kind in [Total::SHIPS, Total::CONVOYS] {
@@ -326,7 +294,6 @@ impl Writer for NavalLosses {
         READS
     }
 
-    // Hourly: each hour a kind's table is not complete is one of its unread hours.
     fn hourly(&self) -> bool {
         true
     }
@@ -388,7 +355,6 @@ impl Writer for NavalLosses {
         Ok(())
     }
 
-    /// The identities, the last reads and each kind's run facts as the commit's hour left them.
     fn prime(&mut self, hour: &Hour<'_>) {
         self.read_identities(hour);
         self.read_kinds(hour);

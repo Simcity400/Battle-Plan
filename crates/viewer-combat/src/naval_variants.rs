@@ -1,4 +1,3 @@
-//! Equipment variant display names shared by active and retained-result hovers.
 use dashboard_text::scripted_text::stored_text;
 use installed_content_localisation::localisation::Localisation;
 use replay_data::{
@@ -30,12 +29,9 @@ impl<'a> Names<'a> {
     }
 }
 
-/// The recorded countries a variant's name is localised for.
 struct Tags<'a> {
     links: Result<Available<'a, tables::CountryLinks>, String>,
-    /// Countries by canonical slot.
     countries: Result<BTreeMap<u32, &'a CountryRow>, String>,
-    /// CountryAppearance by the raw country id of its Countries row.
     appearances: Result<BTreeMap<u32, &'a CountryAppearanceRow>, String>,
 }
 impl<'a> Tags<'a> {
@@ -56,8 +52,6 @@ impl<'a> Tags<'a> {
         }
     }
 
-    /// The origin's own tag when the origin is set (a signed id of at least 1), else
-    /// the creator's original tag when it is a dynamic country, else its tag.
     fn naming_tag(&self, row: &VariantDefinitionRow) -> Result<String, String> {
         let origin = (row.origin_link as i32) >= 1;
         let raw = if origin {
@@ -69,7 +63,6 @@ impl<'a> Tags<'a> {
         let Some(slot) =
             country_slot(links, raw).map_err(|reason| format!("variant {}: {reason}", row.id))?
         else {
-            // The null country has this fallback tag.
             return Ok("---".into());
         };
         let country = self
@@ -111,11 +104,6 @@ impl<'a> Tags<'a> {
     }
 }
 
-/// Return a nonempty saved variant name. Otherwise localise the effective
-/// definition's key for the origin (or creator) country, through the stacked
-/// equipment and recorded lexicon. Append the suffix only when its recorded
-/// flag permits it. The saved name and suffix are stored text, exact only in
-/// `recorded_language`.
 pub(super) fn name(
     row: &VariantDefinitionRow,
     icons: &dyn TextIcons,

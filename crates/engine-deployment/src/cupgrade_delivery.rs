@@ -1,31 +1,17 @@
-//! CUpgradeDelivery with an embedded CEquipmentVariantPool.
-//!
-//! Progress is serialized only for status one. The ordinary hourly path
-//! updates and removes deliveries before capture; other allocation and command
-//! routes do not establish a consistency contract here.
 
 use engine_sites::Rva;
-/// CUpgradeDelivery primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x2a4b900);
-/// CUpgradeDelivery status, u32.
 pub const STATUS: usize = 0x08;
-/// Status whose progress is read; other statuses do not reach the progress field.
 pub const PROGRESS_AVAILABLE_STATUS: u32 = 1;
-/// CUpgradeDelivery progress, i64 native fixed point.
 pub const PROGRESS: usize = 0x10;
-/// CUpgradeDelivery total progress, i64 native fixed point.
 pub const TOTAL_PROGRESS: usize = 0x18;
-/// CUpgradeDelivery embedded CEquipmentVariantPool.
 pub const PRODUCED_EQUIPMENT_POOL: usize = 0x20;
-/// CUpgradeDelivery numeric scale.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 use crate::{
     Memory, cequipment_variant, cequipment_variant_pool, cpdx_array::Array, equipment_entry, read,
 };
 
-/// The engine serializes deliveries in vector order; no persistent delivery
-/// id has been established. A non-progress status retains None, never zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
@@ -86,8 +72,6 @@ pub(crate) fn authenticate(
     Ok(Header {
         address,
         pool,
-        // A status-field fault does not invalidate the independently
-        // authenticated produced pool. Its own table can still be read.
         status: (copied == 3).then_some(u32::from_le_bytes(status)),
     })
 }
@@ -120,8 +104,6 @@ pub(crate) fn row(
         .pool
         .checked_add(cequipment_variant_pool::ALLOW_ZERO)
         .ok_or("army upgrade produced pool address overflow")?;
-    // An empty first span never touches the inactive progress field. The
-    // scatter result preserves which exact field failed without a retry.
     match memory.copy_scattered(
         [at(PROGRESS)?, at(TOTAL_PROGRESS)?, allow_zero_at],
         &mut [&mut progress[..progress_len], &mut total, &mut allow_zero],

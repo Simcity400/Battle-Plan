@@ -1,40 +1,3 @@
-//! The combat engaged-flag index: a background pass that folds
-//! [`engaged::History`] over every recorded hour, so the flag's native lag is
-//! exact at any hour, a seek included.
-//!
-//! When a recording opens, one lowest-priority thread decodes only the tables
-//! the derivation reads and keeps, per combat side, the hours its flag changes
-//! value. Memory follows the number of combat sides and their changes, not the
-//! hours. A newer snapshot of a growing recording continues from the last
-//! folded hour ([`EngagedIndex::extend`]). Until the pass covers an hour, the
-//! flag is what a load at that hour would rebuild, as the native does at load.
-//!
-//! Only a branch that starts with a load signal, sampled at its loaded hour,
-//! starts rebuilt ([`native_load`]). A session start, an hour discontinuity,
-//! or a load whose origin was lost or lies before the first sample joins a
-//! running game: its sides stay unknown until each one rebuilds. (The
-//! collector records the loaded hour as the first hour at a discontinuity
-//! too, so that hour alone cannot tell a load from a discontinuity.)
-//!
-//! The pass folds each hour on its own thread and then appends that hour's
-//! changes under a brief lock, which the UI thread also takes every frame.
-//!
-//! A combat kind registers its sides as a [`Sides`] source in [`SOURCES`]:
-//! land and naval. The pass is one more decoder consumer: it reads
-//! blocks through [`Replay::read_block_alone`] and never shares the
-//! playback decoder.
-//!
-//! Whatever the perspective, fold the recording player's own flag history too.
-//! Each player change rebuilds every side only for the new player. Tag switches
-//! rebuild immediately; observer-view changes and controller assignments rebuild
-//! on the next tick, so their history takes that change one sample later
-//! ([`Pass::fold_hour`]). Combat icon frames follow this same player history.
-//!
-//! When the viewed country is the recording player, answer from that history;
-//! otherwise use the perspective history, which does not rebuild for those player
-//! changes. Check the naval history against recorded bytes on the pass thread
-//! ([`naval_check`]), publishing [`History::byte_check`].
-//! [`check_recorded_bytes`] uses the same fold for a dump.
 
 use playhead::Timeline;
 use replay::campaign::Replay;
@@ -66,7 +29,6 @@ use viewer_foundation::{
     naval_check::{self, ByteCheck, Summary},
 };
 
-/// The tables the icon kinds read besides the viewer's.
 const ICON_TABLES: [TableId; 5] = [
     TableId::LandCombats,
     TableId::LandCombatSides,
@@ -75,7 +37,6 @@ const ICON_TABLES: [TableId; 5] = [
     TableId::NavalCombatDetails,
 ];
 
-/// The tables every kind needs: the viewer and its relations.
 const VIEWER_TABLES: [TableId; 9] = [
     TableId::Campaign,
     TableId::CountryLinks,
@@ -88,7 +49,6 @@ const VIEWER_TABLES: [TableId; 9] = [
     TableId::Subjects,
 ];
 
-/// One hour's inputs both viewers' samples read: the links, the relations and the rosters.
 struct Inputs {
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
@@ -104,14 +64,11 @@ impl Inputs {
     }
 }
 
-/// One hour's viewer and its inputs.
 struct Viewer {
     slot: u32,
     inputs: Arc<Inputs>,
 }
 
-/// The hour's controller rosters; `None` unless `Players` and
-/// `HumanControllers` are both whole.
 fn controllers<F: Tables + ?Sized>(
     frame: &F,
     links: &BTreeMap<u32, u32>,
@@ -137,14 +94,12 @@ fn controllers<F: Tables + ?Sized>(
     for row in counts {
         match links.get(&row.country) {
             Some(&slot) => *out.counts.entry(slot).or_default() += i64::from(row.count),
-            // A count the links cannot place could be the viewer's.
             None => return Ok(None),
         }
     }
     Ok(Some(out))
 }
 
-/// Every row of a core table, or the error today's [`core`] names for it.
 fn whole_core<T: replay_data::rows::TableSchema, F: Tables + ?Sized>(frame: &F) -> io::Result<&[T::Row]> {
     viewer_foundation::fold_tables::whole::<T, F>(frame).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, format!("hour {} {:?} is not whole; the core tables carry the political map itself, so this hour cannot be drawn", frame.at_hour(), T::ID))
@@ -158,14 +113,11 @@ impl Viewer {
     }
 
     fn with<F: Tables + ?Sized>(frame: &F, country: &Country, inputs: &Arc<Inputs>) -> io::Result<Self> {
-        // `perspective::viewer` reads only the lowest slot (its fallback) and
-        // the requested tag's or slot's, so only those are made text.
         let countries = whole_core::<tables::Countries, F>(frame)?;
         let mut tags = BTreeMap::new();
         if let Some(lowest) = countries.iter().min_by_key(|c| c.canonical_slot) {
             tags.insert(lowest.canonical_slot, String::new());
         }
-        // The lowest slot among matching tags, as `perspective::viewer` picks.
         if let Country::Tag(tag) = country
             && let Some(found) = countries
                 .iter()
@@ -186,12 +138,8 @@ impl Viewer {
         Ok(Self { slot, inputs: Arc::clone(inputs) })
     }
 
-    /// The recording's own player's inputs, when the recording names it
-    /// ([`naval_check::recording_player`]), and whether its client observes.
     fn recording<F: Tables + ?Sized>(frame: &F, inputs: &Arc<Inputs>) -> Option<(Self, bool)> {
         let slot = viewer_foundation::fold_tables::perspective(frame, &inputs.links)?;
-        // Use the client's playing-country reference when positive, otherwise
-        // its observer-country reference.
         let observing = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
             .is_some_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
         Some((Self { slot, inputs: Arc::clone(inputs) }, observing))
@@ -210,7 +158,6 @@ impl Viewer {
     }
 }
 
-/// An index of one perspective country's engagements; dropping it stops the fold.
 pub struct EngagedIndex {
     pub shared: Arc<History>,
 }
@@ -222,8 +169,6 @@ impl Drop for EngagedIndex {
 }
 
 impl EngagedIndex {
-    /// An index folded over `frames` (one branch, a load at `load`) on this
-    /// thread, as the pass folds them.
     #[cfg(any(test, feature = "test-support"))]
     pub fn folded(frames: &[DecodedFrame], country: Country, load: Option<Hour>) -> Self {
         let shared = Arc::new(History::default());
@@ -235,12 +180,9 @@ impl EngagedIndex {
     }
 }
 
-/// One viewer's histories of every kind and their per-hour change buffers.
 #[derive(Default)]
 struct Track {
     histories: Vec<engaged::History>,
-    /// Per kind, reused each hour: the sides that took a new value, and those
-    /// whose combat ended.
     changed: Vec<Vec<((u64, u8), Engaged)>>,
     ended: Vec<Vec<(u64, u8)>>,
 }
@@ -264,8 +206,6 @@ impl Track {
         }
     }
 
-    /// An hour this viewer's flags were not folded for: every side it held
-    /// becomes unknown until it rebuilds.
     fn forget(&mut self) {
         self.sized();
         for ((history, changed), ended) in self
@@ -285,7 +225,6 @@ impl Track {
         }
     }
 
-    /// Appends the hour's changes to `fold`'s points and its hour log.
     fn record(&self, fold: &mut Folded, hour: Hour) {
         for (kind, (changed, ended)) in self.changed.iter().zip(&self.ended).enumerate() {
             fold.record(kind, hour, changed, ended);
@@ -293,33 +232,19 @@ impl Track {
     }
 }
 
-/// One branch's fold state on the pass thread.
 #[derive(Default)]
 struct Fold {
-    /// The perspective's viewer.
     perspective: Track,
-    /// The last folded hour, and whether its perspective folded.
     last: Option<(Hour, bool)>,
-    /// The recording's own player.
     recording: Track,
-    /// The last folded hour, and whether the recording player's folded.
     recording_last: Option<(Hour, bool)>,
-    /// The recording client's view (its slot) at the last hour its history
-    /// folded.
     client_view: Option<u32>,
-    /// Per icon kind, for the perspective's viewer: the live instances, and
-    /// those that changed this hour.
     icons: Vec<IconFold>,
     icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
-    /// The same for the recording's own player.
     recording_icons: Vec<IconFold>,
     recording_icon_changed: Vec<Vec<(u64, Option<Kept>)>>,
 }
 
-/// Advance one track's icon folds using its engaged histories. An unfolded
-/// hour loses every icon. For the recording player, naval recorded bytes settle
-/// an undecided flag and supply the icon frame, which is then retained.
-/// The byte check continues to compare against the derivation.
 fn advance_icons<F: Tables + ?Sized>(
     icons: &mut [IconFold],
     changed: &mut [Vec<(u64, Option<Kept>)>],
@@ -338,8 +263,6 @@ fn advance_icons<F: Tables + ?Sized>(
             let flag = history.combat(combat);
             bytes.map_or(flag, |bytes| naval_check::settle(flag, bytes.get(&combat)))
         };
-        // A frame decoded, so an icon table it cannot read is one the hour
-        // holds nothing of: its icons are lost.
         match icon_hour(kind, frame, &flag) {
             Ok(hour) => icons.advance(&hour, continuity, changed),
             Err(_) => icons.lose(changed),
@@ -347,7 +270,6 @@ fn advance_icons<F: Tables + ?Sized>(
     }
 }
 
-/// How an hour follows the last one a track folded.
 fn continuity(
     last: Option<(Hour, bool)>,
     hour: Hour,
@@ -356,20 +278,13 @@ fn continuity(
 ) -> Continuity {
     match last {
         _ if load == Some(hour) => Continuity::Load,
-        // A history goes on with play of another load or session, whose rebuild was unobserved.
         _ if restart => Continuity::Gap,
-        // A branch that joined a running game, or whose first hours were not
-        // folded, starts after unobserved rebuilds.
         None => Continuity::Gap,
         Some((last, true)) if last.checked_add(1) == Some(hour) => Continuity::Next,
         Some(_) => Continuity::Gap,
     }
 }
 
-/// A load rebuilds every side when its loaded hour is the first sampled hour.
-/// If the collector loses the load origin, or sampling starts after that origin,
-/// unobserved refreshes leave those sides unknown. The fresh-save comparison
-/// uses the same load-hour test. Other starts join a running game.
 fn native_load(start: &BranchStart) -> Option<Hour> {
     (start.reason == BranchReason::LoadSignal && start.loaded_hour == Some(start.first_hour))
         .then_some(start.first_hour)
@@ -379,14 +294,11 @@ struct Pass {
     shared: Arc<History>,
     country: Country,
     folds: BTreeMap<BranchId, Fold>,
-    /// The byte check, folded here and published as a summary.
     check: ByteCheck,
-    /// The last hour's viewer inputs and viewing country, kept while their tables do not change.
     inputs: Option<Arc<Inputs>>,
     viewer: Option<Viewer>,
 }
 
-/// Every table the pass decodes.
 fn pass_tables() -> Vec<TableId> {
     let mut tables: Vec<TableId> = VIEWER_TABLES.to_vec();
     for source in SOURCES {
@@ -398,9 +310,6 @@ fn pass_tables() -> Vec<TableId> {
     tables
 }
 
-/// Folds every hour of `replay` on this thread and returns the naval byte
-/// check, as the index's pass does in the background: the headless dump's
-/// count.
 pub fn check_recorded_bytes(replay: &Replay) -> Summary {
     let mut pass = Pass::new(Arc::new(History::default()), Country::Recorded);
     pass.fold(replay, &pass_tables());
@@ -424,7 +333,6 @@ impl Pass {
         self.shared.cancelled.load(Ordering::Acquire)
     }
 
-    /// Copies the check's small summary out under a brief lock.
     fn publish(&self) {
         self.shared
             .check
@@ -433,12 +341,10 @@ impl Pass {
             .clone_from(&self.check.summary);
     }
 
-    /// Folds every hour past each branch's last folded one; returns how many.
     fn fold(&mut self, replay: &Replay, tables: &[TableId]) -> usize {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         let mut blocks: Vec<_> = replay.index.iter().collect();
         blocks.sort_by_key(|block| (block.branch, block.first_hour));
-        // Each history's first hour of each recorded segment: a native load, or a restart.
         let mut starts: BTreeMap<(BranchId, Hour), bool> = BTreeMap::new();
         for history in &replay.branches {
             for (at, piece) in replay.pieces(history.id).iter().enumerate() {
@@ -505,8 +411,6 @@ impl Pass {
         hours
     }
 
-    /// A block that could not be read: both tracks follow unobserved hours,
-    /// and the check counts it.
     fn failed_block(&mut self, branch: BranchId, last_hour: Hour) {
         let fold = self.folds.entry(branch).or_default();
         fold.last = Some((last_hour, false));
@@ -515,14 +419,6 @@ impl Pass {
         self.publish();
     }
 
-    /// Folds one hour for the perspective's viewer, with its icons, and for
-    /// the recording's own player, and checks the latter's naval flags
-    /// against the recorded bytes. An undecodable hour, or one whose sides
-    /// cannot be read, leaves every side unknown until it rebuilds and loses
-    /// every icon. `load` is the hour the branch starts with a native load.
-    ///
-    /// The fold runs without the locks; each is held only to append or copy
-    /// the hour's results.
     fn fold_hour(
         &mut self,
         branch: BranchId,
@@ -534,8 +430,6 @@ impl Pass {
         self.fold_source(branch, hour, frame, load, restart, false);
     }
 
-    /// [`Pass::fold_hour`] from any source of the hour's tables: a decoded frame, or the rows
-    /// the lane fold keeps ([`crate::engaged_lanes`]).
     pub fn fold_source<F: Tables + ?Sized>(
         &mut self,
         branch: BranchId,
@@ -556,41 +450,25 @@ impl Pass {
         let recording_continuity = continuity(fold.recording_last, hour, load, restart);
         let summary = &mut self.check.summary;
         summary.hours += 1;
-        // The sides do not depend on who views them.
         let sides = frame.zip(frame.and_then(|frame| {
             (0..SOURCES.len())
                 .map(|kind| sides_of(kind, frame))
                 .collect::<io::Result<Vec<_>>>()
                 .ok()
         }));
-        // The viewers' inputs are read again only when their tables may have changed.
         let held = self.inputs.take().filter(|_| kept);
         let inputs = sides.as_ref().and_then(|(frame, _)| held.or_else(|| Inputs::read(*frame).ok().map(Arc::new)));
         self.inputs.clone_from(&inputs);
         let held_viewer = self.viewer.take().filter(|viewer| kept && inputs.as_ref().is_some_and(|inputs| Arc::ptr_eq(&viewer.inputs, inputs)));
         let viewer = held_viewer.or_else(|| sides.as_ref().zip(inputs.as_ref()).and_then(|((frame, _), inputs)| Viewer::with(*frame, &self.country, inputs).ok()));
         self.viewer = viewer.as_ref().map(|viewer| Viewer { slot: viewer.slot, inputs: Arc::clone(&viewer.inputs) });
-        // The client's stored viewpoint comes from LocalPlayer. A change rebuilds
-        // all sides for the new player only; its history records that refresh.
-        // The perspective history does not rebuild for it.
         let player = sides
             .as_ref()
             .zip(inputs.as_ref())
             .and_then(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
-        // Evaluate the view for which the client's flags were last rebuilt.
-        // A tag switch or controller assigned the viewed country rebuilds at once.
-        // An observer-view change or a controller assignment instead waits for the
-        // next hourly check; evaluate that sample for the previous view, then move
-        // to the new view in the next sample.
-        //
-        // Not recovered from these samples: a controller assigned the newly viewed
-        // country in the same interval, or a side rebuilding after a view change in
-        // the same command batch. Those refreshes can test the new view while this
-        // fold still evaluates the previous one.
         let previous_view = fold
             .client_view
             .filter(|_| recording_continuity == Continuity::Next);
-        // Each is (the evaluated viewer, the client's view).
         let player = player.map(|(mut viewer, observing)| {
             let view = viewer.slot;
             if let Some(slot) = previous_view
@@ -621,7 +499,6 @@ impl Pass {
                     .advance(viewer, sides.clone(), recording_continuity);
                 fold.recording_last = Some((hour, true));
                 fold.client_view = Some(*view);
-                // An unreadable detail table settles nothing.
                 let bytes = naval_check::recorded_bytes(frame).ok();
                 advance_icons(
                     &mut fold.recording_icons,
@@ -630,7 +507,6 @@ impl Pass {
                     bytes.as_ref(),
                     recording_continuity,
                 );
-                // The check reads the recording player's history after the hour.
                 if self
                     .check
                     .compare(
@@ -697,7 +573,6 @@ impl Pass {
             {
                 covered.viewers.push((hour, slot));
             }
-            // A lookup for the client's view is the client's flag, stale or not.
             let player_slot = player.as_ref().map(|(_, view)| *view);
             if covered
                 .players
@@ -715,13 +590,11 @@ impl Pass {
                 }
             }
         }
-        // Outside the lock the hour was published under: a reader waiting for this hour wakes.
         self.shared.folded();
         self.publish();
     }
 }
 
-/// One combat kind's sides of the hour ([`SOURCES`]) from any source of its tables.
 fn sides_of<F: Tables + ?Sized>(kind: usize, frame: &F) -> io::Result<HourSides> {
     if kind == NAVAL {
         viewer_foundation::naval_sides::naval_sides(frame)
@@ -730,9 +603,6 @@ fn sides_of<F: Tables + ?Sized>(kind: usize, frame: &F) -> io::Result<HourSides>
     }
 }
 
-/// The blocks of run `run` holding any hour of `from..=to`, in hour order, each block once: the
-/// index lists a block under every branch that plays it, and a fold of one branch's hours reads
-/// the hours once.
 fn piece_blocks(index: &[replay::campaign::BlockIndex], run: usize, from: Hour, to: Hour) -> Vec<&replay::campaign::BlockIndex> {
     let mut blocks: Vec<&replay::campaign::BlockIndex> = index.iter().filter(|block| block.run as usize == run && block.last_hour >= from && block.first_hour <= to).collect();
     blocks.sort_by_key(|block| (block.first_hour, block.page));
@@ -740,11 +610,6 @@ fn piece_blocks(index: &[replay::campaign::BlockIndex], run: usize, from: Hour, 
     blocks
 }
 
-/// Today's fold of `branch`'s hours `first..=last` for `country`, from whole decoded blocks: the
-/// index it makes, and the nanoseconds spent reading the blocks and folding the hours. The hours
-/// folded are `timeline`'s, piece by piece, under `branch`, as the lanes fold them
-/// ([`lanes::fold`]): a branch plays the pieces of the runs before it, whose blocks carry the
-/// branch they were recorded under, and a fold of another branch's hours is another index.
 pub fn fold_range(replay: &Replay, country: Country, timeline: &Timeline, branch: BranchId, first: Hour, last: Hour) -> (Arc<History>, u64, u64, u64) {
     let shared = Arc::new(History::default());
     let mut pass = Pass::new(Arc::clone(&shared), country);
@@ -772,9 +637,6 @@ pub fn fold_range(replay: &Replay, country: Country, timeline: &Timeline, branch
                 },
                 || Ok(()),
             );
-            // A block that could not be read leaves its hours unfolded: the fold is told, as the
-            // index's own pass is told ([`Pass::fold`]), rather than seeing a hole in the hours
-            // and calling everything after it unknown.
             if read.is_err() {
                 failed += 1;
                 pass.failed_block(branch, block.last_hour);

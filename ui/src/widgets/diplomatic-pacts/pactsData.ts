@@ -11,7 +11,6 @@ const hour = (value: unknown) => Number.isSafeInteger(value);
 const hourOrNull = (value: unknown) => value === null || Number.isSafeInteger(value);
 const textOrNull = (value: unknown) => value === null || typeof value === 'string';
 
-/** Checks a `diplomatic-pacts` reply's shape, so a reply from another version is refused rather than read wrongly. */
 export function validatePacts(data: unknown): DiplomacyPactsReply {
   if (!object(data) || !Array.isArray(data.warnings) || !Array.isArray(data.unobserved) || !Array.isArray(data.kinds) || !Array.isArray(data.pacts)
     || !data.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && hour(kind.count) && textOrNull(kind.name) && textOrNull(kind.reason))
@@ -22,29 +21,17 @@ export function validatePacts(data: unknown): DiplomacyPactsReply {
   return data as unknown as DiplomacyPactsReply;
 }
 
-/** Whether the recording lists a pact at `at`: listed through its last read (or still at the
- * last read); gone once a later read of its owner no longer lists it, dated by that read; and
- * unknown in between or where its owner was not read again, never assumed gone. Nothing is
- * said about the game's own state words. */
 export function pactState(pact: Pact, at: number): PactState {
   if (at <= pact.lastSeen || pact.presentAtEnd) return { state: 'present' };
-  // An episode a recording gap ended proves no absence: the next read may list it again.
   if (pact.endedBy) return { state: 'unknown', since: pact.lastSeen };
   return pact.goneBy !== null && pact.goneBy <= at ? { state: 'gone', by: pact.goneBy } : { state: 'unknown', since: pact.lastSeen };
 }
 
-/** Where a pact's presence starts: its stored start, else the first read that listed it (a bound). */
 export const pactSince = (pact: Pact) => pact.startHour ?? pact.firstSeen;
 
-/** Relation kinds other widgets show (lend-lease, market access and purchase contracts) and
- * the improve-relations action, which is not an agreement. */
 const ELSEWHERE = new Set(['lend_lease', 'market_access_rights', 'equipment_purchase_contract_relation', 'improve_relation']);
-/** An offer relation is its base relation read the other way round (the game links an
- * offered access from the second country to the first). */
 const OFFERS: Readonly<Record<string, string>> = { offer_military_access: 'military_access', offer_docking_rights: 'docking_rights', offer_air_base_access: 'air_base_access' };
 
-/** How each engine relation reads from the chosen country's side; any other kind (such as a
- * mod's) is listed after these under its game name, by direction. */
 const KNOWN: readonly { kind: string; title: string; one: string; out?: (name: string) => string; in?: (name: string) => string; incomingFirst?: boolean }[] = [
   { kind: 'non_aggression_pact', title: 'Non-aggression pacts', one: 'Non-aggression pact' },
   { kind: 'guarantee', title: 'Guarantees', one: 'Guarantee', out: name => `${name} guarantees`, in: () => 'Guaranteed by' },
@@ -55,26 +42,19 @@ const KNOWN: readonly { kind: string; title: string; one: string; out?: (name: s
   { kind: 'naval_blockade', title: 'Naval blockades', one: 'Naval blockade', out: name => `${name} blockades`, in: () => 'Blockaded by', incomingFirst: true },
 ];
 
-/** One agreement between the chosen country and a partner: the listed episodes of one
- * relation (one kind, direction and stored start) joined. A relation ended and made again
- * has a new start, so one start held across a recording gap is the same relation throughout. */
 export interface Agreement {
   key: string;
   kind: string;
   outgoing: boolean;
   partner: string | null;
   since: number;
-  /** Seen without a stored start, so `since` is only when it was first listed. */
   sinceBound: boolean;
-  /** A stored expiry after its start (a non-aggression pact's term). */
   expires: number | null;
   lastSeen: number;
   state: PactState;
   pact: Pact;
 }
 
-/** The chosen country's agreements at `at`: those listed by then, offers turned round,
- * kinds shown elsewhere left out, and one per relation. */
 export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, kinds: ReadonlySet<string> | null): Agreement[] {
   const joined = new Map<string, { pacts: Pact[]; kind: string; outgoing: boolean; partner: string | null }>();
   for (const pact of pacts) {
@@ -98,10 +78,8 @@ export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, ki
   });
 }
 
-/** `title` names one agreement; `mutual` has no direction (a pact between equals). */
 export interface AgreementLaneInfo { agreement: Agreement; title: string; mutual: boolean }
 export interface AgreementText {
-  /** The chosen country's name, for side headings. */
   name: string;
   country: (tag: string | null, hour: number) => CountryFlagLook & { name: string };
   kindName: (kind: string) => string;
@@ -109,13 +87,9 @@ export interface AgreementText {
 }
 
 const faded = (color: string) => /^#[0-9a-f]{6}$/i.test(color) ? `${color}66` : color;
-/** Listed at the hour shown. */
 const live = (item: Agreement) => item.state.state === 'present';
 const order = (a: Agreement, b: Agreement) => Number(!live(a)) - Number(!live(b)) || a.since - b.since;
 
-/** A section per kind (headed by how many are in force), split by direction where the
- * kind has one, and a lane per partner with its bar from start to end. A pact still listed
- * at the timeline's end runs open to `knownLastHour`. */
 export function agreementLanes(agreements: readonly Agreement[], ended: boolean, knownLastHour: number, text: AgreementText) {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, AgreementLaneInfo>();
@@ -154,7 +128,6 @@ export function agreementLanes(agreements: readonly Agreement[], ended: boolean,
   return { lanes, info };
 }
 
-/** The kinds of relation the widget can show, named as the game names them. */
 export function agreementKinds(kinds: readonly DiplomacyKind[]): { kind: string; name: string | null }[] {
   const named = new Map<string, string | null>();
   for (const kind of kinds) {
@@ -165,11 +138,8 @@ export function agreementKinds(kinds: readonly DiplomacyKind[]): { kind: string;
   return [...named].map(([kind, name]) => ({ kind, name: KNOWN.find(entry => entry.kind === kind)?.title ?? name }));
 }
 
-/** Whether a reply warning is about a kind the widget leaves out. */
 export const aboutElsewhere = (warning: string) => [...ELSEWHERE].some(kind => warning.includes(`Relation ${kind}:`));
 
-/** Every hour from which what the agreements timeline shows may differ: an agreement listed, starting, expiring or
- * gone, the hour after it was last listed, a stretch not recorded starting or ending. Ascending, distinct. */
 export function changeHours(reply: Pick<DiplomacyPactsReply, 'pacts' | 'unobserved'>): number[] {
   const hours = new Set<number>();
   for (const pact of reply.pacts) {

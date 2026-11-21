@@ -11,8 +11,6 @@ import { fixedNumber, formatAmount } from '../../charts/valueAxis';
 import { modifierTooltip } from './productionData.ts';
 import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
 
-/** One factor's parts at the drill's hour and over its window. Negative corrections remain exact rows; only positive
- * amounts draw stacked bands. Picking a day pins it. */
 export default function ProductionDrill({ data, selected, onFactor, hour, active, hoursPerSecond, onPick }: {
   data: ProductionLineBreakdownReply; selected: string; onFactor: (factor: string) => void; hour: number | null;
   active: boolean; hoursPerSecond: number | undefined; onPick: (hour: number) => void;

@@ -1,6 +1,3 @@
-//! Country-owned radar coverage group containing three arrays and producer
-//! state. Without a vtable, authentication uses allocator alignment, valid vector
-//! headers and the backlink to the owning radar pool, whose vtable is checked first.
 
 use crate::{
     Memory, ccountry,
@@ -10,55 +7,38 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Province-ID array pointer.
 pub const PROVINCES: usize = 0;
-/// Province-ID array u32 capacity.
 #[cfg(test)]
 pub const PROVINCES_CAPACITY: usize = 0x08;
-/// Province-ID array u32 count.
 pub const PROVINCES_COUNT: usize = 0x0c;
-/// Host state pointer selected from controlled states.
 pub const STATE: usize = 0x48;
-/// Signed raw i64 scalar using fixed-point scale 100000.
 pub const SCALAR_50: usize = 0x50;
-/// Cached fixed5 radius used by the range symbol.
 pub const COVERAGE_RADIUS: usize = SCALAR_50;
-/// Owning radar-pool pointer.
 pub const PARENT: usize = 0x60;
-/// Radar-group allocation size.
 pub const SIZE: usize = 0x70;
-/// Coverage update using game-state province indices.
 pub const UPDATE_RVA: Rva = Rva(0x0112_b630);
 
-/// One country's radar group in vector order. Its ordinal is a position,
-/// not an identity: swap-removal can move coverage between hours. Host state
-/// is the closest stable name retained by the record.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw CCountry link id of the owning country.
     pub country: u32,
     pub ordinal: u32,
-    /// Host CState id; a null host-state pointer is recorded as absent, not zero.
     pub state: Option<u32>,
     pub symbol: Option<Symbol>,
     pub provinces_start: usize,
     pub provinces_len: usize,
 }
 
-/// Presentation operands carried under the radar update writer's certificate.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Symbol {
     pub radius: i64,
 }
 
-/// A demanded group's cached radius. The caller already authenticated its group.
 pub fn radius(memory: &impl Memory, group: usize) -> Option<i64> {
     group
         .checked_add(COVERAGE_RADIUS)
         .and_then(|at| read::<i64>(memory, at))
 }
 
-/// Only a group with an authenticated nonnull host needs a map range.
 pub fn symbol(memory: &impl Memory, group: usize, state: usize) -> Option<Symbol> {
     (state != 0)
         .then(|| radius(memory, group))
@@ -70,7 +50,6 @@ pub fn symbol(memory: &impl Memory, group: usize, state: usize) -> Option<Symbol
 pub struct Walk {
     pub outcome: Outcome,
     pub provinces_len: usize,
-    /// Full native province demand, including whole rows omitted for space.
     pub required_provinces: usize,
 }
 
@@ -78,7 +57,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     walk_buffers(memory, base, game_state, Buffer::Count, Buffer::Count, |_, _| None)
 }
 
-/// Reserve from each original group/coverage header before copying its body.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -96,8 +74,6 @@ pub fn walk(
     )
 }
 
-/// The existing census supplies authenticated group and host pointers to a
-/// writer-certified symbol cache. It does not read symbol fields itself.
 pub fn walk_with_symbols(
     memory: &impl Memory,
     base: usize,
@@ -143,8 +119,6 @@ fn walk_buffers(
             let mut primary = [0; 8];
             let mut owner = [0; 4];
             let mut header = [0; 16];
-            // Read only the three independent native fields in one guard. The
-            // checks retain the former field and owner-resolution precedence.
             let completed = memory.copy_scattered(
                 [
                     Some(pool),
@@ -160,8 +134,6 @@ fn walk_buffers(
             if completed < 2 {
                 return Err("radar pool country reference unreadable");
             }
-            // A pool may retain a native country-id alias after slot reuse;
-            // resolution must still name this exact authenticated object.
             if countries.resolve(u32::from_le_bytes(owner))?.pointer != country.pointer {
                 return Err("radar pool country differs from its owner");
             }
@@ -169,7 +141,6 @@ fn walk_buffers(
                 .then(|| Array::from_header(header, 8))
                 .flatten()
                 .ok_or("radar group vector unreadable or invalid")?;
-            // Use the complete group count and each complete coverage count.
             output.ensure(
                 len.checked_add(groups.count as usize)
                     .ok_or("radar row demand overflow")?,
@@ -183,7 +154,6 @@ fn walk_buffers(
                 if group == 0 {
                     return Err("counted radar group vector contains a null group");
                 }
-                // Eight-byte allocator alignment and the owning-pool backlink authenticate this nonpolymorphic record.
                 if group % 8 != 0 {
                     return Err("radar group pointer is not eight-aligned");
                 }
@@ -279,7 +249,6 @@ mod tests {
         bytes[address - BASE..address - BASE + value.len()].copy_from_slice(value);
     }
 
-    /// One country with two groups; the second has a null state and no coverage.
     pub(crate) fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x9000];
         put(
@@ -314,12 +283,9 @@ mod tests {
         );
         put(&mut bytes, 0x2008, &(COUNTRY as u64).to_le_bytes());
         put(&mut bytes, 0x2010, &(OTHER_COUNTRY as u64).to_le_bytes());
-        // Link slot 1 and the first country's own id 2 resolve to slot 1; link
-        // slot 2 and the second country's id 3 resolve to slot 2.
         put(&mut bytes, 0x2104, &1_u32.to_le_bytes());
         put(&mut bytes, 0x2108, &2_u32.to_le_bytes());
         put(&mut bytes, 0x210c, &2_u32.to_le_bytes());
-        // Link slot 1 names the first country and slots 2 and 3 the second.
         put(
             &mut bytes,
             OTHER_COUNTRY,
@@ -501,7 +467,6 @@ mod tests {
             }
         );
         let mut bytes = fixture();
-        // A count above its own capacity is a torn vector header, not a census.
         put(&mut bytes, GROUP + PROVINCES_COUNT, &9_u32.to_le_bytes());
         let (walk, _, _) = walked(&bytes, 4, 8);
         assert_eq!(
@@ -511,8 +476,6 @@ mod tests {
             }
         );
         let mut bytes = fixture();
-        // The record now names the other authenticated country, which is a
-        // recycled or torn reference rather than this country's coverage.
         put(
             &mut bytes,
             COUNTRY + ccountry::RADARS_POOL_COUNTRY,

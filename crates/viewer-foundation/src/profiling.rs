@@ -1,7 +1,3 @@
-//! The viewer's opt-in profiling switches and the CPU laps they print.
-//!
-//! Every switch is an environment variable read once; unset, none of them adds
-//! work to a frame. The viewer README lists them.
 
 use std::{ops::Range, sync::OnceLock, time::Instant};
 
@@ -13,18 +9,13 @@ pub use frame_cpu::{
 };
 pub use thread_clock::cpu_clock_hz;
 
-/// The first frame of a profiled `--window-dump` sweep; the frames before it
-/// settle the first hour and its caches.
 pub const SWEEP_START: u32 = 121;
 
-/// The pace of a profiled capture, `BATTLE_PLAN_VIEWER_PROFILE_HZ` frames a second.
 pub fn hz() -> f64 {
     static HZ: OnceLock<f64> = OnceLock::new();
     *HZ.get_or_init(|| parse_hz(std::env::var("BATTLE_PLAN_VIEWER_PROFILE_HZ").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE_HZ")).ok().as_deref()))
 }
 
-/// The frames of a profiled capture's sweep: `BATTLE_PLAN_VIEWER_PROFILE_SWEEP`
-/// frames from [`SWEEP_START`].
 pub fn sweep() -> Range<u32> {
     static FRAMES: OnceLock<u32> = OnceLock::new();
     let frames = *FRAMES
@@ -32,7 +23,6 @@ pub fn sweep() -> Range<u32> {
     sweep_range(frames)
 }
 
-/// Frames a second: a finite 1..=1000, else 60.
 pub fn parse_hz(value: Option<&str>) -> f64 {
     value
         .and_then(|value| value.trim().parse::<f64>().ok())
@@ -40,10 +30,8 @@ pub fn parse_hz(value: Option<&str>) -> f64 {
         .unwrap_or(60.0)
 }
 
-/// The longest sweep, about three hours at 120 Hz.
 const MAX_SWEEP: u32 = 1_296_000;
 
-/// Sweep frames: 1..=[`MAX_SWEEP`], else 120.
 pub fn parse_sweep(value: Option<&str>) -> u32 {
     value
         .and_then(|value| value.trim().parse::<u32>().ok())
@@ -51,21 +39,14 @@ pub fn parse_sweep(value: Option<&str>) -> u32 {
         .unwrap_or(120)
 }
 
-/// The sweep's frames, which cannot overflow however large `frames` is.
 pub fn sweep_range(frames: u32) -> Range<u32> {
     SWEEP_START..SWEEP_START.saturating_add(frames)
 }
 
-/// Cycle-derived CPU time used by the calling thread, excluding waits.
-/// QueryThreadCycleTime is converted with a once-calibrated TSC rate, like the
-/// collector's cycle CPU estimate, rather than scheduler-quantized thread times.
-/// Returns `None` if unavailable; callers sample it only while profiling.
 pub fn current_thread_cpu_time() -> Option<std::time::Duration> {
     thread_clock::current()
 }
 
-/// One completed child scope of an hour-builder job, in milliseconds.
-/// CPU samples retain the platform clock's resolution, including exact zeros.
 #[derive(Clone, Debug)]
 pub struct BuilderSpan {
     pub name: &'static str,
@@ -73,17 +54,12 @@ pub struct BuilderSpan {
     pub cpu_ms: Option<f64>,
 }
 
-/// Explicit job-local child timings, transported with the built hour rather
-/// than left on a worker's thread-local frame collector. Names are full dotted
-/// paths; nested scopes are inclusive and recorded in completion order.
 pub struct BuilderSpans {
     enabled: bool,
     records: Vec<BuilderSpan>,
 }
 
 impl BuilderSpans {
-    /// Uses the caller's existing PROFILE enable; disabled scopes allocate no
-    /// records and read neither the wall clock nor the thread CPU clock.
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
@@ -91,14 +67,10 @@ impl BuilderSpans {
         }
     }
 
-    /// Whether job-local PROFILE output is requested; no clock is read.
     pub fn enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Runs `work` exactly once on this thread, retaining its result unchanged.
-    /// An ordinary error result completes the scope. If work panics, completed
-    /// nested scopes remain, but the unfinished scope has no invented timing.
     pub fn measure<T>(&mut self, name: &'static str, work: impl FnOnce(&mut Self) -> T) -> T {
         if !self.enabled {
             return work(self);
@@ -118,8 +90,6 @@ impl BuilderSpans {
         value
     }
 
-    /// A worker-local recorder with the same enable, sampled on that worker.
-    /// Creating it reads no clock and allocates no record storage.
     pub fn fork(&self) -> Self {
         Self {
             enabled: self.enabled,
@@ -127,17 +97,12 @@ impl BuilderSpans {
         }
     }
 
-    /// Adopts completed worker scopes at the caller's ordered join. Their CPU
-    /// samples belong to the worker, not this thread; wall scopes may overlap.
     pub fn append(&mut self, mut worker: Self) {
         if self.enabled {
             self.records.append(&mut worker.records);
         }
     }
 
-    /// Adds a completed job-local aggregate without sampling another clock.
-    /// Callers retain their own stage totals; existing scopes keep their order.
-    /// Disabled recorders allocate no storage and discard the supplied record.
     pub fn record(&mut self, record: BuilderSpan) {
         if self.enabled {
             self.records.push(record);
@@ -149,7 +114,6 @@ impl BuilderSpans {
     }
 }
 
-/// `name=ms` pairs of the laps at least `min_ms` long, three decimals.
 pub fn laps_line(laps: &[(&'static str, f64)], min_ms: f64) -> String {
     laps.iter()
         .filter(|(_, ms)| *ms >= min_ms)
@@ -163,12 +127,9 @@ std::thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Part of a frame on this thread, timed from [`span`] until it drops while profiling
-/// (`BATTLE_PLAN_VIEWER_PROFILE`); [`take_spans`] reports each name's total.
 pub struct Span {
     name: &'static str,
     start: Option<Instant>,
-    /// The window thread's cycles at the start, noted for playback-cost frames.
     cycles: Option<u64>,
 }
 
@@ -200,9 +161,6 @@ impl Drop for Span {
     }
 }
 
-/// Adds an already measured coarse lap under `BATTLE_PLAN_VIEWER_PROFILE`. Unlike
-/// ordinary spans, these laps report zero and sub-0.05 ms totals too, so a short
-/// worker wait is distinguishable from a lap that was not measured.
 pub fn record_lap(name: &'static str, elapsed: std::time::Duration) {
     if crate::profile_writer::profiling() {
         SPANS.with(|spans| {
@@ -240,19 +198,15 @@ fn spans_line(spans: &[(&'static str, f64, bool)]) -> String {
         .join(" ")
 }
 
-/// This thread's spans since the last call, at least 0.05 ms each, plus every
-/// explicitly recorded coarse lap.
 pub fn take_spans() -> String {
     SPANS.with(|spans| spans_line(&std::mem::take(&mut *spans.borrow_mut())))
 }
 
-/// Completed render records transferred from their worker to the frame owner.
 pub struct ThreadRecords {
     frame: frame_cpu::FrameRecords,
     spans: Vec<(&'static str, f64, bool)>,
 }
 
-/// This thread's unprinted scopes, spans and laps, taken; `None` when not profiling.
 pub fn take_thread_records() -> Option<ThreadRecords> {
     crate::profile_writer::profiling().then(|| ThreadRecords {
         frame: frame_cpu::take_frame_records(),
@@ -260,7 +214,6 @@ pub fn take_thread_records() -> Option<ThreadRecords> {
     })
 }
 
-/// Adds records another thread took to this thread's frame, as if recorded here.
 pub fn adopt_thread_records(records: Option<ThreadRecords>) {
     let Some(records) = records else {
         return;
@@ -275,7 +228,6 @@ pub fn adopt_thread_records(records: Option<ThreadRecords>) {
 }
 
 std::thread_local! {
-    /// The GPU counts at the last lap noted, and each lap's counts since the last take.
     static PASS_COUNTS: std::cell::RefCell<PassCounts> = std::cell::RefCell::default();
 }
 
@@ -287,7 +239,6 @@ struct PassCounts {
     laps: Vec<(&'static str, GpuCounts)>,
 }
 
-/// Charges the GPU commands and staged bytes since the last lap noted to lap `name`.
 fn pass_counts(name: &'static str) {
     let now = shader_pipeline::gpu::stats::peek();
     PASS_COUNTS.with(|counts| {
@@ -303,9 +254,6 @@ fn pass_counts(name: &'static str) {
     });
 }
 
-/// Each lap's GPU commands and staged bytes since the last take, by the names
-/// [`shader_pipeline::gpu::stats::NAMES`] gives, laps with none left out. The counts restart
-/// from the next lap noted, as [`shader_pipeline::gpu::stats::take`] restarts them.
 pub fn take_pass_counts() -> Vec<(&'static str, Vec<(&'static str, u64)>)> {
     PASS_COUNTS.with(|counts| {
         let mut counts = counts.borrow_mut();
@@ -325,20 +273,15 @@ pub fn take_pass_counts() -> Vec<(&'static str, Vec<(&'static str, u64)>)> {
     })
 }
 
-/// Named CPU laps of one frame, recorded only while `start` was given a clock.
 #[derive(Default)]
 pub struct CpuLaps {
     last: Option<Instant>,
     laps: Vec<(&'static str, f64)>,
-    /// Thread cycles at the last lap while playback-cost accounting notes each lap.
     cycles: Option<u64>,
-    /// With [`Self::record_walls`] while the view record is kept: the wall clock and the thread's
-    /// own CPU at the last lap.
     walls: Option<(Instant, Option<std::time::Duration>)>,
 }
 
 impl CpuLaps {
-    /// Starts a frame's laps at `clock`; `None` records nothing.
     pub fn start(&mut self, clock: Option<Instant>) {
         self.last = clock;
         self.laps.clear();
@@ -346,9 +289,6 @@ impl CpuLaps {
         self.walls = None;
     }
 
-    /// Records each later lap's wall time against the frame thread's own CPU in it (the view
-    /// record's `render_wall_us` and `render_cpu_us`), so time the thread is off its CPU inside a
-    /// lap is placed by lap; nothing while the view record is not kept.
     pub fn record_walls(&mut self) {
         if crate::view_record::on() {
             self.walls = Some((Instant::now(), current_thread_cpu_time()));
@@ -362,7 +302,6 @@ impl CpuLaps {
         }
     }
 
-    /// Ends a lap, summing repeated pass/view labels in their first-use order.
     pub fn lap_sum(&mut self, name: &'static str) {
         self.note(name);
         if self.last.is_some() {
@@ -407,8 +346,6 @@ impl CpuLaps {
         laps_line(&self.laps, 0.0)
     }
 
-    /// Prefixes a separate set of laps and makes space-containing pass labels
-    /// single field names in the frame's existing profiling line.
     pub fn line_with_prefix(&self, prefix: &str) -> String {
         self.laps
             .iter()

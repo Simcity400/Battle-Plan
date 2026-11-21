@@ -1,4 +1,3 @@
-//! Host composition assertions spanning combat windows and counter resources.
 use installed_content_core::{ResolvedLayers, defines::Defines, gui::native::resources::Registry};
 use installed_content_image::native::Decode;
 use std::time::Duration;
@@ -130,8 +129,6 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         &lazy,
     )
     .unwrap();
-    // The air binder's selection cascade needs loaded sheets for names that
-    // no `.gui` template declares. Registry facts alone cannot draw either icon.
     for name in [
         "GFX_navalcombat_air_icon_fixture_bomber",
         "GFX_navalcombat_air_icon_fixture_fighter",
@@ -140,7 +137,6 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         assert!(combat.gui.sheet(name.as_bytes()).is_some(), "{name}");
     }
     let localisation = installed_content_localisation::localisation::read(&shared, "english").unwrap();
-    // The same inventory and load calls MapIcons::load_gui uses; no test-only merge.
     let (extra, _) = combat.localisation_assets(&localisation);
     let warnings = combat
         .load_gui(&shared, &localisation, &extra, &mut images)
@@ -218,7 +214,6 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         "the popup bake must draw its substituted inline sprite"
     );
 
-    // Runtime binds the parsed button, hit-tests its retained GUI, then paints with map resources.
     let mut bindings = Bindings::default();
     bind_authored(
         &mut bindings,
@@ -301,8 +296,6 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         "the shared tooltip painter must draw the close shortcut keycap"
     );
 
-    // A fixed-clock dump repeats this resource refresh after settling queued
-    // artwork. The first snapshot must not hide that decoded portrait forever.
     let mut bindings = Bindings::default();
     bind_sprite(
         &mut bindings.values,
@@ -339,13 +332,10 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
 #[test]
 fn the_combat_window_sorts_above_every_map_icon() {
     use {viewer_counters::map::counters, viewer_foundation::map::sprites::layer};
-    // The highest priority a define can give a map icon.
     let top_icon = layer(i8::MAX, u32::MAX, CHILD_SLOTS - 1);
     assert!(window_layer(0) > top_icon);
-    // Window quads keep their push order among themselves.
     assert!(window_layer(1) > window_layer(0));
     assert!(window_layer(usize::MAX) >= window_layer(70_000));
-    // Sorted as the sprite pass sorts, the window's quads come last.
     let icon = layer(
         counters::CounterDefines::VANILLA.priorities.get(
             counters::PriorityTable::Default,

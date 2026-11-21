@@ -419,7 +419,6 @@ fn phase_declares_a_campaign_branch_without_recording_an_hour() {
         unreachable!()
     };
     packet.phase.as_mut().unwrap().campaign[0] = b'f';
-    // A phase naming another campaign is damage: its controls are dropped and named, not read.
     let conflicting = Replay::from_records(campaign.to_vec(), &[vec![Record::SessionStart(session()), Record::Control(entry)]]).unwrap();
     assert!(conflicting.controls.is_empty());
     assert_eq!(conflicting.damaged_parts, 1);

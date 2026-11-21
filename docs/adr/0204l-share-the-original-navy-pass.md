@@ -1,0 +1,7 @@
+# 0204l. Share the original navy pass and classify new division handles by counter
+
+The host owns the native navy pass and its loans. The country counters job reads the physical navy manager slots once, including aliases and observed nulls. The mission ledgers borrow those authenticated slots until the pass completes. A failed slot is not retried by a borrower. Slot zero's original control also supplies the reserved country's launch naval bases. Launch reads do not depend on a country root or any retired route-preview input. Launch refusal leaves the mission loan and other slots independent. Sizing hints come from the live manager, and the worker can grow from the original acquired header before publishing that hour.
+
+Between the daily DivisionEquipment walks, equipment acquisition includes divisions minted past that walk's two ID counters. Unit handles take the old counter value before incrementing, so the saved unit counter itself qualifies. Dynamic registry handles increment first, so their saved counter is already used. The handle's type selects its counter and the other counter is irrelevant. An unreadable or negative unit count cannot establish a mark. When the daily walk runs it covers all divisions.
+
+[Navy inputs](../../crates/collector-naval-movement/src/country_naval_movement_inputs.rs), [New division capture](../../crates/collector-new-divisions/src/new_divisions.rs)

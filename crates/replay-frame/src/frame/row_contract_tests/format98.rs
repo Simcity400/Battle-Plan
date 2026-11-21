@@ -4,7 +4,6 @@ use crate::{
     frame::{Frame, FrameDecoder, TableUpdate, TableView},
 };
 
-// Format 97 fixtures use main's published contract, not the earlier private branch shape.
 fn format97() -> FormatVersion {
     FormatVersion::read(97).unwrap()
 }
@@ -277,7 +276,6 @@ fn format98_operands_preserve_bytes_order_and_independent_changed_fields() {
         membership
     );
     assert_eq!(cadence(TableId::OperativeMemberships), Cadence::Daily(16));
-    // Available-advisor pools are panel data, read once a game day per country.
     assert_eq!(cadence(TableId::AvailableAdvisors), Cadence::Sliced);
     assert_eq!(cadence(TableId::DivisionStatus), Cadence::Hourly);
 }
@@ -318,8 +316,6 @@ fn format98_country_lists_and_lean_available_advisors_round_trip() {
     }
 }
 
-// Synthetic legacy bytes: remove appended native fields, preserving
-// following side operands and the opaque field's length. No legacy encoder exists in production.
 fn nested_field97<V: Value>(bytes: &[u8], nested: &V, tail: usize) -> Vec<u8> {
     let mut needle = Vec::new();
     nested.encode(&mut needle).unwrap();
@@ -347,9 +343,6 @@ fn nested97<T: RowCodec + Fields + std::fmt::Debug + PartialEq, V: Value>(
 ) -> T {
     let mut needle = Vec::new();
     nested.encode(&mut needle).unwrap();
-    // Format 97 records the fields appended before it; later appended
-    // fields (LandCombatDetails' side inputs) are absent from its rows and
-    // masks.
     let recorded = format97().fields(table);
     let recorded_mask = if recorded == 64 {
         u64::MAX
@@ -576,8 +569,6 @@ fn format97_border_width_and_nested_minimum_keep_following_inputs_aligned() {
         }),
         combat_width: Recorded::Value(Default::default()),
     };
-    // The historical writer stands in for format 97's side layout, which
-    // still held the parts retired since.
     let land = crate::rows::with_historical_stamp(0, || {
         nested97(
             TableId::LandCombatDetails,
@@ -595,7 +586,6 @@ fn format97_border_width_and_nested_minimum_keep_following_inputs_aligned() {
     };
     assert_eq!(saved_border.combat_width, Recorded::NotRecorded);
     assert_eq!(saved_border.sides, border.sides);
-    // Format 97 predates the side inputs (field 10) too.
     assert_eq!(land.side_inputs, Recorded::NotRecorded);
     let gaps = TableRows::LandCombatDetails(vec![land]);
     assert_eq!(
@@ -673,8 +663,6 @@ fn format98_optional_empty_inputs_remain_distinct_from_absent_inputs() {
     assert!(leader.check_key_fields().is_err());
     let leader = UnitLeaderRow { kind: 3, ..leader };
     assert!(leader.check_key_fields().is_ok());
-    // Kind 3 constructs a codename independently of skill category. This host
-    // records category but has no kind field.
     let operative = CharacterOperativeRow {
         character: 7,
         reference: 9,
@@ -812,7 +800,6 @@ fn format98_scope_seeds_and_supply_vehicles_preserve_zero_absence_and_raw_extrem
         input.finish().unwrap();
     }
     assert_eq!(cadence(TableId::ScriptVariables), Cadence::Hourly);
-    // Supply trains are decorative, read once a game day per country.
     assert_eq!(cadence(TableId::TrainInventory), Cadence::Sliced);
 }
 

@@ -111,7 +111,6 @@ impl Memory for Fixture {
             .blocked
             .is_some_and(|at| address <= at && at - address < output.len())
         {
-            // A partially written failed destination must never become input.
             if let Some(first) = output.first_mut() {
                 *first = 0xff;
             }
@@ -384,8 +383,6 @@ fn fresh_rail_health_keeps_absence_unreached_and_damaged_domains_distinct() {
         output[3].building,
         Ok(Some(RailwayBuildingState { building: None }))
     );
-    // A zero or equal level must remain available even when its unqueried
-    // partial-health address is unreadable. Neither branch reads that field.
     for index in [1, 2] {
         let partial = BUILDINGS + index * 0x220 + building::PARTIAL_HEALTH;
         memory.blocked = Some(partial);

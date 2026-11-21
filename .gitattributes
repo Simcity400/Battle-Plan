@@ -2,7 +2,6 @@
 *.rs text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
-# The Tauri CLI base64-decodes the updater key file as it is: no line ending, not even a final one.
 *.pub -text
 ui/src/generated/dashboard.ts text eol=lf
 crates/replay-data/src/rows/registry.golden text eol=lf

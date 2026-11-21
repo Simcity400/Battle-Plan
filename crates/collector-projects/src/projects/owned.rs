@@ -1,44 +1,19 @@
 use super::*;
 
-// ===========================================================================
-// Scheduled raw-copy split (ProjectPrograms, ProjectBreakthroughs; the sliced
-// Projects and ProjectHistory and the independent tables use typed
-// acquisition).
-//
-// The acquisition worker copies raw bytes: one shared country census and
-// status read per country, program pointers/rows/strings and breakthrough
-// tree nodes. The single FIFO decode worker replays the existing typed walks
-// against the recorded spans (`crate::raw::Recorded`), so typed rows,
-// ordinals, skips, truncation counts and failure reasons are identical by
-// construction (see `crate::raw` for the mirror rules).
-//
-// The two typed walks each run their own census and status reads; the
-// replay serves every repeat of a staged key with its bytes, so the mirror
-// stages each key once, including a slot's link, canonical pointer and status
-// that the walks read again. Tree nodes are gathered in batches; a batch
-// stages each field as its own span and stops at its first failure, which the
-// replay then reaches at the same field.
-// ===========================================================================
 
-/// Fault-attribution bits, one per raw-copied table in [`RAW`] order.
 pub(super) const M_PROGRAMS: u32 = 0x01;
 const M_BREAKTHROUGH: u32 = 0x02;
 const M_ALL: u32 = 0x03;
 
-/// Breakthrough node left, parent and right links.
 const NODE_LINKS: usize = nproject_breakthrough_node::RIGHT + 8;
-/// Staged breakthrough nodes one tree walk remembers.
 const TREE_NODES: usize = 64;
 
-/// One refresh of raw project payload. Acquisition workers retain the acquired
-/// prefix while growing logs and census scratch from native headers.
 #[derive(Debug)]
 pub struct ProjectsJob {
     pub log: RawLog<2>,
     pub game_state: usize,
     pub active: bool,
     pub(super) census: Vec<CensusEntry>,
-    /// Program status per canonical census entry, in census order.
     pub(super) statuses: Vec<usize>,
     pub(super) pointers: Vec<usize>,
     pub(super) assignment_references: Vec<u64>,
@@ -56,20 +31,16 @@ pub(super) struct CensusEntry {
     pub(super) pointer: usize,
     pub(super) id: u32,
     pub(super) slot: u32,
-    /// The slot its link names; equal to `slot` for a canonical object.
     pub(super) canonical: u32,
 }
 
-/// Shared census borrowed by every scheduled project walk mirror.
 #[derive(Clone, Copy)]
 pub(super) struct ProjectCensus<'a> {
     pub(super) links: &'a Array,
     pub(super) game_state: usize,
     pub(super) countries: &'a Array,
     pub(super) vtable: u64,
-    /// Slots below this were read; a failed census stops at it.
     pub(super) read_to: u32,
-    /// Non-null slots in slot order.
     pub(super) census: &'a [CensusEntry],
 }
 
@@ -89,7 +60,6 @@ impl ProjectsJob {
         job
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -104,7 +74,6 @@ impl ProjectsJob {
         self.log.grow_for_next()
     }
 
-    /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
         engine_allocation::advisory(|| {
             self.log.grow();
@@ -122,8 +91,6 @@ impl ProjectsJob {
         self.update_capacity_charge();
     }
 
-    /// Off the game thread: hold one census row per observed country slot so
-    /// the first hour after a large save loads does not overflow.
     pub fn presize_countries(&mut self) {
         let census = crate::country_scale::reserve_census(&mut self.census);
         let statuses = crate::country_scale::reserve_census(&mut self.statuses);
@@ -146,14 +113,11 @@ impl ProjectsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProjectsCopyReport {
-    /// False when staging overflowed. The accepted acquisition cannot be
-    /// replayed and must fail without a second live walk.
     pub raw_ok: bool,
     pub copy_ticks: [u64; RAW.len()],
     pub raw_bytes: [u64; RAW.len()],
 }
 
-/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectsCopyContext {
     pub base: usize,
@@ -169,9 +133,6 @@ fn pool_u64(log: &RawLog<2>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addrs (address arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads; every other
-/// failure is logged with the affected-table mask.
 pub(super) fn span(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -182,7 +143,6 @@ pub(super) fn span(
     log.take(memory, addr?, len, mask)
 }
 
-/// Parsed breakthrough tree links for the traversal mirror.
 #[derive(Clone, Copy, Default)]
 struct BreakthroughLinks {
     left: usize,
@@ -204,7 +164,6 @@ fn parse_links(log: &RawLog<2>, pointers: usize, nil: usize) -> Option<Breakthro
     })
 }
 
-/// Mirror of `Links::read` for the tree sentinel: links and nil byte.
 fn copy_breakthrough_links(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -222,8 +181,6 @@ fn copy_breakthrough_links(
     parse_links(log, starts[0], starts[1])
 }
 
-/// One tree's staged nodes, so a successor walk that revisits a node reads
-/// nothing again. Bounded; a node past the bound is staged again.
 struct TreeNodes {
     nodes: [(usize, BreakthroughLinks, Option<usize>); TREE_NODES],
     len: usize,
@@ -237,8 +194,6 @@ impl TreeNodes {
         }
     }
 
-    /// Mirror of `Links::read` plus the node's payload, which the walk reads
-    /// when the node is current. Returns the links and the payload's span.
     fn read(
         &mut self,
         log: &mut RawLog<2>,
@@ -275,7 +230,6 @@ impl TreeNodes {
     }
 }
 
-/// Brent-style cycle guard with no reads, mirroring the typed `Chain`.
 struct BreakthroughChain {
     checkpoint: usize,
     power: u64,
@@ -305,8 +259,6 @@ impl BreakthroughChain {
     }
 }
 
-/// Mirror of `successor`: the identical link-following sequence with local
-/// cycle detection. Any failure aborts the breakthroughs walk.
 fn copy_breakthrough_successor(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -357,9 +309,6 @@ fn copy_breakthrough_successor(
     }
 }
 
-/// Mirror of `walk_progress`'s read set: vtable and tree header, sentinel,
-/// root and the in-order node/payload sequence. Capacity truncation is
-/// ignored (a superset is staged); order and coherence checks are local.
 fn copy_breakthrough_tree(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -440,7 +389,6 @@ fn copy_breakthrough_tree(
     true
 }
 
-/// Mirror of `walk`'s read set for breakthroughs across the shared census.
 fn copy_breakthroughs(log: &mut RawLog<2>, memory: &impl Memory, base: usize, statuses: &[usize]) {
     for &status in statuses {
         if !copy_breakthrough_tree(log, memory, base, status) || log.overflowed {
@@ -449,11 +397,6 @@ fn copy_breakthroughs(log: &mut RawLog<2>, memory: &impl Memory, base: usize, st
     }
 }
 
-/// One structural pass over the scheduled read set: the shared census and
-/// statuses first, then the three walk mirrors in typed order. A census or
-/// status failure ends every walk at that country, so each mirror still
-/// stages the countries before it. Failures stop only the affected walk; the
-/// replay derives every outcome from the same recorded spans.
 fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut ProjectsJob) {
     let _reads = read_accounting::table(TABLES[0]);
     job.game_state = game_state;
@@ -514,9 +457,6 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
     copy_breakthroughs(&mut job.log, memory, base, &job.statuses);
 }
 
-/// Country census in walk order. Returns the headers, the country vtable and
-/// the first slot not read (the country count when every slot was read); a
-/// failed slot keeps the census before it, where every walk stops.
 fn copy_census(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -576,10 +516,6 @@ fn copy_census(
     Some((links, countries, vtable, countries.count))
 }
 
-/// Mirror of `Reader::at` in the census, whose `reserved` is the slot-zero object it
-/// authenticated, and of `Reader::read_at` without one. A repeated link or pointer read of a
-/// key this slot already staged is not staged again. `None` ends the census; an inner `None`
-/// is a null slot or an alias of the reserved object, skipped.
 fn copy_slot(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -622,7 +558,6 @@ fn copy_slot(
         && let Some(reserved) = reserved
         && reserved.is_none()
     {
-        // `Reader::at` authenticates slot zero once, and skips a slot holding that object.
         let root_start = span(log, memory, pointer_at(0), 8, M_ALL)?;
         let root = usize::try_from(pool_u64(log, root_start))
             .ok()
@@ -672,9 +607,6 @@ fn copy_slot(
     }))
 }
 
-/// Acquire one refresh into an owned job.
-/// The caller applies the costs after acquisition has completed.
-/// The caller schedules this only for the two daily project tables.
 pub fn copy_projects_refresh(
     memory: &impl Memory,
     ctx: ProjectsCopyContext,
@@ -699,9 +631,6 @@ pub fn copy_projects_refresh(
 }
 
 impl Captured {
-    /// Mark an accepted acquisition failure without retrying live memory.
-    /// Only the two raw-copied project tables are affected; the others retain
-    /// their results.
     pub fn fail_projects_capture(&mut self, active: bool, reason: &'static str) {
         let reason = if active {
             reason
@@ -715,11 +644,6 @@ impl Captured {
         self.raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw refresh payload into the pooled
-    /// typed rows. Outcomes, arena bytes and candidate counts match the typed
-    /// walk exactly because the identical walks run against the recorded
-    /// spans. Clears
-    /// `raw_mode` so the next capture starts clean.
     pub fn decode_projects_payload(
         &mut self,
         base: usize,
@@ -764,10 +688,6 @@ impl Captured {
     }
 }
 
-/// Mirror of `Reader::link`: one link-table span with local bounds checks.
-/// Outer `None` aborts the walk; inner `None` is a readable absence (which
-/// the typed callers also turn into a walk error). Either way the replay
-/// derives the identical reason from the same recorded span.
 fn copy_link(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -799,10 +719,6 @@ impl ProjectCensus<'_> {
     }
 }
 
-/// Mirror of `Reader::resolve` without re-reading authentication: the link
-/// span is recorded here and the `read_at` spans come from the shared census.
-/// A slot a failed census never reached is staged here, as the walk reads it
-/// before reaching that slot itself. Local checks match the walk exactly.
 fn copy_resolve(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -835,9 +751,6 @@ fn copy_resolve(
     (entry.canonical == entry.slot).then_some(entry.pointer)
 }
 
-/// Mirror of `from_country`: status pointer, 20-byte header and owner
-/// resolution, staged once for all three walks. `None` aborts them exactly
-/// like the typed error.
 fn copy_status(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -865,16 +778,12 @@ fn copy_status(
     {
         return None;
     }
-    // The census resolved this country's own id to itself.
     let owner = u32::from_le_bytes(header[16..20].try_into().unwrap());
     if owner != country.id && copy_resolve(log, memory, census, owner, M_ALL)? != country.pointer {
         return None;
     }
     Some(status)
 }
-/// Mirror of one program row's read set: identity, field scatter, optional
-/// active-project handle, building terminator and payload, owner link.
-/// String parses are local; any failure aborts the programs walk.
 pub(super) fn copy_program_row(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -901,8 +810,6 @@ pub(super) fn copy_program_row(
     }
     let at = |offset| pointer.checked_add(offset);
     let mut spans = [0usize; 5];
-    // Whole-group admission is only a path selection. A tight arena or a
-    // missing later address must retain the scalar prefix and its exact demand.
     if let [
         Some(owner),
         Some(owner_copy),
@@ -996,8 +903,6 @@ pub(super) fn copy_program_row(
     let Some(owner_pointer) = copy_resolve(log, memory, census, owner, M_PROGRAMS) else {
         return false;
     };
-    // Share the exact child reader with typed acquisition. The logger stages
-    // owned bytes only; decode never follows the native assignment collection.
     struct AssignmentCopy<'a, M> {
         memory: &'a M,
         log: std::cell::RefCell<&'a mut RawLog<2>>,
@@ -1054,8 +959,6 @@ pub(super) fn copy_program_row(
             pointer,
             &row,
             || {
-                // The complete shared census already authenticated this owner's
-                // status. Reuse its staged pointer without another native read.
                 let log = copy.log.borrow();
                 let address = owner_pointer
                     .checked_add(ccountry::PROGRAM_STATUS)
@@ -1078,11 +981,6 @@ pub(super) fn copy_program_row(
     true
 }
 
-/// Mirror of `nproject_cprogram::walk`'s read set across the shared census.
-/// The walk runs in two phases — a pointer census over every country, then
-/// row reads — so a row failure must not skip later countries' census
-/// spans: the replay censuses everything before decoding the first row. An
-/// incomplete census or status list ends the walk before its rows.
 #[allow(
     clippy::too_many_arguments,
     reason = "The two-phase native read order shares separate pointer and reference scratch without changing their ownership."
@@ -1097,8 +995,6 @@ fn copy_programs(
     pointers: &mut Vec<usize>,
     references: &mut Vec<u64>,
 ) {
-    // Phase 1: pointer census. Only census-span failures abort the walk;
-    // row failures below never reach back into this phase.
     pointers.clear();
     for &status in statuses {
         let Some(array_start) = span(
@@ -1122,7 +1018,6 @@ fn copy_programs(
         let mut index = 0;
         while index < array.count as usize {
             let count = (array.count as usize - index).min(64);
-            // `from_header` proved the whole array in range.
             let Some((start, copied)) =
                 log.take_array_chunk(memory, array.data + index * 8, 8, count, M_PROGRAMS)
             else {
@@ -1150,8 +1045,6 @@ fn copy_programs(
     if !complete {
         return;
     }
-    // Phase 2: row reads in census order (a superset of the walk's sorted
-    // deduplicated order; duplicates record identical spans harmlessly).
     for &pointer in pointers.iter() {
         if !copy_program_row(log, memory, base, shared, pointer, references) {
             return;

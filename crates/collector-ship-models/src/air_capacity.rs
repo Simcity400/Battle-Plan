@@ -1,5 +1,3 @@
-//! Independent refit certificates for the carrier capacity semantic predicate.
-//! Getter cache engagement preserves its value, so it needs no observer.
 use crate::ship_model_changes::Changes;
 use engine_allocation as allocation;
 use engine_native::{Memory, cship};
@@ -29,7 +27,6 @@ impl Store {
     }
     pub fn finish(&mut self) {
         self.current.sort_unstable_by_key(|row| row.pointer);
-        // A repeated admission cannot certify a unique native identity.
         let mut index = 0;
         while index < self.current.len() {
             let mut end = index + 1;
@@ -64,7 +61,6 @@ impl Store {
             return None;
         }
         if row.formation_flags & 0x80 != 0 {
-            // Already recorded in formation_flags; no duplicate wire value.
             return None;
         }
         self.capture_with(

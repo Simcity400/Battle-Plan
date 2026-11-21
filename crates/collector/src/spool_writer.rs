@@ -1,4 +1,3 @@
-//! Ordered file ownership; admission never lends capture or encoder storage.
 
 use crate::allocation::{self, Context};
 use replay::spool::{FileBackend, Record, SealedRecord, SegmentBackend, SegmentedSpool};
@@ -177,7 +176,6 @@ struct State {
     factory_bytes: usize,
     close_receipts: Vec<Weak<Mutex<Option<Result<(), io::ErrorKind>>>>>,
     pool: PoolCharge,
-    /// Lockstep, for tests: whether a waiting thread has handed the writer its next job.
     #[cfg(test)]
     turn: Option<bool>,
 }
@@ -290,7 +288,6 @@ impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    /// In lockstep a thread about to wait on the writer hands it one job, and only while none runs.
     #[cfg(test)]
     fn hand_turn(&self, state: &mut State) {
         if let Some(granted) = &mut state.turn
@@ -657,7 +654,6 @@ impl Writer {
         if bytes > budget / 2 {
             return Err(engine_allocation::oom());
         }
-        // Leave half for writes so completed receipts cannot deadlock admission.
         if state.diagnostics.deferred_bytes > budget / 2 - bytes
             || state.diagnostics.bytes > budget - admission
         {
@@ -707,8 +703,6 @@ impl Writer {
         let last = self.shared.lock().next_ticket - 1;
         self.shared.wait(last)
     }
-    /// Tests only: the writer runs a job only while a thread waits on it, one at a time, so
-    /// the order of every allocation it and its callers make is the same on every run.
     #[cfg(test)]
     pub(crate) fn lockstep(&self) {
         self.shared.lock().turn = Some(false);
@@ -1167,7 +1161,6 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
                     state.fail(*campaign, *generation);
                     state.blocked = true;
                     state.failure_epoch += 1;
-                    // No frame is attached to an idle sync failure.
                     state.completions.push_back(Completion {
                         ticket: 0,
                         context: allocation::context(),

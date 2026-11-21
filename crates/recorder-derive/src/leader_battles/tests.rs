@@ -46,10 +46,6 @@ fn land_result(id: u64, combat: u64, winners: u8, [attacker, defender]: [u64; 2]
     LandCombatResultsRow { id, combat, end_hour: 2, winners, sides: [side(attacker), side(defender)], ..Default::default() }
 }
 
-/// The campaign: land combat C1 (L1 attacking, L2 defending) runs from before the run until its
-/// result at hour 2, which names L4 defending, and a second, disagreeing result at hour 3; C2 (L1
-/// defending) from hour 1, joined by L5 at hour 5; naval combat N1 (L3 attacking) from hour 1 to
-/// its result at hour 3. LandCombatDetails is not read at hour 4.
 fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     for table in INPUTS {
@@ -97,8 +93,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// One row as a test reads it: leader, entry, kind, combat, sides, start, start unknown, winners
-/// and outcome.
 type Seen = (u64, i64, i64, u64, i64, i64, i64, Option<i64>, Option<i64>);
 
 fn rows(store: &Store) -> Vec<Seen> {
@@ -177,7 +171,6 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
     }
 }
 
-/// Each leader's totals: fought, won, lost.
 fn totals(store: &Store) -> Vec<(u64, [i64; 3])> {
     let view = store.view(TableId::LeaderBattleTotals.index());
     testing::rows(store, TableId::LeaderBattleTotals)
@@ -189,9 +182,6 @@ fn totals(store: &Store) -> Vec<(u64, [i64; 3])> {
         .collect()
 }
 
-/// The totals are the run's LeaderBattles rows through the hour, counted as the leaderboard
-/// counts them (participations fought, outcomes won or lost; an hour the writer did not run adds
-/// nothing), and a leader's row goes in the hour its UnitLeaders row is deleted.
 #[test]
 fn totals_count_each_leaders_rows_of_the_run_through_the_hour() {
     let (mut store, mut writers) = (testing::store(), writers());

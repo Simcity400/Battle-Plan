@@ -1,28 +1,14 @@
-//! Scientist reached through its character. Trait and specialization vectors
-//! use data, u32 capacity, i32 count and allocator headers. Copy construction
-//! preserves both live counts; specialization records have stride 0x20.
-//! Capacity is not a count and specialization population has no fixed cap.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_b128);
-/// Trait-token vector data.
 pub const TRAIT_DATA: usize = 0x30;
-/// Trait-vector capacity, u32, separate from live count.
 pub const TRAIT_CAPACITY: usize = 0x38;
-/// Trait-vector signed count used by copying.
 pub const TRAIT_COUNT: usize = 0x3c;
-/// Specialization-record vector data, stride 0x20.
 pub const SKILLS: usize = 0x110;
-/// Specialization-vector signed count used by copying.
 pub const SKILL_COUNT: usize = 0x11c;
-/// Scientist-trait primary vtable.
 pub const TRAIT_VTABLE_RVA: Rva = Rva(0x0279_9590);
-/// Trait lexer token, serialized as its token string and used as database key.
 pub const TRAIT_TOKEN: usize = 0x08;
-/// Nullable retained scientist-template pointer controlling visible predicates.
 pub const VISIBILITY_TEMPLATE: usize = 0x128;
-/// Retained role-template and its embedded visible conjunction identities.
 pub const TEMPLATE_VTABLE_RVA: Rva = Rva(0x027e_3720);
 pub const TEMPLATE_VISIBLE: usize = 0x60;
 pub const VISIBLE_VTABLE_RVA: Rva = Rva(0x0279_64c8);
@@ -31,8 +17,6 @@ const VISIBLE_SOURCE: usize = 0x2c;
 const VISIBLE_HAS_SOURCE: usize = 0x34;
 const SOURCE_FILES_RVA: Rva = Rva(0x0369_19e0);
 
-/// Only a nonempty retained conjunction demands a filename. The source belongs
-/// to this role, including roles installed by effects, not the character's template.
 #[allow(
     clippy::type_complexity,
     reason = "Retain visibility status and the independently optional filename span and source line."
@@ -148,12 +132,8 @@ pub fn visibility(
     *used = end;
     Ok((1, Some(origin)))
 }
-/// Active byte set on assignment, cleared on unassignment and serialized.
 pub const ACTIVE: usize = 0x130;
-/// Signed injury recovery days; the UI reads the stored timer directly.
-/// Serialization emits it only while positive.
 pub const INJURY_DAYS: usize = 0x134;
-/// Scientist allocation size.
 pub const SIZE: usize = 0x138;
 
 #[cfg(test)]
@@ -222,8 +202,6 @@ mod tests {
         .unwrap();
         assert_eq!(observed, (1, Some((0, 14, 17))));
         assert_eq!(&names[..used], b"events/mod.txt");
-        // A generated/replacement template's empty conjunction is native true,
-        // even without a source context or any readable filename-pool root.
         put32(
             &mut memory.0,
             0x400 + TEMPLATE_VISIBLE + VISIBLE_CHILDREN + 12,

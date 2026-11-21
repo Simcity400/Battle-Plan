@@ -9,7 +9,6 @@ import DoctrineMasteryWidget from './DoctrineMasteryWidget';
 import { doctrineSprite, folderName, validateDoctrineMastery } from './doctrineMasteryData';
 import type { DoctrineMasteryReply } from '../../generated/dashboard';
 
-/** The country's doctrine folders at the branch's last hour, with their icons, for the folder setting. */
 function useDoctrineChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;

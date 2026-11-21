@@ -1,8 +1,6 @@
-//! Prepared row and value codecs, independent of frame envelopes.
 pub use replay_rows::checkpoint::{rows, values};
 
 pub mod endpoint {
-    //! Absolute typed patches. Recording wire deltas never enter this codec.
     use crate::rows::TableRows;
     pub use replay_rows::checkpoint::endpoint::*;
     use std::fmt;

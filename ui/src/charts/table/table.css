@@ -1,5 +1,4 @@
-/* Shared style-5 Scoreboard measures; its colours come from the active theme. */
-.chart-table { --table-comfortable-height: 28px; --table-compact-height: 22px; --table-header-min-height: 24px; --table-header-height: var(--table-header-min-height); --table-muted-opacity: var(--muted-row-opacity); --table-row-height: var(--table-comfortable-height); --table-cell-y: 4px; --table-font: var(--type-sm); --table-rank-width: 44px; /* Names keep this much before a narrow table scrolls sideways. */ --table-name-min: 9em; /* A leading country column keeps a whole common name, at most half the row, before other columns hide. */ --table-country-min: min(16em, 50%); min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
+.chart-table { --table-comfortable-height: 28px; --table-compact-height: 22px; --table-header-min-height: 24px; --table-header-height: var(--table-header-min-height); --table-muted-opacity: var(--muted-row-opacity); --table-row-height: var(--table-comfortable-height); --table-cell-y: 4px; --table-font: var(--type-sm); --table-rank-width: 44px; --table-name-min: 9em; --table-country-min: min(16em, 50%); min-height: 0; height: 100%; overflow: auto; padding: 0 6px 8px; }
 .chart-table.is-compact { --table-row-height: var(--table-compact-height); --table-cell-y: 2px; --table-font: var(--type-sm); }
 .chart-table table { display: grid; width: 100%; min-width: 0; border-collapse: collapse; font-family: var(--font-tables); font-size: var(--table-font); }
 .chart-table thead { position: sticky; top: 0; z-index: 2; background: var(--surface); }
@@ -12,7 +11,6 @@
 .chart-table tbody { display: block; position: relative; }
 .chart-table tbody tr { position: absolute; inset: 0 0 auto; height: var(--table-row-height); border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); }
 .chart-table tbody tr:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
-/* Names and values take the bar charts' label and value weights, so a table reads like the chart beside it. */
 .chart-table td { min-width: 0; min-height: 0; padding: var(--table-cell-y) 8px; align-content: center; line-height: 1.46; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chart-table.is-compact td { line-height: 1.5; }
 .chart-table td.is-numeric { font-weight: 600; }
@@ -27,8 +25,6 @@
 .table-delta.is-positive { color: var(--positive); }
 .table-delta.is-negative { color: var(--error); }
 .table-cell { position: relative; display: inline-block; min-width: 64px; }
-/* Full width, shown its length by a scale the frame engine glides (`barGlides`): no transition, so no layer of its own
-   and no restyle each frame, and nothing laid out. */
 .table-cellbar { position: absolute; right: 0; top: 50%; width: 100%; height: 16px; margin-top: -8px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent);
   transform: scaleX(0); transform-origin: right center; }
 .chart-table .align-start .table-cellbar { left: 0; right: auto; transform-origin: left center; }
@@ -40,22 +36,15 @@
 @media (prefers-reduced-motion: reduce) { .chart-table .moving-row { transition: none; animation: none; } .chart-table .moving-row.is-entering::after { content: none; } }
 
 .chart-table.is-wrapped tbody tr { height: auto; min-height: var(--table-row-height); }
-/* Wrapped rows set the height that brings the scrollbar: its gutter is kept so its arrival never narrows the rows it measured. */
 .chart-table.is-wrapped { scrollbar-gutter: stable; }
 .chart-table.is-wrapped td { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
-/* A rank and its marker stay on one line: a marker never makes its row taller while it shows. */
 .chart-table.is-wrapped td.table-rank { white-space: nowrap; overflow-wrap: normal; }
 .chart-table.is-wrapped .table-country > span { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 
-/* A table's rows glide, enter and leave by the frame engine (`rowGlides`, `rowFades`), never by a CSS transition or
-   animation: each of those made a compositor layer restyled every frame while playing. An entering row's flash reads
-   the variable the engine writes. */
 .chart-table .moving-row { transition: none; }
 .chart-table .moving-row.is-entering, .chart-table .moving-row[data-reveal='in'] { animation: none; }
 .chart-table .moving-row.is-entering::after, .chart-table .moving-row[data-reveal='in']::after { animation: none; opacity: var(--row-flash-opacity, 0); }
 
-/* Nested rows: each level indents by the timeline lanes' indent, and a group header row's
-   disclosure mark takes that indent, so its text lines up with the rows under it. */
 .table-tree { --table-tree-indent: 18px; display: inline-flex; align-items: center; max-width: 100%; padding-left: calc(var(--table-tree-depth, 0) * var(--table-tree-indent)); vertical-align: top; }
 .table-tree-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .table-tree.is-group .table-tree-content { font-weight: 600; }

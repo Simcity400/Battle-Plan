@@ -1,5 +1,3 @@
-//! Borrowed status objects, sequences, formatting adapters and checked streaming JSON serialization used by capture diagnostics. Construction allocates no heap storage. The DLL host owns whole-capture status composition and fault exercises.
-
 pub mod status;
 
 #[cfg(test)]

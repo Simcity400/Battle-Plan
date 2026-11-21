@@ -24,7 +24,6 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
                 ..Default::default()
             },
         ]));
-    // A stored override is independent of the lexer read.
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "token read refused".into(),
     };
@@ -42,8 +41,6 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
         };
         rows[0].name = name.to_vec();
     };
-    // The template is scripted, so its expansion depends on the scopes; a plain one
-    // is already the name, whatever the root.
     let template = |frame: &DecodedFrame, root| {
         ScriptedText::new(frame, &catalogue.localisation, content, root)
             .organisation_template(reference)
@@ -51,7 +48,6 @@ fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key(
     };
     assert_eq!(template(&frame, 2), Ok("Owner [From.GetTag]".into()));
     change_name(&mut frame, b"mod_missing");
-    // Localisation copies a missing key; it does not select a later name.
     assert_eq!(show(&frame), Ok("mod_missing".into()));
     assert_eq!(template(&frame, 0), show(&frame));
     change_name(&mut frame, b"");

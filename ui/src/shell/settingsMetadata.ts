@@ -10,5 +10,4 @@ export const settingsSections: { id: SettingsSection; label: string; icon: IconN
   { id: 'diagnostics', label: 'Diagnostics', icon: 'info', description: 'How complete the open recording is, and tools for when the map misbehaves.' },
 ];
 
-/** A search result: a section, and the row to reveal by element id or by its visible label. */
 export interface SettingsTarget { section: SettingsSection; title: string; id?: string; keywords?: string }

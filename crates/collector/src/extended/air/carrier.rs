@@ -1,5 +1,3 @@
-//! Prepared storage for the existing hourly air-base carrier suffixes.
-//! Source addresses are used only against the owned raw log on decode.
 
 use super::*;
 use engine_native::{
@@ -36,8 +34,6 @@ impl Bases {
             state_segments: Vec::new(),
         }
     }
-    /// Reserve all state-summary output and byte scratch in bulk before the
-    /// memo's capacity fingerprint. Reads only the already owned log.
     pub fn prepare_states(&mut self, job: &super::AirBasesJob) -> Result<(), &'static str> {
         self.state_segments.clear();
         allocation::reserve(&mut self.state_segments, job.segments.len())
@@ -84,8 +80,6 @@ impl Bases {
         )
     }
 
-    /// Append state bases' insertion order to the existing independent packet.
-    /// Source addresses are authenticated acquisition context, never wire values.
     pub fn decode_states(
         &mut self,
         job: &super::AirBasesJob,
@@ -94,7 +88,6 @@ impl Bases {
         resolved: &mut [engine_native::cair_base::ResolvedLink],
     ) -> Result<(), &'static str> {
         let log = crate::raw::Recorded::build(&job.log)?;
-        // The census took the callback's roster when it had one.
         let recorded = crate::extended::roster_replay::RosterReplay::new(
             &log,
             &job.roster,
@@ -151,8 +144,6 @@ impl Bases {
         self.indexed = true;
     }
     pub fn install(&mut self, lengths: CarrierLengths, demand: CarrierDemand) {
-        // An inconsistent observer length cannot certify an available prefix.
-        // This rejects only optional packets; the predecessor rows stay intact.
         if lengths.bases > self.rows.len()
             || lengths.countries > self.countries.len()
             || lengths.names > self.names.len()
@@ -172,7 +163,6 @@ impl Bases {
         prepare(&mut self.countries, demand.countries)?;
         prepare(&mut self.names, demand.name_bytes)
     }
-    /// A hint: the decode prepares again and refuses by name.
     pub fn grow(&mut self) {
         let _ = self.prepare(self.demand);
     }
@@ -185,8 +175,6 @@ impl Bases {
     pub fn capacity(&self) -> [usize; 3] {
         [self.rows.len(), self.countries.len(), self.names.len()]
     }
-    /// Worker-only outer-key lookup preparation. Ordered payload arenas and
-    /// the mandatory AirBases traversal are never reordered.
     pub fn index_rows(&mut self) {
         self.rows[..self.len].sort_unstable_by_key(|row| row.base);
         self.indexed = true;
@@ -207,7 +195,6 @@ impl Bases {
         }
         rows.get(index)
     }
-    /// Compare borrowed optional payloads before allocating a replay row.
     pub fn equal(
         &self,
         base: u64,
@@ -310,7 +297,6 @@ impl Registrations {
         prepare(&mut self.rows, demand.registrations)?;
         prepare(&mut self.pools, demand.pools)
     }
-    /// A hint: the decode prepares again and refuses by name.
     pub fn grow(&mut self) {
         let _ = self.prepare(self.demand);
     }
@@ -322,7 +308,6 @@ impl Registrations {
     pub fn capacity(&self) -> [usize; 2] {
         [self.rows.len(), self.pools.len()]
     }
-    /// Worker-only sorting of the outer lookup; source-order pools stay exact.
     pub fn index_rows(&mut self) {
         self.rows[..self.len].sort_unstable_by_key(|row| (row.base, row.slot));
         self.indexed = true;
@@ -342,7 +327,6 @@ impl Registrations {
             .sort_unstable_by_key(|row| (row.base, row.slot));
         Ok(())
     }
-    /// Resolve once for both the optional packet and independent state scalars.
     pub(crate) fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'_> {
         let key = (source.base, source.slot);
         if let Ok(index) = self
@@ -407,7 +391,6 @@ impl Registrations {
     }
 }
 
-/// A borrowed lookup result; no repeated key searches for one projected row.
 pub(crate) struct Registration<'a> {
     row: Option<&'a CarrierRegistration>,
     pools: &'a [CarrierPool],
@@ -458,7 +441,6 @@ impl Registration<'_> {
             }
         }))
     }
-    /// Compare borrowed values before allocating a changed replay row.
     pub(crate) fn equal(
         &self,
         old: &rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>>,
@@ -576,9 +558,6 @@ fn span<T>(rows: &[T], len: usize, (start, count): (usize, usize)) -> Option<&[T
     rows.get(start..end)
 }
 
-/// Native optional staging is independent of the predecessor's RawLog. The
-/// allocating AirBases worker grows from original observations; fixed callback
-/// storage and owned decode use the fully prepared demand.
 pub(crate) struct Job {
     pub log: RefCell<RawLog<2>>,
     pub index: Vec<usize>,
@@ -615,7 +594,6 @@ impl Default for Job {
     }
 }
 impl Job {
-    /// Hints: the acquisition's growing walk refuses by name.
     pub(crate) fn presize(&mut self, demand: CarrierDemand) {
         let _ = self.bases.prepare(demand);
         let _ = self.registrations.prepare(demand);
@@ -642,8 +620,6 @@ impl Job {
     }
     pub fn grow_for_next(&self) -> bool {
         let demand = self.demand;
-        // A failure in one optional field does not suppress growth needed by
-        // another independent field that exhausted the raw arena later.
         self.log.borrow().overflowed
             || self.required_index > self.index.len()
             || demand.bases > self.bases.rows.len()
@@ -657,7 +633,6 @@ impl Job {
             || demand.aces > self.scratch.aces.len()
             || demand.forecasts > self.scratch.forecasts.len()
     }
-    /// Hints: the acquisition's growing walk refuses by name.
     pub fn grow(&mut self) {
         self.log.get_mut().grow();
         let _ = prepare(&mut self.index, self.required_index);
@@ -674,7 +649,6 @@ impl Job {
     }
 }
 
-/// Sole worker memo copy; capacities are retained on invalidation.
 #[derive(Debug, Default)]
 pub(crate) struct Memo {
     pub spans: Vec<crate::raw::Span>,
@@ -760,7 +734,6 @@ impl Memo {
         };
         bases.install(lengths, self.demand);
         registrations.install(lengths, self.demand);
-        // Memo outputs were saved after worker key preparation.
         bases.indexed = true;
         registrations.indexed = true;
     }

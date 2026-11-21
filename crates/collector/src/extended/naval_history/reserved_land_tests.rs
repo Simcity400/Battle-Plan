@@ -317,7 +317,6 @@ fn optional_shortages_grow_in_the_pass_without_promoting_positive_faults() {
     kit::stage_wings(&memory, &mut job);
     assert!(copy_naval_refresh(&memory, context(), &mut job).raw_ok);
     assert!(job.log.fault.iter().any(|fault| *fault));
-    // The short log grows in the pass.
     assert!(!job.reserved_capacity_short);
     let mut captured = Captured::with_capacities(&Capacities::fixture());
     decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
@@ -374,10 +373,6 @@ fn committed_suffix_growth_counts_rows_once_and_restored_naming_failure_removes_
         let mut capacity = Capacities::fixture();
         capacity.rows[4] = initial;
         captured.grow(&mut capacity);
-        // Complete rows at the capacity boundary receive ordinary headroom.
-        // The reserved tail is already in len and must not be counted again.
-        // With three reserved rows, six slots already provide headroom;
-        // counting the suffix twice would incorrectly grow that buffer.
         assert_eq!(capacity.rows[4], expected);
         let grown = capacity.rows[4];
         captured.grow(&mut capacity);
@@ -408,7 +403,6 @@ fn committed_suffix_growth_counts_rows_once_and_restored_naming_failure_removes_
                 .iter()
                 .all(|row| *row == ctheatre::Row::default())
         );
-        // A repeated terminal install has no count from which to remove rows.
         extended.install_reserved_land_certificate();
         assert_eq!(
             extended.naval_history.land.outcome,

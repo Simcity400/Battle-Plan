@@ -22,18 +22,13 @@ import type { WidgetMeta, WidgetRuntime } from '../definitions';
 
 type Limits = NonNullable<WidgetMeta['countries']>;
 
-/** One country from a picker; or, for widgets that show several, chosen countries
- * as removable chips or a smart group (human players, a faction, everyone at war
- * with a country, or the top N where the widget ranks). */
 export function CountriesSection({ widget, reference, runtime, limits, inline = false, onChange }: {
   widget: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime; limits: Limits; onChange: (countries: CountrySelection) => void;
-  /** Show the country search and list in place (a header chip's chooser) instead of behind a field. */
   inline?: boolean;
 }) {
   const source = reference?.source;
   const fallback = defaultCountryKey(reference);
   const common = { field: !inline, inline, source, client: runtime.client, countries: source?.metadata.countries ?? [], playerCountryId: source?.metadata.playerCountryId ?? null };
-  // The dashboard's country as the picker names it: the tag it was chosen under, else the tag it goes by at the hour shown.
   const picker = (fallbackTag: string | null) => <CountryPicker key={source?.id ?? 'unbound'} {...common}
     selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : fallbackTag}
     onChange={tag => onChange(singleCountryChoice(tag, fallbackTag, limits.fixed))} />;
@@ -52,7 +47,6 @@ export function CountriesSection({ widget, reference, runtime, limits, inline = 
   </>;
 }
 
-/** `children` given the tag each key goes by at the widget's hour shown: a slot is named, and flagged, by its country's tag then. */
 function TagsAt({ widget, reference, runtime, keys, children }: {
   widget: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime; keys: readonly string[]; children: (tags: readonly (string | null)[]) => ReactElement;
 }) {
@@ -60,7 +54,6 @@ function TagsAt({ widget, reference, runtime, keys, children }: {
   return children(useKeyTagsAt(runtime, reference, keys, shownHour, widget.time.mode === 'follow', true));
 }
 
-/** `children` given each key's label at the widget's hour shown, as every country label names it then. */
 function LabelsAt({ widget, reference, runtime, keys, children }: {
   widget: WidgetSpec; reference: BoundTrack; runtime: WidgetRuntime; keys: readonly string[]; children: (labels: readonly ReturnType<CountryLabel>[]) => ReactElement;
 }) {
@@ -81,7 +74,6 @@ function CountryChips({ widget, reference, runtime, max, inline, onChange }: {
     {!follows && <button type="button" className="icon-button small" aria-label={`Remove ${chipName(labels[i])}`}
       onClick={() => setTags(tags.filter(item => item !== tag))}><Icon name="close" /></button>}
   </li>)}</ul>;
-  // Without a campaign there is no hour to name a country at.
   return <>
     {reference ? <LabelsAt widget={widget} reference={reference} runtime={runtime} keys={tags}>{chips}</LabelsAt> : chips([])}
     <CountryPicker key={source?.id ?? 'unbound'} field={!inline} inline={inline} source={source} client={runtime.client} countries={source?.metadata.countries ?? []}
@@ -109,7 +101,6 @@ function FactionFields({ selection, max, onChange }: {
       <span className="option-number"><input type="number" min={1} max={max} placeholder="All"
         value={selection.count === Number.MAX_SAFE_INTEGER ? '' : selection.count}
         onChange={event => {
-          // Cleared means every faction, as a new widget starts.
           const count = event.currentTarget.value === '' ? Number.MAX_SAFE_INTEGER : Math.round(Number(event.currentTarget.value));
           if (count >= 1 && count <= max) onChange({ ...selection, count });
         }} /></span></label>
@@ -128,11 +119,8 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
   const source = reference?.source;
   const set = (patch: Partial<Extract<CountrySelection, { kind: 'group' }>>) => onChange({ ...selection, ...patch });
   const group = selection.group;
-  // The factions' names at the head are read each frame and render only when one changes.
   const kinds = [...useAtHead(runtime.clock, widget.time.mode === 'follow', clockHour => groupKinds(groups.data, limits,
     reference ? resolveWindow(widget, reference, runtime.tracks, clockHour)?.lastHour ?? Number.NaN : undefined, overrides), sameKinds)];
-  // A saved faction this branch did not record (or that is still loading) stays
-  // visible as the selection instead of the list silently showing another group.
   if (group.type === 'faction' && !kinds.some(kind => kind.value === `faction:${group.id}`)) {
     kinds.splice(1, 0, { value: `faction:${group.id}`, label: groups.data ? 'Faction unavailable' : 'Loading factions…' });
   }
@@ -162,8 +150,6 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
 const sameKinds = (a: readonly { value: string; label: string }[], b: readonly { value: string; label: string }[]) =>
   a.length === b.length && a.every((kind, index) => kind.value === b[index].value && kind.label === b[index].label);
 
-/** The groups a widget can offer: human players, each recorded faction, at war
- * with a country, and top N when the widget ranks countries. */
 export function groupKinds(reply: CountryGroupReply | undefined, limits: Limits, hour?: number,
   overrides?: Readonly<Record<string, { name?: string }>>): { value: string; label: string }[] {
   return [

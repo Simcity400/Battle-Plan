@@ -40,7 +40,6 @@ export function validateEnded(value: unknown): EspionageEndedReply {
   return value as unknown as EspionageEndedReply;
 }
 
-/** Types are the content's definitions, never a fixed list; art that cannot be drawn keeps a named placeholder. */
 export function validateTypes(value: unknown): EspionageTypesReply {
   if (!object(value) || !Array.isArray(value.types) || !value.types.every(item => object(item) && typeof item.key === 'string' && item.key.length > 0
     && text(item.name) && text(item.icon) && text(item.missing))
@@ -56,7 +55,6 @@ export function validateTypes(value: unknown): EspionageTypesReply {
   return reply;
 }
 
-/** The tokens the recording gave each type: read apart from the names, so no name waits on the history. */
 export function validateTypeTokens(value: unknown): EspionageTypeTokensReply {
   if (!object(value) || !Array.isArray(value.types) || !value.types.every(item => object(item) && typeof item.key === 'string' && item.key.length > 0
     && Array.isArray(item.tokens) && item.tokens.every(token => integer(token) && token >= 0))
@@ -76,31 +74,24 @@ export function validateOperation(value: unknown, id: string): EspionageOperatio
 
 export type OperationKind = 'preparing' | 'running' | 'completed' | 'ended';
 
-/** A completion's stored results, as its log row holds them. */
 export interface Completion {
   completionHour: number | null; terminal: number | null; bonus: number | null; detected: number | null;
   description: string | null; descriptionUnrecorded: string | null;
 }
 
-/** An operation as one row of the log shows it, whichever list it comes from. */
 export interface OperationItem {
-  /** Its handle; none where a completion row did not record it. */
   id: string | null;
   kind: OperationKind;
   owner: Country;
   target: Country | null;
   operation: string | null;
-  /** The hour its countries are named at. */
   countryHour: number;
   startHour: number | null;
   firstSeen: number | null;
   lastSeen: number | null;
-  /** The first read that no longer held it (an ended operation). */
   byHour: number | null;
-  /** As read: under way at the hour shown, an ended operation at its last read; none for a completion. */
   state: OperationState | null;
   completion: Completion | null;
-  /** False where completions were not recorded throughout an ended operation's life. */
   completionsRecorded: boolean;
 }
 
@@ -109,7 +100,6 @@ export const kindOf = (value: OperationState): OperationKind => value.durationDa
 const cellNumber = (cell: LogCell | undefined) => cell?.kind === 'number' ? Number(cell.value) : null;
 const cellText = (cell: LogCell | undefined) => cell?.kind === 'text' ? cell.value : null;
 
-/** A page row of `espionage-log` as the list's row. */
 export function completionRow(row: LogReplyRow): LogRow<OperationItem> {
   const cells = row.cells;
   const target = cellNumber(cells.target);
@@ -134,8 +124,6 @@ export function endedItem(operation: EndedOperation): OperationItem {
     completion: null, completionsRecorded: operation.completionsRecorded };
 }
 
-/** Which operations a list keeps: their types (keys; every type when null), the chosen countries as owner, target or either at the row's
- * hour, countries the hour names no tag for only when every country is chosen, and rows dated from `from`. */
 export interface OperationFilter {
   types: ReadonlySet<string> | null;
   role: 'owner' | 'target' | 'either';
@@ -151,8 +139,6 @@ export function keeps(item: OperationItem, date: number, filter: OperationFilter
   return filter.role === 'owner' ? side(item.owner) : filter.role === 'target' ? side(item.target) : side(item.owner) || side(item.target);
 }
 
-/** Operations under way at `hour`, kept by `filter`: newest start first, or highest preparation first; those not launched have no
- * start and follow the launched ones. */
 export function underWayRows(reply: EspionageOperationsReply | undefined, hour: number, filter: OperationFilter, order: 'start' | 'preparation'): LogRow<OperationItem>[] {
   if (!reply) return [];
   const rows = reply.operations.map(operation => underWayItem(operation, hour)).filter(item => keeps(item, hour, filter));
@@ -162,14 +148,12 @@ export function underWayRows(reply: EspionageOperationsReply | undefined, hour: 
   return rows.map(item => ({ key: `op:${item.id}`, id: `op:${item.id}`, hour: item.startHour ?? hour, item }));
 }
 
-/** What renders the under-way list: its rows in order, never the numbers that move between reads (painted). */
 export function underWayStructure(reply: EspionageOperationsReply, order: 'start' | 'preparation'): string {
   const rows = underWayRows(reply, 0, { types: null, role: 'owner', country: () => true, includeUnknown: true, from: null }, order);
   return JSON.stringify([reply.missing, rows.map(row => [row.item.id, row.item.kind, row.item.owner, row.item.target, row.item.operation, row.item.startHour,
     row.item.state?.phaseCount, row.item.state?.assignedSlots, row.item.state?.autoRepeat, row.item.state?.autoCommence])]);
 }
 
-/** The ended operations a cut shows: the `shown` that ended first (every one when null), kept by `filter`, newest first. */
 export function endedRows(reply: EspionageEndedReply | undefined, shown: number | null, filter: OperationFilter): LogRow<OperationItem>[] {
   if (!reply) return [];
   const through = shown === null ? reply.operations : reply.operations.slice(Math.max(0, reply.operations.length - shown));
@@ -177,7 +161,6 @@ export function endedRows(reply: EspionageEndedReply | undefined, shown: number 
     .map(item => ({ key: `ended:${item.id}:${item.byHour}`, id: `ended:${item.id}`, hour: item.byHour!, by: true, item }));
 }
 
-/** How many ended operations a cut at `hour` shows (the reply is newest first): the list renders only when this changes. */
 export function endedThrough(reply: EspionageEndedReply | undefined, hour: number): number {
   if (!reply) return 0;
   let low = 0, high = reply.operations.length;
@@ -188,28 +171,23 @@ export function endedThrough(reply: EspionageEndedReply | undefined, hour: numbe
   return reply.operations.length - low;
 }
 
-/** A page's rows kept by `filter` where the server could not filter them (several roles, or countries not given by tag). */
 export function filteredPages(pages: readonly LogPage<OperationItem>[], filter: OperationFilter | null): readonly LogPage<OperationItem>[] {
   if (!filter) return pages;
   return pages.map(page => page.rows ? { ...page, rows: page.rows.filter(row => keeps(row.item, row.hour, filter)) } : page);
 }
 
-/** The types to choose from: those the recording gave a token, so ones it may hold (never a type it cannot), named as the content names
- * them. */
 export function operationChoices(types: EspionageTypesReply | undefined, tokens: EspionageTypeTokensReply | undefined) {
   const recorded = new Set((tokens?.types ?? []).filter(type => type.tokens.length > 0).map(type => type.key));
   return (types?.types ?? []).filter(type => recorded.has(type.key)).map(type => ({ value: setToken(type.key), label: operationName(type), icon: type.icon ?? undefined,
     unavailable: storableToken(setToken(type.key)) ? undefined : UNSTORABLE })).sort((a, b) => a.label.localeCompare(b.label));
 }
 
-/** The recorded tokens of the chosen types, for the completions log's facet: null for every type, undefined while the tokens are read. */
 export function typeTokens(tokens: EspionageTypeTokensReply | undefined, chosen: ReadonlySet<string> | null): number[] | null | undefined {
   if (!chosen) return null;
   if (!tokens) return undefined;
   return [...new Set(tokens.types.filter(type => chosen.has(type.key)).flatMap(type => type.tokens))].sort((a, b) => a - b);
 }
 
-/** An operation as the content names it; while the types are loading, that; never its key, which no user reads as a name. */
 export const operationName = (type: OperationType | undefined, pending = false) => contentTitle(type?.name, type?.key, 'Operation name unavailable', pending);
 
 export function operationState(item: OperationItem): string {
@@ -221,7 +199,6 @@ export function operationState(item: OperationItem): string {
   }
 }
 
-/** Sentence parts, so the log keeps each country's flag beside its own name. */
 export function operationWording(item: OperationItem): { action: string; afterTarget: string } {
   switch (item.kind) {
     case 'preparing': return { action: ' is preparing ', afterTarget: '' };
@@ -231,11 +208,9 @@ export function operationWording(item: OperationItem): { action: string; afterTa
   }
 }
 
-/** A stored result flag: the game writes 0 or 1. */
 const flag = (name: string, value: number | null): { value: boolean | null; refused: string | null } => value === null ? { value: null, refused: null }
   : value === 0 || value === 1 ? { value: value === 1, refused: null } : { value: null, refused: `Stored operation ${name} refused: flag byte ${value} is not 0 or 1` };
 
-/** What a finished row says of its outcome; an operation under way has none. */
 export function outcomeText(item: OperationItem): string | null {
   if (item.kind === 'ended') return item.completionsRecorded ? 'Outcome not recorded.' : 'Completion not recorded.';
   const completion = item.completion;
@@ -244,7 +219,6 @@ export function outcomeText(item: OperationItem): string | null {
   return completion.descriptionUnrecorded !== null ? 'Description unavailable.' : 'Outcome';
 }
 
-/** The meter of an operation under way: preparation while preparing, elapsed over duration while running. */
 export function operationProgress(item: Pick<OperationItem, 'kind'>, value: OperationState | null): number | null {
   if (!value) return null;
   if (item.kind === 'preparing') return value.preparationRatio === null ? null : value.preparationRatio / 100_000;
@@ -258,14 +232,12 @@ export function progressText(item: Pick<OperationItem, 'kind'>, value: Operation
   return value.elapsedDays === null ? 'Elapsed days not recorded' : `${value.elapsedDays} / ${value.durationDays} days`;
 }
 
-/** The hours a row's menu jumps to: its start and its end, else its first sighting or its own date. */
 export function jumpHours(item: OperationItem, rowHour: number): number[] {
   const end = item.kind === 'completed' ? item.completion?.completionHour ?? rowHour : item.byHour;
   const hours = [item.startHour, end].filter((hour): hour is number => hour !== null);
   return [...new Set(hours.length ? hours : [item.firstSeen ?? rowHour])].sort((a, b) => a - b);
 }
 
-/** What the tooltip reads on demand: the operation at its read, with its operatives, or why it is not shown. */
 export type OperationDetail = { reply: EspionageOperationReply } | { failure: string } | null;
 
 export function operationTooltip(item: OperationItem, rowHour: number, type: OperationType | undefined, label: (value: Country | null) => ReturnType<CountryLabel>,
@@ -297,20 +269,17 @@ export function operationTooltip(item: OperationItem, rowHour: number, type: Ope
   if (values) {
     if (item.kind === 'running') rows.push({ label: 'Execution progress', value: values.elapsedDays === null ? 'Not recorded' : `${values.elapsedDays} / ${values.durationDays} days` });
     rows.push({ label: 'Phases', value: values.currentPhase === null ? `${values.phaseCount} phases; current phase unknown` : `Phase ${values.currentPhase + 1} of ${values.phaseCount}` },
-      // Preparation percentages truncate to whole percent, as the game's meter text does.
       { label: 'Preparation', value: values.preparationRatio === null ? 'Not recorded' : `${Math.trunc(values.preparationRatio / 1000)}%` },
       { label: 'Auto-start', value: values.autoCommence ? 'Enabled' : 'Disabled' },
       { label: 'Auto-repeat', value: values.autoRepeat ? 'Enabled' : 'Disabled' });
   } else rows.push({ label: 'Preparation, phases and assignments', value: detail === null ? 'Loading…' : 'Not recorded', tone: 'muted' });
   if (read) {
-    // The slot count includes unassigned slots.
     rows.push({ label: 'Operatives', value: `${read.operatives?.length ?? 'Unknown'} / ${read.state.assignedSlots}` });
     for (const name of read.operatives ?? []) rows.push({ label: 'Operative', value: name.name === '' ? 'Unnamed operative' : name.name ?? name.unavailable ?? 'Name unavailable' });
   } else if (detail && 'failure' in detail) rows.push({ label: 'Operatives', value: detail.failure, tone: 'muted' });
   return { title: operationName(type, pending), icon: type?.icon ?? undefined, rows, ...(type?.missing ? { note: type.missing } : {}) };
 }
 
-/** The numbers of the operations under way that move between reads, written into their marked cells with no render. */
 export function paintOperations(root: Element | null, reply: EspionageOperationsReply) {
   if (!root) return;
   const byId = new Map(reply.operations.map(operation => [operation.id, operation]));

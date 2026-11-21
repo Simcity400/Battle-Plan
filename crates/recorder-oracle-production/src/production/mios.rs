@@ -1,9 +1,7 @@
-//! Every stored organisation field the save writer emits, including empty stores.
 use super::*;
 use engine_executable::modifier_keys;
 use replay_data::rows::Recorded;
 
-/// Native constructor and save-writer sentinel for no selected policy.
 const UNSELECTED_POLICY: u32 = 0x4c17;
 
 pub(super) fn compare(
@@ -58,8 +56,6 @@ pub(super) fn compare(
             .map(|&token| name(token).map(<[u8]>::to_vec))
             .collect()
     };
-    // Every successful demanded design-context read of the same key, by the
-    // country its raw reference (possibly one of several aliases) resolves to.
     let mut design_costs = BTreeMap::<&[u8], Vec<(u32, i64)>>::new();
     if let Ok(rows) = frame.complete::<tables::DesignCountryModifiers>() {
         for row in rows.iter().filter(|row| {
@@ -84,8 +80,6 @@ pub(super) fn compare(
             .remove(tag.as_slice())
             .ok_or_else(|| invalid(format!("country {tag:?} MIO policies absent")))?;
         policy_matched += 1;
-        // The save omits accumulators. A failed read is a capture failure, and
-        // a design-context read of the same key must agree with it.
         match policy.cost_modifier_raw {
             Recorded::NotRecorded => report.difference(
                 format!("country {tag:?}.policy_cost_modifier"),
@@ -298,7 +292,6 @@ pub(super) fn compare(
     Ok(())
 }
 
-/// Frozen design values have the existing daily VariantStats observation boundary.
 pub(super) fn compare_designs(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -325,8 +318,6 @@ pub(super) fn compare_designs(
             actual.organisation_trait_count,
             expected.organisation_marker.unwrap_or(0),
         );
-        // Serialization asks the reference registry, independently of country
-        // roster membership. Use the witness for this exact raw author.
         let definition = complete::<tables::VariantDefinitions>(frame)?
             .iter()
             .find(|row| row.id == id)

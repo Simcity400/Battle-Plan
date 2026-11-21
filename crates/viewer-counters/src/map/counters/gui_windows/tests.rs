@@ -7,17 +7,12 @@ use viewer_foundation::map::test_support::{
     Fixture, SYNTHETIC_NAVAL_GUI, SYNTHETIC_NAVY_GUI, VIEWPORT, part,
 };
 
-/// A tick at the view clock's start that advances nothing.
 const STILL: Tick = Tick { time: 0.0, dt: 0.0 };
 
-/// One `.gui` file read in [`VIEWPORT`].
 fn read_gui(bytes: &[u8]) -> native::Gui {
     native::read_at(bytes, VIEWPORT)
 }
 
-/// Native windows accept a final block ending at end-of-file, load resources through
-/// the shared registry without a .gfx sprite map, and lay out through their instance.
-/// Missing counter-column templates become named layout refusals.
 #[test]
 fn the_native_windows_load_and_lay_out_without_the_legacy_readers() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -97,7 +92,6 @@ pub(in crate::map::counters) fn windows() -> NativeWindows {
     .unwrap()
 }
 
-/// The part drawn for `name` among `layout`'s parts, by its path's last name.
 fn drawn(layout: &Layout) -> Vec<&str> {
     layout
         .parts
@@ -106,7 +100,6 @@ fn drawn(layout: &Layout) -> Vec<&str> {
         .collect()
 }
 
-/// The zero-based sprite frame is its strip offset divided by one frame's extent.
 pub(in crate::map::counters) fn sprite_frame(layout: &Layout, name: &str) -> u32 {
     match part(layout, name).unwrap().kind {
         PartKind::Sprite { uv, offsets, .. } => (offsets[0] / uv[2]).round() as u32,
@@ -121,9 +114,6 @@ fn cell_page(layout: &Layout, name: &str) -> usize {
     }
 }
 
-/// Builds a parentless window in the viewport, applies setup, then each ordered update
-/// and one tick. `show_after` shows grid items after the first update; at-sea counters
-/// are shown before it.
 fn instance(
     window: &native::Element,
     setup: &[(String, Call)],
@@ -146,7 +136,6 @@ fn instance(
     instance
 }
 
-/// The calls of an update the combat window takes whole.
 fn made(update: Update) -> Vec<(String, Call)> {
     assert!(update.unknown.is_empty(), "{:?}", update.unknown);
     update.calls
@@ -156,7 +145,6 @@ fn layout_of(instance: &Instance, window: &native::Element, fixture: &Fixture) -
     instance.layout(window, fixture, None).unwrap().unwrap()
 }
 
-/// A counter at sea after one update of `calls`, laid out.
 fn at_sea_layout(window: &native::Element, calls: &[(String, Call)], fixture: &Fixture) -> Layout {
     layout_of(
         &instance(window, &[], &[calls], false, fixture),
@@ -165,8 +153,6 @@ fn at_sea_layout(window: &native::Element, calls: &[(String, Call)], fixture: &F
     )
 }
 
-/// A mission item (port item or combat tile) after its constructor and one update of
-/// `calls`, appended to a visible grid, laid out.
 fn item_layout(window: &native::Element, calls: &[(String, Call)], fixture: &Fixture) -> Layout {
     layout_of(
         &instance(window, &mission_item_setup(window), &[calls], true, fixture),
@@ -195,7 +181,6 @@ pub(in crate::map::counters) fn navy_fixture() -> Fixture {
             ("GFX_fixture_hull_placeholder", 1, [30, 12]),
             ("GFX_fixture_flag", 1, [10, 7]),
             ("GFX_fixture_large_flag", 1, [10, 7]),
-            // Hulls of a mod's own size: 34 x 15 frames, not the vanilla 30 x 12.
             ("GFX_unit_destroyer_icon_medium_white", 2, [68, 15]),
             ("GFX_unit_submarine_icon_medium_white", 2, [68, 15]),
             ("GFX_unit_no_intel_icon_medium_white", 2, [68, 15]),
@@ -205,7 +190,6 @@ pub(in crate::map::counters) fn navy_fixture() -> Fixture {
     )
 }
 
-/// The sprite the `type` part draws, its zero-based frame and its size.
 fn hull_of(layout: &Layout) -> (Vec<u8>, u32, [f32; 2]) {
     match &part(layout, "type").unwrap().kind {
         PartKind::Sprite {
@@ -223,8 +207,6 @@ fn hull_of(layout: &Layout) -> (Vec<u8>, u32, [f32; 2]) {
     }
 }
 
-/// The art the naval counter's code draws: each flag cell names its slot and atlas in its
-/// page.
 struct Art;
 
 impl NavyArt for Art {
@@ -237,7 +219,6 @@ impl NavyArt for Art {
     }
 }
 
-/// The viewer's own country 0, with a UI colour of its own, and country 5.
 fn countries() -> Countries {
     Countries {
         tags: BTreeMap::from([(0, "AAA".to_owned()), (5, "BBB".to_owned())]),
@@ -253,15 +234,12 @@ fn countries() -> Countries {
     }
 }
 
-/// An own, fully seen counter at sea: two capitals of twelve ships, a carrier on base
-/// frame 1, bars at 16 of 17, very low supply, an invalid order and an inactive mission.
 pub(in crate::map::counters) fn at_sea_flotilla(coarse: bool) -> naval::Flotilla {
     naval::Flotilla {
         source: 7,
         members: Arc::from([7]),
         owner: 0,
         logical: Some(0),
-        // Own counters use the friendly type-icon relation.
         type_tint: Some(type_tint::Side::Friend),
         side: Ok(Allegiance::Ours),
         flag_owner: Some(if coarse { 0 } else { 5 }),
@@ -292,7 +270,6 @@ pub(in crate::map::counters) fn at_sea_flotilla(coarse: bool) -> naval::Flotilla
     }
 }
 
-/// A port item of the same task forces: the first member fully seen, mission 2.
 pub(in crate::map::counters) fn port_flotilla() -> naval::Flotilla {
     naval::Flotilla {
         port: true,
@@ -307,10 +284,8 @@ pub(in crate::map::counters) fn port_flotilla() -> naval::Flotilla {
     }
 }
 
-/// What [`navy_calls`] returns, with the counts it made.
 pub(in crate::map::counters) type Production = (Update, BTreeMap<Cow<'static, str>, usize>);
 
-/// The production calls for `flotilla` on `window` under `settings`.
 pub(in crate::map::counters) fn production(
     window: &native::Element,
     flotilla: &naval::Flotilla,
@@ -411,10 +386,6 @@ fn detailed_coarse_and_port_selection_follows_the_first_task_force() {
     );
 }
 
-/// At sea, plate and hull tint follow `type_tint`. Country 5 has enemy allegiance but
-/// a friendly type relation through volunteers or logical ownership, so its plate
-/// uses the allied palette and hull uses FRIEND_COLOR. Missing relations draw an
-/// other-coloured plate and withhold the hull.
 #[test]
 fn an_at_sea_counter_takes_the_type_icon_relation_for_its_plate_and_hull() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -453,9 +424,6 @@ fn an_at_sea_counter_takes_the_type_icon_relation_for_its_plate_and_hull() {
     assert!(part(&layout, "type").is_none());
 }
 
-/// Port items and combat tiles use their own allegiance for plate colour, independent
-/// of type relation. Missing allegiance leaves [`PLATE`] unknown while other writes
-/// continue; country-colour mode instead uses the logical owner's colour.
 #[test]
 fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -481,7 +449,6 @@ fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
         side: Err("relations: WarRelations".into()),
         ..enemy
     };
-    // Every other write is made; the plate's colour is the update's unknown part.
     let (update, _) = production(window, &unknown, CounterSettings::default(), &fixture);
     assert_eq!(
         update.unknown,
@@ -500,7 +467,6 @@ fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
             .count()
     };
     assert_eq!((colours(&update), colours(&whole)), (0, 1));
-    // Only count_bg's colour is written: one control call fewer.
     assert_eq!(update.calls.len() + 1, whole.calls.len());
     let by_country = CounterSettings {
         color_mode: CounterColorMode::Country,
@@ -518,10 +484,6 @@ fn a_mission_item_takes_its_own_allegiance_for_its_plate() {
     );
 }
 
-/// Detailed at-sea updates show the capital diamond/count, inactive plate at frame 1,
-/// overlay, counts and invalid-order glyph. Mission type retains its authored frame;
-/// spotting, selection and large flag are hidden; the small flag is the expeditionary
-/// owner's.
 #[test]
 fn a_detailed_counter_at_sea_draws_the_native_write_set() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -565,7 +527,6 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
         allegiance::Tints::VANILLA.ours
     );
     assert_eq!(cell_page(&layout, "flag"), 1_005);
-    // The hull through the registry at its own frame size, pictorial.
     assert_eq!(
         hull_of(&layout),
         (
@@ -578,15 +539,12 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
         &part(&layout, "capital_count_txt").unwrap().kind,
         PartKind::Text { glyphs, .. } if glyphs.len() == 1
     ));
-    // The owner's civil war holds: the overlay shows at its ruling group's number (2),
-    // nothing unknown.
     assert_eq!(sprite_frame(&layout, "counter_ideology"), 1);
     assert!(report.is_empty());
     assert_eq!(
         calls.wrote.iter().filter(|part| **part == IDEOLOGY).count(),
         1
     );
-    // It fails: the overlay stays hidden as the update's first write leaves it.
     let peaceful = naval::Flotilla {
         ideology: Ok(None),
         ..at_sea_flotilla(false)
@@ -595,7 +553,6 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
     let layout = at_sea_layout(window, &calls.calls, &fixture);
     assert!(part(&layout, "counter_ideology").is_none());
     assert!(calls.unknown.is_empty());
-    // An operand the hour lacks leaves the overlay unknown, by its reason.
     let undecided = naval::Flotilla {
         ideology: Err("CountryCivilWars is not recorded".into()),
         ..at_sea_flotilla(false)
@@ -608,7 +565,6 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
             "counter_ideology is undecided: CountryCivilWars is not recorded".to_owned()
         )]
     );
-    // An active mission takes one-based frame 2.
     let mut active = at_sea_flotilla(false);
     active.status.active = Some(true);
     let (calls, _) = production(window, &active, CounterSettings::default(), &fixture);
@@ -616,9 +572,6 @@ fn a_detailed_counter_at_sea_draws_the_native_write_set() {
     assert_eq!(sprite_frame(&layout, "count_bg"), 1);
 }
 
-/// Coarse counters first recompute capital diamond/count, pride and carrier. Then they
-/// show plate frame 3, count and representative medium flag, hiding group marker and
-/// remaining detail. Without a prior detailed update, invalid_orders stays authored.
 #[test]
 fn a_coarse_counter_recomputes_the_naval_arm_and_hides_the_group_marker() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -653,17 +606,12 @@ fn a_coarse_counter_recomputes_the_naval_arm_and_hides_the_group_marker() {
     assert!(report.is_empty());
 }
 
-/// `unit_counter_navy` with a `general_portrait`, as a mod may declare it.
 const PORTRAIT_NAVY: &str = r#"guiTypes = { containerWindowType = { name = "unit_counter_navy"
     size = { width = 66 height = 33 }
     iconType = { name = "general_portrait" spriteType = "GFX_general_portrait" }
     iconType = { name = "invalid_orders" spriteType = "GFX_fixture_invalid_orders"
         position = { x = -8 y = -3 } } } }"#;
 
-/// One counter's window in one view keeps what its updates leave: a counter first updated
-/// coarse keeps `invalid_orders` as the window builds it and loses the portrait for good; a
-/// detailed update sets `invalid_orders`, which the next coarse update keeps. Another view's
-/// window, never coarse, still shows its portrait.
 #[test]
 fn a_counter_window_keeps_what_its_updates_leave() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -689,23 +637,17 @@ fn a_counter_window_keeps_what_its_updates_leave() {
             .collect::<Vec<_>>()
     };
     let none = Vec::<String>::new();
-    // First update coarse: the glyph as built, the portrait hidden.
     assert_eq!(step(&mut view, &flotilla(true, false)), ["invalid_orders"]);
-    // Detailed: the glyph follows the orders; the portrait stays hidden.
     assert_eq!(step(&mut view, &flotilla(false, false)), none);
     assert_eq!(step(&mut view, &flotilla(true, true)), none);
     assert_eq!(step(&mut view, &flotilla(false, true)), ["invalid_orders"]);
     assert_eq!(step(&mut view, &flotilla(true, false)), ["invalid_orders"]);
-    // The other view's counter was never coarse.
     assert_eq!(
         step(&mut other, &flotilla(false, false)),
         ["general_portrait"]
     );
 }
 
-/// Port updates preserve visibility of capital_ship, type, flag, count_bg and counts,
-/// never tint the hull, and preserve low_supply below full first-member intel. Pooled
-/// windows retain the glyph from their last full update.
 #[test]
 fn a_pooled_mission_item_keeps_what_its_updater_does_not_write() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -747,12 +689,9 @@ fn a_pooled_mission_item_keeps_what_its_updater_does_not_write() {
         &fixture,
     );
     let layout = layout_of(&pooled, window, &fixture);
-    // The overlay hidden (`HideOverlay`), the mission shown at one-based frame 3, the supply
-    // glyph at the very-low frame.
     assert!(part(&layout, "counter_overlay").is_none());
     assert_eq!(sprite_frame(&layout, "mission_type"), 2);
     assert_eq!(sprite_frame(&layout, "low_supply"), 2);
-    // The next update below full intel writes no supply: the glyph is kept.
     let mut dim = port_flotilla();
     dim.supply = counter_inputs::NavalSupply::Retain;
     dim.bars = naval::NavalBars::Hidden;
@@ -768,8 +707,6 @@ fn a_pooled_mission_item_keeps_what_its_updater_does_not_write() {
     );
 }
 
-/// Clearing hide bits before Show reveals authored-hidden controls; setting a bit
-/// with Hide keeps that control hidden through later window shows.
 #[test]
 fn the_updaters_hide_bit_writes_reach_authored_hidden_controls() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -797,13 +734,10 @@ fn the_updaters_hide_bit_writes_reach_authored_hidden_controls() {
         &fixture,
     );
     let layout = layout_of(&item, window, &fixture);
-    // `mission_type` shown though authored hidden; `no_orders` hidden with its bit.
     assert_eq!(drawn(&layout), ["mission_type"]);
-    // Shown again as its grid shows it: the flagged glyph stays hidden.
     item.gui_show(window, window).unwrap();
     item.tick(window, &fixture, STILL).unwrap();
     assert_eq!(drawn(&layout_of(&item, window, &fixture)), ["mission_type"]);
-    // The combat window's bars: authored hidden, shown by the engaged rotation.
     let combat = read_gui(
         br#"guiTypes = { containerWindowType = { name = "naval_combat_mapicon"
             size = { width = 33 height = 43 }
@@ -833,9 +767,6 @@ fn the_updaters_hide_bit_writes_reach_authored_hidden_controls() {
     assert_eq!(drawn(&layout_of(&icon, window, &fixture)), ["progress"]);
 }
 
-/// Bar movement uses integer drawable extent: a 3 x 17 bar at scale 0.69 is 11 high,
-/// so fill 0.9 steps 4; fractional height 11.73 would step 5. Undefined sprites use
-/// fallback artwork for measurement.
 #[test]
 fn a_scaled_bar_steps_by_its_integer_drawable_extent() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -863,16 +794,10 @@ fn a_scaled_bar_steps_by_its_integer_drawable_extent() {
         })
     };
     assert_eq!(offset("bar_org"), Some(Some([4, 0])));
-    // The fallback's 9: t = 4.05, step 4.
     assert_eq!(offset("bar_str"), Some(Some([4, 0])));
     assert!(part(&at_sea_layout(window, &calls, &fixture), "bar_org").is_some());
 }
 
-/// Defined hulls replace the sprite and set frame 1 ([`TYPE_SPRITE`]). Undefined or
-/// empty names and invalid definitions retain the previous drawable, count undefined
-/// names, and leave no unknown part. Missing ship operands or unrecorded-variant ties
-/// make the selection unknown: retain its drawable, withhold the window and count the
-/// reason where it would draw. No-intel replacements follow their own sprite setter.
 #[test]
 fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -903,7 +828,6 @@ fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
     assert_eq!(hull, destroyer);
     assert!(written.wrote.contains(&TYPE_SPRITE));
     assert!(written.unknown.is_empty(), "{:?}", written.unknown);
-    // Undefined: counted by name, the destroyer kept, nothing unknown.
     let (hull, kept, report) = update(&mut counter, HullIcon::Resolved(Some(b"cruiser".to_vec())));
     assert_eq!(hull, destroyer);
     assert_eq!(
@@ -912,13 +836,10 @@ fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
     );
     assert!(!kept.wrote.contains(&TYPE_SPRITE));
     assert!(kept.unknown.is_empty(), "{:?}", kept.unknown);
-    // An invalid definition writes nothing: kept, not counted, nothing unknown.
     let (hull, kept, report) = update(&mut counter, HullIcon::Resolved(None));
     assert_eq!(hull, destroyer);
     assert!(!report.keys().any(|key| key.contains("hull")));
     assert!(kept.unknown.is_empty(), "{:?}", kept.unknown);
-    // Undecided: no write is made, so the instance keeps its drawable, but the update leaves
-    // it unknown by why rather than taking the kept hull for the game's.
     for (hull, why) in [
         (HullIcon::Unrecorded, HULL_UNRECORDED),
         (HullIcon::Ambiguous, HULL_AMBIGUOUS),
@@ -929,7 +850,6 @@ fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
         assert!(!undecided.wrote.contains(&TYPE_SPRITE));
         assert!(!report.keys().any(|key| key.contains("hull")), "{report:?}");
     }
-    // The no-intel replacement's setter; a defined literal writes the sprite.
     let mut hidden = at_sea_flotilla(false);
     hidden.hidden = true;
     let (update, _) = production(window, &hidden, CounterSettings::default(), &fixture);
@@ -944,14 +864,6 @@ fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
     assert_eq!(setter, Some(native_gui::SpriteSetter::Icon));
 }
 
-/// Missing conditional operands make no write in either direction and leave only that
-/// part unknown. Detailed at-sea and full-intel mission updates lacking status, ship,
-/// fleet and supply leave order glyphs, pride, carrier, capital count, group marker,
-/// bars and supply unknown, plus the at-sea plate frame. They still write plate colour
-/// without showing or hiding those undecided children.
-/// A Ships census the hour lacks leaves the ship counts unknown: no exact zero or subtotal is
-/// written at sea or in port, while a mission item's low intel still writes the "?" it shows
-/// without reading them.
 #[test]
 fn an_incomplete_ship_census_leaves_the_counts_unknown() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -974,7 +886,6 @@ fn an_incomplete_ship_census_leaves_the_counts_unknown() {
         assert!(unknown(&update, COUNT), "coarse {coarse}");
         assert!(unknown(&update, CAPITALS), "coarse {coarse}");
         assert_eq!(count_text(&update), None, "coarse {coarse}");
-        // A known count is written and lifts the part.
         sea.ships = Some(0);
         let (update, _) = production(window, &sea, CounterSettings::default(), &fixture);
         assert!(!unknown(&update, COUNT) && update.wrote.contains(&COUNT));
@@ -1067,10 +978,7 @@ fn missing_operands_leave_exactly_their_parts_unknown() {
     expected.retain(|part| *part != PLATE_FRAME);
     assert_eq!(parts(&item), expected);
     assert!(item.wrote.contains(&PLATE));
-    // Mission updates first hide their bars; none of the children above is shown
-    // or hidden.
     assert_eq!(touched(&item, &children), 0, "{:?}", item.calls);
-    // Settled, they are all written.
     let (whole, _) = production(
         window,
         &port_flotilla(),
@@ -1093,8 +1001,6 @@ fn missing_operands_leave_exactly_their_parts_unknown() {
     }
 }
 
-/// Carrier sprite names resolve through the content registry. Undefined names count
-/// by name and retain the drawable ([`CARRIER_SPRITE`]), as hull and convoy names do.
 #[test]
 fn an_undefined_carrier_sprite_is_counted_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1124,9 +1030,6 @@ fn an_undefined_carrier_sprite_is_counted_by_name() {
     assert!(update.wrote.contains(&CARRIER_SPRITE));
 }
 
-/// Ordered hull and no-intel selections resolve against the current type drawable.
-/// A counter showing hull X retains X and its extent when intel falls and the no-intel
-/// sprite is undefined, including when X replaced the authored sprite earlier.
 #[test]
 fn a_hull_followed_by_an_undefined_no_intel_sprite_keeps_the_hull() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1165,9 +1068,6 @@ fn a_hull_followed_by_an_undefined_no_intel_sprite_keeps_the_hull() {
     assert_eq!(extent, [34, 15]);
 }
 
-/// Text and sprite writes are separate ordered [`Call::SetText`] and [`Call::SetSprite`]
-/// calls. Text immediately refreshes its scrollbar. No [`Call::Control`] carries text
-/// or sprite writes, so scrollbar text never takes the refused control-write path.
 #[test]
 fn texts_and_sprites_are_ordered_calls_of_their_own() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1175,7 +1075,6 @@ fn texts_and_sprites_are_ordered_calls_of_their_own() {
     let fixture = navy_fixture();
     let windows = windows();
     let window = windows.navy();
-    // The order: a write between two visibility calls stays between them.
     let mut writes = Writes::new(window);
     writes.show(native::Kind::TextBox, "capital_count_txt");
     writes.control(native::Kind::TextBox, "capital_count_txt", |bound| {
@@ -1195,8 +1094,6 @@ fn texts_and_sprites_are_ordered_calls_of_their_own() {
         })
         .collect();
     assert_eq!(kinds, ["show", "text", "hide", "control"]);
-    // Every production window: counters at sea detailed, coarse and unseen, port items, and
-    // the convoy addition.
     let mut hidden = at_sea_flotilla(false);
     hidden.hidden = true;
     let mut texts = 0;
@@ -1222,9 +1119,6 @@ fn texts_and_sprites_are_ordered_calls_of_their_own() {
     assert!(texts > 0 && sprites > 0);
 }
 
-/// Both counter options: NATO counters put the no-intel hull on its NATO frame at sea and in
-/// port; country-colour mode tints the plate with the logical owner's UI colour, and a
-/// country without one refuses the window by name.
 #[test]
 fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1250,8 +1144,6 @@ fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
         });
         let (calls, _) = production(window, &item, settings, &fixture);
         let calls = calls.calls;
-        // Mission items set frame before sprite: a first no-intel replacement takes
-        // the new drawable's frame; the next selection retains that drawable and frame.
         let first = item_layout(window, &calls, &fixture);
         assert_eq!(hull_of(&first).0, no_intel);
         assert_eq!(hull_of(&first).1, 0);
@@ -1267,7 +1159,6 @@ fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
             &fixture,
         );
         assert_eq!(hull_of(&again), (no_intel.clone(), frame, [34.0, 15.0]));
-        // A third identical write changes nothing more: a port base stands after two.
         let thrice = layout_of(
             &instance(
                 window,
@@ -1281,7 +1172,6 @@ fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
         );
         assert_eq!(hull_of(&thrice), hull_of(&again));
     }
-    // Resolved navy hulls retain the pictorial frame.
     let (calls, _) = production(window, &at_sea_flotilla(false), nato, &fixture);
     assert_eq!(hull_of(&at_sea_layout(window, &calls.calls, &fixture)).1, 0);
     let country = CounterSettings {
@@ -1315,7 +1205,6 @@ fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
     assert!(reason.contains("country slot 5's UI colour"), "{reason}");
 }
 
-/// Combat progress rounds half away from zero and fills from the other side when flipped.
 #[test]
 fn the_combat_progress_value_rounds_as_the_game_does() {
     let value = |progress, flip| {
@@ -1334,9 +1223,6 @@ fn the_combat_progress_value_rounds_as_the_game_does() {
     assert_eq!(value(-12_500, false), -13);
 }
 
-/// Combat calls resolve authored controls: engaged combat writes bg_btn's frame;
-/// unengaged combat retains it. HQ and progress receive their values; a flipped bar
-/// turns half a rotation and moves by its type size.
 #[test]
 fn the_combat_state_calls_go_through_the_native_lookups() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1364,8 +1250,6 @@ fn the_combat_state_calls_go_through_the_native_lookups() {
         }),
         hq: Ok(hq),
     };
-    // Engaged with a progress the hour cannot decide: the bars stay hidden, `bg_btn` takes its
-    // frame, and the bars are the update's unknown part.
     let undecided = combat_calls(
         window,
         &engaged(1, false, Err("its size is undecided".to_owned())),
@@ -1382,10 +1266,8 @@ fn the_combat_state_calls_go_through_the_native_lookups() {
     let calls = undecided.calls;
     let mut icon = instance(window, &[], &[&calls], false, &fixture);
     let layout = layout_of(&icon, window, &fixture);
-    // No progress shows and the HQ frame is hidden: only the background draws.
     assert_eq!(drawn(&layout), ["bg_btn"]);
     assert_eq!(sprite_frame(&layout, "bg_btn"), 1);
-    // Unengaged: the frame of the last engaged update is kept.
     let unengaged = CombatState {
         rotation: Some(Rotation { engaged: None }),
         hq: Ok(false),
@@ -1423,8 +1305,6 @@ fn the_combat_state_calls_go_through_the_native_lookups() {
         let (unflipped, state) = bar(&layout, shown);
         assert!((state - 0.4).abs() < 1e-6);
         assert_eq!(unflipped.rotation, 0.0);
-        // Flipped: turned by pi about its own origin, moved by (w, -h) of its type size and
-        // filled from the other side.
         let calls = made(combat_calls(
             window,
             &engaged(0, false, Ok(progress(small, true))),
@@ -1444,8 +1324,6 @@ fn the_combat_state_calls_go_through_the_native_lookups() {
     }
 }
 
-/// An unmeasurable flipped bar receives every update call except movement and leaves
-/// [`ROTATION`] unknown. Frames, bar hiding/flags, Show, turning, fill and HQ all apply.
 #[test]
 fn an_unmeasured_flipped_bar_takes_every_call_but_its_move() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1465,7 +1343,6 @@ fn an_unmeasured_flipped_bar_takes_every_call_but_its_move() {
         }),
         hq: Ok(false),
     };
-    // The bar's sprite is one only the recording client's session may have registered.
     let mut unmeasured = Fixture::new(&[("GFX_fixture_combat", 2, [70, 35])], &[]);
     unmeasured.session_sprites = true;
     let partial = combat_calls(window, &state, &unmeasured);
@@ -1510,8 +1387,6 @@ fn an_unmeasured_flipped_bar_takes_every_call_but_its_move() {
     assert!(others(&whole.calls).len() > 4);
 }
 
-/// Grid items construct in the GUI viewport, finalize in their grid, then stand in
-/// the holder's content at their slot plus saved offset.
 #[test]
 fn grid_items_are_finalized_and_placed_through_the_module() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1549,7 +1424,6 @@ fn grid_items_are_finalized_and_placed_through_the_module() {
     let places = holder
         .finalize(grid, VIEWPORT, &[tile, tile, tile])
         .unwrap();
-    // Down the one column from the grid's place, each at its slot plus its own (1, 2).
     assert_eq!(places, [[6, 8], [6, 18], [6, 28]]);
     let item = layout_of(
         &instance(tile, &[], &[&[]], false, &fixture),
@@ -1560,8 +1434,6 @@ fn grid_items_are_finalized_and_placed_through_the_module() {
     assert_eq!(parts.len(), 1);
 }
 
-/// Port items append and finalize down box_ships' single column, from the grid's
-/// place plus each slot and saved construction offset. Items past slot limits omit.
 #[test]
 fn port_items_are_placed_in_box_ships() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1601,6 +1473,5 @@ fn port_items_are_placed_in_box_ships() {
     let places = holder
         .finalize(grid, VIEWPORT, &[tile, tile, tile])
         .unwrap();
-    // Two slots: the third item is not added.
     assert_eq!(places, [[-15, 35], [-15, 67]]);
 }

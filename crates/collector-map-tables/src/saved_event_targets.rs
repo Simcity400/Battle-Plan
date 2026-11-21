@@ -1,4 +1,3 @@
-//! Hourly saved globals. Buffers size from the registry and name lengths.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},

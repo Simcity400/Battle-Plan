@@ -1,9 +1,3 @@
-//! Naval mission map icons for strategic regions with registered missions.
-//!
-//! Entries are created in mission-kind order from the resolved mission sprites.
-//! Each entry retains its counters, status and controls; supported visibility and
-//! membership decisions use current-hour recorded inputs. Refused reached operands
-//! withhold the affected fragment with a named count.
 
 use super::naval_windows::{Mark, mark, marks};
 use super::*;
@@ -24,9 +18,6 @@ use viewer_foundation::map::native_text::COLOR;
 use viewer_foundation::map::native_windows::NativeWindows;
 use viewer_foundation::map::province_schedule::{Schedule, Update};
 
-/// Sprite lookup keys by mission kind; kinds without a key have no entry.
-/// Resolve each key through the content's sprite registry. An undefined name
-/// keeps the authored sprite, which is drawn while the missing name is counted.
 pub const MISSION_SPRITES: [(u32, &str); 8] = [
     (1, "GFX_mapicon_naval_mission_patrol"),
     (2, "GFX_mapicon_naval_mission_strike_force"),
@@ -38,58 +29,37 @@ pub const MISSION_SPRITES: [(u32, &str); 8] = [
     (9, "GFX_mapicon_naval_invasion_support"),
 ];
 
-/// Registered mission kinds that this display neither counts nor shows.
 const UNCOUNTED: [u32; 3] = [0, 8, 10];
 
 pub const MISSION_ENTRY_WINDOW: &str = "naval_mission_mapicon_entry";
 pub const MISSION_WINDOW: &str = "naval_mission_mapicon";
-/// The window the game moves.
 const CONTENT_WINDOW: &str = "content";
-/// Mission content container name.
 const MISSIONS_LIST: &str = "missions_list";
 
-/// Mission UI mode selected by the update.
 const DRAWN_UI_MODE: i32 = 0;
 
-/// The recorded range/convoy operands or content needed for this child are incomplete.
 const P2_ACTIVE: &str = "P2 active registrations need complete native range operands";
 const P3_RAIDING: &str = "P3 raiding efficiency needs complete native operands";
 const P3_ESCORT: &str = "P3 escort efficiency needs complete native operands";
 const P3_ESCORT_ALERT: &str = "P3 escort alert needs complete efficiency and presence operands";
 
-/// Why a registration's pride of the fleet is
-/// undecided this hour: its roster owner has no recorded country.
 const PRIDE_OWNER_UNLINKED: &str = "a registered task force's roster owner is not linked to a \
      recorded country";
-/// The country's pride of the fleet (`CountryCounterInputs`) is not recorded.
 const PRIDE_SHIP_UNRECORDED: &str = "a registered task force's country has no recorded pride of \
      the fleet";
-/// The pride ship is absent from an incomplete Ships census.
 const PRIDE_SHIPS_INCOMPLETE: &str =
     "the pride of the fleet is absent from an incomplete Ships census";
 pub(super) const ENGAGEMENT_UNKNOWN: &str =
     "a registered task force has no TaskForceCounterInputs engagement rule";
 
-/// An entry's pride marker (`pride`), which the game shows or hides from
-/// its record's registrations: left unknown when they are undecided, and known again only by a
-/// decided write.
 const PRIDE: &str = "its pride marker";
-/// An entry's count text, which the update writes only while the entry is listed.
 const COUNT: &str = "its count";
-/// Mission entry display inputs retained by the update.
 const ENTRY_PLACE: &str = "its place in the missions list";
-/// The parts of an entry an update of its icon may leave as they were: an entry the update does
-/// not list keeps its count and place.
 const ENTRY_KEPT: [&str; 2] = [COUNT, ENTRY_PLACE];
-/// Retained mission-list position in the icon.
 const LIST_PLACE: &str = "its missions list's place";
 
-/// Naval map mode, UI mode 2: the only mode that counts the units shown by
-/// `content`'s containers.
 const NAVAL_UI_MODE: i32 = 2;
 
-/// Counted mission containers reset their counts on update. Own and enemy
-/// mine values are counted only in naval UI mode and at the detailed camera.
 const COUNTED_CONTAINERS: [(&str, &str); 4] = [
     (
         "mine_status_container",
@@ -109,8 +79,6 @@ const COUNTED_CONTAINERS: [(&str, &str); 4] = [
     ),
 ];
 
-/// Resolve the mission root, its content container, list and entry template
-/// through their local authored hierarchy.
 pub(super) struct MissionWindows<'a> {
     pub(super) root: &'a native::Element,
     content: &'a native::Element,
@@ -145,9 +113,6 @@ impl<'a> MissionWindows<'a> {
             &gui_type,
         )? {
             native_gui::ListEntry::Container(entry) => entry,
-            // Fixed-window entries are incompatible with this visibility walk: it treats
-            // each entry as a container and reads control arrays from uninitialised
-            // callback storage.
             native_gui::ListEntry::Fixed(window) => {
                 return Err(refusal(
                     &list.path,
@@ -168,27 +133,19 @@ impl<'a> MissionWindows<'a> {
     }
 }
 
-/// One shown entry: its kind's counts and the children the recorded inputs decide.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct MissionEntry {
     pub(super) kind: u32,
     pub(super) total: u32,
-    /// Active registrations, where the kind counts them (1, 2 and 9); the input it waits for when
-    /// unknown.
     pub(super) active: Result<Option<u32>, &'static str>,
-    /// Whether this kind carries the pride marker; why not, when unknown.
     pub(super) pride: Result<bool, &'static str>,
-    /// The input it waits for when unknown.
     pub(super) alert: Result<bool, &'static str>,
     pub(super) engagement: Result<bool, &'static str>,
     pub(super) efficiency: Option<Result<i64, &'static str>>,
 }
 
-/// A ledger registration: its mission row, its kind and whether its task force holds the pride
-/// of the fleet (why not, when unknown).
 type Registration = (u64, u32, u32, Result<bool, &'static str>);
 
-/// One hour's mission icons for the viewing country, by strategic region.
 #[derive(Clone, Debug, Default)]
 pub struct MissionIcons {
     pub(super) hovers: Arc<super::naval_mission_inputs::hover::Hovers>,
@@ -197,13 +154,10 @@ pub struct MissionIcons {
         Option<Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>>,
     pub(super) regions: BTreeMap<u32, Vec<MissionEntry>>,
     pub(super) input_gaps: BTreeMap<String, usize>,
-    /// Why no icon is decided this hour, when none is.
     unavailable: Option<&'static str>,
 }
 
 impl MissionIcons {
-    /// The recorded viewing navy's ledger, including repeats and regions
-    /// outside the accessible lists.
     pub(super) fn read(
         frame: &DecodedFrame,
         vision: &Vision,
@@ -229,13 +183,11 @@ impl MissionIcons {
                 ..Self::default()
             });
         }
-        // No current mission region is represented by zero.
         let missions: BTreeMap<_, _> = missions
             .rows()
             .iter()
             .map(|row| (row.task_force, row))
             .collect();
-        // Index only the pride references requested by registered task forces.
         let wanted: BTreeSet<_> = ledgers
             .rows()
             .iter()
@@ -306,7 +258,6 @@ impl MissionIcons {
     }
 }
 
-/// Mission entries for one region's registrations, in kind order.
 fn entries(
     region: u32,
     registrations: &[Registration],
@@ -314,7 +265,6 @@ fn entries(
 ) -> Vec<MissionEntry> {
     let mut totals: BTreeMap<u32, u32> = BTreeMap::new();
     let mut patrolling = 0;
-    // every counted pride registration replaces the chosen kind.
     let mut last_pride: Result<Option<u32>, &'static str> = Ok(None);
     let mut no_engagement: BTreeMap<u32, Result<bool, &'static str>> = BTreeMap::new();
     for (handle, current_region, kind, pride) in registrations {
@@ -361,7 +311,6 @@ fn entries(
             };
             let alert = match kind {
                 1 => Ok(patrolling < 1),
-                // Mission activity and efficiency are independent reached terms.
                 2 | 3 | 9 if no_engagement.get(&kind) == Some(&Ok(true)) => Ok(true),
                 2 | 3 | 9 if no_engagement.get(&kind).is_some_and(Result::is_err) => {
                     no_engagement[&kind]
@@ -389,8 +338,6 @@ fn entries(
         .collect()
 }
 
-/// Count text uses the total, or active over total for mission kinds with
-/// an activity count.
 fn count_text(entry: &MissionEntry) -> Result<(String, bool), &'static str> {
     match entry.active? {
         Some(active) if active != entry.total => {
@@ -401,7 +348,6 @@ fn count_text(entry: &MissionEntry) -> Result<(String, bool), &'static str> {
 }
 
 impl CounterReport {
-    /// What the hour's naval mission icons could not draw, for the warning area.
     pub fn naval_mission_warnings(&self) -> Vec<String> {
         let mut warnings: Vec<String> = self
             .naval_mission_limits
@@ -439,7 +385,6 @@ impl CounterReport {
     }
 }
 
-/// Records a sprite the content does not define.
 fn undefined(report: &mut CounterReport, sprite: &str) {
     if !report.undefined_naval_mission_sprites.contains(sprite) {
         report
@@ -448,22 +393,14 @@ fn undefined(report: &mut CounterReport, sprite: &str) {
     }
 }
 
-/// Prepare one registered mission kind's display decision.
 #[derive(Clone, Debug, PartialEq)]
 struct Record<'e> {
-    /// The kind's shown entry when the region has registrations of that kind.
     listed: Option<&'e MissionEntry>,
-    /// `Ok(shown)`, or the P2/P3 input it waits for (hidden and counted, [`undecided`]).
     alert: Result<bool, &'static str>,
-    /// `Ok(shown)`, or why its registrations do not decide it (an unknown part, [`PRIDE`]).
     pride: Result<bool, &'static str>,
-    /// `None` hidden (the value `-100000`); `Some(Err(input))` waiting for a P3 input (hidden and
-    /// counted); `Some(Ok(text))` shown with `text`.
     efficiency: Option<Result<String, &'static str>>,
 }
 
-/// Format the percentage with zero decimal precision. Values below 75000
-/// receive the red colour control, followed by reset.
 fn efficiency_text(value: i64) -> String {
     let text = installed_content_core::fixed5::fixed5_percent(value.clamp(0, 100_000), 0, true);
     let code = COLOR;
@@ -476,36 +413,25 @@ fn efficiency_text(value: i64) -> String {
     }
 }
 
-/// The record of `kind` this frame, for a region whose shown entries are `entries`.
 fn record(kind: u32, entries: &[MissionEntry]) -> Record<'_> {
     match entries.iter().find(|entry| entry.kind == kind) {
         Some(entry) => Record {
             listed: (entry.total != 0).then_some(entry),
             alert: entry.alert,
             pride: entry.pride,
-            // Convoy raiding and escort
-            // compute their efficiency from the recorded inputs (P3).
             efficiency: entry.efficiency.and_then(|value| match value {
                 Ok(-100_000) => None,
                 other => Some(other.map(efficiency_text)),
             }),
         },
-        // No registration of the kind: every test runs over none.
         None => Record {
             listed: None,
             alert: match kind {
-                // No patrol is registered in the region.
                 1 => Ok(true),
-                // No kind-3 registration has engagement rule 0, and the game's average
-                // over no registration is 0, below 100000.
                 3 => Ok(true),
-                // Read the escort's inputs (P3).
                 4 => Err(P3_ESCORT_ALERT),
-                // Kind 2: `0 < 0` fails and no registration has engagement rule 0; kind 9
-                // alike; the other kinds have no alert.
                 _ => Ok(false),
             },
-            // `value` is always the kind of a counted registration.
             pride: Ok(false),
             efficiency: match kind {
                 3 => Some(Ok(efficiency_text(0))),
@@ -516,9 +442,6 @@ fn record(kind: u32, entries: &[MissionEntry]) -> Record<'_> {
     }
 }
 
-/// The children of a drawn entry of `kind` (its sprite `sprite`) its record hides for a P2 or P3
-/// input no recording holds yet (the count, the alert and the efficiency), each named by child,
-/// kind and input.
 fn undecided(kind: u32, sprite: &str, record: &Record<'_>) -> Vec<String> {
     let count = record.listed.and_then(|entry| count_text(entry).err());
     let efficiency = match &record.efficiency {
@@ -540,8 +463,6 @@ fn undecided(kind: u32, sprite: &str, record: &Record<'_>) -> Vec<String> {
     .collect()
 }
 
-/// Showing a child clears its hide bit before GUI Show, reaching a container's
-/// descendants; hiding calls Hide before setting that bit.
 fn set_shown(
     instance: &mut Instance,
     window: &native::Element,
@@ -557,11 +478,6 @@ fn set_shown(
     }
 }
 
-/// Every resource the mission windows draw, found as construction finds them
-/// ([`native_gui::assets_in`] over the root and the entry window its list makes), and the
-/// executable's kind sprites the content's registry defines: `sprite assignment` replaces the
-/// button's sprite only with a defined one. The texts the code binds (counts and efficiencies:
-/// digits, `/`, `%` and the colour codes) hold no inline icon, so they add nothing.
 pub(super) fn mission_assets(
     windows: &NativeWindows,
     registry: &native::resources::Registry,
@@ -583,24 +499,16 @@ pub(super) fn mission_assets(
     assets
 }
 
-/// The mission icons' part of a prepared hour: what the code decides, made without any window.
 #[derive(Debug, Default)]
 pub(super) struct MissionPass {
     pub(super) hovers: Arc<super::naval_mission_inputs::hover::Hovers>,
     pub(super) convoy_hovers: Arc<BTreeMap<u64, super::naval_mission_inputs::hover::Prepared>>,
-    /// The regions whose ledger is not empty, with their shown entries;
-    /// `None` at or above the cutoff, where the game passes
-    /// the gate 0 and every icon is erased.
     pub(super) regions: Option<BTreeMap<u32, Vec<MissionEntry>>>,
-    /// Why the pass runs below the cutoff but cannot be planned (an incomplete census): every
-    /// icon is erased, which the game does not do ([`MissionView::diverged`]).
     pub(super) undecided: Option<&'static str>,
     pub(super) mode: i32,
     pub(super) regional: BTreeMap<u32, naval_regional::Region>,
 }
 
-/// The hour's mission pass: the regions the game admits below the cutoff, or none at or
-/// above it; what the hour cannot decide is counted.
 pub(super) fn naval_missions(
     inputs: &CounterInputs<'_>,
     icons: &MissionIcons,
@@ -615,7 +523,6 @@ pub(super) fn naval_missions(
             .entry(reason.clone().into())
             .or_default() += *count;
     }
-    // The air and raids map modes draw no naval mission icons.
     let runs = inputs.visibility.naval_missions
         && inputs.passes(|height| mission_pass(height, &inputs.content.defines));
     out.naval.missions = MissionPass {
@@ -628,49 +535,23 @@ pub(super) fn naval_missions(
     Ok(())
 }
 
-/// One pooled icon's entries: the windows the game built for it, one per
-/// record, and what its list holds.
 #[derive(Debug)]
 struct PooledIcon {
-    /// By record, in [`MISSION_SPRITES`] order.
     entries: Vec<Instance>,
-    /// Record indices in append order. Show and hide propagation reaches every
-    /// retained entry in this list.
     listed: Vec<usize>,
-    /// Retain entry registration order independently of the visible list. Appended
-    /// entries move to the end of paint order; clearing a list does not detach old
-    /// entries, so retained hidden entries still participate in lifecycle calls.
     attached: Vec<usize>,
     count_unknown: Vec<Option<&'static str>>,
     held_grids: Vec<Held>,
 }
 
-/// The mission icons' windows of one map view: the type-12 pool keyed by strategic region
-/// and each pooled icon's entries, built from one registry in one GUI
-/// viewport. A refused update withholds its windows through the module's one refusal state: an
-/// icon's in its pool's slot ([`Pool::refuse`]), an entry's in [`Self::entries_withheld`].
 #[derive(Debug, Default)]
 pub(super) struct MissionView {
     built: Option<(NativeWindows, [i32; 2])>,
     pool: Option<Pool<u32>>,
     icons: HashMap<SlotId, PooledIcon>,
-    /// The entries whose places an update left unknown ([`Placement::Unknown`]), by pooled slot
-    /// and record: the entry windows are the pooled icon's, so
-    /// the state stays with the slot, live or free, as the windows do.
     entries_withheld: Withheld<(SlotId, usize)>,
-    /// Why the pool's slots may no longer be the game's: a request or erasure the view cannot
-    /// reproduce (a pass it cannot plan, a region with no decided icon place never requested, the
-    /// frame a growth completes), after which the game's round robin may give a
-    /// region another slot than the game's, with another history. Every slot allocated
-    /// afterwards leaves the parts an update may keep unknown ([`Self::allocated`]); kept until
-    /// the windows are built again.
     diverged: Option<Cow<'static, str>>,
-    /// The windows whose fade and movement an update left unknown, with why, for the view's one
-    /// mechanism (`naval_windows::transition_unknown`), which takes them at the frame's tick.
     unsettled: Vec<(MissionWindow, String)>,
-    /// A live icon's region is reached this frame only through provinces out of view whose
-    /// presentation-dirty bit keeps them in the update list: the view presents frames until the
-    /// schedule's phase clears them.
     kept_off_screen: bool,
     pub(super) updated_grids: Vec<(u32, SlotId)>,
     pub(super) mode: i32,
@@ -678,16 +559,12 @@ pub(super) struct MissionView {
     badge_data: BTreeMap<u32, naval_mine_badges::Packet>,
 }
 
-/// A mission-view window in the GUI transition list: a pooled icon's root,
-/// or one of its entries by record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum MissionWindow {
     Icon(SlotId),
     Entry(SlotId, usize),
 }
 
-/// One region reached by the frame's province schedule. Its gate determines
-/// entries and icon placement; unreached regions are swept separately.
 #[derive(Clone, Debug)]
 struct Reached<'p> {
     region: u32,
@@ -695,11 +572,8 @@ struct Reached<'p> {
     point: [i32; 2],
 }
 
-/// A live icon's layout: nothing drawn, or the refusals of the module.
 type Laid = Result<Option<LaidIcon>, native_gui::Refusals>;
 
-/// One region's icon as the frame lays it out: the root's layout, the entries each holder of it
-/// holds, placed, and how many entries were laid out.
 struct LaidIcon {
     slot: SlotId,
     layout: native_gui::Layout,
@@ -708,8 +582,6 @@ struct LaidIcon {
     hits: Vec<(u32, super::naval_mission_inputs::hover::Control, [f32; 4])>,
 }
 
-/// Construct one retained entry window per mission record, assigning the
-/// resolved kind sprite in the existing update order.
 fn rebuild(
     entry: &native::Element,
     viewport: [i32; 2],
@@ -744,8 +616,6 @@ fn rebuild(
     })
 }
 
-/// Apply shown or hidden state to every retained list entry as the list receives
-/// its lifecycle call, preserving registration order.
 fn reach_entries(
     icon: &mut PooledIcon,
     windows: &MissionWindows<'_>,
@@ -769,7 +639,6 @@ fn reach_entries(
     Ok(())
 }
 
-/// A refusal of `path` of `kind`, for a reason the module gives as text.
 fn refusal(
     path: &str,
     kind: native_gui::RefusalKind,
@@ -782,7 +651,6 @@ fn refusal(
     }
 }
 
-/// A refusal of `element` for a reason the lifecycle gives as text.
 fn refused(element: &native::Element) -> impl Fn(String) -> native_gui::Refusals + '_ {
     move |why| {
         vec![refusal(
@@ -793,16 +661,11 @@ fn refused(element: &native::Element) -> impl Fn(String) -> native_gui::Refusals
     }
 }
 
-/// Update content in call order: hide unused counted containers, set their
-/// hide bits, empty every grid, then append the mode's prepared items.
-/// Grid items remain governed by the current update's membership.
 fn content_calls(
     windows: &MissionWindows<'_>,
     mode: i32,
     root: &mut Instance,
 ) -> Result<(), native_gui::Refusals> {
-    // Grid membership is supplied independently by the regional preparation.
-    // These controls keep their authored backgrounds while every update clears items.
     for (name, _) in COUNTED_CONTAINERS {
         if let Some(container) = windows.content.find(native::Kind::Container, name) {
             root.hide(windows.root, container)
@@ -815,8 +678,6 @@ fn content_calls(
     Ok(())
 }
 
-/// Apply the mission update after common icon placement and visibility,
-/// preserving child text, count, frame, grid and visibility call order.
 fn update_icon(
     windows: &MissionWindows<'_>,
     resources: &dyn native_gui::Resources,
@@ -857,7 +718,6 @@ fn update_icon(
                     .map_err(refused(button))?;
             }
             if let Some(count) = count {
-                // Write the count text through its bound control.
                 let text = match count_text(listed) {
                     Ok((text, true)) => {
                         let code = COLOR;
@@ -874,13 +734,10 @@ fn update_icon(
             update.wrote.push(COUNT);
             icon.listed.push(index);
         } else if let Some(why) = icon.count_unknown[index] {
-            // Leave an unlisted entry's count untouched. A last listing
-            // that hid an undecidable P2 count cannot supply its fade-out text (F3).
             update
                 .unknown
                 .push((COUNT, format!("its last listed count is unknown: {why}")));
         }
-        // An alert waiting for its P2 or P3 input is hidden and counted.
         if let Some(alert) = alert {
             set_shown(window, entry, alert, record.alert == Ok(true)).map_err(refused(alert))?;
         }
@@ -902,8 +759,6 @@ fn update_icon(
                 }
             }
         }
-        // A conditional write whose operands the hour lacks is not made: the marker is left as
-        // it was, unknown until a decided write.
         match record.pride {
             Ok(shown) => {
                 if let Some(pride) = pride {
@@ -922,7 +777,6 @@ fn update_icon(
         .map_err(refused(windows.list))?;
     let held = root.take_held();
     reach_entries(icon, windows, &held).map_err(refused(entry))?;
-    // Read the first entry window's size when positioning the mission list.
     let entry_size = native_gui::container_frame(entry, Some(viewport))
         .map_err(|why| vec![refusal(&entry.path, native_gui::RefusalKind::NoParent, why)])?
         .size;
@@ -949,7 +803,6 @@ fn update_icon(
         .position = Some([kept[0].wrapping_sub(shift), kept[1]]);
     let layout = match root.layout(windows.root, resources, None) {
         Ok(Some(layout)) => layout,
-        // The root draws nothing, the list with it: the list's layout returns.
         Ok(None) => return Ok(updated(Placement::Placed(Vec::new()))),
         Err(refusals) => return Ok(updated(unplaced(icon, windows, &refusals))),
     };
@@ -958,11 +811,8 @@ fn update_icon(
         .iter()
         .find(|holder| holder.path == windows.list.path)
     else {
-        // The list or a window above it is hidden: the list's layout returns, and every entry
-        // stands where it stood.
         return Ok(updated(Placement::Placed(Vec::new())));
     };
-    // Its only error is an element that is no overlapping list, as the reader built it.
     let places = match native_gui::list_places(
         windows.list,
         holder.content,
@@ -989,34 +839,18 @@ fn update_icon(
     Ok(updated(Placement::Placed(placed)))
 }
 
-/// What an update that made all its calls wrote and left unknown: each record's entry's parts
-/// (its count and pride marker, [`gui_windows::Update::wrote`] and
-/// [`gui_windows::Update::unknown`], taken by the module's refusal state through [`marks`]), the
-/// listed entries' places, and whether it placed the list ([`LIST_PLACE`]).
 struct Updated {
     placement: Placement,
     entries: Vec<gui_windows::Update>,
     list_placed: bool,
 }
 
-/// Entry places after an update completed all its calls. Showing the list lays
-/// it out, placing each listed entry and re-parenting it last. Every icon update
-/// that lays out the list writes its listed entries' places again; other updates
-/// leave those places unchanged.
 #[derive(Debug)]
 enum Placement {
-    /// The records whose entries the list's layout set at their places: none when nothing is
-    /// listed, or when the list or a window above it is hidden (the layout returns, leaving every
-    /// entry where it stood).
     Placed(Vec<usize>),
-    /// The module refuses what the places come from (the root's layout, or the list's places),
-    /// for the reason given: where the listed records' entries now stand is unknown.
     Unknown(Vec<usize>, String),
 }
 
-/// The listed entries whose places the module cannot compute (`refusals`): the list's layout
-/// re-parents them last all the same, but where it set them is
-/// unknown ([`Placement::Unknown`]).
 fn unplaced(
     icon: &mut PooledIcon,
     windows: &MissionWindows<'_>,
@@ -1045,10 +879,6 @@ impl MissionView {
         self.pool.as_ref().and_then(Pool::retry)
     }
 
-    /// The pool for `windows` in `viewport`, rebuilt for another registry or viewport.
-    /// The game constructs 0x40 hidden mission icons and their entries. Here entries
-    /// are built when their slot is first taken, since ticking a window that has never
-    /// been shown changes nothing.
     fn build(
         &mut self,
         native: &NativeWindows,
@@ -1075,9 +905,6 @@ impl MissionView {
         Ok(())
     }
 
-    /// Present the prepared hour in the shared schedule order: request or erase
-    /// reached regions, sweep unreached owners, update every retained live icon
-    /// and apply its mission display writes.
     fn frame(
         &mut self,
         windows: &MissionWindows<'_>,
@@ -1090,9 +917,6 @@ impl MissionView {
             return Ok(());
         };
         let result = self.frame_on(&mut pool, windows, resources, reached, viewport, report);
-        // A frame that stops leaves the icons it did not reach as they were, and the failure is
-        // structural, the same every frame: every icon is withheld until the windows are built
-        // again (the entries draw only through their icon).
         if let Err(why) = &result {
             let slots: Vec<SlotId> = pool.registrations().map(|(_, slot)| slot).collect();
             for slot in slots {
@@ -1108,11 +932,6 @@ impl MissionView {
         result
     }
 
-    /// A region's newly allocated slot after the view's allocations may have left the game's
-    /// ([`Self::diverged`]): it may hold another region's history there, so the parts an update
-    /// may keep are unknown, the icon's ([`LIST_PLACE`]) and its entries' ([`ENTRY_KEPT`]), each
-    /// entry waits for its next update ([`Unknown::Update`]), and the icon's and every entry's
-    /// fade and movement are unknown ([`Self::unsettled`]).
     fn allocated(&mut self, pool: &mut Pool<u32>, slot: SlotId, diverged: &str) {
         let why = format!("its pool slot may not be the game's: {diverged}");
         pool.refuse(
@@ -1148,12 +967,10 @@ impl MissionView {
             .collect()
     }
 
-    /// The windows whose fade and movement this frame's update left unknown, taken.
     pub(super) fn take_unsettled(&mut self) -> Vec<(MissionWindow, String)> {
         std::mem::take(&mut self.unsettled)
     }
 
-    /// The instance of a mission window, when it is built.
     pub(super) fn window(&self, window: MissionWindow) -> Option<&Instance> {
         match window {
             MissionWindow::Icon(slot) => self.pool.as_ref()?.instance(slot),
@@ -1161,8 +978,6 @@ impl MissionView {
         }
     }
 
-    /// A refusal on a mission window's refusal state: an icon's in its pool slot, an entry's in
-    /// [`Self::entries_withheld`].
     pub(super) fn refuse(
         &mut self,
         window: MissionWindow,
@@ -1181,7 +996,6 @@ impl MissionView {
         }
     }
 
-    /// `part` of a mission window known again.
     pub(super) fn known(&mut self, window: MissionWindow, part: &'static str) {
         match window {
             MissionWindow::Icon(slot) => {
@@ -1246,7 +1060,6 @@ impl MissionView {
         let pass = pool.update(root, |region, _| {
             match reached.iter().find(|owner| owner.region == *region) {
                 Some(owner) => Admission::Inside(owner.point),
-                // Unreachable: every live icon's region was reached above.
                 None => Admission::Empty,
             }
         })?;
@@ -1264,14 +1077,9 @@ impl MissionView {
             let (Some(instance), Some(icon)) = (pool.get(slot), self.icons.get_mut(&slot)) else {
                 continue;
             };
-            // The base's `gui_show` reached the list.
             let held = instance.take_held();
             reach_entries(icon, windows, &held)?;
             match update_icon(windows, resources, instance, icon, entries, viewport) {
-                // Every call made. the game makes the same calls on every
-                // update, so this one wrote again what an earlier one left unknown of its own
-                // calls, bar the operand-dependent parts it left unknown; a structural refusal
-                // it does not lift.
                 Ok(updated) => {
                     self.updated_grids.push((region, slot));
                     if self.mode == NAVAL_UI_MODE
@@ -1352,19 +1160,12 @@ impl MissionView {
                         mark(&mut self.entries_withheld, &(slot, record), left);
                     }
                     match updated.placement {
-                        // The list's layout set these entries at their places
-                        // (the game from
-                        // run by the list's Show in
-                        // every update): where an earlier update left one unknown is known again.
                         Placement::Placed(records) => {
                             for record in records {
                                 self.entries_withheld
                                     .rewrote(&(slot, record), Rewrote::Part(ENTRY_PLACE));
                             }
                         }
-                        // Only the next update that lays the list out with the entry listed
-                        // sets it again: an entry that leaves the list first stays withheld
-                        // while its hide runs.
                         Placement::Unknown(records, why) => {
                             for record in records {
                                 self.entries_withheld.refuse(
@@ -1376,10 +1177,6 @@ impl MissionView {
                         }
                     }
                 }
-                // A call that does not apply stopped the update part-way: what followed it is
-                // unknown, and the same call fails on every update of these windows, so no later
-                // update writes it all again. The icon and the entries it draws are withheld
-                // until the windows are built again (`MissionView::build`: a new pool).
                 Err(refusals) => {
                     let why = refusals
                         .iter()
@@ -1398,12 +1195,6 @@ impl MissionView {
         Ok(())
     }
 
-    /// The frame's first phase over every mission window: the pool's roots, in use or not, and
-    /// every entry each pooled icon built, shown or not ([`Pool::tick_clocks`],
-    /// [`Instance::tick_clocks`]). the game advances every shown
-    /// frame-animated sprite and looping
-    /// cornered tile before any window's transition, so an
-    /// entry that a root's ended hide reaches has had this frame's clock already.
     pub(super) fn tick_clocks(
         &mut self,
         windows: &MissionWindows<'_>,
@@ -1422,9 +1213,6 @@ impl MissionView {
         ticked
     }
 
-    /// Every mission window's position in the GUI transition list
-    /// ([`native_gui::lifecycle::Registration`]): live and free pool roots and each
-    /// pooled icon's entries.
     pub(super) fn registrations(
         &self,
     ) -> impl Iterator<Item = (native_gui::lifecycle::Registration, MissionWindow)> + '_ {
@@ -1441,9 +1229,6 @@ impl MissionView {
         roots.chain(entries)
     }
 
-    /// Tick transitions in reverse registration order. A root whose fade or hide
-    /// movement ends immediately hides its registered children, including retained
-    /// entries outside the current visible list.
     pub(super) fn tick_transitions_of(
         &mut self,
         windows: &MissionWindows<'_>,
@@ -1473,8 +1258,6 @@ impl MissionView {
         }
     }
 
-    /// The frame's last phase over every mission window ([`Pool::tick_draws`],
-    /// [`Instance::tick_draws`]), the pool's own diagnostics counted.
     pub(super) fn tick_draws(
         &mut self,
         windows: &MissionWindows<'_>,
@@ -1498,11 +1281,6 @@ impl MissionView {
         ticked
     }
 
-    /// Whether a mission window changes on its own ([`Pool::active`], [`Instance::active`]), or
-    /// an icon is kept off screen by the presentation-dirty bit ([`Self::kept_off_screen`]).
-    /// Whether a tick would change any mission window: one whose fade and movement this frame's
-    /// update left unknown, a pool with a growth waiting, or a window that changes on its own or
-    /// was written since its last tick ([`Pool::tick_due`], [`Instance::idle`]).
     pub(super) fn tick_due(&self) -> bool {
         !self.unsettled.is_empty()
             || self.pool.as_ref().is_some_and(Pool::tick_due)
@@ -1521,12 +1299,6 @@ impl MissionView {
                 .any(|icon| icon.entries.iter().any(Instance::active))
     }
 
-    /// Every icon of the manager's visible list laid out ([`Pool::visible`]: the live icons whose
-    /// window is visible, in the live list's order; an erased icon fading out draws nothing):
-    /// its root, and the entries attached under its list in paint order whose windows draw, each
-    /// placed where its window stands ([`native_gui::Holder::place`]). An icon or entry a refused
-    /// update withholds draws nothing and is counted under its reason. The drawn entries'
-    /// undecided children and undefined sprites are counted.
     fn laid(
         &self,
         windows: &MissionWindows<'_>,
@@ -1638,11 +1410,6 @@ impl MissionView {
     }
 }
 
-/// The presented frame's updates of the mission icons on the view's windows
-/// ([`MissionView::frame`]); the windows they found, which the view's one ordered pass then ticks
-/// ([`naval_windows::tick`]) and [`draw`] draws, or `None` when there are none. The regions the
-/// frame's province update list reaches ([`reach`]) are gated on their ledger;
-/// a region's window stands at its icon position projected.
 pub(super) fn update<'n>(
     inputs: &CounterInputs<'n>,
     pass: &MissionPass,
@@ -1710,8 +1477,6 @@ pub(super) fn update<'n>(
                 None
             }
         };
-        // A region with no icon position, or one behind the eye, keeps no icon: the game asks
-        // for one, so the pool's slots may no longer be the game's.
         let (entries, point) = match point {
             Some(point) => (entries, point.map(|value| value.round() as i32)),
             None => {
@@ -1731,7 +1496,6 @@ pub(super) fn update<'n>(
             point,
         });
     }
-    // A pass that runs but cannot be planned erases every icon, which the game does not.
     if let Some(why) = pass.undecided {
         view.diverged = Some(format!("the pass runs but cannot be planned: {why}").into());
     }
@@ -1776,9 +1540,6 @@ pub(super) fn update<'n>(
     Some(windows)
 }
 
-/// Regions are reached once through their first scheduled province. Camera
-/// admission and retained dirty provinces share the update list. A region
-/// with no scheduled province is swept after its dirty phase clears.
 fn reach<'c>(
     candidates: BTreeSet<u32>,
     provinces: impl Fn(u32) -> &'c [u32],
@@ -1805,9 +1566,6 @@ fn reach<'c>(
         .collect()
 }
 
-/// Each icon of the manager's visible list drawn at its window's place under the mission
-/// priority, one ordinal per icon in the live list's order, after the frame's tick.
-// Keep the pass, retained windows and output sinks borrowed from their existing owners.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw(
     inputs: &CounterInputs<'_>,
@@ -1942,7 +1700,6 @@ pub(super) fn draw(
     Ok(())
 }
 
-/// Mission icons show strictly below the content's mission-icon distance cutoff.
 fn mission_pass(height: f32, defines: &CounterDefines) -> bool {
     visible(height, defines.naval_mission_cutoff)
 }

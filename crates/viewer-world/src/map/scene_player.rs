@@ -1,8 +1,3 @@
-//! The model a free camera mode's user steers: one entity in its own pass, placed every frame by
-//! the mode's controller ([`super::Scene::set_player`]). It draws apart from the unit cutoffs and
-//! display switches, on every map copy its own bounds reach inside the view volume however high
-//! it stands above the band the map's objects are admitted in. It casts as every caster does,
-//! inside the light the game fits to the camera's capped water-plane footprint.
 
 use super::ModelPass;
 use crate::map::models::{KeyedInstance, ModelField, ModelInstance, ModelLibrary};
@@ -11,45 +6,31 @@ use std::io;
 use viewer_foundation::map::camera::{Camera, frustum};
 use viewer_foundation::map::frame::FrameConstants;
 
-/// The model a free camera mode's user steers: one entity of a content library.
 #[derive(Clone)]
 pub struct PlayerModel<'a> {
     pub library: &'a ModelLibrary,
-    /// The pass label whose entity data the library's figures take: `"unit models"` for a land
-    /// figure, `"flying aircraft"` for an aircraft.
     pub label: &'static str,
-    /// The entity's slot in `library`.
     pub mesh: usize,
     pub instance: ModelInstance,
 }
 
-/// The cull tile of the player's one-instance field.
 const PLAYER_TILE: f32 = 256.0;
 
-/// A bounding sphere: centre and radius.
 pub type Sphere = ([f32; 3], f32);
 
-/// The player's pass and the storage its frames reuse.
 pub(super) struct Player {
     pub pass: ModelPass,
     label: &'static str,
-    /// The placement the pass holds; a frame that does not move it changes nothing.
     placed: Option<(usize, ModelInstance)>,
-    /// The field and its build scratch, kept between moves.
     field: ModelField,
     scratch: Vec<(usize, ModelInstance)>,
     keyed: Vec<KeyedInstance>,
-    /// Its bounding sphere: around its placement, as far as its mesh's farthest point at its
-    /// scale ([`crate::map::models::ModelMesh::bound`]).
     pub sphere: Sphere,
-    /// This frame's map copies as x offsets ([`copies`]), and each copy's scene constants.
     pub offsets: Vec<f32>,
     pub frames: Vec<FrameConstants>,
 }
 
 impl Player {
-    /// Places `model` in `slot`, building the pass afresh for a new label. A placement equal to
-    /// the last changes nothing; a moved one rebuilds the field in the storage it kept.
     pub(super) fn place(
         slot: &mut Option<Self>,
         device: &wgpu::Device,
@@ -60,7 +41,6 @@ impl Player {
             .as_ref()
             .is_none_or(|player| player.label != model.label)
         {
-            // The player's lit queues draw straight into a pass of their own.
             let mut pass = ModelPass::new(model.library, model.label);
             pass.drawn_directly();
             *slot = Some(Self {
@@ -80,7 +60,6 @@ impl Player {
         if player.placed == Some(placement) {
             return Ok(());
         }
-        // What the pass must upload depends on the entity alone, not on where it stands.
         let entity_changed = player.placed.is_none_or(|(mesh, _)| mesh != model.mesh);
         player.scratch.push(placement);
         player.field.rebuild(
@@ -106,10 +85,6 @@ impl Player {
     }
 }
 
-/// The x offsets of the map copies on which `sphere` reaches inside `camera`'s view volume, into
-/// `out`: every copy within the view volume's own x extent (its corners', an oblique view's far
-/// corners reaching farther in x than its depth) is tested, whatever the height, so a copy
-/// across the seam is drawn wherever it is seen.
 pub fn copies(camera: &Camera, viewport: [u32; 2], (centre, radius): Sphere, out: &mut Vec<f32>) {
     out.clear();
     let planes = camera.frustum_planes(viewport);

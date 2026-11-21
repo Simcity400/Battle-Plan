@@ -1,13 +1,3 @@
-//! Hourly ordered vectors the naval combat map icons are placed from: each province's combat
-//! vector with every entry's class, each naval combat's transfers and each live transfer's live
-//! units.
-//!
-//! With [`province_combat_changes`], the latest complete province walk is held in a home the
-//! pool's frames share ([`Home`]): its take epoch, the province array header and the provinces
-//! it found with combats. Only the hourly capture takes the marks or touches the home; the
-//! sizing census walks every province. While the hour's take returns that epoch and the header is the held one, only those
-//! provinces and the marked ones are read; every other province was empty in the held walk and
-//! no writer touched its vector since, so it has no row. Otherwise every province is read.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
@@ -23,7 +13,6 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 
-// The collector copies the engine's entry classes into the row unchanged.
 const _: () = assert!(
     cprovince::COMBAT_LAND == NavalProvinceCombatRow::LAND
         && cprovince::COMBAT_BORDER_WAR == NavalProvinceCombatRow::BORDER_WAR
@@ -57,9 +46,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Live attach/cadence floor for the original map-icon vectors and
-    /// transfer/unit rosters. The temporary owned walk keeps distinct-reference
-    /// scratch complete while measuring its demand.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -67,7 +53,6 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         let mut capture = Captured::vacant();
-        // The census neither takes the hourly marks nor touches the held walk.
         capture.capture_with(memory, base, state, None);
         let mut failure = None;
         for (floor, outcome) in [
@@ -84,33 +69,26 @@ impl Capacities {
         }
         self.province_combats = self.province_combats.max(capture.province_combats.required);
         self.transfer_handles = self.transfer_handles.max(capture.transfer_handles.required);
-        // Distinct transfer rows also hold every nonzero original occurrence
-        // until compaction; the emitted unique row count alone is insufficient.
         self.transfers = self.transfers.max(capture.transfers.rows.len());
         self.unit_handles = self.unit_handles.max(capture.unit_handles.required);
         failure.map_or(Ok(()), Err)
     }
 }
 
-/// The latest complete province walk ([`province_combat_changes`]).
 struct Held {
     epoch: u64,
     header: [u8; 16],
-    /// The provinces it found with combats, ascending.
     provinces: Vec<u32>,
 }
 
-/// The held walk and the largest its provinces grew, also while a capture has it out.
 #[derive(Default)]
 pub struct Shelf {
     held: Option<Held>,
     bytes: usize,
 }
 
-/// One pool's held walk, which every frame's hourly capture takes and returns.
 pub type Home = engine_allocation::SharedBox<std::sync::Mutex<Shelf>>;
 
-/// A pool's empty home; a refused allocation is the collector's allocation failure.
 pub fn new_home() -> std::io::Result<Home> {
     engine_allocation::shared(std::sync::Mutex::default())
 }
@@ -119,19 +97,15 @@ fn shelf(home: &Home) -> std::sync::MutexGuard<'_, Shelf> {
     home.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The high-water bytes of the pool's held walk.
 pub fn home_allocated_bytes(home: &Home) -> usize {
     shelf(home).bytes
 }
 
 pub struct Captured {
-    /// None only in a placeholder, which walks every province.
     home: Option<Home>,
     provinces: CaptureRows<cprovince::DirectCombatsRow>,
-    /// The hour's provinces to read when the held walk vouches for the rest, ascending.
     listed: Vec<u32>,
     province_combats: Arena<u64>,
-    /// Each entry's class, at the same index as its handle in `province_combats`.
     province_kinds: Arena<u8>,
     combats: CaptureRows<transfers::CombatTransfers>,
     transfer_handles: Arena<u64>,
@@ -140,7 +114,6 @@ pub struct Captured {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::without_home(&Capacities::default())
     }
@@ -152,7 +125,6 @@ impl Captured {
         }
     }
 
-    /// A frame's capture with no held walk until the pool shares its home ([`Self::share_home`]).
     pub fn without_home(c: &Capacities) -> Self {
         Self {
             home: None,
@@ -207,17 +179,14 @@ impl Captured {
         self.home.clone()
     }
 
-    /// Take and return the held walk of `home`, shared with the pool's other frames.
     pub fn share_home(&mut self, home: &Home) {
         self.home = Some(home.clone());
     }
 
-    /// The hourly capture, the marks' one consumer.
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         self.capture_with(memory, base, state, Some(&province_combat_changes::Observer))
     }
 
-    /// `changes` is the hourly capture's; without it every province is read.
     pub fn capture_with(
         &mut self,
         memory: &impl Memory,
@@ -268,7 +237,6 @@ impl Captured {
         ]
     }
 
-    /// The province walk, reading only what the held walk and the marks leave unproven.
     fn walk_provinces(
         &mut self,
         memory: &impl Memory,
@@ -295,7 +263,6 @@ impl Captured {
         self.listed.clear();
         let mut complete = true;
         let listed = &mut self.listed;
-        // The take clears the marks: a walk that does not complete is not held.
         let epoch = changes.take(&mut |id| {
             complete &= u32::try_from(id).is_ok_and(|id| {
                 engine_allocation::advisory(|| engine_allocation::reserve(listed, 1)).is_ok() && {
@@ -446,7 +413,6 @@ mod tests {
         bytes[at..at + value.len()].copy_from_slice(value);
     }
 
-    /// Provinces 1 to 3; only `with` hold the naval combat.
     fn world(with: &[usize]) -> Vec<u8> {
         let mut bytes = vec![0; 0x5000];
         let array = |bytes: &mut Vec<u8>, at: usize, data: usize, count: u32| {
@@ -488,27 +454,21 @@ mod tests {
         )
     }
 
-    /// An empty province no writer touched is not read again; a marked one is, and a new
-    /// epoch reads every province.
     #[test]
     fn provinces_without_combats_are_read_again_only_when_a_writer_marks_them() {
         let domain = province_combat_changes::Domain::enabled(64);
         let mut capture = Captured::with_capacities(&Capacities::default());
         let held = world(&[2]);
         assert_eq!(hour(&mut capture, &held, &domain), (Outcome::Rows { len: 1 }, vec![2]));
-        // Province 1's slot no longer reads, but no writer marked it: it is not read.
         let mut unread = held.clone();
         put(&mut unread, SLOTS + 8, &0_u64.to_le_bytes());
         assert_eq!(hour(&mut capture, &unread, &domain), (Outcome::Rows { len: 1 }, vec![2]));
-        // A combat appended to province 3 marks it.
         drop(domain.notify(0, Some(3)));
         let both = world(&[2, 3]);
         assert_eq!(hour(&mut capture, &both, &domain), (Outcome::Rows { len: 2 }, vec![2, 3]));
-        // The combat leaves province 2.
         drop(domain.notify(1, Some(2)));
         let third = world(&[3]);
         assert_eq!(hour(&mut capture, &third, &domain), (Outcome::Rows { len: 1 }, vec![3]));
-        // A new epoch reads every province, so the unreadable slot refuses.
         domain.boundary(true);
         let mut unread = third.clone();
         put(&mut unread, SLOTS + 8, &0_u64.to_le_bytes());
@@ -516,7 +476,6 @@ mod tests {
             hour(&mut capture, &unread, &domain).0,
             Outcome::Unavailable { .. }
         ));
-        // An incomplete walk is not held: the next hour reads every province again.
         assert!(matches!(
             hour(&mut capture, &unread, &domain).0,
             Outcome::Unavailable { .. }

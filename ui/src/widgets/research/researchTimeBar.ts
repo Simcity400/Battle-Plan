@@ -3,17 +3,13 @@ import type { ResearchTimeSplit } from './researchJourney.ts';
 
 export type ResearchSegmentTone = 'base' | 'penalty' | 'core' | 'slower' | 'paused' | 'saved' | 'juggle' | 'earlier' | 'remaining';
 
-/** One piece of a time row, in fixed5 days. `index` shades successive modifiers. */
 export interface ResearchSegment { key: string; value: bigint; tone: ResearchSegmentTone; name: string; kind?: string; effect: string; index?: number }
 
 export interface ResearchTimeRows {
   expected: ResearchSegment[];
   took: ResearchSegment[];
-  /** The base time plus the ahead-of-time penalty. */
   expectedTotal: bigint;
-  /** Time the research occupied, including time out of a slot. */
   elapsed: bigint;
-  /** The longer row, which both rows share as their scale. */
   axis: bigint;
 }
 
@@ -22,11 +18,6 @@ const kindOf = (m: { label: string; kind: string }) =>
   m.label.toLowerCase().includes(m.kind) ? undefined : m.kind.charAt(0).toUpperCase() + m.kind.slice(1);
 const total = (segments: readonly ResearchSegment[]) => segments.reduce((sum, s) => sum + s.value, 0n);
 
-/** Expected is the base time and the ahead-of-time penalty, then what added time
- * (maluses, returned saved days). Took is the time researched and time out of a
- * slot, then what saved it. The rows close on the same total, Took longer only by
- * time out of a slot, and every segment is its own effect however far maluses and
- * bonuses overlap: a malus can add more days than were researched. */
 export function researchTimeRows(split: ResearchTimeSplit, active: boolean): ResearchTimeRows | null {
   const expectedTotal = split.base + split.penalty;
   if (expectedTotal <= 0n) return null;
@@ -41,7 +32,6 @@ export function researchTimeRows(split: ResearchTimeSplit, active: boolean): Res
   ].filter(s => s.value > 0n);
   const took: ResearchSegment[] = [
     { key: 'core', value: split.taken, tone: 'core' as const, name: active ? 'Time researched so far' : 'Time researched', effect: days(split.taken) },
-    // Out of a slot: elapsed time on top of the time researched.
     { key: 'paused', value: split.paused, tone: 'paused' as const, name: 'Not in a research slot', effect: `+${days(split.paused)}` },
     ...saved.map((m, i) => ({ key: m.key, value: m.days, tone: 'saved' as const, name: m.label, kind: kindOf(m), effect: `−${days(m.days)}`, index: i })),
     { key: 'other-saved', value: split.other, tone: 'saved' as const, name: split.floored ? 'Minimum research speed' : 'Other effects', effect: `−${days(split.other)}`, index: saved.length },

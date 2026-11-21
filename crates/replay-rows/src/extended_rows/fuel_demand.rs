@@ -17,8 +17,6 @@ pub struct FuelDemandUnit {
     pub reference: u64,
     pub parent: u64,
     pub ordinal: u32,
-    /// Native roster, expeditionary and logical owner words, independently of
-    /// the country whose tooltip traversed this occurrence.
     pub owners: Option<[u32; 3]>,
     pub rate_raw: Option<i64>,
     pub reason: Vec<u8>,
@@ -60,7 +58,6 @@ value_struct!(FuelDemandFleet { reference: u64, name: Option<Vec<u8>>, name_reas
 pub struct FuelDemandWing {
     pub reference: u64,
     pub owner: Option<u32>,
-    /// Select a signed-positive country override, otherwise the pool owner.
     pub country_override: Option<i32>,
     pub owner_reason: Vec<u8>,
     pub pool_ordinal: u32,
@@ -68,7 +65,6 @@ pub struct FuelDemandWing {
     pub name: Option<Vec<u8>>,
     pub name_reason: Vec<u8>,
     pub inputs: Option<AirInputs>,
-    /// Index of an owned same-read context, not a later region lookup.
     pub context: Option<u32>,
     pub reason: Vec<u8>,
 }
@@ -102,25 +98,16 @@ value_struct!(FuelDemandContext {
     sums: [i64; 24]
 });
 
-/// The hour a demand pack was read. A current writer reads every pack with
-/// its CountryFuel row, in the same walk (`fuel_demand::attach`), so the
-/// pack's hour is its host row's read hour and costs one tag byte that no
-/// read changes ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum FuelDemandHour {
-    /// Read at its host CountryFuel row's read hour.
     #[default]
     Host,
-    /// A current writer's explicit hour, when its capture had none: a tag
-    /// byte and the hour.
     Stamped(i32),
-    /// An older recording's stored hour, four bytes without a tag.
     Historical(i32),
 }
 
 impl FuelDemandHour {
-    /// The hour the pack was read, given the hour its host row was read.
     pub fn at(self, read_hour: i32) -> i32 {
         match self {
             Self::Host => read_hour,
@@ -136,14 +123,11 @@ impl Value for FuelDemandHour {
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(match (crate::rows::historical_stamp(), self) {
-            // The test-only historical writer stores the older layout.
             (Some(_), _) => size_of::<i32>(),
             (None, Self::Host) => 1,
             (None, Self::Stamped(_) | Self::Historical(_)) => 1 + size_of::<i32>(),
         })
     }
-    /// What the source recording stored: an older recording's hour had no
-    /// tag.
     fn recorded_bytes(&self) -> io::Result<usize> {
         Ok(match self {
             Self::Host => 1,
@@ -160,7 +144,6 @@ impl Value for FuelDemandHour {
                 output.extend_from_slice(&hour.to_le_bytes())
             }
             (None, Self::Host) => output.push(0),
-            // A current writer stores any explicit hour with its tag.
             (None, Self::Stamped(hour) | Self::Historical(hour)) => {
                 output.push(1);
                 output.extend_from_slice(&hour.to_le_bytes());
@@ -180,14 +163,6 @@ impl Value for FuelDemandHour {
     }
 }
 
-/// Supplying-read current required-use rates at fixed5. These are independent
-/// of FuelAwardDay's completed updates. Names are stored game-language
-/// bytes from this boundary; consumers retain the shared language guard.
-///
-/// From [`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`] a recorded
-/// pack holds only its header (hour, identity and reasons); its six lists are
-/// FuelDemandParts rows, which [`assemble_demand_parts`] puts back. Older
-/// recordings hold the lists here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandRead {
@@ -211,7 +186,6 @@ value_struct!(FuelDemandRead { hour: FuelDemandHour, country_instance: Option<u3
     sites: Vec<FuelDemandSite>, air_reason: Vec<u8>, contexts: Vec<FuelDemandContext>, reason: Vec<u8> });
 opaque_value!(FuelDemandRead);
 
-/// One part of a country's demand pack: an element of one of its lists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum FuelDemandPart {
@@ -230,10 +204,8 @@ impl Default for FuelDemandPart {
 }
 
 impl FuelDemandPart {
-    /// The pack's lists, in key order.
     pub const KINDS: u8 = 6;
 
-    /// The pack list the part belongs to.
     pub fn kind(&self) -> u8 {
         match self {
             Self::Division(_) => 0,
@@ -245,8 +217,6 @@ impl FuelDemandPart {
         }
     }
 
-    /// The part's identity within its list: a unit, group or fleet
-    /// reference, a site's list and ordinal, a context's region.
     pub fn ident(&self) -> u64 {
         match self {
             Self::Division(unit) | Self::TaskForce(unit) => unit.reference,
@@ -315,16 +285,6 @@ impl Value for FuelDemandPart {
 }
 opaque_value!(FuelDemandPart);
 
-/// FuelDemandParts: one element of a CountryFuel row's demand pack lists,
-/// keyed by the row's country, its list (`kind`), its identity there
-/// ([`FuelDemandPart::ident`]) and, for an identity a list repeats, its
-/// occurrence among them in list order. A part keeps its key while others
-/// join or leave, so an hour that changes one division's rate stores only
-/// that row. `position` is its index in the native list, which restores the
-/// list's order (a wing's context index included). The table holds the
-/// parts of a complete CountryFuel read; a truncated read keeps its packs
-/// whole and the table is unavailable, as it is with an unavailable
-/// CountryFuel ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandPartRow {
@@ -342,10 +302,6 @@ typed_codec!(FuelDemandPartRow, 115,
  |row| { if row.kind >= FuelDemandPart::KINDS || row.part.kind() != row.kind || row.part.ident() != row.ident { return Err(invalid("fuel demand part outside its key")); } Ok(()) });
 
 impl FuelDemandRead {
-    /// Whether every element of the pack's lists has a FuelDemandParts key
-    /// and position: no identity repeats more than 65,536 times in a list,
-    /// and no list is longer than a position counts. A pack that is not stays
-    /// whole in its CountryFuel row ([`assemble_demand_parts`]).
     pub fn splittable(&self) -> bool {
         fn fits(mut idents: impl ExactSizeIterator<Item = u64>) -> bool {
             if u32::try_from(idents.len().saturating_sub(1)).is_err() {
@@ -374,8 +330,6 @@ impl FuelDemandRead {
             )
     }
 
-    /// The pack's header, its lists left empty, and its lists' elements as
-    /// FuelDemandParts rows of `country`, in key order.
     pub fn split(mut self, country: u32) -> io::Result<(Self, Vec<FuelDemandPartRow>)> {
         let lists: [Vec<FuelDemandPart>; FuelDemandPart::KINDS as usize] = [
             std::mem::take(&mut self.divisions)
@@ -428,7 +382,6 @@ impl FuelDemandRead {
         Ok((self, rows))
     }
 
-    /// Whether any of the pack's lists holds an element.
     fn holds_lists(&self) -> bool {
         !(self.divisions.is_empty()
             && self.groups.is_empty()
@@ -438,8 +391,6 @@ impl FuelDemandRead {
             && self.contexts.is_empty())
     }
 
-    /// Put a header's lists back from its country's parts, in any order.
-    /// Each list's positions must be exactly 0..n.
     fn assemble(&mut self, parts: &[FuelDemandPartRow]) -> Result<(), &'static str> {
         let mut lists: [Vec<(u32, &FuelDemandPart)>; FuelDemandPart::KINDS as usize] =
             Default::default();
@@ -499,9 +450,6 @@ impl FuelDemandRead {
         game_model::fuel_demand::wing_rate_with_context(inputs, sums)
     }
 
-    /// Native cached army/naval sums and recomputed air sum. A family's failure
-    /// leaves other families and known contributor rows available. Do not use
-    /// this wrapping aggregate as an exact widened reporting sum.
     pub fn native_rates(&self) -> [Result<i64, &'static str>; 3] {
         if !self.reason.is_empty() {
             return [Err("fuel current demand read identity unavailable"); 3];
@@ -537,7 +485,6 @@ impl FuelDemandRead {
     }
 }
 
-/// Restore typed demand parts into their countries' already-cloned rows.
 pub fn assemble_demand_parts(
     rows: &mut [CountryFuelRow],
     parts: Result<&[FuelDemandPartRow], &'static str>,
@@ -550,7 +497,6 @@ pub fn assemble_demand_parts(
             continue;
         }
         let assembled = parts.and_then(|parts| {
-            // Parts sort by country first.
             let start = parts.partition_point(|part| part.country < row.country);
             let end = parts.partition_point(|part| part.country <= row.country);
             pack.assemble(&parts[start..end])

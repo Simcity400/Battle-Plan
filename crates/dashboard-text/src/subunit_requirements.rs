@@ -1,10 +1,3 @@
-//! Canonical sub-unit equipment requirements, from recorded simulation
-//! state and the matching sub-unit database content.
-//!
-//! A country-local clone is a separate definition
-//! from its global one: it groups apart, and its requirements are the
-//! recorded override when `CountryLocalSubunits` names it, else the global
-//! authored ones.
 
 #[cfg(test)]
 use crate::subunit_files::subunit_keys;
@@ -32,14 +25,9 @@ pub struct SubUnit {
     pub key: String,
     pub sprite: String,
     pub category: u64,
-    /// `division_3d_model_priority`, which replaces the equipment score.
     pub model_priority: Option<i32>,
-    /// `can_be_parachuted`: a template whose every grouped definition may be parachuted can
-    /// drop from the air. An omitted flag is no; a value other than yes or no is refused.
     pub can_be_parachuted: Result<bool, String>,
-    /// What the division stat calculator reads of the definition.
     pub sheet: Sheet,
-    /// Canonical (archetype, fixed5 amount) needs in native order.
     requirements: Vec<(String, i64)>,
 }
 
@@ -57,31 +45,21 @@ impl Default for SubUnit {
     }
 }
 
-/// A support company's authored grant to the definitions of one category.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grant {
     pub category: String,
-    /// `add = yes` adds to their base words; otherwise each value is a factor.
     pub add: bool,
-    /// Every other field as authored, key and scalar text, in order: the stat words, which
-    /// their consumer resolves against the executable's stat registry.
     pub words: Vec<(String, String)>,
 }
 
-/// A definition's authored operands of the division stat calculator. An authored form the sheet
-/// cannot read is refused by name and leaves the sheet unknown.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sheet {
-    /// Every other scalar field as authored, key and text, in order: the stat words among them,
-    /// which their consumer resolves against the executable's stat registry (a later word for
-    /// the same stat replaces an earlier one).
     pub words: Vec<(String, String)>,
     pub combat_width: i64,
     pub manpower: i32,
     pub training_time: i32,
     pub group: Option<String>,
     pub categories: Vec<String>,
-    /// The critical equipment types (`essential`), as authored, in order.
     pub essential: Vec<String>,
     pub grants: Vec<Grant>,
     pub transport: Option<String>,
@@ -89,7 +67,6 @@ pub struct Sheet {
     pub refused: Vec<Refusal>,
 }
 
-/// A field of the sheet that cannot be read, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refusal {
     pub field: String,
@@ -103,21 +80,16 @@ fn refuse(refused: &mut Vec<Refusal>, field: &str, why: String) {
 #[derive(Clone, Copy, Debug)]
 pub struct EquipmentModel<'a> {
     pub archetype: &'a str,
-    /// Native archetype registration order is the first production comparator.
     pub archetype_ordinal: usize,
-    /// The type itself unless an authored `family`
-    /// or a duplicated archetype names another.
     pub family: &'a str,
     pub model_priority: i32,
     pub visual_level: i32,
     pub model: &'a str,
     pub depth: i32,
-    /// The type's authored `derived_variant_name` and `variant_name` bytes.
     pub derived_variant_name: &'a [u8],
     pub variant_name: &'a [u8],
 }
 
-// Loaded once a run, and handed through a preparation's spool as it is.
 #[cfg(any(test, feature = "test-support"))]
 impl replay_spool::Spooled for Content {
     const RESIDENT: bool = true;
@@ -131,24 +103,15 @@ impl replay_spool::Spooled for Content {
     }
 }
 
-/// Authored sub-units, and the content's equipment database as
-/// `installed_content_core::equipment` loads it, `duplicate_archetypes` copies included.
 #[derive(Clone, Debug, Default)]
 pub struct Content {
-    /// Each sub-unit by its key under the lexer's ASCII fold, the database's identity: a key
-    /// that differs only in case declares the same one again, under its first spelling.
     subunits: BTreeMap<String, SubUnit>,
-    /// Sub-unit identities in database order (the game creates each on first
-    /// sight: the database's files in its order, keys in declaration order), which
-    /// The game walks from index 1 (0 is the null object).
     order: Vec<String>,
     pub equipment: Arc<Database>,
-    /// The `need` entries the game reports and drops, each with why.
     pub dropped: Vec<String>,
 }
 
 impl Content {
-    /// The sub-unit database's files in its order; type masks and groups are the database's own.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut content = Self {
             equipment: layers
@@ -196,7 +159,6 @@ impl Content {
         Ok(())
     }
 
-    /// The database's type masks (by lexer token kind) and groups (kept by a redefinition).
     fn take_database(&mut self, units: &SubUnits) -> io::Result<()> {
         for subunit in self.subunits.values_mut() {
             let key = &subunit.key;
@@ -230,15 +192,10 @@ impl Content {
         self.subunits.is_empty()
     }
 
-    /// The existing recorded equipment database, borrowed by native consumers.
     pub fn equipment_content(&self) -> &Database {
         &self.equipment
     }
 
-    /// Sub-units and equipment from documents read in order: the
-    /// equipment through the database's load, each document an equipment
-    /// file in that order, the sub-units as [`Content::load`] reads them;
-    /// for other modules' fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_test_documents(documents: &[&[u8]]) -> Self {
         let paths: Vec<_> = (0..documents.len())
@@ -267,9 +224,6 @@ impl Content {
         content
     }
 
-    /// The archetype's sub-unit list contains every sub-unit whose `need`
-    /// specifies a positive amount of it, in database order. Other equipment
-    /// types have an empty list.
     pub fn archetype_subunits(&self, key: &str) -> io::Result<Vec<&SubUnit>> {
         if !self.equipment(key)?.is_archetype {
             return Ok(Vec::new());
@@ -286,17 +240,11 @@ impl Content {
             .collect())
     }
 
-    /// Model selection: DLC eligibility is tested only for definitions that
-    /// actually have copied/authored module slots, using their effective type.
     pub fn has_enabled_module_slots(&self, key: &str, dlc_mask: u64) -> io::Result<bool> {
         let slots = &self.equipment(key)?.module_slots;
         Ok(!slots.is_empty() && self.equipment_category(key)? & dlc_mask != 0)
     }
 
-    /// The finalized model inputs on a type: its
-    /// archetype and that archetype's registration order, its family, the
-    /// model priority and parent depth, the visual
-    /// level and the model.
     pub fn equipment_model(&self, key: &str) -> io::Result<EquipmentModel<'_>> {
         let equipment = self.equipment(key)?;
         let archetype = self.archetype_of(key, equipment)?;
@@ -316,12 +264,6 @@ impl Content {
         })
     }
 
-    /// The authored equipment type a variant records by token. The engine
-    /// builds a type's name and token from one authored key, and the
-    /// database finds a name without case, as
-    /// the lexer's fold makes one token of names equal under it, so this
-    /// hour's spelling (`TokenNames`) names that type; an unspelled token or
-    /// none is refused.
     pub fn equipment_key<'a>(
         &'a self,
         tokens: &TokenNames<'_>,
@@ -339,8 +281,6 @@ impl Content {
         self.name(at).map_err(|error| error.to_string())
     }
 
-    /// The authored sub-unit a recorded definition token names, under the
-    /// lexer's fold like [`Self::equipment_key`].
     pub fn subunit_of_token(&self, tokens: TokenNames<'_>, token: u32) -> io::Result<&SubUnit> {
         let spelling = tokens
             .name(token)
@@ -349,8 +289,6 @@ impl Content {
             .ok_or_else(|| invalid(format!("missing authored sub-unit {spelling}")))
     }
 
-    /// The sub-unit a key or recorded spelling names: keys are one token under the lexer's
-    /// ASCII fold.
     pub fn subunit(&self, key: &str) -> Option<&SubUnit> {
         self.subunits.get(&fold_token(key))
     }
@@ -361,7 +299,6 @@ impl Content {
             .ok_or_else(|| invalid(format!("missing authored equipment {key}")))
     }
 
-    /// A type's name as the port's text, or why it is not.
     fn name(&self, at: usize) -> io::Result<&str> {
         let equipment = &self.equipment.equipment[at];
         equipment.name_str().map_err(|refused| {
@@ -372,27 +309,22 @@ impl Content {
         })
     }
 
-    /// The equipment type's archetype; the null object is refused.
     fn archetype_of(&self, key: &str, equipment: &Equipment) -> io::Result<usize> {
         equipment
             .archetype
             .ok_or_else(|| invalid(format!("equipment {key} has no archetype in the content")))
     }
 
-    /// The equipment type's archetype name.
     pub fn archetype(&self, key: &str) -> io::Result<&str> {
         let archetype = self.archetype_of(key, self.equipment(key)?)?;
         self.name(archetype)
     }
 
-    /// The equipment type's effective category mask.
     fn equipment_category(&self, key: &str) -> io::Result<u64> {
         Ok(self.equipment.category(self.equipment(key)?))
     }
 }
 
-/// Scalars the game's reset leaves as an earlier declaration set them: kept until the new
-/// declaration assigns them again.
 const KEPT_SCALARS: [&str; 6] = [
     "affects_speed",
     "can_exfiltrate_from_coast",
@@ -402,7 +334,6 @@ const KEPT_SCALARS: [&str; 6] = [
     "own_equipment_fuel_consumption_mult",
 ];
 
-/// Lists the reset leaves and a redefinition extends: their entries and refusals all stay.
 const KEPT_LISTS: [&str; 7] = [
     "categories",
     "essential",
@@ -417,9 +348,6 @@ fn kept(names: &[&str], field: &str) -> bool {
     names.iter().any(|name| field.eq_ignore_ascii_case(name))
 }
 
-/// One declaration replayed onto `previous`, as the game's reset leaves it: model priority,
-/// transport, the own-fuel multiplier and the kept words stay; categories, essential and
-/// battalion multipliers are extended; everything else starts again.
 fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::Result<SubUnit> {
     let mut subunit = SubUnit {
         key: key.to_owned(),
@@ -433,8 +361,6 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
         subunit.sheet.transport.clone_from(&previous.sheet.transport);
         subunit.sheet.own_fuel_consumption = previous.sheet.own_fuel_consumption;
     }
-    // What the earlier declaration left of the kept scalars and lists; a scalar the new
-    // declaration assigns replaces its earlier word and refusal.
     let (carried_words, carried_refused) = previous.map_or_else(Default::default, |previous| {
         let words: Vec<_> = previous.sheet.words.iter()
             .filter(|(word, _)| kept(&KEPT_SCALARS, word) || kept(&KEPT_LISTS, word)).cloned().collect();
@@ -508,7 +434,6 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
                 let grant = read_grant(key, &field.value, &mut subunit.sheet.refused);
                 subunit.sheet.grants.extend(grant);
             }
-            // Lexical order until references resolve to archetypes.
             b"need" => subunit.requirements.extend(needs::entries(&field.value)?),
             word => {
                 if let Some(value) = field.value.scalar_str() {
@@ -531,7 +456,6 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
     Ok(subunit)
 }
 
-/// Names resolved by token: only bare entries count, and one already held (without case) is skipped.
 fn extend_tokens(
     key: &str,
     field_name: &str,
@@ -557,7 +481,6 @@ fn extend_tokens(
     }
 }
 
-/// An authored fixed5 word of the sheet, or zero with its refusal noted.
 fn sheet_fixed5(key: &str, field: &str, value: &Value, refused: &mut Vec<Refusal>) -> i64 {
     match value
         .scalar_str()
@@ -571,7 +494,6 @@ fn sheet_fixed5(key: &str, field: &str, value: &Value, refused: &mut Vec<Refusal
     }
 }
 
-/// An authored integer of the sheet, or zero with its refusal noted.
 fn sheet_integer(key: &str, field: &str, value: &Value, refused: &mut Vec<Refusal>) -> i32 {
     match value.scalar_str().map(str::parse::<i32>) {
         Some(Ok(value)) => value,
@@ -582,7 +504,6 @@ fn sheet_integer(key: &str, field: &str, value: &Value, refused: &mut Vec<Refusa
     }
 }
 
-/// One `battalion_mult` block: its category, its kind and its stat values.
 fn read_grant(key: &str, value: &Value, refused: &mut Vec<Refusal>) -> Option<Grant> {
     let Some(items) = value.items() else {
         refuse(refused, "battalion_mult", format!("sub-unit {key}: battalion_mult is not a block"));
@@ -625,34 +546,27 @@ fn read_grant(key: &str, value: &Value, refused: &mut Vec<Refusal>) -> Option<Gr
     Some(grant)
 }
 
-// ---------------------------------------------------------- the recorded template
 
-/// Native sub-unit definition identity: a local clone and the global
-/// definition share a token but are separate definitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Definition {
     Global(u32),
     Local { country: u32, token: u32 },
 }
 
-/// The hour's tables a template's definitions resolve through.
 pub struct Sources<'a> {
     pub tokens: TokenNames<'a>,
     index: Arc<SourceIndex>,
 }
 
-/// The hour's country links and local sub-unit overrides, as [`Sources`] reads them.
 #[derive(PartialEq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SourceIndex {
     links: BTreeMap<u32, u32>,
-    /// (canonical country, token) -> the override's (archetype token, amount).
     local: BTreeMap<(u32, u32), Vec<(u32, i64)>>,
     local_complete: bool,
 }
 
 impl SourceIndex {
-    /// Its links and overrides.
     pub fn len(&self) -> usize {
         self.links.len() + self.local.len()
     }
@@ -671,8 +585,6 @@ impl<'a> Sources<'a> {
         })
     }
 
-    /// The sources of an hour whose links, local sub-units and tokens are those an earlier
-    /// [`Self::read`] read `index` with: its tokens are taken as that read checked them.
     pub fn reuse(frame: &'a DecodedFrame, index: Arc<SourceIndex>) -> io::Result<Self> {
         let tokens = rows::<tables::LexicalTokens>(frame)?;
         Ok(Self {
@@ -681,7 +593,6 @@ impl<'a> Sources<'a> {
         })
     }
 
-    /// [`Self::read`] of any frame's tables, a walk's views among them.
     pub fn read_in(frame: HourFrame<'a>) -> io::Result<Self> {
         if let Some(decoded) = frame.decoded() {
             return Self::read(decoded.decoded_frame());
@@ -693,7 +604,6 @@ impl<'a> Sources<'a> {
         })
     }
 
-    /// [`Self::reuse`] of any frame's tables, a walk's views among them.
     pub fn reuse_in(frame: HourFrame<'a>, index: Arc<SourceIndex>) -> io::Result<Self> {
         if let Some(decoded) = frame.decoded() {
             return Self::reuse(decoded.decoded_frame(), index);
@@ -704,13 +614,11 @@ impl<'a> Sources<'a> {
         })
     }
 
-    /// Its links and overrides, kept for [`Self::reuse`].
     pub fn index(&self) -> &Arc<SourceIndex> {
         &self.index
     }
 }
 
-/// The CountryLinks fields the links are read by.
 const LINK: u64 = replay_data::rows::mask::<replay_data::rows::CountryLinkRow>(&["canonical_slot"]);
 
 impl SourceIndex {
@@ -728,8 +636,6 @@ impl SourceIndex {
         )
     }
 
-    /// [`Self::read`] of a walk's views: its local sub-units are a truncated table's read
-    /// rows, as a decoded frame's are.
     fn read_in(frame: HourFrame<'_>) -> io::Result<Self> {
         let mut links = BTreeMap::new();
         for row in frame.complete::<tables::CountryLinks>(LINK)?.iter() {
@@ -809,18 +715,13 @@ pub struct Group<'a> {
     pub requirements: Cow<'a, [(String, i64)]>,
 }
 
-/// A recorded template resolved against content.
 #[derive(Debug)]
 pub struct Template<'a> {
-    /// the game's representative; `None` is the null object.
     pub representative: Option<Group<'a>>,
-    /// The stored grouped entries, null definitions dropped.
     pub groups: Vec<Group<'a>>,
 }
 
 impl Template<'_> {
-    /// Native consumers read the literal first ordered requirement, including
-    /// a zero or negative amount; they do not select the largest requirement.
     pub fn first_requirement<'g>(group: &'g Group<'_>) -> Option<&'g str> {
         group.requirements.first().map(|(key, _)| key.as_str())
     }
@@ -837,7 +738,6 @@ impl Content {
             return Ok(Cow::Borrowed(&subunit.requirements));
         };
         let Some(entries) = sources.index.local.get(&(country, token)) else {
-            // A complete table names every clone that differs.
             return if sources.index.local_complete {
                 Ok(Cow::Borrowed(&subunit.requirements))
             } else {
@@ -849,8 +749,6 @@ impl Content {
         let mut requirements = Vec::with_capacity(entries.len());
         let mut seen = BTreeSet::new();
         for &(archetype_token, amount_raw) in entries {
-            // The requirement names an equipment type by token, under the
-            // lexer's fold like a variant's.
             let spelling = sources.tokens.name(archetype_token).map_err(|reason| {
                 invalid(format!(
                     "local sub-unit {country}:{token} requirement: {reason}"

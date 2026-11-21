@@ -1,7 +1,3 @@
-//! The proof tool's line for rows at the head (`--rows units,combat,world,triggers`): one reader
-//! per table set, driven to the proof's head; at every comparison each table's rows against today's
-//! frame of the same hour, row by row with its status, and the trigger world over them against
-//! today's (music chances and raid icons); per table what making its rows cost.
 
 use super::super::views::{Need, Pace, Reader as ViewReader, Views};
 use crate::document::Document;
@@ -14,7 +10,6 @@ use viewer_foundation::map::perspective;
 
 const LIMIT: Duration = Duration::from_secs(120);
 
-/// A set of tables one reader declares, and the cadence it reads them at while timed.
 struct Set {
     name: &'static str,
     tables: &'static [TableId],
@@ -40,32 +35,24 @@ const SETS: &[Set] = &[
     Set { name: "all", tables: &TableId::ALL, pace: Pace::Step },
 ];
 
-/// Countries whose music chances are compared besides the viewing one.
 const COUNTRIES: usize = 4;
 
 pub(crate) struct Line {
     views: Views,
     readers: Vec<(&'static Set, ViewReader)>,
-    /// The tables the trigger reader declares: its core, and every table today's evaluation read.
     triggers: Vec<TableId>,
-    /// Per comparison name: entries, differing, samples.
     totals: BTreeMap<String, (u64, u64, u64)>,
-    /// `roster@<TAG>`: the template roster as a panel.
     roster: Option<super::roster::RosterLine>,
-    /// `window@<x,z,height>`: the window's selection observers, overlay inputs and clicks.
     window: Option<super::window::WindowLine>,
 }
 
 impl Line {
-    /// Readers of the sets named (comma separated) on `entry`'s playhead.
-    /// `path` and `content` are the recording's and the content folders, for the roster panel.
     pub(crate) fn open(views: Views, branch: replay_data::BranchId, names: &str, timing: bool, path: &std::path::Path, content: &installed_content_core::ResolveOptions) -> io::Result<Self> {
         let mut readers = Vec::new();
         let mut roster = None;
         let mut window = None;
         let mut triggers = SETS.iter().find(|set| set.name == "triggers").map_or_else(Vec::new, |set| set.tables.to_vec());
         for name in names.split(',').filter(|name| !name.is_empty()) {
-            // `triggers@<file>`: the trigger reader also declares the tables the file names, one a line.
             let (name, listed) = name.split_once('@').map_or((name, None), |(name, file)| (name, Some(file)));
             if name == "roster" {
                 let tag = listed.ok_or_else(|| io::Error::other("The roster set names its country: roster@<TAG>"))?;
@@ -99,8 +86,6 @@ impl Line {
         }
     }
 
-    /// Every set's rows at `hour` against today's reader of every table at that hour; each set's
-    /// wait for its rows at the hour, timed from the call (the map has shown the hour by then).
     pub(crate) fn compare(&mut self, document: &Document, hour: replay_data::Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         let called = std::time::Instant::now();
         let mut frames = Vec::with_capacity(self.readers.len());
@@ -144,9 +129,6 @@ impl Line {
         Ok(())
     }
 
-    /// The music chances of the viewing country and a few others, and the viewing country's raid
-    /// icons, over rows at the head against today's frame; the tables today's evaluation read are
-    /// declared first.
     fn triggers(&mut self, document: &Document, today: &Arc<DecodedFrame>, hour: replay_data::Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         let at = self.readers.iter().position(|(set, _)| set.name == "triggers").expect("the triggers set");
         let ours = document.hour()?.vision(&perspective::Choice::default())?.ours();
@@ -163,12 +145,10 @@ impl Line {
             }
         }
         if self.triggers.len() != before {
-            // The tables join at a step past the head, which waits here: compared from the next sample.
             self.readers[at].1.declare_only(&self.triggers);
             let skipped = Compared { notes: json!({"declared": self.triggers.len()}), ..Compared::default() };
             return self.note("triggers:declared".into(), &skipped, hour, why, out);
         }
-        // Tables declared since join at the playhead's newest step, past this head: not waited for.
         if self.readers[at].1.frame().is_none() {
             return self.note("triggers:loading".into(), &Compared::default(), hour, why, out);
         }
@@ -179,8 +159,6 @@ impl Line {
         let (got, missed) = discovering(|| evaluate(document, &frame, ours, &countries));
         let undeclared = undeclared_reads() - undeclared;
         if !missed.is_empty() {
-            // What the scripts read at the head names what today's reads did not: declared, as a
-            // script reader at the head declares, and compared from the next sample.
             for &table in &missed {
                 if !self.triggers.contains(&table) {
                     self.triggers.push(table);
@@ -203,8 +181,6 @@ impl Line {
         Ok(())
     }
 
-    /// The window's readers over rows at the head against over today's frame; a sample whose rows
-    /// lacked a table the readers read declares it and is compared from the next.
     fn window(&mut self, document: &Document, today: &Arc<DecodedFrame>, hour: replay_data::Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         let window = self.window.as_mut().expect("the window set");
         if window.reader.frame().is_none() {
@@ -242,7 +218,6 @@ impl Line {
         self.totals.values().map(|(_, differing, _)| differing).sum()
     }
 
-    /// What was compared, and what the side's views of each table hold.
     pub(crate) fn summary(&self, distribution: fn(Vec<f64>) -> Value) -> Value {
         let held = self.views.held();
         json!({
@@ -260,7 +235,6 @@ impl Line {
     }
 }
 
-/// The reader's frame at `hour`; none when its rows are already past it.
 fn at_hour(reader: &ViewReader, hour: replay_data::Hour) -> io::Result<Option<Arc<DecodedFrame>>> {
     match reader.wait(|frame| frame.hour >= hour, LIMIT) {
         Ok(frame) => Ok((frame.hour == hour).then_some(frame)),
@@ -276,7 +250,6 @@ pub(crate) struct Compared {
     notes: Value,
 }
 
-/// The music chances of each of `countries` and the raid icons of `ours`, each as its text.
 fn evaluate(document: &Document, frame: &DecodedFrame, ours: u32, countries: &[u32]) -> (Vec<String>, Vec<String>) {
     let products = &document.content.products;
     let world = dashboard::triggers::World::read(frame, products.triggers.facts());
@@ -290,7 +263,6 @@ fn evaluate(document: &Document, frame: &DecodedFrame, ours: u32, countries: &[u
     (music, vec![format!("{:?}", icons.icons), format!("{:?}", icons.report)])
 }
 
-/// One table at the head against today's: rows by key, every field, and the status.
 pub(crate) fn table_against(head: &DecodedFrame, today: &DecodedFrame, table: TableId) -> Compared {
     let (got, wanted) = (&*head.tables[table.index()], &*today.tables[table.index()]);
     let sampled = (head.tables[table.index()].sampled_at(), today.tables[table.index()].sampled_at());
@@ -320,7 +292,6 @@ fn status(view: &TableView) -> String {
     }
 }
 
-/// Rows present in one only or differing in a field, and the first such.
 fn rows_differing(got: &TableRows, wanted: &TableRows) -> (u64, Option<String>) {
     if got.table() != wanted.table() {
         return (1, Some("the two hold rows of different tables".into()));
@@ -361,7 +332,6 @@ fn rows_differing(got: &TableRows, wanted: &TableRows) -> (u64, Option<String>) 
     (differing, first)
 }
 
-/// A wire field as text, for the first difference a comparison names.
 fn describe(field: Field<'_>) -> String {
     match field {
         Field::Empty => "empty".into(),
@@ -388,7 +358,6 @@ fn describe(field: Field<'_>) -> String {
     }
 }
 
-/// Where two texts first differ, with what each holds around it.
 pub(super) fn first_difference(wanted: &str, got: &str) -> String {
     let at = wanted.bytes().zip(got.bytes()).position(|(a, b)| a != b).unwrap_or(wanted.len().min(got.len()));
     let around = |text: &str| {

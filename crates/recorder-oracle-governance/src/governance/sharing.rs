@@ -170,8 +170,6 @@ pub(super) fn compare_sharing(
             }
         }
     }
-    // Project the complete native and saved member censuses directly. This
-    // checks the country/bonus pairs without inventing unknown group joins.
     let mut expected_members = pack
         .tech_sharing
         .iter()

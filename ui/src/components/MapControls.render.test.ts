@@ -23,11 +23,9 @@ test('the pop-out map settings show its camera mode and overlay choice while its
     const pressed = [...shown.matchAll(/aria-pressed="(true|false)"[^>]*>(?:<svg[\s\S]*?<\/svg>)?(Map|Fly|Walk)</g)]
       .map(([, state, label]) => `${label}:${state}`);
     assert.deepEqual(pressed, ['Map:false', 'Fly:false', 'Walk:true']);
-    // Walking, the pop-out's own overlay choice shows beside its mode.
     const overlays = (markup: string) => markup.match(/aria-pressed="(true|false)"[^>]*>(?:(?!<\/button>)[\s\S])*Overlays<\/button>/)?.[1];
     assert.equal(overlays(shown), 'false');
     assert.equal(overlays(render('walk', true, true)), 'true');
-    // No running pop-out viewer, or no pop-out, has no camera to show.
     assert.doesNotMatch(render(null), /Pop-out camera/);
     assert.doesNotMatch(render('fly', false), /Pop-out camera/);
   } finally {

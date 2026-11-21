@@ -1,8 +1,3 @@
-//! SWeatherPerRegion weather flags at the completed hourly boundary.
-//!
-//! Province publication jobs finish before region jobs are dispatched and
-//! joined. Only flags and custom entry values displayed by the map and naval
-//! combat window are read.
 
 use crate::{
     Memory, cpdx_array::Array, cweather_manager::walk_dense_records, memory::RecordField,
@@ -10,33 +5,19 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Region-weather vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_40e8);
-/// Region-weather array stride (`cweather_manager::REGIONS`).
 pub const STRIDE: usize = 0x160;
-/// Region ID, i32, authenticated against its array slot.
 pub const ID: usize = 0x08;
-/// Stored active value of each strategic region template custom entry, a CPdxArray of i16 in
-/// template entry order, nonzero when active. The update writes it at weather period rollover.
 pub const CUSTOM_SEA: usize = 0x30;
-/// Embedded modifier collection.
 pub const MODIFIERS: usize = 0x58;
-/// Independent weather flag bytes, eight bytes apart: light rain, heavy rain, snow, blizzard,
-/// sandstorm and arctic water, in that order from `FLAGS`. These flags select modifiers.
 pub const FLAGS: usize = 0x108;
-/// Snow flag used to accumulate province snow.
 pub const SNOW: usize = 0x118;
-/// Blizzard flag used to accumulate province snow.
 pub const BLIZZARD: usize = 0x120;
-/// Region-weather update invoked from a parallel region job.
 pub const UPDATE_RVA: Rva = Rva(0x00fa_3de0);
 
-/// The named native weather flags are independent bytes. They are retained
-/// separately, without deriving a weather-kind enum or quantized intensity.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub id: u32,
-    /// The manager's snow ceiling, stamped by `cweather_manager::Reader`.
     pub max_snow: i64,
     pub light_rain: u8,
     pub heavy_rain: u8,
@@ -46,7 +27,6 @@ pub struct Row {
     pub arctic_water: u8,
 }
 
-/// Identity, the six flag bytes and the custom sea array header, gathered per batch.
 pub const FIELDS: [RecordField; 8] = {
     let mut fields = [RecordField {
         source_offset: 0,
@@ -69,11 +49,9 @@ pub const FIELDS: [RecordField; 8] = {
     };
     fields
 };
-/// The custom sea array header's place in a gathered record.
 const CUSTOM_SEA_HEADER: usize = 18;
 pub const RECORD_BYTES: usize = 34;
 
-/// A decoded record's custom sea array; `None` when its header is not a valid array.
 pub fn custom_sea(record: &[u8]) -> Option<Array> {
     Array::from_header(
         record
@@ -101,7 +79,6 @@ pub(crate) fn walk(memory: &impl Memory, base: usize, array: Array, output: &mut
     )
 }
 
-/// Decode one owned exact-field gather, retaining native field-failure order.
 pub fn decode_record(
     index: u32,
     record: &[u8],
@@ -210,7 +187,6 @@ mod tests {
                 count: 3
             })
         );
-        // A count past its capacity is no array.
         record[CUSTOM_SEA_HEADER + 12..CUSTOM_SEA_HEADER + 16].copy_from_slice(&5_u32.to_le_bytes());
         assert_eq!(custom_sea(&record), None);
         assert_eq!(

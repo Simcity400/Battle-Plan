@@ -1,5 +1,3 @@
-/** Exact directed totals, independent of eased geometry and content. A self-flow
- * contributes once to incoming and once to outgoing. */
 export function chordTotals<T>(flows: readonly T[], source: (flow: T) => string,
   target: (flow: T) => string, value: (flow: T) => bigint): Map<string, { incoming: bigint; outgoing: bigint }> {
   const totals = new Map<string, { incoming: bigint; outgoing: bigint }>();

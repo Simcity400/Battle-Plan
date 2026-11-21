@@ -1,9 +1,3 @@
-//! Targa decoding for flags, font pages and colour-correction lookup tables.
-//!
-//! Supports the uncompressed and run-length encoded true-colour and greyscale
-//! types the game ships (2, 3, 10 and 11) at 8, 16, 24 and 32 bits. The origin
-//! bits are honoured, so the first returned row is always the top one. A 26-byte
-//! version 2 footer follows the pixels in most shipped files and is ignored.
 
 use std::io;
 
@@ -13,18 +7,9 @@ const HEADER: usize = 18;
 const RIGHT_TO_LEFT: u8 = 0x10;
 const TOP_TO_BOTTOM: u8 = 0x20;
 
-/// Converts one stored pixel into RGBA8. Only greyscale reaches 8 bits here.
-///
-/// The stored byte of a 32-bit pixel is always taken as alpha: the shipped
-/// flags carry real coverage there even when the descriptor declares no
-/// attribute bits.
 fn pixel(bytes: &[u8], depth: u8) -> [u8; 4] {
     match depth {
         8 => [bytes[0], bytes[0], bytes[0], 255],
-        // 16-bit is read as X1R5G5B5 and always opaque. The one shipped 16-bit
-        // file, gfx/flags/CSA_neutrality.tga, declares one attribute bit and
-        // leaves it clear in all 4264 pixels, so honouring it would erase the
-        // flag the game draws opaque.
         16 => {
             let value = u16::from_le_bytes([bytes[0], bytes[1]]);
             let expand = |channel: u16| ((channel * 255 + 15) / 31) as u8;
@@ -40,7 +25,6 @@ fn pixel(bytes: &[u8], depth: u8) -> [u8; 4] {
     }
 }
 
-/// Expands the run-length packets of image types 10 and 11.
 fn unpack(input: &[u8], unit: usize, count: usize) -> io::Result<Vec<u8>> {
     let total = count
         .checked_mul(unit)
@@ -75,7 +59,6 @@ fn unpack(input: &[u8], unit: usize, count: usize) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Decodes a Targa file into RGBA8 pixels ordered from the top-left corner.
 pub fn decode(input: &[u8]) -> io::Result<Rgba8Image> {
     let head = input
         .get(..HEADER)
@@ -211,17 +194,14 @@ mod tests {
 
     #[test]
     fn run_length_packets_repeat_and_copy_across_rows() {
-        // A 3-pixel run crosses the row boundary, then one raw pixel closes it.
         let body = [0x82, 1, 2, 3, 255, 0x00, 8, 8, 8, 8];
         let image = decode(&targa(10, 2, 2, 32, TOP_TO_BOTTOM, &body)).unwrap();
         assert_eq!(
             image.pixels,
             vec![3, 2, 1, 255, 3, 2, 1, 255, 3, 2, 1, 255, 8, 8, 8, 8]
         );
-        // Greyscale run-length images expand into opaque grey.
         let image = decode(&targa(11, 2, 1, 8, TOP_TO_BOTTOM, &[0x81, 7])).unwrap();
         assert_eq!(image.pixels, vec![7, 7, 7, 255, 7, 7, 7, 255]);
-        // A run that would overrun the image is refused, not truncated.
         assert!(
             decode(&targa(10, 2, 1, 32, TOP_TO_BOTTOM, &[0x84, 1, 2, 3, 4]))
                 .unwrap_err()
@@ -237,7 +217,6 @@ mod tests {
         let blue = 0x001f_u16.to_le_bytes();
         let body = [white, blue].concat();
         let expected = vec![255, 255, 255, 255, 0, 0, 255, 255];
-        // The attribute bit is ignored whether or not the header declares it.
         assert_eq!(
             decode(&targa(2, 2, 1, 16, TOP_TO_BOTTOM | 1, &body))
                 .unwrap()

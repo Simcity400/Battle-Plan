@@ -1,35 +1,3 @@
-//! DivisionStatus.attack_stats and movement_stats: each division's stat-block attack
-//! and movement operands (`engine_native::csub_unit_definition::capture_attack_stats`, one
-//! read of the same block), carried while no
-//! hooked update active stats touched the army since the
-//! read they came from ([`crate::army_stat_changes`]), and the off-by-default
-//! `attack_witness` diagnostic's native operands (DivisionStatus.attack).
-//!
-//! The [`ArmyStatStore`] holds the latest complete capture's operands in
-//! census order, with each division's army and stat block addresses, under
-//! the marks' epoch of the hour that read or carried them. The domain's
-//! registry marks a registered army or name member a writer touches
-//! ([`crate::army_stat_changes`]); each hour takes the marks once, before any
-//! read ([`Captured::certify`]). A division is carried only when the take
-//! returned the held epoch, its army and stat block are those of the held
-//! entry and its army was not marked; every other one is read, its army
-//! registered first. A held entry is found at the seed's own census index
-//! when the census did not move, so a quiet hour costs no lookup per
-//! division. A capture that does not complete holds nothing, and a failed
-//! job forgets the store. Without a store (the family not configured) every
-//! division is read.
-//!
-//! The same block holds the status pass's maxima (maximum organisation and
-//! strength and the exfiltration byte), which the same writer alone rewrites:
-//! a division the store carries gives that pass its held maxima instead of a
-//! read of its block, and the attack pass holds the maxima the status pass
-//! used beside its operands.
-//!
-//! The store also holds each division's name member span and cached-name lookup cache
-//! text under the same marks, on the member's address
-//! (`engine_mutations::army_stat_mutations`); the naming pass carries and rebuilds them
-//! ([`super::division_presentation`]), and they are held with the attack
-//! pass's operands.
 use crate::army_stat_changes::{self, Changes, Counts};
 use engine_native::{
     Memory, carmy::DivisionSeed, csub_unit_definition as stats,
@@ -44,7 +12,6 @@ mod preparation;
 pub use crate::division_experience::Order as ScalarOrder;
 pub use preparation::{AttackPart, PreparationPart, PreparedDivision};
 
-/// A stat block's scalars.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scalars {
     panel: [Option<i64>; 23],
@@ -74,8 +41,6 @@ impl Scalars {
     }
 }
 
-/// One division's operands this hour: a span of [`Captured::terrain`] and
-/// the scalars, or a read refusal.
 #[derive(Clone, Copy, Debug, Default)]
 struct Row {
     division: u64,
@@ -96,13 +61,9 @@ struct Held {
     start: usize,
     len: usize,
     scalars: Scalars,
-    /// The status pass's maxima of the same hour; `None` when it did not
-    /// establish them.
     maxima: Option<DivisionMaxima>,
 }
 
-/// One division's name member as the latest complete capture read it, and
-/// its cache text's span of the store's name bytes.
 #[derive(Clone, Copy)]
 pub struct HeldName {
     division: u64,
@@ -111,10 +72,6 @@ pub struct HeldName {
     text: (usize, usize),
 }
 
-/// Finds a seed's held entry in entries kept in census order: at the seed's
-/// own index, shifted by the census insertions and removals found so far
-/// this hour, and otherwise through a division index built on the first
-/// miss.
 #[derive(Default)]
 struct Locator {
     order: Vec<(u64, u32)>,
@@ -139,7 +96,6 @@ impl Locator {
         Self::find(&self.order, &mut self.shift, divisions, index, division)
     }
 
-    /// Builds the division index; false when it could not be allocated.
     fn index(&mut self, divisions: &[u64]) -> bool {
         if !self.order.is_empty() || divisions.is_empty() {
             return true;
@@ -159,7 +115,6 @@ impl Locator {
         true
     }
 
-    /// The entry at `index` shifted by `shift`, else through `order`, which moves `shift`.
     fn find(
         order: &[(u64, u32)],
         shift: &mut isize,
@@ -181,9 +136,6 @@ impl Locator {
     }
 }
 
-/// The latest complete capture's operands, lent to the Presentation job each
-/// hour. Entries are kept in census order. Every held army and name member
-/// was registered in the marks' `epoch` of the capture that holds it.
 pub struct ArmyStatStore {
     experience: crate::division_experience::Store,
     progression: crate::division_experience::Store<u64>,
@@ -193,17 +145,12 @@ pub struct ArmyStatStore {
     daily: bool,
     pub history: crate::division_history::Store,
     pub sources: crate::panel_sources::Store,
-    /// The hour's one take of every writer registry these stores carry under.
     pub observations: crate::observations::HourObservations,
-    /// The marks' epoch the held entries were certified in; `None` holds
-    /// nothing.
     epoch: Option<u64>,
     held: Vec<Held>,
-    /// The held entries' divisions, for [`Locator`].
     divisions: Vec<u64>,
     locator: Locator,
     terrain: Vec<i64>,
-    /// Movement words parallel to `terrain`.
     movement: Vec<i64>,
     next: Vec<Held>,
     next_terrain: Vec<i64>,
@@ -224,15 +171,10 @@ impl Default for ArmyStatStore {
     }
 }
 
-// Footer carry uses daily/full revocation and census occurrence identity, not
-// a native writer sequence. The common occurrence store still needs a token.
 const DAILY_SUPPLY_SAMPLE: Option<(u64, u64)> = Some((0, 0));
 
 impl ArmyStatStore {
-    /// Owner-approved daily display samples; hourly certificates still protect
-    /// every other operand, including the XP lent to exercise eligibility.
     pub fn daily_progress(&mut self, refresh: bool) {
-        // Each loan is one hour: its first consumer takes the registries again.
         self.observations.finish();
         self.daily = true;
         self.experience.daily(refresh);
@@ -319,8 +261,6 @@ impl ArmyStatStore {
         }
     }
 
-    /// A failed job: nothing it read certifies a carry, and its take
-    /// consumed the marks.
     pub fn forget(&mut self) {
         self.experience.forget();
         self.progression.forget();
@@ -366,7 +306,6 @@ impl ArmyStatStore {
             + self.next_name_bytes.capacity()
     }
 
-    /// The held name's index for the seed at census `index`, `division`.
     pub fn held_name(&mut self, index: usize, division: u64) -> Option<usize> {
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -376,9 +315,6 @@ impl ArmyStatStore {
             .locate(&self.name_divisions, index, division)
     }
 
-    /// [`Self::held_name`] on a shared store, for naming split across workers: each caller keeps
-    /// its own `shift`. The division index is built when the store is held; without it a seed
-    /// off its shifted index finds nothing and is read afresh.
     pub fn find_held_name(&self, shift: &mut isize, index: usize, division: u64) -> Option<usize> {
         Locator::find(
             &self.name_locator.order,
@@ -389,25 +325,19 @@ impl ArmyStatStore {
         )
     }
 
-    /// Borrow the selected record without copying its owned member span.
     pub fn held_name_record(&self, index: usize) -> &HeldName {
         &self.names[index]
     }
 
-    /// The cache text of a held name member.
     pub fn held_name_text(&self, held: &HeldName) -> &[u8] {
         &self.name_bytes[held.text.0..held.text.0 + held.text.1]
     }
 
-    /// Starts the hour's naming pass: what it keeps is held with the hour's
-    /// attack operands.
     pub fn begin_names(&mut self) {
         self.next_names.clear();
         self.next_name_bytes.clear();
     }
 
-    /// Keeps a division's name member and cache text, carried this hour or
-    /// read after its member was registered.
     pub fn keep_name(
         &mut self,
         division: u64,
@@ -425,7 +355,6 @@ impl ArmyStatStore {
         });
     }
 
-    /// The held operands of the seed at census `index`, `division`.
     fn locate(&mut self, index: usize, division: u64) -> Option<usize> {
         self.locator.locate(&self.divisions, index, division)
     }
@@ -438,8 +367,6 @@ impl ArmyStatStore {
         &self.movement[held.start..held.start + held.len]
     }
 
-    /// The hour's capture completed under the marks' `epoch`: hold what it
-    /// read and carried, in census order.
     pub fn hold(&mut self, epoch: Option<u64>) {
         std::mem::swap(&mut self.held, &mut self.next);
         std::mem::swap(&mut self.terrain, &mut self.next_terrain);
@@ -472,9 +399,6 @@ impl ArmyStatStore {
         self.epoch = epoch;
     }
 
-    /// Whether the held capture may carry seed `index`'s maxima: its division is held with the
-    /// same army and block, and their maxima. Read-only, for the parallel preparation: each
-    /// caller keeps its own `shift`. Without the division index an unshifted seed is not found.
     pub fn may_carry_maxima(&self, shift: &mut isize, index: usize, seed: &DivisionSeed) -> bool {
         self.epoch.is_some()
             && Locator::find(&self.locator.order, shift, &self.divisions, index, seed.division)
@@ -489,12 +413,9 @@ impl ArmyStatStore {
 
 pub const CERTIFY_PHASE_NAMES: [&str; 3] = ["certify_setup", "certify_ordered", "certify_finish"];
 
-/// The hour's operands, sorted by division, and the witnessed packets.
 #[derive(Default)]
 pub struct Captured {
-    /// Recorded XP in census order, possibly held at the daily sample.
     pub experience: Vec<Option<i64>>,
-    /// Only certificate-current XP may be consumed by the hourly native predicate.
     pub exercise_experience: Vec<Option<i64>>,
     certify_ticks: [u64; CERTIFY_PHASE_NAMES.len()],
     scalars_deferred: bool,
@@ -503,46 +424,27 @@ pub struct Captured {
     officer: Vec<Option<i64>>,
     career: Vec<Option<i32>>,
     pub sources: Option<Result<std::sync::Arc<crate::panel_sources::SourceSnapshot>, &'static str>>,
-    /// In census order once [`Self::index_selected_sources`] indexed it.
     pub selected_sources: Vec<(u64, Option<[u64; 3]>)>,
-    /// `selected_sources` positions by division; shorter than it when it was sorted in place.
     selected_order: Vec<(u64, u32)>,
     pub history:
         Option<Result<std::sync::Arc<crate::division_history::HistorySnapshot>, &'static str>>,
-    /// In census order; `order` finds a division's row.
     rows: Vec<Row>,
-    /// Each row's division and position, sorted by division; empty when `rows` itself is
-    /// sorted, as when this index could not be allocated.
     order: Vec<(u64, u32)>,
     terrain: Vec<i64>,
-    /// Movement words parallel to `terrain`.
     movement: Vec<i64>,
     scratch: Vec<i64>,
     movement_scratch: Vec<i64>,
-    /// Per seed: its held operands' index when the held capture certifies
-    /// them this hour ([`Self::certify`]).
     held_index: Vec<Option<u32>>,
-    /// Per seed: carried, or its army registered before the read.
     registered: Vec<bool>,
-    /// The armies and name members the hour's take visited, sorted.
     touched: Vec<usize>,
-    /// The marks' epoch of the hour's take.
     epoch: Option<u64>,
-    /// The held capture's certificates hold this hour: its epoch is the
-    /// take's.
     pub carryable: bool,
-    /// Each seed's carried maxima for the status pass.
     pub held_maxima: Vec<Option<DivisionMaxima>>,
-    /// The status and naming passes' counts, published with the attack
-    /// pass's.
     pub status_counts: Counts,
     witness: Vec<(u64, DivisionAttackInputs)>,
-    /// The live terrains' database indices and own adjuster attacks, read
-    /// once in a witnessing hour.
     terrains: Vec<(i32, i64)>,
 }
 
-/// The witness slice: the divisions whose id falls in this hour of the day.
 fn witnessed(hour: i32, id: u64) -> bool {
     let period = replay_data::cadence::STAGGER_PERIOD;
     army_stat_changes::WITNESS && id % period as u64 == hour.rem_euclid(period) as u64
@@ -577,19 +479,15 @@ impl Captured {
             + self.terrains.capacity() * std::mem::size_of::<(i32, i64)>()
     }
 
-    /// The marks' epoch of the hour's take.
     #[cfg(any(test, feature = "test-support"))]
     pub fn epoch(&self) -> Option<u64> {
         self.epoch
     }
 
-    /// Whether a writer touched `receiver` since the held capture.
     pub fn touched(&self, receiver: usize) -> bool {
         self.touched.binary_search(&receiver).is_ok()
     }
 
-    /// Every receiver [`Self::touched`] names, sorted.
-    /// Per seed: its held operands' index when the hour's certification carries them.
     pub fn held_index(&self) -> &[Option<u32>] {
         &self.held_index
     }
@@ -598,11 +496,6 @@ impl Captured {
         &self.touched
     }
 
-    /// Before the status pass: the hour's take, then for each division the
-    /// held entry it carries (its army and stat block those of the held read,
-    /// the army registered in the held capture's epoch and untouched since)
-    /// and the maxima the store carries for it (`held_maxima`); every other
-    /// division's army is registered before its block is read.
     pub fn certify(
         &mut self,
         memory: &impl Memory,
@@ -615,8 +508,6 @@ impl Captured {
         self.certify_prepared(memory, base, seeds, outcome, store, changes, |_| None);
     }
 
-    /// Settle range-local observations in the original census order. Taking
-    /// marks, registration, cache admission and history edits still happen once.
     #[allow(clippy::too_many_arguments)]
     pub fn certify_prepared<'a>(
         &mut self,
@@ -678,7 +569,6 @@ impl Captured {
             self.touched.extend_from_slice(armies.touched_receivers());
         }
         self.carryable = self.epoch.is_some() && store.epoch == self.epoch;
-        // The take consumed the marks: only this hour's capture holds again.
         store.epoch = None;
         let seeds = &seeds[..outcome.len().min(seeds.len())];
         self.scalars_deferred = defer_owned
@@ -699,8 +589,6 @@ impl Captured {
                     )
                 })
                 .is_ok();
-        // This optional loan only avoids the native exercise reader's own XP
-        // read. Allocation failure must not withdraw the recorded XP sample.
         let exercise_ready = engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut self.exercise_experience, seeds.len())
         })
@@ -743,8 +631,6 @@ impl Captured {
                 let receiver = seed
                     .pointer
                     .checked_add(engine_native::unit_history::OFFICER);
-                // A range's staged observation comes first; without one, a quiet held value is
-                // kept without a query.
                 let quiet = receiver.filter(|_| prepared.is_none_or(|p| !p.acquired[2])).and_then(
                     |receiver| store.officer.quiet(seed, receiver, &observations.history, 2),
                 );
@@ -779,8 +665,6 @@ impl Captured {
                 self.officer
                     .push(value.map_err(|_| history_changes::refused()).ok());
             }
-            // Career and stored XP consult the same independent writer
-            // domain within this quiescent pass. Observe it only once.
             let experience_quiet = ((career_ready || experience_ready)
                 && prepared.is_none_or(|p| !p.acquired[0]))
             .then(|| {
@@ -954,8 +838,6 @@ impl Captured {
     pub fn has_owned_certification(&self) -> bool {
         self.scalars_deferred || self.history_finish.is_some()
     }
-    /// Frozen receiver observations only. No native read, registration or mark
-    /// drain may occur here after the simulation resumes.
     pub fn settle_certification<'a>(
         &mut self,
         base: usize,
@@ -1036,11 +918,7 @@ impl Captured {
         self.certify_ticks
     }
 
-    /// Reads or carries every division of a census `outcome` prefix whose
-    /// stat block the seed names. `hour` decides the witnessed slice.
-    /// `maxima` gives the status pass's maxima of a seed, held with
-    /// its operands; the carried entries are [`Self::certify`]'s.
-    #[allow(clippy::too_many_arguments)] // The census, its seeds, the held store and the status maxima.
+    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1054,9 +932,6 @@ impl Captured {
         self.capture_prepared(memory, base, hour, seeds, outcome, store, maxima, |_| None);
     }
 
-    /// Consume range-local fresh reads only where the original ordered walk
-    /// chooses acquisition. Carry, row order and store settlement are still
-    /// performed by that walk.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_prepared<'a>(
         &mut self,
@@ -1073,7 +948,6 @@ impl Captured {
         self.capture_values(memory, base, hour, seeds, outcome, store, maxima, prepared);
     }
 
-    /// The witness database is native; acquire it before the owned handoff.
     pub fn prepare_witness(
         &mut self,
         memory: &impl Memory,
@@ -1097,8 +971,6 @@ impl Captured {
         }
     }
 
-    /// Every non-carried block has an owned range result. No reader or registry
-    /// registration is reachable after resume, including witness-only hours.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_owned<'a>(
         &mut self,
@@ -1135,7 +1007,6 @@ impl Captured {
         prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
     ) {
         self.reset();
-        // The status and naming passes' counts publish with this pass's.
         let mut counts = self.status_counts;
         let seeds = &seeds[..outcome.len().min(seeds.len())];
         if let Some(store) = store.as_deref_mut() {
@@ -1162,7 +1033,6 @@ impl Captured {
                 self.rows.push(refused);
                 continue;
             };
-            // Certified before the status pass, before any read of the block.
             let held = store.as_deref().and_then(|store| {
                 let at = self.held_index.get(index).copied().flatten()?;
                 Some(store.held[at as usize]).filter(|held| held.stat_block == stat_block)
@@ -1260,7 +1130,6 @@ impl Captured {
                             maxima: maxima(index),
                         });
                     }
-                    // Staged entries retain their own buffers across hours.
                     if staged.is_none()
                         && let Some(Ok(fresh)) = acquired
                     {
@@ -1274,7 +1143,6 @@ impl Captured {
                 }
             }
         }
-        // Sort an index, not the rows: a row holds its whole stat block.
         self.order.clear();
         if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, self.rows.len()))
             .is_ok()
@@ -1312,8 +1180,6 @@ impl Captured {
         self.row(division)?.career_counter
     }
 
-    /// Indexes the census-order `selected_sources` by division, or sorts it in place when the
-    /// index cannot be allocated.
     pub fn index_selected_sources(&mut self) {
         self.selected_order.clear();
         if engine_allocation::advisory(|| {
@@ -1353,15 +1219,12 @@ impl Captured {
             .ok()?;
         self.selected_sources[self.selected_order[at].1 as usize].1
     }
-    /// [`Self::panel_source`] of the division at census `position`, found there without a search
-    /// when it is that division's.
     fn panel_source_at(&self, position: usize, division: u64) -> Option<[u64; 3]> {
         match self.selected_sources.get(position) {
             Some(&(at, source)) if at == division && self.indexed_sources() => source,
             _ => self.panel_source(division),
         }
     }
-    /// The stored panel words: the panel's own in its order, then the suppression word.
     pub fn panel(&self, division: u64) -> [Option<i64>; 23] {
         self.view(division).panel()
     }
@@ -1370,8 +1233,6 @@ impl Captured {
         self.row(division)?.experience
     }
 
-    /// [`Self::view`] of the row at census `position`, found there without a search when it is
-    /// that division's.
     pub fn view_at(&self, position: usize, division: u64) -> RowView<'_> {
         let row = self
             .rows
@@ -1400,7 +1261,6 @@ impl Captured {
             .map(|at| &self.rows[self.order[at].1 as usize])
     }
 
-    /// Resolve the attack-row key once for this row's scalar and terrain fields.
     pub fn view(&self, division: u64) -> RowView<'_> {
         RowView {
             captured: self,
@@ -1435,8 +1295,6 @@ impl Captured {
             .is_ok()
     }
 
-    /// The witnessed native operands of a division, with the hour's
-    /// acclimatization factor.
     pub fn witness(&self, division: u64, factor: Option<i64>) -> Option<DivisionAttackInputs> {
         let at = self
             .witness
@@ -1449,11 +1307,9 @@ impl Captured {
     }
 }
 
-/// Borrowed projection of one current owned attack row; no new read or carry.
 pub struct RowView<'a> {
     captured: &'a Captured,
     division: u64,
-    /// The census position the row was looked up at.
     position: Option<usize>,
     row: Option<&'a Row>,
 }
@@ -1476,12 +1332,10 @@ impl RowView<'_> {
             None => self.captured.panel_source(self.division),
         }
     }
-    /// The stored panel words: the panel's own in its order, then the suppression word.
     pub fn panel(&self) -> [Option<i64>; 23] {
         self.row
             .and_then(|row| row.scalars)
             .map_or([None; 23], |scalars| {
-                // Anti-air is already recorded in movement_stats; keep one stored operand.
                 std::array::from_fn(|index| match index {
                     22 => scalars.suppression,
                     _ => scalars.panel[index + usize::from(index >= 11)],
@@ -1491,8 +1345,6 @@ impl RowView<'_> {
     pub fn witness(&self, factor: Option<i64>) -> Option<DivisionAttackInputs> {
         self.captured.witness(self.division, factor)
     }
-    /// The division's recorded operands; `None` is a refusal (or a division
-    /// the capture did not reach).
     pub fn stats(&self) -> Option<DivisionAttackStats> {
         let row = self.row?;
         let scalars = row.scalars?;
@@ -1507,8 +1359,6 @@ impl RowView<'_> {
         })
     }
 
-    /// The division's recorded movement operands, held with its attack
-    /// operands; `None` is a refusal.
     pub fn movement(&self) -> Option<DivisionMovementStats> {
         let row = self.row?;
         let scalars = row.scalars?;
@@ -1522,7 +1372,6 @@ impl RowView<'_> {
         })
     }
 
-    /// Writes every input of [`Self::stats`] and [`Self::movement`].
     pub fn record(&self, record: &mut collector_projection::projection::Record<'_>) {
         let Some((row, scalars)) = self.row.and_then(|row| Some((row, row.scalars?))) else {
             record.words(None);
@@ -1549,7 +1398,6 @@ impl RowView<'_> {
         record.words(self.captured.movement.get(span));
     }
 
-    /// Whether `previous` holds exactly what [`Self::movement`] would publish.
     pub fn same_movement(
         &self,
         previous: &replay_data::rows::Recorded<Option<DivisionMovementStats>>,
@@ -1575,7 +1423,6 @@ impl RowView<'_> {
         }
     }
 
-    /// Whether `previous` holds exactly what [`Self::stats`] would publish.
     pub fn same(
         &self,
         previous: &replay_data::rows::Recorded<Option<DivisionAttackStats>>,
@@ -1603,8 +1450,6 @@ impl RowView<'_> {
     }
 }
 
-/// Terrain attack lookup's attack for every live terrain: the stat block's entry at
-/// the database index minus one plus the terrain's own adjuster.
 fn witness(fresh: &stats::AttackStats, terrains: &[(i32, i64)]) -> DivisionAttackInputs {
     DivisionAttackInputs {
         sample_hour: PacketHour::Host,
@@ -1632,7 +1477,6 @@ fn witness(fresh: &stats::AttackStats, terrains: &[(i32, i64)]) -> DivisionAttac
     }
 }
 
-/// A missing range is a programming error, never an invented native refusal.
 struct OwnedAttack;
 impl Memory for OwnedAttack {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1659,16 +1503,12 @@ mod tests {
         )
     }
 
-    /// A held entry is found at the seed's own index, then at the index the
-    /// census's insertions and removals shift it to, and not at all once
-    /// the division is gone.
     #[test]
     fn the_locator_follows_census_shifts_and_misses_gone_divisions() {
         let held: Vec<u64> = (1..=6).map(|id| id << 32).collect();
         let mut locator = Locator::default();
         assert_eq!(locator.locate(&held, 2, 3 << 32), Some(2));
         assert!(locator.order.is_empty());
-        // A division inserted before the fourth: every later seed is one on.
         assert_eq!(locator.locate(&held, 4, 4 << 32), Some(3));
         assert_eq!(locator.shift, -1);
         assert_eq!(locator.locate(&held, 5, 5 << 32), Some(4));
@@ -1695,8 +1535,6 @@ mod tests {
         assert!(store.locate(0, 7 << 32).is_none());
     }
 
-    /// The stored panel words leave out the anti-air word movement_stats already holds and end
-    /// with the suppression word; an uncaptured division stores none.
     #[test]
     fn the_stored_panel_ends_with_the_suppression_word() {
         let mut panel = [None; 23];
@@ -1762,12 +1600,10 @@ mod tests {
         let mut changed = stats;
         changed.terrain[1] = 1;
         assert!(!captured.same(3, &replay_data::rows::Recorded::Value(Some(changed))));
-        // A refused read publishes None, as does a division never reached.
         assert_eq!(captured.stats(9), None);
         assert!(captured.same(9, &replay_data::rows::Recorded::Value(None)));
         assert!(captured.same(4, &replay_data::rows::Recorded::Value(None)));
         assert!(!captured.same(3, &replay_data::rows::Recorded::NotRecorded));
-        // The movement operands are published from the same held read.
         let movement = captured.movement(3).unwrap();
         assert_eq!(
             movement,
@@ -1824,7 +1660,6 @@ mod tests {
                     terrain: 2,
                     attack: Some(-20_000)
                 },
-                // A terrain past the stat block's entries is unread.
                 AttackTerrain {
                     terrain: 3,
                     attack: None

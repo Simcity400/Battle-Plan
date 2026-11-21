@@ -1,8 +1,3 @@
-//! CEquipmentVariant identity and fields shared by equipment, production and air.
-//!
-//! The native stat writers preserve signed 64-bit cache values. The supplied
-//! published campaign census comes from the game's dense saved equipment array.
-//! A truncated census is not a complete source for its dependent leaf tables.
 
 use engine_sites::Rva;
 mod design;
@@ -18,105 +13,50 @@ use crate::{
     walk::Outcome,
 };
 
-/// CEquipmentVariant vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_e250);
-/// CEquipmentVariant reference type.
 pub use engine_executable::native_values::equipment_variant::REFERENCE_TYPE;
-/// CEquipmentVariant u32 type word.
 pub const TYPE: usize = 0x08;
-/// CEquipmentVariant u32 id.
 pub const ID: usize = 0x0c;
-/// CEquipmentVariant u32 equipment token.
 pub const EQUIPMENT_TOKEN: usize = 0x18;
-/// CEquipmentVariant creator-country link u32.
 pub const CREATOR_LINK: usize = 0x1c;
-/// CEquipmentVariant origin-country link u32.
 pub const ORIGIN_LINK: usize = 0x20;
-/// CEquipmentVariant raw append-variant-name byte.
 #[cfg(any(test, feature = "test-support"))]
 pub const APPEND_VARIANT_NAME: usize = 0x24;
-/// CEquipmentVariant display-name MSVC string.
 pub const DISPLAY_NAME: usize = 0x28;
-/// CEquipmentVariant variant-name MSVC string.
 pub const VARIANT_NAME: usize = 0x48;
-/// CEquipmentVariant embedded CEquipmentUpgradesInstance.
 pub const UPGRADES: usize = 0x68;
-/// Embedded variant module collection, with its data pointer and count; its vtable remains
-/// unproven.
 pub const MODULES: usize = 0xb0;
-/// Equipment-variant map-range stat in its ordered stat array.
 pub const MAP_RANGE_STAT: usize = 0x270;
-/// The variant stat after the map range, the second retained variant-stat lane.
 #[cfg(any(test, feature = "test-support"))]
 pub const STAT_2F: usize = 0x278;
-/// Variant attack cache, signed i64; live consistency and save agreement remain unverified.
 #[cfg(any(test, feature = "test-support"))]
 pub const AIR_ATTACK_CACHE_CANDIDATE: usize = 0x280;
-/// Variant agility cache, signed i64; live consistency and save agreement remain unverified.
 #[cfg(any(test, feature = "test-support"))]
 pub const AGILITY_CACHE_CANDIDATE: usize = 0x288;
-/// Variant maximum-speed cache, signed i64; live consistency and save agreement remain unverified.
 pub const MAXIMUM_SPEED_CACHE_CANDIDATE: usize = 0x2f0;
-/// Variant reliability cache, signed i64; live consistency and save agreement remain unverified.
 pub const RELIABILITY_CACHE_CANDIDATE: usize = 0x308;
-/// Variant defence cache, signed i64; live consistency and save agreement remain unverified.
 pub const AIR_DEFENSE_CACHE_CANDIDATE: usize = 0x318;
-/// Variant thrust cache, signed i64; live consistency and save agreement remain unverified.
 #[cfg(any(test, feature = "test-support"))]
 pub const THRUST_CACHE_CANDIDATE: usize = 0x320;
-/// Variant fuel cache, signed i64; live consistency and save agreement remain unverified.
 #[cfg(any(test, feature = "test-support"))]
 pub const FUEL_CONSUMPTION_CACHE_CANDIDATE: usize = 0x328;
-/// Variant build-cost cache, signed i64; live consistency and save agreement remain unverified.
 pub const BUILD_COST_CACHE_CANDIDATE: usize = 0x368;
-/// CEquipmentVariant mission-group array data.
 pub const MISSION_GROUP_DATA: usize = 0x370;
-/// CEquipmentVariant CEquipmentType definition pointer.
 pub const DEFINITION: usize = 0x3f0;
-/// CEquipmentVariant classifier flags u64.
 pub const CLASSIFIER_FLAGS: usize = 0x408;
-/// CEquipmentVariant convoy classifier bit.
 pub const CONVOY_CLASSIFIER_MASK: u64 = 1;
-/// CEquipmentVariant capital-ship classifier bit.
 pub const CAPITAL_SHIP_CLASSIFIER_MASK: u64 = 1 << 6;
-/// CEquipmentVariant floating-harbour classifier bit.
 pub const FLOATING_HARBOR_CLASSIFIER_MASK: u64 = 1 << 9;
-/// CEquipmentVariant mission mask u32.
 pub const MISSION_MASK: usize = 0x410;
-/// Raw version byte. Construction clears it, loading restores it,
-/// derivative creation increments the base byte and cloning copies it.
-/// Serialization zero-extends nonzero values.
 pub const VERSION: usize = 0x41c;
-/// CEquipmentVariant obsolete byte.
 pub const OBSOLETE: usize = 0x424;
-/// CEquipmentVariant explicit entity MSVC string.
 pub const EXPLICIT_ENTITY: usize = 0x430;
-/// Variant icon entry: 0x30 bytes with its texture pointer at `ICON_ENTRY_RECORDED`. A new entry is
-/// inactive, kind 1 and empty; loaded or constructed overrides are active. Binding tries this entry
-/// before defaults. Serialization writes an active entry string without its kind.
 pub const ICON_OVERRIDE_ACTIVE: usize = 0x450;
-/// CEquipmentVariant icon entry u32 kind: 0 a GFX sprite name, 1 a texture path.
 pub const ICON_OVERRIDE_KIND: usize = 0x454;
-/// Variant icon MSVC string contains a sprite name or path. The auto-design
-/// sentinel with kind 1 selects an equipment graphic-pool lookup instead.
 pub const ICON_OVERRIDE_TOKEN: usize = 0x458;
-/// Recorded icon bytes: active flag, kind and string header.
-///
-/// The remaining rule uses content and recorded country values; see
-/// `replay_data::rows::VariantDefinitionRow`. An active valid override binds first.
-/// Otherwise type, origin or creator country, classifier and size select the
-/// content name search. Dynamic creators use their original tag.
-/// Auto-design resolves graphic pools using type, ruling ideology and 3D culture.
-/// Type and active archetype names are tried in order, followed by enabling
-/// technology names with country, 2D culture and unprefixed variants; family
-/// links recurse. Pools come from country, faction, continent and default
-/// contexts. A stable descending weight sort precedes reverse icon iteration
-/// within each pool, retaining the pool's content eligibility rules.
 pub const ICON_ENTRY_RECORDED: usize = 0x28;
-/// Equipment-variant constructor initializes the vtable and mission storage.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c2_6060);
 
-/// Authenticates the variant and preserves its native low-type/high-id reference.
 pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("variant module address overflow")?;
@@ -124,8 +64,6 @@ pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64
     identity_header(expected, bytes)
 }
 
-/// Decode an identity already gathered with the rest of its batch. The caller
-/// supplies the relocated vtable so a batch computes it once.
 pub fn identity_from_header(expected: usize, bytes: [u8; 16]) -> Result<u64, &'static str> {
     identity_header(expected, bytes)
 }
@@ -139,7 +77,6 @@ fn identity_header(expected: usize, bytes: [u8; 16]) -> Result<u64, &'static str
     Ok(handle)
 }
 
-/// Authenticated identity and callback-local address, never a serialized pointer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryRow {
     pub id: u64,
@@ -147,7 +84,6 @@ pub struct RegistryRow {
 }
 
 impl RegistryRow {
-    /// Authenticate a single native reference for a bounded dependent read.
     pub fn read(memory: &impl Memory, base: usize, pointer: usize) -> Result<Self, &'static str> {
         if pointer == 0 {
             return Err("variant pointer is null");
@@ -157,20 +93,11 @@ impl RegistryRow {
             address: pointer,
         })
     }
-    /// Use only while reading dependent tables within the same callback.
     pub fn pointer(self) -> usize {
         self.address
     }
 }
 
-/// Copies the published, saved campaign variants, including unused variants.
-/// Every native slot is a row, starting at zero; there is no sentinel or hole.
-/// Pointer spans and retained identity headers use bounded batches. Storage
-/// grows on the acquisition worker only for copied identity batches.
-/// Native order and duplicate identities are preserved; spool conversion must
-/// reject duplicate row keys instead of silently deduplicating the census.
-/// Publication scheduling, consistency and cost remain separate acceptance
-/// requirements. A successful guarded read does not prove update ordering.
 pub fn walk_registry(
     memory: &impl Memory,
     base: usize,
@@ -245,13 +172,10 @@ pub fn walk_registry(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Runtime identity fields; country values remain the engine's reference links.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub id: u64,
     pub equipment_token: u32,
-    /// Definition archetype token, selected through its archetype link;
-    /// the pool total is keyed by this token.
     pub archetype_token: u32,
     pub creator_link: u32,
     pub origin_link: u32,
@@ -261,31 +185,21 @@ pub struct Row {
     pub mission_mask: u32,
 }
 
-/// Exact bytes in the caller's arena. Empty strings remain present empty strings.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TextSpan {
     pub start: usize,
     pub len: usize,
 }
 
-/// The equipment type is named by `identity.equipment_token`; its text is
-/// content, so the name string is not copied per variant.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DefinitionRow<D = VariantDesignState> {
     pub identity: Row,
-    /// Authenticated pass-local type address, never a replay identity.
     pub archetype_pointer: usize,
-    /// Sample-local organisation resolution already used for save admission.
-    /// Only the current native visit may dereference it; never a replay identity.
     pub organisation_pointer: Option<usize>,
-    /// Sample-local direct-source bindings; never serialized. None for a carried deep value.
     pub source_links: Option<DesignSourceLinks>,
     pub display_name: TextSpan,
     pub variant_name: TextSpan,
-    /// The designer's saved model choice; empty when unset.
     pub explicit_entity: TextSpan,
-    /// The icon entry's raw active byte, kind and string (see
-    /// [`ICON_OVERRIDE_ACTIVE`]); inactive entries keep their bytes too.
     pub icon_active: u8,
     pub icon_kind: u32,
     pub icon: TextSpan,
@@ -300,11 +214,6 @@ pub struct TextOutcome {
     pub required_bytes: usize,
 }
 
-/// Reads each supplied variant without caching definitions across hours.
-/// Supply the complete registry census for published campaign coverage; a
-/// truncated or unavailable source cannot become a complete leaf table.
-/// Keep duplicate handles for spool rejection, including conflicts between
-/// different pointers. The same prepared census feeds stats and children.
 pub fn walk_definitions(
     memory: &impl Memory,
     base: usize,
@@ -315,8 +224,6 @@ pub fn walk_definitions(
     walk_definitions_with(memory, base, variants, output, bytes, Ok)
 }
 
-/// The same native visit with worker-owned applied-source interning. Mapping
-/// runs only after the design's complete native inputs have been read.
 pub fn walk_definitions_with<D: Default>(
     memory: &impl Memory,
     base: usize,
@@ -328,9 +235,6 @@ pub fn walk_definitions_with<D: Default>(
     walk_definitions_carried(memory, base, variants, output, bytes, |_| Ok(None), map)
 }
 
-/// A caller with a complete writer certificate may carry the added deep state.
-/// Prefix authentication and text reads retain their ordinary census contract.
-/// Only misses request deep spans; carried values never authorize native reads.
 pub fn walk_definitions_carried<D: Default>(
     memory: &impl Memory,
     base: usize,
@@ -657,10 +561,7 @@ pub fn walk_definitions_carried<D: Default>(
     result.unwrap_or_else(text_failure)
 }
 
-/// Number of native equipment statistic slots in the authenticated executable.
-/// Mods can supply any of these slots; none is selected by equipment family.
 pub use engine_executable::native_values::equipment_variant::STAT_COUNT;
-/// First native signed fixed5 statistic. Slot names come from executable metadata.
 pub const STATS: usize = 0x100;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -670,7 +571,6 @@ pub struct StatsRow {
     pub organisation: Organisation,
 }
 
-/// Frozen design authorship and bonus entries, independent of current MIO traits.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct Organisation {
     pub author: u64,
@@ -682,7 +582,6 @@ pub use game_model::equipment::OrganisationBonus;
 pub const INDUSTRIAL_ORGANISATION: usize = 0x488;
 pub const ORGANISATION_BONUSES: usize = 0x498;
 pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;
-/// Receiver certificates are checked only in the existing daily detail walk.
 pub trait OrganisationCarry {
     fn fresh(&mut self, index: usize, source: &RegistryRow) -> Result<bool, &'static str>;
     fn read(&mut self, _index: usize, _source: &RegistryRow) {}
@@ -727,8 +626,6 @@ fn read_organisation(
     Ok(())
 }
 
-/// Uses the same complete supplied variant census as `walk_definitions`. A
-/// worker grows storage from that already-owned census before the first batch.
 #[cfg(test)]
 pub fn walk_stats(
     memory: &impl Memory,
@@ -787,8 +684,6 @@ pub fn walk_stats_carried(
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
-            // One borrowed layout and guard per batch, still only the exact
-            // stat bytes; no gaps, names or other table fields are touched.
             if memory.copy_records(
                 RecordSources::Pointers(&pointers[..sources.len()]),
                 &LAYOUT,
@@ -830,8 +725,6 @@ pub(crate) fn text_failure(reason: &'static str) -> TextOutcome {
     }
 }
 
-/// Already-copied MSVC header, with inline text retained locally. Heap text and
-/// its terminator use one guarded copy when admitted to the caller's arena.
 pub(crate) struct Literal {
     inline: [u8; 16],
     heap: Option<usize>,
@@ -863,9 +756,6 @@ impl Literal {
         Ok(Self { inline, heap, len })
     }
 
-    /// Do not size the arena from an unverified native heap length. Typical
-    /// names retain their single payload/terminator batch; larger names admit
-    /// bounded readable chunks before growing the destination.
     pub fn copy_growing(
         &self,
         memory: &impl Memory,

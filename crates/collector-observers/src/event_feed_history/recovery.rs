@@ -1,5 +1,3 @@
-//! An already selected census owner's owned baseline. Native reads and heap
-//! growth happen before the shared-store publication lease, never on a callback.
 use super::*;
 use engine_native::ccountry::Country;
 use replay_data::event_feed_rows::decisions::{DecisionChange, Operation};
@@ -40,8 +38,6 @@ impl PreparedOwner {
             }
             if work[OwnerRegistry::Delayed as usize] {
                 cuts[OwnerRegistry::Delayed as usize] = Cut::take();
-                // This private transaction has one census owner, not a table of
-                // every preceding canonical slot. Publication restores its slot.
                 source.recover_delayed(
                     memory,
                     base,
@@ -54,8 +50,6 @@ impl PreparedOwner {
                     },
                 );
             }
-            // A failed private growth uses the live owner's preceding
-            // control reserve, never a partially prepared baseline.
             if source
                 .failure
                 .is_some_and(|reason| OWNER_SHORTAGES.contains(&reason))
@@ -67,9 +61,6 @@ impl PreparedOwner {
             {
                 return Err(OWNER_STORAGE);
             }
-            // Both registries belong to the same census owner. Even an
-            // early world-read failure can be named from its census identity
-            // word without retrying the failed world/header acquisition.
             let identity = source
                 .entries
                 .first()
@@ -148,8 +139,6 @@ impl PreparedOwner {
 }
 
 impl Store {
-    /// Select only work the existing census already owes. Certified queues
-    /// require no native queue read.
     pub(crate) fn owner_work(
         &mut self,
         memory: &impl Memory,
@@ -176,18 +165,12 @@ impl Store {
             });
         [delayed, decisions == decisions::Recovery::Baseline]
     }
-    /// A conservative bound for every remaining owed registry, including
-    /// owners not yet visited. Refreshing the whole live census bound needs
-    /// no per-owner ledger; each emitted refusal spends one of its controls.
     fn owner_control_demand(&self, country: Country) -> usize {
         collector_primitives::country_slots::census_rows(0)
             .max((country.canonical_slot as usize).saturating_add(1))
             .saturating_mul(2)
             .max(self.owner_controls)
     }
-    /// The owner is already uncertified. If even the live-sized reserve
-    /// could not grow, keep its refusal pending rather than attempting a
-    /// marker that would reject globally or mark an unwritten refusal sent.
     #[allow(
         clippy::too_many_arguments,
         reason = "A local refusal keeps the selected registry, census identity and publication operands."
@@ -222,9 +205,6 @@ impl Store {
             self.prepared_delayed_failure(country)
         };
         if !fits && !repeated {
-            // No baseline prefix or Ready was published. Nothing here lost
-            // a native occurrence, so this storage failure cannot withdraw
-            // any unrelated certificate. Leave refused unset for a retry.
             let _ = self.advance();
             self.count_rejected(1);
             recovery_needed();
@@ -258,8 +238,6 @@ impl Store {
         }
         Ok(())
     }
-    /// Includes surviving unacknowledged entries, earlier owners and a
-    /// census-wide refusal reserve, not just the selected registry's control.
     pub(crate) fn prepare_owner_demand(&mut self, plan: &PreparedOwner) -> [usize; 3] {
         self.prepare_owner_budget(plan, self.owner_control_demand(plan.country))
     }
@@ -320,12 +298,8 @@ impl Store {
         if self.failure.is_some() || self.observation(generation).is_err() {
             return Ok(());
         }
-        // The sizing census may grow concurrently: adopt exactly the count
-        // measured by this preflight, never a later unprepared larger count.
         let controls = self.owner_control_demand(plan.country);
         let demand = self.prepare_owner_budget(plan, controls);
-        // The plan's measured demand grows the store here; only a failed
-        // allocation leaves it short, which refuses the owner by name.
         if demand[0] > self.capacity() {
             let _ = self.prepare_capacity(demand[0] - self.entries.len());
         }
@@ -355,8 +329,6 @@ impl Store {
             && demand[1] <= self.script_tokens.len()
             && demand[2] <= self.script_scopes.len();
         if space {
-            // Adopt no reserve until all its storage already exists. The
-            // complete baseline must fit without spending these controls.
             self.owner_controls = controls;
         }
         let fits = [
@@ -398,8 +370,6 @@ impl Store {
                     }
                     continue;
                 };
-                // No partial prefix is installed. The prepared control reserve
-                // remains available to name this owner's refusal.
                 let registry = if registry == OwnerRegistry::Decisions as usize {
                     OwnerRegistry::Decisions
                 } else {
@@ -481,8 +451,6 @@ impl Store {
         }
         Ok(())
     }
-    /// Even if the private preparation allocation failed, refuse only its
-    /// selected owner, using the control space the preceding publication kept.
     pub(crate) fn refuse_owner_preparation(
         &mut self,
         memory: &impl Memory,

@@ -1,6 +1,5 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react';
 
-/** The parts of a dashboard clock the widget's hour reads. */
 export interface HeadClock {
   getHour(): number;
   getSnapshot(): { hoursPerSecond: number; playing: boolean };
@@ -13,7 +12,6 @@ export function heldAt(previous: Held | null, key: string, hour: number): Held {
   return previous?.key === key && previous.hour <= hour ? previous : { key, hour };
 }
 
-/** The hour at which the visible structure last changed. */
 export function useHeadHour(clock: HeadClock, enabled: boolean, key: (hour: number) => string, woken?: Set<() => void>): number {
   const keyed = useRef(key); keyed.current = key;
   const held = useRef<{ key: string; hour: number } | null>(null);
@@ -35,6 +33,4 @@ export function useHeadHour(clock: HeadClock, enabled: boolean, key: (hour: numb
   return enabled && held.current ? held.current.hour : clock.getHour();
 }
 
-/** `key` of a race's rows, made to move at every hour while paused: after a paused seek that keeps the same rows, what
- * the widget renders at its hour (a static label, an empty race's text) is of the hour sought, not the one before. */
 export const pausedKey = (key: string, hour: number, playing: boolean) => `${key}|${playing ? '' : Math.floor(hour)}`;

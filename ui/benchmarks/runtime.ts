@@ -1,4 +1,3 @@
-/** Synthetic production-JavaScript benchmark; run with node --experimental-strip-types. */
 import { performance } from 'node:perf_hooks';
 import { WindowMap } from '../src/dashboard/windowMap.ts';
 import { researchAt } from '../src/widgets/research/researchData.ts';

@@ -1,0 +1,9 @@
+# 0704. Preserve ordered array failures and require stable lexer witnesses
+
+An array's native header has independent capacity and live count. An exact header copy can be decoded without another read. Validate the requested slice and extent, including an empty slice at the array end. A complete copy demands exactly the live count. A prefix caller must request its truncation explicitly. Pointer batch consumers receive the copied prefix in original ordinal order, including null entries. A later failed field cannot displace a consumer's earlier refusal.
+
+Copy the reverse lexer dictionary between two matching writer-free witnesses inside the hourly update. Dynamic insertion changes the count before writing reverse names, and lookup rebuild may also change the extent. Witnesses capture those facts and independently prove that the members of the batched header occupy the expected live layout. The pinned aligned x64 reads and compiler fences order observations at the boundaries. These checks do not lock the lexer or rule out arbitrary writes through escaped string aliases. Reset, runtime destruction and shutdown are outside the admitted callback lifetime.
+
+Publish the native ordinal and exact copied bytes, including an empty or reserved entry, with no resident native pointer. The static long-fixed token is emitted as fixed15 numeric text in the game's serialization. Check each string header's terminating byte separately. A stable capacity shortage may retain a complete prefix. A changing mutation witness invalidates the prefix and its growth demand. A declared string length is not allocation evidence. A fixed-scratch probe certifies only an immediately readable bounded growth step, discarding those bytes and stopping at the first refusal.
+
+[Native arrays](../../crates/engine-native/src/cpdx_array.rs) · [Lexer witness](../../crates/engine-native/src/cpdx_lexer.rs)

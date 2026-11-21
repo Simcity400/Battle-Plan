@@ -35,7 +35,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 pub use map_display_data::{Refresh, SnowMud, Summary};
 
-/// `MAP_SIZE / 4`: the grid fills for a province image.
 pub fn grid_size(width: u32, height: u32) -> [u32; 2] {
     [width / SNOW_MUD_BLOCK, height / SNOW_MUD_BLOCK]
 }
@@ -57,7 +56,6 @@ pub fn grid(map: &MapData, perm_snow: &[bool], frame: &DecodedFrame) -> io::Resu
     )
 }
 
-/// Includes defined provinces absent from the province image.
 fn largest_province(map: &MapData) -> u32 {
     let drawn = map.province_ids.iter().copied().max().unwrap_or(0);
     map.definitions
@@ -72,8 +70,6 @@ pub fn grid_from_cells(cells: &SnowCells, frame: &DecodedFrame) -> io::Result<Sn
     })
 }
 
-/// Reads the hour's bytes and turns `average`'s cells and unknown flags into the texture
-/// and its mask.
 fn grid_with(
     largest: u32,
     dimensions: [u32; 2],
@@ -114,7 +110,6 @@ fn grid_with(
         .checked_mul(4)
         .ok_or_else(|| invalid("snow raster byte count overflow"))?;
     let mut bytes = vec![[0_u8; 2]; provinces];
-    // A whole table observes every province, those it holds no row for included.
     let mut known = vec![complete; provinces];
     let mut province_snow = vec![None; provinces];
     let mut summary = Summary {
@@ -167,8 +162,6 @@ fn grid_with(
         summary.missing_edges = edge_cells;
         None
     };
-    // Unrecorded boundary history must not be reconstructed from province simulation. An
-    // unrecorded boundary draws bare and unhatched by the owner's sign-off; `missing_edges` names it.
     for (edge, cell) in boundary(width, height).enumerate() {
         cells[cell as usize * 2..cell as usize * 2 + 2].copy_from_slice(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
@@ -197,8 +190,6 @@ fn grid_with(
     })
 }
 
-/// The grid's boundary cells in the order the retained edges hold them: the east column south
-/// first without the northern corner, then the northern row.
 pub fn boundary(width: u32, height: u32) -> impl Iterator<Item = u32> {
     (0..height - 1)
         .map(move |z| z * width + width - 1)
@@ -214,15 +205,11 @@ impl std::ops::Deref for SnowCells {
     }
 }
 pub struct SnowComposition {
-    /// The map's largest province id ([`largest_province`]).
     largest: u32,
     width: u32,
     height: u32,
-    /// Each cell's entries: `offsets[cell]..offsets[cell + 1]`.
     offsets: Vec<usize>,
-    /// A province and how many of the cell's pixels read its snow and mud.
     entries: Vec<(u32, u8, u8)>,
-    /// How many of the cell's pixels are `perm_snow`.
     perm: Vec<u8>,
     province_cells: std::collections::BTreeMap<u32, Vec<usize>>,
 }
@@ -318,22 +305,18 @@ impl SnowCells {
         )))
     }
 
-    /// The map's largest province id.
     pub fn largest(&self) -> u32 {
         self.largest
     }
 
-    /// The grid's cell count.
     pub fn cells(&self) -> usize {
         self.perm.len()
     }
 
-    /// The cells `province`'s pixels fall in.
     pub fn province_cells(&self, province: u32) -> &[usize] {
         self.province_cells.get(&province).map_or(&[], Vec::as_slice)
     }
 
-    /// One cell's snow and mud: its pixels' province bytes averaged, permanent snow full.
     pub fn cell_bytes(&self, cell: usize, bytes: impl Fn(u32) -> [u8; 2]) -> [u8; 2] {
         let area = SNOW_MUD_BLOCK * SNOW_MUD_BLOCK;
         let mut snow = u32::from(self.perm[cell]) * u32::from(u8::MAX);
@@ -346,8 +329,6 @@ impl SnowCells {
         [(snow / area) as u8, (mud / area) as u8]
     }
 
-    /// Each cell's unknown flag: 1 where a province `known` does not hold reaches it. Every pixel
-    /// adds its province's mud byte to the average, so no unobserved contributor is irrelevant.
     fn unknown(&self, known: &[bool]) -> Vec<u8> {
         let known = |province: u32| known.get(province as usize) == Some(&true);
         (0..self.perm.len())
@@ -363,7 +344,6 @@ impl SnowCells {
         )
     }
 
-    /// `rasterise`'s cells for these per-province bytes.
     fn average(&self, bytes: &[[u8; 2]]) -> (u32, u32, Vec<u8>) {
         let mut cells = vec![0u8; self.perm.len() * 2];
         for (cell, out) in cells.chunks_exact_mut(2).enumerate() {
@@ -496,7 +476,6 @@ mod tests {
         let rows = vec![
             display_row(3, 3, vec![200, 240, 0, 0, 0, 0, 0, 255, 255, 255], 1),
             row(10, 5, 200, 0),
-            // Recorded snow without a written byte draws bare, as in the game.
             row(20, 7, 0, 0),
             row(21, 0, 240, 0),
             row(30, 0, 0, 255),
@@ -508,7 +487,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!([snow.width, snow.height], [3, 3]);
-        // (previous mud, current snow, previous snow, current mud).
         assert_eq!(texel(&snow, 0, 0), [0, 200, 200, 0]);
         assert_eq!(texel(&snow, 1, 1), [0, 0, 0, 0]);
         assert_eq!(texel(&snow, 2, 1), [0, 240, 240, 0]);
@@ -531,7 +509,6 @@ mod tests {
     #[test]
     fn perm_snow_split_cells_and_missing_rows() {
         let mut ids = image();
-        // Four pixels of cell (0, 1) move to province 21.
         for row in 4..8 {
             ids[row * 12 + 3] = 21;
         }
@@ -551,9 +528,7 @@ mod tests {
             }),
         )
         .unwrap();
-        // Twelve pixels of 40 and four of 240 average to 90.
         assert_eq!(texel(&snow, 0, 1)[1], 90);
-        // Four perm_snow pixels of sixteen: 63, and no mud.
         assert_eq!(texel(&snow, 1, 2), [0, 63, 63, 0]);
         assert!(!snow.summary.complete);
         assert!(
@@ -596,7 +571,6 @@ mod tests {
 
     #[test]
     fn odd_sizes_leave_the_same_edge_pixels_out_of_both_paths() {
-        // Remainder rows and columns are outside the floor-sized grid.
         let ids: Vec<u32> = (0..180u32).map(|at| 1 + (at * 11 + at / 18) % 7).collect();
         let perm: Vec<bool> = (0..180).map(|at| at % 13 == 0).collect();
         let map = MapData {
@@ -653,7 +627,6 @@ mod tests {
             )
             .unwrap()
         };
-        // Attachment can retain edges from a rebuild the recorder never saw.
         let attached = snapshot(10, 20, 30, 40, 7);
         let dirty = snapshot(100, 200, 30, 40, 8);
         let rebuilt = snapshot(100, 200, 70, 80, 9);
@@ -664,7 +637,6 @@ mod tests {
         }
         assert_eq!(texel(&dirty, 0, 0), [200, 100, 100, 200]);
         assert_eq!(dirty.refresh.unwrap().identity, 8);
-        // Historical rows retain available interior data, never invent edges.
         let old = grid_from_cells(
             &cells,
             &frame(TableView::Complete(TableRows::WeatherProvinces(vec![
@@ -713,7 +685,6 @@ mod tests {
             .collect()
     }
 
-    /// Both builds, which must agree on the bytes and the mask.
     fn both(map: &MapData, perm: &[bool], view: TableView) -> SnowMud {
         let frame = frame(view);
         let pixels = grid(map, perm, &frame).unwrap();
@@ -738,7 +709,6 @@ mod tests {
             TableView::Complete(TableRows::WeatherProvinces(rows(&[10, 20, 21, 30]))),
         );
         assert!(unknown_cells(&whole).is_empty());
-        // A whole table observes the provinces it omits; a partial one does not.
         let omitted = both(
             &map,
             &perm,
@@ -753,9 +723,7 @@ mod tests {
                 missing: 1,
             },
         );
-        // Province 20 fills the two interior cells of the middle row; edges are recorded.
         assert_eq!(unknown_cells(&truncated), [(0, 1), (1, 1)]);
-        // The observed cells keep their bytes; the unknown ones keep drawing what they did.
         assert_eq!(truncated.texels, omitted.texels);
         assert_eq!(texel(&truncated, 0, 0), texel(&whole, 0, 0));
         for view in [
@@ -770,8 +738,6 @@ mod tests {
             assert_eq!(unknown_cells(&absent), [(0, 0), (1, 0), (0, 1), (1, 1)]);
             assert!(absent.texels.iter().all(|&byte| byte == 0));
         }
-        // Without the retained boundary, the boundary cells draw bare and unhatched; the summary
-        // still counts them missing.
         let unbounded = both(
             &map,
             &perm,
@@ -787,7 +753,6 @@ mod tests {
     #[test]
     fn a_mixed_cell_with_any_unobserved_province_is_unknown_even_under_permanent_snow() {
         let mut ids = image();
-        // Four pixels of cell (0, 1) move to province 22, all of them permanent snow.
         let mut perm = [false; 144];
         for row in 4..8 {
             ids[row * 12 + 3] = 22;
@@ -808,7 +773,6 @@ mod tests {
                 missing: 1,
             },
         );
-        // Its snow is permanent, but its mud byte still enters the cell's average.
         assert_eq!(unknown_cells(&snow), [(0, 1)]);
         let mut observed = rows;
         observed.push(row(22, 0, 0, 0));
@@ -885,7 +849,6 @@ mod equality_tests {
             |snow| snow.unknown[1] = 0,
             |snow| snow.province_snow[1] = Some(8),
             |snow| snow.post_factors = None,
-            // Bitwise, so negative zero is a different factor.
             |snow| snow.post_factors = Some(vec![Some(-0.0f32), None].into()),
             |snow| snow.summary.with_snow = 1,
             |snow| snow.refresh = None,

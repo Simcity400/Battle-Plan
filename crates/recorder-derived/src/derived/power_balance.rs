@@ -1,8 +1,3 @@
-//! Power-balance description trees: playback's derivation from each record's
-//! recorded sources and the content's static modifiers
-//! ([`replay_derive::power_balance_derive`]) against the native trees a recording
-//! holds as witnesses: the rows of the hour's sampled slice a `breakdown_witness`
-//! collector build read. Rows without witnesses are counted, not compared.
 
 use installed_content_core::{ResolvedLayers, static_modifiers::Descriptions};
 use replay_data::{
@@ -18,7 +13,6 @@ const WEEKLY: u32 = engine_executable::modifier_keys::POWER_BALANCE_WEEKLY;
 
 #[derive(Default)]
 pub(super) struct Checker {
-    /// One stack's static modifiers, each name resolved once.
     statics: Descriptions,
     rows: u64,
     witnessed: u64,
@@ -93,7 +87,6 @@ impl Checker {
     ) -> Result<[Vec<ModifierBreakdownNode>; 2], String> {
         let mut blocks = Vec::with_capacity(row.sources.len());
         for source in &row.sources {
-            // The game compares the name's bytes up to its first NUL.
             let key =
                 std::str::from_utf8(installed_content_core::parser::c_string(source)).map_err(|_| {
                     format!(
@@ -143,7 +136,6 @@ impl Checker {
     }
 }
 
-/// Each leaf as (name, value), the root as its child count.
 fn summary(nodes: &[ModifierBreakdownNode]) -> (u32, Vec<(String, i64)>) {
     (
         nodes.first().map_or(0, |root| root.children),

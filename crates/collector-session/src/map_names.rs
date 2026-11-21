@@ -1,8 +1,3 @@
-//! Province override bytes, read every hour. An hour whose province name
-//! domain is quiet ([`crate::world_input_changes`]: no rename or reset effect
-//! ran since the held read) publishes the held read without reading any
-//! province. Native row/text storage grows only off-thread or on the Slow
-//! job's worker.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
@@ -18,10 +13,8 @@ use std::sync::Mutex;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceNames];
 
-/// The latest complete read's rows and override bytes.
 type Names = (Vec<cprovince::NameRow>, Vec<u8>);
 
-/// The held read, between the Slow job's captures (one runs at a time).
 static HELD: Mutex<Held<Names>> = Mutex::new(Held::new((Vec::new(), Vec::new())));
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +32,6 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // Retain each override's observed string length.
         let demand = cprovince::count_names(memory, base, state);
         let rows = collector_extended_support::demand::rows(demand.outcome)?;
         crate::country_scale::raise(&mut self.rows, rows);
@@ -58,7 +50,6 @@ impl Captured {
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0, bytes: 0 })
     }
@@ -284,7 +275,6 @@ mod tests {
         put(bytes, address + 24, &15_u64.to_le_bytes());
     }
 
-    /// One province census of a single province, id 1.
     fn census() -> Vec<u8> {
         let mut bytes = vec![0; 0x2000];
         let root = BASE + engine_native::cgame_state::PROVINCES;
@@ -314,8 +304,6 @@ mod tests {
         ))
     }
 
-    /// A rename or reset reaches the very next hour; daily reads (the old
-    /// slot 1) showed it up to a day late.
     #[test]
     fn live_override_changes_and_removal_are_captured_the_next_hour() {
         let mut bytes = census();
@@ -336,8 +324,6 @@ mod tests {
         }
     }
 
-    /// A quiet hour publishes the held read without reading a province; an
-    /// hour after a writer ran and a full hour read afresh.
     #[test]
     fn quiet_hours_publish_the_held_read_without_reading() {
         let changes = changes::Isolated::new();
@@ -355,15 +341,11 @@ mod tests {
         let (table, spans) = at(&bytes, 1, false);
         assert_eq!(table, [rows(b"Original")]);
         assert!(spans > 0);
-        // Memory changes without a hooked writer: a quiet hour still
-        // publishes the held read, and reads nothing.
         name(&mut bytes, b"Unseen");
         assert_eq!(at(&bytes, 2, false), ([rows(b"Original")], 0));
-        // A full hour reads.
         let (table, spans) = at(&bytes, 3, true);
         assert_eq!(table, [rows(b"Unseen")]);
         assert!(spans > 0);
-        // A rename effect ran: the next hour reads it.
         name(&mut bytes, b"Renamed");
         changes.write(Domain::ProvinceNames);
         assert_eq!(at(&bytes, 4, false).0, [rows(b"Renamed")]);

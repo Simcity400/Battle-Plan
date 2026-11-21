@@ -38,8 +38,6 @@ struct Map {
 }
 
 impl Map {
-    /// `countries` canonical countries and `provinces` province objects with
-    /// ids 1..=provinces, each with a definition holding `flags`.
     fn new(countries: u32, provinces: u32, flags: impl Fn(u32) -> u8) -> Self {
         let mut world = World::new(MODULE, countries, COUNTRY_DIPLOMACY + 8);
         let table = world.alloc((provinces as usize + 1) * 8);
@@ -84,20 +82,17 @@ impl Map {
 
 #[test]
 fn level_health_follows_the_healthy_level_and_the_partial_level() {
-    // No levels at all: every level reads zero health.
     assert_eq!(health_of(0, 3, 5, 1), 0);
     assert_eq!(health_of(4, 2, 7_000_000, 0), LEVEL_HEALTH);
     assert_eq!(health_of(4, 2, 7_000_000, 2), LEVEL_HEALTH);
     assert_eq!(health_of(4, 2, 7_000_000, 3), 7_000_000);
     assert_eq!(health_of(4, 2, 7_000_000, 4), 0);
-    // A fully damaged building's first level is the partial one.
     assert_eq!(health_of(4, -1, 9, 0), 9);
     assert_eq!(health_of(4, i16::MAX, 9, i16::MAX), LEVEL_HEALTH);
 }
 
 #[test]
 fn a_unit_stands_on_its_province_unless_it_embarks_onto_an_enemy_sea() {
-    // Provinces 1-2 are land, 3 is sea.
     let mut map = Map::new(4, 3, |id| if id == 3 { 1 } else { 0 });
     let still = map.unit(0, 1, &[]);
     let marching = map.unit(0, 1, &[2]);
@@ -106,7 +101,6 @@ fn a_unit_stands_on_its_province_unless_it_embarks_onto_an_enemy_sea() {
     let state = map.world.game_state();
     assert_eq!(unit_province(&memory, MODULE, state, still), Ok(1));
     assert_eq!(unit_province(&memory, MODULE, state, marching), Ok(1));
-    // Only a division can take its route province.
     assert_eq!(unit_province(&memory, MODULE, state, gun), Ok(1));
 }
 
@@ -119,7 +113,6 @@ fn intel_entries_keep_native_order_signed_levels_and_repeats_across_batches() {
     world.array(unit + cunit::VIEWER_DATA, entries, count);
     for index in 0..count as usize {
         let entry = entries + index * INTEL_STRIDE;
-        // Ordinals repeat and run backwards; levels cover the signed range.
         world.u32(entry, (count - 1 - index as u32) % 997);
         world.put(entry + INTEL_LEVEL, &[(index % 256) as u8]);
     }
@@ -133,7 +126,6 @@ fn intel_entries_keep_native_order_signed_levels_and_repeats_across_batches() {
         assert_eq!(*country, (count - 1 - index as u32) % 997);
         assert_eq!(*level, (index % 256) as u8 as i8);
     }
-    // Reading past the array's storage refuses rather than inventing entries.
     let mut past = vec![(0, 0); 2];
     assert!(intel_entries(&memory, array, count as usize + 1_000_000, &mut past).is_err());
 }
@@ -170,7 +162,6 @@ fn a_resistance_text_takes_the_best_province_its_controller_and_the_owners_overl
             })
         );
     }
-    // A negative best index selects the first province.
     map.world.u32(state + STATE_BEST_PROVINCE, (-1_i32) as u32);
     let memory = map.world.memory();
     assert_eq!(
@@ -242,7 +233,6 @@ fn an_inline_and_a_heap_activity_key_are_both_located_exactly() {
     world.u64(at_ + 24, 31);
     let memory = world.memory();
     assert_eq!(activity_key(&memory, activity), Ok((heap, 28)));
-    // A length past the capacity is malformed.
     world.u64(at_ + 16, 40);
     let memory = world.memory();
     assert!(activity_key(&memory, activity).is_err());

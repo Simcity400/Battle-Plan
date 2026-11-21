@@ -9,7 +9,6 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import { measureAmount, measureNote, measureRows, resourceName } from './tradeData.ts';
 import type { Flow, Measure, SideLink, SideNode, TradeCountryFact } from './tradeData';
 
-/** Countries or trades named in a tooltip, largest first. */
 export const TOOLTIP_LIMIT = 8;
 
 interface TooltipOptions {
@@ -25,7 +24,6 @@ interface TooltipOptions {
   ask: (wanted: readonly NameAt[]) => void;
 }
 
-/** The date, labels and requests every trade tooltip uses. */
 function tooltipContext(options: TooltipOptions) {
   const { measure, from, hour, decimals, nodeName, labelAt } = options;
   const fact = (identity: string) => options.countryAt(identity, hour);
@@ -50,7 +48,6 @@ function tooltipContext(options: TooltipOptions) {
   };
 }
 
-/** A ribbon's recorded terms and the countries trading through its endpoints. */
 export function ribbonTooltip(link: SideLink, source: SideNode, target: SideNode, options: TooltipOptions): TooltipContent {
   const { measure, from, hour, decimals, note, viewport } = options;
   const { named, ask, name, amount, subtitle } = tooltipContext(options);
@@ -81,7 +78,6 @@ interface NodeTooltipOptions extends TooltipOptions {
   resourceColour: (id: number) => string | undefined;
 }
 
-/** A country's trade by resource, or the countries summed into an other node. */
 export function nodeTooltip(node: SideNode, links: readonly SideLink[], options: NodeTooltipOptions): TooltipContent {
   const { note, viewport, resourceOrder, resourceColour } = options;
   const { named, nativeLabel, ask, name, amount, subtitle } = tooltipContext(options);

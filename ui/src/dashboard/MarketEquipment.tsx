@@ -1,4 +1,3 @@
-// An equipment design as the market tables show it: its picture, its name, and how many more the row names.
 import ArtFallback from '../components/ArtFallback';
 import './market.css';
 

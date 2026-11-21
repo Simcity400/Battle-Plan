@@ -1,7 +1,3 @@
-//! Every schema table as a journal's hours apply them, in the format-11 table state: what each
-//! changed in the last hour applied, and the strings appended. The journal's generator
-//! (`replay::multiplied`) and tests of the section grammar apply hours through it; recordings
-//! are read through the unit's reader primitives.
 
 use crate::{
     invalid,
@@ -14,7 +10,6 @@ use std::{fmt, io};
 #[cfg(test)]
 mod tests;
 
-/// The strings appended, by id from 0, packed end to end.
 #[derive(Default, PartialEq, Eq)]
 pub struct Dictionary {
     bytes: Vec<u8>,
@@ -28,7 +23,6 @@ impl fmt::Debug for Dictionary {
 }
 
 impl Dictionary {
-    /// The ids appended: the next appended string takes this id.
     pub fn len(&self) -> usize {
         self.ends.len()
     }
@@ -37,7 +31,6 @@ impl Dictionary {
         self.ends.is_empty()
     }
 
-    /// String `id`, when it was appended.
     pub fn get(&self, id: u32) -> Option<&[u8]> {
         let at = id as usize;
         let end = *self.ends.get(at)?;
@@ -57,14 +50,10 @@ impl Dictionary {
     }
 }
 
-/// The rows a truncated table's hour read: those its `changes` read that are still live in
-/// `table`, and those it inserted.
 fn view_read(view: &mut Vec<u32>, changes: &Changes, table: &Table) -> io::Result<()> {
     let live = table.live();
     view.clear();
     engine_allocation::reserve(view, changes.read.len() + changes.inserted.len())?;
-    // A read row the hour deleted is gone; a slot it deleted and filled again holds the
-    // inserted row, once.
     view.extend(changes.read.iter().copied().filter(|&slot| live.get(slot)));
     view.extend_from_slice(&changes.inserted);
     view.sort_unstable();
@@ -72,7 +61,6 @@ fn view_read(view: &mut Vec<u32>, changes: &Changes, table: &Table) -> io::Resul
     Ok(())
 }
 
-/// Clears the hour before's `changes`.
 fn clear_hour(changes: &mut Changes) {
     changes.truncated = false;
     changes.read.clear();
@@ -88,33 +76,25 @@ fn clear_hour(changes: &mut Changes) {
     changes.fill_masks.clear();
 }
 
-/// Every schema table as the hours applied leave it.
 pub struct State {
     kinds: Vec<Vec<Kind>>,
-    /// Each table's columns the journal holds: the first of its schema's.
     columns: Vec<usize>,
     tables: Vec<Table>,
     changes: Vec<Changes>,
     statuses: Vec<Status>,
-    /// Each table's sample hour.
     sampled: Vec<Option<i32>>,
-    /// Each truncated table's rows read: its last hour's read and inserted slots.
     views: Vec<Vec<u32>>,
-    /// Tables whose changes the last hour set, to clear before the next.
     present: Vec<usize>,
     dictionary: Dictionary,
     scratch: Scratch,
 }
 
 impl State {
-    /// `schema` holds each table's column kinds, in table order.
     pub fn new(schema: Vec<Vec<Kind>>) -> io::Result<Self> {
         let columns = engine_allocation::collect_vec(schema.iter().map(Vec::len))?;
         Self::recorded(schema, columns)
     }
 
-    /// The tables of `schema` applied from a journal holding only the first `columns[table]` of
-    /// each table's columns: the others hold every row's cell unrecorded.
     pub fn recorded(schema: Vec<Vec<Kind>>, columns: Vec<usize>) -> io::Result<Self> {
         if columns.len() != schema.len() || columns.iter().zip(&schema).any(|(&held, kinds)| held > kinds.len()) {
             return Err(invalid("A journal's columns pass the schema's"));
@@ -142,7 +122,6 @@ impl State {
         self.tables.get(table)
     }
 
-    /// What the last hour applied changed of `table`.
     pub fn changes(&self, table: usize) -> Option<&Changes> {
         self.changes.get(table)
     }
@@ -155,7 +134,6 @@ impl State {
         self.sampled.get(table).copied().flatten()
     }
 
-    /// For a truncated table, the rows its last hour read; none otherwise.
     pub fn truncated_view(&self, table: usize) -> Option<&[u32]> {
         matches!(self.statuses.get(table)?, Status::Truncated { .. }).then(|| self.views[table].as_slice())
     }
@@ -164,8 +142,6 @@ impl State {
         &self.dictionary
     }
 
-    /// Applies one hour: its appends, statuses and samples, and every present section, whose
-    /// bytes `section(index)` gives for the manifest's `index`th section.
     pub fn apply<'s>(&mut self, manifest: &Manifest<'_>, mut section: impl FnMut(usize) -> io::Result<&'s [u8]>) -> io::Result<()> {
         self.begin_hour(manifest)?;
         for (index, entry) in manifest.sections.iter().enumerate() {
@@ -177,7 +153,6 @@ impl State {
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
             let recorded = self.columns[table];
             section::apply(bytes, &self.kinds[table][..recorded], truncated, &mut self.tables[table], &mut self.scratch, &mut self.changes[table])?;
-            // The columns past the journal's hold no inserted row's cell.
             for column in recorded..self.kinds[table].len() {
                 self.tables[table].unrecord(column, &self.changes[table].inserted)?;
             }
@@ -190,7 +165,6 @@ impl State {
         Ok(())
     }
 
-    /// An hour's start: last hour's changes cleared, its appends, statuses and samples taken.
     fn begin_hour(&mut self, manifest: &Manifest<'_>) -> io::Result<()> {
         let count = self.tables.len();
         if manifest.statuses.len() != count || manifest.read.len() != count.div_ceil(64) {

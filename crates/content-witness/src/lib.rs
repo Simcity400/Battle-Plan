@@ -89,7 +89,6 @@ impl Recorder {
             shards: Default::default(),
         }
     }
-    // Presentation and fallback indices differ for the same recorded layers.
     pub fn for_layers(&self, layers: &ResolvedLayers) -> Self {
         let mut used = BTreeSet::new();
         let roster = Self::roster(layers)
@@ -239,7 +238,6 @@ impl Recorder {
         Ok(witness)
     }
 
-    /// Snapshots the content-bounded set; retained product readers may keep using this recorder.
     pub fn snapshot(&self) -> io::Result<Witness> {
         let mut entries = self
             .entries

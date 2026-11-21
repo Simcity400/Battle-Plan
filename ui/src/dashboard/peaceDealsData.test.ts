@@ -11,7 +11,6 @@ test('unrecorded peace outcomes use one plain status at the actual failure date'
 });
 
 const holder = (slot: number, tag: string, hour: number) => ({ slot, countryId: 10_000 + slot, tag, hour });
-/** One derived settlement that releases country/3 with a state country/1 owned. */
 function reply(release: Record<string, unknown>, released: unknown = true) {
   const state = { state: 3, fromCountry: holder(1, 'country/1', 100), toCountry: holder(3, 'country/3', 101), dates: { beforeHour: 100, afterHour: 101 },
     victoryPoints: '5', victoryPointsReadHour: 101, ...(released === undefined ? {} : { released }) };
@@ -30,7 +29,6 @@ const transfers = [{ state: 3, fromCountry: holder(1, 'country/1', 100), victory
 test('released states carry their holder and each former owner, and an older bridge reply still opens', () => {
   const current = validatePeaceDealsReply(reply({ toCountry: holder(3, 'country/3', 101), transfers }));
   assert.equal(current.transfers.links[0].states[0].released, true);
-  // A bridge built before releases joined the graph sends neither field.
   assert.doesNotThrow(() => validatePeaceDealsReply(reply({}, undefined)));
   for (const malformed of [
     reply({ toCountry: holder(3, 'country/3', 101) }),

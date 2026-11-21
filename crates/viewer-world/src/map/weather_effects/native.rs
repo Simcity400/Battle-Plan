@@ -1,5 +1,3 @@
-//! Candidate packets from the existing presentation simulator. Shader bytes,
-//! declarations and constants are native; historical simulation/order is separate.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 #[path = "native/packing.rs"]
 mod packing;
@@ -32,13 +30,9 @@ pub struct Inputs<'a> {
     pub retained: &'a mut crate::map::shader_scene::State,
 }
 
-/// The wrap views a packet draws in, one flag a view in the frame's order, as many as the frame
-/// has: a free camera can reach any number of map copies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ViewMask {
-    /// Every view.
     All,
-    /// Whether each view draws the packet; views past the end do not.
     Some(Vec<bool>),
 }
 
@@ -55,7 +49,6 @@ pub(super) struct DrawPacket {
     page: usize,
     registration: usize,
     pub actor: [usize; 4],
-    /// Prepared admission in the frame's ordered native camera envelopes.
     pub views: ViewMask,
     pub(super) descriptor: RenderDescriptor,
     constants: Packet,
@@ -82,7 +75,6 @@ impl DrawPacket {
                 1.
             };
         if e.local_space {
-            // Normalize each column separately; a zero column stays zero.
             for column in &mut world.basis {
                 let length =
                     (column[0] * column[0] + column[1] * column[1] + column[2] * column[2]).sqrt();
@@ -133,7 +125,6 @@ impl DrawPacket {
             let mut color = std::array::from_fn(|i| {
                 e.color[i].animate(p.color[i], t).clamp(0., 255.).trunc() as u8
             });
-            // Presentation camera fade is retained independently of shader conversion.
             color[3] = (f32::from(color[3]) * alpha).round() as u8;
             out.instances.push(Instance {
                 position_size: [
@@ -152,14 +143,10 @@ impl DrawPacket {
     }
 
     pub fn entity(e: &Emitter, scale: f32, event: &crate::map::entity_animation::Event) -> Self {
-        // Copy the runtime's world matrix, independent of view.
         Self::new(e, scale, event.transform, event.age - e.start.base)
     }
 }
 
-/// Viewer-owned presentation histories. A newly observed event starts empty;
-/// its historical RNG, actor enqueue order and pre-observation motion are not recorded.
-/// Resolve the content name once per event, then use numeric keys for its emitters.
 #[derive(Default)]
 pub(crate) struct EntitySimulations(
     BTreeMap<String, BTreeMap<(crate::map::entity_animation::EventKey, usize), EntityRuntime>>,
@@ -167,7 +154,6 @@ pub(crate) struct EntitySimulations(
 
 struct EntityRuntime {
     simulation: Simulation,
-    /// The observation in this frame's original event list, also detecting duplicates.
     seen: Option<usize>,
 }
 
@@ -176,8 +162,6 @@ impl EntitySimulations {
         self.0.clear();
     }
 
-    /// Register observations in event order, then advance each privately seeded runtime.
-    /// No random stream or particle storage is shared.
     pub fn prepare(
         &mut self,
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
@@ -231,8 +215,6 @@ impl EntitySimulations {
         drop(register_span);
         let advance_span = viewer_foundation::profiling::span("entity_advance");
         {
-            // One event's emitters are one particle system: they update together, sharing
-            // its turbulence fields.
             for (name, runtimes) in self.0.iter_mut() {
                 let Some((scale, emitters)) = entities.get(name) else {
                     continue;
@@ -292,8 +274,6 @@ impl EntitySimulations {
             add("entity effects", "advanced", advanced);
             add("entity effects", "advanced_particles", advanced_particles);
         }
-        // A duplicate refuses after advancing the preceding observations, just as the
-        // serial walk did, without retiring runtimes after an incomplete observation list.
         if let Some(error) = failure {
             return Err(error);
         }
@@ -303,8 +283,6 @@ impl EntitySimulations {
                 && (runtime.simulation.emitting || !runtime.simulation.particles.is_empty())
         };
         self.0.retain(|_, runtimes| {
-            // An event's emitters are one system on one clock: all stay while any lives, and
-            // retire together.
             let held: std::collections::BTreeSet<_> = runtimes
                 .iter()
                 .filter(|(_, runtime)| alive(runtime))
@@ -316,14 +294,11 @@ impl EntitySimulations {
         Ok(())
     }
 
-    /// Every runtime's identity, age, seed, emission state, accumulator and particles, for
-    /// comparing two sets of simulations stepped alike.
     #[cfg(test)]
     pub(crate) fn presentation_state(&self) -> String {
         self.0.iter().flat_map(|(name, runtimes)| {
             runtimes.iter().map(move |((key, ordinal), runtime)| {
                 let sim = &runtime.simulation;
-                // The pass namespace differs between passes; the rest names the runtime.
                 format!(
                     "{name} {:?} {ordinal} age={} time={} seed={} emitting={} accumulator={} particles={:?}\n",
                     key.without_pass(), sim.age, sim.time, sim.seed, sim.emitting, sim.accumulator,
@@ -333,7 +308,6 @@ impl EntitySimulations {
         }).collect()
     }
 
-    /// The frame's sort pass over every held runtime, hidden ones included.
     pub(super) fn sort(&mut self, eye: super::sort::Eye) {
         for runtime in self.0.values_mut().flat_map(BTreeMap::values_mut) {
             runtime.simulation.sort(eye);
@@ -357,7 +331,6 @@ impl EntitySimulations {
         events: &[crate::map::entity_animation::Event],
         packets: &mut Vec<DrawPacket>,
     ) {
-        // A hidden event's runtime keeps simulating; only its particles are not submitted.
         let tasks: Vec<_> = events
             .iter()
             .enumerate()
@@ -422,19 +395,14 @@ fn submission_order(packets: &[DrawPacket], view: usize) -> Vec<&DrawPacket> {
         .iter()
         .filter(|packet| packet.views.contains(view))
         .collect();
-    // Submit each actor's ordinary packets before that actor's trails.
     ordered.sort_by_key(|packet| order_key(packet));
     ordered
 }
 
-/// Bytes of the trail allocation per particle slot, its largest per slot.
 const TRAIL_STRIDE: usize = 56 * 28;
 
-/// The most particles one system may hold for the trail allocation to stay within a signed
-/// 32-bit byte size.
 pub(super) const MAX_PARTICLES: usize = i32::MAX as usize / TRAIL_STRIDE;
 
-/// Physical bytes of a native vertex allocation of `capacity` records.
 fn allocation_size(capacity: usize, stride: usize) -> io::Result<u64> {
     capacity
         .checked_mul(stride)
@@ -451,8 +419,6 @@ fn allocation(size: u64) -> Arc<Mutex<Partial>> {
     }))
 }
 
-/// Enabled D3D11 particle rings discard at or beyond capacity; otherwise append with NO_OVERWRITE to
-/// the same allocation. Reset the cursor for each view.
 struct InstanceRing {
     allocation: Arc<Mutex<Partial>>,
     size: u64,
@@ -468,9 +434,6 @@ impl InstanceRing {
         }
     }
 
-    /// Upload every nonempty ordinary packet of an actor at once and bind each
-    /// packet's offset into it. The final 12 instance bytes stay unknown. The cloned
-    /// iterator repeats only the immutable actor/packet walk, not its records.
     fn append<'a>(
         &mut self,
         instances: impl Iterator<Item = &'a Instance> + Clone,
@@ -494,7 +457,6 @@ impl InstanceRing {
         }
         let offset = self.cursor;
         if offset == 0 {
-            // DISCARD renames the allocation; earlier binds keep the old contents.
             self.allocation = allocation(self.size);
         }
         let mut allocation = self
@@ -514,8 +476,6 @@ impl InstanceRing {
     }
 }
 
-/// Constants written by this packet, including physical discard padding. Keep the
-/// writer's initialized ranges at the binds, independently of these CPU zeros.
 struct DrawConstants {
     scale: [f32; 4],
     object: [u8; 96],
@@ -571,8 +531,6 @@ struct PacketUpload<'a> {
     bytes: [Vec<u8>; 2],
 }
 
-/// View-local GPU slices. An actor's ordinary records were all written by its one
-/// ring append before its first draw; never pack a future actor or publish its ranges.
 #[derive(Default)]
 struct OrdinaryUploads {
     quads: Vec<QuadUpload>,
@@ -598,8 +556,6 @@ impl OrdinaryUploads {
         count: u32,
     ) -> Option<PacketUpload<'a>> {
         use shader_pipeline::vertices::{NativeBuffer, pack_native};
-        // Only declarations supplied by an ordinary particle program enter this path.
-        // Null techniques and inherited declarations keep their ordered native reads.
         if layouts.len() != 2
             || layouts[0].stride != 8
             || layouts[0].step != wgpu::VertexStepMode::Vertex
@@ -685,8 +641,6 @@ impl OrdinaryUploads {
     }
 }
 
-/// Only commands applied in this view are remembered. Empty actors still apply their
-/// scale/quad; trails replace slot zero. Unknown inherited state is never presumed equal.
 #[derive(Default)]
 struct Applied {
     scale: Option<[u8; 16]>,
@@ -769,8 +723,6 @@ impl Techniques {
             return Ok(index);
         }
         let name = descriptor.technique();
-        // Different authored names/flags can spell the same technique. Share the original
-        // name/trail cache, including missing techniques and replacement refusal counts.
         let index = if let Some(index) = self
             .programs
             .iter()
@@ -825,7 +777,6 @@ pub(super) struct Renderer {
     trace: Option<Vec<DrawTrace>>,
 }
 
-/// A selected technique's declaration and authored states.
 struct Program {
     packing: Option<Arc<packing::Plan>>,
     selection: shader_pipeline::library::Selection,
@@ -892,7 +843,6 @@ impl Renderer {
         }
     }
 
-    /// Prepare each authored technique independently, without touching native frame state.
     pub(super) fn warm(&mut self, device: &wgpu::Device, emitters: &[&Emitter]) {
         let mut stream = shader_pipeline::stream::Stream::default();
         stream.cache = std::mem::take(&mut self.retained.stream.cache);
@@ -980,8 +930,6 @@ impl Renderer {
         packets: &[DrawPacket],
     ) -> io::Result<()> {
         let _profile = viewer_foundation::profiling::thread_span("weather_prepare_lower");
-        // Move scratch out so program/state borrows stay independent. On an error,
-        // drop its view-local GPU entries; no stale slice survives to another Arena.
         let mut planned_uploads = std::mem::take(&mut self.packing);
         planned_uploads.clear_view();
         let mut applied = Applied::default();
@@ -992,9 +940,6 @@ impl Renderer {
             depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
             ..Default::default()
         });
-        // Walk registered type buckets, then each actor's packets.
-        // Stable grouping preserves this viewer's actor/packet enqueue order;
-        // historical cross-producer actor order remains unrecorded.
         let ordered: Vec<_> = packets
             .iter()
             .filter(|packet| packet.views.contains(view))
@@ -1022,14 +967,12 @@ impl Renderer {
             particle_pass(self.samples, wgpu::PrimitiveTopology::TriangleList),
             particle_pass(self.samples, wgpu::PrimitiveTopology::TriangleStrip),
         ];
-        // Bind these resources even with no actors. The next seam inherits the empty view's render state.
         {
             let stream = &mut self.retained.stream;
             for stage in [Stage::Vertex, Stage::Pixel] {
                 stream.bind_partial_constants(0, stage, Some(inputs.frame), &[0..348, 352..408]);
                 stream.bind_constants(1, stage, Some(bytemuck::bytes_of(&projection)));
             }
-            // Restore the complete sixteen-byte light grid at PS b2.
             stream.bind_constants(2, Stage::Pixel, Some(inputs.grid));
             stream.bind_depth_stencil(depth.clone());
             let map_samplers = crate::map::mesh_shader::map_samplers();
@@ -1054,12 +997,9 @@ impl Renderer {
             let key_actor = (packet.registration, packet.actor);
             if actor != Some(key_actor) {
                 actor = Some(key_actor);
-                // Bind an enabled actor's scale and quad even
-                //when all of its subsystem packet counts are zero.
                 let scale = [packet.constants.scale[0], packet.constants.scale[1], 0., 0.];
                 applied.scale(&mut self.retained, bytemuck::bytes_of(&scale));
                 applied.quad(&mut self.retained, quad);
-                // Ordering puts each actor's ordinary packets first, together.
                 let instances = ordered[index..]
                     .iter()
                     .take_while(|p| (p.registration, p.actor) == key_actor && !p.descriptor.trail)
@@ -1114,8 +1054,6 @@ impl Renderer {
             }
             applied.scale(&mut self.retained, scale);
             applied.object(&mut self.retained, object);
-            // Pages and authored states are immutable during this view. Compare the actual
-            // applied selection/page, not the preceding draw (empty actors can intervene).
             let texture = Some((packet.page, cached));
             if applied.texture != texture {
                 self.retained.stream.bind_texture(
@@ -1130,8 +1068,6 @@ impl Renderer {
             }
             let packet_offset = ordinary_offset;
             if let Some(vertices) = &trail {
-                // Allocate maximum count times 56 bytes at stride 28, independently of this upload's size.
-                // Discard the allocation before writing its initialized prefix.
                 let upload: &[u8] = bytemuck::cast_slice(vertices);
                 if upload.len() as u64 > trail_size {
                     return Err(io::Error::other(
@@ -1260,8 +1196,6 @@ impl Renderer {
             }
             submission.pass.bindings.bind_after(&mut pass, same);
             for (slot, buffer) in submission.vertices.iter().enumerate() {
-                // The quad is the same allocation for every ordinary packet, and a buffer already
-                // bound in this pass is bound: wgpu encodes a repeated bind in full.
                 let held = bound.get(slot).and_then(Option::as_ref);
                 if held.is_some_and(|held: &gpu::Slice| {
                     held.buffer == buffer.buffer
@@ -1291,11 +1225,7 @@ impl Renderer {
                 pass: submission.pass,
             });
         }
-        //Keep the renderer's persistent device cache while publishing the
-        //bindings/vertex allocations subsequent meshes and popups inherit.
         inputs.retained.inherit(&self.retained);
-        // Never retain a GPU slice across the caller's next view/frame Arena reset.
-        // Vector capacities (including the shared byte scratch) are the only mutable reuse.
         planned_uploads.clear_view();
         self.packing = planned_uploads;
         viewer_foundation::view_record::add("weather draw", "packets_drawn", drawn);
@@ -1479,7 +1409,6 @@ mod tests {
                 expected
             );
         }
-        // Changing the supplied catalogue retires missing names without a lookup panic.
         simulations.prepare(&BTreeMap::new(), &[]).unwrap();
         assert!(simulations.0.is_empty());
     }
@@ -1516,7 +1445,6 @@ mod tests {
         let entities = BTreeMap::from([("storm".to_owned(), (1., emitters))]);
         let mut simulations = EntitySimulations::default();
         simulations.prepare(&entities, &events).unwrap();
-        // Higher stands nearer the map camera, which looks down.
         let heights = [50., 40., 30., 20., 10.];
         for runtime in simulations.0.get_mut("storm").unwrap().values_mut() {
             runtime.simulation.particles = heights
@@ -1541,7 +1469,6 @@ mod tests {
             defines: MapDefines::test(),
             pose: Pose::Map,
         });
-        // The first pass is gap 4, which five particles cannot fill; the second is gap 1.
         for sorted in [heights.to_vec(), vec![40., 20., 50., 30., 10.]] {
             simulations.sort(eye);
             let mut packets = Vec::new();
@@ -1623,7 +1550,6 @@ mod tests {
             defines: MapDefines::test(),
             pose: Pose::Map,
         };
-        // Prepared for the regions whose held kind is not the wanted one.
         for held in [Presentation::default(), presentation.clone()] {
             let views = super::super::parent_views(
                 &super::super::province_admission_views(camera, [1280, 720]),
@@ -1713,7 +1639,6 @@ mod tests {
             }
             let mut actual = Vec::new();
             let mut drawn = super::super::Drawn::default();
-            // Pairs created this frame, as the reference above admits them.
             let mut fades = super::super::fade::Fades::default();
             fades.produce([7], camera.height, &assets.graphics, |_| true);
             weather_packets(
@@ -1832,8 +1757,6 @@ mod tests {
 
     #[test]
     fn fire_packet_passes_one_atlas_tile_and_neutral_tint_to_native_shader() {
-        // Keep a birth tile; uploads it with the atlas
-        // dimensions.
         let mut emitter = super::super::tests::activation_test_emitter();
         emitter.render.tiles = [2, 2];
         emitter.render.shader = "ParticleAdditive".into();
@@ -1869,8 +1792,6 @@ mod tests {
             let mut emitter = super::super::tests::activation_test_emitter();
             emitter.local_space = local;
             let mut simulation = Simulation::cold(&emitter, 7, anchor, 0.);
-            // Use the production birth space, so
-            // nonlocal particles already hold canonical world positions.
             simulation.advance_space(
                 &emitter,
                 1. / 60.,
@@ -1932,7 +1853,6 @@ mod tests {
         assert_eq!(ring.append([instance(1.)].iter()).unwrap(), 0);
         let first = ring.allocation.clone();
         assert_eq!(ring.append([instance(2.)].iter()).unwrap(), 48);
-        // NO_OVERWRITE writes the same allocation an earlier bind holds.
         assert!(Arc::ptr_eq(&first, &ring.allocation));
         {
             let written = first.lock().unwrap();
@@ -1945,7 +1865,6 @@ mod tests {
         }
         ring.append([instance(3.)].iter()).unwrap();
         assert_eq!(ring.append([instance(4.)].iter()).unwrap(), 0);
-        // DISCARD renames: the earlier bind keeps its bytes, the new one knows only its own.
         assert!(!Arc::ptr_eq(&first, &ring.allocation));
         assert_eq!(first.lock().unwrap().known, [0..36, 48..84, 96..132]);
         let wrapped = ring.allocation.lock().unwrap();
@@ -2065,14 +1984,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             [4., 3.]
         );
-        //Packet masks, identities and populations remain immutable across views.
         assert_eq!(
             packets.iter().map(|p| p.views.clone()).collect::<Vec<_>>(),
             [second.clone(), second, third.clone(), third]
         );
     }
 
-    /// A free camera's frame can have more views than any fixed mask holds.
     #[test]
     fn view_masks_hold_any_number_of_views() {
         let mut views = vec![false; 12];

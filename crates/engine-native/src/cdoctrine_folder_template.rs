@@ -1,4 +1,3 @@
-//! Authored doctrine folder identity. Definitions resolve through recorded content.
 
 use engine_sites::Rva;
 pub const VTABLE_RVA: Rva = Rva(0x0279_6f30);

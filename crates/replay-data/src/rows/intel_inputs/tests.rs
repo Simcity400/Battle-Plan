@@ -54,8 +54,6 @@ fn intel_inputs_append_without_reinterpreting_membership_or_operation_prefixes()
     assert_eq!(old.not_recorded_fields(), 0b111111 << 9);
     assert!(old.encode_fields(&mut Vec::new()).is_err());
 
-    // The preparation fields changed the Operations layout: an older
-    // recording refuses the table by name.
     let old = FormatVersion::read(EFFECT_INPUTS_FORMAT).unwrap();
     assert!(
         old.table_refusal(TableId::Operations)

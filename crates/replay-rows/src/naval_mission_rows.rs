@@ -1,32 +1,9 @@
-//! Operands of the naval mission icon's strike/invasion active counts,
-//! convoy efficiencies and navies' mission ledgers. Efficiencies are
-//! computed when the icon refreshes, never stored, so these tables keep
-//! the required operands ([`crate::naval_mission_derive`] evaluates them).
-//! Modifier values are raw accumulator entries, `None` when absent;
-//! ModifierDefinitions provides feature and clamp metadata for present
-//! entries. Keys: `engine_native::naval_mission_inputs::COUNTRY_KEYS`.
 use super::*;
 
-/// NavalMissionTaskForces (hourly): one row per task force whose mission
-/// kind (`TaskForces.mission`) is strike force (2), convoy raiding (3),
-/// convoy escort (4) or invasion support (9). Fleet, owners, location and
-/// kind are in TaskForces; ship counts and classes in Ships; `is_in_regions`
-/// in TaskForceCounterInputs.
-///
-/// `raiding_factor` is the stored stat-block factor. `local_*` values come
-/// from the task force's own accumulator, `weather_*` values from its
-/// location region's weather modifier. Both are read only while located;
-/// a region outside the weather array has every key absent, as null adds
-/// nothing. `leader` is the fleet's leader reference (zero for none).
-/// `headquarters` keeps one entry per attached naval headquarters in order:
-/// the commander's character reference, zero without a commander.
-/// `range_fleet` (zero when unset), `range_begin` and `range_end` are the
-/// mission's region range; `convoys` is its stored convoy count.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionTaskForceRow {
     pub task_force: u64,
-    /// Raw mission owner, also needed when TaskForceMissions has no region row.
     pub mission_owner: u32,
     pub raiding_factor: i64,
     pub local_coordination: Option<i64>,
@@ -49,13 +26,9 @@ pub struct NavalMissionTaskForceRow {
     pub range_begin: i32,
     pub range_end: i32,
     pub convoys: i32,
-    /// Active-raider retained spotting, independently delta encoded.
     pub raiding_spotting: Option<i64>,
-    /// Active-raider retained region; zero is a known null region.
     pub raiding_region: Option<u32>,
-    /// Each stored target's native liveness; inner absence refuses that reference.
     pub raiding_targets: Option<[Option<bool>; 2]>,
-    /// Raw operands of the first live trade target, otherwise the live transport target.
     pub raiding_target_country: Option<u32>,
     pub raiding_target_convoys: Option<i32>,
     pub raiding_transport_invasion: Option<u8>,
@@ -79,7 +52,6 @@ pub struct NavalMissionTaskForceRow {
     pub weather_range_factor: Option<i64>,
 }
 impl NavalMissionTaskForceRow {
-    /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> (Option<i64>, Option<i64>) {
         use engine_reference_values::modifier_keys as keys;
         match key {
@@ -105,19 +77,6 @@ typed_codec!(NavalMissionTaskForceRow, 64, |row| row.task_force as u128, |key| S
 
 opaque_value!(Option<[Option<bool>; 2]>);
 
-/// NavalMissionLedgers (hourly): one navy's mission ledger for a strategic
-/// region, for every nonempty live ledger. Refresh can register fleet
-/// regions outside TaskForceMissions' accessible list. `owner` is the navy's
-/// canonical country id; `task_forces` keeps registration task forces in
-/// stored order, repeats kept. The pride marker goes to the kind of the
-/// last counted registration holding the pride of the fleet; escort
-/// efficiency counts only each fleet's first escort registration.
-///
-/// `ring` says whether the navy keeps a presence ring for the region. An
-/// absent ring gives `-100000`; otherwise `positive` and `total` count
-/// entries above and at least zero within its first 720. This is read for
-/// every nonempty ledger, including an escort animating out. The presence
-/// key is the region's runtime slot, equal to its id by construction.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionLedgerRow {
@@ -132,15 +91,6 @@ typed_codec!(NavalMissionLedgerRow, 64, |row| (row.owner as u128) << 32 | row.re
  { 0 => (task_forces): U64List, 1 => (ring): Bool, 2 => (positive): I32, 3 => (total): I32 },
  |row| if row.task_forces.is_empty() || (!row.ring && (row.positive, row.total) != (0, 0)) { Err(invalid("invalid naval mission ledger")) } else { Ok(()) });
 
-/// NavalMissionCountries (sliced by country): every roster or mission owner
-/// named by NavalMissionTaskForces, keyed by canonical country id. Values
-/// are its accumulator entries: combined task-force modifiers start from
-/// the roster owner's value, weather reduction uses its `0x248`, and escort
-/// efficiency uses the mission owner's `0x10E`. Hubs keep the navy's stored
-/// list. Up to a day old: each country is read in its daily slice, or at once
-/// when new to the family or its commander fingerprint changed (see NavalMissionCommanders).
-///
-/// SliceReads witnesses the held owner slice's read hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionCountryRow {
@@ -158,12 +108,9 @@ pub struct NavalMissionCountryRow {
     pub range_factor: Option<i64>,
     pub underway: Option<i64>,
     pub hubs: Vec<u32>,
-    /// Complete escort modifier sources, demanded only by registered escort
-    /// mission owners. None refuses the tree; Some(empty) proves no text.
     pub escort_tree: Recorded<Option<Vec<ModifierBreakdownNode>>>,
 }
 impl NavalMissionCountryRow {
-    /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> Result<Option<i64>, &'static str> {
         use engine_reference_values::modifier_keys as keys;
         match key {
@@ -183,7 +130,6 @@ impl NavalMissionCountryRow {
         }
     }
 }
-/// A recorded mission accumulator, refused by name when the recording lacks it.
 fn recorded(
     value: &Recorded<Option<i64>>,
     missing: &'static str,
@@ -196,19 +142,6 @@ fn recorded(
 typed_codec!(NavalMissionCountryRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
  { 0 => (coordination): OptionalI64, 1 => (raiding): OptionalI64, 2 => (escort): OptionalI64, 3 => (weather_reduction): OptionalI64, 4 => (range): OptionalI64, 5 => (range_factor): OptionalI64, 6 => (underway): OptionalI64, 7 => (hubs): U32List, 8 => (detection): OptionalI64, 9 => (spotting): OptionalI64, 10 => (night_spotting): OptionalI64, 11 => (visibility): OptionalI64, 12 => (escort_tree): Opaque, 13 => (speed): OptionalI64 }, |row| match &row.escort_tree { Recorded::Value(Some(nodes)) if !nodes.is_empty() => check_tree(nodes), _ => Ok(()) });
 
-/// NavalMissionCommanders (sliced by country): modifier sources added for
-/// a country's NavalMissionTaskForces (owner is their roster country).
-/// Source 0 is a fleet leader (`reference` as in `leader`), using its
-/// navy-leader accumulator. Sources 1 to 4 are a headquarters commander
-/// (`reference` as in `headquarters`), whose four accumulators are summed
-/// for a kind-2 unit leader in stored order. An
-/// unresolved reference or commander of another unit-leader kind has rows
-/// with every value absent. A missing row means the reference was not read.
-/// The family's fingerprint covers each country's leader and commander
-/// references, so a new one is read within the hour; a changed accumulator
-/// waits for the country's slice.
-///
-/// SliceReads witnesses the held owner slice's read hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionCommanderRow {
@@ -226,11 +159,9 @@ pub struct NavalMissionCommanderRow {
     pub range_factor: Option<i64>,
 }
 impl NavalMissionCommanderRow {
-    /// Sources: the fleet leader, then the four headquarters accumulators.
     pub const SOURCES: u8 = 5;
 }
 impl NavalMissionCommanderRow {
-    /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> Result<Option<i64>, &'static str> {
         use engine_reference_values::modifier_keys as keys;
         match key {

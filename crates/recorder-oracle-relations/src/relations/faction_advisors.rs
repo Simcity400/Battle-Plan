@@ -1,4 +1,3 @@
-//! Advisor slot save projection, including independent modifier owners.
 use super::*;
 pub fn compare(
     frame: &DecodedFrame,

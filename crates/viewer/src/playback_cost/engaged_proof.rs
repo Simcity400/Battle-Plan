@@ -1,7 +1,3 @@
-//! `--engaged-fold <viewers>` of the proof tool: for each viewing country (`recorded` or a tag),
-//! the engaged index and icon frames folded by lanes over the units' hours against today's fold
-//! of the recording's blocks over the same hours: sides and icon frames differing at any change
-//! point, each fold's hours a second with reads and fold apart, and what the lanes hold.
 
 use crate::{
     document::Document,
@@ -23,7 +19,6 @@ use viewer_foundation::{
     map::perspective::Country,
 };
 
-/// Entries of `a` and `b` that differ, by what they are.
 fn differ(a: &History, b: &History) -> (BTreeMap<&'static str, u64>, Option<String>, u64) {
     let (a, b) = (a.branches.lock().unwrap_or_else(|p| p.into_inner()), b.branches.lock().unwrap_or_else(|p| p.into_inner()));
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
@@ -86,7 +81,6 @@ fn points(history: &History) -> (usize, usize) {
     out
 }
 
-/// The recorded viewer's lane index and today's, and the branch they fold into.
 pub(super) struct Folded {
     pub lanes: Arc<History>,
     pub today: Arc<History>,
@@ -113,7 +107,6 @@ pub(super) fn run(document: &Document, pages: &Arc<dyn Pages>, timeline: &Timeli
         })?;
         let (counts, first_differing, entries) = differ(&shared, &today);
         let hours = spent.hours.max(1) as f64;
-        // The same hours, piece by piece, as the lanes folded.
         let today_hours = hours;
         results.push(json!({
             "viewer": name, "hours": spent.hours, "entries": entries, "differing": counts, "first": first_differing,

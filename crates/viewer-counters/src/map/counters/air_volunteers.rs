@@ -1,4 +1,3 @@
-//! Air-base volunteer allowance from recorded simulation operands.
 use super::*;
 use viewer_foundation::map::air_detection::{Countries, CountryModifier};
 
@@ -53,7 +52,6 @@ impl Defines {
     }
 }
 
-/// A single preparation indexes aliases and folds each demanded host's ordered site list once.
 pub(super) struct Allowances {
     values: BTreeMap<u32, Result<(i32, i32), String>>,
 }

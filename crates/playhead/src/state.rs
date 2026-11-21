@@ -1,5 +1,3 @@
-//! A reader's own state of one table, made by its rebuild where the table's lane was sought and
-//! carried to it by the reset step. The playhead holds it, counted, until its reader takes it.
 
 use crate::lane::Lane;
 use std::{
@@ -11,8 +9,6 @@ use std::{
     },
 };
 
-/// A reader's state of the table of the lane given, made from the lane's cells of the columns the
-/// reader declared of it (ascending). Runs on a fetcher, once the lane is sought.
 pub type Rebuild = Arc<dyn Fn(&Lane, &[usize]) -> io::Result<State> + Send + Sync>;
 
 pub struct State {
@@ -22,7 +18,6 @@ pub struct State {
 }
 
 impl State {
-    /// `value`, which holds `bytes`.
     pub fn new(value: impl Any + Send, bytes: usize) -> Self {
         Self { value: Some(Box::new(value)), bytes, flight: None }
     }
@@ -31,7 +26,6 @@ impl State {
         self.bytes
     }
 
-    /// The value, when it is a `T`.
     pub fn downcast<T: Any>(mut self) -> Result<Box<T>, Self> {
         let value = self.value.take().expect("a state holds its value until taken");
         match value.downcast::<T>() {
@@ -67,7 +61,6 @@ impl fmt::Debug for State {
     }
 }
 
-/// The states made and not yet taken: count and bytes, now and at their peak.
 #[derive(Default)]
 pub(crate) struct Flight {
     count: AtomicUsize,
@@ -89,7 +82,6 @@ impl Flight {
         self.bytes.fetch_sub(bytes, Ordering::Relaxed);
     }
 
-    /// (count, bytes) now and at the peak.
     pub(crate) fn read(&self) -> ((usize, usize), (usize, usize)) {
         let load = |held: &AtomicUsize| held.load(Ordering::Relaxed);
         ((load(&self.count), load(&self.bytes)), (load(&self.peak_count), load(&self.peak_bytes)))

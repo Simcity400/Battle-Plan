@@ -13,10 +13,8 @@ import { contentTitleHint } from '../contentTitles';
 import { leaveNumber, numberText, receiveNumber, typeNumber } from './numberDraft';
 import type { NumberDraft, NumberStep } from './numberDraft';
 
-/** Short choice lists are a segmented row; longer ones a drop-down. */
 const SEGMENTED_MAX = 4;
 
-/** Renders a widget's declared option fields; each change saves at once. */
 export function OptionFields({ fields, values, choices, onChange }: {
   fields: readonly OptionField[]; values: Readonly<Record<string, OptionValue>>; choices?: OptionChoices;
   onChange: (key: string, value: OptionValue) => void;
@@ -39,7 +37,6 @@ function OptionRow({ field, value, choices, onChange }: {
           <Segmented label={field.label} value={String(value)} options={field.choices} onChange={onChange} /></div>
         : <div data-setting={field.key} className="setting-row">{caption}<Select label={field.label} value={String(value)} options={field.choices} onChange={onChange} /></div>;
     case 'content-choice': {
-      // A saved choice this campaign lacks stays selectable, so opening the panel never changes it.
       const listed = listedChoices(choices) ?? [];
       if (field.catalogue) {
         const chosen = typeof value === 'string' && value ? value : '';
@@ -62,7 +59,6 @@ function OptionRow({ field, value, choices, onChange }: {
         <ContentSetPicker label={field.label} automatic={field.automatic} choices={listedChoices(choices) ?? []} selected={chosen}
           onReset={() => onChange('')} onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next !== null) onChange(next); }} />
       </div>;
-      // Saved tokens this campaign lacks stay listed, so opening the panel never changes them.
       const listed = listedChoices(choices) ?? [];
       const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: 'Saved choice unavailable', hint: contentTitleHint(token, 'Not in this campaign.') }));
       const chips = [...listed, ...kept].map(chip => ({ ...chip, unavailable: storableToken(chip.value) ? undefined : UNSTORABLE }));
@@ -78,10 +74,6 @@ function OptionRow({ field, value, choices, onChange }: {
   }
 }
 
-/** Saves a typed or stepped number as soon as it is legal, as every other setting saves
- * at once. Text that is not a legal number yet (empty, a lone minus, out of range) stays
- * in the box until it is left: then an empty box means automatic when the field allows
- * it, and anything else returns to the saved number. */
 function NumberRow({ field, value, caption, onChange }: {
   field: Extract<OptionField, { kind: 'number' }>; value: number | null; caption: ReactNode; onChange: (value: OptionValue) => void;
 }) {

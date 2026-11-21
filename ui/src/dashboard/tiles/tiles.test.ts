@@ -11,8 +11,6 @@ import type { Tile } from './tile.ts';
 import { TileView, mostNamed, tileBuckets, unrecordedReason } from './view.ts';
 import type { TiledLine, TileLane, TileViewport } from './view.ts';
 
-/** A tile reply as the service writes it: each tag's bins from `value(tag, hour)`, raw values in 32-bit words, every
- * eleventh bin level. */
 function reply(tags: readonly string[], binHours: number, index: number, lastHour: number, value: (tag: number, hour: number) => number | null): SeriesTileReply {
   const first = index * TILE_BINS * binHours;
   const flags: number[] = [], values: number[] = [], hours: number[] = [];
@@ -42,7 +40,6 @@ function reply(tags: readonly string[], binHours: number, index: number, lastHou
 
 const value = (tag: number, hour: number) => hour % 977 < 20 ? null : (hour * 7 + tag * 1000) % 50_000 - 25_000;
 
-/** A lane whose asks answer at once, counted. */
 function lane(tags: readonly string[], lastHour: number, options: { hold?: boolean } = {}) {
   const asked: { binHours: number; index: number; tags: readonly string[] }[] = [];
   const held: (() => void)[] = [];
@@ -63,7 +60,6 @@ const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 const TAGS = ['GER', 'ITA', 'JAP', 'SOV', 'USA', 'ENG', 'FRA', 'CHI'];
 const LAST = 105_541;
 
-/** The view a following chart reports when its head is at `head`: its window of `days` behind the head, 600 pixels. */
 function following(head: number, days = 365): TileViewport {
   const [from, end] = playbackDomain('window', [0, LAST], head, days * 24, 24);
   return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width: 600 };
@@ -100,13 +96,11 @@ test('a view asks only the tiles it lacks, one request per tile for every tag la
   const tiles = Math.floor(8759 / (TILE_BINS * binHours)) + 1;
   assert.equal(first.asked.length, tiles);
   assert.ok(first.asked.every(ask => ask.tags.length === TAGS.length));
-  // A second chart of the same series and three of its tags, over the same view: only the tag none holds.
   const second = lane(['GER', 'ITA', 'POL'], LAST);
   const other = new TileView(cache, { ...second, key: first.key }, () => {});
   other.setView({ from: 0, to: 8759, end: 8759, width: 600 });
   await settle();
   assert.deepEqual(second.asked.map(ask => [ask.index, ask.tags]), Array.from({ length: tiles }, (_, index) => [index, ['POL']]));
-  // Panned on by a tile: one request, for the tile no chart holds.
   const span = TILE_BINS * binHours;
   other.setView({ from: span, to: span + 8759, end: span + 8759, width: 600 });
   await settle();
@@ -122,13 +116,11 @@ test('an immutable tile is never asked twice, the last tile is asked again only 
   await settle();
   assert.deepEqual(live.asked.map(ask => ask.index), [0, 1, 2]);
   view.close();
-  // The same history reopened: every tile is held, the last filled to its end.
   const again = new TileView(cache, live, () => {});
   again.setView({ from: 0, to: 2 * span + 100, end: 2 * span + 100, width: Math.floor((2 * span + 101) / binHours) });
   await settle();
   assert.equal(live.asked.length, 3);
   again.close();
-  // The history grew: only the tile that was not immutable is asked again.
   const grown = lane(['GER'], 2 * span + 900);
   const later = new TileView(cache, { ...grown, key: live.key }, () => {});
   later.setView({ from: 0, to: 2 * span + 100, end: 2 * span + 100, width: Math.floor((2 * span + 101) / binHours) });
@@ -146,7 +138,6 @@ test('the cache evicts the least recently used tile at its cap and never a tile 
   cache.put(tile('d', 100));
   assert.deepEqual(['a', 'b', 'c', 'd'].filter(key => cache.has(key)), ['a', 'b', 'd'], 'c was used least recently; a is held');
   assert.ok(cache.bytes <= cache.cap);
-  // With every tile held, a new one goes first; held tiles stay even past the cap, and go once let go.
   cache.pin(['b', 'd']);
   cache.put(tile('e', 100));
   assert.deepEqual(['a', 'b', 'd', 'e'].filter(key => cache.has(key)), ['a', 'b', 'd']);
@@ -157,7 +148,6 @@ test('the cache evicts the least recently used tile at its cap and never a tile 
   assert.ok(cache.bytes <= cache.cap);
   assert.ok(cache.has('e'), 'the most recently used stays');
 
-  // Real tiles of 8 tags, followed over the whole campaign at 1,440 h/s: never over the cap.
   const small = new TileCache(4 * 1024 * 1024), followed = lane(TAGS, LAST);
   const view = new TileView(small, followed, () => {});
   let most = 0;
@@ -177,7 +167,6 @@ test('a chart following the head asks one tile per 256 bins of travel and nothin
   view.setView(following(8760));
   await settle();
   const initial = followed.asked.length;
-  // The test's clock: 1,440 h/s at 60 frames a second, over the whole recording.
   for (let head = 8784; head <= LAST; head += 24) {
     const before = followed.asked.length, rendered = renders;
     frames++;
@@ -203,14 +192,12 @@ test('a chart following the head asks one tile per 256 bins of travel and nothin
   console.log(`following at 1,440 h/s: ${initial} tiles to open, then ${moving} tile requests over ${travel} hours (${binHours}-hour bins, a tile every ${(span / 1440).toFixed(2)} s), ${renders} renders`);
 });
 
-/** The view a chart drawing in from the branch start reports with its head at `head`, `width` pixels wide. */
 function drawingIn(head: number, width: number): TileViewport {
   const [from, end] = playbackDomain('draw-in', [0, LAST], head, 365 * 24, 14 * 24);
   return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width };
 }
 
 test('a chart drawing in keeps its bins as the head grows it, so its tiles are those the head crosses, as the suite judges them', async () => {
-  // The suite's measured stretch: about 11,500 hours at 15 hours a frame, from 30,000 hours drawn, 450 pixels wide.
   const cache = new TileCache(), drawn = lane(['GER'], LAST);
   const view = new TileView(cache, drawn, () => {});
   view.setView(drawingIn(30_000, 450));
@@ -219,12 +206,10 @@ test('a chart drawing in keeps its bins as the head grows it, so its tiles are t
   for (let head = 30_015; head <= 41_520; head += 15) { view.setView(drawingIn(head, 450)); await settle(); }
   const playing = drawn.asked.slice(opened);
   assert.ok(playing.every(ask => ask.binHours === start), `the bins held: ${[...new Set(playing.map(ask => ask.binHours))].join(', ')} hours`);
-  // The rule of tools/e2e/playbackVerdicts.mjs: per chart and bins, the tiles the head crossed and one ahead.
   const allowed = Math.floor(11_520 / (start * TILE_BINS)) + 2;
   assert.ok(playing.length <= allowed, `${playing.length} tiles asked while playing, ${allowed} allowed`);
   assert.equal(new Set(playing.map(ask => ask.index)).size, playing.length, 'no tile asked twice');
 
-  // Grown past four bins a pixel it takes the bins its view needs; a view narrower than its bins takes them at once.
   const grown = lane(['GER'], LAST), again = new TileView(new TileCache(), grown, () => {});
   again.setView(drawingIn(2_000, 450));
   const held = binHoursOf(2_001, 450);
@@ -244,7 +229,6 @@ test('the head moving inside a tile asks nothing; crossing into a new tile asks 
   view.setView(at);
   followed.release(); await settle();
   const asked = followed.asked.length;
-  // Each tile is asked 32 bins before the head reaches it; until then the head moves freely.
   const next = (Math.floor((at.to + 32 * binHours) / span) + 1) * span;
   for (let head = 20_000; head + 32 * binHours < next; head += 6) view.setView(following(head));
   assert.equal(followed.asked.length, asked, 'nothing asked inside the tiles held');
@@ -255,7 +239,6 @@ test('the head moving inside a tile asks nothing; crossing into a new tile asks 
   followed.release(); await settle();
 });
 
-/** A canvas context that records what is stroked. */
 function recorder() {
   const ops: [string, ...number[]][] = [];
   const rect: number[][] = [];
@@ -293,8 +276,6 @@ test('the clip draws a tiled line up to the head and not past it, and a frame pl
   assert.equal(end!.y, frame.toY(shown!), 'at the value at the head');
   assert.equal(shown, lines[0].summary.buckets[Math.floor(head / binHours) - Math.floor(lines[0].summary.from / binHours) - 1]!.lastValue);
 
-  // Every line at a head moving each frame: a frame places the vertices of the hours it shows and, of the tiles'
-  // bins before the view or past the head bin, only the one each stroke runs in from or out to.
   for (let step = 0; step < 120; step++) {
     const until = head + step * 0.4, cutAt = frame.toX(Math.floor(until / binHours) * binHours);
     for (const line of lines) {
@@ -319,7 +300,6 @@ test('assembling a view from cached tiles happens once per change of its tiles, 
   for (let head = 60_000; head < 60_024; head += 0.4) view.setView(following(head, 13 * 365));
   assert.equal(assembled, once);
   console.log(`a moving view over held tiles: ${((performance.now() - started) / 60).toFixed(4)} ms a frame`);
-  // What one assembly costs, for the frame it lands in.
   const fresh = new TileView(cache, followed, () => {});
   const begun = performance.now();
   fresh.setView(following(60_000, 13 * 365));
@@ -341,7 +321,6 @@ test('a chart whose lines hold no value anywhere in view says why, naming the re
   assert.equal(unrecordedReason([empty]), rowless, "a ranked reply's lines read alike");
   assert.equal(unrecordedReason([empty, held]), null);
   assert.equal(unrecordedReason([]), null);
-  // A chart of several keyed series, each not recorded, names the reason most of them give.
   assert.equal(mostNamed([after, rowless, rowless]), rowless);
   assert.equal(mostNamed([after]), after);
 });

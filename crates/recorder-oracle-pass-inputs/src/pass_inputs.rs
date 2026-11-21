@@ -1,5 +1,3 @@
-//! Naval, country and orders-group counter operands and leader
-//! picture-directory inputs.
 use super::*;
 use installed_content_core::parser::c_string;
 use replay_data::rows::Recorded;
@@ -37,12 +35,6 @@ pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     });
 }
 
-/// `TaskForceMissions` against the game's mission block: `spotting_region` (token
-/// 0x3BB5) is the current region's id, omitted for none, and `accessible_regions` (token
-/// 0x3BC3) the region ids in array order with repeats, omitted when empty. A task force
-/// has a row exactly when either is saved (`MissionCollector` skips a mission with neither), so
-/// the recorded key set must equal the saved one: a row for a task force that saves neither
-/// field, even an empty one, differs. The writer does not save the owner.
 fn task_force_missions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::TaskForceMissions>()?;
     let forces: BTreeSet<u64> = frame
@@ -95,7 +87,6 @@ fn task_force_missions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io:
             expected.accessible_regions.as_deref(),
         );
     }
-    // Every task force that saves either field carries a row.
     for (&task_force, expected) in saved {
         if (expected.spotting_region.is_some() || expected.accessible_regions.is_some())
             && !listed.contains(&task_force)
@@ -169,8 +160,6 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
             }
             Recorded::Value(Some(name)) => match save.task_forces.get(&row.task_force) {
                 Some(expected) => {
-                    // The unit writer tests stored length before text serialization reads c_str.
-                    // A leading NUL in a nonempty cache still emits `name=""`.
                     let text = c_string(name);
                     eq(
                         r,
@@ -219,7 +208,6 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
             (row.mission_region_count > 0).then_some(row.mission_region_count as usize),
             expected.accessible_regions.as_ref().map(Vec::len),
         );
-        // The game spells values 1..4 and omits every other value.
         let activity = match expected.detached_activity.as_deref() {
             None => Some(0),
             Some(b"repairing") => Some(1),
@@ -243,8 +231,6 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
             (row.repair_last_mission != 0).then_some(row.repair_last_mission),
             expected.repair_last_mission,
         );
-        // The game writes one `naval_headquarter` reference per entry, the array
-        // whose count the game tests.
         eq(
             r,
             &format!("{label}.attached_headquarters"),
@@ -277,8 +263,6 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// Compare only genuine capture demand; searching is unconditional, while
-/// the strike packet's late domains follow stored simulation operands.
 fn task_force_port(
     hour: replay_data::Hour,
     row: &replay_data::rows::TaskForceCounterInputRow,
@@ -449,8 +433,6 @@ fn task_force_motion(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::R
             r.difference(label, "present", "absent");
             continue;
         };
-        // The unit writer saves the route as `path`, a non-null movement
-        // target as `support_attack`, and a nonempty alternate route as `full_path`.
         eq(
             r,
             &format!("{label}.path"),
@@ -469,8 +451,6 @@ fn task_force_motion(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::R
             row.alternate_path.as_slice(),
             saved.alternate_path.as_slice(),
         );
-        // The unit writer emits the movement numerator only when nonzero,
-        // and retreat and withdrawal only as boolean truth.
         if let Some(value) = r.recorded(
             &row.movement_numerator,
             "TaskForceMapMotion.movement_numerator",
@@ -527,10 +507,6 @@ fn task_force_motion(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::R
                 ),
             }
         }
-        // The unit writer omits per-unit combat order. The join path's empty-vector gate
-        // does not constrain direct registration or post-load rebuilding.
-        // An authenticated identity selects saved participant membership, not
-        // the unsaved owner-country set used by the attack-side test.
         if let Some(value) = r.recorded(
             &row.combat_links,
             "TaskForceMapMotion.combat_links",
@@ -560,10 +536,6 @@ fn task_force_motion(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::R
                     )));
                 }
                 Some([first, naval]) => {
-                    // The game tests the unit's current logical owner in the
-                    // first attacker's country set.
-                    // The game writes the units, not that country set.
-                    // The nonzero-role check is recording consistency only.
                     eq(
                         r,
                         &format!("{label}.combat_role has first combat"),
@@ -602,8 +574,6 @@ fn task_force_motion(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::R
                     }
                     if first != naval {
                         if let Some(combat) = save.naval_combats.get(first) {
-                            // A saved naval first proves native type 2, which
-                            // must stop the scan before any later member.
                             r.difference(
                                 format!("{label}.combat_links first naval selection"),
                                 [*first, *naval],
@@ -679,8 +649,6 @@ fn task_force_fresh(frame: &DecodedFrame, save: &Save, report: &mut Report) -> i
             }
         }
         if let Some(raw) = packet.exiled {
-            // The task-force writer delegates to the unit writer. Its saved exile
-            // flag preserves truth, never the nonzero byte magnitude.
             match save.task_forces.get(&row.task_force) {
                 Some(saved) => eq(
                     report,
@@ -765,7 +733,6 @@ fn fleets(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
 
 fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::CountryCounterInputs>()?;
-    // A missing ship table affects only the optional current-name admission.
     let pride_ships = frame.complete::<tables::Ships>();
     let tags: BTreeMap<_, _> = frame
         .complete::<tables::Countries>()?
@@ -780,9 +747,6 @@ fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     );
     super::country_rosters::compare_lists(rows, save, &tags, r)?;
     let mut owned: BTreeMap<&[u8], usize> = BTreeMap::new();
-    // The state loader gives a loaded state whose controller is
-    // omitted (nonpositive) its owner through the state-controller update,
-    // which keeps the controller's array.
     let mut controlled: BTreeMap<&[u8], usize> = BTreeMap::new();
     for state in save.states.values() {
         if let Some(owner) = &state.owner {
@@ -821,7 +785,7 @@ fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
                         ),
                     }
                 }
-                Ok(_) => {} // A stale full reference reaches no native NAME operand.
+                Ok(_) => {}
                 Err(_) => r.limitation(
                     "complete Ships is required to admit the registered pride ship's current cached-name operand; country prefix and raw pride save comparisons remain available",
                     &name_label,
@@ -866,8 +830,6 @@ fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
                 row.pride_of_the_fleet,
                 *handle,
             ),
-            // The game omits the field only for the null reference, a
-            // never-written .bss word, so an omitted pride is exactly a zero reference.
             None => eq(
                 r,
                 &format!("{label}.pride_of_the_fleet (omitted)"),
@@ -887,8 +849,6 @@ fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             row.controlled_state_count as usize,
             controlled.get(*tag).copied().unwrap_or(0),
         );
-        // The game writes the whole roster in order; a country
-        // without a saved division has an empty roster.
         eq(
             r,
             &format!("{label}.first_division"),

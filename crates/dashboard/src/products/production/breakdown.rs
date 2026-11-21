@@ -1,8 +1,3 @@
-//! A production line's efficiency and output factors, part by part (`production-line-breakdown`):
-//! one formula of the line's row, its modifier row and its country's modifier trees, made at each
-//! hour any of them changes within one window of [`DETAIL_HOURS`]. A current factory cache cannot
-//! identify all past growth, switches and assignments; those remain a reconciled residual rather
-//! than attributing today's modifiers to yesterday's efficiency.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -30,7 +25,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The line row the formula reads.
 pub type RawRun = replay_data::rows::ProductionLineRow;
 
 pub(super) const FACTORS: &[(&str, &str)] = &[
@@ -50,8 +44,6 @@ pub(super) const FACTORS: &[(&str, &str)] = &[
     ("refit", "Refit speed parameter"),
 ];
 
-/// Country trees are owned once per changed country read, shared by its lines.
-/// Presentation is projected only for a requested window or one factor history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawModifierRun {
     pub first_hour: i32,
@@ -86,7 +78,7 @@ pub struct ProductionModifierPart {
 pub struct ProductionModifierGroup {
     pub id: String,
     pub label: String,
-    /// Exact sum of the displayed signed parts; null when an operand failed.
+    #[doc = " Exact sum of the displayed signed parts; null when an operand failed."]
     pub total_raw: Option<String>,
     pub decimals: u8,
     pub unit: String,
@@ -182,12 +174,6 @@ fn subtree_end(nodes: &[replay_data::rows::ModifierBreakdownNode], start: usize)
     }
     end
 }
-/// Depth selects rows without double counting interiors. Like the game's
-/// formatter (modifier_text::breakdown), a selected row whose native value is
-/// zero is not shown, so it is neither labelled nor warned about; a nonzero
-/// value that scales to zero still shows. Aliases stay separate rows, and
-/// occurrence numbers count every selected occurrence so a row keeps its id
-/// on days when an earlier alias is zero.
 fn sources(
     country: &CountryProductionModifiersRow,
     key: u32,
@@ -275,7 +261,6 @@ fn multiply(a: i64, b: i64, denominator: i64) -> Option<i64> {
     a.wrapping_mul(b).checked_div(denominator)
 }
 
-/// Factory efficiency gain, including the fixed5/Q15 roundings.
 fn factory_gain(current: i64, cap: i64, gain: i64, balance: i64) -> Option<i64> {
     if balance <= 0 || current == 0 {
         return Some(0);
@@ -284,8 +269,6 @@ fn factory_gain(current: i64, cap: i64, gain: i64, balance: i64) -> Option<i64> 
     let denominator = ((current.wrapping_mul(0x13880000) >> 15).wrapping_mul(balance)) >> 15;
     numerator.wrapping_shl(15).checked_div(denominator)
 }
-/// The tooltip averages clamped *per-factory* gains over active factories,
-/// even when the maximum admits fewer factories. It does not grow the average.
 fn daily_gain(
     line: &ProductionLineModifiersRow,
     run: &RawRun,
@@ -317,7 +300,6 @@ fn daily_gain(
             .checked_div(i64::from(run.active_factories).wrapping_shl(15))
     }
 }
-/// Effective powered fraction and base factory speed.
 fn factory_speed(
     country: &CountryProductionModifiersRow,
     power_modifier: i64,
@@ -336,13 +318,6 @@ fn factory_speed(
     };
     Some(unpowered.wrapping_add(multiply(power, powered.wrapping_sub(unpowered), 100000)?))
 }
-/// Fixed5 daily IC one of `country`'s military factories (a dockyard when
-/// `naval`) applies before any line's own terms (organisation bonus,
-/// licence, resources, efficiency): the powered base rate with the
-/// country's factory or dockyard output modifiers, as the output factor
-/// applies them (the powered modifier only at full power, and a positive
-/// unpowered modifier reduced by the unpowered share). None when an
-/// operand was not read.
 pub fn factory_output(country: &CountryProductionModifiersRow, naval: bool) -> Option<i64> {
     let power_modifier = value(country, keys::OUT_OF_POWER_IMPACT_FACTOR)?;
     let base = factory_speed(country, power_modifier, naval)?;
@@ -383,8 +358,6 @@ fn output_base(
     run: &RawRun,
 ) -> Option<i64> {
     let base = factory_speed(country, value(country, 0xa8)?, line.naval_output)?;
-    // IC scales by active factories, while efficiency_average alone
-    // clamps its cache lookup to the virtual maximum.
     let factories = run.active_factories;
     let speed = multiply(i64::from(factories).wrapping_mul(100000), base, 100000)?;
     let speed = multiply(
@@ -431,9 +404,6 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
         );
     }
     if line.licensed && wants("output") {
-        // Licence speed selects importer and exporter-specific accumulators,
-        // archetype keys, year and faction penalties. Their complete supplying
-        // pack is absent, so no country-only approximation.
         warnings.insert("Licence output source attribution lacks exporter-specific accumulator, year and faction operands; its exact difference is Other / not identified".into());
     }
     if run.max_factories < 0 {
@@ -547,7 +517,6 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             "Base efficiency gain",
             percent(q15_to_fixed5(fixed5_to_q15(country.gain_raw))),
         )];
-        // Growth tooltip passes depth -1 (style argument 2).
         gain_parts.extend(sources(
             country,
             0xaa,
@@ -602,8 +571,6 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             })
             .map(|loss| percent(100000_i64.wrapping_sub(loss)));
         let mut parts = vec![part("base", "Base switch retention", percent(base))];
-        // Source contributions explain the country retention parameter, not a
-        // switch that may not have occurred. The nonlinear clamp is reconciled.
         parts.extend(sources(
             country,
             0xa5,
@@ -629,8 +596,6 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
             .unwrap_or_default();
         if let Some(base) = base {
             let key = if line.naval_output { 0xd6 } else { 0xd4 };
-            // Output, refit and conversion formatting use depth 1.
-            // The full recorded trees retain deeper operands.
             output_parts.extend(sources(
                 country,
                 key,
@@ -657,8 +622,6 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
                     })
                     .map(|value| value.max(0))
             {
-                // The powered-factory adjustment is negated as signed i64;
-                // military/naval output adds that negative return.
                 let adjustment = multiply(
                     100000_i64.wrapping_sub(power),
                     modifier.wrapping_neg(),
@@ -798,16 +761,15 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
 
 pub struct ProductionLineBreakdown;
 
-/// A request for one line's factor breakdown over the window holding `hour`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionBreakdownParams {
     pub branch_id: String,
     pub country: Country,
-    /// The line's key in `production-lines`.
+    #[doc = " The line's key in `production-lines`."]
     pub key: String,
-    /// The factor shown in full; the others carry only their totals.
+    #[doc = " The factor shown in full; the others carry only their totals."]
     pub group: String,
     pub hour: i32,
 }
@@ -827,19 +789,17 @@ pub struct ProductionLineBreakdownReply {
     pub branch_id: String,
     pub tag: String,
     pub key: String,
-    /// The window's hours, both included.
+    #[doc = " The window's hours, both included."]
     pub first_hour: i32,
     pub last_hour: i32,
     pub groups: Vec<ProductionModifierChoice>,
-    /// The factors over the window's hours the line was read, cut where they change.
+    #[doc = " The factors over the window's hours the line was read, cut where they change."]
     pub runs: Vec<ProductionModifierRun>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(ProductionLineBreakdownReply);
 
-/// The row keyed `key` of the table `reader` reads, as of its hour; none where it has none or the
-/// table is not available.
 fn row<T: replay_data::rows::TableSchema>(reader: &TableReader, key: u128, format: u16) -> Option<T::Row>
 where
     T::Row: Clone,
@@ -852,11 +812,8 @@ where
     rows.rows::<T>()?.first().cloned()
 }
 
-/// The line's inputs at one hour: its row, its modifier row and its country's modifiers.
 type Inputs = (RawRun, ProductionLineModifiersRow, CountryProductionModifiersRow);
 
-/// Whether the hour `reader` stepped to last may have changed the row keyed `key`: read anew, its
-/// status moved, or the row inserted, deleted or written.
 fn touched(reader: &TableReader, key: u128) -> bool {
     let changes = reader.changes();
     if changes.anew || changes.status_changed || changes.deleted.iter().any(|&(_, deleted)| deleted == key) {
@@ -914,12 +871,10 @@ impl Product for ProductionLineBreakdown {
         let format = recording.format();
         let handle = u128::from(appearance.handle);
         let mut warnings = BTreeSet::new();
-        // Each stretch of hours the inputs held still, with the run it was read from.
         let mut held: Vec<(u32, i32, i32, Option<Inputs>)> = Vec::new();
         for piece in appearance.pieces.iter().filter(|piece| piece.first <= last && piece.last >= first) {
             let (from, to) = (piece.first.max(first), piece.last.min(last));
             let tables = [(TableId::ProductionLines, None), (TableId::ProductionLineModifiers, None), (TableId::CountryProductionModifiers, None)];
-            // The three rows as of the hour walked, each built again only at an hour that touched it.
             let mut line: Option<Option<RawRun>> = None;
             let mut modifiers: Option<Option<ProductionLineModifiersRow>> = None;
             let mut country: Option<(u32, Option<CountryProductionModifiersRow>)> = None;
@@ -959,7 +914,6 @@ impl Product for ProductionLineBreakdown {
                 Ok(())
             })?;
         }
-        // Organisations are named at the last hour each was read.
         let mut named = Named::default();
         let mut mios: BTreeMap<(u32, i32), Vec<u64>> = BTreeMap::new();
         for (run, _, end, inputs) in &held {
@@ -1118,22 +1072,15 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        // Half power: the base is halfway to the powered rate and a positive
-        // unpowered bonus keeps only its powered share, as the line output
-        // above reconciles with the recorded speed.
         let half = country(50000, &[(0xa8, 0), (0xd4, 20000), (0xd6, 20000)]);
         assert_eq!(factory_output(&half, false), Some(330000));
         assert_eq!(factory_output(&half, true), Some(880000));
-        // A negative bonus is not reduced, and the powered bonus is unread.
         let malus = country(50000, &[(0xa8, 0), (0xd6, -10000)]);
         assert_eq!(factory_output(&malus, true), Some(720000));
-        // Full power adds the powered bonus at the powered rate.
         let full = country(100000, &[(0xa8, 0), (0xd6, 10000), (0xd7, 5000)]);
         assert_eq!(factory_output(&full, true), Some(1150000));
-        // The out-of-power factor scales the powered share.
         let impact = country(50000, &[(0xa8, -50000), (0xd6, 0)]);
         assert_eq!(factory_output(&impact, true), Some(700000));
-        // A failed or missing operand leaves the output unknown.
         assert_eq!(
             factory_output(&country(100000, &[(0xa8, 0), (0xd6, 0)]), true),
             None
@@ -1252,8 +1199,6 @@ mod tests {
             "english",
             &mut warnings,
         );
-        // The game prints no zero row, so the unnamed zero is not even warned
-        // about; the zero first alias still numbers the later ones.
         assert!(warnings.is_empty());
         assert_eq!(
             parts
@@ -1265,7 +1210,6 @@ mod tests {
         let mut parts = parts;
         residual(&mut parts, 9, "native nonlinear total");
         assert_eq!(parts.last().unwrap().raw, "8");
-        // A nonzero native value is shown even when its scaled amount is zero.
         let scaled = sources(
             &country,
             0xa9,

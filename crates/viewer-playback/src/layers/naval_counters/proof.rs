@@ -1,6 +1,3 @@
-//! The naval counters layer's line of the proof tool (`playback_cost::proof`): how it is made from
-//! the loaded recording, and how its members, fleets and bases compare with today's naval hour part
-//! of the same hour and with the layer composed anew.
 
 use super::{NavalCounters, Waters};
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -9,7 +6,6 @@ use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_counters::map::counters::NavalMember;
 use viewer_foundation::map::mode_visibility::UnitKinds;
 
-/// What neither side compares yet, named.
 const LEFT_OUT: [&str; 4] = ["ship-model cells (hull, capitals, carrier)", "native task-force operands (supply, status, port tooltip, pride)", "ideology frame", "the air map mode's carrier fleets (the layer is not drawn there)"];
 
 pub fn make(document: &Document) -> Box<dyn Layer> {
@@ -29,8 +25,6 @@ fn note(compared: &mut Compared, what: String) {
     compared.first.get_or_insert(what);
 }
 
-/// The layer's members, fleets and bases against today's at the document's hour, under the
-/// perspective the layer was given.
 pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = naval(layer);
     let hour = document.hour()?;

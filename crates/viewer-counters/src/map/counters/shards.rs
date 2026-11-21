@@ -1,13 +1,8 @@
-//! A map over the world kept in shards that are shared between its versions: a change copies the
-//! shard it touches and nothing else, so a layer can hand the window each version while it changes
-//! the next.
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-/// Keys per shard, as a power of two of the key's leading id.
 const SHIFT: u32 = 6;
 
-/// A key whose leading id places it in a shard; key order follows shard order.
 pub trait Sharded: Ord + Copy {
     fn shard(&self) -> u32;
 }
@@ -24,7 +19,6 @@ impl<T: Ord + Copy> Sharded for (u32, T) {
     }
 }
 
-/// An ordered map in shards of 64 leading ids, each shared between clones until changed.
 pub struct Shards<K, V> {
     shards: BTreeMap<u32, Arc<BTreeMap<K, V>>>,
     len: usize,
@@ -59,7 +53,6 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         self.get(key).is_some()
     }
 
-    /// Entries in key order.
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> + '_ {
         self.shards.values().flat_map(|shard| shard.iter())
     }
@@ -68,12 +61,10 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         self.iter().map(|(_, value)| value)
     }
 
-    /// Its keys, in key order.
     pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
         self.iter().map(|(&key, _)| key)
     }
 
-    /// Sets `key` to `value`; whether it changed. An equal value copies nothing.
     pub fn insert(&mut self, key: K, value: V) -> bool {
         if self.get(&key) == Some(&value) {
             return false;
@@ -85,7 +76,6 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         true
     }
 
-    /// Removes `key`; whether it was held.
     pub fn remove(&mut self, key: &K) -> bool {
         if !self.contains_key(key) {
             return false;
@@ -100,7 +90,6 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         true
     }
 
-    /// Becomes `entries` (in key order), keeping every shard whose entries are unchanged.
     pub fn assign(&mut self, entries: impl IntoIterator<Item = (K, V)>) {
         let made: Self = entries.into_iter().collect();
         let mut kept = BTreeMap::new();
@@ -113,8 +102,6 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         (self.shards, self.len) = (kept, made.len);
     }
 
-    /// The keys whose entry differs from `old`'s, in key order; shards shared with `old` are
-    /// passed over unread.
     pub fn differing<'a>(&'a self, old: &'a Self) -> impl Iterator<Item = K> + 'a {
         let mut ats: Vec<u32> = self.shards.keys().chain(old.shards.keys()).copied().collect();
         ats.sort_unstable();
@@ -134,18 +121,15 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         })
     }
 
-    /// Its keys from `from` on, in key order.
     pub fn keys_from(&self, from: K) -> impl Iterator<Item = K> + '_ {
         self.shards.range(from.shard()..).flat_map(move |(_, shard)| shard.range(from..).map(|(key, _)| *key))
     }
 
-    /// How many of its shards it shares with `other`, and how many it holds.
     pub fn shared_with(&self, other: &Self) -> (usize, usize) {
         let shared = self.shards.iter().filter(|(at, shard)| other.shards.get(at).is_some_and(|held| Arc::ptr_eq(shard, held))).count();
         (shared, self.shards.len())
     }
 
-    /// The shards it holds, for a size estimate.
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }

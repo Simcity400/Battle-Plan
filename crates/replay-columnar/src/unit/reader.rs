@@ -1,15 +1,3 @@
-//! Reading a unit back: [`fetch`] reads, verifies, decompresses and opens one part, given the part
-//! before it in the block as a [`Prefix`] (any thread); a [`Cursor`] advances a table's selected
-//! cells over the parts fetched, crossing part boundaries in one call and never touching the file,
-//! and says when the part it needs next is not there. A step applies the tracks of rows alive at
-//! its start, then the lifetimes, then the tracks of rows it inserted; a row inserted and deleted
-//! within a step is skipped. Each cell is written once a call; the slots written are reported per
-//! column.
-//!
-//! A part's frames are held once, each followed by zero bytes so its loops read eight bytes at a
-//! time; its streams are ranges of them. An opened stream holds its tracks as arrays, those of
-//! rows older than the part apart from those born in it. A stream's directory is checked when it
-//! is opened; its events are checked as they are read, and damage is reported after the loop.
 
 pub(super) mod bulk;
 mod logs;
@@ -42,16 +30,12 @@ use std::{
 
 static READER_ZSTD: Holder = Holder::new("unit reader");
 
-/// Zero bytes after each frame's raw bytes.
 const PAD: usize = 16;
 
-/// Frame buffers the process keeps for its next fetches, at most, in bytes, unless
-/// [`spare_cap`] says otherwise.
 pub const SPARE_BYTES: usize = 32 << 20;
 
 static SPARE_CAP: AtomicUsize = AtomicUsize::new(SPARE_BYTES);
 
-/// Frame buffers parts let go of, for any thread's next fetch.
 static SPARE: Mutex<Spare> = Mutex::new(Spare { frames: Vec::new(), bytes: 0 });
 
 struct Spare {
@@ -60,8 +44,6 @@ struct Spare {
 }
 
 impl Spare {
-    /// A frame buffer for `wanted` bytes: the smallest spare one that holds them, else the
-    /// largest, to be grown.
     fn take(&mut self, wanted: usize) -> Option<Vec<u8>> {
         let fits = self.frames.iter().enumerate().filter(|(_, held)| held.capacity() >= wanted).min_by_key(|(_, held)| held.capacity()).map(|(at, _)| at);
         let at = fits.or_else(|| self.frames.iter().enumerate().max_by_key(|(_, held)| held.capacity()).map(|(at, _)| at))?;
@@ -75,8 +57,6 @@ fn spare() -> std::sync::MutexGuard<'static, Spare> {
     SPARE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The most bytes of frame buffers the process keeps for later fetches; what it holds past a
-/// smaller cap is let go of at once.
 pub fn spare_cap(bytes: usize) {
     SPARE_CAP.store(bytes, Ordering::Relaxed);
     let mut held = spare();
@@ -86,7 +66,6 @@ pub fn spare_cap(bytes: usize) {
     }
 }
 
-/// Lets go of every spare frame buffer; the bytes it held.
 pub fn release_spare() -> usize {
     let mut held = spare();
     let bytes = held.bytes;
@@ -94,12 +73,10 @@ pub fn release_spare() -> usize {
     bytes
 }
 
-/// The bytes of spare frame buffers the process holds.
 pub fn spare_bytes() -> usize {
     spare().bytes
 }
 
-/// Where a unit's frames are read from.
 pub trait Extents: Sync {
     fn read_at(&self, offset: u64, length: usize, out: &mut Vec<u8>) -> io::Result<()>;
 }
@@ -135,16 +112,12 @@ impl Extents for Vec<u8> {
 
 const OLDER: u16 = u16::MAX;
 const NEVER: u16 = u16::MAX;
-/// An inserted row whose cells are passed over: born and gone within the step.
 const SKIP: u32 = u32::MAX;
 
-/// Consecutive deleted slots that are cleared as one run.
 const RANGE: usize = 64;
 
-/// Tracks a numeric loop passes over together when none of them is due.
 const GROUP: usize = 64;
 
-/// What a thread keeps between fetches: its decompressor and the stored bytes' buffer.
 struct Reading {
     decompressor: Option<Decompressor>,
     stored: Vec<u8>,
@@ -162,7 +135,6 @@ impl Reading {
         Ok(self.decompressor.as_mut().expect("made"))
     }
 
-    /// A frame buffer for `raw` bytes and the padding, from the process's spare ones.
     fn buffer(&mut self, raw: usize) -> Vec<u8> {
         let mut buffer = spare().take(raw + PAD).unwrap_or_default();
         buffer.clear();
@@ -175,7 +147,6 @@ thread_local! {
     static READING: RefCell<Reading> = const { RefCell::new(Reading::new()) };
 }
 
-/// Runs `work` with the thread's [`Reading`]; with a fresh one when it is in use.
 fn reading<T>(work: impl FnOnce(&mut Reading) -> io::Result<T>) -> io::Result<T> {
     let mut work = Some(work);
     let held = READING.try_with(|held| held.try_borrow_mut().ok().map(|mut held| (work.take().expect("once"))(&mut held)));
@@ -185,7 +156,6 @@ fn reading<T>(work: impl FnOnce(&mut Reading) -> io::Result<T>) -> io::Result<T>
     }
 }
 
-/// A stream's place: its frame and its range there.
 #[derive(Clone, Copy, Debug, Default)]
 struct Span {
     frame: u32,
@@ -193,11 +163,9 @@ struct Span {
     end: u32,
 }
 
-/// A part's frames, each its raw bytes and [`PAD`] zero bytes, and where its streams lie.
 #[derive(Debug, Default)]
 struct Frames {
     frames: Vec<Vec<u8>>,
-    /// By stream id.
     streams: Vec<(u32, Span)>,
 }
 
@@ -210,7 +178,6 @@ impl Frames {
         self.span(id).map(|span| &self.frames[span.frame as usize][span.start as usize..span.end as usize])
     }
 
-    /// The frame `span` lies in, through its end and no further.
     fn upto(&self, span: Span) -> &[u8] {
         &self.frames[span.frame as usize][..span.end as usize]
     }
@@ -236,31 +203,21 @@ impl Drop for Frames {
     }
 }
 
-/// The bytes a later part of the same block may be chained to: a part's raw streams, shared, and
-/// nothing else of it.
 #[derive(Clone, Debug)]
 pub struct Prefix(Arc<Frames>);
 
-/// A stream's tracks of one group, as arrays: each one's slot, where its next event lies and where
-/// it ends, the hour of that event in the block ([`NEVER`] once it has none left), and the state
-/// only its model keeps.
 #[derive(Debug, Default)]
 struct Tracks {
     slot: Vec<u32>,
     at: Vec<u32>,
     end: Vec<u32>,
     next: Vec<u16>,
-    /// Insert hours, of a group of rows born in the part.
     born: Vec<u16>,
-    /// The last difference (second differences).
     last: Vec<u64>,
-    /// A run under way: its hours, repeats left and where its code lies (runs).
     gap: Vec<u16>,
     left: Vec<u32>,
     payload: Vec<u32>,
-    /// The earliest next hour: a group with none due is passed over.
     due: u16,
-    /// The earliest next hour of each [`GROUP`] of tracks.
     mins: Vec<u16>,
     max_slot: u32,
 }
@@ -298,14 +255,12 @@ impl Tracks {
     }
 }
 
-/// A stream opened: its tracks from the directory alone, its pool and inserted values.
 #[derive(Debug, Default)]
 struct Opened {
     span: Span,
     model: u8,
     older: Tracks,
     born: Tracks,
-    /// Pooled literals' places in the frame.
     pool: Vec<(u32, u32)>,
     inserted: usize,
     inserted_end: usize,
@@ -316,7 +271,6 @@ impl Opened {
         self.older.len() + self.born.len()
     }
 
-    /// The tracks in directory order: slot order, a slot's older row before those born after it.
     fn order(&self) -> Vec<(bool, usize)> {
         let (mut older, mut born) = (0, 0);
         let mut order = Vec::with_capacity(self.track_count());
@@ -338,8 +292,6 @@ impl Opened {
     }
 }
 
-/// Opens the stream at `span` of `frame` (padded): its directory read and checked against its
-/// lengths, each track's first event hour found.
 fn open_stream(frame: &[u8], span: Span, first: u16) -> io::Result<Opened> {
     let (start, end) = (span.start as usize, span.end as usize);
     let model = *frame.get(start).filter(|_| start < end).ok_or_else(|| invalid("An empty unit stream"))?;
@@ -434,7 +386,6 @@ fn open_stream(frame: &[u8], span: Span, first: u16) -> io::Result<Opened> {
     Ok(opened)
 }
 
-/// Where a part's lifetimes stand.
 #[derive(Clone, Copy, Debug, Default)]
 struct Life {
     at: usize,
@@ -442,58 +393,45 @@ struct Life {
     key: u128,
 }
 
-/// A part read: its selected streams raw (the next part is decompressed against them) and opened.
 #[derive(Debug)]
 pub struct Part {
     pub first: u16,
-    /// Its last hour in the block.
     pub last: u16,
     frames: Arc<Frames>,
-    /// Per selected column, its stream opened; none when the part holds none of it.
     columns: Vec<Option<Opened>>,
     lifetimes: Option<Span>,
     strings: Vec<(u32, Vec<u8>)>,
     read: Option<Opened>,
     touched: Option<Opened>,
-    /// Bytes read from the file and decompressed, and the reads that took.
     pub stored: usize,
     pub decompressed: usize,
     pub reads: usize,
-    /// Nanoseconds opening its streams took: their directories read, their tracks laid out.
     pub open_ns: u64,
-    /// Nanoseconds its frames took to read from the source, to check against their digests, and
-    /// to decompress.
     pub read_ns: u64,
     pub verify_ns: u64,
     pub decompress_ns: u64,
     life: Life,
     lives: u64,
-    /// A log's part: read by a [`LogCursor`], never by a [`Cursor`].
     log: bool,
 }
 
 impl Part {
-    /// Whether it is a log's part.
     pub fn is_log(&self) -> bool {
         self.log
     }
 
-    /// The tracks it holds of its selected columns.
     pub fn track_count(&self) -> usize {
         self.columns.iter().flatten().map(Opened::track_count).sum()
     }
 
-    /// The strings its cells named for the first time.
     pub fn strings(&self) -> &[(u32, Vec<u8>)] {
         &self.strings
     }
 
-    /// What the next part of the block is decompressed against.
     pub fn prefix(&self) -> Prefix {
         Prefix(self.frames.clone())
     }
 
-    /// A part the cursor passes has applied every event it holds.
     fn finished(&self) -> io::Result<()> {
         if self.columns.iter().flatten().any(|opened| opened.older.unfinished() || opened.born.unfinished()) {
             return Err(invalid("A unit track holds events past its part"));
@@ -505,9 +443,6 @@ impl Part {
     }
 }
 
-/// Reads, verifies, decompresses and opens part `entry` of a table, which ends with hour `last`,
-/// for `columns` (indexes into the table's), given the part before it in the block when there is
-/// one. A chained frame whose predecessor's stream is not in `previous` is refused by name.
 pub fn fetch(source: &dyn Extents, entry: &PartEntry, last: u16, columns: &[usize], previous: Option<&Prefix>) -> io::Result<Part> {
     let mut wanted: Vec<u32> = columns.iter().map(|&column| column_stream(column)).collect();
     wanted.extend([LIFETIMES, STRINGS, READ, TOUCHED]);
@@ -521,7 +456,6 @@ pub fn fetch(source: &dyn Extents, entry: &PartEntry, last: u16, columns: &[usiz
         let mut run = std::mem::take(&mut reading.stored);
         let (mut run_from, mut run_end) = (0_u64, 0_u64);
         for (at, frame) in frames.iter().enumerate() {
-            // Frames lying one after another are read in one call.
             if at == 0 || frame.offset < run_from || frame.offset + u64::from(frame.stored) > run_end {
                 let mut end = frame.offset + u64::from(frame.stored);
                 for next in &frames[at + 1..] {
@@ -657,86 +591,58 @@ fn verify(frame: &FrameEntry, stored: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// The rows a step deleted and inserted, in hour order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lives {
-    /// (hour, slot, key it held)
     pub deleted: Vec<(u16, u32, u128)>,
-    /// (hour, slot, key)
     pub inserted: Vec<(u16, u32, u128)>,
 }
 
-/// What [`Cursor::advance`] reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Advanced {
-    /// Every hour asked is applied.
     Reached,
-    /// The hours through `last` are applied; the part starting after it is not fetched.
     Missing { last: Option<u16> },
 }
 
-/// What advancing took, by kind of event, for the measurement: counts always, times only while
-/// the cursor is timed ([`Cursor::time`]), each phase of a step timed by one clock read after it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Spent {
     pub numeric_events: u64,
     pub numeric: std::time::Duration,
-    /// Numeric tracks looked at in a step, and those with an event due.
     pub numeric_scanned: u64,
     pub numeric_visited: u64,
     pub list_events: u64,
     pub list: std::time::Duration,
     pub lives: u64,
     pub lifetimes: std::time::Duration,
-    /// Stream bytes the events applied took, lifetimes included.
     pub bytes: u64,
 }
 
-/// One table's cells advanced over its fetched parts.
 pub struct Cursor {
     columns: Vec<usize>,
-    /// Per selected column: a list or opaque column.
     list: Vec<bool>,
     parts: std::collections::VecDeque<Part>,
-    /// The raw streams of the part passed last, while it holds no other and a later part of the
-    /// block may be decompressed against them.
     passed: Option<Prefix>,
-    /// The next hour to apply.
     hour: u16,
-    /// Each slot's insert hour within the part under way; [`OLDER`] for rows older than it.
     born: Vec<u16>,
     born_slots: Vec<u32>,
-    /// Text of every string the parts named.
     texts: HashMap<u32, Vec<u8>>,
     slots: Vec<u32>,
     cell: Vec<u8>,
     scratch: Vec<u8>,
-    /// List events by form.
     forms: [u64; 8],
     pub spent: Spent,
     timed: bool,
-    /// The step's last clock read, while timed.
     lap: Option<std::time::Instant>,
-    /// By insert of the step, whether the step deletes the row again.
     passing: Vec<bool>,
-    /// The step's inserts not yet deleted again, by slot, while its rows are found.
     open: HashMap<u32, usize, foldhash::fast::FixedState>,
-    /// Rows born and gone within the step whose insert was passed over, by slot: their keys.
     skipped: HashMap<u32, u128, foldhash::fast::FixedState>,
-    /// The hour's inserted slots, [`SKIP`] for those passed over.
     targets: Vec<u32>,
 }
 
-/// What [`Cursor::advance_seeing`] calls for each row a step deletes, just before the row is
-/// cleared: its hour, slot and key, and the cells holding that row as it stood at its last live
-/// hour (other rows may stand later).
 pub type Gone<'a> = &'a mut dyn FnMut(u16, u32, u128, &TableState);
 
-/// [`Gone`] reborrowed for one call.
 type Seeing<'a, 'b> = &'a mut (dyn FnMut(u16, u32, u128, &TableState) + 'b);
 
 impl Cursor {
-    /// A cursor over `columns` of a table of `kinds`, from block hour `hour` on.
     pub fn new(kinds: &[Kind], columns: &[usize], hour: u16) -> Self {
         let kind = |column: usize| kinds.get(column).copied().unwrap_or(Kind::U8);
         Self {
@@ -762,8 +668,6 @@ impl Cursor {
         }
     }
 
-    /// Starts over at block hour `hour` of another part or block, holding no part, its rows'
-    /// marks and buffers kept for the next. [`Self::spent`] goes on counting.
     pub fn reset(&mut self, hour: u16) {
         self.parts.clear();
         self.passed = None;
@@ -776,12 +680,10 @@ impl Cursor {
         self.skipped.clear();
     }
 
-    /// Times each kind of work it does ([`Self::spent`]).
     pub fn time(&mut self, timed: bool) {
         self.timed = timed;
     }
 
-    /// A part fetched, the next after those it holds.
     pub fn push(&mut self, part: Part) {
         for (id, text) in &part.strings {
             self.texts.insert(*id, text.clone());
@@ -790,13 +692,10 @@ impl Cursor {
         self.parts.push_back(part);
     }
 
-    /// The last part it holds and has not passed.
     pub fn last_part(&self) -> Option<&Part> {
         self.parts.back()
     }
 
-    /// What the next part fetched is decompressed against: the last part it holds, or the raw
-    /// streams of the one it passed last when that may have a later part in its block.
     pub fn prefix(&self) -> Option<Prefix> {
         self.parts.back().map(Part::prefix).or_else(|| self.passed.clone())
     }
@@ -805,12 +704,10 @@ impl Cursor {
         self.texts.get(&id).map(Vec::as_slice)
     }
 
-    /// The next hour it applies.
     pub fn hour(&self) -> u16 {
         self.hour
     }
 
-    /// First possible cell or row change in the open part, including the next part boundary.
     pub fn next_change(&self) -> io::Result<Option<u16>> {
         let Some(part) = self.parts.front() else { return Ok(None) };
         let mut due = part.last + 1;
@@ -828,20 +725,14 @@ impl Cursor {
         Ok(Some(due))
     }
 
-    /// The list events it applied, by form ([`lists`]'s form bytes).
     pub fn list_forms(&self) -> [u64; 8] {
         self.forms
     }
 
-    /// Every selected cell, live bit and key brought to the end of block hour `to`, in steps of
-    /// `step` hours; `written[at]` takes the slots written of selected column `at`, each once a
-    /// step; `lives` takes the rows deleted and inserted. Rows touched and read are not cells.
     pub fn advance(&mut self, to: u16, step: u16, cells: &mut TableState, written: &mut [Vec<u32>], lives: &mut Lives) -> io::Result<Advanced> {
         self.advance_by(to, step, cells, written, lives, None)
     }
 
-    /// As [`Self::advance`], each row a step deletes handed to `gone` with its cells at its last
-    /// live hour before it is cleared, rows born and gone within the step included.
     pub fn advance_seeing(&mut self, to: u16, step: u16, cells: &mut TableState, written: &mut [Vec<u32>], lives: &mut Lives, gone: Gone<'_>) -> io::Result<Advanced> {
         self.advance_by(to, step, cells, written, lives, Some(gone))
     }
@@ -883,10 +774,6 @@ impl Cursor {
         self.tracks(from, to, true, cells, written)
     }
 
-    /// Applies the lifetimes of the part under way through hour `to` of the step from `from`,
-    /// rows inserted given their selected cells; whether any hour of lives was applied. Without
-    /// `gone`, a row the step inserts and deletes again is never put in the cells. With it, each
-    /// row deleted is handed over first, a row born in the step given its own tracks' events.
     fn lifetimes(&mut self, from: u16, to: u16, cells: &mut TableState, lives: &mut Lives, mut gone: Option<Seeing<'_, '_>>) -> io::Result<bool> {
         let part = self.parts.front_mut().expect("a part under way");
         let Some(span) = part.lifetimes else { return Ok(false) };
@@ -924,7 +811,6 @@ impl Cursor {
                 while end < deleted && self.slots[end] == self.slots[end - 1] + 1 {
                     end += 1;
                 }
-                // A long run of consecutive slots of rows in the cells, cleared at once.
                 let (low, high) = (self.slots[first], self.slots[end - 1] + 1);
                 if gone.is_none() && end - first >= RANGE && (self.skipped.is_empty() || (low..high).all(|slot| !self.skipped.contains_key(&slot))) {
                     cells.delete_rows(low, high, |slot, key| lives.deleted.push((hour, slot, key)))?;
@@ -952,8 +838,6 @@ impl Cursor {
             self.targets.clear();
             for &slot in &self.slots[deleted..] {
                 life.key = life.key.wrapping_add(unzig_wide(get_wide(raw, &mut at)?) as u128);
-                // A row gone again within the step leaves nothing in the cells: never put there,
-                // unless the table must grow to hold its slot.
                 let skip = self.passing.get(inserts).copied().unwrap_or(false) && slot < cells.slots() && !cells.live().get(slot);
                 inserts += 1;
                 if skip {
@@ -971,11 +855,8 @@ impl Cursor {
                 lives.inserted.push((hour, slot, life.key));
                 self.targets.push(if skip { SKIP } else { slot });
             }
-            // The hour's inserted rows' cells, a column at a time.
             for (selected, &column) in self.columns.iter().enumerate() {
                 let Some(opened) = part.columns[selected].as_mut() else {
-                    // A part inserting rows gives every column of theirs a stream: a column with
-                    // none holds their cells not recorded, whatever the slots held before.
                     for &slot in self.targets.iter().filter(|&&slot| slot != SKIP) {
                         cells.unrecord_cell(column, slot)?;
                     }
@@ -1005,12 +886,9 @@ impl Cursor {
         Ok(applied)
     }
 
-    /// Moves every selected track of the part under way to hour `to`: those of rows the step
-    /// inserted when `inserted`, the others when not.
     fn tracks(&mut self, from: u16, to: u16, inserted: bool, cells: &mut TableState, written: &mut [Vec<u32>]) -> io::Result<()> {
         let part = self.parts.front_mut().expect("a part under way");
         let frames = &*part.frames;
-        // Numeric streams, then list streams, each kind timed by one clock read after its pass.
         for lists in [false, true] {
             let mut count = numbers::Count::default();
             let mut list_events = 0;
@@ -1059,7 +937,6 @@ impl Cursor {
         Ok(())
     }
 
-    /// The rows touched and read in the part under way's hours `from..=to`, each with its hour.
     pub fn marks(&self, from: u16, to: u16, touched: &mut Vec<(u16, u32)>, read: &mut Vec<(u16, u32)>) -> io::Result<()> {
         match self.parts.front() {
             Some(part) => part.marks(from, to, touched, read),
@@ -1069,14 +946,11 @@ impl Cursor {
 }
 
 impl Part {
-    /// The rows touched and read in its hours `from..=to`, each with its hour: its marks are no
-    /// cells, so a cursor passing the part leaves them where the fetch put them.
     pub fn marks(&self, from: u16, to: u16, touched: &mut Vec<(u16, u32)>, read: &mut Vec<(u16, u32)>) -> io::Result<()> {
         self.marked(self.touched.as_ref(), from, to, touched)?;
         self.marked(self.read.as_ref(), from, to, read)
     }
 
-    /// The rows read in its hours `from..=to`, each with its hour ([`Self::marks`]).
     pub fn reads(&self, from: u16, to: u16, read: &mut Vec<(u16, u32)>) -> io::Result<()> {
         self.marked(self.read.as_ref(), from, to, read)
     }
@@ -1102,8 +976,6 @@ impl Part {
     }
 }
 
-/// The time since a step's last clock read, while timed; a phase that did nothing takes none, and
-/// its few nanoseconds go to the next phase that does.
 fn lap(last: &mut Option<std::time::Instant>) -> std::time::Duration {
     let Some(held) = *last else { return std::time::Duration::ZERO };
     let now = std::time::Instant::now();
@@ -1111,8 +983,6 @@ fn lap(last: &mut Option<std::time::Instant>) -> std::time::Duration {
     now - held
 }
 
-/// By insert, in order, whether the lifetimes from `life` through hour `to` delete the row again
-/// by then.
 fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut HashMap<u32, usize, foldhash::fast::FixedState>, slots: &mut Vec<u32>) -> io::Result<()> {
     passing.clear();
     open.clear();
@@ -1149,8 +1019,6 @@ fn passing(raw: &[u8], life: Life, to: u16, passing: &mut Vec<bool>, open: &mut 
     Ok(())
 }
 
-/// A row born at hour `born` of the step and deleted now: each selected column's track of it
-/// applied whole onto its inserted cells, and passed.
 #[allow(clippy::too_many_arguments, reason = "the row's place and the cursor's buffers, given apart")]
 fn finish_born(part: &mut Part, frames: &Frames, columns: &[usize], list: &[bool], slot: u32, born: u16, cells: &mut TableState, cell: &mut Vec<u8>, scratch: &mut Vec<u8>, forms: &mut [u64; 8]) -> io::Result<()> {
     for (selected, &column) in columns.iter().enumerate() {
@@ -1197,7 +1065,6 @@ fn finish_born(part: &mut Part, frames: &Frames, columns: &[usize], list: &[bool
     Ok(())
 }
 
-/// The next inserted row's list cell of an opened column stream, put at `slot` of `cells`.
 fn inserted_list(opened: &mut Opened, raw: &[u8], cells: &mut TableState, column: usize, slot: u32) -> io::Result<()> {
     let at = &mut opened.inserted;
     if *at >= opened.inserted_end {
@@ -1226,8 +1093,6 @@ fn inserted_list(opened: &mut Opened, raw: &[u8], cells: &mut TableState, column
     Ok(())
 }
 
-/// Where a list track's cell stands while its events apply: the page's own bytes, the first
-/// scratch, or a literal of the stream.
 #[derive(Clone, Copy)]
 enum Now {
     Page,
@@ -1235,9 +1100,6 @@ enum Now {
     Stream(usize, usize),
 }
 
-/// Moves the due tracks of one group of a list stream to hour `to`, each cell changed in its
-/// page: a patch in place, any other form built once and written once at the step's end. A track
-/// of a row inserted and gone within the step is passed whole. The events applied.
 #[allow(clippy::too_many_arguments, reason = "the list loop's one entry, every part given apart")]
 fn advance_lists(
     opened: &mut Opened,
@@ -1306,8 +1168,6 @@ fn advance_lists(
     Ok(applied)
 }
 
-/// A list track's events from `at` (the next at `hour`) through hour `to`, applied to the cell
-/// at `slot` held unrecorded or not; where the cell stands and whether it is unrecorded.
 #[allow(clippy::too_many_arguments, reason = "a track's place and the cursor's buffers, given apart")]
 fn list_events(raw: &[u8], pool: &[(u32, u32)], at: usize, end: usize, hour: u32, to: u32, lists: &mut Lists<'_>, slot: u32, unrecorded: bool, cell: &mut Vec<u8>, scratch: &mut Vec<u8>, forms: &mut [u64; 8]) -> io::Result<(usize, Now, bool)> {
     let mut events = 0;
@@ -1315,8 +1175,6 @@ fn list_events(raw: &[u8], pool: &[(u32, u32)], at: usize, end: usize, hour: u32
     Ok((at, now, unrecorded))
 }
 
-/// [`list_events`], also giving the hour of the track's next event ([`NEVER`] past its end) and
-/// counting the events applied.
 #[allow(clippy::too_many_arguments, reason = "a track's place and the cursor's buffers, given apart")]
 fn list_steps(
     raw: &[u8],
@@ -1401,9 +1259,6 @@ fn failed(error: io::Error, slot: u32, hour: u32, form: u8) -> io::Error {
     invalid(format!("{error}: slot {slot}, hour {hour}, form {form}"))
 }
 
-/// A table's status at block hour `hour` from its page entry, the block's first hour being
-/// `first_hour`: the status, whether it was read, its sample hour, and the next hour its status
-/// changes, when it does within the block.
 pub fn status(entry: &TableEntry, hour: u16, first_hour: i32) -> io::Result<(Status, bool, Option<i32>, Option<u16>)> {
     let bytes = &entry.status;
     let mut at = 0;
@@ -1424,8 +1279,6 @@ pub fn status(entry: &TableEntry, hour: u16, first_hour: i32) -> io::Result<(Sta
     Ok((held.0, held.1, held.2, None))
 }
 
-/// A status run's sample hour at game hour `hour` from its code: none, the hour itself, or
-/// another hour.
 fn sampled(code: u64, hour: i32) -> Option<i32> {
     match code {
         0 => None,
@@ -1437,9 +1290,6 @@ fn sampled(code: u64, hour: i32) -> Option<i32> {
     }
 }
 
-/// The hours of a block of `hours` hours, the first being `first_hour`, whose sample hour is the
-/// hour itself (the hours the table was read), from its page entry: `each` is given each run of
-/// them, its first and last game hour, in order.
 pub fn reads(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnMut(i32, i32)) -> io::Result<()> {
     let mut emit = |from: u16, until: u16, sample: u64| {
         let until = until.min(hours);
@@ -1475,10 +1325,6 @@ pub fn reads(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnM
     Ok(())
 }
 
-/// The statuses of a block of `hours` hours, the first being `first_hour`, from its page entry:
-/// `each` is given each run of hours of one status, its first and last game hour, in order,
-/// covering the block (hours before its first status run are not recorded, as [`status`] reads
-/// them).
 pub fn statuses(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnMut(i32, i32, Status)) -> io::Result<()> {
     let mut emit = |from: u16, until: u16, status: Status| {
         let until = until.min(hours);
@@ -1504,23 +1350,16 @@ pub fn statuses(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn 
     Ok(())
 }
 
-/// One event of a track, as [`Part::tracks`] gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
-    /// A number's change from the cell's value before (models of differences, runs, second
-    /// differences resolved).
     Difference(i64),
-    /// A number's value (raw model).
     Value(u64),
     Missing,
     Unrecorded,
-    /// A list event: its form and payload past the form byte.
     List(u8, &'a [u8]),
 }
 
 impl Part {
-    /// Each track of selected column `at`: its slot, its insert hour when inserted in the part,
-    /// and its events with their hours, in order. A pooled literal's event is given as a literal.
     pub fn tracks(&self, at: usize, list: bool, mut each: impl FnMut(u32, Option<u16>, &[(u16, Event<'_>)])) -> io::Result<()> {
         let Some(Some(opened)) = self.columns.get(at) else { return Ok(()) };
         let raw = self.frames.upto(opened.span);
@@ -1588,9 +1427,6 @@ impl Part {
     }
 }
 
-/// A restore chunk's raw bytes into `out`, followed by [`PAD`] zero bytes, with its prefix's raw
-/// bytes in `prefix` when it has one (whether it has): each from its own frame, the chunk
-/// decompressed against the prefix.
 fn chunk_and_prefix(source: &dyn Extents, chunk: &super::restore::Chunk, reading: &mut Reading, out: &mut Vec<u8>, prefix: &mut Vec<u8>) -> io::Result<bool> {
     let zstd = |error: engine_allocation::zstd::Error| invalid(format!("A restore chunk does not decompress: {}", error.name()));
     let mut stored = std::mem::take(&mut reading.stored);
@@ -1623,9 +1459,6 @@ fn chunk_and_prefix(source: &dyn Extents, chunk: &super::restore::Chunk, reading
     result
 }
 
-/// A table of `kinds` as restore `entry` holds it, its cells of `columns`: each chunk from at most
-/// two extents, its own and its prefix's, decoded straight into the table's arrays. The strings
-/// its live cells name come with it.
 pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
     use super::restore::{self as held, META, ROWS, ROWS_CHUNK};
     if entry.log {
@@ -1638,7 +1471,6 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
         let meta_chunk = stream(META).first().ok_or_else(|| invalid("A restore holds no meta stream"))?;
         let against = chunk_and_prefix(source, meta_chunk, reading, &mut raw, &mut prefix)?;
         let mut meta = held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?;
-        // A restore that is not whole lists only strings its whole one does not.
         let whole_slots = if against {
             let whole = held::read_meta(&prefix, kinds, &mut TableState::new(kinds))?;
             meta.strings.extend(whole.strings);
@@ -1670,8 +1502,6 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
         for &column in columns {
             let chunks = stream(held::column_stream(column));
             if chunks.is_empty() {
-                // A restore gives every column of its rows its chunks: a column with none holds
-                // their cells not recorded.
                 table.unrecord_rows(column)?;
                 continue;
             }
@@ -1691,8 +1521,6 @@ pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds
     })
 }
 
-/// The last restore of `table` at or before the end of `pages[at]`: its page and entry; the run's
-/// first restore when no block end restored it.
 pub fn restored_before(pages: &[super::BlockPage], table: usize, at: usize) -> Option<(usize, &super::restore::RestoreEntry)> {
     for index in (0..=at.min(pages.len().checked_sub(1)?)).rev() {
         let entry = pages[index].tables.get(table)?;
@@ -1706,8 +1534,6 @@ pub fn restored_before(pages: &[super::BlockPage], table: usize, at: usize) -> O
     None
 }
 
-/// `table`'s state at the end of `pages[at]`, read from the file: its last restore, then every
-/// part since. The strings its cells named come with it.
 pub fn rebuild(source: &dyn Extents, pages: &[super::BlockPage], kinds: &[Kind], table: usize, at: usize, run_first: i32) -> io::Result<(TableState, HashMap<u32, Vec<u8>>)> {
     if class_of(pages.get(..=at).unwrap_or(pages), table)? {
         return Err(invalid(format!("Table {table} is a log: it has rows by hour, not a state")));

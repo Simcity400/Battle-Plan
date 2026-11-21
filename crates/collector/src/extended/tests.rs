@@ -106,8 +106,6 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         size_of::<engine_map_air::map_air_supply::Capture>(),
     ];
     let assert_vacant = |captured: &Captured| {
-        // The boxes remain reusable; none of their parked packs owns a
-        // second row, arena, hash or source allocation.
         assert_eq!(
             [
                 captured.ordinary_spare.as_ref().unwrap().allocated_bytes()
@@ -364,14 +362,11 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
                 + request.plans.allocated_bytes(),
             bytes + order_bytes
         );
-        // These two auxiliary placeholders were already vacant before
-        // this change; only the four late table packs lose duplicates.
         removed[2] =
             request.packs.allocated_bytes() - box_bytes[2] - request.packs.orders.allocated_bytes();
         assert!(request.packs.air.stats_raw_mode);
         assert!(request.packs.naval_history.raw_mode);
         assert_eq!(request.packs.orders.geometry.as_ptr(), order_storage);
-        // The division sources stay in the frame for the final borrowers.
         assert_eq!(captured.divisions.first.as_ptr(), division_storage);
         assert!(!captured.air.stats_raw_mode);
         assert!(!captured.naval_history.raw_mode);
@@ -482,15 +477,12 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
     assert!(engine_allocation::SharedBox::ptr_eq(captured.unit_inputs.as_ref().unwrap(), &inputs));
     let pending = captured.presentation_report.as_ref().unwrap();
     assert_eq!(pending.ticks, report.ticks);
-    // Reset discards a pending report and releases the frame's source lease.
     captured.drop_and_reset();
     assert!(captured.presentation_report.is_none());
     assert_eq!(captured.allocated_bytes(), bytes);
     assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
 }
 
-/// The retired division ETA inputs and attrition breakdowns are neither
-/// scheduled, acquired, sized nor reported by any pack or the division group.
 #[test]
 fn retired_division_tables_are_never_scheduled() {
     for retired in [
@@ -511,9 +503,6 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     }
     impl Memory for NoPresentationRead {
         fn copy(&self, address: usize, _: &mut [u8]) -> bool {
-            // Presentation begins with this geometry root even for an empty
-            // census. New province tables legitimately read the same root,
-            // so the strict probe applies to the family handoff itself.
             if address == 0x1000 + engine_native::cgame_state::PROVINCES {
                 assert!(
                     !self.forbid_presentation.get(),
@@ -563,8 +552,6 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
         assert_eq!(memory.presentation.get(), 0);
         assert_eq!(memory.independent.get(), 0);
         assert!(captured.presentation_report.is_none());
-        // Exercise the same completed result through global table routing,
-        // where unrelated province consumers may read this native root.
         captured.presentation_report = Some(completed);
         memory.forbid_presentation.set(false);
         let ticks = captured.capture_tables_all(&memory, 11, 0x1000, 0, false);
@@ -590,8 +577,6 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
         );
         assert_eq!(captured.decode_division_presentation_inputs(), [0; 2]);
         assert_eq!(captured.division_presentation.outcomes(), expected_outcomes);
-        // The same probe must detect an actual acquisition, making absence
-        // above meaningful even when every unrelated read fails immediately.
         let before = memory.presentation.get();
         memory.forbid_presentation.set(true);
         captured.acquire_presentation();
@@ -617,7 +602,6 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
     use engine_native::{memory::CountedMemory, memory::SliceMemory};
     use replay_frame::frame::TableView;
 
-    // The template tables belong to the Countries job, not the Slow pack.
     let slow = [
         peace_bids::TABLES.as_slice(),
         map_names::TABLES.as_slice(),
@@ -632,7 +616,6 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
     ]
     .concat()
     .into_iter()
-    // StateResistance now belongs to the independent hourly States job.
     .filter(|id| *id != TableId::StateResistance)
     .collect::<Vec<_>>();
     let late = [
@@ -720,8 +703,6 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
         captured.restore_late_request(request, false, &mut orders);
         assert_eq!(captured.allocated_bytes(), bytes);
 
-        // A second assembly must not turn a consumed failure marker into
-        // an unsubmitted job and retry its reads on the callback.
         for _ in 0..2 {
             let counted = crate::read_accounting::Capture::new();
             let mut ticks = captured.capture_tables(&memory, 11, 0x1000, hour, force_full);
@@ -798,7 +779,6 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
                 }
             }
         }
-        // Reset starts a new observation. The normal path must still read.
         captured.drop_and_reset();
         let counted = crate::read_accounting::Capture::new();
         let mut ticks = captured.capture_tables(&memory, 11, 0x1000, hour, true);
@@ -866,7 +846,6 @@ fn failed_pack_jobs_preserve_separately_acquired_tables_and_raw_gates() {
     {
         assert_eq!(after[id.index()], before[id.index()], "{id:?}");
     }
-    // The sliced project tables are this job's own read.
     for id in [TableId::Projects, TableId::ProjectHistory] {
         assert_eq!(
             after[id.index()],
@@ -928,7 +907,6 @@ fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
     captured.prepare_hour(0, true);
     let before = captured.allocated_bytes();
     let mut request = captured.take_air_missions_request(&countries, 11, 0x1000, None);
-    // The pool refused it: the callback fails it instead of running it.
     request.refuse();
     captured.restore_air_missions_request(request, true);
     assert_eq!(captured.allocated_bytes(), before);
@@ -942,10 +920,6 @@ fn a_refused_air_missions_job_fails_its_tables_without_allocating() {
     }
 }
 
-/// A failed Ordinary family holds no counter-walk census, wherever it
-/// failed: the task-force part panicked, another part stopped after it
-/// completed, or the family was refused admission. A family that returns
-/// without a failure keeps them.
 #[test]
 fn ordinary_terminal_failures_forget_the_counter_censuses() {
     let countries = engine_allocation::shared(
@@ -1008,10 +982,6 @@ fn ordinary_terminal_failures_forget_the_counter_censuses() {
     }
 }
 
-/// A completed Ordinary family keeps its counter censuses through the
-/// assembly that consumes its completion marker and the per-hour reset; a
-/// second assembly call, which finds no marker and fails the family, forgets
-/// them, as does an hour whose family never supplied its marker.
 #[test]
 fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
     struct NoRead;
@@ -1052,7 +1022,6 @@ fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
         1,
         "reused next hour"
     );
-    // The marker was consumed: a second assembly call fails the family.
     captured.capture_tables(&NoRead, 11, 0x1000, 1, false);
     assert_eq!(
         captured.ordinary_failure,
@@ -1061,7 +1030,6 @@ fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
     assert_eq!(captured.naval_counters.held_censuses(), 0);
     captured.drop_and_reset();
     assert_eq!(captured.naval_counters.held_censuses(), 0);
-    // An hour whose family never returned its marker.
     captured
         .naval_counters
         .hold_census(engine_native::ctask_force::HeldCensus::default());
@@ -1073,7 +1041,6 @@ fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
     assert_eq!(captured.naval_counters.held_censuses(), 0);
     captured.drop_and_reset();
     assert_eq!(captured.naval_counters.held_censuses(), 0);
-    // The test-only failure setter forgets them too.
     captured
         .naval_counters
         .hold_census(engine_native::ctask_force::HeldCensus::default());
@@ -1131,8 +1098,6 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
                 .iter()
                 .map(|part| part.allocated_bytes())
                 .sum::<usize>();
-        // One refused or failed part refuses the whole family, as the single
-        // Ordinary job did; the others completed.
         if reason == "ordinary worker admission failed" {
             parts[0].fail(reason);
         }
@@ -1159,7 +1124,6 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
             );
             assert_eq!(ticks[id.index()], 0);
         }
-        // A missing completion marker also cannot reacquire live data.
         captured.capture_tables(&memory, 11, 0x1000, 1, false);
         assert_eq!(memory.combat.get(), 0);
         assert_eq!(
@@ -1212,7 +1176,6 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
         bytes: &[],
     };
     let (hour, force_full) = (7, false);
-    // Owner 7 (in this hour's slice) was seen, unchanged, before this hour.
     let seen = |store: &mut SliceFingerprints| {
         let mut selection = SliceSelection::for_test(0, true, &[]);
         selection.scan(store, 7, Some(1));
@@ -1231,7 +1194,6 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
         let mut launch_request =
             captured.take_raid_launch_request(&countries, 11, 0x1000, hour, force_full, launch);
         if completed {
-            // The walks fail on an empty image: nothing is published.
             state_request.packs.capture(
                 &memory,
                 11,
@@ -1283,14 +1245,12 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
         let mut captured = Captured::with_capacities(&capacity);
         captured.prepare_hour(hour, force_full);
         let bytes = captured.allocated_bytes();
-        // Owner 7 (in this hour's slice) was seen, unchanged, before this hour.
         let mut store = Box::new(crate::slicing::SliceFingerprints::new());
         let mut seen = crate::slicing::SliceSelection::for_test(0, true, &[]);
         seen.scan(&mut store, 7, Some(1));
         store.finish_scan();
         let research =
             captured.take_research_request(&countries, 11, 0x1000, hour, force_full, store);
-        // The family keeps no research capacity while the part is loaned.
         assert!(captured.allocated_bytes() < bytes);
         let governance = captured.take_governance_request(
             &countries,
@@ -1304,7 +1264,6 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
             None,
             None,
         );
-        // Governance fails; its restore must not reach the loaned research rows.
         let _technologies = captured
             .restore_governance_request(governance, Err(crate::acquisition::Failure::Panicked));
         let report = match failure {
@@ -1312,10 +1271,6 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
             Some(failure) => Err(failure),
         };
         let mut store = captured.restore_research_request(research, report);
-        // This hour's research read was not published (a job failure
-        // forgets the store; a complete job whose tables are not all
-        // complete invalidates its selection), so owner 7 is read again
-        // at the next hour although nothing changed.
         let mut next = crate::slicing::SliceSelection::for_test(hour + 1, false, &[]);
         next.scan(&mut store, 7, Some(1));
         assert!(next.contains(7), "{failure:?}");
@@ -1326,8 +1281,6 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
             .expect("governance report restored");
         match failure {
             None => {
-                // Costs land on the research tables; the family's failure
-                // did not replace the research outcomes.
                 for (index, cost) in governance::RESEARCH.into_iter().zip([5, 6, 7]) {
                     assert_eq!(family.ticks[index], cost);
                     assert!(!matches!(
@@ -1349,7 +1302,6 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
                 }
             }
         }
-        // The family's own tables carry the family failure either way.
         assert_eq!(
             outcomes[5],
             Outcome::Unavailable {
@@ -1381,7 +1333,6 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
         captured.allocated_bytes() + request.allocated_bytes(),
         bytes
     );
-    // The worker always owns the hourly changes. A quiet roster stays skipped.
     request.registry.mark_skipped();
     request
         .variants
@@ -1460,7 +1411,6 @@ fn variant_handoff_preserves_a_finished_change_capture_after_a_later_failure() {
     ] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let mut request = captured.take_variants_request(11, 0x1000, 1, false);
-        // An independently refused drain must keep its original verdict too.
         request.changes.fail("finished design-change verdict");
         request.changes_finished = true;
         request.changes_ticks = 31;
@@ -1555,9 +1505,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
                 0
             }
         });
-        // Gated borrows the rest of construction while the allocating
-        // building buffers are still on their worker. Restore that pack
-        // before restoring the worker-only families.
         let gated = captured.take_gated_request(
             11,
             0x1000,
@@ -1569,7 +1516,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         captured.restore_gated_request(gated, false);
         let _technologies =
             captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
-        // The hourly drain leaves even off the registry's slot.
         let variants = captured.take_variants_request(11, 0x1000, 1, context.force_full);
         captured.restore_variants_request(
             variants,
@@ -1604,8 +1550,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
                     0
                 }
             );
-            // ResearchSlots is off its slot; the sliced technology tables
-            // are read every hour, so the failure is theirs.
             if failure.is_some() && slot == 3 {
                 assert_eq!(
                     expected_outcomes[slot],
@@ -1640,8 +1584,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
             }
         );
         assert!(captured.variants_ticks.is_none());
-        // A missing worker result also cannot trigger an allocating walk
-        // on the caller, even on a full-refresh hour.
         captured.capture_tables_all(&memory, 11, 0x1000, 1, true);
         assert_eq!(memory.governance.get(), 0);
         assert_eq!(
@@ -1650,7 +1592,6 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
                 reason: "governance acquisition not supplied"
             }
         );
-        // A direct control capture proves that the spy detects Governance work.
         captured.governance.capture_owned(
             &memory,
             governance::CaptureContext {
@@ -1777,7 +1718,6 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
         let _census = captured.restore_ship_models_request(request, Ok(()));
         captured
     };
-    // The unsplit walk's verdict, straight from the family capture.
     let mut reference = walked(3);
     reference
         .ship_models
@@ -1793,7 +1733,6 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
         let mut captured = walked(ships);
         let requests = captured.take_ship_model_parts(&countries, 11);
         assert_eq!(requests.iter().flatten().count(), parts, "{ships} ships");
-        // The family lends its own capture as part 0.
         assert_eq!(captured.ship_models.allocated_bytes(), 0);
         for (index, request) in requests.into_iter().flatten().enumerate() {
             assert_eq!(request.part, index);
@@ -1817,12 +1756,10 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
             assert!(captured.ship_models.has_terminal_failure());
             continue;
         }
-        // Every part's cost adds up; the verdict is the unsplit walk's.
         let ticks = (1..=parts as u64).sum::<u64>();
         assert_eq!(captured.ship_models_report.unwrap().ticks, [ticks]);
         assert_eq!(captured.ship_models.outcomes(), expected, "{ships} ships");
     }
-    // A failed census lends no part.
     let mut captured = walked(3);
     let request = captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
     let _census =
@@ -2051,7 +1988,6 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             );
         }
         assert_eq!(engine_allocation::SharedBox::strong_count(&countries), 1);
-        // A failed job forgets the held walk its take consumed marks for.
         let store = captured
             .restore_province_unit_order_request(
                 province_order,
@@ -2059,7 +1995,6 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             )
             .unwrap();
         assert_eq!(store.holds(), province_order_failure.is_none());
-        // The join releases the census lease, so the next hour can reuse it.
         assert_eq!(engine_allocation::SharedBox::strong_count(&census), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let outcomes = captured.outcomes();
@@ -2135,8 +2070,6 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
         assert!(captured.supply_trains_report.is_none());
         assert!(captured.character_portraits_report.is_none());
         assert!(captured.province_unit_order_report.is_none());
-        // Route the identical reports through the full ordinary stage.
-        // Unrelated families may legitimately read the same native roots.
         captured.supply_trains_report = Some(supply);
         captured.character_portraits_report = Some(portraits);
         captured.province_unit_order_report = Some(province_order);
@@ -2181,8 +2114,6 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
         assert!(captured.supply_trains_report.is_none());
         assert!(captured.character_portraits_report.is_none());
         assert!(captured.province_unit_order_report.is_none());
-        // With no pending report, each direct table read fails once at
-        // its root: every supply part, the trains, portraits and the order.
         let direct = Reads::default();
         captured.acquire_supply_trains(&direct, supply_context);
         captured.acquire_character_portraits(&direct, portrait_context);
@@ -2288,8 +2219,6 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
     )
     .unwrap();
     for completed in [true, false] {
-        // Owner 9 (in hour 9's slice) and owner 7 were seen, unchanged,
-        // before this hour.
         let mut available = Box::new(crate::slicing::SliceFingerprints::new());
         let mut seen = crate::slicing::SliceSelection::for_test(0, true, &[]);
         seen.scan(&mut available, 7, Some(0));
@@ -2302,18 +2231,11 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
             advisors: None,
             local_subunits: None,
         };
-        // The callback starts each frame's selections at its hour.
         captured.prepare_hour(9, false);
         let request = captured.take_slow_request(&countries, 11, 0x1000, 9, false, stores);
         assert!(request.stores.available.is_some());
-        // Nothing was read: the unpublished reads are invalidated or the
-        // failed job's stores forgotten, and the stores come back either way.
         let mut stores = captured.restore_slow_request(request, completed);
         assert_eq!(captured.hired_advisors.available_selection().hour, 9);
-        // The unpublished slice is read again at the next hour, outside its
-        // own slice. After a completed job an owner of another slice still
-        // waits for its slice; a failed job forgets the store (its scan may
-        // have stopped part-way), so every country is read again at once.
         let available = stores.available.as_mut().expect("the store returns");
         let mut next = crate::slicing::SliceSelection::for_test(10, false, &[]);
         next.scan(available, 9, Some(0));
@@ -2337,17 +2259,12 @@ fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
     .unwrap();
     let (hour, force_full) = (9, false);
     for completed in [true, false] {
-        // Owner 9 (in hour 9's slice) and owner 7 were seen, unchanged,
-        // before this hour.
         let mut store = Box::new(crate::slicing::SliceFingerprints::new());
         let mut seen = crate::slicing::SliceSelection::for_test(0, true, &[]);
         seen.scan(&mut store, 7, Some(0));
         seen.scan(&mut store, 9, Some(0));
         store.finish_scan();
         captured.prepare_hour(hour, force_full);
-        // The Slow job no longer carries the stability pack: its failure
-        // leaves the stability tables to their own job, and theirs leaves
-        // Slow's tables as Slow left them.
         let slow = captured.take_slow_request(
             &countries,
             11,
@@ -2360,8 +2277,6 @@ fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
             captured.take_stability_request(&countries, 11, 0x1000, hour, force_full, Some(store));
         assert!(stability.store.is_some());
         captured.restore_slow_request(slow, false);
-        // Nothing was read: the unpublished read is invalidated or the
-        // failed job's store forgotten, and the store comes back either way.
         let mut store = captured
             .restore_stability_request(stability, completed)
             .expect("the store returns");
@@ -2383,8 +2298,6 @@ fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
                 failed_capture(table, hour, force_full, "slow acquisition failed")
             );
         }
-        // The unpublished slice is read again at the next hour; a failed job
-        // forgets the store, so every country is read again at once.
         let mut next = crate::slicing::SliceSelection::for_test(hour + 1, false, &[]);
         next.scan(&mut store, 9, Some(0));
         next.scan(&mut store, 7, Some(0));
@@ -2392,7 +2305,6 @@ fn the_stability_tables_are_their_own_job_and_its_store_always_returns() {
         assert!(next.contains(9), "completed {completed}");
         assert_eq!(next.contains(7), !completed, "completed {completed}");
     }
-    // Without a store the job reads only the hour's slice and returns none.
     let request = captured.take_stability_request(&countries, 11, 0x1000, 9, false, None);
     assert!(captured.restore_stability_request(request, true).is_none());
 }
@@ -2407,9 +2319,6 @@ fn the_war_overview_is_its_own_job_and_fails_apart_from_slow() {
     let (hour, force_full) = (9, false);
     for completed in [true, false] {
         captured.prepare_hour(hour, force_full);
-        // The Slow job no longer carries the war overview: its failure
-        // leaves the overview's tables to their own job, and theirs leaves
-        // Slow's tables as Slow left them.
         let slow = captured.take_slow_request(
             &countries,
             11,
@@ -2580,8 +2489,6 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
         let mut links = Vec::<engine_native::ccountry::LinkRow>::with_capacity(1);
         let row_storage = rows.as_ptr();
         let link_storage = links.as_ptr();
-        // A worker may already hold a failed original prefix when its
-        // terminal authority returns the owners. That result must survive.
         captured
             .country_appearance
             .raw
@@ -2752,10 +2659,6 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
     }
 }
 
-/// Characters, intel, character portraits, division presentation and country
-/// appearance are helper packs any one thread may convert, the first two with
-/// the spool caches lent to it; packs needing other spool caches stay on the
-/// spool thread.
 #[test]
 fn cached_and_unsynchronised_packs_are_helper_packs() {
     let movable = |name: &str| {
@@ -2777,9 +2680,6 @@ fn cached_and_unsynchronised_packs_are_helper_packs() {
     assert!(!movable("division_templates"));
 }
 
-/// RaidAirScores and the shared rail tables come from their own first-burst
-/// job: a Late failure keeps that job's outcomes, and only the job's own
-/// failure fails them, rereading every score pair at the next hour.
 #[test]
 fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
     use engine_native::memory::SliceMemory;
@@ -2805,7 +2705,6 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
             Box::default(),
             None,
         );
-        // An empty world: each walk fails with its own reason.
         let memory = SliceMemory {
             base: 0,
             bytes: &[],
@@ -2843,7 +2742,6 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
         for id in tables {
             assert_eq!(after[id.index()], installed[id.index()], "{id:?}");
         }
-        // Another TableId the Late job owns still fails with it.
         assert_eq!(
             after[TableId::AirReferenceWitnesses.index()],
             Outcome::Unavailable {
@@ -2853,9 +2751,6 @@ fn scores_and_rails_keep_their_own_job_outcome_through_a_late_failure() {
     }
 }
 
-/// ArmyIconInputs come from their own job right after the division sources
-/// join: a Late failure keeps that job's outcome, and only the job's own
-/// failure fails the rows.
 #[test]
 fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
     use engine_native::memory::SliceMemory;
@@ -2894,10 +2789,6 @@ fn army_icons_keep_their_own_job_outcome_through_a_late_failure() {
     }
 }
 
-/// The daily production tables, split from Slow: a failed job on their slot
-/// refuses them as a failed Slow did, a second assembly neither reruns nor
-/// changes them, and off their slot they are skipped without a read or an
-/// allocation, Slow's refusal keeping them skipped.
 #[test]
 fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
     use engine_native::memory::CountedMemory;
@@ -2927,7 +2818,6 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
     };
     const SLOT: i32 = 8;
     assert!(ProductionDailyPacks::due(SLOT, false));
-    // A failed job on its slot, then a second assembly.
     let mut captured = Captured::with_capacities(&Capacities::default());
     let request = captured.take_production_daily_request(&countries, 11, 0x1000, SLOT, false);
     captured.restore_production_daily_request(request, false);
@@ -2935,7 +2825,6 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
     refused(&captured, "slow acquisition failed");
     captured.capture_tables(&NoRead, 11, 0x1000, SLOT, false);
     refused(&captured, "slow acquisition failed");
-    // Off the slot, twice, with and without Slow's refusal.
     let mut captured = Captured::with_capacities(&Capacities::default());
     let memory = CountedMemory::new(NoRead);
     for refusal in [None, Some("slow acquisition failed")] {
@@ -2970,13 +2859,6 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
     }
 }
 
-/// Every combination of completed, failed and missing Slow, MIO and
-/// ProductionDaily jobs, on the slot and on a full hour, through the real
-/// take, restore and non-test missing-job paths: Slow's failure or absence
-/// refuses the daily production tables with Slow's reason though their own
-/// job completed; their own failure or absence refuses them with the reason
-/// a failed or missing Slow recorded; with all complete they publish their
-/// own capture, as on a frame reused after a refused hour.
 #[test]
 fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() {
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3003,7 +2885,6 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
             .chain(captured.production_modifiers.outcomes())
             .collect()
     };
-    // One hour: Slow's and both daily jobs' joins, then the assembly twice.
     let hour_of = |captured: &mut Captured, slow: Job, mio: Job, daily: Job, hour: i32, full: bool| {
         match slow {
             Job::Missing => captured.fail_missing_slow(hour, full),
@@ -3039,7 +2920,6 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
             }
             captured.restore_production_daily_request(request, daily == Job::Completed);
         } else if let Some((mio_request, ticks)) = mio_request {
-            // Return MIO's storage even when range zero was never supplied.
             let mut packs = captured.production_daily_spare.take().unwrap();
             captured.restore_industrial_organisations_request(
                 mio_request,
@@ -3113,8 +2993,6 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
                         expected,
                         "{slow:?} {mio:?} {daily:?} {hour} {full}"
                     );
-                    // The frame reused after the reset that starts every hour:
-                    // a healthy hour publishes its own capture.
                     captured.reset();
                     assert_eq!(
                         hour_of(
@@ -3134,15 +3012,6 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
     }
 }
 
-/// A split production modifier capture through its real lifecycle (the
-/// split prepared, its parts loaned and the first loaned with the
-/// ProductionDaily job, each returned, then the assembly): its tables are
-/// the whole capture's at 5,000 countries with unequal lines and an idle
-/// range; a failed or missing part refuses both tables with Slow's failure
-/// reason, the first failure in slot order winning; a first range without a
-/// country with lines takes the next range's defines; a second assembly
-/// changes nothing; and a reset after a preparation or a failed hour leaves
-/// no split behind.
 #[test]
 fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
     use production_modifiers::{Captured as Modifiers, test_support};
@@ -3168,7 +3037,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         gain: -5,
         ..Default::default()
     };
-    // 5,000 countries, every seventh with three lines, 2,000..2,600 idle.
     let rows: Vec<(u32, usize, usize)> = (1..=5_000_u32)
         .filter(|id| !(2_000..2_600).contains(id))
         .map(|id| {
@@ -3189,7 +3057,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
     let bounds = [1, 1_200, 2_000, 2_600, u32::MAX];
     let tables = |modifiers: &Modifiers| (modifiers.outcomes(), modifiers.tables());
     let whole = tables(&Modifiers::whole(test_support::part(&rows, context)));
-    // One slot hour: the split, its loans and returns, and two assemblies.
     let hour = |captured: &mut Captured,
                 parts: [Option<production_modifiers::Part>; 4],
                 returned: [Returned; 4],
@@ -3275,7 +3142,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
             refused("slow acquisition failed")
         );
     }
-    // Two parts fail with their own reasons: the earlier one's is published.
     let mut parts = split(&bounds);
     parts[1] = Some(test_support::failed("second range's failure"));
     parts[3] = Some(test_support::failed("fourth range's failure"));
@@ -3284,7 +3150,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         hour(&mut captured, parts, all, true),
         refused("second range's failure")
     );
-    // A first range without a country with lines: the next range's defines.
     let mut parts = split(&bounds);
     parts[0] = Some(test_support::part(&[], context));
     let mut captured = Captured::with_capacities(&Capacities::default());
@@ -3295,7 +3160,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
             context
         )))
     );
-    // A failed ProductionDaily job refuses them, and a reset leaves no split.
     let mut captured = Captured::with_capacities(&Capacities::default());
     assert_eq!(
         hour(&mut captured, split(&bounds), all, false),
@@ -3315,7 +3179,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
             reason: replay_data::cadence::SKIPPED_REASON
         }; production_modifiers::N]
     );
-    // A reset after a preparation: the next slot hour's whole capture.
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured
         .production_modifiers
@@ -3341,9 +3204,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
     let mut ticks = [0; TABLE_COUNT];
     captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
     assert_eq!(tables(&captured.production_modifiers), whole);
-    // One slot hour split at `starts`, every part complete: the daily job
-    // either captured and returned (`captured` true) or returned failed
-    // without running, as a refused or stopped job is.
     let hour_at = |captured: &mut Captured, starts: &[u32], captured_first: bool, daily: bool| {
         captured
             .production_modifiers
@@ -3388,9 +3248,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
         tables(&captured.production_modifiers)
     };
-    // A daily job refused before its capture: the failure, not a reset,
-    // clears the pending split, so the next slot hour on the same frame is
-    // the whole capture.
     let mut captured = Captured::with_capacities(&Capacities::default());
     assert_eq!(
         hour_at(&mut captured, &starts, false, false),
@@ -3416,7 +3273,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
     let mut ticks = [0; TABLE_COUNT];
     captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
     assert_eq!(tables(&captured.production_modifiers), whole);
-    // And the off-slot hour after it skips them without a split.
     captured.reset();
     captured.assemble_production_daily(&NoRead, 11, 0x1000, 9, false, &mut ticks, false);
     assert_eq!(
@@ -3429,8 +3285,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         captured.production_modifiers.prepared_slots(),
         std::iter::once(1..u32::MAX).collect::<Vec<_>>()
     );
-    // Four parts, then two, then one, on the same frame: each split's own
-    // ranges and the whole capture's tables.
     let mut captured = Captured::with_capacities(&Capacities::default());
     for starts in [&starts[..], &[2_600][..], &[][..]] {
         assert_eq!(
@@ -3442,8 +3296,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
     }
 }
 
-/// Every walk the hourly acquisition gates by capture mode, by the tables it
-/// writes: each is a job, sub-pack or walk none of whose tables Map records.
 pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
     let research = governance::RESEARCH.map(|index| governance::TABLES[index]);
     let character_part = |part: usize| {
@@ -3512,8 +3364,6 @@ pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
     ]
 }
 
-/// Map leaves out every gated walk; Full records a table of each, so it runs
-/// them all, as before capture modes gated anything.
 #[test]
 fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
     use replay_data::scope::{self, CaptureMode};
@@ -3527,8 +3377,6 @@ fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
             "{name}"
         );
     }
-    // The masked walks of mixed packs: Map leaves out exactly the tables it
-    // does not record, and Full none.
     for table in governance::TABLES
         .into_iter()
         .chain(intel::TABLES)
@@ -3540,9 +3388,6 @@ fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
     assert!(scope::records(CaptureMode::Map, TableId::Politics));
 }
 
-/// A Map assembly refuses, without walking them, the packs whose jobs Map
-/// leaves out, where Full's direct-walk fixtures walk them, and refuses no
-/// table Map records.
 #[test]
 fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
     use replay_data::scope::{self, CaptureMode};
@@ -3561,7 +3406,6 @@ fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
         &production_modifiers::TABLES,
     ]
     .concat();
-    // The daily production slot, on a full hour: every gated walk is due.
     let hour = 8;
     let outcomes = [CaptureMode::Full, CaptureMode::Map].map(|mode| {
         let mut captured = Captured::with_capacities(&Capacities::default());
@@ -3708,9 +3552,6 @@ fn independent_variant_family_survives_every_final_input_return_order_without_al
     }
 }
 
-/// The Variants job's lanes are claimed behind every job of the DivisionStatus chain, and behind
-/// the Variants job itself: at the hour after attach its 60 lane walks held the workers the
-/// chain's ranges waited for. Only the claim order moves; the job reads and publishes as before.
 #[test]
 fn variant_lanes_are_claimed_behind_the_division_status_chain() {
     use crate::acquisition_jobs::{Batch, Job, Pool, Report, Role};
@@ -3721,7 +3562,6 @@ fn variant_lanes_are_claimed_behind_the_division_status_chain() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let mut request = Some(Job::Variants(captured.take_variants_request(0, 0x1000, 1, true)));
     let mut batch = Batch::new(&pool);
-    // SAFETY: the synthetic world lives until the batch drains.
     let ticket = unsafe { batch.submit(&mut request) }.unwrap();
     let completed = batch.finish(ticket).unwrap();
     let Job::Variants(request) = completed.request else {

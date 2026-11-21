@@ -1,4 +1,3 @@
-//! Terrain-category text preceding the naval background's weather and night lines.
 use installed_content_core::{
     ResolvedLayers, defines::Defines, terrain::TerrainAdjuster, terrain::TerrainDefinitions,
 };
@@ -14,7 +13,6 @@ use {
 };
 
 const ONE: i64 = 100_000;
-// Tooltip asset collection must include inline icons from these keys.
 tooltip_keys! {
     MINIMUM_SEAZONE_DOMINANCE_NEEDED = "MINIMUM_SEAZONE_DOMINANCE_NEEDED",
     ALL_SHIPS = "ALL_SHIPS",
@@ -39,8 +37,6 @@ fn nonzero_adjuster(value: TerrainAdjuster) -> bool {
     value.movement != 0 || value.attack != 0 || value.defence != 0
 }
 
-/// Describe movement, attack and defence in difference mode without a
-/// header, omitting zero fields and adding a newline after each shown field.
 fn describe_adjuster(
     value: TerrainAdjuster,
     icons: &dyn TextIcons,
@@ -132,13 +128,10 @@ impl Content {
         }
     }
 
-    /// Whether the recorded content stack defines the terrain category `name`.
     pub(super) fn has_category(&self, name: &[u8]) -> bool {
         self.terrain.categories.iter().any(|entry| entry.name == name)
     }
 
-    /// highlighted terrain, minimum sea dominance, registered
-    /// ship-class blocks in database order, then the common all-ships block.
     pub(super) fn prefix(
         &self,
         name: &[u8],
@@ -193,8 +186,6 @@ impl Content {
                 "Naval terrain {} class {} modifier {key} has no recorded definition and is dropped as the game drops it.",
                 String::from_utf8_lossy(&category.name), String::from_utf8_lossy(name)
             )));
-            // terrain modifier composition adds the common accumulator to
-            // every authored class, with wrapping fixed5 addition.
             for (&key, &value) in &common.values {
                 let entry = block.values.entry(key).or_default();
                 *entry = entry.wrapping_add(value);
@@ -224,8 +215,6 @@ impl Content {
                 .describe(definitions, icons, loc, ONE, "", u32::MAX)
                 .map_err(|error| error.to_string())?;
             out.push_str(&description);
-            // the game appends this newline for a nonempty accumulator,
-            // even when the game filters every line from its description.
             if !block.values.is_empty() {
                 out.push('\n');
             }

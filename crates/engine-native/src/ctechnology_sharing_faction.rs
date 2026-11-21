@@ -1,12 +1,8 @@
-//! Stored faction research-sharing countries and bonus operands. The saved
-//! upgrade is calculated from programme state, rather than held here.
 
 use crate::{Memory, allocation, cpdx_array::Array, read};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02ac_66b8);
-/// Retained sharing base set by faction scientist refresh. It is independent
-/// of the current scientist roster and the per-country bonus array.
 pub const BASE: usize = 0x10;
 pub const COUNTRIES: usize = 0x18;
 pub const BONUSES: usize = 0x30;
@@ -19,8 +15,6 @@ pub struct Snapshot {
     pub bonuses: Vec<i64>,
 }
 
-/// Worker-only read of the companion selected by its owning faction upgrade
-/// status, into retained storage. Country references retain their native order.
 pub fn read_into(
     memory: &impl Memory,
     base: usize,

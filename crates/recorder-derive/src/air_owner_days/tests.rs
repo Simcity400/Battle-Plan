@@ -13,8 +13,6 @@ fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRo
     RaidAirScoreRow { country, region, friendly, enemy, ..Default::default() }
 }
 
-/// The scores at `hour`: a row moving every seven hours, a row present on even days only with a
-/// negative friendly score, a row appearing at hour 30, and a row gone after hour 60.
 fn world(hour: i32) -> Vec<RaidAirScoreRow> {
     let mut rows = vec![score(1, 5, i64::from((hour / 7) % 4) * 100, 10)];
     if hour.div_euclid(DAY) % 2 == 0 {
@@ -32,7 +30,6 @@ fn world(hour: i32) -> Vec<RaidAirScoreRow> {
 
 const KEYS: [(u32, u32); 4] = [(1, 5), (2, 5), (2, 6), (3, 6)];
 
-/// Each key's scores at `hour` as the game's rows give them: a negative score and a row gone as zero.
 fn scores(hour: i32, (country, region): (u32, u32)) -> (i128, i128) {
     world(hour).iter().find(|row| (row.country, row.region) == (country, region)).map_or((0, 0), |row| (i128::from(row.friendly.max(0)), i128::from(row.enemy.max(0))))
 }
@@ -54,9 +51,6 @@ fn owner(store: &Store, (country, region): (u32, u32)) -> Option<OwnerDay> {
     view.slot(u128::from(country) << 32 | u128::from(region)).and_then(|slot| OwnerDay::read(&view, slot))
 }
 
-/// At every hour, each owner's totals in a region before its day are its scores at the last hour of
-/// each earlier day of the run, and through it add the hour's: a negative score and an entry gone
-/// count as zero, and an owner's row keeps its totals after its entry goes.
 #[test]
 fn an_owners_totals_in_a_region_are_its_scores_at_each_earlier_days_end() {
     let mut store = store();
@@ -87,7 +81,6 @@ fn an_owners_totals_in_a_region_are_its_scores_at_each_earlier_days_end() {
     assert!(owner(&store, (3, 6)).is_some(), "an owner's row keeps its totals after its entry goes");
 }
 
-/// A resume reads the scores whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<i32>| {

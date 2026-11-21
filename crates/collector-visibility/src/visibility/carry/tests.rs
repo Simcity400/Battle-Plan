@@ -20,7 +20,6 @@ fn metadata() -> usize {
     DEFINITIONS + native::UNIT_MODIFIER as usize * definition::STRIDE
 }
 
-/// Independently authored native fields; sparse storage avoids fixture caps.
 struct World {
     spans: BTreeMap<usize, Vec<u8>>,
 }
@@ -108,7 +107,6 @@ impl Memory for World {
     }
 }
 
-/// Counts actual accumulator header acquisitions and retains ordered reads.
 struct Counted<'a> {
     world: &'a World,
     reads: Cell<u64>,
@@ -182,7 +180,7 @@ fn quiet_certified_hour_reads_no_accumulator_and_equals_full_read() {
     assert_eq!(reads, 0);
     assert_eq!(counts.read, 0);
     assert!(!counts.full);
-    assert_eq!(carried, 5); // Includes absent keys and effective zeros.
+    assert_eq!(carried, 5);
 }
 
 #[test]
@@ -208,7 +206,6 @@ fn moved_epoch_and_uncertified_takes_read_every_country() {
     domain.boundary(true);
     let (_, counts, carried, reads) = capture(&mut store, &world, &domain);
     assert_eq!((counts.full, carried, reads), (true, 0, 3));
-    // A writer that names no country moves the epoch.
     domain.write_every(Table::Visibility);
     domain.boundary(false);
     let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
@@ -233,7 +230,6 @@ fn effective_definition_changes_apply_without_an_accumulator_mark_or_read() {
         (0, 1, None),
     ] {
         world.flags(flags, selector);
-        // Authenticated null eligibility callback supplies no feature bits.
         world.put(definition::ELIGIBILITY_CALLBACK_RVA.0, &0_u64.to_le_bytes());
         domain.boundary(false);
         let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
@@ -288,7 +284,6 @@ fn a_replaced_census_object_and_forced_refresh_read_again() {
     let domain = Domain::enabled(2);
     let mut store = Store::new();
     capture(&mut store, &world, &domain);
-    // Same native id and canonical slot, a different census object.
     let replaced = object(20);
     for offset in [0, ccountry::ID, ccountry::MODIFIER_ACCUMULATOR] {
         let bytes = world.spans.get(&(object(1) + offset)).unwrap().clone();
@@ -394,7 +389,6 @@ fn advisory_store_allocation_failure_publishes_exact_rows_and_forgets_consumed_m
     store.fresh = Vec::new();
     domain.write(Table::Visibility, 2);
     domain.boundary(false);
-    // Room for every slot: only the advisory store's allocation is refused.
     let mut rows = vec![native::CountryRow::default(); 8];
     let ((outcome, _), _, _) = crate::test_support::with_allocations_denied(|| {
         store.capture(

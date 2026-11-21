@@ -27,8 +27,6 @@ test('each map setting inherits on its own and offers its own reset', async () =
     }] });
   try {
     const { default: MapAppearance, inheritingAll } = await vite.ssrLoadModule('/ui/src/components/MapAppearance.tsx') as typeof import('./MapAppearance');
-    // Reverting clears every choice in the stored shape, keeping visual mods, so reverting
-    // settings that already inherit everything is no change to apply.
     const mods = [{ id: 'workshop/1', name: 'Terrain' }];
     const stored = { graphics: { rivers: null, trees: false }, audio: { voice: 40.5 }, counters: { kind: 'players' }, visualMods: mods } as never;
     assert.deepEqual(inheritingAll(stored), { graphics: { rivers: null, trees: null }, audio: { voice: null }, counters: null, visualMods: mods });
@@ -42,17 +40,14 @@ test('each map setting inherits on its own and offers its own reset', async () =
     const inherited = render(inherits);
     assert.doesNotMatch(inherited, /Use global defaults<\/button>/, 'settings already inherited have nothing to revert');
     assert.doesNotMatch(inherited, /data-overridden/);
-    // Inherited switches show the parent's value: trees off, rivers on.
     assert.match(inherited, /aria-label="Trees"[^>]*aria-checked="false"/);
     assert.match(inherited, /aria-label="Rivers"[^>]*aria-checked="true"/);
     const one = render({ ...inherits, graphics: { rivers: false } });
     assert.match(one, /Use global defaults<\/button>/);
-    // Only the changed row is marked and offers to inherit again.
     assert.equal(one.match(/data-overridden/g)?.length, 1);
     assert.match(one, /aria-label="Rivers: use global defaults"/);
     assert.match(one, /aria-label="Rivers"[^>]*aria-checked="false"/);
     assert.match(one, /aria-label="Trees"[^>]*aria-checked="false"/);
-    // Parts sit under Advanced, beside their main switch.
     assert.match(one, /Advanced<\/summary>[\s\S]*aria-label="Sea borders"/);
     assert.match(one, /Advanced<\/summary>[\s\S]*aria-label="Generals captured"/);
     assert.match(render({ ...inherits, counters: { kind: 'players' } }), /Use global defaults<\/button>/);
@@ -110,7 +105,6 @@ test('anti-aliasing is unavailable only when the renderer has said its adapter l
       host.__mapGraphics = { reply: reply(sampleCounts), draft: settings };
       return renderToStaticMarkup(createElement(MapAppearance, { global: true, source: null, client: { mapSettings: async () => reply(sampleCounts) } as never }));
     };
-    // No renderer has reported: a saved 8x is a choice, not refused.
     assert.match(render(null), /8x MSAA/);
     assert.doesNotMatch(render(null), /8x MSAA \(unavailable\)/);
     assert.doesNotMatch(render([1, 2, 4, 8]), /\(unavailable\)/);

@@ -4,7 +4,6 @@ export interface LogRevealHistory {
   readonly playhead?: number | null;
   readonly from: number | null;
   readonly loaded: ReadonlySet<string>;
-  /** The rows of each stable server window already presented at this playhead. */
   readonly presented: ReadonlyMap<string, ReadonlySet<string>>;
   readonly reveals?: LogReveals;
 }
@@ -88,7 +87,6 @@ export function logReveals(previous: LogRevealHistory, items: readonly LogItem<u
   return { entering, playhead, index, next: typeof playhead === 'number' ? nextReveal(index, playhead) : 0, presented };
 }
 
-// Commit clock history separately so unchanged eligibility retains its identity.
 export function logRevealHistory(previous: LogRevealHistory, reveals: LogReveals, playhead?: number | null): LogRevealHistory {
   return { playhead, from: revealFrom(previous, playhead), loaded: reveals.index.loaded,
     presented: typeof playhead === 'number'
@@ -96,10 +94,6 @@ export function logRevealHistory(previous: LogRevealHistory, reveals: LogReveals
       : reveals.presented, reveals };
 }
 
-/** A row remounted by scrolling is not another arrival. A continuously mounted
- * entry keeps its CSS animation through forward ticks and metadata updates.
- * Remember entries while their payload is held; released pages are protected
- * by `logReveals` above. */
 export function logVisibleEntries(items: readonly LogItem<unknown>[], start: number, end: number,
   eligible: ReadonlySet<string>, previous: ReadonlySet<string>, mounted: ReadonlySet<string> = new Set(),
   continueMotion = false): { entering: ReadonlySet<string>; seen: ReadonlySet<string> } {

@@ -61,7 +61,6 @@ test('a design adds the purposes counted, refits only when they are', () => {
   assert.equal(designAmount(data, withRefits[0], null, 160).exact, 3500n);
   assert.equal(designAmount(data, withRefits[1], null, 160).exact, 2700n);
   assert.equal(designAmount(data, without[1], null, 160).exact, 2000n);
-  // A purpose not known leaves its design not known, with its reason.
   data.leaves[1].runs[1] = { firstHour: 148, lastHour: 171, totalRaw: null, reason: 'lostOutput' };
   assert.deepEqual(designAmount(data, spendingDesigns(data, true)[0], null, 160), { exact: null, reason: 'lostOutput' });
 });
@@ -82,12 +81,9 @@ test('a kind keeps its designs and its whole; a design of unknown arm leaves the
 test('a span is measured within one observation and holder only', () => {
   const runs = [known(100, 123, '0'), known(124, 147, '1000'), known(148, 171, '50', true)];
   assert.equal(amountIn(runs, 124, 140, [100]).exact, 1000n);
-  // Across a break (another holder's totals) nothing is measured.
   assert.deepEqual(amountIn(runs, 130, 160, [100]), { exact: null, reason: 'outsideRead' });
-  // From an observation's first hour the total is its own; from before it, not known.
   assert.equal(amountIn(runs, 148, 160, [100, 148]).exact, 50n);
   assert.deepEqual(amountIn(runs, 120, 160, [100, 148]), { exact: null, reason: 'observationChanged' });
-  // Outside every run is not known, never zero.
   assert.deepEqual(amountIn(runs, null, 200, [100]), { exact: null, reason: 'outsideRead' });
 });
 
@@ -103,7 +99,6 @@ test('the items and the whole at an hour, and the empty census before any produc
   assert.ok(noProductionAt(data, 110));
   assert.equal(noProductionAt(data, 130), false);
   assert.equal(spendingEmptyLabel(data, designs, 110, null, 'military', false), 'No military production yet.');
-  // A whole not known adds a part saying why, and the total says it too.
   data.totalWithoutRefits[1] = { firstHour: 124, lastHour: 147, totalRaw: null, reason: 'missedPublication' };
   const unknown = productionSpendingItems(data, window, designs, finals, 'military', false);
   assert.deepEqual(unknown.at(-1)?.path, []);
@@ -122,8 +117,6 @@ test('spending is recorded where the reply knows an amount, whether or not the o
   assert.equal(spendingRecorded(none), false);
 });
 
-/** `whole` cut to `first..=last` as the product cuts a window: each run to its hours, a run cut at its start no longer
- * starting afresh. */
 function cut(whole: ProductionSpendingReply, window: number, first: number, last: number): ProductionSpendingReply {
   const runs = (items: readonly ProductionSpendingRun[]) => items.flatMap(run => {
     const from = Math.max(run.firstHour, first), to = Math.min(run.lastHour, last);

@@ -1,4 +1,3 @@
-//! Bounded pressure notifications; one owned worker reconciles native priorities.
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
@@ -22,9 +21,7 @@ pub(crate) enum Role {
     Decode,
     Spool,
     Sizing,
-    /// The thread building frames ahead.
     Builder,
-    /// The spool's conversion helper `n`.
     Helper(usize),
 }
 const FIXED_ROLES: usize = 4;
@@ -41,14 +38,10 @@ impl Role {
     }
 }
 const UNKNOWN: u32 = 3;
-/// A copy-only thread's value while the game ticks: idle priority, off the main thread's core.
 const TICK: u32 = 4;
-/// The same while at most one frame is free: normal priority, still off the main thread's core.
 const TICK_PRESSED: u32 = 5;
-/// The pressure word while the game ticks, with [`PRESSED`] when at most one frame is free.
 const TICKING: u32 = 1 << 8;
 const PRESSED: u32 = 1 << 9;
-/// The ticking word when the main game thread runs on another processor group.
 const NO_PROCESSOR: u32 = u32::MAX;
 const BOOST_NS: u64 = 4_000_000;
 const REST_NS: u64 = 1_000_000;
@@ -74,7 +67,6 @@ fn priority(level: u32) -> i32 {
 }
 fn for_role(pressure: u32, role: usize) -> u32 {
     if pressure & TICKING != 0 {
-        // Sizing reads live game memory and waits the tick out at its own priority.
         return if role == Role::Sizing.slot() {
             0
         } else if pressure & PRESSED != 0 {
@@ -132,9 +124,7 @@ impl Budget {
 struct Target {
     handle: OwnedHandle,
     applied: AtomicU32,
-    /// A CPU-set selection is applied and must be cleared when the tick ends.
     confined: AtomicBool,
-    /// The ticking word whose CPU sets are applied.
     selected: AtomicU32,
 }
 impl Target {
@@ -148,16 +138,11 @@ impl Target {
     }
 }
 
-/// Logical processors one processor group holds.
 const GROUP_PROCESSORS: usize = 64;
 
-/// Every group-0 logical processor's CPU-set id with its physical core, read once, in fixed
-/// storage: the reconciler allocates nothing.
 struct Cores {
-    /// `(logical processor, core, id)` for the first `len` entries.
     sets: [(u8, u8, u32); GROUP_PROCESSORS],
     len: usize,
-    /// Per core index: the ids of every other core's processors, `others_len[core]` of them.
     others: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
     others_len: [usize; GROUP_PROCESSORS],
 }
@@ -168,7 +153,6 @@ impl Cores {
         };
         let mut buffer = [0u64; 2048];
         let mut length = 0u32;
-        // SAFETY: the buffer holds its full byte length, aligned, and outlives the call.
         if unsafe {
             GetSystemCpuSetInformation(
                 buffer.as_mut_ptr().cast(),
@@ -187,13 +171,11 @@ impl Cores {
         let bytes = buffer.as_ptr().cast::<u8>();
         let mut offset = 0usize;
         while offset + entry_size <= length as usize && len < GROUP_PROCESSORS {
-            // SAFETY: entries are packed back to back, each starting with its own size.
             let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
             if (entry.Size as usize) < entry_size {
                 break;
             }
             if entry.Type == CpuSetInformation {
-                // SAFETY: the CpuSet arm is the active one for CpuSetInformation entries.
                 let set = unsafe { entry.Anonymous.CpuSet };
                 if set.Group == 0 {
                     entries[len] = (set.LogicalProcessorIndex, set.CoreIndex, set.Id);
@@ -205,7 +187,6 @@ impl Cores {
         Self::from_sets(&entries[..len])
     }
 
-    /// The table for group-0 `(logical processor, core, id)` entries; none when there are none.
     fn from_sets(entries: &[(u8, u8, u32)]) -> Option<Self> {
         let mut cores = Self {
             sets: [(0, 0, 0); GROUP_PROCESSORS],
@@ -231,7 +212,6 @@ impl Cores {
         (cores.len != 0).then_some(cores)
     }
 
-    /// The ids of every core but the one running `processor`; none when that leaves nothing.
     fn away_from(&self, processor: u32) -> Option<&[u32]> {
         let &(_, core, _) = self.sets[..self.len]
             .iter()
@@ -241,13 +221,9 @@ impl Cores {
     }
 }
 
-/// The machine's core table, read once by the first collector thread that needs it.
 static CORES: OnceLock<Option<Cores>> = OnceLock::new();
-/// Refused selections or clearings by threads keeping off the game thread's core.
 static AWAY_FAILURES: AtomicU64 = AtomicU64::new(0);
 
-/// The CPU sets keeping a thread off the physical core running the game thread's `processor`:
-/// none with several processor groups (`None`), an unknown topology, or no other core.
 fn away_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
     cores?.away_from(processor?)
 }
@@ -256,23 +232,18 @@ fn cores() -> Option<&'static Cores> {
     CORES.get_or_init(Cores::read).as_ref()
 }
 
-/// [`away_sets`] for this machine. Never call it on a game thread: the first call with a
-/// processor reads the table.
 pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))
 }
 
-/// Selects `sets` for `thread`, or clears its selection with `None`.
 fn select(thread: HANDLE, sets: Option<&[u32]>) -> bool {
     let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
         (sets.as_ptr(), sets.len() as u32)
     });
-    // SAFETY: callers name a live collector-owned thread; a null, empty list clears.
     unsafe { SetThreadSelectedCpuSets(thread, list, count) != 0 }
 }
 
-/// [`select`] for a thread keeping off the game thread's core; a refusal is counted.
 pub(crate) fn select_away(thread: HANDLE, sets: Option<&[u32]>) -> bool {
     let selected = select(thread, sets);
     if !selected {
@@ -285,18 +256,12 @@ pub(crate) fn away_failures() -> u64 {
     AWAY_FAILURES.load(Ordering::Relaxed)
 }
 
-/// The calling thread's own selection off the game thread's core, changed only when the
-/// wanted one differs from what it last applied.
 #[derive(Default)]
 pub(crate) struct AwayFromGame {
-    /// The game processor the last change was for.
     wanted: Option<u32>,
-    /// The selection installed; one per core, so compared by address.
     applied: Option<&'static [u32]>,
 }
 impl AwayFromGame {
-    /// Keeps the calling thread off `processor`'s physical core, or anywhere with `None`. One
-    /// attempt per change: a refusal is counted and not retried until the wanted core changes.
     pub(crate) fn follow(&mut self, processor: Option<u32>) {
         if processor == self.wanted {
             return;
@@ -306,7 +271,6 @@ impl AwayFromGame {
         if sets.map(<[u32]>::as_ptr) == self.applied.map(<[u32]>::as_ptr) {
             return;
         }
-        // SAFETY: the pseudo-handle names only the calling thread.
         if select_away(unsafe { GetCurrentThread() }, sets) {
             self.applied = sets;
         }
@@ -331,10 +295,7 @@ enum Boundary {
 pub(crate) struct Pipeline {
     available: AtomicUsize,
     callbacks: AtomicUsize,
-    /// While the game ticks: one plus the group-0 processor running the main game thread
-    /// ([`NO_PROCESSOR`] when unknown); zero otherwise.
     ticking: AtomicU32,
-    /// The ticking word this reconciliation pass applies CPU sets for.
     applying: AtomicU32,
     targets: [OnceLock<Target>; SLOTS],
     event: OnceLock<OwnedHandle>,
@@ -367,12 +328,9 @@ impl Pipeline {
     fn free_count(&self) -> usize {
         self.available.load(Ordering::SeqCst)
     }
-    /// Counts a frame about to be freed: before it is pushed, so a pop's claim always
-    /// follows its publication.
     pub(crate) fn publish(&self) {
         self.available.fetch_add(1, Ordering::SeqCst);
     }
-    /// Counts a free frame taken.
     pub(crate) fn claim(&self) {
         let _ = self
             .available
@@ -399,14 +357,10 @@ impl Pipeline {
     fn notify(&self) {
         if !self.pending.swap(true, Ordering::SeqCst) {
             if let Some(event) = self.event.get() {
-                // SAFETY: the pipeline retains this auto-reset event through every notifier.
                 unsafe { SetEvent(event.as_raw_handle()) };
             }
         }
     }
-    /// The game thread enters its hourly tick on group-0 `processor` (`Some(None)` when it
-    /// runs on another group) or leaves it (`None`). Copy-only threads then work at idle
-    /// priority, off that processor's core, until the tick returns.
     pub(crate) fn tick(&self, processor: Option<Option<u32>>) {
         let word = match processor {
             None => 0,
@@ -417,7 +371,6 @@ impl Pipeline {
         self.ticking.store(word, Ordering::SeqCst);
         self.refresh();
     }
-    /// The CPU sets of every core but the main game thread's, for this pass's ticking word.
     fn tick_sets(&self) -> Option<&[u32]> {
         let word = self.applying.load(Ordering::SeqCst);
         if word == 0 || word == NO_PROCESSOR {
@@ -430,7 +383,6 @@ impl Pipeline {
         self.refresh();
         Callback(self)
     }
-    // Only the named collector worker registers, after its NORMAL initialization succeeds.
     pub(crate) fn register(&self, role: Role) {
         let Some(slot) = self.targets.get(role.slot()) else {
             return;
@@ -438,7 +390,6 @@ impl Pipeline {
         if slot.get().is_some() {
             return;
         }
-        // SAFETY: this id names the registering collector worker, never a game thread.
         let handle = unsafe {
             OpenThread(
                 THREAD_SET_INFORMATION
@@ -451,13 +402,11 @@ impl Pipeline {
         if handle.is_null() {
             return;
         }
-        // SAFETY: OpenThread returned a fresh owned handle.
         let target = Target::new(unsafe { OwnedHandle::from_raw_handle(handle) });
         if slot.set(target).is_ok() {
             self.notify();
         }
     }
-    /// Whether `role`'s worker registered a handle the reconciler writes.
     pub(crate) fn registered(&self, role: Role) -> bool {
         self.targets
             .get(role.slot())
@@ -477,8 +426,6 @@ impl Pipeline {
             hook(boundary);
         }
     }
-    // Only the reconciler writes; every pass has one gate attempt and at most one syscall per
-    // registered worker.
     fn reconcile(
         &self,
         budget: &mut Budget,
@@ -500,7 +447,6 @@ impl Pipeline {
             }
         }
         let _writing = Writing(&self.writing);
-        // Clear before work, never after final validation: racing notifications must survive.
         self.pending.swap(false, Ordering::SeqCst);
         #[cfg(test)]
         self.boundary(Boundary::WriterRegistered);
@@ -508,7 +454,6 @@ impl Pipeline {
         self.applying.store(word, Ordering::SeqCst);
         let pressure = self.pressure();
         let wanted = if pressure & TICKING != 0 {
-            // A tick ends any boost: no expired deadline may keep rearming the timer.
             *budget = Budget::default();
             pressure
         } else {
@@ -543,7 +488,6 @@ impl Pipeline {
         if success && wanted == 0 {
             budget.normal_applied(now());
         }
-        // Publish before the final read: later mutations either fail validation or notify again.
         self.announced.store(pressure, Ordering::SeqCst);
         #[cfg(test)]
         self.boundary(Boundary::Published);
@@ -578,7 +522,6 @@ impl Drop for Callback<'_> {
 }
 fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     let handle = target.handle.as_raw_handle();
-    // SAFETY: the reconciler alone writes these retained collector-owned handles.
     let mut applied = unsafe { SetThreadPriority(handle, priority(value)) != 0 };
     let sets = if value == TICK || value == TICK_PRESSED {
         pipeline.tick_sets()
@@ -587,7 +530,6 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     };
     if sets.is_some() {
         let selected = select(handle, sets);
-        // A failed reselection may leave the previous one installed: keep it to clear.
         if selected {
             target.confined.store(true, Ordering::SeqCst);
             target
@@ -605,7 +547,6 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     if applied && value != TICK && value != TICK_PRESSED {
         target.selected.store(0, Ordering::SeqCst);
     } else if applied && sets.is_none() {
-        // Idle priority without a selection: the main thread's core is unknown.
         target
             .selected
             .store(pipeline.applying.load(Ordering::SeqCst), Ordering::SeqCst);
@@ -638,16 +579,13 @@ fn wait(event: &OwnedHandle, timer: &OwnedHandle, delay: Option<Duration>) -> bo
     let handles = [event.as_raw_handle(), timer.as_raw_handle()];
     let (count, timeout) = if let Some(delay) = delay {
         let due = -(delay.as_nanos().div_ceil(100).clamp(1, i64::MAX as u128) as i64);
-        // SAFETY: this worker owns the timer and both handles outlive the synchronous wait.
         if unsafe { SetWaitableTimer(handles[1], &due, 0, None, std::ptr::null(), 0) } == 0 {
             return false;
         }
         (2, u32::MAX)
     } else {
-        // An idle timeout also recovers a failed SetEvent; no worker priority is elevated then.
         (1, 20)
     };
-    // SAFETY: the fixed handle array is valid for count entries; wait-all is disabled.
     let result = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, timeout) };
     result < count || (count == 1 && result == WAIT_TIMEOUT)
 }
@@ -660,7 +598,6 @@ impl Reconciler {
     pub(crate) fn start(
         pipeline: engine_allocation::SharedBox<Pipeline>,
     ) -> Result<Self, &'static str> {
-        // SAFETY: unnamed, auto-reset handles; no game objects or callbacks are involved.
         let (event, timer) = unsafe {
             (
                 CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()),
@@ -672,7 +609,6 @@ impl Reconciler {
                 ),
             )
         };
-        // SAFETY: each non-null handle is freshly owned, including on partial initialization failure.
         let event = (!event.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(event) });
         let timer = (!timer.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(timer) });
         let (Some(event), Some(timer)) = (event, timer) else {
@@ -735,7 +671,6 @@ impl Reconciler {
         })
     }
     pub(crate) fn thread_id(&self) -> u32 {
-        // SAFETY: the owned join handle remains live through this query.
         unsafe {
             windows_sys::Win32::System::Threading::GetThreadId(
                 self.thread.as_ref().unwrap().as_raw_handle() as _,
@@ -748,7 +683,6 @@ impl Reconciler {
     pub(crate) fn finish(&mut self) {
         self.pipeline.stopping.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            // SAFETY: the pipeline owns this event until after the joined worker exits.
             unsafe { SetEvent(self.pipeline.event.get().unwrap().as_raw_handle()) };
             let _ = thread.join();
             crate::thread_cpu::register_id(crate::thread_cpu::Role::FramePriority, 0);

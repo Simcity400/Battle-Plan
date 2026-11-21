@@ -95,7 +95,6 @@ fn frame(step: u32) -> DecodedFrame {
     frame
 }
 
-/// Independent copy of the prior country's flag inputs, not the extracted helper.
 fn reference(frame: &DecodedFrame) -> io::Result<Countries> {
     core::<tables::CountryLinks>(frame)?;
     let source = core::<tables::Countries>(frame)?;
@@ -272,7 +271,6 @@ fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
                             assert_eq!(a.flag_keys(slot), b.flag_keys(slot));
                             assert_eq!(a.flag_refusal(slot), b.flag_refusal(slot));
                         }
-                        // Both retain the normal hour warm, even after initial prewarm.
                         a.warm_flags(old.assets);
                         b.warm_flags(new.assets);
                         if step == 0 {
@@ -316,7 +314,6 @@ fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
                         assert_eq!(cold.trace(), warm.trace());
                     }
                     assert!(emitted > 0);
-                    // An unrelated GUI demand was not in any initial/hour candidates.
                     for size in 0..3 {
                         assert_eq!(
                             cold.flags[size].acquire(&["COLD", "not indexed"]),
@@ -359,8 +356,6 @@ fn refused_initial_flag_inputs_leave_every_store_cold() {
                         error.to_string()
                     ),
                     Ok(expected) => {
-                        // Noncore omissions retain their field-local refusals, not
-                        // an invented fatal table error or fallback flag key.
                         warm_initial_flags(&source, inputs.assets).unwrap();
                         let actual = countries(&source).unwrap();
                         for slot in [1, 2, 3] {
@@ -374,7 +369,6 @@ fn refused_initial_flag_inputs_leave_every_store_cold() {
                 assert_eq!(stores.textures.version(), 0);
                 assert_eq!(stores.textures.resident_bytes(), 0);
             }
-            // Skipped initial warming never removes the existing cold fallback.
             for flags in &stores.flags {
                 assert!(flags.acquire(&["COLD"]).is_some());
             }

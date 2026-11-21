@@ -1,68 +1,30 @@
-//! Script reader consumption over the shared lexer, token by token, including text
-//! whose consumption differs from balanced tree grammar.
-//!
-//! The tree ([`super::parse`]) pairs braces as written. Script fields instead consume
-//! according to their dispatch, and the next field continues there. A block passed to a
-//! one-value reader is not skipped; a value without a key consumes the next token as
-//! its operator; a definition whose name is taken leaves its `=` for the next key.
-//! [`read`] reproduces that consumption:
-//!
-//! - [`lex`] uses each loader's [`Mode`], skipping a byte-order mark only in mode 1. A
-//!   byte 0xFF ends a read, and reading can continue after it.
-//! - [`Reader`] holds key, operator and value slots, retaining them when a later read
-//!   finds no operator, plus the file's `@name` table.
-//! - Block loops peek, stop at `}` or the end, otherwise read a key/operator/value and
-//!   use the caller's [`Shape`] dispatch.
-//! - File loops stop only at the end.
-//!
-//! The result retains each key, its resolved value token or consumed block, and
-//! [`Read::misreads`] for each departure from the text's shape, by line.
 
 use super::{Item, Operator, Value};
 use crate::key_names::KeyNames;
 
 mod math;
 
-/// A lexer token kind distinguished by field readers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A bare token (kind 0 before the keyword lookup).
     Bare,
-    /// A quoted string (token 0xF).
     Quoted,
-    /// `=` (token 1).
     Equals,
-    /// `<` (token 0x1D4).
     Less,
-    /// `>` (token 0x1D3).
     Greater,
-    /// `{` (token 3).
     Open,
-    /// `}` (token 4).
     Close,
-    /// `(` `)` `,` and `?=` (tokens 5, 6, 8, 0x318).
     Other,
-    /// The end of the text, or the empty value stored before a `}`.
     End,
-    /// A comment marker (`!`, `#`, `;`), stored before the comment is skipped. It
-    /// remains the lexer's token only when the following retry fails ([`lex`]).
     Comment,
-    /// An effect file's `[[ ... ]]` code ([`lex_effect`]): raw bytes consumed after
-    /// `[[`, without lexing.
     Code,
 }
 
-/// One token: its kind, its text (a single-character token's text is that
-/// character) and the line it starts on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
     pub kind: Kind,
     pub text: Vec<u8>,
     pub line: u32,
-    /// The token's quoted flag, stored separately from its kind. A failed peek changes
-    /// the kind to End and keeps this flag, which variable resolution tests.
     pub quoted: bool,
-    /// Byte position after this lexer read, before the next peek.
     pub byte_end: usize,
 }
 
@@ -77,7 +39,6 @@ impl Token {
         }
     }
 
-    /// An initial reader slot: token 0, unquoted and empty, matching no keyword.
     fn slot() -> Self {
         Self {
             kind: Kind::Bare,
@@ -92,7 +53,6 @@ impl Token {
         matches!(self.kind, Kind::Equals | Kind::Less | Kind::Greater)
     }
 
-    /// The operator this token is, as [`Item::operator`] keeps it.
     fn as_operator(&self) -> Operator {
         match self.kind {
             Kind::Less => Operator::Less,
@@ -109,39 +69,30 @@ impl Token {
         }
     }
 
-    /// The token's quoted flag: a quoted string, whatever id a failed peek gave it.
     pub fn quoted(&self) -> bool {
         self.quoted
     }
 
-    /// A read that returned 0 (token 0x13).
     pub fn is_end(&self) -> bool {
         self.kind == Kind::End
     }
 
-    /// `}` or End: the tokens that stop every block loop.
     pub fn ends_block(&self) -> bool {
         matches!(self.kind, Kind::Close | Kind::End)
     }
 
-    /// The first byte of the text, which the readers compare with `@`.
     pub fn starts_with_at(&self) -> bool {
         self.text.first() == Some(&b'@')
     }
 
-    /// The text up to its first NUL, as every consumer reads it.
     pub fn c_str(&self) -> &[u8] {
         crate::parser::c_string(&self.text)
     }
 
-    /// The number id 0xC ([`super::number_token`]) of a bare token.
     pub fn is_number(&self) -> bool {
         self.kind == Kind::Bare && super::number_token(&self.text, false)
     }
 
-    /// Text eligible for keyword lookup: a bare token not numbered by its first byte,
-    /// so `3dposition` cannot be a keyword. Other kinds and empty C strings give
-    /// `None`.
     pub fn lookup(&self) -> Option<&[u8]> {
         let numbered = self
             .text
@@ -154,21 +105,16 @@ impl Token {
         (!text.is_empty()).then_some(text)
     }
 
-    /// Whether the token is keyword `word`: its [`Self::lookup`] text matches under the
-    /// lexer's ASCII case fold.
     pub fn is_keyword(&self, word: &str) -> bool {
         self.lookup()
             .is_some_and(|text| text.eq_ignore_ascii_case(word.as_bytes()))
     }
 }
 
-/// C-locale white space skipped by the lexer.
 fn space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t'..=b'\r')
 }
 
-/// [`lex`] returns tokens in read order. A [`Kind::End`] token represents a failed read
-/// at 0xFF or EOF, retaining the text of a bare token it ended.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lexed<'s> {
     pub tokens: Vec<Token>,
@@ -181,46 +127,22 @@ struct TextSource<'s> {
     code: bool,
 }
 
-/// The loader's lexer mode. Mode 1 skips a leading UTF-8 byte-order mark; mode 0
-/// retains it. Each reader supplies its loader's mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Mode 0: a mark's three bytes start the first token.
     KeepMark,
-    /// Mode 1: a leading mark is skipped.
     SkipMark,
 }
 
-/// Read one byte, returning `None` for 0xFF or past EOF. The position advances in
-/// either case.
 fn next(bytes: &[u8], at: &mut usize) -> Option<u8> {
     let byte = bytes.get(*at).copied();
     *at += 1;
     byte.filter(|byte| *byte != 0xFF)
 }
 
-/// Lex the whole text, skipping a leading UTF-8 byte-order mark in [`Mode::SkipMark`].
-/// `!`, `#` and `;` start line comments. A quote starts a string where escaped quotes
-/// and backslashes become one character and other backslashes stay. `(` `)` `,` `<` `=`
-/// `>` `{` `}` are single-character tokens; `?=` is one token and a lone `?` is
-/// dropped. Other text is bare up to white space or those characters.
-///
-/// A byte 0xFF ends a read like EOF, and reading continues after it ([`next`]). At a
-/// token start it returns [`Kind::End`]; after a bare token it also retains the text.
-/// In a comment it ends only the comment; in a quoted string it ends the string, which
-/// succeeds.
-///
-/// A lone `?` or comment marker is stored before retrying. The retry skips white space
-/// and may fail before clearing that token, leaving its text in End. A token found by
-/// the retry replaces it.
 pub fn lex(bytes: &[u8], mode: Mode) -> Lexed<'_> {
     lex_with(bytes, mode, false)
 }
 
-/// [`lex`] for an effect (`.shader`/`.fxh`) file consumes code after `[[` raw: skip
-/// white space through the first line feed (only spaces before any other byte), then
-/// take everything to the first `]]` or EOF, without nesting or escaping. NUL cuts the
-/// text, which becomes one [`Kind::Code`] token.
 pub fn lex_effect(bytes: &[u8], mode: Mode) -> Lexed<'_> {
     lex_with(bytes, mode, true)
 }
@@ -242,12 +164,9 @@ fn lex_with(bytes: &[u8], mode: Mode, code: bool) -> Lexed<'_> {
         b'(' | b')' | b',' => Some(Kind::Other),
         _ => None,
     };
-    // The `?` or comment marker this read wrote before retrying.
     let mut kept = Vec::new();
     loop {
         if at >= bytes.len() {
-            // Past the end every read returns 0; the first keeps what the
-            // retry left.
             if !kept.is_empty() {
                 tokens.push(Token {
                     kind: Kind::End,
@@ -284,7 +203,6 @@ fn lex_with(bytes: &[u8], mode: Mode, code: bool) -> Lexed<'_> {
                 {
                     at += 1;
                 }
-                // A -1 ends the comment, and is consumed with it.
                 if bytes.get(at) == Some(&0xFF) {
                     at += 1;
                 }
@@ -329,8 +247,6 @@ fn lex_with(bytes: &[u8], mode: Mode, code: bool) -> Lexed<'_> {
                         byte_end: at.min(bytes.len()),
                     });
                 }
-                // The byte is pushed back and the read retries, the `?`
-                // kept as the token until a token replaces it.
                 _ => kept.push(b'?'),
             },
             _ => {
@@ -366,8 +282,6 @@ fn lex_with(bytes: &[u8], mode: Mode, code: bool) -> Lexed<'_> {
                     at += 1;
                 }
                 let text = bytes[start..at].to_vec();
-                // A -1 ends the token and is consumed: the failed read
-                // keeps the token text.
                 let kind = if at == bytes.len() || bytes[at] == 0xFF {
                     at += 1;
                     Kind::End
@@ -419,166 +333,60 @@ fn lex_with(bytes: &[u8], mode: Mode, code: bool) -> Lexed<'_> {
     }
 }
 
-/// Field dispatch after reading its key, operator and value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Shape<S> {
-    /// Consume only the value token, or log a key without a reporting skip. Given `{`,
-    /// subsequent contents become enclosing fields and its `}` closes the enclosing
-    /// block. Reporting an unexpected key instead uses [`Shape::Skip`] to skip its
-    /// block.
     One,
-    /// Like [`Shape::One`], but take the lexer's current token rather than the value
-    /// slot. An `@name` retains its reference text because only the value slot
-    /// resolves; an empty value before `}` takes `}`.
     Current,
-    /// Read the following tokens as an object block, dispatching every field with `S`,
-    /// without checking that the value was `{`.
     Object(S),
-    /// Read an object using the caller's stored dynamic-token key.
     ObjectAs(S, Vec<u8>),
-    /// Read an object only for value `{`; otherwise take one value.
     ObjectIfOpen(S),
-    /// Read an object only for value `{`; otherwise report and use [`Shape::Skip`]
-    /// recovery.
     ObjectOrSkip(S),
-    /// Read the object twice, as required for a newly created default adjuster.
     Twice(S),
-    /// Read every token up to `}` or the end, resolving each into the value slot.
     List,
-    /// Read a fixed-size raw span until close, reporting only its first excess token
-    /// and skipping its block if present. Keep tokens for caller conversion.
     BoundedList(usize),
-    /// Read a list only for value `{`; otherwise take one value.
     ListIfOpen,
-    /// Read tokens after the value until brace depth, initially 1, reaches zero or EOF.
-    /// The value itself is not counted. Resolve into the lexer rather than the value
-    /// slot; keep nonbrace tokens as anonymous values.
     Tokens,
-    /// Read a list only for value `{`; otherwise report and use [`Shape::Skip`]
-    /// recovery.
     ListOrSkip,
-    /// For value `{`, read one entry with dispatch `S`. Report a nonclosing token after
-    /// it, skipping its block if present, then skip to the value block's closing `}`
-    /// without definitions. Other values report and use [`Shape::Skip`].
     Pair(S),
-    /// For value `{`, read two raw tokens as strings without keys or operators. At `}`
-    /// or EOF, report if fewer than two were read and consume the closing token. Other
-    /// tokens, including `{`, resolve into the value slot before conversion through
-    /// [`super::Value::read_string`]. Report a third token, skip its block if present,
-    /// then skip to the pair's `}` without definitions. Other values use
-    /// [`Shape::Skip`].
     Strings,
-    /// Report, then skip the whole block only when the current lexer token is `{`,
-    /// defining nothing. Resolve each token during the skip, so a reference retaining
-    /// `{` opens a nested skip.
     Skip,
-    /// Reporting skip without a stored definition.
     Discard,
-    /// Without reporting, skip literal tokens to the matching `}` only when the value
-    /// token is `{`, defining nothing.
     SkipIfOpen,
-    /// Read a known nonassign trigger body. For `{`, peek until `}` or the end and
-    /// consume the closing token. Dispatch each key with `S`, including keys without
-    /// operators whose slots remain stale ([`Field::fresh`] is false). Anonymous tokens
-    /// become keys rather than list entries. Other values report and use
-    /// [`Shape::Skip`].
     Body(S),
-    /// A trigger [`Shape::Body`] used by content fields such as an idea's
-    /// `allowed`, through the shared trigger dispatch
-    /// ([`crate::combat_tactics::Shaper`]) against the content names the
-    /// read was given ([`read`]).
     Trigger,
-    /// Mean-time-to-happen modifiers treat `factor` and `add` as scoped variables;
-    /// other keys use shared trigger dispatch.
     MtthModifier,
-    /// Read an effect script through the shared effect dispatch.
     Effect,
-    /// The effect caller's parse kind.
     EffectIn(u32),
-    /// An effect value reader's key loop, dispatched through
-    /// `effect_keys::value_readers` outside the default value paths.
     EffectValueKeys(u64),
-    /// An effect script with a dedicated key reader or inline value loop,
-    /// selected by effect token.
     EffectKeys(u32),
-    /// An effect body whose custom key grammar is deferred. Its shape is
-    /// decided by the effect dispatch.
     EffectByKey { trigger_limits: bool },
-    /// Report a counted warning, then follow the selected consumption.
-    /// Repeated reports in one file keep their first line and total count.
     Reported {
         kind: crate::DiagnosticKind,
         report: String,
         read: Box<Shape<S>>,
     },
-    /// A block read by key whose reader the port does not interpret: an
-    /// effect, or an unported nested value reader (see
-    /// [`Reader::generic`]).
     ByKey,
-    /// End the reader's loop after taking this field's value. The closing read consumes
-    /// the next token regardless of kind, then the enclosing reader continues. At file
-    /// top level this is [`Shape::One`].
     Break,
-    /// Report and skip its block, then end this loop and consume its closing token.
     SkipBreak,
-    /// Report and skip its block, then return from this file's reader.
     StopFile,
-    /// Read color from the current lexer token. A number is one packed value. After
-    /// `{`, read three components and a fourth token: if it is not `}`, it is alpha and
-    /// one more token follows. Resolve each token, reporting nonnumeric components or a
-    /// final token other than `}`. Report any other initial token without reading
-    /// further.
     Color,
-    /// Read custom statements. Anonymous values and blocks clear the key slot;
-    /// assignments resolve all three tokens without defining variables. The caller
-    /// supplies field dispatch.
     Statements(S),
-    /// Read raw lexer tokens, resolving into the lexer without changing the value slot,
-    /// unlike string-list reads.
     RawList,
-    /// Read a sub-unit type array with one raw entry before testing its delimiter.
     RawListFirst,
-    /// Read a division-template point as ordered raw coordinates.
     TemplatePoint,
-    /// Read a country-token array, resolving raw entries into the value slot while
-    /// leaving that slot intact for the closing token.
     ValueList,
-    /// Read optional equipment assets in an unconditional raw loop. Each nonclosing
-    /// entry resolves into both lexer and value slot before an object read with `S`.
-    /// Entries need not be `{`; their object reads following fields until `}`. The
-    /// final list closing token changes only the lexer.
     ObjectList(S),
-    /// Read validated token arrays. An opening token cannot name a database item, so
-    /// reporting skips its nested block.
     CheckedList { stores_value: bool },
-    /// Skip raw tokens unconditionally, without reporting.
     RawSkip,
-    /// Read raw characters after the current lexer read up to its matching brace,
-    /// including braces inside comments and quotes.
     RawText,
-    /// Read a math expression's initial `value`, recursive operands, operator tail and
-    /// reporting skip.
     Expression,
-    /// For an on-research-complete body, peek after the value and read a bare `limit`
-    /// as a trigger ([`Shape::Trigger`]). Then read effects with `S` only if the
-    /// resulting value slot holds `{`; otherwise report without further consumption. A
-    /// read limit becomes the block's first item.
     LimitedBody(S),
-    /// Read a scripted key as a scalar C string or case entries. Case names resolve as
-    /// tokens without defining variables; their values are triggers.
     ScriptedKey,
-    /// Read enabled equipment entries with their inline limit trigger. Conditional
-    /// tails beyond one token are refused because the trigger result would change
-    /// subsequent consumption.
     TechnologyEquipment,
-    /// Whether the reader reads this field at all depends on what the port
-    /// cannot tell here (why): the rest of the file is [`Read::unsettled`].
     Unsettled(String),
 }
 
 impl<S> Shape<S> {
-    /// The same shape with its reader argument mapped, for a dispatch that
-    /// embeds another reader's (a modifier block inside an idea).
     pub fn map<T>(self, node: impl FnOnce(S) -> T) -> Shape<T> {
         match self {
             Self::One => Shape::One,
@@ -634,9 +442,6 @@ impl<S> Shape<S> {
     }
 }
 
-/// Mean-time-to-happen fields `factor`, `base`, `days`, `months` and `years` take one
-/// value. `modifier` reads a modifier trigger body by key. Other keys are logged, with
-/// their value token read and nothing skipped.
 pub fn mean_time_to_happen<S>(field: &Field<'_>) -> Shape<S> {
     match field.keyword().as_deref() {
         Some(b"modifier") => Shape::MtthModifier,
@@ -644,13 +449,6 @@ pub fn mean_time_to_happen<S>(field: &Field<'_>) -> Shape<S> {
     }
 }
 
-/// Classify an uninterpreted trigger or effect body field as documented by
-/// [`Reader::generic`]. Every key dispatches with the current value slot, including
-/// keys without operators. A punctuation key cannot name a trigger, effect or scope and
-/// uses a reporting skip on the current lexer token. Otherwise a fresh `{` reads by key
-/// ([`Shape::ByKey`]); a stale block is unsettled. A block after a missing operator
-/// could be enclosing fields for a one-value reader or be skipped by reporting, which
-/// cannot be distinguished here. Other values consume one token either way.
 pub fn untraced<S>(field: &Field<'_>) -> Shape<S> {
     if !matches!(field.key.kind, Kind::Bare | Kind::Quoted) {
         Shape::Skip
@@ -666,68 +464,47 @@ pub fn untraced<S>(field: &Field<'_>) -> Shape<S> {
     }
 }
 
-/// A field as a reader's dispatch sees it.
 #[derive(Debug)]
 pub struct Field<'a> {
-    /// The key token.
     pub key: &'a Token,
-    /// The value token, resolved; stale when `fresh` is false.
     pub value: &'a Token,
-    /// An operator was found and this field's own value was read.
     pub fresh: bool,
-    /// The operator slot, including a previous operator left stale.
     pub operator: Operator,
-    /// The current lexer token: the value, `}` for an empty value, or the token
-    /// consumed as a missing operator. Reporting skips test this token rather than the
-    /// value slot.
     pub current: &'a Token,
-    /// Native effect parse kind; None means the caller did not supply it.
     pub effect_scope: Option<u32>,
 }
 
 impl Field<'_> {
-    /// The key as keyword dispatch sees it: a folded bare key up to its first NUL, the
-    /// token [`Token::lookup`] reads. Quoted keys, punctuation and bare keys starting with
-    /// a digit, `-` or NUL return `None` ([`super::looked_up`]).
     pub fn keyword(&self) -> Option<Vec<u8>> {
         let key = self.key.c_str();
         super::looked_up(key, self.key.kind == Kind::Quoted).then(|| key.to_ascii_lowercase())
     }
 
-    /// Whether the key is keyword `name` (see [`Self::keyword`]).
     pub fn keyword_is(&self, name: &str) -> bool {
         self.keyword()
             .is_some_and(|keyword| keyword == name.as_bytes())
     }
 
-    /// The value slot's token as a reader that dispatches on its id sees
-    /// it, as [`super::Item::value_keyword`]: the folded text up to its first
-    /// NUL of a bare token the lexer looked up; `None` for any other kind.
     pub fn value_keyword(&self) -> Option<Vec<u8>> {
         let value = self.value.c_str();
         (self.value.kind == Kind::Bare && super::looked_up(value, false))
             .then(|| value.to_ascii_lowercase())
     }
 
-    /// Whether the value token is `{`.
     pub fn opens(&self) -> bool {
         self.value.kind == Kind::Open
     }
 
-    /// Whether the current token is `{`, whose block a reporting skip passes over.
     pub fn skips_block(&self) -> bool {
         self.current.kind == Kind::Open
     }
 }
 
-/// A native reading note or counted port warning, with its first line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Misread {
     pub line: u32,
     pub what: String,
     pub kind: crate::DiagnosticKind,
-    /// A repeated warning's occurrences in this file; ordinary native
-    /// reading notes are not aggregated.
     pub count: Option<usize>,
 }
 
@@ -741,85 +518,51 @@ impl std::fmt::Display for Misread {
     }
 }
 
-/// What [`read`] gives: the items as the readers saw them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Read {
     pub items: Vec<Item>,
     pub misreads: Vec<Misread>,
-    /// Diagnostics for each top-level item, in `items` order and with the
-    /// same length, for both file and persistent top-level loops.
-    /// Counted reports retain the occurrences in that item, even when the
-    /// file-wide `misreads` combines the same report from several items.
     pub item_misreads: Vec<Vec<Misread>>,
-    /// Diagnostics from file fields that kept no item, variable definitions
-    /// at any nesting depth. Their ownership is file-wide or unavailable.
     pub unattributed_misreads: Vec<Misread>,
-    /// A block read by key whose reading the port cannot settle, and why:
-    /// everything after it in the file is unknown and not in `items`.
     pub unsettled: Option<Misread>,
 }
 
-/// The outcome of one key/operator/value read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slots {
-    /// A key, an operator and the value.
     Fresh,
-    /// A key and a token that is no operator, consumed in its place.
     NoOperator,
-    /// Nothing: the text ended after definitions.
     Ended,
 }
 
-/// Reader state: the token stream with one pending peek, key/operator/value slots and
-/// the variable table.
 pub struct Reader<'n> {
     tokens: Vec<Token>,
     source: Option<TextSource<'n>>,
-    /// The positions of the [`Kind::End`] tokens, in order, so a look ahead
-    /// finds the next one without walking the text.
     ends: Vec<usize>,
     next: usize,
-    /// The current lexer token. A failed advance at EOF leaves it unchanged; a failed
-    /// peek changes its kind to End and retains its text. Resolved tokens are written
-    /// back here.
     pub current: Token,
-    /// A peek read `current` ahead; the next advance returns its result again.
     pending: bool,
     pending_result: bool,
-    /// The key slot.
     pub key: Token,
-    /// The operator slot, which each [`Item::operator`] keeps.
     operator: Operator,
-    /// The value slot, resolved.
     pub value: Token,
-    /// `@name` definitions: FNV-1a of the name after `@`, plus the whole defining token
-    /// including kind, quoted flag and text.
     variables: Vec<(u32, Token)>,
     misreads: Vec<Misread>,
     reading_notes: Vec<Misread>,
     item_misreads: Vec<Vec<Misread>>,
     unattributed_misreads: Vec<Misread>,
     unsettled: Option<Misread>,
-    /// A field's reader ended its loop ([`Shape::Break`]).
     broken: bool,
-    /// The content names a trigger key is read against ([`Shape::Trigger`]).
     names: Option<&'n KeyNames>,
     stopped: bool,
     effect_scope: Option<u32>,
 }
 
-/// Select a file loop or a direct object-block read.
 #[derive(Clone, Copy, Debug)]
 pub enum Top<S> {
-    /// A database's custom file loop: only the end of the text stops it.
     File(S),
-    /// An object loop: the first closing brace also stops it.
     Persistent(S),
 }
 
-/// Read one file with its loader's lexer mode and field dispatch. [`Top::File`] selects
-/// a database file loop; [`Top::Persistent`] selects a block loop. Trigger readers
-/// supply names from their load point; `None` makes a content key explicitly unknown.
 pub fn read<S: Copy>(
     bytes: &[u8],
     mode: Mode,
@@ -830,7 +573,6 @@ pub fn read<S: Copy>(
     read_scoped(bytes, mode, top, names, None, dispatch)
 }
 
-/// Effect scope supplied by direct native effect dispatch callers.
 pub fn read_in_effect_scope<S: Copy>(
     bytes: &[u8],
     mode: Mode,
@@ -858,8 +600,6 @@ fn read_scoped<S: Copy>(
         Top::File(node) => reader.file(node, dispatch),
         Top::Persistent(node) => reader.object_with_notes(node, dispatch, true),
     };
-    // A refused file must still name counted warnings encountered before
-    // its stopping point; callers that return only the refusal keep them.
     if let Some(cause) = &mut reader.unsettled {
         for note in reader.misreads.iter().filter(|note| note.count.is_some()) {
             cause.what.push_str(&format!("; {note}"));
@@ -878,11 +618,7 @@ fn read_scoped<S: Copy>(
     }
 }
 
-/// Shared reader for GUI, sprite, font, effect and settings consumers that walk tokens
-/// directly rather than dispatching [`Shape`]. It uses the same lexer, slots, variable
-/// table, loop steps and skips as [`read`].
 impl<'n> Reader<'n> {
-    /// Construct a reader over a file's tokens with an empty variable table.
     pub fn new(lexed: Lexed<'n>) -> Self {
         Self {
             ends: (lexed.tokens.iter().enumerate())
@@ -894,7 +630,6 @@ impl<'n> Reader<'n> {
             current: Token::end(0),
             pending: false,
             pending_result: false,
-            // Key and value slots start as token 0 with empty text.
             key: Token::slot(),
             operator: Operator::Equals,
             value: Token::slot(),
@@ -921,12 +656,10 @@ impl<'n> Reader<'n> {
             .map_or(0, |token| token.line)
     }
 
-    /// A native subreader's diagnostic, without adding a skip.
     pub(crate) fn note_native_error(&mut self, line: u32, what: String) {
         self.misread(line, what);
     }
 
-    /// A native subreader whose next token consumption cannot be settled.
     pub(crate) fn refuse_native(&mut self, line: u32, what: String) {
         self.unsettled = Some(Misread {
             kind: crate::DiagnosticKind::Unsettled,
@@ -940,8 +673,6 @@ impl<'n> Reader<'n> {
         self.misread_at(line, what, false);
     }
 
-    /// Definitions update the file's shared variable table, including inside nested
-    /// objects. All later references use that table, so these notes are file-scoped.
     fn variable_misread(&mut self, line: u32, what: String) {
         self.misread_at(line, what, true);
     }
@@ -962,10 +693,6 @@ impl<'n> Reader<'n> {
         self.misreads.push(note);
     }
 
-    /// Advance the lexer: the pending peek's result, else the
-    /// next token. `false` past the end and for a read that returned 0 (a
-    /// [`Kind::End`] token): the token is left as it was, save the text of a
-    /// bare token that read ended, which becomes the lexer's token.
     pub fn advance(&mut self) -> bool {
         if self.pending {
             self.pending = false;
@@ -980,8 +707,6 @@ impl<'n> Reader<'n> {
             return true;
         }
         if !token.text.is_empty() {
-            // A comment marker (token 9) or a bare token's text (token 0):
-            // no bare token is a lone `!`, `#` or `;`, which end one.
             let kind = match token.text.as_slice() {
                 b"!" | b"#" | b";" => Kind::Comment,
                 _ => Kind::Bare,
@@ -994,8 +719,6 @@ impl<'n> Reader<'n> {
         false
     }
 
-    /// Peek advances only when none is pending and keeps the result. A failed read
-    /// changes the token to End while retaining text. Loops stop on `}` or the end.
     pub fn peek(&mut self) -> &Token {
         if !self.pending {
             let result = self.advance();
@@ -1012,8 +735,6 @@ impl<'n> Reader<'n> {
         self.current.clone()
     }
 
-    /// A quoted token stays literal. A bare `@name` takes its defining token, or
-    /// retains its own text if unknown.
     pub fn resolve(&self, token: Token) -> Token {
         if token.quoted || token.kind == Kind::Code || !token.text.starts_with(b"@") {
             return token;
@@ -1028,12 +749,10 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// Read a definition while the lexer stands on `@name`.
     fn define(&mut self) {
         let name = self.current();
         let hash = super::variable_hash(&name.text[1..]);
         if self.variables.iter().any(|(defined, _)| *defined == hash) {
-            // "Variable name %s is already taken": nothing more is read.
             self.variable_misread(
                 name.line,
                 format!(
@@ -1058,12 +777,8 @@ impl<'n> Reader<'n> {
             );
             return;
         }
-        // The peeked token's text decides, whatever its kind (a failed
-        // peek's end token keeps the text).
         let peeked = self.peek().clone();
         let value = match peeked {
-            // Resolved where it stands, without consuming it: the next key
-            // read takes it again.
             token if token.text.starts_with(b"@") => {
                 let resolved = self.resolve(token.clone());
                 self.variable_misread(
@@ -1094,12 +809,9 @@ impl<'n> Reader<'n> {
         self.variables.push((hash, value));
     }
 
-    /// Read a key, operator and value into the slots.
     pub fn key_operator_value(&mut self) -> Slots {
         loop {
             if !self.advance() {
-                // Only definitions were left: the loop ends with no key read
-                // and every slot as it was.
                 return Slots::Ended;
             }
             if self.current().text.starts_with(b"@") {
@@ -1113,11 +825,8 @@ impl<'n> Reader<'n> {
             self.operator = self.current().as_operator();
             let peeked = self.peek();
             let value = if peeked.kind == Kind::Close {
-                // A `}` value is left for the loop: the value is empty.
                 Token::end(peeked.line)
             } else {
-                // Any other, the end a failed peek left included, is taken
-                // with its text.
                 self.advance();
                 self.resolve(self.current())
             };
@@ -1126,7 +835,6 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// A file's top level: fields until the end of the text only.
     fn file<S: Copy>(
         &mut self,
         top: S,
@@ -1151,9 +859,6 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// Read fields until `}` or the end, consuming the closing read. Any retained `@`
-    /// token resolves and is written back, so the enclosing reader continues after
-    /// 0xFF.
     fn object<S: Copy>(
         &mut self,
         schema: S,
@@ -1200,8 +905,6 @@ impl<'n> Reader<'n> {
         items
     }
 
-    /// Peek before each field. A `}` or End closes the loop and is consumed; any
-    /// retained `@` token resolves and is written back.
     fn at_loop_end(&mut self) -> bool {
         if !self.peek().ends_block() {
             return false;
@@ -1211,8 +914,6 @@ impl<'n> Reader<'n> {
         true
     }
 
-    /// Take one block-loop step for a consumer with its own dispatch. Return `false` at
-    /// `}` or End ([`Self::at_loop_end`]); otherwise fill the key/operator/value slots.
     pub fn next_key(&mut self) -> bool {
         if self.at_loop_end() {
             return false;
@@ -1221,8 +922,6 @@ impl<'n> Reader<'n> {
         true
     }
 
-    /// Whether every read from here returns 0: a peeked token that read returned 0, or none but
-    /// the ends left after it.
     pub fn at_end(&self) -> bool {
         if self.pending && self.pending_result {
             return false;
@@ -1232,23 +931,18 @@ impl<'n> Reader<'n> {
             .all(|token| token.kind == Kind::End)
     }
 
-    /// When the value slot holds `{`, skip to its closing literal brace without
-    /// resolving tokens.
     pub fn skip_current_block(&mut self) {
         if self.value.kind == Kind::Open {
             self.skip_block();
         }
     }
 
-    /// A reported key skips a block only when the current lexer token is `{`, resolving
-    /// tokens during that skip.
     pub fn skip_reported(&mut self) {
         if self.current.kind == Kind::Open {
             self.skip();
         }
     }
 
-    /// One key/operator/value read and its field dispatch.
     fn field<S: Copy>(
         &mut self,
         schema: S,
@@ -1262,8 +956,6 @@ impl<'n> Reader<'n> {
         let key = self.key.clone();
         match slots {
             Slots::Fresh => {}
-            // The key and the token after it were consumed; the operator and
-            // value slots keep what the last read left.
             Slots::NoOperator => {
                 let consumed = self.current();
                 self.misread(
@@ -1276,9 +968,6 @@ impl<'n> Reader<'n> {
                     ),
                 );
             }
-            // Block and file loops dispatch the key slot regardless of what the field
-            // read consumed. A definition at EOF leaves the previous slots, or the
-            // initial empty key when none was read.
             Slots::Ended => {
                 let line = self.line();
                 self.misread(
@@ -1312,12 +1001,7 @@ impl<'n> Reader<'n> {
             }
             shape => (shape, key.text.clone()),
         };
-        // Capture this field's operator before reading its block: fields inside
-        // overwrite the same slot with their own `<`, `>` or `=`.
         let operator = self.operator;
-        // Take the source token from the current lexer token for current-token readers,
-        // otherwise from the value slot, preserving its kind even after a failed
-        // advance leaves End.
         let kind = match shape {
             Shape::Current | Shape::Color => current.kind,
             _ => value.kind,
@@ -1532,8 +1216,6 @@ impl<'n> Reader<'n> {
             }
             Shape::ByKey => {
                 if opens && self.current.kind != Kind::Open {
-                    // A key without an operator receives the stale `{`; its dispatch
-                    // decides what to consume.
                     self.unsettled = Some(Misread {
                         kind: crate::DiagnosticKind::Unsettled,
                         count: None,
@@ -1546,7 +1228,6 @@ impl<'n> Reader<'n> {
                     });
                     Value::Block(Vec::new())
                 } else if opens {
-                    // `meta_effect` and `meta_trigger` copy their `text` block raw.
                     let meta = super::looked_up(key.c_str(), key.kind == Kind::Quoted)
                         && matches!(
                             key.c_str().to_ascii_lowercase().as_slice(),
@@ -1736,8 +1417,6 @@ impl<'n> Reader<'n> {
         }
         valid &= !parameter;
         let text = source.bytes[start..at.saturating_sub(usize::from(depth == 0))].to_vec();
-        // A raw read can end inside a quoted token or a comment. Resume
-        // the same lexer at that byte; no token or reader slot was read.
         let mut tail = lex_with(&source.bytes[at..], Mode::KeepMark, source.code);
         let line_offset = source.bytes[..at]
             .iter()
@@ -1756,8 +1435,6 @@ impl<'n> Reader<'n> {
             .filter_map(|(i, token)| (token.kind == Kind::End).then_some(i))
             .collect();
         if !valid {
-            // The raw read leaves the lexer's token intact; reporting tests that token
-            // for `{`.
             self.misread(
                 self.key.line,
                 "raw meta text has unmatched braces or brackets and is reported".into(),
@@ -1767,8 +1444,6 @@ impl<'n> Reader<'n> {
         text
     }
 
-    /// Copy the raw entry into the value slot before reading its child object. Both
-    /// closing reads leave that slot intact.
     fn object_list<S: Copy>(
         &mut self,
         schema: S,
@@ -1795,7 +1470,6 @@ impl<'n> Reader<'n> {
         items
     }
 
-    // Read sub-unit types with an unconditional first raw entry.
     fn raw_list_first(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
         loop {
@@ -1841,9 +1515,6 @@ impl<'n> Reader<'n> {
                 self.current = self.resolve(self.current());
                 let value = self.current();
                 if value.kind != Kind::Open {
-                    // Trigger-body admission tests the value slot, which this loop
-                    // leaves at the list's `{`. It would read the following tokens as
-                    // trigger fields; that consumption is not followed.
                     self.unsettled = Some(Misread {
                         kind: crate::DiagnosticKind::Unsettled,
                         count: None,
@@ -1868,8 +1539,6 @@ impl<'n> Reader<'n> {
                 self.advance();
                 self.current = self.resolve(self.current());
                 token = self.current();
-                // Both evaluated branches consume the same delimiter only
-                // for this tail. Keep the conditional link unavailable.
                 if matches!(token.kind, Kind::Open | Kind::Close | Kind::End)
                     || self.peek().kind != Kind::Close
                 {
@@ -1888,7 +1557,6 @@ impl<'n> Reader<'n> {
         items
     }
 
-    /// Read an effect script using the default effect-key dispatch.
     fn effect_body(&mut self, key: &Token, value: &Token) -> Value {
         let scope =
             crate::effect_keys::value_readers::body_scope(self.names, key, self.effect_scope);
@@ -1912,7 +1580,6 @@ impl<'n> Reader<'n> {
         body
     }
 
-    /// [`Shape::LimitedBody`].
     fn limited_body<S: Copy>(
         &mut self,
         schema: S,
@@ -1927,8 +1594,6 @@ impl<'n> Reader<'n> {
         if self.value.kind == Kind::Open {
             items.extend(self.object(schema, dispatch));
         } else if self.current.kind == Kind::Open {
-            // Reporting skips a block at the current token, here the peeked token; that
-            // recovery is not followed.
             self.unsettled = Some(Misread {
                 kind: crate::DiagnosticKind::Unsettled,
                 count: None,
@@ -1965,8 +1630,6 @@ impl<'n> Reader<'n> {
             let key = self.resolve(self.current());
             self.current = key.clone();
             if key.kind == Kind::Open || !self.peek().operator() {
-                // Case entries reject anonymous blocks and values. Their callback
-                // receives cleared key and operator slots.
                 self.key = Token::slot();
                 self.operator = Operator::Equals;
                 self.value = key.clone();
@@ -1983,8 +1646,6 @@ impl<'n> Reader<'n> {
             let value = self.resolve(self.current());
             self.current = value.clone();
             self.value = value.clone();
-            // Read an exact boolean token; false or failed reads instead construct and
-            // read an AND trigger.
             let shape = if super::read_bool(&value.text) == Some(true) {
                 Shape::One
             } else {
@@ -2002,7 +1663,6 @@ impl<'n> Reader<'n> {
         items
     }
 
-    /// [`Shape::Pair`].
     fn pair<S: Copy>(
         &mut self,
         schema: S,
@@ -2038,8 +1698,6 @@ impl<'n> Reader<'n> {
         Value::Block(items)
     }
 
-    /// [`Shape::Strings`] after its `{`: the strings read, each a value
-    /// without a key.
     fn strings(&mut self, key: &Token) -> Vec<Item> {
         let mut items = Vec::new();
         loop {
@@ -2085,8 +1743,6 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// Advance with literal brace counting to the block's closing `}` or EOF, resolving
-    /// and defining nothing.
     pub fn skip_block(&mut self) {
         let mut depth = 0_u32;
         while self.advance() {
@@ -2099,7 +1755,6 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// [`Shape::Color`]: its components as values without keys.
     fn color(&mut self, key: &Token) -> Value {
         let current = self.current();
         if current.kind == Kind::Bare && super::number_token(&current.text, false) {
@@ -2162,8 +1817,6 @@ impl<'n> Reader<'n> {
         Value::Block(components)
     }
 
-    /// Read tokens until `}` or End and consume that closing token. Resolve every entry
-    /// into the value slot.
     pub fn list(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
         loop {
@@ -2192,8 +1845,6 @@ impl<'n> Reader<'n> {
             if stop {
                 return items;
             }
-            // Write the resolved token back to the lexer and value slot before
-            // reporting.
             let token = self.resolve(self.current());
             self.current = token.clone();
             self.value = token.clone();
@@ -2210,8 +1861,6 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// [`Shape::Tokens`] peeks for EOF first, then stops at depth zero; otherwise it
-    /// takes the next token.
     fn tokens(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
         let mut depth = 1;
@@ -2233,10 +1882,6 @@ impl<'n> Reader<'n> {
         items
     }
 
-    /// With the lexer on `{`, skip tokens through a peeked `}` or End, recursively
-    /// skipping nested blocks and defining nothing. Resolve each token including the
-    /// closing token and write it back. A resolved `{`, including a reference retaining
-    /// a brace, starts a nested skip. Peeks test the token before resolution.
     pub fn skip(&mut self) {
         loop {
             let end = matches!(self.peek().kind, Kind::Close | Kind::End);
@@ -2251,10 +1896,6 @@ impl<'n> Reader<'n> {
         }
     }
 
-    /// A block read by key that holds a value without a key, read as a
-    /// list: [`Self::balanced`], or unsettled when it also holds a
-    /// definition (see [`Self::generic`]). `None` when the block holds keys
-    /// only.
     fn keyless_list(&mut self) -> Option<Vec<Item>> {
         let line = self.line();
         let (keyless, definition) = self.scan();
@@ -2275,17 +1916,6 @@ impl<'n> Reader<'n> {
         Some(self.balanced())
     }
 
-    /// Read an uninterpreted block by key: fresh `{` values recurse and other values
-    /// take one token. Definitions register in the file's shared variable table.
-    /// `meta_effect` and `meta_trigger` instead copy `text` raw without defining
-    /// variables.
-    ///
-    /// Unknown dispatch cannot distinguish a list reader from a key reader. A key the
-    /// game skips may be read by key here and register definitions, so this is lenient.
-    /// A block containing an anonymous value reads as a list without definitions; if it
-    /// also contains a definition, consumption is ambiguous and the remainder of the
-    /// file is unsettled. Known trigger bodies use their own value/key dispatch
-    /// ([`Shape::Trigger`]) against the content names.
     fn generic(&mut self, meta: bool) -> Vec<Item> {
         self.generic_context(meta, false)
     }
@@ -2298,8 +1928,6 @@ impl<'n> Reader<'n> {
             if meta && field.fresh && field.keyword_is("text") {
                 return Shape::Skip;
             }
-            // Read the limit as an AND trigger using the enclosing reader's names.
-            // Other conditional-effect keys remain a counted deferred gap.
             if trigger_limits && field.keyword_is("limit") {
                 return Shape::Trigger;
             }
@@ -2308,10 +1936,7 @@ impl<'n> Reader<'n> {
         self.object(meta, &mut dispatch)
     }
 
-    /// The first level of the block ahead (after its `{`): whether it holds
-    /// a value without a key, and its first definition.
     fn scan(&self) -> (bool, Option<String>) {
-        // A read that returns 0 is the end to the peeks.
         let start = self.next.min(self.tokens.len());
         let end = self
             .ends
@@ -2350,8 +1975,6 @@ impl<'n> Reader<'n> {
         (keyless, definition)
     }
 
-    /// A list-like block read to its matching `}`, kept as the tree reads
-    /// it; references resolve, nothing defines.
     fn balanced(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
         loop {
@@ -2406,7 +2029,6 @@ impl<'n> Reader<'n> {
     }
 }
 
-/// The index after the block opening at `at`.
 fn skip_block(tokens: &[Token], mut at: usize) -> usize {
     let mut depth = 0_usize;
     while let Some(token) = tokens.get(at) {

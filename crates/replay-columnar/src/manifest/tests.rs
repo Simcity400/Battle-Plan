@@ -51,8 +51,6 @@ fn manifests_round_trip_with_every_status_and_wide_tables() {
     assert_eq!(Manifest::read(&bytes, &COLUMNS).unwrap(), quiet);
 }
 
-/// Samples round-trip with their flag, and a reset (no sample hour) differs from a carried
-/// one; samples without the flag, out of order or past the tables are refused.
 #[test]
 fn samples_round_trip_and_disagreeing_ones_are_refused() {
     let sampled = Manifest {
@@ -95,10 +93,8 @@ fn unknown_flags_and_columns_past_a_table_are_refused() {
     let mut column = manifest();
     column.sections[0].columns = vec![1 << 4];
     assert!(column.write(&COLUMNS).is_err(), "table 0 has 4 columns");
-    // The same, written past the writer's checks.
     let bytes = manifest().write(&COLUMNS).unwrap();
     let mut patched = bytes.clone();
-    // Branch 2 takes one byte and the hour four.
     let flags_at = 1 + 4;
     assert_eq!(patched[flags_at], AFTER_GAP | AFTER_LOAD);
     patched[flags_at] |= 0x80;
@@ -134,8 +130,6 @@ fn manifests_that_disagree_with_the_schema_are_refused() {
         stray_read.write(&COLUMNS).is_err(),
         "a read bit past the tables"
     );
-    // The same bit, written past the writer's check. Tables 0 and 2 read set the read word
-    // apart from the present word, which sections of tables 0 and 1 make the three low bits set.
     let distinct = Manifest {
         read: vec![0b101],
         ..manifest()

@@ -1,7 +1,3 @@
-//! Exact doctrine objects selected by the existing country-status census or
-//! a writer notification. No world traversal or periodic scheduling lives here.
-//! Authored identities use the recorded lexer dictionary, rather than copying
-//! template strings for every country's selection.
 use crate::{Memory, cpdx_array::Array, memory::Raw, msvc_string, read};
 use engine_sites::Rva;
 
@@ -229,8 +225,6 @@ pub fn filter(memory: &impl Memory, base: usize, pointer: usize) -> Result<Filte
     })
 }
 
-/// Read into a reusable arena only for a changed grant or its baseline. The
-/// caller owns storage and resets `used` before replacing its grant inventory.
 pub fn name(
     memory: &impl Memory,
     pointer: usize,
@@ -339,8 +333,6 @@ mod tests {
                 memory.word(pointer + TRACK_OWNER, 57);
                 memory.word(pointer + TRACK_FOLDER, 91);
             }
-            // One changed track requires no reads of any other track, country,
-            // commander object, unit or doctrine catalogue.
             let pointer = first + (count - 1) * TRACK_STRIDE;
             let result = track(&memory, 0, pointer, 57, 91).unwrap();
             assert_eq!(result.sub, Some(91_234));

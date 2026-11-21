@@ -1,4 +1,3 @@
-//! Installation and state changes common to the output observers.
 use crate::{
     hook::{Hook, TapSafety},
     output_log::Log,
@@ -27,8 +26,6 @@ impl From<&engine_production::line_output_sites::HookSite> for Site {
     }
 }
 
-/// Production output retains its existing attachment-error behaviour for
-/// enable failures; construction can refuse the table after a safe rollback.
 #[derive(Clone, Copy)]
 pub enum Failure {
     Propagate,
@@ -43,7 +40,6 @@ pub struct Domain<const N: usize> {
     pub unhooked: &'static OnceLock<&'static str>,
 }
 
-/// Every site located with the bytes its hook replaces, or the first withheld one.
 pub fn locate<const N: usize>(
     base: usize,
     sites: &[Site; N],
@@ -68,12 +64,12 @@ pub struct Hooks<const N: usize> {
     domain: Domain<N>,
 }
 impl<const N: usize> Hooks<N> {
-    /// Locate every site and store every trampoline before publication.
-    ///
-    /// # Safety
-    /// The base must identify the authenticated executable in this process.
-    /// The caller owns this family exclusively and must restore its hooks and
-    /// quiesce native calls before releasing code or unloading.
+    #[doc = " Locate every site and store every trampoline before publication."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The base must identify the authenticated executable in this process."]
+    #[doc = " The caller owns this family exclusively and must restore its hooks and"]
+    #[doc = " quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(
         base: usize,
         sites: [Site; N],
@@ -84,12 +80,12 @@ impl<const N: usize> Hooks<N> {
         unsafe { Self::construct(base, sites, callbacks, domain, ready, None) }
     }
 
-    /// Bind the native flight counter and callback ranges before publication.
-    ///
-    /// # Safety
-    /// The base must identify the authenticated executable in this process.
-    /// The caller owns this family exclusively and must restore its hooks and
-    /// quiesce native calls before releasing code or unloading.
+    #[doc = " Bind the native flight counter and callback ranges before publication."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The base must identify the authenticated executable in this process."]
+    #[doc = " The caller owns this family exclusively and must restore its hooks and"]
+    #[doc = " quiesce native calls before releasing code or unloading."]
     pub unsafe fn new_with_safety(
         base: usize,
         sites: [Site; N],
@@ -220,8 +216,6 @@ impl<const N: usize> Hooks<N> {
     }
 }
 
-/// Retain a failed publication and distinguish its rollback outcome. A later
-/// successful disable cannot erase a Rollback diagnostic from this attempt.
 pub fn rollback_after_publication_error(
     cause: &str,
     rollback: impl FnOnce() -> Result<bool, String>,
@@ -246,7 +240,6 @@ pub fn status<'a, const N: usize>(
     unhooked: &'a OnceLock<&'static str>,
     installed: Option<&[AtomicBool; N]>,
 ) -> crate::status::Object<impl crate::status::Fields + 'a> {
-    // Optional fields preserve the previous status schema.
     crate::status::status!({
         "unhooked": unhooked.get(),
         "enabled": observation.enabled.load(Ordering::SeqCst),

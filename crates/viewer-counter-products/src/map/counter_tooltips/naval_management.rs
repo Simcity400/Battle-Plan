@@ -1,4 +1,3 @@
-//! Standing orders alongside existing detailed task-force hovers.
 use super::*;
 fn policy_text(
     row: &replay_data::rows::NavalRepairTaskForceRow,

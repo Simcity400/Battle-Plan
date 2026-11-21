@@ -73,7 +73,6 @@ impl World {
 #[test]
 fn rocket_signed_input_needs_no_handle_census_or_cost_read() {
     let mut world = World::new();
-    // The native rocket constructor's handle and registration never gate spending.
     world.blocked = Some(ROCKET + LINE_HANDLE);
     assert_eq!(world.tick().failure, RocketFailure::None);
     world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_CACHE_CANDIDATE);

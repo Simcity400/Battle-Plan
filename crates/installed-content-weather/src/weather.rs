@@ -1,7 +1,3 @@
-//! The map's weather effect entities, native thermal tooltip intervals, the
-//! province modifier rebuild's rules ([`ProvinceModifierRules`]) and the hourly
-//! temperature pass's settings ([`temperature`]) from `common/weather.txt`,
-//! through the recorded content stack.
 
 use std::{collections::BTreeMap, io};
 
@@ -17,26 +13,17 @@ pub mod temperature;
 
 const PATH: &str = "common/weather.txt";
 
-/// `weather_effects` blocks in region flag order:
-/// light rain, heavy rain, snow, blizzard, sandstorm.
 pub const EFFECT_KINDS: [&str; 5] = ["rain_light", "rain_heavy", "snow", "blizzard", "sandstorm"];
 
-/// One `weather_effect`: pair member 0 is `entity`, member 1 `fading_entity`.
-/// Either may be absent.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectPair {
-    /// The pair's kind, place and entity names, for refusals.
     pub name: String,
     pub entity: Vec<EffectParticle>,
     pub fading_entity: Vec<EffectParticle>,
-    /// Dummy parent spheres of the two members, independent of their particles.
     pub parents: [Option<EffectParent>; 2],
-    /// Why the pair cannot be presented as the game presents it. A withheld pair keeps its
-    /// place in its bank, so it is still drawn by index, and presents nothing.
     pub withheld: Option<String>,
 }
 
-/// A particle a weather entity's default state starts, `delay` seconds after the state begins.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectParticle {
     pub particle: Particle,
@@ -46,27 +33,20 @@ pub struct EffectParticle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectParent {
     pub name: String,
-    /// Authored cull radius times the parent's maximum basis length.
     pub radius: f32,
-    /// The default state's sound events, in event order.
     pub sounds: Vec<WeatherSound>,
 }
 
-/// A weather entity's sound event: the effect it names and its `time`, the
-/// seconds after the entity enters its state at which it fires.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeatherSound {
     pub effect: String,
     pub time: f32,
 }
 
-/// Effect pairs by (kind index, `small`), in authored order: the producer
-/// picks one by index.
 pub type Effects = BTreeMap<(usize, bool), Vec<EffectPair>>;
 
 type Names = BTreeMap<(usize, bool), Vec<[Option<String>; 2]>>;
 
-/// Weather-manager interval order, also the static-modifier slot identifiers.
 pub const TEMPERATURE_MODIFIERS: [&str; 4] = [
     "weather_extreme_cold",
     "weather_very_cold",
@@ -74,31 +54,19 @@ pub const TEMPERATURE_MODIFIERS: [&str; 4] = [
     "weather_extreme_hot",
 ];
 
-/// The static modifier a province record adds while it has mud.
 pub const MUD_MODIFIER: &str = "weather_mud";
 
-/// Ground snow interval order, also the static-modifier identifiers: medium, then high.
 pub const GROUND_SNOW_MODIFIERS: [&str; 2] =
     ["weather_ground_snow_medium", "weather_ground_snow_high"];
 
-/// What a province weather record's modifier rebuild reads from `settings`: the
-/// four thermal intervals (`temperature`), the two ground snow intervals and the
-/// snow ceiling (`snowing`). Every bound is signed fixed5, lower inclusive and
-/// upper exclusive; an interval absent from the file stays zero, which holds nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceModifierRules {
-    /// In [`TEMPERATURE_MODIFIERS`] order.
     pub temperature: [[i64; 2]; 4],
-    /// In [`GROUND_SNOW_MODIFIERS`] order.
     pub ground_snow: [[i64; 2]; 2],
-    /// `snow_gain_max`: the ground snow intervals classify at most this much snow.
     pub snow_gain_max: i64,
 }
 
 impl ProvinceModifierRules {
-    /// Every thermal modifier some temperature selects, None included when a temperature
-    /// falls in no interval. The selection only changes at an interval bound, so the lowest
-    /// temperature and every bound reach each one.
     pub fn reachable_temperature_modifiers(&self) -> Vec<Option<&'static str>> {
         let points = std::iter::once(i64::MIN).chain(self.temperature.iter().flatten().copied());
         let mut reached = Vec::new();
@@ -111,9 +79,6 @@ impl ProvinceModifierRules {
         reached
     }
 
-    /// Every ground snow modifier some snow selects, None included. The classified snow is
-    /// capped at [`Self::snow_gain_max`], so it takes every value up to the cap; the
-    /// selection only changes at an interval bound or the cap.
     pub fn reachable_ground_snow_modifiers(&self) -> Vec<Option<&'static str>> {
         let points = [i64::MIN, self.snow_gain_max]
             .into_iter()
@@ -129,7 +94,6 @@ impl ProvinceModifierRules {
         reached
     }
 
-    /// The first thermal modifier whose interval holds `temperature`; None when none does.
     pub fn temperature_modifier(&self, temperature: i64) -> Option<&'static str> {
         self.temperature
             .iter()
@@ -137,9 +101,6 @@ impl ProvinceModifierRules {
             .map(|slot| TEMPERATURE_MODIFIERS[slot])
     }
 
-    /// The ground snow modifier of a province's snow and permanent snow: their sum,
-    /// capped at [`Self::snow_gain_max`], classifies as high when the high interval holds
-    /// it (even when the medium one does too), else as medium when the medium one does.
     pub fn ground_snow_modifier(&self, snow: i64, permanent_snow: i64) -> Option<&'static str> {
         let snow = snow.wrapping_add(permanent_snow).min(self.snow_gain_max);
         let [medium, high] = self.ground_snow;
@@ -159,24 +120,17 @@ fn holds([lower, upper]: [i64; 2], value: i64) -> bool {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TemperatureRange {
-    /// Signed native fixed5 bounds; lower inclusive, upper exclusive.
     pub lower: i64,
     pub upper: i64,
-    /// Localise the effective static modifier's identifier. None is the
-    /// native null modifier's empty display name, never a vanilla fallback.
     pub modifier: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TemperatureRanges {
     pub ranges: [TemperatureRange; 4],
-    /// The identifier reader's named content diagnostics.
     pub notes: Vec<String>,
 }
 
-// Load the file to EOF. Unknown settings terminate that loader; the
-// presentation reader refuses them by name, including malformed ranges,
-// instead of returning effects the loader would never reach.
 #[derive(Clone, Copy)]
 enum WeatherNode {
     File,
@@ -199,7 +153,6 @@ enum WeatherNode {
 fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
     use WeatherNode::*;
     let mut refused = Vec::new();
-    // Each file constructs the lexer in mode 0.
     let document = native::read(
         bytes,
         native::Mode::KeepMark,
@@ -211,10 +164,9 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
                 (File, Some(b"weather_effects")) => Shape::Object(Effects),
                 (File, Some(b"terrain_modifiers")) => Shape::Object(TerrainKinds),
                 (File, Some(b"settings")) => Shape::Object(Settings),
-                // Map an unrecognized kind to slot zero.
                 (TerrainKinds, _) => Shape::Object(TerrainList),
                 (TerrainList, Some(b"terrain")) => Shape::Object(Terrain),
-                (Terrain, _) => Shape::One, // No unknown-field skip.
+                (Terrain, _) => Shape::One,
                 (Settings, Some(b"temperature")) => Shape::Object(Temperature),
                 (Settings, Some(b"mud")) => Shape::Object(Mud),
                 (Settings, Some(b"snowing")) => Shape::Object(Snow),
@@ -262,8 +214,6 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
                         | b"texture_refresh_freq",
                     ),
                 ) => Shape::One,
-                // Raw fixed5 list; exactly two values required or the outer loader
-                // aborts. Validated below.
                 (
                     Temperature,
                     Some(
@@ -293,11 +243,8 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
                     ),
                 )
                 | (Arctic, Some(b"arctic_water_temperature" | b"arctic_water_end_temperature")) => {
-                    // Read the lexer's tokens, leaving the value slot unchanged.
                     Shape::RawList
                 }
-                // Read effects, their pair lists and each entity through the
-                // corresponding field readers.
                 (
                     Effects,
                     Some(b"rain_light" | b"rain_heavy" | b"snow" | b"blizzard" | b"sandstorm"),
@@ -360,7 +307,6 @@ fn effect_names(document: &native::Read) -> io::Result<Names> {
         .iter()
         .filter(|item| item.keyword_is("weather_effects"))
     {
-        // A repeated effects block clears all banks.
         out.clear();
         for list in block(&effects.value, "weather_effects")? {
             let Some(kind) = EFFECT_KINDS.iter().position(|key| list.keyword_is(key)) else {
@@ -381,7 +327,6 @@ fn effect_names(document: &native::Read) -> io::Result<Names> {
                         pair[usize::from(field.keyword_is("fading_entity"))] =
                             (!name.is_empty()).then(|| name.to_owned());
                     } else if field.keyword_is("small") {
-                        // A failed boolean scan leaves the byte unchanged.
                         small = field
                             .value
                             .scalar()
@@ -407,14 +352,11 @@ fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
     )
 }
 
-/// The `keys` intervals of every `settings` group named `group`.
 fn read_ranges<const N: usize>(
     document: &native::Read,
     group: &str,
     keys: &[&str; N],
 ) -> io::Result<[[i64; 2]; N]> {
-    // Construction zeroes all interval bounds. Repeated settings/groups
-    // keep other slots; each encountered pair overwrites its two words.
     let mut ranges = [[0; 2]; N];
     for settings in document
         .items
@@ -436,8 +378,6 @@ fn read_ranges<const N: usize>(
                         keys[slot]
                     )));
                 };
-                // Start each list entry at zero; failed fixed5 conversion leaves
-                // zero, as the scanner does.
                 let fixed = |value: &crate::parser::Item| {
                     value
                         .value
@@ -459,8 +399,6 @@ fn parse_province_modifier_rules(bytes: &[u8]) -> io::Result<ProvinceModifierRul
 }
 
 fn province_rules(document: &native::Read) -> io::Result<ProvinceModifierRules> {
-    // Construction zeroes the ceiling; each assignment overwrites it, and a
-    // value that is not a scalar leaves it unchanged.
     let mut snow_gain_max = 0;
     for settings in document
         .items
@@ -487,8 +425,6 @@ fn province_rules(document: &native::Read) -> io::Result<ProvinceModifierRules> 
     })
 }
 
-/// The content rules of a province weather record's modifier rebuild, from the
-/// stack's `common/weather.txt`.
 pub fn province_modifier_rules(layers: &ResolvedLayers) -> io::Result<ProvinceModifierRules> {
     let document = read_weather(layers)?;
     province_rules(&document)
@@ -500,8 +436,6 @@ fn read_weather(layers: &ResolvedLayers) -> io::Result<std::sync::Arc<native::Re
     })
 }
 
-/// The four native thermal intervals and their stack-resolved modifier
-/// identifiers. Numeric/classification consumers retain full fixed5 values.
 pub fn temperature_ranges(layers: &ResolvedLayers) -> io::Result<TemperatureRanges> {
     let document = read_weather(layers)?;
     let ranges = read_ranges(&document, "temperature", &TEMPERATURE_MODIFIERS)
@@ -526,11 +460,6 @@ pub fn temperature_ranges(layers: &ResolvedLayers) -> io::Result<TemperatureRang
     })
 }
 
-/// The particles one weather entity's default state emits. Only the forms the
-/// weather pass draws are accepted: particle events that keep their particle and
-/// attach to no node, with no mesh, attachment, state transition, animation or
-/// weighted variants. An event after time zero starts its particle then, once:
-/// its state must not loop it, nor scale or offset its clock.
 fn entity_particles(
     name: &str,
     entities: &Descriptors,
@@ -623,14 +552,10 @@ fn entity_particles(
     ))
 }
 
-/// The weather effects of the stack, each entity resolved to its particles. A pair
-/// with an entity the weather pass cannot present is withheld by name.
 pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects> {
     let document = read_weather(layers)?;
     let names = effect_names(&document)
         .map_err(|error| invalid(format!("{PATH}: {error}")))?;
-    //The existing memoized registry is also used by entity lights/models.
-    //Clones copy the parent's registration-time definition, not its final one.
     let roster = layers.descriptor_roster()?;
     let resolve = |name: &Option<String>| -> io::Result<(Vec<EffectParticle>, Option<EffectParent>)> {
         match name {

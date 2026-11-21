@@ -1,8 +1,3 @@
-//! A declared log's rows (SPEC 1.8), the one implementation every paged log uses: counts per bin
-//! and facet from its summary pieces, exact rows read only in the six-hour buckets that hold them
-//! (each walked at most once while a [`Reader`] is held), pages with ordinals, and counts per bin
-//! for marks and totals. Which rows are asked is a list of [`Pattern`]s: a run's hours and a mask
-//! over the row's facet values, each in a group (a tag) whose rows also carry their own ordinals.
 
 use crate::{
     Query,
@@ -30,8 +25,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Rows of run `run` from `first` through `last` whose facet key, masked, is `value`; counted in
-/// group `group`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pattern {
     pub run: u32,
@@ -48,19 +41,15 @@ impl Pattern {
     }
 }
 
-/// A cell of a logged row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cell {
     Number(i64),
     Text(String),
     List(Vec<u8>),
-    /// An optional number without a value.
     Missing,
     Unrecorded,
 }
 
-/// A row the log inserted at `hour`, its cells by column, and its facet key as its summary counts
-/// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub hour: i32,
@@ -69,8 +58,6 @@ pub struct Row {
     pub cells: Vec<Cell>,
 }
 
-/// A row of a page: its global ordinal among the asked rows and its own within its group, both
-/// counted from the timeline's first hour.
 #[derive(Clone, Debug)]
 pub struct Paged {
     pub row: Row,
@@ -79,8 +66,6 @@ pub struct Paged {
     pub own: u64,
 }
 
-/// A page from ordinal `first` to `end` (exclusive) of the asked rows; `base` were inserted
-/// before the range and `last - base` within it.
 #[derive(Clone, Debug)]
 pub struct Page {
     pub base: u64,
@@ -95,24 +80,17 @@ impl Page {
         self.last - self.base
     }
 
-    /// The ordinal the next page starts at, when there is one.
     pub fn cursor(&self) -> Option<u64> {
         (self.end < self.last).then_some(self.end)
     }
 }
 
-/// One group's counts over a span: what it inserted on the timeline before the span, and per bin
-/// with any (bin index on the absolute grid from the span's first bin, count).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Counts {
     pub before: u64,
     pub bins: Vec<(u32, u64)>,
 }
 
-/// A request's choice of a log's rows by one facet: the values it keeps, or the countries whose
-/// holders' rows it keeps (each country a group). A country filter may name several facets holding
-/// a country, `a|b`: a row is kept for a country when any of them holds its holder, once for each
-/// that does.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FacetFilter {
@@ -124,33 +102,26 @@ pub struct FacetFilter {
     pub countries: Vec<Country>,
 }
 
-/// The asked rows: their patterns, and each group's country (one unnamed group without a country filter).
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub patterns: Vec<Pattern>,
     pub groups: Vec<Option<Country>>,
 }
 
-/// Where a row's facet value is read.
 #[derive(Clone, Copy)]
 enum Facet {
     Column(usize),
     Key(u32),
 }
 
-/// One declared log over a timeline.
 pub struct Reader<'q, 'a> {
     query: &'q Query<'a>,
     log: &'static Log,
     facets: Vec<Facet>,
-    /// The rows of each six-hour bucket walked, by run and bucket.
     walked: Mutex<HashMap<(u32, i64), Arc<Vec<Row>>>>,
-    /// The table's reader where the last walk left it, by run: a later walk advances from there
-    /// unless seeking from a restore replays less.
     cursor: Mutex<Option<(u32, TableReader)>>,
 }
 
-/// The bits of facet `at` in a facet key.
 pub fn facet_shift(at: usize) -> u32 {
     32 * (3 - at as u32)
 }
@@ -178,14 +149,10 @@ impl<'q, 'a> Reader<'q, 'a> {
         self.query
     }
 
-    /// The table's column names, in cell order.
     pub fn columns(&self) -> Vec<&'static str> {
         (0..self.log.table.field_count()).filter_map(|column| self.log.table.field_name(column)).collect()
     }
 
-    /// The rows `filters` keep from `from` through `to`, through the one identity rule for a
-    /// facet holding a country. A tag filter's tags are its groups; at most one facet is filtered
-    /// by tags.
     pub fn select(&self, filters: &[FacetFilter], from: i32, to: i32) -> io::Result<Selection> {
         let mut patterns: Vec<Pattern> = self
             .query
@@ -265,7 +232,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok((i64::from(held.first_hour), i64::from(held.first_hour) + i64::from(held.ordinals) - 1))
     }
 
-    /// The facet key of the row at `slot`, as its summary counts it.
     fn facet_of(&self, view: &TableView<'_>, slot: u32) -> u128 {
         let mut key = 0u128;
         for (at, facet) in self.facets.iter().enumerate().take(4) {
@@ -290,8 +256,6 @@ impl<'q, 'a> Reader<'q, 'a> {
             .collect()
     }
 
-    /// The rows run `run` inserted within `ranges`. Each six-hour bucket is walked once while the
-    /// reader is held; a table holding state counts a row at the hour it was inserted.
     fn logged(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<Row>> {
         let six = bucket_hours(0);
         let mut buckets: Vec<i64> = ranges.iter().flat_map(|&(a, b)| i64::from(a).div_euclid(six)..=i64::from(b).div_euclid(six)).collect();
@@ -327,9 +291,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    /// Each row run `run` inserted in the six-hour buckets `spans` (bucket indexes, ascending, each
-    /// a joined stretch), given to `visit` in hour order as the table's reader passes it; a table
-    /// holding state gives a row at the hour it was inserted.
     fn walk(&self, run: u32, spans: &[(i64, i64)], mut visit: impl FnMut(Row) -> io::Result<()>) -> io::Result<()> {
         let six = bucket_hours(0);
         let (run_first, run_last) = self.run_hours(run)?;
@@ -349,7 +310,6 @@ impl<'q, 'a> Reader<'q, 'a> {
             if from > to {
                 continue;
             }
-            // The hour before, so a row a table holding state kept from it is not counted again.
             let start = if i64::from(from) > run_first { from - 1 } else { from };
             let mut before: HashSet<u128> = HashSet::new();
             crate::cost::storage(|| reader.go_to(recording, read::ordinal(recording, run, start)?))?;
@@ -377,9 +337,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(())
     }
 
-    /// Every row run `run` inserted, given to `visit` in hour order and kept nowhere: one pass over
-    /// the six-hour buckets its summary says hold rows, holding one row at a time. For an index
-    /// built once over a whole log.
     pub fn each(&self, run: u32, visit: impl FnMut(Row) -> io::Result<()>) -> io::Result<()> {
         let six = bucket_hours(0);
         let (first, last) = self.run_hours(run)?;
@@ -389,8 +346,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         self.walk(run, &joined(&buckets), visit)
     }
 
-    /// Every row run `run` inserted within `ranges` (ascending), by hour, then key: only the
-    /// six-hour buckets its summary says hold rows are walked, each once while the reader is held.
     pub fn inserted(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<Row>> {
         let (Some(&(from, _)), Some(&(_, to))) = (ranges.first(), ranges.last()) else { return Ok(Vec::new()) };
         let filled = crate::cost::storage(|| replay::lanes::logged_hours(self.query.replay.recording(), run, self.log.table, from, to))?;
@@ -409,8 +364,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         self.logged(run, &wanted)
     }
 
-    /// Every row of `patterns` (by position) within `ranges` of run `run`: (pattern, row), by
-    /// hour, then pattern, then key.
     pub fn rows(&self, run: u32, patterns: &[Pattern], ranges: &[(i32, i32)]) -> io::Result<Vec<(usize, Row)>> {
         let mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
         let mut out = Vec::new();
@@ -429,8 +382,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    /// Every row of `patterns` from `from` through `to` (pattern, row), by hour, then pattern, then
-    /// key: only the six-hour buckets their counts hold are read, in one pass over the table.
     pub fn every(&self, patterns: &[Pattern], from: i32, to: i32) -> io::Result<Vec<(usize, Row)>> {
         let six = bucket_hours(0);
         let mut by_run: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
@@ -455,10 +406,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    /// Each pattern's rows from `from` through `to` in bins of `bin` hours on the absolute grid (a
-    /// summary bucket's size), by pattern: (bin start, count), exact. One count read a run for the
-    /// bins wholly inside, one for the six-hour buckets at the edges, the slivers under six hours
-    /// read row by row.
     pub fn bins(&self, patterns: &[Pattern], from: i32, to: i32, bin: i64) -> io::Result<Vec<Vec<(i64, u64)>>> {
         let six = bucket_hours(0);
         let mut out: Vec<Vec<(i64, u64)>> = vec![Vec::new(); patterns.len()];
@@ -485,7 +432,6 @@ impl<'q, 'a> Reader<'q, 'a> {
             if a > b {
                 continue;
             }
-            // The run holds no hour past its ends: a bin cut by one is counted whole.
             let (run_first, run_last) = match runs.get(&pattern.run) {
                 Some(&held) => held,
                 None => *runs.entry(pattern.run).or_insert(self.run_hours(pattern.run)?),
@@ -564,10 +510,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    /// Each group's rows from `first` through `last` per bin of `bin_hours` on the absolute grid
-    /// from the bin holding `first`, and its rows on the timeline before `first`: exact, from the
-    /// counts and, under six hours a bin, the rows. `patterns` reach back to the timeline's first
-    /// hour.
     pub fn counts(&self, patterns: &[Pattern], groups: usize, first: i32, last: i32, bin_hours: i64) -> io::Result<Vec<Counts>> {
         if bin_hours < 1 || (bin_hours >= bucket_hours(0) && bin_hours % bucket_hours(0) != 0) {
             return Err(invalid("A log's bins are 1 to 5 hours or whole six-hour buckets"));
@@ -611,9 +553,6 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    /// A page of the rows of `patterns` from ordinal `cursor` within `from..=to`, in hour, then
-    /// group, then key order. Ordinals count from the timeline's first hour: `patterns` reach back
-    /// to it.
     pub fn page(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, cursor: u64, size: u32) -> io::Result<Page> {
         if from > to {
             return Err(invalid("Invalid log page"));
@@ -652,8 +591,6 @@ impl<'q, 'a> Reader<'q, 'a> {
                 ordinal += count;
                 continue;
             }
-            // The bin holding the page's rows: counted again by six-hour bucket, the page's
-            // buckets read exactly.
             let range = ((start.max(i64::from(from))) as i32, ((start + bin - 1).min(i64::from(to))) as i32);
             let held_patterns: Vec<Pattern> = held.iter().map(|&(at, _)| patterns[at]).collect();
             let mut buckets: BTreeMap<i64, u64> = BTreeMap::new();
@@ -663,7 +600,6 @@ impl<'q, 'a> Reader<'q, 'a> {
                 }
             }
             let (skip, reach) = page_buckets(&buckets, ordinal, first, end, range);
-            // Rows before the read buckets are counted, not read: each group's own ordinals follow them.
             if skip > 0 {
                 for (counts, held_pattern) in self.bins(&held_patterns, range.0, reach[0].0 - 1, bin)?.into_iter().zip(&held_patterns) {
                     own[held_pattern.group] += counts.iter().map(|(_, count)| count).sum::<u64>();
@@ -691,11 +627,6 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 }
 
-/// Which six-hour buckets of `range` a page reads, from its bucket counts (`buckets`, by bucket
-/// start; none of them zero) and the ordinal `ordinal` its first bucket starts at: the rows of
-/// the buckets wholly before ordinal `first`, skipped, and the hours of the buckets holding the
-/// page's rows through ordinal `end`, as ascending ranges joined where they touch. A bucket no
-/// asked row is in is never read; without counts the whole range is.
 fn page_buckets(buckets: &BTreeMap<i64, u64>, ordinal: u64, first: u64, end: u64, range: (i32, i32)) -> (u64, Vec<(i32, i32)>) {
     let six = bucket_hours(0);
     let mut skip = 0u64;
@@ -723,7 +654,6 @@ fn page_buckets(buckets: &BTreeMap<i64, u64>, ordinal: u64, first: u64, end: u64
     (skip, reach)
 }
 
-/// Ascending bucket indexes as stretches of touching buckets.
 fn joined(buckets: &[i64]) -> Vec<(i64, i64)> {
     let mut spans: Vec<(i64, i64)> = Vec::new();
     for &bucket in buckets {
@@ -735,7 +665,6 @@ fn joined(buckets: &[i64]) -> Vec<(i64, i64)> {
     spans
 }
 
-/// A bucket size giving about `bins` bins over `hours`.
 pub fn bin_for(hours: i64, bins: i64) -> i64 {
     let wanted = (hours / bins.max(1)).max(1);
     let mut level = 0u8;

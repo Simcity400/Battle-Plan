@@ -211,7 +211,7 @@ fn growth_retains_header_fault_and_reserved_zero_law() {
 
 #[test]
 fn raw_zero_is_independent_of_positive_headers_and_storage() {
-    let source = Source::new(); // Both positive headers are deliberately invalid.
+    let source = Source::new();
     let memo = memo(0, 0);
     let context = memo.view(&source, 0, GS);
     assert_eq!(context.canonical_slot(0), Ok(0));
@@ -447,8 +447,6 @@ fn failed_selected_pointer_survives_observed_links_without_reauthentication() {
     assert_eq!(source.source.attempts(COUNTRIES), 1);
     assert_eq!(source.source.attempts(RESERVED.pointer), 1);
     let reader = Reader::new(&memory, 0, GS).unwrap();
-    // The synthetic vtable would now read successfully. A retained failed
-    // pointer must refuse its physical alias before that second attempt.
     assert_eq!(
         reader.at(1),
         Err("reserved country object identity mismatch")
@@ -499,8 +497,6 @@ fn reset_and_reserve_clear_full_observation_before_the_next_pass() {
         let context = memo.view(&source, 0, GS);
         super::super::read_reserved_observation(&ObservedLinks::new(&context, None), 0, GS)
     };
-    // Explicitly prepare a successful observation for a later pass. Existing
-    // same-pass queries must keep the first failure despite repaired bytes.
     source.observation = super::super::read_reserved_observation(&source.source, 0, GS);
     assert_eq!(source.observation.result(), Ok(RESERVED));
     {

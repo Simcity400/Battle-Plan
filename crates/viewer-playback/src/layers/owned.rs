@@ -1,8 +1,3 @@
-//! A layer worker's owned inputs: of the tables its fold reads, only the columns it reads, by the
-//! mirror's slots, made whole from the mirrors at a compose and kept on the worker from the steps'
-//! own change sets ([`Table::step`]) as the mirror keeps them, so a worker folds a step before the
-//! frame applies it. A list read only to its first element (a division's path) keeps that element
-//! alone. The read calls are the mirror's, so a fold reads either the same.
 
 use crate::{
     layers::{List, Num, Number, Text},
@@ -17,8 +12,6 @@ use replay_data::{
 };
 use std::collections::HashMap;
 
-/// What the fold reads of one table: its number columns, and its list columns with whether only
-/// the first element is read.
 pub struct Shape {
     pub table: TableId,
     numbers: Vec<usize>,
@@ -31,7 +24,6 @@ impl Shape {
         Self { table, numbers: numbers.to_vec(), lists: lists.to_vec(), texts: Vec::new() }
     }
 
-    /// The text columns kept too, each cell as its string's bytes.
     pub fn with_texts(mut self, texts: &[usize]) -> Self {
         self.texts = texts.to_vec();
         self
@@ -41,7 +33,6 @@ impl Shape {
 const VALUE: u8 = 0;
 const MISSING: u8 = 1;
 const UNRECORDED: u8 = 2;
-/// A text cell whose string the table's strings do not name: its bytes hold the id.
 const UNNAMED: u8 = 3;
 
 fn split(cell: Cell<u64>) -> (u64, u8) {
@@ -60,7 +51,6 @@ fn join<T>(value: T, state: u8) -> Cell<T> {
     }
 }
 
-/// A list cell as kept: its bytes (the first element only where that is all the fold reads).
 fn kept(cell: Cell<&[u8]>, first: bool) -> (Box<[u8]>, u8) {
     match cell {
         Cell::Value(bytes) => (if first { bytes[..bytes.len().min(4)].into() } else { bytes.into() }, VALUE),
@@ -69,7 +59,6 @@ fn kept(cell: Cell<&[u8]>, first: bool) -> (Box<[u8]>, u8) {
     }
 }
 
-/// A step's cell: a value, missing or not recorded.
 fn cell(value: Value<'_>) -> Cell<Value<'_>> {
     match value {
         Value::Missing => Cell::Missing,
@@ -78,10 +67,6 @@ fn cell(value: Value<'_>) -> Cell<Value<'_>> {
     }
 }
 
-/// A table's standing as its mirror keeps it, kept from the steps alone: its status and sample
-/// hour, its head, whether a gap step left it unrecorded, an unavailable status's reason in words,
-/// the recording's capture mode and row format, and the table's strings where the mirror keeps
-/// them.
 #[derive(Default)]
 pub struct Standing {
     table: Option<TableId>,
@@ -109,7 +94,6 @@ impl Standing {
         }
     }
 
-    /// A step's change set of the table, as the mirror takes it: its strings, status and head.
     pub fn step(&mut self, changes: &Changes) {
         self.gap = false;
         if let Some(strings) = &mut self.strings {
@@ -133,7 +117,6 @@ impl Standing {
         }
     }
 
-    /// A gap step: nothing is recorded until the next step names the table.
     pub fn gap(&mut self) {
         self.gap = true;
     }
@@ -146,7 +129,6 @@ impl Standing {
         self.head
     }
 
-    /// Why the table is not wholly recorded, in the mirror's words; none when it is.
     pub fn not_recorded(&self) -> Option<String> {
         not_recorded(self.table?, self.status(), self.capture, self.reason.as_ref().map(|(_, text)| &**text))
     }
@@ -160,20 +142,17 @@ impl Standing {
     }
 }
 
-/// One table's kept columns by the mirror's slots.
 #[derive(Default)]
 pub struct Table {
     standing: Standing,
     live: Vec<bool>,
     keys: Vec<u128>,
     index: HashMap<u128, u32>,
-    /// Per number column: its index in the table, values and states by slot.
     numbers: Vec<(usize, Vec<u64>, Vec<u8>)>,
     lists: Vec<(usize, bool, Vec<Box<[u8]>>, Vec<u8>)>,
     texts: Vec<(usize, Vec<Box<[u8]>>, Vec<u8>)>,
 }
 
-/// A text cell of string `id` as kept: its bytes, or the id where the strings do not name it.
 fn named(string: Option<&[u8]>, id: u32) -> (Box<[u8]>, u8) {
     match string {
         Some(bytes) => (bytes.into(), VALUE),
@@ -181,7 +160,6 @@ fn named(string: Option<&[u8]>, id: u32) -> (Box<[u8]>, u8) {
     }
 }
 
-/// A text cell as kept: its string's bytes.
 fn text_of(mirror: &Mirror, column: usize, slot: u32) -> (Box<[u8]>, u8) {
     match mirror.cell(column, slot) {
         Cell::Value(id) => named(mirror.string(id as u32), id as u32),
@@ -191,12 +169,10 @@ fn text_of(mirror: &Mirror, column: usize, slot: u32) -> (Box<[u8]>, u8) {
 }
 
 impl Table {
-    /// The row format its cells were written in: an opaque cell decodes at it.
     pub fn format(&self) -> u16 {
         self.standing.format
     }
 
-    /// The kept columns of `mirror` whole.
     pub fn from_mirror(mirror: &Mirror, shape: &Shape) -> Self {
         let mut table = Self {
             standing: Standing::of(mirror),
@@ -231,7 +207,6 @@ impl Table {
         }
     }
 
-    /// A live row and every kept cell of it, from the mirror.
     fn put(&mut self, mirror: &Mirror, slot: u32, key: u128) {
         let at = slot as usize;
         self.grow(at);
@@ -249,9 +224,6 @@ impl Table {
         }
     }
 
-    /// A step's change set of the table, applied as the mirror applies it; the delta of the kept
-    /// cells it wrote, for the fold, unless it moved no row and no kept cell. A text cell takes its
-    /// string from the table's strings, which the mirror keeps whenever it holds a text column.
     pub fn step(&mut self, changes: &Changes) -> Option<Delta> {
         self.standing.step(changes);
         let inserted = changes.inserted();
@@ -327,17 +299,14 @@ impl Table {
         Some(delta)
     }
 
-    /// A gap step: nothing is recorded until the next step names the table.
     pub fn gap(&mut self) {
         self.standing.gap();
     }
 
-    /// Why the table is not wholly recorded, in the mirror's words; none when it is.
     pub fn not_recorded(&self) -> Option<String> {
         self.standing.not_recorded()
     }
 
-    /// A step's delta, in its order: deletes, inserts, cells.
     fn apply(&mut self, delta: &Delta) {
         for &slot in delta.deleted.slots() {
             let at = slot as usize;
@@ -406,8 +375,6 @@ impl Table {
         join(&values[at][..], states[at])
     }
 
-    /// A text cell's string bytes, or the id of a string the table's strings do not name: what the
-    /// mirror's read refuses by name, never drawn as an empty string.
     pub fn named_text(&self, column: Text, slot: u32) -> Result<Cell<&[u8]>, u32> {
         let unnamed = self.texts.iter().find(|(held, _, _)| *held == column.column).and_then(|(_, values, states)| (states.get(slot as usize) == Some(&UNNAMED)).then(|| &values[slot as usize]));
         match unnamed {
@@ -416,15 +383,12 @@ impl Table {
         }
     }
 
-    /// A text cell whose string the strings no longer name, as a recording before the recorder
-    /// named every string at a seek leaves one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn unname(&mut self, column: Text, slot: u32, id: u32) {
         let (_, values, states) = self.texts.iter_mut().find(|(held, _, _)| *held == column.column).expect("a kept text column");
         (values[slot as usize], states[slot as usize]) = (id.to_le_bytes().into(), UNNAMED);
     }
 
-    /// A text cell's string bytes; not recorded where its string is not named ([`Self::named_text`]).
     pub fn text(&self, column: Text, slot: u32) -> Cell<&[u8]> {
         let Some((_, values, states)) = self.texts.iter().find(|(held, _, _)| *held == column.column) else { return Cell::Unrecorded };
         let at = slot as usize;
@@ -454,14 +418,12 @@ impl Table {
     }
 }
 
-/// The kept tables, by table.
 #[derive(Default)]
 pub struct Tables {
     tables: Vec<Option<Table>>,
 }
 
 impl Tables {
-    /// Every kept table whole from the mirrors.
     pub fn from_mirrors(mirrors: &Mirrors, shapes: &[Shape]) -> Self {
         let mut tables = Self::default();
         for shape in shapes {
@@ -484,7 +446,6 @@ impl Tables {
         self.tables.get_mut(table.index()).and_then(Option::as_mut)
     }
 
-    /// A gap step: every table kept is unrecorded until the next step names it.
     pub fn gap(&mut self) {
         self.tables.iter_mut().flatten().for_each(Table::gap);
     }
@@ -494,15 +455,12 @@ impl Tables {
     }
 }
 
-/// A table's kept rows when whole at the head.
 pub fn complete(tables: &Tables, table: TableId) -> Option<&Table> {
     tables.get(table).filter(|table| table.complete())
 }
 
-/// Rows whose list cells read as the mirror's do: the mirror itself, or a worker's owned copy.
 pub trait ListCells {
     fn list_cell(&self, column: List, slot: u32) -> Cell<&[u8]>;
-    /// The row format its cells were written in: an opaque cell decodes at it.
     fn format(&self) -> u16;
 }
 
@@ -526,8 +484,6 @@ impl ListCells for Table {
     }
 }
 
-/// An opaque cell decoded as the row field's own value type at its rows' format; a cell not
-/// recorded is `NotRecorded`.
 pub fn opaque<T: NativeValue>(rows: &impl ListCells, column: List, slot: u32) -> Result<Recorded<T>, String> {
     let field = match rows.list_cell(column, slot) {
         Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, rows.format())),
@@ -536,7 +492,6 @@ pub fn opaque<T: NativeValue>(rows: &impl ListCells, column: List, slot: u32) ->
     <Recorded<T> as NativeValue>::from_field(field).map_err(|error| error.to_string())
 }
 
-/// A list cell's `u32`s.
 pub fn u32s(table: &Table, column: List, slot: u32) -> impl Iterator<Item = u32> + '_ {
     let bytes = match table.list(column, slot) {
         Cell::Value(bytes) => bytes,
@@ -545,7 +500,6 @@ pub fn u32s(table: &Table, column: List, slot: u32) -> impl Iterator<Item = u32>
     bytes.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().expect("four bytes")))
 }
 
-/// Rows inserted or deleted in a delta: slots and keys.
 #[derive(Default)]
 pub struct Lives {
     slots: Vec<u32>,
@@ -566,7 +520,6 @@ impl Lives {
     }
 }
 
-/// The slots a delta wrote of one kept column.
 pub struct Written {
     column: usize,
     slots: Vec<u32>,
@@ -586,13 +539,10 @@ impl Written {
     }
 }
 
-/// A step's change set of one kept table, its kept cells with their values: the fold's input,
-/// owned.
 pub struct Delta {
     deleted: Lives,
     inserted: Lives,
     columns: Vec<Written>,
-    /// Per cell written: slot, the kept column's place, value and state.
     numbers: Vec<(u32, usize, u64, u8)>,
     lists: Vec<(u32, usize, Box<[u8]>, u8)>,
     texts: Vec<(u32, usize, Box<[u8]>, u8)>,
@@ -612,7 +562,6 @@ impl Delta {
     }
 }
 
-/// Rows keyed `(owner << 32) | target`, for an owner's lane: target and slot, by target.
 pub trait Keyed {
     fn keyed(&self) -> Vec<(u128, u32)>;
 }
@@ -629,7 +578,6 @@ impl Keyed for Table {
     }
 }
 
-/// `raw`'s rows of a table keyed `(owner << 32) | target`: target and slot, by target.
 pub fn owner_rows(rows: &impl Keyed, raw: u32) -> Vec<(u32, u32)> {
     let mut held: Vec<(u32, u32)> = rows.keyed().into_iter().filter(|(key, _)| (key >> 32) as u32 == raw).map(|(key, slot)| (key as u32, slot)).collect();
     held.sort_unstable();

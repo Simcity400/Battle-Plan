@@ -1,20 +1,11 @@
-//! Target-country map slot holding a vector of u32 operation-token IDs.
 
-/// Operation-token target-slot stride.
 pub const STRIDE: usize = 0x28;
-/// Stored robin-hood hash.
 pub const HASH: usize = 0x00;
-/// Probe-distance byte: zero is empty; the excluded end sentinel is all ones.
 pub const OCCUPIED: usize = 0x04;
-/// Target-country u32 tag database ID checked against authenticated roots.
 pub const TARGET_TAG_ID: usize = 0x08;
-/// Operation-token vector data pointer.
 pub const TOKENS: usize = 0x10;
-/// Operation-token vector signed i32 capacity.
 pub const TOKEN_CAPACITY: usize = 0x18;
-/// Operation-token vector signed i32 count.
 pub const TOKEN_COUNT: usize = 0x1c;
-/// Operation-token u32 element width.
 pub const TOKEN_STRIDE: usize = 0x04;
 
 use crate::{Memory, cpdx_array::Array, read, read_slice};
@@ -30,8 +21,6 @@ pub(crate) fn read_entry(
     memory: &impl Memory,
     address: usize,
 ) -> Result<Option<Entry>, &'static str> {
-    // Every slot is a full native 0x28-byte allocation. One copy reads the
-    // occupancy, key and exact 16-byte CPdxArray header without three guards.
     let bytes = read::<[u8; 32]>(memory, address).ok_or("operation token map slot unreadable")?;
     let occupied = bytes[OCCUPIED];
     match occupied {
@@ -66,8 +55,6 @@ pub(crate) fn read_entry(
     }))
 }
 
-/// Copies native token ids in bounded contiguous chunks. The destination is a
-/// caller-owned arena; the vector's order and repeated values are retained.
 pub(crate) fn copy_tokens(
     memory: &impl Memory,
     source: Array,

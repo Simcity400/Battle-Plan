@@ -1,6 +1,3 @@
-//! Each country's military-industrial organisations
-//! in array order, and each one's produced-units history. Daily, in the
-//! production lines' slot, from one walk.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
@@ -83,7 +80,6 @@ impl Captured {
         self.policies
             .fail(super::failed_capture(TABLES[3], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             organisations: 0,
@@ -186,7 +182,6 @@ impl Captured {
         }
         self.holds_complete = matches!(self.details.outcome, Outcome::Rows { .. })
             && matches!(self.policies.outcome, Outcome::Rows { .. });
-        // Only this daily worker visits nested capacities; hourly pool accounting is O(1).
         self.nested_bytes = self
             .policies
             .rows
@@ -368,8 +363,6 @@ impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
                 !carry,
             );
             row.country = country;
-            // A scalar any modifier source can move: read on every daily visit.
-            // A failed read is unknown, never zero, and leaves the roster valid.
             row.cost_modifier_raw =
                 native::details::policy_cost_modifier(self.memory, self.base, identity.pointer)
                     .ok();
@@ -531,14 +524,12 @@ mod tests {
         };
         assert_eq!(history[0].units, i32::MIN);
         assert_eq!(history[0].design_hour, Some(i32::MIN).into());
-        // A span outside the captured arena withholds only the organisations.
         captured.organisations.rows[0].icon.start = 4;
         assert!(matches!(
             captured.tables()[0],
             TableView::Unavailable { .. }
         ));
         assert!(matches!(captured.tables()[1], TableView::Complete(_)));
-        // A truncated walk stays truncated and grows off-thread.
         captured.history.outcome = Outcome::Truncated {
             len: 1,
             unread_rows: 3,
@@ -639,7 +630,6 @@ mod country_scale_tests {
             0x8000_0000 | COUNTRIES as u32
         );
         assert_eq!(policies[COUNTRIES - 1].policies[0].name, [0xff, 0]);
-        // Each country keeps its own policy-cost verdict: a failed read stays unknown.
         assert_eq!(
             policies[COUNTRIES - 1].cost_modifier_raw,
             Some(1 - COUNTRIES as i64).into()

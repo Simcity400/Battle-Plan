@@ -5,11 +5,8 @@ import type { FactionMemberUpgradeLane, FactionRulesReply, FactionSelectionRun }
 
 export const selectionName = (run: FactionSelectionRun) => run.name || 'Name unavailable';
 
-/** The hour a member lane's holder is named at: the last hour of its last selection; null when it has none. */
 export const memberNameHour = (member: Pick<FactionMemberUpgradeLane, 'runs'>) => member.runs.at(-1)?.lastHour ?? null;
 
-/** Every hour a lane's structure changes at: a selection starting, or the hour after one ends. While following,
- * the widget renders only when the head passes one of these, never because it moved inside a run. */
 export function eventHours(reply: FactionRulesReply): number[] {
   const hours = new Set<number>();
   for (const lane of [...reply.rules, ...reply.programmes, ...reply.minimums, ...reply.members, ...reply.doctrines])
@@ -17,18 +14,14 @@ export function eventHours(reply: FactionRulesReply): number[] {
   return [...hours].sort((a, b) => a - b);
 }
 
-/** How many of `hours` (ascending) are at or before `hour`: a key that moves only at an event. */
 export function eventsThrough(hours: readonly number[], hour: number): number {
   let low = 0, high = hours.length;
   while (low < high) { const mid = (low + high) >> 1; if (hours[mid] <= hour) low = mid + 1; else high = mid; }
   return low;
 }
 
-/** What each lane and span is about, for tooltips and menus. */
 export interface LaneInfo { nameFailure?: Failure; section: string; slot: string; runs: readonly FactionSelectionRun[] }
 
-/** Spans for one lane's selections; while following (`live`), only those begun by `at`, left open where the playhead
- * cuts them (the timeline cuts bars at its live head); the run holding `at` is emphasised. */
 function spans(id: string, runs: readonly FactionSelectionRun[], at: number, live: boolean): TimelineSpan[] {
   return runs.flatMap((run, index) => live && run.firstHour > at ? [] : [{
     id: `${id}:${index}`, firstHour: run.firstHour, lastHour: run.lastHour,
@@ -36,8 +29,6 @@ function spans(id: string, runs: readonly FactionSelectionRun[], at: number, liv
   }]);
 }
 
-/** Lanes under headings: rules, shared programmes, faction minimum upgrades, members' upgrades and shared doctrines;
- * a lane without any selection drawn is left out. */
 export function upgradeLanes(reply: FactionRulesReply, at: number, live: boolean, options: { endedProgrammes: boolean; groupName: (group: number) => string;
   country: (tag: string | null, hour: number) => ReturnType<CountryLabel> }) {
   const lanes: TimelineLane[] = [], info = new Map<string, LaneInfo>();

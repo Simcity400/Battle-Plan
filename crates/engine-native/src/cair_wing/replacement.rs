@@ -1,4 +1,3 @@
-//! The saved wing replacement preference and its two independent writers.
 use engine_sites::Rva;
 pub const SETTING: usize = 0x9cc;
 pub const COMMAND_WINGS: usize = 0x28;

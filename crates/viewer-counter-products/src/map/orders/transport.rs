@@ -1,18 +1,6 @@
-//! Paradrop arrow geometry and lift.
-//!
-//! The source is `ArmyOrders.paradrop_target` (the save's `invasion_source`);
-//! the target is the first path province. Densify one straight source-to-target
-//! segment and lift it into a sine arc without smoothing.
-//!
-//! An invasion follows the source, sea route, then the first path province.
-//! Wrap each centroid against the previous control, append the raw adjacency
-//! crossing, then apply move smoothing. The recorded move world supplies the
-//! sea route through its mode-0 path search.
 
 use super::fixed::{Point, SCALE};
 
-/// Append the centroid then raw crossing, wrapping each inserted point
-/// against the preceding one before ORDER_MOVE smoothing.
 pub fn invasion_controls(
     path: &[u32],
     width: i64,
@@ -37,8 +25,6 @@ pub fn invasion_controls(
     Some(out)
 }
 
-/// Bring `x` within half the map width of `reference`, both fixed5, with
-/// `width` in whole pixels. Use integer half-width and strict greater-than ties.
 fn wrap_x(reference: i64, x: &mut i64, width: i64) {
     if width <= 0 {
         return;
@@ -49,29 +35,19 @@ fn wrap_x(reference: i64, x: &mut i64, width: i64) {
     }
 }
 
-/// Paradrop stored controls from the source and target centroids (fixed5).
-/// The first builder call pushes the source twice; the second splits the
-/// segment into threshold-length steps, or replaces the last control with the
-/// target when the segment is shorter.
 pub fn paradrop_controls(source: Point, mut target: Point, width: i64) -> Vec<Point> {
     wrap_x(source[0], &mut target[0], width);
     super::submit::controls(&[source, target], None)
 }
 
-/// Paradrop height inputs, fixed once per arrow.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lift {
-    /// Terrain height under the first and the last control.
     pub from: f32,
     pub to: f32,
-    /// `min(length * ARROW_PARADROP_HEIGHT_TO_LEN, ARROW_PARADROP_HEIGHT_MAX)`.
     pub amplitude: f32,
 }
 
 impl Lift {
-    /// Per-arrow terms: chord length from the integer square root of the raw
-    /// fixed5 squares, and sea-clamped terrain height at each end, with x wrapped
-    /// once into the map.
     pub fn new(
         controls: &[Point],
         width: f32,
@@ -85,8 +61,6 @@ impl Lift {
         let (first, last) = (controls[0], controls[controls.len() - 1]);
         let (dx, dz) = (first[0] - last[0], first[1] - last[1]);
         let squared = dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz));
-        // Skip the square-root loop for signed values <= 1, then narrow the result
-        // to signed32 even after fixed5 overflow.
         let root = if squared > 1 {
             squared.isqrt()
         } else {
@@ -115,16 +89,12 @@ impl Lift {
         })
     }
 
-    /// The height at `t`, the strip sample's fraction along the arrow:
-    /// `h0 + (h1 - h0) * t + sin(t * pi) * amplitude`.
     pub fn at(&self, t: f32) -> f32 {
         self.from
             + (self.to - self.from) * t
             + (t * f32::from_bits(0x4049_0FDB)).sin() * self.amplitude
     }
 
-    /// Use stored-control indices, including the two head samples, rather than
-    /// a fraction of the ribbon's spatial length.
     pub fn at_control(&self, index: usize, count: usize, has_head: bool) -> f32 {
         self.at(index as f32 / (count + if has_head { 2 } else { 0 }) as f32)
     }
@@ -176,7 +146,6 @@ mod tests {
         let mut x = 100 * SCALE;
         wrap_x(4 * SCALE, &mut x, W);
         assert_eq!(x, 100 * SCALE);
-        // Exactly half a map is not past it.
         let mut x = (4 + W / 2) * SCALE;
         wrap_x(4 * SCALE, &mut x, W);
         assert_eq!(x, (4 + W / 2) * SCALE);
@@ -217,8 +186,6 @@ mod tests {
             &|_, _| 0.0,
         )
         .unwrap();
-        // The wrapped signed64 squared sum is negative. Native skips sqrt
-        // and its low signed32 word is 12345^2, not a clamped zero.
         assert_eq!(lift.amplitude, 152_399_025_i32 as f32 / SCALE as f32);
     }
 

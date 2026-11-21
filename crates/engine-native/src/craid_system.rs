@@ -1,12 +1,7 @@
-//! Persistent country-indexed raid graph. Country handles resolve through
-//! the country-link table; layout alone does not establish hourly consistency.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_e798);
-/// Country-raid-status array pointer.
 pub const COUNTRY_STATUSES: usize = 0xd8;
-/// Country-status array capacity, u32.
 #[cfg(test)]
 pub const COUNTRY_STATUSES_CAPACITY: usize = 0xe0;
 
@@ -15,7 +10,6 @@ use crate::{
     craid_target, read, walk::Outcome,
 };
 
-/// One target cooldown of one country, in native order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CooldownRow {
     pub owner_slot: u32,
@@ -27,25 +21,19 @@ pub struct CooldownRow {
 
 pub struct Buffers<'a> {
     pub parents: &'a mut Vec<ccountry_raid_status::Row>,
-    /// Eligible and used raid type tokens of every parent.
     pub type_tokens: &'a mut Vec<u32>,
     pub instances: &'a mut Vec<craid_instance::Row>,
-    /// Raw `show_for` country handles of every instance.
     pub show_for: &'a mut Vec<u32>,
     pub cooldowns: &'a mut Vec<CooldownRow>,
-    /// The caller-owned raid type token memo, sized from the raid database.
     pub type_memo: &'a mut ccountry_raid_status::TypeTokens,
 }
 
 pub struct BuffersBuffer<'a> {
     pub parents: crate::walk::Buffer<'a, ccountry_raid_status::Row>,
-    /// Eligible and used raid type tokens of every parent.
     pub type_tokens: crate::walk::Buffer<'a, u32>,
     pub instances: crate::walk::Buffer<'a, craid_instance::Row>,
-    /// Raw `show_for` country handles of every instance.
     pub show_for: crate::walk::Buffer<'a, u32>,
     pub cooldowns: crate::walk::Buffer<'a, CooldownRow>,
-    /// The caller-owned raid type token memo, sized from the raid database.
     pub type_memo: &'a mut ccountry_raid_status::TypeTokens,
 }
 
@@ -69,16 +57,11 @@ pub struct Walk {
     pub cooldowns: Outcome,
     pub type_tokens_len: usize,
     pub show_for_len: usize,
-    /// Arena demand, including rows that did not fit.
     pub required_type_tokens: usize,
     pub required_show_for: usize,
-    /// Instance and cooldown rows refused because their target's leader
-    /// captor is unproven; counted in the truncation, never in the demand.
     pub refused_leaders: u32,
 }
 
-/// Fills `arena[*len..][..count]` through `copy`, or only counts the demand
-/// when it does not fit. Returns the start of the filled range.
 fn append<T: Default>(
     arena: &mut crate::walk::Buffer<'_, T>,
     len: &mut usize,
@@ -102,7 +85,6 @@ fn append<T: Default>(
     Ok(Some(start))
 }
 
-/// The `show_for` handles, 64 per guarded call.
 fn copy_handles(memory: &impl Memory, source: Array, slot: &mut [u32]) -> Result<(), &'static str> {
     const BATCH: usize = 64;
     const STRIDE: usize = craid_instance::SHOW_FOR_COUNTRY_STRIDE;
@@ -122,10 +104,6 @@ fn copy_handles(memory: &impl Memory, source: Array, slot: &mut [u32]) -> Result
     Ok(())
 }
 
-/// The type-token arena demand of every raid parent's eligible and used
-/// lists: [`walk`] with no row storage, which copies the parents in their
-/// batches and counts each list without reading it. For presizing the arena
-/// before a full hour (the collector's live sizing observation).
 pub fn required_type_tokens(
     memory: &impl Memory,
     base: usize,
@@ -150,10 +128,6 @@ pub fn required_type_tokens(
     }
 }
 
-/// Reads the persistent country-indexed raid graph once. Parent and instance
-/// capacities are independent; a row whose arena range does not fit is left
-/// out and counted, so a prefix never implies a complete census. Omitted
-/// instances are counted from authenticated vector headers. No allocation.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -220,7 +194,6 @@ fn walk_buffer(
         let mut parent_records = [0_u8; BATCH * ccountry_raid_status::PARENT_BYTES];
         let mut cooldown_records = [0_u8; BATCH * ccountry_raid_status::COOLDOWN_BYTES];
         for ordinal in 0..roster.count {
-            // Parents are copied 64 at a time, each batch when it starts.
             let in_batch = ordinal as usize % BATCH;
             if in_batch == 0 {
                 let count = (roster.count - ordinal).min(BATCH as u32) as usize;
@@ -268,7 +241,6 @@ fn walk_buffer(
                     unread_cooldowns += children.cooldowns.count - index;
                     break;
                 };
-                // A country's cooldowns are copied 64 at a time.
                 let in_batch = index as usize % BATCH;
                 if in_batch == 0 {
                     let count = (children.cooldowns.count - index).min(BATCH as u32) as usize;
@@ -284,7 +256,6 @@ fn walk_buffer(
                     [..ccountry_raid_status::COOLDOWN_BYTES];
                 let (raid_type, scope, days) =
                     ccountry_raid_status::parse_cooldown(memory, base, record, known)?;
-                // An unproven leader captor refuses just this row.
                 if scope.leader_refused {
                     unread_cooldowns += 1;
                     walk.refused_leaders += 1;
@@ -343,7 +314,6 @@ fn walk_buffer(
                         }))
                     });
                 match row {
-                    // An unproven leader captor refuses just this row.
                     Ok(Some(row)) if row.target.leader_refused => {
                         unread_instances += 1;
                         walk.refused_leaders += 1;
@@ -371,8 +341,6 @@ fn walk_buffer(
         let instance_outcome = if let Some(reason) = instance_error {
             Outcome::Unavailable { reason }
         } else {
-            // Native references are the row keys; vector positions are retained
-            // in each row. Sorting in place detects duplicates without a set.
             instances[..instance_len].sort_unstable_by_key(|row| row.key());
             if instances[..instance_len]
                 .windows(2)

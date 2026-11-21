@@ -1,7 +1,3 @@
-//! Passive production-hover operands. Cached MIO bonuses are copied without
-//! refreshing them. Shared passive readers acquire source trees; this pack owns
-//! country selection and daily cadence. Requests use the public accumulator/key
-//! reader, independently of army-specific demand selection.
 
 use crate::{
     Memory, attrition_modifier_breakdown::Request, ccountry, cequipment_production_line as line,
@@ -10,13 +6,10 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Production-tooltip modifier keys in increasing order.
 pub use engine_executable::native_values::production_modifiers::KEYS;
-/// Seven production categories mapped through the runtime token table, distinct from token IDs.
 pub const BONUS_COUNT: usize = 7;
 const BONUS_KEYS_RVA: Rva = Rva(0x0343_8320);
 
-/// Signed i32 start/cap percentages, signed fixed5 gain/balance and four fixed5 factory rates.
 const DEFINE_RVAS: [Rva; 8] = [
     Rva(0x033e_0dec),
     Rva(0x033e_0e68),
@@ -34,11 +27,8 @@ pub struct Context {
     pub cap: i32,
     pub gain: i64,
     pub balance: i64,
-    /// Unpowered/powered military, then unpowered/powered naval IC rates.
     pub factory_speed: [i64; 4],
-    /// Switch percentages for same variant, parent, family and archetype.
     pub retention: [i64; 4],
-    /// Stored fixed5 base conversion-speed bonus.
     pub conversion: i64,
     pub module_mask: u64,
     pub bonus_keys: [u32; BONUS_COUNT],
@@ -69,7 +59,6 @@ impl Context {
             *value = i64::from(global::<i32>(memory, base, rva)?).wrapping_mul(1000);
         }
         result.conversion = global(memory, base, Rva(0x033e_23e8))?;
-        // Equipment-category feature gates.
         let mask = global::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
         result.module_mask = (if mask & (1 << 4) != 0 {
             0x80004001c0
@@ -88,12 +77,8 @@ impl Context {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Country {
     pub country: u32,
-    /// Pass-local tree address, never serialized as an identity.
     pub accumulator: usize,
-    /// Stored powered-factory fraction.
     pub power_raw: i64,
-    /// The country's census slot, pass-local: it places the country in a
-    /// slot range of a capture split into parts ([`capture_slots`]).
     pub slot: u32,
 }
 
@@ -105,22 +90,15 @@ pub struct Line {
     pub organisation: u64,
     pub kind: u8,
     pub active_factories: i32,
-    /// Growth/output operand.
     pub resource_penalty: i64,
-    /// the stored bonus; a getter would refresh the bonus cache when nonzero.
     pub organisation_dirty: bool,
-    /// The line's conversion control (`is_converting` in saves).
     pub conversion: bool,
-    /// Positive variant licensing selects the licence-speed contribution.
     pub licensed: bool,
     pub conversion_output: bool,
     pub refit_output: bool,
-    /// Type archetype selection independent of cached variant flags.
     pub naval_efficiency: bool,
-    /// Stored variant ship-family mask used for output.
     pub naval_output: bool,
     pub bonuses: [i64; BONUS_COUNT],
-    /// All saved factory-efficiency occurrences, in native order.
     pub efficiencies: [usize; 2],
 }
 
@@ -189,11 +167,6 @@ fn module_at(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("production modifier address overflow")
 }
 
-/// Whether military production converts into `variant` while its line's
-/// conversion control is set: the native target gate, before the module
-/// restriction the conversion-output bonus adds. A design with a parent, or of
-/// a conversion-family type, is a target unless licensed; any design of a type
-/// with a convert-from list is one. No game function is called.
 pub fn conversion_target(memory: &impl Memory, variant: usize) -> Result<bool, &'static str> {
     fn operand<T: crate::memory::Raw>(
         memory: &impl Memory,
@@ -247,7 +220,6 @@ fn add(value: &mut usize, amount: usize) -> Result<(), &'static str> {
 }
 fn normalized(mut flags: u64) -> u64 {
     use crate::cequipment_type as ty;
-    // Category normalization preserves branch order.
     if flags & ty::SHIP_MASK != 0 {
         if flags & ty::NORMALIZE_FIRST_SELECTOR != 0 {
             flags &= !ty::NORMALIZE_FIRST_CLEAR;
@@ -260,7 +232,6 @@ fn normalized(mut flags: u64) -> u64 {
     flags
 }
 
-/// Effective archetype precedes the current type; caller scratch retains that order without a depth cap.
 fn naval(
     memory: &impl Memory,
     base: usize,
@@ -320,9 +291,6 @@ pub struct Demand {
     pub requests: usize,
 }
 
-/// Off-thread headers only. Production refresh sizes retained efficiency
-/// entries from the factory limit; active factories and country count do not
-/// bound them. Values are acquired independently.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let mut demand = Demand::default();
@@ -368,9 +336,6 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand,
     Ok(demand)
 }
 
-/// One authenticated production roster. No allocation, game calls, or retries.
-/// Short caller-owned arenas retain demand for off-hour growth and refuse the
-/// supplement; the existing ProductionLines census remains independent.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -381,12 +346,6 @@ pub fn capture(
     capture_slots(memory, base, state, 1..u32::MAX, None, context, out)
 }
 
-/// [`capture`] over the census slots `slots` only, one part of a
-/// capture split by consecutive slot ranges: each part's rows are the whole
-/// walk's for its slots, in order, and its first failure is the one the whole
-/// walk meets in them. `provided`, when given, is the define context read once
-/// for every part, used at a part's first country with lines in place of
-/// reading it there (the whole walk reads it once, at the first such country).
 pub fn capture_slots(
     memory: &impl Memory,
     base: usize,
@@ -442,7 +401,6 @@ fn capture_buffer(
         let status = cproduction_status::manager(memory, base, country)?;
         let roster = Array::read(memory, at(status, cproduction_status::LINES)?, 8)
             .ok_or("production modifier line roster unreadable or invalid")?;
-        // Idle countries need no hover trees or factory operands.
         if roster.count == 0 {
             continue;
         }
@@ -518,7 +476,6 @@ fn capture_buffer(
             if factory.count as usize > out.efficiencies.len().saturating_sub(start) {
                 continue;
             }
-            // A fixed stack batch bounds read size, never the live count.
             for index in (0..factory.count as usize).step_by(256) {
                 let count = (factory.count as usize - index).min(256);
                 let address = factory
@@ -540,7 +497,6 @@ fn capture_buffer(
             let bonus = Array::read(memory, at(pointer, 0xa0)?, 16)
                 .ok_or("production modifier organisation cache unreadable or invalid")?;
             let mut bonuses = [0_i64; BONUS_COUNT];
-            // Production bonus selection uses the first equal key.
             let mut found = [false; BONUS_COUNT];
             for index in 0..bonus.count {
                 let entry = bonus
@@ -575,9 +531,7 @@ fn capture_buffer(
             let conversion = field::<u8>(memory, pointer, line::CONVERSION)? != 0;
             let licensed =
                 field::<i32>(memory, variant_pointer, cequipment_variant::ORIGIN_LINK)? > 0;
-            // Production-speed operands include the conversion branch.
             let mut conversion_output = conversion && conversion_target(memory, variant_pointer)?;
-            // Enabled module slots gate the conversion bonus.
             if conversion_output
                 && field::<i32>(memory, definition, crate::cequipment_type::SLOTS_COUNT)? != 0
             {
@@ -606,8 +560,6 @@ fn capture_buffer(
                 ) & context.module_mask
                     == 0;
             }
-            // The four supported production forms have constant eligibility predicates.
-            // Refit selects true; the others select zero. Refuse a different implementation.
             let implementation = usize::try_from(field::<u64>(memory, vtable as usize, 0xd8)?)
                 .map_err(|_| "unreached production refit virtual implementation")?;
             let refit_output = match engine_sites::which(

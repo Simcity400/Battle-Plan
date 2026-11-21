@@ -19,9 +19,6 @@ fn key(high: u32, low: u32) -> u128 {
     u128::from(high) << 32 | u128::from(low)
 }
 
-/// Two countries, two states, four provinces: a capital star moving with victory points written
-/// twice inside one step, a recorded rename, a war beginning and ending, a state changing owner, and
-/// Countries not recorded for a stretch.
 fn side(name: &str) -> crate::playhead_host::MapSide {
     let strings = |at: u32| match at {
         0 => ["AAA", "BBB", "Bigtown"].map(str::to_owned).to_vec(),
@@ -98,7 +95,6 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
     let mut side = side("labels-steps");
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let mut seen = Vec::new();
-    // The labels last seen are kept alive, so labels made again never share their address.
     let mut made: Option<(Arc<map_display_data::landscape::Labels>, replay_data::Hour)> = None;
     frames_until(&mut side, |side, frame| {
         if frame.steps == 0 || side.composing() {
@@ -133,7 +129,6 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
             other => panic!("province {province} at hour {hour}: {other:?}"),
         };
         assert_eq!(display.perspective.as_deref(), Some("AAA"));
-        // State 200's provinces 3 and 4 tie on three points throughout; state 100's star stands.
         let tied = format!("Field Capital stars: capital state 200 carries no star: {}", viewer_world::map::labels::TIED_VICTORY_POINTS);
         assert_eq!(layer.notes(), [tied], "today's line for the withheld star alone at hour {hour}");
         if hour < 8 {

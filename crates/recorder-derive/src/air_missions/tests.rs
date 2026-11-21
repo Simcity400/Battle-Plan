@@ -6,8 +6,6 @@ use crate::{
 use replay_columnar::store::Store;
 use replay_data::rows::{AirMissionWingRow, CountryLinkRow};
 
-/// One hour of the inputs: links (raw id, slot), wings (id, owner, mission region, mask, planes),
-/// registrations (wing, ordinal) and AirRegionalMissions' status.
 #[derive(Clone)]
 struct World {
     links: Vec<(u32, u32)>,
@@ -41,12 +39,10 @@ fn writers() -> Writers {
     writers
 }
 
-/// A group's wings and its missions, none where not recorded.
 fn counts(store: &Store, slot: u32, region: u32) -> Option<Vec<Option<i64>>> {
     cells(store, TableId::AirMissionCounts, group_key((slot, region)))
 }
 
-/// A row of `wings` wings with the missions `missions` (bit, total) and every other not recorded.
 fn expect(wings: i64, missions: &[(usize, i64)]) -> Option<Vec<Option<i64>>> {
     let mut cells = vec![None; 1 + AirMissionCountRow::MISSIONS];
     cells[0] = Some(wings);
@@ -58,9 +54,6 @@ fn expect(wings: i64, missions: &[(usize, i64)]) -> Option<Vec<Option<i64>>> {
 
 const NEGATIVE: u32 = 0x8000_0002;
 
-/// Wings count in registration order: a non-positive mask admits no mission and selects no
-/// column, a negative total restarts from zero and sums wrap; a group's row follows its wings'
-/// owners and regions and goes with its last registration.
 #[test]
 fn mission_counts_follow_registration_order_and_the_map_s_arithmetic() {
     let base = [(1, 10, Some(5), 0b101, 4), (2, 10, Some(5), 0b001, 3), (3, 10, Some(5), NEGATIVE, 9), (4, 20, Some(5), 0b010, 7), (5, 10, Some(6), 0, 2), (6, 10, Some(5), 1, 100)];
@@ -93,8 +86,6 @@ fn mission_counts_follow_registration_order_and_the_map_s_arithmetic() {
     }
 }
 
-/// A registration that does not join withholds the table by name, rows as they were; once every
-/// registration joins again every group is written as it stands.
 #[test]
 fn a_registration_that_does_not_join_withholds_the_table() {
     let wings = [(1, 10, Some(5), 1, 4), (2, 20, Some(5), 1, 3)];
@@ -134,8 +125,6 @@ fn a_registration_that_does_not_join_withholds_the_table() {
     }
 }
 
-/// A resume rebuilds every group from the tables: every hour after it equals a run that never
-/// stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let wings = [(1, 10, Some(5), 0b11, 4), (2, 10, Some(5), 0b01, 3), (3, 20, Some(6), 0b10, 1)];
@@ -181,8 +170,6 @@ fn group_keys_are_the_row_codec_s() {
     assert_eq!(group_key((u32::MAX, 7)), row.key());
 }
 
-/// Each owner's region's wings in registration order, from AirMissionWings: its key range by
-/// ordinal.
 fn region_wings(store: &Store, slot: u32, region: u32) -> Vec<u64> {
     let view = store.view(TableId::AirMissionWings.index());
     let mut wings: Vec<(i64, u64)> = view
@@ -196,9 +183,6 @@ fn region_wings(store: &Store, slot: u32, region: u32) -> Vec<u64> {
     wings.into_iter().map(|(_, wing)| wing).collect()
 }
 
-/// AirMissionWings holds, under each owner's region, exactly the wings the map's own roster
-/// (`regional_counts`) puts there, in its order, as registrations, owners, links and regions
-/// move: a wing leaving a region leaves its rows, a deregistered one has none.
 #[test]
 fn a_region_s_wings_are_the_map_s_roster_in_registration_order() {
     let base = [(1, 10, Some(5), 0b101, 4), (2, 10, Some(5), 0b001, 3), (3, 10, Some(5), NEGATIVE, 9), (4, 20, Some(5), 0b010, 7), (5, 10, Some(6), 0, 2), (6, 10, Some(5), 1, 100)];

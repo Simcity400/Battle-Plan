@@ -1,11 +1,3 @@
-//! Scale equivalence and cost of the variant walk.
-//!
-//! `space` is a deterministic variant registry of many countries, built at
-//! the buffer's own addresses so the same bytes serve `SliceMemory` and the
-//! guarded `LiveMemory` copier. The golden digests were recorded from the
-//! walk before names left the rows; they cover every field both formats hold.
-//! The designer's explicit entity joined the rows later and is checked
-//! against the written bytes instead.
 
 use super::*;
 use engine_equipment::cequipment_upgrades_instance;
@@ -15,17 +7,13 @@ use engine_native::{
 };
 use replay_data::rows::TableSchema;
 
-/// Through the held organisation trait marker, rounded to object alignment.
 const VARIANT: usize = (cequipment_variant::DESIGN_TEAM_TRAITS + 4).next_multiple_of(16);
 const DEFINITION: usize = 0x40;
-/// An equipment type reaches its archetype pointer.
 const TYPE_DEFINITION: usize = cequipment_type::ARCHETYPE + 8;
 const TYPES: usize = 200;
 const MODULES: usize = 300;
 const UPGRADES: usize = 100;
 
-/// The designer's saved model choice of variant `index`: a heap string for
-/// every seventh variant, empty otherwise.
 fn explicit_entity(index: usize) -> String {
     if index.is_multiple_of(7) {
         format!("designer_explicit_entity_{index}")
@@ -34,9 +22,6 @@ fn explicit_entity(index: usize) -> String {
     }
 }
 
-/// Variant `index`'s icon entry: an active sprite name for every eleventh
-/// variant, the auto-design sentinel path for every third, else the inactive
-/// entry a new variant starts with.
 fn icon(index: usize) -> (u8, u32, String) {
     if index.is_multiple_of(11) {
         (1, 0, format!("GFX_designer_icon_{index}"))
@@ -105,7 +90,6 @@ impl Writer {
         self.u32(address + 12, count);
     }
 
-    /// An MSVC string: inline below 16 bytes, else on the heap.
     fn string(&mut self, header: usize, text: &[u8]) {
         let len = text.len();
         if len < 16 {
@@ -124,11 +108,7 @@ impl Writer {
     }
 }
 
-/// About `per_country` variants for each of `countries` creators.
 pub(super) fn space(countries: usize, per_country: usize) -> Space {
-    // Keep empty native reference roots inside this same buffer for guarded
-    // and slice readers. Unresolved frozen authors still require readable
-    // roots for the independently observed save-admission witness.
     let reference_extent = engine_native::creference_registry::LOW_ROOTS_RVA.0
         + engine_native::creference_registry::LOW_ROOT_COUNT as usize * 8
         - cgame_state::SINGLETON_RVA.0;
@@ -136,7 +116,6 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
     let plans: Vec<(usize, usize)> = (0..variants)
         .map(|index| {
             let seed = mix(index as u64);
-            // Every 97th variant crosses the 32-entry module batch.
             let modules = if index.is_multiple_of(97) {
                 40
             } else {
@@ -184,8 +163,6 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             .collect::<Vec<_>>()
     };
     let types = definitions(&mut writer, TYPES, cequipment_type::VTABLE_RVA, "type");
-    // Each type is its own archetype, which the
-    // definitions walk authenticates for the archetype token.
     for &equipment in &types {
         writer.u64(equipment + cequipment_type::ARCHETYPE, equipment as u64);
     }
@@ -213,7 +190,6 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         pointers,
         variants as u32,
     );
-    // Variants live apart in a shuffled order, like heap objects.
     let objects = writer.alloc(variants * VARIANT);
     let step = (7_919..)
         .find(|step| gcd(*step, variants.max(1)) == 1)
@@ -244,8 +220,6 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             variant + cequipment_variant::ORGANISATION_TRAIT_COUNT,
             (index % 9) as u32,
         );
-        // Every variant owns an explicit empty frozen bonus array; its header
-        // must stay inside this object rather than alias the following object.
         writer.array(variant + cequipment_variant::ORGANISATION_BONUSES, 0, 0);
         writer.u32(
             variant + cequipment_variant::ORIGIN_LINK,
@@ -372,8 +346,6 @@ fn capacities(variants: usize) -> Capacities {
     capacities
 }
 
-/// The registry census and variant details, as the Variants job acquires
-/// them, and the acquisition's wall time in milliseconds.
 fn capture(memory: &impl Memory, space: &Space, variants: usize) -> ([TableView; 4], f64) {
     let slot = replay_data::cadence::refresh_slot(TableId::VariantDefinitions).unwrap() as i32;
     let mut registry = super::registry::Registry::new(variants);
@@ -388,7 +360,6 @@ fn capture(memory: &impl Memory, space: &Space, variants: usize) -> ([TableView;
     ([definitions, modules, stats, upgrades], elapsed)
 }
 
-/// FNV-1a over every field both formats hold, in row order.
 fn digest(views: &[TableView; 4]) -> u64 {
     fn rows<S: TableSchema>(
         text: &mut String,
@@ -485,16 +456,12 @@ fn scaled_variant_rows_match_the_recorded_digests() {
     }
 }
 
-/// Guarded calls and wall time of the variant job's reads over the real
-/// guarded copier, caches evicted first as for a daily walk.
-/// `cargo test --release -p collector variants_walk_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "bench"]
 fn variants_walk_bench() {
     for countries in [440, 1_500, 5_000] {
         let variants = countries * 16;
         let space = space(countries, 16);
-        // SAFETY: the space is immutable synthetic storage for this loop.
         let memory = engine_native::memory::CountedMemory::new(unsafe {
             engine_native::memory::LiveMemory::new()
         });

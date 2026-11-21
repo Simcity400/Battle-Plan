@@ -10,8 +10,6 @@ const S: i64 = SCALE;
 const V: u64 = 1000;
 const W: u64 = 2000;
 
-/// One hour of the inputs: countries and links (raw id, slot), wings (id, owner, override,
-/// planes), equipment entries (wing, ordinal, variant, amount) and WingEquipment's status.
 #[derive(Clone)]
 struct World {
     countries: Vec<(u32, u32)>,
@@ -56,7 +54,6 @@ fn writers() -> Writers {
 
 const TABLES: [TableId; 4] = [TableId::AirForceTotals, TableId::AirForceParts, TableId::AirForceWingKinds, TableId::AirForceWingSignatures];
 
-/// Every derived table after each hour, the writers saved and taken up again after hour `resume`.
 fn run(hours: &[World], resume: Option<usize>) -> Vec<Vec<Vec<(u128, Vec<String>)>>> {
     let mut store = store();
     let mut writers = writers();
@@ -86,10 +83,6 @@ fn kind(store: &Store, slot: u32, side: usize, number: u32) -> Option<i64> {
     cells(store, TableId::AirForceWingKinds, kind_key(slot, side, number)).map(|cells| cells[0].unwrap())
 }
 
-/// A wing counts for its roster owner and its effective country (a positive override, else its
-/// owner); a negative plane word leaves its country's planes unknown and its wings known; one wing
-/// whose owner no link resolves leaves that attribution unknown in every row; a slot no country
-/// holds has a row while it holds wings.
 #[test]
 fn air_force_totals_follow_owners_and_say_what_is_not_known() {
     let hours = [
@@ -120,12 +113,6 @@ fn air_force_totals_follow_owners_and_say_what_is_not_known() {
     }
 }
 
-/// Planes split by variant with the rest under none; a wing that cannot split leaves its variants
-/// unknown; compositions are numbered in their order the first hour they are shown, kept while a
-/// live wing holds them (an unknown attribution's too, which has no rows) and deleted the hour none
-/// does, a composition held again taking a new number. Every kinds row names a signature held that
-/// hour and no number names two compositions, so a reply reading a number's signature at any hour
-/// it lived reads what the never-deleted table held.
 #[test]
 fn air_force_composition_splits_planes_and_numbers_compositions() {
     let full = [(1, 0, V, 6 * S), (1, 1, W, 4 * S), (2, 0, V, 2 * S)];
@@ -194,8 +181,6 @@ fn air_force_composition_splits_planes_and_numbers_compositions() {
     }
 }
 
-/// Equipment not read in full withholds the composition by name and never the totals; the next
-/// complete hour writes it whole again.
 #[test]
 fn equipment_not_complete_withholds_the_composition_alone() {
     let mut hours = vec![world(&[(1, 10, 0, 10)], &[(1, 0, V, 10 * S)]); 3];
@@ -214,8 +199,6 @@ fn equipment_not_complete_withholds_the_composition_alone() {
     assert_eq!(part(&store, 1, 0, Some(V)), Some(Some(10)));
 }
 
-/// A resume takes the writers up from their tables alone: every table, every hour after it,
-/// equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let hours = [

@@ -1,10 +1,6 @@
-//! Preserve native IA fetches when a retained declaration overlaps buffer strides.
 use crate::gpu::VertexLayout;
 use std::collections::BTreeMap;
 
-/// A native allocation of `size` bytes whose written prefix is `bytes`. `offset` is the
-/// bound IA byte offset. `known` lists the initialized byte ranges, sorted and disjoint,
-/// within `bytes`; unknown bytes must not be supplied as invented zeros.
 pub struct NativeBuffer<'a> {
     pub bytes: &'a [u8],
     pub size: u64,
@@ -17,10 +13,6 @@ pub struct PackedBuffers {
     pub bytes: Vec<Vec<u8>>,
 }
 
-/// Copy attributes without numeric conversion. The GPU still decodes each
-/// original format, including UNORM, integer inputs and missing components.
-/// D3D11.3 spec8.19.2 makes a fetch outside the bound allocation zero in the
-/// format's present components. An absent map entry is unknown; `None` is null.
 pub fn pack_native(
     layouts: &[VertexLayout],
     buffers: &BTreeMap<u32, Option<NativeBuffer<'_>>>,
@@ -55,7 +47,6 @@ pub fn pack_native(
                 .get(&(slot as u32))
                 .ok_or_else(|| format!("native vertex buffer slot {slot} has not been supplied"))?;
             if let Some(buffer) = buffer {
-                // Byte span of one record's fetches, to check each record's reads at once.
                 let first = layout
                     .attributes
                     .iter()
@@ -68,8 +59,6 @@ pub fn pack_native(
                     .map(|a| a.offset + a.format.size())
                     .max()
                     .unwrap_or(0);
-                // A contiguous declaration copies one known span per record, without copying
-                // native stride padding or the packed format's zero-filled alignment bytes.
                 let contiguous =
                     layout
                         .attributes
@@ -124,7 +113,6 @@ pub fn pack_native(
     Ok(out)
 }
 
-/// Whether sorted, disjoint `known` ranges cover `from..end`.
 fn covered(known: &[std::ops::Range<u64>], from: u64, end: u64) -> bool {
     let mut index = known.partition_point(|range| range.end <= from);
     let mut at = from;
@@ -174,7 +162,6 @@ mod tests {
         let out = pack_native(&layouts, &sources, 1, 2).unwrap();
         assert_eq!(out.layouts[0].stride, 16);
         assert_eq!(out.bytes[0], [&bytes[..16], &bytes[20..36]].concat());
-        // A record straddling the physical end still copies its in-range attribute and zeros the other.
         let known = 20..32;
         let sources = BTreeMap::from([(
             0,
@@ -262,7 +249,6 @@ mod tests {
 
     #[test]
     fn written_prefix_of_a_larger_allocation_reads_known_ranges_only() {
-        // A ring: 4-byte records with 3 known bytes each, written 2 of 4 records deep.
         let layout = VertexLayout {
             stride: 4,
             step: wgpu::VertexStepMode::Instance,
@@ -293,17 +279,14 @@ mod tests {
             )])
         };
         let out = pack_native(std::slice::from_ref(&layout), &source(0), 1, 2).unwrap();
-        // Adjacent known ranges cover a fetch across them.
         assert_eq!(
             out.bytes[0],
             [11, 12, 0, 0, 10, 11, 0, 0, 15, 16, 0, 0, 14, 15, 0, 0]
         );
-        // Inside the allocation but past the written prefix is unknown, not zero.
         let error = pack_native(std::slice::from_ref(&layout), &source(0), 1, 3)
             .err()
             .unwrap();
         assert!(error.contains("record 2") && error.contains("unavailable bytes 9..11"));
-        // Past the allocation's size reads zero.
         let out = pack_native(std::slice::from_ref(&layout), &source(16), 1, 2).unwrap();
         assert_eq!(out.bytes[0], [0; 16]);
     }

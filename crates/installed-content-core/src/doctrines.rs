@@ -1,4 +1,3 @@
-//! Doctrine names, authored presentation and tactic-source inventories, through the content stack.
 
 use crate::{
     ResolvedLayers,
@@ -22,14 +21,10 @@ pub struct Folder {
     pub refused: Option<String>,
 }
 
-/// Presentation fields use authored bytes, independently of folded lookup identity.
-/// Repeated declarations reuse the first token spelling and replace only supplied
-/// scalar fields; omitted fields keep the existing object, as the name reader does.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Presentation {
     pub token: Vec<u8>,
     pub icon: Vec<u8>,
-    /// Grand-doctrine folder reference; absent for other definition kinds.
     pub folder: Option<Token>,
 }
 
@@ -40,21 +35,17 @@ pub struct Database {
     pub sub: BTreeMap<Token, Name>,
     pub tracks: BTreeMap<Token, Name>,
     pub tactic_sources: TacticSources,
-    /// Unique folders in native registration order.
     pub folder_order: Vec<Token>,
     pub folder_presentations: BTreeMap<Token, Presentation>,
     pub grand_presentations: BTreeMap<Token, Presentation>,
     pub sub_presentations: BTreeMap<Token, Presentation>,
     pub track_presentations: BTreeMap<Token, Presentation>,
-    /// Technology descriptions share this already cached family database.
     pub technologies: Option<crate::technology::Catalog>,
     pub notes: Vec<String>,
     unread: Option<String>,
 }
 
 impl Database {
-    /// Same kind domain as `name`: grand, subdoctrine, then track.
-    /// Presentation does not depend on whether a bound name can be formatted.
     pub fn presentation(&self, kind: u8, token: &[u8]) -> Result<Option<&Presentation>, String> {
         if let Some(why) = &self.unread {
             return Err(why.clone());
@@ -74,8 +65,6 @@ impl Database {
         Ok(self.folder_presentations.get(&Token::c_str(token)))
     }
 
-    /// Every grand choice in the folder, in registration order. Repeated object
-    /// occurrences still remain in `tactic_sources.grand_order` for its callers.
     pub fn grand_in_folder(&self, folder: &[u8]) -> Result<Vec<&Presentation>, String> {
         if let Some(why) = &self.unread {
             return Err(why.clone());
@@ -108,13 +97,10 @@ impl Database {
         Ok(name)
     }
 
-    /// Folder token lookup used by mastery selectors.
     pub fn folder_exact(&self, token: &[u8]) -> Result<Option<&Folder>, String> {
         self.lookup(parser::c_string(token), false)
     }
 
-    /// The bonus reader first finds the exact folder token, then removes
-    /// its native `_doctrine` suffix before the category fallback.
     pub fn folder(&self, token: &[u8]) -> Result<Option<&Folder>, String> {
         self.lookup(parser::c_string(token), true)
     }
@@ -124,7 +110,6 @@ impl Database {
             return Err(why.clone());
         }
         let folder = self.entries.get(&token.to_ascii_lowercase()).or_else(|| {
-            // The suffix check tests authored bytes before token lookup.
             strip_suffix
                 .then_some(token)
                 .and_then(|token| token.strip_suffix(b"_doctrine"))
@@ -188,7 +173,6 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, names: &KeyNames)
                     ..Default::default()
                 }
             });
-        // Repeated tokens read into the existing object; omitted fields remain.
         let folder = database.entries.entry(token).or_default();
         for field in item.value.items().unwrap_or_default() {
             if field.keyword_is("tab_gfx")
@@ -234,7 +218,6 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, names: &KeyNames)
     }
 }
 
-/// Folder loader enumerates only this directory's files in lexer mode 0.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();

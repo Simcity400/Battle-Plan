@@ -1,5 +1,3 @@
-//! State air bases' AirBaseRegistrations subtrees carried between hours
-//! ([`super::RegistrationStore`], [`crate::air_base_carry_changes`]).
 use super::air_bases_test_kit as kit;
 use super::*;
 use crate::{air_base_carry_changes::Watches, extended::fog};
@@ -8,7 +6,6 @@ use std::cell::RefCell;
 
 const B0_HANDLE: u64 = (0x41 << 32) | cair_base::TYPE as u64;
 
-/// The fixture with B0's pool naming B0 by its base handle, as `SetAirBase` links it.
 fn fixture() -> Vec<u8> {
     let mut bytes = kit::fixture();
     kit::put64(
@@ -31,7 +28,6 @@ impl Memory for Reads<'_> {
     }
 }
 
-/// A job carrying through a fresh store under `watches`.
 fn job(watches: &'static Watches) -> AirBasesJob {
     let mut job = AirBasesJob::fixture();
     job.registration_store = Some(Box::new(RegistrationStore::new()));
@@ -42,8 +38,6 @@ fn job(watches: &'static Watches) -> AirBasesJob {
     job
 }
 
-/// One acquisition of `bytes` and its replay: the registrations, the live
-/// reads and the store's counts.
 fn hour(
     bytes: &[u8],
     job: &mut AirBasesJob,
@@ -175,9 +169,6 @@ fn failed_registration_observer_and_forwarder_read_changed_native_subtrees() {
     }
 }
 
-/// An hour after a base's fresh read carries its subtree without reading a
-/// container, pool or wing, and the replay publishes the rows a fresh read
-/// would; a hooked write to one base reads only that base again.
 #[test]
 fn an_untouched_state_base_carries_its_subtree_and_a_touched_one_is_read() {
     let mut bytes = fixture();
@@ -198,9 +189,7 @@ fn an_untouched_state_base_carries_its_subtree_and_a_touched_one_is_read() {
     }
     assert_same(&carried, &first);
 
-    // RemoveWing drops W1 from B0's pool, marking B0 by the pool's handle.
     let notification = watches.notify(Some(B0_HANDLE));
-    // The wing vector's count is its header's last word.
     kit::put32(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS + 12, 1);
     drop(notification);
     let (removed, _, read) = hour(&bytes, &mut job);
@@ -209,9 +198,6 @@ fn an_untouched_state_base_carries_its_subtree_and_a_touched_one_is_read() {
     assert_eq!(removed.wings, [kit::WING_HANDLE_0]);
 }
 
-/// Each base's registration time is named by how its subtree was taken: the
-/// host is read without a carry, the state bases are read and held, then
-/// carried with the spans and bytes they splice.
 #[test]
 fn registration_work_names_each_base_by_how_its_subtree_was_taken() {
     let bytes = fixture();
@@ -230,9 +216,6 @@ fn registration_work_names_each_base_by_how_its_subtree_was_taken() {
     );
 }
 
-/// At attach no watch table is installed: the first pass holds nothing but
-/// still counts the state bases it reached, which size the table, and the
-/// hour after the table installs carries.
 #[test]
 fn the_first_pass_sizes_the_watches_without_holding_a_base() {
     let bytes = fixture();
@@ -250,8 +233,6 @@ fn the_first_pass_sizes_the_watches_without_holding_a_base() {
     assert_eq!(read, counts(2, 0));
 }
 
-/// A base listing a pool whose base handle names no base (or another one) is read every hour: that
-/// pool's writers would not notify it.
 #[test]
 fn a_base_whose_pool_names_another_base_is_never_carried() {
     let mut bytes = fixture();
@@ -268,11 +249,8 @@ fn a_base_whose_pool_names_another_base_is_never_carried() {
     assert_same(&carried, &direct(&bytes));
 }
 
-/// A base whose dense list proves its slots carries its subtree under the
-/// same slot mode, and the replay publishes a fresh read's rows.
 #[test]
 fn a_dense_planned_base_carries_its_subtree() {
-    // Each state base's dense list names its one container.
     let mut bytes = fixture();
     for (base, list, container) in [
         (kit::B0, 0x68000, kit::CONT1),
@@ -289,7 +267,6 @@ fn a_dense_planned_base_carries_its_subtree() {
     job.slot_run = crate::air_base_changes::SlotRun { dense: true };
     let (first, _, read) = hour(&bytes, &mut job);
     assert_eq!(read, counts(0, 2));
-    // The host base, whose dense list is empty, is planned too.
     assert_eq!(job.slot_report.dense, 3);
     assert_same(&first, &direct(&bytes));
     let (carried, _, read) = hour(&bytes, &mut job);
@@ -297,8 +274,6 @@ fn a_dense_planned_base_carries_its_subtree() {
     assert_same(&carried, &first);
 }
 
-/// A pass that stops early (here an unreadable air manager) holds nothing,
-/// so the next complete pass reads every base.
 #[test]
 fn a_pass_that_stops_early_holds_nothing() {
     let mut bytes = fixture();
@@ -314,7 +289,6 @@ fn a_pass_that_stops_early_holds_nothing() {
     assert_same(&restored, &direct(&bytes));
 }
 
-/// [`hour`] decoding with `decoded`, which keeps walked bases across hours.
 fn hour_reusing(
     bytes: &[u8],
     job: &mut AirBasesJob,
@@ -355,8 +329,6 @@ fn decoded(reused: u64, walked: u64) -> DecodedCounts {
     DecodedCounts { reused, walked }
 }
 
-/// The decode worker appends a carried base's rows from its walk of the
-/// same held segment and walks a base read afresh into a new segment.
 #[test]
 fn a_carried_segment_appends_the_rows_its_earlier_walk_decoded() {
     let mut bytes = fixture();
@@ -372,8 +344,6 @@ fn a_carried_segment_appends_the_rows_its_earlier_walk_decoded() {
     assert_eq!(reuse.counts(), decoded(2, 2));
     assert_same(&carried, &first);
 
-    // RemoveWing drops W1 from B0's pool: B0 is read into a new segment and
-    // walked; B1 still appends.
     let notification = watches.notify(Some(B0_HANDLE));
     kit::put32(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS + 12, 1);
     drop(notification);
@@ -383,8 +353,6 @@ fn a_carried_segment_appends_the_rows_its_earlier_walk_decoded() {
     assert_eq!(removed.wings, [kit::WING_HANDLE_0]);
 }
 
-/// A base the acquisition reports no segment for is walked every hour, and
-/// a pass that cannot index the segments walks every base.
 #[test]
 fn a_base_without_a_reported_segment_is_walked() {
     let bytes = fixture();
@@ -422,8 +390,6 @@ fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
     kit::put64(&mut bytes, DENSE + 8, kit::CONT1 as u64);
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
-    // The complete-slot fallback retains dense repeats, which cannot use the
-    // fast path's proof of distinct occupied slots.
     job.slot_run.dense = false;
     let source = kit::direct(&kit::memory(&bytes)).bases;
     let decode = |job: &AirBasesJob| {

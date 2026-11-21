@@ -1,14 +1,3 @@
-//! The map's limitation lines at the playback head, in today's order and words: each table's status
-//! from the recording's block pages (no table is opened for them), an unavailable table's reason as
-//! the recording words it, the tables' row notes from the values the mirrors hold, then each drawn
-//! layer's own notes (made where the value is: vision's on its worker, the battle plan's with the
-//! plan, the strikes', the labels' and the raid arrows' with their products), and each registered
-//! layer's refusal by name. A layer hidden or refused gives no note of its own.
-//!
-//! A reason's words are a fact of the recording whether or not any layer declares its table: they
-//! are read from the strings the table's restore and parts list, on a thread of their own, once
-//! for a table and reason id, and kept while the recording's pages are held.
-
 #[cfg(test)]
 mod tests;
 
@@ -25,22 +14,16 @@ use std::{
 };
 use viewer_foundation::map::tables::{DISPLAY_NOT_RECORDED, DISPLAY_UNAVAILABLE, Limitations, RowFacts, Seen, Statuses, table_limitations};
 
-/// How a line the map cannot give at the head starts: the rest names the line it stands for and why.
 pub const NOT_GIVEN: &str = "Map limitations: not given at the playback head: ";
 
-/// What the line says while a reason's words are still being read.
 pub const BEING_READ: &str = "its reason is being read from the recording";
 
-/// What a report says of a reason whose words it waited [`REPORT_WAIT`] for in vain.
 const NOT_IN_TIME: &str = "its reason could not be read in time";
 
-/// How long a report (the detail report, the proof's comparison) waits for a reason's words.
 const REPORT_WAIT: Duration = Duration::from_secs(60);
 
-/// A reason's words as read from the recording.
 enum Text {
     Words(String),
-    /// The recording names no text for the id where the table's strings are.
     Unheld(u32),
     Failed(String),
 }
@@ -62,8 +45,6 @@ impl Reason {
         self.read.notify_all();
     }
 
-    /// The line's words, waiting up to `wait` for them: still unread, [`BEING_READ`] when it may
-    /// not wait, [`NOT_IN_TIME`] when it waited.
     fn words(&self, wait: Duration) -> String {
         let deadline = Instant::now() + wait;
         let mut text = lock(&self.text);
@@ -86,11 +67,8 @@ impl Reason {
 
 type Held = (Weak<dyn Pages>, HashMap<(TableId, u32), Arc<Reason>>);
 
-/// Every reason asked of each recording's pages while they are held.
 static REASONS: Mutex<Vec<Held>> = Mutex::new(Vec::new());
 
-/// Reason `id` of `table`'s unavailable status, seen in block `block` of run `run`: the one asked
-/// before, or a new one whose read has just started.
 fn reason(pages: &Arc<dyn Pages>, table: TableId, id: u32, (run, block): (usize, usize)) -> Arc<Reason> {
     let mut held = lock(&REASONS);
     held.retain(|(pages, _)| pages.strong_count() > 0);
@@ -118,9 +96,6 @@ fn reason(pages: &Arc<dyn Pages>, table: TableId, id: u32, (run, block): (usize,
     reason
 }
 
-/// String `id`'s bytes where `table`'s strings are at block `block` of run `run`: its last restore
-/// before the block (or the run's first), then its parts since, through the block. A string's id
-/// names one text in the whole recording, so the first place naming it gives it.
 fn read(pages: &dyn Pages, run: usize, block: usize, table: usize, id: u32) -> io::Result<Option<Vec<u8>>> {
     let held = pages.runs().get(run).ok_or_else(|| io::Error::other(format!("no run {run}")))?;
     let kinds = pages.kinds(table).ok_or_else(|| io::Error::other(format!("table {table} is withheld")))?;
@@ -157,17 +132,13 @@ fn read(pages: &dyn Pages, run: usize, block: usize, table: usize, id: u32) -> i
     Ok(None)
 }
 
-/// What a report says of reason `id` of `table`, seen at `place` (run, block): its words, by name
-/// that the recording holds none, or, after waiting [`REPORT_WAIT`], that they were not read in time.
 pub(super) fn words(entry: &Entry, table: TableId, id: u32, place: (usize, usize)) -> String {
     reason(entry.pages(), table, id, place).words(REPORT_WAIT)
 }
 
-/// The statuses at the hour the map's mirrors are at.
 struct Head<'a> {
     side: &'a MapSide,
     hour: replay_data::Hour,
-    /// How long a reason's words are waited for: none on the frame thread; the proof waits.
     wait: Duration,
 }
 
@@ -184,19 +155,14 @@ impl Statuses for Head<'_> {
     }
 }
 
-/// A column of `table` by its field name.
 fn column(table: TableId, field: &str) -> Option<usize> {
     (0..).map_while(|column| table.field_name(column).map(|name| (column, name))).find(|&(_, name)| name == field).map(|(column, _)| column)
 }
 
-/// The rows a mirror holds at the head: none unless its table is recorded whole or in part, or
-/// when it holds no row.
 fn rows_of(mirrors: &Mirrors, table: TableId) -> Option<&Mirror> {
     mirrors.get(table).filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })) && mirror.rows().next().is_some())
 }
 
-/// `table`'s rows with the columns of `fields`, when it holds rows; a line in `missing` naming
-/// `line` when it holds rows but no drawn layer reads one of the columns.
 fn columns_of<'m, const N: usize>(mirrors: &'m Mirrors, table: TableId, fields: [&str; N], line: &str, missing: &mut Vec<String>) -> Option<(&'m Mirror, [usize; N])> {
     let rows = rows_of(mirrors, table)?;
     let mut columns = [0; N];
@@ -212,7 +178,6 @@ fn columns_of<'m, const N: usize>(mirrors: &'m Mirrors, table: TableId, fields: 
     Some((rows, columns))
 }
 
-/// An opaque cell decoded as the frame of rows decodes it, at its rows' format.
 fn decoded<T: NativeValue>(cell: Cell<&[u8]>, format: u16) -> Option<T> {
     let field = match cell {
         Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, format)),
@@ -221,9 +186,6 @@ fn decoded<T: NativeValue>(cell: Cell<&[u8]>, format: u16) -> Option<T> {
     T::from_field(field).ok()
 }
 
-/// The tables' row facts from the values the mirrors hold for the drawn layers, and a line for
-/// each fact whose column no drawn layer reads while its table holds rows. A table no layer reads
-/// gives no row note: its status line says what is known of it.
 fn facts(mirrors: &Mirrors) -> (RowFacts, Vec<String>) {
     let mut missing = Vec::new();
     let count = |(rows, [column]): (&Mirror, [usize; 1])| rows.rows().filter(|&slot| rows.raw_cell(column, slot).is_some_and(|value| value != 0)).count();
@@ -256,7 +218,6 @@ fn facts(mirrors: &Mirrors) -> (RowFacts, Vec<String>) {
     (facts, missing)
 }
 
-/// Layer `name` as `T`, while it draws.
 fn drawn<'a, T: 'static>(side: &MapSide, layers: &'a [Box<dyn Layer>], name: &str) -> Option<&'a T> {
     if !side.draws(name) {
         return None;
@@ -264,17 +225,12 @@ fn drawn<'a, T: 'static>(side: &MapSide, layers: &'a [Box<dyn Layer>], name: &st
     layers.iter().find(|layer| layer.name() == name)?.any().downcast_ref::<T>()
 }
 
-/// The raid arrows' notes the scripts layer published, for the viewing country the vision layer
-/// shows; none while the scripts are not drawn, show another country's or have published none.
 fn raid_notes(side: &MapSide) -> Option<std::sync::Arc<Vec<String>>> {
     let layers = side.parts().map(|(_, layers)| layers)?;
     let ours = drawn::<Vision>(side, layers, "vision").and_then(Vision::ours)?;
     crate::layers::scripts::notes(side, ours)
 }
 
-/// The lines made at the head in today's order, without the layers' refusals: the tables' notes,
-/// then the trains', the aircraft's, the point lights', the strikes', the viewing country's, the
-/// battle plan's, the raid arrows' (the scripts layer's), fog and sight, and the labels'.
 fn made(side: &MapSide, head: &Head<'_>, raids: &[String]) -> Vec<String> {
     let Some((mirrors, layers)) = side.parts() else { return table_limitations(head, &RowFacts::default()).into_lines() };
     let (facts, missing) = facts(mirrors);
@@ -286,7 +242,6 @@ fn made(side: &MapSide, head: &Head<'_>, raids: &[String]) -> Vec<String> {
     if let Some(aircraft) = drawn::<Aircraft>(side, layers, "aircraft") {
         lines.extend(aircraft.notes(head));
     }
-    // The entity animation and its lights are the unit models'.
     if drawn::<Units>(side, layers, "units").is_some_and(Units::drawn) {
         let mut out = Limitations::default();
         out.note_point_lights();
@@ -323,8 +278,6 @@ fn made(side: &MapSide, head: &Head<'_>, raids: &[String]) -> Vec<String> {
     lines
 }
 
-/// The lines at the head: the tables' notes and the drawn layers' own (the raid arrows' are the
-/// scripts layer's), then every refused layer's reason; none before the head has reached an hour.
 pub fn lines(side: &MapSide) -> Option<Vec<String>> {
     let hour = side.applied()?;
     let raids = raid_notes(side);
@@ -333,47 +286,30 @@ pub fn lines(side: &MapSide) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// The whole list at the head against today's of the same hour, line by line by their text.
 #[derive(Debug, Default)]
 pub struct Compared {
-    /// Lines on either side: matched, today's missing at the head, and the head's not today's.
     pub entries: u64,
-    /// Lines on one side only.
     pub differing: u64,
-    /// Today's lines the head does not give, and the head's lines today does not, in their order.
     pub missing: Vec<String>,
     pub extra: Vec<String>,
-    /// Lines given on both sides, and how many of them stand in another place at the head.
     pub matched: u64,
     pub reordered: u64,
-    /// Tables counted apart: at the head no recorded status, today one (the tables the dev unit
-    /// files do not hold).
     pub apart: Vec<TableId>,
-    /// The lines the map names as not given, each in place of today's line it names.
     pub not_given: Vec<String>,
-    /// Today's raid arrow lines counted apart because no scripts reader gave the map's.
     pub raids_apart: usize,
     pub refused_layers: usize,
-    /// Today's lines whose owner this map does not register, by owner: not compared.
     pub not_registered: BTreeMap<String, usize>,
     pub first: Option<String>,
 }
 
-/// Who gives a line of today's list at the head.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
-    /// The tables' status notes, read from the recording's pages whatever is drawn: always compared.
     Tables,
-    /// A layer's own note: given while every one of them is registered.
     Layers(&'static [&'static str]),
-    /// A note of a table's rows: given while a drawn layer reads the table, so the mirrors hold it.
     Rows(TableId),
-    /// The scripts reader's raid lines, counted apart when it gave none.
     Scripts,
 }
 
-/// Today's notes by how their line starts, beside the tables' (`Table …`) and the notes that read
-/// only statuses ([`status_notes`]).
 const NOTES: &[(&str, Owner)] = &[
     ("Field Naval base access lists:", Owner::Rows(TableId::NavalBases)),
     ("Field Counter presentation:", Owner::Rows(TableId::Divisions)),
@@ -395,8 +331,6 @@ const NOTES: &[(&str, Owner)] = &[
     ("Field Capital stars:", Owner::Layers(&["labels"])),
 ];
 
-/// The owner of a line of today's list; none for a wording this table does not know.
-/// `by_status` are the lines the notes that read only statuses give at the head, with their owners.
 pub fn owner(line: &str, by_status: &[(&'static [&'static str], Vec<String>)]) -> Option<Owner> {
     if let Some((owners, _)) = by_status.iter().find(|(_, lines)| lines.iter().any(|held| held == line)) {
         return Some(Owner::Layers(owners));
@@ -407,9 +341,6 @@ pub fn owner(line: &str, by_status: &[(&'static [&'static str], Vec<String>)]) -
     line.starts_with("Table ").then_some(Owner::Tables)
 }
 
-/// `today`'s lines a map compares, and by owner those it cannot give: a layer it does not
-/// register (`registered`), or a table no drawn layer reads (`held`). A line of no known owner is
-/// compared.
 fn by_registered<'t>(today: impl Iterator<Item = &'t String>, by_status: &[(&'static [&'static str], Vec<String>)], registered: impl Fn(&str) -> bool, held: impl Fn(TableId) -> bool) -> (Vec<&'t String>, BTreeMap<String, usize>) {
     let mut apart = BTreeMap::new();
     let compared = today
@@ -431,7 +362,6 @@ fn by_registered<'t>(today: impl Iterator<Item = &'t String>, by_status: &[(&'st
     (compared, apart)
 }
 
-/// The lines of the notes that read only the tables' statuses, as `statuses` give them, by owner.
 pub fn status_notes(statuses: &dyn Statuses) -> Vec<(&'static [&'static str], Vec<String>)> {
     let (mut trains, mut aircraft, mut lights, mut sight) = (Limitations::default(), Limitations::default(), Limitations::default(), Limitations::default());
     trains.note_trains(statuses);
@@ -445,8 +375,6 @@ pub fn status_notes(statuses: &dyn Statuses) -> Vec<(&'static [&'static str], Ve
     vec![(TRAINS, trains.into_lines()), (AIRCRAFT, aircraft.into_lines()), (UNITS, lights.into_lines()), (VISION, sight.into_lines())]
 }
 
-/// Two lists by their lines' text, each line matched once: today's lines the head lacks, the
-/// head's lines today lacks, the lines matched, and how many of those stand in another place.
 fn by_text(ours: &[String], theirs: &[&String]) -> (Vec<String>, Vec<String>, u64, u64) {
     fn count<'l>(lines: impl Iterator<Item = &'l str>) -> HashMap<&'l str, usize> {
         let mut held = HashMap::new();
@@ -478,11 +406,6 @@ fn by_text(ours: &[String], theirs: &[&String]) -> (Vec<String>, Vec<String>, u6
     (missing, extra, matched_ours.len() as u64, reordered)
 }
 
-/// The whole list at the head (every line but the layers' refusals) against `today`'s lines of the
-/// same hour, by their text, the order counted apart; `every` is today's frame of every table, for
-/// the tables counted apart. The raid arrow lines are the scripts layer's, none when it draws
-/// none. Today's lines the map cannot give (a layer it does not register, a table no drawn layer
-/// reads) are counted apart by owner. A reason's words are waited for here, off the frame thread.
 pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: &[String]) -> Compared {
     let Some(hour) = side.applied() else { return Compared { entries: 1, differing: 1, first: Some("the head has reached no hour".into()), ..Compared::default() } };
     let head = Head { side, hour, wait: REPORT_WAIT };
@@ -505,9 +428,6 @@ pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: 
         stood.extend(["Field Raids (arrows):".to_owned(), "Field Raids (unit):".to_owned()]);
     }
     let raids_apart = if raids.is_none() { today.iter().filter(|line| line.starts_with("Field Raids (")).count() } else { 0 };
-    // Today's list names every layer's limitations; the head's names only what the view draws, as
-    // `made` gates each one. A layer the view does not draw owes no line, so today's are not
-    // compared against it.
     let layers = side.parts().map(|(_, layers)| layers).unwrap_or_default();
     let registered = |name: &str| match name {
         "units" => drawn::<Units>(side, layers, "units").is_some_and(Units::drawn),
@@ -524,11 +444,6 @@ pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: 
     Compared { entries: matched + differing, differing, missing, extra, matched, reordered, apart, not_given, raids_apart, refused_layers: side.refusals().count(), not_registered, first }
 }
 
-/// The drawn layers' own notes against the same layers composed anew from the mirrors: vision's
-/// (made on its worker), the strikes' and the labels'. The battle plan's and the raid arrows' are
-/// made with their products from rows at the head, which a layer composed anew builds the same way;
-/// the trains', aircraft's and point lights' read only statuses. Entries compared, differing, and
-/// the first difference.
 pub fn differ_composed(side: &MapSide) -> io::Result<(u64, u64, Option<String>)> {
     let Some((mirrors, layers)) = side.parts() else { return Ok((0, 0, None)) };
     let (mut entries, mut differing, mut first) = (0, 0, None);

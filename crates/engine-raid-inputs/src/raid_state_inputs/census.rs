@@ -1,11 +1,5 @@
 use super::*;
 
-/// Attach/cadence storage demand from registries and retained array/name
-/// headers. No resource amounts, modifier values, route pairs or core and
-/// claim links are acquired; the links count both lists and two words for
-/// each strategic location of the state and of its provinces. Resource, province-node and core checks select these same
-/// populations; the worker authenticates its own original headers and grows
-/// if they changed after this hint.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -134,7 +128,6 @@ pub fn demand(
             Ok(())
         },
     )?;
-    // A row-count upper bound also covers all distinct name dictionary keys.
     demand.definitions = demand.modifier_rows;
     demand.name_bytes = demand.token_bytes;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -195,10 +188,6 @@ pub fn demand(
     Ok((demand, core_links))
 }
 
-/// The native IDs of every state the state array holds (a state's ID is its
-/// slot), into `output`: the owners the sliced state tables are scanned
-/// over. One guarded copy per 512 slots; a state is not authenticated here,
-/// the walk does that when it reads one.
 pub fn state_census(
     memory: &impl Memory,
     game_state: usize,
@@ -223,7 +212,6 @@ pub fn state_census(
         }
         for index in 0..count {
             if u64_at(&bytes, index * 8) != 0 {
-                // Null slots do not contribute to the actual census count.
                 output.push(first + index as u32);
             }
         }
@@ -232,16 +220,6 @@ pub fn state_census(
     Ok(())
 }
 
-/// One state's core countries and claim countries: raw country references in stored order at
-/// `links[start..start + len]` and `links[claims_start..claims_start + claims_len]`.
-///
-/// Its strategic locations follow in the same links, two words each: the
-/// state's (location token, anchor province) pairs in stored order at
-/// `links[locations_start..locations_start + 2 * locations_len]`, then each
-/// of its provinces' (province, location token) entries, the provinces in
-/// the state's province order and each province's tokens in stored order,
-/// at `links[province_locations_start..province_locations_start + 2 *
-/// province_locations_len]`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CoreRow {
     pub state: u32,
@@ -255,7 +233,6 @@ pub struct CoreRow {
     pub province_locations_len: usize,
 }
 
-/// Worker-only acquisition; the original core-list headers size owned links.
 #[allow(clippy::too_many_arguments)]
 pub fn state_cores(
     memory: &impl Memory,
@@ -357,8 +334,6 @@ fn state_cores_buffer(
                         .ok_or("state strategic location list invalid")?;
                 let provinces = Array::from_header(header16(record, 64), 8)
                     .ok_or("state province list invalid")?;
-                // Sized first and copied after, without allocating: each
-                // province header is read once per pass.
                 let province = |ordinal| {
                     province_locations(memory, provinces, ordinal, province_vtable, pointers[index])
                 };
@@ -382,7 +357,6 @@ fn state_cores_buffer(
                 *required = required
                     .checked_add(count)
                     .ok_or("state core link count overflow")?;
-                // Core and claim checks reach every stored occurrence.
                 rows.ensure(len + 1)?;
                 links.ensure(used + count)?;
                 let (Some(row), Some(slot)) =
@@ -438,9 +412,6 @@ fn state_cores_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One province of a state's province array: authenticated by vtable, its
-/// state back-reference and a nonzero ID, with its strategic-location token
-/// list header.
 fn province_locations(
     memory: &impl Memory,
     provinces: Array,
@@ -467,8 +438,6 @@ fn province_locations(
     Ok((id, tokens))
 }
 
-/// A province's stored token list into `out` as (province, token) word
-/// pairs, 64 tokens per guarded copy.
 fn copy_paired_tokens(
     memory: &impl Memory,
     list: Array,
@@ -491,8 +460,6 @@ fn copy_paired_tokens(
     Ok(())
 }
 
-/// A stored list of 8-byte (u32, u32) pairs into `out` (two words each),
-/// 32 pairs per guarded copy.
 fn copy_pairs(memory: &impl Memory, list: Array, out: &mut [u32]) -> Result<(), &'static str> {
     let mut bytes = [0_u8; 8 * 32];
     for (chunk, out) in out.chunks_mut(64).enumerate() {
@@ -510,7 +477,6 @@ fn copy_pairs(memory: &impl Memory, list: Array, out: &mut [u32]) -> Result<(), 
     Ok(())
 }
 
-/// One stored u32 list into `out` (its exact length), 64 links per guarded copy.
 fn copy_links(
     memory: &impl Memory,
     list: Array,

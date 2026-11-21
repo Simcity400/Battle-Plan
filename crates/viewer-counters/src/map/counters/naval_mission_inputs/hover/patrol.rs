@@ -1,4 +1,3 @@
-//! Regional spotting and ordered per-target progress, from simulation operands.
 use super::*;
 use viewer_foundation::map::{
     counter_order, directed_wars, naval_region_control, visibility::Relations,
@@ -117,8 +116,6 @@ pub(super) fn combined_detection(hour: &Hour<'_>, handle: u64) -> Fact<i64> {
     ))
 }
 
-/// Each carrier contributes its current aircraft/capacity ratio, not its count.
-/// Dense country and wing occurrences retain their native multiplicity.
 pub(super) fn carrier_fraction(hour: &Hour<'_>, handle: u64) -> Fact<i64> {
     let models = data::<tables::ShipModels>(hour.frame)?;
     let mut sum = 0_i64;
@@ -236,8 +233,6 @@ fn navy_density(
     ))
 }
 
-/// Navy reads its own pool's integer regional occurrence count. Controller
-/// shares and allied pools belong to the separate Air-strength query.
 fn radar_counts(hour: &Hour<'_>) -> Fact<BTreeMap<u32, i32>> {
     let mut counts = BTreeMap::<u32, i32>::new();
     for group in data::<tables::RadarCoverage>(hour.frame)? {

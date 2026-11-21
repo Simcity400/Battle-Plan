@@ -1,4 +1,3 @@
-//! selected routes save comparisons and recorded consistency checks.
 use installed_content_save::Save;
 #[cfg(test)]
 use recorder_oracle_support::fixtures;

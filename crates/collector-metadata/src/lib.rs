@@ -1,4 +1,3 @@
-//! Prepared native content rosters, recorded identity verification and executable layout reports for capture. Content facts are observed from the active installation and its mounted content. The DLL host prepares, samples and publishes these values.
 
 use collector_status::status;
 #[cfg(test)]

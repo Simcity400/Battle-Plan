@@ -163,9 +163,6 @@ fn skeleton_keeps_source_order_and_first_nonempty_allocation() {
     );
 }
 
-/// The generic skeleton is the native one: the first nonempty skeleton, every joint at its
-/// source place whatever its `ix`, `pa` naming a place as the importer's byte holds it. A huge
-/// `ix` allocates nothing, and a palette has one matrix per joint.
 #[test]
 fn the_decoded_skeleton_places_joints_as_the_importer_does() {
     let tx = |x: f32| [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -x, 0.0, 0.0];
@@ -234,7 +231,6 @@ fn the_decoded_skeleton_places_joints_as_the_importer_does() {
     .unwrap();
     let palette = mesh.palette(&animation, FIRST_FRAME);
     assert_eq!(palette.len(), 3);
-    // Influence 0 is the hand, which the animation lifts a unit off its bind.
     assert_eq!(palette[0].transform_point([2.0, 0.0, 0.0]), [2.0, 1.0, 0.0]);
     assert_eq!(palette[1], Transform::IDENTITY);
     assert_eq!(
@@ -305,7 +301,6 @@ fn texture_lookup_is_byte_exact_by_basename_and_keeps_the_first_file() {
     assert_eq!(resolve("Nospec.dds"), "gfx/models/units/Nospec.dds");
     assert_eq!(resolve("upper.DDS"), "gfx/models/units/upper.DDS");
     assert_eq!(resolve("shared.dds"), "gfx/models/x/shared.dds");
-    // Enumeration order: a directory's files before its subdirectories.
     let listed = [
         "gfx/models/a/deep/t.dds",
         "gfx/models/a/t.dds",
@@ -325,7 +320,6 @@ fn texture_lookup_is_byte_exact_by_basename_and_keeps_the_first_file() {
     assert!(refused.contains("texture odd.dds"), "{refused}");
 }
 
-/// Animation paths depend on the descriptor folder, not the descriptor filename's encoding.
 #[test]
 fn an_animation_in_a_descriptor_with_a_raw_file_name_registers() {
     use crate::test_support::{Record, zip_records};
@@ -360,7 +354,6 @@ fn an_animation_in_a_descriptor_with_a_raw_file_name_registers() {
     );
 }
 
-/// A stack's descriptor files, the overlay's second.
 #[cfg(feature = "test-support")]
 pub(super) fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[u8])]) -> Roster {
     let root = std::env::temp_dir().join(format!("installed-content-roster-{name}-{}", std::process::id()));
@@ -381,11 +374,6 @@ pub(super) fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[
     roster
 }
 
-/// The roster reads every `gfx/**/*.asset` in recursive directory
-/// order (each directory's files, then its subdirectories, across
-/// layers); a clone copies its parent as then registered or is dropped,
-/// and a repeated name is replaced unless its `version` is lower than the
-/// stored one, a clone storing its parent's.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_roster_registers_entities_in_declaration_order() {
@@ -433,7 +421,6 @@ fn the_roster_registers_entities_in_declaration_order() {
     assert_eq!(mesh("after_first"), Some("f"));
     assert_eq!(mesh("base"), Some("n"));
     assert_eq!(entities["base"].scale, None);
-    // The clone kept the base it copied, not the later one.
     assert_eq!(mesh("child"), Some("m"));
     assert_eq!(entities["child"].scale, Some(2.0));
     assert_eq!(entities["child"].clone, None);
@@ -441,12 +428,9 @@ fn the_roster_registers_entities_in_declaration_order() {
     assert_eq!(entities["cross"].scale, Some(2.0));
     assert_eq!(entities["cross"].attachments.len(), 1);
     assert_eq!(mesh("v"), Some("o"));
-    // "vc" stored v's version 2, so its version 1 redeclaration is kept out.
     assert_eq!(mesh("vc"), Some("o"));
     assert!(!entities.contains_key("quoted"));
     assert!(roster.unreadable.is_empty());
-    // Each registered copy keeps the parent it named; a dropped clone is none,
-    // and a lower-version redeclaration leaves a copy one.
     assert_eq!(
         roster.clones,
         BTreeMap::from(
@@ -461,8 +445,6 @@ fn the_roster_registers_entities_in_declaration_order() {
     );
 }
 
-/// A plain block that replaces a registered copy leaves a definition of its
-/// own, no longer a clone; a later clone block makes it one again.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_plain_redeclaration_ends_a_copy() {
@@ -493,8 +475,6 @@ fn a_plain_redeclaration_ends_a_copy() {
     assert_eq!(roster.clones["again"], "other");
 }
 
-/// A clone of a name an unreadable file holds may copy that file's
-/// declaration, so it may be declared there too, and so may its clones.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
@@ -531,13 +511,6 @@ fn a_clone_of_an_unreadable_name_may_be_declared_there_too() {
     );
 }
 
-/// A clone's attachments replace the parent's of the same name where
-/// they stand and append new ones. Parent handles 1, 2, 4, 3 keep that
-/// order when the clone declares them 1, 4, 2, 3. The replacement changes
-/// each held value without moving its slot. An unnamed one matches by
-/// joint. A mesh override no `pdxmesh` registers keeps the parent's
-/// mesh and is logged; a redefinition's keeps its
-/// own.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_clone_merges_attachments_in_place_and_keeps_an_unregistered_mesh() {
@@ -636,9 +609,6 @@ fn unbound_mesh_diagnostics_follow_registration() {
     );
 }
 
-/// The last `.gfx` object of a name is the one the engine finds, and only
-/// a `pdxmesh` is a mesh; `.gfx` files declare no entities and `.asset`
-/// files no meshes.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_roster_keeps_the_last_object_of_a_name() {
@@ -675,8 +645,6 @@ fn the_roster_keeps_the_last_object_of_a_name() {
     assert!(roster.descriptors.entities.is_empty());
 }
 
-/// An animation name keeps the last declaration whose file loads, and its
-/// file is always beside the descriptor; a light keeps its last.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_roster_keeps_the_last_animation_that_loads() {
@@ -708,15 +676,12 @@ fn the_roster_keeps_the_last_animation_that_loads() {
     assert_eq!(file("walk"), "gfx/models/walk.anim");
     assert_eq!(file("run"), "gfx/models/sub/run.anim");
     assert_eq!(file("same"), "gfx/models/same.anim");
-    // The last light of a name rewrites the record.
     let lamp = &roster.lights["lamp"];
     assert_eq!(last_text(lamp, "intensity").as_deref(), Some("2"));
 }
 
 #[test]
 fn lexical_names_keep_quoted_and_bare_words_outside_comments() {
-    // A bare CR ends a comment as the parser's lexer ends it, and a
-    // quoted name's escapes are decoded as a parsed name's are.
     let names = lexical_names(
         b"# header\rentity = { name = \"GER_plane_entity\" pdxmesh=plane_mesh # hidden_entity
           clone = \"a b\\\"c\" } } {",
@@ -815,7 +780,6 @@ fn entity_states_keep_variants_empty_states_and_effect_events() {
     assert!(event.keep_particle && event.trigger_once);
 }
 
-/// Builds a container by hand, so the tests do not depend on installed content.
 #[derive(Default)]
 struct Builder {
     bytes: Vec<u8>,
@@ -871,7 +835,6 @@ impl Builder {
     }
 }
 
-/// One shape, one LOD, one triangle, with every stream the tree pass reads.
 fn triangle_mesh() -> Vec<u8> {
     Builder::new()
         .ints("pdxasset", &[1, 0])
@@ -954,7 +917,6 @@ fn the_node_tree_nests_by_depth_alone() {
     assert_eq!(root.children[1].name, "locator");
     let shape = &root.children[0].children[0];
     assert_eq!(shape.children[0].name, "mesh");
-    // `aabb` and `material` are depth 4, so they are children of `mesh`.
     assert_eq!(shape.children[0].children.len(), 2);
     assert_eq!(
         root.property("pdxasset").and_then(Value::ints),
@@ -975,7 +937,6 @@ fn a_skin_is_recorded_and_a_skeleton_decoded() {
         .ints("tri", &[])
         .node(4, "skin")
         .ints("bones", &[2])
-        // Four slots for the one vertex, whatever `bones` says.
         .ints("ix", &[1, 0, -1, -1])
         .floats("w", &[0.75, 0.25, 0.0, 0.0])
         .node(3, "skeleton")
@@ -993,16 +954,13 @@ fn a_skin_is_recorded_and_a_skeleton_decoded() {
     assert_eq!(mesh.skeleton.len(), 2);
     assert_eq!(mesh.skeleton[1].name, "hand");
     assert_eq!(mesh.skeleton[1].parent, Some(0));
-    // `tx` is the world inverse bind, so inverting it is the bind pose.
     assert_eq!(mesh.bind_pose("hand").unwrap().translation, [2.0, 3.0, 0.0]);
-    // A joint the file gives no `tx` has no bind pose at all, and the importer's parent 0.
     assert_eq!(mesh.skeleton[0].inverse_bind, None);
     assert_eq!(mesh.skeleton[0].parent, Some(0));
     assert_eq!(mesh.bind_pose("root"), None);
     let skin = mesh.shapes[0].meshes[0].skin.as_ref().unwrap();
     assert_eq!(skin.bones, 2);
     assert_eq!(skin.joints, vec![[1, 0, -1, -1]]);
-    // The unused slots are dropped and the `-1` never reaches a palette.
     assert_eq!(skin.influences(0), vec![(1, 0.75), (0, 0.25)]);
     assert!(skin.influences(1).is_empty());
     assert!(mesh.shapes[0].meshes[0].uv1.is_none());
@@ -1018,7 +976,6 @@ fn a_skin_stream_that_does_not_cover_every_vertex_four_times_is_refused() {
         .floats("n", &[0.0, 1.0, 0.0, 0.0, 1.0, 0.0])
         .floats("ta", &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
         .floats("u0", &[0.0, 0.0, 0.0, 0.0])
-        // `bones = 1` does not make the stream one wide.
         .ints("bones", &[1])
         .node(4, "skin")
         .ints("bones", &[1])
@@ -1033,29 +990,23 @@ fn a_skin_stream_that_does_not_cover_every_vertex_four_times_is_refused() {
 fn bad_input_is_refused_without_panicking() {
     assert!(parse(b"").is_err());
     assert!(parse(b"nope").is_err());
-    // A property type byte the container does not define.
     let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(b"!\x01xq\x01\x00\x00\x00\x00");
     assert!(parse(&bytes).is_err());
-    // A count that runs past the end.
     let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(b"!\x01xi\xff\xff\xff\x0f");
     assert!(parse(&bytes).is_err());
-    // A node name with no terminator.
     let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(b"[object");
     assert!(parse(&bytes).is_err());
-    // A depth that skips a level.
     let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(b"[[deep\x00");
     assert!(parse(&bytes).is_err());
-    // A byte that starts no token.
     let mut bytes = MAGIC.to_vec();
     bytes.push(b'?');
     assert!(parse(&bytes).is_err());
 }
 
-// Exhaustive destructuring makes new retained fields extend this bitwise comparison.
 fn mesh_bits(mesh: &Mesh) -> Vec<String> {
     fn flat<const N: usize>(rows: &[[f32; N]]) -> Vec<u32> {
         rows.iter().flatten().map(|value| value.to_bits()).collect()
@@ -1121,7 +1072,6 @@ fn mesh_bits(mesh: &Mesh) -> Vec<String> {
     out
 }
 
-/// Retained float bits the decoder must copy unchanged.
 const ODD_FLOATS: [f32; 6] = [
     0.0,
     -0.0,
@@ -1131,8 +1081,6 @@ const ODD_FLOATS: [f32; 6] = [
     f32::from_bits(1),
 ];
 
-// A skeleton beside the shapes and one in a shape, skipped children, short bounds and unusual
-// retained float bits.
 fn mixed_mesh() -> Vec<u8> {
     let tx = [ODD_FLOATS, ODD_FLOATS].concat();
     Builder::new()
@@ -1173,7 +1121,6 @@ fn mixed_mesh() -> Vec<u8> {
         .bytes
 }
 
-/// One shape of one `[mesh]` whose streams the caller supplies.
 fn one_mesh(streams: impl FnOnce(Builder) -> Builder) -> Vec<u8> {
     streams(
         Builder::new()
@@ -1184,7 +1131,6 @@ fn one_mesh(streams: impl FnOnce(Builder) -> Builder) -> Vec<u8> {
     .bytes
 }
 
-// These containers distinguish projection refusals from parse refusals.
 fn projection_cases() -> Vec<(&'static str, Vec<u8>)> {
     let vertex = |builder: Builder| builder.floats("p", &[0.0, 1.0, 2.0]);
     let mut bad_magic = triangle_mesh();
@@ -1298,7 +1244,6 @@ fn expected_projection(label: &str, bytes: &[u8]) -> Result<Mesh, String> {
                         weights: vec![[c, d, e, f]],
                     }),
                 }])],
-                // The skeleton beside the shapes is not read; `j` keeps parent 0 without `tx`.
                 skeleton: vec![
                     Joint { name: "j".into(), index: 0, parent: Some(0), inverse_bind: None },
                 ],
@@ -1380,7 +1325,6 @@ fn optional_stream_counts_are_preserved_and_invalid_triangles_are_named() {
     assert_eq!(decoded.shapes[0].meshes[0].normals.len(), 1);
     assert_eq!(decoded.shapes[0].meshes[0].vertex_count(), 2);
 
-    // A stream the file omits entirely is a collision hull, not an error.
     let hull = Builder::new()
         .node(1, "object")
         .node(2, "collision_boxShape")
@@ -1691,10 +1635,7 @@ fn an_entity_follows_its_mesh_and_its_clone_chain() {
     assert_eq!(descriptors.resolve("base").unwrap().scale, 2.0);
     assert_eq!(descriptors.resolve("child").unwrap().scale, 3.0);
     assert_eq!(descriptors.entities["child"].clone, Some("base".into()));
-    // A cyclic clone chain terminates instead of looping.
     assert!(descriptors.resolve("loop_a").is_none());
-    // An entity that declares its own mesh still inherits the clone's
-    // scale from the parent whose mesh it overrides.
     let own = descriptors.resolve("own_mesh").unwrap();
     assert_eq!(own.definition.file, "a.mesh");
     assert!((own.scale - 1.6).abs() < 1e-6);
@@ -1740,15 +1681,12 @@ fn an_entity_inherits_its_clone_s_attachments_by_handle_and_its_states() {
             .iter()
             .map(|attachment| (attachment.joint.as_str(), attachment.entity.as_str()))
             .collect::<Vec<_>>(),
-        // The child's handle replaces the parent's where it stands.
         vec![
             ("artillery", "generic_gun_entity"),
             ("infantry", "GER_crew_entity"),
         ]
     );
     assert_eq!(german.states["idle"][0].animation, "idle");
-    // The default state picks the animation id, the mesh the animation
-    // name and the descriptor the file.
     let resolved = descriptors.resolve_entity("german").unwrap();
     assert_eq!(
         resolved.animation.map(|animation| animation.file.as_str()),
@@ -1773,7 +1711,6 @@ fn an_animation_block_resolves_against_its_own_directory() {
 
 #[test]
 fn a_rest_pose_composes_its_translation_rotation_and_scale() {
-    // A quarter turn about +Y at scale 2: +X lands on -Z.
     let half = std::f32::consts::FRAC_PI_4;
     let transform = Transform::from_trs([1.0, 0.0, 0.0], [0.0, half.sin(), 0.0, half.cos()], 2.0);
     let point = transform.transform_point([1.0, 0.0, 0.0]);
@@ -1781,18 +1718,13 @@ fn a_rest_pose_composes_its_translation_rotation_and_scale() {
     assert!(point[1].abs() < 1e-5, "{point:?}");
     assert!((point[2] + 2.0).abs() < 1e-5, "{point:?}");
     assert!((transform.uniform_scale() - 2.0).abs() < 1e-5);
-    // A zero scale is the switch that hides an attachment, and it has no
-    // inverse.
     let hidden = Transform::from_trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 0.0);
     assert_eq!(hidden.uniform_scale(), 0.0);
     assert!(hidden.inverse().is_none());
-    // So does a matrix whose entries are not finite.
     let wild = Transform::from_columns(&[1e30; 12]).unwrap();
     assert!(wild.inverse().is_none());
 }
 
-/// Two joints, three frames. `root` animates nothing, `slider` animates
-/// `t` and `q`, so only `slider` appears in the `[samples]` streams.
 fn animation_bytes() -> Vec<u8> {
     Builder::new()
         .node(1, "info")
@@ -1810,22 +1742,20 @@ fn animation_bytes() -> Vec<u8> {
         .floats("q", &[0.0, 0.0, 0.0, 1.0])
         .floats("s", &[0.5])
         .node(1, "samples")
-        // Frame-major: frame 0 repeats the `[info]` values, then the
-        // joint walks along +x while its other coordinates stay fixed.
         .floats(
             "t",
             &[
-                1.0, 0.0, 2.0, // frame 0
-                2.0, 0.0, 2.0, // frame 1
-                3.0, 0.0, 2.0, // frame 2
+                1.0, 0.0, 2.0,
+                2.0, 0.0, 2.0,
+                3.0, 0.0, 2.0,
             ],
         )
         .floats(
             "q",
             &[
-                0.0, 0.0, 0.0, 1.0, // frame 0
-                0.0, 0.0, 0.0, 1.0, // frame 1
-                0.0, 0.0, 0.0, 1.0, // frame 2
+                0.0, 0.0, 0.0, 1.0,
+                0.0, 0.0, 0.0, 1.0,
+                0.0, 0.0, 0.0, 1.0,
             ],
         )
         .bytes
@@ -1847,9 +1777,7 @@ fn an_animation_info_block_decodes_its_rest_pose() {
 #[test]
 fn the_samples_block_is_frame_major_over_the_joints_that_declare_the_channel() {
     let animation = read_animation(&animation_bytes()).unwrap();
-    // One joint declares `t` and `q`, none declares `s`.
     assert_eq!(animation.channel_joints(), [1, 1, 0]);
-    // Frame 0 is the `[info]` block, which is what a still hour draws.
     assert_eq!(
         animation.local("slider", FIRST_FRAME),
         animation.rest("slider")
@@ -1858,12 +1786,8 @@ fn the_samples_block_is_frame_major_over_the_joints_that_declare_the_channel() {
         animation.local("slider", 2).unwrap().translation,
         [3.0, 0.0, 2.0]
     );
-    // A channel the joint does not animate keeps its rest value at every
-    // frame, and so does every channel of a joint with no channels at all.
     assert!((animation.local("slider", 2).unwrap().uniform_scale() - 0.5).abs() < 1e-5);
     assert_eq!(animation.local("root", 2), animation.rest("root"));
-    // A frame past the end falls back to the rest pose rather than
-    // reading another joint's samples.
     assert_eq!(animation.local("slider", 99), animation.rest("slider"));
     assert_eq!(animation.local("absent", 0), None);
 }
@@ -1884,8 +1808,6 @@ fn a_samples_stream_of_the_wrong_length_is_a_named_error() {
     assert!(error.contains("needs 9 floats and has 3"), "{error}");
 }
 
-/// A two-joint arm: `root` at the origin and `hand` bound two units out
-/// along +x, with one vertex at the hand.
 fn arm_bytes() -> Vec<u8> {
     Builder::new()
         .node(1, "object")
@@ -1920,7 +1842,6 @@ fn arm_bytes() -> Vec<u8> {
 #[test]
 fn a_palette_poses_a_joint_and_undoes_its_bind() {
     let mesh = read(&arm_bytes()).unwrap();
-    // An animation that lifts the hand a unit and leaves the root alone.
     let animation = read_animation(
         &Builder::new()
             .node(1, "info")
@@ -1938,22 +1859,17 @@ fn a_palette_poses_a_joint_and_undoes_its_bind() {
             .bytes,
     )
     .unwrap();
-    // The joint is where the animation puts it, which is where an
-    // attachment on it hangs.
     assert_eq!(
         mesh.pose(&animation, FIRST_FRAME, "hand")
             .unwrap()
             .translation,
         [2.0, 1.0, 0.0]
     );
-    // And the vertex bound to it moves with it: bind (2, 0, 0) to
-    // (2, 1, 0), the same one unit up.
     let palette = mesh.palette(&animation, FIRST_FRAME);
     assert_eq!(palette.len(), 2);
     let skin = mesh.shapes[0].meshes[0].skin.as_ref().unwrap();
     assert_eq!(skin.influences(0), vec![(1, 1.0)]);
     assert_eq!(palette[1].transform_point([2.0, 0.0, 0.0]), [2.0, 1.0, 0.0]);
-    // The root is unmoved, so its own matrix is the identity.
     assert_eq!(palette[0], Transform::IDENTITY);
 }
 
@@ -1974,8 +1890,6 @@ fn a_palette_under_no_animation_leaves_every_vertex_in_its_bind_pose() {
 
 #[test]
 fn a_joint_with_an_unusable_inverse_bind_takes_the_identity() {
-    // An all-zero `tx` and an overflowing diagonal both lack a usable
-    // inverse, so each takes the same identity fallback.
     let bytes = Builder::new()
         .node(1, "object")
         .node(2, "s")

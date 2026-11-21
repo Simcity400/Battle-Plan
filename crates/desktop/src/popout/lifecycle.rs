@@ -1,92 +1,52 @@
-//! The pop-out's lifecycle as one state machine with one owner. Inputs (the app's requests,
-//! the window's own reports and the results of the owner's work) arrive in order; each returns
-//! the effects the owner carries out. Nothing here touches a window, a viewer or the frontend, so
-//! every interleaving is a plain sequence of inputs.
-//!
-//! Each window opened is a new generation, reserved before the window exists, so every report
-//! from a window and every event the frontend receives names the window it belongs to. A report
-//! from any window but the current one changes nothing.
 
-/// What reaches the lifecycle, in the order its owner receives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
-    /// The app asks for the pop-out.
     Open,
-    /// The app closes the pop-out window `generation` it saw: its button or an unloaded
-    /// recording. `None` closes whatever is there: the app is exiting. A close naming any other
-    /// window changes nothing.
     Close { generation: Option<u64> },
-    /// Window `generation` is gone: Alt+F4, the session ending, or its release.
     Destroyed(u64),
-    /// Window `generation` finished opening, or could not open.
     Created { generation: u64, ok: bool },
-    /// The viewer of window `generation` started, or could not; `restart` when the user asked
-    /// for it again after it exited.
     Started {
         generation: u64,
         ok: bool,
         restart: bool,
     },
-    /// Window `generation` and its viewer are released.
     Released(u64),
-    /// Window `generation`'s client area changed size.
     Resized {
         generation: u64,
         width: u32,
         height: u32,
     },
-    /// The user asks again for the exited viewer of the window of this generation.
     Restart(u64),
-    /// The viewer of window `generation` changed its status: it became ready, reported an
-    /// error or exited.
     StatusChanged(u64),
 }
 
-/// What the owner does for an input, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Open the window of this generation; its outcome comes back as [`Input::Created`], after
-    /// anything already waiting, so a close sent while it opened is seen first.
     CreateWindow(u64),
-    /// Start window `generation`'s viewer at its size; the outcome comes back at once as
-    /// [`Input::Started`].
     StartViewer { generation: u64, restart: bool },
     Resize {
         generation: u64,
         width: u32,
         height: u32,
     },
-    /// Bring the open window to the front.
     Raise,
-    /// Shut this generation's viewer down and close its window, opened or still opening; the
-    /// owner then reports [`Input::Released`].
     Release(u64),
-    /// Tell the frontend that window `generation` is open or closed.
     Publish { generation: u64, open: bool },
-    /// Tell the frontend window `generation`'s viewer status as it is now.
     PublishStatus(u64),
-    /// The open request just received is answered by this generation's outcome.
     AwaitOpen(u64),
-    /// Answer this generation's open requests: the pop-out is open.
     Opened(u64),
-    /// Answer this generation's open requests: it did not open.
     OpenFailed(u64),
-    /// Answer the restart request for this generation: the viewer did not start again; the
-    /// window, if still open, stays open.
     RestartFailed(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Closed,
-    /// The window is being created; `cancelled` once a close arrived meanwhile, `reopen` once
-    /// an open arrived after that.
     Opening {
         cancelled: bool,
         reopen: bool,
     },
     Open,
-    /// The window and viewer are being released; `reopen` when an open arrived meanwhile.
     Closing {
         reopen: bool,
     },
@@ -96,7 +56,6 @@ enum Phase {
 pub struct Lifecycle {
     generation: u64,
     phase: Phase,
-    /// The app is exiting: no window opens again.
     exiting: bool,
 }
 
@@ -111,18 +70,15 @@ impl Default for Lifecycle {
 }
 
 impl Lifecycle {
-    /// The current window's generation, or the last one's once it closed.
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// Whether the current window is open (created, and not closing).
     #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.phase == Phase::Open
     }
 
-    /// Whether no window exists or is being opened or released.
     pub fn is_closed(&self) -> bool {
         self.phase == Phase::Closed
     }
@@ -133,8 +89,6 @@ impl Lifecycle {
         let closes = |generation: Option<u64>| generation.is_none_or(current);
         let next = self.generation + 1;
         if input == (I::Close { generation: None }) {
-            // The app is exiting: whatever is there closes and nothing opens again, so the exit
-            // never waits for a window queued behind it.
             self.exiting = true;
         }
         if self.exiting && input == I::Open {
@@ -158,7 +112,6 @@ impl Lifecycle {
                 };
                 vec![E::AwaitOpen(next)]
             }
-            // The open in flight answers this request too.
             (
                 P::Opening {
                     cancelled: false, ..
@@ -179,11 +132,8 @@ impl Lifecycle {
                     cancelled: true,
                     reopen: false,
                 };
-                // A reopen asked for after an earlier close is cancelled too.
                 reopen.then_some(E::OpenFailed(next)).into_iter().collect()
             }
-            // The window going away while it opens cancels it. Once cancelled, its going away
-            // is expected and never cancels the reopen queued behind it.
             (
                 P::Opening {
                     cancelled: false, ..
@@ -213,7 +163,6 @@ impl Lifecycle {
                             restart: false,
                         }]
                     }
-                    // Answered before the release, which may already start the reopen.
                     (true, true) => {
                         self.phase = P::Closing { reopen };
                         vec![E::OpenFailed(generation), E::Release(generation)]
@@ -281,8 +230,6 @@ impl Lifecycle {
                 restart: true,
             }],
             (_, I::Restart(generation)) => vec![E::RestartFailed(generation)],
-            // Reports from a window that is no longer current or is closing, and requests that
-            // change nothing.
             _ => Vec::new(),
         }
     }
@@ -306,17 +253,14 @@ impl Lifecycle {
 mod tests {
     use super::{Effect as E, Input as I, *};
 
-    /// The app closing whatever is there: it is exiting.
     const CLOSE: Input = I::Close { generation: None };
 
-    /// The user closing window `generation`, the one the frontend shows.
     fn close(generation: u64) -> Input {
         I::Close {
             generation: Some(generation),
         }
     }
 
-    /// Runs `inputs` in order, returning every effect.
     fn run(lifecycle: &mut Lifecycle, inputs: &[Input]) -> Vec<Effect> {
         inputs
             .iter()
@@ -371,7 +315,6 @@ mod tests {
                 E::Opened(1)
             ]
         );
-        // Another request raises the open window and is answered at once.
         assert_eq!(
             lifecycle.handle(I::Open),
             [E::Raise, E::AwaitOpen(1), E::Opened(1)]
@@ -404,9 +347,7 @@ mod tests {
         let mut lifecycle = Lifecycle::default();
         let old = opened(&mut lifecycle);
         assert_eq!(lifecycle.handle(close(old)), [E::Release(old)]);
-        // Opened again before the old window and viewer are gone: answered by the next window.
         assert_eq!(lifecycle.handle(I::Open), [E::AwaitOpen(old + 1)]);
-        // The old window's own report of its destruction changes nothing.
         assert!(lifecycle.handle(I::Destroyed(old)).is_empty());
         assert_eq!(
             lifecycle.handle(I::Released(old)),
@@ -418,7 +359,6 @@ mod tests {
                 E::CreateWindow(old + 1)
             ]
         );
-        // Late reports from the old window never reach the new one.
         assert!(lifecycle.handle(I::Destroyed(old)).is_empty());
         assert!(lifecycle.handle(I::StatusChanged(old)).is_empty());
         assert!(
@@ -453,7 +393,6 @@ mod tests {
             run(&mut lifecycle, &[I::Open, close(1), I::Open]),
             [E::CreateWindow(1), E::AwaitOpen(1), E::AwaitOpen(2)]
         );
-        // The cancelled first window fails only its own request; the reopen opens window 2.
         assert_eq!(
             run(&mut lifecycle, &[created(1), I::Released(1)]),
             [
@@ -484,7 +423,6 @@ mod tests {
 
     #[test]
     fn a_reopen_closed_again_before_it_starts_fails_only_its_own_request() {
-        // While the first window is still opening.
         let mut lifecycle = Lifecycle::default();
         run(&mut lifecycle, &[I::Open, close(1), I::Open]);
         assert_eq!(lifecycle.handle(close(1)), [E::OpenFailed(2)]);
@@ -499,7 +437,6 @@ mod tests {
                 }
             ]
         );
-        // While the old window is closing.
         let mut lifecycle = Lifecycle::default();
         let old = opened(&mut lifecycle);
         run(&mut lifecycle, &[close(old), I::Open]);
@@ -517,13 +454,9 @@ mod tests {
     fn only_the_owner_publishes_the_viewers_status_and_only_while_its_window_is_open() {
         let mut lifecycle = Lifecycle::default();
         run(&mut lifecycle, &[I::Open]);
-        // A status before the window opened is covered by the open state published later.
         assert!(lifecycle.handle(I::StatusChanged(1)).is_empty());
         run(&mut lifecycle, &[created(1), started(1)]);
-        // A crash after the open state was published is published in order after it, read as
-        // the viewer is now.
         assert_eq!(lifecycle.handle(I::StatusChanged(1)), [E::PublishStatus(1)]);
-        // A crash while closing only finishes the close.
         run(&mut lifecycle, &[CLOSE]);
         assert!(lifecycle.handle(I::StatusChanged(1)).is_empty());
     }
@@ -533,7 +466,6 @@ mod tests {
         let mut lifecycle = Lifecycle::default();
         let generation = opened(&mut lifecycle);
         assert_eq!(lifecycle.handle(CLOSE), [E::Release(generation)]);
-        // The crashed viewer reports, its window goes away, and the user asks for a restart.
         assert!(lifecycle.handle(I::StatusChanged(generation)).is_empty());
         assert!(lifecycle.handle(I::Destroyed(generation)).is_empty());
         assert_eq!(
@@ -604,7 +536,6 @@ mod tests {
     fn an_old_windows_destruction_never_cancels_the_reopen_queued_behind_it() {
         let mut lifecycle = Lifecycle::default();
         run(&mut lifecycle, &[I::Open, close(1), I::Open]);
-        // The cancelled first window goes away before its creation is reported.
         assert!(lifecycle.handle(I::Destroyed(1)).is_empty());
         assert_eq!(
             run(&mut lifecycle, &[created(1), I::Released(1)]),
@@ -636,7 +567,6 @@ mod tests {
 
     #[test]
     fn a_close_before_a_failed_creation_leaves_the_pop_out_closed() {
-        // The app exits while the window is still being created, and creation then fails.
         let mut lifecycle = Lifecycle::default();
         run(&mut lifecycle, &[I::Open, CLOSE]);
         assert_eq!(
@@ -646,7 +576,6 @@ mod tests {
             }),
             [E::OpenFailed(1)]
         );
-        // Nothing is left to release, so the owner can complete the close at once.
         assert!(lifecycle.is_closed());
     }
 
@@ -656,7 +585,6 @@ mod tests {
         let old = opened(&mut lifecycle);
         run(&mut lifecycle, &[close(old), I::Released(old)]);
         let current = opened(&mut lifecycle);
-        // A close or restart sent for the old window, such as an unload that saw it.
         assert!(
             lifecycle
                 .handle(I::Close {
@@ -666,7 +594,6 @@ mod tests {
         );
         assert_eq!(lifecycle.handle(I::Restart(old)), [E::RestartFailed(old)]);
         assert!(lifecycle.is_open());
-        // The current window's own close still works.
         assert_eq!(
             lifecycle.handle(I::Close {
                 generation: Some(current)
@@ -680,15 +607,12 @@ mod tests {
         let mut lifecycle = Lifecycle::default();
         run(&mut lifecycle, &[I::Open, close(1), I::Open]);
         let effects = lifecycle.handle(created(1));
-        // The owner answers window 1's request before releasing it, so window 2's creation
-        // (which the release may start) can never answer it.
         assert_eq!(effects, [E::OpenFailed(1), E::Release(1)]);
     }
 
     #[test]
     fn an_app_exit_cancels_a_queued_reopen_and_refuses_new_opens() {
         let mut lifecycle = Lifecycle::default();
-        // Opening, the app exits, and an open arrives before the window is created.
         run(&mut lifecycle, &[I::Open, CLOSE]);
         assert_eq!(
             lifecycle.handle(I::Open),
@@ -705,9 +629,7 @@ mod tests {
                 }
             ]
         );
-        // Nothing opens after it, so the exit completes.
         assert!(lifecycle.is_closed());
-        // While an earlier window is closing, a queued reopen is cancelled the same way.
         let mut lifecycle = Lifecycle::default();
         let old = opened(&mut lifecycle);
         run(
@@ -732,8 +654,6 @@ mod tests {
 
     #[test]
     fn a_restart_failure_names_only_its_own_generation() {
-        // A restart for a window that is not the current one fails as that window's, so the
-        // owner never answers it with the current window's error.
         let mut lifecycle = Lifecycle::default();
         let current = opened(&mut lifecycle);
         assert_eq!(

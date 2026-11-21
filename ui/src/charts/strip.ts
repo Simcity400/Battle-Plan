@@ -4,46 +4,20 @@ import type { KeyTarget } from './hover.ts';
 import type { Range } from './view.ts';
 import type { ChartTokens } from './tokens.ts';
 
-/** A bar strip under a time chart, on the same time axis:
- * each bar spans its hours with one amount up from a midline and
- * one down, on a scale shared by both halves. Bars too narrow to see apart share a
- * pixel column that keeps the largest of each, so a short peak is never lost; a
- * hover is about the bar whose amount is drawn where the pointer is. */
 
-/** A band under the plot on the same time axis, above the dates, such as daily bars. */
 export interface ChartStrip {
-  /** Its height in layout pixels, for a chart this many pixels tall. */
   height(chartHeight: number): number;
-  /** Draws the strip (`frame.strip`), unclipped so it can label itself in the value
-   * axis' gutter; `state.playhead` is the last hour to draw (null: the whole range). */
   draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
-  /** The hour a hover at `point` (layout pixels) is about, such as the end of the bar
-   * drawn there, even when a zoom cuts that end off: the tooltip, Jump to and pick
-   * describe it while the crosshair stays at the pointer (`pointerTarget`). Null: the
-   * hour under the pointer. `until` is the last hour drawn. */
   describe?(point: { x: number; y: number }, frame: PlotFrame, until: number | null): number | null;
-  /** The keyboard's stops for what the strip draws in `view` by `until` (the last
-   * hour drawn), resolved as `describe` resolves the pointer, so the keys reach
-   * everything a pointer can hover. */
   keyTargets?(view: Range, until: number | null): readonly KeyTarget[];
 }
 
-/** A bar of one read ends at its read's hour. A `span` bar is the greatest reads within its hours, their own hours not
- * known (a summary's bucket): it is drawn over those hours and names no hour of its own. */
 export interface StripBar { firstHour: number; lastHour: number; up: number; down: number; span?: true }
-/** One drawn column: its pixels [`x`, `x` + `width`) and, per half, the amount drawn
- * and the index of the bar it comes from. */
 export interface StripColumn { x: number; width: number; up: number; down: number; upBar: number; downBar: number }
 
-/** Below this many pixels a bar shares its column with its neighbours. */
 const MIN_BAR = 2;
-/** From this many pixels a bar keeps a pixel of space before the next. */
 const GAP_FROM = 4;
 
-/** The pixel columns of the bars (in hour order) that have hours inside [from, to]:
- * a bar that only touches the range (ending at its start, say) has none there and is
- * not drawn. A shared column draws each half's largest amount, from the bar it names
- * (the later on a tie). */
 export function stripColumns(bars: readonly StripBar[], toX: (hour: number) => number, from: number, to: number): StripColumn[] {
   const columns: (StripColumn & { shared: boolean })[] = [];
   bars.forEach((bar, index) => {
@@ -66,19 +40,12 @@ export function stripColumns(bars: readonly StripBar[], toX: (hour: number) => n
   return columns.map(({ shared: _shared, ...column }) => column);
 }
 
-/** The strip's midline in layout pixels: gain above it, burn below. */
 export const stripMiddle = (strip: StripBox) => Math.round(strip.top + strip.height / 2) + 0.5;
 
-/** The bars drawn by `until` (null: all): one ending later is not drawn at all, its
- * amounts being known only from that end. */
 const drawnBars = (bars: readonly StripBar[], until: number | null | undefined) => until == null ? bars : bars.filter(bar => bar.lastHour <= until);
 
-/** One filled rectangle of the strip, in layout pixels, with the bar (an index into
- * the bars drawn) whose amount it shows. */
 export interface StripRect { x: number; y: number; width: number; height: number; half: 'up' | 'down'; bar: number }
 
-/** The rectangles `drawStrip` fills for these columns, in the order it fills them
- * (each column's gain, then its burn), scaled to the largest amount in view. */
 export function stripRects(columns: readonly StripColumn[], strip: StripBox): StripRect[] {
   const largest = columns.reduce((most, column) => Math.max(most, column.up, column.down), 0);
   if (!(largest > 0)) return [];
@@ -94,12 +61,6 @@ export function stripRects(columns: readonly StripColumn[], strip: StripBox): St
   });
 }
 
-/** The bar whose amount is drawn at `point`, so a hover describes exactly what is
- * drawn there: the topmost rectangle containing it (the last filled, as columns may
- * overlap by a pixel). Over no rectangle but inside a column (above a short bar), the
- * topmost such column's bar for the half pointed at, so a short bar stays easy to
- * hover. Null where nothing is drawn at that pixel (between bars, the space after a
- * wide bar) or outside the strip. */
 export function stripBarAt(bars: readonly StripBar[], frame: PlotFrame, until: number | null, point: { x: number; y: number }): StripBar | null {
   const strip = frame.strip;
   if (!strip || point.y < frame.plotTop + frame.plotHeight || point.y > strip.top + strip.height) return null;
@@ -117,10 +78,6 @@ export function stripBarAt(bars: readonly StripBar[], frame: PlotFrame, until: n
   return null;
 }
 
-/** A keyboard stop for each bar drawn in `view` by `until`: at its end, where its
- * amounts are known, or where the view cuts it off when that end lies past the
- * view, describing its end either way, as a pointer hover over it does. A bar
- * that only touches the view is not drawn and has none, nor has a span bar. */
 export function stripKeyTargets(bars: readonly StripBar[], view: Range, until: number | null): KeyTarget[] {
   return drawnBars(bars, until).flatMap(bar => {
     if (bar.span) return [];
@@ -130,9 +87,6 @@ export function stripKeyTargets(bars: readonly StripBar[], view: Range, until: n
   });
 }
 
-/** The strip's bars that end by `until` (an hour; null: all), scaled to the largest
- * amount in view, with the midline and a label for each half in the value axis'
- * gutter. */
 export function drawStrip(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, bars: readonly StripBar[],
   options: { up: string; down: string; upLabel: string; downLabel: string; until?: number | null }): void {
   const strip = frame.strip;
@@ -161,10 +115,6 @@ export function drawStrip(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
   ctx.restore();
 }
 
-/** A time chart's strip of up and down bars: drawn with `drawStrip` in the palette's
- * first two colours, hovered through the same columns (`stripBarAt`), so a hover is
- * about the bar drawn under the pointer and ends at its last hour (a span bar's: the
- * hour pointed at), and reached by the keyboard at each bar drawn in view (`stripKeyTargets`). */
 export function barStrip(bars: readonly StripBar[], look: { height: (chartHeight: number) => number; upLabel: string; downLabel: string }): ChartStrip {
   return {
     height: look.height,

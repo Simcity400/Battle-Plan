@@ -1,5 +1,3 @@
-//! Persistent retained naval results include retirement dates and lists.
-//! Presentation predicate sites do not establish rendered visibility.
 
 use engine_sites::Rva;
 use crate::{
@@ -9,43 +7,24 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// CNavalCombatResults allocation extent.
 pub const SIZE: usize = 0x168;
-/// CNavalCombatResults vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a6c0);
-/// CNavalCombatResults packed reference handle u64.
 pub const HANDLE: usize = 0x08;
-/// CNavalCombatResults first embedded CNavalCombatResultSide.
 pub const FIRST_SIDE: usize = 0x18;
-/// CNavalCombatResults second embedded CNavalCombatResultSide.
 pub const SECOND_SIDE: usize = 0x88;
-/// CNavalCombatResults winning-side pointer.
 pub const WINNING_SIDE: usize = 0xf8;
-/// CNavalCombatResults losing-side pointer.
 pub const LOSING_SIDE: usize = 0x100;
-/// CNavalCombatResults province id u32.
 pub const PROVINCE: usize = 0x108;
-/// CNavalCombatResults result hour i32.
 pub const RESULT_HOUR: usize = 0x118;
-/// CNavalCombatResults first flag byte.
 pub const FLAG_A: usize = 0x128;
-/// CNavalCombatResults second flag byte.
 pub const FLAG_B: usize = 0x129;
-/// CNavalCombatResults subtype byte.
 pub const SUBTYPE: usize = 0x12a;
-/// CNavalCombatResults readiness byte.
 pub const READINESS: usize = 0x12b;
-/// CNavalCombatResults retire hour i32.
 pub const RETIRE_HOUR: usize = 0x138;
-/// CNavalCombatResults category u32.
 pub const CATEGORY: usize = 0x148;
-/// CNavalCombatResults admitted country-id u32 array.
 pub const ADMITTED: usize = 0x150;
-/// CNavalCombatResults constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d4_1460);
-/// CNavalCombatResults merge path.
 pub const MERGE_RVA: Rva = Rva(0x00d4_4ea0);
-/// CNavalCombatResults fill from combat.
 pub const FILL_FROM_COMBAT_RVA: Rva = Rva(0x00d4_5c60);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -59,16 +38,11 @@ pub struct Row {
     pub flag_b: u8,
     pub subtype: u8,
     pub readiness: u8,
-    /// Embedded side selector: 0 null, 1 first side, 2 second side.
     pub winning_side: u8,
     pub losing_side: u8,
-    /// Position in the province bucket, whose order the map icon preserves.
-    /// The global list independently removes records by swapping.
     pub province_ordinal: u32,
 }
 
-/// Caller-owned scratch pairing each written record row with its object, so the province
-/// buckets can be matched to rows once each. It never leaves the walk.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ResultSlot {
     pointer: usize,
@@ -78,7 +52,6 @@ pub struct ResultSlot {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {
     pub result: u64,
-    /// Full copied ship or convoy handle, requiring no live lookup.
     pub member: u64,
     pub presence_value: u64,
     pub ordinal: u32,
@@ -94,10 +67,8 @@ impl MemberRow {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryRow {
     pub result: u64,
-    /// Raw native country reference; CountryLinks supplies alias resolution.
     pub country: u32,
     pub ordinal: u32,
-    /// 0 first side, 1 second side, 2 admitted list.
     pub list: u8,
 }
 
@@ -114,15 +85,12 @@ pub struct Walk {
     pub countries: Outcome,
 }
 
-/// Ephemeral authenticated source, kept only inside acquisition buffers.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Source {
     pub pointer: usize,
     pub id: u64,
 }
 
-/// Independent retained-result census for format22 details. This leaves the
-/// finalized earlier record/member/country acquisition contracts unchanged.
 pub fn visit_sources(
     memory: &impl Memory,
     base: usize,
@@ -132,8 +100,6 @@ pub fn visit_sources(
     if game_state == 0 {
         return Err("game state is null");
     }
-    // The game-state array header and guarded pointer reads authenticate
-    // this growable retained-result census.
     let list = array(memory, game_state, cgame_state::NAVAL_COMBAT_RESULTS, 8)?;
     for ordinal in 0..list.count {
         let pointer = element::<u64>(memory, list, ordinal, 8)? as usize;
@@ -146,8 +112,6 @@ pub fn visit_sources(
     Ok(list.count as usize)
 }
 
-/// Worker census and child arenas grow from original result, side and
-/// admitted headers independently of live country population.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -286,7 +250,6 @@ fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'
 }
 
 fn record(memory: &impl Memory, pointer: usize, id: u64) -> Result<Row, &'static str> {
-    // One guarded copy of the object's owned tail amortizes the SEH transition.
     let tail = pointer
         .checked_add(WINNING_SIDE)
         .and_then(|p| read::<[u8; 84]>(memory, p))
@@ -320,11 +283,6 @@ fn record(memory: &impl Memory, pointer: usize, id: u64) -> Result<Row, &'static
     })
 }
 
-/// Find each row's province-bucket ordinal in one pass over the result map. Insertion appends to
-/// the global list and province vector. The unordered map list has a size, with nodes holding the
-/// next node, a province and a vector. Read each node once and vectors in 64-entry batches; sorted
-/// scratch matches entries by binary search. Reads are linear and comparisons are n log n. Find
-/// every row exactly once under its own province.
 fn province_ordinals(
     memory: &impl Memory,
     game_state: usize,
@@ -373,7 +331,6 @@ fn province_ordinals(
             }
             for (offset, word) in pointers[..n * 8].chunks_exact(8).enumerate() {
                 let pointer = u64::from_le_bytes(word.try_into().expect("eight bytes")) as usize;
-                // A pointer with no row is a record this walk did not write.
                 let Ok(found) = slots.binary_search_by_key(&pointer, |slot| slot.pointer) else {
                     continue;
                 };

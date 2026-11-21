@@ -24,9 +24,6 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
 
-/** Average resistance and compliance of each occupier's occupied states: the declared series `occupier-totals` raced,
- * drawn per country (both measures, compliance dashed) or for one country across its tags. A reader pointing at an hour
- * reads that hour's totals and collaboration (`occupation-at`); nothing is read for the moving head. */
 export default function OccupationTrendWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const view = (options.view as RaceView) ?? 'lines';
@@ -41,10 +38,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const format = useCallback((raw: string) => occupationPercent(raw, digits), [digits]);
   const formatValue = useCallback((value: number) => `${value.toFixed(digits)}%`, [digits]);
 
-  // One country's mix: the chosen country, the dashboard's, or one picked; its aliases over the spans its holder held them.
   const groups = useCountryGroups(runtime, track, active && view === 'mix');
   const fallback = defaultCountryKey(track);
-  // The hour the mix's choices are of: the moment shown, read while paused, pinned or on a range; held while playing.
   const readHour = useCallback(() => track ? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour) : 0,
     [widget, track, runtime.tracks, runtime.clock]);
   const settled = useTransitionValue(view === 'mix' && !playing ? runtime.clock.subscribe : null, readHour);
@@ -55,7 +50,6 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceHour, countries: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  // As main: the countries of the choice holding an occupation at that moment.
   const candidates = useMemo(() => (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(countryKey(row.country), choiceHour)).map(row => countryKey(row.country)),
     [occupiers.data, match, choiceHour]);
   const [picked, setPicked] = useState<{ tag: string; hour: number } | null>(null);
@@ -66,11 +60,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const spans = useMemo(() => view === 'mix' && mixTag && groups.data ? countryDrillSpans(groups.data.countryIdentities, mixTag, mixOrigin) : null,
     [view, mixTag, mixOrigin, groups.data]);
   const spansKey = spans ? JSON.stringify([...spans]) : null;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const mix = useMemo(() => mixTag && spans ? { tag: mixTag, spans } : null, [mixTag, spansKey]);
 
-  // The totals and collaboration of the hour pointed at: on the lines, the hovered hour; on the race, the hour a tooltip
-  // opens at, never while playing (the head would be a read every frame).
   const [detailHour, setDetailHour] = useState<number | null>(null);
   const asked = useRef<number | null>(null);
   const ask = useCallback((hour: number | null) => {

@@ -1,6 +1,3 @@
-//! Shared views as a preparation's spool writes them: each allocation once per stream, so a
-//! view, its change facts and its field stamp read back as one allocation each wherever the
-//! stream met them, and a [`ViewIdentity`] names what it named before.
 
 use super::{ChangeFacts, FieldStamp, SharedView, TableView, ViewIdentity};
 use replay_spool::{Placeholder, Reader, Spooled, Writer};
@@ -10,7 +7,6 @@ use std::{
 };
 
 impl Spooled for TableView {
-    // A view's identity names it after it is gone.
     const WEAKLY: bool = true;
 
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {

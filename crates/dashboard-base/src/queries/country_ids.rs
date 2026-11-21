@@ -1,7 +1,3 @@
-//! Raw country ids named by tag, as diplomacy's tables name countries: an id's canonical slot
-//! from the runs of `CountryLinks` over a run (read once per run, kept while the recording is
-//! open), the slot's tag by the one identity rule ([`dashboard_query::identity`]). A product never
-//! resolves a tag itself.
 
 use dashboard_query::{identity::{Holder, Holders}, read};
 use replay::columnar_frames::Recording;
@@ -9,19 +5,16 @@ use replay_columnar::summary::Source as Column;
 use replay_data::rows::TableId;
 use std::{collections::HashMap, io};
 
-/// One run's `CountryLinks`: each raw id's canonical slot, as runs of hours.
 #[derive(Default)]
 pub struct RunLinks {
     pub slots: HashMap<u32, read::Runs>,
 }
 
 impl RunLinks {
-    /// `raw`'s slot runs meeting `first..=last`, cut to it; none where no link resolves it.
     pub fn within(&self, raw: u32, first: i32, last: i32) -> impl Iterator<Item = (Option<u32>, i32, i32)> + '_ {
         let runs = self.slots.get(&raw).map(Vec::as_slice).unwrap_or_default();
         let start = runs.partition_point(|run| run.1 < first);
         let covered = runs[start..].iter().take_while(move |run| run.0 <= last).map(move |&(a, b, slot)| (slot.map(|slot| slot as u32), a.max(first), b.min(last)));
-        // Hours before the first run or between runs hold no link.
         let mut at = i64::from(first);
         let mut out = Vec::new();
         for (slot, a, b) in covered {
@@ -42,7 +35,6 @@ impl RunLinks {
     }
 }
 
-/// Run `run`'s links, read as runs of each raw id's canonical slot over the whole run.
 pub fn run_links(recording: &Recording, run: u32) -> io::Result<RunLinks> {
     let held = recording.run(run)?;
     let (first, last) = (held.first_hour, held.first_hour + held.ordinals as i32 - 1);
@@ -55,7 +47,6 @@ pub fn run_links(recording: &Recording, run: u32) -> io::Result<RunLinks> {
     Ok(RunLinks { slots })
 }
 
-/// Each canonical slot's tags over a timeline, from its holder runs.
 pub struct Names {
     pub slots: HashMap<u32, Vec<(String, i32, i32)>>,
 }
@@ -76,14 +67,12 @@ impl Names {
         Self { slots }
     }
 
-    /// The tag holding `slot` at `hour`.
     pub fn slot_tag(&self, slot: u32, hour: i32) -> Option<&str> {
         let runs = self.slots.get(&slot)?;
         let at = runs.partition_point(|run| run.2 < hour);
         runs.get(at).filter(|run| run.1 <= hour).map(|run| run.0.as_str())
     }
 
-    /// The tags `slot` held over `first..=last`, each with its hours; none where no tag holds it.
     pub fn slot_tags(&self, slot: u32, first: i32, last: i32) -> Vec<(Option<&str>, i32, i32)> {
         let runs = self.slots.get(&slot).map(Vec::as_slice).unwrap_or_default();
         let start = runs.partition_point(|run| run.2 < first);
@@ -103,13 +92,10 @@ impl Names {
         out
     }
 
-    /// The tag naming raw id `raw` at `hour` by `links`.
     pub fn tag_at(&self, links: &RunLinks, raw: u32, hour: i32) -> Option<&str> {
         self.slot_tag(links.slot_at(raw, hour)?, hour)
     }
 
-    /// The tags naming raw id `raw` over `first..=last` by `links`, each with its hours, in hour
-    /// order; none where no link resolves it or no tag holds its slot.
     pub fn tags_over(&self, links: &RunLinks, raw: u32, first: i32, last: i32) -> Vec<(Option<&str>, i32, i32)> {
         let mut out: Vec<(Option<&str>, i32, i32)> = Vec::new();
         for (slot, a, b) in links.within(raw, first, last) {

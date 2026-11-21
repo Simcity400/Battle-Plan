@@ -1,4 +1,3 @@
-//! Country-name submission, font groups, forced raster.
 use eframe::wgpu;
 use installed_content_core::{ResolvedLayers, pdxshader::RasterizerState, pdxshader::program::Stage};
 use installed_content_image::native::Decode;
@@ -52,7 +51,6 @@ impl Names {
         depth_format: wgpu::TextureFormat,
         arrow_technique: Option<&str>,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(
                 device,
@@ -116,7 +114,6 @@ impl Names {
             attributes,
         }];
         let raster = RasterizerState {
-            // arrow labels retain the manager's cull-none raster.
             cull_mode: if arrow_technique.is_some() {
                 0
             } else {
@@ -158,7 +155,6 @@ impl Names {
         alpha_offset: [f32; 2],
         page: &gpu::TextureBinding,
     ) -> io::Result<gpu::Bindings> {
-        // Initialize all16 bytes and binds b0/b1 to both stages.
         let b1 = [alpha_offset[0], alpha_offset[1], 0., 0.];
         let buffers = BTreeMap::from([
             (binding(0, Stage::Vertex), frame.to_vec()),

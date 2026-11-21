@@ -1,44 +1,14 @@
-//! The controller and owner areas of the Provinces rows
-//! ([`engine_native::controller_areas`]), held between hours and read again only
-//! where a native writer may have changed them.
-//!
-//! The Provinces job gathers every province's two area pointers with its
-//! movement fields; after a complete walk it runs [`capture`] over the
-//! territory family's province marks ([`crate::territory_changes`]), which
-//! the job drained once before its walk ([`crate::province_changes::take`]):
-//! the province controller writer,
-//! the only path to a controller area change, marks its
-//! province; the owner-area rebuild marks every province and
-//! moves the epoch. A state's owner, reset or reader writes no province's
-//! areas. An hour with no mark publishes the held areas; a marked hour
-//! compares every province's pointers with the held ones and reads again the
-//! areas of the marked and re-pointed provinces, the areas they left and
-//! their neighbours' areas. A refused or moved take, a load, gap or
-//! recovery, a requested refresh or a failed walk reads every area.
-//!
-//! A row the job carried ([`crate::province_changes`]) arrives with its held
-//! pointers: an hour that compares every province's pointers first reads
-//! every carried row's pointers again, a bounded marked hour those it
-//! compares, and a quiet carry none, so the areas see what a full walk would
-//! gather.
 use engine_native::{cprovince::Capture, walk::Outcome};
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
 
-/// Full, quiet and marked hours.
 static HOURS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-/// Re-pointed provinces, read areas and carried areas.
 static WORK: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 static LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
 
-/// The Provinces job, after its walk: labels the walked rows' areas and
-/// writes the hour's controller-area nodes, under the hour's `take` of the
-/// province marks. Without the family's store the rows keep no labels and
-/// the fields are refused. Returns the Provinces outcome, which refuses as a
-/// full walk would when a carried row's pointers no longer read.
 pub fn capture(
     capture: &mut Capture,
     outcome: Outcome,
@@ -51,15 +21,11 @@ pub fn capture(
         return outcome;
     };
     let Outcome::Rows { len } = outcome else {
-        // Nothing is held; the take's marks no longer matter.
         store.forget();
         refuse("the province walk did not complete");
         return outcome;
     };
     let quiet = store.carries_quietly(take, len);
-    // A marked hour compares only the provinces a controller change can
-    // re-point ([`engine_native::controller_areas::Store::repointable`]);
-    // anything it cannot bound compares every province.
     let mut scope = std::mem::take(&mut store.scope);
     let bounded = !quiet
         && take.is_some()
@@ -83,9 +49,6 @@ pub fn capture(
         return fail(capture, reason);
     }
     let mut result = run(capture, memory, base, len, take);
-    // A quiet or bounded carry that fell back to a full read (a refused
-    // area) read some carried rows' held pointers: read them all again and
-    // capture afresh.
     let fell_back = match result {
         Ok(counts) => counts.full || (quiet && !counts.quiet),
         Err(_) => true,
@@ -123,8 +86,6 @@ fn run(
     store.capture(memory, base, &mut rows[..len], areas, area_nodes, take)
 }
 
-/// A carried row's pointers did not read again: the Provinces table
-/// refuses as a full walk would, and neither store holds the walk.
 fn fail(capture: &mut Capture, reason: &'static str) -> Outcome {
     if let Some(store) = capture.area_store.as_mut() {
         store.forget();
@@ -187,7 +148,6 @@ mod tests {
                 owner: 0,
             };
         }
-        // A previous hour's node in this recycled frame.
         capture.area_nodes.nodes.push(Node {
             label: 9,
             ..Default::default()
@@ -204,8 +164,6 @@ mod tests {
             .collect()
     }
 
-    /// The Provinces job labels only a complete walk, and only with the
-    /// family's store; a frame never keeps another hour's nodes.
     #[test]
     fn the_province_job_labels_complete_walks_only() {
         let memory = SliceMemory {
@@ -228,7 +186,6 @@ mod tests {
             None,
         );
         assert_eq!(labels(&truncated), [(None, None, None); 2]);
-        // Sea provinces have null areas: labelled zero, with no area to read.
         let mut complete = walked(true);
         super::capture(&mut complete, Outcome::Rows { len: 2 }, &memory, 0, None);
         assert_eq!(labels(&complete), [(Some(0), Some(0), None); 2]);

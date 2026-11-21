@@ -1,5 +1,3 @@
-//! The two text types the game's producers name; their definitions, fonts
-//! and shader come from the recorded content stack.
 use std::{collections::BTreeMap, sync::Arc};
 
 use installed_content_core::{
@@ -9,7 +7,6 @@ use installed_content_core::{
 use installed_content_image::native::Decode;
 use shader_pipeline::library::Effect;
 
-/// The animated map text type a producer names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Style {
     CombatLoss,
@@ -17,7 +14,6 @@ pub enum Style {
 }
 
 impl Style {
-    /// The type names the game's producers pass.
     pub fn name(self) -> &'static [u8] {
         match self {
             Self::CombatLoss => b"CombatLoss",
@@ -28,14 +24,11 @@ impl Style {
 
 #[derive(Clone)]
 pub(super) struct Definition {
-    /// The type's place among every animated map text declaration, which
-    /// orders the draw buckets.
     pub order: usize,
     pub scale: f32,
     pub text: AnimatedMapTextDefinition,
 }
 
-/// Resolved once per document.
 pub struct Assets {
     pub(super) definitions: BTreeMap<Style, Result<Definition, String>>,
     pub(super) effect: Result<Arc<Effect>, String>,
@@ -43,8 +36,6 @@ pub struct Assets {
 }
 
 impl Assets {
-    /// `defines` are the recorded and the graphics defines; the cutoff reads the graphics
-    /// defines, falling back to the recorded one ([`ResolvedLayers::graphics_define`]).
     pub fn load(
         layers: &ResolvedLayers,
         (defines, graphics): (&Defines, &Defines),
@@ -82,9 +73,6 @@ impl Assets {
                     let ObjectKind::AnimatedMapText(text) = &object.kind else {
                         return Err("latest object declaration is not animatedmaptext".into());
                     };
-                    // The draw bucket ordinal counts every animated map text
-                    // declaration, including ones a later declaration of the
-                    // same name shadows in the registry.
                     let order = files
                         .iter()
                         .flat_map(|(_, read)| &read.objects)
@@ -124,7 +112,6 @@ impl Assets {
         let effect = library
             .load(b"gfx/FX/text.lua", &shader_defines)
             .map_err(|error| format!("gfx/FX/text.lua: {error}"));
-        // The fixed5 define is converted to f32 before dividing.
         let cutoff = layers
             .graphics_define("floating map text", graphics, defines, |defines| {
                 defines.fixed5("NGraphics", "PROVINCE_ANIM_TEXT_DISTANCE_CUTOFF")
@@ -138,7 +125,6 @@ impl Assets {
         }
     }
 
-    /// Why a type, the text shader or the cutoff cannot be used.
     pub fn refusals(&self) -> Vec<String> {
         self.definitions
             .values()
@@ -148,7 +134,6 @@ impl Assets {
             .collect()
     }
 
-    /// The fonts the two types draw with, for the GUI resource load.
     pub fn gui_assets(&self) -> viewer_foundation::map::native_gui::Assets {
         viewer_foundation::map::native_gui::Assets {
             fonts: self

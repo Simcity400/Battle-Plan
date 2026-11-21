@@ -1,6 +1,3 @@
-//! Independent source pools and contribution vectors. Callers supply the root
-//! already authenticated by the country-intel census and select only a dirty
-//! family/pool/source. Nothing here enumerates countries or potential pairs.
 
 use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, memory::Raw, read, read_slice};
@@ -56,7 +53,6 @@ pub struct DenseEntry {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dense {
-    /// Positional native extent; omitted entries within it are exact zeros.
     pub count: u32,
     pub entries: Vec<DenseEntry>,
 }
@@ -73,15 +69,10 @@ pub struct StaticPool {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DynamicPool {
-    /// Pending additions, saved under `accumulator` and cleared by aggregation.
     pub values: Vec<Lanes>,
-    /// Retained merge/decay results, saved under `values`.
     pub accumulators: Vec<Lanes>,
 }
 
-/// A native keyed setter retains an existing zero entry, but does not insert
-/// a missing all-zero entry. The source's independently retained remove flag
-/// and identity are unaffected.
 pub fn set_source(
     source: &mut StaticSource,
     target: i32,
@@ -106,8 +97,6 @@ pub fn set_source(
     Ok(true)
 }
 
-/// Pending contributions accept only positive input lanes and use wrapping
-/// signed addition. The sorted native keyed list retains zero results.
 pub fn add_pending(
     pool: &mut DynamicPool,
     target: i32,
@@ -139,9 +128,6 @@ pub fn add_pending(
     Ok(entry.values != old)
 }
 
-/// The native daily removal pass visits source ordinals in reverse and fills
-/// each removed ordinal with the current final source. No pool payload read
-/// is needed after observed remove marks.
 pub fn prune_sources(pool: &mut StaticPool) -> bool {
     let mut changed = false;
     for index in (0..pool.sources.len()).rev() {
@@ -153,9 +139,6 @@ pub fn prune_sources(pool: &mut StaticPool) -> bool {
     changed
 }
 
-/// The independent accumulator decay does not change keyed membership, even
-/// when every lane becomes zero. Division truncates toward zero after the
-/// native-width wrapping subtraction and product.
 pub fn decay_accumulators(pool: &mut DynamicPool, subtraction: i64, factor: i64) -> bool {
     let mut changed = false;
     for entry in &mut pool.accumulators {
@@ -207,7 +190,6 @@ pub fn dense(
     let array = array(memory, root, offset, DENSE_STRIDE)?;
     output.count = array.count;
     output.entries.clear();
-    // A fixed copy window amortises guarded reads; native demand is not capped.
     const BATCH: usize = 64;
     let mut bytes = [0_u8; BATCH * DENSE_STRIDE];
     let mut ordinal = 0;
@@ -251,7 +233,6 @@ pub fn keyed(
         let at = array
             .element(ordinal, KEYED_STRIDE)
             .ok_or("intel keyed entry address overflow")?;
-        // Preserve native order, duplicate keys, keyed zeros and signed keys.
         output[ordinal as usize] = Lanes {
             target: field::<i32>(memory, at, 0)?,
             values: lane_values(
@@ -337,7 +318,6 @@ pub fn dynamic_pool(
     )
 }
 
-/// Initial membership comes from native headers, never the constructor counts.
 pub fn static_pools(
     memory: &impl Memory,
     base: usize,

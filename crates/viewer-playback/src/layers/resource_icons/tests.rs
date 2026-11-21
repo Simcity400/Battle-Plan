@@ -1,7 +1,3 @@
-//! The resource icons layer on the resource origins' fixture written hour by hour into units: equal
-//! to today's hour's icons over the same rows and to itself composed, a change marking only its
-//! state, nothing declared outside the resources mode, a table not recorded refusing by name; the
-//! window's hand-over between the layer's icons and today's.
 
 use super::{ResourceIcons, Source, drawn};
 use crate::{
@@ -122,7 +118,6 @@ impl Pages for Recording {
     }
 }
 
-/// Every text the fixture's rows hold, the dictionary the units name them by.
 pub fn strings_of(frame: &DecodedFrame, tables: &[TableId]) -> Vec<Vec<u8>> {
     struct Texts<'a>(&'a mut Vec<Vec<u8>>);
     impl RowsVisit for Texts<'_> {
@@ -149,7 +144,6 @@ pub fn strings_of(frame: &DecodedFrame, tables: &[TableId]) -> Vec<Vec<u8>> {
     out
 }
 
-/// Writes `rows` into the store, each at its key's slot or a new one.
 pub fn write(store: &mut Store, strings: &[Vec<u8>], rows: &TableRows) {
     struct Put<'a> {
         store: &'a mut Store,
@@ -207,9 +201,6 @@ fn rows_of(frame: &DecodedFrame, table: TableId) -> &TableRows {
     }
 }
 
-/// The fixture at hour 0, MIXED's rubber pool raised at hour 2, MIXED's oil rights taken back at
-/// hour 4, ResourceOrigins not recorded from hour 6 when `refuse`; and today's frame at each hour.
-/// `name` is the test's own: a name and span share one playhead across the test process.
 fn campaign(name: &str, refuse: bool) -> (Units, Vec<DecodedFrame>) {
     let first = fixture::frame();
     let strings = strings_of(&first, &TABLES);
@@ -268,7 +259,6 @@ fn resources() -> View {
     View { map_mode: MapMode::Stock(Stock::Resources), ..View::default() }
 }
 
-/// The map side over `units` with the layer drawn in the resources mode, its first reset composed.
 fn side(units: Units, content: Arc<dyn Source>) -> MapSide {
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
@@ -288,7 +278,6 @@ fn the_layer_equals_todays_icons_and_itself_composed_and_a_change_marks_only_its
     let content = content();
     let mut side = side(units, Arc::clone(&content));
     let origins = content.origins().unwrap();
-    // The stepped head: each hour reached by one step, the clock held.
     let mut marked = layer(&side).marked();
     for hour in 1..26 {
         side.catch_up(hour).unwrap();

@@ -1,4 +1,3 @@
-//! Immutable content operands for combat windows and marker hover text.
 use super::{Assets, modifier_text::NameIndexCache};
 use installed_content_core::map::MapData;
 use installed_content_localisation::localisation::Localisation;
@@ -28,7 +27,6 @@ pub struct Content {
     pub assets: Arc<Assets>,
     pub localisation: Arc<Localisation>,
     pub recorded_language: String,
-    /// The naval source labels' recovery into the display language.
     pub recorded_labels: Arc<super::naval_labels::RecordedLabels>,
     pub scripted: Arc<Result<dashboard_text::scripted_text::ScriptedContent, String>>,
     pub map: Arc<MapData>,
@@ -49,11 +47,9 @@ pub struct Content {
     pub large_flags: Arc<LazyFlags>,
     pub lazy: Arc<LazyTextures>,
     pub trigger_content: Arc<TriggerContent>,
-    /// The occupation laws and resistance and compliance modifiers the state view reads.
     pub occupation: Arc<Result<Occupation, String>>,
 }
 
-/// The recorded content stack's occupation laws and occupation modifier definitions.
 pub struct Occupation {
     pub laws: installed_content_core::occupation_laws::Laws,
     pub modifiers: installed_content_core::occupation_modifiers::Definitions,

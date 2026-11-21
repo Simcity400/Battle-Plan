@@ -1,6 +1,3 @@
-//! The entries' hover text. The click footers the replay cannot act on
-//! (`OPERATION_ONMAP_CLICK_FOR_DETAILS`, `OPERATION_ONMAP_CLICK_FOR_MORE`) are left out, as the
-//! other map hovers leave theirs; a line whose operands are not recorded is refused by name.
 
 use super::build::{Hour, Shared};
 use super::values::{self, ONE};
@@ -9,13 +6,10 @@ use installed_content_localisation::localisation::Argument as Arg;
 use replay_data::rows::{CharacterOperativeRow, Recorded};
 use viewer_foundation::tooltip_text::localise;
 
-/// The More entry's hover: only its click footer, which is left out.
 pub(super) fn more() -> Tooltip {
     Tooltip::default()
 }
 
-/// The shield's hover: the defense breakdown, the agency defense description, a blank line, then
-/// the activity level.
 pub(super) fn shield(
     hour: &Hour<'_, '_>,
     slot: u32,
@@ -172,7 +166,6 @@ fn defense_breakdown(
     Ok(text)
 }
 
-/// The operative's name and codename, two newlines, then its mission's tooltip.
 pub(super) fn operative<'h, 'f>(
     hour: &Hour<'h, 'f>,
     row: &'f OperativeMissionRow,
@@ -290,7 +283,6 @@ fn codename(hour: &Hour<'_, '_>, character: &CharacterOperativeRow) -> Result<St
     String::from_utf8(name.custom.clone()).map_err(|_| format!("{field} custom name is not UTF-8"))
 }
 
-/// The operation's highlighted name, then its status.
 pub(super) fn operation(
     hour: &Hour<'_, '_>,
     row: &OperationRow,

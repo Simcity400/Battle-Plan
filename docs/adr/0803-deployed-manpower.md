@@ -1,0 +1,11 @@
+# Attribute deployed manpower to canonical country slots
+
+The army total includes an ordinary division from the country's own roster only when that country also owns and logically owns it. A positive expeditionary owner takes precedence over the roster owner. Add only the country's entry among the division's manpower contributors. A contributor known to be absent adds zero. Sent expeditionary and volunteer lists also count the country's own entries in their live, ordinary divisions, once for each occurrence. The reverse lookup deduplicates references for invalidation while the sum retains repeated occurrences.
+
+The navy assigns each ship to its fleet's owner and totals acquired and required crews separately. A fleet owner with no canonical link gives the ship no country. An unavailable task force or fleet can hide any country's contribution, so it withholds the navy columns for every country. In the air columns, a wing contributes to its owner's ordinary crews or to the exile country's crews. An unread exile field withholds the owner's ordinary total and every exile total.
+
+Each part requires its own complete input set after country identity is known. Unread contributions withhold the affected total while known contributions add with the game's 32-bit wrapping arithmetic. An absent land row, unknown ordinary-template flag, or unread expeditionary list makes the affected army term unknown. An absent contributor in a recorded division row does not. Country aliases map raw IDs to canonical slots. Alias lists are sorted and raw ID zero never resolves.
+
+The writer retains per-entity contributions and canonical sums, plus indexes to find terms affected by a changed input. A fresh hour, resume, change to identity, or change in input completeness rebuilds from the held tables. No derived state is persisted for this writer. The test harness applies table reads before derivations and restores the sample hours and definitions on resume. An unstamped update applies cells without advancing the sample hour.
+
+[Writer](../../crates/recorder-derive/src/deployed.rs) · [Test replays and harness](../../crates/recorder-derive/src/deployed/tests.rs)

@@ -1,5 +1,3 @@
-//! Copy plans proved from a successful ordinary declaration, never from an effect name.
-//! GPU entries are view/actor-local; only vector capacity and immutable plans survive views.
 use super::{InstanceRing, PacketUpload, gpu};
 use eframe::wgpu;
 use std::{ops::Range, sync::Arc};
@@ -16,8 +14,6 @@ struct Copies {
 }
 
 impl Copies {
-    /// Restrict copies to the native writer's initialized prefix. Other declarations
-    /// still use pack_native, including reads of unknown tail bytes or overlapping records.
     fn new(layout: &gpu::VertexLayout, prefix: u64) -> Option<(gpu::VertexLayout, Self)> {
         let mut packed = layout.clone();
         let mut stride = 0_u64;
@@ -50,8 +46,6 @@ impl Copies {
         ))
     }
 
-    /// Call only with complete records whose writer-prefix proof has succeeded.
-    /// Clear reused padding too: its bytes must match pack_native's fresh zeroed output.
     fn pack(&self, source: &[u8], count: usize, bytes: &mut Vec<u8>) -> Option<()> {
         let size = self.stride.checked_mul(count)?;
         bytes.clear();
@@ -120,10 +114,7 @@ struct Actor {
 }
 
 pub(super) enum Attempt<'a> {
-    /// No GPU staging happened. Preserve the original partial/native fetch path.
     Unproved,
-    /// After a staging refusal, go straight to the existing Stream fallback. Do not
-    /// retry OrdinaryUploads and introduce an extra staging/device/refusal boundary.
     Handled(Option<PacketUpload<'a>>),
 }
 
@@ -188,9 +179,6 @@ impl Uploads {
         {
             at
         } else {
-            // Prove this append's writer ranges before doing any GPU work. A stronger
-            // prefix proof may miss an otherwise valid partial layout; that falls back
-            // rather than refusing it. No future actor's bytes/ranges are consulted.
             let allocation = ring.allocation.lock().unwrap_or_else(|e| e.into_inner());
             let Some(start) = usize::try_from(self.start).ok() else {
                 return Attempt::Unproved;
@@ -234,7 +222,6 @@ impl Uploads {
                 });
                 self.quads.len() - 1
             };
-            // Preserve the original quad-upload -> actor-upload -> Stream-bind order.
             if plan
                 .instances
                 .pack(
@@ -294,7 +281,6 @@ mod tests {
     #[test]
     fn weather_copy_plans_match_native_formats_order_subsets_duplicates_and_padding() {
         let quad = bytemuck::cast_slice(&crate::map::particle_shader::QUAD);
-        // Include two-byte formats to exercise alignment zeros, not just contiguous copies.
         let attrs = [
             (wgpu::VertexFormat::Float32x4, 0),
             (wgpu::VertexFormat::Float32x3, 16),

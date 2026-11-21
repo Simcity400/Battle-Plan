@@ -1,10 +1,3 @@
-//! Script scope targets resolved over one recorded hour.
-//!
-//! [`installed_content_core::scope::parse`] reads a scope as the game's event target
-//! reader does; this resolves it against what the recording
-//! holds. Whatever the recording cannot reach is refused by name with the
-//! missing input, never guessed. The viewer and the dashboard both reach it
-//! (the viewer depends on the dashboard), behind [`RecordedScopes::resolve`].
 use crate::triggers::Failure;
 
 use installed_content_core::{scope::Keyword, scope::Names, scope::Scope, scope::ScopeKind};
@@ -24,22 +17,15 @@ use std::{
 mod original_tags;
 pub use original_tags::OriginalTagLists;
 
-/// A resolved scope target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Target {
-    /// A country by its canonical slot.
     Country(u32),
-    /// A state by its id.
     State(u32),
-    /// A character by its recorded id.
     Character(u32),
 }
 
 impl Target {
-    /// The target's kind for [`installed_content_core::scope::TriggerScopes`]. A scope
-    /// set with the clearing flag carries only this kind; callers that keep
-    /// other carried targets pass them themselves.
     pub fn kind(self) -> ScopeKind {
         match self {
             Self::Country(_) => ScopeKind::Country,
@@ -49,18 +35,9 @@ impl Target {
     }
 }
 
-/// Why a scope resolves to no target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unresolved {
-    /// The scope names nothing in the recorded facts, as the game's scope is
-    /// null there: a state whose owner or controller link is 0, a country
-    /// with no overlord or capital, a scope the context does not set, a
-    /// zero number or text the event target reader does not accept. Not a
-    /// refusal.
     Nothing(String),
-    /// A recorded input the scope needs is missing or incomplete (a table
-    /// the hour lacks, a link CountryLinks does not hold) or not recorded at
-    /// all: a refusal, naming the input.
     Missing(Failure),
 }
 
@@ -73,8 +50,6 @@ impl std::fmt::Display for Unresolved {
     }
 }
 
-/// The scopes a script or text is evaluated in. `None` is a scope the
-/// caller's context does not set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Context {
@@ -85,7 +60,6 @@ pub struct Context {
 }
 
 impl Context {
-    /// A country as ROOT and THIS, as a country context sets them.
     pub fn country(slot: u32) -> Self {
         Self {
             root: Some(Target::Country(slot)),
@@ -95,7 +69,6 @@ impl Context {
     }
 }
 
-/// Country joins retain an unresolved source until an absent lookup needs it.
 #[derive(Clone, Debug, Default)]
 struct CountryValues {
     values: BTreeMap<u32, i32>,
@@ -115,50 +88,29 @@ impl CountryValues {
     }
 }
 
-/// Character script tokens to their ids with their countries' raw references.
 type CharactersByToken = BTreeMap<String, Vec<(u32, u32)>>;
 
-/// The recorded facts scopes resolve through, read from one hour. Each map is
-/// built from the hour's tables when a query first needs it.
 #[derive(Clone, Debug, Default)]
 pub struct RecordedScopes<'a> {
-    /// The hour's tables the maps below are built from.
     frame: Option<HourFrame<'a>>,
-    /// Raw country link to canonical slot (`CountryLinks`).
     links: OnceLock<BTreeMap<u32, u32>>,
-    /// Canonical slot to tag, and back (`Countries`).
     tags: OnceLock<BTreeMap<u32, String>>,
     raw_ids: OnceLock<BTreeMap<u32, u32>>,
-    /// Whether `Countries` is complete, so `tags` is every country.
     countries_complete: bool,
     slots: OnceLock<BTreeMap<String, u32>>,
-    /// State id to raw owner and controller links (`States`).
     states: OnceLock<BTreeMap<u32, (u32, u32)>>,
-    /// Canonical slot to capital state (`Politics.capital`).
     capitals: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
-    /// Canonical slot to raw overlord link (`CountryAppearance.overlord`).
     overlords: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     faction_members_complete: bool,
-    /// Character script token, folded as the lexer folds a token (the
-    /// lookup is by token ID), to its ids with their countries' raw references
-    /// (`Characters.name_token_id` through `LexicalTokens`).
     characters: OnceLock<crate::triggers::refusal::Resolved<CharactersByToken>>,
-    /// Whether `Characters` and `LexicalTokens` are complete, so a token
-    /// no row has names no live character.
     characters_complete: bool,
-    /// Canonical slot to owned state count
-    /// (`CountryCounterInputs.owned_state_count`).
     owned: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
-    /// Exact recorded original-tag buckets and physical country-array order.
     original_tags: OriginalTagLists<'a>,
-    /// The content's tag alias database.
     aliases: Arc<TagAliases>,
     saved_targets_complete: bool,
-    /// Why a table's rows may lack an entry, by table name.
     gaps: BTreeMap<&'static str, String>,
 }
 
-/// The fields of each table recorded scopes read.
 const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
 const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
 const TAG: usize = column::<CountryRow>("tag");
@@ -168,16 +120,13 @@ const OVERLORD: u64 = mask::<CountryAppearanceRow>(&["overlord"]);
 const OWNED: u64 = mask::<CountryCounterInputRow>(&["owned_state_count"]);
 const MEMBER: u64 = mask::<FactionMemberRow>(&["faction", "ordinal"]);
 const SAVED: u64 = tables::GlobalSavedEventTargets::ID.full_mask();
-/// A character's script token, and its country.
 const CHARACTER: u64 = crate::identity::CHARACTER_IDENTITY
     | mask::<replay_data::rows::CharacterRow>(&["country"]);
 
-/// Whether `status` is a complete table's, whatever its layout, as a complete view is.
 fn whole(status: OperandStatus<'_>) -> bool {
     matches!(status, OperandStatus::Complete | OperandStatus::WrongLayout)
 }
 
-/// Why a table at `status` may hold no row for a key, as [`gap`] says of its view.
 pub fn status_gap(status: OperandStatus<'_>) -> String {
     match status {
         OperandStatus::WrongLayout => OperandStatus::Complete.gap(),
@@ -186,10 +135,7 @@ pub fn status_gap(status: OperandStatus<'_>) -> String {
     }
 }
 
-/// A table's rows, a walked row building the fields `mask` names; none, refused where
-/// reached, when the table is unavailable.
 fn held_rows<'a, T: TableSchema>(frame: Option<HourFrame<'a>>, mask: u64) -> Rowset<'a, T::Row> {
-    // Built for a recorded query, whose own result is its input.
     crate::triggers::inputs::unrecorded(|| match frame {
         Some(frame)
             if !matches!(
@@ -206,13 +152,10 @@ fn held_rows<'a, T: TableSchema>(frame: Option<HourFrame<'a>>, mask: u64) -> Row
     })
 }
 
-/// `rows`' failure to build a row of `T`, refused where it is reached.
 fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
     crate::triggers::refusal::input_error(T::ID, why)
 }
 
-/// A table's rows of any frame's tables, each row holding the fields `mask` names, and why
-/// an entry it lacks is unknown.
 pub(crate) fn table_in<'a, T: TableSchema>(
     frame: HourFrame<'a>,
     mask: u64,
@@ -220,7 +163,6 @@ pub(crate) fn table_in<'a, T: TableSchema>(
     (frame.held::<T>(mask), status_gap(frame.status(T::ID)))
 }
 
-/// Why `view` may hold no row for a key.
 pub fn gap(view: &TableView) -> String {
     match view {
         TableView::Complete(_) => "the complete table has no row for it".into(),
@@ -234,8 +176,6 @@ pub fn gap(view: &TableView) -> String {
     }
 }
 
-/// Why `table`, read as `view`, holds no row a reply needs, in the words a user reads: what it
-/// holds in plain words and why it is missing, never its identifier.
 pub fn missing(table: replay_data::rows::TableId, view: &TableView) -> String {
     let what = table.words();
     match view {
@@ -247,11 +187,9 @@ pub fn missing(table: replay_data::rows::TableId, view: &TableView) -> String {
     }
 }
 
-/// [`missing`] of a table not read whole; none when it was.
 pub fn unread(table: replay_data::rows::TableId, view: &TableView) -> Option<String> {
     (!matches!(view, TableView::Complete(_))).then(|| missing(table, view))
 }
-/// Saved-target validity using captured object liveness.
 pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRow) -> bool {
     !r.name.is_empty()
         && (r.state != 0
@@ -259,7 +197,6 @@ pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRo
             || r.live & !replay_data::rows::GlobalSavedEventTargetRow::UNSAVED_NAME != 0)
 }
 
-/// A recorded query of the hour's scopes ([`crate::triggers::inputs`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Query {
@@ -288,8 +225,6 @@ pub enum Query {
 }
 
 impl Query {
-    /// What this query's answer is a function of besides the content
-    /// ([`crate::triggers::inputs::Key::dependence`]); None when undeclared.
     pub(crate) fn dependence(&self) -> Option<Vec<crate::triggers::inputs::TableRead>> {
         use crate::triggers::inputs::TableRead;
         use replay_data::rows::TableId;
@@ -324,16 +259,12 @@ impl Query {
                 }
             }
             Query::Tag(_) | Query::Country(_) => vec![tags()],
-            // Parsing and alias lookup read the recorded tags; alias bodies
-            // themselves belong to the fixed content stack.
             Query::Alias(_) | Query::AliasEntry(_) => vec![tags()],
             Query::Roster => vec![TableRead::fields(TableId::Countries, &["canonical_slot"])],
             Query::Describe(Target::Country(_)) => vec![tags()],
             Query::Describe(Target::State(_) | Target::Character(_)) => Vec::new(),
             Query::ResolveTag(_) => Self::tag_dependence(),
             Query::Resolve(ScopeKey(Scope::Country(_)), _) => Self::tag_dependence(),
-            // Every appearance row's overlord resolves through the links;
-            // refusals name the scoped country by its tag.
             Query::Resolve(ScopeKey(Scope::Keyword(Keyword::Overlord)), _) => vec![
                 TableRead::fields(TableId::CountryAppearance, &["overlord"]),
                 TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
@@ -343,8 +274,6 @@ impl Query {
         })
     }
 
-    /// Tag substitution can visit every member of the original-tag bucket,
-    /// resolving its raw reference and testing whether it owns a state.
     fn tag_dependence() -> Vec<crate::triggers::inputs::TableRead> {
         use crate::triggers::inputs::TableRead;
         use replay_data::rows::TableId;
@@ -360,8 +289,6 @@ impl Query {
     }
 }
 
-/// A parsed scope as a query argument, compared and hashed by its full
-/// `Debug` form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ScopeKey(Scope);
@@ -373,7 +300,6 @@ impl std::hash::Hash for ScopeKey {
 }
 
 impl RecordedScopes<'_> {
-    /// The digest `query` reads in this hour's scopes.
     pub fn reread(&self, query: &Query) -> u64 {
         crate::triggers::inputs::resolved_digest(|| match query {
             Query::SavedTarget(name) => {
@@ -437,17 +363,14 @@ impl RecordedScopes<'_> {
 }
 
 impl<'a> RecordedScopes<'a> {
-    /// Reads scope facts and native country-list snapshots at this hour.
     pub fn read(frame: &'a dyn replay_frame::frame::DecodedSource, aliases: Arc<TagAliases>) -> Self {
         Self::read_in(HourFrame::Decoded(frame), aliases)
     }
 
-    /// [`Self::read`] of any frame's tables, a walk's views among them.
     pub fn read_in(frame: HourFrame<'a>, aliases: Arc<TagAliases>) -> Self {
         Self::read_with(frame, OriginalTagLists::read_in(frame), aliases)
     }
 
-    /// Uses a selectively read native-list snapshot for this same hour.
     pub fn read_with(
         frame: impl Into<HourFrame<'a>>,
         original_tags: OriginalTagLists<'a>,
@@ -480,8 +403,6 @@ impl<'a> RecordedScopes<'a> {
             frame: Some(frame),
             countries_complete: complete(tables::Countries::ID),
             faction_members_complete: complete(tables::FactionMembers::ID),
-            // A character's script token is its name token id spelled by the
-            // hour's LexicalTokens (`Characters.token` is its saved name).
             characters_complete: complete(tables::Characters::ID)
                 && complete(tables::LexicalTokens::ID),
             saved_targets_complete: complete(tables::GlobalSavedEventTargets::ID),
@@ -492,7 +413,6 @@ impl<'a> RecordedScopes<'a> {
         }
     }
 
-    /// Whether `table` is complete this hour, as a complete view is.
     fn complete(&self, table: replay_data::rows::TableId) -> bool {
         self.frame.is_some_and(|frame| whole(frame.status(table)))
     }
@@ -682,14 +602,12 @@ impl<'a> RecordedScopes<'a> {
             .value()
     }
 
-    /// FactionMembers' rows in key order, each read once.
     fn faction_members(&self) -> impl Iterator<Item = Result<Cow<'a, FactionMemberRow>, Failure>> {
         self.rows::<tables::FactionMembers>(MEMBER)
             .iter()
             .map(|row| row.map_err(walked::<tables::FactionMembers>))
     }
 
-    /// GlobalSavedEventTargets' rows in key order, each read once.
     fn saved_targets(
         &self,
     ) -> impl Iterator<Item = Result<Cow<'a, GlobalSavedEventTargetRow>, Failure>> {
@@ -698,8 +616,6 @@ impl<'a> RecordedScopes<'a> {
             .map(|row| row.map_err(walked::<tables::GlobalSavedEventTargets>))
     }
 
-    /// Return the first name match, even when that record is invalid;
-    /// no later duplicate wins.
     pub(crate) fn saved_target(
         &self,
         name: &[u8],
@@ -779,10 +695,6 @@ impl<'a> RecordedScopes<'a> {
         })
     }
 
-    /// An owning own country wins; otherwise use the first owning bucket
-    /// member, or the first member when none owns a state. The caller accepts
-    /// only an owning result, so a nonowning member or an empty bucket keeps
-    /// the own country.
     pub fn resolve_tag(&self, tag: &str) -> Result<u32, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::ResolveTag(tag.to_owned())),
@@ -811,8 +723,6 @@ impl<'a> RecordedScopes<'a> {
         for &member in self.original_tags.bucket(canonical)? {
             let member = self.raw_slot(member)?;
             if self.owned_states(member)? >= 1 {
-                // Stop at this owning member and accept only a positive
-                // returned own word; otherwise keep the own country.
                 let raw = if member == 0 {
                     0
                 } else {
@@ -830,8 +740,6 @@ impl<'a> RecordedScopes<'a> {
         Ok(slot)
     }
 
-    /// A known zero reference resolves to the separately authenticated reserved
-    /// country. Missing positive links cannot be inferred to map to zero.
     pub(crate) fn raw_slot(&self, raw: u32) -> Result<u32, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::RawSlot(raw)),
@@ -852,8 +760,6 @@ impl<'a> RecordedScopes<'a> {
         })
     }
 
-    /// Country iterators retain only signed-positive own tag words
-    /// after resolving a raw reference.
     pub(crate) fn positive_country(&self, raw: u32) -> Result<Option<u32>, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::PositiveCountry(raw)),
@@ -877,8 +783,6 @@ impl<'a> RecordedScopes<'a> {
         Ok(((own as i32) > 0).then_some(slot))
     }
 
-    /// Original-tag bucket selected by a positive tag word, before appending
-    /// that word. Nonpositive words do not demand the snapshot.
     pub(crate) fn original_bucket(&self, selected: i32) -> Result<&[u32], Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalBucket(selected)),
@@ -893,11 +797,6 @@ impl<'a> RecordedScopes<'a> {
         self.original_tags.bucket(self.raw_slot(selected as u32)?)
     }
 
-    /// Why a three-byte name that is no recorded country tag is refused
-    /// when it is, or may be, a tag alias: the alias database is checked
-    /// after the country tags, and the country an alias names is chosen
-    /// at run time by its targets and
-    /// triggers, which are not evaluated yet.
     pub fn alias(&self, tag: &str) -> Option<String> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Alias(tag.to_owned())),
@@ -922,9 +821,6 @@ impl<'a> RecordedScopes<'a> {
         })
     }
 
-    /// The body of the tag alias a three-byte name is, when it is no
-    /// recorded country tag: the alias database is checked after the
-    /// country tags.
     pub fn alias_entry(&self, tag: &str) -> Option<&TagAlias> {
         crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::AliasEntry(tag.to_owned())),
@@ -939,8 +835,6 @@ impl<'a> RecordedScopes<'a> {
         self.aliases.get(tag)
     }
 
-    /// Every captured canonical country, in slot order. This canonical
-    /// roster is distinct from the physical native array with alias occurrences.
     pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, Failure> {
         let roster = crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Roster),
@@ -963,8 +857,6 @@ impl<'a> RecordedScopes<'a> {
         Ok(self.tags().keys().copied())
     }
 
-    /// A country's owned state count, or why it is not
-    /// recorded.
     pub fn owned_states(&self, slot: u32) -> Result<i32, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OwnedStates(slot)),
@@ -988,7 +880,6 @@ impl<'a> RecordedScopes<'a> {
         )))
     }
 
-    /// Exact recorded original-tag buckets and physical country-array order.
     pub fn original_tags(&self) -> &OriginalTagLists<'a> {
         crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalTags),
@@ -1000,7 +891,6 @@ impl<'a> RecordedScopes<'a> {
         &self.original_tags
     }
 
-    /// A country's tag.
     pub fn tag(&self, slot: u32) -> Option<&str> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Tag(slot)),
@@ -1022,7 +912,6 @@ impl<'a> RecordedScopes<'a> {
         )
     }
 
-    /// A country's canonical slot by tag.
     pub fn country(&self, tag: &str) -> Option<u32> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Country(tag.to_owned())),
@@ -1038,7 +927,6 @@ impl<'a> RecordedScopes<'a> {
         found
     }
 
-    /// A raw country link's canonical slot.
     pub fn slot(&self, link: u32) -> Option<u32> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Slot(link)),
@@ -1059,7 +947,6 @@ impl<'a> RecordedScopes<'a> {
         slot
     }
 
-    /// The actual country's faction. Country0 uses its recorded faction field.
     pub(crate) fn faction(&self, slot: u32) -> Result<Option<u64>, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Faction(slot)),
@@ -1099,8 +986,6 @@ impl<'a> RecordedScopes<'a> {
         Ok(None)
     }
 
-    /// The exact first member's own raw country word (ordinal zero).
-    /// Literal raw0 is an authenticated Country0 member, never a null placeholder.
     pub(crate) fn faction_first_raw(&self, faction: u64) -> Result<u32, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::FactionFirstRaw(faction)),
@@ -1142,8 +1027,6 @@ impl<'a> RecordedScopes<'a> {
             .transpose()
     }
 
-    /// Existing scalar API: retain its ordinary link resolution. Scope and text
-    /// select their distinct literal-zero behavior through faction_leader_raw.
     pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, Failure> {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::FactionLeader(slot)),
@@ -1164,9 +1047,6 @@ impl<'a> RecordedScopes<'a> {
         })
     }
 
-    /// Parses `text` as the game's event target reader does
-    /// ([`installed_content_core::scope::parse`]) with this hour's countries and
-    /// characters, and resolves it in `context`.
     #[cfg(test)]
     pub fn resolve_text(
         &self,
@@ -1195,13 +1075,6 @@ impl<'a> RecordedScopes<'a> {
         self.resolve(&installed_content_core::scope::parse(text, quoted, self), context)
     }
 
-    /// Resolves a parsed scope in `context`: the target, a scope that names
-    /// nothing ([`Unresolved::Nothing`]), or a refusal naming the recorded
-    /// input it would need ([`Unresolved::Missing`]).
-    ///
-    /// Not yet implemented: the `occupied` promotion, which
-    /// `StateResistance.country` (the occupied country's original tag) would
-    /// answer; it is refused as unrecorded until a consumer needs it.
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
         crate::triggers::inputs::query_debug_resolved(
             || {
@@ -1232,9 +1105,6 @@ impl<'a> RecordedScopes<'a> {
                 }
             }
             Scope::Country(tag) => self.resolve_tag(tag).map(Target::Country).map_err(Missing),
-            // Look the token up among the scope country's characters.
-            // Missing country or character lookups are logged by the game;
-            // a missing character leaves the scope's character invalid.
             Scope::Character(token) => {
                 let Some(Target::Country(country)) = context.this else {
                     return Err(Nothing(format!(
@@ -1292,8 +1162,6 @@ impl<'a> RecordedScopes<'a> {
                 format!("event_target:{name}: saved targets resolve in the trigger evaluator")
                     .into(),
             )),
-            // Generic prefix accepted by the parser, with no matching resolver
-            // case: only script variables handle the global_event_target: prefix.
             Scope::Prefixed { prefix, value }
                 if prefix.eq_ignore_ascii_case("global_event_target") =>
             {
@@ -1316,8 +1184,6 @@ impl<'a> RecordedScopes<'a> {
         let name = keyword.name();
         let unset = || Nothing(format!("{name} is not set in this context"));
         let this = || context.this.ok_or_else(unset);
-        // A link of 0 or below is no country; a positive one CountryLinks
-        // does not hold is a missing input, not an absence.
         let country = |link: i64, what: &str, of: &str| -> Result<Target, Unresolved> {
             let Some(link) = u32::try_from(link).ok().filter(|link| *link > 0) else {
                 return Err(Nothing(format!("{name}: {of} has no {what}")));
@@ -1403,9 +1269,6 @@ impl<'a> RecordedScopes<'a> {
                     self.describe(other)
                 ).into())),
             },
-            // This fallback has no country-presence gate. Known
-            // clearing state/character/empty scopes ask actual Country0's faction.
-            // A directly carried faction remains outside these supported carriers.
             Keyword::FactionLeader => {
                 let slot = match context.this {
                     Some(Target::Country(slot)) => slot,
@@ -1417,10 +1280,8 @@ impl<'a> RecordedScopes<'a> {
                     )));
                 };
                 if raw == 0 {
-                    // set_country(0, clear=1) leaves validity, but no carried kinds.
                     Ok(Target::State(crate::triggers::NULL_STATE))
                 } else {
-                    // Positive raw aliases remain country carriers, even at slot0.
                     self.slot(raw).map(Target::Country).ok_or_else(|| {
                         Missing(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
                             "{name}: the faction leader has no recorded country link: {}",
@@ -1437,7 +1298,6 @@ impl<'a> RecordedScopes<'a> {
         }
     }
 
-    /// A target as a message names it.
     pub fn describe(&self, target: Target) -> String {
         crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Describe(target)),
@@ -1458,14 +1318,10 @@ impl<'a> RecordedScopes<'a> {
 }
 
 impl Names for RecordedScopes<'_> {
-    /// A recorded country's tag, or a tag alias, which then
-    /// resolves to a named refusal ([`Self::alias`]).
     fn is_country(&self, tag: &str) -> bool {
         self.country(tag).is_some() || self.alias(tag).is_some()
     }
 
-    /// A live character's token; load-time classification reads the
-    /// content's templates instead.
     fn is_character(&self, token: &str) -> bool {
         let found = self.characters().contains_key(&token.to_ascii_lowercase());
         for (complete, table) in [
@@ -1482,10 +1338,7 @@ impl Names for RecordedScopes<'_> {
         found
     }
 
-    /// Recognized keyword prefixes; any other keyword prefix parses
-    /// as well but resolves to the same refusal.
     fn is_keyword(&self, text: &str) -> bool {
-        // global_event_target is recognized by the lexer.
         ["mio", "sp", "scope", "global_event_target"]
             .iter()
             .any(|prefix| text.eq_ignore_ascii_case(prefix))
@@ -1507,8 +1360,6 @@ pub mod tests {
     };
     use replay_frame::frame::Metrics;
 
-    /// GER (slot 0, link 100) with capital state 64, SOV (slot 1, link 200)
-    /// a subject of GER, state 64 owned by GER and controlled by SOV.
     pub fn frame() -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
@@ -1618,8 +1469,6 @@ pub mod tests {
         frame
     }
 
-    /// The current collector's positive-only country roster. Native slot
-    /// zero is a separate ReservedCountryNaming singleton, not GER's link.
     pub fn positive_frame() -> DecodedFrame {
         let mut frame = frame();
         if let TableView::Complete(TableRows::Countries(rows)) =
@@ -1639,8 +1488,6 @@ pub mod tests {
         frame
     }
 
-    /// Original-list fixtures also know the separately authenticated zero
-    /// object's original word is nonpositive. Ordinary fixtures keep it absent.
     #[cfg(test)]
     fn original_frame() -> DecodedFrame {
         let mut frame = positive_frame();
@@ -1658,8 +1505,6 @@ pub mod tests {
         frame
     }
 
-    /// A tag owning no state stands for the first country of its
-    /// original-tag list that owns one.
     #[test]
     fn a_tag_without_states_resolves_as_the_game_substitutes_it() {
         let counts = |ger: i32, sov: i32| {
@@ -1680,7 +1525,6 @@ pub mod tests {
             if let TableView::Complete(TableRows::CountryAppearance(rows)) =
                 &mut *frame.tables[TableId::CountryAppearance.index()]
             {
-                // SOV is a dynamic country named after GER.
                 rows[1].name_tag = b"GER".to_vec();
                 rows[1].original_tag_reference = Recorded::Value(Some(100));
                 rows[1].original_tag = Recorded::Value(Some(b"GER".to_vec()));
@@ -1692,7 +1536,6 @@ pub mod tests {
         };
         assert_eq!(resolve(counts(1, 3)), Ok(1));
         assert_eq!(resolve(counts(0, 3)), Ok(2));
-        // No candidate owns a state: the tag's own country.
         assert_eq!(resolve(counts(0, 0)), Ok(1));
         let mut frame = positive_frame();
         *frame.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
@@ -1708,9 +1551,6 @@ pub mod tests {
         );
     }
 
-    /// GER (link 100, slot 1) and three dynamic countries D01..D03 (links
-    /// 201..203, slots 2..4), with each country's exact original presence and
-    /// every country's owned state count.
     #[cfg(test)]
     pub(crate) fn dynamic_frame(hour: i32, names: [&str; 3], owned: [i32; 4]) -> DecodedFrame {
         let mut frame = original_frame();
@@ -1793,8 +1633,6 @@ pub mod tests {
             RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
             Ok(2)
         );
-        // An original-tag change can remove/reappend D01 between samples while every
-        // final original operand remains identical. The stored order wins.
         if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
             &mut *frame.tables[TableId::ReservedCountryNaming.index()]
         {
@@ -1816,8 +1654,6 @@ pub mod tests {
             rows[1].owned_state_count = 0;
             rows[2].owned_state_count = 0;
         }
-        // The first nonowning member is rejected for its zero state count,
-        // retaining the own country.
         assert_eq!(
             RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
             Ok(1)
@@ -1870,8 +1706,6 @@ pub mod tests {
             match count {
                 Recorded::Value(Some(raw)) => {
                     assert_eq!(scopes.owned_states(0), Ok(raw));
-                    // Reserved owns states: selection stops and returns zero;
-                    // the caller rejects that zero result and keeps GER.
                     assert_eq!(result, Ok(if raw > 0 { 1 } else { 2 }));
                 }
                 _ => assert!(
@@ -1881,7 +1715,6 @@ pub mod tests {
                 ),
             }
         }
-        // Unknown zero count is irrelevant when the own country already owns.
         if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
             &mut *frame.tables[TableId::CountryCounterInputs.index()]
         {
@@ -1920,8 +1753,6 @@ pub mod tests {
             resolve("ROOT.overlord.capital_scope", &sov),
             Ok(Target::State(64))
         );
-        // A character of the scope country only, found by its
-        // token, so without case; another country's names nothing there.
         for token in ["GER_erwin_rommel", "ger_ERWIN_rommel"] {
             assert_eq!(
                 resolve(token, &Context::country(1)),
@@ -1941,7 +1772,6 @@ pub mod tests {
             resolve("ROOT.overlord.capital_scope.controller", &sov),
             Ok(Target::Country(2))
         );
-        // PREV inside a chain is the scope before the step.
         assert_eq!(resolve("overlord.PREV", &sov), Ok(Target::Country(2)));
         for (text, reason) in [
             ("FROM", "from is not set in this context"),
@@ -1968,7 +1798,6 @@ pub mod tests {
             let error = resolve(text, &sov).unwrap_err();
             assert!(error.starts_with(reason), "{text}: {error}");
         }
-        // A table the hour lacks is named with its state.
         let mut frame = positive_frame();
         *frame.tables[TableId::Politics.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
@@ -1985,8 +1814,6 @@ pub mod tests {
         );
     }
 
-    /// The event-target selector takes the faction's first
-    /// member; without a faction it clears the target's validity.
     #[test]
     fn faction_leader_scope_uses_the_first_member_and_clears_an_absent_target() {
         use replay_data::rows::FactionMemberRow;
@@ -2026,9 +1853,6 @@ pub mod tests {
         ));
     }
 
-    /// A three-byte name that is no country tag but a tag alias parses as
-    /// a country scope and is refused by name; while an alias file stops
-    /// short, any unknown three-byte name is.
     #[test]
     fn a_tag_alias_scope_is_refused_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2062,9 +1886,6 @@ pub mod tests {
         ));
     }
 
-    /// A state's owner or controller link of 0 names no country (the game's
-    /// scope is null); a positive link CountryLinks does not hold is a
-    /// missing input, refused by name.
     #[test]
     fn an_owner_link_of_zero_is_nothing_and_an_unlinked_one_is_missing() {
         let mut frame = frame();

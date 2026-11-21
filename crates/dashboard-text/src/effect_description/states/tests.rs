@@ -508,8 +508,6 @@ fn state_content_province_display_uses_fallbacks() {
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
-        // Victory-point names use the state owner's original or current tag.
-        // This owner has no original reference; zero selects its own tag.
         rows.iter_mut()
             .find(|row| row.country == 100)
             .unwrap()
@@ -803,7 +801,6 @@ fn states_branches() {
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
-        // VP descriptions reach the owner's original-or-own.
         rows.iter_mut()
             .find(|row| row.country == 100)
             .unwrap()
@@ -1274,8 +1271,6 @@ fn states_branches() {
             "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
             None,
         ),
-        // The state's controller builtin is an available recorded country
-        // operand, alongside the scoped amount, days and occupied country.
         (
             "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
             S(1),
@@ -1548,7 +1543,6 @@ fn states_branches() {
             );
         }
     }
-    // The shared child projection sends non-own fields through effect parsing.
     let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
     let out = fixture.render(
         "add_resistance_target={amount=0 ignored_field=yes}",
@@ -1637,7 +1631,6 @@ fn state_tables_refuse_gaps_and_name_a_late_country() {
                 "{body}: {:?}",
                 out.refusals
             );
-            // A core table's gap is the world's, in words; any other's is the frame's.
             assert!(
                 out.refusals
                     .keys()

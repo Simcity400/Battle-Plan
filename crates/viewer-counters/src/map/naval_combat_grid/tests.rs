@@ -136,8 +136,6 @@ fn primary_live_ships_deduplicate_task_force_and_count_convoys_separately() {
     assert_eq!(sides[1], SideGrid::default());
 }
 
-/// Opponent-only groups contribute no task force or convoy. Repeated member indices across them do
-/// not repeat a forward position.
 #[test]
 fn paired_only_groups_are_not_walked() {
     let paired = |slot, ship, live_ship, live_convoy, group_member| NavalCombatShipRow {
@@ -175,7 +173,6 @@ fn paired_only_groups_are_not_walked() {
     .unwrap();
     assert_eq!(ids(&sides[0]), vec![vec![101]]);
     assert_eq!(sides[0].convoys, 0);
-    // A paired-only ship whose task force the hour lacks refuses nothing either.
     let sides = grid(
         sources(&combat_ships, &ships[..1], &task_forces[..1]),
         &Vision::default(),
@@ -230,8 +227,6 @@ fn incomplete_census_and_missing_live_join_do_not_turn_into_empty_grid() {
     );
 }
 
-/// A truncated `UnitIntel` census leaves a foreign task force it does not list unknown, so
-/// the grids are refused; a listed one, an own one and a vision-sharing one are decided.
 #[test]
 fn a_truncated_intel_census_refuses_an_unlisted_foreign_task_force() {
     let combat_ships = [member(0, 201, 1, 0), member(1, 202, 1, 0)];
@@ -271,7 +266,6 @@ fn a_truncated_intel_census_refuses_an_unlisted_foreign_task_force() {
     assert_eq!(sides[0].groups[1].task_forces[0].visibility, 250);
     let shared = Vision::sharing(0, [2]).with_truncated_unit_intel([]);
     assert!(run(&shared).is_ok());
-    // Without the foreign force, the own one alone is decided whatever the census.
     let own = grid(
         sources(&combat_ships[..1], &ships, &task_forces),
         &omitted,
@@ -300,8 +294,6 @@ fn native_sort_puts_own_then_foreign_full_and_preserves_equal_priority() {
             0
         ) < 0
     );
-    // The fleet subtraction wraps as the game's: low word `i32::MAX` minus `i32::MIN`
-    // is negative, so the higher word sorts first.
     assert!(
         compare(
             &with(&a, u64::from(i32::MAX as u32), 0),
@@ -311,7 +303,6 @@ fn native_sort_puts_own_then_foreign_full_and_preserves_equal_priority() {
     );
 }
 
-/// A side whose own fleets' words wrap derives as the game sorts it: nothing refused.
 #[test]
 fn wrapping_fleet_handles_sort_as_the_game_sorts_them() {
     let handle = |low: i32| u64::from(low as u32) | (1 << 32);
@@ -326,7 +317,6 @@ fn wrapping_fleet_handles_sort_as_the_game_sorts_them() {
         .collect();
     let mut order: Vec<usize> = (0..pool.len()).collect();
     sort(&mut order, |&a, &b| compare(&pool[a], &pool[b], 0) < 0);
-    // `i32::MAX` stays after 0; `i32::MIN` precedes the first (0) and goes to the front.
     assert_eq!(order, [2, 0, 1]);
 }
 
@@ -502,9 +492,6 @@ fn unknown_allegiance_is_not_assumed_other() {
     );
 }
 
-/// 40 countries, each with an own task force on one combat's attacker side and a
-/// foreign one spread over 12 combats, share one index: every grid derives, and the
-/// crowded side sorts its 40 own forces as the game's stable sort does.
 #[test]
 fn countries_share_one_index_across_combats() {
     const COUNTRIES: u32 = 40;
@@ -517,7 +504,6 @@ fn countries_share_one_index_across_combats() {
         for (side, offset) in [(0_u8, 0_u64), (1, 1)] {
             let id = u64::from(country) * 2 + offset;
             let combat = if side == 0 {
-                // Every own force crowds one combat's attacker side.
                 COMBATS
             } else {
                 u64::from(country) % COMBATS
@@ -550,7 +536,6 @@ fn countries_share_one_index_across_combats() {
             });
         }
     }
-    // The census the naval counters index once per hour, shared as they share it.
     let census = ShipCensus::from_rows(&ships);
     let index = Index::new(Sources {
         combat_ships: Some(&combat_ships),
@@ -576,7 +561,6 @@ fn countries_share_one_index_across_combats() {
         })
         .collect();
     let vision = Vision::default();
-    // An index over a census of its own, as the grids built before sharing the counters'.
     let own = Index::new(Sources {
         combat_ships: Some(&combat_ships),
         ships: Some(ShipCensus::from_rows(&ships)),
@@ -587,7 +571,6 @@ fn countries_share_one_index_across_combats() {
     let mut drawn = 0;
     for combat in 0..=COMBATS {
         let sides = derive(&index, combat, &vision, &Some, &allegiances).unwrap();
-        // The shared census gives every combat the same grids.
         assert_eq!(
             derive(&own, combat, &vision, &Some, &allegiances).unwrap(),
             sides

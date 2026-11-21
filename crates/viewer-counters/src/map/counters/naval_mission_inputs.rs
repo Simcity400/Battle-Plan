@@ -1,5 +1,3 @@
-//! Stored naval mission operands joined during hour preparation.
-//! Camera rebuilds reuse the finished decisions.
 use super::{naval_missions::MissionIcons, *};
 use engine_executable::modifier_keys as keys;
 use replay_data::rows::*;
@@ -33,7 +31,6 @@ pub(super) struct Content {
     underway_factor: i64,
     distance_factor: i64,
     edges: OnceLock<RegionTopology>,
-    /// Native sea-distance matrix is built at load, never per hour.
     distances: OnceLock<Mutex<installed_content_naval_path::naval_path::Distances>>,
 }
 
@@ -66,7 +63,6 @@ impl Content {
             dominance: replay_derive::naval_dominance_derive::Defines::read(|section, name| {
                 defines.fixed5(section, name)
             })?,
-            // Module globals read by the game.
             fuel_factor: defines.fixed5("NNavy", "OUT_OF_FUEL_RANGE_FACTOR")?,
             underway_factor: defines.fixed5("NNavy", "UNDERWAY_REPLENISHMENT_RANGE_FACTOR")?,
             distance_factor: defines.fixed5("NNavy", "NAVAL_RANGE_TO_INGAME_DISTANCE")?,
@@ -76,7 +72,6 @@ impl Content {
     }
 
     fn terrain(&self, region: Option<u32>) -> Fact<&installed_content_core::terrain::TerrainCategory> {
-        // invalid/absent region terrain uses the native literal "ocean".
         let at = region
             .and_then(|id| self.naval_terrain.get(&id))
             .and_then(|name| self.terrain.category(name))
@@ -95,7 +90,6 @@ type Topology<'a> = Fact<(
     &'a installed_content_core::province_geometry::ProvinceGeometry,
 )>;
 
-/// The operands and admission context prepared once for one replay hour.
 pub(super) struct Hour<'a> {
     frame: &'a DecodedFrame,
     content: &'a Content,
@@ -111,8 +105,6 @@ pub(super) struct Hour<'a> {
     ships: OnceLock<Fact<HashMap<u64, Vec<&'a ShipRow>>>>,
     fleets: Fact<HashMap<u64, &'a FleetRow>>,
     flags: OnceLock<Fact<HashMap<u64, u64>>>,
-    /// This build's own sea distances, for the queries made while another build holds the shared
-    /// ones ([`Content`]'s): never waited on.
     own_distances: Mutex<Option<installed_content_naval_path::naval_path::Distances>>,
     definitions: Fact<HashMap<u32, &'a ModifierDefinitionRow>>,
     names: Fact<TokenNames<'a>>,
@@ -323,7 +315,6 @@ impl<'a> Hour<'a> {
                     String::from_utf8_lossy(&terrain.name)
                 ));
             }
-            // Merge only the accumulator entries, not added_modifier children.
             Ok(block
                 .values
                 .iter()
@@ -337,7 +328,6 @@ impl<'a> Hour<'a> {
         }
         let mut terms = Vec::with_capacity(classes.len());
         for (class, count) in classes {
-            // Ship and sub-unit definition names are lexer tokens.
             let own = match names.name(class as u32) {
                 Ok(class_name) => {
                     let subunits = self.anchors.subunit_tokens.as_ref().map_err(Clone::clone)?;
@@ -353,11 +343,9 @@ impl<'a> Hour<'a> {
                             .flatten()
                     }
                 }
-                // an id absent from the class map takes common values.
                 Err(TokenError::Rejected | TokenError::Absent(_)) => None,
                 Err(error) => return Err(error.to_string()),
             };
-            // Add raw common terms before the getter's clamp/gate.
             let value = match (common, own) {
                 (None, None) => None,
                 (a, b) => Some(a.unwrap_or(0).wrapping_add(b.unwrap_or(0))),
@@ -434,7 +422,6 @@ impl<'a> Hour<'a> {
     }
     fn raiding(&mut self, handle: u64) -> Fact<i64> {
         let force = self.force(handle)?;
-        // Return full before reading sibling/modifier operands.
         if force.fleet == 0 {
             return Ok(100_000);
         }
@@ -651,8 +638,6 @@ impl<'a> Hour<'a> {
         self.dominance_sources_in(None)
     }
 
-    /// [`Self::dominance_sources`] of the region `only` alone, when given: the same sources for it,
-    /// none of the others computed.
     pub(super) fn dominance_sources_in(
         &mut self,
         only: Option<u32>,
@@ -717,8 +702,6 @@ impl<'a> Hour<'a> {
                 };
             }
             4 => {
-                // Keep every ledger position. The callback index must refer to the
-                // original order, including non-escort and duplicate registrations.
                 let registrations = ledger
                     .task_forces
                     .iter()
@@ -768,7 +751,6 @@ impl<'a> Hour<'a> {
 
     fn active(&mut self, handle: u64, region: u32) -> Fact<bool> {
         let (graph, geometry) = *self.topology.as_ref().map_err(Clone::clone)?;
-        // Keep table failure precedence; reborrow after the mutable range memo below.
         self.ports.as_ref().map_err(Clone::clone)?;
         self.bases.as_ref().map_err(Clone::clone)?;
         let members = self
@@ -816,7 +798,6 @@ impl<'a> Hour<'a> {
         }
         let ports = self.ports.as_ref().map_err(Clone::clone)?;
         let bases = self.bases.as_ref().map_err(Clone::clone)?;
-        // Test only the land bit: a lake remains the source.
         let source = match geometry.kind_flags(force.province) {
             None if force.province == 0 => return Ok(false),
             None => {
@@ -893,7 +874,6 @@ impl<'a> Hour<'a> {
             .map_err(Clone::clone)?
             .get(&force.fleet)
             .ok_or_else(|| format!("fleet {:#x} has no Fleets row", force.fleet))?;
-        // Consider the navy's hubs only inside the nonnull home-base branch.
         if fleet.home_base == 0 {
             return Ok(false);
         }
@@ -901,8 +881,6 @@ impl<'a> Hour<'a> {
         let shared = self
             .content
             .distances
-            // Port sea provinces come from the resolved map definition. Fixed recorded
-            // content retains those load-time values; no map-authoring update is replayed.
             .get_or_init(|| {
                 Mutex::new(installed_content_naval_path::naval_path::Distances::new(
                     geometry, ports,

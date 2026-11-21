@@ -87,8 +87,6 @@ fn naval_combat_reader_replays_native_list_and_failed_float_consumption() {
           naval_combat_formation = kept \
           naval_death_time = { naval_death_time = 99 } naval_random_start_time = .25",
     );
-    // List reading starts after its current value even without '{', so
-    // ordinary field-like tokens here are effect entries, not assignments.
     assert_eq!(config.formation().unwrap().0, "");
     assert_eq!(
         config.effects[1],
@@ -309,7 +307,6 @@ fn naval_combat_admission_refuses_only_reached_locator_origin_errors() {
         )),
     };
     source.entity_locators = vec![bad("defend_position_big_5")];
-    // The first existing big position is 2, so later big 5 is not probed.
     assert!(select_locators(&rig).is_ok());
     Arc::make_mut(rig.nodes[0].native.as_mut().unwrap())
         .entity_locators

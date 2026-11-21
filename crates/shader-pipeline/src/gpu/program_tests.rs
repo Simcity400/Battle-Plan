@@ -106,7 +106,6 @@ fn successful_program_matches_fresh_multiframe_bytes_offsets_and_queued_pixels()
         let mut fresh = Vec::new();
         let mut replayed = Vec::new();
         for (&identity, value) in order.iter().zip(&values) {
-            // Alternate short zero-filled inputs and physical bytes containing exact NaN/-0 payloads.
             let bytes = value.map(|value| {
                 let mut bytes = bytemuck::bytes_of(&value).to_vec();
                 if frame % 3 != 0 {
@@ -240,8 +239,6 @@ fn successful_program_matches_fresh_multiframe_bytes_offsets_and_queued_pixels()
             enqueue(&retained_arena, &replayed),
         ));
     }
-    // Enqueue all frames without waiting. Frame-arena writes are ordered after prior
-    // submissions, so retained resources never retain an earlier frame's constants.
     for (expected, actual) in &captures {
         for read in [expected, actual] {
             read.slice(..)

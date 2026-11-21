@@ -1,46 +1,3 @@
-//! The final values of every Combat Log a daily prune deletes.
-//!
-//! The game deletes a group's Combat Log in its daily prune
-//! ([`engine_land_inputs::ncombat_log_cmanager::PRUNE_RVA`], per country inside
-//! the daily update) once the group's orders group is gone. Orders
-//! groups can be deleted inside the hourly update that runs the prune, after
-//! the hourly sample, so no sample can see those logs' last changes. A detour
-//! at the prune's entry reads, before the original runs, every log it is
-//! about to delete for that reason ([`engine_land_inputs::ncombat_log_cmanager::deleted_logs`])
-//! into a lock-free log; nothing can change those logs any more, so
-//! the rows are their final values. The detour only reads and calls the
-//! original; it never changes game behaviour and calls no game function.
-//!
-//! The daily update dispatches the per-country prune as a TBB task. This
-//! is a daily job worker path; the simulation thread may also execute the task.
-//! Its wall cost belongs to that thread, outside the hourly callback's timing.
-//! The log is multi-producer: a prune counts its deleted logs' rows, reserves
-//! that many with one `fetch_add`, then reads them into its reservation. The
-//! log is sized off the hook ([`prepare`]) from the rows every retained group
-//! log holds, any of which a prune can delete, and from any shortfall a prune
-//! met; a drain installs the larger log. A prune whose reservation the log
-//! cannot hold reads its rows whole into storage of its own on a lock-free
-//! spill, so it never waits for the drain.
-//! The hourly callback, which runs while no daily update does, hands the rows
-//! over in reservation order ([`drain`]). A read that fails, a spill whose
-//! allocation fails, or hooks that are not installed or enabled make that drain
-//! unobserved: the table then says so for the hour
-//! (`CombatLogState.prune_observed`).
-//!
-//! Each row carries the load signal (the global
-//! [`engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA`] every load sets) of
-//! the session whose prune logged it. The drain hands over only the rows of
-//! the sample's own session: rows an earlier session logged after its last
-//! sample describe a branch the player left, and are discarded and counted.
-//!
-//! Stack: `deleted_logs` nests the bounded `for_each_group`, `read_entries`
-//! and `read_pool` batch buffers: about 60 KB together, before native callers
-//! and guarded-read frames. The pinned executable's PE SizeOfStackReserve is
-//! 4 MB. The TBB workers live in TBB.DLL; their actual stack reserve is not
-//! established by the executable task path alone. A live run must check it
-//! and measure `observe_total_ns` and `observe_max_ns`; a smaller worker stack
-//! needs a smaller batch footprint. A prune within the log allocates nothing
-//! and takes no lock.
 use crate::{hook::Hook, opinion_changes::Padded};
 use collector_primitives::spill_stack::SpillStack;
 use engine_land_inputs::{
@@ -57,31 +14,30 @@ use std::{
     },
 };
 
-/// The rows prunes reserved since the last drain, and the load signal of the
-/// session that logged each (`None`: reserved, but not read).
-///
-/// Safety argument, for every access below:
-/// - A writer reserves `first..first + len` with one `CURSOR.fetch_add`, so
-///   two writers' ranges never overlap. It writes only the part of its range
-///   within the log, and marks every element of that part.
-/// - Each writer runs inside a [`Call`], which increments `ACTIVE` before the
-///   reservation and decrements it (`SeqCst`) after its last write.
-/// - The drain runs at the hourly sample, when no prune can run: the prune
-///   runs only inside the daily update, which the hourly update runs
-///   after the sample, and the callback holds the game thread while it
-///   drains. It reads only after loading `ACTIVE` as 0: every `ACTIVE` change
-///   is a read-modify-write, so that load synchronises with every writer's
-///   final decrement, and all their writes happen before the drain's reads.
-///   A running writer (a violated precondition) makes the drain refuse.
-/// - The drain reads only reserved elements within the log, all marked.
-/// - A log is replaced or freed only with `HANDOFF` set and `ACTIVE` then
-///   loaded as 0; a writer tests `HANDOFF` after entering its call, and loads
-///   `LOG` only when it is clear. So no writer holds a replaced log.
+#[doc = " The rows prunes reserved since the last drain, and the load signal of the"]
+#[doc = " session that logged each (`None`: reserved, but not read)."]
+#[doc = ""]
+#[doc = " Safety argument, for every access below:"]
+#[doc = " - A writer reserves `first..first + len` with one `CURSOR.fetch_add`, so"]
+#[doc = "   two writers' ranges never overlap. It writes only the part of its range"]
+#[doc = "   within the log, and marks every element of that part."]
+#[doc = " - Each writer runs inside a [`Call`], which increments `ACTIVE` before the"]
+#[doc = "   reservation and decrements it (`SeqCst`) after its last write."]
+#[doc = " - The drain runs at the hourly sample, when no prune can run: the prune"]
+#[doc = "   runs only inside the daily update, which the hourly update runs"]
+#[doc = "   after the sample, and the callback holds the game thread while it"]
+#[doc = "   drains. It reads only after loading `ACTIVE` as 0: every `ACTIVE` change"]
+#[doc = "   is a read-modify-write, so that load synchronises with every writer's"]
+#[doc = "   final decrement, and all their writes happen before the drain's reads."]
+#[doc = "   A running writer (a violated precondition) makes the drain refuse."]
+#[doc = " - The drain reads only reserved elements within the log, all marked."]
+#[doc = " - A log is replaced or freed only with `HANDOFF` set and `ACTIVE` then"]
+#[doc = "   loaded as 0; a writer tests `HANDOFF` after entering its call, and loads"]
+#[doc = "   `LOG` only when it is clear. So no writer holds a replaced log."]
 struct Log {
     rows: Box<[UnsafeCell<Row>]>,
     signals: Box<[UnsafeCell<Option<i64>>]>,
 }
-// SAFETY: see the safety argument above.
 unsafe impl Sync for Log {}
 
 impl Log {
@@ -95,11 +51,10 @@ impl Log {
         self.rows.len()
     }
 
-    /// # Safety
-    /// The caller alone reserved `range`, which lies within the log.
+    #[doc = " # Safety"]
+    #[doc = " The caller alone reserved `range`, which lies within the log."]
     #[allow(clippy::mut_from_ref)]
     unsafe fn rows_mut(&self, range: Range<usize>) -> &mut [Row] {
-        // Element pointers only: other writers own the rest of the log.
         unsafe {
             std::slice::from_raw_parts_mut(
                 UnsafeCell::raw_get(self.rows.as_ptr().add(range.start)),
@@ -108,14 +63,14 @@ impl Log {
         }
     }
 
-    /// # Safety
-    /// As [`Log::rows_mut`], for `index`.
+    #[doc = " # Safety"]
+    #[doc = " As [`Log::rows_mut`], for `index`."]
     unsafe fn mark(&self, index: usize, signal: Option<i64>) {
         unsafe { self.signals[index].get().write(signal) };
     }
 
-    /// # Safety
-    /// No writer is active and `index` was marked.
+    #[doc = " # Safety"]
+    #[doc = " No writer is active and `index` was marked."]
     unsafe fn read(&self, index: usize) -> (Option<i64>, Row) {
         unsafe {
             (
@@ -126,8 +81,6 @@ impl Log {
     }
 }
 
-/// The installed log, a larger one offered for the next drain, and a
-/// replaced one, freed off the boundary.
 #[derive(Default)]
 struct Swap {
     current: Option<Box<Log>>,
@@ -139,22 +92,14 @@ static SWAP: Mutex<Swap> = Mutex::new(Swap {
     next: None,
     retired: None,
 });
-/// `SWAP.current`, for writers; null until a drain installs one.
 static LOG: AtomicPtr<Log> = AtomicPtr::new(ptr::null_mut());
-/// Writers keep off the log while it is replaced or freed.
 static HANDOFF: AtomicBool = AtomicBool::new(false);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
-/// Rows the log must hold: retained group logs' rows, or a prune's shortfall.
 static REQUIRED: AtomicUsize = AtomicUsize::new(0);
-/// Rows reserved since the last drain (may exceed the log: overflow).
 static CURSOR: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
-/// A prune call whose deleted logs could not be read completely.
 static LOST: AtomicBool = AtomicBool::new(false);
-/// Reservations the log could not hold, read whole, until drained.
 static SPILL: SpillStack<Spilled> = SpillStack::new();
-/// Spilled reservations taken from [`SPILL`]; producers never lock it.
 static HELD: Mutex<Vec<Spilled>> = Mutex::new(Vec::new());
-/// A prune whose spill could not be allocated.
 static STORAGE_LOST: AtomicBool = AtomicBool::new(false);
 const STORAGE_FAILED: &str = "combat log prune row storage allocation failed";
 struct Spilled {
@@ -162,7 +107,6 @@ struct Spilled {
     signal: i64,
     rows: Vec<Row>,
 }
-/// Every spilled reservation, pushed ones taken in; one no storage could take is named.
 fn held() -> std::sync::MutexGuard<'static, Vec<Spilled>> {
     let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
     if SPILL.take_into(&mut held).is_err() {
@@ -175,16 +119,11 @@ pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-/// A hook state change since the last drain: the prunes between went unseen.
 static CHANGED: AtomicBool = AtomicBool::new(true);
-/// `[prune calls, calls with deleted logs, rows logged, failed reads,
-/// spilled reservations, drains, rows handed over, unobserved drains, rows of
-/// another session discarded, failed log offers, installed logs]`.
 static COUNTERS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 static OBSERVE_TICKS: AtomicU64 = AtomicU64::new(0);
 static OBSERVE_MAX_TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// Times the complete call, including stack probes, initialization and returns.
 struct Observation(i64);
 impl Drop for Observation {
     fn drop(&mut self) {
@@ -212,22 +151,16 @@ fn failed_read() {
     LOST.store(true, Ordering::SeqCst);
 }
 
-/// A reservation the log could not hold; the next drain installs a log of
-/// `required`.
 fn spilled(required: usize) {
     REQUIRED.fetch_max(required, Ordering::SeqCst);
     COUNTERS[4].fetch_add(1, Ordering::Relaxed);
 }
 
-/// Before the prune of `manager` runs: log its logs about to be deleted.
-// Keep the observation's stack setup inside the timed call.
 #[inline(never)]
 fn observe(manager: usize) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
-    // The prune reads the same objects on this thread; they are alive here.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    // No room: the walk counts every deleted row without reading an amount.
     let demand = match native::deleted_logs(&memory, base, manager, &mut []) {
         Ok((_, Outcome::Rows { .. })) => return,
         Ok((_, Outcome::Truncated { unread_rows, .. })) => unread_rows as usize,
@@ -245,19 +178,15 @@ fn observe(manager: usize) {
     });
 }
 
-/// One prune's `demand` rows, which `read` writes into its reservation when
-/// the log holds all of it, and otherwise into a spill.
 fn record(
     signal: i64,
     demand: usize,
     mut read: impl FnMut(&mut [Row]) -> Result<Outcome, &'static str>,
 ) {
     COUNTERS[1].fetch_add(1, Ordering::Relaxed);
-    // Tested after this call entered `ACTIVE` (see `Log`).
     let log = if HANDOFF.load(Ordering::SeqCst) {
         None
     } else {
-        // SAFETY: see `Log`.
         unsafe { LOG.load(Ordering::SeqCst).as_ref() }
     };
     let first = CURSOR.fetch_add(demand, Ordering::SeqCst);
@@ -266,19 +195,15 @@ fn record(
         spilled(end);
         if let Some(log) = log {
             for index in first..end.min(log.len()) {
-                // SAFETY: this writer alone reserved `first..end`.
                 unsafe { log.mark(index, None) };
             }
         }
         return spill_rows(first, signal, demand, read);
     };
-    // SAFETY: this writer alone reserved `first..end`, within the log.
     let kept = match read(unsafe { log.rows_mut(first..end) }) {
         Ok(Outcome::Rows { len }) => len,
         Ok(Outcome::Truncated { len, unread_rows }) => {
-            // A deleted log grew between the count and the read.
             for index in first..end {
-                // SAFETY: as above.
                 unsafe { log.mark(index, None) };
             }
             let required = len.saturating_add(unread_rows as usize);
@@ -291,13 +216,11 @@ fn record(
         }
     };
     for index in first..end {
-        // SAFETY: as above.
         unsafe { log.mark(index, (index < first + kept).then_some(signal)) };
     }
     COUNTERS[2].fetch_add(kept as u64, Ordering::Relaxed);
 }
 
-/// The prune's thread: reads the reservation at `first` whole into owned rows.
 fn spill_rows(
     first: usize,
     signal: i64,
@@ -338,9 +261,6 @@ fn spill_rows(
     COUNTERS[2].fetch_add(kept, Ordering::Relaxed);
 }
 
-/// Off the hook: the log must hold `demand` rows (the native row demand of
-/// every retained group log). A larger log is allocated here, outside the
-/// lock, and the next drain installs it.
 pub fn prepare(demand: usize) {
     let required = REQUIRED.fetch_max(demand, Ordering::SeqCst).max(demand);
     let mut swap = SWAP.lock().unwrap_or_else(PoisonError::into_inner);
@@ -371,7 +291,6 @@ pub fn prepare(demand: usize) {
     }
 }
 
-/// At the drained boundary: the offered log replaces the installed one.
 fn install() {
     let Ok(mut swap) = SWAP.try_lock() else {
         return;
@@ -394,7 +313,6 @@ fn install() {
     HANDOFF.store(false, Ordering::SeqCst);
 }
 
-/// Detach, once the hook is restored and no prune runs: frees every log.
 pub fn release_storage() -> Result<(), &'static str> {
     let mut swap = SWAP.lock().unwrap_or_else(PoisonError::into_inner);
     HANDOFF.store(true, Ordering::SeqCst);
@@ -413,23 +331,14 @@ pub fn release_storage() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Hand the rows the session with load signal `signal` logged over into
-/// `output`, from the hourly sample, their only consumer, and empty the log;
-/// rows another session logged are discarded. Then install a larger log if one
-/// is needed. `Err` when some prune since the last drain went unobserved
-/// (hooks not installed or enabled, or changed state; a read that failed; rows
-/// no storage could be allocated for): the rows it did keep are still handed over.
 pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
     COUNTERS[5].fetch_add(1, Ordering::Relaxed);
     if ACTIVE.load(Ordering::SeqCst) != 0 {
-        // A prune still running (never at the sampling boundary): wait.
         COUNTERS[7].fetch_add(1, Ordering::Relaxed);
         return Err("combat log prune running during the sample");
     }
-    // SAFETY: only this boundary and detach replace the installed log.
     let log = unsafe { LOG.load(Ordering::SeqCst).as_ref() };
     let reserved = log.map_or(0, |log| CURSOR.load(Ordering::SeqCst).min(log.len()));
-    // Every spilled prune is pushed once no prune is active.
     let mut pending = held();
     let spilled_rows = pending.iter().map(|spilled| spilled.rows.len()).sum::<usize>();
     engine_allocation::reserve(output, reserved.saturating_add(spilled_rows))
@@ -450,8 +359,6 @@ pub fn drain(signal: i64, output: &mut Vec<Row>) -> Result<(), &'static str> {
         while let Some(spilled) = spills.next_if(|spilled| spilled.first <= index) {
             spilled.rows.iter().for_each(|&row| take(spilled.signal, row));
         }
-        // SAFETY: no writer is active and every reserved element within the
-        // log was marked (see `Log`).
         if let Some((Some(logged), row)) = log.map(|log| unsafe { log.read(index) }) {
             take(logged, row);
         }
@@ -529,13 +436,13 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// Never fails: without the hook every drain reports the prunes unobserved.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " Never fails: without the hook every drain reports the prunes unobserved."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let hook = unsafe { Self::install(base) }
             .map_err(|reason| {
@@ -597,7 +504,6 @@ impl Hooks {
     }
 }
 
-/// The prune takes the combat log manager pointer in RCX and returns nothing.
 unsafe extern "system" fn prune(manager: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CombatLogPrune);
     let _call = Call::enter();
@@ -610,7 +516,6 @@ unsafe extern "system" fn prune(manager: usize) {
     timing.original(|| unsafe { original(manager) });
 }
 
-/// Tests that touch the process-wide log take this first.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -618,12 +523,9 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Rows the log [`observe_for_test`] installs holds.
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_ROWS: usize = 1 << 12;
 
-/// The log as an enabled, installed hook would leave it, empty, holding
-/// [`TEST_ROWS`]. Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn observe_for_test(enabled: bool) {
     ENABLED.store(enabled, Ordering::SeqCst);
@@ -634,7 +536,6 @@ pub fn observe_for_test(enabled: bool) {
     install_for_test(TEST_ROWS);
 }
 
-/// An empty installed log of exactly `rows`, nothing offered or required.
 #[cfg(any(test, feature = "test-support"))]
 fn install_for_test(rows: usize) {
     assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
@@ -651,8 +552,6 @@ fn install_for_test(rows: usize) {
     };
 }
 
-/// Rows a prune in the session with load signal `signal` would have
-/// logged, as many as fit. Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn append_for_test(signal: i64, rows: &[Row]) {
     record(signal, rows.len(), |out| {
@@ -704,7 +603,6 @@ mod tests {
     fn status_reports_observation_wall_time() {
         let _lock = test_lock();
         let before = OBSERVE_TICKS.load(Ordering::Relaxed);
-        // Exercise the same timer on an early-return path, without live memory.
         drop(Observation(crate::clock::qpc() - 1_000_000));
         let total = OBSERVE_TICKS.load(Ordering::Relaxed);
         let max = OBSERVE_MAX_TICKS.load(Ordering::Relaxed);
@@ -813,9 +711,6 @@ mod tests {
         std::hint::black_box(bytes);
     }
 
-    /// Rows past the log are read whole into the spill and handed over in
-    /// reservation order, and size the log the drain installs; a disabled
-    /// hook is unobserved.
     #[test]
     fn rows_past_the_log_are_kept_whole_in_order_and_grow_the_log() {
         let _lock = test_lock();
@@ -832,7 +727,6 @@ mod tests {
             [row(2, 1), row(2, 2), row(2, 3), row(2, 4), row(3, 1)]
         );
         assert!(held().is_empty());
-        // The drain installed a log for the eleven rows.
         assert!(CAPACITY.load(Ordering::SeqCst) >= 11);
         output.clear();
         append_for_test(SIGNAL, &[row(1, 1); 6]);
@@ -843,8 +737,6 @@ mod tests {
         assert!(drain(SIGNAL, &mut output).is_err());
     }
 
-    /// No fixed count limits one prune or the rows between drains: the log
-    /// holds the native demand it was prepared for.
     #[test]
     fn a_prepared_log_keeps_every_row_of_large_prunes() {
         let _lock = test_lock();
@@ -869,10 +761,6 @@ mod tests {
         );
     }
 
-    /// Before any log is installed a prune's rows are kept in the spill and
-    /// request a log; a read that stops early leaves only what it read; a
-    /// failed read keeps nothing of its own while other prunes' rows are
-    /// handed over.
     #[test]
     fn unread_reservations_are_never_handed_over() {
         let _lock = test_lock();
@@ -885,7 +773,6 @@ mod tests {
         assert_eq!(output, [row(1, 1); 8]);
         assert!(CAPACITY.load(Ordering::SeqCst) >= 8);
         output.clear();
-        // Fewer rows than counted: a deleted log shrank between the reads.
         record(SIGNAL, 3, |out| {
             out[0] = row(2, 1);
             Ok(Outcome::Rows { len: 1 })
@@ -906,8 +793,6 @@ mod tests {
         assert_eq!(output, [row(5, 1)]);
     }
 
-    /// A deleted log that grew between the count and the read is read again
-    /// whole; a spill that cannot be allocated names the drain's loss.
     #[test]
     fn a_reservation_that_grew_is_reread_whole_and_a_failed_spill_is_named() {
         let _lock = test_lock();
@@ -940,8 +825,6 @@ mod tests {
         assert_eq!(output, [row(4, 1)]);
     }
 
-    /// A prune past the log completes while the drain holds its spilled
-    /// reservations, and a burst of them is handed over whole and in order.
     #[test]
     fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_row_in_order() {
         let _lock = test_lock();
@@ -969,8 +852,6 @@ mod tests {
         assert!(held().is_empty());
     }
 
-    /// A load between two samples: the rows the left session logged after
-    /// its last sample never reach the new branch.
     #[test]
     fn rows_another_session_logged_are_discarded() {
         let _lock = test_lock();
@@ -982,9 +863,6 @@ mod tests {
         assert_eq!(output, [row(2, 1)]);
     }
 
-    /// Many writers with reservations of different lengths race, each inside
-    /// a prune call as the detour runs them: every row arrives once, and
-    /// each reservation stays whole and in order.
     #[test]
     fn concurrent_writers_never_share_a_row() {
         const WRITERS: u32 = 8;
@@ -1019,7 +897,6 @@ mod tests {
         let mut output = Vec::new();
         assert_eq!(drain(SIGNAL, &mut output), Ok(()));
         assert_eq!(output.len(), expected as usize);
-        // Each reservation is contiguous: a call's rows follow each other.
         let mut at = 0;
         let mut calls = Vec::new();
         while at < output.len() {

@@ -1,4 +1,3 @@
-//! Compiled mesh passes with retained material state and ordered submission.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use super::*;
 mod admission;
@@ -45,7 +44,6 @@ pub(super) struct Descriptor {
     pub lods: Vec<Vec<Part>>,
 }
 
-/// The game groups accepted materials, then appends the unnumbered records.
 fn lods<T>(records: impl IntoIterator<Item = (Option<i32>, T)>) -> io::Result<Vec<Vec<T>>> {
     let mut lods = Vec::new();
     let mut unnumbered = Vec::new();
@@ -116,8 +114,6 @@ pub(super) fn descriptor(
 
 impl Descriptor {
 
-    /// The game compares y²+x²+z² against the squared ladder backwards;
-    ///below every threshold (or without a ladder), use the last descriptor LOD.
     fn lod(&self, position: [f32; 3], eye: [f32; 3]) -> io::Result<Option<usize>> {
         let Some(last) = self.lods.len().checked_sub(1) else {
             return Ok(None);
@@ -144,11 +140,9 @@ pub struct Inputs<'a> {
     pub samples: u32,
     pub frames: &'a [&'a [u8]],
     pub grid: &'a [u8],
-    /// Physical pixel slots 4..13, independent of material samplers.
     pub textures: [&'a wgpu::TextureView; 10],
 }
 
-/// The game appends regular/alternate/caster queues without sorting.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Queue {
     Regular,
@@ -166,9 +160,6 @@ impl Queue {
     }
 }
 
-/// The game zeroes CPU scratch once per queue invocation. Later actors without
-///userdata retain its preceding bytes. The mode0 buffer selects a
-///new allocation on each upload; a VS-only bind retains PS's snapshot.
 pub struct ObjectConstants {
     bytes: [u8; 208],
     pixel: Option<[u8; 208]>,
@@ -186,8 +177,6 @@ impl Default for ObjectConstants {
 }
 
 impl ObjectConstants {
-    /// A preceding world producer replaced physical PS b1. Its allocation remains in the
-    /// retained stream; a mesh without userdata must not rebind an older CPU snapshot.
     pub fn forget_pixel_snapshot(&mut self) {
         self.pixel = None;
     }
@@ -197,12 +186,8 @@ impl ObjectConstants {
     }
 }
 
-/// One queue invocation's retained binds, applied after its draws. Each native bind replaces
-/// only its own slot (a null pixel sampler keeps the previous one), so the last value per slot
-/// equals binding every draw in turn.
 struct Pending {
     part: Option<usize>,
-    /// The part whose program last bound a sampler with each texture.
     samplers: [Option<usize>; TEXTURE_BINDINGS],
     skin: Option<usize>,
     frame: Option<usize>,
@@ -226,7 +211,6 @@ impl Pending {
         self.record_part(key, resident.binds(), textures);
     }
 
-    /// [`Self::record`] by the part's sampler slots and whether it is skinned.
     fn record_part(&mut self, key: usize, (samplers, skinned): (u32, bool), textures: u32) {
         if self.part != Some(key) {
             let mut samplers = textures & samplers;
@@ -294,7 +278,6 @@ impl Pending {
     }
 }
 
-/// A draw's constant blocks and textures by `binding(slot, stage)`.
 type Constants<'a> = [Option<&'a [u8]>; CONSTANT_BINDINGS];
 type Textures<'a> = [Option<&'a wgpu::TextureView>; TEXTURE_BINDINGS];
 
@@ -304,16 +287,12 @@ struct Resident {
     required_textures: Vec<u32>,
     constant_mask: u32,
     texture_mask: u32,
-    /// The lit program's native binds, which later passes retain.
     retained: shader_scene::Program,
     geometry: SharedGeometry,
     caster_texture: bool,
     blended: bool,
-    /// What its draws and a list's others must agree on to stand in any order among its figures.
     order: Option<mesh_shader::Order>,
-    /// Physical slots this material updates, independent of shader reads.
     samplers: u32,
-    /// Published only at the successful descriptor commit. Stale programs stay cold until use.
     program: Option<(ResourceStamp, plan_tail::Program)>,
 }
 
@@ -330,7 +309,6 @@ impl From<io::Error> for PrepareError {
 
 struct PreparedPart {
     key: usize,
-    /// None while a caster walk records: its list binds its own blocks once they are placed.
     bindings: Option<shader_pipeline::gpu::Bindings>,
     textures: u32,
     material: usize,
@@ -338,8 +316,6 @@ struct PreparedPart {
 }
 
 impl Resident {
-    /// The sampler slots its material updates, and whether it is skinned: what a retained bind
-    /// keeps of it.
     fn binds(&self) -> (u32, bool) {
         (self.samplers, self.geometry.cpu_skin.is_some())
     }
@@ -371,30 +347,20 @@ struct SharedGeometry {
     native_stride: u64,
     cpu_vertices: Arc<[u8]>,
     cpu_skin: Option<Arc<[u8]>>,
-    /// Pooled geometry: vertex chunk and first vertex, index chunk and first index.
     vertices: (usize, i32),
     indices: (usize, u32),
-    /// One past the largest palette index the skin stream names.
     skin_bones: usize,
 }
 
-/// Dense resident slots for one mesh: node/LOD/part, then caster/forced selection.
 type MeshSlots = Vec<Vec<Vec<[Option<usize>; 4]>>>;
 
 pub(super) struct Renderer {
-    /// The mesh effects of the stack the entities were baked from, then of the recording alone:
-    /// a visual mod entity's recorded counterpart ([`super::ModelLibrary::alternatives`]) is
-    /// drawn with the recording's own shaders, as the recording draws it.
-    /// The mesh effects and pipeline cache, shared with the background builds.
     builds: builds::Builds,
     residents: Vec<Resident>,
-    /// Mesh/node/LOD/part, then caster/forced selection. Sized from demanded content.
     slots: Vec<MeshSlots>,
     resource_ids: ResourceIdentities,
     geometry: BTreeMap<GeometryKey, SharedGeometry>,
-    /// Same deferred mesh/node queue decisions, addressed without tree lookups.
     queue_slots: Vec<Vec<Option<[bool; 2]>>>,
-    /// Each mesh's lit queues, summed once from `queue_slots`.
     admission: admission::Admission,
     frame_handles: walk::FrameHandles,
     binding_storage: shader_pipeline::gpu::BindingSessionStorage,
@@ -402,18 +368,12 @@ pub(super) struct Renderer {
     geometry_seen: Vec<bool>,
     prepared: Vec<PreparedPart>,
     candidates: Vec<(usize, shader_pipeline::gpu::BindingProgram)>,
-    /// Vertex pools by stream stride and skinning; the index pool.
     pools: BTreeMap<(u64, bool), Pool>,
     indices: Pool,
-    /// Command packet storage returned after this pass has been encoded.
     draws: DrawList,
-    /// The shadow casters' retained draws.
     casters: kept::Kept,
-    /// Each lit queue's retained draws, by the walk's call in the frame.
     lit: [Vec<kept::Kept>; 2],
-    /// The frame of the last lit walk, and the calls in it by queue.
     calls: (u64, [usize; 2]),
-    /// The lit list whose draws are lent to the encode.
     lent: Option<(usize, usize)>,
 }
 
@@ -423,7 +383,6 @@ impl Renderer {
         list_of(&mut self.casters, &mut self.lit, id)
     }
 
-    /// This lit walk's call in `frame` for its queue.
     fn lit_call(&mut self, frame: u64, queue: usize) -> usize {
         if self.calls.0 != frame {
             self.calls = (frame, [0; 2]);
@@ -433,7 +392,6 @@ impl Renderer {
     }
 }
 
-/// A pass's retained list: its casters', or one lit queue's by the walk's call in the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ListId {
     Casters,
@@ -457,9 +415,6 @@ fn list_of<'a>(
     }
 }
 
-/// The flight record's names for one kind of list ([`viewer_foundation::view_record`]): its draws,
-/// figures, whole walks, frames kept, splices with their own time and the walk inside them,
-/// figures walked in and left, nodes written in place and nodes drawn at each level of detail.
 struct RecordNames {
     draws: &'static str,
     figures: &'static str,
@@ -468,8 +423,6 @@ struct RecordNames {
     spliced: &'static str,
     splice_us: &'static str,
     splice_walk_us: &'static str,
-    /// The splice's own parts: the targets walked, the figures planned and followed, the live
-    /// units written in place, and the list's rows moved. A kept list's test and rewrite.
     targets_us: &'static str,
     plan_us: &'static str,
     rewrite_us: &'static str,
@@ -479,36 +432,22 @@ struct RecordNames {
     entered: &'static str,
     left: &'static str,
     rewritten: &'static str,
-    /// Of the rows a kept frame wrote in place, those whose bytes differed from the ones the
-    /// GPU holds, and how many of their bytes did; the live rows the list holds and the frames
-    /// a new pose set marked them all on; and the writes and bytes the frame staged.
     rows_changed: &'static str,
     row_bytes_changed: &'static str,
     live_rows: &'static str,
     reposed: &'static str,
     staged: &'static str,
     staged_bytes: &'static str,
-    /// Figures whose level of detail the frame's own eye changed in a kept list.
     relevelled: &'static str,
     flipped: &'static str,
     waiting: &'static str,
-    /// The distinct parts drawn, and the draws instancing by part would leave: by runs of one
-    /// part in walk order, and by part in each view.
     parts: &'static str,
     instanced_runs: &'static str,
     instanced_parts: &'static str,
-    /// A list whose parts do not all let their draws stand in any order among its figures: it
-    /// keeps one draw an instance, in walk order.
     ordered: &'static str,
-    /// The bands the walk's draws fall into: maximal runs whose parts agree, inside which one
-    /// part in one view and liveness stands as one instanced draw.
     bands: &'static str,
-    /// Frames the judge of the list's draws ran on.
     judged: &'static str,
     lods: [&'static str; kept::LODS],
-    /// Why the list was walked whole ([`kept::Whole`]), or made from which other input
-    /// ([`kept::Made::first_difference`]); and why each figure walked into a kept list was
-    /// ([`kept::Entered`]).
     whole: [&'static str; kept::WHOLES],
     inputs: [&'static str; kept::MADE_INPUTS],
     entered_by: [&'static str; kept::ENTERED],
@@ -619,7 +558,6 @@ const LIT_RECORD: RecordNames = RecordNames {
     entered_by: LIT_WHY.2,
 };
 
-/// Adds each count of `entered` under its name.
 fn note_entered(label: &'static str, queue: Queue, entered: &[u64; kept::ENTERED]) {
     for (name, n) in record_names(queue).entered_by.iter().zip(entered) {
         if *n > 0 {
@@ -628,9 +566,6 @@ fn note_entered(label: &'static str, queue: Queue, entered: &[u64; kept::ENTERED
     }
 }
 
-/// With `BATTLE_PLAN_CULL_LIST` set, one line on the standard error for each figure the game cull leaves
-/// out of a lit list: why, the frame, the pass, the mesh, the sphere's centre and its distance from
-/// the eye, so a frame's figures left out can be listed.
 #[allow(clippy::too_many_arguments, reason = "one line names the figure, its frame and why")]
 fn note_culled(
     label: &str,
@@ -643,7 +578,6 @@ fn note_culled(
     frame: u64,
 ) {
     static LIST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // A maintainers' diagnostic: lists what the game cull leaves out, to prove none is culled too near.
     if !*LIST.get_or_init(|| std::env::var_os("BATTLE_PLAN_CULL_LIST").or_else(|| std::env::var_os("HOI4_CULL_LIST")).is_some()) {
         return;
     }
@@ -659,16 +593,10 @@ fn note_culled(
     eprintln!("culled by {why}: frame {frame} {label} {mesh} at {:.1},{:.1},{:.1}: {distance:.1}", centre[0], centre[1], centre[2]);
 }
 
-/// Instanced draws a lit list made this frame, and the figures' parts they drew.
 
-/// Instanced draws the casters made this frame, and the figures' parts they drew.
 
-/// Actors posed this frame, each once however many lists draw it.
 const ACTORS_POSED: &str = "actors_posed";
 
-/// The walk's steps the record times (microseconds) and counts: a figure's actors looked up, a
-/// node's userdata, its parts prepared, its blocks and parts captured, the node in all; then the
-/// nodes and the parts.
 const WALK_POSE: usize = 0;
 const WALK_USERDATA: usize = 1;
 const WALK_PREPARE: usize = 2;
@@ -690,8 +618,6 @@ const CASTER_WALK_STEPS: [&str; WALK_STEPS] = [
 ];
 
 
-/// What a list needs of each part its draws stand for: its program, and whether its draws may
-/// stand in any order among the list's figures.
 fn part_programs<'r>(
     residents: &'r [Resident],
 ) -> impl Fn(usize) -> Option<kept::PartProgram<'r>> + 'r {
@@ -705,9 +631,6 @@ fn part_programs<'r>(
     }
 }
 
-/// With `BATTLE_PLAN_ORDER_LIST` set, one line on the standard error for each part a pass builds: the
-/// key a list names it by, where it sits in its mesh, its technique and material, and whether its
-/// draws may stand in any order among a list's figures.
 #[allow(clippy::too_many_arguments, reason = "one line names the part, its place and its order")]
 fn note_part(
     key: usize,
@@ -736,8 +659,6 @@ fn record_names(queue: Queue) -> &'static RecordNames {
     if queue == Queue::Caster { &CASTER_RECORD } else { &LIT_RECORD }
 }
 
-/// A list prepared this frame, in the flight record under its pass's label: its draws, figures,
-/// figures walked in and left, and nodes by level of detail.
 fn note_list(label: &'static str, queue: Queue, list: &mut kept::Kept) {
     let moved = list.take_moved();
     let wrote = list.take_wrote();
@@ -755,10 +676,8 @@ fn note_list(label: &'static str, queue: Queue, list: &mut kept::Kept) {
     add(label, names.figures, list.figures() as u64);
     add(label, names.entered, moved[0]);
     add(label, names.left, moved[1]);
-    // Figures drawn this frame without a part still building: shown late by that part.
     let waiting = list.waiting().map_or(0, |waiting| waiting.iter().filter(|waits| **waits).count());
     add(label, names.waiting, waiting as u64);
-    // What each instancing step would leave: blended draws stay one a figure.
     let counts = list.part_counts();
     let blended = queue == Queue::Alternate;
     let drawn = list.draws.draws.len();
@@ -774,7 +693,6 @@ fn note_list(label: &'static str, queue: Queue, list: &mut kept::Kept) {
     }
 }
 
-/// Runs the judge of a prepared list at its own rate ([`crate::map::actor_check`]).
 fn judge_list(label: &'static str, queue: Queue, list: &mut kept::Kept, residents: &[Resident]) {
     if !crate::map::actor_check::due(list.checks()) {
         return;
@@ -785,9 +703,6 @@ fn judge_list(label: &'static str, queue: Queue, list: &mut kept::Kept, resident
     viewer_foundation::view_record::add(label, record_names(queue).judged, 1);
 }
 
-/// One walk a retained list keeps: its queue, the shared blocks' bytes as `reads` orders them,
-/// and for a lit walk the object block and pixel snapshot it starts from and the caller whose
-/// userdata its nodes write.
 struct Walk<'a> {
     id: ListId,
     queue: Queue,
@@ -798,8 +713,6 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// The bytes of the incoming block a lit walk's nodes keep, and where they start in a node's
-    /// block: after the userdata when they supply their own, after the world when they do not.
     fn chain(&self) -> (usize, &[u8]) {
         match &self.incoming {
             Some((bytes, _)) if self.reads.own_pixel => (96, &bytes[96..]),
@@ -843,7 +756,6 @@ struct ResourceIdentities {
     local: Vec<Option<wgpu::TextureView>>,
     globals: Option<[wgpu::TextureView; 10]>,
     stamp: ResourceStamp,
-    /// Local textures replaced or dropped, not only added: what a kept draw may have bound.
     replaced: u64,
 }
 
@@ -891,7 +803,6 @@ impl ResourceIdentities {
         }
     }
 
-    /// Local textures replaced or dropped since the first observed.
     fn replaced(&self) -> u64 {
         self.replaced
     }
@@ -899,44 +810,32 @@ impl ResourceIdentities {
 
 type VertexKey = ((u64, bool), usize);
 
-/// A map command buffer in submission order; every one is finished where it is encoded.
 pub(crate) struct MapBuffer(wgpu::CommandBuffer);
 
-/// What a bundle is recorded for: its pass's colour format and sample count. Every model pass
-/// has a depth and stencil attachment of [`DEPTH_FORMAT`], both written.
 type BundleTarget = (wgpu::TextureFormat, u32);
 
-/// The scene's lit passes: the float scene and its depth at the world's sample count.
 fn lit_target(samples: u32) -> BundleTarget {
     (SCENE_FORMAT, samples)
 }
 
-/// The shadow depth map's pass the casters draw in: one sample.
 const CASTER_TARGET: BundleTarget = (DEPTH_MAP_FORMAT, 1);
 
-/// Prepared in native order on the presentation thread; encoding reads only GPU handles.
 #[derive(Default)]
 pub(crate) struct DrawList {
     draws: Vec<RecordedDraw>,
     vertices: BTreeMap<VertexKey, [Option<wgpu::Buffer>; 2]>,
     indices: BTreeMap<usize, wgpu::Buffer>,
-    /// A kept list's runs of draws recorded into render bundles, with the target each was
-    /// recorded for and its draws, pipeline, bind group and state sets.
     runs: Vec<bundles::Run<(wgpu::RenderBundle, BundleTarget, [u64; 4])>>,
-    /// The draws changed since the runs were planned.
     unplanned: bool,
 }
 
-/// A kept list's draw's id, which no other draw has had: what a bundled run is recognised by.
 fn draw_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 struct RecordedDraw {
-    /// Zero for a draw staged in the frame's arena, which is never bundled.
     id: u64,
-    /// Encoded; a draw kept only for the state its walk leaves is not.
     shown: bool,
     bindings: shader_pipeline::gpu::Bindings,
     reference: u32,
@@ -945,12 +844,10 @@ struct RecordedDraw {
     first: u32,
     count: u32,
     base: i32,
-    /// Its instances, each reading the rows of its own slot in its group's runs.
     instances: u32,
 }
 
 impl RecordedDraw {
-    /// What it draws, beside the blocks its group binds for it, as a draw of `view`.
     fn geometry(&self, view: usize) -> kept::DrawGeometry {
         kept::DrawGeometry {
             view,
@@ -1007,9 +904,6 @@ impl DrawList {
         }
     }
 
-    /// The models' draws in one pass of their own, opened on the frame's own encoder: a pass
-    /// costs the commands it holds, where an encoder of its own costs a finish and a buffer in
-    /// the frame's submission as well.
     fn encode(lists: &[&Self], targets: &Targets, encoder: &mut wgpu::CommandEncoder) {
         if lists.iter().all(|list| list.draws.is_empty()) {
             return;
@@ -1039,8 +933,6 @@ impl DrawList {
         self.unplanned = false;
     }
 
-    /// Draws `range` of the list into a pass of `target`: each whole run recorded into a bundle
-    /// for that target from its bundle, the rest draw by draw.
     fn record_range(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1089,9 +981,6 @@ impl DrawList {
         }
     }
 
-    /// Plans the runs again when the draws changed, keeping each run whose draws stand
-    /// together, and records into a bundle for `target` each run without one whose draws have
-    /// stood unchanged for [`bundles::STILL`] frames.
     fn bundle(&mut self, device: &wgpu::Device, target: BundleTarget) {
         if std::mem::take(&mut self.unplanned) {
             let draws: Vec<(u64, u32)> =
@@ -1109,7 +998,6 @@ impl DrawList {
             if run.bundle.as_ref().is_some_and(|(_, recorded, _)| *recorded == target) {
                 continue;
             }
-            // Drawn directly until its draws have stood still.
             run.still += 1;
             if run.still < bundles::STILL {
                 continue;
@@ -1124,11 +1012,6 @@ impl DrawList {
 impl DrawList {
 }
 
-/// `draws` recorded into a render bundle for a pass of `target` (its colour format and samples,
-/// with a depth and stencil attachment of [`DEPTH_FORMAT`], declared read-only where none of the
-/// draws' pipelines writes it: [`shader_pipeline::gpu::ReadOnly`]), as
-/// [`DrawList::record_slice`] records them into a pass; with the draws, pipeline, bind group and
-/// state sets it holds, counted where it is executed.
 fn record_bundle(
     device: &wgpu::Device,
     (color, samples): BundleTarget,
@@ -1178,9 +1061,6 @@ fn record_bundle(
     (bundle, counts)
 }
 
-/// Resident geometry in shared chunk buffers, so a draw of another part moves
-/// `base_vertex`/`first_index` instead of rebinding streams. Records of one stride share
-/// numbering; a skinned pool keeps each chunk's skin stream at the same record numbers.
 #[derive(Default)]
 struct Pool {
     chunks: Vec<PoolChunk>,
@@ -1192,12 +1072,9 @@ struct PoolChunk {
     used: u64,
 }
 
-/// Records per chunk unless one part needs more.
 const POOL_RECORDS: u64 = 1 << 16;
 
 impl Pool {
-    /// Place `count` records of `streams` (bytes per record in `strides`); returns the chunk
-    /// and first record. Bytes reach the GPU at the arena's next flush.
     fn place(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1250,10 +1127,6 @@ impl Pool {
     }
 }
 
-/// What a part draws with, from its built pass: the compiled program of the technique the pass
-/// was built from (the recorded one when a visual mod's replacement fell back, never the
-/// technique asked for), and the retained program: that technique, its vertex layouts at the
-/// geometry's compact stride, and its state.
 fn part_program(
     pipeline: &mesh_shader::Pass,
     geometry: &mesh_shader::Geometry,
@@ -1268,7 +1141,6 @@ fn part_program(
         geometry.uv1,
         !geometry.skin.is_empty(),
     )?;
-    // Retained declarations bind the game's compact stride.
     layouts[0].stride = geometry.stride;
     let effect = &selection.effect.source;
     let technique = &effect.techniques[selection.index];
@@ -1287,7 +1159,6 @@ fn part_program(
     Ok((compiled, retained))
 }
 
-/// The part's material effect, with the second UV set defined when its geometry has one.
 fn material_effect(
     library: &mut Library,
     part: &Part,
@@ -1303,7 +1174,6 @@ fn material_effect(
         .map_err(invalid)
 }
 
-/// The technique suffix the game appends for skinning and the shadow pass.
 fn selection_suffix(skinned: bool, caster: bool) -> &'static str {
     match (skinned, caster) {
         (false, false) => "",
@@ -1313,8 +1183,6 @@ fn selection_suffix(skinned: bool, caster: bool) -> &'static str {
     }
 }
 
-/// Select whether the material uses a caster texture and the alternate queue.
-/// The shadow-state check runs only when the lit state did not admit a texture.
 fn material_flags(
     lit: &installed_content_core::pdxshader::BlendState,
     shadow: &installed_content_core::pdxshader::BlendState,
@@ -1329,7 +1197,6 @@ fn material_flags(
     (textured, alternate)
 }
 
-/// The prepare span of one pass and queue, so the caster and lit spans split by what they draw.
 fn prepare_span(label: &str, queue: Queue) -> &'static str {
     let caster = queue == Queue::Caster;
     match label {
@@ -1426,7 +1293,6 @@ impl ModelPass {
         Ok(())
     }
 
-    /// The shadow casters [`Self::prepare_casters`] readied this frame.
     pub(crate) fn record_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1442,9 +1308,6 @@ impl ModelPass {
         }
     }
 
-    /// Keeps, splices by figure or walks the casters' list for this frame, from the retained
-    /// list when it was made from this frame's inputs; otherwise walked, and the walk kept as the
-    /// list. Whether the casters draw what the last frame's drew, byte for byte.
     pub(crate) fn prepare_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1473,9 +1336,6 @@ impl ModelPass {
         Ok(cast && self.native.borrow().as_ref().is_some_and(|native| native.casters.repeated()))
     }
 
-    /// One lit queue's draws for this frame from its retained list (the walk's call in the frame
-    /// names the list): kept, spliced by figure or walked. The frame's constant state is left as
-    /// the walk leaves it. The draws are lent until [`Self::recycle_kept`].
     pub(crate) fn prepare_kept(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1484,8 +1344,6 @@ impl ModelPass {
         queue: Queue,
         object: &mut ObjectConstants,
     ) -> io::Result<DrawList> {
-        // A pass with nothing to keep is walked as before: one that places nothing needs no
-        // renderer and so no content stack.
         let Some(caller) = self.kept_lit(queue) else {
             if let Some(native) = self.native.borrow_mut().as_mut() {
                 native.lent = None;
@@ -1533,11 +1391,6 @@ impl ModelPass {
         Ok(std::mem::take(&mut native.list(walk.id).draws))
     }
 
-    /// The constant bindings a part's draws read one block of per instance: each node's own
-    /// world block and its palette, and the pixel snapshot where a lit node writes its own
-    /// userdata. A pass whose lit queues draw straight into a pass of their own stages each
-    /// draw's constants in the frame's arena and so reads none of them per instance; its casters
-    /// are retained as every pass's are.
     fn instanced(&self, caster: bool) -> u32 {
         let caller = plan_tail::Caller::select(self.label);
         if !caster && (self.direct || matches!(caller, plan_tail::Caller::Unavailable(_))) {
@@ -1549,13 +1402,10 @@ impl ModelPass {
             | if own { 1 << binding(1, Stage::Pixel) } else { 0 }
     }
 
-    /// [`Self::instanced`] of the lit and the caster builds a warm-up makes.
     fn instanced_masks(&self) -> [u32; 2] {
         [self.instanced(false), self.instanced(true)]
     }
 
-    /// The caller whose userdata a lit walk of `queue` writes, when that walk is kept as a list:
-    /// never for the casters' queue, a caller the walk refuses, or a pass that places nothing.
     fn kept_lit(&self, queue: Queue) -> Option<plan_tail::Caller<'static>> {
         let caller = plan_tail::Caller::select(self.label);
         (queue != Queue::Caster
@@ -1564,7 +1414,6 @@ impl ModelPass {
         .then_some(caller)
     }
 
-    /// Returns draws [`Self::prepare_kept`] lent to their list; any others to the pass.
     pub(crate) fn recycle_kept(&self, draws: DrawList) {
         let mut renderer = self.native.borrow_mut();
         if let Some(native) = renderer.as_mut()
@@ -1577,8 +1426,6 @@ impl ModelPass {
         self.recycle_native(draws);
     }
 
-    /// Keeps, splices by figure or walks a retained list for this frame. A lit walk leaves the
-    /// frame's constant state in `object`.
     fn prepare_list(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1648,19 +1495,12 @@ impl ModelPass {
         Ok(())
     }
 
-    /// The textures replaced since the first observed, and the global textures' stamp a lit
-    /// walk binds.
     fn resources(&self, native: &mut Renderer, walk: &Walk<'_>, inputs: &Inputs<'_>) -> (u64, u64) {
         let globals = (walk.queue != Queue::Caster).then_some(inputs.textures);
         let stamp = native.resource_ids.observe(&self.textures, globals);
         (native.resource_ids.replaced(), stamp.globals)
     }
 
-    /// Keeps a retained list for this frame when the inputs it was made from hold: writes the
-    /// shared blocks and each live node's and changed instance's nodes in place, and splices the
-    /// figures that joined, left, were given a player, came into or out of view or no longer
-    /// keep their nodes. A lit list then gives the frame's constant state as its walk leaves it.
-    /// False when the list must be walked whole.
     fn keep_list(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1686,7 +1526,6 @@ impl ModelPass {
                 kept::Stale::Input(at) => names.inputs[at],
             };
             viewer_foundation::view_record::add(self.label, why, 1);
-            // A walk that fails leaves no list made from older inputs.
             list.forget();
             return Ok(false);
         }
@@ -1699,9 +1538,6 @@ impl ModelPass {
             })
         };
         let flips: Vec<usize> = change.changed.groups.iter().copied().filter(|&group| flips_at(group)).collect();
-        // The drawn cull tests a figure again where its place changed, and every gathered figure
-        // when the frame draws by another cull or ground (each frame of a turn) or a group moved:
-        // one that crossed is spliced in or out, so the list draws exactly what the frame draws.
         let redrawn = list.drawn_by() != Some(self.drawn_rule(frame)) || !change.changed.groups.is_empty();
         let crossed = if redrawn {
             self.cull_crossings(frame, list, None)
@@ -1712,11 +1548,8 @@ impl ModelPass {
         };
         viewer_foundation::view_record::add(self.label, "cull_crossed_still", crossed);
         let flipped = !flips.is_empty() || crossed > 0;
-        // A figure drawn without a part that waited on its build is walked again, alone.
         let waiting = list.waiting();
         let mut demoted = waiting.unwrap_or_else(|| vec![false; list.figures()]);
-        // The camera travelled inside the list's padding: every figure keeps the level of detail
-        // this frame's own eye chooses for it, and the one whose level changed is walked again.
         let relevelled = self.relevel(list, frame, &mut demoted);
         viewer_foundation::view_record::add(self.label, names.relevelled, relevelled);
         viewer_foundation::view_record::add(self.label, record_names(walk.queue).flipped, flips.len() as u64);
@@ -1725,9 +1558,6 @@ impl ModelPass {
             && !flipped
             && !demoted.contains(&true)
         {
-            // A standing figure's row holds its root and its limbs. The limbs move only with a
-            // pose set, so the rows of the live figures are written again for a new set and
-            // otherwise only where the figure's own instance changed.
             let mut units: Vec<usize> = change
                 .changed
                 .instances
@@ -1776,11 +1606,6 @@ impl ModelPass {
         Ok(true)
     }
 
-    /// The judge of a view admitted against a held camera: every group and every figure this
-    /// frame's own camera admits, the padded view the lists were walked for admits too, so the
-    /// camera's travel inside the padding took nothing off the screen. Counts the figures the
-    /// padding admits and the camera does not, which are drawn and thrown away by the GPU.
-    /// Names what it finds and does not stop the frame.
     fn judge_view(&self, frame: &ModelFrame<'_>, queue: Queue) {
         let what = if queue == Queue::Caster { "caster view" } else { "lit view" };
         let mut judged = 0;
@@ -1795,9 +1620,6 @@ impl ModelPass {
         crate::map::actor_check::checked(what, judged);
     }
 
-    /// Gives every figure of `list` the level of detail this frame's eye chooses for it, marking
-    /// `demoted` where it changed, and returns how many changed. A list whose levels already
-    /// stand for this eye is not walked at all, so a still camera pays nothing.
     fn relevel(&self, list: &mut kept::Kept, frame: &ModelFrame<'_>, demoted: &mut [bool]) -> u64 {
         let eye = frame.camera.eye();
         if list.lods_for() == Some(eye) {
@@ -1822,16 +1644,10 @@ impl ModelPass {
         changed
     }
 
-    /// The rule this frame draws gathered figures by: its own camera's cull and ground.
     fn drawn_rule(&self, frame: &ModelFrame<'_>) -> kept::Drawn {
         (self.seen.get(), frame.seen.map(|ground| ground.map(f32::to_bits)))
     }
 
-    /// The judge of a list as the frame draws it, from the source routes rather than the list's
-    /// own bookkeeping: every figure it holds the frame's own camera draws (else an extra draw),
-    /// and every route figure the list's queue draws, not hidden, that the camera draws, it holds
-    /// (else a missing one). Each view is tested on the ground the camera draws, so a gathering
-    /// that left a group out shows here as missing figures too.
     fn judge_drawn(
         &self,
         frame: &ModelFrame<'_>,
@@ -1875,8 +1691,6 @@ impl ModelPass {
         crate::map::actor_check::checked(what, judged as u64);
     }
 
-    /// Whether a list of `queue` leaves out the figure at this route whatever the camera: its
-    /// mesh draws in the other lit queue, or the figure is hidden.
     fn passed_over(
         &self,
         admission: &mut admission::Admission,
@@ -1899,17 +1713,12 @@ impl ModelPass {
         row.map_or_else(|| self.hidden.contains(&(mesh, seed, identity)), |row| row.hidden)
     }
 
-    /// Whether the frame's own camera draws the figure at this route in the view at `offset`:
-    /// its group stands on the ground the frame draws and the game cull admits it.
     fn camera_draws(&self, frame: &ModelFrame<'_>, group: usize, index: usize, offset: f32) -> bool {
         let bounds = &self.field.groups[group];
         visible(bounds, offset, frame.seen)
             && self.game_culled(bounds.mesh, &self.field.instances[index], offset, &frame.camera).is_none()
     }
 
-    /// How many figures crossed the frame's cull and ground since the list chose them: held by it
-    /// and culled now, or left out by them then and not now. Only the instances `changed`, or
-    /// every one, in the groups the list gathered.
     fn cull_crossings(&self, frame: &ModelFrame<'_>, list: &kept::Kept, changed: Option<&[usize]>) -> u64 {
         let groups = self.field.groups.len();
         let crossed = |view: usize, position: usize| -> bool {
@@ -1936,7 +1745,6 @@ impl ModelPass {
                 })
                 .filter(|&(view, position)| crossed(view, position))
                 .count(),
-            // Every gathered figure, by the groups the list gathered: the cost follows them.
             None => list
                 .gathered()
                 .iter()
@@ -1950,8 +1758,6 @@ impl ModelPass {
         count as u64
     }
 
-    /// A list kept this frame: its blocks reach the GPU, and a lit list gives the frame's
-    /// constant state as its walk leaves it.
     fn kept(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1969,9 +1775,6 @@ impl ModelPass {
         }
     }
 
-    /// Leaves the frame's constant state as a lit walk of the list leaves it: the retained binds
-    /// later passes read, the object block and pixel snapshot the next pass's walk starts from,
-    /// and the draws counted.
     fn replay_into(
         &self,
         native: &mut Renderer,
@@ -2035,11 +1838,6 @@ impl ModelPass {
         }
     }
 
-    /// Makes a list this frame's figures in walk order: each figure still placed once in a view
-    /// it was drawn in follows its actor's route there, its nodes written in place when its
-    /// instance changed or it is live; every other figure, and one whose nodes no longer write
-    /// in place (`demoted`, or failing here), is walked alone and placed in the list. False
-    /// when the walked figures cannot be placed in this layout, or most figures would be walked.
     #[allow(clippy::too_many_arguments, reason = "the frame, the walk and what changed in it")]
     fn splice_list(
         &self,
@@ -2074,7 +1872,6 @@ impl ModelPass {
                 }
                 let instance = self.field.instances[index];
                 let (seed, identity) = instance.animation_key();
-                // The frame's own ground and cull, as the walk tests them.
                 if !self.camera_draws(frame, group, index, frame.offsets[view]) {
                     culled.push((view, kept::figure_key(mesh, &instance)));
                     continue;
@@ -2098,7 +1895,6 @@ impl ModelPass {
         let list = native.list(walk.id);
         let mut entered = viewer_foundation::view_record::on().then_some([0u64; kept::ENTERED]);
         let mut next = list.plan_counting(&targets, demoted, entered.as_mut());
-        // Most figures to walk: a whole walk costs no more.
         if next.iter().filter(|figure| figure.is_none()).count() * 2 > targets.len() {
             list.drop_for(kept::Whole::MostWalked);
             if let Some(entered) = &entered {
@@ -2145,7 +1941,6 @@ impl ModelPass {
         let refused = self.refused.get();
         let any = !only.is_empty();
         let mut recording = kept::Recording::of(only);
-        // A walk of some figures starts from the state the whole walk would, and leaves none.
         let mut alone = ObjectConstants::default();
         if let Some((bytes, pixel)) = walk.incoming {
             (alone.bytes, alone.pixel) = (bytes, pixel);
@@ -2184,7 +1979,6 @@ impl ModelPass {
             list.set_culled(culled);
         }
         if spliced {
-            // Drawn this frame; a walk that refused or waited on a build is walked whole next.
             if self.refused.get() != refused {
                 list.drop_for(kept::Whole::Refused);
             } else if recording.incomplete() {
@@ -2216,9 +2010,6 @@ impl ModelPass {
         Ok(spliced)
     }
 
-    /// Writes each unit's world, a lit node's own userdata and its palette in place, as the
-    /// walk makes them. Returns the units that differ in more than that (a level of detail, a
-    /// refusal, a palette's length): only a walk of their figures can make them.
     fn rewrite(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -2364,7 +2155,6 @@ impl ModelPass {
         }
     }
 
-    /// Preparation and encoding both retain native order, on the thread that draws the frame.
     pub(crate) fn encode_native(
         lists: &[(&Self, DrawList)],
         targets: &Targets,
@@ -2377,12 +2167,10 @@ impl ModelPass {
         );
     }
 
-    /// A finished map command buffer, in the order [`Self::encode_native`]'s buffers keep.
     pub(crate) fn finished_buffer(buffer: wgpu::CommandBuffer) -> MapBuffer {
         MapBuffer(buffer)
     }
 
-    /// The map's buffers in submission order.
     pub(crate) fn submitted_buffers(buffers: Vec<MapBuffer>) -> Vec<wgpu::CommandBuffer> {
         buffers
             .into_iter()
@@ -2426,9 +2214,6 @@ impl ModelPass {
         })
     }
 
-    /// Makes every part's lit and caster builds (the alpha variant for forced trains) and every
-    /// node's queue flags, so a frame first drawing a mesh builds nothing and draws it whole. A
-    /// part that refuses is left for the frame to report.
     pub fn warm_pipelines(&self, device: &wgpu::Device, map: [u32; 2], samples: u32) {
         let mut renderer = self.native.borrow_mut();
         if renderer.is_none() {
@@ -2455,10 +2240,6 @@ impl ModelPass {
         self.warmed.set(self.meshes.len());
     }
 
-    /// Makes the builds of meshes added since the last warm-up, as [`Self::warm_pipelines`] does,
-    /// and packs their geometry, on a thread of their own that nothing waits for: a frame drawing
-    /// a part before it is made draws without it, as it does while any build is under way, and a
-    /// capture builds it in place.
     pub fn warm_added(&self, device: &wgpu::Device, map: [u32; 2], samples: u32) -> io::Result<()> {
         let _span = viewer_foundation::profiling::span("model_warm_added");
         let from = self.warmed.get();
@@ -2493,7 +2274,6 @@ impl ModelPass {
         queue: Queue,
         object: &mut ObjectConstants,
     ) -> io::Result<DrawList> {
-        // One clock per queue invocation, only under normal PROFILE.
         let _wall = viewer_foundation::profiling::span(if queue == Queue::Caster {
             "native_caster_prepare"
         } else {
@@ -2503,8 +2283,6 @@ impl ModelPass {
         self.walk_native(arena, frame, inputs, queue, object, None)
     }
 
-    /// One queue's walk over the placements. With `recording`, parts are not staged in the
-    /// arena: their blocks and draws go to the recording, for a retained list.
     #[allow(clippy::too_many_arguments, reason = "one walk serves the frame's arena and the retained list's recording")]
     fn walk_native(
         &self,
@@ -2519,10 +2297,8 @@ impl ModelPass {
             return Ok(DrawList::default());
         }
         let caster = queue == Queue::Caster;
-        // A walk of some figures of a retained list leaves no constant state for later passes.
         let partial = recording.as_ref().is_some_and(|recording| recording.partial());
         let caller = plan_tail::Caller::select(self.label);
-        // The game forces every train actor and attachment.
         let forced = self.label == "supply trains";
         let instanced = self.instanced(caster);
         let mut renderer = self.native.borrow_mut();
@@ -2553,7 +2329,6 @@ impl ModelPass {
         let eye = frame.camera.eye();
         let mut posed = 0u64;
         let mut drawn = 0;
-        // With the record on: the walk's own time by step, in nanoseconds, and its nodes and parts.
         let timed = viewer_foundation::view_record::on();
         let spent: [std::cell::Cell<u64>; WALK_STEPS] = Default::default();
         let clock = || timed.then(std::time::Instant::now);
@@ -2572,7 +2347,6 @@ impl ModelPass {
         native.geometry_seen.resize(native.residents.len(), false);
         let mut prepared = std::mem::take(&mut native.prepared);
         let mut candidates = std::mem::take(&mut native.candidates);
-        // Physical pixel slots 4..13; material slots 0..2 are replaced per draw.
         let mut textures: Textures = [None; TEXTURE_BINDINGS];
         let mut texture_mask = 0;
         if !caster {
@@ -2616,8 +2390,6 @@ impl ModelPass {
                         self.hidden.contains(&(group.mesh, seed, identity))
                     }, |row| row.hidden);
                     if hidden { continue; }
-                    // The game culls the figure before anything is prepared for it; a gathered group
-                    // outside the ground the frame draws draws none of its figures.
                     let every = recording.as_deref().is_some_and(|recording| recording.every_lod);
                     let ground = (!visible(group, *offset, frame.seen)).then_some(super::Culled::Planes);
                     if !every && let Some(why) = ground.or_else(|| self.game_culled(group.mesh, &instance, *offset, &frame.camera)) {
@@ -2640,7 +2412,6 @@ impl ModelPass {
                     if !every && self.seen.get().is_some() {
                         viewer_foundation::view_record::add(self.label, if caster { "caster_cull_passed" } else { "lit_cull_passed" }, 1);
                     }
-                    // An actor with a player moves every frame; one without keeps its pose.
                     let live = recording.is_some()
                         && if let Some(row) = row.filter(|_| layout.installed) {
                             self.players.contains_key(&layout.players[row.player])
@@ -2655,7 +2426,6 @@ impl ModelPass {
                     let instance_world = match instance.native_transform() {
                         Ok(world) => world,
                         Err(why) => {
-                            // The instance's own recorded transform, whatever draws it.
 
                             self.refuse_actor(arena, None, index, usize::MAX, &mesh.name, why);
                             continue;
@@ -2676,7 +2446,6 @@ impl ModelPass {
                     let since = clock();
                     let actors = poses.1[index].get_or_insert_with(|| {
                         posed += 1;
-                        // Default-state refusal keeps the original frozen-choice law.
                         let frozen = !matches!(
                             instance.animation,
                             entity_animation::STOPPED | entity_animation::DEFAULT_STATE
@@ -2687,8 +2456,6 @@ impl ModelPass {
                                 self.actors(group.mesh, layout.players[row.player], rig, self.players.get(&layout.players[row.player]), frozen)
                             })
                         } else {
-                            // Optional handle allocation cannot add a refusal or suppress
-                            // the original actor demand. No separate preparation path.
                             self.actors(group.mesh, self.player_key(group.mesh, &instance), rig, self.player(group.mesh, &instance), frozen)
                         }
                     });
@@ -2710,7 +2477,6 @@ impl ModelPass {
                             let position = [world[3][0] + offset, world[3][1], world[3][2]];
 
                             let chosen = descriptor.lod(position, eye).map_err(PrepareError::Actor)?;
-                            // A static list holds every level of detail; its frame draws the one chosen.
                             let every = recording.as_deref().is_some_and(|recording| recording.every_lod);
                             let Some(lod) = chosen.or(every.then_some(0)) else {
                                 if let Some(recording) = recording.as_deref_mut() {
@@ -2744,8 +2510,6 @@ impl ModelPass {
                                 }
                             }
 
-                            // No rest palette: the game returns without a played clip;
-                            // Draws still upload the allocated bytes.
                             let skin_pose = descriptor.lods[lod]
                                 .iter()
                                 .any(|source| !source.geometry.skin.is_empty())
@@ -2761,7 +2525,6 @@ impl ModelPass {
                                 queues.resize(descriptor.node + 1, None);
                             }
                             if queues[descriptor.node].is_none() {
-                                // Until its materials are built the node draws nothing.
                                 let Some(admitted) = native.builds.flags(
                                     &mut queued,
                                     (group.mesh, descriptor.node),
@@ -2786,7 +2549,6 @@ impl ModelPass {
                                 return Ok(());
                             }
 
-                            // The game propagates the ROOT actor payload to every child.
                             let root = rig.nodes[0].native.as_ref().ok_or_else(|| {
                                 PrepareError::Actor(invalid("native root actor source unavailable"))
                             })?;
@@ -2814,7 +2576,6 @@ impl ModelPass {
                                     .collect();
                             }
 
-                            // An actor draws once every part of its LOD has its pass built.
                             let variants = usize::from(caster) * 2 + usize::from(forced);
                             let mut built = true;
                             for (part, source) in descriptor.lods[lod].iter().enumerate() {
@@ -2836,7 +2597,6 @@ impl ModelPass {
                                 if let Some(recording) = recording.as_deref_mut() {
                                     recording.wait();
                                 }
-                                // Another level of detail may be built: the static list takes it.
                                 if every {
                                     continue;
                                 }
@@ -3058,7 +2818,6 @@ impl ModelPass {
                                 let supplies = plan_tail::Supplies::new(
                                     inputs.frames[view], vertex, pixel, skin,
                                     (!caster).then_some(inputs.grid));
-                                // Missing inputs retain their original ordered diagnostic demand.
                                 if supplies.present() & gpu.constant_mask != gpu.constant_mask
                                     || texture_mask & gpu.texture_mask != gpu.texture_mask
                                 {
@@ -3066,21 +2825,17 @@ impl ModelPass {
                                 }
 
                                 let bindings = if recording.is_some() {
-                                    // Only the program is chosen; the list binds its blocks.
                                     match &gpu.program {
                                         Some((installed, program)) if *installed == stamp => {
                                             let supplied = program.constant_reads().iter().all(
                                                 |spec| supplies.get(spec.binding).is_some(),
                                             );
                                             if !supplied {
-                                                // The arena's bind refuses as the walk always has.
                                                 let supply = |binding| supplies.get(binding);
                                                 program.bind_with(arena, supply).map_err(invalid)?;
                                             }
                                         }
                                         _ => {
-                                            // The list keeps the buffer its rows stand in, so the
-                                            // program stages no constants of its own.
                                             let program = gpu
                                                 .pipeline
                                                 .pipeline
@@ -3131,17 +2886,12 @@ impl ModelPass {
                             spend(WALK_PREPARE, since);
                             spent[WALK_PARTS].set(spent[WALK_PARTS].get() + prepared.len() as u64);
                             let since = clock();
-                            // A failed later part leaves all successful-program candidates cold.
                             for (key, program) in candidates.drain(..) {
                                 native.residents[key].program = Some((stamp, plan_tail::Program::new(program)));
                             }
-                            // Prepare every part before the first command for this actor.
                             if !caster && !prepared.is_empty() {
                                 pending_sources.constants_mask(submitted_mask, view, &scratch, index, descriptor.node);
                             }
-                            // The node's world block and palette, placed once for all its parts.
-                            // A lit node's block is kept even when it draws nothing: the next
-                            // pass's walk starts from the last one written.
                             let blocks = match recording.as_deref_mut() {
                                 Some(recording) if !prepared.is_empty() || !caster => {
                                     let mut bones = 0;
@@ -3296,7 +3046,6 @@ impl ModelPass {
             }
         }
         if !caster && !partial {
-            // Failed binds must not replace the last submitted material's retained textures.
             if let Some(material) = last_material {
                 let material = &self.materials[material];
                 for (slot, index) in [material.diffuse, material.specular, material.normal]
@@ -3336,9 +3085,6 @@ mod tests {
 
     use super::*;
 
-    /// Native packets fully establish state at each boundary. Encoding the models into a
-    /// pass of their own preserves MSAA samples, colour blending, depth, stencil and pooled
-    /// geometry, and the preceding encoder's buffer still submits first.
     #[test]
     #[ignore = "requires a GPU"]
     fn the_models_own_pass_keeps_blend_depth_stencil_and_dynamic_bindings() {
@@ -3427,7 +3173,6 @@ mod tests {
                 texture.create_view(&Default::default())
             })
             .collect();
-        // Distinct vertex/index chunks, with nonzero first_index and base_vertex.
         let vertices: Vec<_> = [0.0_f32, 0.125]
             .into_iter()
             .map(|shift| {
@@ -3505,7 +3250,6 @@ mod tests {
                     .unwrap()
                 })
                 .collect();
-            // Cross list boundaries and split the first state's consecutive run.
             let mut lists = [
                 DrawList::default(),
                 DrawList::default(),
@@ -3565,8 +3309,6 @@ mod tests {
                     });
             }
             arena.flush(&queue);
-            // At one sample the lists' runs are bundled: slices that hold a whole run execute its
-            // bundle, the rest draw directly, and both draw what the list draws directly.
             if samples == 1 {
                 for list in &mut lists {
                     list.unplanned = true;
@@ -3577,8 +3319,6 @@ mod tests {
                 }
                 assert!(lists.iter().any(|list| !list.runs.is_empty()));
             }
-            // Drawn in place, `bundled` draws each list: 0 directly, 1 by its runs' bundles
-            // (`record_range`), 2 each drawable draw from a bundle of its own.
             let render = |lists: &[DrawList], encode: bool, empty: bool, bundled: u8| {
                 let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_foundation::map::gpu_contract::SeaBed::Half);
                 let mut encoder = device.create_command_encoder(&Default::default());
@@ -3619,7 +3359,6 @@ mod tests {
                         }
                     }
                 }
-                // The preceding clear is encoded before the models' own pass, in one encoder.
                 if encode {
                     let lists = if empty {
                         Vec::new()
@@ -3629,7 +3368,6 @@ mod tests {
                     DrawList::encode(&lists, &targets, &mut encoder);
                 }
                 queue.submit([encoder.finish()]);
-                // The scene resolves once, after the draws, as a frame's does.
                 let mut resolve = device.create_command_encoder(&Default::default());
                 targets.resolve_scene(&mut resolve);
                 queue.submit([resolve.finish()]);
@@ -3643,7 +3381,6 @@ mod tests {
                         .any(|pixel| pixel[..6].iter().any(|byte| *byte != 0)),
                     !empty
                 );
-                // Where bundles draw other pixels, which: each draw's own bundle, or a run's.
                 assert_eq!(render(&lists, false, empty, 2), reference, "one draw a bundle {samples}x MSAA empty={empty}");
                 assert_eq!(render(&lists, false, empty, 1), reference, "bundled directly {samples}x MSAA empty={empty}");
                 assert_eq!(
@@ -3655,17 +3392,11 @@ mod tests {
         }
     }
 
-    /// A part whose mesh pass fell back from a visual mod's replacement draws with the
-    /// recorded technique: its compiled program, vertex layouts (the recorded POSITION and
-    /// TEXCOORD0, where the replacement's COLOR0 has none), state (the recorded blend) and
-    /// retained program, never the technique it asked for.
     #[test]
     fn a_part_draws_with_the_technique_its_pass_fell_back_to() {
         use crate::map::mesh_shader::vertex_layouts;
         let (pass, asked, recorded, geometry) = crate::map::mesh_shader::tests::fallen_back_pass();
         assert!(!Arc::ptr_eq(&asked.effect, &recorded));
-        // The mod's replacement cannot be laid out, so the mesh pass keeps the recorded
-        // technique it fell back to.
         let inputs = |selection: &shader_pipeline::library::Selection| {
             let compiled = selection.effect.compiled(selection.index).unwrap();
             compiled.vertex.inputs.clone()
@@ -3708,9 +3439,7 @@ mod tests {
             alpha_test: false,
             ..opaque
         };
-        //A textured lit cutout never reaches the shadow-state alternate override.
         assert_eq!(material_flags(&cutout, &cutout, true), (true, false));
-        // The same shadow state selects the alternate queue when the lit state had no textured test.
         assert_eq!(material_flags(&opaque, &cutout, true), (true, true));
         assert_eq!(material_flags(&cutout, &cutout, false), (false, true));
         assert_eq!(material_flags(&opaque, &opaque, true), (false, false));
@@ -3732,7 +3461,6 @@ mod tests {
         let retained = pixel.to_vec();
         assert_eq!(&vertex[..64], bytemuck::bytes_of(&[[7_f32; 4]; 4]));
         assert_eq!(&vertex[64..96], bytemuck::bytes_of(&[5_f32; 8]));
-        // Starting another native invocation clears CPU scratch, not PS b1.
         scratch.sync(&mut object);
         object.begin();
         scratch.begin(&object);
@@ -3804,11 +3532,9 @@ mod tests {
             distances: vec![4., 100.],
             lods: vec![vec![], vec![], vec![]],
         };
-        // Two actors in one old cull group can select different levels.
         assert_eq!(descriptor.lod([1., 0., 0.], [0.; 3]).unwrap(), Some(2));
         assert_eq!(descriptor.lod([2., 0., 0.], [0.; 3]).unwrap(), Some(0));
         assert_eq!(descriptor.lod([6., 8., 0.], [0.; 3]).unwrap(), Some(1));
-        // Walk backwards without sorting or clamping the authored ladder.
         descriptor.distances = vec![0., 100., 25.];
         assert_eq!(descriptor.lod([6., 0., 0.], [0.; 3]).unwrap(), Some(2));
         descriptor.distances.clear();
@@ -3872,7 +3598,6 @@ mod tests {
 
     #[test]
     fn actor_matrix_keeps_affine_w_and_separate_import_scale() {
-        // The game scales the twelve basis floats, never the homogeneous row.
         let actor = mesh::Transform {
             basis: [[0., 0., 2.], [0., 2., 0.], [-2., 0., 0.]],
             translation: [7., 11., 13.],

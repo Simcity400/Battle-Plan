@@ -1,6 +1,3 @@
-//! What the dev encoder `journal-encode` prints of the recorder's writer, and the host it runs it
-//! with: every branch written, every revision saved. Dev only: deleted with it before the lane's
-//! PR.
 
 use crate::{
     Hour,
@@ -21,8 +18,6 @@ use std::{
     time::Instant,
 };
 
-/// The campaign and the session capture `capture`'s journal in `directory` begins with, read
-/// from its first record and never letting go of a segment.
 pub fn journal_start(directory: &Path, capture: u32) -> io::Result<(Vec<u8>, SessionStart)> {
     let mut journal = Journal::open_read_only(directory, capture);
     journal.start(0)?;
@@ -35,10 +30,6 @@ pub fn journal_start(directory: &Path, capture: u32) -> io::Result<(Vec<u8>, Ses
     }
 }
 
-/// The facts file the recorder keeps for the journal in `directory` of campaign `campaign`, by
-/// its layout: `<session>\<campaign>\`, or that folder's `kept-journal\`, holds the journal, and
-/// `<session>\facts.bin` the session's facts. None when the journal is not where a recorder puts
-/// it or the session has no facts file.
 pub fn session_facts_file(directory: &Path, campaign: &[u8]) -> Option<PathBuf> {
     let folder = match directory.file_name()? == "kept-journal" {
         true => directory.parent()?,
@@ -49,10 +40,6 @@ pub fn session_facts_file(directory: &Path, campaign: &[u8]) -> Option<PathBuf> 
     (named && file.is_file()).then_some(file)
 }
 
-/// The facts pack the file at `path`, holding `bytes`, gives a recording of content `content`,
-/// as the recorder's publish gives it: a session's facts file gives its pack verbatim when they
-/// are `content`'s facts and is refused by name otherwise; any other file is a bare pack, given
-/// as it is unless `session_only`.
 pub fn facts_pack(path: &Path, bytes: Vec<u8>, content: &Identity, session_only: bool) -> io::Result<Vec<u8>> {
     if !bytes.starts_with(SESSION_FACTS_MAGIC) {
         return match session_only {
@@ -65,19 +52,14 @@ pub fn facts_pack(path: &Path, bytes: Vec<u8>, content: &Identity, session_only:
         .ok_or_else(|| io::Error::other(format!("{} is another content's facts", path.display())))
 }
 
-/// Writes every branch and saves every revision, counting what it is told.
 pub struct Everything {
     pub facts: Option<Vec<u8>>,
     pub revisions: u64,
-    /// A revision was committed since this was last taken.
     pub committed: bool,
-    /// From the `pace.1`th hour on, at most `pace.0` hours a second, as a game gives them.
     pub pace: Option<(f64, u64)>,
     pub hours: u64,
     pub paced: Option<Instant>,
-    /// Hours applied so far, for a `stop` that cannot borrow the host.
     pub taken: Rc<Cell<u64>>,
-    /// The hour applied last.
     pub last: Option<Hour>,
 }
 
@@ -125,14 +107,10 @@ impl Host for Everything {
     }
 }
 
-/// Reads the process's working set and commit into the phase under way every 50 ms, on a thread
-/// of its own, when the build counts labels.
 pub fn sample_memory() -> io::Result<()> {
     if !engine_allocation::labels::ENABLED {
         return Ok(());
     }
-    // The system's peak counters cannot be reset per phase: each phase keeps the most a
-    // sampler reads every 50 ms.
     std::thread::Builder::new().name("memory sampler".into()).spawn(|| {
         loop {
             engine_allocation::labels::sample_os();
@@ -142,14 +120,8 @@ pub fn sample_memory() -> io::Result<()> {
     Ok(())
 }
 
-/// Tables holding less than this are left out of a revision line's `tables`.
 const TABLE_LINE_BYTES: usize = 64 << 10;
 
-/// A committed revision's line (`--memory`): what the writer holds by part, the key index by
-/// table (its bytes and the table's live rows), what each table over 64 KiB holds by part, what
-/// the summaries hold by summarized table (its ladder; its block builder now and, in a labelled
-/// build, at its most in the block before, read once a day), each derived-table writer's resume
-/// state, and the encoder's peaks.
 pub fn revision_line(writer: &LiveWriter, revision: u64, hours: u64, started: Instant) -> Map<String, Value> {
     let parts: Map<String, Value> = writer.held_parts().into_iter().map(|(name, bytes)| (name, json!(bytes))).collect();
     let encoder = writer.store().encoder().map(|encoder| (encoder.held, encoder.written));
@@ -184,8 +156,6 @@ pub fn revision_line(writer: &LiveWriter, revision: u64, hours: u64, started: In
     line
 }
 
-/// Whether the commit just made, `hours` into the run, ended block `block`: printed when it did,
-/// for the caller to end as a kill would.
 pub fn stopped_after(block: Option<u64>, hours: u64) -> bool {
     if !block.is_some_and(|block| hours / 720 == block + 1) {
         return false;
@@ -194,7 +164,6 @@ pub fn stopped_after(block: Option<u64>, hours: u64) -> bool {
     true
 }
 
-/// The cells of rows inserted that no hour gave, by table.
 pub fn unwritten_line(writer: &LiveWriter) -> Value {
     let unwritten: Map<String, Value> = writer
         .store()
@@ -207,8 +176,6 @@ pub fn unwritten_line(writer: &LiveWriter) -> Value {
     json!({ "inserted_cells_not_given": unwritten })
 }
 
-/// The run's line, but for what only its encoder knows: the file and its parts, the writer's
-/// time per game hour by stage, the encoder's counts and peaks, the derived writers' time.
 pub fn written(writer: &LiveWriter, out: &Path, revisions: u64, hours_written: u64, started: Instant, timed: bool) -> io::Result<Map<String, Value>> {
     let hours = hours_written.max(1) as f64;
     let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3 / hours;
@@ -225,7 +192,6 @@ pub fn written(writer: &LiveWriter, out: &Path, revisions: u64, hours_written: u
             "units_by_kind": { "numeric": unit.numeric.0, "list": unit.list.0, "lifetimes": unit.lifetimes.0, "strings": unit.strings.0, "marks": unit.marks.0, "small": unit.small.0 } })
     });
     let split = encoder.map(|(_, _, timings)| {
-        // Appending is timed a call at a time: the clock reads that costs are taken off.
         let calls = timings.appends.min(20_000_000);
         let clock = Instant::now();
         for _ in 0..calls {
@@ -275,9 +241,6 @@ pub fn written(writer: &LiveWriter, out: &Path, revisions: u64, hours_written: u
     Ok(line)
 }
 
-/// Every phase, on stderr: the start with the run's first hour, then each block of the run (the
-/// first without its first hour): its labelled peak, the most working set and commit sampled in
-/// it, the hour at its peak, and every label holding a MiB or more at the peak or at its own.
 pub fn report_phases() {
     for (at, phase) in engine_allocation::labels::phases().iter().enumerate() {
         let os = phase.os_at_peak.map(|os| json!({ "working": os.working, "commit": os.commit, "peak_working": os.peak_working }));

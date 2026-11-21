@@ -1,44 +1,24 @@
-//! Raw country/strategic-region air-efficiency modifier operand.
-//!
-//! Sortie efficiency looks up the mission's region pointer in the effective
-//! country's map and reads key 0x11 from the matched object's accumulator.
-//! This reader acquires the raw simulation operand; modifier metadata and the
-//! sortie calculation belong to the viewer.
 
 use crate::{Memory, ccountry, cstrategic_region, modifier_accumulator, read};
 use engine_sites::Rva;
 
-/// Country region-map header.
 const COUNTRY_REGION_MAP: usize = 0x4d8;
-/// Map sentinel used to identify a lookup miss.
 const MAP_SENTINEL: usize = 0x08;
-/// Unordered-map stored size.
 const MAP_SIZE: usize = 0x10;
-/// Array of 16-byte last/first bucket pairs.
 const MAP_BUCKETS: usize = 0x18;
-/// Mask applied to the FNV-1a pointer-key hash.
 const MAP_MASK: usize = 0x30;
-/// Bucket count; the stored mask is count minus one.
 const MAP_BUCKET_COUNT: usize = 0x38;
-/// Node key used during lookup; the next pointer advances the chain.
 const NODE_STRIDE: usize = 0x20;
-/// Matched node pointer to its per-region object.
 const NODE_VALUE: usize = 0x18;
-/// Per-region object's modifier accumulator.
 const REGION_ACCUMULATOR: usize = 0x50;
-/// Per-region object primary vtable.
 const REGION_OBJECT_VTABLE_RVA: Rva = Rva(0x0286_44f0);
-/// Modifier key used for country/region sortie efficiency.
 pub const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
-/// Regional Ground Crews writers.
 pub const GROUND_CREWS_ENABLE_RVA: Rva = Rva(0x0073_13f0);
 pub const GROUND_CREWS_DISABLE_RVA: Rva = Rva(0x0073_0e80);
 pub const GROUND_CREWS_CONSTRUCTOR_RVA: Rva = Rva(0x0071_3070);
 const GROUND_CREWS_ENABLED: usize = 0x38;
 
-/// An authenticated regional object. Its pointer is acquisition context;
-/// a writer certificate may retain it, but it never enters a recording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Region {
     object: usize,
@@ -64,8 +44,6 @@ impl Region {
     }
 }
 
-/// One country's authenticated region map header, read once for all of that
-/// country's regions in an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CountryMap {
     sentinel: usize,
@@ -74,8 +52,6 @@ pub struct CountryMap {
     mask: u64,
 }
 
-/// The caller obtains the country pointer from the current hourly census; no
-/// address is serialized.
 pub fn country_map(
     memory: &impl Memory,
     base: usize,
@@ -167,11 +143,6 @@ impl CountryMap {
         Ok(())
     }
 
-    /// The raw key-0x11 modifier of one primary `CStrategicRegion*`, both of
-    /// whose identities are checked in one guarded batch. A readable map miss
-    /// or absent accumulator key returns `Value::default()`; malformed maps,
-    /// identities and short reads remain errors, never zero-valued
-    /// observations.
     pub fn lookup(
         self,
         memory: &impl Memory,
@@ -210,7 +181,6 @@ impl CountryMap {
         if Some(u64::from_le_bytes(second)) != vtable(cstrategic_region::SECONDARY_VTABLE_RVA) {
             return Err("air modifier region secondary identity invalid");
         }
-        // Hash all eight little-endian pointer bytes with FNV-1a.
         let index = hash(region as u64) & mask;
         let bucket = buckets
             .checked_add(
@@ -221,8 +191,6 @@ impl CountryMap {
             )
             .ok_or("air modifier bucket address overflow")?;
         let pair = read::<[u8; 16]>(memory, bucket).ok_or("air modifier bucket unreadable")?;
-        // Insertion updates bucket[0] as the last node. Lookup starts at
-        // bucket[1] and advances through bucket[0].
         let last = word(&pair, 0)?;
         let first = word(&pair, 8)?;
         if first == sentinel && last == sentinel {

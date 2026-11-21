@@ -1,4 +1,3 @@
-//! Concrete selected-route draw operands shared by counter producers and world submission.
 use crate::unit_handle::Unit;
 
 #[derive(Clone)]

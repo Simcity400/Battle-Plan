@@ -21,12 +21,8 @@ fn opinions_among_the_chosen_name_unread_and_unheld_countries_as_unknown_never_a
     let cells = Cells::default();
     let owners = opinions(&frame, &[("AAA", Some((1, 1))), ("BBB", Some((2, 2))), ("CCC", Some((3, 3))), ("DDD", Some((4, 4))), ("EEE", None)], &cells).unwrap();
     let shown: Vec<_> = owners.iter().map(|owner| (owner.tag.as_str(), owner.known)).collect();
-    // Rows without a read stamp still prove a read (BBB); a read with no nonzero opinion is every opinion zero (CCC);
-    // another sliced table's read proves nothing about opinions (DDD).
     assert_eq!(shown, vec![("AAA", true), ("BBB", true), ("CCC", true), ("DDD", false), ("EEE", false)]);
     assert!(owners[3].reason.is_some() && owners[4].reason.is_some());
-    // The opinions and read hours are live cells of the known owners only, read from the frame's rows: a pair with no
-    // row is missing there, which the matrix shows as the known owner's exact zero.
     let live = cells.finish();
     let values: Vec<CellValue> = live.values(&frame).into_iter().flatten().collect();
     let json = live.json(&live.values(&frame).into_iter().map(GroupState::Values).collect::<Vec<_>>());
@@ -37,8 +33,6 @@ fn opinions_among_the_chosen_name_unread_and_unheld_countries_as_unknown_never_a
     assert!(values.contains(&CellValue::Number(-20)) && values.contains(&CellValue::Number(480)) && values.contains(&CellValue::Number(470)));
 }
 
-/// The game lists opinions by raw engine references: a pair listed under other raw ids of the two
-/// countries (their links to the holders' slots) is that pair, never a missing row read as zero.
 #[test]
 fn an_opinion_listed_under_a_countrys_other_raw_ids_is_its_pair() {
     let table = TableId::RelationOpinions.index() as u32;
@@ -89,9 +83,6 @@ fn a_relations_runs_are_cut_where_its_endpoints_or_dates_change() {
 
 #[test]
 fn a_countrys_pacts_end_when_its_row_goes_and_are_unknown_past_a_gap_and_join_across_a_load() {
-    // Raw 1 holds AAA; its guarantee of raw 2 (BBB) runs from before the timeline and is gone at
-    // 150; its access in raw 3 (CCC) runs to the end of a stretch the recording breaks after; a
-    // pact with raw 2 runs across a load into run 1 to the timeline's end.
     let key = |owner: u32, target: u32, kind: u32| u128::from(owner) << 80 | u128::from(target) << 48 | u128::from(kind) << 16;
     let run = |first, last, endpoints, dates| PactRun { first, last, endpoints, dates };
     let first = RunPacts {
@@ -123,7 +114,6 @@ fn a_countrys_pacts_end_when_its_row_goes_and_are_unknown_past_a_gap_and_join_ac
         ]
     );
     assert_eq!(counts.values().sum::<u32>(), 3);
-    // The same stretch followed by a break: the access's end is not known.
     let broken = [Stretch { run: 0, first: 100, last: 199, join: Join::Start }, Stretch { run: 1, first: 250, last: 299, join: Join::Break }];
     let (pacts, _) = super::pacts(&broken, &held, &names, &[(1, 100, 299)], 299);
     assert!(pacts.iter().any(|pact| pact.kind == "military_access" && pact.ended_by && pact.gone_by.is_none()));
@@ -131,8 +121,6 @@ fn a_countrys_pacts_end_when_its_row_goes_and_are_unknown_past_a_gap_and_join_ac
 
 #[test]
 fn a_row_hidden_by_an_unavailable_relation_table_is_not_gone_and_its_hours_are_unobserved() {
-    // Raw 1 (AAA) guarantees raw 2 through 109; the table is unavailable 110..=120 and truncated
-    // 150..=159, and complete otherwise; the stretch shown ends at 155.
     let key = |owner: u32, target: u32, kind: u32| u128::from(owner) << 80 | u128::from(target) << 48 | u128::from(kind) << 16;
     let rows = RunPacts {
         rows: vec![(key(1, 2, 7), vec![PactRun { first: 100, last: 109, endpoints: (1, 2), dates: (50, 0) }])],

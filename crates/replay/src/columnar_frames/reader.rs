@@ -1,8 +1,3 @@
-//! A recording of format 12 read from its file or memory: its root, records, facts and every
-//! run's directory held from open; a span's directory and each table's row of it read when a
-//! reader first needs them and kept; block pages, a table's entries, its summary pieces, a
-//! block's clock and strings read on demand. The unit's reader primitives
-//! ([`replay_columnar::unit::reader`]) read the frames these name through [`Recording::extents`].
 
 use super::{
     Segment, columns_at,
@@ -26,21 +21,13 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-/// What a piece of damage refuses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DamageScope {
-    /// The recording: no committed root can be read.
     Unlocated,
-    /// A run's directory.
     Run(u32),
-    /// A run's block page or span page, by its first block.
     Page { run: u32, block: u32 },
-    /// A block's clock or strings, or a summary piece.
     Extent(Extent),
-    /// One table's entries, parts or restore in a block.
     Table { run: u32, block: u32, table: u32 },
-    /// A table the recording's format holds in a layout or meaning this build reads otherwise, or
-    /// predates.
     Withheld { table: u32 },
 }
 
@@ -57,12 +44,10 @@ impl fmt::Display for DamageScope {
     }
 }
 
-/// A schema table's name, for damage naming it.
 pub fn table_name(table: u32) -> String {
     TableId::ALL.get(table as usize).map_or_else(|| format!("Table {table}"), |id| format!("{id:?}"))
 }
 
-/// Recorded bytes that cannot be read, and what they refuse.
 #[derive(Debug)]
 pub struct Damage {
     pub scope: DamageScope,
@@ -82,8 +67,6 @@ impl std::error::Error for Damage {
 }
 
 impl Damage {
-    /// `cause` as damage refusing `scope`, unless it names its own scope already or is no
-    /// damage: an I/O failure or a lack of memory goes on as it is.
     pub fn wrap(scope: DamageScope, cause: io::Error) -> io::Error {
         if cause.kind() != io::ErrorKind::InvalidData || Self::of(&cause).is_some() {
             return cause;
@@ -91,47 +74,38 @@ impl Damage {
         io::Error::new(io::ErrorKind::InvalidData, Self { scope, cause })
     }
 
-    /// The damage `error` is.
     pub fn of(error: &io::Error) -> Option<&Self> {
         error.get_ref()?.downcast_ref()
     }
 }
 
-/// A run whose directory can be read: its place in the campaign and its pages.
 pub struct Run {
     pub branch: u64,
-    /// Why the run starts ([`envelope::epoch`]).
     pub epoch: u8,
     pub first_hour: i32,
     pub ordinals: u32,
-    /// The chain after its last hour.
     pub chain: [u8; 32],
     directory: RunDirectory,
 }
 
 impl Run {
-    /// Its blocks.
     pub fn pages(&self) -> usize {
         self.directory.blocks() as usize
     }
 
-    /// Block `at`'s first ordinal and hours.
     pub fn block(&self, at: usize) -> (u32, u32) {
         let first = at as u32 * UNIT_ORDINALS;
         (first, self.ordinals.saturating_sub(first).min(UNIT_ORDINALS))
     }
 
-    /// The game hour of block `at`'s first hour.
     pub fn block_first_hour(&self, at: u32) -> i32 {
         self.first_hour + (at * UNIT_ORDINALS) as i32
     }
 
-    /// Run ordinal `ordinal`'s block and its hour in the block.
     pub fn place(&self, ordinal: u32) -> (u32, u16) {
         (ordinal / UNIT_ORDINALS, (ordinal % UNIT_ORDINALS) as u16)
     }
 
-    /// The ordinal of game hour `hour`; none outside the run.
     pub fn ordinal(&self, hour: i32) -> Option<u32> {
         u32::try_from(i64::from(hour) - i64::from(self.first_hour)).ok().filter(|&ordinal| ordinal < self.ordinals)
     }
@@ -140,21 +114,17 @@ impl Run {
         self.first_hour + self.ordinals as i32 - 1
     }
 
-    /// Its directory as read.
     pub fn directory(&self) -> &RunDirectory {
         &self.directory
     }
 }
 
-/// One closed span's directory, where its index lies, and each table's row of it as parsed: a
-/// row is read alone from the index, which is stored as it is.
 struct SpanHeld {
     directory: SpanDirectory,
     index: Extent,
     rows: Mutex<Vec<Option<Arc<SpanRow>>>>,
 }
 
-/// The pages read so far, shared by the recordings selecting from one another.
 #[derive(Default)]
 struct Pages {
     spans: Mutex<HashMap<(u32, u32), Arc<SpanHeld>, foldhash::fast::RandomState>>,
@@ -165,26 +135,13 @@ fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// What a recording holds of this build's schema ([`recorded_columns`]).
 struct Framing {
-    /// Each table's columns, none of a table it does not hold.
     columns: Vec<usize>,
-    /// The tables this build reads otherwise, each with why.
     withheld: Vec<(usize, String)>,
-    /// How many tables its pages name.
     tables: usize,
-    /// The row format its cells were written in.
     format: u16,
 }
 
-/// What `root`'s recording holds of this build's schema, by the row format its records name,
-/// which is read and checked at every open: a format newer than this build's, or outside the
-/// proven history, is refused by name. Of this build's format, every column of every table and
-/// none withheld, its identity naming this build's schema; of an earlier one, when its identity
-/// names that format's schema, the tables introduced by then, this build's first, each framed as
-/// then. The columns appended since hold no recorded cell, and the tables added since and those
-/// whose layout or meaning changed are withheld by name. Records that name no format, or are
-/// damaged (which their readers report), leave only this build's schema to read it by.
 fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>>) -> io::Result<Framing> {
     let schema = schema()?;
     let ours = envelope::schema_digest(&schema);
@@ -214,9 +171,6 @@ fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>
     Ok(Framing { columns, withheld: withheld_at(format)?, tables, format })
 }
 
-/// A recording of format 12 ([`replay_columnar::pages`]): its root and every run's directory,
-/// held from open; its pages read as readers need them. A run directory that cannot be read
-/// refuses only what it covers ([`Self::damage`]); the rest stays readable.
 pub struct Recording {
     source: Arc<Source>,
     root: Root,
@@ -225,49 +179,36 @@ pub struct Recording {
     records: Box<[Extent]>,
     facts: Box<[Extent]>,
     directories: Box<[Extent]>,
-    /// Each schema table's columns it holds: the first of this build's.
     columns: Box<[usize]>,
-    /// The tables its pages name: this build's first, every one but those added since its format.
     tables: usize,
-    /// The row format its cells were written in.
     format: u16,
-    /// The tables its format holds as this build reads them otherwise, and those it predates,
-    /// each with why.
     withheld: Box<[(usize, String)]>,
     runs: Box<[Option<Arc<Run>>]>,
-    /// The segments its readers take ([`Self::with_segments`]), and those it records: one a run.
     segments: Box<[Segment]>,
     recorded: Box<[Segment]>,
     damage: Box<[Damage]>,
-    /// The tables its readers read.
     selected: [bool; TABLE_COUNT],
-    /// The columns of each table its readers read; every one when none.
     projected: Option<Arc<Vec<Option<Vec<usize>>>>>,
     pages: Arc<Pages>,
 }
 
 impl Recording {
-    /// The newest saved revision of the recording `bytes` hold.
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
         Self::read(Held::Memory(bytes), Open::Saved)
     }
 
-    /// The newest saved revision of the recording at `path`.
     pub fn open_path(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_path_as(path, Open::Saved)
     }
 
-    /// The revision of the recording at `path` that `open` names.
     pub fn open_path_as(path: impl AsRef<Path>, open: Open) -> io::Result<Self> {
         Self::read(Held::File(File::open(path)?), open)
     }
 
-    /// The revision of the recording in `file` that `open` names.
     pub fn open_file(file: File, open: Open) -> io::Result<Self> {
         Self::read(Held::File(file), open)
     }
 
-    /// The revision of the recording `bytes` hold that `open` names.
     pub fn open_as(bytes: Vec<u8>, open: Open) -> io::Result<Self> {
         Self::read(Held::Memory(bytes), open)
     }
@@ -305,8 +246,6 @@ impl Recording {
         recording.facts = recording.section(SectionKey::FACTS, sections_schema::FACTS).map_err(unlocated)?.into();
         recording.directories = recording.section(SectionKey::WORLD_LOG, sections_schema::WORLD_LOG).map_err(unlocated)?.into();
         let framing = recorded_columns(&recording.root, || {
-            // Every revision's records name the row format: a campaign's in each extent, a
-            // capture's in its record, the last.
             let Some(last) = recording.records.last() else { return Ok(None) };
             let raw = recording.raw(last)?;
             if let Some(format) = crate::campaign::Records::format_of(&raw) {
@@ -350,8 +289,6 @@ impl Recording {
         Ok(recording)
     }
 
-    /// Every extent of section `key`, refused unless it is of `version`: its frozen ones read
-    /// down through their index pages, then its open ones.
     fn section(&self, key: SectionKey, version: u32) -> io::Result<Vec<Extent>> {
         let Some(section) = self.root.open(key, version)? else { return Ok(Vec::new()) };
         let mut out = Vec::new();
@@ -387,8 +324,6 @@ impl Recording {
         Ok(())
     }
 
-    /// The recording as read from the same file, its pages shared with this one, whose readers
-    /// read only `tables` ([`Self::select`]).
     pub fn selecting(&self, tables: &[TableId]) -> io::Result<Self> {
         let damage = self.damage.iter().map(|held| Damage { scope: held.scope.clone(), cause: io::Error::new(held.cause.kind(), held.cause.to_string()) }).collect();
         let mut recording = Self {
@@ -415,7 +350,6 @@ impl Recording {
         Ok(recording)
     }
 
-    /// Its readers read only `tables`.
     pub fn select(&mut self, tables: &[TableId]) {
         self.selected = [false; TABLE_COUNT];
         for table in tables {
@@ -423,7 +357,6 @@ impl Recording {
         }
     }
 
-    /// Its readers read only `columns` of `table`: the others' cells read as not recorded.
     pub fn project(&mut self, table: TableId, columns: &[usize]) -> io::Result<()> {
         let mut projected = match self.projected.take() {
             Some(projected) => Arc::unwrap_or_clone(projected),
@@ -438,12 +371,10 @@ impl Recording {
         Ok(())
     }
 
-    /// Whether its readers read `table`.
     pub fn selects(&self, table: usize) -> bool {
         self.selected.get(table).copied().unwrap_or(false)
     }
 
-    /// The columns of `table` its readers read: those it projects to, else every one it records.
     pub fn read_columns(&self, table: usize) -> Vec<usize> {
         match self.projected.as_ref().and_then(|projected| projected.get(table)?.as_ref()) {
             Some(columns) => columns.clone(),
@@ -451,45 +382,34 @@ impl Recording {
         }
     }
 
-    /// The tables whose cells this build reads none of, each with why: those it holds in a layout
-    /// or meaning this build reads otherwise, and those its format predates ([`Self::predates`]).
     pub fn withheld(&self) -> &[(usize, String)] {
         &self.withheld
     }
 
-    /// Why `table` is withheld, when it is.
     pub fn withheld_reason(&self, table: usize) -> Option<&str> {
         self.withheld.iter().find(|(held, _)| *held == table).map(|(_, reason)| reason.as_str())
     }
 
-    /// Why the recording holds nothing of `table`, when its format predates it (naming the format
-    /// that introduced it): such a table is not recorded at any hour, as one its capture mode
-    /// leaves out.
     pub fn predates(&self, table: usize) -> Option<&str> {
         (table >= self.tables).then(|| self.withheld_reason(table)).flatten()
     }
 
-    /// The campaign its identity names.
     pub fn campaign(&self) -> &[u8] {
         &self.root.identity.campaign
     }
 
-    /// Each schema table's columns it holds: the first of this build's.
     pub fn columns(&self) -> &[usize] {
         &self.columns
     }
 
-    /// The content identity its root names, decoded.
     pub fn identity(&self) -> io::Result<crate::identity::Identity> {
         crate::campaign::decode_identity(&self.root.identity.content)
     }
 
-    /// The identity its root names.
     pub fn root_identity(&self) -> &envelope::Identity {
         &self.root.identity
     }
 
-    /// Its campaign records, every revision's in order.
     pub fn records(&self) -> io::Result<crate::campaign::Records> {
         let mut records = crate::campaign::Records::default();
         for extent in &*self.records {
@@ -498,10 +418,8 @@ impl Recording {
         Ok(records)
     }
 
-    /// The capture the file's runs belong to, as its records hold it; none when they hold none.
     pub fn capture(&self) -> io::Result<Option<crate::columnar_file::Capture>> {
         if let Some(last) = self.records.last() {
-            // A campaign's recording holds campaign records, not one capture's.
             if crate::campaign::Records::format_of(&self.raw(last)?).is_some() {
                 return Ok(None);
             }
@@ -509,13 +427,10 @@ impl Recording {
         crate::columnar_file::read_capture(&self.records, |extent| self.raw(extent))
     }
 
-    /// Why each run directory that cannot be read is refused.
     pub fn damage(&self) -> &[Damage] {
         &self.damage
     }
 
-    /// Damage that leaves recorded hours where no branch places them: a run whose directory
-    /// cannot be read, as an error naming it.
     pub fn unlocated(&self) -> Option<io::Error> {
         self.damage
             .iter()
@@ -523,17 +438,14 @@ impl Recording {
             .map(|damage| Damage::wrap(damage.scope.clone(), invalid(damage.cause.to_string())))
     }
 
-    /// Recorded hours over every run that can be read.
     pub fn hours(&self) -> u64 {
         self.runs.iter().flatten().map(|run| u64::from(run.ordinals)).sum()
     }
 
-    /// Runs in the recording, readable or not.
     pub fn run_count(&self) -> u32 {
         self.runs.len() as u32
     }
 
-    /// Run `run`, when its directory can be read.
     pub fn run(&self, run: u32) -> io::Result<&Run> {
         match self.runs.get(run as usize) {
             Some(Some(held)) => Ok(held),
@@ -542,13 +454,10 @@ impl Recording {
         }
     }
 
-    /// Every run's directory, in run order; refused when one cannot be read.
     pub fn directories(&self) -> io::Result<Vec<&RunDirectory>> {
         (0..self.run_count()).map(|run| self.run(run).map(Run::directory)).collect()
     }
 
-    /// The segments its readers take: one a readable run ([`Self::recorded_segments`]), unless
-    /// given others ([`Self::with_segments`]).
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
@@ -557,9 +466,6 @@ impl Recording {
         &self.recorded
     }
 
-    /// The recording whose readers take `segments` in place of those it records, as a timeline
-    /// reads them: each one a run's hours, of any branch, its first and last ordinals within the
-    /// run's. A segment may appear more than once.
     pub fn with_segments(mut self, segments: Vec<Segment>) -> io::Result<Self> {
         for segment in &segments {
             let held = self.recorded.iter().find(|held| held.run == segment.run);
@@ -571,75 +477,58 @@ impl Recording {
         Ok(self)
     }
 
-    /// The root its footer names.
     pub fn root(&self) -> &Root {
         &self.root
     }
 
-    /// The revision opened.
     pub fn revision(&self) -> Revision {
         self.revision
     }
 
-    /// The newest saved revision: this one, or the one its root names; none while none is saved.
     pub fn saved(&self) -> Option<Revision> {
         self.saved
     }
 
-    /// The digest of the root its footer names, which names its revision.
     pub fn root_footer_digest(&self) -> io::Result<[u8; 16]> {
         Ok(self.revision.root)
     }
 
-    /// Its campaign records' extents, in order.
     pub fn records_extents(&self) -> &[Extent] {
         &self.records
     }
 
-    /// Its game facts packs' extents, oldest first.
     pub fn facts_extents(&self) -> &[Extent] {
         &self.facts
     }
 
-    /// Its run directories' extents, in run order.
     pub fn run_directories(&self) -> &[Extent] {
         &self.directories
     }
 
-    /// The file's length through the footer of the revision opened.
     pub fn len(&self) -> u64 {
         self.source.len()
     }
 
-    /// Its bytes, when it was opened from memory.
     pub fn memory(&self) -> Option<&[u8]> {
         self.source.memory()
     }
 
-    /// Where the unit's reader primitives read its frames from.
     pub fn extents(&self) -> &(dyn Extents + 'static) {
         &*self.source
     }
 
-    /// Its source, shared: for a reader that outlives the borrow.
     pub fn source(&self) -> Arc<Source> {
         Arc::clone(&self.source)
     }
 
-    /// The row format its cells were written in: an opaque cell decodes at it, and a table's
-    /// fields past those it framed read not recorded.
     pub fn format(&self) -> u16 {
         self.format
     }
 
-    /// The number of schema tables its pages name: this build's first, fewer than all for a
-    /// recording of a format that predates the rest.
     pub fn tables(&self) -> usize {
         self.tables
     }
 
-    /// Refuses `table` when the recording's pages name none, as a reader of a withheld table is
-    /// refused: its format predates the table.
     fn holds(&self, table: usize) -> io::Result<()> {
         if table < self.tables {
             return Ok(());
@@ -648,19 +537,14 @@ impl Recording {
         Err(Damage::wrap(DamageScope::Withheld { table: table as u32 }, invalid(reason)))
     }
 
-    /// `out.len()` stored bytes of `extent` from `at` within it; its digest is the caller's to
-    /// check, once, with [`Self::stored_bytes`].
     pub fn stored_at(&self, extent: &Extent, at: u64, out: &mut [u8]) -> io::Result<()> {
         self.source.stored_at(extent, at, out).map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))
     }
 
-    /// `extent`'s stored bytes, checked against its digest.
     pub fn stored_bytes(&self, extent: &Extent) -> io::Result<Vec<u8>> {
         self.source.stored(extent).map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))
     }
 
-    /// `extent`'s bytes: as stored for one stored as it is (a summary piece, a span index, a
-    /// facts pack), else decoded from its frame.
     pub fn raw(&self, extent: &Extent) -> io::Result<Vec<u8>> {
         let stored = self.stored_bytes(extent)?;
         match extent.kind {
@@ -669,12 +553,10 @@ impl Recording {
         }
     }
 
-    /// `extent`, decoded: the bytes of a record, facts pack or other extent its root names.
     pub fn extent_bytes(&self, extent: &Extent) -> io::Result<Vec<u8>> {
         self.raw(extent)
     }
 
-    /// A unit frame's raw bytes: its stored bytes checked against its digest and decompressed.
     pub fn frame(&self, frame: &FrameEntry) -> io::Result<Vec<u8>> {
         let mut stored = Vec::new();
         self.source.read_at(frame.offset, frame.stored as usize, &mut stored)?;
@@ -684,7 +566,6 @@ impl Recording {
         container::decompress(&stored, Some(u64::from(frame.raw)))
     }
 
-    /// Span `span` of run `run`: its directory and index, read once.
     fn span(&self, run: u32, span: u32) -> io::Result<Arc<SpanHeld>> {
         if let Some(held) = locked(&self.pages.spans).get(&(run, span)) {
             return Ok(Arc::clone(held));
@@ -724,7 +605,6 @@ impl Recording {
         Ok(Arc::clone(rows[table].get_or_insert(row)))
     }
 
-    /// Open block page `block` of run `run`, read once.
     fn open_block(&self, run: u32, block: u32) -> io::Result<Arc<Block>> {
         if let Some(held) = locked(&self.pages.open).get(&(run, block)) {
             return Ok(Arc::clone(held));
@@ -747,7 +627,6 @@ impl Recording {
         Ok(block / SPAN_BLOCKS < self.run(run)?.directory.spans.len() as u32)
     }
 
-    /// Block `block` of run `run`: its head and every table's entry.
     pub fn block(&self, run: u32, block: u32) -> io::Result<Block> {
         self.check_block(run, block)?;
         if !self.closed(run, block)? {
@@ -763,7 +642,6 @@ impl Recording {
         Ok(Block { run, block, head: held.directory.blocks[at].clone(), tables })
     }
 
-    /// The head of block `block` of run `run`.
     pub fn head(&self, run: u32, block: u32) -> io::Result<BlockHead> {
         self.check_block(run, block)?;
         if !self.closed(run, block)? {
@@ -772,8 +650,6 @@ impl Recording {
         Ok(self.span(run, block / SPAN_BLOCKS)?.directory.blocks[(block % SPAN_BLOCKS) as usize].clone())
     }
 
-    /// Table `table`'s entry of block `block` of run `run`: what the unit's reader primitives
-    /// read the table's parts, restore and statuses of that block through.
     pub fn table_entry(&self, run: u32, block: u32, table: usize) -> io::Result<Entry> {
         self.holds(table)?;
         self.check_block(run, block)?;
@@ -785,39 +661,30 @@ impl Recording {
         Ok(self.span_row(run, span, &held, table)?.blocks[(block % SPAN_BLOCKS) as usize].clone())
     }
 
-    /// Table `table`'s summary piece of block `block` of run `run`, when it has one.
     pub fn block_of(&self, run: u32, block: usize, table: usize) -> io::Result<Option<Extent>> {
         Ok(self.table_entry(run, block as u32, table)?.summary)
     }
 
-    /// Table `table`'s summary pieces of the levels above a block's that closed span `span` of
-    /// run `run` holds, as (level, extent).
     pub fn span_summaries(&self, run: u32, span: u32, table: usize) -> io::Result<Vec<(u8, Extent)>> {
         let held = self.span(run, span)?;
         Ok(self.span_row(run, span, &held, table)?.summaries.clone())
     }
 
-    /// Table `table`'s row of span `span` of run `run`: its entries of the span's blocks and its
-    /// summary pieces of the levels above a block's.
     pub fn table_span(&self, run: u32, span: u32, table: usize) -> io::Result<Arc<SpanRow>> {
         let held = self.span(run, span)?;
         self.span_row(run, span, &held, table)
     }
 
-    /// The head of every block of run `run`, in order.
     pub fn heads(&self, run: u32) -> io::Result<Vec<BlockHead>> {
         (0..self.run(run)?.directory.blocks()).map(|block| self.head(run, block)).collect()
     }
 
-    /// Every hour's flags and metrics of block `block` of run `run`.
     pub fn clock(&self, run: u32, block: u32) -> io::Result<Vec<ClockHour>> {
         let head = self.head(run, block)?;
         let raw = self.frame(&head.clock).map_err(|error| Damage::wrap(DamageScope::Page { run, block }, error))?;
         Clock::read(&raw, u32::from(head.hours))
     }
 
-    /// The chain of run `run` through the block holding ordinal `ordinal`. Blocks are written
-    /// once, so a recording grown from this one holds the same there.
     pub fn chain_through(&self, run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
         if ordinal >= self.run(run)?.ordinals {
             return Err(invalid("No block of the run holds the ordinal"));
@@ -825,14 +692,10 @@ impl Recording {
         Ok(self.head(run, ordinal / UNIT_ORDINALS)?.chain)
     }
 
-    /// Blocks `from..to` of run `run` as the unit's reader primitives take a run's pages.
     pub fn unit_pages(&self, run: u32, from: u32, to: u32) -> io::Result<Vec<BlockPage>> {
         (from..to).map(|block| self.block(run, block).map(|block| block.unit_page())).collect()
     }
 
-    /// `table`'s entries as the reader primitives read a run's pages through, for a reader of one
-    /// table: blocks `from..to` of run `run`, each its block's page holding that table's entry
-    /// alone at its index.
     pub fn table_pages(&self, run: u32, table: usize, from: u32, to: u32) -> io::Result<Vec<BlockPage>> {
         let held = self.run(run)?;
         let mut pages = Vec::with_capacity(to.saturating_sub(from) as usize);
@@ -845,7 +708,6 @@ impl Recording {
         Ok(pages)
     }
 
-    /// The strings block `head` appended, by id.
     pub fn strings(&self, head: &BlockHead) -> io::Result<Vec<(u32, Vec<u8>)>> {
         let mut out = Vec::new();
         for chunk in &head.strings {
@@ -854,9 +716,6 @@ impl Recording {
         Ok(out)
     }
 
-    /// Run `run`'s pages from the earliest block every table's last restore at or before its
-    /// last block lies in: what taking the run up rebuilds its tables from. The first block's
-    /// place in the run, and the pages.
     pub fn pages_since_restores(&self, run: u32) -> io::Result<(u32, Vec<BlockPage>)> {
         let blocks = self.run(run)?.directory.blocks();
         let mut pages = Vec::new();
@@ -878,15 +737,11 @@ impl Recording {
     }
 }
 
-/// The strings frame `frame` of a block chunk whose first string is `first`, read from `file`:
-/// each string with its id.
 pub fn strings_of(file: &dyn Extents, frame: &FrameEntry, first: u32) -> io::Result<Vec<(u32, Vec<u8>)>> {
     let (raw, places) = strings_frame(file, frame)?;
     Ok(places.iter().zip(first..).map(|(&(at, length), id)| (id, raw[at as usize..(at + length) as usize].to_vec())).collect())
 }
 
-/// A block's strings chunk, decoded: the frame, and each string's place in it, by id from the
-/// chunk's first.
 pub fn strings_frame(file: &dyn Extents, frame: &FrameEntry) -> io::Result<(Vec<u8>, Vec<(u32, u32)>)> {
     let mut stored = Vec::new();
     file.read_at(frame.offset, frame.stored as usize, &mut stored)?;

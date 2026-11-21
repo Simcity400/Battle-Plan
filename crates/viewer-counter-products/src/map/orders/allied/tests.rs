@@ -60,7 +60,7 @@ fn volunteers(frame: &mut DecodedFrame, country: u32, host: i32) {
         TableView::Complete(TableRows::SentVolunteers(vec![SentVolunteerRow {
             country,
             ordinal: 0,
-            division: 0, // Native tests the list count, not reference resolution.
+            division: 0,
         }]));
     *frame.tables[TableId::LandTheatres.index()] =
         TableView::Complete(TableRows::LandTheatres(vec![LandTheatreRow {
@@ -104,7 +104,7 @@ fn allied_country_walk_keeps_physical_order_duplicates_and_own_alias_suppression
         },
         SubjectRow {
             overlord: 103,
-            subject: 105, // Transitive subjects do not qualify.
+            subject: 105,
             ..Default::default()
         },
     ]));
@@ -112,7 +112,6 @@ fn allied_country_walk_keeps_physical_order_duplicates_and_own_alias_suppression
         TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
             first_country: 101,
             second_country: 104,
-            // Date/cancel metadata does not override the active relation census.
             start_hour: 900,
             end_hour: 1,
             cancel: 1,
@@ -623,7 +622,6 @@ fn known_positive_subject_survives_unknown_faction_but_active_war_vetoes() {
             second_country: 102,
             ..Default::default()
         }]));
-    // A known empty sent list makes the second native OR arm false.
     *frame.tables[TableId::SentVolunteers.index()] =
         TableView::Complete(TableRows::SentVolunteers(Vec::new()));
     assert_eq!(Selection::read(&frame, &links(), 1, true).countries, [1]);

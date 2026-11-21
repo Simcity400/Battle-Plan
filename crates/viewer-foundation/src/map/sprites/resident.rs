@@ -1,20 +1,7 @@
-//! What an upload left resident on the GPU, and the check that it is what a whole rebuild would
-//! leave (`BATTLE_PLAN_VIEWER_CHECK_OVERLAY`, every Nth upload).
-//!
-//! The pass keeps windows' bytes between frames, so a quad comparison is no longer enough: a
-//! transform written into the wrong range, or not written at all, leaves the quads equal and the
-//! pixels wrong. The record is therefore the bytes every draw reads, in the order the frame
-//! encodes them, with the window each belongs to, and the runs that encode them. A difference
-//! names the window and the range.
-//!
-//! A frame in which nothing the batch draws changed must write no bytes at all; that is checked
-//! on every upload, not only a checked one.
 
 use super::{BatchWindow, WindowKey};
 use std::sync::Mutex;
 
-/// How many uploads apart the check runs, from `BATTLE_PLAN_VIEWER_CHECK_OVERLAY`: its value when that
-/// is a number, else every upload of a gate run.
 pub(super) fn every() -> Option<u64> {
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     *EVERY.get_or_init(|| {
@@ -31,7 +18,6 @@ pub(super) fn every() -> Option<u64> {
 
 static FOUND: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// What the check found since the last call. The frame fails on anything here.
 pub fn failures() -> Vec<String> {
     std::mem::take(&mut *FOUND.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
 }
@@ -44,7 +30,6 @@ fn fail(message: String) {
         .push(message);
 }
 
-/// One run of the encoded draw list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Run {
     pub native: Option<usize>,
@@ -54,10 +39,8 @@ pub(super) struct Run {
     pub range: std::ops::Range<u32>,
 }
 
-/// One draw an upload prepared, with the bytes it reads.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Draw {
-    /// A snapped quad, as its six vertices were written.
     Plain {
         window: Option<WindowKey>,
         page: Option<usize>,
@@ -65,8 +48,6 @@ pub(super) enum Draw {
         scissor: Option<[u32; 4]>,
         vertices: Vec<u8>,
     },
-    /// A compiled GUI draw: buffer zero as it binds it, which is where a window's transform
-    /// stands, then its animation records, its geometry, its textures and its scissor.
     Native {
         window: Option<WindowKey>,
         page: Option<usize>,
@@ -78,7 +59,6 @@ pub(super) enum Draw {
         scissor: Option<[u32; 4]>,
         batched: bool,
     },
-    /// A fading icon's page cell composited over the frame.
     Composite { page: usize, vertices: Vec<u8> },
 }
 
@@ -103,7 +83,6 @@ impl Draw {
     }
 }
 
-/// What one upload left resident.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Record {
     pub draws: Vec<Draw>,
@@ -121,7 +100,6 @@ impl Record {
     }
 }
 
-/// The first way `held` is not what `fresh` holds, named by window and range.
 pub(super) fn difference(held: &Record, fresh: &Record) -> Option<String> {
     for (at, (a, b)) in held.draws.iter().zip(&fresh.draws).enumerate() {
         if a == b {
@@ -198,7 +176,6 @@ pub(super) fn difference(held: &Record, fresh: &Record) -> Option<String> {
     None
 }
 
-/// A gate run's line for a check that found nothing, so a run can be seen to have checked.
 pub(super) fn note_equal(record: &Record, written: u64) {
     eprintln!(
         "CHECK sprite resident equal: {} draws, {} runs, {} fade pages, {written} bytes written",
@@ -208,7 +185,6 @@ pub(super) fn note_equal(record: &Record, written: u64) {
     );
 }
 
-/// A frame in which no window and no loose quad changed must write nothing.
 pub(super) fn check_quiet(written: u64) {
     if written != 0 {
         fail(format!(
@@ -224,7 +200,6 @@ pub(super) fn check(held: &Record, fresh: &Record, written: u64) {
     }
 }
 
-/// Which window each quad of a batch belongs to, by its key.
 pub(super) fn owners(windows: &[BatchWindow], quads: usize) -> Vec<Option<WindowKey>> {
     let mut owners = vec![None; quads];
     for window in windows {

@@ -1,4 +1,3 @@
-//! Worker drain of owned strike entries; conversion never follows game pointers.
 use crate::{
     clock::qpc,
     table_capture::{CaptureRows, grow_vec},
@@ -77,7 +76,6 @@ impl Captured {
     }
 }
 
-/// Conversion runs on the spool thread; growth keeps allocation failure terminal.
 fn push<T>(values: &mut Vec<T>, value: T) -> Result<(), &'static str> {
     allocation::reserve(values, 1).map_err(|_| "collector allocation failed")?;
     values.push(value);
@@ -95,8 +93,6 @@ fn country(identity: CountryIdentity) -> replay_data::event_feed_rows::EventFeed
 const UNPAIRED: &[u8] = b"nuclear strike unit after read missing";
 const DIFFERS: &[u8] = b"nuclear strike unit read before and after differ";
 
-/// One unit's damage from a before and an after read of its handle, when
-/// both read the same class.
 fn damage(before: &Unit, after: &Unit) -> Option<NuclearUnitDamage> {
     (before.class == after.class).then_some(NuclearUnitDamage {
         handle: before.handle,
@@ -111,19 +107,14 @@ fn damage(before: &Unit, after: &Unit) -> Option<NuclearUnitDamage> {
     })
 }
 
-/// A before read of the current damage call: its place among the call's
-/// before reads and whether an after read has paired it.
 struct Before {
     unit: Unit,
     position: usize,
     paired: bool,
 }
 
-/// One strike being assembled from its entries.
 struct Assembly {
     row: NuclearStrikeRow,
-    /// The current damage call's number and its before reads, in handle order
-    /// once `sorted`.
     call: Option<u32>,
     before: Vec<Before>,
     sorted: bool,
@@ -159,9 +150,6 @@ impl Assembly {
         }
         Ok(())
     }
-    /// Make `call` the current damage call. Closing the one before it, each
-    /// before read left without its after read is a unit whose damage was not
-    /// observed.
     fn enter(&mut self, call: Option<u32>) -> Result<(), &'static str> {
         if self.call == call {
             return Ok(());
@@ -190,8 +178,6 @@ impl Assembly {
             },
         )
     }
-    /// Pair an after read with its own call's before read of the same unit.
-    /// One whose before read failed was refused by that read and is dropped.
     fn pair_after(&mut self, call: u32, unit: Unit) -> Result<(), &'static str> {
         self.enter(Some(call))?;
         if !self.sorted {
@@ -218,7 +204,6 @@ impl Assembly {
     }
     fn finish(mut self) -> Result<NuclearStrikeRow, &'static str> {
         self.enter(None)?;
-        // One row per country, pool kind and variant, in key order.
         let equipment = &mut self.row.equipment;
         equipment.sort_unstable_by_key(|loss| (loss.country, loss.wing, loss.variant));
         let mut merged: Vec<NuclearEquipmentLoss> =
@@ -234,7 +219,7 @@ impl Assembly {
                         .checked_add(loss.amount_raw)
                         .ok_or("nuclear strike equipment sum overflow")?;
                 }
-                _ => merged.push(loss), // within the reserved length
+                _ => merged.push(loss),
             }
         }
         merged.retain(|loss| loss.amount_raw != 0);
@@ -243,8 +228,6 @@ impl Assembly {
     }
 }
 
-/// Group the drained entries into strikes: each strike entry starts a row and
-/// the entries after it, until the next, are its outcome.
 fn project(entries: &[Entry]) -> Result<Vec<NuclearStrikeRow>, &'static str> {
     let mut rows = Vec::new();
     let mut current: Option<Assembly> = None;
@@ -449,7 +432,6 @@ mod tests {
             before(7, 0, gun),
             after(8, 0, unit(1, 300_000)),
             after(9, 0, Unit { strength: 0, ..gun }),
-            // The second province's call reaches the first unit again.
             before(10, 1, unit(1, 300_000)),
             after(11, 1, unit(1, 100_000)),
             entry(
@@ -539,8 +521,6 @@ mod tests {
 
     #[test]
     fn units_pair_by_handle_within_their_call_whichever_read_failed() {
-        // The first call's middle after read failed; the second call's
-        // before read of unit 4 failed, so its after read pairs nothing.
         let entries = [
             strike(1),
             before(2, 0, unit(1, 900)),
@@ -553,7 +533,6 @@ mod tests {
             after(9, 1, unit(4, 6)),
             after(10, 1, unit(5, 50)),
             after(11, 1, unit(6, 40)),
-            // A unit whose class changed between its reads is not one unit.
             before(12, 2, unit(7, 300)),
             after(
                 13,

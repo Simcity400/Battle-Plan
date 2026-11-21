@@ -1,4 +1,3 @@
-//! Branch evidence is separate from the hours that actually reached the spool.
 
 use std::io;
 
@@ -22,10 +21,7 @@ pub enum BranchReason {
 pub struct BranchStart {
     pub id: BranchId,
     pub session: SessionId,
-    /// The clock at the first callback entry after loading. Unknown if that
-    /// callback was lost; a later callback's clock is not the save's origin.
     pub loaded_hour: Option<Hour>,
-    /// The first observed clock, including a command phase before any hourly frame.
     pub first_hour: Hour,
     pub parent: Parentage,
     pub reason: BranchReason,
@@ -189,7 +185,6 @@ pub struct Observation {
 struct BranchHistory {
     start: BranchStart,
     recorded: Vec<Hour>,
-    /// Observed hours not yet recorded, and whether each one's write is queued.
     pending: Vec<(Hour, bool)>,
 }
 
@@ -225,7 +220,6 @@ impl Default for BranchTracker {
 }
 
 impl BranchTracker {
-    /// A witnessed native invalidation also splits an otherwise identical clock.
     pub fn world_changed(&mut self) {
         self.world_changed = true;
     }
@@ -233,8 +227,6 @@ impl BranchTracker {
         Self::default()
     }
 
-    /// Seed only recovered, successfully decoded hours before starting a new session.
-    /// Missing hours inside a branch's overall range must not be included.
     pub fn seed_recorded_branch(
         &mut self,
         start: BranchStart,
@@ -283,7 +275,6 @@ impl BranchTracker {
         Ok(())
     }
 
-    /// A process is a session. Reusing its id is an error, even before its first frame.
     pub fn begin_session(&mut self, session: SessionId) -> io::Result<()> {
         if self.sessions.contains(&session) {
             return Err(invalid("session id has already been used"));
@@ -299,19 +290,14 @@ impl BranchTracker {
         self.last.map(|last| last.branch)
     }
 
-    /// The load signal of the last observation.
     pub fn last_load_signal(&self) -> Option<i64> {
         self.last.and_then(|last| last.load_signal)
     }
 
-    /// The branch and hour of the last observation: before a resumed
-    /// session's first observation, its recorded tail.
     pub fn last_observation(&self) -> Option<(BranchId, Hour)> {
         self.last.map(|last| (last.branch, last.hour))
     }
 
-    /// Reattach to the same process after seeding its recovered history. This is
-    /// not a new process session; the next observation still checks load/discontinuity.
     pub fn resume_session(
         &mut self,
         session: SessionId,
@@ -340,7 +326,6 @@ impl BranchTracker {
         Ok(())
     }
 
-    /// Resume exact gap evidence without adding missing hours to recorded history.
     pub fn resume_observation(
         &mut self,
         session: SessionId,
@@ -375,7 +360,6 @@ impl BranchTracker {
         Ok(())
     }
 
-    /// A command clock can precede the first frame at that same hour.
     pub fn resume_commands(
         &mut self,
         session: SessionId,
@@ -420,13 +404,6 @@ impl BranchTracker {
         Some(&mut self.branches[index])
     }
 
-    /// Observe a callback before attempting to write it. `known_gaps` are explicit
-    /// missing ranges on the current branch, not an aggregate dropped-frame count.
-    /// A failed signal read retains the last known value. The caller records that
-    /// read failure separately in the frame. Errors leave the tracker unchanged.
-    /// Call this once per callback: a storage retry reuses the returned observation
-    /// and branch start. Repeating a frame clock means an actual discontinuity.
-    /// The caller must write the supplied gap notes as well as tracking them here.
     pub fn observe(
         &mut self,
         loaded_hour: Option<Hour>,
@@ -550,7 +527,6 @@ impl BranchTracker {
             first_pending.push((recorded_hour, false));
         }
 
-        // All fallible validation and growth are above this point.
         if let Some(last) = self.last {
             let history = self.history_mut(last.branch).unwrap();
             for gap in known_gaps {
@@ -593,8 +569,6 @@ impl BranchTracker {
         Ok(Observation { branch, start })
     }
 
-    /// Acknowledge only after the frame was successfully written. Observation and
-    /// a branch start alone never constitute parentage evidence.
     pub fn record_hour(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         let history = self
             .history_mut(branch)
@@ -617,8 +591,6 @@ impl BranchTracker {
         Ok(())
     }
 
-    /// The observed hour's write is queued. A failure cancels every write queued
-    /// after it, so until [`Self::lose_hour`] this hour is parentage evidence.
     pub fn admit_hour(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         let history = self
             .history_mut(branch)
@@ -636,9 +608,6 @@ impl BranchTracker {
         Ok(())
     }
 
-    /// The observed hour will not be recorded: its write failed or was never queued.
-    /// A failed queued write cancelled the writes of every later branch start, so
-    /// those that counted it take the parent left without it.
     pub fn lose_hour(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         let history = self
             .history_mut(branch)
@@ -665,7 +634,6 @@ impl BranchTracker {
         Ok(())
     }
 
-    /// The one branch before `before` that recorded `hour` or still has its write queued.
     fn parent_at(&self, hour: Hour, before: BranchId) -> Parentage {
         let mut containing = self
             .branches
@@ -684,7 +652,6 @@ impl BranchTracker {
 }
 
 fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> io::Result<bool> {
-    // Widen before arithmetic: i32::MAX followed by i32::MIN is a discontinuity.
     let first_missing = i64::from(previous) + 1;
     let next = i64::from(next);
     if next < first_missing {
@@ -837,7 +804,6 @@ mod tests {
         );
         let later = sample(&mut tracker, 50, 51, 4).start.unwrap();
         assert_eq!(later.parent, Parentage::Unknown);
-        // A reload with an ordinary next-hour sample is still a branch.
         let next = sample(&mut tracker, 51, 52, 5).start.unwrap();
         assert_eq!(next.reason, BranchReason::LoadSignal);
         assert_eq!(
@@ -892,7 +858,6 @@ mod tests {
                 .is_none()
         );
         tracker.record_hour(branch, 15).unwrap();
-        // Missing 17 is not explained by these two ranges.
         let holes = [gap(branch, 16, 16), gap(branch, 18, 19)];
         let changed = tracker
             .observe(Some(19), 20, Some(1), &holes)
@@ -900,7 +865,6 @@ mod tests {
             .start
             .unwrap();
         assert_eq!(changed.reason, BranchReason::HourDiscontinuity);
-        // A signal change always wins, even when the missing range is covered.
         let loaded = tracker
             .observe(Some(22), 23, Some(2), &[gap(changed.id, 21, 22)])
             .unwrap()
@@ -914,7 +878,7 @@ mod tests {
         let mut tracker = BranchTracker::new();
         tracker.begin_session(1).unwrap();
         let first = sample(&mut tracker, 99, 100, 1).branch;
-        tracker.observe(Some(100), 101, Some(1), &[]).unwrap(); // write failed
+        tracker.observe(Some(100), 101, Some(1), &[]).unwrap();
         let loaded = tracker
             .observe(Some(101), 102, Some(2), &[gap(first, 101, 101)])
             .unwrap()
@@ -924,7 +888,6 @@ mod tests {
         assert!(tracker.record_hour(first, 101).is_err());
         assert!(tracker.record_hour(first, 100).is_err());
         assert!(tracker.record_hour(999, 102).is_err());
-        // A gap between recorded endpoints is still absent from exact history.
         tracker.record_hour(loaded.id, 102).unwrap();
         tracker
             .observe(Some(105), 106, Some(2), &[gap(loaded.id, 103, 105)])
@@ -950,7 +913,6 @@ mod tests {
             tracker.observe(Some(10), 11, Some(1), &[]).unwrap();
             tracker.admit_hour(first, 11).unwrap();
             assert!(tracker.admit_hour(first, 11).is_err());
-            // The hour-11 save loads before that write's outcome is known.
             let loaded = tracker
                 .observe(Some(11), 11, Some(2), &[])
                 .unwrap()
@@ -997,7 +959,6 @@ mod tests {
             };
             assert_eq!(second.parent, parent);
             tracker.admit_hour(second.id, 11).unwrap();
-            // Hour 11 is recorded on `first` and queued on `second` when it loads again.
             let third = tracker
                 .observe(Some(11), 11, Some(3), &[])
                 .unwrap()
@@ -1018,7 +979,6 @@ mod tests {
                 }
             );
             assert_eq!(tracker.branch_start(second.id).unwrap().parent, parent);
-            // An hour whose write was never queued was no evidence.
             tracker.lose_hour(third.id, 11).unwrap();
             assert!(tracker.record_hour(third.id, 11).is_err());
             assert_eq!(
@@ -1064,8 +1024,6 @@ mod tests {
         tracker.begin_session(1).unwrap();
         let original = sample(&mut tracker, 99, 100, 1).branch;
         sample(&mut tracker, 100, 101, 1);
-        // The first callback after loading was dropped. The surviving callback's
-        // entry clock is 101, but that does not establish which save hour loaded.
         let mut start = tracker
             .observe(None, 102, Some(2), &[])
             .unwrap()

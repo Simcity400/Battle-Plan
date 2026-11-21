@@ -1,11 +1,3 @@
-//! The Operatives map mode's intel icons (today `intel_icons::icons` per built hour) as a layer:
-//! evaluated over rows at the playback head on the layer's own worker, never on the frame. While
-//! playing it evaluates at the step that changes a table it reads (the rows' cadence), at once when
-//! paused, after a seek and when a table arrives; an evaluation still running when newer rows come
-//! is not queued behind: the newest rows are taken next and the ones passed over counted. It reads the tables the
-//! content's scripts read, learned by discovery and kept for the content. At any other map mode it
-//! declares nothing, has no reader, no worker and no icons. The camera's layout stays in the
-//! overlay (`intel_icons::prepare`).
 
 #[cfg(test)]
 mod tests;
@@ -35,14 +27,10 @@ use viewer_world::map::map_mode::{MapMode, Stock};
 
 pub const NAME: &str = "intel icons";
 
-/// The tables every evaluation reads first; the rest are learned. The Clock: its scripts compare
-/// dates, so the icons are evaluated at every step.
 const CORE: [TableId; 5] = [TableId::Countries, TableId::CountryLinks, TableId::Provinces, TableId::States, TableId::Clock];
 
-/// How long an unlimited settle waits for the icons of the hour applied.
 const CATCH_UP: Duration = Duration::from_secs(120);
 
-/// The icons over one frame of rows, for a viewing choice: the recording's content in the window.
 pub trait Evaluate: Send + Sync + 'static {
     fn icons(&self, frame: &DecodedFrame, choice: &perspective::Choice) -> IntelIcons;
 }
@@ -56,14 +44,12 @@ impl Evaluate for crate::document::Content {
     }
 }
 
-/// The viewing country, as today's vision resolves it for the overlay ([`perspective::Vision::ours`]).
 pub fn ours(frame: &DecodedFrame, choice: &perspective::Choice) -> io::Result<u32> {
     let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
     let tags: BTreeMap<u32, String> = core::<tables::Countries>(frame)?.iter().map(|country| (country.canonical_slot, String::from_utf8_lossy(&country.tag).into_owned())).collect();
     perspective::viewer(frame, &links, &tags, &choice.country).map(|(ours, _)| ours)
 }
 
-/// No icons, and why: the viewing country cannot be resolved at the hour.
 fn refused(frame: &DecodedFrame, why: &str) -> IntelIcons {
     let mut icons = IntelIcons { built_for: None, ..IntelIcons::default() };
     icons.report.reasons.insert(format!("the viewing country cannot be resolved at hour {}: {why}", frame.hour), 1);
@@ -76,32 +62,25 @@ struct Job {
     epoch: u64,
 }
 
-/// What the worker is handed: an evaluation, or something to free off the frame (old rows and old
-/// icons can be the last reference to megabytes of row structs).
 enum Work {
     Evaluate(Job),
     Free(Box<dyn Send>),
 }
 
 struct Done {
-    /// None when the evaluation read a table not declared yet, named in `missed`.
     icons: Option<IntelIcons>,
     missed: Vec<TableId>,
     hour: Hour,
-    /// The rows evaluated, held weakly.
     frame: std::sync::Weak<DecodedFrame>,
     ns: u64,
     epoch: u64,
 }
 
-/// The reader and the worker, while the icons are drawn.
 struct Open {
     reader: ViewReader,
     jobs: mpsc::Sender<Work>,
     done: mpsc::Receiver<Done>,
-    /// An evaluation is running.
     busy: bool,
-    /// The newest rows seen, and whether they were handed to the worker.
     seen: Option<Arc<DecodedFrame>>,
     handed: bool,
 }
@@ -112,9 +91,7 @@ impl Open {
         let (jobs, receive) = mpsc::channel::<Work>();
         let (send, done) = mpsc::channel();
         let evaluate = Arc::clone(evaluate);
-        // Not joined: closing drops the sender, and the thread ends after the job it holds.
         std::thread::Builder::new().name("intel icons".into()).spawn(move || {
-            // The step's settle joins its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             for work in receive {
                 let job = match work {
@@ -137,12 +114,10 @@ impl Open {
         Ok(Self { reader, jobs, done, busy: false, seen: None, handed: false })
     }
 
-    /// Frees `held` on the worker.
     fn free(&self, held: impl Send + 'static) {
         let _ = self.jobs.send(Work::Free(Box::new(held)));
     }
 
-    /// The newest rows seen from now on; the ones before are freed on the worker.
     fn see(&mut self, frame: Option<Arc<DecodedFrame>>) {
         if let Some(old) = std::mem::replace(&mut self.seen, frame) {
             self.free(old);
@@ -150,27 +125,18 @@ impl Open {
     }
 }
 
-/// What the layer measured while drawn, each bounded by the values it takes, not by hours played.
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
-    /// Evaluations by milliseconds, a tenth wide.
     pub evaluations: BTreeMap<u32, u64>,
-    /// Frames by how many game hours the icons drawn are behind the hour the map applied.
     pub ages: BTreeMap<i32, u64>,
-    /// Frames drawn in the mode before the first icons came (today's product shows then).
     pub loading: u64,
-    /// Rows passed over: newer rows came before the worker was free for them.
     pub skipped: u64,
-    /// Evaluations discarded because they read a table not declared yet.
     pub learning: u64,
-    /// Results dropped because a reset or a new perspective came after their job.
     pub stale: u64,
-    /// Times the reader and the worker were opened and closed.
     pub opened: u64,
     pub closed: u64,
 }
 
-/// Icons laid out by the window in place of the hour's, by microseconds on the frame thread, ten wide.
 #[derive(Debug, Default)]
 struct Installs(std::sync::Mutex<BTreeMap<u32, u64>>);
 
@@ -215,22 +181,16 @@ impl Installs {
     }
 }
 
-/// The intel icons at the head.
 pub struct Icons {
     evaluate: Arc<dyn Evaluate>,
-    /// The map side's view store, given as the side is made; nothing is read before it.
     views: Option<Views>,
     pace: Pace,
     shown: bool,
     choice: perspective::Choice,
-    /// Learned by discovery; kept when closed, so it opens with them.
     tables: Vec<TableId>,
     open: Option<Open>,
-    /// The newest icons and the hour of the rows they were evaluated over.
     icons: Option<(Arc<IntelIcons>, Hour)>,
-    /// The rows the icons drawn were evaluated over, and the hour they stand at.
     stands: Option<Stands>,
-    /// Bumped by a reset and a new perspective: results of earlier jobs are dropped.
     epoch: u64,
     applied: Option<Hour>,
     stats: Stats,
@@ -238,12 +198,10 @@ pub struct Icons {
 }
 
 impl Icons {
-    /// The icons of `evaluate`'s content, over the views the map side makes of its own mirrors.
     pub fn new(evaluate: Arc<dyn Evaluate>, pace: Pace) -> Self {
         Self { evaluate, views: None, pace, shown: false, choice: perspective::Choice::default(), tables: CORE.to_vec(), open: None, icons: None, stands: None, epoch: 0, applied: None, stats: Stats::default(), installs: Installs::default() }
     }
 
-    /// The newest icons and the hour of the rows they are of; none while loading or not drawn.
     pub fn icons(&self) -> Option<&(Arc<IntelIcons>, Hour)> {
         self.icons.as_ref()
     }
@@ -256,18 +214,14 @@ impl Icons {
         &self.stats
     }
 
-    /// Whether a reader and a worker are open.
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
 
-    /// Evaluates `frame` here, as the worker does: the proof's check that the icons drawn are those
-    /// of the newest rows.
     pub fn evaluate(&self, frame: &DecodedFrame) -> IntelIcons {
         discovering(|| self.evaluate.icons(frame, &self.choice)).0
     }
 
-    /// The rows the reader holds now; none while a table loads.
     pub fn newest_rows(&self) -> Option<Arc<DecodedFrame>> {
         self.open.as_ref().and_then(|open| open.reader.frame())
     }
@@ -276,9 +230,7 @@ impl Icons {
         let icons = self.icons.take();
         if let Some(open) = self.open.take() {
             self.stats.closed += 1;
-            // The last reader of a playhead's rows joins their worker when dropped: never here.
             let _ = std::thread::Builder::new().name("intel icons closing".into()).spawn(move || {
-                // The step's settle joins its product: at the head's priority, never below normal.
                 viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
                 drop((open, icons));
             });
@@ -286,7 +238,6 @@ impl Icons {
         self.epoch += 1;
     }
 
-    /// Sets the icons drawn; the ones before are freed on the worker.
     fn show(&mut self, icons: Option<(Arc<IntelIcons>, Hour)>) {
         if let Some(old) = std::mem::replace(&mut self.icons, icons) {
             match &self.open {
@@ -296,7 +247,6 @@ impl Icons {
         }
     }
 
-    /// Opens the reader and the worker when drawn and a playhead is given; a refusal is printed.
     fn ensure_open(&mut self) {
         if self.open.is_some() || !self.shown {
             return;
@@ -311,14 +261,12 @@ impl Icons {
         }
     }
 
-    /// Takes the worker's finished evaluations; never waits.
     fn receive(&mut self) {
         while let Some(done) = self.open.as_ref().and_then(|open| open.done.try_recv().ok()) {
             let _ = self.take(done);
         }
     }
 
-    /// Whether it was discarded to learn a table.
     fn take(&mut self, done: Done) -> bool {
         let Some(open) = &mut self.open else { return false };
         open.busy = false;
@@ -345,8 +293,6 @@ impl Icons {
         false
     }
 
-    /// Hands the newest rows to the worker when it is free; rows that a newer frame replaces before
-    /// that are counted as passed over.
     fn offer(&mut self) {
         let Some(open) = &mut self.open else { return };
         if let Some(frame) = open.reader.frame()
@@ -368,13 +314,9 @@ impl Icons {
         }
     }
 
-    /// Waits until the icons are of the hour applied: an unlimited settle (the proof's, the tests').
-    /// Gives up when the rows are already past that hour, and when a table was just learned: it
-    /// joins at a step past the head, which never comes while the head is held.
     fn catch_up(&mut self, settling: Settling) -> io::Result<()> {
         let Some(hour) = self.applied else { return Ok(()) };
         let until = Instant::now() + settling.waiting(CATCH_UP);
-        // Out of the step's budget, the icons it holds stand and the step after joins the hour's.
         let ran_out = |why: String| if settling.strict() { Err(io::Error::other(why)) } else { Ok(()) };
         loop {
             if self.icons.as_ref().is_some_and(|(_, at)| *at == hour) && !self.open.as_ref().is_some_and(|open| open.busy) {
@@ -395,11 +337,8 @@ impl Icons {
                 continue;
             }
             let Some(frame) = open.reader.frame() else {
-                // Its tables are arriving in the side's mirrors.
                 return Ok(());
             };
-            // The store's views stand at the hour the side applied, so the hour's rows are the
-            // next frame made for this reader: nothing drives a head here.
             if frame.hour < hour {
                 let seen = open.reader.published();
                 if open.reader.wait_newer(seen, left) == seen {
@@ -407,8 +346,6 @@ impl Icons {
                 }
                 continue;
             }
-            // Rows past the hour, or the rows standing at it already handed to the worker. Rows seen
-            // while it was busy were never handed: they are handed now.
             let seen = open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame));
             if frame.hour > hour || (seen && open.handed) {
                 return Ok(());
@@ -421,7 +358,6 @@ impl Icons {
         }
     }
 
-    /// The bytes the icons hold: states, entries, writes and their text, tooltips' text.
     fn icon_bytes(icons: &IntelIcons) -> usize {
         use intel_icons::Write;
         let mut bytes = std::mem::size_of::<IntelIcons>() + icons.states.capacity() * std::mem::size_of::<intel_icons::StateIcon>();
@@ -451,8 +387,6 @@ impl Layer for Icons {
         Some(0)
     }
 
-    /// Drawn in the Operatives mode only: Countries' keys there, so a reset tells it the hour (its
-    /// own tables come through rows at the head); nothing at any other mode.
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
         let shown = view.map_mode == MapMode::Stock(Stock::Operatives);
         if shown && view.perspective != self.choice {
@@ -497,8 +431,6 @@ impl Layer for Icons {
         self.ensure_open();
         self.receive();
         self.offer();
-        // No evaluation running: it has finished with the rows it took, so the step may make its
-        // views again.
         if let Some(open) = self.open.as_ref().filter(|open| !open.busy) {
             open.reader.ready();
         }
@@ -517,8 +449,6 @@ impl Layer for Icons {
     }
 
 
-    /// Nothing: the icons are a step of rows or more behind by design, and their age is measured
-    /// on its own ([`Stats::ages`]) rather than holding the map's drawn hour back.
     fn carried(&self) -> Carried {
         Carried::default()
     }
@@ -536,7 +466,6 @@ impl Layer for Icons {
     }
 }
 
-/// The icons the map's layer draws, when it draws them.
 pub fn drawn(side: &MapSide) -> Option<Arc<IntelIcons>> {
     if !side.draws(NAME) {
         return None;
@@ -545,7 +474,6 @@ pub fn drawn(side: &MapSide) -> Option<Arc<IntelIcons>> {
     layer.icons().map(|(icons, _)| Arc::clone(icons))
 }
 
-/// The layer's figures for a report: what it measured, and what its rows hold.
 pub fn summary(side: &MapSide) -> Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Icons>())) else { return Value::Null };
     json!({

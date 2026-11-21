@@ -173,14 +173,9 @@ fn censuses_preserve_native_direction_full_width_and_literal_bytes() {
     }
 }
 
-/// A retired relation still installed in the subject-relation slot is what the native subject terms
-/// read, so it stays a row; the retired relation left only in the owned vector (the fixture's
-/// second entry) is skipped.
 #[test]
 fn a_retired_subject_counts_while_it_is_installed() {
     let mut bytes = fixture();
-    // The owned-only retired relation names the same pair but is not the
-    // one installed, so it resolves and is still skipped.
     p32(&mut bytes, RETIRED_RELATION + OVERLORD, 3);
     p32(&mut bytes, RETIRED_RELATION + SUBJECT, 2);
     bytes[RELATION + crelation::RETIRED] = 1;
@@ -195,7 +190,6 @@ fn a_retired_subject_counts_while_it_is_installed() {
     }
 }
 
-/// A failed installation read refuses the walk; only the overlord's visit could emit the subject.
 #[test]
 fn an_unreadable_installation_slot_is_not_an_uninstalled_subject() {
     struct Hole<'a> {
@@ -220,7 +214,6 @@ fn an_unreadable_installation_slot_is_not_an_uninstalled_subject() {
         capture(&bytes, false, &mut rows, &mut names).outcome,
         Outcome::Rows { len: 1 }
     );
-    // The overlord's (slot 1) status toward its subject (slot 2).
     let slot = status(0, 2) + crelation_status::SUBJECT_RELATION;
     let memory = Hole {
         bytes: &bytes,
@@ -296,7 +289,6 @@ fn matrix_batches_authenticate_empty_tail_cells_and_do_not_read_past_count() {
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].overlord, rows[0].subject), (3, 2));
-    // The 65th cell has no subject, but an invalid owner must still fail.
     p64(&mut bytes, 0x20000 + 64 * 8, 0x22000);
     p64(&mut bytes, 0x22000, crelation_status::VTABLE_RVA.0 as u64);
     assert!(matches!(
@@ -314,7 +306,6 @@ fn matrix_batches_authenticate_empty_tail_cells_and_do_not_read_past_count() {
         capture(&bytes, true, &mut rows, &mut names).outcome,
         Outcome::Rows { len: 1 }
     );
-    // Slot 65 is outside the 65-entry array and may contain garbage.
     p64(&mut bytes, 0x20000 + 65 * 8, u64::MAX);
     assert_eq!(
         capture(&bytes, true, &mut rows, &mut names).outcome,
@@ -385,7 +376,6 @@ fn heap_names_have_no_fixed_length_limit_or_lossy_conversion() {
     ));
 }
 
-/// Bump-allocated synthetic address space for census-scale fixtures.
 struct Space {
     bytes: Vec<u8>,
 }
@@ -407,22 +397,16 @@ impl Space {
     }
 }
 
-/// `countries` canonical countries; country 1 is the overlord of every
-/// other one, and its owned vector holds all those subjects.
 fn overlord_census(countries: usize) -> (Vec<u8>, Vec<Row>) {
     overlord_census_of(countries, |_| true)
 }
 
-/// [`overlord_census`] whose countries `is_subject` rejects own no relation and
-/// are no relation's endpoint.
 fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (Vec<u8>, Vec<Row>) {
     let mut space = Space {
         bytes: vec![0; 0x2000],
     };
     let census = space.alloc((countries + 1) * 8);
     let links = space.alloc((countries + 1) * 4);
-    // 24-byte cells: vtable and id, then a later country's diplomacy
-    // pointer (0xf88 = 165 * 24 + 16), so objects overlap without clashing.
     let objects = space.alloc(24 * (countries + 2 + ccountry::DIPLOMACY_STATUS / 24));
     let country = |slot: usize| objects + 24 * slot;
     let mut pointers = vec![u64::MAX];
@@ -587,21 +571,14 @@ fn owned_subject_walk_matches_the_plain_walk_and_scans_each_owner_once() {
         assert_eq!(owned, plain_walk);
         assert_eq!(rows, plain);
         assert_eq!(names, plain_names);
-        // Empty and grown storage alike install the overlord's vector once
-        // and answer every later visit from it.
         assert!(scratch.stats().installed > 0, "grown {grown}");
     }
 }
 
-/// [`overlord_census`] whose overlord's owned vector also holds a relation
-/// of another type after every third subject, with every tenth subject
-/// relation retired but still installed: the census, the overlord's owned
-/// vector header and its serial rows.
 fn mixed_census(countries: usize) -> (Vec<u8>, Array, Vec<Row>) {
     mixed_census_of(countries, |_| true)
 }
 
-/// [`mixed_census`] over [`overlord_census_of`].
 fn mixed_census_of(
     countries: usize,
     is_subject: impl Fn(usize) -> bool,
@@ -647,10 +624,6 @@ fn mixed_census_of(
     (space.bytes, owned, rows)
 }
 
-/// The batched owned walk over `memory` and the serial one over
-/// `serial_memory` (each its own source, so a one-shot fault meets each
-/// walk), each with fresh snapshot storage, `rows` rows and `names` name
-/// bytes: the batched walk's rows, names and outcome, then the serial walk's.
 fn batched_and_serial(
     memory: &impl Memory,
     serial_memory: &impl Memory,
@@ -679,10 +652,6 @@ fn batched_and_serial(
     [(new, new_rows, new_names), (old, old_rows, old_names)]
 }
 
-/// On healthy memory the batched owned walk returns the serial walk's rows,
-/// names and outcome at 5,000 countries, truncated or not, with retired
-/// installed subjects and relations of another type among the entries, in
-/// fewer guarded copies.
 #[test]
 fn batched_subjects_match_the_serial_walk() {
     use crate::memory::{CountedMemory, ReadCounts};
@@ -712,8 +681,6 @@ fn batched_subjects_match_the_serial_walk() {
         prior.add_current();
     }
     let [new, old] = counts;
-    // Each subject's five head reads and four field reads are one gathered
-    // span; each entry and type word joins its batch.
     assert!(
         new.copy_calls + 8 * (COUNTRIES as u64 - 1) < old.copy_calls,
         "{new:?} {old:?}"
@@ -721,17 +688,11 @@ fn batched_subjects_match_the_serial_walk() {
     assert!(new.spans < old.spans, "{new:?} {old:?}");
 }
 
-/// The faults the equality tests place: the overlord's owned entry 10 (in
-/// the first batch, which the walk reads before any membership scan of that
-/// vector), the type word of a relation of another type, bytes of a
-/// subject's head the serial walk never reads and a subject's autonomy
-/// ratio.
 fn subject_fault_sites(bytes: &[u8], owned: Array) -> [std::ops::Range<usize>; 4] {
     let entry = |index: usize| {
         let at = owned.data + index * 8;
         u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
     };
-    // Every fourth entry from entry 3 is of another type.
     let element = owned.data + 10 * 8;
     let other = entry(3) + TYPE_ID;
     let gap = entry(6) + SUBJECT + 4;
@@ -744,9 +705,6 @@ fn subject_fault_sites(bytes: &[u8], owned: Array) -> [std::ops::Range<usize>; 4
     ]
 }
 
-/// A persistent fault gives the serial walk's result: a batch it breaks is
-/// read again entry by entry, once, and counted once; the head gap breaks
-/// two batches, the overlord's and its subject's.
 #[test]
 fn a_persistent_subject_fault_gives_the_serial_result() {
     use crate::batch_fallback::{Batch, Faulty, count};
@@ -774,9 +732,6 @@ fn a_persistent_subject_fault_gives_the_serial_result() {
     }
 }
 
-/// A one-shot fault never refuses more than the serial walk: whatever batch
-/// it breaks is read again entry by entry, so the batched walk keeps the
-/// healthy rows.
 #[test]
 fn a_one_shot_subject_fault_refuses_no_more_than_the_serial_walk() {
     use crate::batch_fallback::Faulty;
@@ -809,7 +764,6 @@ fn a_one_shot_subject_fault_refuses_no_more_than_the_serial_walk() {
     }
 }
 
-/// Country `slot`'s diplomacy and owned vector header in a census image.
 fn owned_of(bytes: &[u8], slot: u32) -> (usize, Array) {
     let memory = SliceMemory { base: 0, bytes };
     let reader = Reader::new(&memory, 0, GS).unwrap();
@@ -821,18 +775,9 @@ fn owned_of(bytes: &[u8], slot: u32) -> (usize, Array) {
     (diplomacy, owned)
 }
 
-/// The batched walk stops where the serial walk stops, with its partial
-/// rows, names and name demand, across batch boundaries and under every
-/// split of row and name capacity: a first null at an overlord's owned
-/// entry 0, 63 or 64, a duplicate entry in a later batch, a subject
-/// country whose only owned entry is null after the overlord's partly used
-/// last batch, and names of several lengths (an empty one and a long heap
-/// one among them) that run out before the rows do or after.
 #[test]
 fn batched_subjects_stop_where_the_serial_walk_stops() {
     let (healthy, hub, _) = mixed_census(200);
-    // Every seventh subject relation names a long heap definition and every
-    // eleventh an empty one.
     let mut named = Space {
         bytes: healthy.clone(),
     };
@@ -917,13 +862,6 @@ fn batched_subjects_stop_where_the_serial_walk_stops() {
     }
 }
 
-/// The batched walk resets its batch at every country and skips census
-/// slots as the serial walk does: the overlord's owned vector ends in a
-/// partly used batch, slot 2 is null and slot 3 an alias of country 4 (two
-/// countries that are no relation's endpoint), and country 4 owns its
-/// relation. Healthy, with country 4's only owned entry null, and with a
-/// later subject relation's name invalid after the name arena has run out
-/// with rows to spare, every capacity split matches the serial walk.
 #[test]
 fn batched_subjects_skip_null_and_alias_slots_and_refuse_late_invalid_names() {
     let (mut bytes, hub, _) = mixed_census_of(200, |slot| slot != 2 && slot != 3);
@@ -943,8 +881,6 @@ fn batched_subjects_skip_null_and_alias_slots_and_refuse_late_invalid_names() {
     assert_eq!(four.count, 1);
     let mut null_four = bytes.clone();
     p64(&mut null_four, four.data, 0);
-    // The 150th subject relation in the overlord's vector names a definition
-    // whose inline name has no terminator.
     let mut bad_name = Space {
         bytes: bytes.clone(),
     };

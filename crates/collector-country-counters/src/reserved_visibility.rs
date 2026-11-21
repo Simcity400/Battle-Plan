@@ -1,6 +1,3 @@
-//! Actual Country0's directed disclosure matrix, acquired within Ordinary.
-//! One live-M arena owns values and exact attempted failures. Native controls
-//! exist only on the callback stack; projection and growth run off-thread.
 use crate::{clock::qpc, table_capture::Arena};
 use engine_native::{Memory, ccountry, crelation_status};
 
@@ -50,7 +47,6 @@ impl Captured {
         self.ticks = 0;
     }
 
-    /// Worker-only preparation continues from the original matrix controls.
     pub fn prepare(
         &mut self,
         memory: &impl Memory,
@@ -62,8 +58,6 @@ impl Captured {
         self.attempted = true;
         self.sample_hour = hour;
         self.prefix_ready = prefix_ready;
-        // The early scalar attempt remains observable even when required
-        // naming later refused. This accessor never reads live memory.
         self.scalar_reason = observation.as_ref().and_then(|value| value.faction().err());
         let _reads =
             crate::read_accounting::table(replay_data::rows::TableId::ReservedCountryNaming);
@@ -78,7 +72,6 @@ impl Captured {
         match source {
             Ok(source) => {
                 self.cells.required = source.required_slots();
-                // Full country visibility uses the original matrix extent.
                 if let Err(reason) = engine_native::walk::Buffer::Growing(&mut self.cells.first)
                     .ensure(self.cells.required)
                 {
@@ -105,7 +98,6 @@ impl Captured {
         slot: u32,
         forward: Option<&crelation_status::ForwardZeroObservation>,
     ) {
-        // A refused source or required prefix cannot commit any later vector body.
         if self.refusal().is_some() {
             return;
         }
@@ -141,7 +133,6 @@ impl Captured {
             })
     }
 
-    /// The hour this matrix was attempted for; its packet stores none.
     pub fn sample_hour(&self) -> Option<i32> {
         self.sample_hour
     }

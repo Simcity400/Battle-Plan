@@ -1,5 +1,3 @@
-/** Writes a painter makes each frame, each only when it changes the node: an unchanged write still dirties style or
- * layout, and a page that lays out every frame drops frames however little it draws. */
 
 export function setText(node: Node | null | undefined, text: string): void {
   if (node && node.textContent !== text) node.textContent = text;

@@ -1,6 +1,3 @@
-//! Immediate renderer integration: cold-owner determinism plus fixed bake/failure witnesses.
-//! Raw Arena bytes, reports and HDR/final pixels are compared across independent Scenes.
-//! This is not an old-vs-new renderer oracle; the removed split oracle is archived externally.
 #[path = "scene_render_sprites.rs"]
 mod sprites;
 use super::scene_failure_tests::Fixture;
@@ -20,8 +17,6 @@ fn error(result: io::Result<()>) -> Result<(), (io::ErrorKind, String)> {
 
 fn normalized(scene: &Scene) -> SceneProof {
     let mut proof = scene.frame_proof_for_tests();
-    // A ModelPass intentionally allocates a distinct event namespace per Scene. Compare
-    // canonical layer owners, not coincidental process-global namespace allocation order.
     for (event, key) in proof
         .reports
         .sound_events
@@ -167,7 +162,6 @@ fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::
             request.postfx = frame % 5 != 2;
             request.no_trees = frame % 7 == 4;
             request.no_water = frame % 9 == 5;
-            // Exercise the ordinary camera, actual seam copies and free-eye mixed passes.
             if frame % 6 == 2 {
                 request.camera.center[0] = 1.;
             }

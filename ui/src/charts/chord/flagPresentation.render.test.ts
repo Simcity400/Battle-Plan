@@ -7,7 +7,6 @@ import { tokensFromValues } from '../tokens.ts';
 import type { FrameTask } from '../scheduler';
 import type { ChordChartProps } from './ChordChart';
 
-// Run the actual draw/publish callbacks; only the browser surfaces and scheduler are synthetic.
 test('a folded-country keyboard tooltip decodes displayed flags only and cannot reclaim another chart on settlement', async () => {
   const handlers = new Map<string, (event: unknown) => void>();
   const context = new Proxy({ measureText: (text: string) => ({ width: text.length * 7 }) },

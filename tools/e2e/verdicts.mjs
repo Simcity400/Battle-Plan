@@ -1,4 +1,3 @@
-// The suite's verdicts from what a run measured: pure functions, so they can be tested without the app.
 
 export const BUDGET_MS = 100;
 export const MAX_PLAYBACK_AGE_HOURS = 48;
@@ -7,52 +6,32 @@ export function playbackPace(first, last, speed) {
   const hps = elapsed > 0 ? 1000 * (last.hour - first.hour) / elapsed : null;
   return { hps, pass: hps !== null && Math.abs(hps / speed - 1) <= .02 };
 }
-/** One frame at 95 Hz, the host's frame budget (crates/desktop/src/perf.rs). */
 export const FRAME_BUDGET_MS = 1000 / 95;
-/** How long a seek may take the map to present its hour. */
 export const MAP_WAIT_MS = 10_000;
 
-/** A page expression that holds once dashboard page `page` is the one shown: its sidebar row current and its grid laid
- * out. A page switch waits on it (run 13: the click on Overview, made while the Campaign map was opening, left the map
- * shown, and the step settled on no widget at all). */
 export const pageShown = page => `(document.querySelector('.sidebar-page-list button[aria-current=page]')?.textContent.trim() === ${JSON.stringify(page)}
   && (document.querySelector('.dash-grid-scroll')?.getClientRects().length ?? 0) > 0)`;
 
-/** Whether a widget has drawn a setting it was given: its article's `data-drawn` (the settings its body last painted
- * with) equals its `data-settings`, which moved off `before`, and it shows no loading. Self-contained: it runs in the page. */
 export function settingDrawn({ settings, drawn, state }, before) {
   return drawn !== null && drawn !== undefined && drawn === settings && settings !== before && state !== 'loading';
 }
 
-/** How long a widget that reports drawing a setting has to show it changed before the step is a no-op. A change later than
- * this is over the 100 ms rule anyway. */
 export const DRAWN_GRACE_MS = 500;
 
-/** Whether a measured step is over at a frame's sample, from what the probe saw: `settled` (no visible widget loading, and
- * its completion held), `busy` (the app's count of what it has in flight, `window.__busy`; null where the app has none),
- * how many samples in a row were settled with nothing in flight (`idle`), and how long it has been settled (`heldMs`).
- * With the count, it is over one frame after it reaches zero: a request counts from the moment it is asked, so a late
- * start is seen. Without it, once it has held for `wait` ms, the window a late start had to show in. Self-contained: it
- * runs in the page. */
 export function stepOver({ settled, busy, idle, heldMs, wait }) {
   if (!settled) return false;
   return busy === null || busy === undefined ? heldMs >= wait : busy === 0 && idle >= 2;
 }
 
-/** Why a step that never settled had not: what the app still had in flight, by kind (`window.__busy.kinds()`). */
 export const stillInFlight = (kinds, timeout) => `still in flight after ${Math.round(timeout / 1000)} s: ${Object.entries(kinds).filter(([, n]) => n > 0).map(([kind, n]) => `${kind} ${n}`).join(', ')}`;
 
-/** Why a setting showed no visible change, from the widget's settings signature before and after it. */
 export const noVisibleChange = (settingsBefore, settingsNow) => settingsNow !== null && settingsNow === settingsBefore
   ? 'no visible change after the setting: the widget was never given it'
   : 'no visible change after the setting: the widget took it, and nothing it shows changed';
 
-/** Each phase's seconds over a run's sessions, in the order they ran: [phase, seconds]. */
 export const phaseSeconds = sessions => (sessions ?? []).flatMap(meta => (meta.phases ?? [])
   .filter(phase => Number.isFinite(meta[`${phase}Seconds`])).map(phase => [phase, meta[`${phase}Seconds`]]));
 
-/** The machine a run measured on, for the report header: load and Battle Plan apps before its first app started and
- * before its last closed; what was not recorded is said so, never shown as idle. */
 export function machineLine(run) {
   const machine = run?.machine;
   const count = value => Number.isFinite(value) ? value : 'not recorded';
@@ -63,15 +42,11 @@ export function machineLine(run) {
   return `Machine (${count(machine.logicalCpus)} logical CPUs): ${sample('before the first app', machine.start)}; ${sample('before the last app closed', machine.end)}.`;
 }
 
-/** Whether a run asked for `phase`: a section of a phase not asked for (the quick tier's) is left out, never failed. */
 export const asked = (run, phase) => !Array.isArray(run?.requested) || run.requested.includes(phase);
 
-/** A value with its object keys sorted, so equal settings compare equal whatever order each side wrote them in. */
 const canonical = value => Array.isArray(value) ? value.map(canonical)
   : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 
-/** Why map state `state` does not show it drew with every setting of `expected`, the settings menu's saved rows as
- * [setting, JSON value] (`graphics.<key>`, `audio.<key>`, `counters`, `visualMods`, a set); null when it does. */
 export function mapDrew(state, expected) {
   if (!state?.applied) return 'its map reports no settings it drew with';
   for (const [setting, json] of expected) {
@@ -84,7 +59,6 @@ export function mapDrew(state, expected) {
   return null;
 }
 
-/** Nearest-rank percentiles, as the host's perf summary computes them. */
 export function quantiles(values) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   if (!sorted.length) return { n: 0, p50: null, p95: null, max: null };
@@ -92,7 +66,6 @@ export function quantiles(values) {
   return { n: sorted.length, p50: rank(0.5), p95: rank(0.95), max: sorted.at(-1) };
 }
 
-/** An item: its samples' quantiles, failing when any sample failed or the maximum is over budget. */
 export function item(name, samples, { budget = BUDGET_MS, reasons = [] } = {}) {
   const q = quantiles(samples.map(sample => sample.ms));
   const failed = samples.filter(sample => !sample.pass);
@@ -108,7 +81,6 @@ export function groupBy(values, key) {
   return groups;
 }
 
-/** Each widget placement's first content in page visits, by kind and pass: from the input that showed it. */
 export function firstContent(results) {
   const placements = [];
   for (const step of results.filter(result => result.area === 'pages' && result.widgets)) {
@@ -120,13 +92,11 @@ export function firstContent(results) {
       if (widget.end === 'unavailable') reasons.push(widget.notice?.text ?? 'unavailable');
       if (widget.end === 'blank') reasons.push('shows nothing');
       if (step.reasons?.includes('no trusted input reached the page')) reasons.push('no trusted input reached the page');
-      // The rule judges a first visit; a revisit is reported beside it.
       if (visit === 'cold' && ms !== null && ms > BUDGET_MS) reasons.push(`${Math.round(ms)} ms, over ${BUDGET_MS} ms`);
       placements.push({ visit, page, kind: widget.kind, title: widget.title, step: step.label, id: `${page}#${widget.id}`, ms, end: widget.end,
         reasons, label: `${page}: ${widget.title} (${step.label})` });
     }
   }
-  // A placement seen in several steps of one visit counts once: where it first showed content.
   const seen = new Map();
   for (const placement of placements) {
     const key = `${placement.visit}|${placement.id}`;
@@ -138,16 +108,12 @@ export function firstContent(results) {
   return [...seen.values()].map(placement => ({ ...placement, pass: placement.reasons.length === 0 }));
 }
 
-/** The map views' acknowledgements, from the perf log, by view, in time order. */
 export function mapAcks(records) {
   const views = groupBy(records.filter(record => record.t === 'map_state'), record => record.view);
   for (const acks of views.values()) acks.sort((a, b) => a.at - b.at);
   return views;
 }
 
-/** When the viewer presented the frame it drew at `drawnAt` (its map state's `drawn_at`, stamped as the frame's interface
- * is built): that frame's record ends its interface pass, and the record after it carries when the paint that presented
- * it ended. Null when the frame log does not hold that frame. */
 export function presentedAt(mapRecords, drawnAt) {
   if (!Number.isFinite(drawnAt)) return null;
   const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
@@ -160,8 +126,6 @@ export function presentedAt(mapRecords, drawnAt) {
   return null;
 }
 
-/** When the pop-out's viewer presented its first frame of `hour` after the input at `after`: the end of the first paint
- * its frame log records once it installed that hour on screen (`map_upload`). Null when it records none. */
 export function popoutPresented(mapRecords, after, hour) {
   const popouts = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'popout').map(record => record.pid));
   const installed = mapRecords.filter(record => record.t === 'map_upload' && popouts.has(record.pid) && record.ok && record.hour === hour && record.at > after);
@@ -171,19 +135,14 @@ export function popoutPresented(mapRecords, after, hour) {
   return paints.length ? Math.min(...paints.map(record => record.painted_at)) : null;
 }
 
-/** The hours the main viewer installed on screen for map view `view` (null: the full campaign map) over [from, to]. */
 export function hoursInstalled(mapRecords, view, from, to) {
   const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
   return new Set(mapRecords.filter(record => record.t === 'map_upload' && main.has(record.pid) && record.ok && (record.view ?? null) === view
     && record.at >= from && record.at <= to).map(record => record.hour)).size;
 }
 
-/** The reason a map frame's presentation cannot be timed. */
 export const UNPRESENTED = "its frame is not in the viewer's frame log, so when it was presented is unknown";
 
-/** How long each seek took the map views to present the sought position: the first acknowledgement after the
- * input, not loading, showing what the view should show, once what it should show moved; timed to the present
- * of the frame that drew it. */
 export function mapSeek(acks, input, mapRecords) {
   const before = acks.filter(ack => ack.at <= input).at(-1);
   const from = before?.expected ?? null;
@@ -195,29 +154,17 @@ export function mapSeek(acks, input, mapRecords) {
   return presented === null ? { ms: null, reason: UNPRESENTED } : { ms: presented - input, reason: null };
 }
 
-/** The map's own target: every frame of an interaction within one 120 Hz frame, and nearly all well within it. */
 export const MAP_FRAME_MS = 1000 / 120;
 export const MAP_P99_MS = 7;
 
-/** The main viewer's frames over [from, to] judged against 120 Hz: window-thread work (the frame's logic and UI, and
- * the CPU part of its paint) and GPU time per frame. A
- * frame whose work exceeds one 120 Hz frame is a dropped frame at 120 Hz, whatever the display shows. `fps` is the
- * frame rate achieved, meaningful when the viewer presents uncapped.
- * GPU time arrives later than its frame: each `map` record names its own `frame` (counted per map), and a
- * later record carries `gpu_frame` (the frame measured) with its `gpu_ms` once that frame's timestamps resolve, or
- * null `gpu_ms` with why it has none (`gpu_error`). The process's `map_open` says whether it can time the GPU at all
- * (`gpu_timer`). */
 export function mapFrames(mapRecords, from, to) {
   const opens = mapRecords.filter(record => record.t === 'map_open' && record.role === 'main');
   const main = new Set(opens.map(record => record.pid));
-  // Each record carries when the paint that ended the frame before it finished: the frame's work runs from its interface
-  // pass through egui's output, tessellation and paint to then, less the paint's wait for a swapchain image.
   const next = new Map();
   for (const pid of main) {
     const own = mapRecords.filter(record => record.t === 'map' && record.pid === pid).sort((a, b) => a.at - b.at);
     own.forEach((record, index) => next.set(record, own[index + 1]));
   }
-  // Every frame whose run, from its start through its paint, overlaps [from, to].
   const frames = mapRecords.filter(record => record.t === 'map' && main.has(record.pid) && record.at - record.work_ms <= to
     && Math.max(record.at, next.get(record)?.painted_at ?? record.at) >= from);
   const timed = frames.map(frame => {
@@ -256,26 +203,19 @@ export function mapFrames(mapRecords, from, to) {
   return { work: workStats, gpu: gpuStats, dropped, frames: frames.length, fps: frames.length / Math.max(0.001, (to - from) / 1000), pass: reasons.length === 0, reasons };
 }
 
-/** Viewer frames that began after an input and ended before the frame that showed its result: zero is the next frame. */
 export function framesLate(mapRecords, posted, drawnAt) {
   const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
   return mapRecords.filter(record => record.t === 'map' && main.has(record.pid) && record.at - record.work_ms >= posted && record.at < drawnAt).length;
 }
 
-/** Every report of the hour a widget shows: its `shown` records, and a map view's acknowledged frames, where a blank or
- * failed map shows no hour. Only reports since `since` (its app session's start) count. */
 export function shownHours(records, since = -Infinity) {
   return [...records.filter(record => record.t === 'shown'),
     ...records.filter(record => record.t === 'map_state' && !record.loading).map(record => ({ t: 'shown', widget: record.view, at: record.at,
       drawnAt: record.drawn_at ?? null, hour: record.blank || record.error ? null : record.hour }))].filter(record => record.at >= since);
 }
 
-/** The start of the app session `at` falls in, from the sessions' start times. */
 export const sessionStart = (starts, at) => Math.max(-Infinity, ...starts.filter(start => start <= at));
 
-/** Per widget kind on the default pages. Paused, each placement scrolled into view must report showing the clock's
- * hour (`hours`: one check per placement, at its epoch `at`, with the clock's `hour`). Playing, each placement in view
- * must report its dated values; out of view it reports none, as it shows none. */
 export function freshnessByKind(records, playbackResults, hourChecks = [], starts = [], dated = []) {
   const kinds = new Map();
   const notMigratedWidgets = new Set(dated.filter(picture => picture.status === 'not migrated').map(picture => picture.widget));
@@ -322,8 +262,6 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
   });
 }
 
-/** Whether an added catalogue view reported the hour it shows, and that it is the clock's: within the 10 s after Add,
- * when it first showed the clock's hour (`at`, epoch ms), and that it showed no other after it. */
 export function catalogueHour(records, step) {
   if (!step.widget) return { pass: false, reason: 'its widget id was not read' };
   const shown = shownHours(records, step.input).filter(record => record.widget === step.widget && record.at >= step.input && record.at <= step.input + 10_000)
@@ -336,8 +274,6 @@ export function catalogueHour(records, step) {
   return { pass: true, hour: step.hour, at: shown[first].at, drawnAt: shown[first].drawnAt ?? null };
 }
 
-/** When the main viewer handled pointer input sent at `posted`: the end of its first frame begun after it, the latest the
- * game's hover delay can have started. Null when its frame log holds no such frame. */
 export function handledAt(mapRecords, posted) {
   const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
   const frames = mapRecords.filter(record => record.t === 'map' && main.has(record.pid) && record.at - record.work_ms >= posted);
@@ -350,12 +286,9 @@ export function frameTimes(records, from, to, refreshHz) {
     drops: refreshHz ? droppedFrames(frames, refreshHz) : null };
 }
 
-/** A playing frame interval longer than this many display refreshes is a dropped frame. */
 export const DROP_REFRESHES = 1.5;
-/** This many dropped frames in a row is stutter a user sees, whatever the main thread's time. */
 export const SUSTAINED_DROPS = 3;
 
-/** Dropped frames over a playing window, in presentation order. */
 export function droppedFrames(frames, refreshHz) {
   const limit = DROP_REFRESHES * 1000 / refreshHz;
   let dropped = 0, run = 0, longest = 0;
@@ -366,8 +299,6 @@ export function droppedFrames(frames, refreshHz) {
     pass: frames.length > 0 && longest < SUSTAINED_DROPS };
 }
 
-/** Per widget that reports the hour it shows, over the playing frames of [from, to]: how many hours its values
- * lagged the clock's hour (no values counts as never current). */
 export function freshness(records, from, to, since = -Infinity) {
   const ticks = records.filter(record => record.t === 'tick').sort((a, b) => a.at - b.at);
   const frames = records.filter(record => record.t === 'frame' && record.playing && record.at >= from && record.at <= to);
@@ -394,7 +325,6 @@ export function freshness(records, from, to, since = -Infinity) {
   return { frames: frames.length, widgets };
 }
 
-/** Records the perf logs dropped, by source: any loss can hide a failure or a slow frame, so each fails the run. */
 export function losses(records) {
   return [...groupBy(records.filter(record => record.t === 'lost'), record => record.source ?? 'unknown')]
     .map(([source, list]) => ({ source, count: list.reduce((sum, record) => sum + (record.count ?? 0), 0), from: Math.min(...list.map(record => record.from ?? record.at)), to: Math.max(...list.map(record => record.to ?? record.at)) }));
@@ -414,7 +344,6 @@ export function failedReplies(records, finished = new Map()) {
   return { failures, shutdown };
 }
 
-/** Console output from our code: everything but the browser's own advice, which `cdp.mjs` already left out. */
 export const consoleFailures = messages => messages.map(message => ({ ...message, pass: false }));
 
 

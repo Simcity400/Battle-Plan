@@ -1,15 +1,3 @@
-//! A campaign's recording: one `<Campaign name>.battleplan` file holding every session of it
-//! ([`replay_columnar::container`]). Its world log's runs hold every
-//! table's hours as columns ([`crate::columnar_frames`]); its records section holds its sessions,
-//! branches, gaps, control records, recovery notes, where each run came from and where a
-//! capture's writer stopped ([`records`]); its facts section holds the game facts it carries.
-//!
-//! [`Replay`] opens one held on disk or in memory, reads its records and names each run's pages
-//! as [`BlockIndex`] entries; its hours are read through [`read`]. It opens the newest saved
-//! revision: hours appended since, which wait to be saved or discarded, are opened only on
-//! purpose ([`Open::Newest`]), by the recorder and by whoever goes on from its last hour.
-//! [`writer`] creates one and adds to it.
-
 use crate::{
     BranchId, Hour, SessionId,
     branches::{BranchReason, BranchStart, BranchTracker, Gap},
@@ -45,13 +33,9 @@ pub use collect::records_of;
 pub use read::{HourCursor, Parallel};
 pub use records::{CaptureStop, Cursor, Records, RecoveryNote};
 
-/// Starts a session's facts file ([`encode_session_facts`]).
 pub const SESSION_FACTS_MAGIC: &[u8; 4] = b"H4SF";
-/// A session folder's facts file, which its recorder writes once the facts are gathered.
 pub const SESSION_FACTS_FILE: &str = "facts.bin";
 
-/// A session's game facts as its recorder gathered them, for the recordings its spools become:
-/// the identity they are the facts of, then the pack.
 pub fn encode_session_facts(identity: &Identity, pack: &[u8]) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::new();
     identity.encode(&mut encoded)?;
@@ -62,7 +46,6 @@ pub fn encode_session_facts(identity: &Identity, pack: &[u8]) -> io::Result<Vec<
     Ok(out)
 }
 
-/// The pack of a session's facts file, when they are `identity`'s facts.
 pub fn session_facts_for<'a>(bytes: &'a [u8], identity: &Identity) -> Option<&'a [u8]> {
     let mut input = Decoder::new(bytes.strip_prefix(SESSION_FACTS_MAGIC)?);
     let encoded = input.bytes().ok()?;
@@ -72,8 +55,6 @@ pub fn session_facts_for<'a>(bytes: &'a [u8], identity: &Identity) -> Option<&'a
     (recorded.same_content(identity) && !pack.is_empty()).then_some(pack)
 }
 
-/// Where the pack of the session facts file `file` lies, its offset and length, when they are
-/// `identity`'s facts: only the file's head is read, never the pack.
 pub fn session_facts_place(file: &mut std::fs::File, identity: &Identity) -> io::Result<Option<(u64, u64)>> {
     use std::io::{Read, Seek, SeekFrom};
     let total = file.metadata()?.len();
@@ -84,7 +65,6 @@ pub fn session_facts_place(file: &mut std::fs::File, identity: &Identity) -> io:
     }
     let length = u64::from(u32::from_le_bytes(head[4..].try_into().expect("four bytes")));
     let offset = 8 + length;
-    // An identity is a few hundred bytes; a longer head is not a facts file.
     if length > 1 << 20 || offset >= total {
         return Ok(None);
     }
@@ -97,11 +77,8 @@ pub fn session_facts_place(file: &mut std::fs::File, identity: &Identity) -> io:
     Ok(recorded.same_content(identity).then_some((offset, total - offset)))
 }
 
-/// The magic an older recording's file starts with: rows beside native files, which this build
-/// refuses by name.
 const OLDER_MAGIC: &[u8; 4] = b"H4RP";
 
-/// An older layout, refused whole by name: readers show its text as the reason.
 #[derive(Debug)]
 struct OlderLayout(String);
 
@@ -113,15 +90,12 @@ impl std::fmt::Display for OlderLayout {
 
 impl std::error::Error for OlderLayout {}
 
-/// Whether `error` refuses a recording of an older layout ([`refuse_older`]).
 pub fn is_older_layout(error: &io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(|inner| inner.is::<OlderLayout>())
 }
 
-/// Refuses a file starting with `header` when it is not a recording this build reads, naming
-/// what it is.
 fn refuse_older(header: &[u8]) -> io::Result<()> {
     if header.starts_with(OLDER_MAGIC) {
         let format = header
@@ -156,21 +130,16 @@ fn refuse_older(header: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// One page of one run: a block of up to [`envelope::UNIT_ORDINALS`] consecutive hours of one
-/// branch, the unit hours are read by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockIndex {
     pub branch: BranchId,
     pub first_hour: Hour,
     pub last_hour: Hour,
-    /// The run and its page.
     pub run: u32,
     pub page: u32,
 }
 
 impl BlockIndex {
-    /// Its place in the recording, run and page, as one number: what names the block among
-    /// every revision's blocks.
     pub fn key(&self) -> u64 {
         (u64::from(self.run) << 32) | u64::from(self.page)
     }
@@ -189,70 +158,51 @@ pub enum SeekResult {
 pub use crate::columnar_frames::{NotSaved, Open, is_not_saved};
 pub use replay_columnar::container::Revision;
 
-/// A campaign's recording, opened: its records, its runs' pages and its revision.
 pub struct Replay {
     recording: Recording,
     path: Option<PathBuf>,
-    /// The row format its hours are recorded in: this build's or an earlier proven one.
     pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
     pub identity: Identity,
-    /// Every session's capture mode: one per file.
     pub capture_mode: CaptureMode,
     pub sessions: Vec<SessionStart>,
     pub branches: Vec<BranchStart>,
     pub gaps: Vec<Gap>,
     pub controls: Vec<ControlRecord>,
     pub recovery_notes: Vec<RecoveryNote>,
-    /// How much of each capture's records it holds, as each revision noted it: a capture's
-    /// last entry stands ([`Self::cursor`]).
     pub cursors: Vec<Cursor>,
     pub stops: Vec<CaptureStop>,
-    /// Read-time damage diagnostics; never written into the recording.
     pub warnings: Vec<String>,
     pub damaged_parts: usize,
     pub damaged_range: Option<(Hour, Hour)>,
-    /// Every readable run's pages, run by run.
     pub index: Vec<BlockIndex>,
-    /// The game facts packs it carries, oldest first.
     pub fact_packs: Vec<Extent>,
-    /// Each entry of `index`'s segment in the recording's.
     segments: Vec<u32>,
     revision: Revision,
-    /// The newest saved revision: its own, or the one its root names.
     saved: Option<Revision>,
     partial_control: Option<usize>,
-    /// Its segments, when read as timelines ([`Self::into_timelines`]).
     physical: Option<Box<timelines::Physical>>,
-    /// The threads its frames are built on; rayon's own without one ([`Self::set_pool`]).
     pool: Option<std::sync::Arc<crate::columnar_frames::Pool>>,
 }
 
 impl Replay {
-    /// The recording held in memory, at its newest saved revision.
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
         Self::open_as(bytes, Open::Saved)
     }
 
-    /// The recording held in memory, at the revision `open` names.
     pub fn open_as(bytes: Vec<u8>, open: Open) -> io::Result<Self> {
         refuse_older(&bytes[..bytes.len().min(envelope::HEADER_BYTES)])?;
         Self::read(Recording::open_as(bytes, open)?, None)
     }
 
-    /// The recording at `path` at its newest saved revision, read from the file as it is
-    /// needed. One with no saved revision is refused ([`is_not_saved`]).
     pub fn open_path(path: &Path) -> io::Result<Self> {
         Self::open_path_as(path, Open::Saved)
     }
 
-    /// The recording at `path` at its newest revision, saved or not: what its recorder goes on
-    /// from.
     pub fn open_newest(path: &Path) -> io::Result<Self> {
         Self::open_path_as(path, Open::Newest)
     }
 
-    /// The recording at `path` at the revision `open` names.
     pub fn open_path_as(path: &Path, open: Open) -> io::Result<Self> {
         let mut header = [0; envelope::HEADER_BYTES];
         let mut file = File::open(path)?;
@@ -392,17 +342,14 @@ impl Replay {
         })
     }
 
-    /// Builds its frames on `pool`'s threads from now on, or on rayon's own without one.
     pub fn set_pool(&mut self, pool: Option<std::sync::Arc<crate::columnar_frames::Pool>>) {
         self.pool = pool;
     }
 
-    /// The columnar recording its hours are read from.
     pub fn recording(&self) -> &Recording {
         &self.recording
     }
 
-    /// How much of capture `capture` made in `source` it holds; none when it holds none of it.
     pub fn cursor(&self, source: &str, capture: u32) -> Option<&Cursor> {
         self.cursors
             .iter()
@@ -410,7 +357,6 @@ impl Replay {
             .find(|cursor| cursor.source == source && cursor.capture == capture)
     }
 
-    /// The file it was opened from; none when held in memory.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
@@ -419,19 +365,13 @@ impl Replay {
         self.path.is_some()
     }
 
-    /// The bytes of a recording opened from memory.
-    ///
-    /// # Panics
-    /// When it was opened from its file.
     pub fn bytes(&self) -> &[u8] {
         self.recording
             .memory()
             .expect("a recording read from its file holds no bytes in memory")
     }
 
-    /// `block`'s segment in [`Recording::segments`].
     pub(crate) fn segment_of(&self, block: &BlockIndex) -> io::Result<usize> {
-        // The recording's pages list runs in order, each run's pages in order.
         let (pages, segments) = match &self.physical {
             Some(physical) => (&physical.index, &physical.segments),
             None => (&self.index, &self.segments),
@@ -442,34 +382,26 @@ impl Replay {
         Ok(segments[position] as usize)
     }
 
-    /// Whether blocks `a` and `b` lie in one segment: a walk from its restart reads both.
     pub fn same_segment(&self, a: &BlockIndex, b: &BlockIndex) -> bool {
         matches!((self.segment_of(a), self.segment_of(b)), (Ok(a), Ok(b)) if a == b)
     }
 
-    /// The revision opened.
     pub fn revision(&self) -> Revision {
         self.revision
     }
 
-    /// The newest saved revision: the one opened, or the one before it that it names. None
-    /// while no revision of the recording is saved.
     pub fn saved_revision(&self) -> Option<Revision> {
         self.saved
     }
 
-    /// Whether the revision opened is not saved: hours wait to be saved or discarded.
     pub fn unsaved(&self) -> bool {
         self.saved != Some(self.revision)
     }
 
-    /// Whether `other` is this recording at this same revision.
     pub fn same_revision(&self, other: &Self) -> bool {
         self.campaign_id == other.campaign_id && self.revision == other.revision
     }
 
-    /// Whether the recording holds `revision`: this one, or for one read from its file, a
-    /// revision the file still ends one of its footers at.
     pub fn contains_revision(&self, revision: Revision) -> io::Result<bool> {
         if revision == self.revision {
             return Ok(true);
@@ -480,7 +412,6 @@ impl Replay {
         }
     }
 
-    /// The file's length through the revision opened.
     pub fn saved_length(&self) -> u64 {
         self.revision.length
     }
@@ -494,8 +425,6 @@ impl Replay {
         self.partial().is_some()
     }
 
-    /// The recorded event losses on `branch`, as the reads each lies between
-    /// (`ControlRecord::EventLoss`): `(after_hour, hour)`.
     pub fn event_losses(&self, branch: BranchId) -> impl Iterator<Item = (Hour, Hour)> + '_ {
         self.controls
             .iter()
@@ -510,8 +439,6 @@ impl Replay {
             })
     }
 
-    /// Opening withheld records or found structural or digest damage. Recorded partial
-    /// captures and spool recovery notes alone are not damage here.
     pub fn needed_recovery(&self) -> bool {
         !self.warnings.is_empty()
     }
@@ -532,12 +459,10 @@ impl Replay {
             })
     }
 
-    /// Why each table is withheld in this recording's format: added since, or read otherwise.
     pub fn compatibility_gaps(&self) -> Vec<String> {
         self.recording.withheld().iter().map(|(_, reason)| reason.clone()).collect()
     }
 
-    /// Game facts pack `at` ([`Self::fact_packs`]), checked against its digest.
     pub fn facts(&self, at: usize) -> io::Result<Vec<u8>> {
         let extent = self
             .fact_packs
@@ -546,13 +471,10 @@ impl Replay {
         self.recording.stored_bytes(extent)
     }
 
-    /// Checks game facts pack `at` against its digest, read whole once, before its bytes are
-    /// read in parts ([`Self::read_facts`]).
     pub fn verify_facts(&self, at: usize) -> io::Result<()> {
         self.facts(at).map(drop)
     }
 
-    /// `out.len()` bytes of game facts pack `at` from `offset` within it.
     pub fn read_facts(&self, at: usize, offset: u64, out: &mut [u8]) -> io::Result<()> {
         let extent = self
             .fact_packs
@@ -561,7 +483,6 @@ impl Replay {
         self.recording.stored_at(extent, offset, out)
     }
 
-    /// The newest game facts pack, when it carries one.
     pub fn newest_facts(&self) -> io::Result<Option<Vec<u8>>> {
         match self.fact_packs.len() {
             0 => Ok(None),
@@ -569,7 +490,6 @@ impl Replay {
         }
     }
 
-    /// Why `hour` of `branch` has no hour, as a seek of it names the gap.
     pub fn gap_reason(&self, branch: BranchId, hour: Hour) -> io::Result<String> {
         let mut reason = String::new();
         let stopped = self.stops.iter().filter(|stop| {
@@ -596,7 +516,6 @@ impl Replay {
         }
     }
 
-    /// Every hour recorded of `branch`, in order: each run's hours are consecutive.
     pub fn recorded_hours(&self, branch: BranchId) -> io::Result<Vec<Hour>> {
         let mut hours = Vec::new();
         for block in self.index.iter().filter(|block| block.branch == branch) {
@@ -608,21 +527,17 @@ impl Replay {
         Ok(hours)
     }
 
-    /// The first and last recorded hours across every branch; none when it records none.
     pub fn hour_span(&self) -> Option<(Hour, Hour)> {
         let first = self.index.iter().map(|block| block.first_hour).min()?;
         let last = self.index.iter().map(|block| block.last_hour).max()?;
         Some((first, last))
     }
 
-    /// Exact prior history, without recording bytes or decoded rows: every branch's hours and
-    /// each session's tail, for a collector or recorder to go on from.
     pub fn into_history(self) -> io::Result<CampaignHistory> {
         if self.physical.is_some() {
             return Err(invalid_static("a recording read as timelines holds no recorder history"));
         }
         self.require_undamaged()?;
-        // Each block's last Clock row, which names its load.
         let mut signals = vec![None; self.index.len()];
         let blocks: Vec<_> = self.index.iter().collect();
         let mut at = 0;
@@ -655,34 +570,27 @@ impl Replay {
         )
     }
 
-    /// The partial notice of the recording at `path`, without walking it.
     pub fn read_partial(path: &Path) -> io::Result<Option<ControlRecord>> {
         Ok(Summary::read(path)?.partial)
     }
 
-    /// The campaign UUID the recording at `path` names; none for another identity.
     pub fn read_campaign_uuid(path: &Path) -> io::Result<Option<Vec<u8>>> {
         let id = Self::read_campaign_id(path)?;
         Ok(crate::identity::is_campaign_uuid(&id).then_some(id))
     }
 
-    /// The campaign id the recording at `path` names, of whatever identity: every revision's,
-    /// so a recording not saved yet names it too.
     pub fn read_campaign_id(path: &Path) -> io::Result<Vec<u8>> {
         Ok(Summary::read_as(path, Open::Newest)?.campaign_id)
     }
 
-    /// The first and last recorded hours across every branch; none for a recording of none.
     pub fn read_hour_span(path: &Path) -> io::Result<Option<(Hour, Hour)>> {
         Ok(Summary::read(path)?.span)
     }
 
-    /// The capture mode of the recording at `path`: every revision's.
     pub fn read_capture_mode(path: &Path) -> io::Result<CaptureMode> {
         Ok(Summary::read_as(path, Open::Newest)?.capture_mode)
     }
 
-    /// The ids of the sessions the recording at `path` holds, without walking it.
     pub fn read_session_ids(path: &Path) -> io::Result<Vec<SessionId>> {
         Ok(Summary::read(path)?
             .sessions
@@ -692,7 +600,6 @@ impl Replay {
     }
 }
 
-/// What a recording's root and records say, read without its pages: what lists and names it.
 pub struct Summary {
     pub campaign_id: Vec<u8>,
     pub capture_mode: CaptureMode,
@@ -703,12 +610,10 @@ pub struct Summary {
 }
 
 impl Summary {
-    /// Of the newest saved revision of the recording at `path`.
     pub fn read(path: &Path) -> io::Result<Self> {
         Self::read_as(path, Open::Saved)
     }
 
-    /// Of the revision of the recording at `path` that `open` names.
     pub fn read_as(path: &Path, open: Open) -> io::Result<Self> {
         Self::read_from_as(File::open(path)?, open)
     }
@@ -760,7 +665,6 @@ impl Summary {
     }
 }
 
-/// Reads as much of `header` as the file holds from its start.
 fn read_prefix(input: &mut impl Read, header: &mut [u8]) -> io::Result<usize> {
     let mut held = 0;
     while held < header.len() {
@@ -779,13 +683,10 @@ pub(crate) fn decode_identity(content: &[u8]) -> io::Result<Identity> {
     Ok(identity)
 }
 
-/// The digest the footer of `recording`'s last revision names.
 fn root_digest(recording: &Recording) -> io::Result<[u8; 16]> {
     recording.root_footer_digest()
 }
 
-/// Exact validated prior hours and provenance, without recording bytes or decoded rows.
-/// Build this, and any tracker made from it, before starting a bounded capture queue.
 #[derive(Clone, Debug)]
 pub struct CampaignHistory {
     pub campaign_id: Vec<u8>,
@@ -798,12 +699,10 @@ pub struct CampaignHistory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedBranchHistory {
     pub start: BranchStart,
-    /// Actual recorded hours only. Holes between runs are never filled.
     pub hours: Vec<Hour>,
     pub last_missing_hour: Option<Hour>,
 }
 
-/// A process's latest hour or explicitly witnessed command-only phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionTail {
     pub branch: BranchId,
@@ -837,8 +736,6 @@ impl CampaignHistory {
             .map(|(_, tail)| *tail)
     }
 
-    /// Seed exact history and select a new process session or resume the same process.
-    /// Same-process reattachment requires its complete saved session metadata to match.
     pub fn tracker_for(&self, session: &SessionStart) -> io::Result<BranchTracker> {
         if !self.identity.same_content(&session.identity) {
             return Err(invalid_static(
@@ -883,7 +780,6 @@ impl CampaignHistory {
     }
 }
 
-/// The load the Clock row of `frame` names, when it holds one.
 fn clock_signal(frame: &DecodedFrame) -> Option<i64> {
     match &*frame.tables[crate::rows::TableId::Clock.index()] {
         crate::frame::TableView::Complete(crate::rows::TableRows::Clock(rows)) => {
@@ -894,9 +790,6 @@ fn clock_signal(frame: &DecodedFrame) -> Option<i64> {
 }
 
 impl CampaignHistory {
-    /// The history spool `segments` of campaign `campaign_id` hold: their sessions and branches,
-    /// every recorded hour of each branch, and each session's tail, its last hour's load from
-    /// its Clock row.
     pub fn from_spool(
         campaign_id: &[u8],
         segments: &[(u32, crate::spool::Recovery<crate::spool::Recovered>)],
@@ -951,8 +844,6 @@ impl CampaignHistory {
     }
 }
 
-/// Every branch's hours and each session's tail from `spans` (branch, first hour, last hour, and
-/// the last hour's load), in recording order, and the records they go with.
 fn build_history(
     campaign_id: Vec<u8>,
     identity: Identity,
@@ -1013,7 +904,6 @@ fn build_history(
             tails.push((history.start.session, tail));
         }
     }
-    // The latest matching witness stands only where the last recorded hour has no Clock row.
     for control in controls.iter().rev() {
         if let ControlRecord::ClockWitness {
             session,
@@ -1085,8 +975,6 @@ fn build_history(
     })
 }
 
-/// Checks the records against one another: a damaged gap or control list is withheld with a
-/// warning, any other inconsistency refuses the recording.
 #[allow(clippy::too_many_arguments)]
 fn validate_records(
     identity: &Identity,

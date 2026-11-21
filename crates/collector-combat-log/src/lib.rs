@@ -1,4 +1,3 @@
-//! Combat log capture: the kept combat log rows of the loaded session and the observer of native log pruning. The host owns dispatch, loans and table assembly.
 
 use collector_certificates::slicing;
 use collector_extended_support::outcomes::failed_capture;
@@ -23,7 +22,6 @@ pub mod history_reducer;
 mod history_projection;
 pub mod observer_projection;
 
-/// A hook site located with the 16 bytes its hook replaces, refused like a differing sentinel.
 fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)
         .and_then(|code| code.sentinel::<16>().map(drop))

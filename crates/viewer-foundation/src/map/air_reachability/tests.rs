@@ -19,8 +19,6 @@ const MIXED: RegionFractions = RegionFractions {
     sea_raw: 50_000,
 };
 
-/// Every table complete and empty but Countries, whose slots 1..=20 own
-/// their slot number as reference.
 fn empty_frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 0,
@@ -127,7 +125,6 @@ impl PortFixture {
             base,
             host_owners: BTreeMap::new(),
             provinces: vec![province(100, 7, 2), province(412, 8, 13)],
-            // Hash membership counts even at level zero.
             naval_bases: vec![NavalBaseRow {
                 province: 412,
                 country: 1,
@@ -158,7 +155,6 @@ impl PortFixture {
         }
     }
 
-    /// Country 1's volunteer hosts, in vector order.
     fn volunteer(&mut self, hosts: &[u32]) {
         self.volunteer_hosts = hosts
             .iter()
@@ -221,7 +217,6 @@ impl PortFixture {
 #[test]
 fn port_strike_uses_base_hash_controller_and_naval_logical_owner() {
     let mut fixture = PortFixture::new();
-    // The reached province need not be in this wing's current region.
     assert_eq!(fixture.admit(&[412]), Some(true));
     fixture.naval_bases.clear();
     assert_eq!(fixture.admit(&[412]), Some(false));
@@ -292,21 +287,16 @@ fn tactical_target_needs_a_hostile_primary_country_and_the_attached_group() {
         attached_orders_group: Some(0),
         ..fixture.wing.clone()
     };
-    // The defender's primary alias 13 is at war with country 1.
     assert_eq!(admit(&frame, &wing, &[412]), Some(true));
     assert_eq!(admit(&frame, &wing, &[100]), Some(false));
-    // An attached group must hold one of the combat's armies.
     wing.attached_orders_group = Some(army(7));
     assert_eq!(admit(&frame, &wing, &[412]), Some(false));
     wing.attached_orders_group = Some(army(8));
     assert_eq!(admit(&frame, &wing, &[412]), Some(true));
-    // A group that did not authenticate cannot be decided, unless no
-    // hostile combat is reached.
     wing.attached_orders_group = None;
     assert_eq!(admit(&frame, &wing, &[412]), None);
     assert_eq!(admit(&frame, &wing, &[100]), Some(false));
     wing.attached_orders_group = Some(army(8));
-    // Secondary roster owners are not tested.
     table::<tables::LandCombatSides>(&mut frame)[0] = LandCombatSideRow {
         combat: 5,
         attacker_primary: vec![2],
@@ -314,11 +304,9 @@ fn tactical_target_needs_a_hostile_primary_country_and_the_attached_group() {
         ..Default::default()
     };
     assert_eq!(admit(&frame, &wing, &[412]), Some(false));
-    // An unknown group does not matter without a hostile combat.
     wing.attached_orders_group = None;
     assert_eq!(admit(&frame, &wing, &[412]), Some(false));
     wing.attached_orders_group = Some(army(8));
-    // A combat without its side row cannot be decided.
     table::<tables::LandCombatSides>(&mut frame).clear();
     assert_eq!(admit(&frame, &wing, &[412]), None);
     truncate::<tables::LandCombats>(&mut frame);
@@ -330,11 +318,8 @@ fn port_strike_mission_country_follows_volunteer_base_controller() {
     let mut fixture = PortFixture::new();
     fixture.wars = vec![war(2, 3)];
     assert_eq!(fixture.admit(&[412]), Some(false));
-    // Host alias 12 matches base controller 2; target alias 13 and
-    // task-force owner 3 match the same war.
     fixture.volunteer(&[12]);
     assert_eq!(fixture.admit(&[412]), Some(true));
-    // A state base without a province has no native controller: refused.
     fixture.base.province = None;
     fixture.air_bases[0].province = None;
     assert_eq!(fixture.admit(&[412]), None);
@@ -358,7 +343,6 @@ fn base_controller_needs_the_province_row_in_the_base_state() {
     assert_eq!(fixture.resolve(), None);
     fixture.provinces.remove(0);
     assert_eq!(fixture.resolve(), None);
-    // Without hosts no base controller is consulted.
     fixture.volunteer(&[]);
     assert_eq!(fixture.resolve(), Some(1));
 }
@@ -380,7 +364,6 @@ fn viewer_relation_gates_on_the_mission_countrys_own_reference() {
     let fixture = PortFixture::new();
     let mut frame = fixture.frame();
     assert_eq!(fixture.admit_in(&frame, &[412]), Some(true));
-    // The country's own reference is tested, rather than the wing's raw reference.
     table::<tables::Countries>(&mut frame)[0].id = 0x8000_0001;
     assert_eq!(fixture.admit_in(&frame, &[412]), Some(false));
     truncate::<tables::Countries>(&mut frame);
@@ -402,8 +385,6 @@ fn carrier_mission_country_uses_host_task_force_roster_owner() {
     assert_eq!(fixture.admit(&[412]), Some(true));
     fixture.host_owners.insert(11, 1);
     assert_eq!(fixture.admit(&[412]), Some(false));
-    // An unresolved host is the null controller: a zero host matches it,
-    // and its nonpositive raw reference falls back to the owner.
     fixture.host_owners.clear();
     fixture.volunteer(&[0, 2]);
     assert_eq!(fixture.resolve(), Some(1));
@@ -429,7 +410,6 @@ fn a_null_host_task_force_refuses_only_a_wing_that_needs_its_controller() {
         let mission = MissionCountrySources::read(&frame, &fixture.links, &registry).unwrap();
         mission.resolve(&fixture.wing).map(|country| country.slot)
     };
-    // Without volunteer hosts the controller is never read.
     assert_eq!(resolve(&fixture), Some(1));
     fixture.volunteer(&[2]);
     assert_eq!(resolve(&fixture), None);
@@ -450,13 +430,10 @@ fn mission_country_tries_transfer_base_after_ineligible_pool_base() {
     fixture.links.insert(4, 4);
     fixture.volunteer(&[4]);
     assert_eq!(fixture.resolve(), Some(4));
-    // An eligible pool controller stops the search; its negative raw
-    // reference falls back to the owner, not to the transfer base.
     fixture.provinces[0].controller = 0x8000_0002;
     fixture.links.insert(0x8000_0002, 2);
     fixture.volunteer(&[2, 4]);
     assert_eq!(fixture.resolve(), Some(1));
-    // So does a zero host matching the pool base's zero controller.
     fixture.provinces[0].controller = 0;
     fixture.volunteer(&[0, 4]);
     assert_eq!(fixture.resolve(), Some(1));
@@ -476,7 +453,6 @@ fn mission_country_reader_does_not_require_port_or_war_tables() {
     };
     set::<tables::Provinces>(&mut frame, fixture.provinces.clone());
     set::<tables::VolunteerHosts>(&mut frame, Vec::new());
-    // Wrong row variants: reading any of them would be a schema error.
     for id in [
         TableId::NavalBases,
         TableId::TaskForces,
@@ -510,7 +486,6 @@ fn port_wars_join_aliases_and_a_complete_war_census_proves_peace() {
     fixture.volunteer(&[12]);
     let mut frame = fixture.frame();
     assert_eq!(fixture.admit_in(&frame, &[412]), Some(true));
-    // RelationTuples is no witness either way.
     *frame.tables[TableId::RelationTuples.index()] = TableView::Unavailable {
         reason: "tuple census absent".into(),
     };
@@ -638,8 +613,6 @@ fn land_scout_uses_state_controller_and_directional_attache() {
         ),
         TargetAdmission::Allowed
     );
-    // The wing country's attache slot toward the controller makes it
-    // allied for fog, which excludes the state even at war.
     let attache = |country, target_index| RelationLinkRow {
         country,
         target_index,
@@ -673,7 +646,6 @@ fn land_scout_air_role_accepts_foreign_neutral_but_not_same_state() {
     assert_eq!(admit(&frame, 1 << 18), Some(true));
     let frame = scout_frame(1);
     assert_eq!(admit(&frame, 1 << 18), Some(false));
-    // A complete war census proves peace; without it only bit 18 decides.
     let mut frame = scout_frame(2);
     truncate::<tables::RelationTuples>(&mut frame);
     assert_eq!(admit(&frame, 0), Some(false));
@@ -802,9 +774,8 @@ fn naval_combat_target_needs_war_and_self_disclosed_active_detected_member() {
         TargetAdmission::Allowed
     );
     assert_eq!(admit(&frame, &[901]), Some(false));
-    naval_member(&mut frame).state = 4; // On the way is outside native mask 0x0b.
+    naval_member(&mut frame).state = 4;
     assert_eq!(admit(&frame, &[900]), Some(false));
-    // Undecided occupant arms leave a negative combat arm unknown.
     assert!(matches!(
         target_admission(1 << 4, 1, Some(SEA), Some(0), naval(admit(&frame, &[900]))),
         TargetAdmission::Unknown(_)
@@ -812,7 +783,6 @@ fn naval_combat_target_needs_war_and_self_disclosed_active_detected_member() {
     naval_member(&mut frame).state = 1;
     naval_member(&mut frame).detection_state = 0;
     assert_eq!(admit(&frame, &[900]), Some(false));
-    // An unlinked participant beside one at war leaves nothing undecided.
     table::<tables::NavalCombatDetails>(&mut frame)[0].sides[0]
         .summary
         .countries = vec![99, 3];
@@ -825,7 +795,7 @@ fn naval_combat_target_needs_war_and_self_disclosed_active_detected_member() {
         .summary
         .countries = vec![3];
     naval_member(&mut frame).detection_state = -1;
-    naval_member(&mut frame).member_source = 1; // Retired member vector.
+    naval_member(&mut frame).member_source = 1;
     assert_eq!(admit(&frame, &[900]), Some(false));
     naval_member(&mut frame).member_source = 0;
     naval_member(&mut frame).group_index = u32::MAX;
@@ -854,8 +824,6 @@ fn naval_combat_primary_countries_and_volunteer_mission_country_are_distinct() {
     naval_side(&mut frame).clear();
     assert_eq!(admit(&frame), Some(false));
 
-    // A faction partner shares visibility unless the one war census
-    // vetoes it.
     *naval_side(&mut frame) = vec![2];
     assert_eq!(admit(&frame), Some(false));
     let member = |country| FactionMemberRow {
@@ -870,7 +838,6 @@ fn naval_combat_primary_countries_and_volunteer_mission_country_are_distinct() {
     set::<tables::FactionMembers>(&mut frame, Vec::new());
     set::<tables::WarRelations>(&mut frame, vec![war(1, 3)]);
 
-    // The mission country becomes the volunteer base controller 2.
     *naval_side(&mut frame) = vec![12];
     set::<tables::WarRelations>(&mut frame, vec![war(2, 13)]);
     set::<tables::VolunteerHosts>(
@@ -1081,7 +1048,6 @@ fn task_force_target_needs_sea_location_no_combat_and_war() {
         let sources = NavalOccupantSources::read(frame, &wars, &kinds).unwrap();
         sources.admit(mission.resolve(&wing).unwrap(), &[900])
     };
-    // The task force is also a mixed occupant, not a railway gun.
     assert_eq!(
         admit(&frame),
         NavalOccupants {
@@ -1110,7 +1076,6 @@ fn task_force_target_needs_sea_location_no_combat_and_war() {
     table::<tables::TaskForces>(&mut frame)[0].combat_references = 0;
     table::<tables::TaskForces>(&mut frame)[0].logical_owner = 2;
     assert_eq!(admit(&frame).task_force, Some(false));
-    // Without a complete war census silence does not prove peace.
     truncate::<tables::WarRelations>(&mut frame);
     assert_eq!(admit(&frame).task_force, None);
     truncate::<tables::TaskForces>(&mut frame);
@@ -1131,7 +1096,6 @@ fn embarked_target_preserves_unknown_and_counts_railway_guns() {
         sources.admit(mission.resolve(&wing).unwrap(), &[900])
     };
     assert_eq!(admit(&frame, &kinds).embarked, Some(true));
-    // Neither a division nor a task force: an unrecorded railway gun.
     table::<tables::ProvinceUnitOrder>(&mut frame)[0].mixed = vec![77];
     let occupants = admit(&frame, &kinds);
     assert_eq!(
@@ -1160,8 +1124,6 @@ fn embarked_target_preserves_unknown_and_counts_railway_guns() {
     assert_eq!(admit(&frame, &BTreeMap::new()), NavalOccupants::default());
     truncate::<tables::DivisionMovement>(&mut frame);
     assert_eq!(admit(&frame, &kinds).embarked, None);
-    // An undecided combat or occupant arm is not the railway-gun gap,
-    // but the railway-gun arm stays undecided beside it.
     let TargetAdmission::Unknown(causes) =
         target_admission(1 << 4, 1, Some(SEA), Some(0), TargetPredicates::default())
     else {
@@ -1169,7 +1131,6 @@ fn embarked_target_preserves_unknown_and_counts_railway_guns() {
     };
     assert!(!causes.railway_gun_only());
     assert!(causes.iter().eq([Cause::Naval, Cause::NavalRailwayGun]));
-    // A proved arm leaves only the region fraction undecided.
     let TargetAdmission::Unknown(causes) = target_admission(
         1 << 4,
         1,
@@ -1245,11 +1206,8 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
         sources.admit(mission.resolve(&wing).unwrap(), 7, reached)
     };
     let admit = |frame: &DecodedFrame, reached: &[u32]| full(frame, reached).found;
-    // Province 401 is outside region 7 but belongs to its state 7.
     assert_eq!(admit(&frame, &[401]), Some(true));
     assert_eq!(admit(&frame, &[900]), Some(false));
-    // An undecided state controller does not stop the province
-    // controller's test; a proved peace there decides the province.
     table::<tables::States>(&mut frame)[0].controller = 99;
     assert_eq!(admit(&frame, &[401]), None);
     table::<tables::Provinces>(&mut frame)[2].controller = 1;
@@ -1271,7 +1229,6 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
             TargetAdmission::Allowed
         );
     }
-    // Target scanning uses the active vector rather than the full building list.
     table::<tables::ProvinceBuildings>(&mut frame)[0].active = false;
     assert_eq!(admit(&frame, &[401]), Some(false));
     const RAIL_WAY: u32 = cbuilding_template::RAIL_WAY_TOKEN;
@@ -1282,8 +1239,6 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
     assert_eq!(admit(&frame, &[401]), Some(false));
     table::<tables::ProvinceUnitOrder>(&mut frame)[0].mixed = vec![40];
     table::<tables::ProvinceBuildings>(&mut frame)[0].active = true;
-    // Every mixed occupant is an identified division or task force, proving that no railway gun
-    // qualifies.
     assert_eq!(admit(&frame, &[401]), Some(false));
     table::<tables::ProvinceUnitOrder>(&mut frame)[0].mixed = vec![77];
     assert_eq!(
@@ -1293,8 +1248,6 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
             railway_gun: true
         }
     );
-    // Other building types below level one are skipped regardless of occupants; no strategic target
-    // remains.
     table::<tables::ProvinceBuildings>(&mut frame)[0].building_type = OTHER;
     assert_eq!(admit(&frame, &[401]), Some(false));
     for bit in [3, 16] {
@@ -1344,9 +1297,7 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
     };
     set::<tables::StateBuildings>(&mut frame, vec![building]);
     assert_eq!(admit(&frame, &[401]), Some(true));
-    assert_eq!(admit(&frame, &[900]), Some(false)); // State buildings need a candidate.
-    // An active state rail way below level 1 would reach the railway arm
-    // with no province.
+    assert_eq!(admit(&frame, &[900]), Some(false));
     table::<tables::StateBuildings>(&mut frame)[0].level = 0;
     table::<tables::StateBuildings>(&mut frame)[0].building_type = RAIL_WAY;
     assert_eq!(
@@ -1356,7 +1307,6 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
             railway_gun: false
         }
     );
-    // Other types below level 1 are skipped in both vectors.
     table::<tables::StateBuildings>(&mut frame)[0].building_type = OTHER;
     table::<tables::ProvinceBuildings>(&mut frame)[0].building_type = OTHER;
     assert_eq!(admit(&frame, &[401]), Some(false));
@@ -1386,7 +1336,6 @@ fn railway_gun_omissions_need_every_undecided_branch_to_be_a_railway_arm() {
         both.iter()
             .eq([Cause::StrategicRailwayGun, Cause::NavalRailwayGun])
     );
-    // An undecided tactical branch is not a railway-gun omission.
     let mixed = causes((1 << 1) | (1 << 3));
     assert!(!mixed.railway_gun_only());
     assert_eq!(mixed.iter().count(), 2);
@@ -1445,8 +1394,6 @@ fn projected_air_definition_bits_preserve_native_map_predicates() {
 
 #[test]
 fn reached_count_gates_every_mask_and_stale_membership_is_used_as_is() {
-    // Province 412 can belong to an earlier region and target 913 can be
-    // stale independently; neither is part of 's checks.
     let none = TargetPredicates::default();
     assert_eq!(
         target_admission(1 << 10, 1, Some(LAND), Some(0), none),
@@ -1461,7 +1408,6 @@ fn reached_count_gates_every_mask_and_stale_membership_is_used_as_is() {
         admission(1 << 6, 0, Some(LAND), Some(0)),
         TargetAdmission::Blocked
     );
-    // The count is the gate; IDs are recorded only for membership scans.
     assert_eq!(
         admission(1 << 2, 1, Some(LAND), Some(0)),
         TargetAdmission::Allowed

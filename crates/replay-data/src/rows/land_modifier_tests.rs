@@ -1,5 +1,3 @@
-//! LandCombatDivisionModifiers' one row a combat member, and the side rows
-//! LandCombatModifiers keeps ([`compatibility::LAND_MODIFIER_ROWS_FORMAT`]).
 use super::*;
 use crate::format::FormatVersion;
 use crate::rows::compatibility::LAND_MODIFIER_ROWS_FORMAT;
@@ -25,7 +23,6 @@ fn entry(id: u32, value_a: i64, value_b: i64) -> CombatModifierValue {
 }
 
 
-/// An Opaque field: its payload's length, then the payload.
 fn opaque(value: &impl Value, output: &mut Vec<u8>) {
     let mut payload = Vec::new();
     Value::encode(value, &mut payload).unwrap();
@@ -35,8 +32,6 @@ fn opaque(value: &impl Value, output: &mut Vec<u8>) {
 
 #[test]
 fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() {
-    // Keyed (combat, side, ordinal) as LandCombatDivisions, which names the
-    // division, with its ordered entries; the row's own division only where no member row does.
     let table = TableId::LandCombatDivisionModifiers;
     assert_eq!(table.field_name(0), Some("entries"));
     assert_eq!(table.field_name(1), Some("division"));
@@ -55,7 +50,6 @@ fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() 
     for row in [
         row.clone(),
         member(0, Vec::new()),
-        // Repeated ids keep their order.
         member(
             3,
             vec![
@@ -100,9 +94,6 @@ fn one_division_whose_entries_change_stores_only_its_row() {
 
 #[test]
 fn land_combat_modifiers_keep_their_side_rows_framing_and_border_values() {
-    // A row a side with its border values; the list of every member's
-    // entries is a tombstone in the same Opaque position, so every container
-    // layout frames older rows exactly as it framed them before.
     let table = TableId::LandCombatModifiers;
     assert_eq!(table.field_name(0), Some("border_values"));
     assert_eq!(table.field_name(1), Some("divisions"));
@@ -118,7 +109,6 @@ fn land_combat_modifiers_keep_their_side_rows_framing_and_border_values() {
     let mut current = Vec::new();
     table.encode_key(row.key(), 0, &mut current).unwrap();
     opaque(&row.border_values, &mut current);
-    // Current writers store an empty list payload.
     current.extend_from_slice(&0_u32.to_le_bytes());
     assert_eq!(bytes, current);
     let mut input = Decoder::new(&bytes);
@@ -128,8 +118,6 @@ fn land_combat_modifiers_keep_their_side_rows_framing_and_border_values() {
     );
     input.finish().unwrap();
 
-    // The previous format's row, with its genuine member list: its border
-    // values decode and its list is discarded through its framing.
     let previous = FormatVersion::read(LAND_MODIFIER_ROWS_FORMAT - 1).unwrap();
     let mut old = Vec::new();
     table.encode_key(row.key(), 0, &mut old).unwrap();
@@ -156,8 +144,6 @@ fn land_combat_modifiers_keep_their_side_rows_framing_and_border_values() {
         row
     );
     input.finish().unwrap();
-    // The previous format keeps LandCombatModifiers whole and refuses only
-    // the member rows it did not record, by name.
     assert_eq!(previous.fields(table), 2);
     assert!(previous.table_refusal(table).is_none());
     let reason = previous

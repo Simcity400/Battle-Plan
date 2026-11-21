@@ -1,11 +1,3 @@
-//! Saved combat logs. The state writer emits a top-level `combat_log` for
-//! each country slot whose manager holds a group log; the manager writes
-//! its `tag` and each group log as `log`. A group log writes its `group`
-//! reference, then the four loss arrays in reason order as repeated
-//! `equipment`, `enemy_equipment`, `equipment_recovered`, manpower, template
-//! statistics and battle references. Each equipment month writes its pool as `equipment`
-//! (omitting zero amounts unless `allow_zero_entries`), its `reason` and
-//! `date`.
 
 use std::io;
 
@@ -16,7 +8,6 @@ use super::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Every saved `combat_log`, in save order (country slot order).
     pub countries: Vec<CountryLog>,
     pub battles: Vec<Battle>,
 }
@@ -49,18 +40,14 @@ pub struct BattleSide {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CountryLog {
-    /// The manager's country tag string, as the save writes it.
     pub tag: Vec<u8>,
     pub groups: Vec<GroupLog>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupLog {
-    /// The orders group's full typed reference (low u32 type, high u32 id).
     pub group: u64,
-    /// The four reason arrays' entries, in save order (reason 0 first).
     pub losses: Vec<Month>,
-    /// The recovered array's entries.
     pub recovered: Vec<Month>,
     pub enemy: Vec<Month>,
     pub manpower: Vec<ManpowerMonth>,
@@ -91,9 +78,7 @@ pub struct BattleReference {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Month {
-    /// The stored reason; the writer always emits it.
     pub reason: i32,
-    /// The raw game hour of the entry's first write.
     pub date: i32,
     pub pool: production::Pool,
 }
@@ -138,7 +123,6 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
 pub(crate) fn parse_battle_side(items: &[Item]) -> io::Result<BattleSide> {
     let mut modifiers = Vec::new();
     if let Some(values) = field(items, b"modifier_hours")? {
-        // Each native modifier-hour object writes an anonymous block.
         for entry in block(values)? {
             if entry.key.is_some() {
                 return Err(invalid("combat modifier hours has a named entry"));
@@ -452,9 +436,6 @@ mod tests {
         }
     }
 
-    /// `BATTLE_PLAN_COMBAT_LOG_SAVE=<text save> cargo test -p installed-content-save --lib
-    /// real_save_combat_logs -- --ignored --nocapture` parses a whole save and
-    /// summarises its combat logs.
     #[test]
     #[ignore]
     fn real_save_combat_logs() {
@@ -501,7 +482,6 @@ mod tests {
     }
 }
 
-/// The active observer serializer, before battle resolution publishes history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observer {
     pub side: BattleSide,

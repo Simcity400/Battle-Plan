@@ -4,7 +4,6 @@ import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import { breakdownVariants } from '../../charts/drill/drillState.ts';
 
 export const BREAKDOWN = { id: 'breakdown', label: 'Holder breakdown' };
-/** The parts race's settings, as a race only: one bar per holder split by source country. */
 export const OPTIONS: readonly OptionField[] = partsRaceOptions('source', BREAKDOWN.label)
   .filter(field => !['split', 'endLabels'].includes(field.key))
   .map(field => field.key === 'view' ? { ...field, default: 'race', visibleWhen: () => false } as OptionField

@@ -1,0 +1,9 @@
+# 1121. Use the authored playback anchor and the rows visible at the head
+
+Dashboard anchors carry a page-local monotonic timestamp. The viewer estimates the clock offset from the smallest observed gap between the authored timestamp and delivery, because any larger gap includes additional delivery delay. The first anchor supplies the initial estimate and has zero inferred age. Unstamped input also has zero inferred age. The running viewer can apply nonnegative excess delay without changing the authored position of a seek or paused anchor. The reload heuristic uses a large backward timestamp movement to distinguish resets from ordinary transport reordering.
+
+Live combat and hover reads come from the active map side's mirrors. If a reader lacks a table or declared fewer columns than its leaf needs, discard that answer, widen or add the declaration, and wait for a view that contains the inputs. Preparing weather temperatures precedes building the province hover text. The map's current visible hour bounds the live hover even if newer mirror frames are already prepared. An open reader can re-evaluate when its worker's result arrives, without requiring a new mouse event. Closing a hover releases its view and worker. Capture keeps the reader until capture ends so the saved frame can show the completed input or its refusal.
+
+The tests drive mirror steps and wait for named states using a deadline, independent of wall-clock sampling cadence. Tests that join a process-wide worker family serialize that join so each case observes its own workers. An undeclared table that is already mirrored can form the reader's view at the held hour on the next step.
+
+[Page clock](../../crates/viewer/src/page_clock.rs) · [Combat reader tests](../../crates/viewer/src/playhead_host/views/tests/combat.rs) · [Hover reader tests](../../crates/viewer/src/playhead_host/views/tests/hover.rs)

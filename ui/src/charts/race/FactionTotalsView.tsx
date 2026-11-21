@@ -38,24 +38,19 @@ import type { FactionLines } from '../../dashboard/territoryReplies';
 
 export interface FactionTotalsViewProps extends WidgetProps {
   options: Readonly<Record<string, OptionValue>>;
-  /** The declared series summed over each faction's members, and its measure. */
   kind: 'territory' | 'country-factories';
   measure: string;
   label: string;
   measureLabel: string;
   note?: string;
   format: (value: number) => string;
-  /** A group's members summed as one total instead of the factions (`aggregate`): its roster at an hour, every
-   * member and the hours it is one (none: the whole view), the hours its members were not read, and its name. */
   group?: GroupTotal;
-  /** One faction alone: a faction group shown as one total. */
   only?: string;
 }
 
 
 const NO_WARNINGS: string[] = [];
 const PARAMS = {};
-/** Both summed series hold whole numbers. */
 const DECIMALS = 0;
 
 function validateStates(value: unknown): SeriesStateReply {
@@ -64,9 +59,6 @@ function validateStates(value: unknown): SeriesStateReply {
   return reply;
 }
 
-/** Factions' sums of a country measure. The race: the rosters from the followed `faction-rosters` panel (pushed when a
- * membership changes), each faction's total the members' followed values added in the painter, never a commit; pinned
- * or on a range, the members' states asked for the hour. The lines: `faction-lines` over the chart's view. */
 export default function FactionTotalsView({ widget, runtime, active, onDiagnostics, options, kind, measure, label, measureLabel, note, format, group, only }: FactionTotalsViewProps) {
   const shown = useShownHour();
   const view: RaceView = options.view === 'lines' ? 'lines' : 'race';
@@ -82,10 +74,9 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const fixed = membership !== 'hour' || !!group;
   const rosters = useHeadProduct<FactionRostersReply>(runtime, widget, 'faction-rosters', track ? PARAMS : null,
     { active: active && view === 'race' && !fixed, validate: validateFactionRosters, structure: rosterRows });
-  // Rosters fixed over the view (at its end, or anyone ever a member) come from the recorded memberships, not the head.
   const groups = useCountryGroups(runtime, track, active && view === 'race' && fixed && !group);
   const held = useMemo(() => fixed && !group && groups.data ? fixedRosters(groups.data, membership as 'end' | 'ever', extent[0], extent[1]) : undefined,
-    [fixed, group, groups.data, membership, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+    [fixed, group, groups.data, membership, extent[0], extent[1]]);
   const moment = Math.floor((fixed ? null : rosters.hour) ?? playhead ?? extent[1]);
   const factionData = fixed ? held : rosters.data;
   const rosterData = useMemo(() => group ? group.rosterAt(moment) : only && factionData
@@ -98,18 +89,12 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const target = useMemo(() => ({ current: root }), [root]);
   const liveRef = useRef<ReturnType<typeof liveRace> | null>(null);
-  // Every country a roster has named since the race was followed: a country joining a faction it was in before, or
-  // leaving one, asks no member value again.
   const named = useStickyMembers(JSON.stringify([track?.branch.id, kind, measure, following]), members, stickyLimit(members.length));
   const query = useMemo(() => following && track && named.length
     ? { product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null,
-  // The reads' hour is not what a followed query follows.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   [following, track?.branch.id, family, named]);
   const memberWakes = useMemo(() => new Set<() => void>(), []);
   const followed = useFollow(store, query, target, () => { liveRef.current?.wake(); for (const wake of [...memberWakes]) wake(); }, answerShape);
-  // A new member asked under a new query: until its first answer lands, the last answered values stay painted (rows
-  // named, so the new member is absent for that step, never zero), never the members asked at the head.
   const answered = useRef<{ store: unknown; entry: FollowEntry } | null>(null);
   if (followed.entry && membersPushed(followed.status, followed.entry.answer)) answered.current = { store, entry: followed.entry };
   else if (followed.status !== 'pending' && followed.status !== 'followed') answered.current = null;
@@ -117,7 +102,6 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     : answered.current?.store === store ? answered.current?.entry ?? null : null;
   const pushed = valuesEntry !== null;
   const refused = pushed && valuesEntry?.answer?.kind === 'notRecorded' ? valuesEntry.answer.reason : null;
-  // Not followed (pinned, a range, or the service cannot), the members' states are asked for the hour.
   const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null, active, validateStates, track?.source);
@@ -126,7 +110,6 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     () => valuesEntry.version, !!group) : null,
   [valuesEntry, runtime.clock, axisOffset, rosterOf, named, slots, format, shown, group]);
   liveRef.current = live;
-  // The widget renders when the race's rows change, never because a value moved; an answer landing while paused wakes it.
   useHeadHour(runtime.clock, !!live, () => liveRef.current ? rowsOf(liveRef.current.entries()) : '', memberWakes);
   const race = useMemo(() => live ? { entries: live.entries(), unknown: 0 } : factionEntries(rosterData, stateValues(asked.data, moment), slots, moment, format),
     [live, rosterData, asked.data, slots, moment, format]);
@@ -150,7 +133,6 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   }, [group, factions, looks.colours, looks.displayNames, tokens.accent]);
   const summaries = useMemo(() => factionSummaries(lines.data && only ? { ...lines.data, lines: lines.data.lines.filter(line => line.id === only) } : lines.data, slots),
     [lines.data, slots, only]);
-  // The hour shown: the race's, painted each frame while followed (in its entries); otherwise the hour of what is read.
   useEffect(() => { if (!live) shown(view === 'race' ? asked.data ? moment : null : lines.data ? Math.floor(chartView?.to ?? moment) : null); });
   const lineRows = useMemo(() => [...summaries.keys()].map(id => ({ tag: id, runs: [] })), [summaries]);
   const liveHead = useMemo(() => widget.time.mode === 'follow' && track
@@ -169,8 +151,6 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   }, [diagnosticKey, onDiagnostics]);
 
   const error = view === 'race' ? (fixed ? groups.error : rosters.error) ?? (pushed ? undefined : asked.error) : lines.error;
-  // A faction's members: the breakdown a bar or a line opens, or the widget's view pinned (`show: members`) for the
-  // faction group it is pinned to; painted from the followed member values while the race follows the head.
   const pinnedMembers = options.show === 'members';
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, kind, measure, widget.countries]);
   const [drillState, setDrill] = useState<{ key: string; drill: DrillState }>({ key: resetKey, drill: CLOSED });
@@ -237,8 +217,6 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   </div>;
 }
 
-/** The members of faction `id` as a widget of their own: the same widget showing that faction's members, following
- * the head or pinned at `hour`. */
 export function pinFactionMembers(widget: WidgetSpec, track: BoundTrack, id: string, hour: number, follow: boolean, membership: GroupMembership): WidgetSpec {
   const pinned = pinnedBreakdown(widget, FACTION_MEMBERS, track.id);
   const offset = Math.floor(hour) - track.branch.firstHour;

@@ -1,9 +1,3 @@
-//! The capture frames and the two FIFOs they travel through. An hour that finds no frame
-//! free gets a new one instead of waiting; while the spool is behind, the frame builder
-//! thread keeps the next hour's frame and a spare built ahead, so that is rare. While the
-//! spool is stalled no frame is added and an hour that finds none free is dropped. Frames beyond
-//! the steady count are freed as the spool catches up. A frame index names a slot that never moves, so a
-//! queue, a fence or a stage holds only the index.
 
 use crate::{
     decode::DecodeJob,
@@ -20,15 +14,10 @@ use std::{
     },
 };
 
-/// The frames the pool returns to once the spool has caught up.
 pub(crate) const STEADY: usize = BUFFERS;
 
-/// The free frames kept ready while the spool is behind: the next hour's and a spare, so a frame
-/// built ahead has an hour's start on the hour that takes it.
 pub(crate) const AHEAD: usize = 2;
 
-/// What an hour does for its frame: take a free one, else grow one, unless the spool is
-/// stalled and takes none back, when the hour is dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HourFrame {
     Free(usize),
@@ -44,13 +33,10 @@ pub(crate) fn hour_frame(free: Option<usize>, spool_stalled: bool) -> HourFrame 
     }
 }
 
-/// Whether the frame builder builds a frame ahead: while fewer than [`AHEAD`] are free, unless
-/// the spool is stalled.
 pub(crate) fn builds_ahead(free: usize, spool_stalled: bool) -> bool {
     free < AHEAD && !spool_stalled
 }
 
-/// Segment `k` holds `STEADY << k` slots: more than an address space can hold frames for.
 const SEGMENTS: usize = 48;
 
 const VACANT: u8 = 0;
@@ -73,24 +59,18 @@ const STAGES: [FrameStage; 7] = [
     FrameStage::Recycle,
 ];
 
-/// One frame's place: its frame while it has one, and what travels with its index.
 pub(crate) struct Slot {
     pub(crate) frame: AtomicPtr<Captured>,
     pub(crate) completed: AtomicI64,
     pub(crate) callback_tail: AtomicI64,
-    /// The frame's measured bytes, stored by its exclusive holder: a gauge, never a delta.
     pub(crate) bytes: AtomicU64,
-    /// Counts the frames this slot has held, so per-frame state kept elsewhere sees a new one.
     pub(crate) generation: AtomicU64,
-    /// The capture sequence of the hour the frame holds, zero once recycled.
     pub(crate) fence: AtomicU64,
     stage: AtomicU64,
     state: AtomicU8,
     returned: AtomicU64,
-    /// The frame was built ahead, off the game thread, and no hour has taken it yet.
     ahead: AtomicBool,
     links: [AtomicUsize; 2],
-    /// The hour's decode job, filled in place by the frame's holder.
     job: UnsafeCell<DecodeJob>,
 }
 
@@ -113,8 +93,6 @@ impl Slot {
     }
 }
 
-/// An unbounded FIFO of slot indices linked through the slots themselves: pushing never
-/// allocates, never fails and never waits. Producers are lock-free; consumers take turns.
 struct Fifo {
     head: AtomicUsize,
     tail: Mutex<usize>,
@@ -135,7 +113,6 @@ impl Fifo {
     }
 }
 
-/// Every frame slot, the free set, and the decode and ready FIFOs.
 pub(crate) struct FramePool {
     segments: [AtomicPtr<Slot>; SEGMENTS],
     made: AtomicUsize,
@@ -154,33 +131,26 @@ pub(crate) struct FramePool {
     ready: Fifo,
 }
 
-/// Where slot `index` lives: its segment and its place there.
 fn locate(index: usize) -> (usize, usize) {
     let group = index / STEADY + 1;
     let segment = (usize::BITS - 1 - group.leading_zeros()) as usize;
     (segment, index - STEADY * ((1 << segment) - 1))
 }
 
-/// What a frame pool reports in the collector's status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Gauge {
     pub live: usize,
     pub free: usize,
-    /// Frames taken for an hour and not yet returned by the spool.
     pub in_flight: usize,
     pub in_flight_bytes: u64,
-    /// Every live frame's bytes, free or not.
     pub live_bytes: u64,
-    /// Frames the game thread built itself because none was free, and their walls.
     pub grown: u64,
     pub grow_ns: u64,
     pub grow_max_ns: u64,
-    /// Free frames built ahead off the game thread that no hour has taken yet.
     pub ahead_ready: usize,
     pub built_ahead: u64,
     pub ahead_taken: u64,
     pub freed: u64,
-    /// Hours dropped because none was free while the spool was stalled.
     pub dropped_stalled: u64,
 }
 
@@ -205,7 +175,6 @@ impl FramePool {
         }
     }
 
-    /// Slot `index`, which must have been made.
     pub(crate) fn slot(&self, index: usize) -> &Slot {
         let (segment, offset) = locate(index);
         let base = self.segments[segment].load(Ordering::Acquire);
@@ -213,11 +182,9 @@ impl FramePool {
             !base.is_null() && index < self.made.load(Ordering::Acquire),
             "frame slot {index} was never made"
         );
-        // SAFETY: a made segment holds `STEADY << segment` slots and is freed only on drop.
         unsafe { &*base.add(offset) }
     }
 
-    /// Slots made so far, frames or not.
     pub(crate) fn made(&self) -> usize {
         self.made.load(Ordering::Acquire)
     }
@@ -226,7 +193,6 @@ impl FramePool {
         (0..self.made()).map(|index| self.slot(index))
     }
 
-    /// The bytes of every segment of slots made, jobs included.
     pub(crate) fn slot_bytes(&self) -> u64 {
         self.segments
             .iter()
@@ -236,23 +202,18 @@ impl FramePool {
             .sum::<usize>() as u64
     }
 
-    /// Frames allocated now.
     pub(crate) fn live(&self) -> usize {
         self.live.load(Ordering::Acquire)
     }
 
-    /// Free frames.
     pub fn len(&self) -> usize {
         self.free.load(Ordering::Acquire)
     }
 
-    /// The newest free frame, held by the caller.
     pub fn pop(&self) -> Option<usize> {
         self.free
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| free.checked_sub(1))
             .ok()?;
-        // A free frame's state is set before the count and cleared after it, so the count
-        // just taken names a free slot no other taker holds.
         loop {
             let newest = (0..self.made())
                 .filter(|&index| self.slot(index).state.load(Ordering::Acquire) == FREE)
@@ -273,7 +234,6 @@ impl FramePool {
             .is_ok()
     }
 
-    /// Takes `index` if it is free and `keep` other frames stay free.
     pub fn take(&self, index: usize, keep: usize) -> bool {
         if index >= self.made() || self.slot(index).state.load(Ordering::Acquire) != FREE {
             return false;
@@ -294,7 +254,6 @@ impl FramePool {
         false
     }
 
-    /// Frees a held frame as the newest.
     pub fn push(&self, index: usize) -> Result<(), usize> {
         if index >= self.made() {
             return Err(index);
@@ -304,7 +263,6 @@ impl FramePool {
         self.restore(index)
     }
 
-    /// Frees a held frame again, as old as it was when taken.
     pub fn restore(&self, index: usize) -> Result<(), usize> {
         if index >= self.made()
             || self.slot(index).frame.load(Ordering::Acquire).is_null()
@@ -320,8 +278,6 @@ impl FramePool {
         Ok(())
     }
 
-    /// A held slot for a new frame: a vacant one, else a new one. The game thread and the
-    /// thread building frames ahead may both call it: neither ever waits on the other.
     pub(crate) fn vacant(&self) -> io::Result<usize> {
         loop {
             let made = self.made();
@@ -345,11 +301,9 @@ impl FramePool {
                     .compare_exchange(ptr::null_mut(), slots, Ordering::AcqRel, Ordering::Acquire)
                     .is_err()
                 {
-                    // SAFETY: the other caller's segment won; this one was never published.
                     drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(slots, len)) });
                 }
             }
-            // A new slot starts vacant, so whichever caller claims it first holds it.
             if self
                 .made
                 .compare_exchange(made, made + 1, Ordering::AcqRel, Ordering::Acquire)
@@ -365,7 +319,6 @@ impl FramePool {
         }
     }
 
-    /// Gives the held slot `index` a new frame.
     pub(crate) fn install(&self, index: usize, frame: Box<Captured>) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
@@ -376,7 +329,6 @@ impl FramePool {
         self.live.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// The spool's retry loop: set on its first failure to take an hour, cleared once it does.
     pub(crate) fn set_spool_stalled(&self, stalled: bool) {
         self.spool_stalled.store(stalled, Ordering::Release);
     }
@@ -385,7 +337,6 @@ impl FramePool {
         self.spool_stalled.load(Ordering::Acquire)
     }
 
-    /// Records an hour dropped because no frame was free while the spool was stalled.
     pub(crate) fn drop_stalled(&self) {
         self.dropped_stalled.fetch_add(1, Ordering::Relaxed);
     }
@@ -394,41 +345,33 @@ impl FramePool {
         self.dropped_stalled.load(Ordering::Relaxed)
     }
 
-    /// Records an hour's frame allocation and its wall.
     pub(crate) fn grew(&self, ns: u64) {
         self.grown.fetch_add(1, Ordering::Relaxed);
         self.grow_ns.fetch_add(ns, Ordering::Relaxed);
         self.grow_max_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
-    /// Marks the held slot `index`'s new frame as built ahead of any hour's need.
     pub(crate) fn built_ahead(&self, index: usize) {
         self.slot(index).ahead.store(true, Ordering::Relaxed);
         self.built_ahead.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The game thread took `index`: counts it if it was built ahead.
     pub(crate) fn taken(&self, index: usize) {
         if self.slot(index).ahead.swap(false, Ordering::Relaxed) {
             self.ahead_taken.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// A held slot whose frame could not be allocated goes back to vacant.
     pub(crate) fn abandon(&self, index: usize) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
         slot.state.store(VACANT, Ordering::Release);
     }
 
-    /// Whether a frame returned now is beyond what the pool keeps: more than the steady count
-    /// live while more than the frames kept ahead are free. One frame between this and the
-    /// building ahead keeps a backlog that sways by an hour from freeing and building each hour.
     pub(crate) fn surplus(&self) -> bool {
         self.live() > STEADY && self.len() > AHEAD
     }
 
-    /// Takes the frame of the held slot `index` and leaves the slot vacant.
     pub(crate) fn vacate(&self, index: usize) -> Box<Captured> {
         let slot = self.slot(index);
         let frame = slot.frame.swap(ptr::null_mut(), Ordering::AcqRel);
@@ -438,11 +381,9 @@ impl FramePool {
         self.live.fetch_sub(1, Ordering::AcqRel);
         self.freed.fetch_add(1, Ordering::Relaxed);
         slot.state.store(VACANT, Ordering::Release);
-        // SAFETY: the frame was installed from a Box and its holder gives it up here.
         unsafe { Box::from_raw(frame) }
     }
 
-    /// Every held slot's frame bytes and count, and the pool's counters.
     pub(crate) fn gauge(&self) -> Gauge {
         let mut gauge = Gauge {
             live: self.live(),
@@ -481,7 +422,6 @@ impl FramePool {
             .store((stage as u64) << STAGE_SHIFT | stamp, Ordering::Relaxed);
     }
 
-    /// Per stage, the frames in it and the longest any has been there, in QPC ticks.
     pub(crate) fn stages(&self, now: u64) -> [(u32, u64); STAGES.len()] {
         let now = now & ((1 << STAGE_SHIFT) - 1);
         let mut stages = [(0, 0); STAGES.len()];
@@ -500,13 +440,12 @@ impl FramePool {
 
     pub(crate) const STAGES: [FrameStage; 7] = STAGES;
 
-    /// The decode job of slot `index`.
-    ///
-    /// # Safety
-    /// The caller holds `index`: no other thread touches its job.
+    #[doc = " The decode job of slot `index`."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The caller holds `index`: no other thread touches its job."]
     #[allow(clippy::mut_from_ref, reason = "the holder of the index owns the job alone")]
     pub(crate) unsafe fn job(&self, index: usize) -> &mut DecodeJob {
-        // SAFETY: forwarded from the caller.
         unsafe { &mut *self.slot(index).job.get() }
     }
 
@@ -558,7 +497,6 @@ impl FramePool {
         self.next(fifo, previous).store(node, Ordering::Release);
     }
 
-    /// The oldest index, or none while the FIFO is empty or its newest push is still linking.
     fn pop_from(&self, fifo: &Fifo) -> Option<usize> {
         let mut tail = fifo.tail.lock().unwrap_or_else(PoisonError::into_inner);
         let mut node = *tail;
@@ -597,7 +535,6 @@ impl Index<usize> for FramePool {
 
 impl Drop for FramePool {
     fn drop(&mut self) {
-        // The loader drops the pool only after callback quiescence and the spool's join.
         let made = *self.made.get_mut();
         for (segment, base) in self.segments.iter_mut().enumerate() {
             let base = *base.get_mut();
@@ -605,13 +542,11 @@ impl Drop for FramePool {
                 break;
             }
             let len = STEADY << segment;
-            // SAFETY: `vacant` leaked exactly this boxed slice.
             let mut slots = unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(base, len)) };
             let first = STEADY * ((1 << segment) - 1);
             for (offset, slot) in slots.iter_mut().enumerate() {
                 let frame = *slot.frame.get_mut();
                 if first + offset < made && !frame.is_null() {
-                    // SAFETY: an installed frame came from a Box and no holder remains.
                     unsafe { drop(Box::from_raw(frame)) };
                 }
             }

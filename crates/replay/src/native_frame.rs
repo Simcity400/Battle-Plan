@@ -1,23 +1,3 @@
-//! A run's hours as columnar sections and manifests, from the frame input the collector's
-//! conversion hands the row encoder today: one [`TableWriter`] per table and the run's
-//! dictionary. A run is one branch's continuous hours; a new branch starts a new writer.
-//!
-//! Each table's sample hour: a complete table read this hour is sampled at it, an unread table
-//! the hour leaves alone keeps its sample, and any other view (changed unread, truncated,
-//! unavailable, not recorded) has none. An unread table keeps it at a row keyframe too, where
-//! the row decoder, starting afresh, has none. A staggered table's
-//! off-slot refusal carries its complete rows, as the row encoder carries it between keyframes,
-//! and a truncated read is refused where the row encoder writes a keyframe: at the hours
-//! [`RowFrame::keyframe`] names, and otherwise at a run's first hour.
-//!
-//! A recorded hour ([`FrameWriter::hour_with`]) writes each table it names as the recording
-//! decodes it, wherever the run starts: at the recording's sample hour, a truncated view still
-//! truncated, and a refusal not carried.
-//!
-//! An hour's tables may be prepared and committed on several threads at once ([`Lanes`]). The
-//! lanes read the run's dictionary without adding to it; a table that would add a string, or
-//! fails, is prepared again on the calling thread in table order. Tables a lane prepared added
-//! no string, so every id is the one a single thread assigns, and so are the bytes.
 
 use crate::{
     columnar_file::{RestartState, referenced_ids},
@@ -43,40 +23,26 @@ use std::{
     time::Instant,
 };
 
-/// Hours a table found densely changed is written complete before it is diffed again.
 const DENSE_HOURS: i32 = 24;
 
 #[cfg(test)]
 mod tests;
 
-/// What the row encoder makes of the hour the frame writer prepares beside it.
 #[derive(Clone, Copy)]
 pub struct RowFrame<'a> {
-    /// The encoder before it commits the hour: its baselines are the rows the run's tables
-    /// hold once both committed the hour before, which complete tables are diffed with.
     pub baselines: Option<&'a FrameEncoder>,
-    /// The encoder writes the hour as a keyframe, which refuses a truncated read.
     pub keyframe: bool,
-    /// The complete tables the encoder wrote as changes from its baselines, with the rows those
-    /// changes wrote (`PreparedFrame::changed_rows`): taken with the baselines, they are the
-    /// table's diff.
     pub changed: &'a [(usize, ChangedRows)],
 }
 
-/// Threads an hour's tables are prepared and committed on at once.
 pub trait Lanes: Sync {
-    /// The threads [`Lanes::run`] runs a job on, the caller's included.
     fn count(&self) -> usize;
-    /// Runs `job` once on each of them and returns when every run has finished.
     fn run(&self, job: &(dyn Fn() + Sync));
-    /// Whether the calling lane takes another table. A lane that stops leaves the rest to
-    /// the others; the caller finishes whatever no lane took.
     fn proceeds(&self) -> bool {
         true
     }
 }
 
-/// The calling thread alone.
 pub struct OneThread;
 
 impl Lanes for OneThread {
@@ -89,85 +55,54 @@ impl Lanes for OneThread {
     }
 }
 
-/// One thread's buffers for the tables it prepares.
 struct Lane {
     cells: RowCells,
-    /// The held keys an hour removes.
     removed: Vec<u128>,
-    /// A diff's changed rows, each with its previous row's index.
     pairs: Vec<(u32, Option<u32>)>,
 }
 
-/// One run's held columns and dictionary.
 pub struct FrameWriter {
     tables: Vec<TableWriter>,
-    /// Each table's column count, as manifests are written with.
     columns: Vec<usize>,
     dictionary: Dictionary,
-    /// Each lane's buffers; the first is the calling thread's.
     lanes: Vec<Lane>,
-    /// Each table the current format leaves out, with the reason a recording decodes for it.
     absent: Vec<Option<String>>,
-    /// No hour of the run has committed yet.
     starting: bool,
-    /// An hour failed after it interned strings: the run cannot continue.
     poisoned: bool,
-    /// The run's strings committed hours appended since the last restart, in id order.
     since_restart: Vec<Box<[u8]>>,
-    /// An hour is prepared and not yet committed: its strings are interned.
     pending: bool,
-    /// Each table's wall preparing and committing its hours, in nanoseconds.
     table_ns: Vec<u64>,
-    /// Each table's shared complete rows its last committed hour held, kept alive so the
-    /// same allocation arriving again is known to be the same rows.
     shared: Vec<Option<Arc<TableRows>>>,
-    /// Each table's hour a lane prepared, until the hour is assembled in table order.
     prepared: Vec<Option<io::Result<TableHour>>>,
-    /// Each table's wall in its last hour: lanes take the costliest tables first.
     costs: Vec<u64>,
-    /// Each table's wall on a lane in the hour's current step.
     walls: Vec<u64>,
-    /// Every table index, costliest first.
     order: Vec<usize>,
-    /// Each table's hours a lane prepared that were prepared again in table order.
     retried: Vec<u64>,
-    /// Each owner-sliced table's held keys by owner, while its last hour was a slice update of
-    /// owners or left its rows as they were.
     owners: Vec<Option<Owners>>,
-    /// The branch and hour of the last committed hour.
     last: Option<(BranchId, i32)>,
-    /// Each table's first hour diffed again after it was found densely changed.
     dense: Vec<AtomicI32>,
 }
 
-/// A table's held keys by owner: owners ascending, each owner's keys ascending.
 type Owners = Vec<(u32, Vec<u128>)>;
 
-/// An owner slice update's owners and its rows' keys, ascending, which its commit holds.
 struct Slice {
     owners: Vec<u32>,
     keys: Vec<u128>,
 }
 
-/// Every table's hour, prepared and not yet applied.
 pub struct FrameHour {
     branch: BranchId,
     hour: i32,
     tables: Vec<TableHour>,
-    /// Each table's shared complete rows, which the commit keeps.
     shared: Vec<Option<Arc<TableRows>>>,
-    /// Each table's owner slice update, whose keys the commit holds by owner.
     slices: Vec<Option<Slice>>,
     statuses: Vec<Status>,
     read: Vec<u64>,
-    /// The strings the hour appends to the run's dictionary, in id order.
     appends: Vec<Box<[u8]>>,
-    /// The hour's manifest; its sections are [`FrameHour::sections`], in table order.
     pub manifest: Vec<u8>,
 }
 
 impl FrameHour {
-    /// Each written section with its table index, in table order.
     pub fn sections(&self) -> impl Iterator<Item = (usize, &[u8])> {
         self.tables.iter().enumerate().filter_map(|(index, table)| {
             let section = table.prepared.as_ref()?.section.as_deref()?;
@@ -179,18 +114,14 @@ impl FrameHour {
         self.hour
     }
 
-    /// Each table's status, as the manifest holds them.
     pub fn statuses(&self) -> &[Status] {
         &self.statuses
     }
 
-    /// The read bits, as the manifest holds them.
     pub fn read(&self) -> &[u64] {
         &self.read
     }
 
-    /// Each table's preparation (its section, manifest entry and census) with its table
-    /// index, in table order.
     pub fn prepared(&self) -> impl Iterator<Item = (usize, &Prepared)> {
         self.tables
             .iter()
@@ -199,20 +130,15 @@ impl FrameHour {
     }
 }
 
-/// What a recording's delta names of a complete table's hour: the keys of the rows it
-/// changed or added, and the keys it removed.
 #[derive(Clone, Copy, Debug)]
 pub struct Changed<'a> {
     pub keys: &'a [u128],
     pub removed: &'a [u128],
 }
 
-/// What a recording holds of one table's hour beside its view.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Source<'a> {
-    /// The view's sample hour, as the recording decodes it.
     pub sample: Option<i32>,
-    /// What its delta names, for a complete table it stores as one.
     pub delta: Option<Changed<'a>>,
 }
 
@@ -275,22 +201,18 @@ impl FrameWriter {
         })
     }
 
-    /// Each table's column count, as this run's manifests are written with.
     pub fn columns(&self) -> &[usize] {
         &self.columns
     }
 
-    /// Each table's wall preparing and committing the run's hours, in nanoseconds.
     pub fn table_ns(&self) -> &[u64] {
         &self.table_ns
     }
 
-    /// Each table's hours a lane prepared that were prepared again in table order.
     pub fn retried(&self) -> &[u64] {
         &self.retried
     }
 
-    /// Prepares every table's hour. Nothing held changes until [`FrameWriter::commit`].
     pub fn hour(&mut self, input: &FrameInput) -> io::Result<FrameHour> {
         self.hour_on(input, &[], None, &OneThread)
     }
@@ -305,8 +227,6 @@ impl FrameWriter {
         let mode = input.capture_mode()?;
         let keyframe = row.map_or(self.starting, |row| row.keyframe);
         let changed = row.map_or(&[][..], |row| row.changed);
-        // The encoder's baselines are the rows this run's tables hold once both committed the
-        // hour before this one.
         let follows = self.last.is_some_and(|(branch, hour)| {
             branch == input.branch && hour.checked_add(1) == Some(input.hour)
         });
@@ -324,7 +244,6 @@ impl FrameWriter {
         let mut read = Vec::new();
         engine_allocation::resize_default(&mut read, TABLE_COUNT.div_ceil(64))?;
         for (index, id) in TableId::ALL.into_iter().enumerate() {
-            // A table the recording omits keeps no read time, as the row encoder stores none.
             let stored = self.absent[index].is_none() && scope::records(mode, id);
             if stored && input.metrics.table_ns[index] != 0 {
                 read[index / 64] |= 1 << (index % 64);
@@ -400,7 +319,6 @@ impl FrameWriter {
             } else {
                 writer.acquisition().last_read
             };
-            // Also at a row keyframe: the rows this run holds prove the read they came from.
             let sample = match recorded.get(index) {
                 Some(source) => source.sample,
                 None => match prepared.evidence.status {
@@ -485,8 +403,6 @@ impl FrameWriter {
         })
     }
 
-    /// Prepares the hour's tables on `lanes`, the costliest first, with the dictionary read
-    /// only; each outcome waits in `prepared` for the hour's assembly.
     fn side_by_side(
         &mut self,
         input: &FrameInput,
@@ -571,19 +487,16 @@ impl FrameWriter {
         Ok(())
     }
 
-    /// Orders the tables by their last hour's wall, the costliest first.
     fn costliest_first(&mut self) {
         let costs = &self.costs;
         self.order
             .sort_unstable_by_key(|&index| std::cmp::Reverse(costs[index]));
     }
 
-    /// Applies a prepared hour.
     pub fn commit(&mut self, hour: FrameHour) -> io::Result<()> {
         self.commit_on(hour, &OneThread)
     }
 
-    /// Applies a prepared hour, its tables on `lanes`.
     pub fn commit_on(&mut self, hour: FrameHour, lanes: &dyn Lanes) -> io::Result<()> {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
@@ -612,8 +525,6 @@ impl FrameWriter {
         Ok(())
     }
 
-    /// Commits each table's hour and holds its shared rows; the rows they replace are freed
-    /// on the lane that commits them.
     fn apply(
         &mut self,
         at: i32,
@@ -679,7 +590,6 @@ impl FrameWriter {
                 }
             });
         }
-        // Whatever no lane took.
         while let Some(&index) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
             commit(index);
         }
@@ -694,9 +604,6 @@ impl FrameWriter {
         Ok(())
     }
 
-    /// The restart a position closing after the last committed hour carries: each table's
-    /// state with the dictionary ids it references, and the run's strings appended since the
-    /// previous restart, which this takes.
     pub fn restart(&mut self) -> io::Result<(Vec<Box<[u8]>>, Vec<RestartState>)> {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
@@ -721,12 +628,6 @@ impl FrameWriter {
         Ok((std::mem::take(&mut self.since_restart), tables))
     }
 
-    /// [`FrameWriter::hour`] of a recorded hour: each table `recorded` names at its index is
-    /// written as the recording decodes it. It is sampled at its [`Source::sample`], at a
-    /// run's start too; a truncated view stays truncated at a run's start, whose rows the
-    /// recording's run read; and a refusal is not carried. A complete table whose delta it
-    /// names changed only the rows the delta names, so only those are compared with the held
-    /// table; a run's first hour, and a table whose last hour was not complete, compare whole.
     pub fn hour_with(
         &mut self,
         input: &FrameInput,
@@ -735,8 +636,6 @@ impl FrameWriter {
         self.hour_on(input, recorded, None, &OneThread)
     }
 
-    /// [`FrameWriter::hour_with`], its tables prepared on `lanes`. A complete table is diffed
-    /// with the rows `committed` holds for it when they are the run's last committed hour's.
     pub fn hour_on(
         &mut self,
         input: &FrameInput,
@@ -747,7 +646,6 @@ impl FrameWriter {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
         }
-        // An uncommitted hour's interned strings would be lost to its successor's manifest.
         if self.pending {
             self.poisoned = true;
             return Err(invalid("A prepared hour commits before the next"));
@@ -758,21 +656,16 @@ impl FrameWriter {
         hour
     }
 
-    /// Each table's writer, holding what the run's committed hours left.
     pub fn tables(&self) -> &[TableWriter] {
         &self.tables
     }
 
-    /// A run's writer handing each table's rows to its writer as `staging` says;
-    /// [`FrameWriter::new`] stages them by column.
     pub fn with_staging(staging: native_columns::Staging) -> io::Result<Self> {
         let mut writer = Self::new()?;
         writer.lanes[0].cells = RowCells::new(staging);
         Ok(writer)
     }
 
-    /// A run's writer whose tables' hours clear and finish the columns `sweep` says;
-    /// [`FrameWriter::new`] sweeps only those an hour touched.
     pub fn with_sweep(sweep: Sweep) -> io::Result<Self> {
         let mut writer = Self::new()?;
         for table in &mut writer.tables {
@@ -782,29 +675,22 @@ impl FrameWriter {
     }
 }
 
-/// What every table of an hour reads, shared by the lanes preparing them.
 struct Part<'a> {
     input: &'a FrameInput,
     recorded: &'a [Source<'a>],
-    /// Each table's rows at the run's last committed hour, when the encoder lent them.
     previous: &'a [Option<&'a TableRows>],
-    /// The rows the encoder's diff of a complete table with those rows wrote.
     changed: &'a [(usize, ChangedRows)],
-    /// The manifest's read bits.
     read: &'a [u64],
     mode: CaptureMode,
     absent: &'a [Option<String>],
-    /// Each table's shared rows the last committed hour held.
     held: &'a [Option<Arc<TableRows>>],
     owners: &'a [Option<Owners>],
     dense: &'a [AtomicI32],
     starting: bool,
-    /// A truncated read is refused this hour, as the row keyframe refuses it.
     keyframe: bool,
 }
 
 impl Part<'_> {
-    /// One table's hour from the form its conversion took.
     fn table(
         &self,
         index: usize,
@@ -816,7 +702,6 @@ impl Part<'_> {
         let input = &self.input.tables[index];
         let read = self.read[index / 64] & (1 << (index % 64)) != 0;
         let source = self.recorded.get(index).copied();
-        // The rows the held table holds, and the rows the row encoder's diff with them wrote.
         let known = !self.starting && writer.status() == Status::Complete;
         let previous = self.previous.get(index).copied().flatten().filter(|_| known);
         let written = previous.and_then(|_| {
@@ -828,15 +713,12 @@ impl Part<'_> {
         {
             removed(id, writer, update, self.owners[index].as_ref(), &mut lane.removed)?;
         }
-        // The row encoder carries an off-slot refusal over a complete baseline from an
-        // earlier hour of the branch; a recorded refusal is one it did not carry.
         let carried = source.is_none()
             && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON)
             && replay_data::cadence::is_staggered(id)
             && writer.status() == Status::Complete
             && writer.acquisition().available_from.is_some();
-        // A delta changes the complete rows the run's last hour held.
         let delta = source
             .and_then(|source| source.delta)
             .filter(|_| !self.starting && writer.status() == Status::Complete);
@@ -845,7 +727,6 @@ impl Part<'_> {
             strings,
             cells: &mut lane.cells,
             read,
-            // The recording's run need not start here: its truncated view stays truncated.
             keyframe: self.keyframe && source.is_none(),
         };
         if let Some(reason) = &self.absent[index] {
@@ -877,8 +758,6 @@ impl Part<'_> {
             _ if carried => held.same(),
             TableInput::ComparedEqual(_) => held.same(),
             TableInput::Sampled(view) => held.view(view),
-            // The rows the last committed hour held, so the table is unchanged; the row encoder
-            // reuses its equality for the same allocation too.
             TableInput::SharedComplete(rows)
                 if self.held[index]
                     .as_ref()
@@ -886,7 +765,6 @@ impl Part<'_> {
             {
                 held.same()
             }
-            // A re-read of the rows the last committed hour held: only the rows that differ.
             TableInput::SharedComplete(rows) => {
                 if let (Some(last), Some(written)) = (previous, written) {
                     return Self::written(rows, last, held, written);
@@ -899,8 +777,6 @@ impl Part<'_> {
                     None => rows.visit(held.with(Form::Complete)),
                 }
             }
-            // Membership is unchanged by the comparison's contract: nothing is removed. Each
-            // changed row's index is its baseline's, so it pairs with its previous row.
             TableInput::ComparedChanges { rows, indices, .. } => match previous {
                 Some(last) => match rows.visit_pair(
                     last,
@@ -924,8 +800,6 @@ impl Part<'_> {
 }
 
 impl Part<'_> {
-    /// `rows` as the changes the row encoder's diff with `last`, the rows the held table
-    /// holds, wrote.
     fn written(
         rows: &TableRows,
         last: &TableRows,
@@ -938,8 +812,6 @@ impl Part<'_> {
         }
     }
 
-    /// `rows` as the changes from `last`, the rows the held table holds, in the lane's
-    /// buffers.
     fn diff(
         &self,
         index: usize,
@@ -967,17 +839,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Whether `update` replaces whole owners' rows, and nothing else.
 fn owner_slice(update: &SliceUpdate) -> bool {
     update.ranges.is_empty() && update.keys.is_empty()
 }
 
-/// The owner a key of table `id` belongs to, as slice updates name it.
 fn owner_of(id: TableId, key: u128) -> u32 {
     (key >> id.key_bits().saturating_sub(32)) as u32
 }
 
-/// The held table's keys by owner.
 fn held_owners(writer: &TableWriter, id: TableId) -> io::Result<Owners> {
     let table = writer.table();
     let mut keys = Vec::new();
@@ -996,7 +865,6 @@ fn held_owners(writer: &TableWriter, id: TableId) -> io::Result<Owners> {
     Ok(owners)
 }
 
-/// Holds a committed owner slice update: each of its owners now holds exactly its rows' keys.
 fn hold_slice(owners: &mut Owners, slice: &Slice, id: TableId) -> io::Result<()> {
     let mut keys = &slice.keys[..];
     for &owner in &slice.owners {
@@ -1018,8 +886,6 @@ fn hold_slice(owners: &mut Owners, slice: &Slice, id: TableId) -> io::Result<()>
     Ok(())
 }
 
-/// The held rows a slice update replaces and does not carry again: from the held keys of its
-/// owners when they are known, otherwise from every held row.
 fn removed(
     id: TableId,
     writer: &TableWriter,
@@ -1029,7 +895,6 @@ fn removed(
 ) -> io::Result<()> {
     out.clear();
     if let Some(owners) = owners.filter(|_| owner_slice(update)) {
-        // Owners ascending and each owner's keys ascending: the keys come out in order.
         for &owner in update.owners() {
             let Ok(at) = owners.binary_search_by_key(&owner, |(held, _)| *held) else {
                 continue;
@@ -1061,7 +926,6 @@ fn removed(
     Ok(())
 }
 
-/// How a table's rows this hour cover its held rows.
 #[derive(Clone, Copy)]
 enum Form<'a> {
     Complete,
@@ -1075,7 +939,6 @@ struct Visit<'a> {
     strings: Strings<'a>,
     cells: &'a mut RowCells,
     read: bool,
-    /// A truncated read is refused, as the row keyframe refuses it.
     keyframe: bool,
 }
 
@@ -1130,7 +993,6 @@ impl<'a> Visit<'a> {
         Rows { visit: self, form }
     }
 
-    /// Every row of a complete table at its place in `previous`, the rows the held table holds.
     fn aligned<R: RowCodec>(self, rows: &[R], previous: &[R]) -> io::Result<TableHour> {
         let read = self.read;
         self.write(Native::Aligned {
@@ -1141,7 +1003,6 @@ impl<'a> Visit<'a> {
         })
     }
 
-    /// The rows `pairs` names, each beside its previous row when it has one; `removed` are gone.
     fn paired<R: RowCodec>(
         self,
         rows: &[R],
@@ -1165,7 +1026,6 @@ impl<'a> Visit<'a> {
     }
 }
 
-/// A table's typed rows in one [`Form`], written when [`TableRows::visit`] hands them over.
 struct Rows<'a, 'f> {
     visit: Visit<'a>,
     form: Form<'f>,
@@ -1206,12 +1066,6 @@ impl RowsVisit for Rows<'_, '_> {
     }
 }
 
-/// A complete table against the rows the held table holds, both in key order: the rows that
-/// changed or came, each beside its previous row, and the keys of those that went, which write
-/// what the complete rows write. Rows out of key order write the complete table. A table
-/// changed in more than three quarters of its rows is not diffed for [`DENSE_HOURS`]; it
-/// writes every row beside its previous one while its rows keep their places, otherwise the
-/// complete table.
 struct Diff<'a> {
     held: Visit<'a>,
     hour: i32,
@@ -1303,7 +1157,6 @@ impl RowsPairVisit for Diff<'_> {
     }
 }
 
-/// A complete table's rows the row encoder's diff wrote, each beside its baseline row.
 struct Written<'a> {
     held: Visit<'a>,
     written: &'a ChangedRows,
@@ -1318,12 +1171,10 @@ impl RowsPairVisit for Written<'_> {
     }
 }
 
-/// A row index as pairs hold it.
 fn index(at: usize) -> io::Result<u32> {
     u32::try_from(at).map_err(|_| invalid("A table holds more than 2^32 rows"))
 }
 
-/// A comparison's changed rows beside their baseline rows, which the held table holds.
 struct Compared<'a> {
     held: Visit<'a>,
     indices: &'a [usize],
@@ -1351,11 +1202,8 @@ impl RowsPairVisit for Compared<'_> {
     }
 }
 
-/// The row type of an hour that visits no rows.
 type Never = replay_data::rows::ClockRow;
 
-/// Kind-only while a capture runs, whatever diagnostic scope encloses it: the live writer
-/// must not allocate to fail. Offline writers keep the message.
 fn invalid(what: &'static str) -> io::Error {
     if engine_allocation::capture_active() {
         io::Error::from(io::ErrorKind::InvalidData)

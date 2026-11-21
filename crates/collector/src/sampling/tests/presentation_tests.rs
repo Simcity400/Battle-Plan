@@ -1,4 +1,3 @@
-//! Publication gates exercise the production callback's presentation scheduler.
 use super::*;
 use std::sync::{Condvar, Mutex, atomic::AtomicUsize, mpsc};
 
@@ -89,7 +88,6 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
                     }
                 }
                 acquisition::Job::Presentation(_) => {
-                    // The real stitch asserts exclusive preparation ownership.
                     let report = acquisition::run_for_test(job, &Unreadable);
                     later_join.open();
                     return report;
@@ -110,7 +108,6 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
     let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     let store = request.army_stats.as_deref().unwrap() as *const _;
     let mut presentation = PresentationPending {
-        // SAFETY: synthetic worker reads only the fixture; batch drains all tickets.
         prepare: Some(unsafe {
             submit_acquisition(
                 &shared,
@@ -122,8 +119,6 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
     };
     running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     for index in 0..2 {
-        // An unrelated producer and its consumer both dispatch and collect
-        // while preparation remains gated. No elapsed-time guess orders this.
         let pending = unsafe { submit_acquisition(&shared, &mut batch, unrelated(index)) };
         crate::test_support::with_allocations_denied(|| unsafe {
             presentation.wait_for(&shared, &mut batch, Some(&pending));
@@ -155,8 +150,6 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
         "stitch must await the last published range"
     );
     assert!(presentation.pending.is_none());
-    // Model an assembly-only join after the early scheduler has exited. It
-    // cannot finish until the scheduler dispatches the presentation stitch.
     let pending = unsafe { submit_acquisition(&shared, &mut batch, unrelated(2)) };
     last_range.open();
     crate::test_support::with_allocations_denied(|| unsafe {
@@ -201,7 +194,6 @@ fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_r
         batch.arm_presentation(&mut request);
         let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
         let mut presentation = PresentationPending {
-            // SAFETY: synthetic requests only; batch drains all accepted ranges.
             prepare: Some(unsafe {
                 submit_acquisition(
                     &shared,
@@ -240,7 +232,6 @@ fn presentation_readiness_rejected_preparation_never_runs_inline_or_retries() {
     let request = request();
     let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
     let mut presentation = PresentationPending {
-        // SAFETY: the stopped pool cannot read native memory.
         prepare: Some(unsafe {
             submit_acquisition(
                 &shared,
@@ -271,7 +262,6 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
         let mut batch = acquisition::Batch::new(&pool);
         batch.arm_presentation(&mut request);
         let mut presentation = PresentationPending {
-            // SAFETY: all synthetic jobs and parked preparation drain with the batch.
             prepare: Some(unsafe {
                 submit_acquisition(
                     &shared,
@@ -285,8 +275,6 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
         unsafe { presentation.advance(&shared, &mut batch) };
         assert!(presentation.prepared.is_some());
         assert_eq!(presentation.parts.iter().flatten().count(), 3);
-        // The callback may leave before collecting a single range. No request
-        // or source lease is hidden in the ticket-only scheduler on that exit.
     }
     assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
     assert_eq!(pool.calibration().executor.uncollected, 0);
@@ -315,7 +303,6 @@ fn presentation_second_preparation_yields_to_unrelated_dispatches() {
     });
     let mut batch = acquisition::Batch::new(&pool);
     let mut presentation = PresentationPending {
-        // SAFETY: synthetic memory only; this batch retains and drains every lease.
         prepare: Some(unsafe {
             submit_acquisition(
                 &shared,
@@ -395,8 +382,6 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
                     stitched.open();
                 }
                 acquisition::Job::Provinces(_) => {
-                    // Models an unrelated long Movement/SpeedTerms/FinalInputs
-                    // join: it cannot publish until stitch is already dispatched.
                     stitched.wait();
                     return acquisition::Report::ShipModels;
                 }
@@ -409,7 +394,6 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
     let mut request = request();
     batch.arm_presentation(&mut request);
     let mut presentation = PresentationPending {
-        // SAFETY: fixture memory only; the batch drains both waves and their store loan.
         prepare: Some(unsafe {
             submit_acquisition(
                 &shared,
@@ -419,8 +403,6 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
         }),
         ..Default::default()
     };
-    // Setup, preparation fan-in, Settle and final ranges all run without
-    // collecting even the initial setup ticket on the callback.
     for _ in 0..3 {
         preparing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     }
@@ -434,7 +416,6 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
     assert!(presentation.pending.is_none());
     let unrelated = unsafe { submit_acquisition(&shared, &mut batch, unrelated(0)) };
     last.open();
-    // No callback collection or readiness service releases this edge.
     stitched.wait();
     unsafe {
         presentation.wait_for(&shared, &mut batch, Some(&unrelated));
@@ -491,12 +472,9 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
             let mut presentation = PresentationPending::default();
             let request = request();
             inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
-            // SAFETY: synthetic memory; both the Batch and its child's ledger drain.
             presentation.prepare = Some(unsafe {
                 submit_acquisition(&shared, &mut batch, acquisition::Job::PresentationPrepare(request))
             });
-            // Initial setup and observation ranges publish; the ordered worker
-            // is dispatched but deliberately never collected before this proof.
             for _ in 0..2 {
                 batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
                 unsafe { presentation.advance(&shared, &mut batch) };
@@ -573,7 +551,6 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
                     acquisition::Job::PresentationPrepare(request),
                 )
             };
-            // All children run before their parent can publish or be collected.
             for _ in 0..3 {
                 running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
             }
@@ -589,11 +566,8 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
                     .accepted,
                 0
             );
-            // Batch exit owns setup and every unadopted range, including the
-            // parent-panic path. No callback collection installs the children.
         }
         assert_eq!(engine_allocation::SharedBox::strong_count(&inputs), 1);
-        // The lent store came back: a take never waits, so a store still out would be another.
         assert_eq!(&*slot.take().unwrap() as *const _, lent);
         let stats = pool.calibration();
         assert_eq!(
@@ -795,8 +769,6 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
             let early = collect_early.then(|| unsafe {
                 finish_acquisition(&shared, &mut batch, master.take().unwrap())
             });
-            // Collecting the master must not close the continuation while
-            // the ordered part is still running.
             assert!(preparing.try_recv().is_err());
             last.open();
             preparing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
@@ -838,8 +810,6 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                     speed_terms.inputs.as_ref().unwrap(),
                     inputs,
                 ));
-                // The callback restores the entire census and releases the
-                // other input consumers while Prepare itself remains blocked.
                 let consumers = [
                     unsafe {
                         submit_acquisition(
@@ -896,10 +866,6 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
     }
 }
 
-/// Without the status side the last input publisher joins the census, as
-/// Full's does, and submits nothing: the callback finds no dispatched job,
-/// takes the request back untouched and the final join refuses the status
-/// side without a read.
 #[test]
 fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing() {
     use super::super::divisions_test_kit as kit;
@@ -967,7 +933,6 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
         };
         let master = unsafe { finish_acquisition(&shared, &mut batch, master) };
         let part = unsafe { finish_acquisition(&shared, &mut batch, part) };
-        // A job completes before its publication runs: wait for the publishers.
         let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
         while pool.calibration().executor.active != 0 {
             assert!(

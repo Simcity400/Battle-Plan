@@ -29,7 +29,6 @@ test('OKLCH conversion round-trips sRGB colours', () => {
   for (const value of ['#000000', '#ffffff', '#5cb2ff', '#c2410c', '#0a0f16', '#aac77e', '#ff00ff']) {
     assert.equal(toHex(oklchToRgb(rgbToOklch(parseColor(value)!))), value);
   }
-  // Out-of-gamut requests keep their lightness by losing chroma.
   const clipped = oklchToRgb({ l: 0.7, c: 0.5, h: 140 });
   assert.ok([clipped.r, clipped.g, clipped.b].every(channel => channel >= 0 && channel <= 255));
 });
@@ -100,12 +99,9 @@ test('VS Code themes with comments and trailing commas convert to one variant', 
     "tokenColors": [{ "scope": "comment", "settings": { "foreground": "#637777" } },],
   }`;
   assert.deepEqual(parseJsonc('{"a": "//not a comment", /* x */ "b": [1,],}'), { a: '//not a comment', b: [1] });
-  // Commas before a closing bracket inside a string are text, not trailing commas.
   assert.deepEqual(parseJsonc('{"a": "x, }", "b": "y,\\"]",}'), { a: 'x, }', b: 'y,"]' });
-  // A trailing comma may be followed by comments and whitespace; a kept comma may not be dropped.
   assert.deepEqual(parseJsonc('[1, // one\n /* two */ ]'), [1]);
   assert.deepEqual(parseJsonc('[1, /* x */ 2]'), [1, 2]);
-  // A 512 KB theme of many closing brackets parses whole.
   const rules = Array.from({ length: 8000 }, (_, i) => `{"scope": "s${i}", "settings": {"foreground": "#112233",},},`).join('');
   assert.equal((parseJsonc(`{"tokenColors": [${rules}]}`) as { tokenColors: unknown[] }).tokenColors.length, 8000);
   const imported = parseThemeText(text);
@@ -124,7 +120,6 @@ test('VS Code themes with comments and trailing commas convert to one variant', 
 test('unique theme names count upwards without clashing', () => {
   assert.equal(uniqueThemeName('Signal', ['Brass']), 'Signal');
   assert.equal(uniqueThemeName('Signal', ['signal', 'Signal 2']), 'Signal 3');
-  // A generated name fits the saved limit, keeps its suffix whole and survives a reload.
   const longest = 'L'.repeat(MAX_THEME_NAME);
   const copy = uniqueThemeName(longest, [longest], ' copy');
   assert.equal(copy, `${'L'.repeat(MAX_THEME_NAME - 5)} copy`);
@@ -203,7 +198,6 @@ test('widget icon styles belong to widget kinds and keep only readable parts', (
     'navy-size': { icon: 'anchor', colour: '#3B82F6' }, 'not-installed': { icon: image }, aces: { icon: 'data:image/svg+xml;base64,PHN2Zz4=', colour: 'red' },
     'bad kind': { icon: 'globe' }, constructor: { icon: 'globe' }, factories: { icon: 'javascript:alert(1)' }, research: 'flask',
   } });
-  // Kinds are not checked against the installed widgets: a kind's saved data is kept, as layouts keep it.
   assert.deepEqual(parsed.widgetIcons, { 'navy-size': { icon: 'anchor', colour: '#3b82f6' }, 'not-installed': { icon: image } });
   assert.deepEqual(DEFAULT_APPEARANCE.widgetIcons, {});
   assert.deepEqual(parseAppearance({ widgetIcons: null }).widgetIcons, {});
@@ -284,7 +278,6 @@ test('the sidebar and top bar glass is set apart from the main view glass', asyn
     assert.equal(values.get('--glass-blur'), '20px');
     assert.equal(values.get('--chrome-opacity'), '100%');
     assert.equal(values.get('--chrome-blur'), '0px', 'a solid sidebar and top bar need no blur');
-    // Every glass saved before keeps the sidebar and top bar exactly as its single setting drew them.
     for (let glass = LIMITS.glass[0]; glass <= LIMITS.glass[1]; glass++) {
       const migrated = parseAppearance({ glass, backdrop: { kind: 'image', imageId: 'saved' } });
       page.document = { querySelector: () => null, documentElement: null };
@@ -333,24 +326,20 @@ test('the main view has its own backdrop, or shows the sidebar and top bar’s t
 test('of overlapping uploads and choices for an icon, only the newest lands, whichever finishes first', async () => {
   const image = (n: number) => `data:image/png;base64,${'A'.repeat(n * 4)}` as const;
   const file = {} as File;
-  /** A decode the test finishes by hand, in any order. */
   function decodes() {
     const pending: ((value: ReturnType<typeof image> | null) => void)[] = [];
     return { rasterise: () => new Promise<ReturnType<typeof image> | null>(resolve => { pending.push(resolve); }), finish: (i: number, value: ReturnType<typeof image> | null) => pending[i](value) };
   }
-  // The earlier upload finishes first: it is dropped, the later one lands.
   let choices = new Map<string, number>(), d = decodes();
   const first = latestIconImage('map', file, choices, d.rasterise), second = latestIconImage('map', file, choices, d.rasterise);
   d.finish(0, image(1)); d.finish(1, image(2));
   assert.equal(await first, null);
   assert.deepEqual(await second, { image: image(2) });
-  // The later upload finishes first: it lands, and the earlier one finishing afterwards is still dropped.
   choices = new Map(); d = decodes();
   const early = latestIconImage('map', file, choices, d.rasterise), late = latestIconImage('map', file, choices, d.rasterise);
   d.finish(1, image(2)); d.finish(0, image(1));
   assert.deepEqual(await late, { image: image(2) });
   assert.equal(await early, null);
-  // A glyph or reset chosen meanwhile (the menu counts it in the same map) also wins; another icon's choice does not count.
   choices = new Map(); d = decodes();
   const beaten = latestIconImage('map', file, choices, d.rasterise);
   choices.set('map', (choices.get('map') ?? 0) + 1);

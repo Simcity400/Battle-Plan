@@ -16,7 +16,6 @@ impl<M: Memory> Memory for Reads<'_, M> {
     }
 }
 
-/// A loaded game module: identity reads compare object vtables with module addresses.
 const SHIP_BASE: usize = 0x1000_0000;
 
 struct ShipWorld(Native);

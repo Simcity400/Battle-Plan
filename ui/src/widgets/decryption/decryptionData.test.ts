@@ -29,7 +29,6 @@ test('progress is painted from the live amount over the threshold, and unknown w
   const known = pair('GER', 'ENG', 1);
   assert.equal(percentOf(known, numbers(known, 500_000)), 50);
   assert.equal(progressLabel(percentOf(known, numbers(known, 500_000))), '50%');
-  // Not read yet: never zero.
   assert.equal(percentOf(known, numbers(known)), null);
   assert.equal(amountText(numbers(known)), 'Amount not read (Not read yet)');
   const unknown = pair('GER', 'ENG', 1, null);

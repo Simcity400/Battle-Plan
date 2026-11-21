@@ -1,4 +1,3 @@
-//! Owned land-combat details, participants, casualties, modifier operands and reinforcement inputs, with their native acquisition and replay conversion. The host supplies the source and hour and owns dispatch, loans and table assembly.
 
 use collector_memory::{read_accounting, terminal as allocation};
 use collector_primitives::{clock, country_slots as country_scale, table_capture};

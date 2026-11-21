@@ -41,7 +41,6 @@ import { useUpdateState } from '../update/useUpdateState';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
-// Shell-only changes (sidebar, popovers, native state) leave the dashboard and its header alone.
 const Dashboard = memo(loadable(() => import('../dashboard/Dashboard').then(module => module.default),
   () => <div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>));
 const Settings = loadable(() => import('./Settings').then(module => module.default), () => <p role="status">Loading settings…</p>);
@@ -52,13 +51,10 @@ const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
 const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
 const SIDEBAR_WIDTH_KEY = 'hoi4-replay.sidebar-width.v1';
 const SIDEBAR_WIDTH = { initial: 232, min: 200, max: 400, mainMin: 640 } as const;
-// A window too narrow to leave the workspace its minimum still keeps the sidebar at its own.
 const clampWidth = (width: number) => Math.round(Math.max(SIDEBAR_WIDTH.min, Math.min(SIDEBAR_WIDTH.max, window.innerWidth - SIDEBAR_WIDTH.mainMin, width)));
 
-/** The sidebar is shown or hidden (Ctrl+B) and resized by dragging its edge, as in T3 Code. */
 function useSidebarState() {
   const [hidden, setHidden] = useState(() => { try { return localStorage.getItem(SIDEBAR_KEY) === 'hidden'; } catch { return false; } });
-  // The width chosen, shown as wide as the window allows; a window widened again shows it whole.
   const [chosen, setChosen] = useState(() => {
     try { const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)); return Number.isFinite(saved) && saved > 0 ? saved : SIDEBAR_WIDTH.initial; }
     catch { return SIDEBAR_WIDTH.initial; }
@@ -71,7 +67,7 @@ function useSidebarState() {
   }, []);
   const width = clampWidth(chosen);
   const [resizing, setResizing] = useState(false);
-  const saveWidth = (next: number) => { try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next)); } catch { /* Session-only preference. */ } };
+  const saveWidth = (next: number) => { try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next)); } catch {  } };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -92,8 +88,7 @@ function useSidebarState() {
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
   };
-  const resetWidth = () => { setChosen(SIDEBAR_WIDTH.initial); try { localStorage.removeItem(SIDEBAR_WIDTH_KEY); } catch { /* Session-only preference. */ } };
-  /** Arrow keys step the width (Shift for larger steps); Home and End jump to its limits. */
+  const resetWidth = () => { setChosen(SIDEBAR_WIDTH.initial); try { localStorage.removeItem(SIDEBAR_WIDTH_KEY); } catch {  } };
   const resizeByKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? 48 : 16;
     const next = event.key === 'ArrowLeft' ? width - step : event.key === 'ArrowRight' ? width + step
@@ -104,8 +99,6 @@ function useSidebarState() {
     setChosen(clamped);
     saveWidth(clamped);
   };
-  // A hidden sidebar slides over the workspace while the pointer is on it or a field in it is being typed in.
-  // Native listeners: portalled sidebar content does not bubble React events to the aside.
   const [peek, setPeek] = useState(false);
   const aside = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -130,14 +123,13 @@ function useSidebarState() {
   const toggle = useCallback(() => {
     setPeek(false);
     setHidden(value => {
-      try { localStorage.setItem(SIDEBAR_KEY, value ? 'shown' : 'hidden'); } catch { /* Session-only preference. */ }
+      try { localStorage.setItem(SIDEBAR_KEY, value ? 'shown' : 'hidden'); } catch {  }
       return !value;
     });
   }, []);
   useEffect(() => {
     const key = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'b') return;
-      // Text fields keep their own Ctrl+B.
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
       event.preventDefault();
@@ -149,8 +141,6 @@ function useSidebarState() {
   return { hidden, peek: hidden && peek, openPeek: () => setPeek(true), aside, toggle, width, resizing, startResize, resetWidth, resizeByKey };
 }
 
-/** Where the app's update control will live. No update service exists yet, so a check only reports that. */
-/** The update button, after T3 Code's, as its own component so update events render only it. */
 function SidebarUpdate() {
   const { state } = useUpdateState();
   return <UpdateButton state={state} />;
@@ -170,7 +160,6 @@ export default function App() {
   const iconMenu = useSidebarIconMenu(appearance);
   const widgetIconMenu = useWidgetIconMenu(appearance);
   const sidebar = useSidebarState();
-  // A manual popover gives sidebar peek the same native-window occlusion events as menus.
   const peekOverlay = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const overlay = peekOverlay.current;
@@ -191,7 +180,7 @@ export default function App() {
   const [page, setPage] = useState<PageId>(() => { try { const saved = localStorage.getItem(PAGE_KEY); return pages.find(entry => entry.id === saved)?.id ?? pages[0].id; } catch { return pages[0].id; } });
   const [layoutReset, setLayoutReset] = useState(0);
   const [pageStorageWarning, setPageStorageWarning] = useState<string | null>(null);
-  const choosePage = (next: PageId) => { setPage(next); try { localStorage.setItem(PAGE_KEY, next); } catch { /* Session-only preference. */ } };
+  const choosePage = (next: PageId) => { setPage(next); try { localStorage.setItem(PAGE_KEY, next); } catch {  } };
   const changePages = (next: PageEntry[]) => { setPages(next); setPageStorageWarning(savePages(next)); };
   const deletePage = (id: PageId) => {
     const index = pages.findIndex(entry => entry.id === id);
@@ -201,7 +190,6 @@ export default function App() {
     clearLayouts(id);
     if (page === id) choosePage(next[Math.min(index, next.length - 1)].id);
   };
-  /** Restores the built-in pages, removes added ones and resets every page's layouts. */
   const resetPages = () => {
     for (const entry of [...pages, ...defaultPages()]) clearLayouts(entry.id);
     const next = defaultPages();
@@ -209,27 +197,21 @@ export default function App() {
     choosePage(next[0].id);
     setLayoutReset(count => count + 1);
   };
-  // Default layouts are built from the widgets' plain definitions, which load with the
-  // dashboard; Settings opened first loads them itself, off the startup path.
   const [widgetsLoading, setWidgetsLoading] = useState<'loading' | 'loaded' | 'failed'>('loading');
   const [layoutsUnsaved, setLayoutsUnsaved] = useState(false);
   useEffect(() => {
     if (tab !== 'settings' || widgetDefinitions().length) return;
     import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
   }, [tab]);
-  /** Null while the default layouts cannot be known yet; undefined when everything is at its default. */
   const pagesReset = (): (() => void) | null | undefined => {
     if (!widgetDefinitions().length) return widgetsLoading === 'failed' ? resetPages : null;
     return !layoutsUnsaved && stableJson(pages) === stableJson(defaultPages()) && pages.every(entry => layoutsAtDefault(entry.id)) ? undefined : resetPages;
   };
   const [playbackHost, setPlaybackHost] = useState<HTMLDivElement | null>(null);
   const [campaignHost, setCampaignHost] = useState<HTMLDivElement | null>(null);
-  // Panels docked beside the workspace, such as the aircraft list, narrow the map rather than
-  // cover it, so it stays shown while they are open.
   const [sideHost, setSideHost] = useState<HTMLElement | null>(null);
   const [metadata, setMetadata] = useState<ReplayMetadata | null>(null);
   const [branch, setBranch] = useState<BranchChoice | null>(null);
-  // The host's folders in the desktop app, the development bridge's in a browser.
   const [folders, setFolders] = useState<ContentFolders | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
   const setupChecked = useRef(false);
@@ -239,9 +221,7 @@ export default function App() {
   const [path, setPath] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [switching, setSwitching] = useState(false);
-  // A view switch that failed, kept whole until a switch succeeds; the view still shown offers it again.
   const [switchFailure, setSwitchFailure] = useState<{ tab: Tab; message: string } | null>(null);
-  // Each failed map operation's error, by operation, until that operation succeeds or is no longer wanted.
   const [mapFailures, setMapFailures] = useState<Record<string, string>>({});
   const reportMap = useCallback((operation: string, error: string | null) => setMapFailures(previous => {
     if ((previous[operation] ?? null) === error) return previous;
@@ -263,7 +243,7 @@ export default function App() {
   const lastNativePath = useRef<string | null>(null);
   const content = useRef<HTMLElement>(null);
   const native = useDesktopState(retry);
-  useEffect(() => { contentRevision(client).observe(folders); }, [client, folders?.game, folders?.user, folders?.contentReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { contentRevision(client).observe(folders); }, [client, folders?.game, folders?.user, folders?.contentReady]);
   useEffect(() => {
     if (!client.contentFolders) return;
     const controller = new AbortController();
@@ -281,8 +261,6 @@ export default function App() {
     }).catch(cause => { if (current) setFolderError(errorMessage(cause)); });
     return () => { current = false; };
   }, [folders?.contentReady]);
-  // Native load/configuration failures keep their existing controls reachable.
-  // Only shell-owned failures need the child hidden for the web recovery panel.
   const shellError = actionError ?? native.error;
   const boundsError = useMapSurface(content, tab === 'map' && !!path && !shellError && !popoverOpen && !sidebar.peek, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
@@ -291,8 +269,6 @@ export default function App() {
   useEffect(() => {
     const changed = lastNativePath.current !== nativePath;
     lastNativePath.current = nativePath;
-    // An initial command-line recording can finish opening after Analytics is
-    // selected. Adopt it only while no dashboard recording has been chosen.
     if (path != null) { if (nativePath === pendingPath.current) pendingPath.current = null; return; }
     if (!nativePath || defaultChosen.current) return;
     if (pendingPath.current && nativePath !== pendingPath.current) return;
@@ -306,7 +282,6 @@ export default function App() {
   }, [native.state?.error]);
 
   function openRecording() { openCampaign.current?.(); }
-  /** Opens the dashboard's recording on the map; a failure stays shown until a later open succeeds. */
   const openDefault = useCallback((chosen: string | null) => {
     const request = ++defaultRequest.current;
     if (!chosen || !desktopAvailable || tab !== 'map' || (chosen === nativePath && !pendingPath.current)) { setOpening(false); reportMap('open', null); return; }
@@ -323,7 +298,6 @@ export default function App() {
     openDefault(chosen);
   }, [openDefault, reportMap]);
 
-  /** Shows `next`: the native view it needs and, for the map, the dashboard's recording opened on it. */
   async function changeTab(next: Tab) {
     if (switching || next === tab) return;
     setSwitching(true);
@@ -336,12 +310,10 @@ export default function App() {
         await openReplay(path);
       }
       setSwitchFailure(null);
-      // Showing the map opens its recording again, so a failed open goes with any switch.
       reportMap('open', null);
       if (next !== 'settings') lastView.current = next;
       setTab(next);
     } catch (cause: unknown) {
-      // Only the open failed: the view still shown takes its native view back, or the map would cover it.
       if (selected) { pendingPath.current = null; await selectNativeView(tab !== 'map').catch(() => {}); }
       setSwitchFailure({ tab: next, message: errorMessage(cause) });
     } finally {
@@ -349,7 +321,6 @@ export default function App() {
     }
   }
 
-  /** Sends each failed map operation again; its error stays until that operation succeeds. */
   function retryMap() {
     if (mapFailures.open != null) openDefault(path);
     setRetry(value => value + 1);

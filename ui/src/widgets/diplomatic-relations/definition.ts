@@ -20,7 +20,6 @@ export const definition = {
   description: 'Every chosen country’s opinion of every other, with a pair’s history.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, rankedBy: 'the Top N by measure' },
-  // The largest countries, not human players: many campaigns are single-player.
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS, variants: breakdownVariants('Diplomatic relations', OPTIONS),
 } as const satisfies WidgetMeta;

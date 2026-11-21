@@ -1,8 +1,6 @@
-//! Selected writer boundaries and admitted passes; quiet members have no tap.
 use super::Site;
 use engine_sites::Rva;
 
-/// Bytes a selected CALL hook owns: adjacent CALLs stop before the next patch.
 pub const fn call_span_len(site: Site) -> usize {
     if site.rva.0 == REACTIVATE_TARGETED_DAYS.rva.0 {
         REACTIVATE_TARGETED_STATE.rva.0 - site.rva.0
@@ -128,17 +126,14 @@ pub const CONSOLE_ALL_DAYS: Site = Site {
     name: "DecisionConsoleAllDays",
     rva: Rva(0x0027208d),
 };
-/// A witness only, staged for [`IGNORE_ALL_COMMAND`]: its return precedes the store.
 pub const IGNORE_ALL_SELECTED: Site = Site {
     name: "DecisionIgnoreAllSelected",
     rva: Rva(0x011e0dcc),
 };
-/// A witness only, staged for [`TARGETED_REMOVAL_REQUEST`].
 pub const REQUEST_TARGETED_TIMED: Site = Site {
     name: "DecisionRequestTargetedTimed",
     rva: Rva(0x00377989),
 };
-/// A witness only, staged for [`TARGETED_REMOVAL_REQUEST`].
 pub const REQUEST_TARGETED: Site = Site {
     name: "DecisionRequestTargeted",
     rva: Rva(0x00377990),
@@ -203,81 +198,54 @@ pub const REMOVAL_RETIRED: Site = Site {
     name: "DecisionRemovalRetired",
     rva: Rva(0x0077f7fb),
 };
-/// A witness only, staged for [`TIMED_SELECTION`].
 pub const TIMED_SELECTION_RESULT: Site = Site {
     name: "DecisionTimedSelectionResult",
     rva: Rva(0x0077de4b),
 };
-/// A witness only, staged for the politics-owned targeted decision entry.
 pub const TARGETED_SELECTION_RESULT: Site = Site {
     name: "DecisionTargetedSelectionResult",
     rva: Rva(0x0077dd79),
 };
-/// A witness only, staged for [`TARGETED_IGNORE_COMMAND`].
 pub const TARGETED_IGNORE_RESULT: Site = Site {
     name: "DecisionTargetedIgnoreResult",
     rva: Rva(0x011e138f),
 };
-/// Automatic mission activation. RCX status. For each retained mission it
-/// skips, appends or reactivates; every reached reactivation's days and
-/// active-state stores precede its return.
 pub const AUTO_MISSION_ACTIVATION: Site = Site {
     name: "AutoMissionActivation",
     rva: Rva(0x0077f850),
 };
-/// Timed decision selection. RCX status, RDX definition. It selects the
-/// timed instance and stores its active state and selected days before
-/// returning them, zero-extended, in RAX.
 pub const TIMED_SELECTION: Site = Site {
     name: "TimedDecisionSelection",
     rva: Rva(0x0077ddc0),
 };
-/// Targeted ignore command execution. RCX command. Every selected targeted
-/// instance's ignore store precedes its return.
 pub const TARGETED_IGNORE_COMMAND: Site = Site {
     name: "TargetedIgnoreCommand",
     rva: Rva(0x011e1280),
 };
-/// Ignore-all command execution. RCX command. Every admitted instance's
-/// ignore store precedes its return.
 pub const IGNORE_ALL_COMMAND: Site = Site {
     name: "IgnoreAllDecisionsCommand",
     rva: Rva(0x011e0d10),
 };
-/// Targeted removal-request effect execution. RCX effect, RDX scope. Both
-/// lookups join one removal-request store, which precedes its return.
 pub const TARGETED_REMOVAL_REQUEST: Site = Site {
     name: "TargetedRemovalRequest",
     rva: Rva(0x00377860),
 };
-/// Decision candidate finalization. RCX status. All four candidate header
-/// clears precede its return.
 pub const CANDIDATE_FINALIZATION: Site = Site {
     name: "DecisionCandidateFinalization",
     rva: Rva(0x00780440),
 };
-/// The mission timeout extension's scalar add. RCX the timed instance, EDX
-/// the signed day delta; the scope is R15 at this CALL. The add completes
-/// before the call returns.
 pub const EXTEND_MISSION_TIMEOUT_CALL: Site = Site {
     name: "ExtendMissionTimeoutCall",
     rva: Rva(0x003623e1),
 };
-/// The removal timer extension's scalar add. RCX the removal timer, EDX the
-/// signed day delta; the scope is RSI at this CALL.
 pub const EXTEND_DECISION_REMOVAL_CALL: Site = Site {
     name: "ExtendDecisionRemovalCall",
     rva: Rva(0x0036245c),
 };
-/// Replaced-event retirement. RCX world, RDX the old definition. On a
-/// fired match it unlinks the node and decrements the fired count before
-/// returning; a no-match retires nothing.
 pub const REPLACE_EVENT_RETIREMENT_CALL: Site = Site {
     name: "ReplaceEventRetirementCall",
     rva: Rva(0x00a5a6a7),
 };
-/// Entry detours. The last seven enclose pre-store writers: their selected
-/// taps and CALLs only stage witnesses, published once the original returns.
 pub const ENTRIES: [Site; 27] = [
     TIMED_PASS,
     TARGETED_PASS,
@@ -307,8 +275,6 @@ pub const ENTRIES: [Site; 27] = [
     TARGETED_REMOVAL_REQUEST,
     CANDIDATE_FINALIZATION,
 ];
-/// Selected CALLs. The last three run their decoded target under a writer
-/// flight and publish the committed result after it.
 pub const CALLS: [Site; 17] = [
     APPEND_TAKEN,
     APPEND_REMOVAL,
@@ -358,7 +324,6 @@ pub const REFRESH_UPDATE: Site = Site {
     name: "DecisionRefreshUpdate",
     rva: Rva(0x77f510),
 };
-/// A descriptor only, no longer installed: [`CANDIDATE_FINALIZATION`] encloses every clear.
 pub const CLEAR_CANDIDATES: Site = Site {
     name: "DecisionClearCandidates",
     rva: Rva(0x007807df),

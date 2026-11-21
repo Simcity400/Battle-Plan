@@ -1,27 +1,3 @@
-//! Country logistics history, reached through `ccountry::LOGISTICS_STATUS`.
-//!
-//! Nineteen history series store one signed fixed5 value per equipment
-//! archetype, indexed by the archetype's position in the equipment database.
-//! Daily updates advance and zero every series record, then fill stock
-//! series 15 and, only for non-AI-controlled countries, balance series 16.
-//!
-//! Stock uses archetype pool totals. Balance subtracts clamped demand and
-//! outgoing-minus-incoming pool differences from available equipment.
-//! Availability uses recorded stock or the live pool cache for the selected
-//! category, adds supply truck/train adjustments and clamps at zero. Demand
-//! includes deployment shortages, reinforcements, garrisons, cached air
-//! requirements, operations, trucks and trains. The demand and pool-difference
-//! sums saturate at the game's fixed bound.
-//!
-//! The logistics view refreshes this balance as demand changes, so its
-//! current display can differ from the stored daily record. Stockpile
-//! changes outside the daily update refresh stock and balance in place,
-//! with the same AI-control gate. Category summaries additionally include
-//! incoming lend-lease; those display totals are not recorded.
-//!
-//! Read current stock and balance only for countries currently outside AI
-//! control. Other countries never receive a balance write, and their stock
-//! duplicates the Stockpiles table.
 
 use crate::{
     Memory, ccountry, cequipment_database as database, cequipment_type, cgame_state, cloop_history,
@@ -33,38 +9,22 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Logistics-status primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a2_ec48);
-/// Logistics history pointer array: capacity and count. Construction fills 19 series; daily update
-/// advances every counted series.
 pub const SERIES: usize = 0x08;
-/// Number of initialized and serialized logistics history series.
 pub const SERIES_COUNT: u32 = 19;
-/// CLogisticsStatus owning `CCountry*`.
 pub const COUNTRY: usize = 0x20;
-/// The stock series.
 pub const STOCK_SERIES: u32 = 15;
-/// The balance series.
 #[cfg(test)]
 pub const BALANCE_SERIES: u32 = 16;
-/// Stock-series roll-up mode.
 pub const STOCK_ROLL_UP: i32 = 0;
-/// Balance-series roll-up mode.
 pub const BALANCE_ROLL_UP: i32 = 1;
 
-/// Bytes of the status copied: vtable, series header and owner.
 const STATUS_BYTES: usize = COUNTRY + 8;
-/// Bytes of a CLoopHistory copied: through the field count.
 const HISTORY_BYTES: usize = cloop_history::FIELD_COUNT + 4;
-/// Bytes of a CLoopHistoryContainer copied: through the owning history.
 const WINDOW_BYTES: usize = window::HISTORY + 8;
-/// Bytes of a record copied: its value header and owning history.
 const RECORD_BYTES: usize = record_fields::HISTORY + 8;
-/// Record values and archetype identities read per guarded batch.
 const BATCH: usize = 64;
 
-/// The fields of an archetype read to name a record index: vtable, script
-/// token, index and archetype flag.
 const IDENTITY_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
@@ -91,29 +51,18 @@ const IDENTITY_STRIDE: usize = 24;
 const IDENTITY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&IDENTITY_FIELDS, IDENTITY_STRIDE).expect("valid record layout");
 
-/// One archetype of a country the game computes the balance for: the value
-/// of each series in the current daily record, fixed5.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The country's own raw tag reference (`ccountry::ID`).
     pub country: u32,
-    /// The record index: the archetype's `cequipment_type::STOCKPILE_INDEX` and its position in
-    /// `cequipment_database::ARCHETYPES`.
     pub archetype: u32,
-    /// The archetype's script token (`cequipment_type::TOKEN`).
     pub token: u32,
-    /// Series 16: the Logistics screen's surplus (positive) or deficit.
     pub balance_raw: i64,
-    /// Series 15: the stock the day's update counted.
     pub stock_raw: i64,
-    /// Acquisition-only identity of the exact balance record; never serialized.
     pub balance_history: usize,
     pub balance_values: usize,
-    /// Filled only by the collector observer for this exact native write.
     pub available_raw: Option<i64>,
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -136,8 +85,6 @@ pub fn walk_buffer(
     }
 }
 
-/// Live roster and archetype headers bound complete logistics storage
-/// before attach, for each eligible country.
 pub fn row_demand(
     memory: &impl Memory,
     base: usize,
@@ -151,15 +98,12 @@ pub fn row_demand(
         .ok_or("logistics row demand overflow")
 }
 
-/// Module vtable addresses the layout is authenticated against.
 struct Vtables {
     status: u64,
     history: u64,
     window: u64,
 }
 
-/// The equipment database's archetype list, read at the first country that
-/// needs it, and where the rows already naming its indices start.
 struct Archetypes {
     list: Array,
     named: Option<usize>,
@@ -209,7 +153,6 @@ fn walk_inner(
             return Err("logistics record size differs from the equipment archetype count");
         }
         let count = list.count as usize;
-        // Visit the complete live archetype list.
         rows.ensure(
             len.checked_add(count)
                 .ok_or("logistics row count overflow")?,
@@ -250,8 +193,6 @@ fn walk_inner(
     Ok((len, unread_rows))
 }
 
-/// Follows one country's status to the current daily record of the stock
-/// and balance series, returning each record's value array.
 struct Records {
     values: [Array; 2],
     balance_history: usize,
@@ -278,7 +219,6 @@ fn read_records(
     let series = Array::from_header(head[SERIES..SERIES + 16].try_into().unwrap(), 8)
         .filter(|series| series.count == SERIES_COUNT)
         .ok_or("logistics series array is not the constructed 19 series")?;
-    // The two series pointers are adjacent in the series array.
     let pair = series
         .element(STOCK_SERIES, 8)
         .and_then(|address| read::<[u8; 16]>(memory, address))
@@ -306,7 +246,6 @@ fn read_records(
     if stock.slot != balance.slot {
         return Err("logistics stock and balance daily slots disagree");
     }
-    // Each window's slot entry and its current record, in one guarded copy.
     let mut stock_slot = [0; 8];
     let mut balance_slot = [0; 8];
     let mut stock_record = [0; RECORD_BYTES];
@@ -349,7 +288,6 @@ fn read_records(
     })
 }
 
-/// Authenticates a series and returns its daily window.
 fn check_history(
     vtables: &Vtables,
     history: usize,
@@ -371,8 +309,6 @@ fn check_history(
     }
 }
 
-/// A daily window's current slot, the address of its slot entry and the
-/// record it names.
 struct Current {
     slot: u32,
     slot_entry: usize,
@@ -428,8 +364,6 @@ fn check_window(
     })
 }
 
-/// Checks that the window's slot names its current record, that the record
-/// belongs to the series and that it holds the series' field count.
 fn check_record(
     history: usize,
     current: &Current,
@@ -478,8 +412,6 @@ fn read_archetype_list(memory: &impl Memory, base: usize) -> Result<Array, &'sta
         .ok_or("equipment archetype list unreadable or invalid")
 }
 
-/// Names each record index with the token of the archetype at that position,
-/// requiring it to be an archetype whose own index is that position.
 fn read_identities(
     memory: &impl Memory,
     base: usize,
@@ -527,7 +459,6 @@ fn read_identities(
     Ok(())
 }
 
-/// Copies both records' values, a batch of each per guarded call.
 fn read_values(
     memory: &impl Memory,
     stock: Array,
@@ -584,8 +515,6 @@ fn i32_at(bytes: &[u8], offset: usize) -> i32 {
 #[cfg(test)]
 mod tests;
 
-/// Metadata used to size the balance operand observer off-thread. A country
-/// without balance rows is omitted by the same native AI predicate as `walk`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BalanceOwner {
     pub country: u32,
@@ -669,10 +598,6 @@ pub fn walk_balance_owners(
     }
 }
 
-/// Operands at the two balance-write calls. Daily update takes available from a caller stack slot;
-/// refresh takes it from another. Entry RSP includes the return address. Both pass record, actual
-/// balance and index in RCX/RDX/R8. Availability already includes convoy-cache and supply
-/// adjustments; this read calls no getter and refreshes no cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BalanceWrite {
     pub history: usize,
@@ -685,15 +610,11 @@ pub struct BalanceWrite {
 pub const BALANCE_WRITE_RVA: Rva = Rva(0x015b_3220);
 pub const BALANCE_CALLS: [(Rva, usize); 2] = [(Rva(0x0140_bc04), 0x90), (Rva(0x0140_c402), 0x80)];
 
-/// Whether the loop-history value setter stores at all: it writes `values[index]` only when the
-/// signed index is below the signed count at the record's count, and returns otherwise. `None` when
-/// the count is unreadable.
 pub fn balance_write_stores(memory: &impl Memory, record: usize, archetype: u32) -> Option<bool> {
     let count = read::<i32>(memory, record.checked_add(0xc)?)?;
     Some((archetype as i32) < count)
 }
 
-/// Validates the native signed-index store's record identity before the call.
 pub fn balance_identity(
     memory: &impl Memory,
     record: usize,
@@ -744,9 +665,6 @@ pub fn balance_write(
     })
 }
 
-/// History advance zeroes reused records; clear zeroes existing buffers.
-/// Only these logistics call sites reach balance series 16. Appearance reset
-/// clears a different country field, and other setters reach series 0/3/6.
 pub const HISTORY_CALLS: [(Rva, Rva); 3] = [
     (Rva(0x0140_ba58), Rva(0x015b_1de0)),
     (Rva(0x0140_7d68), Rva(0x015b_2420)),

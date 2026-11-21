@@ -261,9 +261,6 @@ fn unowned_state_province_census_compares_every_province_and_rejects_positive_ow
     );
 }
 
-/// States.category compares the recorded definition token's spelling with the
-/// saved `state_category` under the lexer's fold; a refused read or a token
-/// outside the recorded dictionary differs.
 #[test]
 fn state_category_compares_its_token_spelling_with_the_saved_name() {
     let with = |actual: Option<u32>, saved: Option<&str>| {
@@ -303,8 +300,6 @@ fn state_category_compares_its_token_spelling_with_the_saved_name() {
     assert_eq!(category(&with(Some(41), None)), 1);
 }
 
-/// States.population compares with the saved pool's `total`; an omitted pool
-/// admits only a nonpositive population.
 #[test]
 fn state_population_compares_with_the_saved_pool_total() {
     let with = |actual: replay_data::rows::Recorded<i32>, saved: Option<Option<i32>>| {
@@ -328,7 +323,6 @@ fn state_population_compares_with_the_saved_pool_total() {
     assert_eq!(population(&with(363_133.into(), Some(Some(363_133)))), 0);
     assert_eq!(population(&with(363_132.into(), Some(Some(363_133)))), 1);
     assert_eq!(population(&with(1.into(), None)), 1);
-    // A pool written without its total differs, whatever was recorded.
     assert_eq!(population(&with(0.into(), Some(None))), 1);
     assert_eq!(population(&with(5.into(), Some(None))), 1);
     let omitted = with(0.into(), None);
@@ -341,8 +335,6 @@ fn state_population_compares_with_the_saved_pool_total() {
     );
 }
 
-/// Marked owners compare with the saved `contested_owners` tags in stored order; a refused read
-/// is a difference and an older recording a named limitation.
 #[test]
 fn marked_owners_compare_with_saved_contested_owners_in_order() {
     let set = |frame: &mut DecodedFrame, owners: replay_data::rows::Recorded<Option<Vec<u32>>>| {

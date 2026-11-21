@@ -1,5 +1,3 @@
-//! Writer-selected receiver sets. Hooks only mark already registered native objects. The existing
-//! worker censuses admit new objects; quiet hours take the marked receivers without a world walk.
 use collector_certificates::watch_registry::WatchRegistry;
 use collector_hooks::hook::{Hook, Registers, Tap};
 use collector_timing::hook_timing::{self, Family};
@@ -34,7 +32,6 @@ pub(crate) fn read_refused(table: usize) {
 
 pub const UNAVAILABLE: &str = "naval repairs could not be followed in the game";
 
-/// Native patch inventory shared with the collector's cross-family ownership audit.
 pub fn patch_sites() -> impl Iterator<Item = (&'static str, Rva)> {
     SITES
         .iter()
@@ -47,8 +44,6 @@ fn hook_failure(
     names: impl Iterator<Item = &'static str>,
     reason: String,
 ) -> &'static str {
-    // Attach/detach failure only. Batch failures may apply to the whole publication,
-    // so retain every candidate's name instead of assigning a guessed culprit.
     let names = names.collect::<Vec<_>>().join(", ");
     let message = format!("naval_management_changes {action} [{names}]: {reason}");
     *PUBLICATION_ERROR
@@ -61,8 +56,6 @@ pub fn boundary(invalidate: bool) {
     renew(&FORCES, &FORCES_REFUSED, invalidate);
     renew(&BASES, &BASES_REFUSED, invalidate);
 }
-/// A refused registration found the table full, so its hour is already unavailable: install the
-/// grown table at the next hour rather than at the next load.
 fn renew(registry: &WatchRegistry, refused: &AtomicBool, invalidate: bool) {
     let grow = refused.load(Ordering::Relaxed) && registry.growth_pending();
     if registry.boundary(invalidate || grow).renewed() {
@@ -85,7 +78,6 @@ pub fn base_demand(entries: usize) {
 
 static CENSUS_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Live watch demand, or `None` before a load has made its game state and navy manager.
 fn census(
     memory: &impl Memory,
     base: usize,
@@ -143,8 +135,6 @@ fn offer_census(receivers: usize, buckets: usize) {
     CENSUS_PENDING.store(false, Ordering::Release);
 }
 
-/// Off the game thread: the first census for a collector attached before any load. A watch
-/// table installed later only grows at an invalidating boundary, so none is offered until then.
 pub fn presize(memory: &impl Memory, base: usize) {
     if !CENSUS_PENDING.load(Ordering::Acquire) {
         return;
@@ -209,16 +199,12 @@ unsafe extern "system-unwind" fn changed(registers: &Registers, tag: usize) {
         return;
     };
     if let Some(write) = &site.write {
-        // This selected store names both operands. Ignore an assignment that changes no bit;
-        // in particular, empty ports' repeated zero allocations never reread their repair work.
         let value = write
             .value
             .map_or(write.literal, |value| register(registers, value) as u64);
         let Some(address) = receiver.checked_add(write.offset) else {
             return;
         };
-        // SAFETY: the pinned native store is about to access this live object. Copies remain
-        // guarded; an unreadable comparison invalidates the hold rather than hiding the write.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let same = match write.bytes {
             1 => engine_native::read::<u8>(&memory, address).map(|old| old == value as u8),
@@ -246,7 +232,6 @@ unsafe extern "system-unwind" fn method<const INDEX: usize>(
     let receiver =
         [first, second, third, fourth][site.argument].checked_add_signed(site.adjustment);
     let registry = if site.base { &BASES } else { &FORCES };
-    // Recalculation's initialization flag is the only branch that stores refit progress.
     let observes = site.rva != sites::REFIT_RECALCULATE.rva || second as u8 != 0;
     let notification = receiver
         .filter(|_| observes)
@@ -264,10 +249,10 @@ pub struct Hooks {
     methods: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The caller owns these sites in the authenticated executable and restores and quiesces
-    /// every executable range before releasing them. Each descriptor identifies a complete
-    /// stack-independent instruction span with no incoming interior branch or native return PC.
+    #[doc = " # Safety"]
+    #[doc = " The caller owns these sites in the authenticated executable and restores and quiesces"]
+    #[doc = " every executable range before releasing them. Each descriptor identifies a complete"]
+    #[doc = " stack-independent instruction span with no incoming interior branch or native return PC."]
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
@@ -397,7 +382,6 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         CENSUS_PENDING.store(false, Ordering::Release);
-        // The runtime's normal restoration and range drain precede dropping this owner.
         unsafe {
             FORCES.release();
             BASES.release();
@@ -466,12 +450,10 @@ mod tests {
             .iter()
             .position(|site| site.rva == sites::REPAIR_SPLIT_COMMAND.rva)
             .expect("independent split writer must be installed");
-        // SAFETY: Registers contains only integer register values.
         let mut registers: Registers = unsafe { std::mem::zeroed() };
         registers.rdi = selected;
         for split in [1, 0] {
             registers.rax = split;
-            // SAFETY: this command descriptor only marks its register receiver.
             unsafe { changed(&registers, tag) };
             let mut marked = Vec::new();
             take_forces(|pointer| marked.push(pointer)).unwrap();
@@ -484,8 +466,6 @@ mod tests {
         assert_eq!(after.sampled - before.sampled, 2);
     }
 
-    /// A ship leaving its task force leaves its base's repair queue through this erase alone;
-    /// unmarked, the base kept the ship's row until its re-queue an hour later marked it.
     #[test]
     fn one_ship_erased_from_a_base_repair_queue_marks_that_base() {
         let _serial = fixture::SERIAL.lock().unwrap();
@@ -506,7 +486,6 @@ mod tests {
             base
         }
         let previous = ORIGINALS[index].swap(erase as *const () as usize, Ordering::SeqCst);
-        // SAFETY: the test owns this slot and its original has the method ABI.
         let result = unsafe { method::<19>(base, 0x5000, 0, 0) };
         ORIGINALS[index].store(previous, Ordering::SeqCst);
         assert_eq!(result, base);
@@ -516,7 +495,6 @@ mod tests {
         take_forces(|_| panic!("a queue erase marks no task force")).unwrap();
     }
 
-    /// A table too small for an undercounted census grew only at the next load.
     #[test]
     fn a_refused_registration_takes_the_grown_table_at_the_next_hour() {
         let _serial = fixture::SERIAL.lock().unwrap();
@@ -552,7 +530,6 @@ mod tests {
         }
         let before = hook_timing::counts(Family::NavalManagementChanges);
         let previous = ORIGINALS[0].swap(original as *const () as usize, Ordering::SeqCst);
-        // SAFETY: the test owns this slot and its original has the method ABI.
         let result = unsafe { method::<0>(0x1000, 0, 0, 0) };
         ORIGINALS[0].store(previous, Ordering::SeqCst);
         assert_eq!(result, 0x1001);
@@ -572,7 +549,6 @@ mod tests {
 
     #[test]
     fn naval_management_writer_sites_are_distinct() {
-        // Every patch replaces at least five bytes; tap spans are decoded from the located code.
         let mut sites: Vec<_> = patch_sites().collect();
         sites.sort_unstable_by_key(|&(_, rva)| rva);
         for pair in sites.windows(2) {
@@ -597,9 +573,7 @@ pub(crate) mod fixture {
         BASES.set_enabled(true);
         boundary(true);
     }
-    /// Both registries hold the smallest table, as after a census that undercounted.
     pub fn undersized() {
-        // SAFETY: the serial lock excludes every notification and capture.
         unsafe {
             FORCES.release();
             BASES.release();

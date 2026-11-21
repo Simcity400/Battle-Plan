@@ -1,10 +1,6 @@
-// Cargo's `build.target` for a run from `cwd`, in Cargo's order: `--config` overrides (right-most
-// first), CARGO_BUILD_TARGET, then each `.cargo` folder from `cwd` up and Cargo's home, where a
-// folder's extensionless `config` hides its `config.toml`.
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-/** The target one TOML text names, undefined when it names none. */
 function named(text, source) {
   let table = '';
   for (const line of text.split(/\r?\n/)) {

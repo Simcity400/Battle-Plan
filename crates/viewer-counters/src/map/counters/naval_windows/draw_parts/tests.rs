@@ -38,7 +38,6 @@ containerWindowType={name=naval_base_mapicon size={width=90 height=70}
    slotsize={width=20 height=10} format=UPPER_LEFT}
 }}"#;
 
-// Cloned only at construction, so both instances keep identical registration and tree identities.
 fn states(views: &[([Instance; 2], &native::Element)], side: usize) -> Vec<String> {
     views
         .iter()
@@ -46,7 +45,6 @@ fn states(views: &[([Instance; 2], &native::Element)], side: usize) -> Vec<Strin
         .collect()
 }
 
-// Retains the original clone-and-place algorithm independently of the production entry point.
 fn reference_place(
     holder: &native_gui::Holder,
     at: [i32; 2],
@@ -59,7 +57,6 @@ fn reference_place(
 }
 
 fn native_asset() -> Arc<library::Effect> {
-    // Byte-emission metadata only: no shader compiler, device or render pipeline.
     let program =
         installed_content_core::pdxshader::program::read_with(b"gfx/FX/naval_draw_fixture.lua", &|_| {
             Some(b"PixelShader={MainCode P [[ ]]}".to_vec())
@@ -178,7 +175,6 @@ fn borrowed_naval_parts_keep_1200_frames_of_draw_bytes_and_carried_state() {
             time = 0.0;
         }
         if phase == 0 && frame != 0 {
-            // A new roster occupant, not cached geometry based on the unchanged item count.
             let instance = Instance::construct(navy, VIEWPORT, &resources).unwrap();
             views[0].0 = [instance.clone(), instance];
         }
@@ -234,7 +230,6 @@ fn borrowed_naval_parts_keep_1200_frames_of_draw_bytes_and_carried_state() {
                     Some(if phase < 60 { 1.0 } else { 1.25 });
             }
         }
-        // Keep the real three phases and reverse-registration transition ordering.
         for side in [0, 1] {
             for (pair, root) in &mut views {
                 pair[side]
@@ -297,7 +292,6 @@ fn borrowed_naval_parts_keep_1200_frames_of_draw_bytes_and_carried_state() {
                         .unwrap()
                         .clone()
                 } else {
-                    // The at-sea caller's live graphical-column holder, not a retained layout.
                     native_gui::Holder {
                         path: "units_box".into(),
                         child: Some(2),
@@ -331,7 +325,6 @@ fn borrowed_naval_parts_keep_1200_frames_of_draw_bytes_and_carried_state() {
                     draws_refused += 1;
                     refusals[side].push(format!("draw: {why:?}"));
                 }
-                // Exercise the original all-or-nothing draw rollback after an unavailable sheet.
                 if phase == 75 {
                     let mut failed = laid.clone();
                     if let Some(part) = failed

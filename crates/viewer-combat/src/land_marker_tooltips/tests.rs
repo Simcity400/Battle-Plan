@@ -55,7 +55,7 @@ fn marker_uses_full_roster_primary_order_and_viewer_relative_survival() {
     assert_eq!(
         countries(&[7, 3, 7], &name).unwrap(),
         "\u{11}YCountry 7\u{11}!, \u{11}YCountry 3\u{11}!, \u{11}YCountry 7\u{11}!"
-    ); // No second set builder here.
+    );
 }
 
 #[test]
@@ -159,7 +159,5 @@ fn marker_country_list_and_roster_have_no_viewer_cap() {
     )
     .unwrap();
     assert!(text.starts_with("\nAttacker: 5000 (\u{11}YC0\u{11}!, \u{11}YC1\u{11}!"));
-    // The shared native localiser limits each substitution to its own
-    // 0x1800-byte buffer; this is not a country-list cap.
     assert!(text.contains("\nDefender: 0 ()"));
 }

@@ -19,8 +19,6 @@ const reply: TerritoryBreakdownReply = {
   missing: null, areaReason: null, warnings: [],
 };
 
-/** The cells as a followed group leaves them: GER owns 5/3 states, ITA's are not recorded, the land no country holds is
- * one whole state, SOV holds none, and FRA's row is gone from the table before the structure without it lands. */
 const cells = new Map([
   [liveKey('ger7', 'value'), 5], [liveKey('ger7', 'denominator'), 3],
   [liveKey('none', 'value'), 1], [liveKey('none', 'denominator'), 1],

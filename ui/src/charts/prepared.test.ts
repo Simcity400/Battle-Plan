@@ -4,7 +4,6 @@ import { APPROXIMATE_ALPHA, APPROXIMATE_DASH, PENDING_ALPHA, markApproximate, ov
 import { plotFrame } from './frame.ts';
 import { tokensFromValues } from './tokens.ts';
 
-/** The drawing calls a painter makes, with the style each was made in. */
 class Recorder {
   globalAlpha = 1; fillStyle: unknown = ''; strokeStyle: unknown = ''; lineWidth = 0;
   calls: unknown[][] = [];

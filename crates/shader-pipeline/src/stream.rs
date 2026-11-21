@@ -1,10 +1,3 @@
-//! Apply native binds in submission order. The owner must feed this after its layer sorting:
-//! a missing technique keeps the preceding program and its input declaration. Each resource
-//! changes only when its own binding command is supplied. A draw the owner refuses still makes
-//! the binds the game makes for it; what the owner lacks of them (a program it could not
-//! compile, a texture it does not hold) is forgotten ([`Stream::forget_program`],
-//! [`Stream::forget_texture`]), so a later draw that reads it is refused instead of given an
-//! earlier bind.
 
 use super::{
     binding, gpu,
@@ -32,7 +25,6 @@ pub enum WarmPass {
     Recorded(String),
 }
 
-/// The binds a [`Stream`] holds at one point of its draws ([`Stream::binds`]).
 #[derive(Clone)]
 pub struct Binds {
     program: Option<(Selection, Layout)>,
@@ -57,20 +49,15 @@ pub struct Stream {
     constants: BTreeMap<u32, Vec<u8>>,
     known_constants: BTreeMap<u32, Vec<std::ops::Range<u32>>>,
     textures: TextureMap,
-    // Created only for a successful immutable bind; ordinary texture changes stay in-place.
     texture_snapshot: Option<Arc<TextureMap>>,
     null_textures: BTreeMap<super::TextureKind, gpu::TextureBinding>,
     last_pass: Option<ResolvedPass>,
     pub cache: gpu::Cache,
     pub refused: BTreeMap<String, u64>,
-    /// Where packed pipelines this stream lacks are built, while their draws wait; `None`
-    /// builds them in place.
     builds: Option<Builds>,
-    /// Draws that waited for a pipeline since [`Self::take_waiting`].
     waits: u32,
 }
 
-/// What a packed pipeline is built for: its program, bound state and target.
 type Target = (wgpu::TextureFormat, u32, wgpu::PrimitiveTopology);
 
 struct Build {
@@ -78,7 +65,6 @@ struct Build {
     selection: Selection,
     state: gpu::State,
     target: Target,
-    /// `None` while it builds.
     made: Option<(gpu::Cached, Diagnostics)>,
 }
 
@@ -99,7 +85,6 @@ impl Build {
     }
 }
 
-/// Packed pipelines streams lacked, each built on a thread of its own.
 #[derive(Clone, Default)]
 pub struct Builds(Arc<Mutex<Vec<Build>>>);
 
@@ -108,7 +93,6 @@ fn lock(builds: &Mutex<Vec<Build>>) -> std::sync::MutexGuard<'_, Vec<Build>> {
 }
 
 impl Builds {
-    /// The finished build for this draw, taken; else `None`, its build started unless under way.
     fn take_or_start(
         &self,
         gui: bool,
@@ -146,7 +130,6 @@ impl Builds {
             move || {
                 let _building = building;
                 let (format, samples, topology) = target;
-                // A build that panicked is refused by name, so its draws never wait for it.
                 let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut cache = gpu::Cache::default();
                     cache.gui = gui;
@@ -171,7 +154,6 @@ impl Builds {
             .spawn(job_priority::carry(build))
         {
             Ok(_) => None,
-            // With no thread to build on, the draw is refused by name, never built here.
             Err(error) => {
                 lock(&self.0).retain(|build| !build.is(gui, selection, state, target));
                 Some((
@@ -200,7 +182,6 @@ impl Layout {
     }
 }
 
-/// Pipeline inputs only: constant bytes, views and native allocations are still read for every draw.
 struct PassInputs {
     effect: uuid::Uuid,
     technique: usize,
@@ -312,7 +293,6 @@ pub struct Submission {
     pub draw: gpu::Draw,
 }
 
-/// Geometry, viewport/scissor and blend constants remain caller-owned.
 pub struct PassSubmission {
     pub pipeline: Arc<gpu::Pipeline>,
     pub bindings: gpu::Bindings,
@@ -320,8 +300,6 @@ pub struct PassSubmission {
     pub scissor_enabled: Option<bool>,
 }
 
-/// Geometry already packed for the effective native declaration. The caller keeps the
-/// native binds unchanged and supplies only uploads whose bytes that draw could read.
 pub struct NativePrepared<'a> {
     pub layouts: &'a [gpu::VertexLayout],
     pub vertices: &'a [gpu::Slice],
@@ -343,9 +321,6 @@ impl NativeBindings {
     }
 }
 
-/// A successful native-pass resolution, scoped to one stream/device and one caller selection.
-/// Every hit still compares the complete ordered pass key and checks initialized constants.
-/// Constants and their arena offsets are never cached. Failed replacements are not cached.
 #[derive(Default)]
 pub struct NativePassCache {
     resolved: Option<ResolvedPass>,
@@ -355,8 +330,6 @@ pub struct NativePassCache {
 }
 
 impl NativePassCache {
-    /// Immutable resource-map snapshots currently held, for consumer exactness proofs.
-    /// This exposes actual cache state, not diagnostic hit/miss counters.
     #[cfg(any(test, feature = "test-support"))]
     pub fn binding_textures(&self) -> impl Iterator<Item = &Arc<TextureMap>> {
         self.bindings.iter().map(|entry| &entry.textures)
@@ -387,7 +360,6 @@ impl Stream {
         program && self.same_state(other) && self.textures == other.textures
     }
 
-    /// Strides, states, samplers, depth-stencil, rasterizer and constants compare equal.
     #[cfg(any(test, feature = "test-support"))]
     fn same_state(&self, other: &Self) -> bool {
         self.vertex_strides == other.vertex_strides
@@ -409,8 +381,6 @@ impl Stream {
             && self.known_constants == other.known_constants
     }
 
-    /// Independent-owner fixture comparison: shader sources, defines, layouts,
-    /// states, strides and constants compare raw. Only texture identities are mapped.
     #[cfg(any(test, feature = "test-support"))]
     pub fn same_bindings_mapped_for_tests(
         &self,
@@ -444,7 +414,6 @@ impl Stream {
                 })
     }
 
-    /// The binds this stream holds now, which a later draw reads unless it binds its own.
     pub fn binds(&self) -> Binds {
         Binds {
             program: self.program.clone(),
@@ -460,7 +429,6 @@ impl Stream {
         }
     }
 
-    /// Holds `binds` again, as the stream held them when they were taken ([`Self::binds`]).
     pub fn restore(&mut self, binds: &Binds) {
         self.program.clone_from(&binds.program);
         self.vertex_strides.clone_from(&binds.vertex_strides);
@@ -474,8 +442,6 @@ impl Stream {
         self.texture_snapshot.clone_from(&binds.texture_snapshot);
     }
 
-    /// Start a scoped render-to-texture pass with the caller's retained bindings.
-    /// Keep this stream's device cache; later changes do not alter the caller.
     pub fn inherit_bindings(&mut self, caller: &Self) {
         self.program = caller.program.clone();
         self.vertex_strides = caller.vertex_strides.clone();
@@ -489,21 +455,15 @@ impl Stream {
         self.texture_snapshot = caller.texture_snapshot.clone();
     }
 
-    /// Independent renderer blend handle, after program selection. Text backgrounds disable
-    /// blending before text uses alpha MAX.
     pub fn bind_blend(&mut self, blend: Option<wgpu::BlendState>, write_mask: wgpu::ColorWrites) {
         self.state.blend = blend;
         self.state.write_mask = write_mask;
     }
 
-    /// The bound blend state and colour write mask.
     pub fn blend(&self) -> (Option<wgpu::BlendState>, wgpu::ColorWrites) {
         (self.state.blend, self.state.write_mask)
     }
 
-    /// Draws into a layer that keeps premultiplied colour and is blended over the frame later:
-    /// the bound blend keeps its colour terms, its alpha accumulates as `One, OneMinusSrcAlpha`,
-    /// and every channel is written. The next effect bind restores the effect's own state.
     pub fn accumulate_alpha(&mut self) {
         if let Some(blend) = &mut self.state.blend {
             blend.alpha = wgpu::BlendComponent {
@@ -515,15 +475,12 @@ impl Stream {
         self.state.write_mask = wgpu::ColorWrites::ALL;
     }
 
-    /// A null handle retains the program and its input layout.
-    /// Blend, depth, rasterizer and resource handles are independent commands.
     pub fn bind_program(&mut self, selection: Option<Selection>, vertices: Vec<gpu::VertexLayout>) {
         if let Some(selection) = selection {
             self.program = Some((selection, Layout::Native(vertices.into())));
         }
     }
 
-    /// Select an immutable native declaration without cloning an unchanged program/layout.
     pub fn select_program(&mut self, selection: &Selection, vertices: &[gpu::VertexLayout]) {
         if self.program.as_ref().is_some_and(|(bound, layout)| {
             bound.effect.id == selection.effect.id
@@ -535,17 +492,12 @@ impl Stream {
         self.bind_program(Some(selection.clone()), vertices.to_vec());
     }
 
-    /// IA buffer strides are independent of the program/input declaration. A trail draw can
-    /// replace slot 0 even when a null technique retains a program.
-    /// Handles and offsets remain caller-owned; an omitted slot keeps its stride.
     pub fn bind_vertex_stride(&mut self, slot: u32, stride: u64) {
         if self.vertex_strides.get(&slot) != Some(&stride) {
             Arc::make_mut(&mut self.vertex_strides).insert(slot, stride);
         }
     }
 
-    /// Effective input declaration for binding the caller's retained buffers.
-    /// Layout strides are defaults until an explicit buffer bind supplies one.
     pub fn vertex_layouts(&self) -> Result<Vec<gpu::VertexLayout>, String> {
         let (_, layout) = self.program.as_ref().ok_or(
             "null technique needs the preceding native program, which has not been supplied",
@@ -570,7 +522,6 @@ impl Stream {
         self.rasterizer = Some(state);
     }
 
-    /// Preserve device resources, with the same native state as a fresh frame.
     pub fn begin_frame(&mut self) {
         *self = Self {
             cache: std::mem::take(&mut self.cache),
@@ -580,7 +531,6 @@ impl Stream {
         };
     }
 
-    /// Build only the pipeline; no resource bindings, geometry or draw counters change.
     pub fn warm_pass(
         &mut self,
         device: &wgpu::Device,
@@ -605,8 +555,6 @@ impl Stream {
         }
     }
 
-    /// A non-native pass (or a new frame) has replaced device state we cannot reconstruct.
-    /// Keep compiled pipelines, but never guess that its program was the last native effect.
     pub fn invalidate_bindings(&mut self) {
         self.program = None;
         self.vertex_strides = Arc::default();
@@ -620,8 +568,6 @@ impl Stream {
         self.texture_snapshot = None;
     }
 
-    /// A null technique retains program/layout and selects the renderer default blend.
-    /// The program is bound even when its blend state is refused: the game binds both.
     pub fn bind_effect(
         &mut self,
         selection: Option<Selection>,
@@ -637,8 +583,6 @@ impl Stream {
                 &selection.effect.source.techniques[selection.index],
             )
         };
-        // A visual mod's replacement whose blend state cannot be built binds the recorded
-        // program instead, refused by name.
         let (selection, blend) = match blend(&selection) {
             Ok(state) => (selection, Ok(state)),
             Err(error) => match selection.fall_back(&error) {
@@ -655,13 +599,10 @@ impl Stream {
         Ok(())
     }
 
-    /// A declared technique the owner could not compile: the game binds its non-null program
-    /// record, which the owner does not have.
     pub fn forget_program(&mut self) {
         self.program = None;
     }
 
-    /// A null constant-buffer handle leaves the slot bound.
     pub fn bind_constants(&mut self, slot: u32, stage: Stage, bytes: Option<&[u8]>) {
         if let Some(bytes) = bytes {
             self.write_constants(binding(slot, stage), bytes);
@@ -675,8 +616,6 @@ impl Stream {
         retained.extend_from_slice(bytes);
     }
 
-    /// `bytes` covers the physical allocation, including unknown discard padding.
-    /// A null handle retains both the allocation and its known-byte ranges.
     pub fn bind_partial_constants(
         &mut self,
         slot: u32,
@@ -704,8 +643,6 @@ impl Stream {
         Ok(())
     }
 
-    // Keep the canonical bitwise key paired with the actual retained sampler, not an
-    // incoming command that native sampler equality might leave unapplied (signed zero).
     fn set_sampler(&mut self, key: u32, sampler: Sampler) {
         let bits = gpu::sampler_key(&sampler);
         if self.sampler_keys.get(&key) != Some(&bits) {
@@ -714,9 +651,6 @@ impl Stream {
         self.state.samplers.insert(key, sampler);
     }
 
-    /// A sampler overrides the caller's slot, for both texture and sampler.
-    /// A null pixel sampler retains state, a null vertex sampler clears it; null texture unbinds.
-    /// Batched GUI uses `bind_formatted_texture`: a view's colour-space format is not queryable.
     pub fn bind_texture(
         &mut self,
         slot: u32,
@@ -745,8 +679,6 @@ impl Stream {
                 self.set_sampler(key, sampler.clone());
             }
         } else if stage == Stage::Vertex {
-            // A null vertex sampler uses D3D11's linear filtering, clamp addressing, zero bias
-            // and unrestricted LOD.
             self.set_sampler(
                 key,
                 Sampler {
@@ -767,8 +699,6 @@ impl Stream {
         }
     }
 
-    /// A texture the owner does not hold, at a slot a draw binds: the slot's sampler binds as
-    /// [`Self::bind_texture`] binds it, and the texture is unknown to later draws.
     pub fn forget_texture(&mut self, slot: u32, stage: Stage, sampler: Option<&Sampler>) {
         self.bind_texture(slot, stage, None, sampler);
         let slot = sampler.map_or(slot, |sampler| sampler.index);
@@ -777,26 +707,20 @@ impl Stream {
         }
     }
 
-    /// Packed pipelines this stream lacks are built on `builds` while their draws wait
-    /// ([`Self::take_waiting`]); `None` builds them in place.
     pub fn defer_builds(&mut self, builds: Option<Builds>) {
         self.builds = builds;
     }
 
-    /// Whether a draw waited for its pipeline since the last call: it was neither prepared nor
-    /// refused, and its binds stay as the game makes them.
     pub fn take_waiting(&mut self) -> bool {
         std::mem::take(&mut self.waits) != 0
     }
 
-    /// The packed pipeline of the bound state for `selection`, or `None` while it builds.
     fn packed(
         &mut self,
         device: &wgpu::Device,
         selection: &Selection,
         (format, samples, topology): Target,
     ) -> Option<gpu::Cached> {
-        // A pipeline this stream already holds is found once, before anything else is asked.
         if let Some(found) =
             self.cache
                 .find_packed(selection, &self.state, (format, samples, topology))
@@ -824,9 +748,6 @@ impl Stream {
         )
     }
 
-    /// Builds, in place, the packed pipeline a draw of `selection` alone makes: the technique's
-    /// blend or the renderer default, alpha accumulated or not, and its own samplers. The
-    /// stream's binds are then invalidated and its blend kept.
     pub fn warm(
         &mut self,
         device: &wgpu::Device,
@@ -838,7 +759,6 @@ impl Stream {
             let source = &selection.effect.source;
             gpu::blend(source, &source.techniques[selection.index])
         };
-        // A replacement whose blend cannot be built draws the recorded program, as a draw binds it.
         let (selection, (blend, mask)) = match blend(selection) {
             Ok(state) => (selection.clone(), state),
             Err(_) => match selection.recorded() {
@@ -866,8 +786,6 @@ impl Stream {
         for sampler in &source.vertex.samplers {
             self.bind_texture(sampler.index, Stage::Vertex, None, Some(sampler));
         }
-        // A failure is kept by the cache and reported where a draw meets it; the recorded program
-        // a failed replacement draws instead is made too.
         if self
             .cache
             .get(device, &selection, &self.state, format, samples, topology)
@@ -888,8 +806,6 @@ impl Stream {
         "its pipeline is being built".into()
     }
 
-    /// `count` records of `stride` bytes drawn as the caller's `topology`: a native four-record
-    /// strip stays four records, so `SV_VertexID` runs as it does natively.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
@@ -981,8 +897,6 @@ impl Stream {
             return Err("native vertex buffers require prepare_pass".into());
         };
         let device = arena.device();
-        // A visual mod's replacement that cannot be drawn with the bound state draws the
-        // recorded program instead, refused by name.
         let target = (format, samples, topology);
         let pipeline = match self.packed(device, &selection, target) {
             None => return Err(self.wait()),
@@ -1013,7 +927,6 @@ impl Stream {
                 self.null_textures.get(kind).map(|bound| &bound.view)
             }
         };
-        // A texture variant this pipeline lacks builds elsewhere while the draw waits.
         if self.builds.is_some() && pipeline.start_variant(device, bound) {
             return Err(self.wait());
         }
@@ -1039,9 +952,6 @@ impl Stream {
         Ok(draw)
     }
 
-    ///Prepare arbitrary caller-owned vertex/index streams with retained native bindings.
-    ///The template owns attachments, topology and multisampling. Bound program/layout,
-    ///blend, rasterizer and depth handles override their corresponding template fields.
     pub fn prepare_pass(
         &mut self,
         arena: &gpu::Arena,
@@ -1058,9 +968,6 @@ impl Stream {
         result
     }
 
-    /// Decode the retained packed declaration, using the caller's attachments and
-    /// retained native depth/raster state. Later texture groups can reuse these
-    /// vertex slices with [`Self::prepare_pass`] without uploading the geometry again.
     pub fn prepare_packed_pass(
         &mut self,
         arena: &gpu::Arena,
@@ -1079,7 +986,6 @@ impl Stream {
                 .into());
             };
             let declaration = *declaration;
-            // Packed for the program drawn, the recorded one when the replacement fell back.
             let (pass, drawn) = self.prepare_pass_inner(arena, template, None, None)?;
             let compiled = drawn.effect.compiled(drawn.index)?;
             let packed = Vertices {
@@ -1099,10 +1005,6 @@ impl Stream {
         result
     }
 
-    /// Decode complete native buffer allocations into WebGPU-compatible strides.
-    /// This preserves overlapping declarations and D3D out-of-allocation reads;
-    /// unknown bytes in an allocation are still a named refusal. The native
-    /// retained declaration/strides remain unchanged by this temporary packing.
     pub fn prepare_native_pass(
         &mut self,
         arena: &gpu::Arena,
@@ -1117,10 +1019,6 @@ impl Stream {
         )
     }
 
-    /// The prepared geometry and previous bindings belong to this arena/view. A caller
-    /// supplying `previous` has compared every constant byte, initialized range, texture
-    /// and sampler since that successful draw. Resolve the pass even then: replacement
-    /// fallbacks and their refusals must still happen in native order.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_native_pass_with(
         &mut self,
@@ -1138,8 +1036,6 @@ impl Stream {
         )
     }
 
-    /// Opt-in native-pass cache for a caller's successful selection. Native buffer reads,
-    /// partial constant checks, null bindings and refusals keep their ordinary serial order.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_native_pass_with_cache(
         &mut self,
@@ -1187,8 +1083,6 @@ impl Stream {
             Ok(NativeSubmission { pass, vertices })
         })();
         if let Some(cache) = cache {
-            // Native geometry staging happens after binding and can still refuse. Publish
-            // immutable bindings only after the entire draw's ordinary preparation succeeds.
             if let Some(pending) = cache.pending.take()
                 && result.is_ok()
             {
@@ -1198,7 +1092,6 @@ impl Stream {
         match result {
             Ok(submission) => Ok(submission),
             Err(reason) => {
-                // Labels are diagnostic only. Do not allocate them for a successful draw.
                 let label = label.to_string();
                 let reason = format!("native draw {label:?}: {reason}");
                 self.refuse(arena, &label, &reason);
@@ -1207,9 +1100,6 @@ impl Stream {
         }
     }
 
-    /// Counts a refused draw and records in the frame's arena what was refused, by identity:
-    /// the draw `label` with the effect file and technique bound, never the message text,
-    /// which can differ between loads ([`gpu::Arena::refuse`]).
     fn refuse(&mut self, arena: &gpu::Arena, label: &str, reason: &str) {
         *self.refused.entry(reason.to_owned()).or_default() += 1;
         arena.refuse(&match &self.program {
@@ -1259,7 +1149,6 @@ impl Stream {
             diagnostics.credit();
             let resolved = resolved?;
             let (pipeline, selection, stencil_reference, scissor_enabled) = &resolved;
-            // Keep a failed replacement's ordinary refusal/fallback on EVERY draw.
             if self.program.as_ref().is_some_and(|(requested, _)| {
                 requested.effect.id == selection.effect.id && requested.index == selection.index
             }) {
@@ -1321,8 +1210,6 @@ impl Stream {
             let frame = arena.frame();
             if cache.frame != frame {
                 cache.frame = frame;
-                // Match ordinary bind-group retirement; page changes within a frame do
-                // not repeatedly recapture programs, and unused views cannot accumulate.
                 cache.bindings.retain(|entry| entry.used + 1 >= frame);
             }
             if let Some(entry) = cache
@@ -1426,8 +1313,6 @@ impl Stream {
             None => stream.vertex_layouts(),
         };
         pass.vertices = layouts(self, &selection)?;
-        // A visual mod's replacement that cannot be drawn with the bound state draws the
-        // recorded program instead, refused by name.
         let pipeline = match self
             .cache
             .get_pass(arena.device(), &selection, &self.state, &pass)
@@ -1443,7 +1328,6 @@ impl Stream {
                 pipeline
             }
         };
-        // A failed replacement still takes its ordinary refusal/fallback path on each draw.
         if self.program.as_ref().is_some_and(|(requested, _)| {
             requested.effect.id == selection.effect.id && requested.index == selection.index
         }) {
@@ -1475,7 +1359,6 @@ impl Stream {
         let mut reference = None;
         if let Some(depth) = &mut pass.depth_stencil {
             if let Some(raster) = &self.rasterizer {
-                // Bias belongs to the native raster handle, independently of depth.
                 depth.bias =
                     gpu::depth_stencil(&DepthStencilState::default(), raster, depth.format)
                         .0
@@ -1493,7 +1376,6 @@ impl Stream {
         (pass, reference, scissor)
     }
 
-    /// Create the zero textures explicit null binds need; refuse slots never bound.
     fn null_textures<'a>(
         &mut self,
         device: &wgpu::Device,
@@ -1901,7 +1783,6 @@ mod tests {
         assert_eq!(depth.depth_compare, Some(wgpu::CompareFunction::Always));
         assert_eq!(depth.bias.constant, -3);
         assert_eq!(pass.multisample.count, 4);
-        // A null technique changes blend but keeps the native packed declaration.
         stream.bind_effect(None, Declaration::Sprite).unwrap();
         assert!(matches!(
             stream.program,
@@ -1928,7 +1809,6 @@ mod tests {
             }
         );
         assert_eq!(stream.state.write_mask, wgpu::ColorWrites::ALL);
-        // An additive colour term is kept; only alpha accumulates.
         stream.bind_blend(
             Some(wgpu::BlendState {
                 color: wgpu::BlendComponent {
@@ -1944,15 +1824,12 @@ mod tests {
         let blend = stream.state.blend.unwrap();
         assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
         assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
-        // Blending off stays off.
         stream.bind_blend(None, wgpu::ColorWrites::RED);
         stream.accumulate_alpha();
         assert_eq!(stream.state.blend, None);
         assert_eq!(stream.state.write_mask, wgpu::ColorWrites::ALL);
     }
 
-    /// A visual mod's replacement whose blend state cannot be built binds the same technique
-    /// of the recorded program, the replacement named.
     #[test]
     fn a_replacement_blend_that_cannot_be_built_binds_the_recorded_program() {
         use super::super::library::{Effect, Recorded};
@@ -2008,9 +1885,6 @@ Effect Up { VertexShader = V PixelShader = P }
         );
     }
 
-    /// Every refused native draw is recorded in the frame's arena by a name that is the same
-    /// on another load: a map compares the refusals it makes with and without visual mods by
-    /// these names.
     #[test]
     fn refused_draws_are_recorded_by_stable_names() {
         use super::super::library::Effect;
@@ -2019,7 +1893,6 @@ Effect Up { VertexShader = V PixelShader = P }
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let (device, _queue) = crate::tests::device();
-        // The counting compiler's shaders build no pipeline, so every draw is refused.
         let refused = || {
             let cache = Arc::new(crate::cache::Cache::new(
                 None,
@@ -2036,7 +1909,6 @@ Effect Up { VertexShader = V PixelShader = P }
                 panic!("a pipeline was built from the counting compiler's shaders");
             };
             assert_eq!(stream.refused.keys().collect::<Vec<_>>(), [&reason]);
-            // Recorded by what was refused, not by the message.
             assert_eq!(
                 arena.refusals(),
                 [format!(
@@ -2050,8 +1922,6 @@ Effect Up { VertexShader = V PixelShader = P }
         assert_eq!(refused(), refused());
     }
 
-    /// A replacement no pipeline can be built from, reading POSITION alone, over a recorded
-    /// effect whose program builds and reads POSITION and TEXCOORD0; with the GPU lock held.
     fn falling_back() -> (
         std::sync::MutexGuard<'static, ()>,
         gpu::Arena,
@@ -2085,7 +1955,6 @@ Effect Up { VertexShader = V PixelShader = P }
                     clock: Default::default(),
                 };
                 if source.identity == self.0 {
-                    // No pipeline can be built from the replacement.
                     return Ok(Compiled {
                         vertex: shader("fixture", vec![input(0, "POSITION", 3)]),
                         pixel: shader("fixture", vec![]),
@@ -2129,9 +1998,6 @@ Effect Up { VertexShader = V PixelShader = P }
         (serial, arena, shown)
     }
 
-    /// Packed geometry follows the program drawn: a replacement that reads only POSITION and
-    /// falls back to a recorded program reading POSITION and TEXCOORD0 packs both, never the
-    /// replacement's layout under the recorded pipeline.
     #[test]
     fn packed_geometry_follows_the_program_a_replacement_falls_back_to() {
         let (_serial, arena, shown) = falling_back();
@@ -2139,7 +2005,6 @@ Effect Up { VertexShader = V PixelShader = P }
         stream
             .bind_effect(shown.select("Up").unwrap(), Declaration::Sprite)
             .unwrap();
-        // Three 20-byte sprite vertices: float3 POSITION, float2 TEXCOORD0.
         let submission =
             match stream.prepare_packed_pass(&arena, "text", &template(), &[0; 60], 20, 3) {
                 Ok(submission) => submission,

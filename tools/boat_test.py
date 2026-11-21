@@ -17,7 +17,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import boat as bt  # noqa: E402
+import boat as bt
 
 OK = types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -40,7 +40,6 @@ class FakeBoat:
         self.missing = set()
         self.failing = set()
         self.refused = set()
-        # Infos a resumed VM stays starting for, then hydrates over, one entry per info; a VM absent keeps its hydration.
         self.starting = {}
         self.hydrating = {}
 
@@ -132,7 +131,6 @@ class Harness(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.state = bt.State(self.root / "state")
         self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "deliver", "run_program", "wait_ready", "RENEW_SECONDS", "UPLOAD_CHUNKS")}
-        # Boat's waits run on a clock that each pause advances, never on wall-clock time.
         self.now = 0.0
 
         def pause(seconds):
@@ -169,7 +167,6 @@ class Rank(unittest.TestCase):
         self.assertEqual(bt.rank(["a", "b", "c", "gone"], states, None, "large", lambda vmid: vmid == "b"), ["c"])
 
     def test_a_running_vm_still_hydrating_comes_after_the_hydrated_ones(self):
-        # A stopped VM hydrates anew, so what its last run left does not count.
         states = {"a": vm("a", hydrated=False), "b": vm("b"), "c": vm("c", "stopped", hydrated=False), "d": vm("d", "stopped")}
         self.assertEqual(bt.rank(sorted(states), states, "c", "large", lambda _: False), ["b", "a", "c", "d"])
 
@@ -237,9 +234,7 @@ class Plan(unittest.TestCase):
         other = self.plan("build", "--release", "-p", "top", manifest={**self.manifest, "crates/base/src/lib.rs": "new"})
         entry = {"used": 1.0, **bt.left_trees({}, {first.key: first.compiled_tree({}, True)}, 1.0), first.cache: first.cached_after({})}
         entry = {**entry, "used": 2.0, **bt.left_trees(entry, {other.key: other.compiled_tree(entry, True)}, 2.0), other.cache: other.cached_after(entry)}
-        # The VM's target holds the other tree, its cache both.
         self.assertEqual((first.rebuilds(entry), other.rebuilds(entry)), ((0, 3), (0, 0)))
-        # Another helper's run since voids the tree, never the cache; checks have none.
         self.assertEqual(first.rebuilds({**entry, "used": 3.0}), (0, 3))
         self.assertEqual(self.plan("check", "-p", "top").rebuilds(entry), (3, 0))
 
@@ -327,7 +322,6 @@ class Parse(unittest.TestCase):
         self.assertEqual((run.program, run.fail_fast, run.pdb), (["first", "second", "--exact", "--nocapture"], False, True))
         _, cargo, outdir, run = bt.parse(["test", "-preplay-columnar", "--lib", "name"])
         self.assertEqual((cargo, outdir, bt.profile(cargo), run.program, run.fail_fast, run.pdb), (["test", "--no-run", "-preplay-columnar", "--lib"], None, "dev", ["name"], True, False))
-        # Words after -- go to the programs whatever they look like.
         self.assertEqual(bt.parse(["test", "-p", "x", "--", "--test-threads", "1", "-p"])[3].program, ["--test-threads", "1", "-p"])
 
     def test_test_refuses_by_name_what_cannot_run_here(self):
@@ -396,7 +390,6 @@ class TestEnvironment(unittest.TestCase):
             "CARGO_PKG_VERSION_MAJOR": "0", "CARGO_PKG_VERSION_MINOR": "4", "CARGO_PKG_VERSION_PATCH": "1", "CARGO_PKG_VERSION_PRE": "rc.2", "CARGO_PKG_AUTHORS": "a:b", "CARGO_PKG_DESCRIPTION": "",
             "CARGO_PKG_RUST_VERSION": "1.80", "BATTLE_PLAN_STAMP": "abc", "BATTLE_PLAN_CAPTURES": "D:/c", "Path": str(folder) + os.pathsep + "C:/bin"})
         self.assertNotIn("PATH", unit)
-        # Only integration tests and benches get binaries and a temporary folder, as Cargo gives them at compile time.
         self.assertFalse({"CARGO_BIN_EXE_viewer", "CARGO_TARGET_TMPDIR"} & unit.keys())
         integration = bt.test_environment(base, worktree, folder, program("viewer", ("test",), "dump_stack"), binaries)
         self.assertEqual((integration["CARGO_BIN_EXE_viewer"], integration["CARGO_TARGET_TMPDIR"]), (str(folder / "viewer.exe"), str(folder / "tmp")))
@@ -446,7 +439,6 @@ class TestSources(unittest.TestCase):
         bt.replace_folder(mine)
         self.assertEqual([entry.name for entry in mine.iterdir()], [bt.TEST_LOCK])
         lock.close()
-        # A folder holding only the lock an earlier run left is still the tool's.
         bt.test_folder(self.root, mine)[1].close()
         bt.test_folder(self.root, empty)[1].close()
         with self.assertRaisesRegex(bt.Refused, "no earlier"):
@@ -562,7 +554,6 @@ class Acquire(Harness):
     def test_a_vm_that_does_not_start_or_stops_hydrating_is_cooled_and_passed_by(self):
         fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped", hydrated=False), vm("c", "stopped", hydrated=False)]))
         fake.starting["a"] = 10 ** 6
-        # c starts and then hydrates, each for longer than a stall lasts.
         fake.starting["c"] = fake.hydrating["c"] = bt.STALL_SECONDS // bt.POLL_SECONDS + 5
         record = {}
         vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
@@ -621,10 +612,8 @@ class Acquire(Harness):
             text = len(bt.base64.b64encode(data))
             parts = [f"runner-{name}.b64-{index:03d}" for index in range(-(-text // bt.CHUNK_CHARS))]
             self.assertTrue(set(parts) <= uploaded)
-            # An interrupted longer upload's later parts are never read.
             self.assertIn(f"cat {' '.join(parts)} | base64 -d > {name}.new", script)
         self.assertNotIn("b64-* |", script)
-        # Every part goes after the install whatever its outcome, which the exec still reports.
         install, cleanup = script.split("; status=$?; ")
         self.assertTrue(install.startswith(f"cd {bt.REMOTE} || exit; {{ ") and install.endswith("; }"))
         self.assertEqual(cleanup, "rm -f runner-*.b64-* remote.py.new run.sh.new; exit $status")
@@ -744,7 +733,6 @@ class Run(Harness):
             return [{"path": f"/t/{name}", "sha256": "0" * 64} for name in ("cli-2b.exe", "app.exe")]
 
         def run_program(executable, args, cwd, env):
-            # The VM's local lock is free by now.
             self.state.lock("a").close()
             ran.append((executable, args, cwd, env["CARGO_BIN_EXE_app"]))
             return 0, 1, 0
@@ -760,7 +748,6 @@ class Run(Harness):
         self.assertEqual(json.loads((out / "boat-artifacts.json").read_text())["cargo_arguments"][:2], ["test", "--no-run"])
         record = self.last_record()
         self.assertEqual((record["mode"], record["exit"], set(record["phases"])), ("test", 0, {"allocate", "sync", "run", "deliver"}))
-        # Tests build in a target of their own, which leaves the release build's tree standing.
         entry = self.state.entry("a")
         self.assertEqual((list(entry["tree_tests_dev"]), entry["tree_build_release"]), (["app"], {"app": "x"}))
 
@@ -777,7 +764,6 @@ class Run(Harness):
         self.assertEqual([call[3:4] == ("--sync",) for call in steps], [True] + [False] * len(bt.WARM))
         self.assertEqual(fake.calls[-2][0:3], ("snapshot", "n", "image"))
         self.assertEqual(fake.ttl_calls("n")[-1], bt.IDLE_SECONDS)
-        # A tree that does not compile whole still warms the image; a step that failed otherwise does not save it.
         fake = self.use(FakeBoat([]))
         fake.cargo_exit = 101
         self.assertEqual(bt.main(["snapshot"]), 0)

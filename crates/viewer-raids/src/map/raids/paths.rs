@@ -1,4 +1,3 @@
-//! Raid source distances use separate land and naval dispatcher memos.
 
 use std::{
     cell::RefCell,
@@ -8,9 +7,6 @@ use std::{
 };
 use viewer_foundation::debug_fields;
 
-/// Source kinds (`engine_native::craid_source`) whose distance uses a path:
-/// a naval base measures to the target's naval path target, a building
-/// to its province.
 pub(crate) const NAVAL_BASE: u8 = engine_native::craid_source::KIND_NAVAL_BASE as u8;
 pub(crate) const BUILDING: u8 = engine_native::craid_source::KIND_BUILDING as u8;
 
@@ -29,7 +25,6 @@ use super::{
 };
 
 type Search = Result<Option<i64>, String>;
-/// A resolved target province, `None` when there is none.
 type Target = Result<Option<u32>, String>;
 
 type MemoKey = (RaidPathDispatcher, u32, u32);
@@ -51,17 +46,12 @@ fn path_dispatcher(path: RaidPath) -> RaidPathDispatcher {
 }
 
 type Key = (u32, u32, RaidPath);
-/// Each province's recorded state, and each state's province count.
 type StateMembers = (BTreeMap<u32, u32>, BTreeMap<u32, usize>);
 
-/// The content searches some holder keeps, by pair.
 type Memo = Mutex<HashMap<Key, Weak<Searched>>>;
 
-/// A content search's answer. The memo finds it while a holder keeps a [`Held`] of it: the
-/// cycle's rows ([`super::cycle`]) and the hour's raid units ([`super::super::raid_arrows`]).
 pub struct Searched {
     result: Search,
-    /// The memo that finds it; `None` for an error, which is searched again.
     memo: Option<(Weak<Memo>, Key)>,
 }
 
@@ -83,7 +73,6 @@ impl Drop for Searched {
             return;
         };
         let mut entries = memo.lock().unwrap_or_else(PoisonError::into_inner);
-        // A search that raced past this one's end may hold the pair now.
         if entries
             .get(key)
             .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), this))
@@ -99,8 +88,6 @@ impl fmt::Debug for Searched {
     }
 }
 
-/// The content search, shared by every hour and perspective: its result depends on content
-/// alone, so a pair is searched once while some holder keeps its answer.
 pub struct PathSearch {
     graph: ProvinceGraph,
     searched: Arc<Memo>,
@@ -129,13 +116,11 @@ impl PathSearch {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    // No `Held` may drop while the memo is locked: its drop locks it.
     fn search(&self, geometry: &ProvinceGeometry, from: u32, to: u32, path: RaidPath) -> Held {
         let key = (from, to, path);
         if let Some(held) = self.memo().get(&key).and_then(Weak::upgrade) {
             return held;
         }
-        // Searched outside the lock: builders of other hours may search too.
         let result = raid_distance(&self.graph, geometry, from, to, path);
         if result.is_err() {
             return Searched::unkept(result);
@@ -153,13 +138,10 @@ impl PathSearch {
     }
 }
 
-/// Pairs an evaluation asked beyond the recorded memo, with what each
-/// holds.
 #[derive(Clone, Debug, Default)]
 pub struct AskedPairs(BTreeMap<MemoKey, Entry>);
 
 impl AskedPairs {
-    /// Whether both hold some pair.
     pub fn share_a_pair(&self, other: &Self) -> bool {
         let (small, large) = if self.0.len() <= other.0.len() {
             (self, other)
@@ -169,22 +151,16 @@ impl AskedPairs {
         small.0.keys().any(|pair| large.0.contains_key(pair))
     }
 
-    /// `later`'s pairs replace these.
     pub fn absorb(&mut self, later: Self) {
         self.0.extend(later.0);
     }
 }
 
-/// What one view of the hour's distances asked: the pairs asked before it
-/// (`base`), those it asked since (`own`, which every pair it reads ends up
-/// in) and its last naval target.
 #[derive(Default)]
 pub struct Ledger<'b> {
     base: Option<&'b AskedPairs>,
     own: RefCell<AskedPairs>,
-    /// The last naval target resolved: a target asks it once per source.
     naval_target: RefCell<Option<(RaidScope, Target)>>,
-    /// The content searches needed answers read since [`Self::take_held`].
     used: RefCell<Vec<Held>>,
 }
 
@@ -205,7 +181,6 @@ impl<'b> Ledger<'b> {
             .cloned()
     }
 
-    /// Each content search read since the last take, once.
     fn take_held(&self) -> Box<[Held]> {
         let mut used = self.used.take();
         used.sort_unstable_by_key(Arc::as_ptr);
@@ -214,19 +189,12 @@ impl<'b> Ledger<'b> {
     }
 }
 
-/// One evaluation's distance inputs: the hour's memo, its naval bases and
-/// its province-to-state membership, each read on first use, and the pairs
-/// asked so far this hour beyond the memo.
 pub struct Distances<'a> {
     assets: &'a RaidAssets,
     frame: &'a dyn DecodedSource,
-    /// Decoded rows ascend by (dispatcher, source, target).
     recorded: Result<&'a [RaidPathDistanceRow], String>,
     naval_bases: OnceLock<Result<BTreeSet<u32>, String>>,
-    /// Each province's recorded state, and each state's province count.
     states: OnceLock<Result<StateMembers, String>>,
-    /// The pairs asked this hour, in the order the hour's evaluations
-    /// asked them.
     asked: Mutex<Ledger<'static>>,
 }
 
@@ -244,7 +212,6 @@ impl<'a> Distances<'a> {
         }
     }
 
-    /// The pairs asked so far this hour.
     fn asked(&self) -> MutexGuard<'_, Ledger<'static>> {
         self.asked
             .lock()
@@ -289,20 +256,14 @@ impl<'a> Distances<'a> {
             .map_err(Clone::clone)
     }
 
-    /// Distance for a naval-base (kind 2) or building (kind 5) source:
-    /// `Ok(None)` is an unsuccessful search. A null source province measures
-    /// zero and passes.
     pub fn distance(&self, kind: u8, from: u32, scope: &RaidScope) -> Search {
         self.distance_in(&self.asked(), kind, from, scope)
     }
 
-    /// Notes that the game asked, or may have asked, a distance whose
-    /// answer this evaluation does not need.
     pub fn note(&self, kind: u8, from: u32, scope: &RaidScope) {
         self.note_in(&self.asked(), kind, from, scope);
     }
 
-    /// [`Self::distance`] with the pairs `ledger` holds.
     fn distance_in(&self, ledger: &Ledger<'_>, kind: u8, from: u32, scope: &RaidScope) -> Search {
         if from == 0 {
             return Ok(Some(0));
@@ -315,7 +276,6 @@ impl<'a> Distances<'a> {
         }
     }
 
-    /// [`Self::note`] into `ledger`.
     fn note_in(&self, ledger: &Ledger<'_>, kind: u8, from: u32, scope: &RaidScope) {
         if from != 0
             && let Ok(Some((to, path))) = self.target(ledger, kind, scope)
@@ -324,7 +284,6 @@ impl<'a> Distances<'a> {
         }
     }
 
-    /// The province a source of `kind` measures to, and its search.
     fn target(
         &self,
         ledger: &Ledger<'_>,
@@ -355,8 +314,6 @@ impl<'a> Distances<'a> {
         target
     }
 
-    /// Use the target province when it has a naval base, else the first province
-    /// of its state with one, through the recorded `NavalBases` keys.
     fn naval_target(&self, scope: &RaidScope) -> Result<Option<u32>, String> {
         let Some(province) = self.assets.province(scope) else {
             return Ok(None);
@@ -376,7 +333,6 @@ impl<'a> Distances<'a> {
             .state_provinces
             .get(&state)
             .ok_or_else(|| format!("state {state} is not in the content"))?;
-        // The runtime list keeps content order while membership is unchanged.
         if sizes.get(&state) != Some(&members.len())
             || members.iter().any(|id| states.get(id) != Some(&state))
         {
@@ -387,9 +343,6 @@ impl<'a> Distances<'a> {
         Ok(members.iter().copied().find(|id| bases.contains(id)))
     }
 
-    /// The memo's answer, else this evaluation's, else a new search that
-    /// this evaluation keeps for its later queries of the same pair. `None`
-    /// when the answer is not `needed`.
     fn path(
         &self,
         ledger: &Ledger<'_>,
@@ -424,15 +377,11 @@ impl<'a> Distances<'a> {
         result
     }
 
-    /// The content searches this hour's distances read since the last take.
     pub fn take_held(&self) -> Box<[Held]> {
         self.asked().take_held()
     }
 }
 
-/// One hour's path searches for the launch gate: distances through the
-/// content search and the recorded memo, and army reach through
-/// `unit_path`, each answered once per hour.
 pub struct HourPaths<'a> {
     assets: &'a RaidAssets,
     distances: Distances<'a>,
@@ -495,13 +444,10 @@ impl super::launch::RaidPaths for HourPaths<'_> {
 }
 
 impl HourPaths<'_> {
-    /// The pairs asked so far this hour, held while a batch is evaluated
-    /// in parts and until the parts' pairs are taken in.
     pub fn asked(&self) -> AskedSoFar<'_> {
         AskedSoFar(self.distances.asked())
     }
 
-    /// The army search the hour's queries share ([`viewer_foundation::map::movement_reads::Moves`]).
     pub fn moves<'s, 'w>(
         &'s self,
         world: &'s World<'w>,
@@ -514,7 +460,6 @@ impl HourPaths<'_> {
     }
 }
 
-/// The hour's asked pairs, held for one batch.
 pub struct AskedSoFar<'h>(MutexGuard<'h, Ledger<'static>>);
 
 impl AskedSoFar<'_> {
@@ -522,14 +467,11 @@ impl AskedSoFar<'_> {
         self.0.own.get_mut()
     }
 
-    /// A part's pairs, taken in after every earlier part's.
     pub fn absorb(&mut self, part: AskedPairs) {
         self.0.own.get_mut().absorb(part);
     }
 }
 
-/// The hour's path searches for one part of a batch: the pairs asked before
-/// the part (`base`), and its own since.
 pub struct PartPaths<'p, 'a> {
     hour: &'p HourPaths<'a>,
     ledger: Ledger<'p>,
@@ -543,7 +485,6 @@ impl<'p, 'a> PartPaths<'p, 'a> {
         }
     }
 
-    /// The pairs this part asked, each with what it holds after the part.
     pub fn into_asked(self) -> AskedPairs {
         self.ledger.own.into_inner()
     }

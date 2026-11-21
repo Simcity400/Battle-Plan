@@ -3,7 +3,6 @@ use crate::identity::TagHolders;
 use replay_data::rows::TABLE_COUNT;
 use std::sync::Arc;
 
-/// A schema of every table, those the tests use with their real kinds, the rest empty.
 fn schema() -> Vec<Vec<Kind>> {
     let mut schema = vec![Vec::new(); TABLE_COUNT];
     schema[TableId::Countries.index()] = vec![Kind::U32, Kind::Bytes];
@@ -25,7 +24,6 @@ fn store() -> Store {
     Store::new(schema(), vec![false; TABLE_COUNT])
 }
 
-/// A writer of Campaign that fails at hour `fails`.
 struct Failing {
     fails: i32,
 }
@@ -70,8 +68,6 @@ impl Writer for Failing {
     }
 }
 
-/// Hour `hour` of Countries (id, slot, tag id) and CountryLinks (id, slot), complete or
-/// `status`, applied to `store`: the tables replaced whole.
 fn apply(store: &mut Store, hour: i32, countries: &[(u32, u32, u32)], links: &[(u32, u32)], status: Status) {
     let appends: &[&[u8]] = if hour == 0 { &[b"GER", b"ENG"] } else { &[] };
     apply_with(store, hour, appends, countries, links, status);
@@ -107,7 +103,6 @@ fn apply_with(store: &mut Store, hour: i32, appends: &[&[u8]], countries: &[(u32
     store.settle();
 }
 
-/// `tag`'s live holder row: its holder, if resolved, from the row's key.
 fn holder(store: &Store, tag: &[u8]) -> Option<Option<(u32, u32)>> {
     let table = store.view(TableId::TagHolders.index());
     table.rows().find_map(|slot| {
@@ -127,36 +122,27 @@ fn reason(store: &Store, table: usize) -> String {
     }
 }
 
-/// The first holder by id whose link resolves holds its tag; a tag no link resolves has none; a
-/// writer that fails withholds its own table by name for the rest of the run and nothing else; an
-/// input not complete closes every holder row and opens an unknown one, naming why; a resume
-/// takes every writer up where it was.
 #[test]
 fn writers_run_withhold_and_resume_by_their_own_rules() {
     let mut store = store();
-    // The failing writer's own reason, in words; never its name.
     const BROKE: &str = "the recorder stopped working this out: it broke";
     let mut writers = Writers::new(vec![Box::new(TagHolders::default()), Box::new(Failing { fails: 2 })]);
     writers.start_run();
     let holders = TableId::TagHolders.index();
     let campaign = TableId::Campaign.index();
-    // Hour 0: GER is countries 7 (unresolved) and 9 (resolved); ENG is 4, unresolved.
     apply(&mut store, 0, &[(9, 3, 0), (7, 3, 0), (4, 5, 1)], &[(9, 3), (7, 8), (4, 6)], Status::Complete);
     writers.hour(1, 0, true, &mut store).unwrap();
     assert_eq!(store.view(holders).status(), Status::Complete);
     assert_eq!(holder(&store, b"GER"), Some(Some((3, 9))));
     assert_eq!(holder(&store, b"ENG"), Some(None));
     assert_eq!(store.view(campaign).status(), Status::Complete);
-    // Hour 1: ENG's link resolves.
     apply(&mut store, 1, &[(9, 3, 0), (7, 3, 0), (4, 5, 1)], &[(9, 3), (7, 8), (4, 5)], Status::Complete);
     writers.hour(1, 1, false, &mut store).unwrap();
     assert_eq!(holder(&store, b"ENG"), Some(Some((5, 4))));
-    // Hour 2: the other writer fails; TagHolders goes on.
     apply(&mut store, 2, &[(9, 3, 0), (4, 5, 1)], &[(9, 3), (4, 5)], Status::Complete);
     writers.hour(1, 2, false, &mut store).unwrap();
     assert_eq!(reason(&store, campaign), BROKE);
     assert_eq!(store.view(holders).status(), Status::Complete);
-    // Hour 3: Countries unavailable; no holder is known, and the unknown row says why.
     apply(&mut store, 3, &[(9, 3, 0), (4, 5, 1)], &[(9, 3), (4, 5)], Status::Unavailable { reason: 0 });
     writers.hour(1, 3, false, &mut store).unwrap();
     assert_eq!(store.view(holders).status(), Status::Complete);
@@ -166,7 +152,6 @@ fn writers_run_withhold_and_resume_by_their_own_rules() {
     assert_eq!(unknown.len(), 1, "one unknown row lives, naming Countries");
     assert_eq!((unknown[0] >> 32) as u32, 0);
     assert_eq!(reason(&store, campaign), BROKE);
-    // A resume takes the writers up: the failed one stays withheld.
     let saved = writers.save().unwrap();
     let mut resumed = Writers::new(vec![Box::new(TagHolders::default()), Box::new(Failing { fails: 99 })]);
     resumed.load(&saved, &mut store).unwrap();
@@ -176,8 +161,6 @@ fn writers_run_withhold_and_resume_by_their_own_rules() {
     assert_eq!(store.view(holders).status(), Status::Complete);
     assert_eq!(holder(&store, b"ENG"), None);
     assert_eq!(holder(&store, b"GER"), Some(Some((3, 9))));
-    // A writer of another version is withheld by name, taken up as a resume is: the store's run
-    // begun again.
     store.begin_run(5);
     let mut other = Writers::new(vec![Box::new(TagHolders::default())]);
     let mut blob = Bytes::new();
@@ -197,7 +180,6 @@ fn writers_run_withhold_and_resume_by_their_own_rules() {
     assert_eq!(reason(&store, holders), OTHER_VERSION, "never the writer's name");
 }
 
-/// `table`'s rows: each key with its first cell's text.
 fn rows_of(store: &Store, table: TableId) -> Vec<(u128, Option<Vec<u8>>)> {
     let view = store.view(table.index());
     let mut rows: Vec<_> = view
@@ -208,15 +190,11 @@ fn rows_of(store: &Store, table: TableId) -> Vec<(u128, Option<Vec<u8>>)> {
     rows
 }
 
-/// TagHolders numbers its rows (each key's epoch) in tag order: two writers given the same hours
-/// in one process, their countries inserted in other orders, write the same rows. A writer
-/// numbering by a hash map's order, seeded per map, writes them numbered otherwise.
 #[test]
 fn tag_holders_number_rows_alike_whatever_order_their_countries_came_in() {
     const TAGS: u32 = 64;
     let names: Vec<Vec<u8>> = (0..TAGS).map(|tag| format!("T{tag:02}").into_bytes()).collect();
     let appends: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
-    // Tag t's countries are 2t (its link unresolved until hour 1 for even t) and 2t + 1.
     let countries: Vec<(u32, u32, u32)> = (0..TAGS).flat_map(|tag| [(2 * tag, 100 + tag, tag), (2 * tag + 1, 100 + tag, tag)]).collect();
     let links = |hour: i32| -> Vec<(u32, u32)> {
         (0..TAGS)
@@ -249,13 +227,11 @@ fn tag_holders_number_rows_alike_whatever_order_their_countries_came_in() {
         written.push((rows_of(&store, TableId::TagHolders), rows_of(&store, TableId::TagNames)));
     }
     assert_eq!(written[0].0.len(), TAGS as usize);
-    // Hour 1 gave every even tag a new holder: a new row, numbered after hour 0's.
     let epochs: Vec<u32> = written[0].0.iter().map(|(key, _)| (key >> 64) as u32).collect();
     assert_eq!(epochs.iter().filter(|&&epoch| epoch >= TAGS).count(), TAGS as usize / 2);
     assert_eq!(written[0], written[1], "the same hours number the same rows alike");
 }
 
-/// A writer setting `rows` of Campaign every hour.
 struct Setting {
     rows: Vec<(u128, Value)>,
 }
@@ -299,9 +275,6 @@ impl Writer for Setting {
     }
 }
 
-/// A writer setting rows equal to those its table holds writes nothing: no insert, no written
-/// cell in the hour's log; a cell set differently is written alone, and one set unrecorded is
-/// unrecorded.
 #[test]
 fn a_writer_setting_equal_rows_writes_nothing() {
     let mut store = store();
@@ -326,12 +299,10 @@ fn a_writer_setting_equal_rows_writes_nothing() {
     assert_eq!(table.text(0, table.slot(1).unwrap()), Some(1));
 }
 
-/// Memory labels, in a build counting them.
 #[cfg(feature = "memory-labels")]
 mod labelled {
     use super::*;
 
-    /// A writer keeping `bytes` more of its own each hour and setting `rows` rows of Campaign.
     struct Hoarding {
         bytes: usize,
         rows: u32,
@@ -374,8 +345,6 @@ mod labelled {
         }
     }
 
-    /// What a writer keeps from its hour is charged to its own label, and what its rows add to the
-    /// store (here tens of thousands of rows) and the hour's rows it handed over are not.
     #[test]
     fn what_a_writer_allocates_in_its_hour_is_charged_to_its_own_label_and_its_tables_growth_to_the_store() {
         const KEPT: i64 = 4 << 20;
@@ -391,14 +360,11 @@ mod labelled {
         };
         let writer = held(&|owner| owner == "writer: Hoarding");
         assert!((KEPT..KEPT + (64 << 10)).contains(&writer), "the writer's label holds {writer} bytes");
-        // The store names its growth by part: "store: cells grown", "store: index grown", ...
         let store = held(&|owner| owner == "store" || owner.starts_with("store: "));
         assert!(store >= 40_000 * 4, "the store's labels hold {store} bytes");
     }
 }
 
-/// A table the hour landed (here its status told) before the writer of it ran is refused by name:
-/// a table has one source, so an hour landing a writer's table stops the run at its first hour.
 #[test]
 fn a_table_the_hour_landed_and_a_writer_writes_is_refused_by_name() {
     let mut store = store();
@@ -414,8 +380,6 @@ fn a_table_the_hour_landed_and_a_writer_writes_is_refused_by_name() {
     assert!(refused.contains("Campaign is Setting's, and the hour landed it before Setting ran"), "{refused}");
 }
 
-/// A writer of Campaign echoing what the hour says it changed of Countries and CountryLinks: a
-/// row per country the hour wrote, and one when it wrote a link.
 struct Echo;
 
 impl Writer for Echo {
@@ -458,8 +422,6 @@ impl Writer for Echo {
     }
 }
 
-/// A run's first hour, which keeps no hour log, gives the writers what the same hour logged gives
-/// them: the same rows of every table they write.
 #[test]
 fn a_run_s_first_hour_without_its_log_gives_the_writers_what_it_logged_does() {
     let countries = [(9, 3, 0), (7, 3, 0), (4, 5, 1)];
@@ -487,15 +449,11 @@ fn a_run_s_first_hour_without_its_log_gives_the_writers_what_it_logged_does() {
     assert_eq!(written[0], written[1]);
 }
 
-/// The log the log tests read: each row a value and the hour it came.
 const LOG: TableId = TableId::MarketEvents;
-/// The tables of the log's two readers: by the row's key its ordinal and value, and by ordinal
-/// the row's key. No other test here may use these four: [`schema`] gives them the readers' kinds.
 const EVENTS_TABLES: [TableId; 2] = [TableId::ArmyTotals, TableId::ArmyMix];
 const EVENTS_OUTPUTS: [Output; 2] = [Output::State(EVENTS_TABLES[0]), Output::State(EVENTS_TABLES[1])];
 const EVENTS: &[Read] = &[Read { table: LOG, columns: Columns::Every, watch: Watch::Appended, required: false }];
 
-/// A store whose MarketEvents is a log.
 fn log_store() -> Store {
     let mut store = store();
     let mut logs = vec![false; TABLE_COUNT];
@@ -504,11 +462,9 @@ fn log_store() -> Store {
     store
 }
 
-/// What a log's reader was handed in an hour it ran.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Handed {
     hour: i32,
-    /// Each appended row's ordinal, key and value.
     appended: Vec<(u64, u128, u64)>,
     backlog: bool,
     forgotten: Vec<std::ops::Range<u64>>,
@@ -516,8 +472,6 @@ struct Handed {
 
 type Handings = std::sync::Arc<std::sync::Mutex<Vec<Handed>>>;
 
-/// A writer following the log: every row it is handed by its key (its ordinal and value) and by its ordinal (its key), a row forgotten leaving both unless its key
-/// came again; all it follows is in its tables.
 struct Follow {
     name: &'static str,
     tables: &'static [Output; 2],
@@ -599,8 +553,6 @@ impl Writer for Follow {
     }
 }
 
-/// Lands hour `hour` of the log: `appends` (key, value) in order, then `forgets`, and its status
-/// told.
 fn log_hour(store: &mut Store, hour: i32, appends: &[(u128, u64)], forgets: &[u64], status: Status) {
     store.begin_hour(hour, &[]).unwrap();
     for &(key, value) in appends {
@@ -613,7 +565,6 @@ fn log_hour(store: &mut Store, hour: i32, appends: &[(u128, u64)], forgets: &[u6
     store.settle();
 }
 
-/// The keys `table` holds, ascending.
 fn keys_of(store: &Store, table: TableId) -> Vec<u128> {
     let view = store.view(table.index());
     let mut keys: Vec<u128> = view.rows().filter_map(|slot| view.key(slot)).collect();
@@ -625,10 +576,6 @@ fn follow(name: &'static str, tables: &'static [Output; 2], reads: &'static [Rea
     Box::new(Follow { name, tables, reads, handed: handed.clone() })
 }
 
-/// A writer reading a log is handed, in each hour the log appended or forgot rows or its status
-/// changed, the appended rows with their ordinals, keys and cells and the forgotten ordinals: in
-/// a run's first hour the list as it stood, flagged backlog, and never after. A log not complete
-/// makes its readers' tables what it is, its reason kept.
 #[test]
 fn a_writer_reading_a_log_is_handed_its_appended_and_forgotten_rows() {
     let events = Handings::default();
@@ -645,7 +592,6 @@ fn a_writer_reading_a_log_is_handed_its_appended_and_forgotten_rows() {
     writers.hour(1, 1, false, &mut store).unwrap();
     end(&mut store);
     assert_eq!((keys_of(&store, EVENTS_TABLES[0]), keys_of(&store, EVENTS_TABLES[1])), (vec![2, 3, 4], vec![1, 2, 3]), "the forgotten row gone by key and by ordinal");
-    // Nothing appended, forgotten or told otherwise: not run.
     log_hour(&mut store, 2, &[], &[], Status::Complete);
     writers.hour(1, 2, false, &mut store).unwrap();
     assert!(events.lock().unwrap().iter().all(|handed| handed.hour != 2), "a reader of a log is not run in an hour that changed neither its rows nor its status");
@@ -682,9 +628,6 @@ fn a_writer_reading_a_log_is_handed_its_appended_and_forgotten_rows() {
     assert_eq!(*events.lock().unwrap(), expected, "no backlog after the run's first hour");
 }
 
-/// A row the game changes in place comes as a forget of its old ordinal and an append of its key
-/// in one hour: both are handed, a writer keyed by the row's key holds the new cells once and the
-/// old ordinal is gone from its own tables, and a writer counting appends sees one new row.
 #[test]
 fn an_update_in_place_is_a_forget_and_an_append_of_the_same_key_in_one_hour() {
     let handed = Handings::default();
@@ -709,8 +652,6 @@ fn an_update_in_place_is_a_forget_and_an_append_of_the_same_key_in_one_hour() {
     assert_eq!(keys_of(&store, EVENTS_TABLES[1]), [1, 2], "the old ordinal gone");
 }
 
-/// A writer reading a log with another watch than Appended, or reading a state table with it, is
-/// refused by name at its run's first hour, before any writer runs.
 #[test]
 fn a_log_read_otherwise_than_by_its_appended_rows_is_refused_by_name() {
     const CHANGED: &[Read] = &[Read { table: LOG, columns: Columns::Every, watch: Watch::Changed, required: false }];
@@ -731,8 +672,6 @@ fn a_log_read_otherwise_than_by_its_appended_rows_is_refused_by_name() {
     assert!(handed.lock().unwrap().is_empty(), "no writer ran");
 }
 
-/// Bytes the test's thread holds from the allocator, and the most it held since last asked; in a
-/// build counting memory labels, over the labels' allocator.
 mod counting {
     use std::{
         alloc::{GlobalAlloc, Layout, System},
@@ -791,7 +730,6 @@ mod counting {
         }
     }
 
-    /// The most bytes `run` held at once on this thread beyond what the thread held before it.
     pub fn peak(run: impl FnOnce()) -> usize {
         let before = HELD.with(Cell::get);
         PEAK.with(|peak| peak.set(before));
@@ -803,9 +741,6 @@ mod counting {
 #[global_allocator]
 static COUNTING: counting::Counting = counting::Counting;
 
-/// A writer setting every row it holds again, each equal to the one held (as a writer reading its
-/// inputs whole after a gap does), holds no copy of what it sets: its hour holds under four bytes
-/// a row at once. A framework holding every row set until the writer returns holds some sixty.
 #[test]
 fn a_writer_setting_every_row_it_holds_again_holds_no_copy_of_them() {
     const ROWS: usize = 200_000;
@@ -824,8 +759,6 @@ fn a_writer_setting_every_row_it_holds_again_holds_no_copy_of_them() {
     assert!(peak < ROWS * 4, "{peak} bytes held at once to set {ROWS} rows equal");
 }
 
-/// A writer of Campaign: rows 1 and 3 until hour `fails`, where it changes row 1, adds row 2,
-/// deletes row 3 and then fails.
 struct SetsThenFails {
     fails: i32,
 }
@@ -875,9 +808,6 @@ impl Writer for SetsThenFails {
     }
 }
 
-/// A writer failing after it set rows leaves its table as the hour before left it, unavailable
-/// for its reason: no row the failed hour set, changed or deleted is read, the hour logs none, and
-/// the text it named is no string of the run.
 #[test]
 fn a_writer_failing_after_it_set_rows_leaves_its_table_as_it_was_and_unavailable() {
     let mut store = store();
@@ -899,8 +829,6 @@ fn a_writer_failing_after_it_set_rows_leaves_its_table_as_it_was_and_unavailable
     assert!(writers.save().unwrap().windows(7).all(|text| text != b"made up"), "the failed hour's text is not named");
 }
 
-/// A writer of Campaign that, after its first hour, sets row 2 twice or reads its own table
-/// through the hour.
 struct Misbehaving {
     twice: bool,
 }
@@ -952,9 +880,6 @@ impl Writer for Misbehaving {
     }
 }
 
-/// A writer setting one row twice in an hour, or reading its own table through the hour rather
-/// than through its rows (where the hour shows no row of it), fails that hour by name: its table
-/// unavailable for the reason, the hour's rows undone.
 #[test]
 fn a_writer_setting_a_row_twice_or_reading_its_own_table_through_the_hour_fails_by_name() {
     for (twice, refusal) in [
@@ -973,12 +898,8 @@ fn a_writer_setting_a_row_twice_or_reading_its_own_table_through_the_hour_fails_
     }
 }
 
-/// The table of the order tests: a number, an optional, a text and an opaque cell.
 const ORDERED: TableId = TableId::WarEvents;
 
-/// A writer of [`ORDERED`] setting each hour the same rows, cells and deletes in `order`: rows
-/// leave and come back, cells change, go missing and are unrecorded, and a row deleted and set in
-/// one hour is kept.
 struct Ordered {
     order: fn(&mut Vec<u128>),
     held: Vec<u128>,
@@ -1043,7 +964,6 @@ impl Writer for Ordered {
     }
 }
 
-/// A unit written to memory.
 #[derive(Default)]
 struct Memory {
     bytes: Vec<u8>,
@@ -1069,8 +989,6 @@ impl replay_columnar::unit::PartSink for Memory {
     }
 }
 
-/// What a run of [`Ordered`] setting its rows in `order` writes: the unit, its block pages, and
-/// the key at each slot of its table.
 type Written = (Vec<u8>, Vec<replay_columnar::unit::BlockPage>, Vec<Option<u128>>);
 
 fn ordered_unit(order: fn(&mut Vec<u128>)) -> Written {
@@ -1092,10 +1010,6 @@ fn ordered_unit(order: fn(&mut Vec<u128>)) -> Written {
     (unit.bytes, unit.pages, keys)
 }
 
-/// A writer setting and deleting its rows in any order writes the unit, byte for byte, and the
-/// slots of one doing so in key order, which is what a framework applying each hour's rows sorted
-/// by key wrote: new rows take the slots key order gives them and changed cells reach the unit in
-/// key order.
 #[test]
 fn a_writer_setting_its_rows_in_any_order_writes_the_bytes_of_one_setting_them_in_key_order() {
     let ascending = ordered_unit(|keys| keys.sort_unstable());
@@ -1109,14 +1023,10 @@ fn a_writer_setting_its_rows_in_any_order_writes_the_bytes_of_one_setting_them_i
     }
 }
 
-/// Each hour a writer watching Countries every read was run, and whether the hour it was handed
-/// says Countries was read then (its sample hour is the hour).
 type Ran = std::sync::Arc<std::sync::Mutex<Vec<(i32, bool)>>>;
 
 const EVERY_COUNTRIES: &[Read] = &[Read { table: TableId::Countries, columns: Columns::Every, watch: Watch::EveryRead, required: false }];
 
-/// A writer of `table` watching Countries every read, run only when it is due by its reads, or
-/// every hour when `hourly`.
 struct EveryReader {
     table: &'static [Output],
     hourly: bool,
@@ -1161,8 +1071,6 @@ impl Writer for EveryReader {
     }
 }
 
-/// An hour of no section through the journal door: Countries and CountryLinks complete, as hour 0
-/// left them, Countries' read bit as `read` says.
 fn unchanged(journal: &mut replay_columnar::store::journal::Journal, store: &mut Store, hour: i32, read: bool) {
     let mut statuses = vec![Status::NotRecorded; TABLE_COUNT];
     statuses[TableId::Countries.index()] = Status::Complete;
@@ -1189,11 +1097,6 @@ fn unchanged(journal: &mut replay_columnar::store::journal::Journal, store: &mut
     journal.applied(store);
 }
 
-/// Countries read every read moves the hour exactly when the journal stamps it read, though its
-/// rows equal the hour before's: a writer the framework runs by its reads runs then and only
-/// then. An hourly writer runs every hour, and the hour it is handed says Countries was
-/// not read in the hour the journal did not stamp it: what a writer counting each read (the
-/// equipment-loss drain) goes by.
 #[test]
 fn a_writer_watching_every_read_runs_when_the_input_is_stamped_read_and_not_when_it_is_not() {
     let (gated, every) = (Ran::default(), Ran::default());
@@ -1223,8 +1126,6 @@ const LOW: definitions::Define = definitions::Define { section: "NMilitary", nam
 const VERY_LOW_ICON: definitions::Define = definitions::Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD", form: definitions::Form::Fixed5 };
 const LOW_ICON: definitions::Define = definitions::Define { section: "NGraphics", name: "SUPPLY_UNIT_COUNTER_LOW_THRESHOLD", form: definitions::Form::Fixed5 };
 
-/// A writer of the supply thresholds, as supply health declares them, into CountryStability's
-/// row 0 (grace, low, the two icon thresholds summed), noting what else it was handed.
 struct Thresholds {
     seen: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -1330,11 +1231,6 @@ fn identity() -> Identity {
     }
 }
 
-/// A writer declaring definitions it requires is not run while they are absent: its table is
-/// unavailable by name and holds no row, nothing written as zero. Once they are held its table is
-/// right from that hour on, read fresh; a resume hands them again to `load` and `prime`, and the
-/// writer goes on as one that never stopped. The supply thresholds and a sub-unit's need reach
-/// it by name.
 #[test]
 fn definitions_reach_the_writers_declaring_them_and_absent_ones_withhold_by_name() {
     let mut store = store();
@@ -1359,7 +1255,6 @@ fn definitions_reach_the_writers_declaring_them_and_absent_ones_withhold_by_name
         seen.lock().unwrap().as_slice(),
         ["hour 1 fresh true: need Some([(\"infantry_equipment\", 10000000)])"]
     );
-    // The same definitions again change nothing: the writer is not made fresh.
     writers.define(thresholds());
     store.begin_hour(2, &[]).unwrap();
     writers.hour(1, 2, false, &mut store).unwrap();
@@ -1380,8 +1275,6 @@ fn definitions_reach_the_writers_declaring_them_and_absent_ones_withhold_by_name
     assert!(resumed_seen[1].starts_with("hour 3 fresh false"), "{resumed_seen:?}");
 }
 
-/// Definitions read from a pack are only the kinds the registered writers declare, through the
-/// reader the writers hold; nothing is read when no writer declares any.
 #[test]
 fn definitions_are_read_from_a_pack_for_the_kinds_writers_declare() {
     fn reader(facts: &Facts, _: &Identity, wanted: &[Definition]) -> Definitions {
@@ -1402,11 +1295,8 @@ fn definitions_are_read_from_a_pack_for_the_kinds_writers_declare() {
     none.define_from(&Facts::held(Arc::new(b"pack".to_vec())), &identity());
 }
 
-/// The hours a writer was called, each with whether it read its inputs whole.
 type Calls = std::sync::Arc<std::sync::Mutex<Vec<(i32, bool)>>>;
 
-/// A writer of Campaign reading Countries (required) by its changes, telling its table read in
-/// part each hour it is called and setting nothing else; `hourly` when it declares that duty.
 struct Called {
     calls: Calls,
     hourly: bool,
@@ -1450,8 +1340,6 @@ impl Writer for Called {
     }
 }
 
-/// A writer withheld for an input not complete says why in words a user reads: what the input
-/// holds and the input's own reason, never the writer's or the table's identifier.
 #[test]
 fn a_writer_withheld_for_its_input_says_why_in_plain_words() {
     let mut store = store();
@@ -1463,8 +1351,6 @@ fn a_writer_withheld_for_its_input_says_why_in_plain_words() {
     assert_eq!(reason(&store, TableId::Campaign.index()), "countries: not available (the capture lost the interval)");
 }
 
-/// The hours [`Called`] is called over seven: Countries written at hours 0, 2 and 5, not complete
-/// at 4, untouched at 1, 3 and 6; its table's status and sample hour after each hour.
 fn called(hourly: bool) -> (Vec<(i32, bool)>, Vec<(Status, Option<i32>)>) {
     let calls = Calls::default();
     let mut store = store();
@@ -1489,11 +1375,6 @@ fn called(hourly: bool) -> (Vec<(i32, bool)>, Vec<(Status, Option<i32>)>) {
     (calls, statuses)
 }
 
-/// A writer reading state tables, with no hourly duty, is not called in an hour that changed none
-/// of its inputs: it is called in its run's first hour, in an hour that wrote its input, and in the
-/// hour after one it did not run, reading its inputs whole. Its table in an hour it is not called
-/// keeps the status it last told, read that hour. A framework calling every writer reading no log
-/// each hour calls it at 1, 3 and 6 too.
 #[test]
 fn a_writer_reading_state_tables_is_called_only_in_an_hour_that_moved_them() {
     let (calls, statuses) = called(false);
@@ -1505,15 +1386,12 @@ fn a_writer_reading_state_tables_is_called_only_in_an_hour_that_moved_them() {
     assert_eq!(statuses[6], (told, Some(6)));
 }
 
-/// A writer declaring an hourly duty is called every hour its inputs are complete, whatever they
-/// did.
 #[test]
 fn an_hourly_writer_is_called_every_hour() {
     let (calls, _) = called(true);
     assert_eq!(calls, [(0, true), (1, false), (2, false), (3, false), (5, true), (6, false)]);
 }
 
-/// A lane writer called by its own declaration, or (`every`) each hour, counting its calls.
 struct Counted {
     inner: Box<dyn Writer>,
     every: bool,
@@ -1571,7 +1449,6 @@ impl Writer for Counted {
     }
 }
 
-/// A number cell of `kind` holding `value`; of Bytes, string `value`.
 fn number(kind: Kind, value: i64) -> Cell<'static> {
     match kind {
         Kind::U8 => Cell::U8(value as u8),
@@ -1586,13 +1463,8 @@ fn number(kind: Kind, value: i64) -> Cell<'static> {
     }
 }
 
-/// One table's rows of an hour: each key with its cells by column.
 type Given = (TableId, Vec<(u128, Vec<(usize, i64)>)>);
 
-/// Hour `hour` of a short campaign of three countries, as the lane's writers read it: each table
-/// told complete and its rows offered, a cell written only where it moved. Most hours move one
-/// table, some none: political power at every third hour, hit points at 4, 5 and 18, a state's
-/// controller at 7, a link unresolved from 10 to 13, victory points at 12, a war ending at 20.
 fn campaign_hour(store: &mut Store, hour: i32) {
     use replay_data::rows::{CountryLinkRow, CountryRow, DivisionRow, HumanControllerRow, ProvinceRow, StateRow, WarRelationRow};
     let appends: &[&[u8]] = if hour == 0 { &[b"GER", b"ENG", b"FRA"] } else { &[] };
@@ -1678,12 +1550,8 @@ fn campaign_hour(store: &mut Store, hour: i32) {
     store.settle();
 }
 
-/// What a run of the lane's writers wrote: the unit and its block pages.
 type Unit = (Vec<u8>, Vec<replay_columnar::unit::BlockPage>);
 
-/// What the lane's writers write over 24 hours of [`campaign_hour`], each
-/// called by its declaration or, `every`, each hour: the unit, how many calls they took, and how
-/// many rows TagHolders, ArmyTotals and TerritoryTotals hold at the end.
 fn lane_unit(every: bool) -> (Unit, usize, [usize; 3]) {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let lane = crate::writers()
@@ -1709,9 +1577,6 @@ fn lane_unit(every: bool) -> (Unit, usize, [usize; 3]) {
     ((unit.bytes, unit.pages), calls.load(std::sync::atomic::Ordering::Relaxed), held)
 }
 
-/// The lane's writers, each not called in an hour that moved none of its inputs unless it declares
-/// an hourly duty, write the unit byte for byte as when every one is called each hour: a writer
-/// not called is one that would have set every row equal to the one held, and its statuses so.
 #[test]
 fn the_lane_s_writers_write_the_bytes_they_wrote_when_called_every_hour() {
     let (gated, gated_calls, held) = lane_unit(false);
@@ -1722,11 +1587,8 @@ fn the_lane_s_writers_write_the_bytes_they_wrote_when_called_every_hour() {
     assert_eq!(gated.1, every.1);
 }
 
-/// The texts every synthetic Bytes cell names, appended at the run's first hour.
 const TEXTS: [&[u8]; 3] = [b"GER", b"ENG", b"FRA"];
 
-/// A field of `kind` holding `value`, for a synthetic row; none for a list or opaque field,
-/// which the row keeps at its default.
 fn synthetic(kind: replay_data::rows::Kind, value: u8) -> Option<replay_data::rows::Field<'static>> {
     use replay_data::rows::{Field, Kind as Wire};
     Some(match kind {
@@ -1748,7 +1610,6 @@ fn synthetic(kind: replay_data::rows::Kind, value: u8) -> Option<replay_data::ro
     })
 }
 
-/// Writes the rows it is handed into `table` of `store`.
 struct Put<'s> {
     store: &'s mut Store,
     table: TableId,
@@ -1765,8 +1626,6 @@ impl replay_data::rows::RowsVisit for Put<'_> {
     }
 }
 
-/// Writes `table`'s row `key`, each scalar and text field `value(column)`, its lists and opaque
-/// values their defaults; a row its type refuses so is not written.
 fn synthetic_row(store: &mut Store, table: TableId, key: u128, value: impl Fn(usize) -> u8) {
     let kinds = table.schema();
     let mask = kinds.iter().enumerate().filter(|&(column, &kind)| column < 64 && synthetic(kind, 0).is_some()).fold(0_u64, |mask, (column, _)| mask | 1 << column);
@@ -1776,7 +1635,6 @@ fn synthetic_row(store: &mut Store, table: TableId, key: u128, value: impl Fn(us
     }
 }
 
-/// A few keys `table` can hold.
 fn synthetic_keys(table: TableId) -> Vec<u128> {
     let bits = table.key_bits();
     if bits == 0 {
@@ -1785,7 +1643,6 @@ fn synthetic_keys(table: TableId) -> Vec<u128> {
     [1_u128, 2, 3, 1 << 32 | 1, 2 << 32 | 2].into_iter().filter(|&key| bits >= 128 || key >> bits == 0).take(4).collect()
 }
 
-/// Every state table `writers` read and none of them writes.
 fn synthetic_inputs(writers: &[Box<dyn Writer>]) -> Vec<TableId> {
     let logs = replay_data::rows::logs();
     let owned: std::collections::HashSet<usize> = writers.iter().flat_map(|writer| writer.tables().iter().map(|output| output.table().index())).collect();
@@ -1799,7 +1656,6 @@ fn synthetic_inputs(writers: &[Box<dyn Writer>]) -> Vec<TableId> {
     inputs
 }
 
-/// Every definition `writers` declare, held.
 fn synthetic_definitions(writers: &[Box<dyn Writer>]) -> Definitions {
     let mut held = Definitions::read_none()
         .with_areas(Ok(vec![1_000; 16]))
@@ -1817,12 +1673,6 @@ fn synthetic_definitions(writers: &[Box<dyn Writer>]) -> Definitions {
     held
 }
 
-/// Hour `hour` of a synthetic campaign of `inputs`, each table's rows made of small numbers so
-/// owners, slots and handles meet. One hour in seven moves and reads nothing; another moves
-/// Countries and CountryLinks alone (what names and resolves); in the rest each table moves every
-/// fourth hour and is read unchanged two hours later. A move shifts every cell and every third
-/// one drops a row; tables are read in part for stretches, and Countries is not recorded at hours
-/// 40 and 41, so the writers requiring it miss those hours.
 fn synthetic_hour(store: &mut Store, inputs: &[TableId], phases: &mut [u32], hour: i32) {
     store.begin_hour(hour, if hour == 0 { &TEXTS[..] } else { &[] }).unwrap();
     let quiet = hour % 7 == 3;
@@ -1860,7 +1710,6 @@ fn synthetic_hour(store: &mut Store, inputs: &[TableId], phases: &mut [u32], hou
     store.settle();
 }
 
-/// One table of a writer as a store holds it: its status, read hour and rows.
 type HeldTable = (Status, Option<i32>, Vec<(u128, Vec<String>)>);
 
 fn held_table(store: &Store, table: TableId) -> HeldTable {
@@ -1868,19 +1717,12 @@ fn held_table(store: &Store, table: TableId) -> HeldTable {
     (view.status(), view.sampled_at(), crate::testing::rows(store, table))
 }
 
-/// The writers write each table the schema declares derived once, and no recorded table.
 #[test]
 fn the_writers_write_exactly_the_derived_tables() {
     let derived: Vec<usize> = TableId::ALL.into_iter().filter(|table| table.is_derived()).map(TableId::index).collect();
     assert_eq!(crate::writers().tables(), derived);
 }
 
-/// Every writer of the journal door, each called only when it is due (a read moved as it watches
-/// it, or it declares an hourly duty) and each called every hour, writes every one of its tables
-/// alike at every hour, statuses and read hours included, and keeps the same resume state: one
-/// that under-declares its reads, or depends on the hour without saying so, differs here by name.
-/// The campaign crosses day and month boundaries, hours that move nothing, hours that move only
-/// the naming inputs, inputs read unchanged, read in part and missed.
 #[test]
 fn every_writer_writes_the_tables_it_wrote_when_called_every_hour() {
     const HOURS: i32 = 800;
@@ -1935,12 +1777,9 @@ fn every_writer_writes_the_tables_it_wrote_when_called_every_hour() {
     assert!(gated_calls < every_calls, "{gated_calls} calls when due against {every_calls} every hour");
 }
 
-/// The log the toy writer appends to: a number, a text, opaque bytes and an optional number.
 const TOY: TableId = TableId::NuclearStrikes;
 const TOY_KINDS: [Kind; 4] = [Kind::U64, Kind::Bytes, Kind::Opaque, Kind::OptionalI32];
 
-/// What the toy writer appended (each row's hour, ordinal, key and cells as a reader of the log
-/// shows them) and forgot (each ordinal's hour), in the order it did them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Toyed {
     appended: Vec<(i32, u64, u128, Vec<String>)>,
@@ -1948,13 +1787,11 @@ struct Toyed {
 }
 
 impl Toyed {
-    /// As a reader of the log hands it: each hour's forgets ascending.
     fn sorted(mut self) -> Self {
         self.forgotten.sort_unstable();
         self
     }
 
-    /// The log's count and the ordinals it lists once hour `hour` is over.
     fn at(&self, hour: i32) -> (u64, Vec<u64>) {
         let appended: Vec<u64> = self.appended.iter().filter(|row| row.0 <= hour).map(|row| row.1).collect();
         let forgotten: std::collections::HashSet<u64> = self.forgotten.iter().filter(|row| row.0 <= hour).map(|row| row.1).collect();
@@ -1964,17 +1801,10 @@ impl Toyed {
 
 type Toys = std::sync::Arc<std::sync::Mutex<Toyed>>;
 
-/// The toy log keyed by the run, and by the hour its keys carry at bit 32.
 const TOY_RUN: &[Output] = &[Output::Log(TOY, Keys::Run)];
 const TOY_HOURLY: &[Output] = &[Output::Log(TOY, Keys::Hour(32))];
 
-/// A writer whose one table is the toy log, declared `outputs`, appending `hour % 5` rows each
-/// hour (one more every 97th hour, which it forgets within the hour), each keyed by its hour and
-/// place, and forgetting by ordinal: every third row it appends in the next hour, by the ordinal
-/// its append gave, and the oldest rows the log lists while more than 40 are, by the store's listed
-/// set.
 struct Toy {
-    /// The ordinals appended last hour that it forgets this hour.
     pending: Vec<u64>,
     toyed: Toys,
     outputs: &'static [Output],
@@ -2077,7 +1907,6 @@ impl Writer for Toy {
     }
 }
 
-/// A store of [`schema`] whose toy table is a log, writing its unit when `encoded`.
 fn toy_store(encoded: bool) -> Store {
     let kinds = schema();
     let mut store = Store::new(kinds.clone(), vec![false; TABLE_COUNT]);
@@ -2090,8 +1919,6 @@ fn toy_store(encoded: bool) -> Store {
     store
 }
 
-/// What taking a run up at a block's end needs: the unit's length and pages then, and the
-/// encoder's, the writers' and the strings' state.
 struct Commit {
     length: usize,
     pages: usize,
@@ -2100,8 +1927,6 @@ struct Commit {
     next: u32,
 }
 
-/// `hours` of the run's hours, each told the store and its writers and ended into `unit`, each
-/// block's end ended as the recorder ends it: the commit at the last block's end in them.
 fn toy_hours(store: &mut Store, writers: &mut Writers, hours: std::ops::Range<u32>, unit: &mut Memory) -> Option<Commit> {
     use replay_columnar::unit::BLOCK;
     let mut commit = None;
@@ -2123,8 +1948,6 @@ fn toy_hours(store: &mut Store, writers: &mut Writers, hours: std::ops::Range<u3
     commit
 }
 
-/// The toy log read back from `unit` by a span of hours: what it appended and forgot, and the
-/// strings its rows name, by id.
 fn read_toy(unit: &Memory) -> (Toyed, HashMap<u32, Vec<u8>>) {
     use replay_columnar::unit::reader::{LogEvent, log_span};
     let columns: Vec<usize> = (0..TOY_KINDS.len()).collect();
@@ -2140,9 +1963,6 @@ fn read_toy(unit: &Memory) -> (Toyed, HashMap<u32, Vec<u8>>) {
     (read, named)
 }
 
-/// The toy log's count and listed ordinals at the end of `hour`, as a seek reads them: the
-/// restore at the end of the block before (none in the run's first), then the hour's block from
-/// its start to it.
 fn seek_toy(unit: &Memory, hour: u32) -> (u64, Vec<u64>) {
     use replay_columnar::unit::{
         BLOCK,
@@ -2169,12 +1989,6 @@ fn seek_toy(unit: &Memory, hour: u32) -> (u64, Vec<u64>) {
     (count, listed.ones().collect())
 }
 
-/// A writer appending to a log and forgetting from it by ordinal, over two blocks: every row it
-/// appended reads back with its cells and strings, in its hour, and every forget in its hour; the
-/// log's restore at each block's end and a seek to every hour list exactly the rows appended and
-/// not forgotten by then, rows forgotten in the hour they came (the run's first among them) and
-/// rows appended in one block and forgotten in the next included; alike whether the log holds its
-/// keys for the run or the hour.
 #[test]
 fn a_writer_s_log_restores_at_every_block_and_seeks_to_any_hour_as_it_appended_and_forgot() {
     use replay_columnar::unit::{BLOCK, reader::log_state};
@@ -2210,10 +2024,6 @@ fn a_writer_s_log_restores_at_every_block_and_seeks_to_any_hour_as_it_appended_a
     }
 }
 
-/// A writer appending to and forgetting from a log, taken up from the file at its first block's
-/// end (the log's restore, the encoder's and the writers' state: the keys a log keyed by the run
-/// was given, none of one keyed by its hour, and the toy's own), writes the second block byte for
-/// byte as a run never stopped.
 #[test]
 fn a_writer_s_log_taken_up_at_a_block_s_end_writes_what_an_unbroken_run_writes() {
     use replay_columnar::{
@@ -2257,10 +2067,6 @@ fn a_writer_s_log_taken_up_at_a_block_s_end_writes_what_an_unbroken_run_writes()
     }
 }
 
-/// A log keyed by its hour, appended to over many hours and across a block's end, holds no key
-/// past the hour it was given in: the writers' state at each block's end holds none of its keys,
-/// where the same log keyed by the run holds a range for every hour that appended, growing with
-/// the run.
 #[test]
 fn a_log_keyed_by_its_hour_holds_no_key_past_its_hour_and_its_block_end_state_none() {
     use replay_columnar::unit::BLOCK;
@@ -2293,7 +2099,6 @@ fn a_log_keyed_by_its_hour_holds_no_key_past_its_hour_and_its_block_end_state_no
     }
 }
 
-/// How [`Misusing`] misuses its tables in its second hour.
 #[derive(Clone, Copy, Debug)]
 enum Misuse {
     SetLog,
@@ -2301,15 +2106,12 @@ enum Misuse {
     AppendState,
     ForgetState,
     KeyAgain,
-    /// Of the log keyed by its hour.
     KeyAgainInHour,
     KeyOfAnotherHour,
     ForgetNever,
     ForgetAgain,
 }
 
-/// A writer of the toy log and Campaign: in hour 0 rows 1 and 2 appended and the second forgotten,
-/// and Campaign's row set; from hour 1 a row keyed by its hour appended and then its misuse.
 struct Misusing {
     misuse: Misuse,
 }
@@ -2387,12 +2189,6 @@ impl Writer for Misusing {
     }
 }
 
-/// A writer setting or deleting a row of its log, appending to or forgetting from its state table,
-/// giving its log a key again (keyed by its hour, one given that same hour), giving a log keyed by
-/// its hour a key of another hour, or forgetting a row the log never appended or forgot before
-/// fails that hour by name and is withheld for the rest of the run: every table of it unavailable for
-/// the reason, nothing of the hour landed (its row appended first included), the recording going
-/// on.
 #[test]
 fn a_writer_misusing_its_log_or_its_state_table_is_withheld_by_name() {
     for (misuse, refusal) in [
@@ -2432,7 +2228,6 @@ fn a_writer_misusing_its_log_or_its_state_table_is_withheld_by_name() {
     }
 }
 
-/// A writer that declares `tables` and writes nothing.
 struct Declared {
     tables: &'static [Output],
 }
@@ -2469,9 +2264,6 @@ impl Writer for Declared {
     }
 }
 
-/// A writer declaring a table a log that the schema's LOGS holds as state, state that LOGS holds
-/// a log, a log the store holds as state, or a log's keys carrying their hour past a key's bits,
-/// is refused by name at its run's first hour, before any writer runs.
 #[test]
 fn a_writer_declaring_a_table_s_class_otherwise_than_the_schema_or_the_store_is_refused_by_name() {
     const CAMPAIGN_LOG: &[Output] = &[Output::Log(TableId::Campaign, Keys::Run)];

@@ -228,8 +228,6 @@ fn identity_membership_and_parent_disagreements_are_each_reported_once() {
     assert!(differences.contains("motorization_level"), "{differences}");
     assert!(differences.contains("parent"), "{differences}");
     assert!(differences.contains("member 1"), "{differences}");
-    // The division parent pointers disagree with the recorded member
-    // vector for the unit that moved, and with the save for both.
     assert!(
         differences.contains("recorded member vector"),
         "{differences}"
@@ -244,8 +242,6 @@ fn a_division_parent_pointer_is_compared_only_where_the_save_has_that_division()
     else {
         unreachable!()
     };
-    // A division the save does not contain still cross-checks against the
-    // recorded member vector, but has no saved parent to compare with.
     divisions.push(DivisionRow {
         id: oob_handle(65580, 4713),
         orders_group: 0,
@@ -1055,7 +1051,6 @@ fn sunk_ship_lexical_classes_keep_nul_limits_and_explicit_pointer_presence() {
         class_token: 1,
         attribution_class_token: 2,
         attribution_class_present: 1,
-        // Neither literal definition-name string substitutes for its token.
         class_name: b"different captured name".to_vec(),
         attribution_class_name: Vec::new(),
         ..Default::default()

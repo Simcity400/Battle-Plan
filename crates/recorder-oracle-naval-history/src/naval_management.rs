@@ -1,4 +1,3 @@
-//! Exact saved standing orders, ordered composition preferences, repair queues and refit work.
 use super::{Report, complete, invalid, required_country_tag};
 use installed_content_save::{Save, naval_management as saved};
 use replay_data::rows::CountryRow;
@@ -20,8 +19,6 @@ fn missing(report: &mut Report, label: impl AsRef<str>) {
     report.difference(label, "absent", "present");
 }
 
-// Flattened save objects retain the enclosing country's authenticated scope.
-// Without admission the full object census remains strict, like country comparisons.
 fn canonical_objects<T>(
     report: &Report,
     objects: impl IntoIterator<Item = T>,
@@ -318,8 +315,6 @@ fn bases(frame: &DecodedFrame, saved: &saved::Pack, report: &mut Report) -> io::
 }
 fn queues(frame: &DecodedFrame, saved: &saved::Pack, report: &mut Report) -> io::Result<()> {
     let expected_bases = canonical_objects(report, &saved.bases, |row| &row.country);
-    // The base census is global. Exclude only provinces serialized exclusively
-    // by out-of-scope owners; canonical/shared and unknown provinces stay strict.
     let mut provinces: BTreeMap<_, _> = saved
         .bases
         .iter()
@@ -383,8 +378,6 @@ fn ships(frame: &DecodedFrame, saved: &saved::Pack, report: &mut Report) -> io::
         .collect();
     let expected_ships = canonical_objects(report, &saved.ships, |(_, row)| &row.country);
     for &(&ship, expected) in &expected_ships {
-        // Empty source links have no row. A carried nonempty raw link may
-        // also project to absence after its work order retires.
         let value = actual.remove(&ship).flatten();
         equal(
             report,
@@ -672,8 +665,6 @@ mod tests {
                 tag: b"RES".to_vec(),
             }))
             .collect();
-            // The authenticated projection retains one reserved representative,
-            // including its nested naval objects, even when the emission repeats.
             let save = document.project(&layout).unwrap().parse().unwrap();
             assert_eq!(
                 save.naval_management.fleets.len(),
@@ -688,8 +679,6 @@ mod tests {
                 2 + usize::from(aliases != 0)
             );
             if aliases != 0 {
-                // Unlike fleet and ship capture, the global base census also
-                // supplies the reserved owner's base and its nonempty queue.
                 *frame.tables[TableId::NavalRepairBases.index()] =
                     TableView::Complete(TableRows::NavalRepairBases(vec![
                         NavalRepairBaseRow {
@@ -760,7 +749,6 @@ mod tests {
                 aliases != 0
             );
 
-            // Every canonical collection still compares its actual operands.
             let mut changed = save.clone();
             let pack = &mut changed.naval_management;
             pack.countries
@@ -809,8 +797,6 @@ mod tests {
                     "{field}: {differences:?}"
                 );
             }
-            // Sparse capture omits the ordinary ship, but a saved refit needs
-            // its source row and an ordinary ship must not resolve a refit.
             let mut missing = frame.clone();
             *missing.tables[TableId::NavalRefitShips.index()] =
                 TableView::Complete(TableRows::NavalRefitShips(Vec::new()));
@@ -837,8 +823,6 @@ mod tests {
             );
             if aliases != 0 {
                 let mut unadmitted = Report::default();
-                // With no admitted scope, neither reserved objects nor their
-                // missing production wrapper may be silently excluded.
                 assert!(compare(&frame, &save, &links, &BTreeMap::new(), &mut unadmitted).is_err());
                 for field in [
                     "naval repair country RES",
@@ -863,7 +847,6 @@ mod tests {
                         .iter()
                         .any(|difference| difference.contains("base 19"))
                 );
-                // Without admission the recorded reserved queue compares too.
                 let mut bad_queue = frame.clone();
                 *bad_queue.tables[TableId::NavalRepairQueue.index()] =
                     TableView::Complete(TableRows::NavalRepairQueue(vec![
@@ -887,8 +870,6 @@ mod tests {
                         .any(|difference| difference.contains("naval base 19"))
                 );
 
-                // Sharing the province with a canonical owner must not hide
-                // canonical differences. Unknown queue provinces stay strict.
                 let mut shared = save.clone();
                 shared
                     .naval_management
@@ -967,8 +948,6 @@ mod tests {
         };
         for fleet in [1, 2] {
             frame.hour = fleet as i32;
-            // An hour before and an hour after transfer: the second fleet has
-            // no repair-parent relationship, but the rejoin destination is live.
             *frame.tables[TableId::TaskForces.index()] =
                 TableView::Complete(TableRows::TaskForces(vec![
                     TaskForceRow {
@@ -992,8 +971,6 @@ mod tests {
             }
             assert!(run(&frame, &saved).differences.is_empty());
         }
-        // Disband the old destination while its detached repair force survives.
-        // The raw source row carries unchanged; only the census and save omission change.
         frame.hour += 1;
         *frame.tables[TableId::TaskForces.index()] =
             TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
@@ -1018,7 +995,6 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("merge_with_after_repair"))
         );
-        // The identity gate must use the full reference, not the numeric id alone.
         *frame.tables[TableId::TaskForces.index()] =
             TableView::Complete(TableRows::TaskForces(vec![
                 TaskForceRow {
@@ -1059,7 +1035,6 @@ mod tests {
             ships(frame, saved, &mut report).unwrap();
             report
         };
-        // New work resolves even before the daily ProductionLines observation.
         assert!(run(&frame, &saved).differences.is_empty());
         *frame.tables[TableId::ProductionLines.index()] =
             TableView::Complete(TableRows::ProductionLines(vec![ProductionLineRow {
@@ -1068,8 +1043,6 @@ mod tests {
             }]));
         saved.ships.insert(4, saved_ship(None));
         frame.hour += 1;
-        // Neither cancellation nor a mod's unproducible-line prune needs a ship mark:
-        // raw link and stale daily metadata carry; the hourly production row retires.
         for lines in [
             vec![],
             vec![NavalRefitProgressRow {

@@ -1,4 +1,3 @@
-//! Successful generated-name facts, owned by one immutable naval preparation.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,7 +41,6 @@ impl<'rows> Facts<'rows> {
     }
 }
 
-// Every lookup shares these exact assets, held frame views and Hour/limits owner.
 pub(in crate::map::unit_models::ships) struct Pass<'context, 'hour, 'rows> {
     assets: &'context UnitModelAssets,
     hour: Option<&'context Hour<'hour>>,

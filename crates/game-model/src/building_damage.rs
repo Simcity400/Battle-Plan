@@ -1,4 +1,3 @@
-/// Attribution of the pinned native caller, independently of source kind.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Cause {

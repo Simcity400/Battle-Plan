@@ -1,11 +1,8 @@
-//! A country's research grant inventory, from its owners' `ResearchModifiers` rows of the
-//! inventory scope at a read; names are localised from the bound content.
 use replay_data::rows::ResearchModifierRow as R;
 use serde::Serialize;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The `ResearchModifiers` index of a country's grant inventory rows.
 pub(super) const INVENTORY_INDEX: u32 = u32::MAX - 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -41,7 +38,7 @@ pub struct ResearchGrant {
 pub struct GrantInventory {
     pub next_id: Option<i32>,
     pub grants: Vec<ResearchGrant>,
-    /// Why the inventory is not known at the hour, when it is not.
+    #[doc = " Why the inventory is not known at the hour, when it is not."]
     pub unavailable: Option<String>,
 }
 
@@ -51,13 +48,10 @@ impl GrantInventory {
     }
 }
 
-/// Whether `row` names a restriction, whose token [`assemble`] spells.
 pub(super) fn spells(row: &R) -> bool {
     matches!(row.kind, R::GRANT_TECHNOLOGY | R::GRANT_CATEGORY)
 }
 
-/// The inventory one country's grant rows hold, in their table order, every name unlocalised;
-/// `token` spells a restriction's token.
 pub(super) fn assemble(selected: &[&R], mut token: impl FnMut(u32) -> Result<String, String>) -> Result<GrantInventory, String> {
     let mut counters = selected.iter().filter(|row| row.kind == R::GRANT_COUNTER);
     let counter = counters.next().ok_or("Research grant inventory is not recorded")?;
@@ -113,7 +107,6 @@ pub(super) fn assemble(selected: &[&R], mut token: impl FnMut(u32) -> Result<Str
     Ok(GrantInventory { next_id: Some(next_id), grants, unavailable: None })
 }
 
-/// `inventory` with each grant's and restriction's name localised.
 pub(super) fn localised(mut inventory: GrantInventory, localise: &dyn Fn(&str) -> Option<String>) -> GrantInventory {
     for grant in &mut inventory.grants {
         for restriction in grant.technologies.iter_mut().chain(grant.categories.iter_mut()) {
@@ -157,7 +150,6 @@ mod tests {
         let named = localised(inventory, &|token| Some(format!("<{token}>")));
         assert_eq!(named.grants[1].name.as_deref(), Some("<mod_b>"));
         assert_eq!(named.grants[2].categories[0].name.as_deref(), Some("<token_42>"));
-        // A token the recording does not spell refuses the whole inventory by name, never a part.
         assert_eq!(assemble(&selected, |id| Err(format!("Research grant restriction token {id} is not recorded"))).unwrap_err(), "Research grant restriction token 41 is not recorded");
         assert!(assemble(&selected[1..], |id| Ok(id.to_string())).is_err());
     }

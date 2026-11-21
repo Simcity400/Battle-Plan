@@ -1,4 +1,3 @@
-/** Keyboard navigation shared by categorical charts and logs. */
 export function keyTarget(key: string, index: number, count: number, page: number): number | null {
   if (count <= 0) return null;
   const clamp = (value: number) => Math.max(0, Math.min(count - 1, value));
@@ -13,7 +12,6 @@ export function keyTarget(key: string, index: number, count: number, page: numbe
   }
 }
 
-/** The first slot from `from` (clamped into `[0, count)`), stepping by `step`, that `shown` admits; null when none is. */
 export function shownSlot(from: number, step: 1 | -1, count: number, shown: (slot: number) => boolean): number | null {
   for (let slot = Math.max(0, Math.min(count - 1, from)); slot >= 0 && slot < count; slot += step) if (shown(slot)) return slot;
   return null;

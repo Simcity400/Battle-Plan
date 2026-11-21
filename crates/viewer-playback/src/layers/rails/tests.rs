@@ -68,8 +68,6 @@ impl Pages for Recording {
     }
 }
 
-/// A strip and a bridge that read exactly what today's railway reads of the network: a province's
-/// neighbours and their levels, the triangle test, its source flag and every anchor's harbour flag.
 pub struct Stub;
 
 impl Geography for Stub {
@@ -99,14 +97,12 @@ impl Geography for Stub {
 
 const EDGES: [(u32, u32, i32); 8] = [(1, 2, 1), (2, 1, 1), (2, 3, 3), (3, 2, 3), (3, 4, 2), (4, 3, 2), (1, 3, 1), (3, 1, 1)];
 const NOT_RECORDED: std::ops::Range<i32> = 40..48;
-/// The steps the playhead builds past the head in [`side_of`].
 const RING: usize = 3;
 
 fn key(from: u32, to: u32) -> u128 {
     u128::from(from) << 32 | u128::from(to)
 }
 
-/// `hours` hours of the recording's own schema, each hour's strings and changes made by `hour`.
 pub fn recorded(hours: u32, mut strings: impl FnMut(u32) -> Vec<String>, mut hour: impl FnMut(u32, &mut Store)) -> Arc<dyn Pages> {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -130,13 +126,10 @@ pub fn recorded(hours: u32, mut strings: impl FnMut(u32) -> Vec<String>, mut hou
     Arc::new(Recording { bytes: memory.bytes, runs: vec![run], kinds })
 }
 
-/// A map side reading `pages` with `layer`, sought to hour 0 and playing four hours a step.
 pub fn side_of(pages: Arc<dyn Pages>, layer: Box<dyn Layer>, name: &str) -> MapSide {
     side_at_pace(pages, layer, name, 4.0)
 }
 
-/// [`side_of`] playing at `speed` game hours a second, so its steps are that many hours long: a
-/// playing head stops only at the end of a step, so a test that settles at every hour plays at 1.
 pub fn side_at_pace(pages: Arc<dyn Pages>, layer: Box<dyn Layer>, name: &str, speed: f64) -> MapSide {
     let kinds = Arc::new((0..TableId::ALL.len()).map(|table| pages.kinds(table).map(<[Kind]>::to_vec).unwrap_or_default()).collect());
     let timeline = Timeline::whole(&*pages).unwrap();
@@ -149,9 +142,6 @@ pub fn side_at_pace(pages: Arc<dyn Pages>, layer: Box<dyn Layer>, name: &str, sp
     side
 }
 
-/// RailEdges, ProvinceSupply and NavalBases over `hours`: edges written twice inside one step,
-/// deleted and inserted, a supply source appearing, a harbour moving, and NavalBases not recorded
-/// for a stretch.
 fn record(hours: u32) -> Arc<dyn Pages> {
     let (edges, supply, naval) = (TableId::RailEdges.index(), TableId::ProvinceSupply.index(), TableId::NavalBases.index());
     recorded(hours, |_| Vec::new(), |at, store| {
@@ -215,7 +205,6 @@ fn side(name: &str) -> MapSide {
     side_of(record(80), Box::new(Rails::new(Arc::new(Stub))), name)
 }
 
-/// Frames until `done` holds, the head one step past the last applied so a frame takes one step.
 pub fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &Frame) -> bool) {
     let mut applied: Option<i32> = None;
     for _ in 0..50_000_000u64 {
@@ -234,8 +223,6 @@ pub fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &Frame) -
     panic!("the map side never reached what the test waits for");
 }
 
-/// Frames at `hour` until it is applied, nothing composes and no layer carries frame-thread work:
-/// one step taken whole, however the frames are paced. Fails by name within 120 s.
 pub fn settle_at(side: &mut MapSide, hour: i32) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -255,8 +242,6 @@ pub fn settle_at(side: &mut MapSide, hour: i32) {
     }
 }
 
-/// Frames at `hour` until it is applied, whatever the layers carry: no step past it is taken.
-/// Fails by name within 120 s.
 fn applied_at(side: &mut MapSide, hour: i32) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -275,8 +260,6 @@ fn rails(side: &MapSide) -> &Rails {
     side.parts().unwrap().1[0].any().downcast_ref::<Rails>().unwrap()
 }
 
-/// The layer settled at every step against itself composed from the mirrors, and the network
-/// against the recorded story at the hours it changes.
 #[test]
 fn rails_settled_every_step_equal_composed_and_follow_writes_deletes_inserts_and_gaps() {
     let mut side = side("rails-steps");
@@ -331,9 +314,6 @@ fn rails_above_the_cutoff_declare_and_hold_nothing_and_settle_again_when_shown()
     let mut probe = Rails::new(Arc::new(Stub));
     probe.inputs(&View { camera_height: 1000.0, ..View::default() }, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "hidden, the layer declares nothing");
-    // Shown again, its tables join at the hour the map's frames are at: with the head held there,
-    // they arrive as a reset at that hour and the layer composes, and at every step after it is
-    // drawn whole: a railway, but none while NavalBases is not recorded.
     side.set_view(View::default()).unwrap();
     let tables = [TableId::RailEdges, TableId::ProvinceSupply, TableId::NavalBases];
     let heads = |side: &MapSide| side.parts().map(|(mirrors, _)| tables.map(|table| (table, mirrors.get(table).and_then(Mirror::head))).to_vec());
@@ -370,8 +350,6 @@ fn rails_above_the_cutoff_declare_and_hold_nothing_and_settle_again_when_shown()
     assert!(railway > 0, "shown again at hour {shown}, the railway was drawn again");
 }
 
-/// A scene that keeps what it is sent: the strip buffer, the strips it draws, and what each
-/// upload wrote.
 #[derive(Default)]
 struct Counted {
     buffer: Vec<[f32; 6]>,
@@ -406,21 +384,17 @@ impl Target for Counted {
 }
 
 impl Counted {
-    /// The vertices drawn, run after run.
     fn drawn(&self) -> Vec<[f32; 6]> {
         self.runs.iter().flat_map(|run| self.buffer[run.start as usize..run.end as usize].iter().copied()).collect()
     }
 }
 
-/// Today's whole mesh of the layer's strips: what the scene must draw.
 fn whole(layer: &Rails) -> Vec<[f32; 6]> {
     RailMesh::assemble(layer.runs().values(), layer.bridges().values().copied()).unwrap().native_vertices
 }
 
 const CHAIN: u32 = 200;
 
-/// A railway of `CHAIN` provinces in a row, each edge both ways at level 1; at hour 6 one way of the
-/// edge 100 to 101 goes to level 3.
 fn chain() -> Arc<dyn Pages> {
     let (edges, supply, naval) = (TableId::RailEdges.index(), TableId::ProvinceSupply.index(), TableId::NavalBases.index());
     recorded(12, |_| Vec::new(), |at, store| {
@@ -444,7 +418,6 @@ fn chain() -> Arc<dyn Pages> {
     })
 }
 
-/// The layer settled at `hour` on its own, every strip and bridge then sent to `scene`.
 fn sent_at(side: &mut MapSide, hour: i32, scene: &mut Counted) -> Rails {
     settle_at(side, hour);
     let (mirrors, _) = side.parts().unwrap();
@@ -455,8 +428,6 @@ fn sent_at(side: &mut MapSide, hour: i32, scene: &mut Counted) -> Rails {
     layer
 }
 
-/// One railway's level changes: the upload writes that railway's strip, not the strips in view,
-/// and the scene draws today's whole mesh. Before, an upload rebuilt and wrote the whole mesh.
 #[test]
 fn rails_upload_writes_only_the_strip_a_level_change_redrew() {
     let mut side = side_of(chain(), Box::new(Rails::new(Arc::new(Stub))), "rails-upload");
@@ -484,8 +455,6 @@ fn rails_upload_writes_only_the_strip_a_level_change_redrew() {
     assert_eq!(scene.drawn(), whole(&layer), "the scene draws today's mesh after the change");
 }
 
-/// An upload runs to completion: one sends the bridges and every strip, and they draw today's whole
-/// mesh.
 #[test]
 fn rails_upload_sends_every_piece_at_once() {
     let mut side = side_of(chain(), Box::new(Rails::new(Arc::new(Stub))), "rails-upload-settling");
@@ -500,9 +469,6 @@ fn rails_upload_sends_every_piece_at_once() {
     assert_eq!(scene.drawn(), whole(&layer), "the pieces draw today's mesh");
 }
 
-/// Four supply rows, province 4 a source by its node level; at hour 6 province 3's flags gain a
-/// bit the railway does not read, province 1's controller moves and province 4's level rises; at
-/// hour 10 province 3's flags gain their first bit.
 fn sources() -> Arc<dyn Pages> {
     let (edges, supply, naval) = (TableId::RailEdges.index(), TableId::ProvinceSupply.index(), TableId::NavalBases.index());
     recorded(16, |_| Vec::new(), |at, store| {
@@ -538,16 +504,12 @@ fn sources() -> Arc<dyn Pages> {
     })
 }
 
-/// A ProvinceSupply write that leaves every province a source or not as it was marks nothing: a
-/// flags bit the railway does not read, a column it does not read, a level that stays above zero.
-/// Before, each write of a read column marked its row for the settle.
 #[test]
 fn rails_mark_no_supply_row_for_a_write_that_leaves_its_source_as_it_was() {
     let mut side = side_of(sources(), Box::new(Rails::new(Arc::new(Stub))), "rails-sources");
     settle_at(&mut side, 4);
     let before = rails(&side).marked()[1];
     let settles = side.hold_settles();
-    // Frames at a head of the test's own: the hour 10 write stays out of the first window.
     applied_at(&mut side, 8);
     assert_eq!(rails(&side).marked()[1], before, "no supply row marked by the writes at hour 6");
     assert_eq!(rails(&side).carried().entities, 0, "nothing carried");
@@ -565,9 +527,6 @@ fn rails_mark_no_supply_row_for_a_write_that_leaves_its_source_as_it_was() {
     assert_eq!(rails(&side).differ(&fresh), (0, None), "settled, the railway equals one composed");
 }
 
-/// The index list a publish writes: the entries of the runs that moved, and nothing read of the
-/// runs that stand where they stood. Before, every publish walked every index of every live strip
-/// to find the span that moved.
 #[test]
 fn rail_strip_indices_are_written_where_a_run_moved_and_read_nowhere_else() {
     let whole = |runs: &[Range<u32>]| -> Vec<u32> { runs.iter().flat_map(|run| run.clone().chain(std::iter::once(u32::MAX))).collect() };
@@ -575,26 +534,22 @@ fn rail_strip_indices_are_written_where_a_run_moved_and_read_nowhere_else() {
     let mut strips = Strips::default();
     let (length, owed) = strips.laid(&runs).unwrap();
     assert_eq!((length, owed.clone()), (whole(&runs).len(), Some(0..whole(&runs).len())), "nothing stands yet, so the whole list is owed");
-    // What the buffer holds: every entry the span carried.
     strips.sent = length;
     assert_eq!(strips.held[..length], whole(&runs)[..], "the list laid out whole");
     assert_eq!(strips.laid(&runs).unwrap(), (length, None), "the same runs owe nothing");
 
-    // A strip redrawn to the same length moves its own entries alone; the runs after it stand.
     runs[20] = 1_000..1_008;
     let (length, owed) = strips.laid(&runs).unwrap();
     assert_eq!(owed, Some(20 * 9..20 * 9 + 8), "the run's entries, not its separator, which did not move");
     assert_eq!(strips.held[..length], whole(&runs)[..], "and the list holds what a whole layout holds");
     strips.sent = length;
 
-    // A strip of another length shifts every entry after it: they are laid out again.
     runs[10] = 2_000..2_004;
     let (length, owed) = strips.laid(&runs).unwrap();
     assert_eq!(owed.map(|owed| owed.start), Some(10 * 9), "from the run that changed length");
     assert_eq!(strips.held[..length], whole(&runs)[..], "the shifted list");
     strips.sent = length;
 
-    // A strip gone, and one more: the list shrinks and grows where it must.
     runs.remove(30);
     let (length, _) = strips.laid(&runs).unwrap();
     assert_eq!(strips.held[..length], whole(&runs)[..]);

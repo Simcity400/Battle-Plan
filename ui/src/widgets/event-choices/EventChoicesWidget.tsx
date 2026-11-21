@@ -40,8 +40,6 @@ const NO_ROWS: readonly LogRow<ChoiceAt>[] = [];
 const CONTINUING: readonly EventFeedKind[] = ['eventOptionSelected'];
 const cardHeight = (row: LogRow<ChoiceAt>) => 78 + 18 * Math.max(1, row.item.card.item?.options?.length ?? 1);
 
-/** Each recorded delivery of a scripted or news event to a country as a card: its picture and title, the country and its
- * sender, when it fired and was chosen, and every authored option with the chosen one marked. */
 export default function EventChoicesWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
@@ -57,7 +55,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const awaiting = options[AWAITING.value] === true;
   const artwork = options.artwork !== false;
   const country = filtered ? match.matches : null;
-  // The chosen countries are kept by the server, so a sparse group pages through its own cards only.
   const scope = useMemo(() => filtered && match.ready ? countryScope(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0) ?? undefined : undefined,
     [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const list = useMemo<CardList<ChoiceCard, ChoiceAt>>(() => ({ product: 'event-choices', scope, openers: JSON.parse(kindsKey), continuing: CONTINUING, row: choiceRow,
@@ -73,8 +70,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return { ...found, name: eventCountryName(tag, found) };
   }, [labelAt]);
   const name = useCallback((tag: string, hour: number) => label(hour, tag).name, [label]);
-  // Every card the head has read, while no filter of the cards' own hides some: the log counts them, painted each frame
-  // from the count at the block's hour and the rows drawn ahead of it as the clock reaches them.
   const counted = !filtered && !awaiting && list.openers.length === EVENT_KINDS.length;
   const offset = track?.axisOffset ?? 0;
   const recorded = cards.feed.missing.length ? ' (recorded hours)' : '';

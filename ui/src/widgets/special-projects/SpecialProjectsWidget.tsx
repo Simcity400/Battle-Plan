@@ -44,7 +44,6 @@ import ProjectDetails from './ProjectDetails';
 import './specialProjects.css';
 import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/dashboard';
 
-/** A country's projects can be missing for several reasons; the card only says they are. */
 const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 
 const ProjectTile = ({ icon }: { icon: string | null }) =>
@@ -61,11 +60,8 @@ const Section = ({ label, count, children }: { label: string; count: number; chi
 
 type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
 
-/** The clock's track hour now, while following; the shown hour otherwise. */
 type HourNow = () => number;
 
-/** Current: running projects as compact cards whose progress and iterations the painter moves each frame, then
- * one-line completed rows, the projects already complete when first recorded folded into one row, and cancelled rows. */
 function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
@@ -147,7 +143,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const resolved = useMemo(() => projectCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0),
     [widget.countries, track, fallback, groups.data]);
   const tags = resolved.tags;
-  // Each country's episodes over its branch, asked once: the head moves nothing here, it is read from the reply.
   const requests = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
     params: { branchId: track.branch.id, country: countryFromKey(tag) } })) : [], [track, resolved.ready, tags, view]);
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
@@ -159,8 +154,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const data = view === 'history' ? history.data : currentData;
   const { error, retry } = view === 'history' ? history : live;
   const membershipAt = useCallback((hour: number) => resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour), [resolved.unobserved]);
-  // While following, the widget renders only when what it shows other than the numbers changes; the painter and the
-  // chart move those each frame.
   const structure = useCallback((clockHour: number) => {
     const hour = Math.floor(clockHour) + axisOffset;
     if (view === 'live') return JSON.stringify([membershipAt(hour), tags.find(tag => resolved.match.matches(tag, hour)), resolved.match.known(hour)]);
@@ -186,7 +179,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const shown = useShownHour();
   const membershipUnknown = membershipAt(at);
   const historyMembershipUnknown = resolved.unobserved.some(span => span.firstHour <= at && first <= span.lastHour);
-  // History's headings name each country at the hour its name or flag last changed, so playing asks for none.
   const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, active && following && view === 'history' && tags.length > 1,
     hour => Math.floor(hour) + axisOffset);
   const labelHour = following ? identityHour ?? at : at;
@@ -196,7 +188,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   }) ?? [], [data, labelHour, resolved.memberships]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
-  // The details under Current carry their own warnings: what they could not name or draw.
   const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
   const notes = view === 'history' ? bounded.data : currentData;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
@@ -219,7 +210,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     if (data.length === 1) return projects;
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ? PROJECTS_UNRECORDED : (projects.length ? '' : 'No special projects yet.')), ...projects];
   }) ?? [], [data, at, from, following, labelAt, labelHour, resolved.memberships, view]);
-  // History reports the hour its bars end at; Current's painter reports its own.
   useLayoutEffect(() => {
     if (view !== 'history' || !data) return;
     const report = () => shown(now());
@@ -233,7 +223,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     menu.open(x, y, [{ ...start, label: `Jump to start · ${projectDate(card.project.start)}` },
       ...(completion ? [{ ...jumpItem(runtime, track.id, completion.hour), label: `Jump to completion · ${projectDate(completion)}` }] : [])]);
   };
-  // Every listed project shares the hover tooltip, spoken description and Jump menu; the tooltip reads the hour now.
   const item = (reply: SpecialProjectsReply): ItemProps => card => {
     const atNow = () => {
       const run = runAt(card.project.runs, now());
@@ -298,8 +287,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
 
 export default function SpecialProjectsWidget(props: WidgetProps) {
   const view = props.widget.options?.view === 'history' ? 'history' : 'live';
-  // The view switch sits beside Live, where the frame never clips it; a frame without header actions (the catalogue
-  // preview) shows it beside the title.
   const actions = useContext(HeaderActionsSlot);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const groups = useCountryGroups(props.runtime, track, props.active);
@@ -307,7 +294,6 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const selected = useMemo(() => projectCountries(props.widget.countries, fallback ? [fallback] : [], groups.data,
     track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0), [props.widget.countries, fallback, groups.data, track]);
   const axisOffset = track?.axisOffset ?? 0;
-  // The countries compared change only when one is chosen or leaves at the head.
   const chosenAt = useCallback((clockHour: number) => {
     const hour = Math.floor(clockHour) + axisOffset;
     return JSON.stringify([selected.tags.filter(tag => selected.match.matches(tag, hour)), selected.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)]);
@@ -318,7 +304,6 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const tags = selected.tags.filter(tag => selected.match.matches(tag, at));
   const unknown = selected.unobserved.some(span => span.firstHour <= at && at <= span.lastHour);
   const tagsKey = JSON.stringify(tags);
-  // Stable panels keep their scroll position while playback advances.
   const comparisonWidget = useMemo(() => ({ ...props.widget, countries: { kind: 'tags' as const, tags: JSON.parse(tagsKey) as string[] } }), [props.widget, tagsKey]);
   const slot = actions ?? props.headerSlot;
   const header = slot && createPortal(<Segmented value={view} options={VIEWS}
@@ -326,6 +311,5 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const compare = view === 'live' && selected.ready && !unknown && tags.length > 1 && !(groups.error && !groups.data);
   return <>{header}{compare
     ? <CountryComparisons {...props} widget={comparisonWidget} headerSlot={null} component={ProjectPanel} />
-    // Each view gets its own panel, so a switch starts at the top instead of keeping the other view's scroll.
     : <ProjectPanel key={view} {...props} />}</>;
 }

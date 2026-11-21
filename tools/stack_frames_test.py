@@ -25,7 +25,6 @@ class Deepest(unittest.TestCase):
         self.assertEqual(sf.deepest(graph, frames, 1), (60 * KIB, [1, 2, 3]))
 
     def test_a_tail_jump_after_a_call_keeps_the_calling_frames(self):
-        # 1 calls 2, which tail-jumps to 3: 3 runs on top of 1's frame, not 2's.
         graph = {1: {2: True}, 2: {3: False}}
         frames = {1: 10 * KIB, 2: 20 * KIB, 3: 30 * KIB}
         self.assertEqual(sf.deepest(graph, frames, 1), (40 * KIB, [1, 2, 3]))

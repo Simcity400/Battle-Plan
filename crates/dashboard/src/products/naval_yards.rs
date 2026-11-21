@@ -1,10 +1,3 @@
-//! One country's naval yards at an hour, two rows-at-an-hour products ([`AtHour`]):
-//! `naval-repairs`, its repair ports (by province, through `NavalBases`' holder) with their
-//! dockyards, priority, repair policy and queues of ships in the game's order; `naval-refits`, its
-//! live refit lines (`NavalRefitProgress`, owned through `ProductionLines`) with their target
-//! design, progress, cost and ships. Each reads only the owner's rows, step by step; what is not
-//! recorded is none with its reason in the warnings, never zero. A ship's hull and a line's
-//! progress move hourly: they are live cells (by ship and line handle) the widgets paint.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -43,11 +36,6 @@ pub struct NavalYardsParams {
     pub country: Country,
 }
 
-/// A ship as the yards show it: its full handle, its name as the game held it, else one rebuilt
-/// from its recorded naming through the content's name lists (else neither, and its design, else
-/// its class, stands in), its design and class, its hull at the reply's hour and its maximum (raw
-/// fixed5; the hull is also the live cell `(handle, hull)`), its task force's name and that task
-/// force's repair policy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -70,10 +58,10 @@ pub struct RepairPort {
     pub province: u32,
     pub name: Option<String>,
     pub priority: Option<i32>,
-    /// The game's name of the port's repair priority.
+    #[doc = " The game's name of the port's repair priority."]
     pub policy: Option<String>,
     pub dockyards: Option<i32>,
-    /// The ships queued, in queue order; a ship queued twice is listed twice.
+    #[doc = " The ships queued, in queue order; a ship queued twice is listed twice."]
     pub queue: Vec<YardShip>,
 }
 
@@ -84,9 +72,9 @@ pub struct NavalRepairsReply {
     pub ports: Vec<RepairPort>,
     pub used_dockyards: Option<i32>,
     pub repair_limit: Option<i32>,
-    /// Distinct ships queued, where every one is recorded.
+    #[doc = " Distinct ships queued, where every one is recorded."]
     pub queued_ships: Option<u32>,
-    /// Whether every base's holder and the whole queue were read: only then is no port no repair.
+    #[doc = " Whether every base's holder and the whole queue were read: only then is no port no repair."]
     pub census_complete: bool,
     pub warnings: Vec<String>,
 }
@@ -97,12 +85,12 @@ pub struct NavalRepairsReply {
 pub struct RefitLine {
     pub handle: String,
     pub target: Option<String>,
-    /// Work done at the reply's hour, raw fixed5 IC; hourly, so also the live cell `(handle, progress)`.
+    #[doc = " Work done at the reply's hour, raw fixed5 IC; hourly, so also the live cell `(handle, progress)`."]
     pub progress: String,
-    /// The line's cost, raw fixed5 IC, from its daily metadata.
+    #[doc = " The line's cost, raw fixed5 IC, from its daily metadata."]
     pub cost: Option<String>,
     pub dockyards: Option<i32>,
-    /// Cost less work done, where both are finite and the cost positive.
+    #[doc = " Cost less work done, where both are finite and the cost positive."]
     pub remaining: Option<String>,
     pub ships: Vec<YardShip>,
 }
@@ -115,10 +103,10 @@ pub struct NavalRefitsReply {
     pub ships: Option<u32>,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub dockyards: Option<i64>,
-    /// The hour the daily line metadata (cost, target, dockyards) was read.
+    #[doc = " The hour the daily line metadata (cost, target, dockyards) was read."]
     pub cost_read: Option<i32>,
     pub census_complete: bool,
-    /// Why the refit lines are not known at the hour, when they are not.
+    #[doc = " Why the refit lines are not known at the hour, when they are not."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -142,18 +130,14 @@ fn validate(params: &NavalYardsParams) -> Result<(), &'static str> {
     validate_country(&params.country)
 }
 
-/// The raw country ids that link to canonical slot `slot`.
 fn raws(held: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
     held.complete::<tables::CountryLinks>().map(|rows| rows.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect()).unwrap_or_default()
 }
 
-/// Ships `ships`' reads: their rows and models.
 fn ship_reads(ships: &BTreeSet<u64>) -> Vec<Read> {
     vec![Read::these(TableId::Ships, ships.iter().map(|&id| u128::from(id))), Read::these(TableId::ShipModels, ships.iter().map(|&id| u128::from(id)))]
 }
 
-/// The task forces (names and repair orders) and designs the held ships name, with the designs
-/// their namings draw from, and their designs' tokens once designs are held.
 fn named_reads(held: &DecodedFrame, more_variants: impl IntoIterator<Item = u64>) -> Vec<Read> {
     let ships = held.complete::<tables::Ships>().unwrap_or_default();
     let tasks: BTreeSet<u128> = ships.iter().map(|row| u128::from(row.task_force)).collect();
@@ -168,17 +152,14 @@ fn named_reads(held: &DecodedFrame, more_variants: impl IntoIterator<Item = u64>
     ]
 }
 
-/// The tokens the held designs and ships' classes spell.
 fn token_reads(held: &DecodedFrame) -> Vec<Read> {
     let mut tokens: BTreeSet<u128> = held.complete::<tables::VariantDefinitions>().unwrap_or_default().iter().map(|row| u128::from(row.equipment_token)).collect();
     tokens.extend(held.complete::<tables::Ships>().unwrap_or_default().iter().map(|row| u128::from(row.class_id as u32)));
     vec![Read::these(TableId::LexicalTokens, tokens)]
 }
 
-/// The content's ship name lists, read once per content stack.
 struct ShipNameGroups(Database);
 
-/// The content's sub-units, which name ship classes, read once per content stack.
 fn sub_units(cat: &Catalogue) -> Result<Arc<SubUnits>, String> {
     cat.content
         .layers
@@ -195,18 +176,14 @@ fn name_groups(cat: &Catalogue) -> Result<Arc<ShipNameGroups>, String> {
         .map_err(|error| format!("Ship name lists are unavailable: {error}"))
 }
 
-/// The design a ship's naming draws its name group from: its naming's own, else its model's.
 fn naming_variant(naming: &ShipNamingOperands, model: Option<&ShipModelRow>) -> Option<u64> {
     naming.equipment.or_else(|| model.map(|model| model.variant)).filter(|&handle| handle != 0)
 }
 
-/// Whether a ship's recorded override names it: one set on it, or any where its design names no group.
 fn override_applies(naming: &ShipNamingOperands, group: &Result<Option<Vec<u8>>, String>) -> bool {
     !naming.override_name.is_empty() && (naming.programmatic == 0 || matches!(group, Ok(None)))
 }
 
-/// A ship's name rebuilt from its recorded naming as the game makes it: its override, else the
-/// member of its design's name group its order picks; or why it cannot be.
 fn rebuilt_name(cat: &Catalogue, groups: impl FnOnce() -> Result<Arc<ShipNameGroups>, String>, naming: &ShipNamingOperands, group: &Result<Option<Vec<u8>>, String>) -> Result<String, String> {
     if override_applies(naming, group) {
         return dashboard_text::scripted_text::stored_text(&cat.localisation, &cat.recorded_language, &naming.override_name, "Ship name override").and_then(|text| catalogue::plain_text(&text));
@@ -218,13 +195,10 @@ fn rebuilt_name(cat: &Catalogue, groups: impl FnOnce() -> Result<Arc<ShipNameGro
     groups()?.0.resolve_any(key, naming.order, naming.ordered != 0).map_err(|why| format!("Ship name group: {why}"))
 }
 
-/// The localisation key of a repair policy: a port's (dockyard) or a task force's.
 fn policy_key(port: bool, value: i32) -> String {
     format!("NAVY_{}_POLICY_{value}", if port { "DOCKYARD_REPAIR" } else { "REPAIR" })
 }
 
-/// The yards' names and hulls of one frame, each failure counted by reason; the hourly numbers it
-/// shows named as live cells.
 struct Yard<'f> {
     frame: &'f DecodedFrame,
     cat: &'f Catalogue,
@@ -244,7 +218,6 @@ impl<'f> Yard<'f> {
         Self { frame, cat, tags, notes: Refusals::default(), live, units: None, groups: None }
     }
 
-    /// The game's name of a repair policy, or none with its reason noted.
     fn policy(&mut self, port: bool, value: i32) -> Option<String> {
         let key = policy_key(port, value);
         let name = self.cat.localised(&key, View::Plain).filter(|_| self.cat.has_presentation_key(&key)).and_then(|text| catalogue::plain_text(&text).ok());
@@ -254,8 +227,6 @@ impl<'f> Yard<'f> {
         name
     }
 
-    /// A ship's class name: its model's sub-unit definition, else its class token's spelling,
-    /// through the content's sub-units and localisation.
     fn class(&mut self, ship: &ShipRow, model: Option<&ShipModelRow>) -> Option<String> {
         let cat = self.cat;
         let units = match self.units.get_or_insert_with(|| sub_units(cat)) {
@@ -291,7 +262,6 @@ impl<'f> Yard<'f> {
         named.map_err(|reason| self.notes.note(reason, ship.id.to_string())).ok()
     }
 
-    /// A ship's name rebuilt from its naming, where the game held none of its own.
     fn rebuilt(&mut self, ship: &ShipRow, model: Option<&ShipModelRow>) -> Option<String> {
         let naming = match ship.naming.require("naming of ships") {
             Ok(Some(naming)) => naming,
@@ -389,18 +359,14 @@ impl<'f> Yard<'f> {
     }
 }
 
-/// Why `table` is not known at the frame's hour, naming `title`.
 fn unrecorded_text(frame: &DecodedFrame, table: TableId, title: &str) -> String {
     format!("{title} are not recorded at this hour: {}", dashboard_text::scope::missing(table, &frame.tables[table.index()]))
 }
 
-/// [`unrecorded_text`] as a refusal.
 fn unrecorded(frame: &DecodedFrame, table: TableId, title: &str) -> io::Error {
     dashboard_core::refused(unrecorded_text(frame, table, title))
 }
 
-/// The refits reply of an hour whose refit progress is not known: no lines, nothing counted, and
-/// why; none when the progress is known.
 fn refits_unrecorded(frame: &DecodedFrame) -> Option<NavalRefitsReply> {
     frame.complete::<tables::NavalRefitProgress>().err().map(|_| NavalRefitsReply {
         lines: Vec::new(),
@@ -419,12 +385,10 @@ fn complete(frame: &DecodedFrame, table: TableId) -> bool {
 
 pub struct NavalRepairs;
 
-/// The provinces of the repair ports `slot` holds: bases whose holder links to it.
 fn owned_ports(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeSet<u32> {
     held.complete::<tables::NavalBases>().map(|rows| rows.iter().filter(|row| raws.contains(&row.country)).map(|row| row.province).collect()).unwrap_or_default()
 }
 
-/// The ports of `ports`' queues, each entry in queue order.
 fn queues(frame: &DecodedFrame, ports: &BTreeSet<u32>) -> BTreeMap<u32, Vec<(u32, u64)>> {
     let mut out: BTreeMap<u32, Vec<(u32, u64)>> = BTreeMap::new();
     for row in frame.complete::<tables::NavalRepairQueue>().unwrap_or_default().iter().filter(|row| ports.contains(&row.province)) {
@@ -478,9 +442,6 @@ impl AtHour for NavalRepairs {
         REPAIR_TABLES.to_vec()
     }
 
-    /// Bases, links and the owners' tables; then the owner's ports, its queues and its row; then
-    /// the queued ships and the ports' states; then the ships' task forces and designs; then the
-    /// designs' tokens.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -544,7 +505,6 @@ impl AtHour for NavalRepairs {
                 queue: queue.into_iter().flatten().map(|&(_, ship)| yard.ship(ship)).collect(),
             });
         }
-        // Ports in the game's order: largest priority first, then province.
         shown.sort_by(|a, b| b.priority.unwrap_or(i32::MIN).cmp(&a.priority.unwrap_or(i32::MIN)).then(a.province.cmp(&b.province)));
         let unowned = frame.complete::<tables::NavalBases>()?.iter().any(|row| row.country != 0 && !frame.complete::<tables::CountryLinks>().is_ok_and(|links| links.iter().any(|link| link.id == row.country)));
         let census_complete = !unowned && complete(frame, TableId::NavalRepairQueue);
@@ -574,12 +534,10 @@ impl AtHour for NavalRepairs {
 
 pub struct NavalRefits;
 
-/// Whether a fixed5 word is a value rather than one of the engine's sentinels.
 fn finite(raw: i64) -> bool {
     raw != i64::MAX && raw != i64::MIN && raw != i64::MIN + 1
 }
 
-/// The refit lines `raws` own through their daily metadata, and the ships linked to each.
 fn owned_lines(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeMap<u64, Vec<u64>> {
     let owned: BTreeSet<u64> = held.complete::<tables::ProductionLines>().map(|rows| rows.iter().filter(|row| raws.contains(&row.country)).map(|row| row.handle).collect()).unwrap_or_default();
     let mut out: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
@@ -634,8 +592,6 @@ impl AtHour for NavalRefits {
         REFIT_TABLES.to_vec()
     }
 
-    /// The lines, their links and metadata and the countries; then the owner's ships; then their
-    /// task forces and designs with the lines' targets; then the designs' tokens.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let lines = || owned_lines(held, &raws(held, owner.slot));

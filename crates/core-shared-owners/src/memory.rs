@@ -1,5 +1,3 @@
-//! In-memory owners for tests: each is fed dated values in hour order and answers its trait from
-//! them. They favour plainness over speed and are not the segment owners.
 
 use crate::{
     Absence, Change, CharacterId, CharacterNaming, Characters, ContentId, CountryId, CountryNaming,
@@ -27,7 +25,6 @@ fn dated<T: Copy>(value: Dated<&T>) -> Dated<T> {
     }
 }
 
-/// The hours an owner has applied, in order.
 #[derive(Clone, Copy, Debug, Default)]
 struct Clock(Option<Hour>);
 
@@ -55,7 +52,6 @@ impl Clock {
     }
 }
 
-/// A refusal as tests feed it: its reason's name and detail.
 pub type Refusal = (String, String);
 
 fn reason(refusal: &Refusal) -> Reason<'_> {
@@ -65,7 +61,6 @@ fn reason(refusal: &Refusal) -> Reason<'_> {
     }
 }
 
-/// Visits changes collected from several histories in hour order, keeping each hour's order.
 fn in_order<K>(
     mut all: Vec<Change<K>>,
     visit: &mut dyn FnMut(Change<K>) -> io::Result<()>,
@@ -84,7 +79,6 @@ fn resolved(tag: Dated<&Result<Vec<u8>, Refusal>>) -> Dated<Result<Tag<'_>, Reas
     }
 }
 
-/// A roster fed link, holder, tag and epoch versions.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryRoster {
     clock: Clock,
@@ -99,14 +93,11 @@ pub struct MemoryRoster {
 }
 
 impl MemoryRoster {
-    /// From `hour` the census is complete: every link and Countries row is set, so a key without
-    /// a row is absent rather than unrecorded.
     pub fn set_complete(&mut self, hour: Hour) -> io::Result<()> {
         self.clock.apply(hour)?;
         self.census.set(hour, (), Ok(())).map(drop)
     }
 
-    /// None where the link has no row.
     pub fn set_link(
         &mut self,
         hour: Hour,
@@ -117,7 +108,6 @@ impl MemoryRoster {
         self.links.set(hour, link, slot).map(drop)
     }
 
-    /// A Countries row's own slot; none where the row is gone.
     pub fn set_country(
         &mut self,
         hour: Hour,
@@ -128,7 +118,6 @@ impl MemoryRoster {
         self.countries.set(hour, country, slot).map(drop)
     }
 
-    /// `rows` are the slot's Countries rows in table order.
     pub fn set_holders(
         &mut self,
         hour: Hour,
@@ -173,7 +162,6 @@ impl MemoryRoster {
         self.epoch.set(hour, (), epoch).map(drop)
     }
 
-    /// Every key held is missing from `hour`, as a gap or damage leaves it.
     pub fn forget(&mut self, hour: Hour, absence: Absence) -> io::Result<()> {
         self.clock.apply(hour)?;
         self.census.set(hour, (), Err(absence.clone()))?;
@@ -198,7 +186,6 @@ impl MemoryRoster {
         Ok(())
     }
 
-    /// Nothing changed through `hour`.
     pub fn advance(&mut self, hour: Hour) -> io::Result<()> {
         self.clock.apply(hour)
     }
@@ -210,8 +197,6 @@ impl Owner for MemoryRoster {
     }
 }
 
-/// `key` at `hour`: its own answer, or known none where a complete census holds and the key
-/// has no version yet.
 fn censused<'a, K: Ord + Clone, V: PartialEq>(
     census: &'a History<(), ()>,
     history: &'a History<K, Option<V>>,
@@ -237,8 +222,6 @@ fn censused<'a, K: Ord + Clone, V: PartialEq>(
     }
 }
 
-/// The keys of `history` that are members at `hour`, once the census is complete there: a key
-/// whose first version is later doesn't exist yet; any other missing key makes the answer missing.
 fn members<'a, K: Ord + Clone, V: PartialEq>(
     census: &'a History<(), ()>,
     history: &'a History<K, V>,
@@ -353,7 +336,6 @@ impl Roster for MemoryRoster {
         visit: &mut dyn FnMut(Slot) -> io::Result<()>,
     ) -> io::Result<Lookup<'_, usize>> {
         let last = self.clock.check(hour)?;
-        // A slot not known now might carry the tag: the answer is unknown, not partial.
         let held = match members(&self.census, &self.holders, hour, last) {
             Ok(held) => held,
             Err(missing) => return Ok(Lookup::Missing(missing)),
@@ -435,7 +417,6 @@ impl Roster for MemoryRoster {
     }
 }
 
-/// Spellings fed token versions; equal literals share a content identity.
 #[derive(Clone, Debug, Default)]
 pub struct MemorySpellings {
     clock: Clock,
@@ -459,7 +440,6 @@ impl MemorySpellings {
         self.spellings.set(hour, token, value).map(drop)
     }
 
-    /// Every token held is missing from `hour`.
     pub fn forget(&mut self, hour: Hour, absence: Absence) -> io::Result<()> {
         self.clock.apply(hour)?;
         for token in self.spellings.keys().copied().collect::<Vec<_>>() {
@@ -503,17 +483,14 @@ impl Spellings for MemorySpellings {
     }
 }
 
-/// A variant version as tests feed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnedVersion {
     pub operands: OperandsId,
     pub token: Option<String>,
-    /// A refusal is its reason's name and detail.
     pub name: Result<Option<String>, (String, String)>,
     pub design: Option<String>,
 }
 
-/// The ledger's truth over a run, as tests feed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LedgerTruth {
     Holds,
@@ -530,8 +507,6 @@ pub enum LedgerUnknown {
     Unavailable,
 }
 
-/// A variant owner fed versions, naming reads, forgets and the ledger's truth. A forget makes
-/// every version missing until the next complete naming read, which keeps unchanged dates.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryVariants {
     clock: Clock,
@@ -544,7 +519,6 @@ pub struct MemoryVariants {
 }
 
 impl MemoryVariants {
-    /// The id of `handle`, assigned at its first sight in id order.
     pub fn assign(&mut self, handle: Handle) -> VariantId {
         let next = VariantId(self.handles.len() as u32);
         *self.ids.entry(handle).or_insert_with(|| {
@@ -579,7 +553,6 @@ impl MemoryVariants {
         Ok(())
     }
 
-    /// The ledger's truth from `hour` until the next.
     pub fn set_ledger(&mut self, hour: Hour, truth: LedgerTruth) -> io::Result<()> {
         self.clock.apply(hour)?;
         if self.ledger.last().is_none_or(|(_, held)| *held != truth) {
@@ -757,16 +730,12 @@ impl Variants for MemoryVariants {
     }
 }
 
-/// One evaluation's footprint as the context keeps it: reads, each of a whole field or one key,
-/// and deadlines.
 #[derive(Clone, Debug, Default)]
 struct Footprint {
     reads: Vec<(TextRead, Option<Vec<u8>>)>,
     deadlines: Vec<Hour>,
 }
 
-/// A trigger context fed each text's compiled reads and the rows whose fields changed; queries
-/// get footprints from their evaluations.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryTriggers {
     clock: Clock,
@@ -777,12 +746,10 @@ pub struct MemoryTriggers {
 }
 
 impl MemoryTriggers {
-    /// `text`'s reads, each with whether the context retains it, or why it can't compile.
     pub fn set_text(&mut self, text: TextId, reads: Result<Vec<(TextRead, bool)>, Refusal>) {
         self.texts.insert(text, reads);
     }
 
-    /// `read` of the row `key` changed at `hour`.
     pub fn change(&mut self, hour: Hour, read: TextRead, key: Key<'_>) -> io::Result<()> {
         self.clock.apply(hour)?;
         self.changed.push((hour, read, key.varint().to_vec()));
@@ -817,7 +784,6 @@ fn not_registered() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "trigger query not registered")
 }
 
-/// The index of the footprint in force at `hour`: the latest evaluated at or before it.
 fn footprint_at(versions: &[(Hour, Footprint)], hour: Hour) -> Option<usize> {
     versions
         .partition_point(|(from, _)| *from <= hour)
@@ -950,7 +916,6 @@ impl TriggerContext for MemoryTriggers {
             }
             for (index, (from, footprint)) in versions.iter().enumerate() {
                 for &due in &footprint.deadlines {
-                    // A deadline counts while its own evaluation is still the one in force.
                     if due > *from && within(due) && footprint_at(versions, due) == Some(index) {
                         all.insert((due, query));
                     }
@@ -962,7 +927,6 @@ impl TriggerContext for MemoryTriggers {
     }
 }
 
-/// Ownership fed province and state facts.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryOwnership {
     clock: Clock,
@@ -1036,7 +1000,6 @@ impl Ownership for MemoryOwnership {
     }
 }
 
-/// A state-name error as tests feed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnedNameError {
     Stored(Refusal),
@@ -1046,7 +1009,6 @@ pub enum OwnedNameError {
     NotPlain(Refusal),
 }
 
-/// State names fed per state and usage.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryStateNames {
     clock: Clock,
@@ -1114,14 +1076,12 @@ impl StateNames for MemoryStateNames {
             all.push(Change { hour, key: *id });
             Ok(())
         })?;
-        // One change per state and hour, whichever usages moved.
         all.sort_by_key(|change| (change.hour, change.key));
         all.dedup();
         all.into_iter().try_for_each(visit)
     }
 }
 
-/// Characters fed naming versions, answering from `retained` on.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryCharacters {
     clock: Clock,
@@ -1142,14 +1102,12 @@ impl MemoryCharacters {
         self.characters.set(hour, id, naming).map(drop)
     }
 
-    /// `token`'s spelling changed at `hour`; every character named by it then changes.
     pub fn respell(&mut self, hour: Hour, token: Token) -> io::Result<()> {
         self.clock.apply(hour)?;
         self.respellings.push((hour, token));
         Ok(())
     }
 
-    /// Answers no hour before `hour` any more.
     pub fn retain_from(&mut self, hour: Hour) {
         self.retained = Some(self.retained.map_or(hour, |held| held.max(hour)));
     }
@@ -1213,7 +1171,6 @@ impl Characters for MemoryCharacters {
     }
 }
 
-/// A country's appearance as tests feed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnedLook {
     pub name_tag: Vec<u8>,
@@ -1222,7 +1179,6 @@ pub struct OwnedLook {
     pub civil_war: Result<bool, Refusal>,
 }
 
-/// Country naming fed per country: its slot and appearance.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryCountryNaming {
     clock: Clock,

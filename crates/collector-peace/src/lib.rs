@@ -1,4 +1,3 @@
-//! Peace capture: the peace settlement observer, its hourly table pack (`tables`) and the peace bid pack. The host installs the hooks, drains at the hourly boundary and assembles the tables.
 
 use collector_extended_support::outcomes::elapsed;
 use collector_hooks::hook;

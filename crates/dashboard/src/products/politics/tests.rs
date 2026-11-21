@@ -20,12 +20,6 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.tables[table.index()] = TableView::Complete(rows).into();
 }
 
-/// GER (slot 7) and ENG (slot 8). GER holds elections every 48 months and owns states through
-/// hour 115; ENG's eligibility is not recorded and it owns states through hour 112. Balance
-/// record 0 (`GER_bop`) lists GER throughout and ENG from hour 120, its value 5000 then 6000
-/// from hour 110, in range `GER_low` then `GER_high` from hour 115, moving toward `GER_right`
-/// from hour 110; record 1 (`ENG_bop`, 1000) lists ENG from hour 125. GER lists ENG as its
-/// civil-war rival from hour 105 through 120.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     let countries = vec![
@@ -77,7 +71,6 @@ fn frame(hour: i32) -> DecodedFrame {
     frame
 }
 
-/// Its frames as snapshots: ENG's eligibility is not recorded, which a spool row frame cannot say.
 fn recording() -> Source {
     let frames = (FIRST..=LAST).map(frame).collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
@@ -185,8 +178,6 @@ fn listings_apart_in_time_are_two_episodes_and_a_third_side_breaks_from_the_one_
     assert_eq!((wars[1].first_hour, wars[1].last_hour), (40, 50));
 }
 
-/// A holder whose raw id changes within a stretch has one schedule in hour order, its runs of one
-/// value joined across the ids: the ids are read in no order.
 #[test]
 fn a_holders_schedule_across_its_raw_ids_is_in_hour_order() {
     let id = |hour: i32| 20_000 + ((hour - FIRST) / 4) as u32;

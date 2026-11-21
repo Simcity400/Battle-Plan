@@ -1,5 +1,3 @@
-//! Dedicated market writers and exact lend-lease occurrences. Callbacks use
-//! prepared event storage only; no shared equipment primitive is patched.
 use crate::{
     event_ledger::{Event, EventLedger},
     hook::{Hook, Registers, Tap},
@@ -61,9 +59,6 @@ const READ_ROUTE: u8 = 1;
 const READ_RUNTIME: u8 = 2;
 const READ_PURCHASE_TOTAL: u8 = 4;
 const DERIVED_TOTAL: u8 = 0x80;
-/// Installed patch owners, shared with the collector's overlap inventory.
-/// Nested pool operations use their delivery/rebuild owners. Draft-action resets
-/// only prepare local action terms and are never observed.
 pub const OBSERVED_SITES: [usize; 25] = [
     0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 29, 30,
 ];
@@ -77,10 +72,6 @@ static VARIABLES_UNOBSERVED: AtomicBool = AtomicBool::new(false);
 pub fn variable_write(at: usize) -> Notification<'static> {
     VARIABLES_WATCH.notify(at)
 }
-/// A variable store may have changed unnamed (an exception's unwinding, an
-/// unreadable context end): the next acquisition reads every contract's
-/// variables again. Seed-changing contexts run on the main thread, which the
-/// hourly acquisition holds, so the write and this flag fall on one side of it.
 pub fn variables_uncertified() {
     VARIABLES_UNOBSERVED.store(true, Ordering::SeqCst);
 }
@@ -101,8 +92,6 @@ impl Event for MarketEventRow {
     }
 }
 static LEDGER: EventLedger<MarketEventRow> = EventLedger::new();
-// Watch registries reserve zero for an empty slot. Keep every country ID,
-// including the null country, distinct and aligned for the address hash.
 fn country_receiver(owner: u32) -> usize {
     (owner as usize + 1) << 3
 }
@@ -150,8 +139,6 @@ pub fn restore_sequence(previous: Option<u64>) -> Result<(), &'static str> {
     OCCURRENCE.fetch_max(next, Ordering::AcqRel);
     Ok(())
 }
-/// Count only live agreement schedule headers inside the existing resource
-/// sizing census. This is not run by a callback or an hourly roster pass.
 pub fn schedule_storage(
     memory: &impl Memory,
     base: usize,
@@ -168,8 +155,6 @@ pub fn schedule_storage(
         )
         .ok_or("market sizing exchange unreadable")? as usize;
         lease::identity(memory, base, pointer)?;
-        // Rare schedule replacement and complete final cumulative snapshots,
-        // plus fixed identity marks; ordinary transfer size is irrelevant.
         demand = demand
             .checked_add(12)
             .ok_or("market sizing demand overflow")?;
@@ -216,8 +201,6 @@ fn prepare_events() {
         None => failure("market event storage demand overflow"),
     }
 }
-/// Existing contract census provides a holder count through this sizing call.
-/// Ordinary market transfers produce fixed marks, independent of item count.
 pub fn contract_storage(_items: usize, _in_transit: usize) -> Option<usize> {
     Some(10)
 }
@@ -236,8 +219,6 @@ pub fn lost_output(count: usize) {
 }
 pub fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidate: bool) {
     LEDGER.boundary(clock);
-    // Recover current state before the existing economy census runs. The
-    // occurrence interval keeps its own loss verdict through the later drain.
     let invalidate = invalidate || LEDGER.interval_incomplete() || held::recovery_requested();
     let renew = if invalidate {
         [None; 4]
@@ -283,7 +264,6 @@ pub fn observe_resets(enabled: bool) {
     RESET_FORWARDED.store(enabled, Ordering::SeqCst);
     refresh_coverage();
 }
-/// The existing country-reset patch owner holds these guards over its original.
 pub struct CountryReset {
     _marks: [Option<Notification<'static>>; 4],
     owner: Option<u32>,
@@ -503,7 +483,6 @@ fn replacement(memory: &impl Memory, base: usize, at: usize) -> Result<(), &'sta
     AMENDMENT_ITEMS.fetch_add(count as u64, Ordering::Relaxed);
     Ok(())
 }
-/// Only the selected holder's identity is read; no operand pool is traversed.
 fn mark_holder(
     event: MarketEventRow,
     pointer: usize,
@@ -569,8 +548,6 @@ fn inventory(
     )?;
     mark_holder(event, stockpile, INVENTORY_MARK, 0)
 }
-/// Rare amendment/removal boundary only. Preserve complete final cumulative
-/// pools before native code resets or destroys them; storage is preallocated.
 fn final_pools(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), &'static str> {
     let event = root(
         memory,
@@ -627,8 +604,6 @@ fn final_pools(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), 
     FINAL_ITEMS.fetch_add(count as u64, Ordering::Relaxed);
     Ok(())
 }
-/// Native cumulative delivery cost and agreed total suffice to derive the
-/// whole-unit delivered manifest on the worker, including terminal contracts.
 fn contract_final(
     memory: &impl Memory,
     pointer: usize,
@@ -661,8 +636,6 @@ fn contract_final(
         ..event
     })
 }
-/// Active removal precedes deferred destruction and native reference retirement.
-/// A destructor of an already retired holder cannot name an active contract.
 fn contract_removing(
     memory: &impl Memory,
     base: usize,
@@ -674,8 +647,6 @@ fn contract_removing(
         pointer,
         engine_production::cpurchase_contract::ID_TYPE,
     )?;
-    // The retired ID marker can also be a live contract's ID. Native removal
-    // clears registration after retiring the handle, before deferred cleanup.
     if id >> 32 == u64::from(native::RETIRED_REFERENCE_ID)
         && scalar::<u8>(
             memory,
@@ -717,7 +688,6 @@ fn contract_removing(
         ..event
     })
 }
-/// Serialized identity is assigned after worker-derived rows join the interval.
 pub fn publish(events: &mut Vec<MarketEventRow>) -> Result<(), &'static str> {
     events.retain(|row| {
         row.kind != AMENDMENT_COST && (row.kind < FINAL_BEGIN || row.kind == DELIVERY_UNAVAILABLE)
@@ -755,8 +725,6 @@ fn contract_root(
     };
     root(memory, base, identity, kind)
 }
-/// Births retain identity only. The private pointer is consumed by the worker
-/// after removals, so short-lived holders never need a definition read.
 fn contract_created(
     memory: &impl Memory,
     base: usize,
@@ -864,8 +832,6 @@ fn run(site: usize, args: [usize; 6]) -> usize {
     } else {
         None
     };
-    // Save identity before native completion can destroy the contract. A nested
-    // removal witness clears this worker mark before any pointer is read.
     if matches!(site, 21 | 24 | 25)
         && let Err(reason) =
             contract_root(&memory, base, args[0], CONTRACT_STATE).and_then(|event| {
@@ -963,8 +929,6 @@ fn run(site: usize, args: [usize; 6]) -> usize {
     FLIGHTS.fetch_sub(1, Ordering::SeqCst);
     result
 }
-/// The operand is the exact signed native ADD delta. Zero stores do no
-/// guarded read, event append, allocation, identity walk or timer sampling.
 fn fuel_store(
     memory: &impl Memory,
     base: usize,
@@ -1055,7 +1019,6 @@ fn site_failure(index: usize, phase: &str, reason: impl std::fmt::Display) -> St
     )
 }
 
-/// The site's address and the 16 bytes its patch replaces.
 fn located(base: usize, index: usize) -> Result<(usize, [u8; 16]), String> {
     engine_sites::hook(base, native::SITES[index].rva)
         .and_then(|code| Ok((code.address, code.sentinel()?)))
@@ -1069,8 +1032,6 @@ fn verify_sites(base: usize) -> Result<(), String> {
     Ok(())
 }
 
-// Publication reports a batch outcome, not a failing member. Name the complete
-// participating set without attributing a batch failure to an arbitrary site.
 fn publication_failure(phase: &str, reason: impl std::fmt::Display) -> String {
     let sites = OBSERVED_SITES
         .map(|index| native::SITES[index].name)
@@ -1089,16 +1050,16 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    /// # Safety
-    /// The host verified the executable and exclusively owns these dedicated sites.
+    #[doc = " # Safety"]
+    #[doc = " The host verified the executable and exclusively owns these dedicated sites."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Release);
         let callbacks = [
             amendment as *const () as usize,
-            0, // draft-action resets are not game-state writers
+            0,
             0,
             removal as *const () as usize,
-            0, // delivered fuel uses the reached native store tap
+            0,
             delivered as *const () as usize,
             lost as *const () as usize,
             reserve as *const () as usize,
@@ -1123,7 +1084,7 @@ impl Hooks {
             0,
             0,
             0,
-            0, // lost fuel uses the reached native store tap
+            0,
             contract_removed as *const () as usize,
         ];
         let install = || -> Result<(Vec<Hook>, Vec<Tap>), String> {
@@ -1139,7 +1100,6 @@ impl Hooks {
                     } else {
                         lease::FUEL_SUNK
                     };
-                    // The tap takes the exchange and delta from ADD [RSI + field], RAX.
                     if original[..3] != [0x48, 0x01, 0x86]
                         || u32::from_le_bytes([original[3], original[4], original[5], original[6]])
                             as usize
@@ -1228,7 +1188,6 @@ impl Hooks {
     }
 }
 
-/// Synthetic owned-census support; no native addresses escape into recordings.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::*;
@@ -1451,8 +1410,6 @@ mod tests {
         .unwrap();
         assert_eq!(memory.reads.get(), 2);
 
-        // A registered holder whose ID equals the marker still has one final
-        // witness. The same words describe the retired holder of the type ID.
         let marker_identity = (u64::from(native::RETIRED_REFERENCE_ID) << 32)
             | u64::from(engine_production::cpurchase_contract::TYPE);
         let memory = operands(Some(marker_identity), Some(1));
@@ -1675,10 +1632,7 @@ mod tests {
         assert_eq!(LEDGER.events.load(Ordering::Relaxed), 15003);
         assert_eq!(LEDGER.overflow.load(Ordering::Relaxed), 0);
         assert_eq!(LEDGER.lost_events_unknown.load(Ordering::Relaxed), 0);
-        // Births need identity and the existing clock only. Any attempt to
-        // walk pools, prices, subsidy targets or trigger text fails this reader.
         const CONTRACT: usize = 0x100;
-        // Use a stack-only reader under the allocation denial as well.
         struct StackBirth;
         impl engine_native::Memory for StackBirth {
             fn copy(&self, at: usize, output: &mut [u8]) -> bool {
@@ -1716,8 +1670,6 @@ mod tests {
                 .all(|row| row.country == 5000 && row.receiver == 4999 && row.agreement == 17)
         );
         assert!(events.iter().all(|row| !(13..=18).contains(&row.kind)));
-        // Ordinary transfer callbacks must ignore even an unreadable operand.
-        // Identical identity/clock work is sufficient for a 5,000-entry source.
         struct Counted<'a> {
             memory: Memory<'a>,
             reads: std::cell::Cell<usize>,
@@ -1766,7 +1718,6 @@ mod tests {
                 "inventory callback read source/destination items"
             );
         }
-        // The only full copies here are the explicitly approved rare boundaries.
         for offset in [lease::DELIVERED, lease::SUNK] {
             let items = world.alloc(5000 * 16);
             for index in 0..5000 {

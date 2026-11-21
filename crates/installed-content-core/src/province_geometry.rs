@@ -1,10 +1,3 @@
-//! Province geometry from map content: province records in `definition.csv`
-//! position order, the province raster, each province's pixel runs, integer
-//! centroid and bounding box.
-//!
-//! Coordinates follow raster file rows: x along a row, y counting from the
-//! bottom of `provinces.bmp`, with horizontal wrapping at the map width.
-//! No recording is needed.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -15,29 +8,20 @@ use crate::{ResolvedLayers, fields::invalid, map::ProvinceKind};
 
 pub mod land_areas;
 
-/// A province's bounding box: left, bottom, width, height.
 pub type Bounds = [i32; 4];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceGeometry {
     pub width: i32,
     pub height: i32,
-    /// Integer pixel centroid; an unpainted record keeps the origin.
     pub centroids: BTreeMap<u32, [i32; 2]>,
     pub bounds: BTreeMap<u32, Bounds>,
-    /// Record positions whose `definition.csv` kind is land, plus invented
-    /// records, which the loader initializes as land.
     pub land: BTreeSet<u32>,
-    /// Record positions whose `definition.csv` kind is lake.
     pub lake: BTreeSet<u32>,
-    /// Indexed non-sea records by position, including zero, lakes, unknown
-    /// kinds and records invented for unclaimed colours.
     pub nonsea_indices: BTreeMap<u32, i32>,
 }
 
 impl ProvinceGeometry {
-    /// Definition land and lake flags set by the CSV kind; `None` for a
-    /// province the map does not define.
     pub fn kind_flags(&self, id: u32) -> Option<u8> {
         self.centroids
             .contains_key(&id)
@@ -108,8 +92,6 @@ impl ProvinceGeometry {
         }
     }
 
-    /// The centre of the state's bounding box, choosing the narrower of
-    /// its unwrapped and wrapped bounds.
     pub fn state_centre(&self, provinces: &[u32]) -> Option<[i32; 2]> {
         let half = self.width / 2;
         let mut plain: Option<Bounds> = None;
@@ -156,8 +138,6 @@ impl ProvinceGeometry {
         Some([centre_x, h / 2 + y])
     }
 
-    /// The state province nearest its centre in authored order; ties keep
-    /// the earlier province.
     pub fn nearest_to_centre(&self, provinces: &[u32]) -> Option<u32> {
         let centre = self.state_centre(provinces)?;
         let distance = |province: &u32| {
@@ -174,7 +154,6 @@ impl ProvinceGeometry {
         Some(best)
     }
 
-    /// Wrapped map distance in fixed5 pixels.
     pub fn wrapped_distance(&self, from: u32, to: u32) -> Option<i64> {
         if from == to {
             return Some(0);
@@ -195,7 +174,6 @@ impl ProvinceGeometry {
     }
 }
 
-/// Fixed5 square root with the game's integer rounding.
 pub fn native_fixed_sqrt(squared: u32) -> i64 {
     if (squared as i32) < 1 {
         return 0;
@@ -210,8 +188,6 @@ pub fn native_fixed_sqrt(squared: u32) -> i64 {
     if shifted { root << 5 } else { root }
 }
 
-/// Fixed5 square root, including the small-value and large-value scaling
-/// used by geometry and simulation consumers, with wrapping signed arithmetic.
 pub fn native_fixed5_sqrt(mut input: i64) -> i64 {
     if input < 10_001 {
         return sqrt_newton(input.wrapping_mul(100)).wrapping_mul(10_000) / 100_000;
@@ -252,11 +228,9 @@ fn sqrt_newton(input: i64) -> i64 {
 }
 
 pub struct EngineMap {
-    /// Row-major, top-down; the engine reads the BMP in bottom-up file order.
     pub ids: Vec<u32>,
     pub width: usize,
     pub height: usize,
-    /// Every native record position from one onward, painted or not.
     pub defined: BTreeSet<u32>,
     pub land: BTreeSet<u32>,
     pub lake: BTreeSet<u32>,
@@ -267,9 +241,6 @@ fn color_key(red: u8, green: u8, blue: u8) -> u32 {
     (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
 }
 
-/// Builds records in CSV position order ([`crate::map::definition_rows`]),
-/// then resolves colours bottom-up. Unknown colours append records; both
-/// stored ids and raster cells narrow to u16.
 pub(crate) fn engine_map(definition_csv: &[u8], provinces_bmp: &[u8]) -> io::Result<EngineMap> {
     engine_map_checked(definition_csv, provinces_bmp, &mut || Ok(()))
 }
@@ -300,7 +271,6 @@ pub fn engine_map_checked(
                 _ => {}
             }
         }
-        // The lookup tests the stored id, not presence: record zero is a miss.
         let [red, green, blue] = row.rgb;
         if row.id != 0 {
             color_to_id.insert(color_key(red, green, blue), u32::from(row.id));
@@ -364,27 +334,21 @@ pub fn engine_map_checked(
     })
 }
 
-/// Where the native province loader finds a BMP's rows: its size, the bytes a pixel spans, the
-/// rows' advance and padded length, and where the pixels start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RasterLayout {
     pub width: usize,
     pub height: usize,
     pub components: usize,
-    /// Each row's place in the decoded storage is `row * pitch`; it writes `padded` bytes there,
-    /// so a later row overwrites an earlier one's padding.
     pub pitch: usize,
     pub padded: usize,
     pub pixels: usize,
 }
 
 impl RasterLayout {
-    /// The decoded storage's length: the rows before the last at their advance, the last whole.
     pub fn written(&self) -> usize {
         (self.height - 1) * self.pitch + self.padded
     }
 
-    /// The file's length the rows need.
     pub fn file_end(&self) -> io::Result<usize> {
         self.padded
             .checked_mul(self.height)
@@ -392,14 +356,11 @@ impl RasterLayout {
             .ok_or_else(|| invalid("BMP pixel extent overflows"))
     }
 
-    /// The colour of a pixel's three bytes, blue first.
     pub fn colour(pixel: &[u8]) -> u32 {
         color_key(pixel[2], pixel[1], pixel[0])
     }
 }
 
-/// The 24bpp native loader ignores bfOffBits and reads from byte 54; the
-/// other supported depths seek to bfOffBits. Unwritten reads are refused.
 pub(crate) fn raster_layout(data: &[u8]) -> io::Result<RasterLayout> {
     let head = data
         .get(..54)
@@ -511,8 +472,6 @@ fn colour_raster(
     Ok((colors, width, height))
 }
 
-/// Stores each run's start, row and length as u16. The raster is top-down
-/// here, so its row is reversed for file-row coordinates.
 fn for_each_run(ids: &[u32], width: usize, height: usize, run: impl FnMut(u32, i32, i32, i32)) {
     for_each_run_checked(ids, width, height, &mut || Ok(()), run)
         .expect("uncancellable native raster runs");
@@ -554,8 +513,6 @@ fn for_each_run_checked(
     Ok(())
 }
 
-/// Runs all narrowed to zero length leave a zero divisor; this differs
-/// from the origin centroid of an unpainted province.
 fn refuse_zero_length_runs(
     ids: &[u32],
     width: usize,
@@ -694,8 +651,6 @@ mod tests {
         const BLUE: [u8; 3] = [0, 0, 255];
         let definitions = b"0;0;0;0;land\n1;255;0;0;land\n2;0;255;0;land\n4;1;2;3;land\n";
         let map = engine_map(definitions, &bmp_two_by_two([[RED, BLUE], [RED, GREEN]])).unwrap();
-        // Unknown blue in the bottom row gets record position four; declared
-        // record three is never painted and keeps the origin.
         assert_eq!(map.ids, [1, 2, 1, 4]);
         let geometry = ProvinceGeometry::from_map(&map);
         assert_eq!(geometry.centroids[&3], [0, 0]);
@@ -706,11 +661,9 @@ mod tests {
 
     #[test]
     fn centroids_sum_runs_and_boxes_grow_to_every_run() {
-        // Engine rows from the bottom: province 1 is an L shape.
         let geometry = ProvinceGeometry::from_map(&map(&[&[1, 1, 1, 2], &[1, 2, 2, 2]], 3));
         assert_eq!(geometry.bounds[&1], [0, 0, 3, 2]);
         assert_eq!(geometry.bounds[&2], [1, 0, 3, 2]);
-        // x: (0 + 1 + 2 + 0) / 4, y: (0 + 0 + 0 + 1) / 4.
         assert_eq!(geometry.centroids[&1], [0, 0]);
         assert_eq!(geometry.state_centre(&[1, 2]), Some([2, 1]));
         assert_eq!(geometry.nearest_to_centre(&[1, 2]), Some(2));
@@ -726,9 +679,7 @@ mod tests {
             })
             .collect();
         let geometry = ProvinceGeometry::from_map(&map(&[&row], 4));
-        // Unwrapped, the state spans 0..10; wrapped it spans 8..12, centre 10 -> 0.
         assert_eq!(geometry.state_centre(&[1, 3]), Some([0, 0]));
-        // Two pixels apart across the seam.
         assert_eq!(geometry.wrapped_distance(1, 3), Some(200_000));
     }
 

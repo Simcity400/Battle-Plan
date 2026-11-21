@@ -1,11 +1,9 @@
 use super::*;
 
-/// A group's view at a wrap offset, as the pass tests it.
 fn visible([gx0, gz0, gx1, gz1]: [f32; 4], offset: f32, [x0, z0, x1, z1]: [f32; 4]) -> bool {
     gx0 + offset <= x1 && gx1 + offset >= x0 && gz0 <= z1 && gz1 >= z0
 }
 
-/// A small deterministic sequence of numbers in `0..1`.
 struct Numbers(u64);
 
 impl Numbers {
@@ -21,7 +19,6 @@ fn group(numbers: &mut Numbers) -> [f32; 4] {
     [x, z, x + w, z + d]
 }
 
-/// The flips of every group, as a scan of each tests them, against `visited` (view by group).
 fn scanned(bounds: &[[f32; 4]], offsets: &[f32], rectangle: [f32; 4], visited: &[bool]) -> Vec<usize> {
     let groups = bounds.len();
     (0..groups)
@@ -34,9 +31,6 @@ fn scanned(bounds: &[[f32; 4]], offsets: &[f32], rectangle: [f32; 4], visited: &
         .collect()
 }
 
-/// A camera flying low over a wrapped field whose groups move: at every frame, the groups whose
-/// view flipped found from the grid's candidates, the groups drawn and the groups that moved are
-/// exactly those a scan of every group finds, and the grid follows the field's moves.
 #[test]
 fn the_groups_whose_view_flipped_are_found_among_the_candidates_alone() {
     let mut numbers = Numbers(7);
@@ -52,14 +46,12 @@ fn the_groups_whose_view_flipped_are_found_among_the_candidates_alone() {
         .collect();
     let mut tested = 0;
     for frame in 1..400u64 {
-        // The eye pans and turns; past the seam the rectangle reaches a wrap copy.
         centre = [centre[0] + numbers.next() * 60. - 20., (centre[1] + numbers.next() * 30. - 15.).clamp(100., 1900.)];
         if centre[0] > 5632. {
             centre[0] -= 5632.;
         }
         let (width, depth) = (120. + numbers.next() * 80., 80. + numbers.next() * 60.);
         rectangle = [centre[0] - width / 2., centre[1] - depth / 2., centre[0] + width / 2., centre[1] + depth / 2.];
-        // Some groups move, one of them out past the field's edge.
         let mut moved: Vec<usize> = (0..5).map(|_| (numbers.next() * 3000.) as usize % 3000).collect();
         for &at in &moved {
             bounds[at] = group(&mut numbers);
@@ -97,8 +89,6 @@ fn the_groups_whose_view_flipped_are_found_among_the_candidates_alone() {
     assert!(tested < 399 * 3000 / 4, "a low eye tests a small share of the groups: {tested}");
 }
 
-/// A frame that does not follow the one the grid holds, or lays the groups out anew, places
-/// every group again; a rectangle that is not finite, or bounds that are not, test every group.
 #[test]
 fn a_grid_that_cannot_follow_places_every_group_again_or_refuses() {
     let bounds = vec![[0., 0., 1., 1.], [10., 10., 11., 11.]];
@@ -108,7 +98,6 @@ fn a_grid_that_cannot_follow_places_every_group_again_or_refuses() {
     assert!(grid.candidates([9., 9., 12., 12.], &[0.], &mut out));
     assert!(out.contains(&1));
     let moved = vec![[0., 0., 1., 1.], [0.5, 0.5, 0.75, 0.75]];
-    // Frame 7 does not follow frame 5: placed again, so the moved group is found where it is.
     grid.sync(2, |at| moved[at], FieldFrame { frame: Some(7), since: Some(6), whole: false, moved: &[] });
     out.clear();
     assert!(grid.candidates([0.6, 0.6, 0.7, 0.7], &[0.], &mut out));

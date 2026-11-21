@@ -1,4 +1,3 @@
-//! A stretch of consecutive game hours, inclusive: the span every reply names hours by.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

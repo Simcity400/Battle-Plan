@@ -18,7 +18,6 @@ pub enum Packet {
 }
 
 impl Packet {
-    /// The data of a batched packet.
     fn batched(&self) -> Option<&Data> {
         match self {
             Self::Native { .. } => None,
@@ -27,9 +26,6 @@ impl Packet {
     }
 }
 
-/// A draw prepared for a batch. Its blocks are shared, so a caller that keeps the packet it
-/// prepared and hands the batch a copy of it pays no copy for the keeping
-/// ([`Data::rebound`]).
 #[derive(Clone)]
 pub struct Data {
     pipeline: Arc<Pipeline>,
@@ -41,19 +37,14 @@ pub struct Data {
     source_draws: u64,
 }
 
-/// The rows block a draw of instanced rows selects with a dynamic offset, and its bytes.
 pub(super) const ROWS_BINDING: u32 = batch_shader::META_BINDING;
 pub(super) const ROWS_BYTES: usize = batch_shader::ROWS_BYTES;
-/// Where in a rows block the instanced stream's own row stands.
 pub(super) const STREAM_ROW: usize = batch_shader::STREAM_ROW;
-/// The instanced stream's words and each instance's first vertex in them.
 pub(super) const STREAM_BINDINGS: [u32; 2] = [
     batch_shader::STREAM_BINDING,
     batch_shader::STREAM_BASE_BINDING,
 ];
 
-/// The program of a pass that draws its constant rows per instance, or none with the reason the
-/// pass draws as it is.
 pub(super) fn instanced(
     device: &wgpu::Device,
     compiled: &Compiled,
@@ -91,8 +82,6 @@ pub(super) fn instanced(
     Some(Arc::new(shader))
 }
 
-/// The rows block an instanced program reads: the draw's base row for each of its per-instance
-/// bindings, selected with a dynamic offset.
 pub(super) fn rows_layout() -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding: batch_shader::META_BINDING,
@@ -106,7 +95,6 @@ pub(super) fn rows_layout() -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// The instanced stream's own words and each instance's first vertex in them, both read whole.
 pub(super) fn stream_layouts() -> [wgpu::BindGroupLayoutEntry; 2] {
     [
         batch_shader::STREAM_BINDING,
@@ -277,9 +265,6 @@ impl Pipeline {
 }
 
 impl Data {
-    /// Binds `bytes` at every binding of `at`, as the program reads them: a draw whose window
-    /// moved over the map binds the same blocks with a new world transform, and nothing else
-    /// about it changed ([`crate::gpu::Arena`] stages what the batch then holds).
     pub fn rebound(&mut self, at: &[u32], bytes: &[u8]) {
         for ((binding, held), (_, stride)) in Arc::make_mut(&mut self.constants)
             .iter_mut()
@@ -292,7 +277,6 @@ impl Data {
         }
     }
 
-    /// What the packet uploads: each binding's constants, the packed vertices and their count.
     #[cfg(any(test, feature = "test-support"))]
     pub fn proof(&self) -> (Vec<(u32, Vec<u8>)>, Vec<f32>, usize) {
         ((*self.constants).clone(), (*self.vertices).clone(), self.count)
@@ -300,7 +284,6 @@ impl Data {
 }
 
 impl Packet {
-    /// The data of a batched packet.
     #[cfg(any(test, feature = "test-support"))]
     pub fn data(&self) -> Option<&Data> {
         self.batched()

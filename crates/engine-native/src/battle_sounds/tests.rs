@@ -8,7 +8,6 @@ const BATTLES: usize = 0x0500_0000;
 const MEMBERS: usize = 0x0600_0000;
 const PROVINCES: usize = 0x0700_0000;
 
-/// A sparse synthetic address space: each object one region.
 #[derive(Default)]
 struct World(BTreeMap<usize, Vec<u8>>);
 
@@ -53,7 +52,6 @@ impl Memory for World {
     }
 }
 
-/// One battle as the game holds it.
 #[derive(Clone)]
 struct Battle {
     center: [u32; 2],
@@ -75,8 +73,6 @@ fn province_at(id: u32) -> usize {
     PROVINCES + id as usize * 0x100
 }
 
-/// A manager whose tree has `count` nodes, `placed` listing each node's
-/// battles in array order.
 fn world(count: u32, placed: &[(u32, Vec<Battle>)]) -> World {
     let mut world = World::default();
     world.put(MANAGER_RVA.0, &(MANAGER as u64).to_le_bytes());
@@ -130,8 +126,6 @@ fn preorder(node: u32, count: u32, out: &mut Vec<u32>) {
     }
 }
 
-/// The successor order is the recursive pre-order for every tree size,
-/// partial last levels included, each node once.
 #[test]
 fn nodes_follow_the_recursive_preorder() {
     for count in [0, 1, 2, 4, 5, 6, 7, 20, 21, 22, 84, 85, 86, 341] {
@@ -148,9 +142,6 @@ fn nodes_follow_the_recursive_preorder() {
     assert_eq!(next_node(u32::MAX / 2, u32::MAX), Some(u32::MAX / 2 + 1));
 }
 
-/// Battles follow the game's node pre-order, not the node array's order,
-/// each node's battles in array order; coordinates keep their exact bits and
-/// members their array order.
 #[test]
 fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
     let mut sounding = battle(2.0, 2.5, 9.0, &[30, 10, 20]);
@@ -181,7 +172,6 @@ fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
         .iter()
         .map(|row| f32::from_bits(row.center_x))
         .collect();
-    // Node order 0, 1, 5, 6, 2; level order would put node 2's battle fourth.
     assert_eq!(xs, [-0.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     assert_eq!(rows[0].center_x, 0x8000_0000);
     assert_eq!(rows[0].center_z, 7.25_f32.to_bits());
@@ -205,7 +195,6 @@ fn battles_follow_the_tree_preorder_with_exact_bits_and_member_order() {
     assert_eq!(demand(&world, 0), Some(walk.required));
 }
 
-/// No manager is no battle; an unreadable global is a refusal.
 #[test]
 fn a_null_manager_holds_no_battles_and_an_unreadable_one_refuses() {
     let mut world = World::default();
@@ -223,7 +212,6 @@ fn a_null_manager_holds_no_battles_and_an_unreadable_one_refuses() {
     assert_eq!(demand(&empty, 0), None);
 }
 
-/// Growing storage reads the whole list and reports its demand.
 #[test]
 fn growing_storage_reads_the_whole_list_and_reports_its_demand() {
     let placed = vec![
@@ -248,7 +236,6 @@ fn growing_storage_reads_the_whole_list_and_reports_its_demand() {
     assert_eq!(&provinces[..6], [1, 2, 3, 4, 5, 6]);
 }
 
-/// Every unreadable or unauthenticated object refuses the list by name.
 #[test]
 fn invalid_objects_refuse_by_name() {
     let placed = vec![(0, vec![battle(1.0, 0.0, 9.0, &[7])])];
@@ -294,8 +281,6 @@ fn invalid_objects_refuse_by_name() {
     );
 }
 
-/// Battles over a full three-level tree grow from empty storage and keep the
-/// pre-order, each node's battles in array order.
 #[test]
 fn battles_keep_the_preorder_from_empty_storage() {
     const COUNT: u32 = 85;

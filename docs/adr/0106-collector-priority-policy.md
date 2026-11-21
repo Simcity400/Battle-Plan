@@ -1,0 +1,11 @@
+# Keep frame service runnable and confine optional sizing when possible
+
+Frame service stays runnable before a backlog exists. Disable dynamic boost so adaptive scheduling controls only our base priority. Retry failed calls between work items. Sizing may use lower base priority, EcoQoS, and CPU-set confinement without a backlog. Work that runs inside the hourly tick needs an admitted, registered frame-priority role. The pipeline must be healthy, and owns idle scheduling for those roles during the tick. Sizing does not inherit that copy-only admission.
+
+When the machine has one processor group and at least four physical cores, confine optional background work to the two least-preferred physical cores, retaining all their logical processors. Sort by scheduling class, then efficiency class, then descending group-relative core index. A multi-group machine remains unconfined because core indices repeat and Windows ignores sets outside the thread’s group. A small machine, failed query, or refused advisory allocation also leaves it unconfined. Cache the availability reason for the attachment. Synthetic tests cover the ordering but never send fixture CPU set IDs to Windows.
+
+The Windows CPU-set query uses a null sizing buffer followed by aligned storage of the returned size. Walk the returned entries by their sizes and select the CPU-set union arm only for matching entry records. The scheduling class is the documented union value. Worker priority calls use the running thread’s own pseudo-handle, which needs no close. Power-throttling configuration stays live across the synchronous call and sets the appropriate version. A null and empty CPU-set list clears the selection. Sizing worker IDs are queried while a live join handle owns the underlying Windows handle.
+
+When capture holds the game thread, its priority guard skips the Windows failure sentinel and priorities already at or above the intended level. The current-thread pseudo-handle is also used when restoring this thread’s prior value. The processor group count and current processor queries need no arguments or owned handle.
+
+[Windows worker priority and CPU policy](../../crates/collector/src/runtime.rs)

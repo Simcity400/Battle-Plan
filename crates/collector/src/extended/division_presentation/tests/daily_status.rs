@@ -69,8 +69,6 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
     let daily = replay_data::cadence::DIVISION_STATUS_DAILY_SLOT as i32;
     for hour in [1, 2, daily, daily + 2] {
         if hour == daily + 2 {
-            // A forced-refresh request that never acquires the loan must still
-            // revoke carry on the next off-slot request.
             slot.prepare_hour(daily + 1, true);
         }
         slot.prepare_hour(hour, false);
@@ -91,8 +89,6 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
             hour,
             ..populated.context()
         };
-        // The last division first appears off-slot, while packet growth must
-        // preserve the known divisions' skip selection.
         let count = rows.len() - usize::from(hour == 1);
         let acquired_rows = &rows[..count];
         let outcome = Outcome::Rows { len: count };
@@ -101,8 +97,6 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
             memory: &live,
             armies: &populated.world.armies[..rows.len() - 1],
         };
-        // Off-slot, every known footer must skip the entire native read. The
-        // initial/daily/full passes use the identical unfiltered layout.
         if hour == 2 {
             acquire(
                 &guarded,
@@ -132,8 +126,6 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
             acquired_rows.to_vec(), outcome,
         )).unwrap();
         assert!(capture.retain_owned_settlement(store, Some(owned), context).is_none());
-        // Decode has no memory capability. Changing the live footer now cannot
-        // change either the carried sample or the owned fresh observations.
         for &army in &populated.world.armies {
             let at = army - populated.world.base + supply::ASKED;
             populated.world.bytes[at..at + 8].copy_from_slice(&i64::MIN.to_le_bytes());
@@ -215,7 +207,6 @@ fn footer_daily_cache_requires_the_complete_occurrence_and_preserves_ordered_ori
     }
     store.remember_supply(0, &[seed], &[Some(Arc::clone(&sample))], false);
     assert!(store.daily_supply(0, 0, &seed, &mut order).is_none());
-    // The same range scratch must also survive a replacement baseline in a different order.
     let other = DivisionSeed {
         division: 8,
         handle: Some(8),
@@ -304,7 +295,6 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
         part.range = index * 2..(index + 1) * 2;
         part
     });
-    // Warm only the required row scratch; daily supply is not enabled yet.
     for part in &mut parts {
         part.capture(
             &unreadable,
@@ -327,8 +317,6 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
     );
     store.daily_progress(true);
     store.remember_supply(populated.world.base, &baseline, &samples, true);
-    // The first range deliberately has no staging. The last two use global
-    // ordinals, including a repeated occurrence and a miss at the range edge.
     for part in &mut parts[1..] {
         part.capture(
             &unreadable,
@@ -443,8 +431,6 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
         ordered
     );
 
-    // A present miss is authoritative, even if another lookup could find a
-    // held value. It must select a fresh footer rather than silently retry.
     let missed = select(
         &|index| if index == 0 { Some(None) } else { stage(index) },
         &mut store,
@@ -462,8 +448,6 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
         stage,
     );
     let mut packet = carmy::StatusPacket::vacant();
-    // DailyStatus's scratch is retained; only the packet's final selection
-    // reserve is unprepared. Its failure forgets carry and reads every footer.
     crate::test_support::with_allocations_denied(|| {
         daily.prepare(
             &mut packet,
@@ -485,8 +469,6 @@ fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_
     assert_eq!(fresh, select(&|_| None, &mut store));
 }
 
-/// One hour on `capture` with `store`, as the hour's acquisition and its owned settlement
-/// leave it: the store stays in the capture, as with a decode worker still settling.
 fn settled_hour(
     populated: &Populated,
     capture: &mut Captured,
@@ -510,10 +492,6 @@ fn settled_hour(
     capture.tables()
 }
 
-/// A decode worker still settling the hour before keeps that hour's store: the next hour's
-/// take gets a store of its own at once and records exactly the rows the held store gives,
-/// panel sources included, and the hour after carries on from the newer store. On the base
-/// the take waited until the older store came back.
 #[test]
 fn an_hour_never_waits_for_the_store_the_hour_before_still_settles() {
     let populated = Populated::new();
@@ -533,7 +511,6 @@ fn an_hour_never_waits_for_the_store_the_hour_before_still_settles() {
             super::super::super::attack_stats::ArmyStatStore::new(),
         )).unwrap()
     };
-    // The store comes back between hours.
     let reference_slot = new_slot();
     let mut reference = fresh_capture();
     let expected: Vec<_> = (1..=2)
@@ -546,7 +523,6 @@ fn an_hour_never_waits_for_the_store_the_hour_before_still_settles() {
             tables
         })
         .collect();
-    // Hour 1's store is still with its decode worker when hour 2 takes.
     let slot = new_slot();
     let mut first = fresh_capture();
     slot.prepare_hour(1, false);
@@ -571,7 +547,6 @@ fn an_hour_never_waits_for_the_store_the_hour_before_still_settles() {
     let tables = settled_hour(&populated, &mut second, store, 2, &rows, outcome, &changes);
     assert!(matches!(tables[5], TableView::Complete(_)), "panel sources withheld");
     assert_eq!(tables, expected[1]);
-    // The older store returns late and carries nothing on; the next hour takes hour 2's.
     drop(first.take_settled_store().unwrap());
     let newer = second.take_settled_store().unwrap();
     let newer_address = &*newer as *const _;

@@ -21,15 +21,11 @@ export function fixed5(raw: string): string {
   return sign + (positive / 100000n).toString() + (tail ? '.' + tail : '');
 }
 
-/** What renders: the goals, their terms and the justifications' fixed facts. Progress is a live cell and the completion
- * date moves with the hour: both are painted, never rendered for. */
 export function wargoalStructure(reply: WargoalsReply): string {
   return JSON.stringify([reply.branchId, reply.tag, reply.standings, reply.goals, reply.stateNames, reply.warnings,
     reply.justifications.map(({ completion: _completion, ...fixed }) => fixed)]);
 }
 
-/** A justification's progress as painted: the share of its cost (clamped, one decimal; bold before the points) and the
- * exact points, or why they are not known. `points` is the stored fixed5 progress from the live cell. */
 export function progressText(points: number | undefined, total: string, missing: string): { share: number | null; shareText: string; text: string } {
   if (points === undefined) return { share: null, shareText: '', text: `${missing} / ${fixed5(total)}` };
   const done = BigInt(Math.trunc(points)), cost = BigInt(total);
@@ -37,7 +33,6 @@ export function progressText(points: number | undefined, total: string, missing:
   return { share, shareText: share != null ? `${share}%` : '', text: `${share != null ? ' · ' : ''}${fixed5(done.toString())} / ${fixed5(total)}` };
 }
 
-/** A goal's expiry as the head reaches it: the date and the days left, or that it has passed. */
 export function expiryText(expires: number, hour: number): string {
   const days = Math.ceil((expires - hour) / 24);
   return expires - hour > 0 ? `Expires ${dayLabel(expires)} · ${usNumber.format(days)} ${days === 1 ? 'day' : 'days'}` : `Expiry date passed ${dayLabel(expires)}`;

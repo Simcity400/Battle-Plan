@@ -5,7 +5,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[test]
 #[ignore = "isolated shared retirement lifecycle; run with --test-threads=1"]
-// NavalJob's private capture state requires constructing this fixture via Default.
 #[allow(clippy::field_reassign_with_default)]
 fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
     let _serial = crate::hook::FAMILY_TEST
@@ -14,7 +13,6 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
     prepare_retirement().unwrap();
     reclaim_payloads();
     let queue = RETIRED_PAYLOADS.load(Ordering::Acquire);
-    // Preparation keeps the queue alive until quiescent loader teardown.
     let queue = unsafe { &*queue };
     assert!(queue.is_empty());
     for unwind in [false, true] {
@@ -58,7 +56,6 @@ fn abandoned_orders_loan_retires_once_on_drop_and_callback_unwind() {
         assert_eq!(payload.log.bytes.as_ptr(), identity);
         assert_eq!(payload.log.bytes.as_ref(), &marker);
         assert!(queue.is_empty());
-        // This abandoned frame is retired, rather than decoded as accepted.
         drop(payload);
     }
 }

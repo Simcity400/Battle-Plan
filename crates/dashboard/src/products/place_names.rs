@@ -1,13 +1,3 @@
-//! Names of provinces, states and strategic regions from the recording's own rows and content,
-//! at the reply: the one function every product names places with ([`Places`], [`Content`]), and
-//! the `place-names` product, which names province/hour and state/hour pairs for the UI.
-//!
-//! A province's name is its nonempty recorded rename through localisation (even to empty text),
-//! else its victory-point name under its state owner's original-or-own tag; without either, its
-//! state's display name, and for a province in no state its strategic region's. Land's ladder
-//! (`land`) leaves a province in no state unnamed. A state's name is its stored custom or
-//! owner-qualified string, else its content template. What cannot be named is a reason, never a
-//! made-up name.
 
 use super::{
     LoadContext, Product,
@@ -38,7 +28,6 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-/// The tables names are read from, besides `States`, which names read only for the states asked.
 pub const TABLES: [TableId; 7] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -49,8 +38,6 @@ pub const TABLES: [TableId; 7] = [
     TableId::States,
 ];
 
-/// The reads that name `provinces` and `states` at an hour: step 0 the owners' tables whole and
-/// the provinces' rows; step 1 the states asked and those the provinces are in. No step after.
 pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame) -> Vec<Read> {
     match step {
         0 => {
@@ -75,8 +62,6 @@ pub fn reads(provinces: &[u32], states: &[u32], step: usize, held: &DecodedFrame
     }
 }
 
-/// What names need of the recorded content: the catalogue (localisation, state templates) and
-/// each strategic region's name, by region and by province.
 pub struct Content {
     pub cat: Arc<Catalogue>,
     regions: Result<Regions, String>,
@@ -94,7 +79,6 @@ struct Cached {
 }
 
 impl Content {
-    /// The content `load` binds, read once per catalogue.
     pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
         let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Place names need the recorded content stack and language"))?;
         let cat = catalogue::catalogue(source, options)?;
@@ -118,7 +102,6 @@ impl Content {
                 for (&id, region) in &regions.regions {
                     let name = named(region);
                     for province in region.native_provinces(|_| true) {
-                        // A province two regions list is in neither, by name.
                         if by_province.insert(province, name.clone()).is_some() {
                             by_province.insert(province, Err(format!("province {province}: multiple strategic-region memberships refused")));
                         }
@@ -133,7 +116,6 @@ impl Content {
         Ok(content)
     }
 
-    /// Strategic region `id`'s name, or why it has none.
     pub fn region(&self, id: u32) -> Result<String, String> {
         let regions = self.regions.as_ref().map_err(Clone::clone)?;
         regions.by_region.get(&id).cloned().unwrap_or_else(|| Err(format!("region {id}: no content-defined strategic region")))
@@ -144,7 +126,6 @@ impl Content {
         regions.by_province.get(&id).cloned().unwrap_or_else(|| Err(format!("province {id}: no content-defined strategic region")))
     }
 
-    /// What the content's reads noted, for a reply's warnings.
     pub fn warnings(&self) -> Vec<String> {
         let mut out: Vec<String> = self.cat.verification.iter().chain(&self.cat.warnings).cloned().collect();
         match &self.regions {
@@ -158,7 +139,6 @@ impl Content {
     }
 }
 
-/// A name, or why there is none (both where a name stands in for one that could not be read).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Name {
     pub name: Option<String>,
@@ -182,7 +162,6 @@ impl Name {
     }
 }
 
-/// The places of a frame holding [`reads`]' rows, each table indexed at its first use.
 pub struct Places<'f> {
     frame: &'f DecodedFrame,
     provinces: OnceCell<HashMap<u32, u32>>,
@@ -250,7 +229,6 @@ impl<'f> Places<'f> {
         tag
     }
 
-    /// Province `id`'s state (zero for none), or why it is not known.
     pub fn province_state(&self, id: u32) -> Option<u32> {
         self.provinces().get(&id).copied()
     }
@@ -263,8 +241,6 @@ impl<'f> Places<'f> {
         }
     }
 
-    /// The original-or-own tag province `id`'s victory-point name is keyed by: its state owner's;
-    /// a province in no state uses country zero's.
     fn victory_point_tag(&self, id: u32, state: u32) -> Result<String, String> {
         if state == 0 {
             return self.tag(0);
@@ -289,12 +265,10 @@ impl<'f> Places<'f> {
         scripted_text::state_display_name(row, &content.cat, names, scripted_text::StateNameUsage::Place)
     }
 
-    /// State `id`'s name.
     pub fn state(&self, content: &Content, id: u32) -> Name {
         Name::of(self.state_display(content, id, || format!("Not in this recording: state {id} at this hour")))
     }
 
-    /// Province `id`'s name, by Land's ladder (`land`) or the native one.
     pub fn province(&self, content: &Content, id: u32, land: bool) -> Name {
         let Some(state) = self.province_state(id) else {
             return Name::missing(format!("Not in this recording: province {id} at this hour"));
@@ -330,7 +304,7 @@ pub struct PlaceNames;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaceNamesParams {
     pub branch_id: String,
-    /// Land's ladder: a province in no state stays unnamed rather than taking its region's name.
+    #[doc = " Land's ladder: a province in no state stays unnamed rather than taking its region's name."]
     #[serde(default)]
     pub land: bool,
     pub places: Vec<PlaceNameRequest>,
@@ -385,10 +359,6 @@ pub struct PlaceNamesReply {
 
 dashboard_base::reply_warnings!(PlaceNamesReply);
 
-/// `frame`'s rows of `provinces` and `states` named at `hour` of `query`, or the reason the
-/// hour cannot be read.
-/// The place tables at `hour`, `frames` moved on from the hour it read before: a request's hours,
-/// asked in order, restore each table once, never once an hour.
 fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_>, hour: i32, provinces: &[u32], states: &[u32]) -> Result<DecodedFrame, String> {
     if query.timeline.at(hour).is_none() {
         let reason = query.timeline.unheld.iter().find(|unheld| unheld.first <= hour && hour <= unheld.last).map_or("the hour was not recorded", |unheld| unheld.reason.as_str());

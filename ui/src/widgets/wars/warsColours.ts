@@ -10,7 +10,6 @@ import type { CountryGroupReply, CountryStyle } from '../../generated/dashboard'
 import { countryTagAt, observationAt } from './warsData.ts';
 import type { NativeSide, PreparedWars } from './warsData';
 
-/** Resolve complete rosters once at the selected hour, never at the branch end. */
 export function warsFactionMembership(groups: CountryGroupReply | undefined, at: number, lineage: Lineage, identities?: CountryIdentityIndex): ReadonlyMap<string, string> | null {
   if (!groups || runAt(groups.unobserved.factions, at)) return null;
   const membership = new Map<string, string>();
@@ -29,7 +28,6 @@ export function warsFactionMembership(groups: CountryGroupReply | undefined, at:
   return membership;
 }
 
-/** More than half the distinct participating countries, including factionless allies. */
 export function warsSideColours(data: PreparedWars, groups: CountryGroupReply | undefined, at: number, colours: ReadonlyMap<string, string>): ReadonlyMap<string, ReadonlyMap<NativeSide, string>> {
   const result = new Map<string, ReadonlyMap<NativeSide, string>>();
   const membership = warsFactionMembership(groups, at, data.lineage, data.identities);
@@ -59,7 +57,6 @@ export function warsSideColours(data: PreparedWars, groups: CountryGroupReply | 
   return result;
 }
 
-/** A stable identity set; a reused tag never supplies another country's colour. */
 export function warsColourSelection(data: PreparedWars, at: number): ReadonlyMap<string, string | null> {
   return new Map(data.countries.map(country => {
     const tag = countryTagAt(country, at);
@@ -67,7 +64,6 @@ export function warsColourSelection(data: PreparedWars, at: number): ReadonlyMap
   }).sort(([first], [second]) => compareTags(first, second)));
 }
 
-/** The native holder boundary, clipped to this recorded branch. */
 export function warsLookStart(data: PreparedWars | null, branch: RecordedBranch | undefined, tag: string, hour: number): number | null {
   if (data?.identities) {
     const run = runAt(data.identityBounds.get(tag) ?? [], hour);
@@ -76,7 +72,6 @@ export function warsLookStart(data: PreparedWars | null, branch: RecordedBranch 
   return branch ? Math.max(branch.firstHour, data?.lineage.holderStart(tag, hour) ?? branch.firstHour) : null;
 }
 
-/** Full style reads only in fixed mode, bounded to the current holder and recording stretch. */
 export function warsColourPlan(data: PreparedWars | null, branch: RecordedBranch | undefined, at: number, fixed: boolean) {
   const selection = fixed && data ? warsColourSelection(data, at) : new Map<string, string | null>();
   const plan = lookPlan(branch, [...selection.values()].flatMap(tag => tag == null ? [] : [tag]), at,
@@ -84,7 +79,6 @@ export function warsColourPlan(data: PreparedWars | null, branch: RecordedBranch
   return { ...plan, selection };
 }
 
-/** Admit one complete colour input, so partial batches and unchanged hours do no correction. */
 export function warsFixedColourKey(plan: ReturnType<typeof warsColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | Error>): string | null {
   if (!plan.wanted.length || plan.wanted.some(item => !styles.has(nameKey(item.hour, item.tag)))) return null;
   const hours = new Map(plan.samples.map(sample => [sample.tag, sample.hour]));
@@ -97,7 +91,6 @@ export function warsFixedColourKey(plan: ReturnType<typeof warsColourPlan>, styl
   return inputs.some(([, , color]) => color != null) ? JSON.stringify(inputs) : null;
 }
 
-/** Reserve every selected identity's slot; unknown colours still display neutral. */
 export function warsCountryColours(tags: readonly string[], color: (tag: string) => CountryStyle['color'], surface: string, fixed: boolean): Map<string, string> {
   const styles = new Map<string, CountryStyle>();
   for (const tag of tags) {

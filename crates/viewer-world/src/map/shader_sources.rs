@@ -1,6 +1,3 @@
-//! Named source/include diagnostics for every compiled map pass.
-//! Effect lookup replaces .lua with .shader. The shared content reader resolves includes through the
-//! recorded stack.
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -9,13 +6,10 @@ use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync:
 use installed_content_core::{ResolvedLayers, pdxshader};
 use installed_content_image::native::Decode;
 
-/// Renderer globals use the client force_pow2_textures setting. File textures can pad; generated
-/// textures retain their own dimensions.
 pub fn globals(map: [u32; 2], decode: Decode) -> Vec<String> {
     shader_pipeline::library::globals(map, decode)
 }
 
-/// Prepend renderer globals even when the pass supplies no caller defines.
 pub fn library(
     layers: &ResolvedLayers,
     map: [u32; 2],
@@ -28,9 +22,6 @@ pub fn library(
     )
 }
 
-/// Each independently submitted map pass, including shared shader users.
-/// Map, mesh, names, shadow blur, particles, post, LUT and railway passes have separate
-/// registrations. Arrow techniques are selected by maparrows.txt.
 pub const PASSES: &[(&str, &str)] = &[
     ("terrain", "gfx/FX/pdxmap.shader"),
     ("terrain refraction", "gfx/FX/pdxmap.shader"),
@@ -99,7 +90,6 @@ fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installe
         out.borrow_mut().sources.insert(path.into(), bytes.clone());
         bytes
     };
-    // The one effect reader opens every path by its bytes; this audit keys its sources by text.
     let read_bytes = |path: &[u8]| match std::str::from_utf8(path) {
         Ok(path) => read(path),
         Err(_) => {
@@ -115,7 +105,6 @@ fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installe
             .errors
             .insert(format!("missing shader {effect}"));
     }
-    // DX11's VFS header is implicit, not in Includes.
     let header = "gfx/FX/defines_hlsl_dx11.fxh";
     if read(header).is_none() {
         out.borrow_mut()
@@ -131,8 +120,6 @@ pub struct Audit {
     pub affected_passes: usize,
 }
 
-/// Compares actual bytes, so an identical replacement is not a false refusal.
-/// Both graphs matter: a replacement can remove an include as well as add one.
 fn audit_paths<B: Clone + Eq + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_core::content::Bytes>>(
     layers: &ResolvedLayers,
     passes: &[(&str, &str, &str)],
@@ -193,7 +180,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Fixed engine registrations plus the effect files selected by the arrow content.
 pub fn passes(layers: &ResolvedLayers) -> io::Result<Vec<(String, String)>> {
     passes_with(&|path| layers.read_uncovered(path))
 }
@@ -203,7 +189,6 @@ fn passes_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]>>(read: &dyn Fn(&s
         .iter()
         .map(|&(name, path)| (name.into(), path.into()))
         .collect();
-    // Resolve arrow and arrowText effects from this descriptor through the content stack.
     let path = "gfx/maparrows/maparrows.txt";
     let document = installed_content_core::parser::parse(&read(path)?)?;
     let effect = |items: &[installed_content_core::parser::Item], kind: &str| -> io::Result<String> {
@@ -239,8 +224,6 @@ fn passes_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]>>(read: &dyn Fn(&s
 
 pub fn check(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<()> {
     let vanilla = layers.base_only()?;
-    // This isolated reader deliberately has no cosmetic overlays and retains the base layer's
-    // folder/archive lookup semantics, verifying the covered sources.
     let base_passes = passes(&vanilla)?;
     let content_passes = passes(layers)?;
     let passes: Vec<_> = base_passes
@@ -262,8 +245,6 @@ pub fn check(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> io::Result<
 mod tests {
     use super::*;
 
-    /// The map passes compile under the client's own `force_pow2_textures` branch of
-    /// GUI and map passes share those globals.
     #[test]
     fn the_map_globals_follow_the_clients_force_pow2_textures() {
         let on = Decode {
@@ -277,8 +258,6 @@ mod tests {
         assert_eq!(defines, shader_pipeline::library::globals([5632, 2048], on));
     }
 
-    /// Point-sample the RGBA32F light table using its authored sampler for map, mesh and particle
-    /// draws. This binding does not require FLOAT32_FILTERABLE.
     #[test]
     #[ignore = "reads the installed game's shaders; set BATTLE_PLAN_GAME_DIR"]
     fn installed_map_passes_point_sample_the_light_table() {

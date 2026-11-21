@@ -1,6 +1,3 @@
-//! The measuring shell (`--features served-ui`): the release app, serving its UI from a production
-//! bundle on disk (`BATTLE_PLAN_UI_DIST`) through the same protocol, origin and CSP as the embedded one.
-//! Each file is read when the page asks for it, so a rebuilt bundle needs only a new app.
 
 use std::{
     borrow::Cow,
@@ -52,13 +49,11 @@ impl<R: Runtime> Assets<R> for Bundle {
         }))
     }
 
-    // A production bundle has no inline script or style to hash; `serve` refuses one that does.
     fn csp_hashes(&self, _html_path: &AssetKey) -> Box<dyn Iterator<Item = CspHash<'_>> + '_> {
         Box::new(std::iter::empty())
     }
 }
 
-/// Why an entry page is not a production bundle's, if it is not.
 fn not_production(html: &str) -> Option<&'static str> {
     if html.contains("/@vite/client") || html.contains("/src/main.tsx") {
         return Some("it is the UI's source page, not `vite build` output");
@@ -70,7 +65,6 @@ fn not_production(html: &str) -> Option<&'static str> {
     inline.then_some("it holds an inline script, which the release CSP would block without its hash")
 }
 
-/// Replaces the embedded UI with the bundle `BATTLE_PLAN_UI_DIST` names; the folder served, or why not.
 pub fn serve<R: Runtime>(context: &mut tauri::Context<R>) -> Result<PathBuf, String> {
     let given = std::env::var_os(VARIABLE)
         .filter(|value| !value.is_empty())

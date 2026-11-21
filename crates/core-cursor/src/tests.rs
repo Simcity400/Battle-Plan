@@ -637,7 +637,6 @@ fn scope_switch_at_full_memory_reclaims_its_own_far_edge_without_catching_up() {
     cursor.wait_read_ahead().unwrap();
     let before = cursor.stats();
     assert_eq!(before.window_hours, 4);
-    // Reclaim needs metadata space, but scope preparation must release a far-edge page.
     let headroom = 4096;
     let _pressure = memory
         .soft()

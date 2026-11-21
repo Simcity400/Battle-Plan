@@ -1,5 +1,3 @@
-//! Selected-wing relocation arrows and progress, in country-base and direct
-//! incoming registration order. Selection belongs exclusively to the viewer.
 use super::radar_symbols::{Field, Symbol};
 use installed_content_core::defines::Defines;
 use replay_data::{rows::AirBaseRow, rows::AirTransferInputRow, rows::AirWingRow, rows::tables};
@@ -47,16 +45,11 @@ pub struct Inputs<'a> {
     pub arrow: Option<&'a ArrowType>,
     pub color: Result<[f32; 4], &'a str>,
     pub heights: HeightField<'a>,
-    // The caller resolves positions on demand, including absent bases and named refusals.
     #[allow(clippy::type_complexity)]
     pub base_position: &'a dyn Fn(&AirBaseRow) -> Result<Option<[f32; 3]>, String>,
 }
 
-/// Native interpolation first converts fixed controls to floats. The symbol
-/// lands back on the fixed grid after interpolation; it is not clamped to the
-/// segment, and a nonpositive total distance gives zero progress.
 #[cfg(test)]
-// Match locate's controls, symbol position and progress tuple in this test adapter.
 #[allow(clippy::type_complexity)]
 fn location(
     from: [f32; 3],
@@ -73,7 +66,6 @@ fn location(
     )
 }
 
-// Return seam-adjusted controls, symbol position and progress as one interpolation result.
 #[allow(clippy::type_complexity)]
 fn locate(
     mut points: [[i64; 2]; 2],
@@ -215,8 +207,6 @@ pub fn read(frame: &DecodedFrame, inputs: &Inputs<'_>) -> Prepared {
                         progress,
                         distance,
                     )?;
-                    // Native destination scratch retains seam shifts while
-                    // walking the remaining incoming wings of the same base.
                     destination = Some(controls[1]);
                     out.progress.symbols.push(Symbol {
                         country: 0,

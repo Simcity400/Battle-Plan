@@ -1,4 +1,3 @@
-//! Persistent CPU program cache. GPU objects remain device-local in `gpu::Cache`.
 use super::{Compiled, Compiler};
 use installed_content_core::content::diagnostics::{Diagnostics as ContentDiagnostics, Once};
 use installed_content_core::pdxshader::program::{Program, Technique};
@@ -9,12 +8,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// Bump whenever source assembly, DXC flags, naga or reflection changes. This is part of
-// the filename hash as well as the payload; old caches cannot silently survive an upgrade.
-// `Compiler::at` refuses any dxcompiler.dll but `DXC_VERSION`, which this names.
 const ABI: &str = "pdxshader-14/dxc-1.9.0.5402-0d3ee6b55/hlsl2016/dx-layout/naga-30.0.1";
 
-/// A failure names the effect and technique, as [`Compiler::compile`] does.
 pub trait Compile: Send + Sync {
     fn compile(
         &self,
@@ -22,7 +17,6 @@ pub trait Compile: Send + Sync {
         technique: &Technique,
         defines: &[String],
     ) -> Result<Compiled, String>;
-    /// Forget a compiler that was not found, so the next compile looks for it again.
     fn retry(&self) {}
 }
 impl Compile for Compiler {
@@ -30,9 +24,6 @@ impl Compile for Compiler {
         Compiler::compile(self, p, t, d)
     }
 }
-/// The bundled compiler, discovered at the first cache miss of this cache (one content load)
-/// or after a retry ([`Cache::retry_failures`]). A compiler installed later is found by the next
-/// load.
 struct Runtime {
     discover: fn() -> Result<Compiler, String>,
     found: Mutex<Option<Arc<Result<Compiler, String>>>>,
@@ -91,7 +82,6 @@ type Cached = Arc<Once<Result<Arc<Compiled>, String>>>;
 static COMPILED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static DISK_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Programs compiled and programs read from disk by every cache of the process since it started.
 pub fn totals() -> (u64, u64) {
     use std::sync::atomic::Ordering::Relaxed;
     (COMPILED.load(Relaxed), DISK_HITS.load(Relaxed))
@@ -120,7 +110,6 @@ impl Default for Cache {
 }
 
 impl Cache {
-    /// `None` disables persistence, not compilation. Callers may isolate the cache for tests.
     pub fn new(root: Option<PathBuf>, compiler: Arc<dyn Compile>) -> Self {
         Self {
             root,
@@ -133,8 +122,6 @@ impl Cache {
     pub fn diagnostics(&self) -> Diagnostics {
         self.diagnostics.lock().unwrap().clone()
     }
-    /// Forget failed compiles and a compiler that was not found, so a repaired compiler serves
-    /// the next request; compiled programs stay.
     pub fn retry_failures(&self) {
         self.compiler.retry();
         self.entries
@@ -169,7 +156,6 @@ impl Cache {
         let mut hash = Sha256::new();
         hash.update(ABI);
         hash.update(source.identity);
-        // Include emitted source as well: callers constructing Program directly are supported.
         for stage in [
             installed_content_core::pdxshader::program::Stage::Vertex,
             installed_content_core::pdxshader::program::Stage::Pixel,
@@ -463,7 +449,6 @@ pub(crate) mod tests {
         assert!(failed.select("Up").is_err());
         assert!(failed.failed() && !compiles.failed());
         compiler.repaired.store(true, Ordering::SeqCst);
-        // Until retried, the failure stays: in the effect and in the cache.
         assert!(failed.select("Up").is_err());
         assert!(cache.get(&source, &source.techniques[0], &[]).is_err());
         compiles.select("Up").unwrap();
@@ -473,7 +458,6 @@ pub(crate) mod tests {
         let again = super::super::library::Effect::new(source.clone(), vec![], cache.clone());
         again.select("Up").unwrap();
         assert!(!again.failed());
-        // What compiled stays compiled.
         compiles.select("Up").unwrap();
         cache.get(&source, &source.techniques[0], &["OTHER".into()]).unwrap();
         assert_eq!(compiler.compiled.0.load(Ordering::SeqCst), 2);

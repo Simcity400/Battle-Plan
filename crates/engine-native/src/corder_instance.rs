@@ -1,4 +1,3 @@
-//! COrderInstance state and the functions that establish its saved representation.
 
 use engine_sites::Rva;
 use crate::{
@@ -17,7 +16,6 @@ use crate::memory::gather_records;
 
 pub mod child_fronts;
 
-/// Raw hourly drawing operands. Variable membership lives in a caller-owned arena.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PlanRow {
     pub owner_group: u64,
@@ -32,14 +30,9 @@ pub struct PlanRow {
     pub fallback: u8,
     pub virtual_order: u8,
     pub has_child: u8,
-    /// Independent optional area/header/child-arena suffix; core plan failure
-    /// ordering is unchanged.
     pub child_fronts: Option<child_fronts::Inputs>,
     pub owner_override: u64,
-    /// Type3's allocated convoy subscriber count, including zero and negative raw values. None for
-    /// other types or a field-local fault.
     pub invasion_transports: Option<i32>,
-    /// Independent simulation operands; failed optional reads preserve the plan.
     pub execution: Option<crate::order_execution::OrderExecutionInputs>,
     pub assigned_start: usize,
     pub assigned_len: usize,
@@ -47,8 +40,6 @@ pub struct PlanRow {
     pub predecessors_len: usize,
     pub successors_start: usize,
     pub successors_len: usize,
-    /// Byte spans of the [`NAME_STRINGS`] in the caller's name arena; empty for
-    /// order types the map labels without an order name.
     pub names: [(usize, usize); 6],
 }
 impl PlanRow {
@@ -57,14 +48,6 @@ impl PlanRow {
     }
 }
 
-/// The instance id of a root order the complete census reached from `owner`.
-///
-/// The census read this id from the order's `+ID` field when it entered the
-/// order, after authenticating its vtable and owner, so re-reading that field
-/// gives the same value. Lifetime: the census and this lookup belong to one
-/// acquisition pass, which holds the game thread throughout; a census from
-/// another pass is never passed here. An order absent from the census fails
-/// before any value is used, with the same reason as before.
 pub(crate) fn census_instance(
     visits: &[Visit],
     pointer: usize,
@@ -88,7 +71,6 @@ pub fn plan_field<T: crate::memory::Raw>(
         .ok_or("plan field unreadable or address overflow")
 }
 
-/// [`plan_field`] taken from `record` when it gathered the field.
 #[inline(always)]
 pub fn gathered_field<T: crate::memory::Raw>(
     memory: &impl Memory,
@@ -102,9 +84,6 @@ pub fn gathered_field<T: crate::memory::Raw>(
     }
 }
 
-/// The embedded convoy subscriber's allocated i32 and vtable are in
-/// PLAN_SPANS' authenticated prefix. Fallback after a gather fault reads at
-/// most eight plus four bytes.
 fn invasion_transports(
     memory: &impl Memory,
     base: usize,
@@ -127,9 +106,6 @@ pub struct PlanWalk {
     pub names: usize,
 }
 
-/// Original assigned HOST pointers, paired with the handle arena by ordinal.
-/// This private lane never reads memory, grows during acquisition, or publishes
-/// native addresses. A short lane preserves core plans but cannot prove a root.
 #[derive(Debug, Default)]
 pub struct AssignedSources {
     pointers: Vec<usize>,
@@ -149,7 +125,6 @@ impl AssignedSources {
         self.required = 0;
         self.failure = None;
     }
-    /// A worker failure invalidates the verdict, retaining observed growth demand.
     pub fn fail(&mut self, reason: &'static str) {
         self.failure = Some(reason);
     }
@@ -203,11 +178,6 @@ impl AssignedSources {
     }
 }
 
-/// Translate an ordered pointer vector through the complete authenticated
-/// ArmyOrders census. Only scoped instance IDs leave the worker. The array
-/// is simulation state: serialization preserves ordinary successors, while
-/// selection of the first predecessor of a type and presentation traversal
-/// use the first predecessor to suppress a shared child.
 fn plan_order_ids(
     memory: &impl Memory,
     owner: usize,
@@ -217,8 +187,6 @@ fn plan_order_ids(
     used: &mut usize,
 ) -> Result<(usize, usize), &'static str> {
     let start = *used;
-    // Scratch is never initialized: only the bytes of a copy that succeeded
-    // are read, and `read_slice_uninit` returns exactly those.
     let mut scratch = [std::mem::MaybeUninit::<u8>::uninit(); 64 * 8];
     for first in (0..array.count).step_by(64) {
         let count = (array.count - first).min(64) as usize;
@@ -244,7 +212,6 @@ fn plan_order_ids(
     Ok((start, *used - start))
 }
 
-/// [`plan_order_ids`] for a vector whose ids the census already resolved.
 fn append_census_ids(
     ids: &[u32],
     output: &mut Vec<u32>,
@@ -260,24 +227,13 @@ fn append_census_ids(
     Ok((start, ids.len()))
 }
 
-/// Census objects the plan walks gather per batch of guarded record copies.
-/// A batch's own spans are hinted before it is gathered; its records, and
-/// then its name records, are gathered one batch apart, each hinting what it
-/// points at, before the batch is decoded.
 pub(crate) const PLAN_BATCH: usize = 16;
 
-/// Whether an order arrow of this type uses its [`NAME_STRINGS`]: move,
-/// invasion and paradrop arrows do; lines carry the group name alone.
 #[inline(always)]
 fn named_type(kind: i32) -> bool {
     matches!(kind, TYPE_MOVE | TYPE_INVASION | TYPE_PARADROP)
 }
 
-/// The COrderInstance spans [`walk_plans`] reads directly for every order
-/// type, as `(offset, len)`: identity and type, segment, the move and
-/// withdraw bytes, the link and member headers, id through front section,
-/// fallback and virtual, and child flag through owner override. They are
-/// hinted ahead and gathered in one record per order.
 const PLAN_SPANS: [(usize, usize); 7] = [
     (0, OWNER + 8),
     (SEGMENT_START, 8),
@@ -296,7 +252,6 @@ const PLAN_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PLAN_FIELDS, PLAN_STRIDE).expect("valid order plan layout");
 const PLAN_MAP: [u16; OWNER_OVERRIDE + 8] = packed_map(PLAN_SPANS);
 
-/// The first byte of the [`NAME_STRINGS`] headers and the end of the last.
 const NAMES: (usize, usize) = {
     let (mut first, mut end, mut index) = (usize::MAX, 0, 0);
     while index < NAME_STRINGS.len() {
@@ -319,8 +274,6 @@ const NAMES: (usize, usize) = {
     );
     (first, end)
 };
-/// The second record of a named order: its six name-string headers, which
-/// only [`named_type`] orders read.
 const NAME_SPANS: [(usize, usize); 1] = [(NAMES.0, NAMES.1 - NAMES.0)];
 const NAME_FIELDS: [RecordField; 1] = packed_fields(NAME_SPANS);
 const NAME_STRIDE: usize = packed_stride(NAME_SPANS);
@@ -328,8 +281,6 @@ const NAME_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&NAME_FIELDS, NAME_STRIDE).expect("valid order name layout");
 const NAME_MAP: [u16; NAMES.1] = packed_map(NAME_SPANS);
 
-/// Hints one census order's own spans, or the owned records the census
-/// gathered for it; advisory only.
 fn prefetch_plan(memory: &impl Memory, lists: &SuccessorLists, visit: &Visit) {
     if lists.plans.record(visit).is_some() {
         lists.plans.prefetch(visit);
@@ -342,11 +293,6 @@ fn prefetch_plan(memory: &impl Memory, lists: &SuccessorLists, visit: &Visit) {
     }
 }
 
-/// Hints what a gathered order record points at: the link vectors the walk
-/// will read (predecessors, and successors the census did not list), a named
-/// order's name-string headers and an owner override's identity. Hints read
-/// nothing. The member arrays are not hinted: in the paired capture-cost
-/// bench that cost more than it saved.
 fn prefetch_dependents(
     memory: &impl Memory,
     record: Gathered<'_>,
@@ -377,22 +323,14 @@ fn prefetch_dependents(
     }
 }
 
-/// No row in an [`OrderBatch`]'s own records: the census gathered the
-/// order's record (or name record), or the order reads no names.
 const NO_ROW: u8 = u8::MAX;
 
-/// One batch of census orders with their records and the name records of
-/// its named orders. A record the census
-/// gathered ([`PlanRecords`]) is taken from there; the batch gathers only the
-/// records of orders the census staged none for.
 struct OrderBatch {
     visits: [Visit; PLAN_BATCH],
     size: usize,
-    /// Each order's row in `records`, or [`NO_ROW`] for a census record.
     rows: [u8; PLAN_BATCH],
     records: [u8; PLAN_BATCH * PLAN_STRIDE],
     complete: [bool; PLAN_BATCH],
-    /// Each order's row in `names`, or [`NO_ROW`].
     name_rows: [u8; PLAN_BATCH],
     names: [u8; PLAN_BATCH * NAME_STRIDE],
     named: [bool; PLAN_BATCH],
@@ -412,8 +350,6 @@ impl OrderBatch {
         }
     }
 
-    /// The order's record: the census's when it gathered one, else the
-    /// batch's own.
     #[inline(always)]
     fn record<'a>(&'a self, lists: &'a SuccessorLists, index: usize) -> Gathered<'a> {
         match self.rows[index] {
@@ -431,9 +367,6 @@ impl OrderBatch {
         }
     }
 
-    /// The order's name record, the census's or the batch's, or none when it
-    /// has none: then a named order's strings are read field by field, as
-    /// before.
     #[inline(always)]
     fn names<'a>(&'a self, lists: &'a SuccessorLists, index: usize) -> Gathered<'a> {
         match self.name_rows[index] {
@@ -451,8 +384,6 @@ impl OrderBatch {
         }
     }
 
-    /// Takes the next orders of `census`, gathers the records the census did
-    /// not, and hints what the records point at.
     fn stage<'a>(
         &mut self,
         memory: &impl Memory,
@@ -493,11 +424,6 @@ impl OrderBatch {
         }
     }
 
-    /// Gathers the name record of each order whose record gives a
-    /// [`named_type`] and that the census gathered no name record for,
-    /// hinted when the batch was staged, and hints every named order's heap
-    /// texts. Orders of other types, and orders whose record did not
-    /// complete, get none.
     fn stage_names(&mut self, memory: &impl Memory, lists: &SuccessorLists) {
         let mut pointers = [0_usize; PLAN_BATCH];
         let mut rows = 0;
@@ -536,18 +462,6 @@ impl OrderBatch {
     }
 }
 
-/// Reuses the complete authenticated ArmyOrders graph census. It reauthenticates
-/// each live object and never retains a native address in a published row.
-/// Payloads can grow from that census and the original member headers; call on
-/// an acquisition worker, never the game-thread callback.
-///
-/// Orders are read a batch at a time: one guarded record per order and one per
-/// owning group gather every fixed span all order types read before any order
-/// of the batch is decoded, and a second record gathers the name-string
-/// headers of the orders whose gathered type reads them. An object whose
-/// record did not complete, or that has no name record, makes its original
-/// per-field reads instead, so the rows and the first failure are those of the
-/// per-field walk.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_plans(
     memory: &impl Memory,
@@ -575,24 +489,14 @@ pub fn walk_plans(
     )
 }
 
-/// The plan walk's row order, caller-owned and reused; it grows on the
-/// worker to the row count. Each census order's key is known before its
-/// record is decoded (its group's handle and the instance the census read),
-/// so the keys are sorted first and each decoded row is written once, in
-/// place. After a complete walk, [`Self::rows`] gives the row of each census
-/// order, for the passes that look plans up by census order.
 #[derive(Debug, Default)]
 pub struct PlanOrder {
     sorted: Vec<(u128, u32)>,
     rows: Vec<u32>,
-    /// The census order from the visits' sequences, for a census that kept
-    /// none ([`census_order_of`]).
     sequence: Vec<u32>,
 }
 
 impl PlanOrder {
-    /// Each census order's plan row (the visits with a pointer, in census
-    /// order) after this pass's complete walk; empty after a failed one.
     pub fn rows(&self) -> &[u32] {
         &self.rows
     }
@@ -602,10 +506,6 @@ impl PlanOrder {
             + (self.rows.capacity() + self.sequence.capacity()) * size_of::<u32>()
     }
 
-    /// Sorts the `len` census orders' keys and records each one's row.
-    /// `Ok(true)` when two keys repeat; `Err` when the scratch cannot grow.
-    /// An order whose group is absent gets a placeholder key: the walk fails
-    /// at that order before any row or repeat is used.
     fn place(
         &mut self,
         groups: &[corders_group::Root],
@@ -638,8 +538,6 @@ impl PlanOrder {
     }
 }
 
-/// One part's plan walk ([`walk_plans_ordered_with_sources`] over a census
-/// part from [`walk_listing_successors_part`]), as [`stitch_plans`] reads it.
 #[derive(Clone, Copy)]
 pub struct PlanPart<'a> {
     pub walk: PlanWalk,
@@ -649,26 +547,9 @@ pub struct PlanPart<'a> {
     pub names: &'a [u8],
     pub order: &'a PlanOrder,
     pub hosts: Option<&'a AssignedSources>,
-    /// The part's census rows, in its census (entry) order: which orders are
-    /// of a type that acquires names.
     pub orders: &'a [Row],
 }
 
-/// The plan walk over the census [`stitch_census`] made, from the parts'
-/// walks over their own census parts, in part order. `census` is the
-/// stitched census's outcome. The outcome and the state are the single
-/// walk's:
-/// - an incomplete census is refused before anything is acquired;
-/// - otherwise the first failure in census order (the parts' census orders
-///   concatenated), with the single walk's acquired state: the assigned,
-///   link and name arenas through the failure, their counts, the assigned
-///   hosts retained through it and their demand; no rows or placement;
-/// - otherwise the rows concatenated, which is their key order, each
-///   acquired span moved into the concatenated arenas (an order of a type
-///   without names keeps its unacquired spans), the placement continued
-///   across the parts and the hosts retained in order.
-///
-/// Reads nothing; storage grows here.
 #[allow(clippy::too_many_arguments)]
 pub fn stitch_plans(
     parts: &[PlanPart<'_>],
@@ -695,7 +576,6 @@ pub fn stitch_plans(
         if !matches!(census, Outcome::Rows { .. }) {
             return Err("plans require a complete army order census");
         }
-        // The parts the single walk reaches: through the first that failed.
         let reached = parts
             .iter()
             .position(|part| matches!(part.walk.outcome, Outcome::Unavailable { .. }))
@@ -706,7 +586,6 @@ pub fn stitch_plans(
             report.links = add(report.links, part.walk.links)?;
             report.names = add(report.names, part.walk.names)?;
         }
-        // The arenas acquired through the parts reached.
         grow_payload(assigned, report.assigned, "plan assigned allocation failed")?;
         grow_payload(links, report.links, "plan graph allocation failed")?;
         grow_payload(names, report.names, "plan name allocation failed")?;
@@ -741,10 +620,6 @@ pub fn stitch_plans(
                 moved.successors_start += ids;
                 *at = moved;
             }
-            // Acquired names move; an order of a type without names keeps
-            // the unacquired spans the single walk leaves it. Each census
-            // row finds its plan row by key: the part's plans hold the same
-            // keys, sorted.
             let plans = &part.rows[..len];
             for census in part.orders.iter().filter(|row| named_type(row.order_type)) {
                 let at = plans
@@ -777,10 +652,6 @@ pub fn stitch_plans(
     report.outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
     let failed = matches!(report.outcome, Outcome::Unavailable { .. });
     if let Some(hosts) = hosts {
-        // The single walk retains hosts in census order, stopping at its
-        // first host failure, through its first core failure: the parts'
-        // lanes concatenated through the part that failed, a failed lane's
-        // prefix included, and their demand.
         if matches!(census, Outcome::Rows { .. }) {
             for part in parts {
                 let Some(lane) = part.hosts else {
@@ -793,8 +664,6 @@ pub fn stitch_plans(
                         let ordinal = hosts.used;
                         hosts.retain(ordinal, pointer);
                     }
-                    // A lane's own failure comes after every pointer it
-                    // retained; a core failure's is replaced below.
                     if hosts.failure.is_none()
                         && lane.failure.is_some()
                         && !matches!(part.walk.outcome, Outcome::Unavailable { .. })
@@ -813,22 +682,15 @@ pub fn stitch_plans(
     }
     if failed {
         order.rows.clear();
-        // A native count is not a request to grow pooled storage after a fault.
         report.required_assigned = report.assigned;
     }
     report
 }
 
-/// `a + b`, refusing an unrepresentable count.
 fn add(a: usize, b: usize) -> Result<usize, &'static str> {
     a.checked_add(b).ok_or("plan arena length overflow")
 }
 
-/// The index of `key` in `rows`, sorted by `key_of` with distinct keys:
-/// `guess` when that row holds the key, which is where the binary search
-/// would land, otherwise the binary search. A complete plan walk's
-/// [`PlanOrder::rows`] are the guesses for its plans and for the census rows,
-/// which hold the same keys in the same order.
 #[inline]
 pub fn keyed_row<T>(
     rows: &[T],
@@ -844,21 +706,6 @@ pub fn keyed_row<T>(
     rows.binary_search_by_key(&key, key_of)
 }
 
-/// [`walk_plans`] with caller-owned [`PlanOrder`] scratch: rows are written
-/// once at their sorted place, not decoded in census order and sorted.
-///
-/// `lists` are the successor lists [`walk_listing_successors`] built with
-/// `visits` in this pass. An order's ordinary successors are taken from them
-/// when the census listed that order from the same vector header; any other
-/// vector, and every predecessor vector, is read as before.
-///
-/// Reuse within the pass: an order's record and name record are taken from
-/// the ones the census gathered in `lists` when it entered that order
-/// (`PlanRecords`), so the plan walk makes no second pass over the orders'
-/// own spans. While the game thread is held those are the bytes this walk's
-/// own gather would copy; an incomplete one keeps its per-field reads, and an
-/// order the census staged no record for is gathered here as before. Valid
-/// only for the census of this same pass.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_plans_ordered(
     memory: &impl Memory,
@@ -878,8 +725,6 @@ pub fn walk_plans_ordered(
     )
 }
 
-/// The original plan walk, retaining already authenticated assigned hosts when
-/// a prepared lane is supplied. Its optional shortage never changes core reads.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_plans_ordered_with_sources(
     memory: &impl Memory,
@@ -913,11 +758,6 @@ pub fn walk_plans_ordered_with_sources(
         if visits.iter().filter(|v| v.pointer != 0).count() != expected {
             return Err("plan source census count mismatch");
         }
-        // The rows and arenas follow census order: the census's own, or,
-        // when it kept none, the one its visits' sequences give, so a census
-        // with or without kept lists lays them out alike. Only a sequence
-        // that cannot be ordered (no storage, or not naming each slot once)
-        // leaves the table's.
         let census_order = if lists.census().is_empty() {
             census_order_of(visits, expected, &mut sequence);
             &sequence[..]
@@ -932,15 +772,8 @@ pub fn walk_plans_ordered_with_sources(
             0,
         )?;
         grow_payload(output, expected, "plan row allocation failed")?;
-        // Each order's row, from its key; without the scratch the rows stay
-        // in census order and the walk fails after them, as before.
         let placed = order.place(groups, census_orders(visits, census_order), expected);
         let mut len = 0;
-        // The census is a pointer-hashed table, so consecutive orders sit on
-        // unrelated pages. Hinting a batch ahead overlaps their misses, and
-        // hinting what each gathered record points at overlaps the dependent
-        // ones; hints read nothing, so the rows, values and failure
-        // precedence below are unchanged.
         let mut ahead = census();
         for visit in ahead.by_ref().take(3 * PLAN_BATCH) {
             prefetch_plan(memory, lists, visit);
@@ -949,12 +782,6 @@ pub fn walk_plans_ordered_with_sources(
         let mut members = [0_u8; 64 * 8];
         let mut hosts_gathered = [0_u8; 64 * ASSIGNED_SPAN];
         let mut host_pointers = [0_usize; 64];
-        // Three batches in flight: the one after next is gathered and its
-        // dependents, named orders' name headers included, hinted; the next
-        // one's name records are gathered and their heap texts hinted; then
-        // the current one is decoded. Each hint leads its read by a batch.
-        // Gathers only read; values and failures come from the decode below
-        // in census order, as before. The batches rotate by reference.
         let mut storage = [OrderBatch::new(), OrderBatch::new(), OrderBatch::new()];
         let [current, next, after] = &mut storage;
         let (mut current, mut next, mut after) = (current, next, after);
@@ -984,15 +811,6 @@ pub fn walk_plans_ordered_with_sources(
                 {
                     return Err("plan order identity mismatch");
                 }
-                // Reuse within the pass: the group's identity is not read
-                // again for each of its orders. `walk_roots` authenticated
-                // this root's vtable, handle and country from this memory in
-                // this acquisition pass, and this order's backlink to it is
-                // checked above; the pass holds the game thread until
-                // the plans are walked, so reading them again would give the
-                // same values and could not fail. Valid only within one pass
-                // while the game thread is held: roots from another pass are
-                // never passed here.
                 let front = field(FRONT_BINDING)?;
                 let owner = field(OWNER_OVERRIDE)? as usize;
                 let owner_override = if owner == 0 {
@@ -1039,13 +857,6 @@ pub fn walk_plans_ordered_with_sources(
                         .or_else(|| read::<[u8; 16]>(memory, address))
                         .and_then(|header| Array::from_header(header, 8))
                         .ok_or("plan graph header invalid")?;
-                    // Reuse within the pass: while the game thread is held,
-                    // this vector is the one the census walked from this
-                    // header, and the census resolved every entry to its id
-                    // under this owner, in array order. Re-reading it would
-                    // give the same ids and could not fail. Valid only for the
-                    // census of this same pass; a vector it did not list, or
-                    // listed from another header, is read as before.
                     let listed = if offset == SUCCESSOR_DATA {
                         lists.ids(visit, array)
                     } else {
@@ -1063,8 +874,6 @@ pub fn walk_plans_ordered_with_sources(
                         )?,
                     };
                 }
-                // Only named types read their name strings, from the name
-                // record when one was gathered and field by field otherwise.
                 let order_type = gathered_field::<i32>(memory, pointer, TYPE, record)?;
                 if order_type == TYPE_INVASION {
                     row.invasion_transports = invasion_transports(memory, base, pointer, record);
@@ -1109,18 +918,11 @@ pub fn walk_plans_ordered_with_sources(
                 }
                 row.assigned_start = report.assigned;
                 row.assigned_len = count;
-                // Up to 64 member slots per guarded copy; a failed copy reads
-                // its slots one by one as before.
                 for first in (0..array.count).step_by(64) {
                     let batched = (array.count - first).min(64);
                     let copied = array.element(first, 8).is_some_and(|address| {
                         read_slice(memory, address, &mut members[..batched as usize * 8])
                     });
-                    // The hosts of the copied slots' leading nonnull members
-                    // in one record copy, whose misses overlap; the loop
-                    // below takes each attempted span from it, the failed one
-                    // included, in place of its own read, and reads and fails
-                    // member by member as before.
                     let (mut attempted, mut gathered) = (0, 0);
                     if copied {
                         for slot in members[..batched as usize * 8].chunks_exact(8) {
@@ -1157,8 +959,6 @@ pub fn walk_plans_ordered_with_sources(
                         .filter(|v| *v != 0)
                         .ok_or("plan member null or unreadable")?
                             as usize;
-                        // Loading stores the host pointer in the reference body, or in the primary
-                        // object. Serialization writes the host's full handle.
                         let unit = member
                             .checked_sub(crate::cunit::SCHEDULED_MEMBER)
                             .ok_or("plan member host underflow")?;
@@ -1183,9 +983,6 @@ pub fn walk_plans_ordered_with_sources(
                         report.assigned += 1;
                     }
                 }
-                // The decoded row's key is the one placed: its group is
-                // this order's owner and its instance the census's, both
-                // checked above.
                 let at = if placed.is_ok() {
                     order.rows[len] as usize
                 } else {
@@ -1209,14 +1006,11 @@ pub fn walk_plans_ordered_with_sources(
         if let Some(hosts) = hosts {
             hosts.failure = Some("plan assigned hosts require complete core plans");
         }
-        // A native count is not a request to grow pooled storage after a fault.
         report.required_assigned = report.assigned;
     }
     report
 }
 
-/// An assigned host's primary vtable, secondary vtable and handle: one span
-/// from the host, which the plan walk gathers for a member chunk at once.
 const ASSIGNED_SPAN: usize = crate::cunit::HANDLE + 8;
 const ASSIGNED_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: 0,
@@ -1226,11 +1020,6 @@ const ASSIGNED_FIELDS: [RecordField; 1] = [RecordField {
 const ASSIGNED_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ASSIGNED_FIELDS, ASSIGNED_SPAN).expect("valid assigned host layout");
 
-/// An assigned division's handle after authenticating its host from its
-/// [`ASSIGNED_SPAN`]: `header` is `Some` when the caller already copied it,
-/// holding the bytes or `None` for a failed copy, and otherwise it is copied
-/// here. If that copy failed, the fields are read one by one as before, so
-/// the failure is the per-field one; the span itself is never read twice.
 fn assigned_handle(
     memory: &impl Memory,
     base: usize,
@@ -1261,78 +1050,39 @@ fn assigned_handle(
     Ok(handle)
 }
 
-/// COrderInstance vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_26e8);
-/// Embedded convoy-subscriber vtable after the order's own vtable; its serializer stores allocated
-/// and required counts.
 const INVASION_SUBSCRIBER_VTABLE_RVA: Rva = Rva(0x029d_8b80);
-/// The embedded subscriber's signed allocated convoys, saved even when zero.
 const INVASION_TRANSPORTS: usize = 0x10;
-/// COrderInstance signed order type.
 pub const TYPE: usize = 0x30;
-/// COrderInstance owning COrdersGroup pointer.
 pub const OWNER: usize = 0x38;
-/// COrderInstance ordered u32 province-id vector.
 pub const PATH_DATA: usize = 0x70;
-/// Path u32 capacity, separate from live count.
 #[cfg(test)]
 pub const PATH_CAPACITY: usize = 0x78;
-/// COrderInstance paradrop target u32 province id.
 pub const PARADROP_TARGET: usize = 0xb8;
-/// COrderInstance accumulated preparation i64.
 pub const ACCUMULATED_PREPARATION: usize = 0xd8;
-/// COrderInstance area-defense u32 state-id vector.
 pub const TARGET_STATE_DATA: usize = 0xe0;
-/// Signed inclusive section span; both endpoints are serialized.
 pub const SEGMENT_START: usize = 0xa0;
-/// Signed inclusive section end, checked against the section-pair count.
 pub const SEGMENT_END: usize = 0xa4;
-/// Section selector used by the section-span query.
 pub const FRONT_SECTION: usize = 0x260;
-/// Child-section-management byte, read as a char and serialized.
 pub const HAS_CHILD: usize = 0x370;
-/// COrderInstance move-special byte.
 pub const MOVE_SPECIAL: usize = 0x118;
-/// COrderInstance withdrawal byte.
 pub const WITHDRAW: usize = 0x119;
-/// COrderInstance raw condition-cache byte.
 pub const CONDITION_CACHE: usize = 0x11a;
-/// COrderInstance predecessor pointer-vector data.
 pub const PREDECESSOR_DATA: usize = 0x1e0;
-/// Successor pointer-vector data; this graph is gathered for group serialization.
 pub const SUCCESSOR_DATA: usize = 0x1f8;
-/// Scheduled-member pointer vector stores each unit's embedded member, rather than body pointers.
 pub const ASSIGNED_MEMBER_DATA: usize = 0x210;
-/// COrderInstance u32 engine instance id.
 pub const ID: usize = 0x244;
-/// COrderInstance active byte.
 pub const ACTIVE: usize = 0x248;
-/// Front binding, `[u32; 3]`, using the full packed-reference sentinel.
 pub const FRONT_BINDING: usize = 0x258;
-// An absent front compares its full packed reference against the shared
-// reference-system invalid handle, `creference_registry::INVALID_REFERENCE_RVA`.
-// This is neither a front-specific value nor an allocation counter.
-/// Fallback byte used by the arrow predicate.
 pub const FALLBACK: usize = 0x298;
-/// COrderInstance virtual-order byte.
 pub const VIRTUAL: usize = 0x299;
-/// Virtual-successor pointer-vector data; this graph is gathered separately.
 pub const VIRTUAL_SUCCESSOR_DATA: usize = 0x2d0;
-/// COrderInstance owner-override pointer, eight bytes.
 pub const OWNER_OVERRIDE: usize = 0x378;
-/// Order-name strings. All are localisation keys except the unique text,
-/// which is stored already localised. In [`PlanRow::names`] order:
-/// prefix, name, first, second, unique, postfix.
 pub const NAME_STRINGS: [usize; 6] = [0x1a0, 0x120, 0x140, 0x160, 0x180, 0x1c0];
-/// COrderInstance move discriminator.
 pub const TYPE_MOVE: i32 = 1;
-/// Line discriminator used for defensive, offensive and fallback tools.
 pub const TYPE_LINE: i32 = 2;
-/// COrderInstance naval-invasion discriminator.
 pub const TYPE_INVASION: i32 = 3;
-/// Paradrop discriminator whose source and target are consumed on execution.
 pub const TYPE_PARADROP: i32 = 4;
-/// Area-defense discriminator, separate from offensive orders.
 pub const TYPE_AREA_DEFENSE: i32 = 5;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1350,15 +1100,11 @@ pub struct Row {
 }
 
 impl Row {
-    /// Order reference: complete owning group handle and country-scoped
-    /// instance ID. No synthetic generation is added.
     pub fn key(self) -> u128 {
         (u128::from(self.owner_group) << 32) | u128::from(self.instance)
     }
 }
 
-/// Caller-owned open-addressed pointer map and intrusive DFS stack. It is reset
-/// and reused on every walk, growing on the worker for newly observed pointers.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Visit {
     pub(crate) pointer: usize,
@@ -1368,14 +1114,8 @@ pub struct Visit {
     successor_count: u32,
     next: u32,
     parent: usize,
-    /// One past the start of this order's ordinary successor list in the
-    /// census's [`SuccessorLists`], or zero when the census did not list it.
     successors: u32,
-    /// One past this order's record in the census's [`PlanRecords`], or zero
-    /// when the census staged none for it.
     record: u32,
-    /// The order's place in census order: how many orders the census entered
-    /// before it ([`census_orders`]).
     sequence: u32,
     completed_graphs: u8,
     active: bool,
@@ -1395,53 +1135,26 @@ impl Visit {
     }
 }
 
-/// No name record in [`PlanRecords::name_rows`].
 const NO_NAME_ROW: u32 = u32::MAX;
 
-/// The plan records a listing census gathered while it held each order: one
-/// [`PLAN_SPANS`] record per entered order and one [`NAME_SPANS`] record per
-/// entered order of a [`named_type`], in census entry order. The census
-/// already reads each order's identity line when it enters it, so it hints
-/// the other plan spans there and gathers them a batch of entries later,
-/// while they are still cached, instead of the plan walk reading every order
-/// again in a second pass.
-///
-/// A record is exactly what the plan walk's own gather of that order would
-/// copy: the same spans of the same object in the same pass, which holds the
-/// game thread throughout, so memory cannot change between the two. An
-/// incomplete record is kept as incomplete, and the walk then makes its
-/// per-field reads, so rows and the first failure are the per-field walk's.
-/// Gathering only reads; it never changes the census's rows, visits or
-/// outcome. The gathers' source requests and ticks are kept apart from the
-/// census's own, for the caller to charge to the plans.
 #[derive(Default)]
 struct PlanRecords {
-    /// [`PLAN_STRIDE`] bytes per staged order; `complete` marks a gathered
-    /// record whose every span copied.
     records: Vec<u8>,
     complete: Vec<bool>,
-    /// Each staged order's row in `names`, or [`NO_NAME_ROW`].
     name_rows: Vec<u32>,
     names: Vec<u8>,
     named: Vec<bool>,
-    /// Staged orders and name records; the first `gathered` and
-    /// `names_gathered` of them are gathered.
     len: usize,
     names_len: usize,
     gathered: usize,
     names_gathered: usize,
-    /// The staged orders not gathered yet, and their named subset.
     pointers: [usize; PLAN_BATCH],
     name_pointers: [usize; PLAN_BATCH],
-    /// Cleared when an allocation failed: later orders get no record and the
-    /// plan walk gathers them itself, as before.
     staging: bool,
     reads: crate::memory::ReadCounts,
     ticks: u64,
 }
 
-/// The records in use and the gathers' requests; not their ticks, which are
-/// diagnostics, nor stale bytes past the records in use.
 impl std::fmt::Debug for PlanRecords {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlanRecords")
@@ -1477,7 +1190,6 @@ impl PlanRecords {
         self.ticks = 0;
     }
 
-    /// Nothing staged is used: the census failed, and plans refuse it.
     fn discard(&mut self) {
         self.len = 0;
         self.names_len = 0;
@@ -1485,9 +1197,6 @@ impl PlanRecords {
         self.names_gathered = 0;
     }
 
-    /// Stages the order the census just authenticated and entered, hints its
-    /// plan spans, and gathers the batch once it is full. Returns the
-    /// order's [`Visit::record`] tag, zero when it has none.
     fn stage(&mut self, memory: &impl Memory, pointer: usize, order_type: i32) -> u32 {
         if !self.staging {
             return 0;
@@ -1504,12 +1213,10 @@ impl PlanRecords {
             self.staging = false;
             return 0;
         }
-        // The census has just read the identity line; hint the rest.
         for (offset, len) in &PLAN_SPANS[1..] {
             memory.prefetch(pointer.wrapping_add(*offset), *len);
         }
         self.name_rows[index] = NO_NAME_ROW;
-        // A named order without a name record reads its names as before.
         if named_type(order_type)
             && let Ok(row) = u32::try_from(self.names_len)
             && row != NO_NAME_ROW
@@ -1529,8 +1236,6 @@ impl PlanRecords {
         tag
     }
 
-    /// Gathers every staged record not gathered yet. Its source requests and
-    /// ticks are set apart from the census's.
     fn gather(&mut self, memory: &impl Memory) {
         let (first, end) = (self.gathered, self.len);
         let (names_first, names_end) = (self.names_gathered, self.names_len);
@@ -1564,8 +1269,6 @@ impl PlanRecords {
         self.ticks += crate::clock::since(begin);
     }
 
-    /// The gathered record of `visit`, complete or not, when the census
-    /// staged one; `None` when the plan walk must gather it itself.
     #[inline(always)]
     fn record(&self, visit: &Visit) -> Option<Gathered<'_>> {
         let index = (visit.record as usize).checked_sub(1)?;
@@ -1580,8 +1283,6 @@ impl PlanRecords {
         })
     }
 
-    /// The gathered name record of `visit`, complete or not, when the census
-    /// staged one.
     #[inline(always)]
     fn names(&self, visit: &Visit) -> Option<Gathered<'_>> {
         let index = (visit.record as usize).checked_sub(1)?;
@@ -1600,7 +1301,6 @@ impl PlanRecords {
         })
     }
 
-    /// Hints the owned bytes of `visit`'s records; advisory only.
     #[inline(always)]
     fn prefetch(&self, visit: &Visit) {
         let Some(index) = (visit.record as usize).checked_sub(1) else {
@@ -1623,27 +1323,12 @@ impl PlanRecords {
     }
 }
 
-/// The ordinary successor lists a listing census resolved, for the plan walk
-/// of the same pass. Each list is `[data low, data high, count, ids...]`: the
-/// [`SUCCESSOR_DATA`] vector header the census read, then the census id
-/// of every entry in array order. Caller-owned and reused; it grows only by
-/// entries the census actually read, on the worker. It also holds the plan
-/// records the census gathered for the same walk (`PlanRecords`).
-///
-/// Lifetime: valid only within the one acquisition pass that built it, while
-/// the game thread is held and memory cannot change. The census rebuilds it
-/// every pass; nothing in it is read in another hour.
 #[derive(Debug, Default)]
 pub struct SuccessorLists {
     words: Vec<u32>,
-    /// Instance ids of the entries of every successor vector still being
-    /// walked, innermost last. A vector's ids are its top `count` entries when
-    /// its walk completes.
     pending: Vec<u32>,
-    /// Cleared when an allocation failed; the rest of that census lists nothing.
     listing: bool,
     plans: PlanRecords,
-    /// The complete census's visit slots in census order ([`Self::census`]).
     census: Vec<u32>,
 }
 
@@ -1654,20 +1339,10 @@ impl SuccessorLists {
             + self.plans.allocated_bytes()
     }
 
-    /// The last complete census's visit slots in census order: groups in
-    /// their handle order, then each group's orders in the order the census
-    /// entered them (its primary roster's graphs, then its fallback rosters),
-    /// as [`census_orders`] iterates them. Empty for an empty or failed
-    /// census, when its storage could not grow, or when the census's own
-    /// sequence failed its consistency check; the passes then iterate the
-    /// table.
     pub fn census(&self) -> &[u32] {
         &self.census
     }
 
-    /// The source requests and ticks of the plan records the last census
-    /// gathered: plan work done inside the census, for the caller to charge
-    /// to the plans rather than to the census.
     pub fn plan_gathers(&self) -> (crate::memory::ReadCounts, u64) {
         (self.plans.reads, self.plans.ticks)
     }
@@ -1680,8 +1355,6 @@ impl SuccessorLists {
         self.plans.begin();
     }
 
-    /// Ends a listing census: a complete one gathers its last staged plan
-    /// records; plans refuse an incomplete one, so nothing of it is kept.
     fn finish_census(&mut self, memory: &impl Memory, outcome: Outcome, visits: &[Visit]) {
         if let Outcome::Rows { len } = outcome {
             self.plans.gather(memory);
@@ -1693,15 +1366,12 @@ impl SuccessorLists {
         self.pending.clear();
     }
 
-    /// Each entered order's slot at its census sequence. Reads nothing; a
-    /// sequence that does not name every slot once leaves no order.
     fn order(&mut self, visits: &[Visit], len: usize) {
         census_order_of(visits, len, &mut self.census);
     }
 
     fn push(&mut self, instance: u32) {
         if self.listing {
-            // Native traversal and deduplication determine the admitted ids.
             if self.pending.len() == self.pending.capacity()
                 && crate::allocation::reserve(&mut self.pending, 1).is_err()
             {
@@ -1712,8 +1382,6 @@ impl SuccessorLists {
         }
     }
 
-    /// Moves a completed vector's ids from the pending stack into a list and
-    /// returns the visit's [`Visit::successors`] value.
     fn finish(&mut self, data: usize, count: u32) -> u32 {
         let count_usize = count as usize;
         if !self.listing {
@@ -1745,9 +1413,6 @@ impl SuccessorLists {
         self.pending.clear();
     }
 
-    /// The census ids of `visit`'s ordinary successor vector when the census
-    /// listed it from the same header `array`; otherwise `None`, and the
-    /// caller reads the vector itself.
     fn ids(&self, visit: &Visit, array: Array) -> Option<&[u32]> {
         let start = (visit.successors as usize).checked_sub(1)?;
         let header = self.words.get(start..start.checked_add(3)?)?;
@@ -1759,12 +1424,6 @@ impl SuccessorLists {
     }
 }
 
-/// A census's orders in census order, with their visit slots: the order
-/// of [`SuccessorLists::census`] when this pass's complete census kept it,
-/// else the table's (see [`SuccessorLists::census`]). Every pass over the
-/// census iterates this way. With the order kept, it meets its orders, its
-/// first refusal, and the first touch of any fault its orders share, in the
-/// same order whatever the table's layout.
 #[derive(Clone)]
 pub enum CensusOrders<'a> {
     Ordered {
@@ -1791,9 +1450,6 @@ impl<'a> Iterator for CensusOrders<'a> {
     }
 }
 
-/// Each entered order's slot at its census sequence, in `census`, for `len`
-/// entered orders: empty when its storage cannot grow, or when a sequence
-/// does not name every slot once or a slot is not a `u32`. Reads nothing.
 fn census_order_of(visits: &[Visit], len: usize, census: &mut Vec<u32>) {
     const UNSET: u32 = u32::MAX;
     census.clear();
@@ -1818,8 +1474,6 @@ fn census_order_of(visits: &[Visit], len: usize, census: &mut Vec<u32>) {
     }
 }
 
-/// [`CensusOrders`] over `visits` in `order` ([`SuccessorLists::census`]),
-/// or in table order when `order` is empty.
 pub fn census_orders<'a>(visits: &'a [Visit], order: &'a [u32]) -> CensusOrders<'a> {
     if order.is_empty() {
         CensusOrders::Table(visits.iter().enumerate())
@@ -1863,27 +1517,14 @@ impl Edge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
-    /// Exact authenticated group census, independent of later order-graph failures.
     pub root_outcome: Outcome,
     pub geometry_len: usize,
     pub required_geometry: usize,
-    /// Exact occupied registry count, including groups with no orders. This is
-    /// scratch demand, not a count of omitted order rows.
     pub required_groups: usize,
-    /// Minimum requested scratch capacity if worker allocation failed. The graph
-    /// size beyond that point is unknown, so it is never an invented row count.
     pub minimum_visits: usize,
-    /// Exact distinct pointers visited before completion or a native/scratch failure.
     pub visited: usize,
 }
 
-/// Samples all registered armies and army groups, their three root lists and
-/// separate successor and virtual-successor graphs. Geometry retains ordered
-/// u32 arrays, including empty arrays and the separate paradrop target. Both
-/// arrays and the target are initialized for all types.
-/// Row, geometry, group and graph storage grows on the acquisition worker from
-/// each admitted observation, with geometry copied in bounded batches before
-/// growth.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -1895,11 +1536,6 @@ pub fn walk(
     walk_census(memory, base, output, geometry, groups, visits, None)
 }
 
-/// [`walk`] that also keeps, in `lists`, the census id of every entry of each
-/// ordinary successor vector it walks, for [`walk_plans_ordered`] in the same
-/// pass. The rows, geometry, visits and outcome are exactly [`walk`]'s: the
-/// ids are the ones the census already resolved, and a list that cannot be
-/// stored is only left out. Call on an acquisition worker.
 pub fn walk_listing_successors(
     memory: &impl Memory,
     base: usize,
@@ -1923,13 +1559,6 @@ pub fn walk_listing_successors(
     walk
 }
 
-/// [`walk_listing_successors`] over a group census this pass already took:
-/// `groups` and `root_outcome` are what [`corders_group::walk_roots`] filled
-/// and returned for this `memory` and `base` in the same acquisition pass,
-/// which holds the game thread throughout, so walking the registry again
-/// would give the same roots and outcome. A census from another pass is never
-/// passed here. Rows, geometry, visits, lists and outcome are exactly
-/// [`walk_listing_successors`]'s.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_listing_successors_of(
     memory: &impl Memory,
@@ -1956,12 +1585,6 @@ pub fn walk_listing_successors_of(
     walk
 }
 
-/// [`walk_listing_successors_of`] over the groups `range` of `groups` only:
-/// one part of a census split into contiguous ranges of its handle-sorted
-/// groups, which [`stitch_census`] joins into the census one walk over all
-/// of them takes. Owners keep their census indices into `groups`; `visits`
-/// and `lists` are the part's own, and its census order is its groups' in
-/// handle order. Valid only in the pass whose roots these are.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_listing_successors_part(
     memory: &impl Memory,
@@ -1990,42 +1613,14 @@ pub fn walk_listing_successors_part(
     part
 }
 
-/// A census part as [`stitch_census`] reads it: its walk and what it left.
 #[derive(Clone, Copy)]
 pub struct CensusPart<'a> {
     pub walk: PartWalk,
-    /// The part's rows, in entry order.
     pub rows: &'a [Row],
     pub geometry: &'a [u32],
     pub visits: &'a [Visit],
 }
 
-/// The census that one walk over all the parts' groups takes, from parts
-/// over consecutive ranges of them, in order: its outcome and the state the
-/// single walk leaves.
-/// - A refusal before any group (the roots', or a part outside them) is
-///   returned as it is, touching nothing, as the single walk touches nothing.
-/// - Otherwise the first failure in group order: the first part that failed
-///   or that enters an order an earlier part entered ("shared across owning
-///   groups"), whichever its single walk would meet first: the shared order's
-///   lookup comes before anything the part did at or after entering it. The
-///   single walk's retained state follows: the rows, geometry and visits of
-///   every order entered before the failure, in entry order, with their
-///   counts.
-/// - Then a duplicate key, which only a part's own rows can hold, after a
-///   run that completed: every row sorted, all geometry and visits.
-/// - Otherwise the parts' rows concatenated, which is their key order (keys
-///   start with the group handle), their geometry with each row's spans moved
-///   by the parts before it, and the census order concatenated.
-///
-/// `visits` becomes one table of the entered orders (its slots are ours, not
-/// the single walk's; lookups by pointer find the same orders), with census
-/// sequences continued across the parts and no traversal state, successor
-/// lists or plan records: those stay the parts'. `lists` keeps only the
-/// census order ([`SuccessorLists::census`]), built from the sequences by
-/// the single census's rule, which keeps no order when an occupied slot is
-/// `u32::MAX` or more (a table of at least 2^32 slots); since the slots are
-/// ours, only there can the two differ. Reads nothing; storage grows here.
 pub fn stitch_census(
     parts: &[CensusPart<'_>],
     output: &mut Vec<Row>,
@@ -2033,8 +1628,6 @@ pub fn stitch_census(
     visits: &mut Vec<Visit>,
     lists: &mut SuccessorLists,
 ) -> Walk {
-    // The single census begins its lists before anything else, refusals
-    // included: no census order survives from an earlier pass.
     lists.begin();
     lists.listing = false;
     let Some(first) = parts.first() else {
@@ -2051,8 +1644,6 @@ pub fn stitch_census(
             visited: 0,
         };
     };
-    // Refused before any group: the single walk returns before it touches
-    // its rows, geometry or visits.
     if let Some(part) = parts.iter().find(|part| part.walk.before_groups) {
         return part.walk.walk;
     }
@@ -2070,7 +1661,6 @@ pub fn stitch_census(
             sum.checked_add(part.walk.walk.visited)
                 .ok_or("army order traversal length overflow")
         })?;
-        // One table of every entered order, sized for all of them.
         let len = entered
             .checked_mul(4)
             .map(|four| (four / 3 + 1).next_power_of_two().max(4))
@@ -2084,12 +1674,8 @@ pub fn stitch_census(
                 .map_err(|_| "army order traversal allocation failed")?;
             visits.resize(len, Visit::default());
         }
-        // The part where the single walk stops, how many of its orders it
-        // entered first, and why.
         let mut stop = None;
         for (index, part) in parts.iter().enumerate() {
-            // An order an earlier part entered: the single walk refuses at
-            // that order's lookup, before anything this part did after it.
             let entered_before = |pointer: usize| {
                 visits
                     .get(visit_index(visits, pointer))
@@ -2118,8 +1704,6 @@ pub fn stitch_census(
                 (failure, reason)
             });
             match (shared, own) {
-                // The part's own failure wins only if it came first: after
-                // fewer new orders, or as many but between entries.
                 (Some(shared), Some((failure, reason)))
                     if failure.entered < shared
                         || (failure.entered == shared && failure.entering.is_none()) =>
@@ -2146,9 +1730,6 @@ pub fn stitch_census(
                 .filter(|visit| visit.pointer != 0 && (visit.sequence as usize) < admitted)
             {
                 let at = visit_index(visits, visit.pointer);
-                // The order's identity and census place; its traversal state,
-                // successor list and plan record stay the part's. Its sequence
-                // is the single walk's, which counts entries in a `u32`.
                 visits[at] = Visit {
                     pointer: visit.pointer,
                     owner: visit.owner,
@@ -2158,8 +1739,6 @@ pub fn stitch_census(
                 };
             }
             if let Some((_, admitted, reason, own)) = stop {
-                // The single walk's state at its failure: every order entered
-                // before it, in entry order.
                 let mut row = 0;
                 let mut word = 0;
                 for (at, part) in parts[..=index].iter().enumerate() {
@@ -2194,7 +1773,6 @@ pub fn stitch_census(
             }
             report.visited += part.walk.walk.visited;
         }
-        // A run over every group completed: every row in entry order.
         let rows = parts.iter().try_fold(0_usize, |sum, part| {
             sum.checked_add(part.rows_len())
                 .ok_or("army order row length overflow")
@@ -2225,8 +1803,6 @@ pub fn stitch_census(
                 .ok_or("army order geometry length overflow")?;
         }
         report.geometry_len = word;
-        // The rows in key order, as the single walk sorts its entry-order
-        // rows once its run completes; then its duplicate-key refusal.
         output[..row].sort_unstable_by_key(|row| row.key());
         if output[..row]
             .windows(2)
@@ -2234,10 +1810,6 @@ pub fn stitch_census(
         {
             return Err("duplicate native army order reference");
         }
-        // The census order from the table's sequences, by the single
-        // census's own rule ([`SuccessorLists::order`]): the sequences are
-        // the single census's, and only a slot past `u32` (a table of 2^32
-        // slots, whose layout is ours) can decide differently.
         lists.order(visits, row);
         Ok(Outcome::Rows { len: row })
     })();
@@ -2251,14 +1823,10 @@ pub fn stitch_census(
     report
 }
 
-/// A part's rows of the orders it entered before its order `limit`, in
-/// entry order, which is the order it wrote them in.
 fn part_entries<'a>(part: &CensusPart<'a>, limit: usize) -> &'a [Row] {
     &part.rows[..limit.min(part.rows_len())]
 }
 
-/// The geometry a part copied before entering its order `limit`: everything
-/// when it entered them all, else the offset its order `limit` started at.
 fn part_geometry(part: &CensusPart<'_>, limit: usize) -> usize {
     part.rows[..part.rows_len()]
         .get(limit)
@@ -2287,8 +1855,6 @@ fn walk_census(
     )
 }
 
-/// The roots' group count, or the census's refusal of roots it cannot walk,
-/// before any group.
 fn root_refusal(root_outcome: Outcome) -> Result<usize, Walk> {
     let mut report = Walk {
         outcome: Outcome::Rows { len: 0 },
@@ -2312,17 +1878,12 @@ fn root_refusal(root_outcome: Outcome) -> Result<usize, Walk> {
     Err(report)
 }
 
-/// The census of a pass whose roots failed before any census part could be
-/// prepared: [`walk_listing_successors_of`]'s refusal of those roots, which
-/// begins `lists` and touches nothing else. `None` for roots a census walks.
 pub fn refuse_census(root_outcome: Outcome, lists: &mut SuccessorLists) -> Option<Walk> {
     let walk = root_refusal(root_outcome).err()?;
     lists.begin();
     Some(walk)
 }
 
-/// The order graph census over `groups`, the roots [`corders_group::walk_roots`]
-/// filled with `root_outcome`.
 #[allow(clippy::too_many_arguments)]
 fn walk_graph_census(
     memory: &impl Memory,
@@ -2348,9 +1909,6 @@ fn walk_graph_census(
     .walk
 }
 
-/// [`walk_graph_census`] over the groups `range` of `groups` (all of them
-/// when `None`), with the owners' census indices kept global, and where the
-/// walk stopped.
 #[allow(clippy::too_many_arguments)]
 fn walk_graph_census_part(
     memory: &impl Memory,
@@ -2382,8 +1940,6 @@ fn walk_graph_census_part(
         };
         return PartWalk::refused(report);
     };
-    // A part keeps its rows in entry order: the stitch sorts them all once,
-    // as the single walk sorts its own.
     let parted = range.is_some();
     let range = range.unwrap_or(0..group_count);
     if range.start > range.end || range.end > group_count {
@@ -2444,29 +2000,20 @@ fn walk_graph_census_part(
     }
 }
 
-/// Where a census walk failed, for [`stitch_census`]'s serial precedence:
-/// after `entered` new orders, and while entering the order `entering`
-/// (whose own pointer lookup had already missed) or between entries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PartFailure {
     entered: usize,
     entering: Option<usize>,
 }
 
-/// One part of an order census split into contiguous ranges of its
-/// handle-sorted groups ([`walk_listing_successors_part`]): its walk, and
-/// where its run failed, if it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartWalk {
     pub walk: Walk,
     failure: Option<PartFailure>,
-    /// Refused before entering any group: its rows, geometry and visits are
-    /// untouched.
     before_groups: bool,
 }
 
 impl PartWalk {
-    /// Refused before any group was walked: every part refuses alike.
     fn refused(walk: Walk) -> Self {
         Self {
             walk,
@@ -2477,7 +2024,6 @@ impl PartWalk {
 }
 
 impl CensusPart<'_> {
-    /// The rows the part wrote: one per order it entered.
     fn rows_len(&self) -> usize {
         self.walk.walk.visited.min(self.rows.len())
     }
@@ -2494,14 +2040,10 @@ struct Graph<'a, M> {
     report: Walk,
     len: usize,
     visited: usize,
-    /// The groups this walk enters, by census index.
     range: std::ops::Range<usize>,
-    /// The order being entered after its pointer lookup missed, until its
-    /// visit is installed.
     entering: Option<usize>,
 }
 
-/// A group's primary, secondary and tertiary order roster headers, in one span.
 const ORDER_ROSTERS: usize =
     corders_group::TERTIARY_ORDER_DATA + 16 - corders_group::PRIMARY_ORDER_DATA;
 const _: () = assert!(
@@ -2509,9 +2051,6 @@ const _: () = assert!(
         && corders_group::TERTIARY_ORDER_DATA == corders_group::SECONDARY_ORDER_DATA + 0x18
 );
 
-// Order serialization and plan acquisition use these exact root fields and
-// vector headers. Gather only pointers obtained from the checked native roster;
-// headers are interpreted only after the original vtable and owner checks.
 const CENSUS_SPANS: [(usize, usize); 8] = [
     (0, 8),
     (OWNER, 8),
@@ -2530,8 +2069,6 @@ const CENSUS_LAYOUT: RecordLayout<'static> =
 impl<M: Memory> Graph<'_, M> {
     fn run(&mut self) -> Result<(), &'static str> {
         for owner in self.range.clone() {
-            // The three roster headers are contiguous: one copy of all three.
-            // A fault reads each header where it is needed, as alone.
             let lists = self.groups[owner]
                 .pointer
                 .checked_add(corders_group::PRIMARY_ORDER_DATA)
@@ -2606,8 +2143,6 @@ impl<M: Memory> Graph<'_, M> {
                         let record = complete[slot]
                             .then(|| &records[slot * CENSUS_STRIDE..][..CENSUS_STRIDE]);
                         if offset == corders_group::PRIMARY_ORDER_DATA {
-                            // Plan acquisition gathers the two graphs
-                            // independently.
                             self.walk_graph(pointer, owner, Edge::Successor, record)?;
                             self.walk_graph(pointer, owner, Edge::VirtualSuccessor, record)?;
                         } else {
@@ -2631,9 +2166,6 @@ impl<M: Memory> Graph<'_, M> {
         else {
             return Ok(());
         };
-        // Listing keeps what this walk resolves anyway: the ids of each
-        // ordinary successor vector, in array order, pushed as each entry is
-        // entered and filed when the vector's walk completes.
         let listing = matches!(edge, Edge::Successor);
         loop {
             let visit = self.visits[current];
@@ -2684,8 +2216,6 @@ impl<M: Memory> Graph<'_, M> {
             .ok_or("army order pointer unreadable or null")
     }
 
-    /// The entered order's census id, and its slot when a walk of `edge`
-    /// begins there.
     fn enter(
         &mut self,
         pointer: usize,
@@ -2694,7 +2224,6 @@ impl<M: Memory> Graph<'_, M> {
         edge: Option<Edge>,
         record: Option<&[u8]>,
     ) -> Result<(u32, Option<usize>), &'static str> {
-        // Pointer hashing is only a transient lookup; it never becomes replay identity.
         let mut index = visit_index(self.visits, pointer);
         if let Some(entry) = self
             .visits
@@ -2728,13 +2257,6 @@ impl<M: Memory> Graph<'_, M> {
         let mut raw_type = [0; 4];
         let mut raw_active = [0; 1];
         let mut raw_target = [0; 4];
-        // Hints for the vector headers this entry reads later: the path and
-        // target headers, the header of the graph that begins here and, for
-        // a primary root, the virtual-successor header its next graph begins
-        // with. A hint reads no value and consumes no guard page, so every
-        // read below stays at its own point, in the same order, and the first
-        // touch of every byte is where it was; the hinted lines' misses only
-        // overlap the field copy's.
         let headers = [
             Some(PATH_DATA),
             Some(TARGET_STATE_DATA),
@@ -2775,8 +2297,6 @@ impl<M: Memory> Graph<'_, M> {
                 ],
             )
         };
-        // Authentication keeps its precedence when a later field faults; no
-        // child pointer is followed before both the vtable and backlink agree.
         if copied == 0 || u64::from_le_bytes(vtable) != expected {
             return Err("army order vtable mismatch");
         }
@@ -2858,7 +2378,6 @@ impl<M: Memory> Graph<'_, M> {
             owner,
             instance,
             record,
-            // A table of 2^32 64-byte visits is beyond any address space.
             sequence: self.visited as u32,
             ..Visit::default()
         };
@@ -2883,8 +2402,6 @@ impl<M: Memory> Graph<'_, M> {
             let index = visit_index(&expanded, entry.pointer);
             expanded[index] = *entry;
         }
-        // Rehashing moves the intrusive stack slots. Preserve active ancestry
-        // and the pending child's parent through the already-owned pointers.
         for index in 0..expanded.len() {
             let entry = expanded[index];
             if entry.active && entry.parent != usize::MAX {
@@ -2927,14 +2444,6 @@ impl<M: Memory> Graph<'_, M> {
     }
 }
 
-/// The slot of `pointer`, or the empty slot where it would go: linear probing
-/// from the hashed slot, wrapping at the end, at most one lap.
-///
-/// Every table the census builds is a power of two long: [`Graph::grow_visits`]
-/// doubles from four, and the collector's pooled capacities grow to powers of
-/// two. There the start slot and each probe step are masks, which give the
-/// same slot as the remainder without a division. Any other length keeps the
-/// remainder, so every length probes exactly the slots it always did.
 #[inline]
 fn visit_index(visits: &[Visit], pointer: usize) -> usize {
     let len = visits.len();

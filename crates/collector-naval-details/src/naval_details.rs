@@ -1,5 +1,3 @@
-//! Hourly naval combat inputs. Ship rows and their arenas grow on the
-//! acquisition worker from their original observations; projection is deferred.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -16,24 +14,18 @@ use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Benchmarks: read every weapon term's metadata, as without the memo.
     pub static TERM_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Benchmarks: walk every ship's doctrine and search its leader classes,
-    /// as without the source memo.
     pub static SOURCE_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Where NavalCombatShips' time goes: members read and their total time,
-/// and the live ships' weapon contexts within it.
 pub fn member_phase_data() -> impl serde::Serialize {
     use std::sync::atomic::Ordering::Relaxed;
     let phases = &engine_native::cfex_member::MEMBER_PHASES;
     let mut frequency = 0;
-    // SAFETY: an out pointer to a live local.
     let known = unsafe {
         windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
     } != 0;
@@ -50,7 +42,6 @@ pub fn member_phase_data() -> impl serde::Serialize {
     })
 }
 
-/// The capture's task-force doctrine and leader source memo.
 fn source_memo() -> Option<engine_native::naval_ship_modifier_inputs::SourceMemo> {
     #[cfg(any(test, feature = "test-support"))]
     if SOURCE_MEMO_OFF.get() {
@@ -59,7 +50,6 @@ fn source_memo() -> Option<engine_native::naval_ship_modifier_inputs::SourceMemo
     Some(Default::default())
 }
 
-/// The capture's weapon-term metadata memo.
 fn term_metadata() -> engine_native::naval_ship_modifier_inputs::TermMetadata {
     #[cfg(any(test, feature = "test-support"))]
     if TERM_MEMO_OFF.get() {
@@ -128,8 +118,6 @@ collector_primitives::capacity_max!(Capacities {
     plane_wings,
 });
 impl Capacities {
-    /// Live combat/header demand before attach and on the spool's sizing thread.
-    /// Full capture still supplies growth after a change between observations.
     pub fn raise_for_live_details(
         &mut self,
         demand: engine_naval_history::naval_combat_demand::Demand,
@@ -181,20 +169,16 @@ pub struct Captured {
     commander_timed_traits: Arena<engine_native::cunit_leader::TimedTrait>,
     weapon_sources: Arena<naval_ship_modifier_inputs::SourceRow>,
     weapon_terms: Arena<naval_ship_modifier_inputs::ModifierTerm>,
-    /// Air bases the hour's combats reference, in first-reference order.
     dense_bases: CaptureRows<naval_combat_air_base_wings::Row>,
     dense_wings: Arena<u64>,
     base_handles: naval_combat_air_base_wings::UniqueHandles,
-    /// Each side's task-force handles, grown from their original headers.
     side_units: Arena<u64>,
     custom_sea: Arena<i16>,
     damage_sources: Arena<(u32, i64)>,
     wing_types: Arena<u32>,
     plane_wings: Arena<u64>,
-    /// Side country tags; grown by the worker at admission, retained on recycle.
     summary_countries: Vec<u32>,
     summary_countries_len: usize,
-    /// The hover source trees the hour's combats reach.
     trees: super::naval_trees::Trees,
 }
 impl Captured {
@@ -224,7 +208,6 @@ impl Captured {
             self.plane_hits.first => c.plane_hits,
         }
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
@@ -335,7 +318,6 @@ impl Captured {
             + self.trees.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        // Carry observed rows and arena lengths to the other pooled frames.
         c.details = c.details.max(self.details.outcome.len());
         c.summary_countries = c.summary_countries.max(self.summary_countries_len);
         c.ships = c.ships.max(self.ships.outcome.len());
@@ -347,8 +329,6 @@ impl Captured {
         c.weapon_terms = c.weapon_terms.max(self.weapon_terms.len);
         self.details.grow(&mut c.details);
         self.ships.grow(&mut c.ships);
-        // These owned arenas grew from successfully read entries in the
-        // worker. A failed payload's declared count must not size a pool.
         if self.damage.first.len() < c.damage
             && resize_default(&mut self.damage.first, c.damage).is_err()
         {
@@ -424,10 +404,6 @@ impl Captured {
         self.plane_wings.grow(&mut c.plane_wings);
     }
 
-    /// Select only bases used by native naval-combat calculations in this
-    /// complete hourly combat census. Positions read active forward planes;
-    /// surface detection reads live ship carrier bases. The same base appears
-    /// once in the capture table even if multiple combat objects reference it.
     fn select_dense_base_handles(&mut self) -> Result<(), &'static str> {
         let (Outcome::Rows { len: details_len }, Outcome::Rows { len: ships_len }) =
             (self.details.outcome, self.ships.outcome)
@@ -881,7 +857,6 @@ impl Captured {
         }
     }
 }
-/// Spool-thread commander projection, shared with retained naval results.
 pub fn commander_inputs(
     c: &engine_native::naval_commander_inputs::Row,
     timed: &[engine_native::cunit_leader::TimedTrait],
@@ -1048,10 +1023,6 @@ mod tests {
         );
     }
 
-    /// One carrier base per country, each referenced by two active planes on
-    /// both sides of a combat and by its live carrier ship: selection is one
-    /// indexed membership test per reference, in first-reference order, with
-    /// no allocation once the hour's capacity is reserved.
     #[test]
     fn dense_base_selection_keeps_first_reference_order_without_allocation() {
         let countries = 12;
@@ -1069,7 +1040,6 @@ mod tests {
         c.details.rows[0].sides[1].planes = [countries, countries];
         c.planes.len = planes;
         for (index, plane) in c.planes.first[..planes].iter_mut().enumerate() {
-            // Side 1 references the same bases in reverse.
             let country = if index < countries {
                 index
             } else {
@@ -1121,8 +1091,6 @@ mod tests {
         captured.details.rows[0].combat = 42;
         captured.ships.rows[0].member.combat = 42;
         let before = captured.allocated_bytes();
-        // Worker observations replenish the other frames independently of
-        // allocator rounding or spare storage in this frame.
         captured.ships.rows.resize(19, Default::default());
         captured.ships.outcome = Outcome::Rows { len: 19 };
         captured.groups.resize(17, 0);

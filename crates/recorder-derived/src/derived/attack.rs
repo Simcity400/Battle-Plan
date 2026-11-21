@@ -1,31 +1,15 @@
-//! The selected army's attack operands ([`replay_derive::attack_derive`]) against
-//! the native ones a recording witnessed: for every DivisionStatus row that
-//! holds both the recorded stat-block operands (`attack_stats`) and a
-//! witnessed packet (`attack`, which the collector's `attack_witness`
-//! diagnostic reads afresh for another slice of divisions each hour), every
-//! terrain's attack is derived as the stat block's entry at the
-//! terrain index minus one plus the content terrain's own adjuster
-//! (`installed_content_core::terrain`) and compared with the witnessed sum, and every
-//! scalar and the acclimatization factor with the witnessed one. A carried
-//! row that disagrees is a missed stat-block write; a terrain that disagrees
-//! everywhere is a content resolution difference.
 
 use replay_data::{rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
-/// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
 
 pub(super) struct Checker {
-    /// Each content terrain category's own adjuster attack, by its one-based
-    /// database index minus one; the reason when the content cannot supply it.
     terrains: Result<Vec<i64>, String>,
     rows: u64,
     terrain_equal: u64,
     scalar_equal: u64,
     mismatches: u64,
-    /// Witnessed terrains past the content's categories or the stat block's
-    /// entries, which neither side can derive.
     underivable: u64,
     unavailable_hours: u64,
     listed: Vec<String>,
@@ -226,11 +210,9 @@ mod tests {
             (1, 1, 7)
         );
         assert_eq!((checker.mismatches, checker.underivable), (0, 1));
-        // A carried row the stat block no longer holds is a mismatch.
         checker.observe(&frame(vec![row(-10_000, -20_000)]));
         assert_eq!(checker.mismatches, 1);
         assert!(checker.listed[0].contains("terrain 1"));
-        // Production rows without diagnostic witnesses have no comparison to request.
         let mut unwitnessed = row(0, 0);
         unwitnessed.attack = Recorded::Value(Witnessed(None));
         checker.observe(&frame(vec![unwitnessed]));

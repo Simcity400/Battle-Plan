@@ -1,5 +1,3 @@
-//! The tables as a recording carries them, so playback reads no installed executable: every
-//! table's decoded values, or why it was withheld, never the image they were decoded from.
 
 use std::io;
 
@@ -12,10 +10,8 @@ use super::{
 };
 
 const MAGIC: &[u8; 4] = b"H4XT";
-/// Version 2 appends the folding table; a version 1 recording reads it as not recorded.
 const VERSION: u16 = 2;
 
-/// `tables` as a recording carries them.
 pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
     let mut out = Out(Vec::with_capacity(1 << 20));
     out.0.extend_from_slice(MAGIC);
@@ -39,7 +35,6 @@ pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
     out.0
 }
 
-/// The tables a recording carries, as [`encode`] wrote them.
 pub fn decode(bytes: &[u8]) -> io::Result<ExecutableTables> {
     let mut input = In(bytes);
     if input.take(4)? != MAGIC {
@@ -655,7 +650,6 @@ mod tests {
         assert_eq!(decoded.folding, Err(withheld));
         assert_eq!(decoded.identity().sha256, [3; 32]);
 
-        // Version 1 ended after the command table: the flag, the count and two pairs.
         let mut earlier = encoded[..encoded.len() - (1 + 4 + 2 * 5)].to_vec();
         earlier[4..6].copy_from_slice(&1_u16.to_le_bytes());
         let folding = decode(&earlier).unwrap().folding.unwrap_err();

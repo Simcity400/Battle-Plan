@@ -1,4 +1,3 @@
-//! Tree caster vertex declaration and submission to the light depth map.
 use eframe::wgpu;
 use installed_content_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
@@ -22,8 +21,6 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
         .map_err(refuse)
 }
 
-/// Initialize scene constants, then replace only the first matrix. Unknown initial padding remains
-/// outside the written ranges.
 pub fn constants(matrix: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = vec![0; 416];
     bytes[..64].copy_from_slice(bytemuck::bytes_of(&matrix));
@@ -32,7 +29,6 @@ pub fn constants(matrix: [[f32; 4]; 4]) -> Vec<u8> {
     bytes
 }
 
-/// Fixed seven-element declaration shared by all tree techniques.
 pub fn vertex_layouts(
     inputs: &[shader_pipeline::VertexInput],
 ) -> io::Result<Vec<gpu::VertexLayout>> {
@@ -88,7 +84,6 @@ impl Caster {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, format, depth)
         })
@@ -108,7 +103,6 @@ impl Caster {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // Bind t0/s0 per mesh, clear t3..6 and bind t14/s14.
         state.samplers.retain(|key, _| {
             [0, 3, 4, 5, 6, 14]
                 .iter()
@@ -116,8 +110,6 @@ impl Caster {
         });
         let mut pass = gpu::Pass::packed(&compiled, &state, format, 1);
         pass.vertices = vertex_layouts(&compiled.vertex.inputs)?;
-        // Override the tree raster state with clockwise fronts and back-face culling. The caller restores
-        // LESS_EQUAL depth with writes enabled.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
         pass.depth_stencil =
@@ -163,12 +155,11 @@ mod tests {
         let matrix = [[2.0, 3.0, 4.0, 5.0]; 4];
         let bytes = constants(matrix);
         assert_eq!(&bytes[..64], bytemuck::bytes_of(&matrix));
-        assert_eq!(&bytes[64..128], &[0; 64]); // Inverse is not copied from the lit camera.
+        assert_eq!(&bytes[64..128], &[0; 64]);
         for offset in [208, 212, 216, 240, 244, 248, 252, 304, 308, 312, 316, 328] {
             assert_eq!(&bytes[offset..offset + 4], &0_f32.to_le_bytes());
         }
         assert_eq!(&bytes[332..336], &1_f32.to_le_bytes());
         assert_eq!(&bytes[404..408], &1_f32.to_le_bytes());
-        // No native-value assertion for uninitialized constructor padding.
     }
 }

@@ -1,37 +1,19 @@
-//! Country raid status stored inline by canonical country slot. The stored
-//! country handle may alias another slot; serialization treats signed
-//! nonpositive handles as absent.
 
 use engine_sites::Rva;
-/// Raid-status vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a4_68c8);
-/// Inline raid-status array stride.
 pub const STRIDE: usize = 0xb0;
-/// Country handle, i32, serialized only when positive.
 pub const COUNTRY: usize = 0x08;
-/// Raid-instance pointer-array data.
 pub const INSTANCES: usize = 0x18;
-/// Used-type pointer-array data; serialization resolves definition names.
 pub const USED_TYPES: usize = 0x30;
-/// Inline target-cooldown array data.
 pub const TARGET_COOLDOWNS: usize = 0x48;
-/// Inline cooldown stride. Offers compare raid type and the first four scope
-/// words; stored days supply tooltip text only.
 pub const TARGET_COOLDOWN_STRIDE: usize = 0x40;
-/// Country-eligible raid-type cache.
 pub const ELIGIBLE_TYPES: usize = 0x68;
-/// Target-cooldown vtable.
 pub const COOLDOWN_VTABLE_RVA: Rva = Rva(0x02a4_6878);
-/// Cooldown entry: raid type pointer.
 pub const COOLDOWN_TYPE: usize = 0x08;
-/// Cooldown entry: target scope, as `raid_location_scope_layout`.
 pub const COOLDOWN_SCOPE: usize = 0x10;
-/// Stored cooldown days used by serialization and denial tooltip.
 pub const COOLDOWN_DAYS: usize = 0x38;
-/// Raid-status constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x0158_3a50);
 
-/// Pointer stride of the instance, used-type and eligible-type arrays.
 pub const POINTER_STRIDE: usize = 8;
 
 use crate::{
@@ -44,19 +26,14 @@ use crate::{
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Array ordinal, which the engine indexes with the canonical country slot.
     pub canonical_slot: u32,
-    /// The stored native handle. Signed nonpositive values mean absence.
     pub country: i32,
-    /// [`ELIGIBLE_TYPES`] then [`USED_TYPES`] as raid type tokens, in the
-    /// caller's token arena.
     pub eligible_start: usize,
     pub eligible_len: usize,
     pub used_start: usize,
     pub used_len: usize,
 }
 
-/// A status's three pointer arrays, validated as it is read.
 pub(crate) struct Children {
     pub instances: Array,
     pub eligible: Array,
@@ -82,7 +59,6 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
     }
 }
 
-/// A parent's identity and its four child array headers, as one record.
 const PARENT_FIELDS: [RecordField; 5] = [
     field(0, 0, 12),
     field(INSTANCES, 12, 16),
@@ -94,8 +70,6 @@ pub(crate) const PARENT_BYTES: usize = 76;
 pub(crate) const PARENT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PARENT_FIELDS, PARENT_BYTES).expect("valid raid parent layout");
 
-/// Copy `count` consecutive parents of `roster` from `first` in one guarded
-/// call.
 pub(crate) fn copy_parents(
     memory: &impl Memory,
     roster: Array,
@@ -121,7 +95,6 @@ pub(crate) fn copy_parents(
     Ok(())
 }
 
-/// Decode one parent record [`copy_parents`] copied.
 pub(crate) fn parse_row(
     record: &[u8],
     base: usize,
@@ -174,26 +147,13 @@ pub(crate) fn type_token(
     ))
 }
 
-/// Raid type tokens already read in one walk, by definition address. The
-/// raid database holds one definition per type and never moves it during a
-/// capture, so each is authenticated and read once per walk.
-///
-/// An open-addressed table the caller owns and sizes from the database's
-/// definition count (`TypeTokens::required`, read at `TypeTokens::begin`),
-/// growing it before worker lookups or off the walk ([`TypeTokens::grow`]); no count is capped. While it
-/// is smaller than the count, a definition it cannot hold is read again each
-/// time, never dropped.
 pub struct TypeTokens {
-    /// `(definition address, token)`; address zero is an empty slot. A power
-    /// of two, kept at most half full.
     slots: Vec<(usize, u32)>,
     len: usize,
-    /// The raid database's definition count at the last walk.
     required: usize,
 }
 
 impl TypeTokens {
-    /// A table for `definitions` raid types.
     #[cfg(any(test, feature = "test-support"))]
     pub fn try_with_definitions(definitions: usize) -> std::io::Result<Self> {
         Ok(Self {
@@ -208,7 +168,6 @@ impl TypeTokens {
         Self::try_with_definitions(definitions).unwrap()
     }
 
-    /// No storage, for a parked placeholder: every token is read uncached.
     pub fn empty() -> Self {
         Self {
             slots: Vec::new(),
@@ -231,7 +190,6 @@ impl TypeTokens {
         self.slots.capacity() * size_of::<(usize, u32)>()
     }
 
-    /// Off the walk: grow to the last walk's definition count.
     pub fn grow(&mut self) -> std::io::Result<()> {
         let slots = Self::slots_for(self.required)?;
         if !self.slots.is_empty() && self.slots.len() < slots {
@@ -242,9 +200,6 @@ impl TypeTokens {
         Ok(())
     }
 
-    /// Start a walk by clearing previous tokens and reading the live definition
-    /// count. An unreadable count retains the previous sizing hint; lookups
-    /// remain exact.
     pub(crate) fn begin(&mut self, memory: &impl Memory, base: usize) {
         self.slots.fill((0, 0));
         self.len = 0;
@@ -260,7 +215,6 @@ impl TypeTokens {
         }
     }
 
-    /// Worker storage follows the already acquired database count.
     pub fn prepare_worker(&mut self) -> Result<(), &'static str> {
         let slots =
             Self::slots_for(self.required).map_err(|_| "capture buffer allocation failed")?;
@@ -306,7 +260,6 @@ impl TypeTokens {
     }
 }
 
-/// A cooldown's identity (vtable, type definition) and its scope's arms.
 const COOLDOWN_FIELDS: [RecordField; 3] = [
     field(0, 0, 16),
     field(COOLDOWN_SCOPE, 16, craid_target::ARMS_BYTES),
@@ -316,7 +269,6 @@ pub(crate) const COOLDOWN_BYTES: usize = 20 + craid_target::ARMS_BYTES;
 const COOLDOWN_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COOLDOWN_FIELDS, COOLDOWN_BYTES).expect("valid raid cooldown layout");
 
-/// Copy `count` consecutive cooldowns from `first` in one guarded call.
 pub(crate) fn copy_cooldowns(
     memory: &impl Memory,
     cooldowns: Array,
@@ -342,8 +294,6 @@ pub(crate) fn copy_cooldowns(
     Ok(())
 }
 
-/// Decode one cooldown record [`copy_cooldowns`] copied: its raid type token
-/// and target scope.
 pub(crate) fn parse_cooldown(
     memory: &impl Memory,
     base: usize,
@@ -373,8 +323,6 @@ pub(crate) fn parse_cooldown(
     ))
 }
 
-/// Copy raid-type pointers as their lexer tokens in guarded batches. The
-/// caller sizes output to the array count.
 pub(crate) fn copy_type_tokens(
     memory: &impl Memory,
     base: usize,
@@ -407,8 +355,6 @@ pub(crate) fn copy_type_tokens(
 mod tests {
     use super::*;
 
-    /// Distinct raid type definitions at 8-byte-aligned addresses, each
-    /// authenticated and carrying token `0x3000 + index`.
     fn definitions(count: usize) -> (Vec<u8>, Vec<usize>) {
         const FIRST: usize = 0x100;
         const STRIDE: usize = 0x20;
@@ -431,7 +377,6 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            // Sized below the count: exact, and the rest is read uncached.
             let mut small = TypeTokens::with_definitions(4);
             let mut sized = TypeTokens::with_definitions(count);
             for round in 0..2 {
@@ -445,7 +390,6 @@ mod tests {
                     assert!(small.len < small.slots.len());
                 }
             }
-            // Grown to the database count, it holds them all.
             small.required = count;
             small.grow().unwrap();
             for &definition in &addresses {
@@ -465,7 +409,6 @@ mod tests {
                 bytes: &bytes,
             };
             let mut memo = TypeTokens::with_definitions(count);
-            // A walk's lookups: every definition read many times.
             let lookups = 20_000;
             let started = std::time::Instant::now();
             for round in 0..20 {

@@ -1,9 +1,3 @@
-//! Carrier-only optional reads after the original air-base census was acquired.
-//!
-//! The carrier job owns its own prepared raw arena. It first copies the
-//! pre-vector country census from the original job, without rereading native
-//! memory. Neither seeding nor an optional fault/overflow changes that original
-//! job. Decode uses `Recorded::build` on this carrier log alone.
 
 use crate::raw::{RawLog, Span, is_canonical_range};
 use engine_native::{Memory, memory::SliceMemory, walk::Buffer};
@@ -11,10 +5,6 @@ use std::cell::{Cell, RefCell};
 
 const SHARED_MASK: u32 = 3;
 
-/// Prepared carrier exact-key slots. The job owns and accounts for the backing
-/// storage; construction/growth happen off-thread. Empty slots are usize::MAX,
-/// occupied slots name a carrier-log span. Worker growth rehashes owned keys
-/// before a new request; fixed callback storage retains capacity refusals.
 pub(super) struct ExactIndex<'a> {
     slots: Buffer<'a, usize>,
     used: usize,
@@ -103,21 +93,6 @@ impl<'a> ExactIndex<'a> {
     }
 }
 
-/// Copy the original job's pre-vector census into already-prepared carrier
-/// storage. The caller supplies only the country-census prefix, before base
-/// vectors, identities, or wing reads. Resets this carrier log, never the source.
-///
-/// Exact keys become unique: repeated successful observations coalesce only
-/// when their bulk flags and bytes agree. A repeated failure or changed value
-/// refuses this carrier census rather than hiding an earlier observation.
-/// Unique failed observations remain failures for both carrier consumers.
-/// An Err rejects the entire carrier census; callers must not decode its
-/// partially copied prefix as an admitted carrier observation.
-///
-/// No native reads. The exact-key index has at most 50%
-/// occupancy and expected constant-time lookups; native measurement remains open.
-/// Byte offsets are remapped; retained bytes still count towards raw capacity,
-/// but they are never charged as newly acquired native payload.
 pub(super) fn seed_census(
     log: &mut RawLog<2>,
     source: &RawLog<3>,
@@ -128,8 +103,6 @@ pub(super) fn seed_census(
     if source.overflowed {
         return Err("carrier original census overflowed");
     }
-    // The entire source prefix is known before any copying. This conservative
-    // demand also covers duplicates; a short index refuses only the carrier.
     index.require(source.spans.len(), &log.spans)?;
     for span in &source.spans {
         if span.len == 0 {
@@ -177,8 +150,6 @@ pub(super) fn seed_census(
             ),
             _ => log.record(span.addr, span.len as usize, bytes, SHARED_MASK),
         };
-        // Both operations above copy already-owned bytes, including a partial
-        // seed later refused for capacity. They acquire no native payload.
         log.raw_bytes = [0; 2];
         if log.overflowed {
             return Err("carrier census seed capacity");
@@ -194,13 +165,6 @@ pub(super) fn seed_census(
     Ok(())
 }
 
-/// A single stopped acquisition pass. Only absent optional requests reach
-/// `live`; existing exact successes and failures remain sticky, even after
-/// overflow. Fault flags do not prevent another independent field's attempt.
-///
-/// The source's same-pass observation guarantee belongs to the caller. This
-/// wrapper forwards no authenticated/immutable capabilities: readers must
-/// request the bytes that the owned decoder will have.
 pub(super) struct CaptureMemory<'a, 'slots, M: Memory> {
     log: &'a RefCell<RawLog<2>>,
     live: &'a M,
@@ -222,7 +186,6 @@ impl<'a, 'slots, M: Memory> CaptureMemory<'a, 'slots, M> {
         }
     }
 
-    /// Base-only=1, registration-only=2, country-reader shared=3.
     pub(super) fn set_mask(&self, mask: u32) {
         assert!(matches!(mask, 1..=3), "carrier read mask invalid");
         self.mask.set(mask);
@@ -231,9 +194,6 @@ impl<'a, 'slots, M: Memory> CaptureMemory<'a, 'slots, M> {
 
 fn stored_bulk(log: &RawLog<2>, address: usize, len: usize) -> Option<&Span> {
     let end = address.checked_add(len)?;
-    // Same nearest-start enclosing bulk choice as Recorded. Reverse scanning
-    // keeps the latest span when geometry is tied. Indexed exact failures always
-    // override a successful containing bulk; failed bulk reads serve no bytes.
     log.spans
         .iter()
         .enumerate()
@@ -322,9 +282,6 @@ impl<M: Memory> Memory for CaptureMemory<'_, '_, M> {
         let Ok((slot, None)) = index.lookup(&log.spans, address, len) else {
             return false;
         };
-        // RawLog retains canonical/address gates and the current failure mask.
-        // Its overflow refusal makes no live read, but earlier spans above are
-        // still available. Worker growth completes before the native request.
         let span_index = log.spans.len();
         let copied = log.take(self.live, address, destination.len(), self.mask.get());
         if log.spans.len() == span_index + 1 {

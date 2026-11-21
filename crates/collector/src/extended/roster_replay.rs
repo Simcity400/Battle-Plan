@@ -1,5 +1,3 @@
-//! A recorded log replayed with the authenticated country roster its copy
-//! resolved countries through; every read still goes to the log.
 use engine_native::{Memory, ccountry};
 
 pub(crate) struct RosterReplay<'a, M> {
@@ -9,8 +7,6 @@ pub(crate) struct RosterReplay<'a, M> {
 }
 
 impl<'a, M> RosterReplay<'a, M> {
-    /// `inner` with the roster and reserved country `snapshot` captured for
-    /// `base` and `game_state`, if any.
     pub(crate) fn new(
         inner: &'a M,
         snapshot: &'a ccountry::RosterSnapshot,

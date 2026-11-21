@@ -1,4 +1,3 @@
-//! Native fuel readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, air_fuel_defines, air_mission, allocation, cace, cair_base, cair_wing, cair_wing_pool,

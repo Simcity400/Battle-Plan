@@ -59,10 +59,6 @@ fn idle_pool_with_retained_region_is_probed_once_with_or_without_registration() 
             capture_references_buffer(&memory, 0, 0, &wings, Some(registered), engine_native::walk::Buffer::Growing(&mut handles), engine_native::walk::Buffer::Growing(&mut output), None),
             Ok(Outcome::Rows { len: 2 })
         );
-        // Two handles, the pool base and the override: a duplicate idle
-        // demand for the registered wing would need a third scratch slot and
-        // truncate. The pass reads the base registry's root once
-        // (`map_air_base_reference::Pass`); it is null, so neither resolves.
         assert_eq!(memory.0.get(), 1, "one registry root read for both probes");
         assert_eq!(
             output.iter().map(|row| row.handle).collect::<Vec<_>>(),

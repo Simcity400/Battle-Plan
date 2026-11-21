@@ -1,53 +1,26 @@
-//! Memory attribution for measurement runs, counted by the allocator. Code says whose work runs
-//! on its thread with [`enter`] or [`kind`]; with the `memory-labels` feature, [`Counting`]
-//! wraps the global allocator, tags each allocation with the label current on its thread, and
-//! charges its free back to that label, wherever it is freed. Each [`phase`] keeps every
-//! label's peak, the bytes each held when the tracked total peaked, and, of an operator's bytes
-//! held then, those its family's emit has freed since: its output in flight. Without the
-//! feature every call here is empty.
 
 use std::marker::PhantomData;
 
-/// Whether this build counts allocations.
 pub const ENABLED: bool = cfg!(feature = "memory-labels");
 
-/// What work holds memory. Every kind but [`Kind::Unlabelled`] and [`Kind::Headers`] is set by
-/// code; a family's kinds are its own, the others the run's ([`Owner::RUN`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Kind {
     Unlabelled = 0,
-    /// A family's operators, and the items they project until the emit frees them.
     Operator = 1,
-    /// A family's spilled items read back for its emit.
     Restore = 2,
-    /// A family's ordered emit and the branch state it keeps.
     Emit = 3,
-    /// Publication: stages, series writers, batches sealing.
     Publish = 4,
-    /// Game content resolved and loaded.
     Content = 5,
-    /// The world a walk's operators share.
     World = 6,
-    /// The walker's pages, arena and tables, and what decoding them takes.
     Walker = 7,
-    /// The segment executor's own work: scheduling, filing, parking.
     Executor = 8,
-    /// The attribution's own tag on each allocation.
     Headers = 9,
-    /// What a series writer keeps of every key it defined: it grows with the publication.
     Keys = 10,
-    /// Sealing a family's series segments and batches: scratch, and the stage written.
     Seal = 11,
-    /// The walker's tables, as each hour applies and each restart restores them.
     WalkerTables = 12,
-    /// zstd contexts, each owned by its holder ([`crate::zstd::Holder`]), not a family.
     Zstd = 13,
-    /// What blocks hold past the bytes asked for, rounded up to the allocator's size classes:
-    /// counted apart, never in the tracked total.
     Rounding = 14,
-    /// What the attribution's tags add to that, pushing blocks into larger size classes, past
-    /// the tags themselves: only in a counting build, apart from the tracked total.
     TagRounding = 15,
 }
 
@@ -92,13 +65,11 @@ impl Kind {
         }
     }
 
-    /// Whether its allocations are a family's output until its emit frees them.
     pub fn projects(self) -> bool {
         matches!(self, Kind::Operator | Kind::Restore)
     }
 }
 
-/// Whose work: a family, by name ([`owner`]), or the run's. Empty without the feature.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Owner(#[cfg(feature = "memory-labels")] u16);
 
@@ -109,12 +80,9 @@ impl Owner {
     pub const RUN: Self = Self();
 }
 
-/// A thread's label, for work it hands to threads it starts ([`resume`]). Empty without the
-/// feature.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Label(#[cfg(feature = "memory-labels")] u32);
 
-/// A label held until dropped, on the thread that set it.
 #[must_use]
 pub struct Scope {
     #[cfg(feature = "memory-labels")]
@@ -122,55 +90,37 @@ pub struct Scope {
     thread: PhantomData<*const ()>,
 }
 
-/// What a label held over a phase.
 #[derive(Clone, Debug)]
 pub struct Charge {
     pub owner: &'static str,
     pub kind: Kind,
-    /// The most it held at once.
     pub peak: i64,
-    /// What it held when the tracked total peaked.
     pub at_peak: i64,
-    /// What it held as the phase ended.
     pub end: i64,
-    /// Of what it held at the peak, what its family's emit has freed since: output then in
-    /// flight. Only for kinds that project ([`Kind::projects`]).
     pub in_flight: Option<i64>,
 }
 
-/// The process's memory as the system counts it, and what of it the wrapped allocator holds.
 #[derive(Clone, Copy, Debug)]
 pub struct Os {
     pub commit: usize,
     pub working: usize,
-    /// The most since the process started.
     pub peak_commit: usize,
     pub peak_working: usize,
-    /// What the wrapped allocator holds committed, as it counts it ([`measure_allocator`]).
     pub allocator: Option<usize>,
 }
 
-/// What a phase of the process held, from one [`phase`] call to the next.
 #[derive(Clone, Debug)]
 pub struct Phase {
     pub name: &'static str,
-    /// The most the allocator was asked to hold at once, the attribution's headers included.
     pub tracked_peak: i64,
-    /// The tracked total when the labels were last read at a peak, within about a thousandth
-    /// of [`Self::tracked_peak`].
     pub tracked_at_peak: i64,
-    /// The process's memory when the labels were last read at a peak.
     pub os_at_peak: Option<Os>,
     pub os_started: Option<Os>,
     pub os_ended: Option<Os>,
-    /// The most working set and commit any [`sample_os`] read during the phase.
     pub os_peak_working: usize,
     pub os_peak_commit: usize,
-    /// The hour [`at_hour`] last named when the labels were read at the phase's peak.
     pub hour_at_peak: Option<i64>,
-    /// Families named past the labels' room, counted as "other".
     pub overflowed: usize,
-    /// Every label that held anything.
     pub labels: Vec<Charge>,
 }
 
@@ -255,12 +205,8 @@ mod on {
     const HEADERS: u32 = Kind::Headers as u32;
     const ROUNDING: u32 = Kind::Rounding as u32;
     const TAG_ROUNDING: u32 = Kind::TagRounding as u32;
-    /// Marks a batch entry as bytes of the label's output its emit freed ([`IN_FLIGHT`]).
     const FLIGHT: u32 = 1 << 31;
-    /// The tag before each allocation: its label, and the peak reading it was made after.
     const HEADER: usize = 8;
-    /// A thread's counts go to the shared ones once they moved this much, or it held this many
-    /// labels: the shared counts lag each thread by no more.
     const FLUSH_BYTES: u64 = 256 << 10;
     const ENTRIES: usize = 16;
     const MISSING: usize = usize::MAX;
@@ -275,18 +221,12 @@ mod on {
     static TOTAL: AtomicI64 = AtomicI64::new(0);
     static TOTAL_PEAK: AtomicI64 = AtomicI64::new(0);
     static AT_PEAK_TOTAL: AtomicI64 = AtomicI64::new(0);
-    /// The tracked total past which the labels are read again.
     static NEXT: AtomicI64 = AtomicI64::new(0);
-    /// Bumped at each reading: an allocation tagged before the current one was held then.
     static EPOCH: AtomicU32 = AtomicU32::new(1);
-    /// Shared by calls counted without a slot and by each slot listed, alone by each reading,
-    /// which also locks every slot: no call is counted while a reading is under way.
     static GATE: RwLock<()> = RwLock::new(());
     static OS_AT_PEAK: [AtomicUsize; READINGS] = [const { AtomicUsize::new(MISSING) }; READINGS];
-    /// The most working set and commit [`sample_os`] read since the phase began.
     static OS_PEAK_WORKING: AtomicUsize = AtomicUsize::new(0);
     static OS_PEAK_COMMIT: AtomicUsize = AtomicUsize::new(0);
-    /// The hour under way ([`at_hour`]), and the one under way at the last reading of a peak.
     static HOUR: AtomicI64 = AtomicI64::new(i64::MIN);
     static HOUR_AT_PEAK: AtomicI64 = AtomicI64::new(i64::MIN);
     static COMMITTED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
@@ -298,7 +238,6 @@ mod on {
         mutex.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// What one allocator call adds, before it goes to its thread's counts.
     #[derive(Default)]
     struct Tally {
         keys: [u32; 8],
@@ -327,9 +266,7 @@ mod on {
         }
     }
 
-    /// A thread's counts not added to the shared ones yet.
     struct Counts {
-        /// The reading the counts were all made after.
         epoch: u32,
         keys: [u32; ENTRIES],
         deltas: [i64; ENTRIES],
@@ -338,7 +275,6 @@ mod on {
     }
 
     impl Counts {
-        /// Whether the total passed the next reading.
         #[inline]
         fn add(&mut self, key: u32, bytes: i64) -> bool {
             for at in (0..self.used).rev() {
@@ -354,7 +290,6 @@ mod on {
             peaked
         }
 
-        /// Adds them to the shared ones: whether the total passed the next reading.
         fn flush(&mut self) -> bool {
             let used = std::mem::replace(&mut self.used, 0);
             self.moved = 0;
@@ -366,9 +301,6 @@ mod on {
         }
     }
 
-    /// A thread's [`Counts`], and the lock under which it calls the allocator and counts what
-    /// it did. A reading holds every slot's lock, so no call falls between its parts. Leaked,
-    /// and listed from [`SLOTS`]: a slot its thread left is taken by the next.
     struct Slot {
         busy: AtomicBool,
         owned: AtomicBool,
@@ -376,7 +308,6 @@ mod on {
         counts: UnsafeCell<Counts>,
     }
 
-    // SAFETY: `counts` is reached only with `busy` held; `next` is set before it is listed.
     unsafe impl Sync for Slot {}
 
     impl Slot {
@@ -392,33 +323,26 @@ mod on {
             self.busy.store(false, Ordering::Release);
         }
 
-        /// With `busy` held; `work` must not allocate.
         #[inline]
         fn with<R>(&self, work: impl FnOnce(&mut Counts) -> R) -> R {
             self.lock();
-            // SAFETY: `busy` is held.
             let result = work(unsafe { &mut *self.counts.get() });
             self.unlock();
             result
         }
     }
 
-    /// The newest slot; each names the one listed before it. Listed under [`GATE`] shared, so
-    /// a reading, holding it alone, finds the same slots to lock and to let go.
     static SLOTS: AtomicPtr<Slot> = AtomicPtr::new(std::ptr::null_mut());
 
     fn slots() -> impl Iterator<Item = &'static Slot> {
         let mut at = SLOTS.load(Ordering::Acquire).cast_const();
         std::iter::from_fn(move || {
-            // SAFETY: slots are never freed.
             let slot = unsafe { at.as_ref() }?;
             at = slot.next;
             Some(slot)
         })
     }
 
-    /// Every slot locked, for a reading: with [`GATE`] held alone, nothing is counted until it
-    /// drops. Nothing may allocate meanwhile.
     struct Stilled;
 
     impl Stilled {
@@ -427,13 +351,10 @@ mod on {
             Self
         }
 
-        /// Adds every thread's counts to the shared ones.
         fn drain(&self) {
             for slot in slots() {
-                // SAFETY: `busy` is held, by this.
                 unsafe { &mut *slot.counts.get() }.flush();
             }
-            // What was drained can take the total past the next reading: read it now.
             let total = TOTAL.load(Ordering::Relaxed);
             if total >= NEXT.load(Ordering::Relaxed) {
                 mark(total);
@@ -447,12 +368,8 @@ mod on {
         }
     }
 
-    /// A thread's label and slot. No destructor: the allocator may not use thread-locals that
-    /// have one.
     struct Local {
         label: Cell<u32>,
-        /// Null until labelling code runs on the thread, and once it ends: its calls are then
-        /// counted under [`GATE`] shared.
         slot: Cell<*const Slot>,
         gone: Cell<bool>,
     }
@@ -465,18 +382,15 @@ mod on {
                 gone: Cell::new(false),
             }
         };
-        // Registered from labelling code, never from the allocator.
         static GUARD: Guard = const { Guard };
     }
 
-    /// Adds a thread's counts as it ends and frees its slot.
     struct Guard;
 
     impl Drop for Guard {
         fn drop(&mut self) {
             let _ = LOCAL.try_with(|local| {
                 local.gone.set(true);
-                // SAFETY: slots are never freed.
                 if let Some(slot) = unsafe { local.slot.replace(std::ptr::null()).as_ref() } {
                     let peaked = slot.with(Counts::flush);
                     slot.owned.store(false, Ordering::Release);
@@ -489,8 +403,6 @@ mod on {
     }
 
     impl Local {
-        /// Gives the thread a slot and the guard that frees it: from labelling code only,
-        /// never from the allocator.
         fn guard(&self) {
             if self.slot.get().is_null() && !self.gone.get() {
                 let _ = GUARD.try_with(|_| ());
@@ -508,7 +420,6 @@ mod on {
         if let Some(slot) = free {
             return slot;
         }
-        // Made before the gate is taken: making it is counted under the gate too.
         let slot = Box::into_raw(Box::new(Slot {
             busy: AtomicBool::new(false),
             owned: AtomicBool::new(true),
@@ -524,21 +435,15 @@ mod on {
         let _gate = GATE.read().unwrap_or_else(PoisonError::into_inner);
         let mut head = SLOTS.load(Ordering::Relaxed);
         loop {
-            // SAFETY: not yet listed, so this thread's alone.
             unsafe { (*slot).next = head.cast_const() };
             match SLOTS.compare_exchange_weak(head, slot, Ordering::Release, Ordering::Relaxed) {
                 Ok(_) => break,
                 Err(now) => head = now,
             }
         }
-        // SAFETY: leaked, never freed.
         unsafe { &*slot }
     }
 
-    /// Adds counts made after reading `epoch` to the shared ones, with no reading under way:
-    /// under a slot's lock or [`GATE`]. Made before the latest reading, they were held then
-    /// too, and what of them its emit freed was not since. Whether the total passed the next
-    /// reading.
     fn apply(epoch: u32, batch: impl IntoIterator<Item = (u32, i64)>) -> bool {
         let before = epoch != EPOCH.load(Ordering::Relaxed);
         let mut sum = 0;
@@ -572,16 +477,12 @@ mod on {
         }
     }
 
-    /// Does `call`, an allocator call, and counts what it reports, with no reading between:
-    /// under this thread's slot, or [`GATE`] shared when it has none. `call` is given the
-    /// reading it is made after.
     #[inline]
     fn counted<R>(call: impl FnOnce(u32, &mut Tally) -> R) -> R {
         let slot = LOCAL
             .try_with(|local| local.slot.get())
             .unwrap_or(std::ptr::null());
         let mut tally = Tally::default();
-        // SAFETY: slots are never freed.
         let (result, peaked) = match unsafe { slot.as_ref() } {
             Some(slot) => slot.with(|counts| {
                 let epoch = EPOCH.load(Ordering::Relaxed);
@@ -617,8 +518,6 @@ mod on {
         (total / 1024).max(1 << 20)
     }
 
-    /// Reads every label at a new peak of the tracked total. Each count taking the total past
-    /// the next reading comes here, so growth during a reading is read after it.
     fn read_peak() {
         let _gate = GATE.write().unwrap_or_else(PoisonError::into_inner);
         let _stilled = Stilled::new();
@@ -628,8 +527,6 @@ mod on {
         }
     }
 
-    /// Takes `total` as the peak: what every label holds now, none of it freed since. Only
-    /// with [`GATE`] held alone and every slot [`Stilled`]; it allocates nothing.
     fn mark(total: i64) {
         EPOCH.fetch_add(1, Ordering::Relaxed);
         for label in 0..LABELS {
@@ -664,7 +561,6 @@ mod on {
         (label as usize / KINDS, label % KINDS as u32)
     }
 
-    /// Counts `bytes` of `label`, tagged after reading `tagged`, freed after reading `epoch`.
     #[inline]
     fn freed(tally: &mut Tally, epoch: u32, label: u32, tagged: u32, bytes: usize, header: usize) {
         let (owner, kind) = of(label);
@@ -701,27 +597,20 @@ mod on {
         }
     }
 
-    /// Has each reading ask `committed` what the wrapped allocator holds committed: a function
-    /// that allocates nothing, as the readings are taken inside the allocator.
     pub fn measure_allocator(committed: fn() -> Option<usize>) {
         COMMITTED.store(committed as *mut (), Ordering::Release);
     }
 
-    /// Has each block counted at the size class `good` gives what is asked of the wrapped
-    /// allocator ([`Kind::Rounding`], [`Kind::TagRounding`]): a function that allocates nothing.
     pub fn measure_sizes(good: fn(usize) -> usize) {
         SIZES.store(good as *mut (), Ordering::Release);
     }
 
-    /// Counts, by `sign`, the size classes' rounding of a block of `size` bytes after a tag of
-    /// `tag` bytes.
     #[inline]
     fn rounded(tally: &mut Tally, size: usize, tag: usize, sign: i64) {
         let good = SIZES.load(Ordering::Relaxed);
         if good.is_null() {
             return;
         }
-        // SAFETY: only `measure_sizes` stores here, a function of this type.
         let good = unsafe { std::mem::transmute::<*mut (), fn(usize) -> usize>(good) };
         let alone = good(size);
         let tagged = good(size + tag);
@@ -737,12 +626,9 @@ mod on {
         if committed.is_null() {
             return None;
         }
-        // SAFETY: only `measure_allocator` stores here, a function of this type.
         unsafe { std::mem::transmute::<*mut (), fn() -> Option<usize>>(committed)() }
     }
 
-    /// The owner named `name`, the same each time it is named. Each thread keeps the owners it
-    /// named, so a label entered for every event takes no lock.
     pub fn owner(name: &str) -> Owner {
         thread_local! {
             static NAMED: std::cell::RefCell<Vec<(&'static str, Owner)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -775,45 +661,36 @@ mod on {
         Owner((names.len() - 1) as u16)
     }
 
-    /// Labels this thread's allocations `owner`'s `kind` until the scope drops.
     #[inline]
     pub fn enter(owner: Owner, kind: Kind) -> Scope {
         set(u32::from(owner.0) * KINDS as u32 + kind as u32)
     }
 
-    /// Labels this thread's allocations `kind`, of the owner already labelled.
     #[inline]
     pub fn kind(kind: Kind) -> Scope {
         let (owner, _) = of(label());
         set(owner as u32 * KINDS as u32 + kind as u32)
     }
 
-    /// This thread's label.
     #[inline]
     pub fn current() -> Label {
         Label(label())
     }
 
-    /// Labels this thread's allocations as `label` until the scope drops: a thread started for
-    /// another's work takes its label.
     #[inline]
     pub fn resume(label: Label) -> Scope {
         set(label.0)
     }
 
-    /// Ends the phase under way and begins `name`'s: from here, its peaks.
     pub fn phase(name: &'static str) {
         close(Some(name));
     }
 
-    /// Every phase, the one under way ended.
     pub fn phases() -> Vec<Phase> {
         close(None);
         std::mem::take(&mut *lock(&PHASES))
     }
 
-    /// Reads the process's working set and commit into the phase's peaks: called by a sampler
-    /// the binary runs, since the system's own peak counters cannot be reset per phase.
     pub fn sample_os() {
         if let Some(os) = os() {
             OS_PEAK_WORKING.fetch_max(os.working, Ordering::Relaxed);
@@ -821,7 +698,6 @@ mod on {
         }
     }
 
-    /// Names the hour under way, for the phase's reading at its peak.
     pub fn at_hour(hour: i64) {
         HOUR.store(hour, Ordering::Relaxed);
     }
@@ -841,11 +717,8 @@ mod on {
         }
     }
 
-    /// Reads the phase, every thread's counts added, and starts the next one's peaks, all with
-    /// every slot [`Stilled`], so no count or reading falls between.
     fn report(name: &'static str, started: Option<Os>, ended: Option<Os>) -> Phase {
         let names = lock(&NAMES).clone();
-        // Allocated first: nothing may allocate while the slots are stilled.
         let mut held = Vec::with_capacity(LABELS);
         let gate = GATE.write().unwrap_or_else(PoisonError::into_inner);
         let stilled = Stilled::new();
@@ -917,7 +790,6 @@ mod on {
         }
     }
 
-    /// The process's memory counters; it allocates nothing.
     #[cfg(windows)]
     fn os() -> Option<Os> {
         #[repr(C)]
@@ -954,9 +826,7 @@ mod on {
             pagefile: 0,
             peak_pagefile: 0,
         };
-        // The current process's pseudo-handle is -1.
         let process = std::ptr::without_provenance_mut(usize::MAX);
-        // SAFETY: the pseudo-handle of this process and an owned block of `size` bytes.
         let read = unsafe { K32GetProcessMemoryInfo(process, &mut counters, size) };
         (read != 0).then(|| Os {
             commit: counters.pagefile,
@@ -973,8 +843,6 @@ mod on {
         None
     }
 
-    /// The allocator `A`, every allocation tagged with its thread's label ahead of it: 8 bytes,
-    /// or its alignment when larger, counted apart ([`Kind::Headers`]).
     pub struct Counting<A>(pub A);
 
     #[inline]
@@ -986,8 +854,6 @@ mod on {
             .map(|outer| (outer, offset))
     }
 
-    /// Tags the block at `base`, of `size` bytes after `offset`, with this thread's label and
-    /// `epoch`, and counts it: its user's pointer.
     #[inline]
     unsafe fn tagged(
         tally: &mut Tally,
@@ -1000,7 +866,6 @@ mod on {
             return base;
         }
         let label = label();
-        // SAFETY: the block holds `offset` bytes, at least 8 and a multiple of 8, before `size`.
         let pointer = unsafe { base.add(offset) };
         unsafe {
             pointer
@@ -1014,10 +879,8 @@ mod on {
         pointer
     }
 
-    /// The label and epoch tagging `pointer`'s block.
     #[inline]
     unsafe fn tag(pointer: *mut u8) -> (u32, u32) {
-        // SAFETY: every block this allocator hands out is tagged just before it.
         let word = unsafe { pointer.sub(HEADER).cast::<u64>().read() };
         (word as u32, (word >> 32) as u32)
     }
@@ -1076,7 +939,6 @@ mod on {
             counted(|epoch, tally| {
                 let base = unsafe { self.0.realloc(pointer.sub(offset), outer, grown) };
                 if base.is_null() {
-                    // The block stays as it was: nothing to count.
                     return base;
                 }
                 freed(tally, epoch, label, was, layout.size(), offset);

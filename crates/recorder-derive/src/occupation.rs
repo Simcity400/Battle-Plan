@@ -1,15 +1,3 @@
-//! `OccupierTotals`: each occupier identity's states under active occupation (a StateResistance
-//! row active with a positive occupied country, its controller the state's), the wrapping sums of
-//! their fixed5 resistance and compliance (the game's arithmetic; the reply divides by the count),
-//! and its held states, those it garrisons united with those it occupies.
-//!
-//! While an occupied state's controller resolves to no identity, or the state has no States row,
-//! every row's sums and counts are not recorded: the state belongs to someone. Garrisons are
-//! counted only while StateGarrisons is complete; `held_complete` says the held count is the whole
-//! inventory. The effective occupation law is not written: it evaluates triggers (the reply's).
-//!
-//! State is the tables: one contribution per occupied state and per garrison, applied as the hour
-//! changes them; a fresh hour, a resume or a change of links or countries rebuilds them.
 
 use crate::{
     forces::{self, invalid, number, written},
@@ -34,8 +22,6 @@ const READS: &[Read] = &[
     Read { table: TableId::CountryLinks, columns: Columns::These(&holders::LINK_SLOT), watch: Watch::Changed, required: true },
 ];
 
-/// An occupied state's contribution: its controller's identity (none when unresolved), resistance
-/// and compliance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Occupied {
     controller: Option<Identity>,
@@ -43,7 +29,6 @@ struct Occupied {
     compliance: i64,
 }
 
-/// One state an occupier holds: its garrison rows, and whether it occupies it.
 #[derive(Clone, Copy, Default)]
 struct Held {
     garrisons: u32,
@@ -57,22 +42,17 @@ struct Occupier {
     occupied: i64,
     garrisons: i64,
     held: HashMap<u32, Held>,
-    /// Occupied states it does not garrison.
     bare: i64,
 }
 
 #[derive(Default)]
 pub struct Occupation {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     holders: Holders,
     occupied: HashMap<u32, Occupied>,
-    /// Each StateGarrisons row's controller identity, while the table is complete.
     garrisons: HashMap<u128, Option<Identity>>,
     occupiers: HashMap<Identity, Occupier>,
-    /// Occupied states whose controller resolves to no identity.
     unresolved: i64,
-    /// Garrisons whose controller resolves to no identity.
     unresolved_garrisons: i64,
     garrisons_complete: bool,
     dirty: HashSet<Identity>,
@@ -119,7 +99,6 @@ impl Occupation {
         Self::settle(&mut self.occupiers, identity, state);
     }
 
-    /// Forgets `state` of `identity`, and the occupier, once they hold nothing.
     fn settle(occupiers: &mut HashMap<Identity, Occupier>, identity: Identity, state: u32) {
         let Some(occupier) = occupiers.get_mut(&identity) else { return };
         if occupier.held.get(&state).is_some_and(|held| held.garrisons == 0 && !held.occupied) {
@@ -130,7 +109,6 @@ impl Occupation {
         }
     }
 
-    /// The state at StateResistance `slot` and its contribution, none while it is not occupied.
     fn read_occupied(&self, resistance: &TableView<'_>, states: &TableView<'_>, slot: u32) -> io::Result<(u32, Option<Occupied>)> {
         let table = TableId::StateResistance;
         let state = resistance.key(slot).ok_or_else(|| invalid(format!("StateResistance slot {slot} holds no row")))? as u32;
@@ -186,7 +164,6 @@ impl Occupation {
         self.read_garrisons(hour, garrisons)
     }
 
-    /// Applies the garrisons the hour added or removed.
     fn apply_garrisons(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         for key in hour.deleted_keys(TableId::StateGarrisons) {
             if let Some(controller) = self.garrisons.remove(&key) {
@@ -201,7 +178,6 @@ impl Occupation {
         Ok(())
     }
 
-    /// Applies the occupied states whose resistance or controller the hour changed.
     fn apply_states(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         let (resistance, states) = (hour.table(TableId::StateResistance), hour.table(TableId::States));
         let mut moved: BTreeSet<u32> = hour.deleted_keys(TableId::StateResistance).map(|key| key as u32).collect();
@@ -235,7 +211,6 @@ impl Occupation {
         Ok(())
     }
 
-    /// What decides every row at once: the sums known, garrisons read whole and all resolved.
     fn flags(&self) -> (bool, bool, bool) {
         (self.unresolved == 0, self.garrisons_complete, self.unresolved_garrisons == 0)
     }
@@ -301,7 +276,6 @@ impl Writer for Occupation {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every contribution from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

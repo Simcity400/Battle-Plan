@@ -1,4 +1,3 @@
-//! Operative actions and unit-leader event title scopes.
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, Link, random};
@@ -11,8 +10,6 @@ const OPERATIVE_CHARACTER: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 mod tests;
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // In a character scope a scalar is the country operand;
-    // in other scopes it is the operative selector.
     fn char_action_operands<'a>(
         &self,
         item: &'a Item,
@@ -34,7 +31,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Resolve the selected character's role, then the current scope's role.
     fn char_action_operative(
         &self,
         operand: Option<&[u8]>,
@@ -54,8 +50,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(leader.filter(|leader| leader.category() == 3))
     }
 
-    // Resolve the carried country. The core has already applied
-    // the effect's country selector to this scope.
     fn char_action_country(
         &self,
         operand: Option<&[u8]>,
@@ -80,7 +74,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         })
     }
 
-    // Substitute OPERATIVE and CAPTURED_BY without appending LF.
     pub(in crate::effect_description) fn char_capture_operative(
         &self,
         item: &Item,
@@ -95,7 +88,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Expand the kill description after substituting the operative and killer.
     pub(in crate::effect_description) fn char_kill_operative(
         &self,
         item: &Item,
@@ -110,7 +102,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Expand the turn description after substituting the operative and target.
     pub(in crate::effect_description) fn char_turn_operative(
         &self,
         item: &Item,
@@ -143,8 +134,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let name = self.effect_resolved_leader_name(operative)?;
         let mut country = self.country_name(country, true)?;
         if country_key == "captured_by" {
-            // Use the stored definite country name, then capitalise it
-            // with the shared text case operation.
             country = installed_content_localisation::localisation::crt_case_text(&country, true, true);
         }
         self.char_native_text(
@@ -158,8 +147,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Query the exact captured-reference roster;
-    // the other operative rosters do not establish captured membership.
     pub(in crate::effect_description) fn char_free_random_operative(
         &self,
         item: &Item,
@@ -181,7 +168,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let captured = self.complete::<tables::CapturedOperativeReferences>(CAPTURED_OWNER)?;
         for row in captured.keyed(|key| world.slot((key >> 32) as u32) == Some(capturer)) {
             let row = row.map_err(built)?;
-            // Skip null or unresolved references before comparing countries.
             if let Some(raw) = row.owner {
                 let country = if raw == 0 {
                     0
@@ -217,7 +203,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Both the integer reader and evaluator narrow to i32.
     fn char_operative_days(&self, item: &Item, scopes: Scopes) -> Result<i32, String> {
         let operand = item.value.scalar().unwrap_or_default();
         match installed_content_core::crt::scan_i32(operand).stored() {
@@ -259,7 +244,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // Substitute NAME, CODENAME and DAYS without appending LF.
     pub(in crate::effect_description) fn char_hide_operative(
         &self,
         item: &Item,
@@ -273,7 +257,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Use the same hiding arguments, then append LF.
     pub(in crate::effect_description) fn char_harm_operative(
         &self,
         item: &Item,
@@ -282,7 +265,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_operative_codename_days(item, scopes, b"EFFECT_HARM_OPERATIVE", true)
     }
 
-    // Expand the raw authored tooltip bytes.
     fn char_event_tooltip(&self, item: &Item, scopes: Scopes) -> Result<Option<String>, String> {
         let Some(text) = field(children(item), "tooltip")
             .and_then(|item| item.value.read_string())
@@ -322,8 +304,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .ok_or("event caller scope is not given")?;
         let seed = random::scoped_draw(parent.random_seed, parent.random_counter) as u32;
         parent.random_seed = parent.random_seed.wrapping_add(1);
-        // Derive title lanes while preserving an unavailable input
-        // until title selection actually reads it.
         Ok((
             random::scope_seed(seed),
             random::scope_counter(seed),
@@ -346,8 +326,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Use a fresh default empty scope seeded from the caller.
-    // FROM is caller ROOT; substitute EVENT without expansion or LF.
     pub(in crate::effect_description) fn char_unit_leader_event(
         &self,
         item: &Item,
@@ -384,8 +362,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // The operative-event wrapper uses EFFECT for its title,
-    // while the unit-leader-event wrapper uses EVENT.
     pub(in crate::effect_description) fn char_operative_leader_event(
         &self,
         item: &Item,
@@ -419,8 +395,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .cursor
             .ok_or("operative_leader_event needs caller scope graph")?;
         let (seed, counter, refusal) = self.char_event_draw(cursor)?;
-        // Installing a unit leader copies its own character, including a referenced
-        // role's character. That field is not present in CharacterOperatives.
         let character = match &leader {
             UnitLeader::Direct(row) => row.character_id,
             UnitLeader::Referenced(row) => keyed(
@@ -459,8 +433,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let Some(override_item) = field(children(item), key) else {
                 continue;
             };
-            // set_root evaluates the set_from operand,
-            // even though the reader stores a separate set_root operand.
             let operand = if key == "set_root" {
                 field(children(item), "set_from").and_then(|item| item.value.scalar())
             } else {

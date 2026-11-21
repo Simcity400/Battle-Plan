@@ -1,20 +1,3 @@
-//! Ships at sea, a task force at a time: each formation's candidate, placement and hulls as today's
-//! model layer makes them ([`UnitModelAssets::naval_force`]), from the mirrors. A task force's own
-//! values (province, owners, mission, motion route, mission-skip operands, its place among its
-//! province's occupants) are kept from change sets for every task force; its figure (the route's
-//! spline and the hulls' targets) is made only while the camera admits its province. Which entity a
-//! hull draws is chosen by the content's scripts over any table, so a task force's roster is resolved
-//! on the layer's worker from rows at the head ([`Rosters`]) when its roster key changes (a member
-//! ship's model row, class or task force, its owners, the variants' entities, the countries) or a
-//! table only the scripts read changed, and kept until then.
-//!
-//! What a task force sees is the vision's (P6's layer): the window's layer takes its task forces'
-//! sight from the vision layer when one of them moves, the proof gives it whole
-//! ([`Ships::set_vision`]); without one the layer
-//! is refused by name. The land occupants that compete for a province's representative and the naval
-//! combats are not made here (today's `add_land_competitors`, `prepare_naval_combats`): while an
-//! admitted task force is in combat or shares its province with a land occupant, the layer does not
-//! stand in for today's ships ([`Ships::stands_in`]) and the window draws today's.
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Published, Text, Upstream, View};
 use crate::{
@@ -51,26 +34,18 @@ use viewer_world::map::{
     unit_models::{Force, ForcePart, ModelReport, ResolvedRoster, ShipGround},
 };
 
-/// The tables the roster resolution reads before any script, and the Clock, whose hour the graphics
-/// pools' limits may compare; the rest are learned.
 const ROSTER_TABLES: &[TableId] = &[TableId::ShipModels, TableId::Ships, TableId::TaskForces, TableId::VariantDefinitions, TableId::Countries, TableId::CountryLinks, TableId::Clock];
 
-/// A roster as resolved: none for a task force with no roster ship.
 pub type Roster = Option<Result<ResolvedRoster, String>>;
 
-/// What the layer reads of the content: when ships are drawn, where provinces are, a formation's
-/// figure from its values and a batch of rosters from rows (today's builder's two cores).
 pub trait Naval: Send + Sync {
-    /// Whether ship models are drawn below a camera at `height`.
     fn drawn_at(&self, height: f32) -> bool;
     fn bounds(&self) -> &BTreeMap<u32, [f32; 4]>;
     fn map(&self) -> (MapSize, MapDefines);
     fn region(&self, province: u32) -> Option<u32>;
     #[expect(clippy::too_many_arguments, reason = "one formation's every input, as the builder's core takes them")]
     fn figure(&self, force: &Force, route: Result<UnitRoute<'_>, &'static str>, link: &dyn Fn(u32) -> Option<u32>, vision: &Vision, skip: &dyn Fn(u32) -> Option<bool>, ordinal: Option<u32>, speed: Option<i32>, day: i32, roster: &mut dyn FnMut() -> Roster) -> ForcePart;
-    /// The rosters of `forces` over `frame`, and the graphics pools their limits decided.
     fn rosters(&self, frame: &DecodedFrame, forces: &[u64]) -> io::Result<(Vec<(u64, Roster)>, Decided)>;
-    /// Whether every pool of `decided` decides the same over `frame`.
     fn decide_the_same(&self, frame: &DecodedFrame, decided: &Decided) -> bool;
 }
 
@@ -152,67 +127,38 @@ struct Columns {
     speed: Num<i32>,
 }
 
-/// One task force as the layer keeps it: its values, whether the camera admits it, its part of the
-/// hour's ships once made, and its roster as last resolved.
 #[derive(Clone, Default)]
 struct Held {
     force: Option<Force>,
     admitted: bool,
     part: Option<ForcePart>,
     roster: Option<Arc<Roster>>,
-    /// Its roster was asked of the worker and not answered yet.
     asked: bool,
-    /// The hour the camera first admitted it, while it does: what is drawn of it is nobody's
-    /// picture before then, so a roster owed from an earlier hour does not make it late.
     in_view_at: Option<Hour>,
-    /// Its province's occupants hold one that is no task force: today's land competitors.
     contested: bool,
 }
 
-/// The rows the worker reads, and what it answers.
 struct Asked {
     source: Option<(Arc<Entry>, Recording)>,
     open: bool,
     stop: bool,
-    /// The hour the map applied, which a driving layer drives the rows to.
     head: Option<Hour>,
-    /// The playhead's seek ([`playhead::Playhead::epoch`]) when the map applied `head`: every roster
-    /// asked belongs to it, and rows of an older seek answer none.
     seek: Option<u64>,
-    /// The map side's view store, for the worker to take: the rows of the step's hour, made from
-    /// the side's own mirrors.
     views: Option<views::Reader>,
-    /// Task forces whose roster is asked, each with the hour the map applied when it was asked (it
-    /// is answered from rows standing at that hour or later), and every one resolved so far (asked
-    /// again when a table only the scripts read changes).
     wanted: Vec<(u64, Hour)>,
     known: Vec<u64>,
-    /// The graphics pools the rosters known decided: asked again at a new hour when one decides
-    /// otherwise.
     decided: Decided,
     answers: Vec<(u64, Arc<Roster>)>,
-    /// The hour of the rows the last answers were resolved at.
     answered: Option<Hour>,
-    /// The batch being resolved, each task force with the hour its ask was made at.
     building: Vec<(u64, Hour)>,
-    /// When `answered` was last set: how long a wait for it slept past its answer.
     answered_at: Option<Instant>,
     tables: Vec<TableId>,
     builds: Vec<u64>,
     error: Option<String>,
-    /// Why every roster of this recording is refused: a table the scripts read that the recording
-    /// holds nothing of.
     refused: Option<String>,
-    /// Something woke the worker since its last look: it takes no wait, however the notification
-    /// and its own unlock fell. The map's side joins the rosters to every step, and a notification
-    /// lost between them would cost the step a whole tick.
     woken: bool,
-    /// Whether the worker has let the rows it read go: closed or refused, it declares no table,
-    /// so the store keeps no view for it ([`Rosters::closed`]).
     let_go: bool,
-    /// The worker holds a reader whose tables have not all arrived.
     loading: bool,
-    /// The frames the worker has looked at.
     #[cfg(any(test, feature = "test-support"))]
     looks: u64,
 }
@@ -229,7 +175,6 @@ impl Shared {
     }
 }
 
-/// The layer's worker: task forces' rosters resolved from rows at the head, a batch at a time.
 pub struct Rosters {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
@@ -249,7 +194,6 @@ impl Rosters {
         let working = Arc::clone(&shared);
         let maker = timeline::maker("ship_rosters");
         let worker = std::thread::Builder::new().name("ship rosters".into()).spawn(move || {
-            // The step's settle joins its product: at the head's priority, never below normal.
             viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             resolve(&working, &*naval, maker)
         })?;
@@ -280,12 +224,10 @@ impl Rosters {
         }
         asked.head = Some(hour);
         timeline::mark(self.maker, Mark::Asked);
-        // A seek: the answers of the one before go (its compose asks every roster again).
         if asked.seek.is_some_and(|before| Some(before) != seek) {
             asked.answers.clear();
         }
         asked.seek = seek.or(asked.seek);
-        // Sought back, the rows at the new head answer what was asked before.
         for (_, at) in &mut asked.wanted {
             *at = (*at).min(hour);
         }
@@ -306,9 +248,6 @@ impl Rosters {
         }
     }
 
-    /// Nothing draws the rosters of `forces` any more: they leave the rosters known, so a resolve
-    /// of every one of them (a table only the scripts read moved) rebuilds none of theirs. Asked
-    /// again, they come back.
     fn forget(&self, forces: impl IntoIterator<Item = u64>) {
         let gone: Vec<u64> = forces.into_iter().collect();
         if gone.is_empty() {
@@ -320,7 +259,6 @@ impl Rosters {
         asked.answers.retain(|(force, _)| !gone.contains(force));
     }
 
-    /// Every roster known is let go: the layer dropped them all.
     fn forget_all(&self) {
         let mut asked = self.shared.lock();
         asked.known.clear();
@@ -331,21 +269,15 @@ impl Rosters {
         std::mem::take(&mut self.shared.lock().answers)
     }
 
-    /// The hour the rows of the rosters answered stand at; none before the first answer.
     fn answered(&self) -> Option<Hour> {
         self.shared.lock().answered
     }
 
-    /// The task forces it still owes an answer for, asked or being resolved, each with the hour
-    /// of the change that asked: what the layer draws of that task force is exact only before
-    /// that hour. Empty once every roster asked is answered.
     fn owed(&self) -> Vec<(u64, Hour)> {
         let asked = self.shared.lock();
         asked.wanted.iter().chain(&asked.building).copied().collect()
     }
 
-    /// Waits until every roster asked is answered from rows at `hour`, once the map applied it; for
-    /// a caller that holds the head (the proof tool, tests), never the window.
     pub fn wait(&self, hour: Hour, limit: Duration) -> io::Result<()> {
         let began = Instant::now();
         let until = began + limit;
@@ -374,8 +306,6 @@ impl Rosters {
         }
     }
 
-    /// Waits until the worker has let the rows it read go, which it does once nothing draws the
-    /// rosters: the hand-over itself answers, so nothing here waits on the clock.
     #[cfg(any(test, feature = "test-support"))]
     pub fn closed(&self) {
         let mut asked = self.shared.lock();
@@ -384,25 +314,21 @@ impl Rosters {
         }
     }
 
-    /// Whether rosters are asked and not answered yet.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending(&self) -> bool {
         !self.shared.lock().wanted.is_empty()
     }
 
-    /// The frames the worker has looked at: one more once it has seen every roster asked before.
     #[cfg(any(test, feature = "test-support"))]
     pub fn looks(&self) -> u64 {
         self.shared.lock().looks
     }
 
-    /// Whether the worker's rows are loading: a table it reads has not arrived.
     #[cfg(any(test, feature = "test-support"))]
     pub fn loading(&self) -> bool {
         self.shared.lock().loading
     }
 
-    /// The batches' milliseconds and the tables the scripts were found to read.
     pub fn measured(&self) -> (Vec<u64>, Vec<TableId>) {
         let asked = self.shared.lock();
         (asked.builds.clone(), asked.tables.clone())
@@ -420,9 +346,6 @@ impl Drop for Rosters {
     }
 }
 
-/// What one wait of [`Rosters::wait`] cost, in the flight record: how long it waited, how much of
-/// that was after the answer it waited for was published (it slept past its product), how many
-/// condvar slices it took and how many of those ended by timeout rather than by the answer.
 fn waited_for(began: Instant, answered_at: Option<Instant>, slices: u64, timeouts: u64, answered: bool) {
     use viewer_foundation::view_record::add;
     if !viewer_foundation::view_record::on() {
@@ -437,8 +360,6 @@ fn waited_for(began: Instant, answered_at: Option<Instant>, slices: u64, timeout
     add("ship rosters", "waits_unanswered", u64::from(!answered));
 }
 
-/// The worker: whenever rosters are asked, or a table only the scripts read changed under the
-/// rosters it knows, resolve them over the newest rows and hand the answers back.
 fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
     let mut reader: Option<views::Reader> = None;
     let mut last: Option<Arc<DecodedFrame>> = None;
@@ -448,7 +369,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             return;
         }
         if !asked.open {
-            // Closed, it holds no reader: its tables leave the rows and come back as a reset.
             if let Some(held) = reader.take() {
                 held.declare_only(&[]);
                 asked.views = Some(held);
@@ -489,7 +409,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
                 reader.declare_only(&asked.tables);
             }
         }
-        // A frame made before a table was declared lacks it: rosters over it would learn it again.
         let frame = reader.as_ref().and_then(views::Reader::frame).filter(|frame| super::rebuilt::holds(frame, &asked.tables));
         asked.loading = reader.is_some() && frame.is_none();
         let Some(frame) = frame else {
@@ -509,8 +428,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         let scripts_moved = newer && last.as_ref().is_some_and(|last| {
             (0..frame.tables.len()).any(|table| !ROSTER_TABLES.iter().any(|known| known.index() == table) && !replay_frame::frame::SharedView::ptr_eq(&frame.tables[table], &last.tables[table]))
         });
-        // Rows newer only in their hour: the rosters known stand while every pool they decided
-        // decides the same at it, judged off the lock.
         let recheck = (newer && !scripts_moved && !asked.decided.is_empty()).then(|| asked.decided.clone());
         let mut limits_moved = false;
         if let Some(decided) = recheck {
@@ -519,7 +436,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             limits_moved = !same || !missed.is_empty();
             asked = shared.lock();
         }
-        // Rows of a seek before the map's answer nothing: sought back, they may stand past its hour.
         let Some((through, seek)) = reader.as_ref().and_then(|reader| reader.through_seek(Arc::as_ptr(&frame))) else { continue };
         if asked.seek.is_some_and(|current| seek < current) {
             if !std::mem::take(&mut asked.woken) {
@@ -527,8 +443,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             }
             continue;
         }
-        // A roster is answered from rows standing at the hour it was asked or later: rows from before
-        // it may lack the task force or the ships it took that hour, and nothing would ask it again.
         let stands = through.max(frame.hour);
         let (mut batch, later): (Vec<(u64, Hour)>, Vec<(u64, Hour)>) = std::mem::take(&mut asked.wanted).into_iter().partition(|&(_, at)| at <= stands);
         asked.wanted = later;
@@ -547,21 +461,15 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
             } else if let Some(stands) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
                 && asked.answered.is_some_and(|answered| answered < stands)
             {
-                // No step since changed the rows every roster known was answered from.
                 asked.answered = Some(stands);
                 asked.answered_at = Some(Instant::now());
                 timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
             }
-            // Nothing to resolve: it waits for the rows of the hour the map applied, or, standing
-            // there already, for the rows of the step after it. The map's side waits for the
-            // rosters at every step, so a blind wait here would cost the step a whole tick.
             let seen = reader.as_ref().map_or(0, views::Reader::published);
             let woken = std::mem::take(&mut asked.woken);
             match (woken, reader.as_ref()) {
                 (true, _) => drop(asked),
-                // A frame newer than the one it has is the step after this one: the views it reads
-                // stand at the hour the side applied, so there is no older hour to chase.
                 (false, Some(reader)) => {
                     drop(asked);
                     reader.wait_newer(seen, Duration::from_millis(17));
@@ -585,8 +493,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
         timeline::mark(maker, Mark::BuildEnded);
         let mut asked = shared.lock();
         asked.building.clear();
-        // Sought while it was built: its answers are the seek before's, and what it answered waits
-        // for the rows of the map's.
         if asked.seek.is_some_and(|current| seek < current) {
             let head = asked.head.unwrap_or(Hour::MIN);
             asked.wanted.extend(batch.into_iter().map(|(force, at)| (force, at.min(head))));
@@ -633,7 +539,6 @@ fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
     }
 }
 
-/// The rows a table holds at the head: none when unavailable, not recorded or in a gap.
 fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
@@ -647,8 +552,6 @@ fn decode_u32(bytes: &[u8], out: &mut Vec<u32>) {
     out.extend(bytes.chunks_exact(4).map(|item| u32::from_le_bytes([item[0], item[1], item[2], item[3]])));
 }
 
-/// A task force's motion route from its TaskForceMapMotion row: the one place that table is read,
-/// so a change of its shape changes this alone. The lists are decoded into `path` and `alternate`.
 fn motion_route<'a>(motion: Option<&Mirror>, columns: &Columns, force: u64, path: &'a mut Vec<u32>, alternate: &'a mut Vec<u32>) -> Result<UnitRoute<'a>, &'static str> {
     let motion = motion.ok_or("task-force motion census incomplete")?;
     let row = motion.slot(u128::from(force)).ok_or("task-force motion row absent")?;
@@ -673,76 +576,52 @@ fn motion_route<'a>(motion: Option<&Mirror>, columns: &Columns, force: u64, path
     })
 }
 
-/// A task force's mission-skip operands from its TaskForceCounterInputs row (is in regions,
-/// bombardment region): the one place that table is read.
 fn skip_inputs(inputs: Option<&Mirror>, columns: &Columns, force: u64) -> Option<(u8, u32)> {
     let inputs = inputs?;
     let row = inputs.slot(u128::from(force))?;
     Some((inputs.number(columns.is_in_regions, row).value().unwrap_or(0), inputs.number(columns.bombardment_region, row).value().unwrap_or(0)))
 }
 
-/// The ships layer's arrays and what keeps them.
 pub struct Ships {
     naval: Arc<dyn Naval>,
     given: Mutex<Option<(Choice, Arc<Vision>)>>,
     vision: Option<(Choice, Arc<Vision>)>,
     columns: Option<Columns>,
     refused: Option<String>,
-    /// By TaskForces slot.
     forces: Vec<Held>,
-    /// Task force id to slot, in key order (the order today's pass walks).
     by_id: BTreeMap<u64, u32>,
-    /// Each ship's task force, as last read.
     ship_force: HashMap<u64, u64>,
-    /// Each province's task forces.
     in_province: HashMap<u32, Vec<u64>>,
     dirty: Dirty,
     figures: Dirty,
     camera: Option<(Placement, [u32; 2])>,
     admission: Option<Admission>,
-    /// [`Self::admission`] with a margin: the provinces whose rosters are warmed.
     nearby: Option<Admission>,
     camera_dirty: bool,
     all_dirty: bool,
     rosters_dirty: bool,
     statuses: HashMap<usize, Status>,
     rosters: Rosters,
-    /// Whether a compose keeps the rosters held: a copy made to compare with, given the rosters.
     reuse: bool,
-    /// The game day the parts' candidates carry.
     day: Option<i32>,
     frame: u64,
-    /// Task forces marked, figures made, rosters asked.
     marked: [usize; 3],
     path: Vec<u32>,
     alternate: Vec<u32>,
-    /// The window's layer: it reads the vision layer; the sight epoch its vision was taken at, and
-    /// whether task forces were born since.
     window: bool,
     sight_epoch: Option<u64>,
     born: bool,
-    /// The refusal draws nothing, as today's builder draws nothing then (a table not wholly
-    /// recorded), rather than waiting for what it needs.
     like_today: bool,
-    /// Changes to what is drawn not yet published, and what was published: its sequence number, the
-    /// counts it was published at, and why today's ships are drawn instead.
     touched: u64,
     published: (u64, [usize; 2], u64),
     needs_today: Option<String>,
-    /// The unit models' lines of what it draws, as the window joins them, and the publish and
-    /// refusal they were made for.
     warnings: Vec<String>,
     warned: Option<(u64, Option<String>)>,
-    /// The newest hour the parts stand for: the head of a settle with nothing marked and no task
-    /// force waiting for its roster. While one waits, what it publishes.
     product_hour: Option<Hour>,
-    /// The hour the map applied, as its task forces' mirror stands.
     head: Option<Hour>,
 }
 
 impl Ships {
-    /// (a caller that plays the playhead
-    /// itself); otherwise they follow the playhead's clock.
     pub fn new(naval: Arc<dyn Naval>) -> io::Result<Self> {
         let rosters = Rosters::new(Arc::clone(&naval))?;
         Ok(Self {
@@ -785,14 +664,10 @@ impl Ships {
         })
     }
 
-    /// The unit models' lines of the ships it draws, worded as today's: the admitted task forces'
-    /// counts with its refusal named, made when what it draws is published.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
 
-    /// The lines made again when the publish or the refusal they were made for moved, from the
-    /// admitted parts' reports alone.
     fn warn(&mut self) {
         let refused = self.refused.clone().filter(|_| self.like_today && self.columns.is_some());
         if self.warned.as_ref().is_some_and(|(seq, held)| (*seq, held) == (self.published.0, &refused)) {
@@ -809,15 +684,11 @@ impl Ships {
         self.warned = Some((self.published.0, refused));
     }
 
-    /// The layer the window draws: it takes the vision from the vision layer.
     pub fn in_window(mut self) -> Self {
         self.window = true;
         self
     }
 
-    /// Whether the window draws this layer's ships rather than today's: drawn and equal to today's
-    /// (hidden, or refused as today's builder draws nothing, both draw nothing), and no admitted task
-    /// force is in combat or shares its province with a land occupant.
     pub fn stands_in(&self) -> bool {
         if self.columns.is_none() {
             return true;
@@ -828,19 +699,14 @@ impl Ships {
         }
     }
 
-    /// Why today's ships are drawn instead, while an admitted task force needs what this layer does
-    /// not make.
     pub fn needs_today(&self) -> Option<&str> {
         self.needs_today.as_deref()
     }
 
-    /// The number of what it draws, moved on once a change has settled.
     pub fn seq(&self) -> u64 {
         self.published.0
     }
 
-    /// What the window draws: the admitted task forces' parts as one hour's ships, and their counts
-    /// with the refusal named, when it draws nothing for one.
     pub fn handover(&self) -> (NavalSources, ModelReport) {
         let (sources, mut report) = self.sources();
         if let Some(why) = self.refused.as_deref().filter(|_| self.like_today && self.columns.is_some()) {
@@ -849,7 +715,6 @@ impl Ships {
         (sources, report)
     }
 
-    /// Publishes what is drawn once nothing is left to settle.
     fn publish(&mut self) {
         let at = (self.marked[0], self.marked[1], self.touched);
         if self.dirty.len() > 0 || self.figures.len() > 0 || (self.published.1, self.published.2) == ([at.0, at.1], at.2) {
@@ -859,8 +724,6 @@ impl Ships {
         self.needs_today = self.today_needed();
     }
 
-    /// The first admitted task force today's builder draws otherwise: in combat (its battle), or in a
-    /// province where a land occupant competes for a ship's representative.
     fn today_needed(&self) -> Option<String> {
         self.by_id.values().map(|&slot| &self.forces[slot as usize]).filter(|held| held.admitted).find_map(|held| {
             let candidate = held.part.as_ref()?.candidate.as_ref()?;
@@ -871,9 +734,6 @@ impl Ships {
         })
     }
 
-    /// The playhead whose rows the rosters are resolved from. Its reader is declared here and the
-    /// call returns once the rows' worker has declared it, so a seek after it brings the tables:
-    /// a table declared later joins the playhead past its head.
     pub fn set_source(&self, entry: Arc<Entry>, recording: Recording) -> io::Result<()> {
         let mut asked = self.rosters.shared.lock();
         if asked.source.as_ref().is_some_and(|(held, _)| Arc::ptr_eq(held, &entry)) {
@@ -888,8 +748,6 @@ impl Ships {
         Ok(())
     }
 
-    /// The map side's view store: the rosters' worker reads the rows of the step's hour from it,
-    /// made from the side's own mirrors. Given once, as the side is made.
     pub fn set_views(&self, store: &views::Store) {
         let needs: Vec<Need> = ROSTER_TABLES.iter().map(|&table| Need::every(table)).collect();
         let reader = store.reader("ship_rosters", &needs);
@@ -901,7 +759,6 @@ impl Ships {
         self.rosters.shared.wake.notify_all();
     }
 
-    /// What the viewer sees and the perspective it is for; every figure is made again with it.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         *self.given.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((choice, vision));
     }
@@ -918,7 +775,6 @@ impl Ships {
         self.columns.is_some()
     }
 
-    /// The hour the map applied, as its task forces' mirror stands.
     pub fn head(&self) -> Option<Hour> {
         self.head
     }
@@ -931,17 +787,14 @@ impl Ships {
         self.marked
     }
 
-    /// Task forces held and those the camera admits.
     pub fn counts(&self) -> [usize; 2] {
         [self.by_id.len(), self.by_id.values().filter(|&&slot| self.forces[slot as usize].admitted).count()]
     }
 
-    /// Each admitted task force's part, by id; none for one whose figure is not made yet.
     pub fn parts(&self) -> BTreeMap<u64, Option<&ForcePart>> {
         self.by_id.iter().filter(|(_, slot)| self.forces[**slot as usize].admitted).map(|(&id, &slot)| (id, self.forces[slot as usize].part.as_ref())).collect()
     }
 
-    /// The cell of `size` world units holding most placed formations: its centre and count.
     pub fn front(&self, size: f32) -> Option<([f32; 2], usize)> {
         let mut cells: HashMap<(i32, i32), usize> = HashMap::new();
         for part in self.parts().into_values().flatten() {
@@ -952,7 +805,6 @@ impl Ships {
         cells.into_iter().max_by_key(|&(cell, count)| (count, std::cmp::Reverse(cell))).map(|((x, z), count)| ([(x as f32 + 0.5) * size, (z as f32 + 0.5) * size], count))
     }
 
-    /// The admitted task forces' parts as one hour's ships, in today's order.
     pub fn sources(&self) -> (NavalSources, ModelReport) {
         let (mut sources, mut report) = (NavalSources::default(), ModelReport::default());
         for part in self.parts().into_values().flatten() {
@@ -961,7 +813,6 @@ impl Ships {
         (sources, report)
     }
 
-    /// A layer of the same content, inputs, vision and rosters, made from scratch.
     pub fn fresh(&self) -> io::Result<Self> {
         let mut fresh = Self::new(Arc::clone(&self.naval))?;
         (fresh.columns, fresh.camera, fresh.camera_dirty, fresh.vision, fresh.reuse) = (self.columns, self.camera, true, self.vision.clone(), true);
@@ -975,8 +826,6 @@ impl Ships {
         Ok(fresh)
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described: admitted task forces
-    /// and their parts.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let (mine, theirs) = (self.sources().0, other.sources().0);
         let (_, differing, first) = viewer_world::map::unit_models::naval_differ(&mine, &theirs);
@@ -992,8 +841,6 @@ impl Ships {
         self.admission.as_ref().is_none_or(|admission| admission.admits_province(self.naval.bounds(), province))
     }
 
-    /// Whether `province` is inside the margin around the view: what the camera can come to admit
-    /// before a roster asked now could be answered.
     fn nears(&self, province: u32) -> bool {
         self.nearby.as_ref().is_none_or(|nearby| nearby.admits_province(self.naval.bounds(), province))
     }
@@ -1004,8 +851,6 @@ impl Ships {
         let (size, defines) = self.naval.map();
         let camera = self.camera.filter(|(_, viewport)| *viewport != [0, 0]);
         self.admission = camera.map(|(placement, viewport)| Admission::new(placement.on(size, defines), viewport));
-        // The margin is the camera's own height, which is the scale of what it sees: it grows and
-        // shrinks with the view rather than being a distance we picked.
         self.nearby = camera.map(|(placement, viewport)| {
             let eye = placement.on(size, defines);
             Admission::padded(eye, viewport, eye.height)
@@ -1020,8 +865,6 @@ impl Ships {
                 self.figures.mark(slot, self.frame);
             }
         }
-        // A task force the camera will admit before its roster could be answered: its roster is
-        // asked while it is still outside the view, so the figure is whole when it arrives.
         let warming: Vec<u64> = self
             .by_id
             .iter()
@@ -1039,9 +882,6 @@ impl Ships {
         }
     }
 
-    /// Task force at slot `at` is admitted or not: the hour it came into view at is kept while it
-    /// is, and forgotten when it leaves, so what is drawn of it is never counted from an hour it
-    /// was in nobody's picture.
     fn came_into_view(&mut self, at: usize, admitted: bool, head: Option<Hour>) {
         let held = &mut self.forces[at];
         held.in_view_at = match (held.admitted && held.in_view_at.is_some(), admitted) {
@@ -1064,8 +904,6 @@ impl Ships {
         }
     }
 
-    /// The roster of task force `id` is stale: it is asked again at once, and its figure waits for
-    /// the answer.
     fn stale_roster(&mut self, mirrors: &Mirrors, id: u64) {
         if let Some(slot) = mirrors.get(TableId::TaskForces).and_then(|forces| forces.slot(u128::from(id))) {
             if self.forces.len() <= slot as usize {
@@ -1079,7 +917,6 @@ impl Ships {
         }
     }
 
-    /// Why nothing is drawn: the core tables or the ship census not wholly recorded, or no vision.
     fn check(&self, mirrors: &Mirrors) -> Result<(), String> {
         if self.vision.is_none() {
             return Err("The ships layer is refused: it is given no vision of the viewing country yet".into());
@@ -1097,7 +934,6 @@ impl Ships {
         Ok(())
     }
 
-    /// Everything dropped and every task force marked.
     fn mark_all(&mut self, mirrors: &Mirrors) {
         self.all_dirty = false;
         self.touched += 1;
@@ -1117,7 +953,6 @@ impl Ships {
         }
     }
 
-    /// Every roster asked again: a variant's entity, a country's tag or a link changed.
     fn all_rosters(&mut self, mirrors: &Mirrors) {
         self.rosters_dirty = false;
         self.ship_force.clear();
@@ -1138,7 +973,6 @@ impl Ships {
         self.all_dirty = true;
     }
 
-    /// One task force's values from its rows; it moves between provinces and its figure is marked.
     fn read_force(&mut self, slot: u32, mirrors: &Mirrors) {
         let columns = self.columns();
         let at = slot as usize;
@@ -1150,8 +984,6 @@ impl Ships {
             Some(Force { id: forces.key(slot)? as u64, province: number(columns.province), logical_owner: number(columns.logical_owner), roster_owner: number(columns.roster_owner), expeditionary_owner: number(columns.expeditionary_owner) })
         });
         let held = &self.forces[at];
-        // Task forces the layer draws no roster of any more: their rosters are let go, so no later
-        // resolve of every roster known rebuilds one nothing reads.
         let mut gone: Vec<u64> = Vec::new();
         if let Some(old) = held.force {
             if row.is_none_or(|new| new.province != old.province) {
@@ -1194,7 +1026,6 @@ impl Ships {
         }
     }
 
-    /// An admitted task force's part, made once its roster is answered.
     fn place(&mut self, slot: u32, mirrors: &Mirrors) {
         let columns = self.columns();
         let at = slot as usize;
@@ -1243,7 +1074,6 @@ impl Ships {
     fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.settle_marked(mirrors);
         self.head = mirrors.get(TableId::TaskForces).and_then(Mirror::head);
-        // Nothing stands anywhere until every admitted task force has been drawn once.
         let stood = self.product_hour.is_some() || (self.marks() == 0 && self.waiting() == 0);
         if self.columns.is_some() && self.refused.is_none() && stood {
             self.product_hour = self.standing().or(self.product_hour);
@@ -1252,19 +1082,12 @@ impl Ships {
         self.warn();
     }
 
-    /// The newest hour everything it draws is exact at: the hour the rows its rosters were
-    /// answered from stand at and, for a task force **the camera admits** whose roster the worker
-    /// owes, the hour before the change that asked for it, or before it came into view if that is
-    /// later. A roster owed for a task force the camera does not admit holds nothing back: it is
-    /// in no picture. A figure drawn from a roster nobody has asked again is exact at the head,
-    /// and nothing leaves this standing at an older settle's hour.
     fn standing(&self) -> Option<Hour> {
         let head = self.head?;
         let rows = self.rosters.answered().map_or(head, |answered| answered.min(head));
         let mut stands = rows;
         for (force, at) in self.rosters.owed() {
             let Some(held) = self.by_id.get(&force).map(|&slot| &self.forces[slot as usize]).filter(|held| held.admitted) else { continue };
-            // What a watcher saw of it: never older than the publication it came into view at.
             let from = held.in_view_at.map_or(at, |seen| at.max(seen));
             if from > Hour::MIN {
                 stands = stands.min(from - 1);
@@ -1273,12 +1096,10 @@ impl Ships {
         Some(stands)
     }
 
-    /// The frame thread's own marks: task forces and figures to make, and whole passes owed.
     fn marks(&self) -> usize {
         self.dirty.len() + self.figures.len() + usize::from(self.all_dirty) + usize::from(self.rosters_dirty)
     }
 
-    /// Admitted task forces whose part waits for their roster from the worker.
     fn waiting(&self) -> usize {
         self.by_id.values().filter(|&&slot| self.forces[slot as usize].admitted && self.forces[slot as usize].part.is_none()).count()
     }
@@ -1299,7 +1120,6 @@ impl Ships {
                 self.refused = Some(why);
                 self.like_today = self.vision.is_some();
             }
-            // A refused layer draws nothing and carries nothing; it marks everything when accepted.
             self.dirty.clear();
             self.figures.clear();
             return;
@@ -1329,8 +1149,6 @@ impl Ships {
                 }
             }
         }
-        // An answer is matched by the task force's slot in the mirror: it can come before the
-        // layer has read a task force born in the step that asked it.
         for (force, roster) in self.rosters.take() {
             if let Some(slot) = mirrors.get(TableId::TaskForces).and_then(|forces| forces.slot(u128::from(force))) {
                 if self.forces.len() <= slot as usize {
@@ -1376,11 +1194,6 @@ impl Ships {
         }
     }
 
-    /// The window's layer takes from the vision layer the sight of the task forces the mirror holds
-    /// ([`crate::layers::vision::Vision::unit_vision`]): every figure is made again when the viewer
-    /// or a whole part of the sight changed, or it has none; only those whose sight moved when the
-    /// vision layer names them; it is taken again, marking nothing, when task forces were born or
-    /// all are placed again. A province's byte moves no ship's sight.
     fn take_vision(&mut self, upstream: &Upstream<'_>, mirrors: &Mirrors, always: bool) {
         use crate::layers::vision::Vision as Layered;
         if !self.window || self.columns.is_none() {
@@ -1412,7 +1225,6 @@ impl Ships {
         }
     }
 
-    /// The task forces a by-task-force table's change names.
     fn by_force(changes: &playhead::changes::Changes, mirror: &Mirror, read: &[usize]) -> Vec<u64> {
         let mut ids: Vec<u64> = changes.deleted().keys().unwrap_or_default().iter().chain(changes.inserted().keys().unwrap_or_default()).map(|&key| key as u64).collect();
         for written in changes.columns().iter().filter(|written| read.contains(&written.column())) {
@@ -1429,9 +1241,6 @@ impl Layer for Ships {
         "ships"
     }
 
-    /// Where the camera stands is taken here, and of its declaration the camera decides only
-    /// whether ship models are drawn at its height: a move that stays one side of that cutoff
-    /// declares nothing again and resets no table.
     fn placed(&mut self, view: &View) -> Option<u64> {
         let camera = view.camera.map(|camera| (camera, view.viewport));
         if camera != self.camera {
@@ -1532,15 +1341,12 @@ impl Layer for Ships {
         self.compose(mirrors)
     }
 
-    /// Its task forces read and their figures placed, and the roster each figure waits for asked
-    /// of the worker: it resolves them while the layers that join no maker settle.
     fn ask(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<bool> {
         self.take_vision(upstream, mirrors, false);
         self.settle_dirty(mirrors);
         Ok(true)
     }
 
-    /// Its rosters join the step: the picture it settles for stands at one hour.
     fn join(&mut self, mirrors: &Mirrors, _upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         timeline::mark(self.rosters.maker, Mark::JoinBegan);
         if self.window
@@ -1640,14 +1446,9 @@ impl Layer for Ships {
         if self.columns.is_none() || self.refused.as_deref().is_some_and(|why| why != "composing") {
             return Carried::default();
         }
-        // A roster asked of the worker is the worker's: counted here it held the shown hour.
         Carried { entities: self.marks() }
     }
 
-    /// While a task force waits for its roster, the hour its figures stand at ([`Self::standing`]),
-    /// or nothing before the first is made. Otherwise that hour, made on the rows' cadence, until
-    /// it is the hour applied and the layer is current. Hidden or refused, it draws nothing and
-    /// owes nothing.
     fn published(&self) -> Published {
         if self.columns.is_none() || self.refused.as_deref().is_some_and(|why| why != "composing") {
             return Published::Current;

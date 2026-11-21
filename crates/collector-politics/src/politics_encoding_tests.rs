@@ -1,4 +1,3 @@
-//! Offline production staging -> hourly census -> ledger -> frame codec.
 use super::*;
 use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput};
 use std::sync::Barrier;
@@ -80,7 +79,6 @@ fn hour_events(country: u32, hour: i32) -> Vec<Event> {
 #[test]
 fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss() {
     let _guard = hooks::staging_test();
-    // Mirror the retained T2 alias ordering; these are fixture IDs, not content.
     let ids = [
         361, 362, 363, 364, 440, 441, 442, 368, 369, 370, 371, 372, 373, 374, 375, 376,
     ];
@@ -99,8 +97,6 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
             ..Default::default()
         })
         .collect();
-    // Deliberately country-ordered with decreasing operative IDs. Use the same
-    // sorting converter as intel; retain two memberships of the same operative.
     let mut operatives: Vec<_> = ids
         .iter()
         .enumerate()
@@ -179,7 +175,6 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
     });
     assert_eq!(staging.registered_lanes(), 16);
     assert_eq!(drained_sequences, (1..=336).collect::<Vec<_>>());
-    // The same sealed indices must not publish any event a second time.
     let handoff = captured.handoff.unwrap().unwrap();
     let repeated = handoff
         .drain(&captured.cursors, &mut [Event::default(); 336], &mut [])

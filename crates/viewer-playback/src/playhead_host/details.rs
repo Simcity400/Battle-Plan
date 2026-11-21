@@ -1,9 +1,3 @@
-//! The detail report's table lines at the playback head: every table's status at the hour the
-//! map's mirrors are at, read from the recording's block pages (no table is opened for it), with
-//! its live rows where a mirror at the head holds the table, and an unavailable table's reason as
-//! the recording words it. A report, not a frame: it waits for a reason's words (bounded, as the
-//! proof's limitation comparison waits), never printing that they are being read.
-
 #[cfg(test)]
 mod tests;
 
@@ -15,12 +9,10 @@ use replay_columnar::{
 };
 use replay_data::{Hour, rows::TableId};
 
-/// The lines of the map's reader of the playhead, in the report's words.
 pub fn of_map(side: &MapSide) -> Vec<String> {
     lines(side.entry(), side.applied(), side.parts().map(|(mirrors, _)| mirrors))
 }
 
-/// Each table's line at `hour` (none: the head has reached no hour yet), and the capture time's.
 pub fn lines(entry: &Entry, hour: Option<Hour>, mirrors: Option<&Mirrors>) -> Vec<String> {
     let Some(hour) = hour else {
         return vec!["At the playback head: no hour reached yet".to_owned()];
@@ -49,10 +41,6 @@ pub fn lines(entry: &Entry, hour: Option<Hour>, mirrors: Option<&Mirrors>) -> Ve
     lines
 }
 
-/// What the report says of each table at the head against what today's frame of the same hour
-/// says: its status, an unavailable table's reason and its rows where a mirror holds the table.
-/// Entries compared, differing, the first difference, and the tables counted apart: not recorded
-/// at the head because the unit files hold nothing of them at all.
 pub fn differ(side: &MapSide, today: &replay_frame::frame::DecodedFrame) -> (u64, u64, Option<String>, Vec<TableId>) {
     use replay_frame::frame::TableView;
     let Some(hour) = side.applied() else { return (1, 1, Some("the head has reached no hour".into()), Vec::new()) };
@@ -87,13 +75,10 @@ pub fn differ(side: &MapSide, today: &replay_frame::frame::DecodedFrame) -> (u64
     (entries, differing, first, absent)
 }
 
-/// Whether the unit files hold anything of `table`: a part or a restore in some block of some run.
 pub fn held_at_all(entry: &Entry, table: TableId) -> bool {
     entry.pages().runs().iter().flat_map(|run| &run.pages).filter_map(|page| page.tables.get(table.index())).any(|held| !held.parts.is_empty() || held.first.is_some() || held.restore.is_some())
 }
 
-/// `table`'s status at game hour `hour` from its block page, with the run and block it is read
-/// from; none in a gap between pieces.
 pub(super) fn status(entry: &Entry, timeline: &Timeline, table: TableId, hour: Hour) -> std::io::Result<Option<(Status, (usize, usize))>> {
     let Some(piece) = timeline.pieces().iter().find(|piece| piece.first <= hour && hour <= piece.last) else {
         return Ok(None);

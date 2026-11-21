@@ -14,8 +14,6 @@ import type { PeopleReply } from '../../generated/dashboard';
 
 const staticRow = () => false;
 
-/** One country's manpower or elections at the widget's hour (`hoverHour` when the reader points at another): rows at an
- * hour, followed at the head as a pushed panel. It renders when its facts' shape changes; their values are painted. */
 export default function CountryPeople({ runtime, widget, track, tag, hoverHour = null, active, view, onWarnings }: {
   runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack | undefined; tag: string | null | undefined; hoverHour?: number | null; active: boolean;
   view: 'manpower' | 'politics'; onWarnings?: (warnings: string[]) => void;

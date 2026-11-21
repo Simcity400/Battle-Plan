@@ -13,21 +13,15 @@ import { useMeasureSeries } from '../country-measure/measureSeries';
 import { COUNTRY_FUEL, validateCountryFuel } from './fuelData';
 
 export interface FuelAt {
-  /** The reply rendered: the structure while followed, the hour's reply while held. */
   data?: CountryFuelReply;
   error?: Failure;
   retry: () => void;
-  /** Followed, the newest reply pushed, painted without a render; held, the hour's reply. */
   live: LiveCell<CountryFuelReply | undefined>;
-  /** The element the followed panel is shown in. */
   root: (element: Element | null) => void;
   followed: boolean;
-  /** The hour the reply shown is of, when known. */
   shownAt: () => number | null;
 }
 
-/** A country's fuel at a moment: followed at the head as a pushed panel (a render only when `structure` of it changes,
- * its numbers painted from `live`), or asked once for a held hour. */
 export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: BoundTrack, tag: string | null, hour: number | null, follows: boolean,
   active: boolean, structure: (reply: CountryFuelReply) => string): FuelAt {
   const live = useMemo(() => new LiveCell<CountryFuelReply | undefined>(undefined), []);
@@ -45,11 +39,8 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: Bou
 
 const NO_ROOT = () => {};
 
-/** The most series one breakdown chart reads at once. */
 export const MOST_PARTS = 8;
 
-/** Some measures of one declared series for one country, from tiles over the chart's view: `MOST_PARTS` slots, each a
- * measure or none, so the hooks called never change. A tile landing renders: a breakdown is not followed at the head. */
 export function usePartSeries(runtime: WidgetRuntime, track: BoundTrack, kind: string, measures: readonly (string | null)[], tag: string | null,
   within: ReadonlyMap<string, readonly HourSpan[]> | undefined, active: boolean) {
   const args = (at: number) => {

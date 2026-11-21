@@ -1,21 +1,10 @@
-//! Orders-group membership base embedded in the unit (`cunit::SCHEDULED_MEMBER`). Member vectors
-//! store pointers to embedded subobjects rather than unit primaries. Serialization uses the host
-//! unit identity, and HQ clearing checks the embedded member against the group provider. The
-//! callback must not call the virtual accessor: recover the host by subtracting the base offset,
-//! then authenticate its vtables and back-pointer.
 
 use engine_sites::Rva;
-/// Owning orders-group pointer; the unit's `carmy::ORDERS_GROUP` is this base's back-pointer.
 pub const GROUP: usize = 0x08;
-/// Cached root-order pointer, checked against recomputation of the owning root.
 pub const ROOT_ORDER: usize = 0x20;
-/// Order-cache dirty byte; root and fallback queries refresh before reading it.
 pub const ORDER_CACHE_DIRTY: usize = 0x28;
-/// Root-order resolver used by the grouping predicate.
 pub const ROOT_ORDER_RVA: Rva = Rva(0x00c4_5310);
-/// Membership-base offset within its host unit.
 pub const HOST_OFFSET: usize = crate::cunit::SCHEDULED_MEMBER;
-/// Virtual-dispatch offset of the membership-base unit accessor.
 pub const UNIT_ACCESSOR_VTABLE_SLOT: usize = 0x20;
 
 use crate::{Memory, corder_instance as order, corders_group as group, cpdx_array::Array};
@@ -34,18 +23,15 @@ pub trait MembershipSignals {
 }
 impl MembershipSignals for () {}
 
-/// Independent owned storage capacities. Acquisition growth requires a worker.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MembershipCapacity {
     pub queries: usize,
     pub groups: usize,
-    /// Storage floor for ordered root entries and unique order inputs.
     pub roots: usize,
     pub chunks: usize,
 }
 
 impl MembershipCapacity {
-    /// Retain pooled capacity and leave undemanded arenas unchanged.
     pub fn grown(self, required: Self) -> Self {
         fn dimension(current: usize, required: usize) -> usize {
             if required <= current {
@@ -66,8 +52,6 @@ impl MembershipCapacity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MembershipQuery {
     pub member: usize,
-    /// The member's group back-pointer (`carmy::ORDERS_GROUP`) as the caller's seed copied it at
-    /// this boundary; the packet does not read it again.
     pub own_group: usize,
 }
 
@@ -88,7 +72,6 @@ struct RootSet {
 struct GroupInput {
     pointer: usize,
     result: Result<(), &'static str>,
-    /// The group's parent link (`corders_group::PARENT`), read once a pass for every query of the group.
     parent: Option<Result<usize, &'static str>>,
     roots: [RootSet; 2],
 }
@@ -99,8 +82,6 @@ struct RootInput {
     next: Option<usize>,
 }
 
-/// Typed, current-pass order inputs. Assigned members are a demanded prefix;
-/// they do not imply ETA's distinct primary-order predicate.
 struct MembershipOrderInput {
     pointer: usize,
     owner: Option<u64>,
@@ -112,22 +93,12 @@ struct MembershipOrderInput {
     failure: Option<&'static str>,
 }
 
-/// Exact owned 64-member native read, including the whole chunk containing a
-/// first match. `next` names another owned chunk, never a live pointer.
 struct MembershipChunkInput {
     bytes: [u8; 64 * 8],
     len: usize,
     next: Option<usize>,
 }
 
-/// Ordered batched Status membership acquisition. Queries are grouped by own
-/// group, then only unresolved queries demand their immediate parent's roots.
-/// Each root and demanded member chunk is acquired once. A later root/chunk
-/// fault is retained at its frontier and cannot poison an earlier match.
-///
-/// Storage grows in place at each original demand on the acquisition worker.
-/// No fallback rereads, hash eviction, or Memory replay occur. Consume individual
-/// `outcome`s in source order, including the successful prefix before a fault.
 pub struct MembershipPacket {
     prepared: MembershipCapacity,
     required: MembershipCapacity,
@@ -193,7 +164,6 @@ impl MembershipPacket {
             .expect("membership packet test capacity")
     }
 
-    /// Prepared population demand, excluding spare allocator capacity.
     pub fn capacity(&self) -> MembershipCapacity {
         MembershipCapacity {
             queries: self.prepared.queries.max(self.required.queries),
@@ -221,7 +191,6 @@ impl MembershipPacket {
             + self.work.capacity() * size_of::<(usize, usize)>()
     }
 
-    /// Discards this completed pass and increases capacities off-thread.
     pub fn grow(&mut self, required: MembershipCapacity) -> std::io::Result<()> {
         let old = self.prepared;
         let next = old.grown(self.required).grown(required);
@@ -308,8 +277,6 @@ impl MembershipPacket {
                 let slot = self.group(memory, base, own)?;
                 self.queries[index].own_slot = Some(slot);
                 self.groups[slot].result?;
-                // Every query observes the link, including those which then
-                // match their own primary root; a group's queries share one read.
                 let parent = *self.groups[slot]
                     .parent
                     .get_or_insert_with(|| pointer(memory, own, group::PARENT));
@@ -377,7 +344,6 @@ impl MembershipPacket {
         self.group_with(at, || group_identity(memory, base, at))
     }
 
-    /// A group the census already authenticated this hour: its queries read no identity.
     pub fn admit_group(&mut self, at: usize) -> Result<(), &'static str> {
         if at != 0 {
             self.group_with(at, || Ok(()))?;
@@ -490,7 +456,6 @@ impl MembershipPacket {
             }
             input.owner = read_at(memory, at, order::OWNER);
             input.owner.ok_or("orders membership pointer unreadable")?;
-            // The admitted root checks this owner before requesting members.
             Ok(())
         })();
         let slot = self.orders.len();
@@ -785,7 +750,6 @@ fn hash(pointer: usize, len: usize) -> Option<usize> {
     Some((value ^ (value >> 27)) as usize % len)
 }
 
-/// An orders or army group's identity, which admits a division's own group.
 pub(crate) fn group_identity(
     memory: &impl Memory,
     base: usize,
@@ -854,8 +818,6 @@ fn contains_from(
     Ok(false)
 }
 
-/// Scalar reference for a single membership query. The recorder uses the
-/// ordered owned packet above; this remains the independent engine reference.
 #[cfg(test)]
 fn has_order(memory: &impl Memory, base: usize, member: usize) -> Result<bool, &'static str> {
     use crate::{corder_instance as order, corders_group as group, cpdx_array::Array, read};

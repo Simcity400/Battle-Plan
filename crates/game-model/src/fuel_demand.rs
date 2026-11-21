@@ -1,5 +1,3 @@
-/// Only reached operands are acquired. A skipped wing needs no fuel, ace,
-/// mission-cost or weather reads. `reached` certifies that native gate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct AirInputs {
@@ -30,12 +28,10 @@ pub struct AirInputs {
     pub mission_cost: i64,
     pub period: u8,
     pub region: Option<u32>,
-    /// Province count is sampled separately for each native slot average.
     pub context_counts: [i32; 24],
     pub context_thresholds: [i64; 24],
 }
 
-/// One ordered province occurrence at one slot, before native averaging.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Weather {
     pub slot: u8,
@@ -48,7 +44,6 @@ pub struct Weather {
 
 pub use crate::modifiers::RequestedOperand as Modifier;
 
-/// Three capacity-gate outcomes; preserve each fixed5 factor.
 pub fn capacity_gate(planes: i32, divisor: i32, threshold: i64) -> bool {
     let denominator = i64::from(divisor).wrapping_mul(100_000);
     if denominator == 0 {
@@ -65,7 +60,6 @@ pub fn capacity_gate(planes: i32, divisor: i32, threshold: i64) -> bool {
     }
 }
 
-/// Ace-count scaling; the sentinel arm precedes wrapping multiplication.
 fn ace_scale(input: &AirInputs) -> i64 {
     let Some(planes) = input.ace_assigned_planes.filter(|value| *value != 0) else {
         return 100_000;
@@ -81,8 +75,6 @@ fn ace_scale(input: &AirInputs) -> i64 {
     }
 }
 
-/// Current pool contribution with no context argument. Keep wrapping and
-/// truncation separate from widened reporting sums.
 pub fn wing_rate(input: &AirInputs, weather: &[Weather]) -> Result<i64, &'static str> {
     if !input.reached {
         return Ok(0);
@@ -98,8 +90,6 @@ pub fn wing_rate(input: &AirInputs, weather: &[Weather]) -> Result<i64, &'static
     wing_rate_with_context(input, sums.as_ref())
 }
 
-/// Ordered weather contributions are accumulated once per captured region.
-/// Compact operands are then shared by independently decodable country packs.
 pub fn context_sums(counts: &[i32; 24], weather: &[Weather]) -> Result<[i64; 24], &'static str> {
     const ONE: i64 = 100_000;
     let mut sums = [0_i64; 24];
@@ -110,7 +100,6 @@ pub fn context_sums(counts: &[i32; 24], weather: &[Weather]) -> Result<[i64; 24]
                 .next()
                 .filter(|sample| usize::from(sample.slot) == slot)
                 .ok_or("fuel demand context occurrence missing or out of order")?;
-            // Weather coefficients are evaluated in order zero, two, one.
             let weighted = sample.coefficients[0]
                 .wrapping_mul(sample.cell[0])
                 .wrapping_div(ONE)
@@ -139,8 +128,6 @@ pub fn context_sums(counts: &[i32; 24], weather: &[Weather]) -> Result<[i64; 24]
     Ok(sums)
 }
 
-/// The native slot sums retain wrapping before average, threshold and period
-/// selection. They are not rounded averages or an inferred usage factor.
 pub fn wing_rate_with_context(
     input: &AirInputs,
     sums: Option<&[i64; 24]>,
@@ -177,7 +164,6 @@ pub fn wing_rate_with_context(
         let mut included = 0_i64;
         for (slot, &sum) in sums.iter().enumerate() {
             let count = input.context_counts[slot];
-            // Preserve the product and divisor as separate ordered operations.
             let average = if count != 0
                 && (sum.wrapping_add(0x7fff_ffff_ffff_fffe) as u64) < 0xffff_ffff_ffff_fffd
             {
@@ -201,7 +187,6 @@ pub fn wing_rate_with_context(
     Ok(term)
 }
 
-/// Twenty-four-hour projection of a current fixed5 required-use rate.
 pub fn daily_required(rate: i64) -> i64 {
     rate.wrapping_mul(2_400_000).wrapping_div(100_000)
 }

@@ -11,7 +11,6 @@ fn run(tag: &str, first_hour: i32, last_hour: i32) -> Run {
     Run { tag: tag.into(), first_hour, last_hour }
 }
 
-/// ENG leads faction 7 with FRA; both fight GER; USA is at peace. Each tag's raw id is its slot.
 fn groups(last: i32) -> Groups {
     Groups {
         factions: [(7, FactionHistory { first_hour: 0, members: vec![run("ENG", 0, last), run("FRA", 0, last)], leaders: vec![run("ENG", 0, last)], incomplete: vec![] })].into(),
@@ -81,7 +80,6 @@ fn a_side_shows_its_leader_s_read_and_a_co_belligerent_member_adds_no_part() {
     let quiet = reply.regions.iter().find(|region| region.id == 11).unwrap();
     assert!(!quiet.active && sides_cell(&quiet.cell).parts.is_empty(), "a zero read adds no part");
     assert_eq!(quiet.wings, AirWings::None, "a complete wings table without the region's row: none");
-    // The scores are live cells read from the rows, never numbers in the reply.
     let live = cells.finish();
     let frame = frame(scores(), true);
     let json = live.json(&live.values(&frame).into_iter().map(GroupState::Values).collect::<Vec<_>>());
@@ -109,7 +107,6 @@ fn a_viewpoint_reads_friendly_and_enemy_of_its_side_s_leader_or_its_country() {
     let live = cells.finish();
     let kinds: BTreeSet<_> = live.json(&[])["kinds"].as_array().unwrap().iter().map(|kind| kind["id"].as_str().unwrap().to_owned()).collect();
     assert!(kinds.contains("enemy"), "a viewpoint shows both scores: {kinds:?}");
-    // The dashboard's selected country by slot reads as the tag it goes by at the hour.
     country.viewpoint = Some(dashboard_base::products::Country::Slot(4));
     let (by_slot, _) = moment_of(&frame(scores(), true), &country);
     assert_eq!(by_slot.regions.iter().find(|region| region.id == 11).unwrap().cell, quiet.cell);

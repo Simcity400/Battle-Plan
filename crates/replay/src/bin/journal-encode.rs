@@ -1,23 +1,3 @@
-//! Writes a capture's journal into a new recording through the recorder's own writer
-//! ([`replay::campaign::live::LiveWriter`]), every branch admitted and every revision saved, so a
-//! fixture is made without the game. Dev tool: `journal-encode <session directory> <capture>
-//! <out.battleplan> [--level=N] [--facts=<file>] [--memory] [--timed] [--times=<factors>]
-//! [--start=<block>] [--hours=N] [--stop-after=<block>]`. The journal is read only, through
-//! [`replay::multiplied`]: no segment is removed or moved, and a journal written before this
-//! schema's newest tables is read as this schema's. `--times` multiplies its world; `--start`
-//! begins the run after the journal's block `N` from `--start-file`, which a child process
-//! (`journal-encode --preroll <session directory> <capture> <block> <file>`) writes first when it
-//! is missing, so the journal's hours before the start are not walked in the process measured;
-//! `--hours` stops after that many hours;
-//! `--stop-after` ends the process right after the commit at that block's end, as a kill would,
-//! and a later run on the same file takes it up. `--memory` prints what each block held, and every
-//! phase's labels at its peak when the build counts them (the run's first hour is a phase of its
-//! own); `--timed` times the encoder's work a call at a time. The recording gets its facts as the
-//! recorder's publish gives them: `--facts` names a session's facts file (`facts.bin`), whose pack
-//! is taken when it is the journal's content's, or a bare pack; without it, the session's
-//! `facts.bin` where the recorder's layout puts it beside the journal, when there is one. Facts of
-//! another content are refused by name. Prints what the writing took and stored as one JSON line.
-
 use replay::{
     campaign::live::{LiveWriter, Progress},
     columnar_file::Settings,
@@ -66,7 +46,6 @@ fn main() -> io::Result<()> {
         } else if let Some(path) = option.strip_prefix("--times=") {
             times = Some(Factors::read(Path::new(path))?);
         } else if let Some(given) = option.strip_prefix("--start=") {
-            // `<block>`; a reference recording named before it is no longer read.
             let block = given.rsplit_once(',').map_or(given, |(_, block)| block);
             start = Some(block.parse::<u32>().map_err(|_| usage())?);
         } else if let Some(path) = option.strip_prefix("--start-file=") {
@@ -112,14 +91,11 @@ fn main() -> io::Result<()> {
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
-    // Through the generator even at factor 1: it reads a journal written before this schema's
-    // newest tables.
     let mut source = Multiplied::open(Path::new(directory), capture, factors, start)?;
     let first_hours = u64::from(writer.segments()).saturating_sub(1) * 720;
     source.start(writer.segments())?;
     eprintln!("{}", json!({ "in_phase": source.in_phase(), "journal_schema_digest_is_a_prefix": source.exact_schema, "taken_up_at_segment": writer.segments(),
         "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied"), "keep_journal": cfg!(feature = "keep-journal") } }));
-    // A recording taken up that carries facts reads its own: the pack is not held at all.
     let facts = facts.filter(|_| !writer.carries_facts());
     let mut host = Everything::new(facts, pace);
     let taken = host.taken.clone();
@@ -159,10 +135,6 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-/// The facts pack the recording of the journal in `directory` gets, and the file it came from:
-/// `given`, or else the session's facts file where the recorder's layout puts it; checked
-/// against the journal's own content before anything is written, as the recorder's publish
-/// checks it.
 fn journal_facts(directory: &Path, capture: u32, given: Option<PathBuf>) -> io::Result<Option<(PathBuf, Vec<u8>)>> {
     let (campaign, session) = encode_report::journal_start(directory, capture)?;
     let (path, session_only) = match given {

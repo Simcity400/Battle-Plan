@@ -4,7 +4,6 @@ import { readFileSync } from 'node:fs';
 
 const css = readFileSync(new URL('./log.css', import.meta.url), 'utf8');
 
-/** The declarations of the rule for exactly `selector`, with `overflow` split into its axes. */
 function declarations(selector: string): Map<string, string> {
   const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim() === selector);
   assert.ok(rule, `${selector} has a rule`);
@@ -23,10 +22,6 @@ function declarations(selector: string): Map<string, string> {
   return found;
 }
 
-// LogList draws only the rows in view, chosen from the viewport's measured height,
-// and measures cards at the viewport's width. A scrollbar that comes and goes with
-// what is drawn changes that viewport, which changes what is drawn: the list
-// re-renders without end ("Maximum update depth exceeded").
 test('a row drawn at the edge of the view cannot bring a sideways scrollbar that shortens the view', () => {
   const scroller = declarations('.log-scroll');
   assert.equal(scroller.get('overflow-y'), 'auto');

@@ -156,7 +156,6 @@ fn empty_invalid_and_scope_targets_leave_template_precedence() {
 fn target_capital_continent_uses_perspective_localisation() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Targeted rule descriptions share their flag-trigger template.
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
@@ -178,7 +177,6 @@ fn target_capital_continent_uses_perspective_localisation() {
 fn named_target_from_flag_uses_scope_name_and_marked_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // FROM selects the named country target.
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);

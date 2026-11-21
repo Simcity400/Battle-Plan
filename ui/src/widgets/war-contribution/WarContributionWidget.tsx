@@ -31,7 +31,6 @@ import { chosenWar, contributionItems, contributionRows, contributionStructure, 
 import type { ContributionItem, Looks, Show, SideTotal } from './warContributionData';
 import './warContribution.css';
 
-/** Below this width the exact values at the bar tips move into the tooltip. */
 const VALUES_WIDTH = 420;
 const NO_ITEMS: readonly ContributionItem[] = [];
 
@@ -51,7 +50,6 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
     return window ? Math.floor(window.lastHour) : null;
   }, [track, widget, runtime.tracks]);
-  // Following, the widget renders only when the war shown, its observation, or whether it has ended changes.
   const clockHour = useHeadHour(clock, active && following, hour => {
     const at = trackHour(hour);
     const war = at === null || !structural.data ? null : chosenWar(structural.data, saved, at);
@@ -62,7 +60,6 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const war = structural.data ? chosenWar(structural.data, saved, at) : null;
   const readHour = war ? readHourFor(war, at) : null;
-  // A war going on at the hour shown is read at the head (a pushed panel while following); one that has ended, at its last hour.
   const going = war !== null && readHour === at;
   const looksRef = useRef<{ looks: Looks; show: Show; muted: string }>(null!);
   const live = useMemo(() => new LiveCell<readonly ContributionItem[]>(NO_ITEMS), []);
@@ -88,14 +85,11 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     product: 'war-contributions', params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: readHour } } : null, active, validateWarContributions, track?.source);
   const reply = going ? head.data : ended.data;
   const error = going ? head.error : ended.error;
-  // A reply of another war's hours (the last one shown while the new one loads) is not this war's.
   const current = reply && war && war.firstHour <= reply.hour && reply.hour <= war.lastHour ? reply : undefined;
   const observation = current && war ? observationAt(war, current.hour) : null;
   const group = current ? warContributions(current.contributions, observation) : null;
   const rows = useMemo(() => group && !group.reason ? contributionRows(group) : [], [group]);
   const tags = useMemo(() => [...new Set(rows.flatMap(row => [...row.left.members, ...row.right.members].map(member => member.tag)))], [rows]);
-  // Colours and names for every participant, read at the war's hour shown: every participant held its tag then, so no
-  // other holder's look is sampled or kept. No flag artwork, since the bars draw none.
   const holders = useMemo(() => current ? tags.map(tag => ({ key: tag, tag, hour: current.hour })) : [], [tags, current?.hour]);
   const looks = useHolderLooks(runtime.client, track, holders, active, tokens);
   looksRef.current = { looks, show, muted: tokens.muted };
@@ -147,7 +141,6 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   const menu = useCallback((item: ContributionItem) => {
     const held = latest.current;
     if (!war || !track || !held) return [];
-    // A member's joining is its native country's, continuous through its tag changes.
     const joins = identities ? [...new Set([...item.row.left.members, ...item.row.right.members].map(member => member.tag))].flatMap(tag => {
       const joined = joinedAt(war, tag, held.hour, identities);
       return joined && joined.firstHour !== war.firstHour ? [{ ...jumpItem(runtime, track.id, joined.firstHour),
@@ -176,7 +169,6 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   </div>;
 }
 
-/** The member (and whether its unknown part) at a side's part index, as the bars lay them out. */
 function partAt(side: SideTotal, index: number) {
   let at = 0;
   for (const member of side.members) {

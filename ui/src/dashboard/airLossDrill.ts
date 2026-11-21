@@ -6,7 +6,6 @@ import { airCauseName, ledgerRuns, ledgerScale, ledgerTotals } from './militaryA
 import type { LedgerIndex } from './militaryAirLedger';
 import type { MilitaryAirPart } from '../generated/dashboard';
 
-/** A drawn tag is bound to its native holder at the picked, recorded hour. */
 export function airLossDrillActors(index: LedgerIndex, hour: number, tags: readonly string[]): string[] {
   if (!runAt(index.reply.observed, hour)) return [];
   return [...new Set(tags)].flatMap(tag => {
@@ -15,13 +14,11 @@ export function airLossDrillActors(index: LedgerIndex, hour: number, tags: reado
   });
 }
 
-/** These keys are made only by airLossDrillActors, never restored from a layout. */
 export function airLossDrillActor(key: string): { tag: string; identity: string } {
   const [tag, identity] = JSON.parse(key) as [string, string];
   return { tag, identity };
 }
 
-/** The same native causes as airLossParts, with full holder history outside top N. */
 export function airLossDrillHistory(index: LedgerIndex, identity: string, from: number, end: number, dealt: boolean) {
   const aliases = index.series.filter(series => series.country.identity === identity);
   if (!aliases.length) return [];
@@ -42,7 +39,6 @@ export function airLossDrillHistory(index: LedgerIndex, identity: string, from: 
     runs: ledgerRuns({ country, parts, points: ledgerTotals(parts), openings: [] }, from, end, dealt, ledgerScale('airLosses')) }));
 }
 
-/** A range retains its native-date lower bound; a held moment uses branch offsets. */
 export function pinAirLossDrill(source: WidgetSpec, track: BoundTrack, tag: string, identity: string, from: number, hour: number,
   follow: boolean): WidgetSpec {
   const pinned = pinPartsRace(follow ? { ...source, time: { mode: 'follow' } } : source, track, tag, hour, follow, 'Loss causes');

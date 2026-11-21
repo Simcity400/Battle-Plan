@@ -32,10 +32,6 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 const PARAMS = {} as const;
 const NO_TAGS: readonly string[] = [];
 
-/** Who has an intel network in whom at the hour shown: owners as rows, targets as columns, each cell the chosen
- * recorded measure of the owner's network in the target. The countries and which pairs hold a network are a pushed
- * panel at the head, rendered only when they change; each cell's colour is painted from the pair's live cells each
- * frame. A cell opens the pair's history (the declared `intel-networks` series), inline or popped out, or pinned. */
 export default function IntelCoverageWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -43,7 +39,6 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === 'pair';
-  // The summaries' read hour moves daily: kept from every push for the tooltip and the jump, never rendered for.
   const readHour = useRef<number | null>(null);
   const head = useHeadProduct<IntelCoverageReply>(runtime, widget, 'intel-network-coverage', track && !saved ? PARAMS : null,
     { active, validate: validateIntelCoverage, structure: coverageStructure, paint: reply => { readHour.current = reply.readHour; } });
@@ -67,7 +62,6 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const ordered = useMemo(() => data && (!selection || selection.ready) ? countriesAt(data, shown, selection ? tag => selection.matches(tag, hour) : undefined, touching) : null,
     [data, shown, selection, hour, touching]);
   const axisTags = ordered ?? NO_TAGS;
-  // Names and flags load for the axes the matrix draws, not every shown country.
   const [visible, setVisible] = useChangedState<readonly string[]>(NO_TAGS);
   const onVisible = useCallback((rows: readonly string[], columns: readonly string[]) => {
     const next = [...new Set([...rows, ...columns])];
@@ -90,8 +84,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
     ...countryNameDetails(axis[row].countryFlag, axis[column].countryFlag),
   }, [at, live, axis, axisTags]);
   const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // A pair's countries are one recording's identities in one branch: another one drops it.
-  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
   const [choice, setPair] = useState<{ scope: object; pair: ChosenPair } | null>(null);
   const pair = choice?.scope === scope ? choice.pair : null;
   const drill = pair ? savedDrill : CLOSED;
@@ -108,7 +101,6 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   if (selection?.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
   if (chosen?.length === 0) return <WidgetState kind="unavailable" message="Choose a country in the widget settings." />;
   if (!data || selection && !selection.ready) return <WidgetState kind="loading" label="Loading intel networks…" />;
-  // A group's members not yet known at the hour: never the most active instead.
   if (data.missing || !at || !ordered) return <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." detail={data.missing ?? undefined} />;
   const main = touching && axisTags.length === 1 ? <WidgetState kind="empty" message="No intel networks of or in this country at this date." />
     : axisTags.length < 2 ? <WidgetState kind="empty" message="Fewer than two countries are shown at this date." />

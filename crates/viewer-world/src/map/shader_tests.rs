@@ -1,5 +1,3 @@
-//! Parses and validates the viewer's standalone WGSL with naga, without a device
-//! or game content, so a WGSL error fails `cargo test` instead of the first render.
 use eframe::wgpu::naga;
 use viewer_foundation::map::sprites::SHADER;
 

@@ -11,9 +11,6 @@ export function provisionalGroupEvent(groups: unknown, hour: number): boolean {
   return !!spans?.some(span => span.firstHour <= hour && hour <= span.lastHour);
 }
 
-/** Callers supply the drawn native-holder histories, including selected aliases.
- * An absent legacy identity field uses proven coverage; an empty field proves none. A row keyed by a slot
- * (`countryKey`) takes the capitulations of each tag its country held when it did, read from `histories`. */
 export function countryCapitulationBadges(groups: Pick<CountryGroupReply, 'capitulations'> | undefined,
   countries: readonly { tag: string; identities?: readonly Span[]; segments: readonly Span[]; membership?: readonly Span[] | null }[],
   extent: readonly [number, number], histories: readonly CountryIdentityHistory[] = []): ReadonlyMap<string, readonly EventBadge[]> {
@@ -35,7 +32,6 @@ export function countryCapitulationBadges(groups: Pick<CountryGroupReply, 'capit
   return badges;
 }
 
-/** Only reached events use dated names/flags; generic badges retain their labels. */
 export function countryCapitulationRows(badges: readonly EventBadge[], labelAt: (hour: number) => CountryLabel) {
   const rows = badgeRows(badges);
   badges.forEach((badge, index) => {

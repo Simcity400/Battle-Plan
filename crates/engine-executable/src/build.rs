@@ -2,20 +2,15 @@ use crate::availability::{Verified, Withheld};
 use sha2::{Digest, Sha256};
 use std::{fmt::Write as _, io::{self, Read}};
 
-/// Default modifier row separating fixed registrations from dynamic definitions.
 pub const FIXED_MODIFIER_GAP: u32 = 0x29a;
 
-/// An executable identity this release was made against.
 #[derive(Debug, Clone, Copy)]
 pub struct Build {
-    /// The release number players see, for messages.
     pub version: &'static str,
     pub exe_size: u64,
     pub exe_sha256: [u8; 32],
 }
 
-/// The build this release recognises. Any other build is read part by part, each part
-/// verifying itself.
 pub const PINNED_BUILD: Build = Build {
     version: "1.19.5.0",
     exe_size: 56_535_160,
@@ -50,7 +45,6 @@ impl ExecutableIdentity {
         PINNED_BUILD.matches(self)
     }
 
-    /// Plain-language warning for a build this release does not recognise.
     pub fn warning(&self, version: Option<&str>) -> Option<String> {
         if self.recognised() {
             return None;
@@ -68,15 +62,12 @@ impl ExecutableIdentity {
     }
 }
 
-/// The game build a recording names, as its recorder saw it.
 pub struct RecordedBuild<'a> {
     pub version: &'a str,
     pub identity: ExecutableIdentity,
 }
 
 impl RecordedBuild<'_> {
-    /// A plain-language warning when the installed game (its identity and version text)
-    /// is another build than the recorded one.
     pub fn warning(&self, installed: (&ExecutableIdentity, Option<&str>)) -> Option<String> {
         let (identity, version) = installed;
         if *identity == self.identity {
@@ -104,8 +95,6 @@ fn describe(size: u64, sha256: &[u8; 32]) -> String {
     text
 }
 
-/// The executable's own version text, found by its shape: the one NUL-delimited string in
-/// read-only data of the form `<Title> v<n>.<n>.<n>[.<n>…].<hex>`. None or several withhold it.
 pub fn version_banner(read_only_data: &[&[u8]]) -> Verified<String> {
     let mut found = None;
     for data in read_only_data {

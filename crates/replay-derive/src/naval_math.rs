@@ -1,8 +1,5 @@
-//! Fixed-point naval dominance arithmetic shared by world fills and combat terrain text.
 const ONE: i64 = 100_000;
 
-/// Saturate on the signed fixed5 overflow guard, preserving wrapping
-/// multiplication rather than limiting the unsigned quotient.
 pub fn dominance_value(minimum: i64, ratio: i64) -> i64 {
     let (scaled, remaining) = if ratio < ONE {
         (minimum.wrapping_mul(ratio), ONE.wrapping_sub(ratio))

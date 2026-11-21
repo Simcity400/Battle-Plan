@@ -1,0 +1,7 @@
+# Carry recording context and priority to preparation workers
+
+Thread priority and recording context do not automatically follow spawned threads. A job and its synchronous helpers carry the recording's executable tables, the level they enter, and any processor confinement. Background preparation starts a level below corresponding work the user is waiting for, so the job's internal priority ordering stays intact. Joining the job stops lowering new threads, and existing workers can follow that promotion. Reused helpers restore previous scheduling state after running and leave prior confinement when they enter unconfined work.
+
+Work that the user might join can instead run at ordinary job priority on half the caller's whole cores. That keeps some CPU available for interactive work without lowering the work the user may soon need. Systems with multiple processor groups are left unconfined because the group affinity cannot be restored through this path. Topology records are read within the size each record supplies because the encompassing Windows union can be larger than a core record. Explicit background mode lowers CPU, I/O and memory priority for work no one waits for. A refused transition remains a failure. Exclusive CPU accounting is optional and independent of recording dependencies.
+
+[Worker priority](../../crates/job-priority/src/lib.rs) · [Accounting](../../crates/job-priority/src/accounting.rs)

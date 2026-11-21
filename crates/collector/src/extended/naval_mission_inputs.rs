@@ -1,22 +1,3 @@
-//! Naval mission icon operands: strike/invasion active counts (P2), convoy efficiencies (P3) and the
-//! navies' mission ledgers. The game computes the efficiencies on demand, so this pack records
-//! their inputs ([`engine_native::naval_mission_inputs`]); `replay_derive::naval_mission_derive` evaluates
-//! them.
-//!
-//! One walk of every country's fleets feeds the hourly task-force operands and names the
-//! countries their roster, mission and expeditionary owners need. Each navy's live ledgers
-//! retain stored order and escort presence, including unlisted entries still fading out;
-//! they are read through the hour's physical navy pass
-//! ([`super::country_naval_movement_inputs`]), which authenticated every navy once.
-//! The `naval_missions` sliced family (`slicing::NAVAL_MISSIONS`) reads country
-//! modifiers/hubs and fleet-leader/HQ accumulators. Its fingerprint is a certificate of
-//! everything a country's rows read ([`Captured::certificate`]): its task forces' leader and
-//! commander references, the naval tree family's certificates of its accumulator and its fleet
-//! leaders' ([`crate::naval_tree_changes`]), its navy's stored hubs and its headquarters
-//! commanders' skill objects. A country whose certificate moved is read within the hour, so its
-//! rows equal the game's every hour; no rotating slice reads the others. A navy's ledger
-//! registrations are read only after a registration, removal or reset moved its certificate
-//! ([`crate::navy_ledger_changes`]).
 use crate::{
     navy_ledger_changes::{Counts as LedgerCounts, Skip as LedgerSkip},
     sampling::qpc,
@@ -49,19 +30,15 @@ pub const TABLES: [TableId; N] = [
     TableId::NavalDominanceTaskForceRanges,
     TableId::NavalPatrolMissionInputs,
 ];
-/// Indices of the `naval_missions` sliced family's tables in [`TABLES`].
 pub(crate) const SLICED: [usize; 2] = [2, 3];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     task_forces: usize,
     headquarters: usize,
-    /// Every walked task force, for the ledgers' mission pointers.
     census: usize,
     ledgers: usize,
-    /// The ledgers' registrations.
     entries: usize,
-    /// Country rows and the walk's named-country scratch (up to three per task force).
     countries: usize,
     commanders: usize,
     hubs: usize,
@@ -79,7 +56,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Native attach/cadence demand; no sampled values or retry witness.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -102,7 +78,6 @@ impl Capacities {
                 selected = selected
                     .checked_add(1)
                     .ok_or("naval mission row demand overflow")?;
-                // Reach every attached HQ occurrence.
                 let attached = visit
                     .task
                     .checked_add(ctask_force::ATTACHED_HEADQUARTERS)
@@ -157,7 +132,6 @@ impl Capacities {
         Ok(())
     }
 
-    /// A family row per country slot at most. Never lowers.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         self.countries = self.countries.max(crate::country_scale::rows(slots, 1));
     }
@@ -166,11 +140,9 @@ impl Capacities {
 #[derive(Clone, Copy, Debug, Default)]
 struct TaskForce {
     row: Operands,
-    /// Roster country: canonical slot and native id.
     slot: u32,
     country: u32,
     headquarters: usize,
-    /// [`inputs::TASK_FORCE_KEYS`] of the location region's weather.
     weather: [Value; 9],
     raiding_grid: Option<inputs::RaidingGrid>,
     additional_range: bool,
@@ -178,7 +150,6 @@ struct TaskForce {
     native_order: usize,
 }
 
-/// A walked task force, for mapping a ledger's mission pointers to handles.
 #[derive(Clone, Copy, Debug, Default)]
 struct Member {
     task: usize,
@@ -191,16 +162,12 @@ struct Member {
     range_failure: Option<&'static str>,
 }
 
-/// One navy's ledger registrations in ledger order, held under the ledger certificate taken
-/// before their read ([`crate::naval_map_changes::ledger_token`]).
 #[derive(Default)]
 struct HeldNavy {
     navy: usize,
     certificate: (u64, u64),
-    /// Region and entry count; `entries` holds the task forces in turn.
     regions: Vec<(u32, usize)>,
     entries: Vec<u64>,
-    /// This hour's read reached the navy.
     seen: bool,
 }
 
@@ -267,7 +234,6 @@ pub struct Captured {
     task_index: Vec<(u64, usize)>,
     escort_owners: Vec<u32>,
     escort_trees: super::naval_escort_trees::Trees,
-    /// Countries whose demanded escort tree this hour refused: read again next hour.
     escort_retries: Vec<u32>,
     convoy_designs: inputs::ConvoyDesigns,
     dominance_fleets: Vec<u64>,
@@ -275,9 +241,7 @@ pub struct Captured {
     headquarters: Arena<u64>,
     census: Arena<Member>,
     ledgers: CaptureRows<LedgerRow>,
-    /// Navies' ledger registrations by navy address, kept across hours.
     ledger_hold: Vec<HeldNavy>,
-    /// The fingerprint's resolved fleet leaders, kept across hours.
     leaders: Leaders,
     mines: Vec<replay_data::rows::NavalRegionalMineRow>,
     mines_outcome: Outcome,
@@ -288,25 +252,16 @@ pub struct Captured {
     map_ticks: [u64; 2],
     map_roster_complete: bool,
     entries: Arena<u64>,
-    /// One ledger's mission pointers; as long as the registration arena.
     scratch: Vec<usize>,
     countries: CaptureRows<CountryRow>,
     hubs: Arena<u32>,
     commanders: CaptureRows<CommanderRow>,
-    /// The countries the walk named, sorted by canonical slot and deduplicated once the walk
-    /// is complete.
     named: Arena<ccountry::Country>,
-    /// Sort scratch for located regions and distinct commander references.
     keys: Vec<u64>,
-    /// The distinct located regions' weather, in region order.
     weather: Vec<(u32, [Value; 9])>,
-    /// The countries this hour's family read covers.
     selection: SliceSelection,
-    /// This hour's ledger read of navies without registered missions.
     ledger_counts: LedgerCounts,
-    /// A CCountry's or CUnitLeader's certificate ([`crate::naval_tree_changes::sequence`]).
     sequence: fn(usize) -> Option<(u64, u64)>,
-    /// A navy's ledger certificate ([`crate::naval_map_changes::ledger_token`]).
     ledger_sequence: fn(usize) -> Option<(u64, u64)>,
 }
 
@@ -315,7 +270,6 @@ fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
     crate::naval_tree_changes::sequence
 }
 
-/// Tests: every receiver is observed and no writer runs, unless a test says otherwise.
 #[cfg(test)]
 fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
     |_| Some((1, 0))
@@ -326,7 +280,6 @@ fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
     crate::naval_map_changes::ledger_token
 }
 
-/// Tests: no navy is observed, so every ledger is read, unless a test says otherwise.
 #[cfg(test)]
 fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
     |_| None
@@ -347,8 +300,6 @@ fn finish(len: usize, unread: u32) -> Outcome {
     }
 }
 
-/// A leader and commander fingerprint of one country's task forces (FNV-1a over their
-/// references, in walk order).
 fn fingerprint(task_forces: &[TaskForce], headquarters: &[u64]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let mut mix = |value: u64| {
@@ -368,8 +319,6 @@ fn fingerprint(task_forces: &[TaskForce], headquarters: &[u64]) -> u64 {
     hash
 }
 
-/// Fleet-leader references resolved to their navy leader under its naval tree certificate,
-/// kept across hours by reference; construction, copy and destruction move it.
 #[derive(Default)]
 struct Leaders {
     held: Vec<(u64, usize, (u64, u64))>,
@@ -379,9 +328,6 @@ struct Leaders {
 }
 
 impl Leaders {
-    /// `reference`'s navy leader and certificate: the held one while its certificate holds,
-    /// else resolved, certified and authenticated in that order. `None` when unreadable or
-    /// unobserved; `Some(None)` when the reference resolves to nothing.
     fn leader(
         &mut self,
         reference: u64,
@@ -413,8 +359,6 @@ impl Leaders {
         }
     }
 
-    /// After a scan: hold exactly the leaders it used. Returns the scan's carried and resolved
-    /// references.
     fn finish(&mut self) -> [u64; 2] {
         self.next.sort_unstable_by_key(|entry| entry.0);
         self.next.dedup_by_key(|entry| entry.0);
@@ -436,7 +380,6 @@ impl Leaders {
     }
 }
 
-/// Hold `navy` in `hold`, sorted by navy address; an allocation failure holds nothing.
 fn hold_navy(hold: &mut Vec<HeldNavy>, navy: HeldNavy) {
     match hold.binary_search_by_key(&navy.navy, |held| held.navy) {
         Ok(at) => hold[at] = navy,
@@ -448,7 +391,6 @@ fn hold_navy(hold: &mut Vec<HeldNavy>, navy: HeldNavy) {
     }
 }
 
-/// Sorts and deduplicates `keys` in place; returns the distinct count.
 fn distinct<T: Copy, K: Ord>(keys: &mut [T], key: impl Fn(T) -> K) -> usize {
     keys.sort_unstable_by_key(|value| key(*value));
     let mut distinct = 0;
@@ -468,7 +410,6 @@ const NO_COUNTRY: ccountry::Country = ccountry::Country {
 };
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::build(&Capacities::default(), false)
     }
@@ -535,7 +476,6 @@ impl Captured {
         }
     }
 
-    /// The walk names up to three countries per recorded task force.
     fn named_capacity(capacity: &Capacities) -> usize {
         capacity
             .countries
@@ -544,7 +484,6 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
-        // A discarded cut must not leave a partially maintained cache as a baseline.
         if self.headquarters_pending {
             self.mission_headquarters.clear();
         }
@@ -624,8 +563,6 @@ impl Captured {
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
         if let Outcome::Truncated { len, unread_rows } = self.task_forces.outcome {
-            // The family did not run: raise it to the bounds the walk's demand implies (a
-            // leader and four commander sources per task force and entry).
             let task_forces = len.saturating_add(unread_rows as usize);
             grow_capacity(
                 &mut capacity.commanders,
@@ -664,22 +601,18 @@ impl Captured {
         }
     }
 
-    /// The countries whose family rows this frame's read replaced.
     pub(crate) fn selection(&self) -> &SliceSelection {
         &self.selection
     }
 
-    /// The latest ledger read's skipped and read navies.
     pub(crate) fn ledger_counts(&self) -> LedgerCounts {
         self.ledger_counts
     }
 
-    /// Start a frame's family read at its hour; the capture resets it again.
     pub(crate) fn reset_selection(&mut self, hour: i32, force_full: bool) {
         self.selection.reset_hooked(hour, force_full);
     }
 
-    /// Terminal completion after an accepted worker failure: nothing is read or published.
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         let outcome = |index: usize| super::failed_capture(TABLES[index], hour, force_full, reason);
         self.task_forces.fail(outcome(0));
@@ -697,11 +630,6 @@ impl Captured {
         self.scratch.fill(0);
     }
 
-    /// One hour's read beside the physical navy pass `holder` began for it.
-    /// Every table is refreshed every hour; the ledgers borrow the holder's
-    /// authenticated navies and skip, as `skip` allows, those without
-    /// registered missions; the sliced tables read the countries the hour
-    /// and, with a store, the changed fingerprints select.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn acquire_with_navies(
         &mut self,
@@ -726,8 +654,6 @@ impl Captured {
         )
     }
 
-    /// One hour's read with its own physical navy pass, as the Ordinary job
-    /// runs it, into growing storage.
     #[cfg(test)]
     pub fn capture(
         &mut self,
@@ -749,8 +675,6 @@ impl Captured {
         )
     }
 
-    /// A full-hour read with its own physical navy pass,
-    /// whose ledgers skip navies without registered missions as `skip` allows.
     #[cfg(test)]
     pub(crate) fn capture_skipping(
         &mut self,
@@ -811,7 +735,6 @@ impl Captured {
         self.empty_headquarters
             .get_or_insert_with(|| Arc::new(Vec::new()));
         self.ledger_counts = LedgerCounts::default();
-        // Without a store no print is held: every country is read.
         self.selection
             .reset_hooked(hour, force_full || fingerprints.is_none());
         let mut ticks = [0; N];
@@ -823,8 +746,6 @@ impl Captured {
                 self.task_forces.outcome = match self.walk(memory, base, countries) {
                     Ok(outcome) => {
                         census_complete = self.census.required <= self.census.first.len();
-                        // Weather consumes this freshly acquired row prefix. Its
-                        // failure does not erase the independent roster witness.
                         self.task_forces.outcome = outcome;
                         self.read_weather(memory, base, game_state)
                             .map(|()| outcome)
@@ -857,7 +778,6 @@ impl Captured {
                 (skip, force_full, &mut hold),
                 census_complete,
             );
-            // A failed read holds nothing; a navy the read did not reach leaves the hold.
             match read {
                 Ok(_) => hold.retain(|held| held.seen),
                 Err(_) => hold.clear(),
@@ -873,8 +793,6 @@ impl Captured {
         if !self.map_roster_complete
             && let Outcome::Unavailable { reason } = self.ledgers.outcome
         {
-            // A complete country roster is required to prove omitted zero mines
-            // and empty report lists. Preserve the other mission tables.
             self.mines_outcome = Outcome::Unavailable { reason };
             self.accidents_outcome = Outcome::Unavailable { reason };
         }
@@ -907,8 +825,6 @@ impl Captured {
                 }
             };
             if matches!(self.ledgers.outcome, Outcome::Rows { .. }) {
-                // Tree acquisition remains within the existing certified owner slice.
-                // A missing first-owner observation leaves that tree unavailable.
                 if self.read_escort_demand(memory, base, &countries).is_err() {
                     self.escort_owners.clear();
                 }
@@ -922,9 +838,6 @@ impl Captured {
         if !matches!(self.task_forces.outcome, Outcome::Rows { .. })
             || self.named.required > self.named.first.len()
         {
-            // The family's census and fingerprints need every task force: nothing more is
-            // published, the restore reads the family's owners again and the growth follows
-            // the walk's demand.
             let outcome = match self.task_forces.outcome {
                 Outcome::Unavailable { reason } => Outcome::Unavailable { reason },
                 _ => Outcome::Unavailable {
@@ -960,7 +873,6 @@ impl Captured {
         ticks
     }
 
-    /// `country`'s demanded escort tree refused this hour.
     fn retry_escort_tree(&mut self, country: u32) -> Result<(), &'static str> {
         reserve(&mut self.escort_retries, 1)
             .map_err(|_| "escort tree retry allocation failed")?;
@@ -968,8 +880,6 @@ impl Captured {
         Ok(())
     }
 
-    /// An unchanged print would keep a refused escort tree missing: each country whose demanded
-    /// tree this hour refused is a change at the next scan.
     fn retry_refused_escort_trees(&self, fingerprints: &mut SliceFingerprints) {
         for &country in &self.escort_retries {
             fingerprints.invalidate(country);
@@ -988,10 +898,6 @@ impl Captured {
         self.accidents_outcome = outcome;
     }
 
-    /// Every task force into the authenticated census, and the mission-input
-    /// and escort task forces in walk order (so each roster country's rows are contiguous and
-    /// in slot order) with the countries they name. A row or list that does not fit is
-    /// counted and its demand kept; the walk goes on so the whole demand is known.
     fn walk<M: Memory>(
         &mut self,
         memory: &M,
@@ -1030,7 +936,6 @@ impl Captured {
                 };
                 census.len += 1;
             }
-            // Raw references that name the roster country itself need no lookup.
             let resolve = |raw: u32| {
                 if raw == visit.country.id {
                     Ok(visit.country)
@@ -1067,8 +972,6 @@ impl Captured {
             }
             let row = attempt?;
             headquarters.required = headquarters.required.saturating_add(row.headquarters);
-            // Preserve raw owners even when not linked; only the family's country census
-            // needs a resolved reference. Playback names the missing link when it uses it.
             let owner = resolve(row.mission_owner).ok();
             let expeditionary = (row.expeditionary_owner > 0)
                 .then(|| resolve(row.expeditionary_owner as u32).ok())
@@ -1151,8 +1054,6 @@ impl Captured {
         Ok(())
     }
 
-    /// The existing mission row and its demanded sibling ranges share each
-    /// identity's immutable headquarters list until its observed values change.
     fn share_mission_headquarters(&mut self) -> Result<(), &'static str> {
         if matches!(self.task_forces.outcome, Outcome::Unavailable { .. }) {
             return Ok(());
@@ -1211,9 +1112,6 @@ impl Captured {
         Ok(())
     }
 
-    /// Only the initial mission rows need weather fan-out. Sibling ranges
-    /// already retain their copied weather and may reorder those initial rows.
-    /// No native capability or writer decision reaches this FIFO tail.
     pub(crate) fn decode_owned(&mut self) {
         if std::mem::take(&mut self.weather_pending) {
             let known = &self.weather[..self.weather_len];
@@ -1280,8 +1178,6 @@ impl Captured {
         }
     }
 
-    /// Distinct existing ledger members, retaining their full ordered source
-    /// context in flat arenas. Optional failure never replaces mission output.
     fn read_patrol_members<M: Memory>(
         &mut self,
         memory: &M,
@@ -1365,7 +1261,6 @@ impl Captured {
                     .ok();
                 }
                 if known.is_some() {
-                    // Consumers obtain this context from its existing mission/range row.
                     packet.existing_context = true;
                 } else if member.range_failure.is_none() {
                     let context = engine_native::naval_patrol_inputs::read_context_with_location(
@@ -1471,8 +1366,6 @@ impl Captured {
         result
     }
 
-    /// Escort text resolves the first registration's owner before filtering
-    /// mission kinds. An additional context never substitutes a roster owner.
     fn read_escort_demand<M: Memory>(
         &mut self,
         memory: &M,
@@ -1533,9 +1426,6 @@ impl Captured {
         Ok(())
     }
 
-    /// Additional range demand comes only from registered strike fleets. The
-    /// original authenticated visits remain valid in this same frozen pass.
-    /// Failure rolls back the optional suffix, preserving the mission family.
     fn read_dominance_ranges<M: Memory>(
         &mut self,
         memory: &M,
@@ -1686,7 +1576,6 @@ impl Captured {
         &rows.rows[..rows.outcome.len()]
     }
 
-    /// The weather modifiers of every region a recorded task force is located in, once each.
     fn read_weather<M: Memory>(
         &mut self,
         memory: &M,
@@ -1717,23 +1606,10 @@ impl Captured {
             inputs::region_weather(memory, weather?, region, &mut values)?;
             self.weather[index] = (region, values);
         }
-        // The map remains available to later native-demand decisions. Copying
-        // its values into mission rows has no bearing on any of those reads.
         self.weather_pending = true;
         Ok(())
     }
 
-    /// Every nonempty live (navy, region) ledger of each positive country's
-    /// navy, borrowed from the hour's physical navy pass in manager order: its
-    /// registrations in stored order and the navy's presence counts for the
-    /// region (also read by unlisted escort records). The navy in a
-    /// country's slot is that country's, whatever owner it stores, and the
-    /// original icon pass requires a navy for every positive canonical country. A navy
-    /// whose registered-mission set is empty
-    /// ([`cstrategic_navy::REGISTERED_MISSIONS`]) has every ledger empty: as
-    /// `skip` allows, its region headers are not read. Outside a full hour, a
-    /// navy whose ledger certificate is the one `hold` keeps for it republishes
-    /// its held registrations; only its presence counts are read.
     fn read_ledgers<M: Memory>(
         &mut self,
         memory: &M,
@@ -1771,8 +1647,6 @@ impl Captured {
             if pointer == 0 {
                 return Err("country navy absent or unreadable");
             }
-            // Map facts are independent of mission registration. The physical
-            // pass already authenticated this navy's identity.
             let begin = qpc();
             if mine_ready.is_ok() {
                 let _reads = crate::read_accounting::table(TABLES[4]);
@@ -1819,8 +1693,6 @@ impl Captured {
             }
             self.map_ticks[1] = self.map_ticks[1].saturating_add(elapsed(begin));
             if !census_complete {
-                // Mine amounts and incident reports have no task-force dependency.
-                // Preserve them even if the mission census cannot join a ledger.
                 continue;
             }
             let outer = navy.take_ledger_regions()?;
@@ -1830,7 +1702,6 @@ impl Captured {
             if let (Ok(at), Some(certificate), false) = (held, certificate, force_full)
                 && hold[at].certificate == certificate
             {
-                // No registration, removal, reset or lifecycle writer touched this navy.
                 self.ledger_counts.carried += 1;
                 hold[at].seen = true;
                 let held = &hold[at];
@@ -1887,8 +1758,6 @@ impl Captured {
                 ..HeldNavy::default()
             };
             let mut holdable = certificate.is_some();
-            // Append, remove and reset write a
-            // ledger and the set together: no registered mission, no entry.
             if skip.enabled && cstrategic_navy::registered_missions(memory, pointer) == Ok(0) {
                 self.ledger_counts.skipped += 1;
                 if holdable {
@@ -1940,8 +1809,6 @@ impl Captured {
                     fresh.regions.push((region, count));
                     fresh.entries.extend_from_slice(entries);
                 }
-                // The naval mission updater updates every record, including an unlisted escort
-                // animating out. Its alert still reads this region's presence.
                 let map = match presence {
                     Some(map) => map,
                     None => {
@@ -1967,8 +1834,6 @@ impl Captured {
                 hold_navy(hold, fresh);
             }
         }
-        // The original icon pass required a navy for every positive
-        // canonical country beyond the manager's physical slots too.
         for slot in (u32::try_from(count).unwrap_or(u32::MAX).max(1))..countries.count() {
             if countries.at(slot)?.is_some() {
                 return Err("navy manager country outside array");
@@ -1994,15 +1859,12 @@ impl Captured {
         })
     }
 
-    /// The rows of one roster country, contiguous in walk order.
     fn owned(rows: &[TaskForce], slot: u32) -> &[TaskForce] {
         let first = rows.partition_point(|task_force| task_force.slot < slot);
         let end = rows.partition_point(|task_force| task_force.slot <= slot);
         &rows[first..end]
     }
 
-    /// Scan every named country's certificate; the walk saw every mission task force, so the
-    /// named set is the family's complete census. Returns the receivers the certificates key.
     fn scan(
         &mut self,
         memory: &impl Memory,
@@ -2033,14 +1895,6 @@ impl Captured {
         receivers
     }
 
-    /// What `country`'s family rows read, beside the accumulator entries a hooked writer certifies:
-    /// task-force leader and commander references; the country's Tree certificate  (modifier
-    /// recalculation and appearance reset rebuild its accumulator); the navy's stored hubs (a short
-    /// array refreshed by reset and append); fleet leaders' tree certificates (recalculation, HQ
-    /// scaling, construction and destruction rebuild the leader's accumulator); and each HQ
-    /// commander's unit leader and four skill objects, selected by four component setters. Their
-    /// source accumulators are content. An unreadable or unobserved part returns `None`, so the
-    /// country is read every hour. A fleet leader's reference resolves through `leaders`.
     fn certificate(
         &self,
         memory: &impl Memory,
@@ -2116,7 +1970,6 @@ impl Captured {
         Some(digest.finish())
     }
 
-    /// The selected countries' rows. Returns the two outcomes and the commander read ticks.
     fn read_family(
         &mut self,
         memory: &impl Memory,
@@ -2218,8 +2071,6 @@ impl Captured {
         Ok(())
     }
 
-    /// A country's distinct fleet leaders (source 0) and headquarters commanders (sources 1
-    /// to 4) across its task forces.
     fn read_commanders(
         &mut self,
         memory: &impl Memory,
@@ -2266,7 +2117,6 @@ impl Captured {
             }
             None => *unread = unread.saturating_add(1),
         };
-        // One sort per source kind avoids a scan of every earlier task force/HQ.
         let mut used = 0;
         for task_force in owned {
             debug_assert_eq!(task_force.country, country);

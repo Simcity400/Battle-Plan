@@ -26,16 +26,12 @@ const formatAxis = (value: number) => `${Math.round(value * 10) / 10}%`;
 export interface TensionChartProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   label: string; extent: [number, number]; playhead: number | null; following: boolean;
-  /** The layers, greatest first, by the tag drawing each; Other is every other contribution. */
   layers: readonly TensionContribution[];
   colours: readonly string[]; otherColour: string;
-  /** Each layer is its share of the tension shown (the layers' top is the tension), or its contribution. */
   share: boolean;
-  /** The head's cells (`world-tension`'s live), drawn as the head bins while following. */
   live: Live<LiveValues<number>> | null;
   badges?: readonly EventBadge[];
   tooltip: (hour: number, badges: readonly EventBadge[]) => TooltipContent | null;
-  /** A line drawn at an hour (the drill's). */
   marker?: number | null;
   onPick?: (hour: number) => void;
   onHover?: (hour: number | null) => void;
@@ -44,21 +40,15 @@ export interface TensionChartProps {
   children?: ReactNode;
 }
 
-/** World tension over time: its top contributors stacked in their colours under the tension line, the rest as Other,
- * each a declared series' tiles read as the chart draws (a tile landing renders nothing), the head bins at the
- * followed cells. As shares, each contributor's layer is its part of the tension shown, so the stack's top is the
- * tension; as contributions, the stack is their sum before the game's cap. */
 export default function TensionChart({ runtime, track, active, options, label, extent, playhead, following, layers, colours, otherColour, share, live,
   badges, tooltip, marker = null, onPick, onHover, onContextMenu, revision, children }: TensionChartProps) {
   const tags = useMemo(() => layers.flatMap(layer => layer.tag ? [layer.tag] : []), [layers]);
-  // The lines are of the layers' countries whatever their order: layers trading places ask no line again.
   const lineKey = [...tags].sort().join('\u0000');
   const lineTags = useMemo(() => lineKey ? lineKey.split('\u0000') : [], [lineKey]);
   const lastHour = track.branch.lastHour;
   const parts = useMeasureSeries(runtime.client, track.source, track.branch.id, 'threat-contributions', 'contribution', lineTags, null, null, active, false, undefined, lastHour, following);
   const tension = useMeasureSeries(runtime.client, track.source, track.branch.id, 'world-tension', 'tension', WORLD_TAGS, null, null, active, false, undefined, lastHour, following);
   const sum = useMeasureSeries(runtime.client, track.source, track.branch.id, 'threat-sum', 'sum', WORLD_TAGS, null, null, active, false, undefined, lastHour, following);
-  // The head bins: the followed cells, as the lines' own units (percentage points).
   useEffect(() => {
     if (!live) return undefined;
     const cell = (key: string, decimals: number) => () => { const value = live.read().get(key); return value === undefined ? null : value / 10 ** decimals; };
@@ -115,10 +105,10 @@ export default function TensionChart({ runtime, track, active, options, label, e
   const subscribers = [parts.subscribe, tension.subscribe, sum.subscribe];
   const data = useMemo<ChartData>(() => ({ revision: () => { const now = summaries(); return now ? [...now.parts, now.tension, now.sum] : []; },
     subscribe: wake => { const stops = subscribers.map(subscribe => subscribe(wake)); return () => stops.forEach(stop => stop()); } }),
-  [summaries, ...subscribers]); // eslint-disable-line react-hooks/exhaustive-deps
+  [summaries, ...subscribers]);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => {
     parts.onSummaryView(view); tension.onSummaryView(view); sum.onSummaryView(view);
-  }, [parts.onSummaryView, tension.onSummaryView, sum.onSummaryView]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [parts.onSummaryView, tension.onSummaryView, sum.onSummaryView]);
   const offset = track.axisOffset;
   const liveHead = useMemo<LiveHead | undefined>(() => following ? { read: () => runtime.clock.getSnapshot().position + offset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, offset]);
@@ -127,7 +117,6 @@ export default function TensionChart({ runtime, track, active, options, label, e
     <TimeChart label={label} extent={extent} playhead={playhead} playback={playback} afterPlayhead={options.afterPlayhead === true}
       windowHours={Number(options.windowDays ?? 365) * 24} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
       liveHead={liveHead} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
-      // 0–100%, grown to whatever is drawn beyond it (negative parts, or contributions past the cap), never cut.
       fitValues={shown => [Math.min(0, shown?.[0] ?? 0), Math.max(100, shown?.[1] ?? 100)]}
       layers={layersDrawn} active={active} notRecorded={tension.notRecorded} data={data} revision={revision} formatValue={formatAxis}
       badges={badges?.length ? badges : undefined} onSummaryView={onSummaryView}

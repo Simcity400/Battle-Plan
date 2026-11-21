@@ -184,8 +184,6 @@ fn texts(tokens: &[Token]) -> Vec<(Kind, String)> {
         .collect()
 }
 
-/// Comments start with `!`, `#` or `;`. Operators and brackets are single characters,
-/// except `?=`. Quoted escapes decode, and 0xFF reads as the end.
 #[test]
 fn the_lexer_splits_as_the_game_does() {
     let lexed = lex(
@@ -216,17 +214,12 @@ fn the_lexer_splits_as_the_game_does() {
             (Kind::Bare, "q".into()),
             (Kind::Open, "{".into()),
             (Kind::Close, "}".into()),
-            // The 0xFF ends the token read.
             (Kind::End, "".into()),
         ]
     );
     assert_eq!(tokens[3].line, 2);
 }
 
-/// The byte 0xFF reads as an end marker and advances, so reading can continue after it.
-/// At a token start or after `?`, it returns an end token; for a bare token it keeps
-/// the text already read. It ends a comment or quoted string, returning the latter. A
-/// block loop ends there and its enclosing reader continues; a file loop stops.
 #[test]
 fn a_byte_0xff_is_one_end_and_reading_goes_on_after_it() {
     let tokens = |bytes: &[u8]| texts(&lex(bytes, Mode::KeepMark).tokens);
@@ -258,7 +251,6 @@ fn a_byte_0xff_is_one_end_and_reading_goes_on_after_it() {
         tokens(b"?\xffa\n"),
         [token(Kind::End, "?"), token(Kind::Bare, "a")]
     );
-    // The `?` remains the lexer's token after that read, so a value read takes it.
     let read = test_read(b"a = { n = ?\xff n = 2 }");
     assert_eq!(
         block(&read.items, "a")[0].value,
@@ -266,8 +258,6 @@ fn a_byte_0xff_is_one_end_and_reading_goes_on_after_it() {
     );
 }
 
-/// Retrying after a lone `?` or comment skips white space and returns an end at 0xFF or
-/// EOF, keeping `?` or the marker as its token. A token found by the retry replaces it.
 #[test]
 fn a_failed_retry_keeps_the_question_mark_or_comment_marker() {
     let tokens = |bytes: &[u8]| texts(&lex(bytes, Mode::KeepMark).tokens);
@@ -297,7 +287,6 @@ fn a_failed_retry_keeps_the_question_mark_or_comment_marker() {
         [token(Kind::Bare, "x"), token(Kind::End, "#")]
     );
     assert_eq!(tokens(b"? # c\n y"), [token(Kind::End, "y")]);
-    // A value read at such a read takes the kept text from the peeked token.
     for (text, value) in [
         (&b"a = { n = ? \xff n = 2 }"[..], "?"),
         (b"a = { n = ?\n", "?"),
@@ -312,13 +301,10 @@ fn a_failed_retry_keeps_the_question_mark_or_comment_marker() {
             String::from_utf8_lossy(text)
         );
     }
-    // `a`'s loop ends at the 0xFF; the file loop reads on: `n = 2` is a
-    // top-level field (an object given a scalar, ended by `}`), then `b`.
     let read = test_read(b"a = { n = 1 \xff n = 2 } b = { n = 3 }");
     assert_eq!(keys(&read.items), ["a", "n", "b"]);
     assert_eq!(keys(block(&read.items, "a")), ["n"]);
     assert_eq!(keys(block(&read.items, "b")), ["n"]);
-    // At the top level the file loop stops at it.
     let read = test_read(b"a = { n = 1 } \xff b = { n = 3 }");
     assert_eq!(keys(&read.items), ["a"]);
 }
@@ -329,9 +315,6 @@ enum Test {
     Body,
 }
 
-/// A test reader: `obj` reads an object, `list` a list, `n` one value,
-/// `trigger` by key; anything else in a body is skipped, at the top an
-/// object.
 fn test_read(text: &[u8]) -> Read {
     read(
         text,
@@ -380,7 +363,6 @@ fn object_list_read(text: &[u8]) -> Read {
     )
 }
 
-/// Each raw `{` is copied into the value slot before its element is read as an object.
 #[test]
 fn object_lists_read_each_raw_entry_as_an_object() {
     let result =
@@ -401,8 +383,6 @@ fn object_lists_read_each_raw_entry_as_an_object() {
     assert_eq!(result.items[1].value, Value::Scalar(b"3".to_vec()));
 }
 
-/// Neither the list nor its element object read guards on `{`: scalar values pull
-/// subsequent fields into the object.
 #[test]
 fn object_lists_read_scalar_outer_values_and_scalar_entries_unconditionally() {
     for (text, entry_kind) in [
@@ -423,8 +403,6 @@ fn object_lists_read_scalar_outer_values_and_scalar_entries_unconditionally() {
     }
 }
 
-/// Both closing reads leave the value slot intact; only nonclosing raw entries and
-/// fields inside their objects replace it.
 #[test]
 fn object_lists_keep_the_last_value_slot_through_closing_reads() {
     for (text, expected_kind, expected_text) in [
@@ -449,9 +427,6 @@ fn object_lists_keep_the_last_value_slot_through_closing_reads() {
     }
 }
 
-/// A block given to a one-value reader: `n` reads `{`, the block's
-/// fields are the body's, its `}` ends the body, and the body's own
-/// remaining fields are the file's.
 #[test]
 fn a_block_where_one_value_is_read_shifts_the_rest_up() {
     let read = test_read(b"a = { n = { n = 2 x = 3 } n = 4 } b = { n = 5 }");
@@ -460,17 +435,12 @@ fn a_block_where_one_value_is_read_shifts_the_rest_up() {
     assert_eq!(keys(a), ["n", "n", "x"]);
     assert_eq!(a[0].value, Value::Scalar(b"{".to_vec()));
     assert_eq!(a[1].value, Value::Scalar(b"2".to_vec()));
-    // `n = 4` is read at the top level, whose reader takes it as an
-    // object that a's own `}` then ends at once.
     assert!(block(&read.items, "n").is_empty());
     assert_eq!(keys(block(&read.items, "b")), ["n"]);
     assert_eq!(read.misreads.len(), 2, "{:?}", read.misreads);
     assert!(read.misreads[0].what.starts_with("field `n` is a block"));
 }
 
-/// A bare token reaching EOF retains its text but fails the read. A peek turns it into
-/// an end token, so lists and block loops stop before it, while a field-value read
-/// takes its text. A quoted string at EOF succeeds.
 #[test]
 fn a_last_bare_token_fails_its_advance_but_keeps_its_text() {
     let last = |bytes: &[u8]| {
@@ -493,14 +463,11 @@ fn a_last_bare_token_fails_its_advance_but_keeps_its_text() {
         block(&read.items, "a")[0].value,
         Value::Scalar(b"Final".to_vec())
     );
-    // A last key is never read: the loop's peek sees the end.
     let read = test_read(b"a = { n = 1 } stray");
     assert_eq!(keys(&read.items), ["a"]);
     assert!(read.misreads.is_empty(), "{:?}", read.misreads);
 }
 
-/// A pair reads one entry, then skips to the block's `}`. A second entry is reported
-/// and passed over without defining anything; a value other than `{` is reported.
 #[test]
 fn a_pair_reads_one_entry_and_skips_the_rest_of_its_block() {
     let pair = |text: &[u8]| {
@@ -525,7 +492,6 @@ fn a_pair_reads_one_entry_and_skips_the_rest_of_its_block() {
     let read = pair(b"a = { pair = { x = 1 @y = 2 obj = { z = 1 } w } n = @y } b = { n = 3 }");
     let a = block(&read.items, "a");
     assert_eq!(keys(a), ["pair", "n"]);
-    // Raw skipping defines nothing: `@y` keeps its text.
     assert_eq!(a[1].value, Value::Scalar(b"@y".to_vec()));
     assert!(
         read.misreads[0].what.contains("more than one entry"),
@@ -541,8 +507,6 @@ fn a_pair_reads_one_entry_and_skips_the_rest_of_its_block() {
     );
 }
 
-/// A reader that requires `{` reports any other value and skips the block at the
-/// current token.
 #[test]
 fn an_object_or_list_given_a_value_is_reported() {
     let read = read(
@@ -558,8 +522,6 @@ fn an_object_or_list_given_a_value_is_reported() {
         },
     );
     let a = block(&read.items, "a");
-    // `obj` consumed `{` as its operator and retained value `1`; reporting skips the
-    // block at the current token.
     assert_eq!(keys(a), ["n", "obj", "list", "n"]);
     assert_eq!(a[3].value, Value::Scalar(b"2".to_vec()));
     assert!(
@@ -569,8 +531,6 @@ fn an_object_or_list_given_a_value_is_reported() {
     );
 }
 
-/// Lexer mode 1 skips a leading UTF-8 byte-order mark. Mode 0 keeps its three bytes at
-/// the start of the first token, preventing a keyword match.
 #[test]
 fn a_byte_order_mark_is_skipped_only_in_mode_one() {
     let text = b"\xef\xbb\xbfa = { n = 1 } b = { n = 2 }";
@@ -594,9 +554,6 @@ fn a_byte_order_mark_is_skipped_only_in_mode_one() {
     assert!(!finds_a(Mode::KeepMark));
 }
 
-/// A failed read keeps the token and quoted flag. A failed peek changes its kind to End
-/// but keeps that flag, so a quoted `@x` before 0xFF or EOF remains literal when the
-/// block's closing read resolves it.
 #[test]
 fn a_failed_peek_keeps_a_quoted_tokens_flag() {
     for text in [&b"@x = 1 k = \"@x\"\xff"[..], b"@x = 1 k = \"@x\""] {
@@ -613,14 +570,8 @@ fn a_failed_peek_keeps_a_quoted_tokens_flag() {
     }
 }
 
-/// Variable-resolving skips write each resolved token back before checking for `{`. A
-/// reference that retained only a block brace opens a nested skip, which consumes the
-/// next `}`. The outer skip ends at its enclosing block's `}`, and reading continues
-/// after it.
 #[test]
 fn a_skip_resolves_each_token_it_reads() {
-    // `@o` retains only `{`; `u` is skipped by the default dispatch. Inside it, `@o`
-    // opens a nested skip that also takes `a`'s `}`.
     let read = test_read(b"@o = { a = { u = { @o } } n = 1 } b = { n = 2 }");
     assert_eq!(keys(&read.items), ["a", "b"]);
     assert_eq!(keys(block(&read.items, "a")), ["u", "n"]);
@@ -628,14 +579,11 @@ fn a_skip_resolves_each_token_it_reads() {
         block(&read.items, "a")[1].value,
         Value::Scalar(b"1".to_vec())
     );
-    // An unknown name stays its own text and opens nothing.
     let read = test_read(b"a = { u = { @none } n = 1 } b = { n = 2 }");
     assert_eq!(keys(&read.items), ["a", "b"]);
     assert_eq!(keys(block(&read.items, "a")), ["u", "n"]);
 }
 
-/// A definition at EOF reads no key, so the loop dispatches the key slot as the last
-/// read left it, or its initial empty key if none was read.
 #[test]
 fn a_text_ending_in_a_definition_dispatches_the_key_slot() {
     let read = test_read(b"@x = 1");
@@ -649,14 +597,11 @@ fn a_text_ending_in_a_definition_dispatches_the_key_slot() {
     assert_eq!(keys(&read.items), ["a", "n"]);
 }
 
-/// A value without a key consumes the next token as its operator and dispatches the key
-/// with the previous value. A following `{` is skipped whole for an unknown key.
 #[test]
 fn a_value_without_a_key_consumes_the_next_token() {
     let read = test_read(b"a = { n = 7 stray n = 1 unknown { n = 9 } n = 2 }");
     let a = block(&read.items, "a");
     assert_eq!(keys(a), ["n", "stray", "=", "unknown", "n"]);
-    // `stray` takes the stale 7; `=` then consumes `1`.
     assert_eq!(a[1].value, Value::Scalar(b"7".to_vec()));
     assert_eq!(a[4].value, Value::Scalar(b"2".to_vec()));
     assert_eq!(read.misreads.len(), 3, "{:?}", read.misreads);
@@ -667,10 +612,6 @@ fn a_value_without_a_key_consumes_the_next_token() {
     );
 }
 
-/// Definitions hold from where they are read on, at any depth read by
-/// key; a taken name leaves its `=` to the next key read; a quoted
-/// reference stays text; a definition ending its block takes `}` as the
-/// next key.
 #[test]
 fn definitions_follow_the_readers_consumption() {
     let read = test_read(
@@ -682,8 +623,6 @@ fn definitions_follow_the_readers_consumption() {
     assert_eq!(a[2].value, Value::Scalar(b"@x".to_vec()));
     assert!(a[2].quoted());
     assert_eq!(a[4].value, Value::Scalar(b"3".to_vec()));
-    // `@z = 4` ends b's block, so `}` is read as a key consuming `c`,
-    // and `=` as a key consuming `{`, whose block is skipped.
     let b = block(&read.items, "b");
     assert_eq!(keys(b), ["n", "}", "="]);
     assert!(
@@ -693,9 +632,6 @@ fn definitions_follow_the_readers_consumption() {
     );
 }
 
-/// An object reader given a scalar reads the following fields up to
-/// the enclosing `}`; a list given a scalar the same; a skipped key's
-/// block is skipped whole.
 #[test]
 fn a_scalar_where_a_block_is_read_pulls_the_rest_in() {
     let read = test_read(b"a = { obj = 1 n = 2 } b = { n = 3 }");
@@ -712,8 +648,6 @@ fn a_scalar_where_a_block_is_read_pulls_the_rest_in() {
     assert!(read.misreads.is_empty());
 }
 
-/// A trigger block holding values without keys is read as a list; one
-/// that also holds a definition cannot be settled.
 #[test]
 fn by_key_blocks_with_values_without_keys() {
     let read = test_read(b"a = { trigger = { x y = 1 } n = 2 } b = { n = 3 }");
@@ -726,10 +660,6 @@ fn by_key_blocks_with_values_without_keys() {
     assert_eq!(keys(&read.items), ["a"]);
 }
 
-/// A known trigger body reads by key. A token without a key consumes the next token as
-/// its missing operator, and dispatch sees the resulting slots. A definition is
-/// consumed as a definition. Scalars are reported without further reading. Lists with
-/// unknown dispatch retain each operand's kind.
 #[test]
 fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -756,10 +686,8 @@ fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
     assert_eq!(keys(a), ["body", "loose", "n"]);
     let inside = block(a, "body");
     assert_eq!(keys(inside), ["x", "=", "n"]);
-    // `=` is a key too, whose missing operator consumes `1`.
     assert_eq!(inside[2].kind, Kind::Quoted);
     assert!(inside[2].quoted());
-    // `@v` was consumed as `x`'s operator, never defined.
     assert_eq!(a[2].value, Value::Scalar(b"@v".to_vec()));
     assert!(read.misreads[0].what.starts_with("key `x` has no operator"));
     let read = body(b"a = { body = yes n = 1 }");
@@ -773,16 +701,12 @@ fn a_known_trigger_body_is_read_by_key_never_as_a_list() {
         "{:?}",
         read.misreads
     );
-    // The same text under a reader the port does not know is a list.
     let read = body(b"a = { trigger = { x y = \"5\" } }");
     let list = block(block(&read.items, "a"), "trigger");
     assert_eq!(list[1].kind, Kind::Quoted);
     assert_eq!(list[1].value, Value::Scalar(b"5".to_vec()));
 }
 
-/// Two tokens of any kind become pair strings. A third is reported, its block skipped
-/// if present, then the pair is skipped to `}`. Fewer than two are reported; nothing
-/// defines variables.
 #[test]
 fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
     let pair = |text: &[u8]| {
@@ -821,13 +745,10 @@ fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
             .contains("holds `{` after its two strings")
     );
 
-    // `{` is a string; the `}` after two strings ends the pair.
     let read = pair(b"a = { pair = { { x } n = 2 }");
     assert_eq!(strings(&read), ["{", "x"]);
     assert_eq!(keys(block(&read.items, "a")), ["pair", "n"]);
 
-    // `k = v`: `k` and `=` are the strings; `v` is the third, and a
-    // definition's name is only resolved.
     let read = pair(b"a = { pair = { @v = 1 } n = @v }");
     assert_eq!(strings(&read), ["@v", "="]);
     assert_eq!(
@@ -845,10 +766,6 @@ fn a_string_pair_reads_two_tokens_and_skips_to_its_end() {
     assert!(read.misreads[0].what.contains("reads `{ string string }`"));
 }
 
-/// Trigger dispatch receives the previous value when a key has no operator. A `{`
-/// consumed as operator beneath a stale `{` is read by key as its block. A stale
-/// nonopening value uses the reporting skip; a stale `{` without a consumed `{` depends
-/// on dispatch and is unsettled.
 #[test]
 fn an_untraced_key_without_an_operator_follows_the_stale_value() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -885,11 +802,9 @@ fn an_untraced_key_without_an_operator_follows_the_stale_value() {
     assert_eq!(keys(loose), ["y", "Or", "z"]);
     assert_eq!(loose[1].value, Value::Block(Vec::new()));
 
-    // A one-value trigger reads nothing more of the stale `{`.
     let read = trigger(b"a = { loose = { always yes } n = 3 }");
     assert!(read.unsettled.is_none(), "{:?}", read.unsettled);
     assert_eq!(keys(block(&read.items, "a")), ["loose", "n"]);
-    // A key only content could name, read without names.
     let read = trigger(b"a = { loose = { maybe yes } n = 3 }");
     let unsettled = read.unsettled.unwrap();
     assert_eq!(unsettled.line, 1);
@@ -901,8 +816,6 @@ fn an_untraced_key_without_an_operator_follows_the_stale_value() {
     );
 }
 
-/// Items retain the source token's kind. End tokens keep text but cannot be keywords;
-/// readers of the current lexer token keep that token's kind.
 #[test]
 fn items_keep_the_value_tokens_kind() {
     let kinds = |text: &[u8], name: &str| {
@@ -949,8 +862,6 @@ fn items_keep_the_value_tokens_kind() {
     );
 }
 
-/// The operator slot retains `<`, `>` or `=`. A key without an operator keeps the
-/// previous operator.
 #[test]
 fn items_keep_the_operator_slot() {
     let read = test_read(b"a = { n < 5 stray n n > 3 n = 1 } b = { n >= 2 }");
@@ -966,15 +877,11 @@ fn items_keep_the_operator_slot() {
             Operator::Equals
         ]
     );
-    // `>=` is `>` and then the value `=`.
     let b = block(&read.items, "b");
     assert_eq!(b[0].operator, Operator::Greater);
     assert_eq!(b[0].value, Value::Scalar(b"=".to_vec()));
 }
 
-/// Each field writes its single-character operator into one shared slot. A block item
-/// keeps the `=` read with its key rather than the last comparison within it, for both
-/// object and [`Shape::ByKey`] reads.
 #[test]
 fn a_block_keeps_its_own_operator_after_comparisons_inside() {
     let read = read(
@@ -1027,10 +934,6 @@ fn a_block_keeps_its_own_operator_after_comparisons_inside() {
     );
 }
 
-/// A reference copies its whole defining token, including its kind. Quoted definitions
-/// stay nonkeywords. Chains take the named value, whose token becomes the next key when
-/// its name is taken. Names compare exactly; quoted or unknown references retain their
-/// own text.
 #[test]
 fn a_reference_keeps_its_definitions_token_kind() {
     let read = test_read(
@@ -1084,8 +987,6 @@ fn shown_gui(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// The GUI readers' lexer (mode 0): comments end a word as well, `?=` is one token, a `?`
-/// opening a token is dropped, and `[`, `]`, `.`, `%` and `@` are word bytes.
 #[test]
 fn comments_and_punctuation_split_words_as_the_game_splits_them() {
     assert_eq!(
@@ -1099,8 +1000,6 @@ fn comments_and_punctuation_split_words_as_the_game_splits_them() {
     assert_eq!(shown_gui(b"@a[1] 50%% -1.5\n"), ["@a[1]", "50%%", "-1.5"]);
 }
 
-/// `\"` and `\\` keep their second byte, any other backslash stays, a line feed is kept, and
-/// the end of the file ends an open string, which is returned.
 #[test]
 fn quoted_strings_keep_the_game_escapes() {
     let tokens = gui_tokens(b"\"x\\\"y\\\\\" \"a\\nb\" \"\\\\\" \"line\nfeed\" \"open");
@@ -1118,8 +1017,6 @@ fn quoted_strings_keep_the_game_escapes() {
     assert!(tokens.iter().all(Token::quoted));
 }
 
-/// The lexer classifies a word by its first byte before any lookup, and lookup reads the
-/// text up to its NUL.
 #[test]
 fn number_and_keyword_tokens_follow_the_lexer() {
     let tokens = gui_tokens(b"12 -x .5 x \"5\" X 3dposition \0q\n");
@@ -1132,8 +1029,6 @@ fn number_and_keyword_tokens_follow_the_lexer() {
     assert_eq!(nul[0].text, b"x\0yz");
 }
 
-/// Field and item keyword dispatch read a key or value up to its NUL, the token the lexer
-/// looks up; a key that starts with NUL is no keyword.
 #[test]
 fn keyword_dispatch_stops_at_the_token_nul() {
     let mut seen = Vec::new();
@@ -1168,10 +1063,6 @@ fn keyword_dispatch_stops_at_the_token_nul() {
     assert_eq!(read.items[1].keyword(), None);
 }
 
-/// A 0xFF is one end of the stream and reading goes on after it: at a token's start, ending
-/// a word (which the lexer keeps), after `?`; it only ends a comment, and ends a string that
-/// is still returned. In mode 0 a leading byte-order mark is word bytes; bytes from 0x80 are
-/// word bytes, never space.
 #[test]
 fn a_byte_0xff_is_one_end_of_the_stream() {
     let kinds = |bytes: &[u8]| -> Vec<(Kind, Vec<u8>)> {
@@ -1231,7 +1122,6 @@ fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
     assert!(modifier[1].keyword_is("add"));
     assert_eq!(modifier[1].value.scalar(), Some(b"3".as_slice()));
 
-    // Railway-construction context uses the same mean-time-to-happen reader.
     let railway = crate::triggers::read(
         b"can_build_railway = { controller_priority = { modifier = { factor = x add = 3 always = yes } } }",
         &names,

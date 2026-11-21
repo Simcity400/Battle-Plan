@@ -1,8 +1,3 @@
-//! The game's three factory groups as the recorded content names them: every building type a
-//! layer of the stack declares with a group's production flag (a mod's own factory types
-//! included), named in the reader's language. A type declared again with other flags counts in
-//! no group the dashboard can name, and is said in a warning. The counts are the declared
-//! `country-factories` series; this names their groups.
 
 use super::branch;
 use crate::{
@@ -29,9 +24,9 @@ pub struct FactoryGroupsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupBuilding {
-    /// The content's building type.
+    #[doc = " The content's building type."]
     pub token: String,
-    /// Its name in the reader's language; null when the content has none.
+    #[doc = " Its name in the reader's language; null when the content has none."]
     pub name: Option<String>,
 }
 
@@ -39,11 +34,11 @@ pub struct FactoryGroupBuilding {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupNames {
-    /// `military`, `naval` or `civilian`, as the factory widgets name the group.
+    #[doc = " `military`, `naval` or `civilian`, as the factory widgets name the group."]
     pub key: String,
-    /// The production flag that counts a building type in it.
+    #[doc = " The production flag that counts a building type in it."]
     pub flag: String,
-    /// The building types counted in it, in the content's declaration order.
+    #[doc = " The building types counted in it, in the content's declaration order."]
     pub buildings: Vec<FactoryGroupBuilding>,
 }
 
@@ -52,21 +47,19 @@ pub struct FactoryGroupNames {
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupsReply {
     pub groups: Vec<FactoryGroupNames>,
-    /// Why no group can be named: the content is not configured or cannot be read.
+    #[doc = " Why no group can be named: the content is not configured or cannot be read."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(FactoryGroupsReply);
 
-/// The groups in the widgets' order, with the flag that counts a type in each.
 const GROUPS: [(&str, &str, fn(&FactoryFlags) -> bool); 3] = [
     ("military", "military_production", FactoryFlags::military),
     ("naval", "naval_production", FactoryFlags::naval),
     ("civilian", "general_production", FactoryFlags::civilian),
 ];
 
-/// Each group's building types from `buildings`, named through `name`, and what cannot be told.
 pub(super) fn groups(buildings: &Buildings, name: impl Fn(&str) -> Option<String>) -> (Vec<FactoryGroupNames>, Vec<String>) {
     let mut warnings: Vec<String> = buildings
         .ambiguous_factory_types

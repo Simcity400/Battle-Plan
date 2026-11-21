@@ -1,4 +1,3 @@
-//! Parsed state chance stays separate from legacy float weighting.
 use super::*;
 
 fn state(fields: &str) -> EntityState {

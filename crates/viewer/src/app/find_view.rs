@@ -1,10 +1,3 @@
-//! The find view over a map view: whether it is open, its edit box's keys, the presented hour's
-//! index, and the camera moves its results ask for.
-//!
-//! The index is built from the rows at the head once per hour, branch and viewing country while
-//! the view is open; its victory points are the map's own labels, as the labels layer draws
-//! them for the viewing country, taken only where they hold for the index's branch and hour. The
-//! search runs again whenever the query or the index changes.
 
 use super::{Viewer, head_rows, live_of};
 use crate::document::Document;
@@ -22,23 +15,19 @@ use viewer_combat::find_view::{
 use viewer_foundation::map::camera::Camera;
 use viewer_foundation::map::camera::motion::Floor;
 
-/// What an index was built for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Key {
     branch: replay_data::BranchId,
     hour: replay_data::Hour,
     ours: u32,
-    /// The map's labels the victory points were taken from, else why they are left out.
     labels: Result<usize, &'static str>,
 }
 
-/// Why the victory points are not in the index.
 const LABELS_NOT_DRAWN: &str = "victory points are left out: the map's labels have not been laid \
      out for the viewing country";
 const LABELS_LOADING: &str = "victory points are loading: the map's labels have not been laid out \
      for this hour yet";
 
-/// An hour's index, with the viewing country's capital state and why any entry is left out.
 struct Built {
     index: Index,
     capital: Option<u32>,
@@ -46,8 +35,6 @@ struct Built {
     fold: Fold<'static>,
 }
 
-/// The game's accent folding from the recording's executable tables; ASCII alone, with why, when
-/// the recording withholds the table.
 fn fold<'t>(table: Result<&'t FoldingTable, String>, refused: &mut BTreeMap<String, usize>) -> Fold<'t> {
     match table {
         Ok(table) => Fold::with_table(&table.letters),
@@ -64,20 +51,15 @@ pub struct FindState {
     pub open: bool,
     pub field: Field,
     index: Option<(Key, Result<Built, String>)>,
-    /// The query and index generation the results are for.
     searched: Option<(String, u64)>,
     generation: u64,
     results: Vec<(String, Target)>,
-    /// Why the shown results are fewer than the game's.
     pub refused: BTreeMap<String, usize>,
-    /// Why parts of the window are not shown.
     pub window_refused: BTreeMap<String, usize>,
-    /// A camera move asked for and not yet made.
     pending: Option<Target>,
 }
 
 impl FindState {
-    /// Whether the edit box has the keys.
     pub fn typing(&self) -> bool {
         self.open && self.field.focused
     }
@@ -109,7 +91,6 @@ impl FindState {
         self.field.focused = false;
     }
 
-    /// A click on the find view's `control`.
     pub fn click(&mut self, control: Control) {
         match control {
             Control::Result(index) => {
@@ -136,8 +117,6 @@ impl FindState {
         }
     }
 
-    /// The pending camera move as the world point to centre on, nearest the camera's `x` across
-    /// the east-west wrap.
     pub fn take_pending(&mut self, document: &Document, camera_x: f32) -> Option<[f32; 2]> {
         let target = self.pending.take()?;
         let state = |id: u32| document.radar_centers.get(id).ok();
@@ -179,10 +158,6 @@ impl FindState {
     }
 }
 
-/// The labels the victory points are taken from: those the labels layer draws for `ours`, while
-/// they hold for `branch` at `hour`; else why not, so no other hour's names stand in.
-/// What an index over `frame` for viewing country `ours` is built for, with the labels its victory
-/// points take: the frame's own branch and hour.
 fn key_of(frame: &DecodedFrame, ours: u32, drawn: Option<&Stamped>) -> (Key, Result<Arc<Labels>, &'static str>) {
     let labels = drawn_labels(drawn, ours, frame.branch, frame.hour);
     let key = Key { branch: frame.branch, hour: frame.hour, ours, labels: labels.as_ref().map(|labels| Arc::as_ptr(labels) as usize).map_err(|why| *why) };
@@ -199,9 +174,6 @@ fn drawn_labels(drawn: Option<&Stamped>, ours: u32, branch: replay_data::BranchI
     }
 }
 
-/// The provinces with victory points and a name, as the map's labels name them, each after its
-/// label's icon frame: the strip's shape for its points, then its colour for the controller's
-/// side (the strip's frames count from one in the text). A name the labels refused is named.
 fn victory_point_entries(
     labels: &Labels,
     defines: &viewer_world::map::labels::LabelDefines,
@@ -239,8 +211,6 @@ fn victory_point_entries(
         .collect()
 }
 
-/// The hour's entries: the countries and states, then the victory point provinces from the
-/// map's labels.
 fn build(
     document: &Document,
     frame: &DecodedFrame,
@@ -288,8 +258,6 @@ fn build(
     })
 }
 
-/// A dump's find view with `query` typed, its index built from the hour's rows and the map's
-/// labels for the viewing country, with why anything is left out.
 pub(crate) fn dump(
     document: &Document,
     options: &crate::Options,
@@ -321,8 +289,6 @@ pub(crate) fn dump(
 }
 
 impl Viewer {
-    /// While the find view is open: the index for the hour at the head, and the results for the
-    /// query. The index keeps the last hour's while the head's rows load.
     pub(super) fn refresh_find_view(&mut self, document: &Document) {
         if !self.picker.find.open {
             return;
@@ -331,8 +297,6 @@ impl Viewer {
         let Some(ours) = self.shown_vision().ok().map(|vision| vision.ours()) else {
             return;
         };
-        // The labels are checked against, the key made from and the index built over one frame of
-        // rows: a publication between two reads would pair one hour's labels with another's rows.
         let drawn = live_of(&self.playhead_map).and_then(|side| side.products().labels.as_ref());
         let held = self.picker.find.index.as_ref().map(|(built, _)| *built);
         let read = self.head_rows.find(head, |frame| {
@@ -350,8 +314,6 @@ impl Viewer {
         self.picker.find.search();
     }
 
-    /// Makes the camera move a result or the home button asked for: centred on its target,
-    /// held at the floor.
     pub(super) fn find_view_move(&mut self, document: &Document, camera: &mut Camera, floor: Floor<'_>) {
         if let Some(center) = self.picker.find.take_pending(document, camera.center[0]) {
             self.camera_manual = true;
@@ -359,9 +321,6 @@ impl Viewer {
         }
     }
 
-    /// The edit box's keys while it has focus, and the view's authored shortcuts while it is
-    /// open: `true` when the edit box took the frame's keys. While it has focus a key that types
-    /// text goes to the box, not to a shortcut.
     pub(super) fn find_view_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2], now: f32) -> bool {
         if !self.picker.find.open {
             return false;
@@ -446,8 +405,6 @@ mod tests {
         assert_eq!(drawn_labels(None, 3, 7, 44).err(), Some(LABELS_NOT_DRAWN), "the layer draws none: no earlier labels stand in");
     }
 
-    /// The key and the labels' check come from the one frame the index is built over: labels laid
-    /// out through hour 44 hold for that frame's rows and never for a frame published after them.
     #[test]
     fn the_index_key_and_its_labels_are_the_frame_it_is_built_over() {
         let labels = Arc::new(Labels::default());
@@ -522,7 +479,6 @@ mod tests {
         let labels = Labels {
             perspective: Some("ITA".to_owned()),
             candidates: Arc::new(vec![
-                // Roma, named through its owner's key as the map labels it.
                 candidate(9904, 40, named("Roma")),
                 candidate(1, 0, named("No points")),
                 candidate(2, 5, LabelName::Value { text: None }),
@@ -545,8 +501,6 @@ mod tests {
         let mut entries = victory_point_entries(&labels, &defines, &mut refused);
         assert_eq!(entries.len(), 1);
         assert_eq!(refused.len(), 1);
-        // The largest point shape (1, after the capital star's 0), our own colour (2), the
-        // strip's frames counted from one: frame 8.
         assert_eq!(
             entries[0].display,
             format!(
@@ -592,7 +546,6 @@ mod tests {
         assert_eq!(find.pending, Some(Target::State(64)));
         find.click(Control::Back);
         assert!(!find.open);
-        // Opening again empties the box and gives it the keys.
         find.toggle(1.0);
         assert!(find.typing());
         assert_eq!(find.field.text(), "");

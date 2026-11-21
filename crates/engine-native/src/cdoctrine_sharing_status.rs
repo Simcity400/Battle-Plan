@@ -1,4 +1,3 @@
-//! Ordered doctrine folders retained by faction doctrine sharing.
 
 use crate::{Memory, allocation, cdoctrine_folder_template as folder, cpdx_array::Array, read};
 use engine_sites::Rva;
@@ -6,7 +5,6 @@ use engine_sites::Rva;
 pub const VTABLE_RVA: Rva = Rva(0x02a3_8780);
 pub const FOLDERS: usize = 0x08;
 
-/// Read the companion reached through an already authenticated upgrade status.
 pub fn read_into(
     memory: &impl Memory,
     base: usize,

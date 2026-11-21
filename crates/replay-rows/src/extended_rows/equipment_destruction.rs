@@ -1,6 +1,5 @@
 use super::*;
 
-/// Stable recording values, independent of the supported executable's addresses.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -31,9 +30,7 @@ pub enum EquipmentDestructionCause {
     ExileEquipment = 22,
     VolunteerReturnEquipment = 23,
     CapitulationEscapeEquipment = 24,
-    /// Division pools only, labelled "Scripted equipment reductions".
     ScriptedEquipmentFraction = 25,
-    /// National stockpile, labelled "Scripted stockpile reductions".
     ScriptedStockpileFraction = 26,
 }
 
@@ -128,11 +125,6 @@ impl EquipmentDestructionCause {
     }
 }
 
-/// A drain before its branch's first complete interval. Consumers begin
-/// counting at the first subsequent complete drain instead of claiming an
-/// unknown campaign total for this deliberately uncounted startup interval.
-/// Frozen recording string: stored in table availability and matched exactly
-/// by consumers. Rewording silently classifies old startup intervals as withheld.
 pub const EQUIPMENT_DESTRUCTION_PARTIAL_REASON: &str =
     "equipment destruction first/branch interval is partial";
 
@@ -228,7 +220,6 @@ impl From<game_model::equipment_destruction::Cause> for EquipmentDestructionCaus
     }
 }
 
-/// Coverage of the supplemental deletion, transfer and live-pool writer group.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -259,8 +250,6 @@ impl NativeValue for EquipmentDestructionCoverage {
     }
 }
 
-/// Stable disposition of a gameplay deletion or temporary roster removal.
-/// Its field is independent of the optional destruction cause.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -338,23 +327,13 @@ impl NativeValue for Option<EquipmentDestructionCause> {
     }
 }
 
-/// Every gameplay division deletion or volunteer/exile roster removal per drain,
-/// including empty pools, returned equipment, merged sources and HQ transfers.
-/// Signed net amounts are aggregated separately in EquipmentDestruction. Rejected
-/// spawns, fake-intel units and load/reset/teardown cleanup have no witness.
-/// Temporary transfer witnesses stay active until census reappearance or deletion.
-/// A witness proves its event, not presence at an earlier census. A complete table
-/// certifies that no censused division disappeared without an event witness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEquipmentDeletionRow {
-    /// Full native handle, joining Divisions.id.
     pub division_handle: u64,
     pub country: u32,
-    /// Raw expeditionary-owner reference captured before DeleteUnit clears it.
     pub expeditionary_owner: u32,
     pub disposition: DivisionDeletionDisposition,
-    /// Present only for Loss. Temporary roster transfers have no loss cause.
     pub cause: Option<EquipmentDestructionCause>,
 }
 

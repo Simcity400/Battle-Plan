@@ -1,13 +1,3 @@
-//! Retains the actual available-stock operand of each native balance write.
-//! Five CALL replacements preserve the caller's frame and native continuation.
-//! No allocation, container walk, game getter, or cache refresh runs in a hook.
-//!
-//! daily logistics update runs per country in parallel,
-//! so writers are concurrent across countries. Each refusal withdraws exactly
-//! the cell (country history, archetype) the refused write could have reached:
-//! overlapping writers of one cell, a history change of its owner, or an
-//! unreadable operand leave that cell uncertified until its next clean write.
-//! Only a store whose cell cannot be identified withdraws every cell.
 use crate::hook::Hook;
 use engine_allocation as allocation;
 use engine_land_inputs::clogistics_status as native;
@@ -23,7 +13,6 @@ use std::{
 };
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
-// Located at construction: the balance store and the advance / clear history calls.
 static WRITE: AtomicUsize = AtomicUsize::new(0);
 static ADVANCE: AtomicUsize = AtomicUsize::new(0);
 static CLEAR: AtomicUsize = AtomicUsize::new(0);
@@ -72,12 +61,7 @@ fn refuse_census(reason: &'static str) {
 static UNREGISTERED: AtomicU64 = AtomicU64::new(0);
 static UNHOOKED: AtomicBool = AtomicBool::new(false);
 static LOG: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
-// The staging prepare is publishing. A callback binds to it as well as to the
-// published storage, so its native write is visible in whichever storage is
-// current while it runs (see `bound`).
 static PENDING: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
-// Published storage never moves or dies before callback quiescence. Retention
-// growth is checked before publication, including a failed replacement.
 struct Retained {
     owners: Vec<Vec<Storage>>,
     scratch: Vec<native::BalanceOwner>,
@@ -109,10 +93,6 @@ impl Drop for Guard {
     }
 }
 
-// A stamp counts native mutations in flight in its low 32 bits (bounded by
-// the native threads that can run at once) and advances its epoch in the
-// high bits as each one completes. An observation certified at a settled
-// stamp holds only while the stamp is unchanged.
 const WRITERS: u64 = 0xffff_ffff;
 const STAMP_EPOCH: u64 = 1 << 32;
 fn settled(stamp: u64) -> bool {
@@ -124,8 +104,6 @@ impl Stamp {
     fn load(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
     }
-    /// Entered before the native call, so readers and writers of every cell
-    /// it covers see the mutation as in flight until it completes.
     fn enter(&self) -> StampWrite<'_> {
         let previous = self.0.fetch_add(1, Ordering::SeqCst);
         StampWrite {
@@ -142,14 +120,10 @@ struct StampWrite<'a> {
 }
 impl Drop for StampWrite<'_> {
     fn drop(&mut self) {
-        // One step: the epoch advances as this writer leaves.
         self.stamp.0.fetch_add(STAMP_EPOCH - 1, Ordering::SeqCst);
     }
 }
 
-// Per-cell writers: the low 32 bits count native writes inside the cell's
-// span, CONTENDED marks any overlap among them, CERTIFIED marks values from
-// the last clean write, and the remaining bits advance once per write.
 const CONTENDED: u64 = 1 << 32;
 const CERTIFIED: u64 = 1 << 33;
 const CELL_EPOCH: u64 = 1 << 34;
@@ -167,18 +141,15 @@ struct CellWrite<'a> {
     claimant: bool,
     published: bool,
     counted: bool,
-    // Set once the write cannot certify; unset means it may still publish.
     refusal: Option<&'static str>,
 }
 impl CellWrite<'_> {
-    /// Certifies only a write no other writer of this cell overlapped.
     fn publish(&mut self, value: native::BalanceWrite, generation: u64, unattributed: u64) {
         let state = self.cell.state.load(Ordering::SeqCst);
         if !self.claimant || state & (WRITERS | CONTENDED) != 1 {
             self.refusal = Some(OVERLAP);
             return;
         }
-        // Readers reject these stores while this writer is counted.
         self.cell.values.store(value.values, Ordering::Relaxed);
         self.cell
             .balance
@@ -208,8 +179,6 @@ impl Drop for CellWrite<'_> {
         if self.published {
             return;
         }
-        // The last writer to leave an uncertified span clears its contention;
-        // the cell stays uncertified until a later clean write.
         let _ = self
             .cell
             .state
@@ -221,14 +190,11 @@ impl Drop for CellWrite<'_> {
                 })
             });
         if self.counted {
-            // An unwinding native call leaves no recorded reason.
             refuse(self.refusal.unwrap_or(UNWOUND));
         }
     }
 }
 impl Cell {
-    // Entered before the native store, never after it: even equal balances
-    // cannot let an overlapping writer certify an older availability.
     fn enter(&self, counted: bool) -> CellWrite<'_> {
         let previous = self.state.fetch_add(1, Ordering::SeqCst);
         let claimant = previous & WRITERS == 0;
@@ -274,7 +240,6 @@ struct Storage {
     load_signal: i64,
     owners: Vec<Owner>,
     cells: Vec<Cell>,
-    // Native stores whose cell could not be identified reach every cell.
     unattributed: Stamp,
     _charge: crate::raw_memory::Charge,
 }
@@ -337,11 +302,6 @@ impl Storage {
     }
 }
 
-/// Every storage a callback's native call can be observed through: the
-/// published one and one staging is publishing. Prepare links `PENDING`
-/// before it checks for active callbacks and clears it only while none are
-/// active, so a storage published during the callback is one of these two.
-/// Binding a storage of an earlier session is harmless: it is never read.
 fn bound() -> [Option<&'static Storage>; 2] {
     let current = unsafe { LOG.load(Ordering::SeqCst).as_ref() };
     let pending = unsafe { PENDING.load(Ordering::SeqCst).as_ref() };
@@ -350,9 +310,6 @@ fn bound() -> [Option<&'static Storage>; 2] {
     [current, pending]
 }
 
-/// Off-thread checked acquisition; returns exact row capacity, including zero.
-/// A load starts fresh storage. Current supply/convoy values are never used
-/// to backfill cells which no native balance write has reached.
 pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
     let Some(clock) = engine_allocation::advisory(|| cgame_state::read_clock(memory, base)) else {
         refuse_census("logistics clock preparation unavailable");
@@ -377,8 +334,6 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
     } = &mut *retained;
     let current = LOG.load(Ordering::SeqCst);
     if ACTIVE.load(Ordering::SeqCst) == 0 {
-        // No callback holds an older storage. One entering now can still read
-        // the last staging before it is unlinked, so that one survives a pass.
         let pending = PENDING.swap(ptr::null_mut(), Ordering::SeqCst);
         storage.retain(|owner| owner.as_ptr() == current || owner.as_ptr() == pending);
     }
@@ -433,8 +388,6 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
     }
     storage.push(owner);
     let pointer = &mut storage.last_mut().unwrap()[0] as *mut Storage;
-    // Link before checking for callbacks: one entering after the check binds
-    // to this staging too, so a write overlapping publication is never lost.
     PENDING.store(pointer, Ordering::SeqCst);
     if ACTIVE.load(Ordering::SeqCst) == 0 {
         LOG.store(pointer, Ordering::SeqCst);
@@ -442,10 +395,10 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
     Ok(rows)
 }
 
-/// Clears retained heap storage so detach/reattach begins without observations.
-///
-/// # Safety
-/// Hooks must be removed and all callbacks/readers quiescent before release.
+#[doc = " Clears retained heap storage so detach/reattach begins without observations."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " Hooks must be removed and all callbacks/readers quiescent before release."]
 pub unsafe fn release() {
     debug_assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
     ENABLED.store(false, Ordering::SeqCst);
@@ -499,7 +452,6 @@ impl Drop for HistoryChange<'_> {
 unsafe fn history_change(history: usize, target: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();
-    // Withdraws only this owner's cells, in every storage it can reach.
     let mut changes = if ENABLED.load(Ordering::SeqCst) {
         let mut counted = true;
         bound().map(|storage| {
@@ -528,8 +480,6 @@ unsafe extern "system-unwind" fn clear(history: usize) {
     unsafe { history_change(history, CLEAR.load(Ordering::Acquire)) };
 }
 
-// No stack or nonvolatile register changes: Rust bodies have normal unwind
-// metadata and return directly to the verified native CALL continuation.
 #[unsafe(naked)]
 unsafe extern "system-unwind" fn daily_entry(_: usize, _: i64, _: u32) {
     core::arch::naked_asm!("mov r9, rsp", "jmp {body}", body = sym daily);
@@ -539,7 +489,6 @@ unsafe extern "system-unwind" fn refresh_entry(_: usize, _: i64, _: u32) {
     core::arch::naked_asm!("mov r9, rsp", "jmp {body}", body = sym refresh);
 }
 
-/// One balance write bound to one storage's cell before the native store.
 struct CellBinding<'a> {
     storage: &'a Storage,
     owner: &'a Owner,
@@ -550,7 +499,6 @@ struct CellBinding<'a> {
 }
 enum Binding<'a> {
     Cell(CellBinding<'a>),
-    // The store's cell is unknown: every cell of the storage is withdrawn.
     Unidentified(StampWrite<'a>),
 }
 fn bind<'a>(
@@ -590,8 +538,6 @@ fn bind<'a>(
         }
         Err(reason) => {
             refuse(reason);
-            // History balance writer returns without a store for
-            // an index at or past the count; nothing else needs withdrawing.
             if !stores() {
                 return [None, None];
             }
@@ -641,9 +587,6 @@ unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offse
         engine_sites::at(base, cgame_state::PLAY_SESSION_STARTED_AT_RVA)
             .and_then(|at| read::<i64>(&memory, at))
     };
-    // Bind every reachable cell before native code, so an overlapping writer
-    // or history change of that cell is seen by both sides. A load during
-    // the write (the session signal changes) leaves the cell uncertified.
     let mut bindings = match ENABLED
         .load(Ordering::SeqCst)
         .then(bound)
@@ -706,10 +649,10 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
@@ -839,8 +782,6 @@ mod tests {
             ..Default::default()
         }
     }
-    /// One hooked balance write through the production bind/finish path:
-    /// identity before the native store, operand after it.
     fn native_write(
         storages: [Option<&Storage>; 2],
         history: usize,
@@ -942,23 +883,19 @@ mod tests {
         let mut first = cell.enter(false);
         let second = cell.enter(false);
         assert_eq!(cell.read(&row, 0, 0), None);
-        // Either native store may land last: the earlier claim cannot certify.
         first.publish(value(1, 100, 0, 17), 0, 0);
         assert!(!first.published);
         drop(second);
         assert_eq!(cell.read(&row, 0, 0), None);
         drop(first);
         assert_eq!(cell.read(&row, 0, 0), None);
-        // The contention ends with its last writer; the next clean write certifies.
         certify(&cell, value(1, 100, 0, 17), 0);
         assert_eq!(cell.read(&row, 0, 0), Some(17));
-        // One reset, or thirty advances returning to the identical pointers.
         assert_eq!(cell.read(&row, STAMP_EPOCH, 0), None);
         assert_eq!(cell.read(&row, 30 * STAMP_EPOCH, 0), None);
         assert_eq!(cell.read(&row, 1, 0), None);
         certify(&cell, value(1, 100, 0, 0), 30 * STAMP_EPOCH);
         assert_eq!(cell.read(&row, 30 * STAMP_EPOCH, 0), Some(0));
-        // An unwound/refused native write destroys its old certification.
         drop(cell.enter(false));
         assert_eq!(cell.read(&row, 30 * STAMP_EPOCH, 0), None);
     }
@@ -967,15 +904,12 @@ mod tests {
     fn one_refused_cell_leaves_every_other_country_and_archetype_certified() {
         let storage = two_countries();
         let rows = certified_rows(&storage);
-        // Two writers of country 1, archetype 0 overlap (PostDailyUpdate and a
-        // refresh of the same record); every other cell keeps its write.
         let mut first = bind([Some(&storage), None], Ok((A, 0xa000)), 0, || true);
         let mut second = bind([Some(&storage), None], Ok((A, 0xa000)), 0, || true);
         finish(&mut first, value(A, 0xa000, -1, 11));
         finish(&mut second, value(A, 0xa000, -1, 12));
         drop((first, second));
         assert_eq!(available(&storage, rows), [None, Some(20), Some(30)]);
-        // An unreadable operand withdraws only its own cell as well.
         let mut unreadable = bind([Some(&storage), None], Ok((B, 0xb000)), 0, || true);
         for binding in unreadable.iter_mut().flatten() {
             if let Binding::Cell(binding) = binding {
@@ -986,7 +920,6 @@ mod tests {
         }
         drop(unreadable);
         assert_eq!(available(&storage, rows), [None, Some(20), None]);
-        // The next clean write of a refused cell restores it.
         native_write(
             [Some(&storage), None],
             A,
@@ -1004,7 +937,6 @@ mod tests {
         let owner = storage.owner(A).unwrap();
         let change = owner.generation.enter();
         assert!(!change.overlapped);
-        // A write of the changing country cannot certify; another country can.
         let mut changing = bind([Some(&storage), None], Ok((A, 0xa000)), 1, || true);
         native_write(
             [Some(&storage), None],
@@ -1032,7 +964,6 @@ mod tests {
     fn unidentified_store_withdraws_every_cell_and_a_native_no_op_withdraws_none() {
         let storage = two_countries();
         let rows = certified_rows(&storage);
-        // History balance writer stores nothing for an index at or past the count.
         let skipped = bind(
             [Some(&storage), None],
             Err("logistics balance write index outside record"),
@@ -1047,7 +978,6 @@ mod tests {
             0,
             || true,
         );
-        // A write of another cell overlapping the unknown store cannot certify.
         let mut overlapped = bind([Some(&storage), None], Ok((B, 0xb000)), 0, || true);
         finish(&mut unknown, value(0, 0, 0, 0));
         drop(unknown);
@@ -1077,7 +1007,6 @@ mod tests {
             native::balance_write_stores(&memory, 0x1010, 3),
             Some(false)
         );
-        // A negative signed index is below every count and stores natively.
         assert_eq!(
             native::balance_write_stores(&memory, 0x1010, u32::MAX),
             Some(true)
@@ -1090,9 +1019,7 @@ mod tests {
         let old = two_countries();
         let new = two_countries();
         let old_rows = certified_rows(&old);
-        // The callback entered while `new` was being published: it binds both.
         let mut early = bind([Some(&old), Some(&new)], Ok((A, 0xa000)), 0, || true);
-        // A callback entering after publication binds only `new`.
         let mut late = bind([Some(&new), None], Ok((A, 0xa000)), 0, || true);
         finish(&mut late, value(A, 0xa000, -1, 40));
         drop(late);
@@ -1118,10 +1045,8 @@ mod tests {
         let [current, pending] = bound();
         assert!(current.is_some_and(|storage| ptr::eq(storage, &old)));
         assert!(pending.is_some_and(|storage| ptr::eq(storage, &new)));
-        // Once published, the staging is bound once.
         PENDING.store(&mut old, Ordering::SeqCst);
         assert!(bound()[1].is_none());
-        // A write across a load binds but cannot certify.
         let mut across = bind([Some(&new), None], Ok((B, 0xb000)), 0, || true);
         for binding in across.iter_mut().flatten() {
             if let Binding::Cell(binding) = binding {

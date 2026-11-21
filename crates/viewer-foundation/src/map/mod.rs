@@ -1,4 +1,3 @@
-//! Common map inputs, resources and rendering contracts.
 
 pub mod allegiance;
 pub mod anchored;

@@ -1,4 +1,3 @@
-// A CDP session on the desktop app's page: trusted input, screenshots and every console message.
 import { readFile } from 'node:fs/promises';
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -7,7 +6,6 @@ export const log = (...args) => console.log(new Date().toISOString().slice(11, 2
 const PROBE = new URL('./probe.js', import.meta.url);
 const APP_PAGE = /^http:\/\/tauri\.localhost\//;
 
-/** A DevTools protocol session on one target's socket: `send` a command, `on` an event (it returns the unsubscribe). */
 export async function cdpSession(url) {
   const socket = new WebSocket(url);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error('CDP connection failed')); });
@@ -49,9 +47,8 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   while (!target) {
     try {
       const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5000) })).json();
-      // The main window, never a pop-out's page.
       target = targets.find(t => t.type === 'page' && APP_PAGE.test(t.url) && t.title === 'Battle Plan') ?? null;
-    } catch { /* not listening yet */ }
+    } catch {   }
     if (!target) {
       if (Date.now() > deadline) throw new Error(`no desktop app page on port ${port} within ${timeoutMs / 1000} s`);
       await sleep(500);
@@ -64,7 +61,6 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
     return result.result.value;
   };
 
-  // Every console error and warning, exception and browser log error, with the case it happened in.
   const messages = [];
   let current = 'startup';
   const note = (type, text, url) => messages.push({ at: Date.now(), during: current, type, text: String(text).slice(0, 800), url: url ?? null });
@@ -73,7 +69,6 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
       note(type, args.map(a => a.value ?? a.description ?? '').join(' '), stackTrace?.callFrames?.[0]?.url);
   });
   on('Runtime.exceptionThrown', ({ exceptionDetails }) => note('exception', exceptionDetails.exception?.description ?? exceptionDetails.text, exceptionDetails.url));
-  // Chromium's own advice (violations, interventions) is not our code's output.
   on('Log.entryAdded', ({ entry }) => {
     if ((entry.level === 'error' || entry.level === 'warning') && entry.source !== 'violation' && entry.source !== 'intervention')
       note(`log-${entry.level}`, entry.text, entry.url);
@@ -81,7 +76,6 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   await send('Runtime.enable');
   await send('Log.enable');
   await send('Page.enable');
-  // The app's commands to its host go as requests to the IPC origin; the suite reads, never alters, them.
   const sent = new Map();
   on('Network.requestWillBeSent', ({ requestId, request }) => {
     const command = /^http:\/\/ipc\.localhost\/([^/?]+)/.exec(request.url)?.[1];
@@ -102,7 +96,6 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   const keyCodes = { Backspace: 8, Delete: 46, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Home: 36, End: 35, Tab: 9, PageUp: 33, PageDown: 34 };
   return {
     send, evaluate, on, messages,
-    /** What the app last sent its host with `command`, as it sent it. */
     lastSent: command => sent.get(command) ?? null,
     setCase(label) { current = label; },
     get case() { return current; },

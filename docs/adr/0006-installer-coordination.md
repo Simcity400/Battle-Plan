@@ -1,0 +1,9 @@
+# 0006. Coordinate the recorder and desktop app through installation
+
+The per-user installer includes both apps. Before replacing files, setup acquires a guard both apps check on startup, then asks each running app to close through its session's control pipe. A busy app can refuse while attached, recording or saving. Setup aborts on refusal or timeout and leaves the running process alone. The close request is `C`, with `Y` for closing and `N` for refusal. An app already closing acknowledges again while setup waits for its process to exit.
+
+Setup releases the guard after files are in place, or on failure after asking apps to close. It restores the apps that it or the old uninstaller closed. The old uninstaller inherits a per-run state file path, records each closure before the next prompt, and clears that state if it has to restore the apps itself. The `/HOI4RECORDER` and `/R` flags cover an updater that already exited when setup inspected the processes. Updates also remove the legacy separate map and shader tools.
+
+The Tauri template reads the hooks before its globals, pages and plugin folder have been declared. Hooks embedded in install sections can use the plugin syntax directly. Failure handlers that run outside those sections use the plugin already loaded during the close step to restart the apps as the interactive user. The welcome page reads the recorder autostart choice from its Windows Run entry, enables it initially for a fresh interactive installation, and leaves it alone during passive updates.
+
+[Installer hooks](../../crates/desktop/windows/installer-hooks.nsh) · [App control protocol](../../crates/app-update/src/control.rs)

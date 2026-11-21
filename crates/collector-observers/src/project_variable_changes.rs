@@ -1,6 +1,3 @@
-//! Project variable-store ownership, registered by the existing selected project
-//! census. Native variable writers notify only a registered store; no native
-//! reads, allocation, or blocking lock on the hook path.
 use crate::country_input_changes::{self, Marks};
 use std::{
     collections::HashMap,
@@ -24,13 +21,9 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn enabled(value: bool) {
     ENABLED.store(value, Ordering::SeqCst);
-    // Withdraw/reacquire detail once. Its availability must not disable the
-    // existing project certificate and force whole-country reads every hour.
     invalidate();
 }
 
-/// Worker path. Registration needs no game read and survives only for the same
-/// native store/owner. Allocation grows from observed project demand.
 pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
     if !ENABLED.load(Ordering::SeqCst) {
         return None;
@@ -115,8 +108,6 @@ pub fn writing(store: usize) -> Write {
             }
         }
         Err(_) => {
-            // A concurrent registration or poisoned map cannot certify an
-            // unseen write. Revoke held maps and the country selection once.
             EPOCH.fetch_add(1, Ordering::SeqCst);
             Write {
                 entries: None,
@@ -132,8 +123,6 @@ pub fn invalidate() {
     drop(country_input_changes::project_variables_written(None));
 }
 
-/// Worker-only lifetime maintenance after an existing complete daily project census.
-/// Failed acquisition or lock contention never declares a registered project dead.
 pub fn retain_live(mut keep: impl FnMut(u32, u32) -> bool) {
     if let Ok(mut entries) = OWNERS.try_write()
         && let Some(entries) = entries.as_mut()
@@ -176,8 +165,6 @@ impl Drop for ProjectWrite {
         }
     }
 }
-/// Existing project writers already own their country marks. Forward the same
-/// object identity without reading it or invalidating unrelated project stores.
 pub fn writing_project(project: usize) -> ProjectWrite {
     let store = project
         .checked_add(engine_projects::nproject_cproject::VARIABLES)
@@ -203,7 +190,6 @@ pub fn writing_project(project: usize) -> ProjectWrite {
     }
 }
 
-/// A project-pool reset invalidates every retained object, on entry and return.
 pub struct Reset;
 pub fn resetting() -> Reset {
     invalidate();

@@ -66,7 +66,6 @@ test('manpower and divisions are held steps to the shown hour, broken at unread 
 test('a course chart spans zero to its largest value, however long the battle', () => {
   assert.equal(courseExtent([[], []]), null);
   assert.deepEqual(courseExtent([[{ firstHour: 0, lastHour: 0, value: 0 }], []]), [0, 1], 'an all-zero course still has a range');
-  // More reads than a call can take as arguments: hourly reads of a very long battle on both sides.
   const long = Array.from({ length: 300_000 }, (_, hour) => ({ firstHour: hour, lastHour: hour, value: hour % 1000 }));
   assert.deepEqual(courseExtent([long, [...long, { firstHour: 300_000, lastHour: 300_000, value: 4321 }]]), [0, 4321]);
 });
@@ -132,7 +131,6 @@ test('terrain names read are held for one client, recording and content, and ask
   held.names.set(1, { provinceId: 1, name: 'Mod hills', missing: null });
   assert.deepEqual(missingTerrain(held, [2, 1, 2]), [2], 'a held province is not asked for again; a drawn one once');
   assert.equal(heldTerrain(held, client, { ...source }, 0), held, 'the same scope keeps what was read');
-  // A new content revision, a new revision of the recording, another source or client: nothing read before holds.
   for (const changed of [heldTerrain(held, client, source, 1), heldTerrain(held, client, { ...source, revision: '2' }, 0),
     heldTerrain(held, client, { ...source, id: 'other' }, 0), heldTerrain(held, {}, source, 0)]) {
     assert.notEqual(changed, held);

@@ -1,21 +1,3 @@
-//! Measures the reads every dashboard reply is made of, on a recording of format 12: a table at
-//! random hours, charts, ranks and top-N, a walk of every hour as `recorder inspect` walks it, and
-//! prints every reply of a fixed set as digests to compare with another reader's. Measurement
-//! only: it opens the recording for reading and writes nothing.
-//!
-//! `direct-read <recording> info`
-//! `direct-read <recording> seek <Table> [--samples=N] [--seed=S] [--purge] [--columns=a,b]`
-//! `direct-read <recording> chart-time <Table> [--column=<source id>] [--pixels=1000]`
-//! `direct-read <recording> replies [--samples=N] [--seed=S]`
-//! `direct-read <recording> walk [--hours=N] [--tables=A,B] [--hold] [--rebuild] [--check]`
-//! `direct-read <recording> read-hours [--tables=A,B]`: a line a table, then the total
-//! `direct-read <recording> rows-digest [--tables=A,B] [--every=block|<hours>]`
-//! `direct-read <file> purge` and `direct-read <file> readall`
-//!
-//! `purge` drops the file's pages from the Windows file cache, so the run after it reads the
-//! disk; `seek --purge` does so before every sampled hour. A build with `memory-labels` also
-//! prints each command's labelled peak, by label. Every command prints one JSON line.
-
 mod meter;
 mod read_hours;
 mod replies;
@@ -41,7 +23,6 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
 
 const USAGE: &str = "direct-read <recording> info|seek|chart-time|replies|walk|read-hours|rows-digest|purge|readall [Table] [--options]";
 
-/// A command's options: `--name=value` or `--name`.
 pub struct Options(Vec<(String, String)>);
 
 impl Options {
@@ -61,7 +42,6 @@ pub fn table_named(name: &str) -> io::Result<TableId> {
     TableId::ALL.into_iter().find(|id| format!("{id:?}") == name).ok_or_else(|| invalid(format!("No table {name}")))
 }
 
-/// The columns of `table` named in `names`, every one when none.
 pub fn fields(table: TableId, names: Option<&str>) -> io::Result<Option<Vec<usize>>> {
     let Some(names) = names else { return Ok(None) };
     names
@@ -71,7 +51,6 @@ pub fn fields(table: TableId, names: Option<&str>) -> io::Result<Option<Vec<usiz
         .map(Some)
 }
 
-/// A recording opened, refused when a run of it is damaged.
 pub fn open(path: &str) -> io::Result<Recording> {
     let recording = Recording::open_path(path)?;
     if let Some(damage) = recording.damage().first() {
@@ -91,8 +70,6 @@ impl Random {
     }
 }
 
-/// `samples` recorded hours drawn uniformly with `seed`, as run and ordinal: the same hours
-/// today's reader drew, run after run in order.
 pub fn sample_hours(recording: &Recording, samples: usize, seed: u64) -> io::Result<Vec<(u32, u32)>> {
     let mut random = Random(seed);
     let total = recording.hours();
@@ -126,12 +103,10 @@ fn info(path: &str) -> io::Result<Value> {
     Ok(json!({ "file_bytes": recording.len(), "hours": recording.hours(), "runs": runs, "damage": recording.damage().len(), "schema": schema, "build_schema": ours, "open": opened.json() }))
 }
 
-/// Before each measured read: a labelled phase of its own.
 fn phase(name: &'static str) {
     engine_allocation::labels::phase(name);
 }
 
-/// Each phase since the last report: its labelled peak and the labels holding over 64 KiB then.
 fn labelled() -> Value {
     if !engine_allocation::labels::ENABLED {
         return Value::Null;
@@ -148,9 +123,6 @@ fn labelled() -> Value {
     json!(phases)
 }
 
-/// `table` at sampled hours: restored at its last restore before the hour, advanced to it, and
-/// its rows built as a frame's are; each from a recording opened for it (after a purge with
-/// `--purge`), then again from one recording.
 fn seek(path: &str, table: TableId, options: &Options) -> io::Result<Value> {
     let samples: usize = options.number("samples", 60)?;
     let seed = options.number("seed", 0x9e37_79b9_7f4a_7c15_u64)?;
@@ -211,7 +183,6 @@ fn seek(path: &str, table: TableId, options: &Options) -> io::Result<Value> {
     }))
 }
 
-/// The level and bin of a view of `per_pixel` hours a pixel, as a chart picks them.
 pub fn grid(per_pixel: i64) -> (u8, i64) {
     if per_pixel < summary::bucket_hours(0) {
         return (lanes::WALKED, per_pixel.max(1));
@@ -223,22 +194,18 @@ pub fn grid(per_pixel: i64) -> (u8, i64) {
     (level, (per_pixel / summary::bucket_hours(level)) * summary::bucket_hours(level))
 }
 
-/// The views a chart reply is timed and compared over: the whole run, a year from its middle,
-/// its first three years; each (name, first hour, last hour).
 pub fn views(first_hour: i64, ordinals: u32) -> [(&'static str, i32, i32); 3] {
     let end = first_hour + i64::from(ordinals);
     let half = first_hour + i64::from(ordinals) / 2;
     [("run", first_hour, end), ("year", half, half + 8760), ("three years", first_hour, first_hour + 3 * 8760)].map(|(name, from, to)| (name, from as i32, (to.min(end) - 1) as i32))
 }
 
-/// The eight keys `table` covered longest, ties by key.
 pub fn eight_keys(recording: &Recording, table: TableId) -> io::Result<Vec<u128>> {
     let mut lives = lanes::lifetimes(recording, 0, table)?;
     lives.sort_by_key(|(key, first, last)| (std::cmp::Reverse(last - first), *key));
     Ok(lives.iter().take(8).map(|(key, _, _)| *key).collect())
 }
 
-/// The summarized column a chart of `table` reads: `--column`, else its first.
 pub fn chart_column(table: TableId, options: &Options) -> io::Result<u32> {
     let registry = summaries::registry()?;
     let Some((_, Shape::Values(columns))) = registry.iter().find(|(held, _)| *held == table.index()) else {
@@ -250,10 +217,6 @@ pub fn chart_column(table: TableId, options: &Options) -> io::Result<u32> {
     }
 }
 
-/// A chart of one summarized column of `table` at 1,000 pixels over three views, for the eight
-/// keys covered longest and for every key, and top ten, from a recording opened after a purge
-/// (cold) and again from the same recording (warm, median of five); and a rank over every key:
-/// the whole run in one bin.
 fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value> {
     let source = chart_column(table, options)?;
     let width: i64 = options.number("pixels", 1000)?;
@@ -315,7 +278,6 @@ fn chart_time(path: &str, table: TableId, options: &Options) -> io::Result<Value
 #[cfg(windows)]
 pub fn purge(path: &str) -> io::Result<Value> {
     use std::os::windows::fs::OpenOptionsExt;
-    // Opening a file unbuffered makes Windows drop the pages it caches of it.
     const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
     let file = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_NO_BUFFERING).open(path)?;
     let bytes = file.metadata()?.len();
@@ -327,7 +289,6 @@ pub fn purge(_: &str) -> io::Result<Value> {
     Err(io::Error::other("purge needs Windows"))
 }
 
-/// Reads the file whole, in order: how fast its bytes come, cached or not.
 fn readall(path: &str) -> io::Result<Value> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;

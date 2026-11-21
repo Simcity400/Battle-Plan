@@ -1,4 +1,3 @@
-//! Per-batch scheduler accounting, enabled only by normal PROFILE.
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

@@ -135,7 +135,6 @@ fn market_subsidy_demand_keeps_stored_total_independent_of_grant_sum() {
         (-123456_i64) as u64,
     );
     array(&mut bytes, STATUS + COUNTRY_SUBSIDIES, 0, 0);
-    // Neither a valid stockpile pointer nor a valid price map is present.
     let mut output = Country::default();
     country(
         &memory(&bytes),

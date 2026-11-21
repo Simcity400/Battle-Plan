@@ -4,7 +4,6 @@ import { forgetFacts, SHARED_FACT_HOURS, sharedFacts, SharedFacts } from './shar
 import type { Ask, Told } from './sharedFacts';
 import type { DashboardClient } from './client';
 
-/** An ask answering each country with its tag and hour, held until released; every request kept. */
 function asks(fail = new Set<string>()) {
   const asked: { hour: number; tags: readonly string[]; signal: AbortSignal; release: () => void }[] = [];
   const ask: Ask<string> = (hour, tags, signal) => new Promise<Told<string>>(resolve => {
@@ -22,7 +21,6 @@ test('a country wanted by many readers is asked once, and told ones are kept for
   const { asked, ask } = asks();
   const facts = new SharedFacts(ask);
   const first = facts.read(10, ['GER', 'ITA'], new AbortController().signal);
-  // The second asks only for what no read asks yet, and joins the rest.
   const second = facts.read(10, ['ITA', 'JAP', 'NONE'], new AbortController().signal);
   assert.deepEqual(asked.map(each => each.tags), [['GER', 'ITA'], ['JAP', 'NONE']]);
   asked.forEach(each => each.release());
@@ -30,11 +28,9 @@ test('a country wanted by many readers is asked once, and told ones are kept for
   const joined = (await second)!;
   assert.deepEqual([...joined.found], [['ITA', 'ITA@10'], ['JAP', 'JAP@10']]);
   assert.equal(joined.failed.size, 0);
-  // Told before, with or without a value: nothing is asked again.
   const again = (await facts.read(10, ['NONE', 'GER'], new AbortController().signal))!;
   assert.deepEqual([...again.found], [['GER', 'GER@10']]);
   assert.equal(asked.length, 2);
-  // Another hour is its own.
   void facts.read(11, ['GER'], new AbortController().signal);
   assert.deepEqual(asked.at(-1)!.tags, ['GER']);
 });
@@ -50,7 +46,6 @@ test('a request is cancelled only once no read waits on it, and its countries ar
   assert.equal(asked[0].signal.aborted, false, 'another read still waits on it');
   asked[0].release();
   assert.deepEqual([...(await stays)!.found], [['GER', 'GER@10']]);
-  // Once every read waiting on a request leaves, it is cancelled and its countries forgotten.
   const alone = new AbortController();
   const gone = facts.read(10, ['ITA'], alone.signal);
   alone.abort();
@@ -71,7 +66,6 @@ test('a failure is told to its readers but never kept', async () => {
   const read = (await failing)!;
   assert.deepEqual([...read.failed], [['GER', failure], ['ITA', failure]]);
   assert.equal((await told)!.failed.size, 0);
-  // Asked again, and told this time.
   fail.clear();
   const retried = facts.read(10, ['GER', 'ITA', 'ENG'], new AbortController().signal);
   assert.deepEqual(asked.at(-1)!.tags, ['GER', 'ITA']);
@@ -88,7 +82,6 @@ test('only the hours used most recently are kept, never one still being asked', 
     asked.at(-1)!.release();
     await read;
   }
-  // Hour 1, used least recently and told, is dropped; hour 0, still asked, is kept.
   const count = asked.length;
   void facts.read(1, ['GER'], new AbortController().signal);
   assert.equal(asked.length, count + 1);

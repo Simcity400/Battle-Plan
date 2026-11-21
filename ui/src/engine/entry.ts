@@ -2,20 +2,13 @@ import { engine } from './frame.ts';
 import type { FrameEngine } from './frame.ts';
 import { cssEase, reducedMotion, rowEase } from './glide.ts';
 
-/** How long a row's entry takes: its fade in and its flash out, as `.moving-row`'s entry animation did. */
 export const ENTRY_MS = 700;
-/** How long a leaving row fades out, as `.moving-row`'s opacity transition did. */
 export const EXIT_MS = 450;
 
-/** What a fading row needs written: its opacity, and the variable its flash overlay (`::after`) reads. */
 export interface FadingRow { style: { opacity: string; setProperty(name: string, value: string): void; removeProperty(name: string): string } }
 
 interface Fade { started: number; from: number; kind: 'entering' | 'leaving' | 'returning'; now: number }
 
-/** Rows entering and leaving, drawn by the engine instead of CSS animations and transitions: one paint-phase task fades
- * an entering row in (opacity e(t)) while its flash fades out (1 - e(t)) along the rows' curve over `ENTRY_MS`, and a
- * leaving row out from where it is along CSS's `ease` over `EXIT_MS`, exactly the motion they replace, with no
- * compositor animation, so no layer of their own. With reduced motion a row simply shows or goes. */
 export class RowFades {
   private readonly fading = new Map<FadingRow, Fade>();
   private task: ReturnType<FrameEngine['every']> | null = null;
@@ -29,7 +22,6 @@ export class RowFades {
     this.reduced = reduced;
   }
 
-  /** Starts `row`'s entry now. */
   enter(row: FadingRow): void {
     if (this.reduced()) return;
     this.fading.set(row, { started: this.clock(), from: 0, kind: 'entering', now: 0 });
@@ -37,7 +29,6 @@ export class RowFades {
     this.run();
   }
 
-  /** Fades `row` out from where it is now; its own style (a leaving class) holds it unseen afterwards. */
   leave(row: FadingRow): void {
     const held = this.fading.get(row);
     if (held?.kind === 'leaving') return;
@@ -49,8 +40,6 @@ export class RowFades {
     this.run();
   }
 
-  /** A leaving `row` that stays after all fades back in from where it is along CSS's `ease`, as the opacity transition
-   * reversed when its leaving class came off; an entry going on is left as it is. */
   stay(row: FadingRow): void {
     const held = this.fading.get(row);
     if (held?.kind !== 'leaving') return;
@@ -58,7 +47,6 @@ export class RowFades {
     this.run();
   }
 
-  /** Whether `row` is fading now. */
   has(row: FadingRow): boolean { return this.fading.has(row); }
 
   private run(): void {
@@ -96,5 +84,4 @@ export class RowFades {
   }
 }
 
-/** The dashboard's fading rows. */
 export const rowFades = new RowFades();

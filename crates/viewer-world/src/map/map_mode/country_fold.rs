@@ -32,9 +32,7 @@ struct Base {
     source_of: ValueIndex<u32, u32>,
     by_source_target: ValueIndex<(u32, u32), ()>,
     colors: ValueIndex<u32, Bits>,
-    /// Shown countries whose colour source the hour cannot decide ([`Relations::source`]).
     unknown: Slots,
-    /// Shown countries whose decided source has no recorded colour.
     missing: usize,
 }
 impl Base {
@@ -153,7 +151,6 @@ impl Base {
                 colors = colors.removed(&target)?;
                 continue;
             }
-            // Relations' warnings name why; the country takes no fill.
             let Some(source) = relations.source(target)? else {
                 source_of = source_of.removed(&target)?;
                 colors = colors.removed(&target)?;

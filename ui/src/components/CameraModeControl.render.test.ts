@@ -23,10 +23,8 @@ test('the camera control offers map, fly and walk, and the overlay switch flying
     const pressed = [...markup.matchAll(/aria-pressed="(true|false)"[^>]*>(?:<svg[\s\S]*?<\/svg>)?(Map|Fly|Walk|Overlays)</g)]
       .map(([, state, label]) => `${label}:${state}`);
     assert.deepEqual(pressed, ['Map:false', 'Fly:true', 'Walk:false', 'Overlays:false']);
-    // The map camera always shows the interface: no switch.
     assert.doesNotMatch(render({ value: 'map' }), /Overlays/);
     assert.match(render({ value: 'walk', overlays: true }), /aria-pressed="true"[^>]*>(?:<svg[\s\S]*?<\/svg>)?Overlays</);
-    // Pressing the switch asks for the other choice.
     const asked: boolean[] = [];
     for (const overlays of [false, true]) {
       const control = module.default as (props: Props) => ReactElement;

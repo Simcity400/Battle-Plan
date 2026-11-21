@@ -122,7 +122,6 @@ fn targets_read_a_state_only_for_state_variants_and_authenticate_once() {
         vtables.targets(&memory, 0x100, 1),
         Err("operative mission target state unreadable")
     );
-    // A country variant's implementation has no state field to read.
     memory
         .fields
         .insert(0x400, (VTABLE_RVAS[2].0 as u64).to_le_bytes().to_vec());

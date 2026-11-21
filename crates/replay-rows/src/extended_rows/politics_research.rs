@@ -22,22 +22,16 @@ pub struct ScriptVariableEntry {
 }
 value_struct!(ScriptVariableEntry {name: Vec<u8>, value_raw: i64});
 
-/// Each native occupation-data member; a null group law still proves membership.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OccupationGroupLaw {
     pub occupied: u32,
-    /// Current id through the retained country pointer; None is a capture fault.
     pub scope_country: Option<u32>,
     pub law: Option<Vec<u8>>,
 }
 value_struct!(OccupationGroupLaw { occupied: u32, scope_country: Option<u32>, law: Option<Vec<u8>> });
 opaque_value!(Option<Vec<OccupationGroupLaw>>);
 
-/// One ordered required-pool entry and the strength getter's lookups.
-/// Strength weights the required amount; quantity uses active pointer
-/// identity and archetype lookup takes the first ordered signed-ID match.
-/// No addresses persist.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GarrisonEquipment {
@@ -62,14 +56,11 @@ value_struct!(GarrisonEquipment {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GarrisonEquipmentInputs {
     pub rows: Vec<GarrisonEquipment>,
-    /// A local acquisition refusal, rather than a fabricated empty pool.
     pub failure: Option<Vec<u8>>,
 }
 value_struct!(GarrisonEquipmentInputs { rows: Vec<GarrisonEquipment>, failure: Option<Vec<u8>> });
 opaque_value!(GarrisonEquipmentInputs);
 
-/// One native scripted target addition, in the state's stored order. Nonpositive country
-/// selectors apply to every country; localisation is the authored key, including empty.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OccupationAddedTarget {
@@ -97,8 +88,6 @@ value_struct!(OccupationEffectExtra {
     custom_tooltips: u32
 });
 
-/// Runtime-only hover operands. Effects are the stored local accumulators, retaining
-/// their native key order and zeros; their eligibility has already been applied.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OccupationHover {
@@ -116,15 +105,12 @@ pub struct OccupationHover {
 value_struct!(OccupationHover { exile_host: i32, legitimacy: i64, flow_from: u32, flow: i64, gain_ratio: i64, added: Vec<OccupationAddedTarget>, resistance_effects: Vec<OccupationEffect>, compliance_effects: Vec<OccupationEffect>, resistance_extra:OccupationEffectExtra, compliance_extra:OccupationEffectExtra });
 opaque_value!(Recorded<Option<OccupationHover>>);
 
-/// Each section's four sources, in controller, state, relation and occupied-country order.
-/// A null relation is a recorded zero. Source labels are stored text in the recording language.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OccupationModifierSource {
     pub section: u8,
     pub source: u8,
     pub key: u32,
-    /// None is an unavailable requested-key total, with the reason in failure; never zero.
     pub total: Option<i64>,
     pub nodes: Vec<ModifierBreakdownNode>,
     pub failure: Vec<u8>,

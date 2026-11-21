@@ -49,7 +49,6 @@ fn complete_empty_world_and_local_failure_scopes_are_distinct() {
     };
     empty.check_key_fields().unwrap();
     assert!(empty.delta(None).unwrap().is_some());
-    // World attribution can remain exact despite a known country's bad input.
     let world = RocketProductionOutputRow {
         ticks: 1,
         inexact_ticks: 1,
@@ -178,8 +177,6 @@ fn unknown_owner_design_deliveries_cannot_claim_exact_or_unaccounted_units() {
             "rocket output scope/counts inconsistent"
         );
         assert!(bad.delta(None).is_err());
-        // Field decoding preserves the malformed values; normal row validation
-        // must refuse them rather than reinterpret the scope or exactness.
         let mut bytes = Vec::new();
         bad.encode_fields(&mut bytes).unwrap();
         let mut input = Decoder::new(&bytes);
@@ -191,7 +188,6 @@ fn unknown_owner_design_deliveries_cannot_claim_exact_or_unaccounted_units() {
             "rocket output scope/counts inconsistent"
         );
     }
-    // World ownership is known despite a known country's inexact delivery.
     RocketProductionOutputRow {
         deliveries: 1,
         inexact_deliveries: 1,
@@ -200,7 +196,6 @@ fn unknown_owner_design_deliveries_cannot_claim_exact_or_unaccounted_units() {
     }
     .check_key_fields()
     .unwrap();
-    // An unknown-owner spending row has no delivery to make inexact.
     RocketProductionOutputRow {
         variant: unknown.variant,
         ticks: 1,

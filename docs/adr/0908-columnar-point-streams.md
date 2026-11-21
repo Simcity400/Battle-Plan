@@ -1,0 +1,11 @@
+# Stream points from row tracks and distinguish missing observations
+
+The recording's table reader restores the requested columns at the first hour and reads the rest of each block as one stretch. The point stream then follows each slot's row membership and the column track events that can change the requested keys. It emits every explicitly requested key at the start, including absent keys, or every live key if the request names none. Later it emits only state changes in hour and key order, and a client can stop accepting events early.
+
+Lifetime and coverage are distinct. A live row can be uncovered when the table is unavailable or the row is unobserved, and a covered optional number can itself have no value. A field not present in the recording's schema is not recorded. The reported selected columns are the supported subset in ascending order. Rows are revisited on table-status changes and partial reads, not by stepping every hour. A read can skip a block wholly inside a summary piece proving none of its requested keys were covered. Log summaries keyed by facets cannot prove that about row keys.
+
+When a slot is freed and reused in the same hour, deletion takes effect before insertion. A row born and gone within a single hour has no visible point. The new row's insert cells are read separately at the insertion hour because their values seed the later track events and are not themselves track changes. Unrequested rows remain in the slot map only as lifetime context. A text can have several dictionary IDs in one run. Points compare by the first ID that supplied those bytes, and cells use the read's deduplicated text index. Opaque and list cells carry the hour of the containing write for a separate row read, using the first shown hour if the write predates the request. Numbers use the signed or unsigned width declared for the cell.
+
+The recorder and dashboard share their summary declarations. They are deliberately outside the schema digest because readers get each piece's shape from the block index. Synthetic journals rank a recorded column for tests, since derivations own writing their own rows.
+
+[Point readers](../../crates/replay/src/points.rs) · [Summary registry](../../crates/replay/src/summaries.rs)

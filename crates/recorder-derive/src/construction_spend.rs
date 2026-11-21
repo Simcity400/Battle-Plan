@@ -1,18 +1,3 @@
-//! `ConstructionSpend`: the civilian-factory output spent on construction, summed by the country
-//! identity of the line's queue owner (as the output names it), the kind of work (new levels or
-//! repair), the building type and the state (a railway: its route's first and last provinces'
-//! states). ConstructionLineOutput holds each line's exact factory output since its observation
-//! began; what a line adds to a row is its output since it was first counted there.
-//!
-//! A line whose output is linked or inexact counts in `unknown` until an exact output is read
-//! again, which then counts all it had spent; one that ends unknown, or ends while the writer did
-//! not watch it, stays counted in `unknown`. An observation that restarts (another `since_hour`)
-//! keeps what the line counted and counts on from its new start. When a line's row would change
-//! (its owner's identity, type or states), what it counted stays where it was and it counts on
-//! from that read in the new row. Rows are never deleted.
-//!
-//! State (its resume blob): each live line's rows, observation start, the output its rows count
-//! from and what they hold of it. Bounded by live lines.
 
 use crate::{
     deployed::{invalid, number, row},
@@ -56,9 +41,6 @@ const READS: &[Read] = &[
     Read { table: TableId::Provinces, columns: Columns::These(&[]), watch: Watch::Changed, required: true },
 ];
 
-/// A live line: its rows (new levels, repair), its observation's start, the output its rows count
-/// from (none while it has not been exact since it moved there), what they hold of it, and whether
-/// they count it unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Line {
     rows: [u128; 2],
@@ -68,7 +50,6 @@ struct Line {
     unknown: bool,
 }
 
-/// What an hour adds to a row: output and lines unknown.
 type Deltas = HashMap<u128, (i128, i64)>;
 
 fn add(deltas: &mut Deltas, row: u128, amount: i128, unknown: i64) {
@@ -81,26 +62,22 @@ fn add(deltas: &mut Deltas, row: u128, amount: i128, unknown: i64) {
 pub struct ConstructionSpend {
     lines: HashMap<u64, Line>,
     holders: Holders,
-    /// The holders are to be read again before the next hour: a resume.
     reread: bool,
 }
 
 impl ConstructionSpend {
-    /// Province `id`'s state; none without its row.
     fn state_of(hour: &Hour<'_>, id: Option<u32>) -> u32 {
         let Some(id) = id else { return NONE };
         let view = hour.table(TableId::Provinces);
         view.slot(u128::from(id)).and_then(|slot| number(&view, PROVINCE_STATE[0], slot)).map_or(NONE, |state| state as u32)
     }
 
-    /// The rows (new levels, repair) a line's output counts in now.
     fn rows_of(&self, hour: &Hour<'_>, output: &ConstructionLineOutputRow) -> io::Result<[u128; 2]> {
         let known = |cell: &Recorded<Option<u32>>| match cell {
             Recorded::Value(Some(value)) => Some(*value),
             _ => None,
         };
         let (slot, country) = sides(&self.holders, known(&output.country).unwrap_or(0))?;
-        // A railway has no building type: its key's shared field holds its last state.
         let (building_type, state, to_state) = if output.railway {
             (NONE, Self::state_of(hour, known(&output.route_first)), Self::state_of(hour, known(&output.route_last)))
         } else {
@@ -110,7 +87,6 @@ impl ConstructionSpend {
         Ok([key(false), key(true)])
     }
 
-    /// Counts the line in `slot` of ConstructionLineOutput as it stands.
     fn line(&mut self, hour: &Hour<'_>, slot: u32, deltas: &mut Deltas) -> io::Result<()> {
         let view = hour.table(TableId::ConstructionLineOutput);
         let output: ConstructionLineOutputRow = row(&view, slot, &OUTPUT)?;
@@ -159,7 +135,6 @@ impl ConstructionSpend {
         Ok(())
     }
 
-    /// Writes each row an hour added to.
     fn write(deltas: Deltas, out: &mut Rows<'_>) {
         for (row, (amount, unknown)) in deltas {
             if amount == 0 && unknown == 0 {
@@ -204,7 +179,6 @@ impl Writer for ConstructionSpend {
         let mut deltas = Deltas::new();
         let view = hour.table(TableId::ConstructionLineOutput);
         let slots: Vec<u32> = if hour.fresh {
-            // Lines that ended while the writer did not watch them end unknown.
             let live: std::collections::HashSet<u64> = view.rows().filter_map(|slot| view.key(slot)).map(|key| key as u64).collect();
             let gone: Vec<u64> = self.lines.keys().copied().filter(|line| !live.contains(line)).collect();
             for line in gone {

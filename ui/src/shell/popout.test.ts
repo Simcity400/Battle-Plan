@@ -12,20 +12,16 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 test('the pop-out tells its two state payloads apart and names why it shows nothing', async () => {
   const { vite, popout: { CLOSED, nextPopoutState, popoutProblem, popoutStopped } } = await load();
   try {
-    // The viewer's own status reaches only an open pop-out.
     assert.deepEqual(nextPopoutState(CLOSED, { generation: 0, sequence: 1, viewer: 0, status: status() }), CLOSED);
     const opened = nextPopoutState(CLOSED, { generation: 1, sequence: 2, viewer: 1, open: true, status: status({ ready: false }) });
     assert.equal(opened.open, true);
     const ready = nextPopoutState(opened, { generation: 1, sequence: 3, viewer: 1, status: status() });
     assert.equal(ready.status?.ready, true);
     assert.equal(ready.sequence, 3);
-    // A whole state replaces everything, clearing an earlier window error.
     assert.deepEqual(nextPopoutState({ ...ready, error: 'resize failed' }, { generation: 1, sequence: 4, viewer: 1, open: false, status: null }), { generation: 1, sequence: 4, viewer: 1, open: false, status: null, error: null });
-    // A crash is named and can be restarted.
     const crashed = nextPopoutState(ready, { generation: 1, sequence: 4, viewer: 1, status: status({ running: false, ready: false, error: 'Native viewer exited (1)' }) });
     assert.equal(popoutStopped(crashed), true);
     assert.equal(popoutProblem(crashed), 'The pop-out map stopped: Native viewer exited (1)');
-    // A viewer that runs but reports an error, and a window error, are both shown.
     assert.equal(popoutProblem(nextPopoutState(ready, { generation: 1, sequence: 4, viewer: 1, status: status({ error: 'Export failed' }) })), 'Export failed');
     assert.equal(popoutProblem({ ...ready, error: 'resize failed' }), 'resize failed');
     assert.equal(popoutProblem(ready), null);
@@ -38,18 +34,14 @@ test('events from a closed window never change the window opened after it', asyn
   const { vite, popout: { CLOSED, nextPopoutState, popoutFailed } } = await load();
   try {
     const first = nextPopoutState(CLOSED, { generation: 1, sequence: 1, viewer: 1, open: true, status: status() });
-    // Closed, then opened again before the first window's cleanup finished.
     const second = nextPopoutState(first, { generation: 2, sequence: 3, viewer: 2, open: true, status: status({ ready: false }) });
-    // The first window's late crash report and error are ignored even though they are newer.
     assert.deepEqual(nextPopoutState(second, { generation: 1, sequence: 4, viewer: 1, status: status({ running: false, error: 'exited' }) }), second);
     assert.deepEqual(popoutFailed(second, { generation: 1, sequence: 4, error: 'resize failed' }), second);
-    // The second window's own events still count.
     assert.equal(nextPopoutState(second, { generation: 2, sequence: 4, viewer: 2, status: status() }).status?.ready, true);
     const failed = popoutFailed(second, { generation: 2, sequence: 4, error: 'resize failed' });
     assert.equal(failed.error, 'resize failed');
     assert.equal(failed.sequence, 4);
     assert.equal(nextPopoutState(second, { generation: 2, sequence: 4, viewer: 2, open: false, status: null }).open, false);
-    // An error no newer than the state shown changes nothing.
     assert.deepEqual(popoutFailed(second, { generation: 2, sequence: 3, error: 'resize failed' }), second);
   } finally { await vite.close(); }
 });
@@ -60,13 +52,10 @@ test('an event older than the state shown never overwrites it', async () => {
     const opened = nextPopoutState(CLOSED, { generation: 1, sequence: 3, viewer: 1, open: true, status: status() });
     const crashed = nextPopoutState(opened, { generation: 1, sequence: 5, viewer: 1, status: status({ running: false, ready: false, error: 'Native viewer exited (1)' }) });
     assert.equal(popoutStopped(crashed), true);
-    // An older whole state claiming the viewer runs arrives after the crash.
     const stale = nextPopoutState(crashed, { generation: 1, sequence: 4, viewer: 1, open: true, status: status() });
     assert.deepEqual(stale, crashed);
     assert.equal(popoutStopped(stale), true);
-    // An event repeating the shown sequence is not newer either.
     assert.deepEqual(nextPopoutState(crashed, { generation: 1, sequence: 5, viewer: 1, status: status() }), crashed);
-    // A closed pop-out is not reopened by an older open state.
     const closed = nextPopoutState(crashed, { generation: 1, sequence: 7, viewer: 1, open: false, status: null });
     assert.deepEqual(nextPopoutState(closed, { generation: 1, sequence: 6, viewer: 1, open: true, status: status() }), closed);
     assert.deepEqual(nextPopoutState(closed, { generation: 2, sequence: 6, viewer: 2, open: true, status: status() }), closed);
@@ -96,8 +85,6 @@ test('the pop-out asks for its state only after both listeners are registered', 
     assert.deepEqual(log, ['listen popout-state', 'listen popout-error'], 'one listener registered is not enough');
     registered.get('popout-error')!(); await tick();
     assert.deepEqual(log, ['listen popout-state', 'listen popout-error', 'invoke popout_publish']);
-    // An event published before the answer to the request still counts, and the answer, an
-    // older state, does not roll it back.
     handlers.get('popout-state')!({ payload: { generation: 1, sequence: 9, viewer: 1, open: true, status: status() } });
     handlers.get('popout-state')!({ payload: { generation: 0, sequence: 8, viewer: 0, open: false, status: null } });
     assert.equal(state.open, true);
@@ -106,7 +93,6 @@ test('the pop-out asks for its state only after both listeners are registered', 
     assert.equal(state.error, 'resize failed');
     stop(); await tick();
     assert.deepEqual(log.slice(3).sort(), ['unlisten popout-error', 'unlisten popout-state']);
-    // Events after stopping change nothing.
     handlers.get('popout-state')!({ payload: { generation: 1, sequence: 11, viewer: 1, open: false, status: null } });
     assert.equal(state.open, true);
   } finally { await vite.close(); }
@@ -133,13 +119,11 @@ test('every new pop-out window is sent the options and the clock again', async (
     const first = nextPopoutState(CLOSED, { generation: 1, sequence: 1, viewer: 1, open: true, status: status() });
     assert.equal(popoutClockKey(first), '1:1');
     assert.equal(popoutConfigKey(first), '1:1');
-    // Closed and reopened in one batch: the readiness the dashboard sees is unchanged, the key is not.
     const closed = nextPopoutState(first, { generation: 1, sequence: 2, viewer: 1, open: false, status: null });
     const second = nextPopoutState(nextPopoutState(closed, { generation: 2, sequence: 3, viewer: 2, open: true, status: status({ ready: false }) }), { generation: 2, sequence: 4, viewer: 2, status: status() });
     assert.deepEqual([second.open, second.status?.ready, second.status?.running], [first.open, first.status?.ready, first.status?.running]);
     assert.equal(popoutClockKey(second), '2:2');
     assert.equal(popoutConfigKey(second), '2:2');
-    // Nothing is sent to a closed pop-out, a stopped viewer, or a viewer not yet ready for options.
     assert.equal(popoutClockKey(closed), null);
     assert.equal(popoutConfigKey(closed), null);
     assert.equal(popoutClockKey(CLOSED), null);
@@ -149,8 +133,6 @@ test('every new pop-out window is sent the options and the clock again', async (
     const stopped = nextPopoutState(second, { generation: 2, sequence: 5, viewer: 2, status: status({ running: false, ready: false, error: 'exited' }) });
     assert.equal(popoutClockKey(stopped), null);
     assert.equal(popoutConfigKey(stopped), null);
-    // A viewer restarted in the same window, even one published straight from running to
-    // running, is a new viewer, so it is sent everything again.
     const restarted = nextPopoutState(second, { generation: 2, sequence: 6, viewer: 3, status: status() });
     assert.deepEqual([restarted.status?.running, restarted.status?.ready], [second.status?.running, second.status?.ready]);
     assert.equal(popoutClockKey(restarted), '2:3');
@@ -163,10 +145,8 @@ test('a whole state keeps a window error the window has not recovered from', asy
   try {
     const opened = nextPopoutState(CLOSED, { generation: 1, sequence: 1, viewer: 1, open: true, status: status() });
     const failed = popoutFailed(opened, { generation: 1, sequence: 2, error: 'resize failed' });
-    // The frontend asks for the whole state again, say after a reload: the error is still there.
     const republished = nextPopoutState(failed, { generation: 1, sequence: 3, viewer: 1, open: true, status: status(), error: 'resize failed' });
     assert.equal(popoutProblem(republished), 'resize failed');
-    // Once the window recovers, its next whole state carries no error.
     const recovered = nextPopoutState(republished, { generation: 1, sequence: 4, viewer: 1, open: true, status: status(), error: null });
     assert.equal(popoutProblem(recovered), null);
   } finally { await vite.close(); }
@@ -181,14 +161,12 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
     const listeners = new Set<() => void>();
     const clock = { getSnapshot: () => snapshot, composedAt: () => 0, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, subscribeFrame: () => () => {} };
     const move = (next: typeof snapshot) => { snapshot = next; for (const listener of listeners) listener(); };
-    // The host refuses a seek naming any window but the one whose viewer runs.
     let running: number | null = 1;
     const shown: { generation: number; hour: number; playing: boolean; seekSequence: number }[] = [];
     const seekPopout = async (generation: number, _path: string, _revision: string, _branch: string, hour: number, playback: import('../dashboard/mapPlayback').MapPlayback) => {
       if (running !== generation) throw new Error('The pop-out map stopped');
       shown.push({ generation, hour, ...playback });
     };
-    // The dashboard's subscription, started again whenever the window the clock drives changes.
     let key: string | null = null;
     let stop: (() => void) | undefined;
     const render = (state: Parameters<typeof popoutClockKey>[0]) => {
@@ -209,7 +187,6 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
     state = nextPopoutState(state, { generation: 1, sequence: 3, viewer: 2, open: true, status: status({ ready: false }) });
     render(state); await tick();
     assert.deepEqual(shown.at(-1), { generation: 1, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440 });
-    // Closed and reopened between two renders: the new window is sent the clock too.
     running = 2;
     state = nextPopoutState(nextPopoutState(state, { generation: 1, sequence: 4, viewer: 1, open: false, status: null }), { generation: 2, sequence: 5, viewer: 2, open: true, status: status() });
     render(state); await tick();

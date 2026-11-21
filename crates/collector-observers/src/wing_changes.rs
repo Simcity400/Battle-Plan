@@ -1,16 +1,3 @@
-//! Allocation-free notifications from the native writers of every air wing's equipment pool
-//! ([`engine_mutations::air_wing_equipment_mutations`]). A detour only notifies the shared watch registry
-//! ([`WatchRegistry`]) for the pools its arguments name, counts its site and calls the original; it
-//! never changes game behaviour. Receivers are the `CEquipmentVariantPool` addresses
-//! (`cair_wing::EQUIPMENT_POOL`) a WingEquipment capture registered; a notification never infers a
-//! wing. Anything unobserved (disabled, poisoned, a refused registration, an epoch change, a
-//! running writer) makes the capture read that wing afresh.
-//!
-//! aircraft loss writer is patched by the equipment-destruction family
-//! (one patch per site); its `air` detour notifies this domain on every path
-//! ([`kill_airplanes`]). The domain observes only while both its own hooks
-//! and that detour are live ([`observe_kills`]): with the destruction family
-//! uninstalled or disabled, losses go unobserved, so nothing is certified.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -29,20 +16,14 @@ static WATCHES: Watches = Watches::new();
 static MAP_ORIGINAL: [AtomicUsize; MAP_MUTATIONS.len()] =
     [const { AtomicUsize::new(0) }; MAP_MUTATIONS.len()];
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read wings; reused and read rows.
 static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-/// Wings the latest complete capture walked, for off-thread sizing.
 static WINGS: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the watched pools, each writer site's calls and
-/// the losses the equipment-destruction detour reported.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
     kills: AtomicU64,
-    /// This family's hooks are enabled.
     hooks: AtomicBool,
-    /// The equipment-destruction family's aircraft loss writer detour is live.
     kills_observed: AtomicBool,
 }
 
@@ -63,24 +44,17 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `pool`. Dropping the guard notifies its return.
     pub fn notify(&self, pool: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(pool)
     }
 
-    /// Hook path, allocation-free: `aircraft loss writer` is about to change
-    /// `wing`'s pool. Dropping the guard notifies its return.
     pub fn kill(&self, wing: usize) -> Notification<'_> {
         self.kills.fetch_add(1, Ordering::Relaxed);
         self.registry
             .notify(wing.wrapping_add(engine_mutations::air_wing_equipment_mutations::POOL))
     }
 
-    /// Observes only while both this family's hooks and the aircraft loss writer
-    /// detour are live; enabling starts an epoch, so nothing written while
-    /// either was down certifies anything.
     fn refresh(&self) {
         self.registry.set_enabled(
             self.hooks.load(Ordering::SeqCst) && self.kills_observed.load(Ordering::SeqCst),
@@ -97,8 +71,6 @@ impl Watches {
         self.refresh();
     }
 
-    /// A domain with a table for `pools` receivers installed, its hooks
-    /// enabled and the aircraft loss writer detour live when `kills_observed`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_kills(pools: usize, kills_observed: bool) -> Self {
         let watches = Self::new();
@@ -109,7 +81,6 @@ impl Watches {
         watches
     }
 
-    /// An enabled domain with a table for `pools` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(pools: usize) -> Self {
         Self::with_kills(pools, true)
@@ -120,7 +91,6 @@ impl Watches {
         self.set_kills_observed(observed);
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -132,11 +102,7 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// `(epoch, sequence)` of one pool, registering it; `None` when it cannot
-    /// be observed. Equal values across hours prove that no observed writer
-    /// touched it.
     fn sequence(&self, pool: usize) -> Option<(u64, u64)>;
 }
 
@@ -146,7 +112,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn sequence(&self, pool: usize) -> Option<(u64, u64)> {
@@ -154,39 +119,26 @@ impl Changes for Observer {
     }
 }
 
-/// A flag receiver is its inline address, distinct from any equipment pool.
-/// These notifications never invalidate WingEquipment certificates.
 pub fn map_sequence(address: usize) -> Option<(u64, u64)> {
     WATCHES.registry.sequence(address)
 }
-/// Guards a read no receiver certifies: a raid's first resolution, and every
-/// flag read before the first table installs.
 pub fn map_quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active() + crate::wing_preferences::active()
 }
 
-/// The equipment-destruction family's `air` detour, on every path before
-/// the original `aircraft loss writer(wing, ...)` runs: the guard covers it.
 pub fn kill_airplanes(wing: usize) -> Option<Notification<'static>> {
     cfg!(feature = "wing_changes").then(|| WATCHES.kill(wing))
 }
 
-/// The equipment-destruction family reports whether its aircraft loss writer
-/// detour is live: after enabling its writers with that site installed, and
-/// before disabling them.
 pub fn observe_kills(observed: bool) {
     crate::crew_changes::observe_kills(observed);
     WATCHES.set_kills_observed(observed);
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     if invalidate {
         crate::wing_preferences::invalidate();
@@ -194,24 +146,17 @@ pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the wings the latest capture
-/// walked. Nothing is offered before a capture walked them: a later larger
-/// table waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
     let wings = WINGS.load(Ordering::Relaxed);
     if wings != 0 {
-        // Pool, stop, coverage, raid reference, a distinct live raid lifetime,
-        // and at most one distinct incoming destination per wing.
         WATCHES.registry.offer(wings.saturating_mul(6));
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's wings and rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
@@ -221,7 +166,6 @@ pub struct Counts {
 }
 
 impl Counts {
-    /// Adds another part's counts of the same capture.
     pub fn add(&mut self, other: &Counts) {
         self.reused += other.reused;
         self.read += other.read;
@@ -230,8 +174,6 @@ impl Counts {
     }
 }
 
-/// One capture publishes its counts, every part's together, and, when it
-/// walked every wing, their number for sizing.
 pub fn record(counts: &Counts, wings: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -257,14 +199,14 @@ pub(crate) fn publish_preference_lifetime(enabled: bool, installed: usize) {
 }
 
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; WingEquipment then
-    /// reads every wing afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled; WingEquipment then"]
+    #[doc = " reads every wing afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         use engine_mutations::{
             air_wing_equipment_mutations::Receiver,
@@ -338,10 +280,6 @@ impl Hooks {
             crate::wing_preferences::lifetime_enabled(false);
         }
         let preferences = self.preferences.set_enabled(enabled)?;
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|reason| map_hook_error("equipment and map flag sites", &reason))?
         {
@@ -361,18 +299,13 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         crate::wing_preferences::lifetime_enabled(false);
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-/// Variant quantity subtraction, which the replaced CALLs invoke.
+#[doc = " Variant quantity subtraction, which the replaced CALLs invoke."]
 static SUBTRACT: AtomicUsize = AtomicUsize::new(0);
 
-/// Hook path: the notifications of a site's pools, covering the original
-/// in flight.
 fn notify(site: usize, first: usize, second: usize) -> [Option<Notification<'static>>; 5] {
     let [pool, other] = pools(MUTATIONS[site].1, first, second);
     [
@@ -392,9 +325,6 @@ fn notify(site: usize, first: usize, second: usize) -> [Option<Notification<'sta
     ]
 }
 
-// Each entry site takes at most four integer or pointer arguments (RCX..R9)
-// and returns RAX unchanged from its original; the first two name the pools
-// as its [`engine_mutations::air_wing_equipment_mutations::Receiver`] says.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system-unwind" fn $name(
@@ -418,20 +348,12 @@ macro_rules! callback {
         }
     };
 }
-// Add airplanes (wing, variant, count, ...).
 callback!(add_airplanes, 0);
-// Add equipment pool (wing, pool, ...).
 callback!(add_equipment_pool, 1);
-// Move airplanes (source, destination, count).
 callback!(move_airplanes, 2);
-// Subtract equipment pool (wing, pool).
 callback!(subtract_equipment_pool, 3);
-// Destroy wing (wing).
 callback!(destroy_wing, 6);
 
-// A replaced CALL of SubtractVariantQuantity(pool, variant, amount): the
-// detour calls it itself, which returns to the site's next instruction
-// through the relay.
 macro_rules! call_site {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -448,9 +370,7 @@ macro_rules! call_site {
         }
     };
 }
-// The over-capacity aircraft trim subtraction call.
 call_site!(trim_airplanes, 4);
-// The daily aircraft return subtraction call.
 call_site!(return_airplanes, 5);
 
 fn map_hook_error(site: &str, reason: &str) -> &'static str {

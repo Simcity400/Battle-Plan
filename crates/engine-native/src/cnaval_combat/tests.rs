@@ -97,7 +97,6 @@ impl World {
             let sentinel = if side == ATTACKING { 0xa680 } else { 0xa6a0 };
             world.u64(side + 0x2b0, sentinel as u64);
             world.u64(sentinel, sentinel as u64);
-            // Capacity differs from count, exercising the corrected F0/F4 header.
             world.array(side + cnaval_combatant::GROUPS, roots, 2, 1);
             world.u64(roots, group as u64);
             world.u64(side + cnaval_combatant::POSITIONING, i64::MIN as u64);
@@ -117,7 +116,6 @@ impl World {
             world.u32(member + cfex_member::OWNER, u32::MAX);
             world.u32(member + cfex_member::STATE, 0x8000_0020);
         }
-        // The zero ship reference is an actual convoy member.
         world.u64(MEMBER_D + cfex_member::SHIP_HANDLE, 0);
         world
     }
@@ -139,8 +137,6 @@ struct DetailMemory<'a>(SliceMemory<'a>);
 impl Memory for DetailMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         use crate::{modifier_definition as md, naval_combat_summary_inputs as summary};
-        // Named synthetic module globals and metadata required by the
-        // summary reader. Other absent addresses remain unreadable.
         if address == IMAGE + md::TABLE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&0x100000u64.to_le_bytes());
             return true;
@@ -206,9 +202,6 @@ fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
     );
 }
 
-/// A side's task forces (`cnaval_combatant::UNITS`) are read in stored order into the caller's
-/// arena. A short arena leaves the row for the next hour with the demand reported, and an entry
-/// that is not a task force refuses the table.
 #[test]
 fn side_units_keep_stored_order_and_report_their_demand() {
     const SLOTS: usize = 0xa700;
@@ -308,8 +301,6 @@ fn side_units_keep_stored_order_and_report_their_demand() {
 #[test]
 fn null_commander_never_falls_back_to_the_last_leader() {
     let mut world = detail_world();
-    // The retained last leader is the one the save and a load keep; the window shows only
-    // `cnaval_combatant::COMMANDER`, so the reader must not read, fall back to or fail on it.
     world.u64(ATTACKING + 0x118, u64::MAX);
     let side = cnaval_combatant::Side {
         pointer: ATTACKING,
@@ -337,7 +328,6 @@ fn null_commander_never_falls_back_to_the_last_leader() {
         cnaval_combatant::details(memory, IMAGE, GS, BODY, [&side, &opponent], &mut arenas)
     };
     assert_eq!(details(&DetailMemory(world.memory())).unwrap().commander, 0);
-    // Only a null pointer means no commander; a bad one still fails.
     world.u64(ATTACKING + cnaval_combatant::COMMANDER, u64::MAX);
     assert!(details(&DetailMemory(world.memory())).is_err());
 }
@@ -345,8 +335,6 @@ fn null_commander_never_falls_back_to_the_last_leader() {
 #[test]
 fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
     use std::cell::{Cell, RefCell};
-    /// One call per copy or scattered copy; `reads` lists every span,
-    /// `singles` the spans read alone.
     struct Count<'a> {
         inner: DetailMemory<'a>,
         calls: Cell<usize>,
@@ -485,8 +473,6 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
             );
         }
     }
-    // A member's identity, nested headers, fixed scalars, text headers and
-    // last-target record share one guarded call.
     let singles = memory.singles.borrow();
     for member in [MEMBER_A, MEMBER_D] {
         for offset in [
@@ -495,8 +481,6 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
             cfex_member::BUILD_COST_IC,
             cfex_member::RECEIVED_CRITICALS,
             cfex_member::ESCAPE_PROGRESS,
-            // The member record also serves the identity, the four text
-            // headers and the last-target record.
             0,
             cfex_member::GROUP,
             cfex_member::STATE,
@@ -547,8 +531,6 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
         (IMAGE + crate::cfex_damage_entry::VTABLE_RVA.0) as u64,
     );
     world.u64(0xa818, i64::MAX as u64);
-    // One member occurs in both active and retained lists. Both air-hit
-    // channels retain the same pointer as independent observations.
     world.array(GROUP_A + 0x70, MEMBERS_A, 1, 1);
     for offset in [0x150, 0x168] {
         world.array(MEMBER_A + offset, 0xa840, 1, 1);
@@ -684,8 +666,6 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
     }
 }
 
-/// External waves keep one air slot in both the side array and its first
-/// group array, with the owner pointer naming that group.
 #[test]
 fn side_external_planes_keep_their_first_group_owner() {
     const PLANE: usize = 0xa900;
@@ -760,7 +740,6 @@ fn side_external_planes_keep_their_first_group_owner() {
     assert_eq!(outcome, Outcome::Rows { len: 1 });
     assert_eq!((side_planes, len), ([0, 2], 2));
     assert_eq!((planes[0].source, planes[1].source), (0, 2));
-    // A null owner remains valid for side planes; another side's group does not.
     world.array(GROUP_A + 0x58, 0, 0, 0);
     world.u64(PLANE + 8, 0);
     assert_eq!(run(&world, &mut planes).0, Outcome::Rows { len: 1 });
@@ -774,7 +753,6 @@ fn side_external_planes_keep_their_first_group_owner() {
 impl Memory for Fault<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if address <= self.address && self.address < address.saturating_add(destination.len()) {
-            // A failed exact-field copy may have changed its destination.
             destination.fill(0x7e);
             false
         } else {
@@ -786,7 +764,6 @@ impl Memory for Fault<'_> {
 #[test]
 fn paired_groups_and_full_native_values_survive_without_narrowing() {
     let mut world = World::new();
-    // The opposing vector can omit a group that its paired pointer retains.
     world.array(DEFENDING + cnaval_combatant::GROUPS, 0, 0, 0);
     let mut combats = vec![Row::default(); 2];
     let mut members = vec![cnaval_combatant::Row::default(); 4];
@@ -1082,8 +1059,6 @@ fn combat_payload_faults_preserve_all_participants_but_identity_faults_do_not() 
         assert!(matches!(capture.combats, Outcome::Unavailable { .. }));
         assert_eq!(capture.participants, capture.combats);
     }
-    // A later payload copy fault must not mask a successfully copied but
-    // incorrect identity in the same guarded scatter.
     world.u64(ATTACKING + cnaval_combatant::COMBAT, BODY as u64 + 8);
     let capture = walk(
         &Fault {
@@ -1105,11 +1080,6 @@ fn combat_payload_faults_preserve_all_participants_but_identity_faults_do_not() 
     assert_eq!(capture.participants, capture.combats);
 }
 
-/// The mixed registry is walked to its own count even when land combats in a
-/// 50,000-division world dominate it. This fixture has more than twice 4,096
-/// entries and one naval combat per 1,024 entries; sparse naval membership
-/// must still produce its rows. Naval rows past caller capacity are counted
-/// unread, providing the demand for the collector to grow storage.
 #[test]
 fn a_registry_past_4096_combats_is_walked_whole_from_any_starting_storage() {
     const REGISTRY: usize = 0x10000;
@@ -1209,7 +1179,6 @@ fn a_registry_past_4096_combats_is_walked_whole_from_any_starting_storage() {
     assert_eq!(short.participants, Outcome::Rows { len: 2 * naval });
 }
 
-/// One details walk from empty ship and group storage, with a plane arena of `planes` rows.
 #[allow(clippy::type_complexity)]
 fn walk_whole(
     world: &World,
@@ -1308,17 +1277,11 @@ fn walk_whole_mode(
     (capture, rows[0].clone(), ships, len, required)
 }
 
-/// Forward groups, members and planes use their own counts without chosen
-/// population bounds. The synthetic fixture has 8,193 groups per side,
-/// 65,537 members per vector and 16,385 planes per vector. Ship storage
-/// grows from empty one acquired member at a time. Short plane storage
-/// withholds the combat with exact demand; grown storage admits it next pass.
 #[test]
 fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     const ARRAY: usize = 0x80000;
     const GROUPS: usize = 0x100000;
     let size = 0x600000 - GS;
-    // 8,193 forward groups on the attacking side, GROUP_A last.
     let mut world = detail_world();
     world.0.resize(size, 0);
     world.array(ATTACKING + cnaval_combatant::GROUPS, ARRAY, 8193, 8193);
@@ -1339,7 +1302,6 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
             .collect::<Vec<_>>(),
         [8192, 0]
     );
-    // A group listed twice in its side's vector is still refused.
     world.u64(ARRAY, GROUP_A as u64);
     assert_eq!(
         walk_whole(&world, 0).0.participants,
@@ -1348,7 +1310,6 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
         }
     );
 
-    // 65,537 members in GROUP_A's forward vector.
     let mut world = detail_world();
     world.0.resize(size, 0);
     world.array(GROUP_A + cfex_group::MEMBERS, ARRAY, 65_537, 65_537);
@@ -1359,7 +1320,6 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     assert_eq!(capture.participants, Outcome::Rows { len: 65_538 });
     assert_eq!(ships[65_536].member_index, 65_536);
 
-    // 16,385 planes in GROUP_A's plane vector.
     const PLANE: usize = 0xa900;
     let mut world = detail_world();
     world.0.resize(size, 0);
@@ -1478,7 +1438,6 @@ fn mixed_registry_skips_known_land_classes_and_refuses_null_or_unknown_entries()
     );
     assert_eq!(capture.combats, Outcome::Rows { len: 1 });
     assert_eq!(capture.participants, Outcome::Rows { len: 2 });
-    // The registry ordinal counts the land entries before the naval one.
     world.u64(ROOTS, land as u64);
     world.u64(ROOTS + 8, BODY as u64);
     let mut combats = vec![Row::default(); 1];

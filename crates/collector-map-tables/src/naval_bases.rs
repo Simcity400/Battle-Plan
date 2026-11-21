@@ -18,7 +18,6 @@ pub const TABLES: [TableId; N] = [
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
-    /// Country-list entries across all bases.
     countries: usize,
 }
 
@@ -31,7 +30,6 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // Size from the bounded map and every country list.
         let demand = cnaval_base::count(memory, base, state);
         let rows = collector_extended_support::demand::rows(demand.outcome)?;
         crate::country_scale::raise(&mut self.rows, rows);
@@ -49,7 +47,6 @@ pub struct Captured {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
@@ -149,7 +146,6 @@ impl Captured {
         [qpc().saturating_sub(begin).max(0) as u64, 0, 0]
     }
 
-    /// Owned maps, row sorting and immutable snapshot publication only.
     pub fn decode_owned(&mut self) {
         if let Some(owned) = self.owned.take() {
             self.management = owned.decode();
@@ -267,7 +263,6 @@ mod tests {
             for index in 0..count {
                 let base = bases + index * cnaval_base::SIZE;
                 let entry = buckets + index * 0x18;
-                // Probe marker, province key, pointer.
                 put(entry + 4, &[1]);
                 put(entry + 8, &(index as u32 + 1).to_le_bytes());
                 put(entry + 0x10, &(base as u64).to_le_bytes());
@@ -300,13 +295,13 @@ mod tests {
             assert_eq!(
                 capture.outcomes(),
                 [
-                    Outcome::Rows { len: count }, // NavalBases
+                    Outcome::Rows { len: count },
                     Outcome::Unavailable {
                         reason: collector_naval_management::changes::UNAVAILABLE,
-                    }, // NavalRepairBases
+                    },
                     Outcome::Unavailable {
                         reason: collector_naval_management::changes::UNAVAILABLE,
-                    }, // NavalRepairQueue
+                    },
                 ]
             );
             assert_eq!(capture.countries.len, count * list_len);

@@ -1,7 +1,6 @@
 pub use map_content::witness::ContentReads;
 use std::sync::Arc;
 
-// Weak bank keys keep allocation identities distinct without retaining immutable payloads.
 pub(crate) struct Operand<T>(std::sync::Weak<T>);
 impl<T> Operand<T> {
     pub fn new(value: &Arc<T>) -> Self {

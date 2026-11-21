@@ -35,7 +35,6 @@ function meterCell({ ratio, label }: { ratio: number | null; label: string }) {
 export default function TrainingQueueWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
-  // The hour the country is resolved at moves only when its identity does; the queue itself is the followed panel's.
   const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && widget.time.mode === 'follow',
     clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
   const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
@@ -50,7 +49,6 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
     { active, validate: validateTrainingQueue, structure: queueStructure });
   const data = state.data;
   const rows = useMemo(() => data ? queueRows(data) : [], [data]);
-  // Orders start open; their open state lives for the session, so a closed one can show its summary.
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
   const tree = useMemo<TableTree<QueueRow>>(() => ({
     children: row => row.kind === 'order' ? row.children : undefined,

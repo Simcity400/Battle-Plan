@@ -88,7 +88,6 @@ fn fixture(province_scope: bool) -> Vec<u8> {
         (TEMPLATE + cbuilding_template::DATABASE_ORDINAL, 5),
         (status + cbuilding_status::FLAGS, scope),
         (status + cbuilding_status::ID, id),
-        // Repair routing differs deliberately from the bombing credit.
         (status + cbuilding_status::COUNTRY, 9999),
         (SOURCE, AIR_SOURCE_KIND),
         (WING + cair_wing::ID, 71),
@@ -507,7 +506,6 @@ fn capacity_census_sizes_from_every_live_location_and_refuses_missing() {
         ),
         Some(8)
     );
-    // Counts need headers, not the individual instances or their type names.
     u64_at(&mut bytes, BUILDINGS, usize::MAX);
     assert_eq!(
         building_count(

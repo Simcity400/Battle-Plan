@@ -54,7 +54,6 @@ test('actual country time views forward dated badges, keyboard stops and full ev
       transform: (source, id) => {
         const key = Object.keys(replacements).find(key => id.endsWith(key));
         if (key) return replacements[key];
-        // The looks' reads are synthetic; which hour and hours the view asks them at is the module's own.
         if (id.endsWith('/dashboard/countryLooks.ts')) return source.replace('export function useCountryLooks(', 'function readCountryLooks(')
           + '\nexport const useCountryLooks = () => ({ name: tag => tag, flag() {}, flagDetail: () => "Synthetic sampled flag decoder failure", flagReason: () => "The flag request failed.", color() {}, revision: 0 });';
         if (id.endsWith('/charts/race/CountryRaceView.tsx')) return source.replace(/\b(useMemo|useCallback|useState|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,

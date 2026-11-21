@@ -1,7 +1,3 @@
-//! The operands of a state view's shared building slot count and factory energy usage: the
-//! state's modifiers for its owner and its controller, those countries' modifiers, the state's
-//! extra shared slots and the controller's stored factory energy factor. The game computes both
-//! values on demand from them.
 
 use super::{
     COUNTRY_MODIFIERS, EXTRA_SHARED_SLOTS, ID, OWNER, VTABLE_RVA,
@@ -16,7 +12,6 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// The modifiers the walk reads, by script name; [`Keys`] resolves them in this order.
 pub const NAMES: [&[u8]; 8] = [
     b"local_building_slots",
     b"local_building_slots_factor",
@@ -32,28 +27,19 @@ const OWNER_COUNTRY: [usize; 2] = [2, 3];
 const CONTROLLER_STATE: [usize; 3] = [4, 5, 6];
 const CONTROLLER_COUNTRY: usize = 7;
 
-/// One state's operands. A `None` group is refused; the others still read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub state: u32,
-    /// The owner and controller (raw country ids) the groups below were read for.
     pub owner: u32,
     pub controller: u32,
     pub extra_shared_slots: i32,
-    /// `local_building_slots` and `local_building_slots_factor`, the state's for its owner.
     pub owner_state: Option<[i64; 2]>,
-    /// `global_building_slots` and `global_building_slots_factor`, the owner country's.
     pub owner_country: Option<[i64; 2]>,
-    /// `local_factories`, `local_factory_energy_consumption` and
-    /// `local_factory_energy_consumption_per_infrastructure`, the state's for its controller.
     pub controller_state: Option<[i64; 3]>,
-    /// `factory_energy_consumption`, the controller country's.
     pub controller_country: Option<i64>,
-    /// The controller's [`cproduction_status::FACTORY_ENERGY_FACTOR`].
     pub energy_factor: Option<i64>,
 }
 
-/// One country's operands, read once per walk.
 #[derive(Clone, Copy, Debug, Default)]
 struct Country {
     slots: Option<[i64; 2]>,
@@ -61,8 +47,6 @@ struct Country {
     factor: Option<i64>,
 }
 
-/// What one walk leaves the next: the resolved modifier keys with the definition table they
-/// were resolved from, and the per-country scratch.
 #[derive(Debug, Default)]
 pub struct Keys {
     held: Option<(Array, [Option<u32>; 8])>,
@@ -74,7 +58,6 @@ impl Keys {
         self.countries.capacity() * size_of::<Option<Country>>()
     }
 
-    /// The keys of [`NAMES`], resolved again only when the definition table moved.
     fn resolve(
         &mut self,
         memory: &impl Memory,
@@ -93,8 +76,6 @@ impl Keys {
     }
 }
 
-/// The state fields one gather copies: vtable, id, owner and controller, extra shared slots and
-/// the country-specific modifier hash header.
 const FIELDS: [RecordField; 5] = packed_fields([
     (0, 8),
     (ID, 4),
@@ -109,7 +90,6 @@ const LAYOUT: RecordLayout<'static> = match RecordLayout::new(&FIELDS, RECORD_BY
 };
 const BATCH: usize = 32;
 
-/// Every state's operands, in roster order.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -118,7 +98,6 @@ pub fn walk(
     output: &mut Vec<Row>,
 ) -> Outcome {
     let keys = match held.resolve(memory, base) {
-        // A key the table does not name, or whose definition does not read, refuses its groups.
         Ok(names) => names.map(|key| {
             key.and_then(|key| Some((key, modifier_definition::operands(memory, base, key).ok()?)))
         }),
@@ -135,7 +114,6 @@ pub fn walk(
     .unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// A resolved modifier index and its definition's operands; `None` refuses the groups using it.
 type Key = Option<(u32, modifier_definition::Operands)>;
 
 fn walk_keys(
@@ -273,8 +251,6 @@ fn state_row<M: Memory>(
     }
 }
 
-/// The effective values of `wanted` in the accumulator at `address`, an absent key's zero; `None`
-/// when a key is unresolved or the accumulator does not read.
 fn values<const N: usize>(
     memory: &impl Memory,
     address: usize,
@@ -304,7 +280,6 @@ fn values<const N: usize>(
     Some(result)
 }
 
-/// Country `raw`'s operands, read on its first use in the walk; `None` when it does not resolve.
 fn country<M: Memory>(
     memory: &M,
     status_vtable: u64,

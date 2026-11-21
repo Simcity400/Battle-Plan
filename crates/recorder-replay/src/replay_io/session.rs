@@ -1,12 +1,3 @@
-//! A session's campaigns, each written into its own recording while it is recorded: the
-//! captures of each campaign's journal in order, through one writer at a time
-//! ([`replay::campaign::live`]). The journal is all that is read of what the collector wrote.
-//!
-//! A campaign's recording is `<folder>/.unsaved/<campaign>.battleplan` until its first save,
-//! which moves it to its name; a campaign saved before is added to where it is. What a
-//! session's campaign folder keeps beside its journal is the writer's resume state and one
-//! note ([`WRITING_FILE`]): the recording's revision before the session's first write, and a
-//! discard under way.
 
 use super::{
     Admissions, Naming, Result, block_settings, failure, read_file, revision_json, revision_of,
@@ -38,27 +29,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long a campaign whose writer failed waits before it is tried again.
 const RETRY: Duration = Duration::from_secs(10);
 
-/// A session's campaign folder's note of the recording it writes into.
 pub const WRITING_FILE: &str = "writing.json";
-/// The writer's resume state in a session's campaign folder.
 const STATE_FILE: &str = "recording.state";
-/// The loads a session's journals named, in its folder.
 pub const LOADS_FILE: &str = "loads.json";
-/// In a session folder: each recorder that took the session over, the recorder that had
-/// stopped, the campaign the collector was writing and after which hour.
 pub const RESTARTS_FILE: &str = "recorder-restarts.json";
-/// Starts the reason of the recovery note a recording holds for each recorder restart.
 const RESTART_NOTE: &str = "the recorder restarted: ";
 
-/// Whether a recovery note names a recorder restart rather than damage.
 pub fn is_restart(note: &RecoveryNote) -> bool {
     note.reason.starts_with(RESTART_NOTE)
 }
 
-/// The reason of the recovery note for each restart the session's record lists of `campaign`.
 fn restart_reasons(session_dir: &Path, campaign: &str) -> Vec<String> {
     let path = session_dir.join(RESTARTS_FILE);
     let restarts = match read_file(&path) {
@@ -94,8 +76,6 @@ fn restart_reasons(session_dir: &Path, campaign: &str) -> Vec<String> {
         .collect()
 }
 
-/// Notes in `writer`'s recording each restart of the session while it wrote `campaign` that
-/// the recording does not hold yet, unless its capture is finished.
 fn note_restarts(session_dir: &Path, campaign: &str, writer: &mut LiveWriter) -> Result<()> {
     if writer.finished() {
         return Ok(());
@@ -127,11 +107,6 @@ fn note_restarts(session_dir: &Path, campaign: &str, writer: &mut LiveWriter) ->
     Ok(())
 }
 
-/// What a session's campaign folder notes of the recording it writes into, before its first
-/// write: the recording's newest revision then (none when the session creates it), a later
-/// revision a discard of the session's hours keeps (what the user's Save made, or what was saved
-/// when the waiting list's Discard came), and whether the session's hours of it are being
-/// discarded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Writing {
     before: Option<Revision>,
@@ -175,7 +150,6 @@ fn write_writing(campaign_dir: &Path, writing: Writing) -> Result<()> {
     )
 }
 
-/// The session folder's name, which names its captures in the recordings they are written into.
 fn source_of(session_dir: &Path) -> Result<String> {
     session_dir
         .file_name()
@@ -184,7 +158,6 @@ fn source_of(session_dir: &Path) -> Result<String> {
         .ok_or_else(|| failure(session_dir, "session folder has no name"))
 }
 
-/// Whether `recording` is a folder's recording that was never saved.
 pub fn is_unsaved_recording(recording: &Path) -> bool {
     recording.parent()
         == Some(&publication::unsaved_folder(
@@ -195,8 +168,6 @@ pub fn is_unsaved_recording(recording: &Path) -> bool {
         ))
 }
 
-/// Where `campaign`'s recording is in `replay_dir`: its name once saved, the hidden folder
-/// until then, nowhere before its first block. Both at once is refused, never guessed between.
 pub fn locate(replay_dir: &Path, campaign: &str) -> Result<Option<PathBuf>> {
     let unsaved = recording_files::unsaved_recording(replay_dir, campaign.as_bytes())
         .map_err(|error| failure(replay_dir, error))?;
@@ -214,8 +185,6 @@ pub fn locate(replay_dir: &Path, campaign: &str) -> Result<Option<PathBuf>> {
     }
 }
 
-/// One load a session's journals named: when its first hour or command was read, by the
-/// session's performance counter, its campaign and its load signal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Load {
     pub qpc: u64,
@@ -223,8 +192,6 @@ pub struct Load {
     pub load: i64,
 }
 
-/// Every load `session_dir`'s journals named so far, each once, in the order the writers met
-/// them.
 pub fn session_loads(session_dir: &Path) -> Vec<Load> {
     let Ok(bytes) = read_file(session_dir.join(LOADS_FILE)) else {
         return Vec::new();
@@ -244,15 +211,12 @@ pub fn session_loads(session_dir: &Path) -> Vec<Load> {
         .collect()
 }
 
-/// Whether the session already recorded hours of `campaign` under another load than `load`.
 pub fn recorded_before_load(session_dir: &Path, campaign: &str, load: i64) -> bool {
     session_loads(session_dir)
         .iter()
         .any(|seen| seen.campaign == campaign && seen.load != load)
 }
 
-/// The campaign the session loaded first: the one whose first hour or command was read
-/// earliest. Every campaign's are timed by the session's one clock.
 pub fn first_loaded_campaign(session_dir: &Path) -> Option<String> {
     session_loads(session_dir)
         .into_iter()
@@ -261,7 +225,6 @@ pub fn first_loaded_campaign(session_dir: &Path) -> Option<String> {
         .map(|load| load.campaign)
 }
 
-/// The campaign folders of a session that hold a journal segment.
 pub fn journal_campaigns(session_dir: &Path) -> Result<Vec<String>> {
     let mut campaigns = Vec::new();
     for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
@@ -286,8 +249,6 @@ pub fn journal_campaigns(session_dir: &Path) -> Result<Vec<String>> {
     Ok(campaigns)
 }
 
-/// The campaign folders of a session that hold a journal segment or note a recording the
-/// session wrote into.
 pub fn written_campaigns(session_dir: &Path) -> Result<Vec<String>> {
     let mut campaigns = journal_campaigns(session_dir)?;
     for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
@@ -303,8 +264,6 @@ pub fn written_campaigns(session_dir: &Path) -> Result<Vec<String>> {
     Ok(campaigns)
 }
 
-/// Deletes the campaign folder's row spool segments the collector has closed, unread: nothing
-/// of the recorder's reads them. With `all`, its newest too, once no collector writes it.
 fn trim_spool(campaign_dir: &Path, all: bool) {
     let Ok(mut segments) = super::spool_segments(campaign_dir) else {
         return;
@@ -317,18 +276,13 @@ fn trim_spool(campaign_dir: &Path, all: bool) {
     }
 }
 
-/// What a session has seen of the hours it applied of one campaign.
 #[derive(Default)]
 struct Observed {
-    /// Hours applied since the recording's last saved revision, and their span.
     unsaved: u64,
     unsaved_span: Option<(Hour, Hour)>,
-    /// Every hour applied: their span, whether one held more than one human, and whether a
-    /// roster could not be read.
     span: Option<(Hour, Hour)>,
     multiplayer: bool,
     roster_lost: bool,
-    /// The branch and hour applied last.
     latest: Option<(BranchId, Hour)>,
 }
 
@@ -351,8 +305,6 @@ impl Observed {
     }
 }
 
-/// Whether the hour `store` holds had more than one human; none when its roster is not whole
-/// enough to tell.
 fn roster(store: &Store) -> Option<bool> {
     let players = store.view(TableId::Players.index());
     let count = players.live().count();
@@ -363,23 +315,16 @@ fn roster(store: &Store) -> Option<bool> {
     }
 }
 
-/// The writer's host for one campaign of a session.
 struct SessionHost<'a> {
     session_dir: &'a Path,
     campaign: &'a str,
     saves: bool,
-    /// The loads the session admitted and refused, as read before this look; none for the
-    /// command line, which records every load.
     admissions: &'a Option<Admissions>,
-    /// The session ended: a load neither admitted nor refused by now is left out.
     last: bool,
     observed: &'a mut Observed,
     loads: &'a mut Vec<Load>,
     omitted: &'a mut Vec<(Option<i64>, u64)>,
     committed: &'a mut Vec<Committed>,
-    /// The facts file was read and is not the session's: the writer asks before every hour
-    /// until it has facts, and a recorder writes the file whole or not at all (a take-over
-    /// packs it again for the same identity).
     facts_refused: bool,
 }
 
@@ -401,7 +346,6 @@ impl Host for SessionHost<'_> {
                 .iter()
                 .map(|load| json!({"qpc": load.qpc, "campaign": load.campaign, "load": load.load}))
                 .collect();
-            // Lost, the list is written whole again with the next load.
             let _ = write_json(&self.session_dir.join(LOADS_FILE), &Value::Array(listed));
         }
         let Some(admissions) = self.admissions else {
@@ -416,9 +360,7 @@ impl Host for SessionHost<'_> {
             {
                 Admit::Skip
             }
-            // The session ended: nobody decides a load it never asked about.
             Some(_) if self.last => Admit::Skip,
-            // No load names the branch, and nothing read later will.
             None if asked.last || (self.last && asked.hour) => Admit::Skip,
             _ => Admit::Wait,
         }
@@ -428,7 +370,6 @@ impl Host for SessionHost<'_> {
         self.saves
     }
 
-    /// The pack at its place in the session's facts file: only the file's head is read here.
     fn facts_file(&mut self, identity: &Identity) -> Option<FactsFile> {
         if self.facts_refused {
             return None;
@@ -470,42 +411,28 @@ fn admitted(admissions: &Admissions, campaign: &str, load: i64) -> bool {
         .is_some_and(|loads| loads.contains(&load))
 }
 
-/// One campaign of a session as it is written.
 #[derive(Default)]
 struct Campaign {
-    /// The capture being written: its number, writer and journal.
     writer: Option<(u32, LiveWriter, Journal)>,
-    /// Captures the recording holds all it keeps of.
     done: BTreeSet<u32>,
     observed: Observed,
-    /// The load its writer waits on.
     waiting: Option<Asked>,
     omitted: Vec<(Option<i64>, u64)>,
     committed: Vec<Committed>,
-    /// Why its writer stopped, and when it is tried again; its end tries again too.
     error: Option<(String, Instant)>,
-    /// Save was asked while its collector still held its journal: every revision of it is
-    /// saved from then on, and its end saves it.
     saving: bool,
-    /// What names the recording as it stood when the session first wrote to it.
     base: Option<Option<Contents>>,
     capture_mode: Option<CaptureMode>,
 }
 
-/// What one look at a campaign's journal got to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reached {
-    /// Every record made so far is taken.
     Journal,
     Paused,
     Undecided,
 }
 
 impl Campaign {
-    /// Takes what the campaign's journal holds, capture after capture. With `ended`, the
-    /// session is over: a load not decided by now is left out, and a capture left unfinished
-    /// ends where its journal does. With `released`, a capture left unfinished ends there too
-    /// once its collector no longer holds its journal, as when the game left the campaign.
     #[allow(
         clippy::too_many_arguments,
         reason = "one campaign's whole context, passed once"
@@ -534,7 +461,6 @@ impl Campaign {
                 };
                 self.open(session_dir, replay_dir, campaign, capture)?;
             }
-            // Read before anything is decided by it: one that cannot be read leaves nothing out.
             let admissions = session_admissions(session_dir)?;
             let (capture, writer, journal) = self.writer.as_mut().expect("opened");
             let capture = *capture;
@@ -568,7 +494,6 @@ impl Campaign {
                     return Ok(Reached::Undecided);
                 }
                 Progress::Waiting => {
-                    // A later capture's journal means this one's collector gave it up.
                     let later = Journal::captures(&campaign_dir)
                         .map_err(|error| failure(&campaign_dir, error))?
                         .into_iter()
@@ -589,7 +514,6 @@ impl Campaign {
                             "its journal is held open, so this ended session's hours wait for it; journal retained",
                         ));
                     }
-                    // The collector let go of it: what it wrote before that is read first.
                     match writer.advance(journal, &mut host, stop).map_err(at)? {
                         Progress::Finished => {}
                         Progress::Paused => return Ok(Reached::Paused),
@@ -612,8 +536,6 @@ impl Campaign {
         }
     }
 
-    /// Opens capture `capture`'s writer on the campaign's recording, noting first what the
-    /// recording held before the session wrote to it.
     fn open(
         &mut self,
         session_dir: &Path,
@@ -647,8 +569,6 @@ impl Campaign {
         };
         let writing = read_writing(&campaign_dir)?;
         let opened = match open() {
-            // A recording the session created and was killed before the first revision of:
-            // nothing reads as it, and its journal holds every hour of it.
             Err(error)
                 if error.kind() == std::io::ErrorKind::InvalidData
                     && is_unsaved_recording(&path)
@@ -692,38 +612,27 @@ impl Campaign {
         Ok(())
     }
 
-    /// The recording's path as its writer knows it.
     fn path(&self) -> Option<&Path> {
         self.writer.as_ref().map(|(_, writer, _)| writer.path())
     }
 }
 
-/// What a campaign's unsaved hours are, for a recording waiting to be saved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Unsaved {
-    /// Admitted hours.
     pub hours: u64,
     pub first_hour: Option<Hour>,
     pub last_hour: Option<Hour>,
-    /// Bytes they take on disk.
     pub bytes: u64,
-    /// A load in them was never asked about, so what a save keeps is not known yet.
     pub undecided: bool,
 }
 
-/// A session's campaigns as they are written, for its end to take over.
 #[derive(Default)]
 pub struct Live {
-    /// Boxed: a campaign's writer holds every table.
     campaigns: BTreeMap<String, Box<Campaign>>,
     loads: Vec<Load>,
 }
 
 impl Live {
-    /// Takes what each campaign's journal added, until `stop`: each block goes into its
-    /// campaign's recording as it closes, saved when `saves` says its campaign saves now; a
-    /// recording saved for the first time takes the name `naming` gives it. Whether an hour
-    /// was taken.
     pub fn advance(
         &mut self,
         session_dir: &Path,
@@ -764,14 +673,12 @@ impl Live {
             grew |= before != campaign.observed.span.map(|_| campaign.observed.latest);
             match reached {
                 Ok(_) => {
-                    // Also one a recorder saved and was killed before naming.
                     place_saved(campaign, replay_dir, &name, naming);
                     if !campaign.committed.is_empty() {
                         trim_spool(&session_dir.join(&name), false);
                         campaign.committed.clear();
                     }
                 }
-                // Its writer goes on from the recording's newest revision when it is tried again.
                 Err(error) => {
                     if failed.as_ref() != Some(&error) {
                         eprintln!(
@@ -786,8 +693,6 @@ impl Live {
         Ok(grew)
     }
 
-    /// The loads the writers wait on, earliest first: its campaign, its load signal and when
-    /// its first hour was read. A load nothing names is none of them.
     pub fn undecided(&self) -> Vec<Load> {
         let mut waiting: Vec<Load> = self
             .campaigns
@@ -805,7 +710,6 @@ impl Live {
         waiting
     }
 
-    /// The hours of a campaign the session applied and has not saved; `None` before any.
     pub fn unsaved(&self, campaign: &str) -> Option<Unsaved> {
         let held = self.campaigns.get(campaign)?;
         let undecided = held.waiting.is_some();
@@ -821,7 +725,6 @@ impl Live {
         })
     }
 
-    /// The campaigns the session wrote hours of that are not saved.
     pub fn unsaved_campaigns(&self) -> Vec<String> {
         self.campaigns
             .keys()
@@ -830,16 +733,12 @@ impl Live {
             .collect()
     }
 
-    /// Tries the campaigns whose writers failed again at the next look.
     pub fn retry(&mut self) {
         for campaign in self.campaigns.values_mut() {
             campaign.error = None;
         }
     }
 
-    /// The file name a save would give each campaign's recording in `replay_dir` now, by
-    /// campaign: what named it before the session, with the session's hours after. One not
-    /// known, or whose loads are not all decided, is left out.
     pub fn names(&mut self, replay_dir: &Path, naming: Naming<'_>) -> BTreeMap<String, String> {
         let mut names = BTreeMap::new();
         for (name, campaign) in &mut self.campaigns {
@@ -853,11 +752,6 @@ impl Live {
         names
     }
 
-    /// Saves everything a campaign's recording holds: a capture its collector let go of
-    /// without finishing ends where its journal does, then one more revision, then its name.
-    /// While a collector still holds its journal, the hours since its last block are the
-    /// collector's: the save is refused, and the campaign is saved as it is written from then
-    /// on and at the session's end. Returns the recording, when the campaign has one.
     pub fn save(
         &mut self,
         session_dir: &Path,
@@ -902,7 +796,6 @@ impl Live {
                 Reached::Journal => {}
             }
         }
-        // Its captures ended: the recording holds every hour of them.
         let saved = save_locked(replay_dir, campaign, naming)?;
         if let Some((path, _)) = &saved {
             note_saved(&session_dir.join(campaign), path)?;
@@ -917,11 +810,6 @@ impl Live {
         }))
     }
 
-    /// Discards the session's hours of a campaign (`dropped` says which), and its journal goes.
-    /// The capture's later hours, should the game load the campaign again, start a recording anew.
-    ///
-    /// While a collector still holds the campaign's journal the discard is refused: its capture
-    /// goes on in that journal should the game load the campaign again.
     pub fn discard(
         &mut self,
         session_dir: &Path,
@@ -929,7 +817,6 @@ impl Live {
         campaign: &str,
         dropped: Discarded,
     ) -> Result<()> {
-        // Its own reader lets go first: the probe below cannot tell its handle from the collector's.
         if let Some(held) = self.campaigns.get_mut(campaign) {
             held.writer = None;
         }
@@ -947,8 +834,6 @@ impl Live {
     }
 }
 
-/// Whether a collector still holds the newest journal of a session's campaign folder. A reader
-/// of it in this process lets go first, or the probe takes its handle for the collector's.
 fn producing(campaign_dir: &Path) -> Result<bool> {
     let newest = Journal::captures(campaign_dir)
         .map_err(|error| failure(campaign_dir, error))?
@@ -962,17 +847,12 @@ fn producing(campaign_dir: &Path) -> Result<bool> {
     }
 }
 
-/// Which of a session's hours of a campaign a discard drops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Discarded {
-    /// Those not saved, as the waiting list's Discard drops them: what is saved stays.
     Unsaved,
-    /// Every hour the session wrote, saved as it wrote them or not, as Stop's Discard drops
-    /// them: the recording is as it was before the session, or as the user's Save left it since.
     Session,
 }
 
-/// The bytes a recording holds after its newest saved revision; all of it when none is saved.
 fn waiting_bytes(path: Option<&Path>) -> u64 {
     let Some(path) = path else {
         return 0;
@@ -983,7 +863,6 @@ fn waiting_bytes(path: Option<&Path>) -> u64 {
     newest.revision().length - newest.saved().map_or(0, |saved| saved.length)
 }
 
-/// The name a save would give `campaign`'s recording now.
 fn predicted(
     held: &mut Campaign,
     replay_dir: &Path,
@@ -1021,8 +900,6 @@ fn predicted(
     name_of(&contents, replay_dir, campaign, existing, naming)
 }
 
-/// The file name a save gives the recording of `campaign` in `replay_dir`, now at `existing`,
-/// once it holds `contents`.
 fn name_of(
     contents: &Contents,
     replay_dir: &Path,
@@ -1049,8 +926,6 @@ fn name_of(
     path.file_stem()?.to_str().map(str::to_owned)
 }
 
-/// The file name [`save_waiting`] would give `campaign`'s recording in `replay_dir` with the
-/// hours that wait in it; none while it is not known.
 pub fn waiting_name(replay_dir: &Path, campaign: &str, naming: Naming<'_>) -> Option<String> {
     let path = locate(replay_dir, campaign).ok()??;
     let newest = Replay::open_newest(&path).ok()?;
@@ -1058,8 +933,6 @@ pub fn waiting_name(replay_dir: &Path, campaign: &str, naming: Naming<'_>) -> Op
     name_of(&contents, replay_dir, campaign, Some(path), naming)
 }
 
-/// Moves a campaign's recording to its name once the session's writer committed a saved
-/// revision of it: a failure leaves it where it waits, for the next save to place.
 fn place_saved(held: &mut Campaign, replay_dir: &Path, campaign: &str, naming: Naming<'_>) {
     let Some((_, writer, _)) = &mut held.writer else {
         return;
@@ -1076,11 +949,6 @@ fn place_saved(held: &mut Campaign, replay_dir: &Path, campaign: &str, naming: N
     }
 }
 
-/// Gives the saved recording at `path` its name in `replay_dir`: one never saved before is
-/// moved out of the hidden folder under the first free name its contents give; one saved before
-/// keeps its name when its contents still give it or the user chose it, and is renamed
-/// otherwise, never replacing another file. Returns the recording, and why it kept a name its
-/// contents no longer give. The caller holds the folder's naming lock.
 fn place(
     replay_dir: &Path,
     campaign: &str,
@@ -1096,7 +964,6 @@ fn place(
     let settings = RecorderSettings::load_from(naming.settings)
         .map_err(|error| failure(naming.settings, error))?;
     if is_unsaved_recording(path) {
-        // A new recording is named by its contents until the user names it.
         if settings.name_chosen(&folder, campaign.as_bytes()) {
             RecorderSettings::update_at(naming.settings, |settings| {
                 settings.choose_name(&folder, campaign, false)
@@ -1122,10 +989,6 @@ fn place(
     })
 }
 
-/// Saves everything `campaign`'s recording in `replay_dir` holds, no capture writing it: one
-/// more revision when hours wait in it, then its name. Returns the recording and why it kept a
-/// name its contents no longer give; none when the campaign has no recording. The caller holds
-/// the folder's naming lock.
 fn save_locked(
     replay_dir: &Path,
     campaign: &str,
@@ -1155,8 +1018,6 @@ fn save_locked(
     place(replay_dir, campaign, &path, naming).map(Some)
 }
 
-/// Saves a recording's waiting hours: everything its file holds is saved, and it takes its
-/// name. Returns the recording, none when the campaign has none in `replay_dir`.
 pub fn save_waiting(
     replay_dir: &Path,
     campaign: &str,
@@ -1173,8 +1034,6 @@ pub fn save_waiting(
     )
 }
 
-/// Drops a recording's waiting hours, every session's: its file is cut back to its newest
-/// saved revision, and one never saved is deleted.
 pub fn discard_waiting(replay_dir: &Path, campaign: &str) -> Result<()> {
     let _lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let Some(path) =
@@ -1185,20 +1044,13 @@ pub fn discard_waiting(replay_dir: &Path, campaign: &str) -> Result<()> {
     cut(&path, campaign, Keep::Saved)
 }
 
-/// What a cut keeps of a recording.
 #[derive(Clone, Copy)]
 enum Keep {
-    /// Its newest saved revision: every session's waiting hours go.
     Saved,
-    /// What it held before a session wrote to it, or the later revision the session's note
-    /// keeps: the session's other hours go, saved as they were written or not.
     Session(Writing),
 }
 
-/// Cuts the recording at `path` back to what `keep` keeps; with nothing, it is deleted. A
-/// recording that is that revision already is left as it is.
 fn cut(path: &Path, campaign: &str, keep: Keep) -> Result<()> {
-    // No revision of it was ever committed: there is nothing of it to keep.
     if is_unsaved_recording(path) && no_revision(path) {
         return publication::posix_delete(path).map_err(|error| failure(path, error));
     }
@@ -1215,7 +1067,6 @@ fn cut(path: &Path, campaign: &str, keep: Keep) -> Result<()> {
     let kept = match keep {
         Keep::Saved => newest.saved(),
         Keep::Session(writing) => {
-            // A revision the recording no longer holds was itself discarded since: what is saved stays.
             let lost = writing.before.is_some() && held(writing.before).is_none();
             [held(writing.before), held(writing.saved), newest.saved().filter(|_| lost)]
                 .into_iter()
@@ -1232,15 +1083,11 @@ fn cut(path: &Path, campaign: &str, keep: Keep) -> Result<()> {
     }
 }
 
-/// Notes that every hour the session wrote of a campaign is discarded, as Stop's Discard drops
-/// them, without discarding them yet: whatever next ends or reads the session
-/// ([`reconcile_session`]) carries the discard out.
 pub fn note_discard(session_dir: &Path, replay_dir: &Path, campaign: &str) -> Result<()> {
     let _lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
     note_discard_locked(&session_dir.join(campaign), replay_dir, campaign, Discarded::Session)
 }
 
-/// [`note_discard`] of the hours `dropped` names; the caller holds the folder's naming lock.
 fn note_discard_locked(
     campaign_dir: &Path,
     replay_dir: &Path,
@@ -1254,7 +1101,6 @@ fn note_discard_locked(
     };
     let writing = match read_writing(campaign_dir)? {
         Some(writing) => writing,
-        // The session wrote nothing of it: only its journal goes.
         None if campaign_dir.is_dir() => Writing {
             before: newest()?.map(|newest| newest.revision()),
             saved: None,
@@ -1280,7 +1126,6 @@ fn latest(one: Option<Revision>, other: Option<Revision>) -> Option<Revision> {
     [one, other].into_iter().flatten().max_by_key(|revision| revision.number)
 }
 
-/// The campaigns whose discard the session notes and has not finished.
 pub fn noted_discards(session_dir: &Path) -> Result<Vec<String>> {
     let mut campaigns = Vec::new();
     for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
@@ -1296,8 +1141,6 @@ pub fn noted_discards(session_dir: &Path) -> Result<Vec<String>> {
     Ok(campaigns)
 }
 
-/// Notes the revision the user's Save made of the recording at `path`, which a later discard of
-/// the session's hours keeps. The caller holds the folder's naming lock.
 fn note_saved(campaign_dir: &Path, path: &Path) -> Result<()> {
     let Some(writing) = read_writing(campaign_dir)? else {
         return Ok(());
@@ -1312,18 +1155,12 @@ fn note_saved(campaign_dir: &Path, path: &Path) -> Result<()> {
     )
 }
 
-/// Finishes the discard a session's campaign folder notes, when it notes one: the recording
-/// cut back, then the writer's resume state, the journal and the row spool gone, then the note.
-/// A journal a collector still holds stays, with the note, for whatever next takes the session
-/// up once it lets go. Every step repeats safely. The caller holds the folder's naming lock.
 fn finish_discard(campaign_dir: &Path, replay_dir: &Path, campaign: &str) -> Result<()> {
     let Some(writing) = read_writing(campaign_dir)?.filter(|writing| writing.discarding) else {
         return Ok(());
     };
     if let Some(path) = locate(replay_dir, campaign)? {
         cut(&path, campaign, Keep::Session(writing))?;
-        // Hours the user's Save kept stay, with the game facts they depend on; without them the
-        // recording takes its facts from the installation when it is next opened.
         if let (Some(session_dir), Ok(newest)) = (campaign_dir.parent(), newest_log(&path))
             && Some(newest.revision()) != writing.before
         {
@@ -1350,7 +1187,6 @@ fn finish_discard(campaign_dir: &Path, replay_dir: &Path, campaign: &str) -> Res
     gone(&campaign_dir.join(WRITING_FILE))
 }
 
-/// Finishes every discard the session's campaign folders note.
 pub fn reconcile_session(session_dir: &Path, replay_dir: &Path) -> Result<()> {
     let _lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
     for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
@@ -1364,8 +1200,6 @@ pub fn reconcile_session(session_dir: &Path, replay_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The hours `campaign`'s recording in `replay_dir` holds that are not saved, every session's;
-/// `None` when none wait.
 pub fn unsaved(replay_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
     let Some(path) = locate(replay_dir, campaign)? else {
         return Ok(None);
@@ -1402,9 +1236,6 @@ pub fn unsaved(replay_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
     Ok(Some(summary))
 }
 
-/// The bytes a session's unsaved hours of `campaign` take on disk: its journal not yet written,
-/// and what the campaign's recording in `replay_dir` holds after its newest saved revision.
-/// None when either cannot be read.
 pub fn unsaved_bytes(session_dir: &Path, replay_dir: &Path, campaign: &str) -> Option<u64> {
     let mut bytes = 0;
     for (_, _, path) in replay::columnar_journal::segments(&session_dir.join(campaign)).ok()? {
@@ -1422,23 +1253,15 @@ pub fn unsaved_bytes(session_dir: &Path, replay_dir: &Path, campaign: &str) -> O
     Some(bytes)
 }
 
-/// What ending one campaign of a session left.
 #[derive(Debug, Default)]
 pub(super) struct Ended {
-    /// The recording, when the session's hours or its save changed it.
     pub recording: Option<PathBuf>,
-    /// Whether everything it holds is saved.
     pub saved: bool,
     pub unrenamed: Option<String>,
     pub omitted: Vec<(Option<i64>, u64)>,
-    /// Hours the session's writers added while ending it.
     pub hours: u64,
 }
 
-/// Ends one campaign of a session whose collector writes no more: what its journal still
-/// holds is written, a capture left unfinished ends where its journal does, and with `save`
-/// everything its recording holds is saved and it takes its name. `after` adds what the
-/// session's failure, when it had one, leaves to say, once the journal is written.
 pub(super) fn end_campaign(
     live: &mut Live,
     session_dir: &Path,
@@ -1503,7 +1326,6 @@ pub(super) fn end_campaign(
                 .map_err(|error| failure(path, error))
         };
         let (written, _) = revision(path)?;
-        // A recording the session added nothing to is not its to change.
         let wrote =
             created.is_some() || writing.is_some_and(|writing| writing.before != Some(written));
         if wrote {
@@ -1523,7 +1345,6 @@ pub(super) fn end_campaign(
             ended.recording = Some(path);
         }
     }
-    // Nothing of the campaign is left to write: what the session kept beside its journal goes.
     trim_spool(&campaign_dir, true);
     for name in [STATE_FILE, WRITING_FILE] {
         let _ = fs::remove_file(campaign_dir.join(name));
@@ -1531,10 +1352,6 @@ pub(super) fn end_campaign(
     Ok(ended)
 }
 
-/// Gives the recording at `path` the game facts `session_dir`'s recorder gathered, when it
-/// carries none and they are its content's, in a revision that leaves what is saved as it was.
-/// Whether it carries them now. No capture writes the recording; the caller holds the folder's
-/// naming lock.
 pub(super) fn attach_facts(session_dir: &Path, path: &Path) -> Result<bool> {
     let facts = session_dir.join(replay::campaign::SESSION_FACTS_FILE);
     let bytes = match fs::read(&facts) {
@@ -1560,13 +1377,10 @@ pub(super) fn attach_facts(session_dir: &Path, path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// The newest revision of the recording at `path`, read for its root and records alone.
 fn newest_log(path: &Path) -> std::io::Result<replay::columnar_frames::Recording> {
     replay::columnar_frames::Recording::open_path_as(path, Open::Newest)
 }
 
-/// Whether no footer of the file at `path` names a root that verifies: no revision of it was
-/// ever committed.
 fn no_revision(path: &Path) -> bool {
     fs::File::open(path).is_ok_and(|file| replay_columnar::container::locate(&file, Open::Newest).is_err())
 }

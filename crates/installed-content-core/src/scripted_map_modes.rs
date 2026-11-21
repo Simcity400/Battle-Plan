@@ -1,16 +1,3 @@
-//! Scripted map modes (`common/map_modes`) from the recorded content stack.
-//!
-//! Direct `.txt` files load in [`script_files::paths`] order. Each
-//! `scripted_map_modes` block declares modes by name; a later declaration of
-//! a name replaces the earlier one in its place. A mode has a `top` and a
-//! `bottom` layer, each a `type` (`none`, `country`, `state`,
-//! `state_controller` or one of the game's own layers `game_map_mode_country`,
-//! `_states`, `_diplomacy`, `_players`, `_factions` and `_ideology`), a `color`
-//! effect body, a `targets` block and the `thickness` switch; the mode adds
-//! `far_text`, `near_text` and `update_daily`.
-//!
-//! Fields the game does not read are reported by name and counted. The colour
-//! and target bodies are kept as written for their consumers.
 
 use crate::{
     ResolvedLayers,
@@ -19,18 +6,15 @@ use crate::{
 };
 use std::io;
 
-/// What a layer draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LayerType {
     None,
     Country,
     State,
     StateController,
-    /// One of the game's own layers; the layer's other entries are ignored.
     Game(GameLayer),
 }
 
-/// The game's own layers a scripted layer can delegate to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GameLayer {
     Country,
@@ -59,7 +43,6 @@ impl LayerType {
     }
 }
 
-/// Which names a mode writes on the map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MapText {
     #[default]
@@ -86,9 +69,7 @@ impl MapText {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layer {
     pub kind: LayerType,
-    /// The colour effect body as written.
     pub color: Vec<Item>,
-    /// The targets block as written; `None` targets every scope.
     pub targets: Option<Vec<Item>>,
     pub thickness: bool,
 }
@@ -107,22 +88,17 @@ impl Default for Layer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MapMode {
     pub name: String,
-    /// The file that declared the definition in use, by its path's bytes.
     pub file: script_files::ScriptPath,
     pub top: Layer,
     pub bottom: Layer,
-    /// The names the mode writes far out and close in; `None` when it declares none.
     pub far_text: Option<MapText>,
     pub near_text: Option<MapText>,
     pub update_daily: bool,
 }
 
-/// Every scripted map mode in declaration order, with the fields the game
-/// does not read named and counted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapModes {
     pub modes: Vec<MapMode>,
-    /// `(file, field)` for each unread or invalid entry, the file by its path's bytes.
     pub refused: Vec<(script_files::ScriptPath, String)>,
 }
 
@@ -131,7 +107,6 @@ impl MapModes {
         self.modes.iter().find(|mode| mode.name == name)
     }
 
-    /// Unread entries as `name (count)` in first-seen order.
     pub fn refusal_counts(&self) -> Vec<(String, usize)> {
         let mut counts: Vec<(String, usize)> = Vec::new();
         for (_, field) in &self.refused {
@@ -186,7 +161,6 @@ fn read_layer(
     layer
 }
 
-/// Parses one file's declarations onto `modes`.
 pub fn parse_into(
     file: &script_files::ScriptPath,
     input: &[u8],
@@ -260,7 +234,6 @@ pub fn parse_into(
     Ok(())
 }
 
-/// Reads every scripted map mode the stack declares.
 pub fn read(layers: &ResolvedLayers) -> io::Result<MapModes> {
     let mut modes = MapModes::default();
     for listed in script_files::paths(layers, "common/map_modes/", Some(".txt"))? {
@@ -309,7 +282,6 @@ mod tests {
             ["first", "second"]
         );
         let first = modes.get("first").unwrap();
-        // The later declaration replaces the earlier one in its place.
         assert_eq!(first.file, "common/map_modes/b.txt");
         assert_eq!(first.top.kind, LayerType::State);
         assert!(!first.update_daily);

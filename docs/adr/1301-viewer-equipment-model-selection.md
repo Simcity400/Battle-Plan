@@ -1,0 +1,11 @@
+# 1301. Resolve equipment models from the complete recorded census
+
+The dashboard and viewer share authored pool evaluation. Conventional ranked variants are a second producer in the same ordered candidate vector. Duplicate entities retain the earlier entry and weight, and ties within the variant roster preserve its order. The selected equipment sprite adds a preferred spelling while keeping the sub-unit and later candidates eligible. Ship classes use the model priority from their parent chain, with a minimum of one, instead of the ordinary visual level.
+
+The bridge requires complete input tables and uses the saved native roster order, including repeated membership and the daily best-variant candidates. A variant's creator, the country whose roster owns it, and the current country reading its graphics are separate inputs. Civil wars can rebuild roster membership without changing creators. The persistent variant object ID is the upper word of its typed handle. Signed nonpositive creator references stay distinct from canonical slot zero. Recorded upgrades sum with wrapping signed 32-bit arithmetic, and the simulation DLC mask gates authored module slots through its command feature categories.
+
+An invalid required-archetype definition withholds a figure. A failed definition outside its required archetypes cannot change its candidates. The retained census stores successful authored joins without storing current country scopes, limit outcomes or chosen models. It skips the original validation path only when both authored resolutions succeeded. The reference builder stays independent so it can catch invalid reuse.
+
+Each hour owns its pool-limit memo. Evaluation starts with fresh temporary state even for an empty scope. Reused plans re-decide the previously consulted pools and check the results instead of recording everything evaluation read. This preserves per-hour answers and avoids evaluating the same pool for every figure. Scope-masked predicates refuse before accessing their operands.
+
+[Pool memo](../../crates/viewer-world/src/map/equipment_graphics.rs) · [Census bridge](../../crates/viewer-world/src/map/equipment_graphics/bridge.rs) · [Independent reference](../../crates/viewer-world/src/map/equipment_graphics/bridge_reference.rs) · [Conventional selection](../../crates/viewer-world/src/map/equipment_graphics/legacy.rs)

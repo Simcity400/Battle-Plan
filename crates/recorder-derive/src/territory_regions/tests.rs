@@ -6,8 +6,6 @@ use crate::{
 use replay_columnar::{manifest::Status, store::Store};
 use replay_data::rows::{CountryLinkRow, ProvinceRow, StateRow};
 
-/// One hour of the inputs: provinces (id, state, owner, controller, victory points), states (id,
-/// owner, controller), Provinces' status.
 #[derive(Clone)]
 struct World {
     provinces: Vec<(u32, u32, u32, u32, i32)>,
@@ -15,8 +13,6 @@ struct World {
     province_status: Status,
 }
 
-/// Provinces 100 and 101 lie in region 7, 102 in region 8, all three in state 1 (GER's, slot 2
-/// controlling); 103 in no region and no state, held by no country; state 2 has no province.
 fn world() -> World {
     World {
         provinces: vec![(100, 1, 10, 20, 5), (101, 1, 10, 20, 0), (102, 1, 10, 10, 1), (103, 0, 0, 0, 3)],
@@ -39,8 +35,6 @@ fn feed(store: &mut Store, hour: i32, world: &World) {
     store.settle();
 }
 
-/// Region 7 lists 100, 101 and 104, region 8 lists 102 and 104: 104 belongs to neither. Areas end
-/// at province 102, so 103 has none.
 fn definitions() -> Definitions {
     let areas: Vec<i64> = [0; 100].into_iter().chain([7, 8, 9]).collect();
     Definitions::read_none().with_areas(Ok(areas)).with_regions(Ok(ProvinceRegions::new([(7, &[100, 101, 104][..]), (8, &[102, 104][..])])))
@@ -53,8 +47,6 @@ fn writers(definitions: Definitions) -> Writers {
     writers
 }
 
-/// Holder `holder`'s row of `region`: controlled provinces, points, area, states over their
-/// denominator, then owned; none where the table has no row.
 fn row(store: &Store, holder: u32, region: u32) -> Option<Vec<Option<i64>>> {
     cells(store, TableId::TerritoryRegionTotals, TerritoryRegionTotalRow::key_of(holder, region))
 }
@@ -67,11 +59,6 @@ fn status(store: &Store) -> Status {
     store.view(TableId::TerritoryRegionTotals.index()).status()
 }
 
-/// The rows at each read hour are the inputs' places grouped by holder and region, counted by
-/// hand: a state split across regions counts its provinces there over its provinces, a state no
-/// province names is whole and in no region, land no country holds is a holder of its own, a
-/// province past the areas has none. A move changes only its rows; an owner no link resolves makes
-/// every row's owned cells unknown, never smaller; a holder left with nothing loses its row.
 #[test]
 fn rows_are_each_holders_places_by_region_at_each_read_hour_and_unknown_where_a_link_is_not() {
     let (mut tables, mut derive) = (store(), writers(definitions()));
@@ -117,9 +104,6 @@ fn rows_are_each_holders_places_by_region_at_each_read_hour_and_unknown_where_a_
     }
 }
 
-/// An unread input withholds the table by name, never stale or zero, and the next complete read
-/// writes what a run never stopped writes; strategic regions not held withhold it by name; areas
-/// not held leave only area unknown.
 #[test]
 fn an_unread_input_or_absent_regions_withhold_the_table_and_absent_areas_only_area() {
     let (mut tables, mut derive) = (store(), writers(definitions()));

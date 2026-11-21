@@ -52,9 +52,6 @@ async function calendarFollowsTheHead(t: { diagnostic: (message: string) => void
   await act('toggleCalendar()');
 }
 
-/** One country at one hour has one name: a widget's header chip, by tag or by slot, and a lane timeline whose caller
- * holds an older hour all name it as the recording's name resolver does at the hour shown, as the breakdown's chip and
- * the dashboard's own header do, never by its catalogue entry's hour or the hour the lanes last changed. */
 async function countriesNamedAtTheHourShown(t: { diagnostic: (message: string) => void }, act: Act) {
   await act('seek(1000)');
   await act('mountCountries(1000)');
@@ -83,7 +80,6 @@ test('nothing that reads the hour at the head renders or asks as it moves; a nam
     for (const id of ['strip', 'chip', 'section', 'map', 'identity', 'off']) assert.equal(steady.renders[id] ?? 0, 0, `${id} rendered as the hour moved`);
     assert.deepEqual(steady.requests, [], 'nothing was asked as the hour moved');
     assert.equal(steady.chip, 'Axis');
-    // Across the rename: the chip, the section and the identity each render once.
     await act('seek(4800)');
     const renamed = await act<Played>('play(1440, 40)');
     t.diagnostic(`across the rename (${renamed.from} to ${renamed.to}): renders ${JSON.stringify(renamed.renders)}`);
@@ -93,7 +89,6 @@ test('nothing that reads the hour at the head renders or asks as it moves; a nam
     assert.equal(renamed.chip, 'Axis Powers');
     assert.equal(renamed.identity, '5000', 'identities are read at the hour they changed');
     assert.deepEqual(renamed.requests, []);
-    // A seek is an anchor: the fallback is told at once, the map's placeholder matches again.
     const seek = await act<Record<string, number>>('seek(200)');
     assert.equal(seek.fallback, 1);
     assert.ok((seek.map ?? 0) >= 1, 'the map renders on an anchor');

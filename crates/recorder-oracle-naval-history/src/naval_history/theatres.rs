@@ -17,9 +17,6 @@ struct ReservedTheatres {
     census_difference: Option<(bool, bool)>,
 }
 
-/// An omission is proved by the actual reserved roster and physical country
-/// census together. A positive physical alias reaches the ordinary serializer,
-/// so its missing country block or payload remains a difference.
 fn reserved_theatres(
     frame: &DecodedFrame,
     saved: &saved::Pack,
@@ -110,8 +107,6 @@ fn reserved_theatres(
             .flat_map(|country| &country.land)
             .map(|theatre| theatre.id)
             .collect();
-        // A handle serialized under any country is always compared, including
-        // a contradictory enclosing country. No saved payload is partitioned out.
         scope
             .omitted
             .extend(handles.difference(&saved_handles).copied());
@@ -198,8 +193,6 @@ fn check_omitted_ordinals(
 }
 
 fn name(report: &mut Report, label: String, actual: &[u8], expected: Option<&[u8]>) {
-    // The theatre-group and air-theatre writers
-    // emit name unconditionally outside checksum mode, even when empty.
     let text = super::serialized_text(report, &label, actual);
     equal(report, label, Some(text), expected);
 }
@@ -260,8 +253,6 @@ fn check_theatre_group_ordinals(
     Ok(())
 }
 
-/// These recorded regular-group units have no serialized grouping payload.
-/// Callers qualify only units also present in the save; totals stay exact.
 pub fn omitted_regular_group_units(
     frame: &DecodedFrame,
     saved: &saved::Pack,
@@ -558,7 +549,6 @@ pub(super) fn compare_theatres(
                     actual.ordinal as usize,
                     ordinal,
                 );
-                // The air-group save writer always emits its name.
                 let field = format!("{label}.name");
                 let text = super::serialized_text(report, &field, &actual.name);
                 equal(report, field, text, expected.name.as_slice());
@@ -607,13 +597,6 @@ pub(super) fn compare_theatres(
     }
 }
 
-/// The serialized order of battle, joined once for all four comparisons.
-///
-/// The save carries each group's identity and ordered membership inside its
-/// theatre, its theatre-group membership in the enclosing `theater_group`
-/// listings, and its parent army group in the enclosing `field_marshal_group`
-/// child listing. None of those is a field of the definition block, so they are
-/// reconstructed here from the exact serialized structure rather than guessed.
 struct OrderOfBattle<'a> {
     definitions: BTreeMap<u64, (&'a [u8], u64, &'a saved::OrdersGroup)>,
     theater_group: BTreeMap<u64, u64>,
@@ -682,8 +665,6 @@ fn order_of_battle<'a>(
     Ok(result)
 }
 
-/// COrdersGroup identity, its ordered unit membership, an army group's ordered
-/// child membership, and the divisions' independent parent pointers.
 pub fn compare_order_of_battle(
     frame: &DecodedFrame,
     divisions: &BTreeMap<u64, Division>,
@@ -691,8 +672,6 @@ pub fn compare_order_of_battle(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // The land comparison reports the physical country-census difference once.
-    // This independent join still applies the same strict partition rules.
     let (omitted_theatres, mut passed) = omitted_reserved_theatres(frame, saved, report, false);
     let omitted = omitted_groups(frame, saved, &omitted_theatres);
     passed &= report.attempt("reserved OrdersGroups", |_report| {
@@ -750,10 +729,6 @@ pub fn compare_order_of_battle(
             report,
             |actual, ((country, theatre, expected), oob), report| {
                 let label = format!("orders group {}", expected.id);
-                // The formation writer never emits its raw country. The serialized enclosing country
-                // proves roster placement, not this independent raw reference.
-                // Keep strict positive-reference resolution without inventing a
-                // country equality for cross-country or reserved groups.
                 if actual.country != 0 {
                     let actual_country = tag(actual.country, links)?;
                     if actual_country != *country {
@@ -766,8 +741,6 @@ pub fn compare_order_of_battle(
                     Recorded::NotRecorded => report.limitation("stored command name not in this recording", format!("{label}.name")),
                     Recorded::Value(None) => return Err(invalid("stored command name capture refused")),
                     Recorded::Value(Some(bytes)) => {
-                        // The formation writer gates on stored length before the quoted-text writer writes
-                        // the first-NUL prefix, including an emitted empty one.
                         let name = (!bytes.is_empty()).then(|| {
                             super::serialized_text(report, &format!("{label}.name"), bytes)
                         });
@@ -775,9 +748,6 @@ pub fn compare_order_of_battle(
                     }
                 }
                 equal(report, format!("{label}.theatre"), actual.theatre, *theatre);
-                // The theatre writer emits each theatre roster in its own native order.
-                // An unrostered recorded group has None, distinct from the
-                // first saved position; every saved definition is rostered.
                 equal(
                     report,
                     format!("{label}.theatre_ordinal"),
@@ -814,8 +784,6 @@ pub fn compare_order_of_battle(
                     equal(report, format!("{label}.parent"), actual.parent,
                         oob.parent.get(&expected.id).copied().unwrap_or(0));
                 }
-                // The formation writer emits leader and leader_unit only for a non-null
-                // pointer, so an omission proves the native pointer is null.
                 equal(
                     report,
                     format!("{label}.leader"),
@@ -899,10 +867,6 @@ pub fn compare_order_of_battle(
     }
 }
 
-/// The group's own member vector and each division's back-pointer are
-/// two independent native sources for the same membership. Both are recorded;
-/// this compares the division pointers against the save and reports any
-/// disagreement between the two recorded sources without resolving it.
 fn compare_division_parents(
     frame: &DecodedFrame,
     divisions: &BTreeMap<u64, Division>,
@@ -935,8 +899,6 @@ fn compare_division_parents(
             );
         }
         cross_checked += 1;
-        // A division the save does not contain has no saved parent to compare
-        // against; its absence is already reported by the divisions group.
         if !divisions.contains_key(&division.id) {
             continue;
         }
@@ -963,8 +925,6 @@ fn compare_division_parents(
     Ok(())
 }
 
-/// Each saved land theatre's `unit` list, by unit: the theatre writer emits its whole member
-/// vector, and only the theatre's add and remove set or clear a unit's own theatre word.
 fn saved_theatre_units(
     countries: &BTreeMap<Vec<u8>, saved::TheatreCountry>,
 ) -> io::Result<BTreeMap<u64, u64>> {
@@ -979,7 +939,6 @@ fn saved_theatre_units(
     Ok(units)
 }
 
-/// A unit records the handle of the saved theatre listing it, or zero when none does.
 fn compare_unit_theatres<'a>(
     table: &str,
     rows: impl Iterator<Item = (u64, &'a Recorded<Option<u64>>)>,

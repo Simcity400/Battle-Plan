@@ -10,13 +10,10 @@ fn always(class: BorderClass) -> impl Fn(u32, u32) -> Option<BorderClass> {
     move |_, _| Some(class)
 }
 
-/// No province in these maps is water, so no chain takes the wide smoothing.
 fn dry(_province: u32) -> bool {
     false
 }
 
-/// A map split into a top and a bottom province, whose single boundary runs from the map's left
-/// edge to its right edge without touching the x seam.
 fn split_rows(width: u32, height: u32, row: u32) -> Vec<u32> {
     let mut ids = Vec::new();
     for y in 0..height {
@@ -42,8 +39,6 @@ fn two_provinces_trace_one_polyline_on_pixel_crack_midpoints() {
     assert_eq!(polyline.class, BorderClass::Country);
     assert!(!polyline.closed);
     assert_eq!(polyline.points.len(), 8, "one point per pixel edge crossed");
-    // Every point is the mean of the two pixel centres its crack separates: on the pixel
-    // column across the row, half a pixel between the two rows along it, converted to world z.
     let (_, z) = world_from_pixel(8, 0.0, 3.5);
     for (index, point) in polyline.points.iter().enumerate() {
         assert_eq!(*point, [index as f32, z]);
@@ -99,7 +94,6 @@ fn an_island_traces_a_closed_loop() {
     let mut expected = expected;
     expected.sort_by(|left, right| left.partial_cmp(right).unwrap());
     assert_eq!(sorted, expected);
-    // Walking the loop never steps more than one pixel corner at a time.
     for window in polyline.points[..8].windows(2) {
         let step = (window[1][0] - window[0][0]).hypot(window[1][1] - window[0][1]);
         assert!(step <= 1.001, "step {step}");
@@ -108,8 +102,6 @@ fn an_island_traces_a_closed_loop() {
 
 #[test]
 fn the_x_seam_is_a_boundary_and_cuts_the_chain() {
-    // Two provinces side by side: they meet down the middle of the map and again across the
-    // seam, because the world wraps.
     let mut ids = Vec::new();
     for _ in 0..8 {
         for x in 0..8 {
@@ -129,7 +121,6 @@ fn the_x_seam_is_a_boundary_and_cuts_the_chain() {
         .map(|line| line.points[0][0])
         .collect();
     columns.sort_by(|left, right| left.partial_cmp(right).unwrap());
-    // The crack between columns 3 and 4, and the seam crack between column 7 and column 0.
     assert_eq!(columns, vec![3.5, 7.5]);
     for polyline in &traced.polylines {
         assert_eq!(polyline.points.len(), 8);
@@ -137,13 +128,8 @@ fn the_x_seam_is_a_boundary_and_cuts_the_chain() {
     }
 }
 
-/// Three provinces meeting at one lattice corner: the two chains that end there must both
-/// carry that corner, or their strips stop a map unit short of each other and the line reads
-/// as a dashed line.
 #[test]
 fn chains_that_meet_at_a_triple_point_share_its_corner() {
-    // Left half is province 1; the right half is 2 above row 4 and 3 below it, so 1, 2 and 3
-    // all meet at the lattice corner (4, 4).
     let mut ids = Vec::new();
     for y in 0..8_u32 {
         for x in 0..8_u32 {
@@ -194,16 +180,12 @@ fn chains_that_meet_at_a_triple_point_share_its_corner() {
 fn smoothing_leaves_the_endpoints_where_the_trace_put_them() {
     let points = [[0.0, 0.0], [1.0, 0.0], [2.0, 4.0], [3.0, 0.0]];
     let smoothed = smooth(&points, false);
-    // The endpoints are the join with the next chain and are never moved.
     assert_eq!(smoothed[0], points[0]);
     assert_eq!(smoothed[3], points[3]);
-    // Interior points are the mean of themselves and their two neighbours.
     assert_eq!(smoothed[1], [1.0, 4.0 / 3.0]);
     assert_eq!(smoothed[2], [2.0, 4.0 / 3.0]);
-    // A straight run stays exactly where it is: no slide along itself.
     let straight = [[0.0, 7.0], [1.0, 7.0], [2.0, 7.0], [3.0, 7.0]];
     assert_eq!(smooth(&straight, false), straight.to_vec());
-    // Too short to filter.
     assert_eq!(smooth(&[[1.0, 2.0]], false), vec![[1.0, 2.0]]);
     assert_eq!(
         smooth(&[[1.0, 2.0], [3.0, 4.0]], true),
@@ -213,22 +195,16 @@ fn smoothing_leaves_the_endpoints_where_the_trace_put_them() {
 
 #[test]
 fn a_water_to_water_chain_takes_the_wide_two_pass_filter() {
-    // A spike on an otherwise straight run: one 3-tap pass leaves a third of it, two passes of
-    // a radius that opens up to six flatten it far harder.
     let mut points: Vec<[f32; 2]> = (0..17).map(|i| [i as f32, 0.0]).collect();
     points[8][1] = 9.0;
     let narrow = smooth(&points, false);
     let wide = smooth(&points, true);
     assert_eq!(narrow[8], [8.0, 3.0]);
-    // Radius at index 8 of a 17 point chain is min(8, 8, 6) = 6, so the first pass spreads the
-    // spike over thirteen taps and the second pass spreads what is left again.
     assert!(wide[8][1] < 1.0, "{:?}", wide[8]);
     assert!(wide[8][1] > 0.0);
-    // Neither filter moves an endpoint.
     assert_eq!(narrow[0], points[0]);
     assert_eq!(wide[0], points[0]);
     assert_eq!(wide[16], points[16]);
-    // The radius is capped, so a point seven from the end still averages thirteen taps.
     assert_eq!(WIDE_SMOOTHING_RADIUS, 6);
 }
 
@@ -261,25 +237,19 @@ fn widened_quads_carry_the_right_rails_uv_and_winding() {
     for point in 0..8 {
         let first = vertices[point * 2];
         let second = vertices[point * 2 + 1];
-        // The boundary runs east, so the rails sit south and north of it by half the width.
         assert_eq!(first.uv, [0, point as i16]);
         assert_eq!(second.uv, [1, point as i16]);
         assert!((first.position[2] - (z - half)).abs() < 1e-5, "{first:?}");
         assert!((second.position[2] - (z + half)).abs() < 1e-5, "{second:?}");
         assert_eq!(first.position[0], second.position[0]);
-        // A flat heightmap of byte 95 is exactly sea level.
         assert_eq!(first.position[1], WATER_HEIGHT);
     }
-    // The first point is the first crack midpoint, and smoothing left it there.
     assert_eq!(vertices[0].position[0], 0.0);
-    // A straight boundary's coarse level is its two ends, widened exactly as the fine ones.
     assert_eq!((draw.coarse_base_vertex, draw.coarse_vertex_count), (0, 4));
     assert_eq!(mesh.coarse_chunks[0], [vertices[0], vertices[1], vertices[14], vertices[15]]);
-    // The shared index buffer is the engine's quad pattern.
     assert_eq!(meshes.indices[..6], [0, 2, 1, 2, 3, 1]);
     assert_eq!(meshes.indices[6..12], [2, 4, 3, 4, 5, 3]);
     assert_eq!(meshes.indices.len(), 7 * 6);
-    // Nothing landed in the other five buckets.
     for class in BorderClass::ALL {
         if class != BorderClass::Country {
             assert!(meshes.mesh(class).draws.is_empty());
@@ -296,7 +266,6 @@ fn heights_come_from_the_field_under_each_rail() {
         height: 8,
         ids: &ids,
     };
-    // Row 3 of the bitmap is high ground, everything else is at sea level.
     let mut values = flat(8, 8);
     for x in 0..8 {
         values[3 * 8 + x] = 195;
@@ -308,21 +277,16 @@ fn heights_come_from_the_field_under_each_rail() {
     };
     let meshes = build(&map, &always(BorderClass::Country), &dry, &heights, 1.5).unwrap();
     let vertices = &meshes.mesh(BorderClass::Country).chunks[0];
-    // The north rail is at row 2.75: one quarter of row 2 and three quarters of row 3.
-    // The south rail is over flat sea-level terrain.
     assert_eq!(vertices[1].position[1], 17.0);
     assert_eq!(vertices[0].position[1], WATER_HEIGHT);
-    // The field itself: world z for bitmap row 3 of 8 is 4.
     assert_eq!(heights.height_at_world(0.0, 4.0), 19.5);
     assert_eq!(heights.height_at_world(0.0, 3.0), WATER_HEIGHT);
-    // x wraps and y clamps rather than panicking.
     assert_eq!(heights.height_at_world(-1.0, 4.0), 19.5);
     assert_eq!(heights.height_at_world(1e9, -1e9), WATER_HEIGHT);
 }
 
 #[test]
 fn the_classifier_decides_which_boundaries_survive() {
-    // Three vertical stripes: 1 | 2 | 3, with the seam putting 3 next to 1 as well.
     let mut ids = Vec::new();
     for _ in 0..8 {
         for x in 0..8 {
@@ -356,7 +320,6 @@ fn the_classifier_decides_which_boundaries_survive() {
     assert_eq!(meshes.mesh(BorderClass::Impassable).draws.len(), 1);
     assert_eq!(meshes.mesh(BorderClass::Country).draws.len(), 0);
     assert_eq!(meshes.mesh(BorderClass::Province).draws.len(), 0);
-    // The classifier always sees the lower id first.
     let seen = RefCell::new(Vec::new());
     let record = |first: u32, second: u32| {
         seen.borrow_mut().push((first, second));
@@ -394,9 +357,7 @@ fn diagonal_contacts_use_component_labels_in_bottom_up_order() {
     };
     let components = BoundaryComponents::new(&map);
     assert_eq!(components.components, [4, 5, 6, 1, 2, 3]);
-    // Only two province ids, but four components meet at this corner.
     assert!(components.is_junction([1, 1]));
-    // Matching province ids at the left/right seam are not flood-filled together.
     assert_ne!(components.components[0], components.components[2]);
 }
 
@@ -414,8 +375,6 @@ fn chunking_splits_a_long_polyline_and_keeps_the_strip_continuous() {
         height: 8,
         values: &values,
     };
-    // Eight vertices per chunk is four points per run, so the eight point boundary needs three
-    // runs that overlap by a point each.
     let meshes =
         build_with_limit(&map, &always(BorderClass::Country), &dry, &heights, 1.5, 8).unwrap();
     let mesh = meshes.mesh(BorderClass::Country);
@@ -428,16 +387,12 @@ fn chunking_splits_a_long_polyline_and_keeps_the_strip_continuous() {
     assert_eq!(mesh.draws[0].index_count, 3 * 6);
     assert_eq!(mesh.draws[1].chunk, 1);
     assert_eq!(mesh.draws[1].base_vertex, 0);
-    // The runs overlap by one point, so the last point of a run and the first of the next are
-    // the same vertex position, and uv.y keeps counting.
     let first = mesh.chunks[0][6];
     let second = mesh.chunks[1][0];
     assert_eq!(first.position, second.position);
     assert_eq!(first.uv, [0, 3]);
     assert_eq!(second.uv, [0, 3]);
     assert_eq!(mesh.chunks[2][0].uv, [0, 6]);
-    // Each run's coarse level goes to its own chunk and keeps the run's ends, so the coarse
-    // strip meets itself at the seams too.
     assert_eq!(
         mesh.draws.iter().map(|draw| (draw.chunk, draw.coarse_base_vertex, draw.coarse_vertex_count)).collect::<Vec<_>>(),
         [(0, 0, 4), (1, 0, 4), (2, 0, 4)]
@@ -446,23 +401,17 @@ fn chunking_splits_a_long_polyline_and_keeps_the_strip_continuous() {
     assert_eq!(mesh.coarse_chunks[0][2].position, mesh.coarse_chunks[1][0].position);
     let counters: Vec<i16> = mesh.coarse_chunks.iter().flat_map(|chunk| chunk.iter().step_by(2).map(|vertex| vertex.uv[1])).collect();
     assert_eq!(counters, [0, 3, 3, 6, 6, 7]);
-    // Every point still appears: three runs of four points with two shared points.
-    // Three runs of four, four and two points, the middle two sharing a point with a
-    // neighbour: 4 + 4 + 2 points become 20 vertices for the 8 point boundary.
     assert_eq!(mesh.vertex_count(), 20);
     assert_eq!(
         meshes.indices.len(),
         3 * 6,
         "the longest run is four points"
     );
-    // A limit too small to hold a segment is a named error.
     assert!(build_with_limit(&map, &always(BorderClass::Country), &dry, &heights, 1.5, 3).is_err());
 }
 
 #[test]
 fn the_coarse_level_keeps_the_strip_within_the_tolerance_at_its_width() {
-    // A boundary along row 4 with a two-row notch over columns 6 to 9, and a ridge across it at
-    // columns 12 and 13.
     let (width, height) = (16_u32, 8_u32);
     let ids: Vec<u32> = (0..height)
         .flat_map(|y| (0..width).map(move |x| if y < if (6..10).contains(&x) { 2 } else { 4 } { 1 } else { 2 }))
@@ -500,9 +449,7 @@ fn the_coarse_level_keeps_the_strip_within_the_tolerance_at_its_width() {
         let off = line.windows(2).map(|segment| line_lod::offset(segment[0], segment[1], point).0).fold(f32::INFINITY, f32::min);
         assert!(off <= line_lod::TOLERANCE + 1e-4, "{point:?} is {off} off the coarse line");
     }
-    // The ridge is under a straight stretch: only its height keeps points on it.
     assert!(line.iter().any(|point| (11.0..15.0).contains(&point[0])), "{line:?}");
-    // A zone or hover outline over the boundary draws the same strip at each level.
     let triangles = |strip: &[Vertex]| -> Vec<[[f32; 3]; 3]> {
         let mut indices = Vec::new();
         super::super::border_pass::run_indices(0, strip.len() as u32 / 2, &mut indices);
@@ -556,7 +503,6 @@ fn a_map_mode_without_province_borders_gives_them_no_alpha_at_any_height() {
                 0.0
             );
         }
-        // The other classes keep their fades.
         assert_eq!(class_alpha(BorderClass::State, 0.0, FADES, shown), 1.0);
         assert_eq!(class_alpha(BorderClass::Country, 0.0, FADES, shown), 1.0);
     }

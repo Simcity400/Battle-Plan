@@ -1,9 +1,3 @@
-//! A country's individual current fuel consumers: its demand pack as a read holds it (the header in
-//! `CountryFuel.demand`, the lists in `FuelDemandParts`), each division, task force and air wing
-//! with its daily projection, the commands, fleets and air sites they sit in; and chosen consumers'
-//! projections at each read of a window. A consumer is an occurrence: its position in its list and
-//! every identity operand there, so the same position in another read is the same consumer only
-//! when every operand still matches.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{Content, DETAIL_HOURS, FuelConsumptionAt, reason};
@@ -24,7 +18,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The raw country id of `tag`'s holder at `hour`; refused by name where none holds it.
 pub(crate) fn holder_id(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result<u32> {
     match query.holders.at(tag, hour).map(|run| run.holder) {
         Some(Holder::Found { id, .. }) => Ok(id),
@@ -32,15 +25,12 @@ pub(crate) fn holder_id(query: &Query<'_>, tag: &Country, hour: i32) -> io::Resu
     }
 }
 
-/// A window's first and last hour.
 pub(crate) fn window_span(window: i32) -> io::Result<(i32, i32)> {
     let first = window.checked_mul(DETAIL_HOURS).ok_or_else(|| dashboard_core::invalid("Invalid fuel window"))?;
     let last = first.checked_add(DETAIL_HOURS - 1).ok_or_else(|| dashboard_core::invalid("Invalid fuel window"))?;
     Ok((first, last))
 }
 
-/// One read of a country's fuel status: its hour, the last hour its values hold, whether it
-/// follows a gap or a read the hour did not show, its row and, when asked, its demand parts.
 #[derive(Clone, Debug)]
 pub struct ReadRow {
     pub hour: i32,
@@ -57,7 +47,6 @@ pub(crate) struct Reads {
 
 const PARTS_UNAVAILABLE: &str = "fuel demand parts are not recorded at this read";
 
-/// A row of `table` from the cells a batch read shows, recorded in row format `format`.
 fn typed<T: replay_data::rows::TableSchema>(view: &replay_columnar::store::TableView<'_>, key: u128, slot: u32, format: u16) -> io::Result<Option<T::Row>>
 where
     T::Row: Clone,
@@ -66,11 +55,6 @@ where
     Ok(rows.rows::<T>().and_then(|rows| rows.first().cloned()))
 }
 
-/// Country `id`'s fuel reads from `first` through `last` of `query`'s timeline, each with its row
-/// (and its demand parts when `parts`), read in one forward pass per run: the read in force at a
-/// stretch's first hour, then every read after, each held until the next read (looked for up to a
-/// day past the span). Its cost follows the reads in the span and, with parts, the country's parts
-/// at each.
 pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, parts: Option<()>, cancelled: &AtomicBool) -> io::Result<Reads> {
     let recording = query.replay.recording();
     let key = u128::from(id);
@@ -83,8 +67,6 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
         }
         let mut hours: Vec<i32> = Vec::new();
         let stored = recording.run(run)?;
-        // Each read writes the row's applied day and demand pack: the hours they were written are its reads, the one in
-        // force at the stretch's first hour included.
         let written = [replay_data::rows::column::<CountryFuelRow>("award_day"), replay_data::rows::column::<CountryFuelRow>("demand")];
         let cells = replay::lanes::history(recording, run, TableId::CountryFuel, &written, replay::lanes::Keys::These(&[key]), from, to)?;
         for (_, steps) in &cells.keys {
@@ -142,7 +124,6 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
                 Ok(())
             })?;
         }
-        // The read in force at the stretch's first hour is dated by the table's last read at or before it: a day back, else the run.
         let last_read = |start: i32| replay::lanes::reads(recording, run, TableId::CountryFuel, start, from).map(|reads| reads.last().map(|&(_, last)| last));
         let read = match hours[0] == from {
             true => match last_read(from.saturating_sub(super::DAY_HOURS).max(stored.first_hour))? {
@@ -158,9 +139,6 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
     Ok(out)
 }
 
-/// A stretch as [`country_reads`] walks it: its first and last hour, the window's last hour,
-/// whether the window cut it (the read in force at `from` then continues the one before), and
-/// CountryFuel's last read hour at or before `from`.
 pub(crate) struct Walk {
     pub from: i32,
     pub to: i32,
@@ -169,9 +147,6 @@ pub(crate) struct Walk {
     pub read: Option<i32>,
 }
 
-/// One stretch's reads from the hours its rows were written, each with the row and the parts
-/// written at that hour and held until the next read; the read in force at `from` dated by its own
-/// read where the recording tells it.
 pub(crate) fn stretch_reads(
     walk: &Walk,
     hours: &[i32],
@@ -202,16 +177,12 @@ pub(crate) fn stretch_reads(
     }
 }
 
-/// Hours of a history's window: those a read holds, or a gap no read holds.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Span<'a> {
     Read { read: &'a ReadRow, first: i32, last: i32 },
     Gap { first: i32, last: i32 },
 }
 
-/// The window `first..=last` as a history shows it: each read meeting it, from its own hour (the
-/// read in force at the window's first hour too) to its last (cut at the window's when
-/// `cut_last`), and every hour no read holds as a gap, in hour order without overlap.
 pub(crate) fn spans(reads: &[ReadRow], first: i32, last: i32, cut_last: bool) -> Vec<Span<'_>> {
     let mut out = Vec::with_capacity(reads.len() + 2);
     let mut next = Some(first);
@@ -238,7 +209,6 @@ pub(crate) fn spans(reads: &[ReadRow], first: i32, last: i32, cut_last: bool) ->
     out
 }
 
-/// An air wing as the demand replies show it, its rate worked from the pack's operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wing {
     pub reference: u64,
@@ -251,7 +221,6 @@ pub struct Wing {
     pub rate: Result<i64, String>,
 }
 
-/// An air site as the demand replies show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Site {
     pub list: u8,
@@ -264,7 +233,6 @@ pub struct Site {
     pub wings: Vec<Wing>,
 }
 
-/// A demand pack as the demand replies show it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub divisions: Vec<FuelDemandUnit>,
@@ -318,7 +286,6 @@ impl Pack {
     }
 }
 
-/// The pack a read at `hour` holds, its lists put back from its parts; or why it is not known.
 pub fn pack_at(row: &CountryFuelRow, parts: Result<&[FuelDemandPartRow], &'static str>, hour: i32) -> Result<FuelDemandRead, String> {
     let mut rows = [row.clone()];
     assemble_demand_parts(&mut rows, parts);
@@ -333,7 +300,6 @@ pub fn pack_at(row: &CountryFuelRow, parts: Result<&[FuelDemandPartRow], &'stati
     Ok(pack)
 }
 
-/// A consumer's occurrence: its list's position and every identity operand it has there.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Key {
     Unit(u32, usize, u64, u64, u32, Option<[u32; 3]>),
@@ -406,7 +372,6 @@ fn wing(pack: &Pack, site_index: usize, index: usize) -> Option<Occurrence<'_>> 
     })
 }
 
-/// Every consumer of a pack: divisions, task forces, then each site's wings.
 pub fn occurrences(pack: &Pack) -> impl Iterator<Item = Occurrence<'_>> {
     pack.divisions
         .iter()
@@ -416,7 +381,6 @@ pub fn occurrences(pack: &Pack) -> impl Iterator<Item = Occurrence<'_>> {
         .chain(pack.sites.iter().enumerate().flat_map(move |(site, item)| (0..item.wings.len()).filter_map(move |index| wing(pack, site, index))))
 }
 
-/// The consumer `key` names, where the pack holds it at the same position with every operand.
 pub fn occurrence<'a>(pack: &'a Pack, key: &Key) -> Option<Occurrence<'a>> {
     let row = match key {
         Key::Unit(0, index, ..) => unit(0, *index, pack.divisions.get(*index)?),
@@ -440,13 +404,12 @@ pub struct FuelDemandLocation {
     pub reason: Option<String>,
 }
 
-/// One consumer: what it is, where it sits and its daily projection, fixed5 (none with `reason`).
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandPart {
     pub key: String,
-    /// 0 army, 1 air, 2 navy: the fuel consumer it counts toward.
+    #[doc = " 0 army, 1 air, 2 navy: the fuel consumer it counts toward."]
     pub kind: u32,
     pub reference: String,
     pub parent: String,
@@ -496,7 +459,7 @@ pub struct FuelDemandAirSite {
     pub capacity_raw: Option<String>,
     pub demilitarized: Option<u8>,
     pub reason: Option<String>,
-    /// Its wings' consumer keys.
+    #[doc = " Its wings' consumer keys."]
     pub wings: Vec<String>,
 }
 
@@ -506,7 +469,7 @@ pub struct FuelDemandAirSite {
 pub struct FuelDemandParams {
     pub branch_id: String,
     pub country: Country,
-    /// Any hour the read holds: the reply names the read.
+    #[doc = " Any hour the read holds: the reply names the read."]
     pub hour: i32,
 }
 
@@ -515,13 +478,13 @@ pub struct FuelDemandParams {
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandReply {
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
-    /// The read the pack is of.
+    #[doc = " The read the pack is of."]
     pub read_hour: i32,
     pub country: u32,
     pub country_instance: Option<u32>,
-    /// The families' sums the read gives, as `country-fuel` shows them.
+    #[doc = " The families' sums the read gives, as `country-fuel` shows them."]
     pub consumption: FuelConsumptionAt,
     pub parts: Vec<FuelDemandPart>,
     pub commands: Vec<FuelDemandCommand>,
@@ -561,10 +524,8 @@ pub fn part_of(row: Occurrence<'_>, content: &Content) -> io::Result<FuelDemandP
     })
 }
 
-/// The families' sums of a pack, as the derived consumption totals hold them.
 pub fn consumption(pack: &FuelDemandRead, parts: &Pack) -> FuelConsumptionAt {
     let rates = pack.native_rates();
-    // `native_rates` orders army, navy, air; the fuel consumers army, air, navy.
     let rates = [rates[0], rates[2], rates[1]];
     let causes = [&pack.army_reason, &pack.air_reason, &pack.navy_reason];
     let mut known = [0_i128; 3];
@@ -592,7 +553,6 @@ fn counted(reasons: impl IntoIterator<Item = String>) -> Vec<String> {
     counts.into_iter().map(|(why, count)| format!("{count} current fuel consumption operands refused: {why}")).collect()
 }
 
-/// The reply for a pack read at `hour` of country `country`.
 pub fn demand_reply(asked: &dashboard_base::products::Country, tag: &str, read: &FuelDemandRead, hour: i32, country: u32, content: &Content, cancelled: &AtomicBool) -> io::Result<FuelDemandReply> {
     let pack = Pack::of(read);
     let mut parts = Vec::new();
@@ -674,7 +634,6 @@ fn branch(id: &str) -> io::Result<u64> {
     id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))
 }
 
-/// The individual consumers of the read holding an hour.
 pub struct CountryFuelDemand;
 
 impl Product for CountryFuelDemand {
@@ -735,15 +694,13 @@ impl Product for CountryFuelDemand {
 pub struct FuelDemandHistoryParams {
     pub branch_id: String,
     pub country: Country,
-    /// The hour the consumers were picked at: the country is its holder then.
+    #[doc = " The hour the consumers were picked at: the country is its holder then."]
     pub hour: i32,
     pub window: i32,
-    /// The consumers' keys, as `country-fuel-demand` gives them.
+    #[doc = " The consumers' keys, as `country-fuel-demand` gives them."]
     pub keys: Vec<String>,
 }
 
-/// A consumer's projection over the hours one read holds; none with `reason` where the read's pack
-/// is not known or does not hold the consumer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -772,7 +729,7 @@ pub struct FuelDemandHistoryReply {
     pub window: i32,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// In the order asked.
+    #[doc = " In the order asked."]
     pub parts: Vec<FuelDemandHistoryPart>,
     pub warnings: Vec<String>,
 }
@@ -781,9 +738,6 @@ dashboard_base::reply_warnings!(FuelDemandHistoryReply);
 
 const NO_READ: &str = "Current fuel consumption was not recorded in the selected native country/recording segment";
 
-/// Each consumer's projection at each read of the window `first..=last`, a read cut at its last
-/// hour: its rate where the read's pack holds the same occurrence, else why not; the hours no read
-/// holds say so.
 pub fn demand_runs(reads: &[ReadRow], keys: &[Key], first: i32, last: i32) -> Vec<Vec<FuelDemandRun>> {
     let spans = spans(reads, first, last, true);
     let mut out: Vec<Vec<FuelDemandRun>> = keys.iter().map(|_| Vec::with_capacity(spans.len())).collect();
@@ -815,7 +769,6 @@ pub fn demand_runs(reads: &[ReadRow], keys: &[Key], first: i32, last: i32) -> Ve
     out
 }
 
-/// Chosen consumers' projections at each read of a window.
 pub struct CountryFuelDemandHistory;
 
 impl Product for CountryFuelDemandHistory {

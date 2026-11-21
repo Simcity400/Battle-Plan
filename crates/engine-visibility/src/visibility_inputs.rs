@@ -1,6 +1,3 @@
-//! Stored simulation inputs for on-demand unit intel and province fog
-//! queries. No viewpoint, fog switch or presentation buffer is read,
-//! and no engine function is called.
 
 use crate::{
     Memory, ccountry, cgame_state,
@@ -12,11 +9,7 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Foreign-unit visibility scales its stored byte by the viewer's modifier 0x24B from the country's
-/// modifier accumulator.
 pub const UNIT_MODIFIER: u32 = crate::modifier_keys::INTEL_FROM_COMBAT_FACTOR;
-/// Province fog uses country-scoped state modifier key 0x4B for owned
-/// states controlled by another country.
 pub const NETWORK_MODIFIER: u32 = crate::modifier_keys::LOCAL_INTEL_TO_ENEMIES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,7 +39,6 @@ pub fn count_countries(memory: &impl Memory, base: usize, game_state: usize) -> 
     countries_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Worker-owned storage grows from the original native headers.
 pub fn countries(
     memory: &impl Memory,
     base: usize,
@@ -67,10 +59,6 @@ pub fn countries_buffer(
     })
 }
 
-/// The same census and native read order, with an authenticated country's raw
-/// accumulator lookup supplied by the worker's change-certified held store.
-/// Every present value still reads effective metadata at its original position
-/// (effective modifier lookup used by unit intel); absent keys skip it.
 pub fn countries_buffer_with(
     memory: &impl Memory,
     base: usize,
@@ -85,7 +73,6 @@ pub fn countries_buffer_with(
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         slots = countries.count() as usize;
-        // Unit-intel queries visit one modifier per live country.
         output.ensure(slots)?;
         let (mut len, mut unread) = (0, 0);
         for slot in 1..countries.count() {
@@ -155,7 +142,6 @@ pub fn count_states(memory: &impl Memory, base: usize, game_state: usize) -> Out
     states_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Worker-owned storage grows from the original native headers.
 pub fn states(
     memory: &impl Memory,
     base: usize,
@@ -174,7 +160,6 @@ pub fn states_buffer(
     states_buffer_extent(memory, base, game_state, output, &mut None)
 }
 
-/// The existing census's array extent, including null slots, without another read.
 pub fn states_buffer_extent(
     memory: &impl Memory,
     base: usize,
@@ -190,7 +175,6 @@ pub fn states_buffer_extent(
             .filter(|array| array.count > 1)
             .ok_or("state array unreadable or empty")?;
         *extent = Some(array.count);
-        // Fog rebuild visits the state registry.
         output.ensure(array.count as usize)?;
         let vtable =
             engine_sites::at(base, cstate::VTABLE_RVA).ok_or("module address overflow")? as u64;
@@ -266,11 +250,8 @@ pub fn states_buffer_extent(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Human-AI debug byte ORed into every country AI verdict; console and
-/// debug UI actions toggle it.
 pub const HUMAN_AI_RVA: Rva = Rva(0x033d_daa9);
 
-/// Debug byte used by removal delay and toggled by the console.
 pub const INSTANT_DECISIONS_RVA: Rva = Rva(0x033d_daa3);
 
 pub fn instant_decisions(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
@@ -279,14 +260,12 @@ pub fn instant_decisions(memory: &impl Memory, base: usize) -> Result<u8, &'stat
         .ok_or("instant decisions byte unreadable")
 }
 
-/// The `human_ai` byte.
 pub fn human_ai(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
     engine_sites::at(base, HUMAN_AI_RVA)
         .and_then(|address| read(memory, address))
         .ok_or("human_ai byte unreadable")
 }
 
-/// The simulation's DLC feature mask.
 pub fn dlc_mask(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
     engine_sites::at(base, dlc_feature_state::MASK_RVA)
         .and_then(|address| read(memory, address))

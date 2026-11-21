@@ -1,20 +1,14 @@
-//! Independent work on the machine's threads, each result in its item's place.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod cpu;
 pub mod dag;
 
-/// `work` over every item on up to the machine's threads, results in item order. Each worker
-/// thread runs as its caller does ([`job_priority::Caller`]): it works for the caller, which
-/// waits for it.
 pub fn map<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let caller = job_priority::Caller::current();
     map_entering(items, || caller.clone().enter(), work)
 }
 
-/// [`map`] with each worker thread first running `enter`, which sets the job and priority the
-/// thread works at ([`job_priority`]).
 pub fn map_entering<T: Sync, R: Send>(
     items: &[T],
     enter: impl Fn() + Sync,
@@ -70,8 +64,6 @@ pub fn map_entering<T: Sync, R: Send>(
         .collect()
 }
 
-/// Starts `work` on a scoped thread that runs as the calling thread does
-/// ([`job_priority::Caller`]): the caller waits for it.
 pub fn spawn<'scope, T: Send + 'scope>(
     scope: &'scope std::thread::Scope<'scope, '_>,
     work: impl FnOnce() -> T + Send + 'scope,
@@ -94,7 +86,6 @@ fn carried<T>(work: impl FnOnce() -> T + Send) -> impl FnOnce() -> T + Send {
     }))
 }
 
-/// A scoped thread's result, its panic resumed on this thread.
 pub fn join<T>(task: std::thread::ScopedJoinHandle<'_, T>) -> T {
     task.join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))

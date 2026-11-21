@@ -10,7 +10,6 @@ impl PartialEq for Paint {
         self.0.same_bits(&other.0)
     }
 }
-/// A floating harbour's or a set of harbours' counts for the layer's summary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HarbourCounts {
     pub fogged: usize,
@@ -19,7 +18,6 @@ pub struct HarbourCounts {
     pub unknown_deployment: usize,
 }
 impl HarbourCounts {
-    /// Adds the counts to `summary`, with the words of the undecided harbours.
     pub fn apply(&self, summary: &mut MapBuildingSummary) {
         summary.fogged += self.fogged;
         summary.placed += self.placed;
@@ -141,8 +139,6 @@ impl Output {
     }
 }
 impl MapBuildingAssets {
-    /// A floating harbour's slot `id` from values: `byte(sea)` is the viewer's fog byte of its sea
-    /// province, `deployed(sea)` whether its controller deployed it (`None` when undecided).
     pub(super) fn harbour(
         &self,
         position: &BuildingPosition,

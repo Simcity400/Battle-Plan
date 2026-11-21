@@ -5,8 +5,6 @@ use engine_native::{
     cland_combatant as side, cpdx_array::Array,
 };
 
-// Independent synthetic native objects. LiveMemory exercises the same SEH
-// batches as capture; no game process or installed content is accessed.
 pub(crate) struct World {
     pub(crate) combat: Vec<u8>,
     sides: [Vec<u8>; 2],
@@ -193,9 +191,8 @@ fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
         allocated,
         "stable census does not grow"
     );
-    // Equal size and sum do not certify unchanged per-variant amounts.
     worlds[0].entries[0][0].amount_raw += 1;
-    worlds[0].set(0, 15, 2); // New variant joins mid-battle.
+    worlds[0].set(0, 15, 2);
     read(&mut c, &worlds);
     assert!(
         c.losses_complete(),
@@ -263,9 +260,9 @@ fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
     });
     assert!(!c.losses_complete());
     c.begin();
-    c.finish(Outcome::Rows { len: 0 }); // Ended between hourly reads.
+    c.finish(Outcome::Rows { len: 0 });
     assert!(rows(&c).is_empty());
-    assert!(!worlds[0].variants.is_empty()); // Keep identity storage alive.
+    assert!(!worlds[0].variants.is_empty());
 }
 #[test]
 fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
@@ -288,7 +285,6 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
             unread_rows: 3
         }
     );
-    // Only the combat's handle: progress is playback's.
     assert_eq!(c.rows.rows[0], 1 << 32 | 62);
     c.grow(&mut capacity);
     assert!(capacity.rows >= 5);
@@ -411,8 +407,6 @@ fn hourly_losses_read_failure_never_becomes_zero() {
 #[ignore = "print-only hourly casualty bench after live-count presize; lead runs through build slot"]
 fn land_casualty_hourly_timing() {
     let _globals = super::test_globals();
-    // Fixture population, never a production admission limit. Both native sides
-    // have complete per-variant pools; no installed content/process is read.
     let provinces: usize = std::env::var("BATTLE_PLAN_LAND_PROVINCES").or_else(|_| std::env::var("HOI4_LAND_PROVINCES"))
         .map(|value| value.parse().unwrap())
         .unwrap_or(20_000);
@@ -438,7 +432,6 @@ fn land_casualty_hourly_timing() {
         let start = std::time::Instant::now();
         read(&mut captured, std::hint::black_box(&worlds));
         let elapsed = start.elapsed().as_nanos();
-        // Correctness checks and sample storage are outside the measured hour.
         assert!(captured.losses_complete());
         assert_eq!(captured.allocated_bytes(), bytes);
         times.push(elapsed);
@@ -503,7 +496,6 @@ fn combat_log_projection_uses_committed_labels_across_capture_buffers_and_keyfra
     let mut encoder = FrameEncoder::new();
     let mut previous: Vec<CombatLogObserverRow> = Vec::new();
     for (branch, hour) in [(1, 1), (1, 2), (1, 3), (1, 4), (1, 6), (2, 7)] {
-        // A new pooled capture buffer has no retained identity registry.
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.rows.outcome = Outcome::Rows { len: 0 };
         for (kind, item, values) in [
@@ -643,7 +635,6 @@ fn observer_daily_numeric_carry_keeps_hourly_columns_and_reads_new_rows_fresh() 
         world.sides[0][counters + lane * 4..counters + lane * 4 + 4]
             .copy_from_slice(&value.to_le_bytes());
     }
-    // Membership is still visited every hour, and new entries read their first value.
     let mut leader = [0; 12];
     World::q(&mut leader, 0, 51);
     leader[8..].copy_from_slice(&(-17_i32).to_le_bytes());
@@ -762,7 +753,7 @@ fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recove
     let slot = 24 + replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT as i32;
     for (hour, full, value) in [(slot, false, 404), (slot + 2, true, 505)] {
         World::q(&mut damage, 8, value);
-        rejected.prepare_hour(hour, full); // No native acquisition follows.
+        rejected.prepare_hour(hour, full);
         let recovered = daily_capture(&memory, &world, hour + 1, false);
         assert_eq!(
             observer_row(&recovered, event::ACTIVITY_DAMAGE, 0).a,

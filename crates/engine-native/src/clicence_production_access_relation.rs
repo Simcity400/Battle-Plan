@@ -1,7 +1,4 @@
-//! CLicenceProductionAccessRelation; shared fields live in `crelation`.
 
 use engine_sites::Rva;
-/// CLicenceProductionAccessRelation primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29dccc8);
-/// CLicenceProductionAccessRelation native type word.
 pub const TYPE: u32 = 0x4b83;

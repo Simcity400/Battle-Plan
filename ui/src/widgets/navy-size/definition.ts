@@ -7,7 +7,6 @@ import { breakdownVariants } from '../../charts/drill/drillState.ts';
 export const OPTIONS: readonly OptionField[] = [
   { key: 'measure', section: 'options', label: 'Measure', kind: 'choice', default: 'ships',
     choices: [{ value: 'ships', label: 'Number of ships' }, { value: 'strength', label: 'Current hull strength (HP)' }] },
-  // The roster holder and assigned country are separate from the expeditionary sender.
   { key: 'ownership', section: 'options', label: 'Count fleets for',
     kind: 'choice', default: 'roster', choices: [{ value: 'roster', label: 'Country holding the fleet' }, { value: 'logical', label: 'Assigned country' }] },
   { key: 'grouping', section: 'options', label: 'Group by',

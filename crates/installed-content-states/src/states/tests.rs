@@ -3,8 +3,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// Nonpositive and duplicate IDs are registration skips. Other reading
-/// diagnostics retain their own kinds for live consumers.
 #[test]
 fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -274,9 +272,6 @@ fn states_variable_definition_diagnostics_affect_every_template() {
             .iter()
             .any(|note| { note.contains("variable `@a` is already taken") })
     );
-    // Failed definitions in discarded templates still affect the same
-    // reader's later templates; a previous template is conservatively covered
-    // by the file-scoped diagnostic too.
     let parsed = attributed(
         b"state = { id = 3 } state = { id = 0 @a bad provinces = { 1 } } state = { id = 4 name = @a }",
     );
@@ -295,8 +290,6 @@ fn states_variable_definition_diagnostics_affect_every_template() {
 fn states_file_diagnostics_without_kept_templates_remain_notes() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // A valid non-state item follows the failed definition, so recovery
-    // consumes that item without reusing the key slot at end of text.
     let parsed = attributed(b"@a bad orphan = yes");
     assert!(parsed.states.is_empty());
     assert_eq!(parsed.diagnostics.len(), 1);
@@ -312,9 +305,6 @@ fn states_file_diagnostics_without_kept_templates_remain_notes() {
 
 const RESOURCES: [&str; 3] = ["chromium", "steel", "sparkstone"];
 
-/// Resource scalar fields take one value; unknown fields skip blocks
-/// without registering their contents. A modifier block depends on its
-/// registry, leaving later resource names unknown for unresolved lookups.
 #[test]
 fn resource_definitions_read_their_own_fields() {
     let mut resources = Resources::default();
@@ -349,11 +339,6 @@ fn resource_definitions_read_their_own_fields() {
         );
 }
 
-/// Every resource key registers its C-string prefix. Empty names or those
-/// starting with a digit or minus sign have token 0, also used by names
-/// the lexer does not hold. An unregistered name is therefore known only
-/// without a token-zero resource; otherwise its amount is refused, and a
-/// following block leaves the current state and later file content unknown.
 #[test]
 fn resources_resolve_by_token() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -387,8 +372,6 @@ fn resources_resolve_by_token() {
         states[1].resources.as_ref().unwrap_err(),
         "state 2: `bogus` is no strategic resource's name, and a resource holds token 0 (a name empty or starting with a digit or `-`): token lookup finds that resource unless the lexer holds a token for `bogus`, which depends on every name the game registered"
     );
-    // A block there is the amount when found and skipped otherwise: the
-    // file is refused by line, like any reading the port cannot follow.
     let error = parse_states(
         b"state = { id = 1 name = A }
               state = { id = 3 name = C resources = { bogus = { x = 1 } } }
@@ -465,13 +448,11 @@ state = {
 fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Conditional effects consume their own body without deferral.
     let (mut states, misreads) = parse(ORIGINAL_STATE).unwrap();
     assert!(misreads.is_empty(), "{misreads:?}");
     let state = states.remove(0);
     assert_eq!(state.id, 29);
     assert_eq!(state.name_key.as_deref(), Ok("ORIGINAL_RIDGE"));
-    // A repeated state_category takes the later value.
     assert_eq!(state.category.as_deref(), Some("test_market"));
     assert_eq!(state.manpower, Some(4_207));
     assert_eq!(state.provinces, vec![11, 16, 18]);
@@ -495,7 +476,6 @@ fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
         }
     );
     assert!(!state.impassable);
-    // The dated and conditional blocks are listed, never applied.
     assert_eq!(state.skipped_history, vec!["1942.6.3", "if"]);
     assert!(!state.buildings.contains_key("storage"));
 }
@@ -519,8 +499,6 @@ fn an_impassable_state_without_history_buildings_still_parses() {
     assert!(state.skipped_history.is_empty());
 }
 
-/// Every state and provinces block is read, with province repeats retained
-/// in source order.
 #[test]
 fn every_state_and_every_provinces_block_is_read_in_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -535,9 +513,6 @@ fn every_state_and_every_provinces_block_is_read_in_order() {
     assert_eq!(states[1].id, 2);
 }
 
-/// Names read in keyword order: last wins, bare spellings fold, quoted
-/// keys reach no case, and variables resolve through the shared file.
-/// A quoted state key reports and skips its block.
 #[test]
 fn names_read_in_keyword_order_through_the_files_variables() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -569,11 +544,6 @@ fn names_read_in_keyword_order_through_the_files_variables() {
     assert!(misreads.is_empty(), "{misreads:?}");
 }
 
-/// Forms the tree cannot hold read as the game reads them: a taken name
-/// hands its `=` to the next key; a block given to `name` is read as
-/// `{` and its contents as the state's fields, its `}` ending the state,
-/// so `id = 2` is read at the top level as one value, and the state's own
-/// `}` is a top-level key consuming the next `state`.
 #[test]
 fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -590,8 +560,6 @@ fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
     assert!(misreads[1].contains("key `}` has no operator"));
 }
 
-/// Dated conditionals accept keywords in any case, read their limits as
-/// triggers and preserve the following start-state fields without notes.
 #[test]
 fn a_dated_conditional_in_history_reads_without_diagnostics() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -680,9 +648,6 @@ fn conditional_history_bodies_preserve_following_fields_and_next_state() {
     assert_eq!(second.province_buildings[&22]["bunker"].level, 1);
 }
 
-/// Color skips only a current block; provinces count braces and retain
-/// number tokens; ignored links read a list, and startup effects read a
-/// body. Resource amounts convert to signed integers; unknown names report.
 #[test]
 fn a_templates_own_readers_consume_what_the_game_consumes() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -717,9 +682,6 @@ fn a_templates_own_readers_consume_what_the_game_consumes() {
     );
 }
 
-/// Nonzero integer history keys open dated entries. Victory points keep
-/// exactly two integer values; positive building keys open province
-/// entries, levels cap at the define, and non-block buildings read no entries.
 #[test]
 fn history_commands_keep_what_the_game_keeps() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -763,11 +725,6 @@ fn history_commands_keep_what_the_game_keeps() {
     assert_eq!(states[0].buildings["infrastructure"].level, 15);
 }
 
-/// Unexpected keys skip a current block: top-level non-state blocks and
-/// unknown resources cannot expose their contents as state fields.
-/// Unknown building-entry fields also skip their blocks. After a non-block
-/// buildings value, skipping occurs only if the current token is `{`;
-/// a key without an operator can consume that brace as its operator.
 #[test]
 fn reported_keys_skip_their_blocks() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -796,10 +753,6 @@ fn reported_keys_skip_their_blocks() {
     assert!(states[0].buildings.is_empty());
 }
 
-/// A block the port cannot settle (a by-key block holding a value
-/// without a key and a definition) leaves the state being read and the
-/// rest of the file unknown. Neither candidate provinces nor the first
-/// definition of a repeated id can be determined from the prefix.
 #[test]
 fn an_unsettled_state_is_not_published() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -831,8 +784,6 @@ fn an_unsettled_state_is_not_published() {
     assert!(error.contains("(no id read yet)"), "{error}");
 }
 
-/// IDs scan as signed integers, default to -1 when absent or unconverted,
-/// and discard nonpositive templates.
 #[test]
 fn only_positive_signed_ids_enter_the_state_database() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -863,8 +814,6 @@ fn only_positive_signed_ids_enter_the_state_database() {
     assert!(parse(b"# no templates\n").unwrap().0.is_empty());
 }
 
-/// State names resolve variables and retain later assignments. Only the
-/// stored C-string prefix before the first NUL must be representable as UTF-8.
 #[test]
 fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -892,8 +841,6 @@ fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
     assert_eq!(states[4].name_key.as_deref(), Ok("last"));
 }
 
-/// State fields dispatch by keyword. Invalid impassability values retain
-/// the previous value; category lookup uses its C-string prefix.
 #[test]
 fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -917,9 +864,6 @@ fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
     assert!(notes.iter().all(|note| note.contains("not yes or no")));
 }
 
-/// The loader resolves resource names without case, reads the level cap
-/// from defines and checks membership against map definitions. Three rows
-/// hold provinces 1 and 2 plus the null record, so province 3 is excluded.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_resources_and_the_building_cap_from_content() {
@@ -957,7 +901,6 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
-    // A 2x1 24-bit bitmap of provinces 1 and 2 (BGR, rows padded to 4).
     let mut bitmap = vec![0_u8; 54];
     bitmap[..2].copy_from_slice(b"BM");
     bitmap[2..6].copy_from_slice(&62_u32.to_le_bytes());
@@ -1055,8 +998,6 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
         2
     );
     assert_eq!(notes.len(), 7);
-    // An unread suffix may own state 2 before a later file does. The
-    // loader must refuse the inventory, not install the later candidate.
     fs::write(
             root.join("history/states/2-unsettled.txt"),
             "state = { id = 2 state_startup_effect = { free_operative = { x @y = 1 } } provinces = { 1 } }",

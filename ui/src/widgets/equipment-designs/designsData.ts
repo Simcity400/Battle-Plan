@@ -16,12 +16,8 @@ export function validateDesigns(value: unknown): EquipmentDesignsReply {
 
 const covering = (spans: readonly HourSpan[], hour: number) => spans.find(span => span.firstHour <= hour && hour <= span.lastHour) ?? null;
 
-/** Whether the designs were known at `hour`: a holder of the tag was recorded then. */
 export const designsKnown = (reply: Pick<EquipmentDesignsReply, 'known'>, hour: number) => covering(reply.known, hour) !== null;
 
-/** When a design (or its obsolete flag) was first read, and how much earlier it may be: the designs were read the hour
- * before without it ('between-reads'), it was there at the first recorded hour ('first-read'), or the hour before
- * was not recorded ('after-gap'). */
 export interface DesignSeen { hour: number; context: 'between-reads' | 'first-read' | 'after-gap' }
 
 function seenAt(reply: Pick<EquipmentDesignsReply, 'known'>, hour: number): DesignSeen {
@@ -29,7 +25,6 @@ function seenAt(reply: Pick<EquipmentDesignsReply, 'known'>, hour: number): Desi
   return { hour, context: designsKnown(reply, hour - 1) ? 'between-reads' : 'after-gap' };
 }
 
-/** One design of the country at the hour shown. */
 export interface DesignRow {
   key: string;
   design: DesignHistory;
@@ -41,8 +36,6 @@ export interface DesignRow {
   seenObsolete: DesignSeen | null;
 }
 
-/** The country's saved designs at `hour`, current and obsolete, each with when it and its obsolete flag were first read.
- * Designs whose type the included set leaves out are skipped. */
 export function designsAt(reply: EquipmentDesignsReply, hour: number, included: ReadonlySet<string> | null): DesignRow[] {
   const rows: DesignRow[] = [];
   for (const design of reply.designs) {
@@ -56,7 +49,6 @@ export function designsAt(reply: EquipmentDesignsReply, hour: number, included: 
   return rows;
 }
 
-/** The last hour at or before `hour` at which any design's row changes: the rows at `hour` are those at it. */
 export function designsSince(reply: EquipmentDesignsReply, hour: number): number {
   let since = Number.MIN_SAFE_INTEGER;
   for (const design of reply.designs) for (const span of [...design.lives, ...design.obsolete]) {
@@ -66,7 +58,6 @@ export function designsSince(reply: EquipmentDesignsReply, hour: number): number
   return since;
 }
 
-/** The read's date, "By" one when the fact may be older than the read. */
 export const seenText = (seen: DesignSeen | null, label: (hour: number) => string) =>
   seen === null ? '—' : seen.context === 'between-reads' ? label(seen.hour) : `By ${label(seen.hour)}`;
 
@@ -74,7 +65,6 @@ export const seenNote = (seen: DesignSeen | null): string | null =>
   seen?.context === 'first-read' ? 'Already so at the start of the recorded designs'
     : seen?.context === 'after-gap' ? 'First shown after hours the designs were not recorded' : null;
 
-/** Every equipment type the country's designs use, for the Included types setting. */
 export function designTypes(reply: EquipmentDesignsReply): { value: string; label: string }[] {
   const types = new Map<string, string>();
   for (const design of reply.designs) {

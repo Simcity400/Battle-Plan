@@ -1,4 +1,3 @@
-//! Saved war-goal references and their goal data.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -7,7 +6,6 @@ pub struct WarGoal {
     pub recipient: Vec<u8>,
     pub kind: Vec<u8>,
     pub states: Vec<u32>,
-    /// Countries saved as `liberate`, in stored order.
     pub countries: Vec<Vec<u8>>,
     pub puppets: Vec<Vec<u8>>,
     pub expires: Option<SavedDate>,

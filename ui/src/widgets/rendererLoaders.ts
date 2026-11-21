@@ -119,7 +119,6 @@ export const rendererLoaders = {
 } satisfies Record<(typeof widgetMetas)[number]['kind'], () => Promise<{ default: WidgetRenderer }>>;
 const loaded = new Map<string, Promise<WidgetRenderer>>();
 const ready = new Map<string, WidgetRenderer>();
-/** A renderer already loaded and registered, so its settings can show without suspending. */
 export const loadedWidgetRenderer = (kind: string): WidgetRenderer | undefined => ready.get(kind);
 export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undefined> {
   if (!Object.hasOwn(rendererLoaders, kind)) return Promise.resolve(undefined);
@@ -139,14 +138,11 @@ export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undef
   return held;
 }
 
-/** Fetches the code of `kinds` now, so a page's widgets render the moment they mount. */
 export function preloadWidgetRenderers(kinds: Iterable<string>): void {
   for (const kind of kinds) if (!ready.has(kind)) void loadWidgetRenderer(kind).catch(() => {});
 }
 
 let idlePreload = false;
-/** Every other widget's code, one at a time while the page is idle, so any page or added widget opens without
- * fetching code. A failed load is left to the widget, which shows and retries it. */
 export function preloadAllWidgetRenderers(): void {
   if (idlePreload || typeof window === 'undefined') return;
   idlePreload = true;

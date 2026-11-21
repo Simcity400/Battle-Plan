@@ -64,7 +64,6 @@ test('chosen owners and groups are matched at the read the roster holds; an unkn
   assert.deepEqual(keys(humans, 100), ['1'], 'the read hour, not the playhead, decides membership');
   assert.deepEqual(keys(humans, 124), ['3']);
   assert.deepEqual(keys(humans, 124, null), [], 'pending membership does not show every country');
-  // A group no one ever joined is empty at once, not a filter every row fails (run 14: the event feed read 13 years of pages).
   const nobody = { ...groups, humans: [] };
   assert.equal(countryMatch(humans, [owner], nobody, 147).reason, 'This group has no members in this campaign.');
   assert.equal(countryMatch(humans, [owner], { ...nobody, unobserved: { ...nobody.unobserved, humans: [{ firstHour: 120, lastHour: 130 }] } }, 147).reason,

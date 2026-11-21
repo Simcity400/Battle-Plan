@@ -104,7 +104,7 @@ fn prepared_frame() -> DecodedFrame {
     let mut frame = empty();
     let root = order(1, super::super::TYPE_MOVE);
     let mut drop = order(2, TYPE_PARADROP);
-    drop.active = 0; // Successor activity is not an execution gate.
+    drop.active = 0;
     let mut root_plan = plan(1);
     root_plan.successors = vec![2];
     let mut drop_plan = plan(2);
@@ -240,7 +240,6 @@ fn active_ordinary_callback_uses_inactive_successors_current_transport_fields() 
         ..Default::default()
     }));
     put::<tables::DivisionMovement>(&mut frame, rows);
-    // The former reduced memo key remains identical. Labels/font are absent.
     let tables = super::super::memo_tables(false);
     assert!(TableKey::of(&first, &tables) == TableKey::of(&frame, &tables));
     assert!(super::super::requires_full_frame(&frame, &BTreeMap::new(), 0, false, false).unwrap());
@@ -293,7 +292,6 @@ fn own_primary_order_precedes_the_later_paradrop_primary() {
     let mut plans = frame.complete::<tables::ArmyOrderPlans>().unwrap().to_vec();
     plans[0].assigned_divisions = vec![UNIT];
     put::<tables::ArmyOrderPlans>(&mut frame, plans);
-    // Unit belongs to the earlier ordinary primary: the paradrop has no demand.
     assert!(
         evaluate(&frame, &defines(), &order(1, super::super::TYPE_MOVE))
             .unwrap()
@@ -302,8 +300,6 @@ fn own_primary_order_precedes_the_later_paradrop_primary() {
 }
 
 fn air_fixture() -> paradrop_counts::tests::Fixture {
-    // Reuse the independently reviewed native-content and admitted-wing
-    // fixture rather than implement another transport/range environment.
     let mut fixture = paradrop_counts::tests::Fixture::new();
     let mut frame = prepared_frame();
     for table in [
@@ -333,7 +329,6 @@ fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution()
     let mut fixture = air_fixture();
     let root = order(1, super::super::TYPE_MOVE);
     let defs = defines();
-    // Nine accepted planes cannot carry the ten-plane unit weight.
     assert!(
         !evaluate_with(&fixture.frame, &defs, &root, &fixture.context())
             .unwrap()
@@ -371,7 +366,6 @@ fn accepted_wing_capacity_threshold_and_duplicate_unit_demand_change_execution()
             .unwrap()
             .prerequisites
     );
-    // One occurrence is ready; the exact repeated occurrence must block.
     let mut plans = fixture
         .frame
         .complete::<tables::ArmyOrderPlans>()
@@ -452,7 +446,6 @@ fn naval_transfer_skips_weight_but_convoy_shortage_still_reaches_preparation() {
         ..Default::default()
     };
     put::<tables::DivisionMovement>(&mut frame, vec![movement.clone()]);
-    // A convoy shortage is not a license to hide unknown preparation.
     assert!(
         evaluate(&frame, &defines(), &row)
             .unwrap_err()
@@ -478,7 +471,6 @@ fn naval_transfer_skips_weight_but_convoy_shortage_still_reaches_preparation() {
     }));
     put::<tables::ArmyOrderPlans>(&mut frame, vec![pack.clone()]);
     assert!(!evaluate(&frame, &defines(), &row).unwrap().prerequisites);
-    // Signed weights and signed allocated counts retain their comparison.
     movement.naval_transfer = 0;
     movement.order_transport = Recorded::Value(Some(DivisionOrderTransportInputs {
         naval_weight: Some(-100_001),
@@ -532,7 +524,7 @@ fn ordered_graph_stops_at_first_unknown_or_false_and_memoises_shared_successors(
         }),
         Ok(false)
     );
-    assert_eq!(calls, [1]); // Local false precedes every successor.
+    assert_eq!(calls, [1]);
     calls.clear();
     memo.clear();
     assert_eq!(
@@ -615,7 +607,7 @@ fn reserved_native_id_zero_preserves_the_relation_alias_zero_exception() {
 fn captured_reserved_preparation_relation_is_independent_of_naming_and_positive_country_census() {
     let mut frame = prepared_frame();
     let mut orders = frame.complete::<tables::ArmyOrders>().unwrap().to_vec();
-    orders[1].paradrop_target = 0; // Preparation is reached; unit/wings are not.
+    orders[1].paradrop_target = 0;
     put::<tables::ArmyOrders>(&mut frame, orders);
     let mut plans = frame.complete::<tables::ArmyOrderPlans>().unwrap().to_vec();
     plans[1].execution = Recorded::Value(Some(OrderExecutionInputs {
@@ -631,7 +623,6 @@ fn captured_reserved_preparation_relation_is_independent_of_naming_and_positive_
     }));
     put::<tables::ArmyOrderPlans>(&mut frame, plans);
     let root = order(1, super::super::TYPE_MOVE);
-    // Owner raw0 reaches no positive identity or reserved naming table.
     assert!(evaluate(&frame, &defines(), &root).unwrap().prerequisites);
     let mut groups = frame.complete::<tables::OrdersGroups>().unwrap().to_vec();
     groups[0].country = 99;
@@ -649,8 +640,6 @@ fn captured_reserved_preparation_relation_is_independent_of_naming_and_positive_
             },
         ],
     );
-    // Both positive aliases select slot0. The id0 branch still contributes
-    // its relation term; a generic equal-slot test would discard/refuse it.
     assert!(evaluate(&frame, &defines(), &root).unwrap().prerequisites);
 }
 

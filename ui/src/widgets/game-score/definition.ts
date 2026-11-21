@@ -5,7 +5,6 @@ import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS } from '../..
 import { choiceVariants } from '../../dashboard/options.ts';
 import { SCORE_LABELS, SCORE_PARTS } from './gameScoreData.ts';
 
-// Total, as the race ranks: the table's rank column and the race agree.
 export const DEFAULT_SORT = { column: 'total', direction: 'descending' } as const;
 const inTable = (options: Readonly<Record<string, unknown>>) => (options.view ?? 'table') === 'table';
 export const OPTIONS: readonly OptionField[] = [

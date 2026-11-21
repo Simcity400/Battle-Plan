@@ -1,10 +1,6 @@
-//! Power-balance definition.
 
-/// Power-balance definition identity MSVC string.
 pub const IDENTITY: usize = 0x10;
 
-/// An exact byte string in the caller-owned census arena. No UTF-8 conversion
-/// or fixed token-size limit is imposed on an engine identity.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Token {
     pub start: usize,

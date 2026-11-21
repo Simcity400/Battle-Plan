@@ -1,4 +1,3 @@
-//! Math expression token consumption, separate from evaluation.
 
 use super::{Item, Kind, Reader, Slots, Value};
 
@@ -13,12 +12,8 @@ impl Reader<'_> {
         self.math_operand(&mut State::default())
     }
 
-    // An opening value reads exactly one key before the tail, without a loop-end peek.
-    // That key must be `value`.
     fn math_operand(&mut self, state: &mut State) -> Value {
         if self.value.kind != Kind::Open {
-            // Fixed5 and scoped-variable operands consume no further token. The operand
-            // index is signed 8-bit.
             if state.operands >= 127 {
                 self.math_error(state, "math operand index exceeds 126");
             } else {
@@ -65,8 +60,6 @@ impl Reader<'_> {
         self.skip_reported();
     }
 
-    // An error skips the remainder raw, but first consumes and resolves a closing peek.
-    // Consecutive and/or reads use the same recursive operand followed by this tail.
     fn math_tail(&mut self, state: &mut State, items: &mut Vec<Item>) {
         while self.unsettled.is_none() {
             if self.at_loop_end() {
@@ -105,8 +98,6 @@ impl Reader<'_> {
                     item.value = self.math_operand(state);
                 }
                 Some(b"not" | b"round" | b"sin" | b"cos" | b"tan" | b"atan") => {
-                    // Unary operators require exact lowercase `yes`; quoted text is
-                    // allowed.
                     if self.value.c_str() != b"yes" {
                         self.math_error(state, "math unary operator requires true");
                     }
@@ -117,8 +108,6 @@ impl Reader<'_> {
                 Some(b"if") => {
                     item.value = self.math_branch(state);
                     items.push(item);
-                    // Consume consecutive `else_if` branches, then one `else`, from the
-                    // enclosing expression, even after a branch error.
                     while self.peek().is_keyword("else_if") && self.unsettled.is_none() {
                         let mut branch = self.math_key();
                         branch.value = self.math_branch(state);
@@ -134,7 +123,6 @@ impl Reader<'_> {
                     continue;
                 }
                 Some(b"every_collection") => {
-                    // `named_collection` takes one token before the tail.
                     let mut name = self.math_key();
                     let mut body = Vec::new();
                     if !name.keyword_is("named_collection") {
@@ -159,7 +147,6 @@ impl Reader<'_> {
         }
     }
 
-    // Read a limit unconditionally, then the branch's tail.
     fn math_branch(&mut self, state: &mut State) -> Value {
         let mut limit = self.math_key();
         let mut items = Vec::new();
@@ -175,8 +162,6 @@ impl Reader<'_> {
         Value::Block(items)
     }
 
-    // Read two fixed, ordered keys, then consume and resolve exactly one closing token
-    // without checking for `}`.
     fn math_arguments(&mut self, state: &mut State, names: &[&str; 2]) -> Value {
         let mut items = Vec::new();
         for name in names {

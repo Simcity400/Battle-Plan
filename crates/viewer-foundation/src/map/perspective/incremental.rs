@@ -1209,7 +1209,6 @@ impl InputView {
         })
     }
     fn is(&self, view: &replay_frame::frame::SharedView) -> bool {
-        // Decoder certificate epochs can change while the immutable value allocation is carried.
         self.allocation == view.as_ptr() as usize || self.empty_matches(view)
     }
     fn empty_matches(&self, view: &replay_frame::frame::SharedView) -> bool {
@@ -1290,7 +1289,6 @@ pub struct Fold {
     index: Index,
     jobs: BTreeMap<Job, RetainedWork>,
     dependents: BTreeMap<Dep, Members<Job>>,
-    // Clamping is ordered: only dirty provinces replay their source contributions.
     operations: BTreeMap<u32, BTreeMap<(Order, Job, usize), Action>>,
     errors: BTreeMap<(u16, Order, Job), &'static str>,
     value: Arc<Vision>,

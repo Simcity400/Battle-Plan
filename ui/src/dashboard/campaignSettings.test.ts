@@ -74,7 +74,6 @@ test('unsafe or malformed stored settings are dropped', () => {
   assert.deepEqual(parsed.campaigns.ab.factions, { 1: { colour: '#00ff00' } });
   assert.deepEqual(parsed.sets, [{ id: 'mp', name: 'MP group', entries: [{ faction: 'Axis', colour: '#ff0000' }] }]);
   assert.deepEqual(parseCampaignSettings({ version: 2 }), { version: 1, campaigns: {}, shared: {}, sets: [] });
-  // Settings saved before colours for every campaign existed still load.
   assert.deepEqual(parseCampaignSettings({ version: 1, campaigns: {}, sets: [] }).shared, {});
   assert.deepEqual(parseCampaignSettings({ version: 1, campaigns: {}, sets: [], shared: { '["name","axis"]': { colour: '#AA0000' }, x: { colour: 'nope' }, __proto__: { colour: '#000000' } } }).shared,
     { '["name","axis"]': { colour: '#aa0000' } });
@@ -94,18 +93,14 @@ test('default faction colours are the leader colour exactly, grey included, else
   const factions = [{ id: '12', leaderColor: parseColor('#808080') }, { id: '3', leaderColor: null }, { id: '40', leaderColor: parseColor('#3a6ea5') }];
   const colours = factionColours(factions, {}, surface);
   assert.deepEqual(factionColours([...factions].reverse(), {}, surface), colours);
-  // The user's decision: GER's grey stays grey, exactly as recorded.
   assert.equal(colours.get('12'), '#808080');
   assert.equal(colours.get('40'), '#3a6ea5');
-  // No recorded leader colour: the palette.
   assert.equal(colours.get('3'), categoricalPalette(surface)[0]);
-  // A user's choice wins.
   assert.equal(factionColours(factions, { 40: '#123456' }, surface).get('40'), '#123456');
 });
 
 test('only clashing default colours are nudged, slightly, by lightness, a grey staying grey', () => {
   const surface = '#16181d';
-  // Two factions led by countries of one grey, and one of a near-identical blue.
   const colours = factionColours([
     { id: '1', leaderColor: parseColor('#808080') }, { id: '2', leaderColor: parseColor('#808080') },
     { id: '3', leaderColor: parseColor('#3a6ea5') }, { id: '4', leaderColor: parseColor('#3b6fa6') },
@@ -113,13 +108,10 @@ test('only clashing default colours are nudged, slightly, by lightness, a grey s
   assert.equal(colours.get('1'), '#808080');
   assert.equal(colours.get('3'), '#3a6ea5');
   const [first, second, blue, nearBlue] = ['1', '2', '3', '4'].map(id => parseColor(colours.get(id)!)!);
-  // The later one moved just far enough to be told apart, and no further than it needed.
   assert.ok(distance(first, second) >= FACTION_APART && distance(first, second) < FACTION_APART + 2);
   assert.ok(distance(blue, nearBlue) >= FACTION_APART && distance(blue, nearBlue) < FACTION_APART + 2);
-  // Still a grey, never turned into a hue; the blue keeps its hue.
   assert.ok(rgbToOklch(second).c < 0.01);
   assert.ok(Math.abs(rgbToOklch(nearBlue).h - rgbToOklch(blue).h) < 3);
-  // A default clashing with a user's choice moves; the choice never does.
   const around = factionColours([{ id: '1', leaderColor: parseColor('#808080') }, { id: '2' }], { 2: '#808080' }, surface);
   assert.equal(around.get('2'), '#808080');
   assert.ok(distance(parseColor(around.get('1')!)!, parseColor('#808080')!) >= FACTION_APART);
@@ -127,29 +119,22 @@ test('only clashing default colours are nudged, slightly, by lightness, a grey s
 
 test('a colour set for all campaigns applies wherever the faction is found; a campaign can override it', () => {
   const axis = factionIdentity('Axis', 'GER');
-  // Named factions match by their name as recorded (a key or literal, never a translation);
-  // unnamed ones by their first leader.
   assert.equal(axis, factionIdentity('Axis', 'ITA'));
   assert.notEqual(factionIdentity('FACTION_PACT', null), factionIdentity('The Pact', null));
   assert.equal(factionIdentity(null, 'D01'), '["leader","D01"]');
   assert.equal(factionIdentity(null, null), null);
   let settings = parseCampaignSettings(undefined);
   settings = setFactionStyle(settings, 'aa', '12', { colour: '#111111', name: 'The Axis' });
-  // Set for every campaign from campaign aa: aa's own colour gives way, its name stays.
   settings = setFactionColour(settings, 'all', 'aa', '12', axis, '#AA0000');
   assert.deepEqual(settings.shared, { [axis!]: { colour: '#aa0000' } });
   assert.deepEqual(settings.campaigns.aa.factions['12'], { name: 'The Axis' });
   assert.equal(chosenColour(settings, 'aa', '12', axis), '#aa0000');
-  // Another campaign, whose faction has another id, finds it by identity.
   assert.equal(chosenColour(settings, 'bb', '99', axis), '#aa0000');
-  // This campaign only: an override there, the other campaigns keep the shared colour.
   settings = setFactionColour(settings, 'campaign', 'bb', '99', axis, '#00aa00');
   assert.equal(chosenColour(settings, 'bb', '99', axis), '#00aa00');
   assert.equal(chosenColour(settings, 'aa', '12', axis), '#aa0000');
-  // A faction with no identity can only be set for its campaign.
   settings = setFactionColour(settings, 'all', 'cc', '5', null, '#0000aa');
   assert.equal(settings.campaigns.cc.factions['5'].colour, '#0000aa');
-  // Clearing the shared colour leaves the default again, and a malformed colour changes nothing.
   assert.equal(setFactionColour(settings, 'all', 'aa', '12', axis, 'nope'), settings);
   settings = setFactionColour(settings, 'all', 'aa', '12', axis, null);
   assert.equal(chosenColour(settings, 'aa', '12', axis), undefined);

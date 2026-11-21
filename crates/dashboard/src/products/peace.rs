@@ -1,14 +1,3 @@
-//! `peace-deals`: every peace deal of a timeline, newest first, from the recorder's peace tables:
-//! the `peace-conference-spans` log (a row each hour a conference's span moved: its newest row is
-//! its span), the `peace-outcomes` log (the world after a conference or a war-end owner
-//! change compared with the world before, one row per change) and the `peace-settlements` log
-//! (the finalizer's own payload, which overrides the derived card of the same conference).
-//!
-//! A deal's countries are named by the one identity rule at the hours the rows name; a new
-//! subject's level and start, and a government's party and leader ideology, are read at the
-//! row's own hours. Nothing is guessed: an outcome whose country holds no tag at its hour is left
-//! out with a limitation saying so. The logs cost the buckets holding their rows, the joins a
-//! read at each hour a row names.
 
 use super::{LoadContext, Product, casualties::HolderTags, casualties::Identity};
 use crate::{Source, catalogue, span::HourSpan};
@@ -39,7 +28,6 @@ pub struct PeaceDealsParams {
     pub branch_id: String,
 }
 
-/// The reads bounding a net change; neither a bid time nor an exact action time.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -58,7 +46,6 @@ pub enum PeaceActionKind {
     CountryReleased,
 }
 
-/// A content-proved action name, else a neutral kind the widget can word.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -87,7 +74,7 @@ pub enum PeaceChange {
         to: String,
         from_country: PeaceTransferCountry,
         to_country: PeaceTransferCountry,
-        /// Exact signed sum, null if Provinces cannot supply the state.
+        #[doc = " Exact signed sum, null if Provinces cannot supply the state."]
         victory_points: Option<String>,
         victory_points_read_hour: Option<i32>,
     },
@@ -104,17 +91,16 @@ pub enum PeaceChange {
     },
     CountryReleased {
         country: String,
-        /// Owners of the transferred states at the before read.
+        #[doc = " Owners of the transferred states at the before read."]
         from: Vec<String>,
         states: Vec<u32>,
-        /// The released country's holder at the after read.
+        #[doc = " The released country's holder at the after read."]
         to_country: PeaceTransferCountry,
-        /// Each state with its own former owner, in state order.
+        #[doc = " Each state with its own former owner, in state order."]
         transfers: Vec<PeaceReleasedState>,
     },
 }
 
-/// A state handed to the released country, with the holder that owned it before.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +117,7 @@ pub struct PeaceReleasedState {
 pub struct PeaceItem {
     pub derived: bool,
     pub dates: PeaceDates,
-    /// The taker/overlord, null where no enforcer or liberator is recorded.
+    #[doc = " The taker/overlord, null where no enforcer or liberator is recorded."]
     pub winner: Option<String>,
     pub action: PeaceActionLabel,
     pub change: PeaceChange,
@@ -143,11 +129,9 @@ pub struct PeaceItem {
 pub enum PeaceObservation {
     RecordedConference,
     ConferenceNotRecorded,
-    /// Outcomes cannot be assigned among sampled conferences or missing rosters.
     ConferenceUnknown,
 }
 
-/// An endpoint's holder and the hour that supplies its tag and appearance.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -170,7 +154,7 @@ impl PeaceTransferCountry {
 pub struct PeaceTransferNode {
     pub id: String,
     pub country: PeaceTransferCountry,
-    /// Separate source/target nodes even when a country occurs on both sides.
+    #[doc = " Separate source/target nodes even when a country occurs on both sides."]
     pub side: PeaceTransferSide,
 }
 
@@ -190,7 +174,7 @@ pub struct PeaceTransferLink {
     pub source: String,
     pub target: String,
     pub state_count: u32,
-    /// Null if any contributing state's VPs are not recorded; never a partial sum.
+    #[doc = " Null if any contributing state's VPs are not recorded; never a partial sum."]
     pub victory_points: Option<String>,
     pub states: Vec<PeaceTransferredState>,
 }
@@ -205,7 +189,7 @@ pub struct PeaceTransferredState {
     pub dates: PeaceDates,
     pub victory_points: Option<String>,
     pub victory_points_read_hour: Option<i32>,
-    /// The same settlement released the taker; the state came from its former owner.
+    #[doc = " The same settlement released the taker; the state came from its former owner."]
     pub released: bool,
 }
 
@@ -223,7 +207,7 @@ pub struct PeaceTransferGraph {
 pub struct PeaceCapturedAction {
     pub derived: bool,
     pub country: u32,
-    /// Event-hour tags; null when that raw reference cannot be resolved then.
+    #[doc = " Event-hour tags; null when that raw reference cannot be resolved then."]
     pub country_tag: Option<String>,
     pub turn: u32,
     pub ordinal: u32,
@@ -231,8 +215,8 @@ pub struct PeaceCapturedAction {
     pub token_name: Option<String>,
     pub name_key: Option<String>,
     pub name: Option<String>,
-    /// The country the name's [`NAME_COUNTRY`] stands for, as an event-hour tag: the game names a
-    /// puppet demand with the country it puppets.
+    #[doc = " The country the name's [`NAME_COUNTRY`] stands for, as an event-hour tag: the game names a"]
+    #[doc = " puppet demand with the country it puppets."]
     pub name_country: Option<String>,
     #[serde(skip)]
     #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
@@ -264,7 +248,7 @@ pub struct PeaceCapturedTransfer {
     pub state: i32,
     pub taker: u32,
     pub to: Option<String>,
-    /// A matching action's giver, absent for automatic/no-demand outcomes.
+    #[doc = " A matching action's giver, absent for automatic/no-demand outcomes."]
     pub giver: Option<u32>,
     pub from: Option<String>,
     pub from_country: Option<PeaceTransferCountry>,
@@ -289,7 +273,7 @@ pub struct PeaceCapturedSubject {
 pub struct PeaceCaptured {
     pub hour: i32,
     pub publication_hour: i32,
-    /// Raw references and native order, independent of country-tag resolution.
+    #[doc = " Raw references and native order, independent of country-tag resolution."]
     pub winners: Vec<u32>,
     pub losers: Vec<u32>,
     pub actions: Vec<PeaceCapturedAction>,
@@ -305,14 +289,14 @@ pub struct PeaceDeal {
     pub derived: bool,
     pub observation: PeaceObservation,
     pub conference_id: Option<String>,
-    /// No native conference name or unambiguous grouped-war identity is recorded.
+    #[doc = " No native conference name or unambiguous grouped-war identity is recorded."]
     pub war_name: Option<String>,
     pub first_observed_hour: i32,
     pub last_observed_hour: i32,
     pub current_turn: Option<i32>,
     pub finalized: Option<bool>,
     pub first_finalized_hour: Option<i32>,
-    /// Last seen when followed by a consecutive absence, else first absent hour.
+    #[doc = " Last seen when followed by a consecutive absence, else first absent hour."]
     pub end_hour: Option<i32>,
     pub end_is_by: bool,
     pub first_absent_hour: Option<i32>,
@@ -320,24 +304,23 @@ pub struct PeaceDeal {
     pub winners: Vec<String>,
     pub losers: Vec<String>,
     pub items: Vec<PeaceItem>,
-    /// Ordered finalizer operands and outcomes, absent for the derived fallback.
+    #[doc = " Ordered finalizer operands and outcomes, absent for the derived fallback."]
     pub captured: Option<PeaceCaptured>,
-    /// Reason the finalizer capture cannot certify this deal's actions.
+    #[doc = " Reason the finalizer capture cannot certify this deal's actions."]
     pub capture_unavailable: Option<String>,
-    /// The settlement's hour when no conference span supplied this card.
+    #[doc = " The settlement's hour when no conference span supplied this card."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub capture_observed_hour: Option<i32>,
-    /// A failed settlement's hour: its reason is no evidence at an earlier hour.
+    #[doc = " A failed settlement's hour: its reason is no evidence at an earlier hour."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub capture_unavailable_hour: Option<i32>,
     pub transfers: PeaceTransferGraph,
-    /// Missing inputs or an attribution limitation, not evidence of no actions.
+    #[doc = " Missing inputs or an attribution limitation, not evidence of no actions."]
     pub limitations: Vec<String>,
 }
 
-/// Hours of the timeline each input was not read.
 #[derive(Clone, Debug, Default, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -358,9 +341,9 @@ pub struct PeaceUnobserved {
 pub struct PeaceDealsReply {
     pub branch_id: String,
     pub derived: bool,
-    /// Newest card first.
+    #[doc = " Newest card first."]
     pub deals: Vec<PeaceDeal>,
-    /// Counts transfer occurrences, including a state transferred more than once.
+    #[doc = " Counts transfer occurrences, including a state transferred more than once."]
     pub transfers: PeaceTransferGraph,
     pub unobserved: PeaceUnobserved,
     pub warnings: Vec<String>,
@@ -368,24 +351,17 @@ pub struct PeaceDealsReply {
 
 dashboard_base::reply_warnings!(PeaceDealsReply);
 
-/// The general warning every reply carries.
 const DERIVED_WARNING: &str = "Derived net outcomes do not recover bids, negotiators, action order or causation. War names and conference participants are not recorded.";
-/// The game's interface names state taking by this key, not by its keyword or cached type name.
 const TAKE_STATES_LABEL: &str = "PEACE_TAKE_STATES_DEMAND";
-/// The label key the game's peace screen names each native action type by (its demand label),
-/// never its keyword, which is also the type's cached name: the keyword, then the key.
 const DEMAND_LABELS: [(&str, &str); 4] = [
     ("take_states", TAKE_STATES_LABEL),
     ("liberate", "PEACE_LIBERATE_LABEL"),
     ("force_government", "PEACE_FORCE_GOVERNMENT_LABEL"),
     ("puppet", PUPPET_LABEL),
 ];
-/// The game's puppet demand label, which names the country it puppets.
 const PUPPET_LABEL: &str = "PEACE_PUPPET_COUNTRY_LABEL";
-/// Where a captured action's name holds its country's name, filled by the widget at the hour.
 pub const NAME_COUNTRY: &str = "{COUNTRY}";
 
-/// One `PeaceOutcomes` row, its holders as (canonical slot, raw id).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub after: i32,
@@ -401,23 +377,17 @@ pub struct Outcome {
     pub victory_points: Option<i64>,
 }
 
-/// A settlement row and the hour its log inserted it.
 #[derive(Clone, Debug)]
 pub struct Settled {
     pub publication_hour: i32,
     pub row: PeaceSettlementRow,
 }
 
-/// What the rows name, read at their hours: tags of holders and of raw ids, token spellings,
-/// new subjects' relations, governments.
 pub struct Joins {
     pub holders: HolderTags,
-    /// A raw id's holder and tag at an hour.
     pub raw: HashMap<(u32, i32), (Identity, String)>,
     pub tokens: HashMap<u32, String>,
-    /// The recorded spelling of the native state-taking keyword, or why it is not known.
     pub action_key: Result<String, String>,
-    /// (overlord, subject, hour): the relation's start hour and the subject's level.
     pub subjects: HashMap<(Identity, Identity, i32), (i32, Option<String>)>,
     pub governments: HashMap<(Identity, i32), PeaceGovernment>,
 }
@@ -490,8 +460,6 @@ fn vp_text(vp: Option<i64>) -> Option<String> {
     vp.map(|vp| vp.to_string())
 }
 
-/// One comparison's rows (all of one before and after hour) as a deal's items, winners, losers
-/// and limitations.
 fn populate(deal: &mut PeaceDeal, rows: &[&Outcome], joins: &Joins) {
     let Some(first) = rows.first() else { return };
     let (before, after) = (first.before, first.after);
@@ -629,7 +597,6 @@ fn item_order(item: &PeaceItem) -> (u8, &str, u32) {
     }
 }
 
-/// A conference's card from its span row and, when it was compared, its outcome rows.
 fn conference_card(span: &PeaceConferenceSpanRow, rows: &[&Outcome], joins: &Joins) -> PeaceDeal {
     let mut deal = card(format!("conference:{}:{}", span.conference, span.first_observed_hour), PeaceObservation::RecordedConference, span.first_observed_hour);
     deal.conference_id = Some(span.conference.to_string());
@@ -659,7 +626,6 @@ fn conference_card(span: &PeaceConferenceSpanRow, rows: &[&Outcome], joins: &Joi
     deal
 }
 
-/// One comparison no sampled conference explains: its connected pairs at one hour.
 fn outcome_card(rows: &[&Outcome], joins: &Joins) -> PeaceDeal {
     let first = rows[0];
     let observation = if first.observation == PeaceOutcomeRow::NOT_RECORDED { PeaceObservation::ConferenceNotRecorded } else { PeaceObservation::ConferenceUnknown };
@@ -710,8 +676,6 @@ struct GraphBuilder {
 }
 
 impl GraphBuilder {
-    /// `released` marks a plain transfer whose taker the same settlement released; `keep`
-    /// selects which of a release's states this graph still draws.
     fn add_with(&mut self, item: &PeaceItem, released: bool, keep: &dyn Fn(u32) -> bool) {
         match &item.change {
             PeaceChange::StateTransfer { state, from_country, to_country, victory_points, victory_points_read_hour, .. } => self.push(PeaceTransferredState {
@@ -776,8 +740,6 @@ impl GraphBuilder {
     }
 }
 
-/// The deals of `spans`, `outcomes` and `settled` (in hour order), named through `joins`, with
-/// the transfer graph of all of them; the warnings the rows raise.
 pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[Settled], joins: &Joins) -> (Vec<PeaceDeal>, PeaceTransferGraph, Vec<String>) {
     let mut warnings = Vec::new();
     let mut recorded: HashMap<u64, Vec<&Outcome>> = HashMap::new();
@@ -790,7 +752,6 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
         }
     }
     let mut deals: Vec<PeaceDeal> = Vec::new();
-    // A conference listed again under its id after it was gone is a second listing: a card of its own.
     for span in spans {
         let rows: Vec<&Outcome> = recorded.get(&span.conference).into_iter().flatten().copied().filter(|row| Some(row.after) == span.compared_hour).collect();
         deals.push(conference_card(span, &rows, joins));
@@ -798,8 +759,6 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
     for rows in unsampled.values() {
         deals.push(outcome_card(rows, joins));
     }
-    // What the derived comparisons say each state's victory points were after its change, and
-    // which released country took it.
     let vps: HashMap<(u32, i32), i64> = outcomes.iter().filter_map(|row| Some(((row.state, row.after), row.victory_points?))).collect();
     let releases: HashMap<(u32, i32), Identity> = deals
         .iter()
@@ -810,7 +769,6 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
             _ => Vec::new(),
         })
         .collect();
-    // Each conference id's cards by first observed hour: a finalizer joins the listing it ends.
     let mut indices: HashMap<String, Vec<(i32, usize)>> = HashMap::new();
     for (at, deal) in deals.iter().enumerate() {
         if let Some(id) = &deal.conference_id {
@@ -925,7 +883,6 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
                 },
             });
         }
-        // A conference's own derived release keeps the states the capture cannot draw.
         let kept: Vec<PeaceItem> = fallback
             .iter()
             .filter(|item| item.derived && item.dates.after_hour == publication_hour)
@@ -968,7 +925,6 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
                 .collect(),
         });
     }
-    // Graphs after the captures: a derived card keeps no state outcome a capture witnessed.
     let mut campaign = GraphBuilder::default();
     for (index, deal) in deals.iter_mut().enumerate() {
         deal.items.retain(|item| !item.derived || !matches!(&item.change, PeaceChange::StateTransfer { state, .. } if exact_states.contains(&(*state, item.dates.after_hour))));
@@ -993,23 +949,18 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
     (deals, campaign.finish(), warnings)
 }
 
-/// Whether a recorded spelling is the native `keyword`, as the game's reader matches it.
 fn is_keyword(spelling: &str, keyword: &str) -> bool {
     installed_content_core::parser::native::Token { kind: installed_content_core::parser::native::Kind::Bare, text: spelling.as_bytes().to_vec(), line: 0, quoted: false, byte_end: 0 }.is_keyword(keyword)
 }
 
-/// Whether a recorded spelling is the native state-taking keyword.
 fn takes_states(spelling: &str) -> bool {
     is_keyword(spelling, "take_states")
 }
 
-/// The game's demand label key of the native action type a recorded spelling names.
 fn demand_label(spelling: &str) -> Option<&'static str> {
     DEMAND_LABELS.iter().find(|(keyword, _)| is_keyword(spelling, keyword)).map(|(_, label)| *label)
 }
 
-/// Names the reply's actions from the content: state taking by the interface's key, others by
-/// their cached type name or their name key.
 fn name_actions(reply: &mut PeaceDealsReply, localisation: &installed_content_localisation::localisation::Localisation, recorded_language: &str) {
     let mut names: HashMap<String, Option<String>> = HashMap::new();
     let mut refused = catalogue::Refusals::default();
@@ -1069,7 +1020,6 @@ fn name_actions(reply: &mut PeaceDealsReply, localisation: &installed_content_lo
     reply.warnings.extend(refused.lines("peace action names"));
 }
 
-/// The hours of `first..=last` outside `reads` (ascending runs).
 fn complement(reads: &[(i32, i32)], first: i32, last: i32, out: &mut Vec<HourSpan>) {
     let mut at = i64::from(first);
     for &(a, b) in reads {
@@ -1090,7 +1040,6 @@ fn number(cells: &[log::Cell], at: usize) -> Option<i64> {
     }
 }
 
-/// Every row a declared log inserted over `query`'s timeline, in hour order.
 fn logged(query: &Query<'_>, name: &str) -> io::Result<Vec<log::Row>> {
     let declared = dashboard_declare::log(name).ok_or_else(|| invalid(format!("No log is declared as {name}")))?;
     let reader = log::Reader::new(query, declared)?;
@@ -1100,7 +1049,6 @@ fn logged(query: &Query<'_>, name: &str) -> io::Result<Vec<log::Row>> {
     Ok(page.rows.into_iter().map(|paged| paged.row).collect())
 }
 
-/// Each canonical slot's holders over a timeline: (raw id, tag, first, last).
 fn slot_holders(query: &Query<'_>) -> HashMap<u32, Vec<(u32, String, i32, i32)>> {
     let mut slots: HashMap<u32, Vec<(u32, String, i32, i32)>> = HashMap::new();
     for (tag, runs) in &query.holders.tags {
@@ -1166,7 +1114,6 @@ impl Product for PeaceDeals {
             complement(&replay::lanes::reads(recording, run, TableId::PeaceConferences, first, last)?, first, last, &mut unobserved.conferences);
             complement(&replay::lanes::reads(recording, run, TableId::PeaceOutcomes, first, last)?, first, last, &mut unobserved.ownership);
         }
-        // Each hour a conference's span moved is a row of the log: its newest row is its span.
         let span_columns = SPAN_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceConferenceSpans, name).unwrap_or(usize::MAX));
         if span_columns.contains(&usize::MAX) {
             return Err(invalid("peace conference spans does not hold the columns the peace deals read"));
@@ -1185,8 +1132,6 @@ impl Product for PeaceDeals {
         for held in [&mut unobserved.settlements, &mut unobserved.conferences, &mut unobserved.ownership] {
             *held = super::subjects::settle(std::mem::take(held));
         }
-        // The writer's comparison reads ownership, wars, subjects, governments, existence and
-        // victory points together: an hour it did not run knows none of them.
         let ownership = unobserved.ownership.clone();
         for held in [&mut unobserved.wars, &mut unobserved.subjects, &mut unobserved.governments, &mut unobserved.existence, &mut unobserved.victory_points] {
             held.clone_from(&ownership);
@@ -1206,7 +1151,6 @@ impl Product for PeaceDeals {
             }
         }
         crate::metadata::check_cancel(cancelled)?;
-        // A settlement is the row its log inserted, decoded from the log's own cells.
         let settlement_columns = SETTLEMENT_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceSettlements, name).unwrap_or(usize::MAX));
         if settlement_columns.contains(&usize::MAX) {
             return Err(invalid("peace settlements does not hold the columns the peace deals read"));
@@ -1240,8 +1184,6 @@ impl Product for PeaceDeals {
     }
 }
 
-/// Each listing's span: its newest row. A conference listed again under its id after it was gone
-/// has a new first observed hour, so it is a listing of its own, as the game listed it twice.
 fn listings(rows: Vec<PeaceConferenceSpanRow>) -> Vec<PeaceConferenceSpanRow> {
     let mut spans: BTreeMap<(u64, i32), PeaceConferenceSpanRow> = BTreeMap::new();
     for span in rows {
@@ -1255,8 +1197,6 @@ fn listings(rows: Vec<PeaceConferenceSpanRow>) -> Vec<PeaceConferenceSpanRow> {
 
 const SETTLEMENT_COLUMNS: [&str; 9] = ["conference", "hour", "winners", "losers", "actions", "transfers", "failure", "omitted", "subjects"];
 
-/// A row of the `peace-settlements` log as the settlement it records (its key is the observation
-/// sequence); `None` where a cell is not recorded or does not decode.
 fn settlement(row: &log::Row, columns: &[usize; 9]) -> Option<PeaceSettlementRow> {
     let cell = |index: usize| row.cells.get(columns[index]);
     let optional = |index: usize| match cell(index) {
@@ -1264,7 +1204,6 @@ fn settlement(row: &log::Row, columns: &[usize; 9]) -> Option<PeaceSettlementRow
         Some(log::Cell::Missing) => Some(None),
         _ => None,
     };
-    // An empty list is stored as no bytes: the game's empty list, not a value not recorded.
     fn list(cell: Option<&log::Cell>) -> Option<Option<&[u8]>> {
         match cell {
             Some(log::Cell::List(bytes)) if !bytes.is_empty() => Some(Some(&bytes[..])),
@@ -1302,12 +1241,10 @@ fn settlement(row: &log::Row, columns: &[usize; 9]) -> Option<PeaceSettlementRow
     })
 }
 
-/// `row` as an outcome, none when a cell it needs is not recorded.
 const SPAN_COLUMNS: [&str; 9] = [
     "first_observed_hour", "last_observed_hour", "current_turn", "finalized", "first_finalized_hour", "first_absent_hour", "comparison", "before_hour", "compared_hour",
 ];
 
-/// A row of the `peace-conference-spans` log as the span it records; `None` where a cell was not recorded.
 fn conference_span(row: &log::Row, columns: &[usize; 9]) -> Option<PeaceConferenceSpanRow> {
     let at = |index: usize| number(&row.cells, columns[index]);
     let optional = |index: usize| match row.cells.get(columns[index]) {
@@ -1347,11 +1284,9 @@ fn outcome(row: &log::Row, columns: &[usize; 11]) -> Option<Outcome> {
     })
 }
 
-/// What `outcomes` and `settled` name, read at their hours.
 fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Settled], warnings: &mut Vec<String>) -> io::Result<Joins> {
     let recording = query.replay.recording();
     let mut joins = Joins { holders: HolderTags::new(query), ..Joins::default() };
-    // Raw ids of the settlements, through each run's links to the slot's holder at the event hour.
     let slots = slot_holders(query);
     for Settled { publication_hour, row } in settled {
         let hour = row.hour.unwrap_or(*publication_hour);
@@ -1377,7 +1312,6 @@ fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Se
             }
         }
     }
-    // Token spellings and the state-taking keyword, from the dictionary at the timeline's end.
     let tokens: BTreeSet<u32> = settled.iter().flat_map(|settled| settled.row.actions.iter().map(|action| action.token)).collect();
     let transfers = !settled.is_empty() || outcomes.iter().any(|row| row.change == PeaceOutcomeRow::TRANSFER);
     if transfers && let Some(stretch) = query.timeline.stretches.last() {
@@ -1406,7 +1340,6 @@ fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Se
             Err(error) => joins.action_key = Err(format!("lexical tokens: {error}")),
         }
     }
-    // New subjects: the relation's start and the subject's level at the after read.
     for row in outcomes.iter().filter(|row| row.change == PeaceOutcomeRow::NEW_SUBJECT) {
         let Some(stretch) = query.timeline.at(row.after) else { continue };
         let subjects = crate::answer::subjects(source, stretch.run)?;
@@ -1419,7 +1352,6 @@ fn joins(source: &Source, query: &Query<'_>, outcomes: &[Outcome], settled: &[Se
             joins.subjects.insert((row.to, row.from, row.after), ((cell >> 32) as i32, level));
         }
     }
-    // Governments of the countries a comparison says changed government, at its two reads.
     let mut wanted: BTreeMap<i32, BTreeSet<Identity>> = BTreeMap::new();
     for row in outcomes.iter().filter(|row| row.change == PeaceOutcomeRow::GOVERNMENT) {
         wanted.entry(row.before).or_default().insert(row.from);

@@ -24,7 +24,6 @@ fn divides_after_each_fixed_product() {
     input.coverage = 50_001;
     input.mission.capacity = 50_001;
     input.mission.supply = 50_001;
-    // The first product truncates to 25_001; the second to 12_500.
     assert_eq!(sortie_efficiency(&input), 12_500);
 }
 
@@ -46,7 +45,6 @@ fn modifiers_fuel_and_region_follow_native_order() {
     input.effective.fuel_allocated = 100;
     input.fuel_penalty = 20_000;
     input.country_region = Some(-10_000);
-    // 40_000 * 1.1 -> 44_000; fuel factor .6 -> 26_400; region .9 -> 23_760.
     assert_eq!(sortie_efficiency(&input), 23_760);
 }
 
@@ -86,7 +84,6 @@ fn ordinary_rounds_half_away_then_applies_the_stance_ratio() {
     let carrier = Base::Ordinary {
         stance_ratio: Some(50_000),
     };
-    // Round 3.49 to 3, then truncate 3 * .5 to 1.
     assert_eq!(scenario_plane_count(carrier, 349, 1_000), 1);
 }
 
@@ -94,17 +91,10 @@ fn ordinary_rounds_half_away_then_applies_the_stance_ratio() {
 fn rocket_rounds_up_and_caps_while_gun_returns_one() {
     assert_eq!(scenario_plane_count(Base::Rocket(9), 10, 12_500), 2);
     assert_eq!(scenario_plane_count(Base::Rocket(9), 1, 12_500), 1);
-    // A negative product with a remainder truncates towards zero.
     assert_eq!(scenario_plane_count(Base::Rocket(9), 10, -12_500), -1);
     assert_eq!(scenario_plane_count(Base::Gun, 10, 0), 1);
 }
 
-/// The game multiplies the rounded-up quotient back by 100000
-/// (wrapping) and divides again before narrowing. At the
-/// top of the range that product wraps: 92233720368548 * 100000 becomes
-/// negative, the second quotient's low 32 bits are 702313053 and the wing's
-/// 100 planes are the smaller. Without the wrap the count would be the low
-/// 32 bits of 92233720368548, -702313052.
 #[test]
 fn rocket_rounding_wraps_its_multiply_back_as_native_does() {
     let efficiency = 9_223_372_036_854_775_800;
@@ -113,8 +103,6 @@ fn rocket_rounding_wraps_its_multiply_back_as_native_does() {
         scenario_plane_count(Base::Rocket(1), i32::MAX, efficiency),
         702_313_053
     );
-    // An exact multiple takes no multiply-back: the low 32 bits of
-    // 92233720368547.
     assert_eq!(
         scenario_plane_count(Base::Rocket(1), i32::MAX, 9_223_372_036_854_700_000),
         -702_313_053
@@ -130,7 +118,6 @@ fn defines() -> SortieDefines {
     }
 }
 
-/// Hand-computed tuples of the whole law through the recorded rows.
 #[test]
 fn recorded_operands_give_hand_computed_counts() {
     let input = AirMissionInputRow {
@@ -186,17 +173,13 @@ fn recorded_operands_give_hand_computed_counts() {
     let count = |sources: &SortieSources, wing: &AirWingRow, base: &AirBaseRow| {
         sources.count(wing, &input, base, 3, (3, 3), &defines())
     };
-    // 90000 -> x.8 72000 -> x.95 68400 -> x.9 61560 -> x.97 59713
-    // -> fuel .5 + .5 * .7 = .85: 50756; 100 planes round to 51.
     assert_eq!(count(&sources, &wing, &state), Ok(51));
-    // A carrier skips no term here; stance 1 halves the rounded 51.
     let host_base = AirBaseRow {
         id: 6,
         host: 88,
         ..Default::default()
     };
     assert_eq!(count(&sources, &wing, &host_base), Ok(25));
-    // A console override replaces the law unclamped: -20.5 rounds to -21.
     sources
         .modifiers
         .insert((AirSortieModifierRow::EFFICIENCY_OVERRIDE, 3, 0), -20_500);
@@ -214,7 +197,6 @@ fn recorded_operands_give_hand_computed_counts() {
         ..Default::default()
     };
     sources.special.insert(5, &rocket_host);
-    // 9 slots x .125 = 1.125 rounds up to 2.
     assert_eq!(count(&sources, &wing, &rocket), Ok(2));
     let gun = AirBaseRow { kind: 2, ..state };
     assert_eq!(count(&sources, &wing, &gun), Ok(1));

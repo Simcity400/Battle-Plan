@@ -1,5 +1,3 @@
-//! State-base fuel from recorded simulation operands and content. Registration
-//! order, empty pools and repeated wing occurrences belong to the caller.
 use super::{Context, carrier_summary};
 use replay_data::{
     rows::AirBaseRegistrationRow, rows::AirBaseRow, rows::AirWingRow, rows::CarrierAirPool,
@@ -115,7 +113,6 @@ impl<'a, 'b> Reader<'a, 'b> {
         let countries = self.countries()?;
         let mut ace_term = 0;
         if wing.ace != 0 {
-            // The country-first table is not globally ordered by ace handle.
             let aces = self
                 .aces
                 .get_or_init(|| {
@@ -328,7 +325,6 @@ impl<'a, 'b> Reader<'a, 'b> {
             .wings
             .get(start..end)
             .ok_or("state Air pool membership outside registration")?;
-        // Empty registered pools emit a zero line without demanding per-wing operands.
         if members.is_empty() {
             return Ok(0);
         }

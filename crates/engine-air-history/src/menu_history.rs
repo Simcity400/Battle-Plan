@@ -1,11 +1,3 @@
-//! A country air history's three loop windows (daily, monthly, yearly), every
-//! channel, for the strategic air menu.
-//!
-//! Adds write only the daily window's current record (the region-history
-//! getter, then the clamped channel add); the queue advance moves each window
-//! and recomputes the monthly and yearly current records from the windows
-//! below. A held copy therefore follows an advance without a read, and an hour
-//! with adds but no advance changes only the daily current record.
 
 use crate::{
     Memory, cloop_history, cpdx_array::Array, loop_history_record_fields as record,
@@ -16,7 +8,6 @@ use engine_native::memory::{RecordField, RecordLayout, RecordSources};
 pub const CHANNELS: usize = cloop_history::air_stats::FIELD_COUNT as usize;
 pub const LEVELS: usize = 3;
 const BATCH: usize = 64;
-/// Records whose channels one gather copies, bounding the scratch.
 const VALUE_CHUNK: usize = 256;
 const STRIDE: usize = CHANNELS * 8;
 const ZERO: [i64; CHANNELS] = [0; CHANNELS];
@@ -28,7 +19,6 @@ pub struct Window {
     pub wrapped: bool,
 }
 
-/// One nonzero record of a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {
     pub level: u8,
@@ -36,16 +26,13 @@ pub struct Record {
     pub values: [i64; CHANNELS],
 }
 
-/// A history's windows; records absent here are zero in the game.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct History {
     pub roll_up: i32,
     pub windows: [Window; LEVELS],
-    /// Nonzero records by (level, slot).
     pub records: Vec<Record>,
 }
 
-/// What one history's daily current record holds now, with every window's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Current {
     pub roll_up: i32,
@@ -71,7 +58,6 @@ impl History {
             .map(|at| &self.records[at].values)
     }
 
-    /// Store `values` at `(level, slot)`; a zero record is dropped.
     pub fn set(
         &mut self,
         level: u8,
@@ -115,9 +101,6 @@ impl History {
         }
     }
 
-    /// The window's closed records in summation order, then the current one
-    /// when asked and the window has not wrapped: their clamped sum, or for a
-    /// roll-up of one the newest record with a positive channel.
     fn aggregate(&self, level: usize, include_current: bool) -> [i64; CHANNELS] {
         let window = self.windows[level];
         let capacity = window.capacity;
@@ -145,7 +128,6 @@ impl History {
                 );
             }
         };
-        // Slots from `start` up, then those below it: summation order.
         let split = records.partition_point(|record| record.slot < start);
         for record in records[split..].iter().chain(&records[..split]) {
             if position(record.slot) < count {
@@ -161,7 +143,6 @@ impl History {
         sum
     }
 
-    /// The queue advance, `count` times.
     pub fn advance(&mut self, count: u64) -> Result<(), &'static str> {
         if self.windows.iter().any(|window| window.capacity == 0) {
             return Err("air menu history window invalid");
@@ -186,8 +167,6 @@ impl History {
         Ok(())
     }
 
-    /// The daily current record read alone: valid only when every window
-    /// stands where this copy holds it.
     pub fn apply_current(&mut self, current: &Current) -> Result<bool, &'static str> {
         if current.roll_up != self.roll_up || current.windows != self.windows {
             return Err("air menu history moved without an observed advance");
@@ -211,13 +190,10 @@ pub const REFUSALS: [&str; 7] = [
     "air menu history channels unreadable",
 ];
 
-/// Reusable buffers; none grows past a batch of [`BATCH`] histories, and the
-/// channel copy past [`VALUE_CHUNK`] records.
 #[derive(Default)]
 pub struct Scratch {
     bytes: Vec<u8>,
     pointers: Vec<usize>,
-    /// (history in batch, level, slot) of each pointer.
     owners: Vec<(usize, usize, u32)>,
     failures: Vec<Option<&'static str>>,
     windows: Vec<(usize, usize, usize)>,
@@ -252,8 +228,6 @@ impl Scratch {
             + self.heads.capacity() * size_of::<Head>()
     }
 
-    /// Copy `fields` of `pointers[range]` into `bytes` from offset zero,
-    /// naming the first unreadable record of each run in `failures`.
     fn gather(
         &mut self,
         memory: &impl Memory,
@@ -289,7 +263,6 @@ impl Scratch {
         Ok(())
     }
 
-    /// Keep only the pointers of histories still unrefused.
     fn compact(&mut self) {
         let mut live = 0;
         for at in 0..self.pointers.len() {
@@ -307,8 +280,6 @@ impl Scratch {
         self.heads[history].refused.get_or_insert(reason);
     }
 
-    /// One pass over the owners' pointers in place: `at` and the bytes of
-    /// each gathered record.
     fn each_gathered(
         &mut self,
         memory: &impl Memory,
@@ -364,9 +335,6 @@ fn values(bytes: &[u8]) -> [i64; CHANNELS] {
     })
 }
 
-/// Authenticated headers of a batch: each history's roll-up and windows, and
-/// in `scratch.owners`/`pointers` the record-pointer slots to follow (every
-/// slot when `whole`, else each daily window's current one).
 fn headers(
     memory: &impl Memory,
     base: usize,
@@ -501,8 +469,6 @@ fn headers(
     Ok(())
 }
 
-/// Follow `scratch.pointers` from record-pointer slots to each record's
-/// channel data, refusing histories as they fail.
 fn channel_pointers(
     memory: &impl Memory,
     histories: &[usize],
@@ -543,8 +509,6 @@ fn channel_pointers(
     Ok(())
 }
 
-/// Every record of each history, its nonzero records kept. `each` gets the
-/// history's index in `histories` and its copy or the reason it is refused.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -578,7 +542,6 @@ pub fn capture(
                     && scratch.heads[history].refused.is_none()
                     && let Some(copy) = &mut copies[history]
                 {
-                    // Owners run in (level, slot) order, so pushes stay sorted.
                     crate::allocation::reserve(&mut copy.records, 1)
                         .map_err(|_| "air menu history allocation failed")?;
                     copy.records.push(Record {
@@ -601,7 +564,6 @@ pub fn capture(
     Ok(())
 }
 
-/// Each history's window states and its daily current record alone.
 pub fn capture_current(
     memory: &impl Memory,
     base: usize,
@@ -671,7 +633,6 @@ mod tests {
                 .unwrap();
             held.advance(1).unwrap();
         }
-        // Twelve days: four months, two years; every stored record is nonzero.
         assert_eq!(
             held.windows[0],
             Window {
@@ -686,7 +647,6 @@ mod tests {
                 .windows(2)
                 .all(|pair| (pair[0].level, pair[0].slot) < (pair[1].level, pair[1].slot))
         );
-        // The daily window was zeroed at each new current slot.
         assert_eq!(held.at(0, 0), None);
         let mut sum = held.clone();
         sum.advance(0).unwrap();

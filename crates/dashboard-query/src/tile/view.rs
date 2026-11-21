@@ -1,7 +1,3 @@
-//! A chart's view made of tiles, as the UI assembles it (`ui/src/dashboard/tiles/view.ts`): the bins
-//! a view of its hours and width reads, the tiles covering it asked [`GROUP`] keys at a time with the
-//! chart request's own fields, and their bins cut to the view's whole bins, the first starting its
-//! line; a view of hours joins its tiles' runs across their seams and cuts them to its hours.
 
 use super::{ALPHABET, BINS, FIRST_BREAK, SEAM, SeriesTileReply, TileLine, TilePart, decode, decode_runs};
 use crate::{
@@ -13,14 +9,12 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{io, ops::RangeInclusive};
 
-/// Keys one tile request names at most, as the UI groups them.
 pub const GROUP: usize = 64;
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// A chart's view: its first and last hour, and its width in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct View {
     pub from: i32,
@@ -29,7 +23,6 @@ pub struct View {
 }
 
 impl View {
-    /// The view a chart request (`from`, `to`, `width`) names.
     pub fn of(chart: &Value) -> io::Result<Self> {
         let hour = |name: &str| -> io::Result<i32> {
             chart
@@ -52,21 +45,16 @@ impl View {
         Ok(Self { from, to, width })
     }
 
-    /// The hours of each of its bins.
     pub fn bin_hours(&self) -> i64 {
         grid(i64::from(self.to) - i64::from(self.from) + 1, self.width).1
     }
 
-    /// The indices of the tiles covering it.
     pub fn tiles(&self) -> RangeInclusive<i64> {
         let span = BINS as i64 * self.bin_hours();
         i64::from(self.from).div_euclid(span)..=i64::from(self.to).div_euclid(span)
     }
 }
 
-/// The view a chart request asks, and the tile requests that draw it, tile after tile: each the
-/// chart request's own fields less its view, with the view's bin hours, the tile's index and up to
-/// [`GROUP`] of its keys, each key's `within` spans cut to the hours the tile reads.
 pub fn requests(chart: &Value) -> io::Result<(View, Vec<Value>)> {
     let view = View::of(chart)?;
     let bin_hours = view.bin_hours();
@@ -107,7 +95,6 @@ pub fn requests(chart: &Value) -> io::Result<(View, Vec<Value>)> {
     Ok((view, out))
 }
 
-/// A key's spans cut to `from..=to`: a key `within` does not name is drawn nowhere.
 fn spans_within(spans: Option<&Value>, from: i64, to: i64) -> io::Result<Vec<Value>> {
     let Some(spans) = spans else { return Ok(Vec::new()) };
     let spans = spans.as_array().ok_or_else(|| invalid("A key's within spans are a list"))?;
@@ -122,23 +109,17 @@ fn spans_within(spans: Option<&Value>, from: i64, to: i64) -> io::Result<Vec<Val
     Ok(out)
 }
 
-/// One key's line over the view.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewLine {
     pub country: Country,
-    /// Its bins cut to the view's whole bins; a view of hours carries its runs cut to its hours.
     pub summary: ChartSummary,
-    /// The view's hours it holds no value in, with why.
     pub missing: Vec<MissingSpan>,
-    /// The holders it meets in the view.
     pub parts: Vec<TilePart>,
-    /// Asked with marks, for a series with drops: one cluster per bin of the view with any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marks: Option<MarkSummary>,
 }
 
-/// A chart's view assembled from its tiles.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssembledView {
@@ -153,7 +134,6 @@ enum Bins {
     Runs(Vec<(i32, i32, f64, u8)>),
 }
 
-/// The lines of `view` from the replies to its [`requests`], in their order.
 pub fn assemble(view: View, replies: &[SeriesTileReply]) -> io::Result<AssembledView> {
     let bin_hours = view.bin_hours();
     let tiles = view.tiles();
@@ -205,7 +185,6 @@ pub fn assemble(view: View, replies: &[SeriesTileReply]) -> io::Result<Assembled
     Ok(AssembledView { measure, decimals, bin_hours, series })
 }
 
-/// One key's line from its tiles, in index order.
 fn line(view: View, bin_hours: i64, first_tile: i64, tiles: &[&(&TileLine, Bins)]) -> io::Result<ViewLine> {
     let (from, to) = (i64::from(view.from), i64::from(view.to));
     let mut parts: Vec<TilePart> = Vec::new();
@@ -313,7 +292,6 @@ fn line(view: View, bin_hours: i64, first_tile: i64, tiles: &[&(&TileLine, Bins)
     Ok(ViewLine { country, summary, missing, parts, marks })
 }
 
-/// Standard padded base64 `text` as bytes.
 fn unbase64(text: &str) -> io::Result<Vec<u8>> {
     let malformed = || invalid("A tile's bins are not base64");
     if text.len() % 4 != 0 {

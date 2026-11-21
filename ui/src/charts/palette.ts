@@ -2,25 +2,14 @@ import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, t
 import type { Oklch, Rgb } from '../shell/appearance/color';
 import { colourDistance, NearestColours } from './paletteDistance.ts';
 
-/** Colours for things that are categories, not countries (slices, stacked parts,
- * advisor types). Countries keep their recorded map colours. The hue order is
- * fixed. Content may have any number of categories (a mod's resources or
- * ideologies), and none is hidden for want of a colour: lines past the eighth
- * take the colours again with dashes of their own (`lineStyles`), and bands take
- * them again in order. Each theme gets its own steps, solved for contrast against
- * that theme's surface. */
 
-/** The validated categorical hues, in order, for dark and light surfaces. */
 const CATEGORICAL = {
   dark: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#e66767', '#008300'],
   light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#4a3aa7', '#e34948', '#008300'],
 } as const;
 export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
-/** Graphical objects need 3:1 against their background (WCAG 1.4.11). */
 export const MARK_CONTRAST = 3;
 
-/** The categorical palette for a surface colour, solved once per surface and shared
- * by every caller, which must not change it. */
 const palettes = new Map<string, string[]>();
 export function categoricalPalette(surface: string): string[] {
   let palette = palettes.get(surface);
@@ -38,23 +27,14 @@ function readable(color: Rgb, background: Rgb, darkSurface: boolean): Rgb {
   return oklchToRgb(solveLightness(rgbToOklch(color), background, MARK_CONTRAST, darkSurface ? 'lighter' : 'darker'));
 }
 
-/** Perceptual distance in OKLab, ×100 (a ΔE of about 2 is barely visible). */
 export function distance(first: Rgb, second: Rgb): number {
   return colourDistance(first, second);
 }
 
-/** Below this chroma a colour reads as grey, which charts reserve for "contested"
- * and "no data". */
 export const GREY_CHROMA = 0.045;
 
-/** Makes each colour readable on the background, not grey, and at least
- * `minDistance` from every earlier one, changing lightness first and chroma only
- * for greys. Hue is kept. Stable: the same inputs always give the same result,
- * and earlier colours never change because of later ones. */
 export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance = 12, avoid: readonly Rgb[] = []): Rgb[] {
   const darkSurface = isDark(background);
-  // A grey has no real hue (its angle is rounding noise), so a grey input takes the
-  // categorical colour for its position instead of an arbitrary one.
   const fallback = categoricalPalette(toHex(background)).map(hex => parseColor(hex)!);
   const result: Rgb[] = [];
   const neighbours = new NearestColours(avoid);
@@ -67,16 +47,12 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
     if (!(mark(chosen) && gap(chosen) >= minDistance)) {
       const start = rgbToOklch(chosen);
       let best: { color: Rgb; gap: number } | null = null;
-      // Try lightness steps alternating away from and toward the surface, far
-      // enough to reach either end of the usable range from any start.
       for (let step = 1; step <= 70; step++) {
         const delta = (step % 2 ? 1 : -1) * Math.ceil(step / 2) * 0.02 * (darkSurface ? 1 : -1);
-        // Past about 0.9 lightness sRGB cannot hold enough chroma, and colours turn grey.
         const candidate = oklchToRgb({ ...start, c: Math.max(start.c, GREY_CHROMA * 2), l: Math.min(0.9, Math.max(0.2, start.l + delta)) });
         if (!mark(candidate)) continue;
         const apart = gap(candidate);
         if (apart >= minDistance) { best = { color: candidate, gap: apart }; break; }
-        // If nothing clears every colour, the most distinct readable one is used.
         if (!best || apart > best.gap) best = { color: candidate, gap: apart };
       }
       if (best) chosen = best.color;
@@ -87,28 +63,14 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
   return result;
 }
 
-/** A line's look: its colour, and the dashes of its primary line (none: solid) and
- * of a secondary line drawn with it (such as demand beside supply). */
 export interface LineStyle { color: string; primary: readonly number[]; secondary: readonly number[] }
 
-/** The dash patterns for one round of lines. Round 0 is the ordinary look (a solid
- * primary, a dashed secondary); each later round, used once every palette colour is
- * taken, has dashes of its own length, so no two rounds match however many there
- * are, and a primary pattern (two numbers, or none) never matches a secondary one
- * (four numbers after round 0; 6-4 in it, which no primary dash of 2n-3 equals). */
 export function lineDashes(round: number): { primary: readonly number[]; secondary: readonly number[] } {
   return round === 0 ? { primary: [], secondary: [6, 4] } : { primary: [2 * round, 3], secondary: [10 + 2 * round, 3, 2, 3] };
 }
 
-/** The dash of a secondary line drawn with a solid one in the same colour: a
- * ceiling (a maximum, a capacity), demand beside supply, war support beside
- * stability. */
 export const SECONDARY_DASH = lineDashes(0).secondary;
 
-/** One distinct palette colour per line: each takes the colour at its `preferred`
- * place (such as its place in the game's order, so it keeps its colour as others
- * come and go) when free, else the first colour no other line has. With no more
- * lines than colours, two lines never share one; past that, colours repeat. */
 export function lineColours<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, string> {
   const colours = new Map<K, string>();
   const taken = new Set<number>();
@@ -123,9 +85,6 @@ export function lineColours<K>(lines: readonly { key: K; preferred: number }[], 
   return colours;
 }
 
-/** Every line's style, distinct at any count: the first round of lines (as many as
- * the palette has colours, by `preferred`) takes `lineColours` with the ordinary
- * dashes, and each further round the colours again with its own `lineDashes`. */
 export function lineStyles<K>(lines: readonly { key: K; preferred: number }[], palette: readonly string[]): Map<K, LineStyle> {
   const sorted = [...lines].sort((a, b) => a.preferred - b.preferred);
   const size = Math.max(1, palette.length);

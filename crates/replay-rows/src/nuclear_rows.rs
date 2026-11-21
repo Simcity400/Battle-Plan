@@ -1,7 +1,3 @@
-//! Nuclear strikes as impact events ([`engine_events::nuclear_strike_sites`]), not
-//! stockpile snapshots. A strike appears once, in the hourly drain after its
-//! impact; `hour` is the impact-time clock read. Outcomes are what the
-//! impact did before the authored `on_nuke_drop` effects ran.
 use crate::{
     codec::{Decoder, invalid_static as invalid},
     event_feed_rows::EventFeedCountry,
@@ -9,7 +5,6 @@ use crate::{
 };
 use std::io;
 
-/// An outcome a strike row can lack, named by its refusals.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -46,8 +41,6 @@ impl Value for NuclearStrikePart {
     }
 }
 
-/// One war-support adjustment call: the country's raw signed fixed5 war support before and after
-/// its clamp.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearWarSupport {
@@ -61,10 +54,6 @@ value_struct!(NuclearWarSupport {
     after_raw: i64
 });
 
-/// One building whose healthy levels the strike removed, located and typed as
-/// [`crate::rows::BuildingBombingDamageRow`] is: `controller` is the location controller,
-/// `province` is set for a province building, and `amount_raw` is pre-minus-post health
-/// (a full level is 10,000,000). Buildings it left unchanged are not listed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearBuildingDamage {
@@ -82,19 +71,14 @@ value_struct!(NuclearBuildingDamage {
     amount_raw: i64
 });
 
-/// One unit the strike's immediate-damage calls reached, with the fields they write
-/// before and after. A unit reached in several provinces of a state's strike appears once
-/// per call.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearUnitDamage {
     pub handle: u64,
-    /// The native class word: 0 a division, 13 a railway gun.
     pub class: u32,
     pub owner: u32,
     pub strength_before: i64,
     pub strength_after: i64,
-    /// None for a railway gun, which has no organisation.
     pub organisation_before: Option<i64>,
     pub organisation_after: Option<i64>,
     pub manpower_before: i64,
@@ -112,9 +96,6 @@ value_struct!(NuclearUnitDamage {
     manpower_after: i64
 });
 
-/// The strike's signed fixed5 pool difference of one variant for one country, summed over
-/// the division pools changed by active damage or, for `wing`, the air wing pools changed
-/// by aircraft removal. A negative amount is a native gain.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearEquipmentLoss {
@@ -130,8 +111,6 @@ value_struct!(NuclearEquipmentLoss {
     amount_raw: i64
 });
 
-/// One air wing's crews removed with its planes: the wing's acquired manpower before and after.
-/// Part of the equipment outcome, whose writer call it is.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearWingLoss {
@@ -145,7 +124,6 @@ value_struct!(NuclearWingLoss {
     manpower_after: i64
 });
 
-/// A part of the outcome that was not observed, with how many times.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearStrikeRefusal {
@@ -159,24 +137,15 @@ value_struct!(NuclearStrikeRefusal {
     count: u32
 });
 
-/// One nuclear impact. `id` increases through the recording. A complete empty table is an
-/// hour without strikes; an unavailable one is unknown. A part named in `refusals` is
-/// incomplete; any other part lists everything the impact did to it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearStrikeRow {
     pub id: u64,
     pub hour: i32,
-    /// The launcher's own reference (the nuclear strike's country) and full native ID at the
-    /// impact.
     pub launcher: EventFeedCountry,
-    /// Native type ordinal (the nuclear strike's type); 1 strikes every province of the state.
     pub nuke_type: u32,
     pub province: u32,
-    /// 0 for a province without a state.
     pub state: u32,
-    /// The state owner, which the war support loss falls on, resolved at the
-    /// impact; the reserved country (reference 0) without a state.
     pub owner: EventFeedCountry,
     pub controller: u32,
     pub war_support: Vec<NuclearWarSupport>,
@@ -188,7 +157,6 @@ pub struct NuclearStrikeRow {
 }
 
 impl NuclearStrikeRow {
-    /// Whether every outcome of `part` is listed.
     pub fn complete(&self, part: NuclearStrikePart) -> bool {
         self.refusals.iter().all(|refusal| refusal.part != part)
     }

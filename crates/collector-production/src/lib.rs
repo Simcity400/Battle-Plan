@@ -1,4 +1,3 @@
-//! Production and equipment-variant capture, the authenticated variant registry, owned raw copies and replay projection. The host owns scheduling and loans; this library owns the census, native reads, conversions and synthetic scale fixtures.
 
 use collector_memory::{read_accounting, terminal as allocation};
 use collector_primitives::{clock, country_slots as country_scale, raw_memory, table_capture};

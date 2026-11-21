@@ -42,7 +42,6 @@ const memberKey = (entry: MemberAmount) => entry.key;
 const amount = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 const exact = new Intl.NumberFormat('en-US', { maximumFractionDigits: 5 });
 
-/** A bar's width painted from live texts (a percentage), never rendered for. */
 function LiveWidth({ live, at, colour }: { live: LiveTexts; at: string; colour: string }) {
   const element = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
@@ -53,8 +52,6 @@ function LiveWidth({ live, at, colour }: { live: LiveTexts; at: string; colour: 
   return <i ref={element} style={{ width: live.text(at), background: colour }} />;
 }
 
-/** What a faction pools at the shown hour: its resources, each member's manpower, research sharing and shared
- * doctrines. One pushed panel while following; every amount painted from its live cell. */
 export default function FactionPooledStrengthWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
@@ -75,7 +72,6 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const pool = shownPool(offered, options.pool);
   const members = useMemo(() => data ? manpowerRows(data) : [], [data]);
   const resources = data?.resources ?? null;
-  // Amounts, bar widths and the header's total, painted each frame from the live cells.
   const texts = useMemo(() => liveTextsOf(live, (values, key) => {
     if (key === 'total') return data && pool ? poolHeading(data, pool, values) : '';
     if (key === 'research') { const value = values.get(researchBaseKey); return value === undefined ? values.missing(researchBaseKey) || 'Not recorded' : amount.format(value); }
@@ -89,18 +85,15 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const tags = useMemo(() => [...new Set(pool === 'manpower' ? members.flatMap(row => row.tag ? [row.tag] : [])
     : pool === 'research' ? data?.researchCountries ?? [] : [])], [pool, members, data]);
   const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // A drill belongs to the faction it was opened from; another source, branch or faction closes it.
   const drillOwner = JSON.stringify([track?.source.id ?? null, track?.source.revision ?? null, track?.branch.id ?? null, faction?.id ?? null]);
   const [openedFor, setOpenedFor] = useState<string | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setOpenedFor(null); }, [drillOwner]);
   const drill = openedFor === drillOwner ? savedDrill : CLOSED;
-  // The drill keeps the member clicked as it was at the hour clicked (`drill.hour`).
   const picked = drill.breakdown;
   const pickedHour = drill.hour ?? dataHour;
   const pickedHolder = useMemo(() => picked ? [{ key: 'picked', tag: picked, hour: pickedHour }] : [], [picked, pickedHour]);
   const pickedLook = useHolderLooks(runtime.client, track, pickedHolder, active, tokens);
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tags.map(tag => ({ hour: dataHour, tag })), [tags, dataHour]), active);
-  // Flags for the manpower rows the mounted list shows; leaving the list releases them.
   const listed = pool === 'manpower' && members.length > 0;
   const [visibleTags, setVisibleTags] = useChangedState<readonly string[]>(NO_TAGS);
   useEffect(() => { if (!listed) setVisibleTags(previous => previous.length ? NO_TAGS : previous); }, [listed]);

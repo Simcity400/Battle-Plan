@@ -1,20 +1,14 @@
-//! Ordered relation-goal references and their naming operands.
 use crate::{
     Memory, ccountry, cpdx_array::Array, creference_registry, cstate, cwar_goal_type, read,
 };
 use engine_sites::Rva;
 
-/// Primary goal vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_9250);
-/// Registered u64 reference.
 pub const HANDLE: usize = 8;
-/// Embedded goal actor.
 pub const ACTOR: usize = 0x38;
 pub const RECIPIENT: usize = 0x3c;
 pub const TYPE: usize = 0x40;
-/// Ordered state-pointer array; the first entry supplies the state naming operand.
 pub const STATES: usize = 0x48;
-/// Ordered country references; the first supplies country-name and adjective operands.
 pub const COUNTRIES: usize = 0x60;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,7 +18,6 @@ pub struct Row {
     pub side: u8,
     pub ordinal: u32,
     pub handle: u64,
-    /// Zero retains a null/stale handle; a failed read fails the whole table.
     pub resolved: u8,
     pub type_token: u32,
     pub actor: u32,

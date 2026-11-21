@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// How hard the recorder compresses what it writes. It never runs in the game: Low makes
-/// larger files with less of the recorder's CPU, High the smallest files with more. Low keeps
-/// pace with the game at full speed; High may not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Compression {
@@ -24,7 +21,6 @@ impl Compression {
         self.block_settings().level
     }
 
-    /// The columnar writer's settings for blocks and restarts.
     pub fn block_settings(self) -> crate::columnar_file::Settings {
         match self {
             Self::Low => crate::columnar_file::Settings::LOW,

@@ -1,7 +1,3 @@
-//! Each sub-unit's equipment need by archetype, as the sub-unit database holds it: the `need`
-//! blocks of its last declaration (a redefinition starts its need again), each named type
-//! resolved to its archetype in first-insertion order, a later reference to the same archetype
-//! replacing its amount, and a name with no registered equipment type reported and dropped.
 
 use std::{collections::BTreeMap, io};
 
@@ -13,17 +9,13 @@ use crate::{
     parser::{self, Document, Value, fold_token},
 };
 
-/// Sub-unit needs by the sub-unit's key under the lexer's ASCII fold.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SubUnitNeeds {
-    /// Canonical (archetype, fixed5 amount) needs in native order.
     pub needs: BTreeMap<String, Vec<(String, i64)>>,
-    /// The `need` entries the game reports and drops, each with why.
     pub dropped: Vec<String>,
 }
 
 impl SubUnitNeeds {
-    /// The sub-unit database's files in its order, resolved through `database`.
     pub fn read(layers: &ResolvedLayers, database: &Database) -> io::Result<Self> {
         let mut documents = Vec::new();
         for path in sub_unit_files(layers)? {
@@ -34,8 +26,6 @@ impl SubUnitNeeds {
         Self::from_documents(&documents, |name| archetype(database, name))
     }
 
-    /// The needs `documents` declare, each named type's archetype given by `archetype`: none
-    /// for a name that is no equipment.
     pub fn from_documents(documents: &[(String, Document)], archetype: impl Fn(&str) -> Option<io::Result<String>>) -> io::Result<Self> {
         let mut authored: BTreeMap<String, (String, Vec<(String, i64)>)> = BTreeMap::new();
         for (shown, document) in documents {
@@ -63,13 +53,11 @@ impl SubUnitNeeds {
         Ok(out)
     }
 
-    /// The needs of the sub-unit a key or recorded spelling names.
     pub fn get(&self, key: &str) -> Option<&[(String, i64)]> {
         self.needs.get(&fold_token(key)).map(Vec::as_slice)
     }
 }
 
-/// A `need` block's entries as authored, in order: each type's name and fixed5 amount.
 pub fn entries(value: &Value) -> io::Result<Vec<(String, i64)>> {
     let items = value.items().ok_or_else(|| invalid("model content field is not a block"))?;
     let mut out = Vec::with_capacity(items.len());
@@ -81,9 +69,6 @@ pub fn entries(value: &Value) -> io::Result<Vec<(String, i64)>> {
     Ok(out)
 }
 
-/// Sub-unit `key`'s authored `need` entries as the game stores them: by archetype in first
-/// insertion order, a later reference replacing the amount; a name no equipment type registers
-/// is reported in `dropped` and left out.
 pub fn canonical(key: &str, need: &[(String, i64)], archetype: &impl Fn(&str) -> Option<io::Result<String>>, dropped: &mut Vec<String>) -> io::Result<Vec<(String, i64)>> {
     let mut out = Vec::<(String, i64)>::new();
     for (name, amount) in need {
@@ -100,7 +85,6 @@ pub fn canonical(key: &str, need: &[(String, i64)], archetype: &impl Fn(&str) ->
     Ok(out)
 }
 
-/// The archetype of the type `name` finds in `database`; none when it finds none.
 pub fn archetype(database: &Database, name: &str) -> Option<io::Result<String>> {
     let equipment = database.named(name)?;
     Some(

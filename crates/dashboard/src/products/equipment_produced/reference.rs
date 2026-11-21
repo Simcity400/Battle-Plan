@@ -1,5 +1,3 @@
-//! The whole-branch reply equipment produced gave before its values were a derived table: kept to prove the windowed
-//! reply equal to it on the fixtures.
 
 use super::{value::TypeCells, *};
 use replay_data::rows::tables;
@@ -8,15 +6,12 @@ fn type_key(id: u32, token: u32) -> u128 {
     u128::from(id) << 32 | u128::from(token)
 }
 
-/// What a request counts: the choice, and the asked types (none for every type).
 struct Select {
     choice: Choice,
     measure: ProducedMeasure,
     types: Option<BTreeSet<String>>,
 }
 
-/// The tokens of a run a request counts, and whether its untyped designs are read for the rule
-/// that they could be of a counted type.
 struct Asked {
     tokens: Vec<u32>,
     untyped: bool,
@@ -29,7 +24,6 @@ impl Select {
         Some(Asked { tokens, untyped: !keys.contains(UNRECORDED_TYPE) })
     }
 
-    /// Whether a Rocket design of archetype `token` (0: not recorded) is counted.
     fn counts(&self, types: Option<&BTreeMap<u32, Typed>>, token: u32, spelled: Option<&Typed>) -> Counted {
         let Some(keys) = &self.types else { return Counted::Yes };
         if token == ProductionTypeTotalRow::NO_ARCHETYPE {
@@ -44,7 +38,6 @@ impl Select {
     }
 }
 
-/// The archetype tokens of Rocket designs `variants` at `hour`: 0 where no definition says.
 fn rocket_archetypes(query: &Query<'_>, run: u32, hour: i32, variants: &[u128]) -> io::Result<HashMap<u64, u32>> {
     if variants.is_empty() {
         return Ok(HashMap::new());
@@ -53,7 +46,6 @@ fn rocket_archetypes(query: &Query<'_>, run: u32, hour: i32, variants: &[u128]) 
     Ok(frame.complete::<tables::VariantDefinitions>().unwrap_or(&[]).iter().map(|row| (row.id, row.archetype_token)).collect())
 }
 
-/// A Rocket design's type when the run's type rows never named its archetype.
 fn rocket_typed(query: &Query<'_>, span: &Span, tokens: &HashMap<u64, u32>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<HashMap<u32, Typed>> {
     let unique: BTreeSet<u128> = tokens.values().filter(|&&token| token != 0).map(|&token| u128::from(token)).collect();
     let asked: Vec<u128> = unique.into_iter().collect();
@@ -61,8 +53,6 @@ fn rocket_typed(query: &Query<'_>, span: &Span, tokens: &HashMap<u64, u32>, cont
     Ok(asked.into_iter().map(|token| (token as u32, typed(content, spelled.get(&(token as u32)).map(String::as_str), notes))).collect())
 }
 
-/// The type rows a producer's values read: its rows of the asked types, then its untyped row when
-/// the rule that untyped designs could be of a counted type applies.
 fn type_keys_of(id: u32, asked: &Asked) -> Vec<u128> {
     let mut keys: Vec<u128> = asked.tokens.iter().map(|&token| type_key(id, token)).collect();
     if asked.untyped {
@@ -71,9 +61,6 @@ fn type_keys_of(id: u32, asked: &Asked) -> Vec<u128> {
     keys
 }
 
-/// What one run's spans read for every producer a reply shows: each table once over the hours any
-/// of them covers, every producer's keys together, so a reply of N countries reads each table once
-/// a run, never once a country.
 struct RunRows {
     country: Read,
     coverage: Read,
@@ -93,7 +80,6 @@ impl RunRows {
         let mut types: Vec<u128> = asked.map(|asked| group.ids.iter().flat_map(|&id| type_keys_of(id, asked)).collect()).unwrap_or_default();
         types.sort_unstable();
         let rockets: Vec<(u128, u128)> = group.ids.iter().map(|&id| rocket_designs(id)).collect();
-        // The tables are apart: read side by side, the reply waits for the slowest.
         let ((country, coverage), ((types, world), rocket)) = rayon::join(
             || rayon::join(
                 || Read::of(query, &span, TableId::ProductionCountryTotals, &COUNTRY_COLUMNS, Keys::These(&countries)),
@@ -110,24 +96,20 @@ impl RunRows {
         Ok(Self { country: country?, coverage: coverage?, types: types?, world: world?, rocket: rocket? })
     }
 
-    /// The Rocket designs producer `id` holds rows of over the run's hours read.
     fn rocket_variants(&self, id: u32) -> Vec<u64> {
         self.rocket.history.keys.iter().filter(|(key, _)| (key >> 64) as u32 == id).map(|(key, _)| *key as u64).collect()
     }
 }
 
-/// The hours of one run a reply's spans cover, and the producers holding them: read together.
 #[derive(Debug, PartialEq, Eq)]
 struct RunGroup {
     run: u32,
     first: i32,
     last: i32,
     ids: BTreeSet<u32>,
-    /// Each span of the run: its line's place and the span's place in that line.
     spans: Vec<(usize, usize)>,
 }
 
-/// The spans of every line (`spans[line]`), grouped by run in run order.
 fn run_groups(spans: &[Vec<Span>]) -> Vec<RunGroup> {
     let mut groups: BTreeMap<u32, RunGroup> = BTreeMap::new();
     for (line, held) in spans.iter().enumerate() {
@@ -143,15 +125,12 @@ fn run_groups(spans: &[Vec<Span>]) -> Vec<RunGroup> {
 }
 
 
-/// What one span counts besides its rows: its type rows and its Rocket designs, each counted or not.
 struct SpanPlan {
     type_keys: Vec<u128>,
     variants: Vec<u64>,
     counted: Vec<Counted>,
 }
 
-/// One span's plan: the Rocket designs' types are read and named here, on the reply's thread, so
-/// what content notes stays the reply's own.
 fn span_plan(query: &Query<'_>, rows: &RunRows, span: &Span, select: &Select, types: Option<&BTreeMap<u32, Typed>>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<SpanPlan> {
     let asked = select.asked(types);
     let type_keys = asked.as_ref().map(|asked| type_keys_of(span.id, asked)).unwrap_or_default();
@@ -169,8 +148,6 @@ fn span_plan(query: &Query<'_>, rows: &RunRows, span: &Span, select: &Select, ty
     Ok(SpanPlan { type_keys, variants, counted })
 }
 
-/// One producer's values over one span from its run's rows, as running totals with the
-/// observation they count in. Reads nothing: the rows were read for the run.
 fn span_values(rows: &RunRows, span: &Span, select: &Select, asked: Option<&Asked>, plan: &SpanPlan) -> Vec<Piece<measure::Counted>> {
     let mut tracks = vec![rows.country.steps(u128::from(span.id))];
     tracks.extend(coverage_keys(span.id).map(|key| rows.coverage.steps(key)));
@@ -219,8 +196,6 @@ fn span_values(rows: &RunRows, span: &Span, select: &Select, asked: Option<&Aske
     pieces(steps, span.first, span.last, absent)
 }
 
-/// Each tag's series over every span it was held, measured: each run's tables read once for every
-/// tag ([`RunRows`]), each span swept on its own thread.
 fn lines(query: &Query<'_>, tags: &[Country], select: &Select, types: &BTreeMap<u32, BTreeMap<u32, Typed>>, content: &Content, notes: &mut BTreeSet<String>, dated: &mut Dated, cancelled: &AtomicBool) -> io::Result<Vec<ProducedSeries>> {
     use rayon::prelude::*;
     let spans: Vec<Vec<Span>> = tags.iter().map(|tag| spending::spans(query, tag)).collect();
@@ -249,7 +224,6 @@ fn lines(query: &Query<'_>, tags: &[Country], select: &Select, types: &BTreeMap<
     Ok(out)
 }
 
-/// Each of `ids`' values at `hour` of run `run`, with their observations.
 fn values_at(query: &Query<'_>, run: u32, hour: i32, ids: &[u32], select: &Select, types: Option<&BTreeMap<u32, Typed>>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<HashMap<u32, measure::Counted>> {
     let asked = select.asked(types);
     let country_keys: Vec<u128> = ids.iter().map(|&id| u128::from(id)).collect();
@@ -309,9 +283,6 @@ fn values_at(query: &Query<'_>, run: u32, hour: i32, ids: &[u32], select: &Selec
     Ok(out)
 }
 
-/// The `n` countries with the greatest value at `hour`, greatest first, ties by tag: only countries
-/// whose value then is known and above zero rank. A window's value is the total then less the total
-/// at its start, which the same holder's stretch must reach.
 fn ranked(query: &Query<'_>, hour: i32, n: usize, select: &Select, types: &BTreeMap<u32, BTreeMap<u32, Typed>>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<Vec<String>> {
     let Some(stretch) = query.timeline.at(hour).copied() else {
         return Ok(Vec::new());
@@ -326,7 +297,6 @@ fn ranked(query: &Query<'_>, hour: i32, n: usize, select: &Select, types: &BTree
     }
     let ids: Vec<u32> = held.keys().copied().collect();
     let run_types = types.get(&stretch.run);
-    // Values are as of production's latest read; a window's start is the read that long before it.
     let reads = reads_in(query, stretch.run, stretch.first, hour)?;
     let Some(read) = measure::read_at(&reads, hour) else {
         return Ok(Vec::new());
@@ -342,7 +312,6 @@ fn ranked(query: &Query<'_>, hour: i32, n: usize, select: &Select, types: &BTree
         let amount = match select.measure {
             ProducedMeasure::Total => now.0,
             _ => {
-                // The window's start must be the same holder's, in the same stretch.
                 let same = before.as_ref().filter(|(start, _)| {
                     query.holders.at(tag, *start).is_some_and(|run| run.last >= hour && matches!(run.holder, Holder::Found { id: held, .. } if held == *id))
                 });
@@ -374,7 +343,6 @@ pub(super) fn whole(source: &Source, query: &Query<'_>, params: &EquipmentProduc
     let mut dated = Dated::default();
     let series = self::lines(query, &tags, &select, &types, &content, &mut notes, &mut dated, cancelled)?;
     let lines: Vec<ProducedLine> = tags.into_iter().zip(series).map(|(country, series)| ProducedLine { identities: identities(query, &country), tag: query.holders.name(&country, query.timeline.last), country, series }).collect();
-    // Production's reads are the branch's, whichever lines are shown: a top N with nothing ranked yet still has them.
     for stretch in &query.timeline.stretches {
         dated.reads(query, &Span { run: stretch.run, first: stretch.first, last: stretch.last, id: 0, breaks: false })?;
     }

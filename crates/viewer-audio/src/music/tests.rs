@@ -27,18 +27,14 @@ fn chances(weights: Vec<Option<f64>>) -> Chances {
     }
 }
 
-/// A song's weight is its chance times its place in the history over the
-/// recently-played size, at least 0.001, in units of 1/100000.
 #[test]
 fn weights_follow_the_history_place_and_round_to_the_fixed_point() {
     assert_eq!(weight(Some(1.0), None, 10), (100_000, true));
-    // The song played last weighs nothing but the least weight.
     assert_eq!(weight(Some(1.0), Some(0), 10), (100, true));
     assert_eq!(weight(Some(2.0), Some(5), 10), (100_000, true));
     assert_eq!(weight(Some(0.0), None, 10), (0, false));
     assert_eq!(weight(Some(-3.0), None, 10), (0, false));
     assert_eq!(weight(None, None, 10), (DISABLED_WEIGHT, false));
-    // A chance below the fixed point's resolution is zero.
     assert_eq!(weight(Some(0.000_001), None, 10), (0, false));
 }
 
@@ -49,7 +45,6 @@ fn draws_only_positive_chances_and_a_lone_song_plays_again() {
     let mut player = Player::new(3);
     assert_eq!(player.update(&music, Some(&chances), 10), Some("t0"));
     assert_eq!(player.take_wanted(), Some(0));
-    // While a song plays nothing else is drawn.
     assert_eq!(player.update(&music, Some(&chances), 10), None);
     let (sender, stream) = track_channel();
     sender.send(Ok(vec![16_384; 4])).unwrap();
@@ -59,8 +54,6 @@ fn draws_only_positive_chances_and_a_lone_song_plays_again() {
     player.mix(&mut out, 8_192);
     assert_eq!(&out[..4], [8_192; 4]);
     assert_eq!(player.playing(), None, "a finished track ends");
-    // The only drawable song was just played: it weighs the least weight
-    // and plays again.
     assert_eq!(player.update(&music, Some(&chances), 10), Some("t0"));
     assert_eq!(player.history, [0, 0]);
 }
@@ -75,11 +68,9 @@ fn the_history_keeps_the_recently_played_size() {
         player.stop();
     }
     assert_eq!(player.history.len(), 3);
-    // A size of zero keeps none.
     let mut player = Player::new(0);
     player.update(&music, Some(&chances), 0).unwrap();
     assert!(player.history.is_empty());
-    // Without chances nothing plays.
     player.stop();
     assert_eq!(player.update(&music, None, 1), None);
 }
@@ -101,10 +92,6 @@ fn a_smaller_size_or_another_song_list_leaves_no_stale_history() {
     assert!(player.history.is_empty());
 }
 
-/// A track plays sample by sample as its stream delivers them: a chunk not
-/// yet decoded leaves the rest of the callback silent without ending the
-/// track, a failure is named once and ends it, and the end of the stream
-/// ends it. A mono track's samples pair into frames.
 #[test]
 fn a_streamed_track_plays_as_chunks_arrive() {
     let music = music(1);
@@ -129,15 +116,12 @@ fn a_streamed_track_plays_as_chunks_arrive() {
 
 const UNITY_STEP: i32 = 16_384;
 
-/// The loader decodes only as far ahead as the stream holds: a player
-/// that lets go stops the decoding, and nothing is decoded whole.
 #[test]
 fn a_stream_decodes_only_ahead_of_the_player() {
     let (sender, stream) = track_channel();
     let reader = std::thread::spawn(move || {
         pump(|| Ok(Some((48_000, 1, vec![0.1; CHUNK_SAMPLES]))), &sender)
     });
-    // Take two chunks, then let go.
     stream.chunks.recv().unwrap().unwrap();
     stream.chunks.recv().unwrap().unwrap();
     drop(stream);
@@ -145,8 +129,6 @@ fn a_stream_decodes_only_ahead_of_the_player() {
     assert!(read <= 2 + CHUNKS_AHEAD + 1, "{read} packets decoded");
 }
 
-/// Decoded samples reach the mixer as the game's Vorbis reader gives them:
-/// rounded to 16 bits, at their own rate and channel count.
 #[test]
 fn tracks_reach_the_mixer_as_decoded_16_bit_samples() {
     let (sender, stream) = track_channel();
@@ -158,6 +140,5 @@ fn tracks_reach_the_mixer_as_decoded_16_bit_samples() {
     pump(|| Ok(packets.pop()), &sender);
     drop(sender);
     let chunk = stream.chunks.recv().unwrap().unwrap();
-    // Halves round to even; out of range clamps.
     assert_eq!(chunk, [16_384, -32_768, 0, 2]);
 }

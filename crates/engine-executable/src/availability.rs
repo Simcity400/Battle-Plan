@@ -1,15 +1,12 @@
-//! Build-specific parts that verify themselves: each is available or withheld by name.
 
 use std::{borrow::Cow, fmt, io};
 
-/// A build-specific part that failed its own check, with the reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Withheld {
     pub part: Cow<'static, str>,
     pub reason: String,
 }
 
-/// A part that passed its own check, or the reason it is withheld.
 pub type Verified<T> = Result<T, Withheld>;
 
 impl Withheld {
@@ -20,7 +17,6 @@ impl Withheld {
         }
     }
 
-    /// `self`, naming `part` as what it withholds because `self` is missing.
     pub fn requires(&self, part: impl Into<Cow<'static, str>>) -> Self {
         Self {
             part: part.into(),
@@ -49,7 +45,6 @@ impl From<&Withheld> for io::Error {
     }
 }
 
-/// The withheld part an I/O error carries, if it is one.
 pub fn withheld_of(error: &io::Error) -> Option<&Withheld> {
     error.get_ref()?.downcast_ref::<Withheld>()
 }

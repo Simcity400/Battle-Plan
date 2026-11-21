@@ -1,4 +1,3 @@
-//! The update channel both apps follow, saved once for the user.
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -21,7 +20,6 @@ impl Channel {
     }
 }
 
-/// Absent fields follow the running build.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Saved {
@@ -36,7 +34,6 @@ fn path() -> Result<PathBuf, String> {
     Ok(Path::new(&local).join("HOI4Replay").join("updates.json"))
 }
 
-/// The channel the user chose, if they chose one.
 pub fn load() -> Result<Option<Channel>, String> {
     let path = path()?;
     match fs::read(&path) {

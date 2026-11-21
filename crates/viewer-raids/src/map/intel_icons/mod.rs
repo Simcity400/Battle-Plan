@@ -1,26 +1,3 @@
-//! The Operatives map mode's intel icons for the viewing country: one `intel_map_mode_map_icon`
-//! container per state, its overlapping `entries` list holding the state's entries.
-//!
-//! - **Entries**, from the viewing country only: a counterintelligence shield for each friendly
-//!   country (the viewer, or a country sharing its non-null faction or in a subject relation with
-//!   it either way, unless an active war between them vetoes it) at its capital state; each
-//!   operative of the viewer's active roster on a mission, and each one relocating with a
-//!   pending targeted mission; each of the viewer's operation instances.
-//! - **States**: build and quiet network, root out resistance, boost ideology and propaganda
-//!   missions stand in their target state, the other missions in their target country's capital
-//!   state; a relocating operative in its pending state; an operation in its target province's
-//!   state, else its target country's capital state.
-//! - **Order**: shields by country display name, operatives by their owner's display name then
-//!   roster position, operations by the `NMapIcons.OPERATION_PRIORITY_*` of their state then
-//!   definition token, then the More entry; a stable sort. `NMapMode.
-//!   MAP_MODE_INTEL_MAX_HORIZONTAL_STACK` bounds a state's operations before sorting: one past it
-//!   is omitted and the state's More entry stands for it.
-//! - **Anchor**: the state's first province with the greatest positive victory points, at its
-//!   label anchor; with none, the state's bounding centre at height zero.
-//! - **Shown** in the Operatives mode while the camera's eye height is strictly below
-//!   `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF`; free cameras use each anchor's distance.
-//!
-//! What the hour lacks for a part is counted by name; the part is hidden, never guessed.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -46,23 +23,17 @@ pub use windows::{IntelHit, IntelInputs, IntelView, PreparedIntel, hit_at, hit_s
 
 use viewer_foundation::map::native_windows;
 
-/// The state container and its list.
 pub const CONTAINER_WINDOW: &str = native_windows::INTEL_CONTAINER_WINDOW;
 pub const ENTRIES_LIST: &str = "entries";
-/// The entry windows.
 pub const SHIELD_WINDOW: &str = native_windows::INTEL_SHIELD_WINDOW;
 pub const OPERATIVE_WINDOW: &str = native_windows::INTEL_OPERATIVE_WINDOW;
 pub const OPERATION_WINDOW: &str = native_windows::INTEL_OPERATION_WINDOW;
 pub const MORE_WINDOW: &str = native_windows::INTEL_MORE_WINDOW;
-/// The sprite the game's portrait setter gives the operative entry's portrait when the
-/// operative's own portrait cannot be shown, resolved through the content's interface files.
 pub const OPERATIVE_UNKNOWN_PORTRAIT: &str = "GFX_mapicon_operative_unknown";
 
-/// The static modifier whose root-out effectiveness an operative of the target's nationality adds.
 const NATIONALITY_MODIFIER: &str = "operative_nationality_mission";
 const NATIONALITY_KEY: &str = "root_out_resistance_effectiveness_factor";
 
-/// The `NMapIcons.OPERATION_PRIORITY_*` an operation sorts by, by its state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OperationPriorities {
     pub can_start: i32,
@@ -72,53 +43,34 @@ pub struct OperationPriorities {
     pub default: i32,
 }
 
-/// The counterintelligence operands of the shield's rating and an operative's contribution
-/// (`NOperatives`, fixed5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CounterDefines {
-    /// `BASE_COUNTER_INTELLIGENCE_RATING`.
     pub base: i64,
-    /// `OPERATIVE_BASE_INTEL_AGENCY_DEFENSE`.
     pub operative_base: i64,
-    /// `COUNTER_INTELLIGENCE_STACKING_FACTOR`.
     pub stacking: i64,
-    /// `COUNTER_INTELLIGENCE_FOREIGN_AGENT_FACTOR`.
     pub foreign_agent: i64,
-    /// `COUNTER_INTELLIGENCE_TO_DEFENSE_LOG_FACTOR`.
     pub log_factor: i64,
-    /// `COUNTER_INTELLIGENCE_TO_DEFENSE_DIVISOR`.
     pub divisor: i64,
 }
 
-/// `NInterface.COUNTERINTELLIGENCE_ACTIVITY_LEVEL_THRESHOLD_VALUES` (fixed5) and `_COLORS`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ActivityDefines {
     pub thresholds: Vec<i64>,
     pub colors: Vec<[f32; 4]>,
 }
 
-/// Every define the layer reads. The layout's own are required; the others refuse only the
-/// part that reads them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IntelDefines {
     pub missions: Result<missions::Defines, String>,
-    /// `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF` as stored, fixed5.
     pub cutoff: i64,
-    /// `NMapIcons.INTEL_MAP_MODE_MAP_ICON_OFFSET`, each truncated.
     pub offset: [i32; 2],
-    /// `NMapMode.MAP_MODE_INTEL_MAX_HORIZONTAL_STACK`.
     pub max_stack: i32,
     pub priorities: OperationPriorities,
     pub counter: Result<CounterDefines, String>,
     pub activity: Result<ActivityDefines, String>,
-    /// `NOperatives.OPERATIVE_BASE_ROOT_OUT_RESISTANCE_EFFICIENCY` and
-    /// `ROOT_OUT_RESISTANCE_STACKING_FACTOR`.
     pub root_out: Result<[i64; 2], String>,
-    /// `NOperatives.CONTROL_TRADE_MAX_INFLUENCE`.
     pub control_trade_max: Result<i64, String>,
-    /// `NOperatives.DIPLOMATIC_PRESSURE_MAX_AI_ACCEPTANCE_SCORE_INCREASE`.
     pub diplomatic_max: Result<i64, String>,
-    /// `NCountry.MAX_PROPAGANDA_STABILITY_IMPACT` and `MAX_PROPAGANDA_WAR_SUPPORT_IMPACT`.
     pub propaganda_max: Result<[i64; 2], String>,
 }
 
@@ -145,7 +97,6 @@ impl IntelDefines {
                     "COUNTERINTELLIGENCE_ACTIVITY_LEVEL_THRESHOLD_VALUES",
                 )
                 .map_err(|error| error.to_string())?;
-            // A list of RGBA lists.
             let colors = d
                 .number_lists(
                     "NInterface",
@@ -212,21 +163,17 @@ impl IntelDefines {
         })
     }
 
-    /// The eye height the icons show strictly below ([`values::visible`]).
     pub fn cutoff(&self) -> f32 {
         viewer_foundation::map::camera::fixed5_camera_distance(self.cutoff)
     }
 }
 
-/// Everything static the layer reads, from the recorded content stack.
 pub struct IntelAssets {
     pub defines: Result<IntelDefines, String>,
     pub scripted: Option<Arc<Result<dashboard_text::scripted_text::ScriptedContent, String>>>,
     operations: Result<installed_content_core::intelligence::Intelligence, String>,
     phases: Result<installed_content_core::intelligence::OperationPhases, String>,
-    /// The nationality modifier's root-out effectiveness factor, fixed5.
     nationality: Result<i64, String>,
-    /// What the content refuses, once.
     pub warnings: Vec<String>,
 }
 
@@ -241,8 +188,6 @@ impl std::fmt::Debug for IntelAssets {
 }
 
 impl IntelAssets {
-    /// Reads the defines, the operation and phase definitions and the nationality modifier.
-    /// Each read that fails refuses only what reads it, named in [`Self::warnings`].
     pub fn load(layers: &ResolvedLayers, defines: &installed_content_core::defines::Defines) -> Self {
         let mut warnings = Vec::new();
         let defines = IntelDefines::read(defines).map_err(|error| error.to_string());
@@ -311,7 +256,6 @@ impl IntelAssets {
         }
     }
 
-    /// Synthetic assets: `defines`, operations, phases and the nationality factor as given.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test(
         defines: IntelDefines,
@@ -341,8 +285,6 @@ impl IntelAssets {
         }
     }
 
-    /// The sprites the code sets that no template names: each operation's map icon and each
-    /// phase's map sprite, as `registry` declares them.
     pub fn gui_assets(
         &self,
         registry: &installed_content_core::gui::native::resources::Registry,
@@ -395,14 +337,12 @@ impl IntelAssets {
     }
 }
 
-/// Where a state's container stands: a province's label anchor, or a world point.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Anchor {
     Province(u32),
     Centre([f32; 3]),
 }
 
-/// An entry's window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EntryKind {
     Shield,
@@ -422,41 +362,28 @@ impl EntryKind {
     }
 }
 
-/// What an entry stands for, which keeps its window from hour to hour.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EntryKey {
-    /// A friendly country, by canonical slot.
     Shield(u32),
-    /// An operative, by its roster's raw country and its handle.
     Operative(u32, u64),
-    /// An operation instance, by its handle.
     Operation(u64),
     Offer(u32, u32),
     More,
 }
 
-/// One write the entry's update makes on a child, by name.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Write {
-    /// Shown (the hide bit cleared, then Show) or hidden (Hide, then the hide bit set).
     Shown(&'static str, bool),
-    /// The child's sprite, replaced by name.
     Sprite(&'static str, Vec<u8>),
-    /// A leader portrait: the sprite, or the unknown leader's when no interface file declares
-    /// it.
     Portrait(&'static str, Vec<u8>),
-    /// A one-based frame.
     Frame(&'static str, i32),
     Text(&'static str, String),
     Color(&'static str, [f32; 4]),
-    /// A progress bar's value, in percent.
     Progress(&'static str, i32),
     Enabled(&'static str, bool),
-    /// A write whose operands the hour lacks: the child is hidden and counted with why.
     Withheld(&'static str, String),
 }
 
-/// One entry of a state's list: its window, identity, update and hover text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub kind: EntryKind,
@@ -465,7 +392,6 @@ pub struct Entry {
     pub tooltip: Arc<Tooltip>,
 }
 
-/// One state's container and its entries in list order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StateIcon {
     pub state: u32,
@@ -473,12 +399,10 @@ pub struct StateIcon {
     pub entries: Vec<Entry>,
 }
 
-/// What an hour's layer decided and what it could not.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntelReport {
     pub states: usize,
     pub entries: usize,
-    /// Why parts or entries are hidden, with counts.
     pub reasons: BTreeMap<String, usize>,
 }
 
@@ -487,7 +411,6 @@ impl IntelReport {
         *self.reasons.entry(why.into()).or_default() += 1;
     }
 
-    /// The report's diagnostics lines.
     pub fn warnings(&self) -> Vec<String> {
         self.reasons
             .iter()
@@ -496,17 +419,13 @@ impl IntelReport {
     }
 }
 
-/// An hour's icons for one viewing country.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IntelIcons {
     pub states: Vec<StateIcon>,
     pub report: IntelReport,
-    /// The branch, hour and canonical country they were built for.
     pub built_for: Option<(replay_data::BranchId, replay_data::Hour, u32)>,
 }
 
-/// The hour's icons for canonical country `ours`. `language` is the recording's client
-/// language, which stored names are drawn in.
 pub fn icons(
     assets: &IntelAssets,
     raids: &RaidAssets,
@@ -551,7 +470,6 @@ pub fn icons(
     out
 }
 
-/// A complete table's rows, or why the parts that read it are hidden.
 fn complete<'a, T: replay_data::rows::TableSchema>(
     frame: &'a DecodedFrame,
     name: &str,
@@ -561,7 +479,6 @@ fn complete<'a, T: replay_data::rows::TableSchema>(
         .map_err(|error| format!("{name} is not complete: {error}"))
 }
 
-/// The tables the layer reads, each complete or why not.
 struct Tables<'a> {
     missions: Result<&'a [OperativeMissionRow], String>,
     operations: Result<&'a [OperationRow], String>,
@@ -594,14 +511,10 @@ impl<'a> Tables<'a> {
     }
 }
 
-/// Country slots the hour names, collected before the names are read.
 type Slots = BTreeSet<u32>;
 
-/// Raw country references by canonical slot, in raw order.
 type RawBySlot = BTreeMap<u32, Vec<u32>>;
 
-/// An operation's state: in preparation, running with its elapsed and remaining whole days,
-/// or finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationState {
     Preparing,

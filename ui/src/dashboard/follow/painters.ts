@@ -1,14 +1,8 @@
-/** The moving parts of the widgets that follow the head, painted from a followed answer straight
- * into the page: a cell is written only when its text or width changed, and a value the answer
- * does not hold is a dash with its reason, never a zero. */
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
 import type { FollowedAnswer, FollowedRows } from './message.ts';
 import { barGlides } from '../../engine/glide.ts';
 
-/** A text a painter writes: its node and what it shows, kept here so a frame reads nothing back
- * from the page and writes only what changed, in place (replacing an element's text node costs
- * ten times as much in a frame). */
 export class TextCell {
   text: string;
   title: string;
@@ -28,7 +22,6 @@ export class TextCell {
   }
 }
 
-/** `element`'s text as a cell: it holds one text node from now on. */
 export function textCell(element: HTMLElement): TextCell {
   const only = element.firstChild;
   const node = only && only.nodeType === 3 && !only.nextSibling ? only as Text : document.createTextNode(element.textContent ?? '');
@@ -36,9 +29,6 @@ export function textCell(element: HTMLElement): TextCell {
   return new TextCell(node, element);
 }
 
-/** A full-width bar shown `width` (a percentage) long by a compositor scale: it glides without laying the page out. */
-/** A bar's length, written only when it changed: as its width, or (`scaled`) as a scale along x that the engine glides
- * there over `glide()` ms (`barGlides`), never by a CSS transition. */
 export class BarCell {
   width: string;
   private readonly style: { width: string; transform?: string };
@@ -69,7 +59,6 @@ function grouped(digits: string): string {
   return out;
 }
 
-/** `formatAmount` of a safe integer; null where the written value would not be one. */
 function formatSafe(signed: number, scale: number, digits: number): string | null {
   const negative = signed < 0;
   let value = negative ? -signed : signed;
@@ -91,22 +80,17 @@ function formatSafe(signed: number, scale: number, digits: number): string | nul
   return end > text.length - digits ? `${sign}${whole}.${text.slice(text.length - digits, end)}` : sign + whole;
 }
 
-/** `formatAmount` exactly, in numbers where the amount is a safe integer, so a frame of values
- * makes no big integers. */
 export function formatAmountFast(raw: bigint, scale: number, digits: number): string {
   if (raw > 9_007_199_254_740_991n || raw < -9_007_199_254_740_991n) return formatAmount(raw, scale, digits);
   return formatSafe(Number(raw), scale, digits) ?? formatAmount(raw, scale, digits);
 }
 
-/** Cell `at` written as `formatAmount` would, scaled by `times` first. */
 function amount(answer: FollowedRows, at: number, scale: number, digits: number, times: number): string {
   const value = cellNumber(answer, at);
   const safe = value !== null && Number.isSafeInteger(value * times) ? formatSafe(value * times, scale, digits) : null;
   return safe ?? formatAmount(cellValue(answer, at) * BigInt(times), scale, digits);
 }
 
-/** Each slot the amount of its row of column `column` (a series' answer has a row a tag, in the
- * order asked), multiplied by `times` and followed by `suffix`. */
 export function paintAmounts(answer: FollowedAnswer | undefined, slots: readonly TextCell[], scale: number, digits: number, times = 1, suffix = '', column = 0, first = 0): void {
   for (let index = 0; index < slots.length; index++) {
     const slot = slots[index]!, row = first + index;
@@ -119,16 +103,12 @@ export function paintAmounts(answer: FollowedAnswer | undefined, slots: readonly
   }
 }
 
-/** The country measure widget's value at the head for each tag: a declared series' raw amount of
- * `scale` decimals, written to `digits`. */
 export const paintMeasure = (answer: FollowedAnswer | undefined, slots: readonly TextCell[], scale: number, digits: number) =>
   paintAmounts(answer, slots, scale, digits);
 
-/** One row's value at the head, as [`paintMeasure`] writes it. */
 export const paintMeasureRow = (answer: FollowedAnswer | undefined, cell: TextCell, row: number, scale: number, digits: number) =>
   paintAmounts(answer, [cell], scale, digits, 1, '', 0, row);
 
-/** Row `row`'s raw value scaled to `scale` decimals: null where the answer holds none, undefined before an answer. */
 export function rowAmount(answer: FollowedAnswer | undefined, row: number, scale: number): number | null | undefined {
   if (!answer) return undefined;
   if (answer.kind === 'notRecorded' || row >= answer.rows || cellState(answer, row * answer.columns) !== CELL.value) return null;
@@ -136,14 +116,9 @@ export function rowAmount(answer: FollowedAnswer | undefined, row: number, scale
   return (value ?? Number(cellValue(answer, row * answer.columns))) / 10 ** scale;
 }
 
-/** The stability widget's values at the head (stability, war support): fixed-point fractions of
- * `scale` decimals written as percentages to `digits`. */
 export const paintStability = (answer: FollowedAnswer | undefined, slots: readonly TextCell[], scale: number, digits: number) =>
   paintAmounts(answer, slots, scale, digits, 100, '%');
 
-/** The army size widget's rows at the head: a top-N answer, greatest first, each row's bar as a
- * share of the greatest and its count. The rows themselves (which countries, in which order)
- * are the widget's structure, rendered by React from the answer's keys. */
 export function paintArmy(answer: FollowedAnswer | undefined, rows: readonly { bar: BarCell; value: TextCell }[], scale: number, digits: number, column = 0): void {
   const held = answer && answer.kind !== 'notRecorded' ? answer : null;
   let greatest = 0n;
@@ -166,9 +141,6 @@ export function paintArmy(answer: FollowedAnswer | undefined, rows: readonly { b
   }
 }
 
-/** A pushed panel's texts written in place under `root`, each into the element whose `data-paint`
- * is its key: a panel carries its moving numbers with its rows, and they are painted between the
- * renders its structure causes. An element whose key the texts lack is left as rendered. */
 export function paintTexts(root: Element | null, texts: ReadonlyMap<string, string>): void {
   if (!root) return;
   for (const element of root.querySelectorAll<HTMLElement>('[data-paint]')) {

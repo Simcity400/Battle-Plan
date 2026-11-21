@@ -1,42 +1,23 @@
-//! Eagerly loaded sprite animation records.
-//!
-//! The instance clock gates each record. The first two active records bind mask and
-//! animated textures to slots one through four and upload their constants, selecting
-//! the corresponding animated technique. [`Animated`] prepares CPU gating, textures
-//! and constants; the shader pipeline runs the installed effect program.
 
 use super::*;
 
-/// One record as loaded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationRecord {
     pub data: installed_content_core::gui::native::sprites::AnimationData,
-    /// `animationmaskfile`'s texture, or the null texture when it does not load.
     pub mask: usize,
-    /// `animationtexturefile`'s texture and its size.
     pub texture: usize,
     pub texture_size: [i32; 2],
 }
 
-/// An active record's draw inputs: its textures for slots `1 + 2k` and `2 + 2k`, and its five
-/// `float4` of `b1` in the game's order: `Rotation` (`cos, -sin, sin, cos`), `UVScale`,
-/// (`RotationOffset`, the stored texture scale), (`AnimationOffset`, `BlendFactor`, `Type`,
-/// the blend mode), (`ClampAnimation`, 0, 0, 0).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationDraw {
     pub mask: usize,
     pub texture: usize,
     pub constants: [[f32; 4]; 5],
-    /// Whether the game writes `AnimationOffset` and `Type` (floats 12 and 14): only for
-    /// animation types 1 to 4; any other type leaves them as the draw found them.
     pub typed: bool,
 }
 
 impl AnimationDraw {
-    /// The bytes of its 80-byte record the game writes: the first three `float4`s,
-    /// `BlendFactor` (52..56), the blend mode and `ClampAnimation`'s first float (60..68), and
-    /// for a typed record `AnimationOffset` (48..52) and `Type` (56..60). Bytes 68..80 are
-    /// never written.
     pub fn written(&self) -> Vec<std::ops::Range<u32>> {
         if self.typed {
             vec![0..48, 48..68]
@@ -46,11 +27,6 @@ impl AnimationDraw {
     }
 }
 
-/// A sprite drawn with its active records: the quad as [`PartKind::Sprite`] draws it (its
-/// masking texture still bound to slot 5, though the `ANIMATED` programs are compiled without
-/// `MASKING`), the effect
-/// file to compile with `ANIMATED` and `NUM_ANIMATIONS_n` (`n` the records' count), the state
-/// technique, and each record's inputs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Animated {
     pub sprite: Vec<u8>,
@@ -60,18 +36,13 @@ pub struct Animated {
     pub effect: String,
     pub technique: &'static str,
     pub records: Vec<AnimationDraw>,
-    /// Whether the selected sprite declares a masking texture.
     pub masked: bool,
 }
 
-/// `sat`: 0 below 0, else `MINSS(1, x)` (a NaN passes).
 fn saturate(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
-/// Gate an animation record using elapsed instance time, retained state,
-/// texture dimensions and blend factor. Unavailable reached state leaves
-/// the record undecided.
 pub fn record_draw(
     record: &AnimationRecord,
     t: f32,
@@ -81,7 +52,6 @@ pub fn record_draw(
 ) -> Option<AnimationDraw> {
     let data = &record.data;
     let bit = 1u32.wrapping_shl(state & 31);
-    // A trigger record runs from its start; one not started is inactive.
     let t = if data.trigger_frames != 0 {
         if start < 0.0 {
             return None;
@@ -94,7 +64,6 @@ pub fn record_draw(
         return None;
     }
     let time = data.time;
-    // A NaN passes (`!(t > T)`).
     if !data.looping && t > time {
         return None;
     }
@@ -114,11 +83,9 @@ pub fn record_draw(
             t
         }
     };
-    // `0x40490FDB`.
     let turn = 2.0 * std::f32::consts::PI;
     let (kind, offset, angle) = match data.kind {
         1 => {
-            // `0x3FB50481`.
             let k = (h / ah) * f32::from_bits(0x3FB5_0481);
             let s = 1.0 / ratio;
             let t = if data.looping && data.delay > 0.0 {
@@ -172,13 +139,6 @@ pub fn record_draw(
 }
 
 impl Walk<'_> {
-    /// The active records of the eagerly loaded sprite `sprite` for `element` in `state`, on the
-    /// instance's clock (its first draw and each trigger record's start): at most the first two
-    /// (`select_effect_program` stops at two). Without an instance the state is taken as never
-    /// changed since the first draw (a trigger record starts then when its trigger holds the
-    /// state, `inst.last` starting at 0). A clock no instance keeps, the records a caller has
-    /// not loaded, and a trigger record under a state the pointer changes (whose start no
-    /// instance records) are refused.
     pub(super) fn animation_records(
         &self,
         element: &Element,

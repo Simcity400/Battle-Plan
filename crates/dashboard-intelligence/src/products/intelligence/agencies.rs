@@ -1,6 +1,3 @@
-//! Agency comparison: every country's intelligence agency at an hour as the agency screen shows it
-//! (rows at an hour): its name, its defence line, its active and maximum operatives, and its
-//! acquired upgrades with their levels.
 
 use super::{Country, IDENTITY, Tags, agency_content::{self, AgencyContent}, branch, missing};
 use crate::{
@@ -28,35 +25,33 @@ pub struct AgencyComparison;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgencyComparisonParams {
     pub branch_id: String,
-    /// Countries whose agency is not created yet are listed too.
+    #[doc = " Countries whose agency is not created yet are listed too."]
     #[serde(default)]
     pub include_uncreated: bool,
 }
 
-/// One entry of an agency's acquired upgrades, in the stored order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeItem {
     pub ordinal: u32,
-    /// The branch's and the definition's recorded tokens: a token alone is ambiguous.
+    #[doc = " The branch's and the definition's recorded tokens: a token alone is ambiguous."]
     pub branch: Option<String>,
     pub token: Option<String>,
-    /// Signed, as stored.
+    #[doc = " Signed, as stored."]
     pub level: i32,
     pub name: Option<String>,
-    /// Why the name is not shown: the identity refused, a token not recorded, or the content.
+    #[doc = " Why the name is not shown: the identity refused, a token not recorded, or the content."]
     pub missing: Option<String>,
 }
 
-/// An agency's acquired upgrades at the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Upgrades {
-    /// Why the list cannot be summed: an entry not authenticated, or ordinals missing or repeated.
+    #[doc = " Why the list cannot be summed: an entry not authenticated, or ordinals missing or repeated."]
     pub unavailable: Option<String>,
-    /// The sum of each level at or above zero, as a decimal string; none where `unavailable`.
+    #[doc = " The sum of each level at or above zero, as a decimal string; none where `unavailable`."]
     pub nonnegative_level_sum: Option<String>,
     pub items: Vec<UpgradeItem>,
 }
@@ -67,18 +62,18 @@ pub struct Upgrades {
 pub struct Agency {
     pub country: Country,
     pub created: bool,
-    /// A created agency's stored name (even empty); the content's default for one not created.
+    #[doc = " A created agency's stored name (even empty); the content's default for one not created."]
     pub name: Option<String>,
     pub name_missing: Option<String>,
-    /// Fixed5, as recorded.
+    #[doc = " Fixed5, as recorded."]
     pub defense_raw: String,
-    /// The defence line as the agency screen shows it, and its number alone.
+    #[doc = " The defence line as the agency screen shows it, and its number alone."]
     pub defense_text: Option<String>,
     pub defense_value: Option<String>,
     pub active_count: i32,
-    /// The maximum the agency screen shows, as recorded.
+    #[doc = " The maximum the agency screen shows, as recorded."]
     pub maximum: i32,
-    /// None where acquired upgrades were not recorded at the hour (the reply says why).
+    #[doc = " None where acquired upgrades were not recorded at the hour (the reply says why)."]
     pub upgrades: Option<Upgrades>,
 }
 
@@ -86,9 +81,9 @@ pub struct Agency {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AgencyComparisonReply {
-    /// By country id.
+    #[doc = " By country id."]
     pub agencies: Vec<Agency>,
-    /// The defence column's label from the content; none where it cannot be read.
+    #[doc = " The defence column's label from the content; none where it cannot be read."]
     pub defense_label: Option<String>,
     pub upgrades_missing: Option<String>,
     pub missing: Option<String>,
@@ -97,8 +92,6 @@ pub struct AgencyComparisonReply {
 
 dashboard_base::reply_warnings!(AgencyComparisonReply);
 
-/// An agency's acquired upgrades from its rows, by the capture's rules: every entry kept, its
-/// identity refused by name, its level summed only where every entry is authenticated and ordered.
 pub fn upgrades(rows: &[&AgencyUpgradeLevelRow], tokens: &HashMap<u32, String>, content: Option<&AgencyContent>) -> Upgrades {
     let mut items: Vec<(UpgradeItem, bool)> = rows
         .iter()
@@ -127,12 +120,10 @@ pub fn upgrades(rows: &[&AgencyUpgradeLevelRow], tokens: &HashMap<u32, String>, 
     Upgrades { unavailable, nonnegative_level_sum: sum, items: items.into_iter().map(|(item, _)| item).collect() }
 }
 
-/// A created agency's stored name as plain text; none where its bytes are not text.
 fn stored_name(row: &IntelligenceAgencyRow) -> Option<String> {
     std::str::from_utf8(installed_content_core::parser::c_string(&row.name)).ok().and_then(|name| dashboard_base::catalogue::plain_text(name).ok())
 }
 
-/// The frame's agencies.
 pub fn agencies(frame: &DecodedFrame, include_uncreated: bool, content: Result<&AgencyContent, &str>, warnings: &mut Vec<String>) -> io::Result<(Vec<Agency>, Option<String>)> {
     let tags = Tags::read(frame)?;
     let rows = frame.complete::<tables::IntelligenceAgencies>()?;
@@ -178,7 +169,6 @@ pub fn agencies(frame: &DecodedFrame, include_uncreated: bool, content: Result<&
                 defense_text: text.ok(),
                 defense_value: value.ok(),
                 active_count: row.active_count,
-                // The recorded bits are shown as a signed count, as the screen does.
                 maximum: row.unknown_f0 as i32,
                 upgrades,
             }
@@ -250,7 +240,6 @@ impl AtHour for AgencyComparison {
         vec![TableId::IntelligenceAgencies, TableId::AgencyUpgradeLevels, TableId::LexicalTokens, IDENTITY[0], IDENTITY[1]]
     }
 
-    /// The agencies, their upgrades and the identity first; then the tokens the upgrades name.
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match step {
             0 => vec![Read::all(TableId::IntelligenceAgencies), Read::all(TableId::AgencyUpgradeLevels), Read::all(IDENTITY[0]), Read::all(IDENTITY[1])],

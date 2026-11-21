@@ -1,4 +1,3 @@
-//! Line order and conditions, apart from content and recorded-input joins.
 use super::Tooltip;
 use engine_native::{craid_instance::outcome_key, craid_instance::phase_key};
 use installed_content_localisation::localisation::Argument as Arg;
@@ -21,8 +20,6 @@ pub struct Raid {
     pub description: Text,
     pub outcome: i32,
     pub progress: Known<Option<i64>>,
-    /// Diagnostic execution result and accumulated reasons. Return the final
-    /// trigger step even if the unit or pool failed.
     pub gate: (Known<bool>, Lines),
     pub assigned_unit: Known<Option<Text>>,
     pub owner: Text,
@@ -34,8 +31,6 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
     let mut out = Tooltip::default();
     let plain = |key| localise(loc, key, &[]);
     if input.ended {
-        // Own and incoming raids share results; describe the plain location here,
-        // separately from active descriptions.
         out.line(
             false,
             0,
@@ -69,7 +64,6 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         return out;
     }
     if incoming {
-        // Append header, description, success and optional counterplay in order.
         out.line(
             false,
             0,
@@ -120,7 +114,6 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         }
         return out;
     }
-    // Store prompts separately from the main tooltip text.
     out.line(
         true,
         0,
@@ -147,8 +140,6 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
             }
         }),
     );
-    // Prepare reasons unconditionally in phase 1. Append execute reasons
-    // in phase 3 only when the diagnostic result is false.
     if input.phase == 1 || input.phase == 3 {
         match input.gate {
             (allowed, reasons) if input.phase == 1 || allowed == Ok(false) => {
@@ -210,9 +201,6 @@ pub struct Type {
     pub once: bool,
 }
 
-/// Cache only the candidate list; other facts come from the shown hour.
-/// Compact means anything except one target with exactly one type; it
-/// suppresses description and launch text.
 pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> Tooltip {
     let compact = targets.len() != 1 || targets[0].types.len() != 1;
     let mut out = Tooltip::default();
@@ -336,7 +324,6 @@ pub fn offers(loc: &Localisation, targets: Vec<Target>, quick: Known<bool>) -> T
                         localise(
                             loc,
                             TOOLTIP_POTENTIAL_TARGET_RAID_DESC,
-                            // Bind the name under TEXT.
                             &[("TEXT", Arg::Text(&desc))],
                         ),
                     ),

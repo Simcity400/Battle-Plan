@@ -1,7 +1,3 @@
-//! The sparse direct-war packet recordings through format 101 stored in
-//! `CountryCounterInputs.directed_wars`. Null and retired are false; a missing
-//! partial target is unknown. Current recordings store None and playback
-//! derives every cell from WarRelations ([`crate::directed_war_derive`]).
 
 use super::*;
 
@@ -25,13 +21,7 @@ pub struct DirectedWars {
     pub receiver_raw_id: i32,
     pub receiver_slot: u32,
     pub matrix_count: u32,
-    /// True ONLY after reviewed writer-complete candidate acquisition.
-    /// With false, every absent target is unknown. An admitted empty complete
-    /// vector proves false, while an empty observed vector proves nothing.
     pub complete_active_domain: bool,
-    /// Sorted unique exact direct observations: the slot-zero war pointer is not null and the
-    /// pointed relation's retired byte is zero. In a complete active-domain packet false cells may
-    /// be omitted.
     pub cells: Vec<WarCell>,
     pub refused_slots: Vec<u32>,
 }
@@ -39,9 +29,6 @@ pub struct DirectedWars {
 value_struct!(DirectedWars { sample_hour: PacketHour, receiver_raw_id: i32, receiver_slot: u32, matrix_count: u32, complete_active_domain: bool, cells: Vec<WarCell>, refused_slots: Vec<u32> });
 opaque_value!(Option<DirectedWars>);
 
-/// One admitted immutable owner/hour context. Borrowing the packet prevents
-/// reassignment of identity or domains while its binary-query API is in use.
-/// The caller admits once for this owner/hour, then shares the borrowed context.
 #[derive(Clone, Copy, Debug)]
 pub struct DirectedWarContext<'a> {
     packet: &'a DirectedWars,
@@ -49,8 +36,6 @@ pub struct DirectedWarContext<'a> {
 
 impl DirectedWars {
     fn validate(&self) -> Fact<()> {
-        // Use the full resolved canonical slot. The stored diplomacy matrix
-        // extent is a signed i32.
         if self.matrix_count == 0
             || self.matrix_count > i32::MAX as u32
             || self.receiver_slot >= self.matrix_count
@@ -74,8 +59,6 @@ impl DirectedWars {
         Ok(())
     }
 
-    /// Validate arrays ONCE, and associate this borrowed packet with the
-    /// current hour and the actual receiver identity from CountryLinks.
     pub fn admit(
         &self,
         hour: i32,
@@ -94,10 +77,6 @@ impl DirectedWars {
 }
 
 impl DirectedWarContext<'_> {
-    /// Direct attack predicate has NO positive-receiver veto. Raw receiver0
-    /// cells may instead reuse this hour's existing reverse_visibility.war.
-    /// Admission has already validated identity/domains; this is bounds plus
-    /// binary searches only, with no per-target whole-packet validation.
     pub fn pointer_active(&self, target_slot: u32) -> Fact<bool> {
         let p = self.packet;
         if target_slot >= p.matrix_count {
@@ -195,8 +174,6 @@ mod tests {
     #[test]
     fn stale_owner_and_malformed_domains_never_admit() {
         let p = packet();
-        // A host packet was read with its hourly row; only a historical
-        // stamp can name another hour.
         assert!(p.admit(99, 10, 1).is_ok());
         let stamped = DirectedWars {
             sample_hour: PacketHour::Stamped(100),

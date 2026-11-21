@@ -1,6 +1,5 @@
 import type { ChartTokens } from './tokens';
 
-/** One repeating tile for unknown values, shared by Canvas and HTML bars. */
 export function hatchTile(spacing: number) {
   const size = Math.max(2, spacing);
   return { size, lines: [[0, size, size, 0]] };
@@ -13,7 +12,6 @@ export function hatchStyle(tokens: ChartTokens) {
   return { backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(svg)}")`, backgroundSize: `${tile.size}px ${tile.size}px` };
 }
 
-/** All counted unknown parts share this wash and diagonal stroke. */
 export function fillHatched(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number,
   color: string, spacing = 4, lineWidth = 1.5): void {
   if (width <= 0 || height <= 0) return;

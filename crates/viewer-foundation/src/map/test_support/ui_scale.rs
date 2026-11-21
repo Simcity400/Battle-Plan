@@ -1,9 +1,7 @@
-//! Synthetic game display and monitor inputs.
 use installed_content_settings::{
     settings::Clamp, settings::Desktop, settings::Display, settings::DisplayMode,
 };
 
-/// The owner's borderless game on a 2560x1440 monitor at 125%.
 pub fn borderless() -> Display {
     borderless_at(1.0)
 }

@@ -19,8 +19,6 @@ pub struct VariantMissionStats {
     pub stats: Vec<VariantStatEntry>,
 }
 
-/// Each applied source, in native order; repeated sources remain repeated.
-/// The idea name is absent for a source without an idea (for example research).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct VariantNamedBonus {
@@ -60,27 +58,19 @@ pub struct VariantDesignState<S = VariantBonusSource> {
     pub terrain_attrition: Vec<i64>,
     pub niches: Vec<u32>,
     pub build_cost: i64,
-    /// Lightweight resource pool: entry index is its resource token, value is amount.
     pub build_resources: Vec<VariantStatEntry>,
     pub design_team: u64,
-    /// Whether the raw reference resolved when this design snapshot was read.
-    /// Save serialization omits a nonnull reference which no longer resolves.
     pub design_team_serialized: bool,
-    /// Stored organisation bonus marker; it does not enumerate the MIO traits.
     pub design_team_traits: i32,
     pub design_team_bonus: Vec<VariantStatEntry>,
     pub named_bonuses: Vec<u32>,
     pub bonus_sources: Vec<S>,
     pub named_sources: Vec<S>,
     pub mission_stats: Vec<VariantMissionStats>,
-    /// Cached non-legacy slots whose named runtime bonus operands have no
-    /// retained per-design snapshot. Empty when content and held sources suffice.
     pub unresolved_stats: Vec<VariantStatEntry>,
 }
 
 impl<S> VariantDesignState<S> {
-    /// Replace applied source payloads with a caller's immutable snapshot
-    /// references, moving every other held operand without copying it.
     pub fn with_sources<T>(
         self,
         bonus_sources: Vec<T>,

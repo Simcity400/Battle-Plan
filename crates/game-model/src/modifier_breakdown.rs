@@ -1,4 +1,3 @@
-/// Preorder node; child occurrences retain their native order, including aliases.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct Node {
@@ -7,8 +6,6 @@ pub struct Node {
     pub name: Vec<u8>,
 }
 
-/// A complete raw source node. Playback selects keys and applies the recorded
-/// definition metadata, including dynamic keys from installed content.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct SourceValue {

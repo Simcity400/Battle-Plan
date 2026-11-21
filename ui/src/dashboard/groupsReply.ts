@@ -9,13 +9,9 @@ const isName = (value: unknown) => isObject(value) && ((typeof value.name === 's
   || (value.name === null && typeof value.reason === 'string'));
 const listOf = (value: unknown, check: (item: unknown) => boolean) => Array.isArray(value) && value.every(check);
 
-/** Group comparison geometry depends on recorded membership, never display names. */
 export const groupNumbers = (reply: CountryGroupReply): CountryGroupReply => ({ ...reply, warnings: [],
   factions: reply.factions.map(faction => ({ ...faction, name: null, nameReason: null, names: [] })) });
 
-/** Checks a `country-groups` reply's shape: every membership, war, war start and
- * capitulation list, and the unobserved spans, so a reply from another version is
- * refused rather than read wrongly. */
 export function validateCountryGroupReply(data: unknown): CountryGroupReply {
   const reply = data as Record<string, unknown>;
   const unobserved = isObject(reply) ? reply.unobserved : null;
@@ -31,7 +27,6 @@ export function validateCountryGroupReply(data: unknown): CountryGroupReply {
     && listOf(reply.identityChanges, change => isObject(change) && isHour(change.hour) && typeof change.from === 'string' && typeof change.to === 'string')
     && validCountryIdentityHistories(reply.countryIdentities)
     && isObject(unobserved) && listOf(unobserved.humans, isSpan) && listOf(unobserved.factions, isSpan) && listOf(unobserved.wars, isSpan);
-  // A reply answered from the prepared prefix names the hours later keyframes stand for.
   if (!ok || 'approximate' in reply && !isOrderedSpans(reply.approximate)
     || 'eventsApproximate' in reply && !isOrderedSpans(reply.eventsApproximate)) throw new Error('The country groups reply is malformed.');
   return data as CountryGroupReply;

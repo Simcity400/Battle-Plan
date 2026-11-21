@@ -1,8 +1,5 @@
 import { usNumber } from '../charts/numberFormat.ts';
 
-// Keep this presentation conversion aligned with engine::cdate,
-// installed_content_save::GameDate::engine_hour and viewer::app::date. Game dates have
-// 365 days every year and display hours 01:00 through 24:00, not local time.
 export const HOUR_EPOCH = 43_800_000;
 const HOURS_PER_DAY = 24;
 const DAYS_PER_YEAR = 365;
@@ -22,7 +19,6 @@ export function isEngineHour(hour: number): boolean {
 }
 
 export function gameDate(engineHour: number): GameDate | null {
-  // The native viewer has no calendar interpretation before this epoch.
   if (!isEngineHour(engineHour) || engineHour < HOUR_EPOCH) return null;
   const elapsed = engineHour - HOUR_EPOCH;
   const days = Math.floor(elapsed / HOURS_PER_DAY);
@@ -67,8 +63,6 @@ export function monthAt(index: number): { year: number; month: number } {
   return { year, month: index - year * 12 + 1 };
 }
 
-// Month starts may fall just beyond i32 at the very first/last representable
-// date. Keep the grid arithmetic wide; only a validated hour is selectable.
 export function firstHourOfMonth(index: number): number {
   const { year, month } = monthAt(index);
   const days = year * DAYS_PER_YEAR + monthLengths.slice(0, month - 1).reduce<number>((sum, length) => sum + length, 0);

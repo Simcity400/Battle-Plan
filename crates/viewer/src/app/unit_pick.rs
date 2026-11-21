@@ -1,14 +1,3 @@
-//! The units behind the unit models a ray meets, by the game's picker and click rules.
-//!
-//! The game draws one model per province and map stack kind. Its picker walks the viewing
-//! country's own unit list, not every country's, and returns the first unit whose own province and
-//! stack kind name a model the ray meets, passing over divisions on a naval transfer with no
-//! ordinary route. A click's walk starts just after the one selected unit, so repeated clicks cycle;
-//! a click that meets no listed model falls to the ground beneath. A hover that meets none tests the
-//! units of the province under the pointer again, any country's. A click selects every division
-//! at the picked unit's location with the same first ordinary hop and logical owner that the
-//! viewing country may select. The list's order is recorded for the recording client's country
-//! only, so where it would decide between outcomes elsewhere, the outcome is withheld by name.
 use std::collections::HashMap;
 use viewer_foundation::unit_handle::Unit;
 use viewer_playback::layers::units::PickDivision;
@@ -32,18 +21,12 @@ pub(crate) const TASK_FORCE_START: &str =
 pub(crate) const PROVINCE_ORDER: &str =
     "unit model pick: the models the pointer meets in its province stand for more than one outcome, and the game takes the first in the province's unit order, which recordings do not hold";
 
-/// The order the game walks the viewing country's units in, as far as the recording holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UnitOrder<'a> {
-    /// The recording client's own divisions and railway guns, in the list's order, while the map
-    /// is viewed as the client's country.
     Recorded(&'a [u64]),
-    /// Not held for this map, with the reason shown where the order would decide.
     NotRecorded(&'static str),
 }
 
-/// The order for the map viewed as `ours`: the recorded `list` holds the recording client's
-/// units, which are `ours` only while `client` (the client's viewing country) is.
 pub(crate) fn order_for<'a>(list: Result<&'a [u64], &'static str>, client: Option<u32>, ours: Option<u32>) -> UnitOrder<'a> {
     match (list, client) {
         (Err(why), _) => UnitOrder::NotRecorded(why),
@@ -53,17 +36,12 @@ pub(crate) fn order_for<'a>(list: Result<&'a [u64], &'static str>, client: Optio
     }
 }
 
-/// The listed units a walk may pick, and the reason shown when they disagree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Walk {
     pub candidates: Vec<PickDivision>,
     pub unordered: &'static str,
 }
 
-/// The game's walk over the units behind the models met (`met`): only the viewing country's list
-/// counts, and a click starts just after `after`, the one selected unit. With the order recorded
-/// it is the one unit the game picks; without it, every listed unit the pick may be, less the
-/// selected one, which a click's walk tests last.
 pub(crate) fn walk(met: Vec<PickDivision>, order: UnitOrder<'_>, ours: Option<u32>, after: Option<Unit>) -> Result<Walk, &'static str> {
     if met.is_empty() {
         return Ok(Walk { candidates: met, unordered: ORDER_NOT_RECORDED });
@@ -103,9 +81,6 @@ pub(crate) fn walk(met: Vec<PickDivision>, order: UnitOrder<'_>, ours: Option<u3
     }
 }
 
-/// The divisions behind the models met, each a province and the stack kind its model shows.
-/// `fallback` marks the hover's second walk over the pointed province's own units, which tests
-/// transfers too and passes over only province 0; the first walk passes over provinces 0 and 1.
 pub(crate) fn behind(
     met: &[(u32, u32)],
     divisions: &HashMap<u32, Vec<PickDivision>>,
@@ -127,8 +102,6 @@ pub(crate) fn behind(
     Ok(found)
 }
 
-/// The one province every unit the pick may be stands in, whose location the hover describes;
-/// refused with `unordered` when they stand in more than one.
 pub(crate) fn location(
     candidates: &[PickDivision],
     divisions: &HashMap<u32, Vec<PickDivision>>,
@@ -143,15 +116,11 @@ fn province_of(id: u64, divisions: &HashMap<u32, Vec<PickDivision>>) -> Option<u
     divisions.iter().find(|(_, list)| list.iter().any(|division| division.id == id)).map(|(&province, _)| province)
 }
 
-/// The roster owner every unit behind the models shares, whom the cursor relates to; none when
-/// they differ or one is not linked.
 pub(crate) fn roster_owner(candidates: &[PickDivision]) -> Option<u32> {
     let first = candidates.first()?.roster?;
     candidates.iter().all(|candidate| candidate.roster == Some(first)).then_some(first)
 }
 
-/// What a click on the models does, settled: the picked unit as its group's one stand-in, whether
-/// it is selected and the viewing country's, and the stack mates the click adds, in location order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Click {
     pub province: u32,
@@ -161,10 +130,6 @@ pub(crate) struct Click {
     pub mates: Vec<u64>,
 }
 
-/// The click's outcome when the units the pick may be settle it: one stack-mate group (the same
-/// location, first hop and logical owner), a picked unit whose selection and owner the whole group
-/// shares, and mates whose hop and roster owner the hour records. Refused with `unordered` when
-/// which unit the walk takes would change it.
 pub(crate) fn click(
     candidates: &[PickDivision],
     divisions: &HashMap<u32, Vec<PickDivision>>,

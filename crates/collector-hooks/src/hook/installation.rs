@@ -1,5 +1,3 @@
-//! Attach-thread observations of real hook construction/publication attempts.
-//! Never entered or consulted by a native callback.
 use std::{borrow::Cow, cell::RefCell};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -35,7 +33,6 @@ pub struct Report {
     pub failure: Option<Failure>,
 }
 thread_local! { static CURRENT: RefCell<Option<Report>> = const { RefCell::new(None) }; }
-/// Captures calls through the production APIs, including failures their owner handles internally.
 pub fn capture<R>(work: impl FnOnce() -> R) -> (R, Report) {
     struct Restore(Option<Report>);
     impl Drop for Restore {
@@ -94,7 +91,6 @@ pub fn refused(kind: Kind, site: Option<usize>, cause: &str) {
         report.failure = Some(Failure { kind, site, cause });
     });
 }
-/// Same guarded read and predicate as the caller's sentinel guard; no retry or extra native read.
 pub fn sentinel<const N: usize>(
     memory: &impl engine_native::Memory,
     at: usize,
@@ -150,7 +146,6 @@ mod tests {
         let (_, report) = capture(|| {
             let _ = construct(17, || Err::<(), _>("relocation refused".into()));
             refused(Kind::Rollback, Some(17), "restore failed");
-            // A later successful disable cannot replace the first failed rollback.
             let _ = construct(17, || Ok(()));
         });
         let failure = report.failure.unwrap();

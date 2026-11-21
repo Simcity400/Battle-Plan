@@ -1,16 +1,3 @@
-//! Party history (family 23): one country's politics over a branch, for the ruling party widget:
-//! its parties, which party ruled under which name, its first country leader, and when elections
-//! were held, folded from the recording's own rows ([`read`]): per stretch and holder of the tag,
-//! the history of its `PoliticalParties` (all but popularity), `CountryAppearance` and `Politics`
-//! rows, read at the hours they change. Runs never bridge an hour not read or a change of holder.
-//!
-//! Parties are named by their ideology group token, joined to content for the group's name and
-//! colour, with the party indices each was read under: popularity is the declared
-//! `party-popularity` series of those parts, drawn from tiles, the engine's fixed-point percentage
-//! ([`POPULARITY_DECIMALS`] places). An election is dated to the hour `Politics.last_election`
-//! first shows a new date under the same holder. A party's name and a leader's character are read where their inputs change: a rename
-//! of the same character, or a naming input of another country changing alone, is not seen.
-
 use dashboard_base::products::Country;
 use super::{
     CountryParams, LoadContext, Product, check_reply_budget,
@@ -34,11 +21,8 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Decimal places of recorded popularity (a percentage).
 pub const POPULARITY_DECIMALS: u8 = 5;
 
-/// A party, by its ideology group token, and the parts of the `party-popularity` series it was
-/// read under: its index in its country's parties.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -47,7 +31,6 @@ pub struct PartySeries {
     pub parts: Vec<u32>,
 }
 
-/// A party ruling over consecutive read hours.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -55,48 +38,44 @@ pub struct RulingRun {
     pub token: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Follows an hour not read or another holder, so the change before it is not a change of
-    /// government.
+    #[doc = " Follows an hour not read or another holder, so the change before it is not a change of"]
+    #[doc = " government."]
     pub starts_segment: bool,
 }
 
-/// The ruling party's first country leader over consecutive read hours.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderRun {
-    /// The leader's ideology token; empty when the ruling party had no leader.
+    #[doc = " The leader's ideology token; empty when the ruling party had no leader."]
     pub ideology: String,
-    /// The leader's index in `people`; null when the party had no leader.
+    #[doc = " The leader's index in `people`; null when the party had no leader."]
     pub person: Option<u32>,
     pub first_hour: i32,
     pub last_hour: i32,
     pub starts_segment: bool,
 }
 
-/// The ruling party's naming over consecutive read hours.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PartyNameRun {
-    /// Index in `party_names`.
+    #[doc = " Index in `party_names`."]
     pub name: u32,
     pub first_hour: i32,
     pub last_hour: i32,
 }
 
-/// An ideology group as content names and colours it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeologyInfo {
     pub token: String,
     pub name: Option<String>,
-    /// sRGB bytes; null when the content's colour is refused (the warnings name why).
+    #[doc = " sRGB bytes; null when the content's colour is refused (the warnings name why)."]
     pub color: Option<[u8; 3]>,
 }
 
-/// A sub-ideology a recorded leader holds, as content names it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -105,17 +84,16 @@ pub struct IdeologyTypeInfo {
     pub name: Option<String>,
 }
 
-/// One recorded leader's name and portrait.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderArtwork {
     pub character: IdeaCharacter,
-    /// Null when the saved name needs runtime scope or nothing names the character.
+    #[doc = " Null when the saved name needs runtime scope or nothing names the character."]
     pub name: Option<String>,
-    /// An artwork URL; null when the portrait is not known.
+    #[doc = " An artwork URL; null when the portrait is not known."]
     pub portrait: Option<String>,
-    /// Why `portrait` is null.
+    #[doc = " Why `portrait` is null."]
     pub portrait_missing: Option<String>,
 }
 
@@ -125,41 +103,39 @@ pub struct LeaderArtwork {
 pub struct PartyHistoryReply {
     pub branch_id: String,
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub decimals: u8,
     pub parties: Vec<PartySeries>,
     pub ruling: Vec<RulingRun>,
-    /// The ruling party's leader; an hour without a run was not read.
+    #[doc = " The ruling party's leader; an hour without a run was not read."]
     pub leaders: Vec<LeaderRun>,
-    /// The ruling party's name; an hour without a run was not read.
+    #[doc = " The ruling party's name; an hour without a run was not read."]
     pub party_name_runs: Vec<PartyNameRun>,
-    /// Each name on `party_name_runs`; null when it cannot be known.
+    #[doc = " Each name on `party_name_runs`; null when it cannot be known."]
     pub party_names: Vec<Option<String>>,
-    /// Each character on `leaders`, named and pictured.
+    #[doc = " Each character on `leaders`, named and pictured."]
     pub people: Vec<LeaderArtwork>,
-    /// The leaders' sub-ideologies, named.
+    #[doc = " The leaders' sub-ideologies, named."]
     pub ideology_types: Vec<IdeologyTypeInfo>,
-    /// Hours an election was first seen held.
+    #[doc = " Hours an election was first seen held."]
     pub elections: Vec<i32>,
-    /// Every ideology group in content order, for colours, names and legend order.
+    #[doc = " Every ideology group in content order, for colours, names and legend order."]
     pub ideologies: Vec<IdeologyInfo>,
-    /// Hours the country's parties were not read: a change of government next to one is a gap,
-    /// not a change.
+    #[doc = " Hours the country's parties were not read: a change of government next to one is a gap,"]
+    #[doc = " not a change."]
     pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(PartyHistoryReply);
 
-/// A leader as read: the character and the portrait its holder records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Leader {
     pub character: IdeaCharacter,
     pub portrait: RecordedPortrait,
 }
 
-/// One country's party history, before content is joined.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Parties {
     pub parties: BTreeMap<String, PartySeries>,
@@ -167,17 +143,12 @@ pub(crate) struct Parties {
     pub leaders: Vec<LeaderRun>,
     pub people: Vec<Leader>,
     pub party_name_runs: Vec<PartyNameRun>,
-    /// Each name run's naming and the party tag's original tag (or why it is not known).
     pub namings: Vec<(PartyNaming, Result<String, String>)>,
     pub elections: Vec<i32>,
     pub unobserved: Vec<HourSpan>,
-    /// The last hour read and its holder.
     last: Option<(i32, (u32, u32))>,
-    /// The holder whose last election date is held, and the date.
     election: Option<((u32, u32), i64)>,
-    /// The naming inputs of the last name run (token, party tag, stored key), with its index.
     naming: Option<((String, u32, Option<String>), u32)>,
-    /// The leader inputs of the last leader run (character), with its person.
     leader: Option<(Option<u32>, Option<u32>)>,
 }
 
@@ -202,7 +173,6 @@ impl Columns {
     }
 }
 
-/// A history's keys' cells stepped through in hour order.
 struct Stepper<'a> {
     history: &'a History,
     at: Vec<usize>,
@@ -231,7 +201,6 @@ impl<'a> Stepper<'a> {
         self.now.iter().filter_map(|cells| *cells)
     }
 
-    /// The rows shown with their keys.
     fn keyed(&self) -> impl Iterator<Item = (u128, &'a [Cell])> + '_ {
         self.history.keys.iter().zip(&self.now).filter_map(|((key, _), cells)| Some((*key, (*cells)?)))
     }
@@ -262,9 +231,6 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     }
 }
 
-/// The hours `table` of run `run` holds rows read over `first..=last`: the hours it was read where
-/// its blocks name the hour each read was taken; where they name none (a table whose status runs
-/// carry no sample hour), the hours it was available, its rows as last read.
 pub(crate) fn observed_reads(recording: &replay::columnar_frames::Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
     let reads = lanes::available_reads(recording, run, table, first, last)?;
     if !reads.is_empty() {
@@ -277,7 +243,6 @@ pub(crate) fn observed_reads(recording: &replay::columnar_frames::Recording, run
         .collect())
 }
 
-/// `tag`'s party history over `query`'s timeline.
 pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Parties> {
     let columns = Columns::new()?;
     let mut parties = Parties::default();
@@ -406,8 +371,6 @@ impl Parties {
                 }
             }
         }
-        // The leader, when this hour's appearance row is read; named as an advisor is, and left
-        // unnamed rather than misnamed.
         if let (Some(ideology), Some(character), Some(cells)) = (looks.place(columns.look[0]), looks.place(columns.look[1]), looks.shown().next()) {
             let ideology = looks.text(cells[ideology]).map(|text| String::from_utf8_lossy(text).into_owned()).unwrap_or_default();
             let id = number(cells[character]).and_then(|id| u32::try_from(id).ok());
@@ -439,8 +402,6 @@ impl Parties {
                 }
             }
         }
-        // A gap under the same holder still dates an election, to the hour it is first seen; the
-        // first date seen is when the recording started, not an election.
         if !same {
             self.election = None;
         }
@@ -456,7 +417,6 @@ impl Parties {
     }
 }
 
-/// The party tag `raw`'s own tag and original tag at `hour`, as the game names a party by them.
 fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32), tag: &str) -> io::Result<(Option<String>, Result<String, String>)> {
     let reads = [replay::at::Read::all(TableId::Countries), replay::at::Read::all(TableId::CountryLinks), replay::at::Read::all(TableId::CountryAppearance)];
     let frame = cost::storage(|| replay::at::frame(query.replay.recording(), run, hour, &reads))?;
@@ -496,8 +456,6 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
     })
 }
 
-/// Character `id` as the leader views read it at `hour`: its script token and saved name, and the
-/// civilian large portrait its holder records.
 fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32) -> io::Result<Leader> {
     let recording = query.replay.recording();
     let key = [u128::from(id)];
@@ -520,12 +478,10 @@ fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32) -> io::Result<Lead
     Ok(Leader { character: IdeaCharacter { id, token, name }, portrait })
 }
 
-/// The chart's bytes of an ideology group's colour: each channel clamped to 0..1 and scaled.
 fn chart_color(color: [f32; 4]) -> [u8; 3] {
     [color[0], color[1], color[2]].map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
-/// Content ideology names and colours.
 fn ideology_infos(politics: &PoliticsContent, warnings: &mut Vec<String>) -> Vec<IdeologyInfo> {
     let (groups, gap) = politics.ideologies.groups();
     if let Some(gap) = gap {
@@ -542,11 +498,8 @@ fn ideology_infos(politics: &PoliticsContent, warnings: &mut Vec<String>) -> Vec
         .collect()
 }
 
-/// The reply to `params` from `parties`, joined with `politics` (names, colours and portraits)
-/// where the content loaded.
 pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &CountryParams, tag: &str, parties: &Parties, cancelled: &AtomicBool) -> io::Result<PartyHistoryReply> {
     let mut warnings = Vec::new();
-    // Without the game folders the chart still draws, in palette colours and with tokens for names.
     let politics = match politics {
         Ok(politics) => {
             warnings.extend(politics.warnings.iter().cloned());
@@ -585,7 +538,6 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
                 return None;
             };
             warnings.extend(fallback);
-            // Party names are plain.
             politics.localised(&key, View::Plain)
         })
         .collect();
@@ -595,7 +547,6 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
     if parties.parties.is_empty() {
         warnings.push(format!("{tag}: no recorded parties in this branch"));
     }
-    // Names left out for a localisation refusal, by reason and key.
     if let Some(politics) = politics {
         warnings.extend(politics.catalogue.refusal_lines());
     }
@@ -618,7 +569,6 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
     })
 }
 
-/// The last country read, kept for the next request of it.
 #[derive(Default)]
 struct Kept(Option<(u64, Country, Arc<Parties>)>);
 

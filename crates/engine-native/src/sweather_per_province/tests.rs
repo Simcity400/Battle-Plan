@@ -41,7 +41,6 @@ fn snow_keeps_its_native_word_and_read_faults_are_named() {
         (rows[0].temperature, rows[0].raw_mud),
         (-9_007_199_254_740_993, 7)
     );
-    // The pass's other words: committed drift, staged temperature, working drift.
     assert_eq!(
         (
             rows[0].drift,
@@ -109,8 +108,6 @@ fn temperature_and_raw_mud_failures_withhold_the_row_without_narrowing() {
     }
 }
 
-/// A batched gather crosses the guarded boundary once per 64 rows and
-/// copies only the declared spans.
 #[test]
 fn a_dense_census_costs_one_guarded_gather_per_batch_not_one_per_row() {
     use crate::read_census::ReadCensus;
@@ -253,9 +250,6 @@ fn display_bytes_join_by_slot_and_a_foreign_count_refuses() {
     assert!(fill_display(&memory, unreadable, 3, &mut rows).is_err());
 }
 
-/// A static modifier list reads each entry's days and its definition's script name in list
-/// order, inline and heap names alike; a definition without the static modifier vtable, an
-/// unreadable entry or a malformed header refuses the list.
 #[test]
 fn static_modifier_lists_keep_order_days_and_names() {
     const VTABLE: u64 = 0x7777;
@@ -327,7 +321,6 @@ fn static_modifier_lists_keep_order_days_and_names() {
         ),
         Err("static modifier list unreadable")
     );
-    // A count past the capacity is malformed.
     header[8..12].copy_from_slice(&1_u32.to_le_bytes());
     assert_eq!(static_modifier_list(header), None);
 }

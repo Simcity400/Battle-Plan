@@ -17,8 +17,6 @@ test('a dated name is loading only while its read is going, and unavailable once
 });
 
 test('holders reusing a tag inside one look sampling interval are each read at their own hour', () => {
-  // The branch starts at 0, the tag passes to another country at 24 and the moment shown is 48:
-  // a monthly sample would read both at 0, the earlier holder's hour.
   const branch = { firstHour: 0, lastHour: 2000, gaps: [] };
   assert.deepEqual(lookPlan(branch, ['mod:Ω'], 48).wanted, [{ tag: 'mod:Ω', hour: 0 }], 'what sampling would read');
   const holders = [{ key: 'earlier', tag: 'mod:Ω', hour: 10 }, { key: 'later', tag: 'mod:Ω', hour: 48.5 }];

@@ -1,4 +1,3 @@
-//! Opt-in playback measurement (`BATTLE_PLAN_PERF_LOG=<file>`); each map writes `<file>.map.<map>.jsonl`.
 
 use serde_json::{Value, json};
 use std::{
@@ -15,22 +14,16 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-/// One frame at 95 Hz.
 const BUDGET_MS: f64 = 1000.0 / 95.0;
-/// Bytes waiting for the writer at most; past it records are dropped and counted.
 const PENDING_BYTES: usize = 32 << 20;
-/// How long an exit waits for the page's last records.
 const PAGE_WAIT: Duration = Duration::from_secs(5);
-/// How long a stop waits for every viewer's file to pass its end.
 const MAP_WAIT: Duration = Duration::from_secs(2);
 
 enum Message {
-    /// Lines, and how many of the pending bytes they hold.
     Lines(String, usize),
     Flush(Sender<()>),
 }
 
-/// Records dropped, as one loss record tells them.
 #[derive(Default)]
 struct Loss {
     count: u64,
@@ -56,12 +49,10 @@ impl Loss {
     }
 }
 
-/// What waits for the writer, and what was dropped since its last loss records.
 #[derive(Default)]
 struct Backlog {
     pending: AtomicUsize,
     lost: AtomicBool,
-    /// The host's own drops, and the page's loss records among them.
     loss: Mutex<(Loss, Loss)>,
 }
 
@@ -69,7 +60,6 @@ impl Backlog {
     fn dropped(&self, lines: &str) {
         let (mut host, mut page) = (Loss::default(), Loss::default());
         for line in lines.lines() {
-            // A dropped page loss record still owes what it counted.
             if line.contains(r#""t":"lost""#)
                 && let Ok(record) = serde_json::from_str::<Value>(line)
             {
@@ -91,7 +81,6 @@ impl Backlog {
     }
 }
 
-/// Records go to a writer thread, so no service or page thread waits on the disk.
 pub struct PerfLog {
     path: PathBuf,
     map_prefix: PathBuf,
@@ -107,7 +96,6 @@ pub fn log() -> Option<&'static PerfLog> {
     LOG.get_or_init(open).as_ref()
 }
 
-/// Milliseconds since the Unix epoch, the clock every record shares.
 fn epoch_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -126,7 +114,6 @@ fn open() -> Option<PerfLog> {
             return None;
         }
     };
-    // A previous run's viewer files are not this run's.
     for stale in map_files(&map_prefix) {
         let _ = std::fs::remove_file(stale);
     }
@@ -178,7 +165,6 @@ fn write_records(mut out: BufWriter<File>, messages: Receiver<Message>, backlog:
             }
         }
         write_loss(&mut out, backlog);
-        // The process may end at any moment.
         let _ = out.flush();
     }
 }
@@ -199,14 +185,12 @@ fn write_loss(out: &mut impl Write, backlog: &Backlog) {
     }
 }
 
-/// A record's `at`, read without parsing the line.
 fn at_of(line: &str) -> Option<f64> {
     let rest = &line[line.find(r#""at":"#)? + 5..];
     let end = rest.find([',', '}']).unwrap_or(rest.len());
     rest[..end].trim().parse().ok()
 }
 
-/// Starts recording when the switch is set; before any data service exists.
 pub fn init() {
     if log().is_none() {
         return;
@@ -232,12 +216,10 @@ pub fn init() {
     }));
 }
 
-/// The prefix each map names its frame file from.
 pub fn map_prefix() -> Option<&'static Path> {
     log().map(|log| log.map_prefix.as_path())
 }
 
-/// The maps' frame files, `<prefix>.<map>.jsonl`.
 fn map_files(prefix: &Path) -> Vec<PathBuf> {
     let Some(name) = prefix.file_name().and_then(|name| name.to_str()) else {
         return Vec::new();
@@ -263,7 +245,6 @@ fn map_files(prefix: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The viewer wrote everything up to `end`: a later record or its closing one is on disk.
 fn map_drained(path: &Path, end: f64) -> bool {
     let Ok(mut file) = File::open(path) else {
         return false;
@@ -297,7 +278,6 @@ fn wait_for_maps(files: &[PathBuf], end: f64) {
 }
 
 impl PerfLog {
-    /// Queues newline-separated records, or drops and counts them while the writer is too far behind.
     fn write(&self, lines: String) {
         let counted = lines.len() + 1;
         if self.backlog.pending.fetch_add(counted, Ordering::AcqRel) + counted > PENDING_BYTES {
@@ -310,7 +290,6 @@ impl PerfLog {
         }
     }
 
-    /// Waits until every record queued so far is on disk.
     fn flush(&self) {
         let (done, written) = mpsc::channel();
         if self.queue.send(Message::Flush(done)).is_ok() {
@@ -318,7 +297,6 @@ impl PerfLog {
         }
     }
 
-    /// Asks the page to stop recording and write what it holds: whether it did, `None` without a page.
     fn finish_page(&self, app: &AppHandle) -> Option<bool> {
         let window = app.get_webview_window("main")?;
         let (done, finished) = mpsc::channel();
@@ -329,8 +307,6 @@ impl PerfLog {
         Some(finished.recv_timeout(PAGE_WAIT).unwrap_or(false))
     }
 
-    /// Summarizes from the last `start` to `end`, else the last `stop`, else now. The page has
-    /// written what it holds; `wait_maps` waits for live viewers to write theirs.
     fn summarize(&self, end: Option<f64>, wait_maps: bool, page_flushed: Option<bool>) -> Result<Value, String> {
         self.flush();
         let records = read(&self.path)?;
@@ -397,7 +373,6 @@ fn values(records: &[&Value], field: &str) -> Vec<f64> {
     records.iter().filter_map(|record| number(record, field)).collect()
 }
 
-/// Nearest-rank percentiles; no values gives only the count.
 fn stats(mut values: Vec<f64>) -> Value {
     if values.is_empty() {
         return json!({ "count": 0 });
@@ -415,7 +390,6 @@ fn stats(mut values: Vec<f64>) -> Value {
     })
 }
 
-/// [`stats`] with the share of values over the 95 Hz budget.
 fn frame_stats(values: Vec<f64>) -> Value {
     let over = values.iter().filter(|&&value| value > BUDGET_MS).count();
     let count = values.len();
@@ -426,8 +400,6 @@ fn frame_stats(values: Vec<f64>) -> Value {
     result
 }
 
-/// Page frames that came a refresh or more late, by whether the main thread had rendered the
-/// frame before them within a refresh: if it had, the frame was lost after the main thread.
 fn missed_frames(frames: &[&Value]) -> Value {
     let (mut main_thread, mut after_main, mut unmeasured) = (0u64, 0u64, 0u64);
     for record in frames {
@@ -438,7 +410,6 @@ fn missed_frames(frames: &[&Value]) -> Value {
             None => unmeasured += 1,
             Some(main) => match main.as_f64() {
                 Some(main) if main <= BUDGET_MS => after_main += 1,
-                // Null: the main thread had not rendered it by the next frame.
                 _ => main_thread += 1,
             },
         }
@@ -451,8 +422,6 @@ fn missed_frames(frames: &[&Value]) -> Value {
     })
 }
 
-/// Each widget's work counted in the page's frame records while playing (renders, hours, holds,
-/// reads and replies), in all and per second of playing, named as the page last named it.
 fn widget_work(all: &[Value], end: f64, frames: &[&Value], playing_seconds: Option<f64>) -> Value {
     let mut names: HashMap<&str, &Value> = HashMap::new();
     for record in all.iter().filter(|record| kind(record) == "widget") {
@@ -504,8 +473,6 @@ fn widget_work(all: &[Value], end: f64, frames: &[&Value], playing_seconds: Opti
         .into()
 }
 
-/// Page frames by whether React committed since the frame before, each with how many came a
-/// refresh or more late.
 fn commit_frames(frames: &[&Value]) -> Value {
     let (mut with, mut without) = ([0u64; 2], [0u64; 2]);
     let mut commits = 0u64;
@@ -526,8 +493,6 @@ fn commit_frames(frames: &[&Value]) -> Value {
     })
 }
 
-/// Commits by the part of the page that rendered in them (`zones` in the page's frame records,
-/// a commit counted once for each part), in all and per second of playing.
 fn zone_commits(frames: &[&Value], playing_seconds: Option<f64>) -> Value {
     let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
     for record in frames {
@@ -567,16 +532,13 @@ fn sorted<'a>(records: impl Iterator<Item = &'a Value>) -> Vec<&'a Value> {
     records
 }
 
-/// Wall time the clock played at one speed, with no seek inside, in the window.
 struct Interval {
     from: f64,
     to: f64,
     speed: f64,
-    /// The clock's sequence at its last seek: a frame of an earlier one shows no part of this playback.
     sequence: Option<f64>,
 }
 
-/// Playing intervals from the clock's records: play, pause, seek and speed each bound one.
 fn intervals(ticks: &[&Value], window: &Window) -> Vec<Interval> {
     let mut found = Vec::new();
     let mut open: Option<Interval> = None;
@@ -611,7 +573,6 @@ fn intervals(ticks: &[&Value], window: &Window) -> Vec<Interval> {
         .collect()
 }
 
-/// When a dashboard map was visible and following the clock, from the page's view lists.
 fn active_spans(lists: &[&Value], view: &str) -> Vec<(f64, f64)> {
     let mut spans = Vec::new();
     let mut since = None;
@@ -637,11 +598,9 @@ fn active_spans(lists: &[&Value], view: &str) -> Vec<(f64, f64)> {
     spans
 }
 
-/// One acknowledgement: what the map presents from then on, `None` when nothing.
 struct Ack {
     at: f64,
     shown: Option<f64>,
-    /// The sequence of the target it presents.
     sequence: Option<f64>,
 }
 
@@ -661,9 +620,6 @@ struct Achieved {
     longest_stall_ms: f64,
 }
 
-/// What a map presented over each playing interval it was active in, from the frame shown at
-/// each interval's start to the frame shown at its end. Only frames of the interval's seek, shown
-/// since the map last became active, count.
 fn achieved(acks: &[Ack], intervals: &[Interval], spans: &[(f64, f64)]) -> Achieved {
     let mut result = Achieved::default();
     for interval in intervals {
@@ -681,7 +637,6 @@ fn achieved(acks: &[Ack], intervals: &[Interval], spans: &[(f64, f64)]) -> Achie
                         .is_some_and(|(seeked, shows)| shows >= seeked)
             };
             let before = acks.partition_point(|ack| ack.at <= from);
-            // (segment start time, its shown position, last ack time, last shown position)
             let mut segment: Option<(f64, f64, f64, f64)> = before
                 .checked_sub(1)
                 .map(|last| &acks[last])
@@ -697,7 +652,6 @@ fn achieved(acks: &[Ack], intervals: &[Interval], spans: &[(f64, f64)]) -> Achie
             };
             for ack in acks[before..].iter().take_while(|ack| ack.at <= to) {
                 match (ack.shown, segment) {
-                    // Only an advance of the shown position ends a stall.
                     (Some(shown), Some((start, first, last_at, last))) if shown != last => {
                         result.longest_stall_ms = result.longest_stall_ms.max(ack.at - last_at);
                         segment = Some((start, first, ack.at, shown));
@@ -730,7 +684,6 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
             .filter(move |record| kind(record) == name)
     };
 
-    // Losses that overlap the window: what they dropped could have been inside it.
     let mut losses: BTreeMap<String, Loss> = BTreeMap::new();
     for record in all.iter().chain(map).filter(|record| kind(record) == "lost") {
         let (from, to) = (
@@ -749,8 +702,6 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
                 );
         }
     }
-    // Page or host records lost in the window leave the clock and map states incomplete.
-    // A page that never answered its final flush may still hold records of the window.
     let page_complete =
         !losses.contains_key("ui") && !losses.contains_key("host") && page_flushed != Some(false);
 
@@ -767,7 +718,6 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
         .copied()
         .filter(|record| record["playing"].as_bool() == Some(true))
         .collect();
-    // Capabilities are recorded once, when the page starts, before any `start`.
     let page = all
         .iter()
         .rev()
@@ -837,7 +787,6 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
                 "covered_seconds": page_complete.then_some(measured.covered_ms / 1000.0),
                 "coverage": (page_complete && measured.playing_ms > 0.0)
                     .then(|| measured.covered_ms / measured.playing_ms),
-                // Over the whole playing time: uncovered time counts as no progress.
                 "hours_per_second": covered.then(|| measured.hours * 1000.0 / measured.playing_ms),
                 "clock_hours_per_second": covered.then(|| measured.clock_hours * 1000.0 / measured.covered_ms),
                 "longest_stall_ms": covered.then_some(measured.longest_stall_ms),
@@ -847,7 +796,6 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
         })
         .collect();
 
-    // One entry per map: the main map and any pop-out.
     let mut by_map: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
     for record in map {
         by_map.entry(record["map"].to_string()).or_default().push(record);
@@ -1036,7 +984,6 @@ pub fn perf_enabled() -> bool {
     log().is_some()
 }
 
-/// Appends the page's newline-separated JSON records.
 #[tauri::command]
 pub fn perf_write(lines: String) -> Result<(), String> {
     let log = log().ok_or("Measurement is off")?;
@@ -1048,7 +995,6 @@ pub fn perf_write(lines: String) -> Result<(), String> {
     Ok(())
 }
 
-/// The page wrote its last records, as an exit asked; `complete` when it lost none doing so.
 #[tauri::command]
 pub fn perf_finished(complete: bool) {
     if let Some(log) = log()
@@ -1062,7 +1008,6 @@ pub fn perf_finished(complete: bool) {
     }
 }
 
-/// The page wrote everything up to its `stop`; viewers and the host catch up before the summary.
 #[tauri::command]
 pub async fn perf_stop() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -1074,8 +1019,6 @@ pub async fn perf_stop() -> Result<Value, String> {
     .map_err(|error| error.to_string())?
 }
 
-/// Ends a measured run once its service and viewers have ended: the page writes what it holds,
-/// then the summary. Nothing when measurement is off or the summary is written.
 pub fn finish(app: &AppHandle) {
     let Some(log) = log() else {
         return;
@@ -1086,7 +1029,6 @@ pub fn finish(app: &AppHandle) {
     }
 }
 
-/// Summarizes at exit what no stop has, when the ordered exit did not run.
 pub fn close() {
     if let Some(log) = LOG.get().and_then(Option::as_ref)
         && !log.summarized.swap(true, Ordering::AcqRel)

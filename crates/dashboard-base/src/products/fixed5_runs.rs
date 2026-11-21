@@ -1,5 +1,3 @@
-//! Exact hourly fixed5 histories. Only changes occupy sparse delta pairs;
-//! equal rereads extend the observed span without additional payload.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -14,16 +12,12 @@ pub struct NativeFixed5Run {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub raw: Option<String>,
-    /// Space-separated `hours_since_change:delta` pairs, first from first_hour.
-    /// Decimal deltas multiply by delta_scale (fixed5 scale when omitted);
-    /// `r` prefixes an unscaled raw delta. Gaps are positive, deltas nonzero.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deltas: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub delta_scale: Option<String>,
-    /// Product-owned shared reason index, never an implicit zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub missing: Option<usize>,
@@ -66,7 +60,6 @@ pub struct Fixed5State {
     changed_at: i32,
 }
 
-/// Append an observed read without rescanning the existing changes.
 pub fn push_fixed5(
     runs: &mut Vec<NativeFixed5Run>,
     state: &mut Fixed5State,

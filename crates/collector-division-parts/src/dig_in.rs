@@ -1,14 +1,3 @@
-//! DivisionStatus.dig_in_factor: the counter's dig-in duration factor over the
-//! shared authenticated division census. Each division's factor is its
-//! selected commander's unit modifier block's entrenchment term, selected
-//! through the dig-in factor's block lookup
-//! ([`carmy::counter_dig_in_factor`]); a failed read stays that
-//! division's refusal. The pass reads what a group's divisions share once
-//! ([`carmy::DigInMemo`]): the group's leader and HQ selection inputs and each
-//! commander block's term, so a division under an already read commander
-//! costs no native read unless its own primary root decides the block. Spool
-//! projection reads only owned rows. A block's term is carried under its commander's
-//! retreat-ban certificate: that family's writers are the blocks' only runtime writers.
 
 use crate::table_capture::{Arena, grow_vec};
 use collector_observers::retreat_ban_changes;
@@ -18,21 +7,14 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Default)]
 struct Row {
     division: u64,
-    /// The factor and the commander block its selection chose
-    /// (`carmy::COMMANDER_BLOCK_*`).
     factor: Option<Result<(i64, u8), &'static str>>,
 }
 
-/// Each block's term by leader and accumulator, with the certificate taken before its read; a
-/// freed leader's address can later hold another leader's accumulator.
 type Terms = HashMap<(usize, usize), ((u64, u64), i64)>;
 
 pub struct Captured {
     rows: Arena<Row>,
-    /// Sized off the hourly path for the census's divisions; a smaller memo
-    /// only reads afresh what it cannot keep.
     memo: carmy::DigInMemo,
-    /// The terms the latest complete capture read or carried.
     held: Terms,
     next: Terms,
     blocks: [u64; 3],
@@ -84,10 +66,6 @@ impl Captured {
         self.rows.reset();
     }
 
-    /// Every division of a complete census, reading what its group or its
-    /// commander shares with an earlier division only once; an incomplete
-    /// census or a failed row allocation leaves every division without a
-    /// factor.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -119,7 +97,6 @@ impl Captured {
         self.next.clear();
         let (held, next, blocks) = (&self.held, &mut self.next, &mut self.blocks);
         for (index, seed) in seeds[..outcome.len()].iter().enumerate() {
-            // A block's accumulator lies in the leader the census selected it from.
             let leader = seed
                 .selected
                 .and_then(|selected| selected.leader)
@@ -162,16 +139,10 @@ impl Captured {
         std::mem::swap(&mut self.held, &mut self.next);
     }
 
-    /// The latest capture's commander blocks carried, read under a certificate, and read without one.
     pub fn blocks(&self) -> [u64; 3] {
         self.blocks
     }
 
-    /// Cut a capture over the whole census to what a capture over the
-    /// status pass's `outcome` publishes ([`Self::capture`]): the same
-    /// leading rows when it is a complete census no longer than the rows
-    /// read, otherwise none. Each row's factor is its own division's reads,
-    /// so the rows a longer capture adds change none before them.
     pub fn settle(&mut self, outcome: Outcome) {
         self.rows.required = outcome.len();
         self.rows.len = if matches!(outcome, Outcome::Rows { .. }) && outcome.len() <= self.rows.len
@@ -182,14 +153,10 @@ impl Captured {
         };
     }
 
-    /// The factor of the division at this census index; None is a refusal.
     pub fn factor(&self, division: u64, index: usize) -> Option<i64> {
         self.selection(division, index).map(|(factor, _)| factor)
     }
 
-    /// The commander block the division's movement speed reads
-    /// (`carmy::COMMANDER_BLOCK_*`), decided by the factor's selection; None is a
-    /// refusal.
     pub fn commander_block(&self, division: u64, index: usize) -> Option<u8> {
         self.selection(division, index).map(|(_, block)| block)
     }
@@ -218,8 +185,6 @@ mod tests {
 
     #[test]
     fn each_division_keeps_its_own_factor_or_refusal() {
-        // A null orders group has no selected commander: the native factor is
-        // 100000 without an accumulator. An unread group stays a refusal.
         let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &[],
@@ -233,12 +198,9 @@ mod tests {
         );
         assert_eq!(captured.factor(9, 0), Some(100_000));
         assert_eq!(captured.factor(11, 1), None);
-        // A census index names one division; another handle is refused.
         assert_eq!(captured.factor(11, 0), None);
     }
 
-    /// Two groups under two commanders, read as `counter_dig_in_factor`
-    /// reads them; every read address is recorded.
     struct Commanders {
         bytes: Vec<u8>,
         reads: std::cell::RefCell<Vec<usize>>,
@@ -337,10 +299,6 @@ mod tests {
         }
     }
 
-    /// Divisions under one commander read their group, its leader and the
-    /// leader's entrenchment term once a pass, each division keeping exactly
-    /// the factor or refusal its own reads give, and the next pass reads
-    /// them again.
     #[test]
     fn a_group_and_its_commander_are_read_once_for_all_their_divisions() {
         let mut seeds = Vec::new();
@@ -366,7 +324,6 @@ mod tests {
             [Ok(-50_000), Ok(-50_000), Ok(102_500)],
             "the fixture selects each commander's term"
         );
-        // What one division's own factor reads of its commander's block.
         memory.reads.borrow_mut().clear();
         let _ = carmy::counter_dig_in_factor(&memory, 0, &seeds[0]);
         let block = memory.count(MODIFIERS[0]);
@@ -387,8 +344,6 @@ mod tests {
                     expected.ok(),
                     "{index}"
                 );
-                // A division with a commander keeps the block its selection chose; one
-                // without a group or leader none.
                 let block = captured.commander_block(seed.division, index);
                 match seed.orders_group {
                     Some(0) => assert_eq!(block, Some(carmy::COMMANDER_BLOCK_NONE)),
@@ -411,9 +366,6 @@ mod tests {
         }
     }
 
-    /// A capture over the whole census, cut to a status outcome, publishes
-    /// exactly what a capture over that outcome does: rows, their factors
-    /// and refusals, the published length and the demanded length.
     #[test]
     fn a_settled_census_capture_publishes_what_the_status_rows_capture_does() {
         let mut seeds = Vec::new();
@@ -468,7 +420,6 @@ mod tests {
         }
     }
 
-    /// Commander certificates the test sets: `(1, sequence)` for a listed commander.
     struct Certificates(std::cell::RefCell<HashMap<usize, u64>>);
     impl retreat_ban_changes::Changes for Certificates {
         fn sequence(&self, leader: usize) -> Option<(u64, u64)> {
@@ -476,7 +427,6 @@ mod tests {
         }
     }
 
-    /// A division under commander `index`, whose ordinary block the census selected.
     fn commanded(division: u64, index: usize) -> carmy::DivisionSeed {
         use engine_native::carmy_leader;
         let leader = LEADERS[index];
@@ -499,7 +449,6 @@ mod tests {
         }
     }
 
-    /// A quiet hour reads no block, even after memory changed; touched or uncertified ones are read.
     #[test]
     fn a_quiet_commander_block_is_carried_and_a_touched_one_read() {
         let seeds = [commanded(1, 0), commanded(2, 0), commanded(3, 1)];
@@ -541,7 +490,6 @@ mod tests {
             [Some(90_000), Some(90_000), Some(102_500)]
         );
 
-        // Nothing read without a certificate is held.
         let uncertified = Certificates(Default::default());
         captured.capture_with(&memory, 0, &seeds, outcome, &uncertified);
         assert_eq!(captured.blocks(), [0, 0, 2]);
@@ -553,8 +501,6 @@ mod tests {
         assert_eq!(captured.blocks(), [0, 2, 0]);
     }
 
-    /// A held term serves only its own leader: another leader whose block lies at the same address
-    /// (a freed leader's memory reused) is read.
     #[test]
     fn a_held_term_serves_only_its_own_leader() {
         let certificates = Certificates(std::cell::RefCell::new(HashMap::from([

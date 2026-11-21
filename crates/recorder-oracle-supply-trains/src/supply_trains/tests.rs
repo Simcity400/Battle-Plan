@@ -48,9 +48,6 @@ fn supply_compares_province_census_and_routes_despite_membership_exclusions() {
     nodes(&frame, &membership, &mut report).unwrap();
     assert_eq!(report.compared_tables["SupplyNodes"], 3);
     assert!(report.membership_skips.is_empty());
-    // An id outside the map is the game's null province, which
-    // the walk records as stored: a named limitation, never a difference,
-    // for a node's province (zero included) and for a parent.
     let null = |report: &Report| {
         report
             .limitations
@@ -71,7 +68,6 @@ fn supply_compares_province_census_and_routes_despite_membership_exclusions() {
     };
     rows[2].province = 0;
     rows[2].parent = 98;
-    // The walk records the null parent's own vertex row.
     rows.push(SupplyNodeRow {
         country,
         index: SupplyNodeRow::VERTEX | 98,
@@ -101,8 +97,6 @@ fn supply_compares_province_census_and_routes_despite_membership_exclusions() {
     rows.pop();
     rows[2].province = 99;
     rows[2].parent = -1;
-    // A route through the excluded state's province still has to match its
-    // captured parent lookup.
     let TableView::Complete(TableRows::SupplyNodes(rows)) =
         &mut *frame.tables[TableId::SupplyNodes.index()]
     else {
@@ -184,8 +178,6 @@ fn floating_harbour_compares_boolean_status_and_first_match_order_through_aliase
         "temp_nodes={{province=-1 base=no} {province=-1 base=yes} {province=-2147483648 base=yes}}",
         &[(-1, 0), (-1, 1), (i32::MIN, 2)],
     );
-    // The inventory's raw reference is now an alias, while deployments retain
-    // the canonical slot. CountryLinks still resolves both physical references.
     let TableView::Complete(TableRows::Countries(countries)) =
         &mut *frame.tables[TableId::Countries.index()]
     else {
@@ -388,8 +380,6 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
             .map(|c| (c.tag.clone(), Default::default()))
             .collect(),
     );
-    // Province 1 is on the verified map but absent from the save's sparse
-    // provinces block, as most node provinces are in real saves.
     let province = 1;
     assert!(!save.provinces.contains_key(&province));
     let country = countries[0].id;
@@ -422,9 +412,6 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
     compare(&frame, &save, &Ok(&membership), &mut report);
     assert!(report.differences.is_empty());
     assert!(report.failed_comparisons.is_empty());
-    // The serializer's owned-state count filter omits an authenticated supply
-    // system. A parent province need not be a simulation node, but it must
-    // still have a recorded vertex in the country's graph.
     save.economy.supply.as_mut().unwrap().clear();
     owned_states(&mut frame, &countries, 0);
     let parent = province + 1;
@@ -437,7 +424,6 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
     compare(&frame, &save, &Ok(&membership), &mut report);
     assert!(report.differences.is_empty());
     assert!(report.failed_comparisons.contains_key("SupplyNodes"));
-    // Every parent must have a vertex row, and vertices are bare edges.
     let TableView::Complete(TableRows::SupplyNodes(rows)) =
         &mut *frame.tables[TableId::SupplyNodes.index()]
     else {
@@ -489,8 +475,6 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
     compare(&frame, &save, &Ok(&membership), &mut report);
     assert!(!report.differences.is_empty());
     save.economy.supply.as_mut().unwrap().clear();
-    // Repair the preceding missing-parent fixture so this case reaches
-    // the independent inventory count and dense node-index checks.
     if let TableView::Complete(TableRows::SupplyNodes(rows)) =
         &mut *frame.tables[TableId::SupplyNodes.index()]
     {
@@ -509,10 +493,6 @@ fn supply_joins_fail_for_bad_censuses_but_do_not_compare_distinct_save_caches() 
     );
 }
 
-/// TrainInventory is read once a game day per country (owner decision
-/// 2026-10-11): a country's allocations are compared with the saved variants
-/// only when SliceReads dates its read to the oracle hour; a full hour, or a
-/// recording whose SliceReads dates no inventory, compares every country.
 #[test]
 fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
@@ -526,7 +506,6 @@ fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
         TableView::Complete(TableRows::Countries(countries.clone()));
     save.economy.supply = Some(Default::default());
     owned_states(&mut frame, &countries, 0);
-    // Every inventory names a variant the save does not hold.
     *frame.tables[TableId::TrainInventory.index()] =
         TableView::Complete(TableRows::TrainInventory(
             countries
@@ -551,7 +530,6 @@ fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
     let mut report = Report::default();
     trains(&frame, &save, &mut report).unwrap();
     assert_eq!(unsaved(&report), 2);
-    // The first country was read at the oracle hour, the second earlier.
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
         replay_data::rows::SliceReadRow {
             table: TableId::TrainInventory.index() as u32,
@@ -573,7 +551,6 @@ fn only_inventories_read_at_the_oracle_hour_compare_their_saved_variants() {
             .keys()
             .any(|reason| reason.contains("owner decision 2026-10-11"))
     );
-    // A forced full hour reads every country.
     let mut report = Report {
         forced_full: true,
         ..Default::default()

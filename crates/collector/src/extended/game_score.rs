@@ -1,5 +1,3 @@
-//! Hourly end-screen operands. Native arithmetic belongs in the product;
-//! acquisition retains ordered witnesses and independent guarded failures.
 use crate::{
     sampling::qpc,
     spooling::{table, table_iter, unavailable},
@@ -150,8 +148,6 @@ pub(crate) struct Witnessed<'a> {
     allocation_failure: Option<&'static str>,
 }
 
-/// Shared by the owned wing acquisition and its typed fallback. No second
-/// strategic-air, base-registration or wing-payload walk is introduced.
 pub(crate) struct AirInputs {
     enabled: bool,
     allocation_failure: Option<&'static str>,
@@ -235,7 +231,6 @@ impl AirInputs {
         }
         let slot_index = slot as usize;
         self.required_countries = self.required_countries.max(slot_index.saturating_add(1));
-        // Short storage still visits every owner and counts every site's header demand.
         let start = self.sites.len;
         let read = {
             if let Err(error) = engine_native::walk::Buffer::Growing(&mut self.countries)
@@ -282,9 +277,6 @@ impl AirInputs {
             self.written_wings = len + 1;
         }
     }
-    /// Joins `part`, the inputs of a census part that witnessed owner
-    /// slots from `first` on, after this one's: its first sites and wing
-    /// leaves follow these, and its owners index the joined sites.
     pub(crate) fn absorb(&mut self, part: &AirInputs, first: usize) -> Result<(), &'static str> {
         if !self.enabled {
             return Ok(());
@@ -299,7 +291,6 @@ impl AirInputs {
         self.sites.len = end;
         self.sites.required = self.sites.required.saturating_add(part.sites.required);
         self.required_countries = self.required_countries.max(part.required_countries);
-        // Short only after the part's own allocation failure, which it carries.
         let end = part.required_countries.min(part.countries.len());
         let slots = first.min(end)..end;
         engine_native::walk::Buffer::Growing(&mut self.countries).ensure(end)?;
@@ -322,8 +313,6 @@ impl AirInputs {
         self.required_wings = self.required_wings.saturating_add(part.required_wings);
         Ok(())
     }
-    /// Every witnessed country's read and first sites, the wing leaves and
-    /// the demand, for comparing two acquisitions.
     #[cfg(test)]
     pub(crate) fn witnessed(&self) -> Witnessed<'_> {
         Witnessed {
@@ -354,7 +343,6 @@ impl AirInputs {
             Outcome::Unavailable { .. } => self.required_wings,
         };
         self.required_wings = self.required_wings.max(required);
-        // Only the independent score-leaf census certifies these operands.
         let current = match u32::try_from(self.required_wings.saturating_sub(self.written_wings)) {
             Ok(0) => Outcome::Rows {
                 len: self.written_wings,
@@ -538,8 +526,6 @@ impl Captured {
     }
     pub(crate) fn install_air(&mut self, air: &mut AirInputs) {
         std::mem::swap(&mut self.air, air);
-        // The returned job grows its replacement buffers from this same hour's
-        // demand before recycling; the spool grows the captured set separately.
         air.required_countries = air.required_countries.max(self.air.required_countries);
         air.required_wings = air.required_wings.max(self.air.required_wings);
         air.sites.required = air.sites.required.max(self.air.sites.required);

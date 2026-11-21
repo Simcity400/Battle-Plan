@@ -1,7 +1,3 @@
-//! The per-entry nested-entry walk exactly as the parent commit (eafc953b4f)
-//! had it, kept for tests only: the reference the runs of
-//! [`super::append_entries`] must equal under lasting faults and never be
-//! harsher than under faults that clear.
 use super::{DETAIL_ARENA_CAPACITY, EntryOutput};
 use crate::{Memory, cpdx_array::Array, read};
 

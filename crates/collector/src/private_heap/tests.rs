@@ -16,8 +16,6 @@ impl Heap {
 }
 impl Drop for Heap {
     fn drop(&mut self) {
-        // Every test joins its workers and frees its ordinary live blocks first.
-        // The detach test deliberately leaves a retained block for HeapDestroy.
         unsafe { self.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) };
     }
 }
@@ -100,7 +98,6 @@ fn failed_realloc_preserves_the_old_allocation() {
         }
         unsafe { heap.0.dealloc(pointer, layout) };
     }
-    // The allocator itself never records a capture failure; checked callers do.
     assert!(!crate::allocation::failed());
 }
 
@@ -121,7 +118,6 @@ fn large_growth_moves_with_its_payload_and_a_failed_move_keeps_the_old_block() {
             .enumerate()
             .all(|(i, &b)| b == i as u8)
     };
-    // Far beyond any in-place extension, so growth must move the block.
     let grown_size = 64 * 1024 * 1024;
     heap.0.failures.store(ALLOCATE, Ordering::Relaxed);
     assert!(unsafe { heap.0.realloc(pointer, layout, grown_size) }.is_null());
@@ -145,8 +141,6 @@ fn creation_failure_is_cached_without_fallback() {
     heap.0.failures.store(CREATE, Ordering::Relaxed);
     let layout = Layout::from_size_align(23, 16).unwrap();
     assert!(unsafe { heap.0.alloc(layout) }.is_null());
-    // The one-shot failure has cleared. A retry would create a heap if this
-    // had not cached the failed creation, but still returns null.
     assert_eq!(heap.0.failures.load(Ordering::Relaxed), 0);
     assert!(unsafe { heap.0.alloc_zeroed(layout) }.is_null());
     assert!(!crate::allocation::failed());
@@ -212,7 +206,6 @@ fn process_heaps() -> Vec<HANDLE> {
         let mut heaps = vec![ptr::null_mut(); count as usize];
         let returned = unsafe { GetProcessHeaps(count, heaps.as_mut_ptr()) };
         assert!(returned > 0);
-        // A parallel test can create a heap between the calls; the larger count fills nothing.
         if returned <= count {
             heaps.truncate(returned as usize);
             return heaps;
@@ -241,12 +234,10 @@ fn destroy_runs_only_for_free_library_process_detach() {
         assert!(process_heaps().contains(&handle));
         unsafe { pointer.write(37) };
     }
-    // Reclaims the intentionally retained block's reservation as well as the empty heap.
     assert!(unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
     assert!(!process_heaps().contains(&handle));
     assert!(heap.0.pages.made.load(Ordering::Relaxed).is_null());
     assert!(!unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
-    // Cached terminal zero prevents allocating into a second heap after destroy.
     assert!(unsafe { heap.0.alloc(layout) }.is_null());
 }
 
@@ -270,7 +261,6 @@ fn attach_creates_the_heap_allocation_free_and_refuses_a_failed_creation() {
     let failed = Heap::new();
     failed.0.failures.store(CREATE, Ordering::Relaxed);
     crate::test_support::with_allocations_denied(|| assert!(!failed.0.ready()));
-    // The failure is cached: a later attach check still refuses, creating nothing.
     assert!(!failed.0.ready());
 }
 
@@ -318,7 +308,6 @@ fn reallocation_stays_within_a_class_and_moves_across_classes() {
     assert!(!pointer.is_null());
     unsafe { pointer.write_bytes(0x11, 40) };
     assert_eq!(unsafe { heap.0.realloc(pointer, layout(40), 48) }, pointer);
-    // Through a larger class, a large block and back to a small one.
     let mut current = (pointer, 48);
     for size in [49, 40_000, 100] {
         let moved = unsafe { heap.0.realloc(current.0, layout(current.1), size) };
@@ -336,7 +325,6 @@ fn reallocation_stays_within_a_class_and_moves_across_classes() {
     assert!(!crate::allocation::failed());
 }
 
-/// `count` blocks of `class` straight from the heap, as the lists would hold them.
 fn heap_blocks(heap: &PrivateHeap, class: usize, count: usize) -> Vec<*mut u8> {
     let blocks: Vec<*mut u8> = (0..count)
         .map(|_| unsafe { HeapAlloc(heap.heap(), 0, class_size(class)) }.cast())
@@ -355,14 +343,12 @@ fn a_full_cache_passes_a_batch_through_the_depot_to_another_thread() {
     for &block in &blocks {
         assert!(freeing.keep(class, block, &heap.0.depot, true));
     }
-    // The list and its spare hold a batch each; the oldest batch went on.
     let list = freeing.lists[class];
     assert_eq!((list.head, list.count, list.spare), (blocks[2], 1, blocks[1]));
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), SMALL_LIMIT);
     assert_eq!(allocating.take(class, &heap.0.depot), blocks[0]);
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), 0);
     assert!(allocating.take(class, &heap.0.depot).is_null());
-    // A cache drains its list, then its spare, before the depot.
     assert_eq!(freeing.take(class, &heap.0.depot), blocks[2]);
     assert_eq!(freeing.take(class, &heap.0.depot), blocks[1]);
     for block in blocks {
@@ -380,7 +366,6 @@ fn a_small_class_batch_keeps_every_block_in_order() {
     for &block in &blocks {
         assert!(freeing.keep(class, block, &heap.0.depot, true));
     }
-    // The first batch reached the depot whole; another thread takes it in reverse free order.
     let taken: Vec<*mut u8> = (0..batch)
         .map(|_| allocating.take(class, &heap.0.depot))
         .collect();
@@ -396,7 +381,6 @@ fn off_the_hold_path_frees_beyond_the_depot_bound_return_to_the_heap() {
     let heap = Heap::new();
     let class = super::class(SMALL_LIMIT).unwrap();
     let held = DEPOT_BYTES / SMALL_LIMIT;
-    // The list and the spare, the batches the depot holds, then one more.
     let blocks = heap_blocks(&heap.0, class, held + 3);
     let (mut freeing, mut allocating) = (Cache::EMPTY, Cache::EMPTY);
     for (index, &block) in blocks.iter().enumerate() {
@@ -404,7 +388,6 @@ fn off_the_hold_path_frees_beyond_the_depot_bound_return_to_the_heap() {
         assert_eq!(kept, index < held + 2);
     }
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), DEPOT_BYTES);
-    // A batch taken out makes room for the next one passed on.
     assert!(!allocating.take(class, &heap.0.depot).is_null());
     assert!(freeing.keep(class, blocks[held + 2], &heap.0.depot, true));
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), DEPOT_BYTES);
@@ -425,7 +408,6 @@ fn the_hold_path_frees_past_the_depot_bound_and_never_into_the_heap() {
         unsafe { heap.0.dealloc(block, layout) };
     }
     assert_eq!(heap.0.hold().heap.calls, before.heap.calls);
-    // This thread keeps its list and spare; every other batch is in the depot, past its bound.
     assert_eq!(
         heap.0.depot.bytes.load(Ordering::Relaxed),
         (held + 2) * SMALL_LIMIT
@@ -438,7 +420,6 @@ fn the_hold_path_frees_past_the_depot_bound_and_never_into_the_heap() {
     assert_eq!(heap.0.depot.bytes.load(Ordering::Relaxed), 0);
 }
 
-/// Allocates every `(size, count)` block, writes each, then checks and frees them all.
 fn churn(heap: &PrivateHeap, shape: &[(usize, usize)]) {
     let mut blocks = Vec::new();
     for &(size, count) in shape {
@@ -462,7 +443,6 @@ fn churn(heap: &PrivateHeap, shape: &[(usize, usize)]) {
 
 #[test]
 fn the_hold_path_takes_no_lock_while_other_threads_hammer_the_heap() {
-    // An hour's blocks on the hold path, and far more per round on the other threads.
     const HOUR: [(usize, usize); 4] = [(16, 64), (112, 64), (2048, 8), (100 * 1024, 1)];
     const ROUND: [(usize, usize); 4] = [(16, 4096), (112, 1024), (2048, 512), (100 * 1024, 64)];
     let heap = Heap::new();
@@ -480,7 +460,6 @@ fn the_hold_path_takes_no_lock_while_other_threads_hammer_the_heap() {
             });
         }
         churn(heap, &HOUR);
-        // The first hour filled this thread's cache from the heap, and counted it as its own.
         assert!(heap.hold().heap.calls > 0);
         while rounds.load(Ordering::Relaxed) < 4 {
             std::thread::yield_now();
@@ -496,7 +475,6 @@ fn the_hold_path_takes_no_lock_while_other_threads_hammer_the_heap() {
         stop.store(true, Ordering::Relaxed);
         assert_eq!((held.heap.calls, held.heap.ticks), (0, 0));
     });
-    // The other threads' own calls into the heap count apart.
     assert!(heap.other().heap.calls > 0);
     assert!(!crate::allocation::failed());
 }
@@ -515,12 +493,10 @@ fn a_large_block_grows_and_shrinks_in_place_and_its_reservation_is_reused_zeroed
     let pointer = unsafe { heap.0.alloc(layout(40_000)) };
     assert!(!pointer.is_null());
     unsafe { pointer.write_bytes(0x3c, 40_000) };
-    // Within its 64 KiB reservation it grows in place, keeping its payload.
     assert_eq!(unsafe { heap.0.realloc(pointer, layout(40_000), 60_000) }, pointer);
     let bytes = |size| unsafe { std::slice::from_raw_parts(pointer, size) };
     assert!(bytes(40_000).iter().all(|&byte| byte == 0x3c));
     unsafe { pointer.add(40_000).write_bytes(0x3c, 20_000) };
-    // Shrinking gives back the pages past its end.
     assert_eq!(unsafe { heap.0.realloc(pointer, layout(60_000), 33_000) }, pointer);
     let base = pointer as usize / GRANULARITY * GRANULARITY;
     let tail = (base + page_end(pointer as usize - base + 33_000)) as *const u8;
@@ -530,7 +506,6 @@ fn a_large_block_grows_and_shrinks_in_place_and_its_reservation_is_reused_zeroed
     let reused = unsafe { heap.0.alloc_zeroed(layout(50_000)) };
     assert_eq!(reused, pointer);
     assert!(bytes(50_000).iter().all(|&byte| byte == 0));
-    // Past its reservation it moves.
     let moved = unsafe { heap.0.realloc(reused, layout(50_000), 70_000) };
     assert!(!moved.is_null());
     assert_ne!(moved, reused);
@@ -550,7 +525,6 @@ fn every_refused_page_call_returns_null_and_keeps_what_it_had() {
     let layout = |size| Layout::from_size_align(size, 16).unwrap();
     let refuse = |ahead| heap.page_refusal.store(ahead, Ordering::Relaxed);
     let refused = || heap.page_refusal.load(Ordering::Relaxed) == 0;
-    // A fresh reservation refused, then its first commit: nothing is kept or listed.
     for ahead in [1, 2] {
         refuse(ahead);
         assert!(unsafe { heap.alloc(layout(40_000)) }.is_null());
@@ -563,7 +537,6 @@ fn every_refused_page_call_returns_null_and_keeps_what_it_had() {
     unsafe { pointer.write_bytes(0x6d, 40_000) };
     let record = PrivateHeap::record(pointer);
     let committed = unsafe { (*record).committed };
-    // Growth in place refused: the block keeps its pages and payload.
     refuse(1);
     assert!(unsafe { heap.realloc(pointer, layout(40_000), 60_000) }.is_null());
     assert!(refused());
@@ -573,7 +546,6 @@ fn every_refused_page_call_returns_null_and_keeps_what_it_had() {
             .iter()
             .all(|&byte| byte == 0x6d)
     );
-    // A kept reservation whose commit is refused stays kept and serves the next block.
     assert_eq!(
         unsafe { heap.realloc(pointer, layout(40_000), 33_000) },
         pointer
@@ -618,7 +590,6 @@ fn a_freed_large_body_past_the_bound_is_decommitted_off_the_hold_path_and_kept_o
             assert_eq!(heap.pages.kept.load(Ordering::Relaxed), KEPT_BYTES + PAGE);
         });
     });
-    // The decommitted reservation serves again: its kept page cleared, the rest committed afresh.
     let reused = unsafe { heap.alloc_zeroed(layout) };
     assert_eq!(reused, pointer);
     assert!(
@@ -651,9 +622,7 @@ fn an_exiting_thread_returns_its_batches_to_the_depot_and_the_rest_to_the_heap()
                 }
                 let before = heap.hold().heap.calls;
                 heap.thread_exit();
-                // Only the partial list went back to the heap, one call a block.
                 assert_eq!(heap.hold().heap.calls - before, 3);
-                // Blocks after the exit bypass the flushed cache.
                 let late = unsafe { heap.alloc(partial) };
                 assert!(!late.is_null());
                 unsafe { heap.dealloc(late, partial) };

@@ -1,14 +1,3 @@
-//! `NDefines` from `common/defines`, evaluated in stack load order.
-//!
-//! All scripts in the merged tree run in one Lua 5.1 state, whose numbers
-//! are doubles. Typed readers select `NDefines.<section>.<name>`. Vendored
-//! PUC Lua 5.1 evaluates mod arithmetic, locals, functions and loops. A
-//! script error refuses the reader, as the game abandons the load.
-//!
-//! The sandbox opens `base`, `string`, `table` and `math` only, removes the
-//! file loaders from `base` and bounds the instruction count. Scripts that
-//! need `io`, `os`, `package` or `debug` are refused instead of receiving
-//! access to this machine.
 
 use crate::{ResolvedLayers, script_files::ScriptPath};
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
@@ -24,13 +13,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Hook calls of [`HOOK_INTERVAL`] instructions before the scripts are
-/// stopped: 10^8 instructions, far past the shipped scripts' few thousand.
 const HOOK_INTERVAL: u32 = 1_000_000;
 const HOOK_LIMIT: u32 = 100;
 const BUDGET_SPENT: &str = "define script exceeded its instruction limit";
 
-/// Lua error handlers can swallow the budget error; wrappers rethrow it once the limit is spent.
 const BUDGET_GUARD: &str = r#"
 local spent, message = ...
 local raise, catch, handled = error, pcall, xpcall
@@ -48,20 +34,15 @@ if type(coroutine) == "table" and coroutine.resume then
 end
 "#;
 
-/// Memory the define state may allocate; a runaway string or table fails
-/// the load instead of exhausting the process.
 const MEMORY_LIMIT: usize = 256 << 20;
 
-/// The final `NDefines` of the recorded content stack.
 #[derive(Clone)]
 pub struct Defines {
     lua: Lua,
     sealed: bool,
-    /// The instruction limit was reached: no later result of the state is a load.
     spent: Arc<AtomicBool>,
 }
 
-// Dump the Lua values, never Lua handles (whose Debug contains addresses).
 impl std::fmt::Debug for Defines {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fn value(item: Value, active: &mut Vec<usize>) -> io::Result<String> {
@@ -104,7 +85,6 @@ impl std::fmt::Debug for Defines {
     }
 }
 
-/// Runs every define script of the stack in load order.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     let read = |layers: &ResolvedLayers| {
         let mut defines = Defines::new()?;
@@ -122,10 +102,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     defines.map(|defines| defines.as_ref().clone())
 }
 
-/// Define scripts in recursive load order: each directory's names ending
-/// in `lua`, case-sensitive and in byte order, then its subdirectories in
-/// byte order, depth first. A path repeated across layers uses the winning
-/// layer; paths differing only in case remain separate tree entries.
 pub(crate) fn script_paths(layers: &ResolvedLayers) -> io::Result<Vec<ScriptPath>> {
     let listed = layers.listed_layer_paths(b"common/defines/")?;
     Ok(
@@ -136,8 +112,6 @@ pub(crate) fn script_paths(layers: &ResolvedLayers) -> io::Result<Vec<ScriptPath
     )
 }
 
-/// Names under `root` ending in `filter`, with files before subdirectories
-/// and each level in byte order, depth first.
 pub fn load_order<'a>(
     root: &str,
     filter: &str,
@@ -153,8 +127,6 @@ pub fn load_order<'a>(
     .collect()
 }
 
-/// [`load_order`] over layer paths' bytes, which the enumeration compares and
-/// returns as they are ([`crate::ResolvedLayers::listed_layer_paths`]).
 pub fn load_order_paths<'a>(
     root: &[u8],
     filter: &[u8],
@@ -168,8 +140,6 @@ pub fn load_order_paths<'a>(
         })
         .map(|path| &path[root.len()..])
         .collect();
-    // Files sort before the subdirectories of the same directory, and each
-    // level compares names bytewise.
     paths.sort_by(|a, b| {
         let (a, b) = (
             a.split(|byte| *byte == b'/').collect::<Vec<_>>(),
@@ -190,8 +160,6 @@ pub fn load_order_paths<'a>(
 }
 
 impl Defines {
-    /// The sandboxed define state before any script has run; [`read`] then
-    /// [`Defines::load`]s the stack's scripts into it.
     pub fn new() -> io::Result<Self> {
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH,
@@ -206,7 +174,6 @@ impl Defines {
         let hooks = Arc::new(AtomicU32::new(0));
         let spent = Arc::new(AtomicBool::new(false));
         let spending = Arc::clone(&spent);
-        // Global, so a script's coroutines count against the same limit as the main thread.
         lua.set_global_hook(
             HookTriggers::new().every_nth_instruction(HOOK_INTERVAL),
             move |_, _| {
@@ -234,7 +201,6 @@ impl Defines {
         })
     }
 
-    /// Runs `source` as the next script of the load order; an error refuses the reader.
     pub fn load(&self, path: &str, source: &[u8]) -> io::Result<()> {
         if self.sealed {
             return Err(invalid(
@@ -268,15 +234,11 @@ impl Defines {
         section_table.get(name).map_err(lua_error)
     }
 
-    /// `NDefines.<section>.<name>`, which must be a Lua number.
     pub fn number(&self, section: &str, name: &str) -> io::Result<f64> {
         number(self.value(section, name)?)
             .ok_or_else(|| invalid(format!("NDefines.{section}.{name} is not a number")))
     }
 
-    /// `NDefines.<section>.<name>` as a signed integer: truncate a Lua number
-    /// to 64 bits, using `i64::MIN` for out-of-range values, then take the low
-    /// 32 bits. Missing or non-number values store 0.
     pub fn int32(&self, section: &str, name: &str) -> io::Result<i32> {
         let Some(value) = number(self.value(section, name)?) else {
             return Ok(0);
@@ -290,7 +252,6 @@ impl Defines {
         Ok(wide as i32)
     }
 
-    /// `NDefines.<section>.<name>`, which must be a Lua boolean.
     pub fn boolean(&self, section: &str, name: &str) -> io::Result<bool> {
         match self.value(section, name)? {
             Value::Boolean(value) => Ok(value),
@@ -300,7 +261,6 @@ impl Defines {
         }
     }
 
-    /// `NDefines.<section>.<name>`, which must be a Lua string.
     pub fn text(&self, section: &str, name: &str) -> io::Result<String> {
         match self.value(section, name)? {
             Value::String(text) => Ok(text.to_str().map_err(lua_error)?.to_owned()),
@@ -310,7 +270,6 @@ impl Defines {
         }
     }
 
-    /// Table define numbers in Lua iteration order.
     pub fn numbers(&self, section: &str, name: &str) -> io::Result<Vec<f64>> {
         let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
         let Value::Table(table) = self.value(section, name)? else {
@@ -324,7 +283,6 @@ impl Defines {
             .collect()
     }
 
-    /// A table of number tables (such as a list of colours), each in Lua iteration order.
     pub fn number_lists(&self, section: &str, name: &str) -> io::Result<Vec<Vec<f64>>> {
         let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
         let Value::Table(table) = self.value(section, name)? else {
@@ -347,7 +305,6 @@ impl Defines {
             .collect()
     }
 
-    /// String-vector define entries in Lua iteration order.
     pub fn strings(&self, section: &str, name: &str) -> io::Result<Vec<String>> {
         let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
         let Value::Table(table) = self.value(section, name)? else {
@@ -362,7 +319,6 @@ impl Defines {
             .collect()
     }
 
-    /// A table define converted entry by entry to fixed5.
     pub fn fixed5_array(&self, section: &str, name: &str) -> io::Result<Vec<i64>> {
         self.numbers(section, name)?
             .into_iter()
@@ -373,7 +329,6 @@ impl Defines {
             .collect()
     }
 
-    /// `NDefines.<section>.<name>` through the native fixed-point getter.
     pub fn fixed5(&self, section: &str, name: &str) -> io::Result<i64> {
         fixed5(self.number(section, name)?)
             .map_err(|error| invalid(format!("NDefines.{section}.{name}: {error}")))
@@ -392,9 +347,6 @@ fn lua_error(error: mlua::Error) -> io::Error {
     invalid(error.to_string())
 }
 
-/// The `NDefines` sections presentation reads: graphics, aircraft graphics, interface, front
-/// end, map modes and map icons. Every other section is a simulation operand the recording
-/// was played with.
 pub const GRAPHICS_SECTIONS: [&str; 6] = [
     "NGraphics",
     "NAirGfx",
@@ -405,12 +357,6 @@ pub const GRAPHICS_SECTIONS: [&str; 6] = [
 ];
 
 impl Defines {
-    /// The defines artwork consumers of `layers` read: these (the recorded defines) with the
-    /// graphics sections of `layers`' presentation defines ([`Self::with_graphics_of`]), or these
-    /// alone without visual mods' defines. A graphics value the mods retype keeps the recorded
-    /// one, and mods' scripts that cannot run keep these whole; each is named on `layers` as
-    /// artwork drawn from the recording ([`ResolvedLayers::note_overlay_refusal`]). The map and
-    /// the dashboard's widgets read graphics defines through it alike.
     pub fn graphics_for(&self, layers: &ResolvedLayers) -> Defines {
         let Some(stack) = layers.presentation_defines() else {
             return self.clone();
@@ -435,11 +381,6 @@ impl Defines {
         }
     }
 
-    /// These (recorded) defines with the [`GRAPHICS_SECTIONS`] of `shown`, the defines the
-    /// visual mods' scripts were merged into: every simulation section stays recorded, and every
-    /// graphics value the mods set is theirs. A graphics value the mods give in another type
-    /// than the recording's (a cutoff set to a string) keeps the recorded value and is returned
-    /// named with why, so no consumer silently reads one it cannot use.
     pub fn with_graphics_of(&self, shown: &Defines) -> io::Result<(Defines, Vec<String>)> {
         let mut graphics = Defines::new()?;
         let lua = &graphics.lua;
@@ -471,12 +412,9 @@ impl Defines {
         };
         let (recorded, mods) = (root(self)?, root(shown)?);
         let into = lua.create_table().map_err(lua_error)?;
-        // One copier per source state, so each state's shared tables stay shared and its cycles
-        // stay cycles; copy graphics apart so mod writes cannot reach shared simulation tables.
         let mut from_recording = Copier::new(lua);
         let mut graphics_from_recording = Copier::new(lua);
         let mut from_mods = Copier::new(lua);
-        // Keys of one source state made in the other's, to look a value up there.
         let mut in_recording = Copier::new(&self.lua);
         let mut in_mods = Copier::new(&shown.lua);
         if let Some(recorded) = &recorded {
@@ -497,7 +435,6 @@ impl Defines {
             let theirs = match field(&mods, name)? {
                 Value::Table(theirs) => theirs,
                 Value::Nil if ours.is_none() => continue,
-                // A section the mods retype or delete keeps the recorded one, named.
                 other => {
                     kept.push(format!(
                         "NDefines.{name} ({})",
@@ -534,7 +471,6 @@ impl Defines {
                     .raw_set(from_mods.copy(key)?, from_mods.copy(value)?)
                     .map_err(lua_error)?;
             }
-            // A recorded value the mods delete keeps the recorded one, named.
             if let Some(ours) = &ours {
                 for pair in ours.pairs::<Value, Value>() {
                     let (key, value) = pair.map_err(lua_error)?;
@@ -564,8 +500,6 @@ fn graphics_section(key: &Value) -> bool {
         .any(|section| &*name.as_bytes() == section.as_bytes()))
 }
 
-/// A define value's kind for [`Defines::with_graphics_of`]: a Lua number is one kind however
-/// it is stored.
 fn kind(value: &Value) -> &'static str {
     match value {
         Value::Integer(_) | Value::Number(_) => "number",
@@ -582,7 +516,6 @@ fn key_text(key: &Value) -> String {
     }
 }
 
-/// How the mods' `theirs` differs from the recording's `ours`, for a value kept recorded.
 fn change(theirs: &Value, ours: &Value) -> String {
     if theirs.is_nil() {
         format!("deleted where the recording has {}", kind(ours))
@@ -591,11 +524,6 @@ fn change(theirs: &Value, ours: &Value) -> String {
     }
 }
 
-/// Copies values of one define state into `into`: numbers, booleans, strings and tables of
-/// them. Each table is copied once, so tables its state shares stay shared, and a table that
-/// holds itself (`NDefines.NGraphics.extra = NDefines.NGraphics`, a cycle the game's own state
-/// keeps and no reader follows, since every define is read by section and name) is copied as
-/// the same cycle rather than followed without end.
 struct Copier<'a> {
     into: &'a Lua,
     copied: std::collections::HashMap<*const std::ffi::c_void, Table>,
@@ -641,14 +569,10 @@ impl<'a> Copier<'a> {
     }
 }
 
-/// Numeric define conversion narrows the Lua number to f32 before separate
-/// multiply, add, subtract and truncating conversion steps. Rounding in
-/// f64 or with `round()` differs at half steps and large values.
 pub fn fixed5(value: f64) -> io::Result<i64> {
     let value = value as f32;
     let sign = if value >= 0.0 { 1.0_f32 } else { 0.0 };
     let rounded = (sign + value * 100_000.0_f32) - 0.5_f32;
-    // Truncating conversion would return its indefinite sentinel here.
     if !rounded.is_finite() || rounded < i64::MIN as f32 || rounded >= -(i64::MIN as f32) {
         return Err(invalid("numeric define is outside signed fixed5 range"));
     }
@@ -657,8 +581,6 @@ pub fn fixed5(value: f64) -> io::Result<i64> {
 
 #[cfg(test)]
 mod tests {
-    /// The graphics defines take every graphics value the mods set, keep every simulation
-    /// section recorded, and keep (and name) a graphics value the mods give in another type.
     #[test]
     fn graphics_defines_take_the_mods_presentation_values_only() {
         let recorded = super::Defines::new().unwrap();
@@ -702,8 +624,6 @@ mod tests {
         assert!(graphics.load("test", b"NDefines.NGraphics.X = 1").is_err());
     }
 
-    /// A graphics section the mods retype or delete, and a recorded graphics value they delete,
-    /// keep the recorded values, each named.
     #[test]
     fn retyped_and_deleted_graphics_defines_keep_the_recorded_values_by_name() {
         let recorded = super::Defines::new().unwrap();
@@ -739,8 +659,6 @@ mod tests {
         );
     }
 
-    /// A table that holds itself, which the game's define state keeps and no reader follows, is
-    /// copied as the same cycle in either state, never followed without end.
     #[test]
     fn a_define_table_that_holds_itself_is_copied_as_a_cycle() {
         let recorded = super::Defines::new().unwrap();
@@ -932,7 +850,6 @@ mod tests {
             "for increment = 1, 4 do NDefines.NSession.QUANTA = NDefines.NSession.QUANTA + increment end",
         ])
         .unwrap();
-        // The copy shares NVisualTest, so the second alias's write is visible.
         assert_eq!(values.number("NVisualTest", "THRESHOLD").unwrap(), 125.0);
         assert_eq!(values.number("NSession", "SPAN").unwrap(), 63.0);
         assert_eq!(values.number("NSession", "QUANTA").unwrap(), 14.0);
@@ -1005,7 +922,6 @@ mod tests {
         assert_eq!(fixed5(0.000005).unwrap(), 1);
         assert_eq!(fixed5(-0.000005).unwrap(), -1);
         assert_eq!(fixed5(0.0000049).unwrap(), 0);
-        // The f32 narrowing loses this fraction, as the native getter does.
         assert_eq!(fixed5(1000.00001).unwrap(), 100_000_000);
         assert!(fixed5(f64::NAN).is_err());
         assert!(fixed5(f64::MAX).is_err());

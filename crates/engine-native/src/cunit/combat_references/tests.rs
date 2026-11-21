@@ -1,4 +1,3 @@
-// Synthetic fixtures for ordered combat-reference capture.
 use super::*;
 use crate::{creference_registry as registry, memory::SliceMemory, reference_bucket};
 use std::cell::{Cell, RefCell};
@@ -183,7 +182,6 @@ fn authenticated_empty_takes_the_seed_header_without_a_reread() {
     let value = header(&mut image.bytes, 0);
     assert_eq!(capture(&image, value, &mut Vec::new()), Ok(0));
     assert!(image.reads.borrow().is_empty());
-    // Only a vector with elements read after its header is checked again.
     image.changed_header = true;
     assert_eq!(capture(&image, value, &mut Vec::new()), Ok(0));
 }
@@ -282,7 +280,6 @@ fn worker_combat_reference_arena_grows_from_the_original_count() {
     let (mut image, _) = fixture();
     let mut rows = Vec::new();
     for count in [50, 200] {
-        // Every native occurrence is retained even when it repeats a handle.
         let mut capture =
             CombatReferencesCapture::new_buffer(crate::walk::Buffer::Growing(&mut rows));
         capture.begin(count);

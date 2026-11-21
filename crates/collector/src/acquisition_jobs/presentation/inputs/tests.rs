@@ -105,7 +105,6 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     let store = division_presentation::held_store::Slot::new(Box::new(
         crate::extended::attack_stats::ArmyStatStore::new(),
     )).unwrap();
-    // The previous hour's loan, still with its decode worker.
     let older = store.take().unwrap();
     let address = &*older as *const _;
     let mut hour_store = None;
@@ -204,7 +203,6 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     );
     let mut payload = sampling::DivisionsJob::new_worker();
     payload.presentation = Some(Arc::clone(&inputs));
-    // SAFETY: this fixture owns the synthetic census through collection and publisher settlement.
     let ticket = unsafe {
         executor.submit(&mut Some(Job::DivisionInputs(RawRequest {
             countries: engine_allocation::SharedBox::clone(&countries),
@@ -260,8 +258,6 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             "callback closed the publisher's locked handoff"
         );
         resume.send(()).unwrap();
-        // The older loan stays out until the hour has taken its store: returned first, it would
-        // be the latest store and the hour would carry it on.
         if unwind != PublicationUnwind::None {
             failed.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
             assert!(inputs.state.is_poisoned());
@@ -356,7 +352,6 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     assert!(state.master.is_none() && state.parts.iter().all(Option::is_none));
     assert!(state.movement.is_none() && state.speed_terms.is_none());
     assert_eq!(store.owners(), 1);
-    // The latest take's store carries on; the older one returned after it carries nothing.
     assert_eq!(
         &*store.take().unwrap() as *const _,
         hour_store.unwrap_or(address)

@@ -36,7 +36,6 @@ test('month dividers precede each month’s first row, keyed by the month so the
   const items = logItems(rows, true);
   assert.deepEqual(items.map(item => item.kind === 'month' ? `[${item.label}]` : item.key), ['[Jun 1941]', 'a', 'b', '[May 1941]', 'c', '[Dec 1940]', 'd']);
   assert.equal(logItems(rows, false).length, 4);
-  // The same month keeps its key whatever rows it holds.
   const again = logItems(newestFirst([row('x', hour(1941, 6, 30)), ...rows]), true);
   assert.equal(again[0].key, items[0].key);
   assert.equal(monthLabel(hour(1936, 1, 1)), 'Jan 1936');
@@ -61,18 +60,14 @@ test('only the items in view are drawn, with a margin each way', () => {
   const offsets = Array.from({ length: 101 }, (_, index) => index * 10);
   assert.deepEqual(visibleRange(offsets, 0, 50, 2), [0, 7]);
   assert.deepEqual(visibleRange(offsets, 205, 50, 2), [18, 28]);
-  // Scrolled past the end, or a list with nothing in it.
   assert.deepEqual(visibleRange(offsets, 5000, 50, 2), [97, 100]);
   assert.deepEqual(visibleRange([0], 0, 50), [0, 0]);
 });
 
 test('reaching a row scrolls as little as needed, clear of a held month divider', () => {
   const offsets = Array.from({ length: 21 }, (_, index) => index * 10);
-  // Already whole in view: no scroll.
   assert.equal(scrollToShow(offsets, 3, 0, 50), 0);
-  // Below the view: its bottom meets the view's bottom.
   assert.equal(scrollToShow(offsets, 8, 0, 50), 40);
-  // Above the view: its top clears the divider held over the rows.
   assert.equal(scrollToShow(offsets, 5, 100, 50, 24), 26);
   assert.equal(scrollToShow(offsets, 0, 100, 50, 24), 0);
 });
@@ -117,7 +112,6 @@ test('without animation a row that is gone goes at once, never left over its rep
   const keys = (list: MovingRow<string>[]) => list.map(item => item.key);
   assert.deepEqual(keys(shownMotion(rows, 0, 10, true)), ['new', 'b', 'old']);
   assert.deepEqual(keys(shownMotion(rows, 0, 10, false)), ['new', 'b']);
-  // The keyboard's row stays drawn out of view, but a gone row is never kept.
   assert.deepEqual(keys(shownMotion(rows, 0, 10, false, item => item.key === 'far' || item.key === 'old')), ['new', 'b', 'far']);
 });
 
@@ -127,10 +121,8 @@ test('a tooltip follows what its row is about across the row’s keys, and goes 
   assert.equal(rowId(stage('plain')), 'plain');
   const before = new Map([stage('p:0', 'p')].map(row => [rowId(row), row]));
   const after = new Map([stage('p:1', 'p')].map(row => [rowId(row), row]));
-  // The project built a level: its row re-entered as p:1, and the tooltip now shows that row.
   assert.equal(tipRow({ id: 'p' }, before)?.key, 'p:0');
   assert.equal(tipRow({ id: 'p' }, after)?.key, 'p:1');
-  // Filtered out or gone: the tooltip is hidden, not left describing an old state.
   assert.equal(tipRow({ id: 'p' }, new Map()), null);
   assert.equal(tipRow(null, after), null);
 });
@@ -164,7 +156,6 @@ test('card heights stack with month dividers and window by their measured layout
   assert.deepEqual(offsets, [0, 24, 174, 484, 508, 598]);
   assert.deepEqual(visibleRange(offsets, 200, 200, 0), [2, 3]);
   assert.deepEqual(visibleRange(offsets, 460, 100, 0), [2, 5]);
-  // A new measurement changes the next offset, without scaling for screen zoom.
   heights.set('b', 350);
   assert.equal(logOffsets(items, 'compact', at => heights.get(at.key)!).at(-1), 638);
   assert.deepEqual(logOffsets(logItems(rows, false), 'compact', () => Number.NaN), [0, 28, 56, 84]);
@@ -237,13 +228,11 @@ test('cards enter only once; existing cards never re-enter after scroll or backw
   assert.deepEqual(newCardKeys(moving, known), ['new']);
   for (const item of arriving) known.add(item.key);
   history = commitRows(history, arriving, 0, 450);
-  // The shared motion phase remains entering while these items are unchanged.
   assert.equal(shownRows(history, arriving, 0, 450)[0].phase, 'entering');
   assert.deepEqual(newCardKeys(shownRows(history, arriving, 0, 450), known), []);
   history = commitRows(history, first, 1000, 450);
   history = commitRows(history, first, 2000, 450);
   assert.deepEqual(newCardKeys(shownRows(history, arriving, 2000, 450), known), []);
-  // A first arrival after a committed empty log still enters while Live is on.
   const empty = commitRows(EMPTY_HISTORY, wrap([]), 0, 450);
   assert.deepEqual(newCardKeys(shownRows(empty, first, 0, 450), new Set()), ['old']);
 });
@@ -317,7 +306,6 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
   const slots = new Map<number, unknown>(), frames: (() => void)[] = [];
   let cursor = 0;
   type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
-  // As React: an effect without dependencies runs after every render.
   const changedDeps = (previous: Effect | undefined, deps?: readonly unknown[]) => !previous || !deps || !previous.deps
     || deps.length !== previous.deps.length || deps.some((dep, at) => !Object.is(dep, previous.deps![at]));
   const effects = new Map<number, Effect>(), pendingEffects = new Map<number, Effect>();
@@ -394,14 +382,10 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
   Object.defineProperty(globalThis, 'CSS', { configurable: true, value: { escape: (value: string) => value } });
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (frame: () => void) => { frames.push(frame); return frames.length; } });
   Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: () => {} });
-  // Only React's dispatcher and environmental hooks are synthetic. The LogList
-  // component, navigation/effects, loading demand and tooltip store run. Layout
-  // measurement is controlled by the scroller rather than a browser observer.
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'log-card-focus-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        // Every hook the list calls, its own and those of the modules it calls them from, is the fixture's.
         if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts') || path.endsWith('/dashboard/widgetPerf.ts')) {
           return source.replace(/import \{ ([^}]+) \} from 'react';/, "import * as React from 'react'; const { $1 } = { ...React, ...globalThis.__logCardHooks };");
         }
@@ -451,12 +435,9 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     key('End'); draw();
     assert.equal(tooltipStore.get(), null);
     assert.equal(reached.at(-1), null);
-    // The list tells its owner what it shows and wants with the next frame.
     flush();
     assert.deepEqual(wanted.at(-1), ['older', 'current']);
     assert.deepEqual(visible.at(-1), ['B']);
-    // A reached pointer row cancels the unloaded End destination. Its eventual
-    // arrival cannot take the tooltip or re-admit the released detail request.
     const b = nodes.find(node => node.props['data-log-id'] === 'B')!;
     (b.props.onPointerMove as (event: unknown) => void)({ target: new Part(), currentTarget: new Part(), clientX: 20, clientY: 30 });
     draw();
@@ -484,7 +465,6 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
       assert.equal(reached.slice(beforeArrival).includes('A2'), false, takeover);
       assert.equal(nodes.some(node => node.props['data-log-id'] === 'A2' && node.props['aria-selected']), false, takeover);
     }
-    // An uncancelled destination still completes at its filtered native offset.
     props = { ...props, pages: [currentPage, pendingPage] };
     draw(); key('End'); draw();
     props = { ...props, pages: [currentPage, { ...loadedPage, rows: loadedPage.rows.slice(0, 2) }] };
@@ -492,8 +472,6 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     assert.equal(tooltipStore.get()?.content.title, 'A1');
     assert.equal(reached.at(-1), 'A1');
     assert.equal(nodes.some(node => node.props['data-log-id'] === 'A1' && node.props['aria-selected']), true);
-    // Commit the real card measurement and entry effects against controlled DOM
-    // heights. Released pages must release both native key and height retention.
     measureLayout = true;
     const cardPage = { key: 'card window', start: 0, end: 100, count: 1, rows: [row('held card', 80)] };
     props = { ...props, layout: 'card', rowHeight: () => 100, pages: [cardPage] };
@@ -510,7 +488,6 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     const detach = attach('held card');
     const releasedObserver = observers.at(-1)!;
     draw();
-    // The list holds its card measurements in a ref, as the painter reads them between renders.
     const retained = () => [...slots.values()].map(value => (value as { current?: unknown } | null)?.current)
       .find(value => value && typeof value === 'object' && 'heights' in value) as CardMeasurements;
     const known = () => [...slots.values()].map(value => (value as { current?: unknown } | null)?.current).find(value => value instanceof Set) as Set<string>;
@@ -558,7 +535,6 @@ test('paged card measurement retains only held keys through 5,000 window evictio
     measured = updateCardHeights(measured, 400, 'comfortable', [{ key, height: 100 }, { key: 'released stale node', height: 200 }], '', held);
     assert.deepEqual([...measured.heights], [[key, 100]]);
   }
-  // Ordinary card logs still retain estimates for their offscreen rows.
   measured = updateCardHeights(measured, 400, 'comfortable', [{ key: 'ordinary', height: 140 }]);
   assert.equal(measured.heights.size, 2);
 });

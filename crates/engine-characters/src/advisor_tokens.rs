@@ -1,14 +1,3 @@
-//! The character manager's advisor idea-token set holds string keys and their
-//! hashes. Idea lookup consults it first to identify advisor names.
-//!
-//! Buckets are selected by the hash and mask. Probing stops when the stored
-//! distance is shorter than the probe length; matching checks the stored hash
-//! and then the key. The empty table uses image storage. Rehashing allocates
-//! buckets for the mask, maximum probe and end sentinel; erasure and insertion
-//! update the live count as advisor roles change.
-//!
-//! Bucket order follows hashes and insertion history. Consumers sort the keys;
-//! the collector publishes them sorted.
 
 use crate::{
     Memory,
@@ -18,31 +7,20 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// The table inside CCharacterManager.
 pub const TABLE: usize = 0x60;
-/// Bucket array pointer, relative to [`TABLE`].
 pub const BUCKETS: usize = 0x08;
-/// Live key count, u32, relative to [`TABLE`].
 pub const COUNT: usize = 0x10;
-/// Bucket mask (bucket count minus one), u32, relative to [`TABLE`].
 pub const MASK: usize = 0x14;
-/// Maximum probe distance, u8, relative to [`TABLE`].
 pub const MAXIMUM_PROBE: usize = 0x18;
-/// The image's empty bucket array the constructor installs.
 pub const EMPTY_BUCKETS_RVA: Rva = Rva(0x030f_d240);
-/// Bucket stride.
 pub const STRIDE: usize = 0x30;
-/// Distance-plus-one byte: zero is empty, 0xFF the end bucket.
 pub const DISTANCE: usize = 0x04;
-/// The key's `std::string`.
 pub const KEY: usize = 0x08;
 
 const EMPTY: u8 = 0;
 const END: u8 = 0xff;
-/// Buckets copied per guarded read.
 const BUCKETS_PER_READ: usize = 16;
 
-/// One key, as a span of the caller's byte arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub start: usize,
@@ -53,21 +31,14 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// The table header [`walk_carried`] gathers before reading any bucket.
 pub const HEADER: usize = 0x19;
 
-/// A caller's held token rows ([`walk_carried`]).
 pub trait TokenCarry {
-    /// Registers the authenticated manager before any bucket is read; when
-    /// the held table may be carried, its row and byte counts.
     fn plan(&mut self, manager: usize, header: &[u8; HEADER]) -> Option<(usize, usize)>;
-    /// Writes the carryable held rows and bytes.
     fn carry(&mut self, rows: &mut [Row], bytes: &mut [u8]);
-    /// The table read afresh and whole.
     fn read(&mut self, rows: &[Row], bytes: &[u8]);
 }
 
-/// No held rows: the table is read.
 pub struct Fresh;
 impl TokenCarry for Fresh {
     fn plan(&mut self, _: usize, _: &[u8; HEADER]) -> Option<(usize, usize)> {
@@ -77,9 +48,6 @@ impl TokenCarry for Fresh {
     fn read(&mut self, _: &[Row], _: &[u8]) {}
 }
 
-/// [`walk`] with `carry` supplying the held table it proves
-/// current: the manager and table header are still read and authenticated,
-/// and a carried table's buckets and keys are not.
 pub fn walk_carried(
     memory: &impl Memory,
     base: usize,
@@ -103,7 +71,6 @@ pub fn walk_carried(
     })
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -178,7 +145,6 @@ fn walk_inner(
     }
     let empty = engine_sites::at(base, EMPTY_BUCKETS_RVA).ok_or("module address overflow")?;
     if buckets == empty {
-        // The constructor's image buckets hold no key.
         return if count == 0 {
             Ok(NameWalk {
                 outcome: Outcome::Rows { len: 0 },
@@ -302,8 +268,6 @@ mod tests {
         p64(bytes, at + 16, value.len() as u64);
     }
 
-    /// Eight buckets (mask 7, maximum probe 1): keys in buckets 1, 4 and 8,
-    /// the end bucket at 9.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x6000];
         p64(
@@ -408,7 +372,6 @@ mod tests {
         p32(&mut bytes, table + MASK, 0);
         bytes[table + MAXIMUM_PROBE] = 0;
         assert_eq!(run(&bytes, 4, 64).0.outcome, Outcome::Rows { len: 0 });
-        // A count over the image's buckets is torn.
         p32(&mut bytes, table + COUNT, 1);
         assert!(matches!(
             run(&bytes, 4, 64).0.outcome,
@@ -434,8 +397,6 @@ mod tests {
     fn a_torn_table_or_unreadable_key_fails() {
         let table = MANAGER + TABLE;
         for (address, value) in [
-            // Another class, a count the buckets disagree with, and one
-            // beyond them.
             (MANAGER, 1_u32),
             (table + COUNT, 2),
             (table + COUNT, 9),
@@ -448,8 +409,6 @@ mod tests {
                 "{address:#x}: {walk:?}"
             );
         }
-        // The end bucket inside the span, and a heap key without its
-        // terminator.
         let mut bytes = fixture();
         bytes[BUCKET_ARRAY + 2 * STRIDE + DISTANCE] = END;
         assert!(matches!(

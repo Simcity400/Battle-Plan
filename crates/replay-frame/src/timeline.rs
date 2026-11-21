@@ -1,7 +1,3 @@
-//! Measurement-only spans of a preparation's tasks and phases: when each began and ended,
-//! relative to the process's start, with the segment, lane and bytes it was of. Off unless a
-//! measurement harness calls [`enable`]; then a span costs a clock read at each end and one
-//! entry, and otherwise a relaxed load.
 
 use serde_json::{Value, json};
 use std::{
@@ -25,7 +21,6 @@ struct Closed {
     bytes: Option<usize>,
 }
 
-/// Records spans for the rest of the process.
 pub fn enable() {
     ORIGIN.get_or_init(origin);
     ENABLED.store(true, Ordering::Release);
@@ -44,7 +39,6 @@ struct Open {
     bytes: Option<usize>,
 }
 
-/// A span of `kind` from now until dropped.
 #[must_use]
 pub struct Span(Option<Open>);
 
@@ -105,7 +99,6 @@ impl Drop for Span {
     }
 }
 
-/// Every span closed so far, by start: `[kind, start µs, end µs, segment, lane, bytes]`.
 pub fn snapshot() -> Value {
     let spans = SPANS.lock().unwrap_or_else(PoisonError::into_inner);
     let mut order: Vec<&Closed> = spans.iter().collect();
@@ -127,7 +120,6 @@ pub fn snapshot() -> Value {
     )
 }
 
-/// The process's start, as an instant: now, less the time since its creation.
 fn origin() -> Instant {
     let now = Instant::now();
     since_creation()
@@ -141,14 +133,12 @@ fn since_creation() -> Option<Duration> {
         Foundation::FILETIME,
         System::Threading::{GetCurrentProcess, GetProcessTimes},
     };
-    // FILETIME counts 100 ns from 1601, 11,644,473,600 s before the Unix epoch.
     const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
     let zero = FILETIME {
         dwLowDateTime: 0,
         dwHighDateTime: 0,
     };
     let [mut created, mut exited, mut kernel, mut user] = [zero; 4];
-    // SAFETY: the pseudo-handle of the current process and four owned FILETIMEs.
     let read = unsafe {
         GetProcessTimes(
             GetCurrentProcess(),

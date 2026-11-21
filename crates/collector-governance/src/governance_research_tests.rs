@@ -1,25 +1,3 @@
-//! The loaned research part against a synthetic world whose research walks
-//! all succeed with rows, so a wrong split cannot pass by failing both sides.
-//!
-//! The world has a three-slot country census: slot 1 holds country id 1, slot 2
-//! is null and slot 3 holds country id 3. Both countries have an authenticated
-//! CTechnologyStatus with active research, and each has one applied
-//! limited-use bonus. Country 1 has a direct research-speed modifier and
-//! country 3 has a named source in its modifier tree. The two countries use
-//! different technologies, progress, bonuses and modifiers, so rows given the
-//! wrong country, placed in the wrong order or overwritten show up in the
-//! row-for-row comparison.
-//!
-//! The reference calls the engine's per-country walks directly, one country
-//! at a time, in census order, each into fresh buffers. It shares none of
-//! `ResearchPart`'s buffer slicing or outcome accumulation.
-//!
-//! Memory is a sparse overlay, not one flat image. A small heap window holds
-//! the objects, and a layout-sized module-data window, zero unless written, serves
-//! the research cost, research modifier and modifier-definition defines. The
-//! module base is zero, as in the engine research tests, so each vtable
-//! identity is its bare RVA. Addresses outside both windows are unreadable,
-//! including the null page.
 
 use super::*;
 use crate::country_input_changes::{Domain, Table};
@@ -33,14 +11,12 @@ const HEAP_END: usize = 0x3_0000;
 const GAME_STATE: usize = 0x1000;
 const COUNTRY_TABLE: usize = 0x2000;
 const LINK_TABLE: usize = 0x2100;
-/// Modifier-definition rows. Key 0xcd's row sits at index 0xcd, inside the heap.
 const METADATA: usize = 0x3000;
 
 const COST_SCALE: i64 = 130_000;
 const AHEAD_PENALTY: i64 = 175_000;
 const REASON: &str = "governance acquisition panicked";
 
-/// One assigned technology and the objects that only it owns.
 struct Tech {
     handle: u32,
     database_index: i32,
@@ -49,14 +25,11 @@ struct Tech {
     progress: i64,
     cost: i64,
     applied_speed: i64,
-    /// The technology category-speed sum in the modifier walk.
     category_speed: i64,
-    /// The template's XP modifier, present when the technology uses experience.
     experience: Option<i64>,
     bonus_ids: &'static [i32],
 }
 
-/// One research slot, listed in native roster order. `index` is the native slot index.
 struct Slot {
     index: u32,
     speed: i64,
@@ -76,28 +49,23 @@ struct CountrySpec {
     origin: usize,
     slots: &'static [Slot],
     bonuses: &'static [Bonus],
-    /// Raw 0xcd research-speed entry of the country accumulator.
     country_speed: i64,
-    /// A named child source in the accumulator tree (name, raw 0xcd).
     source: Option<(&'static [u8], i64)>,
 }
 
-// Per-country object layout relative to its origin (each origin owns 0x1_0000 bytes).
 const STATUS: usize = 0x1000;
 const SLOTS: usize = 0x1200;
-const SLOT: usize = 0x1300; // + i * 0x100
-const TECH: usize = 0x2000; // + i * 0x400
-const TEMPLATE: usize = 0x3000; // + i * 0x800
-const IDS: usize = 0x4000; // + i * 0x40
+const SLOT: usize = 0x1300;
+const TECH: usize = 0x2000;
+const TEMPLATE: usize = 0x3000;
+const IDS: usize = 0x4000;
 const BONUS_ROSTER: usize = 0x4200;
-const BONUS: usize = 0x4400; // + j * 0x100
+const BONUS: usize = 0x4400;
 const STORAGE: usize = 0x5000;
 const CHILDREN: usize = 0x5100;
 const WRAPPER: usize = 0x5200;
 const CHILD_STORAGE: usize = 0x5400;
 
-/// Country id 1. Its roster is permuted: native slot index 2 comes first,
-/// idle slot 1 second and slot 0 last. The walk sorts by native index.
 const FIRST: CountrySpec = CountrySpec {
     census_slot: 1,
     id: 1,
@@ -151,7 +119,6 @@ const FIRST: CountrySpec = CountrySpec {
     source: None,
 };
 
-/// Country id 3, in census slot 3, after the null slot 2.
 const SECOND: CountrySpec = CountrySpec {
     census_slot: 3,
     id: 3,
@@ -194,7 +161,6 @@ fn window(bytes: &[u8], start: usize, address: usize, len: usize) -> Option<&[u8
 
 impl engine_native::Memory for World {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
-        // The module window first: a scaled heap reaches past its start.
         let source = window(&self.image, IMAGE_START, address, out.len())
             .or_else(|| window(&self.heap, HEAP_START, address, out.len()));
         match source {
@@ -213,7 +179,6 @@ impl World {
             heap: vec![0; HEAP_END - HEAP_START],
             image: vec![0; IMAGE_LEN],
         };
-        // Country census: [sentinel, id 1, null, id 3]; links map raw id -> slot.
         world.array(GAME_STATE + cgame_state::COUNTRIES, COUNTRY_TABLE, 4);
         world.array(GAME_STATE + cgame_state::COUNTRY_LINKS, LINK_TABLE, 4);
         for spec in [&FIRST, &SECOND] {
@@ -227,9 +192,6 @@ impl World {
             );
             world.country(spec);
         }
-        // Module data: research cost defines, the modifier-definition table
-        // and the ahead-penalty define. The other research modifier defines
-        // read as zero in the zero-filled window.
         world.image_put(ctechnology::BASE_COST_SCALE_RVA, &COST_SCALE.to_le_bytes());
         world.image_put(ctechnology::BASE_COST_DEBUG_FLAG_RVA, &[0]);
         world.image_put(
@@ -270,7 +232,6 @@ impl World {
         self.put(at + 12, count.to_le_bytes());
     }
 
-    /// Inline MSVC string (capacity 15).
     fn text(&mut self, at: usize, text: &[u8]) {
         assert!(text.len() <= 15);
         self.heap[at - HEAP_START..at - HEAP_START + text.len()].copy_from_slice(text);
@@ -278,7 +239,6 @@ impl World {
         self.put(at + 24, 15_u64.to_le_bytes());
     }
 
-    /// A one-entry sorted accumulator: key, then raw value.
     fn modifier(&mut self, accumulator: usize, storage: usize, key: u32, raw: i64) {
         self.array(accumulator, storage, 1);
         self.put(storage, key.to_le_bytes());
@@ -293,7 +253,6 @@ impl World {
             (BASE as u64 + ccountry::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         self.put(o + ccountry::ID, spec.id.to_le_bytes());
-        // Each country owns a state, so its research drifts daily.
         self.put(o + ccountry::OWNED_STATE_COUNT, 1_i32.to_le_bytes());
         self.pointer(o + ccountry::TECHNOLOGY_STATUS, status);
         self.put(
@@ -408,7 +367,6 @@ impl World {
         let accumulator = o + ccountry::MODIFIER_ACCUMULATOR;
         self.modifier(accumulator, o + STORAGE, 0xcd, spec.country_speed);
         if let Some((name, raw)) = spec.source {
-            // The child wrapper holds an accumulator whose string names the source.
             self.array(accumulator + 0x18, o + CHILDREN, 1);
             self.pointer(o + CHILDREN, o + WRAPPER);
             let child = o + WRAPPER + 0x10;
@@ -438,9 +396,6 @@ struct Research {
     modifiers: Vec<research_modifiers::Row>,
 }
 
-/// Independent reference: the engine walks, country by country in census
-/// order, each into fresh buffers grown from the observed inventory demand,
-/// and every per-country outcome must be complete.
 fn reference(world: &World) -> Research {
     let countries = ccountry::Reader::new(world, BASE, GAME_STATE).expect("census readable");
     let input_context = research_inputs::Context::read(world, BASE);
@@ -488,8 +443,6 @@ fn reference(world: &World) -> Research {
         let Outcome::Rows { len: modifier_len } = modifier_outcome else {
             panic!("country {} modifiers: {modifier_outcome:?}", country.id);
         };
-        // Every country contributes to every table, so a dropped or
-        // overwritten country block changes the comparison.
         assert!(input_len > 0 && bonus_len > 0 && modifier_len > 0);
         result.inputs.extend_from_slice(&inputs[..input_len]);
         result.bonuses.extend_from_slice(&bonuses[..bonus_len]);
@@ -508,7 +461,6 @@ fn reference(world: &World) -> Research {
     result
 }
 
-/// The complete research rows the captured family holds, or a panic that names the incomplete table.
 fn research(captured: &Captured) -> Research {
     fn complete<R: Clone>(rows: &CaptureRows<R>, table: &str) -> Vec<R> {
         let Outcome::Rows { len } = rows.outcome else {
@@ -531,7 +483,6 @@ fn research_tables(captured: &Captured) -> Vec<TableView> {
         .collect()
 }
 
-/// The loaned part alone, restored into an otherwise untouched family.
 fn loaned_only(world: &World) -> Captured {
     let mut captured = captured();
     let mut part = captured.take_research();
@@ -540,7 +491,6 @@ fn loaned_only(world: &World) -> Captured {
     captured
 }
 
-/// Test A: the loaned part produces exactly the independent per-country walk.
 #[test]
 fn gap_research_grants_research_part_rows_match_independent_per_country_walks() {
     let world = World::new();
@@ -647,7 +597,6 @@ fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
     let mut captured = captured();
     let mut part = captured.take_research();
     let mut baseline = None;
-    // Hour 2 is forced so that its certified take still reads every country.
     for (hour, forced, installed, certified) in [
         (0, true, false, false),
         (1, false, true, false),
@@ -672,8 +621,6 @@ fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
     }
 }
 
-/// Test B: a family capture with the part loaned, in either completion
-/// order, leaves research to the part and yields Test A's tables.
 #[test]
 fn family_capture_with_loaned_research_yields_the_part_rows() {
     let world = World::new();
@@ -699,7 +646,6 @@ fn family_capture_with_loaned_research_yields_the_part_rows() {
     }
 }
 
-/// Test C: governance failing does not take the independently acquired research rows with it.
 #[test]
 fn governance_failure_keeps_successful_research_rows() {
     let world = World::new();
@@ -731,14 +677,9 @@ fn governance_failure_keeps_successful_research_rows() {
     }
 }
 
-/// Test D: a failed research part publishes its reason for walked tables and
-/// the cadence skip for tables not due. The research tables are currently
-/// walked every hour, so only the first case occurs. The expectation is
-/// computed from `should_walk` so a later cadence change is still checked.
 #[test]
 fn research_part_failure_publishes_reason_or_cadence_skip() {
     let world = World::new();
-    // One family reused across hours, as the collector's pooled frames are.
     let mut captured = captured();
     for force_full in [false, true] {
         for hour in 0..48 {
@@ -746,7 +687,6 @@ fn research_part_failure_publishes_reason_or_cadence_skip() {
             let mut part = captured.take_research();
             captured.capture(&world, BASE, GAME_STATE, hour, force_full);
             let family = captured.outcomes();
-            // Rows from a successful walk must not survive the later failure.
             part.capture(&world, context, &mut SliceFingerprints::new());
             part.fail(context, "research acquisition panicked");
             captured.restore_research(part);
@@ -773,7 +713,6 @@ fn research_part_failure_publishes_reason_or_cadence_skip() {
     }
 }
 
-/// Country IDs of the research rows a capture produced.
 fn owners(captured: &Captured) -> Vec<u32> {
     let mut owners: Vec<_> = research(captured)
         .inputs
@@ -784,7 +723,6 @@ fn owners(captured: &Captured) -> Vec<u32> {
     owners
 }
 
-/// One hour's research read, selected by `changes`' marks.
 fn slice_capture(
     world: &impl engine_native::Memory,
     hour: i32,
@@ -798,7 +736,6 @@ fn slice_capture(
     captured
 }
 
-/// A full-hour read: every country is read, and the take's epoch held.
 fn primed(world: &impl engine_native::Memory, changes: &Domain) -> SliceFingerprints {
     let mut fingerprints = SliceFingerprints::new();
     let mut captured = captured();
@@ -813,7 +750,6 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
     let world = World::new();
     let changes = Domain::enabled(64);
     let mut fingerprints = primed(&world, &changes);
-    // Country 1 is slice 1, country 3 slice 3; hour 25 is slot 1 again.
     for (hour, expected) in [(1, vec![1]), (3, vec![3]), (5, vec![]), (25, vec![1])] {
         let captured = slice_capture(&world, hour, &mut fingerprints, &changes);
         assert_eq!(owners(&captured), expected, "hour {hour}");
@@ -823,8 +759,6 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
         assert_eq!(selection.scanned, 2);
         assert_eq!(selection.contains(1), hour % 24 == 1);
         assert_eq!(selection.contains(3), hour % 24 == 3);
-        // Every emitted row belongs to a selected owner; the spool records
-        // their read hour in SliceReads.
         for view in research_tables(&captured) {
             let TableView::Complete(rows) = view else {
                 panic!("slice tables complete")
@@ -836,8 +770,6 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
             );
         }
     }
-    // The slice rows, carried from the held read, equal that country's rows
-    // from a full read.
     let full = research(&loaned_only(&world));
     let slice = research(&slice_capture(&world, 27, &mut fingerprints, &changes));
     let only = |rows: &Research| {
@@ -858,24 +790,17 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
     assert!(!changes.poisoned(Table::Research));
 }
 
-/// Test E: a country a hooked writer marked is read within the hour, alone;
-/// an unmarked one waits for its slice, which carries its held read with the
-/// daily progress read afresh. An unmarked change of a certified field is
-/// carried as held.
 #[test]
 fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_is_carried_at_its_slice() {
     let mut world = World::new();
     let changes = Domain::enabled(64);
-    // Nothing held yet: every country is read, outside its slice.
     let mut fresh = SliceFingerprints::new();
     assert_eq!(
         owners(&slice_capture(&world, 5, &mut fresh, &changes)),
         [1, 3]
     );
-    // After a full hour, a quiet hour reads nobody outside the slice.
     let mut fingerprints = primed(&world, &changes);
     assert!(owners(&slice_capture(&world, 5, &mut fingerprints, &changes)).is_empty());
-    // Technology assignment writes country 3's slot speed and marks it.
     let speed = SECOND.origin + SLOT + engine_research::cresearch_slot::RESEARCH_SPEED;
     world.put(speed, 95_000_i64.to_le_bytes());
     changes.write(Table::Research, 3);
@@ -885,10 +810,7 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_is_carried_at
     assert_eq!(selection.early_count, 1);
     assert!(selection.contains(3) && !selection.contains(1));
     assert!(!research(&captured).modifiers.is_empty());
-    // Taken: the next hour does not read it again.
     assert!(owners(&slice_capture(&world, 7, &mut fingerprints, &changes)).is_empty());
-    // Daily progress moves unmarked: no early read, and country 3's slice
-    // (hour 27) carries it with the progress read afresh.
     world.put(
         SECOND.origin + TECH + engine_research::ctechnology::LIVE_PROGRESS,
         260_000_i64.to_le_bytes(),
@@ -897,8 +819,6 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_is_carried_at
     let captured = slice_capture(&world, 27, &mut fingerprints, &changes);
     assert_eq!(owners(&captured), [3]);
     assert_eq!(research(&captured).inputs[0].progress_raw, 260_000);
-    // A slot speed changed with no mark is not read early, and the next
-    // slice carries the held speed.
     world.put(speed, 97_000_i64.to_le_bytes());
     assert!(owners(&slice_capture(&world, 28, &mut fingerprints, &changes)).is_empty());
     let carried = slice_capture(&world, 51, &mut fingerprints, &changes);
@@ -906,8 +826,6 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_is_carried_at
     assert_eq!(research(&carried).inputs[0].slot.research_speed_raw, 95_000);
 }
 
-/// A writer that names no country, a moved epoch (a load or gap) or an
-/// interrupted job reads every country at the next hour, then settles.
 #[test]
 fn an_uncertified_hour_reads_every_country() {
     let world = World::new();
@@ -926,7 +844,6 @@ fn an_uncertified_hour_reads_every_country() {
         [1, 3]
     );
     assert!(owners(&slice_capture(&world, 9, &mut fingerprints, &changes)).is_empty());
-    // A stability writer leaves research alone.
     changes.write(Table::Stability, 3);
     changes.write_every(Table::Stability);
     assert!(owners(&slice_capture(&world, 10, &mut fingerprints, &changes)).is_empty());
@@ -940,14 +857,9 @@ fn an_uncertified_hour_reads_every_country() {
 }
 
 impl World {
-    /// `countries` copies of the two specs at 0x8000-byte origins, every
-    /// `stated`-th one owning a state, census slot and raw id equal to its
-    /// native id.
     fn scaled(countries: usize, stated: usize) -> Self {
         const STRIDE: usize = 0x8000;
         let first = 0x1_0000;
-        // Objects skip the module window, which hides the heap bytes it
-        // overlaps.
         let origin = |index: usize| {
             let origin = first + index * STRIDE;
             if origin + STRIDE > IMAGE_START {
@@ -958,8 +870,6 @@ impl World {
         };
         let tables = origin(countries);
         let mut world = Self::new();
-        // Drop the two fixture countries; keep the census header and the
-        // metadata rows below them.
         world.heap.truncate(first - HEAP_START);
         world
             .heap
@@ -1004,13 +914,6 @@ impl World {
     }
 }
 
-/// Quiet-hour cost of the research job before and after the drift filter,
-/// over a synthetic world of 446, 1,500 and 5,000 countries: "all" has every
-/// country owning a state (the reads of the old selection), "1/6" a sixth,
-/// as in a vanilla census; "roster" reads through the hour's authenticated
-/// country census, as the live job does (`Cache::roster_view`). No writer
-/// marks anything; each run is one full hour, then 24 quiet hours.
-/// `cargo test --release -p collector research_quiet_hours_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "bench"]
 fn research_quiet_hours_bench() {
@@ -1059,7 +962,6 @@ fn research_quiet_hours_bench() {
     }
 }
 
-/// The addresses a capture read, over a [`World`].
 struct Reads<'a> {
     world: &'a World,
     addresses: std::cell::RefCell<Vec<usize>>,
@@ -1072,11 +974,6 @@ impl engine_native::Memory for Reads<'_> {
     }
 }
 
-/// A drifting country no writer marked is carried at its slice: of its
-/// research only its status, slot roster, banked days and assigned
-/// technologies' progress are read, and its rows equal a full read of the
-/// same memory. Before, the slice read every input, bonus and modifier
-/// source again.
 #[test]
 fn an_unmarked_slice_reads_only_the_daily_drift() {
     let mut world = World::new();
@@ -1130,7 +1027,6 @@ fn an_unmarked_slice_reads_only_the_daily_drift() {
     assert_eq!(carried, only(research(&loaned_only(&world))));
     assert_eq!(carried.inputs[0].progress_raw, 270_000);
     assert_eq!(carried.inputs[0].slot.banked_days_raw, 4_200_000);
-    // A slot roster that moved without a mark is read whole.
     world.array(
         SECOND.origin + STATUS + ctechnology_status::RESEARCH_SLOTS_DATA,
         SECOND.origin + SLOTS,
@@ -1140,9 +1036,6 @@ fn an_unmarked_slice_reads_only_the_daily_drift() {
     assert_eq!(only(research(&read)), only(research(&loaned_only(&world))));
 }
 
-/// Country 1's roster lists its slots in native index order 2, 1, 0, and
-/// its rows are sorted by slot index: a carried slice puts each slot's
-/// banked days on that slot's row, as a full read does.
 #[test]
 fn a_carried_slice_keeps_each_slots_banked_days_on_its_row() {
     let mut world = World::new();
@@ -1168,7 +1061,6 @@ fn a_carried_slice_keeps_each_slots_banked_days_on_its_row() {
     assert_eq!(banked, [3_000_000, 2_000_000, 1_000_000]);
 }
 
-/// [`World`] memory that fails reads of `address` while `remaining` lasts.
 struct Faulty<'a> {
     world: &'a World,
     address: usize,
@@ -1189,9 +1081,6 @@ impl engine_native::Memory for Faulty<'_> {
     }
 }
 
-/// The relaxed read-order rule lets the optional gather consume a one-shot
-/// fault: its one original serial pass must publish the now-readable live
-/// rows. A persistent fault still refuses at the original scalar boundary.
 #[test]
 fn a_one_shot_drift_fault_publishes_healed_slice_rows() {
     drift_fault_slice(true);
@@ -1208,7 +1097,6 @@ fn drift_fault_slice(once: bool) {
     let changes = Domain::enabled(64);
     let mut fingerprints = primed(&world, &changes);
     let banked = SECOND.origin + SLOT + engine_research::cresearch_slot::BANKED_DAYS;
-    // Distinguish successful live fallback rows from stale held rows.
     world.put(banked, 4_200_000_i64.to_le_bytes());
     world.put(
         SECOND.origin + TECH + engine_research::ctechnology::LIVE_PROGRESS,
@@ -1253,13 +1141,10 @@ fn drift_fault_slice(once: bool) {
         ));
     }
     assert_eq!(count(Batch::GovernanceResearchDrift) - before, 1);
-    assert_eq!(faulty.reads.get(), 2); // Failed gather plus one original serial pass.
+    assert_eq!(faulty.reads.get(), 2);
     assert!(!changes.poisoned(Table::Research));
 }
 
-/// Country 1's held research carried at its slice reads each slot's banked
-/// days in roster order (positions 0, 1, 2; native indices 2, 1, 0), as the
-/// full walk acquires them, not in its rows' index order.
 #[test]
 fn a_carried_slice_reads_the_slots_in_roster_order() {
     struct Banked<'a> {
@@ -1289,7 +1174,6 @@ fn a_carried_slice_reads_the_slots_in_roster_order() {
     assert_eq!(banked.reads.into_inner(), [0, 1, 2]);
 }
 
-/// The three research tables' outcomes of one capture.
 fn outcomes(captured: &Captured) -> [Outcome; 3] {
     [
         captured.research_inputs.outcome,
@@ -1298,11 +1182,6 @@ fn outcomes(captured: &Captured) -> [Outcome; 3] {
     ]
 }
 
-/// A persistent fault at each operand a carried slice of country 1 reads (its
-/// status pointer and identity, slot roster header, each slot's banked days
-/// and each assigned technology's progress) gives the carried slice exactly
-/// the outcomes a full read meets at the same fault: the same tables
-/// unavailable with the same reasons.
 #[test]
 fn a_carried_slice_fails_as_the_full_walk_at_each_fault() {
     let status = FIRST.origin + STATUS;

@@ -1,4 +1,3 @@
-//! A replay and the verified local game content used to draw its current hour.
 
 #[cfg(test)]
 pub mod music_inputs;
@@ -59,19 +58,16 @@ use {
     viewer_world::map::borders, viewer_world::map::borders::BorderMeshes,
     viewer_world::map::demilitarized::Zone, viewer_world::map::political::Regions,
 };
-// rivers
 use {
     viewer_world::map::rivers, viewer_world::map::rivers::RiverAssets,
     viewer_world::map::rivers::RiverImage, viewer_world::map::rivers::RiverMesh,
 };
-// trees
 use viewer_world::map::mapframe::FrameAssets;
 use {
     viewer_world::map::trees, viewer_world::map::trees::TreeAssets,
     viewer_world::map::trees::TreeField, viewer_world::map::trees::TreeGeometry,
     viewer_world::map::trees::TreeImage,
 };
-// close zoom
 use viewer_world::map::map_buildings::MapBuildingAssets;
 use viewer_world::map::unit_models::{ModelReport, UnitModelAssets};
 use {
@@ -79,7 +75,6 @@ use {
     viewer_world::map::railways::RailAssets, viewer_world::map::railways::RailMesh,
 };
 use {viewer_world::map::sprawl, viewer_world::map::sprawl::Sprawl};
-// names
 use viewer_raids::map::intel_icons;
 use viewer_raids::map::raids;
 use {
@@ -88,46 +83,28 @@ use {
     viewer_world::map::labels::LabelContent, viewer_world::map::labels::LabelReport,
     viewer_world::map::name_pass::NameContent, viewer_world::map::name_pass::PlacementInputs,
 };
-// counters
 use viewer_counters::map::counters::{self, CounterContent, CounterInputs, CounterReport};
-// orders: the recorded player's battle plan
 use {
     viewer_counter_products::map::orders,
     viewer_foundation::map::province_geometry::ProvinceGeometry,
     viewer_foundation::map::ribbon_content::OrderAssets,
     viewer_foundation::map::ribbon_content::OrderField,
 };
-// weather
 use viewer_foundation::map::perspective;
 use viewer_foundation::map::tables::{self, Limitations};
 use viewer_foundation::map::textures::IntelMap;
 use {viewer_world::map::weather, viewer_world::map::weather::SnowMud};
 
-/// The recorded hour to sit on after load: `--branch` and `--hour` select it,
-/// `hour_fraction` is how far past it the frame sits.
 pub struct InitialHour {
     pub branch: Option<BranchId>,
     pub hour: Option<replay_data::Hour>,
     pub hour_fraction: f32,
 }
 
-/// A replay, the hour on screen and the content it is drawn with.
 pub struct Document {
-    /// Everything that does not move with the hour, shared with the map's layers and the
-    /// workers that build their products.
     pub content: Arc<Content>,
     pub playback: Playback,
-    /// How far past [`Playback::hour`] the drawn frame is, in hours, in
-    /// `[0, 1)`.
-    ///
-    /// The recorded hour is the whole frame's state. A moving division stands
-    /// at its settled route point all hour, as the game draws it, so only the
-    /// fog-of-war note reads this; it is zero for every recorded hour, which is
-    /// what `--dump --hour <n>` renders.
     pub hour_fraction: f32,
-    /// State ids to treat as demilitarised **in addition to** the recorded
-    /// ones. Empty unless `--dump --demilitarized` sets it; see
-    /// [`Hour::demilitarized_zone`].
     pub demilitarized_override: BTreeSet<u32>,
 }
 
@@ -139,16 +116,11 @@ impl std::ops::Deref for Document {
     }
 }
 
-/// The load's view of the visual mod fallback ([`crate::visual_fallback`]): the recording's
-/// identity and the decisions its keys hold.
 pub type VisualFallback<'a> = (
     &'a str,
     &'a BTreeMap<crate::visual_fallback::FallbackKey, crate::visual_fallback::Decision>,
 );
 
-/// The decision `fallback` holds for the visual mods `selected` as they are now, when it shows
-/// no visual mods: `None` once a mod changes (another revision, another key), for another
-/// recording, or when the mods are shown.
 fn decided(
     fallback: Option<VisualFallback<'_>>,
     options: &ResolveOptions,
@@ -169,8 +141,6 @@ fn decided(
     decision.reason().is_some().then(|| (key, decision.clone()))
 }
 
-/// What the selected visual mods hold now ([`installed_content_core::content::visual::revision`]), with the
-/// recording's own mods as the selection mounts them; `None` when it cannot be read.
 fn visual_revision_now(
     options: &ResolveOptions,
     replay: &Replay,
@@ -195,9 +165,6 @@ fn visual_revision_now(
     .ok()
 }
 
-/// What `load` loads, loaded again until the revision of visual mods it loaded with is still the
-/// one `now` reads as it returns: a mod that changed during a load is never installed stale.
-/// Content that shows no revision (no selection, or one that could not be read) returns at once.
 fn until_current<T>(
     mut load: impl FnMut() -> io::Result<(T, String)>,
     mut now: impl FnMut() -> Option<String>,
@@ -210,9 +177,6 @@ fn until_current<T>(
     }
 }
 
-/// The city sprawl of `plan`: placed as the recording places it, its buildings' artwork
-/// loaded through the visual mods' artwork fallback ([`installed_content_core::ResolvedLayers::artwork`]),
-/// with the graphics defines of `defines` (recorded, graphics) while the mods show.
 fn load_sprawl(
     layers: &installed_content_core::ResolvedLayers,
     decode: installed_content_image::native::Decode,
@@ -233,93 +197,49 @@ fn load_sprawl(
     })
 }
 
-/// The verified local game content a replay is drawn with: everything that
-/// does not change with the recorded hour.
 pub struct Content {
     loading: installed_content_core::content::Loading,
     first_frame_reported: std::sync::atomic::AtomicBool,
-    /// The executable tables the recording carries, which its map's work reads in their scope.
     pub tables: Option<engine_executable::executable_tables::Tables>,
     pub products: map_products::ProductContent,
-    /// Fresh combat content identity, constructed with every host content load.
     pub combat: Arc<combat::Content>,
     pub counter_content: Arc<viewer_counter_products::map::counter_content::Content>,
 
-    /// Perspective-independent compute resources, weakly cached per graphics device.
     pub political_gpu: viewer_world::map::political_gpu::Cache,
-    /// The game textures scenes of this content draw, weakly cached per graphics device.
     pub scene_textures: viewer_world::map::scene::TextureCache,
     pub texture_quality: u8,
     pub visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
-    /// What the mounted visual mods held when this content loaded
-    /// ([`installed_content_core::content::visual::revision`]); empty when none is mounted.
     pub visual_revision: String,
-    /// The fallback key it was built for and what it was built under
-    /// ([`crate::visual_fallback`]); `None` without a visual mod selection to fall back from.
     pub fallback: Option<crate::visual_fallback::Built>,
     pub map: Arc<MapData>,
-    /// The content's camera and frame defines with the user's camera tilt.
     pub map_defines: MapDefines,
-    /// The content's zoom defines with the user's zoom and camera speeds.
     pub camera_law: CameraLaw,
-    /// The minimap's slide: `NInterface.MINIMAP_TOGGLE_DURATION` and `_SHIFT`.
     pub minimap_defines: Result<combat::minimap::Defines, String>,
-    /// The recorded speeds the day/night cycle follows, or why they could not be read.
     pub game_speeds: Result<viewer_foundation::map::frame::GameSpeeds, String>,
-    /// The user's `settings.txt` display facts that size the game's interface
-    /// on screen, or why they could not be read; see [`crate::map::ui_scale`].
     pub game_display: Result<installed_content_settings::settings::Display, String>,
-    /// The map options the user's `settings.txt` saves, which the window, a dump and the picker
-    /// start from; a line the game could not read is in [`Self::warnings`].
     pub game_options: installed_content_settings::settings::MapOptions,
-    /// The configured user folder's local world target size; no recorder UI state.
     pub game_full_resolution: bool,
-    /// Local show-all strategic names preference; never read from the recording.
     pub game_strategic_names: bool,
-    /// The user's `settings.txt` sound volumes.
     pub game_audio: dashboard_core::protocol::MapAudio,
-    /// The game's second master factor (`dev_master_volume`), a fraction.
     pub game_dev_master: f32,
-    /// The game's map cursors, each or why it is not shown.
     pub cursors: crate::cursors::Cursors,
-    /// The game images and textures the map passes draw from.
     pub assets: MapAssets,
-    /// Persistent recording compatibility, content verification and presentation limitations.
     pub warnings: Vec<String>,
-    /// Shared lazy content reads, reported afresh for map diagnostics and dumps.
     pub uncovered_reads: installed_content_core::content::UncoveredReads,
-    /// The content's sound definitions and the layers their samples are read
-    /// from; `None` when they are unreadable, which leaves the maps silent.
     pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
-    // borders
-    /// `map/terrain/border_*_0.dds` and `strait.dds`.
     pub border_assets: BorderAssets,
-    /// The traced border strips. Every land edge sits in the `Province` bucket until the hour's
-    /// political regions re-bucket it; see `viewer_world::map::border_pass`.
     pub border_meshes: Arc<BorderMeshes>,
-    /// The strait ribbons from `map/adjacencies.csv`.
     pub straits: Vec<StraitVertex>,
-    /// `map/strategicregions/*.txt`, which layer 1 of the political fill is built from; see
-    /// `viewer_world::map::political::strategic_regions_of`.
     pub strategic_regions: Arc<BTreeMap<u32, installed_content_regions::regions::StrategicRegion>>,
     pub naval_dominance: viewer_world::map::naval_dominance::Content,
-    /// The map modes' defines, colours and the content's scripted modes.
     pub map_modes: Arc<viewer_world::map::map_mode::Content>,
-    /// Wall time of the border trace, for reporting.
     pub border_trace: Duration,
-    // names
-    /// Fonts and map-icon sprites, uploaded once by the scene.
     pub icons: MapIcons,
-    /// Province adjacency, province bounds and the localisation.
     pub names: NameContent,
-    /// The label window layout and the unit-stack anchors.
     pub labels: LabelContent,
-    /// The resources mode's state icons, or why their content cannot be read.
     pub resource_icons: Result<viewer_world::map::resource_icons::ResourceIconContent, String>,
-    /// The strait and canal icons of the content's adjacency rules.
     pub adjacency_icons: viewer_world::map::adjacency_icons::AdjacencyIcons,
-    /// The trade-route lines' defines, or why they cannot be read.
     pub trade_routes: Result<viewer_world::map::trade_routes::TradeRouteDefines, String>,
     air_assignment_colors: Result<viewer_world::map::air_assignment::Colors, String>,
     occupation_stripe_alpha: Result<viewer_world::map::occupation_stripes::Alpha, String>,
@@ -327,108 +247,50 @@ pub struct Content {
     naval_region_eligibility: BTreeSet<u32>,
     air_order_colors: Result<viewer_world::map::air_orders::Colors, String>,
     air_transfer_color: Result<[f32; 4], String>,
-    // rivers
-    /// `map/terrain/RiverSurface_*`.
     pub river_assets: RiverAssets,
-    /// The ribbons traced from `map/rivers.bmp`.
     pub river_mesh: RiverMesh,
-    /// What the trace found, including the rivers the engine reports and drops.
     pub river_trace: rivers::Trace,
-    /// Wall time of the river trace and widening, for reporting.
     pub river_build: Duration,
-    // counters
-    /// The counter, base and combat anchors from `map/unitstacks.txt` and
-    /// `map/buildings.txt`.
     pub counters: Arc<CounterContent>,
     pub radar_centers: viewer_world::map::radar_symbols::Centers,
-    /// Raid hover identity and its immutable content, fresh for every content rebuild.
     pub raid_hover: Arc<raids::tooltips::Content>,
-    // the map's table frame
-    /// Content-resolved ambient mesh actors and their materials.
     pub frame_assets: FrameAssets,
-    // trees
-    /// The canopy meshes, their textures and the `tree_*` season blocks.
     pub tree_assets: TreeAssets,
-    /// The canopy geometry, flattened over every LOD of every tree mesh.
     pub tree_geometry: TreeGeometry,
-    /// Every canopy instance on the map, bucketed by tile.
     pub tree_field: TreeField,
-    /// Wall time of the instance generation, for reporting.
     pub tree_build: Duration,
-    // close zoom
-    /// The city sprawl: its mesh library and its placed houses.
     pub sprawl: Sprawl,
-    /// How long generating the sprawl took.
     pub sprawl_build: Duration,
-    /// The map-building slot table, types and meshes; the placed buildings are
-    /// per hour and come from [`Document::map_building_field`].
     pub map_buildings: MapBuildingAssets,
-    /// `gfx/models/supply/railroad.dds`.
     pub rail_assets: RailAssets,
-    /// Static boundary crossings and anchors for the recorded railway graph.
     pub rail_geometry: rail_layer::RailGeometry,
     pub aircraft: Arc<viewer_world::map::aircraft::AircraftAssets>,
     pub trains: Arc<viewer_world::map::trains::TrainAssets>,
-    /// How long constructing the static railway geography took.
     pub rail_build: Duration,
-    /// The railway bridges, which are meshes rather than strip.
     pub bridges: Bridges,
-    /// The land division entities, the sub-unit keys and the graphical
-    /// cultures; the placed figures are per hour and come from
-    /// [`Document::unit_model_field_sailing`].
     pub unit_models: UnitModelAssets,
-    // orders: the recorded player's battle plan
-    /// `gfx/maparrows/maparrows.txt` and the mask and pattern pages of every
-    /// arrow type the battle-plan layer can select.
     pub orders: OrderAssets,
     pub weather_effects: Arc<viewer_world::map::weather_effects::Assets>,
-    /// Derived ETA results shared across the hours in flight. The counter
-    /// layer builds on the window thread and the close-zoom models on workers
-    /// that run ahead of it; see [`Hour::etas`].
     eta_cache: Arc<EtaCache>,
-    /// Each hour's battle plan, shared by the hours whose plan tables
-    /// ([`orders::TABLES`]) are the same allocations, keyed also on the
-    /// viewing country's slot, the only thing it reads from the perspective.
     order_memo: Recent<(TableKey, u32, bool), OrderField>,
     trade_route_memo: Recent<(TableKey, u32), viewer_world::map::trade_routes::TradeRoutes>,
-    /// Each route's stops as the build before searched them, for the lines built since: a build
-    /// that finds the lock held searches its own ([`trade_routes::KeptStops`]).
     trade_route_stops: std::sync::Mutex<viewer_world::map::trade_routes::KeptStops>,
-    /// Each hour's counter type-icon relations, shared by the hours whose
-    /// relation tables and viewing country's volunteer hosts are unchanged
-    /// ([`counters::type_tint::Memo`]).
     type_tint_memo: counters::type_tint::Memo,
     mission_memo: counters::MissionMemo,
-    /// The overlay tables' whole-world parts kept from hour to hour ([`counters::Need::by_key`]).
     overlay_carry: counters::Carry,
-    /// The content-derived movement map and defines behind route points,
-    /// stack kinds and ETAs; `None` when the content could not be derived, in
-    /// which case moving units stand at their province and have no ETA.
     pub movement: Option<Arc<MovementContent>>,
-    /// Province pixel centroids and boundary crossing points, the two
-    /// quantities the engine builds an order's polyline from.
     pub province_geometry: Arc<ProvinceGeometry>,
-    /// How long that one pass over `map/provinces.bmp` took, for reporting.
     pub province_geometry_build: Duration,
 }
 
-/// One recorded hour of a document: its decoded frame, the fraction past it,
-/// and the content it is drawn with. Everything built per hour is built here,
-/// on whichever thread holds the frame.
 pub struct Hour<'a> {
     pub content: &'a Content,
     pub frame: &'a DecodedFrame,
-    /// See [`Document::hour_fraction`].
     pub hour_fraction: f32,
-    /// The last perspective read for this hour; several builders need it.
     product_hour: map_products::ProductHour<'a>,
     pool_limits: viewer_world::map::equipment_graphics::LimitValues,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
     air_rosters: Option<Arc<crate::playback::AirRosters>>,
-    /// The hours of the publication this hour's rows end at the recording moved a mover at: the
-    /// counters' layout gives each mover a place for each of them
-    /// ([`viewer_foundation::map::counter_move::MovedHours`]). None for an hour laid out outside a
-    /// step — a dump, a judge's own layout — whose movers are settled anyway.
     moved_hours: Option<Arc<viewer_foundation::map::counter_move::MovedHours>>,
 }
 
@@ -441,13 +303,10 @@ impl std::ops::Deref for Hour<'_> {
 }
 
 impl Content {
-    /// The naval dominance sources of `frame` for the country in slot `ours`, made as its overlay's
-    /// tables make them ([`counters::naval_dominance_sources`]).
     pub fn naval_dominance_sources(&self, frame: &DecodedFrame, ours: u32, region: u32) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
         counters::naval_dominance_sources(frame, &self.map, &self.counters, ours, region, self.icons.raids.movement_reads(), self.icons.raids.mission_topology())
     }
 
-    /// The heightmap as the map passes sample it.
     pub fn heights(&self) -> HeightField<'_> {
         HeightField {
             width: self.assets.heightmap.width,
@@ -456,8 +315,6 @@ impl Content {
         }
     }
 
-    /// One hour's battle plan for `ours` from a frame holding its tables (all of them for
-    /// invasions, active orders and labelled paradrops, [`orders::requires_full_frame`]).
     pub fn battle_plan(
         &self,
         frame: &DecodedFrame,
@@ -508,8 +365,6 @@ impl Content {
     }
 }
 
-/// The frame's provinces for the paced report: all, those the camera admits, and those out of
-/// view whose dirty bit still admits their owners' icons off screen.
 fn note_scope(schedule: &viewer_foundation::map::province_schedule::Schedule, bounds: &BTreeMap<u32, [f32; 4]>) {
     use viewer_foundation::map::{province_schedule::Update, redraws::note};
     let (mut in_view, mut dirty) = (0_u64, 0_u64);
@@ -527,10 +382,6 @@ fn note_scope(schedule: &viewer_foundation::map::province_schedule::Schedule, bo
     viewer_foundation::view_record::set("overlay", "provinces_dirty_off_screen", dirty);
 }
 
-/// The hour's intel icons in the overlay's tables: made with them, or deferred until a layout first
-/// reads them ([`counters::Need::by_key`]), so tables whose icons the map's intel layer lays in
-/// ([`OverlayTables::set_intel`]) never make their own. A deferred part is made from the tables' own
-/// rows and viewing country, with the document's content, as a made one is.
 #[derive(Clone)]
 enum IntelPart {
     Made(Arc<intel_icons::IntelIcons>),
@@ -548,8 +399,6 @@ impl IntelPart {
         match self {
             Self::Made(made) => Arc::clone(made),
             Self::Deferred(deferred) => {
-                // A reader never waits on another's making: it makes its own, and the first made
-                // is kept.
                 if let Some(made) = deferred.made.get() {
                     return Arc::clone(made);
                 }
@@ -568,7 +417,6 @@ impl IntelPart {
     }
 }
 
-/// Raw country reference to canonical slot, the `CountryLinks` join.
 pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
     Ok(tables::core::<row_tables::CountryLinks>(frame)?
         .iter()
@@ -576,10 +424,6 @@ pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
         .collect())
 }
 
-/// The hit shapes of the overlay's own icons as a draw laid them out: the raid icons it laid out
-/// for hovering, drawn or hidden, the Operatives entries, and the occupation and adjacency icons.
-/// The draw writes them beside the counters' report, so the map is resolved against what was
-/// drawn until the next draw, whatever layout is installed meanwhile.
 #[derive(Default)]
 pub struct OverlayHits {
     pub raids: Vec<raids::tooltips::Hit>,
@@ -589,9 +433,6 @@ pub struct OverlayHits {
 }
 
 impl OverlayHits {
-    /// The intel entry under the pointer. `seen` gives the pointer in one entry's own layout
-    /// with its container's draw rank, the coordinates every consumer of a map-icon hit works in
-    /// ([`crate::app::map_hits::local`]); `None` for an entry a free eye does not show.
     pub fn intel_at(
         &self,
         seen: impl Fn(&intel_icons::IntelHit) -> Option<([f32; 2], u32)>,
@@ -600,12 +441,6 @@ impl OverlayHits {
     }
 }
 
-/// Camera-dependent preparation retained while only the hour fraction moves.
-///
-/// The raid icons are kept apart from the labels, so that a raid batch's
-/// icons replace them alone ([`PreparedOverlay::replace_raids`]): their
-/// layers are their depth order among themselves, and no other part of the
-/// overlay reads them.
 pub struct PreparedOverlay {
     pub radar: Arc<viewer_world::map::radar_symbols::Field>,
     pub air_ranges: Arc<viewer_world::map::air_ranges::Fields>,
@@ -613,57 +448,30 @@ pub struct PreparedOverlay {
     pub occupation_stripes: viewer_world::map::air_assignment::Field,
     pub naval_selection: viewer_world::map::naval_selection::Field,
     pub air_orders: Arc<viewer_world::map::air_orders::Prepared>,
-    /// The labels' prepared values, drawn through this view's native pools.
     labels: labels::PreparedLabels,
-    /// The raid icons, drawn before the labels.
     raids: Batch,
-    /// Prepared raid owners; presentation windows retain their own clock.
     native_raids: raids::PreparedRaids,
     icons: counters::PreparedCounters,
     label_report: LabelReport,
     raid_report: raids::RaidReport,
-    /// The Operatives map mode's state containers, and their quads and report as of the last
-    /// draw.
     native_intel: intel_icons::PreparedIntel,
     intel: Batch,
     intel_report: intel_icons::IntelReport,
-    /// [`crate::map::lazy_icons::LazyTextures::version`] when it was laid out; a
-    /// newer version may have decoded a flag or portrait it left out.
     lazy_version: u64,
-    /// Its tables' land combat flags came from the engaged index; otherwise
-    /// they are what a load at the hour rebuilds, and the window lays the
-    /// overlay out again once the index covers the hour.
     engaged_covered: bool,
-    /// The layers' products this layout was made with
-    /// ([`counters::layered::Layered::identity`]). A layer publishing another product makes a
-    /// different layout of the same hour, which the overlay's gate names instead of reporting it
-    /// as a difference of layouts.
     layers: [usize; 6],
-    /// The counter options and the view's counter memory it was laid out with, which its
-    /// redraws keep.
     counter_view: CounterView,
-    /// The resources mode's state icons and the strait and canal icons, presented through this
-    /// view's pools.
     resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
     occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
-    /// Who laid out the resource icons and the occupation icons.
     resource_icons_by: MadeBy,
     occupation_icons_by: MadeBy,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
-    /// The strait and canal icons' priority in the view's map mode.
     adjacency_priority: i8,
-    /// The resource, occupation and adjacency icons as last drawn.
     mode_icons: Batch,
-    /// What the last draw refused, by reason.
     mode_icon_refused: BTreeMap<String, usize>,
-    /// Which build of the tables it was laid out over ([`OverlayTables::identity`]): a layout is
-    /// placed again over its own publication's tables and no other's.
     tables: usize,
 }
 
-/// What an overlay holds that the camera does not move: the province fields the hour's rows
-/// supply, and the labels laid out for every camera. An overlay placed again at another camera
-/// takes these as they are ([`PreparedOverlay::project`]).
 pub struct Still {
     labels: labels::PreparedLabels,
     air_assignment: viewer_world::map::air_assignment::Field,
@@ -675,32 +483,23 @@ pub struct Still {
     engaged_covered: bool,
 }
 
-/// Who laid out an overlay part that a map layer can draw instead of today's maker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MadeBy {
-    /// Today's maker, over the hour's frame or the rows at the head.
     Today,
-    /// Nobody: left empty for the layer, whose product the window lays in.
     Left,
-    /// The layer, from its product at this version.
     Layer(u64),
 }
 
-/// The tables the trade routes' convoy lines read ([`Hour::trade_route_lines`]).
 const TRADE_ROUTE_TABLES: &[replay_data::rows::TableId] = &trade_route_read::TABLES;
 
-/// The overlay parts the map's layers draw: today's maker leaves them empty.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LeftToLayers {
     pub resource_icons: bool,
     pub occupation_marks: bool,
-    /// The radar layer draws the radar field: the hour's tables read none, since the frame takes
-    /// the layer's ([`crate::app::Viewer::draw_map`]) and the hour's would only be its fallback.
     pub radar: bool,
 }
 
 impl LeftToLayers {
-    /// What `side`'s layers draw; nothing while the map's playhead is off.
     pub fn of(side: Option<&crate::playhead_host::MapSide>) -> Self {
         Self {
             resource_icons: side.and_then(crate::layers::resource_icons::drawn).is_some(),
@@ -711,7 +510,6 @@ impl LeftToLayers {
 
 }
 
-/// The counters laid out on `view`'s retained memory, over the rows their tables were made from.
 fn prepare_counters_with(
     inputs: &CounterInputs<'_>,
     tables: &OverlayTables,
@@ -726,7 +524,6 @@ fn prepare_counters_with(
     counters::prepare_retained(inputs, &tables.counters, lazy_version, &mut retained)
 }
 
-/// A dump retains the same presented windows across its scene frames.
 pub struct DumpOverlay<'a> {
     hour: Hour<'a>,
     prepared: PreparedOverlay,
@@ -738,9 +535,7 @@ pub struct DumpOverlay<'a> {
     pub batch: Batch,
     pub extra: Batch,
     pub sprites: Batch,
-    /// The sprites as a free camera shows them ([`free_icons::present`]).
     presented: Batch,
-    /// How a free camera shows each icon, which hover follows; `None` when drawn as laid out.
     looks: Option<free_icons::Looks>,
     pub labels: LabelReport,
     pub counters: CounterReport,
@@ -750,8 +545,6 @@ pub struct DumpOverlay<'a> {
 }
 
 impl DumpOverlay<'_> {
-    /// The sprites the last [`DumpOverlay::present`] drew: as laid out, or as a free camera
-    /// shows them.
     pub fn shown(&self) -> &Batch {
         if self.camera.free().is_some() {
             &self.presented
@@ -788,12 +581,10 @@ impl DumpOverlay<'_> {
             .retries()
     }
 
-    /// The overlay as of the last presented frame: its intel icons' report and its stripes.
     pub fn prepared(&self) -> &PreparedOverlay {
         &self.prepared
     }
 
-    /// How the last presented frame's free camera showed each icon; `None` as laid out.
     pub fn looks(&self) -> Option<&free_icons::Looks> {
         self.looks.as_ref()
     }
@@ -804,9 +595,6 @@ impl DumpOverlay<'_> {
         self.tables.naval_dominance_sources()
     }
 
-    /// Opens the target details window of the raid offer bubble at `province`, built from the
-    /// hour's rows for the viewing country as the bubble's click builds it; how many targets it
-    /// lists.
     pub fn open_raid_details(&mut self, province: u32) -> Result<usize, String> {
         let targets = self
             .tables
@@ -839,7 +627,6 @@ impl DumpOverlay<'_> {
     }
 
     pub fn present(&mut self, time: f32) -> io::Result<&Batch> {
-        // Advance even when models are omitted; owners still use the province schedule.
         self.advance_provinces();
         loop {
             let before = self.hour.icons.lazy.version();
@@ -862,12 +649,10 @@ impl DumpOverlay<'_> {
                     self.looks = None;
                     return Ok(&self.sprites);
                 }
-                // A free camera shows the icons standing in the world.
                 let ground = free_icons::Ground {
                     field: self.hour.heights(),
                     sight: self.hour.assets.terrain_sight(),
                 };
-                // A dump draws one hour with every unit settled, so no mover carries a track.
                 let at = viewer_foundation::map::anchored::Head { hour: self.hour.frame.hour, fraction: 0.0 };
                 self.looks = Some(free_icons::present(
                     &self.camera,
@@ -892,8 +677,6 @@ impl DumpOverlay<'_> {
 }
 
 impl PreparedOverlay {
-    /// The counter plate the primary button holds and the one under the pointer, which draw
-    /// without a new preparation.
     pub fn set_pressed(
         &mut self,
         pressed: Option<viewer_foundation::unit_handle::Unit>,
@@ -903,8 +686,6 @@ impl PreparedOverlay {
         self.counter_view.plate_hovered = plate_hovered;
     }
 
-    /// The raid bubble whose details window is open, with what its click built, and the bubble
-    /// under the pointer: they change no layout, so the frame sets them as they change.
     pub fn raid_view(&self) -> (Option<(u32, Arc<raids::tooltips::Details>)>, Option<u32>) {
         (self.counter_view.raid_details.clone(), self.counter_view.raid_hovered)
     }
@@ -914,25 +695,16 @@ impl PreparedOverlay {
         self.counter_view.raid_hovered = hovered;
     }
 
-    /// The view the overlay presents through, for one laid out on another memory of it
-    /// ([`crate::map_views::Presentation::sharing`]).
     pub fn set_counter_view(&mut self, view: CounterView) {
         self.counter_view = view;
     }
 
-    /// Takes `old`'s drawn land plates whose stack and style this overlay's are the same by value:
-    /// for an overlay of another hour laid out for `old`'s view, with the same art.
     pub fn carry_plates(&mut self, old: &mut PreparedOverlay) {
         if self.lazy_version == old.lazy_version {
             self.icons.keep_drawn_by_value(&mut old.icons);
         }
     }
 
-    /// Whether flags or portraits have decoded since this overlay was laid out.
-    /// Places this overlay at `camera`: the counters' pass over the plans the view keeps, and
-    /// each icon kind's projection. The parts the camera does not move ([`Still`]) are kept, so
-    /// moving the camera reads no row and lays no hour out again. On a refusal the overlay is
-    /// left as it was.
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one placing")]
     pub fn project(
         &mut self,
@@ -955,7 +727,6 @@ impl PreparedOverlay {
         let mut spans = viewer_foundation::profiling::BuilderSpans::new(false);
         match hour.prepare_overlay_with(camera, viewport, ui_scale, tables, view, rows, &mut spans, Some(&mut still)) {
             Ok(mut placed) => {
-                // A column whose plan the view kept keeps the plate it drew, at the new origin.
                 placed.icons.keep_drawn(&mut self.icons);
                 *self = placed;
                 Ok(())
@@ -996,25 +767,18 @@ impl PreparedOverlay {
         self.lazy_version != hour.icons.lazy.version()
     }
 
-    /// The layers' products this layout was made with.
     pub fn layers(&self) -> [usize; 6] {
         self.layers
     }
 
-    /// Which build of the tables it was laid out over ([`OverlayTables::identity`]).
     pub fn tables(&self) -> usize {
         self.tables
     }
 
-    /// The icon windows the last draw asked this view's native pools for and they have not made
-    /// yet: the pools make them over the frames after the one that asked, so a frame drawn once
-    /// can be missing them ([`crate::render`]'s dump settles the same way).
     pub fn retries(&self) -> Vec<Retry> {
         self.counter_view.presentation.windows.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retries()
     }
 
-    /// The overlay presented at `time` seconds on the view's own presentation clock (see
-    /// [`counters::PreparedCounters::draw`]).
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw(
         &mut self,
@@ -1038,12 +802,6 @@ impl PreparedOverlay {
         ))
     }
 
-    /// The presented frame's passes alone, for a frame in which nothing the overlay shows changed:
-    /// the province schedule advanced and the manager pass of each family in `pools`, with the
-    /// naval windows' lifecycle, run as a drawn frame runs them
-    /// ([`counters::PreparedCounters::draw_quiet`], [`crate::map_views::Views::set_quiet`]); the
-    /// batch, reports and hits the last drawn frame made stand. A family with nothing running is
-    /// left as it stands: its pass has nothing to do, and the next drawn frame runs it.
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw_quiet(
         &mut self,
@@ -1149,8 +907,6 @@ impl PreparedOverlay {
         counters
     }
 
-    /// [`PreparedOverlay::draw`] into the caller's batch, counter report and hit shapes, reusing
-    /// the batch's and report's storage. On an error all three are left as they were.
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw_into(
         &mut self,
@@ -1201,7 +957,6 @@ impl PreparedOverlay {
             visibility: self.counter_view.visibility,
             art: hour.icons.lazy.version(),
         };
-        // One advance before forking. Workers snapshot/read it, never advance it.
         let schedule_profile = viewer_foundation::profiling::span("d_schedule");
         inputs
             .schedule
@@ -1369,7 +1124,6 @@ impl PreparedOverlay {
         );
         let (counters, counters_owner) = counters;
         let ((other, other_owners), other_owner) = other;
-        // The counters' own branch, when they drew branched.
         let counters_branch = counters.as_ref().ok().copied().flatten();
         for sample in [counters_owner, counters_branch, other_owner]
             .into_iter()
@@ -1404,23 +1158,19 @@ impl PreparedOverlay {
             },
             layers,
         );
-        // Only the raid icons the draw laid out for hovering, drawn or hidden, can own the hover.
         let raids = if raid_range.is_some() || layers.raids_hovered { raid_hits } else { Vec::new() };
         *hits = OverlayHits { raids, intel: intel_hits, occupation: occupation_drawn, adjacency: adjacency_drawn };
         Ok(())
     }
 
-    /// The labels' report, fixed when the overlay was laid out.
     pub fn label_report(&self) -> &LabelReport {
         &self.label_report
     }
 
-    /// The raid icons' report, as of the icons last laid out.
     pub fn raid_report(&self) -> &raids::RaidReport {
         &self.raid_report
     }
 
-    /// The warning-area lines of the mode icons: what their last draw refused.
     pub fn mode_icon_warnings(&self) -> Vec<String> {
         self.mode_icon_refused
             .iter()
@@ -1428,7 +1178,6 @@ impl PreparedOverlay {
             .collect()
     }
 
-    /// All views upload this same current secondary province field, including its empty clear.
     pub fn province_stripes(&self) -> &viewer_world::map::air_assignment::Field {
         use viewer_foundation::map::mode_visibility::PriorityTable;
         match self.counter_view.visibility.priorities {
@@ -1448,12 +1197,10 @@ impl PreparedOverlay {
             }))
     }
 
-    /// The intel icons' report, as of the last draw.
     pub fn intel_report(&self) -> &intel_icons::IntelReport {
         &self.intel_report
     }
 
-    /// ToolTip draws after the map and combat window, with this hour's native flag atlases.
     pub fn draw_tooltip(
         &self,
         hour: &Hour<'_>,
@@ -1492,14 +1239,11 @@ impl PreparedOverlay {
         self.occupation_icons_by
     }
 
-    /// Lays out the resource icons layer's `icons`, at `version`, in place of the hour's.
     pub fn replace_resource_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
         self.resource_icons = hour.resource_icons_with(camera, viewport, ui_scale, self.counter_view.visibility, |inputs| viewer_world::map::resource_icons::lay_out(inputs, icons));
         self.resource_icons_by = MadeBy::Layer(version);
     }
 
-    /// Lays out the occupation marks layer's `marks`, at `version`, in place of the hour's, for
-    /// viewing country `country`.
     #[allow(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
     pub fn replace_occupation_icons(&mut self, hour: &Hour<'_>, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
         self.occupation_icons = hour.occupation_icons_with(camera, viewport, ui_scale, self.counter_view.occupation, country, |inputs| viewer_world::map::occupation_icons::lay_out(inputs, marks));
@@ -1508,25 +1252,18 @@ impl PreparedOverlay {
 
 }
 
-/// The overlay's parts, each in its own push order, with the windows its quads belong to.
 struct OverlayParts<'a> {
     pings: &'a Batch,
     bases: &'a Batch,
-    /// The map mode's resource, occupation and strait icons.
     mode_icons: &'a Batch,
     raids: &'a Batch,
-    /// The Operatives map mode's state containers.
     intel: &'a Batch,
     labels: &'a Batch,
     counters: &'a Batch,
     combats: &'a Batch,
-    /// The naval combat icons the view's own windows drew ([`counters::PreparedCounters`]).
     naval_combats: &'a Batch,
 }
 
-/// `batch` emptied, then `parts` in draw order: pings and bases, raid icons
-/// and labels, counters and combats, leaving out the `omitted` groups (raid
-/// icons go with the labels). Where the raid icons stand, when drawn.
 fn compose(
     batch: &mut Batch,
     parts: &OverlayParts<'_>,
@@ -1550,7 +1287,6 @@ fn compose(
     if layers.labels {
         batch.append(parts.labels);
     }
-    // Each counter kind and owner was filtered as it was drawn.
     batch.append(parts.counters);
     if layers.land_combats {
         batch.append(parts.combats);
@@ -1561,22 +1297,15 @@ fn compose(
     raids
 }
 
-/// Which parts of the screen-space overlay a view draws. Hidden parts are still laid out, so
-/// their hovers, selection and presentation windows carry on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverlayLayers {
-    /// Faction-theatre pins.
     pub pins: bool,
-    /// Base, naval HQ and facility icons.
     pub bases: bool,
     pub raids: bool,
-    /// Whether raid icons keep their hover while hidden; a dump's omission removes it too.
     pub raids_hovered: bool,
-    /// Capital and victory-point names and symbols.
     pub labels: bool,
     pub counters: counters::CounterDisplay,
     pub land_combats: bool,
-    /// Naval combat, result and mission icons.
     pub naval_markers: bool,
 }
 
@@ -1596,7 +1325,6 @@ impl Default for OverlayLayers {
 }
 
 impl OverlayLayers {
-    /// A view's choices; `owners` are the counter filter's canonical country slots.
     pub fn shown(
         graphics: &dashboard_core::protocol::MapGraphics,
         owners: Option<Arc<std::collections::BTreeSet<u32>>>,
@@ -1620,8 +1348,6 @@ impl OverlayLayers {
         }
     }
 
-    /// A dump's omitted groups: counters take every unit, base and combat icon; labels take
-    /// raid icons and victory-point labels, and their hovers.
     pub fn omitting(omitted: Omissions) -> Self {
         let counters = !omitted.counters;
         let labels = !omitted.labels;
@@ -1644,7 +1370,6 @@ impl OverlayLayers {
     }
 }
 
-/// Whether two quad lists are the same bit for bit.
 pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
     let bits = |values: &[f32]| {
         values
@@ -1663,7 +1388,6 @@ pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
         })
 }
 
-/// Preserves the selection setter order through the scene input seam.
 pub fn select_movement(
     scene: &mut viewer_world::map::scene::Scene,
     device: &eframe::wgpu::Device,
@@ -1758,7 +1482,6 @@ pub enum LoadTarget {
 }
 
 impl Document {
-    /// Which tables the open recording holds.
     pub fn capture_mode(&self) -> replay_data::scope::CaptureMode {
         self.playback.replay().capture_mode
     }
@@ -1796,7 +1519,6 @@ impl Document {
             LoadTarget::Content,
         )?;
         document.bind_source(&source);
-        // The hour read before the binding could not read a native map: read it again.
         if !matches!(
             document.playback.current(),
             crate::playback::Current::Frame(_)
@@ -1807,15 +1529,11 @@ impl Document {
         Ok(document)
     }
 
-    /// Binds worker playback to the native recordings published beside `source`'s replay.
-    /// It does not start preparation or read a campaign's hourly history.
     pub fn bind_source(&mut self, source: &dashboard_base::Source) {
         self.playback
             .bind_map(crate::map_binding::MapBinding::new(source));
     }
 
-    /// Load verified presentation assets using the same immutable recording
-    /// handle as the native analytics service. Call only on a loading thread.
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn load_shared(
         path: &Path,
@@ -1830,8 +1548,6 @@ impl Document {
         target: LoadTarget,
     ) -> io::Result<Self> {
         let _startup = crate::perf_log::StartupSpan::new("document").with_loaders(path);
-        // A visual mod that changed while the content loaded, when a refresh would find nothing
-        // loaded to check, loads it again: what installs is what the mods hold as it installs.
         let resolved = std::cell::RefCell::new({
             let _admission = crate::perf_log::StartupSpan::new("source_admission");
             source.content(options)?
@@ -1900,7 +1616,6 @@ impl Document {
         Ok(document)
     }
 
-    /// [`Self::load_shared`], once, with the recording's own executable tables in scope.
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn load_shared_once(
         path: &Path,
@@ -1966,8 +1681,6 @@ impl Document {
         }
         let language = &replay.identity.language;
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
-        // Replay::open requires every session to have the same content identity.
-        // The recorded layer ids and hashes, rather than launcher state, select it.
         viewer_foundation::load_record::count("content loaded", 1, 0);
         let mut content = {
             let _stage = viewer_foundation::load_record::stage("document.recorded_stack");
@@ -1978,9 +1691,6 @@ impl Document {
         let uncovered_reads = content.layers.report_uncovered_reads();
         let mut visual_revision = String::new();
         let mut fallback = None;
-        // Visual mods mount above the recorded stack for artwork only; geometry and every
-        // recorded fact keep reading the recorded layers. A selection that cannot be shown is
-        // named and the recording still opens.
         if let Some(selected) = visual_mods.filter(|selected| !selected.is_empty()) {
             let recorded: Vec<_> = replay
                 .identity
@@ -1992,8 +1702,6 @@ impl Document {
                 })
                 .collect();
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            // A map that failed with these visual mods, as they are now, shows what its fallback
-            // decided ([`crate::visual_fallback`]).
             let decided_stage = viewer_foundation::load_record::stage("document.visual_decided");
             let decision = decided(visual_fallback, options, selected, &recorded, &cancel);
             drop(decided_stage);
@@ -2108,7 +1816,6 @@ impl Document {
                 let _stage = viewer_foundation::load_record::stage("content.terrain");
                 product_loader.terrain()?
             };
-            // The game logs a malformed terrain entry or field and loads the rest.
             for reason in &terrain.skipped {
                 warnings.push(format!(
                     "Terrain content the game logs and reads past: {reason}."
@@ -2122,18 +1829,11 @@ impl Document {
                 let _stage = viewer_foundation::load_record::stage("content.audio");
                 product_loader.audio(&defines, &options.user_dir, &mut warnings)
             };
-            // Graphics consumers read the recorded defines with the graphics sections of the defines
-            // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
-            // simulation section stays recorded, for every consumer. A graphics value of another
-            // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
-            // keep the recorded defines, each named.
             let art_defines = {
                 let _stage = viewer_foundation::load_record::stage("content.graphics_defines");
                 defines.graphics_for(&content.layers)
             };
             let game_speeds = viewer_foundation::map::frame::GameSpeeds::load(&defines);
-            // The defines an artwork loader reads with the stack it was handed: graphics defines
-            // with the visual mods, recorded defines when it falls back to the recording.
             let defines_for = |stack: &installed_content_core::ResolvedLayers| {
                 if stack.shows_visual_mods() {
                     &art_defines
@@ -2141,7 +1841,6 @@ impl Document {
                     &defines
                 }
             };
-            // Every key as the game reads it (`installed_content_settings::settings::SettingsKeys`).
             let settings = installed_content_settings::settings::read_keys(&options.user_dir)?;
             let camera_tilt = viewer_foundation::map::camera::stored_tilt(
                 settings
@@ -2151,8 +1850,6 @@ impl Document {
                     )
                     .ok_or_else(|| invalid("settings.txt camera_tilt is not a number"))?,
             );
-            // The local graphics preference defaults on when no boolean value is stored.
-            // The game halves the HDR scene; the output/interface remain full size.
             let game_full_resolution = settings
                 .bool_at(&["maprenderingoptions", "draw_map_full_res"])
                 .unwrap_or(true);
@@ -2182,8 +1879,6 @@ impl Document {
                 combat::minimap::Defines::load,
             )
             .map_err(|error| error.to_string());
-            // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
-            // pads every texture file the passes load and sets their global defines.
             let decode = settings.texture_decode();
             if settings.is_absent() {
                 warnings.push(format!(
@@ -2197,8 +1892,6 @@ impl Document {
                     .into_iter()
                     .map(|line| format!("Map options: {line}.")),
             );
-            // Only the interface scale's default needs these; without them it falls
-            // back to 1.0 and says so, rather than refusing the recording.
             let game_display = installed_content_settings::settings::read_pdx(&options.user_dir)
                 .and_then(|pdx| {
                     installed_content_settings::settings::Display::read(
@@ -2207,13 +1900,6 @@ impl Document {
                     )
                 })
                 .map_err(|error| error.to_string());
-            // The GUI viewport the map-icon windows' asset set is read at: settings.txt's own frame
-            // (the last `graphics` block's `size`, else the default 1280 x 720)
-            // over its scale as each block clamps it, a desktop the
-            // constructor's size standing in for display 0's. That read decides only which
-            // resources load, a set no viewport changes
-            // (`the_asset_set_does_not_depend_on_the_gui_viewport`); every view reads its windows
-            // again at its own viewport.
             let asset_viewport = {
                 const CONSTRUCTED: [u32; 2] = [1280, 720];
                 let (frame, scale) = match &game_display {
@@ -2235,7 +1921,6 @@ impl Document {
                 };
                 native_shader_draw::gui_viewport(frame, scale)
             };
-            // The strategic regions are parsed once for borders, counters and aircraft.
             let installed_content_regions::regions::StrategicRegions {
                 regions,
                 notes: region_notes,
@@ -2265,8 +1950,6 @@ impl Document {
                 );
                 Ok((assets?, warnings))
             });
-            // Artwork, interface, fonts, models and text load from the presentation stack, whose
-            // visual mods show only under artwork roots, and fall back to the recording by name.
             let h_icons = dag.add(&[], || {
                 let _stage = viewer_foundation::load_record::stage("wave1.icons");
                 let _startup = crate::perf_log::StartupSpan::new("document_icons");
@@ -2396,10 +2079,8 @@ impl Document {
             let h_units = dag.add(&[], || -> io::Result<_> {
                 let _stage = viewer_foundation::load_record::stage("wave1.units");
                 let _startup = crate::perf_log::StartupSpan::new("document_units");
-                // Its refusals are its own warnings; it never fails as a whole.
                 let stack = layers.presentation();
                 let mut warnings = Vec::new();
-                // Defines the visual mods' scripts break fall back to the recorded ones.
                 let recorded = (stack.shows_visual_mods()
                     && layers.presentation_defines().is_some())
                 .then_some(&defines);
@@ -2472,21 +2153,14 @@ impl Document {
                     RailAssets::load(stack, [map.width, map.height], decode)
                 })
             });
-            // The ideology groups supply the tactic triggers' ideology names.
-            // Loading trigger keys registers those content names.
             let h_ideologies = dag.add(&[], || {
                 let _stage = viewer_foundation::load_record::stage("wave1.ideologies");
                 product_loader.ideologies()
             });
-            // The resource declarations, for the tactic triggers' resource
-            // names as the content is read.
             let h_resources = dag.add(&[], || {
                 let _stage = viewer_foundation::load_record::stage("wave1.resources");
                 product_loader.resources()
             });
-            // The initial seek decodes from its block start to the hour, all
-            // in memory; it overlaps the file reads above on its own thread.
-            // Only playback moves here, so the joins below keep their order.
             let h_initial = dag.add(&[], || {
                 let _stage = viewer_foundation::load_record::stage("wave1.initial");
                 Self::initial_playback(replay, initial).map(std::sync::Mutex::new)
@@ -2750,8 +2424,6 @@ impl Document {
             }
             let names = h_names.take()?;
             let recorded_labels = h_labels.take()?;
-            // The map-icon windows' resources need the localisation their texts are shown
-            // through, which the names pass reads.
             let icon_windows = viewer_foundation::load_record::stage("wave1.icon_windows");
             joined_warnings.extend(layers.artwork("map icon windows", |stack| {
                 MapIcons::load_gui(
@@ -2792,16 +2464,12 @@ impl Document {
                     .into_iter()
                     .map(|(_, warning)| format!("Combat tactics: resources: {warning}")),
             );
-            // Count triggers resolve these buildings, ideologies and
-            // resources; the building database is the one read above. The
-            // raids' triggers read the same settled names.
             raid_assets.trigger_content.triggers = Arc::new(combat_assets.set_count_trigger_names(
                 &building_types,
                 &ideologies,
                 &resources,
             ));
             raid_assets.trigger_content.ideologies = Some(ideologies.clone());
-            // A naval counter at sea's `counter_ideology` frame is its group's number.
             counters.ideologies = ideologies;
             let (trains, notes) = h_trains.take()?;
             joined_warnings.extend(notes.into_iter().map(|(_, message)| message));
@@ -2837,7 +2505,6 @@ impl Document {
                 height: assets.heightmap.height,
                 values: assets.heightmap_texels(),
             };
-            // The unit-stack slots `map/unitstacks.txt` leaves out.
             counters.seed_default_anchors(
                 map.definitions.keys().copied(),
                 |province| province_geometry.centroid(province),
@@ -2849,7 +2516,6 @@ impl Document {
                 counters.missing_standstill.len()
             ));
             }
-            // Region icon positions also anchor the faction-theatre pins.
             let unplaced = counters.place_region_icons(
                 |province| province_geometry.centroid(province),
                 map.width,
@@ -2870,8 +2536,6 @@ impl Document {
             let (sprawl, sprawl_build, notes) = h_sprawl.take()?;
             wave2_warnings.extend(notes);
             let (rail_geometry, rail_build) = h_railgeom.take()?;
-            // The movement map failing refuses glide, stack kinds and ETAs,
-            // not the document: moving units then stand at their province.
             let movement = match h_movement.take() {
                 Ok(movement) => {
                     let unavailable = movement.map.unavailable_edges();
@@ -2893,7 +2557,6 @@ impl Document {
             h_initial_flags.take()?;
             warnings.extend(wave2_warnings);
             let _rest = viewer_foundation::load_record::stage("content.rest");
-            // Raid `is_coastal` reads the movement map's static province terrain.
             raid_assets.trigger_content.terrain = movement.clone();
             let map_modes = {
                 let mode_layers = product_loader.reader(&content.layers, "display/modes");
@@ -2913,7 +2576,6 @@ impl Document {
                         .as_ref()
                         .and_then(|movement| movement.map.terrain(province))
                 };
-                // The map modes' colours and ranges are graphics defines: the mods' where they read.
                 let ideologies = Arc::new(counters.ideologies.clone());
                 Arc::new(crate::map_assets::graphics_define(
                     &mode_layers,
@@ -2952,14 +2614,11 @@ impl Document {
                 )?)
             };
             let scripted = installed_content_core::parallel::join(h_scripted);
-            // The intel icons' content, and the sprites their code sets that no template names.
             let mut intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
             intel_assets.scripted = Some(Arc::clone(&scripted));
             warnings.extend(intel_assets.warnings.iter().cloned());
             let mut counter_assets = counter_assets;
             let mut icon_images = icon_images;
-            // The occupation catalogue reads settled script and modifier names after the content
-            // loaders above. Runtime badge sprites and inline trend icons share the native GUI.
             let occupation = crate::map_assets::graphics_define(
                 &content.layers,
                 "occupation map icons",
@@ -3022,7 +2681,6 @@ impl Document {
             warnings.push(
             "Counter items use the first admitted division. Source icons are province/visual buckets, and geographic columns rebuild their unit lists with the engine's first-fit predicate. Province occupant order and alternate templates use recorded inputs. Missing rows and unrecorded presentation insertion history can change plate order, grouping, flags and icons.".into(),
         );
-            // Labels read the same finalised unit-stack table, slot 38.
             let mut labels = labels;
             labels.set_anchors(
                 map.definitions.keys().copied(),
@@ -3035,14 +2693,12 @@ impl Document {
                 labels.centroid_fallbacks.len()
             ));
             }
-            // borders
             if !border_meshes.one_pixel_provinces.is_empty() {
                 warnings.push(format!(
                 "{} provinces cover a single pixel of map/provinces.bmp; the game reports these too and no border is traced through them.",
                 border_meshes.one_pixel_provinces.len()
             ));
             }
-            // rivers
             if river_trace.unreachable > 0 {
                 warnings.push(format!(
                 "{} river pixels of map/rivers.bmp are not reachable from any source or junction marker and are not drawn; the game does not draw them either.",
@@ -3056,23 +2712,18 @@ impl Document {
                 rivers::MIN_RIVER_POINTS
             ));
             }
-            // the map's table frame
-            // trees
             warnings.push(
             "Meshes, animations and textures are read from gfx/models and gfx/entities, which are outside the content coverage policy and are not hash-verified; their .gfx and .asset descriptors are verified.".into(),
         );
-            // close zoom
             warnings.push("Railway geography limitations: tied crossing inputs and the initial tied-pixel collection order are unrecorded. Province visibility history and the railway manager's hash-table draw order are unrecorded; strips use all provinces in ascending order. Port selection uses recorded naval-base levels instead of strategic-navy membership. Custom adjacency overrides and the transient rail fade are not reconstructed; matching native geography and presentation snapshots would settle these cases.".into());
             warnings.push(
             "A division's model follows the engine's own ladder: the template's saved model, then the equipment pair's saved model, authored graphic pools and conventional candidates, else the viewing country's fallback queues, then the recorded model number and sub-unit key under the cosmetic tag, tag, graphical culture and bare name, then the recorded camouflage. Template composition and model choices are recorded hourly, so a template edit reaches its figures within the hour; a template whose model inputs were unreadable that hour draws no model for its divisions, and its counters are unaffected. Equipment is recorded daily, with an hourly record of divisions deployed since; an existing division's mid-day equipment change reaches its figure at the next daily refresh; the country's stored best-variant candidates are daily too. A no-pair fallback whose rows name different entities takes the second row of the game's labelled option list, its labels built in the display language from the recorded variant names and country tags; a label that cannot be built refuses the figure by name. The window advances authored state clips and attachment transforms with presentation seed 0x414e494d XOR the unit handle; original clocks and RNG ordering are unrecorded. A time-zero dump preserves the default first pose. A standing figure's facing is a hash, because nothing records the heading the engine last turned it to."
                 .into(),
         );
-            // orders: the recorded player's battle plan
             warnings.push(
             "Map buildings keep the destroyed-mesh hysteresis, and stay drawn above the update distance once created below it, from this viewer's own camera history since the last seek; a seek starts every slot healthy and uncreated, as a freshly loaded game does. A dump has no camera history unless --building-camera supplies it. Popup growth and the shared model creation allowance run on the viewer's frame clock; native capture-time presentation remains unrecorded."
                 .into(),
         );
-            // Validate province membership before rebuilding region battle-name candidates.
             let battle_name_provinces =
                 battle_name_candidates(&regions, states.definitions(), &|province| {
                     map.definitions.contains_key(&province)
@@ -3326,7 +2977,6 @@ impl Document {
                 uncovered_reads,
                 audio,
                 source_path: path.to_path_buf(),
-                // borders
                 border_assets,
                 border_meshes,
                 straits,
@@ -3335,25 +2985,19 @@ impl Document {
                 naval_dominance,
                 map_modes,
                 border_trace,
-                // names
                 icons,
                 names,
                 labels,
-                // rivers
                 river_assets,
                 river_mesh,
                 river_trace,
                 river_build,
-                // the map's table frame
                 frame_assets,
-                // counters
                 counters,
-                // trees
                 tree_assets,
                 tree_geometry,
                 tree_field,
                 tree_build,
-                // close zoom
                 sprawl,
                 sprawl_build,
                 map_buildings,
@@ -3364,7 +3008,6 @@ impl Document {
                 rail_build,
                 bridges,
                 unit_models,
-                // orders: the recorded player's battle plan
                 orders: order_assets,
                 political_gpu: viewer_world::map::political_gpu::Cache::default(),
                 scene_textures: viewer_world::map::scene::TextureCache::default(),
@@ -3388,8 +3031,6 @@ impl Document {
         })
     }
 
-    /// Presentation state over verified content; the coordinator supplies the
-    /// first decoded frame without synchronous work on the UI thread.
     pub fn from_content(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
         Ok(Self {
             content,
@@ -3399,8 +3040,6 @@ impl Document {
         })
     }
 
-    /// A Campaign map selection over content already held by another native map.
-    /// Like `load_shared`, this performs its initial seek on a loading thread.
     pub fn from_shared_content(
         content: Arc<Content>,
         replay: Arc<Replay>,
@@ -3421,7 +3060,6 @@ impl Document {
                 branch
             } else {
                 let mut candidates = Vec::new();
-                // Histories share the hours before they part: the main one answers for them.
                 let main = playback
                     .replay()
                     .timelines()
@@ -3463,14 +3101,11 @@ impl Document {
         Ok(playback)
     }
 
-    /// The hour on screen, for everything built per hour.
     pub fn hour(&self) -> io::Result<Hour<'_>> {
         Ok(Hour::new(&self.content, self.frame()?, self.hour_fraction)
             .with_air_rosters(Some(self.playback.air_rosters())))
     }
 
-    /// What this hour's counters can see, for the combat windows and the
-    /// limitation lines.
     pub fn vision(
         &self,
         perspective: &perspective::Choice,
@@ -3479,13 +3114,10 @@ impl Document {
         self.hour()?.vision(perspective)
     }
 
-    /// The viewing country's tag at the hour on screen.
     pub fn viewing_tag(&self, vision: &perspective::Vision) -> io::Result<String> {
         self.hour()?.viewing_tag(vision)
     }
 
-    /// The cold paths a `--dump` takes; the window reads the same facts through the map's
-    /// layers instead.
     pub fn limitations(&self, perspective: &perspective::Choice) -> io::Result<Limitations> {
         self.hour()?.limitations(perspective)
     }
@@ -3547,7 +3179,6 @@ impl Document {
             .unit_model_field_sailing(perspective, 0.0, &|_| false)
     }
 
-    /// See [`Hour::unit_model_field_sailing`].
     pub fn unit_model_field_sailing(
         &self,
         perspective: &perspective::Choice,
@@ -3600,8 +3231,6 @@ impl Document {
         self.hour()?.demilitarized_zone(regions, &override_ids)
     }
 
-    /// The decoded frame of the hour on screen, or a named error for a recorded gap or a refused
-    /// hour.
     pub fn frame(&self) -> io::Result<&DecodedFrame> {
         match self.playback.current() {
             crate::playback::Current::Frame(frame) => Ok(frame),
@@ -3623,9 +3252,6 @@ impl Document {
     }
 }
 
-/// The hour's camera-independent overlay tables, built once per hour and
-/// perspective ([`Hour::hour_tables`]) and reused by every camera's
-/// [`Hour::prepare_overlay_cached`].
 #[derive(Clone)]
 pub struct OverlayTables {
     counters: counters::HourTables,
@@ -3633,32 +3259,18 @@ pub struct OverlayTables {
     labels: Arc<map_display_data::landscape::Labels>,
     radar: Arc<viewer_world::map::radar_symbols::Field>,
     air: Arc<std::sync::Mutex<OverlayAir>>,
-    /// The engaged-flag index covered this hour when these were built.
     pub engaged_covered: bool,
-    /// Built with the rest on the tables' worker only: raid offer evaluation runs path
-    /// searches and must never land on the frame path.
     raids: Arc<raids::RaidIcons>,
-    /// The Operatives map mode's intel icons for the viewing country.
     intel: IntelPart,
-    /// The branch, hour and canonical viewing country the tables are for.
     built_for: (replay_data::BranchId, replay_data::Hour, u32),
-    /// Made at the head only: the viewing country's raid arrows, which today's order field carries.
     raid_arrows: Arc<OrderField>,
 }
 
-/// The rows the overlay's layout reads: the counters, resource and occupation icons, air orders,
-/// ranges and assignment, occupation stripes and naval selection. Rows at the head while the map's
-/// playhead is open, and nothing else: an input that read a table they do not hold yet reads it as
-/// unavailable, and [`Self::missed`] names it for their reader to declare, so the window keeps the
-/// overlay it laid out last. The hour's frame with no open map. Inputs may run on a worker, so
-/// each read learns its tables on its own thread.
 #[derive(Debug, Default)]
 pub struct OverlayRows {
     rows: Option<Arc<DecodedFrame>>,
     missed: std::sync::Mutex<Vec<replay_data::rows::TableId>>,
-    /// Each input read from the rows: its name, wall nanoseconds and thread cycles.
     spent: std::sync::Mutex<Vec<(&'static str, u64, u64)>>,
-    /// The inputs the map's layers draw, which are not made here.
     left: LeftToLayers,
 }
 
@@ -3667,7 +3279,6 @@ impl OverlayRows {
         Self { rows, missed: Default::default(), spent: Default::default(), left: LeftToLayers::default() }
     }
 
-    /// These rows, with the inputs `left` drawn by the map's layers.
     pub fn leaving(self, left: LeftToLayers) -> Self {
         Self { left, ..self }
     }
@@ -3690,27 +3301,22 @@ impl OverlayRows {
         value
     }
 
-    /// Which rows these are, for a product kept while they hold; 0 for the hour's frame.
     fn identity(&self) -> usize {
         self.rows.as_ref().map_or(0, |rows| Arc::as_ptr(rows) as usize)
     }
 
-    /// Each input read from the rows: its name, wall nanoseconds and thread cycles.
     pub fn spent(&self) -> Vec<(&'static str, u64, u64)> {
         self.spent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
-    /// The tables an input read that the rows did not hold.
     pub fn missed(&self) -> Vec<replay_data::rows::TableId> {
         self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 
-/// Selection is viewer-local, while camera changes reuse the same Air products.
 #[derive(Clone)]
 struct OverlayAir {
     selected: Arc<Vec<u64>>,
-    /// The rows a selection's products were read from ([`OverlayRows::identity`]).
     rows: usize,
     orders: Arc<viewer_world::map::air_orders::Prepared>,
     ranges: Arc<viewer_world::map::air_ranges::Fields>,
@@ -3743,7 +3349,6 @@ impl OverlayAir {
 }
 
 impl OverlayTables {
-    /// Worker/export preparation only; refreshing tables on a frame does no warming.
     pub fn warm_counter_flags(&self, assets: &counters::CounterAssets) {
         self.counters.warm_flags(assets);
     }
@@ -3754,7 +3359,6 @@ impl OverlayTables {
         self.counters.naval_dominance_sources()
     }
 
-    /// See [`counters::HourTables::land_combat_gaps`].
     #[cfg(any(test, feature = "test-support"))]
     pub fn land_combat_gaps(
         &self,
@@ -3765,27 +3369,22 @@ impl OverlayTables {
         self.counters.land_combat_gaps()
     }
 
-    /// The hour's counter tables, which the counters layer is proved against.
     pub fn counters(&self) -> &counters::HourTables {
         &self.counters
     }
 
-    /// The raid icons, to keep drawing while the builders prepare new ones.
     pub fn raids(&self) -> Arc<raids::RaidIcons> {
         Arc::clone(&self.raids)
     }
 
-    /// The canonical viewing country the tables are for.
     pub fn ours(&self) -> u32 {
         self.built_for.2
     }
 
-    /// The viewing country's raid arrows, made with tables made at the head; empty otherwise.
     pub fn raid_arrows(&self) -> &Arc<OrderField> {
         &self.raid_arrows
     }
 
-    /// Which build these are: their clones share it, another build never does.
     pub fn identity(&self) -> usize {
         Arc::as_ptr(&self.air) as *const () as usize
     }
@@ -3795,9 +3394,6 @@ impl OverlayTables {
         &self.vision
     }
 
-    /// Replaces the intel icons with those the map's layer evaluated at the head; `false` when
-    /// they are the ones held, or built for another viewing country.
-    /// Replaces the labels with the labels layer's for the same viewing country; whether they changed.
     pub fn set_labels(&mut self, labels: &Arc<map_display_data::landscape::Labels>, ours: u32) -> bool {
         if Arc::ptr_eq(&self.labels, labels) || ours != self.built_for.2 {
             return false;
@@ -3817,7 +3413,6 @@ impl OverlayTables {
 }
 
 impl<'a> Hour<'a> {
-    /// A province's integer bitmap centroid with its sampled terrain height.
     fn icon_centroid(&self, province: u32) -> Option<[f32; 3]> {
         let (_, geography) = self.icons.raids.mission_topology().ok()?;
         let [x, z] = *geography.centroids.get(&province)?;
@@ -3825,8 +3420,6 @@ impl<'a> Hour<'a> {
         Some([x, self.heights().surface_height(x, z), z])
     }
 
-    /// The resource icons `lay` makes for the camera; none when their content failed to load,
-    /// which is a document warning.
     fn resource_icons_with(
         &self,
         camera: Camera,
@@ -3848,8 +3441,6 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// The occupation icons `lay` makes for the camera and viewing country `country`; none when
-    /// their content failed to load.
     fn occupation_icons_with(
         &self,
         camera: Camera,
@@ -3947,8 +3538,6 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// The recording's daily air rosters, for the interception alerts a mod's short air log
-    /// timeout can change; without them such an alert is withheld.
     pub fn with_air_rosters(
         mut self,
         air_rosters: Option<Arc<crate::playback::AirRosters>>,
@@ -3957,7 +3546,6 @@ impl<'a> Hour<'a> {
         self
     }
 
-    /// The hours this publication moved its movers at, which its counters' layout places them by.
     pub fn with_moved_hours(
         mut self,
         moved_hours: Arc<viewer_foundation::map::counter_move::MovedHours>,
@@ -3970,11 +3558,6 @@ impl<'a> Hour<'a> {
         self.product_hour.trigger_world()
     }
 
-    /// This hour's derived ETAs, cached and shared by both consumers.
-    ///
-    /// The counter layer builds on the window thread and the close-zoom models
-    /// on workers that run ahead of it, so the cache lives on the shared
-    /// [`Content`] and holds the hours in flight rather than only the last one.
     pub fn etas(&self) -> io::Result<Arc<Etas>> {
         let build = || self.eta_cache.etas(self.frame, self.movement.as_deref());
         match &self.worker_etas {
@@ -3983,12 +3566,10 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// Build only the current hour's railway graph; static geography is cached.
     pub fn rail_mesh(&self) -> io::Result<RailMesh> {
         Ok(self.rail_product()?.0.clone())
     }
 
-    /// The labels' per-hour product for the viewing slot `ours`, as the overlay tables take it.
     pub fn labels(&self, ours: u32) -> io::Result<Arc<map_display_data::landscape::Labels>> {
         self.product_hour.labels(ours)
     }
@@ -3997,20 +3578,6 @@ impl<'a> Hour<'a> {
         self.product_hour.rails(&self.rail_geometry, &self.bridges)
     }
 
-    // orders: the viewing country's battle plan
-    /// This hour's battle-plan ribbons and labels, with allied plans disabled.
-    ///
-    /// The viewing country decides the default plan; the explicit allied
-    /// variant follows the admitted country occurrences.
-    /// Labels are in the reader's language, from the `arrowText` font.
-    ///
-    /// Ordinary plans share the field while [`orders::TABLES`] and the
-    /// viewing country are unchanged (`crate::map::memo`). Invasion search
-    /// can read other tables through adjacency triggers and uses the full hour.
-    ///
-    /// The viewing country's raid arrows share the plan's map-arrow manager,
-    /// so they are drawn from the same field: the plan's,
-    /// memoised, with the hour's raid arrows appended ([`raid_arrows`]).
     pub fn order_field(&self, perspective: &perspective::Choice) -> io::Result<Arc<OrderField>> {
         self.order_field_with_allied(perspective, false)
     }
@@ -4023,8 +3590,6 @@ impl<'a> Hour<'a> {
         Ok(self.orders_and_convoys(perspective, show_allied)?.0)
     }
 
-    /// The viewed country's trade-route lines and convoys of the hour
-    /// ([`viewer_world::map::trade_routes`]).
     pub fn trade_route_lines(&self, ours: u32) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
         self.trade_route_memo
             .get_or_insert_with((TableKey::of(self.frame, TRADE_ROUTE_TABLES), ours), || {
@@ -4037,12 +3602,6 @@ impl<'a> Hour<'a> {
             })
     }
 
-    /// The hour's convoy lines, kept in `kept` from one hour to the next: the lines and their
-    /// geometry while the columns they read read the same and the viewer is the same, and the
-    /// convoys they carry made again from those lines alone while nothing but the convoys assigned
-    /// moved ([`TradeRouteRead`], [`trade_routes::sailed`]). The lines are built whole otherwise,
-    /// and at a bounded rate beside the convoys kept, which are compared with them
-    /// ([`viewer_foundation::install_check`]).
     pub fn trade_route_convoys_kept(&self, ours: u32, kept: &mut Option<KeptConvoys>) -> Arc<Vec<viewer_world::map::trade_routes::ConvoyLine>> {
         use replay_data::rows::TableId;
         use viewer_world::map::trade_routes;
@@ -4134,8 +3693,6 @@ impl<'a> Hour<'a> {
         };
         let heights = self.heights();
         let declared = |name: &str| self.unit_models.declares(name);
-        // The stops are kept for whichever build holds them; one begun while another builds
-        // searches its own rather than wait for them.
         let mut kept = self.trade_route_stops.try_lock().ok();
         if let Some(kept) = kept.as_deref_mut() {
             kept.begin();
@@ -4154,8 +3711,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// The battle plan with the hour's raid arrows and trade-route lines appended in the shared
-    /// arrow manager, and the trade-route convoys the unit models sail.
     pub fn orders_and_convoys(
         &self,
         perspective: &perspective::Choice,
@@ -4167,8 +3722,6 @@ impl<'a> Hour<'a> {
         self.orders_and_convoys_with(perspective, show_allied, false, false)
     }
 
-    /// [`Self::orders_and_convoys`] without the battle plan (`plan_layered`) or the trade routes
-    /// (`routes_layered`): the map's orders and convoys layers draw them.
     pub fn orders_and_convoys_with(
         &self,
         perspective: &perspective::Choice,
@@ -4205,7 +3758,6 @@ impl<'a> Hour<'a> {
         Ok((Arc::new(field), routes.convoys.clone()))
     }
 
-    /// The viewing country's raid arrows of the hour, in a field of their own, and their report.
     pub fn raid_arrows(&self, ours: u32) -> (OrderField, viewer_foundation::map::ribbon_content::RaidArrowReport) {
         let heights = self.heights();
         let counters = &self.counters;
@@ -4239,7 +3791,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// Air arrows read game state; the local range presentation supplies highlights.
     pub fn air_orders(
         &self,
         viewer: u32,
@@ -4343,8 +3894,6 @@ impl<'a> Hour<'a> {
             };
             force.province
         };
-        // State endpoints search the ordinary air-base bucket queue, regardless
-        // of the selected base's subtype. Hosted endpoints use the province centre.
         if state.is_some()
             && self.counters.kinds.get(&province) == Some(&installed_content_core::map::ProvinceKind::Land)
             && let Some(icon) = self.counters.site_icons
@@ -4374,7 +3923,6 @@ impl<'a> Hour<'a> {
         ]))
     }
 
-    /// The battle plan alone; ordinary plans are memoised on [`orders::TABLES`].
     pub fn plan_field(
         &self,
         perspective: &perspective::Choice,
@@ -4387,9 +3935,6 @@ impl<'a> Hour<'a> {
                 .battle_plan(frame, &links, ours, show_allied)
                 .map(Arc::new)
         };
-        // Native adjacency-rule triggers may depend on any recorded table.
-        // Invasions and labelled paradrops use the full hour for their lazy
-        // trigger/transport operands; ordinary plans keep the small memo.
         if orders::requires_full_frame(
             self.frame,
             &links,
@@ -4407,10 +3952,6 @@ impl<'a> Hour<'a> {
         }
     }
 
-    // close zoom
-    /// This hour's map-building targets.
-    ///
-    /// The viewing country decides which slots its fog of war hides.
     pub fn map_building_field(
         &self,
         perspective: &perspective::Choice,
@@ -4424,7 +3965,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// The same targets with sequential parts on the hour-builder PROFILE line.
     pub fn map_building_field_profiled(
         &self,
         perspective: &perspective::Choice,
@@ -4442,12 +3982,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    // close zoom
-    /// This hour's placed unit models.
-    ///
-    /// The perspective is the counter layer's: the engine hides a division's
-    /// map model on the same visibility byte, against the game's own
-    /// 150 rather than the counter's 250.
     pub fn prepare_unit_models(
         &self,
         perspective: &perspective::Choice,
@@ -4455,7 +3989,6 @@ impl<'a> Hour<'a> {
         self.prepare_unit_models_profiled(perspective, &mut |_| {})
     }
 
-    /// The same preparation with sequential parts reported on the builder's line.
     pub fn prepare_unit_models_profiled(
         &self,
         perspective: &perspective::Choice,
@@ -4468,7 +4001,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// Includes nested model joins and bake-worker CPU on the built hour line.
     pub fn prepare_unit_models_with_spans(
         &self,
         perspective: &perspective::Choice,
@@ -4478,8 +4010,6 @@ impl<'a> Hour<'a> {
         self.prepare_unit_models_naval_or_not(perspective, true, lap, spans)
     }
 
-    /// The same models; without `naval` the hour's ships are not made: the map's ships layer draws
-    /// them.
     pub fn prepare_unit_models_naval_or_not(
         &self,
         perspective: &perspective::Choice,
@@ -4492,10 +4022,6 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// The hour's unit models without its land stacks, which the map's units layer chooses itself:
-    /// the ships with `naval` (otherwise the map's ships layer draws them). Without the ships it
-    /// reads of the viewer only whose country it is, `ours` (its canonical slot): no vision is made
-    /// and no ship input read.
     pub fn prepare_unit_models_without_land(
         &self,
         perspective: &perspective::Choice,
@@ -4518,7 +4044,6 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// `make` over the hour's unit model inputs; the divisions' arrival estimates only with `land`.
     fn unit_models_with(
         &self,
         perspective: &perspective::Choice,
@@ -4545,8 +4070,6 @@ impl<'a> Hour<'a> {
                 },
             );
             let anchor = |province, slot| content.anchor(province, slot);
-            // Whether a province is land: the content movement map's terrain flag, else the map's
-            // own kind. It picks a task force's slot 19.
             let land = |province| match movement.and_then(|movement| movement.map.terrain(province))
             {
                 Some(terrain) => terrain.flags & 1 != 0,
@@ -4592,14 +4115,10 @@ impl<'a> Hour<'a> {
                 lap,
             )
         })();
-        // The preparation's local joins have been released before this last part.
         lap("um_finish");
         prepared
     }
 
-    /// The hour's unit models with the raid units, and the trade-route convoys sailing at `time`
-    /// seconds of presentation time where `shown` admits them
-    /// ([`viewer_world::map::trade_routes::convoys_shown`]).
     pub fn unit_model_field_sailing(
         &self,
         perspective: &perspective::Choice,
@@ -4629,20 +4148,15 @@ impl<'a> Hour<'a> {
         Ok((field, report))
     }
 
-    /// This hour's nuclear impacts at their provinces' standstill anchors.
     pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         self.product_hour.nuclear_impacts()
     }
 
-    /// A province's standstill unit-stack anchor and admission box, where
-    /// its impact effects stand.
     fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
         self.content.products.impact_place(province)
     }
 
-    /// This hour's map events interpreted for `vision`'s viewing country:
-    /// their floating text and critical bombardment explosions.
     pub fn map_text(
         &self,
         vision: &perspective::Vision,
@@ -4743,17 +4257,10 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// What the hour on screen could not draw, one line per degraded table.
-    ///
-    /// The map passes degrade on their own; this is the single list of what
-    /// that cost, so the window's warning area and a `--dump` report the same
-    /// thing. A core table's gap is not here: it is the frame error above.
     pub fn limitations(&self, perspective: &perspective::Choice) -> io::Result<Limitations> {
         self.product_hour.limitations(perspective)
     }
 
-    /// The map mode's country channel this hour.
-    /// `colour` is a scripted mode's borders as the previous hour kept them.
     pub fn map_mode_fill(
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
@@ -4791,8 +4298,6 @@ impl<'a> Hour<'a> {
         self.product_hour.seed_vision(choice, vision);
     }
 
-    // counters: the viewing country
-    /// What this hour's counters can see, for the limitation lines and the viewing tag.
     pub fn vision(
         &self,
         perspective: &perspective::Choice,
@@ -4805,18 +4310,10 @@ impl<'a> Hour<'a> {
         self.product_hour.viewing_tag(vision)
     }
 
-    // borders: the demilitarised-zone bucket bank
-    /// This hour's demilitarised zone, for `viewer_world::map::demilitarized` and the border pass.
-    ///
-    /// The recorded set is the hour's own `StateFlags` joined to its `States`
-    /// ([`viewer_world::map::demilitarized::recorded_states`]). `extra` is the `--dump --demilitarized`
-    /// override, empty everywhere else; it only ever *adds* to the recorded set, so an hour that
-    /// records the flag is drawn from the recording whatever the command line says.
     pub fn demilitarized_zone(&self, regions: &Regions, extra: &BTreeSet<u32>) -> io::Result<Zone> {
         self.product_hour.zone(regions, extra)
     }
 
-    // names
     pub fn place_names(
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
@@ -4862,9 +4359,6 @@ impl<'a> Hour<'a> {
         }
     }
 
-    // counters
-    /// The hour's camera-independent icon tables for the window's per-frame
-    /// icon rebuilds; see [`Hour::prepare_overlay_cached`].
     pub fn hour_tables(
         &self,
         perspective: &perspective::Choice,
@@ -4874,18 +4368,11 @@ impl<'a> Hour<'a> {
         self.hour_tables_with_raids(perspective, Arc::new(self.raid_icons(ours)), engaged, counters::Kinds::default())
     }
 
-    /// The hour's raid icons for canonical country `ours`, every offer evaluated.
     fn raid_icons(&self, ours: u32) -> raids::RaidIcons {
         let paths = raids::paths::HourPaths::new(&self.icons.raids, self.frame);
         raids::icons(&self.icons.raids, self.frame, ours, &paths)
     }
 
-    /// [`Hour::hour_tables`] with raid icons already built: the window passes
-    /// the icons its raid lane built ([`crate::raid_lane`]), which draw only
-    /// when they are this hour's own, so no raid offer is evaluated on the
-    /// frame. Until the lane delivers this hour's none draw, and the
-    /// diagnostics say so ([`raids::RaidIcons::carried`]). Today's source of each counter kind in
-    /// `left_out` is left to the map's layers ([`CounterView::layered`]).
     pub fn hour_tables_with_raids(
         &self,
         perspective: &perspective::Choice,
@@ -4903,7 +4390,6 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// Builds the same immutable tables with explicit, job-owned child timings.
     pub fn hour_tables_with_raids_profiled(
         &self,
         perspective: &perspective::Choice,
@@ -4916,8 +4402,6 @@ impl<'a> Hour<'a> {
         self.hour_tables_layered(perspective, raids, engaged, left_out, false, spans, radar)
     }
 
-    /// [`Self::hour_tables_with_raids_profiled`], reading no labels when the map's labels layer
-    /// draws them (`labels_by_layers`): the window lays the layer's out in their place.
     pub fn hour_tables_layered(
         &self,
         perspective: &perspective::Choice,
@@ -4931,9 +4415,6 @@ impl<'a> Hour<'a> {
         self.hour_tables_of(perspective, raids, engaged.map(|index| index.shared.as_ref()), left_out, labels_by_layers, spans, radar, counters::Need::WHOLE)
     }
 
-    /// The open map's overlay tables over rows at the head (`self.frame`): the vision its vision
-    /// layer shows, the raid icons its scripts reader built, the engagements layer's index. The
-    /// parts its view needs, made as `need` says.
     #[allow(clippy::too_many_arguments, reason = "the tables' inputs, what the view draws and the timings")]
     pub fn hour_tables_at_head(
         &self,
@@ -4968,13 +4449,9 @@ impl<'a> Hour<'a> {
         need: counters::Need,
     ) -> io::Result<OverlayTables> {
         let (etas, vision) = spans.measure("overlay.tables.prerequisites", |spans| {
-            // Routes made by key make each admitted division's estimate as they make its route,
-            // and a view that draws no counter and no combat marker reads no route at all.
             let etas = spans.measure("overlay.tables.prerequisites.etas", |_| {
                 if need.routes_by_key(left_out) || !(need.shown.units || need.shown.land_combats) { Ok(Arc::default()) } else { self.etas() }
             })?;
-            // One `Vision` per hour and perspective: the counters and the limitation
-            // lines read the same cached one.
             let vision = spans.measure("overlay.tables.prerequisites.vision", |_| {
                 self.vision(perspective)
             })?;
@@ -4989,8 +4466,6 @@ impl<'a> Hour<'a> {
                 self.product_hour.labels(ours)
             })?
         };
-        // Checked first: coverage that arrives during the build costs one
-        // rebuild, never a stale flag.
         let engaged_covered =
             engaged.is_some_and(|index| index.covers(self.frame.branch, self.frame.hour));
         let (radar, empty_air) = spans.measure("overlay.tables.radar_empty_air", |_| {
@@ -5058,20 +4533,6 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// Builds this frame's whole screen-space icon layer, in priority order.
-    ///
-    /// Content `DEFAULT_PRIORITY_*` defines sort map icons: air
-    /// and naval bases 3, victory points and capitals 5, unit stacks 10, land
-    /// and naval combat 20. The sprite batch draws in push order, so pushing
-    /// the four groups in that order is what produces the engine's overlap.
-    ///
-    /// The layer is laid out in interface pixels, `viewport` divided by
-    /// `ui_scale`; the sprite pass scales it back into device pixels. The
-    /// tables come from [`Hour::hour_tables`]: a worker builds them from the rows at the head
-    /// and the window reuses them for every camera.
-    ///
-    /// `view` is the map view's counter options and memory: the window's, a dashboard map's,
-    /// or a fresh one for a dump.
     pub fn prepare_overlay_cached(
         &self,
         camera: Camera,
@@ -5083,7 +4544,6 @@ impl<'a> Hour<'a> {
         self.prepare_overlay_at(camera, viewport, ui_scale, tables, view, &OverlayRows::default())
     }
 
-    /// [`Self::prepare_overlay_cached`] with its camera-bound inputs read from `rows`.
     #[allow(clippy::too_many_arguments, reason = "the overlay's inputs and the rows they read")]
     pub fn prepare_overlay_at(
         &self,
@@ -5147,8 +4607,6 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// What an overlay for this hour and view holds at every camera: the province fields its rows
-    /// supply, and its labels laid out ([`Still`]).
     fn read_still(
         &self,
         tables: &OverlayTables,
@@ -5260,9 +4718,6 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// Lays an overlay out for this hour and view and places it at `camera`. With `still`, the
-    /// parts the camera does not move are taken from the overlay being placed again, and nothing
-    /// the hour holds is read or laid out afresh ([`PreparedOverlay::project`]).
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     fn prepare_overlay_with(
         &self,
@@ -5291,8 +4746,6 @@ impl<'a> Hour<'a> {
             Some(still) => still,
             None => read.insert(spans.measure("overlay.projection.still", |_| self.read_still(tables, view, rows))?),
         };
-        // A worker owns its Hour wrapper (and its RefCells); only immutable content
-        // and the completed hour tables cross the fork.
         let content = self.content;
         let fraction = self.hour_fraction;
         let prepare_counters = || {
@@ -5303,7 +4756,6 @@ impl<'a> Hour<'a> {
         let prepare_other = |labels: &mut labels::PreparedLabels| {
             let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
             let hour = Hour::new(content, frame, fraction);
-            // Raid icons sort above the labels and the counters by their layer.
             let native_raids = hour.raid_owners(
                 camera,
                 viewport,
@@ -5331,7 +4783,6 @@ impl<'a> Hour<'a> {
                 &tables.intel.get(&hour),
             );
             let intel_report = native_intel.report.clone();
-            // A part the map's layer draws is left empty: the window lays the layer's product in.
             let resource_icons = if rows.left.resource_icons {
                 (Default::default(), MadeBy::Left)
             } else {
@@ -5525,25 +4976,14 @@ impl<'a> Hour<'a> {
         })
     }
 
-    // weather
-    /// Builds this hour's `SnowMudData` grid from its recorded display bytes.
     pub fn snow_mud(&self) -> io::Result<SnowMud> {
         self.product_hour.snow_grid(self.snow_cells()?)
     }
 
-    /// The map's snow and mud cell composition ([`weather::SnowCells`]),
-    /// built once for the content on first use.
     pub fn snow_cells(&self) -> io::Result<&weather::SnowCells> {
         Ok(&self.products.snow_content()?.cells)
     }
 
-    // fog of war
-    /// Builds this hour's `IntelMap` for one perspective.
-    ///
-    /// The province image and the definitions are static content, so the hour
-    /// and the perspective are the only inputs that move; an hour whose
-    /// [`perspective::Vision::province_fog`] is `None` gets the all-clear grid
-    /// and a frame that draws no fog.
     pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {
         self.product_hour.intel_map(perspective)
     }
@@ -5560,14 +5000,6 @@ const _: fn() = || {
     shared::<replay_frame::frame::DecodedFrame>();
 };
 
-/// The recorded battles in recorded order, each with the units of its member
-/// provinces' land combats, attackers and defenders, summed over each member
-/// as the game sums them, and, when `layers`, the sub-units by type of those
-/// that are divisions, from `composition` (each template slot one sub-unit):
-/// the game counts every unit but the slots of divisions only. Also counts the
-/// member combats' divisions without a recorded composition or name. A
-/// battle's sounds keep its object as their identity from hour to hour, so a
-/// battle that moves in the list plays on.
 #[cfg(test)]
 fn recorded_battles(
     recorded: &[replay_data::rows::BattleSoundRow],
@@ -5609,7 +5041,6 @@ fn recorded_battles(
         .iter()
         .map(|row| {
             let mut battle = viewer_audio::battle::Battle {
-                // The game keeps a battle's sounds on its object.
                 key: row.object,
                 provinces: row.provinces.clone(),
                 center: [f32::from_bits(row.center_x), f32::from_bits(row.center_z)],
@@ -5633,17 +5064,12 @@ fn recorded_battles(
     (battles, unknown)
 }
 
-/// The unit class of a division; a land combat's other units have no template.
 #[cfg(test)]
 const DIVISION_CLASS: u32 = 0;
 
-/// A mean-time value of one: the evaluator's fixed five-decimal scale.
 #[cfg(test)]
 const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 
-/// Each song's chance from `evaluate`, which reads a mean-time body as fixed
-/// five-decimal value: `None` for songs of disabled stations and, named, for a
-/// body `evaluate` refuses.
 #[cfg(test)]
 fn song_chances(
     content: &viewer_audio::Content,
@@ -5669,9 +5095,6 @@ fn song_chances(
     viewer_audio::Chances { weights, refusals }
 }
 
-/// What one hour's convoy lines are kept by from the hour before: what the lines read, the viewer
-/// they were built for, the lines built whole (their geometry, which the convoys are made from
-/// again) and the convoys of the hour kept now.
 pub struct KeptConvoys {
     read: TradeRouteRead,
     ours: u32,
@@ -5718,9 +5141,6 @@ mod tests {
         assert_eq!(builds, 4);
     }
 
-    /// City sprawl keeps the recording's placement but draws its buildings' artwork from the
-    /// visual mods, through the artwork fallback: a mod that replaces only a city house's mesh
-    /// is drawn.
     #[test]
     fn city_sprawl_draws_the_visual_mods_artwork() {
         let root = std::env::temp_dir().join(format!(
@@ -5759,7 +5179,6 @@ mod tests {
             br#"entity = { name = house pdxmesh = house_mesh scale = 1 state = { name = idle } }"#,
         );
         write("base/gfx/models/house.mesh", &mesh(1.0));
-        // The city damage thresholds the sprawl reads.
         write(
             "base/common/defines/00_graphics.lua",
             b"NDefines = { NGraphics = { CITY_DAMAGED_THRESHOLD = 0.8, CITY_DESTROYED_THRESHOLD = 0.3 } }",
@@ -5807,8 +5226,6 @@ mod tests {
         assert!(sprawl.library.meshes[slot].visual);
     }
 
-    /// Content whose visual mods changed while it loaded is loaded again, so the content that
-    /// installs is what the mods hold as it installs; content without a revision is not checked.
     #[test]
     fn a_mod_changed_during_a_load_loads_it_again() {
         let mut disk = vec!["r2", "r2"].into_iter();
@@ -5824,14 +5241,11 @@ mod tests {
             || disk.next().map(str::to_owned),
         )
         .unwrap();
-        // The first load mounted r1; a mod changed to r2 before it returned, so it loaded again.
         assert_eq!(loaded, 2);
         let unchecked = until_current(|| Ok(((), String::new())), || Some("r9".into()));
         assert!(unchecked.is_ok());
     }
 
-    /// A load shows no visual mods only for the decision its own key holds: this recording's,
-    /// at the revision the mods hold now. A mod changed since, or another recording, shows them.
     #[test]
     fn a_load_follows_only_its_own_keys_decision() {
         let root = std::env::temp_dir().join(format!(
@@ -5902,14 +5316,8 @@ mod tests {
     }
     use replay_data::identity::Roster;
 
-    /// The recorded battles keep their recorded order, centres and radii
-    /// (not the provinces' combat order or a grouping of their own), and
-    /// each sums the divisions and template slots of every member province's
-    /// combats, counting what it cannot name.
     #[test]
     fn recorded_battles_keep_their_order_and_sum_their_members_combats() {
-        // Unit 99 is a railway gun: it counts toward the battle's units but
-        // has no template slots and is not an unknown division.
         let unit_class = |unit: u64| if unit == 99 { 13 } else { DIVISION_CLASS };
         let combat = |id: u64, province: u32, attackers: Vec<u64>, defenders: Vec<u64>| {
             replay_data::rows::LandCombatRow {
@@ -5947,8 +5355,6 @@ mod tests {
                 object: 0x1000 + u64::from(ordinal),
             }
         };
-        // The game's list: province 9's battle first, then one covering
-        // provinces 5 and 7, then a battle whose combats have ended.
         let recorded = [
             row(0, 90.0, 9.0, vec![9]),
             row(1, 60.0, 31.5, vec![5, 7]),
@@ -5956,7 +5362,6 @@ mod tests {
         ];
         let (battles, unknown) = recorded_battles(&recorded, &combats, true, composition);
         let keys: Vec<_> = battles.iter().map(|battle| battle.key).collect();
-        // Each battle keeps its recorded object as its identity.
         assert_eq!(keys, [0x1000, 0x1001, 0x1002]);
         assert_eq!(battles[1].center, [60.0, -60.0]);
         assert_eq!(battles[1].radius, 31.5);
@@ -5966,7 +5371,6 @@ mod tests {
         assert_eq!(battles[1].sub_units["infantry"], 7 + 7 + 7 + 2 + 7);
         assert_eq!(battles[1].sub_units["artillery"], 4);
         assert_eq!(battles[2].divisions, 0);
-        // Division 3 of province 5's combat has no composition.
         assert_eq!(unknown, 1);
         let (silent, unknown) = recorded_battles(&recorded, &combats, false, composition);
         assert!(silent.iter().all(|battle| battle.sub_units.is_empty()));
@@ -5974,9 +5378,6 @@ mod tests {
         assert_eq!(unknown, 0);
     }
 
-    /// Song chances: a disabled station's song is not drawable, an
-    /// unanswerable body is unknown and named, and the evaluator's
-    /// five-decimal value scales to a weight.
     #[test]
     fn song_chances_leave_refused_songs_unknown_and_skip_disabled_stations() {
         use installed_content_sound::music::{Music, Song, Track};
@@ -6016,7 +5417,6 @@ mod tests {
                 Ok(body.len() as i64 * 150_000)
             }
         });
-        // A refused song stays unknown rather than falling back to its base chance.
         assert_eq!(chances.weights, [None, None, Some(3.0)]);
         assert_eq!(chances.refusals, ["song t0: unanswered"]);
         assert_eq!(calls, 2, "each enabled song once");
@@ -6078,8 +5478,6 @@ mod tests {
         );
     }
 
-    /// Each display switch leaves out only its own overlay part; a part shows only under its
-    /// main switch, and hidden raid icons keep their hover.
     #[test]
     fn display_switches_leave_out_only_their_overlay_part() {
         let quad = |group: usize| Quad {
@@ -6166,7 +5564,6 @@ mod tests {
             let expected: Vec<_> = (0..7).filter(|group| *group != missing).collect();
             assert_eq!(textures, expected, "{graphics:?}");
         }
-        // The main switch takes every counter and icon part, but not city names.
         let (textures, raids, layers) = drawn(dashboard_core::protocol::MapGraphics {
             counters: false,
             ..all
@@ -6176,7 +5573,6 @@ mod tests {
         assert!(layers.raids_hovered);
         assert!(!layers.counters.land && !layers.counters.naval);
         assert!(!layers.counters.railway_guns && !layers.counters.ports);
-        // Kind switches reach the counter producer, which keeps each one's hovers.
         let naval = OverlayLayers::shown(
             &dashboard_core::protocol::MapGraphics {
                 naval_counters: false,
@@ -6185,7 +5581,6 @@ mod tests {
             None,
         );
         assert!(naval.counters.land && !naval.counters.naval);
-        // A dump's label omission removes raid hovers with the icons.
         assert!(
             !OverlayLayers::omitting(Omissions {
                 labels: true,

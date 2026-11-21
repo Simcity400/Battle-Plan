@@ -1,4 +1,3 @@
-//! Division experience display from the recorded content defines.
 use crate::defines::Defines;
 use std::io;
 
@@ -32,8 +31,6 @@ impl DivisionExperience {
         })
     }
 
-    /// `experience` is stored experience already normalized by current manpower.
-    /// Threshold order is native order, including repeated or decreasing values.
     pub fn progress(&self, experience: i64) -> DivisionExperienceProgress {
         let level = self
             .thresholds
@@ -56,7 +53,6 @@ impl DivisionExperience {
         };
         DivisionExperienceProgress {
             level: level as i32,
-            // At the final level only, the native display clamps to [0, 1].
             next_level_fraction: if level == self.thresholds.len() {
                 if denominator == 0 || sentinel {
                     100_000

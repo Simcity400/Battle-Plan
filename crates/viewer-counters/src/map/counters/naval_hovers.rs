@@ -1,4 +1,3 @@
-//! Root-inherited naval counter hover observers from the retained GUI draw.
 
 use super::*;
 use viewer_foundation::map::counter_hovers::gui_authored::Authored;
@@ -9,7 +8,6 @@ use viewer_foundation::map::gui_resources::contains;
 use viewer_foundation::map::gui_resources::hit_rectangle;
 use viewer_foundation::map::native_gui;
 
-// These are the retained GUI draw's independent layout, placement and hit inputs.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn presented(
     window: &native::Element,
@@ -35,8 +33,6 @@ pub(super) fn presented(
         target: None,
         boxes: Vec::new(),
     };
-    // The layout retains only presented controls. Every hit forwards this window's
-    // inherited handler; only the exact control bound by the game selects a special arm.
     for region in &placed.regions {
         let Some(element) = gui_windows::find_path(window, &region.path) else {
             continue;
@@ -121,7 +117,6 @@ mod tests {
             before: 0,
             position: None,
         };
-        // Holder clips are logical-parent coordinates, translated by screen origin.
         let mut notes = BTreeMap::new();
         let flotilla = at_sea_flotilla(false);
         let hovers = presented(
@@ -139,8 +134,6 @@ mod tests {
             hovers.iter().map(|hover| hover.control).collect::<Vec<_>>(),
             [Control::Normal, Control::Carrier, Control::NoOrders]
         );
-        // A clipped edge may retain a zero-area diagnostic footprint. Its
-        // native predicate remains authoritative, rather than that rectangle.
         assert_eq!(hovers[0].rect[2], 0.0);
         assert!(!hovers[0].contains([138.0, 262.0]));
         assert_eq!(hovers[1].rect, [110., 252., 28., 20.]);
@@ -206,8 +199,6 @@ mod tests {
             .find(|hover| hover.rect == [40.0, 20.0, 20.0, 20.0])
             .unwrap();
         assert!(text.supported);
-        // The native text's layout offset is unscaled, and measured font
-        // height supplies its inverse pivot. This point is outside its draw box.
         assert!(text.contains([22.0, 0.0]));
         assert!(!text.contains([21.9, 0.0]));
         let container = window.find(native::Kind::Container, "inner").unwrap();

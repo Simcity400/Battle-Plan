@@ -1,4 +1,3 @@
-//! A Map recording holds every table its counters, markers and selections read.
 
 use super::*;
 use replay_data::rows::TableId;
@@ -6,7 +5,6 @@ use viewer_foundation::map::test_support::{
     assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
 };
 
-/// Bars are withheld without DivisionStatus or DivisionPanelStats; fog is off without its inputs.
 const PRESENTED_ABSENT: [TableId; 4] = [
     TableId::DivisionStatus,
     TableId::DivisionPanelStats,
@@ -14,8 +12,6 @@ const PRESENTED_ABSENT: [TableId; 4] = [
     TableId::CountryVisibility,
 ];
 
-/// Map's land counters take each division's exercise predicate from DivisionModelInputs,
-/// reading no table Map leaves out; a refused or missing read is unknown, never off.
 #[test]
 fn map_counters_take_the_exercise_predicate_from_the_model_witness() {
     use replay_data::rows::DivisionModelInputRow;
@@ -42,7 +38,6 @@ fn map_counters_take_the_exercise_predicate_from_the_model_witness() {
         [1, 2, 3, 4].map(|division| statuses.get(division).exercising),
         [Some(true), Some(false), None, None]
     );
-    // Every other glyph input stays unrecorded.
     assert!(!statuses.recorded(1) && statuses.get(1).has_order.is_none());
 }
 
@@ -110,7 +105,6 @@ fn map_counters_markers_and_selections_read_only_recorded_tables() {
                 )
                 .unwrap();
                 prepare_cached(&inputs, &tables).unwrap();
-                // The sample rows may refuse a selection, but never for a table Map leaves out.
                 let scoped = |what: &str, result: std::io::Result<()>| {
                     if let Err(error) = result {
                         assert!(

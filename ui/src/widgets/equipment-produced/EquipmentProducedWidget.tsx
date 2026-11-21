@@ -40,10 +40,6 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 
 const same = <T,>(reply: T) => reply;
 
-/** Equipment each country delivered: one type at a time in units, or the factory IC put into equipment, as a race
- * or as lines over time; a country's breakdown lists every type it made with its models. A reply holds every shown
- * country's values over one window of hours: the race asks the window it shows and, following, the next ahead from
- * the frame; the lines the windows in view. Following the playhead paints the values held and asks nothing per hour. */
 export default function EquipmentProducedWidget(props: WidgetProps) {
   const { widget, runtime, active, setOption } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -55,9 +51,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const offset = track?.axisOffset ?? 0;
   const following = widget.time.mode === 'follow';
-  // Following, the widget renders only when the rows of the race change: their values and order are painted.
   const structure = useRef<() => string>(() => '');
-  // Paused, the widget's hour is the clock's: a seek shows its hour whether or not the rows change.
   const headHour = useHeadHour(runtime.clock, active && following,
     hour => pausedKey(structure.current(), hour, runtime.clock.getSnapshot().playing));
   useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
@@ -72,24 +66,20 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
 
-  // In units, until a type is chosen, the type delivered most; IC counts every type until one is chosen.
   const types = useProducedTypes(runtime, track, refits, active);
   const pickingDefault = count === 'units' && !included.length;
   const mostType = types.data?.mostDelivered ?? null;
   const shownTypes = useMemo(() => pickingDefault ? mostType ? [mostType] : [] : included, [pickingDefault, mostType, included]);
-  // A top N is ranked at the hour shown when paused or sought, kept while playing: never an hour that moves with playback.
   const rankedAt = useRef<number | null>(null);
   const rankHour = producedRankHour(widget.time.mode, playhead, runtime.clock.getSnapshot().playing, rankedAt.current, extent[1]);
   rankedAt.current = following ? rankHour : null;
   const params = track && (resolved.top != null || resolved.tags.length > 0) && !(pickingDefault && !mostType)
     ? producedRequest(track.branch.id, resolved, rankHour, count, measure, shownTypes, refits) : null;
   const identity = track && params ? JSON.stringify([track.source.id, track.source.revision, params]) : null;
-  // The moment shown at a clock hour, as a render works it out.
   const momentAt = (hour: number) => {
     const at = track && resolveWindow(widget, track, runtime.tracks, hour);
     return Math.floor((at && (following || widget.time.mode === 'pin') ? at.lastHour : null) ?? extent[1]);
   };
-  // The windows a clock hour wants: the race's at the moment and, following, the next ahead; the lines' in view.
   const viewKey = JSON.stringify([identity, view, extent]);
   const viewport = useRef<{ key: string; range: [number, number] } | null>(null);
   const windowsAt = (hour: number): number[] => {
@@ -116,7 +106,6 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   }, [viewKey]);
   const merged = useMemo(() => mergeProducedWindows(windows.data), [windows.data]);
   const model = useMemo(() => merged ? producedModel(merged) : null, [merged]);
-  // What this render shows: the race's window at the moment, or every window in view.
   const needed = view === 'lines' ? windowsAt(moment) : producedWindows(moment, moment);
   const failure = needed.map(index => windows.errors.get(index)).find(error => error !== undefined);
   const holding = view === 'lines' ? needed.some(index => windows.data.has(index)) : needed.every(index => windows.data.has(index));
@@ -134,14 +123,13 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + offset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, offset]);
   const lineTags = useMemo(() => resolved.top != null ? model?.tags ?? [] : resolved.tags, [resolved, model]);
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
     const runs = lineRuns(model, tag, membershipOf(tag), range);
     return runs.length || model.lines.has(tag) ? [{ tag, runs }] : [];
-  }), [model, view, lineTags, resolved.membership, range]); // eslint-disable-line react-hooks/exhaustive-deps
-  const keyHours = useMemo(() => merged?.reads.filter(hour => hour >= extent[0] && hour <= extent[1]), [merged, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [model, view, lineTags, resolved.membership, range]);
+  const keyHours = useMemo(() => merged?.reads.filter(hour => hour >= extent[0] && hour <= extent[1]), [merged, extent[0], extent[1]]);
 
-  // What is counted, in words: the pill names the equipment, the caption the window and date.
   const typeName = (key: string) => typeLabel(types.data?.types.find(type => type.key === key) ?? { key, name: null });
   const equipment = !shownTypes.length ? count === 'ic' ? 'All equipment' : 'Equipment'
     : shownTypes.length === 1 ? typeName(shownTypes[0]) : `${shownTypes.length.toLocaleString()} types`;
@@ -150,7 +138,6 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const since = reads ? countedSince(reads, moment) : null;
   const caption = view === 'race' ? producedCaptionAt(count, measure, reads, moment, dayLabel)
     : producedCaption(count, measure, null, since == null ? null : dayLabel(since));
-  // Following, the race's date moves with the head: painted each frame at the hour shown, never rendered for.
   const shownHour = useRef(() => moment);
   shownHour.current = () => (track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null) ?? moment;
   const paintedCaption = following && view === 'race';
@@ -169,7 +156,6 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     {setOption && <Segmented value={count} options={COUNTS} label="Count" onChange={value => setOption('count', value)} />}
   </div>;
 
-  // A tooltip's breakdown is read for the country and hour pointed at, never for the hour playback moves through.
   const [hovered, setHovered] = useChangedState<{ tag: string; hour: number } | null>(null);
   const hoveredAt = useProducedAt(runtime, track, hovered?.tag ?? null, hovered?.hour ?? null, measure, refits, active);
   const point = (tag: string, hour: number) => {
@@ -222,14 +208,11 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />;
     return null;
   })();
-  // An empty top N says nothing was produced only where a shown country's value is known then.
   const nothingYet = produced && model && ranked.length === 0 && model.tags.some(tag => producedAt(model, tag, moment)?.value != null)
     ? measure === 'total' ? `No production by ${dayLabel(moment)}.` : measure === 'day' ? `No production on ${dayLabel(moment)}.`
       : measure === 'week' ? 'No production in the previous week.' : 'No production in the previous month.'
     : producedWindowUnavailable(measure);
 
-  // The breakdown asks for the country's every model in the count shown; its chart stacks the chosen type's models,
-  // or every type in IC until one is chosen.
   const [drillType, setDrillType] = useState<{ scope: string; type: string } | null>(null);
   const drillScope = JSON.stringify([track?.source.id, track?.branch.id, count, measure, included, refits]);
   const chartType = drillType?.scope === drillScope ? drillType.type : shownTypes.length === 1 ? shownTypes[0] : null;

@@ -1,10 +1,3 @@
-//! A single-province non-move line whose path is one province and did not
-//! snap to a border.
-//!
-//! Extend from an owned pixel in both half-unit directions, stopping at the
-//! first sample outside the province. Submit those outside positions with
-//! smoothing off and skip the ordinary smoothing loop. Province pixels and
-//! centroids come only from matching map content.
 
 use viewer_foundation::map::province_geometry::{Centers, province_at};
 
@@ -15,11 +8,6 @@ use super::fixed::{self, Point, SCALE};
 const MAX_RAY_SAMPLES: usize = 1_025;
 const MAX_CONTROLS: usize = 8_192;
 
-/// The diagonal `(1, 1)`, or the quarter-turned direction from the last
-/// different predecessor province. `FFFFFFFF` stops the scan and keeps the
-/// diagonal; it never skips back to an earlier valid province.
-/// The stored controls, including the native first-point duplicate and the
-/// inserted controls. The caller must not smooth them again.
 pub(super) fn points(
     centers: &Centers,
     map: &MapData,
@@ -73,8 +61,6 @@ fn ray_endpoint(map: &MapData, province: u32, center: Point, step: Point) -> Opt
             return Some(point);
         }
     }
-    // 1025 samples inside the province submit nothing; neither the last
-    // interior pixel nor a fabricated endpoint is drawn.
     None
 }
 
@@ -84,7 +70,6 @@ fn squared_distance([ax, az]: Point, [bx, bz]: Point) -> i64 {
     x * x / SCALE + z * z / SCALE
 }
 
-/// Stored-control geometry with smoothing disabled.
 fn append_control(controls: &mut Vec<Point>, point: Point) {
     let count = controls.len();
     if count >= MAX_CONTROLS {
@@ -100,7 +85,6 @@ fn append_control(controls: &mut Vec<Point>, point: Point) {
         return;
     }
     let mut previous = controls[count - 1];
-    // Convert and divide in f32, take square roots and divide before integer conversion.
     let distance = (squared_distance(previous, point) as f32 / SCALE as f32).sqrt();
     let spacing = (threshold as f32 / SCALE as f32).sqrt();
     let count = (distance / spacing) as i32;

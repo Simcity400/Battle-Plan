@@ -1,4 +1,3 @@
-//! The spool conversion helper against single-thread conversion, over one synthetic hour.
 
 use super::tests::captured;
 use super::*;
@@ -16,12 +15,9 @@ fn text<const N: usize>(value: &[u8]) -> Text<N> {
     result
 }
 
-/// One synthetic hour. Most rows repeat; a few change on fixed steps.
 fn hour_frame(step: i32) -> Captured {
     let hour = FIRST_HOUR + step;
     let mut source = captured(hour);
-    // A fixed world: tests that run the deletion stub advance the global
-    // generation, and a change between two frames starts a branch.
     source.world_generation = 1;
     source.total_ns = 1_000 + step as u64;
     source.table_ns[TableId::Countries.index()] = 10 + step as u64;
@@ -83,8 +79,6 @@ fn hour_frame(step: i32) -> Captured {
         expeditionary_owner: 0,
         province: 6,
         template: 9,
-        // Whole display steps (replay_data::display): the wire holds the same
-        // tenths the digest was taken over.
         hit_points: 10_000 * (1_000 - i64::from(step)),
         organisation: 5_000_000,
         orders_group: 0,
@@ -133,12 +127,6 @@ fn hour_frame(step: i32) -> Captured {
     source
 }
 
-/// Conversion split over the helpers fills every table slot the single-thread
-/// order fills, with equal values, whatever the plan: the order the threads
-/// take the movable packs in and how many helpers take them. That includes a
-/// failed ordinary job's refusal, which must cover packs converted after the
-/// spool thread's own share. Each movable pack is converted once, by a thread
-/// of the plan, and every other pack by the spool thread.
 #[test]
 fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan() {
     use crate::extended::{HELPER_PACKS, PACK_NAMES, capture_live_shape};

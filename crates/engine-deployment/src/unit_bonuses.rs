@@ -1,25 +1,3 @@
-//! A country's persistent unit-bonus list, embedded in its deployment status
-//! at [`cdeployment_status::UNIT_BONUSES`]. The unit-bonus effect, doctrine
-//! rewards and milestones, and special-project rewards each append one entry;
-//! removing a source erases its entries. The game rebuilds the country's local
-//! sub-unit clones from the list, applying its entries in stored order.
-//!
-//! An entry holds its source (kind, id token, signed number and label) and a
-//! payload of exact sub-unit targets and sub-unit category targets. Each
-//! target owns a bonus definition, whose dense stat words and combat width the
-//! clone rebuild adds and whose battalion grants it merges. The definition's
-//! requirements, terrain and special adjusters, priorities, sprite, transport
-//! restriction and own-fuel multiplier are not read: the clones' effective
-//! requirements are CountryLocalSubunits', and the rebuild applies none of the
-//! others.
-//!
-//! The walk reads every canonical country. Its deployment status is
-//! authenticated by vtable and owner backlink, each entry and payload by
-//! vtable, and each owned bonus definition by the sub-unit definition vtable.
-//! Any failure makes the whole walk unavailable: a partial list cannot be told
-//! from a shorter one. An entry is stored whole or not at all; one that does
-//! not fit a fixed output is counted unread with its demand, so a later
-//! capture grows off-thread. Nothing certifies the list between reads.
 
 use crate::{
     Memory, ccountry, cdeployment_status, cequipment_variant,
@@ -30,111 +8,66 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// List entry stride.
 pub const STRIDE: usize = 0x70;
-/// Entry vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_c408);
-/// The entry's embedded bonus payload.
 pub const PAYLOAD: usize = 0x08;
-/// The payload's vtable.
 pub const PAYLOAD_VTABLE_RVA: Rva = Rva(0x0285_e858);
-/// Payload CPdxArray of exact sub-unit targets: pointers to owned bonus
-/// definitions, whose token names the target sub-unit.
 pub const EXACT_TARGETS: usize = 0x08;
 pub const EXACT_TARGET_STRIDE: usize = 0x08;
-/// Payload CPdxArray of sub-unit category targets: the category pointer, then
-/// the owned bonus definition pointer at [`CATEGORY_TARGET_BONUS`].
 pub const CATEGORY_TARGETS: usize = 0x20;
 pub const CATEGORY_TARGET_STRIDE: usize = 0x10;
 pub const CATEGORY_TARGET_BONUS: usize = 0x08;
-/// Source kind, u32, below [`SOURCE_KINDS`]: none, special project, effect,
-/// grand doctrine, sub-doctrine, doctrine reward and doctrine milestone.
 pub const SOURCE_KIND: usize = 0x40;
 pub const SOURCE_KINDS: u32 = 7;
-/// Source id token, u32.
 pub const SOURCE_ID: usize = 0x44;
-/// Source number, signed i32: a doctrine reward's ordinal or a milestone's
-/// track index, otherwise zero.
 pub const SOURCE_NUMBER: usize = 0x48;
-/// Source label MSVC string, the unit-bonus effect's name; it ends the entry.
 pub const LABEL: usize = 0x50;
-/// A sub-unit category's token, u32.
 pub const CATEGORY_TOKEN: usize = 0x54;
-/// An owned bonus definition's battalion-grant CPdxArray.
 pub const BATTALION_GRANTS: usize = 0x88;
 pub const BATTALION_GRANT_STRIDE: usize = 0x30;
-/// A grant's recipient sub-unit category pointer.
 pub const GRANT_CATEGORY: usize = 0x08;
-/// A grant's sparse stat CPdxArray: a u32 stat selector, then its signed
-/// fixed5 amount at [`GRANT_STAT_AMOUNT`].
 pub const GRANT_STATS: usize = 0x10;
 pub const GRANT_STAT_STRIDE: usize = 0x10;
 pub const GRANT_STAT_AMOUNT: usize = 0x08;
-/// A grant's add byte.
 pub const GRANT_ADD: usize = 0x28;
-/// A grant's display-as-percentage byte.
 pub const GRANT_DISPLAY_AS_PERCENTAGE: usize = 0x29;
-/// An owned bonus definition's dense stat words: one signed fixed5 word per
-/// stat selector, in the executable's selector order.
 pub const STATS: usize = 0xa0;
-/// An owned bonus definition from its vtable through its last stat word.
 const DEFINITION_SPAN: usize = STATS + cequipment_variant::STAT_COUNT * 8;
 
-/// One list entry, in stored order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw CCountry id of the owning deployment status.
     pub country: u32,
-    /// Position in the country's list.
     pub ordinal: u32,
-    /// Below [`SOURCE_KINDS`].
     pub source_kind: u8,
     pub source_id: u32,
     pub source_number: i32,
-    /// Label bytes in the label arena.
     pub label: Span,
-    /// The entry's targets in the target arena: every exact target, then every
-    /// category target, each in array order.
     pub targets: Span,
 }
 
-/// One target of an entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
-    /// False for an exact sub-unit target, true for a sub-unit category target.
     pub category: bool,
-    /// The target sub-unit's token, or the category's.
     pub token: u32,
-    /// Signed fixed5 combat width.
     pub combat_width_raw: i64,
-    /// The nonzero dense stat words in the stat arena, in selector order.
     pub stats: Span,
-    /// Battalion grants in the grant arena, in stored order.
     pub grants: Span,
 }
 
-/// One battalion grant of a target.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Grant {
-    /// The recipient sub-unit category's token.
     pub category_token: u32,
-    /// Raw add byte.
     pub add: u8,
-    /// Raw display-as-percentage byte.
     pub display_as_percentage: u8,
-    /// The grant's sparse stats in the stat arena, in stored order with zero
-    /// amounts and repeated selectors.
     pub stats: Span,
 }
 
-/// One stat selector and its signed fixed5 value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stat {
     pub selector: u32,
     pub value_raw: i64,
 }
 
-/// Lengths of the five outputs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     pub rows: usize,
@@ -147,14 +80,10 @@ pub struct Counts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
-    /// What the outputs hold; `rows` is the outcome's length.
     pub written: Counts,
-    /// What every entry reached needs, stored or not, including a failed
-    /// walk's entries before its failure.
     pub required: Counts,
 }
 
-/// The walk's outputs: the entries and the arenas their spans index.
 pub struct Buffers<'a> {
     pub rows: Buffer<'a, Row>,
     pub targets: Buffer<'a, Target>,
@@ -164,7 +93,6 @@ pub struct Buffers<'a> {
 }
 
 impl<'a> Buffers<'a> {
-    /// Worker-owned outputs, grown from the headers the walk reads.
     pub fn growing(
         rows: &'a mut Vec<Row>,
         targets: &'a mut Vec<Target>,
@@ -181,7 +109,6 @@ impl<'a> Buffers<'a> {
         }
     }
 
-    /// No storage: the walk only counts demand.
     pub fn demand() -> Self {
         Self {
             rows: Buffer::Count,
@@ -195,7 +122,6 @@ impl<'a> Buffers<'a> {
 
 const OVERFLOW: &str = "unit bonus count overflow";
 
-/// One output: the values stored so far and the demand of every value reached.
 struct Sink<'a, T> {
     values: Buffer<'a, T>,
     len: usize,
@@ -211,8 +137,6 @@ impl<'a, T: Default> Sink<'a, T> {
         }
     }
 
-    /// Stores `value` when it fits, growing a worker-owned output; counts its
-    /// demand either way.
     fn push(&mut self, value: T) -> Result<bool, &'static str> {
         self.required = self.required.checked_add(1).ok_or(OVERFLOW)?;
         let end = self.len.checked_add(1).ok_or(OVERFLOW)?;
@@ -226,8 +150,6 @@ impl<'a, T: Default> Sink<'a, T> {
 }
 
 impl Sink<'_, u8> {
-    /// Stores a validated string's bytes when they fit. A worker-owned arena
-    /// grows only as the bytes are copied.
     fn push_text(
         &mut self,
         memory: &impl Memory,
@@ -250,7 +172,6 @@ struct Output<'a> {
     grants: Sink<'a, Grant>,
     stats: Sink<'a, Stat>,
     labels: Sink<'a, u8>,
-    /// Entries that did not fit.
     missing: u32,
 }
 
@@ -265,7 +186,6 @@ impl Output<'_> {
         ]
     }
 
-    /// Withdraws a partly stored entry and counts it unread.
     fn withdraw(&mut self, marks: [usize; 5]) -> Result<(), &'static str> {
         [
             self.rows.len,
@@ -289,7 +209,6 @@ impl Output<'_> {
     }
 }
 
-/// The expected vtable words, at the module base.
 struct Identity {
     entry: u64,
     payload: u64,
@@ -312,7 +231,6 @@ fn pointer(word: u64) -> Option<usize> {
     usize::try_from(word).ok().filter(|pointer| *pointer != 0)
 }
 
-/// Every canonical country's list, in country order and stored order.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
     let mut output = Output {
         rows: Sink::new(buffers.rows),
@@ -446,9 +364,6 @@ fn read_entry(
     Ok(())
 }
 
-/// One target's owned bonus definition. A category target carries its
-/// category's token; an exact target is named by the definition's own.
-/// Returns whether everything it stored fit.
 fn read_target(
     memory: &impl Memory,
     identity: &Identity,

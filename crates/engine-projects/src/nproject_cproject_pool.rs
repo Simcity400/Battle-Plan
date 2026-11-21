@@ -1,20 +1,13 @@
-//! Country project pool.
 
 use crate::{Memory, cpdx_array::Array, nproject_cprogram_status, nproject_cproject, read};
 use engine_sites::Rva;
 
-/// Project-pool primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a4_0e38);
-/// First project pointer in the contiguous pool.
 pub const PROJECTS: usize = 0x10;
-/// Project u32 capacity in the low half of the header.
 pub const CAPACITY: usize = 0x18;
-/// Project u32 count in the high half of the header.
 pub const COUNT: usize = 0x1c;
-/// Robin-hood project-token lookup yielding a signed i16 array index.
 const INDEX: usize = 0x30;
 
-/// Copy the selected project's stored definition/owner pair; an unresolved token returns no project.
 pub fn active_definition(
     memory: &impl Memory,
     base: usize,
@@ -34,7 +27,6 @@ pub fn active_definition(
     )))
 }
 
-/// Resolve the selected active project through its existing native index.
 pub fn active_pointer(
     memory: &impl Memory,
     base: usize,

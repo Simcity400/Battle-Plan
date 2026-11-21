@@ -1,17 +1,10 @@
-//! Project reward-history record.
 
 use engine_sites::Rva;
-/// Project-history primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_f3b0);
-/// Project-history record stride.
 pub const STRIDE: usize = 0x58;
-/// Reward u32 lexer token.
 pub const PROTOTYPE_REWARD_HANDLE: usize = 0x08;
-/// Option u32 lexer token.
 pub const OPTION_HANDLE: usize = 0x0c;
-/// Inline project context.
 pub const CONTEXT: usize = 0x10;
-/// Stored signed i32 raw hour.
 pub const DATE: usize = 0x48;
 
 use crate::{Memory, nproject_cproject, nproject_sproject_context, read, walk::Outcome};
@@ -27,8 +20,6 @@ pub struct Row {
     pub context: nproject_sproject_context::Row,
 }
 
-/// Walks each authenticated country-local project history once. No project
-/// definition or reward identity is substituted for the owner-local row key.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     nproject_cproject::walk_with_history_buffer(
         memory,
@@ -40,8 +31,6 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut V
     .1
 }
 
-/// The parent supplies the joined country and local project identity. History
-/// ordinals preserve vector order; reward handles are not unique row keys.
 pub fn read_row(
     memory: &impl Memory,
     base: usize,

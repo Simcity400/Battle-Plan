@@ -1,10 +1,3 @@
-//! Ships sunk: every sinking the game listed, by window (a block of a run). The game keeps its
-//! sinkings for whole years in one list (SunkShips), pruning each by its sinking hour; a window's
-//! sinkings are those first listed within it: an entry is known at the first read at or after its
-//! sinking hour ([`replay::lanes::reads`]). They are the list read at the window's last hour, and
-//! those its first read listed that the game pruned before the end (an entry sunk within a window
-//! outlives it). Names, classes and places are built at the reply from the recording's content;
-//! countries are named at the sinking hour.
 
 use super::super::{LoadContext, Product, army::ArmySpan, country_ids};
 use crate::Source;
@@ -34,10 +27,10 @@ fn invalid(what: impl Into<String>) -> io::Error {
 #[serde(rename_all = "camelCase")]
 pub struct ShipClassInfo {
     pub token: u32,
-    /// The recorded lexical token, resolved to the content's sub-unit spelling.
+    #[doc = " The recorded lexical token, resolved to the content's sub-unit spelling."]
     pub key: Option<String>,
     pub name: Option<String>,
-    /// PNG sent once per class, never once per sinking.
+    #[doc = " PNG sent once per class, never once per sinking."]
     pub icon: Option<String>,
 }
 
@@ -47,7 +40,6 @@ pub struct ShipClassInfo {
 pub enum ShipSinkingCause {
     Hostile,
     Assisted,
-    /// The game recorded a cause in words instead of a sinker.
     Cause,
 }
 
@@ -56,14 +48,14 @@ pub enum ShipSinkingCause {
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkRow {
     pub sink_hour: i32,
-    /// The first read listing it.
+    #[doc = " The first read listing it."]
     pub known_at: i32,
     pub name: Option<String>,
     pub class_index: u32,
     pub recorded_name_index: Option<u32>,
     pub victim: Option<String>,
     pub attacker: Option<String>,
-    /// Always null: both countries are named at the sinking hour.
+    #[doc = " Always null: both countries are named at the sinking hour."]
     pub victim_as_of: Option<i32>,
     pub attacker_as_of: Option<i32>,
     pub place_index: Option<u32>,
@@ -78,19 +70,19 @@ pub struct ShipsSunkRow {
 pub struct ShipsSunkReply {
     pub branch_id: String,
     pub window: usize,
-    /// The game's list was read at or before the window's end; otherwise nothing is known.
+    #[doc = " The game's list was read at or before the window's end; otherwise nothing is known."]
     pub available: bool,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The window's first read of the list.
+    #[doc = " The window's first read of the list."]
     pub first_read: Option<i32>,
-    /// The window's hours the timeline does not hold.
+    #[doc = " The window's hours the timeline does not hold."]
     pub unread: Vec<ArmySpan>,
     pub classes: Vec<ShipClassInfo>,
     pub places: Vec<String>,
     pub recorded_names: Vec<String>,
-    /// Those pruned within the window first, then the game's list order at its end; a row's index
-    /// in the window is its place here.
+    #[doc = " Those pruned within the window first, then the game's list order at its end; a row's index"]
+    #[doc = " in the window is its place here."]
     pub rows: Vec<ShipsSunkRow>,
     pub warnings: Vec<String>,
 }
@@ -101,10 +93,10 @@ pub struct ShipsSunkReply {
 pub struct ShipsSunkManifestReply {
     pub branch_id: String,
     pub windows: Vec<ArmySpan>,
-    /// The list was read at some hour of the branch.
+    #[doc = " The list was read at some hour of the branch."]
     pub available: bool,
     pub first_read: Option<i32>,
-    /// The classes of every sinking the game listed at each run's end, for the class choice.
+    #[doc = " The classes of every sinking the game listed at each run's end, for the class choice."]
     pub classes: Vec<ShipClassInfo>,
     pub recorded_names: Vec<String>,
     pub warnings: Vec<String>,
@@ -124,7 +116,6 @@ fn branch(branch_id: &str) -> io::Result<u64> {
     branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))
 }
 
-/// The cause a list entry records.
 pub fn cause(entry: &SunkShipEntry) -> ShipSinkingCause {
     if entry.cause_record != 0 {
         ShipSinkingCause::Cause
@@ -135,14 +126,11 @@ pub fn cause(entry: &SunkShipEntry) -> ShipSinkingCause {
     }
 }
 
-/// The first read at or after `hour` in `reads` (ascending runs of read hours).
 pub fn known_at(reads: &[(i32, i32)], hour: i32) -> Option<i32> {
     let at = reads.partition_point(|run| run.1 < hour);
     reads.get(at).map(|run| run.0.max(hour))
 }
 
-/// The entries of `earlier` (a read at `first_read`) first listed then and missing from `later`,
-/// as many times as each is missing: those the game pruned between the two reads.
 pub fn pruned<'a>(earlier: &'a [SunkShipEntry], later: &[SunkShipEntry], first_read: i32, reads: &[(i32, i32)]) -> Vec<&'a SunkShipEntry> {
     let mut left: BTreeMap<i32, Vec<&SunkShipEntry>> = BTreeMap::new();
     for entry in later {
@@ -164,13 +152,10 @@ pub fn pruned<'a>(earlier: &'a [SunkShipEntry], later: &[SunkShipEntry], first_r
         .collect()
 }
 
-/// The game's sinking list as read at or before `hour` of `run`, with the hour of that read; none
-/// where it was never read by then.
 pub fn sinkings_at(recording: &Recording, run: u32, hour: i32) -> io::Result<Option<(i32, Vec<SunkShipEntry>)>> {
     sinkings_in(&replay::at::frame(recording, run, hour, &[read::Read::all(TableId::SunkShips)])?)
 }
 
-/// [`sinkings_at`] through `seeker`, for a reply reading the list at many hours in turn.
 pub fn sinkings_seen(seeker: &mut Seeker<'_>, run: u32, hour: i32) -> io::Result<Option<(i32, Vec<SunkShipEntry>)>> {
     sinkings_in(&dashboard_query::cost::storage(|| seeker.frame(run, hour, &[read::Read::all(TableId::SunkShips)]))?)
 }
@@ -181,11 +166,9 @@ fn sinkings_in(frame: &replay_frame::frame::DecodedFrame) -> io::Result<Option<(
     Ok(sampled.map(|sampled| (sampled, rows.first().map(|row| row.entries.clone()).unwrap_or_default())))
 }
 
-/// The content the replies name classes and places with, or why it is not there.
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     units: Result<Arc<SubUnits>, String>,
-    /// Each province's strategic regions, from the content.
     regions: Result<(Arc<installed_content_regions::regions::StrategicRegions>, BTreeMap<u32, Vec<u32>>), String>,
 }
 
@@ -216,7 +199,6 @@ impl Content {
         self.catalogue.as_deref().ok()
     }
 
-    /// Why content is not there, as a reply's warning.
     pub fn warnings(&self) -> Vec<String> {
         match &self.catalogue {
             Ok(cat) => cat.verification.iter().chain(&cat.warnings).cloned().collect(),
@@ -225,7 +207,6 @@ impl Content {
     }
 }
 
-/// Each entry's ship name and class name (the content's, else the name the game stored).
 pub fn ship_names(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[SunkShipEntry], content: &Content, refused: &mut Refusals) -> io::Result<Vec<(Option<String>, Option<String>)>> {
     let held: Vec<&SunkShipEntry> = entries.iter().collect();
     let named = Named::new(seeker, run, hour, &held, content)?;
@@ -241,7 +222,6 @@ pub fn ship_names(seeker: &mut Seeker<'_>, run: u32, hour: i32, entries: &[SunkS
         .collect())
 }
 
-/// What one reply names: its classes, recorded class names and places, by index.
 #[derive(Default)]
 struct Named {
     classes: Vec<ShipClassInfo>,
@@ -254,7 +234,6 @@ struct Named {
     warnings: Vec<String>,
 }
 
-/// Each class token's recorded literal, from LexicalTokens at `hour`.
 fn literals(seeker: &mut Seeker<'_>, run: u32, hour: i32, tokens: &BTreeSet<u32>) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
         return Ok(HashMap::new());
@@ -265,7 +244,6 @@ fn literals(seeker: &mut Seeker<'_>, run: u32, hour: i32, tokens: &BTreeSet<u32>
     Ok(rows.iter().map(|row| (row.token, String::from_utf8_lossy(&row.literal).into_owned())).collect())
 }
 
-/// Class `token`, resolved from its recorded literal through the content's sub-units.
 fn class_info(token: u32, literal: Option<String>, content: &Content, refused: &mut Refusals) -> ShipClassInfo {
     let mut info = ShipClassInfo { token, key: literal, name: None, icon: None };
     let (Ok(cat), Ok(units), Some(literal)) = (&content.catalogue, &content.units, info.key.clone()) else {
@@ -314,8 +292,6 @@ fn text(bytes: &[u8], what: &str, refused: &mut Refusals) -> Option<String> {
     }
 }
 
-/// Text the game stored in its own language without a key (ship names, causes), shown only in the
-/// language it was stored in.
 fn stored(bytes: &[u8], what: &str, content: &Content, refused: &mut Refusals) -> Option<String> {
     let Ok(cat) = &content.catalogue else { return text(bytes, what, refused) };
     match dashboard_text::scripted_text::stored_text(&cat.localisation, &cat.recorded_language, bytes, what) {
@@ -428,7 +404,6 @@ impl Product for ShipsSunk {
     }
 }
 
-/// Window `index`'s sinkings.
 pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Content, cancelled: &AtomicBool) -> io::Result<ShipsSunkReply> {
     let windows = super::super::army::windows(query)?;
     let span = windows.get(index).cloned().ok_or_else(|| invalid("Unknown history window"))?;
@@ -453,7 +428,6 @@ pub fn window(query: &Query<'_>, branch_id: &str, index: usize, content: &Conten
     let Some((sampled, entries)) = sinkings_at(recording, run, last)? else { return Ok(reply) };
     reply.available = true;
     crate::metadata::check_cancel(cancelled)?;
-    // The read before the window decides which earlier sinkings it already listed.
     let mut reads = replay::lanes::reads(recording, run, TableId::SunkShips, (first - 720).max(stretch.first), last)?;
     if reads.first().is_none_or(|run| run.0 >= first) && stretch.first < first - 720 {
         reads = replay::lanes::reads(recording, run, TableId::SunkShips, stretch.first, last)?;
@@ -528,7 +502,6 @@ impl Product for ShipsSunkManifest {
             recorded_names: Vec::new(),
             warnings: Vec::new(),
         };
-        // Each run's list at its last hour of the branch: the classes the class choice offers.
         let mut ends: BTreeMap<u32, i32> = BTreeMap::new();
         for stretch in &query.timeline.stretches {
             crate::metadata::check_cancel(cancelled)?;

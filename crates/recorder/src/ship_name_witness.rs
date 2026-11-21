@@ -1,5 +1,3 @@
-//! Independent, read-only copies of the retained ship display cache.
-//! The operator holds the paused state through its supplying recording boundary.
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
@@ -235,7 +233,6 @@ fn ships(memory: &impl Memory, base: usize, state: usize) -> (Census, Vec<Ship>)
     (census, ships)
 }
 
-/// Only observed build/content facts: this diagnostic does not acquire a collector receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContentIdentity {
@@ -349,7 +346,6 @@ fn mounts(
 }
 
 fn capture(options: Options) -> Result<(), String> {
-    // Read-only rights; no injection, game calls, writes or thread suspension.
     let process = loop {
         let game = match choose_game(&windows::game_processes()?) {
             Discovery::One(game) => game,
@@ -358,7 +354,6 @@ fn capture(options: Options) -> Result<(), String> {
             }
             Discovery::Several(several) => return Err(several.to_string()),
         };
-        // `None`: its PID names another process now, so discovery looks again.
         if let Some(process) = Process::open_selected(&game, false)? {
             break process;
         }
@@ -391,7 +386,6 @@ fn capture(options: Options) -> Result<(), String> {
             .ok_or("game executable has no folder")?
             .to_owned(),
         user_dir: user,
-        // The recording path's cache, with the same LOCALAPPDATA fallback.
         cache_dir: replay::recorder_settings::directory(),
         dlc_order: None,
     })
@@ -499,7 +493,6 @@ fn write_report(path: &Path, report: &impl Serialize) -> Result<(), String> {
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    // Never replace earlier evidence (or an accidentally selected game file).
     let file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -646,7 +639,6 @@ fn compare(report: &Report, replay: &Replay, hour: i32, branch: u64) -> Result<C
             .refusals
             .push("recording process session differs from witness".into());
     }
-    // A recorder restarted while the game ran loses nothing: its note is no damage.
     let damage_notes = replay.recovery_notes.iter().filter(|note| !recorder_replay::replay_io::is_restart(note)).count();
     if replay.damaged_parts != 0 || damage_notes != 0 || !replay.warnings.is_empty()
     {

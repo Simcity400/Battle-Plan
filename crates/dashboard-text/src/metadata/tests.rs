@@ -102,7 +102,6 @@ fn initial_catalogue_has_no_countries_or_player_when_its_block_is_unreadable() {
 
 #[test]
 fn catalogue_campaign_failure_becomes_a_gap_and_tries_the_next_block() {
-    // An hour apart from the first: a block of its own.
     let next_hour = 200;
     let recording = |first| {
         Replay::from_records(
@@ -172,7 +171,6 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
         FAIL_AT.get() == Some(attempt)
     }
     let mut segment = records(1, vec![source(1, 100, Some(1))]);
-    // Content the recorder did not verify: the one warning the healthy read gives.
     for record in &mut segment {
         if let replay::spool::Record::SessionStart(session) = record {
             session.identity.verification = replay_data::identity::Verification::Unverified {
@@ -218,7 +216,6 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
         expected_refusals
     );
 
-    // Sustained warning denial bypasses only recoverable storage, leaving every mandatory growth isolated.
     engine_allocation::set_stop_hook(Some(fail_allocation));
     let healthy = read_refused();
     engine_allocation::set_stop_hook(None);
@@ -281,7 +278,6 @@ fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild() {
             .unwrap()
             .is(&sample.tables[TableId::Countries.index()])
     );
-    // Naming the table does not hold its rows, so a later hour updates them in place.
     let countries = std::mem::replace(
         &mut sample.tables[TableId::Countries.index()],
         TableView::Unavailable {
@@ -359,8 +355,6 @@ fn link_tags_incomplete_reads_are_errors_and_recovery_rebuilds_even_the_same_vie
 
 #[test]
 fn link_tags_aliases_join_slots_without_requiring_a_countries_own_link() {
-    // Each raw link resolves to a slot; distinct links may name the same
-    // country. Missing target rows name none.
     let mut sample = source(1, 100, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *sample.tables[TableId::Countries.index()]
@@ -383,7 +377,6 @@ fn link_tags_aliases_join_slots_without_requiring_a_countries_own_link() {
         assert_eq!(tags.get(raw).unwrap(), "GER");
     }
     assert_eq!(tags.get(14), None);
-    // Equal tag strings do not merge the two canonical countries.
     assert_eq!(tags.get(9001).unwrap(), "GER");
     assert_eq!(tags.get(9002).unwrap(), "GER");
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
@@ -621,7 +614,6 @@ fn metadata_catalogue_lists_every_country_once_across_branches_within_the_reply_
         &AtomicBool::new(false),
     )
     .unwrap();
-    // Not countries x branches: each country once, at its first branch.
     assert_eq!(metadata.countries.len(), COUNTRIES as usize);
     assert!(
         metadata
@@ -733,8 +725,6 @@ fn supplying_read_batches_match_each_tables_own_read_rule() {
 fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
     let slot = daily_slot_of(TableId::CountryFuel);
     let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
-    // The shared economy read is charged to hourly ProvinceSupply, so no
-    // table of the slot is timed at its slot hour.
     let mut charged = replay_frame::frame::Metrics::default();
     charged.table_ns[TableId::ProvinceSupply.index()] = 1_051_200;
     for table in [TableId::CountryFuel, TableId::CountryExperience] {
@@ -751,7 +741,6 @@ fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
             day + slot + 1
         ));
     }
-    // A full hour times the slot's tables off their slot hour.
     let mut full = replay_frame::frame::Metrics::default();
     full.table_ns[TableId::CountryExperience.index()] = 72_100;
     assert!(super::slot_read(
@@ -769,8 +758,6 @@ fn a_recording_dates_tables_by_the_cadence_of_its_format() {
         FormatVersion::read(replay_data::rows::compatibility::CADENCE_FORMAT - 1).unwrap();
     let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
     let untimed = replay_frame::frame::Metrics::default();
-    // WorldTension and Projects were read daily before the cadence change.
-    // Later unrelated format additions do not move that boundary.
     for (table, slot) in [(TableId::WorldTension, 18), (TableId::Projects, 4)] {
         for hour in day..day + replay_data::cadence::STAGGER_PERIOD {
             assert_eq!(
@@ -786,8 +773,6 @@ fn a_recording_dates_tables_by_the_cadence_of_its_format() {
             ));
         }
     }
-    // A full hour timing a table of the old slot dates its siblings; a table of
-    // another old slot does not.
     let mut sibling = replay_frame::frame::Metrics::default();
     sibling.table_ns[TableId::TheatreAreas.index()] = 1;
     assert!(super::slot_read(
@@ -824,7 +809,6 @@ fn country_intel_is_dated_only_by_its_measured_walk() {
         TableId::CountryIntel,
         hour + 5
     ));
-    // Intel can move off its slot independently of the other daily walks.
     let sibling = TableId::LogisticsEquipment;
     assert_eq!(daily_slot_of(sibling), slot);
     assert!(!super::slot_read(
@@ -854,7 +838,6 @@ fn every_tag_is_tagged_in_one_pass_as_tagged_country_tags_it() {
         tag: tag.to_vec(),
         ..Default::default()
     };
-    // A second GER row the links resolve after one they do not, and a tag no link resolves.
     let countries = [
         country(5, 9, b"GER"),
         country(9001, 7, b"GER"),
@@ -895,8 +878,6 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
     };
     let slot = slot_hour(TableId::LogisticsEquipment);
     assert_eq!(slot, slot_hour(TableId::CountryIntel));
-    // Intel deferred at the slot hour, then retried alone. Its retry cannot
-    // date the logistics rows carried from the slot read.
     let deferred = walked(&[TableId::LogisticsEquipment]);
     assert!(slot_read(
         replay_data::format::FormatVersion::CURRENT,
@@ -938,8 +919,6 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
         TableId::CountryFuel,
         fuel + 1
     ));
-    // Off-slot timing dates its own slot only. A full read needs evidence
-    // for the other slots too, and Intel always needs its own timing.
     let off_slot = fuel + 3;
     assert!(slot_read(
         replay_data::format::FormatVersion::CURRENT,
@@ -999,7 +978,6 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
         TableId::Stockpiles,
         stock + 1
     ));
-    // Resources are now hourly; a lack of daily-slot timing cannot make them carried.
     for table in [TableId::CountryResources, TableId::ResourceExchanges] {
         assert!(slot_read(
             replay_data::format::FormatVersion::CURRENT,
@@ -1014,7 +992,6 @@ fn a_table_is_read_by_its_slot_or_timing_and_a_deferred_intel_walk_proves_nothin
             fuel + 2
         ));
     }
-    // The shared economy read can be charged to an hourly anchor instead.
     assert!(slot_read(
         replay_data::format::FormatVersion::CURRENT,
         &walked(&[]),
@@ -1136,9 +1113,6 @@ fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    // Opening reads only the catalogue's first hours, as before; the table
-    // fails where playback reaches it, the tables derived from it say so, and
-    // the rest of that hour stays exact.
     assert!(metadata.damaged.is_none());
     assert!(metadata.branches[0].gaps.is_empty());
     let replay::campaign::SeekResult::Frame(actual) = replay.seek(1, 101).unwrap() else {
@@ -1226,7 +1200,6 @@ fn link_tags_projected_matches_native_bytes_unchanged_inputs_aliases_and_recover
             .tag
             .clear();
     }
-    // Equivalent allocations must keep the unchanged projected-input return.
     let mut same = rename.clone();
     same.hour = 104;
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
@@ -1322,8 +1295,6 @@ fn filtered_metadata_country_joins_record_their_source_once() {
     assert!(refusals.first().unwrap().names("CountryLinks"));
 }
 
-/// The independent scalar rule: a timed slot mate dates the slot except for
-/// CountryIntel, whose read dates only itself.
 fn scalar_read_rule(
     format: replay_data::format::FormatVersion,
     metrics: &replay_frame::frame::Metrics,
@@ -1364,7 +1335,6 @@ fn scalar_supplying_reads_share_one_projection_across_holders() {
         1,
         "one timed-table projection, independent of holder count"
     );
-    // Different readers can present different read evidence at the same hour.
     for (at, timed) in [
         (hour, TableId::LexicalTokens),
         (hour + 1, TableId::CountryIntel),

@@ -8,19 +8,16 @@ const named = (places: readonly Place[]) => ({ values: places.map(place => [key(
 
 test('a list opened inside a window has its own places named when their read lands, though the next window asks before it lands (run 12: every place loading)', () => {
   const reads = new KeyedReads<Place, string>(key, 256);
-  // Opened at an hour inside the window at the head: its battles' places are asked.
   const head = [{ provinceId: 1, hour: 100 }, { provinceId: 2, hour: 140 }, { provinceId: 1, hour: 100 }];
   const first = reads.take(head);
   assert.deepEqual(first, [[{ provinceId: 1, hour: 100 }, { provinceId: 2, hour: 140 }]], 'the head window\'s places, each once');
   assert.ok(head.every(place => reads.pending(place)), 'loading while read');
-  // The window ahead lands before the head's read does: only its own places are asked, and the head's read stands.
   const ahead = [...head, { provinceId: 3, hour: 900 }];
   assert.deepEqual(reads.take(ahead), [[{ provinceId: 3, hour: 900 }]], 'nothing asked again, nothing cancelled');
   reads.landed(first[0]!, named(first[0]!));
   assert.equal(reads.values.get(key({ provinceId: 2, hour: 140 })), 'Province 2', 'the head window\'s rows are named');
   assert.equal(reads.pending({ provinceId: 1, hour: 100 }), false);
   assert.equal(reads.pending({ provinceId: 3, hour: 900 }), true, 'the window ahead still loading');
-  // Every block and hour after: nothing is asked again.
   for (let block = 0; block < 10; block++) assert.deepEqual(reads.take(ahead), [], 'never asked again per block or hour');
 });
 
@@ -36,7 +33,6 @@ test('a key the reply leaves out is settled as unanswered, a failed read names i
   assert.equal(reads.failure(places[2]!)?.message, 'read refused');
   assert.equal(reads.pending(places[2]!), false);
   assert.deepEqual(reads.take(places), [], 'neither is asked again');
-  // The asks a want leads with (the rows a view shows first) come in a chunk of their own, the rest after in full chunks.
   const led = new KeyedReads<Place, string>(key, 3, 2);
   const many = [1, 2, 3, 4, 5, 6].map(provinceId => ({ provinceId, hour: 10 }));
   assert.deepEqual(led.take(many).map(chunk => chunk.map(place => place.provinceId)), [[1, 2], [3, 4, 5], [6]]);

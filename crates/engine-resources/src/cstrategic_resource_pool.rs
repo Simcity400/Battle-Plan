@@ -1,18 +1,12 @@
-//! CStrategicResourcePool; slot zero is the resource database's null object.
 
 use crate::cpdx_array::Array;
 use engine_sites::Rva;
 
-/// Resource-pool primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29ce1e8);
-/// Value-record pointer used by resource-amount predicates.
 pub const VALUES: usize = 0x08;
-/// Value-record stride selected by resource one-based ordinal.
 pub const VALUE_STRIDE: usize = 0x10;
-/// Signed i64 amount at the start of each resource record.
 pub const VALUE: usize = 0x00;
 
-/// Resource token stored beside the i64 value, copied from its descriptor.
 pub const TOKEN: usize = 0x08;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -21,10 +15,6 @@ pub struct StoredAmount {
     pub raw: i64,
 }
 
-/// Read a demanded pool already reached through its authenticated owner.
-/// Storage is retained between changed-owner reads. The null-resource slot is
-/// retained because the serializer visits it too; all installed resource occurrences, including
-/// zero amounts, remain ordered. No resource names or population limits live here.
 pub fn read_into(
     memory: &impl crate::Memory,
     base: usize,

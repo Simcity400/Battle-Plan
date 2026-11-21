@@ -1,5 +1,3 @@
-//! Regional Air mission entries. Registration determines membership; the selected
-//! mission mask counts the wing's aircraft once in each selected mission.
 use super::*;
 #[cfg(test)]
 use replay_data::rows::AirRegionalMissionRow;
@@ -24,14 +22,10 @@ const AIR_SUPPLY: usize = 10;
 const SUPPLY_REFUSAL: &str = "regional Air supply totals were not captured";
 const SUPPLY_UNRECORDED: &str = "regional Air supply totals were not recorded";
 
-/// Why the supply entry of a region counting no Air supply is withheld: whether the recording
-/// holds no Ground Crews supply column.
 pub fn supply_refusal(unrecorded: bool) -> &'static str {
     if unrecorded { SUPPLY_UNRECORDED } else { SUPPLY_REFUSAL }
 }
 
-/// A region's supply summary entered in its counts: a low or very low summary counts the
-/// Air supply entry, with no other mission.
 pub fn supplied(counts: &mut Option<Counts>, supply: &replay_data::rows::AirSupplySummary) {
     if supply.severity < 2 {
         let counts = counts.get_or_insert([-1; MISSIONS]);
@@ -39,17 +33,14 @@ pub fn supplied(counts: &mut Option<Counts>, supply: &replay_data::rows::AirSupp
     }
 }
 
-/// The window's refusal when the counts cannot be made, by reason.
 pub fn counts_withheld(reason: &str) -> String {
     format!("{WINDOW} counts withheld: {reason}")
 }
 
-/// A mission entry's refusal, by reason.
 pub fn fragment_withheld(reason: &str) -> String {
     format!("{ENTRY} fragment withheld: {reason}")
 }
 
-/// A region's Ground Crews control refused, by reason.
 pub fn ground_withheld(reason: &str) -> String {
     format!("{WINDOW} Ground Crews withheld: {reason}")
 }
@@ -58,7 +49,6 @@ pub fn ground_withheld(reason: &str) -> String {
 pub(super) struct Prepared {
     supply: BTreeMap<u32, replay_data::rows::AirSupplySummary>,
     supply_complete: bool,
-    /// The recording holds no Ground Crews supply column.
     supply_unrecorded: bool,
     supply_hovers: BTreeMap<u32, Arc<viewer_foundation::tooltip_text::Tooltip>>,
     regions: BTreeMap<u32, [i32; MISSIONS]>,
@@ -76,8 +66,6 @@ pub struct Ground {
     pub enabled: bool,
 }
 
-/// A region's Ground Crews control from values: the content's cost, then its flag (`active`:
-/// zero without a row), then the country's command power.
 pub fn ground_of(cost: Result<i64, String>, active: impl FnOnce() -> Result<u32, String>, power: Option<i64>) -> Result<Ground, String> {
     let cost = cost?;
     ground(active()?, power, cost)
@@ -132,10 +120,6 @@ fn interception_alert(
     unknown.map_or(Ok(false), Err)
 }
 
-/// Whether the daily air pass at `pass` visited the country in canonical `slot`, from the
-/// recording's hourly AirDailyRoster ([`replay_derive::air_region_derive::pass_visited`]). A
-/// pass at or before the branch's first sample counts as not visiting: every row read since
-/// already holds it.
 pub trait AirPasses: Sync {
     fn visited(
         &self,
@@ -149,10 +133,6 @@ const PASS_UNKNOWN: &str =
     "whether the latest daily air pass pruned the regional combat records is unrecorded";
 const TIMEOUT_UNKNOWN: &str = "NGame.AIR_LOG_TIMEOUT_HOURS is unavailable";
 
-/// Whether the holder's interception aggregate over the last day alerts. Only the latest daily
-/// pass can have pruned a record the window reaches: an earlier one removed only records dated
-/// before its own hour, at least a day ago, where the newest-first scan stops anyway. So the
-/// row decides unless pruning it by that pass changes the answer; then the roster does.
 #[cfg(test)]
 fn interception_received(
     holder: &replay_data::rows::AirRegionCombatRow,
@@ -165,7 +145,6 @@ fn interception_received(
     interception_received_of(read, hour, filter, pass_visited, timeout)
 }
 
-/// [`interception_received`] from the holder's two record vectors as read.
 pub fn interception_received_of(
     read: replay_derive::air_region_derive::Retained<'_>,
     hour: replay_data::Hour,
@@ -194,7 +173,6 @@ pub fn interception_received_of(
     }
 }
 
-/// A wing's interception-alert gate as its mission records it; `None` when unknown.
 pub fn interception_gate(gate: &replay_data::rows::Recorded<Option<u32>>) -> Option<bool> {
     match gate {
         replay_data::rows::Recorded::Value(Some(0)) => Some(false),
@@ -203,17 +181,12 @@ pub fn interception_gate(gate: &replay_data::rows::Recorded<Option<u32>>) -> Opt
     }
 }
 
-/// One region's mission entries: the kinds whose interception alert is proved (a bit per kind),
-/// and each withheld entry's reason, in kind order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegionAlerts {
     pub alerts: u32,
     pub uncertain: Vec<(usize, &'static str)>,
 }
 
-/// [`RegionAlerts`] of a region from its counts and its registered wings (id and mission mask,
-/// in registration order). `received(kind, classification)` is the holder's interception
-/// aggregate for a kind's missions of that classification, asked at most once each.
 pub fn region_alerts(
     counts: &Counts,
     wings: &[(u64, u32)],
@@ -245,11 +218,8 @@ pub fn region_alerts(
     out
 }
 
-/// The regional Air mission part a layer decided, as values: today's [`Prepared`] without its
-/// hovers, which the window makes from them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AirValues {
-    /// The window's counts withheld, in today's words ([`counts_withheld`]).
     pub withheld: Option<String>,
     pub regions: BTreeMap<u32, Counts>,
     pub alerts: BTreeSet<(u32, usize)>,
@@ -257,11 +227,9 @@ pub struct AirValues {
     pub supply: BTreeMap<u32, replay_data::rows::AirSupplySummary>,
     pub supply_complete: bool,
     pub supply_unrecorded: bool,
-    /// Each region counting a mission: its Ground Crews control, or why it is refused.
     pub ground: BTreeMap<u32, Result<Ground, String>>,
 }
 
-/// Today's regional Air mission part of an hour as values.
 pub struct TodayAir {
     pub regions: BTreeMap<u32, Counts>,
     pub alerts: BTreeSet<(u32, usize)>,
@@ -304,7 +272,6 @@ pub(super) struct HourInputs<'a> {
     pub(super) content: &'a CounterContent,
     pub(super) assets: &'a CounterAssets,
     pub(super) localisation: &'a installed_content_localisation::localisation::Localisation,
-    /// The recording's daily air rosters, when the caller can read them.
     pub(super) passes: Option<&'a dyn AirPasses>,
 }
 
@@ -346,8 +313,6 @@ impl Prepared {
                     .iter()
                     .map(|link| (link.id, link.canonical_slot))
                     .collect();
-                // Match the regional native rosters: neither countries nor
-                // unrelated wings/combat holders are searched for each entry.
                 let holders: HashMap<_, _> = combat
                     .as_ref()
                     .ok()
@@ -405,8 +370,6 @@ impl Prepared {
         })
     }
 
-    /// A layer's values with today's hovers made from them; each mission hover's wing
-    /// efficiencies read from `frame`, the hour on screen, for country `ours`.
     pub(super) fn of_values(values: &AirValues, inputs: &HourInputs<'_>, frame: &DecodedFrame, ours: u32) -> Self {
         if let Some(withheld) = &values.withheld {
             return Self { refused: BTreeMap::from([(withheld.clone(), 1)]), ..Default::default() };
@@ -449,7 +412,6 @@ impl Prepared {
     }
 }
 
-/// A region's Ground Crews hover, its flag `active` and control `state` decided.
 fn ground_hover(inputs: &HourInputs<'_>, region: u32, active: u32, state: Ground) -> Result<Arc<viewer_foundation::tooltip_text::Tooltip>, String> {
     use installed_content_localisation::localisation::Argument;
     use viewer_foundation::tooltip_text::Tooltip;
@@ -502,8 +464,6 @@ fn ground_hover(inputs: &HourInputs<'_>, region: u32, active: u32, state: Ground
     Ok(Arc::new(tooltip))
 }
 
-/// The hover averages current sortie efficiencies weighted by each selected
-/// wing's aircraft, with native signed accumulation and fixed5 operations.
 fn average(values: impl IntoIterator<Item = (i32, i64)>) -> Option<i64> {
     let (mut total, mut weighted) = (0_i32, 0_i64);
     for (planes, efficiency) in values {
@@ -579,7 +539,6 @@ impl Prepared {
         self.supply_hovers(inputs);
     }
 
-    /// Every named region's supply hover, from the supply summaries.
     fn supply_hovers(&mut self, inputs: &HourInputs<'_>) {
         use installed_content_localisation::localisation::Argument;
         for &region in inputs.content.region_names.keys() {
@@ -686,7 +645,6 @@ impl Prepared {
             "AIRWING_MISSION_TYPE_SAM",
         ];
         let loc = inputs.localisation;
-        // Keep each region's wing order and per-wing refusals inside the fallible preparation.
         #[allow(clippy::type_complexity)]
         let efficiencies =
             (|| -> Result<BTreeMap<u32, Vec<(&AirWingRow, Result<i64, String>)>>, String> {
@@ -713,8 +671,6 @@ impl Prepared {
                 for (&region, wings) in regional_wings {
                     for &wing in wings {
                         let efficiency = (|| -> Result<i64, String> {
-                            // A zero-plane wing contributes zero for every native
-                            // efficiency, so its otherwise unused operands are not demanded.
                             if wing.planes == 0 {
                                 return Ok(0);
                             }
@@ -1073,7 +1029,6 @@ impl Prepared {
                 .copied()
                 .unwrap_or([-1; MISSIONS]);
             let mut parts = vec![Vec::new(); drawn.layout.holders.len()];
-            // Only an icon that draws takes its hits.
             let mut hits = Vec::new();
             let run = || -> Result<(), String> {
                 let Some(at) = drawn
@@ -1258,7 +1213,6 @@ mod tests {
         use replay_derive::air_region_derive::Filter;
         let pass = 43_800_000 + 24 * 30;
         let hour = pass + 3;
-        // Within the last day, but older than a mod's six-hour log timeout at the pass.
         let holder = AirRegionCombatRow {
             own: Arc::new(vec![AirCombatRecord {
                 date: pass - 10,

@@ -1,8 +1,4 @@
-//! What a map mode shows of the map's other layers, as plain values the counter, raid and world
-//! passes read. The viewer host decides them from the view's map mode
-//! (`viewer_world::map::map_mode::visibility`).
 
-/// The `NMapIcons` priority table a mode's map icons draw with, by its define prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PriorityTable {
     Default,
@@ -21,7 +17,6 @@ pub enum PriorityTable {
 }
 
 impl PriorityTable {
-    /// The define prefix: `<prefix>_PRIORITY_<ICON>`.
     pub fn prefix(self) -> &'static str {
         match self {
             Self::Default => "DEFAULT",
@@ -59,8 +54,6 @@ impl PriorityTable {
     ];
 }
 
-/// The map icon kinds whose priority a mode's table sets and the viewer draws, by their define
-/// suffix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PriorityIcon {
     UnitsStack,
@@ -79,9 +72,7 @@ pub enum PriorityIcon {
     RocketSite,
     GunEmplacement,
     StrategicLocation,
-    /// Strait and canal (adjacency-rule) icons.
     AdjacencyRule,
-    /// A state's resource icon.
     Resource,
 }
 
@@ -131,8 +122,6 @@ impl PriorityIcon {
     }
 }
 
-/// Every table's `NMapIcons.<table>_PRIORITY_<icon>` for the icons the viewer draws, each
-/// truncated to the signed byte the game stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Priorities([[i8; PriorityIcon::ALL.len()]; PriorityTable::ALL.len()]);
 
@@ -148,7 +137,6 @@ impl Priorities {
         Ok(Self(tables))
     }
 
-    /// Every table holding `values` for each icon, in [`PriorityIcon::ALL`] order.
     pub const fn uniform(values: [i8; PriorityIcon::ALL.len()]) -> Self {
         Self([values; PriorityTable::ALL.len()])
     }
@@ -159,7 +147,6 @@ impl Priorities {
         self.0[table.expect("every table is listed")][icon.expect("every icon is listed")]
     }
 
-    /// Sets one table's priority, for fixtures.
     pub fn set(&mut self, table: PriorityTable, icon: PriorityIcon, value: i8) {
         let table = PriorityTable::ALL.iter().position(|t| *t == table);
         let icon = PriorityIcon::ALL.iter().position(|i| *i == icon);
@@ -167,66 +154,42 @@ impl Priorities {
     }
 }
 
-/// Which unit counters a mode lets the counter pass build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnitKinds {
-    /// Armies, railway guns and fleets.
     All,
-    /// Only fleets with a ship that carries air wings.
     CarrierFleets,
-    /// None.
     Nothing,
 }
 
-/// How far raid icons reach in a mode that shows them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RaidReach {
-    /// Out to `RAID_MAP_ICON_DRAW_DISTANCE_MAX`.
     Normal,
-    /// Out to `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE`.
     RaidMode,
 }
 
-/// What a map mode shows of the map's layers besides the political fill.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Visibility {
     pub priorities: PriorityTable,
-    /// Native political mode, independently of a shared icon priority table.
     pub political_mode: bool,
-    /// Whether unit counters are drawn at all; their camera cutoff and the peace conference
-    /// still apply.
     pub unit_counters: bool,
     pub unit_kinds: UnitKinds,
-    /// The opacity army counters are drawn at.
     pub army_opacity: f32,
-    /// Whether unit counters group by country from `MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE_STRATEGIC`
-    /// rather than `MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE`.
     pub strategic_grouping: bool,
-    /// Whether a province shows its victory point (dot and name), air base, rocket site, naval
-    /// base, radar and strategic-location icons and its land and naval combat and naval
-    /// combat-result icons. Special facilities and naval headquarters always show.
     pub province_icons: bool,
-    /// Whether 3-D land unit models are drawn; ships always are.
     pub land_models: bool,
     pub unit_arrows: bool,
-    /// Whether victory-point and capital labels keep their names (their dots and stars stay).
     pub label_text: bool,
-    /// `None` hides raid icons.
     pub raid_icons: Option<RaidReach>,
     pub naval_missions: bool,
     pub faction_pins: bool,
-    /// Whether the fog of war is drawn, when the view has it switched on.
     pub fog_of_war: bool,
     pub province_borders: bool,
-    /// Strait and canal (adjacency-rule) icons.
     pub adjacency_rules: bool,
     pub trade_routes: bool,
-    /// Each state's resource icon (`resource_mapicon`).
     pub resource_icons: bool,
 }
 
 impl Visibility {
-    /// The political mode's: everything.
     pub const POLITICAL: Self = Self {
         priorities: PriorityTable::Default,
         political_mode: true,
@@ -248,7 +211,6 @@ impl Visibility {
         resource_icons: false,
     };
 
-    /// The navy mode's army counter opacity.
     pub const NAVY_ARMY_OPACITY: f32 = 0.5;
 }
 

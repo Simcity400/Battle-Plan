@@ -1,4 +1,3 @@
-//! Authenticated variant census owned by production capture.
 
 use super as production;
 use crate::table_capture::CaptureRows;
@@ -24,7 +23,6 @@ impl Registry {
             self.rows.rows.len(),
         );
     }
-    // Off-hours carry-forward hint keeps byte-identical spool output.
     pub fn mark_skipped(&mut self) {
         self.rows.outcome = Outcome::Unavailable {
             reason: replay_data::cadence::SKIPPED_REASON,

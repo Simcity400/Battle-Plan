@@ -1,5 +1,3 @@
-/** Shared dense country values for size races. Products own counting and top-N;
- * the kit preserves exact totals, unknown parts, gaps and country identities. */
 import type { CountryIdentityRun } from '../../generated/dashboard';
 import type { CountryRaceEntry } from './countryRace';
 import { shownRuns } from './lines.ts';
@@ -9,7 +7,6 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import { int, object } from '../../dashboard/validation.ts';
 
 export interface CountryValueType { key: string; name: string | null }
-/** Normalised lookup row; the wire accepts compact totals and separate mix only. */
 interface CountryValueRun extends Span {
   startsSegment: boolean; total: number | null; rawTotal?: string; values: (number | null)[]; rawValues?: (string | null)[];
 }
@@ -21,7 +18,6 @@ export interface CountryValueSeries {
 }
 export interface CountryValuesReply { types: CountryValueType[]; series: CountryValueSeries[] }
 
-/** Structural reply accepted by the recorded-count model of a parts race. */
 export interface CountryPartsReply {
   branchId: string;
   parts: (CountryValueType & { unresolved: boolean })[];
@@ -34,7 +30,6 @@ export interface CountryPartsReply {
 
 const amount = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER);
 
-/** Admit the shared run shape without coercion, expanding, repairing or backfill. */
 export function validCountryValues(reply: unknown): reply is CountryValuesReply {
   if (!object(reply) || !Array.isArray(reply.types) || !Array.isArray(reply.series)) return false;
   const types = reply.types;
@@ -87,8 +82,6 @@ export function countryValuesModel(reply: CountryValuesReply): CountryValuesMode
   })), tags: reply.series.map(series => series.tag) };
 }
 
-/** Join independent totals and composition at run boundaries, never per hour.
- * Missing composition keeps the total and supplies nullable parallel parts. */
 export function countryValuePartsReply(
   reply: CountryValuesReply & { branchId: string; warnings: string[] },
   unresolved: (type: CountryValueType) => boolean = type => type.name === null,
@@ -140,7 +133,6 @@ export function countryValueAt(model: CountryValuesModel, tag: string, hour: num
     stretch: series.starts[position], readHour: Math.floor(hour) };
 }
 
-/** Missing and unknown totals never rank. A complete read of zero remains zero. */
 export function rankCountryValues(model: CountryValuesModel, candidates: readonly string[], hour: number, count: number): { tag: string; at: CountryValueAt & { total: number } }[] {
   return candidates.flatMap(tag => {
     const at = countryValueAt(model, tag, hour);
@@ -153,7 +145,6 @@ export function rankCountryValues(model: CountryValuesModel, candidates: readonl
   }).slice(0, Math.max(0, count));
 }
 
-/** Null values end their run; equal neighbours merge only within one identity. */
 export function countryValueRuns(model: CountryValuesModel, tag: string, part?: number): Run[] {
   const runs: Run[] = [];
   let broken = true;
@@ -178,8 +169,6 @@ export function countryValueMix(model: CountryValuesModel, tag: string, membersh
   return model.reply.types.map((_, index) => shownRuns(countryValueRuns(model, tag, index), membership, range));
 }
 
-/** Exact totals retain their width when a content split is unknown; the
- * unattributed remainder is hatched, never assigned to an invented type. */
 export function countryValueEntries(model: CountryValuesModel, ranked: readonly { tag: string; at: CountryValueAt & { total: number } }[],
   split: boolean, format: (value: number) => string): CountryRaceEntry[] {
   return ranked.map(({ tag, at }) => {

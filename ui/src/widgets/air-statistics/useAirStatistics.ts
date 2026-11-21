@@ -11,12 +11,8 @@ import type { AirStatisticsReply } from './airStatisticsData';
 import { choicesAt } from '../air-missions/airMissionsData';
 import type { AirStatisticsRegionsReply } from '../../generated/dashboard';
 
-/** The structure a render shows: the channels, which regions have statistics and their names, the read they come from,
- * and why none are recorded. The pairs' words are live cells, painted each frame, never rendered. */
 const structure = (reply: AirStatisticsReply) => JSON.stringify([reply.channels, reply.regions, reply.missing, reply.warnings, reply.readHour, reply.theatres, reply.theatresMissing]);
 
-/** The country's statistics at the widget's hour: followed at the head as a panel, asked for a pinned or hovered hour;
- * its words come from `live` either way. */
 export function useAirStatistics(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -36,8 +32,6 @@ const validateRegions = (value: unknown): AirStatisticsRegionsReply => {
   return reply;
 };
 
-/** Channels by their game names, the theatres at the hour, and every region the country held statistics in over the
- * timeline (`air-statistics-regions`), so a region not recorded at the hour shown can be chosen too. */
 export function useAirStatisticsChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data, options, track, tag } = useAirStatistics(widget, runtime, true);
   const regions = useProduct<AirStatisticsRegionsReply>(runtime.client, track && tag ? { sourceId: track.source.id, revision: track.source.revision,

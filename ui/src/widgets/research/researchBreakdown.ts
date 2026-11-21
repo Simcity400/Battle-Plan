@@ -8,7 +8,6 @@ export interface ResearchPeriod {
   firstHour: number;
   endHour: number;
   state: ResearchSlotState | null;
-  /** Fixed5 research days multiplied by 24; divide only after summing. */
   work: bigint | null;
   firstRate: bigint | null;
   lastRate: bigint | null;
@@ -18,9 +17,6 @@ const effectKey = (state: ResearchSlotState) => JSON.stringify([
   state.details?.modifiers, state.details?.bonuses, state.appliedDaysRaw, state.aheadReductionYearsRaw,
 ]);
 
-/** Integrate the recorded rate over [from, to). Re-evaluate at each game-day
- * boundary: an ahead penalty declines even when no modifier changes. This is
- * a continuous-rate estimate, not a claim about the native daily update phase. */
 export function researchWork(state: ResearchSlotState, from: number, to: number): bigint | null {
   let work = 0n;
   let steps = 0;
@@ -36,11 +32,6 @@ export function researchWork(state: ResearchSlotState, from: number, to: number)
   return work;
 }
 
-/** Split [from, to) into the research earned and the time the ahead-of-time
- * penalty added or bonuses saved, all in fixed5 days × 24. At 1× the earned
- * work would take `work`; the penalty alone would stretch it by `penalty`;
- * bonuses bring it back to the hours actually spent:
- * work + penalty - bonus = (to - from) × 1.00000. */
 export function researchSplit(state: ResearchSlotState, from: number, to: number): { work: bigint; penalty: bigint; bonus: bigint; floored: boolean } | null {
   let work = 0n, penalty = 0n, bonus = 0n, floored = false;
   let steps = 0;
@@ -69,10 +60,6 @@ const pretty = (token: string) => { const text = token.replace(/_/g, ' ').trim()
 
 export interface ResearchModifierPart { key: string; kind: string; label: string; raw: bigint }
 
-/** Every additive research modifier in effect for a state, down to its named
- * sources. Parts sum to the total bonus: what a component's named sources do
- * not account for (a base value, a clamp) remains as the component's own part.
- * Scientist sources are efficiencies, not additive, so the scientist stays whole. */
 export function researchModifierParts(state: ResearchSlotState): ResearchModifierPart[] | null {
   const modifiers = state.details?.modifiers;
   if (!modifiers) return null;
@@ -91,8 +78,6 @@ export function researchModifierParts(state: ResearchSlotState): ResearchModifie
   return parts;
 }
 
-/** Input must already be clipped by researchAt. No future samples or assumed
- * rates across missing hours enter the explanation. */
 export function researchBreakdown(slot: ResearchSlotHistory, entry: ResearchEntry) {
   const firstHour = entry.firstObservedHour;
   const endHour = entry.outcome !== 'unknown' && entry.endedByHour !== null
@@ -135,7 +120,6 @@ export function researchBreakdown(slot: ResearchSlotHistory, entry: ResearchEntr
   const observed = last && BigInt(last.progressRaw) >= 0n ? BigInt(last.progressRaw) : null;
   const initial = first && BigInt(first.progressRaw) >= 0n ? BigInt(first.progressRaw) : null;
   const costChanged = samples.some(p => p.baseDaysRaw !== first?.baseDaysRaw);
-  // A missing observation or a progress reset prevents a complete reconciliation.
   const continuousProgress = samples.every((p, i) => i === 0 ||
     (samples[i - 1].lastHour + 1 === p.firstHour && BigInt(p.progressRaw) >= BigInt(samples[i - 1].progressRaw)));
   const compareEnd = last ? Math.min(last.lastHour, endHour) : firstHour;
@@ -162,7 +146,6 @@ export function researchBreakdown(slot: ResearchSlotHistory, entry: ResearchEntr
   };
 }
 
-/** Only presentation rounds; arithmetic above remains integer fixed point. */
 export function researchNumber(raw: bigint, precision = 1): string {
   const scale = 10n ** BigInt(precision);
   const magnitude = raw < 0n ? -raw : raw;

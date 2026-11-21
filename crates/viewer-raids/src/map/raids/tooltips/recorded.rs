@@ -1,4 +1,3 @@
-//! Recorded joins for the three ordinary-map tooltip entry points.
 use super::super::{
     RaidAssets, TypeToken, launch, offers, paths,
     script::{Eval, Scope, Scopes, World},
@@ -23,8 +22,6 @@ mod diagnostic;
 #[path = "trigger.rs"]
 mod trigger;
 
-/// The tooltip of `key` for country `ours` in one recorded hour, from the
-/// raid hover content.
 pub fn build(
     content: &super::Content,
     frame: &DecodedFrame,
@@ -46,7 +43,6 @@ pub fn build(
     })
 }
 
-/// The details window of an offer bubble's targets, built at the click's hour.
 pub fn details(
     content: &super::Content,
     frame: &DecodedFrame,
@@ -137,7 +133,6 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
             incoming,
         } => context.raid(*id, *reference_type, *incoming),
         Key::Offer(targets) => Ok(context.offers(targets, true)),
-        // The bubble alone appends the quick-start hint.
         Key::Type(target) => Ok(context.offers(std::slice::from_ref(&**target), false)),
     };
     result.unwrap_or_else(|reason| {
@@ -147,10 +142,6 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
     })
 }
 
-/// A details entry's order from its shown types' launchability: the type its name reads (the
-/// one launchable type, else none) and its buttons, launchable ones enabled first, then the rest
-/// disabled. An undecided type leaves the buttons unordered, and the name too unless two types
-/// are already launchable.
 fn detail_order(types: &[(usize, Result<bool>)]) -> (Result<Option<usize>>, Result<Vec<(usize, bool)>>) {
     let undecided: Vec<&str> = types.iter().filter_map(|(_, allowed)| allowed.as_ref().err().map(String::as_str)).collect();
     let launchable: Vec<usize> = types.iter().filter(|(_, allowed)| *allowed == Ok(true)).map(|&(at, _)| at).collect();
@@ -177,10 +168,7 @@ struct Context<'a, 'w> {
     assets: &'a RaidAssets,
     world: &'a World<'w>,
     loc: &'a Localisation,
-    /// The recording client's language
-    /// ([`dashboard_text::scripted_text::stored_text`]).
     recorded_language: &'a str,
-    /// What custom trigger tooltips' scripted text reads.
     scripted_content: &'a Result<dashboard_text::scripted_text::ScriptedContent>,
     ours: u32,
     nato: bool,
@@ -197,14 +185,7 @@ fn known(eval: Eval) -> Result<bool> {
     }
 }
 
-/// Event scopes used to expand custom trigger-tooltip text.
-///
-/// The raid condition chain starts in a default scope; FROM, when set, is
-/// another default scope for the target, so all links of both are known.
-/// Inside a scope change (PREV set or THIS different from ROOT), only linked
-/// objects are known, not their own links.
 fn event_scopes(scopes: Scopes) -> EventScopes {
-    // Build raid conditions from default scopes.
     let target = |scope| match scope {
         Scope::Country(slot) => EventObject::Country(slot),
         Scope::State(id) => EventObject::State(id),
@@ -271,7 +252,6 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         };
         std::iter::once(current).chain(linked).collect()
     };
-    // Keep target variables set throughout the condition-text evaluation.
     let mut graph = EventScopes::new(list);
     graph.variables = ScopeVariables {
         target_state: scopes.target_state,
@@ -311,7 +291,6 @@ impl Context<'_, '_> {
         }
     }
     fn type_name(&self, kind: &RaidType) -> Result<String> {
-        // Localize the raid-type name key with its prefix.
         localise(self.loc, &format!("raid_type_{}", kind.name), &[])
     }
     fn state_name(&self, state: u32) -> Result<String> {
@@ -417,7 +396,6 @@ impl Context<'_, '_> {
                 .as_ref()?
                 .get(index)
                 .ok_or("target terrain ordinal absent")?;
-            // Localize the category token; NAME is the plain location.
             return localise(
                 self.loc,
                 "PROV_TOOLTIP_LOCATION_STATE",
@@ -435,7 +413,6 @@ impl Context<'_, '_> {
         } else {
             self.target_name(scope, Some(kind))?
         };
-        // Bind TYPE and TARGET as string arguments.
         localise(
             self.loc,
             "raid_inst_item_desc",
@@ -477,7 +454,6 @@ impl Context<'_, '_> {
                     kind.speed_multiplier_raw,
                     self.assets.tooltip.speed.as_ref()?,
                 );
-                // The hour's raid unit keeps what this reads ([`crate::map::raid_arrows`]).
                 let distance = unit_inputs::target_distance(
                     self.assets,
                     self.world.frame(),
@@ -517,7 +493,6 @@ impl Context<'_, '_> {
     fn current(&self, scope: &RaidScope) -> Result<i64> {
         self.current_for(scope, self.ours)
     }
-    /// `current` is the target's CURRENT, computed at most once per target.
     fn facility(
         &self,
         scope: &RaidScope,
@@ -561,8 +536,6 @@ impl Context<'_, '_> {
                     .map_err(|why| why.to_string())?
                     .ok_or("ongoing project definition token is absent")?;
                 let key = std::str::from_utf8(key).map_err(|e| e.to_string())?;
-                // The reader authenticates the selected project's owner against
-                // this program owner; no daily project-history join is needed.
                 let owner = self
                     .world
                     .slot(program.owner)
@@ -586,8 +559,6 @@ impl Context<'_, '_> {
         if let Some(reason) = &project.refusal {
             return Err(format!("special project {default}: {reason}"));
         }
-        // Use a nonempty narrative name, otherwise the template name, then the
-        // tag-specific key. Join the recorded project template to its name record.
         let key = project
             .name
             .as_deref()
@@ -607,8 +578,6 @@ impl Context<'_, '_> {
         };
         let scopes = Scopes::of(Scope::Country(country));
         let text = self.scoped_text(selected, scopes)?;
-        // Read the inherited name record, appending its default in parentheses
-        // when keys differ; plain formatting only wraps yellow.
         if selected == default {
             Ok(format!("\u{11}Y{text}\u{11}!"))
         } else {
@@ -632,8 +601,6 @@ impl Context<'_, '_> {
             bare: false,
         })
     }
-    /// Each target's name and type buttons: launchable types enabled, then the rest disabled,
-    /// and the type named when exactly one is launchable.
     fn detail_entries(&self, targets: &[offers::TooltipTarget]) -> Vec<super::DetailEntry> {
         let paths = paths::HourPaths::new(self.assets, self.world.frame());
         let launcher = launch::Launcher::new(self.assets, self.world, self.ours, &paths);
@@ -771,7 +738,6 @@ impl Context<'_, '_> {
         }
         rules::offers(self.loc, output, quick)
     }
-    /// `flags` holds every country's candidates, built once per tooltip.
     fn flag(
         &self,
         country: u32,
@@ -787,7 +753,6 @@ impl Context<'_, '_> {
             .find(|choice| self.world.slot(choice.raw) == Some(country))
             .ok_or("controller flag operands are absent")?;
         choice.key(self.flag_exists)?;
-        // Resolve the tag through this hour's small flag atlas.
         if choice.tag.chars().count() != 3 {
             return Err("controller flag tag is not three codepoints".into());
         }
@@ -808,8 +773,6 @@ impl Context<'_, '_> {
                 (u64::from(r.id) << 32 | u64::from(r.reference_type)) == scope.leader_reference
             })
             .ok_or("captive leader is absent from UnitLeaders")?;
-        // Read the inherited name record. Naming localizes the saved input,
-        // recorded as inherited_text_a rather than a script ID.
         localise(
             self.loc,
             std::str::from_utf8(&leader.inherited_text_a).map_err(|e| e.to_string())?,

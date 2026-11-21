@@ -1,6 +1,3 @@
-//! Fuel by military branch: a country's fuel consumers at an hour, as its fuel status holds them
-//! (`CountryFuelConsumers`, keyed by raw country id and consumer index), named from the recorded
-//! content. The consumers' amounts over time are the declared series `fuel-consumers`.
 use dashboard_base::products::{Country, validate_country};
 use super::super::LoadContext;
 use crate::{
@@ -15,10 +12,8 @@ use std::io;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The game's labels of its three fuel consumers, in consumer order.
 const LABELS: [&str; 3] = ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"];
 
-/// Fixed-point denominator of the amounts.
 pub const SCALE: u32 = 100_000;
 
 pub struct FuelBranches;
@@ -31,12 +26,11 @@ pub struct FuelBranchesParams {
     pub country: Country,
 }
 
-/// One consumer at the hour: fixed5 amounts and the game's priority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelConsumerRow {
-    /// Its native consumer index: the series part.
+    #[doc = " Its native consumer index: the series part."]
     pub index: u32,
     pub requested: String,
     pub received: String,
@@ -49,20 +43,19 @@ pub struct FuelConsumerRow {
 pub struct FuelBranchesReply {
     pub tag: String,
     pub scale: u32,
-    /// Each consumer index's label from the recorded content; null where it names none.
+    #[doc = " Each consumer index's label from the recorded content; null where it names none."]
     pub consumer_names: Vec<Option<String>>,
-    /// The hour the consumers were last read: they are read once a day.
+    #[doc = " The hour the consumers were last read: they are read once a day."]
     pub read_hour: Option<i32>,
-    /// The country's consumers in index order; none when it requested no fuel.
+    #[doc = " The country's consumers in index order; none when it requested no fuel."]
     pub consumers: Vec<FuelConsumerRow>,
-    /// Why the consumers are not known at the hour.
+    #[doc = " Why the consumers are not known at the hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(FuelBranchesReply);
 
-/// The consumers' labels, read once per request or follow, and why any is absent.
 pub struct Labels {
     names: [Option<String>; 3],
     warnings: Vec<String>,
@@ -91,13 +84,11 @@ fn labels(source: &Source, load: &LoadContext) -> Labels {
     Labels { names, warnings }
 }
 
-/// Every key of country `id`'s consumers.
 fn range(id: u32) -> Keys {
     let owner = u128::from(id) << 32;
     Keys::Range(owner, owner | u128::from(u32::MAX))
 }
 
-/// The reply at `frame`'s hour for the country with raw id `id`.
 fn reply(frame: &DecodedFrame, tag: &str, id: u32, labels: &Labels) -> FuelBranchesReply {
     let view = &frame.tables[TableId::CountryFuelConsumers.index()];
     let mut out = FuelBranchesReply {

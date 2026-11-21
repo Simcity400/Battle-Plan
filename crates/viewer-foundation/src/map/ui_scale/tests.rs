@@ -22,14 +22,12 @@ fn manual_and_unavailable_display_keep_direct_raster_and_input_scale() {
 fn matching_the_game_multiplies_its_scale_by_its_stretch() {
     let (scale, note) = Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[MONITOR]));
     assert_eq!((scale, note), (1.25, None));
-    // At 100% the same game fills the monitor 1:1.
     let unscaled = Desktop { dpi: 96, ..MONITOR };
     assert_eq!(
         Setting::MatchGame.resolve(Ok(&borderless()), Ok(&[unscaled])),
         (1.0, None)
     );
     let (scale, _) = Setting::MatchGame.resolve(Ok(&borderless_at(1.2)), Ok(&[unscaled]));
-    // 2560 frame pixels over 2133 interface pixels, truncated as the game does.
     assert_eq!(scale, 2560.0 / 2133.0);
 }
 
@@ -60,8 +58,6 @@ fn a_manual_scale_ignores_the_game_and_invalid_stored_values_match_it() {
 
 #[test]
 fn tooltip_lengths_follow_the_ui_scale_alone_whatever_the_display_scale() {
-    // 14 interface pixels are 17.5 device pixels at 1.25 on a 100%, 150%
-    // or 200% Windows display, as a 14-pixel sprite would be.
     for pixels_per_point in [1.0, 1.5, 2.0] {
         let device = points(14.0, 1.25, pixels_per_point) * pixels_per_point;
         assert!((device - 17.5).abs() < 1e-4, "{pixels_per_point}");

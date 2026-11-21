@@ -5,7 +5,6 @@ import { Popover, usePopover } from './Popover';
 
 export interface MenuItem { label: string; icon?: IconName; disabled?: boolean; hint?: string; run: () => void }
 
-/** A right-click menu at the pointer. `open` shows the items; render `menu` once. */
 export function useContextMenu(label: string) {
   const popover = usePopover('start');
   const [items, setItems] = useState<readonly MenuItem[]>([]);

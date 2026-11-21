@@ -14,8 +14,6 @@ fn scratch(name: &str) -> PathBuf {
     root
 }
 
-/// What a localisation part's build gives: its value, and a note its build made, which every
-/// read of the kept part must replay.
 fn localisation_build() -> (io::Result<Localisation>, Diagnostics) {
     diagnostics::capture(|| {
         Diagnostics::note("Text is shown in english, the language this recording was made in.".to_owned());
@@ -26,9 +24,6 @@ fn localisation_build() -> (io::Result<Localisation>, Diagnostics) {
     })
 }
 
-/// A part is built once and read in place after; a file of another key, cut short anywhere or
-/// with any byte changed is built and written again; a cache folder that cannot be written
-/// leaves the part built each time, never refused.
 #[test]
 fn a_kept_part_is_rebuilt_when_missing_stale_cut_or_damaged() {
     let root = scratch("lifecycle");
@@ -64,7 +59,6 @@ fn a_kept_part_is_rebuilt_when_missing_stale_cut_or_damaged() {
         assert_eq!(read(2), 1, "damaged at {at}");
         assert_eq!(read(2), 0);
     }
-    // A cache folder that is a file: nothing can be kept, and every source builds the part.
     let blocked = scratch("blocked");
     std::fs::write(blocked.join("catalogue"), b"not a folder").unwrap();
     let place = Place {
@@ -79,7 +73,6 @@ fn a_kept_part_is_rebuilt_when_missing_stale_cut_or_damaged() {
     };
     assert_eq!(kept(Some(place), localisation_build).0.unwrap(), expected);
     assert_eq!(built() - before, 2);
-    // A part without a place is built and kept nowhere.
     let before = built();
     assert_eq!(kept(None, localisation_build).0.unwrap(), expected);
     assert_eq!(built(), before, "no place, nothing read or kept");
@@ -101,8 +94,6 @@ const GFX: &str = r#"spriteTypes = {
     spriteType = { name = "GFX_a" texturefile = "gfx/interface/a_later.dds" }
 }"#;
 
-/// Every kind of drawable declaration reads back from its kept form equal, field for field, to
-/// the one read from its file, with the refused names and lines; a lookup decodes only its own.
 #[test]
 fn kept_sprites_read_back_as_every_kind_was_declared() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -111,7 +102,6 @@ fn kept_sprites_read_back_as_every_kind_was_declared() {
         "interface/test.gfx".to_owned(),
         installed_content_core::gui::native::sprites::read_sprites(GFX.as_bytes()),
     )]);
-    // The reader reached every declaration: each kind is drawable, the last refused by name.
     for name in ["GFX_a", "GFX_b", "GFX_tile", "GFX_bar", "GFX_anim"] {
         assert!(read.contains(name), "{name}: {read:?}");
     }
@@ -139,9 +129,6 @@ fn kept_sprites_read_back_as_every_kind_was_declared() {
     );
 }
 
-/// A recording whose game facts carry `files`, written to a file of its own, and the content
-/// options of the folders it was recorded from, whose `settings.txt` then asks for French text,
-/// which playback never reads.
 fn recording_with_facts(name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf, ContentOptions) {
     let (root, options, identity) = game(name, files);
     let path = root.join("campaign.battleplan");
@@ -154,8 +141,6 @@ fn recording_with_facts(name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf
     (root, path, options)
 }
 
-/// A game folder named for the test holding `files`, its content options and the identity of a
-/// recording made over it.
 fn game(name: &str, files: &[(&str, &str)]) -> (PathBuf, ContentOptions, replay_data::identity::Identity) {
     let root = scratch(name);
     std::fs::create_dir_all(root.join("user")).unwrap();
@@ -175,7 +160,6 @@ fn game(name: &str, files: &[(&str, &str)]) -> (PathBuf, ContentOptions, replay_
     (root, options, identity)
 }
 
-/// One session of one hour, recorded as `identity`.
 fn session(identity: &replay_data::identity::Identity) -> Vec<replay::spool::Record> {
     let mut input = crate::test_fixtures::records(1, vec![crate::test_fixtures::source(1, 100, Some(1))]);
     let replay::spool::Record::SessionStart(session) = &mut input[0] else {
@@ -185,8 +169,6 @@ fn session(identity: &replay_data::identity::Identity) -> Vec<replay::spool::Rec
     input
 }
 
-/// A new source of the recording at `path`, its content mounted over `options`' folders: what
-/// the mount itself notes is no part of the catalogue's.
 fn open(path: &std::path::Path, options: &ContentOptions) -> crate::Source {
     let source = crate::Source::open(
         crate::SourceKey {
@@ -201,10 +183,6 @@ fn open(path: &std::path::Path, options: &ContentOptions) -> crate::Source {
     source
 }
 
-/// A recording's catalogue as a cold source reads it from its kept files equals, part for part,
-/// the one built from the recording: every text, sprite, warning and note its build made. The
-/// first source builds the kept files; a later one reads them without building; a damaged one is
-/// built again. A recording carrying no facts keeps nothing.
 #[test]
 fn a_cold_source_reads_the_kept_catalogue_as_it_was_built() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -279,8 +257,6 @@ fn a_cold_source_reads_the_kept_catalogue_as_it_was_built() {
     drop(cold);
     std::fs::remove_dir_all(root).unwrap();
 
-    // Without facts nothing of the recording's catalogue is known: it is refused by name, and
-    // nothing is kept.
     let (bare, options, identity) = game("no-facts", &[]);
     let source = crate::Source::from_replay(
         crate::SourceKey {

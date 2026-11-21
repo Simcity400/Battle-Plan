@@ -1,5 +1,3 @@
-//! The required rule icon's hover: the adjacency rule's name and the permissions of the observed
-//! country's relation to it, with why it holds; the other relations' permissions delayed.
 use super::{loc, paths_named};
 use crate::binding::Bindings;
 use crate::content::Content;
@@ -14,16 +12,13 @@ use viewer_foundation::map::movement_reads::RuleReason;
 
 type Loc<'a> = dyn Fn(&str, &[(&str, Argument<'_>)]) -> Result<String, String> + 'a;
 
-/// Each relation's key suffix, in the relations' order.
 const SUFFIXES: [&str; 4] = ["_CONTESTED", "_ENEMY", "_FRIEND", "_NEUTRAL"];
 
-/// A permission's word, green when allowed and red when not.
 fn allowed(loc: &Loc<'_>, set: bool) -> Result<String, String> {
     let (key, colour) = if set { ("YES", 'G') } else { ("NO", 'R') };
     Ok(format!("\u{11}{colour}{}\u{11}!", loc(key, &[])?))
 }
 
-/// A relation's permissions: army, navy, submarines and trade.
 fn permission_list(loc: &Loc<'_>, bits: u8) -> Result<String, String> {
     let [army, navy, submarines, trade] = [1, 2, 4, 8].map(|bit| allowed(loc, bits & bit != 0));
     loc(
@@ -37,9 +32,6 @@ fn permission_list(loc: &Loc<'_>, bits: u8) -> Result<String, String> {
     )
 }
 
-/// The permission text: with `current`, the current relation's heading, reason and permissions
-/// (or the reason alone when the rule is disabled, `relation` `None`); without, every other
-/// relation's heading and permissions.
 fn permission_text(loc: &Loc<'_>, permissions: [u8; 4], relation: Option<usize>, reason: &str, current: bool) -> Result<String, String> {
     let mut text = String::new();
     if relation.is_none() && current {
@@ -64,7 +56,6 @@ fn permission_text(loc: &Loc<'_>, permissions: [u8; 4], relation: Option<usize>,
     Ok(text)
 }
 
-/// The country's faction name, else its name: how the contested reason names a side.
 fn side(content: &Content, frame: &DecodedFrame, names: &CountryNames<'_>, slot: u32) -> Result<String, String> {
     let links = frame.complete::<tables::CountryLinks>().map_err(|e| e.to_string())?;
     let members = frame.complete::<tables::FactionMembers>().map_err(|e| e.to_string())?;
@@ -91,8 +82,6 @@ fn side(content: &Content, frame: &DecodedFrame, names: &CountryNames<'_>, slot:
     )
 }
 
-/// Why the disabled rule is disabled: its failure key localised in the observed country's scope,
-/// or the bare blocked text without one.
 fn disabled(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewer: u32) -> Result<String, String> {
     let key = rule.disabled_reason.as_ref().map_err(Clone::clone)?;
     if key.is_empty() {
@@ -115,7 +104,6 @@ fn disabled(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewe
     loc(content, "PERMISSION_BLOCKED_DUE_TO", &[("REASON", Argument::Text(&text))])
 }
 
-/// A verdict's unnamed reason key and its failed-trigger heading key.
 fn keys(verdict: Verdict) -> Result<(&'static str, &'static str), String> {
     match verdict {
         Verdict::Enemy => Ok(("PERMISSION_ENEMY_UNNAMED_DESC", "PERMISSION_NOT_ENEMY_DESC")),
@@ -125,9 +113,6 @@ fn keys(verdict: Verdict) -> Result<(&'static str, &'static str), String> {
     }
 }
 
-/// A reason that describes the rule's own triggers, `describe` giving a verdict's at an indent: a
-/// held verdict's unnamed text, then its triggers at indent one; otherwise the verdict's unnamed
-/// text, then each verdict whose triggers failed, its heading and its triggers at indent two.
 fn trigger_reason(loc: &Loc<'_>, describe: &dyn Fn(Verdict, usize) -> Result<String, String>, reason: RuleReason) -> Result<String, String> {
     use Verdict::{Enemy, Friend, Neutral};
     let (shown, failed): (Verdict, &[Verdict]) = match reason {
@@ -152,8 +137,6 @@ fn trigger_reason(loc: &Loc<'_>, describe: &dyn Fn(Verdict, usize) -> Result<Str
     Ok(text)
 }
 
-/// The rule's triggers for `verdict` described in the observed country's scope at the game's
-/// `indent`, in mode zero.
 fn triggers(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewer: u32, verdict: Verdict, indent: usize) -> Result<String, String> {
     use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
     let items = match verdict {
@@ -177,7 +160,6 @@ fn triggers(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewe
     viewer_foundation::tooltip_text::displayable(content.assets.as_ref(), described)
 }
 
-/// The relation's reason text.
 fn reason(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewer: u32, reason: RuleReason) -> Result<String, String> {
     let names = CountryNames::read(frame, &content.localisation);
     match reason {
@@ -197,7 +179,6 @@ fn reason(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewer:
     }
 }
 
-/// The hover's main and delayed texts.
 fn hover(content: &Content, frame: &DecodedFrame, rule: &AdjacencyRule, viewer: u32, relations: &crate::RuleRelations) -> Result<(String, String), String> {
     let relation = relations(frame, rule, viewer)?;
     let why = reason(content, frame, rule, viewer, relation)?;

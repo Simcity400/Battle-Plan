@@ -1,9 +1,5 @@
-//! Shared synthetic native-read counter for raid fixtures.
 use crate::Memory;
 
-/// Guarded calls and bytes a walk asks of its memory: one call per
-/// native guarded frame (a copy, a scattered batch or a record batch),
-/// forwarded to the inner memory's own batch methods.
 pub struct Counted<M> {
     pub inner: M,
     pub guards: std::cell::Cell<u64>,

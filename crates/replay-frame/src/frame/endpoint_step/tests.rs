@@ -146,7 +146,6 @@ fn endpoint_native_k24_every_tail_roots_and_held_outputs_match_canonical_bytes()
         let mut held = Vec::new();
         for tick in 0..=48 + tail {
             let mut raw = encoder.encode(source(tick), tick % 24 == 0).unwrap();
-            // A decoded table refusal, not a writer-selected replacement error.
             if tick == 35 {
                 raw.tables[TableId::DivisionStatus.index()] =
                     TableUpdate::Unchanged { baseline: -1 };
@@ -269,7 +268,7 @@ fn endpoint_reader_refuses_every_truncated_payload_and_wrong_baselines_without_m
     let Operation::Patch { deleted, .. } = &mut bad.sections[at].operation else {
         panic!("expected patch");
     };
-    *deleted = vec![1]; // key 1 is also patched; previous tables have already applied.
+    *deleted = vec![1];
     assert_eq!(
         bad.apply(Some(&first)).unwrap_err().to_string(),
         "endpoint changed and deleted keys overlap"
@@ -352,7 +351,6 @@ fn endpoint_root_preserves_absence_sample_hours_and_owned_buffer_lifetime() {
     assert_eq!(canonical(&restored), expected);
 }
 
-/// Ticks 0..=30 on the wire and as reconstructed, with keyframes at 0 and 24.
 fn window() -> (Vec<Frame>, Vec<DecodedFrame>) {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::for_tables(SELECTED);
@@ -365,7 +363,6 @@ fn window() -> (Vec<Frame>, Vec<DecodedFrame>) {
 
 #[test]
 fn endpoint_resume_writes_the_observing_writers_next_step_byte_for_byte() {
-    // Every resume hour, across keyframes, truncation, refusal and reinsertion.
     let (raws, frames) = window();
     let last = frames.last().unwrap();
     for resume in 0..frames.len() - 1 {
@@ -387,7 +384,6 @@ fn endpoint_resume_writes_the_observing_writers_next_step_byte_for_byte() {
         let reached = step.apply(Some(&frames[resume])).unwrap();
         assert_eq!(canonical(&reached), canonical(last));
     }
-    // A resumed writer has nothing pending at its own hour.
     let mut resumed = EndpointWriter::resume(SELECTED, &frames[3]).unwrap();
     assert!(resumed.finish(&frames[3], &mut Vec::new()).is_err());
 }
@@ -408,7 +404,6 @@ fn endpoint_owned_apply_equals_flat_apply_and_patches_only_unshared_rows_in_plac
             .unwrap()
             .apply(flat.as_ref())
             .unwrap();
-        // Every other step, an exported copy shares the baseline's tables.
         let exported = owned.clone().filter(|_| tick % 8 == 0);
         let exported_bytes = exported.as_ref().map(canonical);
         let next_owned = EndpointStep::decode(&bytes)
@@ -457,7 +452,6 @@ fn endpoint_owned_apply_equals_flat_apply_and_patches_only_unshared_rows_in_plac
             assert_eq!(second_tag(&held), before);
         }
     }
-    // A wrong baseline is refused before any table is taken.
     let mut writer = EndpointWriter::for_tables(SELECTED);
     writer.observe(&raws[0], &frames[0]).unwrap();
     let mut seed = Vec::new();
@@ -480,7 +474,6 @@ fn endpoint_owned_sparse_patch_keeps_its_table_buffer_and_membership_changes_mer
         TableView::Complete(TableRows::Countries(rows)) => rows.as_ptr() as usize,
         _ => panic!("complete {table:?}"),
     };
-    // A seed at `from`, then one step to the next tick, both as page bytes.
     let steps = |from: usize| {
         let mut writer = EndpointWriter::for_tables(SELECTED);
         writer.observe(&raws[from], &frames[from]).unwrap();
@@ -491,7 +484,6 @@ fn endpoint_owned_sparse_patch_keeps_its_table_buffer_and_membership_changes_mer
         writer.finish(&frames[from + 1], &mut step).unwrap();
         (seed, step)
     };
-    // Ticks 2 to 3 change fields only; 12 to 13 also deletes a country.
     for (from, merged) in [(2, false), (12, true)] {
         let (seed, step) = steps(from);
         let base = EndpointStep::decode(&seed)
@@ -522,7 +514,6 @@ fn endpoint_owned_sparse_patch_keeps_its_table_buffer_and_membership_changes_mer
             "owned {owned_growths}, flat {flat_growths}"
         );
     }
-    // A shared baseline is copied, never written through.
     let (seed, step) = steps(2);
     let base = EndpointStep::decode(&seed)
         .unwrap()
@@ -540,8 +531,6 @@ fn endpoint_owned_sparse_patch_keeps_its_table_buffer_and_membership_changes_mer
     assert_eq!(canonical(&held), held_bytes);
 }
 
-/// Steps of disjoint table selections between the same two points merge into the step of
-/// their union, byte for byte; steps of other points, or of one table twice, do not.
 #[test]
 fn steps_of_disjoint_selections_merge_into_the_step_of_their_union() {
     let (_, frames) = window();
@@ -630,7 +619,6 @@ fn endpoint_diff_between_any_two_hours_reaches_the_later_hour_and_patches_across
         operation(TableId::Campaign),
         Operation::Complete(_)
     ));
-    // The same hour, an earlier hour and another branch are refused.
     for (from, to) in [(after, after), (after, before)] {
         let mut out = vec![1];
         assert!(EndpointWriter::diff(SELECTED, from, to, &mut out).is_err());
@@ -644,7 +632,6 @@ fn endpoint_diff_between_any_two_hours_reaches_the_later_hour_and_patches_across
 #[test]
 fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues() {
     let (raws, frames) = window();
-    // A seed at tick 0, then steps every five ticks through 25.
     let mut writer = EndpointWriter::for_tables(SELECTED);
     let mut steps = Vec::new();
     for (tick, (raw, frame)) in raws.iter().zip(&frames).enumerate().take(26) {
@@ -658,7 +645,6 @@ fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues
     let mut decoder = FrameDecoder::for_tables(SELECTED);
     let mut previous: Option<usize> = None;
     for (tick, bytes) in &steps {
-        // A clone shares the held state; advancing one never writes the other's.
         let held = decoder.clone();
         let reached = decoder
             .advance_endpoint(EndpointStep::decode(bytes).unwrap())
@@ -669,7 +655,6 @@ fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues
             previous.map(|previous| canonical(&frames[previous])),
             "the clone at tick {tick}"
         );
-        // The native decoder continues from the endpoint as from its own hour.
         let mut native = decoder.clone();
         for (raw, frame) in raws.iter().zip(&frames).skip(tick + 1).take(3) {
             assert_eq!(
@@ -681,7 +666,6 @@ fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues
         }
         previous = Some(*tick);
     }
-    // A step for other tables is refused with the state kept.
     let mut other = Vec::new();
     EndpointWriter::diff(&SELECTED[..4], &frames[25], &frames[27], &mut other).unwrap();
     assert_eq!(
@@ -695,7 +679,6 @@ fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues
         decoder.current().map(canonical),
         Some(canonical(&frames[25]))
     );
-    // A step from another baseline is refused before it consumes the state.
     let mut later = Vec::new();
     EndpointWriter::diff(SELECTED, &frames[26], &frames[27], &mut later).unwrap();
     assert_eq!(
@@ -729,7 +712,6 @@ fn strided(raws: &[Frame], frames: &[DecodedFrame], stride: usize) -> Vec<(usize
     steps
 }
 
-/// A seed at tick `from` and the step on to tick `to`, as page bytes.
 fn seed_and_step(
     raws: &[Frame],
     frames: &[DecodedFrame],
@@ -755,7 +737,6 @@ fn endpoint_parallel_apply_equals_native_reconstruction_at_every_worker_count() 
         for workers in [1, 2, 4, 8] {
             let mut parallel: Option<DecodedFrame> = None;
             for (tick, bytes) in &steps {
-                // Every other step, an exported copy shares the baseline's tables.
                 let exported = parallel.clone().filter(|_| tick % 2 == 0);
                 let exported_bytes = exported.as_ref().map(canonical);
                 let started = AtomicUsize::new(0);
@@ -777,7 +758,6 @@ fn endpoint_parallel_apply_equals_native_reconstruction_at_every_worker_count() 
                         "{at}: {table:?}"
                     );
                 }
-                // Each thread beside the caller ran the worker hook first.
                 assert_eq!(started.into_inner(), workers.min(sections) - 1, "{at}");
                 assert_eq!(
                     exported.as_ref().map(canonical),
@@ -788,7 +768,6 @@ fn endpoint_parallel_apply_equals_native_reconstruction_at_every_worker_count() 
             }
         }
     }
-    // Steps between two hours, across keyframes, truncation and refusal.
     for (at, previous) in frames.iter().enumerate().step_by(3) {
         for frame in frames[at + 1..].iter().step_by(4) {
             let mut bytes = Vec::new();
@@ -817,7 +796,6 @@ fn endpoint_parallel_apply_patches_unshared_tables_in_place_and_copies_shared_on
         TableView::Complete(TableRows::DivisionStatus(rows)) => rows.as_ptr() as usize,
         _ => panic!("complete division status"),
     };
-    // Ticks 2 to 3 change fields only.
     let (seed, step) = seed_and_step(&raws, &frames, 2, 3);
     for workers in [2, 4, 8] {
         for shared in [false, true] {
@@ -879,7 +857,6 @@ fn endpoint_parallel_apply_fails_with_the_lowest_failing_tables_error() {
     assert_eq!(countries, "endpoint patch needs complete baseline");
     assert_eq!(status, "endpoint patch has no row baseline");
     assert_eq!(error(broken(true, true), 1), countries);
-    // Whatever the schedule, the error is the lower table's.
     for workers in [2, 4, 8] {
         for _ in 0..16 {
             assert_eq!(error(broken(false, true), workers), status);
@@ -888,7 +865,6 @@ fn endpoint_parallel_apply_fails_with_the_lowest_failing_tables_error() {
     }
 }
 
-// The stop hook is process-wide, so only the apply's threads count; `DENY_AT` is denied.
 static GROWTH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static DENY_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 static DENIED: AtomicBool = AtomicBool::new(false);
@@ -911,7 +887,6 @@ fn deny_one_growth() -> bool {
 fn endpoint_parallel_apply_returns_an_allocation_error_whichever_thread_is_denied() {
     let (raws, frames) = window();
     engine_allocation::set_stop_hook(Some(deny_one_growth));
-    // Field changes, a deleted country, and a step across the keyframe.
     for (from, to) in [(2, 3), (12, 13), (23, 25)] {
         let (seed, step) = seed_and_step(&raws, &frames, from, to);
         for (workers, shared) in [(2, false), (4, false), (4, true), (8, true)] {
@@ -964,7 +939,6 @@ fn endpoint_decoder_parallel_advance_reaches_each_step_and_the_native_decoder_co
     for workers in [2, 4, 8] {
         let mut decoder = FrameDecoder::for_tables(SELECTED);
         for (tick, bytes) in steps.iter().take(6) {
-            // The held state stays shared, as playback keeps it.
             let _held = decoder.clone();
             let reached = decoder
                 .advance_endpoint_parallel(EndpointStep::decode(bytes).unwrap(), workers, &|| {})

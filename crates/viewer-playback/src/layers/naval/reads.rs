@@ -1,5 +1,3 @@
-//! Every field the naval layer reads, one function per table: what declares its columns and what
-//! reads a row's values from the mirror. A table whose shape moves changes here and nowhere else.
 
 use super::super::{Inputs, List, Num, owned::opaque};
 use crate::playhead_host::mirror::{Cell, Mirror};
@@ -7,7 +5,6 @@ use replay_data::rows::{DirectedWars, Recorded, ReservedReverseVisibilityInputs,
 use std::io;
 use viewer_world::map::naval_dominance::Supremacy;
 
-/// The tables the layer reads, each with its keys.
 pub(super) const TABLES: [TableId; 9] = [
     TableId::NavalSupremacy,
     TableId::CountryLinks,
@@ -56,8 +53,6 @@ impl Columns {
         })
     }
 
-    /// The part of the layer's inputs a change of `table` touches: its rows inserted, deleted or
-    /// restated when `column` is none, else that column written; none for a column it does not read.
     pub(super) fn part(&self, table: TableId, column: Option<usize>) -> u16 {
         let read = |held: usize| column.is_none_or(|column| column == held);
         match table {
@@ -79,7 +74,6 @@ impl Columns {
     }
 }
 
-/// The parts of the inputs, one bit each, that the sides and blockades read and a step touches.
 pub(super) const SUPREMACY: u16 = 1;
 pub(super) const LINKS: u16 = 1 << 1;
 pub(super) const COUNTRIES: u16 = 1 << 2;
@@ -91,43 +85,35 @@ pub(super) const FORWARD: u16 = 1 << 7;
 pub(super) const DIRECTED: u16 = 1 << 8;
 pub(super) const WARS: u16 = 1 << 9;
 pub(super) const TUPLES: u16 = 1 << 10;
-/// The hour itself: packets are fresh only at their own hour.
 pub(super) const HOUR: u16 = 1 << 11;
 
-/// NavalSupremacy: country `country`'s supremacy in the row at `slot`; none for a cell not held.
 pub(super) fn supremacy(mirror: &Mirror, columns: &Columns, slot: u32, country: u32) -> Option<Supremacy> {
     let current = mirror.number(columns.current, slot).value()?;
     let previous = mirror.number(columns.previous, slot).value()?;
     Some(Supremacy { country, current, previous })
 }
 
-/// NavalSupremacy: the region and country a key names.
 pub(super) fn supremacy_key(key: u128) -> (u32, u32) {
     ((key >> 32) as u32, key as u32)
 }
 
-/// CountryLinks: the raw reference and its canonical slot.
 pub(super) fn link(mirror: &Mirror, columns: &Columns, slot: u32) -> Option<(u32, u32)> {
     Some((mirror.key(slot)? as u32, mirror.number(columns.link_slot, slot).value()?))
 }
 
-/// Countries: the native id and its canonical slot.
 pub(super) fn country(mirror: &Mirror, columns: &Columns, slot: u32) -> Option<(u32, u32)> {
     Some((mirror.key(slot)? as u32, mirror.number(columns.country_slot, slot).value()?))
 }
 
-/// FactionMembers: the raw member and its faction.
 pub(super) fn faction_member(mirror: &Mirror, columns: &Columns, slot: u32) -> Option<(u32, u64)> {
     Some((mirror.key(slot)? as u32, mirror.number(columns.faction, slot).value().unwrap_or(0)))
 }
 
-/// Subjects: the raw overlord and subject.
 pub(super) fn subject(mirror: &Mirror, slot: u32) -> Option<(u32, u32)> {
     let key = mirror.key(slot)?;
     Some(((key >> 32) as u32, key as u32))
 }
 
-/// ReservedCountryNaming: the cached faction handle.
 pub(super) fn naming_faction(mirror: &Mirror, columns: &Columns, slot: u32) -> Recorded<Option<u64>> {
     match mirror.number(columns.naming_faction, slot) {
         Cell::Value(handle) => Recorded::Value(Some(handle)),
@@ -136,38 +122,31 @@ pub(super) fn naming_faction(mirror: &Mirror, columns: &Columns, slot: u32) -> R
     }
 }
 
-/// ReservedCountryNaming: Country0's reverse visibility packet.
 pub(super) fn naming_reverse(mirror: &Mirror, columns: &Columns, slot: u32) -> Result<Recorded<Option<ReservedReverseVisibilityInputs>>, String> {
     opaque(mirror, columns.reverse_visibility, slot)
 }
 
-/// CountryCounterInputs: the row of native country `id`.
 pub(super) fn counter_row(mirror: &Mirror, id: u32) -> Option<u32> {
     mirror.slot(u128::from(id)).filter(|&slot| mirror.live(slot))
 }
 
-/// CountryCounterInputs: the country's forward visibility packet.
 pub(super) fn forward(mirror: &Mirror, columns: &Columns, slot: u32) -> Result<Recorded<Option<ReverseZeroVisibilityInputs>>, String> {
     opaque(mirror, columns.forward_visibility, slot)
 }
 
-/// CountryCounterInputs: the country's recorded directed-war packet (older recordings only).
 pub(super) fn directed(mirror: &Mirror, columns: &Columns, slot: u32) -> Result<Recorded<Option<DirectedWars>>, String> {
     opaque(mirror, columns.directed_wars, slot)
 }
 
-/// WarRelations: the raw first and second countries.
 pub(super) fn war(mirror: &Mirror, slot: u32) -> Option<(u32, u32)> {
     let key = mirror.key(slot)?;
     Some(((key >> 32) as u32, key as u32))
 }
 
-/// RelationTuples: the type a key names.
 pub(super) fn tuple_kind(key: u128) -> u32 {
     (key >> 16) as u32
 }
 
-/// RelationTuples: a tuple of type `kind`'s raw first and second countries.
 pub(super) fn tuple(mirror: &Mirror, columns: &Columns, slot: u32, kind: u32) -> Option<(u32, u32)> {
     (tuple_kind(mirror.key(slot)?) == kind).then_some(())?;
     Some((mirror.number(columns.tuple_first, slot).value()?, mirror.number(columns.tuple_second, slot).value()?))

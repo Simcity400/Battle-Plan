@@ -7,24 +7,17 @@ import type {
 export type {
   RegionalWeatherChoice as Choice, RegionalWeatherProvince as ProvinceWeather, RegionalWeatherProvincesReply as ProvincesReply, RegionalWeatherReply as WeatherReply,
 } from '../../generated/dashboard';
-/** A column shown, clipped to the extent; `column` indexes the reply's columns. */
 export interface WeatherPeriod extends HeatPeriod { column: number }
 export type WeatherShow = 'conditions' | 'temperature' | 'modifiers';
 
-/** Temperatures are the game's fixed-point degrees Celsius. */
 export const TEMPERATURE_SCALE = 100000;
 
-/** Raw modifier entries are the game's fixed-point values. */
 export const MODIFIER_SCALE = 100000;
 
 export const DAY_HOURS = 24;
-/** A view whose days fit is asked whole blocks of this many hours, so a pan inside them asks nothing again. */
 const BLOCK_HOURS = 90 * 24;
 const dayOf = (hour: number) => Math.floor(hour / DAY_HOURS);
 
-/** The hours to ask for and the most columns to fold them into, for `pixels` columns over `extent`. A view whose days
- * fit keeps the blocks holding it, one day a column whatever the viewport; a longer one asks for its own whole days,
- * folded from its first. */
 export function weatherWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number) {
   if (dayOf(extent[1]) - dayOf(extent[0]) + 1 <= pixels) {
     const first = Math.max(branch.firstHour, Math.floor(extent[0] / BLOCK_HOURS) * BLOCK_HOURS);
@@ -68,31 +61,23 @@ export function validateWeather(value: unknown): WeatherReply {
   return reply;
 }
 
-/** The hours of `extent` a reply does not reach: shown as loading while the next reply is on its way. */
 export function uncoveredSpans(extent: readonly [number, number], reply: { firstHour: number; lastHour: number }): { firstHour: number; lastHour: number }[] {
   if (reply.firstHour > reply.lastHour || reply.lastHour < extent[0] || reply.firstHour > extent[1]) return [{ firstHour: extent[0], lastHour: extent[1] }];
   return [...extent[0] < reply.firstHour ? [{ firstHour: extent[0], lastHour: reply.firstHour - 1 }] : [],
     ...reply.lastHour < extent[1] ? [{ firstHour: reply.lastHour + 1, lastHour: extent[1] }] : []];
 }
 
-/** The hour a drill opens for the day holding `hour`: its last hour shown. */
 export const pickedDay = (hour: number, dayHours: number, extent: readonly [number, number]) =>
   Math.min(Math.floor(hour / dayHours) * dayHours + dayHours - 1, extent[1]);
 
-/** A column's calendar days. */
 export const columnDays = (column: WeatherColumn, dayHours: number) => Math.floor(column.lastHour / dayHours) - Math.floor(column.firstHour / dayHours) + 1;
 
-/** The reply's columns within `extent`, clipped to it. A column of several days is approximate. */
 export function weatherPeriods(columns: WeatherColumns, extent: readonly [number, number], dayHours: number): WeatherPeriod[] {
   return columns.columns.flatMap((column, index) => column.lastHour < extent[0] || column.firstHour > extent[1] ? []
-    // A day sampled without a recorded read is shown at the hour it was sampled.
     : [{ firstHour: Math.max(column.firstHour, extent[0]), lastHour: Math.min(column.lastHour, extent[1]), readHour: column.readHour ?? column.sampledHour,
       column: index, ...columnDays(column, dayHours) > 1 ? { exact: false } : {} }]);
 }
 
-/** The chosen regions; every region without a choice. */
-/** The reply's regions the widget shows: those chosen, within the chosen theatres' regions (`inTheatres`, null for no
- * theatre filter). */
 export function shownRegions(reply: WeatherReply, regions: readonly string[], inTheatres: ReadonlySet<string> | null = null): Choice[] {
   return reply.regions.filter(region => (!regions.length || regions.includes(region.id)) && (!inTheatres || inTheatres.has(region.id)));
 }
@@ -100,20 +85,12 @@ export function shownRegions(reply: WeatherReply, regions: readonly string[], in
 type Measures = Map<string, { region: WeatherColumnRegion; measures: Map<string, WeatherMeasure> }>;
 const regionMeasures = (reply: WeatherReply): Measures =>
   new Map((reply.columns.regions).map(region => [region.id, { region, measures: new Map(region.measures.map(measure => [measure.id, measure])) }]));
-/** A column's mean, lowest and highest raw value over its days holding one. */
 function stats(measure: WeatherMeasure | undefined, column: number) {
   const values = measure?.values?.[column];
   return values ? { mean: Number(BigInt(values[1])) / measure!.days[column], low: values[0], high: values[2], days: measure!.days[column],
     zero: values[0] === '0' && values[2] === '0' } : null;
 }
 
-/** A heat cell for each column of each region. Conditions: every flag set on one of its
- * days, as stripes in the recording's flag order sized by days, beside the days with
- * none set and the days the region's conditions were not read (none set on any day is
- * blank). Temperature: the mean of the days' averages. Modifier: the chosen modifier's
- * mean on a ramp from grey, or hatched where no day witnessed it. A value missing on
- * some of a column's days marks the cell approximate. A one-day column shows that
- * day's value. */
 export function weatherRows(reply: WeatherReply, regions: readonly Choice[], periods: readonly WeatherPeriod[], show: WeatherShow, modifier: string | null,
   colours: { flag: (index: number) => string; ramp: (value: number, highest: number) => string; temperature?: (value: number, low: number, high: number) => string;
     clear?: string; gap?: string }): { rows: HeatRow[]; highest: number } {
@@ -134,7 +111,6 @@ export function weatherRows(reply: WeatherReply, regions: readonly Choice[], per
       if (readHour === null) return blank;
       const days = columnDays(columns[column], reply.dayHours);
       if (show === 'temperature') {
-        // A region with any province unknown has no average: its cell stays blank.
         const value = stats(entry?.measures.get('temp'), column);
         if (!value) return blank;
         const degrees = value.mean / TEMPERATURE_SCALE;
@@ -149,7 +125,6 @@ export function weatherRows(reply: WeatherReply, regions: readonly Choice[], per
         const partial = value.days < days ? { approximate: true } : {};
         return value.zero ? { parts: [], ...partial } : { parts: [{ id: modifier!, label: String(raw), color: colours.ramp(Math.abs(raw), highest), share: 1 }], ...partial };
       }
-      // Days the region's conditions were not read are never clear.
       const observed = entry?.region.observed?.[column] ?? 0;
       if (!observed) return unknown;
       const set = reply.flags.flatMap((flag, index) => {
@@ -169,9 +144,6 @@ export function weatherRows(reply: WeatherReply, regions: readonly Choice[], per
   return { rows, highest };
 }
 
-/** A column's tooltip from the column alone. A one-day column reads as that day; a
- * folded one summarises its days: which were recorded, the days each condition was
- * set, and the mean with the lowest and highest values. */
 export function columnTooltip(reply: WeatherReply, region: Choice, column: number, show: WeatherShow, modifier: string | null,
   date: string, label: (hour: number) => string): TooltipContent {
   const shown = reply.columns.columns[column];
@@ -210,13 +182,11 @@ export function columnTooltip(reply: WeatherReply, region: Choice, column: numbe
   };
 }
 
-/** A modifier's fixed-point value as the game's signed percent. */
 export function modifierText(raw: string): string {
   const value = Number(raw) / MODIFIER_SCALE * 100;
   return `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
 }
 
-/** A temperature's fixed-point value in degrees Celsius, to one decimal. */
 export function temperatureText(raw: string): string {
   const value = Number(raw) / TEMPERATURE_SCALE;
   return `${value < 0 ? '−' : ''}${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`;

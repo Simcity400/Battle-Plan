@@ -34,7 +34,6 @@ export const definition = {
   variants: raceViewVariants('Army size', OPTIONS, { mix: 'Army composition', breakdown: 'Army breakdown' }),
 } as const satisfies WidgetMeta;
 
-/** Saved breakdowns retain their view; chart views retain race, lines or mix. */
 export function normaliseArmyOptions(options: WidgetOptions = {}): WidgetOptions {
   const { show, ...rest } = options;
   return { ...rest, view: show === 'breakdown' ? 'breakdown' : rest.view ?? 'race' };

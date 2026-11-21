@@ -21,7 +21,6 @@ foreach ($definition in $driverAst.FindAll({param($node)
 try { $ScratchRoot = Resolve-LaunchUserDirectory $ScratchRoot }
 catch { throw "ScratchRoot prerequisite failed: supply an existing physical, hyphen-free directory without junctions, symbolic links or subst drives. $($_.Exception.Message)" }
 
-# Exercise real Launch, stopping at the process boundary without desktop APIs.
 if (-not ('Hoi4ProbeInput' -as [type])) {
     Add-Type 'public static class Hoi4ProbeInput { public static System.IntPtr GetForegroundWindow() { return System.IntPtr.Zero; } }'
 }
@@ -73,8 +72,6 @@ function Assert-ScratchRefusal([string]$path) {
     $script:Passed++; Write-Host 'PASS named scratch-root prerequisite'
 }
 
-# Run Smoke's production snapshot, write and finally blocks with stopped synthetic
-# processes; omit unrelated live capture, binary receipt and oracle operations.
 $smoke = $driverAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-FullSmoke'}, $false)
 $snapshot = $smoke.Body.EndBlock.Statements | Where-Object { $_.Extent.Text -match '^\$selection = ' }
 $write = $smoke.Find({param($node) $node -is [Management.Automation.Language.PipelineAst] -and $node.Extent.Text -match '^Write-LaunchSelection '}, $true)
@@ -145,7 +142,6 @@ try {
     Assert-SmokeRestore $null 'before_write'
     Assert-SmokeRestore $null 'delete_failure'
     Assert-SmokeRestore $null 'already_missing'
-    # Setup that fails after the lock is taken, before anything launches, releases it.
     $setup = $smoke.Find({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.CatchClauses.Count -and $node.Body.Extent.Text -match "WriteAllText\(\(Join-Path \`$lock 'owner'\)"}, $true)
     if (-not $setup) { throw 'Smoke has no guarded setup after taking the game lock.' }
     $lock = Join-Path $root 'setuplock'; $ownerToken = 'synthetic'; $sourceSave = Join-Path $root 'no such save.hoi4'
@@ -183,7 +179,6 @@ try {
     if ($LASTEXITCODE -ne 0) { $substDrive = $null; throw 'Subst test prerequisite: could not create the synthetic drive.' }
     Assert-Launch 'subst profile names the drive' "UserDirectory is on subst drive ${substDrive}." ($substDrive + '\physical profile')
     Assert-ScratchRefusal ($substDrive + '\')
-    # The staged viewer takes the compiler's two DLLs along from beside the build, or is refused.
     $built = Join-Path $root 'built'; $staged = Join-Path $root 'staged'
     $null = New-Item -ItemType Directory -Path $built -Force
     $null = New-Item -ItemType Directory -Path $staged
@@ -199,7 +194,6 @@ try {
     }
     if (Test-Path -LiteralPath (Join-Path $staged 'shader-tools')) { throw 'The staged viewer took a shader-tools folder.' }
     $script:Passed++; Write-Host 'PASS the staged viewer takes the shader compiler along'
-    # The clock reader's lines: a field the recorder left out stays absent, never zero.
     . (Join-Path (Split-Path -Parent $Driver) 'game-clock.ps1')
     $withheld = '{"paused":"command_inputs::IDLER_RVA withheld: unresolved"}' | ConvertFrom-Json
     $bare = ConvertTo-GameClock ('{"game_state":4096,"hour":1936,"play_time":77,"seed":-5,"speed":3,"tick_busy":0,"play_session_started_at":1778888888}' | ConvertFrom-Json) $withheld

@@ -1,4 +1,3 @@
-//! Recordings, sessions and decoded frames built for tests.
 
 use replay::spool::Record;
 use replay_data::{
@@ -121,8 +120,6 @@ pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
     framed(branch, frames, |frame| encoder.encode_input(frame, false).unwrap())
 }
 
-/// [`records`], each frame its tables as given rather than encoded: a row may leave a field not
-/// recorded, as a recording's cells can and the spool's row frames cannot.
 pub fn snapshot_records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
     framed(branch, frames, |frame| Frame {
         branch: frame.branch,
@@ -157,8 +154,6 @@ fn framed(branch: u64, frames: Vec<DecodedFrame>, mut frame_of: impl FnMut(Frame
         frames
             .into_iter()
             .map(|mut frame| {
-                // Existing research scenarios describe a logical observation.
-                // Populate the hourly companion from those same fixture values.
                 if matches!(&*frame.tables[TableId::ResearchInputs.index()], TableView::Unavailable { reason } if reason == "fixture hourly research") {
                     fixture_research_inputs(&mut frame);
                 }
@@ -170,8 +165,6 @@ fn framed(branch: u64, frames: Vec<DecodedFrame>, mut frame_of: impl FnMut(Frame
     out
 }
 
-/// A new segment of an existing branch repeats its original context before a
-/// fresh keyframe; its first hour does not redefine when the branch began.
 pub fn continuation_records(
     replay: &replay::campaign::Replay,
     branch: u64,
@@ -245,7 +238,6 @@ pub fn fixture_research_inputs(frame: &mut DecodedFrame) {
     );
     *frame.tables[TableId::ResearchAppliedBonuses.index()] =
         TableView::Complete(TableRows::ResearchAppliedBonuses(vec![]));
-    // Every fixture hour reads every country.
     let mut reads: Vec<_> = frame
         .complete::<tables::ResearchSlots>()
         .map(|slots| slots.iter().map(|slot| slot.country).collect::<Vec<_>>())
@@ -270,15 +262,12 @@ pub fn fixture_research_inputs(frame: &mut DecodedFrame) {
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
 }
 
-/// A unique three-byte tag per country, as the engine's tag loader allows.
 pub fn scale_tag(index: u32) -> Vec<u8> {
     const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let digit = |place: u32| DIGITS[(index / place % 62) as usize];
     vec![digit(62 * 62), digit(62), digit(1)]
 }
 
-/// Every province its own country: `count` countries,
-/// each owning one state.
 pub fn scale_frame(branch: u64, hour: i32, count: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -387,11 +376,6 @@ pub fn stability_frame(
     frame
 }
 
-/// Germany's (native id 9001, also linked as 11) and Italy's stockpiles and
-/// production lines. `read` times a walk of another table of the stockpile slot
-/// only, as a shared read times only its anchor; `lines` None records the
-/// production lines as unavailable. Variants 10 and 20 are infantry equipment
-/// (token 1), 30 a ship (token 2); variant 20 has its own name.
 pub fn stockpile_frame(
     hour: i32,
     read: bool,
@@ -428,7 +412,6 @@ pub fn stockpile_frame(
             amount_raw,
         })
         .collect();
-    // Italy's stock is not Germany's.
     rows.push(StockpileRow {
         country: 21,
         ordinal: 0,
@@ -486,7 +469,6 @@ pub fn stockpile_frame(
     if read {
         frame.metrics.table_ns[TableId::DeploymentLines.index()] = 1;
     }
-    // The initial stockpile frame reads variants too; later reads follow their cadence.
     if hour == slot_hour(TableId::Stockpiles)
         || replay_data::cadence::is_refresh(TableId::VariantDefinitions, hour)
     {
@@ -495,7 +477,6 @@ pub fn stockpile_frame(
     frame
 }
 
-/// The hour of a daily table's slot on day 1000.
 pub fn slot_hour(table: TableId) -> i32 {
     let replay_data::cadence::Cadence::Daily(slot) = replay_data::cadence::cadence(table) else {
         panic!("{table:?} is read in a daily slot");
@@ -503,12 +484,9 @@ pub fn slot_hour(table: TableId) -> i32 {
     1000 * replay_data::cadence::STAGGER_PERIOD + slot as i32
 }
 
-/// A stockpile frame whose variant 20 is named `name`, or whose variant table is
-/// unavailable (`None`) though its read was due.
 pub fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
     use replay_data::rows::VariantDefinitionRow;
     let mut frame = stockpile_frame(hour, false, &[(20, 100_000)], Some(&[]));
-    // The variant table's slot-mate walked: its read was due at this hour.
     frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
     *frame.tables[TableId::VariantDefinitions.index()] = match name {
         Some(name) => {
@@ -531,7 +509,6 @@ pub fn replay(frames: Vec<DecodedFrame>) -> replay::campaign::Replay {
     replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
 
-/// Equipment types from authored texts, as `installed_content_core::equipment` reads a folder's files.
 pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<installed_content_core::equipment::Database> {
     let texts: Vec<String> = texts
         .iter()
@@ -552,27 +529,16 @@ pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<installed_content_cor
     }
 }
 
-// Start these scenarios on the production slot, as the shared reader dates it.
 pub const PRODUCTION_HOUR: i32 = 4 * replay_data::cadence::STAGGER_PERIOD
     + match replay_data::cadence::cadence(TableId::ProductionLines) {
         replay_data::cadence::Cadence::Daily(slot) => slot as i32,
         _ => panic!("production lines have a daily slot"),
     };
 
-/// One line of the production fixture: (handle, variant, active factories,
-/// efficiency Q15).
 pub type LineFixture = (u64, u64, i32, i64);
 
-/// One output row of the production fixture: (line, variant, units, exact, ended).
 pub type OutputFixture = (u64, u64, i64, bool, bool);
 
-/// A frame with Germany (native id `germany`, linked through id 11 too) and
-/// Italy (slot 0), Germany's `lines` and output, one Italian line, and Germany's
-/// organisation 79 (Mauser). `read` times a walk of another table of the
-/// production slot only, as a shared read times only its anchor; `variants` does
-/// the same for the variant slot; `output` is None where the output table is
-/// unavailable. Variants 70 and 71 are infantry equipment (71 named "Gewehr 98" by
-/// its designer); every variant's icon entry is the auto-design ".".
 pub fn production_frame(
     hour: i32,
     read: bool,
@@ -639,7 +605,6 @@ pub fn production_frame(
     let line =
         |&(handle, variant, active_factories, efficiency_raw): &LineFixture| ProductionLineRow {
             handle,
-            // Germany's lines name it by its other link.
             country: 11,
             kind: 0,
             variant,
@@ -711,9 +676,6 @@ pub fn production_frame(
     frame
 }
 
-/// Germany (raw links 11 and `germany`, slot 7), Italy (21, slot 8) and Spain
-/// (31, slot 9), with steel and oil. Deals are (handle, exporter, importer,
-/// delivered).
 pub fn resource_frame(
     hour: i32,
     steel: i64,
@@ -778,14 +740,12 @@ pub fn resource_frame(
         to_export: 2_500_000,
         exported: 1_700_000,
         used: produced + 800_000 - 2_500_000,
-        // Special projects take 0.4; the production lines need 30.
         special_total: produced + 800_000 - 2_500_000 - 40_000,
         production_demand: -3_000_000,
         ..Default::default()
     };
     *frame.tables[TableId::CountryResources.index()] =
         TableView::Complete(TableRows::CountryResources(vec![
-            // Germany's rows name it by its other link.
             pools(11, 1, steel),
             pools(11, 2, 0),
             pools(21, 1, 99_900_000),
@@ -809,9 +769,6 @@ pub fn resource_frame(
     frame
 }
 
-/// A frame with Germany (slot 7, links 11 and 9001), Italy (slot 8, link 21) and,
-/// when `austria`, a dynamic country with a space in its tag (`D01 mod`, slot
-/// 9, link 31), as a mod's tags may be. Other tables are unavailable.
 pub fn world_frame(hour: i32, austria: bool) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {

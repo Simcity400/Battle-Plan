@@ -1,51 +1,3 @@
-//! The viewing country's raid arrows and their in-flight units.
-//!
-//! Keep one arrow per non-ended raid, in instance order, beside the battle
-//! plan. An ended raid moves to a second list while its uncancelled unit
-//! progress is below 0.999. Its first update there sets progress to 1, so a
-//! still frame never shows it.
-//!
-//! Per raid:
-//!
-//! - Hide types rejected by the default filter ([`crate::map::raids::category_admits`]).
-//! - Use `NMapMode.ACTIVE_RAID_ARROW_COLOR` in phases 4 and 5. Otherwise use
-//!   READY when execution checks hold, else PREPARING. Execution is false
-//!   outside phase 3. Phase 3 needs a unit at the source, the raid's own pool
-//!   meeting essential and other equipment requirements at level 4 (including
-//!   nukes), and [`launch_triggers`]. Offers read neither this pool nor
-//!   `launchable`/`launchable_from`, so evaluate them here, taking the pool
-//!   from `RaidEquipment` ([`raid_pool`]). Refuse undecided phase-3 checks by name.
-//! - Build geometry by the type's arrow kind using its `active_raid_*` content
-//!   type through the shared battle-plan manager. Buckets, textures, blend and
-//!   pass modes are shared ([`super::orders`]).
-//!
-//! # The unit
-//!
-//! Phase 4 carries the raid unit's entity ([`raid_entity`]), placed from
-//! `RaidRow.travelled` and [`raid_unit_speed`] over `RaidSpeedInputs`.
-//!
-//! The recording holds each hour's state after its tick. A paused frame at
-//! hour H is the start of H with tick progress 0. Samples do not retain
-//! sub-hour progress; playback fraction supplies it. Hour builders place at
-//! fraction 0 (dumps use `--hour-fraction`) and keep [`UnitTrack`]. Playing
-//! windows place again each rendered frame, so units glide and cross stages
-//! within the hour. Arrow geometry and colour stay fixed. An ended unit
-//! reaches progress 1 on its first phase-5 update, beyond the visibility
-//! threshold 0.999, and can show for at most one rendered frame at the target.
-//!
-//! Create the entity in `idle`; each update selects the type's `unit_animations`
-//! stage through [`animation_state`]. Entity clips use wall-clock delta with
-//! console scale 1.0, including while paused. State speed advances clip phase,
-//! wrapping at clip length; an ended clip enters `next_state`. The viewer uses
-//! its own wall clock in entity animation. A
-//! stage reached under a shown unit plays `intro`, then its `next_state`. A
-//! freshly shown mid-stage unit (first placement, seek or dump) shows the stage
-//! state. Keep each raid entity's history across hours by raid ID
-//! ([`UnitPlacement::seed`]).
-//!
-//! Camera height does not hide the entity: phase rules and arrow reset own
-//! visibility. `NGraphics.DRAW_MAP_OBJECTS_CUTOFF` applies to province objects.
-//! The raid entity draws at every height with its mesh's own LOD distances.
 
 use installed_content_equipment_graphics::equipment_graphics::countries as model_countries;
 use std::collections::BTreeMap;
@@ -80,51 +32,30 @@ use {
     viewer_foundation::map::ribbon_content::{ArrowType, OrderAssets, OrderField},
 };
 
-/// One fixed5 world unit.
-/// A fixed5 `(x, z)` point for an arrow control.
 type Point = [i64; 2];
 
-/// Raid phase 4 is launched; phase 5 is ended.
 const LAUNCHED: i32 = 4;
 const ENDED: i32 = 5;
-/// Execution is true only in phase 3.
 const PREPARED: i32 = 3;
-/// Outcome 5 is cancelled.
 const CANCELLED: i32 = 5;
 
-/// Unit-stack anchor slot: 19 (0x13) on land, else 0.
 const STACK_STANDSTILL: u32 = 0;
 const STACK_DOCKED: u32 = 19;
 
-/// The phantom handle is a quarter of the end segment.
 const HANDLE: f32 = 0.25;
 
-/// What [`build`] needs beyond the frame.
 pub struct ArrowInputs<'a> {
     pub assets: &'a RaidAssets,
     pub orders: &'a OrderAssets,
     pub heights: &'a HeightField<'a>,
-    /// The content movement map: native neighbour order and crossings.
     pub movement: Option<&'a MovementMap>,
-    /// The province unit-stack slot for `kind`.
     pub anchor: &'a dyn Fn(u32, u32) -> Option<[f32; 3]>,
-    /// The viewing country's canonical slot.
     pub ours: u32,
-    /// Whether the content's `gfx` descriptors declare an entity
-    /// (`UnitModelAssets`, the land-model registry).
     pub declared: &'a dyn Fn(&str) -> bool,
-    /// Complete airborne selector (variant, raw country), shared with
-    /// conventional flights through `UnitModelAssets::aircraft_entity`.
     pub variant_model: &'a dyn Fn(u64, u32) -> Result<Option<String>, String>,
-    /// The frame's hour fraction: 0 from the window's hour builders, a
-    /// dump's `--hour-fraction`. It stands in for the tick's progress
-    /// Tick fraction is unrecorded: hourly samples have 1.0, then the hour tick
-    /// resets it to zero. Playback uses its own fraction ([`UnitTrack::place`]).
     pub hour_fraction: f32,
 }
 
-/// The hour's raid arrows, in an [`OrderField`] of their own for
-/// [`orders::append`], and the report.
 pub fn build(
     inputs: &ArrowInputs<'_>,
     frame: &DecodedFrame,
@@ -155,7 +86,6 @@ fn build_into(
     if ours.is_empty() {
         return Ok(());
     }
-    // Fill the cache in instance order.
     ours.sort_by_key(|raid| raid.ordinal);
     report.raids = ours.len();
     let defines = inputs
@@ -250,9 +180,6 @@ fn build_into(
             continue;
         }
         report.drawn += 1;
-        // Show the unit in phase 4. Ended raids carrying a unit never appear in a
-        // still frame; every drawn raid is before phase 5, so its update progress
-        // does not affect this decision.
         if unit_shown(raid.phase, raid.outcome, 0.0) {
             let mut held = Vec::new();
             let placed = place_unit(
@@ -282,23 +209,19 @@ fn build_into(
     Ok(())
 }
 
-/// Raid colour; `None` for phase 3, whose colour depends on [`can_execute`].
 pub fn color(phase: i32, defines: &RaidGraphicsDefines) -> Option<[f32; 4]> {
     match phase {
         LAUNCHED | ENDED => Some(defines.active_color),
         PREPARED => None,
-        // Execution without text returns false outside phase 3.
         _ => Some(defines.preparing_color),
     }
 }
 
-/// An arrow's stored controls and how its strip is lifted.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Geometry {
     pub controls: Vec<Point>,
 }
 
-/// Arrow controls: `Ok(None)` when no geometry is built.
 fn controls(
     inputs: &ArrowInputs<'_>,
     defines: &RaidGraphicsDefines,
@@ -346,7 +269,6 @@ fn controls(
             Ok(spline_controls(points, spline, arrow).map(|controls| Geometry { controls }))
         }
         RaidArrowKind::Line | RaidArrowKind::Ballistic | RaidArrowKind::Air => {
-            // Use the source province's slot-zero anchor.
             let from = (inputs.anchor)(source, STACK_STANDSTILL)
                 .ok_or_else(|| format!("source province {source} has no unit-stack anchor"))?;
             let province = assets
@@ -371,11 +293,6 @@ fn controls(
     }
 }
 
-/// Start at the route's first province. Each next province that is a content
-/// neighbour of the last kept one appends the kept anchor and, when enabled
-/// and admitted, the neighbour's crossing midpoint. Precede the first hop and
-/// follow the last anchor with phantom handles, each a quarter of its end
-/// segment. Wrap each point within half a map width of its predecessor; y is zero.
 pub fn path_points(
     route: &[u32],
     width: f32,
@@ -434,11 +351,6 @@ pub fn path_points(
     Ok(points)
 }
 
-/// Path spline: apply sharp-turn smoothing at type width times
-/// `*_SHARP_TURN_SMOOTHNESS` when positive, then emit the first point,
-/// `*_SUBDIVISIONS` uniform Catmull-Rom samples per inner segment (none when
-/// nonpositive), and the last point, all converted to fixed5. No kept route
-/// point returns `None`; attempting to read it would precede the array.
 pub fn spline_controls(
     mut points: Vec<[f32; 3]>,
     spline: PathArrowDefines,
@@ -479,8 +391,6 @@ pub fn spline_controls(
     Some(out)
 }
 
-/// Clamped interpolation, exact at the ends and monotonic between values of one sign.
-/// Emits one arrow into `field` with the plan's strip builder.
 fn emit(
     inputs: &ArrowInputs<'_>,
     defines: &RaidGraphicsDefines,
@@ -490,9 +400,6 @@ fn emit(
     geometry: &Geometry,
     color: [f32; 4],
 ) -> Option<()> {
-    // Store fixed controls in the shared map arrow and build through the
-    // battle-plan path, including its smoothing. Its emitter takes the resulting
-    // fixed controls as they are.
     let controls = &geometry.controls;
     let scale = arrow.global_scale(controls.len());
     let width = i64::from(inputs.heights.width);
@@ -500,9 +407,6 @@ fn emit(
     let ends = Ends::new(controls, width, &|p| {
         heights.fixed_height(p[0], p[1], width)
     });
-    // Pass each stored control's index and the control count, plus two with a
-    // head (see the battle-plan lift). Head geometry follows `head_length > 0`,
-    // independently of technique.
     let strip_n = controls.len() as i32 + if arrow.head_length > 0.0 { 2 } else { 0 };
     let lift = |i: i32| -> f32 {
         let Some(ends) = ends else { return 0.0 };
@@ -512,8 +416,6 @@ fn emit(
             _ => 0.0,
         }
     };
-    // Ballistic and air arrows set their own height callback. Other kinds
-    // retain the shared strip builder's terrain callback.
     let lifted = |_: f32, _: f32, control: usize| lift(control as i32);
     let terrain = |x: f32, z: f32, _: usize| {
         viewer_foundation::map::ribbon_mesh::ribbon_height(heights, x, z)
@@ -525,31 +427,19 @@ fn emit(
     let draw =
         viewer_foundation::map::ribbon_mesh::emit(field, arrow, controls, scale, color, height)?;
     let draw = &mut field.draws[draw];
-    // The raid arrow's teeth side stays at its initial zero.
     draw.culling_offset = f32::from(u8::from(arrow.culling_direction != 0));
     draw.kind = dashboard_core::protocol::PlanKind::Raid;
-    // Create all three arrow colours as white, then update only the primary colour.
     draw.secondary_color = [1.0; 4];
     draw.outer_color = [1.0; 4];
     Some(())
 }
 
-// ------------------------------------------------------------------ the unit
 
-/// Walk stages in order until at_progress exceeds progress, keeping the last
-/// whose state the entity has. Skip missing states. `None` leaves the entity
-/// in its current state.
-/// Interpolate current and next phase progress at the tick fraction in phase
-/// 4; phase 5 gives exactly 1; other phases give 0.
-/// Show an entity in phase 4, or in phase 5 while progress is below 0.999 and
-/// the outcome is not cancelled. Use progress left by the arrow's last update: an
-/// ended unit shows for the one frame whose update sets [`movement_progress`] to 1.
 pub fn unit_shown(phase: i32, outcome: i32, progress: f32) -> bool {
     phase == LAUNCHED
         || (phase == ENDED && progress < f32::from_bits(0x3f7f_be77) && outcome != CANCELLED)
 }
 
-/// The raid's unit in phase 4, from its planned recorded inputs.
 #[allow(clippy::too_many_arguments)]
 fn place_unit(
     inputs: &ArrowInputs<'_>,
@@ -585,8 +475,6 @@ fn place_unit(
         kind.unit_model.start_offset_raw,
     )
     .ok_or("a raid arrow with fewer than two controls")?;
-    // A paused or exported frame is the hour's own progress; playback
-    // places the unit again every rendered frame ([`UnitTrack::place`]).
     let pose = track
         .place(inputs.heights, inputs.hour_fraction)
         .ok_or("a raid arrow with fewer than two controls")?;
@@ -602,10 +490,6 @@ fn place_unit(
     })
 }
 
-/// Build [`unit_entity`] from the raid owner's tag and graphical culture
-/// (`CountryAppearance`), primary equipment roster (`AvailableEquipmentVariants`
-/// kind 0 with `VariantDefinitions` flags) and wing, then resolve the entity.
-/// A designer model resolving none falls back to the wing.
 fn raid_entity(
     inputs: &ArrowInputs<'_>,
     world: &World<'_>,
@@ -687,8 +571,6 @@ fn raid_entity(
     }
 }
 
-/// Choose the largest signed `WingEquipment` amount in a nonempty bank,
-/// first on ties, as `aircraft.rs` reads it.
 pub fn wing_primary_variant(
     frame: &dyn replay_frame::frame::DecodedSource,
     wing: u64,
@@ -696,7 +578,6 @@ pub fn wing_primary_variant(
     aircraft_model::wing_primary(frame, wing)
 }
 
-// Execution checks.
 
 fn can_execute(
     assets: &RaidAssets,
@@ -738,31 +619,14 @@ fn can_execute(
     }
 }
 
-/// Inputs used to choose the raid unit's entity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnitEntity {
-    /// A declared entity, by name.
     Entity(String),
-    /// First primary-roster variant of the unit model's equipment category.
-    /// Its model is final, even when it resolves none.
     Designer(u64),
-    /// Without a type model, use the wing's primary equipment through the same resolver.
     WingEquipment(u64),
-    /// Nothing to show.
     None,
 }
 
-/// Entity selection and fallback:
-///
-/// 1. For an `equipment` category (cleared outside 0x1F0037FC00), choose the
-///    first country primary-roster variant whose definition flags share it.
-/// 2. Try `entity` prefixed by country tag, then graphical culture, then bare,
-///    joining each prefix with an underscore.
-/// 3. Try `default_entity`.
-/// 4. Otherwise use the raid's wing when it resolves.
-///
-/// `primary` is the roster's (variant, definition flags) in stored order;
-/// `declared` reports whether content declares an entity.
 pub fn unit_entity(
     model: &installed_content_raids::raids::RaidUnitModel,
     tag: &str,
@@ -799,7 +663,5 @@ pub fn unit_entity(
     wing.map_or(UnitEntity::None, UnitEntity::WingEquipment)
 }
 
-/// Stored control `i` with height from the arrow callback at `(i, count)`,
-/// or sea-clamped terrain when no callback is set.
 #[cfg(test)]
 mod tests;

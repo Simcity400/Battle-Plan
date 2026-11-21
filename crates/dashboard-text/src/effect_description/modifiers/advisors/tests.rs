@@ -51,7 +51,7 @@ fn fixture() -> (Fixture, Folder) {
                     character,
                     country: 100,
                     idea: b"SYN_ADVISOR".to_vec(),
-                    tooltip_keys: Recorded::NotRecorded, // Historical cache fixture.
+                    tooltip_keys: Recorded::NotRecorded,
                     modifier_cache: Recorded::Value(Some(AdvisorModifierCache {
                         entries: vec![
                             CachedModifier {
@@ -147,11 +147,7 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
         assert_eq!(result.text, expected);
         assert!(result.refusals.is_empty(), "{:?}", result.refusals);
     }
-    // The advisor registry wins an add/remove token collision; Show also
-    // appends the idea name after the character's name.
     let file = installed_content_core::ideas::parse_ideas(
-        // An explicit idea name selects its native first naming branch;
-        // an unnamed idea would need a declared category/name generator.
         b"ideas={country={SYN_ADVISOR={name=SYN_ADVISOR}}}",
         &[],
         &Default::default(),
@@ -184,7 +180,6 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
-    // A case-different primary name is not an exact match.
     let TableView::Complete(TableRows::AvailableAdvisors(rows)) =
         &mut *fixture.frame.tables[TableId::AvailableAdvisors.index()]
     else {
@@ -235,7 +230,6 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
         ..roles(&mut fixture)[0].clone()
     };
     roles(&mut fixture).insert(1, later);
-    // No lexical spelling is needed for numeric cache definition IDs.
     *fixture.frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
     };
@@ -244,7 +238,7 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
     else {
         unreachable!()
     };
-    definitions[1].category_mask = 1 << 31; // uses the full mask.
+    definitions[1].category_mask = 1 << 31;
     for (body, prefix) in [
         ("add_ideas=SYN_ADVISOR", "Add "),
         ("remove_ideas=SYN_ADVISOR", "Remove "),
@@ -428,7 +422,6 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
             ])
             .collect(),
     );
-    // These synthetic stored strings were recorded in this declared language.
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         fixture.catalogue.recorded_language.clone();
     for (keys, tips) in [
@@ -472,9 +465,6 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
     }
 }
 
-/// AvailableAdvisors is read once a game day per country (owner decision
-/// 2026-10-11): a pool SliceReads dates to an earlier hour of the day still
-/// names its advisor, from the held rows the frame carries.
 #[test]
 fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
     engine_executable::executable_tables::initialize_for_tests()

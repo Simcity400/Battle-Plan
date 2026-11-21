@@ -276,7 +276,6 @@ export class DatedStore {
     }
     if (start > through) {
       if (start <= candidate.through && cells.size === candidate.cells.length) route.waiting.set(r, start);
-      // An exact seed proves only its panel hour; use a followed value there whenever it covers that hour.
       start = through = candidate.start;
       for (const id of candidate.cells) {
         const stream = this.groups.get(id), held = r.cells.get(id);

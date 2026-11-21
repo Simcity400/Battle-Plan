@@ -1,24 +1,3 @@
-//! Bitmap fonts and the screen-space text layout the map's labels use.
-//!
-//! Font declarations and family pages resolve through the recorded content stack. The shared font
-//! reader supplies glyph metrics and named verification failures. Outline artwork belongs to the
-//! page; this module adds no outline. Screen-space text applies authored font colour, while the
-//! installed world-name shader controls its own colour treatment.
-//!
-//! # Colour codes
-//!
-//! Localisation stores an authored `§` as the control byte 0x11
-//! (`installed_content_localisation::localisation`), and the engine's text layout
-//! reads 0x11 and the code after it as a colour change, drawing neither.
-//! [`strip_color_codes`] removes them and keeps the text. The per-code colours
-//! in the `textcolors` blocks are not applied: every map label the viewer
-//! draws is a plain name, and applying them would need a per-glyph colour the
-//! batch does not carry yet. The engine's map glyph runs read no other special
-//! sequence: the 0x14 control is a codepoint without a glyph, which draws
-//! nothing, takes no advance and ends kerning. The remaining controls (an
-//! inline flag, a text icon and 0x1A) are not drawn here; [`unsupported_control`]
-//! names the first one so a caller refuses the text rather than drawing what
-//! follows it.
 
 use std::cell::RefCell;
 #[cfg(test)]
@@ -30,83 +9,44 @@ use installed_content_core::{
 };
 use installed_content_image::dds;
 
-/// One glyph's box in a bitmap font, in the font's own pixels at its native size.
-///
-/// The fields are a `hoi_mapfont4.fntchar` record: `xoffset` and `yoffset` are
-/// measured from the top left of the line box, not from the baseline, and `xadvance` is the pen
-/// step. `uv` is the atlas rectangle already normalised to `[0, 1]` as `[u0, v0, u1, v1]` with
-/// `v0` the top edge, so this module never needs the atlas size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphBox {
-    /// Width of the glyph's atlas rectangle, in font pixels.
     pub width: f32,
-    /// Height of the glyph's atlas rectangle, in font pixels.
     pub height: f32,
-    /// Offset from the pen position to the rectangle's left edge, in font pixels.
     pub xoffset: f32,
-    /// Offset from the line box top to the rectangle's top edge, in font pixels.
     pub yoffset: f32,
-    /// Pen step after this glyph, in font pixels.
     pub xadvance: f32,
-    /// Normalised atlas rectangle `[u0, v0, u1, v1]`.
     pub uv: [f32; 4],
 }
 
-/// Metrics of a loaded bitmap font at its native size.
-///
-/// An implementation reports a missing character as `None`. Such a character is dropped from the
-/// layout entirely rather than measured as zero, which keeps the measured width and the laid out
-/// width equal.
 pub trait GlyphMetrics {
-    /// X advance of `ch` in font pixels, or `None` when the font has no such character.
     fn advance(&self, ch: char) -> Option<f32>;
 
-    /// The font's `lineHeight`. This is the text height the engine's measure call returns for the
-    /// single line names laid out here.
     fn line_height(&self) -> f32;
 
-    /// The font's `base`: the baseline's distance below the top of the line box.
     fn base(&self) -> f32;
 
-    /// The glyph box of `ch`, or `None` when the font has no such character.
     fn glyph(&self, ch: char) -> Option<GlyphBox>;
 
-    /// Kerning between `a` and `b` in font pixels. `hoi_mapfont4` ships no kerning pairs, so the
-    /// default is zero and the engine's measure and its layout agree with it.
     fn kerning(&self, a: char, b: char) -> f32 {
         let _ = (a, b);
         0.0
     }
 }
 
-/// `interface/core.gfx`: the map-name font, `gfx/fonts/hoi_mapfont4`.
 pub const MAP_FONT: &str = "tahoma_60";
-/// The stored control byte 0x11 a colour run opens with, and 0x11 `!` closes
-/// with.
 const COLOR_CODE: char = '\u{11}';
 
-/// A loaded page: its texture id and the extent its glyph boxes are divided by.
 type Page = (usize, [f32; 2]);
 
-/// One loaded bitmap font: its family's glyphs as the game loads them, their page textures and
-/// its colour.
 #[derive(Clone, Debug)]
 pub struct Font {
     projection_id: u64,
-    /// The `interface/*.gfx` name, such as `hoi_20bs`.
     pub name: String,
-    /// The family's first file, for reporting.
     pub stem: String,
-    /// Load family files in order, with the first glyph for a codepoint winning.
     glyphs: GlyphSet,
-    /// Each family file contributes a page id and decoded extent for glyph UVs. An absent file
-    /// contributes no glyphs. An unloaded page retains advance widths but supplies no drawing.
     pages: Vec<Option<Page>>,
-    /// What the game logs and reads past while loading the font, for the caller's warnings:
-    /// each family file no layer holds ("Missing font file"), and each page that does not load
-    /// in the game, with why.
     pub logged: Vec<String>,
-    /// The font's `color` (`0xAARRGGBB`, 0 when it declares none), straight RGBA.
     color: [f32; 4],
 }
 
@@ -133,7 +73,6 @@ impl Font {
         }
     }
 
-    /// The glyph `ch` draws and its page, `None` when its page did not load.
     fn glyph_of(&self, ch: char) -> Option<(&fonts::Glyph, Option<Page>)> {
         let glyph = self.glyphs.glyphs.get(&(ch as u32))?;
         Some((
@@ -142,32 +81,26 @@ impl Font {
         ))
     }
 
-    /// The page texture id a glyph of `ch` is drawn from.
     pub fn page_of(&self, ch: char) -> Option<usize> {
         self.glyph_of(ch)?.1.map(|(texture, _)| texture)
     }
 
-    /// The definition's colour as straight RGBA in 0..1.
     pub fn color(&self) -> [f32; 4] {
         self.color
     }
 
-    /// The first `.fnt`'s `lineHeight`.
     pub fn line_height(&self) -> f32 {
         self.glyphs.line_height.unwrap_or_default() as f32
     }
 
-    /// Page count, for reporting.
     pub fn page_count(&self) -> usize {
         self.pages.iter().flatten().count()
     }
 
-    /// Glyph count, for reporting.
     pub fn glyph_count(&self) -> usize {
         self.glyphs.glyphs.len()
     }
 
-    /// One line naming the font and the `.fnt` header it was loaded from.
     pub fn summary(&self) -> String {
         format!(
             "{} ({}): lineHeight {}, base {}, {} glyphs on {} page(s) in {} file(s)",
@@ -198,7 +131,6 @@ impl GlyphMetrics for Font {
     fn glyph(&self, ch: char) -> Option<GlyphBox> {
         let (glyph, page) = self.glyph_of(ch)?;
         let Some((_, atlas)) = page else {
-            // Its page did not load: the glyph advances and draws nothing.
             return Some(GlyphBox {
                 width: 0.0,
                 height: 0.0,
@@ -232,15 +164,6 @@ impl GlyphMetrics for Font {
     }
 }
 
-/// Loads one named font and appends its pages to `images`.
-///
-/// Returns a named error rather than panicking when `interface/*.gfx` declares no such font,
-/// when the game's reading of its declaration is refused (its recorded reasons), when its family
-/// loads no glyph or its first file no line metrics, or when a page's drawing is not determined
-/// by the file or the recording ([`resources::NoTexture::native_failure`]). A family file no
-/// layer holds contributes nothing, as the game logs it ("Missing font file") and reads on; a
-/// page the game itself does not load leaves its glyphs advancing and drawing nothing; both are
-/// named in [`Font::logged`]. A read that fails other than by a file's absence is the error.
 pub fn load(
     layers: &ResolvedLayers,
     interface: &super::sprites::Interface,
@@ -264,12 +187,8 @@ pub fn load(
                 .join("; ")
         )));
     }
-    // Use the first bitmap-font override whose languages include the reader's language, otherwise
-    // the declared family's own files.
     let family = font.family(format!("l_{language}").as_bytes());
     let failed = RefCell::new(None);
-    // A family file or page the visual mods break or hide is the recording's own, named; one no
-    // stack gives is named for the map's fallback.
     let recorded = layers.without_overlays();
     let glyphs = fonts::load_glyphs(family, &|path| match layers.read_uncovered_path(path) {
         Ok(bytes) => Some(bytes),
@@ -313,7 +232,6 @@ pub fn load(
             pages.push(None);
             continue;
         }
-        // Register the page texture and use its decoded extent.
         match resources::stack_texture_or_recorded(
             layers,
             recorded.as_ref(),
@@ -355,43 +273,20 @@ pub fn load(
     })
 }
 
-/// The fonts the map passes draw with.
 pub struct Fonts {
-    /// The country and state name font, with the native fallback or an empty refused font.
     pub map: Font,
-    /// The unit counter's `count_txt` font from `mapicons.gui` (`Main_14`),
-    /// resolved as the engine does; `None` when that font does not load, and
-    /// counters then draw no count.
     pub counter: Option<Font>,
-    /// The battle-plan label font `gfx/maparrows/maparrows.txt` names in its
-    /// `arrowText` block, resolved as `counter` is; loaded only when it is none
-    /// of the fonts above. See [`Fonts::arrow`].
     arrow_own: Option<Font>,
-    /// The resolved name of the plan label font, when one resolved and loaded.
     arrow_name: Option<String>,
 }
 
-/// The font names the content declares for each map text family.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeclaredFonts<'a> {
-    /// The unit counter count box's font.
     pub counter: Option<&'a str>,
-    /// `maparrows.txt`'s `arrowText` font.
     pub arrow: Option<&'a str>,
 }
 
 impl Fonts {
-    /// Loads them from the content's registered fonts for `language`, appending their pages to
-    /// `images`.
-    ///
-    /// `counter` is the counter count box's declared font. A name the
-    /// registry does not hold, or none at all, takes
-    /// the game's fallback
-    /// ([`fonts::Fonts::get_or_fallback`]); a font that then fails to load leaves the
-    /// count undrawn with a warning rather than failing every map icon.
-    ///
-    /// Arrow and map-name fonts use the registered fallback. An unreadable fallback withholds text
-    /// and reports a counted font refusal.
     pub fn load(
         layers: &ResolvedLayers,
         interface: &super::sprites::Interface,
@@ -401,9 +296,6 @@ impl Fonts {
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let DeclaredFonts { counter, arrow } = *declared;
-        // With visual mods mounted, a font that does not load is a refusal of the mods' fonts:
-        // the error lets the loader draw the recorded ones instead (`ResolvedLayers::artwork`),
-        // where the recording alone would draw no text.
         let refuse = |what: &str, error: &io::Error| -> io::Result<()> {
             if layers.shows_visual_mods() {
                 return Err(io::Error::new(
@@ -413,15 +305,12 @@ impl Fonts {
             }
             Ok(())
         };
-        // No bitmapfont registered at all: with visual mods mounted, their fonts hid the
-        // recorded declarations, so it is a refusal too.
         let undeclared = |what: &str| -> io::Result<()> {
             refuse(
                 what,
                 &io::Error::new(io::ErrorKind::NotFound, "no bitmapfont is declared"),
             )
         };
-        // Use the declared font name, empty when undeclared, otherwise the fallback.
         let resolve = |name: Option<&str>| {
             interface
                 .registry
@@ -445,7 +334,6 @@ impl Fonts {
                 None
             }
         };
-        // Log a missing name and select the first font bucket.
         let map = match resolve(Some(MAP_FONT)) {
             Some(name) => {
                 if name != MAP_FONT {
@@ -481,13 +369,9 @@ impl Fonts {
                 Font::empty(MAP_FONT)
             }
         };
-        // Loaded last, so the other fonts keep their page ids. An undeclared
-        // or unnamed font takes the fallback, as the game does; a name
-        // already loaded shares that font's atlas pages.
         let arrow_name = resolve(arrow);
         let loaded = [Some(&map), counter.as_ref()];
         let (arrow_own, arrow_name) = match arrow_name {
-            // Share the same registered font; a refused load withholds both label families.
             Some(name) if name == map.name && map.glyph_count() == 0 => {
                 warnings.push(format!(
                     "1 battle-plan font refusal: {name} also failed as the map-name font; battle-plan labels are not drawn."
@@ -548,8 +432,6 @@ impl Fonts {
         })
     }
 
-    /// The battle-plan label font, shared with an already loaded font of the
-    /// same name; `None` when it did not load, and plan labels are then not drawn.
     pub fn arrow(&self) -> Option<&Font> {
         let name = self.arrow_name.as_deref()?;
         self.arrow_own
@@ -557,7 +439,6 @@ impl Fonts {
             .or_else(|| find([Some(&self.map), self.counter.as_ref()], name))
     }
 
-    /// One summary line per font, in load order.
     pub fn summary(&self) -> Vec<String> {
         [
             Some(&self.map),
@@ -571,12 +452,10 @@ impl Fonts {
     }
 }
 
-/// The first of `fonts` loaded under `name`.
 fn find<'a, const N: usize>(fonts: [Option<&'a Font>; N], name: &str) -> Option<&'a Font> {
     fonts.into_iter().flatten().find(|font| font.name == name)
 }
 
-/// Horizontal alignment, as an `instantTextboxType`'s `format` declares it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Align {
     #[default]
@@ -585,29 +464,18 @@ pub enum Align {
     Right,
 }
 
-/// One laid-out glyph in device pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGlyph {
-    /// Page texture id the quad samples.
     pub page: usize,
-    /// `x, y, width, height` in device pixels, `y` down from the top.
     pub rect: [f32; 4],
-    /// Normalised atlas rectangle `[u0, v0, u1, v1]`.
     pub uv: [f32; 4],
 }
 
-/// Strips the game's colour runs, keeping the text between them.
-///
-/// 0x11 followed by any one character opens a run and 0x11 `!` closes it; a
-/// trailing 0x11 with nothing after it is dropped. The engine's own layout
-/// does the same before it measures, so the width this module
-/// reports matches the engine's.
 pub fn strip_color_codes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(ch) = chars.next() {
         if ch == COLOR_CODE {
-            // Both the opening `§X` and the closing `§!` consume one character.
             chars.next();
         } else {
             out.push(ch);
@@ -616,8 +484,6 @@ pub fn strip_color_codes(text: &str) -> String {
     out
 }
 
-/// The first control in stored `text` that map text does not draw, named for
-/// a refusal: every control but a colour code and the glyph-less 0x14.
 pub fn unsupported_control(text: &str) -> Option<String> {
     use installed_content_localisation::{localisation::Piece, localisation::pieces};
     pieces(text)
@@ -626,11 +492,6 @@ pub fn unsupported_control(text: &str) -> Option<String> {
         .map(|piece| piece.describe())
 }
 
-/// Width of `text` in font pixels, with the colour codes stripped.
-///
-/// Characters the font has no glyph for are dropped, which is what
-/// the world-name producer does, so a measured width and a laid-out width
-/// always agree.
 pub fn measure(font: &Font, text: &str) -> f32 {
     let mut width = 0.0f32;
     let mut previous: Option<char> = None;
@@ -647,17 +508,6 @@ pub fn measure(font: &Font, text: &str) -> f32 {
     width
 }
 
-/// Lays one line out at `origin`, the top-left of the text box in device pixels.
-///
-/// `max_width` supplies the alignment box and truncation limit. A glyph whose advance would move
-/// the pen beyond it, and every following glyph, is dropped. Labels use a plain cut where the
-/// game uses ellipsis.
-///
-/// With no `maxWidth` there is no box, so a centred run is centred on `origin`
-/// itself and a right-aligned one ends there.
-///
-/// Glyph `y` follows BMFont: `yoffset` is measured from the top of the line
-/// box, which is `origin.y`, not from the baseline.
 pub fn layout(
     font: &Font,
     text: &str,
@@ -668,8 +518,6 @@ pub fn layout(
     let stripped = strip_color_codes(text);
     let width = measure(font, &stripped);
     let limit = max_width.unwrap_or(f32::INFINITY);
-    // The slack the run has inside its box, never negative: an over-long run
-    // starts at the box's left edge and is cut at its right one.
     let slack = (max_width.unwrap_or(0.0) - width).max(0.0);
     let start = match align {
         Align::Left => origin[0],
@@ -720,7 +568,6 @@ mod tests {
     use installed_content_core::gui::native::fonts::Glyph;
     use std::collections::BTreeMap;
 
-    /// A synthetic three-character font: `A` and `B` 10 wide, space 4 wide.
     fn font() -> Font {
         let mut glyphs = BTreeMap::new();
         glyphs.insert(
@@ -778,7 +625,6 @@ mod tests {
 
     #[test]
     fn a_later_font_file_supplies_the_glyphs_the_first_lacks() {
-        // Its glyph is on the second file's page.
         let mut font = font();
         font.glyphs.glyphs.insert(
             'Z' as u32,
@@ -794,7 +640,6 @@ mod tests {
         assert_eq!(font.page_of('A'), Some(7));
     }
 
-    /// A content stack holding `files`, and the interface read from it.
     fn stack(
         name: &str,
         files: &[(&str, &[u8])],
@@ -818,7 +663,6 @@ mod tests {
         (root, layers, interface)
     }
 
-    /// An 8 x 7 `DXT5` file: four blocks of zeroes.
     fn dxt5_8x7() -> Vec<u8> {
         let mut dds = vec![0u8; 128];
         dds[..4].copy_from_slice(b"DDS ");
@@ -889,7 +733,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// `gfx/fonts` is covered and verified; a font a mod declares elsewhere is named unverified.
     #[test]
     fn only_a_font_outside_the_covered_root_is_named_unverified() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -938,8 +781,6 @@ mod tests {
         }
     }
 
-    /// A visual mod whose fonts declare no bitmapfont is a refusal of its fonts, so the
-    /// loader draws the recorded ones; the recording alone draws no text and loads.
     #[test]
     fn visual_mods_that_hide_every_bitmapfont_refuse_their_fonts() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1053,7 +894,6 @@ path=\"{art}\"
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Absent family files are named and skipped while later files still load.
     #[test]
     fn a_missing_family_file_is_skipped_and_named() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1083,8 +923,6 @@ path=\"{art}\"
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// An eight-by-seven DXT5 page decodes to an eight-by-eight block extent. Glyph UVs divide by the
-    /// loaded extent rather than authored height.
     #[test]
     fn a_page_divides_its_glyphs_by_the_extent_the_game_decodes() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1114,7 +952,6 @@ path=\"{art}\"
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// Refuse a declaration with an unsupported text colour code byte, preserving its reason.
     #[test]
     fn a_refused_font_does_not_load() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1136,7 +973,6 @@ path=\"{art}\"
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A page the game does not load leaves its glyphs advancing and drawing nothing.
     #[test]
     fn a_glyph_of_an_unloaded_page_advances_and_draws_nothing() {
         let mut font = font();
@@ -1150,7 +986,6 @@ path=\"{art}\"
         );
     }
 
-    /// The synthetic font under `name`, its one page at texture id `page`.
     fn named(name: &str, page: usize) -> Font {
         let mut font = font();
         font.name = name.into();
@@ -1168,7 +1003,6 @@ path=\"{art}\"
         };
         let shared = fonts(None, "tahoma_60");
         assert_eq!(shared.arrow().map(|font| font.page_of('A')), Some(Some(0)));
-        // A shared font adds no summary line: its pages were loaded once.
         assert_eq!(shared.summary().len(), 2);
         let own = fonts(Some(named("plan_font", 5)), "plan_font");
         assert_eq!(own.arrow().map(|font| font.page_of('A')), Some(Some(5)));
@@ -1182,7 +1016,6 @@ path=\"{art}\"
 
     #[test]
     fn colour_codes_are_stripped_and_the_text_between_them_kept() {
-        // Values as the loader stores them.
         let stored = |authored: &str| {
             let loc: installed_content_localisation::localisation::Localisation =
                 [("K".to_owned(), authored.to_owned())]
@@ -1193,10 +1026,8 @@ path=\"{art}\"
         assert_eq!(strip_color_codes(&stored("§YBerlin§!")), "Berlin");
         assert_eq!(strip_color_codes(&stored("a§Gb§!c")), "abc");
         assert_eq!(strip_color_codes("plain"), "plain");
-        // A dangling code at the end of the string drops the marker only.
         assert_eq!(strip_color_codes(&stored("tail§")), "tail");
         assert_eq!(strip_color_codes(&stored("§!§!")), "");
-        // A doubled `§` is stored as the character, which is drawn.
         assert_eq!(strip_color_codes(&stored("100§§")), "100§");
         assert_eq!(unsupported_control(&stored("§Ya§! b")), None);
         assert_eq!(
@@ -1204,7 +1035,6 @@ path=\"{art}\"
             Some("the icon 0x13 \"pol_power\" (an authored `£`)")
         );
         assert!(unsupported_control(&stored("@GER")).is_some());
-        // The authored `¤` is stored as 0x14, which map glyph runs read as a glyph-less codepoint.
         assert_eq!(stored("a¤b"), "a\u{14}b");
         assert_eq!(unsupported_control(&stored("a¤b")), None);
         assert!(unsupported_control(&stored("a¤{12")).is_some());
@@ -1213,13 +1043,10 @@ path=\"{art}\"
     #[test]
     fn the_advance_sums_the_glyph_steps_and_the_kerning_pairs() {
         let font = font();
-        // A then B is 10 + (-2 kerning) + 10.
         assert_eq!(measure(&font, "AB"), 18.0);
         assert_eq!(measure(&font, "BA"), 20.0);
         assert_eq!(measure(&font, "A B"), 24.0);
-        // Characters the font has no box for are dropped, not measured as zero.
         assert_eq!(measure(&font, "AZB"), 18.0);
-        // Colour codes never reach the measure.
         assert_eq!(measure(&font, "\u{11}YAB\u{11}!"), 18.0);
     }
 
@@ -1229,24 +1056,17 @@ path=\"{art}\"
         let left = layout(&font, "AB", [100.0, 50.0], Align::Left, Some(149.0));
         assert_eq!(left.len(), 2);
         assert_eq!(left[0].page, 7);
-        // `xoffset` 1 on `A`, and `yoffset` 2 below the top of the line box.
         assert_eq!(left[0].rect, [101.0, 52.0, 8.0, 12.0]);
-        // `B` starts one advance plus the kerning further on, with xoffset 0.
         assert_eq!(left[1].rect[0], 108.0);
-        // The atlas rectangle is normalised by the page texture's size.
         assert_eq!(left[0].uv, [0.0, 0.0, 8.0 / 64.0, 12.0 / 32.0]);
 
-        // Centre and right place the run inside the `maxWidth` box.
         let centre = layout(&font, "AB", [100.0, 50.0], Align::Centre, Some(50.0));
         assert_eq!(centre[0].rect[0], 100.0 + (50.0 - 18.0) * 0.5 + 1.0);
         let right = layout(&font, "AB", [100.0, 50.0], Align::Right, Some(50.0));
         assert_eq!(right[0].rect[0], 100.0 + 50.0 - 18.0 + 1.0);
-        // A run wider than the box starts at its left edge whatever the format,
-        // and is cut at the first glyph that would not fit.
         let tight = layout(&font, "AB", [100.0, 50.0], Align::Centre, Some(10.0));
         assert_eq!(tight.len(), 1);
         assert_eq!(tight[0].rect[0], 101.0);
-        // With no box there is nothing to centre inside, so the origin is used.
         let free = layout(&font, "AB", [100.0, 50.0], Align::Centre, None);
         assert_eq!(free[0].rect[0], 101.0);
     }
@@ -1256,7 +1076,6 @@ path=\"{art}\"
         let font = font();
         let cut = layout(&font, "ABAB", [0.0, 0.0], Align::Left, Some(20.0));
         assert_eq!(cut.len(), 2);
-        // The space has an empty box, so it advances the pen but emits no quad.
         let spaced = layout(&font, "A B", [0.0, 0.0], Align::Left, None);
         assert_eq!(spaced.len(), 2);
         assert_eq!(spaced[1].rect[0], 14.0);

@@ -1,5 +1,3 @@
-//! Sizing-read contracts the extended capture families share: a census
-//! outcome's storage demand and the live world they read.
 
 use engine_native::{Memory, cgame_state, walk::Outcome};
 
@@ -13,7 +11,6 @@ pub fn rows(outcome: Outcome) -> Result<usize, &'static str> {
     }
 }
 
-/// An absent or empty world is pending, not a failed census or a zero hint.
 pub fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
     let game_state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
         .and_then(|at| engine_native::read::<u64>(memory, at))
@@ -30,9 +27,6 @@ pub fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usi
     Ok((countries.count >= 2).then_some(state))
 }
 
-/// The air manager is constructed after country roots, then its country-air
-/// slots are filled. Its count reaches the country count before filling slots.
-/// A null manager or shorter roster therefore leaves these hints pending.
 pub fn demand_air_game_state(
     memory: &impl Memory,
     base: usize,

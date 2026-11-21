@@ -1,4 +1,3 @@
-//! Shared query indexes and recorded identity histories for dashboard products.
 use crate::Source;
 use std::{collections::HashMap, io, sync::{Arc, PoisonError}};
 
@@ -8,19 +7,15 @@ pub mod lexicon;
 #[derive(Default)]
 struct Held(Arc<dashboard_query::Index>);
 
-/// The query layer's index of `source`'s recording.
 pub fn index(source: &Source) -> Arc<dashboard_query::Index> {
     let held = source.state::<Held>();
     let held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     Arc::clone(&held.0)
 }
 
-/// Each lexer token's text at a run's hour, once read: none where the run held no text for it.
 #[derive(Default)]
 struct Spellings(std::collections::HashMap<(u32, i32), std::collections::HashMap<u32, Option<String>>>);
 
-/// The texts of lexer `tokens` as run `run` holds them at `hour`; a token without one is left out.
-/// Each token is read from LexicalTokens once at that hour while the recording is open.
 pub fn spellings(source: &Source, run: u32, hour: i32, tokens: &std::collections::BTreeSet<u32>) -> io::Result<std::collections::HashMap<u32, String>> {
     let state = source.state::<Spellings>();
     let missing: Vec<u128> = {
@@ -46,12 +41,9 @@ pub fn spellings(source: &Source, run: u32, hour: i32, tokens: &std::collections
     Ok(tokens.iter().filter_map(|token| Some((*token, known.get(token)?.clone()?))).collect())
 }
 
-/// Each run's lexicon, behind a slot held while it is read: a caller asking during the read waits
-/// for it instead of reading the table's history again.
 #[derive(Default)]
 struct Lexicons(std::collections::HashMap<u32, Arc<std::sync::Mutex<Option<Arc<lexicon::RunLexicon>>>>>);
 
-/// Run `run`'s lexicon, read once and kept; warmed at open ([`warm_lexicons`]).
 pub fn lexicon(source: &Source, run: u32) -> io::Result<Arc<lexicon::RunLexicon>> {
     let slot = Arc::clone(source.state::<Lexicons>().lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry(run).or_default());
     let mut held = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -63,8 +55,6 @@ pub fn lexicon(source: &Source, run: u32) -> io::Result<Arc<lexicon::RunLexicon>
     Ok(made)
 }
 
-/// Reads the lexicon of every run of the recording's timelines, the main timeline's first, one
-/// after another: called on a thread of its own once the open has answered, so no open waits.
 pub fn warm_lexicons(source: &Source) -> io::Result<()> {
     let Some(timelines) = source.replay_ref().timelines() else { return Ok(()) };
     let mut branches: Vec<u64> = timelines.list.iter().map(|timeline| timeline.id).collect();

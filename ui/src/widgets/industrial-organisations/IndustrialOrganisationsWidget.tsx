@@ -40,10 +40,6 @@ const NO_WARNINGS: readonly string[] = [];
 const NAME_UNAVAILABLE = 'Organisation name unavailable';
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
 
-/** A country's industrial organisations at the moment shown, largest first: size, funds, traits and policy. Followed at
- * the head as a pushed panel that changes only when an organisation, its size, traits or policy does; funds are painted
- * from live cells and a cooldown's days from the shown hour. A row opens the game's policy screen for it once the
- * game-window renderer provides one. */
 export default function IndustrialOrganisationsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -57,7 +53,6 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const hour = head.at ?? head.hour ?? track?.branch.lastHour ?? 0;
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // The policy window belongs to the recording, branch and country it was opened for.
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
   const [stored, setPicked] = useState<{ owner: object; selection: MioPolicySelection } | null>(null);
@@ -65,7 +60,6 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   useEffect(() => dispatch({ type: 'close' }), [owner]);
   const Chooser = gameWindow('mioPolicyChooser');
   const windowOpen = drill.breakdown !== null && !!picked && !!Chooser;
-  // The open policy window reports its own diagnostics; both reach the card.
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
@@ -78,7 +72,6 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
   shownAt.current = head.shownAt;
-  // The hour the cooldowns count from: the one the clock shows (the head, a pinned hour or a range's end).
   const hourAt = useRef((position: number) => position);
   hourAt.current = position => Math.floor((track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? hour);
   const live = head.live;

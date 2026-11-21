@@ -1,15 +1,3 @@
-//! The hourly temperature pass's recorded inputs ([`replay_data::rows::TemperaturePass`]).
-//!
-//! The decode worker sees the hours in order. Each complete read gives every province record's
-//! words ([`State`]) and the manager's cursor, window and seed. An hour extends the current anchor
-//! when the read proves what the hour did since the hour before: with both suspension gates clear,
-//! hourly weather update ran one ordinary pass, so the cursor moved exactly as weather window pass
-//! walks it and no record outside the window it visited changed, and the hour's seed is recorded;
-//! with a gate set, nothing moved. Anything else (the first read, a missed hour, a load, a console
-//! reload or the `randomize_weather` effect, which reinitialize every record through weather
-//! reinitialize) starts a new anchor holding the hour's words, as does every [`ANCHOR_HOURS`] hours
-//! so that a frame needs at most that many hours of passes.
-
 use engine_allocation::{self as allocation, SharedBox};
 use replay_data::{
     rows::{TemperaturePass, TemperatureWitness},
@@ -17,21 +5,13 @@ use replay_data::{
 };
 use replay_frame::KEYFRAME_INTERVAL;
 
-/// Hours an anchor lasts: two keyframe intervals. A block's keyframe holds
-/// its frame's anchor words, and the keyframe one interval after an anchor
-/// repeats them, which the anchored keyframe encoding stores at a few bytes,
-/// so the province words (about seven bytes a province compressed) are
-/// stored once per two blocks; a frame derives from at most this many hours
-/// of passes and its pass lists at most this many seeds.
 pub const ANCHOR_HOURS: i32 = 2 * KEYFRAME_INTERVAL as i32;
 
-/// The manager words one hour's read gives besides the records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Words {
     pub cursor: i32,
     pub window: i32,
     pub seed: u32,
-    /// The suspension gates, `None` when unread.
     pub gates: Option<[u8; 2]>,
 }
 
@@ -42,22 +22,15 @@ struct Read {
     states: Vec<State>,
 }
 
-/// The words an hour's rows hold and the pass its slot 0 carries.
 pub type Anchored<'a> = (SharedBox<Vec<State>>, &'a TemperaturePass);
 
 #[derive(Debug, Default)]
 pub struct Tracker {
     previous: Option<Read>,
-    /// The anchor's words, shared with every frame that holds them, and the pass, which holds
-    /// its hour, cursor and the hours since.
     anchored: Option<(SharedBox<Vec<State>>, TemperaturePass)>,
 }
 
 impl Tracker {
-    /// The hour's anchored words and pass, from the hour's complete read (`None` when the
-    /// records or the manager words were not read whole). A refused hour forgets the hours
-    /// before it. The read's words are kept as the next hour's comparison: the caller gets the
-    /// buffer they replace back to fill next hour, so an ordinary hour copies no words.
     pub fn observe(
         &mut self,
         hour: i32,
@@ -87,7 +60,6 @@ impl Tracker {
             let pass = TemperaturePass {
                 anchor: hour,
                 cursor: words.cursor,
-                // The anchor hour's own ordinary pass, when the hour before proves it.
                 anchor_seed: proven.flatten(),
                 hours: Vec::new(),
                 witness: TemperatureWitness::default(),
@@ -110,8 +82,6 @@ impl Tracker {
     }
 }
 
-/// `Some(Some(seed))` for an ordinary pass since the hour before, `Some(None)` for a
-/// suspended hour, `None` when the reads do not prove either.
 fn classify(previous: &Read, hour: i32, words: Words, states: &[State]) -> Option<Option<u32>> {
     let before = previous.words?;
     if previous.hour.checked_add(1) != Some(hour)

@@ -1,8 +1,6 @@
 use super::*;
 use crate::extended::bench_world::{self, Shape, World};
 
-/// The median and p95 of the LandTheatres header copy, of the order of
-/// battle copy and of the callback's registry census it walks, in µs.
 fn time_copies(
     memory: &impl engine_native::Memory,
     world: &World,
@@ -19,7 +17,6 @@ fn time_copies(
             false,
         );
     });
-    // The pass clears the log first; so does each timed copy.
     let oob = bench_world::time(50, || {
         job.log.clear();
         copy_naval_oob(job, memory, world.base);
@@ -34,7 +31,6 @@ fn time_copies(
     [theatres, oob, census]
 }
 
-/// The callback's registry census of the pass into the job's snapshot.
 fn census_roots(memory: &impl engine_native::Memory, world: &World, job: &mut NavalJob) {
     let mut roots = vec![corders_group::Root::default(); world.groups as usize];
     let outcome = corders_group::walk_roots(memory, world.base, &mut roots);
@@ -54,8 +50,6 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
                 },
             );
             let slice = world.slice();
-            // The callback's country census of the hour, as the Naval job
-            // sees it: every copy reads through its roster view.
             let mut countries_cache = engine_native::country_memory::Cache::try_with_capacity(
                 engine_native::country_memory::Cache::cells_for_countries(
                     countries as usize + 1,
@@ -68,16 +62,12 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
             let slice_roster = countries_cache.roster_view(&slice);
             let live_roster = countries_cache.roster_view(&live);
             let mut job = NavalJob::fixture();
-            // An off-slot hour: the land theatre headers and the order of
-            // battle are the hourly work; theatre details stay daily.
             let ctx = NavalCopyContext {
                 hour: 1,
                 force_full: false,
                 base: world.base,
                 game_state: world.game_state,
             };
-            // Grow the raw log and the roster snapshot off the clock, as
-            // the spool thread does, so every case times the steady path.
             while {
                 census_roots(&slice, &world, &mut job);
                 !copy_naval_refresh(&slice_roster, ctx, &mut job).raw_ok || job.grow_for_next()
@@ -138,8 +128,6 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
             };
             let mut captured = Captured::with_capacities(&capacity);
             let mut ticks = [0; NAVAL_PACK_N];
-            // The raw replay's decode of every hourly naval table: the
-            // registry census, the order of battle and the theatre headers.
             let (decode, decode_p95) = bench_world::time(20, || {
                 decode_naval_payload(&mut captured, world.base, &job, &mut ticks);
             });

@@ -27,7 +27,6 @@ fn thermal_pairs_keep_order_fixed5_and_repeated_group_values() {
         parse_temperature_ranges(b"settings={temperature={}}").unwrap(),
         [[0; 2]; 4]
     );
-    // Native accepts inverted/overlapping intervals; consumers decide matches.
     assert_eq!(
         parse_temperature_ranges(b"settings={temperature={weather_very_hot={4 2}}}").unwrap()[2],
         [400_000, 200_000]
@@ -71,8 +70,6 @@ fn province_modifier_rules_keep_ranges_ceiling_and_classify_first_and_high() {
             snow_gain_max: 1_200_000,
         }
     );
-    // The first interval holding the temperature wins; upper bounds are exclusive
-    // and an unset interval holds nothing.
     assert_eq!(
         rules.temperature_modifier(-2_500_000),
         Some("weather_extreme_cold")
@@ -83,7 +80,6 @@ fn province_modifier_rules_keep_ranges_ceiling_and_classify_first_and_high() {
     );
     assert_eq!(rules.temperature_modifier(-500_000), None);
     assert_eq!(rules.temperature_modifier(0), None);
-    // High wins where both ground snow intervals hold; the sum is capped first.
     assert_eq!(
         rules.ground_snow_modifier(300_000, 0),
         Some("weather_ground_snow_medium")
@@ -191,7 +187,6 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
         },
         delay,
     };
-    // A delayed event in a state that runs once starts its particle at its time.
     assert_eq!(
         entity_particles("delayed", &entities, &catalog).unwrap().0,
         [drops(0.5, 1.5)]
@@ -203,7 +198,6 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
             EffectParent {
                 name: "custom".into(),
                 radius: 6.,
-                // The clone keeps its parent's sound event for the map audio.
                 sounds: vec![WeatherSound {
                     effect: "rain".into(),
                     time: 0.0,
@@ -211,7 +205,6 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
             }
         )
     );
-    // A looping state would start it again; an offset clock moves it.
     for name in ["timed", "offset", "random", "orphan", "absent"] {
         assert!(
             entity_particles(name, &entities, &catalog).is_err(),
@@ -320,7 +313,6 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
     )
     .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    //A prior valid definition does not make the later unknown overwrite safe.
     assert!(
         layers
             .descriptor_roster()
@@ -329,7 +321,6 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
             .entities
             .contains_key("uncertain")
     );
-    // The pair is withheld by name and keeps its place in the bank; the next one loads.
     let effects = effects(&layers, &Catalog::default()).unwrap();
     let [uncertain, plain] = &effects[&(0, false)][..] else {
         panic!("both pairs keep their places: {effects:?}");
@@ -357,8 +348,6 @@ fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
         b"weather_effects={rain_light={weather_effect={}}}",
     )
     .unwrap();
-    // The identifier reader keeps this native misread, even when later
-    // definitions make all requested lookups resolvable.
     std::fs::write(root.join("common/modifiers/a.txt"), b"other=word").unwrap();
     std::fs::write(
         root.join("common/modifiers/b.txt"),
@@ -383,8 +372,6 @@ fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// The thermal and ground snow modifiers some value selects: a modifier an earlier interval
-/// shadows, or a snow interval above the cap, is never selected.
 #[test]
 fn reachable_province_modifiers_follow_the_intervals() {
     let rules = ProvinceModifierRules {

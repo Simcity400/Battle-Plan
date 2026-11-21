@@ -1,4 +1,3 @@
-//! Between-tick native writer observers that several capture families share: country inputs and the families forwarding to them, rosters, characters, advisor pools, opinions, output and event ledgers, nuclear strikes, wars, naval trees and leaders, orders groups, retreat bans, raids, air base carry, rail, territory, the event feed with its history and war provenance, political status, world inputs, wings, air losses and building bombing. One patch owner per native site forwards to the others. The host installs the hooks, drains the stores at the hourly boundary and composes the capture families that read them.
 
 use collector_certificates::{dirty_set, watch_registry};
 use collector_hooks::hook;
@@ -70,12 +69,10 @@ static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reser
 pub mod wargoal_changes;
 pub mod division_panel_changes;
 
-/// A hook site located with the 16 bytes its hook replaces, or why not.
 fn verified(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     engine_sites::hook(base, key)?.sentinel::<16>().map(drop)
 }
 
-/// [`verified`], refusing a withheld site the way a differing sentinel was.
 fn located(base: usize, key: engine_sites::Rva) -> Result<(), &'static str> {
     verified(base, key).inspect_err(|cause| {
         hook::installation::refused(hook::installation::Kind::Sentinel, None, cause);

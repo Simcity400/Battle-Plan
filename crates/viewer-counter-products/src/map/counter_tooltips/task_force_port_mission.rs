@@ -1,11 +1,3 @@
-//! Port-counter strike-force status.
-//!
-//! Strike-force combat power comes from each ship's strike words, which are not
-//! recorded: a reached readiness arm (likelihood, ready or too strong) with a
-//! ship to weigh refuses by name. The game scores power and decides exact
-//! readiness, using the deterministic range for
-//! coarse intel. Products wrap at 64 bits before truncating division.
-//! Neither unit selection nor a client tooltip/animation cache is an input.
 
 use super::*;
 use replay_data::{
@@ -38,8 +30,6 @@ fn multiply(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / SCALE
 }
 
-/// Only members read by the power scorer. The aggregate's other six words are never consumed by
-/// either reached readiness chain and are not recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Power {
     ships: i32,
@@ -68,7 +58,6 @@ fn score(own: Power, other: Power, defines: &Defines) -> Result<i64, String> {
         .wrapping_sub(own.capitals)
         .wrapping_sub(own.carriers);
     let screening = if screens > 0 {
-        // The native ratio is capitals/screens, including its unintuitive direction.
         let ratio = fraction(i64::from(own.capitals) * SCALE, i64::from(screens) * SCALE)?;
         let screening_ratio = *d.screening_ratio.as_ref().map_err(Clone::clone)?;
         if screening_ratio != 0 && divisible(ratio) {
@@ -125,8 +114,6 @@ fn mix(mut value: u32) -> u32 {
     ((value >> 8) ^ value) & 0x7fff_ffff
 }
 
-/// Deterministic endpoint range, seeded by the target's signed reference id,
-/// with overlapping 31-bit draws packed at bit 30.
 fn fuzzy_range(base: i64, width: i32, seed: i32) -> (i64, i64) {
     let seed = seed as u32;
     let mut a = seed.wrapping_mul(0x7eb8_da44);
@@ -271,9 +258,6 @@ fn probability_status(probability: i64, d: &Defines) -> Result<(Status, bool), S
     ))
 }
 
-/// Walk target ships first, then the stored exclusion list. A
-/// decisive match does not consume later faults; an earlier fault prevents a
-/// later match from being considered. The comparison is exact native bytes.
 fn permits_types<'a>(
     types: impl IntoIterator<Item = Result<&'a [u8], String>>,
     avoided: &[Option<Vec<u8>>],
@@ -379,12 +363,8 @@ fn roster<'a>(
     Ok(result)
 }
 
-/// Per-ship strike words (the cached light, heavy, piercing and
-/// torpedo attack and the fleet leader's torpedo cooldown modifier).
 const STRIKE_UNRECORDED: &str = "the ships' strike operands (light, heavy, piercing and torpedo attack and the torpedo cooldown modifier) are not recorded, so the strike-force readiness is unknown";
 
-/// Strike-force combat power: zero for an empty roster; a ship's strike words
-/// are not recorded, so a roster with ships refuses by name.
 fn power(context: &Context<'_>, target: u64) -> Result<Power, String> {
     if roster(context, target)?.is_empty() {
         return Ok(Power::default());
@@ -604,9 +584,6 @@ pub(super) fn append(context: &Context<'_>, target: u64, visibility: u16, out: &
     }
 }
 
-/// Select the first matching searching entry, preserving order and
-/// decisive prefixes. Native dereferences a null/dangling searcher before the
-/// ownership test; that is a named fault boundary, never an entry to skip.
 fn searcher(context: &Context<'_>, first: u64) -> Result<Option<u64>, String> {
     let packet = mission(context, input(context, first)?)?;
     let entries = packet
@@ -845,7 +822,6 @@ mod tests {
                 assert!(searcher(context, 50).unwrap_err().contains(fault))
             });
         }
-        // Raw equality does not demand the canonical CountryLinks table.
         let mut raw_frame = test_frame(7);
         test_put(
             &mut raw_frame,
@@ -1075,7 +1051,6 @@ mod tests {
                 assert_eq!(status(context, &own, 101, intel).unwrap(), expected)
             });
         }
-        // Unknown resolution cannot be skipped to the otherwise-ready rule.
         test_put(
             &mut frame,
             TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
@@ -1099,8 +1074,6 @@ mod tests {
         });
     }
 
-    /// The strike words are not recorded: a roster with ships refuses the
-    /// readiness arms by name, while an empty roster's power stays zero.
     #[test]
     fn ship_power_refuses_without_strike_words_and_empty_rosters_stay_zero() {
         let mut frame = test_frame(7);
@@ -1125,7 +1098,6 @@ mod tests {
         );
         with_context(&frame, |context| {
             assert_eq!(super::power(context, 50), Err(STRIKE_UNRECORDED.into()));
-            // Another task force's empty roster weighs nothing.
             assert_eq!(super::power(context, 51), Ok(Power::default()));
         });
         let mut empty = test_frame(7);
@@ -1173,7 +1145,6 @@ mod tests {
         }
         assert_eq!(fraction(1, 0).unwrap(), 4_294_967_295);
         assert_eq!(fraction(-5, 3).unwrap(), -166_666);
-        // Native IMUL wraps before the signed division, rather than widening.
         assert_eq!(multiply(i64::MAX, 2), 0);
         assert!(fraction(1_i64 << 58, -1).is_err());
     }
@@ -1224,7 +1195,6 @@ mod tests {
             torpedo: 100_000,
             ..power()
         };
-        // 1/3 then /4, separately truncated: factor 0.77083, not full screening.
         assert_eq!(score(own, power(), &d).unwrap(), 693_747);
         own.maximum_strength = 0;
         own.maximum_organisation = 0;

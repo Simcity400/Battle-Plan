@@ -1,6 +1,3 @@
-//! Hourly battle-sound list: the battles the game's battle ambience holds, in
-//! the order its per-frame pass visits them ([`engine_native::battle_sounds`]).
-//! Storage grows on the worker from the live battle and member counts.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -23,7 +20,6 @@ pub struct Capacities {
 collector_primitives::capacity_max!(Capacities { battles, provinces });
 
 impl Capacities {
-    /// Off-thread sizing from the live list. Never lowers a capacity.
     pub fn raise(&mut self, demand: native::Demand) {
         grow_capacity(&mut self.battles, demand.battles);
         grow_capacity(&mut self.provinces, demand.provinces);
@@ -36,7 +32,6 @@ pub struct Captured {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
@@ -62,7 +57,6 @@ impl Captured {
         self.provinces.grow(&mut c.provinces);
     }
 
-    /// Worker only: the walk grows its storage from the acquired counts.
     pub fn capture(&mut self, memory: &impl Memory, base: usize, _state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
@@ -117,8 +111,6 @@ mod tests {
     use super::*;
     use engine_native::memory::SliceMemory;
 
-    /// The pack publishes the walk's rows in list order with their members,
-    /// grown from empty storage, and the next hour's buffers keep the demand.
     #[test]
     fn the_list_publishes_in_order_from_empty_storage() {
         let base = 0x10;

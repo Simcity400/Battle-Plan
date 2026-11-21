@@ -1,5 +1,3 @@
-//! Saved operands of the current endgame scores.
-//! Runtime headers, air-site access and selected stat caches are not saved.
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::{PartialMapMembership, ProvinceMembership, Save};
@@ -15,8 +13,6 @@ fn country_inputs<'a>(
 ) -> io::Result<BTreeMap<&'a [u8], &'a CountryGameScoreInputRow>> {
     let mut rows = BTreeMap::new();
     for row in complete::<tables::CountryGameScoreInputs>(frame)? {
-        // The game state writer starts at physical slot one. The
-        // authenticated reserved object has neither a save row nor a link.
         if row.country == 0 {
             report.limitation(
                 "the game state save writer omits reserved slot zero; Countries and CountryLinks intentionally contain only positive identities",
@@ -92,7 +88,6 @@ pub fn rosters(
                 .task_forces;
             let count = i32::try_from(forces.len())
                 .map_err(|_| invalid("saved task-force roster exceeds native i32"))?;
-            // The navy score adds the headers with signed i32 wrapping.
             navy = navy.wrapping_add(count);
         }
         if row.navy_count != Some(navy) {
@@ -157,8 +152,6 @@ pub fn land(
         )));
     }
     let mut counts = BTreeMap::<&[u8], i32>::new();
-    // The province save writer defaults omission to the state's OWNER,
-    // even where its controller differs. Reuse the shared saved-control join.
     let control = saved.province_control(membership)?;
     for province in &control {
         if let Some(controller) = province.controller.as_deref() {

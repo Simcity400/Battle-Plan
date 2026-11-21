@@ -1,5 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{Columns, Hour, columns};
 use replay_columnar::store::TableView;
@@ -27,12 +25,8 @@ pub(super) const FORCE: [usize; 2] = columns::<TaskForceRow, 2>(["roster_owner",
 pub(super) const CONTROLLER: [usize; 1] = columns::<ProvinceRow, 1>(["controller"]);
 pub(super) const FACTION: [usize; 1] = columns::<FactionMemberRow, 1>(["faction"]);
 pub(super) const LINKS: [usize; 1] = columns::<RelationLinkRow, 1>(["links"]);
-/// The relation tables the ports rule reads; WarRelations and Subjects by their keys alone.
 pub(super) const RELATIONS: [TableId; 4] = [TableId::FactionMembers, TableId::WarRelations, TableId::Subjects, TableId::RelationLinks];
 
-/// Whether the hour moved what the ports rule reads of the relation tables: their statuses,
-/// FactionMembers' factions, RelationLinks' links, and the rows of each (a war's casualties move
-/// every hour of a war and are not read).
 pub(super) fn relations_moved(hour: &Hour<'_>) -> bool {
     let read: [(TableId, &'static [usize]); 4] = [(TableId::FactionMembers, &FACTION), (TableId::WarRelations, &[]), (TableId::Subjects, &[]), (TableId::RelationLinks, &LINKS)];
     read.into_iter().any(|(table, columns)| hour.changes(table).status_changed || hour.wrote(table, Columns::These(columns)))
@@ -42,42 +36,34 @@ fn mask(columns: &[usize]) -> u64 {
     columns.iter().fold(0, |mask, column| mask | 1 << column)
 }
 
-/// `view`'s row keyed `key`, the fields of `columns` as the row decoder reads them.
 fn row<R: RowCodec>(view: &TableView<'_>, key: u128, columns: &[usize]) -> io::Result<Option<R>> {
     let Some(slot) = view.slot(key) else { return Ok(None) };
     let format = FormatVersion::CURRENT.version();
     R::from_wire_fields(key, mask(columns), &mut |column| replay_frame::frame::field(view, slot, column, format)).map(Some)
 }
 
-/// Raw country `raw`'s dockyards in use; none without its row.
 pub(super) fn used_dockyards(hour: &Hour<'_>, raw: u32) -> Option<i32> {
     let view = hour.table(TableId::NavalRepairCountries);
     view.number(COUNT[0], view.slot(u128::from(raw))?).map(|count| count as i32)
 }
 
-/// Whether raw country `raw` has a NavalRepairCountries row.
 pub(super) fn has_dockyards(hour: &Hour<'_>, raw: u32) -> bool {
     hour.table(TableId::NavalRepairCountries).slot(u128::from(raw)).is_some()
 }
 
-/// Whether raw country `raw` has a CountryProductionModifiers row.
 pub(super) fn has_modifiers(hour: &Hour<'_>, raw: u32) -> bool {
     hour.table(TableId::CountryProductionModifiers).slot(u128::from(raw)).is_some()
 }
 
-/// The daily output one of raw country `raw`'s dockyards applies, fixed5; none without its row
-/// or an operand.
 pub(super) fn dockyard_output(hour: &Hour<'_>, raw: u32) -> io::Result<Option<i64>> {
     let view = hour.table(TableId::CountryProductionModifiers);
     Ok(row::<CountryProductionModifiersRow>(&view, u128::from(raw), &MODIFIERS)?.and_then(|row| row.factory_output(true)))
 }
 
-/// The naval base at `province`: its prohibition list and holder.
 pub(super) fn base(hour: &Hour<'_>, province: u32) -> io::Result<Option<NavalBaseRow>> {
     row::<NavalBaseRow>(&hour.table(TableId::NavalBases), u128::from(province), &BASE)
 }
 
-/// The holder's raw country of the base at NavalBases `slot`, and its province.
 pub(super) fn base_holder(view: &TableView<'_>, slot: u32) -> Option<(u32, u32)> {
     Some((view.key(slot)? as u32, view.number(BASE[0], slot)? as u32))
 }
@@ -87,17 +73,14 @@ pub(super) fn allocation(hour: &Hour<'_>, province: u32) -> Option<i32> {
     view.number(ALLOCATION[0], view.slot(u128::from(province))?).map(|count| count as i32)
 }
 
-/// A NavalRepairQueue key's province and ordinal.
 pub(super) fn queue_key(key: u128) -> (u32, u32) {
     ((key >> 32) as u32, key as u32)
 }
 
-/// The queued ship of the queue entry keyed `key`; none without its row.
 pub(super) fn queued(view: &TableView<'_>, key: u128) -> Option<u64> {
     view.number(QUEUE[0], view.slot(key)?).map(|ship| ship as u64)
 }
 
-/// Ship `id`'s operands: none without its row, an error while a cell is not recorded.
 pub(super) fn ship(hour: &Hour<'_>, id: u64) -> Result<Option<QueuedShip>, ()> {
     let view = hour.table(TableId::Ships);
     let Some(slot) = view.slot(u128::from(id)) else { return Ok(None) };
@@ -107,7 +90,6 @@ pub(super) fn ship(hour: &Hour<'_>, id: u64) -> Result<Option<QueuedShip>, ()> {
     }
 }
 
-/// Task force `id`'s operands: none without its row, an error while a cell is not recorded.
 pub(super) fn force(hour: &Hour<'_>, id: u64) -> Result<Option<QueuedForce>, ()> {
     let view = hour.table(TableId::TaskForces);
     let Some(slot) = view.slot(u128::from(id)) else { return Ok(None) };
@@ -117,20 +99,16 @@ pub(super) fn force(hour: &Hour<'_>, id: u64) -> Result<Option<QueuedForce>, ()>
     }
 }
 
-/// Ship `ship`'s model operands; none without its row.
 pub(super) fn model(hour: &Hour<'_>, ship: u64) -> io::Result<Option<QueuedModel>> {
     Ok(row::<ShipModelRow>(&hour.table(TableId::ShipModels), u128::from(ship), &MODEL)?.as_ref().map(model_operands))
 }
 
-/// The controller of `province`: none without its row, an error while not recorded.
 pub(super) fn controller(hour: &Hour<'_>, province: u32) -> Result<Option<u32>, ()> {
     let view = hour.table(TableId::Provinces);
     let Some(slot) = view.slot(u128::from(province)) else { return Ok(None) };
     view.number(CONTROLLER[0], slot).map(|controller| Some(controller as u32)).ok_or(())
 }
 
-/// The relations the ports rule reads, through `links`; refused, saying why, while a table is not
-/// complete or names a country no link resolves.
 pub(super) fn relations(hour: &Hour<'_>, links: &BTreeMap<u32, u32>) -> Result<(Relations, AccessLinks), &'static str> {
     for table in RELATIONS {
         if !hour.complete(table) {

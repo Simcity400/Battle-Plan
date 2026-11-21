@@ -1,4 +1,3 @@
-//! Immutable byte origins for an ordered invocation, not a cross-frame constant cache.
 use super::*;
 
 #[derive(Default)]
@@ -82,15 +81,12 @@ impl Default for PendingSources {
     }
 }
 impl PendingSources {
-    /// Only the union of accepted parts' full supplies, in the original slot order.
-    /// All parts of one descriptor share these immutable object/pose origins.
     pub fn constants_mask(
         &mut self, mask: u32, view: usize, scratch: &Scratch,
         instance: usize, node: usize,
     ) {
         self.constants_mask_at(mask, view, scratch.current, scratch.pixel, instance, node);
     }
-    /// [`Self::constants_mask`] with the vertex and pixel blocks' origins given.
     pub fn constants_mask_at(
         &mut self, mask: u32, view: usize, current: usize, pixel: Option<usize>,
         instance: usize, node: usize,
@@ -112,7 +108,6 @@ impl PendingSources {
         self.state.frame = Some(view);
         self.state.grid |= mask & (1 << 5) != 0;
     }
-    /// Each slot's bytes by its source.
     pub fn resolve_with<'a>(&self, bytes: impl Fn(Source) -> &'a [u8]) -> Constants<'a> {
         std::array::from_fn(|slot| self.sources[slot].map(&bytes))
     }

@@ -1,10 +1,3 @@
-//! CountryIntel capture storage shared by the frame pool.
-//!
-//! CountryIntel is walked once a day (and on forced refreshes), so the pool
-//! needs one buffer rather than one per frame. A frame borrows it for the walk
-//! and holds it until the spool has converted and grown it; dropping the loan
-//! also returns it. A walk that finds it on loan is skipped rather than waited
-//! for, the hour carries the last sample, and the next hour walks instead.
 
 use crate::table_capture::{CaptureRows, grow_capacity};
 use engine_allocation::{SharedBox, filled, oom};
@@ -16,9 +9,7 @@ use std::sync::{
 
 pub struct Buffer {
     pub rows: CaptureRows<Row>,
-    /// Fixed copy window for the bulk record reads; it never grows.
     pub scratch: Vec<u8>,
-    /// Optional reserved suffix pressure cannot change the positive outcome.
     pub reserved_required: usize,
 }
 
@@ -30,7 +21,6 @@ impl Buffer {
 
 struct Slot {
     buffer: Option<Box<Buffer>>,
-    /// A due walk found the buffer on loan; the next walk runs off-cadence.
     missed: bool,
 }
 
@@ -39,7 +29,6 @@ struct Inner {
     bytes: AtomicUsize,
 }
 
-/// The pool's one buffer. Clones share it.
 #[derive(Clone)]
 pub struct Home(SharedBox<Inner>);
 
@@ -68,7 +57,6 @@ impl Home {
         Self::try_new(rows, scratch).unwrap()
     }
 
-    /// The shared buffer's bytes, to be counted once for the whole pool.
     pub fn allocated_bytes(&self) -> usize {
         self.0.bytes.load(Ordering::Relaxed)
     }
@@ -78,21 +66,17 @@ impl Home {
         SharedBox::ptr_eq(&self.0, &other.0)
     }
 
-    /// Held only for a pointer swap, never across a walk or an allocation.
     fn slot(&self) -> MutexGuard<'_, Slot> {
         self.0.slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 pub enum Walk<'a> {
-    /// Not due this hour.
     Skip,
-    /// Due, but another frame still holds the buffer.
     Busy,
     Ready(&'a mut Buffer),
 }
 
-/// One frame's access to the shared buffer.
 #[derive(Default)]
 pub struct Loan {
     home: Option<Home>,
@@ -111,8 +95,6 @@ impl Loan {
         self.home.as_ref()
     }
 
-    /// Borrow the buffer for a walk that cadence makes `due`, or that an
-    /// earlier hour missed. Never waits for another frame.
     pub fn borrow(&mut self, due: bool) -> Walk<'_> {
         if self.buffer.is_none() {
             let Some(home) = &self.home else {
@@ -133,15 +115,12 @@ impl Loan {
         Walk::Ready(self.buffer.as_deref_mut().expect("borrowed above"))
     }
 
-    /// The borrowed rows, for conversion.
     pub fn rows(&self) -> Option<&[Row]> {
         self.buffer
             .as_deref()
             .map(|buffer| buffer.rows.rows.as_slice())
     }
 
-    /// Spool thread, after conversion: grow the buffer from this frame's walk,
-    /// or an idle one to a raised capacity, and return it.
     pub fn grow(&mut self, capacity: &mut usize) {
         let Some(home) = &self.home else {
             return;
@@ -166,7 +145,6 @@ impl Loan {
         };
         grow_capacity(capacity, buffer.reserved_required);
         buffer.rows.grow(capacity);
-        // Pressure is consumed; an idle buffer must not grow from it again.
         buffer.rows.reset();
         buffer.reserved_required = 0;
         home.0
@@ -175,7 +153,6 @@ impl Loan {
         home.slot().buffer = Some(buffer);
     }
 
-    /// Return the buffer without growing it.
     pub fn release(&mut self) {
         if let (Some(home), Some(buffer)) = (&self.home, self.buffer.take()) {
             home.slot().buffer = Some(buffer);
@@ -199,10 +176,7 @@ mod tests {
         let home = Home::new(4, 32);
         let (mut first, mut second) = (Loan::new(home.clone()), Loan::new(home.clone()));
         assert!(matches!(first.borrow(true), Walk::Ready(_)));
-        // The spool has not converted the first frame yet: the second frame's
-        // due walk returns at once instead of blocking the capture.
         assert!(matches!(second.borrow(true), Walk::Busy));
-        // Off-cadence hours skip until the buffer is back, then walk once.
         assert!(matches!(second.borrow(false), Walk::Busy));
         first.grow(&mut 4);
         assert!(matches!(second.borrow(false), Walk::Ready(_)));
@@ -225,7 +199,6 @@ mod tests {
         loan.grow(&mut capacity);
         assert!(capacity >= 10);
         assert_eq!(home.allocated_bytes(), capacity * size_of::<Row>() + 32);
-        // An idle buffer grows only to a raised capacity, never from stale pressure.
         loan.grow(&mut capacity);
         assert_eq!(home.allocated_bytes(), capacity * size_of::<Row>() + 32);
         let mut raised = capacity * 2;

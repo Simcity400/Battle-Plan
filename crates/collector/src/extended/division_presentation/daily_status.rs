@@ -1,5 +1,3 @@
-//! Slot-12 footer carry. Acquisition selects whole native footers; settlement
-//! copies only owned packets, so the FIFO decode never follows live origins.
 use super::super::{
     attack_stats::{ArmyStatStore, ScalarOrder},
     supply_inputs::Sample,
@@ -41,8 +39,6 @@ impl DailyStatus {
         let Some(store) = store.filter(|store| store.holds_daily_progress()) else {
             return;
         };
-        // Carry is optional: inability to retain its scratch selects the full
-        // fresh read, not a harsher status/footer refusal.
         let prepared = engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut self.samples, seeds.len())?;
             engine_allocation::reserve(&mut self.requested, seeds.len())?;
@@ -84,8 +80,6 @@ impl DailyStatus {
                     engine_allocation::advisory(|| Sample::owned(inputs, failure, origins)).ok();
             }
         }
-        // Incomplete observation never establishes a baseline. Already owned
-        // carried samples still qualify the current admitted prefix.
         engine_allocation::advisory(|| store.remember_supply(base, seeds, &self.samples, complete));
     }
     pub(super) fn sample(&self, index: usize) -> Option<&Sample> {

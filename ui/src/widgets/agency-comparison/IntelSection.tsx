@@ -13,9 +13,6 @@ import type { IntelDetail, IntelDetailsReply } from '../../generated/dashboard';
 const keyOf = (row: IntelDetail) => row.key;
 const SORT = { column: 'group', direction: 'ascending' } as const;
 
-/** A section of Agency comparison: the raw intel the recording holds for one viewing country about one country, at the hour the
- * table shows. While the campaign plays it keeps the hour it last read (a request per hour shown would follow the head); paused,
- * it reads the hour shown. Its country choice includes countries without an agency. */
 export default function IntelSection({ widget, runtime, active, hour, playing }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & { hour: number | null; playing: boolean }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const selectionSource = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
@@ -34,7 +31,6 @@ export default function IntelSection({ widget, runtime, active, hour, playing }:
   }, [at, country, viewer]);
   const read = useProduct<IntelDetailsReply>(runtime.client, track && at !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'intel-details',
     params: { branchId: track.branch.id, hour: at, country, viewer } } : null, active, validate, track?.source);
-  // The last reply stays shown while the next hour is read.
   const held = useRef<IntelDetailsReply | undefined>(undefined);
   if (read.data) held.current = read.data;
   const data = read.data ?? held.current;

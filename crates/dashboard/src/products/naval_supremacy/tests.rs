@@ -11,7 +11,6 @@ fn each_day_is_read_at_its_last_held_hour_and_a_day_split_by_runs_takes_the_late
         unheld: Vec::new(),
     };
     let hours = day_hours(&timeline, 30, 100);
-    // Days 1 (24..47), 2 (48..71), 3 (72..95), 4 (96..100), from day 1 as day 0.
     assert_eq!(hours.get(&0), Some(&(0, 47)));
     assert_eq!(hours.get(&1), Some(&(1, 71)), "hours 48-50 and 60-71: the later run's last hour");
     assert_eq!(hours.get(&2), Some(&(1, 95)));
@@ -23,7 +22,6 @@ fn equal_days_make_one_run_and_an_unknown_day_ends_it() {
     let contested = Values { control: Some(0), friendly: Some(5), enemy: Some(5), share: Some(50_000), own: Some(5) };
     let friendly = Values { control: Some(1), ..contested.clone() };
     let refused = Values { control: None, ..contested.clone() };
-    // Pieces as stretches of one viewer add them, out of order: day 2 is in none.
     let piece = |day: u32, values: &Values| (day, day, values.clone());
     let runs = runs(BTreeMap::from([(9, vec![piece(3, &contested), piece(4, &friendly), piece(5, &refused), (0, 1, contested.clone())])]));
     let summary: Vec<(u32, u32, Option<i8>)> = runs[&9].iter().map(|run| (run.first_day, run.last_day, run.control)).collect();

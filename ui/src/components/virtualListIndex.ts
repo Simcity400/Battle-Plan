@@ -1,4 +1,3 @@
-/** Measured rows with logarithmic updates, prefix offsets and viewport bounds. */
 export class VirtualListIndex {
   private tree: Float64Array;
   private heights: Float64Array;

@@ -9,8 +9,6 @@ import { isSidebarIconId } from './appearance/sidebarIcons';
 import { StyledIcon } from './appearance/StyledIcon';
 import { commitZone } from './commitCount';
 
-/** Analytics in the sidebar: its pages, added with +, renamed or deleted from a right-click
- * menu (or the context-menu key; F2 renames) and reordered by dragging, or Alt+Up / Alt+Down. */
 export default function AnalyticsNav({ pages, page, active, disabled, onChoose, onPages, onDelete, iconMenu }: {
   pages: PageEntry[]; page: PageId; active: boolean; disabled: boolean;
   iconMenu: Pick<ReturnType<typeof useSidebarIconMenu>, 'colour' | 'icon' | 'items'>;
@@ -18,7 +16,6 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
 }) {
   const [open, setOpen] = useState(true);
   const [renaming, setRenaming] = useState<PageId | null>(null);
-  // `to` is the index the dragged page would land before; `pages.length` is the end.
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
   const contextMenu = useContextMenu('Page actions');
   const add = () => {

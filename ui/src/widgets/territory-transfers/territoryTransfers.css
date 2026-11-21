@@ -1,6 +1,5 @@
 .territory-transfer-host, .territory-transfers { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .territory-transfers > .chart-table { flex: 1; }
-/* The conference in scope and the gap line, as Peace deals writes its note. */
 .transfer-note { margin: 0; padding: 0 12px 6px; color: var(--muted); font-size: 0.6875rem; }
 .transfer-note.has-hint { cursor: help; }
 

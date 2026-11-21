@@ -1,65 +1,6 @@
-//! Several hook families publish under one thread census and suspension.
-//! Detach attempts every participating unrestored family independently.
-//! Attach stops at its first busy or refused family: only the ordered ready
-//! prefix writes, and verification and protection restoration precede the
-//! next write.
-//!
-//! A family takes part through [`Hook::set_family_enabled_shared`], and in
-//! attach through every publication entry point. The runtime runs one [`Round`]:
-//! - a collect pass calls each taking-part family's own `set_enabled`, whose
-//!   publications are recorded instead of performed. Detach reports "not
-//!   ready", so the family stops before anything that depends on the outcome.
-//!   Attach reports "ready" and the family records all its publications,
-//!   running its atomic steps between them early; nothing samples an hour
-//!   before the report pass, which repeats those steps with the real outcomes,
-//!   and a family that does not publish is refused, which turns them off;
-//! - [`publish`] checks and writes the eligible recorded families under one
-//!   suspension, with exactly the checks a family's own publication makes;
-//! - a report pass calls the families again, in their usual order and with
-//!   their usual bookkeeping, and each publication returns its own recorded
-//!   outcome without suspending anything.
-//!
-//! During detach, a family whose sites a thread holds, or whose bytes, verification or
-//! protection refuse, gets the outcome its own publication would have given,
-//! and the others still publish: every family is checked and, unless held or
-//! refused before writing, written and verified, whatever another family's
-//! outcome. Page protections are restored once, after every write and flush,
-//! and nothing makes a page writable again before the threads resume. A
-//! failed restore leaves its page as it was and every other restore still
-//! runs, so a page shared by several families ends with its saved protection
-//! whenever any of their restores of it succeeds; a family reports success
-//! only when all of its own restores succeeded.
-//!
-//! Attach flushes and verifies each family before the next writes, and
-//! restores its pages using each hook's immutable saved protection. A later
-//! family reopens its sites if an earlier restore covered their shared page.
-//! Atomic preparation runs when the publisher reaches its family. Report
-//! runs observer admission and forwarding in chain order after resume,
-//! before the runtime admits the first hour; those flags select no later patch.
-//! Preparation involving allocation or native registration stays off hold.
-//!
-//! Two failures are shared rather than per family: a failed instruction-cache flush
-//! restores the prior bytes of every family written in the round and each
-//! reports that failure, and a failed thread resume is reported
-//! by every family of the round, ahead of its own preparation error (its
-//! own publication would not have suspended at all). Both leave every
-//! family's bytes and retained executable storage as conservative as its
-//! own failure would. Attach rollback reopens earlier restored pages; a
-//! failed reopen leaves that family's bytes alone and retains its executable
-//! storage for detach. A recording allocation failure abandons the collected
-//! batch, so report can fall back to serial publication without writing a
-//! suffix past the missing family. A publication the report pass reaches
-//! unrecorded, such as a rollback after a refusal, publishes on its own.
-//!
-//! The recorded hook slices are raw pointers into the families' own hook
-//! storage. Between the collect pass and the report pass nothing touches
-//! those vectors except [`publish`], so the pointers stay valid and are the
-//! only access to them while it runs.
 use super::*;
 use std::cell::{Cell, RefCell};
 
-/// One family's publication: its hooks, the requested state and, once
-/// published, its outcome and the QPC ticks of its checks and writes.
 struct Recorded {
     hooks: RecordedHooks,
     family: Option<&'static str>,
@@ -99,13 +40,11 @@ enum Mode {
     Report,
 }
 
-/// A family's enabling preparation, kept for the family that recorded it.
 type Preparation = (Option<&'static str>, fn());
 
 thread_local! {
     static MODE: Cell<Option<Mode>> = const { Cell::new(None) };
     static RECORDED: RefCell<Vec<Recorded>> = const { RefCell::new(Vec::new()) };
-    /// The checks-and-writes ticks of the family the last report returned.
     static REPORTED_TICKS: Cell<Option<i64>> = const { Cell::new(None) };
     static PREFIX: Cell<bool> = const { Cell::new(false) };
     static COLLECT_STOPPED: Cell<bool> = const { Cell::new(false) };
@@ -113,26 +52,17 @@ thread_local! {
     static COLLECT_ALLOCATION_FAILED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// One round's shared publication: the families recorded and its wall
-/// ticks (census, protections, suspension, every family's checks and
-/// writes, flush, protections and resume).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Shared {
     pub families: usize,
     pub ticks: i64,
 }
 
-/// A round on this thread: [`Round::collect`] starts the collect pass,
-/// [`Round::publish`] publishes what it recorded and starts the report pass,
-/// and dropping it ends the round. Not `Send`: the round is the calling
-/// thread's.
 pub struct Round {
     _thread: std::marker::PhantomData<*const ()>,
 }
 
 impl Round {
-    /// Start a collect pass; `None` inside another round, whose publications
-    /// are then each their own.
     pub fn collect() -> Option<Self> {
         if MODE.get().is_some() {
             return None;
@@ -148,16 +78,12 @@ impl Round {
         })
     }
 
-    /// Attach checks, verifies and restores protections in chain order,
-    /// stopping before the first family that cannot publish.
     pub fn collect_attach() -> Option<Self> {
         let round = Self::collect()?;
         PREFIX.set(true);
         Some(round)
     }
 
-    /// Publish every family the collect pass recorded under one suspension,
-    /// then answer their calls until the round is dropped.
     pub fn publish(&mut self) -> Shared {
         MODE.set(None);
         let previous = publication::current_family();
@@ -170,8 +96,6 @@ impl Round {
         shared
     }
 
-    /// Visit every retained attach rollback failure after native resume and
-    /// before ordered reporting can return an earlier family's error.
     pub fn for_each_attach_rollback_failure(
         &self,
         mut visit: impl FnMut(Option<&'static str>, &installation::Failure),
@@ -201,16 +125,10 @@ impl Drop for Round {
     }
 }
 
-/// Enabling preparation already ran in the collect pass. Report only its
-/// outcome and post-publication bookkeeping.
 pub fn attach_reporting() -> bool {
     PREFIX.get() && MODE.get() == Some(Mode::Report)
 }
 
-/// Defer allocation-free, atomic preparation until the publisher reaches
-/// its family. A report with no stored outcome is serial fallback and must
-/// prepare normally. The temporary reference vector may still be built off
-/// hold after this call.
 pub fn defer_preparation(prepare: fn()) -> bool {
     if !PREFIX.get() {
         return false;
@@ -229,9 +147,6 @@ pub fn defer_preparation(prepare: fn()) -> bool {
     }
 }
 
-/// A reference-vector refusal occurs before its publication is recorded.
-/// Only when all predecessors reported success does runtime reach that
-/// family's saved refusal, and run its pending preparation once.
 pub fn prepare_refused_family(name: &'static str) {
     if let Some((Some(family), prepare)) = PREPARATION.get()
         && family == name
@@ -241,8 +156,6 @@ pub fn prepare_refused_family(name: &'static str) {
     }
 }
 
-/// Candidate reference storage must not latch a terminal allocation failure
-/// for a family an earlier busy publication prevents the chain reaching.
 pub fn publication_storage_attach<T>(capacity: usize, enabled: bool) -> io::Result<Vec<T>> {
     if !PREFIX.get() || MODE.get() != Some(Mode::Collect) {
         return publication_storage(capacity, enabled);
@@ -259,9 +172,6 @@ pub fn take_collect_allocation_failure() -> bool {
     COLLECT_ALLOCATION_FAILED.take()
 }
 
-/// Reference-building families consume their report before rebuilding the
-/// temporary reference vector, so report cannot introduce a new allocation
-/// refusal after a later family's bytes were written.
 pub fn attach_outcome() -> Option<Result<bool, String>> {
     if !attach_reporting() {
         return None;
@@ -269,14 +179,11 @@ pub fn attach_outcome() -> Option<Result<bool, String>> {
     answer(None, true)
 }
 
-/// The recorded outcome of the publication of `key`'s hooks; `None` for a family's single
-/// recorded outcome, which an attach family takes before it rebuilds its references.
 fn answer(key: Option<(*const Hook, usize)>, enabled: bool) -> Option<Result<bool, String>> {
     let found = RECORDED.with_borrow_mut(|recorded| {
         recorded
             .iter_mut()
             .find(|entry| {
-                // A family records several publications; each answers only its own hooks.
                 (!PREFIX.get() || entry.family == publication::current_family())
                     && key.is_none_or(|key| entry.hooks.key() == key)
                     && entry.enabled == enabled
@@ -316,9 +223,6 @@ fn collect(
         return Ok(false);
     }
     let recorded = RECORDED.with_borrow_mut(|recorded| {
-        // Attach abandons the whole batch, so no later family can publish
-        // ahead of this one; detach leaves this family to publish on its own
-        // in the report pass and keeps the others recorded.
         let abandon = |recorded: &mut Vec<Recorded>| {
             if PREFIX.get() {
                 recorded.clear();
@@ -350,15 +254,9 @@ fn collect(
         });
         true
     });
-    // Attach goes on to record the family's later publications, so all of them share the one
-    // suspension; the report pass repeats every step after it with the real outcomes.
     Ok(recorded && PREFIX.get())
 }
 
-/// [`Round`] as one call: `collect` (each taking-part family's
-/// `set_enabled`), the shared publication, `shared` with its summary, then
-/// `report` (the families' usual calls, which receive the recorded
-/// outcomes). Inside another round, `report` runs alone.
 #[cfg(any(test, feature = "test-support"))]
 pub fn round<R>(
     collect: impl FnOnce(),
@@ -373,17 +271,11 @@ pub fn round<R>(
     report()
 }
 
-/// The checks-and-writes ticks (QPC) of the family the last report
-/// answered, once: `None` when its publication was its own, it published
-/// nothing, or it does not take part.
 pub fn take_reported_ticks() -> Option<i64> {
     REPORTED_TICKS.take()
 }
 
 impl Hook {
-    /// Preserve publication's cause and symbolic patch owners after threads resume.
-    /// Site-specific checks retain only a flag while suspended. Failures shared by
-    /// the whole publication (for example thread resume) name all participating sites.
     pub fn set_family_enabled_shared_named(
         hooks: &mut [Self],
         enabled: bool,
@@ -404,15 +296,10 @@ impl Hook {
         })
     }
 
-    /// [`Hook::set_family_enabled`] that takes part in a shared [`Round`]:
-    /// recorded in its collect pass, answered from the recording
-    /// in its report pass, and published on its own otherwise.
     pub fn set_family_enabled_shared(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
         Self::set_family_enabled_shared_with_prepare(hooks, enabled, None)
     }
 
-    /// Atomic preparation runs only when attach reaches this family, before
-    /// its checks and write. It must not allocate, lock or call native code.
     pub fn set_family_enabled_shared_prepared(
         hooks: &mut [Self],
         enabled: bool,
@@ -436,8 +323,6 @@ impl Hook {
                 if !PREFIX.get()
                     && (hooks.is_empty() || !enabled && hooks.iter().all(|hook| !hook.is_enabled()))
                 {
-                    // Nothing to write: the family proceeds as its own
-                    // publication would let it.
                     return Ok(true);
                 }
                 collect(enabled, prepare, false, || {
@@ -465,8 +350,6 @@ impl Hook {
 
 }
 
-/// [`Hook::set_enabled_batch`]: every publication an attach round reaches joins its one
-/// suspension, whichever entry point a family publishes through. Detach publishes on its own.
 pub(super) fn batch<const TRACK_BUSY: bool>(
     hooks: &mut [&mut Hook],
     enabled: bool,
@@ -493,7 +376,6 @@ pub(super) fn batch<const TRACK_BUSY: bool>(
     }
 }
 
-/// Publish every recorded family under one census and suspension.
 fn publish() -> Shared {
     let begin = crate::clock::qpc();
     let mut recorded = RECORDED.take();
@@ -502,9 +384,6 @@ fn publish() -> Shared {
         let mut groups: Vec<Group<'_>> = Vec::new();
         if groups.try_reserve_exact(families).is_ok() {
             for entry in &recorded {
-                // SAFETY: a family's own hook storage, recorded in this round's
-                // collect pass; nothing else reaches it until the report
-                // pass, and no two families share a hook.
                 let hooks = match &entry.hooks {
                     RecordedHooks::Slice(hooks, len) => {
                         Hooks::Slice(unsafe { std::slice::from_raw_parts_mut(*hooks, *len) })
@@ -527,8 +406,6 @@ fn publish() -> Shared {
                 entry.outcome = Some(outcome);
             }
         }
-        // Without the groups' storage nothing recorded is answered: each
-        // family publishes on its own in the report pass.
     }
     RECORDED.set(recorded);
     Shared {
@@ -539,8 +416,6 @@ fn publish() -> Shared {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Page-protection restores to let through, then to refuse, as a failed
-    /// `VirtualProtect` would.
     static FAIL_RESTORES: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     static FAIL_REOPENS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
@@ -552,7 +427,6 @@ pub(super) fn fail_restores(skip: usize, count: usize) {
 pub fn fail_reopens(skip: usize, count: usize) {
     FAIL_REOPENS.set((skip, count));
 }
-/// Whether a test refuses this page-protection restore.
 #[cfg(any(test, feature = "test-support"))]
 fn restore_refused() -> bool {
     let (skip, count) = FAIL_RESTORES.get();
@@ -584,8 +458,6 @@ pub(super) fn real_flush() -> Result<(), u32> {
     }
 }
 
-/// The hooks a publication touches: all of them to enable, those enabled
-/// before it to disable.
 fn selected<'h>(
     hooks: &'h Hooks<'_>,
     previous: &'h [(bool, bool)],
@@ -598,9 +470,6 @@ fn selected<'h>(
         .map(|(hook, _)| hook)
 }
 
-/// The owning family's stable storage, borrowed only by its publisher.
-/// Scattered pointers come from disjoint exclusive hook references in the
-/// collect pass, never from its temporary reference vector's storage.
 enum Hooks<'a> {
     Slice(&'a mut [Hook]),
     Pointers(&'a [*mut Hook]),
@@ -620,8 +489,6 @@ impl Hooks<'_> {
             Self::Slice(hooks) => (&hooks[..], &[][..]),
             Self::Pointers(hooks) => (&[][..], &hooks[..]),
         };
-        // SAFETY: the collect/report contract gives this publisher the only
-        // access to these stable hooks until it releases the groups.
         slice
             .iter()
             .chain(pointers.iter().map(|hook| unsafe { &**hook }))
@@ -631,34 +498,25 @@ impl Hooks<'_> {
             Self::Slice(hooks) => (&mut hooks[..], &[][..]),
             Self::Pointers(hooks) => (&mut [][..], &hooks[..]),
         };
-        // SAFETY: as above; each pointer was an exclusive reference to a
-        // distinct hook, and this iterator borrows the group exclusively.
         slice
             .iter_mut()
             .chain(pointers.iter().map(|hook| unsafe { &mut **hook }))
     }
 }
 
-/// One family in a shared publication.
 pub(super) struct Group<'a> {
     hooks: Hooks<'a>,
     enabled: bool,
-    /// Prior `(enabled, is_enabled)` of each hook.
     previous: Vec<(bool, bool)>,
-    /// The sites of the selected hooks.
     ranges: Vec<Range<usize>>,
     protected: usize,
     prepare_error: Option<String>,
-    /// While suspended: `Ok(true)` checked and written, `Ok(false)` held,
-    /// `Err(code)` refused.
     checked: Option<Result<bool, u32>>,
     snapshot_refusal: bool,
     publication_failed: bool,
     protection_ok: bool,
     outcome: Option<Result<bool, String>>,
     ticks: i64,
-    /// A numeric protection error can be retained without formatting while
-    /// suspended when an ordered publication reopens a shared page.
     protection_error: Option<u32>,
     prepare_callback: Option<fn()>,
     prepare_allocation_failed: bool,
@@ -707,8 +565,6 @@ impl<'a> Group<'a> {
         }
     }
 
-    /// Before the suspension: prior states, ranges and page protections,
-    /// in a family's own publication's order.
     fn prepare(&mut self, prefix: bool) {
         if self.track_busy {
             for hook in self.hooks.iter() {
@@ -759,9 +615,6 @@ impl<'a> Group<'a> {
         }
     }
 
-    /// While suspended, exactly as a family's own publication checks: a held
-    /// site or tap is `Ok(false)` and a changed snapshot `Err(0)`, before any
-    /// write; then every selected hook that changes state is written.
     fn check_and_write(&mut self, threads: &mut Threads) -> Result<bool, u32> {
         if self.track_busy {
             self.check_and_write_tracking::<true>(threads)
@@ -830,7 +683,6 @@ impl<'a> Group<'a> {
         Ok(true)
     }
 
-    /// After a failed flush: put the family's prior bytes back.
     fn roll_back(&mut self) {
         let enabled = self.enabled;
         for (hook, &(was_enabled, owned)) in self.hooks.iter_mut().zip(&self.previous) {
@@ -850,7 +702,6 @@ impl<'a> Group<'a> {
         }
     }
 
-    /// Still suspended: restore the page protections this group changed.
     fn restore_protection(&mut self) {
         let mut ok = true;
         for (hook, _) in self
@@ -881,9 +732,6 @@ impl<'a> Group<'a> {
         self.protected = 0;
     }
 
-    /// A prior family's restore can cover the same page. Reopen this
-    /// family's selected sites using its immutable saved protection for the
-    /// later restore; do not save the temporary writable protection.
     fn reopen(&mut self) -> Result<(), u32> {
         let mut protected = 0;
         for (hook, &(_, owned)) in self.hooks.iter_mut().zip(&self.previous) {
@@ -922,7 +770,6 @@ impl<'a> Group<'a> {
         Ok(())
     }
 
-    /// The family's outcome, with its own publication's messages and order.
     fn finish(
         &mut self,
         census_refusal: Option<&'static str>,
@@ -968,10 +815,6 @@ impl<'a> Group<'a> {
     }
 }
 
-/// Every group under one census and suspension, each with the outcome its
-/// own publication ([`Hook::set_family_enabled`]) would have given (but for
-/// the shared flush and resume failures in the module docs). A group with
-/// nothing to write is done without suspending.
 #[cfg(test)]
 pub(super) fn publish_groups(groups: &mut [Group<'_>], flush: impl FnMut() -> Result<(), u32>) {
     publish_groups_with_order(groups, flush, false);
@@ -983,8 +826,6 @@ fn publish_groups_with_order(
     prefix: bool,
 ) {
     if prefix {
-        // Empty predecessors still prepare once, without a controller. The
-        // first real family's preparation precedes even a census refusal.
         for group in groups.iter_mut() {
             group.prepare_observation();
             if !group.hooks.is_empty() {
@@ -1004,8 +845,6 @@ fn publish_groups_with_order(
     if groups.iter().all(|group| group.outcome.is_some()) {
         return;
     }
-    // Taken before any protection change and released after the last
-    // restore and resume (see `PUBLICATION`).
     let _publication = PUBLICATION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1034,7 +873,6 @@ fn publish_groups_with_order(
         groups.iter().any(ready)
     };
     if can_publish {
-        // No allocation, formatting, locks or destruction while suspended.
         match threads.suspend() {
             Err(code) => {
                 for group in groups.iter_mut().filter(|group| ready(group)) {
@@ -1060,8 +898,6 @@ fn publish_groups_with_order(
             }
         }
     }
-    // Protections are restored before any thread runs again, as a family's
-    // own publication does.
     for group in groups.iter_mut().filter(|group| group.outcome.is_none()) {
         group.restore_protection();
     }
@@ -1074,9 +910,6 @@ fn publish_groups_with_order(
     }
 }
 
-/// One stable IP snapshot, but each family flushes, verifies and restores
-/// its protections before the next can write. On any failed flush, all
-/// written families roll back before resume, including earlier successes.
 fn publish_prefix(
     groups: &mut [Group<'_>],
     threads: &mut Threads,
@@ -1119,10 +952,6 @@ fn publish_prefix(
     }
 }
 
-/// Still suspended, after the writes: one flush for every written group,
-/// then each group's verification; a failed flush restores every written
-/// group's prior bytes, and a second failed flush keeps their executable
-/// storage for detach to retry.
 fn settle(groups: &mut [Group<'_>], flush: &mut impl FnMut() -> Result<(), u32>) {
     let written = |group: &Group<'_>| group.checked == Some(Ok(true));
     if let Err(code) = flush() {
@@ -1166,8 +995,6 @@ fn rollback(
         group.checked = Some(Err(code));
         if reopen && let Err(error) = group.reopen() {
             group.protection_error = Some(error);
-            // A page that could not be made writable must not be written.
-            // Keep every executable owner reachable for detach to retry.
             for hook in group.hooks.iter_mut() {
                 hook.needs_flush = true;
             }

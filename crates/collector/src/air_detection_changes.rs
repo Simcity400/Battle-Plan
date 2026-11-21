@@ -1,5 +1,3 @@
-//! The simulation console's Air detection overrides, carried under their sole writer.
-//! No local selection, mode, panel or evaluated tooltip is observed.
 use crate::hook::Hook;
 use engine_map_air::map_air_sortie_inputs as native;
 use engine_native::Memory;
@@ -38,8 +36,6 @@ impl Domain {
             if !enabled {
                 self.enabled.store(false, Ordering::SeqCst);
             }
-            // A command could run while this patch was absent. A token from
-            // either side of that interval cannot certify the other side.
             self.sequence.fetch_add(1, Ordering::SeqCst);
             self.enabled.store(enabled, Ordering::SeqCst);
         }
@@ -60,7 +56,6 @@ static DOMAIN: Domain = Domain::new();
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
-/// Includes originals still running after this entry has been restored.
 pub(crate) fn active() -> usize {
     DOMAIN.active()
 }

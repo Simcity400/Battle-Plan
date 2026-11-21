@@ -29,7 +29,6 @@ test('a country tooltip breaks gains and losses down by counterpart, without a w
   assert.deepEqual(winner.rows.map(row => [row.label, row.value ?? null]), [['Gained', '3 states · 10 VP'], ['Loserland', '2'], ['Otherland', '1']]);
   assert.equal(winner.countryFlag?.flag, 'flag:WIN');
   const loser = countryTooltip(balances.get('LOS')!, labels);
-  // One unknown state's VP leaves that side's total out rather than a partial sum.
   assert.deepEqual(loser.rows.map(row => [row.label, row.value ?? null]), [['Lost', '3 states'], ['Winnerland', '2'], ['Freedonia', '1']]);
 });
 

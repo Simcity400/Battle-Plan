@@ -1,0 +1,13 @@
+# 0903. Track the completeness of captured tables and owners
+
+Map capture records the viewer, counters, battle windows, models, effects and animations with the operands those surfaces need. It substitutes the smaller DivisionModelInputs witness for DivisionStatus. That witness includes the exercise predicate that drives the training glyph. Full capture already records those operands in DivisionStatus. Kept views name the results that need excluded data and withhold them. Each table has one capture-scope definition that the collector and readers share.
+
+Each sliced table has one owner domain, a native country ID, canonical country slot or native state ID. The owner must occupy the high 32 bits of the row key so its rows remain contiguous. Slices replace an owner's entire row group, including an empty replacement, and drop gone owners. Owners kept from an earlier read keep its sample hour in SliceReads. Consumers use that hour. If observed writers cannot certify the hour, the collector reads all owners. A truncated equipment-loss read names exactly the owners whose rows it can replace. The supply companion's node, route and inventory rows are read together by country.
+
+TechnologyDefinitions is a keyed exception. Its partial read replaces the supplied template keys, and an empty read leaves the previous table intact. A nonempty complete definitions read covers every template reachable from the full roster and drops removed templates. Market and lend-lease tables use hourly certificates for their owner or exact holder updates and do not borrow another hour as their timestamp.
+
+The encoder can represent an owner-slice or holder-key update against the existing complete baseline without materialising a second table. Sorted query ranges keep short searches local. The merge walks groups instead of performing a membership lookup per row. Replacement enforces key order and rejects fresh rows outside the named scope. Equal membership swaps rows in place. Membership changes reserve storage before moving rows once, preserving the baseline on error and continuing to share immutable pools. An unchanged update writes no header and consumes no output space.
+
+A terminal witness is prepared before collector allocation or hook publication. It records each process session's identity and independently names any uncommitted hours admitted by the ordered writer. The last fully committed spool watermark is the proof of publication and can belong to another campaign or branch.
+
+[Capture scope](../../crates/replay-data/src/scope.rs) · [Sliced rows](../../crates/replay-data/src/sliced.rs) · [Slice updates](../../crates/replay-data/src/sliced/update.rs) · [Terminal witness](../../crates/replay-data/src/witness.rs)

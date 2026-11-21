@@ -10,7 +10,6 @@ test('a picker choice keeps the map mode and slots, and the fog switch still dec
   maps.changed({ viewId: 'm', options: { country: null, fog: false, mapMode: 'strategic_air', mapModeSlots: ['states'] } });
   const shown = maps.merge('m', { country: 'GER', fog: true });
   assert.deepEqual(shown, { country: 'GER', fog: true, mapMode: 'strategic_air', mapModeSlots: ['states'] });
-  // Turning fog off in the map settings reaches the map after a picker choice.
   assert.equal(maps.merge('m', { country: 'GER', fog: false })?.fog, false);
 });
 
@@ -23,13 +22,10 @@ test("a Ctrl+click sets the default campaign's country from the campaign map, a 
   const fixed = map('fixed-map', 'tracks', 'other');
   const pinned = map('pinned-map', 'tracks', 'main', { kind: 'tags', tags: ['GER'] });
   const template = { tracks, widgets: [followsDefault, fixed, pinned] };
-  // The campaign map and the pop-out both report as the campaign map: the default campaign's choice.
   assert.equal(observedRole('campaign-map', template, 'comparison'), 'comparison');
   assert.equal(observedRole('campaign-map', template, null), null);
-  // A widget map on the default campaign follows the default; one fixed to a campaign sets that campaign's.
   assert.equal(observedRole('default-map', template, 'comparison'), 'comparison');
   assert.equal(observedRole('fixed-map', template, 'primary'), 'comparison');
-  // A pinned widget map keeps its own country; an unknown view sets nothing.
   assert.equal(observedRole('pinned-map', template, 'primary'), null);
   assert.equal(observedRole('gone', template, 'primary'), null);
 });
@@ -38,17 +34,13 @@ test('fog clicks flip the view switch in order: two give the original, three the
   const maps = new PickerOptions();
   let fog = true;
   const stop = maps.onFog('m', () => { fog = !fog; });
-  // Two clicks before any echo: the switch is back where it was.
   assert.ok(maps.toggled('m', { setting: 'fog' }));
   assert.ok(maps.toggled('m', { setting: 'fog' }));
   assert.equal(fog, true);
-  // A third flips it.
   maps.toggled('m', { setting: 'fog' });
   assert.equal(fog, false);
-  // Another view's click and day/night (the host's settings) leave it alone.
   maps.toggled('other', { setting: 'fog' });
   assert.ok(!maps.toggled('m', { setting: 'dayNight' }));
-  // An external change shows at once, and the next click flips that value.
   fog = true;
   maps.toggled('m', { setting: 'fog' });
   assert.equal(fog, false);
@@ -59,22 +51,18 @@ test('fog clicks flip the view switch in order: two give the original, three the
 
 test('the campaign map and the pop-out flip the one campaign fog switch, each click in order', () => {
   let options: MapOptions = { country: null, fog: true };
-  // React applies each queued update to the state the previous one left.
   const update = (flip: (options: MapOptions) => MapOptions) => { options = flip(options); };
-  // A click on the campaign map, then one on the pop-out, both under campaign-map.
   campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
   campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
   assert.equal(options.fog, true);
   campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
   assert.equal(options.fog, false);
-  // A widget's click is its own view's; graphics clicks need a loaded campaign.
   campaignToggled({ viewId: 'w', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
   campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'dayNight' } }, update, {} as DashboardClient, null);
   assert.deepEqual(options, { country: null, fog: false });
 });
 
 test('setting clicks ask the service to flip, in click order, so a reset meanwhile is what they flip', async () => {
-  // The service's store: a flip reads the value when it runs and writes only that choice.
   let stored: { graphics: { dayNight: boolean | null; borders: boolean | null }; audio: { voice: number | null } } =
     { graphics: { dayNight: null, borders: false }, audio: { voice: 40 } };
   const inherited = true;
@@ -95,23 +83,19 @@ test('setting clicks ask the service to flip, in click order, so a reset meanwhi
     async mapSettings() { throw new Error('a picker click never writes the whole settings'); },
   } as unknown as DashboardClient;
   const view = { id: 'w', sourceId: 's', revision: 'r' } as DashboardMapView;
-  // A flip is held; a reset saves meanwhile, clearing the widget's overrides.
   const flip = toggleMapSetting(client, view, { setting: 'dayNight' });
   await writing;
   stored = { graphics: { dayNight: null, borders: null }, audio: { voice: 40 } };
   paused = false;
   release();
   await flip;
-  // The flip applied to the value after the reset, and the reset's borders and the audio stand.
   assert.deepEqual(stored, { graphics: { dayNight: false, borders: null }, audio: { voice: 40 } });
-  // Quick clicks are flips sent one after another: two give the value they started from.
   await Promise.all([
     toggleMapSetting(client, view, { setting: 'dayNight' }),
     toggleMapSetting(client, view, { setting: 'dayNight' }),
   ]);
   assert.equal(stored.graphics.dayNight, false);
   assert.deepEqual(sent, Array(3).fill('dayNight {"scope":"widget","id":"w"}'));
-  // Fog is the view's own switch, never a settings flip.
   await toggleMapSetting(client, view, { setting: 'fog' });
   assert.equal(sent.length, 3);
 });

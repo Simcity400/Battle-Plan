@@ -1,6 +1,3 @@
-//! Doctrine writer notifications. Receivers are exact country-status, folder
-//! or track objects; no observer scans units or recomputes mastery. Construction,
-//! loading and array relocation invalidate the baseline separately.
 
 use engine_sites::Rva;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,5 +104,4 @@ pub const SITES: [Site; 16] = [
     },
 ];
 
-/// Effective-gain stores: both branches copy their stored operand directly.
 pub const EFFECTIVE_GAIN_STORES: [Rva; 2] = [Rva(0x104c825), Rva(0x104c82c)];

@@ -1,14 +1,3 @@
-//! `AirMissionCounts`: each owner's (canonical slot) registered wings in a strategic region and
-//! the regional map's plane total per mission bit ([`AirMissionCountRow::count`]), in
-//! registration order. A registration joins its AirWings row: the wing's owner through its link,
-//! its mission region. One registration that does not join makes the table unavailable by name
-//! for the hour, rows as they were, as the map refuses the whole roster. `AirMissionWings` holds
-//! each counted wing under its group with its ordinal, a region's drill read by one key range;
-//! it follows AirMissionCounts' status.
-//!
-//! State is the tables: each registered wing's ordinal and group, applied as the hour changes
-//! them; a group is counted again whenever one of its wings moves. A fresh hour, a resume or a
-//! change of links rebuilds them.
 
 use crate::{
     forces::{Owners, invalid, links_moved, number, written},
@@ -34,7 +23,6 @@ const READS: &[Read] = &[
     Read { table: TableId::CountryLinks, columns: Columns::These(&[0]), watch: Watch::Changed, required: true },
 ];
 
-/// Why a registration does not join, by [`Writer::strings`] index.
 const NO_WING: usize = 0;
 const UNRESOLVED: usize = 1;
 const NO_REGION: usize = 2;
@@ -44,7 +32,6 @@ const REASONS: [&str; 3] = [
     "AirMissions: a registered wing has no mission region",
 ];
 
-/// Where a registered wing is counted: its owner's slot and region, or why nowhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Group(u32, u32),
@@ -59,8 +46,6 @@ fn wing_key((slot, region): (u32, u32), wing: u64) -> u128 {
     u128::from(slot) << 96 | u128::from(region) << 64 | u128::from(wing)
 }
 
-/// A group's row: its wings, then each mission's total where a positive mask of the group selects
-/// it, from the members' (mask, planes) in registration order.
 fn group_row(members: impl ExactSizeIterator<Item = (u32, i32)>) -> Vec<Value> {
     let wings = members.len() as i64;
     let mut totals = [-1; AirMissionCountRow::MISSIONS];
@@ -79,17 +64,12 @@ fn group_row(members: impl ExactSizeIterator<Item = (u32, i32)>) -> Vec<Value> {
 
 #[derive(Default)]
 pub struct AirMissions {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     owners: Owners,
-    /// Each registered wing's ordinal and place.
     registered: HashMap<u64, (u32, Place)>,
-    /// Each group's wings in registration order.
     groups: HashMap<(u32, u32), BTreeSet<(u32, u64)>>,
-    /// The registrations that do not join.
     broken: BTreeMap<u64, usize>,
     dirty: HashSet<(u32, u32)>,
-    /// Wings counted again this hour, and the AirMissionWings keys they left.
     placed: HashSet<u64>,
     left: Vec<u128>,
 }
@@ -107,7 +87,6 @@ impl AirMissions {
         }
     }
 
-    /// Counts `wing` at its registration's `ordinal` as its row stands; forgets it with none.
     fn refresh(&mut self, wings: &TableView<'_>, wing: u64, ordinal: Option<u32>) -> io::Result<()> {
         if let Some((ordinal, place)) = self.registered.remove(&wing) {
             match place {
@@ -158,7 +137,6 @@ impl AirMissions {
         Ok(())
     }
 
-    /// Applies the registrations and registered wings the hour changed.
     fn apply(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         let (registrations, wings) = (hour.table(TableId::AirRegionalMissions), hour.table(TableId::AirWings));
         for key in hour.deleted_keys(TableId::AirRegionalMissions) {
@@ -191,7 +169,6 @@ impl AirMissions {
         Ok(Some(group_row(read.into_iter())))
     }
 
-    /// AirMissionWings for the wings counted again this hour, or with `all` for every wing.
     fn write_wings(&mut self, out: &mut Rows<'_>, all: bool) {
         let table = TableId::AirMissionWings;
         let placed = std::mem::take(&mut self.placed);
@@ -291,7 +268,6 @@ impl Writer for AirMissions {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every group from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

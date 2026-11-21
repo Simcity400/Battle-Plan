@@ -1,7 +1,3 @@
-//! A catalogue: an id map, each key given the next id once and kept. Its section holds it as
-//! chunks, each the keys given ids since the chunk before.
-//!
-//! A chunk: its first id, how many keys, then each key length-prefixed.
 
 use super::{ContainerWriter, SectionKey, SectionKind, Tags};
 use crate::{
@@ -18,7 +14,6 @@ use std::{
 pub struct Catalogue {
     keys: Vec<Box<[u8]>>,
     ids: HashMap<Box<[u8]>, u32, foldhash::fast::RandomState>,
-    /// Ids below it are in a chunk written.
     written: usize,
 }
 
@@ -43,7 +38,6 @@ impl Catalogue {
         self.keys.get(id as usize).map(|key| &**key)
     }
 
-    /// `key`'s id, given it now when it has none.
     pub fn insert(&mut self, key: &[u8]) -> io::Result<u32> {
         if let Some(id) = self.id(key) {
             return Ok(id);
@@ -57,7 +51,6 @@ impl Catalogue {
         Ok(id)
     }
 
-    /// The keys given ids since the last chunk written, as the next chunk; none when there are none.
     pub fn pending(&self) -> io::Result<Option<Vec<u8>>> {
         if self.written == self.keys.len() {
             return Ok(None);
@@ -72,8 +65,6 @@ impl Catalogue {
         Ok(Some(writer.into_bytes()))
     }
 
-    /// Writes the pending chunk, when there is one, as the next extent of catalogue `id`, which
-    /// `writer` holds at the owner's schema version.
     pub fn write<W: Write + Seek>(&mut self, writer: &mut ContainerWriter<W>, id: u32, level: i32) -> io::Result<()> {
         let Some(chunk) = self.pending()? else {
             return Ok(());
@@ -85,7 +76,6 @@ impl Catalogue {
         Ok(())
     }
 
-    /// Adds a chunk's keys, which must follow those it holds.
     pub fn read_chunk(&mut self, bytes: &[u8]) -> io::Result<()> {
         let mut reader = Reader::new(bytes);
         if reader.count()? != self.keys.len() {

@@ -10,7 +10,6 @@ import type { SummedNode } from './sum';
 
 export const flowOtherColour = (tokens: Pick<ChartTokens, 'surface' | 'text'>) => mix(tokens.surface, tokens.text, 0.4);
 
-/** One stable complete country set, independent of node sides and fitted capacity. */
 export function countryFlowColours(tags: readonly string[], color: (tag: string) => CountryStyle['color'], surface: string, fixed: boolean): Map<string, string> {
   const styles = new Map([...new Set(tags)].sort(compareTags).map(tag => [tag, { tag, name: null, color: color(tag) }]));
   if (![...styles.values()].some(style => style.color != null)) return new Map();
@@ -18,8 +17,6 @@ export function countryFlowColours(tags: readonly string[], color: (tag: string)
   return new Map([...colours].filter(([tag]) => styles.get(tag)?.color != null));
 }
 
-/** Country map colours, flags and missing looks are
- * identical for every country flow diagram. Widgets supply only their wording. */
 export function countryFlowNodes(nodes: readonly SummedNode[], look: (tag: string) => CountryFlagLook,
   tokens: Pick<ChartTokens, 'surface' | 'text'>, nodeName: (node: SummedNode) => string,
   order: (node: SummedNode) => string, countryColours: ReadonlyMap<string, string>): { nodes: (FlowNode & { countryFlag?: CountryFlagLook })[]; colours: ReadonlyMap<string, string> } {

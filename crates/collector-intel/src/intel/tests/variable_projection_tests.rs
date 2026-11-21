@@ -12,7 +12,6 @@ fn variables_frame(hour: i32, input: TableInput) -> FrameInput {
     frame
 }
 
-/// The baseline the spool compares with: the shared one keyed updates edit.
 fn shared_baseline(
     encoder: &FrameEncoder,
     hour: i32,
@@ -23,7 +22,6 @@ fn shared_baseline(
         .and_then(|(token, rows)| Some((token, rows.rows::<tables::ScriptVariables>()?)))
 }
 
-/// Today's complete conversion, as the reference encoder takes it.
 fn complete(capture: &Captured) -> TableInput {
     capture.variables_table(capture.variables.outcome).into()
 }
@@ -97,7 +95,6 @@ fn variable_scope_updates_keep_frame_bytes() {
             }
             let baseline = shared_baseline(&optimized, hour, force);
             let actual = if !force && hour == 2 {
-                // The first successful comparison sized its bitsets at hour 1.
                 collector_test_support::with_allocations_denied(|| {
                     capture.variables_input(capture.variables.outcome, baseline, &mut scratch)
                 })
@@ -135,7 +132,6 @@ fn country(id: u32, seed: u32, entries: &[(&'static str, i64)]) -> Scope {
     (cvariables::Scope::Country(id), Some(seed), entries.to_vec())
 }
 
-/// Six countries of three entries each, captured in key order.
 fn countries() -> Vec<Scope> {
     (1..=6)
         .map(|id| {
@@ -152,7 +148,6 @@ fn countries() -> Vec<Scope> {
         .collect()
 }
 
-/// The capture the walk writes for `scopes`: entries and names appended in order.
 fn captured(scopes: &[Scope]) -> Captured {
     let entries = scopes.iter().map(|scope| scope.2.len()).sum();
     let bytes = scopes
@@ -194,8 +189,6 @@ fn captured(scopes: &[Scope]) -> Captured {
     capture
 }
 
-/// What the variable store lists for `current` continuing `held`: the
-/// scopes whose seed or entries differ from the held scope of their identity.
 fn listed(held: &[Scope], current: &[Scope]) -> (bool, Vec<u32>) {
     let same_scopes = held.len() == current.len()
         && held
@@ -211,9 +204,6 @@ fn listed(held: &[Scope], current: &[Scope]) -> (bool, Vec<u32>) {
     (same_scopes, changed)
 }
 
-/// Hours converted from what the capture saw change and committed, beside a
-/// reference encoder fed today's complete conversion; each hour's held rows
-/// are checked against today's cell for cell.
 struct Run {
     encoder: FrameEncoder,
     reference: FrameEncoder,
@@ -240,12 +230,10 @@ impl Run {
         }
     }
 
-    /// An hour whose capture continues the previous one, as the store lists it.
     fn hour(&mut self, scopes: &[Scope]) -> Converted {
         self.convert(scopes, true)
     }
 
-    /// An hour whose capture continues none.
     fn uncontinued(&mut self, scopes: &[Scope]) -> Converted {
         self.convert(scopes, false)
     }
@@ -286,7 +274,6 @@ impl Run {
     }
 }
 
-/// The keys and rows of a keyed update.
 fn update(input: &TableInput) -> (Vec<(u8, u32)>, &[rows::ScriptVariablesRow]) {
     let TableInput::SliceUpdate { update, .. } = input else {
         panic!("a keyed update: {input:?}");
@@ -302,9 +289,6 @@ fn update(input: &TableInput) -> (Vec<(u8, u32)>, &[rows::ScriptVariablesRow]) {
     )
 }
 
-/// On 39b's head an added entry, an added scope or a removed scope sent the
-/// hour to today's complete conversion of every scope; each now converts the
-/// one scope, and an unchanged hour compares none.
 #[test]
 fn membership_changes_convert_their_scope_alone() {
     let mut run = Run::new();
@@ -312,7 +296,6 @@ fn membership_changes_convert_their_scope_alone() {
     let first = run.hour(&base);
     assert!(matches!(first.input, TableInput::SharedComplete(_)));
     assert_eq!(first.work.path, Path::Complete(Complete::NoBaseline));
-    // No converted hour names the keyframe's baseline: every scope is compared.
     let settling = run.hour(&base);
     assert!(matches!(settling.input, TableInput::ComparedEqual(_)));
     assert_eq!(settling.work.path, Path::AllScopes(AllScopes::NoKeptHour));

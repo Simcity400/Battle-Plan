@@ -15,7 +15,6 @@ fn writers() -> Vec<Box<dyn Writer>> {
     vec![Box::new(Aid::default())]
 }
 
-/// Every row as (sender, host, channel, divisions).
 fn aid(run: &Run) -> Vec<(u32, u32, u8, Option<i64>)> {
     run.rows::<MilitaryAidRow>(TableId::MilitaryAid)
         .into_iter()
@@ -29,8 +28,6 @@ fn aid(run: &Run) -> Vec<(u32, u32, u8, Option<i64>)> {
         .collect()
 }
 
-/// GER (10) lists one volunteer twice beside a null and a dead reference, and two
-/// expeditionaries; ITA and ROM list nothing.
 fn sent() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits)
@@ -47,9 +44,6 @@ fn sent() -> Edits {
     edits
 }
 
-/// A volunteer counts for its division's logical owner, an expeditionary for its roster owner;
-/// repeats count, null and dead references do not; a pair's row lives while it has aid; an input
-/// not complete makes the table unavailable, its rows as they were, until it returns.
 #[test]
 fn aid_counts_listed_live_divisions_by_host_and_channel() {
     let mut run = Run::new(writers, INPUTS);
@@ -71,9 +65,6 @@ fn aid_counts_listed_live_divisions_by_host_and_channel() {
     assert_eq!(aid(&run), [(1, 2, EXP, Some(1))]);
 }
 
-/// Two lists for one sender, an expeditionary another country owns, a sender with no counters row
-/// and a list no link names: each channel concerned holds one row of no host, its count not
-/// recorded, and no pair rows, until it can be read whole again.
 #[test]
 fn a_channel_that_cannot_be_read_whole_holds_one_unknown_row() {
     let mut run = Run::new(writers, INPUTS);
@@ -98,10 +89,6 @@ fn a_channel_that_cannot_be_read_whole_holds_one_unknown_row() {
     assert_eq!(aid(&run), [(1, 2, VOL, Some(1))]);
 }
 
-/// Tallies are the sender's own VolunteerHosts vector, the first count of each host listed, zero
-/// included; two vectors for one sender, a host no link resolves, a vector no link names and the
-/// table not complete each leave tallies unknown by name, never zero, and the other channels as
-/// they are.
 #[test]
 fn tallies_are_the_games_own_vector_and_unknown_by_sender_never_zero() {
     let mut run = Run::new(writers, INPUTS);
@@ -134,7 +121,6 @@ fn tallies_are_the_games_own_vector_and_unknown_by_sender_never_zero() {
     assert_eq!(aid(&run), [(1, 2, TAL, Some(3)), (1, 3, TAL, Some(0))]);
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes.
 #[test]
 fn a_resumed_aid_writer_writes_the_table_of_one_never_stopped() {
     let mut first = sent();

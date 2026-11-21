@@ -1,10 +1,7 @@
-//! CStrategicNavyManager canonical-country-indexed cache.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, read};
 use engine_sites::Rva;
 
-/// Strategic-navy-manager primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_f9d0);
-/// Strategic-navy pointer array.
 pub const NAVIES: usize = 8;
 
 pub fn navies(memory: &impl Memory, base: usize, state: usize) -> Result<Array, &'static str> {
@@ -52,7 +49,6 @@ pub(crate) fn authenticate(
     })
 }
 
-/// The navy in the country's slot, with authenticated identity.
 pub fn navy(
     memory: &impl Memory,
     base: usize,
@@ -65,7 +61,6 @@ pub fn navy(
     })
 }
 
-/// Regional mine level, raw fixed5, selected for the wing's effective country.
 pub fn regional_operand(
     memory: &impl Memory,
     base: usize,

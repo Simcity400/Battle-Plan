@@ -1,4 +1,3 @@
-//! Hourly exact native portrait strings for all land HQ leaders.
 use crate::{
     clock::qpc,
     projection::{Projection, project_table},
@@ -22,7 +21,6 @@ collector_primitives::capacity_max!(Capacities { rows, sources });
 
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
-        // Select at most one leader per orders root.
         let count = collector_extended_support::demand::rows(
             engine_native::corders_group::count_roots(memory, base),
         )?;
@@ -34,7 +32,6 @@ impl Capacities {
 
 pub struct Captured {
     rows: CaptureRows<cunit_leader::PortraitRow<engine_native::capture_text::Owned>>,
-    // Reused only by the adjacent path walk; storage grows off-thread.
     sources: CaptureRows<(u64, usize)>,
 }
 impl Captured {
@@ -44,7 +41,6 @@ impl Captured {
         self.sources.fail(self.rows.outcome);
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: 0,

@@ -1,4 +1,3 @@
-//! Raid input capture: raid launch inputs and raid state inputs, read beside their daily slices for the owners a raid writer marked. The host owns dispatch, loans and table assembly.
 
 use collector_certificates::slicing;
 use collector_extended_support::outcomes::MISSING;

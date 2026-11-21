@@ -23,7 +23,6 @@ use viewer_foundation::{
     },
 };
 
-/// No anchors, no movement map: a route stands still, its kind resolved only when defending.
 struct Bare;
 
 impl Front for Bare {
@@ -66,7 +65,6 @@ fn division(store: &mut Store, slot: u32, id: u64, owner: u32, province: u32, co
     put(store, TableId::DivisionMovement, slot, Some(u128::from(id)), &[("map_entity", Cell::U8(1)), ("combat_role", Cell::U8(combat_role)), ("path", Cell::U32List(&[])), ("alternate_path", Cell::U32List(&[]))]);
 }
 
-/// A combat at `slot`, keyed `id`, in `province`: division 2 (link 11) attacks division 1 (link 10).
 fn combat(store: &mut Store, slot: u32, id: u64, province: u32) {
     put(store, TableId::LandCombats, slot, Some(u128::from(id)), &[("province", Cell::U32(province)), ("attackers", Cell::U64List(&[2])), ("defenders", Cell::U64List(&[1]))]);
     put(
@@ -78,8 +76,6 @@ fn combat(store: &mut Store, slot: u32, id: u64, province: u32) {
     );
 }
 
-/// Two linked countries; divisions 1 (link 10, province 5) and 2 (link 11, province 6, defending
-/// in its first combat so its kind is resolved); combat 100 in province 5.
 fn world(store: &mut Store) {
     for (slot, key) in [(0, 10u128), (1, 11)] {
         put(store, TableId::CountryLinks, slot, Some(key), &[("canonical_slot", Cell::U32(slot))]);
@@ -103,7 +99,6 @@ fn campaign(name: &str, status: impl Fn(u32, TableId) -> Status, mut hour: impl 
     )
 }
 
-/// The engaged index: combat 100 seen by country 0 from hour 0, 101 unseen, through hour 399.
 fn history() -> Arc<History> {
     let history = Arc::new(History::default());
     let mut covered = Covered::new(0);
@@ -211,7 +206,6 @@ fn a_combat_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -298,7 +292,6 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert!(layer(&side).published().is_none(), "and the window is given no marker to draw");
     settled_equals_composed(&mut side);
     side.set_view(View { fog: false, ..View::default() }).unwrap();
-    // Its tables left the mirrors while it was hidden: they come back as a reset, and it composes then.
     frames_until(&mut side, |side, frame| frame.steps > 0 && !side.composing() && layer(side).refused().is_none());
     settled_equals_composed(&mut side);
     assert!(outcome(&side, 100).is_some(), "shown again, it composes");
@@ -338,10 +331,6 @@ fn the_layer_declares_against_this_schema() {
     assert_eq!(inputs.into_tables().len(), TABLES.len());
 }
 
-/// Combat 100's sides and its two divisions' strength changed in three steps while the settling is
-/// spent: `apply` reads no row (on the base it read each changed division's key and every marked
-/// combat's province) and makes nothing, the work is carried, and the settle after makes the
-/// combat once, from its newest values.
 #[test]
 fn steps_mark_their_combats_reading_no_row_and_a_combat_changed_in_several_is_made_once() {
     let units = campaign("land apply marks", |_, _| Status::Complete, |at, store| match at {
@@ -367,9 +356,6 @@ fn steps_mark_their_combats_reading_no_row_and_a_combat_changed_in_several_is_ma
     settled_equals_composed(&mut side);
 }
 
-/// Hours alone move the layer's head: on the base every stepped hour collected and sorted every
-/// live combat, read every one's kept frame from the index and walked every made outcome against
-/// it. A stretch of hours that changes no row and no kept frame marks and makes nothing.
 #[test]
 fn hours_that_change_no_combat_mark_and_make_nothing() {
     let units = campaign("land quiet hours", |_, _| Status::Complete, |_, _| {});

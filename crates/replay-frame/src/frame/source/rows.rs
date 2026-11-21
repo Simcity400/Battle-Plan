@@ -1,4 +1,3 @@
-/// Borrowed native rows used by the decoded-only migration seam.
 pub struct Rows<'a, R>(&'a [R]);
 impl<R> Clone for Rows<'_, R> {
     fn clone(&self) -> Self {

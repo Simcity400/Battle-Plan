@@ -1,7 +1,5 @@
 import type { SunburstNode } from './layout';
 
-/** Activation uses the tree and callback that supplied the drawn slice. Content
- * and playback may update the callback without relabelling that old geometry. */
 export interface SunburstPick {
   owner: unknown;
   nodes: readonly SunburstNode[];

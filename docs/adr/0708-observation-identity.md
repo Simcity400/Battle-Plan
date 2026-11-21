@@ -1,0 +1,15 @@
+# 0708. Distinguish acquired identities from presentation and save fields
+
+The callback journal keys country observations by the exact signed raw operand. Nonzero operands use the live tags and zero uses the reserved database. Arithmetic lookup does not depend on reading the display spelling. Keep original attempted outcomes even when a family cannot publish its rows. A policy-limited string can be completed by another permitted reader. A native fault is final. Reserve journal storage before the original attempt. If storage refuses, mark publication accordingly and still make the original attempt once. Native pointers and controls stay in callback-owned state.
+
+The save counter reader follows the serializer's identities. The unsigned current reference ID is sourced from the reference registry even though the loader writes that token to a different game-state field. Other counters keep the save's signed representation, including RNG wrap. The unit-ID high-water mark is shared. `present` follows serializer order, which is distinct from declaration order. A failed scalar leaves only that counter absent.
+
+The reference registry compares ID before type while authenticating the cached hash. Distances store the probe distance plus one, with a separate terminal marker. The anchor selector is a presentation layout. Its layout alone cannot certify hourly lifetime.
+
+A detected transport operand uses the original selected and authenticated stat pointer. Each scalar has one independent attempt. A field-local fault cannot erase the other values or cause a fallback default. The detection-only path does not demand visibility. A wing's current mission and enabled mask are distinct. Only the native absence sentinel selects fallback mission stats. An acquired number does not extend the carrier or region lifetime.
+
+The headquarters deployment reader borrows an already authenticated, same-pass group census and counter prefix. An unresolved target retains its raw reference. Writer operand vectors keep their capacity across acquisitions. Immutable replay payloads only need replacing when the acquired operands differ.
+
+Division career entries preserve occurrence order, including repeats. Any pointer borrowed to take an embedded record remains local to that acquisition. The latest entry's province list can grow without an observed writer when a same-kind event follows it. Earlier entries change under the observed edit and inheritance writers. The native label of the saved casualty counter says kills, while damage increments casualties. Keep the saved counter's meaning.
+
+[Country journal](../../crates/engine-native/src/raw_country_observations.rs) · [Save counters](../../crates/engine-native/src/save_allocation_counters.rs) · [Transport inputs](../../crates/engine-native/src/transport_spotting_graph.rs) · [Headquarters context](../../crates/engine-native/src/template_hq_context.rs) · [Unit history](../../crates/engine-native/src/unit_history.rs)

@@ -1,24 +1,3 @@
-//! Passive research-speed and tooltip inputs.
-//! Country operands are copied once; only assigned technologies are followed.
-//! All links are pass-local. Worker storage grows from acquired native demand;
-//! fixed fixture readers retain explicit shortages. No native calls or catalogue sweep.
-//!
-//! The hourly reader follows assigned technology links from the same acquisition
-//! pass. It copies shared country speed/source trees once, slot-specific
-//! idea/script and design-team operands, XP boosts, matching production licences,
-//! sharing group operands and selected scientist-category bonuses. Sharing uses
-//! bounded direct template-index lookups for raw member levels and predecessor
-//! classifiers, not a technology census. Native group filters, doctrine flags
-//! and scientist category values stay separate; analytics derives eligibility,
-//! contributor counts and the combined scientist contribution. Modifier metadata
-//! keeps native flags and feature operands for replay eligibility and clamping.
-//! Scientist efficiency-modifier sources are separate from cached category
-//! values; do not sum those values as direct technology-speed contributions.
-//! Applied-bonus roster scans have a finite bound and stop once requested IDs
-//! resolve (`research_inputs`). Operand meanings stay beside the fields.
-//!
-//! Synthetic fixtures cover signed values, missing reads, output capacity,
-//! ownership, aliases, source cycles and conditional read cost.
 use crate::{
     Memory, ccountry, cpdx_array::Array, msvc_string::Descriptor, read, read_slice,
     research_inputs, research_inputs::Text, walk::Outcome,
@@ -30,14 +9,12 @@ mod sharing;
 static SCRIPTED_SHARING_ROSTER: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Loader-only demand, before the existing research writer certificate is published.
 pub fn scripted_sharing_roster(enabled: bool) {
     SCRIPTED_SHARING_ROSTER.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 #[cfg(test)]
 mod tests;
 
-/// Acquisition categories, mapped explicitly to replay's wire tags by collector.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -78,7 +55,6 @@ pub enum Kind {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// u32::MAX denotes country-wide operands shared by its active slots.
     pub index: u32,
     pub ordinal: u32,
     pub technology_handle: u32,
@@ -90,7 +66,6 @@ pub struct Row {
     pub name: Text,
 }
 
-/// Minimum research speed, licence factor, sharing clamp and ahead-of-time factor.
 const DEFINES: [Rva; 4] = [
     Rva(0x033e_4658),
     Rva(0x033e_4328),
@@ -125,7 +100,6 @@ impl Context {
         })
     }
 
-    /// One value for the defines every modifier row of a read may carry.
     pub fn digest(&self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         for value in [
@@ -142,17 +116,13 @@ impl Context {
     }
 }
 
-// Technology-category and research-modifier fixed operands of each assigned technology.
 const TECHNOLOGY_FIELDS: [crate::memory::RecordField; 4] =
     crate::memory::packed_fields([(0x190, 24), (0x1e8, 12), (0x68, 16), (0x110, 64)]);
 const TECHNOLOGY_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&TECHNOLOGY_FIELDS, 116).unwrap();
-// Research modifier calculation: contribution and CIdea link are its two qwords.
 const IDEA_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x38, 16)]);
 const IDEA_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&IDEA_FIELDS, 16).unwrap();
-// Research modifier calculation: each script record names a source whose source pointer is its
-// contribution.
 const SCRIPT_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x30, 8)]);
 const SCRIPT_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&SCRIPT_FIELDS, 8).unwrap();
@@ -266,7 +236,6 @@ pub fn walk_country_buffer<M: Memory>(
     )
 }
 
-/// The caller has acquired a valid Research writer epoch for this selection.
 #[allow(
     clippy::too_many_arguments,
     reason = "Keep the certified capture operands and caller-owned output explicit without new capture state."
@@ -307,7 +276,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
     output: crate::walk::Buffer<'_, Row>,
     record_roster: bool,
 ) -> Outcome {
-    // Idle countries need neither defines, modifier trees nor sharing/industrial state.
     let active = inputs.iter().any(|r| r.slot.technology_present != 0);
     if !active && !record_roster {
         return Outcome::Rows { len: 0 };
@@ -375,8 +343,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
             Text::default(),
         )?;
         let mut witnesses = sharing::Witnesses::default();
-        // Licence and scientist contexts are lazy: no linked
-        // equipment/categories, no read.
         let mut licenses = None;
         let mut scientist = None;
         let technology_pointers = crate::allocation::advisory(|| {
@@ -415,8 +381,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
             let mut xp = [0; 12];
             let mut equipment = [0; 16];
             let mut lists = [0; 64];
-            // Technology category lookup: the category sum, design-team sum and XP flag. Research
-            // modifier calculation: ideas, scripted sources and scientist categories.
             if technology_memory.copy_scattered_prefetched(
                 [
                     at(tech, 0x190)?,
@@ -435,8 +399,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
                 return Err("research modifier operands unreadable");
             }
             out.value(Kind::CategorySpeed, i64_at(&cached, 0))?;
-            // Resolve the adjacent organisation reference. Retain the exact reference even when its
-            // localized name is unavailable.
             out.push(
                 Kind::DesignTeam,
                 i64_at(&cached, 16),
@@ -481,7 +443,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
             let idea_pointer_memory = idea_pointers.view(memory);
             let idea_memory = idea_batch.view(&idea_pointer_memory);
             pointer_pages(&idea_memory, ideas, |pointer| {
-                // Research modifier idea contribution and its CIdea pointer.
                 let bytes = read::<[u8; 16]>(&idea_memory, at(pointer, 0x38)?)
                     .ok_or("research idea contribution unreadable")?;
                 let raw = i64_at(&bytes, 0);
@@ -522,8 +483,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
             );
             let script_pointer_memory = script_pointers.view(memory);
             let script_memory = script_batch.view(&script_pointer_memory);
-            // Research modifier calculation walks the original scripted-source
-            // count.
             for index in 0..scripts.count {
                 let entry = scripts
                     .element(index, 40)
@@ -549,8 +508,6 @@ fn walk_country_buffer_with_roster<M: Memory>(
                 let roster = match licenses {
                     Some(roster) => roster,
                     None => {
-                        // The production status embeds the industrial status; its list holds
-                        // licensed variants.
                         let production =
                             pointer(memory, at(country.pointer, ccountry::PRODUCTION_STATUS)?)?;
                         let roster = array_at(memory, at(production, 0x1b0)?, 8)?;
@@ -604,9 +561,6 @@ fn country_sources(
             bytes: [0; 64 * 8],
         })
     }
-    // Visit every original child through its wrapper. Keep acquired pages on the worker stack so
-    // neither depth nor fanout caps the pass, and returning from a child never reacquires its
-    // parent page.
     let mut stack =
         crate::allocation::vec(1).map_err(|_| "research source stack allocation failed")?;
     stack.push(frame(memory, accumulator)?);
@@ -667,7 +621,6 @@ fn country_sources(
     Ok(())
 }
 
-/// Lower-bound lookup without a census of irrelevant modifiers.
 fn modifier(
     memory: &impl Memory,
     base: usize,
@@ -752,7 +705,6 @@ fn scientist_bonus<M: Memory>(
     let header = match *cached {
         Some(v) => v,
         None => {
-            // The country's program status selects the hash storage, mask and overflow.
             let owner =
                 crate::nproject_cprogram_status::from_country(memory, base, country, countries)?;
             let bytes = read::<[u8; 17]>(memory, at(owner, 0x88)?)
@@ -769,7 +721,6 @@ fn scientist_bonus<M: Memory>(
             value
         }
     };
-    // Consume every category; the batch is scratch, not a limit.
     let mut category_bytes = [0; 128 * 4];
     let mut first = 0;
     while first < categories.count {
@@ -815,10 +766,7 @@ fn scientist_bonus<M: Memory>(
                         category,
                         Text::default(),
                     )?;
-                    // These pointers are the exact selected scientist source list.
                     pointer_pages(memory, array(&bytes[24..40], 8)?, |source| {
-                        // Retain scientists with a positive modifier 0x27A. Their character
-                        // backlink is also copied.
                         let identity = read::<[u8; 16]>(memory, source)
                             .ok_or("research scientist identity unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())
@@ -901,9 +849,6 @@ fn pointer_pages(
     array: Array,
     mut visit: impl FnMut(usize) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    // Bounded by the validated native header (count <= capacity <= i32::MAX)
-    // only: faction member rosters hold countries and grow with the country
-    // table; each page is one guarded read and a failure fails the walk.
     let mut bytes = [0; 64 * 8];
     let mut first = 0;
     while first < array.count {

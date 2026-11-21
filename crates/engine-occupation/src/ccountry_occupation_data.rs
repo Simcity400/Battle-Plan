@@ -1,24 +1,12 @@
-//! Country occupation data. Stale values in empty hash-table buckets cannot
-//! establish membership.
 
 use engine_sites::Rva;
-/// Occupation-data primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_0dc8);
-/// Owning CCountryOccupationStatus pointer requiring an exact back-reference match.
 pub const PARENT_STATUS: usize = 0x08;
-/// Occupied country link, u32.
 pub const OCCUPIED_COUNTRY: usize = 0x10;
-/// Retained occupied-country pointer supplying effect scope.
 pub const OCCUPIED_COUNTRY_POINTER: usize = 0x18;
-/// Group occupation-law pointer used by queries and serialization.
 pub const GROUP_LAW: usize = 0xa0;
-/// State-id to COccupationLaw robin-hood table.
 pub const LAW_TABLE: usize = 0xb0;
-/// State-id to CStateGarrisonData robin-hood table; only live buckets establish membership.
 pub const GARRISON_TABLE: usize = 0xd8;
-/// Garrison-table span parameter, u32, used as a capacity or mask by
-/// its consumer; traversal includes this value plus maximum probe distance
-/// plus one buckets.
 pub const GARRISON_CAPACITY_OR_MASK: usize = 0xe4;
 
 use crate::ccountry_occupation_status::Rows;
@@ -59,8 +47,6 @@ pub(crate) fn group_law(
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("occupied-country law pointer unreadable")?;
-    // The scope's current id comes from the retained pointer, independently of the historical
-    // lookup link. A fault need not hide an override.
     let scope_country = scope
         .pointer
         .checked_add(OCCUPIED_COUNTRY_POINTER)
@@ -108,8 +94,6 @@ pub(crate) fn identity(
     if backref != parent as u64 {
         return Err("occupation data parent mismatch");
     }
-    // Insertion resolves the raw tag to its canonical country slot for the map key; its new data
-    // object stores the country's id, which can be a raw alias.
     if countries.resolve(occupied)?.canonical_slot != entry.key {
         return Err("occupation bucket key differs from occupied country slot");
     }
@@ -174,9 +158,6 @@ pub(crate) fn laws(
         .checked_add(LAW_TABLE)
         .ok_or("occupation law table address overflow")?;
     pdx_robin_hood_table::visit(memory, table, |entry| {
-        // Ordinary updates write the state's id. Loading accepts the raw key
-        // without resolving it; preserve zero/unknown keys rather than hiding
-        // a native override whose state association is unavailable.
         let token = coccupation_law::literal(memory, base, entry.value)?;
         match names.copy(memory, token, output.fits()?)? {
             Some(name_start) => output.push(LawRow {

@@ -1,4 +1,3 @@
-//! Selected travel. Target and selection stay local.
 
 use super::{Arg, Class, Context, Localisation, Tooltip, Unit, line, localise, refuse};
 use crate::map::division_eta::{CounterPreview, CounterQueries, CounterUnit};
@@ -10,8 +9,6 @@ pub(super) struct SelectionTravel {
     pub(super) route: Result<Vec<u32>, String>,
 }
 
-/// Zero is a native null LOCATION only for a present authenticated complete row.
-/// An absent row/table never becomes null. LAND is a separate content lookup.
 pub(super) fn source(frame: &DecodedFrame, unit: Unit) -> Result<Option<u32>, String> {
     let province = match unit {
         Unit::Division(handle) => {
@@ -60,9 +57,6 @@ fn counter_unit(unit: Unit) -> CounterUnit {
     }
 }
 
-/// The retained-route query remembers its first matching unit, even null or
-/// nonland. A second clears only the returned unit pointer; duration queries
-/// replace hours without replacing that route.
 fn selection_travel(
     class: Class,
     selected: &[Unit],
@@ -110,8 +104,6 @@ fn selection_travel(
     result
 }
 
-/// Admit the first unit at each of twelve distinct nonnull sources without
-/// demanding LAND. First-unit query failures cannot promote duplicates.
 fn fallback_hours(
     selected: &[Unit],
     source: &mut impl FnMut(Unit) -> Result<Option<u32>, String>,
@@ -134,8 +126,6 @@ fn fallback_hours(
             .and_then(|preview| preview.duration)
             .map(|duration| game_model::movement::unit::eta_hours(duration) as i32)
         {
-            // Admission is already certain; no positive i32 contributor can
-            // improve one. Earlier duration failures also cannot improve it.
             Ok(1) => return Ok(1),
             Ok(hours) if hours > 0 => best = Some(best.map_or(hours, |old: i32| old.min(hours))),
             Ok(_) => {}
@@ -174,7 +164,6 @@ pub(super) fn build(
                 .map(|terrain| terrain.flags & 1 != 0)
                 .ok_or_else(|| format!("prospective source terrain {province} is unavailable"))
         },
-        // Same local route preference as existing counter hovers; no new setting.
         |unit| queries.preview(counter_unit(unit), context.province.id, false),
     )
 }

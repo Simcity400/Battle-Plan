@@ -105,7 +105,6 @@ fn reverse_zero_empty_effective_cutoffs_precede_all_native_query_operands() {
 fn reverse_zero_uses_actual_receiver_identity_and_keeps_positive_target_alias_zero() {
     let (mut frame, mut links, _) = tests::fixture();
     links.insert(777, 0);
-    // No reverse packet: actual receiver ID0 is raw-self with literal target0.
     assert_eq!(cutoff(&frame, &links, 777, 0, CUTOFFS), Ok(5));
     assert_eq!(cutoff(&frame, &links, 0, 0, CUTOFFS), Ok(5));
     assert_eq!(
@@ -115,7 +114,6 @@ fn reverse_zero_uses_actual_receiver_identity_and_keeps_positive_target_alias_ze
     install(
         &mut frame,
         vec![Some(ReverseZeroVisibilityInputs {
-            // Active war decides before the unknown raw target and subject.
             war: Some([1, 0]),
             ..Default::default()
         })],
@@ -216,7 +214,6 @@ fn reverse_zero_faction_shortcut_is_lazy_and_does_not_bypass_unknown_war() {
     *frame.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
         reason: "membership unknown".into(),
     };
-    // Target canonical0 resolves the same actual source faction, without a roster.
     assert_eq!(reverse_zero_shared(&frame, &links, 0), Ok(true));
     assert_eq!(
         reverse_zero_shared(&frame, &links, 1),
@@ -257,7 +254,6 @@ fn reverse_zero_subject_matches_actual_cell_target_by_ordered_raw_then_canonical
             }),
         ],
     );
-    // Retired war is clear; the cell target is an alias rather than query raw101.
     assert_eq!(reverse_zero_shared(&frame, &links, 1), Ok(true));
     assert_eq!(
         map_intel_subject(&subject(Some(999), None), &links, Ok(999)),
@@ -400,7 +396,6 @@ fn reverse_zero_intel_uses_actual_owner_zero_and_retains_carried_sample_hour() {
                 army: i64::MIN,
                 ..Default::default()
             },
-            // These alias-owned rows are deliberately different and must not supply receiver0.
             CountryIntelRow {
                 owner_country: 777,
                 target_index: 0,
@@ -649,7 +644,6 @@ fn event_sharing_compares_receiver_object_id_before_its_incoming_alias() {
         event_shared(&frame, &links, 777, 777, false),
         Err("ReservedCountryNaming")
     );
-    // Positive receivers compare their actual object ID or nonzero canonical identity.
     assert_eq!(event_shared(&frame, &links, 701, 101, true), Ok(true));
     install(
         &mut frame,
@@ -966,7 +960,6 @@ fn forward_visibility_fog_uses_raw_cell_alias_and_only_historical_absence_uses_l
         event_shared(&frame, &links, 101, 777, true),
         Err("CountryCounterInputs.forward_visibility military access invalid")
     );
-    // Exact literal0 and positive alias0 remain different raw subject predicates.
     forward_packet(
         &mut frame,
         Recorded::Value(Some(ReverseZeroVisibilityInputs {

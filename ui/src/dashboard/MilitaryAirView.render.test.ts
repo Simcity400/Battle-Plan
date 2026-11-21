@@ -15,7 +15,6 @@ import { partOf } from './militaryAirParts.fixture.ts';
 import type { Leaf } from './militaryAirParts.fixture';
 
 test('a group whose members are read is a moment no chosen country was recorded, in both widgets', async () => {
-  // ENG suffered damage throughout; GER, the human player, never did.
   const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
   const data: MilitaryAirLedger = { family: 'bombing', ...span, available: true, observed: [span], incomplete: [],
     countries: [{ tag: 'ENG', identity: '1:102', present: [span], membership: null }],
@@ -42,10 +41,8 @@ test('a group whose members are read is a moment no chosen country was recorded,
       runtime: { tracks: [track], client: {}, clock: { getHour: () => BRANCH.lastHour } }, active: true, onDiagnostics() {},
       family: 'bombing', fields: OPTIONS, title: 'Bombing damage' } as unknown as WidgetProps & { family: 'bombing'; fields: typeof OPTIONS; title: string };
     const render = () => renderToStaticMarkup(createElement(module.default, props));
-    // GER is the human player then and suffered no damage.
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] });
     assert.match(render(), /No selected country was recorded at this moment\./);
-    // The aircraft losses race says the same through its own state.
     state.data = { ...data, family: 'airLosses' };
     Object.assign(props, { family: 'airLosses', fields: AIR_OPTIONS, title: 'Air kills & losses' });
     assert.match(render(), /No selected country was recorded at this moment\./);

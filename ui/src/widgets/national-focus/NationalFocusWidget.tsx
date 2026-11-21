@@ -36,7 +36,6 @@ export type FocusListItem = { kind: 'completed'; entry: FocusEntry } | { kind: '
 export const isCompletedFocus = (item: FocusListItem) => item.kind === 'completed';
 const disclosureKey = (entry: FocusEntry, readHour: number) => JSON.stringify([entry.ordinal, nameKey(readHour, entry.token)]);
 
-/** The progress at the moment a frame paints, and the signal that it may have moved. */
 export interface FocusLiveProgress { at(): FocusProgressState | null; subscribe(changed: () => void): () => void }
 
 export function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large' | 'small' }) {
@@ -60,9 +59,6 @@ const failuresKey = (failures: readonly Failure[] | undefined) => failures?.map(
 const sameArt = (a: Artwork | undefined, b: Artwork | undefined) => a === b || !!a && !!b && a.token === b.token && a.name === b.name
   && a.icon === b.icon && a.description === b.description && a.baseDurationDays === b.baseDurationDays;
 
-/** Whether a completed focus's row draws the same: a segment while following hands every row new objects, and only the
- * rows whose focus, date, art or texts changed render again. Its toggle differs only with the widget's identity, which
- * remounts the list. */
 function sameCompletion(a: CompletionProps, b: CompletionProps): boolean {
   return a.entry.ordinal === b.entry.ordinal && a.entry.token === b.entry.token && a.entry.completedByHour === b.entry.completedByHour
     && sameArt(a.art, b.art) && a.reason === b.reason && a.pending === b.pending && a.description === b.description && a.open === b.open
@@ -93,11 +89,8 @@ export const FocusCompletion = memo(function FocusCompletion({ entry, art, reaso
   </details>;
 }, sameCompletion);
 
-/** The progress bar's glide to a new reading. */
 const FOCUS_GLIDE_MS = 600;
 
-/** Live or pinned: the focus being worked on, with the game's progress line along its lower edge. The
- * progress is painted each frame from `progress`, never rendered for. */
 export function CurrentFocus({ order, art, progress, live, reason, failure, failures, titleFailure, pending }: { order: Pick<FocusOrder, 'current' | 'continuous' | 'paused'>; art: Artwork | undefined; progress?: FocusLiveProgress; live: boolean; reason?: string; failure?: Failure; failures?: readonly Failure[]; titleFailure?: Failure; pending?: boolean }) {
   const errors = focusErrors(failure, failures);
   const token = order.current ?? order.continuous;
@@ -108,8 +101,6 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
   const bar = useRef<HTMLSpanElement>(null), banked = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
     if (!progress) return;
-    // A frame paints only when the state it reads moved (once a game hour at most), and writes only what changed: the
-    // bar's own transition carries the motion between readings.
     let painted: FocusProgressState | null | undefined;
     const paint = () => {
       const state = progress.at();
@@ -125,7 +116,6 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
       }
       setHidden(bar.current, now.fraction === null);
       setAttr(bar.current, 'aria-valuenow', String(Math.round((now.fraction ?? 0) * 100)));
-      // The fill and the knob glide by the engine, as their 600 ms transition did, never by a CSS transition.
       const [fill, knob] = bar.current ? [...bar.current.children] as HTMLElement[] : [];
       const glide = reducedMotion() ? 0 : FOCUS_GLIDE_MS;
       if (fill) progressFill.to(fill.style, now.fraction ?? 0, glide);
@@ -134,8 +124,6 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
     };
     paint();
     return progress.subscribe(paint);
-    // The paint reads only `progress`, `duration` and the order's fields.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progress, duration, order.current, order.continuous]);
   if (!token) {
     return <div className="focus-now is-idle" role="status">
@@ -161,14 +149,11 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
   </div>;
 }
 
-/** One country's national focuses over the branch, read once (`national-focus`). Following playback it renders
- * only where the shown order changes; the progress line is painted each frame. */
 export default function NationalFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const menu = useContextMenu('National focus actions');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const live = widget.time.mode === 'follow';
-  // A pinned moment shows the focus in progress then, like Live but held still.
   const moment = live || widget.time.mode === 'pin';
   const request = track && tag ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, country: countryFromKey(tag) }) : null;
   const { data, error, retry } = useProduct<FocusReply>(runtime.client, request, active, validateFocusReply);
@@ -177,9 +162,7 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     return hour === undefined || !track || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour);
   };
   useShownEachFrame(runtime.clock, () => data ? trackHour(runtime.clock.getHour()) : null);
-  // Following, the widget renders where the shown order changes.
   const headHour = useHeadHour(runtime.clock, active && live && !!data, clockHour => data ? focusShownAt(data, trackHour(clockHour)) : '');
-  // Off the head the hour is the pin's or the campaign's end, read as rendered.
   const settled = live ? null : trackHour(runtime.clock.getHour());
   const key = data ? focusShownAt(data, live ? trackHour(headHour) : settled) : '';
   const segmentIndex = data && key.startsWith('s') ? Number(key.slice(1)) : -1;
@@ -193,17 +176,14 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
   const contentRevision = useContentRevision(runtime.client);
   const detailsIdentity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, contentRevision]) : '';
   const [opened, setOpened] = useState<{ identity: string; client: typeof runtime.client; rows: Set<string> } | null>(null);
-  // Only explicitly static text may be shown before the dated reply arrives.
   const metadata = useMemo(() => {
     const text = new Map(data?.staticText?.map(item => [item.token, item]));
     return new Map(data?.artwork.map(({ token, baseDurationDays }) => [token,
       { token, baseDurationDays, name: text.get(token)?.name ?? null, description: text.get(token)?.description ?? null, icon: null } satisfies Artwork]));
   }, [data]);
-  // A continuous focus is looked up in its own database, never as a national focus of the same id.
   const continuousMetadata = useMemo(() => new Map(data?.continuousStaticText.map(item => [item.token, item])), [data]);
   const progress = useMemo<FocusLiveProgress | undefined>(() => {
     if (!data || !moment) return undefined;
-    // The same state while the hour stands, so a frame inside an hour paints nothing.
     let held: { hour: number | null; state: FocusProgressState | null } | null = null;
     const at = () => {
       const hour = live ? trackHour(runtime.clock.getHour()) : settled;
@@ -215,36 +195,25 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
       const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
       return () => { for (const stop of stops) stop(); };
     } };
-    // `trackHour` reads the track and the widget's time, named by its text.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, moment, live, settled, runtime.clock, track, JSON.stringify(widget.time)]);
-  // The asks keep their identity while what they name stands, so a new segment sharing its focuses asks nothing.
   const asked = useRef<{ wanted: NameAt[]; continuous: NameAt[] }>({ wanted: [], continuous: [] });
-  // Following, the art of what the head reaches within the lists' read-ahead is asked with what is shown, a stretch at a
-  // time: a focus begun or completed while playing is never asked for at the head, and the reads land once a stretch.
   const aheadUntil = live && segment ? focusAheadUntil(segment.lastHour + 1, runtime.clock.getSnapshot().hoursPerSecond, AHEAD_SECONDS) : -Infinity;
   const ahead = (asks: NameAt[], asksOf: (order: FocusOrder, hours: SegmentHours) => NameAt[]) => data
     ? focusAsksAhead(asks, data.history.segments, readHours, segmentIndex, aheadUntil, asksOf) : asks;
   const wanted = sameAsks(asked.current.wanted, ahead(focusArtAsks(order, hours, live, moment), (next, held) => focusArtAsks(next, held, live, moment)));
   const continuousWanted = sameAsks(asked.current.continuous, ahead(continuousArtAsks(order, hours), continuousArtAsks));
   asked.current = { wanted, continuous: continuousWanted };
-  // Repeated completions may share dated text, but their disclosure state must stay separate.
   const openRows = opened?.identity === detailsIdentity && opened.client === runtime.client ? opened.rows : null;
   const detailsWanted = useMemo(() => {
     const rows = openRows ? order?.completed.flatMap(entry => {
       const hour = completedHour(entry);
       return Number.isInteger(hour) && openRows.has(disclosureKey(entry, hour)) ? [{ tag: entry.token, hour }] : [];
     }) ?? [] : [];
-    // Follow schedules the newest end of the list first, as `wanted` does.
     return live ? rows.reverse() : rows;
-    // `completedHour` reads `hours` and `readingHour`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRows, order, hours, readingHour, live]);
   const inRange = key !== 'out';
   const dated = useFocusArtwork(runtime.client, track, tag, wanted, active && inRange, detailsWanted, data?.staticText);
   const continuousDated = useContinuousFocusArtwork(runtime.client, track, tag, continuousWanted, active && inRange, data?.continuousStaticText);
-  // Descriptions rows have shown, used while their read has no answer: closing releases the demand, yet the row
-  // closes with its text, and reopening shows the same reading at once. Another identity or client starts empty.
   const shownTexts = useRef<{ identity: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
   if (shownTexts.current?.identity !== detailsIdentity || shownTexts.current.client !== runtime.client) {
     shownTexts.current = { identity: detailsIdentity, client: runtime.client, texts: new Map() };
@@ -291,7 +260,6 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     return items;
   }, [order, moment]);
   const seen = useRef(count);
-  // While following playback, keep the newest completion in view as it lands.
   useLayoutEffect(() => {
     if (live && count > seen.current) list.current?.scrollTo({ top: list.current.scrollHeight, behavior: document.documentElement.dataset.motion === 'reduced' ? 'auto' : 'smooth' });
     seen.current = count;
@@ -314,7 +282,6 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
         ? `${item.entry.ordinal}:${completedHour(item.entry)}` : `unfinished:${item.token}`} estimate={52} label="Completed focuses in order" className="focus-list" scrollRef={list}
         isInteractive={isCompletedFocus} rowProps={item => item.kind === 'unfinished' ? { className: 'focus-entry is-unfinished' }
           : ({ className: `focus-entry${item.entry.ordinal === newest ? ' is-newest' : ''}`, ...rowJumpProps(runtime, track.id, item.entry.completedByHour, menu.open) })}>{item => {
-        // The unfinished focus is the final noninteractive ordered row.
         if (item.kind === 'unfinished') return <div className="focus-row">
           <span className="focus-number" aria-hidden="true">{String(order.completed.length + 1).padStart(2, '0')}</span>
           <FocusArt art={currentArt.art} size="small" />

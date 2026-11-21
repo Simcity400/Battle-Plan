@@ -7,12 +7,10 @@ import type { ProductWindows } from '../../dashboard/productWindows';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { withWindowEntries } from '../../dashboard/windowMap.ts';
 
-/** Windows held, and whether one is held now (read in the frame, between renders). */
 export interface FrameWindows<T> extends ProductWindows<T> { holds(window: number): boolean; check(): void }
 
 interface Held<T> { owner: object; data: ReadonlyMap<number, T>; errors: ReadonlyMap<number, Failure>; attempt: number }
 
-/** Product windows asked from the frame as `wanted()` moves, never for a render; only a reply renders. */
 export function useFrameWindows<T>(client: DashboardClient, identity: string | null, request: (window: number) => ProductRequest,
   wanted: () => readonly number[], subscribe: (changed: () => void) => () => void, active: boolean,
   validate?: (data: unknown) => T, source?: DashboardSource): FrameWindows<T> {
@@ -29,7 +27,6 @@ export function useFrameWindows<T>(client: DashboardClient, identity: string | n
     if (!active || identity == null) return;
     const controller = new AbortController();
     const asked = new Set<number>();
-    // Replies landing before the next frame commit together, with what is no longer wanted let go.
     const arrived: { data: [number, T][]; errors: [number, Failure][] } = { data: [], errors: [] };
     let scheduled = false;
     const commit = () => {
@@ -57,10 +54,7 @@ export function useFrameWindows<T>(client: DashboardClient, identity: string | n
     run();
     const stop = subscribe(run);
     return () => { stop(); controller.abort(); check.current = () => {}; };
-    // The identity names every request; `wanted`, `request` and `subscribe` are read as they are now.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, active, attempt]);
-  // A render that moves what is wanted (a new view, a new manifest) asks without waiting for a frame.
   useEffect(() => { check.current(); });
   const data = current?.data, errors = current?.errors;
   const retry = useMemo(() => () => {

@@ -31,30 +31,23 @@ fn frame(hour: i32, input: TableInput) -> FrameInput {
     frame
 }
 
-/// Each hour's read, the owners it reads and the owners still live.
 type HourRead = (Vec<ResearchInputRow>, fn(u32) -> bool, fn(u32) -> bool);
 
 fn hours() -> Vec<HourRead> {
     vec![
-        // Equal rows of the read owners.
         (
             vec![row(1, 0, 0), row(1, 1, 0)],
             |owner| owner == 1,
             |_| true,
         ),
-        // Changed rows, same counts.
         (vec![row(2, 0, 5)], |owner| owner == 2, |_| true),
-        // An owner gains a row, another is read without rows.
         (
             vec![row(1, 0, 6), row(1, 1, 0), row(1, 2, 1)],
             |owner| owner == 1 || owner == 3,
             |_| true,
         ),
-        // A new owner, and one no longer live outside the read.
         (vec![row(4, 0, 2)], |owner| owner == 4, |owner| owner != 25),
-        // Nothing read: unchanged.
         (vec![], |_| false, |_| true),
-        // Several owners at once, counts unchanged.
         (
             vec![row(1, 0, 7), row(1, 1, 1), row(1, 2, 1), row(2, 0, 6)],
             |owner| owner <= 2,
@@ -63,8 +56,6 @@ fn hours() -> Vec<HourRead> {
     ]
 }
 
-/// The update path writes the bytes of the merged complete table and
-/// commits its rows inside the baseline both share.
 #[test]
 fn slice_updates_encode_and_commit_the_merged_complete_table() {
     let start = TableRows::ResearchInputs(vec![
@@ -103,7 +94,6 @@ fn slice_updates_encode_and_commit_the_merged_complete_table() {
             .unwrap();
         assert!(Arc::ptr_eq(baseline, &held));
         let before = Arc::as_ptr(&held);
-        // The producer releases its copy so the commit updates in place.
         drop(held);
         let input = TableInput::SliceUpdate {
             token,
@@ -137,7 +127,6 @@ fn a_shared_or_stale_baseline_and_a_foreign_row_are_refused_or_copied() {
             false,
         )
         .unwrap();
-    // Rows of an owner the update does not list do not fit.
     let update = SliceUpdate {
         ranges: Vec::new(),
         keys: Vec::new(),
@@ -153,7 +142,6 @@ fn a_shared_or_stale_baseline_and_a_foreign_row_are_refused_or_copied() {
         update: Arc::new(update),
     };
     assert!(encoder.prepare_bytes(frame(1, refused), false).is_err());
-    // A keyframe, a gap or another branch has no slice baseline.
     assert!(
         encoder
             .slice_baseline(TableId::ResearchInputs, 1, 2, false)
@@ -169,7 +157,6 @@ fn a_shared_or_stale_baseline_and_a_foreign_row_are_refused_or_copied() {
             .slice_baseline(TableId::ResearchInputs, 1, 1, true)
             .is_none()
     );
-    // While the producer still holds the baseline, commit replaces a copy.
     let update = SliceUpdate::new(
         &start,
         TableRows::ResearchInputs(vec![row(1, 0, 3)]),
@@ -300,7 +287,6 @@ fn exact_key_updates_match_full_frames_for_changes_additions_and_removals() {
     let mut full = FrameEncoder::new();
     let mut keyed = FrameEncoder::new();
     let first = frame(0, TableView::Complete(baseline.clone()).into());
-    // Slice updates require the shared baseline used by certified producers.
     let shared = frame(0, TableInput::SharedComplete(Arc::new(baseline.clone())));
     assert_eq!(
         full.encode_bytes(first, false).unwrap().bytes,
@@ -310,7 +296,7 @@ fn exact_key_updates_match_full_frames_for_changes_additions_and_removals() {
         (1, row(5000, 17, 0).key(), vec![row(5000, 17, 77)]),
         (2, row(5000, 5000, 0).key(), vec![row(5000, 5000, 1)]),
         (3, row(5000, 18, 0).key(), vec![]),
-        (4, row(5000, 18, 0).key(), vec![]), // deleting an absent key is a carry
+        (4, row(5000, 18, 0).key(), vec![]),
     ] {
         let update = SliceUpdate::keyed(vec![key], TableRows::ResearchInputs(fresh));
         assert!(update.fits(&baseline));
@@ -357,9 +343,6 @@ fn exact_key_updates_match_full_frames_for_changes_additions_and_removals() {
     assert!(!foreign.fits(&baseline));
 }
 
-/// ScriptVariables' conversion edits its shared baseline by scope key: a
-/// scope whose entries grew, an added scope and a removed one, alone and
-/// together, write the complete table's bytes and leave its rows.
 #[test]
 fn script_variable_key_updates_match_full_frames() {
     use crate::rows::{Recorded, ScriptVariableEntry, ScriptVariablesRow};

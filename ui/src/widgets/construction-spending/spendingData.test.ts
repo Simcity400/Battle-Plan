@@ -32,7 +32,6 @@ test('spending names both railway endpoints from the reply, and a state the cont
   assert.equal(missing.exact, known.exact);
   const note = 'State 5: no name in the recorded content State 6: not named by the reply';
   assert.equal(missing.note, note);
-  // A missing name is not missing IC.
   for (const levels of [[true, true, true], [false, true, false], [false, false, false]]) {
     const root = groupTree([missing], { id: 'all', label: 'All construction' }, levels);
     let node = root;
@@ -124,8 +123,6 @@ test('ownerless output makes only the whole partial, in ranges that include it',
 });
 
 test('known amounts stay drawn and listed when output elsewhere is not counted', () => {
-  // As recorded for a country: new buildings and repairs, a line whose output was not recorded exactly, branch-wide
-  // output with no country, and hours the recording does not hold.
   const data = reply([
     leaf({ spent: [{ knownAt: 124, totalRaw: '23049375000' }] }),
     leaf({ state: 6, spent: [{ knownAt: 100, totalRaw: '100000' }], unknown: [{ knownAt: 124, reason: 'inexactOutput', project: 'q', until: null }],
@@ -141,7 +138,6 @@ test('known amounts stay drawn and listed when output elsewhere is not counted',
   assert.equal(root.valueUnknown, false);
   assert.equal(root.exact, 23049375000n + 100000n + 916375000n);
   assert.equal(unknownTotal(root), 2);
-  // Only recorded kinds are listed: nothing named for output no country can be given.
   assert.deepEqual(root.children.filter(listed).map(child => child.label), ['New buildings', 'Repairs']);
   assert.ok(root.children.every(child => !child.valueUnknown));
   const targets = arcTargets(root, root, 'share');
@@ -174,7 +170,6 @@ test('a leaf does not appear before its first line is read, and the render key m
   const item = at(124)[0];
   assert.equal(item.present, false);
   assert.equal(item.final, 100);
-  // The second leaf's amount moving does not change what renders; the first appearing does.
   assert.equal(presentKey(at(124)), presentKey(at(140)));
   assert.notEqual(presentKey(at(140)), presentKey(at(148)));
 });

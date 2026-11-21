@@ -20,8 +20,6 @@ use std::{
 use viewer_foundation::map::perspective::{Choice, Vision};
 use viewer_world::map::trade_routes::{self, Countries, ExchangeOrder, Stops, TradeRoutes};
 
-/// Today's lines over the values, their convoys summed into the report, and each route's stops
-/// asked for and counted; no content geometry.
 #[derive(Default)]
 struct Lines {
     searches: AtomicUsize,
@@ -98,9 +96,6 @@ fn route(store: &mut Store, slot: u32, key: (u32, u8, u32), path: &[u32]) {
     routes.write(slot, c("destination_state"), Cell::OptionalU32(Some(20))).unwrap();
 }
 
-/// The viewed country (link 7, slot 3) with a resource origin and an import from link 8, their two
-/// routes, an exchange and a sea region's efficiency; the import's convoys change twice in two
-/// hours, the client is replaced by another, and ConvoyClients is not recorded for a stretch.
 fn campaign(at: u32, store: &mut Store) {
     for table in TABLES {
         let status = if table == TableId::ConvoyClients && (180..220).contains(&at) { Status::NotRecorded } else { Status::Complete };
@@ -161,7 +156,6 @@ fn side_seeing(name: &str, seeing: bool) -> (MapSide, Arc<Lines>) {
     (side, routes)
 }
 
-/// A view in the supply map mode, which draws trade routes.
 fn supply() -> View {
     View { map_mode: viewer_world::map::map_mode::MapMode::parse("supply").unwrap(), ..View::default() }
 }
@@ -181,8 +175,6 @@ fn composed_equal(side: &MapSide) {
     assert_eq!(layer(side).differ(&fresh), (0, None));
 }
 
-/// Frames with the head never past `cap` until `done` holds: the playhead decodes on, the map does
-/// not take a step ending after `cap`.
 fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
     for _ in 0..50_000_000u64 {
         let head = side.entry().playhead().newest().unwrap_or(0).min(cap);
@@ -197,7 +189,6 @@ fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &c
     panic!("the map side never reached what the test waits for with the head at most {cap}");
 }
 
-/// The viewed country's lines and the convoys they carry.
 fn drawn(side: &MapSide) -> (usize, usize) {
     let report = &layer(side).product().report;
     (report.drawn, report.convoys)
@@ -219,11 +210,8 @@ fn a_row_changed_twice_before_the_layer_settles_shows_its_newest_values() {
     let (mut side, _) = side("convoys-twice");
     through(&mut side, 30);
     let settles = side.hold_settles();
-    // Both changes (hours 50 and 51) marked before any settle; the head stays at hour 56 from here,
-    // far before the client replaced at hour 130. Then, with no settling, a unit a frame.
     frames_within(&mut side, 56, |_, frame| frame.applied.is_some_and(|applied| applied >= 51));
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    // The product is made off the frame: it arrives a frame or more after it is asked for.
     frames_within(&mut side, 56, |side, _| layer(side).carried().entities == 0 && layer(side).published() == crate::layers::Published::Current);
     let at = side.parts().unwrap().0.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head).expect("a head");
     assert!((51..=56).contains(&at), "the mirrors at hour {at}");
@@ -279,7 +267,6 @@ fn a_map_mode_that_draws_no_trade_routes_declares_nothing_and_one_that_does_comp
     let (mut side, _) = side("convoys-mode");
     through(&mut side, 30);
     side.settle_all().unwrap();
-    // Hidden while the convoys changed at hours 50 and 51 wait for a product.
     through(&mut side, 52);
     side.set_view(View::default()).unwrap();
     through(&mut side, 140);
@@ -290,8 +277,6 @@ fn a_map_mode_that_draws_no_trade_routes_declares_nothing_and_one_that_does_comp
     assert!(layer(&side).product().convoys.is_empty());
     composed_equal(&side);
     side.set_view(supply()).unwrap();
-    // Its tables come back as resets in a step built once their lanes are prepared, which may be
-    // past the recording's end: until then it is not drawn.
     let last = HOURS as i32 - 1;
     frames_until(&mut side, |side, frame| (!side.composing() && side.parts().is_some_and(|_| layer(side).refused().is_none())) || frame.applied == Some(last));
     if layer(&side).refused().is_none() {
@@ -302,8 +287,6 @@ fn a_map_mode_that_draws_no_trade_routes_declares_nothing_and_one_that_does_comp
     }
 }
 
-/// Today's lines, held on the worker until the test opens the gate (a minute at most, after which
-/// the build goes on and the test's assertions fail by name).
 #[derive(Default)]
 struct HeldLines {
     lines: Lines,
@@ -345,10 +328,6 @@ impl Routes for HeldLines {
     }
 }
 
-/// While a job is out (the convoys changed at hours 50 and 51) the layer carries nothing for it and
-/// publishes the hour its product stands for, which the host shows; answered, it is current again.
-/// On the base the job out was carried work and the layer published `Current`, so the host kept the
-/// hour it last carried nothing at.
 #[test]
 fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_for() {
     use crate::layers::Published;
@@ -370,7 +349,6 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
     assert!((30..50).contains(&stands), "the product stands for the rows before the change, at {stands}");
     assert_eq!(layer(&side).published(), Published::At(stands));
     assert_eq!(side.last_frame().layers[0].shown, Some(stands), "the host shows the hour the product stands for");
-    // A still publication runs under the side's lock: it polls the job out and never waits on it.
     let waited = layer(&side).blocking_waits;
     side.frame_still(side.applied().expect("a step applied")).unwrap();
     assert_eq!(layer(&side).blocking_waits, waited, "a still publication waits on no convoy job");
@@ -381,10 +359,6 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
     assert_eq!(drawn(&side), (2, 5), "the newest convoys");
 }
 
-/// A change of viewing country withholds the lines made for the country before at once, and a job
-/// asked for that country and answered after the change is never taken. Before, the worker's
-/// products carried no viewer: the lines of the country before stayed published for the new one,
-/// and a job out at the change replaced them with that country's lines again.
 #[test]
 fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     use viewer_foundation::map::perspective::Country;
@@ -399,7 +373,6 @@ fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     through(&mut side, 30);
     side.settle_all().unwrap();
     assert!(layer(&side).shown().is_some_and(|(_, lines)| lines.report.drawn == 2), "slot 3's lines are shown for slot 3");
-    // A job for slot 3 out (the convoys changed at hours 50 and 51), held on the worker.
     routes.set(false);
     let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
     frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
@@ -415,9 +388,6 @@ fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     assert!(layer(&side).shown().is_some(), "slot 7's own lines are shown");
 }
 
-/// In the window the convoys take the viewing country from the vision layer: once it has none (its
-/// vision refused), the lines made for the country before are withheld at once, never shown for
-/// the refused view.
 #[test]
 fn a_refused_vision_withholds_the_lines_made_for_the_country_before() {
     let entry = open(recorded::record("convoys-refused-viewer", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
@@ -438,10 +408,6 @@ fn a_refused_vision_withholds_the_lines_made_for_the_country_before() {
     assert!(convoys.shown().is_none(), "slot 3's lines are withheld once the vision has no viewing country");
 }
 
-/// While the vision is refused the layer carries nothing: rows that change then, and a job out
-/// from before, keep no paused map from settling, and that job's lines are never taken; given a
-/// vision again, every row is read again and the lines are made for it. Before, the changed rows
-/// stayed carried and the job out stayed published, so the map never settled.
 #[test]
 fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() {
     use crate::layers::Published;
@@ -455,7 +421,6 @@ fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() 
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     through(&mut side, 30);
     side.settle_all().unwrap();
-    // A job for slot 3 out (the convoys changed at hours 50 and 51), held on the worker.
     routes.set(false);
     let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
     frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
@@ -463,7 +428,6 @@ fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() 
     let upstream: Vec<Box<dyn Layer>> = vec![Box::new(refused)];
     let convoys = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Convoys>()).expect("the convoys layer");
     convoys.settle_with(&crate::playhead_host::mirror::Mirrors::default(), &crate::layers::Upstream::new(&upstream), crate::layers::Settling::Whole).unwrap();
-    // The client is replaced at hour 130 while the vision is refused; the map then holds at 140.
     frames_within(&mut side, 140, |side, frame| at(side).is_some_and(|hour| hour >= 134) && frame.steps == 0);
     side.frame(140).unwrap();
     assert!(layer(&side).refused().is_some_and(|why| why.contains("vision")), "{:?}", layer(&side).refused());

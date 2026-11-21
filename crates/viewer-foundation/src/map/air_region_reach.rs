@@ -1,8 +1,5 @@
-//! Current base-to-region reach shared by assignments and transport orders.
 use installed_content_core::{province_geometry::Bounds, province_geometry::ProvinceGeometry};
 
-/// The template centre and rectangles. The first painted province chooses
-/// the primary cluster, separately from a state's minimum-width wrapped box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RegionGeometry {
     centre: [i32; 2],
@@ -10,7 +7,6 @@ pub struct RegionGeometry {
     count: usize,
 }
 
-/// The two base anchors use different wrapped-distance laws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     State([i32; 2]),
@@ -32,8 +28,6 @@ impl RegionGeometry {
         let mut secondary = [0; 4];
         let mut first_x = 0_i32;
         for province in provinces {
-            // Missing or unpainted province records have no valid raster box.
-            // Invalid IDs resolve to the unpainted slot zero.
             let Some(&bounds) = map.bounds.get(province) else {
                 continue;
             };
@@ -72,9 +66,6 @@ impl RegionGeometry {
         }
     }
 
-    /// Preserve the nonconservative centre prefilter and split-box y intersection
-    /// before testing provinces. `origin` is the state bounding centre or the host
-    /// ship's task-force province position, selected by the source-base law.
     pub fn reaches(
         &self,
         map: &ProvinceGeometry,
@@ -105,8 +96,6 @@ impl RegionGeometry {
             return false;
         }
         provinces.iter().any(|id| {
-            // Province lookup uses slot zero for invalid IDs, with centroid at the
-            // origin. Unpainted valid records likewise keep zero content coordinates.
             let point = map.centroids.get(id).copied().unwrap_or([0; 2]);
             let distance = match origin {
                 Origin::State(origin) => wrapped_squared(point, origin, map.width),
@@ -134,8 +123,6 @@ fn grow(rectangle: &mut Bounds, [x, y, width, height]: Bounds) {
     }
 }
 
-/// Wrap once with strict half-width ties. Distance arithmetic uses signed
-/// i32, including overflow in the squared sum.
 fn wrapped_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
     let mut dx = from[0].wrapping_sub(to[0]);
     let dy = from[1].wrapping_sub(to[1]);
@@ -147,8 +134,6 @@ fn wrapped_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
     dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
 }
 
-/// Hosted per-province reach uses an absolute-delta law that differs from
-/// ordinary region reach at i32::MIN. Preserve that overflow case.
 pub fn province_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
     let delta = from[0].wrapping_sub(to[0]);
     let absolute = delta.wrapping_abs();

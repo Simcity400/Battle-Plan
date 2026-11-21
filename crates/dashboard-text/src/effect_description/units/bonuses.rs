@@ -1,5 +1,3 @@
-//! Sub-unit stat bonus descriptions shared by add_unit_bonus,
-//! technology and special-project rewards.
 
 use super::*;
 use installed_content_core::{
@@ -20,7 +18,7 @@ fn stats(items: &[Item]) -> [i64; STAT_COUNT] {
             .and_then(|key| installed_content_core::equipment::stat_index(&key.folded()))
             && let Some(value) = installed_content_core::modifiers::read_fixed5(item)
         {
-            values[index] = value; // A failed scan keeps the destination.
+            values[index] = value;
         }
     }
     values
@@ -96,8 +94,6 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let mut text = String::new();
-        // Separate sub-unit and category vectors preserve authored order
-        // within each vector, including repeated selectors.
         for category in [false, true] {
             for (_, name, fields) in entries.iter().filter(|entry| entry.0 == category) {
                 match self.units_bonus_body(name, fields, category, units, scopes) {
@@ -127,7 +123,7 @@ impl Renderer<'_, '_, '_> {
             scopes,
             false,
         )?);
-        text.push('\n'); // Raw fixed5, without scaling.
+        text.push('\n');
         Ok(text)
     }
 
@@ -136,8 +132,6 @@ impl Renderer<'_, '_, '_> {
         if lines.is_empty() {
             return Ok(lines);
         }
-        // Use an unindented highlighted token header,
-        // then three-space component lines.
         let name = self.localised(adjuster.key.as_bytes(), &[], scopes, false)?;
         Ok(format!(
             "\u{11}H{name}\u{11}!\n{}",
@@ -197,7 +191,7 @@ impl Renderer<'_, '_, '_> {
         }
         if category {
             return Ok(text);
-        } // The category branch describes only stats.
+        }
         for key in ["night", "amphibious", "river", "fort", "snow"] {
             match self.units_bonus_adjuster(&adjuster(key, items), scopes) {
                 Ok(body) => text.push_str(&body),
@@ -217,8 +211,6 @@ impl Renderer<'_, '_, '_> {
 
     fn units_bonus_terrain(&self, items: &[Item], scopes: Scopes) -> Result<String, String> {
         let mut text = String::new();
-        // Only request the cached terrain roster for a potential terrain
-        // adjuster; unrelated scalar/equipment fields do not need map inputs.
         if items.iter().any(|item| {
             item.value.items().is_some()
                 && ![
@@ -261,7 +253,7 @@ impl Renderer<'_, '_, '_> {
         {
             let mut category = None;
             let mut percentage = false;
-            let mut add = false; // Both flags default to false.
+            let mut add = false;
             let mut values = Vec::new();
             for item in children(block) {
                 if item.keyword_is("category") {
@@ -277,7 +269,7 @@ impl Renderer<'_, '_, '_> {
                     };
                     if let Some(value) = parser::read_bool(item.value.scalar().unwrap_or_default())
                     {
-                        *target = value; // A failed boolean scan keeps the destination.
+                        *target = value;
                     }
                 } else if let Some(index) = item
                     .keyword()
@@ -285,7 +277,7 @@ impl Renderer<'_, '_, '_> {
                     && let Some(value) = installed_content_core::modifiers::read_fixed5(item)
                     && value != 0
                 {
-                    values.push((index, value)); // Append each successful nonzero stat.
+                    values.push((index, value));
                 }
             }
             let category = category.ok_or("battalion_mult has no resolved sub-unit category")?;

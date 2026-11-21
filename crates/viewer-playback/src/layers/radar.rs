@@ -1,9 +1,3 @@
-//! The radar range symbols' per-hour part: per recorded radar group its country, host state and
-//! range, with the faction and subject families that admit an allied group to the roster. Where
-//! a symbol stands and whether the viewer's roster shows it are made from these with the viewing
-//! country ([`Radar::groups`]); the host state's centre and height are content.
-//!
-//! A table not whole refuses the symbols by name and draws none, as today.
 
 use super::{Carried, Settling, Dirty, Gpu, Inputs, Layer, Num, Upstream, View};
 use crate::{
@@ -27,7 +21,6 @@ struct Columns {
     radius: Num<i64>,
 }
 
-/// One group as recorded: raw country, ordinal, host state, range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Entry {
     country: u32,
@@ -36,7 +29,6 @@ struct Entry {
     radius: Option<i64>,
 }
 
-/// Faction members and subject pairs in canonical slots, as today's `Families::read`.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Families {
     factions: BTreeMap<u32, u64>,
@@ -51,23 +43,17 @@ impl Families {
 
 pub struct Radar {
     columns: Option<Columns>,
-    /// Per RadarCoverage key: the group.
     groups: BTreeMap<u128, Entry>,
     links: BTreeMap<u32, u32>,
     families: Result<Families, &'static str>,
-    /// Why no symbol is drawn: a table not whole.
     refused: Option<String>,
     dirty: Dirty,
-    /// Keys by the dirty list's index.
     keys: Vec<u128>,
     index: BTreeMap<u128, u32>,
     whole: bool,
-    /// The viewing country, from the vision layer.
     ours: Option<u32>,
-    /// The symbols as placed for the scene, and whether the groups or the viewer moved since.
     field: Option<Arc<viewer_world::map::radar_symbols::Field>>,
     field_dirty: bool,
-    /// Each read table's status as last seen.
     statuses: std::collections::HashMap<usize, replay_columnar::manifest::Status>,
     frame: u64,
     marked: u64,
@@ -102,18 +88,14 @@ impl Radar {
         self.marked
     }
 
-    /// The symbols the scene draws, placed at their host states' centres; none before the first
-    /// upload.
     pub fn field(&self) -> Option<Arc<viewer_world::map::radar_symbols::Field>> {
         self.field.clone()
     }
 
-    /// The viewing country the groups are admitted for; none without a vision.
     pub fn ours(&self) -> Option<u32> {
         self.ours
     }
 
-    /// The groups in table order as today's field reads them for viewer `ours`; or why none.
     pub fn groups(&self, ours: u32) -> Result<Vec<Group>, String> {
         if let Some(why) = &self.refused {
             return Err(why.clone());
@@ -203,7 +185,6 @@ impl Radar {
                 Some(entry) => self.groups.insert(key, entry),
                 None => self.groups.remove(&key),
             };
-            // The field is placed and sorted whole: it is made again only for a group that moved.
             self.field_dirty |= held != entry;
             Ok(())
         });
@@ -211,7 +192,6 @@ impl Radar {
     }
 }
 
-/// The radar layer of a loaded recording.
 pub fn for_document(_document: &crate::document::Document) -> Box<dyn Layer> {
     Box::new(Radar::new())
 }

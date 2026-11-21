@@ -1,4 +1,3 @@
-//! AI strategy helpers retain their allocated context and field consumption.
 
 use crate::{
     combat_tactics, crt, fixed5,
@@ -28,7 +27,6 @@ enum Helper {
 enum Context {
     Allocated(Helper),
 
-    /// Negative global indices select an absent helper.
     Null,
     Unknown(&'static str),
 }
@@ -162,7 +160,6 @@ impl<'n> Shaper<'n> {
                         self.context = Context::Allocated(helper);
                     }
                 } else if let Some(kind) = crt::scan_i32(field.value.c_str()).stored() {
-                    // Numeric assignments preserve the allocated helper; failed scans preserve the type.
                     self.kind = kind;
                 }
                 Shape::One
@@ -246,7 +243,6 @@ impl<'n> Shaper<'n> {
             ValueReader::One => Shape::One,
             ValueReader::Values => Shape::ValueList,
 
-            // Trigger bodies read unconditionally without the repeated-limit child gate.
             ValueReader::Trigger => Shape::Body(Node::Trigger(combat_tactics::Node::Trigger)),
             ValueReader::OrderType => accepted(token_is_one_of(
                 field.value,

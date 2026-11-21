@@ -33,7 +33,6 @@ import './constructionLog.css';
 
 const NO_ROWS: readonly LogRow<ProjectAt>[] = [];
 
-/** A row's factories, painted each frame they move: the count, its hammer and its muted look at none. */
 function LiveFactories({ live, at }: { live: LiveTexts; at: string }) {
   const cell = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
@@ -61,10 +60,6 @@ const QUEUE_CHIP = [{ value: 'queue', label: 'In the queue', hint: 'Only project
 const TYPES_FIELD = OPTIONS.find(field => field.key === 'types');
 const EVERY_TYPE = TYPES_FIELD?.kind === 'content-set' ? TYPES_FIELD.automatic : 'Every type';
 
-/** Every construction project of the chosen countries as a log: newest first, each row the game's building art and
- * name with its levels over where it is, the country, a status pill and, while it is in the queue, the factories on
- * it. Following the playhead it renders once a block: each project's states through the block's end, within the
- * window and the windows held, revealed by the clock at their hours, the factories and levels painted between. */
 export default function ConstructionLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const live = widget.time.mode === 'follow';
   const options = resolveOptions(OPTIONS, widget.options);
@@ -75,8 +70,6 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     const at = track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour : undefined;
     return at == null ? null : Math.floor(at);
   }, [track, widget, runtime.tracks]);
-  // What a block's end is read from (the render before's, as the log depends on the block's hour): the windows, the
-  // log held and its rows' changes.
   const changes = useRef<{ windows: readonly { firstHour: number; lastHour: number }[]; log: ConstructionLog | null; playback: ConstructionPlayback | null }>({ windows: [], log: null, playback: null });
   const end = useCallback((clockHour: number) => {
     const at = trackHour(clockHour), held = changes.current;
@@ -89,19 +82,15 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const block = useAheadHour(runtime.clock, following, end);
   const clockHour = block.hour;
   const filtered = widget.countries.kind !== 'all';
-  // One country is named by the header chip, so its rows leave the country out.
   const oneCountry = widget.countries.kind === 'selected' || (widget.countries.kind === 'tags' && widget.countries.tags.length === 1);
   const groups = useCountryGroups(runtime, track, active && filtered);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const target = window ? Math.floor(window.lastHour) : null;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const inBranch = target != null && track != null && target >= track.branch.firstHour && target <= track.branch.lastHour;
-  // The hour shown is the target's once its window is held.
   const { manifest, log, hour, error, retry, onDrawn } = useConstructionLog(runtime, track, active, inBranch ? target : null, live);
-  // Tags stay an array end to end: a mod's tag may hold any character, spaces included.
   const tags = selectedCountryKeys(widget.countries, track);
   const tagsKey = JSON.stringify(tags);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => tags, [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
@@ -113,23 +102,18 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     ? constructionPlayback(log, { types: contentSet(types), projects, queue, country: match.matches, from }, order) : null,
   [log, match, types, projects, queue, from, order]);
   changes.current = { windows: manifest?.windows ?? [], log, playback: rowPlayback };
-  // Following with the block's window held, its rows are each project's states through the block's last hour (never past
-  // what the log holds now), revealed by the clock; else the rows at the hour shown.
   const ahead = following && hour != null && hour === target && log != null;
   const last = ahead ? Math.min(hour + block.until - 1 - Math.floor(block.hour), drawLimit(manifest?.windows ?? [], log, hour) - 1) : hour;
   const rows = useMemo(() => hour != null && last != null ? rowPlayback?.states(hour, last) ?? NO_ROWS : NO_ROWS, [rowPlayback, hour, last]);
   const revealHour = useCallback((at: number) => trackHour(at) ?? -Infinity, [trackHour]);
   const reveal = useRevealClock(runtime.clock, ahead, revealHour);
-  // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
   const onVisible = useCallback((drawn: readonly LogRow<ProjectAt>[]) => { setVisible(drawn); onDrawn(rows, drawn, from); }, [rows, onDrawn, from]);
   const naming = inBranch && log != null && match.ready;
-  // Off screen only reads wait: names already read stay on their rows.
   const names = useMemo(() => rowCountryRequests(naming ? visible : NO_ROWS), [visible, naming]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, names.wanted, active && naming, names.maxHours);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
   const choices = useMemo(() => buildingChoices(manifest), [manifest]);
-  // Factories and levels move at reads between the rows' changes: painted at the clock's hour, within the windows held.
   const paintedHour = useRef<() => number>(() => 0);
   paintedHour.current = () => {
     if (hour == null || !log) return hour ?? 0;
@@ -138,7 +122,6 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   };
   const painted = useMemo(() => liveProjectTexts(runtime.clock, () => paintedHour.current(), new Map((log?.projects ?? []).map(project => [project.id, project]))),
     [runtime.clock, log]);
-  // Revealed by the clock, the rows shown are the painted hour's, up to the last drawn; else the hour rendered.
   useShownEachFrame(runtime.clock, () => !log || hour == null ? null : reveal && last != null ? Math.min(paintedHour.current(), last) : hour);
   const warnings = useMemo(() => [...new Set([...manifest?.warnings ?? [], ...[...log?.windows.values() ?? []].flatMap(reply => reply.warnings)])],
     [manifest, log]);
@@ -163,7 +146,6 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     const label = country(at);
     const factories = rowFactories(at);
     const tone = statusTone(at);
-    // A name still being read shows a placeholder; a missing or failed one says so.
     const named = (placeholder: string): ReactNode => label.known === undefined
       ? <span className={`skeleton ${placeholder}`} aria-hidden="true" /> : <span className="construction-ellipsis">{label.name}</span>;
     const flag = <CountryFlagUrl className="log-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />;
@@ -189,7 +171,6 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     </>;
   };
   const menu = (row: LogRow<ProjectAt>) => jumpHours(row.item, hour).map(at => jumpItem(runtime, track.id, at));
-  // Older rows may still be on their way while earlier windows load.
   const empty = !logComplete(log, from) ? 'Loading earlier construction…'
     : chosen.length || projects !== 'all' || queue || from != null
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.'

@@ -13,7 +13,6 @@ fn store() -> Store {
     store
 }
 
-/// A plain model of one table: cells by slot and column, `None` for unrecorded.
 type Model = BTreeMap<u32, (u128, Vec<Option<Owned>>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +62,6 @@ fn model_cells(seed: u64) -> Vec<Option<Owned>> {
     cells(seed).iter().zip(KINDS).map(|(&cell, kind)| owned(value_of(kind, cell, &mut scratch).unwrap())).collect()
 }
 
-/// Every entry point, applied to the store and to a plain map, leaves the same cells.
 #[test]
 fn each_entry_point_matches_a_plain_map_of_cells() {
     let mut store = store();
@@ -103,7 +101,6 @@ fn each_entry_point_matches_a_plain_map_of_cells() {
             6 if live => {
                 let held = model.get_mut(&slot).unwrap();
                 let Some(Owned::List(old)) = held.1[5].clone() else { continue };
-                // Keep the first item, remove the rest, insert 4 and 6.
                 let items: Vec<u8> = [4_u32, 6].iter().flat_map(|item| item.to_le_bytes()).collect();
                 let removed = (old.len() / 4 - 1) as u32;
                 changes.edit(slot, 5, Edits { hunks: &[(1, removed, 2)], items: &items }).unwrap();
@@ -135,8 +132,6 @@ fn each_entry_point_matches_a_plain_map_of_cells() {
     }
 }
 
-/// A column widens as values need, signed values keep their sign, and a whole restore's
-/// narrowing gives the width back.
 #[test]
 fn narrow_columns_widen_and_narrow() {
     let mut column = Narrow::new(true);
@@ -158,7 +153,6 @@ fn narrow_columns_widen_and_narrow() {
     assert_eq!((unsigned.width(), unsigned.get(0)), (8, u64::MAX));
 }
 
-/// The key index finds every live row and none that went, across growth and removals.
 #[test]
 fn the_key_index_follows_inserts_and_deletes() {
     let mut store = store();
@@ -178,7 +172,6 @@ fn the_key_index_follows_inserts_and_deletes() {
     assert_eq!(changes.slot(7), Some(0));
 }
 
-/// Packing moves the live rows to slots 0..live in slot order and keeps every cell.
 #[test]
 fn a_packed_table_keeps_its_rows_in_slot_order() {
     let mut store = store();
@@ -208,9 +201,6 @@ fn a_packed_table_keeps_its_rows_in_slot_order() {
     assert_eq!(table.rows().collect::<Vec<_>>(), (0..5).collect::<Vec<_>>());
 }
 
-/// Packing in place across list pages, with a key index: every live row keeps its key and every
-/// cell (lists, unrecorded bits and missing optionals included), the rows are found by key at
-/// their new slots, and the slots freed hold nothing.
 #[test]
 fn a_table_packed_in_place_across_pages_keeps_every_row_and_its_index() {
     let mut store = store();
@@ -248,9 +238,6 @@ fn a_table_packed_in_place_across_pages_keeps_every_row_and_its_index() {
     assert_eq!(store.tables[0].slot(1), None, "a deleted row's key finds nothing");
 }
 
-/// A lookup naming the slot that holds its key reads it without the key index; one naming
-/// another slot, or none, builds the index. A block's end lets go of an index looked up fewer
-/// times than its table has rows, and keeps one looked up as often; a pack lets go of it too.
 #[test]
 fn a_hinted_lookup_needs_no_key_index_and_a_block_s_end_lets_go_of_one_little_used() {
     let mut store = self::store();
@@ -281,9 +268,6 @@ fn a_hinted_lookup_needs_no_key_index_and_a_block_s_end_lets_go_of_one_little_us
     assert_eq!(store.tables[0].slot(1050), Some(50));
 }
 
-/// A list page holding more than a segment: cells written, rewritten longer and shorter, and
-/// cleared, across several segments and the compactions they cause, read back as a plain map
-/// of the same cells holds them.
 #[test]
 fn a_list_page_across_segments_holds_every_cell_through_rewrites_and_compaction() {
     let mut store = store();
@@ -321,8 +305,6 @@ impl StringSource for Archive {
     }
 }
 
-/// A string no live cell names is let go of at a block's end and read again from the file when
-/// a cell names it again; without a file it is refused by name.
 #[test]
 fn strings_let_go_are_read_again_from_their_file() {
     let mut store = store();
@@ -339,7 +321,6 @@ fn strings_let_go_are_read_again_from_their_file() {
     assert_eq!(store.strings().get(1), Some(&b"one"[..]));
 }
 
-/// A section applied through the adapter leaves the cells `section::apply` leaves in a table.
 #[test]
 fn the_journal_adapter_matches_the_section_grammar() {
     let kinds = vec![Kind::U16, Kind::OptionalU32, Kind::Opaque];
@@ -348,8 +329,6 @@ fn the_journal_adapter_matches_the_section_grammar() {
     let mut adapter = Journal::default();
     let mut changes = crate::section::Changes::default();
     let mut scratch = crate::section::Scratch::default();
-    // A third hour inserts and sets opaque cells past what the adapter decodes at once: one cell
-    // larger than a piece, and many that fill several.
     let (big_ends, big_items) = {
         let (mut ends, mut items) = (Vec::new(), Vec::new());
         for row in 0..400_u32 {
@@ -371,7 +350,6 @@ fn the_journal_adapter_matches_the_section_grammar() {
         }
         (ends, items)
     };
-    // A fourth hour inserts more rows than the adapter decodes numbers for at once.
     let many_slots: Vec<u32> = (403..140_403).collect();
     let many_keys: Vec<u128> = many_slots.iter().map(|&slot| u128::from(slot) * 3 + 1).collect();
     let many_u16: Vec<u16> = many_slots.iter().map(|&slot| (slot % 60_000) as u16).collect();
@@ -504,8 +482,6 @@ fn the_journal_adapter_matches_the_section_grammar() {
     }
 }
 
-/// Letting go of slots past the last live row keeps every bit of the rows below it, however
-/// far each column's bits reach.
 #[test]
 fn trimming_keeps_the_bits_of_live_rows() {
     let mut flags = Flags::default();
@@ -531,8 +507,6 @@ fn trimming_keeps_the_bits_of_live_rows() {
     assert_eq!(table.slots(), 200);
     assert_eq!(table.value(3, 130), Value::Number(1));
     assert_eq!(table.value(2, 140), Value::Number(7));
-    // A list column no row past the first page wrote holds that page alone: trimming into the
-    // next page leaves it whole.
     let mut store = self::store();
     let mut changes = store.table(0).unwrap();
     for slot in 0..1100_u32 {
@@ -549,9 +523,6 @@ fn trimming_keeps_the_bits_of_live_rows() {
     assert_eq!(table.value(5, 130), Value::List(&[4, 0, 0, 0, 5, 0, 0, 0]));
 }
 
-/// Rows inserted in one hour, the first leaving a column unwritten: that cell is not recorded,
-/// and every cell written of the rows after it stays recorded, however the hour's unwritten
-/// cells sort among the written ones.
 #[test]
 fn an_unwritten_column_of_one_inserted_row_leaves_the_next_rows_written_cells_recorded() {
     let kinds = vec![Kind::I32, Kind::U16];
@@ -576,10 +547,6 @@ fn an_unwritten_column_of_one_inserted_row_leaves_the_next_rows_written_cells_re
     assert_eq!(table.value(1, 7), Value::Unrecorded);
 }
 
-/// The test's run-first hour at `hour`: table 0 complete, forty rows inserted (one row's first
-/// column not given, one cell unrecorded, one row touched); table 1 read in part, three rows
-/// inserted; table 2 complete, three rows inserted and one of them, a cell of it unrecorded,
-/// deleted again.
 fn a_first_hour(store: &mut Store, hour: i32, appends: &[&[u8]]) {
     store.begin_hour(hour, appends).unwrap();
     store.status(0, Status::Complete, true, Some(hour), true).unwrap();
@@ -617,10 +584,6 @@ fn a_first_hour(store: &mut Store, hour: i32, appends: &[&[u8]]) {
     store.settle();
 }
 
-/// A run's first hour keeps nothing per row or cell in the hour's log, and gives what the same
-/// changes logged as an ordinary hour give: the same tables (a cell the hour did not give not
-/// recorded, a partly read table viewing every row), the same count of cells not given, and the
-/// same summary pieces.
 #[test]
 fn a_run_s_first_hour_keeps_no_log_and_reads_as_the_same_hour_logged() {
     use crate::summary::{Builder, Column, Facet, Shape, Source, aggregate};
@@ -678,8 +641,6 @@ fn a_run_s_first_hour_keeps_no_log_and_reads_as_the_same_hour_logged() {
     assert_eq!(first_pieces, logged_pieces);
 }
 
-/// A log summary of a run's first hour counts the rows live at the hour's end: a row inserted and
-/// deleted again inside that hour is not counted.
 #[test]
 fn a_log_summary_of_a_run_s_first_hour_counts_the_rows_live_at_its_end() {
     use crate::summary::{Builder, Facet, Piece, Shape};
@@ -708,8 +669,6 @@ fn a_log_summary_of_a_run_s_first_hour_counts_the_rows_live_at_its_end() {
     assert_eq!(total, 4, "the four rows live at the hour's end");
 }
 
-/// A table read in part views, after a run's first hour, the rows live at the hour's end: a row
-/// inserted and deleted again inside that hour is not in it.
 #[test]
 fn a_partly_read_table_s_view_after_a_run_s_first_hour_holds_its_live_rows() {
     let hour = 3_000_017;
@@ -731,7 +690,6 @@ fn a_partly_read_table_s_view_after_a_run_s_first_hour_holds_its_live_rows() {
     assert_eq!(store.table_state(0).unwrap().view(), Some(&[1, 6][..]));
 }
 
-/// A state table (0) and a log (1) of [`KINDS`].
 fn with_log() -> Store {
     let mut store = Store::new(vec![KINDS.to_vec(); 2], vec![false; 2]);
     store.declare_logs(&[false, true]).unwrap();
@@ -739,9 +697,6 @@ fn with_log() -> Store {
     store
 }
 
-/// Every change by row is refused on a log by name, and appending and forgetting on a state
-/// table; forgetting a row never appended or forgotten before is refused by name; a log holds no
-/// row to find by key; classes are declared before any row.
 #[test]
 fn what_may_not_be_done_to_a_log_is_refused_by_name() {
     let mut store = with_log();
@@ -791,8 +746,6 @@ fn what_may_not_be_done_to_a_log_is_refused_by_name() {
     assert!(refused.contains("after it holds rows"), "{refused}");
 }
 
-/// A million rows appended and all but the last 200,000 forgotten, oldest first: the log holds its
-/// count and one bit a row of its live span, by the store's own count, and nothing else per row.
 #[test]
 fn a_log_holds_a_count_and_its_live_span_alone() {
     let mut store = with_log();
@@ -824,10 +777,6 @@ fn a_log_holds_a_count_and_its_live_span_alone() {
     assert!(bytes.total() <= 2 * span + 64, "{bytes:?}");
 }
 
-/// An hour's appended rows are the log's view while the hour lasts, with every cell as given (a
-/// column not given not recorded) and the log's own status; the hour's log says how many, from
-/// which ordinal, and what it forgot, a row appended and forgotten within the hour included; a
-/// log summary counts the rows appended. The next hour's view starts empty.
 #[test]
 fn an_hour_s_appended_rows_are_the_log_s_view_and_summary() {
     use crate::summary::{Builder, Facet, Piece, Shape};
@@ -880,7 +829,6 @@ fn an_hour_s_appended_rows_are_the_log_s_view_and_summary() {
     assert_eq!(store.log().tables[1].appended, 0);
 }
 
-/// The key index holds the highest slot a table's 32-bit slot count allows, exactly.
 #[test]
 fn the_key_index_holds_the_last_slot_the_format_records() {
     let keys = Keys::new();
@@ -891,9 +839,6 @@ fn the_key_index_holds_the_last_slot_the_format_records() {
     assert_eq!(index.find(0, &keys), None);
 }
 
-/// A row at the slot past the format's width is refused by name, on the store's table and on a
-/// table apart, and nothing of it is held; the slots below go on as before. The lowest free slot
-/// past the last word the width holds is none.
 #[test]
 fn a_row_past_the_format_s_slot_width_is_refused_by_name() {
     let mut store = store();
@@ -915,9 +860,6 @@ fn a_row_past_the_format_s_slot_width_is_refused_by_name() {
     assert_eq!(slot_at(last_word + 1, 0), None);
 }
 
-/// A run's strings take ids up to the format's 32-bit width and up to the lowest writer's string:
-/// an hour appending past either is refused by name before anything changes, an intern past them
-/// too, and a text held is still found.
 #[test]
 fn strings_past_their_width_or_into_a_writer_s_are_refused_by_name() {
     let mut wide = Store::new(vec![KINDS.to_vec()], vec![false]);
@@ -939,7 +881,6 @@ fn strings_past_their_width_or_into_a_writer_s_are_refused_by_name() {
     assert_eq!(store.strings().get(5), Some(&b"a writer's"[..]));
 }
 
-/// A log's listed set holds the last ordinal a 64-bit count leaves, and clears it.
 #[test]
 fn a_log_s_listed_set_holds_its_last_ordinal() {
     let mut listed = Listed::default();
@@ -949,9 +890,6 @@ fn a_log_s_listed_set_holds_its_last_ordinal() {
     assert!(listed.is_empty());
 }
 
-/// A journal section inserting a state table's row past the format's slot width costs that table
-/// from that hour, by name: nothing of the section lands, the hour's other tables do, the refusal
-/// is kept when the adapter is taken up again, and the table's later sections are not applied.
 #[test]
 fn the_journal_adapter_refuses_a_state_table_past_the_slot_width_by_name() {
     let kinds = vec![Kind::U16];
@@ -1000,7 +938,6 @@ fn the_journal_adapter_refuses_a_state_table_past_the_slot_width_by_name() {
     }
 }
 
-/// A journal section of a table the recorder writes itself is refused, naming the table.
 #[test]
 fn the_journal_adapter_refuses_a_section_of_a_table_it_leaves_by_name() {
     let kinds = vec![Kind::U16];

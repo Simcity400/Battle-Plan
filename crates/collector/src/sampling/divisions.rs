@@ -1,8 +1,6 @@
 use super::{Captured, elapsed, extended, qpc};
 use engine_native::walk::Outcome;
 
-/// One independently bounded owned division census, coverage counts and five detail tables.
-/// No address/span replay or live memory access remains on the decode worker.
 #[derive(Debug, Default)]
 pub(crate) struct DivisionsJob {
     pub(crate) presentation: Option<std::sync::Arc<crate::acquisition_jobs::PresentationInputs>>,
@@ -15,11 +13,7 @@ pub(crate) struct DivisionsJob {
     pub(super) overflowed: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
     pub(super) source_packet: Vec<engine_native::cequipment_variant_pool::DivisionSource>,
-    /// The country slots this hour's inputs walk, when parts walk the rest
-    /// ([`crate::division_census::Census::capture_inputs_part`]); every slot
-    /// otherwise.
     pub(crate) slots: Option<(u32, u32)>,
-    /// The joined census's storage to reserve after walking the first part.
     pub(crate) join_capacity: crate::division_census::JoinCapacity,
 }
 impl DivisionsJob {
@@ -100,8 +94,6 @@ impl DivisionsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct DivisionsCopyReport {
-    /// Ready owned payload. A core failure after seed leasing is terminal;
-    /// only an input-stage shortage before leasing may use a fresh fallback.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 6],
 }
@@ -111,7 +103,6 @@ pub(crate) struct DivisionsCopyContext {
     pub game_state: usize,
     pub source_capacity: usize,
     pub detail_capacities: [usize; 5],
-    /// Frozen with the input lineage and retained through owned decoding.
     pub details_active: bool,
 }
 impl Default for DivisionsCopyContext {
@@ -126,8 +117,6 @@ impl Default for DivisionsCopyContext {
         }
     }
 }
-/// Initial source acquisition only. No input lease may outlive an earlier use
-/// of this job. A native failure remains attached to this exact input attempt.
 fn copy_divisions_inputs_pass(
     job: &mut DivisionsJob,
     memory: &impl engine_native::Memory,
@@ -143,7 +132,6 @@ fn copy_divisions_inputs_pass(
     if let Some(slots) = job.slots {
         job.census
             .capture_inputs_part(memory, context.base, context.game_state, slots);
-        // Off the game thread: room for the parts the callback joins.
         job.census.reserve_join(job.join_capacity);
     } else {
         job.census
@@ -151,14 +139,9 @@ fn copy_divisions_inputs_pass(
     }
     job.acquisition_ticks[0] = elapsed(started);
     job.inputs_captured = true;
-    // This is metadata-only capacity admission. capture_core may still discover
-    // a private row/header capacity shortage, which cannot authorize a retry
-    // after consumers receive a lease.
     job.overflowed = job.census.overflowed;
 }
 
-/// Retain one input packet before any core task leases it. A capacity miss
-/// permits fallback only before any consumer has borrowed that packet.
 pub(crate) fn copy_divisions_inputs_refresh(
     memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
@@ -168,16 +151,12 @@ pub(crate) fn copy_divisions_inputs_refresh(
     !payload.overflowed
 }
 
-/// Consume only the retained input lineage. This stage never clears a Census,
-/// reacquires its input packet, or retries an earlier core/detail acquisition.
 fn copy_divisions_core_pass(
     job: &mut DivisionsJob,
     memory: &impl engine_native::Memory,
     context: DivisionsCopyContext,
 ) {
     let _reads = crate::read_accounting::table(replay_data::rows::TableId::Divisions);
-    // Context mismatch is a terminal orchestration failure. Keep the original
-    // input owner intact so its other consumers can finish.
     if !job.inputs_captured || job.context != context {
         job.overflowed = true;
         job.core_finished = true;
@@ -219,7 +198,6 @@ fn copy_divisions_core_pass(
     }
 }
 
-/// Report the one owned acquisition without reading source memory.
 fn divisions_copy_report(payload: &DivisionsJob) -> DivisionsCopyReport {
     DivisionsCopyReport {
         raw_ok: !payload.overflowed,
@@ -227,7 +205,6 @@ fn divisions_copy_report(payload: &DivisionsJob) -> DivisionsCopyReport {
     }
 }
 
-/// A failure after input leasing is final for this callback; no source retry.
 pub(crate) fn copy_divisions_core_refresh(
     memory: &impl engine_native::Memory,
     ctx: DivisionsCopyContext,
@@ -237,7 +214,6 @@ pub(crate) fn copy_divisions_core_refresh(
     divisions_copy_report(payload)
 }
 
-/// Single composed acquisition for synthetic callers.
 #[cfg(test)]
 pub(crate) fn copy_divisions_refresh(
     memory: &impl engine_native::Memory,
@@ -249,7 +225,6 @@ pub(crate) fn copy_divisions_refresh(
     divisions_copy_report(payload)
 }
 
-/// The hourly core and coverage counts fail even off the detail tables' slot.
 pub(super) fn fail_divisions_capture(
     frame: &mut Captured,
     reason: &'static str,
@@ -262,8 +237,6 @@ pub(super) fn fail_divisions_capture(
     }
 }
 
-/// Worker installation copies compact core rows and transfers owned detail
-/// buffers. Callback presentation rows and their source packet survive.
 pub(crate) fn decode_divisions_payload(
     frame: &mut Captured,
     _base: usize,
@@ -284,10 +257,5 @@ pub(crate) fn decode_divisions_payload(
         job.update_capacity_charge();
     }
 }
-/// Shared synthetic address space for the divisions-group copy/decode
-/// harness: two countries plus one alias slot, one province, three
-/// divisions (null location, null template and null orders covered),
-/// equipment pools with signed amounts, and upgrade groups with requests,
-/// one live delivery and produced rows.
 #[cfg(test)]
 pub(crate) mod divisions_test_kit;

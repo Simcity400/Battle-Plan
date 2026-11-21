@@ -1,9 +1,3 @@
-//! The political and character tables recorded for script triggers:
-//! CountryCharacters and CountryRetiredCharacters against each country's
-//! saved `character_status` and `retired_character_status`, and
-//! PartyLeaders against each saved party's `country_leader` entries and the
-//! leaders' saved roles, and CountryCivilWars against
-//! each country's saved `civil_war_target`s.
 
 use super::{
     Report, complete, country_tag, current_slice_owners, invalid, required_country_tag,
@@ -56,14 +50,6 @@ pub fn compare(
     });
 }
 
-/// Advisor-status updating inserts comparator-distinct idea keys into the
-/// available-advisor roster and sets the advisor flag for nonnull roles.
-/// Entries compare the primary key then case-insensitive text, not character.
-/// The game saves that flag; the game saves the role's idea.
-/// The save carries membership, not the available array's native order.
-/// Pools are read once a game day per country: only the countries read at the
-/// oracle hour are compared (all of them on a full hour or in a recording
-/// from before the table was sliced).
 fn available_advisors(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -136,14 +122,10 @@ fn available_advisors(
                 .get(&handle)
                 .ok_or_else(|| invalid("saved advisor status character missing from manager"))?;
             for role in &character.advisors {
-                // The game omits an empty idea string. The game
-                // still inserts its key, including emptiness, without a gate.
                 expected.insert((id, role.idea.clone().unwrap_or_default()));
             }
         }
         let actual = recorded.remove(tag).unwrap_or_default();
-        // The save omits the primary comparison word. ASCII-folded equal
-        // ideas may share one representative; it cannot certify which one.
         let mut candidates = BTreeMap::<Vec<u8>, BTreeSet<(u32, Vec<u8>)>>::new();
         for item in &expected {
             candidates
@@ -212,14 +194,6 @@ fn available_advisors(
     Ok(())
 }
 
-/// Each faction's recorded occupied advisor slots against its saved
-/// `upgrades.slots`, slot by slot: the faction upgrade save writer
-/// writes every slot in order, with `advisor` (the slot advisor's
-/// character token) only for an occupied one, so a
-/// recorded row exists exactly for a saved advisor. The save has no idea
-/// token: it is compared with the saved advisor roles of the character of
-/// that token, exactly when there is one role with a token, as membership
-/// when there are several (the slot's role is then not identified).
 fn faction_advisors(
     frame: &DecodedFrame,
     factions: &BTreeMap<u64, installed_content_save::Faction>,
@@ -332,10 +306,6 @@ fn faction_advisors(
     Ok(())
 }
 
-/// Role-string parsing preserves role bytes
-/// and hashes all of them with ASCII-folded FNV-1a. Set insertion
-/// and lookup require that hash and case-insensitive comparison (ASCII
-/// path); equal keys keep the first inserted spelling.
 fn advisor_token_key(token: &[u8]) -> (u32, Vec<u8>) {
     let hash = token.iter().fold(0x811c_9dc5_u32, |hash, byte| {
         (hash ^ u32::from(byte.to_ascii_lowercase())).wrapping_mul(0x0100_0193)
@@ -346,35 +316,6 @@ fn advisor_token_key(token: &[u8]) -> (u32, Vec<u8>) {
     )
 }
 
-/// The recorded advisor idea-token set against the set loading the save
-/// builds. No writer saves the set; loading clears it and each country's
-/// character loader fills it through the only insertion path:
-/// - a `character_status` entry (token 0x4CA6) goes through
-///   character-status updating followed by advisor-status updating, registering
-///   the character's advisor roles in the country's available-advisor roster,
-///   inserting their idea tokens and setting the record's `advisor` byte exactly
-///   when there is a role. Thus entries marked `advisor=yes` supply those tokens;
-/// - a `retired_character_status` entry (token 0x4E00) inserts the idea
-///   tokens of every advisor role of its character, whatever its flags.
-///
-/// Only advisor-status updating (a role the character lost) and
-/// advisor-role removal (a role removed from a
-/// character that is not retired) erase a token, so retiring keeps them.
-///
-/// At a load hour (`Report::load_hour`: the frame hour is the loaded and
-/// first hour of a LoadSignal branch) the game has just rebuilt the set, and
-/// every mismatch is a difference. A SessionStart branch's first hour is not
-/// a load hour: the game may have run since its load. At any other hour a
-/// recorded token can outlive both lists without an erase:
-/// the dynamic-country reset (civil wars, dynamic
-/// countries) resets country appearance, replacing its character state and
-/// destroying the old state. Destruction zeroes both lists' counts without
-/// erasing their idea keys. So there a recorded token none
-/// of whose holders is in a saved list is a counted limitation; the holders
-/// are the saved characters whose saved roles produce it and the recorded
-/// AdvisorRoles characters with that idea. A token no role names, a token a
-/// listed character holds, and a saved token the recording lacks remain
-/// differences.
 fn advisor_tokens(frame: &DecodedFrame, pack: &saved::Pack, report: &mut Report) -> io::Result<()> {
     let rows = complete::<tables::AdvisorTokens>(frame)?;
     let mut recorded = BTreeMap::new();
@@ -403,7 +344,6 @@ fn advisor_tokens(frame: &DecodedFrame, pack: &saved::Pack, report: &mut Report)
     for (list, countries, retired) in lists {
         for (tag, statuses) in report.canonical_countries(countries) {
             for status in statuses {
-                // Listed whatever its advisor flag.
                 listed.insert(status.character);
                 match (retired, status.advisor) {
                     (true, _) | (false, Some(true)) => {}
@@ -486,11 +426,6 @@ fn advisor_tokens(frame: &DecodedFrame, pack: &saved::Pack, report: &mut Report)
     Ok(())
 }
 
-/// Each country's recorded civil-war array against its saved
-/// `civil_war_target`s, in order: the country save writer writes each
-/// entry's tag (the country-tag text lookup) in array order. A
-/// recorded raw reference is named by the tag of the country its link
-/// resolves to.
 fn civil_wars(
     frame: &DecodedFrame,
     countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
@@ -540,8 +475,6 @@ fn character_handle(id: u32) -> u64 {
     (u64::from(id) << 32) | u64::from(engine_native::ccharacter::REFERENCE_TYPE)
 }
 
-/// Each country's recorded rows grouped by tag, checking one raw reference per
-/// tag and ordinals contiguous from zero.
 fn by_country<'a, R>(
     rows: &'a [R],
     links: &BTreeMap<u32, &'a CountryRow>,
@@ -572,13 +505,6 @@ fn by_country<'a, R>(
         .collect())
 }
 
-/// A country's recorded active (CountryCharacters) or retired
-/// (CountryRetiredCharacters) records against its saved `character_status`
-/// or `retired_character_status`, as sets: the country character save writer
-/// inserts every record's character reference into a map before writing each
-/// list, so the save neither keeps the native order nor a duplicate record,
-/// and it dereferences every record, so a null record has no saved
-/// counterpart and is a difference.
 fn character_records<T>(
     frame: &DecodedFrame,
     saved: &BTreeMap<Vec<u8>, Vec<saved::CharacterStatus>>,
@@ -630,16 +556,6 @@ where
     Ok(())
 }
 
-/// Each party's recorded leaders against its saved `country_leader` entries,
-/// in order: the party save writer writes one entry
-/// per element of the leader vector,
-/// in order, with the parent character's reference (the invalid reference
-/// `{0, 0}` for a null parent). Parties are joined through PoliticalParties
-/// (country and ideology ID to the party's ideology token, the save's party
-/// key). The party writer does not save `leader_id`: the country-leader
-/// role writer does, as `id` when not -1, so it is
-/// compared with the saved role at the recorded map key's position,
-/// even when the game changes its ideology without rekeying.
 fn party_leaders(
     frame: &DecodedFrame,
     governance: &governance::Pack,
@@ -853,9 +769,6 @@ mod tests {
         assert!(available_advisors(&frame, &pack, &links, &mut Report::default()).is_err());
     }
 
-    /// Pools are read once a game day per country (owner decision
-    /// 2026-10-11): a country whose pool SliceReads dates to an earlier hour
-    /// is not compared with the save, so its held pool is no difference.
     #[test]
     fn available_advisors_compare_only_pools_read_at_the_oracle_hour() {
         let source = br#"
@@ -870,7 +783,6 @@ mod tests {
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
-        // The held pool predates the save's: it lists another idea.
         *frame.tables[TableId::AvailableAdvisors.index()] =
             TableView::Complete(TableRows::AvailableAdvisors(vec![
                 replay_data::rows::AvailableAdvisorRow {
@@ -900,7 +812,6 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("owner decision 2026-10-11"))
         );
-        // Read at the oracle hour, the same pool is a difference.
         *frame.tables[TableId::SliceReads.index()] = read_at(frame.hour);
         let mut report = Report::default();
         available_advisors(&frame, &pack, &links, &mut report).unwrap();
@@ -1056,8 +967,6 @@ mod tests {
         report
     }
 
-    /// The retired records compare the same way with
-    /// `retired_character_status`.
     #[test]
     fn retired_records_compare_as_a_set_with_retired_character_status() {
         let mut frame = frame();
@@ -1098,7 +1007,6 @@ mod tests {
 
     #[test]
     fn active_records_compare_as_a_set_with_character_status() {
-        // Native order (by name token) differs from the saved map order.
         let report = run(
             &characters_frame(&[Some(9), Some(4), Some(9)]),
             &status(&[4, 9]),
@@ -1122,8 +1030,6 @@ mod tests {
         );
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
         assert!(report.differences.iter().any(|d| d.contains("null record")));
-        // A saved country with records but none recorded, and a recorded
-        // country the save lacks.
         let report = run(&characters_frame(&[]), &status(&[4]));
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         let mut pack = status(&[4]);
@@ -1135,7 +1041,6 @@ mod tests {
                 .iter()
                 .any(|d| d.contains("country absent from save"))
         );
-        // A gap in the ordinals is malformed, not a difference.
         let mut frame = characters_frame(&[Some(4)]);
         *frame.tables[TableId::CountryCharacters.index()] =
             TableView::Complete(TableRows::CountryCharacters(vec![CountryCharacterRow {
@@ -1270,7 +1175,6 @@ mod tests {
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert!(report.failed_comparisons.is_empty());
         assert_eq!(report.compared_tables["PartyLeaders"], 3);
-        // A null parent has no role to join its id.
         assert!(
             report
                 .limitations
@@ -1332,15 +1236,12 @@ mod tests {
 
     #[test]
     fn party_leader_order_identity_id_and_membership_differences_are_reported() {
-        // Swapped order within the party: both characters differ, and the
-        // first saved leader's role id is not the recorded one.
         let report = run_leaders(&leader_frame(&[
             (3, 0, None, -1),
             (3, 1, Some(1482), 12),
             (5, 0, Some(1482), -1),
         ]));
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-        // A wrong role id, a missing leader, and an extra party.
         let report = run_leaders(&leader_frame(&[
             (3, 0, Some(1482), 7),
             (5, 0, Some(1482), -1),
@@ -1359,7 +1260,6 @@ mod tests {
                 .iter()
                 .any(|d| d.contains("democratic[1]"))
         );
-        // A party the recording lacks in PoliticalParties is malformed.
         let report = run_leaders(&leader_frame(&[(4, 0, Some(1482), 12)]));
         assert!(report.failed_comparisons.contains_key("PartyLeaders"));
     }
@@ -1410,9 +1310,6 @@ mod tests {
         run_retired_tokens(tokens, advisor, None, false)
     }
 
-    /// `run_tokens` with character 1523 (roles `SOV_c`, `SOV_c_theorist`)
-    /// saved as SOV's retired record with the given advisor flag, or not
-    /// listed at all when `retired` is `None`, at a load hour or not.
     fn run_retired_tokens(
         tokens: &[&[u8]],
         advisor: Option<bool>,
@@ -1502,7 +1399,6 @@ mod tests {
         let (tokens, gap) = authored.advisor_tokens();
         assert!(gap.is_none());
         let tokens = tokens.collect::<Vec<_>>();
-        // The game keeps the first spelling when the game finds an ASCII case alias.
         assert_eq!(tokens, ["mixed_advisor"]);
         let mut pack = saved::parse(&installed_content_core::parser::parse(br#"
             character_manager={historical={
@@ -1527,7 +1423,6 @@ mod tests {
             assert!(report.failed_comparisons.contains_key("AdvisorTokens"));
             assert_eq!(run_token_pack(&[], &pack, load_hour).differences.len(), 1);
         }
-        // Retired characters use the same set identity, whatever the flag.
         let retired = pack.character_status.remove(b"AAA".as_slice()).unwrap();
         pack.retired_character_status
             .insert(b"AAA".to_vec(), retired);
@@ -1563,15 +1458,12 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("no writer saves"))
         );
-        // A character not marked advisor registers nothing.
         assert_eq!(
             run_tokens(&[b"GER_a", b"GER_a_theorist"], Some(false))
                 .differences
                 .len(),
             2
         );
-        // Missing and extra tokens are differences; a repeat or a missing
-        // advisor flag is malformed.
         let report = run_tokens(&[b"GER_a", b"GER_b"], Some(true));
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         let report = run_tokens(&[b"GER_a", b"GER_a"], Some(true));
@@ -1582,8 +1474,6 @@ mod tests {
 
     #[test]
     fn advisor_tokens_keep_every_role_of_a_retired_character() {
-        // Loading a retired record (the game token 0x4E00) inserts all its
-        // character's roles, whatever its advisor flag says.
         let all: [&[u8]; 4] = [b"GER_a", b"GER_a_theorist", b"SOV_c", b"SOV_c_theorist"];
         for load_hour in [true, false] {
             for flag in [Some(true), Some(false), None] {
@@ -1591,8 +1481,6 @@ mod tests {
                 assert!(report.differences.is_empty(), "{:?}", report.differences);
                 assert_eq!(report.compared_tables["AdvisorTokens"], 4);
             }
-            // A recorded set lacking a retired character's tokens is short
-            // at every hour.
             assert_eq!(
                 run_retired_tokens(
                     &[b"GER_a", b"GER_a_theorist"],
@@ -1611,7 +1499,6 @@ mod tests {
     fn a_token_of_a_character_in_no_saved_list_is_runtime_only_except_at_a_load_hour() {
         const RUNTIME_ONLY: &str = "runtime-only advisor token: character not in the saved rosters";
         let all: [&[u8]; 4] = [b"GER_a", b"GER_a_theorist", b"SOV_c", b"SOV_c_theorist"];
-        // Character 1523 is saved with both roles but in neither list.
         let report = run_retired_tokens(&all, Some(true), None, true);
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         assert!(!report.limitations.contains_key(RUNTIME_ONLY));
@@ -1620,10 +1507,8 @@ mod tests {
         assert_eq!(report.limitations[RUNTIME_ONLY].len(), 2);
         assert_eq!(report.compared_tables["AdvisorTokens"], 4);
         for load_hour in [true, false] {
-            // A saved token the recording lacks.
             let report = run_retired_tokens(&[b"GER_a"], Some(true), None, load_hour);
             assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-            // A token no saved or recorded role names.
             let report = run_retired_tokens(
                 &[b"GER_a", b"GER_a_theorist", b"XXX_unknown"],
                 Some(true),
@@ -1631,8 +1516,6 @@ mod tests {
                 load_hour,
             );
             assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-            // A token of a listed character (1451, advisor=no) whose saved
-            // roles do not produce it.
             let report = run_retired_tokens(
                 &[b"GER_a", b"GER_a_theorist", b"GER_b"],
                 Some(true),
@@ -1703,18 +1586,14 @@ mod tests {
         let report = run_faction_advisors(&[(0, b"GER_b_idea"), (2, b"GER_a_theorist")], slots());
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["FactionAdvisors"], 2);
-        // GER_a has two roles: its slot is only checked for membership.
         assert!(
             report
                 .limitations
                 .values()
                 .any(|subjects| subjects.iter().any(|s| s.ends_with("[2]")))
         );
-        // A wrong token, an occupied slot recorded empty, and a slot the
-        // save does not have.
         let report = run_faction_advisors(&[(0, b"GER_a_idea"), (3, b"GER_b_idea")], slots());
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-        // A saved advisor whose character is unknown.
         let report = run_faction_advisors(&[(0, b"GER_b_idea")], vec![Some(b"GER_c")]);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     }
@@ -1732,7 +1611,6 @@ mod tests {
         );
         assert_eq!(run_civil_wars(&[], &[b"ITA"]).differences.len(), 1);
         assert_eq!(run_civil_wars(&[103], &[]).differences.len(), 1);
-        // An unknown raw reference cannot be named.
         let report = run_civil_wars(&[999], &[]);
         assert!(report.failed_comparisons.contains_key("CountryCivilWars"));
     }

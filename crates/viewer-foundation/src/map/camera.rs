@@ -1,33 +1,12 @@
-//! The game's map camera and projection conventions.
-//!
-//! The engine keeps a left-handed look-at camera with a fixed horizontal lead:
-//! `eye = (cx, h, cz - 30)` looking at `(cx, WATER_HEIGHT, cz)` with up `+Y`.
-//! The lead is the user's `camera_tilt * 0.3` (30 at the default 100) and does not depend on the height, so
-//! "pitch" is really a constant lead and `height` is the only zoom control.
-//!
-//! Matrices follow D3D's row-vector convention (`clip = vec4(world, 1) * M`),
-//! which is what [`view_projection`](Camera::view_projection) returns as
-//! `[row][column]`. WGSL reads a `mat4x4<f32>` uniform as four consecutive
-//! column vectors, so writing those rows straight into the buffer gives WGSL
-//! the transpose, which is exactly the column-vector matrix `M^T` that yields
-//! the same clip position from `M_wgsl * vec4(world, 1)`. Depth lands in 0..1
-//! in both D3D and wgpu, so no depth remap is needed.
-//!
-//! Beside that camera, a [`Pose::Free`] eye looks in any direction with its own lens
-//! ([`pose`]); every method below answers for either.
 
 pub mod frustum;
 mod pose;
 
 pub use pose::{Free, Lens, PITCH_LIMIT, Pose};
 
-/// Vertical field of view in radians.
 pub const FOV_Y: f32 = 0.785;
-/// Near plane.
 pub const NEAR: f32 = 5.0;
-/// Far plane.
 pub const FAR: f32 = 4000.0;
-/// `WATER_HEIGHT` from `constants.fxh`; the look-at point and water plane.
 pub const WATER_HEIGHT: f32 = 9.5;
 
 use std::io;
@@ -36,16 +15,12 @@ use super::gradient_math::hsv_to_rgb;
 
 pub mod motion;
 
-/// The fixed5 scale, in the single precision the map-icon distance gates divide in.
 const FIXED5_SCALE: f32 = 100_000.0;
 
-/// A stored fixed5 camera-distance define as the map-icon gates compare it with the eye height:
-/// the stored integer converted to `f32` first, then divided by the fixed5 scale in `f32`.
 pub fn fixed5_camera_distance(stored: i64) -> f32 {
     stored as f32 / FIXED5_SCALE
 }
 
-/// Projected viewport position and sorting depth.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapIconProjection {
     pub position: [f32; 2],
@@ -53,8 +28,6 @@ pub struct MapIconProjection {
 }
 
 impl MapIconProjection {
-    /// Where a caller that keeps every anchor places one behind a free eye: outside any viewport,
-    /// and deepest.
     pub const BEHIND: Self = Self {
         position: [-1.0e9, -1.0e9],
         depth: f32::MAX,
@@ -65,12 +38,9 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Look-at lead north of the eye: the user's camera_tilt multiplied by 0.3.
 const TILT_SCALE: f32 = 0.3;
-/// The game holds `settings.txt` `camera_tilt` within these as it reads the file.
 const TILT_RANGE: [f32; 2] = [5.0, 100.0];
 
-/// `settings.txt` `camera_tilt` as the game holds it after reading the file.
 pub fn stored_tilt(value: f32) -> f32 {
     let [low, high] = TILT_RANGE;
     if low > value {
@@ -82,68 +52,36 @@ pub fn stored_tilt(value: f32) -> f32 {
     }
 }
 
-/// The `NDefines.NGraphics` operands the camera and the frame constants read,
-/// and the user's camera tilt. Every value comes from the recorded content and
-/// the configured user folder; nothing falls back to the shipped numbers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapDefines {
-    /// `camera_tilt * 0.3`.
     pub tilt_lead: f32,
-    /// `NFrontend.CAMERA_MIN_HEIGHT` and `CAMERA_MAX_HEIGHT`.
     pub heights: [f32; 2],
-    /// `CAMERA_OUTSIDE_MAP_DISTANCE_TOP` and `..._BOTTOM`: how far past the map's
-    /// top and bottom edges the visible ground may reach.
     pub outside: [f32; 2],
-    /// `SUN_HEIGHT`, `SUN_LATITUDE`, `SUN_HEIGHT_WATER`.
     pub sun: [f32; 3],
-    /// `MOON_HEIGHT`, `MOON_HEIGHT_WATER`.
     pub moon: [f32; 2],
-    /// `SECOND_SUN_LATITUDE`, `SECOND_MOON_LATITUDE`.
     pub second_latitude: [f32; 2],
-    /// Political-mode gradient camera-distance and outline-cutoff pairs, using STRATEGIC_REGIONS for
-    /// layer one and COUNTRY for layer two.
     pub gradient_borders: [f32; 4],
-    /// `DRAW_SHADOWS_CUTOFF` and `DRAW_SHADOWS_FADE_LENGTH`.
     pub shadows: [f32; 2],
-    /// `DRAW_FOW_CUTOFF` and `DRAW_FOW_FADE_LENGTH`.
     pub fog: [f32; 2],
-    /// The authored `TREE_FADE_NEAR` and `TREE_FADE_FAR` thresholds.
     pub tree_fade: [f32; 2],
-    /// `AMBIENT_LIGHT_POS_X`, `_NEG_X`, `_POS_Y`, `_NEG_Y`, `_POS_Z`, `_NEG_Z`,
-    /// linear.
     pub ambient: [[f32; 3]; 6],
-    /// `SUN_DIFFUSE_COLOR` (linear) and `SUN_INTENSITY`.
     pub sun_diffuse: [f32; 4],
-    /// `MOON_DIFFUSE_COLOR` (linear) and `MOON_INTENSITY`.
     pub moon_diffuse: [f32; 4],
-    /// `RAID_MAP_ICON_DRAW_DISTANCE_MIN` and `..._MAX`: the camera heights
-    /// raid map icons show between in the ordinary map modes.
     pub raid_icons: [f32; 2],
-    /// `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE`: the raid map mode's upper height.
     pub raid_icons_raid_mode: f32,
-    /// `SUN_SPECULAR_INTENSITY`.
     pub sun_specular: f32,
-    /// `CUBEMAP_INTENSITY`.
     pub cubemap: f32,
-    /// `DRAW_COUNTRY_NAMES_CUTOFF`: country names fade in at or above this height.
     pub country_names_cutoff: f32,
-    /// The political gradient-border field operands.
     pub gradient_field: super::gradient_math::FieldDefines,
-    /// `BORDER_WIDTH`: the full width of a border strip in map pixels.
     pub border_width: f32,
-    /// `PROVINCE_BORDER_FADE_NEAR`/`_FAR` and `STATE_BORDER_FADE_NEAR`/`_FAR`.
     pub border_fades: [[f32; 2]; 2],
-    /// `CITY_SPRAWL_SHRINK_DISTANCE`, `DRAW_MAP_OBJECTS_CUTOFF` and
-    /// `RAILWAY_CAMERA_CUTOFF`: the map-object camera switches.
     pub sprawl_cutoff: f32,
     pub map_objects_cutoff: f32,
     pub railway_cutoff: f32,
-    /// `RAILWAY_CAMERA_CUTOFF_SPEED`: the railway opacity's change per second.
     pub railway_cutoff_speed: f32,
 }
 
 impl MapDefines {
-    /// `camera_tilt` is the configured user folder's `settings.txt` value.
     pub fn load(defines: &installed_content_core::defines::Defines, camera_tilt: f32) -> io::Result<Self> {
         let define = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
@@ -154,7 +92,6 @@ impl MapDefines {
             }
         };
         let number = |key: &str| define("NGraphics", key);
-        // Convert the authored HSV triple to RGB, then raise each component to power 2.2 for linear colour.
         let color = |key: &str| -> io::Result<[f32; 3]> {
             match defines.numbers("NGraphics", key)?.as_slice() {
                 &[h, s, v] => Ok(hsv_linear([h as f32, s as f32, v as f32])),
@@ -242,7 +179,6 @@ impl MapDefines {
         })
     }
 
-    /// The shipped content's values, for synthetic fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test() -> Self {
         Self {
@@ -286,13 +222,10 @@ impl MapDefines {
     }
 }
 
-/// [`hsv_to_rgb`], then `ToLinear` (`pow 2.2`).
 fn hsv_linear(hsv: [f32; 3]) -> [f32; 3] {
     hsv_to_rgb(hsv).map(|channel| channel.powf(2.2))
 }
 
-/// Map pixel dimensions come from the province bitmap named by default.map. Shader globals receive
-/// them as floats. World units are map pixels; wrapping uses the integer width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MapSize {
     pub width: u32,
@@ -315,7 +248,6 @@ impl MapSize {
         self.height as f32
     }
 
-    /// A vanilla-shaped map for synthetic fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub const TEST: Self = Self {
         width: 5632,
@@ -323,21 +255,15 @@ impl MapSize {
     };
 }
 
-/// The map camera: the ground point it looks at, its height and the map it
-/// looks at.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
-    /// The look-at point on the water plane, as world `(x, z)`; a free pose's eye.
     pub center: [f32; 2],
-    /// Eye height in world units; the only zoom control the engine has.
     pub height: f32,
     pub map: MapSize,
     pub defines: MapDefines,
-    /// The game's look-at camera, or a free eye.
     pub pose: Pose,
 }
 
-/// A camera given before its map is known, as `--camera` does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
     pub center: [f32; 2],
@@ -346,7 +272,6 @@ pub struct Placement {
 }
 
 impl Placement {
-    /// The game's camera looking at `center` from `height`.
     pub const fn map(center: [f32; 2], height: f32) -> Self {
         Self {
             center,
@@ -366,7 +291,6 @@ impl Placement {
     }
 }
 
-/// An orthonormal left-handed camera basis: right, up and forward.
 struct Basis {
     right: [f32; 3],
     up: [f32; 3],
@@ -374,7 +298,6 @@ struct Basis {
 }
 
 impl Camera {
-    /// The camera without its map.
     pub fn placement(&self) -> Placement {
         Placement {
             center: self.center,
@@ -383,7 +306,6 @@ impl Camera {
         }
     }
 
-    /// The free pose, `None` for the game's camera.
     pub fn free(&self) -> Option<&Free> {
         match &self.pose {
             Pose::Map => None,
@@ -391,12 +313,10 @@ impl Camera {
         }
     }
 
-    /// The lens the projection uses.
     pub fn lens(&self) -> Lens {
         self.free().map_or(Lens::MAP, |free| free.lens)
     }
 
-    /// The eye position, `vCamPos` in the frame constants.
     pub fn eye(&self) -> [f32; 3] {
         match self.pose {
             Pose::Map => [
@@ -408,17 +328,10 @@ impl Camera {
         }
     }
 
-    /// How far `other` stands from this camera when it is this one moved over the ground and
-    /// turned, and nothing else: the same map, height and lens. The first value is the distance
-    /// over the ground; the second bounds how far any direction tied to the view moves, twice the
-    /// sine of half the turn's angle, and is zero only when the pose is the same. `None` when the
-    /// view's shape differs, which neither covers.
     pub fn turned_from(&self, other: &Camera) -> Option<(f32, f32)> {
         let turn = match (&self.pose, &other.pose) {
             (pose, other) if pose == other => Some(0.0),
             (Pose::Free(free), Pose::Free(other)) if free.lens == other.lens => {
-                // From the axes' differences, as a trace near 3 rounds a small turn away: their
-                // squared lengths sum to twice the squared chord.
                 let moved: f32 = free
                     .axes()
                     .iter()
@@ -435,7 +348,6 @@ impl Camera {
         turn.filter(|_| same).map(|turn| ((dx * dx + dz * dz).sqrt(), turn))
     }
 
-    /// The look-at point: on the water plane for the game's camera, one unit ahead of a free eye.
     pub fn look_at(&self) -> [f32; 3] {
         match &self.pose {
             Pose::Map => [self.center[0], WATER_HEIGHT, self.center[1]],
@@ -446,7 +358,6 @@ impl Camera {
         }
     }
 
-    /// The normalised forward direction, `vCamLookAtDir`.
     pub fn look_direction(&self) -> [f32; 3] {
         match &self.pose {
             Pose::Map => normalize(subtract(self.look_at(), self.eye())),
@@ -460,7 +371,6 @@ impl Camera {
             return Basis { right, up, forward };
         }
         let forward = self.look_direction();
-        // LookAtLH: right = normalize(cross(up, forward)), up = cross(forward, right).
         let right = normalize(cross([0.0, 1.0, 0.0], forward));
         Basis {
             up: cross(forward, right),
@@ -469,20 +379,16 @@ impl Camera {
         }
     }
 
-    /// The view's right column and normalised up column, which world text
-    /// quads face along.
     pub fn world_text_axes(&self) -> ([f32; 3], [f32; 3]) {
         let Basis { right, up, .. } = self.basis();
         (right, normalize(up))
     }
 
-    /// The view's right, up and forward unit axes.
     pub fn axes(&self) -> [[f32; 3]; 3] {
         let Basis { right, up, forward } = self.basis();
         [right, up, forward]
     }
 
-    /// `ViewProjectionMatrix` as `[row][column]` in the row-vector convention.
     pub fn view_projection(&self, viewport: [u32; 2]) -> [[f32; 4]; 4] {
         multiply(self.view(), projection(self.lens(), aspect(viewport)))
     }
@@ -491,7 +397,6 @@ impl Camera {
         projection(self.lens(), aspect(viewport))
     }
 
-    /// `InvViewProjMatrix`, in the same convention; `None` if it is singular.
     pub fn inverse(&self, viewport: [u32; 2]) -> Option<[[f32; 4]; 4]> {
         invert(self.view_projection(viewport))
     }
@@ -507,13 +412,6 @@ impl Camera {
         ]
     }
 
-    /// Projects a world point to screen pixels, with `y` down from the top.
-    ///
-    /// `None` when the point is at or behind the eye plane, where the
-    /// perspective divide has no meaning.
-    // The `names` and `icons` passes anchor their screen-space sprites with
-    // this ( "Map-icon anchoring"); a screen-space pass wants
-    // [`project_wrapped`], which is this with the map's x seam accounted for.
     pub fn project(&self, world: [f32; 3], viewport: [u32; 2]) -> Option<[f32; 2]> {
         let m = self.view_projection(viewport);
         let mut clip = [0.0f32; 4];
@@ -532,10 +430,6 @@ impl Camera {
         ])
     }
 
-    /// Map-icon anchors move by whole map widths to within half a width of the camera. Project using
-    /// the frame camera, divide by signed w without refusal, and scale coordinates by the integer GUI
-    /// extent. The game's camera keeps behind-eye and non-finite results for caller conversion; a
-    /// free eye has anchors behind it, and those return `None`.
     pub fn project_map_icon(
         &self,
         world: [f32; 3],
@@ -566,7 +460,6 @@ impl Camera {
         Some(Self::project_map_icon_matrix(&matrix, world, extent))
     }
 
-    /// Returns z divided by w without an eye-plane guard.
     pub fn project_map_icon_matrix(
         matrix: &[[f32; 4]; 4],
         world: [f32; 3],
@@ -588,7 +481,6 @@ impl Camera {
         }
     }
 
-    /// Divides z by signed w, including behind-eye points.
     pub fn map_icon_depth(matrix: &[[f32; 4]; 4], world: [f32; 3]) -> f32 {
         let clip = |column: usize| {
             world[1] * matrix[1][column]
@@ -599,37 +491,11 @@ impl Camera {
         clip(2) / clip(3)
     }
 
-    /// Projects a world anchor, trying the map's two x-seam copies as well.
-    ///
-    /// The map wraps at its width, and the world passes cover a view that
-    /// runs past either edge by drawing their geometry again a map width away
-    /// (`map::border_pass::wrap_offsets`). A screen-space icon has no geometry
-    /// to copy, so it is the anchor that moves instead: a province just across
-    /// the seam from the camera is seen a whole map width from where its
-    /// `map/unitstacks.txt` position puts it, and projecting that position
-    /// unshifted drops the icon off the frame entirely.
-    ///
-    /// The three candidates are the anchor and the anchor shifted by plus and
-    /// minus a map width. **At most one is kept** — see [`wrap_offset`] — so an
-    /// anchor never draws twice. `None` only when no candidate projects at all.
-    ///
-    /// [`wrap_offset`]: Camera::wrap_offset
     pub fn project_wrapped(&self, world: [f32; 3], viewport: [u32; 2]) -> Option<[f32; 2]> {
         let offset = self.wrap_offset(world, viewport);
         self.project([world[0] + offset, world[1], world[2]], viewport)
     }
 
-    /// Which of the map's three x-seam copies of `world` the frame sees, as a
-    /// world x translation of `0` or minus or plus the map width.
-    ///
-    /// The copy kept is the one whose projection lands nearest the middle of
-    /// the viewport, which is the one the visible rectangle reaches: the other
-    /// two are a whole map width away in world x and so at least the width of
-    /// the frame away on screen at every height the engine allows. `0` when no
-    /// candidate projects at all, where the caller's own projection fails too.
-    ///
-    /// A caller that projects two anchors and reads the direction between them
-    /// needs both on the *same* copy, which is what this exposes.
     pub fn wrap_offset(&self, world: [f32; 3], viewport: [u32; 2]) -> f32 {
         let middle = viewport[0].max(1) as f32 * 0.5;
         let width = self.map.x();
@@ -643,12 +509,6 @@ impl Camera {
             .map_or(0.0, |(offset, _)| offset)
     }
 
-    /// Where a screen pixel's view ray meets the water plane, as world `(x, z)`.
-    ///
-    /// `None` when the ray points at or above the horizon. At every height the
-    /// engine allows this cannot happen for the game's camera: the steepest lead is
-    /// `atan2(30, 50 - 9.5) = 36.5` degrees above the forward axis while half
-    /// the vertical field of view is only 22.5 degrees. A free eye looks above it.
     pub fn unproject_ground(&self, screen: [f32; 2], viewport: [u32; 2]) -> Option<[f32; 2]> {
         let direction = self.ray(screen, viewport);
         if direction[1] > -1e-6 {
@@ -659,14 +519,12 @@ impl Camera {
         Some([eye[0] + t * direction[0], eye[2] + t * direction[2]])
     }
 
-    /// The unnormalised world-space view ray through a screen pixel.
     pub fn ray(&self, screen: [f32; 2], viewport: [u32; 2]) -> [f32; 3] {
         let width = viewport[0].max(1) as f32;
         let height = viewport[1].max(1) as f32;
         let ndc_x = screen[0] / width * 2.0 - 1.0;
         let ndc_y = 1.0 - screen[1] / height * 2.0;
         let y_scale = 1.0 / (self.lens().fov_y * 0.5).tan();
-        // View-space direction that projects onto this NDC point, with z = 1.
         let view = [ndc_x * aspect(viewport) / y_scale, ndc_y / y_scale, 1.0];
         let Basis { right, up, forward } = self.basis();
         [
@@ -676,8 +534,6 @@ impl Camera {
         ]
     }
 
-    /// integer screen point, inverse projection,
-    /// camera-to-world, then subtract the eye and normalise.
     pub fn pick_ray(&self, screen: [f32; 2], viewport: [u32; 2]) -> [f32; 3] {
         let [x, y] = screen.map(|value| value as i32 as f32);
         let x = (x + x) / viewport[0].max(1) as f32 - 1.0;
@@ -685,9 +541,6 @@ impl Camera {
         self.ray_at_ndc([x, y], viewport)
     }
 
-    /// The direction the map pans towards a framebuffer pixel: the [`Self::pick_ray`] through it,
-    /// kept to its part in the camera's right and up plane, back in world axes, with its height
-    /// dropped. It is not normalised, so its length follows the view's field and aspect.
     pub fn pan_direction(&self, screen: [f32; 2], viewport: [u32; 2]) -> [f32; 3] {
         let ray = self.pick_ray(screen, viewport);
         let Basis { right, up, .. } = self.basis();
@@ -700,11 +553,7 @@ impl Camera {
         ]
     }
 
-    /// Floating NDC coordinates are accepted directly. Shadow footprints use exact corners and centre
-    /// without screen rounding.
     pub fn ray_at_ndc(&self, [x, y]: [f32; 2], viewport: [u32; 2]) -> [f32; 3] {
-        // Build these inverse terms directly from tan(fov/2),
-        // rather than inverting the rounded forward projection.
         let lens = self.lens();
         let tangent = (lens.fov_y * 0.5).tan();
         let reciprocal_w = 1.0 / (1.0 / lens.near);
@@ -714,10 +563,8 @@ impl Camera {
             reciprocal_w,
         ];
         let Basis { right, up, forward } = self.basis();
-        let up = normalize(up); // Normalize the camera-to-world up axis.
+        let up = normalize(up);
         if self.free().is_some() {
-            // A free eye's near plane can be a small fraction of its coordinates, where the
-            // game's round trip through the eye's position would lose the ray's direction.
             return normalize(std::array::from_fn(|axis| {
                 view[1] * up[axis] + view[0] * right[axis] + view[2] * forward[axis]
             }));
@@ -729,18 +576,6 @@ impl Camera {
         }))
     }
 
-    /// Pulls the centre back until the visible ground stays inside the map
-    /// grown by `CAMERA_OUTSIDE_MAP_DISTANCE_TOP`/`_BOTTOM`.
-    ///
-    /// Compare visible z extent with map height plus the top/bottom allowance. While it fits, shift
-    /// the camera by edge overshoot; otherwise centre the overshoot. Horizontal edges remain
-    /// unclamped because the map wraps.
-    ///
-    /// The top and bottom allowances constrain the visible ground footprint at every zoom level.
-    ///
-    /// `--dump --camera` sets the camera directly and never calls this, so a
-    /// headless frame still renders exactly the camera it is given. A free eye
-    /// keeps its own limits ([`Camera::hold_free`]).
     pub fn clamp_center(&mut self, viewport: [u32; 2]) {
         if self.free().is_some() {
             return;
@@ -762,11 +597,6 @@ impl Camera {
         };
     }
 
-    /// Drags the ground point under `from` to sit under `to`.
-    ///
-    /// The camera only ever translates in `xz`, so the ground point under a
-    /// screen pixel is `center + f(pixel)` for a function of the height and the
-    /// viewport alone; the new centre follows without another intersection.
     pub fn pan(&mut self, from: [f32; 2], to: [f32; 2], viewport: [u32; 2]) {
         let (Some(from), Some(to)) = (
             self.unproject_ground(from, viewport),
@@ -779,12 +609,6 @@ impl Camera {
         self.clamp_center(viewport);
     }
 
-    /// Centres the map and picks the lowest height that shows all of it.
-    ///
-    /// The visible ground quad is not a linear function of the height, because
-    /// the 30-unit lead is fixed while the eye rises, so this bisects instead of
-    /// solving. The engine's `CAMERA_MAX_HEIGHT` of 3000 does not reach the full
-    /// width of the shipped map at 16:9, so the result saturates there.
     pub fn fit(map: MapSize, defines: MapDefines, viewport: [u32; 2]) -> Self {
         let center = [map.x() * 0.5, map.y() * 0.5];
         let covers = |height: f32| {
@@ -829,12 +653,6 @@ impl Camera {
         }
     }
 
-    /// The `(x0, z0, x1, z1)` bounding box of the visible water plane, grown by
-    /// `margin` on every side so terrain standing above the plane stays covered.
-    ///
-    /// A free eye's box is what its view volume reaches of the band the map's objects stand in,
-    /// out to its [object range](Camera::object_range). Looking wholly above the band it is the
-    /// eye's own point, so nothing beyond the margin around it passes.
     pub fn visible_ground(&self, viewport: [u32; 2], margin: f32) -> Option<[f32; 4]> {
         if self.free().is_some() {
             let range = self.object_range();
@@ -870,9 +688,6 @@ impl Camera {
         ])
     }
 
-    /// [`Self::visible_ground`] of every camera a held one's `slack` covers: one that stands up to
-    /// `slack.pad` from this one over the ground and turned by up to `slack.turn`. It holds the
-    /// eye too, where a covered view that misses the band of the map's objects has its ground.
     pub fn held_ground(&self, viewport: [u32; 2], margin: f32, slack: Slack) -> Option<[f32; 4]> {
         if slack.turn == 0.0 || self.free().is_none() {
             return self.visible_ground(viewport, margin + slack.pad);
@@ -889,16 +704,10 @@ impl Camera {
         Some([rect[0] - margin, rect[1] - margin, rect[2] + margin, rect[3] + margin])
     }
 
-    /// How far from a free eye the map's objects stand: the content's `DRAW_MAP_OBJECTS_CUTOFF`,
-    /// the distance the game removes map objects at, or the far plane if nearer. The game's camera
-    /// has no such range; its height gates its objects.
     pub fn object_range(&self) -> f32 {
         self.defines.map_objects_cutoff.min(self.lens().far)
     }
 
-    /// How far a map icon at `anchor` stands from the camera, as the content's map-icon distance
-    /// cutoffs and grouping distances read it: the game's camera height, or a free eye's distance
-    /// to the anchor's nearest map copy.
     pub fn icon_distance(&self, anchor: [f32; 3]) -> f32 {
         match self.pose {
             Pose::Map => self.height,
@@ -915,27 +724,20 @@ impl Camera {
         }
     }
 
-    /// The `(x0, z0, x1, z1)` box of the part of the view volume within view depth `range` and
-    /// between heights `band`; `None` when the view misses the band.
     pub fn reach(&self, viewport: [u32; 2], range: f32, band: [f32; 2]) -> Option<[f32; 4]> {
         frustum::bounds(&self.reach_points(viewport, range, band))
     }
 
-    /// The corners of the view volume within view depth `range` and between heights `band`.
     pub fn reach_points(&self, viewport: [u32; 2], range: f32, band: [f32; 2]) -> Vec<[f32; 3]> {
         let near = self.lens().near;
         let corners = frustum::corners(self, viewport, near, range.max(near));
         frustum::in_band(&corners, band[0], band[1])
     }
 
-    /// The view volume's six planes, inside non-negative: left, right, top, bottom, near, far.
     pub fn frustum_planes(&self, viewport: [u32; 2]) -> [[f32; 4]; 6] {
         frustum::planes(&self.view_projection(viewport))
     }
 
-    /// Keeps a free eye on the map: its `x` on the first map copy, its `z` within the map rows and
-    /// its height at least `clearance` above `floor` under it and at most `CAMERA_MAX_HEIGHT`
-    /// above the water. The game's camera is left alone.
     pub fn hold_free(&mut self, floor: &dyn Fn(f32, f32) -> f32, clearance: f32) {
         if self.free().is_none() {
             return;
@@ -950,7 +752,6 @@ impl Camera {
         self.height = self.height.clamp(low, high);
     }
 
-    /// Refuses a camera that would produce a degenerate matrix.
     pub fn validate(self) -> std::io::Result<()> {
         let pose = match &self.pose {
             Pose::Map => true,
@@ -978,7 +779,6 @@ fn aspect(viewport: [u32; 2]) -> f32 {
     viewport[0].max(1) as f32 / viewport[1].max(1) as f32
 }
 
-/// Left-handed perspective projection with normalized depth in 0..1.
 fn projection(lens: Lens, aspect: f32) -> [[f32; 4]; 4] {
     let Lens { fov_y, near, far } = lens;
     let y_scale = 1.0 / (fov_y * 0.5).tan();
@@ -1000,9 +800,6 @@ fn multiply(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     out
 }
 
-/// Cofactor inverse, computed in `f64` because the view-projection mixes
-/// world coordinates in the thousands with near-unit projection terms.
-/// `None` when the determinant is not usable.
 fn invert(m: [[f32; 4]; 4]) -> Option<[[f32; 4]; 4]> {
     let wide = m.map(|row| row.map(f64::from));
     let f = |r: usize, c: usize| wide[r][c];
@@ -1031,7 +828,6 @@ fn invert(m: [[f32; 4]; 4]) -> Option<[[f32; 4]; 4]> {
     let mut out = [[0.0f32; 4]; 4];
     for (row, values) in out.iter_mut().enumerate() {
         for (column, value) in values.iter_mut().enumerate() {
-            // Transposed cofactor matrix over the determinant.
             *value = (cofactor[column][row] / determinant) as f32;
         }
     }
@@ -1063,21 +859,10 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// How far the camera travels, in world units, before what its view's retained sets gather is
-/// gathered again. A travelling camera gathers with this to spare, so while it stays inside it the
-/// gathered sets already hold everything the camera draws: a drag of about two map units a frame
-/// keeps them for four.
 pub const PAD: f32 = 8.0;
 
-/// How far a turning free eye's view may turn before what it gathers is gathered again, as
-/// [`Camera::turned_from`] measures a turn: about 2.9 degrees.
 pub const TURN: f32 = 0.05;
 
-/// What a set gathered against a held camera allows for: every test moved out by `pad`, and a
-/// plane through the held eye leaned out by `turn` per unit of distance from it ([`Self::at`]). A
-/// camera standing up to `pad` from the held one over the ground and turned by up to `turn`
-/// ([`Camera::turned_from`]) has each plane within `pad + turn * distance` of the held one's, so
-/// the test gathers everything that camera sees.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Slack {
     pub pad: f32,
@@ -1085,32 +870,21 @@ pub struct Slack {
 }
 
 impl Slack {
-    /// The camera itself.
     pub const NONE: Self = Self { pad: 0.0, turn: 0.0 };
 
-    /// A travelling camera's: [`PAD`] over the ground and no turn.
     pub const PAN: Self = Self { pad: PAD, turn: 0.0 };
 
-    /// A turning free eye's: [`PAD`] over the ground and [`TURN`].
     pub const TURNING: Self = Self { pad: PAD, turn: TURN };
 
-    /// How far out a test through the held eye moves at a point `distance` from it.
     pub fn at(self, distance: f32) -> f32 {
         self.pad + self.turn * distance
     }
 
-    /// Whether a camera `moved` ([`Camera::turned_from`]) from the held one is inside it.
     fn covers(self, (travel, turn): (f32, f32)) -> bool {
         travel <= self.pad && turn <= self.turn
     }
 }
 
-/// The camera a view's retained sets gather against, and the slack they gather with. Gathering
-/// decides nothing that is drawn: every frame draws exactly what its own camera sees, of what was
-/// gathered. A camera standing still gathers what it sees. A travelling one gathers with [`PAD`] to
-/// spare, and a turning free eye with [`TURN`] as well, and keeps what it gathered while it keeps
-/// the view's shape and stays inside the slack, so nothing is gathered again frame by frame under
-/// a moving camera.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hold {
     seen: Option<(Camera, [u32; 2])>,
@@ -1118,7 +892,6 @@ pub struct Hold {
 }
 
 impl Hold {
-    /// The camera this frame's view gathers against, and the slack to gather with.
     pub fn at(&mut self, camera: Camera, viewport: [u32; 2]) -> (Camera, Slack) {
         let last = self.seen.replace((camera, viewport));
         if last.is_none_or(|last| last == (camera, viewport)) {

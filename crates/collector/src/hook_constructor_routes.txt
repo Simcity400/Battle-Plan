@@ -1,29 +1,6 @@
-# Reviewed non-construction call routes in runtime::run.
-# New routes require explicit classification. Never add hook aliases or helper
-# factories here: use canonical direct constructors in FamilyHooks::construct.
-# Methods and opaque local macro definitions are included so unsupported forms
-# fail closed. Macro fingerprints cover normalized source tokens, not game data.
-# Integration composition: collection/scalar methods; retained storage cleanup;
-# watch demand/buffer sizing; content-demand flags; design receiver registration;
-# market sequence/capacity preparation; deadline formatting. None constructs hooks.
-# Engine owner routes size content buffers and lexical-key staging, initialize
-# verified immutable executable metadata, and set scripted-sharing demand.
-# These loader preparation calls construct no hooks.
-# The build gate records the running build and reports it in status; admission
-# refuses withheld essential families before any game read. None constructs hooks.
-# Detach macro fingerprints retain every composed owner across failed teardown.
-# Decode panic routes install only the standard panic handler and read its retained
-# diagnostic. Conditional event-feed status uses bool::then; detach retains the
-# panic-handler owner and preserves the first decode failure.
-# Capture-mode scope (extended::records_any) only tests the session's table list.
-# History-journal and frame-priority worker threads, country presizing, restoration
-# scratch and detach pacing (which only disable hooks), and terminal status/error
-# writes: none constructs hooks or reads the game.
-# The spool state's empty applied-combat-hint table; plain data.
 call:AppliedHints::default
 call:Arc::as_ptr
 call:Arc::clone
-# Shared weak ownership only; no hook construction or game access.
 call:Arc::downgrade
 call:Arc::new
 call:AtomicU32::new
@@ -46,7 +23,6 @@ call:Instant::now
 call:LiveMemory::new
 call:Ok
 call:OnceLock::new
-# The game's one-collector claim: a named mutex only; no hook construction or game read.
 call:Owner::claim
 call:PreparedCampaigns::load
 call:Processor::new
@@ -82,19 +58,11 @@ call:crate::building_bombing::buildings
 call:crate::building_bombing::capacity
 call:crate::building_bombing::prepare
 call:crate::building_bombing::restore_sequence
-# The capture thread starts with the other workers and is in the owned-worker list by its id;
-# once every family is installed, captures leave the game thread only if it started and the
-# command batch's hook is live. Detach stops and joins it after capture admission has closed.
-# None constructs hooks or reads the game.
 call:crate::capture_point::Thread::start
 call:crate::capture_point::set_beside
-# Detach waits a bounded time for the last ended hour to be read at a batch's return, then
-# records every hour still unread as lost once no capture can run. None constructs hooks.
 call:crate::capture_point::drain
 call:crate::capture_point::take_unread
 call:sampling::record_lost
-# The performance counter times a detach restore batch for its progress step; it reads
-# no game memory and constructs no hook.
 call:crate::clock::qpc
 call:crate::combat_log_prune::release_storage
 call:crate::command_batch::enabled
@@ -122,7 +90,6 @@ call:crate::country_scale::observe_reserved_visibility
 call:crate::country_scale::observe_saved_targets
 call:crate::country_scale::presize_table_inputs
 call:crate::country_scale::source_demand::Demand::observe
-# Registers scratch-pool byte accounting against the weak Shared owner; no hooks.
 call:crate::design_changes::account_scratch
 call:crate::division_panel_forwarder::attach
 call:crate::equipment_destruction::demand
@@ -130,8 +97,6 @@ call:crate::extended::records_any
 call:crate::equipment_destruction::release
 call:crate::experience_gains::prepare
 call:crate::extended::weather::observe_display_capacity
-# A conversion helper's priority slot (an enum value) and the helper pool's size from usable CPUs;
-# registering a helper's thread id for CPU accounting. None constructs hooks or reads the game.
 call:crate::frame_priority::Reconciler::start
 call:crate::frame_priority::Role::Helper
 call:crate::fuel_awards::capacities
@@ -140,8 +105,6 @@ call:crate::fuel_awards::presize
 call:crate::fuel_awards::release
 call:crate::history_changes::presize
 call:crate::hook::publication::status
-# A detach restoration batch over the prepared scratch: it records and restores patches
-# already published, disables only, and constructs no hook and reads no game memory.
 call:crate::hook::restoration::Batch::collect
 call:crate::hook::restoration::Scratch::prepare
 call:crate::hook::restoration::active
@@ -180,8 +143,6 @@ call:crate::peace_settlements::capacity_for_world
 call:crate::politics_changes::release
 call:crate::politics_changes::resize
 call:crate::politics_changes::restore_epoch
-# Marks the calling collector thread off the game's hold path for allocation accounting;
-# constructs no hook and reads no game memory.
 call:crate::private_heap::off_hold_path
 call:crate::progress::Progress::open
 call:crate::progress::Stage::new
@@ -195,8 +156,6 @@ call:crate::territory_changes::scripted_capture
 call:crate::thread_cpu::register
 call:crate::thread_cpu::register_helper
 call:crate::thread_cpu::register_id
-# The worker panic guard records a thread's first panic for progress and status; first() reads it.
-# Neither constructs hooks or reads the game.
 call:crate::worker_panic::Guard::install
 call:crate::worker_panic::first
 call:crate::worker_sampler::prepare
@@ -214,18 +173,12 @@ call:decode::worker_finished
 call:decode::worker_id
 call:detach_retry_delay
 call:drop
-# The collector state in a fallibly allocated shared box (a refusal is the named attach
-# failure) and its pointer published for the hooks, as Arc::new and Arc::as_ptr were.
-# Neither constructs hooks or reads the game.
 call:engine_allocation::SharedBox::as_ptr
 call:engine_allocation::shared
 call:engine_dlc::cdlc_manager::observe_counts
 call:engine_events::politics_sites::lexical_key_demand
 call:engine_executable::executable_tables::initialize_executable
 call:engine_research::research_modifiers::scripted_sharing_roster
-# Site location reads the loaded executable's own image and publishes the located keys; at, name and
-# hook resolve a key (hook gives the hourly site's address and verified bytes to its constructor).
-# None constructs a hook.
 call:engine_sites::Image::module
 call:engine_sites::Located::locate
 call:engine_sites::at
@@ -245,8 +198,6 @@ call:installation_message
 call:io::Error::from
 call:module_path
 call:mutation_detach_refusal
-# Whether a mutation observer is still running, from the families' own counters, gating
-# world lifetime into a detach batch; reads no game memory and constructs no hook.
 call:observers_active
 call:ptr::null
 call:ptr::null_mut
@@ -269,8 +220,6 @@ call:u64::from
 call:usize::try_from
 call:wait_acquisitions
 call:wait_quiet
-# Whether every family but world lifetime is restored (plain flags), so world lifetime
-# restores last in its own detach batch; constructs no hook.
 call:world_restore_ready
 call:write_status
 call:write_status_bytes
@@ -281,7 +230,6 @@ macro:format
 macro:format_args
 macro:retain_detach
 macro:vec
-# Binds writer/receipt byte accounting to Shared.pool_bytes; no hooks or game reads.
 method:account_writer
 method:acquisition_failed
 method:activate
@@ -294,8 +242,6 @@ method:as_micros
 method:as_mut
 method:as_ref
 method:build_warning
-# The frame builder thread's id, for CPU accounting and the owned-worker list: it builds
-# capture frames only, constructs no hooks and reads no game memory.
 method:builder_id
 method:busy_sites
 method:cast_mut
@@ -353,8 +299,6 @@ method:observe_input_demand
 method:observe_input_demand_error
 method:observer_state
 method:ok
-# Opens hourly capture admission (an atomic flag) once every attach family has reported;
-# the hourly hook was published with the families. Constructs no hook.
 method:open
 method:opened
 method:or
@@ -380,7 +324,6 @@ method:raise_for_pride_names
 method:raise_for_raid_arenas
 method:raise_for_supply_origins
 method:raise_reserved_visibility
-# The frame pool's ready-queue length, read for drain progress.
 method:ready_len
 method:recognised
 method:refusal
@@ -415,5 +358,4 @@ method:validation_refusals
 method:wake_spool
 method:with_file_name
 method:withheld
-# Collector configuration drops one campaign's prepared history; no game call or hook construction.
 method:without_history

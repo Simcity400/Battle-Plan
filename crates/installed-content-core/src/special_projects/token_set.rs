@@ -1,4 +1,3 @@
-//! The breakthrough specialization token set.
 
 #[derive(Clone, Copy, Default)]
 struct Slot {
@@ -22,8 +21,6 @@ fn hash(mut token: u32) -> u32 {
 
 impl Set {
     fn grow(&mut self) {
-        // Eight initial buckets, then double, with log2+2 overflow slots.
-        // Reinsert old entries in physical slot order.
         let buckets = if self.mask <= 3 {
             8
         } else {
@@ -57,8 +54,6 @@ impl Set {
                 break;
             }
         }
-        // Construction keeps 0.9f, and the denominator is the mask,
-        // not the number of buckets.
         if distance > self.maximum || (self.count + 1) as f32 / self.mask as f32 > 0.9_f32 {
             self.grow();
             self.insert(token);
@@ -93,7 +88,6 @@ impl Set {
     }
 }
 
-/// Walk occupied physical slots, not authored order.
 pub fn order(tokens: &[u32]) -> Vec<u32> {
     let mut set = Set::default();
     for token in tokens {
@@ -119,7 +113,6 @@ mod tests {
                 .windows(2)
                 .all(|pair| (hash(pair[0]) & 7) <= (hash(pair[1]) & 7))
         );
-        // Growth has no country/content cap and retains every registered token.
         let many = order(&(1..=5_000).collect::<Vec<_>>());
         assert_eq!(many.len(), 5_000);
         assert_eq!(

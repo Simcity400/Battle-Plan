@@ -1,5 +1,3 @@
-//! Aircraft model results, hour-local or kept across builds, and the same signed primary-equipment
-//! fold.
 use crate::map::{
     equipment_graphics::{
         Decided, Limits,
@@ -18,12 +16,6 @@ use std::{
 
 pub type Selected = Result<Option<String>, String>;
 
-/// Each (variant, raw country)'s model chosen by the content's scripts, kept from one build to the
-/// next while what choosing it read reads the same: the rows it read or noted (a change drops
-/// exactly the models it reaches, [`kept::Kept::indexed`]) and its census entries; the pools its
-/// limits decided and the countries' joined geography are read unnoted, so they are compared whole
-/// and one that differs drops every model. A refusal is chosen again each build, as its words may
-/// name the hour. It holds the models of the last build and the frame they were kept at.
 #[derive(Default)]
 pub struct KeptModels {
     held: Option<Held>,
@@ -33,13 +25,10 @@ struct Held {
     frame: Arc<DecodedFrame>,
     decided: Decided,
     geography: Result<context::Prepared, String>,
-    /// The census at `frame`, once a model read it.
     census: Option<Result<Arc<Retained>, String>>,
     models: kept::Kept<(u64, u32), Option<String>, CensusRead>,
 }
 
-/// What one build's models did: the (variant, country)s whose model was kept from the build
-/// before, and those chosen anew.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelsMade {
     pub kept: usize,
@@ -47,10 +36,6 @@ pub struct ModelsMade {
 }
 
 impl KeptModels {
-    /// One build's models over `frame` under `limits`: `run` is given each (variant, raw country)'s
-    /// model, kept or chosen by `assets` and kept for the next build. Gives back what `run` gave,
-    /// every pool the build's limits decided (what a product made from the models read of the
-    /// scripts beyond the rows) and what it kept and chose.
     pub fn session<R>(
         &mut self,
         assets: &UnitModelAssets,
@@ -126,9 +111,6 @@ impl KeptModels {
     }
 }
 
-/// One build call's immutable model selection results. Raw country references
-/// stay distinct, and failures and known absence are retained just like names.
-/// Construct a fresh memo for each hour, content and authored limit context.
 #[derive(Default)]
 pub struct ModelMemo {
     selected: RefCell<BTreeMap<(u64, u32), Selected>>,
@@ -151,7 +133,6 @@ impl ModelMemo {
 
 pub(super) struct Primary<'a> {
     frame: &'a DecodedFrame,
-    // Keep acquisition lazy: hours with no emitted aircraft never demand this table.
     index: OnceCell<Result<BTreeMap<u64, u64>, String>>,
 }
 

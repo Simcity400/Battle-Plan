@@ -23,10 +23,6 @@ fn stock(run: &Run) -> Vec<(u32, u64, Option<i64>, Option<i64>)> {
     run.rows::<StockByVariantRow>(TableId::StockByVariant).into_iter().map(|row| (row.slot, row.variant, value(row.amount), value(row.positions))).collect()
 }
 
-/// A slot's stock of a design sums its raw countries' list positions and counts them; a position
-/// that comes to hold another design takes its amount there, one gone takes its own, a design
-/// summing to none while positions hold it keeps its row, and one no position holds has none. A country no link resolves makes every amount not recorded until its link
-/// comes. A resume writes what the unbroken run writes.
 #[test]
 fn a_slots_stock_of_a_design_sums_its_countries_positions_and_follows_a_position_to_another_design() {
     let mut run = Run::new(make, INPUTS);

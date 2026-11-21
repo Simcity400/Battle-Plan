@@ -11,12 +11,6 @@ thread_local! {
 pub(super) fn owns_observation() -> bool {
     OWNER.get()
 }
-/// Serialises the fixtures that share this module's statics and makes this
-/// thread the observation's owner. As with the naval, air-loss and bombing
-/// observers, another test's hourly path (`boundary`, `lost_observer_interval`,
-/// a capture's `drain`) then cannot move a fixture mid-test. A failing test
-/// releases SERIAL poisoned; the next fixture's `setup` resets every static it
-/// reads, so one failure stays one failure instead of failing every later test.
 struct Serial {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
@@ -32,8 +26,6 @@ impl Drop for Serial {
         OWNER.set(false);
     }
 }
-/// Holds the fixtures' lock with a fresh attachment's event demand, for a test elsewhere that
-/// sizes from [`demand`].
 pub(crate) fn fresh_demand() -> std::sync::MutexGuard<'static, ()> {
     let serial = SERIAL
         .lock()
@@ -45,17 +37,14 @@ pub(crate) fn fresh_demand() -> std::sync::MutexGuard<'static, ()> {
 static FORWARDED: Mutex<[usize; 8]> = Mutex::new([0; 8]);
 static OBSERVED_DELETION: Mutex<Option<Deletion>> = Mutex::new(None);
 
-/// The drain's store with every pushed event folded.
 fn folded() -> std::sync::MutexGuard<'static, Store> {
     let mut store = STORE.lock().unwrap();
     store.fold();
     store
 }
-/// A refused interval, as a refusal the drain folded would leave it.
 fn poison() {
     folded().poisoned = true;
 }
-/// Opens `context` as this thread's deletion scope, already resolved.
 fn scoped(context: Deletion) -> DeletionScope {
     let id = next_id();
     folded().scopes.insert(id, context);
@@ -69,7 +58,6 @@ fn scoped(context: Deletion) -> DeletionScope {
         observed: false,
     }))
 }
-/// The scope a deletion would open, resolved by the drain as its writer's event.
 fn deletion_context(
     memory: &impl Memory,
     base: usize,
@@ -86,7 +74,6 @@ fn deletion_context(
     store.delete(scope, expeditionary_owner, classified);
     Ok(store.scopes.get(&scope.id).copied())
 }
-/// From a writer's native original: this thread's scope as the drain resolved it.
 fn resolved_scope() -> Option<Deletion> {
     let scope = DELETION.get()?;
     let mut store = STORE
@@ -97,15 +84,12 @@ fn resolved_scope() -> Option<Deletion> {
 }
 static GATE: std::sync::LazyLock<std::sync::Barrier> =
     std::sync::LazyLock::new(|| std::sync::Barrier::new(2));
-/// Holds its writer inside the native original until the test has met it twice.
 unsafe extern "system-unwind" fn gated_subtract(pool: usize, design: usize, amount: usize) {
     GATE.wait();
     GATE.wait();
     unsafe { subtract(pool, design, amount) };
 }
-/// The site, plus one, whose next writer holds between its pool read and its next event.
 static HELD_AFTER_READ: AtomicUsize = AtomicUsize::new(0);
-/// From a writer: holds it after its pool read until the test has met it twice.
 pub(super) fn after_pool_read(site: SiteId) {
     if HELD_AFTER_READ
         .compare_exchange(site as usize + 1, 0, Ordering::SeqCst, Ordering::SeqCst)
@@ -116,8 +100,6 @@ pub(super) fn after_pool_read(site: SiteId) {
     }
 }
 
-// Real allocated addresses exercise the production SEH-guarded reads. The
-// fake objects carry the native layout and arbitrary, non-content identities.
 struct World {
     storage: Vec<u64>,
     designs: usize,
@@ -363,7 +345,6 @@ unsafe extern "system-unwind" fn credit_pool(manager: usize, source: usize) {
             .unwrap();
         let amount =
             (target_items + at * equipment_entry::STRIDE + equipment_entry::AMOUNT) as *mut i64;
-        // Synthetic admitted operands avoid native signed-add wraparound.
         unsafe {
             *amount = (i128::from(*amount) + i128::from(quantity))
                 .clamp(-0x53e2d620fb40, 0x53e2d620fb40) as i64;
@@ -505,8 +486,6 @@ unsafe extern "system-unwind" fn subtract(pool: usize, design: usize, amount: us
     for i in 0..count as usize {
         let row = (items + i * 16) as *mut u64;
         if unsafe { *row } == design as u64 {
-            // Quantity subtraction clamps signed quantities at these fixed5
-            // limits; it does not clamp an exhausted pool to zero.
             let limit = 0x53e2d620fb40i128;
             unsafe {
                 *row.add(1) = ((*row.add(1) as i64 as i128 - amount as i64 as i128)
@@ -563,8 +542,6 @@ unsafe extern "system-unwind" fn land_scale_and_ceiling(
 ) {
     unsafe { forwarding(a, b, c, d, e, f, g, h) };
     let bank = a + carmy::EQUIPMENT_POOL;
-    // Damage scales by 100000-damage, then the stochastic ceiling
-    // branch can round above the pre-damage fraction.
     unsafe { fraction_scale(bank, (100000i64 - b as i64) as usize) };
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let count = unsafe { *((bank + pool::COUNT) as *const i32) };
@@ -584,7 +561,6 @@ unsafe extern "system-unwind" fn air_request(wing: usize, request: usize, source
     let bank = wing + engine_native::cair_wing::EQUIPMENT_POOL;
     let items = unsafe { *((bank + pool::ITEMS) as *const usize) };
     let design = unsafe { *(items as *const usize) };
-    // Airplane losses negate the signed request before the add.
     let amount = i64::from(request as u32 as i32) * equipment_entry::FIXED_POINT_SCALE;
     unsafe { subtract(bank, design, amount as usize) };
 }
@@ -615,7 +591,6 @@ fn assert_signed_row(amount_raw: i64, cause: native::Cause, variant: u64) {
 }
 
 fn refusal_diagnostics() -> (u64, [u64; native::SITES.len()], serde_json::Value) {
-    // Writers' refusals reach the counters as the drain folds them.
     drop(folded());
     (
         REFUSALS.load(Ordering::Relaxed),
@@ -691,7 +666,6 @@ fn scripted_factor_above_one_records_signed_gain_without_poison() {
     world.owner(4999);
     world.amount(0, 1030000);
     let diagnostics = refusal_diagnostics();
-    // Scripted scaling leaves the scale factor unclamped.
     unsafe { scripted_equipment_fraction(world.army() + carmy::EQUIPMENT_POOL, 200000) };
     assert_signed_row(
         -1030000,
@@ -724,7 +698,6 @@ fn negative_air_request_records_signed_gain_without_poison() {
     let _sampled = crate::hook_timing::sample_all();
     let timed = crate::hook_timing::counts(family);
     unsafe { air(address, (-2i32) as usize, 1500, 0) };
-    // The callback is counted and its original timed apart from the detour.
     let after = crate::hook_timing::counts(family);
     assert!(after.calls > timed.calls && after.sampled > timed.sampled);
     assert!(after.original > timed.original && after.detour > timed.detour);
@@ -738,9 +711,6 @@ fn negative_air_request_records_signed_gain_without_poison() {
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
-// A known real return PC proves the production entry shim's ninth argument.
-// This framed test caller also preserves all four stack arguments and carries
-// unwind metadata, using the same eight-slot Win64 ABI as the native writer.
 core::arch::global_asm!(
     ".text", ".globl destruction_land_test_caller", ".seh_proc destruction_land_test_caller",
     "destruction_land_test_caller:", "sub rsp, 0x48", ".seh_stackalloc 0x48", ".seh_endprologue",
@@ -755,7 +725,6 @@ unsafe extern "system-unwind" {
     fn destruction_land_test_return();
 }
 
-// Real calls supply the caller PC at entry RSP.
 core::arch::global_asm!(
     ".text", ".globl destruction_delete_test_caller", ".seh_proc destruction_delete_test_caller",
     "destruction_delete_test_caller:", "sub rsp, 0x28", ".seh_stackalloc 0x28", ".seh_endprologue",
@@ -790,8 +759,6 @@ fn record_queue(
         native::QueuedContext::Transfer(disposition) => (native::Cause::Unknown, disposition),
         native::QueuedContext::Ignore => panic!("ignored queues have no fixture provenance"),
     };
-    // These provenance fixtures model an earlier fully credited HQ return.
-    // Actual refused/partial-credit callbacks are exercised separately below.
     if disposition == native::Disposition::HqTransferred && !store.credits.contains(handle) {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         if native::army_identity(&memory, BASE.load(Ordering::Relaxed), army) == Ok(handle)
@@ -835,7 +802,6 @@ fn setup(capacity: usize, designs: usize) {
 }
 
 fn install(store: Store) {
-    // Fixtures call setup only after their handlers and worker threads returned.
     for active in &ACTIVE {
         active.store(0, Ordering::SeqCst);
     }
@@ -843,8 +809,6 @@ fn install(store: Store) {
     HELD_AFTER_READ.store(0, Ordering::SeqCst);
     drop(LOG.take());
     let queued = store.queued_limit;
-    // A previous fixture that failed while holding this lock leaves it
-    // poisoned; its contents are replaced below, so recover and clear it.
     *STORE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = store;
@@ -859,8 +823,6 @@ fn install(store: Store) {
     OBSERVING.set(false);
     FREEING.set(0);
     BASE.store(0, Ordering::Relaxed);
-    // Each fixture is a fresh attachment: an earlier fixture's peak must not
-    // size this one's frames.
     QUEUED_CAPACITY.store(queued, Ordering::Release);
     HOURLY_PEAK_EVENTS.store(0, Ordering::Relaxed);
     HOURLY_PEAK_CAPACITY.store(0, Ordering::Relaxed);
@@ -923,7 +885,6 @@ fn refusals_identify_each_writer_and_recover_at_clean_boundary() {
         let refusal = serde_json::to_value(held.refusal).unwrap();
         assert_eq!(refusal["site_index"], site);
         assert_eq!(refusal["reason"], "synthetic destruction refusal");
-        // Reading status must retain the first diagnostic while STORE is held.
         let status = serde_json::to_value(status()).unwrap();
         assert!(!status["refusal"].is_null());
         assert_eq!(
@@ -993,7 +954,6 @@ fn supplemental_snapshot_refusals_identify_writer_and_preserve_first_diagnostic(
         assert!(folded().poisoned);
         assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(reason));
     }
-    // Quantity scaling stores signed values beyond quantity addition saturation.
     for quantity in [0x53e2d620fb41, -0x53e2d620fb41] {
         setup(8, 1);
         boundary(clock(1, 1));
@@ -1079,7 +1039,6 @@ fn two_threads_in_the_family_at_once_keep_every_pool_change() {
     let mut out = vec![Entry::default(); 8];
     let drained = drain(&mut out);
     assert_eq!(drained, Ok(2));
-    // Each pool change closes in the order its writer returned.
     assert_eq!(
         (out[0].country, out[0].cause, out[0].amount_raw),
         (4999, native::Cause::LandCombat, 200000)
@@ -1127,7 +1086,6 @@ fn two_threads_writing_one_pool_at_once_refuse_their_interval_by_name_and_name_t
     GATE.wait();
     writer.join().unwrap();
     assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(SHARED_POOL));
-    // The status names the pool, the observation that found it held and its holder.
     assert_eq!(
         contested(),
         (
@@ -1179,7 +1137,6 @@ fn a_writer_held_after_its_pool_read_overlaps_every_window_another_thread_opens_
     GATE.wait();
     writer.join().unwrap();
     assert_eq!(world.storage[(0x600 + 8) / 8] as i64, 600000);
-    // The attrition copy predates the land removal: never 200000 plus 300000.
     assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(SHARED_POOL));
     assert_eq!(
         contested(),
@@ -1195,7 +1152,6 @@ fn a_writer_held_after_its_pool_read_overlaps_every_window_another_thread_opens_
         )
     );
 
-    // A destructor's residual copy is held the same way.
     setup(8, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -1216,7 +1172,6 @@ fn a_writer_held_after_its_pool_read_overlaps_every_window_another_thread_opens_
     unsafe { attrition(bank, design, 100000) };
     GATE.wait();
     assert_eq!(destructor.join().unwrap(), army);
-    // The residual copy holds the attrited 100000 too: never counted twice.
     assert_eq!(drain(&mut vec![Entry::default(); 8]), Err(DESTRUCTOR_OVERLAP));
     assert_eq!(
         contested(),
@@ -1350,7 +1305,7 @@ fn actual_events_every_country_fail_closed_and_detach() {
     unsafe {
         attrition(p, v, 0);
     }
-    assert_eq!(drain(&mut out).unwrap(), 0); // no actual removal
+    assert_eq!(drain(&mut out).unwrap(), 0);
     for countries in [15, 50] {
         for country in 0..countries {
             world.owner(country);
@@ -1373,7 +1328,6 @@ fn actual_events_every_country_fail_closed_and_detach() {
         serde_json::to_value(status()).unwrap()["hourly_peak_capacity"].as_u64(),
         Some(50)
     );
-    // Full-pool path preserves multiple exact designs, including rounding.
     world.amount(0, 450001);
     world.amount(1, 300000);
     world.amount(2, 100000);
@@ -1385,20 +1339,17 @@ fn actual_events_every_country_fail_closed_and_detach() {
     });
     assert_eq!(drain(&mut out).unwrap(), 2);
     assert_eq!((out[0].amount_raw, out[1].amount_raw), (80001, 100000));
-    // An empty output grows to the interval's entries.
     world.amount(1, 900000);
     unsafe {
         attrition(p, v, 100000);
     }
     assert_eq!(drain(&mut Vec::new()), Ok(1));
-    // A log with no room grows as the drain folds.
     folded().entries = Vec::new();
     world.amount(1, 900000);
     unsafe {
         attrition(p, v, 100000);
     }
     assert_eq!(drain(&mut out), Ok(1));
-    // A writer while the drain holds its store is kept whole.
     boundary(clock(1, 3));
     boundary(clock(2, 3));
     world.amount(1, 900000);
@@ -1430,7 +1381,6 @@ fn actual_events_every_country_fail_closed_and_detach() {
         drop(held);
         assert_eq!(active(), 0);
     }
-    // Actual assembly shim round-trip preserves all eight full ABI slots.
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
     ORIGINAL[SiteId::Land as usize].store(forwarding as *const () as usize, Ordering::Release);
@@ -1558,8 +1508,6 @@ fn real_delete_entry_preserves_four_slots_and_classifies_its_stack_return_pc() {
     let invoke: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
         unsafe { std::mem::transmute(destruction_delete_test_caller as *const ()) };
     let slots = [usize::MAX, usize::MAX - 1, usize::MAX - 2, usize::MAX - 3];
-    // A proved parser caller ignores even invalid partially read objects.
-    // This result depends on delete_entry and its framed shim carrying the PC.
     unsafe { invoke(slots[0], slots[1], slots[2], slots[3]) };
     assert_eq!(
         *FORWARDED.lock().unwrap(),
@@ -1636,8 +1584,6 @@ fn real_queue_entry_preserves_slots_and_replaces_r8_with_the_stack_return_pc() {
     let handle = context_rebased(&world, base, native::Cause::Unknown).handle;
     let invoke: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(destruction_queue_test_caller as *const ()) };
-    // R8 deliberately carries a known HQ-transfer PC. Only the real entry's
-    // replacement with its actual return PC makes this an Unknown loss.
     unsafe {
         invoke(
             state.state.as_ptr() as usize,
@@ -1730,8 +1676,6 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
         );
         assert!(!folded().poisoned);
     }
-    // The actual native reserve-credit call, rather than the request flag,
-    // proves the actual credit; a zero deficit retains the transfer witness.
     for cause in [
         native::Cause::DivisionDisbanded,
         native::Cause::DivisionCapitulation,
@@ -1759,7 +1703,6 @@ fn deletion_paths_snapshot_before_free_and_ignore_actual_returns_and_cleanup() {
         assert_eq!(out[0].amount_raw, 0);
         assert_eq!(out[0].variant, 0);
     }
-    // Ignored load/reset objects need not have a valid handle, owner or pool.
     for (caller, reset) in [
         (native::READ_CONTEXT_RETURN.0, false),
         (native::FAILED_CREATE_RETURN.0, false),
@@ -1974,7 +1917,6 @@ fn transferred_provenance_survives_conflicting_requests_and_direct_deletion() {
             assert_eq!(out[0].amount_raw, 0);
         }
     }
-    // Reusing an address with a new complete handle starts new provenance.
     setup(100, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -2075,7 +2017,6 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
                     _ => unreachable!(),
                 }
             }
-            // Each original ran despite observation suppression.
             assert!(world.storage[(0x600 + 8) / 8] < 900001);
             assert_eq!(drain(&mut vec![Entry::default(); 8]).unwrap(), 0);
         }
@@ -2102,8 +2043,6 @@ fn pending_transfers_exclude_each_army_writer_and_direct_free_but_not_reused_han
         assert!(folded().queued.is_empty());
         assert!(DELETION.get().is_none());
 
-        // An ignored entry for the recycled address has another full handle.
-        // Every ordinary writer must resume its exact actual removal capture.
         let new_handle = handle + (1 << 32);
         world.word(engine_native::cunit::HANDLE, new_handle);
         record_queue(
@@ -2164,12 +2103,8 @@ fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
         queue_metadata_during_delete as *const () as usize,
         Ordering::Release,
     );
-    // A request observed inside an active deletion can be rejected by the
-    // native queue. Its retained metadata must not outlive that deletion.
     unsafe { delete(state.state.as_ptr() as usize, world.army(), 0, 0, base + 1) };
     assert!(folded().queued.is_empty());
-    // Proved cleanup scopes retire by address without authenticating a
-    // partially read handle. The same applies to a direct cleanup destructor.
     for disposal in ["delete", "free"] {
         record_queue(
             &mut folded(),
@@ -2195,8 +2130,6 @@ fn completed_disposal_retires_owned_metadata_without_reading_a_freed_unit() {
         }
         assert!(folded().queued.is_empty());
     }
-    // All comparisons below use owned identities; the address can already be
-    // invalid. A new handle at the same address retains its own provenance.
     let old = 0x1234usize;
     record_queue(
         &mut folded(),
@@ -2239,8 +2172,6 @@ fn residual_follows_damage_flush_attrition_and_owner_cleanup_without_double_coun
         world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 1500);
         let ctx = context(&world, residual);
         assert_eq!(ctx.country, 1500);
-        // Unit deletion clears expeditionary ownership before its nested combat
-        // flush; every observation retains the scope's entry owner instead.
         world.dword(engine_native::cunit::EXPEDITIONARY_OWNER, 0);
         let _scope = scoped(ctx);
         if residual == native::Cause::DivisionDeleted {
@@ -2314,7 +2245,6 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
             .store(land_removal as *const () as usize, Ordering::Release);
         ORIGINAL[SiteId::Delete as usize]
             .store(cleanup_delete as *const () as usize, Ordering::Release);
-        // Unit deletion ends combat and applies damage before freeing the unit.
         let invoke: unsafe extern "system-unwind" fn(usize, usize, usize, usize) =
             unsafe { std::mem::transmute(destruction_delete_test_caller as *const ()) };
         unsafe {
@@ -2343,8 +2273,6 @@ fn recovered_deletion_scope_retains_owner_and_allows_native_nested_flushes() {
         }
         assert!(DELETION.get().is_none());
         assert_eq!(active(), 0);
-        // A nested destructor for a different division gets its own unknown
-        // scope, rather than inheriting the first division's ignored transfer.
         let mut outer = World::new(1);
         outer.rebase(base);
         let mut ctx = context_rebased(&outer, base, native::Cause::Unknown);
@@ -2671,7 +2599,6 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
     );
     let invoke: unsafe extern "system-unwind" fn(usize, usize) =
         unsafe { std::mem::transmute(destruction_queue_test_caller as *const ()) };
-    // The excluded native PC applies even before a handle was attached.
     unsafe { invoke(usize::MAX, usize::MAX - 1) };
     assert!(folded().queued.is_empty());
     assert!(!folded().poisoned);
@@ -2686,7 +2613,6 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
     let flag = engine_native::creferenced_division_template::REVEAL_SKIP;
     template[flag / 8] = 1 << ((flag % 8) * 8);
     world.word(carmy::STANDARD_TEMPLATE, template.as_ptr() as u64);
-    // Fake pools can be nonempty; disposal still has no real force loss.
     unsafe { division_free(world.army(), 1) };
     assert_eq!(drain(&mut vec![Entry::default(); 1]).unwrap(), 0);
     assert!(!folded().poisoned);
@@ -2698,8 +2624,6 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
 
 #[test]
 fn withheld_site_install_refusal_withholds_both_tables() {
-    // OnceLock is attachment-scoped. An isolated test process exercises the
-    // real refusal without changing the other synthetic attachment fixtures.
     const CHILD: &str = "BATTLE_PLAN_DESTRUCTION_INSTALL_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -2718,7 +2642,6 @@ fn withheld_site_install_refusal_withholds_both_tables() {
     setup(100, 1);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
-    // Without a located executable every site is withheld.
     struct Unreadable;
     impl Memory for Unreadable {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -3171,7 +3094,6 @@ fn the_drain_store_starts_empty_and_holds_what_the_hours_need_not_the_census() {
     assert_eq!(peak, countries * designs);
     assert_eq!(demand(), peak);
     let held = folded().owned_capacity();
-    // Doubling holds at most twice the largest hour; this hour queued and credited nothing.
     assert!(
         held.payload_vectors as usize <= 2 * peak * std::mem::size_of::<Entry>(),
         "{held:?} for a peak of {peak} rows"
@@ -3251,7 +3173,6 @@ fn queue_churn_bench(countries: usize, designs: usize) {
     );
 }
 
-/// Per division-pool and stockpile entry of the bench's world, one each per country and design.
 fn bytes_per_pool_entry(countries: usize, designs: usize) -> usize {
     producer_payload_bytes() / (2 * countries * designs)
 }
@@ -3290,7 +3211,6 @@ unsafe extern "system-unwind" fn exile_scale_and_round(army: usize, enabled: usi
     let count = unsafe { *((bank + pool::COUNT) as *const i32) };
     for index in 0..count as usize {
         let raw = (items + index * equipment_entry::STRIDE + equipment_entry::AMOUNT) as *mut i64;
-        // The native operation scales, then rounds to integral equipment.
         unsafe {
             *raw = ((*raw / 2 + 50000) / 100000) * 100000;
         }
@@ -3299,15 +3219,12 @@ unsafe extern "system-unwind" fn exile_scale_and_round(army: usize, enabled: usi
 unsafe extern "system-unwind" fn roster_remove(country: usize, army: usize) -> usize {
     assert!(STORE.try_lock().is_ok());
     *FORWARDED.lock().unwrap() = [country, army, 0, 0, 0, 0, 0, 0];
-    // Make every post-call native identity read fail. The published witness
-    // must use only the owned snapshot taken before native removal.
     if country as u8 != 0 {
         unsafe {
             *(army as *mut u64) = 0;
             *((army + engine_native::cunit::HANDLE) as *mut u64) = 0;
         }
     }
-    // The high bits prove the wrapper preserves the entire native result.
     country
 }
 
@@ -3739,7 +3656,6 @@ fn a_writer_across_the_hour_boundary_is_kept_in_the_interval_it_completes() {
         let mut second = vec![Entry::default(); 8];
         let second_drain = drain(&mut second);
         if load {
-            // A load discards the hour that straddles it, then the writer's own.
             assert!(first_drain.unwrap_err().contains("first/branch interval"));
             assert_eq!(provenance, 0);
         } else {
@@ -3936,7 +3852,6 @@ fn observed_unwind_closes_its_window_but_retains_callback_for_detach() {
     boundary(clock(10, 2));
     assert_eq!(active(), 1);
     setup(4, 1);
-    // An excluded transferred source has no basis an unwind could break.
     let mut ctx = context(&world, native::Cause::Unknown);
     ctx.disposition = native::Disposition::Merged;
     let _scope = scoped(ctx);
@@ -3994,7 +3909,6 @@ fn returned_callback_unwind_refuses_accepted_credit_but_preserves_ignored_exclus
                     .unwrap_err()
                     .contains("lifetime incomplete")
             );
-            // The gap refuses the source whose lifetime the unwind left open.
             boundary(clock(20, 1));
             assert!(folded().poisoned);
             boundary(clock(21, 1));
@@ -4066,8 +3980,6 @@ fn returned_and_hq_credit_deficits_use_source_time_and_publish_only_at_deletion(
                 boundary(clock(4, 1));
                 boundary(clock(5, 1));
             }
-            // This retained source is bookkeeping after the credit. A later
-            // cleanup write must not change the already observed deficit.
             world.amount(0, 0);
             let mut deletion = ctx;
             if site == SiteId::Return {
@@ -4188,7 +4100,6 @@ fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
         assert_eq!(pair[1].amount_raw, 100001);
     }
     assert_eq!(producer_payload_bytes(), bytes);
-    // Recycled proof nodes support the same full census again, with no growth.
     for (index, world) in worlds.iter_mut().enumerate() {
         world.restore_pool();
         world.rebase(base);
@@ -4209,8 +4120,6 @@ fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
     assert_eq!(producer_payload_bytes(), bytes);
     let revision = folded().credits.revision();
     poison();
-    // A refused full census uses existing handle lookups, with no head scans,
-    // storage growth or global invalidation when each source is authenticated.
     for (index, world) in worlds.iter().enumerate() {
         let reserve = ReserveWorld::for_source(world, base, index as u32 + 1, 0x53e2d620fb40);
         unsafe {
@@ -4235,8 +4144,6 @@ fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
 }
 
-// Synthetic request graph has the real parent/child backlinks and native
-// held-pool offsets. Status does not control destructor return admission.
 struct RequestsWorld {
     root: Vec<u64>,
     reinforcement: Vec<World>,
@@ -4370,8 +4277,6 @@ unsafe extern "system-unwind" fn merged_delete_fixture(_: usize, army: usize, _:
     let source_items = unsafe { *((source_pool + pool::ITEMS) as *const usize) };
     let variant = unsafe { *(source_items as *const usize) };
     unsafe {
-        // Native unit deletion's transferred-source flush uses the real scope,
-        // including any queued HQ provenance that takes caller precedence.
         land(
             army,
             variant,
@@ -4510,8 +4415,6 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
         }
         let survivor_requests = RequestsWorld::new(&mut survivor, base, &[held], &[777777]);
         let source_requests = RequestsWorld::new(&mut source, base, &[held], &[held]);
-        // Both request graphs must share the same actual design as the native
-        // main pools, not merely an equivalent synthetic handle.
         let source_held = survivor.design(0) as u64;
         for world in source_requests
             .reinforcement
@@ -4575,7 +4478,6 @@ fn whole_merge_includes_only_canceled_held_pools_and_all_bulk_designs() {
             survivor_requests.upgrades[0].storage[(0x600 + 8) / 8],
             777777
         );
-        // Live census accounts both families; preparation remains off-thread.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let mut pools = 0;
         native::canceled_delivery_pools(&memory, base, survivor.army(), true, |_| {
@@ -4640,7 +4542,6 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                 reserve._country[engine_native::ccountry::DIVISIONS_CAPACITY / 8] = 1 | (1 << 32);
                 state.countries[index + 1] = reserve._country.as_ptr() as u64;
             }
-            // Both families return to each source's distinct country.
             let requests: Vec<_> = armies
                 .iter_mut()
                 .map(|army| RequestsWorld::new(army, base, &[200000, 200000], &[200000]))
@@ -4700,7 +4601,6 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
                     reserve.world.storage[(0x600 + 8) / 8] as i64,
                     initial + amount - expected
                 );
-                // Survivor upgrade deliveries stay live; source families die.
                 assert_eq!(
                     requests[index].root[(0x70 + 0x48 + 8) / 8] >> 32,
                     u64::from(index % 2 == 0)
@@ -4890,8 +4790,6 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
             PoolState::Live
         );
         if action >= 2 {
-            // The actual callback still credits the native reserve on every
-            // refused path; that cannot leave the retained proof Live.
             if action == 2 {
                 poison();
             }
@@ -4926,7 +4824,6 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
             OBSERVING.set(false);
             boundary(clock(20, 1));
             boundary(clock(21, 1));
-            // A drain holding its store delays nothing: that credit is proved.
             assert_eq!(
                 folded().credits.state(handle, survivor.army(), 1).is_ok(),
                 action == 4
@@ -4958,8 +4855,6 @@ fn credited_survivor_reallocation_restores_live_damage_and_return_accounting() {
                 PoolState::Bookkeeping
             );
         }
-        // The real queued unit deletion path retains HQ provenance; live state
-        // still admits its final damage flush and new residual snapshot.
         ORIGINAL[SiteId::Delete as usize]
             .store(cleanup_delete as *const () as usize, Ordering::SeqCst);
         unsafe {
@@ -5019,8 +4914,6 @@ fn refused_pool_writers_and_unrelated_destructor_keep_outer_basis_unavailable() 
         }
     }
     unsafe extern "system-unwind" fn credit_during_free(manager: usize, pool: usize) {
-        // Deterministic Free-first interleaving: B's held credit occurs after
-        // A's attempted pre reads and before A's post, with B still ACTIVE.
         unsafe {
             cancel_native_requests(
                 OTHER_POOL.load(Ordering::SeqCst) - carmy::EQUIPMENT_POOL,
@@ -5130,8 +5023,6 @@ fn refused_pool_writers_and_unrelated_destructor_keep_outer_basis_unavailable() 
                 .state(outer_handle, outer.army(), 1)
                 .is_err()
         );
-        // Retire the other source before the gap; its successful cleanup must
-        // not restore the remaining observer's contaminated proof.
         if mode < 3 {
             unsafe {
                 division_free(other.army(), 1);
@@ -5180,7 +5071,6 @@ fn a_refused_writer_inside_a_return_window_keeps_its_credit_unproven() {
     );
     let writer = std::thread::spawn(move || unsafe { hq_returned(manager, pool) });
     GATE.wait();
-    // Another thread's refused writer inside the window can touch its pools.
     revoke_active_observation();
     GATE.wait();
     writer.join().unwrap();
@@ -5224,7 +5114,7 @@ fn missed_destructor_invalidation_survives_contention_unwind_and_gap() {
             );
         }
         let handle = context_rebased(&world, base, native::Cause::Unknown).handle;
-        poison(); // The original still runs without a snapshot.
+        poison();
         let guard = folded();
         if unwind {
             ORIGINAL[SiteId::DivisionFree as usize]
@@ -5241,12 +5131,10 @@ fn missed_destructor_invalidation_survives_contention_unwind_and_gap() {
                 .state(handle, world.army(), 1)
                 .is_err()
         );
-        // Only the source an unwound destructor left in place refuses the gap.
         boundary(clock(20, 1));
         assert_eq!(folded().poisoned, unwind);
         boundary(clock(21, 1));
         assert_eq!(active(), usize::from(unwind));
-        // A load clears every retained source, freed or not.
         boundary(clock(21, 2));
         assert!(!folded().credits.contains(handle));
     }
@@ -5431,7 +5319,6 @@ fn native_merge_selection_and_reserve_reads_stay_with_reached_designs() {
             .contains("scratch too short")
     );
     let mut reserve = ReserveWorld::for_source(&survivor, 0, 1, 100);
-    // An unrelated design is never authenticated/copied by this operation.
     reserve.world.word(0x600 + equipment_entry::STRIDE, 0xdead);
     let mut rows = [equipment_entry::Row::default(); 2];
     native::snapshot(

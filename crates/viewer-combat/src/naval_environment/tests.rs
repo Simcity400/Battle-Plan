@@ -231,8 +231,6 @@ fn terrain_hover_joins_live_ship_at_battle_province() {
     );
 }
 
-/// A weather key is localised; an absent key shows its own bytes, so its
-/// sprite is looked up and refused by that name when missing.
 #[test]
 fn a_weather_icon_is_localised_and_a_missing_key_is_its_bytes() {
     let localisation = loaded(concat!(
@@ -282,8 +280,6 @@ fn weather_picture_uses_ui_precedence_and_terrain_fallback() {
         ]
     );
 }
-/// The sprite precedes the first `:`, with a one-based frame after it
-/// read as a signed decimal prefix; empty text sets nothing.
 #[test]
 fn weather_icon_text_reads_sprite_and_one_based_frame() {
     assert_eq!(weather_icon_text(""), Ok(None));
@@ -303,14 +299,12 @@ fn weather_icon_text_reads_sprite_and_one_based_frame() {
 
 #[test]
 fn a_convoy_total_is_shown_only_when_no_allowed_value_changes_the_whole_number() {
-    // One convoy with weapon bound 0.25 shows whole-number total 0.
     assert_eq!(bounded_total(0, 1, Ok([0, 25_000])), Some(0));
     assert_eq!(bounded_total(8_190_000, 0, Ok([0, 25_000])), Some(81));
     assert_eq!(bounded_total(8_190_000, 1, Ok([0, 25_000])), None);
     assert_eq!(bounded_total(0, 4, Ok([0, 25_000])), None);
     assert_eq!(bounded_total(0, 4, Ok([25_000, 25_000])), Some(1));
     assert_eq!(bounded_total(0, 2, Ok([25_000, 25_000])), Some(0));
-    // A negative convoy value can lower the whole number.
     assert_eq!(bounded_total(100_000, 1, Ok([-1, 0])), None);
     assert_eq!(bounded_total(0, 1, Err("x")), None);
 }
@@ -329,8 +323,6 @@ fn torpedo_counter_sums_current_attack_before_truncating_to_177() {
         },
         ..Default::default()
     };
-    // Sum fixed5 attack before whole-number formatting; per-ship truncation
-    // and historical damage never enter this counter.
     let attack = weapon(&ship, 3, false).unwrap();
     assert_eq!(attack, 8_875_000);
     assert_eq!(bounded_total(add(attack, attack), 0, Ok([0, 0])), Some(177));
@@ -407,7 +399,6 @@ fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
         carrier_penalty_values(&side, &opponents, models, 1, &defines).map(|value| value.0 < ONE),
         Ok(true)
     );
-    // A larger opposing silhouette outranks the content's free allowance.
     let mut capital = opponent.clone();
     capital.ship = 2;
     capital.formation_flags = 1 << 6;
@@ -417,7 +408,6 @@ fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
         carrier_penalty_values(&side, &opposing, models, 1, &defines).map(|value| value.0),
         Ok(ONE)
     );
-    // Excess planes retain the half-opacity laurel when the authored penalty is zero.
     let mut no_effect = defines.clone();
     no_effect.plane_stacking_penalty_effect = 0;
     assert_eq!(
@@ -590,9 +580,6 @@ fn doctrine_weight_and_hq_maximum_are_not_flat_sums() {
     assert_eq!(modifier(&context, 7), Some(17_000));
 }
 
-/// Unknown fields go to the stat reader, then are reported and their blocks
-/// are skipped. Their nested lg_attack never becomes the convoy's stat.
-/// `attrition` and `can_convert_from` read their own blocks.
 #[test]
 fn equipment_fields_are_read_as_their_readers_read_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -620,7 +607,6 @@ fn equipment_fields_are_read_as_their_readers_read_them() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// One equipment file through the loader, and its convoy bound.
 fn bound_of(text: &str) -> ConvoyBound {
     use std::fs;
     let root = std::env::temp_dir().join(format!(
@@ -638,16 +624,10 @@ fn bound_of(text: &str) -> ConvoyBound {
     bound
 }
 
-/// Fields retain their individual value-reading rules: `upgrades` reads to
-/// the closing brace; type and mission lists require a block; resources and
-/// default modules read single-value entries. Module slots, modifier stats and
-/// count limits skip unknown blocks; upgrade overrides read a value and return.
 #[test]
 fn equipment_fields_follow_their_value_readers() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Each field reader consumes exactly its own value, so every
-    // field after them is still the convoy's: 0.25 and 0.5.
     let (bound, misreads) = bound_of(
         "equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
             upgrades = { a b } resources = { steel = 1 } default_modules = { s = empty }
@@ -661,16 +641,12 @@ fn equipment_fields_follow_their_value_readers() {
     );
     assert_eq!(bound, Ok([0, 50_000]), "{misreads:?}");
     assert!(misreads.is_empty(), "{misreads:?}");
-    // A repeated slot name is case-insensitive and skips its block without
-    // defining @v. A new slot reads nested fields and defines @w.
     let (bound, misreads) = bound_of(
         "equipments = { convoy_1 = { type = convoy
             module_slots = { s = { required = yes } S = { @v = 0.9 } t = { @w = 0.75 gfx = g } }
             lg_attack = @v hg_attack = @w } }",
     );
     assert_eq!(bound, Ok([0, 75_000]), "{misreads:?}");
-    // After `module_slots = inherit` the slots the loaded source holds
-    // decide a block: the archetype's `s` is skipped, the new `t` read.
     let (bound, misreads) = bound_of(
         "equipments = { base = { is_archetype = yes module_slots = { s = { } } }
             convoy_1 = { archetype = base type = convoy module_slots = inherit
@@ -680,17 +656,10 @@ fn equipment_fields_follow_their_value_readers() {
     assert_eq!(bound, Ok([0, 75_000]), "{misreads:?}");
 }
 
-/// No step limit: a chain of any length links as the file loop reads
-/// it. `archetype` copies the stat block as it stands,
-/// so later stats overwrite the copy; `parent` passes the parent's
-/// archetype on while none is set, but no stats; the type is the own
-/// one, else the archetype's, names found without case.
 #[test]
 fn a_long_archetype_chain_links_in_load_order() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // `base` is no convoy, and a type goes one step only, so only the
-    // convoys below carry its 7, copied down 40 archetypes.
     let mut text = String::from("equipments = { base = { is_archetype = yes lg_attack = 7 }");
     for link in 1..=40 {
         text.push_str(&format!(
@@ -711,17 +680,13 @@ fn a_long_archetype_chain_links_in_load_order() {
     );
     let (bound, misreads) = bound_of(&text);
     assert_eq!(bound, Ok([0, 9_000_000]), "{misreads:?}");
-    // `ahead` names a definition not read yet: reported, unlinked.
     assert_eq!(misreads.len(), 1, "{misreads:?}");
     assert!(
         misreads[0].contains("archetype later is no equipment defined before it"),
         "{misreads:?}"
     );
-    // `early_stat`'s 30 is overwritten by the copy, and `child` takes
-    // no stats from its parent: 7 is the largest.
     let (bound, _) = bound_of(&text.replace("sub_attack = 90", ""));
     assert_eq!(bound, Ok([0, 700_000]));
-    // Without `base`'s 7 nothing reaches the chain's end.
     let (bound, _) = bound_of(
         &text
             .replace("sub_attack = 90", "")
@@ -730,9 +695,6 @@ fn a_long_archetype_chain_links_in_load_order() {
     assert_eq!(bound, Ok([0, 75_000]));
 }
 
-/// The game follows parent, else archetype, with no cycle guard. A
-/// repeated name, read again into the same definition, can close a
-/// loop, which the game never leaves: refused, naming the loop.
 #[test]
 fn a_link_cycle_is_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -748,13 +710,11 @@ fn a_link_cycle_is_refused_by_name() {
             && reason.contains("never finish loading"),
         "{reason}"
     );
-    // Archetype links close a loop the same way.
     let (bound, _) = bound_of(
         "equipments = { x = { is_archetype = yes } y = { is_archetype = yes archetype = x }
           x = { is_archetype = yes archetype = y } }",
     );
     assert!(bound.is_err_and(|reason| reason.contains("x -> y -> x")));
-    // A self link ends the walk: no cycle.
     let (bound, misreads) = bound_of(
         "equipments = { s = { is_archetype = yes archetype = s parent = s type = convoy } }",
     );

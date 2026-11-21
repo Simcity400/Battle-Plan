@@ -1,4 +1,3 @@
-//! Retained native combat history; native array ordinals preserve repeats.
 use super::*;
 opaque_value!([u8; 4]);
 
@@ -141,11 +140,6 @@ pub struct CombatLogBattleCountryRow {
 typed_codec!(CombatLogBattleCountryRow, 72, |row| (row.battle as u128) << 40 | (row.side as u128) << 32 | row.ordinal as u128, |key| Self { battle: (key >> 40) as u32, side: (key >> 32) as u8, ordinal: key as u32, ..Default::default() },
  { 0 => (country): U32 }, |_row| Ok(()));
 
-/// Active observer operands. The full combat handle and side own stable labels
-/// assigned by semantic collection/parent/occurrence against the preceding
-/// complete encoder baseline. Labels are not native traversal order: use
-/// `logical_order` and `fact` to reconstruct that view, including duplicates.
-/// Aggregate manpower/equipment reuse LandCombatProgress's same-census read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogObserverRow {
@@ -173,8 +167,6 @@ typed_codec!(CombatLogObserverRow, 128,
  |row| if row.ordinal > u64::MAX / 2 { Err(invalid("combat log observer ordinal overflow")) } else { Ok(()) });
 
 impl CombatLogObserverRow {
-    /// Repack only the already acquired facts. Signed numeric lanes never hold
-    /// design, leader, division or country identities, nor child positions.
     pub fn from_fact(
         combat: u64,
         attacker: bool,
@@ -235,8 +227,6 @@ impl CombatLogObserverRow {
             }
             _ => return Err("combat log observer kind unsupported"),
         }
-        // Unused lanes in the native emission are zero. Refuse a new shape by
-        // name rather than silently dropping a captured word.
         if row.fact() != (kind, item, [a, b, c, d, e]) {
             return Err("combat log observer payload shape differs");
         }
@@ -271,13 +261,10 @@ impl CombatLogObserverRow {
         (self.kind, self.item, values)
     }
 
-    /// Occurrence, not value identity: equal native entries remain distinct.
     pub fn semantic_key(&self) -> (u64, bool, u8, u64, u64) {
         (self.combat, self.attacker, self.kind, self.item, self.index)
     }
 
-    /// Within one combat/side, native preorder: state, counters, pools and entries,
-    /// modifiers, countries, leaders, attribution, then each activity and its children.
     pub fn logical_order(&self) -> (u8, u64, u8, u64) {
         use CombatLogObserverKind as K;
         match self.kind {
@@ -300,12 +287,8 @@ impl CombatLogObserverRow {
     }
 }
 
-/// Native full equipment-reference type used by the existing own-loss keys.
 pub const COMBAT_LOG_VARIANT_TYPE: u32 = engine_reference_values::native_values::equipment_variant::REFERENCE_TYPE;
 
-/// Stored active-observer operand kinds. Item and payload meanings follow the
-/// native collection: side, pool, equipment, modifier, country, observer state,
-/// counter block, leader hours, damage attribution, and activity descendants.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombatLogObserverKind {

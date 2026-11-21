@@ -1,4 +1,3 @@
-//! Shared map render targets, formats, bindings and geometry upload.
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use crate::map::gpu_contract::DEPTH_FORMAT as gpu_contract_DEPTH_FORMAT;
@@ -11,36 +10,10 @@ use std::{io, sync::mpsc};
 pub const MAP_SAMPLED_TEXTURES: u32 = 19;
 pub const REFRACTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
-/// Depth buffer format; the engine's exact format does not reach a pixel.
-// Scene allocation includes D24S8 depth/stencil.
-// The stencil plane is shared by meshes, map arrows and world-space names.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
-// Output colour is gamma-encoded RGB in an UNORM target, matching egui and the game framebuffer. The
-// view applies no additional sRGB conversion.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-// colour: the scene the world passes draw into and the `post` stage grades. It
-// is high dynamic range because the engine's is, and because the grade is the
-// only stage entitled to decide what "white" is.
-//
-// HDR scene targets use RGBA16_FLOAT; luminance targets use R16_FLOAT. Only disabling the HDR chain
-// selects an eight-bit scene.
-//
-// The floating-point target retains highlights above one until post-processing applies tone
-// mapping, including water glints, city lights and snow highlights.
 pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The multisampled scene chain, its resolve target, the single-sample output
-/// and the separate sea-bed refraction target.
-///
-/// colour: the world passes draw into the float scene chain ([`SCENE_FORMAT`])
-/// at the selected sample count, as the game's scene target is; `post` reads
-/// the resolved scene and writes the graded frame into the 8-bit output
-/// ([`OUTPUT_FORMAT`]), which screen-space text and icons then draw over and which
-/// egui and the PNG readback take. The output is single-sample, as the game's
-/// post targets and back buffer are; the depth buffer belongs to the world passes.
-/// `draw_map_full_res=no` halves only the scene/depth chain;
-/// restore samples it linearly into the full-size output before grading.
-/// The sea-bed target is [`SeaBed::size`].
 pub struct Targets {
     scene: wgpu::Texture,
     scene_ms: wgpu::TextureView,
@@ -50,8 +23,6 @@ pub struct Targets {
     color_view: wgpu::TextureView,
     pub refraction_view: wgpu::TextureView,
     refraction_depth: wgpu::TextureView,
-    /// What the sea-bed target holds: a content of its own, so a pass kept while its inputs
-    /// repeat draws again into a target made afresh, whose colour is gone.
     refraction_content: crate::map::textures::Content,
     sea_bed: SeaBed,
     size: [u32; 2],
@@ -147,9 +118,6 @@ impl Targets {
         }
     }
 
-    /// The multisampled float scene attachment. Every world pass, that is
-    /// everything the grade reads, draws here; [`Self::resolve_scene`] moves
-    /// the samples into the scene texture once, before the grade reads it.
     pub fn scene_attachment(
         &self,
         load: wgpu::LoadOp<wgpu::Color>,
@@ -169,8 +137,6 @@ impl Targets {
         }
     }
 
-    /// The single-sample 8-bit output attachment. The grade writes every pixel
-    /// first and screen-space text and icons draw over it.
     pub fn output_attachment(
         &self,
         load: wgpu::LoadOp<wgpu::Color>,
@@ -186,10 +152,6 @@ impl Targets {
         }
     }
 
-    /// Resolves the multisampled scene into [`Self::scene_view`]. A pass
-    /// resolves its colour attachment when it ends, whether or not it drew, so
-    /// one empty pass costs one resolve and no draws. A single-sample chain
-    /// has the world passes drawing into the scene texture already.
     pub fn resolve_scene(&self, encoder: &mut wgpu::CommandEncoder) {
         if self.samples == 1 {
             return;
@@ -223,8 +185,6 @@ impl Targets {
                 store: wgpu::StoreOp::Store,
             }),
             stencil_ops: Some(wgpu::Operations {
-                // Clear colour, depth and stencil before the map. Stencil starts at zero and subsequent passes
-                // retain it.
                 load: match load {
                     wgpu::LoadOp::Clear(_) => wgpu::LoadOp::Clear(0),
                     wgpu::LoadOp::Load => wgpu::LoadOp::Load,
@@ -239,12 +199,10 @@ impl Targets {
         self.size
     }
 
-    /// The scene and depth attachments' sample count, which every world pipeline matches.
     pub fn samples(&self) -> u32 {
         self.samples
     }
 
-    /// HDR scene and depth dimensions; output and GUI keep [`Self::size`].
     pub fn world_size(&self) -> [u32; 2] {
         self.world_size
     }
@@ -253,8 +211,6 @@ impl Targets {
         self.sea_bed
     }
 
-    /// What the sea-bed target holds. Only [`Self::refraction_attachment`] writes it, so a pass
-    /// that did not draw left it as it was and this is still the content that pass drew.
     pub fn refraction_content(&self) -> crate::map::textures::Content {
         self.refraction_content
     }
@@ -282,8 +238,6 @@ impl Targets {
         }
     }
 
-    /// The resolved float scene, which is what `post` grades. Egui
-    /// and the PNG readback take [`Targets::output`].
     pub fn scene_view(&self) -> &wgpu::TextureView {
         &self.scene_view
     }
@@ -301,14 +255,9 @@ impl Targets {
     }
 }
 
-/// How large the sea-bed refraction target and its depth are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeaBed {
-    /// Half the output each way, rounded up so every output keeps a texel. Water that samples
-    /// it only at screen UVs, which any target size maps alike, reads it through its linear
-    /// clamped sampler; a sharper sea bed is not worth its cost.
     Half,
-    /// The output's size, for water that reads the target by texel.
     Full,
 }
 
@@ -329,7 +278,6 @@ pub fn extent(size: [u32; 2]) -> wgpu::Extent3d {
     }
 }
 
-/// A sampled-texture entry for a bind group layout.
 pub fn texture_entry(
     binding: u32,
     visibility: wgpu::ShaderStages,
@@ -347,7 +295,6 @@ pub fn texture_entry(
     }
 }
 
-/// A filtering-sampler entry for a bind group layout.
 pub fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -357,9 +304,6 @@ pub fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-/// Creates a buffer already holding `data`.
-///
-/// Shared by every pass that uploads geometry once and never rewrites it.
 pub fn buffer(
     device: &wgpu::Device,
     label: &str,
@@ -415,29 +359,22 @@ pub fn unsupported(message: impl std::fmt::Display) -> io::Error {
     )
 }
 
-/// Whether these limits run the kernel: eight storage buffers and 64-thread workgroups.
 pub fn compute_limits(limits: &wgpu::Limits) -> bool {
     limits.max_compute_workgroups_per_dimension != 0
         && limits.max_storage_buffers_per_shader_stage >= 8
         && limits.max_compute_invocations_per_workgroup >= 64
 }
 
-/// Shown over every map drawn on the platform's software adapter.
 pub const SOFTWARE_RENDERER_NOTICE: &str = "Software renderer: no graphics card that can run the \
      map was found, so it is drawn on the CPU and will be slow.";
 
-/// What adapter selection reads of one adapter.
 #[derive(Clone, Debug)]
 pub struct AdapterCandidate {
     pub name: String,
     pub device_type: wgpu::DeviceType,
     pub backend: wgpu::Backend,
-    /// Compute shaders with the political kernel's storage buffers and workgroups.
     pub compute: bool,
-    /// BC texture compression and [`MAP_SAMPLED_TEXTURES`] per stage, which the world scene
-    /// needs.
     pub textures: bool,
-    /// Presents to the window's surface; always `true` headless.
     pub presents: bool,
 }
 
@@ -467,11 +404,6 @@ impl AdapterCandidate {
     }
 }
 
-/// The adapter order the window, the dashboard maps and `--dump` share. First the hardware
-/// adapter `request_adapter` picks at `power` among those that run the map: at high
-/// performance discrete, integrated, other, virtual; at low power integrated first; with no
-/// preference, enumeration order. Enumeration order breaks ties. Then the platform's software
-/// adapter, the one `force_fallback_adapter` selects: WARP on DirectX 12, lavapipe on Vulkan.
 pub fn choose_adapter(
     candidates: &[AdapterCandidate],
     power: wgpu::PowerPreference,
@@ -527,7 +459,6 @@ pub fn choose_adapter(
         })
 }
 
-/// Choose from enumerated adapters by [`choose_adapter`], naming a software choice on stderr.
 pub fn select_adapter(
     adapters: &[wgpu::Adapter],
     surface: Option<&wgpu::Surface<'_>>,
@@ -536,7 +467,6 @@ pub fn select_adapter(
         .iter()
         .map(|adapter| AdapterCandidate::of(adapter, surface))
         .collect::<Vec<_>>();
-    // `WGPU_POWER_PREF` as egui-wgpu and `request_adapter` honour it.
     let power = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
     let index = choose_adapter(&candidates, power)?;
     let chosen = &candidates[index];
@@ -549,19 +479,12 @@ pub fn select_adapter(
     Ok(adapters[index].clone())
 }
 
-/// Whether a map on this adapter carries [`SOFTWARE_RENDERER_NOTICE`].
 pub fn is_software(adapter: &wgpu::Adapter) -> bool {
     adapter.get_info().device_type == wgpu::DeviceType::Cpu
 }
 
-/// The optional device features the viewer draws some content exactly with that a device with
-/// `features` lacks, each named with what it costs: viewer hardware requirements, not native
-/// failures or missing replay data. Named once at start-up ([`device_descriptor`]) and in the
-/// diagnostics (the App's warnings, the details output and the headless dump's).
 pub fn device_requirements(features: wgpu::Features) -> Vec<String> {
     let mut missing = Vec::new();
-    // The compiled GUI and map effects' own states (`shader_pipeline::gpu`): a program the
-    // device cannot build is refused by name where it is drawn.
     if !features.contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER) {
         missing.push(
             "the adapter lacks ADDRESS_MODE_CLAMP_TO_BORDER: compiled effects whose samplers \
@@ -581,22 +504,8 @@ pub fn device_requirements(features: wgpu::Features) -> Vec<String> {
     missing
 }
 
-/// The device the map pipeline needs.
-///
-/// `TEXTURE_COMPRESSION_BC` is required because the game's atlases, water and
-/// border textures are authored as DXT and are uploaded still compressed;
-/// [`Scene::new`] reports a named error if the adapter lacks it.
-///
-/// `max_sampled_textures_per_shader_stage` is the adapter's rather than wgpu's
-/// default of 16, because the terrain fragment stage now needs 19: the fifteen
-/// the lit pass samples, `ShadowMap`, and the three `fow.fxh` reads —
-/// `IntelMap`, `FOWNoise` and `FOWHeight`. The game's own terrain pixel shader
-/// declares sixteen samplers on a D3D11 feature-level 11 device, whose
-/// guaranteed minimum is 128, so an adapter that can run the map at all has the
-/// headroom several times over.
 pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     let limits = adapter.limits();
-    // Let Scene issue UnsupportedPoliticalCompute on downlevel adapters, before creating passes.
     let compute = adapter
         .get_downlevel_capabilities()
         .flags
@@ -608,10 +517,7 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     } else {
         wgpu::Limits::downlevel_webgl2_defaults()
     };
-    // Atlases built on the CPU page to this side ([`crate::map::atlas_pages`]).
     crate::map::atlas_pages::record_device_limit(limits.max_texture_dimension_2d);
-    // Float32 filtering uses hardware when available, otherwise shader-pipeline lowers it.
-    // Clamp-to-border and dual-source blending remain optional device requirements.
     static NAMED: std::sync::Once = std::sync::Once::new();
     NAMED.call_once(|| {
         for requirement in device_requirements(adapter.features()) {
@@ -623,12 +529,9 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
         | wgpu::Features::DUAL_SOURCE_BLENDING
         | wgpu::Features::FLOAT32_FILTERABLE;
-    // Profiling only: per-pass GPU timestamps (`map::gpu_passes`).
-    // Printed, or recorded by a measurement that turned the view record on before its device.
     if crate::map::gpu_passes::requested() || crate::map::gpu_passes::recorded() {
         wanted |= crate::map::gpu_passes::features();
     }
-    // The perf map log's per-frame GPU time (`map::gpu_frame_time`).
     if crate::map::gpu_frame_time::requested() {
         wanted |= crate::map::gpu_frame_time::features();
     }
@@ -641,8 +544,6 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     }
 }
 
-/// The limits a device asks of an adapter with `limits`: `base`, with the adapter's own where the
-/// renderer binds as many as the adapter allows.
 fn required_limits(limits: &wgpu::Limits, base: wgpu::Limits) -> wgpu::Limits {
     wgpu::Limits {
         max_buffer_size: limits.max_buffer_size,
@@ -651,20 +552,13 @@ fn required_limits(limits: &wgpu::Limits, base: wgpu::Limits) -> wgpu::Limits {
         max_texture_dimension_2d: limits.max_texture_dimension_2d,
         max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
         max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
-        // Compiled programs bind every constant buffer at a dynamic offset into the
-        // frame's upload arena; D3D11 allows fourteen per stage.
         max_dynamic_uniform_buffers_per_pipeline_layout: limits.max_dynamic_uniform_buffers_per_pipeline_layout,
-        // An instanced program reads each constant buffer's rows, and its instances' records, as
-        // storage at a dynamic offset: a lit program binds more than the default four.
         max_dynamic_storage_buffers_per_pipeline_layout: limits.max_dynamic_storage_buffers_per_pipeline_layout,
         max_storage_buffers_per_shader_stage: limits.max_storage_buffers_per_shader_stage,
         ..base
     }
 }
 
-/// [`device_descriptor`] for the map renderer's own device: also records the anti-aliasing its
-/// adapter supports, which its scenes check and its host advertises. Other devices, such as the
-/// game windows' on the host, leave that record alone.
 pub fn map_device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     let descriptor = device_descriptor(adapter);
     dashboard_core::map_settings::set_sample_counts(sample_counts(
@@ -674,9 +568,6 @@ pub fn map_device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<
     descriptor
 }
 
-/// The sample counts the map's multisampled targets (scene colour and depth) support on `adapter`
-/// with `features`, resolve included for the scene colour. The output is single-sample at every
-/// count, so it is asked only to support one sample.
 pub fn sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u32> {
     [1, 2, 4, 8]
         .into_iter()
@@ -707,8 +598,6 @@ pub fn sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u
         .collect()
 }
 
-/// Runs `work` under out-of-memory and validation scopes, so a resource the device cannot make
-/// fails it, named as `what`, rather than reaching the device's uncaptured-error handler.
 pub fn scoped<T>(
     device: &wgpu::Device,
     what: impl FnOnce() -> String,
@@ -809,9 +698,6 @@ pub fn compiled<T>(slot: &Result<T, String>) -> io::Result<&T> {
 mod limit_tests {
     use super::*;
 
-    /// A device asks the adapter's own storage limits, so a lit program's instanced variant (its
-    /// constant buffers' rows and its records, each at a dynamic offset) is not refused for the
-    /// default four.
     #[test]
     fn a_device_asks_the_adapter_s_own_storage_buffer_limits() {
         let adapter = wgpu::Limits {
@@ -842,9 +728,6 @@ mod tests {
         assert_eq!(SeaBed::Full.size([2049, 1153]), [2049, 1153]);
     }
 
-    /// The compiled effects' optional device states, clamp-to-border sampling and dual-source
-    /// blending, are named the same way when the device lacks them: effects that author them
-    /// are refused where they are drawn.
     #[test]
     fn missing_compiled_effect_states_are_named_as_device_requirements() {
         let all = wgpu::Features::FLOAT32_FILTERABLE
@@ -895,7 +778,6 @@ mod tests {
         let low = wgpu::PowerPreference::LowPower;
         assert_eq!(chosen_at(&candidates, low), "integrated");
         assert_eq!(chosen_at(&candidates[..3], low), "discrete");
-        // No preference: the first hardware adapter enumerated, never the software one.
         assert_eq!(
             chosen_at(&candidates, wgpu::PowerPreference::None),
             "virtual"
@@ -930,12 +812,10 @@ mod tests {
         let warp = adapter("warp", DeviceType::Cpu, Backend::Dx12);
         assert_eq!(chosen(&[no_compute.clone(), warp.clone()]), "warp");
         assert_eq!(chosen(&[elsewhere.clone(), warp.clone()]), "warp");
-        // A card lacking the map's texture needs falls back rather than being refused.
         assert_eq!(chosen(&[no_bc, warp.clone()]), "warp");
         assert_eq!(chosen(std::slice::from_ref(&warp)), "warp");
         let lavapipe = adapter("lavapipe", DeviceType::Cpu, Backend::Vulkan);
         assert_eq!(chosen(&[warp.clone(), lavapipe]), "warp");
-        // A usable hardware adapter wins wherever it is listed.
         let card = adapter("card", DeviceType::IntegratedGpu, Backend::Dx12);
         assert_eq!(chosen(&[warp, no_compute, card]), "card");
     }

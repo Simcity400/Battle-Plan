@@ -95,14 +95,12 @@ test('contributor totals add the recorded hours before a gap, which hides only t
     } }] });
   try {
     const { default: Component } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/TradeDrillView.tsx');
-    // Recorded 0–20 and 31–71: hours 21–30 are a gap.
     const trade = decodeTrade({ ...reply(2), known: [{ firstHour: 0, lastHour: 20 }, { firstHour: 31, lastHour: 71 }] });
     const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'b', firstHour: 0, lastHour: 71, gaps: [] } } as unknown as BoundTrack;
     const props = (measure: string) => ({ flows: trade.flows, trade, track, runtime: { client: {}, clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } },
       measure, from: 0, hour: 25, live: null, extent: [0, 71], known: trade.reply.known, colours: new Map(),
       tokens: { muted: '#888888' }, active: true, onPick() {}, onContextMenu() {} }) as unknown as ComponentProps<typeof TradeDrill>;
     const tip = () => state.chart!.tooltip!(25, undefined as never, [])!;
-    // Totals so far still add the recorded hours before the gap.
     assert.match(renderToStaticMarkup(createElement(Component, props('total'))), /Total (?!Not recorded)/);
     assert.notEqual(tip().rows[0]?.value, 'Not recorded');
     renderToStaticMarkup(createElement(Component, props('current')));
@@ -122,7 +120,6 @@ test('an Other node and ribbon expose all 5,000 native contributors beyond the q
   assert.equal(new Set(full.map(flow => flow.key)).size, 4998);
   assert.ok(full.some(flow => flow.sellerIdentity === identity(4999)));
   assert.deepEqual(selectedContributors(data.flows, linkSelection(selected, selections.get(target.id)!, 7)), full);
-  // The same cohort stays selected when a different country would be drawn first.
   assert.deepEqual(selectedContributors(data.flows, readSelection(selectionToken(selected, CONTEXT), CONTEXT)!), full);
   assert.equal(contributionAmounts(full, 'current', 0, 60, data.reply.known).every(item => item.raw === 0n), true);
   assert.ok(parseStoredOptions({ tradeSelection: selectionToken(selected, CONTEXT) }));
@@ -155,7 +152,6 @@ test('the full inventory remains selectable when every flow is nonpositive and n
   assert.equal(buildDiagram(data.flows, 'current', 0, 5, 12).nodes.length, 0);
   const selected = readSelection(selectionToken({ kind: 'all' }, CONTEXT), CONTEXT)!;
   assert.deepEqual(contributionAmounts(selectedContributors(data.flows, selected), 'current', 0, 5, item.known).map(item => item.raw), [-10n, 0n]);
-  // A named positive country and a separate negative holder still expose both.
   item.flows[0].deliveredRaw = ['10']; item.flows[1].deliveredRaw = ['-5'];
   const mixed = decodeTrade({ ...item });
   assert.equal(buildDiagram(mixed.flows, 'current', 0, 5, 12).nodes.some(node => !node.identity), false);
@@ -202,7 +198,6 @@ test('Total and Average history track their selected basis, and picking a histor
     const amount = contributionAmounts(data.flows, measure, from, picked.hour!, item.known)[0].raw;
     assert.equal(amount, BigInt(exact));
   }
-  // A missing stretch breaks the geometry rather than carrying or inventing trade.
   const known = observedTradeSpans(item.known, [{ firstHour: 24, lastHour: 47 }]);
   const model = contributionMeasureModel(data.flows, 'total', 0, known);
   const spans: [number, number][] = [];
@@ -233,8 +228,6 @@ test('hourly changes across 50 days and 5,000 contributors draw pixel-budgeted g
     deliveredRaw: hours.map(hour => String(10 + hour % 2)), sellerTags: hours.map(() => 0), buyerTags: hours.map(() => 1),
     factories: hours.map(() => 1), convoysAssigned: hours.map(() => 0), convoysRequired: hours.map(() => 0), deals: hours.map(() => 1) };
   const original = decodeTrade(item).flows[0];
-  // Shared immutable native runs model simultaneous country changes without a
-  // synthetic flow-by-hour matrix, just as the geometry must preserve them.
   const flows = Array.from({ length: 5000 }, (_, index) => ({ ...original, key: `flow-${index}`, sellerIdentity: identity(index) }));
   const model = contributionMeasureModel(flows, 'total', 0, item.known);
   assert.equal(model.flows, flows);
@@ -256,7 +249,6 @@ test('hourly changes across 50 days and 5,000 contributors draw pixel-budgeted g
   });
   assert.equal(last, 1199);
   assert.ok(pieces > 0 && pieces < 100);
-  // A clipped cumulative rise is bounded without revisiting the flow inventory.
   assert.ok(contributionMeasureExtent(model, 1198.25, 1198.75)![1] > 0);
 });
 
@@ -270,7 +262,6 @@ test('staggered 5,000 one-run native histories prepare scalar guides from source
     assert.ok(model.hours.length >= flows.length);
     assert.equal(model.work.prefixWalks, flows.length);
     assert.ok(model.work.eventUpdates <= flows.length * 3);
-    // Constant average terms have no grouped-ratio evaluation at union hours.
     assert.equal(model.work.groupEvaluations, 0);
     assert.equal(model.guide.bands.length, 0);
   }
@@ -305,7 +296,6 @@ test('event coefficients, positive crossings and unlike average denominators mat
     const selected = contributionAmounts(data.flows, measure, from, 30, known);
     assert.equal(selected.some(part => part.raw === null), false);
   }
-  // Exact raw corrections/zeros remain selectable independently of the curve clamp.
   assert.deepEqual(contributionAmounts(data.flows, 'current', 0, 30, known).map(part => part.raw), [-2n, 0n]);
   assert.equal(contributionAmounts(data.flows, 'current', 0, 25, known).every(part => part.raw === null), true);
 });
@@ -365,7 +355,6 @@ test('a country view saves one native holder, selects both its sides and pins fo
   assert.deepEqual(readSelection(selectionToken(selection, CONTEXT), CONTEXT), selection);
   assert.equal(readSelection(selectionToken({ kind: 'country', holder: '' } as never, CONTEXT), CONTEXT), null);
   const data = decodeTrade(reply(3));
-  // Countries 0-2 each sell to country 3: country 1's view is its one sale, country 3's every purchase.
   assert.deepEqual(selectedContributors(data.flows, selection).map(flow => flow.key), [data.flows[1].key]);
   assert.equal(selectedContributors(data.flows, { kind: 'country', holder: identity(3) }).length, 3);
   const pinned = pinContributions(source, track, selection, 5000, false, [2000, 9999], 'Country 00001');

@@ -1,10 +1,3 @@
-//! Writes the journals on a thread of their own: opening, appending, ending segments and
-//! making them durable, in the order the spool thread queued them. The spool thread only
-//! queues, so a slow or busy disk never holds it, and through it the frames; what waits is
-//! the queue, which holds each hour's manifest and sections until they are written. One
-//! thread serves the session. Every record reaches the file as it is written and each ended
-//! segment is synced before the next record is appended, so a killed collector leaves the
-//! journal a whole-record prefix of what was queued, which the recorder takes as it is today.
 
 use replay::{
     columnar_file::{Capture, Stop, capture_of},
@@ -23,7 +16,6 @@ use std::{
 };
 
 const STACK_BYTES: usize = 256 * 1024;
-/// Sync walls in 100 µs steps; the last holds every longer one, bounded above by `max_ns`.
 const STEP_NS: u64 = 100_000;
 const STEPS: usize = 2048;
 
@@ -35,11 +27,9 @@ pub(crate) const DURABLE: &str = "making an ended journal segment durable";
 pub(crate) const CONTROLS: &str = "writing control records to the journal";
 pub(crate) const FINISHING: &str = "finishing the journal";
 
-/// The session's journal thread.
 pub(crate) struct JournalThread {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
-    /// Queues still to refuse as a queue that cannot grow would.
     #[cfg(test)]
     refuse: AtomicUsize,
 }
@@ -55,7 +45,6 @@ struct State {
     timing: Timing,
 }
 
-/// A capture's journal as a recording opens it.
 pub(super) struct Opening {
     pub directory: PathBuf,
     pub identity: Vec<u8>,
@@ -63,8 +52,6 @@ pub(super) struct Opening {
     pub controls: Vec<Vec<u8>>,
 }
 
-/// A committed hour as the journal takes it: the run it starts, when it starts one, and
-/// whether it ends a segment.
 pub(super) struct Hour {
     pub starts: Option<(u64, u8, i32)>,
     pub branch: u64,
@@ -82,22 +69,15 @@ pub(super) enum Op {
     End(Ending),
 }
 
-/// How a capture's journal ends.
 pub(super) enum Ending {
-    /// Durable, as the healthy end of the recording.
     Finished,
-    /// Durable, with where writing stopped and why: the last hour written, else the branch
-    /// of the capture's commands.
     Stopped {
         reason: String,
         command_branch: Option<u64>,
     },
-    /// Left as it is, for the recorder to finish: its stop could not be held.
     Abandoned,
 }
 
-/// What a journal could not take: the step that failed and why, then each hour it was given
-/// from there on, and the control records, until its capture is finished.
 #[derive(Default)]
 pub(super) struct Failure {
     pub failed: Option<(&'static str, io::Error)>,
@@ -105,17 +85,11 @@ pub(super) struct Failure {
     pub controls: Vec<Vec<u8>>,
 }
 
-/// One recording's journal on the thread, and what the recording learns back from it.
 pub(super) struct Lane {
-    /// Only the journal thread locks this, so the recording never waits on a write.
     writer: Mutex<Option<JournalWriter>>,
-    /// The thread's failure since the recording last took it; both lock it only briefly.
     failure: Mutex<Failure>,
-    /// Set by the thread at a failure, cleared when the capture ends.
     refusing: AtomicBool,
-    /// The branch and hour of the last hour written.
     last: Mutex<Option<(u64, i32)>>,
-    /// The campaign's directory, where a `columnar.fail` file fails the next append.
     #[cfg(feature = "columnar-fault-injection")]
     directory: Mutex<Option<PathBuf>>,
     queued: AtomicUsize,
@@ -124,7 +98,6 @@ pub(super) struct Lane {
     append_max_ns: AtomicU64,
 }
 
-/// Each sync's wall.
 #[derive(Clone, Copy)]
 pub(super) struct Timing {
     steps: [u32; STEPS],
@@ -148,8 +121,6 @@ impl Timing {
         self.max_ns = self.max_ns.max(ns);
     }
 
-    /// An upper bound of the `quantile` sync's wall: its step's upper edge, or the longest
-    /// sync for the open last step.
     fn quantile_ns(&self, quantile: f64) -> Option<u64> {
         if self.count == 0 {
             return None;
@@ -211,15 +182,12 @@ impl Lane {
         })
     }
 
-    /// What the thread could not take since the last call; none while it took everything.
     pub(super) fn take_failure(&self) -> Option<Failure> {
         let mut failure = lock(&self.failure);
         (failure.failed.is_some() || !failure.lost.is_empty() || !failure.controls.is_empty())
             .then(|| std::mem::take(&mut *failure))
     }
 
-    /// Operations queued and not yet done, the most ever queued, and the appends' total and
-    /// longest wall.
     pub(super) fn counters(&self) -> [u64; 4] {
         [
             self.queued.load(Ordering::Acquire) as u64,
@@ -229,8 +197,6 @@ impl Lane {
         ]
     }
 
-    /// Holds the journal as a slow disk would: the thread's next operation for this lane
-    /// waits until the guard is dropped.
     #[cfg(test)]
     pub(super) fn hold_writer(&self) -> MutexGuard<'_, Option<JournalWriter>> {
         lock(&self.writer)
@@ -278,7 +244,6 @@ impl Lane {
                 && let Err(error) = journal.finish(stop.as_ref())
                 && !self.refusing.load(Ordering::Acquire)
             {
-                // A journal that could not finish is finished by the recorder as it was left.
                 self.fail(FINISHING, error);
             }
             self.refusing.store(false, Ordering::Release);
@@ -355,10 +320,7 @@ impl Lane {
     }
 }
 
-/// The capture's journal, begun at its capture's number after every one the directory holds,
-/// so the recorder writes those still waiting first and none is overwritten.
 fn open(opening: &Opening) -> io::Result<JournalWriter> {
-    // The row spool creates the campaign's directory at its first segment, after this.
     fs::create_dir_all(&opening.directory)?;
     let mut n = 0_u32;
     for entry in fs::read_dir(&opening.directory)? {
@@ -374,8 +336,6 @@ fn open(opening: &Opening) -> io::Result<JournalWriter> {
     JournalWriter::create(&opening.directory, n, &opening.identity, &opening.capture)
 }
 
-/// The hour, after the run it starts; a block's last hour ends its segment. Each ended
-/// segment is synced before anything after it is written.
 fn write(
     journal: &mut JournalWriter,
     hour: &Hour,
@@ -445,10 +405,6 @@ impl JournalThread {
         }))
     }
 
-    /// Queues `op` for `lane` and returns at once. A queue that cannot grow refuses it, as a
-    /// failure of the step it was for, so the recording loses it by name. An ending it cannot
-    /// take is not refused: it runs here once the lane's earlier work settled, so the lane always
-    /// ends and a later capture on it is never refused for the earlier one's failure.
     pub(super) fn queue(&self, lane: &Arc<Lane>, op: Op) {
         let mut state = self.shared.lock();
         #[cfg(test)]
@@ -482,8 +438,6 @@ impl JournalThread {
         self.shared.changed.notify_all();
     }
 
-    /// Waits until everything queued for `lane` is written or refused: only when a capture
-    /// stops or the recording finishes.
     pub(super) fn settle(&self, lane: &Lane) {
         let mut state = self.shared.lock();
         while lane.queued.load(Ordering::Acquire) != 0 {
@@ -491,7 +445,6 @@ impl JournalThread {
         }
     }
 
-    /// The next `count` queues are refused as a queue that cannot grow refuses them.
     #[cfg(test)]
     pub(super) fn refuse_queues(&self, count: usize) {
         self.refuse.store(count, Ordering::Release);
@@ -525,8 +478,6 @@ fn serve(shared: &Shared) {
             continue;
         };
         drop(state);
-        // Queued before any terminal failure: written even after one, as the spool thread
-        // wrote it before the journal had a thread of its own.
         engine_allocation::finishing(|| lane.run(op, &shared.state));
         lane.queued.fetch_sub(1, Ordering::AcqRel);
         state = shared.lock();

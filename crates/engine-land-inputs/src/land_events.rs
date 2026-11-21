@@ -1,17 +1,3 @@
-//! Owned native land event snapshots. No game calls and no allocation.
-//! Words are a collector-private staging protocol, never replay bytes.
-//!
-//! Combat update, explicit removal, invalid-side cleanup and forced border
-//! endings share the removal path. Finalization, participant detachment and
-//! history publication precede deletion; border scripts run before the base
-//! finalizer. Destructors do not finalize, so registry or save-reset teardown
-//! does not establish battle completion. The manager frees its own history
-//! and vector separately from results.
-//!
-//! Hourly combat updates follow the clock increment and stamp that advanced
-//! hour, certified at the next hourly entry. A completion path before the
-//! increment would instead stamp the preceding hour; this layout does not
-//! establish whether such a path occurs.
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cgame_state, cland_border_war_combat,
     cland_border_war_combatant, cland_combat as combat, cland_combatant as side, corders_group,
@@ -19,10 +5,6 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Off-thread population hint for staging records. Each live combat can
-/// dispatch participants and commanders, then finalize results, losses and
-/// history; destruction retains its current combat references. Future event
-/// volume is unbounded and grows storage from attempted word demand.
 pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<usize, &'static str> {
     let mut words = 0_usize;
     let mut add = |count| {
@@ -86,7 +68,6 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
                 let combats = Array::read(memory, combats_at, 8)
                     .ok_or("destroyed division combat header invalid")?;
                 add(destruction_words(combats))?;
-                // A separate observation supplies the selected killer for this entry.
                 add(4)
             },
         )?;
@@ -102,18 +83,10 @@ fn destruction_words(combats: Array) -> usize {
 }
 
 pub const FINALIZE_RVA: Rva = Rva(0x1349260);
-/// Round termination invokes this dispatch before removing losers; it
-/// resolves loser then winner and marks the winner's observer.
 pub const DISPATCH_RVA: Rva = Rva(0x13491a0);
-/// Exact loser-then-winner commander return addresses certify on-action
-/// commanders. Scripts can query the same resolver while dispatch state is active.
 pub const DISPATCH_LEADER_RETURNS: [Rva; 2] = [Rva(0x13491bc), Rva(0x13491da)];
-/// Six-byte verdict CALLs in on-action dispatch. Resolver entries and
-/// vtable slots are not patched.
 pub const DISPATCH_LEADER_CALLS: [Rva; 2] = [Rva(0x13491b6), Rva(0x13491d4)];
 pub const DISPATCH_LEADER_CALL_SENTINEL: [u8; 6] = [0xff, 0x90, 0xe8, 0, 0, 0];
-/// The commander-resolver vtable slot each verdict CALL calls through, the displacement its
-/// sentinel ends with.
 pub const DISPATCH_LEADER_VTABLE_SLOT: usize = 0xe8;
 pub const DISPATCH_LEADER_CALL_NAMES: [&str; 2] = [
     "DispatchLeaderOnActions.loser_leader",
@@ -156,7 +129,6 @@ const _: () = {
     assert!(RESULT_SIDE_BYTES == RESULT_FLAGS + size_of::<u8>());
 };
 
-/// One authenticated combat header, reused by dispatch's participant plan.
 #[derive(Clone, Copy)]
 pub struct CombatHeader {
     pointer: usize,
@@ -200,8 +172,6 @@ impl CombatHeader {
     }
 }
 
-/// Read after finalization returns and pending damage has flushed, while
-/// sides remain alive. Removal deletes those sides afterward.
 pub struct LossesPlan {
     combat: u64,
     pointers: [usize; 2],
@@ -241,7 +211,6 @@ impl LossesPlan {
             words,
         })
     }
-    /// Authenticated by this plan while both terminal sides are still alive.
     pub fn observer_sources(&self) -> (u64, [usize; 2]) {
         (self.combat, self.pointers)
     }
@@ -278,7 +247,6 @@ pub fn dispatch_inputs(
     };
     Ok((header, mask))
 }
-/// Actual commander result, captured before scripts and participant removal.
 pub fn leader_reference(
     memory: &impl Memory,
     base: usize,
@@ -290,7 +258,6 @@ pub fn leader_reference(
     identity(memory, base, leader, carmy_leader::VTABLE_RVA)?;
     field(memory, leader, cunit_leader::TYPE)
 }
-/// Verdict operands after border scripts; kind5 supplies history separately.
 pub fn final_inputs(
     memory: &impl Memory,
     base: usize,
@@ -355,13 +322,9 @@ pub fn final_inputs(
     }
     Ok(out)
 }
-/// Null history country selects the reserved database tag string.
-/// Those bytes are opaque content.
 #[derive(Clone, Copy)]
 pub struct NullTagPlan(crate::msvc_string::Descriptor);
 impl NullTagPlan {
-    /// Nonzero raw tags select stored tag strings independently of country
-    /// links; aliases must not change their spelling.
     pub fn country(memory: &impl Memory, base: usize, raw: u32) -> Result<Self, &'static str> {
         if raw == 0 {
             return Self::read(memory, base);
@@ -401,10 +364,6 @@ impl NullTagPlan {
         self.0.copy_words(memory, put)
     }
 }
-/// Read at base-finalizer exit while combat is alive. Combat-end processing
-/// flushes damage and clears unit lists; later detachment removes references
-/// and notifies presentation. History therefore uses this post-finalizer
-/// first-country projection.
 #[derive(Clone, Copy)]
 pub struct HistoryPlan {
     pub words: usize,
@@ -476,19 +435,10 @@ impl HistoryPlan {
         Ok(())
     }
 }
-/// Destruction dispatch arguments: old province, new province, dying division,
-/// equipment pool and selected killer division. Deletion is deferred; hourly
-/// movement can continue after destruction dispatch. Preserve every invocation,
-/// including repeated dying-division handles.
 pub const DESTROY_RVA: Rva = Rva(0xd3bdc0);
-/// Snapshot destruction-entry country choice and victim operands before
-/// leader experience or history can run effects. A later observation supplies
-/// the actual selected killer.
 pub const DESTRUCTION_RVA: Rva = Rva(0xce6370);
 pub const BORDER_FINALIZE_RVA: Rva = Rva(0x148a4b0);
 pub const BORDER_TERMINATE_RVA: Rva = Rva(0x148b950);
-/// Attacker-then-defender finalizer verdict returns, before scripts.
-/// Calls from effects are not verdict queries.
 pub const BORDER_TERMINATE_RETURNS: [Rva; 2] = [Rva(0x148a51d), Rva(0x148a52d)];
 
 fn field<T: crate::memory::Raw>(
@@ -581,8 +531,6 @@ pub struct ResultPlan {
     progress: [i64; 2],
 }
 impl ResultPlan {
-    /// Copy countries before retreat rebuilding empties both sets. Commanders
-    /// come from actual resolver returns, avoiding a second unit traversal.
     pub fn participants(mut self) -> Self {
         self.header[0] = 3;
         self.without_candidates()
@@ -590,7 +538,6 @@ impl ResultPlan {
     pub fn combat(&self) -> u64 {
         self.header[1]
     }
-    /// Dispatch already supplied exact commanders, so no fallback unit walk.
     pub fn without_candidates(mut self) -> Self {
         for units in &mut self.units {
             self.words -= units.count as usize * 3;
@@ -598,8 +545,6 @@ impl ResultPlan {
         }
         self
     }
-    /// Capture before ordinary finalization. Border finalization reaches the
-    /// same base routine after its verdict; the hook retains that verdict.
     pub fn read(
         memory: &impl Memory,
         base: usize,
@@ -613,7 +558,6 @@ impl ResultPlan {
             border_verdict,
         )
     }
-    /// Use dispatch's already authenticated header without another native copy.
     pub fn read_header(
         memory: &impl Memory,
         base: usize,
@@ -623,20 +567,13 @@ impl ResultPlan {
         let pointer = header.pointer;
         let border = header.border_war();
         let (state, hour) = state_hour(memory, base)?;
-        // Sets contain raw country references, including
-        // aliases. Bound their cardinality by live link IDs, not the smaller
-        // canonical country-object roster; the link array includes null0.
         let limit = ccountry::Reader::new(memory, base, state)?.arrays()[1].count as usize;
-        // One contiguous copy of handle, both combatants, province and counters; offsets stay owned
-        // by CLandCombat.
         let qword = |offset| header.qword(offset);
         let sides = [
             qword(combat::ATTACKER) as usize,
             qword(combat::DEFENDER) as usize,
         ];
         use crate::memory::{RecordLayout, RecordSources};
-        // Each combatant: identity/backlink, units and both set headers in
-        // one span, then the two distant verdict operands. Six copies total.
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&RESULT_SIDE_FIELDS, RESULT_SIDE_BYTES).unwrap();
         let mut blocks = [0u8; 2 * RESULT_SIDE_BYTES];
@@ -755,9 +692,6 @@ impl ResultPlan {
                 }
             }
             put(u64::from(self.units[n].count));
-            // The fallback authenticates division vector entries. The actual resolver
-            // can dispatch other unit classes; unsupported entries refuse this interval
-            // rather than supplying an invented leader.
             for ordinal in 0..self.units[n].count {
                 let army = field::<u64>(
                     memory,
@@ -823,8 +757,6 @@ impl DestructionPlan {
         } else {
             countries.resolve(destination)?.canonical_slot
         };
-        // Equality or country aliases mean non-enemy. Otherwise require the
-        // selected war relation to be active with its retired byte clear.
         let enemy = if (victim.id as i32) <= 0
             || roster == destination
             || (destination != 0 && victim.canonical_slot == slot)
@@ -925,7 +857,6 @@ impl DestructionPlan {
             put(word);
         }
         for n in 0..self.combats.count {
-            // Participant detachment compares combat pointers, rather than handles.
             let pointer = field::<u64>(
                 memory,
                 self.combats
@@ -944,7 +875,6 @@ impl DestructionPlan {
     }
 }
 
-/// Actual selected division pointer; zero preserves an observed null.
 pub fn killer_handle(
     memory: &impl Memory,
     base: usize,
@@ -963,7 +893,6 @@ mod tests {
 
     #[test]
     fn word_demand_presizes_destroyed_divisions_and_grows_with_combat_references() {
-        // regression: cbb071fb60 Retry live sizing and grow observer storage from independent pressure
         let mut world = crate::ccountry::synthetic::World::new(0, 2, ccountry::DIVISIONS + 16);
         for slot in 1..=2 {
             let army = world.alloc(cunit::COMBAT_REFERENCE_DATA + 16);
@@ -976,7 +905,6 @@ mod tests {
             word_demand(&world.memory(), world.module, world.game_state()),
             Ok(28)
         );
-        // A live combat-reference roster can grow without adding a country.
         let roster =
             Array::read(&world.memory(), world.object(1) + ccountry::DIVISIONS, 8).unwrap();
         let army = crate::read::<u64>(&world.memory(), roster.data).unwrap() as usize;
@@ -1102,8 +1030,6 @@ mod tests {
         assert_eq!(winner, 1);
         assert_eq!(header.handle(), 0x8000_0001_0000_003e);
         assert_eq!(header.sides(), [0x3000, 0x4000]);
-        // A participant plan must use the owned dispatch header: denying a
-        // second header read still succeeds, while an ordinary read fails.
         let denied = 0x2000 + combat::HANDLE;
         let byte = f.0.remove(&denied).unwrap();
         assert!(ResultPlan::read_header(&f, 0, header, None).is_ok());
@@ -1116,7 +1042,6 @@ mod tests {
         assert_eq!(words[1], 0x8000_0001_0000_003e);
         assert_eq!(words[6], 2);
         assert!(words.contains(&u64::from(0x8000_0001u32)));
-        // History formats raw tag-string slots independently of country aliases.
         f.put(0x6000, &1u32.to_le_bytes());
         f.array(0x1000 + crate::cgame_state::COUNTRY_TAGS, 0x18000, 3);
         f.put(0x18020, &[0; 32]);
@@ -1128,8 +1053,6 @@ mod tests {
         history.copy(&f, |v| tags.push(v)).unwrap();
         assert_eq!(&tags[..5], &[5, 0x8000_0001_0000_003e, 1, 0, 9]);
         assert_eq!(tags[5].to_le_bytes(), *b"raw-alia");
-        // Finalization can alter the country projection independently of the
-        // earlier participants. The exit record must use the current sets.
         f.put(0x3000 + side::COUNTRIES + 16, &0i32.to_le_bytes());
         let history = HistoryPlan::read(&f, 0, 0x2000).unwrap();
         let size = history.words;
@@ -1137,8 +1060,6 @@ mod tests {
         history.copy(&f, |v| end.push(v)).unwrap();
         assert_eq!(end.len() + 1, size);
         assert_eq!(&end[..4], &[5, 0x8000_0001_0000_003e, 0, 0]);
-        // More raw tag IDs than canonical countries is a supported alias
-        // shape. The native set is bounded by links, not country objects.
         f.array(0x1000 + crate::cgame_state::COUNTRY_LINKS, 0xa000, 6);
         f.q(0x3000 + side::COUNTRIES, 0x1a000);
         f.q(0x3000 + side::COUNTRIES + 8, 0x1a080);
@@ -1153,15 +1074,11 @@ mod tests {
         let mut aliases = Vec::new();
         plan.copy(&f, 0, |word| aliases.push(word)).unwrap();
         assert_eq!(&aliases[11..17], &[5, 1, 2, 3, 4, 5]);
-        // Other unit classes may support commander resolution; this fallback
-        // authenticates divisions and refuses other forms.
         f.array(0x3000 + side::UNITS, 0x7000, 1);
         f.q(0x7000, 0x8000);
         f.q(0x8000, 17);
         let plan = ResultPlan::read(&f, 0, 0x2000, None).unwrap();
         assert!(plan.copy(&f, 0, |_| {}).is_err());
-        // When dispatch already provided actual commanders, finalization
-        // skips the unit vector and its leader/skill walk entirely.
         let skipped = plan.without_candidates();
         assert_eq!(skipped.words + 3, plan.words);
         assert!(skipped.copy(&f, 0, |_| {}).is_ok());

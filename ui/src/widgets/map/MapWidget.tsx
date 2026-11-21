@@ -9,10 +9,8 @@ import { resolveWindow } from '../../dashboard/model';
 import type { PlaybackController } from '../../dashboard/playback';
 import { mapFrameOnScreen, mapPresentationMatches } from './presentation';
 
-/** The native map's body: the renderer draws into this rectangle; React shows its state. */
 export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) {
   const body = useRef<HTMLDivElement>(null);
-  // The placeholder matches the map against the clock's anchor; forward playback renders nothing here.
   const anchor = useCallback(() => {
     const clock = runtime.clock.getSnapshot();
     return widget.time.mode === 'follow' ? `${clock.playing}:${clock.seekSequence}:${clock.playing ? '' : clock.hour}` : '';
@@ -37,7 +35,6 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
   useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
   const state = useMapState(runtime.maps, widget.id);
   const hidden = useMapsHidden(runtime.maps);
-  // The date of the frame drawn changes with every frame: painted, at most once a display frame.
   const shownDate = useRef<HTMLSpanElement>(null);
   const showsDate = runtime.client.nativeMaps !== false && state?.hour != null;
   useLayoutEffect(() => {
@@ -52,7 +49,6 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
   const desired = target(runtime.clock.getSnapshot());
   const matched = mapPresentationMatches(state, desired);
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
-  // A frame of another hour stays on screen, dated and marked "Updating…", while the viewer builds this one.
   const framed = !nativeUnavailable && mapFrameOnScreen(state);
   const preparing = !hidden && !framed && (state?.loading || (desired && !matched && !nativeUnavailable));
   return <div className="dash-map-widget" data-map-current={matched}>

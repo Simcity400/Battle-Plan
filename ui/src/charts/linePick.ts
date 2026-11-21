@@ -2,8 +2,6 @@ import { curveSegments, heldSegments, runAt } from './series.ts';
 import type { PathCommand, Run } from './series';
 import type { ChartPick } from './TimeChart';
 
-/** Screen ordinates of the paths drawLine uses, including held vertical edges.
- * monotonePath's cubic x controls are thirds, so x advances linearly in t. */
 export function ordinates(path: readonly PathCommand[], x: number, targetY: number): number[] {
   const ys: number[] = [];
   let px = 0, py = 0;
@@ -26,8 +24,6 @@ export function ordinates(path: readonly PathCommand[], x: number, targetY: numb
   return ys;
 }
 
-/** Nearest drawn actor at the shown hour; coincident lines require a chooser.
- * Keyboard picks offer all actors drawn there, without inventing a Y target. */
 export function pickLines(lines: readonly { key: string; runs: readonly Run[]; held?: boolean }[], hour: number,
   context?: ChartPick): string[] {
   if (!context?.frame) return [];
@@ -49,6 +45,5 @@ export function pickLines(lines: readonly { key: string; runs: readonly Run[]; h
   }
   if (!context.point) return [...distances.keys()];
   const nearest = [...distances.values()].reduce((best, distance) => Math.min(best, distance), Infinity);
-  // Within one stroke's screen width, choosing an actor would be ambiguous.
   return [...distances].filter(([, distance]) => distance <= nearest + 2).map(([key]) => key);
 }

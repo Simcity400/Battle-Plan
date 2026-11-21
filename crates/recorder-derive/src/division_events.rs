@@ -1,17 +1,3 @@
-//! `DivisionEvents`: the division log. A division first seen in the run's Divisions is a sighting,
-//! except at the run's first complete census, its baseline; a DivisionEquipmentDeletions witness
-//! whose cells differ from the ones last read for its division is a removal, lost or transferred;
-//! a shown division leaving the census with no witness is a vanishing, no loss.
-//! Each is a row of the log appended the hour it was read and forgotten at the writer's next
-//! hour, so the log lists each hour's events alone; it holds what a reply could only read again
-//! from the largest tables at the hour before: the division's last province and template and its name
-//! operands, copied as the deletion found them for a removed division, and its template's icon
-//! operands. A destroyed or overrun division's one death in DestroyedDivisions since the census
-//! before, inside a complete LandEventCoverage span, dates it exactly and names its killer.
-//!
-//! State: every division handle the run has seen (the one blob the family map lets grow with
-//! entities ever made), the witnesses last read, the hours of the last census and of the name
-//! and icon reads then, and the deaths the log gave since that census and still lists.
 
 mod inputs;
 #[cfg(test)]
@@ -43,22 +29,14 @@ const READS: &[Read] = &[
 
 #[derive(Default)]
 pub struct DivisionLog {
-    /// Every division handle the run's censuses held.
     seen: HashSet<u64>,
-    /// Each witness as last read, by division.
     witnesses: HashMap<u64, Signature>,
-    /// The hour of the run's last complete census: the hour the writer last ran.
     census: Option<i32>,
-    /// DivisionStatus's and DivisionTemplateIcons' sample hours then: when their deleted rows'
-    /// cells were read.
     names: Option<i32>,
     icons: Option<i32>,
-    /// The deaths DestroyedDivisions logged at or after the last census and still lists, by
-    /// ordinal.
     deaths: Vec<(u64, Death)>,
 }
 
-/// What an event copies of its division, each with the hour its table supplied it where known.
 struct Copied<'a> {
     placed: Option<(Placed, Option<i32>)>,
     names: Option<(Names<'a>, Option<i32>)>,
@@ -66,8 +44,6 @@ struct Copied<'a> {
     template: Option<inputs::TemplateName>,
 }
 
-/// A death dating a removal: its division, its hour and province, its killer's raw country and
-/// division.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Death {
     of: u64,
@@ -77,8 +53,6 @@ struct Death {
     division: Option<u64>,
 }
 
-/// How a removal is dated: the one covered death matching it, and how many matched, for a
-/// destroyed or overrun division.
 #[derive(Default)]
 struct Dating {
     death: Option<Death>,
@@ -96,8 +70,6 @@ fn opaque(out: &mut Rows, bytes: Option<&[u8]>) -> Value {
     }
 }
 
-/// The rows the hour deleted of Divisions, DivisionStatus and DivisionTemplateIcons, by key, their
-/// cells as the deletion found them.
 struct Dropped<'a> {
     divisions: HashMap<u128, &'a [Kept]>,
     names: HashMap<u128, &'a [Kept]>,
@@ -112,8 +84,6 @@ impl<'a> Dropped<'a> {
 }
 
 impl DivisionLog {
-    /// What `division` copies this hour: as the hour's deletions found its rows (read the hour
-    /// before, unless the writer did not run then), else as its tables hold them now.
     fn copied<'a>(&self, hour: &Hour<'a>, division: u64, dropped: &Dropped<'a>) -> Copied<'a> {
         let key = u128::from(division);
         let earlier = |at: Option<i32>| at.filter(|_| !hour.fresh);
@@ -135,7 +105,6 @@ impl DivisionLog {
     }
 }
 
-/// One event's row cells, the owner given raw.
 fn cells(hour: &Hour<'_>, out: &mut Rows, witness: Option<&DivisionEquipmentDeletionRow>, owner: Option<u32>, after: Option<i32>, copied: &Copied<'_>, dating: &Dating) -> Vec<Value> {
     let at = hour.hour;
     let death = dating.death.as_ref();
@@ -207,7 +176,6 @@ fn key(kind: u8, hour: i32, division: u64) -> u128 {
     u128::from(kind) << 96 | u128::from(hour as u32) << 64 | u128::from(division)
 }
 
-/// Whether a removal names its division's killer when one covered death matches it.
 fn killed(witness: &DivisionEquipmentDeletionRow) -> bool {
     matches!(witness.cause, Some(Cause::DivisionDestroyed | Cause::DivisionOverrun))
 }
@@ -229,7 +197,6 @@ impl Writer for DivisionLog {
         READS
     }
 
-    // Hourly: its rows are forgotten at its next hour, and the last census is the hour it last ran.
     fn hourly(&self) -> bool {
         true
     }
@@ -239,7 +206,6 @@ impl Writer for DivisionLog {
     }
 
     fn hour(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
-        // Complete as before DestroyedDivisions was a log: a death not logged leaves a removal undated.
         out.status(TableId::DivisionEvents, Status::Complete);
         crate::forces::forget_listed(hour, out, TableId::DivisionEvents);
         let at = hour.hour;
@@ -415,8 +381,6 @@ impl Writer for DivisionLog {
 }
 
 impl DivisionLog {
-    /// The witnesses whose cells differ from those last read for their division, ascending by
-    /// division: of the rows the hour wrote, or of every row after an hour the writer did not run.
     fn witnessed(&mut self, hour: &Hour<'_>) -> io::Result<Vec<DivisionEquipmentDeletionRow>> {
         let table = TableId::DivisionEquipmentDeletions;
         let view = hour.table(table);

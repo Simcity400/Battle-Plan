@@ -1,12 +1,3 @@
-//! The details under Current (`special-project-details`): one country's scientists, specialization
-//! progress, facility assignments and its projects' pending rewards, chosen options and variables
-//! at an hour. A value the game refreshes daily carries the hour of the read it comes from: the
-//! last available read of its table in the day up to the hour while the same country held the tag
-//! ([`lanes::available_reads`]; a project's, its owner's slice read), "not read" by name otherwise.
-//!
-//! The effects text of a project's output and of its pending reward's options is its own product
-//! (`special-project-effects`), asked when the reader opens a project: it reads every table scripted
-//! effects can name.
 
 use dashboard_base::products::Country;
 use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, country_key, needs_scope, scoped_at};
@@ -41,7 +32,6 @@ mod visibility;
 
 pub use facility::{FacilityDetails, FacilitySource};
 
-/// The history entry a project's completion writes, not a chosen option.
 const COMPLETION_MARKER: u32 = super::fold::COMPLETION_MARKER;
 
 pub struct SpecialProjectDetailsAt;
@@ -61,7 +51,7 @@ pub struct SpecialProjectDetailsParams {
 pub struct SpecialProjectEffectsParams {
     pub branch_id: String,
     pub country: Country,
-    /// The project's raw owner id and its id within it.
+    #[doc = " The project's raw owner id and its id within it."]
     pub owner: u32,
     pub project: u32,
 }
@@ -91,7 +81,7 @@ pub struct ScientistDetails {
     pub person: ProjectPerson,
     pub active: Option<u8>,
     pub injury_days: Option<i32>,
-    /// The read `injury_days` comes from.
+    #[doc = " The read `injury_days` comes from."]
     pub injury_hour: Option<i32>,
     pub visible: Option<bool>,
     pub visibility_hour: Option<i32>,
@@ -193,13 +183,13 @@ pub struct ProjectRuntimeDetails {
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectDetails {
     pub hour: i32,
-    /// None where the hour's scientist roster is not known (never an empty one).
+    #[doc = " None where the hour's scientist roster is not known (never an empty one)."]
     pub scientists: Option<Vec<ScientistDetails>>,
-    /// None without a read of the programs in the day up to the hour.
+    #[doc = " None without a read of the programs in the day up to the hour."]
     pub programs: Option<Vec<ProgramDetails>>,
-    /// None without a read of the progress in the day up to the hour.
+    #[doc = " None without a read of the progress in the day up to the hour."]
     pub breakthroughs: Option<Vec<SpecializationProgress>>,
-    /// None without a read of the country's projects in the day up to the hour.
+    #[doc = " None without a read of the country's projects in the day up to the hour."]
     pub projects: Option<Vec<ProjectRuntimeDetails>>,
     pub unavailable: Vec<String>,
     pub warnings: Vec<String>,
@@ -220,9 +210,9 @@ pub struct ProjectEffects {
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectEffects {
     pub hour: i32,
-    /// None where the project's definition is not in the recorded content.
+    #[doc = " None where the project's definition is not in the recorded content."]
     pub output: Option<ProjectEffects>,
-    /// The pending reward's options, in its order; empty with none pending.
+    #[doc = " The pending reward's options, in its order; empty with none pending."]
     pub options: Vec<ProjectEffects>,
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
@@ -230,8 +220,6 @@ pub struct SpecialProjectEffects {
 
 dashboard_base::reply_warnings!(SpecialProjectEffects);
 
-/// What both products read beside their frame: the content, and the recording for read dates and
-/// the frames scoped text needs.
 pub struct Context {
     content: Result<Arc<ProjectContent>, String>,
     replay: Arc<Replay>,
@@ -256,14 +244,12 @@ fn branch(id: &str) -> io::Result<u64> {
     id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))
 }
 
-/// A token's spelling in the frame's LexicalTokens, or why not.
 fn spelled(frame: &DecodedFrame, id: u32) -> Result<String, String> {
     let rows = frame.complete::<tables::LexicalTokens>().map_err(|why| format!("lexical tokens: {why}"))?;
     let row = rows.binary_search_by_key(&id, |row| row.token).ok().map(|at| &rows[at]).ok_or_else(|| format!("lexical tokens lacks token {id}"))?;
     std::str::from_utf8(installed_content_core::parser::c_string(&row.literal)).map(str::to_owned).map_err(|_| format!("Token {id} is not UTF-8"))
 }
 
-/// Whether the holder at `hour` of `tag` held it through every hour from `read`.
 fn held_since(query: &Query<'_>, tag: &Country, holder: Owner, read: i32, hour: i32) -> bool {
     let mut at = hour;
     while let Some(run) = query.holders.at(tag, at) {
@@ -283,7 +269,6 @@ struct Coverage {
     reads: Vec<(i32, i32)>,
 }
 
-/// The hours values are read at: the reply's, and its run's.
 struct Reads<'r, 'q> {
     query: &'r Query<'q>,
     coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
@@ -294,8 +279,6 @@ struct Reads<'r, 'q> {
 }
 
 impl Reads<'_, '_> {
-    /// The hour of the last available read of `table` in the day up to the reply's hour while the
-    /// holder held the tag, or why there is none (`what` names the values).
     fn last(&self, table: TableId, what: &str) -> Result<i32, String> {
         let from = self.hour.saturating_sub(STAGGER_PERIOD - 1);
         let recording = self.query.replay.recording();
@@ -315,12 +298,10 @@ impl Reads<'_, '_> {
         self.supplies(read).then_some(read).ok_or_else(|| format!("{what} were last read before this country held the tag"))
     }
 
-    /// Whether a read at `read` supplies the reply's hour: within the day before it, by the same holder.
     fn supplies(&self, read: i32) -> bool {
         read <= self.hour && self.hour - read < STAGGER_PERIOD && held_since(self.query, self.tag, self.holder, read, self.hour)
     }
 
-    /// The new sample while the old reply's coverage (including its reason) still holds.
     fn continued(&self, previous: i32, table: TableId, what: &str) -> Option<Option<i32>> {
         let before = Self { hour: previous, ..*self };
         match (before.last(table, what), self.last(table, what)) {
@@ -331,10 +312,8 @@ impl Reads<'_, '_> {
     }
 }
 
-/// One reply's names: its content's, scoped text evaluated once per key.
 struct Namer<'c, 'r, 'q> {
     naming: Option<Naming<'c>>,
-    /// Why there are no names, where the content is unavailable.
     missing: Option<String>,
     query: &'r Query<'q>,
     hour: i32,
@@ -355,7 +334,6 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
         self.naming.as_ref().map(|naming| naming.content)
     }
 
-    /// `key`'s text for the country at the hour; none where the content cannot make it.
     fn name(&mut self, key: &str) -> Option<String> {
         let naming = self.naming.as_ref()?;
         let content = naming.content;
@@ -377,7 +355,6 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
         ProjectLabel { name: self.name(&token), token }
     }
 
-    /// The token `id` of `frame` as a label; its id where the recording does not spell it.
     fn token(&mut self, frame: &DecodedFrame, id: u32, unavailable: &mut Vec<String>) -> ProjectLabel {
         match spelled(frame, id) {
             Ok(token) => self.label(token),
@@ -388,7 +365,6 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
         }
     }
 
-    /// Who a native character reference names.
     fn person(&mut self, frame: &DecodedFrame, reference: u64) -> ProjectPerson {
         let unread = |missing: Option<String>| ProjectPerson { assigned: Some(reference != 0), id: None, name: None, portrait: None, missing };
         if reference == 0 {
@@ -409,19 +385,15 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
     }
 }
 
-/// The raw ids linking to `slot` in the frame's CountryLinks: a project's or a program's owner is
-/// any raw id of its country.
 fn owners_of(frame: &DecodedFrame, slot: u32) -> io::Result<BTreeSet<u32>> {
     let links = frame.complete::<tables::CountryLinks>()?;
     Ok(dashboard_text::metadata::link_slots(links).into_iter().filter(|(_, held)| *held == slot).map(|(raw, _)| raw).collect())
 }
 
-/// Every key of `owners`, each the high bits of a key `shift` wide below it.
 fn owner_ranges(owners: &BTreeSet<u32>, shift: u32) -> Keys {
     Keys::Ranges(owners.iter().map(|&owner| (u128::from(owner) << shift, u128::from(owner) << shift | ((1u128 << shift) - 1))).collect())
 }
 
-/// The rows of `rows` (in key order) whose key starts `prefix`.
 fn prefixed<T>(rows: &[T], prefix: u32, of: impl Fn(&T) -> u32) -> &[T] {
     let first = rows.partition_point(|row| of(row) < prefix);
     let last = first + rows[first..].partition_point(|row| of(row) == prefix);
@@ -440,7 +412,6 @@ fn scientist_references(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> (BTreeS
     (roster, assigned)
 }
 
-/// The tokens a reply spells: from the rows of the step before.
 fn tokens(frame: &DecodedFrame, owners: &BTreeSet<u32>) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
     for row in frame.complete::<tables::Projects>().unwrap_or(&[]) {
@@ -578,8 +549,6 @@ impl AtHour for SpecialProjectDetailsAt {
         DETAIL_TABLES.to_vec()
     }
 
-    /// The links, the scientist roster and the programs whole; then the country's own rows by its
-    /// raw ids and the characters they name; then the tokens those rows spell.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -682,7 +651,6 @@ fn scientists(
         unavailable.push(why.clone());
     }
     let roster: Vec<_> = rows.iter().filter(|row| owners.contains(&row.country)).collect();
-    // Each scientist's daily row, where its read saw the same roster.
     let observed: Vec<(u32, &ScientistDailyRow)> = match &daily {
         Ok((rows, _)) => roster
             .iter()
@@ -793,7 +761,6 @@ fn programs(frame: &DecodedFrame, owners: &BTreeSet<u32>, reads: &Reads<'_, '_>,
     Some(out)
 }
 
-/// The definition `token` names in the content, by the game's case-blind match.
 fn definition<'c>(content: &'c ProjectContent, token: &str) -> Option<&'c installed_content_core::special_projects::Project> {
     content.definitions.projects.iter().find(|(name, _)| name.eq_ignore_ascii_case(token)).map(|(_, definition)| definition)
 }
@@ -862,7 +829,6 @@ fn projects(
 ) -> Option<Vec<ProjectRuntimeDetails>> {
     let rows = frame.complete::<tables::Projects>().map_err(|why| unavailable.push(format!("Projects are unavailable: {why}"))).ok()?;
     let slices = frame.complete::<tables::SliceReads>().map_err(|why| unavailable.push(format!("Project read hours are unavailable: {why}"))).ok()?;
-    // A sliced table's rows of an owner are as its last slice read left them.
     let mut read_of: BTreeMap<u32, i32> = BTreeMap::new();
     for &owner in owners {
         let has_rows = !prefixed(rows, owner, |row| row.owner).is_empty();
@@ -924,7 +890,6 @@ fn effect_tables() -> Vec<TableId> {
     tables
 }
 
-/// `output`'s text for `project` as the game describes it, with what it could not describe.
 fn effects(
     content: &ProjectContent,
     frame: &DecodedFrame,
@@ -989,7 +954,6 @@ impl AtHour for SpecialProjectEffectsAt {
         Some(&params.country)
     }
 
-    /// Every table scripted effects and their scopes name, whole.
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         effect_tables()
     }
@@ -1026,7 +990,6 @@ impl AtHour for SpecialProjectEffectsAt {
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
         let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
-        // The game reads the program's scientist as it stood at its daily read: only that hour knows it.
         let scientist = (|| {
             if project.program_reference as u32 != PROGRAM_REFERENCE {
                 return Err("Scientist assignment has no supplying read at this hour".to_owned());

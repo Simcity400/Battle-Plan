@@ -1,8 +1,6 @@
 use super::*;
 use crate::unit::{FrameEntry, PartEntry, column_stream, put_varint, put_wide, zig_wide};
 
-/// One stream of column 0 of model 0, its directory and events as given, compressed alone as a
-/// part's only frame: the bytes and the part's entry.
 fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry) {
     let mut raw = vec![0_u8];
     put_varint(&mut raw, tracks);
@@ -17,7 +15,6 @@ fn part_of(tracks: u64, directory: &[u8], events: &[u8]) -> (Vec<u8>, PartEntry)
     (stored, PartEntry { first: 0, frames: vec![frame], ..PartEntry::default() })
 }
 
-/// Two rows at slots 0 and 1 of one number column.
 fn cells() -> TableState {
     let mut cells = TableState::new(&[Kind::I32]);
     cells.insert_row(0, 10).unwrap();
@@ -33,15 +30,12 @@ fn advanced(bytes: &[u8], entry: &PartEntry) -> io::Result<Advanced> {
     cursor.advance(23, 24, &mut cells, &mut [Vec::new()], &mut Lives::default())
 }
 
-/// A well-formed stream reads: the base the damaged ones below are made from.
 #[test]
 fn a_whole_stream_reads() {
-    // Slot 0: at hour 0, +1; slot 1: at hour 1, +1.
     let (bytes, entry) = part_of(2, &[0, 2, 2, 1, 2, 2], &[0, 2, 1, 2]);
     assert_eq!(advanced(&bytes, &entry).unwrap(), Advanced::Reached);
 }
 
-/// A directory one byte longer than its tracks is refused when the part is fetched.
 #[test]
 fn a_directory_that_disagrees_is_refused_by_name() {
     let (bytes, entry) = part_of(1, &[0, 2, 2, 0], &[0, 2]);
@@ -49,7 +43,6 @@ fn a_directory_that_disagrees_is_refused_by_name() {
     assert!(refused.to_string().contains("directory disagrees"), "{refused}");
 }
 
-/// A track whose length passes its stream is refused when the part is fetched.
 #[test]
 fn a_track_running_past_its_stream_is_refused_by_name() {
     let (bytes, entry) = part_of(1, &[0, 2, 9], &[0, 2]);
@@ -57,8 +50,6 @@ fn a_track_running_past_its_stream_is_refused_by_name() {
     assert!(refused.to_string().contains("passes its stream"), "{refused}");
 }
 
-/// An event's code that runs on into the next track's bytes is damage, reported by name after the
-/// loop.
 #[test]
 fn an_event_running_into_the_next_track_is_refused_by_name() {
     let (bytes, entry) = part_of(2, &[0, 2, 2, 1, 2, 2], &[0, 0x82, 1, 2]);
@@ -66,8 +57,6 @@ fn an_event_running_into_the_next_track_is_refused_by_name() {
     assert!(refused.to_string().contains("damaged"), "{refused}");
 }
 
-/// A varint whose bytes run to the stream's end reads into the zero bytes past the frame, never
-/// out of it, and is refused by name.
 #[test]
 fn a_varint_running_past_the_buffer_is_refused_by_name() {
     let (bytes, entry) = part_of(1, &[0, 2, 3], &[0, 0x80, 0x80]);
@@ -75,7 +64,6 @@ fn a_varint_running_past_the_buffer_is_refused_by_name() {
     assert!(refused.to_string().contains("damaged"), "{refused}");
 }
 
-/// A track whose events lie past its part's last hour is refused when the cursor passes the part.
 #[test]
 fn events_past_their_part_are_refused_by_name() {
     let (bytes, entry) = part_of(1, &[0, 2, 3], &[0x80, 0x05, 2]);
@@ -87,8 +75,6 @@ fn events_past_their_part_are_refused_by_name() {
     assert!(refused.to_string().contains("past its part"), "{refused}");
 }
 
-/// One block of `script`'s hours on a table of a number and a list column, written by the store:
-/// the unit's bytes, its page, and the table after each hour.
 fn written(script: impl Fn(u32, &mut crate::store::TableChanges<'_>)) -> (Vec<u8>, crate::unit::BlockPage, Vec<TableState>) {
     use crate::{
         store::Store,
@@ -134,7 +120,6 @@ fn written(script: impl Fn(u32, &mut crate::store::TableChanges<'_>)) -> (Vec<u8
     (memory.bytes, memory.pages.remove(0), states)
 }
 
-/// A row's key and cells, as text.
 fn row(cells: &TableState, slot: u32) -> (Option<u128>, Vec<String>) {
     (cells.key(slot), (0..2).map(|column| format!("{:?}", cells.value(column, slot))).collect())
 }
@@ -146,7 +131,6 @@ fn live_rows(cells: &TableState) -> Vec<(u32, Option<u128>, Vec<String>)> {
     }).collect()
 }
 
-/// A cursor over the block's one part from hour 1, its cells the table after hour 0.
 fn cursor_over(bytes: &[u8], page: &crate::unit::BlockPage, states: &[TableState]) -> (Cursor, TableState) {
     let part = fetch(&bytes.to_vec(), &page.tables[0].parts[0], page.hours - 1, &[0, 1], None).unwrap();
     let mut cursor = Cursor::new(&[Kind::I32, Kind::U32List], &[0, 1], 1);
@@ -154,10 +138,6 @@ fn cursor_over(bytes: &[u8], page: &crate::unit::BlockPage, states: &[TableState
     (cursor, states[0].clone())
 }
 
-/// Each row a step deletes is handed over with its cells at its last live hour, before it is
-/// cleared: a row older than the step, a row born and gone within the step on the slot the first
-/// left (with writes between), a row born and gone on a fresh slot; the slot taken a third time.
-/// The step otherwise ends as `advance` leaves it.
 #[test]
 fn a_deleted_row_is_seen_at_its_last_live_hour() {
     use crate::state::Cell;
@@ -208,7 +188,6 @@ fn a_deleted_row_is_seen_at_its_last_live_hour() {
         }
     };
     let (bytes, page, states) = written(script);
-    // The reference: hour by hour, each deleted row read at the end of the hour before its delete.
     let (mut hourly, mut cells) = cursor_over(&bytes, &page, &states);
     let mut expected = Vec::new();
     let mut before = cells.clone();
@@ -220,7 +199,6 @@ fn a_deleted_row_is_seen_at_its_last_live_hour() {
         }
         before = cells.clone();
     }
-    // Hours 1 to 23 as one step, then 24 to 47 seen.
     let (mut stepped, mut seen_cells) = cursor_over(&bytes, &page, &states);
     let (mut plain, mut plain_cells) = cursor_over(&bytes, &page, &states);
     let mut seen = Vec::new();
@@ -239,9 +217,6 @@ fn a_deleted_row_is_seen_at_its_last_live_hour() {
 }
 
 
-/// A long run of consecutive rows deleted in one hour beside single deletes, and a slot of the run
-/// taken again in the step: the cells, the lives in slot order and the slots written equal a
-/// cursor stepped hour by hour and the store's table.
 #[test]
 fn a_run_of_deleted_rows_is_cleared_as_one() {
     use crate::state::Cell;
@@ -290,9 +265,6 @@ fn a_run_of_deleted_rows_is_cleared_as_one() {
     assert_eq!(cells.value(0, 100), Value::Number(0), "a cleared slot holds nothing");
 }
 
-/// Stepping past varints and summing key differences, 64 or eight bytes or a word's keys at a
-/// time, equal reading them one at a time: widths of one to nineteen bytes, in runs and mixed,
-/// from every start, for every count; a step past the stream's end is refused.
 #[test]
 fn stepping_past_values_and_summing_keys_equal_reading_them_one_at_a_time() {
     let mut differences: Vec<i128> = (0..40).map(|index| index % 3 - 1).collect();

@@ -1,13 +1,3 @@
-//! Allocation-free notifications from the native writers of every province's combat vector,
-//! which NavalProvinceCombats records ([`engine_mutations::province_combat_mutations`]). A
-//! detour only marks the province its first argument names in the family's [`DirtySet`] (by its
-//! guarded id `cprovince::ID`), counts its site and calls the original; it never changes game
-//! behaviour. Both writers run on the game thread. A receiver whose id does not read marks no
-//! id and moves the set's epoch, so the consumer reads every province.
-//!
-//! The NavalProvinceCombats capture is the set's one consumer: it reads the provinces its held
-//! walk found with combats and those its take returns, and every other province, empty in the
-//! held walk and unwritten since, has no row.
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
@@ -22,16 +12,12 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static DOMAIN: Domain = Domain::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read provinces, quiet hours (no marked province) and full reads.
 static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-/// Slots of the province array the latest complete walk visited, for off-thread sizing.
 static SLOTS: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the marked provinces and each site's calls.
 pub struct Domain {
     provinces: DirtySet,
     calls: [AtomicU64; SITES],
-    /// Receivers whose id did not read.
     unnamed: AtomicU64,
 }
 
@@ -44,9 +30,6 @@ impl Domain {
         }
     }
 
-    /// Hook path, allocation-free: the writer of `site` ([`MUTATIONS`] index) is about to
-    /// rewrite the combat vector of province `id`; `None` when its id does not read. Dropping
-    /// the guard marks its return.
     pub fn notify(&self, site: usize, id: Option<usize>) -> Dirty<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         match id {
@@ -58,7 +41,6 @@ impl Domain {
         }
     }
 
-    /// An enabled domain with a set for `provinces` ids installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(provinces: usize) -> Self {
         let domain = Self::new();
@@ -68,7 +50,6 @@ impl Domain {
         domain
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.provinces.boundary(invalidate);
@@ -81,9 +62,7 @@ impl Default for Domain {
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// The take of the marked province ids ([`DirtySet::take`]).
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
 }
 
@@ -93,7 +72,6 @@ impl Changes for Domain {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
@@ -101,12 +79,9 @@ impl Changes for Observer {
     }
 }
 
-/// Whether NavalProvinceCombats reads only the provinces that may hold combats.
 pub const CARRY: bool = cfg!(feature = "province_combat_changes");
 
-/// The guarded id of the province at `province`; zero, which no province has, names none.
 fn province_id(province: usize) -> Option<usize> {
-    // SAFETY: a guarded read of live memory on the calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     province
         .checked_add(engine_native::cprovince::ID)
@@ -115,20 +90,14 @@ fn province_id(province: usize) -> Option<usize> {
         .map(|id| id as usize)
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     DOMAIN.provinces.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate` after a load, gap or
-/// recovery: nothing observed before it certifies anything.
 pub fn boundary(invalidate: bool) {
     DOMAIN.provinces.boundary(invalidate);
 }
 
-/// Off the game thread: size the set for the slots the latest complete walk visited. Nothing is
-/// offered before a walk: a later larger bitmap waits for an invalidating hour, while the first
-/// installs at once.
 pub fn presize() {
     let slots = SLOTS.load(Ordering::Relaxed);
     if slots != 0 {
@@ -136,25 +105,18 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced bitmap.
 pub fn collect() {
     DOMAIN.provinces.collect();
 }
 
-/// One capture's provinces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Provinces the held walk vouched for without a read.
     pub reused: u64,
     pub read: u64,
-    /// No province was marked.
     pub quiet: bool,
-    /// Every province read: no held walk certified any.
     pub full: bool,
 }
 
-/// A worker publishes one capture's counts and, when it walked the whole province array, its
-/// slots for sizing.
 pub fn record(counts: &Counts, slots: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -174,13 +136,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction. A differing
-    /// sentinel leaves the family uninstalled; NavalProvinceCombats then reads every province.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction. A differing"]
+    #[doc = " sentinel leaves the family uninstalled; NavalProvinceCombats then reads every province."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if CARRY
@@ -207,9 +169,6 @@ impl Hooks {
         if !enabled {
             DOMAIN.provinces.set_enabled(false);
         }
-        // One census and suspension for the whole family, shared with the other families in a
-        // runtime round (`hook::shared`): a thread at any of its sites, or in a tap, holds
-        // every site back until the next attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -226,14 +185,10 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the bitmaps are dropped only once the hooks were
-        // never enabled, or were removed and drained after the last capture.
         unsafe { DOMAIN.provinces.release() };
     }
 }
 
-// Both sites take the province in RCX and the combat in RDX and return nothing a caller
-// reads; a detour forwards RCX..R9 and RAX. The mark covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -251,9 +206,7 @@ macro_rules! callback {
         }
     };
 }
-// Unique append (province, combat), from combat creation, joining and link rebuild.
 callback!(add_combat, 0);
-// Swap-remove (province, combat), from combat finalization.
 callback!(remove_combat, 1);
 
 #[cfg(test)]
@@ -266,7 +219,6 @@ mod tests {
         (epoch, ids)
     }
 
-    /// A province's guarded id names it; a zero or unreadable id names none.
     #[test]
     fn a_receiver_names_its_province_through_the_live_object() {
         let mut province = vec![0_u8; 0x200];
@@ -276,8 +228,6 @@ mod tests {
         assert_eq!(province_id(0), None);
     }
 
-    /// Each site marks the province it names; an unnamed receiver and an invalidating boundary
-    /// move the epoch.
     #[test]
     fn each_site_marks_its_province() {
         let domain = Domain::enabled(1024);

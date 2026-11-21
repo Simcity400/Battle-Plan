@@ -1,4 +1,3 @@
-//! Combat window operands from recorded simulation state and matching content.
 use installed_content_division_names::{division_names::Database, division_names::Unresolved};
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
@@ -50,9 +49,6 @@ fn show(values: &mut Values, key: &str) {
     values.entry(key.into()).or_default().hidden = false;
 }
 
-/// The land window facts decided once per bind, here and nowhere else: the
-/// terrain picture and each side's flag. Each binds
-/// through [`Bindings::bind`], so a refusal hides the widget.
 fn pictures(
     out: &mut Bindings,
     frame: &DecodedFrame,
@@ -74,10 +70,6 @@ fn pictures(
     let picture = terrain_picture(frame, id, province, terrain, has_sprite)?;
     out.bind("terrain_picture", SPRITE, picture);
     for (side, prefix) in ["attacker", "defender"].into_iter().enumerate() {
-        // The flag widget uses the selected commander's country, else the first
-        // primary country, else the attacked province's controller. The
-        // recorder keeps that country as
-        // `commander_country` with or without a commander.
         let flag = match detail {
             Some(detail) => country_flag(flags, detail.sides[side].commander_country),
             None => Err(format!(
@@ -91,13 +83,6 @@ fn pictures(
     Ok(())
 }
 
-/// terrain picture: `GFX_terrain_<category>` of the combat
-/// province, with `_winter` when that province's weather snow
-/// (`WeatherProvinces.snow`) is positive. Missing weather is not zero snow:
-/// without the province's row summer and winter are undecided. Natively a
-/// missing sprite is logged ("Missing spriteType") and the widget keeps
-/// whatever it showed before; the viewer has no such earlier native state,
-/// so it refuses by name.
 fn terrain_picture(
     frame: &DecodedFrame,
     id: u64,
@@ -137,7 +122,6 @@ fn terrain_picture(
         refused(format!("the content lacks sprite {name}"))
     }
 }
-/// Why a table this hour holds no row for a key, from the table's state.
 fn absence<T: TableSchema>(table: &Available<'_, T>) -> String {
     match table {
         Available::Complete(_) => "the complete table lacks it".to_owned(),
@@ -150,24 +134,18 @@ fn absence<T: TableSchema>(table: &Available<'_, T>) -> String {
         }
     }
 }
-// Signed 64-bit multiplication precedes the fixed5 division.
 fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / 100_000
 }
 fn fraction(value: i64, maximum: i64) -> f32 {
     ((value as f64 / maximum.max(100) as f64).clamp(0.0, 1.0)) as f32
 }
-/// Why a division's name cannot be rendered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unnamed {
     CustomNotText,
     StoredText(String),
     Unavailable(String),
-    /// The name holds a control the native text layout does not draw ([`displayable`]).
     Control(String),
-    /// Divisions use type-zero names bound to their template. Other name types
-    /// (1 ship/variant, 2 operative, 3 railway gun, 4 unassigned) have no
-    /// content form for a division; an edited save can still record one.
     ForeignType(i32),
     Unresolved(Unresolved),
 }
@@ -188,9 +166,6 @@ impl std::fmt::Display for Unnamed {
     }
 }
 
-/// Use a recorded custom name unless it is programmatic with a resolved
-/// name group. Otherwise use the selected name of a type-zero member from
-/// the content's name groups.
 fn division_name(
     row: &LandCombatMember<'_>,
     names: &Database,
@@ -217,8 +192,6 @@ fn division_name(
 const UNRECORDED_NAMING: &str =
     "its naming operands are in neither its LandCombatDivisions row nor its division's rows";
 
-/// Player overrides are literals. Visible programmatic overrides are stored client text;
-/// a resolved group instead generates the name, even if an override was recorded.
 fn division_custom_name(
     custom: &[u8],
     programmatic: u8,
@@ -244,7 +217,6 @@ fn division_custom_name(
         .map_err(|_| Unnamed::CustomNotText)
 }
 
-/// Historical generator-operand name, before the retained native cache was recorded.
 fn division_name_operands(
     custom: Option<String>,
     kind: i32,
@@ -264,8 +236,6 @@ fn division_name_operands(
         .map_err(Unnamed::Unresolved)
 }
 
-/// [`division_name`] as the entry draws it: the text path reads
-/// its control bytes, so one the native text layout does not draw is refused.
 fn shown_name(
     row: &LandCombatMember<'_>,
     names: &Database,
@@ -277,8 +247,6 @@ fn shown_name(
         .and_then(|name| displayable(icons, name).map_err(Unnamed::Control))
 }
 
-/// The live getter returns the retained cache, not a freshly generated name.
-/// Only an explicitly unrecorded cache uses the old combat naming projection.
 fn shown_recorded_name(
     row: &LandCombatMember<'_>,
     status: Option<&replay_data::rows::DivisionStatusRow>,
@@ -302,8 +270,6 @@ fn shown_recorded_name(
         .and_then(|name| displayable(icons, name).map_err(Unnamed::Control))
 }
 
-/// One warning per cause for a combat's divisions whose names are
-/// unavailable, naming each division with its group and ordinal.
 fn unnamed_warnings<'a>(
     combat: u64,
     rows: impl Iterator<Item = LandCombatMember<'a>>,
@@ -344,8 +310,6 @@ fn unnamed_warnings<'a>(
         .collect()
 }
 
-/// Committed entries put the inline flag after the attacker's name and
-/// before the defender's name. Reserve entries use the bare name.
 fn entry_name(name: String, side: u8, committed: bool, flag: Option<&String>) -> String {
     match flag.filter(|_| committed) {
         Some(flag) if side == 0 => format!("{name} {INLINE_FLAG}{flag}"),
@@ -354,9 +318,6 @@ fn entry_name(name: String, side: u8, committed: bool, flag: Option<&String>) ->
     }
 }
 
-/// An entry's strength and organisation bars; without the division's
-/// condition both are hidden and the refusal counted. A bar whose maximum is
-/// unknown is hidden alone; `panel_gap` says why `DivisionPanelStats` may lack it.
 fn condition_bars(
     out: &mut Bindings,
     values: &mut Values,
@@ -411,14 +372,10 @@ fn entry(
     flag: Option<&String>,
     mut values: Values,
 ) -> Values {
-    // An unavailable name is cleared and hidden; `unnamed_warnings` reports
-    // it once per cause with every division it covers.
     let name_widget = values.entry("name".into()).or_default();
     name_widget.hidden = name.is_none();
     name_widget.text = name.map(|name| entry_name(name, row.side, committed, flag));
     if committed {
-        // Division combat inputs, then side bonus and cached stats. A member whose stats
-        // are recorded nowhere shows no stat box.
         let (scales, stats) = (row.scales, row.values.map(|values| values.stat_values));
         let attack =
             bonus.map(|bonus| mul(mul(scales[2], scales[0]), bonus.wrapping_add(100_000)));
@@ -444,9 +401,6 @@ fn entry(
             ),
         ] {
             if let Some(raw) = raw {
-                // The game sets each stat box through fixed-point formatting
-                // at precision 0, so the whole part is
-                // truncated rather than rounded.
                 text(
                     &mut values,
                     key,
@@ -480,16 +434,11 @@ fn icons(values: &mut Values, key: &str, template: &str, frames: impl Iterator<I
     );
 }
 
-/// A global modifier hover: its text (`None` for a frame without one) and
-/// delayed text, each or why it is refused.
 type ModifierHover = (
     Result<Option<String>, String>,
     Option<Result<String, String>>,
 );
 
-/// The game ignores the hovered child and dispatches by the global modifier
-/// strip's frame. Static descriptions come from the localisation; border
-/// conflict factors are the side's recorded simulation operands.
 fn global_modifier_tooltip(
     icons: &impl TextIcons,
     loc: &Localisation,
@@ -532,8 +481,6 @@ fn global_modifier_tooltip(
                 Ok(entry) => entry,
                 Err(reason) => return (Err(reason), None),
             };
-            // The game wraps the entry in the control byte 0x11 and a colour
-            // with string appends, outside the localiser's buffer.
             let colour = if value < 100_000 { 'R' } else { 'H' };
             let coloured = format!("\u{11}{colour}{entry}\u{11}!");
             if !main.is_empty() && !main.ends_with('\n') {
@@ -550,8 +497,6 @@ fn global_modifier_tooltip(
         0 => (
             BM_FORT_MODIFIER,
             dlc_mask.map(|mask| {
-                // feature ID 0x23 maps to the saved DLC mask's
-                // bit 7, not to a bit numbered 0x23.
                 if mask & (1 << 7) != 0 {
                     BM_FORT_MODIFIER_DESC_WITH_RAILWAY_GUN
                 } else {
@@ -575,9 +520,6 @@ fn global_modifier_tooltip(
         ),
         _ => return (Ok(None), None),
     };
-    // The BM_ keys are the executable's: each must be in the localisation,
-    // and a missing or unsupported one is refused by name, never shown as
-    // its own text.
     let main = builtin(icons, loc, key, &[])
         .and_then(|name| {
             builtin(
@@ -592,10 +534,6 @@ fn global_modifier_tooltip(
     (main, delayed)
 }
 
-/// The side whose `*_leader_initiative_overlay_glow` is shown. Each side
-/// scores its selected commander's skill, zero without one, plus the
-/// `RECON_SKILL_IMPACT` define when its greatest full-roster reconnaissance
-/// is strictly greater. The higher score glows; a tie shows neither.
 fn initiative_side(skills: [i32; 2], reconnaissance: [i64; 2], impact: i32) -> Option<usize> {
     let mut scores = skills;
     match reconnaissance[0].cmp(&reconnaissance[1]) {
@@ -610,11 +548,6 @@ fn initiative_side(skills: [i32; 2], reconnaissance: [i64; 2], impact: i32) -> O
     }
 }
 
-// A recorded role identifies the section independently of LandCombatDetails.
-// The full-side ordinal differs from the committed/reserve list order
-// recorded in LandCombatDetails. The ordinal
-// order is only the fallback the limitation registry states when that table
-// is missing (formats 14 and 22).
 fn role_rosters<'a>(
     divisions: impl IntoIterator<Item = &'a LandCombatDivisionRow>,
     side: u8,
@@ -635,8 +568,6 @@ fn role_rosters<'a>(
     groups
 }
 
-/// True once two units in the side's full ordered LandCombats roster have
-/// different direction keys. Border-war sides always return false.
 fn several_directions<D: std::ops::Deref<Target = LandCombatDivisionRow>>(
     combat: &replay_data::rows::LandCombatRow,
     border_war: bool,
@@ -659,10 +590,6 @@ fn several_directions<D: std::ops::Deref<Target = LandCombatDivisionRow>>(
     Some(false)
 }
 
-/// One combat's LandCombatDivisionModifiers rows by side and division, each
-/// division its LandCombatDivisions row's of the same key. A division a side
-/// lists twice keeps its first row, as the side's member list was searched
-/// before; a row without its member row names no division and is left out.
 pub(super) fn division_modifiers<'a>(
     rows: &'a [replay_data::rows::LandCombatDivisionModifierRow],
     members: &[LandCombatDivisionRow],
@@ -677,10 +604,6 @@ pub(super) fn division_modifiers<'a>(
     found
 }
 
-/// Whether the combat is a border-war combat, whose type token 0x39A5
-/// selects both the window title and the combatant
-/// class above. Only a border war records border values on its modifier
-/// rows, so without any row for the combat the class stays undecided.
 pub(super) fn border_war(
     rows: &[replay_data::rows::LandCombatModifierRow],
     id: u64,
@@ -753,8 +676,6 @@ fn land(
     };
     out.warnings
         .extend(unnamed_warnings(id, divisions.values().copied(), shown));
-    // Undecided entry flags and exile badges by widget and cause, with the
-    // committed divisions each cause leaves undecided: one warning per cause.
     let mut undecided: BTreeMap<(&str, String), Vec<u64>> = BTreeMap::new();
     let movement: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)?
         .rows()
@@ -778,7 +699,6 @@ fn land(
     }
     out.warnings
         .retain(|s| !s.starts_with("Combat UI: LandCombatDetails/"));
-    // Committed entries whose icon list ended early, per cause.
     let mut omitted = BTreeMap::new();
     for side in 0..2 {
         let prefix = if side == 0 { "attacker" } else { "defender" };
@@ -919,10 +839,6 @@ fn land(
             } else {
                 ("reserves", "COMBAT_RESERVES_LABEL")
             };
-            // COUNT is the side's committed or reserve count as a string
-            // argument (signed integer formatting,
-            // string-argument localisation). An unknown count
-            // takes the viewer's unknown dash.
             let count = if detail.is_some() || (roles_known && divisions_complete) {
                 ids.len().to_string()
             } else {
@@ -943,8 +859,6 @@ fn land(
         }
         if let Some(detail) = detail {
             let value = &detail.sides[side];
-            // A commander name localises its recorded token; no commander shows
-            // UNIT_LEADER_NO_LEADER.
             let name = if value.commander == 0 {
                 builtin(
                     static_content.assets.as_ref(),
@@ -963,11 +877,7 @@ fn land(
                 format!("Land combat {id} {prefix} commander name is hidden: {reason}.")
             });
             out.bind(&format!("{prefix}_leader_name"), TEXT, name);
-            // The side flag is bound in `pictures`, with or without a
-            // commander.
             if value.commander != 0 {
-                // UNIT_LEADER_SKILL with the integer argument SKILL
-                // (value localisation, type 5).
                 let skill = builtin(
                     static_content.assets.as_ref(),
                     &static_content.localisation,
@@ -979,8 +889,6 @@ fn land(
                 });
                 out.bind(&format!("{prefix}_leader_skill"), TEXT, skill);
             } else {
-                // The game writes an empty skill beside UNIT_LEADER_NO_LEADER
-                // and sets the sprite it names on the portrait button.
                 out.bind(&format!("{prefix}_leader_skill"), TEXT, Ok(String::new()));
                 let name = "GFX_no_combat_leader";
                 let portrait = if static_content.assets.has_sprite(name) {
@@ -992,7 +900,6 @@ fn land(
                 };
                 out.bind(&format!("{prefix}_leader"), SPRITE, portrait);
             }
-            // The badge is hidden in `Bindings::land` and shown only here.
             match super::hq::unit(frame, value)? {
                 Ok(0) => {}
                 Ok(_) => show(&mut out.values, &format!("{prefix}_leader_army_hq_icon")),
@@ -1022,8 +929,6 @@ fn land(
             if marker.indicator != 0 {
                 kinds.push(8);
             }
-            // Preserve strip order. Frame 6 is attacker-only and requires
-            // several attack directions.
             for (mask, kind) in [
                 (0x8000, 2),
                 (0x4000, 1),
@@ -1162,8 +1067,6 @@ fn naval(
     flags: &Flags,
     vision: &Vision,
 ) -> io::Result<()> {
-    // Hide the controlling-player button when neither primary side list
-    // contains an equivalent viewing country.
     hide(&mut out.values, "header_container/disengage");
     let details = rows::<tables::NavalCombatDetails>(frame)?;
     if let Some(detail) = details.rows().iter().find(|r| r.combat == id) {
@@ -1180,9 +1083,6 @@ fn naval(
             id,
             naval_disengage_state(detail, &aliases, vision.ours()),
         );
-        // Compare the viewing country with the defender primary list.
-        // A match shows the defender skin;
-        // otherwise the attacker skin. Both widgets receive the same progress.
         match naval_progress_skin(detail, &aliases, vision.ours()) {
             Ok(shown) => bind_naval_progress(&mut out.values, shown, detail.progress),
             Err(reason) => out.withhold(
@@ -1193,15 +1093,11 @@ fn naval(
                 format!("Naval combat {id} progress skin is hidden: {reason}."),
             ),
         }
-        // The window recomputes positioning, screening and anti-air from live operands on
-        // every refresh; the combat's stored copies lag them.
         let combat_ships = rows::<tables::NavalCombatShips>(frame)?;
         let ship_models = rows::<tables::ShipModels>(frame)?;
         let air_bases = rows::<tables::AirBases>(frame)?;
         let live_ships = rows::<tables::Ships>(frame)?;
         let defines = static_content.assets.naval_defines.as_ref();
-        // One ShipModels lookup per refresh serves surface detection, carrier
-        // air, screening and anti-air.
         let models = ship_models
             .is_complete()
             .then(|| super::keyed::Keyed::new(ship_models.rows(), |model| model.ship))
@@ -1216,9 +1112,6 @@ fn naval(
         let dense = (dense.is_complete() && wings.is_complete())
             .then(|| super::naval_air_groups::DenseBases::new(dense.rows(), wings.rows()))
             .flatten();
-        // The recomputations read fixed modifier keys from the recorded
-        // accumulators; a recording whose definitions spell them differently
-        // is refused by name, and the affected values are omitted.
         let mut admitted =
             |family| match replay_derive::fixed_layout::validate_recording(frame, family) {
                 Ok(()) => true,
@@ -1246,8 +1139,6 @@ fn naval(
         for (side, value) in detail.sides.iter().enumerate() {
             let label = if side == 0 { "attacker" } else { "defender" };
             let wnd = if side == 0 { "left" } else { "right" };
-            // Recomputed screening uses fixed-point percentage formatting
-            // at precision 0, times 100.
             let screening = match &screening_inputs {
                 Some((defines, models)) => super::naval_screening::calculate(
                     id,
@@ -1284,8 +1175,6 @@ fn naval(
                     refusal,
                 ),
             }
-            // positioning as the screening, anti-air
-            // through fixed-point formatting at precision 1, truncating.
             out.bind(
                 &format!("header_container/{wnd}_wnd/stat_positioning"),
                 TEXT,
@@ -1333,7 +1222,6 @@ fn naval(
             out.bind(&format!("header_container/flag_{label}"), FLAG, flag);
             let name_key = format!("header_container/leader_{label}_name");
             if value.commander == 0 {
-                // Refresh the commander portrait with the combat details.
                 let name = builtin(
                     static_content.assets.as_ref(),
                     &static_content.localisation,
@@ -1344,8 +1232,6 @@ fn naval(
                     format!("Naval combat {id} {label} commander name is hidden: {reason}.")
                 });
                 out.bind(&name_key, TEXT, name);
-                // Set "GFX_leader_unknown" on the
-                // portrait button; land's GFX_no_combat_leader is not used.
                 let sprite = "GFX_leader_unknown";
                 let portrait = if static_content.assets.has_sprite(sprite) {
                     Ok(sprite.to_owned())
@@ -1379,7 +1265,6 @@ fn naval(
                     );
                 }
             } else {
-                // The skills box stays hidden from `Bindings::naval`.
                 out.withhold(
                     &[&name_key],
                     format!(
@@ -1423,9 +1308,6 @@ fn naval_flag_country(
         .ok_or_else(|| "NavalCombatDetails lists no country for the side".to_owned())
 }
 
-/// Compare only the two primary country lists against the viewing country.
-/// Allied vision does not admit the retreat button. Enable it unless the
-/// matched side is already retreating; hide it when neither side matches.
 fn naval_disengage_state(
     detail: &replay_data::rows::NavalCombatDetailsRow,
     aliases: &BTreeMap<u32, u32>,
@@ -1442,11 +1324,8 @@ fn naval_disengage_state(
     });
     let enabled = detail.sides.each_ref().map(|side| side.retreating == 0);
     match (attacker, defender) {
-        // The game chooses the attacker first if both primary lists match.
         (Ok(true), _) => Ok(Some(enabled[0])),
         (Ok(false), Ok(true)) => Ok(Some(enabled[1])),
-        // An unknown attacker cannot change visibility when the defender
-        // matches, nor the state if both possible sides have the same state.
         (Err(_), Ok(true)) if enabled[0] == enabled[1] => Ok(Some(enabled[1])),
         (Ok(false), Ok(false)) => Ok(None),
         (Err(reason), _) | (_, Err(reason)) => Err(reason),
@@ -1469,9 +1348,6 @@ fn bind_naval_disengage(out: &mut Bindings, id: u64, state: Result<Option<bool>,
     }
 }
 
-/// The game selects the defender skin when the viewing
-/// country is in the defender primary list. Raw links resolve to canonical
-/// slots before comparison (`tactics::viewing_side`).
 fn naval_progress_skin(
     detail: &replay_data::rows::NavalCombatDetailsRow,
     aliases: &BTreeMap<u32, u32>,

@@ -1,4 +1,3 @@
-//! Failed stitches retain the parent schedule's Naval and wing barrier.
 use super::*;
 use std::sync::{Condvar, Mutex, mpsc};
 
@@ -65,7 +64,6 @@ fn deferred_stitch_failure(naval_panics: bool) {
         }
     });
     let mut batch = acquisition::Batch::new(&pool);
-    // SAFETY: synthetic workers read no native memory; Batch drains all tickets.
     let stitch = unsafe {
         submit_acquisition(
             &shared,
@@ -75,7 +73,6 @@ fn deferred_stitch_failure(naval_panics: bool) {
     };
     batch.wait_ready(|batch| pending_complete(batch, &stitch).then_some(()));
     assert!(!stitch_can_advance(&batch, &stitch, false));
-    // SAFETY: as above.
     let naval = unsafe {
         submit_acquisition(
             &shared,
@@ -96,14 +93,11 @@ fn deferred_stitch_failure(naval_panics: bool) {
         running.recv_timeout(crate::TEST_HANG_GUARD).unwrap(),
         "naval"
     );
-    // SAFETY: as above.
     let blocker = unsafe { submit_acquisition(&shared, &mut batch, peer(0)) };
     assert_eq!(
         running.recv_timeout(crate::TEST_HANG_GUARD).unwrap(),
         "peer"
     );
-    // Both workers are gated, so this lower-priority job is definitely queued.
-    // SAFETY: as above.
     let lower = unsafe { submit_acquisition(&shared, &mut batch, peer(1)) };
     assert_eq!(pool.calibration().executor.queued, 1);
     assert!(!pending_complete(&batch, &lower));
@@ -114,9 +108,6 @@ fn deferred_stitch_failure(naval_panics: bool) {
     assert!(!barrier.ready(&batch, Some(&stitch), Some(&naval), true));
 
     peer_gate.open();
-    // Use the same readiness predicates as the callback: a published contained
-    // panic cannot settle while Naval is withheld. The other worker must be
-    // able to finish previously queued lower-priority work, not cancel it.
     let next = batch.wait_ready(|batch| {
         if stitch_can_advance(batch, &stitch, false)
             || barrier.ready(batch, Some(&stitch), Some(&naval), true)
@@ -128,7 +119,6 @@ fn deferred_stitch_failure(naval_panics: bool) {
     });
     assert_eq!(next, "lower");
     assert!(!batch.stopped());
-    // SAFETY: readiness proved publication, with all loans still owned here.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, lower) };
     assert!(
         completed.report.is_ok(),
@@ -138,7 +128,6 @@ fn deferred_stitch_failure(naval_panics: bool) {
         unreachable!("lower-priority request lost")
     };
     assert_eq!(request.base, 1);
-    // SAFETY: the blocker published before its worker claimed the lower job.
     assert!(
         unsafe { finish_acquisition(&shared, &mut batch, blocker) }
             .report
@@ -148,14 +137,10 @@ fn deferred_stitch_failure(naval_panics: bool) {
     naval_gate.open();
     batch.wait_ready(|batch| pending_complete(batch, &naval).then_some(()));
     assert_eq!(batch.stopped(), naval_panics);
-    // Reaching the barrier again must not resample a stop caused by Naval.
     barrier.reach(&batch);
     assert_eq!(barrier.admissible, Some(true));
     assert!(!barrier.ready(&batch, Some(&stitch), Some(&naval), false));
     assert!(barrier.ready(&batch, Some(&stitch), Some(&naval), true));
-    // As in the callback, collect Naval before settling the deferred stitch;
-    // the true wing prerequisite stands for its already-returned census.
-    // SAFETY: both requests have published and Batch retains their loans.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, naval) };
     assert_eq!(completed.report.is_err(), naval_panics);
     if naval_panics {
@@ -165,7 +150,6 @@ fn deferred_stitch_failure(naval_panics: bool) {
         ));
     }
     drop(completed);
-    // SAFETY: as above; the stitch ticket stayed uncollected until settlement.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, stitch) };
     let Ok(acquisition::Report::OrdersStitch(report)) = completed.report else {
         unreachable!("contained stitch panic must remain a report")

@@ -5,7 +5,6 @@ import { useProduct } from '../../dashboard/products';
 import MinefieldsWidget from './MinefieldsWidget';
 import { validateMinefields } from './minefieldsData';
 
-/** Sea regions as the content names them, for the region setting. */
 function useMinefieldChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const { data } = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefields',

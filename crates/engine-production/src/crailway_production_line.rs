@@ -1,30 +1,17 @@
-//! CRailwayProductionLine; inherited fields live in cgeneral_production_line and cproduction_line.
 
 use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
 
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02aa_4860);
-/// Railway-construction reference type identifier.
 pub const REFERENCE_TYPE_ID: u32 = 4_713;
-/// Initial railway level, signed i32, serialized as a dword.
 pub const BASE_LEVEL: usize = 0x78;
-/// Requested railway level, signed i32, serialized as a dword.
 pub const TARGET_LEVEL: usize = 0x7c;
-/// Cancel byte serialized as `cancel`; independently completes the line
-/// without requiring route completion.
 pub const COMPLETION_FLAG: usize = 0x80;
-/// Route province-ID array data.
 pub const ROUTE: usize = 0x88;
-/// Route array count, u32.
 #[cfg(test)]
 pub const ROUTE_COUNT: usize = 0x94;
-/// Route entries are u32 province IDs.
 pub const ROUTE_PROVINCE_STRIDE: usize = 0x04;
-/// Current segment, i32, permitting -1.
 pub const CURRENT_SEGMENT: usize = 0xa0;
-/// Remaining construction cost, signed i64 fixed5; produced amount is total
-/// segment cost minus remaining cost.
 pub const REMAINING_COST: usize = 0xa8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

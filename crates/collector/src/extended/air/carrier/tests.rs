@@ -142,7 +142,6 @@ fn source() -> cair_base::RegistrationRow {
         base: 17,
         slot: 2,
         capacity_raw: 42,
-        // Relative pool offsets must not be compared with this global arena offset.
         wings_start: 37,
         wings_len: 3,
     }
@@ -320,7 +319,6 @@ fn rejected_seed_cannot_admit_its_partial_prefix_on_decode() {
         false,
         &mut [0; 3],
     );
-    // Keep the readable partial carrier prefix but revoke seed admission.
     job.carrier.seed = Err("carrier census repeated observation changed");
     let mut air = super::super::Captured::with_capacities(&super::super::Capacities::fixture());
     let mut fog = crate::extended::fog::Captured::with_capacities(
@@ -402,8 +400,6 @@ struct CoherentCarrierMemory<'a> {
 impl<'a> CoherentCarrierMemory<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         let mut globals = std::collections::BTreeMap::new();
-        // Only genuine module globals lie outside the existing kit's address
-        // space. Their selected objects and payloads use ordinary kit bytes.
         for (address, pointer) in [
             (
                 engine_native::csub_unit_definition::DATABASE_RVA.0,
@@ -529,8 +525,6 @@ fn coherent_carrier_fixture() -> Vec<u8> {
             allocated as u64,
         );
     }
-    // A real, empty registered pool still has a definition, owner, base,
-    // copied wing header and known-zero passive sums. Container B has no pool.
     coherent_header(
         &mut bytes,
         COHERENT_CONTAINER_A + container::POOLS,
@@ -589,8 +583,6 @@ fn coherent_carrier_fixture() -> Vec<u8> {
     );
     bytes[COHERENT_NULL + definition::IS_REAL] = 0;
 
-    // Exact type/id registry route and retained SSO name; no generator or UI
-    // setting participates. Its name demand is observed before the warm growth.
     kit::put64(
         &mut bytes,
         COHERENT_REGISTRY + registry::ENTRIES,
@@ -733,8 +725,6 @@ fn coherent_carrier_scale_fixture(countries: usize) -> Vec<u8> {
             );
         }
     }
-    // Dense native order retains the duplicate country-2 occurrence before
-    // indexed countries 1..N, exercising payload demand beyond registry slots.
     kit::put64(&mut bytes, dense, COHERENT_CONTAINER_B as u64);
     bytes
 }
@@ -767,8 +757,6 @@ fn assert_counted_seed_refusal(reason: &'static str) {
     let links = country_table + 4 * 8;
     let indexed = links + 4 * 4;
     let dense = indexed + 4 * 8;
-    // The third country has no base registration. Its three original census
-    // witnesses can disagree without changing the independent mandatory rows.
     kit::put64(&mut bytes, indexed + 3 * 8, 0);
     coherent_header(
         &mut bytes,
@@ -894,8 +882,6 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
     use super::super::air_bases_test_kit as kit;
     let mut bytes = coherent_carrier_fixture();
     let mut job = super::super::AirBasesJob::fixture();
-    // The first native pass grows its optional arenas to the exact live
-    // pressure; nothing is left to grow before the accepted capture below.
     coherent_carrier_stage(&mut job, &bytes);
     assert_eq!(job.carrier.demand.countries, 3);
     assert_eq!(job.carrier.demand.indexed, 3);
@@ -996,10 +982,6 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
         )
     );
 
-    // Only the two fuel words change. They ride in the original pass's own
-    // container span, so its spans stay those of the accepted capture while
-    // its bytes change and the memo decodes afresh; the observer reads
-    // neither word, so its own log is unchanged.
     kit::put64(
         &mut bytes,
         COHERENT_CONTAINER_A + engine_native::ccountry_air_container::FUEL_DEMAND_RAW,
@@ -1054,8 +1036,6 @@ fn native_carrier_packets_and_memo_follow_current_fuel_word_changes() {
     assert_ne!(changed_registration, first_registration);
     assert_eq!(fog.registrations_snapshot().rows, snapshot.rows);
 
-    // A third adjacent capture reacquires identical native inputs before the
-    // genuine memo hit restores the exact base and UPDATED registration packet.
     coherent_carrier_stage(&mut job, &bytes);
     air.bases_raw_mode = true;
     fog.registrations_raw_mode = true;
@@ -1210,7 +1190,6 @@ fn coherent_assert_complete_carrier_packets(
 
 #[test]
 fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hour() {
-    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
     let _hint = crate::country_scale::hint_guard();
     use super::super::air_bases_test_kit as kit;
     const HOUR: i32 = 201;
@@ -1222,8 +1201,6 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
     let mut frames = [coherent_carrier_parts(), coherent_carrier_parts()];
     let mut memo = super::super::AirBasesMemo::default();
 
-    // Both native jobs are already queued at H before either output frame
-    // sees pressure. No job or output arena is locally pre-grown here.
     for job in &mut jobs {
         assert_eq!(job.carrier.bases.capacity()[1..], [0, 0]);
         assert_eq!(job.carrier.registrations.capacity()[1], 0);
@@ -1237,7 +1214,6 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
             ),
             (3, COHERENT_NAME_BYTES.len(), 1)
         );
-        // The native pass grows its arenas and copies the dense payload at once.
         assert!(
             job.carrier
                 .log
@@ -1281,8 +1257,6 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
         assert_eq!(job.carrier.demand, CarrierDemand::default());
         assert!(job.carrier.seed.is_err());
     }
-    // A refresh, rather than passage of a game hour, settles both queued
-    // slots. Native copy runs again at H after actual worker pool growth.
     for job in &mut jobs {
         coherent_carrier_refresh(job, &bytes, HOUR, true);
         assert!(!job.grow_for_next());
@@ -1290,7 +1264,6 @@ fn two_queued_carrier_slots_recover_after_real_retirement_at_the_same_paused_hou
     for (index, ((air, fog), job)) in frames.iter_mut().zip(&jobs).enumerate() {
         air.bases_raw_mode = true;
         fog.registrations_raw_mode = true;
-        // The job grew to its demand in its own pass, the frame on the first decode.
         let demand = job.carrier.demand;
         let [_, countries, names] = air.carrier.capacity();
         assert!(countries >= demand.countries && names >= demand.name_bytes);
@@ -1428,9 +1401,6 @@ fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure(
     use engine_native::{cair_wing, cair_wing_pool};
     const HOST_WINGS: usize = 0x76000;
     let mut bytes = coherent_carrier_fixture();
-    // Move the existing authenticated primary wings to the genuine host pool.
-    // Its old state pool is empty so registration reaches the host before the
-    // fault; all handles and both subobject identities remain real kit inputs.
     coherent_header(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS, 0, 0);
     coherent_header(
         &mut bytes,

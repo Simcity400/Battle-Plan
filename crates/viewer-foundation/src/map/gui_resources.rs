@@ -1,4 +1,3 @@
-//! Shared GUI resources, viewport and per-occurrence diagnostics.
 
 use super::{
     lazy_icons::LazyFlags,
@@ -10,12 +9,8 @@ use super::{
 use installed_content_core::gui::native;
 use std::collections::BTreeMap;
 
-/// Draws the portrait art a window names by its bytes.
 pub type PortraitTextures<'a> = &'a dyn Fn(&[u8]) -> Option<Texture>;
 
-/// What the windows draw from: their resources as the native registry loads them
-/// ([`super::native_resources::GuiResources`]), the recording's localisation, and the hour's countries and flag art
-/// the flags resolve through ([`native_flags::FlagSource`]).
 pub struct GuiAssets<'a> {
     pub gui: &'a crate::map::native_resources::GuiResources,
     pub windows: &'a NativeWindows,
@@ -25,7 +20,6 @@ pub struct GuiAssets<'a> {
     pub portrait_textures: Option<PortraitTextures<'a>>,
 }
 
-/// Flag resolution and the two atlases used by GUI text and shields.
 pub struct GuiFlags<'a> {
     pub source: &'a dyn native_flags::FlagSource,
     pub small: &'a LazyFlags,
@@ -138,23 +132,17 @@ impl native_gui::Sheets for GuiAssets<'_> {
     }
 }
 
-/// Refused for a flag a window draws while its hour's countries are not recorded.
 const NO_COUNTRIES: &str =
     "a flag's country is unknown: the hour's countries (CountryAppearance) are not recorded";
 
-/// The GUI viewport for parentless windows, with scaled extents truncated to integers.
-/// Reading, construction, layout and projection share this viewport
-/// ([`crate::map::native_shader::draw::gui_viewport`]).
 pub fn viewport(viewport: [u32; 2], ui_scale: f32) -> [i32; 2] {
     crate::map::native_shader::draw::gui_viewport(viewport, ui_scale).map(|value| value as i32)
 }
 
-/// Why `window` is not drawn: the module's `refusal`.
 pub fn refused_cause(window: &str, refusal: &native_gui::Refusal) -> String {
     format!("{window} is not drawn: {refusal}")
 }
 
-/// A part `window` draws nothing for without failing, and why.
 pub fn noted_cause(window: &str, diagnostic: &native_gui::Diagnostic) -> String {
     format!(
         "{window} draws nothing for {} ({}): {}",
@@ -164,7 +152,6 @@ pub fn noted_cause(window: &str, diagnostic: &native_gui::Diagnostic) -> String 
     )
 }
 
-/// Counts each refusal of `window` under its reason.
 pub fn count_refused<K: From<String> + Ord>(
     gaps: &mut BTreeMap<K, usize>,
     window: &str,
@@ -177,7 +164,6 @@ pub fn count_refused<K: From<String> + Ord>(
     }
 }
 
-/// Counts each part `window` draws nothing for without failing, under its reason.
 pub fn count_noted<K: From<String> + Ord>(
     gaps: &mut BTreeMap<K, usize>,
     window: &str,
@@ -193,15 +179,11 @@ pub fn count_noted<K: From<String> + Ord>(
 pub struct HitRectangle {
     pub rect: [f32; 4],
     pub order: usize,
-    /// Only a supported shape can dispatch its observer. Other shapes retain
-    /// conservative bounds to block input without invoking an unverified callback.
     pub supported: bool,
     pub geometry: Option<native_gui::HitGeometry>,
     pub disabled: bool,
 }
 
-/// A presented observer's native hit rectangle and attachment order. Unknown
-/// hit forms refuse interaction in their drawn bounds; they never pass input through.
 pub fn hit_rectangle(
     control: &native::Element,
     layout: &Layout,
@@ -219,7 +201,6 @@ pub fn hit_rectangle(
     )
 }
 
-/// Which native observer geometry the caller has adopted.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HitMode {
     DrawBounds,
@@ -284,8 +265,6 @@ pub fn observer_hit_rectangle(
         }
         rect[0] += origin[0] as f32;
         rect[1] += origin[1] as f32;
-        // Keep existing capture rectangles. A zero stretch can still have a
-        // full-frame native hit, so only an empty draw uses diagnostic bounds.
         let rect = if rect[2] > 0.0 && rect[3] > 0.0 {
             rect
         } else {
@@ -317,7 +296,6 @@ pub fn observer_hit_rectangle(
     if hit == Some(native_gui::Hit::Through) {
         return None;
     }
-    // Without retained native geometry the drawn crop is only a blocker.
     let supported = mode == HitMode::DrawBounds && hit == Some(native_gui::Hit::Frame);
     if !supported {
         let reason = if mode == HitMode::NativeGeometry && resources.physical_viewport().is_none() {
@@ -348,7 +326,6 @@ pub fn observer_hit_rectangle(
     })
 }
 
-/// The one screen-rectangle hit test; the map's counter hits share it.
 pub fn contains(rect: [f32; 4], point: [f32; 2]) -> bool {
     point[0] >= rect[0]
         && point[1] >= rect[1]

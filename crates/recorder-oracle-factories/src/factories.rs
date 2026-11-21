@@ -1,15 +1,3 @@
-//! CountryFactories against a text save. The save writes none of the stored
-//! factory totals: the production save writer omits them
-//! and a load recalculates them. What it writes are their inputs, so the one
-//! comparison is each group's building levels: the levels of the saved state
-//! buildings the country controls and of its saved offsite buildings whose
-//! content flags put them in that group, as the game sums them. Where the
-//! state writer omits control, captured control supplies that invariant input.
-//!
-//! The stored levels are those of the last recalculation. A country whose
-//! save shows one pending (production `dirty`, or `refresh` bit 1 or 9, which
-//! the next hourly update applies at the next hour) is listed, not
-//! compared.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,9 +11,6 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid, required_country_tag};
 
-/// The derived-state refresh: bit 1 rebuilds modifiers, which
-/// recalculates the factory totals when modifier 0x68 changes;
-/// bit 9 recalculates them directly.
 const REFRESH_RECALCULATES: u32 = 1 << 1 | 1 << 9;
 
 pub fn compare(
@@ -73,10 +58,6 @@ pub fn compare(
                 if !building_states.contains(id) {
                     continue;
                 }
-                // The game omits this state's controller too. The game sums
-                // the controlled-state roster; the game adds only positive
-                // controllers. Use captured control as an invariant input,
-                // never assign null-controlled buildings to a saved country.
                 let row = captured
                     .as_ref()
                     .and_then(|rows| rows.get(id))
@@ -95,8 +76,6 @@ pub fn compare(
             }
         }
     }
-    // [military, naval, civilian] levels by country, and the countries a type
-    // with ambiguous flags reaches.
     let mut expected = BTreeMap::<&[u8], [i64; 3]>::new();
     let mut ambiguous = BTreeSet::<&[u8]>::new();
     let placed = saved

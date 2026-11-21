@@ -3,7 +3,6 @@ import test from 'node:test';
 import { allWidgetPages, FIXTURE, LEGIBLE, LEGIBLE_ROWS, SCREEN, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
 
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-/** The grid's vertical compaction leaves an item where it is only when it sits on the top or on another item. */
 const resting = (item, all) => item.y === 0 || all.some(other => other !== item && other.y + other.h === item.y && other.x < item.x + item.w && item.x < other.x + other.w);
 
 test('packing puts each item where it sits highest, never over another or past the grid', () => {
@@ -48,7 +47,6 @@ test('the screen view shows a page on exactly the screen\'s device pixels, at th
     assert.ok(metrics.height >= height, `${height} CSS px fit`);
     assert.deepEqual([metrics.width * metrics.deviceScaleFactor, metrics.height * metrics.deviceScaleFactor].map(Math.round), [SCREEN.width, SCREEN.height]);
     assert.equal(metrics.width * 9, metrics.height * 16);
-    // One step smaller would not hold the page.
     assert.ok(metrics.height - 9 < height, `${height}: ${metrics.height} is the smallest`);
   }
   assert.deepEqual(screenMetrics(2160), { width: 3840, height: 2160, deviceScaleFactor: 1 });
@@ -91,13 +89,11 @@ test('the fixture pages hold every widget the app offers once, at its minimum or
     }
     assert.equal(page.rows, Math.max(...lg.map(item => item.y + item.h)));
   }
-  // All at minimum size within a few rows of the floor their area sets.
   const minimum = built[FIXTURE];
   assert.equal(minimum.inView, minimum.widgets.length);
   assert.ok(minimum.rows <= Math.ceil(widgetMetas.reduce((sum, meta) => sum + meta.minSize.w * meta.minSize.h, 0) / 12) + 8, `${minimum.rows} rows`);
   const fitted = screenMetrics(minimum.rows * 32);
   assert.deepEqual([fitted.width * fitted.deviceScaleFactor, fitted.height * fitted.deviceScaleFactor].map(Math.round), [SCREEN.width, SCREEN.height], 'minimum page fits the 4K device pixels');
-  // The legible page leads with the widgets planned in view, each whole in its rows, and none after them fits there.
   const page = built[LEGIBLE];
   const lg = storage.loadLayouts(read, page.id).library.layouts[0].template.layouts.lg;
   const at = id => lg.find(item => item.i === id);

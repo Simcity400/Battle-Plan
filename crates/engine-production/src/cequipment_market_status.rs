@@ -1,10 +1,7 @@
-//! CEquipmentMarketStatus, the country market wrapper.
 
 use crate::{Memory, ccountry, read};
 
-/// CEquipmentMarketStatus stockpile pointer.
 pub const STOCKPILE: usize = 0x00;
-/// Market-manager pointer, authenticated against `cgame_state::MARKET_MANAGER`.
 pub const MANAGER: usize = 0x70;
 
 pub(crate) fn verify_manager(

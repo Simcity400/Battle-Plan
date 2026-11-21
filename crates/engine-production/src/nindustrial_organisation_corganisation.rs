@@ -1,7 +1,3 @@
-//! Military-industrial organisations held by each country's production status
-//! in content-template order. Instances are created at game start or loading,
-//! and production lines resolve their global full handles through the registry.
-//! These offsets require a resolved organisation object.
 
 use crate::{
     Memory, ccountry, cequipment_variant,
@@ -13,69 +9,39 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Organisation primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_4568);
-/// Organisation reference-type discriminator.
 pub const REFERENCE_TYPE_ID: u32 = 79;
-/// Organisation full self-reference, two u32 words.
 pub const REFERENCE: usize = 0x08;
-/// Organisation u32 script-key token copied from its template and used to serialize its block.
 pub const TOKEN: usize = 0x38;
-/// Stored name-key override copied from the template and mutable through
-/// script effects. Empty selects the script key; an available owner-tag-prefixed
-/// localization key takes precedence. The stored string is serialized even empty.
 pub const NAME: usize = 0x60;
-/// Stored icon-sprite override copied from the template and mutable through
-/// script effects. A nonempty override precedes tag-prefixed and plain script-key
-/// sprite candidates, then the generic fallback.
 pub const ICON: usize = 0x80;
-/// Organisation production-line entry array.
 pub const PRODUCTION_LINES: usize = 0xd8;
-/// History robin-hood entries keyed by variant handle; serialized in slot order.
 pub const HISTORY: usize = 0xf8;
-/// History signed i32 element count; zero omits history serialization.
 pub const HISTORY_COUNT: usize = 0x100;
-/// History-table signed i32 bucket mask, used with the overflow extent.
 pub const HISTORY_LAST: usize = 0x104;
-/// History-table u8 overflow extent, set to the bucket exponent plus two.
 pub const HISTORY_OVERFLOW: usize = 0x108;
-/// Owner country link copied at construction and used for name/icon tag prefixes.
 pub const OWNER: usize = 0x120;
 
 pub mod details;
 
-/// History slots copied per guarded read.
 const HISTORY_BATCH: usize = 32;
 
-/// One organisation, in its owner's array order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CID: type 79 in the low word, id in the high word.
     pub reference: u64,
-    /// Raw id of the country whose production status holds it.
     pub country: u32,
-    /// Position in that array; the save writes this order.
     pub ordinal: u32,
-    /// [`OWNER`]: the tag link the name and icon rules prefix.
     pub owner: u32,
-    /// [`TOKEN`]: the script key.
     pub token: u32,
-    /// [`NAME`] in the caller's arena; empty means the script key.
     pub name: TextSpan,
-    /// [`ICON`] in the caller's arena; empty selects the script-key sprite fallback.
     pub icon: TextSpan,
 }
 
-/// One occupied history slot: the units the organisation's lines completed
-/// of one variant.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryRow {
     pub organisation: u64,
-    /// The slot's key, an authenticated-type variant CID (type 70).
     pub variant: u64,
-    /// `mio_history_entry::PRODUCTION_COUNT`.
     pub units: i32,
-    /// An occupied slot may have production history without ever authoring a design.
     pub design_hour: Option<i32>,
 }
 
@@ -83,10 +49,7 @@ pub struct HistoryRow {
 pub struct Outcomes {
     pub organisations: Outcome,
     pub history: Outcome,
-    /// Arena bytes the organisation rows use.
     pub bytes_len: usize,
-    /// Exact when complete; when truncated, at least the bytes of the first
-    /// organisation that did not fit.
     pub required_bytes: usize,
 }
 
@@ -101,8 +64,6 @@ impl Outcomes {
     }
 }
 
-/// Acquisition workers continue from the original organisation fields and
-/// history headers when native storage grows after the last sizing poll.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -122,8 +83,6 @@ pub fn walk(
     )
 }
 
-/// Additional operands read only while the existing census holds authenticated
-/// objects. A visitor keeps its own independent outcome; it cannot add a census.
 pub trait Visitor {
     fn country(&mut self, _country: &ccountry::Country, _status: usize) {}
     fn organisation(&mut self, _pointer: usize, _row: &Row) {}
@@ -152,7 +111,6 @@ pub fn walk_with(
     .unwrap_or_else(Outcomes::unavailable)
 }
 
-/// New-game roster includes eligible content templates; full strings and live history counts size storage.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -220,8 +178,6 @@ fn walk_inner(
     let mut found_country = false;
     let mut bytes_len = 0usize;
     let mut required_bytes = 0;
-    // Set once a row or its strings do not fit: later organisations are
-    // counted from their array headers only.
     let mut full = false;
     let mut pointers = [0_u8; 32 * 8];
     for slot in 1..countries.count() {
@@ -328,8 +284,6 @@ fn walk_inner(
             Outcome::Truncated { len, unread_rows }
         }
     };
-    // Organisations left unread for capacity have unread histories of unknown
-    // size, so the history is never complete while they are.
     if unread != 0 {
         history_unread = history_unread.max(1);
     }
@@ -344,7 +298,6 @@ fn walk_inner(
     })
 }
 
-/// One organisation's fields and history header, from a single scatter.
 struct Fields {
     row: Row,
     name: Descriptor,
@@ -399,7 +352,6 @@ fn read_fields(memory: &impl Memory, vtable: u64, pointer: usize) -> Result<Fiel
     let word =
         |offset: usize| u32::from_le_bytes(table[offset - HISTORY..][..4].try_into().unwrap());
     let overflow = table[HISTORY_OVERFLOW - HISTORY];
-    // Bucket exponents 1..=30 select mask and overflow geometry; invalid geometry refuses only history.
     let history_slots = word(HISTORY_LAST)
         .checked_add(1)
         .filter(|buckets| {
@@ -421,15 +373,10 @@ fn read_fields(memory: &impl Memory, vtable: u64, pointer: usize) -> Result<Fiel
         history: usize::try_from(u64::from_le_bytes(table[..8].try_into().unwrap()))
             .map_err(|_| "organisation history pointer overflow")?,
         history_count: word(HISTORY_COUNT),
-        // Slot extent follows the live mask and overflow count, without a fixed slot limit.
         history_slots,
     })
 }
 
-/// Reads the occupied slots of one history table in slot order, as Serialize
-/// visits them: a zero distance byte is empty; the -1 sentinel may only end
-/// the table. The occupied slots must number the element count. Returns the
-/// rows written and the rows left unread for capacity.
 fn read_history(
     memory: &impl Memory,
     fields: &Fields,
@@ -502,7 +449,6 @@ mod tests {
     const FIRST: usize = 0x6100;
     const SECOND: usize = 0x6300;
     const TABLE: usize = 0x6800;
-    /// One past the fixture's readable memory.
     const END: usize = BASE + 0x8000;
     const CID_FIRST: u64 = (25 << 32) | REFERENCE_TYPE_ID as u64;
     const CID_SECOND: u64 = (27 << 32) | REFERENCE_TYPE_ID as u64;
@@ -525,9 +471,6 @@ mod tests {
         put(bytes, header + 24, &15_u64.to_le_bytes());
     }
 
-    /// One country (slot 2 aliases slot 1) holding two organisations; the
-    /// first has eight history buckets and a five-slot overflow tail, with
-    /// occupied slots 0 and 2.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x8000];
         array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
@@ -588,7 +531,6 @@ mod tests {
                 &units.to_le_bytes(),
             );
         }
-        // The end sentinel after the last slot is never read.
         put(
             &mut bytes,
             TABLE + 13 * entry::STRIDE + entry::DISTANCE,
@@ -733,7 +675,6 @@ mod tests {
             }
         );
 
-        // A fault beyond the former cap refuses the entire history.
         put(&mut bytes, last + entry::DISTANCE, &[0xff]);
         assert_eq!(
             run(&bytes, 4, 4).0.history,
@@ -872,7 +813,6 @@ mod tests {
             TABLE + 13 * entry::STRIDE + entry::DISTANCE,
             &[0],
         );
-        // The next batch is unreadable; the excess second entry must win.
         bytes.truncate(TABLE - BASE + HISTORY_BATCH * entry::STRIDE);
         let (outcomes, ..) = run(&bytes, 4, 4);
         assert_eq!(outcomes.organisations, Outcome::Rows { len: 2 });
@@ -899,7 +839,6 @@ mod tests {
                 REFERENCE_TYPE_ID as u64,
                 "organisation vtable or reference mismatch",
             ),
-            // An authentic identity at the end of memory, its fields beyond.
             (ARRAY + 8, END as u64 - 16, "organisation fields unreadable"),
             (
                 SECOND + NAME + 16,
@@ -980,7 +919,6 @@ mod tests {
             assert_eq!(outcomes.organisations, Outcome::Rows { len: 2 }, "{reason}");
             assert_eq!(outcomes.history, Outcome::Unavailable { reason });
         }
-        // An empty history is not read at all, even with a broken table.
         let mut bytes = fixture();
         put(&mut bytes, FIRST + HISTORY_COUNT, &0_u32.to_le_bytes());
         put(&mut bytes, FIRST + HISTORY, &0_u64.to_le_bytes());

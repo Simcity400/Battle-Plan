@@ -295,9 +295,6 @@ fn sortie_factors_apply_native_screening_weather_and_organisation() {
     );
 }
 
-/// A live carrier member at slot 3 of a combat side, hosting base 9,
-/// whose modifier context holds only the eligibility source: no source
-/// carries a sortie key.
 fn screened_carrier(formation_flags: u64) -> (NavalCombatPlane, NavalCombatShipRow) {
     let mut ship = NavalCombatShipRow {
         ship: 7,
@@ -357,8 +354,6 @@ fn static_screening_reads_global_metadata_without_a_dynamic_sortie_key() {
         )
     };
     assert_eq!(run(&plane), Some(55_000));
-    // Key 0x24's own definition metadata gates and clamps the static
-    // value, although no accumulator of the ship holds that key.
     plane.efficiency.modifier_metadata[2] = [0, 4];
     assert_eq!(run(&plane), Some(50_000));
     plane.efficiency.eligibility_callback = 1;
@@ -382,7 +377,6 @@ fn static_screening_reads_global_metadata_without_a_dynamic_sortie_key() {
         ),
         Some(100_000)
     );
-    // A refused static value is needed only where the law reads it.
     let refused = [[None, Some(0)], [Some(10_000), Some(0)]];
     plane.efficiency.modifier_metadata[2] = [0, 0];
     assert_eq!(
@@ -435,7 +429,6 @@ fn a_pool_only_carrier_takes_the_carrier_box_and_a_capital_box_only_capital_scre
             Some(&defines),
         )
     };
-    // Box 2: capital 0.5 x 0.2; box 3 adds combined 0.5 x 0.1.
     assert_eq!(run(0), Some(55_000));
     assert_eq!(run(1 << 22), Some(57_500));
     assert_eq!(run(1 << 37), Some(57_500));
@@ -514,8 +507,6 @@ fn early_sortie_uses_authored_mission_ratio_and_missing_content_is_unavailable()
         ),
         Some(40_000)
     );
-    // This is the parent NavalCombatDetails.duration; the plane has no
-    // second copy of the same duration operand.
     assert_eq!(
         test_efficiency(
             &plane,
@@ -617,8 +608,6 @@ fn source3_without_combat_member_uses_shared_host_organisation() {
         ),
         Some(50_000)
     );
-    // A nonnegative slot can remain after its linked member pointer is
-    // cleared, so slot alone cannot turn on member-specific modifiers.
     plane.carrier_slot = 5;
     assert_eq!(
         efficiency(
@@ -668,7 +657,6 @@ fn carrier_host(
     CarrierJoins::new(None, bases, ships, models).host(plane)
 }
 
-/// Counts of the `referenced` bases from dense rows `(base, wings)`.
 fn dense_counts<const N: usize>(
     rows: &[(u64, &[u64])],
     wings: &[AirWingRow],
@@ -693,18 +681,14 @@ fn dense_counts_read_only_the_referenced_rows_once_each() {
     };
     let wings = [wing(5, 3), wing(6, 2)];
     let rows: [(u64, &[u64]); 3] = [(41, &[5, 6]), (42, &[5, 5]), (43, &[7])];
-    // Base 43 names a wing outside the roster; only a combat that
-    // references it loses every count. A repeated reference is one row.
     assert_eq!(
         dense_counts(&rows, &wings, [42, 41, 42, 44]),
         Some(BTreeMap::from([(41, 5), (42, 6)]))
     );
     assert_eq!(dense_counts(&rows, &wings, [42, 43]), None);
-    // Repeated or disordered keys refuse the tables whole.
     assert_eq!(dense_counts(&[(42, &[]), (42, &[])], &wings, [41]), None);
     assert_eq!(dense_counts(&[(42, &[]), (41, &[])], &wings, [41]), None);
     assert_eq!(dense_counts(&rows, &[wing(6, 2), wing(5, 3)], [41]), None);
-    // A dense row for base zero is refused when referenced.
     assert_eq!(dense_counts(&[(0, &[])], &wings, [0]), None);
     assert_eq!(
         dense_counts(&[(0, &[])], &wings, [41]),
@@ -740,8 +724,6 @@ fn joins_refuse_missing_rows_and_duplicate_or_disordered_keys() {
         carrier_host(&plane, Some(&bases), Some(&ships), Some(&models)).map(|host| host.ship),
         Some(77)
     );
-    // A duplicate or out-of-order key refuses the whole table, even for
-    // a key that would otherwise resolve.
     for bases in [[base(42, 77), base(42, 76)], [base(42, 77), base(41, 76)]] {
         assert_eq!(
             carrier_host(&plane, Some(&bases), Some(&ships), Some(&models)),
@@ -766,7 +748,6 @@ fn joins_refuse_missing_rows_and_duplicate_or_disordered_keys() {
         ),
         None
     );
-    // Missing rows, a zero host and a model without counter operands.
     assert_eq!(
         carrier_host(&plane, Some(&bases[..1]), Some(&ships), Some(&models)),
         None
@@ -786,9 +767,6 @@ fn joins_refuse_missing_rows_and_duplicate_or_disordered_keys() {
         None
     );
 
-    // Two forward members of one side and group sharing the host ship
-    // are ambiguous; the other side, another group and a source-1
-    // member are separate keys.
     let member = |side, group, slot, source| NavalCombatShipRow {
         combat: 7,
         side,
@@ -842,8 +820,6 @@ fn positioning_air_counts_dense_wing_occurrences_even_with_refused_assignment() 
         AirWingRow {
             id: 5,
             planes: 3,
-            // The dense occurrence, not this assigned-base backlink,
-            // controls the native carrier-base count.
             air_base: 999,
             ..Default::default()
         },
@@ -907,7 +883,6 @@ fn positioning_air_requires_an_explicit_dense_base_row_and_complete_wing_join() 
     assert_eq!(positioning_air(&side, &sources), None);
     let sources = positioning_sources(&joins, None, &content, &defines);
     assert_eq!(positioning_air(&side, &sources), None);
-    // A recorded empty dense base has a known zero aircraft count.
     let empty = dense_counts(&[(42, &[])], &wings, [42]).unwrap();
     let sources = positioning_sources(&joins, Some(&empty), &content, &defines);
     assert_eq!(

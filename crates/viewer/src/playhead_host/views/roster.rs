@@ -1,7 +1,3 @@
-//! The proof tool's line for the template roster as a panel (`--rows roster@<TAG>`): the panel's data
-//! over rows at the head against the reply the request path answers for the same hour, and what
-//! evaluating it costs where the follow host evaluates it (each new frame of its rows, the data
-//! that differs pushed).
 
 use super::super::views::{Need, Pace, Reader as ViewReader, Views};
 use dashboard_follow::panel::{Panel, PanelData, dated};
@@ -24,13 +20,11 @@ pub(crate) struct RosterLine {
     pub(super) reader: ViewReader,
     last: Option<Arc<DecodedFrame>>,
     data: Option<PanelData>,
-    /// Each evaluation's nanoseconds, and the data that differed with their message bytes.
     evaluations: Vec<u64>,
     pushed: Vec<usize>,
 }
 
 impl RosterLine {
-    /// The roster panel of `tag` on `rows`, its sections in the reader's language of `content`.
     pub(crate) fn open(views: &Views, path: &Path, branch: u64, tag: &str, content: &ResolveOptions, pace: Pace) -> io::Result<Self> {
         let cancelled = AtomicBool::new(false);
         let source = dashboard::Source::open(
@@ -48,7 +42,6 @@ impl RosterLine {
         Ok(Self { tag: tag.to_owned(), branch, source, context, panel, reader, last: None, data: None, evaluations: Vec::new(), pushed: Vec::new() })
     }
 
-    /// What the follow host does each frame: a new frame of rows evaluated, its data pushed when it differs.
     pub(crate) fn poll(&mut self) {
         let Some(frame) = self.reader.frame() else { return };
         if self.last.as_ref().is_some_and(|last| Arc::ptr_eq(last, &frame)) {
@@ -64,7 +57,6 @@ impl RosterLine {
         self.last = Some(frame);
     }
 
-    /// The panel's data over `frame` against the request path's reply at `hour`: (entries, differing, the first difference).
     pub(crate) fn compare(&mut self, frame: &DecodedFrame, hour: replay_data::Hour) -> (u64, u64, Option<String>) {
         let ours = self.panel.data(frame);
         let params = json!({ "branchId": self.branch.to_string(), "tag": self.tag, "hour": hour });

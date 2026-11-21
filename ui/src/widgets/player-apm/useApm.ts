@@ -30,8 +30,6 @@ export function useApmChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
   }, [data]);
 }
 
-/** The widget's eAPM by request: by the fallback's clock while following unless `followed` (its values at the head are
- * then pushed, and nothing is asked here), else for its pinned hour or range. `head` names what a followed head asks. */
 export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean, view?: { identity: string; from: number; to: number; width: number } | null,
   followed = false) {
   const playbackHour = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow' && !followed);
@@ -47,9 +45,7 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   const selected = selectedCountryKeys(widget.countries, track);
   const resolved = useMemo(() => widget.countries.kind === 'all' ? null
     : resolveCountries(widget.countries, selected, groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   [widget.countries, JSON.stringify(selected), groups.data, track?.branch.lastHour]);
-  // The dashboard's country by its slot is each tag it went by, over the hours it did (the activity log names tags).
   const slot = widget.countries.kind === 'selected' && selected.length === 1 ? countryFromKey(selected[0]) : null;
   const slots = useSlotTags(runtime.client, track, active && typeof slot === 'number');
   const asked = useMemo(() => {
@@ -72,14 +68,11 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   } : null;
   const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'player-apm', params } : null, ['firstHour', 'lastHour', 'buckets'], active, validateApm, track?.source);
-  // The hours the shown reply answers; while the newest are read it stays shown, named for its own.
   const answered = useMemo(() => {
     if (!product.moment) return null;
     const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];
     return { firstHour, lastHour };
   }, [product.moment]);
-  // A followed head names the countries and players asked, not the hours: the service takes the trailing window.
-  // Group membership the recording leaves unobserved anywhere keeps the request path, which refuses such windows.
   const head = track && (!resolved || (!resolved.reason && !resolved.unobserved.length)) ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, tags: asked?.tags ?? null,
     membership: asked?.membership ? [...asked.membership.values()].flat() : null, players: contentSet(options.players).map(contentKey),

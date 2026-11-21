@@ -6,7 +6,6 @@ import ArmySizeWidget from './ArmySizeWidget';
 import ArmyCountryChip from './ArmyCountryChip';
 import { armyMetadataRequest, measureChoices, validateArmySizeReply } from './armySizeData';
 
-/** An empty selection answers the recording's measure capabilities alone. */
 function useArmyChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = armyMetadataRequest(track);

@@ -1,4 +1,3 @@
-//! Checked heap growth shared by native capture and its replay writer.
 
 pub mod labels;
 mod shared_box;
@@ -26,11 +25,8 @@ thread_local! {
 }
 
 static COLLECT: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
-/// How often a worker returns what it freed, at most.
 const COLLECT_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Has [`collect`] call `collect`: what returns the memory the calling thread freed and holds
-/// for reuse.
 pub fn set_collect(collect: Option<fn()>) {
     COLLECT.store(
         collect.map_or(std::ptr::null_mut(), |f| f as *mut ()),
@@ -38,9 +34,6 @@ pub fn set_collect(collect: Option<fn()>) {
     );
 }
 
-/// Returns what this thread freed and holds for reuse, but where it did so less than
-/// [`COLLECT_EVERY`] ago: for a worker between tasks. The allocator otherwise purges a
-/// segment's freed pages only as it next takes a page of that segment.
 pub fn collect() {
     let callback = COLLECT.load(Ordering::Acquire);
     if callback.is_null() {
@@ -54,17 +47,13 @@ pub fn collect() {
         return;
     }
     COLLECTED.set(Some(now));
-    // Only set_collect stores this function pointer.
     unsafe { std::mem::transmute::<*mut (), fn()>(callback)() };
 }
 
-/// Checked heap growth attempts admitted on the calling thread, including advisory work.
 pub fn growths() -> u64 {
     GROWTHS.get()
 }
 
-/// Scope a synchronous sizing census and all its nested worker readers to
-/// nonterminal allocation. Capture hooks remain installed for other threads.
 pub fn advisory<T>(read: impl FnOnce() -> T) -> T {
     struct Scope;
     impl Drop for Scope {
@@ -77,8 +66,6 @@ pub fn advisory<T>(read: impl FnOnce() -> T) -> T {
     read()
 }
 
-/// Scope work whose refused allocation costs only that work: the refusal does not stop capture,
-/// and the second value says whether one happened. Advisory scopes inside it stay advisory.
 pub fn contained<T>(work: impl FnOnce() -> T) -> (T, bool) {
     struct Scope;
     impl Drop for Scope {
@@ -98,8 +85,6 @@ fn contained_active() -> bool {
     CONTAINED_DEPTH.with(|depth| depth.get() != 0)
 }
 
-/// Scope a writer's work that was handed over before capture became terminal: it may still
-/// grow, so what was captured is written. A refused allocation still fails.
 pub fn finishing<T>(work: impl FnOnce() -> T) -> T {
     struct Scope;
     impl Drop for Scope {
@@ -121,7 +106,6 @@ static STOPPED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg(feature = "alloc-fault-injection")]
 static BEFORE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Install allocation-free capture callbacks before admitting any work.
 pub fn set_hooks(before: Option<fn() -> bool>, failed: Option<fn()>) {
     #[cfg(feature = "alloc-fault-injection")]
     BEFORE.store(
@@ -136,7 +120,6 @@ pub fn set_hooks(before: Option<fn() -> bool>, failed: Option<fn()>) {
     );
 }
 
-/// Once capture is terminal, subsequent growth must abandon its work.
 pub fn set_stop_hook(stopped: Option<fn() -> bool>) {
     STOPPED.store(
         stopped.map_or(std::ptr::null_mut(), |f| f as *mut ()),
@@ -159,7 +142,6 @@ pub fn oom() -> io::Error {
     } else {
         let callback = FAILED.load(Ordering::Acquire);
         if !callback.is_null() && !advisory_active() {
-            // Only set_hooks stores this allocation-free function pointer.
             unsafe { std::mem::transmute::<*mut (), fn()>(callback)() };
         }
     }
@@ -178,7 +160,6 @@ pub fn allocation_attempt() -> io::Result<()> {
     {
         let callback = BEFORE.load(Ordering::Acquire);
         if !advisory_active() && !callback.is_null()
-            // Only set_hooks stores this allocation-free function pointer.
             && unsafe { std::mem::transmute::<*mut (), fn() -> bool>(callback)() }
         {
             return Err(oom());
@@ -198,7 +179,6 @@ pub fn mul(left: usize, right: usize) -> io::Result<usize> {
 
 pub fn is_allocation_error(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::OutOfMemory
-        // Windows memory, system-resource and commit/quota exhaustion.
         || matches!(error.raw_os_error(), Some(8 | 14 | 1450..=1455 | 1816))
 }
 
@@ -210,11 +190,6 @@ pub fn allocation_error(error: io::Error) -> io::Error {
     }
 }
 
-/// Checked capture construction/projections may use this fallback only behind
-/// collector runtime::run's pre-install guard, or the publication
-/// guards in decode::process_owned_job and spooling::Processor::write_prepared.
-/// Advisory constructors may also abandon their optional storage without stopping capture, and
-/// contained work's caller refuses what the work made. Do not grow the returned empty Vec.
 pub fn owned_vec<T>(result: io::Result<Vec<T>>) -> Vec<T> {
     match result {
         Ok(values) => values,
@@ -234,14 +209,11 @@ pub fn boxed<T>(value: T) -> io::Result<Box<T>> {
         NonNull::<T>::dangling().as_ptr()
     } else {
         allocation_attempt()?;
-        // SAFETY: layout describes T's size and alignment; null is refused.
         unsafe { alloc(layout).cast::<T>() }
     };
     if pointer.is_null() {
         return Err(oom());
     }
-    // SAFETY: storage is aligned and writable for T (or dangling for a ZST).
-    // The value moves exactly once and Box owns the matching allocation.
     unsafe {
         pointer.write(value);
         Ok(Box::from_raw(pointer))
@@ -264,8 +236,6 @@ pub fn reserve_exact<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()
     Ok(())
 }
 
-/// Reserve a known push batch with the pinned Vec's sequential growth policy,
-/// keeping capacity-based recording metrics unchanged.
 pub fn reserve_push_batch<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()> {
     let required = values.len().checked_add(additional).ok_or_else(oom)?;
     if required <= values.capacity() {
@@ -382,7 +352,6 @@ pub fn reserve_set<T: Eq + Hash, S: BuildHasher>(
     Ok(())
 }
 
-/// Move a vector to an exact boxed slice without an infallible shrink realloc.
 pub fn boxed_slice<T>(mut values: Vec<T>) -> io::Result<Box<[T]>> {
     let len = values.len();
     if len == 0 {
@@ -404,7 +373,6 @@ pub fn boxed_slice<T>(mut values: Vec<T>) -> io::Result<Box<[T]>> {
     if pointer.is_null() {
         return Err(oom());
     }
-    // Transfer each element once; the old vector then owns only its allocation.
     unsafe {
         std::ptr::copy_nonoverlapping(values.as_ptr(), pointer, len);
         values.set_len(0);
@@ -675,9 +643,6 @@ pub(crate) mod tests {
         assert_eq!(vec::<u8>(16).unwrap().capacity(), 16);
     }
 
-    /// Once capture is terminal every growth is refused, except a writer's finishing work
-    /// handed over before it, which still grows; outside that scope the refusal stands. Its stop
-    /// hook is process-global, so it runs alone in a process of its own.
     #[test]
     fn finishing_work_grows_after_capture_stopped() {
         use std::sync::atomic::{AtomicBool, Ordering};

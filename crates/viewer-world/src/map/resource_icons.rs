@@ -1,26 +1,3 @@
-//! Each state's resource icon in the resources map mode: the content's `resource_mapicon`
-//! window (map icon type 3) with one `resource_mapicon_item` row per resource in its
-//! `resources_list`, from the hour's recorded resource origins
-//! ([`viewer_foundation::resource_origins`]).
-//!
-//! The icons exist only in the resources mode ([`Visibility::resource_icons`]) and strictly below
-//! `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF`; their rows and the window's flag show strictly below
-//! `NGraphics.RESOURCE_MAP_ICON_TEXT_CUTOFF`. They sort by `NMapIcons.<table>_PRIORITY_RESOURCE`.
-//! Every state of every country qualifies ([`Hour::has_icon`]); fog, intel and the viewing
-//! country play no part.
-//!
-//! A row is shown for each resource of a positive nominal amount, in the resource database's
-//! order. Its text is the resource strip's inline icon at the resource's `icon_frame`, then
-//! `MAP_ICON_NAME` with `NAME` the resource's `PRODUCTION_MATERIALS_<RESOURCE>` and `VAL` the
-//! value: `MAP_RESOURCE_ICON_VAL` (`VAL` delivered, `MAX` nominal, each rounded half away from
-//! zero) in red below the nominal amount or below zero, green above it, uncoloured at it, then
-//! a line break. The window's flag is the rights holder's when every row's rights go to the one
-//! country other than the controller; otherwise each row whose rights go elsewhere shows its
-//! holder's flag. A flag icon is bound to its country's canonical slot, the flag index a masked
-//! shield draws through the GUI resources' flag source.
-//!
-//! The window stands at the member centroid nearest the rounded mean of the state's province
-//! centroids, with horizontal wrapping and authored province order breaking ties.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -49,26 +26,18 @@ use viewer_foundation::{
     resource_origins::{self, Definition, Hour, RowColour, Values, whole},
 };
 
-/// The state icon's window and its row window.
 pub use viewer_foundation::map::native_windows::{
     RESOURCE_ITEM_WINDOW as ITEM_WINDOW, RESOURCE_WINDOW as WINDOW,
 };
 const LIST: &str = "resources_list";
 const FLAG: &str = "flag";
 const DESC: &str = "desc";
-/// The sprite each row's inline icon names (`GFX_` is tried first, as for every inline icon).
 const STRIP: &str = "resources_strip";
-/// How the manager anchors the window at its projected point: centred on both axes.
 const ALIGNMENT: u8 = 0x12;
 
-/// The `NDefines` operands of the resource icons.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResourceIconDefines {
-    /// `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF`, a fixed5 define: the icons exist strictly below
-    /// it.
     pub icons_cutoff: f32,
-    /// `NGraphics.RESOURCE_MAP_ICON_TEXT_CUTOFF`, an integer define compared as a float: rows and
-    /// the window's flag show strictly below it.
     pub text_cutoff: f32,
     pub priorities: Priorities,
 }
@@ -84,7 +53,6 @@ impl ResourceIconDefines {
     }
 }
 
-/// What the icons read of the recorded content stack.
 pub struct ResourceIconContent {
     pub origins: resource_origins::Content,
     pub defines: ResourceIconDefines,
@@ -98,41 +66,32 @@ impl ResourceIconContent {
         })
     }
 
-    /// What the content's resource files misread.
     pub fn warnings(&self) -> &[String] {
         &self.origins.warnings
     }
 }
 
-/// The inline sprite the rows' text draws, for the windows' resource load; the windows' own
-/// sprites load with the other map-icon windows ([`NativeWindows::assets`]).
 pub fn gui_assets() -> native_gui::Assets {
     let mut assets = native_gui::Assets::default();
     assets.add_text(&format!("{ICON}{STRIP}|1 "));
     assets
 }
 
-/// Everything one frame of resource icons needs besides the decoded hour.
 pub struct ResourceIconInputs<'a> {
     pub content: &'a ResourceIconContent,
     pub localisation: &'a Localisation,
     pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
-    /// Integer bitmap centroids, with sampled terrain height.
     pub centroid: &'a dyn Fn(u32) -> Option<[f32; 3]>,
     pub camera: Camera,
-    /// The frame in device pixels, which the projection uses.
     pub viewport: [u32; 2],
-    /// Device pixels per interface pixel.
     pub ui_scale: f32,
     pub visibility: Visibility,
 }
 
-/// What one frame of resource icons drew, and what it could not.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ResourceIconReport {
     pub icons: usize,
     pub rows: usize,
-    /// What is not drawn, by reason, with how often each was met.
     pub refused: BTreeMap<String, usize>,
 }
 
@@ -142,7 +101,6 @@ impl ResourceIconReport {
     }
 }
 
-/// One row's text and its own flag (the rights holder's canonical slot).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub text: String,
@@ -155,21 +113,17 @@ struct Placed {
     depth: f32,
     anchor: IconAnchor,
     priority: i8,
-    /// Whether the rows and the window's flag show (below the text cutoff).
     text: bool,
     rows: Vec<Row>,
     flag: Option<u32>,
 }
 
-/// A prepared hour's icons. Preparing never changes a presented window.
 #[derive(Default)]
 pub struct PreparedResourceIcons {
     placed: Vec<Placed>,
     pub report: ResourceIconReport,
 }
 
-/// Whether a mode has a resource icon at `distance` from the camera
-/// ([`Camera::icon_distance`]: the game's camera's height), and whether its rows show.
 pub fn shown(
     visibility: &Visibility,
     distance: f32,
@@ -179,7 +133,6 @@ pub fn shown(
         .then_some(distance < defines.text_cutoff)
 }
 
-/// One row's text, as the game builds it.
 pub fn row_text(
     localisation: &Localisation,
     definition: &Definition,
@@ -217,8 +170,6 @@ pub fn row_text(
     Ok(format!("{ICON}{STRIP}|{frame} {line}\n"))
 }
 
-/// Nearest member centroid to the rounded, equally weighted centroid mean. Ties retain
-/// authored member order; victory points and unit-stack placements do not participate.
 pub fn anchor_provinces(
     members: &BTreeMap<u32, Vec<u32>>,
     centroid: &dyn Fn(u32) -> Option<[f32; 3]>,
@@ -280,10 +231,8 @@ fn normalize_anchor_x(x: f32, width: f32) -> f32 {
     }
 }
 
-/// One hour's resource icons, placed for the camera.
 pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> PreparedResourceIcons {
     let defines = &inputs.content.defines;
-    // The game's camera shows every icon by its height; a free eye, each by its own distance.
     if !inputs.visibility.resource_icons
         || (inputs.camera.free().is_none()
             && shown(&inputs.visibility, inputs.camera.height, defines).is_none())
@@ -293,30 +242,23 @@ pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> Prepare
     lay_out(inputs, &hour_icons(frame, &inputs.content.origins, inputs.localisation))
 }
 
-/// One state's icon as the window lays it out: its rows' text and flags and the window's flag,
-/// each refused by name where it cannot be made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Laid {
     pub rows: Result<Vec<Row>, String>,
     pub flag: Result<Option<u32>, String>,
 }
 
-/// Every recorded state's icon at an hour (none for a state without one, the reason for a state
-/// refused), or why no icon is drawn.
 pub type HourIcons = Result<BTreeMap<u32, Result<Option<Laid>, String>>, String>;
 
-/// The icons of the hour `frame` holds.
 pub fn hour_icons(frame: &DecodedFrame, origins: &resource_origins::Content, localisation: &Localisation) -> HourIcons {
     let hour = Hour::new(frame, origins)?;
     Ok(hour.states().map(|state| (state, laid(&hour, localisation, state))).collect())
 }
 
-/// One state's icon from `values`; none for a state without one.
 pub fn laid(values: &dyn Values, localisation: &Localisation, state: u32) -> Result<Option<Laid>, String> {
     Ok(resource_origins::icon(values, state)?.map(|icon| laid_icon(values, localisation, &icon)))
 }
 
-/// A state's icon's rows and flag as the window lays them out.
 pub fn laid_icon(values: &dyn Values, localisation: &Localisation, icon: &resource_origins::StateIcon) -> Laid {
     let slot = |raw: u32| values.slot(raw).ok_or_else(|| format!("CountryLinks lacks {raw}"));
     let rows = icon
@@ -332,7 +274,6 @@ pub fn laid_icon(values: &dyn Values, localisation: &Localisation, icon: &resour
     Laid { rows, flag: icon.flag.map(slot).transpose() }
 }
 
-/// The icons of `icons` laid out for the camera of `inputs`.
 pub fn lay_out(inputs: &ResourceIconInputs<'_>, icons: &HourIcons) -> PreparedResourceIcons {
     let mut prepared = PreparedResourceIcons::default();
     let defines = &inputs.content.defines;
@@ -431,12 +372,9 @@ pub fn lay_out(inputs: &ResourceIconInputs<'_>, icons: &HourIcons) -> PreparedRe
     prepared
 }
 
-/// The pooled windows and each pooled window's row windows of one map view.
 #[derive(Debug, Default)]
 pub struct ResourceIconView {
     pool: PoolView,
-    /// A pooled window's rows, in list order; a row window outlives the rows that leave it
-    /// hidden, as the game's list keeps its items.
     items: HashMap<SlotId, Vec<Instance>>,
 }
 
@@ -454,7 +392,6 @@ impl ResourceIconView {
     }
 }
 
-/// The controls the code binds.
 struct Controls<'w> {
     list: &'w native::Element,
     flag: &'w native::Element,
@@ -489,7 +426,6 @@ fn controls(windows: &NativeWindows) -> Result<Controls<'_>, String> {
     })
 }
 
-/// Showing a control clears its hide bit before `Show`; hiding calls `Hide` before setting it.
 fn set_shown(
     instance: &mut Instance,
     window: &native::Element,
@@ -505,7 +441,6 @@ fn set_shown(
     }
 }
 
-/// Shows `element` with `country`'s flag (its canonical slot), or hides it.
 fn bind_flag(
     instance: &mut Instance,
     window: &native::Element,
@@ -523,8 +458,6 @@ fn bind_flag(
     }
 }
 
-/// The frame's update of one live icon: the list and the window's flag shown or hidden, and a
-/// row window for each row, its text and its flag written.
 fn update(
     instance: &mut Instance,
     root: &native::Element,
@@ -544,8 +477,6 @@ fn update(
     if !icon.text {
         return Ok(());
     }
-    // The rows fill the list's items in order, each shown as it is filled; the items the rows
-    // leave stay hidden.
     for (index, row) in icon.rows.iter().enumerate() {
         if entries.len() <= index {
             entries.push(Instance::construct(controls.item, viewport, resources)?);
@@ -561,9 +492,7 @@ fn update(
     Ok(())
 }
 
-/// The first `count` row windows laid out in the list box's holder of `layout`, placed where the
-/// list box puts its rows. The number of rows placed.
-#[allow(clippy::too_many_arguments)] // The window's layout, its rows and their resources.
+#[allow(clippy::too_many_arguments)]
 fn row_parts(
     layout: &native_gui::Layout,
     controls: &Controls<'_>,
@@ -607,8 +536,6 @@ fn row_parts(
 }
 
 impl PreparedResourceIcons {
-    /// Presents the icons through the view's pool and draws them onto `batch` in depth order.
-    /// The flags draw through `context`'s flag source.
     pub fn draw(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -646,7 +573,6 @@ impl PreparedResourceIcons {
                 owners: &owners,
             },
             Box::new(|instance, root| {
-                // The window's flag starts hidden.
                 let flag = named(root, native::Kind::Icon, FLAG)?;
                 set_shown(instance, root, flag, false)
             }),

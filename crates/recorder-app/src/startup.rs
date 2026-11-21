@@ -1,5 +1,3 @@
-//! One recorder per user session, the optional start with Windows, and the
-//! taskbar's light or dark appearance for drawing the tray icon.
 use std::{
     ffi::{OsStr, OsString, c_void},
     os::windows::ffi::OsStrExt,
@@ -27,7 +25,6 @@ fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
 }
 
-/// Held for the process lifetime. The named mutex disappears with the process.
 pub struct Instance(HANDLE);
 
 impl Drop for Instance {
@@ -40,12 +37,10 @@ impl Drop for Instance {
     }
 }
 
-/// `None` when another recorder already runs for this user session.
 pub fn single_instance() -> Option<Instance> {
     let name = wide(OsStr::new(INSTANCE_MUTEX));
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
-        // Without the mutex a duplicate cannot be ruled out; recording still matters more.
         eprintln!(
             "Battle Plan Recorder could not check for another instance: {}",
             std::io::Error::last_os_error()
@@ -61,8 +56,6 @@ pub fn single_instance() -> Option<Instance> {
     Some(Instance(handle))
 }
 
-/// Whether the user's Run key starts the recorder: the setting itself, which the installer and
-/// the panel's switch both write.
 pub fn starts_with_windows() -> Result<bool, String> {
     let key = wide(OsStr::new(RUN_KEY));
     let value = wide(OsStr::new(RUN_VALUE));
@@ -88,7 +81,6 @@ pub fn starts_with_windows() -> Result<bool, String> {
     }
 }
 
-/// Write or remove this executable's entry in the user's Run key.
 pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
     let key = wide(OsStr::new(RUN_KEY));
     let value = wide(OsStr::new(RUN_VALUE));
@@ -124,7 +116,6 @@ pub fn set_start_with_windows(enabled: bool) -> Result<(), String> {
     }
 }
 
-/// Whether the taskbar uses the light theme; dark when unknown.
 pub fn light_taskbar() -> bool {
     let key = wide(OsStr::new(PERSONALIZE_KEY));
     let value = wide(OsStr::new("SystemUsesLightTheme"));

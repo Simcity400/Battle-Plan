@@ -1,4 +1,3 @@
-//! Water draw ; registration and strip allocation.
 use viewer_foundation::map::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{
@@ -24,8 +23,6 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
         .map_err(refuse)
 }
 
-/// Whether a compiled water technique samples the snow/mud texture, as the shipped high
-/// techniques do for ice; a technique that never reads it shows no snow on water.
 pub fn reads_snow_mud(compiled: &shader_pipeline::Compiled) -> bool {
     compiled
         .pixel
@@ -34,8 +31,6 @@ pub fn reads_snow_mud(compiled: &shader_pipeline::Compiled) -> bool {
         .any(|&(slot, _)| slot == binding(SNOW_MUD_SLOT, Stage::Pixel))
 }
 
-/// The sea bed this program can sample: half size when it samples the refraction texture only at
-/// screen UVs, else the output's size and why, for reads a smaller target would answer wrongly.
 pub fn sea_bed(compiled: &shader_pipeline::Compiled) -> (SeaBed, Option<String>) {
     let Some(why) = shader_pipeline::texel::by_texel(
         &compiled.pixel.wgsl,
@@ -51,7 +46,6 @@ pub fn sea_bed(compiled: &shader_pipeline::Compiled) -> (SeaBed, Option<String>)
 }
 
 pub fn technique(high: bool, refractions: bool) -> &'static str {
-    // Low-graphics selection precedes underwater selection; debug drawing defaults on.
     if !high {
         "water_low_gfx"
     } else if refractions {
@@ -61,14 +55,11 @@ pub fn technique(high: bool, refractions: bool) -> &'static str {
     }
 }
 
-/// The refraction UVs' half-pixel offset, of the output: the sea-bed target may be smaller, but the
-/// same UV is the same point of the scene, which is the one the game samples.
 fn half_pixel(output: [u32; 2]) -> [f32; 2] {
     output.map(|side| 0.5 / side as f32)
 }
 
 fn quad(map: [u32; 2]) -> [[i16; 2]; 4] {
-    // Store the map bitmap dimensions as16-bit words.
     let [w, h] = map.map(|v| v as i16);
     [[w, 0], [0, 0], [w, h], [0, h]]
 }
@@ -82,22 +73,16 @@ pub struct Inputs<'a> {
     pub textures: [&'a wgpu::TextureView; 16],
 }
 
-/// The pixel slot the engine binds the map's snow/mud texture to for the water effect.
 pub const SNOW_MUD_SLOT: u32 = 9;
-/// The pixel slot the engine binds the sea-bed refraction target to for the water effect.
 pub const REFRACTION_SLOT: u32 = 5;
-/// The pixel slot the engine binds the shadow screen buffer to for the water effect.
 pub const SHADOW_SLOT: u32 = 15;
 
 pub struct Water {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
-    /// Whether the technique reads the snow/mud texture at all, after dead-code elimination.
     pub reads_snow_mud: bool,
-    /// The sea bed this technique samples, and why when it is not [`SeaBed::Half`] ([`sea_bed`]).
     pub sea_bed: (SeaBed, Option<String>),
-    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub texel_reads: Option<String>,
 }
 
@@ -111,7 +96,6 @@ impl Water {
         depth: wgpu::TextureFormat,
         technique: &str,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, map, samples, format, depth, technique)
         })
@@ -137,7 +121,6 @@ impl Water {
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
-        // Bind at most16 physical PS texture/sampler slots.
         state
             .samplers
             .retain(|slot, _| (0..16).any(|i| *slot == binding(i, Stage::Pixel)));
@@ -167,8 +150,6 @@ impl Water {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // Restore renderer raster state before water. Retain renderer depth restored by rivers and
-        // railways; trees do not replace it.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
         pass.depth_stencil =
@@ -218,8 +199,6 @@ impl Water {
             .enumerate()
             .map(|(i, v)| (binding(i as u32, Stage::Pixel), (*v).clone()))
             .collect();
-        // Clear all 112 bytes of b1; b3 has a 16-byte allocation.
-        // Initialize only 12 bytes: time,0.5/width,0.5/height. Last4 unknown.
         let [x, y] = half_pixel(inputs.size);
         let b3 = bytemuck::cast_slice(&[inputs.time, x, y, 0.0]).to_vec();
         let mut bound = Vec::new();
@@ -363,8 +342,6 @@ mod tests {
             pixel: stage(pixel),
         };
         assert!(reads_snow_mud(&compiled(&[0, 5, SNOW_MUD_SLOT])));
-        // A technique whose compiler dropped the read, as a low-end one may, shows none; nor
-        // does a vertex-stage read colour the water.
         assert!(!reads_snow_mud(&compiled(&[0, 5, 8])));
     }
 }

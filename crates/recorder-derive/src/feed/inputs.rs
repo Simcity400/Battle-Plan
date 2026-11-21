@@ -1,6 +1,3 @@
-//! Each input of the Feed writer, read through one function, so a reshaped input (a state table
-//! becoming a log) is a change here alone: the writer sees what each returns, never how the input
-//! is held.
 
 use super::invalid;
 use crate::framework::{Columns, Hour, columns};
@@ -15,7 +12,6 @@ use std::{
     io,
 };
 
-/// Countries' and CountryLinks' canonical slot.
 pub(super) const SLOT: [usize; 1] = [0];
 pub(super) const OWNED: [usize; 1] = columns::<CountryCounterInputRow, 1>(["owned_state_count"]);
 pub(super) const RELATION: [usize; 4] = columns::<RelationTupleRow, 4>(["first_country", "second_country", "start_hour", "cancel"]);
@@ -27,22 +23,17 @@ fn number(table: &TableView<'_>, column: usize, slot: u32) -> Option<i64> {
     }
 }
 
-/// `table`'s row in `slot`, whole, as the row decoder reads it.
 fn row<R: RowCodec>(table: TableId, view: &TableView<'_>, slot: u32) -> io::Result<R> {
     let key = view.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
     let format = FormatVersion::CURRENT.version();
     R::from_wire(key, &mut |column| replay_frame::frame::field(view, slot, column, format)).map_err(|error| invalid(format!("{table:?} row {key}: {error}")))
 }
 
-/// The feed's read of an hour: its occurrences, and whether they are the list as it stood when the
-/// run began (a log's backlog, each dated long before its read) rather than events read this hour.
 pub(super) struct Pack {
     pub(super) row: EventFeedHistoryRow,
     pub(super) backlog: bool,
 }
 
-/// The feed's read of this hour, when EventFeedHistory was read this hour. Its one row holds the
-/// occurrences of the interval the read covers, so it is never a backlog.
 pub(super) fn pack(hour: &Hour<'_>) -> io::Result<Option<Pack>> {
     let view = hour.table(TableId::EventFeedHistory);
     if view.sampled_at() != Some(hour.hour) {
@@ -52,15 +43,12 @@ pub(super) fn pack(hour: &Hour<'_>) -> io::Result<Option<Pack>> {
     Ok(Some(Pack { row: row(TableId::EventFeedHistory, &view, slot)?, backlog: false }))
 }
 
-/// Whether the hour moved an input the derived kinds read: CountryCounterInputs or RelationTuples
-/// not complete, or a watched column of either written.
 pub(super) fn derived_inputs_moved(hour: &Hour<'_>) -> bool {
     [(TableId::CountryCounterInputs, &OWNED[..]), (TableId::RelationTuples, &RELATION[..])]
         .into_iter()
         .any(|(table, columns)| !hour.complete(table) || hour.wrote(table, Columns::These(columns)))
 }
 
-/// Countries and CountryLinks as the hour holds them, while both are complete.
 pub(super) struct Names<'a> {
     countries: TableView<'a>,
     links: TableView<'a>,
@@ -76,8 +64,6 @@ impl<'a> Names<'a> {
         number(&self.links, SLOT[0], slot).map(|canonical| canonical as u32)
     }
 
-    /// The canonical slot `reference` links to; with `id`, only while the country of that id
-    /// holds the slot (its Countries row names the slot and its own link resolves to it).
     fn slot(&self, reference: u32, id: Option<u32>) -> Option<u32> {
         let slot = self.canonical(reference)?;
         let Some(id) = id else { return Some(slot) };
@@ -86,8 +72,6 @@ impl<'a> Names<'a> {
     }
 }
 
-/// The slot of the country `reference` (and `id`, when known) names: [`TagHolderRow::NONE`] for
-/// no country, not recorded when no link and holder witness it.
 pub(super) fn slot(names: Option<&Names<'_>>, reference: u32, id: Option<u32>) -> Recorded<u32> {
     if reference as i32 <= 0 {
         return Recorded::Value(TagHolderRow::NONE);
@@ -95,12 +79,8 @@ pub(super) fn slot(names: Option<&Names<'_>>, reference: u32, id: Option<u32>) -
     names.and_then(|names| names.slot(reference, id)).map_or(Recorded::NotRecorded, Recorded::Value)
 }
 
-/// A decision execution's charge: its hour, country, token, and whether it is the timeout's.
 pub(super) type ChargeKey = (i32, u32, Box<[u8]>, bool);
 
-/// The political and command power the hour's changes realized for each decision execution or
-/// timeout, of a country whose political and command power were both captured over the change's
-/// hour; none while either table is not complete. A key no such change names is not proven.
 pub(super) fn charges(hour: &Hour<'_>) -> io::Result<Option<HashMap<ChargeKey, [i128; 2]>>> {
     if !hour.complete(TableId::CountryPowerChanges) || !hour.complete(TableId::PoliticsCaptureCoverage) {
         return Ok(None);
@@ -135,37 +115,27 @@ pub(super) fn charges(hour: &Hour<'_>) -> io::Result<Option<HashMap<ChargeKey, [
     Ok(Some(sums))
 }
 
-/// CountryCounterInputs, when read complete this hour.
 pub(super) struct Counters<'a> {
     view: TableView<'a>,
-    /// The rows whose owned-state count the hour wrote; all of them when read whole.
     pub(super) rows: Vec<u32>,
 }
 
 impl Counters<'_> {
-    /// The country id and owned-state count of `slot`'s row.
     pub(super) fn owned(&self, slot: u32) -> Option<(u32, i64)> {
         Some((self.view.key(slot)? as u32, number(&self.view, OWNED[0], slot)?))
     }
 }
 
-/// CountryCounterInputs this hour.
 pub(super) enum Counted<'a> {
-    /// Not complete: what it read cannot be compared.
     Incomplete,
-    /// Complete, not read this hour.
     Unread,
-    /// Read complete: its rows, and the countries whose rows it deleted.
     Read(Counters<'a>, Vec<u32>),
 }
 
-/// Whether the hour read CountryCounterInputs complete.
 pub(super) fn counters_read(hour: &Hour<'_>) -> bool {
     hour.complete(TableId::CountryCounterInputs) && hour.table(TableId::CountryCounterInputs).sampled_at() == Some(hour.hour)
 }
 
-/// CountryCounterInputs this hour: when read complete, its rows `whole`, else those whose
-/// owned-state count it wrote (and the countries whose rows it deleted).
 pub(super) fn counters<'a>(hour: &Hour<'a>, whole: bool) -> Counted<'a> {
     let table = TableId::CountryCounterInputs;
     let view = hour.table(table);
@@ -185,13 +155,8 @@ pub(super) fn counters<'a>(hour: &Hour<'a>, whole: bool) -> Counted<'a> {
     Counted::Read(Counters { view, rows }, deleted)
 }
 
-/// A guarantee relation: first and second raw references, start hour.
 pub(super) type Guarantee = (u32, u32, i32);
 
-/// What a complete RelationTuples read says of guarantee relations, of the rows read (every row
-/// when whole, else the rows the hour inserted or wrote): `listed` those a row holds uncancelled,
-/// `held` how many rows hold each, cancelled or not, and, an hour not whole, `moved` how the hour
-/// changed the rows holding each: rows inserted or written to hold it, written away or deleted.
 #[derive(Default)]
 pub(super) struct Guarantees {
     pub(super) listed: HashSet<Guarantee>,
@@ -203,7 +168,6 @@ fn is_guarantee(key: u128) -> bool {
     (key >> 16) as u32 == engine_native::cguarantee_relation::TYPE
 }
 
-/// A guarantee from its first, second, start cells.
 fn guarantee([first, second, start]: [Option<i64>; 3]) -> Option<Guarantee> {
     Some((first? as u32, second? as u32, start? as i32))
 }
@@ -215,7 +179,6 @@ fn kept(cell: Option<&Kept>) -> Option<i64> {
     }
 }
 
-/// RelationTuples' guarantee relations as the hour read them; none while it is not complete.
 pub(super) fn guarantees(hour: &Hour<'_>, whole: bool) -> Option<Guarantees> {
     let table = TableId::RelationTuples;
     if !hour.complete(table) {

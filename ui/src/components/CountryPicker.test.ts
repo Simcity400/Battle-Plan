@@ -24,7 +24,6 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     rosterReply: null as unknown, retryAction: undefined as (() => void) | undefined, flagCall: 0, drawn: new WeakMap<object, Set<string>>() };
   const globals = globalThis as typeof globalThis & { __pickerWitness?: typeof state };
   globals.__pickerWitness = state;
-  // Retain the real component's hook cells and effect cleanup between SSR draws.
   const hooks = `const cell = init => { const s = globalThis.__pickerWitness, i = s.cursor++; return s.hooks[i] ??= init(); };
     export const useId = () => cell(() => 'picker-fixture');
     export const useRef = initial => cell(() => ({ current: initial }));
@@ -62,7 +61,6 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
         if (!s.rosterReply) throw Error('authoritative choices must not request metadata fallback');
         return Promise.resolve(s.rosterReply);
       };`,
-    // The list reads first, then the header. A client's flags are drawn once an effect has asked, per content revision.
     '/dashboard/countryFlags.ts': `export const flagReadKey = read => JSON.stringify([read.branchId, read.hour, read.tag]);
       export const retryFlags = () => {};
       export const useFlagReads = (client, _source, reads) => { const s = globalThis.__pickerWitness, header = s.flagCall++ === 1;

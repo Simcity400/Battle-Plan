@@ -1,6 +1,4 @@
-//! Game-authored land and naval combat windows, shared by playback and PNG export.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -11,13 +9,8 @@ use std::time::Instant;
 use viewer_foundation::engaged::Ambiguity;
 use viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap as NavySources;
 
-/// The naval dominance sources of a frame for the country in a slot, in one sea region, as the
-/// map's overlay builds them, derived with the content the app holds: the naval region view reads
-/// them over its own rows.
 pub type NavySourcesOf = Arc<dyn Fn(&replay_frame::frame::DecodedFrame, u32, u32) -> NavySources + Send + Sync>;
 
-/// An adjacency rule's relation for a country slot at a frame, with the branch that decided it,
-/// read with the movement content the app holds.
 pub type RuleRelations = Arc<
     dyn Fn(
             &replay_frame::frame::DecodedFrame,
@@ -118,8 +111,6 @@ pub enum Selector {
 }
 
 impl Selector {
-    /// The window a selector names itself, which reads no rows to resolve: an air region, a state
-    /// or a naval region. None for a combat looked up by handle or province.
     pub fn direct(self) -> Option<Selection> {
         match self {
             Self::AirRegion(region) => Some(Selection::AirRegion(region)),
@@ -155,7 +146,6 @@ impl Selector {
             }
         }
         if matches.is_empty() {
-            // Map icons also open completed results (readiness zero), not just pending ones.
             let results = rows::<tables::NavalResults>(frame)?;
             let newest = results
                 .rows()
@@ -186,11 +176,6 @@ impl Selector {
     }
 }
 
-/// An open land window refills its lists only when membership changes.
-/// If the existing entries match the committed or reserve array count and each
-/// unit remains in the combat and in that array, refresh values and preserve order.
-/// Otherwise clear the grid and rebuild in array order. Construction and an
-/// interface-setting change force a rebuild; a newly opened window starts empty.
 fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
     let members = |list: &[(u64, Values)]| {
         let mut units: Vec<u64> = list.iter().map(|(unit, _)| *unit).collect();
@@ -211,53 +196,34 @@ fn keep_list_order(next: &mut [(u64, Values)], shown: &[(u64, Values)]) {
 #[derive(Default)]
 pub struct Window {
     air: air_menu::State,
-    /// Viewer playback pause state.
     playing: bool,
-    /// The adjacency rule relations the state view's required rule hover reads.
     rule_relations: Option<RuleRelations>,
-    /// How the naval region view derives its hour's naval dominance sources.
     navy_sources_of: Option<NavySourcesOf>,
-    /// The frames drawn are saved pictures: windows stand where their openings settle.
     settled: bool,
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
     air_offset: [f32; 2],
     pub dragging: bool,
-    /// The possible-tactics popup: window presentation state,
-    /// never recorded.
     pub tactics_open: bool,
-    /// retained-result detail panels are local UI state.
     result_details_open: bool,
     tactics_position: Option<[f32; 2]>,
     dragging_tactics: bool,
     hover: HoverState,
-    /// Whether the last hover with text, whose tooltip shows, was the map's.
     tooltip_from_map: bool,
     cached: Option<Cached>,
     bindings_dirty: bool,
-    /// Bumped with every change of a setting the contents are read under.
     settings: u64,
-    /// Windows opened since the viewer began: a window opened again is another read.
     opened: u64,
-    /// What the window last asked the map's side to read ([`Self::asking`]): only a read of it is
-    /// shown.
     asked: Option<Family>,
-    /// The window holds no read of the hour on screen ([`Prepared::Loading`]), so it draws nothing.
     loading: bool,
-    /// The side's reads, by seek and hour, each held until the map reaches or passes its hour
-    /// ([`Self::offer`]).
     pending: std::collections::VecDeque<Product>,
-    /// Why the last read closed the window, by name; none while one is open.
     closed: Option<String>,
-    /// The reads and contents let go of, for the owner to free off the frame ([`Self::take_retired`]).
     retired: Vec<Box<dyn Send>>,
     gui: gui::Windows,
     gui_time: Option<f32>,
     refused: BTreeMap<String, usize>,
 }
 
-/// Where a window's contents were read: the branch and hour, the combat, the
-/// perspective choice and the viewing country it resolved to there.
 #[derive(Clone, Debug, PartialEq)]
 struct Scope {
     branch: replay_data::BranchId,
@@ -287,13 +253,7 @@ impl Scope {
             && self.nato == nato
     }
 
-    /// Whether contents read at `self` are the window's last refresh at
-    /// `now`: the same combat on the same branch, seen by the same viewing
-    /// country under the same choice, no later than `now`. Another branch's
-    /// contents, or another resolved viewer's, are not this window's.
     fn holds_at(&self, now: &Scope) -> bool {
-        // Only land tactics have scripted unit-bonus icons, and land windows
-        // refresh at `now`. A local icon or playback toggle does not end a naval hold.
         self.branch == now.branch
             && self.selection == now.selection
             && self.perspective == now.perspective
@@ -310,31 +270,19 @@ impl Scope {
     }
 }
 
-/// A window's contents and where they were read.
 type Contents = (Scope, Bindings);
 
-/// The window's state at one (branch, hour, selection, perspective).
 struct Cached {
-    /// The hour drawn, and its resolved viewer.
     at: Scope,
-    /// Whether the engaged index covered that hour.
     covered: bool,
-    /// The contents and where they were read: `at` itself after a refresh, an
-    /// earlier hour while held. `None` when the window never refreshed.
     contents: Option<Contents>,
-    /// Whether the window shows.
     shown: bool,
-    /// Why the window holds contents it may not show natively, reported.
     held: Option<String>,
-    /// combat selection/refresh serial; holds keep the bound generation.
     generation: u64,
     gui_assets: Option<gui_resources::GuiAssets>,
-    /// The asking and seek of the side's read these contents came in; none for a read made here.
     of: Option<(Family, u64)>,
 }
 
-/// The hour's engaged flags for the viewer, of every land and
-/// naval combat.
 fn combat_flags(
     frame: &replay_frame::frame::DecodedFrame,
     ours: u32,
@@ -348,8 +296,6 @@ fn combat_flags(
         .map(|row| (row.id, row.canonical_slot))
         .collect();
     let relations = Relations::read(frame, &links);
-    // A load-rebuilt flag's provenance is named with the hour's marker lines
-    // (CounterReport::combat_limits), which cover this combat too.
     CombatFlags::read(
         frame,
         ours,
@@ -359,24 +305,16 @@ fn combat_flags(
     )
 }
 
-/// What the window does at an hour, from its combat's flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Update {
     Close,
-    /// Rebuild its contents; `false` hides it.
     Refresh(bool),
-    /// Keep the contents of the last hour it refreshed, or do not open.
-    /// `undecided` says why the hour cannot tell whether the combat is
-    /// engaged, which is reported.
     Hold {
         combat: u64,
         undecided: Option<&'static str>,
     },
 }
 
-/// An active land window hides when neither side is engaged; an undecided
-/// flag keeps it open while the marker reports the gap. A naval window opens
-/// and refreshes only while engaged. Other hours hide its retained contents.
 fn update(selection: Selection, flags: &CombatFlags) -> Update {
     use viewer_foundation::engaged::Engaged;
     let flag = |flags: &BTreeMap<u64, Engaged>, id| flags.get(&id).copied();
@@ -397,9 +335,6 @@ fn update(selection: Selection, flags: &CombatFlags) -> Update {
     }
 }
 
-/// The contents a holding window keeps at `now` and the note it reports;
-/// `None` when it has nothing to keep and nothing to report, so it closes.
-/// Only contents read under the same [`Scope::holds_at`] are kept.
 fn hold(
     previous: Option<Contents>,
     now: &Scope,
@@ -425,7 +360,6 @@ fn hold(
     Some((contents, note))
 }
 
-/// A map hover: its title, delayed body, screen rectangle and province.
 pub type HoverHit<'a> = (&'a str, Option<&'a str>, [f32; 4], Option<u32>);
 
 impl Window {
@@ -433,41 +367,30 @@ impl Window {
         self.air.shift = shift;
         self.air.control = control;
     }
-    /// The speed-above-3 night picture depends on whether playback is paused.
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
     }
 
-    /// Whether the frame drawn is a saved picture: then its windows stand where they settle, every
-    /// opening fade and movement run to its end, as live playback shows them once they finish.
     pub fn set_settled(&mut self, settled: bool) {
         self.settled = settled;
     }
 
-    /// The inputs taken from the content loaded (its rule relations and naval sources provider),
-    /// for the owner to free off the frame when that content goes.
     pub fn take_inputs(&mut self) -> impl Send + 'static {
         (self.rule_relations.take(), self.navy_sources_of.take())
     }
 
-    /// Whether the window holds inputs taken from a loaded content.
     pub fn holds_inputs(&self) -> bool {
         self.rule_relations.is_some() || self.navy_sources_of.is_some()
     }
 
-    /// What the window keeps whatever it shows: its content's inputs and whether it draws saved
-    /// pictures.
     fn kept(&mut self) -> (Option<RuleRelations>, Option<NavySourcesOf>, bool) {
         (self.rule_relations.take(), self.navy_sources_of.take(), self.settled)
     }
 
-    /// Whether an open window holds no read of the hour on screen ([`Prepared::Loading`]).
     pub fn is_loading(&self) -> bool {
         self.selection.is_some() && self.loading
     }
 
-    /// Why the window, asked for, draws nothing of what it holds: closed by its read, or open with
-    /// contents it does not show (a battle the viewing country is not in). None while it shows.
     pub fn not_shown(&self) -> Option<String> {
         let Some(selection) = self.selection else {
             return Some(self.closed.clone().unwrap_or_else(|| "the window is closed".into()));
@@ -478,21 +401,14 @@ impl Window {
         let cached = self.cached.as_ref()?;
         Some(cached.held.clone().unwrap_or_else(|| format!("at hour {}, {selection:?}: the viewing country is not engaged in it, so the window is not shown", cached.at.hour)))
     }
-    /// The adjacency rule relations ([`RuleRelations`]), set once per loaded content.
     pub fn set_rule_relations(&mut self, relations: RuleRelations) {
         self.rule_relations = Some(relations);
     }
 
-    /// How the naval region view derives its naval dominance sources ([`NavySourcesOf`]), set
-    /// once per loaded content.
     pub fn set_navy_sources_of(&mut self, of: NavySourcesOf) {
         self.navy_sources_of = Some(of);
     }
-    /// What the open window cannot show exactly: its bindings' gaps and the
-    /// combat artwork's. Built only for diagnostics and exports; empty when no
-    /// window is open.
     pub fn warnings(&self, artwork: &[String]) -> Vec<String> {
-        // Loading, the window draws nothing: what it holds is another hour's.
         let Some(cache) = self.cached.as_ref().filter(|_| self.selection.is_some() && !self.loading) else {
             return Vec::new();
         };
@@ -514,17 +430,14 @@ impl Window {
         );
         warnings
     }
-    /// Whether the primary button holds one of the shown window's buttons.
     pub fn holding(&self) -> bool {
         self.showing() && self.gui.holding()
     }
 
-    /// Whether the window shows what it holds: shown, and of the hour on screen.
     fn showing(&self) -> bool {
         !self.loading && self.cached.as_ref().is_some_and(|cached| cached.shown)
     }
 
-    /// The window's control the last draw drew for the pointer.
     pub fn highlighted(&self) -> Option<&str> {
         self.showing().then(|| self.gui.highlighted()).flatten()
     }
@@ -580,8 +493,6 @@ impl Window {
         };
     }
 
-    /// What the window holds, retired with everything retired before: a window opened or closed
-    /// frees none of it on the frame.
     fn let_go(&mut self) -> Vec<Box<dyn Send>> {
         let (cached, pending) = (self.cached.take(), self.take_pending());
         self.retire(cached);
@@ -595,8 +506,6 @@ impl Window {
         }
     }
 
-    /// The reads and contents the window let go of since the last call, for the owner to free off
-    /// the frame: a large battle's take long to free.
     pub fn take_retired(&mut self) -> Option<impl Send + 'static> {
         (!self.retired.is_empty()).then(|| std::mem::take(&mut self.retired))
     }
@@ -608,7 +517,6 @@ impl Window {
         self.dirty();
     }
 
-    /// Acts on the control a native click took, by its path or the rectangle it drew.
     pub fn click(&mut self, drawn: &Drawn, path: &str, rect: [f32; 4]) -> bool {
         if matches!(self.selection, Some(Selection::AirRegion(_)))
             && let Some((_, action)) = drawn.air_controls.iter().find(|(at, _)| at == path)
@@ -659,7 +567,6 @@ impl Window {
         }
         false
     }
-    /// A drag begins on the popup's or the window's title strip.
     pub fn start_drag(&mut self, drawn: Option<&Drawn>, point: Option<[f32; 2]>) {
         self.dragging = false;
         self.dragging_tactics = false;
@@ -678,7 +585,6 @@ impl Window {
             self.dragging = true;
         }
     }
-    /// Moves the window or the popup being dragged, in interface pixels.
     pub fn drag_by(&mut self, delta: [f32; 2]) {
         let target = if self.dragging_tactics {
             self.tactics_position.get_or_insert([0.0; 2])
@@ -692,7 +598,6 @@ impl Window {
     pub fn scroll(&mut self, target: ScrollTarget, direction: i32, wheel: bool) {
         self.gui.scroll(target, direction, wheel);
     }
-    /// The topmost combat hover, otherwise the map's, on the native tooltip clock.
     pub fn tooltip(
         &mut self,
         drawn: Option<&Drawn>,
@@ -745,7 +650,6 @@ impl Window {
                 anchor: Some(window),
             });
         }
-        // Explicit anchors retain their position while the hide timer runs.
         let anchor = self.hover.anchor;
         self.hover
             .shown(
@@ -764,12 +668,10 @@ impl Window {
                 )
             })
     }
-    /// Whether the tooltip [`Self::tooltip`] last gave is the map's.
     pub fn tooltip_from_map(&self) -> bool {
         self.tooltip_from_map
     }
 
-    /// When the tooltip next changes with a still pointer, for a repaint.
     pub fn tooltip_repaint_after(
         &self,
         defines: Option<&TooltipDefines>,
@@ -777,9 +679,6 @@ impl Window {
     ) -> Option<Duration> {
         self.hover.next_change(now, defines?.timing)
     }
-    /// The open window's read at (`branch`, `hour`) of `frame`, made here: for a dump, which draws
-    /// one frame and may wait. `engaged` is the window's engaged-flag index; without it (a dump)
-    /// the flag is what a load at this hour rebuilds.
     #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
     #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
     pub fn prepare(
@@ -801,15 +700,11 @@ impl Window {
         read(&self.asking_of(document, rosters, family).request(branch, hour, frame, engaged)).map(|fresh| Prepared::Read(Box::new(fresh)))
     }
 
-    /// What the map's side reads the open window at, for each publication's own hour; none while
-    /// no window is open. `rosters` is the air roster history each read looks its own hour's
-    /// daily pass up in. Only a read of the newest asking is shown ([`Self::shown`]).
     pub fn asking(&mut self, document: &Arc<StaticContent>, rosters: &Arc<Sampler>, perspective: &Choice, nato: bool) -> Option<Asking> {
         let family = self.ask(perspective, nato)?;
         Some(self.asking_of(document, rosters, family))
     }
 
-    /// The read the open window asks for, kept as the only read it shows.
     fn ask(&mut self, perspective: &Choice, nato: bool) -> Option<Family> {
         let selection = self.selection?;
         let family = self.family(selection, perspective, nato);
@@ -817,9 +712,6 @@ impl Window {
         Some(family)
     }
 
-    /// A read of the side's, held until [`Self::shown`] finds the map at its hour or past it. It
-    /// replaces a read of its seek and hour, and the reads of older seeks and of another asking go:
-    /// none of them can be shown.
     pub fn offer(&mut self, made: Product) {
         let asked = self.asked.clone();
         let (kept, gone): (std::collections::VecDeque<Product>, std::collections::VecDeque<Product>) = std::mem::take(&mut self.pending)
@@ -837,10 +729,6 @@ impl Window {
         (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
     }
 
-    /// What the open window shows with the map at `at`: the read offered once the map stands at
-    /// its hour, under the window's newest asking and the side's seek; else what the window holds
-    /// while it is of all of those; else nothing, loading. A read of an hour the map has not
-    /// reached waits for it; one of an hour it passed, another asking or another seek is retired.
     pub fn shown(&mut self, at: Option<OnScreen>) -> io::Result<Prepared> {
         if self.selection.is_none() {
             let pending = self.take_pending();
@@ -874,8 +762,6 @@ impl Window {
         Ok(if holds { Prepared::Kept } else { Prepared::Loading })
     }
 
-    /// Whether the open window holds what a read at (`branch`, `hour`) would give, and otherwise
-    /// the read's family.
     fn want(&mut self, branch: replay_data::BranchId, hour: replay_data::Hour, perspective: &Choice, engaged: Option<&History>, nato: bool) -> Want {
         let Some(selection) = self.selection else {
             return Want::Closed;
@@ -904,8 +790,6 @@ impl Window {
         AirAsking { state: self.air.clone(), rosters: Arc::clone(rosters) }
     }
 
-    /// The content its reads are made from was replaced (a map installed again): what it holds and
-    /// any read made before are let go, and nothing is shown until a read under the next asking.
     pub fn content_replaced(&mut self) {
         let (cached, pending) = (self.cached.take(), self.take_pending());
         self.retire(cached);
@@ -914,18 +798,11 @@ impl Window {
         self.dirty();
     }
 
-    /// The window's contents must be read again: a setting they were read under changed.
     fn dirty(&mut self) {
         self.bindings_dirty = true;
         self.settings = self.settings.wrapping_add(1);
     }
 
-    /// Lays the open window out on a frame of `extent` interface pixels, from what
-    /// [`Self::prepare`] read; the batch and every hit rectangle are in interface pixels too
-    /// ([`viewer_foundation::map::ui_scale`]). Only a draw with `hovers` collects the hover
-    /// regions [`Self::tooltip`] needs, so a frame that lays the window out twice (once for its
-    /// hit tests) does the hover work once. Hit preparation does not advance; drawing ticks once
-    /// after input.
     #[allow(clippy::too_many_arguments, reason = "the window's layout inputs, each from another owner")]
     pub fn draw(
         &mut self,
@@ -992,8 +869,6 @@ impl Window {
         Ok(Some(drawn))
     }
 
-    /// Takes what [`Self::prepare`] or [`Self::shown`] gave into the window; false when no window
-    /// is open after it.
     pub fn take_in(&mut self, document: &Arc<StaticContent>, prepared: Prepared) -> bool {
         let Some(selection) = self.selection else {
             return false;
@@ -1006,7 +881,6 @@ impl Window {
         }
     }
 
-    /// Takes a fresh read into the window; false when it closed.
     fn keep(&mut self, document: &Arc<StaticContent>, selection: Selection, fresh: Fresh) -> bool {
         let Fresh {
             air,
@@ -1049,7 +923,6 @@ impl Window {
                 };
                 self.retire(gone);
                 let Some((contents, held)) = hold(previous, &now, combat, undecided) else {
-                    // Never engaged for this viewer on this branch: it does not open.
                     self.retire(gui_assets);
                     self.close();
                     self.closed = Some(format!("at hour {}, {selection:?}: never engaged for the viewing country, so the window does not open", now.hour));
@@ -1108,8 +981,6 @@ impl Window {
         true
     }
 
-    /// The hour the window's contents were last read at, and those contents as text, for
-    /// comparing two reads of one hour.
     pub fn model(&self) -> Option<(replay_data::Hour, String)> {
         let cached = self.cached.as_ref()?;
         Some((
@@ -1122,7 +993,6 @@ impl Window {
     }
 }
 
-/// Everything a window's read takes, owned, so it runs on the map side's maker.
 struct Request {
     content: Arc<StaticContent>,
     branch: replay_data::BranchId,
@@ -1134,15 +1004,11 @@ struct Request {
     nato: bool,
     playing: bool,
     air: AirAsking,
-    /// Whether a retained result's detail panels are open.
     details: bool,
-    /// How the naval region view derives the naval dominance sources of the read's own rows.
     navy_sources_of: Option<NavySourcesOf>,
     rule_relations: Option<RuleRelations>,
 }
 
-/// The air menu's state a read is made under, and the roster history the read looks up its own
-/// hour's daily pass in.
 #[derive(Clone)]
 struct AirAsking {
     state: air_menu::State,
@@ -1150,15 +1016,12 @@ struct AirAsking {
 }
 
 impl AirAsking {
-    /// The state of a read at (`branch`, `hour`) seen by the country in `viewer`: the daily pass
-    /// of that hour.
     fn at(&self, branch: replay_data::BranchId, hour: replay_data::Hour, viewer: u32) -> air_menu::State {
         let pass = RosterHistory::of(Arc::clone(&self.rosters)).visiting_pass(branch, hour, viewer);
         air_menu::State { pass, ..self.state.clone() }
     }
 }
 
-/// What makes two reads the same window's: its selection and every setting it was read under.
 #[derive(Clone, Debug, PartialEq)]
 struct Family {
     selection: Selection,
@@ -1169,8 +1032,6 @@ struct Family {
     opened: u64,
 }
 
-/// What the map's side reads the open window at, everything but the rows: posted by the frame with
-/// the view and read for each publication's own hour ([`Self::read`]).
 #[derive(Clone)]
 pub struct Asking {
     content: Arc<StaticContent>,
@@ -1181,7 +1042,6 @@ pub struct Asking {
     navy_sources_of: Option<NavySourcesOf>,
 }
 
-/// Which window, and which settings, a read is of: a read of another is never shown.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadKey(Family);
 
@@ -1190,8 +1050,6 @@ impl Asking {
         ReadKey(self.family.clone())
     }
 
-    /// The window's read at (`branch`, `hour`) of `frame`, the rows of that hour made at `seek`
-    /// (the playhead's epoch the side posted them at).
     pub fn read(&self, branch: replay_data::BranchId, hour: replay_data::Hour, seek: u64, frame: Arc<replay_frame::frame::DecodedFrame>, engaged: Option<Arc<History>>) -> Product {
         Product { key: self.key(), branch, hour, seek, fresh: read(&self.request(branch, hour, Ok(frame), engaged)) }
     }
@@ -1202,8 +1060,6 @@ impl Asking {
     }
 }
 
-/// The side's read of the open window at one hour and seek, which the window shows only with the
-/// map at that hour of that seek.
 #[derive(Debug)]
 pub struct Product {
     key: ReadKey,
@@ -1214,14 +1070,11 @@ pub struct Product {
 }
 
 impl Product {
-    /// The hour it was read at.
     pub fn hour(&self) -> replay_data::Hour {
         self.hour
     }
 }
 
-/// Where the map stands, which the window shows only a read of: the branch and hour on screen, and
-/// the seek the side last posted its rows at (an older seek's read is another history's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OnScreen {
     pub branch: replay_data::BranchId,
@@ -1235,7 +1088,6 @@ enum Want {
     Read(Family),
 }
 
-/// The window's read of its request's frame: its scope, the combat's flags and what it shows.
 fn read(request: &Request) -> io::Result<Fresh> {
     let Request { content: document, branch, hour, frame, selection, perspective, engaged, nato, playing, air, details, navy_sources_of, rule_relations } = request;
     let frame = frame.as_deref().map_err(|why| invalid(why.clone()))?;
@@ -1292,9 +1144,6 @@ fn read(request: &Request) -> io::Result<Fresh> {
     Ok(Fresh { air: air_read, now, covered, read, of: None })
 }
 
-/// The naval dominance sources a read of `selection` over `frame` takes: the naval region view's,
-/// derived from that frame for the viewing country in `ours`, so rows and sources are one hour's
-/// and one country's; none for any other window.
 fn navy_sources(selection: Selection, of: Option<&NavySourcesOf>, frame: &replay_frame::frame::DecodedFrame, ours: u32) -> NavySources {
     match (selection, of) {
         (Selection::NavalRegion(region), Some(of)) => of(frame, ours, region),
@@ -1303,15 +1152,12 @@ fn navy_sources(selection: Selection, of: Option<&NavySourcesOf>, frame: &replay
     }
 }
 
-/// What a read learned of the air menu's state from the frame.
 #[derive(Debug)]
 struct AirRead {
     mission_groups: Result<[u32; 3], String>,
-    /// The side it opens on, the first time the frame can tell.
     enemy: Option<bool>,
 }
 
-/// The air menu's mission filters from the recorded DLC mask.
 fn mission_groups(frame: &replay_frame::frame::DecodedFrame) -> Result<[u32; 3], String> {
     use replay_data::rows::*;
     match frame.complete::<tables::SimulationFeatures>() {
@@ -1336,26 +1182,20 @@ fn mission_groups(frame: &replay_frame::frame::DecodedFrame) -> Result<[u32; 3],
     }
 }
 
-/// What [`Window::prepare`] or [`Window::shown`] gave, for [`Window::draw`].
 #[derive(Debug)]
 pub enum Prepared {
-    /// No window is open.
     Closed,
-    /// The window holds the contents of this request already.
     Kept,
-    /// The window holds no read of the hour on screen, and draws nothing until one comes.
     Loading,
     Read(Box<Fresh>),
 }
 
-/// A read at a new hour, selection or setting.
 #[derive(Debug)]
 pub struct Fresh {
     air: Option<AirRead>,
     now: Scope,
     covered: bool,
     read: Read,
-    /// The asking and seek of the side's read it came in ([`Window::shown`]).
     of: Option<(Family, u64)>,
 }
 
@@ -1368,7 +1208,6 @@ enum Read {
     Refresh {
         shown: bool,
         bindings: Bindings,
-        /// What the bindings draw, gathered with them off the frame.
         gui_assets: gui_resources::GuiAssets,
         details: bool,
     },
@@ -1390,28 +1229,20 @@ pub struct Drawn {
     pub batch: Batch,
     pub refused: BTreeMap<String, usize>,
     pub rect: [f32; 4],
-    /// Where each of the window's windows and controls drew, which may stand past [`Self::rect`]:
-    /// the window takes the pointer over all of them.
     areas: Vec<[f32; 4]>,
     pub close: Option<[f32; 4]>,
     dismiss: Option<[f32; 4]>,
     result_details_button: Option<[f32; 4]>,
     lists: Vec<([f32; 4], ScrollTarget)>,
     scroll_buttons: Vec<([f32; 4], ScrollTarget, i32)>,
-    /// Hover regions in draw order; the last containing one wins.
     tooltips: Vec<TooltipHit>,
     tactics_button: Option<[f32; 4]>,
     tactics_close: Option<[f32; 4]>,
     tactics_rect: Option<[f32; 4]>,
-    /// The sound effects its buttons' state changes play this frame, in order.
     pub sounds: Vec<viewer_foundation::map::native_gui::pointer::Played>,
-    /// Each control clicked this frame: its path, the rectangle it drew and the click's order
-    /// among the frame's button changes.
     pub clicks: Vec<(String, [f32; 4], usize)>,
 }
 impl Drawn {
-    /// Why this draw put no window into the frame, naming what it refused; none when its window
-    /// drew quads.
     pub fn missing(&self) -> Option<String> {
         if !self.batch.quads.is_empty() {
             return None;
@@ -1423,14 +1254,10 @@ impl Drawn {
         })
     }
 
-    /// Adds another window's hover regions above this window's, as a later window paints over
-    /// it.
     pub fn add_hovers(&mut self, other: &Drawn) {
         self.tooltips.extend(other.tooltips.iter().cloned());
     }
 
-    /// This picture to draw again, with the sounds and clicks of the frame that made it spent:
-    /// what a window draws while nothing it shows changes.
     fn again(&self) -> Self {
         Self {
             sounds: Vec::new(),
@@ -1447,11 +1274,8 @@ pub struct ScrollTarget {
     vertical: bool,
 }
 
-/// Bound hover text. The bindings hold it once; each drawn hover region
-/// shares it rather than copying the text every frame.
 pub(crate) type HoverText = Arc<str>;
 
-/// One widget's hover region and its text, in interface pixels.
 #[derive(Clone, Debug, PartialEq)]
 struct TooltipHit {
     rect: [f32; 4],
@@ -1461,20 +1285,15 @@ struct TooltipHit {
     anchor: TooltipAnchor,
 }
 
-/// Placement: ship groups anchor beside the naval window, a control's authored
-/// `pdx_tooltip_anchor` holds where it says, and the rest follow the pointer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TooltipAnchor {
     #[default]
     Pointer,
     NavalWindow,
     Authored(installed_content_core::gui::native::TooltipAnchor),
-    /// An authored anchor resolved on screen, in interface pixels.
     At { x: i32, y: i32, below: bool },
 }
 
-/// Where a drawn window takes the pointer: the window, each window and control it drew past it,
-/// and its popup.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Footprint(Vec<[f32; 4]>);
 
@@ -1501,7 +1320,6 @@ impl Drawn {
             && (self.close.is_some_and(|rect| contains(rect, point))
                 || self.dismiss.is_some_and(|rect| contains(rect, point)))
     }
-    /// The list under `point`; the popup covers the window's lists.
     pub fn list_at(&self, point: [f32; 2]) -> Option<ScrollTarget> {
         self.lists
             .iter()
@@ -1523,57 +1341,34 @@ impl Drawn {
 #[derive(Clone, Debug, Default)]
 pub struct Widget {
     pub text: Option<String>,
-    /// the game overrides the text scrollbar's step from its newline count.
     pub text_scroll_lines: Option<bool>,
-    /// Hover text, and the delayed body shown after its longer delay.
     pub tooltip: Option<HoverText>,
     pub tooltip_description: Option<HoverText>,
-    /// Native shortcut tail, appended after the immediate and delayed strings.
     pub tooltip_shortcut: Option<HoverText>,
     pub tooltip_anchor: TooltipAnchor,
-    /// A dynamic hover builder owns both strings ([`tooltips::set_hover`]):
-    /// the window's update replaces the
-    /// authored `pdx_tooltip` the widget was created with, so the authored
-    /// seed never replaces its text or its refusal.
     pub hover_owned: bool,
     pub sprite: Option<String>,
-    /// the game leaves the existing drawable untouched when its picture path is absent.
     pub retain_sprite: bool,
     pub flag: Option<String>,
     pub fill: Option<f32>,
     pub progress: Option<i32>,
     pub frame: Option<u32>,
     pub rotation: Option<f32>,
-    /// The drawable's stretch along its unrotated height, about its centre.
     pub stretch: Option<f32>,
-    /// The drawable's uniform scale, in place of its authored one.
     pub scale: Option<f32>,
-    /// An edit box's shown caret: the codepoint index it stands before.
     pub caret: Option<usize>,
     pub opacity: Option<f32>,
     pub color: Option<[f32; 4]>,
-    /// Runtime button state; absent restores the GUI's authored enabled state.
     pub enabled: Option<bool>,
     pub hidden: bool,
     pub size: Option<[f32; 2]>,
     pub offset: [f32; 2],
-    /// Repeated authored entries, used by reserve, trait and modifier grids.
     pub entry_template: Option<String>,
-    /// Sparse per-entry template overrides, such as the native exile badge.
     pub entry_templates: BTreeMap<usize, String>,
     pub entries: Vec<Values>,
 }
 pub type Values = BTreeMap<String, Widget>;
-/// The viewer's inline flag: this marker, then the resolved flag-atlas key.
-/// Native text presentation resolves the complete key. The game writes 0x12
-/// and a country tag; the viewer resolves the tag first and marks it with a
-/// byte the localisation loader never makes a control, so
-/// an authored `@` (0x12) inside localised text around it is still refused
-/// by name ([`viewer_foundation::tooltip_text::displayable`]), in combat windows and map hovers alike.
 pub(crate) const INLINE_FLAG: char = RESOLVED_FLAG;
-/// The layer of a window quad pushed after `quads` others: the window draws
-/// in push order, one icon ordinal per quad, in the GUI band above every
-/// map-icon priority, so the open window covers the icons behind it.
 pub fn window_layer(quads: usize) -> u64 {
     gui_layer(u32::try_from(quads).unwrap_or(u32::MAX), 0)
 }
@@ -1582,9 +1377,6 @@ pub fn window_layer(quads: usize) -> u64 {
 mod capture_scope_tests;
 #[cfg(test)]
 mod tests {
-    /// A land window hides for an unengaged combat and refreshes on an undecided flag; a naval
-    /// one refreshes only while engaged and holds otherwise, reporting an undecided or absent
-    /// combat.
     #[test]
     fn the_window_updates_only_while_its_combat_is_engaged() {
         use std::collections::BTreeMap;
@@ -1631,7 +1423,6 @@ mod tests {
             held(Selection::Naval(2), Engaged::Ambiguous(Ambiguity::Scope)),
             Some((2, Some(Ambiguity::Scope.reason())))
         );
-        // A combat the hour no longer holds is not engaged either.
         assert_eq!(
             held(Selection::Naval(3), Engaged::Yes),
             Some((3, Some("it is absent")))
@@ -1753,9 +1544,6 @@ mod tests {
         assert!(!window.result_details_open && window.cached.is_none());
     }
 
-    /// Held contents are kept only for the branch, combat, choice and resolved viewing
-    /// country they were read under, and never from a later hour; an undecided hour reports
-    /// what it kept, and one with nothing to keep still reports and shows nothing.
     #[test]
     fn a_held_window_keeps_only_its_own_branch_and_viewers_contents() {
         use super::{Bindings, hold};
@@ -1764,18 +1552,13 @@ mod tests {
             hold(read(), now, 2, undecided)
                 .map(|(contents, note)| (contents.map(|(read, _)| read.hour), note))
         };
-        // A disengaged hour keeps them silently.
         assert_eq!(kept(&scope(0, 12, 1), None), Some((Some(10), None)));
-        // Another branch holding the same combat handle, or the recorded player resolving to
-        // another country under the same choice: not this window's contents, so it closes.
         assert_eq!(kept(&scope(1, 12, 1), None), None);
         assert_eq!(kept(&scope(0, 12, 7), None), None);
         let mut fogless = scope(0, 12, 1);
         fogless.perspective.fog = false;
         assert_eq!(kept(&fogless, None), None);
-        // A seek back before the read.
         assert_eq!(kept(&scope(0, 9, 1), None), None);
-        // An undecided flag keeps and reports; without contents it only reports.
         assert_eq!(
             kept(&scope(0, 12, 1), Some("its engaged flag is unknown")),
             Some((
@@ -1829,14 +1612,10 @@ mod tests {
         assert!(matches!(want(&mut window, 10), Want::Closed));
     }
 
-    /// The map at `hour` of seek 0.
     fn at(hour: i32) -> Option<OnScreen> {
         Some(OnScreen { branch: 0, hour, seek: 0 })
     }
 
-    /// A read of the side's for `hour` under the window's newest asking at `nato`, made at `seek`:
-    /// a naval combat whose flag is unknown, which keeps nothing and so needs no game content to
-    /// take in.
     fn made_at(window: &mut Window, hour: i32, seek: u64, nato: bool) -> Product {
         let family = window.ask(&Choice::default(), nato).expect("an open window asks");
         let fresh = Fresh { air: None, now: scope(0, hour, 1), covered: false, read: Read::Hold { combat: 2, undecided: Some("its engaged flag is unknown") }, of: None };
@@ -1847,8 +1626,6 @@ mod tests {
         made_at(window, hour, 0, false)
     }
 
-    /// The hour the window shows with the map at `on`, `made` offered first; none while loading.
-    /// A read shown is held as the window takes it in.
     fn shown_on(window: &mut Window, made: Option<Product>, on: Option<OnScreen>) -> Option<i32> {
         if let Some(made) = made {
             window.offer(made);
@@ -1869,9 +1646,6 @@ mod tests {
         shown_on(window, made, at(hour))
     }
 
-    /// While playing, the side's read of an hour can come after the map has moved on: the window
-    /// then shows nothing, loading, never the older hour's read over the newer map, and what it
-    /// holds stays only while the map stands at the hour it was read at.
     #[test]
     fn a_read_of_an_older_hour_is_never_shown_over_a_newer_map() {
         let mut window = Window::default();
@@ -1891,8 +1665,6 @@ mod tests {
         assert_eq!(shown_hour(&mut window, Some(stale), 12), None, "a read under a setting since changed is not shown");
     }
 
-    /// The side publishes an hour before the map's installers show it: its read waits for the map
-    /// to reach that hour, is never shown over the hour before, and is shown once the map is there.
     #[test]
     fn a_read_of_an_hour_the_map_has_not_reached_waits_for_it_and_is_shown_there() {
         let mut window = Window::default();
@@ -1911,8 +1683,6 @@ mod tests {
         assert_eq!(shown_hour(&mut window, None, 13), Some(13), "and hour 13's is still held for its hour");
     }
 
-    /// While the display stands at an hour, the side's reads of it and of askings since replaced
-    /// do not pile up: one read is held per hour of the window's newest asking.
     #[test]
     fn reads_offered_while_the_display_stands_still_do_not_pile_up() {
         let mut window = Window::default();
@@ -1931,8 +1701,6 @@ mod tests {
         assert_eq!(shown_hour(&mut window, None, 12), Some(12));
     }
 
-    /// What the window is given once (whether it draws saved pictures, its content's inputs) stays
-    /// through every window it opens and closes.
     #[test]
     fn opening_and_closing_keep_what_the_window_was_given_once() {
         let mut window = Window::default();
@@ -1946,7 +1714,6 @@ mod tests {
         assert!(window.navy_sources_of.is_some(), "still holding the content's provider");
     }
 
-    /// An open window that draws nothing says why, by name, for a saved frame to refuse.
     #[test]
     fn a_window_that_draws_nothing_says_why() {
         let mut window = Window::default();
@@ -1959,8 +1726,6 @@ mod tests {
         assert!(window.not_shown().is_some(), "closed, it draws nothing");
     }
 
-    /// The naval region view's dominance sources are derived from the read's own frame for its own
-    /// viewing country, never taken from elsewhere; no other window derives them.
     #[test]
     fn a_naval_region_read_derives_its_sources_from_its_own_rows_and_viewer() {
         let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1979,8 +1744,6 @@ mod tests {
         assert!(navy_sources(Selection::NavalRegion(7), None, &frame, 3).is_err_and(|why| why.contains("not given")), "refused by name without the map's content");
     }
 
-    /// A window loading a new hour draws nothing, so it reports none of what the hour before's
-    /// contents and drawing refused.
     #[test]
     fn a_loading_window_reports_nothing_of_the_hour_before() {
         let mut window = Window::default();
@@ -1992,8 +1755,6 @@ mod tests {
         assert!(window.warnings(&["the combat artwork".into()]).is_empty(), "loading hour 11, none of hour 10's");
     }
 
-    /// A changed setting at the same hour (NATO naming here) is another asking: the contents read
-    /// under the one before are not shown, the window is loading until the new asking's read.
     #[test]
     fn a_changed_asking_at_the_same_hour_is_loading_never_the_contents_of_the_one_before() {
         let mut window = Window::default();
@@ -2012,8 +1773,6 @@ mod tests {
         assert_eq!(shown_hour(&mut window, Some(late), 10), None, "nor a read made from the content before, handed after");
     }
 
-    /// A seek away and back to the same hour: what was read before the seek (held contents, or a
-    /// read handed late) is another history's and never shown; the read of the new seek is.
     #[test]
     fn a_read_or_contents_of_an_older_seek_are_never_shown_at_the_same_hour() {
         let mut window = Window::default();
@@ -2029,9 +1788,6 @@ mod tests {
         assert_eq!(shown_on(&mut window, None, on(3)), Some(20), "and held under it");
     }
 
-    /// Every read and contents the window lets go of is retired for its owner to free off the
-    /// frame: a read passed over, contents replaced, and all it holds when opened or
-    /// closed. Taken once, then nothing until it lets go of more.
     #[test]
     fn the_window_frees_no_read_and_no_contents_itself() {
         let mut window = Window::default();
@@ -2065,8 +1821,6 @@ mod tests {
         assert_eq!(window.retired.len(), 1, "a read offered to a closed window");
     }
 
-    /// A window opened between publications shows nothing, loading, until the side's read of the
-    /// hour on screen comes, and then that read.
     #[test]
     fn a_window_opened_mid_play_is_loading_until_the_read_of_the_hour_on_screen() {
         let mut window = Window::default();
@@ -2081,8 +1835,6 @@ mod tests {
         assert_eq!(shown_hour(&mut window, Some(eight), 8), Some(8), "then the read of the hour on screen");
     }
 
-    /// A recording of branch 1 from hour 20 to 50 whose daily air roster lists country 7 (slot 5)
-    /// as eligible every hour, so each daily pass visits it.
     fn roster_recording() -> Arc<replay::campaign::Replay> {
         use replay::spool::Record;
         use replay_data::identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification};
@@ -2123,8 +1875,6 @@ mod tests {
         Arc::new(replay::campaign::Replay::from_records(b"campaign".to_vec(), &[records]).unwrap())
     }
 
-    /// The frame asks while the map stands at hour 47, and the side reads hour 48 with that asking
-    /// (a seek, a step, a saved frame): the read takes hour 48's daily pass, not hour 47's.
     #[test]
     fn an_air_read_takes_the_daily_pass_of_its_own_hour_not_the_hour_it_was_asked_at() {
         let rosters = Arc::new(Sampler::today(roster_recording(), None));
@@ -2188,10 +1938,6 @@ mod tests {
 
     use super::*;
 
-    /// The tactics popup paints into its own batch, which is appended after
-    /// the window's quads: with the window's quad count as its layer base,
-    /// every popup quad sorts above every window quad, as the sprite pass
-    /// sorts them (viewer_foundation::map::sprites, by layer).
     #[test]
     fn the_tactics_popup_draws_above_the_whole_window() {
         let mut window = Drawn::default();
@@ -2233,7 +1979,6 @@ mod tests {
             (unit, values)
         };
         let shown = [entry(13, "old"), entry(6, "old"), entry(11, "old")];
-        // Same members in a new array order: shown order, refreshed values.
         let mut next = vec![entry(11, "new"), entry(13, "new"), entry(6, "new")];
         keep_list_order(&mut next, &shown);
         assert_eq!(
@@ -2244,7 +1989,6 @@ mod tests {
             next.iter()
                 .all(|(_, values)| values["name"].text.as_deref() == Some("new"))
         );
-        // A replaced member, or a different count, rebuilds in array order.
         for mut next in [
             vec![entry(11, "new"), entry(13, "new"), entry(9, "new")],
             vec![entry(11, "new"), entry(13, "new")],

@@ -1,6 +1,3 @@
-//! Test-only sequential, unshared reinforcement-input readers. Row types
-//! match the shared reader so outputs compare directly. Equivalence tests
-//! compare every read in the unshared order and every failure with its reason.
 #![allow(dead_code, clippy::all)]
 
 use engine_sites::Rva;
@@ -24,8 +21,6 @@ fn field<T: crate::memory::Raw>(
         .ok_or("reinforcement input unreadable")
 }
 
-/// Preserve the original field order, including a late checked-address failure.
-/// A failed field may be partial; no later span is read and nothing is retried.
 fn copy_input_spans<const N: usize>(
     memory: &impl Memory,
     sources: [(usize, usize); N],
@@ -33,8 +28,6 @@ fn copy_input_spans<const N: usize>(
 ) -> Result<(), &'static str> {
     let addresses = sources.map(|(pointer, offset)| pointer.checked_add(offset));
     if addresses.iter().any(Option::is_none) {
-        // No read has started. Preserve the scalar prefix instead of turning
-        // an arithmetic failure into a request at a sentinel address.
         for (address, destination) in addresses.into_iter().zip(destinations) {
             let address = address.ok_or("reinforcement input unreadable")?;
             if !crate::read_slice(memory, address, destination) {
@@ -96,10 +89,6 @@ fn pointer(memory: &impl Memory, p: usize, o: usize) -> Result<usize, &'static s
     field::<u64>(memory, p, o).map(|p| p as usize)
 }
 
-/// Bounded only by the live native header (count <= capacity <= i32::MAX and
-/// an in-range extent, validated by `Array::from_header`). Several of these
-/// arrays are indexed by canonical country slot (country links, air manager
-/// countries, intel rows), so no reader-chosen count may refuse them.
 fn array(memory: &impl Memory, p: usize, o: usize, stride: usize) -> Result<Array, &'static str> {
     let header = field(memory, p, o)?;
     Array::from_header(header, stride).ok_or("reinforcement array invalid")
@@ -148,8 +137,6 @@ fn append_modifiers(
         };
         *len += 1;
     }
-    // The owning pass supplies this authenticated complete raw country snapshot.
-    // Never memoize a derived effective value.
     let mut shared = true;
     for term in &mut output[start..*len] {
         if let Some(value) = memory.modifier_accumulator_value(accumulator, term.key) {
@@ -208,9 +195,6 @@ fn append_modifiers(
     Ok(())
 }
 
-/// Country-specific accumulator selection; the hash selects a source rather
-/// than calculating a displayed numeric result. All four possible speed keys
-/// are kept so controller and attacking choices cannot lose an operand.
 fn state_accumulator(
     memory: &impl Memory,
     base: usize,
@@ -550,8 +534,6 @@ fn transport_context(
             if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != owner.pointer {
                 return Err("reinforcement transport diplomacy backlink mismatch");
             }
-            // Every enemy reference is visited and appended to a growable array:
-            // the live header count is the only bound.
             let enemies = array(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRIES, 4)?;
             for index in 0..enemies.count {
                 let raw = field::<u32>(memory, element(enemies, index, 4)?, 0)?;
@@ -591,8 +573,6 @@ fn transport_context(
                         owner,
                     )?,
                 };
-                // Grow one slot per term whose reads all succeeded, never from
-                // the unverified header count; Vec growth is amortized.
                 let slot = start
                     .checked_add(row.transport_term_count)
                     .ok_or("reinforcement transport term index overflow")?;
@@ -639,13 +619,6 @@ fn transport_context(
     Ok(row)
 }
 
-/// Authenticated pointer-free, bounded raw speed graph. Source selectors follow
-/// native predicates; numeric operands retain their native integer bits. The
-/// naval-transfer branch owns the separate regional weather/enemy/intel graph.
-/// Its enemy terms are written to `transport_terms[transport_start..]`, growing
-/// the caller-owned vector as needed, so call it only where the caller may
-/// allocate (the acquisition worker, never the capturing thread). Entries past
-/// the returned count are unspecified scratch.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_context(
     memory: &impl Memory,

@@ -1,4 +1,3 @@
-//! Army icon inputs capture: each division's icon inputs read from the division sources and the seeded unit inputs. The host owns the ArmyIcons job's dispatch, the division source loan and table assembly.
 
 #[cfg(test)]
 use collector_extended_support::outcomes::MISSING;

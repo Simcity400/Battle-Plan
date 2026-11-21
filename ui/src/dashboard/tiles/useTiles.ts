@@ -13,8 +13,6 @@ import { prepareGate, preparing } from '../prepare.ts';
 import type { TiledLine, TileViewport } from './view.ts';
 import { inFrame } from '../frameUpdates.ts';
 
-/** A declared series' tiles: the recording, history and family asked, the tags drawn (each over its `within`
- * spans when given) and the history's last hour. */
 export interface TileSeries {
   source: Pick<DashboardSource, 'id' | 'revision'>;
   branchId: string;
@@ -22,19 +20,11 @@ export interface TileSeries {
   tags: readonly string[];
   within?: ReadonlyMap<string, readonly HourSpan[]>;
   lastHour: number;
-  /** Each tile also carries its drops per bin, drawn as marks. */
   marks?: boolean;
 }
 
-/** The tiles' name of a series: recording, revision, history and family. */
 const laneKey = (series: TileSeries) => `${series.source.id}|${series.source.revision}|${series.branchId}|${JSON.stringify(series.family)}`;
 
-/** A chart's lines from tiles: `onView` takes the chart's view as it moves, outside React, and asks only the tiles
- * it lacks; nothing renders because the view or the head moved inside the tiles held. Without `live`, the component
- * renders when a view's lines are assembled (a new tile landed or the series changed). With `live` it renders only
- * when the first lines of a series land or its failure changes: later lines (a tile the head's travel asked) are
- * read when painted, `read()`, and `subscribe` hears them, so a chart following the head never commits for a tile.
- * `head(tag)` names a tag's line for `followAtHead`; `unrecorded`, why no line holds a value in the lines landed. */
 export function useTiles(client: DashboardClient, series: TileSeries | null, active: boolean, live = false) {
   const key = series && JSON.stringify([series.source.id, series.source.revision, series.branchId, series.family, series.tags,
     series.within && [...series.within], series.lastHour, series.marks === true]);
@@ -84,7 +74,6 @@ export function useTiles(client: DashboardClient, series: TileSeries | null, act
   return { onView, lines: current?.lines ?? null, read, subscribe, live: newestLines, head, error: current?.error ?? null, retry, unrecorded };
 }
 
-/** The newest lines' summaries by tag, made again only when new lines land: what a chart's layers read as they draw. */
 export function liveSummaries(lines: Live<ReadonlyMap<string, TiledLine> | null>): Live<ReadonlyMap<string, ChartSummary> | null> {
   return mapLive(lines, held => held && new Map([...held].map(([tag, line]) => [tag, line.summary])));
 }

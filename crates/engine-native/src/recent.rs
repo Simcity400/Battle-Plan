@@ -1,5 +1,3 @@
-//! The latest `N` complete observations by key, kept for one stopped capture
-//! and replaced in turn. A miss only reads again; nothing is allocated.
 
 pub struct Recent<K, V, const N: usize> {
     entries: [Option<(K, V)>; N],

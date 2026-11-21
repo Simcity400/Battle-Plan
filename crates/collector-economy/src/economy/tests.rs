@@ -332,9 +332,6 @@ fn cold_resource_worker_consumes_original_headers_when_the_frame_has_nonzero_liv
     assert_eq!(captured.exchanges.rows[0].id, 0x1234_5678_0000_0033);
 }
 
-/// CountryResources, ResourceExchanges and their census are hourly: every
-/// hour walks the census once and publishes it with both consumers. A job
-/// without capacity still starts nothing.
 #[test]
 fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     let source = resource_fixture::Fixture::new();
@@ -367,7 +364,6 @@ fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     assert!(matches!(captured.resources.outcome, Outcome::Rows { .. }));
     assert!(matches!(captured.exchanges.outcome, Outcome::Rows { .. }));
 
-    // The typed walk publishes the same.
     let mut direct = Captured::with_capacities(&e_capacities());
     direct.capture(&memory, 0, 0x1000, 0, false);
     assert_eq!(direct.definitions.outcome, captured.definitions.outcome);
@@ -375,11 +371,6 @@ fn every_hour_publishes_the_census_with_its_hourly_consumers() {
     assert_eq!(direct.exchanges.outcome, captured.exchanges.outcome);
 }
 
-/// A value fault stays local to CountryResources. Under the relaxed read
-/// order a one-shot fault on a value is read again once, by the batched
-/// walk's bounded fallback, and the table completes; a persistent one
-/// refuses the table, as the serial walk does. Its siblings complete either
-/// way, and decoding reads no native memory.
 #[test]
 fn owned_resource_value_faults_recover_once_and_remain_local() {
     let reads_at = |memory: &ResourceTrace<'_>| {
@@ -404,7 +395,6 @@ fn owned_resource_value_faults_recover_once_and_remain_local() {
     assert!(matches!(captured.resources.outcome, Outcome::Rows { .. }));
     assert_eq!(captured.definitions.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.exchanges.outcome, Outcome::Rows { len: 1 });
-    // The block, then its one fallback read.
     assert_eq!(reads_at(&memory), 2);
 
     let mut source = resource_fixture::Fixture::new();
@@ -559,7 +549,6 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
         let memory = engine_native::memory::CountedMemory::new(ResourceTrace {
             source: &source,
             reads: Default::default(),
-            // A second native attempt would succeed, hiding the first fault.
             fault: Some(GAME + cgame_state::COUNTRIES),
         });
         let mut captured = Captured::with_capacities(&e_capacities());
@@ -575,7 +564,6 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
         expected_counts[TableId::ProvinceSupply.index()] = engine_native::memory::ReadCounts {
             copy_calls: 8,
             spans: 8,
-            // Seven supply requests plus the failed 16-byte country header.
             bytes: 104 + 3 * sprovince_supply_data::STRIDE as u64,
             ..engine_native::memory::ReadCounts::ZERO
         };
@@ -596,8 +584,6 @@ fn failed_daily_country_header_keeps_hourly_supply_and_first_fault() {
             captured.purchases.outcome,
             Outcome::Unavailable { reason } if reason != replay_data::cadence::SKIPPED_REASON
         ));
-        // The census and both its consumers are walked every hour, so the
-        // shared fault reaches them.
         for outcome in &captured.outcomes()[6..9] {
             assert!(matches!(
                 outcome,
@@ -787,9 +773,6 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     let scratch = ProjectionScratch::default();
     let mut projection = Projection::new(&encoder, 1, 101, false, &scratch);
     let assert_unchanged = |inputs: [TableInput; N]| {
-        // Hourly supply, resource definitions, country resources and
-        // exchanges may reuse their validated baselines. Daily tables
-        // materialize complete rows for their separate recovery cache.
         for index in [2, 6, 7, 8] {
             assert!(matches!(inputs[index], TableInput::ComparedEqual(_)));
         }
@@ -800,8 +783,6 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     assert_unchanged(with_award_refusal(
         captured.table_inputs(Some(&mut projection)),
     ));
-    // A native census permutation keeps the same replay keys and payloads,
-    // including unsigned replay ordering of signed province/node fields.
     captured.hubs.rows.swap(0, 1);
     assert_unchanged(with_award_refusal(
         captured.table_inputs(Some(&mut projection)),
@@ -827,8 +808,6 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
         assert_ne!(changed[index], original_inputs[index]);
     }
 
-    // Every field in the only nested economy row must participate in the
-    // exact projection, including embedded zero/non-UTF8 source bytes.
     let original = captured.foreign.rows[0];
     for field in 0..13 {
         captured.foreign.rows[0] = original;
@@ -859,7 +838,6 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     }
     captured.foreign.rows[0] = original;
     captured.sources.first[2] = 0;
-    // Identical bytes in a different arena position are still equal.
     captured.sources.first.copy_within(1..4, 0);
     captured.foreign.rows[0].source_start = 0;
     assert_eq!(
@@ -950,7 +928,6 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
         (fuel.current_raw, fuel.maximum_raw, fuel.lend_lease_gain_raw),
         (i64::MIN, i64::MAX, 4_294_967_317)
     );
-    // The oracle-only operands publish their tombstones.
     let retired = replay_data::rows::RetiredI64::default();
     assert_eq!(
         [
@@ -1070,15 +1047,6 @@ fn growth_keeps_primary_membership_scratch_and_source_capacity_in_step() {
     assert_eq!(captured.allocated_bytes(), before);
 }
 
-// =======================================================================
-// Economy-rest copy/decode split tests (one per table plus group gates).
-// Each per-table test builds a minimal SliceMemory fixture valid for that
-// table (plus shared census), runs the typed direct capture and the
-// copy→decode path against the same memory with the same pooled caps,
-// and asserts identical outcomes (incl. len/unread) and identical rows.
-// Truncation, faults, raw-compare, overflow, gate, worker decode and
-// worst-case caps are covered per table via the shared harness.
-// =======================================================================
 
 const E_BASE: usize = 0;
 const E_GAME: usize = 0x1000;
@@ -1165,12 +1133,9 @@ fn e_assert_table<const R: usize>(split: &Captured, direct: &Captured, index: us
         direct.outcomes()[index],
         "outcome index {index}"
     );
-    // Rows compare via TableView conversion for typed tables; for raw
-    // CaptureRows compare lengths and debug equality through outcomes.
     let _ = R;
 }
 
-/// The census with both countries' fuel statuses.
 fn e_fuel_world() -> Vec<u8> {
     use engine_fuel::ccountry_fuel_status;
     use engine_native::ccountry;
@@ -1239,8 +1204,6 @@ fn economy_fuel_copy_matches_direct_walk() {
     e_assert_fuel_matches_direct(&e_fuel_world());
 }
 
-/// Positive slots holding the reserved slot-zero object are skipped as the
-/// reader skips them; the daily country tables stay available.
 #[test]
 fn economy_copy_skips_positive_aliases_of_the_reserved_country() {
     use engine_native::{ccountry, cgame_state};
@@ -1262,7 +1225,6 @@ fn economy_copy_skips_positive_aliases_of_the_reserved_country() {
     e_assert_fuel_matches_direct(&bytes);
 }
 
-/// Fuel statuses with three consumers and a full history ring each.
 fn e_fuel_arrays(bytes: &mut [u8]) {
     use engine_fuel::ccountry_fuel_status as fuel;
     use engine_native::ccountry;
@@ -1327,7 +1289,6 @@ fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
     let mut bytes = vec![0; 0x9000];
     e_census(&mut bytes);
     e_fuel_arrays(&mut bytes);
-    // Each case points one array header's data at unmapped memory.
     for (case, header) in [
         ("complete", None),
         (
@@ -1364,7 +1325,6 @@ fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
                 direct.fuel_consumers.rows[..direct.fuel_consumers.outcome.len()]
             );
             let outcomes = direct.outcomes();
-            // Every starting storage grows to both countries' rows.
             match case {
                 "unreadable ring" => assert_eq!(
                     outcomes[0],
@@ -1374,7 +1334,6 @@ fn economy_fuel_arrays_copy_matches_direct_walk_with_independent_failures() {
                 ),
                 _ => {
                     assert_eq!(outcomes[0], Outcome::Rows { len: 2 }, "{case}");
-                    // Ring entry i holds 3 * offset - 11 in every qword.
                     let sum = |field: usize| {
                         (0..24)
                             .map(|slot| (slot * fuel_history_entry::STRIDE + field) as i64 * 3 - 11)
@@ -1495,7 +1454,6 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
             let report = copy_economy_rest_refresh(&memory, context, &mut job);
             assert!(report.raw_ok);
             let raw_counts = read_accounting::snapshot();
-            // The acquired job determines the decode's active groups.
             split.set_schedule(0, true);
             let mut decode_ticks = [0; N];
             split.decode_economy_rest_payload(E_BASE, &job, &mut decode_ticks);
@@ -1508,9 +1466,6 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
             );
             assert!(typed_counts[TABLES[2].index()].spans > 0);
             assert!(raw_counts[TABLES[2].index()].spans > 0);
-            // CountryResources, ResourceExchanges and their census are
-            // walked every hour (the census fails in this fixture, so its
-            // failure is published).
             for (active, indices) in [
                 (true, &[6, 7, 8][..]),
                 (
@@ -1568,9 +1523,6 @@ fn economy_supply_is_hourly_with_daily_gates_and_identical_truncation() {
 
 #[test]
 fn economy_census_tables_copy_matches_direct_walk() {
-    // An empty hub map emits Rows{0} in both paths. The resource database
-    // singleton lies outside this fixture, so resource definitions, country
-    // resources and exchanges preserve its source failure in both paths.
     use engine_native::memory::SliceMemory;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
@@ -1596,9 +1548,6 @@ fn economy_census_tables_copy_matches_direct_walk() {
 
 #[test]
 fn economy_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/exact-fit/overflow run typed AND copy→decode against the
-    // SAME memory with the SAME pooled caps, asserting identical fuel
-    // outcomes (the table under test with valid data and no faults).
     use engine_fuel::ccountry_fuel_status;
     use engine_native::{ccountry, memory::SliceMemory};
     let mut bytes = vec![0; 0x8000];

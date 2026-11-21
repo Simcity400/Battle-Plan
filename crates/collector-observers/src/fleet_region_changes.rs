@@ -1,15 +1,3 @@
-//! Allocation-free certificates for a fleet's mission-region multiset.
-//!
-//! A running guard excludes certificates during each native writer. Append,
-//! clear, remove and prune notify only when their before/after counts differ;
-//! these operations change membership only by changing the count. Pure
-//! permutations need no observation. Construction, loading and destruction
-//! revoke observations of a reused address. The existing fleet
-//! census reads a vector only on its first observation or a changed
-//! certificate. A fleet the watch table cannot hold (none installed yet, or
-//! every slot its probes reach taken) is certified by the family's quiet
-//! token instead, which any region writer moves. Disabled observation
-//! refuses the field rather than introducing a periodic native vector walk.
 
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_native::Memory;
@@ -19,23 +7,20 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-/// What proves a fleet's held regions current: the fleet's own writer sequence, or, for a fleet
-/// the watch table cannot hold, the family's quiet token, which every region writer moves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Certificate {
     Fleet { epoch: u64, sequence: u64 },
     Family { epoch: u64, revision: u64 },
 }
 
-/// A verified native entry owned by this family.
 #[derive(Clone, Copy)]
 pub struct Site {
     pub name: &'static str,
     pub rva: Rva,
 }
 
-/// Mutation and lifetime entries. Their first argument is always the fleet;
-/// each accepts at most four integer arguments and returns through RAX.
+#[doc = " Mutation and lifetime entries. Their first argument is always the fleet;"]
+#[doc = " each accepts at most four integer arguments and returns through RAX."]
 pub const SITES: [Site; 7] = [
     Site {
         name: "append mission region",
@@ -74,8 +59,6 @@ static RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 static CALLS: [AtomicU64; SITES.len()] = [const { AtomicU64::new(0) }; SITES.len()];
 static ORIGINAL: [AtomicUsize; SITES.len()] = [const { AtomicUsize::new(0) }; SITES.len()];
 
-/// Register a fleet reached by the authenticated census. Observation being
-/// disabled refuses even an otherwise retained registry certificate.
 pub fn sequence(fleet: usize) -> Option<Certificate> {
     if !ENABLED.load(Ordering::SeqCst) {
         return None;
@@ -88,12 +71,10 @@ pub fn sequence(fleet: usize) -> Option<Certificate> {
     }
 }
 
-/// Demand measured by the fleet census, used only for off-thread sizing.
 pub fn demand(fleets: usize) {
     RECEIVERS.fetch_max(fleets, Ordering::Relaxed);
 }
 
-/// Prepare watch storage off the native thread.
 pub fn presize() {
     if !CONFIGURED.load(Ordering::Acquire) {
         return;
@@ -104,17 +85,14 @@ pub fn presize() {
     }
 }
 
-/// Begin an hourly boundary; a load, gap or recovery revokes prior values.
 pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);
 }
 
-/// Native notifications still in flight.
 pub fn active() -> usize {
     WATCHES.active()
 }
 
-/// Release retired watch storage off-thread.
 pub fn collect() {
     WATCHES.collect();
 }
@@ -129,17 +107,15 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// The owning feature is disabled: no native verification, patches or
-    /// observer storage are prepared.
     pub const fn disabled() -> Self {
         Self { hooks: Vec::new() }
     }
-    /// Prepare the complete writer family without publishing any patch.
-    ///
-    /// # Safety
-    /// The enclosing runtime authenticated this executable, owns this family
-    /// exclusively and restores its patches and drains native calls before
-    /// releasing its storage or unloading.
+    #[doc = " Prepare the complete writer family without publishing any patch."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The enclosing runtime authenticated this executable, owns this family"]
+    #[doc = " exclusively and restores its patches and drains native calls before"]
+    #[doc = " releasing its storage or unloading."]
     pub unsafe fn prepare(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         for site in SITES {
             engine_sites::hook(base, site.rva)
@@ -167,10 +143,10 @@ impl Hooks {
         Ok(Self { hooks })
     }
 
-    /// Alias matching the other writer families' construction API.
-    ///
-    /// # Safety
-    /// The requirements of [`Self::prepare`] apply.
+    #[doc = " Alias matching the other writer families' construction API."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The requirements of [`Self::prepare`] apply."]
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         unsafe { Self::prepare(memory, base) }
     }
@@ -208,7 +184,6 @@ impl Drop for Hooks {
         CONFIGURED.store(false, Ordering::Release);
         ENABLED.store(false, Ordering::SeqCst);
         WATCHES.set_enabled(false);
-        // SAFETY: the runtime removes and drains patches before release.
         unsafe { WATCHES.release() };
     }
 }
@@ -260,8 +235,6 @@ unsafe fn invoke(
 }
 
 unsafe fn region_count(fleet: usize) -> Option<i32> {
-    // SAFETY: the authenticated native method owns its live receiver for
-    // this call. The guarded copy contains no allocation or game call.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     engine_native::read(
         &memory,
@@ -288,7 +261,6 @@ mod tests {
         fourth: usize,
     ) -> usize {
         let watches = unsafe { &*(watches as *const WatchRegistry) };
-        // The notification must span the original, including nested work.
         assert!(watches.sequence(fleet).is_none());
         third ^ fourth
     }
@@ -314,12 +286,10 @@ mod tests {
         assert_ne!(watches.sequence(16), Some(before));
         assert_eq!(watches.sequence(32), Some(other));
         assert_eq!(watches.active(), 0);
-        // Disabled observation never authorizes an hourly payload reread.
         watches.set_enabled(false);
         assert!(watches.sequence(16).is_none());
         watches.set_enabled(true);
         assert_ne!(watches.sequence(16), Some(before));
-        // SAFETY: the synthetic original returned and holds no notification.
         unsafe { watches.release() };
     }
 
@@ -363,12 +333,9 @@ mod tests {
         );
         assert_ne!(watches.sequence(fleet), Some(before));
         assert_eq!(watches.active(), 0);
-        // SAFETY: no synthetic writer remains in flight.
         unsafe { watches.release() };
     }
 
-    /// A fleet made after the session's table filled: the game holds its regions (none, here),
-    /// so it is read under the family's quiet token instead of refused for its whole life.
     #[test]
     fn a_fleet_the_full_table_cannot_hold_is_certified_by_the_family_quiet_token() {
         WATCHES.offer(1);
@@ -392,7 +359,6 @@ mod tests {
         ENABLED.store(false, Ordering::SeqCst);
         WATCHES.set_enabled(false);
         assert_eq!(sequence(fleet), None, "disabled observation certifies nothing");
-        // SAFETY: no synthetic writer remains in flight.
         unsafe { WATCHES.release() };
     }
 }

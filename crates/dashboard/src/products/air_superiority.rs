@@ -1,17 +1,3 @@
-//! Air superiority: each strategic region's friendly and enemy air scores, compared per side or
-//! from one viewpoint.
-//!
-//! Strategic-air entries are indexed by the region's runtime slot. Friendly scores sum the
-//! friendly roster's contributions minus enemy suppression; enemy scores reverse those rosters.
-//! Both clamp at zero. The rosters include wartime allies and volunteer relationships, so the side
-//! comparison is an application comparison of views: a side shows its leader's read (a leaderless
-//! coalition, its best member's). Co-belligerents are assigned by recorded war relations
-//! ([`assignment`]). The map uses friendly*100000/(friendly+enemy), strictly >60000 good and
-//! <40000 bad. RaidAirScores is sparse: complete tables witness every air-object owner; a missing
-//! pair for that owner is zero, an absent owner has no air object. Partial absent pairs are unknown.
-//!
-//! [`AirSuperiorityAt`] is the moment at an hour (rows at an hour: structure, every score a live
-//! cell); [`AirSuperiorityChoices`] the widgets' choices over the timeline.
 
 use super::{BranchParams, LoadContext, Product};
 use crate::{
@@ -43,7 +29,6 @@ mod tests;
 use assignment::AssignedSide;
 use compose::{Compose, Operands, Pair, Roster, SidesCell, View};
 
-/// The map's denominator and thresholds, from the game's air map mode.
 pub const SCALE: i32 = 100_000;
 pub const BAD_BELOW: i32 = 40_000;
 pub const GOOD_ABOVE: i32 = 60_000;
@@ -64,24 +49,22 @@ pub struct AirSuperiorityParams {
     pub branch_id: String,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mode: Option<AirMode>,
-    /// A side's key, or a country (its slot or tag) with `viewpointCountry`.
+    #[doc = " A side's key, or a country (its slot or tag) with `viewpointCountry`."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint: Option<dashboard_base::products::Country>,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country: Option<bool>,
-    /// The side keys compared; all when none.
+    #[doc = " The side keys compared; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sides: Option<Vec<String>>,
-    /// The regions shown; all active when none.
+    #[doc = " The regions shown; all active when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub regions: Option<Vec<u32>>,
-    /// The air theatres whose regions are shown; all when none.
+    #[doc = " The air theatres whose regions are shown; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
 }
 
-/// The viewpoint as the scores name it: a side's key, or the tag the viewpoint country goes by at
-/// `hour` (none where it holds none).
 pub(crate) fn viewpoint_name<'a>(viewpoint: Option<&'a dashboard_base::products::Country>, country: bool, holders: &'a Holders, hour: i32) -> &'a str {
     match viewpoint {
         Some(viewpoint) if country => holders.tag_at(viewpoint, hour).unwrap_or_default(),
@@ -108,7 +91,6 @@ impl AirSuperiorityParams {
     }
 }
 
-/// Where a side's colour is read: a country at an hour.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -117,27 +99,24 @@ pub struct AirAnchor {
     pub hour: i32,
 }
 
-/// A side of the hour's assignment. Faction names come from the groups the page reads by id.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirSide {
     pub key: String,
-    /// Its anchor faction's id.
+    #[doc = " Its anchor faction's id."]
     pub faction: Option<String>,
-    /// The faction whose colour it shows: one a strict majority of its fighting members belong to.
+    #[doc = " The faction whose colour it shows: one a strict majority of its fighting members belong to."]
     pub colour_faction: Option<String>,
-    /// Every faction merged into it, by id.
+    #[doc = " Every faction merged into it, by id."]
     pub factions: Vec<String>,
-    /// Its first member, for a side of no faction.
+    #[doc = " Its first member, for a side of no faction."]
     pub tag: Option<String>,
     pub leader: Option<String>,
     pub co_belligerents: usize,
     pub anchor: Option<AirAnchor>,
 }
 
-/// A side's part of a region's comparison: the country whose read it shows; its friendly score is
-/// the live cell (`live`, `friendly`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -147,18 +126,12 @@ pub struct AirPart {
     pub live: String,
 }
 
-/// A region's comparison at the hour, without its numbers.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AirCell {
-    /// Why it has none: identity-not-recorded, sides-not-recorded, side-not-present,
-    /// score-not-recorded, no-air-object, outside-theatres, theatres-not-recorded.
     Reason { reason: String },
-    /// Each scoring side's part, in the assignment's order.
     Sides(AirSidesCell),
-    /// One viewpoint's friendly and enemy scores: live cells (`live`, `friendly` / `enemy`), none
-    /// for a known zero.
     View { side: Option<u32>, leader: Option<String>, live: Option<String> },
 }
 
@@ -167,17 +140,16 @@ pub enum AirCell {
 #[serde(rename_all = "camelCase")]
 pub struct AirSidesCell {
     pub parts: Vec<AirPart>,
-    /// A leaderless side and the country whose read it shows.
+    #[doc = " A leaderless side and the country whose read it shows."]
     pub viewpoints: Vec<(u32, String)>,
     pub unknown: Vec<u32>,
     pub no_air_object: Vec<u32>,
-    /// Only the chosen sides are compared.
+    #[doc = " Only the chosen sides are compared."]
     pub filtered: bool,
-    /// Sides of the fallback left out: no air object.
+    #[doc = " Sides of the fallback left out: no air object."]
     pub excluded: usize,
 }
 
-/// What a region's assigned wings are: a live cell (`region`, `wings`), none, or not known.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -193,9 +165,9 @@ pub enum AirWings {
 pub struct AirRegion {
     pub id: u32,
     pub name: Option<String>,
-    /// Why the name is not shown.
+    #[doc = " Why the name is not shown."]
     pub name_missing: Option<String>,
-    /// Any country scores in it.
+    #[doc = " Any country scores in it."]
     pub active: bool,
     pub cell: AirCell,
     pub wings: AirWings,
@@ -205,14 +177,14 @@ pub struct AirRegion {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirSuperiorityReply {
-    /// Why no comparison is shown at the hour.
+    #[doc = " Why no comparison is shown at the hour."]
     pub missing: Option<String>,
-    /// The sides the cells name, by index.
+    #[doc = " The sides the cells name, by index."]
     pub sides: Vec<AirSide>,
-    /// The viewpoint side's index, when a side is the viewpoint and present.
+    #[doc = " The viewpoint side's index, when a side is the viewpoint and present."]
     pub viewpoint: Option<u32>,
     pub regions: Vec<AirRegion>,
-    /// The comparison of a region no country scores in.
+    #[doc = " The comparison of a region no country scores in."]
     pub fallback: AirCell,
     pub scale: i32,
     pub bad_below: i32,
@@ -232,25 +204,23 @@ pub struct AirChoice {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirChoicesReply {
-    /// Every strategic region of the recorded stack, by id.
+    #[doc = " Every strategic region of the recorded stack, by id."]
     pub regions: Vec<AirChoice>,
-    /// Every side the timeline assigns, as last assigned.
+    #[doc = " Every side the timeline assigns, as last assigned."]
     pub sides: Vec<AirSide>,
-    /// The air theatres at the timeline's last hour, by id.
+    #[doc = " The air theatres at the timeline's last hour, by id."]
     pub theatres: Vec<AirChoice>,
-    /// Why the theatres are not listed.
+    #[doc = " Why the theatres are not listed."]
     pub theatres_missing: Option<String>,
-    /// Every tag held on the timeline.
+    #[doc = " Every tag held on the timeline."]
     pub countries: Vec<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(AirSuperiorityReply, AirChoicesReply);
 
-/// The recorded content a reply names regions and theatres with.
 pub struct Names {
     catalogue: Result<Arc<Catalogue>, String>,
-    /// The recorded stack's strategic regions; a name is made only for a region a reply shows.
     regions: Result<Arc<installed_content_regions::regions::StrategicRegions>, String>,
     warnings: Vec<String>,
 }
@@ -282,22 +252,17 @@ fn region_name(names: &Names, region: u32) -> (Option<String>, Option<String>) {
     }
 }
 
-/// What a moment is made with: the content's names and the timeline's sides.
 pub struct AirContext {
     names: Names,
     index: Result<Arc<index::AirIndex>, String>,
 }
 
-/// An hour's countries and their scores by region.
 pub(crate) struct HourScores {
     pub operands: Operands,
-    /// Each region's pairs, by tag.
     pub pairs: BTreeMap<u32, Vec<Pair>>,
-    /// Regions any row scores in.
     pub active: BTreeSet<u32>,
 }
 
-/// The tag holding each canonical slot at `hour`.
 fn slot_tags(holders: &Holders, hour: i32) -> HashMap<u32, &str> {
     holders
         .tags
@@ -309,8 +274,6 @@ fn slot_tags(holders: &Holders, hour: i32) -> HashMap<u32, &str> {
         .collect()
 }
 
-/// `rows` (complete or not) at `hour` read through the links and holders: the duplicate owner rule
-/// keeps the greatest raw id of a tag's rows in a region; a negative score makes its owner invalid.
 pub(crate) fn hour_scores(rows: &[RaidAirScoreRow], complete: bool, links: Option<&[CountryLinkRow]>, holders: &Holders, present: &Arc<BTreeSet<String>>, hour: i32) -> HourScores {
     let mut operands = Operands { complete, present: Arc::clone(present), ..Operands::default() };
     let mut active = BTreeSet::new();
@@ -346,8 +309,6 @@ pub(crate) fn hour_scores(rows: &[RaidAirScoreRow], complete: bool, links: Optio
     HourScores { operands, pairs, active }
 }
 
-/// Every theatre's regions at the hour (the mission regions of its member wings), by id; an error
-/// where membership is not known.
 pub(crate) fn theatre_regions(theatres: &[AirTheatreRow], groups: &[AirTheatreGroupRow], members: &[AirTheatreMemberRow], wings: &[AirWingRow]) -> Result<BTreeMap<String, BTreeSet<u32>>, String> {
     let groups: HashMap<u64, u64> = groups.iter().map(|group| (group.id, group.theatre)).collect();
     let regions: HashMap<u64, Option<u32>> = wings.iter().map(|wing| (wing.id, wing.mission_region)).collect();
@@ -369,7 +330,6 @@ fn member_wings(held: &DecodedFrame) -> Option<Read> {
     (!members.is_empty()).then(|| Read::these(TableId::AirWings, members.iter().map(|member| u128::from(member.wing))))
 }
 
-/// The selected theatres' regions at the hour; an error naming why membership is not known.
 fn selected_regions(frame: &DecodedFrame, ids: &[String]) -> Result<HashSet<u32>, ()> {
     let read = || -> io::Result<_> { Ok((frame.complete::<tables::AirTheatres>()?, frame.complete::<tables::AirTheatreGroups>()?, frame.complete::<tables::AirTheatreMembers>()?)) };
     let (theatres, groups, members) = read().map_err(|_| ())?;
@@ -391,7 +351,6 @@ fn side_of(index: &index::AirIndex, side: &AssignedSide) -> AirSide {
     }
 }
 
-/// The places a reply names, as its dictionary's indexes.
 struct Dictionary<'a> {
     sides: &'a [AssignedSide],
     keep: Option<HashSet<&'a str>>,
@@ -407,7 +366,6 @@ impl<'a> Dictionary<'a> {
         self.at.insert(position, 0);
     }
 
-    /// `cell` with only the chosen sides, each named by its place.
     fn select(&mut self, cell: compose::Cell) -> compose::Cell {
         let filtered = self.keep.is_some();
         match cell {
@@ -434,7 +392,6 @@ impl<'a> Dictionary<'a> {
         }
     }
 
-    /// The dictionary's order: places ascending (factions, then the rest by first tag).
     fn finish(&mut self) {
         for (at, index) in self.at.values_mut().enumerate() {
             *index = at as u32;
@@ -450,7 +407,6 @@ fn live_row(tag: &str, region: u32) -> String {
     format!("{tag}@{region}")
 }
 
-/// `cell` of `region` as the reply shows it, its numbers named in `live`.
 fn shown(cell: compose::Cell, region: u32, dictionary: &Dictionary<'_>, live: &Cells, columns: (usize, usize), enemy: bool) -> AirCell {
     let score = |tag: &str, raw: u32| {
         let row = live_row(tag, region);
@@ -479,7 +435,6 @@ fn shown(cell: compose::Cell, region: u32, dictionary: &Dictionary<'_>, live: &C
     }
 }
 
-/// The moment at `hour` from its frame: the scores, the wings, the theatres when chosen.
 fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders, hour: i32, context: &AirContext, live: &Cells) -> io::Result<AirSuperiorityReply> {
     let mut warnings = context.names.warnings.clone();
     let index = context.index.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
@@ -629,8 +584,6 @@ impl AtHour for AirSuperiorityAt {
         ]
     }
 
-    /// The scores, the wings and the links whole; with theatres chosen, the theatre tables, then
-    /// their member wings alone.
     fn reads(params: &Self::Params, _owner: Option<super::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let theatres = params.theatre_ids().is_some();
         match step {
@@ -646,7 +599,6 @@ impl AtHour for AirSuperiorityAt {
         }
     }
 
-    /// The scores alone: the rows' other fields (the contribution menus above all) are never read.
     fn columns(table: TableId) -> Option<Vec<usize>> {
         (table == TableId::RaidAirScores).then(|| ["friendly", "enemy"].iter().filter_map(|name| dashboard_declare::field(table, name).ok()).collect())
     }
@@ -665,7 +617,6 @@ impl AtHour for AirSuperiorityAt {
     }
 }
 
-/// The sides, regions, theatres and countries the widgets' settings choose from.
 pub struct AirSuperiorityChoices;
 
 impl Product for AirSuperiorityChoices {
@@ -710,7 +661,6 @@ impl Product for AirSuperiorityChoices {
     }
 }
 
-/// The theatres at the timeline's last hour, named in the recording's language.
 fn theatres_at_end(query: &dashboard_query::Query<'_>, names: &Names) -> Result<Vec<AirChoice>, String> {
     let frame = super::at_hour::frame(query, query.timeline.last, &[Read::all(TableId::AirTheatres)], "Air theatres").map_err(|error| error.to_string())?;
     let theatres = frame.complete::<tables::AirTheatres>().map_err(|error| format!("Air theatres are not recorded at the timeline's end: {error}"))?;

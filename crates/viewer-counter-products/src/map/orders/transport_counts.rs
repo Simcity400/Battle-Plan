@@ -1,12 +1,7 @@
-//! Idle transport-wing count and region reach. The count belongs to the
-//! viewer. The source supplies recorded simulation operands and content
-//! definition categories only when a branch reaches them; registration order
-//! and repeated slots are retained.
 
 use installed_content_core::province_geometry::ProvinceGeometry;
 use replay_data::rows::{AirWingRow, ArmyOrderPlanRow};
 
-/// Allocated convoys are already stored on the invasion order.
 pub(super) fn invasion(plan: &ArmyOrderPlanRow) -> Result<i32, String> {
     plan.invasion_transports
         .require("ArmyOrderPlans.invasion_transports")?
@@ -15,20 +10,12 @@ pub(super) fn invasion(plan: &ArmyOrderPlanRow) -> Result<i32, String> {
 
 pub(super) trait Sources {
     fn wing(&self, handle: u64) -> Result<&AirWingRow, String>;
-    /// The containing pool's content definition. The capture authenticates
-    /// the registration's wing backlink before joining this wing's pool.
-    /// Only the authored `air_transport` bit (bit 20) is needed.
     fn is_transport_pool(&self, wing: &AirWingRow) -> Result<bool, String>;
     fn range(&self, wing: &AirWingRow) -> Result<i64, String>;
     fn transfer_resolves(&self, handle: u64) -> Result<bool, String>;
-    /// Base/mission restrictions followed by region reach.
     fn region_admits(&self, wing: &AirWingRow) -> Result<bool, String>;
 }
 
-/// The base's selected country-container wings, flattened in pool/wing
-/// order after containing-pool authentication. A null container supplies an
-/// empty list. The native sum uses signed planes and wraps at 32 bits.
-// Count-only convenience for synthetic fixtures.
 #[cfg(test)]
 pub(super) fn count(
     registered: &[u64],
@@ -39,9 +26,6 @@ pub(super) fn count(
     Ok(totals(registered, distance, has_target_region, sources)?.plane_count)
 }
 
-/// Capacity consumes the same admitted occurrences. Negative plane counts
-/// still affect the signed count but contribute no capacity. No wing vector
-/// or derived total is recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct AcceptedTotals {
     pub plane_count: i32,
@@ -75,8 +59,6 @@ pub(super) fn totals(
     Ok(total)
 }
 
-/// Invalid signed province IDs use the reserved slot-zero centroid.
-/// Preserve the absolute-delta law and fixed5 square root.
 pub(super) fn distance(map: &ProvinceGeometry, source: u32, destination: u32) -> i64 {
     if source == destination {
         return 0;

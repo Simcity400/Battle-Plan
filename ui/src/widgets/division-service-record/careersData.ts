@@ -33,14 +33,12 @@ export function validateDivisionRecord(value: unknown): DivisionRecordReply {
 export const divisionName = (name: string | null) => name ?? 'Division name unavailable';
 export const medalName = (medal: CareerMedal | undefined) => medal?.name ?? 'Medal name unavailable';
 
-/** Experience as a share of the full scale; null when not recorded or outside it. */
 export function experienceRatio(facts: CareerFacts): number | null {
   if (facts.experienceRaw === null) return null;
   const value = fixedNumber(facts.experienceRaw, 5);
   return value >= 0 && value <= 1 ? value : null;
 }
 
-/** The header's detail line; each part missing on its own reads as a dash. */
 export function headerDetail(templateName: string | null, facts: CareerFacts | null): string {
   const medals = facts?.medals == null ? '—' : `${usNumber.format(facts.medals)} ${facts.medals === 1 ? 'medal' : 'medals'}`;
   const level = facts?.levelName ?? '—';
@@ -50,7 +48,6 @@ export function headerDetail(templateName: string | null, facts: CareerFacts | n
 
 export type RecordItem = { entry: RecordEntry; medal: CareerMedal | undefined };
 
-/** The record's entries newest first, filtered by the Show setting; repeats keep their places. */
 export function recordRows(reply: DivisionRecordReply, show: string): ReadonlyArray<LogRow<RecordItem>> {
   return reply.entries
     .filter(entry => show === 'both' || (show === 'awards') === entry.award)
@@ -67,7 +64,6 @@ export function entryTooltip(item: RecordItem): TooltipContent {
   return { title: entryText(item), rows };
 }
 
-/** One leaderboard row: the division's career facts with its country and template. */
 export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour: number, country: string, template: string | null): TooltipContent {
   const facts = row.facts;
   const rows: TooltipRow[] = [
@@ -83,7 +79,6 @@ export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, hour:
   return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(hour)}`, rows };
 }
 
-/** A Division service record widget for one division, at the drill's moment. */
 export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, hour: number, follow: boolean): WidgetSpec {
   const base = createWidget('division-service-record', track.id);
   const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
@@ -95,20 +90,15 @@ export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<B
 
 export const divisionKey = (row: CareerRow) => row.division;
 
-/** What a followed ranking renders on: its divisions, medals and templates; experience and kills move with them. */
 export const careersStructure = (reply: DivisionCareersReply) => JSON.stringify([reply.missing, reply.divisions, reply.medals, reply.templates, reply.warnings]);
-/** What a followed record renders on. */
 export const recordStructure = (reply: DivisionRecordReply) => JSON.stringify(reply);
 export const medalsValue = (row: CareerRow) => row.facts.medals;
-// Keyed by column, so a different default sort column fails to compile here.
 const defaultSortValue = { medals: medalsValue }[DEFAULT_SORT.column];
-/** Most decorated divisions' first row at its default sort, when it holds a medal. */
 export function topDivision(rows: readonly CareerRow[]): CareerRow | null {
   const first = sortRows(rows, defaultSortValue, DEFAULT_SORT.direction, divisionKey)[0];
   return first && (first.facts.medals ?? 0) > 0 ? first : null;
 }
 
-/** Division choices from a careers reply: name and country, ordered by name. */
 export function divisionChoices(reply: DivisionCareersReply, campaignKey: string, country: (tag: string) => { name: string; nameDetail?: string }) {
   return reply.divisions.map(row => {
     const label = row.tag ? country(row.tag) : undefined;

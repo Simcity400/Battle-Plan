@@ -1,5 +1,3 @@
-//! The convoy counts: each country's convoys assigned to its clients whose route crosses the
-//! region, the observed country's exact and its enemies' as its civilian intel estimates them.
 use super::{Content, Element, enemies, links, text};
 use crate::binding::Bindings;
 use replay_data::rows::{ConvoyClientRow, ResourceOriginRow, TradeRouteRow, tables};
@@ -7,7 +5,6 @@ use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, HashMap};
 use viewer_foundation::map::{count_math, perspective::Vision};
 
-/// The salt the game adds to the enemy convoy estimate's variation.
 const CONVOY_SALT: u32 = 0xab5;
 const SUPPLY_TRANSFER: u8 = 1;
 const IMPORT: u8 = 2;
@@ -18,7 +15,6 @@ const NAVAL_ROUTE: u8 = 2;
 
 type RouteKey = (u8, u32, u32);
 
-/// Every convoy client and route of the hour, by the canonical slot of each party.
 struct Clients<'a> {
     links: BTreeMap<u32, u32>,
     clients: &'a [ConvoyClientRow],
@@ -45,8 +41,6 @@ impl<'a> Clients<'a> {
         self.links.get(&raw).copied()
     }
 
-    /// The convoys of the country in slot `slot` on routes through `region`: its imports, own
-    /// resource origins, naval supply transfers, received lend-lease and bought market contracts.
     fn count(&self, slot: u32, region: u32) -> Result<i32, String> {
         let ours = |raw| self.slot(raw) == Some(slot);
         let clients = self
@@ -73,8 +67,6 @@ impl<'a> Clients<'a> {
     }
 }
 
-/// Whether a client's route passes through the sea region. A rebuilt route holds sea regions only
-/// when naval; one left without a kind keeps whatever sea regions it last had, which no row holds.
 fn crosses(route: Option<&TradeRouteRow>, key: RouteKey, region: u32) -> Result<bool, String> {
     let route = route.ok_or_else(|| format!("the route {key:?} of a convoy client has no TradeRoutes row"))?;
     match route.kind {

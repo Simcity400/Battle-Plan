@@ -1,9 +1,3 @@
-//! The window's battle ambience: the battle list ([`Sounds`]) made on a worker the layer owns, fed
-//! the steps the frame applied and each declaration. The worker keeps its own copies of the
-//! tables it reads (made at a compose, kept by applying each step as the frame's mirrors are),
-//! settles every mark whole and hands back the mix's battles stamped with the hour applied. The
-//! frame never waits for them while playing: it swaps in what has arrived and shows the hour of the
-//! battles it has.
 
 use super::{Columns, Sounds, TABLES};
 use crate::{
@@ -21,14 +15,10 @@ use std::{
 use viewer_audio::battle::{self, Battles};
 
 enum Job {
-    /// The battle list made anew from the tables' copies.
     Reset { epoch: u64, model: Box<Sounds>, mirrors: Box<Mirrors> },
-    /// One frame's steps in order and the columns when the view declared again; the battles
-    /// stamped `stamp`.
     Frame { epoch: u64, stamp: Option<Hour>, steps: Vec<Arc<Step>>, declared: Option<Option<Columns>> },
 }
 
-/// What the worker made for `answers` jobs, current at `stamp` (none: the compose's).
 struct Made {
     epoch: u64,
     stamp: Option<Hour>,
@@ -40,15 +30,12 @@ struct Made {
     held: usize,
 }
 
-/// The worker's battle list and the copies of the tables it reads.
 struct Work {
     model: Box<Sounds>,
     mirrors: Box<Mirrors>,
 }
 
 impl Work {
-    /// A frame's steps applied to the copies and marked; a declaration taken as the frame's layer
-    /// takes it.
     fn take(&mut self, steps: Vec<Arc<Step>>, declared: Option<Option<Columns>>) {
         if let Some(columns) = declared {
             (self.model.columns, self.model.whole) = (columns, true);
@@ -84,13 +71,10 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
                 let _ = model.compose(&mirrors);
                 work.insert(Work { model, mirrors }).made(epoch, None, 1)
             }
-            // Jobs go in the order sent, each epoch's after its reset: one of an epoch composed again
-            // is dropped by the frame.
             Job::Frame { epoch: of, .. } if of != epoch => continue,
             Job::Frame { stamp, steps, declared, .. } => {
                 let Some(held) = &mut work else { continue };
                 held.take(steps, declared);
-                // The jobs queued meanwhile go into the same battles, made for the newest hour.
                 let (mut stamp, mut answers) = (stamp, 1);
                 while let Ok(queued) = jobs.try_recv() {
                     match queued {
@@ -115,33 +99,24 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
     }
 }
 
-/// The window's battle ambience layer: what its view declares, the frame's steps handed to its
-/// worker, and the worker's newest battles due.
 pub struct SoundsFed {
-    /// The battle list as the view declares it: never composed or settled here.
     spec: Sounds,
     jobs: Option<mpsc::Sender<Job>>,
     made: Option<mpsc::Receiver<Made>>,
     epoch: u64,
-    /// Jobs of this epoch sent whose battles have not been received.
     owed: usize,
     products: Products<Made>,
-    /// The steps handed and not yet sent with a frame's job, in order.
     waiting: VecDeque<Arc<Step>>,
-    /// A declaration made since the last job.
     declared: bool,
-    /// The newest battles taken: the mix the audio plays.
     battles: Option<Arc<Battles>>,
     marked: [usize; 3],
     made_battles: u64,
     scoped: Scoped,
     worker_held: usize,
-    /// The worker stopped (it panicked): no battle sounds from then on.
     stopped: bool,
 }
 
 impl SoundsFed {
-    /// The window's layer over `sounds`.
     pub fn new(sounds: Sounds) -> Self {
         Self {
             spec: sounds,
@@ -161,23 +136,19 @@ impl SoundsFed {
         }
     }
 
-    /// The battles the audio plays, as last settled whole; none when the content plays none.
     pub fn battles(&self) -> Option<&Arc<Battles>> {
         self.battles.as_ref()
     }
 
-    /// Combats, provinces and battles the worker's steps marked, as of the newest battles.
     pub fn marked(&self) -> [usize; 3] {
         self.marked
     }
 
-    /// Battles its worker made (their members' fronts summed and named), as of the newest battles.
     #[cfg(any(test, feature = "test-support"))]
     pub fn made(&self) -> u64 {
         self.made_battles
     }
 
-    /// A battle list as the view declares it, made from nothing, as the worker's is at a compose.
     pub fn fresh(&self) -> Sounds {
         self.spec.fresh()
     }
@@ -190,8 +161,6 @@ impl SoundsFed {
         }
     }
 
-    /// Receives what the worker made and takes every product due, in order. With `wait` (a whole
-    /// settle, a compose), until every job sent is answered; otherwise what has arrived.
     fn exchange(&mut self, wait: bool) {
         if let Some(receive) = &self.made {
             loop {
@@ -236,8 +205,6 @@ impl Layer for SoundsFed {
         self.spec.inputs(view, inputs)
     }
 
-    /// The worker started from the tables' copies (made here, off the frame thread); its first
-    /// battles waited for.
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
@@ -274,20 +241,14 @@ impl Layer for SoundsFed {
         true
     }
 
-    /// The steps the frame applied (and those built past it), kept until the frame's job goes.
     fn ahead(&mut self, steps: &[Arc<Step>]) {
         self.waiting.extend(steps.iter().cloned());
     }
 
-    /// Its worker is given only steps applied, so it folded nothing void: the steps kept past `kept`
-    /// go, and are handed again.
     fn void_ahead(&mut self, _mirrors: &Mirrors, kept: Option<Hour>) {
         self.waiting.retain(|step| kept.is_some_and(|kept| step.last() <= kept));
     }
 
-    /// What the worker made taken, never waited for while playing; this frame's steps and a new
-    /// declaration then go to the worker in one job. A whole settle waits for the battles of its
-    /// hour.
     fn settle(&mut self, _mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
         let whole = settling.waits();
         self.exchange(false);
@@ -306,12 +267,9 @@ impl Layer for SoundsFed {
 
 
     fn carried(&self) -> Carried {
-        // Every mark is the worker's: published, not carried.
         Carried::default()
     }
 
-    /// Current once the battles of the hour applied are taken; while a step is with the worker, the
-    /// hour of the battles it has.
     fn published(&self) -> Published {
         if self.stopped {
             return Published::Nothing;

@@ -30,20 +30,14 @@ impl Frame {
         self.encode_with_sizes(out).map(|_| ())
     }
 
-    /// Sizes current frames. Decoded recordings use `table_encoded_sizes_version`
-    /// with their source version.
     pub fn table_encoded_sizes(&self) -> io::Result<[usize; TABLE_COUNT]> {
         self.table_encoded_sizes_version(FormatVersion::CURRENT)
     }
 
-    /// Counts only tables present in the source recording, with its original
-    /// field prefix and nested values; historical rows are never rewritten.
     pub fn table_encoded_sizes_version(
         &self,
         format: FormatVersion,
     ) -> io::Result<[usize; TABLE_COUNT]> {
-        // Size decoded values directly: absent historical fields are not
-        // re-encoded as current rows, and deltas retain their recorded mask width.
         let mode = self.capture_mode()?;
         TableId::ALL
             .map(|table| {
@@ -98,7 +92,6 @@ impl Frame {
         out.push(u8::from(self.keyframe));
         out.push(mode.byte());
         out.extend_from_slice(&self.metrics.total_ns.to_le_bytes());
-        // Timing entries and updates use the same table-id order.
         for table in TableId::ALL {
             if !table_stored(table, FormatVersion::CURRENT, mode) {
                 continue;
@@ -179,13 +172,10 @@ impl Frame {
         Ok(sizes)
     }
 
-    /// Read one timing entry and one update for every recorded table.
     pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
         Self::decode_selected(input, None)
     }
 
-    /// Parse and validate every update, retaining only the requested tables.
-    /// Discarding unrelated rows immediately bounds their allocation lifetime.
     pub fn decode_selected(
         input: &mut Decoder<'_>,
         selected: Option<&[TableId]>,
@@ -262,10 +252,6 @@ impl Frame {
     }
 }
 
-/// Decode one table's update in `format`, from its status byte. Absent tables
-/// read nothing; a catalogued layout gap discards the update's bytes by its
-/// proven framing and keeps their length. A table the row frame leaves to the
-/// native capture is refused: [`decode_recorded_update`] reads it.
 pub fn decode_update(
     table: TableId,
     change: &LastChange,
@@ -276,8 +262,6 @@ pub fn decode_update(
     decode_retained_update(table, change, format, None, keyframe, true, input)
 }
 
-/// [`decode_update`] of an update a recording of `mode` stored, which may leave
-/// the table to the native capture.
 pub fn decode_recorded_update(
     table: TableId,
     change: &LastChange,
@@ -289,8 +273,6 @@ pub fn decode_recorded_update(
     decode_retained_update(table, change, format, Some(mode), keyframe, true, input)
 }
 
-/// [`decode_update`], validating an unretained delta's rows without
-/// allocating them.
 fn decode_retained_update(
     table: TableId,
     change: &LastChange,
@@ -309,7 +291,6 @@ fn decode_retained_update(
     input.recorded_fields = change.fields(table, format.version());
     let update_start = input.remaining();
     let status = input.u8()?;
-    // The row frame leaves the table to the native capture.
     if status == 5 {
         return mode
             .map(|mode| TableUpdate::NotRecorded { mode })

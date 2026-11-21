@@ -3,8 +3,6 @@ use replay_data::rows::{CountryLinkRow, TableId, TableRows};
 use replay_frame::frame::TableView;
 use viewer_foundation::tooltip_text::NoIcons;
 
-/// Raw 10 and its alias 20 name slot 1 (D01, a dynamic country named after
-/// AAA); raw 30 names slot 3 (BBB).
 fn frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 0,
@@ -86,14 +84,11 @@ fn variant(origin_link: u32, creator_link: u32) -> VariantDefinitionRow {
 fn an_origin_takes_its_own_tag_and_a_creator_its_original_tag() {
     let frame = frame();
     let tags = Tags::new(&frame);
-    // A positive origin, raw or aliased, takes its own tag, never the original.
     assert_eq!(tags.naming_tag(&variant(10, 30)), Ok("D01".into()));
     assert_eq!(tags.naming_tag(&variant(20, 30)), Ok("D01".into()));
-    // Without one the creator, raw or aliased, takes its original tag when it has one.
     assert_eq!(tags.naming_tag(&variant(0, 20)), Ok("AAA".into()));
     assert_eq!(tags.naming_tag(&variant(0, 10)), Ok("AAA".into()));
     assert_eq!(tags.naming_tag(&variant(0, 30)), Ok("BBB".into()));
-    // A negative signed origin is no origin.
     assert_eq!(
         tags.naming_tag(&variant(0x8000_0000 | 30, 20)),
         Ok("AAA".into())
@@ -140,7 +135,6 @@ fn stored_names_are_exact_only_in_the_recording_language() {
     );
     let reason = name(&row, &NoIcons, &loc, None, None).unwrap_err();
     assert!(reason.contains("has no recording language"), "{reason}");
-    // The suffix is read as stored text too.
     let broken = VariantDefinitionRow {
         id: 7,
         display_name: b"Escort".to_vec(),

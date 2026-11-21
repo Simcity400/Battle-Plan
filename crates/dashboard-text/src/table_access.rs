@@ -8,25 +8,14 @@ use replay_frame::frame::DecodedFrame;
 use replay_frame::frame::{HourFrame, Rowset, TableView};
 use std::{collections::BTreeMap, io};
 
-/// What one table of one decoded hour actually holds.
-///
-/// `Truncated` keeps the rows the collector's partial walk did reach: they are
-/// real recorded rows, not a guess, and a pass may draw them. A partial walk
-/// never asserts that the absent keys were deleted, so `missing` counts rows
-/// the hour is silent about, not rows that are gone.
 pub enum Available<'a, T: TableSchema> {
-    /// Every row the hour recorded.
     Complete(&'a [T::Row]),
-    /// The rows the walk reached, and how many rows it did not reach.
     Truncated { rows: &'a [T::Row], missing: u32 },
-    /// The table failed for this hour, with the collector's own reason.
     Unavailable { reason: &'a str },
-    /// The recording's capture mode leaves the table out.
     NotRecorded { mode: CaptureMode },
 }
 
 impl<'a, T: TableSchema> Available<'a, T> {
-    /// The rows the hour holds. An unavailable or unrecorded table holds none.
     pub fn rows(&self) -> &'a [T::Row] {
         match self {
             Available::Complete(rows) | Available::Truncated { rows, .. } => rows,
@@ -34,17 +23,11 @@ impl<'a, T: TableSchema> Available<'a, T> {
         }
     }
 
-    /// Whether the hour holds the whole table.
     pub fn is_complete(&self) -> bool {
         matches!(self, Available::Complete(_))
     }
 }
 
-/// A recorded country reference (a CountryLinks id) as the canonical slot
-/// it links to: `None` for 0, no country; `Err` names why this hour cannot
-/// say (a link the complete table lacks, or one a truncated or unavailable
-/// table may hold). A present link proves either answer of a comparison
-/// with it; an unresolved one proves neither.
 pub fn country_slot(
     links: &Available<'_, tables::CountryLinks>,
     country: u32,
@@ -69,10 +52,6 @@ pub fn country_slot(
     })
 }
 
-/// The rows of `T` this hour holds, whatever state its table is in.
-///
-/// The only error is a decoded table holding another table's rows, which is a
-/// corrupt file rather than a recorded gap.
 pub fn rows<T: TableSchema>(
     frame: &dyn replay_frame::frame::DecodedSource,
 ) -> io::Result<Available<'_, T>> {
@@ -87,9 +66,6 @@ pub fn rows<T: TableSchema>(
     }
 }
 
-/// [`rows`] reading the fields of `fields` alone: a frame of rows at the playback head holds only
-/// the columns its reader declared, and a read that names them is served where one naming others
-/// is refused by name ([`replay_frame::frame::NOT_DECLARED`]).
 pub fn rows_fields<T: TableSchema>(
     frame: &dyn replay_frame::frame::DecodedSource,
     fields: u64,
@@ -97,16 +73,8 @@ pub fn rows_fields<T: TableSchema>(
     replay_frame::frame::reading(fields, || rows::<T>(frame))
 }
 
-/// Content names spelled by this hour's `LexicalTokens`. Rows record an
-/// equipment type, module or upgrade by its token: the engine builds each
-/// definition's name and token from one authored key, so the spelling is the
-/// name. The exception is token 0, returned for every rejected key
-/// (empty, or starting with a digit or
-/// '-'), so it names no one key. A spelling that is not NUL-free UTF-8 names
-/// nothing here.
 #[derive(Clone, Copy)]
 pub struct TokenNames<'a> {
-    /// The hour's rows, in token order: a decoded frame's, or a walk's literals read in place.
     rows: Rowset<'a, LexicalTokenRow>,
     complete: bool,
 }
@@ -120,11 +88,9 @@ impl std::fmt::Debug for TokenNames<'_> {
     }
 }
 
-/// The LexicalTokens fields a name reads: each token's literal.
 const LITERAL: u64 = mask::<LexicalTokenRow>(&["literal"]);
 const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
 
-/// Why a token has no name this hour. Formatted only when reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenError {
     Rejected,
@@ -165,8 +131,6 @@ impl<'a> TokenNames<'a> {
         })
     }
 
-    /// [`Self::new`] of any frame's tables: a walk's rows are in token order, its literals read
-    /// where the walker holds them.
     pub fn new_in(frame: HourFrame<'a>) -> io::Result<Self> {
         if let Some(decoded) = frame.decoded() {
             return Self::new(decoded.decoded_frame());
@@ -177,7 +141,6 @@ impl<'a> TokenNames<'a> {
         })
     }
 
-    /// Rows already in ascending token order, as every replay table is.
     pub fn from_rows(rows: &'a [LexicalTokenRow], complete: bool) -> Self {
         Self {
             rows: Rowset::Decoded(rows),
@@ -185,7 +148,6 @@ impl<'a> TokenNames<'a> {
         }
     }
 
-    /// Every token of the hour spelled as text, in token order.
     pub fn iter(&self) -> impl Iterator<Item = (u32, &'a str)> + '_ {
         self.rows
             .keys()
@@ -196,9 +158,6 @@ impl<'a> TokenNames<'a> {
                 (token != 0 && !name.contains('\0')).then_some((token, name))
             })
     }
-    /// The token the lexer gives each key: the one spelled equal to it under
-    /// the lexer's fold (`TokenKeys`), found in one pass without allocating.
-    /// Several such tokens are refused by name.
     pub fn tokens_of<const N: usize>(&self, keys: [&str; N]) -> [Result<Option<u32>, String>; N] {
         #[derive(Clone, Copy)]
         enum Found {
@@ -228,12 +187,10 @@ impl<'a> TokenNames<'a> {
         })
     }
 
-    /// The token's name, or why this hour cannot give one.
     pub fn name(&self, token: u32) -> Result<&'a str, TokenError> {
         if token == 0 {
             return Err(TokenError::Rejected);
         }
-        // A token's row is keyed by the token; a literal the walk did not record is no text.
         let literal = match self
             .rows
             .text(u128::from(token), |row| &row.literal, LITERAL_COLUMN)
@@ -255,7 +212,6 @@ impl<'a> TokenNames<'a> {
     }
 }
 
-/// Refused token matches by reason, with how often each was met.
 pub type Refusals = BTreeMap<String, usize>;
 
 pub fn refuse(refusals: &mut Refusals, reason: String) {
@@ -264,9 +220,6 @@ pub fn refuse(refusals: &mut Refusals, reason: String) {
 
 pub use crate::triggers::fold_token;
 
-/// Content keys grouped by lexer token identity. Lookup uses ASCII-folding
-/// FNV-1a, equal length and comparison folding only A-Z. Equivalent keys share
-/// one token, so several such content keys make the spelling ambiguous.
 #[derive(Clone, Debug, Default)]
 pub struct TokenKeys(BTreeMap<String, Vec<String>>);
 
@@ -279,7 +232,6 @@ impl TokenKeys {
         Self(folded)
     }
 
-    /// The content key a spelling names; `None` when content has none.
     pub fn resolve(&self, spelling: &str) -> Result<Option<&str>, String> {
         match self.keys(spelling) {
             [] => Ok(None),
@@ -291,8 +243,6 @@ impl TokenKeys {
         }
     }
 
-    /// Each set of content keys equal under the lexer's fold, which every
-    /// spelling of them names at once: [`Self::resolve`] refuses them.
     pub fn ambiguous(&self) -> impl Iterator<Item = &[String]> {
         self.0
             .values()
@@ -300,7 +250,6 @@ impl TokenKeys {
             .filter(|keys| keys.len() > 1)
     }
 
-    /// Every content key equal to a spelling under the lexer's fold, in the order given.
     pub fn keys(&self, spelling: &str) -> &[String] {
         self.0.get(&fold_token(spelling)).map_or(&[], Vec::as_slice)
     }
@@ -376,7 +325,6 @@ mod tests {
             assert_eq!(names.name(token), Err(TokenError::NotText(token)));
         }
         assert_eq!(names.name(10), Err(TokenError::Absent(10)));
-        // Token 0 is shared by every key the lexer rejects.
         assert_eq!(names.name(0), Err(TokenError::Rejected));
         let truncated = frame(TableView::Truncated { rows, missing: 3 });
         let names = TokenNames::new(&truncated).unwrap();
@@ -409,7 +357,6 @@ mod tests {
         ]);
         let complete = frame(TableView::Complete(rows));
         let names = TokenNames::new(&complete).unwrap();
-        // Token 0 names no one key, so only token 3 spells air_base.
         let [air, bunker, naval] = names.tokens_of(["air_base", "BUNKER", "naval_base"]);
         assert_eq!((air, bunker), (Ok(Some(3)), Ok(None)));
         assert_eq!(
@@ -438,14 +385,10 @@ mod tests {
             keys.resolve("Infantry"),
             Err("token Infantry names several content keys: infantry, INFANTRY".to_owned())
         );
-        // Only A-Z fold: other letters must match exactly.
         assert_eq!(keys.resolve("\u{e9}t\u{e9}"), Ok(Some("\u{e9}t\u{e9}")));
         assert_eq!(keys.resolve("\u{c9}t\u{c9}"), Ok(None));
     }
 
-    /// A present link proves the slot; 0 is no country; a link the hour
-    /// lacks is named with why (a complete table without it, a truncated
-    /// or unavailable one), never taken as another country's.
     #[test]
     fn country_references_resolve_or_name_why_not() {
         use replay_data::rows::CountryLinkRow;

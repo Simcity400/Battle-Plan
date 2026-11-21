@@ -1,8 +1,3 @@
-//! The client's retained agency operation buckets, exactly as state map icons visit them.
-//!
-//! This is one shared client buffer, populated for the clock's viewing country, not a
-//! per-country saved roster. A perspective change may leave its previous contents intact.
-//! Keep that snapshot, including empty lists and unresolved references; never rebuild it.
 
 use engine_sites::Rva;
 use crate::{
@@ -15,16 +10,11 @@ use engine_native::{
     coperation, cprovince, creference_registry, cstate, modifier_definition::NamedKey,
 };
 
-/// Inline agency UI operation buffer in the authenticated executable image.
 pub const BUFFER_RVA: Rva = Rva(0x033e_b190);
-/// Completed, running, ready preparation, unready preparation, offers: native visit order.
 pub const BUCKET_OFFSETS: [usize; 5] = [0x00, 0x48, 0x18, 0x30, 0x60];
-/// UI buffer publication counter; used only to reject a changing observation.
 pub const REVISION: usize = 0xa8;
-/// Script name of the modifier that shortens an offered operation.
 pub const SPEED: &[u8] = b"intelligence_operation_speed";
 
-/// The offer speed modifier's key, unresolved until an offer is read.
 pub const fn speed_key() -> NamedKey {
     NamedKey::new(SPEED)
 }
@@ -41,7 +31,6 @@ pub struct Entry {
     pub country: u32,
     pub duration: Option<i32>,
     pub operation: u64,
-    /// None for an unresolved reference; Some(0) for a resolved operation with no state.
     pub state: Option<u32>,
 }
 
@@ -56,7 +45,6 @@ pub fn count(memory: &impl Memory, base: usize, state: usize) -> Walk {
     walk_buffer(memory, base, state, Buffer::Count, Buffer::Count, &mut speed_key())
 }
 
-/// `speed` is the caller's held key ([`speed_key`]), kept across walks.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -339,7 +327,6 @@ fn walk_buffer(
                     let definition = coperation::definition(memory, base, pointer)?;
                     let country = word::<u32>(memory, entry, 8)?;
                     let state = offer_state(memory, base, state, &countries, country)?;
-                    // A sizing walk keeps nothing, and the duration refuses only itself.
                     if fits {
                         let duration = speed
                             .get(memory, base)
@@ -500,8 +487,6 @@ mod tests {
                 ..Entry::default()
             }]
         );
-        // The first out-of-range positive index, and larger indices, return
-        // no state without reading a missing slot or withholding other buckets.
         for index in [2, i32::MAX] {
             world.u32(world.object(1) + ccountry::CAPITAL, index as u32);
             let (result, _, entries) = capture(&world, &mut memory);

@@ -1,5 +1,3 @@
-//! Owned dependency traces and prepared read plans that certify unchanged capture results. Changed controls and failed prepared reads resume the ordinary reader from the observed prefix, preserving order and avoiding retries. Canonical-range checking is shared with raw-copy capture.
-
 pub mod address_range;
 pub mod snapshot_plan;
 

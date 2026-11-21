@@ -129,7 +129,6 @@ def measure(args):
         environment["BATTLE_PLAN_PLAYBACK_SEED_CACHE"] = str(Path(args.seed_cache).resolve())
     command = [str(Path(args.viewer).resolve()), "--playback-cost", str(Path(args.recording).resolve()), *viewer_arguments,
                "--out", str(run_folder)]
-    # One timing run at a time on the machine; Windows frees the mutex when this process ends, however it ends.
     k.CreateMutexW.restype = wt.HANDLE
     turn = k.CreateMutexW(None, False, "Global\\battle-plan-playback-measure")
     waited = time.monotonic()
@@ -155,7 +154,6 @@ def measure(args):
     start = None
     began = time.monotonic()
     while process.poll() is None:
-        # A viewer that never ends would hold every other timing run's turn: it is stopped and the run fails by name.
         if time.monotonic() - began > args.limit:
             process.kill()
             process.wait()
@@ -172,8 +170,6 @@ def measure(args):
     for child in busy:
         child.kill()
     print("\n".join(lines[-3:]))
-    # Every line the viewer wrote, beside its report: a judged run prints a line for each check it
-    # makes, and the last three of them say nothing about the ones before.
     if run_folder.is_dir():
         (run_folder / "viewer.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
     report_path = run_folder / "report.json"
@@ -309,7 +305,6 @@ def table(args):
     for folder in args.runs:
         made = row(Path(folder).resolve())
         if earlier and made[0] in earlier["rows"]:
-            # A set measured before a column existed has no figure for it.
             before = dict(zip(earlier["heads"], earlier["rows"][made[0]]))
             rows.append([f"{made[0]} of {earlier['of']}", *(before.get(head, "-") for head in heads[1:])])
         rows.append(made)

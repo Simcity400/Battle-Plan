@@ -10,10 +10,8 @@ test('the log shows the raids at the hour, each dated by the phase it shows, new
   const data = syntheticRaidLog([syntheticEpisode('1', 10, 'ENG', 20, 30, true), syntheticEpisode('2', 15, 'PRC', 25, null, false), syntheticEpisode('3', 30, 'GER', null, null, false)]);
   assert.deepEqual(raidLogRows(data, 22, [], all, null).map(row => [row.id, row.hour]), [['1', 20], ['2', 15]]);
   assert.deepEqual(raidLogRows(data, 31, [], all, null).map(row => [row.id, row.hour]), [['1', 30], ['3', 30], ['2', 25]]);
-  // A raider the selection does not match at the row's date is left out; a range keeps rows dated within it.
   assert.deepEqual(raidLogRows(data, 31, [], tag => tag === 'PRC', null).map(row => row.id), ['2']);
   assert.deepEqual(raidLogRows(data, 31, [], all, 26).map(row => row.id), ['1', '3']);
-  // A raid without a raider shows only to a log of every country.
   const unnamed = syntheticRaidLog([syntheticEpisode('4', 10, null, null, null, false)]);
   assert.equal(raidLogRows(unnamed, 12, [], (tag) => tag !== null, null).length, 0);
 });

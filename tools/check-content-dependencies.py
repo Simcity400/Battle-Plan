@@ -10,7 +10,6 @@ from pathlib import Path
 import tomllib
 
 
-# These readers consume recorded rows; the facade exports them all.
 ROW_READERS = {
     "installed-content",
     "installed-content-country-names",

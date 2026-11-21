@@ -1,9 +1,3 @@
-//! Source requests, measured below all owned snapshots and caches.
-//!
-//! Wrap the raw source once, before constructing any acquisition adapters.
-//! Batch methods delegate to that source's overrides, never to this wrapper's
-//! scalar fallback. Thread-local counters need no per-read allocation, lock or
-//! atomic. Owners drain them at table/job boundaries, including on unwind.
 
 use crate::{
     Memory,
@@ -14,14 +8,6 @@ use crate::{
 use std::ptr::NonNull;
 use std::{cell::Cell, ops::AddAssign};
 
-/// Requested work at the raw Memory boundary, not bytes retained in a snapshot.
-/// Calls include empty requests and rejected/faulted calls. Spans exclude empty
-/// destinations and count the completed prefix plus its first failed/rejected
-/// source request; a plan control rejection has no following source request.
-/// Bytes sum those spans' requested lengths, including an entire faulted span
-/// whose partial copied length is unknown. Invalid destination geometry has no
-/// source requests. Neither successful-byte counts nor cache-line traffic is
-/// inferred from these counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadCounts {
     pub copy_calls: u64,
@@ -46,13 +32,10 @@ impl ReadCounts {
         bytes: 0,
     };
 
-    /// Drain this thread's raw requests. Nested job owners must retain and
-    /// restore the previous value so caller-assisted work is not charged twice.
     pub fn take_current() -> Self {
         COUNTS.with(|counts| counts.replace(Self::ZERO))
     }
 
-    /// Restore a suspended owner or add a batch's source requests.
     #[inline]
     pub fn add_current(self) {
         COUNTS.with(|counts| self.add_to(counts));
@@ -78,10 +61,6 @@ impl AddAssign for ReadCounts {
     }
 }
 
-/// A single accounting boundary around a raw source (LiveMemory in production,
-/// a synthetic fixture in tests). Put caching/recording adapters outside it:
-/// owned reads then bypass this boundary and misses retain the native fast path.
-/// On Windows x64 MSVC, the private pointer makes this neither Send nor Sync.
 pub struct CountedMemory<M>(
     pub M,
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))] NonNull<Cell<ReadCounts>>,
@@ -100,11 +79,6 @@ impl<M> CountedMemory<M> {
     fn add_counts(&self, counts: ReadCounts) {
         #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
         {
-            // SAFETY: on this target, pinned std stores const/no-Drop COUNTS
-            // in fixed native TLS until thread/module exit. Private !Send/!Sync
-            // handle stays on that thread; collector quiescence ends all uses
-            // before DLL unload. No destructor destroys the Cell; resets only
-            // replace its contents. This short shared borrow permits nesting.
             counts.add_to(unsafe { self.1.as_ref() });
         }
         #[cfg(not(all(windows, target_env = "msvc", target_arch = "x86_64")))]

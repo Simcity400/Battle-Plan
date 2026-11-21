@@ -1,19 +1,3 @@
-//! One hour's countries, read once and shared by every layer that names one.
-//!
-//! The overlay, the labels, the movers and the name pass each resolve raw
-//! country link ids to canonical slots and slots to tags. This index holds
-//! those maps once per hour. `Countries` carries hourly power values, so its
-//! table is a new allocation every hour while the index built from it rarely
-//! changes; [`CountryIndex::settled`] hands on an earlier hour's equal index
-//! ([`Settled`]), so a layer keyed on the index's identity hits across hours.
-//!
-//! Every map is sized from the recorded rows; nothing assumes a country count
-//! or a tag list, so a mod's dynamic and added countries index like vanilla's.
-//!
-//! The index refuses an hour whose `CountryLinks` or `Countries` is missing or
-//! truncated, as the map layers do. A reader that tolerates a partial
-//! `CountryLinks` through [`rows`] (the combat windows) keeps reading its own
-//! rows rather than switching to the index.
 
 use std::{collections::BTreeMap, io, sync::Arc};
 
@@ -25,33 +9,23 @@ use super::{
     tables::{core, rows},
 };
 
-/// The tables the index reads, and all it reads.
 pub const TABLES: &[TableId] = &[
     TableId::CountryLinks,
     TableId::Countries,
     TableId::CountryAppearance,
 ];
 
-/// Cosmetic prefix and the exact original-or-own tag, including its refusal.
 pub type FlagTags = (Result<String, String>, Result<String, String>);
 
-/// One hour's country identities, by raw link id and by canonical slot.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CountryIndex {
-    /// Raw country link id to canonical slot, from `CountryLinks`.
     links: BTreeMap<u32, u32>,
-    /// Canonical slot to tag, from `Countries`.
     tags: BTreeMap<u32, String>,
-    /// Canonical slot to the country's own raw link id, from `Countries`.
     ids: BTreeMap<u32, u32>,
-    /// Canonical slot to cosmetic tag and exact original-or-own flag tag from `CountryAppearance`.
-    /// Only rows present in the hour supply these values.
     flag_tags: BTreeMap<u32, FlagTags>,
 }
 
 impl CountryIndex {
-    /// Reads the index from the hour's tables; a missing or truncated
-    /// `CountryLinks` or `Countries` refuses the hour, as every map layer does.
     pub fn read(frame: &DecodedFrame) -> io::Result<Self> {
         let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
         let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
@@ -98,13 +72,10 @@ impl CountryIndex {
         })
     }
 
-    /// The hour's index, as the same allocation as an earlier hour's when the
-    /// two are equal.
     pub fn settled(memo: &Settled<Self>, frame: &DecodedFrame) -> io::Result<Arc<Self>> {
         memo.get_or_build(frame, Self::read)
     }
 
-    /// A memo for [`CountryIndex::settled`].
     pub fn memo() -> Settled<Self> {
         Settled::new(TABLES)
     }
@@ -113,7 +84,6 @@ impl CountryIndex {
         &self.links
     }
 
-    /// The canonical slot a raw country link id refers to.
     pub fn slot(&self, link: u32) -> Option<u32> {
         self.links.get(&link).copied()
     }
@@ -144,8 +114,6 @@ mod tests {
     };
     use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
 
-    /// `count` countries whose raw link ids differ from their slots, the last
-    /// one without an appearance row, with `power` as every hourly value.
     fn tables(count: u32, power: i64) -> [SharedView; 3] {
         let tag = |slot: u32| format!("C{slot:03}").into_bytes();
         let complete = |rows| SharedView::from(TableView::Complete(rows));
@@ -217,7 +185,6 @@ mod tests {
             index.flag_tags()[&1],
             (Ok("COS".to_owned()), Ok("C001".to_owned()))
         );
-        // The last country has no appearance row, so no flag tags.
         assert!(!index.flag_tags().contains_key(&2));
     }
 
@@ -339,7 +306,6 @@ mod tests {
         assert_eq!(index.flag_tags()[&1], (Ok("COS".into()), Ok("C001".into())));
     }
 
-    /// `view`'s rows as a partial walk that missed one more.
     fn truncated(view: &SharedView) -> SharedView {
         match &**view {
             TableView::Complete(rows) => SharedView::from(TableView::Truncated {
@@ -386,7 +352,6 @@ mod tests {
             (without.links(), without.tags(), without.ids()),
             (complete.links(), complete.tags(), complete.ids())
         );
-        // A partial walk's rows are real rows: they are indexed.
         let partial =
             CountryIndex::read(&frame(1, &[links, countries, truncated(&appearance)])).unwrap();
         assert_eq!(partial, complete);
@@ -411,10 +376,6 @@ mod tests {
         );
     }
 
-    /// The link, tag, id and flag-tag maps exactly as `counters::hour_tables`
-    /// builds them (`map/counters.rs`, the lines before its `sides` entry).
-    /// A stand-in until the overlay reads the index itself: the first PR that
-    /// switches it over replaces this copy with a test on `hour_tables`.
     #[expect(
         clippy::type_complexity,
         reason = "the four maps, as hour_tables holds them"
@@ -497,11 +458,8 @@ mod tests {
         let memo = CountryIndex::memo();
         let first = CountryIndex::settled(&memo, &frame(1, &tables(40, 1))).unwrap();
         assert_eq!(first.tags().len(), 40);
-        // Every table is a new allocation and the power values moved, but no
-        // identity did: the same index.
         let next = CountryIndex::settled(&memo, &frame(2, &tables(40, 2))).unwrap();
         assert!(Arc::ptr_eq(&first, &next));
-        // A new country is a new index.
         let grown = CountryIndex::settled(&memo, &frame(3, &tables(41, 2))).unwrap();
         assert!(!Arc::ptr_eq(&first, &grown));
         assert_eq!(grown.tag(40), Some("C040"));

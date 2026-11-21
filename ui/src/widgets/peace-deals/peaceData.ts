@@ -12,18 +12,12 @@ import { playbackRows } from '../../charts/playbackIntervals.ts';
 import { logStates } from '../../charts/log/logStates.ts';
 import type { PeaceDeal, PeaceDealsReply, PeaceItem } from '../../generated/dashboard';
 
-/** `vp`: the state's victory points as an exact decimal, null when not recorded. */
 export interface PeaceChip { key: string; hour: number; state?: number; vp?: string | null; tag?: string; missing?: string; note?: string; derived: boolean }
-/** `warScore`: the recorded cost of this row's captured actions, null when none was captured.
- * `automatic`: the game's own transfer list, with no action or demand. `nameCountry`: the country the name names, at its hour. */
 export interface PeaceActionRow { key: string; winner: string | null; name: string | null; token: string | null; outcome: boolean; automatic?: boolean;
   warScore: number | null; chips: PeaceChip[]; nameCountry?: NameAt }
-/** `warEnd`: outcomes read from ownership when the war ended joined this conference. */
 export interface PeaceCard { deal: PeaceDeal; actions: PeaceActionRow[]; hour: number; knownAt: number; by: boolean; warEnd?: boolean }
 export type PeaceRow = LogRow<PeaceCard>;
-/** Conference cards newest first, and the merged unrecorded stretches that could hide one. */
 export interface PeaceLog { rows: readonly PeaceRow[]; gaps: readonly HourSpan[] }
-/** `country` names the country an action's name names, at its hour; without it the game's label stands without the country. */
 export const peaceActionName = (row: PeaceActionRow, country?: (at: NameAt) => string) => row.automatic ? 'Automatic transfer'
   : row.outcome ? 'Outcome; action unknown' : row.name == null ? 'Action name not recorded'
     : peaceActionLabel(row.name, row.nameCountry && country ? country(row.nameCountry) : null);
@@ -49,8 +43,6 @@ export function peaceActionChoices(log: PeaceLog | null): { value: string; label
   return [...choices].map(([key, label]) => ({ value: setToken(key), label }));
 }
 
-/** Filter once when the choice changes; playback keeps its binary cutoff. Gaps
- * are kept, and a matching conference keeps all of its actions. */
 export function filterPeaceLog(log: PeaceLog, categories: readonly string[]): PeaceLog {
   if (!categories.length) return log;
   const chosen = new Set(categories);
@@ -58,7 +50,6 @@ export function filterPeaceLog(log: PeaceLog, categories: readonly string[]): Pe
     ? card.actions.some(action => chosen.has(actionCategory(action))) : chosen.has(emptyCategory(card))) };
 }
 
-/** Width fitting never cuts the complete participant or outcome tooltip. */
 export function peaceTooltipRows(card: PeaceCard, countryAt: (hour: number) => CountryLabel, chipLabel: (chip: PeaceChip) => string): TooltipRow[] {
   const country = countryAt(card.hour);
   return [
@@ -77,7 +68,6 @@ export function peaceTooltipRows(card: PeaceCard, countryAt: (hour: number) => C
   ];
 }
 
-/** Group native actions in their recorded order, or the dated fallback's items. */
 export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
   const rows = new Map<string, PeaceActionRow>();
   const seen = new Map<string, Set<string>>();
@@ -109,16 +99,12 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
         action.nameCountry != null ? { hour, tag: action.nameCountry } : undefined);
     }
   }
-  // Captured outcomes are usable at the finalizer hour even when the graph
-  // needs a later ownership comparison to establish their former owner.
   for (const transfer of deal.captured?.transfers ?? []) {
     if (transfer.state < 0 || covered.has(transfer.state)) continue;
     covered.add(transfer.state);
     add(transfer.to, null, null, transfer.automatic ? 'automaticOutcome' : 'capturedOutcome',
       { key: `state:${transfer.state}`, hour: transfer.hour, state: transfer.state, derived: false });
   }
-  // The final subject may be newly allocated, so an action's country operand
-  // cannot identify this output or establish which action produced it.
   for (const subject of deal.captured?.subjects ?? []) {
     add(subject.overlordTag, null, null, 'capturedOutcome', {
       key: JSON.stringify(['subject', subject.subject]), hour: deal.captured!.hour,
@@ -142,8 +128,6 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
   return [...rows.values()];
 }
 
-/** Each transferred state's recorded victory points, from the deal's ownership
- * outcomes and transfer graph; a state recorded without them stays unknown. */
 function stateVictoryPoints(deal: PeaceDeal): Map<number, string | null> {
   const points = new Map<number, string | null>();
   const note = (state: number, value: string | null) => { if (points.get(state) == null) points.set(state, value); };
@@ -152,8 +136,6 @@ function stateVictoryPoints(deal: PeaceDeal): Map<number, string | null> {
   return points;
 }
 
-/** An action row's states, their victory points (only when every state's is
- * recorded) and its war score. */
 export function peaceActionTotals(row: PeaceActionRow): { states: number; vp: bigint | null; warScore: number | null } {
   const states = row.chips.filter(chip => chip.state != null);
   const vp = states.length && states.every(chip => chip.vp != null)
@@ -161,7 +143,6 @@ export function peaceActionTotals(row: PeaceActionRow): { states: number; vp: bi
   return { states: states.length, vp, warScore: row.warScore };
 }
 
-/** States most valuable first; one without recorded points follows them. */
 export function chipsByValue(chips: readonly PeaceChip[]): PeaceChip[] {
   const value = (chip: PeaceChip) => chip.vp == null ? null : BigInt(chip.vp);
   return chips.map((chip, index) => ({ chip, index })).sort((a, b) => {
@@ -171,11 +152,6 @@ export function chipsByValue(chips: readonly PeaceChip[]): PeaceChip[] {
   }).map(entry => entry.chip);
 }
 
-/** A grouped war-end outcome at the hour of a recorded conference that names each
- * of its winners as a winner and each loser as a loser is that conference's
- * settlement: one card, never two. An outcome matching no conference, or more
- * than one, stays its own card, whatever other outcomes join; a conference
- * takes every outcome matching it alone. */
 export function joinWarEndOutcomes(deals: readonly PeaceDeal[]): { deal: PeaceDeal; warEnds: PeaceDeal[] }[] {
   const conferences = deals.filter(deal => deal.observation === 'recordedConference' && deal.captured != null);
   const joined = new Map<PeaceDeal, PeaceDeal[]>();
@@ -195,11 +171,6 @@ export function joinWarEndOutcomes(deals: readonly PeaceDeal[]): { deal: PeaceDe
   });
 }
 
-/** Unrecorded hours that could hide a conference: those of the hourly finalizer
- * capture and ownership/war reads, which include every hour the recording missed.
- * The conference roster is read once a day; its hours between reads are its
- * cadence, not missing data. A conference that opens and closes between roster
- * reads still reaches the hourly finalizer capture or ownership comparison. */
 export function peaceGaps(reply: PeaceDealsReply): HourSpan[] {
   const sorted = [...reply.unobserved.settlements, ...reply.unobserved.ownership, ...reply.unobserved.wars]
     .sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
@@ -221,7 +192,6 @@ export function preparePeaceLog(reply: PeaceDealsReply): PeaceLog {
   rows.sort((a, b) => b.hour - a.hour);
   return { rows, gaps: peaceGaps(reply) };
 }
-/** Binary cutoff: whole-campaign shaping and sorting never happen on a playback tick. */
 export function peaceRowsAt(log: PeaceLog, until: number | null, from = -Infinity): readonly PeaceRow[] {
   if (until == null && from === -Infinity) return log.rows;
   const end = until ?? Infinity;
@@ -246,21 +216,16 @@ export function peacePlayback(log: PeaceLog, from: number) {
   return playbackRows(peaceChanges(selected.rows), hour => peaceRowsAt(selected, hour, from));
 }
 
-/** Every hour the log's rows change from `from` on (a deal listed, a capture's detail lost), ascending, once each. */
 export function peaceChangeHours(log: PeaceLog, from: number): number[] {
   return [...new Set(peaceChanges(log.rows.filter(row => row.hour >= from)))].sort((a, b) => a - b);
 }
 
-/** Following, the log over a block from `hour` through `last` (`changes` ascending): each conference's states, each from
- * the hour it shows to the hour the next replaces it (`logStates`), so the list draws the block once and its clock shows
- * at every hour exactly that hour's cards, newest first. */
 export function peaceBlockRows(log: PeaceLog, from: number, hour: number, last: number, changes: readonly number[]): PeaceRow[] {
   const hours = [hour, ...changes.filter(change => change > hour && change <= last)];
   const place = new Map(peaceRowsAt(log, last, from).map((row, index) => [row.key, index]));
   const at = (row: PeaceRow) => place.get(row.id ?? row.key) ?? -1;
   return logStates(hours, step => peaceRowsAt(log, step, from), row => JSON.stringify(row.item.deal), (a, b) => b.hour - a.hour || at(a) - at(b));
 }
-/** The gaps within the shown time, clipped so a later hour never shows. */
 export function peaceGapsIn(gaps: readonly HourSpan[], until: number, from = -Infinity): HourSpan[] {
   const shown: HourSpan[] = [];
   for (const gap of gaps) {
@@ -269,7 +234,6 @@ export function peaceGapsIn(gaps: readonly HourSpan[], until: number, from = -In
   }
   return shown;
 }
-/** One hint for every gap in the shown time, never one row per gap. */
 export function peaceGapHint(gaps: readonly HourSpan[]): string | null {
   if (!gaps.length) return null;
   const between = `between ${formatDateTime(gaps[0].firstHour)} and ${formatDateTime(gaps.at(-1)!.lastHour)}`;
@@ -284,7 +248,6 @@ export function derivedNote(deal: PeaceDeal): string {
 }
 export const conferenceLabel = (deal: PeaceDeal) => deal.observation === 'recordedConference' ? null
   : deal.observation === 'conferenceNotRecorded' ? 'War-end outcomes' : 'Conference unknown';
-/** Where a joined card's states and victory points came from. */
 export const WAR_END_NOTE = 'States and victory points read from ownership when the war ended.';
 export function peaceWanted(rows: readonly PeaceRow[]): { countries: NameAt[]; states: StateAt[] } {
   const countries = new Map<string, NameAt>();
@@ -303,13 +266,11 @@ export function peaceWanted(rows: readonly PeaceRow[]): { countries: NameAt[]; s
   }
   return { countries: [...countries.values()], states: [...states.values()] };
 }
-/** Offscreen estimate; the log measures actual wrapping only for drawn cards. */
 export function peaceRowHeight({ item: card }: PeaceRow, density: LogDensity): number {
   const compact = density === 'compact';
   if (!card.actions.length) return compact ? 30 : 36;
   return (compact ? 50 : 60) + card.actions.length * (compact ? 50 : 58) + (card.warEnd || derivedNote(card.deal) ? 18 : 0);
 }
-/** No war name is recorded; the widget's own description leads with the sides. */
 export function peaceDescription({ item: card }: PeaceRow): string {
   return [`${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, conferenceLabel(card.deal), derivedNote(card.deal),
     card.warEnd ? WAR_END_NOTE : null].filter(Boolean).join(' · ');

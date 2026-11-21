@@ -1,7 +1,6 @@
 import type { MovingRow } from '../rowMotion';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 
-/** Exact ordering: geometry may use numbers, comparisons never round integers. */
 export type SortValue = string | number | bigint | null | undefined;
 export type SortDirection = 'ascending' | 'descending';
 export interface Sort { column: string; direction: SortDirection }
@@ -9,7 +8,6 @@ export interface Sort { column: string; direction: SortDirection }
 export const isMissing = (v: SortValue) => v == null || (typeof v === 'number' && !Number.isFinite(v));
 const compareKey = compareTags;
 const valueCollator = new Intl.Collator(undefined, { numeric: true });
-/** Equal values always order by key, in either direction and across input updates. */
 export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, direction: SortDirection, rowKey: (row: T) => string,
   tieKey: (row: T) => string = rowKey): T[] {
   const present: { row: T; key: string; value: NonNullable<SortValue>; numeric: number }[] = [];
@@ -24,9 +22,6 @@ export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, di
     }
   }
   const sign = direction === 'ascending' ? 1 : -1;
-  // Partition missing values once to keep the comparison path small.
-  // Number conversion is monotone. Distinct approximate keys preserve exact
-  // integer order; ties (including overflow) always compare the original value.
   present.sort(numerical
     ? (a, b) => a.numeric < b.numeric ? -sign : a.numeric > b.numeric ? sign : a.value < b.value ? -sign : a.value > b.value ? sign : compareKey(a.key, b.key)
     : (a, b) => sign * valueCollator.compare(String(a.value), String(b.value)) || compareKey(a.key, b.key));
@@ -34,10 +29,8 @@ export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, di
   return present.map(item => item.row).concat(absent.map(item => item.row));
 }
 
-/** A dated group key is its identity; equal labels do not merge groups. */
 export interface TableGroup { key: string; label: string; order?: number; orderKey?: bigint }
 
-/** Groups stay in label order while each uses the selected exact column sort. */
 export function groupedRows<T>(rows: readonly T[], groupBy: (row: T) => TableGroup,
   value: (row: T) => SortValue, direction: SortDirection, rowKey: (row: T) => string,
   tieKey: (row: T) => string = rowKey): T[] {
@@ -60,7 +53,6 @@ export function groupedRows<T>(rows: readonly T[], groupBy: (row: T) => TableGro
 export const nextSort = (sort: Sort, column: string, first: SortDirection = 'descending', fixed?: SortDirection): Sort => ({ column,
   direction: fixed ?? (column === sort.column ? (sort.direction === 'ascending' ? 'descending' : 'ascending') : first) });
 
-/** A bar's fraction of a positive maximum. Only its width uses floating point. */
 export function barFraction(value: number | bigint | null | undefined, maximum: number | bigint): number {
   if (value == null || (typeof value === 'number' && !Number.isFinite(value))
     || (typeof maximum === 'number' && !Number.isFinite(maximum)) || maximum <= 0 || value <= 0) return 0;
@@ -89,23 +81,16 @@ export function rankChanges(previous: ReadonlyMap<string, RankChange>, keys: rea
   return changes;
 }
 
-/** Scale a table's layout-pixel height by the density ratio measured from its CSS. */
 export function densityRowHeight(height: number, density: 'comfortable' | 'compact', compactRatio: number): number {
   return height * (density === 'compact' ? compactRatio : 1);
 }
 
-/** Absolute item offsets, including the sticky header before the first row. */
 export function rowOffsets(count: number, rowHeight: number, headerHeight = 0): number[] {
   return Array.from({ length: count + 1 }, (_, slot) => headerHeight + slot * rowHeight);
 }
 
-/** Wrapped rows' measured heights, for one scope of widths and typography: the lowest height measured (`floor`, 0 before
- * any), which every row is taken to have, and each row measured taller than it. */
 export interface RowMeasurements { scope: string; heights: ReadonlyMap<string, number>; floor: number }
 
-/** `before` with `readings` (row key, height) at `rowHeight` (the stylesheet's minimum) in `scope`: `before` itself when
- * nothing that places a row moved, so a row mounting at the height every row has, or re-observed at its own, renders
- * nothing. A row within half a pixel of the floor is at it; heights from another scope stand until measured again. */
 export function withRowHeights(before: RowMeasurements, readings: readonly (readonly [string, number])[], rowHeight: number, scope: string): RowMeasurements {
   if (!readings.length) return before;
   const same = before.scope === scope;
@@ -124,15 +109,12 @@ export function withRowHeights(before: RowMeasurements, readings: readonly (read
   return heights || !same || floor !== before.floor ? { scope, heights: heights ?? before.heights, floor } : before;
 }
 
-/** Prefix offsets for measured wrapped rows, with a minimum for rows not mounted yet. */
 export function measuredRowOffsets(keys: readonly string[], heights: ReadonlyMap<string, number>, minimum: number, headerHeight = 0): number[] {
   const offsets = [headerHeight];
   for (const key of keys) offsets.push(offsets[offsets.length - 1] + Math.max(minimum, heights.get(key) ?? minimum));
   return offsets;
 }
 
-// Same contracts as the log kit's logData.ts; kept local until both kits land.
-/** [start, end) covering top..top+height, widened by overscan items each way. */
 export function visibleRange(offsets: readonly number[], top: number, height: number, overscan = 6): [number, number] {
   const count = offsets.length - 1;
   if (count <= 0) return [0, 0];
@@ -147,29 +129,22 @@ export function visibleRange(offsets: readonly number[], top: number, height: nu
   return [Math.max(0, low - overscan), Math.min(count, end + overscan)];
 }
 
-/** Only viewport rows and keep(row); leaving rows vanish immediately without animation. */
 export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end: number, animate: boolean,
   keep: (row: MovingRow<T>) => boolean = () => false): MovingRow<T>[] {
   return rows.filter(row => (animate || row.phase !== 'leaving') && ((row.slot >= start && row.slot < end) || keep(row)));
 }
 
-/** Show the whole row, moving as little as possible and clearing the sticky header. */
 export function scrollToShow(offsets: readonly number[], index: number, top: number, height: number, stickyTop = 0): number {
   const start = offsets[index];
   const end = offsets[index + 1];
-  // Keep oversized rows at their start so repeated keys don't oscillate.
   if (end - start > height - stickyTop) return Math.max(0, start - stickyTop);
   if (start - stickyTop < top) return Math.max(0, start - stickyTop);
   if (end > top + height) return end - height;
   return top;
 }
 
-/** Which prioritised columns a narrow table hides, and the width each needed while shown. */
 export interface ColumnFit { readonly hidden: readonly string[]; readonly needs: readonly number[] }
 export const FULL_FIT: ColumnFit = { hidden: [], needs: [] };
-/** One step towards a table that fits: hide the next column while the content is wider
- * than the table, or show the last hidden one again once the width it needed is back.
- * `required` is the content's scroll width and `available` the table's client width. */
 export function fitColumns(fit: ColumnFit, order: readonly string[], available: number, required: number): ColumnFit {
   let kept = 0;
   while (kept < fit.hidden.length && fit.hidden[kept] === order[kept]) kept++;
@@ -182,23 +157,15 @@ export function fitColumns(fit: ColumnFit, order: readonly string[], available: 
   return held;
 }
 
-/** Rows nested under group header rows. `children` returns the rows under a group
- * header, or undefined for an ordinary row; an empty array is a group with nothing in it. */
 export interface TableTree<T> {
   children: (row: T) => readonly T[] | undefined;
-  /** Whether a group starts open; groups start open unless this says otherwise. */
   initiallyOpen?: (row: T) => boolean;
-  /** A widget that draws open and closed groups differently owns their state here. */
   open?: (row: T) => boolean;
   onToggle?: (row: T, open: boolean) => void;
 }
 
-/** Where a row sits in the tree: its depth from 1, its group header row, whether it
- * heads a group and that group is open, its place among its siblings, and its children. */
 export interface TreeRow { level: number; parent: string | null; group: boolean; open: boolean; position: number; size: number; count: number }
 
-/** Depth-first rows of the open groups, each level arranged on its own. A row key met
- * twice keeps its first place, so a cycle in `children` cannot repeat rows. */
 export function treeRows<T>(top: readonly T[], children: TableTree<T>['children'], open: (row: T) => boolean,
   arrange: (rows: readonly T[], level: number) => T[], rowKey: (row: T) => string, everyGroup = false): { rows: T[]; nesting: Map<string, TreeRow> } {
   const rows: T[] = [];

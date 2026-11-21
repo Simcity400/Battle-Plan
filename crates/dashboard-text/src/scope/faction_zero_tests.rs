@@ -34,7 +34,6 @@ fn raw_zero_first_member_clears_only_the_event_selector() {
     assert_eq!(scopes.slot(0), None);
     assert_eq!(scopes.faction_leader_raw(1), Ok(Some(0)));
     assert_eq!(scopes.raw_slot(0), Ok(0));
-    // Scalar consumers retain their separate unsupported raw-zero disposition.
     assert!(
         scopes
             .faction_leader(1)
@@ -88,7 +87,6 @@ fn typed_reserved_faction_keeps_null_and_faults_distinct() {
                 .unwrap_err()
                 .contains("faction of reserved country naming")
         );
-        // A positive member's faction does not demand the reserved getter.
         assert_eq!(scopes.faction(1), Ok(Some(5)));
     }
     for table in [
@@ -172,7 +170,6 @@ fn absent_faction_stops_prev_while_positive_leader_alias_keeps_its_country_carri
         scopes.resolve_text("faction_leader.PREV", false, &Context::country(1)),
         Err(Unresolved::Nothing(_))
     ));
-    // Synthetic resolver-law control: positive first word maps canonical0.
     let mut frame = super::tests::frame();
     *frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![

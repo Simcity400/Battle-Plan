@@ -3,16 +3,13 @@ import type { OptionField, OptionValue } from '../../dashboard/options';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 
 export const FUEL_BRANCHES = 'fuel-branches';
-/** The declared series of every consumer's amounts, one part per consumer index. */
 export const FUEL_CONSUMERS = 'fuel-consumers';
-/** The fixed-point places of the recorded amounts. */
 export const FUEL_PLACES = 5;
 const MOST_FUEL_DECIMALS = 5;
 
 export const FUEL_DECIMALS_OPTION: OptionField = { key: 'fuelDecimals', section: 'options', label: 'Fuel decimals',
   hint: 'Decimal places in fuel amounts.', kind: 'number', min: 0, max: MOST_FUEL_DECIMALS, step: 1, default: 0 };
 
-/** The decimals chosen, within the option's range. */
 export function fuelDecimals(options: Readonly<Record<string, OptionValue>>): number {
   const chosen = options[FUEL_DECIMALS_OPTION.key];
   return typeof chosen === 'number' && Number.isInteger(chosen) ? Math.max(0, Math.min(MOST_FUEL_DECIMALS, chosen)) : 0;
@@ -33,20 +30,17 @@ export function validateFuelBranches(value: unknown): FuelBranchesReply {
   return value as unknown as FuelBranchesReply;
 }
 
-/** One consumer at the reply's hour. */
 export interface BranchAt {
   index: number;
   name: string;
   requested: bigint;
   received: bigint;
-  /** What was requested and not received: none above the request. */
   unmet: bigint;
   priority: number;
 }
 
 export const branchName = (names: readonly (string | null)[], index: number) => names[index] ?? 'Branch name unavailable';
 
-/** Each consumer the reply holds, in native order. */
 export function branchesAt(reply: FuelBranchesReply): BranchAt[] {
   return reply.consumers.map(row => {
     const requested = BigInt(row.requested), received = BigInt(row.received);
@@ -55,12 +49,10 @@ export function branchesAt(reply: FuelBranchesReply): BranchAt[] {
   });
 }
 
-/** What a bars render depends on: which consumers, their names, and how each row is drawn; the amounts are painted. */
 export function fuelStructure(reply: FuelBranchesReply): string {
   return JSON.stringify([reply.missing, reply.consumerNames, reply.consumers.map(row => [row.index, row.requested === '0', BigInt(row.requested) > BigInt(row.received)])]);
 }
 
-/** The widths of a row's received and unmet parts, against the largest amount any row shows. */
 export function barWidths(rows: readonly BranchAt[]): Map<number, { delivered: string; unmet: string }> {
   let largest = 0n;
   for (const row of rows) for (const value of [row.requested, row.received]) if (value > largest) largest = value;
@@ -70,10 +62,8 @@ export function barWidths(rows: readonly BranchAt[]): Map<number, { delivered: s
 
 export const fuelAmount = (value: bigint, digits: number) => formatAmount(value, FUEL_PLACES, digits);
 
-/** The received share's percent text from its four-decimal value. */
 export const percentText = (value: number) => `${value.toFixed(value % 1 === 0 ? 0 : 2)}%`;
 
-/** The share axis: at least 0-100%, high enough for every share shown, with at most eight round steps. */
 export function ratioAxis(most: number): { top: number; ticks: number[] } {
   const highest = Math.max(100, most);
   let step = 25;

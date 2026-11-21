@@ -11,7 +11,6 @@ import type { Country, Placement } from '../../generated/dashboard';
 
 export const placementKey = (placement: Placement) => `${placement.owner.id}:${placement.target.id}`;
 
-/** The placements shown: every pair when `tags` is null, else those touching a chosen country; most operatives first. */
 export function placementRows(placements: readonly Placement[], tags: ReadonlySet<string> | null): Placement[] {
   const shown = tags ? placements.filter(placement => [placement.owner.tag, placement.target.tag].some(tag => tag !== null && tags.has(tag))) : [...placements];
   return shown.sort((a, b) => b.operatives.length - a.operatives.length || compareCountries(a.owner, b.owner) || compareCountries(a.target, b.target));
@@ -19,7 +18,6 @@ export function placementRows(placements: readonly Placement[], tags: ReadonlySe
 
 export const operativeNames = (placement: Placement) => placement.operatives.map(operative => operative.name ?? 'Unnamed operative').join(', ');
 
-/** What the chord's structure is made of: the countries it may draw and why nothing is known, never the counts. */
 export function placementStructure(reply: { placements: readonly Placement[]; missing: string | null }): string {
   const countries = new Set<string>();
   for (const placement of reply.placements) for (const side of [placement.owner, placement.target]) countries.add(countryKey(side));
@@ -38,8 +36,6 @@ export interface PlacementChord extends FoldedChord {
   look: (country: Country) => PlacementLook;
 }
 
-/** The chord of `placements`: a ribbon per pair, coloured by the country spying, the `most` countries with the most
- * operatives sent and received drawn, the rest folded into "Other countries". Counts are exact. */
 export function placementChord(placements: readonly Placement[], most: number, look: (country: Country) => PlacementLook,
   color: (country: Country) => string, muted: string): PlacementChord {
   const totals = chordTotals(placements, n => countryNodeId(n.owner), n => countryNodeId(n.target), n => BigInt(n.operatives.length));

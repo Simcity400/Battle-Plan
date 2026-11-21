@@ -1,6 +1,3 @@
-//! Where an uncovered primary click on the map goes, as the game routes it for an observer: the
-//! strategic modes pick the strategic region; other modes pick a sea province's region and a land
-//! or lake province itself.
 use installed_content_core::map::ProvinceKind;
 use viewer_world::map::map_mode::{MapMode, Stock};
 
@@ -8,16 +5,11 @@ use viewer_world::map::map_mode::{MapMode, Stock};
 pub(crate) enum Ground {
     AirRegion(u32),
     NavalRegion(u32),
-    /// The state view of this province's state.
     State(u32),
-    /// The state or naval region view closes; other windows stay.
     Close,
-    /// Why the click's target cannot be decided from the recording and content.
     Refused(String),
 }
 
-/// What the clicked province is: its class, whether it has a state at the hour, its region and
-/// whether that region opens the naval region view.
 pub(crate) struct Picked {
     pub province: u32,
     pub kind: Option<ProvinceKind>,
@@ -26,7 +18,6 @@ pub(crate) struct Picked {
     pub naval: Result<bool, String>,
 }
 
-/// `None` when the click picks nothing beyond the deselection before it.
 pub(crate) fn route(mode: &MapMode, picked: &Picked) -> Option<Ground> {
     let region = |picked: &Picked| -> Option<Ground> {
         let region = picked.region?;
@@ -48,9 +39,6 @@ pub(crate) fn route(mode: &MapMode, picked: &Picked) -> Option<Ground> {
     }
 }
 
-/// What a ground click leaves selected, whose outline the borders draw: a picked strategic
-/// region's provinces, or the clicked land province's state. A lake or stateless land province
-/// is selected with no state to outline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Selected {
     Region(u32),
@@ -69,15 +57,12 @@ pub(crate) fn selects(mode: &MapMode, picked: &Picked) -> Option<Selected> {
     }
 }
 
-/// The selection's provinces and whether they outline a state (palette entry 2) rather than
-/// selected provinces (entry 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Outline {
     pub provinces: std::sync::Arc<[u32]>,
     pub state: bool,
 }
 
-/// The provinces of the clicked province's state at the hour.
 pub(crate) fn state_provinces(frame: &replay_frame::frame::DecodedFrame, province: u32) -> std::io::Result<Vec<u32>> {
     let rows = frame
         .complete::<replay_data::rows::tables::Provinces>()
@@ -89,8 +74,6 @@ pub(crate) fn state_provinces(frame: &replay_frame::frame::DecodedFrame, provinc
     Ok(rows.iter().filter(|row| state != 0 && row.state == state).map(|row| row.id).collect())
 }
 
-/// Whether a strategic region opens the naval region view: the game opens it when the share of
-/// its members that are sea is above zero, so one sea province among land or lakes is enough.
 pub(crate) fn naval_region(region: u32, kinds: impl IntoIterator<Item = Option<ProvinceKind>>) -> Result<bool, String> {
     let mut unclassed = false;
     for kind in kinds {
@@ -106,7 +89,6 @@ pub(crate) fn naval_region(region: u32, kinds: impl IntoIterator<Item = Option<P
     Ok(false)
 }
 
-/// Whether the province has a state at the hour.
 pub(crate) fn has_state(frame: &replay_frame::frame::DecodedFrame, province: u32) -> std::io::Result<bool> {
     let rows = frame
         .complete::<replay_data::rows::tables::Provinces>()
@@ -117,9 +99,6 @@ pub(crate) fn has_state(frame: &replay_frame::frame::DecodedFrame, province: u32
 }
 
 impl super::Viewer {
-    /// The ground's click on `province`, in the map mode shown: the state or region it selects,
-    /// outlined, and the view it opens or closes, over the rows of the hour it was clicked at. A
-    /// unit model click in the Infrastructure or Raids mode lands here too.
     pub(super) fn select_province(
         &mut self,
         document: &crate::document::Document,

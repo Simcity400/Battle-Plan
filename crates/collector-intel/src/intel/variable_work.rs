@@ -1,34 +1,22 @@
-//! What ScriptVariables' conversion did in one hour, and over the session.
 
-/// How an hour's input was decided.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Path {
-    /// Only the scopes the capture saw change were compared.
     #[default]
     Changes,
-    /// Every scope was compared with its baseline row.
     AllScopes(AllScopes),
-    /// The table was converted complete.
     Complete(Complete),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AllScopes {
-    /// No converted hour is the baseline's: the first hour after a keyframe,
-    /// a new branch, a dropped frame or a refusal.
     NoKeptHour,
-    /// The capture did not continue the one the baseline holds.
     NoCaptureDelta,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Complete {
-    /// A keyframe, a new branch or a spool restart.
     NoBaseline,
-    /// The capture is truncated or unavailable.
     NotComplete,
-    /// Today's conversion refuses the capture, or a check found it is not
-    /// the kept one's.
     Refused,
 }
 
@@ -63,36 +51,25 @@ impl Path {
     }
 }
 
-/// One hour's conversion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VariableWork {
     pub path: Path,
     pub scopes: u64,
-    /// The capture's scopes are not the kept capture's, position for position.
     pub reordered: bool,
-    /// Scopes compared with their baseline rows: on the changes path, those
-    /// whose bytes differ from the capture the baseline holds.
     pub scopes_compared: u64,
     pub entries_compared: u64,
-    /// Entry records and key bytes of the compared scopes.
     pub bytes_compared: u64,
-    /// Rows converted for a compared scope.
     pub rows_built: u64,
-    /// Rows replaced under their key.
     pub rows_changed: u64,
-    /// Replaced rows whose keys changed: an entry added, removed or renamed.
     pub entry_sets_changed: u64,
     pub scopes_added: u64,
     pub scopes_removed: u64,
-    /// Comparing the compared scopes with their baseline rows.
     pub compare_ns: u64,
-    /// Converting rows: changed ones and the input, or the complete table.
     pub build_ns: u64,
     pub ns: u64,
 }
 
 impl VariableWork {
-    /// Deciding the path, finding scopes' baseline rows and the removed rows.
     fn select_ns(&self) -> u64 {
         self.ns
             .saturating_sub(self.compare_ns)
@@ -120,7 +97,6 @@ impl VariableWork {
     }
 }
 
-/// The session's hours, summed, with each hour's largest.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VariableTotals {
     hours: u64,
@@ -128,7 +104,6 @@ pub struct VariableTotals {
     reordered: u64,
     sum: VariableWork,
     max: VariableWork,
-    /// Selection time, summed and at its largest.
     select_ns: [u64; 2],
     latest: Option<VariableWork>,
 }

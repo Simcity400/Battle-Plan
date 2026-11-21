@@ -5,7 +5,6 @@ import { TooltipRowView } from '../TooltipRows';
 import type { TooltipRow } from '../tooltip';
 import './countryRace.css';
 
-/** What a race shows of one country picked from it at an hour: its rows, read by a request when picked. */
 export default function MeasureDetails({ title, rows, error, onRetry, onClose, children }: {
   title: string; rows: readonly TooltipRow[] | undefined; error?: Failure; onRetry?: () => void; onClose?: () => void; children?: ReactNode;
 }) {

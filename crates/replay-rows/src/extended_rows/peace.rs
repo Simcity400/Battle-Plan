@@ -1,4 +1,3 @@
-//! Lossless codecs for captured peace-conference actions and outcomes.
 use super::*;
 
 opaque_value!(Vec<SettledPeaceAction>);

@@ -376,8 +376,6 @@ fn filtered_raw_joins_refuse_each_source_once_and_resolved_colours_stay_exact() 
                 ..Default::default()
             }],
         );
-        // A complete sharing roster with an unresolved acquisition owner must
-        // preserve CountryLinks, never add a string-based Unsupported copy.
         set_invasion_table::<tables::ResearchModifiers>(
             &mut f,
             vec![ResearchModifierRow {
@@ -553,7 +551,6 @@ fn missing_province_references_refuse_control_and_invasion_nonmatches() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let mut f = invasion_frame();
     add_known_invasion(&mut f, 64);
-    // Isolate the province lookup from unresolved country joins.
     set_invasion_table::<tables::LandTheatres>(
         &mut f,
         vec![LandTheatreRow {
@@ -787,7 +784,6 @@ fn nested_scope_parse_replays_country_classification_failure_on_cold_and_warm_re
         with_world(&f, "", Ok(&roles), |world| {
             let eval = Evaluator::new(world, None);
             let scopes = Scopes::of(Scope::Country(1));
-            // Reuse the loaded items as well as the world's lazy name indexes.
             let callback = items(
                 "if = { limit = { ROOT.AAA = { always = yes } } set_temp_variable = { green = 1 } } set_temp_variable = { alpha = 1 }",
             );

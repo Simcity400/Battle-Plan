@@ -31,7 +31,6 @@ fn history_dates_versions_and_never_answers_missing_as_a_value() {
     assert!(history.set(15, 1, Err(gap())).unwrap());
     assert!(history.set(20, 1, Ok(5)).unwrap());
     assert!(history.set(19, 1, Ok(6)).is_err(), "hours never go back");
-    // Not recorded before the first version, from the asked hour to it.
     assert_eq!(
         missing(history.at(&1, 7, 30)),
         (span(7, 9), MissingKind::NotRecorded)
@@ -43,7 +42,6 @@ fn history_dates_versions_and_never_answers_missing_as_a_value() {
             kind: MissingKind::NotRecorded,
         })
     );
-    // A known zero is a value, dated at its version, not at the unchanged later set.
     assert_eq!(
         history.at(&1, 14, 30),
         Lookup::Known(Dated {
@@ -128,7 +126,6 @@ fn roster_keeps_every_row_so_each_family_reads_its_own_mode() {
             value: Some(Slot(7))
         })
     );
-    // Visited tags borrow the owner, so they outlive the callback without a copy.
     let mut held: Vec<(CountryId, Tag<'_>)> = Vec::new();
     let count = roster
         .holders(Slot(7), 105, &mut |country, tag| {
@@ -147,12 +144,10 @@ fn roster_keeps_every_row_so_each_family_reads_its_own_mode() {
             value: 2
         })
     );
-    // Table order: the last row's tag wins for one family; a unique holder is absent for another.
     assert_eq!(
         rows,
         [(CountryId(5), "GER".into()), (CountryId(9), "GER".into())]
     );
-    // A slot known to be empty is known, with no holder: not unknown.
     let none = roster
         .holders(Slot(9), 105, &mut |_, _| panic!("no holder"))
         .unwrap();
@@ -163,7 +158,6 @@ fn roster_keeps_every_row_so_each_family_reads_its_own_mode() {
             value: 0
         })
     );
-    // A tag that isn't UTF-8 is kept as recorded.
     let original = roster.name_tag(Slot(8), 105).unwrap();
     let Lookup::Known(Dated {
         value: Some(tag), ..
@@ -172,7 +166,6 @@ fn roster_keeps_every_row_so_each_family_reads_its_own_mode() {
         panic!("dynamic slot");
     };
     assert_eq!((tag.0, tag.text()), (&[0xff, b'X'][..], None));
-    // An original tag that doesn't resolve is refused with its reason, not missing.
     let original = |country| match roster.original_tag(country, 105).unwrap() {
         Lookup::Known(Dated { value, .. }) => value
             .map(|tag| tag.text().unwrap().to_owned())
@@ -203,7 +196,6 @@ fn roster_keeps_every_row_so_each_family_reads_its_own_mode() {
             Ok(())
         })
         .unwrap();
-    // By first holder's id: slot 8's country 3 before slot 7's country 5.
     assert_eq!((count, tagged), (Lookup::Known(2), vec![Slot(8), Slot(7)]));
     let mut links = Vec::new();
     roster
@@ -228,7 +220,6 @@ fn roster_forget_makes_every_answer_unknown_and_reports_changes_in_hour_order() 
         roster.slot_of(Link(12), 107).unwrap(),
         Lookup::Missing(_)
     ));
-    // One unknown slot makes a tag's slots unknown, never a partial list.
     let tagged = roster.tagged(Tag(b"GER"), 107, &mut |_| Ok(())).unwrap();
     assert!(matches!(tagged, Lookup::Missing(_)));
     let links = roster.links(Slot(8), 108, &mut |_| Ok(())).unwrap();
@@ -264,7 +255,6 @@ fn roster_forget_makes_every_answer_unknown_and_reports_changes_in_hour_order() 
 fn reverse_roster_lookups_are_missing_until_a_census_and_read_that_hours_members() {
     let mut empty = MemoryRoster::default();
     empty.advance(10).unwrap();
-    // Nothing was read: an empty roster is unrecorded, never known to be empty.
     assert!(matches!(
         empty.tagged(Tag(b"GER"), 10, &mut |_| Ok(())).unwrap(),
         Lookup::Missing(_)
@@ -299,7 +289,6 @@ fn reverse_roster_lookups_are_missing_until_a_census_and_read_that_hours_members
     assert_eq!(completed, [RosterKey::Census], "completion changes reverse answers");
 
     let mut roster = roster();
-    // Countries row 10 keeps its own slot 7 while its link aliases slot 8.
     roster.set_country(102, CountryId(10), Ok(Some(Slot(7)))).unwrap();
     roster.set_link(102, Link(10), Ok(Some(Slot(8)))).unwrap();
     roster.set_country(104, CountryId(9), Ok(None)).unwrap();
@@ -328,7 +317,6 @@ fn reverse_roster_lookups_are_missing_until_a_census_and_read_that_hours_members
             .unwrap();
         rows
     };
-    // Each hour's own members: row 10 doesn't exist yet at 101, and row 9 is gone at 104.
     assert_eq!(live(101), [(3, 8), (5, 7), (9, 7)]);
     assert_eq!(
         roster.country(CountryId(10), 101).unwrap(),
@@ -433,7 +421,6 @@ fn variant_versions_are_missing_while_forgotten_and_keep_their_dates_after() {
     let (hours, kind) = missing(variants.version(first, 31).unwrap());
     assert_eq!(hours, span(30, 33));
     assert!(matches!(kind, MissingKind::Unknown(_)));
-    // Unchanged across the forget: still dated at its own read.
     assert_eq!(since(first, 35), (22, "Rifle".into()));
     assert_eq!(since(second, 35), (34, "Renamed gun".into()));
     assert_eq!(variants.known_since(29).unwrap(), Lookup::Known(22));
@@ -574,7 +561,6 @@ fn queries_are_invalidated_only_through_their_own_footprints() {
     assert_eq!(count, Lookup::Known(2));
     assert_eq!(reads, [(owner, true), (tension, false)]);
 
-    // Registration ids come from the context, so two families can't collide.
     let leaders = triggers.register(TextId(1)).unwrap();
     let feed = triggers.register(TextId(1)).unwrap();
     let broken = triggers.register(TextId(3)).unwrap();
@@ -593,7 +579,6 @@ fn queries_are_invalidated_only_through_their_own_footprints() {
     triggers.change(11, owner, ita).unwrap();
     triggers.change(13, owner, ger).unwrap();
     triggers.change(14, tension, ita).unwrap();
-    // Re-evaluated at 15, the leaders query reads only the tension field and has no deadline.
     triggers.advance(15).unwrap();
     triggers.footprint(leaders, 15, &whole, &[]).unwrap();
     triggers.change(16, owner, ger).unwrap();
@@ -663,7 +648,6 @@ fn ownership_tells_an_absent_place_from_an_unrecorded_one() {
         .set_province(14, ProvinceId(1), Err(gap()))
         .unwrap();
     ownership.advance(20).unwrap();
-    // State 0 is recorded so and kept; a known absence is not unknown.
     assert_eq!(
         ownership.province(ProvinceId(1), 11).unwrap(),
         Lookup::Known(Dated {
@@ -769,7 +753,6 @@ fn state_names_keep_each_usage_and_its_error_mode() {
             ..
         })
     ));
-    // Another usage of a state is its own answer.
     assert!(matches!(
         names
             .state_name(StateId(8), StateNameUsage::Place, 14)
@@ -808,7 +791,6 @@ fn character_naming_answers_earlier_hours_within_its_retained_history() {
     characters
         .set_character(20, CharacterId(6), Ok(None))
         .unwrap();
-    // Token 41's spelling changes character 5's name; token 40 no longer names anyone.
     characters.respell(25, Token(41)).unwrap();
     characters.respell(26, Token(40)).unwrap();
     characters.advance(30).unwrap();
@@ -850,7 +832,6 @@ fn country_naming_keeps_each_field_result_and_its_failures_without_the_hour() {
     use crate::memory::{MemoryCountryNaming, OwnedLook};
     let mut naming = MemoryCountryNaming::default();
     let refusal = |detail: &str| ("unlinked".to_owned(), detail.to_owned());
-    // The original tag fails while the civil war resolves: each result stands alone.
     let look = OwnedLook {
         name_tag: b"GER".to_vec(),
         cosmetic_tag: Vec::new(),
@@ -881,13 +862,11 @@ fn country_naming_keeps_each_field_result_and_its_failures_without_the_hour() {
     assert_eq!((read.name_tag, read.cosmetic_tag), (Tag(b"GER"), Tag(b"")));
     assert!(matches!(read.original_or_own_tag, Err(reason) if reason.detail == "reference 44"));
     assert_eq!(read.civil_war, Ok(true));
-    // No appearance row is a known absence; unrecorded inputs are missing, not either of those.
     assert_eq!(facts(CountryId(2)).value.look, None);
     assert!(matches!(
         naming.naming(CountryId(3), 15).unwrap(),
         Lookup::Missing(_)
     ));
-    // A lasting failure is one version, not a change each hour.
     assert_eq!(facts(CountryId(1)).since, 10);
     let mut changes = 0;
     naming

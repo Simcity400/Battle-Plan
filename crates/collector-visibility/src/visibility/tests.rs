@@ -121,7 +121,6 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
                         ..Default::default()
                     },
                 ),
-                // The fixture serves no define global: each is refused, never zero.
                 movement_defines: replay_data::rows::Recorded::Value(
                     replay_data::rows::MovementDefines::default()
                 ),
@@ -138,8 +137,6 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
     let mut captured = Captured::with_capacities(&fixture_capacities());
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    // Unchanged, a controller change, an observer view, no view, a failed
-    // read and recovery, each decoded through the codec.
     let samples = [
         Some([4_999_u32, 0]),
         Some([4_999, 0]),
@@ -164,7 +161,6 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
             reason: "fixture".into(),
         });
         tables[TableId::LocalPlayer.index()] = captured.tables()[6].clone();
-        // The fixture holds no viewer unit vector: the row is a refused read, never empty.
         let TableView::Complete(order) = &captured.tables()[7] else {
             panic!("LandUnitOrder unavailable");
         };
@@ -239,8 +235,6 @@ fn one_failed_input_leaves_the_others_and_the_hourly_features_fail_too() {
     let mut captured = Captured::with_capacities(&fixture_capacities());
     captured.fail_capture(1, false, "worker stopped");
     let outcomes = captured.outcomes();
-    // SimulationFeatures is hourly: `human_ai` can be toggled at runtime.
-    // NavalRegionAccess is hourly too, so its failure is no skip.
     assert!(outcomes[..6].iter().all(|outcome| *outcome
         == Outcome::Unavailable {
             reason: "worker stopped"
@@ -326,7 +320,6 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
         }))
     );
 
-    // Known empty and a failed arena/hour are different current observations.
     captured.wars.rows[0].ordered = Some((4, 0));
     assert_eq!(
         read(&captured)[0].ordered,
@@ -348,9 +341,6 @@ fn ordered_enemy_suffix_preserves_current_occurrences_and_refuses_independently(
     );
 }
 
-/// NavalRegionAccess is read every hour; a quiet hour publishes the held read
-/// without reading any navy, and an hour after the access setter or the navy
-/// reset ran reads afresh.
 #[test]
 fn quiet_region_access_hours_publish_the_held_read() {
     use crate::world_input_changes::{self as changes, Domain, Held, Isolated};
@@ -372,7 +362,6 @@ fn quiet_region_access_hours_publish_the_held_read() {
             |rows| changes::assign(rows, &[row]),
         );
     }
-    // No navy is readable: a fresh read fails, a carried hour does not.
     let memory = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
@@ -381,13 +370,11 @@ fn quiet_region_access_hours_publish_the_held_read() {
     captured.capture_naval_access(&memory, 0, 0x1000, false, &changes, &held);
     assert_eq!(captured.naval_access.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.naval_access.rows[0], row);
-    // A full hour reads.
     captured.capture_naval_access(&memory, 0, 0x1000, true, &changes, &held);
     assert!(matches!(
         captured.naval_access.outcome,
         Outcome::Unavailable { .. }
     ));
-    // The failed read held nothing, so the next quiet hour reads too.
     captured.capture_naval_access(&memory, 0, 0x1000, false, &changes, &held);
     assert!(matches!(
         captured.naval_access.outcome,

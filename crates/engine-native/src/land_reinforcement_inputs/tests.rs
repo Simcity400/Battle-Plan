@@ -224,13 +224,10 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
     assert_eq!((counted.copies.get(), counted.bytes.get()), (4, 52));
 }
 
-/// A census that fails partway leaves the shared arena as it found it.
 #[test]
 fn a_failed_census_leaves_no_entries_in_the_arena() {
     let mut bytes = vec![0_u8; 0x400];
     let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-    // Header at 0x100: data 0x200, capacity 3, count 3; the keys 5, 7, 6
-    // break the order at the third entry.
     put(0x100, 0x200);
     put(0x108, (3_u64 << 32) | 3);
     for (index, key) in [5_u64, 7, 6].into_iter().enumerate() {
@@ -536,8 +533,6 @@ fn supply_and_priority_category_arenas_keep_all_mod_sized_occurrences() {
     }
 }
 
-/// Chunked sparse memory: a read succeeds only inside one written chunk,
-/// so every field the reader touches must be written explicitly.
 #[derive(Default)]
 struct Sparse(std::collections::BTreeMap<usize, Vec<u8>>);
 impl Sparse {
@@ -581,9 +576,6 @@ fn diplomacy_at(slot: usize) -> usize {
     0x800_0000 + slot * 0x400
 }
 
-/// Owner plus `enemies` distinct countries (canonical slot == raw id).
-/// Enemies divisible by 7 are capitulated and by 11 have no fog network,
-/// so the retained terms keep native order with the native skips.
 fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
     use crate::{
         ccountry_intel, cdiplomacy_status, country_intel_row, cstatic_modifier, cstrategic_navy,
@@ -741,8 +733,6 @@ fn transport_terms_follow_every_native_enemy_into_caller_storage() {
             country: 0xdead,
             ..TransportTerm::default()
         };
-        // Earlier divisions' admitted terms stay untouched; this call writes
-        // from its start and grows the vector past its current length.
         let mut terms = vec![sentinel; 4];
         let row = capture_context_buffer(&memory, 0, GAME, &mut Sources::new(), ARMY, HANDLE, crate::walk::Buffer::Growing(&mut vec![ModifierTerm::default(); 2]), crate::walk::Buffer::Count, crate::walk::Buffer::Count, &mut terms, 2)
         .unwrap();
@@ -760,7 +750,6 @@ fn transport_terms_follow_every_native_enemy_into_caller_storage() {
 #[test]
 fn transport_enemy_failure_is_not_a_shorter_enemy_list() {
     let (mut memory, _) = transport_fixture(5_000);
-    // A torn enemy late in a long list fails the whole context.
     memory
         .0
         .remove(&(diplomacy_at(4_901) + crate::cdiplomacy_status::CAPITULATED));

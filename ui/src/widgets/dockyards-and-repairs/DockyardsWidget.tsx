@@ -21,15 +21,11 @@ import { YARD_OPTIONS } from '../refits/yardOptions';
 import '../refits/yards.css';
 import type { RepairPort } from '../../generated/dashboard';
 
-/** A port with its repair queue, or one queued ship at its place in the queue. */
 interface RepairRow { key: string; port: RepairPort; index?: number }
 
 const rowKey = (row: RepairRow) => row.key;
 const portName = (port: RepairPort) => port.name ?? 'Port name unavailable';
 
-/** One country's ports and their repair queues at the hour shown: each port's dockyards and
- * priority, and the ships queued there in the game's order with their hull. Following playback it
- * is a pushed panel; hulls are painted between the renders its rows cause. */
 export default function DockyardsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(YARD_OPTIONS, widget.options);
@@ -38,7 +34,6 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
   const root = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct(runtime, widget, 'naval-repairs', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRepairs, structure: repairsStructure });
   const { data, error, retry } = head;
-  // Hourly numbers are painted from the product's live cells each frame they move, reporting the hour they are of.
   const shown = useShownHour();
   const painted = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
   const texts = useMemo(() => data ? (values: LiveValues<number>) => repairsTexts(data, values) : null, [data]);
@@ -72,10 +67,8 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
       value: row => row.index === undefined ? row.port.priority : null, render: row => row.index === undefined ? countText(row.port.priority) : '' },
   ], [bars]);
   const tooltip = useCallback((row: RepairRow): TooltipContent => repairTooltip(row, dayLabel(shownHour())),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [head.hour]);
   const menu = useCallback(() => track ? [jumpItem(runtime, track.id, shownHour())] : [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [track, runtime, head.hour]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see dockyards and repairs." />;

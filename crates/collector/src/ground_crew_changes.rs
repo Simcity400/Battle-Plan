@@ -1,6 +1,3 @@
-//! Ground Crews is carried under its region's writers and object lifetime.
-//! Notifications never walk memory or allocate. Acquisition stays on the
-//! existing registered-mission worker and reads only new or changed flags.
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_map_air::{
     map_air_country_region_modifier as native, map_air_country_region_modifier::Region,
@@ -21,8 +18,6 @@ static CACHE: Mutex<Option<Cache<Region>>> = Mutex::new(None);
 
 type Pair = (usize, usize);
 
-// Pair notifications and allocator notifications occupy separate key domains.
-// A hash collision can only invalidate an additional pair, never certify one.
 fn pair_key((country, region): Pair) -> usize {
     (country.rotate_left(17) ^ region.rotate_left(31)) | 1
 }
@@ -89,8 +84,6 @@ impl<T: Copy> Cache<T> {
                 return Some(held.read);
             }
         }
-        // Failed lookups are observations too; a quiet certificate keeps them
-        // unknown without retrying the native read.
         let read = read().unwrap_or(Read {
             object: None,
             value: None,
@@ -118,9 +111,6 @@ impl<T: Copy> Cache<T> {
     }
 }
 
-/// The closure owns the current mission census; its callback receives the
-/// authenticated country and region pointers already demanded by that census.
-/// An absent certificate returns an unknown without reading the flag.
 pub(crate) struct Flags<'a, M> {
     memory: &'a M,
     base: usize,
@@ -333,7 +323,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // The enclosing family has disabled and drained its notifications.
         unsafe { WATCHES.release() };
         *CACHE
             .lock()

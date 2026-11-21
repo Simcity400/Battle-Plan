@@ -31,7 +31,6 @@ test('no faction for the chosen countries and no faction at all are said, each i
         client: {}, clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0, playing: false, position: BRANCH.lastHour }), subscribeFrame: () => () => {} } },
       active: true, onDiagnostics() {} }) as unknown as WidgetProps;
     const render = (countries: unknown = humansBy('hour')) => renderToStaticMarkup(createElement(module.default, props(countries)));
-    // GER, human throughout, was never in a faction; the faction ENG led is not GER's.
     assert.match(render(), /None of the chosen countries has been in a faction yet\./);
     state.groups = { ...pendingGroups({ final: true }), factions: [] } as CountryGroupReply;
     assert.match(render({ kind: 'all' }), /No factions recorded\./);

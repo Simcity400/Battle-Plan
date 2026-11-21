@@ -7,14 +7,11 @@ use replay_columnar::envelope::UNIT_ORDINALS;
 
 const TABLES: [TableId; 2] = [TableId::Countries, TableId::WorldTension];
 
-/// Two runs over blocks of a fixture whose rows leave and come back, whose world tension goes
-/// unavailable by name and back, and whose tables are restored at block ends.
 fn recording() -> Recording {
     const RUNS: [(u64, i32, u32); 2] = [(1, 100, 5), (2, 50_000, 3)];
     Recording::open(fixtures::churned(&RUNS).0).unwrap()
 }
 
-/// Hours of each run across its blocks: first and last of a block, a restore's next hour, the run's last.
 fn ordinals(ordinals: u32) -> Vec<u32> {
     let block = UNIT_ORDINALS;
     let mut out: Vec<u32> = [0, 1, 299, 300, 450, block - 1, block, 1000, 2 * block, 3 * block - 1, 3 * block, 3 * block + 1, 4 * block + 77]
@@ -26,9 +23,6 @@ fn ordinals(ordinals: u32) -> Vec<u32> {
     out
 }
 
-/// The frame of every row of chosen tables is the frame a seek of those tables builds: rows,
-/// cells, unavailable reasons, status, sample hour and metrics, at hours across blocks and after a
-/// restore.
 #[test]
 fn a_frame_at_an_hour_is_the_seek_of_its_tables() {
     let recording = recording();
@@ -48,8 +42,6 @@ fn a_frame_at_an_hour_is_the_seek_of_its_tables() {
     assert!(compared > 10);
 }
 
-/// A cursor's frame at each hour is that hour's frame, whether the hours come in order across
-/// blocks and restores, run after run, or back again (sought), of every row or of some keys.
 #[test]
 fn a_cursors_frames_at_hours_in_turn_are_each_hours_frame() {
     let recording = recording();
@@ -70,7 +62,6 @@ fn a_cursors_frames_at_hours_in_turn_are_each_hours_frame() {
         }
     }
     assert!(compared > 40);
-    // In order, a reader restores only where a restore lies nearer than the hour it holds, never once an hour.
     let held = recording.run(0).unwrap();
     let forward = ordinals(held.ordinals);
     let mut cursor = Cursor::new(&recording, &TABLES.map(Read::all)).unwrap();
@@ -83,9 +74,6 @@ fn a_cursors_frames_at_hours_in_turn_are_each_hours_frame() {
     }
 }
 
-/// A cursor resumed from the readers another left gives each hour's frame, later or earlier, and
-/// restores no table the one cursor asking every hour would not; readers of other columns, or of a
-/// cursor whose frame failed, are not taken.
 #[test]
 fn a_cursor_resumed_from_anothers_readers_restores_nothing_again() {
     let recording = recording();
@@ -126,9 +114,6 @@ fn a_cursor_resumed_from_anothers_readers_restores_nothing_again() {
     assert!(failing.into_readers().is_none(), "a cursor whose frame failed hands on no reader");
 }
 
-/// A seeker's frame at each hour is that hour's frame of whatever reads the hour asks (tables
-/// joining and leaving, keys changing), in order across blocks and runs or back again; asked in
-/// order, a table restores no more than a cursor of it would, never once an hour.
 #[test]
 fn a_seekers_frames_of_changing_reads_are_each_hours_frame() {
     let recording = recording();
@@ -180,8 +165,6 @@ fn countries(frame: &DecodedFrame) -> Vec<CountryRow> {
     }
 }
 
-/// A frame of some keys holds exactly the whole table's rows of those keys, the other tables as
-/// a frame of every row holds them; keys asked that no row holds are not made up.
 #[test]
 fn a_frame_of_some_keys_is_the_whole_table_filtered() {
     let recording = recording();
@@ -213,7 +196,6 @@ fn a_frame_of_some_keys_is_the_whole_table_filtered() {
     assert!(compared > 30);
 }
 
-/// Countries rows of a complete or partly read view, and its missing count when read in part.
 fn shown(frame: &DecodedFrame) -> Option<(Vec<CountryRow>, Option<u32>)> {
     match &*frame.tables[TableId::Countries.index()] {
         TableView::Complete(TableRows::Countries(rows)) => Some((rows.clone(), None)),
@@ -222,9 +204,6 @@ fn shown(frame: &DecodedFrame) -> Option<(Vec<CountryRow>, Option<u32>)> {
     }
 }
 
-/// Over hours read in part, refused for an hour, after a block end that packed the table and
-/// restored it whole: a frame of every row is the seek's, and a frame of some keys is its rows of
-/// those keys, as complete or as partly read, or refused as it is.
 #[test]
 fn a_frame_over_partial_and_refused_hours_is_the_seek_filtered() {
     let recording = Recording::open(fixtures::edited(3).0).unwrap();
@@ -257,9 +236,6 @@ fn a_frame_over_partial_and_refused_hours_is_the_seek_filtered() {
     assert!(partial > 0 && refused > 0, "{partial} partly read, {refused} refused");
 }
 
-/// A read of some columns builds its rows from those columns alone: every other field holds its
-/// row's default and is never decoded, so an opaque field left unread (an air score's contribution
-/// menu) neither fails the frame nor reads as recorded.
 #[test]
 fn a_read_of_some_columns_decodes_those_fields_alone() {
     use crate::{

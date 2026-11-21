@@ -1,6 +1,3 @@
-//! The record loop and the snapshot it keeps. One worker thread waits for a
-//! single game, attaches when the settings say so and finalizes; the tray and
-//! panel reach it through this state.
 use crate::{
     flags::{BackgroundPriority, FlagContent, FlagImage},
     panel,
@@ -25,9 +22,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 
 pub const STATUS_EVENT: &str = "recorder-status";
-/// The worker changed the saved settings itself: the panel reads them again.
 pub const SETTINGS_EVENT: &str = "recorder-settings";
-/// A recording was saved or discarded, or began or stopped waiting: the panel lists them again.
 pub const RECORDINGS_EVENT: &str = "recorder-recordings";
 
 pub fn recordings_changed(app: &AppHandle) {
@@ -46,56 +41,33 @@ fn settings_used(app: &AppHandle) {
 struct Inner {
     snapshot: Snapshot,
     record_requested: bool,
-    /// Exit once the current capture or save ends.
     quit_when_idle: bool,
-    /// Exit after the Stop prompt that Quit opened is answered and carried out.
     quit_after_stop: bool,
     capturing: bool,
     unloading: bool,
-    /// A finished session's Saved or Discarded state stays until the panel has shown it.
     result: bool,
-    /// A capture's failure stays until the panel has shown it.
     sticky: Option<Problem>,
     panel_open: bool,
-    /// The panel has shown the result or failure while open.
     seen: bool,
-    /// Hours the collector has processed this session.
     hours: u64,
-    /// The earlier recording this session continues and its size, by campaign.
     earlier: Option<(String, Option<PathBuf>, Option<u64>)>,
-    /// The loaded campaign's recording while not recording it.
     idle_recording: targets::RecordingCache,
-    /// The saved recording the panel still shows, found again if renamed.
     saved_recording: targets::RecordingCache,
-    /// The running session's folder, once it records, and the folder it saves into.
     session: Option<(PathBuf, PathBuf)>,
-    /// A game runs, so Record can attach to it.
     game_running: bool,
-    /// The tray menu's Start and Stop as last shown.
     menu: Option<(bool, bool)>,
-    /// Campaigns the running session set aside that wait to be saved.
     set_aside: Vec<Waiting>,
-    /// The name each of the running session's recordings would get so far, by campaign.
     names: BTreeMap<String, String>,
-    /// The flag last asked for this session.
     flag_keys: Option<FlagAsk>,
-    /// This session's game and Paradox user folders, for its content stack.
     flag_folders: Option<(PathBuf, PathBuf)>,
-    /// The last flag shown for each campaign, shown again while not recording it.
     last_flags: BTreeMap<String, FlagImage>,
-    /// An update's request to close, carried out at the top of the record loop.
     leaving: Option<Leaving>,
-    /// The record loop agreed to close for an update.
     closing: bool,
-    /// Waiting recordings the panel is saving or discarding.
     acting: usize,
 }
 
-/// What an update asks of the record loop.
 pub enum Leave {
-    /// The installer asks the recorder to close.
     Exit,
-    /// This recorder starts the installer, then closes.
     Install(app_update::Launch),
 }
 
@@ -104,7 +76,6 @@ struct Leaving {
     reply: mpsc::SyncSender<Result<(), String>>,
 }
 
-/// How long an update waits for the record loop to reach a point where it may close.
 const LEAVE_WAIT: Duration = Duration::from_secs(30);
 const SAVING_FOR_UPDATE: &str =
     "Battle Plan Recorder is saving a recording. Restart to update once it has saved.";
@@ -114,7 +85,6 @@ const ATTACHED_FOR_UPDATE: &str =
     "Battle Plan Recorder is attached to HOI4. Restart to update once the game has closed.";
 const CLOSING_FOR_UPDATE: &str = "Battle Plan Recorder is closing for an update.";
 
-/// Why the recorder may not close for an update now.
 fn update_busy(inner: &Inner) -> Option<&'static str> {
     if inner.unloading || inner.acting > 0 || inner.snapshot.phase == Phase::Saving {
         Some(SAVING_FOR_UPDATE)
@@ -127,7 +97,6 @@ fn update_busy(inner: &Inner) -> Option<&'static str> {
     }
 }
 
-/// Held while the panel saves or discards a waiting recording, which an update waits out.
 pub struct Acting(Arc<Recorder>);
 
 impl Drop for Acting {
@@ -141,11 +110,9 @@ pub struct Recorder {
     control: Control,
     inner: Mutex<Inner>,
     wake: Condvar,
-    /// The content stack of the session whose flags were last resolved.
     flag_content: Mutex<Option<(PathBuf, Arc<FlagContent>)>>,
 }
 
-/// The flag keys one session asked for, for one campaign: a lookup answers only this ask.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FlagAsk {
     session: PathBuf,
@@ -153,8 +120,6 @@ struct FlagAsk {
     keys: Vec<String>,
 }
 
-/// Resolve the viewed country's flag off the record loop, then show it if
-/// the same session still wants the same keys.
 fn request_flag(app: &AppHandle, (game_dir, user_dir): (PathBuf, PathBuf), ask: FlagAsk) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -179,8 +144,6 @@ fn request_flag(app: &AppHandle, (game_dir, user_dir): (PathBuf, PathBuf), ask: 
     }
 }
 
-/// A flag lookup's answer, kept only while its session still asks for the same keys. It
-/// replaces the campaign's last flag, which a lookup that found none removes.
 fn flag_found(inner: &mut Inner, ask: &FlagAsk, flag: Option<FlagImage>) {
     if inner.flag_keys.as_ref() != Some(ask) {
         return;
@@ -198,7 +161,6 @@ fn flag_found(inner: &mut Inner, ask: &FlagAsk, flag: Option<FlagImage>) {
     }
 }
 
-/// A recording's name as both apps show it: its file name.
 fn file_name(path: &Path) -> Option<String> {
     path.file_stem()?.to_str().map(str::to_owned)
 }
@@ -210,15 +172,10 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Where recordings are saved: the chosen folder or the recorder's default.
 pub fn save_folder(settings: &RecorderSettings) -> PathBuf {
     settings.effective_save_folder()
 }
 
-/// Keeps `root`, the folder a session now records in, among the recorder's session roots: the
-/// save folder chosen away from as its capture began, it may have been forgotten with nothing
-/// there yet. Kept under the settings' lock, which forgetting a folder reads it again under; its
-/// session folder keeps it from then on.
 fn keep_session_root(settings: &Path, root: &Path) {
     if let Err(error) = RecorderSettings::update_at(settings, |settings| {
         settings.keep_session_root(root.to_path_buf())
@@ -227,7 +184,6 @@ fn keep_session_root(settings: &Path, root: &Path) {
     }
 }
 
-/// The save folder, created and in canonical form so campaign folders compare equal.
 fn save_root(settings: &RecorderSettings) -> Result<PathBuf, String> {
     let root = save_folder(settings);
     fs::create_dir_all(&root)
@@ -235,7 +191,6 @@ fn save_root(settings: &RecorderSettings) -> Result<PathBuf, String> {
         .map_err(|error| format!("Save folder {}: {error}", root.display()))
 }
 
-/// A probe withheld on an unrecognised build stays withheld for the process; other failures retry at the next poll.
 struct GameProbe {
     pid: u32,
     start: u64,
@@ -253,20 +208,15 @@ impl GameProbe {
     }
 }
 
-/// Why the record loop does not attach to a game on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hold {
-    /// Its capture failed: until it restarts or Record is pressed.
     Game,
-    /// The user stopped it: its next other load records if that campaign records automatically.
     Load,
 }
 
-/// A game the record loop does not attach to on its own.
 #[derive(Debug, PartialEq, Eq)]
 struct Held {
     start: u64,
-    /// After Stop, the load stopped; `None` holds until restart or Record.
     stopped: Option<Option<(String, i64)>>,
 }
 
@@ -278,7 +228,6 @@ impl Held {
         }
     }
 
-    /// The game names a load other than the one stopped, of a campaign that records automatically.
     fn released_by(&self, loaded: Option<&LoadedCampaign>, settings: &RecorderSettings) -> bool {
         self.stopped.as_ref().is_some_and(|stopped| {
             loaded.is_some_and(|loaded| {
@@ -291,12 +240,10 @@ impl Held {
     }
 }
 
-/// The game processes last listed, frozen or not, by PID and start time.
 #[derive(Default)]
 struct Present(Vec<(u32, u64)>);
 
 impl Present {
-    /// Takes a new listing; whether a process listed before has left it, which is its exit.
     fn update(&mut self, found: &[GameProcess]) -> bool {
         let now: Vec<(u32, u64)> = found
             .iter()
@@ -311,8 +258,6 @@ impl Present {
         self.0.contains(&(pid, start))
     }
 
-    /// Takes a new listing and its choice: what they mean for the record loop before it probes or
-    /// attaches to `followed`, the game it follows.
     fn look(
         &mut self,
         found: &[GameProcess],
@@ -330,33 +275,19 @@ impl Present {
     }
 }
 
-/// What one process listing means for the record loop.
 #[derive(Debug, PartialEq, Eq)]
 struct Look {
-    /// Run the abandoned-session pass: at the first look, once a listed process has left, or
-    /// when a retry is due.
     pass: bool,
-    /// No game is chosen and the followed one has left the listing, frozen or not: its probe,
-    /// hold and hand-over go.
     gone: bool,
 }
 
-/// How a session ended, for the record loop.
 struct Ended {
-    /// Do not attach to this game again automatically, and until when.
     hold: Option<Hold>,
-    /// The last load the game named while the session recorded.
     last_load: Option<(String, i64)>,
-    /// The session ended because a load was refused.
     rerouted: bool,
-    /// The campaign Record was pressed for, refused only because it records
-    /// into another folder: the next session for it is a Record session too.
     handover: Option<String>,
 }
 
-/// How a finished capture continues. A session that ended for a refused load
-/// looks again at once: the campaign may be skipped, or record into its own
-/// folder. The user's Stop, even during that detach, holds the stopped load instead.
 fn continuation(outcome: &CaptureOutcome, stopped: bool) -> Ended {
     let rerouted = outcome.rerouted && !stopped;
     Ended {
@@ -376,7 +307,6 @@ impl Ended {
         }
     }
 
-    /// Nothing attached: the record loop looks again at once.
     fn again() -> Self {
         Self {
             hold: None,
@@ -387,29 +317,19 @@ impl Ended {
     }
 }
 
-/// One session's admission rule. Record pressed makes the campaign it was
-/// pressed for (or the first one loaded) record even when it does not record
-/// automatically; every campaign still records only into its own folder.
 struct SessionAdmission<'a> {
     settings: &'a Path,
     root: &'a Path,
     target: &'a Path,
-    /// The session's capture mode, fixed at attach.
     mode: CaptureMode,
     manual: bool,
     manual_campaign: RefCell<Option<String>>,
-    /// The campaign the session's spool shows loaded first, if any: Record
-    /// pressed at the menu belongs to it, even when it recorded and ended
-    /// before any probe named it.
     first_loaded: Box<dyn Fn() -> Option<String> + 'a>,
     handover: RefCell<Option<String>>,
-    /// Called once a load used up its campaign's pending New file.
     used_up: Box<dyn Fn() + 'a>,
 }
 
 impl SessionAdmission<'_> {
-    /// `recorded`: this session's spool already holds the campaign's hours
-    /// from an earlier load, which a pending New file keeps apart.
     fn admit(&self, campaign: &str, recorded: bool) -> Result<(), Refusal> {
         let pressed = self.manual && {
             let mut chosen = self.manual_campaign.borrow_mut();
@@ -418,15 +338,12 @@ impl SessionAdmission<'_> {
             }
             chosen.as_deref() == Some(campaign)
         };
-        // Unknown settings decide nothing: the load is left out, kept in the
-        // session folder and reported, never guessed into a recording.
         let Ok(settings) = RecorderSettings::load_from(self.settings) else {
             return Err(Refusal::Settings);
         };
         if !pressed && !settings.records_campaign(campaign) {
             return Err(Refusal::Off);
         }
-        // Its folder (a pending New file starting one) must be this session's.
         let target =
             targets::session_target_at(self.settings, self.root, campaign, recorded, self.mode);
         if let Ok((_, true)) = target {
@@ -445,8 +362,6 @@ impl SessionAdmission<'_> {
     }
 }
 
-/// What the panel says about loads a session left out: those that recorded
-/// hours, and why when it is the same for all.
 fn omitted_loads(omitted: &[Omission]) -> Option<OmittedLoads> {
     let shown: Vec<_> = omitted
         .iter()
@@ -473,7 +388,6 @@ impl Recorder {
         self.inner.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The session's recorded content stack, resolved once per session.
     fn flag_content(
         &self,
         session: &Path,
@@ -500,7 +414,6 @@ impl Recorder {
         Ok(content)
     }
 
-    /// Unchanged snapshots must still follow taskbar theme changes.
     fn update(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) {
         let (published, menu, menu_changed, light, tooltip) = {
             let mut inner = self.lock();
@@ -509,7 +422,6 @@ impl Recorder {
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
-            // Start needs a game to attach to; Stop a recording to end.
             let menu = (
                 inner.game_running && !inner.capturing && !inner.unloading,
                 inner.capturing
@@ -542,8 +454,6 @@ impl Recorder {
         self.lock().snapshot.clone()
     }
 
-    /// The running session's folder and the folder it saves into, the campaigns it set aside that
-    /// wait, and the names their recordings there would get so far.
     pub fn set_aside(
         &self,
     ) -> (
@@ -559,7 +469,6 @@ impl Recorder {
         )
     }
 
-    /// The folder the running session saves into, when `session` is that session.
     pub fn live_target(&self, session: &Path) -> Option<PathBuf> {
         let inner = self.lock();
         inner
@@ -569,12 +478,10 @@ impl Recorder {
             .map(|(_, target)| target.clone())
     }
 
-    /// The last flag shown for each campaign this run.
     pub fn flags(&self) -> BTreeMap<String, FlagImage> {
         self.lock().last_flags.clone()
     }
 
-    /// The running session's collector guards `target`'s histories, so it acts there.
     pub fn act_on_recording(&self, target: &Path, campaign: &str, discard: bool) -> bool {
         let running = {
             let inner = self.lock();
@@ -584,7 +491,6 @@ impl Recorder {
                     .as_ref()
                     .is_some_and(|(_, live)| live == target)
         };
-        // Once its capture loop has ended, the caller acts on it itself.
         running && self.control.set_aside(campaign.to_owned(), discard)
     }
 
@@ -596,14 +502,11 @@ impl Recorder {
             .map(|_| ())
     }
 
-    /// Record pressed: attach to the running game even if automatic recording
-    /// is off for its campaign or it was stopped.
     pub fn record(&self) {
         self.lock().record_requested = true;
         self.wake.notify_all();
     }
 
-    /// Save or Discard chosen on the Stop prompt.
     pub fn stop(&self, app: &AppHandle, discard: bool) {
         let mut accepted = false;
         self.update(app, |inner| {
@@ -614,34 +517,29 @@ impl Recorder {
         }
     }
 
-    /// Recording, with no stop being carried out.
     fn recording(&self) -> bool {
         let inner = self.lock();
         inner.capturing && inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping
     }
 
-    /// Right-click Stop recording › Save.
     pub fn save(&self, app: &AppHandle) {
         if self.recording() {
             self.stop(app, false);
         }
     }
 
-    /// Right-click Stop recording › Discard…: its confirmation opens beside the tray icon.
     pub fn ask_discard(&self, app: &AppHandle) {
         if self.recording() {
             panel::open(app, None, panel::Opening::DiscardPrompt);
         }
     }
 
-    /// Quit: while recording, the same choice as Stop first.
     pub fn quit(&self, app: &AppHandle) {
         let mut inner = self.lock();
         if !inner.capturing && !inner.unloading {
             drop(inner);
             app.exit(0);
         } else if !inner.capturing {
-            // The ended session's unload observation, and a discarded spool's removal, finish first.
             inner.quit_when_idle = true;
             drop(inner);
             self.wake.notify_all();
@@ -650,7 +548,6 @@ impl Recorder {
             drop(inner);
             panel::open(app, None, panel::Opening::QuitPrompt);
         } else {
-            // Nothing recorded yet, or already saving: finish, then exit.
             inner.quit_when_idle = true;
             let stopping = inner.snapshot.stopping;
             drop(inner);
@@ -661,8 +558,6 @@ impl Recorder {
         }
     }
 
-    /// The Stop prompt was dismissed (Stop pressed again): a Quit waiting on it
-    /// is cancelled too, unless Save or Discard is already being carried out.
     pub fn cancel_stop_prompt(&self) {
         let mut inner = self.lock();
         if !self.control.stopping() {
@@ -679,7 +574,6 @@ impl Recorder {
         self.update(app, |inner| {
             inner.panel_open = false;
             if !stopping {
-                // Closing the Stop prompt that Quit opened cancels the quit.
                 inner.quit_after_stop = false;
             }
             if std::mem::take(&mut inner.seen) {
@@ -690,24 +584,19 @@ impl Recorder {
         self.wake.notify_all();
     }
 
-    /// Settings changed: look again now rather than at the next poll.
     pub fn settings_changed(&self) {
         self.wake.notify_all();
     }
 
-    /// Why the apps may not be replaced now, if they may not.
     pub fn update_blocked(&self) -> Option<&'static str> {
         let inner = self.lock();
         update_busy(&inner).or(inner.closing.then_some(CLOSING_FOR_UPDATE))
     }
 
-    /// Close for an update, or start the installer and close, once the record loop reaches its
-    /// top: never while it is attached to the game or saving.
     pub fn leave(&self, leave: Leave) -> Result<(), String> {
         let (reply, answer) = mpsc::sync_channel(1);
         {
             let mut inner = self.lock();
-            // The installer asks each running copy until it is gone.
             if inner.closing && matches!(leave, Leave::Exit) {
                 return Ok(());
             }
@@ -723,7 +612,6 @@ impl Recorder {
         match answer.recv_timeout(LEAVE_WAIT) {
             Ok(result) => result,
             Err(_) => {
-                // Still waiting for the loop: withdrawn. Taken by it: its answer comes next.
                 if self.lock().leaving.take().is_some() {
                     return Err(
                         "Battle Plan Recorder stayed busy, so it did not close for the update.".into(),
@@ -736,7 +624,6 @@ impl Recorder {
         }
     }
 
-    /// The panel saves or discards a waiting recording; refused while closing for an update.
     pub fn acting(self: &Arc<Self>) -> Result<Acting, String> {
         let mut inner = self.lock();
         if inner.closing || inner.leaving.is_some() {
@@ -746,8 +633,6 @@ impl Recorder {
         Ok(Acting(Arc::clone(self)))
     }
 
-    /// At the top of the record loop, nothing is attached: carry out an update's request.
-    /// Whether the recorder is closing.
     fn leave_now(&self, app: &AppHandle, leaving: Leaving) -> bool {
         let refused = {
             let mut inner = self.lock();
@@ -791,15 +676,10 @@ impl Recorder {
     }
 
     fn run(&self, app: &AppHandle) {
-        // The game the user stopped, or whose capture failed, until it is released.
         let mut held: Option<Held> = None;
         let mut game: Option<GameProbe> = None;
-        // The last session ended because a load was refused.
         let mut rerouted = false;
-        // The game and campaign a Record session hands over to its own folder.
         let mut handover: Option<(u64, String)> = None;
-        // Sessions a crashed or closed recorder left are ended at start and as each game exits;
-        // one left busy or failed is looked at again while idle, each time a little later.
         let mut ended_abandoned = false;
         let mut abandoned_retry = AbandonedRetry::default();
         let mut present = Present::default();
@@ -820,7 +700,6 @@ impl Recorder {
             {
                 return;
             }
-            // Only once the ended session's unload work is done.
             if self.exit_requested() {
                 app.exit(0);
                 return;
@@ -881,7 +760,6 @@ impl Recorder {
                         held = None;
                     }
                     if !game.as_ref().is_some_and(|game| game.settled(start)) {
-                        // On an unrecognised build the probe is withheld; capture still attaches.
                         let probe = Probe::open(&selected);
                         if let Err(error) = &probe
                             && game.as_ref().is_none_or(|game| {
@@ -898,8 +776,6 @@ impl Recorder {
                     }
                     let probe = game.as_ref().and_then(|game| game.probe.as_ref().ok());
                     let loaded = probe.and_then(Probe::loaded);
-                    // Record pressed for a campaign that turned out to belong in
-                    // another folder carries over to its session there.
                     if handover.as_ref().is_some_and(|(game, _)| *game != start) {
                         handover = None;
                     }
@@ -909,9 +785,6 @@ impl Recorder {
                                 .take_if(|(_, campaign)| *campaign == loaded.campaign)
                                 .is_some()
                         });
-                    // A refused load is routed by what the game has loaded.
-                    // If that cannot be read, attaching at the menu again would
-                    // only meet the same refusal, so the game is held instead.
                     if std::mem::take(&mut rerouted) && loaded.is_none() && !manual {
                         held = Some(Held::game(start));
                     }
@@ -932,7 +805,6 @@ impl Recorder {
                         let ended = self.capture(app, selected, &settings, manual, loaded, probe);
                         held = ended.hold.map(|hold| match hold {
                             Hold::Game => Held::game(start),
-                            // The load recorded when Stop came; one loaded while it saved records.
                             Hold::Load => Held {
                                 start,
                                 stopped: Some(ended.last_load.or(started)),
@@ -949,9 +821,6 @@ impl Recorder {
         }
     }
 
-    /// Ends the sessions a crashed or closed recorder left in any save folder, once their game has
-    /// exited or their collector left it: their hours then wait in Recordings.
-    /// Returns whether any session was left busy or failed, for a later pass.
     fn end_abandoned(&self, app: &AppHandle, settings: &RecorderSettings) -> bool {
         let mut retry = false;
         for root in settings.session_roots() {
@@ -966,8 +835,6 @@ impl Recorder {
         retry
     }
 
-    /// The snapshot while nothing is being captured. `loaded` is the campaign
-    /// the running game has loaded, when it can be read.
     fn idle(
         &self,
         app: &AppHandle,
@@ -1030,7 +897,6 @@ impl Recorder {
         });
     }
 
-    /// Record one session.
     fn capture(
         &self,
         app: &AppHandle,
@@ -1042,7 +908,6 @@ impl Recorder {
     ) -> Ended {
         let game = match controller::open_game(&selected) {
             Ok(Some(game)) => game,
-            // Its PID names another process now: discovery looks again.
             Ok(None) => return Ended::again(),
             Err(error) => {
                 self.fail(app, error, false);
@@ -1110,8 +975,6 @@ impl Recorder {
                 capture_mode: Some(settings.capture_mode.name()),
                 ..Snapshot::default()
             };
-            // A loaded campaign is recording from attachment; its first hour
-            // follows when the game runs.
             if let Some((loaded, recording, bytes)) = opening {
                 inner.earlier = Some((loaded.campaign.clone(), recording.clone(), bytes));
                 inner.snapshot.flag = inner.last_flags.get(&loaded.campaign).cloned();
@@ -1126,7 +989,6 @@ impl Recorder {
             }
         });
         let settings_path = RecorderSettings::path();
-        // The session folder, known once recording starts.
         let session_dir: RefCell<Option<PathBuf>> = RefCell::new(None);
         let admission = SessionAdmission {
             settings: &settings_path,
@@ -1159,8 +1021,6 @@ impl Recorder {
             }
             named
         };
-        // Read as each decision is made, so a change applies without a restart; settings that
-        // cannot be read keep the last value read, never turning Auto save on by themselves.
         let last_auto_save = Cell::new(settings.auto_save);
         let auto_save = || match RecorderSettings::load_from(&settings_path) {
             Ok(read) => {
@@ -1176,7 +1036,6 @@ impl Recorder {
         };
         let started = Cell::new(false);
         let finished = RefCell::new(None);
-        // A session taken over goes on writing into its own folder.
         let writes_into = RefCell::new(target.clone());
         let stage = |stage: Stage<'_>| match stage {
             Stage::Preparing => {}
@@ -1215,7 +1074,6 @@ impl Recorder {
             }),
             Stage::SetAside { waiting, done } => self.set_aside_changed(app, waiting, done),
             Stage::Finished { result } => {
-                // Its unload observation always follows: pending before capturing ends, so Quit waits for it.
                 self.lock().unloading = true;
                 finished.replace(Some(self.finish(app, result, started.get())));
             }
@@ -1228,8 +1086,6 @@ impl Recorder {
             capture_mode: settings.capture_mode,
             admit: &admit,
             loaded: &current,
-            // Attached for this load: it records even if the game closes before
-            // the first poll.
             opening: loaded
                 .as_ref()
                 .map(|loaded| (loaded.campaign.as_str(), loaded.load)),
@@ -1247,7 +1103,6 @@ impl Recorder {
         ended
     }
 
-    /// A failed save stays shown as any capture failure does.
     fn set_aside_changed(&self, app: &AppHandle, waiting: Option<&[Waiting]>, done: &[SetAside]) {
         let failure = done.iter().find_map(|done| match done {
             SetAside::Failed(campaign, error) => Some(format!("Campaign {campaign}: {error}")),
@@ -1278,9 +1133,6 @@ impl Recorder {
         recordings_changed(app);
     }
 
-    /// Fold one collector status publication into the snapshot. The game's
-    /// loaded campaign is the live one when it can be read: the collector names
-    /// a campaign only once it has written an hour of it.
     fn live(
         &self,
         app: &AppHandle,
@@ -1292,7 +1144,6 @@ impl Recorder {
     ) {
         let live = status.map(snapshot::read_live).unwrap_or_default();
         let mut live = loaded_live(live, probe.and_then(Probe::loaded));
-        // Held unchanged until this session saves, so found once per campaign.
         let (recording, earlier) = match &live.campaign {
             Some(campaign) => {
                 let cached = self.lock().earlier.clone();
@@ -1311,14 +1162,11 @@ impl Recorder {
             }
             None => (None, None),
         };
-        // The name a save gives its file, not the name a file it continues has now.
         let name = live
             .campaign
             .as_ref()
             .and_then(|campaign| names.get(campaign))
             .cloned();
-        // A new set of flag keys (another country, cosmetic tag or ruling group)
-        // or another campaign asks for its flag once.
         let flag_request = match (&live.campaign, live.flag_keys.take()) {
             (Some(campaign), Some(keys)) => {
                 let ask = FlagAsk {
@@ -1375,7 +1223,6 @@ impl Recorder {
             });
             return ended;
         }
-        // Saved and finalized; hours left unsaved wait in `.unsaved`, which is not compressed.
         let jobs = app.state::<Arc<crate::compress::Jobs>>();
         for path in &outcome.replays {
             if path.parent().and_then(Path::file_name).is_none_or(|folder| folder != ".unsaved") {
@@ -1396,7 +1243,6 @@ impl Recorder {
             .or(outcome.replays.last())
             .cloned();
         let omitted = omitted_loads(&outcome.omitted);
-        // The campaign in progress waits to be saved: Auto save is off.
         let unsaved = campaign
             .as_ref()
             .is_some_and(|campaign| outcome.waiting.contains(campaign));
@@ -1435,9 +1281,6 @@ impl Recorder {
                     snapshot.problem = kept.or(unrenamed);
                 });
             }
-            // Nothing was saved: nothing reached the spool (the game closed at
-            // its menu, say), or every load was left out, which stays shown
-            // until the panel has shown it.
             None => self.update(app, |inner| {
                 inner.capturing = false;
                 inner.session = None;
@@ -1505,7 +1348,6 @@ impl Recorder {
     }
 }
 
-/// What the panel says of a discarded session whose capture had failed.
 fn discarded_failure(report: &Path) -> Problem {
     Problem {
         text: format!(
@@ -1519,8 +1361,6 @@ fn discarded_failure(report: &Path) -> Problem {
     }
 }
 
-/// Stop for the capture running now, decided under the lock its end takes: a capture that has
-/// already ended keeps what it ended with, and no stop is left for the next one.
 fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
     if !inner.capturing {
         return false;
@@ -1535,9 +1375,6 @@ fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
     true
 }
 
-/// The collector's status as of the campaign the game has loaded: its date and viewed country
-/// count only when the collector last wrote an hour of that campaign, and a campaign loaded since
-/// (paused before its first hour, say) shows the game's own date.
 fn loaded_live(mut live: snapshot::Live, loaded: Option<LoadedCampaign>) -> snapshot::Live {
     if let Some(loaded) = loaded
         && live.campaign.as_deref() != Some(loaded.campaign.as_str())
@@ -1549,8 +1386,6 @@ fn loaded_live(mut live: snapshot::Live, loaded: Option<LoadedCampaign>) -> snap
     live
 }
 
-/// One collector status publication (or the game's loaded campaign standing in) into the
-/// snapshot, with the recording it continues, its size and the name its save gives it.
 fn fold_live(
     inner: &mut Inner,
     live: snapshot::Live,
@@ -1560,7 +1395,6 @@ fn fold_live(
     recording: Option<PathBuf>,
     earlier: Option<u64>,
 ) {
-    // An unread status keeps this session's last count, which only grows.
     if let Some(hours) = live.hours {
         inner.hours = hours;
     }
@@ -1572,7 +1406,6 @@ fn fold_live(
             snapshot.phase = Phase::Recording;
             snapshot.started_at = Some(now_ms());
         }
-        // Another campaign shows its own last flag until its new one resolves.
         if snapshot.campaign.as_deref() != Some(campaign.as_str()) {
             snapshot.flag = inner.last_flags.get(&campaign).cloned();
         }
@@ -1588,7 +1421,6 @@ fn fold_live(
         snapshot.build_warning = live.build_warning;
     }
     snapshot.behind = live.behind;
-    // A failed save of a set-aside campaign stays shown.
     snapshot.problem = live.problem.or_else(|| inner.sticky.clone());
 }
 
@@ -1614,7 +1446,6 @@ fn unload_finished(inner: &mut Inner, result: Result<(), String>) {
     }
 }
 
-/// When the worker next looks again at abandoned sessions a pass left busy or failed.
 #[derive(Default)]
 struct AbandonedRetry {
     at: Option<Instant>,
@@ -1629,7 +1460,6 @@ impl AbandonedRetry {
         self.at.is_some_and(|at| Instant::now() >= at)
     }
 
-    /// Schedules the next look after a pass, backing off while sessions stay busy or failing.
     fn after(&mut self, retry: bool) {
         if retry {
             self.wait = (self.wait * 2).clamp(Self::FIRST, Self::LONGEST);
@@ -1679,7 +1509,6 @@ mod tests {
                 held = None;
             }
         }
-        // Held, the same load does not attach again by itself.
         assert!(
             held.is_some_and(|held| !held.released_by(Some(&loaded(CAMPAIGN, 100)), &on)),
             "a freeze released the user's Stop"
@@ -1693,7 +1522,6 @@ mod tests {
         let orphan = [game(9, 90, Frozen)];
         let choice = controller::choose_game(&orphan);
         assert!(present.look(&orphan, &choice, None, false, false).pass);
-        // That first pass found the orphan's collector still mapped: settled, with no retry.
         assert!(!present.look(&orphan, &choice, None, true, false).pass);
         let look = present.look(&[], &Discovery::None, None, true, false);
         assert!(look.pass, "the orphan's game exited, freeing its session");
@@ -1771,7 +1599,6 @@ mod tests {
         assert!(control.stopping() && !control.discarding());
         assert_eq!(inner.snapshot.phase, Phase::Saving);
         assert!(inner.snapshot.stopping);
-        // The capture ended (Saved) before the stop took the lock.
         let control = Control::new();
         let mut inner = Inner {
             result: true,
@@ -1794,7 +1621,6 @@ mod tests {
         );
         fold_live(&mut inner, read, session, &names, None, None, None);
         assert_eq!((inner.hours, inner.snapshot.spool_bytes), (12, Some(4096)));
-        // No publication this poll: the game's loaded campaign stands in, its size unknown.
         let unread = snapshot::Live {
             campaign: Some(CAMPAIGN.into()),
             hour: Some(10),
@@ -1813,14 +1639,12 @@ mod tests {
             "campaign": CAMPAIGN, "hours": 12, "last_hour": 9, "spool_bytes": 4096,
             "player": {"tag":"OWN","cosmetic":"","original":"OWN","group":"synthetic_group"},
         });
-        // The game still holds the campaign last written: the status's date and country stand.
         let same = loaded_live(snapshot::read_live(&status), Some(loaded(CAMPAIGN, 7)));
         assert_eq!(
             (same.campaign.as_deref(), same.hour),
             (Some(CAMPAIGN), Some(9))
         );
         assert!(same.flag_keys.is_some());
-        // Another campaign loaded, paused before its first hour: it and its own date, no country.
         let other = loaded_live(snapshot::read_live(&status), Some(loaded(OTHER, 8)));
         assert_eq!(
             (other.campaign.as_deref(), other.hour),
@@ -1828,7 +1652,6 @@ mod tests {
         );
         assert_eq!(other.flag_keys, None);
         assert_eq!((other.hours, other.spool_bytes), (Some(12), Some(4096)));
-        // The game's load unread: the status alone.
         let unread = loaded_live(snapshot::read_live(&status), None);
         assert_eq!(unread.campaign.as_deref(), Some(CAMPAIGN));
     }
@@ -1848,17 +1671,14 @@ mod tests {
         let mut inner = Inner::default();
         inner.snapshot.campaign = Some(CAMPAIGN.into());
         inner.flag_keys = Some(ask("later"));
-        // The earlier session's lookup ends last, with the same campaign and keys.
         flag_found(&mut inner, &ask("earlier"), Some(flag(1)));
         assert_eq!(inner.snapshot.flag, None);
         assert!(inner.last_flags.is_empty());
         flag_found(&mut inner, &ask("later"), Some(flag(2)));
         assert_eq!(inner.snapshot.flag, Some(flag(2)));
         assert_eq!(inner.last_flags.get(CAMPAIGN), Some(&flag(2)));
-        // A late failure of the earlier session clears nothing.
         flag_found(&mut inner, &ask("earlier"), None);
         assert_eq!(inner.snapshot.flag, Some(flag(2)));
-        // The asking session's own content naming no flag leaves none from earlier content.
         flag_found(&mut inner, &ask("later"), None);
         assert_eq!(inner.snapshot.flag, None);
         assert!(inner.last_flags.is_empty());
@@ -1910,20 +1730,15 @@ mod tests {
                 .folder = Some(format!("{CAMPAIGN} (2)"));
         })
         .unwrap();
-        // Record at the menu, then the campaign whose recording lives in "(2)":
-        // not admitted into the save folder, and handed over to its own folder.
         let menu = admission(&settings, &root, &root, true);
         assert_eq!(menu.admit(CAMPAIGN, false), Err(Refusal::Elsewhere));
         assert_eq!(menu.handover.borrow().as_deref(), Some(CAMPAIGN));
-        // Without Record the campaign does not record at all, and nothing is handed over.
         let automatic = admission(&settings, &root, &root, false);
         assert_eq!(automatic.admit(CAMPAIGN, false), Err(Refusal::Off));
         assert!(automatic.handover.borrow().is_none());
-        // The handed-over Record session in the campaign's folder admits it.
         let folder = root.join(format!("{CAMPAIGN} (2)"));
         let own = admission(&settings, &root, &folder, true);
         assert_eq!(own.admit(CAMPAIGN, false), Ok(()));
-        // Record covers only the campaign it was pressed for.
         assert_eq!(own.admit(OTHER, false), Err(Refusal::Off));
         fs::remove_dir_all(scratch).unwrap();
     }
@@ -1934,8 +1749,6 @@ mod tests {
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
         fs::write(&settings, b"not settings").unwrap();
-        // Neither whether the campaign records nor its folder is known, even
-        // with Record pressed for it.
         for manual in [false, true] {
             let session = admission(&settings, &root, &root, manual);
             assert_eq!(session.admit(CAMPAIGN, true), Err(Refusal::Settings));
@@ -1994,7 +1807,6 @@ mod tests {
         recorder.lock().quit_after_stop = true;
         recorder.cancel_stop_prompt();
         assert!(!recorder.lock().quit_after_stop);
-        // Once Save or Discard is being carried out, the quit stands.
         recorder.lock().quit_after_stop = true;
         recorder.control.stop(false);
         recorder.cancel_stop_prompt();
@@ -2010,8 +1822,6 @@ mod tests {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
-        // The first recording of the campaign is still only this session's
-        // spool; New file then a reload must not join the two loads.
         assert_eq!(targets::recording(&root, CAMPAIGN), None);
         let session = admission(&settings, &root, &root, false);
         assert_eq!(session.admit(CAMPAIGN, true), Err(Refusal::Elsewhere));
@@ -2020,7 +1830,6 @@ mod tests {
             saved.campaigns[CAMPAIGN].folder.as_deref(),
             Some(&*format!("{CAMPAIGN} (2)"))
         );
-        // The next session records the reload there.
         let folder = root.join(format!("{CAMPAIGN} (2)"));
         assert_eq!(
             admission(&settings, &root, &folder, false).admit(CAMPAIGN, false),
@@ -2036,19 +1845,15 @@ mod tests {
             rerouted: true,
             ..CaptureOutcome::default()
         };
-        // A refusal alone looks again at once.
         let ended = continuation(&rerouting, false);
         assert!(ended.hold.is_none() && ended.rerouted);
-        // Save or Discard chosen during that detach holds the stopped load.
         let ended = continuation(&rerouting, true);
         assert!(ended.hold == Some(Hold::Load) && !ended.rerouted);
-        // The game exiting never holds.
         let exited = CaptureOutcome {
             process_exited: true,
             ..rerouting
         };
         assert!(continuation(&exited, true).hold.is_none());
-        // A failed capture holds the whole game.
         assert_eq!(Ended::held().hold, Some(Hold::Game));
     }
 
@@ -2071,17 +1876,12 @@ mod tests {
             ..RecorderSettings::default()
         };
         let (on, off) = (auto(true), auto(false));
-        // The stopped load itself, or the menu, never records again by itself.
         assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 100)), &on));
         assert!(!stopped.released_by(None, &on));
-        // Reloading the same campaign, or loading another, records again.
         assert!(stopped.released_by(Some(&loaded(CAMPAIGN, 101)), &on));
         assert!(stopped.released_by(Some(&loaded(OTHER, 100)), &on));
-        // With Auto record off, only Record or a game restart does.
         assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 101)), &off));
         assert!(!stopped.released_by(Some(&loaded(OTHER, 5)), &off));
-        // Unless the loaded campaign's own choice records it automatically; its own choice not to
-        // holds it even with Auto record on.
         let choose = |mut settings: RecorderSettings, record| {
             settings.campaigns.insert(
                 OTHER.to_owned(),
@@ -2095,18 +1895,14 @@ mod tests {
         assert!(stopped.released_by(Some(&loaded(OTHER, 5)), &choose(auto(false), true)));
         assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 101)), &choose(auto(false), true)));
         assert!(!stopped.released_by(Some(&loaded(OTHER, 5)), &choose(auto(true), false)));
-        // Stopped before the game named a load: whatever it loads next records.
         let unnamed = Held {
             start: 7,
             stopped: Some(None),
         };
         assert!(unnamed.released_by(Some(&loaded(CAMPAIGN, 100)), &on));
-        // A failed capture holds the game through every load.
         assert!(!Held::game(7).released_by(Some(&loaded(OTHER, 5)), &on));
     }
 
-    /// Record pressed at the menu with automatic recording off: campaign A
-    /// records briefly and ends before a probe, then the probe names B.
     #[test]
     fn record_pressed_at_the_menu_belongs_to_the_first_campaign_the_spool_shows() {
         let scratch = scratch("first-loaded");
@@ -2118,7 +1914,6 @@ mod tests {
         session.first_loaded = Box::new(|| Some(CAMPAIGN.to_owned()));
         assert_eq!(session.admit(OTHER, false), Err(Refusal::Off));
         assert_eq!(session.admit(CAMPAIGN, false), Ok(()));
-        // With nothing spooled yet, the first campaign asked about is the first loaded.
         let session = admission(&settings, &root, &root, true);
         assert_eq!(session.admit(OTHER, false), Ok(()));
         assert_eq!(session.admit(CAMPAIGN, false), Err(Refusal::Off));
@@ -2134,7 +1929,6 @@ mod tests {
             refusal,
         };
         assert_eq!(omitted_loads(&[]), None);
-        // A load left out before it recorded an hour lost nothing.
         assert_eq!(omitted_loads(&[omission(0, Some(Refusal::Off))]), None);
         assert_eq!(
             omitted_loads(&[omission(3, Some(Refusal::Off)), omission(0, None)]),
@@ -2153,7 +1947,6 @@ mod tests {
                 reason: Some(OmissionReason::Elsewhere),
             })
         );
-        // Different reasons: the count alone.
         assert_eq!(
             omitted_loads(&[omission(2, Some(Refusal::Off)), omission(1, None)]),
             Some(OmittedLoads {

@@ -1,6 +1,4 @@
 import type { PeaceChange, PeaceDeal, PeaceDealsReply, PeaceItem, PeaceTransferCountry, PeaceTransferGraph, PeaceTransferredState, PeaceUnobserved } from '../../generated/dashboard';
-// Synthetic peace-deals replies shaped as the product writes them, for the
-// Territory transfers tests. Nothing here comes from a game or a recording.
 
 export const holder = (slot: number, tag: string, hour: number, countryId = 1000 + slot): PeaceTransferCountry => ({ slot, countryId, tag, hour });
 export interface Move {
@@ -8,7 +6,6 @@ export interface Move {
   vp?: string | null; vpHour?: number | null; released?: boolean; derived?: boolean;
 }
 
-/** The product's graph: one link per giver/taker holder pair, IDs naming both. */
 export function graph(moves: readonly Move[]): PeaceTransferGraph {
   const nodes = new Map<string, PeaceTransferGraph['nodes'][number]>();
   const links = new Map<string, { id: string; source: string; target: string; states: PeaceTransferredState[] }>();
@@ -32,7 +29,6 @@ export function graph(moves: readonly Move[]): PeaceTransferGraph {
   }) };
 }
 
-/** Plain moves become state-transfer items; released moves join one release item per taker. */
 export function deal(id: string, moves: readonly Move[], extra: Partial<PeaceDeal> = {}): PeaceDeal {
   const items: PeaceItem[] = [];
   const releases = new Map<string, Move[]>();
@@ -68,7 +64,6 @@ export function reply(deals: PeaceDeal[], unobserved: Partial<PeaceUnobserved> =
   return { branchId: '1', derived: true, deals, transfers: campaign, unobserved: { ...noGaps(), ...unobserved }, warnings: [] };
 }
 
-/** The same reply from a bridge built before released states joined the graphs. */
 export function olderBridge(current: PeaceDealsReply): PeaceDealsReply {
   const strip = (value: PeaceTransferGraph): PeaceTransferGraph => {
     const links = value.links.map(link => ({ ...link, states: link.states.filter(state => !state.released).map(({ released: _released, ...state }) => state as PeaceTransferredState) }))

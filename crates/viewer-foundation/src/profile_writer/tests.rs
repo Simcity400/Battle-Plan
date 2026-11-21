@@ -4,8 +4,6 @@ use std::{
     sync::{Arc, Mutex, mpsc::Receiver},
 };
 
-/// Output whose first write waits until released, and which reports each
-/// line it has written.
 struct Stalled {
     written: Arc<Mutex<Vec<u8>>>,
     release: Option<Receiver<()>>,
@@ -38,8 +36,6 @@ struct Run {
     lines: Receiver<()>,
 }
 
-/// A sink holding four lines, with line 0 stuck in a stalled write and
-/// lines 1 to 10 printed behind it.
 fn stalled_with_ten_behind() -> Run {
     let written = Arc::new(Mutex::new(Vec::new()));
     let (release, released) = mpsc::channel();

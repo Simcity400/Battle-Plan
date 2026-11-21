@@ -31,13 +31,9 @@ const NO_ROWS: readonly OccupiedRow[] = [];
 const PARAMS = {} as const;
 const rowKey = (row: OccupiedRow) => row.key;
 const painted = (value: unknown) => percentCell(BigInt(Math.trunc(value as number)).toString());
-/** The countries the rows name, each once, sorted, as one text. */
 const countriesOf = (rows: readonly OccupiedRow[]) => [...new Set(rows.flatMap(row => [row.value.owner, row.value.occupier, row.value.occupied]
   .filter((tag): tag is string => tag !== null)))].sort().join(',');
 
-/** Every occupied state at the playback date: the hour's rows followed at the head as a pushed panel (names, countries,
- * garrisons and laws), every number painted from its live cell: resistance, compliance, the garrison's amount, and the
- * garrison's strength as its bar and red. */
 export default function OccupiedStatesWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewportHeight = useViewportHeight();
@@ -52,35 +48,27 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const shownAt = useRef(head.shownAt);
   shownAt.current = head.shownAt;
   const tableLive = useMemo(() => reporting(live, () => shown(shownAt.current())), [live, shown]);
-  // With no table drawn (no occupied state, or a state saying why), the panel's own hour is what the widget shows.
   useEffect(() => { if (head.data) shown(shownAt.current()); });
   const hour = head.at ?? track?.branch.lastHour ?? 0;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  // A held panel's rows are chosen again where the chosen group changes, at the hour its values are current through.
   const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
   const view = useMemo(() => data && match.ready && !match.reason
     ? occupiedRows(data, widget.countries.kind === 'all' ? null : tag => match.matches(tag, choiceAt), role, membershipUnrecordedAt(widget.countries, groups.data, choiceAt)) : null,
   [data, match, widget.countries, groups.data, choiceAt, role]);
   const rows = view?.rows ?? NO_ROWS;
-  // The countries of the rows drawn, for their names and flags: news only when other countries are drawn (a push or a
-  // re-sort moves rows, not countries).
   const [drawn, setDrawn] = useState('');
   const onVisibleRows = useCallback((shownRows: readonly OccupiedRow[]) => setDrawn(countriesOf(shownRows)), [setDrawn]);
   const tagsKey = useMemo(() => countriesOf(rows), [rows]);
   const stableTags = useMemo(() => tagsKey ? tagsKey.split(',') : [], [tagsKey]);
-  // Pushed, each panel comes at a new hour: the countries are named where one of their identities last changed, so a
-  // push asks no name and commits once.
   const namesHour = usePushedLooksHour(runtime, widget, track, stableTags, head.read === 'followed', hour).hour;
   const wanted = useMemo(() => drawn ? drawn.split(',').map(tag => ({ hour: namesHour, tag })) : [], [drawn, namesHour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  // A name sort needs every name; flags still load only for mounted rows.
   const sortingNames = useMemo(() => sort.column === 'owner' || sort.column === 'occupier'
     ? rows.flatMap(row => row.value[sort.column as 'owner' | 'occupier'] === null ? [] : [{ hour: namesHour, tag: row.value[sort.column as 'owner' | 'occupier']! }]) : [],
   [rows, sort.column, namesHour]);
@@ -101,8 +89,6 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
       country('owner', 'Owner', 1), country('occupier', 'Occupier'),
       { key: 'resistance', header: 'Resistance', label: 'Resistance', numeric: true, bar: 10000000, width: '150px', value: () => null, paint: painted },
       { key: 'compliance', header: 'Compliance', label: 'Compliance', numeric: true, bar: 10000000, width: '150px', priority: 2, value: () => null, paint: painted },
-      // The required amount is painted from its cell, the strength bar and its red from the strength's cell; an unmet
-      // requirement's empty bar and red are the row's structure.
       { key: 'garrison', header: 'Garrison', label: 'Garrison', numeric: true, width: '175px', priority: 3, bar: 100000n, value: () => null,
         paint: value => garrisonText(value as number), missingText: () => '-',
         barOf: row => garrisonCell(row.value).bar, barCell: { id: STRENGTH, value: garrisonBar, tone: garrisonTone(redRaw) },

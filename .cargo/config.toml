@@ -1,6 +1,5 @@
 [build]
 target-dir = ".cargo-target"
 
-# Rust's bundled COFF linker supports MSVC libraries, resources and x64 SEH.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"

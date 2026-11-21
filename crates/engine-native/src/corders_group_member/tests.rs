@@ -135,8 +135,6 @@ fn packet_batches_member_queries_and_reads_each_group_link_once() {
         assert_eq!(memory.count(address), 1);
     }
     assert_eq!(memory.count(OWN + group::SECONDARY_ORDER_DATA), 0);
-    // The own group comes from the query (the seed's copy of the link) and
-    // the group's parent link is read once for all three of its queries.
     for index in 0..3 {
         assert_eq!(memory.count(MEMBER + index * 0x100 + GROUP), 0);
     }
@@ -327,8 +325,6 @@ fn packet_zero_and_small_capacities_preserve_original_reads_and_failures() {
             }
             let allocated = inputs.allocated_bytes();
             inputs.grow(inputs.required_capacity()).unwrap();
-            // A failed original read may have demanded an arena before reaching
-            // its reserve. Preparation retains all storage and supplies that demand.
             assert!(inputs.allocated_bytes() >= allocated);
         }
     }
@@ -465,7 +461,6 @@ fn packet_matches_scalar_branch_and_static_fault_outcomes() {
             let mut inputs = packet(&[(MEMBER, OWN)]);
             inputs.acquire(&source, 0);
             assert_eq!(inputs.outcome(0), expected);
-            // The packet takes the member's group link from its query.
             let addresses: std::collections::BTreeSet<_> = direct
                 .reads
                 .borrow()
@@ -515,7 +510,6 @@ fn has_order_requires_membership_and_ignores_both_dirty_and_clean_caches() {
         memory.word(MEMBER + 0x20, 0);
         assert_eq!(has_order(&memory, 0, MEMBER), Ok(true));
     }
-    // Nearby host pointers are not the embedded member pointer.
     memory.word(MEMBERS, (MEMBER - HOST_OFFSET) as u64);
     assert_eq!(has_order(&memory, 0, MEMBER), Ok(false));
     memory.word(MEMBER + GROUP, 0);

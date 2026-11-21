@@ -1,4 +1,3 @@
-//! Literal project, nuclear, raid and conference state in text saves.
 use super::{
     Decimal, GameDate, SavedDate, block, boolean, bytes, field, integer, invalid, required_block,
     required_bytes, scalar, typed_handle,
@@ -9,9 +8,7 @@ use std::{collections::BTreeMap, io};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub countries: BTreeMap<Vec<u8>, Country>,
-    /// Absence is retained separately from a present, empty manager.
     pub raids: Option<Vec<RaidCountry>>,
-    /// `raids.targets`: the raid system's target statuses in stored order.
     pub raid_targets: Option<Vec<RaidTargetStatus>>,
     pub conferences: Option<BTreeMap<u64, Conference>>,
 }
@@ -22,19 +19,14 @@ pub struct Country {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Nuke {
-    /// The writer saves raw/100000, although one weapon
-    /// is 100000000 raw units. Never apply the weapon scale to this literal.
     pub amount: Decimal,
-    /// The ready count is always saved as a signed, unscaled integer.
     pub ready: i32,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProgramStatus {
     pub programs: BTreeMap<u64, Program>,
-    /// Stored program array order, including repeated occurrences.
     pub program_order: Vec<u64>,
     pub projects: BTreeMap<u64, Project>,
-    /// The fixed4 storage is printed as an unscaled signed integer.
     pub breakthroughs: BTreeMap<Vec<u8>, i32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,7 +34,6 @@ pub struct Program {
     pub id: u64,
     pub country: Option<Vec<u8>>,
     pub province: u32,
-    /// A lexer token, not the registered project reference id.
     pub active_project: Option<Vec<u8>>,
     pub scientist: Option<u64>,
     pub building: Vec<u8>,
@@ -64,7 +55,6 @@ pub struct Project {
     pub program: Option<u64>,
     pub started: bool,
     pub completed: bool,
-    /// The current state's enum is emitted, not a pointer offset.
     pub current_state: i32,
     pub prototype_phase_progress: Decimal,
     pub prototype_progress: i32,
@@ -85,37 +75,29 @@ pub struct History {
 pub struct Context {
     pub province: i32,
     pub progress: i32,
-    /// Both null and unresolvable references are omitted.
     pub character: Option<u64>,
-    /// Signed integer spellings of optional u32 bits, distinct from tags.
     pub country: Option<u32>,
     pub scientist: Option<u32>,
     pub state: Option<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RaidCountry {
-    /// Stored array order includes dummy/nonpositive country entries.
     pub ordinal: u32,
     pub country: Option<Vec<u8>>,
     pub instances: Vec<Raid>,
-    /// `used_types`, raid type names in stored order.
     pub used_types: Vec<Vec<u8>>,
-    /// `target_cooldowns`, in stored order.
     pub cooldowns: Vec<RaidCooldown>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RaidCooldown {
     pub raid_type: Vec<u8>,
     pub target: RaidTarget,
-    /// Stored signed days.
     pub days: i32,
 }
-/// One `raids.targets.target`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RaidTargetStatus {
     pub valid: bool,
     pub target: RaidTarget,
-    /// The detection bytes, absent when the vector is empty.
     pub detected: Vec<u8>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,49 +105,26 @@ pub struct Raid {
     pub id: u64,
     pub phase: i32,
     pub outcome: i32,
-    /// `show_for` country tags.
     pub show_for: Vec<Vec<u8>>,
-    /// The entire source is omitted when kind presence is zero. Omission
-    /// cannot certify its independently stored location/reference fields.
     pub source: Option<RaidSource>,
-    /// The raid type definition's own token string is written; absent only
-    /// when the definition pointer is null.
     pub raid_type: Option<Vec<u8>>,
-    /// `detected` is written only when the byte is set.
     pub detected: bool,
-    /// The `target` block, absent when the scope is empty.
     pub target: Option<RaidTarget>,
-    /// `unit.army` and `unit.air_wing`,
-    /// each written only when nonzero.
     pub army: Option<u64>,
     pub air_wing: Option<u64>,
-    /// `distance`: fixed5, written as the exact raw / 100000 only when nonzero,
-    /// so an absent field is zero.
     pub travelled: Option<Decimal>,
-    /// `prep_time`, written only when nonzero.
     pub preparation_hours: i32,
-    /// `equipment`: the raid's pool, omitted when empty.
     pub equipment: Option<super::production::Pool>,
-    /// `nukes`, written only when nonzero.
     pub nukes: i32,
-    /// `end_date`, written only while its presence flag is set. The date
-    /// formats the raw game-state hour stored when the raid ends.
     pub end_date: Option<SavedDate>,
 }
-/// The saved `target` block of one raid.
-/// A character target carries none of these.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RaidTarget {
     pub province: Option<u32>,
     pub state: Option<u32>,
-    /// `target.leader_province`, the scope's province arm.
     pub leader_province: Option<u32>,
-    /// `target.building.template`, the building type's own token string.
     pub building_template: Option<Vec<u8>>,
-    /// `target.building.location`, a province or a state id by the template;
-    /// -1 for a country-scoped building reference.
     pub building_location: Option<i64>,
-    /// `target.leader`, the full character handle.
     pub leader: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,8 +133,6 @@ pub struct RaidSource {
     pub province: Option<u32>,
     pub ship: Option<u64>,
     pub country: Option<Vec<u8>>,
-    /// `building.template` and `building.location`: the reference is written
-    /// only when set.
     pub building_template: Option<Vec<u8>>,
     pub building_location: Option<i64>,
 }
@@ -184,14 +141,8 @@ pub struct Conference {
     pub id: u64,
     pub ordinal: u32,
     pub finalized: bool,
-    /// Turn is rebuilt from the first country-keyed history node.
-    /// Keep every count; lexical tag order cannot reconstruct the stored keys.
     pub history_turns: BTreeMap<Vec<u8>, i32>,
-    /// Each country's turns and actions retain writer order; map iteration
-    /// cannot reproduce the stored country-keyed tree order.
     pub bids: BTreeMap<Vec<u8>, Vec<PeaceBid>>,
-    /// Each history node is emitted in traversal order.
-    /// Keep that writer order separately from the lookup map's tag sorting.
     pub bid_countries: Vec<Vec<u8>>,
 }
 
@@ -204,7 +155,6 @@ pub struct PeaceBid {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeaceAction {
     pub token: Vec<u8>,
-    /// Stored text; a read token can replace constructor localisation.
     pub name: Option<Vec<u8>>,
     pub taker: Option<Vec<u8>>,
     pub giver: Option<Vec<u8>>,
@@ -229,7 +179,6 @@ fn peace_bid(items: &[Item]) -> io::Result<PeaceBid> {
                 .ok_or_else(|| invalid("peace action lacks token"))?;
             let fields = block(&item.value)?;
             let mut flags = [false; 4];
-            // These flag bytes are emitted only when enabled.
             for (flag, key) in flags.iter_mut().zip([
                 b"demilitarized_zone".as_slice(),
                 b"war_reparation",
@@ -251,7 +200,6 @@ fn peace_bid(items: &[Item]) -> io::Result<PeaceBid> {
                 cost: number(fields, b"cost")?,
                 state: optional_number(fields, b"state")?,
                 flags,
-                // This field is written for puppet and government forms.
                 puppet: bytes(fields, b"puppet")?,
                 liberate: bytes(fields, b"liberate")?,
                 ship: field(fields, b"ship")?.map(typed_handle).transpose()?,
@@ -344,7 +292,6 @@ fn parse_project(definition: &[u8], items: &[Item]) -> io::Result<Project> {
     let prototype = required_block(progress, b"prototype_state")?;
     let stopping = required_block(progress, b"stopping_state")?;
     let mut history = Vec::new();
-    // History is omitted precisely when its vector count is zero.
     if let Some(value) = field(items, b"history")? {
         for item in anonymous(block(value)?)? {
             history.push(History {
@@ -441,7 +388,6 @@ fn parse_raid_source(items: &[Item]) -> io::Result<RaidSource> {
             .transpose()?,
     })
 }
-/// The saved raid target scope.
 fn parse_target(items: &[Item]) -> io::Result<RaidTarget> {
     let building = field(items, b"building")?.map(block).transpose()?;
     Ok(RaidTarget {
@@ -457,7 +403,6 @@ fn parse_target(items: &[Item]) -> io::Result<RaidTarget> {
         leader: optional_handle(items, b"leader")?,
     })
 }
-/// An anonymous list of scalars, such as `used_types` or `show_for`.
 fn scalars(items: &[Item]) -> io::Result<Vec<Vec<u8>>> {
     items
         .iter()
@@ -469,10 +414,6 @@ fn scalars(items: &[Item]) -> io::Result<Vec<Vec<u8>>> {
         })
         .collect()
 }
-/// `raids.targets` contains four counters, then one `target` per status:
-/// two counters, `valid`, `dynamic`, the scope and, when nonempty, the
-/// anonymous `detected` bytes. Any other key,
-/// or a keyed detection byte, is refused rather than skipped.
 fn parse_target_statuses(items: &[Item]) -> io::Result<Vec<RaidTargetStatus>> {
     const COUNTERS: [&[u8]; 4] = [
         b"next_state",
@@ -525,7 +466,6 @@ fn parse_target_statuses(items: &[Item]) -> io::Result<Vec<RaidTargetStatus>> {
     Ok(statuses)
 }
 fn parse_raid(items: &[Item]) -> io::Result<Raid> {
-    // Precisely zero phase/outcome/preparation values are omitted.
     let phase = match bytes(items, b"phase")?.as_deref() {
         None => 0,
         Some(b"ASSEMBLING") => 1,
@@ -594,11 +534,9 @@ fn parse_raid(items: &[Item]) -> io::Result<Raid> {
 fn parse_raids(items: &[Item]) -> io::Result<Vec<RaidCountry>> {
     let mut countries = Vec::new();
     let mut ids = std::collections::BTreeSet::new();
-    // Countries are omitted only when their array count is zero.
     if let Some(value) = field(items, b"countries")? {
         for item in anonymous(block(value)?)? {
             let mut instances = Vec::new();
-            // The child vector is omitted precisely when empty.
             if let Some(value) = field(item, b"raid_instance")? {
                 for child in anonymous(block(value)?)? {
                     let raid = parse_raid(child)?;
@@ -643,8 +581,6 @@ fn parse_raids(items: &[Item]) -> io::Result<Vec<RaidCountry>> {
 }
 fn parse_conferences(items: &[Item]) -> io::Result<BTreeMap<u64, Conference>> {
     let mut conferences = BTreeMap::new();
-    // Each manager reference is serialized in order as repeated active_peace
-    // objects without filtering resident rows.
     for (ordinal, item) in items
         .iter()
         .filter(|item| item.key.as_deref() == Some(b"active_peace"))
@@ -654,7 +590,6 @@ fn parse_conferences(items: &[Item]) -> io::Result<BTreeMap<u64, Conference>> {
         let mut history_turns = BTreeMap::new();
         let mut bids = BTreeMap::new();
         let mut bid_countries = Vec::new();
-        // History is omitted precisely when its map has no entries.
         if let Some(value) = field(items, b"history")? {
             for country in block(value)? {
                 let tag = country
@@ -682,7 +617,6 @@ fn parse_conferences(items: &[Item]) -> io::Result<BTreeMap<u64, Conference>> {
         let conference = Conference {
             id: id(items)?,
             ordinal: u32::try_from(ordinal).map_err(|_| invalid("peace ordinal overflow"))?,
-            // completed=yes is emitted iff the completion byte is nonzero.
             finalized: field(items, b"completed")?
                 .map(boolean)
                 .transpose()?
@@ -801,8 +735,6 @@ mod tests {
             .is_err()
         );
     }
-    /// `raids.targets` keeps its writer's keys only: an unknown key at either
-    /// level, a keyless entry or a keyed detection byte is refused.
     #[test]
     fn raid_target_statuses_refuse_unknown_and_keyed_entries() {
         let targets = |body: &str| {

@@ -1,8 +1,3 @@
-//! Independent native map bodies on one eframe root and one graphics device.
-//!
-//! The host supplies absolute replay time and physical geometry. Source assets,
-//! decode/work resources and the game textures are shared; each view's Scene keeps
-//! its hour state and the targets sized to it, which it lets go while hidden.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -33,7 +28,6 @@ use crate::{
 };
 use viewer_world::map::scene::Scene;
 
-// Immutable artwork can be shared only when the recording and visual choices match.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MapSourceKey {
     recording: SourceKey,
@@ -83,8 +77,6 @@ impl Drop for OpeningSource {
 struct MapView {
     target: DashboardMapView,
     source: Option<MapSourceKey>,
-    // Keep the large renderer out of BTreeMap nodes and their insertion/removal
-    // temporaries. Moving several inline Viewers can exhaust the Windows UI stack.
     viewer: Box<Viewer>,
     loading: Option<SceneLoad>,
     error: Option<String>,
@@ -94,7 +86,6 @@ struct MapView {
 impl MapView {
     fn retire(&mut self, frame: &eframe::Frame) {
         self.viewer.export_closed("its map widget let its map go before its picture was saved");
-        // A cancelled build's scene is dropped with its result, off the UI thread.
         let load = self.loading.take();
         if let Some(load) = &load {
             load.alive.store(false, Ordering::Release);
@@ -141,7 +132,6 @@ impl Drop for LoadingSource {
 
 struct SceneLoad {
     samples: u32,
-    /// The content the scene is built from ([`still_current`]).
     content: std::sync::Weak<Content>,
     result: mpsc::Receiver<Result<(Document, Scene), String>>,
     alive: Arc<AtomicBool>,
@@ -154,7 +144,6 @@ impl Drop for SceneLoad {
 }
 
 pub struct DashboardMaps {
-    /// The process-wide interface scale setting every map view draws at.
     pub(crate) ui_scale: Setting,
     config: Config,
     options: Options,
@@ -165,31 +154,19 @@ pub struct DashboardMaps {
     source_bindings: BTreeMap<RequestedSource, Result<Arc<Source>, String>>,
     opening_source: Option<OpeningSource>,
     views: BTreeMap<String, MapView>,
-    /// Exports of views that went, not yet answered: each request, and why it was refused.
     ended_exports: Vec<(u64, Result<String, String>)>,
     order: Vec<String>,
-    // Content::load has its own scoped asset waves. Admit only one cold source
-    // at a time instead of multiplying those waves for every map body.
     loading: Option<LoadingSource>,
-    /// The one owner of every map's visual mod fallback, shared with the Campaign map
-    /// ([`crate::visual_fallback`]).
     fallbacks: crate::visual_fallback::Shared,
-    /// This frame's reports for it, reduced together once every map has drawn.
     visual_reports: Vec<crate::visual_fallback::Report>,
     limits: MapLimits,
     waiting_source: Option<PathBuf>,
-    /// The host's diagnostics choice, passed on to every map.
     diagnostics: bool,
-    /// The host's mute choice, passed on to every map.
     muted: bool,
-    /// The map that sounds: the last one the user pressed, dragged or
-    /// scrolled, else the first visible map in layout order.
     audio_owner: Option<String>,
-    /// The pickers' messages for the host, by view.
     view_events: Vec<(String, crate::app::picker::ViewEvent)>,
 }
 
-/// What the graphics device itself can make: no map target can be larger.
 struct MapLimits {
     dimension: u32,
 }
@@ -268,25 +245,20 @@ impl DashboardMaps {
         })
     }
 
-    /// Shows or hides every map's stats and data limitations.
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
-        // Applied at once: the sounding map may not draw again soon.
         for view in self.views.values_mut() {
             view.viewer.muted = muted;
             view.viewer.apply_audio_mix();
         }
     }
 
-    /// Silences every map, as when the dashboard is hidden.
     pub fn release_audio(&mut self) {
         for view in self.views.values_mut() {
             view.viewer.release_audio();
         }
     }
 
-    /// The dashboard is not drawn (the campaign map shows, or no widget is in view): every map
-    /// lets its playhead go, and an export it held is refused, answered by the next drain.
     pub fn not_drawn(&mut self) {
         for view in self.views.values_mut() {
             view.viewer.export_closed("its map widget was not drawn before its picture was saved");
@@ -318,8 +290,6 @@ impl DashboardMaps {
         {
             return;
         }
-        // Only content its fallback key holds now: never content a map failed with, nor content
-        // built for another decision.
         if content
             .fallback
             .as_ref()
@@ -354,8 +324,6 @@ impl DashboardMaps {
             .collect()
     }
 
-    /// Each loaded map that shows visual mods: its key, selection, the recording's mods and the
-    /// revision it mounted, for [`Self::reload_stale`].
     pub(crate) fn visual_checks(
         &self,
     ) -> Vec<(
@@ -393,15 +361,10 @@ impl DashboardMaps {
             .collect()
     }
 
-    /// Whether a source's content is loading: a check of its visual mods then misses it until it
-    /// is installed.
     pub(crate) fn loading_content(&self) -> bool {
         self.loading.is_some()
     }
 
-    /// Reloads the maps whose visual mods changed since they loaded, as a folder change does:
-    /// their content is dropped off the UI thread and their views load again. Each map comes with
-    /// the revision the check found changed; content loaded since carries another and is kept.
     pub(crate) fn reload_stale(&mut self, stale: &[(MapSourceKey, String)], frame: &eframe::Frame) {
         let stale = stale_content(&self.sources, stale, |source| {
             source
@@ -425,15 +388,10 @@ impl DashboardMaps {
         }
     }
 
-    /// Shares the Campaign map's fallback owner, so every map of a recording follows one
-    /// decision per key ([`crate::visual_fallback`]).
     pub fn share_fallbacks(&mut self, fallbacks: crate::visual_fallback::Shared) {
         self.fallbacks = fallbacks;
     }
 
-    /// Reduces this frame's reports from every map at once, then drops each source's content
-    /// that is no longer what its fallback key holds, so its maps load again: without the
-    /// visual mods for a failure, or with them back.
     fn apply_visual_fallback(&mut self, frame: &eframe::Frame) {
         let reports = std::mem::take(&mut self.visual_reports);
         let mut fallbacks = crate::visual_fallback::lock(&self.fallbacks);
@@ -516,7 +474,6 @@ impl DashboardMaps {
             return;
         }
         self.config = config.clone();
-        // Every map retries, a source that failed to open too.
         self.source_bindings.retain(|_, binding| binding.is_ok());
         if let Some(load) = &self.loading {
             load.alive.store(false, Ordering::Release);
@@ -576,7 +533,6 @@ impl DashboardMaps {
                     if !view.target.visible && target.visible {
                         view.error = None;
                         view.viewer.retry_map();
-                        // The retry opens a source that failed to open again.
                         let requested = RequestedSource::target(&target);
                         if self
                             .source_bindings
@@ -657,9 +613,6 @@ impl DashboardMaps {
         ctx.request_repaint();
     }
 
-    /// Every view is admitted: each costs only its own targets beside its source's shared
-    /// textures. A view larger than the device can make a texture is refused, and a hidden one
-    /// lets its targets go.
     fn admit(&mut self, frame: &eframe::Frame) {
         for view in self.views.values_mut() {
             let shown =
@@ -879,9 +832,6 @@ impl DashboardMaps {
                 });
             if let Some(result) = finished {
                 let load = view.loading.take().expect("finished scene load");
-                // A scene built from content its source has dropped meanwhile (for a probe of
-                // its visual mods) is neither installed nor taken to have failed: the view
-                // builds again from what the source holds now.
                 let current = view
                     .source
                     .as_ref()
@@ -894,9 +844,6 @@ impl DashboardMaps {
                             .install_map(document, scene, view.target.revision.clone());
                     }
                     Err(error) => {
-                        // A scene that cannot be built with the visual mods is its content's
-                        // failure, reported to the owner, which probes without them; one that
-                        // cannot be built without them either is an error.
                         let failed = view
                             .source
                             .as_ref()
@@ -1000,7 +947,6 @@ impl DashboardMaps {
         };
         let visual_mods = source.visual_mods.clone();
         let texture_quality = source.texture_quality;
-        // The decisions the recording's fallback keys hold as the load starts.
         let recording =
             crate::visual_fallback::recording(&key.recording.source_id, &key.recording.revision);
         let decisions = crate::visual_fallback::lock(&self.fallbacks).decisions(&recording);
@@ -1044,8 +990,6 @@ impl DashboardMaps {
                     let Document {
                         content, playback, ..
                     } = document;
-                    // The load's block and map walk are destroyed here, off the UI thread; the
-                    // map draws from the recording's playhead, never by walking it.
                     drop(playback);
                     Ok(content)
                 }))
@@ -1069,8 +1013,6 @@ impl DashboardMaps {
         }
     }
 
-    /// The exports every view ended since the last call, those of views that went too: each
-    /// request, and why it was refused.
     pub fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
         let mut ended = std::mem::take(&mut self.ended_exports);
         for view in self.views.values_mut() {
@@ -1079,7 +1021,6 @@ impl DashboardMaps {
         ended
     }
 
-    /// What the views' pickers told the host since the last call, by view.
     pub fn take_view_events(&mut self) -> Vec<(String, crate::app::picker::ViewEvent)> {
         std::mem::take(&mut self.view_events)
     }
@@ -1114,7 +1055,6 @@ impl DashboardMaps {
         self.poll(ui.ctx());
         self.apply_visual_fallback(frame);
         let scale = ui.ctx().pixels_per_point();
-        // The maps drawn this frame: shown, loaded and not scrolled out.
         let drawn: std::collections::BTreeSet<&String> = self
             .order
             .iter()
@@ -1127,11 +1067,9 @@ impl DashboardMaps {
                 })
             })
             .collect();
-        // The one map that may sound; see [`DashboardMaps::audio_owner`].
         let audio_view = audio_view(self.audio_owner.as_ref(), &self.order, |id| {
             drawn.contains(id)
         });
-        // Every other map, drawn or not, stops sounding; a map not drawn lets its playhead go.
         for (id, view) in &mut self.views {
             if audio_view.as_ref() != Some(id) {
                 view.viewer.release_audio();
@@ -1176,7 +1114,6 @@ impl DashboardMaps {
                 view.viewer.ui_scale = self.ui_scale;
                 view.viewer.muted = self.muted;
                 view.viewer.audio_focus = audio_view.as_ref() == Some(id);
-                // Each map reads its own recording's executable tables.
                 let tables = view.viewer.tables();
                 engine_executable::executable_tables::scope(tables, || {
                     view.viewer.map_ui(&mut map_ui, frame, &view.target)
@@ -1205,8 +1142,6 @@ impl DashboardMaps {
                 );
                 recorded = true;
             }
-            // Diagnostics show only when the user turned them on; the loading
-            // status always shows.
             let diagnostics = view.viewer.diagnostics && view.viewer.has_map();
             let replay = view
                 .source
@@ -1254,8 +1189,6 @@ impl DashboardMaps {
     }
 }
 
-/// The last interacted map while it is shown, else the first shown map in
-/// layout order.
 fn audio_view(
     owner: Option<&String>,
     order: &[String],
@@ -1267,8 +1200,6 @@ fn audio_view(
         .cloned()
 }
 
-/// Where a map draws this frame: its clip within its body and the panel,
-/// or `None` when it is hidden or scrolled out.
 fn drawn_clip(target: &DashboardMapView, scale: f32, panel: egui::Rect) -> Option<egui::Rect> {
     if !target.visible {
         return None;
@@ -1291,8 +1222,6 @@ fn same_config(left: &Config, right: &Config) -> bool {
     left.game_dir == right.game_dir && left.user_dir == right.user_dir
 }
 
-/// The checked maps whose loaded content still carries the revision the check found changed;
-/// a map loading, or loaded since the check, is left alone.
 fn stale_content<S>(
     sources: &BTreeMap<MapSourceKey, S>,
     stale: &[(MapSourceKey, String)],
@@ -1310,8 +1239,6 @@ fn stale_content<S>(
         .collect()
 }
 
-/// Whether a scene load built from `built` completes for content its source still holds
-/// (`current`).
 fn still_current<T>(built: &std::sync::Weak<T>, current: Option<&Arc<T>>) -> bool {
     current.is_some_and(|current| std::ptr::eq(Arc::as_ptr(current), built.as_ptr()))
 }
@@ -1320,8 +1247,6 @@ fn still_current<T>(built: &std::sync::Weak<T>, current: Option<&Arc<T>>) -> boo
 mod tests {
     use super::*;
 
-    /// A scene built from content its source dropped meanwhile, for a probe of its visual
-    /// mods, is never installed: only one built from the content the source holds now is.
     #[test]
     fn a_scene_built_from_dropped_content_is_not_installed() {
         let built = Arc::new(1u8);
@@ -1411,8 +1336,6 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    /// A recording that failed to open keeps its map's error until the host hides and shows the
-    /// map again, which opens it afresh.
     #[test]
     fn showing_a_map_again_reopens_a_recording_that_failed_to_open() {
         fn settle(
@@ -1440,7 +1363,6 @@ mod tests {
         let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
         let revision = dashboard::protocol::replay_revision(&path).unwrap();
-        // Out of reach for now, as behind a share that dropped; a rename keeps its revision.
         std::fs::rename(&path, &away).unwrap();
         let mut maps = DashboardMaps::new(
             Config::default(),
@@ -1450,7 +1372,6 @@ mod tests {
             crate::worker_pool::WorkerPool::new().unwrap(),
         )
         .unwrap();
-        // Without a device, admission still follows the widget's size.
         maps.limits.dimension = u32::MAX;
         let bounds = ViewBounds {
             x: 0,
@@ -1499,8 +1420,6 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// A widget's export is answered though its widget went before the host heard: removing the
-    /// last widget, which hides the map, keeps the answer for the host.
     #[test]
     fn an_export_of_a_widget_that_went_is_still_answered() {
         let mut maps = DashboardMaps::new(
@@ -1541,8 +1460,6 @@ mod tests {
         assert_eq!(maps.take_export_results(), [(5, Err("Open a map and wait for any active export to finish".to_owned()))]);
         assert!(maps.take_export_results().is_empty(), "answered once");
 
-        // A widget's export held while the dashboard stops drawing (the campaign map shows, or
-        // no widget is in view) is refused, and its answer drained with the rest.
         maps.set_views(vec![target.clone()], &frame, &ctx);
         maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png", 6);
         maps.not_drawn();
@@ -1567,7 +1484,6 @@ mod tests {
             super::audio_view(Some(&c), &order, shown(&[])),
             Some(c.clone())
         );
-        // A hidden owner gives way to the first shown map.
         assert_eq!(
             super::audio_view(Some(&c), &order, shown(&["c"])),
             Some("a".into())
@@ -1578,8 +1494,6 @@ mod tests {
         );
     }
 
-    /// A map scrolled out of the panel or hidden is not drawn, so it cannot
-    /// be the map that sounds.
     #[test]
     fn a_scrolled_out_or_hidden_map_is_not_drawn() {
         let bounds = |y: i32| ViewBounds {

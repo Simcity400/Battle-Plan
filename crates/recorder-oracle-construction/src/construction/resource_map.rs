@@ -6,7 +6,6 @@ use replay_data::{
     rows::SliceReadRow, rows::TradeRouteRow,
 };
 
-/// The recorded resources map tables a comparison reads.
 pub struct ResourceMapRows<'a> {
     pub origins: &'a [ResourceOriginRow],
     pub rights: &'a [ResourceRightRow],
@@ -17,16 +16,10 @@ pub struct ResourceMapRows<'a> {
     pub resources: &'a [ResourceDefinitionRow],
 }
 
-/// Whether a convoy line with efficiency factors `a` and `b` (fixed5) draws in the bad-route
-/// colour: their truncated product below `threshold`.
 fn bad(a: i64, b: i64, threshold: i64) -> bool {
     i128::from(a) * i128::from(b) / 100_000 < i128::from(threshold)
 }
 
-/// A recorded operand against its saved value, or false when the recording predates it: the
-/// caller names that as a limitation, never a match. The client writer writes every operand
-/// unconditionally, so one absent from the save says nothing about the value: it is named as
-/// uncertified, never compared.
 fn operand<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
     subject: &str,
@@ -49,14 +42,6 @@ fn operand<T: std::fmt::Debug + PartialEq>(
     }
 }
 
-/// The resources map tables against the save. Each country's saved `resources` block (the
-/// country resource save writer) gives its own and rights-holder origins: their stored
-/// efficiency product, line colour (the convoy factors' product below
-/// `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`), convoy counts and requirement before the
-/// naval-dominance reduction (`request`), rights and routes, and the sea regions of the bad
-/// naval ones. The saved exports, lend-lease exchanges and market contracts give every other
-/// convoy client but supply transfers: its line colour, efficiency factors, convoy counts
-/// and `request`.
 #[allow(clippy::too_many_arguments)]
 pub fn resource_map(
     rows: &ResourceMapRows<'_>,
@@ -69,7 +54,6 @@ pub fn resource_map(
     hour: Hour,
     report: &mut Report,
 ) -> io::Result<()> {
-    // Recorded origins by (list owner's tag, list, state).
     let mut captured: BTreeMap<(Vec<u8>, u8, u32), &ResourceOriginRow> = BTreeMap::new();
     for row in rows.origins {
         if row.list > 1 {
@@ -185,8 +169,6 @@ pub fn resource_map(
     Ok(())
 }
 
-/// A recorded convoy client's assigned and required counts against its saved
-/// `convoys_subscriber`.
 fn counts(report: &mut Report, subject: &str, assigned: i32, required: i32, saved: ConvoyCounts) {
     value(
         report,
@@ -202,8 +184,6 @@ fn counts(report: &mut Report, subject: &str, assigned: i32, required: i32, save
     );
 }
 
-/// Each state's recorded rights against its controller origin's saved
-/// `given_resource_rights`, by resource name and holder tag.
 pub(super) fn rights(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
@@ -262,8 +242,6 @@ pub(super) fn rights(
             },
         );
     }
-    // The save writer sorts a temporary resource-name map, losing the live list order.
-    // Membership still compares above; native positions must be unique within an origin.
     let mut positions = BTreeSet::new();
     for row in rows.rights {
         if !positions.insert((row.state, row.ordinal)) {
@@ -282,9 +260,6 @@ pub(super) fn rights(
     Ok(())
 }
 
-/// The route the save writes for an origin, as the line builder draws it: a naval route's
-/// ports and sea regions, any other kind's end states and land states, and nothing without
-/// both ends and a path.
 fn drawn(route: &saved::SavedRoute) -> (u8, u32, u32, Vec<u32>) {
     let (ends, path) = if route.kind == engine_resources::resource_map::NAVAL {
         ((route.from_port, route.to_port), &route.naval_path)
@@ -299,9 +274,6 @@ fn drawn(route: &saved::SavedRoute) -> (u8, u32, u32, Vec<u32>) {
     }
 }
 
-/// The recorded origin routes against every saved own and rights-holder origin's
-/// `delivery_route`, keyed by the list owner's tag and the origin's state. Every country on
-/// either side must have had its TradeRoutes read at this hour.
 fn routes(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
@@ -412,8 +384,6 @@ fn routes(
     Ok(())
 }
 
-/// Every shared delivery route is held by at least one current client. Multiple
-/// import, lend-lease and market clients may reference the same recorded row.
 fn delivery_route_membership(rows: &ResourceMapRows<'_>, report: &mut Report) {
     let referenced: BTreeSet<_> = rows
         .clients
@@ -440,9 +410,6 @@ fn delivery_route_membership(rows: &ResourceMapRows<'_>, report: &mut Report) {
     report.compared("TradeRoutes delivery client membership", compared);
 }
 
-/// Shared routes are saved by the seller, keyed by buyer. Join through the saved
-/// contract, not a captured route key, so changing a captured country cannot select a
-/// different saved route or turn a saved comparison into a runtime-only limitation.
 fn market_route_endpoints(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
@@ -486,8 +453,6 @@ fn market_route_endpoints(
             continue;
         };
         let key = (client.route_country, client.route_class, client.route_other);
-        // Validate both client membership and route identity against the independently
-        // saved contract. Raw aliases of the same country still join by country tag.
         for (name, country, expected) in [
             ("seller", client.owner, contract.seller.as_slice()),
             ("buyer", client.other, contract.buyer.as_slice()),
@@ -538,8 +503,6 @@ fn market_route_endpoints(
             );
             compared += 1;
         } else {
-            // Absence of a serialized entry is distinct from present fields whose value
-            // differs. Only this independently saved pair can establish the limitation.
             report.limitation(
                 "this saved market contract's seller/buyer pair has no resources.delivery_routes entry; native endpoint states have no saved counterpart",
                 format!("{subject}: runtime-only; no text-save endpoint equality claim"),
@@ -571,9 +534,6 @@ fn market_route_endpoints(
     Ok(())
 }
 
-/// Each recorded regional delivery efficiency against the country's saved
-/// `strategic_navy.regional_convoys`: a region without a saved efficiency is full. Every sea
-/// region a saved bad naval origin route crosses needs its list owner's row.
 fn regional(
     rows: &ResourceMapRows<'_>,
     saved: &saved::Pack,
@@ -643,25 +603,18 @@ fn regional(
     Ok(())
 }
 
-/// A convoy client the save writes: its category, its owner and other countries, its two
-/// efficiency factors and its convoy counts.
 struct SavedClient<'a> {
     category: u8,
     owner_ordinal: Option<u32>,
-    /// An import's or lend-lease's saved owner and other; markets' are checked with routes.
     endpoints: Option<[Option<&'a [u8]>; 2]>,
     factors: [&'a installed_content_save::Decimal; 2],
-    /// The client's `request`, its convoy requirement before the naval-dominance reduction.
     request: Option<i32>,
     convoys: ConvoyCounts,
 }
 
-/// Every saved convoy client by the handle id its typed reference holds: each export (its
-/// receiver's import), each lend-lease exchange and each market contract's `convoy_client`.
 fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClient<'_>>> {
     use engine_resources::{resource_map::IMPORT, resource_map::LEND_LEASE, resource_map::MARKET};
     let exchanges = economy.countries.iter().flat_map(|(tag, country)| {
-        // An import's owner is the export's receiver and its other the exporter.
         let exports = country.exports.iter().flatten().map(move |exchange| {
             (
                 exchange.id,
@@ -732,9 +685,6 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
     Ok(clients)
 }
 
-/// Every recorded convoy client but supply transfers against the saved clients, by handle
-/// id: its category, an import's or lend-lease's countries, line colour, efficiency factors,
-/// convoy counts and convoy requirement before the naval-dominance reduction.
 fn clients(
     rows: &ResourceMapRows<'_>,
     economy: &economy::Pack,
@@ -1132,8 +1082,6 @@ mod market_route_tests {
             report.compared_tables["TradeRoutes market saved endpoints"],
             2
         );
-        // A saved delivery route is not permission to record it without a current
-        // client. Its non-null endpoints previously escaped all comparisons.
         let mut extra = routes.clone();
         extra.push(TradeRouteRow {
             country: 15,
@@ -1147,7 +1095,6 @@ mod market_route_tests {
         let report = run(&saved, &clients, &extra, &reads);
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("TradeRoutes.15.delivery.9.client_membership"));
-        // All client categories participate, and several clients may share a row.
         let mut shared = clients.clone();
         shared.push(ConvoyClientRow {
             handle: 9,
@@ -1171,7 +1118,7 @@ mod market_route_tests {
         for index in 0..2 {
             let mut wrong = routes.clone();
             wrong[index].source_state = Some(99);
-            wrong[index].destination_state = Some(22); // A non-null but wrong naval destination.
+            wrong[index].destination_state = Some(22);
             let report = run(&saved, &clients, &wrong, &reads);
             assert!(
                 report
@@ -1192,8 +1139,6 @@ mod market_route_tests {
         missing[1].source_state = None;
         missing[1].destination_state = None;
         assert_eq!(run(&saved, &clients, &missing, &reads).differences.len(), 2);
-        // Changing the captured buyer and its route key cannot choose CC->BB's saved
-        // endpoint instead of the saved CC->DD contract's endpoint or skip equality.
         let mut changed_clients = clients.clone();
         changed_clients[1].other = 9;
         changed_clients[1].route_other = 9;
@@ -1231,7 +1176,6 @@ mod market_route_tests {
                 .len(),
             2
         );
-        // Only genuine absence under the independently saved pair has no counterpart.
         let mut no_counterpart = saved.clone();
         no_counterpart
             .country_resources

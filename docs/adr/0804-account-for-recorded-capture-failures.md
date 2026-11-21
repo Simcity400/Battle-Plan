@@ -1,0 +1,3 @@
+# Account for capture failures from the recorded interval
+
+Recorder metrics read only the replay blocks needed for the requested inclusive interval. Opening a replay does not verify every block, so its digest is checked when the requested metrics walk reads it. Capture-failure accounting excludes recorder-derived tables and tables the selected capture mode intentionally left out. Exact native-nanosecond percentiles and named failures come from the remaining samples. The recorder owns command routing and uses synthetic fixtures to verify the file and in-memory paths. [Recorder metrics](../../crates/recorder-metrics/src/metrics.rs) · [Command routing](../../crates/recorder-metrics/src/lib.rs)

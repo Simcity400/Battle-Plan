@@ -1,4 +1,3 @@
-//! The country tags content declares (`common/country_tags`).
 
 use crate::{ResolvedLayers, parser, script_files};
 use std::{collections::BTreeMap, io};
@@ -13,18 +12,13 @@ pub struct CountryTag {
     pub dynamic: bool,
 }
 
-/// The tags content declares, and the keys the engine's reader skips.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TagIndex {
-    /// Every declared tag and its country file, `common/` plus the value.
     pub files: BTreeMap<String, String>,
-    /// Keys that are not three bytes, as `<path>: <key>`: the engine declares no tag
-    /// for them, so neither does this reader, but they are counted, not dropped silently.
     pub skipped: Vec<String>,
 }
 
 impl TagIndex {
-    /// Every skipped key as one counted warning.
     pub fn warning(&self) -> Option<String> {
         if self.skipped.is_empty() {
             return None;
@@ -37,13 +31,6 @@ impl TagIndex {
     }
 }
 
-/// `common/country_tags/*.txt`, listed as the database loader lists them
-/// ([`script_files::paths`]): declared tags and country files, with
-/// `common/` prepended to each value. `dynamic_tags` marks where dynamic-country
-/// slots begin without declaring a tag; following tags still register.
-/// Keys must be exactly three bytes; others are counted in [`TagIndex::skipped`].
-/// The first declaration wins. Block values are refused because their
-/// consumption is unsupported.
 pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
     let mut index = TagIndex::default();
     for path in script_files::paths(layers, "common/country_tags/", Some(".txt"))? {
@@ -52,9 +39,6 @@ pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
     Ok(index)
 }
 
-/// Corpus inventory of declarations, including opaque longer identities the
-/// engine can carry elsewhere. This does not widen the train/unit-model reader.
-/// Includes the authored dynamic boundary, never inferred from a tag's spelling.
 pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, CountryTag>> {
     let mut tags = BTreeMap::new();
     let mut dynamic = false;
@@ -64,14 +48,12 @@ pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, 
     Ok(tags)
 }
 
-/// One index file's declarations, added in file order; the first wins.
 fn add_tag_index(path: &str, bytes: &[u8], index: &mut TagIndex) -> io::Result<()> {
     let document = parser::parse(bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
     for item in &document.items {
         let Some(key) = item.key.as_deref() else {
             continue;
         };
-        // The marker requires a keyword; quoted text does not match.
         if item.keyword_is("dynamic_tags") {
             continue;
         }
@@ -102,8 +84,6 @@ fn add_definitions(
     dynamic: &mut bool,
 ) -> io::Result<()> {
     let document = parser::parse(bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
-    // The last marker snapshots the registration count as the first
-    // dynamic slot. Its value is ignored, and the boundary survives file changes.
     for item in &document.items {
         if item.keyword_is("dynamic_tags") {
             for definition in tags.values_mut() {
@@ -187,7 +167,6 @@ mod tests {
             ("GHI".into(), "common/countries/later.txt".into()),
             ("JKL".into(), "common/countries/over.txt".into()),
         ]);
-        // The index lists the files the database loader lists: nested and `.TXT` files are not.
         assert_eq!(country_tag_index(&layers).unwrap().files, expected);
         assert_eq!(
             read_definitions(&layers)
@@ -197,7 +176,6 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             expected
         );
-        // A file the loader never lists does not stop the index, whatever it holds.
         drop(layers);
         std::fs::write(
             base.join("common/country_tags/nested/z.txt"),
@@ -277,7 +255,6 @@ mod tests {
             &mut index,
         )
         .unwrap();
-        // A key that is not three bytes declares no tag, and is counted.
         assert_eq!(
             index.skipped,
             ["00_countries.txt: LONGKEY", "00_countries.txt: GB"]
@@ -302,7 +279,6 @@ mod tests {
         add_tag_index("extra.txt", extra.as_bytes(), &mut index).unwrap();
         assert_eq!(index.skipped.len(), 10);
         assert!(index.warning().unwrap().ends_with("extra.txt: skipped_7"));
-        // Quoted text is not the dynamic boundary.
         add_tag_index("quoted.txt", b"\"dynamic_tags\" = unused", &mut index).unwrap();
         assert_eq!(index.skipped.len(), 11);
         assert_eq!(index.skipped.last().unwrap(), "quoted.txt: dynamic_tags");

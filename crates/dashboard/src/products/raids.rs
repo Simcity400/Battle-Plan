@@ -1,10 +1,3 @@
-//! Raids (family 61): every raid of a span ([`RaidLog`]), with its raider, victim, type, icon,
-//! target, its phases as runs and its preparation hours, and the raid types the content offers.
-//! The tally of each country's launches and wins is counted from the same reply. A raid is the
-//! lifetime of its `Raids` row (kept in the index at open). Its phases, launch and preparation are
-//! one history of its row's columns over the span; a finished raid's last state, target and victim
-//! are its row of the `raid-ends` log; a raid with no end row in the span (live at its end, or
-//! already ended at the run's first read) is read from its target's history at its last hour.
 
 use dashboard_base::products::Country;
 use crate::{
@@ -26,21 +19,17 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Raids' columns, as the schema numbers them, ascending as a history holds them.
 const PARENT_SLOT: usize = 0;
 const PHASE: usize = 2;
 const OUTCOME: usize = 3;
 const TRAVELLED: usize = 16;
 const PREPARATION: usize = 17;
 const RAID_COLUMNS: [usize; 5] = [PARENT_SLOT, PHASE, OUTCOME, TRAVELLED, PREPARATION];
-/// RaidTargets' columns: the scope's nine, then the raid type token.
 const TARGET_COLUMNS: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 const RAID_TYPE: usize = 9;
-/// The sprite the game draws for a raid type without one of its own.
 const UNKNOWN_ICON: &str = "GFX_raid_type_icon_unknown";
 const ENDED_VICTIMS: &str = "Ended victims use the target controller at each raid's first ended read. The saved completion-time country is not recorded, so control changes before that read are unknown.";
 
-/// A cell as a number: none where not recorded, `Some(None)` for an optional number holding none.
 fn lane_value(cell: Option<Cell>) -> Option<Option<i64>> {
     match cell? {
         Cell::Number(value) => Some(Some(value)),
@@ -57,8 +46,6 @@ fn log_value(cell: Option<&log::Cell>) -> Option<Option<i64>> {
     }
 }
 
-/// A raid's target from its nine scope columns, the end row's or the target row's (by position);
-/// none while one of them is not recorded.
 fn scope_of(value: impl Fn(usize) -> Option<Option<i64>>) -> Option<RaidScope> {
     let number = |at: usize| value(at).flatten();
     Some(RaidScope {
@@ -74,7 +61,6 @@ fn scope_of(value: impl Fn(usize) -> Option<Option<i64>>) -> Option<RaidScope> {
     })
 }
 
-/// The targeted province, by the game's location priority.
 pub fn province_of(scope: &RaidScope) -> Option<u32> {
     if scope.province != 0 {
         Some(scope.province)
@@ -87,29 +73,22 @@ pub fn province_of(scope: &RaidScope) -> Option<u32> {
     }
 }
 
-/// The fixed64 finite domain: every signed value but the three infinity and undefined sentinels.
 fn finite(raw: i64) -> bool {
     (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// What a raid's row history says of it through its last hour in the span.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Course {
     pub runs: Vec<(i32, i32, i32, i32)>,
     pub preparation: Vec<RaidPreparationRun>,
-    /// The first hour in progress or with a finite nonzero distance flown.
     pub launched: Option<i32>,
-    /// The first hour read ended.
     pub ended: Option<i32>,
-    /// Its last recorded parent slot, phase and outcome.
     pub raider: Option<u32>,
     pub phase: Option<i32>,
     pub outcome: Option<i32>,
 }
 
 impl Course {
-    /// From `steps` (hour order) of the columns [`RAID_COLUMNS`], each holding through the hour
-    /// before the next, the last through `last`.
     pub fn read(steps: &[lanes::Step], last: i32) -> Self {
         let mut course = Self::default();
         for (at, step) in steps.iter().enumerate() {
@@ -151,8 +130,6 @@ impl Course {
     }
 }
 
-/// Adds `value` held from `first` through `last` to `runs`, joining it to the last run where the
-/// hours follow on and the value keeps that run's change per hour.
 fn prepare(runs: &mut Vec<RaidPreparationRun>, first: i32, last: i32, value: i32) {
     if let Some(run) = runs.last_mut()
         && run.1 + 1 == first
@@ -194,7 +171,6 @@ pub struct RaidArtwork {
     pub missing: Option<String>,
 }
 
-/// A stretch of a raid's phase and outcome, every hour of it read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -207,8 +183,6 @@ pub struct RaidPhaseRun {
     pub outcome_name: Option<String>,
 }
 
-/// (First read, last read, preparation hours at the first read, change per hour), every hour of
-/// it read while the raid was preparing: a missing read ends it, so it never spans a gap.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))] pub i64);
@@ -217,29 +191,29 @@ pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[cfg_attr(any(test, fe
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidEpisode {
-    /// The raid's row key, as a decimal string.
+    #[doc = " The raid's row key, as a decimal string."]
     pub id: String,
-    /// The first and last hour its row lived within the span.
+    #[doc = " The first and last hour its row lived within the span."]
     pub first_hour: i32,
     pub last_hour: i32,
     pub raider: Option<String>,
     pub victim: Option<String>,
-    /// Why the victim is not named, when it is not.
+    #[doc = " Why the victim is not named, when it is not."]
     pub victim_missing: Option<String>,
-    /// The raid type's token and its name in the reader's language.
+    #[doc = " The raid type's token and its name in the reader's language."]
     pub raid_type: Option<String>,
     pub raid_type_name: Option<String>,
-    /// The sprite key into the reply's artwork, or why there is none.
+    #[doc = " The sprite key into the reply's artwork, or why there is none."]
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
     pub province: Option<u32>,
     pub state: Option<u32>,
-    /// Its last phase and outcome.
+    #[doc = " Its last phase and outcome."]
     pub phase: Option<i32>,
     pub phase_name: Option<String>,
     pub outcome: Option<i32>,
     pub outcome_name: Option<String>,
-    /// Its phases over the span, in hour order.
+    #[doc = " Its phases over the span, in hour order."]
     pub runs: Vec<RaidPhaseRun>,
     pub preparation: Vec<RaidPreparationRun>,
     pub launched_hour: Option<i32>,
@@ -248,13 +222,11 @@ pub struct RaidEpisode {
     pub succeeded: bool,
 }
 
-/// The content a raids reply is named and drawn with, or why it is not there.
 struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     raids: Result<Arc<Catalog>, String>,
 }
 
-/// Each raid icon drawn, by raid type and target template: its sprite key and image, or why not.
 type Drawn = Mutex<HashMap<(String, Option<String>), Result<(String, String), String>>>;
 
 impl Content {
@@ -266,14 +238,12 @@ impl Content {
         Self { catalogue, raids }
     }
 
-    /// `key`'s text in the reader's language, none where the content has no such key.
     fn label(&self, key: &str) -> Option<String> {
         let cat = self.catalogue.as_ref().ok()?;
         cat.localisation.get(key)?;
         cat.localised(key, View::Plain)
     }
 
-    /// Every raid type the content declares, then each it holds undecided with why.
     fn types(&self) -> Vec<RaidTypeInfo> {
         let Ok(raids) = &self.raids else { return Vec::new() };
         raids
@@ -297,8 +267,6 @@ impl Content {
         out
     }
 
-    /// The icon of a raid of type `token` against a building of template `template`: its type's
-    /// sprite specialised by the template where the content declares that sprite, drawn once.
     fn icon(&self, token: &str, template: Option<&str>) -> Result<(String, String), String> {
         let cat = self.catalogue.as_ref().map_err(|reason| format!("raid icons are unavailable: {reason}"))?;
         let raids = self.raids.as_ref().map_err(|reason| format!("raid icons are unavailable: {reason}"))?;
@@ -335,7 +303,6 @@ impl Content {
     }
 }
 
-/// Each token's recorded literal, read at `hour`.
 fn literals(query: &Query<'_>, run: u32, hour: i32, tokens: &BTreeSet<u32>) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
         return Ok(HashMap::new());
@@ -352,8 +319,6 @@ fn literals(query: &Query<'_>, run: u32, hour: i32, tokens: &BTreeSet<u32>) -> i
         .collect())
 }
 
-/// A key's cell at `hour` in `history` (its last step at or before it), none where its row is not
-/// shown then.
 fn cell_at(history: &lanes::History, steps: Option<&Vec<lanes::Step>>, column: usize, hour: i32) -> Option<Cell> {
     let at = history.columns.binary_search(&column).ok()?;
     let steps = steps?;
@@ -365,7 +330,6 @@ fn steps_of(history: &lanes::History, key: u128) -> Option<&Vec<lanes::Step>> {
     history.keys.binary_search_by_key(&key, |(key, _)| *key).ok().map(|at| &history.keys[at].1)
 }
 
-/// What a raid's end row or target says of its last state.
 struct Facts {
     scope: Option<RaidScope>,
     token: Option<u32>,
@@ -373,7 +337,6 @@ struct Facts {
     victim: (Option<String>, Option<String>),
 }
 
-/// Every raid whose row lived in `from..=to` of `query`'s timeline.
 fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Content, warnings: &mut BTreeSet<String>) -> io::Result<(Vec<RaidEpisode>, BTreeMap<String, RaidArtwork>)> {
     let recording = query.replay.recording();
     let countries = Names::new(&query.holders);
@@ -577,7 +540,6 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
     Ok((out, artwork))
 }
 
-/// The `raid-ends` columns a reply reads, by name.
 struct EndColumns {
     kind: usize,
     launched_hour: usize,
@@ -615,7 +577,6 @@ impl EndColumns {
     }
 }
 
-/// The span's hours the timeline does not hold, with why.
 fn unheld(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
     query
         .timeline
@@ -645,15 +606,15 @@ pub struct RaidLog;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RaidLogParams {
     pub branch_id: String,
-    /// The timeline's first and last hour when none.
+    #[doc = " The timeline's first and last hour when none."]
     #[serde(default)]
     pub from: Option<i32>,
     #[serde(default)]
     pub to: Option<i32>,
-    /// Raids by or against these countries; every raid when empty.
+    #[doc = " Raids by or against these countries; every raid when empty."]
     #[serde(default)]
     pub countries: Vec<Country>,
-    /// Only the raid types and whether raids are available: no raid is read.
+    #[doc = " Only the raid types and whether raids are available: no raid is read."]
     #[serde(default)]
     pub catalogue: bool,
 }
@@ -662,19 +623,19 @@ pub struct RaidLogParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidLogReply {
-    /// False only when the content proves no raid type exists; true once a raid was recorded; none
-    /// when neither is known.
+    #[doc = " False only when the content proves no raid type exists; true once a raid was recorded; none"]
+    #[doc = " when neither is known."]
     pub available: Option<bool>,
     pub unavailable: Option<String>,
-    /// The game's phase and outcome numbers a reader compares with.
+    #[doc = " The game's phase and outcome numbers a reader compares with."]
     pub phase_preparing: i32,
     pub phase_ended: i32,
     pub outcome_none: i32,
-    /// Every raid type the content declares, then each it holds undecided with why.
+    #[doc = " Every raid type the content declares, then each it holds undecided with why."]
     pub types: Vec<RaidTypeInfo>,
-    /// Each icon the episodes name, once.
+    #[doc = " Each icon the episodes name, once."]
     pub artwork: Vec<RaidArtwork>,
-    /// By first hour.
+    #[doc = " By first hour."]
     pub episodes: Vec<RaidEpisode>,
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
@@ -682,7 +643,6 @@ pub struct RaidLogReply {
 
 dashboard_base::reply_warnings!(RaidLogReply);
 
-/// Whether a raid was recorded in any run of `query`'s timeline (from the index at open).
 fn recorded(source: &Source, query: &Query<'_>) -> io::Result<bool> {
     for run in query.timeline.stretches.iter().map(|stretch| stretch.run).collect::<BTreeSet<_>>() {
         if !crate::answer::lifetimes(source, run, TableId::Raids)?.is_empty() {

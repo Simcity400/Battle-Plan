@@ -1,4 +1,3 @@
-//! Modifier and popularity fields resolve through their shared registries.
 
 use crate::{
     equipment,

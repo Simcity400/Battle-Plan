@@ -1,4 +1,3 @@
-/** Synthetic mounted histories for real browser interaction assertions. */
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { VirtualList } from './VirtualList';
@@ -35,8 +34,6 @@ function Histories({ columns, deferChildren, controls, noninteractive, rows = it
     return (item: { id: string }) => eligible ? positions.has(Number(item.id)) : !positions.has(Number(item.id));
   }, [eligible, noninteractive]);
   const isInteractive = useMemo(() => (item: { id: string }) => { eligibilityCalls++; return interactive(item); }, [interactive]);
-  // Separately bind the parent only for the cross-column regression, isolating it
-  // from the regression where parent and child first mount in the same commit.
   const [ready, setReady] = useState(!deferChildren);
   useLayoutEffect(() => { setReady(true); }, []);
   return <><button data-control="before">Before histories</button>

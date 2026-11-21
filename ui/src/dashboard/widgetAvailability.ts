@@ -13,8 +13,6 @@ export function availabilityRequest(definition: Pick<WidgetMeta, 'availability'>
   } : null;
 }
 
-/** Products whose reply has no reason field (the air ledger, casualty pairs,
- * the division log) answer with `available` alone. */
 export function validateWidgetAvailability(value: unknown): WidgetAvailability {
   const reply = value as Partial<WidgetAvailability> | null;
   if (!reply || ![true, false, null].includes(reply.available as boolean | null)
@@ -22,7 +20,6 @@ export function validateWidgetAvailability(value: unknown): WidgetAvailability {
   return { available: reply.available as boolean | null, unavailable: reply.unavailable ?? null };
 }
 
-/** Why a recording's capture mode leaves out what the widget reads, or null when it holds it. */
 export function scopeReason(definition: Pick<WidgetMeta, 'data' | 'captureModes'>, mode: CaptureMode | undefined): string | null {
   if (!definition.data || mode === undefined || (definition.captureModes ?? ['full']).includes(mode)) return null;
   return `Not in this recording: a ${mode === 'map' ? 'Map' : mode} recording holds the campaign map and its battle windows only.`;

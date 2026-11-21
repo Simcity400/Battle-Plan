@@ -2,8 +2,6 @@ import { approach } from '../easing.ts';
 import { checkChord } from './check.ts';
 import type { ChordData, ChordFlow, ChordNode } from './layout.ts';
 
-/** Stable insertion order across updates. Removed items keep their position until
- * zero, and their identity keeps its position if it returns. No data is interpolated. */
 export class ChordMotion {
   private nodes = new Map<string, { node: ChordNode; target: number; presence: number }>();
   private flows = new Map<string, { flow: ChordFlow; target: number; value: number }>();
@@ -43,13 +41,10 @@ export class ChordMotion {
       else this.flows.set(flow.id, { flow, target: flow.value, value: 0 });
       if (flow.value > 0) source.target = target.target = 1;
     }
-    // Returning identities recover their old position. Sort only at a data
-    // change; a frame walks active and departing shapes, never the history.
     this.nodes = new Map([...this.nodes].sort(([a], [b]) => this.nodeOrder.get(a)! - this.nodeOrder.get(b)!));
     this.flows = new Map([...this.flows].sort(([a], [b]) => this.flowOrder.get(a)!.order - this.flowOrder.get(b)!.order));
   }
 
-  /** A recording gap or a change of source resets presentation immediately. */
   clear(): void {
     this.settled = null;
     this.nodes.clear(); this.flows.clear(); this.nodeOrder.clear(); this.flowOrder.clear();

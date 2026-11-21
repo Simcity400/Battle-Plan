@@ -1,12 +1,3 @@
-//! The vision layer: what the viewing country sees, the values today's `perspective::Vision`
-//! derives from a frame of rows, kept from the mirrors. The viewer, the relations, the unit
-//! modifier, the intel lanes and the defines are reread whole when their small tables change;
-//! the unit intel levels per unit; the province bytes per province from the ordered terms of
-//! [`fold`]; the invasion sight per division at sea.
-//!
-//! Fog, intel, counters, unit models and the engagement layers read it. A table missing at the
-//! head is what today's `Vision::read` makes of it: an undecided unit sight, a truncated census, a
-//! relations gap or a visibility gap, by name; a gap step refuses the hour.
 
 mod fold;
 mod global;
@@ -29,13 +20,9 @@ use viewer_foundation::map::{
     visibility::{self, FogContent},
 };
 
-/// The fog content the layer reads: province kinds and neighbours by id, and the `NIntel` defines.
 pub struct Content {
     fog: Result<FogContent, String>,
-    /// Per province id: 1 land, 2 sea, 0 neither.
     kind: Vec<u8>,
-    /// Per province id: its native neighbours, `neighbors[start[id]..start[id + 1]]`; none for an
-    /// id the topology does not hold.
     start: Vec<u32>,
     neighbors: Vec<u32>,
     held: Vec<bool>,
@@ -79,7 +66,6 @@ impl Content {
         self.kind.get(province as usize) == Some(&SEA)
     }
 
-    /// The province's neighbours, none when the topology does not hold it.
     fn neighbors(&self, province: u32) -> Option<&[u32]> {
         let at = province as usize;
         self.held.get(at).copied().unwrap_or(false).then(|| &self.neighbors[self.start[at] as usize..self.start[at + 1] as usize])
@@ -90,7 +76,6 @@ impl Content {
     }
 }
 
-/// The columns the layer reads.
 #[derive(Clone, Copy)]
 pub(super) struct Columns {
     link_slot: Num<u32>,
@@ -136,8 +121,6 @@ pub(super) struct Columns {
     forward_visibility: List,
 }
 
-/// A status as the layer reacts to it: a truncated table's missing count moves every hour and
-/// changes nothing the layer reads.
 fn kind(status: Option<Status>) -> Option<Status> {
     status.map(|status| match status {
         Status::Truncated { .. } => Status::Truncated { missing: 0 },
@@ -145,39 +128,28 @@ fn kind(status: Option<Status>) -> Option<Status> {
     })
 }
 
-/// The rows a table holds at the head when it is whole; none otherwise.
 pub(super) fn complete(mirrors: &Mirrors, table: TableId) -> Option<&Mirror> {
     mirrors.get(table).filter(|mirror| mirror.complete())
 }
 
-/// The rows a table holds at the head, whole or truncated; none when unavailable, unrecorded or
-/// in a gap.
 pub(super) fn held(mirrors: &Mirrors, table: TableId) -> Option<&Mirror> {
     mirrors.get(table).filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
-/// The limitation notes vision's values make, in today's words and order, made on the fold's worker
-/// and published with it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Notes {
-    /// The viewing country and the fog switch.
     perspective: Vec<String>,
     fog: bool,
-    /// With fog on: the undecided sight's and the visibility gap's lines.
     sight: Vec<String>,
-    /// A fog is drawn: the fog of war's line is stated.
     fog_drawn: bool,
-    /// With fog on: the perspective tables the hour truncated.
     truncated: Vec<String>,
 }
 
 impl Notes {
-    /// The viewing country's line.
     pub fn perspective(&self) -> &[String] {
         &self.perspective
     }
 
-    /// With fog on, the sight inputs' lines at `statuses`, then the undecided sight's and the gap's.
     pub fn sight(&self, statuses: &dyn viewer_foundation::map::tables::Statuses) -> Vec<String> {
         if !self.fog {
             return Vec::new();
@@ -189,7 +161,6 @@ impl Notes {
         lines
     }
 
-    /// The fog of war's line over the intel texture's `fogged` cells, when a fog is drawn.
     pub fn fog_of_war(&self, fogged: usize) -> Option<String> {
         self.fog_drawn.then(|| {
             let mut out = viewer_foundation::map::tables::Limitations::default();
@@ -198,7 +169,6 @@ impl Notes {
         })
     }
 
-    /// Whether a fog is drawn, so the fog of war's line is owed.
     pub fn fog_drawn(&self) -> bool {
         self.fog_drawn
     }
@@ -208,8 +178,6 @@ impl Notes {
     }
 }
 
-/// A whole vision's parts as the layer holds them, the province bytes as the fold's arrays (the
-/// provinces held and every byte by id): made into today's type off the frame.
 pub struct SeenCopy {
     bytes: Option<(Vec<u32>, Vec<u8>)>,
     parts: Parts,
@@ -220,14 +188,11 @@ thread_local! {
     static MADE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Visions made of a copy on this thread: the frame thread makes none.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seen_made_here() -> u64 {
     MADE.with(std::cell::Cell::get)
 }
 
-/// The province bytes of the last vision made from a copy, kept by the thread that makes them: the
-/// next is made by writing only the provinces whose byte changed.
 pub struct Made {
     present: Vec<u32>,
     bytes: Vec<u8>,
@@ -235,7 +200,6 @@ pub struct Made {
 }
 
 impl SeenCopy {
-    /// A copy of `parts` without province bytes, for a test of what holds copies.
     #[cfg(test)]
     pub(crate) fn of_parts(parts: Parts) -> Self {
         Self { bytes: None, parts }
@@ -245,8 +209,6 @@ impl SeenCopy {
         self.make_after(None).0
     }
 
-    /// The vision of this copy, its province bytes made from `before`'s by writing only the
-    /// provinces whose byte differs, with what the next copy is made after.
     pub fn make_after(self, before: Option<&Made>) -> (Seen, Option<Made>) {
         use viewer_foundation::map::perspective::values::Values;
         #[cfg(any(test, feature = "test-support"))]
@@ -283,23 +245,16 @@ impl SeenCopy {
     }
 }
 
-/// The vision layer's arrays.
 pub struct Vision {
     content: Arc<Content>,
     pub(super) columns: Option<Columns>,
     choice: Choice,
-    /// The whole parts as the worker last made them.
     global: Global,
-    /// Per unit: its rows' ordinals and slots in UnitIntel, and the first level keyed to the
-    /// viewer.
     unit_rows: HashMap<u64, Vec<(u32, u32)>>,
     levels: BTreeMap<u64, i8>,
     units: Dirty64,
     lanes_dirty: bool,
-    /// CountryIntel rows whose air or navy lane moved: raw owner and target.
     lane_changes: Vec<(u32, u32)>,
-    /// What the applies marked, read at the settle: UnitIntel's rows, all of its units (its status
-    /// moved), and CountryIntel's slots whose air or navy lane was written.
     intel: Vec<Intel>,
     intel_all: bool,
     lane_slots: Vec<u32>,
@@ -311,22 +266,15 @@ pub struct Vision {
     statuses: HashMap<usize, Option<Status>>,
     gap: bool,
     pub(super) frame: u64,
-    /// Units, provinces and terms the steps have marked.
     marked: [u64; 3],
-    /// Nanoseconds on the frame handing steps to the worker.
     copying: u64,
-    /// What a unit's sight reads besides its province's byte, its level and its sight province,
-    /// and how many times it changed: a reader of unit sight rereads every unit only then.
     sight_key: Option<SightKey>,
     sight_epoch: u64,
-    /// The perspective changed since the fold last started: it starts over at the view's change.
     rechoose: bool,
-    /// Mirror rows its applies read: none.
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
-/// A UnitIntel row an apply marked: gone or come (key and slot), or written (slot).
 #[derive(Clone, Copy, Debug)]
 enum Intel {
     Gone(u128, u32),
@@ -334,8 +282,6 @@ enum Intel {
     Written(u32),
 }
 
-/// The whole parts a unit's sight reads ([`Vision::sees_land`], today's `sees_navy` and a task
-/// force's priority).
 #[derive(Debug, PartialEq)]
 struct SightKey {
     ours: u32,
@@ -349,7 +295,6 @@ struct SightKey {
     relations_gap: Option<&'static str>,
 }
 
-/// Dirty 64-bit keys, each once, in the order first marked, each with the frame it was marked at.
 #[derive(Debug, Default)]
 struct Dirty64 {
     list: Vec<(u64, u64)>,
@@ -419,7 +364,6 @@ impl Vision {
         Self { columns: self.columns, choice: self.choice.clone(), ..Self::new(Arc::clone(&self.content)) }
     }
 
-    /// Why the hour has no vision, by name; none when it has one.
     pub fn refused(&self) -> Option<String> {
         if self.gap {
             return Some("the hour is a gap in the recording".into());
@@ -427,14 +371,10 @@ impl Vision {
         self.global.failed.clone()
     }
 
-    /// The vision as today's type, made from the layer's arrays: what the proof compares and what
-    /// a reader of today's type takes.
     pub fn vision(&self) -> Option<Seen> {
         self.refused().is_none().then(|| self.copy().make())
     }
 
-    /// What [`Self::shown`] makes, copied at the cost of the layer's arrays, to be made into the
-    /// vision elsewhere ([`SeenCopy::make`]): the province bytes as two arrays, not a map.
     pub fn shown_copy(&self) -> Result<SeenCopy, String> {
         if self.fold.published() == crate::layers::Published::Nothing {
             return Err("the vision layer has published nothing yet".into());
@@ -488,12 +428,10 @@ impl Vision {
         }
     }
 
-    /// Its limitation notes as its worker last made them; none while it refuses the hour.
     pub fn notes(&self) -> Option<&Notes> {
         self.refused().is_none().then(|| self.fold.notes())
     }
 
-    /// The perspective it is drawn at.
     pub fn choice(&self) -> &Choice {
         &self.choice
     }
@@ -502,24 +440,19 @@ impl Vision {
         self.marked
     }
 
-    /// Microseconds the province terms' settles spent, by part: cutoffs, sources, provinces,
-    /// divisions at sea.
     pub fn spent(&self) -> [u64; 4] {
         self.fold.spent().map(|ns| ns / 1000)
     }
 
-    /// Microseconds the fold spent on the worker, and its folds, since the layer was made.
     pub fn worker(&self) -> (u64, u64) {
         let (ns, runs) = self.fold.worker();
         (ns / 1000, runs)
     }
 
-    /// Microseconds on the frame handing steps to the worker since the layer was made.
     pub fn copying_us(&self) -> u64 {
         self.copying / 1000
     }
 
-    /// Every term made again since the layer was made, by the part of the whole parts that moved.
     pub fn rebuilds(&self) -> [u64; 4] {
         self.fold.rebuilds()
     }
@@ -528,7 +461,6 @@ impl Vision {
         self.content.bytes()
     }
 
-    /// The newest hour its worker has made a product of, as received on the frame.
     #[cfg(any(test, feature = "test-support"))]
     pub fn made_through(&self) -> Option<replay_data::Hour> {
         self.fold.made_through()
@@ -544,24 +476,18 @@ impl Vision {
         }
     }
 
-    /// Whether a fog is drawn: fog on, a vision, and no visibility gap.
     pub fn fog_drawn(&self) -> bool {
         self.refused().is_none() && self.global.fog && self.fold.gap(&self.content).is_none()
     }
 
-    /// A province's byte as the intel texture reads it.
     pub fn intel_byte(&self, province: u32) -> u8 {
         self.fold.intel_byte(province)
     }
 
-    /// Every province's byte as the terms make it, whether or not a gap withholds the fog: what
-    /// stepping must equal when today's product draws none.
     pub fn terms_bytes(&self) -> BTreeMap<u32, u8> {
         self.fold.province_bytes()
     }
 
-    /// A province's byte as today's `Vision::province_byte` gives it: 255 with fog off, none under
-    /// a visibility gap or for a province the Provinces table does not hold.
     pub fn province_byte(&self, province: u32) -> Option<u8> {
         if !self.global.fog {
             return Some(u8::MAX);
@@ -572,25 +498,19 @@ impl Vision {
         self.fold.province_byte(province)
     }
 
-    /// A perspective change's fold is still being made: what the layer shows is the viewer's before.
     pub fn restarting(&self) -> bool {
         self.fold.restarting()
     }
 
-    /// Its fold has answered for its choice since it was composed or the choice changed: what it
-    /// shows, a refusal included, is its own rather than a state of being made.
     pub fn made(&self) -> bool {
         use crate::layers::Layer as _;
         !self.restarting() && !matches!(self.published(), crate::layers::Published::Nothing)
     }
 
-    /// The viewing country's canonical slot; none without a vision.
     pub fn ours(&self) -> Option<u32> {
         self.refused().is_none().then_some(self.global.ours)
     }
 
-    /// How much of one land unit standing in `province` the viewer is shown, read in place:
-    /// today's `Vision::sees_land`; none without a vision.
     pub fn sees_land(&self, unit: u64, owner: u32, province: u32) -> Option<Sight> {
         self.refused().is_none().then(|| {
             let shared = self.global.shares.contains_key(&owner);
@@ -599,7 +519,6 @@ impl Vision {
         })
     }
 
-    /// The whole parts a land unit's sight reads besides its own level and province byte.
     fn sight_parts(&self) -> SightParts {
         let global = &self.global;
         SightParts {
@@ -612,8 +531,6 @@ impl Vision {
         }
     }
 
-    /// What a division's sight reads of the layer, whole: for a reader that keeps its own copy
-    /// ([`SightCopy`]) on another thread.
     pub fn sight_copy(&self) -> SightCopy {
         SightCopy {
             keys: self.sight_keys(),
@@ -623,7 +540,6 @@ impl Vision {
         }
     }
 
-    /// What a division's sight reads of the layer as a whole, to tell a later change by.
     pub fn sight_keys(&self) -> SightKeys {
         SightKeys {
             refused: self.refused(),
@@ -635,9 +551,6 @@ impl Vision {
         }
     }
 
-    /// What changed of a division's sight since `held` (the keys of the copy last made or
-    /// changed), named by the changed lists: whole when anything but a unit's or a province's own
-    /// part moved; none when nothing did.
     pub fn sight_change(&self, changed: crate::layers::Change<'_>, held: &mut Option<SightKeys>) -> Option<SightChange> {
         let keys = self.sight_keys();
         let (whole, units, provinces) = match changed {
@@ -655,16 +568,10 @@ impl Vision {
         Some(SightChange { whole: whole.then(|| Box::new(self.sight_copy())), units, provinces })
     }
 
-    /// The province whose byte [`Self::sees_land`] reads for a land unit standing in `province`.
-    /// It moves only with a change of the unit's sight, which the changed lists name ("unit").
     pub fn sight_province(&self, unit: u64, province: u32) -> u32 {
         self.fold.sight_of(unit).unwrap_or(province)
     }
 
-    /// Moves on whenever what a unit's sight reads besides its province's byte, its level and its
-    /// sight province changed (the viewer, the fog, the relations, the modifier, a gap), and at a
-    /// compose; between two of its values the changed lists name every unit and province whose sight
-    /// moved.
     pub fn sight_epoch(&self) -> u64 {
         self.sight_epoch
     }
@@ -684,10 +591,6 @@ impl Vision {
         }
     }
 
-    /// Today's vision with only what the sight of `units` reads, made from the layer's arrays: their
-    /// levels, the viewer, the fog, the relations and the modifier, but no province, so it answers
-    /// `sees_navy`, `shares_vision_proven` and `at_war_proven` for those units and nothing that
-    /// reads a province's byte. None without a vision.
     pub fn unit_vision(&self, units: impl Iterator<Item = u64>) -> Option<Seen> {
         if self.refused().is_some() {
             return None;
@@ -717,8 +620,6 @@ impl Vision {
         }))
     }
 
-    /// Whether `owner` shares vision with the viewer, today's `Vision::shares_vision_proven`;
-    /// none without a vision.
     pub fn shares_vision_proven(&self, owner: u32) -> Option<Result<bool, SharingUnknown>> {
         self.refused().is_none().then(|| {
             if self.global.shares.contains_key(&owner) {
@@ -728,7 +629,6 @@ impl Vision {
         })
     }
 
-    /// The marks of one step ([`Layer::apply`]).
     fn mark(&mut self, step: &Step) {
         let Some(columns) = self.columns else { return };
         self.fold.applied(step);
@@ -765,14 +665,11 @@ impl Vision {
         }
     }
 
-    /// Mirror rows its applies read since it was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
 
-    /// The rows the applies marked, in order: UnitIntel's units and CountryIntel's lanes, a written
-    /// slot's row as the mirror holds it now.
     fn take_marks(&mut self, mirrors: &Mirrors) {
         let rows = mirrors.get(TableId::UnitIntel);
         let mut intel = std::mem::take(&mut self.intel);
@@ -812,7 +709,6 @@ impl Vision {
         self.lane_slots.clear();
     }
 
-    /// One unit's first level keyed to the viewer, from its UnitIntel rows.
     fn settle_unit(&mut self, unit: u64, mirrors: &Mirrors) {
         let columns = self.columns();
         let ours = self.global.ours;
@@ -830,8 +726,6 @@ impl Vision {
         }
     }
 
-    /// The viewer's air and navy lanes from its references' CountryIntel rows, first reference
-    /// first.
     fn read_lanes(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         self.truncated_country_intel = matches!(mirrors.get(TableId::CountryIntel).and_then(Mirror::status), Some(Status::Truncated { .. }));
@@ -858,7 +752,6 @@ impl Vision {
         (self.air_intel, self.navy_intel) = (air, navy);
     }
 
-    /// The viewer's lanes for the targets whose rows moved: the first of its references with a row.
     fn read_lane_targets(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         let mut targets: Vec<u32> = std::mem::take(&mut self.lane_changes).into_iter().filter(|(owner, _)| self.global.links.get(owner) == Some(&self.global.ours)).map(|(_, target)| target).collect();
@@ -885,7 +778,6 @@ impl Vision {
         }
     }
 
-    /// The whole parts the worker made, taken in: what their change moves on the frame marked.
     fn adopt(&mut self, global: Global) {
         let ours = global.ours != self.global.ours || global.failed.is_some() != self.global.failed.is_some();
         let links = global.links != self.global.links;
@@ -908,7 +800,6 @@ impl Vision {
         if before != (self.fog_drawn(), self.global.ours) {
             self.fold.touch_all();
         }
-        // Every part of the key moves only with a change published as everything.
         if self.sight_key.is_none() || matches!(self.fold.changed.read(), crate::layers::Change::Whole) {
             let key = self.sight_key();
             if self.sight_key.as_ref() != Some(&key) {
@@ -950,8 +841,6 @@ impl Vision {
 
 }
 
-/// The layer while the map draws it: declared, composed and not refused. Its [`Vision::ours`] is
-/// the viewing country the window's readers and its histories' continuity take.
 pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<&Vision> {
     if !side.draws("vision") {
         return None;
@@ -959,7 +848,6 @@ pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<&Vision> {
     side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<Vision>())
 }
 
-/// The whole parts a land unit's sight reads besides its own level and province byte.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SightParts {
     ours: u32,
@@ -971,8 +859,6 @@ struct SightParts {
 }
 
 impl SightParts {
-    /// Today's sight of a land unit of `owner`, with its level, whether its owner shares vision
-    /// with the viewer, and the byte of the province its sight reads.
     fn land(self, owner: u32, shared: bool, level: Option<i8>, byte: Option<u8>) -> Sight {
         let known = shared || level.is_some() || !self.truncated_unit_intel;
         if !self.fog || owner == self.ours || self.undecided || self.gap || !known {
@@ -993,8 +879,6 @@ impl SightParts {
     }
 }
 
-/// What a division's sight reads of the vision layer as a whole: why it has no vision, the
-/// perspective and its sight epoch, the whole parts, who shares vision, and the relations' gap.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SightKeys {
     refused: Option<String>,
@@ -1005,9 +889,6 @@ pub struct SightKeys {
     relations_gap: Option<&'static str>,
 }
 
-/// A copy of what a division's sight reads of the vision layer, for a reader on another thread:
-/// made whole ([`Vision::sight_copy`]) and kept from the layer's changes ([`Vision::sight_change`]).
-/// It answers as the layer does.
 #[derive(Clone, Debug)]
 pub struct SightCopy {
     keys: SightKeys,
@@ -1016,9 +897,6 @@ pub struct SightCopy {
     sight: BTreeMap<u64, u32>,
 }
 
-/// What changed of a division's sight: the whole copy when anything but a unit's or a province's
-/// own part did; the units named (their level and sight province) and the provinces named (their
-/// byte) always, which a reader marks.
 pub struct SightChange {
     whole: Option<Box<SightCopy>>,
     units: Vec<(u64, Option<i8>, Option<u32>)>,
@@ -1026,7 +904,6 @@ pub struct SightChange {
 }
 
 impl SightChange {
-    /// The whole copy, when anything but a unit's or a province's own part changed.
     pub fn whole(&self) -> Option<&SightCopy> {
         self.whole.as_deref()
     }
@@ -1041,7 +918,6 @@ impl SightChange {
 }
 
 impl SightCopy {
-    /// The layer's change applied.
     pub fn apply(&mut self, change: &SightChange) {
         if let Some(whole) = &change.whole {
             *self = SightCopy::clone(whole);
@@ -1081,7 +957,6 @@ impl SightCopy {
         self.keys.refused.is_none().then_some(self.keys.parts.ours)
     }
 
-    /// As [`Vision::sees_land`].
     pub fn sees_land(&self, unit: u64, owner: u32, province: u32) -> Option<Sight> {
         self.keys.refused.is_none().then(|| {
             let shared = self.keys.shares.contains_key(&owner);
@@ -1090,12 +965,10 @@ impl SightCopy {
         })
     }
 
-    /// As [`Vision::sight_province`].
     pub fn sight_province(&self, unit: u64, province: u32) -> u32 {
         self.sight.get(&unit).copied().unwrap_or(province)
     }
 
-    /// As [`Vision::shares_vision_proven`].
     pub fn shares_vision_proven(&self, owner: u32) -> Option<Result<bool, SharingUnknown>> {
         self.keys.refused.is_none().then(|| {
             if self.keys.shares.contains_key(&owner) {
@@ -1110,7 +983,6 @@ impl SightCopy {
     }
 }
 
-/// The vision layer of a loaded recording's content.
 pub fn for_document(document: &crate::document::Document) -> Box<dyn Layer> {
     Box::new(Vision::new(Arc::new(Content::new(document.content.products.fog.as_ref().clone()))))
 }
@@ -1199,8 +1071,6 @@ impl Layer for Vision {
         Ok(())
     }
 
-    /// Marks only, of its two tables the frame reads: UnitIntel's rows gone, come and written,
-    /// and CountryIntel's air and navy lanes; read at the settle.
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
@@ -1215,9 +1085,6 @@ impl Layer for Vision {
         true
     }
 
-    /// A perspective change starts the fold over from the mirrors at the hour applied: the worker
-    /// may hold steps folded past it, which it cannot undo. One copy of its tables, on the frame,
-    /// at the user's change.
     fn viewed(&mut self, _view: &View, mirrors: &Mirrors) {
         if std::mem::take(&mut self.rechoose)
             && let Some(columns) = self.columns
@@ -1246,8 +1113,6 @@ impl Layer for Vision {
 
 
     fn carried(&self) -> Carried {
-        // The fold's steps are its worker's: published, not carried. Refused, a settle can do none
-        // of the marked work; it waits there for the next vision.
         if self.refused().is_some() {
             return Carried::default();
         }
@@ -1291,7 +1156,6 @@ mod copy_tests {
     use super::SeenCopy;
     use viewer_foundation::map::perspective::Parts;
 
-    /// The fog bytes of a copy at `bytes`, every province with a byte present.
     fn copy(bytes: &[(u32, u8)]) -> SeenCopy {
         let len = bytes.iter().map(|&(id, _)| id as usize + 1).max().unwrap_or(0);
         let mut held = vec![0; len];
@@ -1301,8 +1165,6 @@ mod copy_tests {
         SeenCopy { bytes: Some((bytes.iter().map(|&(id, _)| id).collect(), held)), parts: Parts { fog: true, ..Parts::default() } }
     }
 
-    /// A copy made after the one before writes only the provinces whose byte changed, and holds
-    /// exactly the bytes a copy made from nothing holds: a province revealed, hidden or gone.
     #[test]
     fn a_copy_made_after_the_one_before_equals_one_made_from_nothing() {
         let (_, before) = copy(&[(1, 10), (2, 20), (3, 30)]).make_after(None);

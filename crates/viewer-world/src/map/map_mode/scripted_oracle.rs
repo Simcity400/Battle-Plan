@@ -18,10 +18,7 @@ pub(super) fn fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
     let mut coloured = false;
     let political = inputs.content.defines.country_channel;
     let mut draw = Draw::of([Source::Empty; 2], political);
-    // The game layer each mode slot holds, so a layer both sides name shows in both.
     let mut held: Vec<(GameLayer, Source)> = Vec::new();
-    // The bottom layer is channel 1 and the top layer channel 2. The country layer is one
-    // object, so when both sides choose a variant of it, the top's variant shows in both.
     for (channel, (side, layer)) in [("bottom", &mode.bottom), ("top", &mode.top)]
         .into_iter()
         .enumerate()
@@ -46,7 +43,6 @@ pub(super) fn fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
                         draw.country = country;
                         source
                     }
-                    // The same game layer in both channels is one layer shown twice.
                     None if held.iter().any(|(layer, _)| *layer == game) => held
                         .iter()
                         .find_map(|&(layer, source)| (layer == game).then_some(source))
@@ -57,8 +53,6 @@ pub(super) fn fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
                         } else {
                             diplomacy(inputs, &mut warnings)?
                         };
-                        // A second distinct layer takes the country layer's place, which then
-                        // shows in neither channel.
                         let (slot, source) = if draw.layer.is_none() {
                             (&mut draw.layer, Source::Mode)
                         } else {

@@ -1,7 +1,5 @@
 use crate::{Verified, Withheld};
 
-/// The sections of a PE32+ image by RVA: the running module, or an executable file laid out the
-/// same way. Pointers stored in the image are relative to `pointer_base`.
 pub struct Image<'a> {
     sections: Vec<Section<'a>>,
     pointer_base: u64,
@@ -14,7 +12,6 @@ struct Section<'a> {
     bytes: &'a [u8],
 }
 
-/// An executable file laid out by RVA, for processes that read another process's game.
 pub struct OwnedImage {
     sections: Vec<([u8; 8], u32, Vec<u8>)>,
     pointer_base: u64,
@@ -57,13 +54,12 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
 }
 
 impl Image<'static> {
-    /// The image of the module loaded at `base` in this process.
-    ///
-    /// # Safety
-    /// `base` must be the base of a loaded PE32+ module that stays loaded for the program's life.
+    #[doc = " The image of the module loaded at `base` in this process."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " `base` must be the base of a loaded PE32+ module that stays loaded for the program's life."]
     pub unsafe fn module(base: usize) -> Verified<Self> {
         let read = |offset: usize, len: usize| {
-            // SAFETY: the headers of a loaded module are mapped and readable.
             Some(unsafe { std::slice::from_raw_parts((base + offset) as *const u8, len) }.to_vec())
         };
         let header = header(read)?;
@@ -73,7 +69,6 @@ impl Image<'static> {
             .map(|&(name, rva, virtual_size, _, _)| Section {
                 name,
                 rva,
-                // SAFETY: a loaded module maps every section at its RVA for its virtual size.
                 bytes: unsafe {
                     std::slice::from_raw_parts((base + rva as usize) as *const u8, virtual_size as usize)
                 },
@@ -88,7 +83,6 @@ impl Image<'static> {
 }
 
 impl OwnedImage {
-    /// Lay out an executable file's sections by RVA.
     pub fn new(file: &[u8]) -> Verified<Self> {
         let read = |offset: usize, len: usize| file.get(offset..offset.checked_add(len)?).map(<[u8]>::to_vec);
         let header = header(read)?;
@@ -108,7 +102,6 @@ impl OwnedImage {
         })
     }
 
-    /// The image as if loaded at `base`, the module base of the process it is located for.
     pub fn image(&self, base: usize) -> Image<'_> {
         Image {
             sections: self
@@ -134,7 +127,6 @@ impl<'a> Image<'a> {
             .map(|s| (s.rva, s.bytes))
     }
 
-    /// The name of the section holding `rva`.
     pub(crate) fn section_of(&self, rva: u32) -> Option<&[u8]> {
         self.sections
             .iter()
@@ -159,7 +151,6 @@ impl<'a> Image<'a> {
         self.u32(rva).map(|v| v as i32)
     }
 
-    /// The RVA a stored pointer refers to.
     pub(crate) fn pointer(&self, rva: u32) -> Option<u32> {
         let b = self.bytes(rva, 8)?;
         let value = u64::from_le_bytes(b.try_into().ok()?);

@@ -1,7 +1,3 @@
-//! The one native resource path GUI consumers draw through: the content stack's sprite
-//! registry, fonts and colour tables in the game's load order, the texture a sprite's name loads
-//! (or the reason none draws), its frames' queried integer extent and floating geometry, and the
-//! effects sprites name.
 
 use std::{collections::BTreeMap, io};
 
@@ -15,71 +11,40 @@ use crate::{
     image::{dds, native},
 };
 
-/// The fallback name retried when the requested sprite is undefined.
 pub const FALLBACK_SPRITE: &[u8] = b"GFX_default_fallback_texture";
 
-/// The effect a masked shield's overlay draws with: the game's code names it,
-/// not the shield's declaration.
 pub const SHIELD_OVERLAY_EFFECT: &str = "gfx/FX/buttonstate.shader";
 
-/// The texture loader's file-size limit; larger files do not load.
 const FILE_LIMIT: usize = 16 << 20;
 
-/// The sprite instance selected from a name.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Lookup<'a> {
-    /// The latest declaration of the name.
     Defined(&'a SpriteFacts),
-    /// The name is undefined; the fallback sprite's declaration.
     Fallback(&'a SpriteFacts),
-    /// Neither requested nor fallback sprite is defined: no drawable.
     Nothing,
 }
 
-/// A texture as the game loads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Texture {
-    /// The path read (a layer-relative path), as text for messages: the read itself keeps its
-    /// bytes.
     pub path: String,
-    /// The texture's own extent, which every size and UV divides.
     pub width: u32,
     pub height: u32,
     pub image: dds::Texture,
 }
 
-/// Why a defined sprite has no drawable texture. Every variant but [`NoTexture::Undefined`] and
-/// [`NoTexture::Device`] is the game's own outcome: sprite draw then returns
-/// without drawing, and every size it reports divides 0-by-0 extents. Paths are text for
-/// messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoTexture {
-    /// No texture name (an empty `textureFile` is never registered).
     Empty,
-    /// A name without a `.`: texture extension resolver returns null.
     NoExtension(Vec<u8>),
-    /// None of the resolver's candidates exists in any layer.
     Missing(Vec<String>),
-    /// The file exceeds the texture loader's 16 MiB limit.
     TooLarge { path: String, bytes: usize },
-    /// Every texture image decoder refuses the file ([`native::Failure::Undecodable`]), with
-    /// each step's reason.
     Undecodable { path: String, reason: String },
-    /// What the game draws from the file is not determined by it
-    /// ([`native::Failure::Undefined`]: uninitialised or out-of-bounds memory): a consumer must
-    /// refuse what it would draw with it, not draw it as missing.
     Undefined { path: String, reason: String },
-    /// What the game draws from the file depends on the graphics device
-    /// ([`native::Failure::Device`]), which the recording does not hold: refused by name.
     Device { path: String, reason: String },
-    /// The caller's decoded-texel budget refused the file's extent before decoding
-    /// ([`stack_texture_within`], [`native::Failure::OverBudget`]); the game would load it.
     OverBudget { path: String, reason: String },
 }
 
 impl NoTexture {
-    /// Whether the game itself has no texture here (so drawing nothing is exact), as opposed to
-    /// an outcome the file or the recording does not determine.
     pub fn native_failure(&self) -> bool {
         !matches!(
             self,
@@ -125,33 +90,23 @@ impl std::fmt::Display for NoTexture {
     }
 }
 
-/// The content stack's GUI resources, read once in the game's load order.
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
-    /// Every `.gfx` file read, in load order.
     pub files: Vec<(String, Sprites)>,
-    /// Each name's latest declaration: (file, index).
     sprites: BTreeMap<Vec<u8>, (usize, usize)>,
-    /// The registered fonts, overrides applied as read.
     pub fonts: Fonts,
-    /// The global `textcolors` table: the last block read; empty (every code
-    /// looks free) when no file declares one.
     pub text_colors: TextColors,
-    /// The global `cursor_offset` and `selection_offset`, the last of each.
     pub cursor_offset: [i32; 2],
     pub selection_offset: [i32; 2],
 }
 
 impl Registry {
-    /// Reads every `interface/**/*.gfx` of the stack in the game's order
-    /// ([`sprites::gfx_order`]).
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         layers.product("interface registry", 1, &[], |layers| {
             Ok(Self::from_files(sprites::read_layers(layers)?))
         }).map(|registry| registry.as_ref().clone())
     }
 
-    /// The registry over files already read, in load order.
     pub fn from_files(files: Vec<(String, Sprites)>) -> Self {
         let mut sprites = BTreeMap::new();
         let mut text_colors = TextColors::new();
@@ -187,14 +142,12 @@ impl Registry {
         }
     }
 
-    /// The latest sprite declaration of `name`, compared byte for byte.
     pub fn sprite(&self, name: &[u8]) -> Option<&SpriteFacts> {
         self.sprites
             .get(crate::parser::c_string(name))
             .map(|(file, index)| &self.files[*file].1.sprites[*index])
     }
 
-    /// The requested name, else the fallback sprite, else nothing.
     pub fn create(&self, name: &[u8]) -> Lookup<'_> {
         match (self.sprite(name), self.sprite(FALLBACK_SPRITE)) {
             (Some(sprite), _) => Lookup::Defined(sprite),
@@ -203,8 +156,6 @@ impl Registry {
         }
     }
 
-    /// Every refusal of every file and declaration: the sprite files', their sprites' and every
-    /// registered font's.
     pub fn refusals(&self) -> Vec<&super::Refusal> {
         let mut refusals = sprites::refusals(&self.files);
         refusals.extend(
@@ -217,7 +168,6 @@ impl Registry {
     }
 }
 
-/// The candidate byte path opened by the virtual file system, with separators collapsed.
 fn vfs_path(candidate: &[u8]) -> Vec<u8> {
     candidate
         .split(|byte| *byte == b'/')
@@ -226,10 +176,6 @@ fn vfs_path(candidate: &[u8]) -> Vec<u8> {
         .join(&b'/')
 }
 
-/// Load a sprite texture by trying extension candidates and taking the first existing file. The
-/// texture loader passes the authored name and client's `decode` state to
-/// [`native::decode_texture_image`]. Read each candidate's bytes through `read`; return
-/// `Err(io)` only for failures other than a missing file.
 pub fn texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     name: &[u8],
     read: &dyn Fn(&[u8]) -> io::Result<B>,
@@ -238,8 +184,6 @@ pub fn texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::con
     texture_within(name, read, decode, None)
 }
 
-/// [`texture`], refusing an image past `max_texels` from its header
-/// ([`native::decode_texture_image_within`]).
 fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     name: &[u8],
     read: &dyn Fn(&[u8]) -> io::Result<B>,
@@ -305,13 +249,6 @@ fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::
     Ok(Err(NoTexture::Missing(tried)))
 }
 
-/// [`texture`] for a GUI sprite or font, through the content stack by each candidate's bytes
-/// (uncovered textures unverified, as `ResolvedLayers::read_uncovered` states). A cube map is
-/// refused: texture creation makes it a cube texture, which a GUI draw samples through
-/// a two-dimensional binding.
-/// [`stack_texture`], or, when it does not load or read from `layers` and `recorded` holds the
-/// layers below their visual mods, the recording's texture, named like
-/// [`ResolvedLayers::artwork`]; one the recording cannot give either fails as from `layers`.
 pub fn stack_texture_or_recorded(
     layers: &ResolvedLayers,
     recorded: Option<&ResolvedLayers>,
@@ -343,9 +280,6 @@ pub fn stack_texture(
     stack_texture_within(layers, name, decode, None)
 }
 
-/// [`stack_texture`] for a caller that must bound memory: an image whose decoded texels would
-/// exceed `max_texels` is refused from its header, before it is decoded
-/// ([`NoTexture::OverBudget`]).
 pub fn stack_texture_within(
     layers: &ResolvedLayers,
     name: &[u8],
@@ -369,16 +303,11 @@ pub fn stack_texture_within(
     )
 }
 
-/// A frame's queried integer extent: `cvttss2si((1.0f / columns) * texture width)`, and the
-/// same vertically. A texture that does not load gives 0 by 0; zero frames give `i32::MIN`. The
-/// sprite size query then scales this extent.
 pub fn frame_extent(plain: &Plain, texture: [u32; 2]) -> [i32; 2] {
     let grid = plain.grid();
     [0, 1].map(|axis| truncate_f32((1.0 / grid[axis] as f32) * texture[axis] as f32))
 }
 
-/// The floating frame extent before world scaling: `(1.0f / columns) * width`, and the same
-/// vertically times the V scale; no truncation.
 pub fn frame_geometry(plain: &Plain, texture: [u32; 2]) -> [f32; 2] {
     let grid = plain.grid();
     [
@@ -401,8 +330,6 @@ mod tests {
         )
     }
 
-    /// The latest declaration wins across files; an undefined name takes the fallback sprite,
-    /// and a defined sprite without a texture is not the fallback.
     #[test]
     fn lookups_distinguish_undefined_from_textureless() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -437,8 +364,6 @@ mod tests {
             texture(b"gfx\\x.png", &missing).unwrap(),
             Err(NoTexture::Missing(tried)) if tried == ["gfx/x.dds", "gfx/x.tga", "gfx/x.png"]
         ));
-        // A name whose bytes are not UTF-8 is read by exactly those bytes, never through a lossy
-        // spelling.
         let png = crate::image::native::tests_support::png_rgba(1, 1, &[9, 8, 7, 255]);
         let read = |path: &[u8]| match path {
             b"gfx/\x80.dds" => Ok(png.clone()),
@@ -452,8 +377,6 @@ mod tests {
         ));
     }
 
-    /// Registry refusals include every registered font as well as sprites: a text color code
-    /// causes the text color reader to index past its table.
     #[test]
     fn refusals_include_the_fonts() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -468,11 +391,6 @@ mod tests {
         assert!(refusals[0].reason.contains("text color reader"));
     }
 
-    /// A mod sprite's texture resolves through the stack and decodes in the game's order: a
-    /// `.png` it names, a `.tga` name whose file holds PNG bytes, a `.dds` name found as a PNG
-    /// under the name itself, a JPEG under a `.dds` name. A three-byte file makes FreeImage's
-    /// ICO validate compare uninitialised stack, an outcome the file does not determine; bytes
-    /// every decoder refuses, an absent file and an oversized file are the game's own failures.
     #[test]
     fn mod_textures_decode_in_the_native_order() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -541,8 +459,6 @@ mod tests {
         }
     }
 
-    /// The queried extent truncates the reciprocal product; the geometry keeps its fraction;
-    /// a vertical strip divides the height.
     #[test]
     fn frames_have_an_integer_extent_and_a_floating_geometry() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -566,8 +482,6 @@ mod tests {
         assert_eq!(frame_extent(&plain(0), [0, 0]), [0, 0]);
     }
 
-    /// DDS clamps the logical short side to one; the native padding step does not clamp its
-    /// shifted side, so it refuses before an empty padded buffer could reach the device.
     #[test]
     fn bc7_force_pow2_refuses_a_zero_padded_mip_side_by_file_name() {
         use crate::gui::native::resources::{NoTexture, texture};

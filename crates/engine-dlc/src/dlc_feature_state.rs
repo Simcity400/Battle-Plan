@@ -1,19 +1,11 @@
-//! Runtime DLC feature-mask operands, distinct from the content roster.
-//! The legacy game-state word is not treated as an equivalent runtime mask.
-//! This module describes predicates without calling the game.
 
 use engine_sites::Rva;
-/// Runtime DLC mask, u32.
 pub const MASK_RVA: Rva = Rva(0x033d_d698);
-/// Feature ID required by equipment-loss bookkeeping.
 #[cfg(test)]
 pub const EQUIPMENT_LOSSES_FEATURE: u32 = 3;
-/// Runtime bit tested for equipment-loss bookkeeping.
 pub const EQUIPMENT_LOSSES_MASK: u32 = 0x0000_0002;
 pub const DEEPER_FACTIONS_MASK: u32 = 0x0000_8000;
-/// Runtime bit required by both related feature IDs.
 pub const THUNDER_AT_OUR_GATES: u32 = 0x0002_0000;
-/// Narrow compiled DLC-name and mask dependencies.
 pub const NAME_MASKS: &[(&str, u32)] = &[
     ("Poland: United and Ready", 0x0000_0001),
     ("Together for Victory", EQUIPMENT_LOSSES_MASK),

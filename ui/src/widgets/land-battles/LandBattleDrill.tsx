@@ -14,7 +14,6 @@ import type { DesignLoss, SideLook } from './landBattleCourse';
 import type { LandBattleRow } from './landBattlesData';
 
 const SIDES = ['Attackers', 'Defenders'] as const;
-/** Designs listed per side before the rest fold into one line. */
 const DESIGNS = 6;
 const AXES = { xFrom: null, xTo: null, yMin: null, yMax: null, log: false };
 
@@ -60,10 +59,8 @@ function Designs({ side, index, colour, total }: { side: DesignLoss[] | string |
   </div>;
 }
 
-/** One battle at the shown hour: its sides, how it went, and the equipment each side lost by design. */
 export default function LandBattleDrill({ row, context, colours, looks, terrain, heldAt = null }: {
   row: LandBattleRow; context: BattleViewContext; colours: readonly string[]; looks: readonly SideLook[]; terrain: string | null;
-  /** The hour `row` was last listed, when the battle has since left the list. */
   heldAt?: number | null;
 }) {
   const { track, runtime, active, shownHour } = context;

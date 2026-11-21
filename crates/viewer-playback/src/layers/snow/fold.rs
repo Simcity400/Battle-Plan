@@ -1,11 +1,3 @@
-//! The snow fold on the layer's worker, from its own copy of WeatherProvinces: per province its two
-//! display bytes, its snow word and whether the hour observes it; per grid cell its texel
-//! (previous mud, snow, previous snow, mud) and unknown flag; per winter volume its post-effect
-//! factor; the summary and the retained boundary. It builds the grid the scene takes, the last
-//! grid's pages edited where cells changed and the rest shared.
-//!
-//! A table that is truncated observes only the provinces it holds; an unavailable, unrecorded or
-//! gap table observes none, so every cell is unknown and draws nothing, as today.
 
 use super::{Columns, Content};
 use crate::{
@@ -20,7 +12,6 @@ use replay_columnar::manifest::Status;
 use replay_data::rows::{Field, NativeValue, Opaque, Recorded, WeatherDisplay};
 use std::{collections::BTreeSet, io, sync::Arc};
 
-/// One province as the hour holds it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Province {
     display: [u8; 2],
@@ -33,7 +24,6 @@ impl Province {
     }
 }
 
-/// The table's rows at the head: none when unavailable, not recorded or in a gap.
 fn held(table: Option<&Table>) -> Option<&Table> {
     table.filter(|table| matches!(table.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
@@ -41,19 +31,15 @@ fn held(table: Option<&Table>) -> Option<&Table> {
 pub(super) struct Fold {
     content: Arc<Content>,
     columns: Columns,
-    /// Per province id up to the map's largest: its values while a row holds it.
     provinces: Vec<Option<Province>>,
-    /// Rows past the map's largest province, which refuse the hour.
     beyond: BTreeSet<u32>,
     counts: [usize; 3],
     present: usize,
     complete: bool,
     usable: bool,
-    /// Per cell: RGBA texel and unknown flag.
     texels: Vec<[u8; 4]>,
     unknown: Vec<u8>,
     factors: Vec<Option<f32>>,
-    /// The retained boundary of province zero's row: its refresh and edges, none when absent.
     display: Option<(Refresh, Vec<u8>)>,
     boundary_error: bool,
     province_dirty: Dirty,
@@ -61,10 +47,7 @@ pub(super) struct Fold {
     volume_dirty: Dirty,
     edges_dirty: bool,
     frame: u64,
-    /// Provinces, cells and volumes the steps have marked.
     marked: [u64; 3],
-    /// The grid last built, and what changed since: cells, snow words, factors, and whether the
-    /// summary or the boundary may have.
     built: Option<Arc<SnowMud>>,
     changed_cells: Vec<u32>,
     changed_provinces: Vec<u32>,
@@ -102,7 +85,6 @@ impl Fold {
         }
     }
 
-    /// Why the hour is refused, in today's words; none when it draws.
     pub(super) fn refused(&self) -> Option<String> {
         if let Some(&id) = self.beyond.first() {
             return Some(format!("Snow/mud presentation: 1 refused weather province {id} beyond the map's largest province {}", self.content.cells.largest()));
@@ -133,9 +115,6 @@ impl Fold {
         }
     }
 
-    /// The grid as the scene takes it, made again where anything changed since the last, with the
-    /// cells whose texel or unknown flag differ from the last grid's (none when made whole); none
-    /// while the hour is refused.
     pub(super) fn grid(&mut self) -> io::Result<(Option<Arc<SnowMud>>, Option<Vec<u32>>)> {
         if self.refused().is_some() || self.texels.is_empty() {
             return Ok((None, None));
@@ -217,7 +196,6 @@ impl Fold {
         }
     }
 
-    /// Everything reread: every province and the boundary marked, cells and volumes follow.
     fn mark_all(&mut self) {
         let content = Arc::clone(&self.content);
         let provinces = content.cells.provinces();
@@ -245,7 +223,6 @@ impl Fold {
         self.edges_dirty = true;
     }
 
-    /// One province reread from the table; what its change touches is marked.
     fn settle_province(&mut self, id: u32, rows: Option<&Table>) {
         let columns = self.columns;
         let largest = self.content.cells.largest();
@@ -325,7 +302,6 @@ impl Fold {
         }
     }
 
-    /// The boundary from province zero's retained display.
     fn settle_edges(&mut self, rows: Option<&Table>) {
         let columns = self.columns;
         let content = Arc::clone(&self.content);
@@ -346,14 +322,11 @@ impl Fold {
         self.display = decoded.filter(|_| !self.boundary_error).map(|display| (Refresh { interval: display.refresh_interval, identity: display.refresh_identity }, display.edges));
         let edges: Vec<[u8; 2]> = (0..content.boundary.len()).map(|edge| self.display.as_ref().map_or([0; 2], |(_, edges)| [edges[edge], edges[edge_cells + edge]])).collect();
         for (&cell, [snow, mud]) in content.boundary.iter().zip(edges) {
-            // An unrecorded boundary draws bare and unhatched, as `map_snow::grid_from_cells`.
             self.set_cell(cell as usize, [mud, snow, snow, mud], 0);
         }
         self.changed_rest = true;
     }
 
-    /// A step's delta of the table, applied to `table` already: the provinces and boundary it
-    /// touches marked.
     pub(super) fn apply(&mut self, delta: &Delta, table: &Table) {
         let columns = self.columns;
         for &key in delta.deleted().keys().unwrap_or_default().iter().chain(delta.inserted().keys().unwrap_or_default()) {
@@ -376,7 +349,6 @@ impl Fold {
         }
     }
 
-    /// Everything marked settled from `table`, whatever it costs: the fold runs off the frame.
     pub(super) fn settle(&mut self, table: Option<&Table>) {
         self.frame += 1;
         let rows = held(table);

@@ -1,13 +1,3 @@
-//! Simulation occupant order, HQ portrait holders and ship counter operands.
-//! Rules are pure over recorded simulation rows and recorded content.
-//!
-//! Unit sources walk `ProvinceUnitOrder.mixed` in array order, excluding units absent
-//! from that province's array. Port counters walk `ProvinceUnitOrder.naval` before
-//! sorting. Source activation order, grouping cursors and groups are local
-//! presentation history ([`crate::map::counter_groups::SourceLayer`]).
-//!
-//! Ship rules use [`is_capital`], [`better_hull`], [`task_force_carrier`] and
-//! [`port_carrier`]. HQ portrait selection uses [`hq_portrait`].
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,20 +12,14 @@ use replay_frame::frame::DecodedFrame;
 
 use crate::map::tables::rows;
 
-/// Native simulation occupant order for one hour.
 #[derive(Clone, Debug, Default)]
 pub struct RecordedOrder {
-    /// Unit handle to (province, first ordinal in that province's mixed array).
     mixed: BTreeMap<u64, (u32, u32)>,
-    /// Unit handle to (province, first ordinal in that province's naval array).
     naval: BTreeMap<u64, (u32, u32)>,
-    /// Each province's naval occupant array, in native order.
     naval_rosters: BTreeMap<u32, Vec<u64>>,
 }
 
 impl RecordedOrder {
-    /// `None` when the hour holds no complete `ProvinceUnitOrder`: missing
-    /// entries cannot establish native insertion order.
     pub fn read(frame: &DecodedFrame) -> io::Result<Option<Self>> {
         let order = rows::<tables::ProvinceUnitOrder>(frame)?;
         if !order.is_complete() {
@@ -44,7 +28,6 @@ impl RecordedOrder {
         Ok(Some(Self::from_rows(order.rows())))
     }
 
-    /// Indexes the recorded occupant arrays; the first occurrence of a unit wins.
     pub fn from_rows(provinces: &[replay_data::rows::ProvinceUnitOrderRow]) -> Self {
         let mut out = Self::default();
         for row in provinces {
@@ -65,8 +48,6 @@ impl RecordedOrder {
         out
     }
 
-    /// The unit's ordinal in `province`'s mixed occupant array; `None` means the engine does not
-    /// walk it there.
     pub fn mixed(&self, unit: u64, province: u32) -> Option<u32> {
         self.mixed
             .get(&unit)
@@ -74,7 +55,6 @@ impl RecordedOrder {
             .map(|(_, ordinal)| *ordinal)
     }
 
-    /// The task force's ordinal in `province`'s naval occupant array.
     pub fn naval(&self, unit: u64, province: u32) -> Option<u32> {
         self.naval
             .get(&unit)
@@ -82,31 +62,22 @@ impl RecordedOrder {
             .map(|(_, ordinal)| *ordinal)
     }
 
-    /// `province`'s whole naval occupant array, empty when it holds none.
     pub fn naval_roster(&self, province: u32) -> &[u64] {
         self.naval_rosters.get(&province).map_or(&[], Vec::as_slice)
     }
 }
 
-/// Capital-ship flag.
 pub const CAPITAL_FLAG: u64 = 1 << 6;
-/// Carrier bit, tested on the ship and on positive pool variants.
 pub const CARRIER_FLAG: u64 = 1 << 22;
-/// Missile-carrier bit.
 pub const MISSILE_CARRIER_FLAG: u64 = 1 << 37;
-/// The capital-slot mask on the first roster ship, bits 6 and 22.
 pub const FORMATION_CAPITAL_MASK: u64 = 0x40_0040;
 
-/// Carrier status includes the ship's missile-carrier bit and positive variants
-/// with that bit. Missing model operands remain unavailable.
 pub fn is_carrier(row: &ShipModelRow) -> Option<bool> {
     let counter = row.counter.as_ref()?;
     let mask = CARRIER_FLAG | MISSILE_CARRIER_FLAG;
     Some(row.formation_flags & mask != 0 || counter.positive_equipment_flags & mask != 0)
 }
 
-/// Whether a roster's first carrier ([`is_carrier`]) has a carrier air base; `false` without a
-/// carrier, `None` when a ship before it lacks model operands.
 pub fn first_carrier_has_air_base(roster: &[&ShipModelRow]) -> Option<bool> {
     for ship in roster {
         if is_carrier(ship)? {
@@ -120,23 +91,17 @@ pub fn first_carrier_has_air_base(roster: &[&ShipModelRow]) -> Option<bool> {
     Some(false)
 }
 
-/// A ship is capital when its capital bit or qualifying carrier status holds.
 pub fn is_capital(row: &ShipModelRow) -> Option<bool> {
     let carrier = is_carrier(row)?;
     Some(row.formation_flags & CAPITAL_FLAG != 0 || carrier)
 }
 
-/// One ship as the counter's hull selector sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct Hull<'a> {
-    /// The recorded `Ships.strength`.
     pub strength: i64,
     pub model: &'a ShipModelRow,
 }
 
-/// Whether candidate `a` replaces current best `b`: capital status, positive
-/// variant availability, greater strength, then sub-unit ordering. A comparison
-/// with a missing operand remains unavailable.
 pub fn better_hull(
     a: &Hull<'_>,
     b: &Hull<'_>,
@@ -172,9 +137,6 @@ fn preferred_variant(
     let (a, b) = (variant_packet(a)?, variant_packet(b)?);
     let definition = |index: Option<i32>| -> Result<(i32, Option<usize>), String> {
         let index = index.ok_or("current variant definition index is unreadable")?;
-        // The writer authenticates the null sub-unit definition
-        // before emitting -1. Its initial state sets
-        // depth to zero and self-linked categories to zero.
         if index == -1 {
             return Ok((0, None));
         }
@@ -253,8 +215,6 @@ fn variant_packet(model: &ShipModelRow) -> Result<&replay_data::rows::HullVarian
         })
 }
 
-/// The game visits the archetype before its own effective categories. Following
-/// that order also refuses a broken/cyclic authored link before testing own bits.
 fn plane_definition(
     equipment: &installed_content_core::equipment::Database,
     index: usize,
@@ -281,20 +241,13 @@ fn plane_definition(
     }))
 }
 
-/// What the naval `type` child resolves to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HullIcon {
-    /// The navy fallback sprite: `GFX_unit_` plus `ShipModels.fallback_sprite` when
-    /// `definition_valid` is set. `None` draws nothing.
     Resolved(Option<Vec<u8>>),
-    /// Unrecorded variant ties leave candidates with different names.
     Ambiguous,
-    /// A member lacks format-23 ship operands.
     Unrecorded,
 }
 
-/// Select the best hull in task-force and roster order. Each candidate replaces
-/// the current hull only when [`better_hull`] holds.
 pub fn hull_icon<'a>(
     ships: impl IntoIterator<Item = Hull<'a>>,
     equipment: Result<&installed_content_core::equipment::Database, &str>,
@@ -345,28 +298,17 @@ pub fn hull_icon<'a>(
     }
 }
 
-/// What the counter knows about one carrier's own air base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CarrierBase {
-    /// Whether the viewer's canonical slot has an `AirBaseRegistrations` container at this base.
     pub access: bool,
-    /// The recorded `AirBases.kind`.
     pub kind: i32,
-    /// A registered nonempty wing pool in the viewing country's container proves
-    /// stationing. Otherwise unrecorded owner registrations leave it unknown.
     pub stationed: Option<bool>,
 }
 
-/// Scan one task force's roster. For each carrier ([`is_carrier`]) with a non-null
-/// air base that passes access, a stationed base returns 4 (non-zero kind) or 2
-/// immediately. An unstationed base sets 3 or 1 and keeps scanning. Return every
-/// value unrecorded operands leave possible; an empty set means a ship lacks
-/// format-23 operands or its base is unrecorded.
 pub fn task_force_carrier(
     roster: &[&ShipModelRow],
     base: &impl Fn(u64) -> Option<CarrierBase>,
 ) -> BTreeSet<u32> {
-    // Each branch is (result so far, still scanning).
     let mut states: BTreeSet<(u32, bool)> = BTreeSet::from([(0, true)]);
     for ship in roster {
         let Some(carrier) = is_carrier(ship) else {
@@ -401,7 +343,6 @@ pub fn task_force_carrier(
     states.into_iter().map(|(value, _)| value).collect()
 }
 
-/// the ordinary naval counter keeps the maximum over its members.
 pub fn counter_carrier(members: &[BTreeSet<u32>]) -> BTreeSet<u32> {
     let mut out = BTreeSet::from([0]);
     for member in members {
@@ -416,10 +357,6 @@ pub fn counter_carrier(members: &[BTreeSet<u32>]) -> BTreeSet<u32> {
     out
 }
 
-/// The `air_base_icon` child of an ordinary naval counter: `GFX_mapicon_air_base` for 1 and 2,
-/// `GFX_mapicon_rocket_site` for 3 and 4,
-/// with one-based frame 1 for 1 and 3 and 2 for 2 and 4, returned zero-based. The selected-base
-/// frames 6 and 7 need a UI selection a replay does not have.
 pub fn carrier_icon(value: u32) -> Option<(&'static str, u32)> {
     match value {
         1 | 2 => Some((AIR_BASE_ICON, u32::from(value == 2))),
@@ -431,10 +368,6 @@ pub fn carrier_icon(value: u32) -> Option<(&'static str, u32)> {
 pub const AIR_BASE_ICON: &str = "GFX_mapicon_air_base";
 pub const ROCKET_SITE_ICON: &str = "GFX_mapicon_rocket_site";
 
-/// Port carrier selection folds members' possible carrier states in item order.
-/// Air-base and rocket-site states have separate latches. The first selects the
-/// air-base sprite; otherwise rocket-site status selects that sprite. No admitted
-/// state hides the child. Unstationed states select the first frame.
 pub fn port_carrier(members: &[BTreeSet<u32>]) -> BTreeSet<Option<(&'static str, u32)>> {
     let mut states: BTreeSet<[bool; 4]> = BTreeSet::from([[false, true, false, true]]);
     for member in members {
@@ -476,8 +409,6 @@ pub fn port_carrier(members: &[BTreeSet<u32>]) -> BTreeSet<Option<(&'static str,
         .collect()
 }
 
-/// The recorded `UnitLeaders.category`: 0 and 1 are army (1), 2 navy (2),
-/// 3 operative (4); anything else keeps the initial 1.
 pub fn leader_category(category: i32) -> u32 {
     match category {
         2 => 2,
@@ -486,30 +417,17 @@ pub fn leader_category(category: i32) -> u32 {
     }
 }
 
-/// Headquarters portrait size.
 pub const HQ_PORTRAIT_SIZE: u32 = 1;
-/// the portrait the game falls back to.
 pub const UNKNOWN_LEADER_PORTRAIT: &str = "GFX_leader_unknown";
 
-/// What an HQ counter's `general_portrait` child shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Portrait {
-    /// A `GFX_...` sprite name (descriptor kind 0).
     Sprite(Vec<u8>),
-    /// A texture path (descriptor kind 1).
     File(Vec<u8>),
-    /// The native fallback, [`UNKNOWN_LEADER_PORTRAIT`], when the named descriptor does not resolve.
     FallbackIfUnresolved(Box<Portrait>),
-    /// A native branch whose input is not recorded.
     Unrecorded(&'static str),
 }
 
-/// Select the recorded headquarters portrait. No leader uses the unknown portrait.
-/// A character reference uses its recorded category and size-one holder entry,
-/// accepting a declared sprite or loaded texture. Unrecorded generated portraits
-/// remain unavailable. Non-character leaders try their explicit path, then their
-/// country-qualified picture path, then sprite name and the unknown portrait.
-/// Texture paths must belong to the loaded authored portrait set.
 pub fn hq_portrait(
     leader: Option<&LeaderPortraitRow>,
     category: Option<i32>,
@@ -520,8 +438,6 @@ pub fn hq_portrait(
         return Portrait::Sprite(UNKNOWN_LEADER_PORTRAIT.as_bytes().to_vec());
     };
     if leader.character != 0 {
-        // A non-zero character reference takes the holder branch and never reaches the
-        // leader's portrait strings, so a reference with no row stays undrawn.
         let Some(character) = character else {
             return Portrait::Unrecorded("character row");
         };
@@ -605,7 +521,6 @@ mod tests {
         }]);
         assert_eq!(order.mixed(70, 7), Some(1));
         assert_eq!(order.mixed(72, 7), Some(0));
-        // Not walked in another province's array.
         assert_eq!(order.mixed(70, 8), None);
         assert_eq!(order.naval(5, 7), Some(0));
     }
@@ -624,7 +539,6 @@ mod tests {
             is_capital(&ship(1, 0, MISSILE_CARRIER_FLAG, 0, 0, "x")),
             Some(true)
         );
-        // Support bits 7/8/39 are not capital bits.
         assert_eq!(
             is_capital(&ship(1, (1 << 7) | (1 << 8) | (1 << 39), 0, 0, 0, "dd")),
             Some(false)
@@ -640,7 +554,6 @@ mod tests {
         let battleship = ship(2, CAPITAL_FLAG, 0, 0, 12, "battleship");
         let cruiser = ship(3, 0, 0, 0, 13, "light_cruiser");
         let hull = |model, strength| Hull { strength, model };
-        // Air base beats strength.
         assert_eq!(
             hull_icon(
                 [hull(&battleship, 900), hull(&carrier, 1)],
@@ -648,7 +561,6 @@ mod tests {
             ),
             HullIcon::Resolved(Some(b"carrier".to_vec()))
         );
-        // Strength beats roster order.
         assert_eq!(
             hull_icon(
                 [hull(&cruiser, 5), hull(&battleship, 9)],
@@ -656,7 +568,6 @@ mod tests {
             ),
             HullIcon::Resolved(Some(b"battleship".to_vec()))
         );
-        // Historical distinct-variant operands are absent: unresolved unless names agree.
         assert_eq!(
             hull_icon(
                 [hull(&cruiser, 5), hull(&battleship, 5)],
@@ -672,7 +583,6 @@ mod tests {
             ),
             HullIcon::Resolved(Some(b"light_cruiser".to_vec()))
         );
-        // The same variant is not better: the first stays.
         let twin = ship(5, 0, 0, 0, 13, "other_name");
         assert_eq!(
             hull_icon(
@@ -681,7 +591,6 @@ mod tests {
             ),
             HullIcon::Resolved(Some(b"light_cruiser".to_vec()))
         );
-        // An invalid definition draws nothing.
         let mut invalid = cruiser.clone();
         invalid.counter.as_mut().unwrap().definition_valid = 0;
         assert_eq!(
@@ -831,7 +740,6 @@ mod tests {
         let database = &content;
         let mixed = definition_index(database, b"mod_mixed");
         let ship_index = definition_index(database, b"mod_ship");
-        // Own non-plane categories do not hide a plane archetype. The predicate is on the left.
         let a = HullVariantInputs {
             module_count: Some(1),
             version: Some(255),
@@ -910,7 +818,6 @@ mod tests {
     }
 
     #[test]
-    // Database's private indices require constructing this fixture via Default.
     #[allow(clippy::field_reassign_with_default)]
     fn authenticated_null_definition_compares_without_content_and_preserves_faults() {
         let null = HullVariantInputs {
@@ -1022,14 +929,12 @@ mod tests {
             first_carrier_has_air_base(&[&cruiser, &carrier]),
             Some(true)
         );
-        // The first carrier decides, even without an air base of its own.
         assert_eq!(
             first_carrier_has_air_base(&[&empty_carrier, &carrier]),
             Some(false)
         );
         assert_eq!(first_carrier_has_air_base(&[&cruiser]), Some(false));
         assert_eq!(first_carrier_has_air_base(&[]), Some(false));
-        // A ship before the first carrier without model operands leaves it open.
         let unknown = ShipModelRow {
             ship: 4,
             ..Default::default()
@@ -1068,12 +973,10 @@ mod tests {
         assert_eq!(carrier_icon(2), Some((AIR_BASE_ICON, 1)));
         assert_eq!(carrier_icon(3), Some((ROCKET_SITE_ICON, 0)));
         assert_eq!(carrier_icon(0), None);
-        // The ordinary counter keeps the maximum.
         assert_eq!(
             counter_carrier(&[BTreeSet::from([1]), BTreeSet::from([4])]),
             BTreeSet::from([4])
         );
-        // The port counter stops scanning after a stationed air base.
         assert_eq!(
             port_carrier(&[BTreeSet::from([2]), BTreeSet::from([4])]),
             BTreeSet::from([Some((AIR_BASE_ICON, 0))])
@@ -1103,7 +1006,6 @@ mod tests {
             portrait_entry(&holder, 2, 1).unwrap().identity,
             b"navy_large"
         );
-        // No army large: the first entry of that size.
         assert_eq!(
             portrait_entry(&holder, 1, 1).unwrap().identity,
             b"civ_large"
@@ -1138,7 +1040,6 @@ mod tests {
             hq_portrait(None, None, None, None),
             Portrait::Sprite(UNKNOWN_LEADER_PORTRAIT.as_bytes().to_vec())
         );
-        // Format 24's recorded tag completes the portrait directory branch.
         let pictured = LeaderPortraitRow {
             leader: 3,
             portrait_e0: b"portrait_generic_land_4.dds".to_vec(),
@@ -1154,7 +1055,6 @@ mod tests {
             hq_portrait(Some(&pictured), Some(0), None, None),
             Portrait::Unrecorded("leader picture directory")
         );
-        // A character reference with no row never reaches the leader's portrait strings.
         let dangling = LeaderPortraitRow {
             leader: 4,
             character: (9 << 32) | 73,

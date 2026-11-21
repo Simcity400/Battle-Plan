@@ -1,5 +1,3 @@
-// WebGPU BC top-level extents must be block aligned. Decode padded staging
-// images with the hardware, cropping each authored mip into its logical extent.
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var destination: texture_storage_2d<rgba8unorm, write>;
 

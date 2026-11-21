@@ -59,9 +59,6 @@ const NO_WARNINGS: readonly string[] = [];
 const SUPPLY = { kind: RESOURCE_BALANCE, measure: 'supply' } as const;
 const DEMAND = { kind: RESOURCE_BALANCE, measure: 'demand' } as const;
 
-/** One country's resources: per resource, supply against demand with the game's surplus or deficit, or supply and
- * demand over time; a resource opens its breakdown (parts, deals, parts over time), which can be pinned as a widget of
- * its own for that country. */
 export default function ResourceBalanceWidget(props: WidgetProps) {
   return props.widget.options?.show === BREAKDOWN.id ? <ResourceCountry {...props} /> : <CountryComparisons {...props} component={ResourceCountry} />;
 }
@@ -69,7 +66,6 @@ export default function ResourceBalanceWidget(props: WidgetProps) {
 const isMember = (within: ComparisonProps['within'], hour: number | null) =>
   !within || hour === null || within.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
-/** The pinned breakdown's country: its saved choice, or the widget's one country. */
 function savedCountryOf(widget: WidgetSpec, track: BoundTrack): DatedCountrySelection | null {
   const options = resolveOptions(OPTIONS, widget.options);
   return readDatedCountry(options.resourceCountry, track.source.metadata.campaignKey, track.branch.id)
@@ -98,8 +94,6 @@ function partColours(tokens: ChartTokens): Map<string, string> {
   ]);
 }
 
-/** One country's view and its breakdown host. The breakdown reads its own product: followed with the head while it
- * follows playback, else asked for the day picked. */
 function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: string; saved: DatedCountrySelection | null }) {
   const { widget, runtime, active, countrySlot, track, tag, saved } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -117,7 +111,6 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const playhead = window && (following || widget.time.mode === 'pin') ? Math.floor(window.lastHour) : null;
   useEffect(() => { dispatch({ type: 'close' }); setResourceId(undefined); }, [track.source.id, track.source.revision, track.branch.id, tag, options.show]);
 
-  // The breakdown's hour: the head while it follows a following widget, else the day picked or the one the widget shows.
   const shown = !!saved || drill.breakdown !== null;
   const drillFollows = following && (drill.breakdown === null ? !!saved : drill.follow);
   const drillAt = drillFollows ? null : drill.breakdown !== null && drill.hour !== null ? drill.hour : playhead ?? extent[1];
@@ -192,11 +185,8 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   </div>;
 }
 
-/** The painted parts of one resource's row: each bar part by id, the net, and the missing note. */
 interface RowCells { parts: Map<string, HTMLElement>; net: HTMLElement | null }
 
-/** The balance bars at the head (a pushed panel naming which resources show and in which order, rendering only when
- * that changes; every amount painted each frame from its live cells), or at the pinned, ranged or hovered hour. */
 function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, track, onPick }: ComparisonProps & {
   tag: string; track: BoundTrack; onPick: (resource: ResourceInfo, hour: number | null) => void;
 }) {
@@ -223,7 +213,6 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
     const whole = campaign ? campaignScale(sizes.data) : 0n, moment = momentScale(poolsOf(reply, values));
     return whole > moment ? whole : moment;
   }, [campaign, sizes.data]);
-  // Every amount is written into the page in the frame its cells move: no render.
   useLayoutEffect(() => {
     if (!data) return undefined;
     const paint = () => {
@@ -324,9 +313,6 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
   return <div ref={head.root} className="resource-balance-host">{body}</div>;
 }
 
-/** Supply (solid) and demand (dashed) over time for the chosen resources, each in its own palette colour, from the
- * declared series' tiles; with one resource the gap between them is shaded. The chips carry each chosen resource's
- * net at the head, painted from the head product's live cells; a line picked opens its breakdown. */
 function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag, track, extent, playhead, liveHead, setOption, onPick }: ComparisonProps & {
   tag: string; track: BoundTrack; extent: [number, number]; playhead: number | null; liveHead?: { read(): number; subscribe(changed: () => void): () => void };
   onPick: (resource: ResourceInfo, hour: number | null) => void;
@@ -386,12 +372,11 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
     ] satisfies ChartLayer[]),
   ], [lines, shade, supply.summaryOf, demand.summaryOf]);
   const [selection, setSelection] = useState<{ hour: number; ids: readonly string[] } | null>(null);
-  useEffect(() => setSelection(null), [chosen, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setSelection(null), [chosen, extent[0], extent[1]]);
   const chipValues = useRef(new Map<number, HTMLElement>());
   const report = useShownHour();
   const shownAt = useRef(atHead.shownAt);
   shownAt.current = atHead.shownAt;
-  // Each chosen chip's net at the head, written in the frame its cells move.
   useLayoutEffect(() => {
     const data = atHead.data;
     if (!data) return undefined;
@@ -480,7 +465,6 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   </div>;
 }
 
-/** A reply's own cells, read at its hour. */
 function repliedValues(reply: ResourceBalanceReply): LiveValues<number> {
   return repliedCellsOf(reply).read();
 }

@@ -1,4 +1,3 @@
-//! Standing naval incident groups, retaining native report occurrences.
 use super::{Arg, Tooltip, counter_content};
 use replay_data::{rows::AirCountryRelationRow, rows::NavalAccidentReportRow, rows::tables};
 use replay_frame::frame::DecodedFrame;

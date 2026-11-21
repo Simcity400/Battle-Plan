@@ -1,35 +1,17 @@
-//! Read hour of a nested packet on an hourly host row.
-//!
-//! Every host of a [`PacketHour`] is hourly ([`crate::cadence`]): the
-//! encoder never carries it (`FrameEncoder::can_carry` admits only staggered
-//! tables), so an hour's complete or truncated host rows were acquired at that
-//! hour, and so were the packets they hold. A packet that was not read is its
-//! explicit refusal (`None`, or `None` operands), never an earlier packet.
-//! Current writers therefore store no hour, equal acquisitions encode
-//! `Unchanged`, and a keyframe or seek proves freshness from the frame alone.
-//!
-//! Recordings through [`STAMPED_PACKET_FORMAT`] stored the read hour in every
-//! packet; it decodes as [`PacketHour::Stamped`] and still decides freshness.
 use super::*;
 
-/// Last format whose hourly-host packets store their read hour.
 pub const STAMPED_PACKET_FORMAT: u16 = crate::rows::compatibility::POLITICAL_FORMAT;
 
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum PacketHour {
-    /// Read with its hourly host row; costs no bytes.
     #[default]
     Host,
-    /// Historical per-packet read hour. Never written by current formats.
     Stamped(i32),
 }
 
 impl PacketHour {
-    /// Whether the packet was read at `hour`, the hour of the frame whose
-    /// decoded host rows hold it. A host packet always was; a historical
-    /// stamp must equal that hour.
     pub fn fresh_at(self, hour: i32) -> bool {
         match self {
             Self::Host => true,
@@ -37,7 +19,6 @@ impl PacketHour {
         }
     }
 
-    /// The stored historical hour, for diagnostics; None for host packets.
     pub fn stamp(self) -> Option<i32> {
         match self {
             Self::Host => None,
@@ -46,7 +27,6 @@ impl PacketHour {
     }
 }
 
-/// Diagnostics name a historical stamp by its hour.
 impl std::fmt::Display for PacketHour {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -112,8 +92,6 @@ pub fn historical_stamp() -> Option<i32> {
     HISTORICAL_STAMP.with(std::cell::Cell::get)
 }
 
-/// Test-only stand-in for the format-101 writer: host packets encoded inside
-/// `encode` carry `hour`, as every stamped packet of that hour's rows did.
 #[cfg(any(test, feature = "test-support"))]
 pub fn with_historical_stamp<R>(hour: i32, encode: impl FnOnce() -> R) -> R {
     let previous = HISTORICAL_STAMP.with(|stamp| stamp.replace(Some(hour)));

@@ -1,5 +1,3 @@
-//! How the division log reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{Hour, columns};
 use replay_columnar::store::{Kept, TableView, Value as Held};
@@ -13,7 +11,6 @@ pub(super) fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Divisions' owners, place, template and reveal-skip byte.
 const DIVISION: [usize; 5] = columns::<DivisionRow, 5>(["roster_owner", "expeditionary_owner", "province", "template", "reveal_skip"]);
 pub(super) const SHOWN: [usize; 1] = [DIVISION[4]];
 pub(super) const NAMES: [usize; 2] = columns::<DivisionStatusRow, 2>(["name", "naming"]);
@@ -21,7 +18,6 @@ pub(super) const ICON: [usize; 3] = columns::<DivisionTemplateIconRow, 3>(["prio
 pub(super) const LINK: [usize; 1] = columns::<CountryLinkRow, 1>(["canonical_slot"]);
 const NAMING: [usize; 2] = columns::<DivisionTemplateIconRow, 2>(["display_name", "country"]);
 
-/// `table`'s row in `slot`, its fields `mask` names, as the row decoder reads them.
 fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io::Result<R> {
     let held = hour.table(table);
     let key = held.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
@@ -36,8 +32,6 @@ fn number(value: Held<'_>) -> Option<i64> {
     }
 }
 
-/// A division as Divisions holds it: its owner (the positive expeditionary owner, else the roster
-/// owner), and its province and template where recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Placed {
     pub owner: Option<u32>,
@@ -55,31 +49,24 @@ fn placed(cell: impl Fn(usize) -> Option<i64>) -> Placed {
     }
 }
 
-/// Whether the Divisions row in `slot` is a division, not an intel copy.
 pub(super) fn shown(view: &TableView<'_>, slot: u32) -> bool {
     view.number(DIVISION[4], slot) == Some(0)
 }
 
-/// Whether a deleted Divisions row was a division, not an intel copy.
 pub(super) fn dropped_shown(cells: &[Kept]) -> bool {
     cells.get(DIVISION[4]).and_then(|cell| number(cell.value())) == Some(0)
 }
 
-/// The Divisions row in `slot`.
 pub(super) fn division(view: &TableView<'_>, slot: u32) -> Placed {
     placed(|column| view.number(column, slot))
 }
 
-/// A deleted Divisions row, from its cells as the deletion found them.
 pub(super) fn dropped_division(cells: &[Kept]) -> Placed {
     placed(|column| cells.get(column).and_then(|cell| number(cell.value())))
 }
 
-/// A division's name and name operands as DivisionStatus holds their opaque cells, each none when
-/// not recorded.
 pub(super) type Names<'a> = [Option<&'a [u8]>; 2];
 
-/// DivisionStatus's row for `division`, when the table is complete and holds one.
 pub(super) fn names<'a>(hour: &Hour<'a>, division: u64) -> Option<Names<'a>> {
     if !hour.complete(TableId::DivisionStatus) {
         return None;
@@ -89,7 +76,6 @@ pub(super) fn names<'a>(hour: &Hour<'a>, division: u64) -> Option<Names<'a>> {
     Some(NAMES.map(|column| view.list(column, slot)))
 }
 
-/// A deleted DivisionStatus row's names, from its cells as the deletion found them.
 pub(super) fn dropped_names(cells: &[Kept]) -> Names<'_> {
     NAMES.map(|column| match cells.get(column) {
         Some(Kept::List(bytes)) => Some(&bytes[..]),
@@ -97,14 +83,12 @@ pub(super) fn dropped_names(cells: &[Kept]) -> Names<'_> {
     })
 }
 
-/// A template's icon operands: its priority sub-unit, custom icon and the sub-unit's name.
 pub(super) struct Icon<'a> {
     pub unit: Option<u32>,
     pub custom: Option<i32>,
     pub name: Option<&'a [u8]>,
 }
 
-/// DivisionTemplateIcons' row for `template`, when the table is complete and holds one.
 pub(super) fn icon<'a>(hour: &Hour<'a>, template: u64) -> Option<Icon<'a>> {
     if !hour.complete(TableId::DivisionTemplateIcons) {
         return None;
@@ -118,7 +102,6 @@ pub(super) fn icon<'a>(hour: &Hour<'a>, template: u64) -> Option<Icon<'a>> {
     })
 }
 
-/// A deleted DivisionTemplateIcons row's icon operands, from its cells as the deletion found them.
 pub(super) fn dropped_icon<'a>(hour: &Hour<'a>, cells: &[Kept]) -> Icon<'a> {
     let cell = |column: usize| cells.get(column).map(Kept::value);
     Icon {
@@ -131,15 +114,12 @@ pub(super) fn dropped_icon<'a>(hour: &Hour<'a>, cells: &[Kept]) -> Icon<'a> {
     }
 }
 
-/// A template's display-name operands: its literal name, else the key localised for its country.
 pub(super) struct TemplateName {
     pub literal: Vec<u8>,
     pub key: Option<Vec<u8>>,
     pub country: i32,
 }
 
-/// Template `template`'s display-name operands at the hour, as DivisionTemplateIcons and the daily
-/// DivisionTemplates give them; none where either is not complete, holds no row or refuses.
 pub(super) fn template_name(hour: &Hour<'_>, template: u64) -> Option<TemplateName> {
     if !hour.complete(TableId::DivisionTemplateIcons) {
         return None;
@@ -157,21 +137,16 @@ pub(super) fn template_name(hour: &Hour<'_>, template: u64) -> Option<TemplateNa
     Some(TemplateName { literal: parts.literal.to_vec(), key: parts.fallback_key.map(<[u8]>::to_vec), country: icon.country })
 }
 
-/// A removal witness's cells the log compares from one read to the next: country, expeditionary
-/// owner, disposition and cause.
 pub(super) type Signature = (u32, u32, u8, Option<u8>);
 
 pub(super) fn signature(row: &DivisionEquipmentDeletionRow) -> Signature {
     (row.country, row.expeditionary_owner, row.disposition as u8, row.cause.map(|cause| cause as u8))
 }
 
-/// The DivisionEquipmentDeletions row in `slot`.
 pub(super) fn witness(hour: &Hour<'_>, slot: u32) -> io::Result<DivisionEquipmentDeletionRow> {
     row(hour, TableId::DivisionEquipmentDeletions, slot, u64::MAX)
 }
 
-/// The deaths DestroyedDivisions logged this hour, each with its ordinal; none while the log is not
-/// complete.
 pub(super) fn deaths(hour: &Hour<'_>) -> io::Result<Vec<(u64, DestroyedDivisionsRow)>> {
     let table = TableId::DestroyedDivisions;
     if !hour.complete(table) {
@@ -185,8 +160,6 @@ pub(super) fn deaths(hour: &Hour<'_>) -> io::Result<Vec<(u64, DestroyedDivisions
     Ok(deaths)
 }
 
-/// Every LandEventCoverage span certified complete, (from, to], when the table is complete. Its
-/// deaths are stamped from `from` through `to`.
 pub(super) fn covered(hour: &Hour<'_>) -> io::Result<Vec<(i32, i32)>> {
     let mut spans = Vec::new();
     if !hour.complete(TableId::LandEventCoverage) {
@@ -202,7 +175,6 @@ pub(super) fn covered(hour: &Hour<'_>) -> io::Result<Vec<(i32, i32)>> {
     Ok(spans)
 }
 
-/// `country`'s canonical slot, while CountryLinks is complete and resolves it.
 pub(super) fn resolve(hour: &Hour<'_>, country: u32) -> Option<u32> {
     if !hour.complete(TableId::CountryLinks) {
         return None;

@@ -325,7 +325,6 @@ fn count_ranges_are_exact_at_full_intel_and_clamp_nonpositive_counts() {
         ),
         [9, 9]
     );
-    // A tiny positive count cannot become an absent unit at low intel.
     let [min, max] = count_range(1, 1, 0, 123, 60_827_914, d);
     assert_eq!(min, 1);
     assert!(max >= 1);
@@ -369,12 +368,10 @@ fn seeded_count_range_keeps_wrapping_native_salt() {
     let d = content().defines;
     let law = [d.minimum, d.maximum, d.range];
     let hour = 60_827_914;
-    // UINT_MAX + 0x4A2 - 1 wraps to 0x4A0 before count and calendar terms.
     assert_eq!(
         count_range(100, u32::MAX, 40_000, -1, hour, d),
         count_range_seeded(100, 40_000, 0x4A0, hour, law),
     );
-    // Air country UINT_MAX + 0x5E2 wraps to 0x5E1, without the land salt.
     assert_eq!(
         count_range_seeded(100, 40_000, u32::MAX.wrapping_add(0x5E2), hour, law),
         count_range_seeded(100, 40_000, 0x5E1, hour, law),

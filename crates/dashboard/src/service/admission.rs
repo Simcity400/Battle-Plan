@@ -8,8 +8,6 @@ use std::{
     },
 };
 
-/// The same token stays with a request through loading, serialization and every
-/// fragment. Cancellation cannot be forgotten when a reply leaves a queue.
 pub(super) struct Request {
     pub(super) id: String,
     pub(super) cancelled: AtomicBool,
@@ -47,14 +45,11 @@ pub(super) struct Lease {
 
 #[derive(Default)]
 pub(super) struct Pending {
-    // Admission includes completed replies until their final fragment is sent.
     pub(super) requests: BTreeMap<String, Arc<Request>>,
     pub(super) leases: BTreeMap<String, Lease>,
     pub(super) source_requests: BTreeMap<String, String>,
     pub(super) ready: VecDeque<(Arc<Request>, String)>,
     pub(super) errors: VecDeque<(Arc<Request>, QueryError)>,
-    // Recent cancel-before-admission messages are bounded separately. Live work
-    // keeps its own token even after an unrelated tombstone evicts an old id.
     pub(super) cancelled: VecDeque<String>,
     pub(super) next_lease: u64,
 }
@@ -73,8 +68,6 @@ impl Pending {
         self.requests
             .insert(request.id.clone(), Arc::clone(&request));
         if at_capacity {
-            // Reserve at most another MAX_PENDING small rejection replies. A
-            // conforming host already bounds all outstanding requests to 64.
             self.errors
                 .push_back((request, crate::transport::CAPACITY_REACHED.into()));
             None
@@ -151,7 +144,6 @@ impl Pending {
         std::mem::take(self)
     }
 
-    /// Queue a finished job's result if its request is still current.
     pub(super) fn complete(&mut self, request: Arc<Request>, result: Result<String, QueryError>) {
         if !self.current(&request) {
             return;
@@ -186,7 +178,6 @@ impl Inner {
         }
         let request = pending.begin(id);
         drop(pending);
-        // begin may have queued a bounded capacity error instead of work.
         self.signal.notify();
         request
     }
@@ -227,8 +218,6 @@ impl Inner {
         drop(lease);
     }
 
-    /// Terminal cleanup is safe on any service thread. It never joins a
-    /// thread; the owning Service performs all joins during retirement.
     pub(super) fn stop(&self) {
         let pending = {
             let mut pending = self
@@ -243,8 +232,6 @@ impl Inner {
             .unwrap_or_else(|error| error.into_inner())
             .take();
         drop(pending);
-        // Close the configuration, so a rebind still in flight installs nothing and none starts,
-        // then retire every source's binding, cancelling work still done ahead under it.
         self.content.close();
         for source in self.bound_sources() {
             source.bind(None, Default::default());

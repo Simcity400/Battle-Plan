@@ -1,4 +1,3 @@
-// Preload before Playwright. Its PID tree-kill can only request our Job shutdown.
 const cp = require('node:child_process'), fs = require('node:fs');
 const { promisify } = require('node:util');
 if (!(process.env.BATTLE_PLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Launch through owned_job.py');

@@ -1,21 +1,3 @@
-//! Reading one decoded hour's tables when the hour does not hold all of them.
-//!
-//! The collector grows its buffers over the first hours of a session, so an
-//! early frame records several tables truncated and a staggered table not at
-//! all. The viewer shows gaps, truncated tables and unavailable tables **as
-//! such** rather than refusing the hour, so a
-//! pass reads what the hour holds through `rows` and states what it could not
-//! draw through `Limitations`.
-//!
-//! # Core and the rest
-//!
-//! Three tables are **core**: `Provinces` carries the per-province owner,
-//! controller and state the political fill *is*, and `CountryLinks` and
-//! `Countries` turn its raw country references into the canonical slots and
-//! tags every colour, flag and name is keyed by. Without all three there is no
-//! political map to degrade, so [`core`] refuses the frame with a message that
-//! names the table and says so. Every other table the map reads degrades: see
-//! `limitations` for the full list and what each gap costs.
 
 use std::io;
 
@@ -24,16 +6,10 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 use super::perspective::Resolution;
 
-/// The core tables, named in the error a missing one produces.
 const CORE: &str = "Provinces, CountryLinks and Countries";
 
 pub use crate::table_access::{Available, rows, rows_fields};
 
-/// Every row of a core table, or a named error for the whole frame.
-///
-/// A truncated `Provinces` table would paint part of the world and leave the
-/// rest unowned, which is an invented map rather than a stated gap, so the
-/// hour is refused instead. See the module docs for why these three.
 pub fn core<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
     let table = T::ID;
     let hour = frame.hour;
@@ -54,10 +30,6 @@ pub fn core<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
     }
 }
 
-/// What one hour could not draw, in the words the window and a dump both show.
-///
-/// One line per degraded table, in the fixed order of [`limitations`], so the
-/// same hour always reports the same list.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Limitations {
     lines: Vec<String>,
@@ -118,7 +90,6 @@ impl Limitations {
         self.note_field("Supply train phase", "The scheduler seed/counter, remaining interval and existing train fleet are unrecorded. Presentation uses seed 0x54524149 XOR ordered route provinces, a global 9200..12000 ms schedule and animation time (dump=0). Routes/weights/access and signed ordered inventory are recorded in format 21, each country's once a game day at its owner slice (its read hour is in SliceReads), so a route, weight or fleet can be up to a day old. Rail spline anchors, continent wagon fallback, wheel animation and exhaust remain unverified. A null or missing variant join suppresses that consist; the engine's unrecorded first-owned-train fallback is not invented.");
     }
 
-    /// Entity light state is a field omission, even when every table is whole.
     pub fn note_point_lights(&mut self) {
         self.push(
             "Entity animation: window clocks sample authored states, blends, attachments and muzzle/cigarette light and particle events. \
@@ -133,10 +104,6 @@ impl Limitations {
         );
     }
 
-    /// Records `affected` when this hour's `T` table is not complete.
-    ///
-    /// `affected` is what the map draws differently because of the gap, stated
-    /// in the present tense: it is read by someone looking at the render.
     pub fn note<T: TableSchema>(&mut self, frame: &DecodedFrame, affected: &str) {
         let table = T::ID;
         match &*frame.tables[table.index()] {
@@ -153,19 +120,10 @@ impl Limitations {
         }
     }
 
-    /// Records a limitation of one recorded **field** rather than of a table.
-    ///
-    /// A row can be present, and its table complete, and the field still carry
-    /// nothing a pass can draw: a `ProvinceNames.name` is raw engine bytes that
-    /// need not be text at all.
-    /// The table is complete, so [`Limitations::note`] has nothing to say about
-    /// it, but the pass still fell back and the reader still has to be told
-    /// which field it fell back from.
     pub fn note_field(&mut self, field: &str, affected: &str) {
         self.push(format!("Field {field}: {affected}"));
     }
 
-    /// Records `affected` when `table` is not complete in `statuses`, worded as [`Limitations::note`].
     pub fn note_seen(&mut self, statuses: &dyn Statuses, table: replay_data::rows::TableId, affected: &str) {
         match statuses.seen(table) {
             Seen::Complete => {}
@@ -176,8 +134,6 @@ impl Limitations {
         }
     }
 
-    /// The recorded lines, one per degraded table. An hour that drew
-    /// everything it reads has none.
     pub fn lines(&self) -> Vec<String> {
         self.lines.clone()
     }
@@ -186,13 +142,6 @@ impl Limitations {
         self.lines
     }
 
-    // orders: the recorded player's battle plan
-    /// Records what the drawn battle plan cannot take from the recording.
-    ///
-    /// These are not table gaps --- `ArmyOrders` and `OrdersGroups` can be
-    /// complete and every one of them still holds --- so they are fields rather
-    /// than tables, and they are stated only on an hour that draws a plan at
-    /// all, because on an hour with none they describe nothing on screen.
     pub fn note_battle_plan(&mut self, drawn: usize) {
         if drawn == 0 {
             return;
@@ -201,9 +150,6 @@ impl Limitations {
         self.note_field("ArmyOrderPlans (presentation)", "Plans follow the viewer's Allied battle plans toggle and native admission rules. Long invasion and paradrop labels use recorded simulation operands and content. Active plans use current simulation prerequisites; blocked plans stop texture scrolling while their active effect remains. Missing execution operands retain named refusals. The read-only viewer does not select or edit order groups");
     }
 
-    // raids: the viewing country's raid arrows
-    /// Records what the raid arrows cannot take from the recording, when the
-    /// viewing country has `raids` non-ended raids, `launched` of them in flight.
     pub fn note_raid_arrows(&mut self, raids: usize, launched: usize) {
         if raids == 0 {
             return;
@@ -214,14 +160,6 @@ impl Limitations {
         }
     }
 
-    /// Records the game's two controls: the viewing country and the fog switch.
-    ///
-    /// Neither is a table gap, so [`Limitations::note`] has nothing to say about
-    /// them, but every counter, colour and plan on the frame depends on them and
-    /// the reader has to be told which country the map was viewed as — and, when
-    /// that is not the country asked for, why. The wording lives here beside
-    /// every other degradation's so the window and a dump cannot state different
-    /// ones.
     pub fn note_perspective(&mut self, perspective: &Perspective) {
         let tag = &perspective.tag;
         let country = match &perspective.resolution {
@@ -257,11 +195,6 @@ impl Limitations {
         self.push(format!("{country}; {fog}"));
     }
 
-    /// Records the sight inputs the fog-on unit byte takes from the hour.
-    ///
-    /// Only fog of war on reads them: with it off unit intel returns
-    /// `0xff` before any of them is asked, so a gap in them costs nothing and
-    /// is not stated.
     pub fn note_fog_on_sight(&mut self, statuses: &dyn Statuses) {
         self.note_seen(
             statuses,
@@ -292,8 +225,6 @@ impl Limitations {
         );
     }
 
-    /// Records that fog of war is on but a sight table is unavailable, so the
-    /// unit byte cannot be decided and every stack is drawn as fog off draws it.
     pub fn note_undecided_sight(&mut self, table: &str) {
         self.push(format!(
             "Fog of war on, but table {table} is unavailable for this hour and an unavailable \
@@ -302,13 +233,6 @@ impl Limitations {
         ));
     }
 
-    /// Records what the drawn fog of war is a snapshot of.
-    ///
-    /// Called only when the frame draws fog, because the ways it can fail to
-    /// are already stated: fog of war off in [`Limitations::note_perspective`],
-    /// and with it on [`Limitations::note_visibility_gap`]. The fog is rebuilt
-    /// from the recorded hour and not interpolated, so a frame drawn between
-    /// two hours carries the earlier hour's fog (`fraction`).
     pub fn note_fog_of_war(&mut self, fogged: usize, fraction: f32) {
         let between = if fraction > 0.0 {
             format!(
@@ -324,7 +248,6 @@ impl Limitations {
         ));
     }
 
-    /// Records that fog of war is on but the province fog rebuild lacks an input.
     pub fn note_visibility_gap(&mut self, input: &str) {
         self.push(format!(
             "Fog of war on, but the province fog cannot be rebuilt this hour ({input}): no fog is \
@@ -335,37 +258,20 @@ impl Limitations {
     }
 }
 
-/// What the game's two controls resolved to for this hour.
-///
-/// `map::perspective` decides this; the wording of it lives here.
 pub struct Perspective {
-    /// The viewing country's tag.
     pub tag: String,
-    /// How the viewing country was settled.
     pub resolution: Resolution,
-    /// Whether fog of war is on.
     pub fog: bool,
 }
 
-/// Every non-core table the map reads, and what a gap in it costs this hour.
-///
-/// This is the one place that list lives: the window and `--dump` both report
-/// it, so neither can state a different limitation from the other. A pass is
-/// responsible only for degrading; the wording of the degradation is here, next
-/// to the wording of every other one.
-///
-/// A table's status as the limitation notes read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
     Complete,
     Truncated(u32),
-    /// Unavailable, with the recording's reason.
     Unavailable(String),
-    /// Not recorded, in a recording of the mode named when it is known.
     NotRecorded(Option<replay_data::scope::CaptureMode>),
 }
 
-/// Each table's status at one hour.
 pub trait Statuses {
     fn seen(&self, table: replay_data::rows::TableId) -> Seen;
 }
@@ -381,26 +287,17 @@ impl Statuses for DecodedFrame {
     }
 }
 
-/// What the table notes read from rows rather than statuses: a frame's, or the values the map's
-/// layers hold at the head. Each is what a table holding no rows gives.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RowFacts {
-    /// Naval bases whose recorded country list is unreadable.
     pub unreadable_naval_bases: usize,
     pub divisions: bool,
     pub task_forces: bool,
-    /// Division templates whose model inputs were unreadable.
     pub unreadable_templates: usize,
-    /// When ShipModels holds rows: whether every one holds its counter operands.
     pub ship_counters: Option<bool>,
-    /// A weather region holds rain, snow, a blizzard or a sandstorm.
     pub weather: bool,
-    /// When WeatherProvinces holds rows: why province zero's retained display is missing, none
-    /// when it holds one.
     pub weather_display: Option<Option<&'static str>>,
 }
 
-/// Why province zero's retained weather display is missing: not recorded, or recorded without one.
 pub const DISPLAY_NOT_RECORDED: &str = "not recorded";
 pub const DISPLAY_UNAVAILABLE: &str = "unavailable";
 
@@ -427,12 +324,8 @@ impl RowFacts {
     }
 }
 
-/// The core tables are absent on purpose. A gap in one of them is not a
-/// limitation of the render, it is the absence of the render, and `core`
-/// names it as a frame error instead.
 pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitations {
     let mut out = Limitations::default();
-    // borders: the demilitarised-zone bucket bank
     out.note_seen(statuses, tables::StateFlags::ID,
         "the demilitarised-zone border is not drawn at all: a state this hour is silent about \
          cannot be assumed not to be demilitarised, and half a zone is a wrong outline rather than \
@@ -451,7 +344,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
          and a counter flag falls back from its cosmetic tag",
     );
     out.note_seen(statuses, tables::ArmyIconInputs::ID, "missing division rows use the standard template and recover only HQ-provider separation from OrdersGroups; alternate template grouping is unavailable");
-    // names
     out.note_seen(statuses, tables::ProvinceNames::ID,
         "a victory point renamed in game keeps the static localised name of its province, because \
          a province this hour is silent about cannot be assumed not to have been renamed",
@@ -463,7 +355,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
     out.note_seen(statuses, tables::PoliticalParties::ID,
         "country names show their tag and counter flags fall back to the plain <TAG> key",
     );
-    // counters: allegiance
     out.note_seen(statuses, tables::LocalPlayer::ID,
         "the recording client's viewpoint is unavailable; the default view uses the lowest country slot",
     );
@@ -489,8 +380,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
     out.note_seen(statuses, tables::Autonomy::ID,
         "current subject colour switches among the missing rows are unavailable; those subjects keep their own colour and their names fall back to their tags",
     );
-    // counters: co-belligerency. `Relations::read` needs all four tables complete; without
-    // them the counter pass knows no side but the viewing country's own.
     const COUNTER_RELATIONS: &str = "unit counters take no side but the viewing country's own,         and different owners never share a counter column, because the co-belligerent byte the         grouping reads is derived from the complete war, faction, subject and relation tables";
     out.note_seen(statuses, tables::WarRelations::ID, COUNTER_RELATIONS);
     out.note_seen(statuses, tables::FactionMembers::ID, COUNTER_RELATIONS);
@@ -604,7 +493,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
             out.note_field("Naval counter presentation", "The province occupant census is incomplete or unavailable. Naval counters use cold order, so native grouping may differ. Incomplete ship operands leave capital counts, hull icons and status cells unknown; bar fallback is reported by the missing tables above.");
         }
     }
-    // counters
     out.note_seen(statuses, tables::Divisions::ID,
         "land counters count only the recorded divisions, and a land combat's attack direction may \
          be missing",
@@ -622,8 +510,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
             ),
         );
     }
-    // A recording without DivisionStatus draws its land figures and exercise glyphs from
-    // DivisionModelInputs.
     if matches!(statuses.seen(tables::DivisionStatus::ID), Seen::NotRecorded(_)) {
         out.note_seen(statuses, tables::DivisionStatus::ID,
             "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment and no-order glyphs are not drawn",
@@ -636,7 +522,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
             "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment, exercise and no-order glyphs are not drawn; at close zoom its model number and camouflage are unknown, so it draws no model",
         );
     }
-    // close zoom: the 3D model selectors' daily inputs
     out.note_seen(statuses, tables::DivisionEquipment::ID,
         "a close-zoom division among the missing rows has no known equipment, so its model is unknown and not drawn",
     );
@@ -672,7 +557,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
         Some(false) => out.note_field("ShipModels formation", "Missing ship roster operands suppress the formation; neither capital choice nor support slot order can be established."),
         None => {}
     }
-    // orders: the recorded player's battle plan
     out.note_seen(statuses, tables::ArmyOrderPlans::ID,
         "battle-plan binding, style and assignment; absent plans are not drawn",
     );
@@ -719,7 +603,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
     out.note_seen(statuses, tables::LexicalTokens::ID,
         "a base icon whose building token is among the missing rows is not drawn at all",
     );
-    // weather
     out.note_seen(statuses, tables::WeatherRegions::ID,
         "weather effects are drawn only for the recorded region rows",
     );
@@ -738,7 +621,6 @@ pub fn table_limitations(statuses: &dyn Statuses, facts: &RowFacts) -> Limitatio
     out
 }
 
-/// [`table_limitations`] of a frame of rows: its statuses, and its rows for the notes that read them.
 pub fn limitations(frame: &DecodedFrame) -> Limitations {
     table_limitations(frame, &RowFacts::of(frame))
 }
@@ -754,8 +636,6 @@ mod tests {
     use replay_data::{rows::PoliticalPartyRow, rows::ProvinceRow, rows::TableId};
     use replay_frame::frame::Metrics;
 
-    /// A frame whose every table is unavailable, so a test only has to fill in
-    /// the ones it cares about.
     fn frame() -> DecodedFrame {
         DecodedFrame {
             branch: 1,
@@ -811,7 +691,6 @@ mod tests {
         assert!(view.rows().is_empty());
         assert!(!view.is_complete());
         assert!(matches!(view, Available::Unavailable { .. }));
-        // A complete table is not a gap at all.
         let mut whole = frame();
         *whole.tables[TableId::Divisions.index()] =
             TableView::Complete(TableRows::Divisions(Vec::new()));
@@ -846,14 +725,12 @@ mod tests {
         );
         assert!(error.contains(CORE), "{error}");
         assert!(error.contains("cannot be drawn"), "{error}");
-        // An unavailable core table keeps the collector's own reason.
         let error = core::<tables::Countries>(&frame).err().unwrap().to_string();
         assert!(error.contains("Countries is unavailable"), "{error}");
         assert!(
             error.contains("the collector had not grown its buffer yet"),
             "{error}"
         );
-        // A complete core table is handed over unchanged.
         *frame.tables[TableId::Provinces.index()] =
             TableView::Complete(TableRows::Provinces(vec![province(1), province(2)]));
         assert_eq!(core::<tables::Provinces>(&frame).unwrap().len(), 2);
@@ -869,7 +746,6 @@ mod tests {
         let mut limitations = Limitations::default();
         limitations.note::<tables::ProvinceBuildings>(&frame, "a naval base carries no icon");
         limitations.note::<tables::LandCombats>(&frame, "no combat icon is drawn");
-        // A complete table contributes no line at all.
         *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(Vec::new()));
         limitations.note::<tables::Ships>(&frame, "never reported");
         assert_eq!(
@@ -882,8 +758,6 @@ mod tests {
         assert!(Limitations::default().lines().is_empty());
     }
 
-    /// A complete table whose field is empty is not a table gap, so it carries
-    /// its own wording and names the field rather than the table.
     #[test]
     fn an_empty_recorded_field_names_the_field_and_not_a_table() {
         let mut limitations = Limitations::default();
@@ -894,9 +768,6 @@ mod tests {
         );
     }
 
-    /// Every counter on the frame depends on the two controls, so both are
-    /// stated whether or not anything degraded — and a country other than the
-    /// one asked for says why.
     #[test]
     fn the_viewing_country_and_the_fog_switch_are_stated_on_every_frame() {
         let line = |tag: &str, resolution: Resolution, fog: bool| {
@@ -906,8 +777,6 @@ mod tests {
                 resolution,
                 fog,
             });
-            // Province visibility is a recorded table, so its absence is the
-            // registry's line and not a sentence every view carries.
             assert_eq!(out.lines().len(), 1);
             out.lines()[0].clone()
         };
@@ -991,11 +860,9 @@ mod tests {
                 "{table} is missing from the registry"
             );
         }
-        // The core tables are frame errors, not limitations.
         for table in ["Table Provinces", "Table CountryLinks", "Table Countries"] {
             assert!(!lines.contains(table), "{table} must not be a limitation");
         }
-        // An hour that holds everything reports nothing.
         let mut whole = frame();
         for table in TableId::ALL {
             *whole.tables[table.index()] = TableView::Complete(TableRows::empty(table));
@@ -1037,7 +904,6 @@ mod tests {
             limitations(&whole).lines()[0]
                 .contains("model inputs of 1 division template were unreadable this hour")
         );
-        // Readable templates add no line.
         *whole.tables[TableId::DivisionTemplateIcons.index()] =
             TableView::Complete(TableRows::DivisionTemplateIcons(vec![template(2, 0)]));
         assert!(limitations(&whole).lines().is_empty());

@@ -1,4 +1,3 @@
-//! CFrontSection: the geometry belongs to a section, not to CFront itself.
 use crate::{
     Memory,
     cpdx_array::Array,
@@ -11,20 +10,12 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Front-section primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_2360);
-/// Front-section id used for section lookup.
 pub const ID: usize = 8;
-/// Owning front pointer.
 pub const FRONT: usize = 0x10;
-/// Province-pair array with 16-byte entries, each holding two province pointers.
 pub const PAIRS: usize = 0x48;
 
-/// Pairs per guarded copy of the pair array, and per gather of their
-/// provinces.
 const PAIR_BATCH: usize = 64;
-/// What each pair's province contributes: its identity and its id, the two
-/// reads the per-pair walk makes, gathered in one record per province.
 const PROVINCE_SPANS: [(usize, usize); 2] = [(0, 8), (cprovince::ID, 4)];
 const PROVINCE_FIELDS: [RecordField; 2] = packed_fields(PROVINCE_SPANS);
 const PROVINCE_STRIDE: usize = packed_stride(PROVINCE_SPANS);
@@ -61,14 +52,6 @@ pub(crate) fn header(
     Ok((id, pairs))
 }
 
-/// Appends each pair's two province ids at `start` in `output`, after
-/// authenticating both provinces. Pairs are copied up to [`PAIR_BATCH`] per
-/// guarded copy and their provinces gathered one record each; a pair whose
-/// batch did not copy, or a province whose record did not complete, makes
-/// the per-pair walk's own reads, so ids, the output prefix and the first
-/// failure are those of the per-pair walk. Memory cannot change while the
-/// pass holds the game thread, so a gathered byte is the byte that read
-/// copies.
 pub(crate) fn copy_pairs(
     memory: &impl Memory,
     base: usize,

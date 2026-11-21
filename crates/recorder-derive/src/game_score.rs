@@ -1,14 +1,3 @@
-//! `CountryGameScores`: each live country's end-screen scores, keyed by raw country id, by the
-//! game's arithmetic over its CountryGameScoreInputs row, the GameScoreMultipliers singleton, its
-//! CountryFactories row and, for air, the wings registered at the air bases its strategic-air
-//! entry can reach (AirBaseRegistrations by base and canonical slot, AirWingGameScoreStats by
-//! wing). Every part that cannot be computed is not recorded, its reason code saying why
-//! ([`CountryGameScoreRow::REASONS`]).
-//!
-//! State is indexes rebuilt from the tables: the registrations and wings each country's air sum
-//! reached, so a changed registration or wing recomputes only the countries that reach it. A
-//! fresh hour, a resume, a change of links or multipliers, or an input becoming complete or not
-//! recomputes every country.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
 use replay_columnar::{
@@ -28,7 +17,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Fixed5's one.
 const Q: i64 = 100_000;
 
 const INPUT: [usize; 9] = columns::<CountryGameScoreInputRow, 9>([
@@ -66,7 +54,6 @@ const READS: &[Read] = &[
     Read { table: TableId::AirWingGameScoreStats, columns: Columns::These(&WING), watch: Watch::Changed, required: false },
 ];
 
-/// The inputs a part may be unknown without: inputs, multipliers, factories, registrations, wings.
 const OPTIONAL: [TableId; 5] = [
     TableId::CountryGameScoreInputs,
     TableId::GameScoreMultipliers,
@@ -75,7 +62,6 @@ const OPTIONAL: [TableId; 5] = [
     TableId::AirWingGameScoreStats,
 ];
 
-/// The parts, in the table's order.
 const ARMY: usize = 0;
 const NAVY: usize = 1;
 const AIR: usize = 2;
@@ -83,15 +69,12 @@ const INDUSTRY: usize = 3;
 const LAND: usize = 4;
 const TOTAL: usize = 5;
 
-/// A part's value, or the reason it is not known.
 type Part = Result<i64, u8>;
 
-// Both low-64 products are kept before the signed division, as the game computes it.
 fn count_score(count: i32, multiplier: i64) -> i64 {
     i64::from(count).wrapping_mul(multiplier).wrapping_mul(Q) / Q
 }
 
-/// Each factory total truncated and narrowed, then added and less what is given away, in order.
 fn industry_count(factories: [i64; 7]) -> i32 {
     let [naval, civilian, military, civilian_others, civilian_overlord, military_others, military_overlord] = factories;
     ((naval / Q) as i32)
@@ -107,7 +90,6 @@ fn air_contribution(planes: i32, stat: i64) -> i64 {
     stat.wrapping_mul(i64::from(planes).wrapping_mul(Q)) / Q
 }
 
-/// The total leaves out industry and land.
 fn total_score(army: i64, navy: i64, air: i64, multiplier: i64) -> i64 {
     air.wrapping_add(navy).wrapping_add(army).wrapping_mul(multiplier) / Q
 }
@@ -117,24 +99,17 @@ fn counted(count: Option<i32>, multiplier: Option<i64>) -> Part {
     Ok(count_score(count, multiplier.ok_or(Score::MULTIPLIER)?))
 }
 
-/// What a country's air sum looked up: registrations by key, wings by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Reach {
     registrations: Vec<u128>,
     wings: Vec<u64>,
 }
 
-/// The joins of an air sum.
 trait Joins {
-    /// The wings registered under `key`, or why none can be read.
     fn registration(&mut self, key: u128) -> io::Result<Result<Vec<u64>, u8>>;
-    /// Wing `id`'s plane count and stat, or why its row cannot be read.
     fn wing(&mut self, id: u64) -> io::Result<Result<(Option<i32>, Option<i64>), u8>>;
 }
 
-/// The air score of the country of `row`, canonical `slot`: every wing registered at every base
-/// its first list can access, each occurrence counted, times the multiplier. What it looks up
-/// goes in `reach`, up to the first thing it cannot read.
 fn air(row: &CountryGameScoreInputRow, slot: Option<u32>, multiplier: Option<i64>, joins: &mut dyn Joins, reach: &mut Reach) -> io::Result<Part> {
     match row.air_state {
         CountryGameScoreInputRow::AIR_ABSENT => return Ok(Ok(0)),
@@ -169,7 +144,6 @@ fn air(row: &CountryGameScoreInputRow, slot: Option<u32>, multiplier: Option<i64
     Ok(multiplier.map(|multiplier| sum.wrapping_mul(multiplier) / Q).ok_or(Score::MULTIPLIER))
 }
 
-/// A country's six parts from its inputs row and factories (or why they are not read).
 fn scores(
     input: Result<&CountryGameScoreInputRow, u8>,
     factories: Result<[i64; 7], u8>,
@@ -207,7 +181,6 @@ fn cells(parts: &[Part; 6]) -> Vec<Value> {
     values.chain(reasons).collect()
 }
 
-/// A numeric cell; none when missing or not recorded.
 fn number(table: &TableView<'_>, column: usize, slot: u32) -> Option<i64> {
     match table.value(column, slot) {
         Held::Number(bits) => Some(bits as i64),
@@ -215,7 +188,6 @@ fn number(table: &TableView<'_>, column: usize, slot: u32) -> Option<i64> {
     }
 }
 
-/// `table`'s row in `slot`, the columns `mask` names, as the row decoder reads them.
 fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io::Result<R> {
     let held = hour.table(table);
     let key = held.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
@@ -227,10 +199,8 @@ fn mask<const N: usize>(columns: [usize; N]) -> u64 {
     columns.iter().fold(0, |mask, column| mask | 1 << column)
 }
 
-/// An air sum's joins as the hour's tables hold them.
 struct Joined<'h, 'a> {
     hour: &'h Hour<'a>,
-    /// Whether AirBaseRegistrations and AirWingGameScoreStats are complete.
     complete: [bool; 2],
 }
 
@@ -257,19 +227,15 @@ impl Joins for Joined<'_, '_> {
 
 #[derive(Default)]
 pub struct GameScore {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
-    /// Each raw country's canonical slot.
     links: HashMap<u32, u32>,
     multipliers: [Option<i64>; 6],
-    /// Which of [`OPTIONAL`] were complete at the hour before.
     complete: [bool; 5],
     reach: HashMap<u32, Reach>,
     by_registration: HashMap<u128, Vec<u32>>,
     by_wing: HashMap<u64, Vec<u32>>,
 }
 
-/// The keys of the rows of `table` the hour wrote one of `columns` of, inserted or deleted.
 fn edited(hour: &Hour<'_>, table: TableId, columns: &'static [usize]) -> Vec<u128> {
     let held = hour.table(table);
     let mut keys: Vec<u128> = hour.written_rows(table, Columns::These(columns)).into_iter().filter_map(|slot| held.key(slot)).collect();
@@ -315,7 +281,6 @@ impl GameScore {
         self.reach.insert(id, reach);
     }
 
-    /// Links, multipliers and inputs' completeness as the hour holds them; the indexes emptied.
     fn read_whole(&mut self, hour: &Hour<'_>, complete: [bool; 5]) {
         self.complete = complete;
         self.links.clear();
@@ -336,7 +301,6 @@ impl GameScore {
         self.by_wing.clear();
     }
 
-    /// Country `id`'s cells this hour, its reach indexed again where it moved.
     fn compute(&mut self, hour: &Hour<'_>, id: u32) -> io::Result<Vec<Value>> {
         let key = u128::from(id);
         let input: Result<CountryGameScoreInputRow, u8> = match self.complete[0] {
@@ -441,7 +405,6 @@ impl Writer for GameScore {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume recomputes every country from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

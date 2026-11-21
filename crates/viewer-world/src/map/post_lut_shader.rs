@@ -1,4 +1,3 @@
-//! Native LUT blend registration and submission.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -8,7 +7,6 @@ use shader_pipeline::{binding, gpu, library::Effect};
 
 use super::fullscreen::{self, Fullscreen};
 
-// Three 1024x32 BGRA8 UNORM LUT targets.
 pub(super) const SIZE: [u32; 2] = [1024, 32];
 pub(super) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
@@ -37,7 +35,6 @@ pub(super) struct Blends {
 
 impl Blends {
     pub(super) fn new(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| Self::build(device, effect))
     }
 
@@ -48,7 +45,6 @@ impl Blends {
             let technique = &source.techniques[selection.index];
             let compiled = effect.compiled(selection.index)?;
             let mut state = gpu::State::authored(source, technique)?;
-            // Bind four physical PS texture/sampler slots.
             state
                 .samplers
                 .retain(|slot, _| (0..4).any(|i| *slot == binding(i, Stage::Pixel)));
@@ -57,11 +53,7 @@ impl Blends {
                 &source.rasterizer(technique),
                 wgpu::PrimitiveTopology::TriangleList,
             );
-            // Set the scissor to the entire target when binding it,
-            // matching wgpu's full-attachment default even when authored enabled.
             pass.primitive = primitive;
-            // Create colour-only targets; attaches no DSV.
-            // Authored depth/stencil is bound natively but has no attachment to test.
             Fullscreen::from_pass(device, &selection, &state, pass)
         };
         let null = device
@@ -99,7 +91,6 @@ impl Blends {
         factors: [f32; 2],
         double: bool,
     ) -> io::Result<()> {
-        // Write both inverse dimensions as 1/1024, then the blend factors.
         let constants = [
             1.0 / 1024.0,
             1.0 / 1024.0,
@@ -115,8 +106,6 @@ impl Blends {
         let bindings = draw
             .bind_textures(arena, 0, bytemuck::cast_slice(&constants), &sources)
             .map_err(refuse)?;
-        // Do not clear: authored RGB-only writes retain alpha.
-        // Native initial target bytes are unspecified.
         draw.draw(encoder, target, &bindings, Some(SIZE));
         Ok(())
     }

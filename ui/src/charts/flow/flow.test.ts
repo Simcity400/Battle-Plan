@@ -12,11 +12,9 @@ import type { FlowGeometry, FlowLink, FlowNode } from './layout';
 
 const node = (id: string, side: 'source' | 'target', extra: Partial<FlowNode> = {}): FlowNode => ({ id, side, label: id, color: '#888', order: id, ...extra });
 const link = (source: string, target: string, value: number, order = ''): FlowLink => ({ id: `${source}>${target}${order}`, source, target, value, color: '#123', order });
-// Two slots a side: 114 px less one 10 px gap and each node's 2 px minimum leave 100.
 const geometry: FlowGeometry = { left: 100, right: 300, top: 0, bottom: 114, nodeWidth: 10, gap: 10 };
 const nodes = [node('A', 'source'), node('B', 'source'), node('X', 'target'), node('Y', 'target')];
 
-/** An element's style as the chart reads and writes it. */
 function styleOf() {
   const values = new Map<string, string>();
   return { getPropertyValue: (name: string) => values.get(name) ?? '', setProperty: (name: string, value: string) => { values.set(name, value); } };
@@ -33,13 +31,10 @@ test('snapped, nodes fill the height in proportion and ribbons stack inside them
   const frame = motion.step({ nodes, links: [link('A', 'Y', 30), link('A', 'X', 10), link('B', 'X', 60)] }, geometry, 16, 100, true);
   assert.equal(frame.settled, true);
   const box = (id: string) => frame.nodes.find(item => item.id === id)!;
-  // 1 px per unit, and each node 2 px more.
   assert.deepEqual([box('B').y, box('B').height, box('A').y, box('A').height], [0, 62, 72, 42]);
   assert.deepEqual([box('X').y, box('X').height, box('Y').y, box('Y').height], [0, 72, 82, 32]);
   const shape = (id: string) => frame.links.find(item => item.id === id)!;
-  // Inside A, the ribbon to X comes before the one to Y by key, whatever their sizes.
   assert.deepEqual([shape('A>X').y0, shape('A>Y').y0], [72, 82]);
-  // Inside X, A's ribbon comes before B's.
   assert.deepEqual([shape('A>X').y1, shape('B>X').y1], [0, 10]);
   assert.equal(shape('B>X').width, 60);
 });
@@ -47,18 +42,15 @@ test('snapped, nodes fill the height in proportion and ribbons stack inside them
 test('a campaign scale keeps widths as amounts while the total changes', () => {
   const motion = new FlowMotion();
   const frame = motion.step({ nodes, links: [link('A', 'X', 25)] }, { ...geometry, scale: 100, slots: 2 }, 16, 0, true);
-  // 100 fills the 100 px left after one gap and two minimum nodes.
   assert.equal(frame.links[0].width, 25);
 });
 
 test('many nodes shrink the gaps, keep a minimum height and never run past the bottom', () => {
-  // 40 a side in 200 px: the 10 px gaps alone would not fit.
   const many = Array.from({ length: 40 }, (_, index) => [node(`S${index}`, 'source'), node(`T${index}`, 'target')]).flat();
   const links = Array.from({ length: 40 }, (_, index) => link(`S${index}`, `T${index}`, index === 0 ? 1000 : 0.001));
   const frame = new FlowMotion().step({ nodes: many, links }, { ...geometry, bottom: 200 }, 16, 0, true);
   assert.equal(frame.nodes.length, 80);
   assert.ok(frame.nodes.every(box => box.height >= 2 && box.y + box.height <= 200 + 1e-9), 'every node drawn inside the height');
-  // How many a side a widget should ask for at that height, one label row each.
   assert.equal(flowCapacity(200, 16), 11);
   const rows = Array.from({ length: flowCapacity(200, 16) }, (_, index) => ({ id: `L${index}`, y: 100, height: 16 }));
   assert.ok(Math.max(...layoutEndLabels(rows, 0, 200).values()) + 8 <= 200, 'every label row of that many fits, gaps included');
@@ -68,14 +60,12 @@ test('many nodes shrink the gaps, keep a minimum height and never run past the b
 test('ribbons grow in, shrink away and nodes glide to their new slots', () => {
   const motion = new FlowMotion();
   motion.step({ nodes, links: [link('A', 'X', 40), link('B', 'Y', 60)] }, geometry, 16, 100, true);
-  // A new ribbon grows from nothing; a ribbon no longer wanted shrinks, then goes.
   let frame = motion.step({ nodes, links: [link('A', 'X', 40), link('A', 'Y', 20)] }, geometry, 16, 100);
   const grown = frame.links.find(item => item.id === 'A>Y')!;
   const going = frame.links.find(item => item.id === 'B>Y')!;
   assert.ok(grown.width > 0 && grown.width < 20 * 100 / 100);
   assert.ok(going.width > 0);
   assert.equal(frame.settled, false);
-  // A was the smaller source; now it is the only one and glides up to the top.
   const aBefore = frame.nodes.find(item => item.id === 'A')!.y;
   assert.ok(aBefore > 0);
   for (let step = 0; step < 400; step++) frame = motion.step({ nodes, links: [link('A', 'X', 40), link('A', 'Y', 20)] }, geometry, 16, 100);
@@ -120,7 +110,6 @@ test('the point on a ribbon or a node finds it, and a thin ribbon is still easy 
   const frame = motion.step({ nodes, links: [link('A', 'X', 99.9), link('B', 'Y', 0.1)] }, geometry, 16, 0, true);
   const middle = (id: string) => { const item = frame.links.find(each => each.id === id)!; return ribbonTop(item, 200)! + item.width / 2; };
   assert.equal(linkAt(frame.links, 200, middle('A>X'))?.id, 'A>X');
-  // 0.1 px wide, yet within a few pixels of it points at it.
   assert.equal(linkAt(frame.links, 200, middle('B>Y') + 2)?.id, 'B>Y');
   assert.equal(linkAt(frame.links, 50, 10), null);
   assert.equal(nodeAt(frame.nodes, 95, 5)?.id, 'A');
@@ -134,7 +123,6 @@ test('the keyboard stops at each source node and its ribbons, then each target n
     ['node:B', 'link:B>X', 'node:A', 'link:A>X', 'link:A>Y', 'node:X', 'node:Y']);
 });
 
-// Actual component callbacks retain the keyed stop while only the drawn model changes.
 test('keyboard stop discovery scans links once at 5,000 source countries', () => {
   const sources = Array.from({ length: 5000 }, (_, index) => node(`source-${index}`, 'source'));
   const frame = new FlowMotion().step({ nodes: [...sources, node('target', 'target')],
@@ -198,7 +186,7 @@ test('a backward drawn cutoff clears a vanished keyed tooltip with a stable call
     const key = (value: string) => state.key!({ key: value, preventDefault() {} });
     key('Home'); key('ArrowDown');
     state.task!.frame({ now: 8, dt: 8 });
-    await Promise.resolve(); // Seed the renderer's callback identity before the backward frame.
+    await Promise.resolve();
     assert.equal(tooltip!.tooltipStore.get()?.content.title, 'link:future');
     assert.equal(tooltip!.tooltipStore.get()?.content.rows, rows);
     assert.match(state.spoken, /Native occurrence 4999/);
@@ -274,7 +262,6 @@ test('a drawn flag or name opens its node only where the diagram asks, and a bar
     }
     assert.deepEqual([...labelPicks.keys()].sort(), ['A', 'B', 'X', 'Y'], 'every drawn country name or flag is a place to click');
     assert.ok(picks.includes('A') && picks.includes('X'), 'node bars keep opening their own breakdown');
-    // Without a label action, a name is not a place to click (as before).
     state.latest!.current = { ...props, onLabelPick: undefined };
     const [x, y] = labelPicks.get('A')!;
     const count = picks.length;

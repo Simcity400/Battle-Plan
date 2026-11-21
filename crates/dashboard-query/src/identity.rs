@@ -1,10 +1,3 @@
-//! The one identity rule (SPEC 3.3), applied once for every per-country product: a tag's holder
-//! is what `TagHolders` says. That table is a history whose rows are never deleted, so a run's
-//! holder runs are the table as it stands at the run's last hour: one read of one small table,
-//! whatever the campaign's length, kept while the recording is open. A tag is unresolved where
-//! its row names no holder and absent where no row covers the hour; UNKNOWN rows are hours no
-//! holder is known for any tag. A request names its country as a [`Country`]: a canonical slot,
-//! followed through every tag that country holds, or a tag the user chose.
 
 use crate::{read, timeline::Timeline};
 use replay::columnar_frames::Recording;
@@ -18,8 +11,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
 }
 
 
-/// The country a request names: its canonical slot (the catalogue's country id), the country
-/// itself whatever tag it holds, or a tag the user chose, whose holder is resolved at each hour.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize, TS)]
 #[serde(untagged)]
 #[ts(rename = "CountryRef")]
@@ -28,15 +19,11 @@ pub enum Country {
     Tag(String),
 }
 
-/// Why a slot that holds no tag in a history has no value there: it is not in that history.
 pub const NOT_IN_HISTORY: &str = "This country is not in this branch";
 
-/// What starts a slot's [`Country::key`].
 pub const SLOT_MARK: char = '\0';
 
 impl Country {
-    /// Its name where a string names it: the tag, or [`SLOT_MARK`] and the slot's number, which no
-    /// tag can spell (a tag never holds a NUL).
     pub fn key(&self) -> std::borrow::Cow<'_, str> {
         match self {
             Self::Tag(tag) => std::borrow::Cow::Borrowed(tag),
@@ -44,7 +31,6 @@ impl Country {
         }
     }
 
-    /// The tag a tag choice names; none for a slot.
     pub fn tag(&self) -> Option<&str> {
         match self {
             Self::Tag(tag) => Some(tag),
@@ -86,7 +72,6 @@ impl fmt::Display for Country {
     }
 }
 
-/// What names a country's holder runs: a tag, or a [`Country`].
 pub trait Key {
     fn runs<'h>(&self, holders: &'h Holders) -> &'h [HolderRun];
 }
@@ -118,43 +103,30 @@ impl Key for Country {
     }
 }
 
-/// Who holds a tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Holder {
-    /// Its holder's canonical slot and raw country id.
     Found { slot: u32, id: u32 },
-    /// The tag's countries, none of whose links resolves.
     Unresolved,
 }
 
-/// A stretch of hours one holder held a tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HolderRun {
     pub first: i32,
     pub last: i32,
     pub holder: Holder,
-    /// The run follows hours the tag was absent, unresolved, unknown or unrecorded, another
-    /// holder, or a new stretch of the timeline: it starts a segment.
     pub starts_segment: bool,
 }
 
-/// Every tag's holders over a timeline.
 #[derive(Clone, Debug, Default)]
 pub struct Holders {
-    /// By tag, in hour order.
     pub tags: BTreeMap<String, Vec<HolderRun>>,
-    /// Hours the identity table was not available, with why.
     pub unknown: Vec<(i32, i32, String)>,
     slots: OnceLock<BTreeMap<u32, SlotHistory>>,
 }
 
-/// One canonical slot's history, from the tags it holds.
 #[derive(Clone, Debug, Default)]
 struct SlotHistory {
-    /// The hours some tag's holder resolves to the slot, in hour order; the holder is the lowest
-    /// raw id among them at each hour.
     runs: Vec<HolderRun>,
-    /// Each tag's stretch held by the slot, (first, last, raw id, tag), by first hour.
     tags: Vec<(i32, i32, u32, String)>,
 }
 
@@ -167,20 +139,16 @@ impl Holders {
         self.slots.get_or_init(|| slot_histories(&self.tags))
     }
 
-    /// `country`'s runs in hour order: a tag's holder runs, or the hours a slot holds a tag.
     pub fn runs<K: Key + ?Sized>(&self, country: &K) -> &[HolderRun] {
         country.runs(self)
     }
 
-    /// `country`'s holder at `hour`, with the run holding it.
     pub fn at<K: Key + ?Sized>(&self, country: &K, hour: i32) -> Option<&HolderRun> {
         let runs = country.runs(self);
         let at = runs.partition_point(|run| run.last < hour);
         runs.get(at).filter(|run| run.first <= hour)
     }
 
-    /// The tag `country` goes by at `hour`: a tag choice's own tag, or the tag a slot's holder holds
-    /// then; none for a slot holding no tag at that hour.
     pub fn tag_at<'a>(&'a self, country: &'a Country, hour: i32) -> Option<&'a str> {
         match country {
             Country::Tag(tag) => Some(tag),
@@ -192,8 +160,6 @@ impl Holders {
         }
     }
 
-    /// Whether `country` goes by `tag` at `hour`: the tag itself, or a slot whose country holds it
-    /// then.
     pub fn goes_by(&self, country: &Country, tag: &str, hour: i32) -> bool {
         match country {
             Country::Tag(chosen) => chosen == tag,
@@ -201,14 +167,10 @@ impl Holders {
         }
     }
 
-    /// The tag to name `country` by near `hour`: its tag then, else the nearest tag it held,
-    /// else (a slot holding no tag in this history) its [`Country::key`].
     pub fn name(&self, country: &Country, hour: i32) -> String {
         self.label(country, hour).unwrap_or_else(|| country.key().into_owned())
     }
 
-    /// The tag to name `country` by near `hour` in text: as [`Self::name`], but none for a slot
-    /// holding no tag in this history, which has no name to show.
     pub fn label(&self, country: &Country, hour: i32) -> Option<String> {
         if let Some(tag) = self.tag_at(country, hour) {
             return Some(tag.to_owned());
@@ -218,14 +180,10 @@ impl Holders {
         self.slots().get(slot).and_then(|held| held.tags.iter().min_by_key(|(first, last, ..)| distance(*first, *last))).map(|(.., tag)| tag.clone())
     }
 
-    /// A message about `country` near `hour`, naming it by [`Self::label`]; [`NOT_IN_HISTORY`]
-    /// for a slot that has no name to show.
     pub fn say(&self, country: &Country, hour: i32, message: impl FnOnce(&str) -> String) -> String {
         self.label(country, hour).map_or_else(|| NOT_IN_HISTORY.to_owned(), |name| message(&name))
     }
 
-    /// `country`'s runs meeting `from..=to`, cut to it; the first keeps `starts_segment` only where
-    /// its run starts there.
     pub fn within<K: Key + ?Sized>(&self, country: &K, from: i32, to: i32) -> Vec<HolderRun> {
         let runs = country.runs(self);
         let start = runs.partition_point(|run| run.last < from);
@@ -240,7 +198,6 @@ impl Holders {
             .collect()
     }
 
-    /// The first hour of the segment holding `hour` of `country`'s runs.
     pub fn segment_first<K: Key + ?Sized>(&self, country: &K, hour: i32) -> Option<i32> {
         let runs = country.runs(self);
         let at = runs.partition_point(|run| run.last < hour);
@@ -250,13 +207,11 @@ impl Holders {
         runs[..=at].iter().rev().find(|run| run.starts_segment).map(|run| run.first)
     }
 
-    /// Whether `country` is ever held on the timeline.
     pub fn named<K: Key + ?Sized>(&self, country: &K) -> bool {
         !country.runs(self).is_empty()
     }
 }
 
-/// Each slot's history from every tag's resolved holder runs.
 fn slot_histories(tags: &BTreeMap<String, Vec<HolderRun>>) -> BTreeMap<u32, SlotHistory> {
     let mut out: BTreeMap<u32, SlotHistory> = BTreeMap::new();
     for (tag, runs) in tags {
@@ -271,7 +226,6 @@ fn slot_histories(tags: &BTreeMap<String, Vec<HolderRun>>) -> BTreeMap<u32, Slot
         let mut edges: Vec<i64> = held.tags.iter().flat_map(|(first, last, ..)| [i64::from(*first), i64::from(*last) + 1]).collect();
         edges.sort_unstable();
         edges.dedup();
-        // One sweep over the edges, holding the raw ids whose runs cover each stretch.
         let mut starts: Vec<(i64, u32)> = held.tags.iter().map(|(first, _, id, _)| (i64::from(*first), *id)).collect();
         let mut ends: Vec<(i64, u32)> = held.tags.iter().map(|(_, last, id, _)| (i64::from(*last) + 1, *id)).collect();
         starts.sort_unstable();
@@ -302,8 +256,6 @@ fn slot_histories(tags: &BTreeMap<String, Vec<HolderRun>>) -> BTreeMap<u32, Slot
     out
 }
 
-/// One row of a run's identity history: a tag (or, unknown, why) and its holder from `first`
-/// through `last`.
 struct Row {
     tag: Option<String>,
     reason: String,
@@ -312,8 +264,6 @@ struct Row {
     last: i32,
 }
 
-/// Run `run`'s identity history: the identity table's lifetimes, each key one holder's stretch,
-/// and the tag of each number, read at the run's last hour.
 fn history(recording: &Recording, run: u32) -> io::Result<Vec<Row>> {
     let held = recording.run(run)?;
     let end = held.first_hour + held.ordinals as i32 - 1;
@@ -341,7 +291,6 @@ fn history(recording: &Recording, run: u32) -> io::Result<Vec<Row>> {
     Ok(out)
 }
 
-/// Every tag's holder runs over `timeline`, from each of its runs' identity history.
 pub fn holders(recording: &Recording, timeline: &Timeline) -> io::Result<Holders> {
     let mut out = Holders::default();
     let mut read: std::collections::HashMap<u32, Vec<Row>> = std::collections::HashMap::new();
@@ -368,9 +317,6 @@ pub fn holders(recording: &Recording, timeline: &Timeline) -> io::Result<Holders
     Ok(out)
 }
 
-/// `runs` in hour order, the same holder in adjacent hours (across a load into a recorded hour
-/// too) one run; every run starts a segment, as another holder, hours unheld or unknown, or no
-/// resolved holder lie before it.
 fn merged(mut runs: Vec<HolderRun>) -> Vec<HolderRun> {
     runs.sort_unstable_by_key(|run| run.first);
     let mut out: Vec<HolderRun> = Vec::with_capacity(runs.len());

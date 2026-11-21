@@ -1,104 +1,5 @@
-//! Effect descriptions, shared by event and balance tooltips.
 
-//! Shared domain entry points:
-//! `Renderer::{line, localised, expanded}` localise keys/arguments and expand in
-//!   the caller's scope/session; `line` appends LF.
-//! `Renderer::expanded_with_faction_environment` selects the copied scope's
-//!   kind-0 environment and optional faction.
-//! `Renderer::{country_target, state_target}` resolve native effect selectors
 
-//!   sharing `evaluator` for scoped variables. State zero stays zero.
-//! `Renderer::{current_country, country_name, tag, state_name}` resolve names;
-//!   `state_name` shares the state-name formatter.
-//! `Renderer::selected_party_name` shares selected-ideology party lookup
-//!   and `ScriptedText::party_name`.
-//! `ScriptedText::country_marked_name` shares marked country-name formatting.
-//! `Renderer::equipment_list_description` resolves seller-scoped entries and
-//!   formats the quantity pool, reusing equipment names.
-//! `Scope` `EventObject` carry `Project { owner, id }`, `Raid(u64)` and
-//!   `Unit(u64)`; `Evaluator::{enter_scope, with_this, event_scopes}` keeps their
-//!   graph links. `sp:` and `mio:` use that selector path.
-//! `World::{project(owner, id), raid(reference), unit(reference)}` joins those
-//!   recorded identities. `Renderer::{project_name(owner, id), raid_name(reference),
-//!   unit_name(reference), organisation_name(reference)}` returns native names
-//!   or a named missing-input error.
-//! `World::unit_status(reference)` supplies the retained `DivisionStatus.name`
-//!   and historical generator operands. `unit_names::army_name` shares the
-//!   cached getter, exact literal identity and stored-text
-//!   language guard with the viewer and recorded-unit products. Only historical
-//!   cache absence uses group/ordinal selection, retaining
-//!   named legacy-allocation refusals.
-//!   `Content::division_names` caches the recorded stack's name groups.
-//! `Renderer::unit_name(&self, reference: u64) -> Result<String, String>` is
-//!   `pub(super)`, the single entry point for all effect domains, including raid
-//!   divisions (pass `RaidRow.unit`) and full wing handles. Recorded AirWings
-//!   stored names use `scripted_text::stored_text`'s recording-language rule
-//!   An old format's absent name retains
-//!   `World::raid_wing_name`'s active-raid WING_NAME projection.
-//! `World::has_template(country, name)` shares the exact recorded template
-//!   display-name comparison and content fallback.
-//! `Content::{buildings, resources, max_railway_level}` supplies cached declared
-//!   building labels, resource frames, and NSupply's
-//!   MAX_RAILWAY_LEVEL, read once per stack by `CachedContent`.
-//! `Content::{equipment, autonomy_states}` supplies the complete equipment
-//!   database and declared autonomy states,
-//!   each read once per stack by `CachedContent`, with reader notes retained.
-//! `Content::state_categories` supplies declared category identities
-//!   cached once with reader notes retained.
-//! `Content::wargoals` supplies declared wargoal-type identities
-//!   cached once with reader notes retained.
-//! `ScriptedText::{province_display_name, country_adjective}` shares effect
-//!   province naming and country adjective naming.
-//! `Renderer::evaluator` is the shared trigger/variable/saved-target evaluator;
-//!   `scoped_value` evaluates fixed5 operands.
-//! `Renderer::modifier_description_with` formats raw modifier text;
-//!   `modifier_list_with` expands it in the supplied scope.
-//!   `ModifierListOptions` maps the native formatting arguments; `modifier_list`
-//!   uses its defaults. The numeric prefix is a separate `&str` argument.
-//!   `cached_modifier_description_with(entries: &[CachedModifier], prefix: &str,
-//!   options: ModifierListOptions) -> Result<String, String>` takes recorded
-//!   definition IDs in native cache order, sharing that formatter.
-//! `scaled_static_modifiers(context, token, prefix, scale)` lists a static
-//!   modifier's raw text with its values scaled, sharing that formatter.
-//! `Content::{static_modifiers, dynamic_modifiers, opinion_modifiers,
-//!   power_balances}` supplies description catalogues from the same stack;
-//!   static descriptions resolve each requested name once.
-//! `Renderer::units_equipment_reference_name(&self, fields: &[Item],
-//!   scopes: Scopes) -> Result<String, String>` shares equipment reference naming
-//!   for production and licences. `character_content.catalogue`
-//!   `char_country_traits` and `char_equipment_bonuses` are shared inside effect_description for
-//!   advisor-backed idea lookup and equipment fragments.
-//! Numeric leaves share `numeric_leaf(&self, item: &Item, scopes: Scopes,
-//!   key: &[u8], format: numeric::NumericFormat) -> Result<String, String>`;
-//!   `numeric_value` keeps its existing fixed5 signature.
-//!   The modifier/number formatters share localisation arguments
-//!   and `crate::modifier_text::value_text`.
-//!   `Argument` and `installed_content_core::fixed5::{fixed5_to_string, fixed5_percent}` retain
-//!   native modifier/number formatting.
-//! `Renderer::group`, `append_description`, `indent_nonempty_lines`,
-//!   `trim_description`, and `Context::{with_variable_session,
-//!   with_expansion_scopes, variable_session}` retain indentation/session rules.
-//! `Renderer::refuse(key, reason)` counts a named failure; the class-keyed
-//!   dispatch is in `dispatch.rs`.
-//! `Renderer::effect_children(item)` projects each reader's own fields out of the
-//!   child array, shared by builders and probes.
-//! `Renderer::fresh_country_state_scope(country, state)` creates a localisation
-//!   environment without caller ROOT/FROM/PREV.
-//! Variable descriptions use `Evaluator::description_variable` for shared
-//!   operands/arithmetic; builder writes use
-//!   `description_temp_destination_fields` and `store_description_temp`
-//!   for repeated fields/defaults and index overrides;
-//!   `encode_description_scope` retains shared object encoding.
-//!   `refuse_description_writer` invalidates unknown TLS mutations.
-//!   `Evaluator::begin_description_in(scopes)` initializes the outer TLS seed
-//!   from the recorded store and immediate THIS/FROM; nested calls
-//!   retain it. `description_random_temp(item, scopes)` consumes RNG;
-//!   `description_supply_temp(item, scopes, minimum_trains)` lazily reads the
-//!   content minimum only for required trains.
-//! `Evaluator::{script_target_candidates, fresh_country_scope}` share native
-//!   script targets selection and fresh FROM-linked scorer scopes;
-//!   saved global tooltip targets use
-//!   `save_global_tooltip_target`.
 use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
@@ -120,7 +21,6 @@ use replay_data::rows::{
 use replay_frame::frame::{HourFrame, Rowset};
 use std::borrow::Cow;
 
-/// The fields of a States row [`Renderer::valid_state`] lends.
 const STATE_COUNTRIES: u64 = mask::<StateRow>(&["owner", "controller"]);
 const PARTY_SELECTION: u64 = mask::<PoliticalPartyRow>(&[
     "token",
@@ -132,19 +32,16 @@ const PARTY_SELECTION: u64 = mask::<PoliticalPartyRow>(&[
 const RESISTANCE_COUNTRY: u64 = mask::<StateResistanceRow>(&["country"]);
 pub(crate) const DLC_MASK: u64 = mask::<replay_data::rows::SimulationFeatureRow>(&["dlc_mask"]);
 
-/// A walked row's failure to build, refused where it is reached.
 pub(crate) fn built(why: std::io::Error) -> String {
     why.to_string()
 }
 
-/// Each row of `rows`, a walked row's failure to build refused.
 pub(crate) fn each<'r, R: RowCodec + Clone + 'r>(
     rows: Rowset<'r, R>,
 ) -> impl DoubleEndedIterator<Item = Result<Cow<'r, R>, String>> + 'r {
     rows.iter().map(|row| row.map_err(built))
 }
 
-/// The row of `rows` keyed `key`.
 pub(crate) fn keyed<'r, R: RowCodec + Clone>(
     rows: &Rowset<'r, R>,
     key: u128,
@@ -152,7 +49,6 @@ pub(crate) fn keyed<'r, R: RowCodec + Clone>(
     rows.get(key).map_err(built)
 }
 
-/// The first row of `rows` passing `keep`, in key order.
 pub(crate) fn find<'r, R: RowCodec + Clone + 'r>(
     rows: Rowset<'r, R>,
     mut keep: impl FnMut(&R) -> bool,
@@ -193,8 +89,6 @@ mod tests;
 mod units;
 mod variables;
 
-/// Recorded operands effect descriptions read beyond the trigger kit
-/// ([`crate::triggers::RECORDED_TABLES`]).
 const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::AirWings,
     replay_data::rows::TableId::AvailableAdvisors,
@@ -221,9 +115,6 @@ const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::VariantUpgrades,
 ];
 
-/// Every recorded table an effect description reads at its hour: the trigger
-/// kit and the effects' own operands. Every product describing effects selects
-/// all of them, so an operand the hour recorded is never discarded locally.
 pub fn recorded_tables() -> impl Iterator<Item = replay_data::rows::TableId> {
     crate::triggers::RECORDED_TABLES
         .iter()
@@ -231,29 +122,15 @@ pub fn recorded_tables() -> impl Iterator<Item = replay_data::rows::TableId> {
         .copied()
 }
 
-/// Modifier list formatting controls shared by raw and scoped descriptions.
-///
-/// Precision is capped by each definition. Category masks use separate include
-/// and exclude intersections. Scale multiplies the value before fixed-point
-/// division. A null separator selects LF; an empty prefix adds no numeric text.
-/// Colour, plus signs and inversion apply independently of scope expansion.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ModifierListOptions<'a> {
-    /// Requested numeric precision, capped by each definition.
     pub(super) precision: i32,
-    /// Colour marker surrounding the entire list.
     pub(super) outer_colour: u8,
-    /// A definition must include a category in this mask.
     pub(super) category_mask: u32,
-    /// A definition must include a category outside this mask.
     pub(super) excluded_category_mask: u32,
-    /// Separator appended to numeric modifier text.
     pub(super) separator: &'a str,
-    /// Fixed-point multiplier applied before division by 100_000.
     pub(super) scale: i64,
-    /// Print a plus sign even when a definition disables it.
     pub(super) force_plus: bool,
-    /// Reverse good/bad numeric colour polarity.
     pub(super) invert: bool,
 }
 
@@ -278,11 +155,9 @@ pub struct Description {
     pub refusals: BTreeMap<String, usize>,
 }
 
-/// Resolves an event id to its parsed event, or why it cannot be.
 pub type EventLookup<'a> =
     dyn Fn(&[u8]) -> Result<Arc<installed_content_events::events::Event>, String> + 'a;
 
-/// Content already cached by the caller. Referenced events remain lazy.
 #[derive(Default, Clone, Copy)]
 pub struct Content<'a> {
     pub doctrines: Option<&'a installed_content_core::doctrines::Database>,
@@ -310,7 +185,6 @@ pub struct Content<'a> {
     pub gaps: Option<&'a BTreeMap<&'static str, String>>,
 }
 
-/// Per recorded content stack. Event bodies use the caller's lazy ID cache.
 pub struct CachedContent {
     politics: politics::PoliticsContent,
     characters: characters::CharacterContent,
@@ -321,7 +195,6 @@ pub struct CachedContent {
     dynamic_modifiers: Option<installed_content_core::dynamic_modifiers::Database>,
     opinion_modifiers: Option<installed_content_core::opinion_modifiers::Database>,
     power_balances: Option<installed_content_core::power_balance::Database>,
-    /// Advisor templates from the same ideas read.
     pub advisor_templates: Option<installed_content_core::characters::Characters>,
     name_lists: Option<installed_content_core::names::NameLists>,
     key_names: Option<std::sync::Arc<installed_content_core::key_names::KeyNames>>,
@@ -332,7 +205,6 @@ pub struct CachedContent {
     buildings: Option<installed_content_core::buildings::Buildings>,
     resources: Option<Vec<installed_content_core::resources::Resource>>,
     max_railway_level: Option<i32>,
-    /// Only a raid name needs the raid database; keep it lazy per content stack.
     raids:
         installed_content_core::content::diagnostics::Once<Result<installed_content_raids::raids::Catalog, String>>,
     equipment: Option<installed_content_core::equipment::Database>,
@@ -344,8 +216,6 @@ pub struct CachedContent {
     pub notes: Vec<String>,
 }
 
-/// Runs `read` on a helper thread working for this one ([`installed_content_core::parallel::spawn`]),
-/// with what the catalogues note there credited to this thread's consumers once [`joined`].
 fn alongside<'s, T: Send + 's>(
     threads: &'s std::thread::Scope<'s, '_>,
     read: impl FnOnce() -> T + Send + 's,
@@ -353,7 +223,6 @@ fn alongside<'s, T: Send + 's>(
     installed_content_core::parallel::spawn(threads, move || crate::catalogue::capture(read))
 }
 
-/// What [`alongside`] read, its notes credited here as if read on this thread.
 fn joined<T>(read: std::thread::ScopedJoinHandle<'_, (T, crate::catalogue::OwnRefusals)>) -> T {
     let (value, noted) = installed_content_core::parallel::join(read);
     crate::catalogue::credit(&noted);
@@ -384,8 +253,6 @@ impl CachedContent {
             .ok()
         }
         let mut gaps = BTreeMap::new();
-        // Every read that needs only the layers starts alongside at once; this thread reads
-        // what needs the defines and then the characters, the longest chain, meanwhile.
         let doctrines = alongside(threads, || installed_content_core::doctrines::read(layers));
         let decisions = alongside(threads, || installed_content_core::decisions::read(layers));
         let division_names = alongside(threads, || {
@@ -436,7 +303,6 @@ impl CachedContent {
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
         let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
         let max_railway_level = keep(maximum, "MAX_RAILWAY_LEVEL", &mut gaps);
-        // Effect descriptions share these catalogues and their diagnostics.
         let _ = environment.ideologies();
         let _ = environment.terrain();
         let _ = environment.leader_traits();
@@ -586,7 +452,6 @@ impl CachedContent {
         })
     }
 
-    /// The technology catalogue read with the doctrines, or why it is unavailable.
     pub fn technologies(&self) -> Result<&installed_content_core::technology::Catalog, String> {
         self.doctrines
             .as_ref()
@@ -641,14 +506,12 @@ impl crate::scripted_text::ScriptedContent {
             .map_err(Clone::clone)
     }
 
-    /// Whether [`Self::effects`] has read its content, successfully or not.
     #[cfg(any(test, feature = "test-support"))]
     pub fn effects_read(&self) -> bool {
         self.effects.get().is_some()
     }
 }
 
-/// One hour's immutable inputs; the mutable event graph belongs to its caller.
 pub struct Context<'c, 'f> {
     text: &'c ScriptedText<'f>,
     localisation: &'c Localisation,
@@ -706,8 +569,6 @@ impl<'c, 'f> Context<'c, 'f> {
     }
 }
 
-/// Each call is its own native variable/description session. Cleanup follows FROM;
-/// targets on a distinct ROOT endpoint may survive into the next call.
 pub fn describe(
     items: &[Item],
     context: &Context<'_, '_>,
@@ -758,12 +619,10 @@ struct Renderer<'r, 'c, 'f> {
     scripted_stack: Vec<(Vec<u8>, Scope)>,
 }
 
-/// trims exactly these four ASCII bytes.
 pub fn trim_description(text: &str) -> &str {
     text.trim_matches(['\n', '\t', '\r', ' '])
 }
 
-/// prefixes one space per level, leaving empty lines untouched.
 pub(super) fn indent_nonempty_lines(text: &str, indent: usize) -> String {
     let prefix = " ".repeat(indent);
     let mut out = String::new();
@@ -796,7 +655,7 @@ pub(super) fn fixed_field(items: &[Item], name: &str, default: i64) -> i64 {
         .filter(|item| item.keyword_is(name))
         .filter_map(|item| installed_content_core::fixed5::script_fixed5(item.value.scalar()?))
         .next_back()
-        .unwrap_or(default) // fixed-point parsing retains the previous value on failure.
+        .unwrap_or(default)
 }
 
 fn integer(text: &[u8]) -> i32 {
@@ -885,30 +744,26 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<Option<u32>, String> {
-        // Evaluate parsed scoped operands;
-        // otherwise resolves the selector.
-        // Block target fields belong only to the class's own native reader.
         let item = if item.value.scalar().is_some() {
             item
         } else {
             let token = item
                 .keyword()
                 .and_then(|key| installed_content_core::effect_keys::registered(&key.folded()));
-            // These custom value/key readers own target outside KEY_READERS.
             if !token.is_some_and(|token| {
                 installed_content_core::effect_keys::is_own_field(token, b"target")
                     || installed_content_core::effect_keys::class(token).is_some_and(
                         |(value_reader, key_reader)| {
-                            value_reader == 0x1403C2880 // Make puppet's value reader.
+                            value_reader == 0x1403C2880
                                 || matches!(
                                     key_reader,
-                                    0x1403CAC20 // Declare war.
-                                        | 0x1403CD750 // Remove wargoal.
-                                        | 0x1403CD0D0 // Release autonomy.
-                                        | 0x1403CD910 // Set autonomy.
-                                        | 0x1404BE0F0 // Send equipment.
-                                        | 0x1404BE2C0 // Send equipment fraction.
-                                        | 0x1403CEEF0 // Transfer units fraction.
+                                    0x1403CAC20
+                                        | 0x1403CD750
+                                        | 0x1403CD0D0
+                                        | 0x1403CD910
+                                        | 0x1404BE0F0
+                                        | 0x1404BE2C0
+                                        | 0x1403CEEF0
                                 )
                         },
                     )
@@ -916,7 +771,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 scalar_operand(item)?;
             }
             let Some(target) = self.country_target_field(item, "target")? else {
-                return Ok(None); // Constructor's zero country/selector.
+                return Ok(None);
             };
             target
         };
@@ -936,7 +791,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 if self.valid_state(state)?.is_none() {
                     return Ok(None);
                 }
-                // state resistance is recorded unchanged, even inactive.
                 let rows = self.complete::<tables::StateResistance>(RESISTANCE_COUNTRY)?;
                 let raw = keyed(&rows, u128::from(state))?
                     .ok_or_else(|| format!("state resistance lacks country for state {state}"))?
@@ -964,7 +818,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                             Some(country)
                         }
                         Some(Scope::State(id)) if id != NULL_STATE => {
-                            // returns the selected state's owner tag.
                             let state = self.valid_state(id)?.ok_or_else(|| {
                                 format!("invalid nonzero state {id}: country selection needs the missing state's owner")
                             })?;
@@ -984,7 +837,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         _ => None,
                     }
                 } else {
-                    None // Country-scope resolution does not test capital/random.
+                    None
                 }
             }
             Some(Selected::EventTarget(name)) => match self.effect_saved_target(name, scopes)? {
@@ -1039,7 +892,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         scopes: Scopes,
     ) -> Result<Option<u32>, String> {
         match scopes.this {
-            // falls back to zero when no current state exists.
             Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => Ok(None),
             Scope::State(_) => Ok(match self.evaluator()?.enter(&Parsed::Keyword(keyword), scopes).map_err(|why| why.to_string())? {
                 Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => Some(country),
@@ -1057,7 +909,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let name = installed_content_core::parser::c_string(name);
         if let Some(mut at) = scopes.cursor {
             let graph = self.graph.borrow();
-            // use terminal FROM storage.
             let mut steps = 0;
             loop {
                 if steps == graph.scopes.len() {
@@ -1085,8 +936,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .find(|(key, _)| key == name)
                     .map(|(_, object)| *object)
             };
-            // Find the first name match, then test its validity; an invalid first
-            // duplicate tries the next store, never another duplicate.
             for target in [
                 graph.tooltip_targets.get(&at).and_then(|rows| lookup(rows)),
                 graph.saved_targets.get(&at).and_then(|rows| lookup(rows)),
@@ -1102,8 +951,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     EventObject::Country(0)
                     | EventObject::State(0)
                     | EventObject::UnitLeader(0) => continue,
-                    // clears both members before storing a state;
-                    // its nonzero state is live, while country stays zero.
                     EventObject::Country(_) | EventObject::State(_) => {
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
@@ -1143,8 +990,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 }
             }
         }
-        // Read only the requested member: state and country are
-        // independent, unlike a context projection.
         let recorded = self.context.text.recorded();
         match recorded.saved_target(name).map_err(|why| why.to_string())? {
             Some(row) if crate::scope::valid_saved_target(&row) => {
@@ -1155,8 +1000,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn state_target(&self, item: &Item, scopes: Scopes) -> Result<u32, String> {
-        // parses selectors before assigning the scoped value;
-        // falls back to the carried country with state zero.
         let target = match scope_selector(item) {
             Some(Selected::Keyword(selector)) => {
                 if let Some(target) = selector_scope(selector) {
@@ -1175,13 +1018,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                                 then: Box::new(Parsed::Keyword(Keyword::CapitalScope)),
                             }
                         }
-                        // calls the capital getter, then falls through
-                        // to the country branch with zero; only the state branch returns it.
                         Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => return Ok(0),
                         _ => return Err("capital selector needs the event scope's state/country fields; the projected scope does not expose them".into()),
                     }
                 } else {
-                    return Ok(0); // does not test these selector bits.
+                    return Ok(0);
                 }
             }
             Some(Selected::EventTarget(name)) => {
@@ -1212,20 +1053,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    /// The hour's tables, a decoded frame's or a walk's views.
     pub(super) fn tables(&self) -> HourFrame<'f> {
         self.context.text.tables()
     }
 
-    /// `T`'s rows when complete, a walked row holding the fields `mask` names.
     pub(super) fn complete<T: TableSchema>(&self, mask: u64) -> Result<Rowset<'f, T::Row>, String> {
         self.tables()
             .complete::<T>(mask)
             .map_err(|why| why.to_string())
     }
 
-    /// The hour's one SimulationFeatures row, holding the fields `mask` names; None where the
-    /// complete table holds another count.
     pub(super) fn features(
         &self,
         mask: u64,
@@ -1237,7 +1074,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         each(rows).next().transpose()
     }
 
-    /// The hour's Clock random seed, as the recorded source reads it.
     pub(super) fn clock_seed(&self) -> Result<Option<i32>, String> {
         const SEED: u64 = mask::<replay_data::rows::ClockRow>(&["seed"]);
         match self.complete::<tables::Clock>(SEED)?.iter().next() {
@@ -1246,7 +1082,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    /// The States row of a positive `id`, holding its owner and controller.
     fn valid_state(&self, id: u32) -> Result<Option<Cow<'f, StateRow>>, String> {
         let states = self.complete::<tables::States>(STATE_COUNTRIES)?;
         if (id as i32) > 0 {
@@ -1311,7 +1146,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.expanded_with_faction_environment(text, scopes, None)
     }
 
-    /// None: event text; Some: kind-0 environment, including a null faction.
     pub(super) fn expanded_with_faction_environment(
         &self,
         text: &str,
@@ -1369,8 +1203,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    /// Bracketed text reads the scope state the title triggers leave, so it
-    /// refuses when their walk stopped short; other text does not depend on it.
     pub(super) fn event_title(
         &self,
         title: installed_content_events::events::TitleKey<'_>,
@@ -1404,8 +1236,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         .unwrap_or_else(|| format!("unknown effect key {effect_key}")),
                 };
                 self.refuse(&effect_key, format!("key {effect_key}: {why}"));
-                // Known builders can still describe their independent children.
-                // An unsupported class may override traversal, so do not assume the base projection.
                 result.map(|_| String::new())
             }
         }
@@ -1427,7 +1257,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(own) = self.own(item, scopes) else {
             return String::new();
         };
-        // Prefix the generic own line with LF. Custom event descriptions differ.
         let mut text = if own.len() as i32 <= 1 {
             String::new()
         } else if self.indents(item) {
@@ -1435,7 +1264,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         } else {
             own
         };
-        // Always traverse the children, even when own length <= 1.
         if !self.empty_build_override(item) {
             let body = self.effect_children(item);
             append_description(&mut text, &self.group(&body, scopes, indent));
@@ -1454,7 +1282,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn empty_build_override(&self, item: &Item) -> bool {
-        // These builders discard their children.
         self.effect_class(item).is_some_and(|class| {
             matches!(
                 class.vtable,
@@ -1464,9 +1291,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn indents(&self, item: &Item) -> bool {
-        // Context is needed here for its parent's first-child header clear.
-        // The builder returns context descriptions before its own-line prefix.
-        // The if effect tests its embedded condition.
         !(self.is_context(item)
             || item.keyword_is("country_event")
                 && field(children(item), "desc")
@@ -1489,8 +1313,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 }
 
-/// Describe an authored output in the selected project's actual assignment scopes.
-/// A missing assignment stays missing instead of selecting another scientist or facility.
 pub fn project_output_description(
     output: &installed_content_core::special_projects::Output,
     context: &Context<'_, '_>,

@@ -1,13 +1,7 @@
-//! Popup-entry hover providers, distinct from the selected tactic.
-//! Build main effects and counters plus delayed requirements; a lock replaces
-//! only the main string. Side conditions and weights extend the delayed text.
 use super::super::tooltips::{Described, hover_text, set_hover, tactic_description};
 use super::*;
 use installed_content_core::fixed5::fixed5_percent;
 
-/// the game resolves the last countered_by text against the completed registry.
-/// Buckets prepend entries, so repeated names resolve to their last definition.
-/// A missing dependency is the null tactic and leaves the initialized ID zero.
 fn counter_id(content: &Content, definition: &Definition) -> Evaluation<i32> {
     let name = field(&definition.items, "countered_by")
         .and_then(|item| item.value.scalar())
@@ -19,8 +13,6 @@ fn counter_id(content: &Content, definition: &Definition) -> Evaluation<i32> {
     content.named_id(name)
 }
 
-/// Format stats with both side flags set, selecting the tactic's authored
-/// is_attacker polarity.
 pub(super) fn main(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -105,7 +97,6 @@ fn append(
     }
 }
 
-/// source strings are ordered, may repeat, and each has a leading LF.
 pub(super) fn locked(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -129,8 +120,7 @@ pub(super) fn locked(
     Ok(text)
 }
 
-/// The tooltip sums signed weights; list normalization sums only positive ones.
-#[allow(clippy::too_many_arguments)] // Native side context, list weights and text/refusal resources.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn status(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -141,7 +131,6 @@ pub(super) fn status(
     index: usize,
     unavailable: &mut BTreeSet<String>,
 ) -> Evaluation<String> {
-    // Even a locked tactic evaluates its conditions for this explanation.
     if !context.check(&definition.blocks("trigger"))? {
         return builtin(icons, loc, "TACTIC_CONDITIONS_NOT_MET", &[]);
     }
@@ -283,7 +272,6 @@ pub(super) fn requirements(
 ) -> Evaluation<String> {
     let mut text = builtin(icons, loc, "TACTICS_ACTIVATION_REQUIREMENTS", &[])?;
     text.push('\n');
-    // Indent each nonempty requirement line by two spaces.
     let body = body.map(|body| {
         let mut indented = String::new();
         for line in body.split_inclusive('\n') {
@@ -304,8 +292,6 @@ pub(super) fn requirements(
     Ok(text)
 }
 
-/// The provider owns the root. Each independent unavailable fragment is named;
-/// an older row cannot replace a valid immediate string or another delayed part.
 pub(super) fn bind(
     row: &mut Values,
     tactic: &str,

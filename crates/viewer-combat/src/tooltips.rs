@@ -1,6 +1,3 @@
-//! Land combat hover text rebuilt from simulation operands and matching content.
-//!
-//! Combat details supply tactic, terrain, width and commander hovers.
 use installed_content_core::{gui::native, gui::native::Element, unit_leader::Skills};
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
@@ -40,10 +37,6 @@ pub(super) struct Content {
 }
 
 impl Content {
-    /// `skills` are `common/unit_leader`'s, read with the commander content
-    /// (their files' readers also hold the traits); the skill hover takes
-    /// the recorded progress, so only their reader's warnings stay. Tactic
-    /// effects come from the one tactic registry ([`Tactics`]).
     pub(super) fn load(skills: Skills) -> Self {
         Self {
             warnings: skills.warnings().to_vec(),
@@ -55,10 +48,6 @@ impl Content {
     }
 }
 
-/// The game rebuilds the six combat sums after tactic changes and load.
-/// Organisation terms come from content; the two recorded damage sums
-/// prove the current side membership still matches that rebuild. The
-/// error names the missing operand.
 pub(super) fn organisation_effects(
     tactics: &Tactics,
     detail: &LandCombatDetailsRow,
@@ -71,8 +60,6 @@ pub(super) fn organisation_effects(
             sides.combat, detail.combat
         ));
     }
-    // The game scopes each side to its first linked-set country. An empty
-    // set during teardown cannot authenticate the previous effects.
     for (side, primary) in [
         ("attacker", &sides.attacker_primary),
         ("defender", &sides.defender_primary),
@@ -110,25 +97,17 @@ pub(super) fn organisation_effects(
     Ok(organisation)
 }
 
-/// The game tests the other pointer, not whether it is a real tactic.
-/// Kind 1 is a present null tactic (id 0); only kind 0 is an absent pointer.
 pub(super) fn countered(side: &LandCombatSideDetails, other: &LandCombatSideDetails) -> bool {
     side.tactic_kind != 0
         && other.tactic_kind != 0
         && side.tactic_counter_id == other.tactic_id as u32
 }
 
-/// Trim newline, tab, carriage return and space from both ends of tooltip
-/// text. Other Unicode whitespace remains. An empty result gives no hover.
 pub(super) fn hover_text(text: &str) -> Option<HoverText> {
     let text = text.trim_matches(['\n', '\t', '\r', ' ']);
     (!text.is_empty()).then(|| text.into())
 }
 
-/// The one hover setter: both strings of `key`'s widget, which the dynamic
-/// builder then owns. A refused hover is `None` and clears what the widget
-/// held, so an authored `pdx_tooltip` never stands in for a refused dynamic
-/// one, whichever binds first; the caller counts the refusal.
 pub(super) fn set_hover(
     values: &mut Values,
     key: impl Into<String>,
@@ -141,8 +120,6 @@ pub(super) fn set_hover(
     widget.hover_owned = true;
 }
 
-/// Clears the dynamically owned hovers `keys` a builder cannot make at all,
-/// so none keeps its authored seed.
 pub(super) fn refuse_hovers<K: Into<String>>(
     values: &mut Values,
     keys: impl IntoIterator<Item = K>,
@@ -152,7 +129,6 @@ pub(super) fn refuse_hovers<K: Into<String>>(
     }
 }
 
-/// The land hovers the game sets on every update of one side.
 fn side_hovers(prefix: &str) -> [String; 9] {
     [
         "tactic",
@@ -168,7 +144,6 @@ fn side_hovers(prefix: &str) -> [String; 9] {
     .map(|suffix| format!("{prefix}_{suffix}"))
 }
 
-/// [`hover_text`] of a built hover, or `None` with its refusal counted.
 pub(super) fn counted_hover(
     text: Result<String, impl std::fmt::Display>,
     refused: &mut BTreeMap<String, usize>,
@@ -182,15 +157,12 @@ pub(super) fn counted_hover(
     }
 }
 
-/// What the authored seed reads: the localiser, the native text icons and the
-/// combat windows an entry template names.
 struct Gui<'a> {
     icons: &'a dyn TextIcons,
     loc: &'a Localisation,
     windows: &'a NativeWindows,
 }
 
-// GUI field reading stores hash, not a text lookup key.
 fn authored_key<'a>(
     hash: u64,
     key: &'a [u8],
@@ -234,12 +206,6 @@ fn authored_hover(
     counted_hover(builtin(gui.icons, gui.loc, token, &[]), refused)
 }
 
-/// Authored `pdx_tooltip`/`pdx_tooltip_delayed` keys of every widget, the
-/// text it is created with: a widget whose hovers a dynamic builder owns
-/// keeps the builder's text or refusal. Missing localisation keeps the key's
-/// text; an invalid stored hash/key or text [`builtin`] cannot produce is
-/// counted in `refused`, immediate or delayed alike. Button shortcuts remain
-/// an independent tail even when a dynamic builder owns the text.
 fn authored(
     gui: &Gui<'_>,
     node: &Element,
@@ -253,7 +219,6 @@ fn authored(
         } else {
             format!("{path}/{}", child.name())
         };
-        // Native lookup folds ASCII case; keep the producer's path and hover ownership.
         let key = values
             .get_key_value(&key)
             .map(|(path, _)| path)
@@ -305,7 +270,6 @@ fn authored(
     }
 }
 
-/// Authored text and shortcuts for every constructed combat window and entry.
 pub fn bind_authored(
     out: &mut Bindings,
     icons: &dyn TextIcons,
@@ -327,7 +291,6 @@ pub fn bind_authored(
         )),
     }
     if matches!(selection, Selection::Land(_)) {
-        // The game selects the division entry templates.
         for (side, entries) in out.entries.iter_mut().enumerate() {
             let name = match side {
                 0 => "division_combat_attacker_entry",
@@ -341,7 +304,6 @@ pub fn bind_authored(
                 &mut refused,
             );
         }
-        // The game constructs the tactics window and entry templates.
         match gui.windows.gui_type(b"tactics_list_view") {
             Some(window) => authored(&gui, window, "", &mut out.tactics.values, &mut refused),
             None => out.refuse(
@@ -355,7 +317,6 @@ pub fn bind_authored(
             &mut refused,
         );
     } else {
-        // The game constructs ship entries for live combat and results.
         authored_entries(
             &gui,
             "navalcombat_ship_entry",
@@ -390,27 +351,17 @@ fn authored_entries<'a>(
     }
 }
 
-/// A hover's immediate text and, when it has one, its delayed text or why
-/// that is absent.
 type Hover = (String, Option<Result<String, String>>);
 
-/// The null tactic has a localised constructor name. An absent top-level
-/// key displays as its own text, including the active null-tactic singleton.
 const NULL_TACTIC_NAME: &str = "nullCombatTactic";
 pub(super) const HEADER: &str = "HEADER";
 
-/// The tactic a side's hover describes.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Described<'a> {
-    /// A content tactic: its recorded database id and token.
     Content { id: i32, token: &'a [u8] },
-    /// A present null tactic (recorded kind 1) uses the ordinary header,
-    /// effect and delayed path with its default name and zero effects.
     Null,
 }
 
-/// Build the immediate text, then `TACTIC_DESC` in the delayed slot.
-/// Only an absent tactic pointer (kind 0) has `NO_TACTIC` alone.
 fn tactic_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -459,7 +410,6 @@ pub(super) fn tactic_description(
     if countered {
         text.push_str(&builtin(icons, loc, TACTIC_CURRENTLY_COUNTERED, &[])?);
     } else {
-        // The null tactic's six effects are zero.
         let tactic = match described {
             Described::Content { id, token } => tactics.effects(id, token)?,
             Described::Null => Effects::default(),
@@ -480,8 +430,6 @@ pub(super) fn tactic_description(
                 false,
             ),
             (tactic.defender, TACTICS_DAMAGE_DEFENDER, !attacker, false),
-            // Defender organisation damage uses the attacker colour preference;
-            // defender strength damage uses the defender preference.
             (
                 tactic.defender_org,
                 TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER,
@@ -513,37 +461,17 @@ pub(super) fn tactic_description(
     Ok((text, builtin(icons, loc, TACTIC_DESC, &[])))
 }
 
-/// A recording without the side hover inputs (LandCombatDetails field 10)
-/// holds no skill progress, which the viewing country's commander's skill
-/// line prints.
 const SKILL_PROGRESS_UNRECORDED: &str =
     "the viewing country's commander's skill progress is not recorded in this recording";
 
-/// The capture could not read the next skill level the progress divides by.
 const SKILL_PROGRESS_UNREAD: &str = "the viewing country's commander's next skill level, which its skill progress divides by, could not be read at capture";
 
-/// Nor the offence and defence lines every commander's skill hover appends.
 const SKILL_LINES_UNRECORDED: &str = "the skill hover's offence and defence lines (keys 0x5F and 0x60 of the selected leader block) are not recorded in this recording";
 
-/// The capture could not read the leader block, or the unit choice that
-/// selects it.
 const SKILL_LINES_UNREAD: &str = "the skill hover's offence and defence lines (keys 0x5F and 0x60 of the leader block selected for the chosen unit) could not be read at capture";
 
-/// Nor the CAS hover's operands, unless an older recording's side details
-/// hold them ([`replay_data::rows::LandCombatDetailsRow::cas_inputs`]).
 const CAS_UNRECORDED: &str = "the CAS hover's prevented damage and anti-air effectiveness (STR_PREVENT, ORG_PREVENT, AA_EFFECTIVENESS over the side's anti-air cache and prevented-damage fields) are not recorded in this recording";
 
-/// The side commander's skill hover: the skill line, a newline, then the
-/// leader block's keys 0x5F and 0x60 copied into a fresh accumulator and
-/// formatted as a modifier description
-/// (precision 2, no colour, every category, scale 1.0), in both arms. Only
-/// the viewing country's commander (a country equality) gets the progress
-/// arm, the recorded experience ratio: none is the at-cap arm.
-///
-/// The skill line refuses the hover only when its own operand is missing.
-/// The offence and defence lines are a part of their own: when their
-/// operands are missing they alone refuse, by name, returned beside the text,
-/// and the skill line stands.
 fn skill_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -606,10 +534,6 @@ fn skill_tooltip(
     }
 }
 
-/// Anti-air defence derived from the side's stored anti-air cache, times
-/// `ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR` (truncated) and capped at
-/// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR`, the reduction the CAS application applies to
-/// incoming planes.
 fn anti_air_effectiveness(
     anti_air: i64,
     defines: &super::defines::LandDefines,
@@ -623,19 +547,13 @@ fn anti_air_effectiveness(
     Ok((defence.wrapping_mul(defines.anti_air[0]) / 100_000).min(defines.anti_air[1]))
 }
 
-/// The CAS summary the game builds for a side's air text, count and icon:
-/// the side's own planes, then what the opposing side's anti-air did to them.
 struct Cas<'a> {
     own: &'a LandCombatSideDetails,
     opponent: &'a LandCombatSideDetails,
-    /// The opposing side's anti-air cache and prevented strength and
-    /// organisation damage ([`replay_data::rows::LandCombatDetailsRow::cas_inputs`]).
     opponent_cas: (i64, [i64; 2]),
     attacking: bool,
 }
 
-/// The CAS hover with its delayed detail, or why it is refused: the opposing
-/// division, operand or localisation key that failed.
 fn cas_tooltip(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -650,7 +568,6 @@ fn cas_tooltip(
         .air_counts
         .iter()
         .fold(0_i32, |sum, count| sum.wrapping_add(*count));
-    // The opponent's committed units' current strength and organisation.
     let (strength, organisation) = cas.opponent.committed.iter().try_fold(
         (0_i64, 0_i64),
         |(strength, organisation), unit| {
@@ -683,13 +600,11 @@ fn cas_tooltip(
             ("ORG", Argument::Fixed5(cas.opponent.damage[1])),
             ("ORG_MAX", Argument::Fixed5(organisation)),
             ("KILL", Argument::Int32(cas.opponent.air_kills as i32)),
-            // Recorded at the display step `|R0` prints (replay_data::display).
             ("STR_PREVENT", Argument::Fixed5(prevent_strength)),
             ("ORG_PREVENT", Argument::Fixed5(prevent_organisation)),
             ("AA_EFFECTIVENESS", Argument::Fixed5(effectiveness)),
         ],
     )?;
-    // The opponent's committed width bounds the planes that fit.
     let detail = widths.and_then(|width| {
         builtin(
             icons,
@@ -707,8 +622,6 @@ fn cas_tooltip(
     Ok((text, detail))
 }
 
-/// combat width hover for the combat's province, or the operand
-/// or key that failed.
 fn width_tooltip(static_content: &StaticContent, province: u32) -> Result<String, String> {
     let (icons, loc) = (static_content.assets.as_ref(), &static_content.localisation);
     let terrain = static_content
@@ -838,17 +751,12 @@ pub(super) fn bind(
     })()
     .map_err(|why| format!("Land combat {id} balance hover is omitted: {why}"));
     land_progress_hovers(&mut out.values, icons, loc, outlook, &mut refused);
-    // The skill hover's offence and defence lines name their modifiers
-    // through the recorded definitions.
     let definitions = Definitions::read(frame, &static_content.modifier_names)?;
-    // The side hover inputs: NotRecorded before LandCombatDetails field 10.
     let side_inputs = detail.side_inputs.require("LandCombatDetails.side_inputs");
     for (index, prefix) in ["attacker", "defender"].into_iter().enumerate() {
         let side = &detail.sides[index];
         let opponent = &detail.sides[1 - index];
         let inputs = side_inputs.as_ref().map(|sides| &sides[index]);
-        // The tactic and its countered overlay share the builder and both of
-        // its slots, for the attacker and the defender alike.
         if side.tactic_kind == 1 && loc.get(NULL_TACTIC_NAME).is_none() {
             out.warnings.push(format!(
                 "Land combat {id} {prefix} tactic: the content has no localisation {NULL_TACTIC_NAME}, used by the null tactic name; the game shows the key itself, and so does the hover."
@@ -891,16 +799,12 @@ pub(super) fn bind(
             );
         }
         if side.commander == 0 {
-            // No commander: the game builds no skill or badge hover.
             refuse_hovers(
                 &mut out.values,
                 ["leader_skill", "leader_skill_bg", "leader_army_hq_icon"]
                     .map(|suffix| format!("{prefix}_{suffix}")),
             );
         } else {
-            // The game shows the progress only for the viewing country's
-            // commander (a country equality): a link this hour cannot
-            // resolve decides neither.
             let skill = match country_slot(&links, side.commander_country) {
                 Ok(slot) => skill_tooltip(
                     icons,
@@ -916,8 +820,6 @@ pub(super) fn bind(
             };
             let skill = match skill {
                 Ok((text, lines_refused)) => {
-                    // The offence and defence lines are refused alone; the
-                    // skill line stands.
                     if let Some(reason) = lines_refused {
                         out.refuse(format!(
                             "Land combat {id} {prefix} leader skill hover's offence and defence lines are omitted: {reason}"
@@ -965,11 +867,9 @@ pub(super) fn bind(
                 &mut refused,
             )
         } else {
-            // A hidden glow carries no hover.
             None
         };
         set_hover(&mut out.values, glow, text, None);
-        // The game's CAS hover on the side's air text, count and icon.
         let Some(opponent_cas) = detail.cas_inputs(1 - index) else {
             let cas = counted_hover(Err(CAS_UNRECORDED.to_owned()), &mut refused);
             for suffix in ["air_text", "air_count", "air_icon"] {
@@ -1056,8 +956,6 @@ pub(super) fn bind(
     Ok(())
 }
 
-/// Naval progress and stat hovers dispatch side stats before checking
-/// progress widgets.
 fn naval_hovers(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -1077,13 +975,7 @@ fn naval_hovers(
             naval_pride_hover(&mut row.values, assets, loc, id, &mut refused);
         }
     }
-    // both progress icons receive this same dynamic tooltip,
-    // including the hidden icon. The localiser resolves the executable key
-    // through the recorded content stack; an authored seed cannot replace it.
     naval_progress_hovers(&mut out.values, assets, loc, id, &mut refused);
-    // The game uses the same callback for each text and its background.
-    // Anti-air has no breakdown; the other stats append an operand-dependent
-    // delayed body and are handled with their calculations separately.
     naval_anti_air_hovers(&mut out.values, assets, loc, id, &mut refused);
     for (reason, count) in refused {
         for _ in 0..count {
@@ -1098,8 +990,6 @@ fn naval_hovers(
     Ok(())
 }
 
-// Use the first authored shortcut, trimmed and converted into keycaps,
-// then localise SHORTCUT and KEY.
 fn shortcut_tooltip(gui: &Gui<'_>, shortcut: &[u8], path: &str) -> Result<String, String> {
     let shortcut = std::str::from_utf8(shortcut)
         .map_err(|_| format!("Combat button {path}'s shortcut is not UTF-8"))?;
@@ -1107,7 +997,6 @@ fn shortcut_tooltip(gui: &Gui<'_>, shortcut: &[u8], path: &str) -> Result<String
     if glyphs.is_empty() {
         return Ok(String::new());
     }
-    // The game displays a missing localisation key itself.
     builtin(
         gui.icons,
         gui.loc,
@@ -1117,7 +1006,6 @@ fn shortcut_tooltip(gui: &Gui<'_>, shortcut: &[u8], path: &str) -> Result<String
 }
 
 pub(super) fn shortcut_keycaps(shortcut: &str) -> String {
-    // Trim only these bytes and preserve component indices.
     let shortcut = match shortcut.trim_matches(['\n', '\t', '\r', ' ']) {
         "," => "COMMA",
         "." => "PERIOD",
@@ -1176,8 +1064,6 @@ fn carrier_penalty_text(
     enemy_fleet: i32,
     minimum: i32,
 ) -> Result<String, String> {
-    // executable argument names and order: PERC is a fixed5
-    // actual sortie multiplier, then the weighted opposing count and floor.
     builtin(
         icons,
         loc,
@@ -1227,8 +1113,6 @@ fn naval_flag_country(
     aliases: &BTreeMap<u32, u32>,
     viewer: u32,
 ) -> Result<u32, String> {
-    // Both flag hovers select the name from the first attacker country,
-    // regardless of the hovered flag. Only the delayed arguments swap sides.
     let members = &detail.sides[0].summary.countries;
     let Some(&first) = members.first() else {
         return Err("the side lists no country".into());
@@ -1252,9 +1136,6 @@ fn naval_flag_country(
     }
 }
 
-/// both flags' immediate line is the selected country's live
-/// display name wrapped in the native H colour; the game builds its delayed
-/// summary from the side history and source-token map.
 fn naval_flag_hovers(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -1332,8 +1213,6 @@ fn naval_pride_hover(
     id: u64,
     refused: &mut BTreeMap<String, usize>,
 ) {
-    // ship icon hover dispatches the pride icon before its
-    // stored member hover. A hidden pride widget has no hit target.
     if values.get("pride").is_some_and(|widget| !widget.hidden) {
         let text = counted_hover(
             builtin(icons, loc, NAVY_CONTAINS_PRIDE_OF_FLEET_WITHOUT_NAME, &[]).map_err(|reason| {
@@ -1352,7 +1231,6 @@ fn land_progress_hovers(
     outlook: Result<String, String>,
     refused: &mut BTreeMap<String, usize>,
 ) {
-    // both names share outlook and the delayed explanation.
     let main = counted_hover(outlook, refused);
     let delayed = counted_hover(builtin(icons, loc, COMBAT_PROGRESS_DESC, &[]), refused);
     for key in ["combat_progress", "land_battle_progress_frame"] {
@@ -1367,8 +1245,6 @@ fn naval_progress_hovers(
     id: u64,
     refused: &mut BTreeMap<String, usize>,
 ) {
-    // Naval survival scores are zero on either side. Neither 120% comparison
-    // wins, and rounded duration is always zero days.
     let main = counted_hover(
         super::land_marker_tooltips::outlook(icons, loc, [0, 0], [false; 2])
             .map_err(|reason| format!("Naval combat {id} progress hover is omitted: {reason}")),
@@ -1390,9 +1266,6 @@ fn naval_progress_hovers(
     }
 }
 
-/// The game builds the portrait's HEADER and description from the recorded
-/// commander tokens, appending learning progress only for the viewing
-/// country. It uses the same learning formatter as land portrait.
 fn naval_commander_hovers(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -1476,11 +1349,9 @@ fn naval_commander_portrait(
     )
 }
 
-// Shared by the land skill builder and naval components.
 pub(super) const LEADER_SKILL_DESC: &str = "LEADER_SKILL_DESC";
 
 tooltip_keys! {
-    // tooltip updates.
     SHORTCUT = "SHORTCUT",
     COMBAT_PROGRESS_DESC = "COMBAT_PROGRESS_DESC",
     COMBAT_STAT_ANTI_AIR = "combat_stat_anti_air",

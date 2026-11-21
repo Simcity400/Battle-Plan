@@ -6,7 +6,6 @@ import { curveSegments, gapRegions } from './series.ts';
 import type { Run } from './series.ts';
 import { tokensFromValues } from './tokens.ts';
 
-/** A canvas that records the path calls between each beginPath and the next. */
 function recorder() {
   const paths: { calls: string[]; clipped: boolean; filled: string | null }[] = [];
   let current: { calls: string[]; clipped: boolean; filled: string | null } | null = null;
@@ -24,7 +23,6 @@ function recorder() {
   return { context: context as unknown as CanvasRenderingContext2D, paths };
 }
 
-// Supply falls through demand: surplus first, then a shortfall, with a crossing between.
 const SUPPLY: Run[] = [{ firstHour: 0, lastHour: 40, value: 300, breakBefore: true }, { firstHour: 41, lastHour: 100, value: 100 }];
 const DEMAND: Run[] = [{ firstHour: 0, lastHour: 40, value: 150, breakBefore: true }, { firstHour: 41, lastHour: 100, value: 200 }];
 const frame = plotFrame(600, 300, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 100], [0, 400], false);
@@ -35,12 +33,10 @@ test('gap regions are bounded by the very curves the lines are drawn with', () =
   const demand = curveSegments(DEMAND, 0, 100, frame.toX, frame.toY);
   const { above, below } = gapRegions(supply, demand, frame.plotTop, frame.plotTop + frame.plotHeight);
   assert.equal(above.length, 1);
-  // Surplus: under the supply curve, over the demand curve; shortfall the reverse.
   assert.deepEqual(above[0].clip.slice(0, supply[0].path.length), supply[0].path);
   assert.deepEqual(above[0].fill.slice(0, demand[0].path.length), demand[0].path);
   assert.deepEqual(below[0].clip.slice(0, demand[0].path.length), demand[0].path);
   assert.deepEqual(below[0].fill.slice(0, supply[0].path.length), supply[0].path);
-  // Each closes to the plot edge on its side, back at its start.
   const end = supply[0].points.at(-1)!;
   assert.deepEqual(above[0].clip.slice(-3), [['L', end.x, frame.plotTop + frame.plotHeight], ['L', supply[0].points[0].x, frame.plotTop + frame.plotHeight],
     ['L', supply[0].points[0].x, supply[0].points[0].y]]);
@@ -56,7 +52,6 @@ test('the fill a canvas draws follows the drawn lines, green above and red below
   drawGapFill(fill.context, frame, SUPPLY, DEMAND, 'green', 'red');
   const [surplusClip, surplusFill, shortfallClip, shortfallFill] = fill.paths;
   const curveOf = (calls: string[]) => calls.filter(call => call.startsWith('M') || call.startsWith('C'));
-  // Surplus: clipped under the stroked supply curve, filled over the stroked demand curve.
   assert.deepEqual(curveOf(surplusClip.calls), curves[0]);
   assert.equal(surplusClip.clipped, true);
   assert.deepEqual(curveOf(surplusFill.calls), curves[1]);
@@ -64,7 +59,6 @@ test('the fill a canvas draws follows the drawn lines, green above and red below
   assert.deepEqual(curveOf(shortfallClip.calls), curves[1]);
   assert.deepEqual(curveOf(shortfallFill.calls), curves[0]);
   assert.equal(shortfallFill.filled, 'red');
-  // Only the hours drawn are filled.
   const until = recorder();
   drawGapFill(until.context, frame, SUPPLY, DEMAND, 'green', 'red', { until: 30 });
   const partial = recorder();

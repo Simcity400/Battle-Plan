@@ -3,7 +3,6 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { ReplayFile, ReplayLibrary } from './src/dashboard/client.ts';
 
-// Read at each use: a test harness points APPDATA at a private profile after this module loads.
 const settingsPath = () => path.join(process.env.APPDATA || path.join(homedir(), '.config'), 'battle-plan', 'replay-folder.json');
 
 export async function savedReplayFolder(fallback: string): Promise<string> {

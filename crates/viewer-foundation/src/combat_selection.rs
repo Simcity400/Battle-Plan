@@ -1,4 +1,3 @@
-//! Combat selections and observer hits shared by map markers and open windows.
 use crate::map::gui_resources::contains;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,7 +6,6 @@ pub enum Selection {
     Naval(u64),
     NavalResult(u64),
     AirRegion(u32),
-    /// The state view of the clicked province's state.
     State(u32),
     NavalRegion(u32),
 }
@@ -17,7 +15,6 @@ pub struct Hit {
     pub rect: [f32; 4],
     pub layer: u64,
     pub order: usize,
-    /// Unsupported native hit shapes block lower windows without dispatching observers.
     pub supported: bool,
 }
 impl Hit {
@@ -32,7 +29,6 @@ mod scale_tests {
     use crate::map::ui_scale::to_interface;
     #[test]
     fn a_click_hits_exactly_what_the_scaled_quad_covers() {
-        // A combat bubble laid out at (100, 100) 40 x 20 interface pixels.
         let hit = super::Hit {
             selection: super::Selection::Land(7),
             rect: [100.0, 100.0, 40.0, 20.0],
@@ -48,7 +44,6 @@ mod scale_tests {
         assert!(!click([x1, y0]));
         assert!(!click([x0, y1]));
         assert!(!click([x0 - 0.5, y0]));
-        // Unscaled, the same device point that hits at 1.25 misses the bubble.
         assert!(!hit.contains([170.0, 140.0]));
         assert!(click([170.0, 140.0]));
     }

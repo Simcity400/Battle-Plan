@@ -1,0 +1,15 @@
+# Keep native map composition and game window dispatch independent of widget rendering
+
+Send a batch of targets to the native viewer and track its acknowledgments per map. Layout dirtiness schedules measurement before frame writes. An anchor, visibility or option change can reuse the measured rectangles. Ignore scrolling inside lists that cannot move any surface. The native map's own clock advances between playhead anchors without a new target message each hour. Resend the last anchor when recovering a restarted viewer.
+
+While playing, a ready frame on the requested branch can answer the current target. Its changing hour and sequences are excluded from the widget's render key and its date lands through a frame painter. While paused, the requested hour and sequences matter. Open menus and layout controls can hide the native surfaces, whose own windows would otherwise cover the controls. A hidden surface does not report loading.
+
+Keep picker choices per view. Route fog to its view and host-owned options to the host. Scope save acknowledgments by view, recording revision and setting, and let only the latest save clear that setting's failure. A toggle changes an existing choice and a dropped response may follow a successful change. Sending it again would risk flipping it twice.
+
+The campaign map and pop-out share the default campaign's country choice and graphics. An unpinned widget changes the choice for its own campaign, and a pinned widget keeps its own selection. Bind country choices by canonical slot so they follow a rename, and discard older picker echoes. Send consecutive setting flips in click order for each source and scope. The host applies each flip to the saved or inherited value under its save lock, so a concurrent reset can change what the next flip acts on without losing unrelated settings.
+
+Carry each playhead anchor's page-local monotonic composition time so a delayed delivery advances from the right point. The composition time alone does not make an anchor new, while a pause or a seek at the same hour does. Coalesce an occupied native command to the latest anchor and resend when playback reenters the branch. Report failures by operation, admit only the latest outcome and retry only repeatable commands.
+
+A game window request carries a semantic selection with recording, branch, playback hour and native identity, and the window component owns its layout. The registry admits a window kind only once a renderer supplies its component. The widget disables the action for absent kinds. A window receives the client for its own requests, contributes diagnostics to the host, and can report a sampled date alongside the answer's date.
+
+[Native map store](../../ui/src/dashboard/geometry.ts) · [Game window registry](../../ui/src/dashboard/gameWindows.ts) · [Policy chooser entry point](../../ui/src/widgets/industrial-organisations/IndustrialOrganisationsWidget.tsx)

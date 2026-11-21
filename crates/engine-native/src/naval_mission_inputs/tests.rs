@@ -32,7 +32,6 @@ fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     put_u32(bytes, at + 12, count);
 }
 
-/// An accumulator at `header` holding `entries` (key, raw) at `data`.
 fn accumulator(bytes: &mut [u8], header: usize, data: usize, entries: &[(u32, i64)]) {
     array(bytes, header, data, entries.len() as u32);
     for (index, (key, raw)) in entries.iter().enumerate() {
@@ -154,15 +153,12 @@ fn task_force_row_keeps_every_efficiency_operand() {
             ..Default::default()
         }
     );
-    // Each entry keeps its place; the second has no commander.
     assert_eq!(headquarters, [(5 << 32) | 73, 0]);
-    // Without a location neither the local accumulator nor a region is read.
     let mut docked = bytes.clone();
     put_u64(&mut docked, TASK + cunit::LOCATION, 0_u64);
     put_u32(&mut docked, TASK + LOCAL_MODIFIERS + 8, u32::MAX);
     let row = read_row(&docked, &mut vec![0; 2]).unwrap();
     assert_eq!((row.region, row.local), (0, [Value::default(); 9]));
-    // A location that is no province is refused.
     let mut stray = bytes;
     put_u64(&mut stray, PROVINCE, 1_u64);
     assert!(read_row(&stray, &mut vec![0; 2]).is_err());
@@ -249,7 +245,6 @@ fn walk_visits_every_authenticated_task_force() {
             (1, (12 << 32) | 61, 3)
         ])
     );
-    // A task force claiming another fleet is refused.
     world.u64(task[1] + ctask_force::FLEET, 1);
     assert!(walked(&world).is_err());
 }
@@ -356,11 +351,9 @@ fn a_ledger_keeps_its_missions_in_stored_order() {
     assert_eq!(ledger(&memory, missions, &mut out), Ok(3));
     assert_eq!(out, [0x5360, 0x4360, 0x5360]);
     assert_eq!(out[1].checked_sub(MISSION), Some(0x4000));
-    // Too little room reports the count and writes nothing.
     let mut short = [0; 2];
     assert_eq!(ledger(&memory, missions, &mut short), Ok(3));
     assert_eq!(short, [0; 2]);
-    // An empty region has no missions; a null entry is refused.
     assert_eq!(ledger(&memory, Array::default(), &mut out), Ok(0));
     put_u64(&mut bytes, MISSIONS + 8, 0_u64);
     let memory = SliceMemory {
@@ -462,7 +455,6 @@ fn leader_modifiers_need_a_navy_leader() {
     assert!(leader_modifiers(&memory, 0, 1, &resolve, &mut out).is_err());
 }
 
-/// A presence map with `mask + probe + 2` entries; `(slot, key, distance, ring)`.
 fn presence_map(entries: &[(u32, u32, u8, usize, i32, i32, i32)]) -> Vec<u8> {
     const NAVY: usize = 0x100;
     const ENTRIES: usize = 0x1000;
@@ -492,7 +484,6 @@ fn home(key: u32) -> u32 {
 fn presence_follows_the_native_probe_and_counts_the_ring_window() {
     const NAVY: usize = 0x100;
     const RING: usize = 0x3000;
-    // Two keys share a home slot: the second sits one further at distance 2.
     let first = 11;
     let second = (12..10_000).find(|&key| home(key) == home(first)).unwrap();
     let slot = home(first);
@@ -500,11 +491,9 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
         (slot, first, 1, RING, 4, 1, 0),
         (slot + 1, second, 2, RING + 0x100, 1_000, 998, 2),
     ]);
-    // First ring wraps: entries 1, 2, 3 = [2, -1, 0].
     for (index, value) in [7_i32, 2, -1, 0].into_iter().enumerate() {
         put_u32(&mut bytes, RING + index * 4, value as u32);
     }
-    // Second ring wraps from 998 to 2: [5, 0, -3, 1].
     for (index, value) in [(998, 5_i32), (999, 0), (0, -3), (1, 1)] {
         put_u32(&mut bytes, RING + 0x100 + index * 4, value as u32);
     }
@@ -530,7 +519,6 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
             total: 3
         }))
     );
-    // An absent key is the native "absent" result, not zero entries.
     let absent = (1..10_000)
         .find(|&key| key != first && key != second && home(key) == (slot + 4) % 8)
         .unwrap();
@@ -540,7 +528,6 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
             .presence(&memory, absent),
         Ok(None)
     );
-    // A long ring counts only the window.
     let mut long = presence_map(&[(slot, first, 1, RING, 1_000, 0, 999)]);
     for index in 0..999 {
         put_u32(&mut long, RING + index * 4, 1_i32 as u32);
@@ -558,7 +545,6 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
             total: PRESENCE_WINDOW as i32
         }))
     );
-    // A short ring whose tail is never met wraps until the window: [2, -1, 0, 7] repeated.
     let mut short = presence_map(&[(slot, first, 1, RING, 4, 1, -1)]);
     for (index, value) in [7_i32, 2, -1, 0, 9].into_iter().enumerate() {
         put_u32(&mut short, RING + index * 4, value as u32);
@@ -620,7 +606,6 @@ fn region_weather_reads_the_indexed_record_or_nothing_outside_the_array() {
             Value::default()
         ]
     );
-    // A region past the weather array has no object and contributes nothing.
     region_weather(&memory, &weather, 2, &mut out).unwrap();
     assert_eq!(out, [Value::default(); 9]);
 }

@@ -1,46 +1,27 @@
-/** One chart tooltip for the whole dashboard. Charts publish structured content,
- * not HTML, so every tooltip looks the same and no recorded text is ever parsed
- * as markup. The layer renders it above every widget. */
 
 export interface TooltipRow {
   detail?: string;
   label: string;
-  /** Internal content identity, available on hover without becoming the label. */
   lookupKey?: string;
   value?: string;
-  /** A colour square identifying the series. */
   swatch?: string;
-  /** A small artwork image before the label. */
   icon?: string;
-  /** Present for a recorded country, including a missing flag at its supplying hour. */
   countryFlag?: { nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
-  /** Indents the row under the one above, as a part of it. */
   indent?: boolean;
-  /** `neutral` is the game's yellow, for a value neither good nor bad. */
   tone?: 'positive' | 'negative' | 'neutral' | 'muted';
-  /** Starts a new group with a divider above it. */
   divider?: boolean;
-  /** A section heading or a total: the label in full text colour, bold. */
   strong?: boolean;
-  /** Keeps the label on one line, shortened, where a long list must fit the window. */
   short?: boolean;
-  /** Positive exact count on the fitter's summary, so a later fit never counts it as data. */
   omittedRows?: number;
 }
 export interface TooltipContent {
   detail?: string;
   title: string; rows: readonly TooltipRow[]; note?: string;
-  /** Keep every row reachable through the measured scrolling layer. */
   scrollable?: boolean;
-  /** Stable hovered item, so arriving facts preserve its scroll position. */
   scrollId?: string;
-  /** A game-style header: the thing's icon and a line under its name. */
   icon?: string; subtitle?: string;
   countryFlag?: TooltipRow['countryFlag'];
-  /** Running text after the rows, such as an idea's description. */
   description?: string;
-  /** What assistive technology reads, when the rows shown were trimmed to fit the
-   * window (`fitTooltip`): the content in full. Else the content itself is read. */
   spoken?: string;
 }
 export function countryNameDetails(...countries: readonly ({ name?: string; nameFailure?: Error; nameDetail?: string } | null | undefined)[]): Pick<TooltipContent, 'detail'> {
@@ -53,8 +34,6 @@ export function countryNameDetails(...countries: readonly ({ name?: string; name
 
 export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number }
 
-/** The content as one line of text, for assistive technology (the tooltip layer is
- * not read out). */
 export function tooltipText(content: TooltipContent): string {
   if (content.spoken) return content.spoken;
   return [content.title, content.subtitle,
@@ -63,31 +42,24 @@ export function tooltipText(content: TooltipContent): string {
     .filter(Boolean).join('; ');
 }
 
-/** The tooltip layer's measures in pixels (charts.css), for fitting content to the
- * window before it is shown. */
-const WINDOW_MARGIN = 16; // max-height: calc(100vh - 16px)
-const BOX = 18; // 8 px padding above and below, and the borders
-const LINE = 17; // a 12 px row at line-height 1.4
-const SMALL_LINE = 16; // 11 px text at line-height 1.4
-const DIVIDER = 9; // 4 px margin, 4 px padding and the rule
-const GAP = 4; // under the header, and above a note or description
+const WINDOW_MARGIN = 16;
+const BOX = 18;
+const LINE = 17;
+const SMALL_LINE = 16;
+const DIVIDER = 9;
+const GAP = 4;
 const ICON = 40;
 const FLAG = 26;
-const TITLE_LINE = 19; // the 13 px title
-/** Characters of a row (label and value) to a line, and of small text, at the
- * tooltip's 320 px in a wide font (the interface font is the user's choice); a
- * longer one wraps. */
+const TITLE_LINE = 19;
 const ROW_CHARS = 34;
 const SMALL_CHARS = 42;
 
 const lines = (text: string, perLine: number) => Math.max(1, Math.ceil(text.length / perLine));
 
-/** One row's height in pixels: a short row keeps to one line, a long one wraps. */
 export function tooltipRowHeight(row: TooltipRow): number {
   return (row.short ? 1 : lines(`${row.label}  ${row.value ?? ''}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
 }
 
-/** About how tall a tooltip is, in pixels, as the layer draws it. */
 export function tooltipHeight(content: TooltipContent): number {
   const title = lines(content.title, ROW_CHARS) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, SMALL_CHARS) * SMALL_LINE : 0);
   const header = (content.countryFlag ? Math.max(FLAG, title) : content.icon ? Math.max(ICON, title) : title) + GAP;
@@ -97,27 +69,12 @@ export function tooltipHeight(content: TooltipContent): number {
   return BOX + header + rows + description + note;
 }
 
-/** Room for a tooltip in a window `height` pixels tall. */
 export const tooltipRoom = (height: number) => height - WINDOW_MARGIN;
 
-/** Fitting options: the last `keep` rows (such as a total) always show, and `more`
- * words the row that counts rows left out. */
-/** `keep` rows at the bottom always stay when a form is cut; `more` words the row
- * counting what was cut; `full` is the complete content assistive technology reads,
- * when even the fullest form shown is already trimmed (such as a list capped for the
- * eye); without it the first form is read. */
 export interface FitOptions { keep?: number; more?: (hidden: number) => string; full?: TooltipContent }
 
 const moreRows = (hidden: number) => `${hidden} more`;
 
-/** The fullest of `forms` that fits a window `height` pixels tall, so a tooltip is
- * never cut off by the window. Forms are tried in order, fullest first, and built
- * only as far as needed (pass a generator). When none fits, the last (the most
- * compact) is cut to fit: its last `keep` rows always stay, then as many rows from
- * the top as fit, with one row counting the rest; at a very short window its
- * description and then its note make room for them. Whatever is shown, `spoken`
- * holds `options.full`, else the first form, in full, so assistive technology still
- * reads everything. */
 export function fitTooltip(forms: Iterable<TooltipContent>, height: number, options: FitOptions = {}): TooltipContent {
   const room = tooltipRoom(height);
   let first: TooltipContent | undefined;
@@ -151,15 +108,10 @@ type Listener = () => void;
 let state: TooltipState | null = null;
 let key = '';
 const listeners = new Set<Listener>();
-// Counts each time the layer is taken or moved, which only an interaction does (content refreshed in
-// place does not), so a late reply can tell whether anything was pointed at since its action.
 let revision = 0;
 
 const emit = () => { for (const listener of listeners) listener(); };
 
-/** Shows content at a client position. Re-publishing identical content only moves it.
- * `contentKey` identifies the content cheaply (such as its hour) so it need not be
- * serialised every frame; without it the content itself is compared. */
 export function showTooltip(owner: string, content: TooltipContent, x: number, y: number, contentKey?: string): void {
   const nextKey = `${owner}\u0000${contentKey ?? JSON.stringify(content)}`;
   if (nextKey === key && state && state.x === x && state.y === y && (contentKey == null || state.content === content)) return;
@@ -173,8 +125,6 @@ export function showTooltip(owner: string, content: TooltipContent, x: number, y
   emit();
 }
 
-/** Wheel and page keys stay with the chart that owns a scrollable tooltip. The
- * layer clamps this position to its measured row viewport. */
 export function scrollTooltip(owner: string, delta: number, pages = false): boolean {
   if (state?.owner !== owner || !state.content.scrollable) return false;
   const scrollTop = Math.max(0, (state.scrollTop ?? 0) + delta * (pages ? state.scrollViewport ?? 0 : 1));
@@ -182,7 +132,6 @@ export function scrollTooltip(owner: string, delta: number, pages = false): bool
   return true;
 }
 
-/** Page keys move by the actual row viewport, without skipping unseen rows. */
 export function measureTooltipScroll(owner: string, height: number): void {
   if (state?.owner === owner && state.content.scrollable && state.scrollViewport !== height) {
     state = { ...state, scrollViewport: height };
@@ -190,8 +139,6 @@ export function measureTooltipScroll(owner: string, height: number): void {
   }
 }
 
-/** Refreshes current content without taking the layer from another owner. The
- * builder runs only while this owner's tooltip is still shown. */
 export function refreshTooltip(owner: string, build: () => TooltipContent | null, contentKey?: string): void {
   if (state?.owner !== owner) return;
   const { x, y } = state;
@@ -200,7 +147,6 @@ export function refreshTooltip(owner: string, build: () => TooltipContent | null
   else hideTooltip(owner);
 }
 
-/** Hides the tooltip if this owner is showing it. */
 export function hideTooltip(owner: string): void {
   if (state?.owner !== owner) return;
   state = null;

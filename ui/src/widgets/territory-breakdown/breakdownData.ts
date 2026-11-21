@@ -8,7 +8,6 @@ import type { TerritoryBreakdownReply } from './types';
 
 export type RegionalRule = 'controlled' | 'owned';
 
-/** A country's faction at an hour, or that it is not known (memberships not read, a roster incomplete, two factions). */
 export type Affiliation = { faction?: FactionGroup; unknown: boolean };
 
 export function affiliation(groups: CountryGroupReply, hour: number): (tag: string) => Affiliation {
@@ -29,7 +28,6 @@ export function affiliation(groups: CountryGroupReply, hour: number): (tag: stri
   };
 }
 
-/** The hours at which `affiliation` can answer differently, ascending: each span's first hour and the hour after its last. */
 export function affiliationEpochs(groups: CountryGroupReply): number[] {
   const hours = new Set<number>();
   const add = (span: { firstHour: number; lastHour: number }) => { hours.add(span.firstHour); hours.add(span.lastHour + 1); };
@@ -42,7 +40,6 @@ export function affiliationEpochs(groups: CountryGroupReply): number[] {
   return [...hours].sort((a, b) => a - b);
 }
 
-/** Which stretch between `epochs` holds `hour`: equal for two hours `affiliation` answers alike at. */
 export function epochOf(epochs: readonly number[], hour: number): number {
   let low = 0, high = epochs.length;
   while (low < high) {
@@ -57,8 +54,6 @@ export interface Amount { value: number; exact: bigint; denominator: bigint }
 const NOTHING: Amount = { value: 0, exact: 0n, denominator: 1n };
 const whole = (value: number) => BigInt(Math.trunc(value));
 
-/** The amount of row `key` the live values hold: states an exact fraction of whole states, the rest whole; nothing
- * where the table holds no row of the key any more; null where it is not known, never zero. */
 export function rowAmount(values: LiveValues<number>, key: string, measure: TerritoryMeasure): Amount | null {
   const at = liveKey(key, 'value');
   const amount = values.get(at);
@@ -73,12 +68,9 @@ export interface BreakdownLooks {
   country: (tag: string) => NonNullable<SunburstKey['countryFlag']> & { name: string };
   faction: (faction: FactionGroup) => string;
   colour: (id: string) => string | undefined;
-  /** Whether a holder is among the countries shown (none: land no country holds). */
   selected: (tag: string | null) => boolean;
 }
 
-/** The sunburst's items: the reply's rows (faction, country, strategic region) with their amounts from the live
- * values. A holding not known is an unknown value, never zero; land no country holds is "Unassigned territory". */
 export function breakdownItems(reply: TerritoryBreakdownReply, values: LiveValues<number>, measure: TerritoryMeasure,
   factionOf: (tag: string) => Affiliation, looks: BreakdownLooks): SunburstItem[] {
   const regions = new Map(reply.regions.map(region => [region.id, region]));
@@ -108,9 +100,6 @@ export function breakdownItems(reply: TerritoryBreakdownReply, values: LiveValue
 
 const pathKey = (item: SunburstItem) => item.path.map(key => key.id).join('\u0000');
 
-/** Fill's items: those at the hour shown, each with its amount at the view's end as its final (none there: a final of
- * zero), and those held only at the end at none now, so the whole is the end's and each slice fills toward it. A final
- * not known is said so, never zero. */
 export function withFinals(items: readonly SunburstItem[], ending: readonly SunburstItem[]): SunburstItem[] {
   const finals = new Map(ending.map(item => [pathKey(item), item]));
   const out: SunburstItem[] = items.map(item => {
@@ -127,7 +116,6 @@ const object = (value: unknown): value is Record<string, unknown> => value !== n
 const text = (value: unknown) => value === null || typeof value === 'string';
 const count = (value: unknown) => Number.isSafeInteger(value);
 
-/** The breakdown reply, checked whole: rows and names only; its live cells are checked where they are read. */
 export function validateBreakdownReply(value: unknown): TerritoryBreakdownReply {
   if (!object(value) || typeof value.measure !== 'string' || typeof value.rule !== 'string'
     || !Array.isArray(value.regions) || !value.regions.every(region => object(region) && count(region.id) && text(region.name) && text(region.missing))

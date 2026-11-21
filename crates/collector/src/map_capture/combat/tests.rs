@@ -166,7 +166,6 @@ impl Memory for World {
             output.copy_from_slice(&(self.state() as u64).to_le_bytes());
             true
         } else {
-            // Every native-looking span belongs to this independently authored fixture.
             unsafe { engine_native::memory::LiveMemory::new() }.copy(address, output)
         }
     }

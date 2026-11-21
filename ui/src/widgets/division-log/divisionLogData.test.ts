@@ -60,7 +60,6 @@ test('a place still being read shows as loading, never as an unnamed province; a
   const reading = { pending: true, failed: false }, answered = { pending: false, failed: false };
   assert.equal(divisionPlace(row, new Map(), reading), 'Loading place…');
   assert.equal(divisionPlace(row, new Map(), { pending: false, failed: true }), 'Place name couldn’t load');
-  // PB7: a place a landed reply left out stayed "Loading place…" for ever.
   assert.equal(divisionPlace(row, new Map(), answered), 'Unnamed province (the names reply left it out)', 'a place the reply left out is settled, never loading for ever');
   const key = JSON.stringify([42, 118]);
   assert.equal(divisionPlace(row, new Map([[key, { provinceId: 42, hour: 118, name: 'Brest', missing: null }]]), answered), 'Brest');

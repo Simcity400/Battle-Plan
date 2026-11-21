@@ -34,9 +34,6 @@ import type { CipherPair, DecryptionReply } from '../../generated/dashboard';
 const NO_ROWS: readonly MovingRow<CipherPair>[] = [];
 const PARAMS = {} as const;
 
-/** Every cipher being broken at the hour, as a race: a pushed panel at the head whose rows (pairs, order, broken or not,
- * each attempt's start and break) render only when they change; the progress, amounts and bonus countdowns are live
- * cells painted each frame. Pinned, a range's end or a hovered hour is asked for its hour. */
 export default function DecryptionWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -52,8 +49,6 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
     widget.countries.kind === 'all' ? undefined : selection.matches) : [], [data, options.order, options.countrySide, hour, selection, widget.countries.kind]);
   const items = useMemo(() => rows.map(item => ({ key: pairKey(item), item })), [rows]);
   const [visible, setVisible] = useState<readonly MovingRow<CipherPair>[]>(NO_ROWS);
-  // Names and flags load for the rows drawn, not every pair; pushed at the head, for every pair, so the race reordering
-  // or a row scrolling into view asks nothing and renders nothing.
   const pushed = head.read === 'followed';
   const tags = useMemo(() => tagsOf((pushed ? rows : visible.map(row => row.item)).flatMap(pair => [pair.owner, pair.target])), [pushed, rows, visible]);
   const label = useIntelLabels(runtime, widget, tags, hour, active, pushed);
@@ -106,8 +101,6 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   </div>;
 }
 
-/** One pair: its flags and target, the game's progress meter and its status. The meter, its percent, an unknown
- * threshold's amount and the bonus countdown are painted from `live` each frame, never rendered for. */
 function RaceCell({ pair, reply, live, owner, target, active, leaving, rowProps, descriptionId, content }: {
   pair: CipherPair; reply: DecryptionReply; live: Live<LiveValues<number>>; owner: ReturnType<CountryLabel> | null; target: ReturnType<CountryLabel> | null;
   active: boolean; leaving: boolean; rowProps: HTMLAttributes<HTMLDivElement> | undefined; descriptionId: string; content: TooltipContent | null;
@@ -136,8 +129,6 @@ function RaceCell({ pair, reply, live, owner, target, active, leaving, rowProps,
     };
     paint();
     return live.subscribe(paint);
-    // `view` reads only `live` and `pair`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, pair]);
   const now = view();
   const state = broken ? 'done' : active && pair.decrypting !== 0 && known ? 'live' : 'idle';

@@ -1,4 +1,3 @@
-//! Bounded immutable hour geometry, independent of counter and GUI history.
 
 use std::{collections::BTreeMap, convert::Infallible, io, sync::Arc};
 
@@ -8,7 +7,6 @@ use viewer_foundation::map::{memo::Recent, tables::core};
 
 use crate::map::counter_groups::{Bounds, Extents, GroupDefines};
 
-/// The state lookup and extents always come from the same ordered province projection.
 pub(super) struct Geometry {
     pub state_of: BTreeMap<u32, u32>,
     pub extents: Extents,
@@ -34,14 +32,9 @@ impl Geometry {
 }
 
 struct Key {
-    /// Keep row order and repetitions, including zero-state rows. In particular, a
-    /// repeated zero does not remove the preceding nonzero assignment.
     states: Vec<(u32, u32)>,
-    /// Retained allocations both namespace the content and prevent address reuse.
-    /// Editing either map with Arc::make_mut changes its identity while a key holds it.
     bounds: Arc<BTreeMap<u32, Bounds>>,
     region_of: Arc<BTreeMap<u32, u32>>,
-    /// These are the only scalar content inputs Extents::build reads.
     limits: [u32; 3],
 }
 
@@ -75,7 +68,6 @@ impl Memo {
         defines: &GroupDefines,
         map_width: f32,
     ) -> io::Result<Arc<Geometry>> {
-        // A previous complete hour must never stand in for a refused core read.
         let provinces = core::<tables::Provinces>(frame)?;
         let key = Key {
             states: provinces.iter().map(|row| (row.id, row.state)).collect(),

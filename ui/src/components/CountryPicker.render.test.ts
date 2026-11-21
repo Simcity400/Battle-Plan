@@ -101,7 +101,6 @@ test('renaming an open recording retains the top-bar and list flags without re-r
     fixture.reads.set('', { kind: 'absent' });
     await settle();
     assert.ok(texts(output).includes('Country name unavailable'), 'a day without a recorded name says so');
-    // The field's own label reads 'Country' too.
     assert.equal(texts(output).filter(text => text === 'Country').length, 2, 'a country with no name at the hour is listed by its catalogue entry');
   } finally { fixture.unmount(); await vite.close(); delete host.__pickerRename; }
 });

@@ -1,13 +1,9 @@
-//! The hour's country names, read through recorded queries
-//! ([`crate::triggers::inputs`]): each lookup records its country and the
-//! digest of what it returned.
 
 use crate::triggers::inputs::{Key, digest, digest_debug, query, query_debug};
 use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
 
 pub(crate) struct RecordedNames<'a>(pub(super) CountryNames<'a>);
 
-/// A recorded query of the hour's country names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Query {
@@ -15,7 +11,6 @@ pub enum Query {
     Name(u32),
     NameWith(u32, String),
     RulingGroup(u32),
-    /// Which of slot zero's names its reserved row had built.
     ReservedBuilt,
 }
 
@@ -52,7 +47,6 @@ impl RecordedNames<'_> {
         )
     }
 
-    /// The digest `query` reads in this hour's names.
     pub fn reread(&self, query: &Query) -> u64 {
         match query {
             Query::Operands(slot) => digest_debug(&self.0.operands(*slot)),

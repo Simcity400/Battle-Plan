@@ -1,11 +1,3 @@
-//! Nuclear impacts from the mirrors: the impacts listed at the head, located on their provinces'
-//! standstill anchors (today's per-hour product), and the impacts every step brought, in birth
-//! order, to start their effects.
-//!
-//! NuclearStrikes is a log: an impact is appended once, in the hour it lands, and forgotten an
-//! hour later, so at 24 hours a step nearly every impact is appended and forgotten inside a step.
-//! Each step hands every row it appended with its cells, and every impact of every hour the head
-//! passed starts its effect on the frame its step is applied.
 
 use super::{Carried, Settling, Dirty, Gpu, Inputs, Layer, Num, View};
 use crate::playhead_host::mirror::{Mirror, Mirrors, UNREAD_REASON};
@@ -21,47 +13,34 @@ struct Columns {
     nuke_type: Num<u32>,
 }
 
-/// Where a slot's row stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Placed {
     Empty,
-    /// Live, with no standstill anchor or painted box.
     Unplaced,
     At(usize),
 }
 
-/// A province's standstill unit-stack anchor and admission box, where its impact effects stand.
 pub type Place = Arc<dyn Fn(u32) -> Option<([f32; 3], [f32; 4])> + Send + Sync>;
 
-/// The strikes layer's arrays and what keeps them.
 pub struct Strikes {
     place: Place,
     columns: Option<Columns>,
-    /// Per slot of NuclearStrikes, its impact's place in `impacts`.
     placed: Vec<Placed>,
     impacts: Vec<Option<Impact>>,
     unplaced: usize,
-    /// Why the table is not whole at the head, in today's words.
     refused: Option<String>,
-    /// The impacts the steps applied since the last [`Strikes::take_events`], in birth order.
     events: Vec<Impact>,
-    /// The impacts of those steps that have no place.
     unplaced_events: usize,
     dirty: Dirty,
     whole: bool,
     status: Option<Option<Status>>,
     frame: u64,
-    /// Rows marked, and events collected, since it was made.
     marked: [usize; 2],
-    /// A compose happened: the next upload starts the head's impacts after clearing every slot.
     reset: bool,
-    /// The limitation notes of the refusals at the head, and the refusal and unplaced count they
-    /// were made for.
     notes: Vec<String>,
     noted: Option<(Option<String>, usize)>,
 }
 
-/// The table's rows as today reads them: none when unavailable, not recorded or in a gap.
 fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
@@ -88,12 +67,10 @@ impl Strikes {
         }
     }
 
-    /// The impact refusals at the head as today's limitation lines: one per refusal.
     pub fn notes(&self) -> &[String] {
         &self.notes
     }
 
-    /// The notes made again when the refusals they were made for moved.
     fn note(&mut self) {
         if self.noted.as_ref().is_some_and(|(refused, unplaced)| (refused, *unplaced) == (&self.refused, self.unplaced)) {
             return;
@@ -114,7 +91,6 @@ impl Strikes {
         |province| (self.place)(province)
     }
 
-    /// The impacts recorded at the head in recorded order, with today's refusals.
     pub fn product(&self) -> Impacts {
         let mut impacts: Vec<Impact> = self.impacts.iter().flatten().cloned().collect();
         impacts.sort_unstable_by_key(|impact| impact.id);
@@ -123,8 +99,6 @@ impl Strikes {
         Impacts { impacts, refused }
     }
 
-    /// The impacts the steps brought since the last call, in birth order, and how many of them
-    /// had no place: what the effect presentation starts.
     pub fn take_events(&mut self) -> (Vec<Impact>, usize) {
         (std::mem::take(&mut self.events), std::mem::take(&mut self.unplaced_events))
     }
@@ -133,7 +107,6 @@ impl Strikes {
         self.marked
     }
 
-    /// One slot's impact from the mirror.
     fn read(&mut self, slot: u32, mirrors: &Mirrors) {
         let columns = self.columns.expect("declared before it settles");
         let at = slot as usize;
@@ -166,8 +139,6 @@ impl Strikes {
         };
     }
 
-    /// The step's impacts in birth order: the rows it appended, by id, which increases through a
-    /// recording.
     fn collect(&mut self, changes: &Changes, columns: Columns) {
         let mut born: Vec<(u64, u32, u32)> = Vec::new();
         if let Some(log) = changes.log()
@@ -201,8 +172,6 @@ impl Strikes {
         }
     }
 
-    /// NuclearStrikes' change set of a step: the impacts it brought collected; a step that
-    /// appended or forgot rows has the few it lists read again.
     fn apply_changes(&mut self, changes: &Changes, mirrors: &Mirrors) {
         let Some(columns) = self.columns else { return };
         let Some(mirror) = mirrors.get(TableId::NuclearStrikes) else { return };
@@ -224,7 +193,6 @@ impl Strikes {
     }
 }
 
-/// Impacts and refusals that differ between two products, the first described.
 pub fn differ_impacts(a: &Impacts, b: &Impacts) -> (u64, Option<String>) {
     let mut differing = 0;
     let mut first = None;
@@ -316,8 +284,6 @@ impl Layer for Strikes {
         settled
     }
 
-    /// At a reset the head's impacts start with every slot cleared, as today's presentation of a
-    /// sought hour; then each step's impacts, in birth order.
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         use viewer_foundation::map::presentation::Continuity;
         if std::mem::take(&mut self.reset) {

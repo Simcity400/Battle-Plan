@@ -1,6 +1,3 @@
-//! Advisor definitions retained only under uninterrupted mutation observation.
-//! Double-buffered owned arenas let one changed character grow without moving
-//! later cache keys or forcing the rest of the roster to be reacquired.
 use super::*;
 use engine_allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
 #[cfg(any(test, feature = "advisor_profile"))]
@@ -56,8 +53,6 @@ impl Owned {
 struct Section {
     plan: crate::snapshot_plan::SnapshotPlan,
     geometry: (usize, u32),
-    /// Entries and plan come from a loaned census, whose plan traces only
-    /// sentinels; roster passes trace the roster, views and sentinels.
     census: bool,
     #[cfg(feature = "advisor_profile")]
     diagnostic: [u64; DIAGNOSTIC_SLOTS],
@@ -72,8 +67,6 @@ struct Section {
     charge: crate::raw_memory::Charge,
 }
 impl Section {
-    /// Every held character of this census-sourced section was certified
-    /// under a watched revision, so a quiet hour may carry it whole.
     fn carried_whole(&self, scope: (usize, usize)) -> bool {
         self.valid
             && self.census
@@ -147,7 +140,6 @@ impl Section {
     #[cfg(test)]
     pub fn decode(&self, captured: &mut Captured) {
         let rows = self.result.outcome.len();
-        // Decode owns these allocations. Acquisition never resizes an arena.
         if let Err(reason) = captured.reserve_advisors(AdvisorDemand {
             rows,
             bytes: self.result.bytes_len,
@@ -165,14 +157,10 @@ impl Section {
     }
     fn prepare(&mut self) {
         if self.census {
-            // Census passes read no country; certification applies the census's.
             self.plan.prepare();
             self.update_charge();
             return;
         }
-        // Country is a result value, never a selecting pointer or a validation
-        // predicate. Bind its exact read occurrence to the matching character;
-        // the remaining observations retain equality controls.
         let data_reads = self.plan.pending_reads().map(|reads| {
             let mut countries = reads.iter().enumerate().filter(|(_, read)| read.len == 4);
             let mut indexes = Vec::new();
@@ -190,8 +178,6 @@ impl Section {
         match data_reads {
             Some(Some(indexes)) => self.plan.prepare_with_data(&indexes),
             Some(None) => {
-                // A changed reader shape retains full comparisons. Never
-                // infer a binding from an address alone or omit an unknown read.
                 for entry in &mut self.current.entries {
                     entry.country_offset = None;
                 }
@@ -244,8 +230,6 @@ impl Section {
         let counted = Counted::new(memory);
         let same_source = || match &source {
             Source::Roster { geometry, .. } => !self.census && self.geometry == *geometry,
-            // The census plan traces only sentinels: every occurrence, identity
-            // and map header must repeat the ones these entries were built from.
             Source::Census { roles, range } => {
                 self.census
                     && self.current.entries.len() == range.len()
@@ -307,10 +291,6 @@ impl Section {
                         }
                     };
                     let rows = &mut self.current.rows[entry.rows.clone()];
-                    // Every role in this occurrence has the same country.
-                    // Avoid making unchanged row cache lines writable on
-                    // each validation pass (decode may have read them on
-                    // another core since the previous acquisition).
                     if rows.first().is_some_and(|row| row.country != country) {
                         for row in rows {
                             row.country = country;
@@ -368,14 +348,11 @@ impl Section {
         };
         let result = (|| {
             let mut index = 0;
-            // One occurrence: fresh revision, owned reuse or a fresh walk.
             macro_rules! observe {
                 ($character:expr, $map:expr) => {{
                     let character = $character;
                     let map = $map;
                     let previous = self.previous.entries.get(index);
-                    // A quiet whole-domain revision avoids one hash-table lookup
-                    // per unchanged character. Identity/controls remain fresh.
                     let revision = if reuse
                         && self.observation == before
                         && previous.is_some_and(|entry| {
@@ -444,9 +421,6 @@ impl Section {
                     } else {
                         batch.append(
                             |rows, bytes| {
-                                // Role payloads cannot select another character's
-                                // controls. Their future reuse is certified by the
-                                // watched revision, never by these omitted reads.
                                 let _payload = self.plan.untracked_reads();
                                 cadvisor::walk_definitions_entry_buffer(
                                     &map,
@@ -514,9 +488,6 @@ impl Section {
                     let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
                     let mut next = range.start;
                     while next < range.end && batch.active() {
-                        // Sentinels are gathered ahead of their maps. A header that
-                        // fails before its sentinel read, or whose sentinel lies
-                        // inside the character view, ends the batch.
                         let mut staged = 0;
                         while staged < SENTINEL_BATCH && next + staged < range.end {
                             let occurrence = roles.occurrence(next + staged);
@@ -600,14 +571,11 @@ impl Section {
     }
 }
 
-/// Where a section's occurrences come from.
 enum Source<'a> {
-    /// One roster vector, read with its character views.
     Roster {
         roster: ccharacter_manager::Roster,
         geometry: (usize, u32),
     },
-    /// Occurrences of the roster job's census loaned in this callback.
     Census {
         roles: census::Admitted<'a>,
         range: std::ops::Range<usize>,
@@ -623,15 +591,10 @@ struct ModifierSpan {
     tooltip_len: usize,
     tooltip_recorded: bool,
     tooltip_failure: Option<&'static str>,
-    /// Taken before this row's read; certifies holding it for a later hour.
     certificate: Option<RoleCertificate>,
-    /// Published from the held row without reading the role.
     carried: bool,
 }
 
-/// One advisor role's identity and its character's watch `(epoch, sequence)`
-/// ([`crate::character_changes`]). Equal certificates across hours prove that
-/// no hooked writer touched the character's roles in between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RoleCertificate {
     role: usize,
@@ -640,7 +603,6 @@ struct RoleCertificate {
     sequence: u64,
 }
 
-/// The certificates' source.
 #[derive(Clone, Copy)]
 pub(super) struct RoleObservation {
     changes: &'static dyn crate::character_changes::Changes,
@@ -661,8 +623,6 @@ impl std::fmt::Debug for RoleObservation {
     }
 }
 
-/// The previous complete capture's spans and bytes; its rows are carried
-/// positionally when their certificates repeat.
 #[derive(Debug, Default)]
 struct HeldModifiers {
     spans: Vec<ModifierSpan>,
@@ -737,21 +697,6 @@ pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
     );
 }
 
-/// Each role's cached modifier accumulator (`cadvisor::MODIFIER_ENTRIES`) and its tooltip key set
-/// (the accumulator's string set), outside the advisor-map certified definition program.
-///
-/// A role's held entries and keys are carried, without reading the role,
-/// when the previous complete capture read it at the same position with the
-/// same role and character pointers and the character's watch certificate
-/// ([`crate::character_changes`]) is unchanged. Every writer of both fields is
-/// observed there: the hooked `ADVISOR_MODIFIERS` rebuild alone clears and
-/// refills them. Trait addition, removal, hourly upgrades from combat
-/// experience, both factories and the role update reach that rebuild.
-/// The factories and role update then copy and add the role's own block in
-/// the same call; a factory's role is a new object. Coverage is described in
-/// [`engine_mutations::character_role_mutations`]. A role whose character is not
-/// observed (disabled, poisoned, refused registration, a running writer, a
-/// new epoch after a load, gap or recovery) is read afresh.
 #[derive(Debug)]
 struct Modifiers {
     spans: Vec<ModifierSpan>,
@@ -761,7 +706,6 @@ struct Modifiers {
     required_bytes: usize,
     shortfall: usize,
     failure: Option<&'static str>,
-    /// The latest capture finished without a failure.
     complete: bool,
     held: HeldModifiers,
     roles: RoleObservation,
@@ -770,8 +714,6 @@ struct Modifiers {
 }
 
 impl Modifiers {
-    /// The latest capture recorded every role's cache and keys under a
-    /// certificate, so a quiet hour may carry it whole.
     fn carried_whole(&self) -> bool {
         self.complete
             && self.shortfall == 0
@@ -816,10 +758,6 @@ impl Modifiers {
         });
     }
 
-    /// Hands the previous capture's arena to [`HeldModifiers`] when it
-    /// completed and certified a row; the held arena, as large, takes this
-    /// capture. Without a held arena that large (and no growth allowed)
-    /// nothing is held and every role is read.
     fn begin(&mut self) {
         self.held.rows = 0;
         let rows = self.required_rows.min(self.spans.len());
@@ -845,8 +783,6 @@ impl Modifiers {
         self.held.rows = rows;
     }
 
-    /// The previous capture's span at `index` when its certificate is
-    /// `certificate` and both of its parts were recorded.
     fn held_span(
         &self,
         index: usize,
@@ -884,7 +820,6 @@ impl Modifiers {
         {
             return;
         }
-        // A held arena in use takes a later capture: keep it as large.
         if !self.held.spans.is_empty()
             && (resize(&mut self.held.spans, rows, ModifierSpan::default()).is_err()
                 || resize(&mut self.held.bytes, bytes, 0).is_err())
@@ -903,8 +838,6 @@ impl Modifiers {
         self.capture_mode(memory, rows.map(|row| (None, row)))
     }
 
-    /// `rows` pairs each role with the character whose advisor map holds it,
-    /// when known; a role without one is read afresh.
     fn capture_mode<'a>(
         &mut self,
         memory: &impl Memory,
@@ -919,10 +852,7 @@ impl Modifiers {
         self.role_counts = Default::default();
         self.spans.fill(ModifierSpan::default());
         let result = (|| {
-            // Acquire every pre-existing numeric cache before appended keys
-            // can use the remaining byte arena.
             for (character, row) in rows.clone() {
-                // Registration precedes every read it certifies.
                 let certificate = character.and_then(|character| {
                     let (epoch, sequence) = self.roles.changes.sequence(character)?;
                     Some(RoleCertificate {
@@ -1049,34 +979,21 @@ impl Modifiers {
     }
 }
 
-// Independent historical/generated certificates keep generated roster growth
-/// from invalidating the large historical pass. Roots are acquired once first.
 #[derive(Debug)]
 pub(crate) struct Cache {
     sections: [Section; 2],
     modifiers: Modifiers,
     pub(super) result: ReadResult,
     pub(super) counts: Counts,
-    /// What lets a quiet hour carry the whole table ([`Quiet`]).
     quiet: Option<Quiet>,
-    /// Names the held table: a fresh value at every capture that does not
-    /// carry it whole ([`Self::carry_quiet`]), which leaves it unchanged.
     content: u64,
 }
 
-/// A content version no other cache has held.
 fn fresh_content() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A quiet hour carries every definition, modifier cache and tooltip key
-/// without a lookup or a read: the advisor family's and the character
-/// domain's quiet tokens equal the ones taken before the last complete
-/// capture, so neither family's observed writers ran, and the census has
-/// that capture's generation, so every occurrence, identity, country and map
-/// header is the one read then. That capture certified every character and
-/// role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Quiet {
     scope: (usize, usize),
@@ -1145,8 +1062,6 @@ impl Cache {
         }
     }
 
-    /// A quiet hour, after `quiet` matched: carry the table unless a writer
-    /// ran since `before`, which leaves the hour to a capture.
     fn carry_quiet(&mut self, observer: &dyn Changes, before: Option<(u64, u64)>) -> bool {
         if before != observer.quiet() {
             return false;
@@ -1171,7 +1086,6 @@ impl Cache {
         );
         true
     }
-    /// Tests: the roles' certificates come from `changes`.
     #[cfg(test)]
     pub(super) fn observe_roles(&mut self, changes: &'static dyn crate::character_changes::Changes) {
         self.modifiers.roles = RoleObservation::with(changes);
@@ -1190,8 +1104,6 @@ impl Cache {
             section.prepare();
         }
     }
-    /// A loaned census supplies each section's occurrences, identities,
-    /// countries and map headers; sentinels and role payloads stay fresh.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1211,7 +1123,6 @@ impl Cache {
     ) {
         self.counts = Counts::default();
         let counted = Counted::new(memory);
-        // Taken before any registration or read this capture certifies.
         let before = observer.quiet();
         let characters = self.modifiers.roles.changes.quiet();
         let scope = (context.base, context.game_state);
@@ -1340,7 +1251,6 @@ impl Cache {
                         .iter()
                         .enumerate()
                         .map(move |(index, row)| {
-                            // Entries list each character's rows in order.
                             while entries.get(entry).is_some_and(|e| e.rows.end <= index) {
                                 entry += 1;
                             }
@@ -1365,8 +1275,6 @@ impl Cache {
         }
         self.modifiers.update_charge();
         
-        // Everything this capture published was certified from the census,
-        // with no writer running: later quiet hours carry it.
         self.quiet = quiet.filter(|_| {
             matches!(self.result.outcome, Outcome::Rows { .. })
                 && self
@@ -1377,8 +1285,6 @@ impl Cache {
                 && before == observer.quiet()
         });
     }
-    /// A frame whose buffers hold this content's rows publishes them as
-    /// they are.
     pub fn decode(&self, captured: &mut Captured) {
         if let Some((_, result)) = captured
             .held
@@ -1479,9 +1385,6 @@ impl Cache {
     }
 }
 
-/// Hints follow their selecting pointer read. The prepared executor repeats
-/// them only after that pointer's exact control comparison succeeds. This
-/// overlaps independent character cache misses without changing read order.
 struct Prefetched<'a, M> {
     memory: &'a M,
     geometry: (usize, u32),
@@ -1520,8 +1423,6 @@ impl<M: Memory> Memory for Prefetched<'_, M> {
         outputs: &mut [&mut [u8]; N],
     ) -> usize {
         let completed = self.memory.copy_scattered(addresses, outputs);
-        // Recognize this reader's exact character view field batch. Role
-        // payload batches must not be interpreted as character map headers.
         if N == 7
             && completed == N
             && outputs[0].len() == 16

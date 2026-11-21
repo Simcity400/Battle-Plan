@@ -1,5 +1,3 @@
-//! Retained naval state. Save order is retained; anonymous sunk ships
-//! never acquire an invented identity from their name or equipment variant.
 
 use std::{collections::BTreeMap, io};
 
@@ -11,13 +9,9 @@ use super::{
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub accident_reports: BTreeMap<Vec<u8>, Vec<super::naval_accidents::Report>>,
-    /// The entire container is omitted precisely when its count is zero.
     pub sunk_convoys: Vec<SunkConvoy>,
-    /// `history.sunk_ship` entries are emitted in increasing vector position.
     pub sunk_ships: Vec<SunkShip>,
     pub results: BTreeMap<u64, NavalResult>,
-    /// Region keys are runtime roster slots, not authored IDs.
-    /// An absent region root remains distinct from a complete empty root.
     pub supremacy_regions: Option<BTreeMap<u32, SupremacyRegion>>,
     pub railways: Option<BTreeMap<u32, Railway>>,
     pub theatre_countries: Option<BTreeMap<Vec<u8>, TheatreCountry>>,
@@ -25,14 +19,10 @@ pub struct Pack {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Railway {
-    /// The neighbour-indexed array is serialized without sorting edges.
     pub levels: Vec<i32>,
-    /// Every signed-nonpositive cooldown is omitted, not only raw zero.
     pub cooldown: Option<i32>,
 }
 
-/// Province-definition neighbor order, derived independently from game content.
-/// The saved railway list uses this order, not the sorted live railway pairs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RailwayAdjacency {
     neighbors: Vec<Vec<u32>>,
@@ -48,8 +38,6 @@ impl RailwayAdjacency {
     }
 
     pub fn parse(definitions: &[u8], bitmap: &[u8], authored: Option<&[u8]>) -> io::Result<Self> {
-        // The reader refuses a record whose ID is not its position, which the engine's
-        // template roster and colour lookup need to agree on.
         let definitions = installed_content_core::map::read_definitions(definitions)?;
         let image = installed_content_core::map::decode_provinces_bmp(bitmap, &definitions)?;
         Self::derive(
@@ -59,14 +47,12 @@ impl RailwayAdjacency {
         )
     }
 
-    /// None is an unknown province; an empty slice is a defined empty vector.
     pub fn neighbors(&self, province: u32) -> Option<&[u32]> {
         (province != 0)
             .then(|| self.neighbors.get(province as usize).map(Vec::as_slice))
             .flatten()
     }
 
-    /// The game's ordered neighbours, shared with the movement map.
     fn derive(
         image: &installed_content_core::map::ProvinceImage,
         count: usize,
@@ -74,7 +60,6 @@ impl RailwayAdjacency {
     ) -> io::Result<Self> {
         use installed_content_core::movement::adjacency;
         let width = image.width as usize;
-        // The adjacency scan walks stored file rows, bottom first.
         let ids: Vec<u32> = image
             .province_ids
             .chunks(width.max(1))
@@ -99,12 +84,8 @@ pub struct LandTheatre {
     pub id: u64,
     pub volunteers_country: Option<Vec<u8>>,
     pub groups: Vec<LandGroup>,
-    /// Ordered stationed-unit references, with one `unit` per position.
     pub units: Vec<u64>,
-    /// One representative province per controller area, in area order.
     pub area_representatives: Vec<u32>,
-    /// Serialized orders-group/army-group definitions in this theatre, in the
-    /// order the writer emits them. Their theatre membership is the nesting.
     pub definitions: Vec<OrdersGroup>,
 }
 
@@ -132,47 +113,20 @@ pub struct AirGroup {
     pub wings: Vec<u64>,
 }
 
-/// One serialized orders-group or army-group definition inside a land theatre.
-///
-/// The writer emits a nonempty stored `name` outside checksum mode,
-/// then each `member={ unit={...} }` in
-/// member-vector order, then `leader_unit` only when the HQ provider is
-/// non-null, then `leader` only when the leader pointer is non-null, and always
-/// `field_marshal_group` and `motorization_level`. An army group additionally
-/// lists its ordered child `orders_group={ id type }` references.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrdersGroup {
     pub id: u64,
-    /// The name is gated on stored length, then written as its first-NUL
-    /// prefix. Emitted empty text therefore
-    /// differs from an omitted zero-length name.
     pub name: Option<Vec<u8>>,
-    /// The theatre writer emits its regular-group roster, then its army-group
-    /// roster, retaining each roster's stored order.
-    /// The enclosing block key selects the roster, independently of the raw
-    /// discriminator below.
     pub theatre_ordinal: u32,
-    /// Written unconditionally from the raw discriminator byte.
     pub is_army_group: bool,
-    /// Written unconditionally from the raw motorization byte.
     pub motorization_level: i32,
-    /// Omission proves the leader pointer is null.
     pub leader: Option<u64>,
-    /// Omission proves the HQ-provider pointer is null.
     pub leader_unit: Option<u64>,
-    /// Ordered member unit handles; both id spaces occur.
     pub members: Vec<u64>,
-    /// Ordered child orders-group references of an army group.
     pub children: Vec<u64>,
-    /// `withdrawing=yes` is written only for a nonzero withdrawal byte.
     pub withdrawing: bool,
-    /// Stored distance, emitted as `distance` only when >= 0.
-    /// Omission proves negativity, not the exact sentinel.
     pub distance: Option<i32>,
-    /// Stored HQ distance, written as `hq_distance_to_naval_invasion_source`
-    /// only when nonnegative.
     pub invasion_source_distance: Option<i32>,
-    /// Emitted only when nonnegative, independently of distance.
     pub hq_nearest_front: Option<i32>,
     pub target_template: Option<u64>,
     pub hq_deployed: bool,
@@ -237,7 +191,6 @@ fn railways(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Railway>>> {
                 .ok_or_else(|| invalid("saved railway info lacks province key"))?,
         )?;
         let fields = block(&entry.value)?;
-        // The integer array is written only for a positive count.
         let levels = field(fields, b"rail_way")?
             .map(block)
             .transpose()?
@@ -266,8 +219,6 @@ fn railways(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Railway>>> {
     Ok(Some(result))
 }
 
-/// Both definition kinds share one serializer, so they parse identically; the
-/// saved `field_marshal_group` boolean, not the block key, decides the kind.
 fn orders_groups(theatre: &[Item]) -> io::Result<Vec<OrdersGroup>> {
     let mut roster_ordinals = [0_u32; 2];
     theatre
@@ -303,8 +254,6 @@ fn orders_groups(theatre: &[Item]) -> io::Result<Vec<OrdersGroup>> {
                 .collect::<io::Result<Vec<_>>>()?;
             Ok(OrdersGroup {
                 id: object_id(fields)?,
-                // The name key is gated on stored length; emitted text
-                // keeps its first-NUL prefix even when that prefix is empty.
                 name: bytes(fields, b"name")?,
                 theatre_ordinal,
                 is_army_group: boolean(field(fields, b"field_marshal_group")?.ok_or_else(
@@ -367,9 +316,6 @@ fn orders_groups(theatre: &[Item]) -> io::Result<Vec<OrdersGroup>> {
         .collect()
 }
 
-/// The saved controller-area representatives of one theatre, in stored order.
-/// The theatre writer emits a single unkeyed id array; an absent field
-/// is an empty list and a keyed entry inside it is refused rather than skipped.
 fn area_representatives(fields: &[Item]) -> io::Result<Vec<u32>> {
     let mut representatives = Vec::new();
     for entry in fields
@@ -434,10 +380,6 @@ fn theatre_countries(
                         .filter(|entry| entry.key.as_deref() == Some(b"unit"))
                         .map(|entry| typed_handle(&entry.value))
                         .collect::<io::Result<_>>()?,
-                    // The writer emits one representative province per controller
-                    // area, not each area's membership, and
-                    // it writes them as one unkeyed `area={ id id ... }` array
-                    // rather than one `area=` field per area.
                     area_representatives: area_representatives(fields)?,
                     definitions: orders_groups(fields)?,
                 });
@@ -479,15 +421,11 @@ fn theatre_countries(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupremacyRegion {
-    /// Missing dominance is retained, including a possible inactive roster slot.
-    /// Values are omitted exactly when the stored values map is empty.
     pub values: Option<Vec<SupremacyValue>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupremacyValue {
-    /// Pairs of country tag and dominance values. Equal tags are
-    /// retained because distinct raw reference aliases can serialize equally.
     pub country: Vec<u8>,
     pub current: Decimal,
     pub base_target: Decimal,
@@ -569,25 +507,19 @@ pub struct SunkConvoy {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SunkShip {
-    /// Both names are omitted in one writer mode; omission proves no bytes.
     pub ship_name: Option<Vec<u8>>,
     pub attribution_name: Option<Vec<u8>>,
     pub victim_country: Vec<u8>,
     pub attacker_country: Vec<u8>,
     pub sink_date: GameDate,
-    /// Serialized class token spellings, independent of definition name bytes.
     pub class: Vec<u8>,
     pub attribution_class: Vec<u8>,
     pub model_level: i32,
-    /// Omitted for null or unresolved references, not necessarily raw zero.
     pub victim_equipment_variant: Option<u64>,
     pub damage_source_reference: Option<u64>,
-    /// Location is emitted exactly when the province pointer is nonnull.
     pub province: Option<u32>,
-    /// The unconditional battle reference may have both words zero.
     pub battle: u64,
     pub cause_record: bool,
-    /// `assist=yes` is emitted only when the flag is set.
     pub assisted_kill: bool,
 }
 
@@ -606,11 +538,8 @@ pub struct NavalResult {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResultSide {
-    /// Members are emitted as repeated ship blocks in stored order.
-    /// These handles can identify ships or convoys.
     pub members: Vec<ResultMember>,
     pub details: super::combat_details::ResultSideDetails,
-    /// Country references are copied to tags without sorting.
     pub countries: Vec<Vec<u8>>,
 }
 
@@ -618,8 +547,6 @@ pub struct ResultSide {
 pub struct ResultMember {
     pub id: u64,
     pub details: super::combat_details::NavalMemberDetails,
-    /// The snapshot attribution is serialized only if nonempty and writer mode
-    /// permits. Its exact byte length is the recorded presence value.
     pub sunk_by: Option<Vec<u8>>,
 }
 
@@ -638,7 +565,6 @@ fn required_boolean(items: &[Item], key: &[u8]) -> io::Result<bool> {
 
 fn country_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     let Some(value) = field(items, key)? else {
-        // These lists are emitted iff their count is nonzero.
         return Ok(Vec::new());
     };
     block(value)?
@@ -673,7 +599,6 @@ pub(crate) fn sunk_ship(items: &[Item]) -> io::Result<SunkShip> {
         victim_equipment_variant: field(items, b"equipment_variant")?
             .map(typed_handle)
             .transpose()?,
-        // The saved key is literally air_wing, regardless of caller type.
         damage_source_reference: field(items, b"air_wing")?.map(typed_handle).transpose()?,
         province: field(items, b"location")?
             .map(|value| integer::<i32>(scalar(value)?).map(|value| value as u32))

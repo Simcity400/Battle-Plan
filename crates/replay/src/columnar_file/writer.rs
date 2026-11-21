@@ -10,21 +10,16 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 
 static WRITER: Holder = Holder::new("zstd: columnar writer");
 
-/// Stored bytes a writer wrote, by what they hold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Written {
-    /// Table parts' frames and restores' chunks, as the unit's encoder handed them.
     pub frames: u64,
     pub clock: u64,
     pub strings: u64,
     pub summaries: u64,
-    /// Block pages, span directories and indexes, run directories.
     pub pages: u64,
-    /// Roots.
     pub roots: u64,
 }
 
-/// The run being written.
 struct Run {
     run: u32,
     branch: u64,
@@ -33,14 +28,11 @@ struct Run {
     hours: u32,
     chain: [u8; 32],
     spans: Vec<SpanPages>,
-    /// The open span's block pages and the blocks they hold.
     open: Vec<Extent>,
     blocks: Vec<Block>,
-    /// The summary pieces covering its last span when not whole, given as it ends.
     tail: Vec<(u32, Extent)>,
 }
 
-/// The run under way, as its resume state names it ([`FileWriter::open_run`]).
 #[derive(Clone, Copy, Debug)]
 pub struct RunCursor {
     pub run: u32,
@@ -49,54 +41,37 @@ pub struct RunCursor {
     pub branch: u64,
 }
 
-/// Where a writer takes up a file it wrote before ([`FileWriter::resume`]): the root it takes up
-/// and, when its last run may go on, that run.
 pub struct Resumed {
     pub root: Root,
-    /// That root's revision: its number, the file's length through its footer and its digest.
     pub at: replay_columnar::container::Revision,
-    /// The branch and hour of the last hour the file holds.
     pub last: Option<(u64, i32)>,
     pub open: Option<OpenRun>,
 }
 
-/// A run a writer takes up: its directory and its open span's blocks.
 pub struct OpenRun {
     pub run: u32,
     pub directory: RunDirectory,
     pub blocks: Vec<Block>,
 }
 
-/// What a block's end gives the file besides the parts its encoder wrote: its clock, the strings
-/// its hours appended, each summarized table's piece of it and, when it closes its span, the
-/// span's pieces of the levels above (table, level, piece).
 pub struct BlockEnd<'a> {
     pub clock: &'a [u8],
-    /// `count | per string: length | bytes`, and the first string's id.
     pub strings: (&'a [u8], u32),
     pub summaries: Vec<(u32, Vec<u8>)>,
     pub span: Vec<(u32, u8, Vec<u8>)>,
 }
 
-/// Writes a columnar recording's world log into its container: the frames of the recorder's
-/// unit as its encoder hands them, and the pages naming them.
 pub struct FileWriter<W: Write + Seek + Read> {
     container: ContainerWriter<W>,
-    /// Its own frames' context, used only while no encoder's thread is given.
     compressor: Compressor,
     frames: Option<replay_columnar::unit::FrameCompressor>,
     tables: usize,
     run: Option<Run>,
-    /// The finished runs' directories.
     runs: Vec<Extent>,
-    /// The encoder's page of the block under way, waiting for the block's end.
     page: Option<BlockPage>,
-    /// A write failed partway: what the file holds no longer matches what was given.
     poisoned: bool,
     written: Written,
-    /// The branch and hour of the last hour written.
     last: Option<(u64, i32)>,
-    /// Changes each block's page before it is written, for tests of damage.
     #[cfg(any(test, feature = "test-support"))]
     tamper: Option<Box<dyn Fn(&mut Block) + Send>>,
 }
@@ -131,7 +106,6 @@ impl<W: Write + Seek + Read> PartSink for FileWriter<W> {
 }
 
 impl<W: Write + Seek + Read> FileWriter<W> {
-    /// Starts the file at its header, its revisions' resume state kept in `state`.
     pub fn create(
         file: W,
         identity: envelope::Identity,
@@ -162,17 +136,12 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         })
     }
 
-    /// A writer changing each block's page with `tamper` before it is written, for tests of
-    /// damage.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_tamper(mut self, tamper: impl Fn(&mut Block) + Send + 'static) -> Self {
         self.tamper = Some(Box::new(tamper));
         self
     }
 
-    /// Takes up `file` after the revision `resumed` names, its resume state kept in `state`: what
-    /// follows the revision is cut by the caller, and its last run goes on when `resumed` holds it
-    /// open.
     pub fn resume(file: W, resumed: Resumed, tables: usize, settings: Settings, state: Option<StateFile>) -> io::Result<Self> {
         let mut runs = match resumed.root.open(SectionKey::WORLD_LOG, schema::WORLD_LOG)? {
             Some(section) if section.frozen.is_empty() => engine_allocation::copy_vec(&section.open)?,
@@ -218,18 +187,15 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         }
     }
 
-    /// `result`, ending the file when it failed partway.
     fn poison<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
         self.poisoned |= result.is_err();
         result
     }
 
-    /// Whether a run is under way.
     pub fn running(&self) -> bool {
         self.run.is_some()
     }
 
-    /// The run under way once it holds an hour.
     pub fn open_run(&self) -> Option<RunCursor> {
         self.run.as_ref().filter(|run| run.hours > 0).map(|run| RunCursor {
             run: run.run,
@@ -239,44 +205,35 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         })
     }
 
-    /// The bytes it holds past the file: the open span's pages.
     pub fn held_bytes(&self) -> usize {
         self.run.as_ref().map_or(0, |run| run.blocks.iter().map(block_bytes).sum())
     }
 
-    /// The stored bytes written so far.
     pub fn written(&self) -> Written {
         self.written
     }
 
-    /// The stored bytes its container wrote of its own.
     pub fn framing(&self) -> Framing {
         self.container.framing()
     }
 
-    /// The file it writes, for tests reading it between revisions.
     #[cfg(any(test, feature = "test-support"))]
     pub fn file_mut(&mut self) -> &mut W {
         self.container.file_mut()
     }
 
-    /// The branch and hour of the last hour written.
     pub fn last(&self) -> Option<(u64, i32)> {
         self.last
     }
 
-    /// The newest saved revision of the file it writes.
     pub fn saved(&self) -> Option<replay_columnar::container::Revision> {
         self.container.saved()
     }
 
-    /// The container it writes into: whoever owns the recording declares its other sections
-    /// there, and puts and names their extents in the revision under way.
     pub fn container(&mut self) -> &mut ContainerWriter<W> {
         &mut self.container
     }
 
-    /// Starts a run of `branch` at `first_hour`, finishing the run under way first.
     pub fn start_run(&mut self, branch: u64, epoch: u8, first_hour: i32) -> io::Result<()> {
         self.usable()?;
         self.finish_run()?;
@@ -296,7 +253,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(())
     }
 
-    /// `raw` as one frame, written: what names it.
     fn frame_of(&mut self, raw: &[u8]) -> io::Result<FrameEntry> {
         let stored = self.compressed(raw)?;
         let run = self.run.as_ref().map_or(0, |run| run.run);
@@ -312,8 +268,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         })
     }
 
-    /// Its frames are compressed from now on by the unit encoder's thread, `frames`: one context
-    /// for the whole recording.
     pub fn compress_on(&mut self, frames: replay_columnar::unit::FrameCompressor) {
         self.frames = Some(frames);
     }
@@ -332,7 +286,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(stored)
     }
 
-    /// One extent of `raw` compressed as one frame, described by its envelope.
     fn extent(&mut self, kind: envelope::Kind, tags: Tags, raw: &[u8]) -> io::Result<Extent> {
         let stored = self.compressed(raw)?;
         let extent = self.container.put(kind, tags, raw.len() as u64, &stored)?;
@@ -340,9 +293,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(extent)
     }
 
-    /// The block under way ends: its page, which its encoder gave ([`PartSink::block`]), written
-    /// with `end`; its span's pages once it closes the span. The block's head as written, and
-    /// where its span's higher summary pieces went (table, level, extent).
     #[allow(clippy::type_complexity, reason = "the block's head and its span's pieces, returned together")]
     pub fn end_block(&mut self, end: BlockEnd<'_>) -> io::Result<(BlockHead, Vec<(u32, u8, Extent)>)> {
         self.usable()?;
@@ -350,7 +300,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         self.poison(result)
     }
 
-    /// Table `table`'s summary pieces of the open span's blocks, read back in order.
     pub fn span_summaries(&mut self, table: u32) -> io::Result<Vec<Vec<u8>>> {
         let extents: Vec<Extent> = match &self.run {
             Some(run) => run.blocks.iter().filter_map(|block| block.tables.get(table as usize).and_then(|entry| entry.summary)).collect(),
@@ -359,8 +308,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         extents.iter().map(|extent| self.summary(extent.offset, extent.stored, extent.digest)).collect()
     }
 
-    /// The summary piece of `stored` bytes the file holds at `offset`, read back and checked
-    /// against its `digest`.
     pub fn summary(&mut self, offset: u64, stored: u64, digest: [u8; 16]) -> io::Result<Vec<u8>> {
         let mut out = Vec::new();
         let stored = u32::try_from(stored).map_err(|_| invalid("A summary piece passes 2^32 bytes"))?;
@@ -429,9 +376,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok((head, span))
     }
 
-    /// Writes the open span's pages: every table's row with its higher summary pieces
-    /// `summaries` (table, level, piece), and its directory; and closes the span. Where the pieces
-    /// went.
     fn close_span(&mut self, summaries: &[(u32, u8, Vec<u8>)]) -> io::Result<Vec<(u32, u8, Extent)>> {
         let run = self.run.as_mut().expect("a run under way");
         let index = run.run;
@@ -473,8 +417,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(written)
     }
 
-    /// Puts `pieces` (table, piece), each covering the run's last span, which is not whole, for
-    /// its directory to name when the run ends.
     pub fn tail(&mut self, pieces: &[(u32, Vec<u8>)]) -> io::Result<()> {
         self.usable()?;
         let Some(run) = self.run.as_ref() else { return Ok(()) };
@@ -491,13 +433,11 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         Ok(())
     }
 
-    /// Ends the run under way with its directory.
     pub fn finish_run(&mut self) -> io::Result<()> {
         self.usable()?;
         if self.page.is_some() {
             return Err(invalid("A run ends once its last block's page was written"));
         }
-        // A run that took no hour wrote nothing and is none.
         let Some(run) = self.run.take().filter(|run| run.hours > 0) else {
             return Ok(());
         };
@@ -521,10 +461,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         self.extent(envelope::Kind::RunDirectory, Tags { run: run.run, ..Tags::default() }, &directory)
     }
 
-    /// Publishes everything written and named so far as the next revision, saved or not: the
-    /// finished runs' directories and the directory of the run under way, with resume state
-    /// `state`. `sync` makes what is written durable before what names it. A failure leaves the
-    /// file at its last published revision.
     pub fn revise_runs(
         &mut self,
         state: Option<&[StateEntry]>,
@@ -550,9 +486,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
         self.poison(result)
     }
 
-    /// Finishes the run under way and publishes the last revision, saved or not: it names no
-    /// resume state, and the state file goes. `final_state` is kept as
-    /// [`ContainerWriter::finish`] keeps it. The file, the revision and what was stored.
     pub fn finish_runs(
         mut self,
         final_state: &[StateEntry],
@@ -571,8 +504,6 @@ impl<W: Write + Seek + Read> FileWriter<W> {
     }
 }
 
-/// A block's appended strings, `count | per string: length | bytes`, cut into chunks of that
-/// form of about [`STRING_CHUNK`] raw bytes: each with its first string's id.
 fn string_chunks(raw: &[u8], first: u32) -> io::Result<Vec<(u32, Vec<u8>)>> {
     let mut reader = replay_columnar::leaf::Reader::new(raw);
     let count = reader.count()?;
@@ -605,7 +536,6 @@ fn string_chunks(raw: &[u8], first: u32) -> io::Result<Vec<(u32, Vec<u8>)>> {
     Ok(chunks)
 }
 
-/// Roughly what a block held in the open span takes.
 fn block_bytes(block: &Block) -> usize {
     block
         .tables
@@ -623,8 +553,6 @@ fn block_bytes(block: &Block) -> usize {
 mod tests {
     use super::*;
 
-    /// A block's strings past a chunk's size are cut at string boundaries into chunks of about
-    /// that size, each naming its first id; read in order they are the block's strings.
     #[test]
     fn a_block_s_strings_are_cut_into_chunks_that_name_their_first_id() {
         let texts: Vec<Vec<u8>> = (0..3_000_u32).map(|at| vec![(at % 251) as u8; 700 + (at as usize % 900)]).collect();

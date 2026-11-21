@@ -45,7 +45,6 @@ const NO_TAGS: readonly string[] = [];
 const rowKey = (row: ApmSeries) => row.id;
 const FILL = { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, minWidth: 0, height: '100%' } as const;
 
-/** A tiled line's bin holding `hour`: its value is a rate over the bin. */
 function tiledBin(summary: ChartSummary | undefined, hour: number): ChartBucket | null {
   const binHours = summary?.tiles?.binHours;
   if (!summary || !binHours) return null;
@@ -56,7 +55,6 @@ function tiledBin(summary: ChartSummary | undefined, hour: number): ChartBucket 
 export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const { graph, runtime, active, widget, setOption, onDiagnostics } = props;
   const [view, setView] = useChangedState<{ identity: string; from: number; to: number; width: number } | null>(null);
-  // Whether the head is followed, as the last commit saw it: while it is, nothing is asked by the clock.
   const [headFollowed, setHeadFollowed] = useState(false);
   const query = useApm(props, graph, view, headFollowed);
   const { data, track, options, first, last } = query;
@@ -67,14 +65,12 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const players = options.group === 'player';
   const following = widget.time.mode === 'follow';
 
-  // The values at the head: a followed value computed from the command index, pushed when it differs. Which rows it
-  // holds is structure; every number is painted.
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headKey = query.head ? JSON.stringify(query.head) : null;
   const headQuery = useMemo(() => following && active && track && query.head ? apmHeadQuery(query.head, track.branch, TRAILING_HOURS) : null,
-    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, headKey]);
   const woken = useMemo(() => new Set<() => void>(), []);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => {
@@ -84,16 +80,13 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const headEntry = followsHead(followed) ? followed.entry : null;
   useLayoutEffect(() => setHeadFollowed(headEntry !== null), [headEntry]);
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
-  // The table's rows are the answer's; the graph's lines are the branch's series, so only the table renders for them.
   useHeadHour(runtime.clock, headEntry !== null && !graph, () => apmHeadStructure(entryRef.current?.answer), woken);
   const headStructure = headEntry && !graph ? apmHeadStructure(headEntry.answer) : null;
-  const headRows = useMemo(() => headEntry ? apmHeadRows(headEntry.answer) : null, [headEntry, headStructure]); // eslint-disable-line react-hooks/exhaustive-deps
+  const headRows = useMemo(() => headEntry ? apmHeadRows(headEntry.answer) : null, [headEntry, headStructure]);
   const headRefused = headEntry?.answer?.kind === 'notRecorded' ? headEntry.answer.reason : null;
   const live = useMemo(() => store && headEntry ? liveFollowed(store, headEntry, entry => apmLiveValues(entry.answer)) : undefined, [store, headEntry]);
-  /** A row's value now: the newest followed answer's while followed. */
   const current = (row: ApmSeries): ApmValue => (entryRef.current ? apmHeadRows(entryRef.current.answer).find(held => held.id === row.id)?.summary : undefined) ?? row.summary;
 
-  // The graph following the head draws every series of the branch from tiles on the absolute grid, asked once each.
   const tiled = graph && headEntry !== null;
   const branchSeries = useProduct<ApmReply>(runtime.client, tiled && track && query.head ? { sourceId: track.source.id, revision: track.source.revision, product: 'player-apm',
     params: { ...query.head, registry: false, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour, buckets: 1 } } : null, active, validateApm, track?.source);
@@ -110,7 +103,6 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const [visibleRows, setVisibleRows] = useState<readonly ApmSeries[]>(NO_ROWS);
   const wanted = useMemo(() => visibleRows.flatMap(row => row.tag ? [{ tag: row.tag, hour: row.hour }] : []), [visibleRows]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !graph);
-  // The branch's series name their holders at each one's last hour; at the head, at the hour shown, read where one last changed.
   const graphTags = useMemo(() => tiled && !players ? rows.flatMap(row => row.tag ? [row.tag] : []) : NO_TAGS, [tiled, players, rows]);
   const identityHour = useIdentityHour(runtime.client, track, graphTags, runtime.clock, active && tiled && !players,
     hour => track ? branchHour(track.branch, hour + track.axisOffset) : null);
@@ -174,8 +166,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
     setView(previous => previous && previous.identity === value.identity && previous.from === value.from && previous.to === value.to && previous.width === value.width ? previous : value);
   }, [query.identity, tiled, tileView, pausedView]);
   const liveHead = useMemo(() => following && track ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
-    [following, runtime.clock, track?.axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Paused or after a seek the graph ends at the head; while playing this holds null, so no frame commits.
+    [following, runtime.clock, track?.axisOffset]);
   const pausedHead = useAtHead(runtime.clock, graph && following, hour => runtime.clock.getSnapshot().playing ? null : Math.floor(hour));
   const stillView = track && first != null && last != null ? apmPausedView(pausedHead === null ? null : pausedHead + track.axisOffset, first, last, TRAILING_HOURS) : null;
   const columns = useMemo<readonly TableColumn<ApmSeries>[]>(() => [
@@ -196,7 +187,6 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
       value: row => row.summary.unpausedMinutes, render: row => apmText(row.summary.unpausedMinutes), paint: value => apmText(Number(value)) },
   ], [players, paused, labels, names]);
   useDiagnostics(onDiagnostics, headEntry ? branchSeries.data?.warnings ?? [] : data?.warnings ?? []);
-  // Asked by the fallback's clock or for a pinned time: the last hour the shown reply answers, told when it lands.
   const showing = data && !query.error && (!players || registry.data) ? query.answered?.lastHour ?? null : null;
   useEffect(() => { if (!headEntry) shown(showing); }, [shown, showing, headEntry]);
 

@@ -1,10 +1,3 @@
-//! Every country's aces at an hour (`air-aces`) and their portraits (`air-ace-portraits`):
-//! rows-at-an-hour products ([`AtHour`]) over AirAces and what its rows name (owner and killer
-//! countries, the assigned wing's name and aircraft). Aces have no creation or death timestamp:
-//! the first hour an ace's row held a value is an upper bound of when it became one, and a death
-//! is dated (last alive read, first dead read], unknown for an ace first seen dead. Those dates
-//! are read once per timeline from the `alive` cell's runs and kept while the recording is open
-//! ([`history`]); a reply reads them, never the hours.
 
 use super::LoadContext;
 use crate::{
@@ -56,12 +49,12 @@ pub struct AirAcesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceDeath {
-    /// The last read that saw it alive; null when it was first seen dead.
+    #[doc = " The last read that saw it alive; null when it was first seen dead."]
     pub last_alive: Option<i32>,
-    /// The first read that saw it dead after one that saw it alive.
+    #[doc = " The first read that saw it dead after one that saw it alive."]
     pub by_hour: Option<i32>,
     pub killer_ace: Option<String>,
-    /// The killer's name when the killer is on the roster at the hour.
+    #[doc = " The killer's name when the killer is on the roster at the hour."]
     pub killer_name: Option<String>,
     pub killer_tag: Option<String>,
 }
@@ -72,7 +65,7 @@ pub struct AirAceDeath {
 pub struct AirAceAircraft {
     pub id: String,
     pub name: Option<String>,
-    /// Why the name is not shown, without one.
+    #[doc = " Why the name is not shown, without one."]
     pub missing: Option<String>,
 }
 
@@ -84,13 +77,13 @@ pub struct AirAce {
     pub tag: Option<String>,
     pub name: Option<String>,
     pub callsign: Option<String>,
-    /// The assigned wing's handle; null without one.
+    #[doc = " The assigned wing's handle; null without one."]
     pub wing: Option<String>,
     pub wing_name: Option<String>,
-    /// The wing's aircraft in its equipment order; null when not recorded.
+    #[doc = " The wing's aircraft in its equipment order; null when not recorded."]
     pub aircraft: Option<Vec<AirAceAircraft>>,
     pub alive: bool,
-    /// The first hour the timeline held its row: an upper bound of when it became an ace.
+    #[doc = " The first hour the timeline held its row: an upper bound of when it became an ace."]
     pub first_seen: Option<i32>,
     pub death: Option<AirAceDeath>,
 }
@@ -99,9 +92,9 @@ pub struct AirAce {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcesReply {
-    /// The hour of the read the roster holds; none when not known.
+    #[doc = " The hour of the read the roster holds; none when not known."]
     pub read_hour: Option<i32>,
-    /// Why the roster is not shown at the hour, when it is not.
+    #[doc = " Why the roster is not shown at the hour, when it is not."]
     pub missing: Option<String>,
     pub aces: Vec<AirAce>,
     pub warnings: Vec<String>,
@@ -135,7 +128,6 @@ pub struct AirAcePortraitReply {
 
 dashboard_base::reply_warnings!(AirAcePortraitReply);
 
-/// One death an ace's `alive` cell shows: the first hour it held dead, and the interval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Death {
     pub from: i32,
@@ -143,7 +135,6 @@ pub(crate) struct Death {
     pub dead_by: Option<i32>,
 }
 
-/// What an ace's history on a timeline says.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Dates {
     pub first_seen: Option<i32>,
@@ -151,13 +142,11 @@ pub(crate) struct Dates {
 }
 
 impl Dates {
-    /// The death `hour` falls in, for an ace dead at it.
     fn death_at(&self, hour: i32) -> Option<Death> {
         self.deaths.iter().rev().find(|death| death.from <= hour).copied()
     }
 }
 
-/// One ace's `alive` cell folded run by run in hour order.
 #[derive(Default)]
 pub(crate) struct Fold {
     pub dates: Dates,
@@ -166,8 +155,6 @@ pub(crate) struct Fold {
 }
 
 impl Fold {
-    /// A run of the cell from `first` through `last`: none where the row was not live or the
-    /// table not available, which dates nothing; `last_read` the last read of the table in it.
     pub(crate) fn run(&mut self, first: i32, alive: Option<i64>, last_read: Option<i32>) {
         let Some(alive) = alive else { return };
         self.dates.first_seen.get_or_insert(first);
@@ -183,17 +170,14 @@ impl Fold {
     }
 }
 
-/// The last hour of `reads` (ascending runs) from `first` through `last`.
 pub(crate) fn last_read(reads: &[(i32, i32)], first: i32, last: i32) -> Option<i32> {
     let at = reads.partition_point(|run| run.0 <= last).checked_sub(1)?;
     let hour = reads[at].1.min(last);
     (hour >= first).then_some(hour)
 }
 
-/// Each canonical slot's holders over a timeline: tag and hours.
 type Slots = HashMap<u32, Vec<(String, i32, i32)>>;
 
-/// The aces' dates on one timeline, and who held each canonical slot.
 pub struct History {
     aces: HashMap<u64, Dates>,
     slots: Slots,
@@ -206,7 +190,6 @@ impl History {
     }
 }
 
-/// Timeline `query`'s history of the aces: each stretch's `alive` runs and read hours, folded.
 fn build(query: &dashboard_query::Query<'_>) -> io::Result<History> {
     let recording = query.replay.recording();
     let alive = dashboard_declare::field(TableId::AirAces, "alive")?;
@@ -228,8 +211,6 @@ fn build(query: &dashboard_query::Query<'_>) -> io::Result<History> {
 #[derive(Default)]
 struct Histories(HashMap<u64, Arc<History>>);
 
-/// The aces' history of timeline `branch` of the recording `replay` whose index is `index`, read
-/// once and kept in `held`.
 fn held_history(held: &Mutex<Histories>, replay: &Replay, index: &Index, branch: u64) -> io::Result<Arc<History>> {
     if let Some(found) = held.lock().unwrap_or_else(PoisonError::into_inner).0.get(&branch) {
         return Ok(Arc::clone(found));
@@ -239,12 +220,10 @@ fn held_history(held: &Mutex<Histories>, replay: &Replay, index: &Index, branch:
     Ok(made)
 }
 
-/// The aces' history of `source`'s timeline `branch`, read once while the recording is open.
 pub fn history(source: &Source, branch: u64) -> io::Result<Arc<History>> {
     held_history(&source.state::<Histories>(), source.replay_ref(), &crate::answer::index(source), branch)
 }
 
-/// What a reply reads beside its frame: the recorded content, and the timelines' histories.
 pub struct Context {
     cat: Result<Arc<Catalogue>, String>,
     replay: Arc<Replay>,
@@ -282,7 +261,6 @@ fn text(bytes: &[u8], identity: &str, refusals: &mut Refusals) -> Option<String>
     catalogue::display_text(bytes).map_err(|reason| refusals.note(reason, identity)).ok()
 }
 
-/// An ace's name by the game's plain `ACE_FULL_NAME(NAME, SUR)`; its callsign is its own field.
 fn ace_name(row: &AirAceRow, cat: Option<&Catalogue>, refusals: &mut Refusals) -> Option<String> {
     let identity = row.id.to_string();
     let Some(cat) = cat else {
@@ -298,13 +276,10 @@ fn ace_name(row: &AirAceRow, cat: Option<&Catalogue>, refusals: &mut Refusals) -
     cat.localised_with("ACE_FULL_NAME", &[("NAME", Argument::Text(&first)), ("SUR", Argument::Text(&surname))], View::Plain)
 }
 
-/// The assigned wings of `rows`.
 fn assigned(rows: &[AirAceRow]) -> BTreeSet<u64> {
     rows.iter().map(|row| row.assigned_wing).filter(|wing| *wing != 0).collect()
 }
 
-/// Each assigned wing's variants in equipment order; none for a wing whose equipment is not
-/// known (its wing or equipment table not complete, or the wing not in it).
 fn wing_variants(frame: &DecodedFrame, wings: &BTreeSet<u64>) -> HashMap<u64, Option<Vec<u64>>> {
     let held: Option<HashSet<u64>> = frame.complete::<tables::AirWings>().ok().map(|rows| rows.iter().map(|row| row.id).collect());
     let equipment = frame.complete::<tables::WingEquipment>().ok();
@@ -326,7 +301,6 @@ fn wing_variants(frame: &DecodedFrame, wings: &BTreeSet<u64>) -> HashMap<u64, Op
         .collect()
 }
 
-/// Each of `variants`' display name at the frame's hour, or why not.
 fn variant_names(frame: &DecodedFrame, variants: &BTreeSet<u64>, cat: Option<&Catalogue>) -> HashMap<u64, Result<String, String>> {
     let tables = (|| -> io::Result<_> {
         let countries = frame.complete::<tables::Countries>()?;
@@ -357,7 +331,6 @@ fn variant_names(frame: &DecodedFrame, variants: &BTreeSet<u64>, cat: Option<&Ca
         .collect()
 }
 
-/// The roster at `frame`'s hour, named and dated by `history`.
 pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catalogue>, warnings: &mut Vec<String>) -> (Option<String>, Vec<AirAce>) {
     let rows = match frame.complete::<tables::AirAces>() {
         Ok(rows) => rows,
@@ -438,7 +411,6 @@ pub(crate) fn roster(frame: &DecodedFrame, history: &History, cat: Option<&Catal
     (None, aces)
 }
 
-/// `rows`' wings and their variants' keys: the reads of the second step.
 fn wing_reads(held: &DecodedFrame) -> Vec<Read> {
     let Ok(rows) = held.complete::<tables::AirAces>() else { return Vec::new() };
     let wings = assigned(rows);
@@ -451,7 +423,6 @@ fn wing_reads(held: &DecodedFrame) -> Vec<Read> {
     ]
 }
 
-/// The variants the held wings fly: the read of the third step.
 fn variant_reads(held: &DecodedFrame) -> Vec<Read> {
     let Ok(equipment) = held.complete::<tables::WingEquipment>() else { return Vec::new() };
     let variants: BTreeSet<u64> = equipment.iter().map(|row| row.variant).collect();
@@ -461,7 +432,6 @@ fn variant_reads(held: &DecodedFrame) -> Vec<Read> {
     vec![Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from))]
 }
 
-/// The held variants' equipment type tokens: the read of the fourth step.
 fn token_reads(held: &DecodedFrame) -> Vec<Read> {
     let Ok(definitions) = held.complete::<tables::VariantDefinitions>() else { return Vec::new() };
     let tokens: BTreeSet<u32> = definitions.iter().map(|row| row.equipment_token).collect();
@@ -492,8 +462,6 @@ impl AtHour for AirAcesAt {
         TABLES.to_vec()
     }
 
-    /// The roster and the countries whole; then only the wings it names, their aircraft, and
-    /// those aircraft's definitions and type tokens.
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match step {
             0 => [TableId::AirAces, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance].into_iter().map(Read::all).collect(),
@@ -519,7 +487,6 @@ impl AtHour for AirAcesAt {
     }
 }
 
-/// The operands a portrait is drawn from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct PortraitOperands {
     tag: Option<String>,
@@ -541,9 +508,6 @@ impl PortraitOperands {
     }
 }
 
-/// The game's portrait ladder: a named sprite first, then the country's pool, a culture's
-/// sprites only for an empty pool (to the first missing one, at most the game's 256), the global
-/// pool last.
 fn portrait(facts: &PortraitOperands, cat: &Catalogue) -> Result<String, String> {
     let tag = facts.tag.as_ref().ok_or("Ace country not recorded")?;
     let name = std::str::from_utf8(&facts.name).map_err(|_| "Ace name is not UTF-8")?;
@@ -568,7 +532,6 @@ fn portrait(facts: &PortraitOperands, cat: &Catalogue) -> Result<String, String>
                 let key = std::str::from_utf8(key).map_err(|_| "Ace portrait sprite key is not UTF-8")?;
                 cat.sprites.find(key)?.ok_or_else(|| format!("Native ace portrait sprite {key} absent from recorded content"))?
             } else {
-                // A negative remainder is an out-of-bounds access in the game, never wrapped here.
                 let index = pool_index % (culture_pool.len() as i32);
                 culture_pool
                     .get(usize::try_from(index).map_err(|_| "Ace portrait index has negative native remainder")?)
@@ -580,7 +543,6 @@ fn portrait(facts: &PortraitOperands, cat: &Catalogue) -> Result<String, String>
     catalogue::sprite_frame_png(&cat.content.layers, sprite, cat.gui_decode.clone()?, 0, 96).map_err(|error| error.to_string())
 }
 
-/// Portraits drawn for one catalogue, by operands.
 #[derive(Default)]
 struct PortraitCache {
     catalogue: Option<Arc<Catalogue>>,
@@ -633,7 +595,6 @@ impl AtHour for AirAcePortraits {
         vec![TableId::AirAces, TableId::CountryLinks]
     }
 
-    /// The asked aces' rows alone, and the links naming their countries.
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         if step > 0 {
             return Vec::new();

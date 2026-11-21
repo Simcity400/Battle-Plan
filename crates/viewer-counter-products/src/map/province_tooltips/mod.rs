@@ -1,4 +1,3 @@
-//! Political-map location and viewer-selected unit tooltip.
 use super::counter_content;
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
@@ -46,35 +45,25 @@ pub struct Content {
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
     temperature: Result<installed_content_weather::weather::TemperatureRanges, String>,
-    /// What the hourly temperature pass reads ([`replay_data::temperature`]), and the last frame's
-    /// derivation, which the next hour of the same anchor steps once from.
     pass: Result<replay_data::temperature::Content, String>,
     derived: inputs::TemperaturesByFrame,
     pub(super) units: Result<units::Content, String>,
     border: Result<border::Defines, String>,
-    /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily prune's window
-    /// ([`replay_derive::air_region_derive`]).
     air_log_timeout: Result<i32, String>,
     air_detection: Result<viewer_foundation::map::air_detection::Defines, String>,
     air_range: Result<viewer_foundation::map::air_range::Defines, String>,
     pub(super) air_fuel: Result<super::counter_tooltips::air_fuel::Defines, String>,
     navy: strategic_navy::Defines,
-    /// The `NResistance` and `NCountry` defines the occupation hover reads.
     occupation: Result<mode_lines::OccupationDefines, String>,
-    /// `NOperatives.INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET`, the base
-    /// the Operatives hover shows for a network's strength cap.
     network_base_target: Result<i64, String>,
-    /// What the resources mode's hover reads of the content.
     resources: Result<viewer_foundation::resource_origins::Content, String>,
 }
 
 impl Content {
-    /// Whether the state's content template is impassable.
     pub fn impassable_state(&self, state: u32) -> bool {
         self.impassable.contains(&state)
     }
 
-    /// The resource declarations and building grants the resources hover reads.
     pub fn resources(&self) -> Result<&viewer_foundation::resource_origins::Content, &str> {
         self.resources.as_ref().map_err(String::as_str)
     }
@@ -171,9 +160,6 @@ impl Content {
         warnings
     }
 
-    /// The enemy share of `state`'s border-war power from `country`'s side
-    /// in mode zero (a raw link; `links` resolves raw links to canonical slots),
-    /// for the attrition hover.
     pub(crate) fn border_enemy_share(
         &self,
         frame: &DecodedFrame,
@@ -184,15 +170,11 @@ impl Content {
         border::enemy_share(self, frame, country, links, state)
     }
 
-    /// Certify this exact frame's temperature input on an hour worker. Only
-    /// immutable values/refusals cross to the hover; no roster query runs here.
     pub fn prepare_temperature(&self, frame: &Arc<DecodedFrame>) {
         self.derived
             .prepare(frame, self.pass.as_ref().map_err(String::as_str));
     }
 
-    /// The temperature `province`'s record holds at the frame's hour, which the game reads:
-    /// recorded, or derived from the frame's anchor and pass with the recorded content.
     pub fn temperature_at(
         &self,
         frame: &DecodedFrame,
@@ -209,58 +191,32 @@ impl Content {
     }
 }
 
-/// What a map mode's province hover shows. The game shows the location block, the province's
-/// units and the selection only in the default and states modes; every other mode shows its own
-/// lines alone.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ModeHover {
-    /// The location block, units and selection; `category` adds the state's category line,
-    /// naming its live category (States `category`), as the states mode does.
     Location { category: bool },
-    /// Regional Air detection and statistics.
     StrategicAir(Arc<Vec<u64>>),
-    /// Regional naval control, live source statistics and mine summary.
     StrategicNavy(
         Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
     ),
-    /// A sea province's strategic region in the default mode, as the game's pointer picks it:
-    /// the region's dominance for the viewing country, and its ratio list delayed.
     SeaRegion(
         Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
     ),
-    /// A sea province's strategic region in a mode whose region text is nothing of its own.
     Region,
-    /// The terrain mode's text, which viewer-combat's terrain mode makes, over the province or,
-    /// with `region`, over the sea province's strategic region.
     Terrain { region: bool },
-    /// Nothing of the mode's own.
     Nothing,
-    /// The state's population.
     Manpower,
-    /// The infrastructure line (`MAPMODE_TOOLTIP_INFRASTRUCTURE`) with the hovered province's
-    /// state's infrastructure level, zero outside every state, or why it cannot be read.
     Infrastructure(Result<i32, String>),
-    /// The state, its owner, and the owner's relation to the viewing country, at the content's
-    /// very good and very bad opinion thresholds.
     Diplomacy { very_good: i32, very_bad: i32 },
-    /// The name of the owner's ruling ideology.
     Ideology,
-    /// The viewing country's intelligence network section for the state.
     Operatives,
-    /// The state's resistance and compliance, the same in both modes.
     Occupation,
-    /// The percentage control's detailed resistance section, in either occupation mode.
     OccupationMarker,
-    /// What the state produces, resource by resource.
     Resources,
-    /// A scripted mode's `<name>_tooltip` and `<name>_tooltip_delayed`.
     Scripted(String),
-    /// A mode whose lines the viewer does not build, and why.
     Unbuilt(String),
 }
 
 impl ModeHover {
-    /// Whether the hover is a strategic region's, which follows the trade routes' text.
     pub fn region(&self) -> bool {
         matches!(
             self,
@@ -269,8 +225,6 @@ impl ModeHover {
     }
 }
 
-/// `below` under the trade-route lines' text, as the game composes the province's tooltip or,
-/// with `region`, the strategic region's.
 pub fn under_routes(
     content: &counter_content::Content,
     frame: &DecodedFrame,
@@ -285,8 +239,6 @@ pub fn under_routes(
     trade_routes::compose(region, route_text(content, frame, ours, routes), below)
 }
 
-/// The province, viewing country and fog setting a tooltip was built for,
-/// whether NATO counters were on, the map mode's hover and the trade-route lines over it.
 type CacheKey = (u32, u32, bool, bool, ModeHover, Vec<TradeRouteLine>);
 type TooltipSources = (
     Arc<counter_content::Content>,
@@ -298,11 +250,10 @@ type TooltipSources = (
 #[derive(Default)]
 pub struct Cache {
     held: Holder<CacheKey>,
-    // Keep source identities alive across hour refreshes.
     source: Option<TooltipSources>,
 }
 impl Cache {
-    #[allow(clippy::too_many_arguments)] // Cache identities, shared movement reads and existing hover choices.
+    #[allow(clippy::too_many_arguments)]
     pub fn request(
         &mut self,
         content: &Arc<counter_content::Content>,
@@ -340,23 +291,15 @@ impl Cache {
         text
     }
 
-    /// Whether the held tooltip was built while a roster answer it asked for was still
-    /// being read, so asking again after [`Self::wait`] adds what it lacked.
     pub fn pending(&self) -> bool {
         self.held.pending()
     }
 
-    /// Blocks until the roster service answers after the held tooltip was built, or its
-    /// worker stops, after which every question refuses by name; returns at once when
-    /// nothing it asked for was pending.
     pub fn wait(&self) {
         self.held.wait();
     }
 }
 
-/// The held tooltip with its key, the roster answers' generation it was built at, and
-/// whether one of its questions was still pending; its questions to the shared roster
-/// history, asked on a worker of its own.
 struct Holder<K> {
     held: Option<(K, u64, bool, Arc<Tooltip>)>,
     rosters: Option<air_region::PassRosters>,
@@ -370,8 +313,6 @@ impl<K> Default for Holder<K> {
     }
 }
 impl<K: PartialEq> Holder<K> {
-    /// The held tooltip when `key` and the sources (`same`) are unchanged and no roster
-    /// answer has completed since it was built; otherwise `build`'s.
     fn get(
         &mut self,
         key: K,
@@ -419,7 +360,6 @@ impl<K: PartialEq> Holder<K> {
     }
 }
 
-/// The rosters a build asks, noting whether any answer was still pending.
 struct Asked<'a> {
     rosters: &'a air_region::PassRosters,
     pending: std::cell::Cell<bool>,
@@ -444,7 +384,6 @@ fn localise(loc: &Localisation, key: &str, args: &[(&str, Arg<'_>)]) -> Result<S
         .map_err(|e| e.to_string())
 }
 
-/// Newline and four spaces per nesting level.
 fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, String>) {
     match value {
         Ok(value) if !value.is_empty() => {
@@ -470,7 +409,7 @@ fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, Stri
     }
 }
 
-#[allow(clippy::too_many_arguments)] // The cache's identities and the recording's rosters.
+#[allow(clippy::too_many_arguments)]
 fn build(
     content: &counter_content::Content,
     reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
@@ -523,7 +462,6 @@ fn build(
         context.mode_lines(mode, &mut out);
         return out;
     };
-    // Stateless provinces omit the complete location block; land units remain below.
     if province.state != 0 {
         context.location(&mut out, *category);
     }
@@ -574,8 +512,6 @@ fn build(
     out
 }
 
-/// The trade-route lines' text over the hour's rows. The lines drawn are the viewing country's
-/// own, so their route set is disclosed.
 fn route_text(content: &counter_content::Content, frame: &DecodedFrame, ours: u32, routes: &[TradeRouteLine]) -> trade_routes::Routes {
     let links: Result<BTreeMap<u32, u32>, String> = frame
         .complete::<tables::CountryLinks>()
@@ -623,7 +559,6 @@ fn route_text(content: &counter_content::Content, frame: &DecodedFrame, ours: u3
     trade_routes::assemble(routes, true, &|key| loc(key, &[]), |line| trade_routes::describe(frame, &names, line))
 }
 
-/// A state's display name at the hour: its stored custom or owner name, else its template's.
 fn state_name_of(content: &counter_content::Content, frame: &DecodedFrame, id: u32) -> Result<String, String> {
     let state = frame
         .complete::<tables::States>()
@@ -637,8 +572,6 @@ fn state_name_of(content: &counter_content::Content, frame: &DecodedFrame, id: u
     })
 }
 
-/// The delayed "click to view state" line the Default and States modes give a land province, as
-/// the ground click opens its state view.
 fn click_footer(loc: &Localisation, kind: Option<installed_content_core::map::ProvinceKind>, out: &mut Tooltip) {
     match kind {
         Some(installed_content_core::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
@@ -676,7 +609,6 @@ impl Context<'_> {
     fn marked_country(&self, raw: u32) -> Result<String, String> {
         self.marked_slot(self.slot(raw)?)
     }
-    /// The flag, tag and name of the country in `slot`.
     fn marked_slot(&self, slot: u32) -> Result<String, String> {
         let tag = self.countries.tag(slot, "country naming operands absent")?;
         if tag.chars().count() != 3 {
@@ -684,7 +616,6 @@ impl Context<'_> {
                 "country slot {slot} flag tag is not three codepoints"
             ));
         }
-        // Resolve the tag through the small flag atlas.
         let name = installed_content_localisation::localisation::crt_case_text(
             &self.countries.name_with(slot, "_DEF")?,
             true,
@@ -692,7 +623,6 @@ impl Context<'_> {
         );
         Ok(format!("{}{} {name}", FLAG, tag))
     }
-    /// A content static modifier's list, two spaces before each line, scaled by `scale`.
     fn scaled_static_modifiers(&self, token: &str, scale: i64) -> Result<String, String> {
         let scripted = self
             .content
@@ -956,8 +886,6 @@ impl Context<'_> {
                         .frame
                         .complete::<tables::AirBases>()
                         .map_err(|e| e.to_string())?;
-                    // Country air uses a shared manager passed to each constructor and
-                    // retained by the pool. Index its shared table by state.
                     let mut found = bases
                         .iter()
                         .filter(|b| b.state == Some(p.state) && b.kind == kind);
@@ -998,7 +926,6 @@ impl Context<'_> {
                     let name = tokens
                         .name(building.building_type)
                         .map_err(|e| e.to_string())?;
-                    // Stop at the first specialization-bearing active row.
                     if self.content.building_facts.is_facility(name)? {
                         facility = true;
                         break;

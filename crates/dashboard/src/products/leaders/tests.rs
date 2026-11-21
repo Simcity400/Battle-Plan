@@ -24,7 +24,6 @@ fn a_trait_is_dated_by_its_gain_and_a_later_first_observation_does_not_move_it()
     fold_date(&mut dates, key("organizer"), 400, Gain::FIRST_OBSERVED);
     fold_date(&mut dates, key("panzer_leader"), 200, Gain::GAINED);
     fold_date(&mut dates, key("trickster"), 300, Gain::FIRST_OBSERVED);
-    // A child run's first hour writes held before for what its parent dated.
     fold_date(&mut dates, key("panzer_leader"), 350, Gain::HELD_BEFORE);
     fold_date(&mut dates, key("trickster"), 500, Gain::GAINED);
     assert_eq!(dates[&key("organizer")], (100, Gain::HELD_BEFORE));
@@ -71,7 +70,6 @@ fn kinds_and_countries_choose_leaders_by_kind_and_owner_tag() {
     let countries = LeaderSelection::Countries { countries: vec!["GER".into()] };
     assert!(countries.keeps(Some((7, "GER"))));
     assert!(!countries.keeps(None), "a leader whose owner is not named is in no country");
-    // The selected country by slot keeps its leaders through a tag change, and never another holder's.
     let slot = LeaderSelection::Countries { countries: vec![dashboard_base::products::Country::Slot(7)] };
     assert!(slot.keeps(Some((7, "DEU"))) && !slot.keeps(Some((9, "GER"))));
     assert!(LeaderSelection::All.keeps(None));
@@ -85,8 +83,6 @@ fn a_leaders_traits_are_listed_in_their_recorded_order() {
     assert_eq!(held[&3], vec!["c".to_owned()]);
 }
 
-/// A leader id's battles from `LeaderBattleTotals` sum its handles, less the run's totals before
-/// the timeline enters the run late; a result neither won nor lost counts in neither.
 #[test]
 fn a_leaders_battles_from_its_totals_sum_its_handles_and_runs() {
     let run = |battles: Vec<(u64, [u64; 3])>| super::RunTally { battles, dates: HashMap::new() };
@@ -99,9 +95,6 @@ fn a_leaders_battles_from_its_totals_sum_its_handles_and_runs() {
     assert_eq!((eight.fought, eight.won, eight.lost), (2, 0, 2));
 }
 
-/// Trait dates from `LeaderTraitDates`, as the recorder's LeaderTraits writer writes it in each of
-/// two runs, are the old fold of every `LeaderTraitGains` row of both runs in order: a gain always
-/// dates a trait, a later held-before or first observation never moves one.
 #[test]
 fn trait_dates_from_their_table_are_the_fold_of_the_gain_rows_over_runs() {
     use recorder_derive::{framework::Writers, leader_traits::LeaderTraits, testing};
@@ -155,9 +148,6 @@ fn trait_dates_from_their_table_are_the_fold_of_the_gain_rows_over_runs() {
     assert_eq!(tally.date(LEADER, "t2"), Some((11, Gain::GAINED)));
 }
 
-/// A leader whose role may carry `visible` conditions reads its character and the tokens first,
-/// never every trigger table at once: those are read only for a role the character's template shows
-/// has conditions to evaluate, which needs the content.
 #[test]
 fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_trigger_tables_only_for_conditions_to_evaluate() {
     use super::{LeadersContext, UnitLeaders, UnitLeadersParams};

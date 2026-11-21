@@ -1,7 +1,6 @@
 use crate::{Dated, Hour, Interval, Lookup, Missing, MissingKind, Reason};
 use std::{collections::BTreeMap, io};
 
-/// An owned reason a value is missing, lent out as [`MissingKind`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Absence {
     Unknown { name: String, detail: String },
@@ -31,8 +30,6 @@ impl Absence {
     }
 }
 
-/// Each key's versions in hour order, known or missing, and the keys each hour changed. A key
-/// is not recorded before its first version. Callers apply hours in order.
 #[derive(Clone, Debug)]
 pub struct History<K, V> {
     versions: BTreeMap<K, Vec<(Hour, Result<V, Absence>)>>,
@@ -49,8 +46,6 @@ impl<K, V> Default for History<K, V> {
 }
 
 impl<K: Ord + Clone, V: PartialEq> History<K, V> {
-    /// Sets `key` from `hour`; true where its answer changed. An hour before the key's last
-    /// version is an error.
     pub fn set(&mut self, hour: Hour, key: K, value: Result<V, Absence>) -> io::Result<bool> {
         let versions = self.versions.entry(key.clone()).or_default();
         match versions.last_mut() {
@@ -70,7 +65,6 @@ impl<K: Ord + Clone, V: PartialEq> History<K, V> {
         Ok(true)
     }
 
-    /// `key` at `hour`, known through `watermark`.
     pub fn at(&self, key: &K, hour: Hour, watermark: Hour) -> Lookup<'_, Dated<&V>> {
         let versions = self.versions.get(key).map_or(&[][..], Vec::as_slice);
         let index = versions.partition_point(|(from, _)| *from <= hour);
@@ -96,7 +90,6 @@ impl<K: Ord + Clone, V: PartialEq> History<K, V> {
         }
     }
 
-    /// The keys whose answers changed in `hours`, in hour order.
     pub fn changes(
         &self,
         hours: Interval,
@@ -114,12 +107,10 @@ impl<K: Ord + Clone, V: PartialEq> History<K, V> {
         Ok(())
     }
 
-    /// `key`'s first version's hour; none before any.
     pub fn first(&self, key: &K) -> Option<Hour> {
         self.versions.get(key).and_then(|versions| versions.first()).map(|(hour, _)| *hour)
     }
 
-    /// Every key with a version, ascending.
     pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.versions.keys()
     }

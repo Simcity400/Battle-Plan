@@ -1,38 +1,17 @@
-//! What a campaign map draws and plays, and how each choice inherits.
-//!
-//! Every choice resolves on its own through the game -> global -> campaign -> widget: a scope
-//! stores only the choices it overrides (`Some`), and `None` takes the parent scope's resolved
-//! value. Changing one choice at a scope leaves every other choice inheriting.
-//!
-//! Display switches gate drawing only. Simulation, hover and picking, selection, combat windows,
-//! engagement and every presentation clock keep running while something is hidden; a hidden
-//! world object also stops casting its shadow. Weather is the one exception, as in the game:
-//! turning it off releases its particle pairs, and turning it back on builds new ones from a
-//! freshly seeded random stream. A part switch (Advanced) draws only while its main switch is on
-//! as well.
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// What every map option is until the user chooses in the app. The options the game saves in
-/// `settings.txt` take the user's file ([`installed_content_settings::settings::MapOptions::read`]); these
-/// are the game's own defaults for them, kept when the file stores none or cannot be read. The
-/// rest are the app's own.
 pub mod option_defaults {
     use installed_content_settings::settings::MapOptions;
     pub const DAY_NIGHT: bool = MapOptions::DEFAULT.day_night;
     pub const ALLIED_PLANS: bool = MapOptions::DEFAULT.allied_plans;
-    /// Counters tinted by their owner's colour rather than by allegiance.
     pub const COUNTRY_COUNTER_COLOURS: bool = MapOptions::DEFAULT.country_counter_colours;
     pub const NATO_COUNTERS: bool = MapOptions::DEFAULT.nato_counters;
-    /// Fog of war, which the game does not save: always on until chosen.
     pub const FOG: bool = true;
-    /// Only the viewing country's own counters; not saved by the game.
     pub const PLAYER_COUNTERS: bool = false;
-    /// Rotating radar ranges; not saved by the game.
     pub const RADAR: bool = false;
 }
 
-/// Declares a resolved preference struct, its per-choice override form and the resolution.
 macro_rules! inheritable {
     (
         $(#[$meta:meta])*
@@ -40,8 +19,6 @@ macro_rules! inheritable {
             $( $(#[$field_meta:meta])* $field:ident : $ty:ty = $default:expr ),* $(,)?
             $(
                 ;
-                // Choices that may resolve to no value: unset inherits the parent's, which may
-                // be none, so a scope can set one but never set "none".
                 $( $(#[$optional_meta:meta])* $optional:ident : Option<$optional_ty:ty> ),* $(,)?
             )?
         }
@@ -60,7 +37,6 @@ macro_rules! inheritable {
             }
         }
 
-        /// The choices one scope overrides; `None` inherits the parent scope's value.
         #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, TS)]
         #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
         pub struct $overrides {
@@ -69,14 +45,12 @@ macro_rules! inheritable {
         }
 
         impl $overrides {
-            /// Each overridden choice over the parent's resolved value.
             pub fn resolve(&self, parent: &$name) -> $name {
                 $name {
                     $( $field: self.$field.unwrap_or(parent.$field), )*
                     $( $( $optional: self.$optional.or(parent.$optional), )* )?
                 }
             }
-            /// Whether this scope inherits every choice.
             pub fn is_empty(&self) -> bool {
                 true $( && self.$field.is_none() )* $( $( && self.$optional.is_none() )* )?
             }
@@ -85,23 +59,20 @@ macro_rules! inheritable {
 }
 
 inheritable! {
-    /// Quality choices and every show/hide switch of a map, resolved.
     pub struct MapGraphics / MapGraphicsOverrides {
-        // Quality
         samples: u32 = 4,
         texture_quality: u8 = 0,
-        /// The world target size; `draw_map_full_res`.
+        #[doc = " The world target size; `draw_map_full_res`."]
         full_resolution: bool = true,
         high_gfx_shaders: bool = true,
         water_reflections: bool = true,
-        /// Cast shadows; `draw_shadows`.
+        #[doc = " Cast shadows; `draw_shadows`."]
         shadows: bool = true,
-        /// The day/night cycle, the game's `hide_daynight_cycle` inverted. Off fixes the virtual
-        /// lights while simulation time and province clocks stay authoritative.
+        #[doc = " The day/night cycle, the game's `hide_daynight_cycle` inverted. Off fixes the virtual"]
+        #[doc = " lights while simulation time and province clocks stay authoritative."]
         day_night: bool = option_defaults::DAY_NIGHT,
-        // World
         water: bool = true,
-        /// Main switch of the four border parts.
+        #[doc = " Main switch of the four border parts."]
         borders: bool = true,
         land_borders: bool = true,
         sea_borders: bool = true,
@@ -109,23 +80,23 @@ inheritable! {
         strait_crossings: bool = true,
         rivers: bool = true,
         trees: bool = true,
-        /// Main switch of rails, bridges and supply trains.
+        #[doc = " Main switch of rails, bridges and supply trains."]
         railways: bool = true,
         rails: bool = true,
         railway_bridges: bool = true,
         supply_trains: bool = true,
         city_sprawl: bool = true,
-        /// Buildings, facilities and floating harbours.
+        #[doc = " Buildings, facilities and floating harbours."]
         buildings: bool = true,
-        /// The map table frame and its ambient actors.
+        #[doc = " The map table frame and its ambient actors."]
         map_table: bool = true,
-        /// Nuclear and thermonuclear impact effects.
+        #[doc = " Nuclear and thermonuclear impact effects."]
         nuclear_strikes: bool = true,
-        /// Critical shore bombardment explosions.
+        #[doc = " Critical shore bombardment explosions."]
         bombardment_explosions: bool = true,
-        /// The explosions where missiles land.
+        #[doc = " The explosions where missiles land."]
         missile_explosions: bool = true,
-        /// Main switch of the floating map text kinds.
+        #[doc = " Main switch of the floating map text kinds."]
         map_text: bool = true,
         text_fake_divisions: bool = true,
         text_railway_guns: bool = true,
@@ -136,66 +107,63 @@ inheritable! {
         text_buildings: bool = true,
         weather: bool = true,
         sky: bool = true,
-        /// World country names.
+        #[doc = " World country names."]
         country_names: bool = true,
-        // Units
-        /// Main switch of the 3-D unit figures and aircraft; `draw_units`.
+        #[doc = " Main switch of the 3-D unit figures and aircraft; `draw_units`."]
         units: bool = true,
-        /// Land, railway-gun, ship and raid figures.
+        #[doc = " Land, railway-gun, ship and raid figures."]
         unit_figures: bool = true,
-        /// Main switch of the aircraft mission parts.
+        #[doc = " Main switch of the aircraft mission parts."]
         aircraft: bool = true,
-        /// Patrol and training flights.
+        #[doc = " Patrol and training flights."]
         air_patrols: bool = true,
         air_reconnaissance: bool = true,
-        /// Close air support.
+        #[doc = " Close air support."]
         air_support: bool = true,
-        /// Strategic, carpet and fire bombing.
+        #[doc = " Strategic, carpet and fire bombing."]
         air_bombing: bool = true,
-        /// Dogfights and interceptions.
+        #[doc = " Dogfights and interceptions."]
         air_combat: bool = true,
         air_kamikaze: bool = true,
         air_supply: bool = true,
-        /// Missiles in flight.
+        #[doc = " Missiles in flight."]
         air_missiles: bool = true,
-        // Plans and arrows
-        /// Main switch of every battle-plan part, raid paths included.
+        #[doc = " Main switch of every battle-plan part, raid paths included."]
         battle_plans: bool = true,
         front_lines: bool = true,
-        /// Offensive, fallback and withdrawal lines.
+        #[doc = " Offensive, fallback and withdrawal lines."]
         offensive_lines: bool = true,
         planned_movement: bool = true,
         naval_invasions: bool = true,
         paradrops: bool = true,
         raid_paths: bool = true,
         plan_labels: bool = true,
-        /// Allied battle plans, the game's `show_allied_plans`.
+        #[doc = " Allied battle plans, the game's `show_allied_plans`."]
         show_allied_plans: bool = option_defaults::ALLIED_PLANS,
-        /// The selected units' movement arrows.
+        #[doc = " The selected units' movement arrows."]
         movement_arrows: bool = true,
-        // Map icons
-        /// Main switch of every counter and map icon part.
+        #[doc = " Main switch of every counter and map icon part."]
         counters: bool = true,
         land_counters: bool = true,
         railway_gun_counters: bool = true,
         naval_counters: bool = true,
-        /// Ships in port on naval bases.
+        #[doc = " Ships in port on naval bases."]
         port_counters: bool = true,
-        /// Air-base, naval-base, naval HQ and facility icons.
+        #[doc = " Air-base, naval-base, naval HQ and facility icons."]
         base_icons: bool = true,
-        /// Faction-theatre pins.
+        #[doc = " Faction-theatre pins."]
         theatre_pins: bool = true,
         land_combat_markers: bool = true,
-        /// Naval combat, result and mission icons.
+        #[doc = " Naval combat, result and mission icons."]
         naval_markers: bool = true,
         raid_icons: bool = true,
-        /// Capital and victory-point names and symbols.
+        #[doc = " Capital and victory-point names and symbols."]
         city_names: bool = true,
-        /// Map hover tooltips; the hover itself keeps working.
+        #[doc = " Map hover tooltips; the hover itself keeps working."]
         tooltips: bool = true,
         ;
-        /// NATO counter frames (`template_counter`); none, when the game's settings could not
-        /// be read, uses the recording's game choice.
+        #[doc = " NATO counter frames (`template_counter`); none, when the game's settings could not"]
+        #[doc = " be read, uses the recording's game choice."]
         nato_counters: Option<bool>,
     }
 }
@@ -231,7 +199,6 @@ impl MapGraphics {
     pub fn aircraft(&self) -> bool {
         self.units && self.aircraft
     }
-    /// Whether aircraft flying this kind of mission draw.
     pub fn air_mission(&self, mission: AirMission) -> bool {
         self.aircraft()
             && match mission {
@@ -245,9 +212,6 @@ impl MapGraphics {
                 AirMission::Missile => self.air_missiles,
             }
     }
-    /// Whether a battle-plan ribbon of this kind draws. Trade-route lines share the ribbons'
-    /// arrow manager but are no battle-plan family: their map mode decides them, never these
-    /// settings.
     pub fn plan(&self, kind: PlanKind) -> bool {
         self.battle_plans
             && match kind {
@@ -266,7 +230,6 @@ impl MapGraphics {
     pub fn counter(&self, part: bool) -> bool {
         self.counters && part
     }
-    /// Whether floating map text of this kind draws.
     pub fn map_text(&self, kind: MapTextKind) -> bool {
         self.map_text
             && match kind {
@@ -281,128 +244,101 @@ impl MapGraphics {
     }
 }
 
-/// The floating map text kinds a viewer can hide separately, one per recorded map event family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapTextKind {
-    /// Fake divisions revealed.
     FakeDivisions,
-    /// Railway guns overrun.
     RailwayGuns,
-    /// Critical shore bombardments.
     Bombardments,
-    /// Generals captured.
     Generals,
-    /// Paradrop landings.
     Paradrops,
-    /// Resistance activity.
     Resistance,
-    /// Building damage.
     Buildings,
 }
 
-/// The aircraft mission families a viewer can hide separately.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AirMission {
-    /// Patrol and training flights.
     Patrol,
     Reconnaissance,
-    /// Close air support.
     Support,
-    /// Strategic, carpet and fire bombing.
     Bombing,
-    /// Dogfights and interceptions.
     Combat,
     Kamikaze,
     Supply,
-    /// Missiles in flight.
     Missile,
 }
 
-/// The battle-plan ribbon families a viewer can hide separately.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlanKind {
     #[default]
     Front,
-    /// Offensive, fallback and withdrawal lines.
     Offensive,
     Movement,
     Invasion,
     Paradrop,
     Raid,
-    /// Trade-route lines, which share the arrow manager; the map mode shows them.
     TradeRoute,
 }
 
 inheritable! {
-    /// Map sound volumes from 0 to 100, kept exactly as the game stores them (49.6 stays 49.6).
-    /// These are stored and resolved here; the map audio plays them, and only the focused map
-    /// plays sound.
     pub struct MapAudio / MapAudioOverrides {
-        /// `master_volume`.
+        #[doc = " `master_volume`."]
         master: f32 = 100.0,
-        /// `ambient_volume`; a fresh install stores 50.
+        #[doc = " `ambient_volume`; a fresh install stores 50."]
         ambient: f32 = 50.0,
-        /// Unit, vehicle, train and aircraft sounds; `sound_fx_volume`.
+        #[doc = " Unit, vehicle, train and aircraft sounds; `sound_fx_volume`."]
         units: f32 = 100.0,
-        /// Combat and strike sounds; `sound_fx_volume`.
+        #[doc = " Combat and strike sounds; `sound_fx_volume`."]
         combat: f32 = 100.0,
-        /// The interface's button sounds; `sound_fx_volume`.
+        #[doc = " The interface's button sounds; `sound_fx_volume`."]
         interface: f32 = 100.0,
-        /// `voice_volume`.
+        #[doc = " `voice_volume`."]
         voice: f32 = 100.0,
-        /// The music player; `music_volume`.
+        #[doc = " The music player; `music_volume`."]
         music: f32 = 75.0,
     }
 }
 
 impl MapAudio {
-    /// A category's gain, scaled by the master volume.
     pub fn gain(&self, category: f32) -> f32 {
         self.master / 100.0 * category / 100.0
     }
 }
 
-/// Whose counters a map draws. Hidden counters keep their hover and selection.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum CounterFilter {
     #[default]
     All,
-    /// Countries a human controls at the shown hour.
     Players,
-    /// These country tags.
     Countries { tags: Vec<String> },
 }
 
-/// One scope's stored choices: everything it does not set inherits.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct CampaignMapSettings {
     pub graphics: MapGraphicsOverrides,
     pub audio: MapAudioOverrides,
-    /// None inherits the parent's counter filter.
+    #[doc = " None inherits the parent's counter filter."]
     pub counters: Option<CounterFilter>,
-    /// Installed mods shown over the recording's artwork. None inherits the parent scope's
-    /// choice; at the root it shows none. Ids are matched against the installed catalogue,
-    /// never joined to a path; a mod no longer installed keeps its name.
+    #[doc = " Installed mods shown over the recording's artwork. None inherits the parent scope's"]
+    #[doc = " choice; at the root it shows none. Ids are matched against the installed catalogue,"]
+    #[doc = " never joined to a path; a mod no longer installed keeps its name."]
     #[ts(type = "Array<{ id: string, name: string }> | null")]
     pub visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
 }
 
-/// Every choice of a scope after inheritance.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedMapSettings {
     pub graphics: MapGraphics,
     pub audio: MapAudio,
     pub counters: CounterFilter,
-    /// The chosen visual mods as a set: sorted by id, without repeats, and empty when none.
+    #[doc = " The chosen visual mods as a set: sorted by id, without repeats, and empty when none."]
     #[ts(type = "Array<{ id: string, name: string }> | null")]
     pub visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
 }
 
 impl ResolvedMapSettings {
-    /// `settings` over this parent.
     pub fn child(&self, settings: &CampaignMapSettings) -> Self {
         Self {
             graphics: settings.graphics.resolve(&self.graphics),
@@ -489,19 +425,16 @@ mod tests {
             ..Default::default()
         };
         let resolved = own.resolve(&parent);
-        // The overridden choice applies; the parent's other choices still show through.
         assert!(!resolved.rivers);
         assert!(!resolved.trees);
         assert_eq!(resolved.samples, 2);
         assert!(MapGraphicsOverrides::default().is_empty());
         assert!(!own.is_empty());
-        // An explicit On beats a parent's Off.
         let on = MapGraphicsOverrides {
             trees: Some(true),
             ..Default::default()
         };
         assert!(on.resolve(&parent).trees);
-        // NATO keeps the parent's unknown choice until a scope sets it.
         assert_eq!(
             MapGraphicsOverrides::default()
                 .resolve(&parent)
@@ -513,7 +446,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(nato.resolve(&parent).nato_counters, Some(true));
-        // A parent's choice shows through an unset scope.
         assert_eq!(
             MapGraphicsOverrides::default()
                 .resolve(&MapGraphics {
@@ -561,7 +493,6 @@ mod tests {
         assert_eq!(settings.counters, None);
         let json = serde_json::to_value(CampaignMapSettings::default()).unwrap();
         assert!(json["graphics"]["trees"].is_null());
-        // A misspelt or retired field is refused, at either level.
         assert!(serde_json::from_str::<CampaignMapSettings>(r#"{"graphic":{}}"#).is_err());
         assert!(
             serde_json::from_str::<CampaignMapSettings>(r#"{"graphics":{"tree":false}}"#).is_err()
@@ -612,7 +543,6 @@ mod tests {
         assert!(filter(&["GER", "SOV"]).validate().is_ok());
         assert!(filter(&["GER", "GER"]).validate().is_err());
         assert!(filter(&[""]).validate().is_err());
-        // Many countries are fine: the filter is sized by the recording, not a cap.
         let many: Vec<String> = (0..5_000).map(|n| format!("C{n:04}")).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert!(filter(&many).validate().is_ok());

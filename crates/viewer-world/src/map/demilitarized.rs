@@ -1,30 +1,3 @@
-//! Demilitarised-zone borders, using selection reason 7.
-//!
-//! A highlighted edge uses the ordinary traced geometry and base-material
-//! texture in the secondary bucket bank. Exactly one province must have a
-//! nonzero recorded demilitarised-state byte. Missing states read as zero;
-//! [`Zone::splits`] requires both sides to be land, excluding coasts. Edges
-//! inside a zone receive no highlight. Each edge enters one bucket, so the
-//! highlight replaces its ordinary border draw.
-//!
-//! The palette is resolved from content. Entry 0 is clear, entries 1 through 9
-//! are the named highlight colours, and entries 10 onward are custom colours.
-//! Entry 7 is `BORDER_COLOR_DEMILITARIZED`. Width, texture and pulse shading come
-//! from the ordinary border material and installed compiled shader.
-//!
-//! Pulse time follows the presentation clock, independent of simulation time.
-//! Windows animate locally; headless dumps use the default clock. Highlighted
-//! rows retain full transparency at every camera height. Ordinary province and
-//! state fades apply only to rows with selection reason zero.
-//!
-//! Each wrap view draws ordinary province/state/country/impassable buckets,
-//! then straits and gradient borders, then sea/sea-region and highlighted
-//! buckets. The demilitarised pass follows the ordinary border pass.
-//!
-//! [`recorded_states`] joins complete StateFlags and States tables, preserving
-//! the raw byte before selecting nonzero state ids. Missing or partial inputs
-//! withhold the layer with a diagnostic. The dump-only `--demilitarized` option
-//! adds explicit state ids to this recorded set.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::{collections::BTreeSet, io};
 
@@ -45,30 +18,17 @@ use {
     },
 };
 
-/// `vTime_Transparency.y` for a secondary-bank draw; see the module docs for why it is 1.
 pub const TRANSPARENCY: f32 = 1.0;
 
-/// Bytes one border vertex occupies: `float3 position` then `6G16_SINT uv`.
 const VERTEX_STRIDE: u64 = 16;
-/// One hour's demilitarised states, projected onto provinces.
-///
-/// [`Zone::splits`] is the engine's reason-7 predicate: both provinces are land and exactly one of
-/// them sits in a demilitarised state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Zone {
-    /// The state ids, kept so two zones compare cheaply.
     states: BTreeSet<u32>,
-    /// Per province id: the province's state is demilitarised.
     flag: Vec<bool>,
-    /// Per province id: whether the resolved province definition marks it as land.
     land: Vec<bool>,
 }
 
 impl Zone {
-    /// Projects `states` through this hour's province-to-state mapping.
-    ///
-    /// `map` supplies the land bit: `map/definition.csv`'s province kind, the same source
-    /// `super::border_pass::Topology` reads it from.
     pub fn new(map: &MapData, regions: &Regions, states: &BTreeSet<u32>) -> Self {
         let mut flag = vec![false; regions.state_of.len()];
         let mut land = vec![false; regions.state_of.len()];
@@ -89,7 +49,6 @@ impl Zone {
         }
     }
 
-    /// Whether the boundary between two provinces is a demilitarised-zone edge.
     pub fn splits(&self, a: u32, b: u32) -> bool {
         self.land(a) && self.land(b) && self.demilitarized(a) != self.demilitarized(b)
     }
@@ -102,34 +61,15 @@ impl Zone {
         self.land.get(province as usize).copied().unwrap_or(false)
     }
 
-    /// Whether the hour knows of no demilitarised state at all, in which case nothing is drawn and
-    /// the border pass has nothing to leave out.
     pub fn is_empty(&self) -> bool {
         self.states.is_empty()
     }
 
-    /// The state ids behind the zone, in ascending order.
     pub fn states(&self) -> &BTreeSet<u32> {
         &self.states
     }
 }
 
-/// The demilitarised state ids this hour records.
-///
-/// StateFlags supplies one raw demilitarised byte per state alongside States. Any nonzero byte
-/// qualifies without normalization to one. Complete tables include zero flags, so their nonzero ids
-/// define the zone.
-///
-/// The join is `StateFlags.state` to `States.id`: the flags table is keyed by a state id and the
-/// hour's own `States` table is what says which state ids exist. A flag for a state this hour does
-/// not carry is not projected onto the map.
-///
-/// **An incomplete table yields nothing at all.** A truncated walk reached real rows, but the rows
-/// it did not reach are rows the hour is *silent* about, and the engine's reason-7 predicate is an
-/// exclusive or: reading silence as "not demilitarised" would not draw a shorter outline, it would
-/// draw a **wrong** one, cutting a zone in half along a boundary the game draws no line on. So
-/// either table being anything but complete leaves the zone empty and the hour states the gap
-/// through `viewer_foundation::map::tables::limitations`.
 pub fn recorded_states(frame: &replay_frame::frame::DecodedFrame) -> io::Result<BTreeSet<u32>> {
     let flags = rows::<tables::StateFlags>(frame)?;
     let states = rows::<tables::States>(frame)?;
@@ -146,27 +86,20 @@ pub fn recorded_states(frame: &replay_frame::frame::DecodedFrame) -> io::Result<
         .collect())
 }
 
-/// One hour's highlighted strips, selected without a device so a builder
-/// thread can do it ahead of the frame that shows the hour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ZonePlan {
     runs: Vec<PlannedRun>,
     edges: usize,
 }
 
-/// One class's strips at both levels, as the border pass holds them ([`super::line_lod`]): the fine
-/// level's vertices then the coarse level's, and the fine level's indices then the coarse level's.
 #[derive(Clone, Debug, PartialEq)]
 struct PlannedRun {
     class: BorderClass,
-    /// In `borders::Vertex`'s 16-byte layout.
     vertices: Vec<u8>,
     indices: Vec<u32>,
-    /// How many of `indices` are the fine level's.
     fine: u32,
 }
 
-/// One class's strips while they are gathered, each level on its own.
 #[derive(Default)]
 struct Gathered {
     fine: (Vec<Vertex>, Vec<u32>),
@@ -174,11 +107,6 @@ struct Gathered {
 }
 
 impl ZonePlan {
-    /// Selects the edges `zone` splits, grouped by base material.
-    ///
-    /// The strips are copied out of the traced meshes rather than re-traced: a highlighted chain is
-    /// the same boundary the border pass already holds, so the only per-hour work is selecting the
-    /// edges the zone splits and grouping them by base material.
     pub fn new(meshes: &BorderMeshes, regions: &Regions, zone: &Zone) -> Self {
         if zone.is_empty() {
             return Self::default();
@@ -186,7 +114,6 @@ impl ZonePlan {
         Self::matching(meshes, regions, |a, b| zone.splits(a, b))
     }
 
-    /// Selects ordinary-material strips for the demilitarised secondary bank.
     pub fn matching(
         meshes: &BorderMeshes,
         regions: &Regions,
@@ -195,7 +122,6 @@ impl ZonePlan {
         Self::select(meshes, regions, highlight, false)
     }
 
-    /// Custom reasons can also claim native material 0xff, remapped to Province.
     pub fn custom_highlight(
         meshes: &BorderMeshes,
         regions: &Regions,
@@ -218,9 +144,6 @@ impl ZonePlan {
         Self::gather(draws, highlight, |a, b| land_class(regions, a, b))
     }
 
-    /// The plan [`Self::new`] makes, from `draws` alone (each a class and the draw's index in that
-    /// class's mesh): equal to it when `draws` holds every draw `splits` keeps, such as the draws of
-    /// the zone's provinces. `land` is the land class of a province mesh draw's two provinces.
     pub fn of_draws(
         meshes: &BorderMeshes,
         mut draws: Vec<(BorderClass, u32)>,
@@ -242,11 +165,7 @@ impl ZonePlan {
         land: impl Fn(u32, u32) -> BorderClass,
     ) -> Self {
         let mut plan = Self::default();
-        // One bucket per base material; a land edge's material is the hour's own class, every other
-        // edge keeps the class the content settled at trace time.
         let mut per_class: Vec<Gathered> = BorderClass::ALL.iter().map(|_| Gathered::default()).collect();
-        // Material 0xff is remapped to Province only when a custom highlight
-        // claims it; retaining these strips closes coasts and isolated islands.
         for (mesh, hidden, draw) in draws {
             if !highlight(draw.province_a, draw.province_b) {
                 continue;
@@ -294,7 +213,6 @@ impl ZonePlan {
 
 #[cfg(test)]
 impl ZonePlan {
-    /// The positions of the triangles the plan draws at the coarse level or the fine one.
     pub(crate) fn triangles(&self, coarse: bool) -> Vec<[[f32; 3]; 3]> {
         let mut triangles = Vec::new();
         for run in &self.runs {
@@ -312,8 +230,6 @@ impl ZonePlan {
     }
 }
 
-/// One class's highlighted geometry: `fine` indices of the fine level, then `coarse` of the coarse
-/// level.
 struct Run {
     class: BorderClass,
     vertices: wgpu::Buffer,
@@ -322,26 +238,18 @@ struct Run {
     coarse: u32,
 }
 
-/// How the edges a demilitarised zone splits from the ordinary border buckets draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ZoneEdges {
-    /// In the zone's highlight colour, as the game draws them.
     Highlighted,
-    /// As the ordinary land borders they would be without the zone, while the zone display is
-    /// hidden and land borders show: the ordinary pass leaves these edges to this one.
     Ordinary {
         camera_height: f32,
         fades: [[f32; 2]; 2],
-        /// Whether the map mode draws province borders ([`super::borders::class_alpha`]).
         province_borders: bool,
     },
-    /// Not at all, while land borders are hidden.
     Hidden,
 }
 
 impl ZoneEdges {
-    /// A class's zone batch as these edges draw it: the ordinary pass's palette entry (none) and
-    /// fade, or no runs. Every texture stays bound, so later passes keep the same inputs.
     fn apply<T>(
         self,
         class: BorderClass,
@@ -367,32 +275,23 @@ impl ZoneEdges {
     }
 }
 
-/// The demilitarised-zone border pass: the engine's secondary bucket bank, reason 7.
 pub struct DemilitarizedPass {
     compiled: Result<super::border_shader::Border, String>,
     textures: Vec<wgpu::TextureView>,
     runs: Vec<Run>,
     edges: usize,
-    /// `NGraphics.BORDER_COLOR_DEMILITARIZED_*`, palette entry 7.
     color: [f32; 4],
-    /// Hover highlights share the pipeline/textures, with their own palette entry.
     hover: Vec<Run>,
     hover_color: Option<[f32; 4]>,
-    /// The ground selection's outline, palette entry 1 or 2, drawn before the zone's 7.
     selection: Vec<Run>,
     selection_color: Option<[f32; 4]>,
 }
 
 impl DemilitarizedPass {
-    /// How the program drawn reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self) -> Option<&str> {
         self.compiled.as_ref().ok()?.texel_reads.as_deref()
     }
 
-    /// Builds the pipeline and uploads the six class textures.
-    ///
-    /// The textures are the same six `map/terrain/border_<class>_<quality>.dds` the ordinary border pass
-    /// binds, because a highlighted chain keeps its base material.
     pub fn new(
         device: &wgpu::Device,
         samples: u32,
@@ -428,11 +327,6 @@ impl DemilitarizedPass {
         })
     }
 
-    /// Rebuilds the highlighted geometry for one hour's zone.
-    ///
-    /// The strips are copied out of the traced meshes rather than re-traced: a highlighted chain is
-    /// the same boundary the border pass already holds, so the only per-hour work is selecting the
-    /// edges the zone splits and grouping them by base material.
     pub fn set_zone(
         &mut self,
         device: &wgpu::Device,
@@ -443,7 +337,6 @@ impl DemilitarizedPass {
         self.set_plan(device, &ZonePlan::new(meshes, regions, zone))
     }
 
-    /// Uploads the strips [`ZonePlan::new`] selected.
     pub fn set_plan(&mut self, device: &wgpu::Device, plan: &ZonePlan) -> io::Result<()> {
         self.edges = plan.edges;
         Self::upload_plan(device, plan, &mut self.runs)
@@ -465,7 +358,6 @@ impl DemilitarizedPass {
         self.hover_color = None;
     }
 
-    /// The ground selection's outline in `color`, or none.
     pub fn set_selection(&mut self, device: &wgpu::Device, plan: Option<(&ZonePlan, [f32; 4])>) -> io::Result<()> {
         match plan {
             Some((plan, color)) => {
@@ -504,7 +396,6 @@ impl DemilitarizedPass {
         Ok(())
     }
 
-    /// Province boundaries this hour's zone highlights.
     pub fn edge_count(&self) -> usize {
         self.edges
     }
@@ -518,9 +409,6 @@ impl DemilitarizedPass {
         edges: ZoneEdges,
         coarse: bool,
     ) -> io::Result<()> {
-        // Native buckets follow material order, with reason-byte order inside
-        // each: DMZ 7 before the custom palette entries at 10+. The faction hover outline is
-        // interaction feedback, not a border, and draws whatever the border switches say.
         let mut batches = Vec::new();
         for class in BorderClass::ALL {
             if let Some(color) = self.selection_color {
@@ -533,8 +421,6 @@ impl DemilitarizedPass {
                 batches.push(self.batch(class, &self.hover, color, coarse));
             }
         }
-        // One initialization and every material's texture bind are required
-        // even when its runs are empty. Keep the complete bank.
         viewer_foundation::map::gpu_contract::compiled(&self.compiled)?
             .draw(arena, encoder, targets, inputs, &batches, true)
             .map(|_| ())
@@ -565,7 +451,6 @@ impl DemilitarizedPass {
     }
 }
 
-/// The vertex bytes of one strip list, in `borders::Vertex`'s 16-byte layout.
 fn vertex_bytes(vertices: &[Vertex]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(vertices.len() * VERTEX_STRIDE as usize);
     for vertex in vertices {
@@ -579,7 +464,6 @@ fn vertex_bytes(vertices: &[Vertex]) -> Vec<u8> {
     bytes
 }
 
-/// Parses the `--demilitarized <id>,<id>,...` verification override.
 pub fn parse_states(value: &str) -> io::Result<BTreeSet<u32>> {
     let mut states = BTreeSet::new();
     for field in value.split(',') {
@@ -617,7 +501,6 @@ mod tests {
             zone(ZoneEdges::Highlighted, BorderClass::Country),
             (TRANSPARENCY, [0.5, 0.0, 0.0, 1.0], 2)
         );
-        // Shown as the ordinary pass draws the class: no palette entry and its fade.
         let fades = [[10.0, 20.0], [30.0, 40.0]];
         let near = ZoneEdges::Ordinary {
             camera_height: 5.0,
@@ -640,7 +523,6 @@ mod tests {
             super::super::borders::class_alpha(BorderClass::State, 25.0, fades, true)
         );
         assert_eq!(zone(ZoneEdges::Hidden, BorderClass::Country).2, 0);
-        // A map mode without province borders gives the zone's province edges no alpha either.
         let resources = ZoneEdges::Ordinary {
             camera_height: 5.0,
             fades,
@@ -656,8 +538,6 @@ mod tests {
             super::super::border_pass::Topology,
             viewer_foundation::map::province_map::{HeightField, ProvinceMap},
         };
-        // Native province adjacency for this raster is 1-2, 1-3, 2-3,
-        // 1-4 (wrap), 2-4, 3-4 and 4-5. Province 5 is an isolated island.
         let mut map = map();
         map.width = 8;
         map.height = 4;
@@ -707,8 +587,6 @@ mod tests {
             pairs(&meshes.hidden),
             BTreeSet::from([(1, 4), (2, 4), (3, 4), (4, 5)])
         );
-        // The highlighted province set {1,2,5} has five
-        // perimeter runs. The 1-2 interior and the wholly external 3-4 stay out.
         let provinces = BTreeSet::from([1, 2, 5]);
         let highlight = |a, b| provinces.contains(&a) != provinces.contains(&b);
         let plan = ZonePlan::custom_highlight(&meshes, &regions, highlight);
@@ -721,7 +599,6 @@ mod tests {
         );
         let zone = Zone::new(&map, &regions, &BTreeSet::from([42]));
         assert_eq!(ZonePlan::new(&meshes, &regions, &zone).edges, 2);
-        // Custom reason overrides DMZ reason 7; these strips enter one bank.
         assert_eq!(
             ZonePlan::matching(&meshes, &regions, |a, b| zone.splits(a, b)
                 && !highlight(a, b))
@@ -742,7 +619,6 @@ mod tests {
         }
     }
 
-    /// Provinces 1, 2 and 3 are land and province 4 is a sea province.
     fn map() -> MapData {
         MapData {
             width: 4,
@@ -769,8 +645,6 @@ mod tests {
         }
     }
 
-    /// Provinces 1 and 2 are in demilitarised state 42, province 3 in state 7 and province 4 is
-    /// the stateless sea province.
     fn zone() -> Zone {
         Zone::new(
             &map(),
@@ -782,16 +656,12 @@ mod tests {
     #[test]
     fn only_the_outline_of_the_zone_splits() {
         let zone = zone();
-        // Inside the zone: both sides demilitarised.
         assert!(!zone.splits(1, 2));
-        // The outline against another state.
         assert!(zone.splits(2, 3));
         assert!(zone.splits(3, 1));
-        // Outside it entirely.
         assert!(!zone.splits(3, 3));
     }
 
-    /// Coasts are excluded even when a missing water-side state supplies zero.
     #[test]
     fn a_coast_takes_the_land_bit_exemption() {
         let zone = zone();
@@ -837,8 +707,6 @@ mod tests {
         }
     }
 
-    /// The engine's own test is `!= 0` on an unnormalised byte, and a complete
-    /// table carries the false flags too, so the zone is the non-zero rows.
     #[test]
     fn the_zone_is_every_state_whose_recorded_byte_is_not_zero() {
         use replay_data::rows::TableRows;
@@ -857,8 +725,6 @@ mod tests {
                 flag(51, 1),
                 flag(64, 0),
                 flag(978, 7),
-                // A flag for a state this hour's States table does not carry is
-                // not projected onto the map.
                 flag(4242, 1),
             ]));
         assert_eq!(
@@ -867,25 +733,20 @@ mod tests {
         );
     }
 
-    /// Silence is not "not demilitarised": the reason-7 predicate is an
-    /// exclusive or, so a half-read table would draw a line the game does not.
     #[test]
     fn an_incomplete_table_draws_no_zone_at_all() {
         use replay_data::rows::TableRows;
         use replay_frame::frame::TableView;
         let whole_states =
             || TableView::Complete(TableRows::States(vec![state(42), state(51), state(978)]));
-        // Unavailable: no rows and no count.
         let mut frame = frame();
         *frame.tables[replay_data::rows::TableId::States.index()] = whole_states();
         assert!(recorded_states(&frame).unwrap().is_empty());
-        // Truncated: real rows reached, but the rest are unknown.
         *frame.tables[replay_data::rows::TableId::StateFlags.index()] = TableView::Truncated {
             rows: TableRows::StateFlags(vec![flag(42, 1)]),
             missing: 1_080,
         };
         assert!(recorded_states(&frame).unwrap().is_empty());
-        // Whole flags, but no state ids to join them to.
         *frame.tables[replay_data::rows::TableId::StateFlags.index()] =
             TableView::Complete(TableRows::StateFlags(vec![flag(42, 1)]));
         *frame.tables[replay_data::rows::TableId::States.index()] = TableView::Truncated {
@@ -893,7 +754,6 @@ mod tests {
             missing: 1_080,
         };
         assert!(recorded_states(&frame).unwrap().is_empty());
-        // Both whole: the zone is drawn.
         *frame.tables[replay_data::rows::TableId::States.index()] = whole_states();
         assert_eq!(recorded_states(&frame).unwrap(), BTreeSet::from([42]));
     }

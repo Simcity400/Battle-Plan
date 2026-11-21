@@ -1,12 +1,3 @@
-//! `StabilityParts` and `StabilityPartKeys`: each part of a country's displayed stability and war
-//! support at its read, by the game's arithmetic ([`replay_data::country_stability`]), keyed by
-//! raw country id, measure and the part's handle, and the dictionary numbering each part by its
-//! source. A country has rows while it is a country and SliceReads dates its inputs row.
-//!
-//! State is the tables: the dictionary's sources, each country's part handles and its lines' keys,
-//! read back from them when a run is taken up or an hour is fresh. An hour recomputes the countries
-//! whose inputs, lines or read hours it changed, or whose Countries row came or went; a fresh hour
-//! recomputes every country.
 
 mod inputs;
 #[cfg(test)]
@@ -46,7 +37,6 @@ const READS: &[Read] = &[
         watch: Watch::Changed,
         required: true,
     },
-    // Looked up when a read names a character; their changes alone change no part.
     Read {
         table: TableId::Characters,
         columns: Columns::These(&[]),
@@ -61,12 +51,10 @@ const READS: &[Read] = &[
     },
 ];
 
-/// Each measure's modifier term in the formula and the modifier key its lines carry.
 const LINES_OF: [(&str, &[u8]); 2] = [("stabilityFactor", b"stability_factor"), ("warSupportFactor", b"war_support_factor")];
 
 const MEASURES: [u8; 2] = [StabilityPartRow::STABILITY, StabilityPartRow::WAR_SUPPORT];
 
-/// What a part is: a [`StabilityPartKeyRow`] but its handle.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Source {
     kind: u8,
@@ -81,8 +69,6 @@ impl Source {
         Self { kind, identity: identity.into(), identity_id: 0, secondary: 0, naming: Naming::none() }
     }
 
-    /// The source of `line`, its character as `character` names it. An unpaired line is its label
-    /// as plain text, as a reply shows it, so labels shown alike are one part.
     fn line(line: &CountryStabilityLineRow, character: &mut dyn FnMut(u32) -> Naming) -> Self {
         match line.kind {
             CountryStabilityLineRow::UNPAIRED => match installed_content_localisation::localisation::display_text(&line.text) {
@@ -100,7 +86,6 @@ impl Source {
     }
 }
 
-/// Adds `value` to `source`'s part, as the game's total adds two lines of one source.
 fn add(parts: &mut Vec<(Source, i64)>, source: Source, value: i64) {
     match parts.iter_mut().find(|(held, _)| *held == source) {
         Some((_, held)) => *held = held.wrapping_add(value),
@@ -108,10 +93,6 @@ fn add(parts: &mut Vec<(Source, i64)>, source: Source, value: i64) {
     }
 }
 
-/// Measure `measure`'s parts at a read of `row` with its `lines` (the country's, in tree order),
-/// as its displayed value adds up: the total first, then each nonzero term in formula order, the
-/// modifier term as its lines' sources and what they leave of its total, then the clamp. None
-/// while a term is not known.
 fn parts(
     row: &CountryStabilityInputRow,
     measure: u8,
@@ -156,7 +137,6 @@ fn part_key(country: u32, measure: u8, handle: u32) -> u128 {
     u128::from(country) << 40 | u128::from(measure) << 32 | u128::from(handle)
 }
 
-/// A dictionary row's handle and source.
 fn dictionary_row(view: &TableView<'_>, slot: u32) -> io::Result<(u32, Source)> {
     let unread = || invalid("A StabilityPartKeys row is not whole");
     let handle = view.key(slot).ok_or_else(unread)? as u32;
@@ -184,17 +164,13 @@ fn dictionary_row(view: &TableView<'_>, slot: u32) -> io::Result<(u32, Source)> 
 
 #[derive(Default)]
 pub struct StabilityParts {
-    /// The writer must read its state back from the tables before its next hour: a resume.
     rebuild: bool,
-    /// The dictionary: each source's handle, and the next handle.
     handles: HashMap<Source, u32>,
     next: u32,
     held: HashMap<u32, Held>,
     lines: inputs::Lines,
 }
 
-/// A country's part handles with rows, by measure; whether its read's lines were read with it;
-/// and whether a part may name a character, whose naming is read at each read.
 #[derive(Default)]
 struct Held {
     handles: [Vec<u32>; 2],
@@ -203,8 +179,6 @@ struct Held {
 }
 
 impl StabilityParts {
-    /// Reads the dictionary (`keys`), each country's part handles (`parts`) and its lines' keys
-    /// from the tables.
     fn restore(&mut self, hour: &Hour<'_>, keys: &TableView<'_>, parts: &TableView<'_>) -> io::Result<()> {
         self.handles.clear();
         self.next = 0;
@@ -224,7 +198,6 @@ impl StabilityParts {
         Ok(())
     }
 
-    /// `source`'s handle, numbered and written to the dictionary when new.
     fn handle(&mut self, source: Source, out: &mut Rows) -> io::Result<u32> {
         if let Some(&handle) = self.handles.get(&source) {
             return Ok(handle);
@@ -269,7 +242,6 @@ impl StabilityParts {
         Ok(handle)
     }
 
-    /// Country `id`'s rows this hour.
     fn country(&mut self, hour: &Hour<'_>, id: u32, out: &mut Rows) -> io::Result<()> {
         let read = inputs::inputs_read(hour, id).filter(|_| inputs::live(hour, id));
         let row = match read {
@@ -321,13 +293,10 @@ impl StabilityParts {
         Ok(())
     }
 
-    /// Whether country `id`'s lines were read with its read at `read`: they are known only then.
     fn lined(hour: &Hour<'_>, id: u32, read: i32) -> bool {
         inputs::lines_read(hour, id).is_none_or(|lines| lines == read)
     }
 
-    /// Whether a read of country `id` the hour dated anew, its inputs row and lines unchanged,
-    /// gives the parts it holds: its lines as known as before and no part naming a character.
     fn reread_alike(&self, hour: &Hour<'_>, id: u32) -> bool {
         let Some(held) = self.held.get(&id).filter(|held| !held.named) else { return false };
         let read = inputs::inputs_read(hour, id).filter(|_| inputs::live(hour, id));
@@ -380,7 +349,6 @@ impl Writer for StabilityParts {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads its state back from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }
@@ -394,7 +362,6 @@ impl Writer for StabilityParts {
     }
 
     fn prime(&mut self, hour: &Hour<'_>) {
-        // A table that cannot be read back leaves the rebuild to the next hour, which fails by name.
         let _ = self.restore(hour, &hour.table(TableId::StabilityPartKeys), &hour.table(TableId::StabilityParts));
     }
 }

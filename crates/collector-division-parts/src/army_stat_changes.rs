@@ -1,14 +1,3 @@
-//! Allocation-free notifications from the native writers of every division's stat block
-//! (`cunit::STAT_BLOCK`) whose attack operands and maxima DivisionStatus records, and of its name
-//! member (`carmy_combat_inputs::NAME_GROUP_MEMBER`), whose span and cached-name lookup cache it
-//! records ([`engine_mutations::army_stat_mutations`]). A detour only notifies the shared marking watch
-//! registry ([`WatchRegistry::marking`]) for the `CArmy` or member its first argument names, or
-//! for the members of the country's division roster after the country-wide name refresh (a new
-//! epoch only when that roster cannot be read), counts the call and calls the original; it
-//! never changes game behaviour. The writers run on the game thread and on the TBB workers of the
-//! hourly update, which the registry's atomics serve. Receivers are the armies and members a
-//! DivisionStatus capture registered. Anything unobserved (disabled, poisoned, a refused
-//! registration, an epoch change, a running writer) makes the capture read that division afresh.
 use crate::{
     hook::Hook,
     hook_timing::CallCounters,
@@ -68,8 +57,6 @@ const SITES: usize = MUTATIONS.len();
 const REFRESH_COUNTRY_NAMES: usize = 2;
 static WATCHES: Watches = Watches::new();
 
-/// Visits the name member of every army in `country`'s division roster; `None` when the roster
-/// or a member pointer cannot be read.
 fn roster_members(
     memory: &impl Memory,
     country: usize,
@@ -106,14 +93,11 @@ fn experience_patched(enabled: bool) {
     EXPERIENCE_PATCHED.store(enabled, Ordering::Release);
     experience_enabled();
 }
-/// The existing combat-damage patch must cover casualty XP loss.
 pub fn experience_forwarder(enabled: bool) {
     EXPERIENCE_FORWARDED.store(enabled, Ordering::Release);
     experience_enabled();
 }
-/// The combat-damage patch forwards its receiver across the native original.
 pub fn experience_damage(army: usize) -> (Notification<'static>, Notification<'static>) {
-    // The same native damage writer updates the panel's retained counter.
     (
         WATCHES.experience.notify(army),
         unit_history_changes::notify(army),
@@ -121,26 +105,18 @@ pub fn experience_damage(army: usize) -> (Notification<'static>, Notification<'s
 }
 
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read divisions; refused reads; witnessed divisions; divisions
-/// whose status maxima, and whose name members, were carried.
 static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-/// Divisions the latest complete capture visited, for off-thread sizing.
 static DIVISIONS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 pub(crate) static HISTORY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// Held by every test that registers in, or resets, the process-wide division panel operands;
-/// [`boundary`] and [`presize`] reset them too.
 #[cfg(test)]
 pub(crate) static MEMBERSHIP_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// Holds a shared test lock even after another test panicked under it, so that failure is
-/// reported alone.
 #[cfg(test)]
 pub(crate) fn serial(lock: &'static std::sync::Mutex<()>) -> std::sync::MutexGuard<'static, ()> {
     lock.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// One observation domain: the watched armies and the writer's calls.
 pub struct Watches {
     registry: WatchRegistry,
     experience: WatchRegistry,
@@ -164,9 +140,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: the writer of `site` ([`MUTATIONS`]
-    /// index) is about to rewrite `receiver`, an army's stat block or a name
-    /// member. Dropping the guard notifies its return.
     pub fn notify(
         &self,
         receiver: usize,
@@ -190,10 +163,6 @@ impl Watches {
         (primary, progression)
     }
 
-    /// Hook path, allocation-free, after the country-wide name refresh has returned under a
-    /// [`WatchRegistry::running`] guard: it rewrote the name members of `country`'s division
-    /// roster, the roster the census walks, so only those are marked. A roster that cannot be
-    /// read revokes every certificate.
     pub fn refreshed_country_names(&self, memory: &impl Memory, country: usize) {
         self.calls.increment(REFRESH_COUNTRY_NAMES);
         if roster_members(memory, country, |member| drop(self.registry.notify(member))).is_none() {
@@ -201,7 +170,6 @@ impl Watches {
         }
     }
 
-    /// An enabled domain with a table for `armies` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(armies: usize) -> Self {
         let watches = Self::new();
@@ -217,7 +185,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -231,39 +198,26 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
     fn progression_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }
-    /// Independent stored-experience certificate. An absent observer refuses
-    /// acquisition instead of turning it into periodic polling.
     fn experience_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }
-    /// A parallel range's certificates: a receiver not yet watched registers there; a full
-    /// table is refused and counted by the ordered admission ([`WatchRegistry::range_sequence`]).
     fn experience_range_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }
     fn progression_range_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }
-    /// Before any read of the hour: visits every registered army and member
-    /// a hooked writer touched since the previous take, clearing its mark,
-    /// and returns the epoch they were marked in ([`WatchRegistry::take`]).
-    /// A receiver registered in that epoch and not visited since was touched
-    /// by no observed writer. `None` when nothing taken certifies anything.
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// The armies whose stored XP, and whose previous template, a writer touched since the last take.
     fn take_experience(&self, _visit: &mut dyn FnMut(usize)) -> Option<u64> {
         None
     }
     fn take_progression(&self, _visit: &mut dyn FnMut(usize)) -> Option<u64> {
         None
     }
-    /// Registers a receiver before its read; whether it is now watched in
-    /// the epoch of the hour's take.
     fn register(&self, receiver: usize) -> bool;
 }
 
@@ -294,7 +248,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn progression_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
@@ -323,12 +276,8 @@ impl Changes for Observer {
     }
 }
 
-/// Whether the off-by-default diagnostic records the native operands
-/// (`DivisionStatus.attack`) of another slice of divisions each hour, which
-/// the recorder's derivation check compares with the derived ones.
 pub const WITNESS: bool = cfg!(feature = "attack_witness");
 
-/// The registries the division panel registers through, by name, for the live status.
 pub fn registries() -> [(&'static str, &'static WatchRegistry); 4] {
     [
         ("army_stats", &WATCHES.registry),
@@ -338,7 +287,6 @@ pub fn registries() -> [(&'static str, &'static WatchRegistry); 4] {
     ]
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
         + WATCHES.experience.active()
@@ -347,9 +295,6 @@ pub fn active() -> usize {
         + collector_observers::division_panel_changes::active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     unit_history_changes::boundary(invalidate);
     collector_observers::division_panel_changes::boundary(invalidate);
@@ -358,16 +303,11 @@ pub fn boundary(invalidate: bool) {
     WATCHES.progression.boundary(invalidate);
 }
 
-/// The existing live naming census prepares all division receiver domains
-/// before the first boundary, independently of naming-payload availability.
 pub fn demand_divisions(divisions: usize) {
     DIVISIONS.fetch_max(divisions, Ordering::Relaxed);
     presize();
 }
 
-/// Off the game thread: size the watches from the live census and later
-/// complete captures. A larger offered table waits for an invalidating hour;
-/// the initial offer must already cover every division receiver domain.
 pub fn presize() {
     let divisions = DIVISIONS.load(Ordering::Relaxed);
     unit_history_changes::demand(divisions);
@@ -379,21 +319,18 @@ pub fn presize() {
     );
     collector_observers::division_panel_changes::presize();
     if divisions != 0 {
-        // Each division registers its army and its name member.
         WATCHES.registry.offer(divisions.saturating_mul(2));
         WATCHES.experience.offer(divisions);
         WATCHES.progression.offer(divisions);
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
     WATCHES.experience.collect();
     WATCHES.progression.collect();
 }
 
-/// One capture's divisions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
@@ -404,8 +341,6 @@ pub struct Counts {
     pub names_reused: u64,
 }
 
-/// A worker publishes one capture's counts and, when it visited every
-/// division, their number for sizing.
 pub fn record(counts: &Counts, divisions: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -422,8 +357,6 @@ pub fn record(counts: &Counts, divisions: Option<usize>) {
     }
 }
 
-// Only a failed attach/detach allocates this diagnostic, retained for the runtime's
-// static failure interface. Publication is atomic across the listed sites.
 fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str {
     let sites = site.map_or_else(
         || {
@@ -456,13 +389,13 @@ pub struct Hooks {
     operands: crate::panel_operand_hooks::Hooks,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A withheld site refuses installation with the owning family and site.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A withheld site refuses installation with the owning family and site."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "army_stat_changes") {
@@ -512,10 +445,6 @@ impl Hooks {
             WATCHES.progression.set_enabled(false);
             unit_history_changes::patched(false);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|reason| hook_failure(None, "publication", &reason))?
         {
@@ -540,9 +469,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe {
             WATCHES.registry.release();
             WATCHES.experience.release();
@@ -552,9 +478,6 @@ impl Drop for Hooks {
     }
 }
 
-// `update active stats(army)` takes the primary CArmy in
-// RCX and returns nothing a caller reads; the detour forwards RCX..R9 and
-// RAX. The notification covers the original in flight.
 unsafe extern "system" fn update_active_stats(
     army: usize,
     second: usize,
@@ -568,8 +491,6 @@ unsafe extern "system" fn update_active_stats(
     timing.original(|| unsafe { original(army, second, third, fourth) })
 }
 
-// `refresh cached name(member, ...)` takes the
-// member in RCX; members of ships, operatives and lines are never registered.
 unsafe extern "system" fn refresh_cached_name(
     member: usize,
     second: usize,
@@ -583,9 +504,6 @@ unsafe extern "system" fn refresh_cached_name(
     timing.original(|| unsafe { original(member, second, third, fourth) })
 }
 
-// `refresh country names(group, country, ...)` rewrites the cached and override names of
-// members in the division roster of the country in RDX without naming them; they are marked
-// once it returns.
 unsafe extern "system" fn refresh_country_names(
     first: usize,
     country: usize,
@@ -597,7 +515,6 @@ unsafe extern "system" fn refresh_country_names(
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[REFRESH_COUNTRY_NAMES].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, country, third, fourth) });
-    // SAFETY: guarded reads on the native calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     WATCHES.refreshed_country_names(&memory, country);
     drop(running);
@@ -713,8 +630,6 @@ mod tests {
         assert_ne!(watches.experience_sequence(0x1000), held);
     }
 
-    /// The writer moves only the army it names; a running writer certifies
-    /// nothing.
     #[test]
     fn the_writer_marks_only_its_registered_receiver() {
         let watches = Watches::enabled(16);
@@ -726,24 +641,18 @@ mod tests {
         let (epoch, _) = take(&watches);
         assert!([0x1000, 0x2000].map(|army| Changes::register(&watches, army)) == [true; 2]);
         drop(watches.notify(0x2000, 0));
-        // An unregistered receiver is not watched.
         drop(watches.notify(0x3000, 1));
         assert_eq!(take(&watches), (epoch, vec![0x2000]));
         assert_eq!(take(&watches), (epoch, vec![]));
         assert_eq!(watches.calls.total(0), 1);
-        // A running writer certifies nothing.
         let running = watches.notify(0x1000, 0);
         assert_eq!(take(&watches).0, None);
         drop(running);
         assert_eq!(take(&watches), (epoch, vec![0x1000]));
-        // An invalidating hour moves the epoch.
         watches.boundary(true);
         assert_ne!(take(&watches).0, epoch);
     }
 
-    /// The country-wide name refresh rewrites only the name members of its country's division
-    /// roster: it marks those and keeps the epoch, so every other division stays carried. A roster
-    /// it cannot read revokes every certificate.
     #[test]
     fn the_country_name_refresh_marks_only_its_rosters_name_members() {
         use engine_native::{carmy_combat_inputs::NAME_GROUP_MEMBER, ccountry::DIVISIONS};
@@ -772,7 +681,6 @@ mod tests {
             (epoch, touched)
         };
         let (epoch, _) = take(&watches);
-        // Both roster armies and their members, and another country's army and member.
         for receiver in [0x1000, 0x2000, 0x9100, 0x9200, 0x3000, 0x9300] {
             assert!(Changes::register(&watches, receiver));
         }
@@ -818,7 +726,6 @@ experience_callback!(destroy_medal_store, 14);
 experience_callback!(add_officer_experience, 17);
 experience_callback!(set_officer_experience, 18);
 
-// Award application has two stack arguments in addition to the register arguments.
 unsafe extern "system" fn apply_division_award(
     store: usize,
     second: usize,
@@ -835,7 +742,6 @@ unsafe extern "system" fn apply_division_award(
     timing.original(|| unsafe { original(store, second, third, fourth, entry, pay_cost) })
 }
 
-// Officer promotion mutates the history in its second argument, including its store binding.
 unsafe extern "system" fn promote_division_officer(
     leader: usize,
     history: usize,

@@ -1,4 +1,3 @@
-//! An invocation's dense successful-program bindings. Arena placement remains serial.
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -27,7 +26,6 @@ impl GroupClock {
         }
         constants.touch_ordered(frame);
         textures.touch_ordered(frame);
-        // Only the locked last-view shortcut is invalidated, never bound state.
         self.hint.store(false, Ordering::Release);
         self.revision() == revision
     }
@@ -46,9 +44,6 @@ impl GroupStamp {
         self.0.store(frame, Ordering::Release);
     }
     fn touch_ordered(&self, frame: u64) {
-        // Together with the revision reads and retirement reads, these stores form
-        // one total order: either pruning sees the touch, or the second revision
-        // read forces locked resolution. A removed entry is never resurrected.
         self.0.store(frame, Ordering::SeqCst);
     }
 }
@@ -60,7 +55,6 @@ pub(super) struct GroupResources {
     pub groups: [wgpu::BindGroup; 3],
 }
 
-// General binds stay inline; only a session's resolved entry allocates the shared owner.
 #[derive(Clone)]
 pub(super) enum ResourceHandle {
     Inline(GroupResources),
@@ -116,7 +110,6 @@ struct ProgramEntry {
     last: usize,
 }
 
-/// Capacity only between invocations: no GPU handles or byte sources are retained.
 #[derive(Default)]
 pub struct BindingSessionStorage {
     programs: Vec<ProgramEntry>,
@@ -131,10 +124,6 @@ impl BindingSessionStorage {
     }
 }
 
-/// Ordered bindings for one actual arena and invocation. A warm draw still supplies
-/// every constant block to the unchanged arena algorithm before selecting its group.
-/// Dense keys are caller-owned successful-program identities, not borrowed addresses.
-/// Returned bindings own their immutable resources and never borrow this session.
 pub struct BindingSession<'a> {
     arena: &'a Arena,
     frame: u64,
@@ -154,8 +143,6 @@ impl<'a> BindingSession<'a> {
         }
     }
 
-    /// Already-reflected dynamic-offset order from this successful effective program.
-    /// Every full supplied block reaches the ordinary Arena in the original order.
     pub fn bind_ordered<'b>(
         &mut self, key: usize, program: &BindingProgram,
         mut constants: impl Iterator<Item = Option<&'b [u8]>>,
@@ -204,8 +191,6 @@ impl<'a> BindingSession<'a> {
         program: &BindingProgram,
         constants: impl Fn(u32) -> Option<&'b [u8]>,
     ) -> Result<Bindings, String> {
-        // The API cannot stop an external caller resetting a shared Arena. Treat that
-        // as a new scope, never as a matching numeric frame in some different Arena.
         self.sync_frame();
         let count = program.buffers.len();
         let mut blocks = [(&[][..], 0); BUFFERS];
@@ -260,8 +245,6 @@ impl<'a> BindingSession<'a> {
                 entry.last = index;
                 Arc::clone(&entry.buffers[index].resources)
             } else {
-                // A release or frame prune invalidates old entries before removing them.
-                // Re-register only here, after staging, through the ordinary locked path.
                 let resolved = program.resolve_groups(self.arena, source.clone(), true)?;
                 let resources = Arc::new(resolved.resources);
                 let value = BufferEntry {

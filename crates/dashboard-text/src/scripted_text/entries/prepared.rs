@@ -1,4 +1,3 @@
-//! Content databases prepared only for reached world operands.
 use super::*;
 use crate::triggers::{AuthoredStates, PreparedContent};
 use installed_content_core::content::diagnostics::Once as OnceLock;
@@ -63,7 +62,6 @@ impl ScriptedContent {
             .map_err(String::as_str)
     }
     fn prepared_states(&self) -> Result<&PreparedStates, &str> {
-        // Its warnings are the state templates' warnings.
         crate::catalogue::used(crate::catalogue::Reader::States);
         let environment = self.prepared_environment()?;
         environment
@@ -149,7 +147,6 @@ impl PreparedContent for ScriptedContent {
             .get_or_init(|| {
                 let groups = installed_content_core::equipment::Groups::load(&self.layers.layers)
                     .map_err(|error| error.to_string())?;
-                // Past a reading the port cannot follow, the groups are unknown.
                 match &groups.lost {
                     Some(lost) => Err(format!("the equipment groups are unread past {lost}")),
                     None => Ok(groups),

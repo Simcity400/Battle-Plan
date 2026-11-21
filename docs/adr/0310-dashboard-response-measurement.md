@@ -1,0 +1,11 @@
+# 0310. Compare dashboard responses using recorded exchanges
+
+Replay reference transcript requests against the candidate. The first line identifies the transcript format, family, revision, and branches. Subsequent lines contain the exchanges and any unordered result paths. Compare complete values, with absent properties distinct from null, ordered arrays compared positionally, and only explicitly unordered paths counted as multisets. Ignore paths by structural pattern, with a wildcard covering all array elements at that position. Exclude ignored members before counting an element in a multiset. Compare integers exactly, floats by their stored bits, and mixed numbers only where the float exactly represents the integer.
+
+For a tiled chart, assemble the same view the UI draws, and charge the sum of its tile requests including serialization. UI assembly is outside service timing. Serve ranking charts that change membership by bin through their original request. Count tiles alongside timed exchanges and keep timing by report product and series family. Mark reference answers with null data as pending, apart from refusals and absent fields. Keep storage time, reply time, and index setup time distinct.
+
+Time the live service only if a host installs its timing sink. Queue time ends at loader start. Compute time ends when the reply is ready and delivery lasts until the host receives its final fragment. Total time covers admission to the final outcome, including cancellation or error. Internal phase times are nanoseconds relative to admission and reports use milliseconds.
+
+Time-series windows use a fixed grid of four recording blocks, independent of campaign duration. Request visible windows and the one ahead. Window endpoints are inclusive and intersected with the timeline. Focus replies keep completion hours as observed upper bounds and compress equal adjacent progress. Focus progress is exact signed fixed5 days of work, including the daily increment and any work banked on idle days.
+
+[Reply checker](../../crates/dashboard/src/reply_check.rs) · [Request timing](../../crates/dashboard/src/service/perf.rs) · [Window grid](../../crates/dashboard/src/products/windows.rs) · [Focus reply types](../../crates/dashboard/src/reply_dto.rs)

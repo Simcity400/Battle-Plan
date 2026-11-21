@@ -1,6 +1,3 @@
-//! One leader: its whole career over a timeline ([`LeaderCareer`], read once per leader), the
-//! leader at an hour ([`LeaderHour`], rows at an hour, its experience and training live cells),
-//! and the picker's leaders ([`LeaderChoices`], from the leaders' lifetimes).
 
 use super::{
     Asked, Battles, Content, LeaderRole, LeaderTrait, LeadersContext, RESULTS_MISSING, TraitList, cell_number, cell_text, handle, held_traits, parse_branch,
@@ -48,7 +45,6 @@ pub struct LeaderCareerParams {
     pub reference: String,
 }
 
-/// A stretch of hours over which the leader's row held these values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -60,8 +56,6 @@ pub struct CareerRun {
     pub components: [i32; 4],
 }
 
-/// A combat the leader commanded: when it started, when that was first read, whether its start
-/// is unknown, and its result where one was read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -92,7 +86,7 @@ pub struct LeaderCommand {
     pub last_hour: i32,
     pub formation: String,
     pub kind: CommandKind,
-    /// The formation's stored name at its first hour; none where it was not recorded.
+    #[doc = " The formation's stored name at its first hour; none where it was not recorded."]
     pub name: Option<String>,
 }
 
@@ -102,15 +96,15 @@ pub struct LeaderCommand {
 pub struct LeaderCareerReply {
     pub reference: String,
     pub name: Option<String>,
-    /// The hour the name and portrait are read at: the leader's last on the timeline.
+    #[doc = " The hour the name and portrait are read at: the leader's last on the timeline."]
     pub portrait_hour: Option<i32>,
     pub runs: Vec<CareerRun>,
-    /// [hour, place in `traits`, class]: 0 held before, 1 gained, 2 first observed.
+    #[doc = " [hour, place in `traits`, class]: 0 held before, 1 gained, 2 first observed."]
     pub trait_gains: Vec<(i32, u32, u8)>,
     pub traits: Vec<LeaderTrait>,
     pub commands: Vec<LeaderCommand>,
     pub battles: Vec<CareerBattle>,
-    /// The timeline's recorded stretches: a battle lane is drawn only over them.
+    #[doc = " The timeline's recorded stretches: a battle lane is drawn only over them."]
     pub observed: Vec<(i32, i32)>,
     pub battles_partial_from: Option<i32>,
     pub results_missing: String,
@@ -120,7 +114,6 @@ pub struct LeaderCareerReply {
 
 pub struct LeaderCareer;
 
-/// A leader row's columns a career reads, in [`career_runs`]' order.
 struct RunColumns {
     columns: Vec<usize>,
 }
@@ -145,8 +138,6 @@ impl RunColumns {
     }
 }
 
-/// The values of one step of a leader's row, in [`RunColumns`] order: owner, category, kind,
-/// skill (none when not valid), components.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunValues {
     pub owner: u32,
@@ -156,7 +147,6 @@ pub struct RunValues {
     pub components: [i32; 4],
 }
 
-/// A step's cells as [`RunValues`], or none where any is not recorded.
 fn values_of(history: &History, cells: &[Step], columns: &[usize]) -> Option<RunValues> {
     let mut at: HashMap<usize, i64> = HashMap::new();
     for (column, cell) in history.columns.iter().zip(cells) {
@@ -174,8 +164,6 @@ fn values_of(history: &History, cells: &[Step], columns: &[usize]) -> Option<Run
     })
 }
 
-/// A row's steps as runs: each step holds until the next, the last through `to`; a step without
-/// the row (or with a cell not recorded) breaks the career; equal neighbours join.
 pub fn career_runs(steps: &[(i32, Option<RunValues>)], to: i32) -> Vec<(i32, i32, RunValues)> {
     let mut out: Vec<(i32, i32, RunValues)> = Vec::new();
     for (at, (hour, values)) in steps.iter().enumerate() {
@@ -192,8 +180,6 @@ pub fn career_runs(steps: &[(i32, Option<RunValues>)], to: i32) -> Vec<(i32, i32
     out
 }
 
-/// A formation's spans led by `leader` from its leader column's steps, each through the next
-/// step, the last through `to`.
 pub fn led_spans(steps: &[(i32, Option<u64>)], leader: u64, to: i32) -> Vec<(i32, i32)> {
     let mut out: Vec<(i32, i32)> = Vec::new();
     for (at, (hour, led)) in steps.iter().enumerate() {
@@ -209,11 +195,8 @@ pub fn led_spans(steps: &[(i32, Option<u64>)], leader: u64, to: i32) -> Vec<(i32
     out
 }
 
-/// A logged battle row: (read hour, entry, kind, combat, start hour, start unknown, outcome,
-/// result hour).
 pub type BattleRow = (i32, u8, u8, u64, i32, bool, Option<u8>, Option<i32>);
 
-/// Each participation with the first result of its combat read at or after it.
 pub fn join_battles(rows: &[BattleRow]) -> Vec<CareerBattle> {
     let mut results: BTreeMap<(u8, u64), Vec<(i32, Option<u8>, Option<i32>)>> = BTreeMap::new();
     for &(read, entry, kind, combat, _, _, outcome, result_hour) in rows {
@@ -246,8 +229,6 @@ pub fn join_battles(rows: &[BattleRow]) -> Vec<CareerBattle> {
     out
 }
 
-/// A leader's trait rows as its career lists them: a gain always; held before and first observed
-/// only for a trait the timeline has not dated before.
 pub fn career_gains(rows: &[(i32, String, u8)]) -> Vec<(i32, String, u8)> {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -260,7 +241,6 @@ pub fn career_gains(rows: &[(i32, String, u8)]) -> Vec<(i32, String, u8)> {
     out
 }
 
-/// A command's kind as the `leader-commands` log and its open spans hold it.
 fn command_kind(kind: u8) -> CommandKind {
     match kind {
         Command::ARMY_GROUP => CommandKind::ArmyGroup,
@@ -269,7 +249,6 @@ fn command_kind(kind: u8) -> CommandKind {
     }
 }
 
-/// A formation's stored name from its copied opaque cell; none where it was not recorded.
 fn stored_name(content: &Content, bytes: &[u8]) -> Option<String> {
     let name = Option::<Vec<u8>>::decode(&mut Decoder::new(bytes)).ok()??;
     content.stored_text(&name)
@@ -416,7 +395,6 @@ pub struct LeaderHourParams {
     pub reference: String,
 }
 
-/// A trait in training: its live cell's row is `key`, column `experience`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -436,14 +414,12 @@ pub struct LeaderFactor {
     pub factor_raw: String,
 }
 
-/// The leader's experience and training. The experience numbers are live cells: (reference,
-/// `experience`) for the commander, (training key, `experience`) for each trait in training.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderProgress {
     pub next_required_raw: Option<String>,
-    /// None where the training rows were not recorded.
+    #[doc = " None where the training rows were not recorded."]
     pub training: Option<Vec<LeaderTraining>>,
     pub factors: Option<Vec<LeaderFactor>>,
 }
@@ -453,7 +429,7 @@ pub struct LeaderProgress {
 #[serde(rename_all = "camelCase")]
 pub struct LeaderHourReply {
     pub reference: String,
-    /// Why the leader is not shown at this hour, when it is not.
+    #[doc = " Why the leader is not shown at this hour, when it is not."]
     pub missing: Option<String>,
     pub name: Option<String>,
     pub role: Option<LeaderRole>,
@@ -623,7 +599,6 @@ pub struct LeaderChoicesParams {
     pub selection: super::LeaderSelection,
 }
 
-/// A leader as the picker lists it, at the last hour it served: [reference, name, owner, hour].
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -659,7 +634,6 @@ impl Product for LeaderChoices {
         let mut leader_columns = [owner, character, kind];
         leader_columns.sort_unstable();
         let token = field(TableId::Characters, "token")?;
-        // Each leader at the last hour it served on the timeline.
         let mut last: BTreeMap<u128, (u32, i32)> = BTreeMap::new();
         for stretch in &query.timeline.stretches {
             for &(key, first, end) in crate::answer::lifetimes(source, stretch.run, TableId::UnitLeaders)?.iter() {

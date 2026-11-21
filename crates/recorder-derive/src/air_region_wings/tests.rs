@@ -5,7 +5,6 @@ use crate::{
 };
 use replay_columnar::{manifest::Status, store::Store};
 
-/// One hour of the wings (id, owner, mission region) and AirWings' status.
 fn feed(store: &mut Store, hour: i32, wings: &[(u64, u32, Option<u32>)], status: Status) {
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     let wings: Vec<AirWingRow> = wings.iter().map(|&(id, owner, mission_region)| AirWingRow { id, owner, mission_region, ..Default::default() }).collect();
@@ -32,8 +31,6 @@ const HOURS: &Hours = &[
     (&[(2, 20, Some(6)), (4, 10, None)], Status::Complete),
 ];
 
-/// Every owner's wings count in their mission region, a wing without one nowhere; a region with
-/// none has no row; wings not read in full withhold the table by name.
 #[test]
 fn region_wings_count_every_owner_s_wings_by_mission_region() {
     let mut store = store();
@@ -52,7 +49,6 @@ fn region_wings_count_every_owner_s_wings_by_mission_region() {
     }
 }
 
-/// A resume reads the wings whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {

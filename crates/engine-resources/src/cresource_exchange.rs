@@ -1,5 +1,3 @@
-//! Classic resource-exchange object. Delivery-route fields belong to the
-//! separate resource-origin object and must not be read beyond this extent.
 
 use crate::{
     Memory, ccountry, ccountry_resources, cpdx_array::Array, cstrategic_resource, read,
@@ -7,49 +5,27 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CResourceExchange primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29d8e60);
-/// CResourceExchange allocation size.
 pub const SIZE: usize = 0xf0;
-/// CResourceExchange assigned convoy count, i32.
 pub const CONVOYS_ASSIGNED: usize = 0x28;
-/// CResourceExchange required convoy count, i32.
 pub const CONVOYS_REQUIRED: usize = 0x2c;
-/// CResourceExchange first efficiency factor, i64 fixed point.
 pub const EFFICIENCY_A: usize = 0x48;
-/// CResourceExchange second efficiency factor, i64 fixed point.
 pub const EFFICIENCY_B: usize = 0x50;
-/// CResourceExchange exporter CCountryResources pointer.
 pub const EXPORTER_RESOURCES: usize = 0x80;
-/// CResourceExchange importer raw country link, u32.
 pub const IMPORTER: usize = 0x88;
-/// Candidate importer index, unused by the classic exchange reader.
 pub const IMPORTER_INDEX_CANDIDATE: usize = 0x8c;
-/// CResourceExchange CStrategicResource pointer.
 pub const RESOURCE: usize = 0x90;
-/// CResourceExchange delivered amount, native i64 fixed point.
 pub const DELIVERED: usize = 0x98;
-/// Required civilian factories, i32; accounting subtracts assigned from
-/// required, and serialization retains both counts.
 pub const REQUIRED_FACTORIES: usize = 0xe0;
-/// CResourceExchange assigned civilian factories, i32.
 pub const ASSIGNED_FACTORIES: usize = 0xe4;
-/// CResourceExchange no-trade-influence boolean, u8.
 pub const NO_TRADE_INFLUENCE: usize = 0xe8;
-/// CResourceExchange no-resources boolean, u8.
 pub const NO_RESOURCES: usize = 0xe9;
-/// Resource-exchange constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0xd05480);
 
-/// Full reference-object handle containing both type and ID words.
 pub const REFERENCE: usize = 0x08;
-/// Registered byte; only registered objects serialize their full handle.
 pub const REGISTERED: usize = 0x10;
-/// Convoy-client raw owner reference initialized from the importer.
 pub const OWNER: usize = 0x18;
 
-/// An exchange's authenticated ends: its exporter's resources, the exporter's and the importer's
-/// raw country links, and the exporter.
 #[derive(Debug, Clone, Copy)]
 pub struct Ends {
     pub exporter_resources: usize,
@@ -58,9 +34,6 @@ pub struct Ends {
     pub exporter_country: ccountry::Country,
 }
 
-/// The exchange at `pointer`, copied whole, held in `importer`'s import list: its vtable, its
-/// registered handle, its exporter's resources (the exporter's own resources, by backlink),
-/// its convoy owner and importer (both `importer`) and two distinct ends.
 pub fn authenticate<M: Memory>(
     memory: &M,
     base: usize,
@@ -68,8 +41,6 @@ pub fn authenticate<M: Memory>(
     pointer: usize,
     importer: ccountry::Country,
 ) -> Result<([u8; SIZE], Ends), &'static str> {
-    // One guarded full-object copy preserves field widths without a separate
-    // guarded-read entry per scalar.
     let bytes = read::<[u8; SIZE]>(memory, pointer).ok_or("trade exchange unreadable")?;
     let u32_at = |offset: usize| {
         u32::from_le_bytes(
@@ -146,8 +117,6 @@ pub struct Row {
     pub no_resources: u8,
 }
 
-/// Caller-owned per-walk index. Its foreign addresses and output indices never
-/// leave the callback and are overwritten before scratch is reused.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Membership {
     pointer: usize,
@@ -157,11 +126,6 @@ pub struct Membership {
     ordinal: Option<u32>,
 }
 
-/// Enumerates the importing countries' exchange vectors and verifies each
-/// exporting resource bucket. Descriptors must be this callback's complete
-/// authenticated cstrategic_resource::walk output, never a cross-hour cache.
-/// Supply one scratch entry per output row; either capacity can truncate the
-/// table, with the exact count of omitted source rows. Scratch never allocates.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -241,8 +205,6 @@ pub fn walk_buffer(
         if !found_country {
             return Err("country table has no readable countries");
         }
-        // Sort only scratch; the primary census order and its capacity prefix
-        // remain intact. Duplicate detection no longer scans every earlier row.
         let scratch = &mut scratch[..len];
         scratch.sort_unstable_by_key(|entry| output[entry.output_index].id);
         if scratch
@@ -321,9 +283,6 @@ impl<M: Memory> Reader<'_, M> {
                     .ok_or("trade resource bucket missing")?,
                 8,
             )?;
-            // Read every pointer in this touched vector once, including entries
-            // outside the emitted capacity prefix. Unknown readable pointers
-            // remain unrelated; unreadable slots and duplicates still fail.
             for ordinal in 0..source.count {
                 let pointer = self.pointer(source, ordinal)?;
                 if let Ok(index) = group.binary_search_by_key(&pointer, |entry| entry.pointer)
@@ -372,8 +331,6 @@ impl<M: Memory> Reader<'_, M> {
             .iter()
             .find(|r| r.address as u64 == u64_at(RESOURCE))
             .ok_or("trade resource descriptor absent from database")?;
-        // The importer is the country walked (checked above), whose
-        // resources this pass authenticated before reading its routes.
         Ok((
             Row {
                 id: u64_at(REFERENCE),
@@ -541,7 +498,6 @@ mod tests {
             walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
             Outcome::Rows { len: COUNT }
         );
-        // Each primary slot is read in order, then each reciprocal slot once.
         let expected: Vec<_> = [IMPORTS, EXPORTS]
             .into_iter()
             .flat_map(|base| (0..COUNT).map(move |index| (base + index * 8, 8)))
@@ -571,9 +527,6 @@ mod tests {
         }
     }
 
-    /// Each pass authenticates the importer's resources once, at its own
-    /// routes, not again for every trade; every trade still authenticates
-    /// its exporter's.
     #[test]
     fn a_pass_authenticates_each_importer_once() {
         struct Reads<'a> {
@@ -598,7 +551,6 @@ mod tests {
             walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
             Outcome::Rows { len: COUNT }
         );
-        // Every row keeps its exporter, importer and handle.
         for (index, row) in rows.iter().enumerate() {
             assert_eq!(
                 (row.id, row.exporter, row.importer),
@@ -606,16 +558,10 @@ mod tests {
             );
         }
         let counts = memory.counts.borrow();
-        // The exporter (0x6000, raw 7): its own census entry, then each of
-        // its 64 trades (owner read and backlink check).
         assert_eq!(counts[&(0x6000 + ccountry_resources::OWNER)], 1 + 2 * 64);
-        // The importer (0x7000): its census entry alone.
         assert_eq!(counts[&0x7000], 1);
     }
 
-    /// An exporter's resources replaced at the same address between two of
-    /// its trades in one pass is authenticated afresh at the second: here the
-    /// replacement names the importer, whose own resources are elsewhere.
     #[test]
     fn an_exporter_replaced_between_two_trades_is_authenticated_afresh() {
         struct Replaced<'a> {
@@ -624,7 +570,6 @@ mod tests {
         }
         impl Memory for Replaced<'_> {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                // Reading the second trade object replaces the exporter's.
                 if address == OBJECTS + 0x100 {
                     self.replaced.set(true);
                 }

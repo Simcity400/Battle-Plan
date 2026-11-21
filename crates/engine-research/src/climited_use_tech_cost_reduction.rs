@@ -1,6 +1,3 @@
-//! Limited-use technology cost reduction. Serialization writes its name,
-//! id and signed fixed5 reduction. Selection adds ids to the same applied-id
-//! list as speed/ahead bonuses; both kinds share the status id counter.
 use engine_sites::Rva;
 use crate::{
     Memory, climited_use_tech_bonus::Value, msvc_string::Descriptor, read, research_inputs::Text,

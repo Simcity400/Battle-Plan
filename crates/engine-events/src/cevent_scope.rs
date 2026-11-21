@@ -1,52 +1,25 @@
-//! CEventScope fields copied into pending events, windows and commands.
-//!
-//! Scope country, actor and containing-country recipient are distinct. Zero
-//! scope country is valid. The
-//! ability argument shares this layout; no separate effect-scope layout is established.
 
 use engine_sites::Rva;
-/// CEventScope primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0285_2168);
-/// CEventScope FROM scope pointer.
 pub const FROM: usize = 0x20;
-/// CEventScope ROOT binding. An address is never a recorded scope ID.
 pub const ROOT: usize = 0x18;
-/// CEventScope PREV binding.
 pub const PREV: usize = 0x28;
-/// CEventScope country tag, u32.
 pub const COUNTRY_TAG: usize = 0x08;
-/// CEventScope first random word, u32.
 pub const RANDOM_A: usize = 0x0c;
-/// CEventScope second random word, u32.
 pub const RANDOM_B: usize = 0x10;
-/// CEventScope strategic-region pointer.
 pub const STRATEGIC_REGION: usize = 0x48;
-/// CEventScope combat-context pointer.
 pub const COMBAT_CONTEXT: usize = 0x60;
-/// Scope state id, signed i32; values at least one admit state scope.
 pub const STATE_ID: usize = 0xa8;
-/// CEventScope allocation size.
 pub const SIZE: usize = 0xb0;
-/// CEventScope country value meaning no country.
 pub const NO_COUNTRY: u32 = 0;
-/// Scope country setter.
 pub const SET_COUNTRY_RVA: Rva = Rva(0x0058_1970);
-/// Scope equality used in pending-event lookup.
 pub const EQUALS_RVA: Rva = Rva(0x0057_f3a0);
 
-/// Packed object references, in native field order: character, operation,
-/// ace, unit, industrial organisation, purchase contract, raid, project,
-/// faction. References preserve both words without resolving unrelated objects.
 pub const REFERENCE_FIELDS: [usize; 9] = [0x50, 0x58, 0x68, 0x70, 0x78, 0x80, 0x88, 0x90, 0x98];
-/// Optional scope-local saved and tooltip target storage.
 pub const TARGET_STORAGE: usize = 0xa0;
 const ADDRESS_HASH_MULTIPLIER: usize = 0x9e37_79b9_7f4a_7c15;
-/// Each saved/tooltip target container holds these native records.
 const TARGET_RECORD_BYTES: usize = 0x70;
 
-/// Pointer-free scope operands. ROOT/FROM/PREV binding IDs index the acquisition's graph,
-/// including self-links and shared nodes. Unknown pointer-owned operands are
-/// explicit, separately counted demands, never silently represented as absent.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Operands {
     pub country: u32,
@@ -60,7 +33,6 @@ pub struct Operands {
     pub tooltip_storage_unrecorded: bool,
 }
 
-/// Acquisition-only work slot. Its address must not leave native acquisition.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Node {
     address: usize,
@@ -68,15 +40,12 @@ pub struct Node {
     pub operands: Operands,
 }
 
-/// Prepared address-to-ID index; the caller reuses this storage for every
-/// occurrence. Empty slots carry no semantic country/scope ID.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct IndexSlot {
     address: usize,
     id: u32,
 }
 
-/// A complete prefix is never a complete graph on shortage or read failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Graph {
     pub len: usize,
@@ -84,10 +53,6 @@ pub struct Graph {
     pub failure: Option<&'static str>,
 }
 
-/// Copy exactly the graph reachable from one occurrence, without allocation,
-/// recursion, a selected depth cap, or touching any country's other events.
-/// `index` needs more slots than `nodes`; a shortage requests prepared growth.
-/// The graph IDs follow first encounter in native binding order.
 pub fn copy_graph(
     memory: &impl crate::Memory,
     base: usize,
@@ -133,8 +98,6 @@ pub fn copy_graph(
             }
         };
         intern(root, nodes)?;
-        // Discovering a node initializes its work slot. The sentinel address
-        // after the discovered prefix is unnecessary: all IDs originate here.
         let mut discovered = 1;
         let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("event scope vtable unreadable or differs")? as u64;
@@ -220,9 +183,6 @@ pub fn copy_graph(
         }
         Ok(())
     })();
-    // Reset only slots this occurrence used, including the discovered suffix
-    // after failure. Preparing a large graph never makes later small events
-    // clear the whole retained capacity.
     for node in &nodes[..count] {
         index[node.index_slot] = IndexSlot::default();
     }

@@ -1,18 +1,3 @@
-//! The trade-route lines under the pointer, described as the game's province and strategic-region
-//! tooltips describe them.
-//!
-//! The lines are walked in the game's collection order (layer, then draw order). Each gives its
-//! description, or `NO_INTEL` for a route set the viewer may not see. A line of a new kind 0 to 3
-//! prefixes its header, after a newline when text is already written. A text already written,
-//! as a whole, is not written again; texts are joined by newlines.
-//!
-//! Composition: the province tooltip is the route text alone when any is written, and goes on as
-//! it would without the lines when none is; the strategic-region tooltip follows the route text.
-//!
-//! The naval-dominance line follows a client that requires convoys and whose requirement the
-//! reduction changed; its reduction is the share of the route's sea-region weights under the
-//! client country's naval control, times the convoy define. Supply transfers are withheld by name:
-//! their amounts and acquired convoys are not recorded.
 
 use super::Arg;
 use replay_data::rows::{Recorded, TradeRouteRow, tables};
@@ -27,10 +12,8 @@ const HEADERS: [&str; 4] = [
     "TRADE_ROUTE_CONVOY_IMPORT_HEADER",
 ];
 
-/// `ConvoyClients.category` of a market contract.
 const MARKET_CATEGORY: u8 = 6;
 
-/// `TradeRoutes.kind` of a naval route, whose path is strategic sea regions.
 const NAVAL_KIND: u8 = 2;
 
 const DOMINANCE_WITHHELD: &str = "trade route: its naval-dominance cost reduction line is withheld";
@@ -41,21 +24,14 @@ pub(super) const LEND_LEASE_EFFICIENCY_UNRECORDED: &str = "trade route: a lend-l
 pub(super) const MARKET_EFFICIENCY_UNRECORDED: &str = "trade route: a market route's efficiency line is withheld: its contracts' efficiency factors are not recorded";
 pub(super) const MARKET_REASON_UNRECORDED: &str = "trade route: a market route's convoy explanation is withheld: whether its convoys are sunk reads its contracts' efficiency factors, which are not recorded";
 
-/// What names the descriptions read.
 pub(super) struct Names<'a> {
     pub loc: &'a dyn Fn(&str, &[(&str, Arg<'_>)]) -> Result<String, String>,
     pub state: &'a dyn Fn(u32) -> Result<String, String>,
-    /// A recorded country reference's name.
     pub country: &'a dyn Fn(u32) -> Result<String, String>,
-    /// A resource's name by its one-based database index.
     pub resource: &'a dyn Fn(u32) -> Result<String, String>,
-    /// Whether a recorded country reference is the viewing country.
     pub viewed: &'a dyn Fn(u32) -> Result<bool, String>,
-    /// A strategic region's route weight.
     pub weight: &'a dyn Fn(u32) -> Result<i32, String>,
-    /// Whether a recorded country reference holds naval control of a strategic region.
     pub controls: &'a dyn Fn(u32, u32) -> Result<bool, String>,
-    /// The convoy define the controlled share scales, fixed5.
     pub factor: &'a Result<i64, String>,
 }
 
@@ -63,9 +39,6 @@ fn dominance_withheld(why: &str) -> String {
     format!("{DOMINANCE_WITHHELD}: {why}")
 }
 
-/// A route's controlled cost reduction for one country, fixed5: the share of the weights of the
-/// sea regions in its path (each entry counted, repeats too) that the country controls, times
-/// the define.
 pub(super) fn controlled_reduction(
     path: &[u32],
     weight: &dyn Fn(u32) -> Result<i32, String>,
@@ -87,13 +60,10 @@ pub(super) fn controlled_reduction(
     Ok(ratio.wrapping_mul(factor) / 100_000)
 }
 
-/// Whether a client's dominance line shows: it requires convoys and the reduction changed them.
-/// An unrecorded requirement before the reduction leaves it open, to be withheld by name.
 fn gate_open(required: i32, base: &Recorded<i32>) -> bool {
     required > 0 && !matches!(base, Recorded::Value(base) if *base == required)
 }
 
-/// The cost reduction a client's dominance line shows, 0 where its gate is closed.
 fn client_reduction(names: &Names<'_>, required: i32, base: &Recorded<i32>, country: u32, route: Option<&TradeRouteRow>) -> Result<i64, String> {
     if !gate_open(required, base) {
         return Ok(0);
@@ -109,7 +79,6 @@ fn client_reduction(names: &Names<'_>, required: i32, base: &Recorded<i32>, coun
     controlled_reduction(&route.path, names.weight, &|region| (names.controls)(country, region), factor)
 }
 
-/// A convoy client's two efficiency factors, where recorded.
 fn factors(client: &replay_data::rows::ConvoyClientRow) -> Option<(i64, i64)> {
     match (&client.efficiency_a, &client.efficiency_b) {
         (Recorded::Value(a), Recorded::Value(b)) => Some((*a, *b)),
@@ -117,25 +86,18 @@ fn factors(client: &replay_data::rows::ConvoyClientRow) -> Option<(i64, i64)> {
     }
 }
 
-/// One market contract of a route, as its convoy client holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Contract {
     pub assigned: i32,
     pub required: i32,
-    /// Its two efficiency factors, fixed5; none where unrecorded.
     pub factors: Option<(i64, i64)>,
-    /// Its controlled-route cost reduction, 0 where its dominance gate is closed, or why it is
-    /// withheld.
     pub reduction: Result<i64, String>,
 }
 
-/// Whether a fixed5 sum is finite for the game's averaging: its three non-finite sentinels are not.
 fn finite(value: i64) -> bool {
     !matches!(value, i64::MAX | i64::MIN) && value != i64::MIN + 1
 }
 
-/// A required-weighted average of `sum` over `required` convoys, the game's non-finite
-/// sentinel where it cannot be taken.
 fn weighted(sum: i64, required: i32) -> i64 {
     let total = i64::from(required).wrapping_mul(100_000);
     if total == 0 || !finite(sum) {
@@ -145,10 +107,6 @@ fn weighted(sum: i64, required: i32) -> i64 {
     }
 }
 
-/// A market route's text: `bought` is the importing side's line, `country` the other side's
-/// name, `reasons` whether the route set explains a convoy shortfall (the viewer's own). Its
-/// convoys and efficiency are the contracts' summed and required-weighted; without convoys it
-/// is a land route.
 pub(super) fn market(
     loc: &dyn Fn(&str, &[(&str, Arg<'_>)]) -> Result<String, String>,
     bought: bool,
@@ -222,26 +180,20 @@ pub(super) fn market(
     Ok(text)
 }
 
-/// One line's description, or why it is withheld whole, and the parts of it withheld.
 #[derive(Debug, PartialEq)]
 pub(super) struct Described {
     pub text: Result<String, String>,
     pub withheld: Vec<String>,
 }
 
-/// The route text written for the lines under the pointer.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Routes {
     pub text: String,
-    /// Whether any text was written.
     pub appended: bool,
-    /// Whether a line's whole description was withheld, which the game would have written.
     pub withheld: bool,
     pub refused: Vec<String>,
 }
 
-/// Walks `lines` as the game does: `disclosed` is whether the viewer may see the route set,
-/// `describe` gives each line's description.
 pub(super) fn assemble(
     lines: &[TradeRouteLine],
     disclosed: bool,
@@ -291,8 +243,6 @@ pub(super) fn assemble(
     routes
 }
 
-/// The tooltip of the province or strategic region under route lines: the region's follows the
-/// route text; the province's is the route text alone unless the lines wrote none.
 pub(super) fn compose(region: bool, routes: Routes, below: impl FnOnce() -> Tooltip) -> Tooltip {
     let mut out = if region {
         let mut below = below();
@@ -309,13 +259,11 @@ pub(super) fn compose(region: bool, routes: Routes, below: impl FnOnce() -> Tool
     out
 }
 
-/// `ROUTE_EFFICIENCY`'s argument: the percentage, red below one and yellow at or above it.
 fn efficiency_text(value: i64) -> String {
     let colour = if value < 100_000 { 'R' } else { 'Y' };
     format!("\u{11}{colour}{}\u{11}!", installed_content_core::fixed5::fixed5_percent(value, 0, true))
 }
 
-/// One line's description from the hour's rows.
 pub(super) fn describe(frame: &DecodedFrame, names: &Names<'_>, line: &TradeRouteLine) -> Described {
     let mut withheld = Vec::new();
     let text = describe_into(frame, names, line, &mut withheld).map_err(|why| {
@@ -429,7 +377,6 @@ fn describe_into(frame: &DecodedFrame, names: &Names<'_>, line: &TradeRouteLine,
             let route = |key: (u32, u8, u32)| routes.iter().find(|row| (row.country, row.class, row.other) == key);
             let identity = |key| route(key).and_then(|row| Some((row.kind, row.source_state?, row.destination_state?)));
             let wanted = identity(line.route).ok_or("its route or its endpoint states are absent from TradeRoutes")?;
-            // The route's contracts, as the lines group them, in the side's own list order.
             let mut members = Vec::new();
             for client in clients.iter().filter(|client| client.category == MARKET_CATEGORY) {
                 let side = if bought { client.other } else { client.owner };
@@ -481,25 +428,20 @@ mod tests {
             6 => Described { text: Err(SUPPLIES_UNRECORDED.into()), withheld: Vec::new() },
             client => text(&format!("text {client}")),
         });
-        // Collection order: production, exports, lend-lease; draw order within each.
         assert_eq!(
             routes.text,
             "[TRADE_ROUTE_CONVOY_PRODUCTION_HEADER]text 2\norigin\n\n[TRADE_ROUTE_CONVOY_EXPORT_HEADER]text 1\nsold\ntext 4"
         );
         assert!(routes.appended && routes.withheld);
         assert_eq!(routes.refused, [SUPPLIES_UNRECORDED]);
-        // Two overlapping routes with the same text write it once.
         let twice = assemble(&[line(4, 1), line(4, 2)], true, &loc, |_| text("same"));
         assert_eq!(twice.text, "same");
-        // A text already written whole appends nothing more.
         let empty = assemble(&[line(5, 1)], true, &loc, |_| text(""));
         assert!(!empty.appended);
     }
 
     #[test]
     fn overlapping_lines_in_draw_order_are_described_in_the_games_collection_order() {
-        // As the hit gives them: draw order puts imports before exports, lend-lease received
-        // before given, and supply transfers last.
         let lines = [line(3, 1), line(2, 2), line(5, 3), line(4, 4), line(1, 5)];
         let routes = assemble(&lines, true, &loc, |line| text(&format!("text {}", line.client)));
         assert_eq!(
@@ -528,9 +470,7 @@ mod tests {
         assert!(compose(false, written(), below).body.is_empty());
         let region = compose(true, written(), below);
         assert_eq!((region.title.as_str(), region.body.as_str()), ("routeprovince", "more"));
-        // Nothing written: the province goes on as without the lines.
         assert_eq!(compose(false, Routes::default(), below).title, "province");
-        // A withheld description stands where the game wrote text: no fall-through.
         let withheld = Routes { withheld: true, refused: vec![SUPPLIES_UNRECORDED.into()], ..Routes::default() };
         let shown = compose(false, withheld, below);
         assert!(shown.title.is_empty());
@@ -562,7 +502,6 @@ mod tests {
             _ => Err(format!("strategic region {region} has no recorded weight")),
         };
         let controls = |region: u32| Ok(region == 1);
-        // Region 1 twice and region 2 once: 6 of 7 weight controlled, at a define of 0.5.
         assert_eq!(controlled_reduction(&[1, 2, 1], &weight, &controls, 50_000), Ok(85_714 * 50_000 / 100_000));
         assert_eq!(controlled_reduction(&[2], &weight, &controls, 50_000), Ok(0));
         assert_eq!(controlled_reduction(&[], &weight, &controls, 50_000), Err(EMPTY_NAVAL_PATH.to_owned()));
@@ -598,11 +537,9 @@ mod tests {
     #[test]
     fn a_market_route_sums_convoys_and_weights_efficiency_by_required_convoys() {
         let mut withheld = Vec::new();
-        // Without required convoys it is a land route, with the contract count alone.
         let land = market(&key, true, "GER", &[contract(0, 0, None, None)], true, &mut withheld).unwrap();
         assert_eq!(land, "[TRADE_ROUTE_INTERNATIONAL_MARKET_IMPORT_LAND COUNTRY=GER CONTRACT_COUNT=1]");
         assert!(withheld.is_empty());
-        // Efficiency (1.0 x 0.9) weighted 1:3 with (0.5 x 1.0): 0.5 x 1/4 + 0.9 x 3/4 = 0.8.
         let contracts = [contract(1, 1, Some((50_000, 100_000)), Some(0)), contract(3, 3, Some((100_000, 90_000)), Some(0))];
         let sea = market(&key, false, "ENG", &contracts, true, &mut withheld).unwrap();
         assert_eq!(
@@ -612,11 +549,9 @@ mod tests {
              \n[TRADE_ROUTE_INTERNATIONAL_MARKET_CONVOY_DEFICIT_TT ]\n\n[TRADE_ROUTE_INTERNATIONAL_MARKET_CONVOY_SUNK_REASON_TT ]\n"
         );
         assert!(withheld.is_empty());
-        // A short contract with sunk convoys mixes both reasons; a positive reduction prints negated.
         let mixed = market(&key, true, "GER", &[contract(1, 2, Some((100_000, 90_000)), Some(10_000))], true, &mut withheld).unwrap();
         assert!(mixed.contains("[CONVOY_DOMINANCE_COST_REDUCTION REDUCTION=-10000]\n"));
         assert!(mixed.ends_with("[TRADE_ROUTE_INTERNATIONAL_MARKET_MIX_REASON_TT ]\n"));
-        // A short contract without sunk convoys explains assignment; nothing short, nothing sunk, no explanation.
         let short = market(&key, true, "GER", &[contract(1, 2, Some((100_000, 100_000)), Some(0))], true, &mut withheld).unwrap();
         assert!(short.ends_with("[TRADE_ROUTE_INTERNATIONAL_MARKET_ASSIGNMENT_REASON_TT ]\n"));
         let full = market(&key, true, "GER", &[contract(2, 2, Some((100_000, 100_000)), Some(0))], true, &mut withheld).unwrap();

@@ -22,18 +22,14 @@ test('a period is found by its hours, and an hour between periods finds none', (
 test('bands stack in order, signed, and an unknown band is never stacked as zero', () => {
   assert.deepEqual(columnEdges(periods[0]), [{ low: 0, high: 2 }, { low: 2, high: 5 }, { low: 5, high: 6 }]);
   assert.deepEqual(columnEdges(periods[1]), [{ low: 0, high: 4 }, null, { low: 4, high: 5 }]);
-  // A correction stacks down from zero.
   assert.deepEqual(columnEdges(periods[2]), [{ low: 0, high: 5 }, { low: -2, high: 0 }, { low: 5, high: 5 }]);
 });
 
 test('the value axis fits the columns in view, with zero', () => {
-  // An unknown band in view keeps room above the stacks for its cap.
   assert.deepEqual(columnsExtent(periods, [0, 2159]), [-2, 6 + 8 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent(periods, [744, 1000]), [0, 5 + 5 * CAP_HEADROOM]);
-  // Negative-only and mixed-sign stacks keep room from their whole span.
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [-1_000_000, null, 0] }], [0, 9]), [-1_000_000, 1_000_000 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [3, -7, null] }], [0, 9]), [-7, 3 + 10 * CAP_HEADROOM]);
-  // An uncertain band keeps the same room for its marker.
   assert.deepEqual(columnsExtent(periods, [1416, 2159]), [-2, 5 + 7 * CAP_HEADROOM]);
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [4, 0, 0] }], [0, 9]), [0, 4]);
   assert.deepEqual(columnsExtent([{ firstHour: 0, lastHour: 9, values: [null] }], [0, 9]), [0, 1]);
@@ -66,8 +62,6 @@ test('drawing stops at the playhead and caps a column with an unknown band', () 
   const { ctx, calls } = recorder();
   columnsLayer(periods, ['#a', '#b', '#c']).draw(ctx, frame, tokens, { playhead: 800 });
   const fills = calls.filter(call => call.startsWith('fillRect'));
-  // The first column's three bands, the second's two known bands and the
-  // hatched cap's wash above them; the third lies after the playhead.
   const capWash = fills.filter(call => call.endsWith(',12)'));
   assert.equal(capWash.length, 1);
   assert.equal(fills.length, 6);
@@ -80,7 +74,6 @@ test('the unknown cap stays visible on the tallest column at the fitted extent',
   const { ctx, calls } = recorder();
   columnsLayer(lone, ['#a', '#b', '#c']).draw(ctx, frame, tokens, { playhead: null });
   const fills = calls.filter(call => call.startsWith('fillRect'));
-  // The known band and a cap of nonzero height above it.
   assert.equal(fills.length, 2);
   const cap = fills[1].slice('fillRect('.length, -1).split(',').map(Number);
   assert.ok(cap[3] > 0, `the cap has height (${fills[1]})`);
@@ -109,7 +102,6 @@ test('a known band that is uncertain but draws no height keeps a visible marker'
   assert.ok(mark[3] > 0, `the marker has height (${fills[0]})`);
 });
 
-// Monthly bars of whole periods, as the army's losses draw them.
 const months: ColumnPeriod[] = [
   { firstHour: 0, lastHour: 9, values: [3, 4] },
   { firstHour: 10, lastHour: 19, values: [], unknown: true },
@@ -140,7 +132,6 @@ test('an unknown period is hatched from the plot top down to zero', () => {
 test('proportional spacing keeps up to two pixels, a share of the width in view, and drops columns with none', () => {
   const frame = plotFrame(300, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 30], [0, 10], false);
   assert.deepEqual(columnBox(months[0], frame, 'proportional'), { left: 2, width: 96 });
-  // Cut by the view, the gap follows the part shown.
   const panned = plotFrame(300, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [8, 38], [0, 10], false);
   assert.deepEqual(columnBox(months[0], panned, 'proportional'), { left: 2, width: 16 });
   const narrow = plotFrame(30, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 3000], [0, 10], false);
@@ -159,7 +150,6 @@ test('thin bands keep a known nonzero amount a pixel tall; by default it draws n
   assert.equal(rects(thin.calls).length, 2, 'the large band and the small one; a zero band draws nothing either way');
   assert.equal(rects(thin.calls)[1][3], 1);
   assert.equal(rects(plain.calls).length, 1);
-  // An amount too small to move the stack's edges at all is still a known nonzero band.
   const vast = [{ firstHour: 0, lastHour: 9, values: [1e12, 0.00001] }];
   const wide = plotFrame(300, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 10], [0, 1e12], false);
   const lost = recorder();
@@ -173,7 +163,6 @@ test('a signed month stacks its correction down from zero, and nothing after the
   const { ctx, calls } = recorder();
   columnsLayer(months, ['#a', '#b'], { spacing: 'proportional', thinBands: true }).draw(ctx, frame, tokens, { playhead: 25 });
   const drawn = rects(calls);
-  // Month one's two bands, the unknown month's wash, month three's two bands.
   assert.equal(drawn.length, 5);
   const [up, down] = drawn.slice(-2);
   assert.ok(up[1] + up[3] <= frame.toY(0) + 1e-9 && Math.abs(down[1] - frame.toY(0)) < 1e-9, 'the correction hangs below zero');

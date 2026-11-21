@@ -1,5 +1,3 @@
-/** The shared charts in a real browser, each given a live source the test writes: what each paints, and how many
- * commits it took. A canvas's log holds what its last frame drew (a frame starts with a whole-canvas clear). */
 import { Profiler } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -29,7 +27,6 @@ async function settle() { for (let i = 0; i < 8; i++) await frame(); }
 
 interface Drawn { texts: string[]; fills: string[]; heads: number[] }
 const drawn = new WeakMap<HTMLCanvasElement, Drawn>();
-// Charts draw into their canvas's offscreen canvas: what it draws is logged against the page's canvas it shows on.
 type Context = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 const pageCanvas = (context: Context) => canvasElement(context.canvas)!;
 const log = (context: Context) => {
@@ -38,7 +35,6 @@ const log = (context: Context) => {
   if (!held) drawn.set(canvas, held = { texts: [], fills: [], heads: [] });
   return held;
 };
-// The timeline's playhead is the only line it strokes 1.5 wide: the first point after that width is set is its x.
 const armed = new WeakSet<Context>();
 for (const proto of [CanvasRenderingContext2D.prototype, OffscreenCanvasRenderingContext2D.prototype] as Context[]) {
   const { clearRect, fillText, fillRect, moveTo } = proto;
@@ -59,7 +55,6 @@ for (const proto of [CanvasRenderingContext2D.prototype, OffscreenCanvasRenderin
   };
 }
 
-// A table bar's length, as the percentage its scale shows.
 const barWidth = (bar: HTMLElement | null) => {
   const scale = bar && /scaleX\(([^)]+)\)/.exec(bar.style.transform)?.[1];
   return scale == null ? null : `${Number(scale) * 100}%`;
@@ -82,7 +77,6 @@ function host(id: string, width: number, height: number) {
 const canvasOf = (id: string) => roots.get(id)!.host.querySelector('canvas')!;
 const lastFrame = (id: string): Drawn => drawn.get(canvasOf(id)) ?? { texts: [], fills: [], heads: [] };
 
-// Table: 200 rows, one painted column with a bar.
 interface Row { key: string; name: string }
 const tableRows: Row[] = Array.from({ length: 200 }, (_, i) => ({ key: `r${i}`, name: `Country ${String(i).padStart(3, '0')}` }));
 const tableColumns: TableColumn<Row>[] = [
@@ -92,15 +86,12 @@ const tableColumns: TableColumn<Row>[] = [
 const tableLive = new LiveCell<LiveValues<SortValue>>(valuesOf(new Map(), 'Not read yet'));
 const rowKey = (row: Row) => row.key;
 
-// Heat matrix: six countries each way.
 const axis = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, label: `Country ${i}` }));
 const heatLive = new LiveCell<LiveValues<MatrixCell>>(valuesOf(new Map(), 'Not read yet'));
 
-// Timeline: one lane held the whole extent.
 const lanes = [{ id: 'slot', label: 'Slot', spans: [{ id: 'holder', firstHour: 0, lastHour: 1000, label: 'Holder' }] }];
 const timelineHead = new LiveCell(100);
 
-// Sunburst: two parts, each a slice of its own.
 const sunItems = (a: number, b: number, c?: number): SunburstItem[] => [
   { path: [{ id: 'a', label: 'Alpha' }], value: a, exact: BigInt(a) },
   { path: [{ id: 'b', label: 'Beta' }], value: b, exact: BigInt(b) },
@@ -110,14 +101,12 @@ const sunLive = new LiveCell<SunburstValues>({ items: sunItems(10, 20) });
 const sunText = { format: (_value: number, exact: bigint | null) => exact == null ? 'Not recorded' : `A${exact}`, unit: 'units', valueLabel: 'Amount', missingLabel: 'Not recorded' };
 const sunSettings = { growth: 'share' as const, labels: true, legend: true, breadcrumb: true, dimming: true };
 
-// Drill parts: two parts, values painted.
 const drillParts = (a: number | null, b: number | null): DrillPart[] => [
   { id: 'a', label: 'Alpha', value: a, text: a == null ? 'Not known' : `${a} units` },
   { id: 'b', label: 'Beta', value: b, text: b == null ? 'Not known' : `${b} units` },
 ];
 const drillLive = new LiveCell<ReturnType<LiveDrillParts['read']>>({ parts: drillParts(30, 10) });
 
-// Chord and flow: two countries, one flow each way.
 const chordFrame = (forward: number, back: number): ChordFrame => ({ data: { nodes: [{ id: 'x', label: 'Ex', color: '#aa3333' }, { id: 'y', label: 'Why', color: '#3333aa' }],
   flows: [{ id: 'xy', source: 'x', target: 'y', value: forward }, { id: 'yx', source: 'y', target: 'x', value: back }] }, segment: 'one' });
 const chordLive = new LiveCell<ChordFrame>(chordFrame(10, 10));
@@ -137,12 +126,10 @@ export const fixture = {
       sort={{ column: sort, direction: sort === 'score' ? 'descending' : 'ascending' }} live={live ? tableLive : undefined} />));
     await settle();
   },
-  /** Scores by row key; a key left out is missing. */
   async pushTable(scores: Record<string, number>) {
     tableLive.set(valuesOf(new Map(Object.entries(scores).map(([key, value]) => [liveKey(key, 'score'), value])), key => `no score for ${key.split('\u0000')[0]}`));
     await settle();
   },
-  /** The first `count` rows in the order shown: key, the painted cell's text and its title, the bar's width. */
   tableRows(count: number) {
     return [...roots.get('table')!.host.querySelectorAll<HTMLElement>('tbody tr:not([aria-hidden="true"])')]
       .sort((a, b) => Number(a.ariaRowIndex) - Number(b.ariaRowIndex)).slice(0, count).map(row => {
@@ -158,7 +145,6 @@ export const fixture = {
       tooltip={() => null} active live={live ? heatLive : undefined} />));
     await settle();
   },
-  /** Every cell `color`, but the one at `missing` (a row and a column index). */
   async pushHeat(color: string, missing?: [number, number]) {
     const cells = new Map<string, MatrixCell>();
     for (const [r, row] of axis.entries()) for (const [c, column] of axis.entries())
@@ -166,7 +152,6 @@ export const fixture = {
     heatLive.set(valuesOf(cells, 'Not recorded at this hour'));
     await settle();
   },
-  /** How many cells the last frame filled in each colour. */
   heatFills() {
     const counts: Record<string, number> = {};
     for (const fill of lastFrame('heat').fills) if (/^#[0-9a-f]{6}$/.test(fill)) counts[fill] = (counts[fill] ?? 0) + 1;
@@ -180,7 +165,6 @@ export const fixture = {
     await settle();
   },
   async pushHead(hour: number) { timelineHead.set(hour); await settle(); },
-  /** Where the last frame drew the playhead. */
   playheadX: () => lastFrame('timeline').heads[0] ?? null,
 
   async mountSunburst(live: boolean) {
@@ -191,7 +175,6 @@ export const fixture = {
   },
   async pushSunburst(values: SunburstValues) { sunLive.set(values); await settle(); },
   items: sunItems,
-  /** The centre's and the slices' texts of the last frame, and the legend's rows: name, amount, share. */
   sunburst() {
     return { canvas: lastFrame('sunburst').texts,
       legend: [...roots.get('sunburst')!.host.querySelectorAll<HTMLElement>('.sunburst-legend [role="group"], .sunburst-legend button')]
@@ -204,7 +187,6 @@ export const fixture = {
     await settle();
   },
   async pushDrill(a: number | null, b: number | null) { drillLive.set({ parts: drillParts(a, b) }); await settle(); },
-  /** Each row: label and amount, in the order shown. */
   drill: () => [...roots.get('drill')!.host.querySelectorAll('.drill-parts > li')].map(row => [row.querySelector('.drill-part-label')?.textContent, row.querySelector('b')?.textContent]),
 
   async mountChord(live: boolean) {
@@ -224,7 +206,6 @@ export const fixture = {
   async pushFlow(value: number | null) { flowLive.set(flowValues(value)); await settle(); },
   flowTexts: () => lastFrame('flow').texts,
 
-  /** A canvas as it is drawn now. */
   picture: (id: string) => canvasOf(id).toDataURL(),
   unmount(id: string) { roots.get(id)?.root.render(<></>); },
 };

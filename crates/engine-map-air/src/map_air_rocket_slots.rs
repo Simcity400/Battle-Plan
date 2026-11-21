@@ -1,8 +1,3 @@
-//! State rocket-base slot input for map aircraft count.
-//!
-//! Selects the first qualifying building in the state's active-building vector.
-//! A host base uses a content define, so only a state base has a live building
-//! level to acquire.
 
 use crate::{
     Memory, cair_base, cbuilding, cbuilding_status, cbuilding_template, cpdx_array::Array, cstate,
@@ -10,25 +5,13 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Signed building-template weight; the first positive weight qualifies.
 const MISSILE_SLOT_WEIGHT: usize = 0x310;
-/// Building-template primary vtable.
 const BUILDING_TEMPLATE_VTABLE_RVA: Rva = Rva(0x0286_1988);
-/// First contribution array, with separate signed flagged and unflagged maxima.
 const PRIMARY_CONTRIBUTIONS: usize = 0x10;
-/// Second contribution array, adding unflagged levels.
 const SECONDARY_CONTRIBUTIONS: usize = 0x28;
-/// Signed i16 contribution level.
 const CONTRIBUTION_LEVEL: usize = 0x48;
-/// Contribution flag used to split or exclude nodes.
 const CONTRIBUTION_FLAG: usize = 0x8c;
 
-/// Read the live operand for a native kind-one rocket base. `None` denotes a
-/// host base, whose slots come from the matching game define. `Some(0)` is a
-/// complete state base with no qualifying building (or a zero aggregate).
-///
-/// This reads simulation objects only. In particular, it does not read the
-/// local map/selection cache or call a native presentation getter.
 pub fn state_rocket_slots(
     memory: &impl Memory,
     module_base: usize,
@@ -93,7 +76,6 @@ pub fn state_rocket_slots(
     if status_id != state_id || flags & cbuilding_status::STATE_FLAG == 0 {
         return Err("rocket building-status state identity mismatch");
     }
-    // The state's building status is its embedded CBuildingStatus plus ACTIVE_BUILDINGS.
     let buildings = bounded_array(
         memory,
         status,
@@ -207,8 +189,6 @@ fn aggregate_level(memory: &impl Memory, building: usize) -> Result<i16, &'stati
         cbuilding::LEVEL,
         "rocket built level unreadable",
     )?;
-    // The native getter adds in the low word and its rocket-base caller sign
-    // extends that word. Preserve negative and overflowed results exactly.
     Ok(ordinary_max
         .wrapping_add(additive.wrapping_add(built))
         .wrapping_add(flagged_max))

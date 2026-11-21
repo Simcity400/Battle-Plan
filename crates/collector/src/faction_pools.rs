@@ -1,6 +1,3 @@
-//! Held faction totals and faction/system extracted pools, supplied by scalar
-//! writer operands. Ordinary worker acquisition reads no native owner or resource
-//! array; one caller-specific observer copies final pools after extraction.
 use engine_allocation as allocation;
 use engine_native::Memory;
 use engine_resources::cstrategic_resource_pool as native;
@@ -191,7 +188,6 @@ impl Storage {
                 continue;
             };
             let mut changed = false;
-            // The null-resource slot is lifetime state; the native rebuild leaves it alone.
             for ordinal in 1..cell.resources.len() {
                 let value = ordinal
                     .checked_mul(native::VALUE_STRIDE)
@@ -269,8 +265,6 @@ impl Storage {
         changed
     }
 }
-/// Receivers are authenticated faction pointers or their embedded pool pointers.
-/// Foreign pool stores perform no native read and select no recorded cell.
 pub(crate) fn observe(receiver: usize, resource: bool, index: usize, value: i64, add: bool) {
     let hazard = Hazard::new();
     if CLOSED.load(Ordering::SeqCst) {
@@ -280,7 +274,6 @@ pub(crate) fn observe(receiver: usize, resource: bool, index: usize, value: i64,
     if pointer.is_null() {
         return;
     }
-    // Hazard admission protects the immutable receiver index during lookup.
     let storage = unsafe { &*pointer };
     let map = if resource {
         &storage.pools
@@ -321,9 +314,6 @@ pub(crate) fn rank_current(faction: u64) -> Option<(u64, u32)> {
         cell.phase_members[1].load(Ordering::Relaxed) as u32,
     ))
 }
-/// A phase guard spans the whole native refresh, including parallel children.
-/// The sole native read is the demanded owner's member-count operand; all
-/// country sums below are supplied by the native arithmetic, with no owner walk.
 pub(crate) fn phase_call(receiver: usize, kind: usize, original: impl FnOnce() -> usize) -> usize {
     let hazard = std::mem::ManuallyDrop::new(Hazard::new());
     let pointer = POINTER.load(Ordering::SeqCst);
@@ -386,8 +376,6 @@ pub(crate) fn phase_call(receiver: usize, kind: usize, original: impl FnOnce() -
     drop(std::mem::ManuallyDrop::into_inner(hazard));
     result
 }
-/// Projection includes parallel getter/setter and share passes; hold the owned
-/// lifetime until those children have all completed, without any extra reads.
 pub(crate) fn boundary_call(
     receiver: usize,
     kind: usize,
@@ -439,9 +427,6 @@ impl Drop for Hazard {
         READERS.fetch_sub(1, Ordering::SeqCst);
     }
 }
-/// One observer at the extraction caller's completed rebuild. Read only the
-/// registered faction/system amount words once, rather than once per contributing
-/// country. Native clear/add helpers and all foreign resource traffic are untapped.
 pub(crate) fn rebuild() {
     let _hazard = Hazard::new();
     if CLOSED.load(Ordering::SeqCst) {
@@ -719,8 +704,6 @@ impl Store {
             ));
         }
         if self.failure.iter().any(Option::is_some) {
-            // Scalar overlap does not revoke authenticated owner lifetimes.
-            // Keep drained, unpublished operands for the next quiet publication.
             if self.force || self.incomplete_epoch.is_some() || self.before != epoch {
                 self.epoch = None;
             }
@@ -1002,8 +985,6 @@ mod tests {
             storage.rebuild(&memory);
             assert_eq!(storage.drain(&mut store.held), [false, false]);
         });
-        // Each observer reads one header and two amounts; the unrelated pool
-        // and the retained null-resource slot are never read.
         assert_eq!(memory.reads.get() - reads, 6);
     }
     #[test]
@@ -1129,7 +1110,7 @@ mod tests {
             assert!(store.output(0).0.is_none());
             assert_eq!(memory.reads.get(), reads);
         }
-        pass(&mut store, &memory, 1, 1); // a complete census permits the next baseline
+        pass(&mut store, &memory, 1, 1);
         assert_eq!(memory.reads.get(), reads);
         pass(&mut store, &memory, 1, 1);
         assert_eq!(store.failure, [None; 2]);
@@ -1160,7 +1141,7 @@ mod tests {
                 -71,
                 false,
             );
-            storage.write(8, true, usize::MAX, 1, false); // unrelated country's pool
+            storage.write(8, true, usize::MAX, 1, false);
         });
         pass(&mut store, &memory, 40, 1);
         assert_eq!(memory.reads.get(), reads);

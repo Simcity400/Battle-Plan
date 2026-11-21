@@ -8,7 +8,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { browserTests, checkBrowserManifest, checkNodeImports, discoverTests, repositoryRoot, runGroups, testGroups } from './test-ui.mjs';
 
-// These child drivers share CPU and module-loading time with the pure UI group.
 const driverTimeoutMs = 30_000;
 let checkedFiles;
 function checkedTestFiles() {
@@ -58,7 +57,6 @@ test('child receives isolated native sweep flags', () => {
 });
 `);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
-    // The driver exercises actual isolated test children without opening a browser.
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
 const original = [(process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLE_PLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL)];
@@ -109,8 +107,6 @@ test('the production group runner reports actual Node test failures', async () =
     await writeFile(resolve(root, 'pass.test.mjs'), "import test from 'node:test'; test('synthetic pass', () => {});");
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
-    // run() intentionally skips recursive use inside a test process. Exercise
-    // its normal entry context in a short-lived Node driver, with no browser.
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
 let reported = '';

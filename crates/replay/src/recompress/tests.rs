@@ -5,10 +5,8 @@ use crate::{
 };
 use std::{fs, sync::atomic::{AtomicBool, Ordering}};
 
-/// Two runs, the first long enough to close a span.
 const RUNS: [(u64, i32, u32); 2] = [(1, 100, SPAN_BLOCKS + 1), (2, 900_000, 2)];
 
-/// A folder of the test's own, removed afterwards.
 struct Folder(PathBuf);
 
 impl Folder {
@@ -32,8 +30,6 @@ impl Drop for Folder {
     }
 }
 
-/// The two recordings read alike: every table of every hour of every run, read on hour after
-/// hour, each block's clock, the identity and every record.
 fn assert_reads_alike(a: &Path, b: &Path) {
     let (a, b) = (Recording::open_path(a).unwrap(), Recording::open_path(b).unwrap());
     assert_eq!((a.run_count(), a.hours()), (b.run_count(), b.hours()));
@@ -55,8 +51,6 @@ fn assert_reads_alike(a: &Path, b: &Path) {
     assert_eq!(records(&a), records(&b));
 }
 
-/// The recording at `path` holds chained part frames, restore chunks named again and written
-/// against a whole restore's, and a closed span: every link the recompress rewrites.
 fn assert_exercises_every_link(path: &Path) {
     let file = Recording::open_path(path).unwrap();
     let (mut chained, mut again, mut prefixed) = (0, 0, 0);
@@ -83,8 +77,6 @@ fn assert_exercises_every_link(path: &Path) {
     assert!(!file.run(0).unwrap().directory().spans.is_empty(), "the first run closes a span");
 }
 
-/// A recording recompressed from level 7 to 19 reads every table of every hour of every block as
-/// it did, keeps its identity and records, is smaller, and records its new level.
 #[test]
 fn a_recording_compressed_again_reads_as_it_did_and_is_smaller() {
     let folder = Folder::new("again");
@@ -113,9 +105,6 @@ fn a_recording_compressed_again_reads_as_it_did_and_is_smaller() {
     assert_reads_alike(&before, &path);
 }
 
-/// The kill test: a recompress stopped after a few units leaves the recording byte for byte as it
-/// was, and the file it left beside it is never listed as a recording; the next run takes the
-/// recording up from the start and leaves no such file.
 #[test]
 fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlisted() {
     let folder = Folder::new("stopped");
@@ -141,7 +130,6 @@ fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlist
     assert_reads_alike(&before, &path);
 }
 
-/// A recording whose root records the level asked for is left as it is, and said to be.
 #[test]
 fn a_recording_already_at_the_level_is_left_alone() {
     let folder = Folder::new("already");
@@ -152,21 +140,17 @@ fn a_recording_already_at_the_level_is_left_alone() {
     assert!(!partial_path(&path).exists());
 }
 
-/// A recording Battle Plan Recorder holds to write, or whose newest revision is not saved, is refused by
-/// name and left byte for byte as it was.
 #[test]
 fn a_recording_still_being_written_is_refused_by_name() {
     let folder = Folder::new("written");
     let bytes = fixtures::restored(7, &[(1, 100, 1)]);
     let path = folder.recording(&bytes);
-    // As the recorder's writer holds the recording it writes: readers may share it, writers not.
     let writer = OpenOptions::new().read(true).write(true).share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE).open(&path).unwrap();
     let held = recompress_file(&path, 19, false, |_| true);
     assert!(matches!(held, Err(Kept::Recording)), "{held:?}");
     assert!(held.unwrap_err().to_string().contains("still being written"));
     drop(writer);
     assert_eq!(fs::read(&path).unwrap(), bytes);
-    // Hours appended and not saved yet.
     let (root, length) = container::locate(bytes.as_slice(), Open::Newest).unwrap().unwrap();
     let read = container::read_root(bytes.as_slice(), &root).unwrap();
     let at = container::Revision { number: read.revision, length, root: root.digest };
@@ -179,8 +163,6 @@ fn a_recording_still_being_written_is_refused_by_name() {
     assert!(!partial_path(&path).exists());
 }
 
-/// A recording another program opens while it is compressed is kept byte for byte as it was when
-/// the smaller file is whole, and that file goes; once closed, it is compressed.
 #[test]
 fn a_recording_opened_elsewhere_while_compressed_is_kept_as_it_was() {
     let folder = Folder::new("elsewhere");
@@ -198,8 +180,6 @@ fn a_recording_opened_elsewhere_while_compressed_is_kept_as_it_was() {
     assert!(matches!(recompress_file(&path, 19, false, |_| true), Ok(Outcome::Replaced { .. })));
 }
 
-/// A recompress run below normal priority lowers its process and its threads: read from inside
-/// the job.
 #[test]
 fn a_background_recompress_runs_below_normal_priority() {
     use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, NORMAL_PRIORITY_CLASS, SetPriorityClass, THREAD_PRIORITY_BELOW_NORMAL};
@@ -215,22 +195,17 @@ fn a_background_recompress_runs_below_normal_priority() {
     })
     .join()
     .unwrap();
-    // SAFETY: the pseudo handle of the calling process; the test process goes back to normal.
     unsafe { SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS) };
     assert!(matches!(seen.0, Ok(Outcome::Replaced { .. })), "{:?}", seen.0);
     assert_eq!(seen.1, Some((BELOW_NORMAL_PRIORITY_CLASS, THREAD_PRIORITY_BELOW_NORMAL)));
 }
 
-/// What a held task saw: the later units compressed while it was held, and whether every other
-/// worker was left without work first.
 #[derive(Clone, Copy, Debug)]
 struct Held {
     units: usize,
     stalled: bool,
 }
 
-/// A hold on the first task compressing more than `above` raw bytes: it goes on once `units`
-/// later units were compressed, or once nothing else can go on.
 pub(super) struct Hold {
     above: usize,
     units: usize,
@@ -239,7 +214,6 @@ pub(super) struct Hold {
 }
 
 impl Queue {
-    /// The task of item `seq`, about to compress `raw` bytes, held as the hold says.
     pub(super) fn hold(&self, seq: u64, raw: usize) {
         let Some(hold) = &self.hold else { return };
         if raw <= hold.above || hold.taken.swap(true, Ordering::SeqCst) {
@@ -261,16 +235,12 @@ impl Queue {
     }
 }
 
-/// What a held part frames task saw before it said it was done: its unit written without it, or
-/// every other worker left without work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PartsHeld {
     written: bool,
     stalled: bool,
 }
 
-/// A hold on the first unit's part frames task, its frames' tasks handed out, before it says it
-/// is done: it goes on once its unit was written, or once nothing else can go on.
 pub(super) struct PartsHold {
     taken: AtomicBool,
     seen: Mutex<Option<PartsHeld>>,
@@ -295,7 +265,6 @@ impl Queue {
         *hold.seen.lock().unwrap() = Some(held);
     }
 
-    /// The writer wrote its first `applied` items.
     pub(super) fn applied(&self, applied: u64) {
         self.lock().applied = applied;
         self.given.notify_all();
@@ -303,7 +272,6 @@ impl Queue {
 }
 
 impl State {
-    /// A unit after the held task's item, counted once a frame or piece of it is compressed.
     pub(super) fn later(&mut self, message: &Message) {
         if let (Some((at, later)), Message::Done { seq, slot: Some(_), unit: true, .. }) = (&mut self.held, message) {
             if *seq > *at {
@@ -313,16 +281,11 @@ impl State {
     }
 }
 
-/// One very large unit among small ones: while a frame of it is held on one worker, the others
-/// compress every unit after it, so a unit compressing long never stalls the rest behind the order
-/// they are written in; and the bytes written are those of one worker taking one item at a time,
-/// and of a recompress paced for this machine.
 #[test]
 fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
     let folder = Folder::new("large");
     let path = folder.recording(&fixtures::one_large_unit(1));
     let file = Recording::open_path(&path).unwrap();
-    // Each unit in file order: its largest frame, its frames' raw bytes, and whether it has work.
     let mut units = Vec::new();
     let mut heads = 0;
     for run in 0..file.run_count() {
@@ -350,7 +313,6 @@ fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
         assert!(matches!(written, Ok(Written::Whole(_))), "{written:?}");
         fs::read(&partial).unwrap()
     };
-    // Room for the large unit twice over: the window, not its size, decides what else is handed out.
     let held = paced("held.tmp", Pace { workers: 4, window: 2 * units[large].1, hold: Some(Arc::clone(&hold)), parts: None });
     let seen = hold.seen.lock().unwrap().expect("a frame of the large unit was held");
     assert!(seen.units >= later, "{} of {later} later units compressed while the large one's frame was held (the others left without work: {})", seen.units, seen.stalled);
@@ -359,10 +321,6 @@ fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
     assert_reads_alike(&path, &folder.0.join("held.tmp"));
 }
 
-/// A unit's part frames task that says it is done only after every frame it handed out was
-/// compressed again still has its unit waiting for it: the unit is written once, with it, and
-/// the rewrite is whole. On the base the unit was written without it and its late word failed
-/// the rewrite as work of no item in flight.
 #[test]
 fn a_unit_waits_for_its_part_frames_task_to_say_it_is_done() {
     let folder = Folder::new("parts-late");

@@ -1,13 +1,3 @@
-//! The power ledger (family 33): what a country spent of its political or command power, read
-//! from the PowerLedger writer's tables. `power-spending` lists a span's payments as the changes
-//! of the holder's running totals (`PowerSpendTotals`): a one-off item's step is the payments of
-//! its read hour, a recurring item's a day counted as it ended, the gains row's the days' gains;
-//! coverage is the runs of `PowerSpendCoverage`. Items are named at their first payment's hour
-//! ([`naming`]). `power-day` ([`day`]) is the open day at an hour: its daily figures, what it
-//! spent by item and what command power the holder's allocations hold.
-//!
-//! A span is read per stretch and per holding of the tag: totals restart with a run, nothing
-//! carries across a gap, and no hour is walked.
 
 pub mod day;
 mod naming;
@@ -47,7 +37,6 @@ pub enum SpendCurrency {
 }
 
 impl SpendCurrency {
-    /// The currency as the writer's tables key it.
     fn code(self) -> u8 {
         match self {
             Self::Political => 0,
@@ -63,43 +52,40 @@ pub struct PowerSpendingParams {
     pub branch_id: String,
     pub country: Country,
     pub currency: SpendCurrency,
-    /// The span's first and last hour: a payment read in it is listed.
+    #[doc = " The span's first and last hour: a payment read in it is listed."]
     pub from: i32,
     pub to: i32,
 }
 
-/// An item paid in the span, as every reply names it: at its first payment's hour.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendItem {
-    /// Unique in the recording: holder, the holder's item ordinal and its first read (ordinals
-    /// restart with a run). `power-day` names its parts by it.
+    #[doc = " Unique in the recording: holder, the holder's item ordinal and its first read (ordinals"]
+    #[doc = " restart with a run). `power-day` names its parts by it."]
     pub id: String,
-    /// Items shown as one share it: their category, operands and names are equal.
+    #[doc = " Items shown as one share it: their category, operands and names are equal."]
     pub group_id: String,
     pub cause: String,
     pub category: String,
-    /// Charged every day (daily costs, deficits, upkeep): listed by day, not by payment.
+    #[doc = " Charged every day (daily costs, deficits, upkeep): listed by day, not by payment."]
     pub recurring: bool,
     pub first_hour: i32,
     pub first_read: i32,
     pub name: Option<String>,
-    /// Plain text naming the payment by its cause, item and target.
+    #[doc = " Plain text naming the payment by its cause, item and target."]
     pub action: String,
-    /// The key of its picture in `icons`.
+    #[doc = " The key of its picture in `icons`."]
     pub icon: Option<String>,
     pub character: Option<u32>,
     pub target_tag: Option<String>,
     pub target_name: Option<String>,
-    /// Why a name, target or picture is not known.
+    #[doc = " Why a name, target or picture is not known."]
     pub unknown: Option<String>,
-    /// The idea in `ideaTooltips` its tooltip shows.
+    #[doc = " The idea in `ideaTooltips` its tooltip shows."]
     pub tooltip_token: Option<String>,
 }
 
-/// What the tooltips of the ideas and advisors paid for show: each idea's effects, its name and
-/// description, and the formats and texts the effects read.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -116,74 +102,70 @@ pub struct SpendIdeaTooltips {
 pub struct SpendCategory {
     pub id: String,
     pub name: String,
-    /// False for payments whose cause was not recorded.
+    #[doc = " False for payments whose cause was not recorded."]
     pub identified: bool,
 }
 
-/// The payments of one one-off item read in one hour.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendPayment {
-    /// Its item's index in `items`.
+    #[doc = " Its item's index in `items`."]
     pub item: u32,
-    /// The latest payment's own hour.
+    #[doc = " The latest payment's own hour."]
     pub hour: Option<i32>,
-    /// The hour it was read and counted.
+    #[doc = " The hour it was read and counted."]
     pub read: i32,
-    /// The latest payment's native order: its sequence, then its cost ordinal.
+    #[doc = " The latest payment's native order: its sequence, then its cost ordinal."]
     pub sequence: Option<String>,
     pub ordinal: Option<u32>,
-    /// What the payments whose charge was recorded charged, fixed5; none where the sum was not
-    /// recorded.
+    #[doc = " What the payments whose charge was recorded charged, fixed5; none where the sum was not"]
+    #[doc = " recorded."]
     pub known_raw: Option<String>,
     pub payments: u32,
-    /// Payments whose charge was not recorded.
+    #[doc = " Payments whose charge was not recorded."]
     pub unknown: u32,
-    /// A payment read while the capture did not cover the currency.
+    #[doc = " A payment read while the capture did not cover the currency."]
     pub uncovered: bool,
 }
 
-/// The days of one recurring item counted in one hour (as its day ended).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendDay {
     pub item: u32,
-    /// The latest counted day's midnight.
+    #[doc = " The latest counted day's midnight."]
     pub day: Option<i32>,
     pub read: i32,
     pub days: u32,
-    /// What the days charged, fixed5; none where it was not recorded.
+    #[doc = " What the days charged, fixed5; none where it was not recorded."]
     pub charge_raw: Option<String>,
     pub payments: u32,
     pub unknown: u32,
-    /// Days read while the capture did not cover the currency.
+    #[doc = " Days read while the capture did not cover the currency."]
     pub uncovered: u32,
-    /// The balance moves the days' payments made, fixed5; none where one was not recorded.
+    #[doc = " The balance moves the days' payments made, fixed5; none where one was not recorded."]
     pub realized_raw: Option<String>,
-    /// Negative daily costs: a credit, not spending.
+    #[doc = " Negative daily costs: a credit, not spending."]
     pub credits: u32,
 }
 
-/// The daily gains of the days counted in one hour.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendGain {
     pub read: i32,
-    /// What the days gained before daily costs, fixed5; none where not recorded.
+    #[doc = " What the days gained before daily costs, fixed5; none where not recorded."]
     pub gained_raw: Option<String>,
-    /// What the cap kept off the days' gains.
+    #[doc = " What the cap kept off the days' gains."]
     pub capped_raw: Option<String>,
     pub days: u32,
-    /// Days whose gain was not read.
+    #[doc = " Days whose gain was not read."]
     pub unknown_days: u32,
-    /// Daily costs whose day's application was not recorded.
+    #[doc = " Daily costs whose day's application was not recorded."]
     pub unmatched: u32,
 }
 
-/// Hours whose spending in the currency was, or was not, recorded whole.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -206,16 +188,16 @@ pub struct PowerSpendingReply {
     pub decimals: u8,
     pub items: Vec<SpendItem>,
     pub categories: Vec<SpendCategory>,
-    /// In read order.
+    #[doc = " In read order."]
     pub payments: Vec<SpendPayment>,
-    /// In read order.
+    #[doc = " In read order."]
     pub days: Vec<SpendDay>,
-    /// In read order.
+    #[doc = " In read order."]
     pub gains: Vec<SpendGain>,
-    /// The span's hours the tag was held, in order; an hour of the span in none was not recorded.
+    #[doc = " The span's hours the tag was held, in order; an hour of the span in none was not recorded."]
     pub coverage: Vec<SpendCoverage>,
     pub icons: Vec<EquipmentIcon>,
-    /// None where no item is an idea or an advisor.
+    #[doc = " None where no item is an idea or an advisor."]
     pub idea_tooltips: Option<SpendIdeaTooltips>,
     pub warnings: Vec<String>,
 }
@@ -264,24 +246,19 @@ impl Product for PowerSpending {
     }
 }
 
-/// Whether `row`'s item is charged every day.
 pub(super) fn recurring(row: &PowerItemRow) -> bool {
     row.kind != PowerItemRow::CHANGE || matches!(row.cause, PowerCause::DailyGain | PowerCause::AbilityUpkeep)
 }
 
-/// A span of one stretch a holder held the tag: its run, holder, hours, and where the run's
-/// totals start (`zero`: from nothing at the run's first hour).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Piece {
     pub run: u32,
     pub slot: u32,
     pub first: i32,
     pub last: i32,
-    /// The hour the totals before the piece are read at; none where they are nothing.
     pub baseline: Option<i32>,
 }
 
-/// The pieces of `first..=last` in which `tag`'s holders held it, in hour order.
 pub(super) fn pieces(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> io::Result<Vec<Piece>> {
     let held = holdings(&query.holders);
     let mut tagged: Vec<&Holding> = held.values().flatten().filter(|holding| super::casualties::matches(tag, (holding.slot, holding.id), &holding.tag)).collect();
@@ -297,8 +274,6 @@ pub(super) fn pieces(query: &Query<'_>, tag: &Country, first: i32, last: i32) ->
             if from > to {
                 continue;
             }
-            // Totals restart with their run; a stretch after missing hours inside one reads them
-            // at its first hour, its own changes there not listed.
             let baseline = if from > stretch.first {
                 Some(from - 1)
             } else if stretch.first == run_first {
@@ -313,11 +288,9 @@ pub(super) fn pieces(query: &Query<'_>, tag: &Country, first: i32, last: i32) ->
     Ok(out)
 }
 
-/// A history cell as the ledger reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Value {
     Number(i64),
-    /// An optional cell holding none.
     None,
     Unrecorded,
 }
@@ -339,7 +312,6 @@ impl Value {
     }
 }
 
-/// The columns of `PowerSpendTotals` a span's steps read, by name.
 const TOTALS: [&str; 22] = [
     "known",
     "payments",
@@ -365,10 +337,8 @@ const TOTALS: [&str; 22] = [
     "unmatched",
 ];
 
-/// One key's cells at a step, by [`TOTALS`] position.
 type Cells = [Value; TOTALS.len()];
 
-/// A change of one totals row: its hour and its cells before and after.
 pub(super) struct Change<'a> {
     pub ordinal: u32,
     pub hour: i32,
@@ -399,7 +369,6 @@ fn raw(value: Option<i64>) -> Option<String> {
     value.map(|value| value.to_string())
 }
 
-/// What one change of an item's totals lists: its one-off payments and its recurring days.
 pub(super) fn listed(change: &Change<'_>, item: u32) -> (Option<SpendPayment>, Option<SpendDay>) {
     let after = |name: &str| change.after[position(name)];
     let payment = (count(change, "payments") > 0).then(|| {
@@ -436,7 +405,6 @@ pub(super) fn listed(change: &Change<'_>, item: u32) -> (Option<SpendPayment>, O
     (payment, day)
 }
 
-/// What one change of the gains row lists.
 pub(super) fn gained(change: &Change<'_>) -> Option<SpendGain> {
     let gain = SpendGain {
         read: change.hour,
@@ -450,8 +418,6 @@ pub(super) fn gained(change: &Change<'_>) -> Option<SpendGain> {
     (gain.days > 0 || gain.unknown_days > 0 || gain.unmatched > 0 || moved(&gain.gained_raw) || moved(&gain.capped_raw)).then_some(gain)
 }
 
-/// Every change of the totals rows `keys` of run `run` after `piece`'s baseline through its
-/// last hour, each against its cells before; a row hidden in an hour keeps its cells before.
 fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, each: &mut dyn FnMut(Change<'_>)) -> io::Result<()> {
     let columns: Vec<usize> = TOTALS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendTotals, name)).collect::<io::Result<_>>()?;
     let from = piece.baseline.unwrap_or(piece.first);
@@ -475,7 +441,6 @@ fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, each: &mut d
     Ok(())
 }
 
-/// The coverage runs of `piece`'s holder in `currency`, each with why it was not covered.
 fn coverage(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, out: &mut Vec<SpendCoverage>) -> io::Result<()> {
     let names = ["political", "command", "reason", "input_reason"];
     let columns: Vec<usize> = names.iter().map(|name| dashboard_declare::field(TableId::PowerSpendCoverage, name)).collect::<io::Result<_>>()?;
@@ -522,7 +487,6 @@ fn coverage(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, out: &mut
     Ok(())
 }
 
-/// The holder's items of run `run` as of `hour`, by ordinal.
 fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<BTreeMap<u32, PowerItemRow>> {
     let low = u128::from(slot) << 32;
     let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::Range(low, low | u128::from(u32::MAX)) }];
@@ -530,7 +494,6 @@ fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<BTreeMap<u32,
     Ok(frame.complete::<tables::PowerItems>().map(|rows| rows.iter().map(|row| (row.ordinal, row.clone())).collect()).unwrap_or_default())
 }
 
-/// The payments, days, gains and coverage `params` asks of `query`'s timeline, named.
 fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
     let currency = params.currency;
     let mut reply = PowerSpendingReply {

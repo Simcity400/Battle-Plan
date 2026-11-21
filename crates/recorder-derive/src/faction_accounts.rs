@@ -1,16 +1,3 @@
-//! `FactionAccountOwners`: the faction a faction account is kept with after the game stopped
-//! listing its country as a member. An account is its FactionAccounts kind-0 row; its country
-//! resolves through CountryLinks to a canonical slot, and the slot to its holder, the one
-//! Countries row of that canonical slot (none while several are). While the holder's slot is an
-//! explicit member of one faction the row holds that faction, `member` 1; when the membership ends
-//! the row keeps it, `member` 0, while the same holder (slot, id and tag) holds the account and the
-//! run's hours do not break. The row goes when the account row goes, its country no longer
-//! resolves to that holder, the slot's membership is ambiguous, or a member's country cannot be
-//! resolved (then only explicit members keep rows).
-//!
-//! Every input is required: while one is not complete the table is unavailable, and the next hour
-//! starts afresh, keeping nothing past the break. State is the table, read again at a resume, and
-//! the identity and membership indexes, rebuilt when their tables change.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
 use replay_columnar::leaf::Writer as Bytes;
@@ -57,14 +44,12 @@ const READS: &[Read] = &[
     },
 ];
 
-/// A canonical slot's holder: its raw id and tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Holder {
     id: u32,
     tag: Box<[u8]>,
 }
 
-/// An account's row as written, with the tag its holder had.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Owned {
     faction: u64,
@@ -73,21 +58,15 @@ struct Owned {
     member: bool,
 }
 
-/// The identity and membership indexes, as their tables stand.
 #[derive(Default)]
 struct Indexes {
-    /// Each link's canonical slot, by raw id.
     links: HashMap<u32, u32>,
-    /// Each canonical slot's holder; none while several Countries rows name the slot.
     holders: HashMap<u32, Option<Holder>>,
-    /// Each member slot's faction; none while its countries name two factions.
     members: HashMap<u32, Option<u64>>,
-    /// Every member's country resolves to a holder.
     joined: bool,
 }
 
 impl Indexes {
-    /// `country`'s canonical slot and holder, when it resolves to exactly one.
     fn holder(&self, country: u32) -> Option<(u32, &Holder)> {
         let slot = *self.links.get(&country)?;
         Some((slot, self.holders.get(&slot)?.as_ref()?))
@@ -139,10 +118,8 @@ impl Indexes {
 
 #[derive(Default)]
 pub struct FactionAccounts {
-    /// The table's rows, by account.
     held: HashMap<u32, Owned>,
     indexes: Option<Indexes>,
-    /// The last hour it ran.
     last: Option<i32>,
 }
 
@@ -150,14 +127,11 @@ fn key(account: u32) -> u128 {
     u128::from(account) << 64
 }
 
-/// The account a FactionAccounts key is the own (kind 0, ordinal 0) row of.
 fn own(key: u128) -> Option<u32> {
     (key as u64 == 0).then_some((key >> 64) as u32)
 }
 
 impl FactionAccounts {
-    /// What `account`'s row is to hold this hour, from its country (none when it has no row) and
-    /// the row held before.
     fn owner(indexes: &Indexes, country: Option<u32>, before: Option<&Owned>) -> Option<Owned> {
         let (slot, holder) = indexes.holder(country?)?;
         let before = before.filter(|before| before.slot == slot && before.holder == *holder);
@@ -169,7 +143,6 @@ impl FactionAccounts {
         }
     }
 
-    /// Makes `account`'s row what the rule says, writing only a change.
     fn settle(&mut self, account: u32, country: Option<u32>, out: &mut Rows) {
         let indexes = self.indexes.as_ref().expect("indexes read before accounts");
         let now = Self::owner(indexes, country, self.held.get(&account));
@@ -188,7 +161,6 @@ impl FactionAccounts {
         }
     }
 
-    /// Every account FactionAccounts holds, by its own row's country.
     fn accounts(hour: &Hour<'_>) -> HashMap<u32, u32> {
         let table = hour.table(TableId::FactionAccounts);
         table
@@ -215,7 +187,6 @@ impl Writer for FactionAccounts {
         READS
     }
 
-    // Hourly: a break in the hours, told by the hour it last ran, ends every kept membership.
     fn hourly(&self) -> bool {
         true
     }
@@ -230,7 +201,6 @@ impl Writer for FactionAccounts {
         self.last = Some(at);
         let identity = hour.wrote(TableId::Countries, Columns::These(&COUNTRY)) || hour.wrote(TableId::CountryLinks, Columns::These(&LINK)) || hour.wrote(TableId::FactionMembers, Columns::These(&MEMBER));
         if broke {
-            // Nothing is kept past a break: every row starts again from explicit membership.
             let kept: Vec<u32> = self.held.keys().copied().collect();
             for account in kept {
                 if self.held.get(&account).is_some_and(|owned| !owned.member) {
@@ -265,8 +235,6 @@ impl Writer for FactionAccounts {
         Ok(())
     }
 
-    /// Its rows as the commit's hour left them, each with the tag its holder has there: what a
-    /// writer never stopped holds.
     fn prime(&mut self, hour: &Hour<'_>) {
         *self = Self::default();
         let Ok(indexes) = Indexes::read(hour) else { return };
@@ -287,7 +255,6 @@ impl Writer for FactionAccounts {
         self.last = Some(hour.hour);
     }
 
-    /// Takes nothing: a resume primes it from the store ([`Self::prime`]).
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

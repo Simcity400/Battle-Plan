@@ -29,18 +29,14 @@ test('a later presentation generation invalidates content; the first seen, repea
   const revision = new ContentRevision();
   let changes = 0;
   revision.subscribe(() => changes++);
-  // The generation an opened source carries is where its replies start.
   revision.observePresentation(3);
   assert.equal(changes, 0);
   revision.observePresentation(3);
-  // A late reply of an older job never undoes a newer change.
   revision.observePresentation(2);
   assert.equal(changes, 0);
-  // Selected visual mods changed, reordered to another set, updated or removed.
   revision.observePresentation(4);
   assert.equal(changes, 1);
   assert.equal(revision.snapshot(), 1);
-  // Folder changes still count apart.
   revision.observe({ game: 'game', user: 'user', contentReady: true });
   revision.observePresentation(4);
   assert.equal(changes, 2);
@@ -78,7 +74,6 @@ test('only products declared to read content change their request identity', () 
     const request = { sourceId: 'same', revision: 'same', product, params: {} };
     assert.notEqual(productKey(request, 1), productKey(request, 2));
   }
-  // Holders and runs are recorded, but these replies also name countries and factions in the reader's language.
   assert.ok(CONTENT_PRODUCTS.includes('country-styles'));
   assert.ok(CONTENT_PRODUCTS.includes('country-groups'));
 });
@@ -87,7 +82,6 @@ test('a recording-only product keeps its settled cache and pending load across c
   let calls = 0;
   let aborted = false;
   let finish = () => {};
-  // A duplicate load must fail the call count instead of waiting on another gate.
   const response = new Promise<void>(resolve => { finish = resolve; });
   const client = { product: async (request: ProductRequest, signal: AbortSignal) => {
     calls++;
@@ -128,7 +122,6 @@ test('content becoming available re-requests successful but empty replies at the
   revision.observe({ game: 'game', user: 'user', contentReady: true });
   assert.deepEqual(await loadProduct(client, request, signal()), { name: 'Current country' });
   assert.equal(calls, 2);
-  // Another client has an independent content scope.
   assert.equal(contentRevision({} as DashboardClient).snapshot(), 0);
 });
 

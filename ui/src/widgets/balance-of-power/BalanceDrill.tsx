@@ -12,11 +12,6 @@ import type { PoliticsHistoryReply } from '../../generated/dashboard';
 
 const plain = (value: number) => String(value);
 
-/** What makes up a balance's weekly change at one hour: the derived drift sources
- * and each member's recorded weekly and daily contribution, each signed and exact
- * and totalled on its own; the two are independent and never reconciled. `token` null
- * shows the record the game shows; the country is `tag`'s holder at `at` in `history`,
- * found by the tag it held at the detail's hour. */
 export default function BalanceDrill({ runtime, track, history, tag, at, token, details, active }: {
   runtime: WidgetRuntime; track: BoundTrack; history: PoliticsHistoryReply; tag: string; at: number; token: string | null; details: BalanceDetails; active: boolean;
 }) {

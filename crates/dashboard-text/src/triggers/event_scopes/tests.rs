@@ -392,8 +392,6 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay_data::{rows::CharacterRow, rows::Recorded, rows::UnitLeaderRow};
     let leader = 9_u64 << 32 | 3;
-    // Deliberately disagree: carried SOV country versus the leader's GER
-    // owner. Tag reads the leader; country flags/store/hash read the country.
     let mut f = with_variables(
         frame(&original_countries(), &[103]),
         &[(1, 103, &[("x", ONE)]), (3, 44, &[("x", 9 * ONE)])],
@@ -473,8 +471,6 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
             Ok(37 + 4 * 31 * (13 + 17))
         );
         evaluator.end_description(caller).unwrap();
-        // Saving a target projects one saved-target arm. Copying
-        // a scope preserves both, while clearing setters produce bare children.
         evaluator.save_tooltip_target(b"kept", caller).unwrap();
         evaluator
             .save_global_tooltip_target(b"global", caller)
@@ -577,9 +573,6 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
                 .is_err()
         );
     });
-    // A changed current role can coexist with the original group leader.
-    // The existing role projection refuses ambiguous associations rather
-    // than selecting the original handle's owner as if it were the current one.
     let TableView::Complete(TableRows::UnitLeaders(leaders)) =
         &mut *f.tables[TableId::UnitLeaders.index()]
     else {

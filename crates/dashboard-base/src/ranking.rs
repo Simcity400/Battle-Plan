@@ -1,7 +1,3 @@
-//! The top N countries at every hour, for every product that ranks countries by
-//! a value held over runs of hours (the race widgets: Factories, Equipment
-//! produced). The product ranks here, so a reply carries only the countries ever
-//! among the top N, each with the hours it was.
 
 use crate::span::HourSpan;
 use std::{
@@ -11,10 +7,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-/// Visit the intersection of ordered, nonoverlapping runs and spans in one
-/// linear pass. A clipped piece retains its original supplying run; gaps and
-/// read dates remain the caller's recorded facts. The visitor can refuse a
-/// budget before copying the piece.
 pub fn for_each_piece<R>(
     runs: &[R],
     spans: &[HourSpan],
@@ -53,7 +45,6 @@ pub fn for_each_piece<R>(
     Ok(())
 }
 
-/// One key's spans inside `first..=last`, in hour order, overlapping or touching spans joined.
 pub fn joined_spans(mut spans: Vec<HourSpan>, first: i32, last: i32) -> Vec<HourSpan> {
     spans.sort_unstable_by_key(|span| (span.first_hour, span.last_hour));
     let mut joined: Vec<HourSpan> = Vec::new();
@@ -75,7 +66,6 @@ pub fn joined_spans(mut spans: Vec<HourSpan>, first: i32, last: i32) -> Vec<Hour
     joined
 }
 
-/// The hours of `spans` inside `within`.
 pub fn within_spans(
     spans: &[HourSpan],
     within: &[HourSpan],
@@ -98,14 +88,6 @@ pub fn within_spans(
     Ok(clipped)
 }
 
-/// The hours each country was among the top N, by tag: at every hour a value can
-/// change (a run starting or ending in any series), every country with a known
-/// value then is ranked (highest first, ties by tag), so between two such hours
-/// the top N stay the same. A country without a run at an hour, or whose value
-/// there is unknown (`value` gives none), is not ranked there, never as zero.
-///
-/// Each series' runs are in hour order and do not overlap; `span` gives a run's
-/// first and last hour.
 pub fn top_membership<R, N: Into<i128>>(
     series: &BTreeMap<String, Vec<R>>,
     count: usize,
@@ -126,10 +108,6 @@ pub fn top_membership<R, N: Into<i128>>(
     )
 }
 
-/// Exact table ranking in either direction. An active run with an unknown value
-/// sorts after all known values; no run means the country is absent. Tags break
-/// ties in recorded UTF-8 order. Callers supply identity spans independently of
-/// their measure's coverage, so missing data never becomes a recorded zero.
 pub fn top_membership_exact<R>(
     series: &BTreeMap<String, Vec<R>>,
     count: usize,
@@ -143,10 +121,6 @@ pub fn top_membership_exact<R>(
     )
 }
 
-/// Publish rank positions from the same sweep and comparison used by top membership.
-/// Callbacks retain every input run boundary, in hour order and then rank
-/// order: callers select native instances at the interval's first hour, and
-/// an unseeded series batch takes its first hour from its first callback.
 pub fn rank_positions<R>(
     series: &BTreeMap<String, Vec<R>>,
     span: impl Fn(&R) -> (i32, i32),
@@ -168,10 +142,6 @@ pub fn rank_positions<R>(
     Ok(())
 }
 
-/// Publish maximal adjacent spans of the same country at the same rank.
-/// Unlike `rank_positions`, input boundaries that leave positions unchanged
-/// make no callback. Callers must seed their batch bounds independently and
-/// use country keys that do not depend on a span's first hour.
 pub fn rank_runs<R>(
     series: &BTreeMap<String, Vec<R>>,
     span: impl Fn(&R) -> (i32, i32),
@@ -182,8 +152,6 @@ pub fn rank_runs<R>(
     RankPlan::new(series, span, cancelled)?.runs(value, cancelled, &mut position)
 }
 
-// Reverse compares directly, so descending values retain both i128 extrema.
-// Every set uses one direction; either known variant precedes Unknown.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum RankValue {
     Ascending(i128),
@@ -199,7 +167,6 @@ impl RankValue {
         }
     }
 }
-/// The same exact, unknown-last comparison for a table at one recorded hour.
 pub fn compare(left: Option<i128>, right: Option<i128>, descending: bool) -> std::cmp::Ordering {
     RankValue::new(left, descending).cmp(&RankValue::new(right, descending))
 }
@@ -246,8 +213,6 @@ fn membership<R>(
     )
 }
 
-/// One sorted boundary plan shared by several ranking channels over the
-/// same runs. Values and rank state remain each channel's own.
 pub struct RankPlan<'a, R> {
     tags: Vec<(&'a String, &'a Vec<R>)>,
     events: Vec<RankEvent>,
@@ -290,8 +255,6 @@ impl<'a, R> RankPlan<'a, R> {
                 });
             }
         }
-        // Ends precede starts at the same boundary, including adjacent equal runs.
-        // i64 keeps the one-past-i32::MAX boundary distinct from recorded hours.
         events.sort_unstable_by_key(|event| (event.hour, event.starts));
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -391,8 +354,6 @@ impl<'a, R> RankPlan<'a, R> {
                 break;
             };
             let (start, end) = (hour as i32, (next.hour - 1) as i32);
-            // Changed countries update the set; its first N supply membership.
-            // The index breaks equal-value ties by the BTreeMap's UTF-8 tag order.
             for (rank, (_, index)) in ranked.iter().take(count).enumerate() {
                 steps += 1;
                 if steps.is_multiple_of(4096) && cancelled.load(Ordering::Acquire) {
@@ -449,8 +410,6 @@ impl<'a, R> RankPlan<'a, R> {
     }
 }
 
-/// A measure without selected spans keeps each recorded run intact; otherwise
-/// use the shared clipped walk, so every product has the same gap boundaries.
 pub fn for_each_optional_piece<R>(
     runs: &[R],
     spans: Option<&[HourSpan]>,

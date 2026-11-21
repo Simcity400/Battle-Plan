@@ -1,13 +1,9 @@
-// Pure page metadata for the sidebar and the layout model; no React or CSS.
 import type { IconName } from '../components/Icons';
 import type { WidgetKind } from './model';
 
-/** A default widget: kind, then x, y, width and height on the 12-column grid, in reading order,
- * and optionally the key of the catalogue variant it starts as. */
 type Panel = readonly [WidgetKind, number, number, number, number, string?];
 export interface Page { id: string; label: string; icon: IconName; panels: readonly Panel[] }
 
-/** Analytics pages. Each keeps its own saved layouts and starts from this arrangement. */
 export const PAGES = [
   { id: 'overview', label: 'Overview', icon: 'grid', panels: [
     ['map', 0, 0, 8, 14], ['event-feed', 8, 0, 4, 14],
@@ -105,12 +101,10 @@ export const PAGES = [
   ] },
 ] as const satisfies readonly Page[];
 
-/** A built-in page id, or `page-…` for one the user added. */
 export type PageId = string;
 export const pageDefinition = (id: PageId): Page | undefined => PAGES.find(page => page.id === id);
 export const pageIcon = (id: PageId): IconName => pageDefinition(id)?.icon ?? 'layout';
 
-/** The sidebar's pages in order, with the names the user gave them. */
 export interface PageEntry { id: PageId; label: string }
 const PAGE_LIST_KEY = 'hoi4-replay.analytics-pages.v1';
 export const MAX_PAGE_LABEL = 60;
@@ -140,13 +134,10 @@ export function savePages(pages: PageEntry[], storage?: PageStorage): string | n
   catch { return 'Your pages apply for this session. This device could not save them.'; }
 }
 
-/** What each page other than the shown one kept while it was not shown, for the pages that
- * still exist: a deleted page's kept draft is gone with it. */
 export function keptPageStates<T>(states: ReadonlyMap<PageId, T>, shown: PageId, pages: readonly PageId[]): T[] {
   return [...states].filter(([id]) => id !== shown && pages.includes(id)).map(([, state]) => state);
 }
 
-/** Moves the page at `from` so it lands before the page now at `to` (`to` may be the length). */
 export function movePage(pages: PageEntry[], from: number, to: number): PageEntry[] {
   const next = [...pages];
   const [page] = next.splice(from, 1);

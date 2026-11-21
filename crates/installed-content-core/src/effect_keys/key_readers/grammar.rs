@@ -1,4 +1,3 @@
-//! Effect body grammars selected by executable reader identity.
 
 use super::{Fallback, KeyReader, ValueReader};
 #[derive(Clone, Copy)]

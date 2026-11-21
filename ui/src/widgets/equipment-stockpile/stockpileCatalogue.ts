@@ -4,12 +4,8 @@ import type { Span } from '../../charts/series';
 import type { StockGroup } from './stockpileData';
 import type { StockpileChoicePeak, StockpileHolder } from '../../generated/dashboard';
 
-/** What the widget reads of the whole branch besides an hour's values (`equipment-stockpile-catalogue`). */
 export interface StockpilePrepared {
-  /** The hour the values are as of: the one the shown reply answers, which a followed read can hold
-   * while the next hour's loads. */
   hour: number;
-  /** The holders' stock and logistics reads within their hours, for stepping through them. */
   reads: readonly number[]; logisticsReads: readonly number[];
   stockRecorded: boolean; linesRecorded: boolean; balanceRecorded: boolean; aiRecorded: boolean;
   nonzeroLogistics: readonly string[];
@@ -19,32 +15,24 @@ export interface StockpilePrepared {
 export type PreparedStockpileReply = EquipmentStockpileReply & { prepared?: StockpilePrepared };
 export interface StockpileView { from: number; to: number; width: number }
 
-/** The hour a reply's values are as of, else `hour`. */
 export const servedHour = (reply: EquipmentStockpileReply | undefined, hour: number) =>
   (reply as PreparedStockpileReply | undefined)?.prepared?.hour ?? hour;
 
-/** A group's key in the catalogue's choices and the chart's lines: `[kind, key]`, a variant by its handle. */
 export const stockpileGroupKey = (group: StockGroup) => JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key]);
 
-/** The group with its variants as `reply` holds them. */
 export function groupIn(reply: EquipmentStockpileReply, group: StockGroup): StockGroup {
   const variants = new Map(reply.variants.map(variant => [variant.id, variant]));
   return { ...group, variants: group.variants.flatMap(variant => variants.get(variant.id) ?? []) };
 }
 
-/** The holders a request reads: each tag, only within its hours where they are named. */
 export const stockpileHolders = (spans: ReadonlyMap<string, readonly Span[]>): StockpileHolder[] =>
   [...spans].map(([tag, within]) => ({ country: countryFromKey(tag), within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) }));
 
-/** The holder whose hours hold `hour`: the first without named hours, else the one they hold it. */
 export const holderAt = (holders: readonly StockpileHolder[], hour: number): string | null => {
   const found = holders.find(holder => !holder.within || holder.within.some(span => span.firstHour <= hour && hour <= span.lastHour));
   return found ? countryKey(found.country) : null;
 };
 
-/** The widget's reply at an hour: the catalogue's variants, types and peaks with the hour's values and
- * the reads that supply them (`equipment-stockpile-at`), none where the hour's reply is not in yet. A
- * variant or type the hour names that an older catalogue does not list keeps its own entry. */
 export function stockpileView(catalogue: StockpileCatalogueReply, at: EquipmentStockpileReply | undefined, hour: number, tag = at?.tag ?? (catalogue.countries[0] === undefined ? '' : countryKey(catalogue.countries[0]))): PreparedStockpileReply {
   const values = new Map((at?.variants ?? []).map(variant => [variant.id, variant]));
   const listed = new Set(catalogue.variants.map(variant => variant.id));

@@ -1,29 +1,3 @@
-//! A nuclear drop's impact. No game code is called.
-//!
-//! Every launch, through an effect or command, only appends a delayed entry to its nuke object's
-//! queue. Queue dispatch runs during country pending refresh in the serial country loop before the
-//! hourly update, on the main thread only, and calls [`IMPACT`] once per ready entry. The impact:
-//!
-//! - logs the launcher (the nuke's launcher, passing on its tag word), province
-//!   id and controller;
-//!
-//! - subtracts the province's nuclear war-support damage from the state owner's
-//!   war support, resolving the owner through the province's state and its owner
-//!   and using tag zero without a state;
-//!
-//! - for a type other than 1, damages the province's units ([`UNIT_DAMAGE`]),
-//!   destroys aircraft in its air bases' wings and removes healthy building
-//!   levels. Type 1 does all three for every province of the state
-//!   (the state's province list);
-//!
-//! - removes healthy levels of the state's buildings, adds war score, then
-//!   tail-jumps to [`NOTIFY`], its only entry, which dispatches the authored
-//!   `on_nuke_drop` effects.
-//!
-//! A strike's outcome is therefore what runs between impact entry and
-//! notification entry: closing it there keeps authored effects out. Type lookup
-//! gives ordinals 0 and 1 their lexer tokens; the impact reads only whether the
-//! type is 1.
 
 use crate::{
     Memory, carmy, ccountry, cnuke,
@@ -34,49 +8,32 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// A function entry this family patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Site {
     pub name: &'static str,
     pub rva: Rva,
 }
 
-/// Impact takes nuke and province pointers in RCX and RDX, saved immediately; no other argument is
-/// read. The five patched bytes save RDX to its home slot.
 pub const IMPACT: Site = Site {
     name: "impact",
     rva: Rva(0x0111_fdf0),
 };
-/// Notification takes nuke and province pointers, entered only by the impact's tail jump; RCX and
-/// RDX are kept in RSI and RDI. The five patched bytes save RBX to its home slot.
 pub const NOTIFY: Site = Site {
     name: "notify",
     rva: Rva(0x0112_19b0),
 };
-/// Unit damage takes nuke and province pointers and returns u64, called by both province-damage
-/// branches of the impact. It walks the province's mixed occupants (up to their count) in order.
-/// For each whose class word is not 1, it calls the immediate-damage virtual with random strength
-/// and organisation fractions between the `NRaids` minimum and maximum, flag 1 and the launcher's
-/// tag. The five patched bytes push RBX, RBP, RSI and RDI; RAX is returned unchanged.
 pub const UNIT_DAMAGE: Site = Site {
     name: "unit_damage",
     rva: Rva(0x0111_f4d0),
 };
 pub const SITES: [Site; 3] = [IMPACT, NOTIFY, UNIT_DAMAGE];
 
-/// A drop's target and launcher, as the impact reads them on entry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Strike {
-    /// The launcher named by its own reference.
     pub launcher: CountryIdentity,
-    /// The native type ordinal of the nuke.
     pub nuke_type: u32,
     pub province: u32,
-    /// The province's state id (`cstate::ID`); 0 for a province without a state, which has no state
-    /// buildings and no war support recipient.
     pub state: u32,
-    /// The war support recipient: the state owner's reference resolved, the
-    /// reserved country (reference zero) without a state.
     pub owner: CountryIdentity,
     pub controller: u32,
 }
@@ -119,9 +76,6 @@ fn authenticate(
     Ok(())
 }
 
-/// The impact's operands on entry: the nuke object and province it was
-/// called with, authenticated by their vtables, and the full native IDs of
-/// the launcher and the state owner at this hour.
 pub fn strike(
     memory: &impl Memory,
     base: usize,
@@ -211,35 +165,20 @@ pub fn strike(
     })
 }
 
-/// A division's class word (`cunit::CLASS`).
 pub const ARMY_CLASS: u32 = 0;
-/// The class [`UNIT_DAMAGE`] skips by comparing the occupant's class word (`cunit::CLASS`) with
-/// one.
 pub const SKIPPED_CLASS: u32 = 1;
-/// A railway gun's class word, passed to unit construction by the railway-gun
-/// constructor.
 pub const RAILWAY_GUN_CLASS: u32 = 13;
 
-/// One unit [`UNIT_DAMAGE`] damages: the fields its immediate-damage operation
-/// writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Unit {
     pub handle: u64,
     pub class: u32,
     pub owner: u32,
-    /// Signed fixed5: `carmy::STRENGTH`, `crailway_gun::CURRENT_STRENGTH`.
     pub strength: i64,
-    /// Signed fixed5 `carmy::ORGANISATION`; a railway gun has none (its getter returns a constant
-    /// and its damage operation ignores the organisation operand).
     pub organisation: Option<i64>,
-    /// A division's manpower entries summed (`carmy::MANPOWER_VALUES`, the signed dwords the loss
-    /// walker subtracts from); a railway gun's `crailway_gun::MANPOWER`.
     pub manpower: i64,
 }
 
-/// Visits, in native order, each occupant [`UNIT_DAMAGE`] damages: `Ok`
-/// for a division or railway gun, `Err` naming any other class. The walk's
-/// own failure is the outer error.
 pub fn units(
     memory: &impl Memory,
     base: usize,
@@ -299,7 +238,6 @@ fn army(memory: &impl Memory, base: usize, army: usize) -> Result<Unit, &'static
             "nuclear strike division handle unreadable",
         )?,
         class: ARMY_CLASS,
-        // Active division damage credits the expeditionary owner when positive.
         owner: equipment_destruction::army_owner(memory, army)?,
         strength: field(
             memory,
@@ -333,8 +271,6 @@ fn railway_gun(memory: &impl Memory, base: usize, gun: usize) -> Result<Unit, &'
             "nuclear strike railway gun handle unreadable",
         )?,
         class: RAILWAY_GUN_CLASS,
-        // Railway-gun immediate damage resolves the casualty victim from the roster owner
-        // (`cunit::ROSTER_OWNER`).
         owner: field(
             memory,
             gun,
@@ -384,8 +320,6 @@ mod tests {
             world.u64(NUKE, cnuke::VTABLE_RVA.0 as u64);
             world.u64(NUKE + cnuke::COUNTRY, COUNTRY as u64);
             world.u32(NUKE + cnuke::TYPE, 1);
-            // Slots 0 (reserved), 1 (launcher) and 2 (owner); raw reference
-            // 3 is an alias of the owner.
             world.array(GAME + cgame_state::COUNTRIES, SLOTS, 3);
             world.array(GAME + cgame_state::COUNTRY_LINKS, LINKS, 4);
             for (slot, country, id, instance) in [
@@ -443,7 +377,6 @@ mod tests {
                 nuke_type: 1,
                 province: 13_000,
                 state: 1_204,
-                // The aliased reference keeps its raw word beside the full ID.
                 owner: CountryIdentity {
                     reference: 3,
                     id: 2,
@@ -478,7 +411,6 @@ mod tests {
         let mut world = World::new();
         world.u64(PROVINCE, 0);
         assert!(strike(&world.memory(), 0, GAME, NUKE, PROVINCE).is_err());
-        // A launcher whose reference names another country is not trusted.
         let mut world = World::new();
         world.u32(COUNTRY + ccountry::ID, 2);
         assert!(strike(&world.memory(), 0, GAME, NUKE, PROVINCE).is_err());

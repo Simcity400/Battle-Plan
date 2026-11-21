@@ -1,0 +1,13 @@
+# Mount visual mods over art without changing recorded facts
+
+Discover locally installed mod descriptors and Workshop items in the game's Steam library. Deduplicate a Workshop item represented by a user descriptor and aliases pointing at the same source. The Workshop directory or its own archive supplies the content even when its descriptor names an old path. Discovery is read-only and reports each unreadable candidate so one bad entry cannot hide the rest.
+
+Mount chosen mods in native dependency and descriptor order, above the recorded layers and below built-in layers mounted above mods. A recorded mod chosen again retains its verification. The game mounts one mod per display name, so reject a colliding selection by name and keep mounting usable selections. Inventory and lookup can share the underlying layers, but changed selections need fresh memoization. A selection revision covers the visible paths with their spelling, metadata and mounting failures. If it changes during mounting, remount against the new revision before publishing the result.
+
+Filter replacements and files through the presentation roots. Geometry and simulation keep reading recorded content even through a presentation stack. The graphics-defines reader has a separate stack that exposes the mod scripts and lends only their graphics sections. Visual mods follow native file enumeration policy, while verified recorded layers refuse case variants and links their proof cannot settle.
+
+Folder overlays follow Windows directory junctions and keep the canonical directories on the active walk. When a junction returns to an ancestor, refuse the overlay and name the mod and cycle in the mount warning. The game bounds that traversal. The refusal leaves the recorded stack available while the reader lacks a proven matching bound.
+
+Draw an artwork item or operation from the selected visual stack first, and retry from the unmodified recorded stack when the selection cannot supply it. When stages depend on one another, fall back for the whole operation so the selected asset does not inherit an incompatible recorded stage. Separate strict-draw and ordinary draw memo entries. Track which mod supplied each file and which operations used recorded fallback. Nested observers capture their own fallbacks, isolated observers selectively publish them, and reused memo entries replay them to each consumer. A named refusal remains when neither stack can draw the item.
+
+[Visual-mod discovery and mounts](../../crates/installed-content-core/src/content/visual.rs) · [Artwork fallback and diagnostics](../../crates/installed-content-core/src/content.rs)

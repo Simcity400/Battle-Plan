@@ -294,7 +294,6 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
                     .ok_or("command owner list overflow")?,
             )
             .ok_or("command owner handle unreadable")?;
-            // Execute slots skip list references that vanished after the command was posted.
             let Some(pointer) = self.resolve_reference(handle, object)? else {
                 continue;
             };
@@ -458,7 +457,6 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
         if node != 0 {
             return Err("command combat countries exceed native count");
         }
-        // The host's human and AI retreat requests have the same replicated payload.
         Ok(if !belongs {
             Resolution::Automatic
         } else if player == 1 && automatic {
@@ -524,7 +522,6 @@ impl<M: Memory, F: Fn(u32, Object) -> bool> Reader<'_, M, F> {
                 if count < 0 {
                     return Err("command script country list invalid");
                 }
-                // Scripted window effects originate in the UI; global scopes have no country operand.
                 if count == 0 {
                     Some(actor_country)
                 } else {
@@ -586,7 +583,6 @@ pub fn target(
         state,
         inputs,
         registry: HeaderResolver::default(),
-        // The player command family is refused before this runs when the table is withheld.
         object_identity: |identity, object| {
             engine_executable::executable_tables::commands()
                 .is_ok_and(|commands| commands.object(identity, object))

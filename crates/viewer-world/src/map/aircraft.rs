@@ -1,96 +1,3 @@
-//! Flying aircraft scenarios from recorded simulation and content-defined rigs.
-//!
-//! Strategic regions are visited every two wall seconds. Eligible missions enter
-//! per-region arrays: bombers mask 0x1f7fa, base equipment, fighters mask 0x85,
-//! transports bit 10 and scouts bit 14. The local 50-entry limit excludes direct
-//! bit-17 base-equipment appends. One set holds the viewing country and side A;
-//! another holds side B. Fighter, scout and transport units divide mission-effective
-//! counts by the family's `NAirGfx.*_DIVISION_FACTOR`, flooring positive counts to
-//! one. Authored three-unit and one-unit steps select triple and single scenarios.
-//! An unpaired bomber emits one scenario, using its own plane count to choose a
-//! triple. `MAX_*_SCENARIOS` is checked by exact kind before a wing's batch, so the
-//! batch can exceed it. Refusal ends a stepped family's side loop; an unpaired
-//! bomber refusal skips only that wing ([`scenarios`]).
-//!
-//! Model selection takes the largest wing-equipment amount, keeping the first
-//! tie. It tries designer and saved variant models, then equipment overrides,
-//! cosmetic tag, country tag and bare key. Each prefix tries equipment name,
-//! archetype name and sprite with `_entity`; graphical culture is not a rung.
-//! The first registered entity wins. Refused definitions omit and count the wing
-//! without trying a later candidate ([`resolve_entity`]).
-//!
-//! Placement uses a supplied province or a draw from the deduplicated region list.
-//! Bombers and transports supply their mission's last target; scouts and side A
-//! fighters supply a random reached province; side B fighters supply none.
-//! Naval-patrol fighters use [`NavalPatrolSources::choose`] for their province
-//! and `success`/`default` kamikaze outcome.
-//! Anchors use integer map coordinates and the game's clamped bilinear terrain
-//! sample ([`HeightField::native_height`]), as do the route's minimum elevation
-//! and the near-ground band. Orientation
-//! follows the designated wing's base with a signed 10..40-degree perturbation
-//! from a square-root-shaped variate. Animated rig bones provide formation
-//! positions, orientation, duration and initial speed.
-//!
-//! The base joins the animation through five-control-point nested interpolation.
-//! Sampling uses distance divided by `AIRPLANES_CURVE_POINT_DENSITY`, plus three
-//! points. Handle length is the smaller of 0.9 times distance and
-//! `AIRPLANES_CURVE_MAX_EXTRAPOLATION`. Interior samples stay above terrain plus
-//! `AIRPLANES_CURVE_MIN_ELEVATION`; travel advances by polyline arc length.
-//! Take-off and landing use `AIRPLANES_SCALE_*`, with synchronized group arrivals.
-//! Each frame the drawn transform eases toward the pose, as the game's does:
-//! per elapsed 30 Hz frame the position by `AIRPLANES_SMOOTH_INTERPOLATION_MOVE`
-//! and the heading and up axis by `AIRPLANES_SMOOTH_INTERPOLATION_TURN` times
-//! the clock's speed; a new cycle starts on its take-off route's first point.
-//! The band and the runs read the pose, not the eased transform ([`Eased`]).
-//! Every state base takes off where the game's base position finder puts it
-//! ([`viewer_foundation::map::building_facts::SiteSlots::base`]).
-//! A separate presentation clock advances while paused at
-//! `AIRPLANES_ANIMATION_GLOBAL_SPEED_PER_GAMESPEED[0]`.
-//!
-//! Recorded simulation selects grouping, kinds, cap checks, strategic thresholds
-//! and paired outcomes. Missing first-window history or selected strategic stats
-//! refuse only dependent branches. CAS diversion uses the raw mission ratio.
-//! Models, rigs and every define resolve through the recorded content stack.
-//! Presentation clocks and seeds belong to the viewer. Deterministic random
-//! removal supplies selections from unrecorded wall-clock random state. Training
-//! uses the four initial bomber/fighter arrays; carrier take-off shares the
-//! settled task-force route law.
-//!
-//! Base-equipment wings follow the scouts, side A then side B: each yields
-//! `max(1, count / MISSILES_DIVISION_FACTOR)` missile bombing scenarios to its
-//! mission's last target, checking `MAX_MISSILE_BOMBING_SCENARIOS` before
-//! each wing, unless its mission is bit 17 or its pool definition holds the
-//! launch flag (AIR_FLAGS bit 33): those start a launch effect at their base
-//! instead ([`launches`]), whose entity plays at the base and, for the launch
-//! flag, ends in a missile explosion in its mission region. A missile scenario
-//! that finishes plays the content's missile explosion entity in its
-//! province's effect slot ([`super::strike_effects`]). A rocket site or gun
-//! emplacement takes off where the game's base position finder puts it
-//! ([`launches`]).
-//!
-//! The game's scenario analysis gives no landing route to the rocket, to
-//! kamikaze fighters that succeed, to the defending slots of a successful
-//! interception or dogfight and to the attacking slots of a lost dogfight
-//! ([`lands`]). Each frame of the rig such an actor meets the near-ground
-//! band ([`grounding`]): the rocket is done at or below the terrain; at or
-//! below the terrain plus `AIRPLANES_GROUND_COLLISION_OFFSET_Y` an actor
-//! plays its entity's `explode` state and stays where it is, done and hidden
-//! once that state's played position reaches
-//! `AIRPLANES_GROUND_EXPLOSION_TIME_DELAY`, or, when its entity declares no
-//! `explode` state, is hidden and done at once. The scenario ends when every
-//! actor is done in the same frame, which skips the landing; otherwise these
-//! actors are hidden for it. A scenario actor whose attachment node the rig
-//! lacks (vanilla's v2 rocket has only `joint1`) is logged by the game and
-//! rides the scenario entity's root: it flies its take-off to the rig origin
-//! without a heading, at `NAirGfx.ROCKET_SPEED` for the rocket and one for
-//! other slots, and stands there; a rocket there is on the terrain and ends
-//! the scenario as the rig starts. The band is tested at the viewer's own
-//! frames on the pose each actor draws then, as the game tests it at its
-//! frames, hidden missions included ([`AircraftPlan::field`]); an exploding
-//! actor is done once its own shared player reads the delay, a pdxmesh root
-//! reading the clip it played before when `explode` plays no animation, as
-//! the game's entity does. A cycle that ends early starts its next take-off
-//! on that frame.
 
 #[cfg(test)]
 use crate::map::aircraft_events::callback;
@@ -162,8 +69,6 @@ use {
 
 pub const SEED: u32 = 0x4149_5250;
 
-/// One scenario family's content-defined `NAirGfx` sizing: the division
-/// factor, the triple threshold and the regional scenario limit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct FamilyDefines {
     factor: i32,
@@ -174,20 +79,16 @@ struct FamilyDefines {
 impl FamilyDefines {
     fn load(defines: &Defines, factor: &str, anim: &str, limit: &str) -> io::Result<Self> {
         let factor_value = defines.int32("NAirGfx", factor)?;
-        // The builder divides by it; a negative factor floors to one unit.
         if factor_value == 0 {
             return Err(invalid_data(format!("NDefines.NAirGfx.{factor} is zero")));
         }
         Ok(Self {
             factor: factor_value,
             triple: defines.int32("NAirGfx", &format!("AIRPLANES_3_{anim}_ANIM"))?,
-            // The game admits one scenario
-            // below any non-positive limit.
             limit: defines.int32("NAirGfx", limit)?.max(1) as usize,
         })
     }
 
-    /// `planes / factor`, floored to one when positive.
     fn units(self, planes: i32) -> i32 {
         if planes > 0 {
             (planes / self.factor).max(1)
@@ -197,8 +98,6 @@ impl FamilyDefines {
     }
 }
 
-/// A family whose batch loop steps by its thresholds: fighters, scouts and
-/// transports. The loops never end on a non-positive step, so it is refused.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SteppedFamily {
     sizing: FamilyDefines,
@@ -217,8 +116,6 @@ impl SteppedFamily {
         Ok(Self { sizing, single })
     }
 
-    /// Triple scenarios while the units reach the triple threshold, else
-    /// singles; the remainder is dropped.
     fn batches(self, units: i32) -> Option<(usize, usize)> {
         if units >= self.sizing.triple {
             Some((3, (units / self.sizing.triple) as usize))
@@ -230,29 +127,18 @@ impl SteppedFamily {
     }
 }
 
-/// The `NAirGfx` defines the flight builder and animator read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlightDefines {
     fighter: SteppedFamily,
     scout: SteppedFamily,
-    /// Independent bomber sizing; CAS diversion reads `bomber_single`.
     bomber: FamilyDefines,
     bomber_single: i32,
     dogfight: SteppedFamily,
     fire_threshold: i64,
     carpet_threshold: i64,
     transport: SteppedFamily,
-    /// The training pass: the wing's own planes
-    /// over `TRANSPORT_DIVISION_FACTOR`, fighter-patrol kinds 0/1 at the
-    /// `AIRPLANES_1/3_FIGHTER_PATROL_ANIM` steps, `MAX_TRAINING_SCENARIOS`.
-    /// It compares units, not wings, so no loop is refused.
     training: SteppedFamily,
-    /// Base-equipment wings: `MISSILES_DIVISION_FACTOR` and
-    /// `MAX_MISSILE_BOMBING_SCENARIOS`; the kind has no triple. Only the
-    /// base-equipment loop reads them, so a missing or zero factor refuses
-    /// that loop alone ([`scenarios`]).
     missile: Result<FamilyDefines, &'static str>,
-    /// `AIRPLANES_ANIMATION_GLOBAL_SPEED_PER_GAMESPEED[0]`, the paused speed
     clock_speed: f32,
     curve_density: f32,
     curve_extrapolation: f32,
@@ -260,8 +146,6 @@ pub struct FlightDefines {
     scale_takeoff: f32,
     scale_landing: f32,
     scale_min: f32,
-    /// `AIRPLANES_SMOOTH_INTERPOLATION_MOVE` and `_TURN`: how far, per
-    /// elapsed 30 Hz frame, an actor's drawn transform eases toward its pose.
     smooth_move: f32,
     smooth_turn: f32,
 }
@@ -321,7 +205,6 @@ impl FlightDefines {
                 defines.int32("NAirGfx", "MAX_MISSILE_BOMBING_SCENARIOS"),
             ) {
                 (Err(_), _) => Err("NDefines.NAirGfx.MISSILES_DIVISION_FACTOR is unreadable"),
-                // The game divides by it.
                 (Ok(0), _) => Err("NDefines.NAirGfx.MISSILES_DIVISION_FACTOR is zero"),
                 (_, Err(_)) => Err("NDefines.NAirGfx.MAX_MISSILE_BOMBING_SCENARIOS is unreadable"),
                 (Ok(factor), Ok(limit)) => Ok(FamilyDefines {
@@ -358,7 +241,6 @@ impl FlightDefines {
                 "NDefines.NAirGfx.AIRPLANES_ANIMATION_GLOBAL_SPEED_PER_GAMESPEED[0] non-positive playback is unsupported".into(),
             ));
         }
-        // The curve's sample count divides by the density.
         if out.curve_density.is_nan() || out.curve_density <= 0.0 {
             return Err(invalid_data(
                 "NDefines.NAirGfx.AIRPLANES_CURVE_POINT_DENSITY must be positive".into(),
@@ -367,7 +249,6 @@ impl FlightDefines {
         Ok(out)
     }
 
-    /// Defines for tests: one-plane families, unit clock and curves.
     #[cfg(test)]
     fn for_tests() -> Self {
         let sizing = FamilyDefines {
@@ -399,8 +280,6 @@ impl FlightDefines {
         }
     }
 
-    /// Scale up over the first take-off fraction. IEEE
-    /// arithmetic as native, a NaN scale included.
     fn takeoff_scale(&self, t: f32) -> f32 {
         let scale = if t <= self.scale_takeoff {
             t / self.scale_takeoff
@@ -414,7 +293,6 @@ impl FlightDefines {
         }
     }
 
-    /// Scale down after the landing fraction.
     fn landing_scale(&self, t: f32) -> f32 {
         let scale = if self.scale_landing <= t {
             1.0 - (t - self.scale_landing) / (1.0 - self.scale_landing)
@@ -429,10 +307,6 @@ impl FlightDefines {
     }
 }
 
-/// What a plane meeting the ground does, from the content's `NAirGfx`:
-/// `AIRPLANES_GROUND_COLLISION_OFFSET_Y` is the height above the surface at
-/// which it meets it, and `AIRPLANES_GROUND_EXPLOSION_TIME_DELAY` the seconds
-/// its explosion plays before the entity is removed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroundContact {
     pub offset: f32,
@@ -440,16 +314,10 @@ pub struct GroundContact {
 }
 
 impl GroundContact {
-    /// The near-ground band the content's flights meet ([`Band`]), read once for both.
     pub fn load(defines: &Defines) -> Result<Self, &'static str> {
         Band::load(defines).map(Self::from)
     }
 
-    /// Whether an exploding actor has played the explosion's delay, as its own
-    /// player reads it ([`crate::map::models::ModelPass::root_play_position`]):
-    /// its root's play position, at its clip's authored speed and start, has
-    /// reached the delay; a root that plays no animation reads zero against it.
-    /// Before its player exists it has not.
     pub fn exploded(&self, played: Option<Option<(f32, f32)>>) -> bool {
         match played {
             Some(Some((position, _))) => position >= self.explosion,
@@ -468,10 +336,8 @@ impl From<Band> for GroundContact {
     }
 }
 
-/// The game converts an authored f32 threshold to fixed5 before comparing.
 fn threshold_raw(value: f32) -> i64 {
     let rounded = value * 100_000.0 + (if value >= 0.0 { 1.0 } else { 0.0 }) - 0.5;
-    // Truncating integer conversion returns the signed indefinite word on overflow or NaN.
     let limit = -(i64::MIN as f32);
     if !(-limit..limit).contains(&rounded) {
         i64::MIN
@@ -480,22 +346,16 @@ fn threshold_raw(value: f32) -> i64 {
     }
 }
 
-/// The master `DRAW_MAP_OBJECTS_CUTOFF` over every map object.
 pub fn draws(camera: &Camera) -> bool {
     camera.height < camera.defines.map_objects_cutoff
 }
 
-/// Model-selection inputs read from an equipment
-/// type besides its name.
 #[derive(Debug, Clone, Default)]
 struct Equipment {
-    /// Archetype name; the null object's is empty.
     archetype: String,
-    /// The equipment type's own sprite key.
     sprite: String,
 }
 
-/// Authored track shared by every scenario of this kind, prepared once.
 #[derive(Debug)]
 struct Rig {
     tracks: Vec<Vec<Transform>>,
@@ -504,32 +364,15 @@ struct Rig {
     duration: f32,
     events: Vec<mesh::EntityEvent>,
     speed: f32,
-    /// Per track, the speed of an actor whose attachment node the scenario
-    /// entity lacks: the game's analysis leaves its start and end poses at
-    /// zero and its speed at the slot's default, and at run time the actor
-    /// takes the entity's own root transform ([`scenario_tracks`]).
     unbound: Vec<Option<f32>>,
-    /// Per track, whether the game's scenario analysis gives the actor a
-    /// landing route ([`lands`]). An actor without one meets the near-ground
-    /// band during the rig ([`grounding`]) and is hidden for the landing.
     lands: Vec<bool>,
-    /// Per track, whether the actor is the rocket slot, which ends where its
-    /// pose reaches the terrain.
     rockets: Vec<bool>,
 }
 
-/// The default speed of a scenario actor slot whose attachment node is
-/// absent: `NAirGfx.ROCKET_SPEED` for the rocket, one for every other slot.
 const UNBOUND_SPEED: f32 = 1.0;
 
-/// The outcome whose attacking slots lose a dogfight (`fail`).
 const FAIL: u8 = 3;
 
-/// Whether the game's scenario analysis builds a landing route for a slot on
-/// `side` of scenario `kind` playing `outcome`. It builds none for the
-/// rocket, for kamikaze fighters that succeed, for the defending slots of a
-/// successful interception or dogfight and for the attacking slots of a lost
-/// dogfight; every other slot flies home.
 fn lands(kind: u8, outcome: u8, side: u8) -> bool {
     !match kind {
         scenarios::MISSILE_KIND => outcome == 0,
@@ -540,13 +383,8 @@ fn lands(kind: u8, outcome: u8, side: u8) -> bool {
     }
 }
 
-/// The state the game requests on an actor that reaches the near-ground band.
 const EXPLODE_STATE: &str = "explode";
 
-/// The near-ground band an actor without a landing route meets:
-/// `NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y` above the terrain, and
-/// `NAirGfx.AIRPLANES_GROUND_EXPLOSION_TIME_DELAY` of played `explode` state
-/// before the actor is hidden.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Band {
     offset: f32,
@@ -574,38 +412,24 @@ pub struct AircraftAssets {
     library: RwLock<ModelLibrary>,
     roster: Arc<mesh::Roster>,
     layers: ResolvedLayers,
-    /// Candidate entities the game would find that cannot be drawn here,
-    /// with the reason.
     unusable: Mutex<BTreeMap<String, String>>,
-    // Cold resolves of the same entity share one bake; unrelated entities never wait on it.
     bakes: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     #[cfg(test)]
     resolve_hooks: tests::ResolveHooks,
-    /// Asset-load diagnostics from successful or refused lazy bakes.
     lazy_diagnostics: Mutex<Vec<installed_content_core::Diagnostic>>,
-    /// Equipment names by the lexer's token identity.
     keys: TokenKeys,
     rigs: BTreeMap<String, Rig>,
-    /// Each strategic region's provinces, from content.
     region_provinces: BTreeMap<u32, Vec<u32>>,
-    /// Each region's provinces once, in first-listing order.
     region_draws: BTreeMap<u32, Vec<u32>>,
-    /// Each region's land and sea fractions.
     region_fractions: BTreeMap<u32, RegionFractions>,
     province_kinds: BTreeMap<u32, ProvinceKind>,
     sortie_defines: Result<SortieDefines, String>,
     flight_defines: Result<FlightDefines, String>,
-    /// The near-ground band; a rig that needs it exists only when it reads.
     band: Option<Band>,
-    /// What launch effects and rocket-site and gun-emplacement take-offs
-    /// read ([`launches`]).
     launch_content: launches::Content,
-    /// How a plane meets the ground, for the flying mode's aircraft.
     ground: Result<GroundContact, String>,
 }
 
-/// The exact suffix ladder under each available prefix. Missing recorded
-/// override levels are reported, never substituted with a graphical culture.
 #[cfg(test)]
 pub(crate) fn candidates(tag: &str, name: &str, archetype: &str, sprite: &str) -> Vec<String> {
     aircraft_model::candidates("", tag, name, archetype, sprite)
@@ -613,20 +437,14 @@ pub(crate) fn candidates(tag: &str, name: &str, archetype: &str, sprite: &str) -
 
 const NOT_LOADED: &str = "its mesh did not load";
 
-/// Why a wing's aircraft has no entity to draw.
 #[derive(Debug, PartialEq)]
 enum Unresolved {
-    /// The wing's equipment variant is not recorded.
     Identity,
-    /// No candidate for this equipment names an entity.
     Missing(String),
-    /// The variant's equipment type token does not name one content key.
     Token(String),
-    /// The first entity the ladder finds exists but cannot be drawn here.
     Refused { entity: String, reason: String },
 }
 
-/// Wings omitted for a refused aircraft entity, counted by entity.
 #[derive(Default)]
 struct Refusals(BTreeMap<(String, String), usize>);
 
@@ -655,9 +473,6 @@ impl Refusals {
     }
 }
 
-/// Every entity a candidate key can name that the roster knows of: declared,
-/// or held by a descriptor file that does not parse, so a possibly hidden
-/// declaration stops the ladder instead of vanishing.
 fn declared_planes<'a>(roster: &'a mesh::Roster, keys: &BTreeSet<&str>) -> BTreeSet<&'a String> {
     roster
         .descriptors
@@ -675,12 +490,6 @@ fn declared_planes<'a>(roster: &'a mesh::Roster, keys: &BTreeSet<&str>) -> BTree
         .collect()
 }
 
-/// Bakes the declared plane entities whose declarations, and the
-/// declarations they use, the engine's choice for is verified
-/// ([`mesh::Roster::refused_declaration`]). A refused entity still exists for
-/// the engine's name lookup, so its reason stops resolution rather than
-/// skipping it; an entity whose mesh does not load is kept too. When every
-/// candidate is refused the library is empty and every reason is kept.
 fn plane_library<'a>(
     layers: &ResolvedLayers,
     decode: Decode,
@@ -716,9 +525,6 @@ fn plane_library<'a>(
         warnings,
         mesh::Roster::refused_declaration,
     )?;
-    // An entity the visual mods' descriptors leave refused, though the recording's own do not,
-    // is drawn from the recording; every other refusal is recorded by name for the map's
-    // fallback.
     let recorded = layers.recorded_descriptor_roster()?;
     let from_recording: Vec<String> = unusable
         .keys()
@@ -756,9 +562,6 @@ fn plane_library<'a>(
     Ok((library, unusable))
 }
 
-/// The first candidate the engine's name lookup finds, `None` when none
-/// exists. A refused entity ends the ladder as a drawn one would; it does
-/// not fall through to a lower-priority candidate.
 fn resolve_entity(
     candidates: &[String],
     slot: impl Fn(&str) -> Option<usize>,
@@ -778,8 +581,6 @@ fn resolve_entity(
     Ok(None)
 }
 
-/// A scenario entity's mesh and the animation of its `default` state; the
-/// scenario entities name that state, not the implicit `idle`.
 fn scenario<'a>(
     descriptors: &'a mesh::Descriptors,
     entity: &str,
@@ -815,8 +616,6 @@ fn scenario<'a>(
     Ok((definition, animation, state.speed))
 }
 
-/// A scenario entity's posed mesh source, read from the file its pdxmesh
-/// names; the reason names the file when it does not read.
 fn scenario_source(
     layers: &ResolvedLayers,
     descriptors: &mesh::Descriptors,
@@ -831,8 +630,6 @@ fn scenario_source(
         pdxmesh: true,
         binary_locators: crate::map::mesh_pose::binary_locators(&tree, &skeleton, definition.scale)
             .map_err(unreadable)?,
-        // Registration keeps duplicate names in order and the cloned
-        // parent's mesh identity.
         entity_locators: crate::map::mesh_pose::entity_locators(
             &descriptors.entities[entity].locators,
             &skeleton,
@@ -846,8 +643,6 @@ fn scenario_source(
     })
 }
 
-/// The first refused declaration a scenario rig uses: the scenario entity,
-/// its mesh and the animation of the state it plays.
 fn scenario_refusal(roster: &mesh::Roster, entity: &str, state: &str) -> Option<String> {
     if let Some(flaw) = roster.unreadable(entity) {
         return Some(format!("it {flaw}"));
@@ -870,8 +665,6 @@ fn scenario_refusal(roster: &mesh::Roster, entity: &str, state: &str) -> Option<
         .map(|flaw| format!("its animation {animation} {flaw}"))
 }
 
-/// The scenario outcomes the game plays: 0 `default`,
-/// 1 `pass`, 2 `success`, 3 `fail`.
 const SUCCESS: u8 = 2;
 
 fn state_name(outcome: u8) -> &'static str {
@@ -883,9 +676,6 @@ fn state_name(outcome: u8) -> &'static str {
     }
 }
 
-/// The state a scenario entity plays for `outcome`. A default-outcome
-/// scenario entity that declares no `default` state stays in its own default
-/// state, as `missile_1_bombing_entity` does in its `idle`.
 fn scenario_state<'a>(descriptors: &'a mesh::Descriptors, entity: &str, outcome: u8) -> &'a str {
     let name = state_name(outcome);
     match descriptors.inherit(entity) {
@@ -896,7 +686,6 @@ fn scenario_state<'a>(descriptors: &'a mesh::Descriptors, entity: &str, outcome:
     }
 }
 
-/// A rig's key: the scenario name, with the outcome's state when not default.
 fn rig_key(scenario: &str, outcome: u8) -> String {
     if outcome != 0 {
         format!("{scenario}_{}", state_name(outcome))
@@ -905,7 +694,6 @@ fn rig_key(scenario: &str, outcome: u8) -> String {
     }
 }
 
-/// Scenario names, each resolved through recorded content.
 fn scenario_name(kind: u8) -> &'static str {
     match kind {
         0 => "fighter_1_patrol",
@@ -933,7 +721,6 @@ fn scenario_name(kind: u8) -> &'static str {
     }
 }
 
-/// The mission family a viewer hides a scenario's aircraft with.
 fn scenario_mission(kind: u8) -> AirMission {
     match kind {
         0 | 1 => AirMission::Patrol,
@@ -947,9 +734,6 @@ fn scenario_mission(kind: u8) -> AirMission {
     }
 }
 
-/// The flights in the air at `seconds`, each by its index among every flight. Every flight keeps
-/// its own clock, read from `seconds` and its phase alone, and its animation seed, whatever the
-/// display hides.
 fn place_flights(
     flights: &[Flight],
     rigs: &BTreeMap<String, Rig>,
@@ -959,9 +743,6 @@ fn place_flights(
     place_runs(flights, rigs, defines, seconds, &|_| None)
 }
 
-/// [`place_flights`] where `run` gives a flight's cycle start, number and
-/// ground state on the viewer's frames; without one its cycles follow its
-/// phase and it follows its node.
 fn place_runs(
     flights: &[Flight],
     rigs: &BTreeMap<String, Rig>,
@@ -975,7 +756,6 @@ fn place_runs(
         .filter_map(|(index, flight)| {
             let rig = &rigs[&flight.rig];
             let total = flight.cycle(rig.duration);
-            // A rootless rocket based at its target has nothing to show.
             if total.is_nan() || total <= 0.0 {
                 return None;
             }
@@ -996,8 +776,6 @@ fn place_runs(
                 (flight.outgoing.at(t), defines.takeoff_scale(t))
             } else if time < flight.group_travel + rig.duration {
                 let rig_time = time - flight.group_travel;
-                // A hidden actor stays placed, so its player keeps stepping
-                // ([`AircraftPlan::field`] hides it).
                 match ground {
                     Ground::Exploding { pose, .. } => (pose, 1.0),
                     Ground::Following | Ground::Hidden => {
@@ -1016,7 +794,6 @@ fn place_runs(
                 }
             } else {
                 let t = (time - flight.group_travel - rig.duration) / flight.travel;
-                // An actor without a landing route is hidden for the landing.
                 if t >= 1.0 || !flight.lands {
                     return None;
                 }
@@ -1033,8 +810,6 @@ fn place_runs(
                     pitch,
                     roll,
                     scale,
-                    // Preserve the rig/route basis during matrix upload; Euler conversion
-                    // above is only the retained port's instance declaration.
                     native_flags: 4,
                     native_basis: pose.basis,
                     train_clip: [0.0; 4],
@@ -1048,7 +823,6 @@ fn place_runs(
         .collect()
 }
 
-/// The animation keys of the placed flights whose mission is not `shown`.
 fn hidden_flights(
     flights: &[Flight],
     placed: &[(usize, ModelInstance)],
@@ -1064,7 +838,6 @@ fn hidden_flights(
         .collect()
 }
 
-/// Side-local attachment order for the scenario rig.
 fn scenario_bones(kind: u8) -> Vec<(u8, String)> {
     let single = |bone: &str| vec![(0, bone.to_owned())];
     let triple = |bone: &str| (1..=3).map(|n| (0, format!("{bone}_{n}"))).collect();
@@ -1085,12 +858,6 @@ fn scenario_bones(kind: u8) -> Vec<(u8, String)> {
     }
 }
 
-/// Resolve each locator once, then
-/// sample the shared native source-order palette. Animation joint names do
-/// not rebind the skeleton; no content-specific alias is needed. A bone the
-/// entity does not hold is logged by the game, which then reads the scenario
-/// entity's own root transform for that actor: its track is the entity
-/// scale at the rig origin, and it is reported in the second list.
 fn scenario_tracks(
     source: &crate::map::mesh_pose::Source,
     animation: &mesh::Animation,
@@ -1133,8 +900,6 @@ fn scenario_tracks(
     Ok((tracks, bindings.iter().map(Option::is_none).collect()))
 }
 
-/// The rig of scenario `entity` read from `layers` with its `roster`, or `None` with why in
-/// `warnings`.
 fn scenario_flown(
     layers: &ResolvedLayers,
     roster: &mesh::Roster,
@@ -1152,8 +917,6 @@ fn scenario_flown(
     };
     let descriptors = &roster.descriptors;
     let state = scenario_state(descriptors, entity, outcome);
-    // The engine's choice between duplicate or out-of-order
-    // declarations is unverified, so a scenario using one is refused.
     if let Some(reason) = scenario_refusal(roster, entity, state) {
         refuse(reason);
         return None;
@@ -1165,9 +928,6 @@ fn scenario_flown(
             return None;
         }
     };
-    // A mesh or animation the content names but that does not read
-    // refuses this rig alone, as the plane library refuses an entity
-    // it cannot bake: the map opens and the scenario is not flown.
     let loaded = scenario_source(layers, descriptors, entity, definition).and_then(|source| {
         let anim = mesh::read_animation_in(layers, &animation.file)
             .map_err(|error| {
@@ -1200,11 +960,6 @@ fn scenario_flown(
     )
 }
 
-/// What `fly` builds for scenario `entity` from the stack it names (`true` for the recorded
-/// layers below the visual mods): from the shown stack, or, when that refuses it and
-/// `below` holds recorded layers, from those, named in `layers`' visual mod refusals. One
-/// neither builds is refused by a stable name for the map's fallback
-/// ([`ResolvedLayers::note_refused`]). `warnings` takes the notes of the attempt that is kept.
 fn shown_or_recorded<T>(
     layers: &ResolvedLayers,
     entity: &str,
@@ -1235,11 +990,6 @@ fn shown_or_recorded<T>(
     None
 }
 
-/// A scenario's rig from its entity's attachment tracks, or why it is not
-/// flown. An actor slot without its node rides the scenario entity's root
-/// at the slot's default speed: `NAirGfx.ROCKET_SPEED` for the rocket, which
-/// only that case reads. A rig with an actor that does not land needs the
-/// near-ground band's defines ([`Band`]), which only that case reads.
 #[allow(clippy::too_many_arguments)]
 fn scenario_rig(
     entity: &str,
@@ -1263,7 +1013,6 @@ fn scenario_rig(
         Ok(_) => return refuse("it has fewer than two animation samples".into()),
         Err(reason) => return refuse(format!("its attachment tracks fail: {reason}")),
     };
-    // The state's `animation_speed` plays the track faster.
     if !(speed.is_finite() && speed > 0.0) {
         return refuse("its animation_speed is not positive".into());
     }
@@ -1277,8 +1026,6 @@ fn scenario_rig(
             "an actor that does not land meets the near-ground band, whose {reason}"
         ));
     }
-    // Only an actor without its node rides the root at the fallback speed,
-    // so only an unbound rocket needs the rocket speed.
     let default = if !rocket {
         UNBOUND_SPEED
     } else if !absent.contains(&true) {
@@ -1337,9 +1084,6 @@ impl AircraftAssets {
             .clone()
     }
 
-    /// What the prepared content refuses when a flight meets it: entities
-    /// that cannot be drawn, equipment names one token under the lexer's
-    /// fold, and the sortie and flight defines.
     pub fn refusals(&self) -> Vec<String> {
         let mut refusals: Vec<String> = self
             .unusable
@@ -1372,9 +1116,6 @@ impl AircraftAssets {
         refusals
     }
 
-    /// `defines` are the recorded defines, whose operands the sorties count with, and the
-    /// graphics defines, which the flights, bands, rockets and launches read, each value falling
-    /// back to the recorded one ([`ResolvedLayers::graphics_define`]).
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -1383,11 +1124,6 @@ impl AircraftAssets {
         regions: &BTreeMap<u32, StrategicRegion>,
         warnings: &mut Vec<installed_content_core::Diagnostic>,
     ) -> io::Result<Self> {
-        // The content's equipment database, `duplicate_archetypes` copies
-        // included: the archetype is resolved as the definitions are read
-        // (a `parent` passes its archetype on), and an `archetype` read
-        // copies the archetype's sprite while the type's own is empty
-        // A duplicate's own sprite replaces its copies'
         let database = installed_content_core::equipment::Database::load_complete(layers)?;
         let text = |bytes: &[u8], what: &str| {
             installed_content_core::parser::text(bytes)
@@ -1406,8 +1142,6 @@ impl AircraftAssets {
         }
         let roster = layers.descriptor_roster()?;
         let mut rigs = BTreeMap::new();
-        // Scenario and outcome catalogs provide authored
-        // independent and paired rigs, including both callback sides.
         let mut scenarios = Vec::new();
         for kind in 0..=20 {
             let outcomes: &[u8] = match kind {
@@ -1433,8 +1167,6 @@ impl AircraftAssets {
                     .map_err(|_| "NDefines.NAirGfx.ROCKET_SPEED is unreadable")
             });
         let band = layers.graphics_define("aircraft bands", graphics, defines, Band::load);
-        // A rig the visual mods break (an animation or mesh of theirs that does not read) is
-        // flown from the recorded layers below them, as the plane library bakes an entity.
         let below = layers.without_overlays();
         let below_roster = layers.recorded_descriptor_roster()?;
         let recorded = below.as_ref().zip(below_roster.as_deref());
@@ -1465,8 +1197,6 @@ impl AircraftAssets {
                 rigs.insert(rig_key(&key, outcome), rig);
             }
         }
-        // Entities any candidate key can name: `<key>_entity` or
-        // `<prefix>_<key>_entity` for an equipment, archetype or sprite key.
         let keys: BTreeSet<&str> = equipment
             .iter()
             .flat_map(|(name, eq)| [name.as_str(), eq.archetype.as_str(), eq.sprite.as_str()])
@@ -1522,8 +1252,6 @@ impl AircraftAssets {
         })
     }
 
-    /// How a plane meets the ground ([`GroundContact`]), or why the content's
-    /// defines for it do not read.
     pub fn ground_contact(&self) -> Result<GroundContact, &str> {
         self.ground.as_ref().copied().map_err(String::as_str)
     }
@@ -1534,9 +1262,6 @@ impl AircraftAssets {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Selected designer/explicit/graphic names need not have an equipment
-    /// suffix. Bake them from the same authenticated roster on first use;
-    /// a failed selected entity is remembered and never replaced.
     fn resolve(&self, entity: &str) -> Result<usize, Unresolved> {
         if let Some(known) = self.known(entity) {
             return known;
@@ -1559,7 +1284,6 @@ impl AircraftAssets {
         #[cfg(test)]
         self.resolve_hooks
             .reach(entity, tests::ResolvePoint::Acquired);
-        // Retired claims can still have waiters, so every holder re-reads the committed decision.
         if let Some(known) = self.known(entity) {
             self.retire(entity, &claim);
             #[cfg(test)]
@@ -1583,7 +1307,6 @@ impl AircraftAssets {
             .unusable
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Usable actors can still omit attachments; preserve warning kinds and occurrences.
         self.lazy_diagnostics
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1612,7 +1335,6 @@ impl AircraftAssets {
         resolved
     }
 
-    // A remembered refusal takes precedence over a library slot, as in the cold resolve.
     fn known(&self, entity: &str) -> Option<Result<usize, Unresolved>> {
         #[cfg(test)]
         if matches!(
@@ -1649,7 +1371,6 @@ impl AircraftAssets {
         }
     }
 
-    /// The claim `entity`'s first bake holds ([`Self::resolve`]).
     fn claim(&self, entity: &str) -> Arc<Mutex<()>> {
         Arc::clone(
             self.bakes
@@ -1662,28 +1383,18 @@ impl AircraftAssets {
 }
 
 impl AircraftAssets {
-    /// The registered descriptor roster the aircraft bake from.
     pub fn roster(&self) -> &mesh::Roster {
         &self.roster
     }
 }
 
-/// A chosen aircraft baked for flying: its slot in [`AircraftAssets::library`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerAircraft {
-    /// The entity or bare mesh name it was chosen by.
     pub name: String,
     pub slot: usize,
 }
 
 impl AircraftAssets {
-    /// Bakes a chosen entity or bare mesh on first use, through the same
-    /// roster and checks a recorded flight's entity meets, and returns its
-    /// library slot, or why it cannot be flown. The plane resolver admits declarations,
-    /// including recorded fallbacks, before files are read. Fly also needs geometry in
-    /// that admitted bake; other flights can keep meshless actors' events. A refused name
-    /// keeps the catalogue's reason where it has one, or the file load error, and stays
-    /// refused. It reads files: call it off the UI thread.
     pub fn player(&self, name: &str) -> Result<PlayerAircraft, String> {
         let why = || aircraft_catalogue::refusal(&self.roster, name).map(|refusal| refusal.reason);
         match self.resolve(name) {
@@ -1704,7 +1415,6 @@ impl AircraftAssets {
     }
 }
 
-/// Each province once, in first listing order.
 fn first_listings(provinces: &[u32]) -> Vec<u32> {
     let mut seen = BTreeSet::new();
     provinces
@@ -1714,7 +1424,6 @@ fn first_listings(provinces: &[u32]) -> Vec<u32> {
         .collect()
 }
 
-/// The game's unsigned mixer, with a specified replacement seed.
 struct Random {
     seed: u32,
     index: u32,
@@ -1765,8 +1474,6 @@ fn rotate(a: [f32; 3], yaw: f32) -> [f32; 3] {
 }
 
 impl Route {
-    /// Five-point nested interpolation (not a cubic
-    /// Bezier and not the land counter's Catmull-Rom spline).
     fn build(
         start: [f32; 3],
         end: [f32; 3],
@@ -1776,7 +1483,6 @@ impl Route {
         defines: &FlightDefines,
     ) -> Self {
         let distance = norm(sub(end, start));
-        // The game scales in f64 by the f32 0.9 factor, then caps.
         let h = (f64::from(distance) * f64::from(0.9_f32)) as f32;
         let h = if defines.curve_extrapolation <= h {
             defines.curve_extrapolation
@@ -1808,7 +1514,6 @@ impl Route {
         for i in 0..count {
             let t = i as f32 / (count - 1) as f32;
             let mut p = lerp(start, lerp(p1, lerp(p2, lerp(p3, end, t), t), t), t);
-            // The game's clamped bilinear terrain sample, as for the anchor.
             if i > 0 && i + 1 < count {
                 p[1] = p[1].max(heights.native_height(p[0], p[2]) + defines.curve_elevation);
             }
@@ -1844,9 +1549,6 @@ impl Route {
     }
 }
 
-/// Whether an actor's entity declares an `explode` state on its root: one
-/// that does plays it in the near-ground band; one that does not is hidden
-/// there at once.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Explode {
     Absent,
@@ -1865,8 +1567,6 @@ fn explode(rig: &crate::map::entity_animation::Rig) -> Explode {
     }
 }
 
-/// An entity's own player for `instance` on `requests`, evaluated at
-/// entity time `at`.
 fn played_at(
     (rig, palette): &ActorSource,
     instance: ModelInstance,
@@ -1889,10 +1589,6 @@ fn played_at(
     player
 }
 
-/// Entity seconds after it spawns until a launch entity's own player, in
-/// its default state, reads its root clip's length, where the game removes
-/// its record: at once when the root plays no animation, never (infinite)
-/// when the position never gets there.
 fn played_end(source: &ActorSource, instance: ModelInstance) -> f32 {
     let player = played_at(source, instance, &Arc::new(Vec::new()), 0.0);
     match player.root_play_clip(&source.0) {
@@ -1903,9 +1599,6 @@ fn played_end(source: &ActorSource, instance: ModelInstance) -> f32 {
     }
 }
 
-/// An actor's pose at rig time `time` relative to its rig origin, as it is
-/// drawn: between samples the translation is interpolated and each basis
-/// axis interpolated and renormalized.
 fn rig_pose(poses: &[Transform], fps: f32, time: f32) -> Transform {
     let frame = time.max(0.0) * fps;
     let a = &poses[(frame as usize).min(poses.len() - 1)];
@@ -1917,9 +1610,6 @@ fn rig_pose(poses: &[Transform], fps: f32, time: f32) -> Transform {
     }
 }
 
-/// The heightmap pixels an actor without a landing route can stand over
-/// during its rig, so its band is tested at the viewer's frames on exactly
-/// the game's clamped bilinear terrain ([`HeightField::native_height`]).
 #[derive(Clone, Debug, PartialEq)]
 struct Terrain {
     width: u32,
@@ -1927,12 +1617,10 @@ struct Terrain {
     column: usize,
     bottom: usize,
     columns: usize,
-    /// The window's bytes, bottom-up from `bottom`, `columns` wide.
     values: Vec<u8>,
 }
 
 impl Terrain {
-    /// The pixels the sampler reads anywhere over `[x0, x1] x [z0, z1]`.
     fn capture(heights: &HeightField<'_>, (x0, x1): (f32, f32), (z0, z1): (f32, f32)) -> Self {
         let (width, height) = (heights.width, heights.height);
         let column =
@@ -1958,7 +1646,6 @@ impl Terrain {
         }
     }
 
-    /// [`HeightField::native_height`] over the captured pixels.
     fn native_height(&self, x: f32, z: f32) -> f32 {
         let x = x - 0.5;
         let z = z - 0.5;
@@ -1982,32 +1669,19 @@ impl Terrain {
     }
 }
 
-/// What an actor's own player reads, by its animation key, as the previous
-/// frame left it ([`crate::map::models::ModelPass::root_play_position`]).
 type Played<'a> = &'a dyn Fn((usize, u32, u32)) -> Option<Option<(f32, f32)>>;
 
-/// Where an actor without a landing route stands in the near-ground band
-/// this cycle, as the game's update leaves it frame by frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Ground {
-    /// It follows its node.
     Following,
-    /// It entered the band, requested `explode` at entity time `entry` and
-    /// stays at `pose`; `hidden` once its player has read the band's delay.
     Exploding {
         pose: Transform,
         entry: f32,
         hidden: bool,
     },
-    /// It entered the band without an `explode` state: hidden for good,
-    /// still following its node.
     Hidden,
 }
 
-/// One placed scenario on the viewer's frames: its flights, the aircraft
-/// clock time its current cycle started, the cycle's number and each
-/// flight's ground state. A cycle ends after its landing, or on the frame
-/// every actor's update reports it done.
 #[derive(Clone, Debug)]
 struct Run {
     initialized: bool,
@@ -2017,17 +1691,11 @@ struct Run {
     grounds: Vec<Ground>,
 }
 
-/// The game's frame period the easing counts frames by, in milliseconds.
 const EASING_FRAME_MS: f32 = 33.333_336;
-/// A heading this close to zero on every axis is replaced by its target.
 const EASED_HEADING_MINIMUM: f32 = 0.001;
 
-/// A flight's identity across hourly plans: its wing, region, rig, track,
-/// anchor and heading.
 type FlightKey = (u64, u32, String, usize, [u32; 3], u32);
 
-/// An actor's drawn transform: where it is, its heading and its up axis,
-/// in the scenario cycle it belongs to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Eased {
     cycle: u32,
@@ -2046,10 +1714,6 @@ impl Eased {
         }
     }
 
-    /// One frame of `frames` 30 Hz frames toward `pose`, as the game eases
-    /// an actor each frame: the position by `move` per frame and the heading
-    /// and up axis by `turn` per frame, each step at most the whole way; a
-    /// heading left within the minimum of zero takes the target's.
     fn ease(&mut self, pose: &Transform, frames: f32, step_move: f32, step_turn: f32) {
         let fraction = |value: f32| if value >= 0.0 { value.min(1.0) } else { 0.0 };
         let (moving, turning) = (fraction(frames * step_move), fraction(step_turn * frames));
@@ -2068,7 +1732,6 @@ impl Eased {
         };
     }
 
-    /// The basis the game builds from the heading and up axis.
     fn basis(&self) -> [[f32; 3]; 3] {
         let cross = |a: [f32; 3], b: [f32; 3]| {
             [
@@ -2084,7 +1747,6 @@ impl Eased {
     }
 }
 
-/// The instance's rotation fields for a drawn transform.
 fn pose_instance(instance: &mut ModelInstance, position: [f32; 3], basis: [[f32; 3]; 3]) {
     instance.position = position;
     instance.native_basis = basis;
@@ -2105,9 +1767,6 @@ impl Flight {
         )
     }
 
-    /// One scenario cycle: the take-off, the rig of `duration` and the
-    /// landing. A cycle can end sooner on a frame where every actor of a
-    /// scenario none of whose actors lands is done ([`Run`]).
     fn cycle(&self, duration: f32) -> f32 {
         2.0 * self.group_travel + duration
     }
@@ -2115,7 +1774,6 @@ impl Flight {
 
 #[derive(Clone, PartialEq)]
 struct Flight {
-    /// The family a viewer can hide this flight's aircraft with.
     mission: AirMission,
     mesh: usize,
     wing: u64,
@@ -2131,55 +1789,31 @@ struct Flight {
     group_travel: f32,
     phase: f32,
     requests: Arc<Vec<Request>>,
-    /// A missile bombing scenario's province, standstill anchor and
-    /// admission box, where its explosion plays when the scenario finishes.
     impact: Option<(u32, [f32; 3], [f32; 4])>,
-    /// Whether the actor flies the landing route; one that does not is
-    /// hidden for the landing and meets the near-ground band.
     lands: bool,
-    /// Whether its entity plays `explode` in the band.
     explode: Explode,
-    /// The terrain its rig path stands over, for an actor that does not land.
     terrain: Option<Arc<Terrain>>,
 }
 
 #[derive(Clone, Default)]
 pub struct AircraftPlan {
     flights: Vec<Flight>,
-    /// Each flight's and each launch's animation seed, drawn from its own identity
-    /// ([`AircraftPlan::assign_seeds`]).
     flight_seeds: Vec<u32>,
     launch_seeds: Vec<u32>,
-    /// Each placed scenario's run on the viewer's frames.
     runs: Vec<Run>,
-    /// The presentation time the runs last advanced to.
     ran_at: Option<f32>,
-    /// Missile scenarios that finished on a frame since they were taken.
     finished: Vec<super::strike_effects::Impact>,
-    /// Each flight's drawn transform as the last frame eased it, by its
-    /// identity, so a later hour's plan of the same flights carries it on.
     eased: BTreeMap<FlightKey, Eased>,
-    /// The presentation time the drawn transforms last eased to.
     eased_at: Option<f32>,
     launches: Vec<launches::Launch>,
-    /// Whether explosions were taken past the launch clock's opening instant.
     opened: bool,
-    /// The runs it started anew at its install.
     restarts: usize,
-    /// While the flight record is kept: the flights drawn the frame before, by identity, and those
-    /// of them this frame stood on a fresh transform instead of easing on ([`Self::field`]).
     drawn_keys: BTreeSet<FlightKey>,
     snapped: usize,
     pub diagnostics: Vec<String>,
-    /// What its build took, by part.
     pub marks: Marks,
 }
 
-/// One build's parts, in nanoseconds of the building thread: the sources read (links,
-/// participants, registry, sortie sources, target scans), the wings admitted in visit order, the
-/// scenarios generated with their launch records, the training patrols, and the flights' animation
-/// requests, each without the model selection by the content's scripts and the placement (routes,
-/// terrain) made inside them, which are counted apart; and the wings admitted and scenarios placed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Marks {
     pub sources: u64,
@@ -2195,30 +1829,19 @@ pub struct Marks {
     pub models: u64,
     pub placement: u64,
     pub wings: usize,
-    /// Scenarios and their flights placed anew, and kept from the build before ([`Kept`]).
     pub scenarios: usize,
     pub flights_placed: usize,
     pub kept: usize,
     pub flights_kept: usize,
 }
 
-/// What a worker keeps from one build to the next, for one maker's assets and map: each scenario's
-/// placed flights (routes, terrain and animation requests) by everything placing them reads, so a
-/// scenario whose wings keep their mission, region, target province, take-off point, model and
-/// draws is not placed again. It holds only what the last build placed or kept.
 #[derive(Default)]
 pub struct Kept {
     placed: HashMap<Placing, Vec<Flight>>,
-    /// The regions' states, what the Provinces rows they were read from read (every province's
-    /// state, in row order) and the view those came from: the strategic and scout scans read the
-    /// states of every region of every build, and nothing but those two columns decides them
-    /// ([`RegionStates`]).
     regions: Option<(ViewIdentity, Arc<Vec<u64>>, Arc<RegionStates>)>,
 }
 
 impl Kept {
-    /// The regions' states of `frame`, read again only when the provinces' own rows move: a view
-    /// made anew in another column reads the same.
     fn regions(&mut self, frame: &DecodedFrame, region_provinces: &BTreeMap<u32, Vec<u32>>) -> io::Result<Arc<RegionStates>> {
         let view = &frame.tables[replay_data::rows::TableId::Provinces.index()];
         if let Some((identity, _, held)) = &self.regions
@@ -2243,8 +1866,6 @@ impl Kept {
     }
 }
 
-/// Everything a scenario's placement reads that can differ from build to build; the rest (the
-/// rig named `rig`, the province's centroid and the heights) is the maker's own content.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Placing {
     rig: String,
@@ -2254,7 +1875,6 @@ struct Placing {
     start: [u32; 3],
     yaw: u32,
     phase: u32,
-    /// Each side's actor: its mesh, wing, take-off point and whether it plays `explode`.
     actors: [Option<(usize, u64, [u32; 3], bool)>; 2],
 }
 
@@ -2283,8 +1903,6 @@ impl Placing {
     }
 }
 
-/// One build's keeping: what the build before placed, what this one placed or kept, and the
-/// flights it placed anew, whose requests are made at the end.
 #[derive(Default)]
 struct Keeping {
     before: HashMap<Placing, Vec<Flight>>,
@@ -2293,14 +1911,12 @@ struct Keeping {
 }
 
 impl Keeping {
-    /// The flights placed for `key` by the build before, or earlier in this one.
     fn take(&mut self, key: &Placing) -> Option<Vec<Flight>> {
         self.before.remove(key).or_else(|| self.now.get(key).cloned())
     }
 }
 
 impl Marks {
-    /// Each timed part by name, in the order a build runs them.
     pub fn parts(&self) -> [(&'static str, u64); 12] {
         [
             ("sources", self.sources),
@@ -2323,10 +1939,8 @@ fn since(started: Instant) -> u64 {
     started.elapsed().as_nanos() as u64
 }
 
-/// Launch explosions' impact ids set this bit, apart from the flights'.
 const LAUNCH_IMPACT: u64 = 1 << 63;
 
-/// What starting a launch record reads.
 struct LaunchSources<'a, 'c> {
     frame: &'a DecodedFrame,
     assets: &'a AircraftAssets,
@@ -2335,23 +1949,15 @@ struct LaunchSources<'a, 'c> {
     clock_speed: f32,
 }
 
-/// One pass's launch records over every region, in visit order: a base's
-/// province holds one live record ([`launches`]).
 #[derive(Default)]
 struct LaunchRecords {
     bases: BTreeSet<u32>,
-    /// Requests that start no record, and records that are not drawn, by
-    /// reason.
     unstarted: BTreeMap<String, usize>,
     undrawn: BTreeMap<String, usize>,
-    /// Each mission region's explosion places, shared by its launches.
     places: BTreeMap<u32, launches::ExplosionPlaces>,
-    /// Launches drawn so far: the next one's index in the plan.
     started: usize,
 }
 
-/// A wing's launch entity: its primary equipment type's token spelling with
-/// `_entity`, as the game builds the name.
 fn launch_entity(frame: &DecodedFrame, wing: u64) -> Result<String, String> {
     let variant = aircraft_model::wing_primary(frame, wing)?
         .ok_or("its equipment identity is not recorded")?;
@@ -2370,9 +1976,6 @@ fn launch_entity(frame: &DecodedFrame, wing: u64) -> Result<String, String> {
 }
 
 impl LaunchRecords {
-    /// Starts `request`'s record unless its base holds one, and returns the
-    /// launch to draw. A name no entity declares starts no record; a record
-    /// the viewer cannot draw still holds its base.
     fn start(
         &mut self,
         request: scenarios::LaunchRequest<'_>,
@@ -2432,7 +2035,6 @@ impl LaunchRecords {
         province: u32,
         sources: &LaunchSources<'_, '_>,
     ) -> Result<launches::Launch, String> {
-        // The index the plan will give it, which seeds its player.
         let index = self.started;
         let (wing, base) = (request.wing.wing, request.wing.base);
         let assets = sources.assets;
@@ -2445,8 +2047,6 @@ impl LaunchRecords {
         let position = take_off(&assets.launch_content, sources.carriers, base)
             .map_err(|reason| format!("their base has no position: {reason}"))?;
         let max_delay = assets.launch_content.max_delay()?;
-        // The entity plays its default state until its own player reads
-        // its root clip's length.
         let length =
             assets.launch_lifetime(mesh, launches::Launch::instance_for(index).animation_seed);
         let seed = wing.id as u32 ^ (wing.id >> 32) as u32 ^ province.rotate_left(16);
@@ -2506,14 +2106,6 @@ impl LaunchRecords {
 
 type RegionMembership = (BTreeMap<u32, Vec<u32>>, BTreeMap<u32, RegionFractions>);
 
-/// The game skips a listed ID the province
-/// table does not hold and counts every other listing, duplicates included,
-/// in the region's total and its land (kind bit 0) or sea (bits 0 and 1
-/// clear) count. The skips are counted in one warning.
-/// A_/d_ choose the attacking/defending array; without a
-/// prefix both arrays receive the callback. A digit chooses a one-based
-/// member; zero or an out-of-range number broadcasts. Native skips exactly
-/// two bytes after a numeric prefix, even for a multi-digit number.
 fn flight_requests(
     flight: &Flight,
     rig: &Rig,
@@ -2579,7 +2171,6 @@ fn region_membership(
 
 use viewer_foundation::map::air_reachability::Scans;
 
-/// Wings omitted for an undecided target, counted by reason.
 #[derive(Default)]
 struct Undecided {
     by_reason: BTreeMap<&'static str, usize>,
@@ -2609,9 +2200,6 @@ impl Undecided {
     }
 }
 
-/// Direct rejections before target scans: no mission, the veto,
-/// the counter over its limit, or an inactive regional mission (training
-/// flies without one).
 fn passes_initial_gate(wing: &AirWingRow) -> bool {
     wing.mission_mask != 0
         && wing.eligibility_veto == 0
@@ -2628,10 +2216,6 @@ fn invalid_data(reason: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, reason)
 }
 
-/// the game's two arrays for the viewing country. Without complete
-/// relation vectors and volunteer hosts only its own wings fly; a partial
-/// vector cannot give the native first-occurrence order. Only the vectors
-/// the arrays use are looked up, by binary search of the key-sorted rows.
 fn participant_countries(
     frame: &DecodedFrame,
     ours: u32,
@@ -2661,15 +2245,12 @@ fn participant_countries(
     Ok((participants, None))
 }
 
-/// AirCountryRelations rows, sorted by `(country, kind, ordinal)`.
 struct RelationRows<'a> {
     rows: &'a [AirCountryRelationRow],
     links: &'a BTreeMap<u32, u32>,
 }
 
 impl RelationRows<'_> {
-    /// A country's rows of kinds `first..=last`: a binary search for the
-    /// first, then a scan of the rows the caller reads anyway.
     fn span(&self, slot: u32, first: u8, last: u8) -> &[AirCountryRelationRow] {
         let start = self
             .rows
@@ -2717,23 +2298,15 @@ impl CountryVectors for RelationRows<'_> {
     }
 }
 
-/// One registered wing in the game's visit order.
 #[derive(Clone, Copy)]
 struct Visit<'a> {
-    /// Which grouping call collects it: the
-    /// viewing country, then one per participant entry.
     call: usize,
-    /// Its group arrays: 0 for the viewing country and array A, 1 for B.
     side: usize,
-    /// The viewing country's own call, the only one given a scout array.
     own: bool,
     region: u32,
     wing: &'a AirWingRow,
 }
 
-/// Registered wings in the game's visit order: region IDs ascending, then
-/// the viewing country's wings and those of arrays A and B, each country's in
-/// registration order. A country in both arrays is visited twice, as natively.
 fn visit_order<'a>(
     wings: &'a [AirWingRow],
     registrations: &[replay_data::rows::AirRegionalMissionRow],
@@ -2797,9 +2370,6 @@ fn visit_order<'a>(
     Ok(ordered)
 }
 
-/// the game's per-region arrays: bombers,
-/// fighters, base equipment, transports, scouts. Direct bit17 appends bypass
-/// their local cap; the grouping call's coarse all-full gate still applies.
 const GROUP_CAPACITY: usize = 50;
 
 #[derive(Default)]
@@ -2811,8 +2381,6 @@ struct Groups {
 }
 
 impl Groups {
-    /// Whether an eligible wing enters its group. A call is skipped whole
-    /// when its side's first four groups are full.
     fn admit(&mut self, visit: &Visit<'_>, group: usize, last_target: i32) -> bool {
         if self.region != Some(visit.region) {
             *self = Self {
@@ -2825,8 +2393,6 @@ impl Groups {
             self.call = Some(visit.call);
             self.open = counts[..4].iter().any(|&count| count < GROUP_CAPACITY);
         }
-        // Direct bit-17 appends have no local 50-entry cap. The
-        // earlier bomber-definition arm still has its cap when masks overlap.
         let mask = visit.wing.mission_mask;
         let uncapped = group == 2
             && mask & 0x20000 != 0
@@ -2839,16 +2405,12 @@ impl Groups {
     }
 }
 
-/// Recorded naval-patrol inputs: each country's task forces in a naval
-/// combat as (province, stored region), in fleet order, and each country's
-/// window-0 history sums per region.
 struct NavalPatrolSources {
     combats: BTreeMap<u32, Vec<(u32, u32)>>,
     sums: BTreeMap<(u32, u32), (i64, i64)>,
 }
 
 impl NavalPatrolSources {
-    /// `None` without both complete tables.
     fn read(frame: &DecodedFrame) -> io::Result<Option<Self>> {
         let (Available::Complete(combats), Available::Complete(histories)) = (
             rows::<tables::AirNavalPatrolCombats>(frame)?,
@@ -2904,14 +2466,6 @@ impl NavalPatrolSources {
         Ok(Some(Self { combats, sums }))
     }
 
-    /// The outcome and province the game hands the builder. The first of
-    /// the wing country's task forces fighting a naval combat in the mission
-    /// region decides it, through the viewer's history there: enemy ships
-    /// sunk and our fighters lost, each in whole units. Both positive: the
-    /// combat's province, `success`. None sunk and a fighter lost: a random
-    /// reached sea province other than the combat's,
-    /// `success`. Otherwise, or with no such task force or history, a random
-    /// reached province, `default`.
     fn choose(
         &self,
         country: u32,
@@ -2947,8 +2501,6 @@ impl NavalPatrolSources {
         if sunk != 0 || lost < 1 {
             return fallback;
         }
-        // Scan forward from the draw for a sea province other than the
-        // combat's; after a full turn the draw itself stands.
         let province = (0..reached.len())
             .map(|step| reached[(start + step) % reached.len()])
             .find(|&province| {
@@ -2959,9 +2511,6 @@ impl NavalPatrolSources {
     }
 }
 
-/// A stateless base's take-off point: its host ship's task force
-/// resolved through its host ship and drawn where the task force's
-/// map animator stands.
 struct CarrierSources<'a> {
     ships: Option<&'a [ShipRow]>,
     task_forces: Option<&'a [TaskForceRow]>,
@@ -2991,7 +2540,6 @@ impl<'a> CarrierSources<'a> {
         })
     }
 
-    /// The host ship's task force.
     fn task_force(&self, base: &AirBaseRow) -> Result<&'a TaskForceRow, &'static str> {
         if base.host == 0 {
             return Err("the stateless base has no host");
@@ -3010,8 +2558,6 @@ impl<'a> CarrierSources<'a> {
             .map_err(|_| "the carrier's task force is outside the recorded roster")
     }
 
-    /// Province lookup for a stateless base: its host's
-    /// task-force location, which the game reads without a null check.
     fn province(&self, base: &AirBaseRow) -> Result<u32, &'static str> {
         if self.registry.hosts_without_task_force.contains(&base.id) {
             return Err("the carrier has no task force");
@@ -3039,15 +2585,11 @@ impl<'a> CarrierSources<'a> {
     }
 }
 
-/// The game counts exact kind and outcome
-/// before a batch; a complete admitted batch can exceed the content limit.
 #[derive(Default)]
 struct Caps {
     counts: BTreeMap<(u32, String), usize>,
 }
 
-/// the game's arrays: bombers, fighters, base
-/// equipment, transports, scouts.
 fn group_index(category: Category) -> usize {
     match category {
         Category::BomberFlight => 0,
@@ -3058,8 +2600,6 @@ fn group_index(category: Category) -> usize {
     }
 }
 
-/// A positive override, else
-/// the pool owner.
 fn effective_country(wing: &AirWingRow) -> u32 {
     if wing.country_override > 0 {
         wing.country_override as u32
@@ -3068,14 +2608,10 @@ fn effective_country(wing: &AirWingRow) -> u32 {
     }
 }
 
-/// The seed of a wing's one draw before its batches (its province).
 fn wing_random(wing: u64, region: u32) -> Random {
     Random::new(SEED ^ wing as u32 ^ (wing >> 32) as u32 ^ region.rotate_left(16) ^ 0xffff)
 }
 
-/// Where a wing's scenarios take off and its launch effects stand, by the
-/// game's base position finder for a state base
-/// ([`launches::Content::site`]), or its carrier.
 fn take_off(
     sites: &launches::Content,
     carriers: &CarrierSources<'_>,
@@ -3087,33 +2623,25 @@ fn take_off(
     }
 }
 
-/// The map a scenario is placed on.
 struct Placement<'a, 'h> {
     geometry: &'a ProvinceGeometry,
     heights: &'a HeightField<'h>,
     defines: &'a FlightDefines,
 }
 
-/// An actor entity's rig and default joint palette.
 type ActorSource = (Arc<crate::map::entity_animation::Rig>, Vec<PaletteJoint>);
 
-/// What every scenario of one wing's batch shares.
 struct Batch<'a> {
     wing: u64,
     region: u32,
     mission: AirMission,
     key: &'a str,
     rig: &'a Rig,
-    /// The game obtains orientation from the designated wing's base,
-    /// independently of whether the game can create its aircraft entity.
     start: [f32; 3],
     attacker: Option<Actor>,
     defender: Option<Actor>,
 }
 
-/// First-window scenario sums, in channel order 10/17/3/51/58/44/24/65.
-/// A captured empty window is zero; an older table without its acquisition
-/// witness cannot decide the paired outcomes.
 struct ScenarioHistory {
     sums: BTreeMap<u32, [i64; 8]>,
     unavailable: BTreeMap<u32, &'static str>,
@@ -3194,12 +2722,10 @@ struct Actor {
     mesh: usize,
     wing: u64,
     start: [f32; 3],
-    /// Whether its entity plays `explode` in the near-ground band.
     explode: Explode,
 }
 
 impl Batch<'_> {
-    /// The seed of the batch's `ordinal`th scenario.
     fn random(&self, ordinal: usize) -> Random {
         Random::new(
             SEED ^ self.wing as u32
@@ -3210,20 +2736,10 @@ impl Batch<'_> {
     }
 }
 
-/// What the game's training gate reads of a
-/// region: the A side's (the viewer and array A) bomber and fighter group
-/// arrays and the B side's, as the game filled
-/// them. The family loops that empty those arrays run only in the gate's
-/// other branches, after it, so a region trains exactly when all four are
-/// empty; the base-equipment, transport and scout arrays do not count.
 #[derive(Default)]
 struct TrainingGate {
-    /// Whether the participant arrays are known ([`participant_countries`]).
     participants: bool,
-    /// Regions where a wing reached a bomber or fighter array, entering it
-    /// or finding it (or its side) full.
     grouped: BTreeSet<u32>,
-    /// Regions where a wing that may reach one was omitted undecided.
     undecided: BTreeSet<u32>,
 }
 
@@ -3234,8 +2750,6 @@ impl TrainingGate {
         }
     }
 
-    /// A wing omitted before its grouping was decided; `None` when even its
-    /// array is unknown.
     fn undecided(&mut self, region: u32, group: Option<usize>) {
         if group.is_none_or(|group| group < 2) {
             self.undecided.insert(region);
@@ -3243,8 +2757,6 @@ impl TrainingGate {
     }
 }
 
-/// One training wing's batch: `batches` fighter-patrol scenarios of
-/// `formation` aircraft over its pool base's region.
 struct TrainingDraw<'a, B> {
     wing: &'a AirWingRow,
     base: B,
@@ -3253,23 +2765,6 @@ struct TrainingDraw<'a, B> {
     batches: usize,
 }
 
-/// The training pass, for each region the gate admits.
-///
-/// Candidates are the viewing country's pooled wings whose mission has mask
-/// bit 11, regardless of other wing state, and whose pool base stands in a
-/// province assigned to this region. At most 50 are admitted in pool/wing
-/// order, recorded as `AirWings.pool_ordinal`. The pool owner is the recorded
-/// `AirWings.owner`; a country override does not move a wing out of its
-/// pool. The builder then draws candidates at random with a wall-clock seed.
-/// The viewer uses its deterministic presentation seed. A training wing
-/// whose pool base does not resolve here still took its place in the game,
-/// so a region with 50 or more candidates beside one is counted.
-///
-/// Each wing converts its own plane count to units by dividing by
-/// `TRANSPORT_DIVISION_FACTOR`. These units are stepped into kind 1
-/// (triple fighter patrol) or kind 0 (single)
-/// scenarios against `MAX_TRAINING_SCENARIOS`. A wing below a single, or
-/// whose batch is refused, ends the region's pass.
 fn training_draws<'a, B>(
     wings: &'a [AirWingRow],
     viewer: impl Fn(&AirWingRow) -> bool,
@@ -3308,13 +2803,11 @@ fn training_draws<'a, B>(
             undecided += 1;
             continue;
         }
-        // The game keeps the first 50 in pool/wing order.
         candidates.sort_by_key(|(wing, _)| wing.pool_ordinal);
         if candidates.len() >= GROUP_CAPACITY && unresolved != 0 {
             uncertain += 1;
         }
         candidates.truncate(GROUP_CAPACITY);
-        // Random selection with last-entry replacement.
         let mut rng = Random::new(SEED ^ region.rotate_left(16));
         while !candidates.is_empty() {
             let index = rng.next() as usize % candidates.len();
@@ -3357,8 +2850,6 @@ fn training_draws<'a, B>(
     draws
 }
 
-/// SplitMix64's finaliser over `value` into `state`: the stable mix the animation seeds are drawn
-/// with, so a seed is the same in every build of a plan and on every machine.
 fn mix(state: u64, value: u64) -> u64 {
     let mut z = state ^ value.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -3366,7 +2857,6 @@ fn mix(state: u64, value: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// `hash`'s seed, or the next seed derived from it that nothing in the plan has taken.
 fn claim(taken: &mut BTreeSet<u32>, mut hash: u64) -> u32 {
     loop {
         let seed = hash as u32;
@@ -3377,7 +2867,6 @@ fn claim(taken: &mut BTreeSet<u32>, mut hash: u64) -> u32 {
     }
 }
 
-/// A flight's identity ([`FlightKey`]) mixed: its wing, region, rig, track, anchor and heading.
 fn flight_identity(flight: &Flight) -> u64 {
     let mut hash = mix(0, u64::from(flight.region));
     hash = mix(hash, flight.wing);
@@ -3391,7 +2880,6 @@ fn flight_identity(flight: &Flight) -> u64 {
     mix(hash, u64::from(flight.yaw.to_bits()))
 }
 
-/// A launch's identity mixed: everything [`launches::Launch::same_source`] reads of its source.
 fn launch_identity(launch: &launches::Launch) -> u64 {
     let mut hash = mix(1, launch.wing);
     hash = mix(hash, launch.mesh as u64);
@@ -3403,8 +2891,6 @@ fn launch_identity(launch: &launches::Launch) -> u64 {
 }
 
 impl AircraftPlan {
-    /// One scenario of `batch` at `province`: the game anchors it at the
-    /// province's integer pixel mean.
     fn place(
         &mut self,
         batch: &Batch<'_>,
@@ -3420,7 +2906,6 @@ impl AircraftPlan {
             ));
             return;
         };
-        // The game's clamped bilinear terrain sample at the integer centroid.
         let origin = [x, map.heights.native_height(x, z), z];
         let direction = sub(origin, start);
         let yaw = -direction[0].atan2(direction[2])
@@ -3446,8 +2931,6 @@ impl AircraftPlan {
         let mut group = Vec::new();
         let mut group_travel = 0.0f32;
         for (track, poses) in rig.tracks.iter().enumerate() {
-            // The game attempts both sides independently and synchronizes
-            // only actors successfully appended to the scenario.
             let Some(actor) = (if rig.sides[track] == 0 {
                 batch.attacker.as_ref()
             } else {
@@ -3456,7 +2939,6 @@ impl AircraftPlan {
                 continue;
             };
             let lands = rig.lands[track];
-            // The pixels its drawn rig path can stand over.
             let terrain = (!lands).then(|| {
                 let mut x = (f32::INFINITY, f32::NEG_INFINITY);
                 let mut z = x;
@@ -3470,8 +2952,6 @@ impl AircraftPlan {
             let first = poses[0];
             let last = *poses.last().unwrap();
             let unbound = rig.unbound[track];
-            // An unbound actor's analysed poses are zero: it starts and ends
-            // at the rig origin without a heading.
             let (begin, end, back_first, back_last) = if unbound.is_some() {
                 (origin, origin, [0.0; 3], [0.0; 3])
             } else {
@@ -3544,8 +3024,6 @@ impl AircraftPlan {
         self.flights.extend(group);
     }
 
-    /// `ours` is the viewing country's canonical slot: admission reads nothing else of what the
-    /// viewer sees, whatever the fog-of-war switch.
     #[expect(clippy::too_many_arguments, reason = "a build's inputs are given together")]
     pub fn build(
         frame: &DecodedFrame,
@@ -3572,8 +3050,6 @@ impl AircraftPlan {
         )
     }
 
-    /// [`Self::build`], keeping from `kept` each scenario the build before placed whose placement
-    /// reads the same, and leaving in it what this build placed or kept.
     #[expect(clippy::too_many_arguments, reason = "a build's inputs are given together")]
     pub fn make(
         frame: &DecodedFrame,
@@ -3643,7 +3119,6 @@ impl AircraftPlan {
             air_reachability::MissionCountrySources::read(frame, &links, &registry)?;
         out.marks.src_missions = since(source_lap);
         source_lap = Instant::now();
-        // Shared by every scan: one war census and one family set per hour.
         let wars = Wars::read(frame, &links)?;
         let families = Families::read(frame, &links).ok();
         let fog_families = families
@@ -3774,7 +3249,6 @@ impl AircraftPlan {
                 training.undecided(region, None);
                 continue;
             };
-            // A wing without planes flies only for these definitions.
             if wing.planes == 0 && inputs.definition_map_flags & AIR_MISSION_ZERO_PLANE_FLAGS == 0 {
                 continue;
             }
@@ -3791,9 +3265,6 @@ impl AircraftPlan {
                 training.undecided(region, Some(group));
                 continue;
             };
-            // The game gets a scout array only in the viewing country's own
-            // call. A transfer is rejected when its base resolves, rather
-            // than flying from it.
             if (category == Category::Scout && !visit.own)
                 || registry.transfer_resolves(wing.base_override)
             {
@@ -3832,7 +3303,6 @@ impl AircraftPlan {
                     continue;
                 }
             }
-            // The wing enters its array, or finds it (or its side) full.
             training.reach(region, group);
             if groups.admit(&visit, group, inputs.last_target_province) {
                 regional.entry(region).or_default().arrays[visit.side][group].push(ScenarioWing {
@@ -3955,8 +3425,6 @@ impl AircraftPlan {
                 if !per_scenario {
                     targets.insert(draw.batch, province);
                 }
-                // The scenario's orientation reference remains available
-                // even when the designated attacking entity is refused.
                 let start = match take_off(&assets.launch_content, &carriers, candidate.base) {
                     Ok(start) => start,
                     Err(reason) => {
@@ -4051,8 +3519,6 @@ impl AircraftPlan {
             wings,
             |wing| links.get(&wing.owner) == Some(&ours),
             |wing| {
-                // Resolve the wing pool's base and province; the game dereferences
-                // both results without a null check.
                 let base = registry
                     .bases
                     .get(&wing.air_base)
@@ -4061,7 +3527,6 @@ impl AircraftPlan {
                     Some(_) => base.province.ok_or("its state base has no province")?,
                     None => carriers.province(base)?,
                 };
-                // A province omitted from every region has no assigned region.
                 Ok(region_of
                     .get(&province)
                     .copied()
@@ -4101,7 +3566,6 @@ impl AircraftPlan {
                 out.diagnostics.push(format!("missing scenario {key}"));
                 continue;
             };
-            // Draw one random province from the region's list for every scenario of this wing.
             let Some(provinces) = assets
                 .region_draws
                 .get(&region)
@@ -4164,7 +3628,6 @@ impl AircraftPlan {
         Ok(out)
     }
 
-    /// Bytes the plan holds: flights with their routes, requests and terrain, runs and launches.
     pub fn bytes(&self) -> usize {
         use std::mem::size_of;
         let flights: usize = self
@@ -4184,14 +3647,10 @@ impl AircraftPlan {
             + self.diagnostics.iter().map(String::capacity).sum::<usize>()
     }
 
-    /// Flights, launches and diagnostics the plan holds.
     pub fn counts(&self) -> [usize; 3] {
         [self.flights.len(), self.launches.len(), self.diagnostics.len()]
     }
 
-    /// Entries of two plans built for an hour compared, entries differing, and the first
-    /// described: every flight as placed, every run, launch and diagnostic in order. What the
-    /// frames advanced since (eased transforms, run clocks) is not compared.
     pub fn differ(&self, other: &Self) -> (u64, u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -4225,13 +3684,6 @@ impl AircraftPlan {
         (entries as u64, differing, first)
     }
 
-    /// The missile explosions of scenarios that finished on a frame since
-    /// the last call, each as its scenario's cycle ended ([`Self::field`]),
-    /// and of launch-flagged launch records whose entity finishes after
-    /// presentation time `from` and by `to`. The first call that reaches
-    /// the launch clock's opening instant from at or before it also takes
-    /// the records that finish at that instant, which no `(from, to]`
-    /// covers; plans carry that across swaps ([`Self::carry_opening`]).
     pub fn missile_explosions(&mut self, from: f32, to: f32) -> Vec<super::strike_effects::Impact> {
         let mut out = std::mem::take(&mut self.finished);
         if from.is_nan() || to.is_nan() {
@@ -4244,7 +3696,6 @@ impl AircraftPlan {
         if opening {
             out.extend(self.launch_explosions(|launch| launch.finished_at_open()));
         }
-        // Every later finish is after the opening instant.
         let from = if opening { from.max(0.0) } else { from };
         if to > from {
             out.extend(self.launch_explosions(|launch| launch.finished(from, to)));
@@ -4252,24 +3703,10 @@ impl AircraftPlan {
         out
     }
 
-    /// Keeps `previous`'s record of having passed the launch clock's
-    /// opening instant, so a plan swapped in later never takes it again.
     pub fn carry_opening(&mut self, previous: &Self) {
         self.opened |= previous.opened;
     }
 
-    /// Advances every scenario's run to presentation time `seconds`, as the
-    /// game's update does each frame. A run starts, and a clock that goes
-    /// back restarts it, at its phase. On a frame inside the rig each actor
-    /// without a landing route meets the near-ground band on the pose it
-    /// draws then and the terrain under it: the rocket is done at or below
-    /// the terrain; at or below the terrain plus the band's offset an actor
-    /// requests `explode` and stays there, or without that state is hidden;
-    /// an exploding actor is done, and hidden for good, once its own player
-    /// (`played`, the previous frame's) reads the band's delay; a hidden one
-    /// is done while it is at or below the band. The cycle ends on a frame
-    /// where every actor of a scenario none of whose actors lands is done;
-    /// a missile scenario's ending cycle plays its explosion.
     fn advance(
         &mut self,
         rigs: &BTreeMap<String, Rig>,
@@ -4320,7 +3757,6 @@ impl AircraftPlan {
             };
             let mut time = elapsed - run.start;
             if time >= total {
-                // Only the last finished cycle plays: its province holds one effect.
                 let cycles = (time / total).floor();
                 run.start += cycles * total;
                 run.cycle += cycles as u32;
@@ -4375,7 +3811,6 @@ impl AircraftPlan {
                         entry,
                         hidden,
                     } => {
-                        // Once it has read the delay it is hidden and stays done.
                         let read = hidden
                             || GroundContact::from(band).exploded(played((
                                 flight.mesh,
@@ -4404,9 +3839,6 @@ impl AircraftPlan {
         }
     }
 
-    /// The missile explosions of launch-flagged launch records whose entity
-    /// finishes after `from` and by `to`, on the presentation clock: the
-    /// last record of each launch, keyed apart from the flights'.
     fn launch_explosions<'a>(
         &'a self,
         finished: impl Fn(&launches::Launch) -> Option<u32> + 'a,
@@ -4433,10 +3865,6 @@ impl AircraftPlan {
             })
     }
 
-    /// A plan of rootless rockets, one per `(province, anchor)`, each a
-    /// two-second take-off ending its scenario as its rig starts, run on a
-    /// clock of speed one at the frames `frames`, and the explosions those
-    /// frames finish.
     #[cfg(test)]
     pub(crate) fn rocket_explosions_for_tests(
         provinces: &[(u32, [f32; 3])],
@@ -4525,14 +3953,6 @@ impl AircraftPlan {
         place_flights(&self.flights, &assets.rigs, defines, seconds)
     }
 
-    /// The flights at `seconds` as their runs left them, each drawn where the
-    /// game's per-frame easing has brought it ([`Eased`]): the frame's time
-    /// since the last counts 30 Hz frames, and the turn steps by the aircraft
-    /// clock's speed too. An actor that starts a new cycle starts on its
-    /// take-off route's first point, as the game creates it there; one first
-    /// seen mid-flight, or after the clock went back, stands on its pose. An
-    /// exploding actor keeps the transform it had, as the game stops easing
-    /// it. The band reads the poses, not the eased transforms.
     fn eased_runs(
         &mut self,
         rigs: &BTreeMap<String, Rig>,
@@ -4548,7 +3968,6 @@ impl AircraftPlan {
             self.eased.clear();
         }
         self.eased_at = Some(seconds);
-        // The game eases an actor on the frame it enters the band, then no more.
         let mut frozen = BTreeMap::new();
         for run in &self.runs {
             for (index, ground) in run.flights.clone().zip(&run.grounds) {
@@ -4592,12 +4011,6 @@ impl AircraftPlan {
         placed
     }
 
-    /// Every flight's and launch's animation seed, each drawn from its own identity alone, and
-    /// each launch's clip length from its seed. A plan built for an hour then holds the same
-    /// seeds whichever plans came before it, so a flight that goes on across an install keeps its
-    /// player, and a viewer that played to the hour, one that sought to it and one that opened at
-    /// it draw the same aircraft. Two entries whose identity hashes alike take the next derived
-    /// seed, so no two share a player.
     pub fn assign_seeds(&mut self, launch_lifetime: &dyn Fn(usize, u32) -> f32) {
         let mut taken = BTreeSet::new();
         self.flight_seeds = self
@@ -4648,7 +4061,6 @@ impl AircraftPlan {
                 .push(index);
         }
         let mut retained = BTreeSet::new();
-        // Each run's run of the plan before: the same flights.
         let mut matched: Vec<Option<usize>> = vec![None; self.runs.len()];
         for (at, run) in self.runs.iter().enumerate() {
             let flights = &self.flights[run.flights.clone()];
@@ -4684,13 +4096,10 @@ impl AircraftPlan {
         Ok(())
     }
 
-    /// The runs its install started anew: new players, nothing carried.
     pub fn restarts(&self) -> usize {
         self.restarts
     }
 
-    /// Takes over the drawn transforms of the plan this one replaces, for the
-    /// flights the two share.
     pub fn carry_easing(&mut self, previous: &mut Self) {
         self.drawn_keys = std::mem::take(&mut previous.drawn_keys);
         let keys: BTreeSet<FlightKey> = self.flights.iter().map(Flight::key).collect();
@@ -4699,7 +4108,6 @@ impl AircraftPlan {
         self.eased_at = previous.eased_at;
     }
 
-    /// The flights at `seconds` as their runs left them ([`Self::advance`]).
     fn placed_runs(
         &self,
         rigs: &BTreeMap<String, Rig>,
@@ -4719,7 +4127,6 @@ impl AircraftPlan {
         placed
     }
 
-    /// The launch entities shown at presentation time `seconds`.
     fn launched(&self, seconds: f32) -> Vec<(usize, ModelInstance)> {
         self.launches
             .iter()
@@ -4732,13 +4139,6 @@ impl AircraftPlan {
             .collect()
     }
 
-    /// The aircraft in the air at `seconds`, every mission placed so each keeps its player,
-    /// clock and events, and the animation keys of those whose mission is not `shown`, which
-    /// stay placed but draw nothing ([`crate::map::models::ModelPass::set_hidden`]). Launch
-    /// effects are missiles.
-    ///
-    /// Each scenario's run advances to `seconds` first ([`Self::advance`]),
-    /// reading the actors' players as the previous frame left them.
     pub fn field(
         &mut self,
         assets: &AircraftAssets,
@@ -4755,14 +4155,10 @@ impl AircraftPlan {
             Err(_) => Vec::new(),
         };
         if viewer_foundation::view_record::on() {
-            // `jumps`: a flight drawn the frame before that stands on a fresh transform instead of
-            // easing on (its drawn transform lost at an install); a take-off at a new cycle is the
-            // game's own and eases from its route's first point.
             viewer_foundation::view_record::add("flights", "jumps", self.snapped as u64);
             viewer_foundation::view_record::set("flights", "running", self.runs.len() as u64);
             self.drawn_keys = placed.iter().map(|&(index, _)| self.flights[index].key()).collect();
         }
-        // An actor exploding in the band asks for `explode` at its entry.
         let mut entries = BTreeMap::new();
         for run in &self.runs {
             for (index, ground) in run.flights.clone().zip(&run.grounds) {
@@ -4773,7 +4169,6 @@ impl AircraftPlan {
         }
         let launched = self.launched(seconds);
         let mut hidden = hidden_flights(&self.flights, &placed, shown);
-        // Actors the band hid stay placed, players stepping, and draw nothing.
         let mut grounded = BTreeSet::new();
         for run in &self.runs {
             for (index, ground) in run.flights.clone().zip(&run.grounds) {
@@ -4809,7 +4204,6 @@ impl AircraftPlan {
                 .collect(),
             128.0,
         );
-        // A launch entity plays its default state from its spawn.
         let unrequested = Arc::new(Vec::new());
         for (mesh, instance) in launched {
             field.clocks.insert(
@@ -4866,7 +4260,6 @@ impl AircraftPlan {
         lines
     }
 
-    // Asset diagnostics can grow while another plan bakes; these lines belong only to this plan.
     pub fn plan_report(&self, assets: &AircraftAssets) -> Vec<String> {
         let mut lines = vec![format!(
             "Aircraft: {} generated flight slots, {} at time zero, seed 0x{SEED:08x}; live presentation phase is unrecorded",

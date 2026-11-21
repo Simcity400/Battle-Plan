@@ -1,4 +1,3 @@
-//! Exact ordered source-pool projection, including empty extents and keyed zeros.
 use super::*;
 use installed_content_save::{ActualCountry, Save, intel::sources as saved};
 use replay_data::rows::{IntelContributionRow as Contribution, IntelSourceRow as Source};
@@ -249,8 +248,6 @@ fn compare_pack(
             if row.pool == u32::MAX && row.source < 4 {
                 let tag = country_tag(row.reference_country, countries)?.map(<[u8]>::to_vec);
                 let mut normalized = row;
-                // The strategic holder and country root can retain different
-                // authenticated raw aliases of the same actual country.
                 normalized.owner = owner;
                 normalized.reference_country = 0;
                 if references
@@ -261,11 +258,8 @@ fn compare_pack(
                 }
             } else {
                 let mut normalized = row;
-                // The text writer emits a Boolean, while the recording keeps
-                // the full native remove byte.
                 normalized.removed = u8::from(row.removed != 0);
                 if source_key(&row) == (u32::MAX, u32::MAX, u32::MAX) {
-                    // The root's raw country alias has no independent text-save word.
                     normalized.reference_country = 0;
                 }
                 if actual_sources
@@ -330,7 +324,6 @@ fn compare_pack(
                         .find(|(_, country)| country.tag == network.target)
                         .map(|(&reference, _)| reference)
                         .ok_or_else(|| invalid("network source target lacks country identity"))?;
-                    // Match raw alias through tags; source payload country is normalized separately.
                     let actual_target = references
                         .keys()
                         .find(|(kind, raw)| {

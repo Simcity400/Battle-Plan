@@ -35,10 +35,10 @@ test('inclusive range subtraction dates signed changes to their supplying reads,
   const items = lossItems(data, { ...window, first: 104, from: 104, hour: 107 });
   assert.equal(lossesTotal(items).exact, 50000n);
   assert.equal(items[1].final, -50000);
-  assert.equal(items[1].weight, 50000); // Ordering is independent of the signed final.
+  assert.equal(items[1].weight, 50000);
   data.causes[0].leaves[0].points = [{ hour: 108, totalRaw: '300000' }];
   assert.equal(lossRows(data, { ...window, hour: 107 }).length, 0);
-  assert.equal(lossAmount(leaf, 108, 104), 300000n); // The first retained read is counted where it was supplied.
+  assert.equal(lossAmount(leaf, 108, 104), 300000n);
 });
 
 test('only follow ignores its trailing frame start; explicit times refuse outside or reversed branch bounds', () => {

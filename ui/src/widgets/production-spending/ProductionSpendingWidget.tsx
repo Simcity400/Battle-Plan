@@ -27,8 +27,6 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const settings = sunburstSettings(options);
   const kind: FactoryKind = options.factories === 'dockyards' ? 'dockyards' : 'military';
   const refits = options.refits === true;
-  // Following, the sunburst reads its values at the head each frame: the widget renders only when what it shows
-  // around them changes (the empty state and its words).
   const headKey = useRef<(hour: number) => string>(() => '');
   const spending = useSpending(widget, runtime, active, false, validateProductionSpendingReply, hour => headKey.current(hour));
   useShownEachFrame(runtime.clock, () => spending.data && spending.track ? trackHourOf(widget, spending.track, runtime.tracks, runtime.clock.getHour()) : null);
@@ -45,14 +43,11 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   };
   const build = useRef(valuesAt);
   build.current = valuesAt;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const values = useMemo(() => hour == null ? { items: [] } : valuesAt(hour), [data, designs, finals, kind, refits, from, hour, end]);
   const live = useMemo(() => headAt && data && hour != null ? liveAt(runtime.clock, position => Math.floor(headAt(position) ?? hour), at => build.current(at)) : undefined,
-    // Made again whenever what the values are made from changes; the head's hour is read each frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [headAt, runtime.clock, data, designs, finals, kind, refits, from, end]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
-  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
   const decimals = data?.decimals ?? 5;
   const digits = icDecimals(options, decimals);
   const label = hour == null ? 'Loading production spending…' : emptyLabel(hour);

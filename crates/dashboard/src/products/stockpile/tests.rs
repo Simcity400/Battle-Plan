@@ -14,22 +14,17 @@ fn member(token: &str, archetype: Option<&str>, domain: Option<super::Domain>) -
     Member { token: token.into(), archetype: archetype.map(str::to_owned), domain, names: Vec::new() }
 }
 
-/// A read holds for a day at most, up to the next read and the holder's last hour; a missed read
-/// leaves the hours after the carry unknown, never the last value carried on.
 #[test]
 fn a_read_is_carried_a_day_to_the_next_read_and_no_further() {
     assert_eq!(carried(&[10, 34, 58], 100), vec![span(10, 81)]);
     assert_eq!(carried(&[10, 82], 90), vec![span(10, 33), span(82, 90)]);
     assert_eq!(carried(&[10], 20), vec![span(10, 20)]);
-    // Rows shown at the first read, none at the second (an AI-controlled read), shown again.
     let held = [(5, true), (40, false), (70, true)];
     let (with, without) = split_logistics(&[10, 34, 58, 82], &held, 100);
     assert_eq!(with, vec![span(10, 57), span(82, 100)]);
     assert_eq!(without, vec![span(58, 81)]);
 }
 
-/// A type sums its designs exactly at every hour; a design of unknown type holding anything leaves
-/// every type's total unknown until it holds none, and a design's own line is its stock.
 #[test]
 fn a_types_stock_sums_its_designs_and_an_untyped_holding_makes_it_unknown() {
     let mut replay = Replay { stock: vec![span(0, 99)], ..Replay::default() };
@@ -48,14 +43,10 @@ fn a_types_stock_sums_its_designs_and_an_untyped_holding_makes_it_unknown() {
     assert_eq!(values, vec![(0, 19, Some(107)), (20, 29, None), (30, 49, Some(107)), (50, 59, Some(157)), (60, 99, Some(150))]);
     let own: Vec<Option<i128>> = variant_line(&replay, 2).iter().map(|piece| piece.value).collect();
     assert_eq!(own, vec![Some(7), Some(0)]);
-    // Excluding the type keeps its designs out of every group but the excluded designs' own rows.
     let included = groups(&variants, &BTreeMap::new(), &BTreeMap::new(), &[":mod_gun".to_owned()]);
     assert!(included.iter().all(|group| group.variants == vec![3]));
 }
 
-/// A type's need is its write's available operand less its balance; without the operand an
-/// ordinary type derives it from its stock and a type with a note leaves it unknown; a resolved
-/// arm is unknown while an unresolved type holds anything.
 #[test]
 fn a_need_comes_from_the_available_operand_and_an_unresolved_type_decides_an_arm() {
     let mut replay = Replay { balance: vec![span(0, 49)], ..Replay::default() };
@@ -77,12 +68,9 @@ fn a_need_comes_from_the_available_operand_and_an_unresolved_type_decides_an_arm
     let values = |line: &Vec<Piece<(i128, Option<i128>)>>| line.iter().map(|piece| (piece.first, piece.value)).collect::<Vec<_>>();
     assert_eq!(values(&lines[0]), vec![(0, Some((-50, Some(170)))), (20, Some((-50, Some(150))))]);
     assert_eq!(values(&lines[1]), vec![(0, Some((30, None)))]);
-    // Listed at zero, the unresolved type leaves the arm's need unknown; holding, its whole line.
     assert_eq!(values(&lines[2]), vec![(0, Some((-50, None))), (30, None)]);
 }
 
-/// A line drawn over a view: an hourly view lists its runs, a long view folds them into the grid's
-/// bins with each bin's first, last, least and greatest; a break follows an unknown stretch.
 #[test]
 fn a_chart_folds_exact_pieces_into_the_views_bins_and_breaks_after_unknown_hours() {
     let pieces = vec![
@@ -103,7 +91,6 @@ fn a_chart_folds_exact_pieces_into_the_views_bins_and_breaks_after_unknown_hours
     let held: Vec<_> = binned.buckets.iter().flatten().collect();
     assert!(held.iter().any(|bucket| bucket.min_value == 10.0 && bucket.max_value == 30.0 || bucket.first_value == 10.0));
     assert!(held.iter().all(|bucket| bucket.max_value <= 30.0 && bucket.min_value >= 10.0));
-    // A view starting inside a piece draws from its own first hour, its runs and bins cut to it.
     let mut lines: Vec<Drawn> = Vec::new();
     drawn(&pieces, |raw| Some((raw as f64, raw.unsigned_abs())), (5, 39), None, &mut lines);
     let cut = summary(lines, 5, 39, 40);

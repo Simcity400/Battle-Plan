@@ -9,8 +9,6 @@ import type { BreakdownLine, StabilityBreakdown } from '../../generated/dashboar
 const line = (position: number, kind: string, valueRaw: string, extra: Partial<BreakdownLine> = {}): BreakdownLine => ({
   line: position, kind, identity: '', identityId: 0, secondaryRaw: '0', valueRaw, text: null, label: null, group: null, groupKind: null, ...extra });
 
-// GER on 28 Oct 1943, as the game's tooltip showed it: Stability 85 + 6 + 5 = 96%,
-// War Support 30 + 40 + 5 = 75%.
 const GER: StabilityBreakdown = {
   hour: 100, readHour: 100, language: 'l_english', linesAvailable: true,
   stability: { valueRaw: '96000', clampRaw: '0', terms: [
@@ -74,7 +72,6 @@ test('lines that do not add up show the rest as its own part, and missing inputs
   assert.ok(rows.some(row => row.label === 'Other' && row.value === '+3.0%'));
   assert.ok(rows.some(row => row.label === 'Party popularity' && row.value === 'Not recorded'));
   assert.equal(unavailable, true);
-  // Lines from another read are not shown as this hour's: the term stands alone.
   const stale = breakdownRows({ ...GER, linesAvailable: false }, 'stability', 5, 'Stability');
   assert.deepEqual(stale.rows.at(-2), { label: 'Modifiers', value: '+5.0%', tone: 'positive' });
 });
@@ -98,7 +95,6 @@ test('a long breakdown lists its largest lines and counts the rest, so it fits t
   const many: StabilityBreakdown = { ...GER, modifiers: [{ ...GER.modifiers[0], lines }] };
   const { rows } = breakdownRows(many, 'stability', 5, 'Stability', cap);
   assert.equal(rows.filter(row => row.label.startsWith('Spirit')).length, cap);
-  // The three smallest (100 + 200 + 300) are counted in one row.
   assert.deepEqual(rows.find(row => row.label === '3 more lines'), { label: '3 more lines', value: '+0.6%', tone: 'muted' });
 });
 

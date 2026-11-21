@@ -1,11 +1,3 @@
-//! Allocation-free template and country-holder writer notifications. The native
-//! inventory is in `engine_mutations::template_mutations`; callbacks preserve original
-//! arguments and return values. A template whose object and owner certificates
-//! and local-definition token stand since its held read is not read at all.
-//! Country configuration uses its owner/deployment holder; garrison selections
-//! use their occupation holder. A missing, poisoned, overlapping or invalidated
-//! certificate reads the template afresh.
-//! A recoverable installation failure selects fresh reads for the whole family.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -31,8 +23,6 @@ struct HqSource {
 static HQ_SOURCES: Mutex<Vec<(usize, HqSource)>> = Mutex::new(Vec::new());
 static HQ_SOURCE_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-/// Worker-only registration. Hooks only try the lock and update existing slots;
-/// contention conservatively revokes carry, without waiting or allocating.
 pub(crate) fn track_hq_holder(holder: usize) -> Result<(), &'static str> {
     if holder != 0 {
         let mut sources = HQ_SOURCES
@@ -68,18 +58,13 @@ const AI_ROLE_SITE: usize = 25;
 static WATCHES: Watches = Watches::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Carried and read templates and names read again, since attach.
 static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-/// The latest capture's carried and read templates.
 static HOUR: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
-/// Live sizing or captured template demand, for off-thread watch sizing.
 static TEMPLATES: AtomicUsize = AtomicUsize::new(0);
 static COUNTRIES: AtomicUsize = AtomicUsize::new(0);
 static HQ_GROUPS: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the watched templates and each writer site's
-/// calls.
 pub(crate) struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
@@ -97,9 +82,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `template`'s names. Dropping the guard notifies its
-    /// return.
     pub(crate) fn notify(&self, template: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(template)
@@ -132,7 +114,6 @@ impl Watches {
         }
     }
 
-    /// An enabled domain with a table for `objects` receivers installed.
     #[cfg(test)]
     pub(crate) fn enabled(objects: usize) -> Self {
         let watches = Self::new();
@@ -148,27 +129,15 @@ impl Watches {
     }
 }
 
-/// What a walk sees of the notifications.
 pub(crate) trait Changes: Sync {
-    /// A recoverable observer install failure requires fresh reads without reuse admission.
     fn fresh_only(&self) -> bool {
         false
     }
-    /// `(epoch, revision)` of the whole domain while it is observed and no
-    /// writer runs; `None` otherwise. Equal values across hours prove that no
-    /// observed writer ran in between, so every certificate taken after the
-    /// earlier value still holds without looking it up.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of one template, registering it; `None` when it
-    /// cannot be observed. Equal values across hours prove that no observed
-    /// writer touched it.
     fn sequence(&self, template: usize) -> Option<(u64, u64)>;
-    /// Deployment reset is owned by the existing local-subunit observer.
     fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
         self.sequence(status)
     }
-    /// Local definition writers, including shared definition/content reloads.
-    /// Missing observation leaves the icon core on its original fresh path.
     fn core_dependencies(&self) -> Option<(u64, u64)> {
         None
     }
@@ -183,9 +152,7 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub(crate) struct Observer;
-/// A real observer without offered storage, isolated by its caller's test process.
 #[cfg(test)]
 pub(crate) fn unsized_observer_for_tests() -> Observer {
     WATCHES.registry.set_enabled(true);
@@ -217,14 +184,10 @@ impl Changes for Observer {
     }
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// In each capture, before its readers. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
@@ -238,24 +201,17 @@ fn offer(templates: usize, countries: usize, hq_groups: usize) {
     }
 }
 
-/// Off-thread live sizing, before the first sample. The existing template
-/// capacity census supplies demand without waiting for a captured baseline.
 pub(crate) fn prepare(templates: usize, countries: usize) {
     TEMPLATES.fetch_max(templates, Ordering::Relaxed);
     record_countries(countries);
     presize();
 }
 
-/// The existing off-thread root sizing pass supplies group demand before
-/// capture. Preserve template/country demand and reserve both each group
-/// and its potential deployment holder in their shared observation table.
 pub(crate) fn prepare_hq_groups(groups: usize) {
     record_hq_groups(groups);
     presize();
 }
 
-/// Off-thread growth from capture demand. Offered tables are installed by
-/// the existing boundary; unchanged demand allocates nothing.
 pub fn presize() {
     offer(
         TEMPLATES.load(Ordering::Relaxed),
@@ -264,7 +220,6 @@ pub fn presize() {
     );
 }
 
-/// The configuration census's live owner demand, including empty template rosters.
 pub(crate) fn record_countries(countries: usize) {
     COUNTRIES.fetch_max(countries, Ordering::Relaxed);
 }
@@ -272,23 +227,17 @@ pub(crate) fn record_hq_groups(groups: usize) {
     HQ_GROUPS.fetch_max(groups, Ordering::Relaxed);
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's templates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Counts {
-    /// Published from their held read, reading nothing past the identity.
     pub carried: u64,
     pub read: u64,
-    /// Names the walk could not read, read again for the dictionary.
     pub rereads: u64,
 }
 
-/// A worker publishes one capture's counts and, when its dictionary is
-/// complete, its templates for sizing.
 pub(crate) fn record(counts: &Counts, templates: Option<usize>) {
     for (target, value) in READS
         .iter()
@@ -309,9 +258,6 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A withheld site leaves the family uninstalled; DivisionTemplates
-    /// then reads every template's names afresh.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         BASE.store(base, Ordering::Release);
@@ -403,10 +349,6 @@ impl Hooks {
             );
             crate::orders_group_changes::forwarder(false);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -433,14 +375,10 @@ impl Drop for Hooks {
             false,
         );
         crate::orders_group_changes::forwarder(false);
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-/// The template a site's first argument names.
 fn receiver(receiver: Receiver, first: usize) -> usize {
     match receiver {
         Receiver::Data => first.saturating_sub(DATA),
@@ -455,7 +393,6 @@ fn receiver(receiver: Receiver, first: usize) -> usize {
     }
 }
 
-/// The receiver a `kind` site names from its first two arguments; `None` revokes every template.
 fn selected_receiver(
     memory: &impl Memory,
     base: usize,
@@ -482,14 +419,12 @@ fn selected_receiver(
     }
 }
 
-/// The notification `site`'s writer gives `watches`, and its occupation holder's.
 pub(crate) fn native_notification(
     watches: &Watches,
     site: usize,
     first: usize,
     second: usize,
 ) -> (Notification<'_>, Option<Notification<'static>>) {
-    // SAFETY: all reads are guarded on the native calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     notification(
         watches,
@@ -523,11 +458,6 @@ fn notification<'a>(
     (template, occupation)
 }
 
-// Ordinary sites take at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original; the detour forwards all four. The
-// notification covers the original in flight.
-// Foreign unwind may cross a detour. Keep the notification active on escape:
-// only a normal native return proves that its flight finished.
 type NativeFunction = unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize;
 
 macro_rules! callback {
@@ -549,13 +479,9 @@ macro_rules! callback {
         }
     };
 }
-// Editable-data assignment (dest data, source data).
 callback!(assign_editable_template_data, 0);
-// Full-data assignment (dest data, source data).
 callback!(assign_template_data, 1);
-// Read template data (data, reader, token).
 callback!(read_template_data, 2);
-// Division template deleting destructor(template, flags).
 callback!(destroy_template, 3);
 callback!(reset_template_data, 4);
 callback!(rebuild_template_caches, 5);
@@ -583,8 +509,6 @@ unsafe extern "system-unwind" fn set_template_unit_type(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
-    // UNIT_TYPE_OVERRIDE is this setter's only store. Even an unchanged store
-    // excludes acquisition until the original returns normally.
     let running = ManuallyDrop::new(WATCHES.registry.running());
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let notification = ManuallyDrop::new(WATCHES.unit_type_notification(&memory, first, second));
@@ -597,7 +521,6 @@ unsafe extern "system-unwind" fn set_template_unit_type(
 }
 callback!(toggle_template_variant, 24);
 callback!(update_template_tracked_variant, 56);
-// Custom-icon command (command).
 callback!(set_template_symbol, 57);
 callback!(add_template_effect, 58);
 callback!(add_colonial_template_effect, 59);
@@ -609,8 +532,6 @@ unsafe extern "system-unwind" fn rebuild_template_ai_role(
 ) -> usize {
     use engine_native::creferenced_division_template::{AI_ROLE, AI_ROLE_FALLBACK};
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
-    // The role, its presence byte and its fallback are this rebuild's only stores: one that
-    // leaves them equal notifies nothing, as an unchanged unit type does.
     let running = ManuallyDrop::new(WATCHES.registry.running());
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let fields = first.checked_add(AI_ROLE - DATA);
@@ -667,7 +588,6 @@ callback!(allocate_hq_deployment_order, 42);
 callback!(set_hq_target, 43);
 callback!(begin_hq_deployment, 44);
 callback!(cancel_hq_deployment, 45);
-// Group destructor (group): also frees the group the orders-group family certifies.
 unsafe extern "system-unwind" fn destroy_hq_group(
     first: usize,
     second: usize,
@@ -921,7 +841,6 @@ mod tests {
     fn unit_type_callback_preserves_arguments_return_and_in_flight_exclusion() {
         const TEST: &str = "template_changes::tests::unit_type_callback_preserves_arguments_return_and_in_flight_exclusion";
         const CHILD: &str = "BATTLE_PLAN_TEMPLATE_UNIT_TYPE_CALLBACK_TEST";
-        // The process-wide observer this enables would certify other tests' templates.
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
@@ -993,7 +912,6 @@ mod tests {
         use collector_observers::occupation_changes as occupation;
         const TEST: &str = "template_changes::tests::occupation_holder_callbacks_forward_real_certificates_and_template_admission";
         const CHILD: &str = "BATTLE_PLAN_OCCUPATION_TEMPLATE_FORWARDING_TEST";
-        // Process-wide observers and original pointers belong to this child alone.
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
@@ -1112,7 +1030,6 @@ mod tests {
             assert_ne!(occupation::quiet(), Some(quiet));
         }
 
-        // Both a readable null parent and a failed guarded parent read revoke all holders.
         group[engine_mutations::template_mutations::OCCUPATION_PARENT / size_of::<usize>()] = 0;
         for first in [group.as_ptr() as usize, 0] {
             let holder = occupation::sequence(HOLDER).unwrap();
@@ -1228,8 +1145,6 @@ mod tests {
         }
     }
 
-    /// A writer moves only the template it names (an assignment names it
-    /// through its contained data), and every writer moves the quiet token.
     #[test]
     fn a_writer_moves_only_its_templates_certificate_and_the_quiet_token() {
         let watches = Watches::enabled(16);
@@ -1244,7 +1159,6 @@ mod tests {
         assert_ne!(Changes::quiet(&watches), Some(quiet));
         assert_eq!(watches.calls[0].load(Ordering::Relaxed), 1);
         assert_eq!(receiver(MUTATIONS[3].1, 0x1000), 0x1000);
-        // A running writer certifies nothing.
         let running = watches.notify(0x1000, 3);
         assert!(Changes::sequence(&watches, 0x1000).is_none());
         assert!(Changes::quiet(&watches).is_none());
@@ -1252,7 +1166,6 @@ mod tests {
         assert!(!watches.poisoned());
     }
 
-    /// The custom-icon command names no template: it revokes every one.
     #[test]
     fn the_custom_icon_command_revokes_every_template_certificate() {
         let site = MUTATIONS
@@ -1276,10 +1189,6 @@ mod tests {
         assert!(!watches.poisoned());
     }
 
-    /// A scripted template addition appends to its scope country's roster and renames only a
-    /// template of that roster: it revokes that country's templates through their owner
-    /// certificate and leaves every other template and country carried. A scope whose country
-    /// cannot be resolved revokes every template.
     #[test]
     fn scripted_template_additions_revoke_only_their_scope_countrys_templates() {
         use engine_mutations::template_mutations::EFFECT_SCOPE_COUNTRY;
@@ -1321,7 +1230,6 @@ mod tests {
                 .unwrap();
             assert_eq!(MUTATIONS[site].1, Receiver::ScopeCountry, "{name}");
             let watches = Watches::enabled(16);
-            // Country 7's owner certificate, another country's, and a template of each.
             let receivers = [7, 9, 0x5000, 0x6000];
             let before = receivers.map(|receiver| Changes::sequence(&watches, receiver).unwrap());
             let (running, occupation) = notification(&watches, &memory, base, site, 0xe0, scope);

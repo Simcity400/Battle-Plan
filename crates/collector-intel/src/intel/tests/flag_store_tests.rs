@@ -1,12 +1,7 @@
-//! ScriptFlags rows carried between hours per flag manager
-//! ([`super::super::FlagStore`], [`crate::flag_changes`]): quiet hours read no
-//! manager and publish the same rows, a hooked write re-reads only its
-//! manager and an invalidation re-reads every manager.
 use super::*;
 use crate::flag_changes::{Counts, Watches};
 use std::cell::RefCell;
 
-/// Every guarded call's first address, over the [`flag_scopes`] bytes.
 struct Calls<'a> {
     bytes: &'a [u8],
     calls: RefCell<Vec<usize>>,
@@ -23,8 +18,6 @@ impl Memory for Calls<'_> {
     }
 }
 
-/// The five scope managers of [`flag_scopes`]: global, country 2, state 1
-/// and characters 44 and 45 (embedded, the last one empty).
 const MANAGERS: [usize; 5] = [
     0xa000,
     0xa100,
@@ -32,13 +25,10 @@ const MANAGERS: [usize; 5] = [
     0x6000 + ccharacter::FLAGS,
     0x6200 + ccharacter::FLAGS,
 ];
-/// The dense row each of the first four managers holds.
 fn row(scope: usize) -> usize {
     0xb000 + scope * cscript_flag::STRIDE
 }
 
-/// Add empty historical scopes without adding flag rows: watch demand must
-/// follow scope count, not the usually much smaller live flag count.
 fn with_empty_characters(count: usize) -> Vec<u8> {
     let mut bytes = flag_scopes();
     let list = 0x10000;
@@ -92,7 +82,6 @@ struct Hour {
     outcome: Outcome,
     rows: Vec<ScopedFlag>,
     counts: Counts,
-    /// Guarded reads of any manager header or dense row.
     manager_reads: usize,
 }
 
@@ -100,8 +89,6 @@ fn walk(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> Hour {
     walk_with(bytes, store, watches).0
 }
 
-/// [`walk`], also returning the guarded reads of any scope root, state,
-/// character or manager, none of which a quiet hour makes.
 fn walk_with(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> (Hour, usize) {
     let memory = Calls {
         bytes,
@@ -161,8 +148,6 @@ fn set_value(bytes: &mut [u8], scope: usize, value: i16) {
     );
 }
 
-/// The first hour reads and holds every manager; this is what the old
-/// behaviour does every hour.
 fn first_hour(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> Hour {
     let first = walk(bytes, store, watches);
     assert_eq!(first.outcome, Outcome::Rows { len: 4 });
@@ -198,8 +183,6 @@ fn quiet_hours_read_no_manager_and_publish_identical_rows() {
             ),
             (0, 5, 4)
         );
-        // Neither a header nor a row of a non-character manager is read; a
-        // character's header still arrives with its identity.
         assert_eq!(quiet.manager_reads, 0);
         watches.boundary(false);
     }
@@ -212,7 +195,6 @@ fn a_hooked_write_rereads_only_its_manager() {
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
     first_hour(&bytes, &mut store, &watches);
-    // set_country_flag on country 2: the detour notifies around the write.
     let notification = watches.notify(MANAGERS[1], 0);
     set_value(&mut bytes, 1, 7);
     drop(notification);
@@ -228,7 +210,6 @@ fn a_hooked_write_rereads_only_its_manager() {
             .enumerate()
             .all(|(index, row)| index == 1 || row.flag.value == i16::MIN)
     );
-    // The re-read manager is carried again from the next quiet hour.
     watches.boundary(false);
     let quiet = walk(&bytes, &mut store, &watches);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 5));
@@ -242,12 +223,10 @@ fn an_invalidating_hour_rereads_every_manager() {
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
-    // Load, gap or recovery.
     watches.boundary(true);
     let hour = walk(&bytes, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (5, 0));
     assert_eq!(hour.rows, first.rows);
-    // A forgotten store (a failed job) reads every manager too.
     watches.boundary(false);
     store.forget();
     let forgotten = walk(&bytes, &mut store, &watches);
@@ -261,10 +240,6 @@ fn a_changed_scope_identity_is_read_afresh() {
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
     first_hour(&bytes, &mut store, &watches);
-    // Character 44 becomes 46 at the same address and manager. Only
-    // character identity repair rewrites a rostered character's id
-    // (`RegisterIdentity`), and the roster domain observes it, so the hour
-    // walks every scope and re-reads only the scope whose identity changed.
     put(&mut bytes, 0x6000 + ccharacter::ID, &46_u32.to_le_bytes());
     watches.roster_write();
     watches.boundary(false);
@@ -279,9 +254,6 @@ fn a_changed_scope_identity_is_read_afresh() {
 #[test]
 fn an_unobserved_write_is_carried_stale() {
     let _globals = crate::flag_changes::test_globals();
-    // Guards the premise of the family: only hooked writers move a
-    // certificate, so a missed writer would be carried until an
-    // invalidation, which is why every writer site is hooked.
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
@@ -299,10 +271,6 @@ fn a_failed_walk_holds_nothing() {
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
     first_hour(&bytes, &mut store, &watches);
-    // A state's flag root is written only by state construction
-    // and destroy state, which build and destroy its manager through
-    // the hooked construct flags and destroy flags: the state's manager is
-    // destroyed (`destroy_flags`) and its root no longer reads.
     let mut broken = bytes.clone();
     let notification = watches.notify(MANAGERS[2], 9);
     put(&mut broken, 0x8000 + cstate::FLAGS, &0_u64.to_le_bytes());
@@ -310,7 +278,6 @@ fn a_failed_walk_holds_nothing() {
     watches.boundary(false);
     let failed = walk(&broken, &mut store, &watches);
     assert!(matches!(failed.outcome, Outcome::Unavailable { .. }));
-    // The failed walk's carried rows certify nothing afterwards.
     set_value(&mut bytes, 0, 5);
     let hour = walk(&bytes, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (5, 0));
@@ -332,7 +299,6 @@ fn every_site_names_its_manager() {
         assert_eq!(receiver, expected, "{}", site.name);
     }
     assert_eq!(manager(Receiver::Manager, 0xa100), 0xa100);
-    // Assign flags receives the manager's row array.
     assert_eq!(manager(Receiver::Rows, 0xa108), 0xa100);
     let watches = Watches::enabled(16);
     let certified = crate::flag_changes::Changes::sequence(&watches, 0xa100).unwrap();
@@ -343,10 +309,6 @@ fn every_site_names_its_manager() {
     );
 }
 
-/// A quiet hour (no flag or roster writer since the latest complete walk,
-/// the same countries) walks no scope at all and publishes that walk's rows;
-/// the old walk read every root, state, character and manager header each
-/// hour.
 #[test]
 fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
     let _globals = crate::flag_changes::test_globals();
@@ -356,7 +318,6 @@ fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
     let (first, reads) = walk_with(&bytes, &mut store, &watches);
     assert_ne!(reads, 0);
     assert!(!first.counts.quiet);
-    // The held walk's rows are what it published.
     let held = store.witnessed().unwrap();
     watches.boundary(false);
     for _ in 0..3 {
@@ -371,10 +332,6 @@ fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
     }
 }
 
-/// A flag write marks its manager: the hour is still quiet, walks no scope
-/// and reads only that manager afresh, and the next unwritten hour publishes
-/// the new rows without reading it. A roster write moves a token: that hour
-/// walks every scope.
 #[test]
 fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     let _globals = crate::flag_changes::test_globals();
@@ -391,10 +348,8 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     let (written, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(written.counts.quiet);
     assert_eq!((written.counts.read, written.counts.reused), (1, 4));
-    // Changed rows are new held rows.
     let renewed = store.witnessed().unwrap();
     assert_ne!(renewed, held);
-    // Only the marked manager's header and row were read.
     assert_eq!(reads, written.manager_reads);
     assert_ne!(written.manager_reads, 0);
     assert_eq!(written.rows[1].flag.value, 7);
@@ -409,7 +364,6 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     assert_eq!(quiet.rows, written.rows);
     assert_eq!(store.witnessed(), Some(renewed));
     watches.boundary(false);
-    // A third historical character, 47, owning one flag, is appended.
     let character = 0x6400;
     put(&mut bytes, 0x5110, &(character as u64).to_le_bytes());
     let historical = 0x5000 + ccharacter_manager::HISTORICAL_CHARACTERS;
@@ -447,18 +401,14 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
             &1_i32.to_le_bytes(),
         );
     }
-    // Unseen, the quiet hour still publishes the held rows...
     let (stale, _) = walk_with(&bytes, &mut store, &watches);
     assert!(stale.counts.quiet);
     watches.boundary(false);
-    // ...and the roster write that appends it walks every scope again.
     watches.roster_write();
     watches.boundary(false);
     let (appended, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(!appended.counts.quiet);
     assert_ne!(reads, 0);
-    // The country changed since the last full walk too: its old per-scope
-    // certificate conservatively rereads it when the scope census resumes.
     assert_eq!((appended.counts.read, appended.counts.reused), (2, 4));
     assert_eq!(appended.outcome, Outcome::Rows { len: 5 });
     assert_eq!(
@@ -466,8 +416,6 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
         walk(&bytes, &mut FlagStore::new(), &watches).rows
     );
     watches.boundary(false);
-    // Removing that scope revokes the roster token too. No surviving
-    // manager changed; only its scope membership disappears.
     put(
         &mut bytes,
         historical + engine_native::cpdx_array::COUNT,
@@ -486,8 +434,6 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     );
 }
 
-/// The country census comparison: the same countries in walk order, and
-/// nothing else.
 #[test]
 fn a_quiet_hour_needs_the_held_countries_in_walk_order() {
     let _globals = crate::flag_changes::test_globals();
@@ -508,9 +454,6 @@ fn a_quiet_hour_needs_the_held_countries_in_walk_order() {
     ));
 }
 
-/// The family's premise for a character scope: an unhooked write to a
-/// character's embedded manager is carried by a quiet hour, which reads no
-/// manager.
 #[test]
 fn a_quiet_hour_carries_an_unhooked_character_flag_write() {
     let _globals = crate::flag_changes::test_globals();
@@ -526,10 +469,6 @@ fn a_quiet_hour_carries_an_unhooked_character_flag_write() {
     assert_eq!(stale.rows[3].flag.value, i16::MIN);
 }
 
-/// A quiet hour's publishing loop visits only the scopes it reads: none in
-/// an unwritten hour; the written manager's scope after a write, including
-/// one whose rows shrink. The held rows between them are copied whole, and
-/// every hour's rows are a fresh walk's.
 #[test]
 fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     let _globals = crate::flag_changes::test_globals();
@@ -542,24 +481,19 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     assert!(quiet.counts.quiet);
     assert!(FlagStore::visited_scopes().is_empty());
     watches.boundary(false);
-    // A value written in place: the country scope alone.
     let notification = watches.notify(MANAGERS[1], 0);
     set_value(&mut bytes, 1, 7);
     drop(notification);
     watches.boundary(false);
     let (written, _) = walk_with(&bytes, &mut store, &watches);
     assert!(written.counts.quiet);
-    // Walk order: the global scope, country 2, state 1, then characters.
     assert_eq!(FlagStore::visited_scopes(), [1]);
     assert_eq!(
         written.rows,
         walk(&bytes, &mut FlagStore::new(), &watches).rows
     );
     watches.boundary(false);
-    // The country's flag is cleared: its scope's rows shrink to none, and
-    // every later scope's held rows move up.
     let notification = watches.notify(MANAGERS[1], 0);
-    // Its manager now holds no rows, as the empty character manager does.
     for field in [cflag_manager::SLOT_COUNT, cflag_manager::ENTRY_COUNT] {
         put(&mut bytes, MANAGERS[1] + field, &0_i32.to_le_bytes());
     }
@@ -576,7 +510,6 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     let fresh = walk(&bytes, &mut FlagStore::new(), &watches).rows;
     assert_eq!(cleared.rows, fresh);
     assert_eq!(cleared.rows.len(), 3);
-    // The renewed rows, re-indexed, are carried whole the next hour.
     watches.boundary(false);
     let (next, _) = walk_with(&bytes, &mut store, &watches);
     assert!(next.counts.quiet);
@@ -584,9 +517,6 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     assert_eq!(next.rows, fresh);
 }
 
-/// MIO sizing can offer a table first. The existing ScriptFlags sizing
-/// census must replace that offer with the combined demand before install;
-/// waiting for the first capture leaves growth stuck until an invalidation.
 #[test]
 fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
     let _globals = crate::flag_changes::test_globals();
@@ -596,8 +526,6 @@ fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
         bytes: &bytes,
     };
     let scopes = 5_005;
-    // One watch past a sizing boundary: omitting even one scope leaves the
-    // smaller offer, while the embedded-only offer matches the undersizing.
     let embedded = 8_193 - scopes;
     crate::flag_changes::offer_embedded(embedded);
     assert_eq!(script_flag_demand(&memory, BASE, GAME), Some(4));
@@ -607,8 +535,6 @@ fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
         ((scopes + embedded) * 4).next_power_of_two()
     );
 
-    // The same prepared demand certifies every scope, even when almost all
-    // managers are empty. The next hour walks and reads none of them.
     let watches = Watches::enabled(scopes + embedded);
     let mut store = FlagStore::new();
     let (first, _) = walk_with(&bytes, &mut store, &watches);
@@ -628,8 +554,6 @@ fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
 fn refused_flag_sizing_keeps_the_prior_watch_demand() {
     let _globals = crate::flag_changes::test_globals();
     let mut bytes = with_empty_characters(5_000);
-    // The last manager's invalid header refuses the entire sizing census,
-    // not a successful partial scope count.
     let last = bytes.len() - 0x200;
     put(&mut bytes, last + ccharacter::FLAGS, &0_u64.to_le_bytes());
     crate::flag_changes::offer_embedded(1_024);
@@ -654,7 +578,6 @@ fn refused_flag_watches_read_fresh_instead_of_certifying_a_quiet_hour() {
     use crate::flag_changes::Changes;
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(1);
-    // Fill the real bounded watch table with unrelated receivers.
     for receiver in 1..=16_384 {
         let _ = watches.sequence(receiver);
     }
@@ -699,7 +622,6 @@ fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
     assert_eq!(refused.rows, fresh.rows);
     assert!(refused.rows.is_empty());
     assert!(!refused.counts.quiet);
-    // No failed acquisition remains eligible for quiet carry.
     put(
         &mut bytes,
         MANAGERS[1],
@@ -724,8 +646,6 @@ fn a_daily_expiry_mark_refreshes_the_countdown_and_removal_only() {
     let mut store = FlagStore::new();
     let (first, _) = walk_with(&bytes, &mut store, &watches);
     watches.boundary(false);
-    // Advancing an ordinary hour changes neither the stored set hour nor
-    // the native remaining-days field, even for a timed flag.
     let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(quiet.counts.quiet);
     assert_eq!(quiet.rows, first.rows);

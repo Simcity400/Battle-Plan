@@ -4,8 +4,6 @@ import type { BoundTrack } from '../../dashboard/model';
 export { priceLevel, validateMarketReply } from '../../dashboard/market.ts';
 import { INTERACTIVE_PRODUCTS } from '../../generated/dashboard.ts';
 
-/** Why the "Market & lend-lease" view shows nothing: the market family's `market-lendlease` is not served by this
- * build (the market widgets bring it). Null once it is in the contract's products. */
 export function marketLendLeaseWaits(products: readonly string[] = INTERACTIVE_PRODUCTS): string | null {
   return products.includes('market-lendlease') ? null : 'The market and lend-lease view comes with the market widgets, which this build does not serve yet.';
 }

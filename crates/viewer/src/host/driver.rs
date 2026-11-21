@@ -1,5 +1,3 @@
-//! The map's frames on its own thread: a device and a surface on its window's handle, an egui
-//! pass over the viewer for each frame its input or a repaint asks for, and the result presented.
 
 use super::{
     Lost,
@@ -12,8 +10,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A map's device, with a surface on `window` when it has one, chosen as the map's window always
-/// chose them.
 pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderState, Option<wgpu::Surface<'static>>), String> {
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
     let configuration = render::configuration();
@@ -26,8 +22,6 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
     let surface = match window {
         Some(window) => {
             let handle = std::num::NonZeroIsize::new(window.hwnd() as isize).ok_or("The map's window has no handle")?;
-            // SAFETY: the window outlives the surface: a close asks the map's thread to stop, and the
-            // window is destroyed only once that thread has dropped the surface (`Window::destroy`).
             Some(
                 unsafe {
                     instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -73,8 +67,6 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
     })
 }
 
-/// The map's device and surface, let go under the device lifecycle lock once everything that drew
-/// with them (dropped first, as declared after) is gone.
 struct Released<T>(Option<T>);
 
 impl<T> std::ops::Deref for Released<T> {
@@ -97,14 +89,12 @@ impl<T> Drop for Released<T> {
     }
 }
 
-/// Runs the viewer `make` builds in `window` until the window or the viewer closes.
 pub(crate) fn run(
     window: &Window,
     inputs: Inputs,
     lost: &Lost,
     make: impl FnOnce(&egui::Context, &egui_wgpu::RenderState) -> Result<app::Viewer, String>,
 ) -> Result<(), String> {
-    // The map steps its clock at the refresh of the display this window is on.
     let _followed = viewer_foundation::map::display_refresh::follow_window(window.hwnd());
     let (state, surface) = map_device(Some(window))?;
     let state = Released(Some(state));
@@ -165,8 +155,6 @@ pub(crate) fn run(
         if lost.reason().is_some() {
             return Ok(());
         }
-        // The frame rate limit holds this map's frames on its own grid of deadlines, so a frame
-        // due now waits for its deadline and the input that asked for it is drawn then.
         let waiting = limited.until(Instant::now());
         if !waiting.is_zero() {
             due = Some(Instant::now() + waiting);

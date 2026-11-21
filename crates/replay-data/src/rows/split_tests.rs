@@ -1,4 +1,3 @@
-//! Tests of rows declared in replay-rows that read the registry, kept beside it.
 use super::*;
 
 #[path = "../extended_rows/border_effects/tests.rs"]
@@ -14,13 +13,11 @@ mod rows_retired_tests {
         let mut bytes = Vec::new();
         Value::encode(&Retired, &mut bytes).unwrap();
         assert!(bytes.is_empty());
-        // An older payload is discarded whole, whatever it held.
         let payload = [7_u8, 0, 0, 0, 255];
         let mut input = Decoder::new(&payload);
         input.format = RETIRED_INPUTS_FORMAT - 1;
         assert_eq!(Retired::decode(&mut input).unwrap(), Retired);
         input.finish().unwrap();
-        // A current recording holds none; leftover bytes stay unread.
         let mut input = Decoder::new(&payload);
         assert_eq!(Retired::decode(&mut input).unwrap(), Retired);
         assert!(input.finish().is_err());
@@ -28,7 +25,6 @@ mod rows_retired_tests {
 
     #[test]
     fn retired_fixed_width_fields_store_zero_and_follow_older_values_through_deltas() {
-        // A current writer's row never marks the tombstone as changed.
         let current = DivisionLandInputsRow {
             division: 7,
             naval_transfer: true,
@@ -38,8 +34,6 @@ mod rows_retired_tests {
         previous.naval_transfer = false;
         let delta = current.delta(Some(&previous)).unwrap().unwrap();
         assert_eq!(delta.mask, 1 << 4);
-        // An older recording's value decodes and follows its deltas across
-        // the whole native range, so the rest of the row stays exact.
         let older = DivisionLandInputsRow {
             division: 7,
             received_supply: RetiredI64(i64::MIN),
@@ -155,9 +149,6 @@ mod rows_retired_tests {
         input.format = RETIRED_INPUTS_FORMAT - 1;
         let side = LandCombatSideDetails::decode(&mut input).unwrap();
         input.finish().unwrap();
-        // The anti-air cache and the prevented lanes keep their format-101
-        // values, exact, for the CAS hover (SIDE_INPUTS_FORMAT); the other
-        // retired parts are dropped.
         let kept = LandCombatSideDetails {
             committed: vec![1, u64::MAX],
             air_counts: vec![-1],
@@ -165,7 +156,6 @@ mod rows_retired_tests {
             air_kills: 3,
             damage: [1, 2],
             prevented_damage: RetiredKept::older_value([500_005, 600_000]),
-            // Format 101 held the 24 samples; the side keeps their sum.
             organisation_loss_sum: -7 * 24,
             organisation_loss_count: 24,
             commander: 9,
@@ -174,8 +164,6 @@ mod rows_retired_tests {
             ..Default::default()
         };
         assert_eq!(side, kept);
-        // The current layout stores none of the retired parts, and decodes
-        // none.
         let current_side = LandCombatSideDetails {
             anti_air_attack: RetiredKept::default(),
             prevented_damage: RetiredKept::default(),
@@ -206,15 +194,12 @@ mod rows_retired_tests {
             &mut reference,
         )
         .unwrap();
-        // Anti-air, four damage lanes, 23 more loss samples than the sum,
-        // experience, an empty token and two empty trait lists.
         assert_eq!(
             reference.len() - current.len(),
             8 + 4 * 8 + 23 * 8 + 8 + 4 + 4 + 4
         );
     }
 
-    /// The field one default row stores at `index`.
     fn stored(rows: TableRows, index: usize) -> String {
         let table = rows.table();
         let mut bytes = Vec::new();
@@ -252,7 +237,6 @@ mod rows_retired_tests {
                 field.name
             );
             if field.name.contains('.') {
-                // A nested retirement changes its parent's nested layout.
                 continue;
             }
             let rows = match field.table {
@@ -457,8 +441,6 @@ mod extended_rows_air_ledger_tests {
     fn air_ledgers_five_thousand_country_sparse_scale() {
         use std::time::Instant;
 
-        // Synthetic identities intentionally exceed the vanilla inventories.
-        // Three active regions per country model sparse country-region demand.
         let losses: Vec<_> = (0..5_000_u32)
             .flat_map(|country| {
                 (0..3_u32).map(move |region| AirLossEventRow {
@@ -748,8 +730,6 @@ mod extended_rows_fresh_eta_tests {
         assert_eq!(old.selection_hour, Recorded::NotRecorded);
         assert_eq!(old.building, Recorded::NotRecorded);
         assert_eq!(old.cooldown_ticks, -1);
-        // All three suffixes share their introduction, so this selects the
-        // same historical prefix rather than one containing `building`.
         let old = historical_prefix(TableId::RailCooldowns, 2, &row);
         assert_eq!(old.building, Recorded::NotRecorded);
         assert_eq!(old.selection, Recorded::NotRecorded);
@@ -820,8 +800,6 @@ mod extended_rows_fresh_eta_tests {
         assert_eq!(decoded.cooldown_ticks, row.cooldown_ticks);
     }
 
-    /// The retired table keeps its published framing, which older recordings
-    /// need to discard it.
     #[test]
     fn published_eta_snapshot_and_delta_keep_all_eighteen_fields_and_bytes() {
         let row = DivisionEtaInputsRow {
@@ -848,38 +826,34 @@ mod extended_rows_fresh_eta_tests {
             leg_transport_speed: vec![-1, 0, 1],
             leg_rail_speed: vec![7, -7, 0],
         };
-        // Accepted99 fields 5/14/15/16 are Opaque: each u32 byte-length
-        // envelope precedes the vector's separate u32 element count. Keep
-        // this golden independent of the row, Field and Value encoders.
         let mut expected = Vec::new();
-        expected.extend_from_slice(&i64::MIN.to_le_bytes()); // 0: speed_modifier
-        expected.extend_from_slice(&i64::MAX.to_le_bytes()); // 1: speed_base
-        expected.push(1); // 2: speed_org = Some(-1)
+        expected.extend_from_slice(&i64::MIN.to_le_bytes());
+        expected.extend_from_slice(&i64::MAX.to_le_bytes());
+        expected.push(1);
         expected.extend_from_slice(&(-1_i64).to_le_bytes());
-        expected.push(0); // 3: speed_fuel = None
-        expected.extend_from_slice(&(-7_i64).to_le_bytes()); // 4: current_speed
-        expected.extend_from_slice(&16_u32.to_le_bytes()); // 5: opaque payload length
-        expected.extend_from_slice(&1_u32.to_le_bytes()); // terrain entry count
+        expected.push(0);
+        expected.extend_from_slice(&(-7_i64).to_le_bytes());
+        expected.extend_from_slice(&16_u32.to_le_bytes());
+        expected.extend_from_slice(&1_u32.to_le_bytes());
         expected.extend_from_slice(&17_i32.to_le_bytes());
         expected.extend_from_slice(&i64::MIN.to_le_bytes());
         for value in [-2_i64, -3, -4, -5] {
-            // 6..9: fort, snow, river, leader
             expected.extend_from_slice(&value.to_le_bytes());
         }
-        expected.extend_from_slice(&u32::MAX.to_le_bytes()); // 10: class
-        expected.push(1); // 11: rail_country_modifier = Some(MIN)
+        expected.extend_from_slice(&u32::MAX.to_le_bytes());
+        expected.push(1);
         expected.extend_from_slice(&i64::MIN.to_le_bytes());
-        expected.push(0); // 12: rail_state_modifier = None
-        expected.push(1); // 13: rail_friendly_state_modifier = Some(MAX)
+        expected.push(0);
+        expected.push(1);
         expected.extend_from_slice(&i64::MAX.to_le_bytes());
         for values in [[i64::MIN, 0, i64::MAX], [-1, 0, 1], [7, -7, 0]] {
-            expected.extend_from_slice(&28_u32.to_le_bytes()); // 14..16: opaque length
-            expected.extend_from_slice(&3_u32.to_le_bytes()); // vector element count
+            expected.extend_from_slice(&28_u32.to_le_bytes());
+            expected.extend_from_slice(&3_u32.to_le_bytes());
             for value in values {
                 expected.extend_from_slice(&value.to_le_bytes());
             }
         }
-        expected.extend_from_slice(&i32::MIN.to_le_bytes()); // 17: sample_hour
+        expected.extend_from_slice(&i32::MIN.to_le_bytes());
         let mut actual = Vec::new();
         row.encode_fields(&mut actual).unwrap();
         assert_eq!(actual.len(), 209);

@@ -1,22 +1,11 @@
-//! CGameDate includes its secondary persistent subobject.
-//!
-//! The vtable pointers at `GREGORIAN_BASE` and `PERSISTENT_BASE` belong to one date object. Textual
-//! save hours range from 1 through 24.
 
 use engine_sites::Rva;
-/// CGameDate primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0279_63d0);
-/// CGameDate CPersistent vtable.
 pub const PERSISTENT_VTABLE_RVA: Rva = Rva(0x0279_6400);
-/// CGameDate CGregorianDate base.
 pub const GREGORIAN_BASE: usize = 0;
-/// Embedded date base containing signed i32 raw hour.
 pub const DATE_BASE: usize = 0x08;
-/// CGameDate CPersistent base.
 pub const PERSISTENT_BASE: usize = 0x10;
 
-/// Stored raw hour, preserving null and negative values. A date's primary and
-/// persistent vtables authenticate the same embedded object.
 pub fn read_raw(
     memory: &impl crate::Memory,
     base: usize,
@@ -39,5 +28,4 @@ pub fn read_raw(
         .and_then(|at| crate::read(memory, at))
         .ok_or("game date raw hour unreadable")
 }
-/// CGameDate null raw hour i32.
 pub const NULL_RAW_HOUR: i32 = 43_808_760;

@@ -43,8 +43,6 @@ export function tallyLines(series: readonly RaidTallySeries[], metric: TallyMetr
   return series.flatMap(item => {
     const spans = item.identities ?? item.segments;
     const starts = new Set(spans.map(segment => segment.firstHour));
-    // Equal counts may compress across a holder change; split at the recorded
-    // identity spans before group/range clipping so those countries stay apart.
     const measures = metric === 'both' ? ['launched', 'succeeded'] as const : [metric];
     return measures.flatMap(measure => {
       const identityRuns = clipToSpans(item.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: run[measure] })), spans)

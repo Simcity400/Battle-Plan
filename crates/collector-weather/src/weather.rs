@@ -1,12 +1,3 @@
-//! Native weather acquisition. Only growth and replay conversion allocate.
-//!
-//! Hourly weather raw-copy split (WeatherRegions, WeatherProvinces): the game
-//! acquisition worker copies raw bytes and the single FIFO decode worker runs the
-//! native row parsers over owned exact-field gathers. Root topology, row
-//! order, truncation and field-failure prefixes survive without retaining
-//! unused dense-array padding. The provinces also carry the manager's display
-//! bytes, the stored values the snow/mud map texture averages.
-
 use crate::{
     clock::qpc,
     raw::RawLog,
@@ -57,7 +48,6 @@ impl Default for Capacities {
 }
 
 impl Capacities {
-    /// Off-thread live headers only; these hints never supply recorded values.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -89,34 +79,17 @@ pub struct Captured {
     regions: CaptureRows<sweather_per_region::Row>,
     provinces: CaptureRows<sweather_per_province::Row>,
     display: DisplayCapture,
-    /// Both suspension gates read clear at this boundary, so
-    /// hourly weather update ran `day/night update`
-    /// this hour and every clock from slot 1 is the hour's derivation.
     clocks_updated: bool,
     daylight_direction: Option<[i64; 3]>,
     daylight_feather: Option<[i64; 2]>,
-    /// Each province record's temperature words at the pass's anchor, by slot, and the pass
-    /// ([`temperature::Tracker`]); `None` when the hour's temperature inputs were not read whole.
     temperature_anchor: Option<engine_allocation::SharedBox<Vec<replay_data::temperature::State>>>,
     temperature_pass: Option<rows::TemperaturePass>,
-    /// The hour's read words handed to the tracker, which returns the hour before's buffer.
     temperature_read: Vec<replay_data::temperature::State>,
-    /// Each region record's ([`WeatherJob::combat`]) raw weather speed, attack and
-    /// breakthrough entries, in region order; `None` refuses one region.
     combat: Vec<Option<RegionModifiers>>,
     air_efficiency: Vec<air_efficiency::Tree>,
-    /// Each province record's weather modifier accumulator, in slot order.
     province_modifiers: ProvinceModifiers,
-    /// Each province record's static modifier list, in slot order, shared with the carry
-    /// ([`WeatherJob::province_statics`]).
     province_statics: Option<engine_allocation::SharedBox<ProvinceStatics>>,
-    /// Each region record's custom sea values ([`WeatherJob::custom_sea`]), in region order.
     custom_sea: entries::CustomSea,
-    /// Raw-copy split gate for the hourly weather family (copy/decode split).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
-    /// then skips the typed walks and the decode worker fills these rows
-    /// before the ready handoff. Preserved across `reset` (set per hour,
-    /// cleared by the worker after decode).
     pub raw_mode: bool,
 }
 
@@ -179,7 +152,6 @@ impl Captured {
         self.provinces.outcome = Outcome::Unavailable { reason };
     }
 
-    /// Prepare the decode handoff; missing acquisition cannot retry live memory.
     pub fn finish_owned_capture(&mut self) -> [u64; N] {
         self.reset();
         if !self.raw_mode {
@@ -188,7 +160,6 @@ impl Captured {
         [0; N]
     }
 
-    /// Acquire one manager snapshot and both independent dense tables.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
         self.reset();
@@ -234,7 +205,6 @@ impl Captured {
             self.display.capture(memory, reader.display_grid());
             ticks[1] = ticks[1].saturating_add(elapsed(begin));
         }
-        // The typed walk sees one hour: its pass anchors at it.
         let words = reader
             .temperature_words()
             .ok()
@@ -261,7 +231,6 @@ impl Captured {
         [self.regions.outcome, self.provinces.outcome]
     }
 
-    /// Spool-thread conversion; raw values and incomplete-table status survive.
     pub fn tables(&self) -> [TableView; N] {
         [
             self.region_table(),
@@ -285,7 +254,6 @@ impl Captured {
                 &self.provinces.rows,
                 |row| u128::from(row.id),
                 |_, row, record| {
-                    // Slot 0 also carries the pass's daylight, display and temperature pass.
                     if row.id == 0 {
                         return None;
                     }
@@ -328,7 +296,6 @@ impl Captured {
             self.regions.rows.iter().take(outcomes[0].len()).enumerate(),
             |(index, r)| rows::WeatherRegionRow {
                 id: r.id,
-                // No region operand is witnessed; current writers leave it empty.
                 attack: rows::Recorded::Value(rows::Witnessed(None)),
                 combat: rows::Recorded::Value(self.combat.get(index).copied().flatten().map(
                     |[
@@ -401,7 +368,6 @@ impl Captured {
     }
 
     fn province_row(&self, r: &sweather_per_province::Row) -> rows::WeatherProvinceRow {
-        // A slot past the read (a short fixture) or refused is a refusal.
         let modifiers = self.province_modifiers.get(r.id as usize).map(|entries| {
             rows::ProvinceWeatherModifiers {
                 entries: entries
@@ -429,12 +395,8 @@ impl Captured {
             permanent_snow: r.permanent_snow,
             display_snow: r.display_snow,
             display_mud: r.display_mud,
-            // The pass's anchor holds every slot; an hour without a pass keeps the
-            // words it read, which no consumer derives from.
             temperature: self.province_temperature(r),
             raw_mud: replay_data::rows::Recorded::Value(r.raw_mud),
-            // Slot 0 is never updated (day/night update starts at 1); a
-            // suspended or unread gate holds every slot's clock.
             clock: self.province_clock(r),
             display: rows::Recorded::Value(if r.id == 0 { self.display.row() } else { None }),
             temperature_pass: rows::Recorded::Value(if r.id == 0 {
@@ -445,7 +407,6 @@ impl Captured {
         }
     }
 
-    /// Province `slot`'s static modifier list; `None` when it was refused or not read.
     fn province_statics(&self, slot: u32) -> Option<&[u8]> {
         self.province_statics.as_deref()?.get(slot as usize)
     }
@@ -540,8 +501,6 @@ impl Captured {
             }
     }
 
-    /// Hand the hour's complete read to the pass tracker and keep its anchored words and pass.
-    /// A failed or truncated province walk, or unread manager words, records no pass.
     fn track_temperature(
         &mut self,
         hour: i32,
@@ -577,7 +536,6 @@ impl Captured {
     }
 }
 
-/// A read record's temperature words.
 fn words_of(row: &sweather_per_province::Row) -> replay_data::temperature::State {
     replay_data::temperature::State {
         temperature: row.temperature,
@@ -591,22 +549,11 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-// ===========================================================================
-// Hourly weather raw-copy split.
-//
-// The acquisition worker copies raw bytes only: manager pointer and vtable, the
-// weather and clock array headers and the two display array headers, the exact
-// fields in bounded gathers, and the two display arrays whole. No row is
-// decoded during acquisition. Each array keeps its own failure scope.
-// ===========================================================================
 
-/// Fault-attribution bits in family order: [regions, provinces].
 const M_W_ALL: u32 = 0x03;
 const M_REGIONS: u32 = 0x01;
 const M_PROVINCES: u32 = 0x02;
 
-/// One hour of raw weather payload. Acquisition grows from the original
-/// headers and owned decoding grows the rows before publication.
 #[derive(Debug, Default)]
 pub struct WeatherJob {
     pub log: RawLog<N>,
@@ -619,39 +566,21 @@ pub struct WeatherJob {
     display: DisplayCapture,
     manager: usize,
     manager_authenticated: bool,
-    /// Each region record's weather modifier entries for `army_attack_factor` and
-    /// `breakthrough_factor`, raw (`None` for an absent key), which the selected army's attack list
-    /// reads through region weather modifier lookup; the outer `None` is that region's read
-    /// refusal. Region order.
     combat: Vec<Option<RegionModifiers>>,
     air_efficiency: Vec<air_efficiency::Tree>,
-    /// Each province record's weather modifier accumulator; slot order.
     province_modifiers: ProvinceModifiers,
-    /// One province's accumulator, as it is read.
     province_scratch: Vec<entries::Entry>,
-    /// Each province record's static modifier list, slot order, shared with the carry and the
-    /// frames; `None` refuses every province.
     province_statics: Option<engine_allocation::SharedBox<ProvinceStatics>>,
-    /// Every province's static modifier list header, as one read gathers them.
     static_headers: Vec<u8>,
-    /// One province's static modifier list, as it is read.
     static_scratch: Vec<u8>,
-    /// The static modifier definition vtable each list entry must carry; `None` refuses
-    /// every list.
     static_vtable: Option<usize>,
-    /// Each region record's stored custom entry values, in the record's own order and count;
-    /// region order. A refused read refuses that region.
     custom_sea: entries::CustomSea,
-    /// One region's custom sea array as it is copied, and its values.
     custom_bytes: Vec<u8>,
     custom_values: Vec<i16>,
-    /// The carried province and region records, loaned for this hour's
-    /// read ([`carry`]); `None` reads every record.
     pub carry: Option<Box<carry::WeatherCarry>>,
 }
 
 impl WeatherJob {
-    /// The payload holds a staging failure: its rows will not publish.
     pub fn staging_failed(&self) -> bool {
         self.staging_failure.is_some()
     }
@@ -685,7 +614,6 @@ impl WeatherJob {
         job
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -708,7 +636,6 @@ impl WeatherJob {
         self.log.grow_for_next() || self.display.needs_growth()
     }
 
-    /// The dense payloads grow in the pass from the original headers.
     pub fn grow(&mut self) {
         self.log.grow();
         let mut display_capacity = display::bytes_hint();
@@ -732,8 +659,6 @@ impl WeatherJob {
     }
 }
 
-/// Exact declared fields only, not an address-space substitute. The first
-/// failed field is retained as a prefix, never retried or zero-filled.
 #[derive(Debug, Default)]
 struct DensePayload {
     array: Option<engine_native::cpdx_array::Array>,
@@ -776,7 +701,6 @@ impl DensePayload {
         let mut first = 0;
         while first < array.count as usize {
             let count = (array.count as usize - first).min(64);
-            // Array validated the complete native extent before this loop.
             let sources = RecordSources::Strided {
                 base: array.element(first as u32, stride).unwrap_or(0),
                 stride,
@@ -844,7 +768,6 @@ impl DensePayload {
         Outcome::Rows { len: count }
     }
 
-    /// Apply owned exact clock records; never follow the retained native source.
     fn fill_clocks(
         &self,
         provinces: u32,
@@ -877,21 +800,17 @@ impl DensePayload {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WeatherCopyReport {
-    /// False when the log could not hold the hour; with a failed source read the
-    /// payload is instead terminally unavailable, never retried.
     pub raw_ok: bool,
     pub copy_ticks: [u64; N],
     pub raw_bytes: [u64; N],
 }
 
-/// Acquisition-worker copy parameters, bundled to keep dispatch small.
 #[derive(Debug, Clone, Copy)]
 pub struct WeatherCopyContext {
     pub game_state: usize,
     pub base: usize,
 }
 
-/// One array header recorded under `mask`, parsed when it reads.
 fn header(
     log: &mut RawLog<N>,
     memory: &impl Memory,
@@ -906,8 +825,6 @@ fn header(
     )
 }
 
-/// Acquire the manager topology once and preflight every destination. Returns
-/// the display array headers when both read.
 fn prepare_weather_pass(
     memory: &impl Memory,
     game_state: usize,
@@ -941,18 +858,13 @@ fn prepare_weather_pass(
                         .unwrap(),
                 ) == vtable as u64
             });
-    // The snow ceiling every region row carries; a failed read fails only them.
     if let Some(address) = pointer.checked_add(cweather_manager::MAX_SNOW) {
         let _ = log.take(memory, address, 8, M_REGIONS);
     }
-    // The two suspension gates decide whether the clocks were updated this
-    // hour; a failed read fails no table and leaves every clock held.
     if let Some(address) = pointer.checked_add(cweather_manager::SUSPEND_FLAGS) {
         let updated = log
             .take(memory, address, 2, 0)
             .is_some_and(|start| log.bytes[start..start + 2] == [0, 0]);
-        // The ordinary native update supplies this direction by date. Only
-        // suspended/unread gates need a bounded held-state observation.
         if !updated
             && job.manager_authenticated
             && let Some(direction) = pointer.checked_add(cweather_manager::DAYLIGHT_DIRECTION)
@@ -968,8 +880,6 @@ fn prepare_weather_pass(
             }
         }
     }
-    // The temperature pass's cursor, window and seed; a failed read fails no
-    // table and records no pass for the hour.
     for offset in [
         cweather_manager::UPDATE_CURSOR,
         cweather_manager::PROVINCES_PER_UPDATE,
@@ -1056,8 +966,6 @@ fn copy_weather_dense(
     carry::capture_provinces(memory, job, &PROVINCES_LAYOUT);
     let provinces_complete = !job.provinces.faulted(sweather_per_province::FIELDS.len());
     let log = &mut job.log;
-    // Display and clock inputs are kept even if a province row failed; the
-    // worker decodes ordinary fields first and preserves that error.
     let mut display_complete = false;
     if let Some(arrays) = display {
         display_complete = true;
@@ -1071,7 +979,6 @@ fn copy_weather_dense(
             }
         }
     }
-    // The native clock has no row identity. Equal live counts prove its slot join.
     if display_complete
         && job.clocks.array.map(|array| array.count) == job.provinces.array.map(|array| array.count)
     {
@@ -1087,10 +994,8 @@ fn copy_weather_dense(
         .faulted(sweather_per_province::CLOCK_FIELDS.len());
 }
 
-/// One region record's raw weather modifier entries, in [`COMBAT_KEYS`] order.
 pub type RegionModifiers = [Option<i64>; 8];
 
-/// The keys of [`WeatherJob::combat`], ascending.
 const COMBAT_KEYS: [u32; 8] = [
     1,
     engine_executable::modifier_keys::NAVAL_DETECTION,
@@ -1104,7 +1009,6 @@ const COMBAT_KEYS: [u32; 8] = [
 
 pub use entries::{ProvinceModifiers, ProvinceStatics};
 
-/// Acquire one refresh into its owned payload.
 pub fn copy_weather_refresh(
     memory: &impl Memory,
     ctx: WeatherCopyContext,
@@ -1117,8 +1021,6 @@ pub fn copy_weather_refresh(
     let display_bytes = display.map_or(0, |arrays| {
         arrays.iter().map(|array| array.count as usize).sum()
     });
-    // Walk every live province/region. Continue
-    // from the headers already acquired; no source read is repeated.
     job.regions.grow();
     job.provinces.grow();
     job.clocks.grow();
@@ -1134,8 +1036,6 @@ pub fn copy_weather_refresh(
     job.log.reserve(display_bytes);
     let overflow = job.log.overflowed;
     let root_fault = job.log.fault.iter().any(|&fault| fault);
-    // Keep a failed source terminal when storage is also exhausted; retrying
-    // the typed path would otherwise observe the failed native source again.
     if overflow && root_fault {
         job.staging_failure = Some("weather staging unavailable after source read failure");
     }
@@ -1173,16 +1073,11 @@ pub fn copy_weather_refresh(
 }
 
 impl Captured {
-    /// Mark an accepted acquisition failure without retrying live memory.
     pub fn fail_weather_capture(&mut self, reason: &'static str) {
         self.fail(reason);
         self.raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw hourly payload into the pooled
-    /// typed rows. Outcomes match the typed walk exactly because the same row
-    /// parsers and display join consume the recorded bytes. Clears `raw_mode`
-    /// so the next capture starts clean.
     pub fn decode_weather_payload(
         &mut self,
         base: usize,
@@ -1197,7 +1092,6 @@ impl Captured {
         }
     }
 
-    /// The rows of the payload and, when read, the temperature pass's manager words.
     fn decode_weather_rows(
         &mut self,
         base: usize,
@@ -1228,8 +1122,6 @@ impl Captured {
                 return None;
             }
         };
-        // Province modifier entries belong to WeatherProvinces, whose outcome does not
-        // depend on the regions' snow ceiling.
         if !self.province_modifiers.copy_from(&job.province_modifiers) {
             self.province_modifiers.clear();
         }

@@ -1,4 +1,3 @@
-//! The payload budget shared by all hosted lead rings and outgoing queues.
 
 pub const BYTES: usize = 128 << 20;
 pub const LEAD: playhead::Lead = playhead::Lead { seconds: 0.5, bytes: BYTES };

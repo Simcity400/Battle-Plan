@@ -39,7 +39,6 @@ enum Role {
 #[derive(Default)]
 struct Namespaces(Mutex<Vec<Arc<[ContentLayer]>>>);
 
-/// A live pass namespace, effective asset and unchanged producer shared-player key.
 pub type ActorAddress = (u64, AssetKey, u32, u32);
 
 pub(super) fn namespace(layers: &ResolvedLayers) -> Arc<[ContentLayer]> {

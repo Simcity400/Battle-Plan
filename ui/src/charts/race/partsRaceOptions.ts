@@ -2,7 +2,6 @@ import type { OptionField } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../drill/drillState.ts';
 import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption } from './options.ts';
 
-/** Shared controls for country totals and parallel content parts; `breakdown` names the one-country breakdown. */
 export function partsRaceOptions(part: string, breakdown = `By ${part}`): readonly OptionField[] {
   return [
     { key: 'drillOriginHour', section: 'options', label: 'Country selected at hour', kind: 'number',

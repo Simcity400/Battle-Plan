@@ -1,6 +1,3 @@
-//! Applied fuel operands, observed without game calls. The serial owned-state
-//! country loop applies fuel updates before the hourly boundary. Rate refresh
-//! also has other callers; later rates cannot reconstruct historical awards.
 use crate::{
     Memory, cair_base, ccountry, ccountry_air_container, ccountry_fuel_status as fuel, cfleet,
     cgame_state, cpdx_array::Array, creference_registry, cstrategic_air, cstrategic_air_manager,
@@ -8,15 +5,8 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Before the normal pending-gain increment, after refresh and incoming LL.
-/// The overwritten MOV+ADD is eight bytes, with no incoming interior branch.
 pub const BEGIN: Rva = Rva(0x0117_e3a3);
-/// All awards and Q15 consumer debits have settled, before pending/ring clear.
-/// Post-update eight-byte load span before the original clear continuation.
 pub const END: Rva = Rva(0x0117_f1b3);
-/// Division receipt writes, including unrolled and residual paths. RAX is the division, RDX the
-/// actual signed fixed5 receipt with parity rounding. Chained unwind entries lead to a handler-free
-/// body; each five-byte return point remains in its original entry.
 pub const LAND: [Rva; 5] = [
     Rva(0x0117_9d7d),
     Rva(0x0117_9dc2),
@@ -24,17 +14,8 @@ pub const LAND: [Rva; 5] = [
     Rva(0x0117_9e4d),
     Rva(0x0117_9eba),
 ];
-/// Complete receipt addition, preserving the original return. RCX task force,
-/// RDX signed fixed5 receipt. This leaf has no unwind entry or handler.
 pub const NAVAL: Rva = Rva(0x00dc_ab00);
-/// Non-null-container receipt store: RDI base, RDX container, RBX receipt. The seven-byte store
-/// ends before register restoration; the five-byte return point remains inside the handler-free
-/// body.
 pub const AIR: Rva = Rva(0x00ca_8df1);
-/// Unconditional fuel-reset prefix, RSI status. Appearance reset reaches it during runtime reset,
-/// country reuse and initialization; a pointer and zero identity can recur. The eight-byte span
-/// follows the handler-free prologue and contains no interior branch or return address. The
-/// five-byte return point shares its unwind state.
 pub const RESET: Rva = Rva(0x0117_9839);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -55,20 +36,14 @@ pub struct Started {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settled {
-    /// Own gain components: base, state modifiers, oil and negative-cost gain,
-    /// all fixed5. Resolve the content-loaded breakdown templates rather than
-    /// substituting a built-in refinery name.
     pub gains: [i64; 4],
     pub own_gain: i64,
-    /// Q15: incoming LL, outgoing LL, positive-cost debit, total other debit.
     pub transfers: [i64; 4],
     pub consumed: i64,
     pub received: [i64; 3],
     pub current: i64,
 }
 
-/// Fixed5-to-Q15 conversion with truncation toward zero. The quotient/remainder
-/// form avoids overflowing a direct product.
 pub fn quantity(raw: i64) -> i64 {
     (raw % 100_000) * 0x4000_0000 / 0xc350_0000 + (raw / 100_000) * 0x8000
 }
@@ -103,9 +78,6 @@ fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(
     }
     Ok(())
 }
-/// The `(offset, width)` fields of `object`, in order, in one guarded copy
-/// of exactly those spans: the first unreadable field refuses with the
-/// message `value` gives, as reading them one by one would.
 fn fields<const N: usize>(
     memory: &impl Memory,
     object: usize,
@@ -126,9 +98,6 @@ fn fields<const N: usize>(
     }
     Ok(values)
 }
-/// Where [`start`] found a fuel status's country: the owner it authenticated
-/// through the country tables, and that country. A later read of the same
-/// root in the same world and hour may take it ([`start_held`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Located {
     pub owner: usize,
@@ -139,17 +108,6 @@ pub fn start(memory: &impl Memory, base: usize, status: usize) -> Result<Started
     Ok(start_held(memory, base, status, None)?.0)
 }
 
-/// [`start`], taking `held` (this status's owner, located by the same
-/// fuel-update invocation's BEGIN) when the status still names that owner: then
-/// the owner is not authenticated through the country tables again (its id,
-/// link, slot and identity reads). From BEGIN to END the fuel update and its
-/// callees (resource and lend-lease helpers, unit consumption through the
-/// cached consumption getter, allocation with its request builders, and receipt
-/// writers) write fuel operands, unit fuel and temporary arrays only: no
-/// country object, id, link or slot, and no reference registration. Every other
-/// read is made in its native order, the backlink and instance included, so the
-/// reads are a fresh read's with only that chain left out. Also returns whether
-/// `held` was taken.
 pub fn start_held(
     memory: &impl Memory,
     base: usize,
@@ -171,9 +129,6 @@ pub fn start_held(
     let started = payload(memory, status, country.id, country_instance)?;
     Ok((started, Located { owner, country }, taken))
 }
-/// The status payload [`start_held`] reads after the identity chain, in one
-/// guarded copy of its exact fields, as the [`Started`] of `country` and its
-/// `country_instance`.
 fn payload(
     memory: &impl Memory,
     status: usize,
@@ -230,18 +185,6 @@ pub fn settle(
     Ok(settle_held(memory, base, begun, status, None)?.0)
 }
 
-/// [`settle`], reading the status again through [`start_held`]; also returns whether it took
-/// `held`. With `held` (located by this status's own BEGIN in the same invocation) and the same
-/// status, only the payload is read again. Between BEGIN and END nothing writes a country object
-/// (see [`start_held`]), and no fuel-update store writes the status's identity words: the initial
-/// update writes only three operand fields and the ring through RSI before its tail jump; its
-/// continuation writes the fields through the end of the operands through RBX up to END. Allocation
-/// writes the status's first operand through R13, and the receipt writer passed the status writes
-/// only through RDX, R10, R11 and the army. Its vtable, owner, the owner's backlink and instance
-/// therefore read as BEGIN read them. The controls BEGIN's start passed (the game-state singleton
-/// and both country headers, whose objects that range neither frees nor replaces) pass again:
-/// omitted reads could only repeat BEGIN's values and outcomes. This holds for a fuel-update
-/// invocation that runs from BEGIN to END without exceptional dispatch.
 pub fn settle_held(
     memory: &impl Memory,
     base: usize,
@@ -274,8 +217,6 @@ pub fn settle_held(
     } else {
         0
     };
-    // These are differences of native book entries, never a tank-net estimate.
-    // Bookkeeping adds the exact fixed5 input before aggregate conversion.
     let oil = own_gain
         .wrapping_sub(begun.base)
         .wrapping_sub(begun.states)
@@ -291,7 +232,6 @@ pub fn settle_held(
     )
     .filter(|a| a.count == fuel::MAX_CONSUMERS)
     .ok_or("fuel award consumers unreadable or invalid")?;
-    // The three consumers' RECEIVED words, within the validated array.
     let receipt = |index: usize| {
         (
             index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED,
@@ -318,19 +258,11 @@ pub fn settle_held(
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Recipient {
-    /// 0 division, 1 country/base air container, 2 task force (native consumers).
     pub kind: u32,
     pub reference: u64,
-    /// Recipient's stored roster owner; the consuming country is separate.
     pub owner: u32,
-    /// Air host reference, zero for a state base. Never guess a wing receipt.
     pub host: u64,
 }
-/// The reference registry headers one fuel-update invocation's unit
-/// recipients resolve through: a header read successfully is taken again by
-/// the later recipients of the same invocation, whose bucket probes are
-/// still read. Nothing in that invocation registers a reference
-/// ([`start_held`]). [`Self::default`] starts afresh.
 #[derive(Default)]
 pub struct Registry(creference_registry::HeaderResolver);
 
@@ -343,8 +275,6 @@ pub fn unit(
     Ok(unit_with(memory, base, pointer, kind, &mut Registry::default())?.0)
 }
 
-/// [`unit`], resolving through `registry`; also returns whether it took a
-/// header `registry` held.
 pub fn unit_with(
     memory: &impl Memory,
     base: usize,
@@ -386,11 +316,6 @@ pub fn air(
     Ok(air_held(memory, base, pointer, container, consuming, None)?.0)
 }
 
-/// [`air`], taking `held` (the consuming country its fuel update
-/// invocation's BEGIN located, [`start_held`]) as the country the consuming
-/// id and, when it is the same id, the container's owner resolve to: those
-/// two resolutions are not read again. Every other read is made in its
-/// native order. Also returns whether `held` was taken.
 pub fn air_held(
     memory: &impl Memory,
     base: usize,
@@ -448,8 +373,6 @@ pub fn air_held(
     ))
 }
 
-/// Off-hour log sizing from live request rosters, including duplicates.
-/// Each queue route is bounded by its own roster count.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Demand {
     pub entries: usize,
@@ -466,8 +389,6 @@ impl StoredName {
         self.0.copy(memory, output)
     }
 }
-/// Stored division and task-force name caches. Never run name generation;
-/// the retained, possibly stale language bytes supply the displayed name.
 pub fn stored_name(
     memory: &impl Memory,
     pointer: usize,

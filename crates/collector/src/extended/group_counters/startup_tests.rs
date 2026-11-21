@@ -108,8 +108,6 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
         );
         return;
     }
-    // Exceed the former template/country-only table with distinct readable
-    // group and deployment-holder receivers in the same observation domain.
     let count = 1500;
     let world = World::new(count);
     let observer = crate::template_changes::unsized_observer_for_tests();
@@ -120,8 +118,6 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
     capacity.presize(&world, 0, 0).unwrap();
     assert_eq!(capacity.rows, count);
     crate::template_changes::boundary(true);
-    // Reserve the other shared-table receivers as the template and country
-    // captures do: template, owner, deployment manager and occupation holder.
     for receiver in [0x5000, 1, 0x8400, 0x8000] {
         assert!(observer.sequence(receiver).is_some());
     }
@@ -130,8 +126,6 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
     let mut decoder = FrameDecoder::new();
     for hour in 0..3 {
         if hour != 0 {
-            // Ordinary off-thread sizing and a continuous boundary cannot
-            // repair an initially undersized installed table by replacing it.
             crate::template_changes::prepare(0, 1);
             crate::template_changes::presize();
             crate::template_changes::boundary(false);

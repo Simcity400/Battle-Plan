@@ -1,13 +1,9 @@
-//! Lexer tokens by their literal under the lexer's fold, read from one LexicalTokens table:
-//! each fold's literal once, lower-cased, in one buffer, found by its hash.
 
 use crate::triggers::{Failure, refusal::refused};
 use std::collections::BTreeMap;
 
-/// Where `index` holds no fold.
 const EMPTY: u32 = u32::MAX;
 
-/// A fold: its hash, where its literal is in [`Folds::text`], and the token it names.
 struct Fold {
     hash: u64,
     start: usize,
@@ -15,22 +11,14 @@ struct Fold {
     token: u32,
 }
 
-/// Lexer tokens by their literal under the lexer's fold; refused for a fold two recorded
-/// literals share.
 pub(in crate::triggers) struct Folds {
-    /// The folded literals, end to end.
     text: Vec<u8>,
     folds: Vec<Fold>,
-    /// Open addressing over `folds` by hash, a power of two long and never past half full.
     index: Vec<u32>,
-    /// What a hash is shifted by to place it in `index`.
     shift: u32,
-    /// Why each fold two literals share names no token, by fold.
     refused: BTreeMap<u32, Failure>,
 }
 
-/// Why a fold several literals share, `literal` the last by token, names no token: one token
-/// per fold natively.
 pub(super) fn several(literal: &[u8]) -> Failure {
     refused(format!(
         "{} names several lexer tokens",
@@ -38,7 +26,6 @@ pub(super) fn several(literal: &[u8]) -> Failure {
     ))
 }
 
-/// `literal`'s hash under the fold.
 fn hash(literal: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for &byte in literal {
@@ -48,8 +35,6 @@ fn hash(literal: &[u8]) -> u64 {
 }
 
 impl Folds {
-    /// The folds of `len` rows, each a token and its literal, in their order; refused where a
-    /// row does not read.
     pub(super) fn read<'a>(
         len: usize,
         rows: impl Iterator<Item = Result<(u32, &'a [u8]), Failure>>,
@@ -84,8 +69,6 @@ impl Folds {
         Ok(folds)
     }
 
-    /// The token `name` names under the fold, or why it names none; None where no literal
-    /// folds to it.
     pub(super) fn get(&self, name: &[u8]) -> Option<Result<u32, &Failure>> {
         let at = self.find(hash(name), name).ok()?;
         Some(match self.refused.get(&at) {
@@ -94,7 +77,6 @@ impl Folds {
         })
     }
 
-    /// The fold `literal` folds to, or the empty slot of `index` it would take.
     fn find(&self, hash: u64, literal: &[u8]) -> Result<u32, usize> {
         let mask = self.index.len() - 1;
         let mut slot = (hash.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> self.shift) as usize;

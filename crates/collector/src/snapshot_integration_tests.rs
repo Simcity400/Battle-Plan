@@ -1,4 +1,3 @@
-//! Snapshot plans integrated with capture allocation and character fixtures.
 
 use crate::snapshot_plan::SnapshotPlan;
 use engine_native::Memory;

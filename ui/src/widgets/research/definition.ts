@@ -4,7 +4,6 @@ import { choiceVariants } from '../../dashboard/options.ts';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 
 export const VIEWS = [{ value: 'columns', label: 'Columns' }, { value: 'list', label: 'List' }] as const;
-/** The List's columns, in order; oldest first by default. */
 export const SORT_COLUMNS = [
   { key: 'date', label: 'Date' }, { key: 'technology', label: 'Technology' }, { key: 'folder', label: 'Folder' },
   { key: 'slot', label: 'Slot' }, { key: 'took', label: 'Took' },
@@ -23,7 +22,6 @@ export const definition = {
   description: 'The order each research slot worked through, when each technology finished and when slots opened, as columns or a list.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   minSize: { w: 3, h: 5 }, defaultSize: { w: 7, h: 12 }, options: OPTIONS,
-  // Version 1 was titled Research; an unchanged title follows the new name.
   migrate: (from, widget) => from < 2 && widget.title === 'Research' ? { ...widget, title: 'Research history' } : widget,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Research list', ['list']),
 } as const satisfies WidgetMeta;

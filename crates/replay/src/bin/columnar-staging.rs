@@ -1,20 +1,3 @@
-//! Measures the columnar writer's staging on a recording: every table's hour as the recorder
-//! hands it over (a complete view the recording leaves unchanged as the same rows again, so
-//! not staged), staged by one set of writers a row at a time and by another as one batch by
-//! column. Both must write the same sections, manifest entries and strings every hour, and the
-//! same restarts at every run's end. Reports the wall each takes to prepare and commit, per
-//! staged cell (a visited row's column), in total and per table, beside the wall of only
-//! reading the rows' wire fields, which both pay.
-//!
-//! With `--fixed`, measures instead what a table's hour costs the writer by what it asks of
-//! it, staged by column: no rows, rows that change nothing, and rows that write a section,
-//! and, after each hour of a complete table, two probes of no rows: changes of no row, as the
-//! recorder hands on a re-read table that did not change, and an empty batch prepared
-//! directly. Writers clearing and finishing only the columns an hour touched run beside
-//! writers sweeping every column, which must write the same. `--cold <MiB>` writes that much
-//! memory before every hour, as the game does between the writer's hours.
-//! `columnar-staging <recording.battleplan> [hours] [--fixed [--cold <MiB>]]`
-
 use replay::{
     campaign::Replay,
     native_columns::{self, RowCells, Staging, TableHour, TableInput},
@@ -38,13 +21,11 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// One staging's writers for a run, and its wall.
 struct Side {
     writers: Vec<TableWriter>,
     sweep: Sweep,
     dictionary: Dictionary,
     cells: RowCells,
-    /// A batch of no rows, for the probe preparing one directly.
     empty: Batch,
     prepare_ns: Vec<u64>,
     commit_ns: Vec<u64>,
@@ -63,14 +44,12 @@ impl Side {
         })
     }
 
-    /// A new run's writers, keeping the wall measured.
     fn restart(&mut self) -> io::Result<()> {
         self.writers = writers(self.sweep)?;
         self.dictionary = Dictionary::new();
         Ok(())
     }
 
-    /// Table `table`'s wall so far.
     fn wall(&self, table: usize) -> u64 {
         self.prepare_ns[table] + self.commit_ns[table]
     }
@@ -159,7 +138,6 @@ fn writers(sweep: Sweep) -> io::Result<Vec<TableWriter>> {
         .collect()
 }
 
-/// A table's hour as the recorder hands it to its writer.
 #[derive(Clone, Copy)]
 enum Input<'a> {
     Rows {
@@ -169,13 +147,10 @@ enum Input<'a> {
     Same,
     Unavailable(&'a str),
     NotRecorded,
-    /// Changes of no row, through [`native_columns::table_hour`].
     NoChanges,
-    /// A batch of no rows, through [`TableWriter::prepare`].
     EmptyBatch,
 }
 
-/// A table's rows by their own type, staged as a complete or truncated snapshot.
 struct Stage<'a> {
     writer: &'a mut TableWriter,
     dictionary: &'a mut Dictionary,
@@ -201,8 +176,6 @@ impl RowsVisit for Stage<'_> {
     }
 }
 
-/// Reads every row's wire fields, encoding opaque values, and keeps none: what a staging
-/// pays before it compares a cell.
 struct Wire<'a> {
     scratch: &'a mut Vec<u8>,
 }
@@ -224,7 +197,6 @@ impl RowsVisit for Wire<'_> {
     }
 }
 
-/// A table's hour as the recorder hands it to its writer.
 fn handed<'a>(
     view: &'a TableView,
     update: &TableUpdate,
@@ -232,8 +204,6 @@ fn handed<'a>(
     writer: &TableWriter,
 ) -> Input<'a> {
     match view {
-        // The collector hands an unchanged complete table on as the rows it shared before,
-        // which the live writer takes as the same rows.
         TableView::Complete(_)
             if continues
                 && matches!(update, TableUpdate::Unchanged { .. })
@@ -257,7 +227,6 @@ fn handed<'a>(
     }
 }
 
-/// What an hour writes: its section with its manifest entry and census, if it has one.
 fn written(hour: &TableHour) -> Option<(&[u8], &[u64], u8, Census)> {
     let prepared = hour.prepared.as_ref()?;
     let section = prepared.section.as_deref()?;
@@ -269,12 +238,10 @@ fn written(hour: &TableHour) -> Option<(&[u8], &[u64], u8, Census)> {
     ))
 }
 
-/// Both hours write the same section and evidence.
 fn same_hour(one: &TableHour, other: &TableHour) -> bool {
     written(one) == written(other) && one.evidence == other.evidence
 }
 
-/// Both stagings' restarts of every table are the same.
 fn same_restarts(rows: &Side, columns: &Side, hour: i32) -> io::Result<()> {
     for (index, (expected, actual)) in rows.writers.iter().zip(&columns.writers).enumerate() {
         if expected.restart()? != actual.restart()? {
@@ -324,7 +291,6 @@ fn main() -> io::Result<()> {
     let mut wire_ns = vec![0_u64; TABLE_COUNT];
     let mut scratch = Vec::new();
     let (mut hours, mut runs) = (0_u64, 0_u64);
-    // The branch and the next hour of the run under way.
     let mut run: Option<(u64, i32)> = None;
     let started = Instant::now();
     let blocks: Vec<_> = replay.index.iter().collect();
@@ -360,8 +326,6 @@ fn main() -> io::Result<()> {
                         })?;
                         wire_ns[index] += begin.elapsed().as_nanos() as u64;
                     }
-                    // Each staging goes first every other hour, so neither always finds the
-                    // rows warm.
                     let (first, second) = if hours % 2 == 0 {
                         (&mut rows, &mut columns)
                     } else {
@@ -439,8 +403,6 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-/// The table-hours [`per_table`] tells apart: no rows visited, rows that change nothing, rows
-/// that write a section, then the probes after an hour of a complete table.
 const KINDS: [&str; 5] = ["same", "quiet", "changed", "no_changes", "empty_batch"];
 const SAME: usize = 0;
 const QUIET: usize = 1;
@@ -448,23 +410,16 @@ const CHANGED: usize = 2;
 const NO_CHANGES: usize = 3;
 const EMPTY_BATCH: usize = 4;
 
-/// A count or wall per table and kind of hour.
 type ByKind = Vec<[u64; KINDS.len()]>;
 
-/// Writers working only the columns an hour touched beside writers sweeping every column,
-/// and what their hours cost.
 struct Sweeps {
     touched: Side,
     swept: Side,
     counts: ByKind,
-    /// The touched writers' wall, then the swept ones'.
     walls: [ByKind; 2],
 }
 
 impl Sweeps {
-    /// One table-hour through both, which must write the same; the one going first
-    /// alternates every hour, so neither always finds the rows warm. Its wall goes to `kind`,
-    /// or to the kind its rows make when none is given.
     fn hour(
         &mut self,
         table: usize,
@@ -509,8 +464,6 @@ impl Sweeps {
     }
 }
 
-/// Every table's hours staged by column, by writers working only the columns an hour touched
-/// and by writers sweeping every column, timed by what each hour asked of them.
 fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
     let replay = Replay::open_path(input)?;
     let mut sweeps = Sweeps {
@@ -560,7 +513,6 @@ fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
                         _ => Some(SAME),
                     };
                     sweeps.hour(index, input, kind, at, flip)?;
-                    // A complete table's hours of no rows change nothing held.
                     if sweeps.touched.writers[index].status() == Status::Complete {
                         sweeps.hour(index, Input::NoChanges, Some(NO_CHANGES), at, flip)?;
                         sweeps.hour(index, Input::EmptyBatch, Some(EMPTY_BATCH), at, flip)?;
@@ -603,14 +555,12 @@ fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
         for (kind, name) in KINDS.iter().enumerate() {
             report.insert(name.to_string(), kinds(walls, &[kind]));
         }
-        // Every hour that wrote nothing: what a recording's unchanged tables cost.
         report.insert("unwritten".to_string(), kinds(walls, &[SAME, QUIET]));
         serde_json::Value::Object(report)
     };
     let mut tables: Vec<usize> = (0..TABLE_COUNT)
         .filter(|&table| counts[table].iter().any(|&count| count > 0))
         .collect();
-    // The tables whose hours of no change cost the sweeping writers most first.
     tables.sort_unstable_by_key(|&table| {
         let swept = &walls[1][table];
         std::cmp::Reverse(swept[QUIET] + swept[NO_CHANGES] + swept[EMPTY_BATCH])

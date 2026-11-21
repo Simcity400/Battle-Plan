@@ -1,9 +1,3 @@
-//! The trains' plan maker: what the plan reads ([`Store`]), the census of supply nodes the synthetic
-//! naval breaks read, each weighted node's kept walks, each path's rail curve, and the plan. It
-//! takes a batch whole, works out from each changed row's values before and after which kept walks
-//! it forgets and whether the plan is made again or only its weights move, then makes the plan. A
-//! curve it does not hold it asks the frame side for, which holds the rails layer's network. It
-//! runs on the layer's worker, or on the calling thread at a compose and an unlimited settle.
 
 use super::{
     CORE, Columns, STRUCTURAL, WHOLE, Yard,
@@ -50,7 +44,6 @@ fn recorded(cell: Cell<i32>) -> Recorded<Option<i32>> {
     }
 }
 
-/// What the last plan read besides its country's nodes: a change elsewhere leaves it as it is.
 #[derive(Default)]
 pub(super) struct Queried {
     provinces: HashSet<u32>,
@@ -59,7 +52,6 @@ pub(super) struct Queried {
     tokens: HashSet<u32>,
 }
 
-/// One node of the census: its country's canonical slot, province and kind.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Entry {
     country: u32,
@@ -68,17 +60,12 @@ struct Entry {
     vertex: bool,
 }
 
-/// What a census count changed for the plan: provinces that entered or left a country's kind 2 to
-/// 5 nodes, and whether an entry the plan refuses was counted or uncounted.
 #[derive(Default)]
 struct Counted {
     moved: Vec<u32>,
     refused: bool,
 }
 
-/// The supply nodes the synthetic naval breaks read, by key: each node's entry, the kind 2 to 5
-/// nodes counted per (slot, province), the entries a plan refuses (an unknown kind, a country
-/// without a Countries row), each native's keys and every Countries row as (canonical slot, native).
 #[derive(Default)]
 struct Census {
     entries: HashMap<u128, Entry>,
@@ -87,8 +74,6 @@ struct Census {
     by_country: HashMap<u32, BTreeSet<u128>>,
     natives: BTreeSet<(u32, u32)>,
     native_slots: HashMap<u32, u32>,
-    /// Natives whose Countries row came, went or took another canonical slot: their nodes are
-    /// counted again.
     country_natives: BTreeSet<u32>,
     touched: BTreeSet<u128>,
     recount: bool,
@@ -133,7 +118,6 @@ impl Census {
         }
     }
 
-    /// Every node counted again at a recount, else the nodes a batch touched.
     fn settle(&mut self, store: &Store) -> Counted {
         let mut out = Counted::default();
         if std::mem::take(&mut self.recount) {
@@ -160,7 +144,6 @@ impl Census {
         while let Some(key) = self.touched.pop_first() {
             let entry = Self::entry(store, key);
             let native = (key >> 32) as u32;
-            // A node counted the same is left as it is; a country's keys move only when a node comes or goes.
             match (self.entries.get(&key).copied(), entry) {
                 (Some(old), Some(new)) if old == new => {}
                 (Some(old), Some(new)) => {
@@ -191,18 +174,12 @@ impl Census {
     }
 }
 
-/// What the maker did since its figures were last taken: plans made, batches that changed nothing
-/// drawn, curves made, plans whose weights alone moved; microseconds in the census, the plan, its
-/// nodes' reading, curves and the carried presentation, then the tables whose status moved; and
-/// the plans made again by a change to a table the plan read, by `STRUCTURAL`, and by rails redrawn.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Stats {
     pub(super) marked: [usize; 4],
     pub(super) timed: [u64; 6],
     pub(super) why: [u64; 9],
     pub(super) worker_ns: u64,
-    /// The most hours a plan taken stood before the hour the frame had applied when the worker
-    /// began it: above zero, a plan missed a step it should hold.
     pub(super) plan_short: i32,
 }
 
@@ -216,13 +193,9 @@ impl Stats {
     }
 }
 
-/// What a making came to.
 pub(super) enum Made {
-    /// A new plan, or new weights for the one it holds.
     Plan,
-    /// The plan needs the curves of these paths first; the walks made are kept.
     Wants(Vec<Vec<u32>>),
-    /// Nothing the plan draws changed.
     Quiet,
 }
 
@@ -231,35 +204,25 @@ pub struct Maker {
     ours: Option<u32>,
     store: Store,
     census: Census,
-    /// The plan's country, and its weighted nodes' keys and weights in the plan's order.
     country: Option<u32>,
     weighted: Vec<u128>,
     weights: Vec<i64>,
-    /// The plan is made again; only its weights may have moved; the `STRUCTURAL` causes counted in
-    /// this batch.
     structural: bool,
     reweigh: bool,
     counted: u16,
     queried: RefCell<Queried>,
-    /// Each weighted node's checked routes from the last plans, forgotten by what a batch changed.
     pub(super) cache: PlanCache,
-    /// Per province path its rail curve, until the rails layer redraws a strip on it; per
-    /// province, the paths through it with a kept curve.
     curves: HashMap<Vec<u32>, Curve>,
     paths_of: HashMap<u32, BTreeSet<Vec<u32>>>,
     pub(super) plan: TrainPlan,
     pub(super) refused: Option<String>,
-    /// How the plan was last made: built, or its weights alone replaced.
     pub(super) how: &'static str,
-    /// For the proof: in the last batch taken, the plan country's nodes moved by their supply alone,
-    /// and moved otherwise.
     pub(super) moved: [u64; 2],
     stats: Stats,
     nodes_ns: Counter<u64>,
 }
 
 impl Maker {
-    /// Everything from the mirrors, the plan still to make; SupplyNodes rows whole for `whole`.
     pub(super) fn new(content: Arc<dyn Yard>, columns: &Columns, ours: Option<u32>, mirrors: &Mirrors, whole: Option<u32>) -> Self {
         Self {
             content,
@@ -285,9 +248,6 @@ impl Maker {
         }
     }
 
-    /// Its rows made whole from the mirrors at the hour applied, the census counted again and every
-    /// kept walk forgotten: the plan is made again from them. Its curves stay: the network they
-    /// follow forgets its own moved provinces.
     pub(super) fn restart(&mut self, mirrors: &Mirrors, columns: &Columns, whole: Option<u32>) {
         self.store = Store::from_mirrors(mirrors, columns, whole);
         self.census = Census { recount: true, ..Census::default() };
@@ -296,7 +256,6 @@ impl Maker {
         (self.structural, self.reweigh) = (true, false);
     }
 
-    /// The figures since they were last taken.
     pub(super) fn take_stats(&mut self) -> Stats {
         let mut stats = std::mem::take(&mut self.stats);
         stats.timed[2] = self.nodes_ns.take() / 1000;
@@ -307,7 +266,6 @@ impl Maker {
         self.stats.worker_ns += ns;
     }
 
-    /// A change to cells the last plan read through `table`: counted once a batch.
     fn structural_by(&mut self, table: TableId) {
         self.structural = true;
         if let Some(at) = STRUCTURAL.iter().position(|&read| read == table)
@@ -318,7 +276,6 @@ impl Maker {
         }
     }
 
-    /// The provinces a kept curve runs through.
     pub(super) fn curved(&self) -> impl Iterator<Item = u32> + '_ {
         self.paths_of.keys().copied()
     }
@@ -330,7 +287,6 @@ impl Maker {
         self.curves.insert(path, curve);
     }
 
-    /// Drops the curves through `provinces`; whether any was dropped.
     fn forget_curves(&mut self, provinces: impl IntoIterator<Item = u32>) -> bool {
         let mut dropped = false;
         for province in provinces {
@@ -341,8 +297,6 @@ impl Maker {
         dropped
     }
 
-    /// A batch taken whole: each changed row read against the last plan, the kept walks it
-    /// changed forgotten; the rails' redrawn curves dropped.
     pub(super) fn take(&mut self, mut batch: Batch) {
         self.counted = 0;
         self.moved = [0; 2];
@@ -352,12 +306,10 @@ impl Maker {
         let any = !moved.restated.is_empty()
             || moved.reserved
             || [moved.countries.len(), moved.links.len(), moved.appearance.len(), moved.tokens.len(), moved.provinces.len(), moved.nodes.len(), moved.inventory.len(), moved.variants.len(), moved.edges.len(), moved.cooldowns.len()].iter().any(|&len| len > 0);
-        // A refused plan is made again at any change: it reads no rows to compare against.
         if any && self.refused.is_some() {
             self.structural = true;
         }
         for &table in &moved.restated {
-            // Every kept walk goes, and a restated census or Countries is counted again whole.
             self.structural = true;
             clear = true;
             self.stats.timed[5] += 1;
@@ -454,8 +406,6 @@ impl Maker {
         }
     }
 
-    /// The census again, then the plan: made again when a change reached what it read, its
-    /// weights replaced when only its nodes' supply moved, else left as it is.
     pub(super) fn make(&mut self, carry: bool) -> Made {
         let started = Instant::now();
         let counted = self.census.settle(&self.store);
@@ -487,14 +437,11 @@ impl Maker {
                     return Made::Plan;
                 }
             }
-            // The weighted nodes themselves changed: the plan is made again, and stays owed through
-            // a wait for its curves until it is made (`finish`).
             self.structural = true;
         }
         self.build(carry)
     }
 
-    /// [`Self::make`] until it is made, the curves it wants made here from `network`.
     pub(super) fn make_now(&mut self, network: &RailNetwork, carry: bool) -> Made {
         loop {
             match self.make(carry) {
@@ -518,8 +465,6 @@ impl Maker {
         self.stats.marked[0] += 1;
     }
 
-    /// The plan made from what the maker holds, the presentation taken over when `carry`; the
-    /// paths whose curves it lacks, when any.
     fn build(&mut self, carry: bool) -> Made {
         let Some(ours) = self.ours else {
             self.finish();
@@ -527,7 +472,6 @@ impl Maker {
             self.refused = Some("no viewing country".into());
             return Made::Plan;
         };
-        // A node taken from the cache reads nothing again, so what the cached nodes read stays queried.
         if self.cache.held().0 == 0 {
             *self.queried.borrow_mut() = Queried::default();
         }
@@ -579,8 +523,6 @@ impl Maker {
         PlanRows { store: &self.store, census: &self.census, queried: &self.queried, nodes_ns: &self.nodes_ns }
     }
 
-    /// The plan's weighted nodes: their weights, the hour their rows were last copied and the
-    /// supply cells the maker holds of them now, for the proof.
     pub(super) fn shown_nodes(&self) -> Vec<super::ShownNode> {
         self.weighted
             .iter()
@@ -592,8 +534,6 @@ impl Maker {
             .collect()
     }
 
-    /// The plan country's weighted nodes and their weights, in key order: their kind, flag and
-    /// supply read, nothing else.
     fn weights(&self) -> Option<(Vec<u128>, Vec<i64>)> {
         let country = self.country?;
         Some(
@@ -627,7 +567,6 @@ impl Maker {
     }
 }
 
-/// The trains' tables as the plan maker holds them.
 #[derive(Clone, Copy)]
 pub struct PlanRows<'a> {
     store: &'a Store,
@@ -637,7 +576,6 @@ pub struct PlanRows<'a> {
 }
 
 impl PlanRows<'_> {
-    /// A table's head: the last game hour its cells are at.
     pub fn head(&self, table: TableId) -> Option<Hour> {
         self.store.meta(table).and_then(|meta| meta.head)
     }
@@ -646,7 +584,6 @@ impl PlanRows<'_> {
         self.store.meta(table).is_some_and(Meta::complete)
     }
 
-    /// The core table wholly recorded, or the hour refused in today's words.
     fn core(&self, table: TableId) -> io::Result<()> {
         let meta = self.store.meta(table).filter(|meta| meta.held).ok_or_else(|| io::Error::other(format!("{table:?} is not read yet")))?;
         if meta.status != Some(Status::Complete) {
@@ -656,12 +593,10 @@ impl PlanRows<'_> {
         Ok(())
     }
 
-    /// The natives of canonical `slot` in key order.
     fn natives(&self, slot: u32) -> Vec<u32> {
         self.census.natives.range((slot, 0)..=(slot, u32::MAX)).map(|&(_, native)| native).collect()
     }
 
-    /// ReservedCountryNaming's singleton row, or why there is none.
     fn reserved(&self) -> Result<&Reserved, String> {
         let meta = &self.store.reserved.meta;
         if !meta.complete() {

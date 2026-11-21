@@ -1,9 +1,3 @@
-//! A country's army, navy and air experience at an hour: what it banked at the latest daily read,
-//! its change from the read a day before and its gross gain over that day, as the recorder's
-//! CountryExperienceDaily holds them, each in the game's units (32,768 a point). A rows-at-an-hour
-//! product ([`AtHour`]), requested for an hour and followed as a panel at the head; the lines over
-//! time are the declared series `country-experience` (banked) and `country-experience-daily`.
-//! A value not recorded says why, never zero.
 
 use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
@@ -18,9 +12,7 @@ use std::io;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The game's experience units in a point.
 pub const SCALE: u32 = 32_768;
-/// A change compares reads one day apart.
 pub const DAY_HOURS: i32 = 24;
 
 const TABLES: [TableId; 2] = [TableId::CountryExperience, TableId::CountryExperienceDaily];
@@ -35,7 +27,6 @@ pub struct ExperienceParams {
     pub country: Country,
 }
 
-/// The three branches, each in the game's units as decimal text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -50,11 +41,11 @@ pub struct ExperienceValues {
 #[serde(rename_all = "camelCase")]
 pub struct ExperienceReply {
     pub tag: String,
-    /// Units per experience point for every value.
+    #[doc = " Units per experience point for every value."]
     pub scale: u32,
     pub day_hours: i32,
-    /// The daily read the values are from; none where the recording does not tell it (the journal
-    /// door gives CountryExperience no sample hour).
+    #[doc = " The daily read the values are from; none where the recording does not tell it (the journal"]
+    #[doc = " door gives CountryExperience no sample hour)."]
     pub read_hour: Option<i32>,
     pub banked: Option<ExperienceValues>,
     pub banked_missing: Option<String>,
@@ -67,8 +58,6 @@ pub struct ExperienceReply {
 
 dashboard_base::reply_warnings!(ExperienceReply);
 
-/// The hour of the daily read the experience at the frame's hour is from: the table is read whole,
-/// so its sample hour is every country's read (the hours `replay::lanes::reads` lists).
 pub fn read_hour(frame: &DecodedFrame) -> Option<i32> {
     frame.tables[TableId::CountryExperience.index()].sampled_at()
 }
@@ -109,7 +98,6 @@ impl AtHour for CountryExperience {
         TABLES.to_vec()
     }
 
-    /// The holder's row of each table, by its raw country id.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         match (step, owner) {
             (0, Some(owner)) => TABLES.map(|table| Read::these(table, [u128::from(owner.id)])).into(),

@@ -1,4 +1,3 @@
-//! Native luminance reductions, preserving the fixed backing targets.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -25,8 +24,6 @@ pub(super) struct Assets {
 }
 
 impl Assets {
-    /// The recorded effects for those a visual mod replaces, each refused for `why`; `None`
-    /// when no visual mod replaces any.
     fn recorded(&self, why: &str) -> Option<Self> {
         let [seed, normal, alpha] =
             [&self.seed, &self.normal, &self.alpha].map(|effect| effect.fall_back(why));
@@ -40,7 +37,6 @@ impl Assets {
 
 pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Assets> {
     let (mut library, mut defines) = fullscreen::library(layers, map, decode);
-    // Register both reductions; their blend is retained from seed.
     let seed = library
         .load(b"gfx/FX/downsample.shader", &defines)
         .map_err(refuse)?;
@@ -62,7 +58,6 @@ pub(super) struct Reductions([Fullscreen; 2]);
 
 impl Reductions {
     pub(super) fn new(device: &wgpu::Device, assets: &Assets) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         Self::build(device, assets).or_else(|error| match assets.recorded(&error.to_string()) {
             Some(recorded) => Self::build(device, &recorded),
             None => Err(error),
@@ -83,10 +78,6 @@ impl Reductions {
             &assets.normal.source.techniques[normal.index],
         )
         .map_err(refuse)?;
-        // Bind only the program: seed's blend/depth/raster retain.
-        // Both variants use the NON-alpha effect's physical sampler table[0].
-        // A null entry retains seed's sampler; higher registers remain
-        // unsupported until the preceding frame's bind stream is reconstructed.
         state
             .samplers
             .retain(|key, _| *key == binding(0, Stage::Pixel));
@@ -101,9 +92,6 @@ impl Reductions {
         ]))
     }
 
-    /// 40 initialized bytes of the shared 48-byte b2: inverse viewport float2 + zero float2,
-    /// UVScale float2 + zero float2, zero float2. Only the final register's padding is not an
-    /// operand.
     pub(super) fn constants(viewport: [u32; 2], uv_scale: [f32; 2]) -> [f32; 10] {
         [
             1.0 / viewport[0] as f32,
@@ -119,8 +107,6 @@ impl Reductions {
         ]
     }
 
-    /// The reduction at `index` reads one block of the chain's kept constants and one source,
-    /// neither of which changes while the chain stands.
     pub(super) fn kept(
         &self,
         device: &wgpu::Device,

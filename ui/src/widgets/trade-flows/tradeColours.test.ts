@@ -27,7 +27,6 @@ test('5,000 native holder slots stay complete and ordered while only full style 
   assert.equal(tradeFixedColourKey(first, partial), null);
   const key = tradeFixedColourKey(first, styles(first));
   assert.equal(JSON.parse(key!).length, 5000);
-  // A new dated style sample with unchanged native colours needs no correction.
   const later = tradeColourPlan(trade, branch, 730, true);
   assert.equal(tradeFixedColourKey(later, styles(later)), key);
   assert.equal(tradeColourPlan(trade, branch, 10, false).wanted.length, 0);

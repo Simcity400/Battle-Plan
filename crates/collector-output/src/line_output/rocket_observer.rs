@@ -1,5 +1,3 @@
-//! One CREDIT/DELIVERY/rocket owner. Native calls stay outside Rust frames;
-//! only normal assembly return releases a flight. Escaping calls retain storage.
 use super::{
     ACTIVE, BASE, CREDIT, DELIVERY, DELIVERY_CALLERS, ENABLED, Entry, NOTHING_PENDING, ORIGINAL,
     OutputKind, PENDING, Pending, ROCKET_DELIVERY, append, credit_entry, invalidate,
@@ -55,7 +53,6 @@ struct Context {
     tick: Option<RocketTick>,
     delivery: Option<Delivery>,
     pending: Pending,
-    /// The credit call's entry as its entry read it.
     credit: Option<Entry>,
 }
 impl Default for Context {
@@ -83,7 +80,6 @@ impl Default for Context {
 }
 
 fn retain() {
-    // Never settles a flight, event or active guard; all roots remain owned.
     RETAINED.store(true, Ordering::SeqCst);
     ENABLED.store(false, Ordering::SeqCst);
     invalidate();
@@ -128,9 +124,6 @@ fn delivery_source(caller: usize) -> DeliverySource {
     }
 }
 fn rocket_source(kind: u32, caller: usize) -> bool {
-    // Daily rocket production and its DELIVERY return are rocket
-    // observations. Equipment's DELIVERY/CREDIT still use the same guard,
-    // but must not inflate the rocket counter.
     kind == 2
         || kind == 1
             && delivery_source(caller) == DeliverySource::Rocket
@@ -144,7 +137,6 @@ unsafe extern "system-unwind" fn before(
     kind: u32,
 ) {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::LineOutput);
-    // Initialize the owned frame before any acquisition or fallible observer.
     unsafe {
         pointer.write(Context {
             receiver,
@@ -207,8 +199,6 @@ unsafe extern "system-unwind" fn before(
                 }
             }
         }
-        // Armed before the guarded read: a panic or native escape cannot lose
-        // acquired ownership and later certify an empty complete interval.
         if !acquire(&ACQUIRED_EVENTS) {
             context.failed = true;
             retain();
@@ -242,8 +232,6 @@ unsafe extern "system-unwind" fn before(
             context.scope_owned = true;
         } else {
             let scope = SCOPE.try_with(|scope| scope.get()).unwrap_or_default();
-            // DELIVERY RCX is logistics status. Producer comes only from the
-            // matched same-thread Rocket scope, not a receiver-type guess.
             let variant =
                 engine_native::cequipment_variant::identity(&memory, base, second).unwrap_or(0);
             if let crate::rocket_output::Entry::Delivery {
@@ -263,8 +251,6 @@ unsafe extern "system-unwind" fn before(
         }
     }));
     if let Err(payload) = result {
-        // The panic's partial ownership is uncertain; retain it rather than
-        // invoking another terminal callback or a guessed cleanup/decrement.
         std::mem::forget(payload);
         unsafe { (*pointer).failed = true };
         retain();
@@ -278,8 +264,6 @@ unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
         return 0;
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // Every payload was copied before original; equipment's also needs
-        // its delivery from the same occurrence.
         if context.refused
             || !crate::world_lifetime::current(context.generation)
             || context.kind == 0
@@ -384,9 +368,6 @@ unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
     }
 }
 
-// Six callback arguments use home space at 20/28; native arguments are saved
-// at30..48, return RAX/XMM0 at60/68, and flight ownership at80. Context starts
-// A0. The original CALL is outside all Rust frames, with real .seh metadata.
 const CONTEXT: usize = 0xa0;
 const FRAME: usize = CONTEXT + std::mem::size_of::<Context>().div_ceil(16) * 16 + 8;
 macro_rules! owner_entry {
@@ -450,7 +431,6 @@ unsafe extern "system-unwind" {
     fn production_owned_rocket_end();
 }
 
-/// The sole production family, with native flight and full callback IP guards.
 pub(super) fn descriptors() -> [(crate::output_hooks::Site, usize, crate::hook::TapSafety); 3] {
     let entry = |site, begin, end| {
         (
@@ -535,8 +515,6 @@ mod tests {
         super::super::observe_for_test(false);
     }
 
-    /// CREDIT can refresh the producer's lines before it returns; the entry
-    /// keeps the line's design, organisation and purpose from its entry.
     #[test]
     fn credit_publishes_what_its_entry_read_after_a_nested_refresh() {
         use super::super::tests::{Line, MILITARY};
@@ -548,7 +526,6 @@ mod tests {
         let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[MILITARY].0;
         let mut context = Context::default();
         unsafe { before(&mut context, line.address(), 7, 0, caller, 0) };
-        // The nested refresh clears the control and replaces the design.
         line.set_converting(false);
         line.replace(0x6_0000_0046, 0x8_0000_004f);
         assert_eq!(unsafe { returned(&mut context) }, 1);
@@ -642,7 +619,6 @@ mod tests {
             assert_eq!(unsafe { call(41, 17, 9) }, 111.0);
             ORIGINAL[index].store(previous, Ordering::SeqCst);
         }
-        // A credit observed at entry reads its line there, so the receiver must be one.
         let line = super::super::tests::Line::new(0x11_0000_0021, 0x5_0000_0046, 0x9_0000_004f);
         for enabled_at_entry in [false, true] {
             super::super::observe_for_test(enabled_at_entry);
@@ -671,7 +647,6 @@ mod tests {
         super::super::observe_for_test(true);
         let before_refusals = super::super::DELIVERY_REFUSALS.load(Ordering::Relaxed);
         let mut context = Context::default();
-        // Unsupported callers require no native pointer read or world guess.
         unsafe { before(&mut context, 0, 0, 123, 0xfeed, 1) };
         assert!(context.acquired && context.unknown_delivery && context.active);
         assert_eq!(unsafe { returned(&mut context) }, 1);

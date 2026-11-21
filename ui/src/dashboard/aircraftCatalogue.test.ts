@@ -35,7 +35,6 @@ test('only the first page is asked for until the listing says how long it is', (
   assert.equal(pages.all, 500_007);
   assert.equal(pages.entry(1)?.name, 'b');
   assert.equal(pages.entry(2), undefined);
-  // Every page of a long listing stays reachable; none past its end is asked.
   const last = Math.ceil(500_000 / AIRCRAFT_PAGE) - 1;
   assert.ok(pages.wants(last));
   assert.ok(!pages.wants(last + 1));

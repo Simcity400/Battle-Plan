@@ -6,7 +6,6 @@ import type { LogRow } from './logData';
 interface Item { name: string; status: string }
 const order = (a: LogRow<Item>, b: LogRow<Item>) => b.hour - a.hour || (a.item.name < b.item.name ? -1 : a.item.name > b.item.name ? 1 : 0);
 const row = (name: string, hour: number, status: string): LogRow<Item> => ({ key: name, id: name, hour, item: { name, status } });
-// a: under way, then ended at 110 (dated then); b: from 105; c: until 108; d: x, then y from 103, then x again from 106.
 const rowsAt = (hour: number) => [
   hour < 110 ? row('a', 90, 'under way') : row('a', 110, 'ended'),
   ...hour >= 105 ? [row('b', 105, 'under way')] : [],
@@ -38,7 +37,6 @@ test('a state keeps its key in the next block, so it does not enter again', () =
 
 test('a block read whole only at its first hour, then only the rows that change, holds the same states as one read whole at every hour', () => {
   const hours = [100, 103, 105, 106, 108, 110];
-  // What changes at each hour, as a row's own change hours say: a starts at 90, ends at 110; b from 105; c until 108; d at 103 and 106.
   const changing = new Map([[103, ['d']], [105, ['b']], [106, ['d']], [108, ['c']], [110, ['a']]]);
   const reads: string[] = [];
   const rowOf = (name: string, hour: number) => { reads.push(`${name}@${hour}`); return rowsAt(hour).find(item => item.item.name === name) ?? null; };
@@ -48,7 +46,6 @@ test('a block read whole only at its first hour, then only the rows that change,
   const shape = (rows: readonly LogRow<Item>[]) => rows.map(item => [item.key, item.id, item.revealedHour ?? null, item.leftHour ?? null]);
   assert.deepEqual(shape(by), shape(all));
   assert.deepEqual(reads, ['*@100', 'd@103', 'b@105', 'd@106', 'c@108', 'a@110'], 'the first hour whole, then one read per change');
-  // An hour any row may change at is read whole again.
   reads.length = 0;
   assert.deepEqual(shape(logStatesBy(hours, whole, hour => hour === 106 ? null : changing.get(hour) ?? [], rowOf, state, order)), shape(all));
   assert.ok(reads.includes('*@106') && !reads.includes('d@106'));

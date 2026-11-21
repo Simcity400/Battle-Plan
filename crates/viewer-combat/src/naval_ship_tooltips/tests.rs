@@ -34,8 +34,6 @@ fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
             super::super::TooltipAnchor::NavalWindow
         );
     }
-    // Exercise the actual retained hit order: the chevrons overlap a grid
-    // with the formation explanation, but their member callback wins.
     let windows = windows(
         br#"guiTypes={
         containerWindowType={name=navalcombatview size={width=300 height=200} clipping=no
@@ -140,8 +138,6 @@ fn naval_sunk_group_keeps_every_separator_native_newlines_and_pointer_anchor() {
         ..Default::default()
     };
     let slots = [0, 1, 2];
-    // The game adds LF to every member; the game does not insert another
-    // before the separator when the preceding non-space byte is already LF.
     for separator in ["stacked divider\n", "stacked divider"] {
         let mut localisation: Localisation = base_localisation
             .iter()
@@ -376,7 +372,6 @@ fn explicit_convoy_hover_orders_condition_arrival_criticals_and_damage() {
         cursor += position + term.len();
     }
     assert!(text.contains(&format!("{INLINE_FLAG}AAA")));
-    // The saved name is stored text, exact only in the recording's language.
     let reason = tooltip(Some("german")).unwrap_err();
     assert!(reason.contains("variant 7 explicit name"), "{reason}");
     assert!(reason.contains("stored in german"), "{reason}");
@@ -425,7 +420,6 @@ fn cached_ship_text_draws_in_recorded_language_and_escaping_members_refuse() {
     )
     .unwrap_err();
     assert!(reason.contains("stored in german"), "{reason}");
-    // The game reserves the sunk branch for two null live references.
     let mut still_live = ship.clone();
     still_live.live_ship = 1;
     let live_text = member_tooltip(
@@ -458,8 +452,6 @@ fn cached_ship_text_draws_in_recorded_language_and_escaping_members_refuse() {
 
 #[test]
 fn an_escaping_member_withholds_its_group_by_name_while_others_still_build() {
-    // The state-8 section needs the escape chance's combat and source-tree
-    // context. Every other member state keeps its complete native text.
     let mut localisation = loc();
     localisation.language = "english".into();
     let ships: Vec<_> = [(2, 2), (3, 8)]
@@ -540,9 +532,6 @@ fn escape_tree(
     }
 }
 
-/// The escape section lists a live ship's 0x5B source trees in
-/// recorded order after its progress, chance and base lines, and a convoy's
-/// side sources (0x5D) with their summed root in the chance.
 #[test]
 fn an_escaping_member_lists_its_source_trees_after_the_chance() {
     use replay_data::naval_trees::Kind;
@@ -583,7 +572,6 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
     };
     combat.sides[0].summary.countries = vec![7];
     combat.sides[0].commander = 66;
-    // One row per source, holding each of its keys' trees in key order.
     let mut country = escape_tree(Kind::Country, 7, 0x5b, 10_000, b"Doctrine");
     country
         .trees
@@ -628,7 +616,6 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
     assert!(text.find("Chance").unwrap() < doctrine, "{text}");
     assert!(doctrine < trait_line, "{text}");
     assert!(!text.contains("Convoy doctrine"), "{text}");
-    // A convoy takes its side's sources and root sum for 0x5D.
     let convoy = NavalCombatShipRow {
         live_ship: 0,
         live_convoy: 1,
@@ -646,9 +633,7 @@ fn an_escaping_member_lists_its_source_trees_after_the_chance() {
     )
     .unwrap();
     assert!(text.contains("  Convoy doctrine: "), "{text}");
-    // The chance is the base and the country's convoy root: 0.10 + 0.30.
     assert!(text.contains("Chance 40"), "{text}");
-    // Without recorded trees the escaping member refuses by name.
     let missing = crate::naval_trees::Sources::from_parts(
         Err("NavalModifierTrees not recorded".into()),
         &definitions,

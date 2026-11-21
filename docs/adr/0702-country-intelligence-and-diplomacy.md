@@ -1,0 +1,19 @@
+# Preserve independent intelligence, cryptology and diplomacy fields
+
+Intel vectors are positional. Their indices are canonical slots, including indices whose four stored lanes are zero. Keep every nonzero record and the last record, even when entirely zero, so length and omitted zeros are recoverable. A null provider is distinct from a readable empty vector. Capture reads the entire validated vector to count sparse demand even when no output fits. Only authenticated complete headers can bound demand after later body failure. Add the actual reserved owner's vector after the completed positive walk. Its failure leaves the positive prefix intact, and an independently observing visitor cannot change the headline read. Reuse the actual reserved root or its same-pass fault for a verified alias.
+
+Cryptology belongs to the authenticated agency and country. Each inline state stores a target reference, bonus duration and activity, decrypting flag, and signed fixed-point progress. Retain zero progress and inactive states. Days remaining is derived by the game and is not substituted for a stored field. There is one state per canonical target. A sparse duplicate detection fallback uses unpublished storage until the owner's walk completes. A spare capacity entry is never a row.
+
+Batch agency and cryptology identity fields, then validate in scalar order. A block of inline states that cannot be read whole falls back to the scalar prefixes within that block. A read-ahead failure is retried once at its ordinary turn. Under either a persistent or one-shot fault the result cannot refuse more than the serial reader. The test baseline keeps guarded field reads separate so this behavior is measurable. Terms for intel, cryptology and decryption are acquired independently of display fractions.
+
+Country diplomacy resolves relation targets by canonical slot. It keeps separate owned relations, war goals, enemies and wartime allies. Rebuild enemies from opposing war lists, then maintain nonenemy friendly allies. The arrays are runtime inputs and are absent from saves. The ordinary war test uses a nonzero enemy count before scanning relations. Keep subject references in order and signed overlord inputs as stored. Attachment, popularity, docking rights and embargo specializations share the base relation layout and authenticate their own type.
+
+Read owned war-goal recipients in vector order. A non-authenticating goal refuses that country's list only. A fixed buffer too short for the list leaves that country row unread. The retired surrender history fields sit outside this read. A missing diplomacy root marks the row unavailable. A current autonomy root is optional, but a foreign non-null root refuses the autonomy census. Keep raw score words, exact definition names and nullable previous and next states. The last modified value remains raw date bits, whose signedness and calendar projection are outside this reader.
+
+Retain the full capitulation byte. A synthetic case checks a non-Boolean value. Captured-operative references hold two identity words, copied together by construction and preserved by the intelligence-agency roster walk.
+
+## Safety of the synthetic cryptology cost test
+
+In `ccryptology::tests::acquisition_cost`, `intel_arena` finishes constructing the owned backing arena before the test creates `LiveMemory`. Every serial and batched read uses pointers into that arena. The arena stays allocated and immutable through both cases.
+
+[Country intel](../../crates/engine-native/src/ccountry_intel.rs) · [Cryptology](../../crates/engine-native/src/ccryptology.rs) · [Diplomacy](../../crates/engine-native/src/cdiplomacy_status.rs) · [Autonomy state](../../crates/engine-native/src/ccurrent_autonomy_status.rs)

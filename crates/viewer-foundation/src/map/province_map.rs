@@ -1,23 +1,16 @@
-//! Borrowed province and terrain images and shared pixel/world sampling contracts.
 
 use crate::errors::invalid;
 use installed_content_core::map::MapData;
 use std::io;
 
-/// A province id image in map pixel space: `provinces.bmp`, origin top-left, x right, y down.
-///
-/// The same shape as [`installed_content_core::map::MapData`](../../../installed-content/map/struct.MapData.html)'s
-/// `width`, `height` and `province_ids`, borrowed so this module needs no loader dependency.
 #[derive(Clone, Copy, Debug)]
 pub struct ProvinceMap<'a> {
     pub width: u32,
     pub height: u32,
-    /// Row-major province ids, `width * height` of them, starting at the top-left pixel.
     pub ids: &'a [u32],
 }
 
 impl ProvinceMap<'_> {
-    /// Checks the dimensions are usable and the id slice covers exactly the declared pixels.
     pub fn validate(&self) -> io::Result<()> {
         if self.width == 0 || self.height == 0 {
             return Err(invalid("province map needs a nonzero width and height"));
@@ -37,29 +30,17 @@ impl ProvinceMap<'_> {
     }
 }
 
-/// `WATER_HEIGHT`: the vertex shader clamps a strip's `y` up to this so borders over water lie flat
-/// on the sea plane.
 pub const WATER_HEIGHT: f32 = 9.5;
-/// World units per heightmap byte. Sea-level byte 95 is exactly [`WATER_HEIGHT`].
 pub const HEIGHT_SCALE: f32 = 0.1;
 
-/// Map pixel space to game world space for a map `map_height` pixels tall: `x` is the bitmap
-/// column and `z` counts up from the bottom row, so `z = height - 1 - y`. The
-/// height is the content's provinces bitmap. The inverse is [`pixel_from_world`].
 pub fn world_from_pixel(map_height: u32, x: f32, y: f32) -> (f32, f32) {
     (x, map_height as f32 - 1.0 - y)
 }
 
-/// The inverse of [`world_from_pixel`].
 pub fn pixel_from_world(map_height: u32, x: f32, z: f32) -> (f32, f32) {
     (x, map_height as f32 - 1.0 - z)
 }
 
-/// Terrain height samples in map pixel space, one byte per pixel, rows top-left first.
-///
-/// The caller feeds `map/heightmap.bmp` decoded by `installed_content_image::bmp::decode_indexed`; the
-/// bytes are heights in [`HEIGHT_SCALE`] world units, the same scale `pdxmap.shader`'s vertex shader
-/// uses.
 #[derive(Clone, Copy, Debug)]
 pub struct HeightField<'a> {
     pub width: u32,
@@ -68,17 +49,10 @@ pub struct HeightField<'a> {
 }
 
 impl HeightField<'_> {
-    /// Each rail sample removes its half-pixel shift, interpolates four height bytes in X then Z,
-    /// scales by .1 and clamps to sea level. Sample indices clamp rather than wrap.
     pub fn border_height_at_world(&self, x: f32, z: f32) -> f32 {
         self.native_height(x + 0.5, z + 0.5)
     }
 
-    /// The height of the surface the terrain pass draws at world `(x, z)`, or the water plane where
-    /// that is higher: one vertex per map pixel at its height byte, each cell split along the
-    /// diagonal the terrain's index pattern chooses (from its south-west corner where the cell's
-    /// column and row sum to an even number, else from its south-east corner). `x` wraps with the
-    /// map and `z` clamps to it. A walker or a camera standing on the drawn ground reads this.
     pub fn surface_height(&self, x: f32, z: f32) -> f32 {
         if self.width == 0
             || self.height == 0
@@ -112,8 +86,6 @@ impl HeightField<'_> {
         height.max(WATER_HEIGHT)
     }
 
-    /// Bilinear bottom-up height sampling with a half-pixel shift, clamped indices, .1 scaling and a
-    /// sea floor. Movement routes supply spline x/z coordinates.
     pub fn native_height(&self, x: f32, z: f32) -> f32 {
         let x = x - 0.5;
         let z = z - 0.5;
@@ -134,10 +106,6 @@ impl HeightField<'_> {
         (((high - low) * tz + low) * HEIGHT_SCALE).max(WATER_HEIGHT)
     }
 
-    /// The raid arrow height callbacks' terrain sample: floor and ceiling pixels of each fixed5
-    /// coordinate, x wrapped once by `map_width` and every index clamped to the height bitmap. The four
-    /// bytes are scaled by 0.1 and interpolated in x then z by the fixed5 fractions. There is no
-    /// half-pixel shift or sea floor.
     pub fn fixed_height(&self, x: i64, z: i64, map_width: i64) -> f32 {
         const SCALE: i64 = 100_000;
         let floor = |value: i64| value.div_euclid(SCALE);
@@ -165,7 +133,6 @@ impl HeightField<'_> {
         (high - low) * tz + low
     }
 
-    /// Checks the sample count matches the declared dimensions.
     pub fn validate(&self) -> io::Result<()> {
         if self.width == 0 || self.height == 0 {
             return Err(invalid("height field needs a nonzero width and height"));
@@ -184,9 +151,6 @@ impl HeightField<'_> {
         Ok(())
     }
 
-    /// Nearest-sample lookup retained for the other map passes' existing placement rules.
-    /// Border rails use [`Self::border_height_at_world`], the native bilinear/clamped call.
-    /// x wraps with the world and the row clamps at the poles.
     #[cfg(any(test, feature = "test-support"))]
     pub fn height_at_world(&self, x: f32, z: f32) -> f32 {
         let (column, row) = pixel_from_world(self.height, x, z);
@@ -201,9 +165,6 @@ impl HeightField<'_> {
     }
 }
 
-/// Truncate both coordinates to integers toward zero and
-/// then bounds-checks them, so a sub-pixel negative position names pixel zero.
-/// World z is `height - 1 - row` because `provinces.bmp` is stored bottom-up.
 pub fn pixel(width: u32, height: u32, x: f32, z: f32) -> Option<usize> {
     if width == 0 || height == 0 || !x.is_finite() || !z.is_finite() {
         return None;
@@ -214,7 +175,6 @@ pub fn pixel(width: u32, height: u32, x: f32, z: f32) -> Option<usize> {
         .then(|| row as usize * width as usize + column as usize)
 }
 
-/// The province under a world position of the map's own province bitmap.
 pub fn province_at(map: &MapData, x: f32, z: f32) -> Option<u32> {
     ProvinceMap {
         width: map.width,
@@ -225,8 +185,6 @@ pub fn province_at(map: &MapData, x: f32, z: f32) -> Option<u32> {
 }
 
 impl ProvinceMap<'_> {
-    /// The province under a world position, or `None` off the map or on an
-    /// unclaimed pixel. There is no nearest-province fallback.
     pub fn at(&self, x: f32, z: f32) -> Option<u32> {
         pixel(self.width, self.height, x, z)
             .and_then(|index| self.ids.get(index).copied())
@@ -238,13 +196,11 @@ impl ProvinceMap<'_> {
 mod tests;
 
 impl ProvinceMap<'_> {
-    /// True when the id slice matches the declared size and neither dimension is zero.
     pub fn is_well_formed(&self) -> bool {
         let expected = (self.width as usize).checked_mul(self.height as usize);
         self.width > 0 && self.height > 0 && expected == Some(self.ids.len())
     }
 
-    /// The id at a pixel, wrapping x around the date line and rejecting y outside the image.
     pub fn id_at(&self, x: i32, y: i32) -> Option<u32> {
         if y < 0 || y >= self.height as i32 {
             return None;

@@ -1,10 +1,8 @@
-//! Scene inputs preserve setter order, returned products and refusal boundaries.
 
 use super::*;
 use crate::map::{aircraft::AircraftAssets, trains::TrainAssets};
 use viewer_foundation::map::{native_resources::GuiResources, province_map::HeightField};
 
-/// Unboxed hour products move directly into their setters without another allocation.
 #[allow(clippy::large_enum_variant, reason = "a product moves into its setter unboxed, with no second allocation")]
 pub enum SceneInput<'a> {
     WarmTrains(&'a Arc<TrainAssets>),
@@ -15,7 +13,6 @@ pub enum SceneInput<'a> {
     WarmRailways(&'a RailAssets),
     WarmOrders(&'a OrderAssets),
     WarmWeather(Arc<crate::map::weather_effects::Assets>),
-    /// After every pass is installed: see [`Scene::warm_pipelines`].
     WarmPipelines,
     WarmPolitical {
         map: &'a installed_content_core::map::MapData,
@@ -43,13 +40,10 @@ pub enum SceneInput<'a> {
         assets: &'a crate::map::animated_map_text::Assets,
         gui: &'a GuiResources,
     },
-    /// The order field by its producers' parts (plan, raid arrows, trade routes, air orders).
     SetOrders {
         assets: &'a OrderAssets,
         parts: [Option<&'a OrderField>; crate::map::order_pass::ORDER_PARTS],
     },
-    /// Draws the hour's figures where the view's presentation history moves them this frame:
-    /// each figure's unit, hour placement, root rotation and scale.
     SetUnitMovement {
         positions: Box<
             dyn Iterator<
@@ -68,7 +62,6 @@ pub enum SceneInput<'a> {
         camera: Camera,
         size: [u32; 2],
     },
-    /// The selected units' movement arrows (`movement_arrows.set`).
     SetMovementArrows {
         epoch: (u64, i32, u32),
         routes: Vec<viewer_foundation::map::movement_routes::Route>,
@@ -77,14 +70,11 @@ pub enum SceneInput<'a> {
         width: f32,
         selected: &'a BTreeSet<viewer_foundation::unit_handle::Unit>,
     },
-    /// Arrow admission geometry (`unit_history.prepare_arrow_bounds`).
     PrepareArrowBounds {
         map: &'a installed_content_core::map::MapData,
         known: &'a Arc<BTreeMap<u32, [f32; 4]>>,
     },
-    /// The units' selection (`unit_history.set_selection`).
     SetUnitSelection(&'a BTreeSet<viewer_foundation::unit_handle::Unit>),
-    /// The selected units' provinces (`unit_history.select_provinces`).
     SelectProvinces(BTreeSet<u32>),
     SetRaidUnits(Vec<(usize, crate::map::models::ModelInstance)>),
     SetFactionHighlight {
@@ -109,7 +99,6 @@ pub enum SceneInput<'a> {
 }
 
 impl SceneInput<'_> {
-    /// The input's name, which its upload cost is charged under.
     pub fn name(&self) -> &'static str {
         match self {
             Self::WarmTrains { .. } => "WarmTrains",
@@ -153,7 +142,6 @@ impl SceneInput<'_> {
 }
 
 impl Scene {
-    /// Returns the setter's refusal unchanged.
     pub fn apply(
         &mut self,
         device: &wgpu::Device,

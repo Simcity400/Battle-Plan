@@ -1,0 +1,11 @@
+# 1110. Bake native text sprites when their retained content changes
+
+Buttons with a font and a text sprite, font-backed check boxes, and edit boxes without an instant text box retain the bake arguments while hidden. Their show and text writes rebake the target, and ordinary frames reuse it. Font-backed fallback drawables prepare an empty text value. Icons have no font and produce no baked text. Registered text box sprites share construction and text-update behavior. An earlier registration of the same empty text box provides the same single-frame untextured type.
+
+The optional texture named by the caller replaces the type's texture. An absent texture can leave an empty bake with no target, and non-positive target dimensions emit nothing. A zero frame count is refused where the drawable frame divides. The bake uses a single-mip BGRA target cleared to transparent black. A loaded texture draws its nine-slice background over the strip first with blending disabled. Glyphs, inline icons and flags use the authored text technique and target projection. Each frame submits its accumulated glyph vertices together after its inline art, whereas ordinary text's intermediate glyph buffer can flush at 512 glyphs. Both bake passes use the font's auxiliary color, and a state the port cannot establish leaves a named refusal. Ordinary text restores that color to white.
+
+Frame zero takes the first frame, positive frame numbers are one-based, and negative values select from the drawable state by unsigned remainder. Final geometry starts one target height below its supplied position and rotates around that position. The sprite's final draw retains both clocks. Button centering measures the widest line and total height without a width limit, adding both borders after layout.
+
+The tooltip path resolves the tooltip template and default text box, prewraps with soft-line indent preservation, and then updates its text sprite. The width applies the authored border in both steps. The bake receives a zero requested height and still respects the type's fixed-size rule.
+
+[Text sprite preparation](../../crates/viewer-foundation/src/map/native_gui/text_sprites.rs) · [Draw submission](../../crates/viewer-foundation/src/map/native_shader/draw.rs)

@@ -120,7 +120,6 @@ fn anchored_frames_must_reproduce_their_witness_and_proven_anchors_their_words()
                 pass(HOUR, vec![Some(7)], None, 1, after_one.witness()),
             ),
         ),
-        // A periodic anchor proven by the hour before: its words are the pass's.
         frame(
             HOUR + 2,
             anchored(
@@ -149,9 +148,7 @@ fn anchored_frames_must_reproduce_their_witness_and_proven_anchors_their_words()
         (3, 3, 1)
     );
     assert_eq!((stats.anchor_rows_equal, stats.mismatches()), (4, 0));
-    // The first frame's anchor has no hour before it.
     assert_eq!(stats.anchors_unproven, 1);
-    // A wrong witness and an anchor that differs from the pass are mismatches.
     let mut wrong = frames.clone();
     let mut differing = simulation.states.clone();
     differing[2].drift += 1;
@@ -167,8 +164,6 @@ fn anchored_frames_must_reproduce_their_witness_and_proven_anchors_their_words()
     for frame in &wrong {
         checker.observe(frame);
     }
-    // The hour before the second anchor failed its witness, so that anchor is unproven
-    // like the first frame's.
     assert_eq!(checker.stats.witness_mismatches, 2);
     assert_eq!(checker.stats.anchors_unproven, 2);
     let mut checker = Checker::new(Ok(content));

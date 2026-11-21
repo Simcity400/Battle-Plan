@@ -19,7 +19,6 @@ impl Memory for Mem {
     }
 }
 
-/// Fixture writes; `base` is where the module image starts.
 trait Store {
     fn put(&mut self, address: usize, bytes: &[u8]);
     fn base(&self) -> usize;
@@ -94,7 +93,6 @@ fn state(m: &mut impl Store, pointer: usize, id: u32, controller: u32, scratch: 
     m.u64(container + cdynamic_modifier_container::COUNTRY, 0);
     m.u32(container + cdynamic_modifier_container::STATE, id);
     m.array(container + cdynamic_modifier_container::ENTRIES, scratch, 0);
-    // An empty country-modifier hash: one bucket, nothing stored.
     m.put(pointer + cstate::COUNTRY_MODIFIERS, &[0; 17]);
     m.u64(
         pointer + cstate::COUNTRY_MODIFIERS,
@@ -105,17 +103,11 @@ fn state(m: &mut impl Store, pointer: usize, id: u32, controller: u32, scratch: 
     m.u8(scratch + 0x300 + 4, 0);
 }
 
-/// A state's strategic locations follow its cores and claims: its own
-/// (token, anchor province) pairs, then each of its provinces' (province,
-/// token) entries in the state's province order. Each province is checked
-/// against its state; one that names another state refuses the read.
-/// Before, neither list was read.
 #[test]
 fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
     let mut m = fixture();
     m.array(STATE_A + cstate::CORES, 0, 0);
     m.array(STATE_B + cstate::CORES, 0, 0);
-    // State 1: two location pairs, and provinces 31 (one token) and 32 (two).
     m.array(STATE_A + cstate::STRATEGIC_LOCATIONS, 0x4642_0000, 2);
     for (index, (token, province)) in [(701_u32, 31_u32), (702, 32)].into_iter().enumerate() {
         m.u32(0x4642_0000 + index * 8, token);
@@ -171,7 +163,6 @@ fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
     );
     assert_eq!(required, 10);
     assert_eq!(&links[..10], &[701, 31, 702, 32, 31, 801, 32, 802, 32, 803]);
-    // A province that names another state refuses the read.
     province(&mut m, 1, 0x4645_0000, 32, STATE_B, &[802]);
     assert!(matches!(run(&m).0, Outcome::Unavailable { .. }));
 }
@@ -183,7 +174,6 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
     m.u32(0x4640_0000, 42);
     m.u32(0x4640_0004, 5);
     m.array(STATE_B + cstate::CORES, 0, 0);
-    // State 2's claims follow its (empty) cores; state 1 claims nothing.
     m.array(STATE_B + cstate::CLAIMS, 0x4641_0000, 2);
     m.u32(0x4641_0000, 9);
     m.u32(0x4641_0004, 42);
@@ -232,17 +222,14 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
         ]
     );
     assert_eq!((&links[..4], required), (&[42, 5, 9, 42][..], 4));
-    // Only the selected states are read.
     let (outcome, rows, _, required) = run(&m, &|state| state == 2, 4);
     assert_eq!(
         (outcome, rows[0].state, required),
         (Outcome::Rows { len: 1 }, 2, 2)
     );
-    // Short storage grows, and the demand is still reported.
     let (outcome, rows, _, required) = run(&m, &|_| true, 2);
     assert_eq!(outcome, Outcome::Rows { len: 2 });
     assert_eq!((rows[0].state, required), (1, 4));
-    // An unreadable claim list refuses the read.
     m.array(STATE_B + cstate::CLAIMS, 0x4642_0000, 1);
     assert_eq!(
         run(&m, &|_| true, 4).0,
@@ -251,7 +238,6 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
         }
     );
     m.array(STATE_B + cstate::CLAIMS, 0x4641_0000, 2);
-    // A record that is not its census slot's state refuses the read.
     m.u32(STATE_B + cstate::ID, 7);
     assert!(matches!(
         run(&m, &|_| true, 4).0,
@@ -259,11 +245,8 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
     ));
 }
 
-/// Base zero; state 1 is controlled by country 1, which has an origin
-/// for it; state 2 has no controller.
 fn fixture() -> Mem {
     let mut m = Mem::default();
-    // Resource database: the null object, then tokens 101 and 102.
     let database = 0x4100_0000;
     m.u64(
         cstrategic_resource_database::SINGLETON_RVA.0,
@@ -297,7 +280,6 @@ fn fixture() -> Mem {
             );
         }
     }
-    // Modifier metadata: every key enabled, none clamped.
     let table = 0x4a00_0000;
     m.u64(modifier_definition::TABLE_RVA.0, table as u64);
     for key in [0x10_usize, 0x13, 0x223, 0x292] {
@@ -305,7 +287,6 @@ fn fixture() -> Mem {
         m.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
         m.u32(row + modifier_definition::FLAGS, 0);
     }
-    // Country 1 and its resources.
     m.pointers(GS + cgame_state::COUNTRIES, 0x4200_0000, &[0, COUNTRY]);
     m.array(GS + cgame_state::COUNTRY_LINKS, 0x4200_0100, 2);
     m.u32(0x4200_0100, 0);
@@ -336,7 +317,6 @@ fn fixture() -> Mem {
     m.u64(0x4300_4008, 50_000);
     m.u32(0x4300_3020, 556);
     m.array(0x4300_3028, 0, 0);
-    // Supply: provinces 7 and 9 map to nodes 0 and 1; node 1 has a route.
     let root = 0x4400_0000;
     m.u64(GS + cgame_state::SUPPLY_SYSTEM, root as u64);
     m.u64(root, csupply_system::VTABLE_RVA.0 as u64);
@@ -375,7 +355,6 @@ fn fixture() -> Mem {
         m.u64(node + supply_node::ROUTE_VALUE, index as u64 * 5);
     }
     m.array(COMPANION + supply_companion::NODES, 0x4400_6000, 2);
-    // Infrastructure: database ordinal 0.
     m.u64(cbuilding_database::SINGLETON_RVA.0, 0x4500_0000);
     m.u64(0x4500_0000 + INFRASTRUCTURE_TEMPLATE, 0x4500_1000);
     m.u8(
@@ -383,7 +362,6 @@ fn fixture() -> Mem {
         1,
     );
     m.u32(0x4500_1000 + cbuilding_template::DATABASE_ORDINAL, 0);
-    // States.
     m.pointers(
         GS + cgame_state::STATES,
         0x4600_0000,
@@ -424,7 +402,6 @@ fn fixture() -> Mem {
         m.u32(0x4630_3000 + index * 16, key);
         m.u64(0x4630_3008 + index * 16, value as u64);
     }
-    // One unscoped permanent modifier named "refinery".
     let container = STATE_A + cstate::DYNAMIC_MODIFIERS;
     m.array(
         container + cdynamic_modifier_container::ENTRIES,
@@ -686,7 +663,6 @@ fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
         };
         assert_eq!(&names.bytes[start..start + len], text.as_bytes());
     }
-    // Dictionary expansion keeps previously captured identities and bytes.
     for index in 0..2_201 {
         let definition = 0x4c00_0000 + index * 0x100;
         memory.0.remove(&definition);
@@ -709,8 +685,6 @@ fn live_demand_sizes_every_raid_state_table_without_acquiring_payloads() {
     memory.array(STATE_A + cstate::CORES, 0x4d00_0000, 5_000);
     memory.array(STATE_B + cstate::CORES, 0, 0);
     memory.array(STATE_B + cstate::CLAIMS, 0x4e00_0000, 3_000);
-    // The core and claim payloads are deliberately absent: a hint needs only
-    // their headers.
     let (capacity, cores) = demand(&memory, 0, GS).unwrap();
     assert_eq!(
         (capacity.states, capacity.countries, capacity.resources),
@@ -747,7 +721,6 @@ fn live_demand_sizes_every_raid_state_table_without_acquiring_payloads() {
             .iter()
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
     );
-    // Population is unchanged; retained child headers still raise demand.
     memory.array(STATE_B + cstate::CORES, 0x4d10_0000, 6_000);
     assert_eq!(demand(&memory, 0, GS).unwrap().1, 14_000);
 }
@@ -776,8 +749,6 @@ fn a_foreign_container_or_torn_pool_fails_the_whole_walk() {
 
 #[test]
 fn a_walk_reads_rows_only_for_selected_states_and_countries() {
-    // State 1's container and country 1's overrides are foreign or torn:
-    // only a walk that reads them fails.
     let mut m = fixture();
     m.u32(
         STATE_A + cstate::DYNAMIC_MODIFIERS + cdynamic_modifier_container::STATE,
@@ -801,7 +772,6 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         ]
     );
     assert_eq!(buffers.inputs[0].state, 2);
-    // Country 1's overrides alone, from an intact image.
     let m = fixture();
     let country = Selection {
         states: &|_| false,
@@ -811,9 +781,6 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     let read = walk(&m, 0, GS, &mut buffers, country);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [0, 0, 0, 2]);
     assert_eq!(buffers.overrides[0].country, 1);
-    // State 1 alone keeps its controller's origin and reads its controller's
-    // overrides, which its building grants read: a country that has just
-    // come to control a state is read with it.
     let one = Selection {
         states: &|state| state == 1,
         countries: &|_| false,
@@ -826,7 +793,6 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         (1, 1)
     );
     assert_eq!(buffers.read_countries, [1]);
-    // The same rows as a walk that reads every state's controller.
     let alone = (
         buffers.inputs[0],
         buffers.resources[0],
@@ -846,11 +812,9 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         ),
         alone
     );
-    // State 2 has no controller: no country is read with it.
     let read = walk(&m, 0, GS, &mut buffers, only_two);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 0, 0, 0]);
     assert!(buffers.read_countries.is_empty());
-    // State 1's unreadable resource pool fails only a walk that selects it.
     let mut m = fixture();
     m.0.remove(&(STATE_A + cstate::RESOURCE_POOL));
     let read = walk(&m, 0, GS, &mut buffers, only_two);
@@ -861,8 +825,6 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
             reason: "state resource fields unreadable"
         }
     );
-    // Without a selected country no other state is read: state 2's foreign
-    // record fails only a walk that reads every state's controller.
     let mut m = fixture();
     m.u64(STATE_B, 7);
     let read = walk(&m, 0, GS, &mut buffers, one);
@@ -885,27 +847,22 @@ fn the_batched_resource_database_keeps_each_failure_and_its_order() {
         }
     };
     let keys = cstrategic_resource::STATE_ADDITIVE_KEY;
-    // Item 2's token disagrees with its database key.
     let mut m = fixture();
     m.u32(0x4100_1100 + 4, 7);
     assert_eq!(
         reason(&m),
         "resource descriptor disagrees with database identity"
     );
-    // Item 1's keys are unreadable: met after every identity.
     let mut m = fixture();
     m.0.remove(&(0x4100_3000 + keys + 4));
     assert_eq!(reason(&m), "resource modifier keys unreadable");
     m.u64(0x4100_4000, 7);
     assert_eq!(reason(&m), "resource descriptor vtable mismatch");
-    // A null item.
     let mut m = fixture();
     m.u64(0x4100_1000 + 16, 0);
     assert_eq!(reason(&m), "resource descriptor pointer unreadable or null");
 }
 
-/// One flat buffer: the module image, then bump-allocated objects at
-/// their real addresses, so `LiveMemory` reads it with guarded copies.
 struct Arena {
     bytes: Vec<u8>,
     base: usize,
@@ -951,18 +908,13 @@ const PROVINCES_PER_STATE: usize = 4;
 const MODIFIERS_PER_STATE: usize = 5;
 const DEFINITIONS: usize = 20;
 
-/// `countries` countries controlling `states` states round-robin, each
-/// state with an origin, infrastructure, a supply route, eight resources,
-/// twenty accumulator entries and five dynamic modifiers.
 fn scaled(countries: usize, states: usize) -> (Arena, usize) {
     scaled_with(countries, states, true)
 }
 
-/// [`scaled`], optionally without any resource origin.
 fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, usize) {
     let mut m = Arena::new(states * 0x1e00 + countries * 0x2400 + (1 << 20));
     let game_state = m.alloc(0x1000);
-    // Resources: tokens 1000 + i, keys 0x100 + 4 i .. + 3.
     let database = m.alloc(0x80);
     m.u64(
         m.base + cstrategic_resource_database::SINGLETON_RVA.0,
@@ -1002,10 +954,8 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
             );
         }
     }
-    // Modifier metadata: every key enabled, none clamped.
     let table = m.alloc(0x300 * modifier_definition::STRIDE);
     m.u64(m.base + modifier_definition::TABLE_RVA.0, table as u64);
-    // Infrastructure template, ordinal 0.
     let buildings = m.alloc(0x400);
     let template = m.alloc(0x300);
     m.u64(
@@ -1014,7 +964,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
     );
     m.u64(buildings + INFRASTRUCTURE_TEMPLATE, template as u64);
     m.u8(template + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, 1);
-    // Shared dynamic modifier definitions.
     let definitions: Vec<usize> = (0..DEFINITIONS)
         .map(|index| {
             let definition = m.alloc(0x1d0);
@@ -1029,7 +978,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
             definition
         })
         .collect();
-    // Countries 1..=countries, raw id = slot; supply systems and companions.
     let slots = countries + 1;
     let country_array = m.alloc(8 * slots);
     let links = m.alloc(4 * slots);
@@ -1081,7 +1029,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
         m.u64(country + ccountry::RESOURCES, resources as u64);
         m.u64(resources, m.rva(ccountry_resources::VTABLE_RVA));
         m.u32(resources + ccountry_resources::OWNER, slot as u32);
-        // Every tenth country has one override entry with one element.
         if slot % 10 == 0 {
             let entry = m.alloc(ccountry_resources::OVERRIDE_STRIDE);
             let element = m.alloc(16);
@@ -1134,7 +1081,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
             m.u64(origins + ordinal * 8, origin as u64);
             m.u64(origin, m.rva(cresource_origin::VTABLE_RVA));
             m.u64(origin + cresource_origin::STATE, pointer as u64);
-            // Pool: eight records, three nonzero.
             let pool = m.alloc(16 * (RESOURCES_PER_STATE + 1));
             m.array(
                 pointer + cstate::RESOURCE_POOL + 8,
@@ -1148,7 +1094,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
                     m.u64(record, 100_000 * (index as u64 + 1));
                 }
             }
-            // Twenty sorted accumulator entries, four of them read.
             let entries = m.alloc(16 * 20);
             m.array(pointer + cstate::BASE_MODIFIERS, entries, 20);
             let keys = (0x50..0x60).chain([0x100, 0x101, 0x103, GLOBAL_FACTOR_KEY]);
@@ -1156,7 +1101,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
                 m.u32(entries + index * 16, key);
                 m.u64(entries + index * 16 + 8, 1_000);
             }
-            // Infrastructure level 5 at building index 0.
             let status = pointer + cstate::BUILDING_STATUS;
             let indices = m.alloc(4);
             let list = m.alloc(8);
@@ -1166,7 +1110,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
             m.u64(list, building as u64);
             m.u64(building + cbuilding::TEMPLATE, template as u64);
             m.put(building + cbuilding::LEVEL, &5_i16.to_le_bytes());
-            // Provinces, each with a route node; the last node carries a value.
             let provinces = m.alloc(8 * PROVINCES_PER_STATE);
             m.array(
                 pointer + cstate::PROVINCES,
@@ -1189,7 +1132,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
                 m.u32(node + 4, id);
                 m.u64(node + supply_node::ROUTE_VALUE, (index / 3) as u64);
             }
-            // Five dynamic modifiers.
             let container = m.alloc(dynamic_modifier_entry::STRIDE * MODIFIERS_PER_STATE);
             m.array(
                 pointer + cstate::DYNAMIC_MODIFIERS + cdynamic_modifier_container::ENTRIES,
@@ -1212,14 +1154,12 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
     (m, game_state)
 }
 
-/// `cargo test --release -p engine raid_state_inputs_bench -- --ignored --nocapture`
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 #[test]
 #[ignore]
 fn raid_state_inputs_bench() {
     for (countries, states) in [(1_500, 3_000), (5_000, 10_000)] {
         let (arena, game_state) = scaled(countries, states);
-        // SAFETY: immutable synthetic storage owned by this test.
         let memory = Counted::new(unsafe { crate::memory::LiveMemory::new() });
         let mut capacity = fixture_capacity();
         let mut buffers = Buffers::new(&capacity).unwrap();
@@ -1287,7 +1227,6 @@ fn raid_state_inputs_bench() {
     }
 }
 
-/// Walk buffers grown to a complete walk of this image.
 fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers {
     let mut capacity = fixture_capacity();
     loop {
@@ -1312,17 +1251,12 @@ fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers
     }
 }
 
-/// A state hour as the collector runs it: the state census, then the
-/// walk of one daily slice of states and countries (the first hour of a
-/// session reads every owner). Cold: a full walk of another image first.
-/// `cargo test --release -p engine raid_state_hour_bench -- --ignored --nocapture`
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 #[test]
 #[ignore]
 fn raid_state_hour_bench() {
     for (countries, states) in [(1_500, 3_000), (5_000, 10_000)] {
         let images = [scaled(countries, states), scaled(countries, states)];
-        // SAFETY: immutable synthetic storage owned by this test.
         let memory = Counted::new(unsafe { crate::memory::LiveMemory::new() });
         let mut buffers = grown_walk(&memory, &images[0].0, images[0].1);
         let mut census = Vec::with_capacity(states + 1);

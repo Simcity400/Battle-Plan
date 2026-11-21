@@ -1,69 +1,37 @@
-//! Visual mods: installed mods mounted above a recording's verified content, for presentation
-//! only.
-//!
-//! Discovery lists every mod the game could mount on this machine: each descriptor directly in
-//! the user folder's `mod` directory, and each item of the Workshop folder in the game's own
-//! Steam library, which the launcher mounts in place from its `descriptor.mod`. A Workshop item
-//! a user descriptor already names is one mod, and so are descriptors naming one source. Nothing
-//! is downloaded, enabled or written.
-//!
-//! A selection mounts its mods as ordinary folder or archive layers above every recorded mod
-//! (and below the built-in layers the engine mounts above mods), ordered among themselves as
-//! the engine orders enabled mods (dependencies, then descriptor path bytes), with each
-//! descriptor's `replace_path`. The recorded stack is never changed: map geometry, simulation
-//! and recorded facts keep reading it, and only artwork consumers read
-//! [`ResolvedLayers::presentation`]. A mod's other files never keep it from being shown; what
-//! cannot be mounted is named and counted in the plan's warnings.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Steam's application id for the game: its library keeps Workshop items in
-/// `steamapps/workshop/content/<id>/<item>`.
 const WORKSHOP_APP_ID: &str = "394360";
 
-/// The descriptor the launcher writes into the user's `mod` folder for a Workshop item, and so
-/// the descriptor path the engine orders the item by when no such file exists yet.
 fn workshop_request(item: &str) -> String {
     format!("mod/ugc_{item}.mod")
 }
 
-/// One installed mod as the picker lists it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledMod {
-    /// The selection id: `workshop/<item>` for a Workshop item, `mod/<file>` for a descriptor
-    /// in the user's `mod` folder.
     pub id: String,
     pub name: String,
-    /// The id a recording names this mod by: its `remote_file_id`, else its descriptor's name.
     pub recorded_id: String,
-    /// Where its files are read from.
     pub source: String,
-    /// Why it cannot be mounted: its descriptor or source cannot be read.
     pub problem: Option<String>,
 }
 
-/// A selected visual mod, kept by name so a selection that is no longer installed can still
-/// be shown and named.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Choice {
     pub id: String,
     pub name: String,
 }
 
-/// What a selection mounts: its mods in mount order (lowest precedence first) and every one it
-/// cannot mount, by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Plan {
     pub order: Vec<Choice>,
     pub warnings: Vec<String>,
-    /// What the selection held when it was mounted ([`revision`]); empty for an empty selection.
     pub revision: String,
 }
 
 struct Candidate {
     item: InstalledMod,
-    /// The descriptor path the engine is asked to mount, `mod/<file>`.
     request: String,
     descriptor: PathBuf,
     document: Option<Document>,
@@ -82,7 +50,6 @@ fn cancelled(cancel: &AtomicBool) -> io::Result<()> {
     }
 }
 
-/// The Workshop folder of the Steam library the game is installed in, when there is one.
 fn workshop_root(game_dir: &Path) -> Option<PathBuf> {
     let game = fs::canonicalize(game_dir).ok()?;
     let common = game.parent()?;
@@ -110,7 +77,6 @@ fn source_key(source: &LayerSource) -> PathBuf {
     path.clone()
 }
 
-/// A descriptor's name, recorded id, `replace_path`s and source, the source found by `locate`.
 fn describe(
     candidate: &mut Candidate,
     document: Document,
@@ -142,7 +108,6 @@ fn describe(
     candidate.document = Some(document);
 }
 
-/// A descriptor in the user's `mod` folder, its source declared by `path` or `archive`.
 fn local(user_dir: &Path, path: PathBuf) -> Candidate {
     let file = path
         .file_name()
@@ -189,8 +154,6 @@ fn local(user_dir: &Path, path: PathBuf) -> Candidate {
     candidate
 }
 
-/// A Workshop item, mounted from its own folder (or the archive its descriptor names there),
-/// whatever folder its `descriptor.mod` once named.
 fn workshop(folder: PathBuf, item: String) -> Candidate {
     let descriptor = folder.join("descriptor.mod");
     let request = workshop_request(&item);
@@ -229,7 +192,6 @@ fn workshop(folder: PathBuf, item: String) -> Candidate {
     candidate
 }
 
-/// Something discovery could not read, listed by name with why, so the rest still list.
 fn unreadable(id: String, name: String, problem: String) -> Candidate {
     Candidate {
         item: InstalledMod {
@@ -247,8 +209,6 @@ fn unreadable(id: String, name: String, problem: String) -> Candidate {
     }
 }
 
-/// A folder's entries in name order. A folder that cannot be listed, or entries it cannot
-/// name, are one unreadable candidate each, counted; a missing folder has none.
 fn entries(directory: &Path, problems: &mut Vec<Candidate>) -> Vec<fs::DirEntry> {
     let named = || directory.display().to_string();
     let listed = match fs::read_dir(directory) {
@@ -284,8 +244,6 @@ fn entries(directory: &Path, problems: &mut Vec<Candidate>) -> Vec<fs::DirEntry>
     entries
 }
 
-/// Every installed mod, local descriptors first, each source once. What cannot be read is a
-/// candidate with its problem; it never hides the others.
 fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Candidate>> {
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut problems = Vec::new();
@@ -309,7 +267,6 @@ fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Can
         }
     }
     let root = workshop_root(&options.game_dir);
-    // A local descriptor of a Workshop item, its folder or an archive in it, is that item.
     if let Some(root) = &root {
         for candidate in &mut candidates {
             let folder = match &candidate.source {
@@ -374,7 +331,6 @@ fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Can
     Ok(candidates)
 }
 
-/// Every installed mod, by name.
 pub fn installed(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<InstalledMod>> {
     let mut out: Vec<_> = discover(options, cancel)?
         .into_iter()
@@ -389,20 +345,12 @@ pub fn installed(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Ve
     Ok(out)
 }
 
-/// The selected mods the catalogue can mount, in the engine's mount order, and why any other
-/// is not shown.
-/// A mod the recording was made with: the id it was recorded by and its display name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedMod {
     pub id: String,
     pub name: String,
 }
 
-/// The selected mods the catalogue can mount, in the engine's mount order, and why any other
-/// is not shown. The engine keys mods by display name and mounts one of a name: a selected mod
-/// named as a recorded mod it is not stays hidden behind the recorded one, and of selected mods
-/// sharing a name the first in mount order is shown, since a visual selection has no launcher
-/// list to decide it.
 fn ordered(
     mut catalogue: Vec<Candidate>,
     selected: &[Choice],
@@ -445,8 +393,6 @@ fn ordered(
         let Some(document) = candidate.document.take() else {
             continue;
         };
-        // Each descriptor on its own first, so one malformed name or dependency list refuses
-        // only its own mod.
         match native_mod_order(
             vec![(candidate.request.clone(), (), document.clone())],
             &mut Vec::new(),
@@ -492,7 +438,6 @@ fn choice(candidate: &Candidate) -> Choice {
     }
 }
 
-/// The order a selection mounts in and what it cannot mount, without reading the mods' files.
 pub fn plan(
     options: &ResolveOptions,
     selected: &[Choice],
@@ -512,11 +457,6 @@ pub fn plan(
     Ok(plan)
 }
 
-/// A digest of what a selection mounts now: its mods in mount order with their sources, each
-/// descriptor's stamp, and the spelled path, size and modification time of every file a visual
-/// mod shows (an archive by its own stamp), plus what cannot be shown. A mod installed, updated or
-/// removed since a map loaded changes it, so the map reloads; equal digests need no reload.
-/// It reads metadata only, never file contents.
 pub fn revision(
     options: &ResolveOptions,
     selected: &[Choice],
@@ -556,7 +496,6 @@ pub fn revision(
         match &candidate.source {
             Some(LayerSource::Archive(path)) => field(stamp(path).as_bytes()),
             Some(LayerSource::Folder(root)) => {
-                // The mod's files as its mount lists them, through its links too.
                 let root = match fs::canonicalize(root) {
                     Ok(root) => root,
                     Err(error) => {
@@ -578,7 +517,6 @@ pub fn revision(
                                 .to_ascii_lowercase()
                         })
                         .unwrap_or_default();
-                    // Only the folders a visual mod shows anything from.
                     let shown = |root: &str| {
                         below(lower.as_bytes(), root.as_bytes())
                             || below(root.as_bytes(), lower.as_bytes())
@@ -594,7 +532,6 @@ pub fn revision(
                     })
                 };
                 let walked = walk_folder(root, root, true, &kind, &mut |relative, entry| {
-                    // Loaders admit and order files by spelling: a case-only rename counts.
                     if overlay_sees(true, &relative.to_ascii_lowercase()) {
                         field(relative.as_slice());
                         field(stamp(&entry.path()).as_bytes());
@@ -616,10 +553,6 @@ pub fn revision(
         .collect())
 }
 
-/// Mounts the selected mods above the verified recorded stack as its
-/// [`ResolvedLayers::presentation`]. The recorded layers are not changed. A recorded mod
-/// selected again mounts above the others it was recorded below and still verifies its recorded
-/// bytes. An empty selection mounts nothing.
 pub fn apply(
     layers: &mut ResolvedLayers,
     options: &ResolveOptions,
@@ -632,7 +565,6 @@ pub fn apply(
     })
 }
 
-/// [`apply`] with each revision taken by `revision`, the mount loop's seam for tests.
 fn apply_with(
     layers: &mut ResolvedLayers,
     options: &ResolveOptions,
@@ -646,9 +578,6 @@ fn apply_with(
         layers.presentation_defines = None;
         return Ok(Plan::default());
     }
-    // The revision names what was mounted: a mod that changes while it mounts is mounted
-    // again, so a later check of the same selection ([`revision`]) agrees exactly until a mod
-    // changes after the mount, including when none of it can be shown.
     loop {
         let before = revision()?;
         let mut plan = mount(layers, options, selected, recorded, cancel)?;
@@ -659,7 +588,6 @@ fn apply_with(
     }
 }
 
-/// [`apply`]'s mount of a non-empty selection, without its revision.
 fn mount(
     layers: &mut ResolvedLayers,
     options: &ResolveOptions,

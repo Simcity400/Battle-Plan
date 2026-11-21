@@ -1,4 +1,3 @@
-//! Shared recorded operands for deployed panel and counter explanations.
 use replay_data::{rows::ModifierBreakdownNode, rows::tables};
 use replay_derive::modifier_registry::Registry;
 use replay_frame::frame::DecodedFrame;
@@ -65,8 +64,6 @@ pub fn country_identity(frame: &DecodedFrame, raw: u32) -> Result<u64, String> {
         .map(|row| row.id as u64)
         .ok_or_else(|| "attrition owner country identity unavailable".into())
 }
-/// The equipment term is one contribution per nonzero native occurrence.
-/// Its lower bound prevents terrain plus upkeep from going below zero.
 pub fn equipment(base: i64, values: impl IntoIterator<Item = (i64, i64)>) -> i64 {
     let sum = values
         .into_iter()
@@ -87,7 +84,6 @@ pub fn at_war(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, raw: u32) -> Res
     }) {
         return Ok(true);
     }
-    // The native fallback scans owned relations, including retired occurrences.
     Ok(frame
         .complete::<tables::WarOwnedRelations>()
         .map_err(|why| why.to_string())?
@@ -95,7 +91,6 @@ pub fn at_war(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, raw: u32) -> Res
         .any(|row| links.get(&row.owner) == Some(&slot)))
 }
 
-/// Nonzero native pool occurrences each contribute once, including repeats.
 pub fn held_bonus(frame: &DecodedFrame, division: u64, terrain: u32) -> Result<i64, String> {
     let sources = frame
         .complete::<tables::DivisionPanelSources>()
@@ -162,7 +157,6 @@ pub fn state_amount(
     }
     Ok(value)
 }
-/// Apply each key's recorded effective-value rules to the shared raw preorder.
 pub fn tree(
     frame: &DecodedFrame,
     kind: u8,

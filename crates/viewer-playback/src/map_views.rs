@@ -1,5 +1,3 @@
-//! Per-view composition of counter options, icon histories and the shared schedule.
-
 use std::sync::Mutex;
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::counter_move::SharedMovement;
@@ -11,9 +9,6 @@ use {
     viewer_foundation::map::icon_windows::{PoolView, Retry},
 };
 
-/// The canonical country slots a counter filter draws at this hour; `None` draws every
-/// country. An hour lacking the complete tables a filter reads, or naming a human-controlled
-/// country it cannot place, draws every country rather than guess.
 fn counter_owners(
     frame: &replay_frame::frame::DecodedFrame,
     filter: &dashboard_core::protocol::CounterFilter,
@@ -46,8 +41,6 @@ fn counter_owners(
     }
 }
 
-/// The slots of the countries humans control, through the hour's country links; none when any
-/// one cannot be placed, so a player's counters never disappear for a missing link.
 fn player_slots(
     links: impl IntoIterator<Item = (u32, u32)>,
     humans: impl IntoIterator<Item = u32>,
@@ -59,7 +52,6 @@ fn player_slots(
         .collect()
 }
 
-/// The slots of the countries whose tag is chosen.
 fn chosen_slots<'a>(
     tags: &[String],
     countries: impl IntoIterator<Item = (&'a [u8], u32)>,
@@ -72,8 +64,6 @@ fn chosen_slots<'a>(
         .collect()
 }
 
-/// A view's resolved map settings, resolved again only when the store's generation or the
-/// view's scope changes, so a frame never resolves them.
 #[derive(Debug, Default)]
 pub struct ResolvedSettings {
     read: Option<(u64, String, Arc<dashboard_core::protocol::ResolvedMapSettings>)>,
@@ -97,25 +87,18 @@ impl ResolvedSettings {
     }
 }
 
-/// The tables [`counter_owners`] reads.
 const OWNER_TABLES: [replay_data::rows::TableId; 3] = [
     replay_data::rows::TableId::CountryLinks,
     replay_data::rows::TableId::HumanControllers,
     replay_data::rows::TableId::Countries,
 ];
 
-/// A view's resolved counter owners, read again only when the filter or one of the tables they
-/// come from changes, so a frame never re-reads the hour's tables. While the map's playhead is on
-/// they are read from its rows at the head, four times a second at most while playing.
 #[derive(Debug, Default)]
 pub struct CounterOwners {
     resolved: Option<ResolvedOwners>,
     head: Option<crate::playhead_host::views::AtHead>,
 }
 
-/// The table allocations and filter the owners were read for, and the owners. An allocation
-/// belongs to one recording's decoder and is shared only by hours whose table did not change,
-/// so another recording, branch or changed hour reads again.
 type ResolvedOwners = (
     [replay_frame::frame::ViewIdentity; OWNER_TABLES.len()],
     dashboard_core::protocol::CounterFilter,
@@ -123,8 +106,6 @@ type ResolvedOwners = (
 );
 
 impl CounterOwners {
-    /// The owners at `head`'s rows while the map's playhead is open, the last resolved while they
-    /// load; at `today` with no open map.
     pub fn get(
         &mut self,
         today: Option<&replay_frame::frame::DecodedFrame>,
@@ -169,14 +150,12 @@ impl CounterOwners {
     }
 }
 
-/// All native icon views use one lock when checking whether another frame is needed.
 #[derive(Debug, Default)]
 pub struct Views {
     pub naval: naval_windows::Windows,
     pub labels: viewer_world::map::labels::LabelView,
     pub pings: PoolView,
     pub raids: PoolView,
-    /// The Operatives map mode's state containers and their entries.
     pub intel: viewer_raids::map::intel_icons::IntelView,
     pub bases: viewer_counters::map::counters::BaseView,
     pub land_combats: viewer_counters::map::counters::land_windows::View,
@@ -199,7 +178,6 @@ impl Views {
         retries
     }
 
-    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
     pub fn set_quiet(&mut self, quiet: bool) {
         self.naval.set_quiet(quiet);
         self.labels.set_quiet(quiet);
@@ -210,9 +188,6 @@ impl Views {
         self.adjacency_rules.set_quiet(quiet);
     }
 
-    /// Whether a window changed on its own at the last frame, not cleared: beside it a family runs
-    /// only for its manager's pass (a dirty province keeping an icon off screen). The intel and
-    /// occupation views count any running as changed.
     pub fn running_visibly(&self) -> bool {
         self.naval.running_visibly()
             || self.labels.running_visibly()
@@ -246,26 +221,15 @@ impl Views {
     }
 }
 
-/// What one map view's counters keep from one update to the next, as the game's persistent
-/// counter objects do: owned by the view (the window, a dashboard map, a dump), never shared
-/// between views through the content. The view's clock is not here: each presented frame is
-/// given it ([`PreparedCounters::draw`]).
 #[derive(Debug, Default)]
 pub struct Presentation {
-    /// Map-icon window histories, touched by presentation, never by a prepared hour.
     pub windows: Mutex<Views>,
-    /// Camera-independent counter programs, separate from native lifecycle state.
     pub counters: Mutex<viewer_counters::map::counters::Preparation>,
-    /// The view's province schedule and dirty bits, which its scene advances each frame and its
-    /// map icons read ([`crate::map::province_schedule`]).
     schedule: Shared,
-    /// The view's unit presentation history, which its frame clocks and its counters and figures
-    /// read.
     movement: SharedMovement,
 }
 
 impl Presentation {
-    /// The view's province schedule, for its scene to run on.
     pub fn schedule(&self) -> &Shared {
         &self.schedule
     }
@@ -274,9 +238,6 @@ impl Presentation {
         &self.movement
     }
 
-    /// Memories of its own over this view's province schedule and movement history: what lays the
-    /// overlay out off the frame thread prepares on it, so the frame thread never waits for the
-    /// view's own memory ([`Self::take_memory`]).
     pub fn sharing(&self) -> Self {
         Self {
             windows: Default::default(),
@@ -286,9 +247,6 @@ impl Presentation {
         }
     }
 
-    /// A presentation standing on its own: a copy of this one's province schedule, no unit
-    /// animation, no window history and no memory, for drawing a layout apart from the view
-    /// (the overlay's own gate).
     pub fn snapshot(&self) -> Self {
         let schedule = self.schedule.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         Self {
@@ -299,27 +257,17 @@ impl Presentation {
         }
     }
 
-    /// Takes the counters' memory a layout was laid out on, which is bound to that layout's tables
-    /// and windows, and gives it this one's: the two memories alternate, and the frame draws the
-    /// quads of the layout over the memory they were laid out on. The maker lays out only while no
-    /// layout it published stands untaken ([`crate::playhead_host::overlay::lays`]), so the memory
-    /// handed over here is never the one it is writing.
     pub fn take_memory(&self, laid: &Presentation) {
         let mut ours = self.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut theirs = laid.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::swap(&mut *ours, &mut *theirs);
     }
 
-    /// Gives `laid`'s counters' memory the products this view shows, before it lays out on it.
     pub fn lend_layered(&self, laid: &Presentation) {
         let ours = self.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         laid.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).adopt_layered(&ours);
     }
 
-    /// Whether a map-icon window changed on its own or a unit still moves at the last presented
-    /// frame, cleared: a view draws its retained overlay again on the next one while one does, as
-    /// the game ticks every window and animator each frame. The hour/camera preparation does not
-    /// read those clocks.
     pub fn take_running(&self) -> Running {
         let (windows, visible) = {
             let mut views = self.windows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -332,31 +280,17 @@ impl Presentation {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .running();
         viewer_foundation::map::redraws::note("running.movement", u64::from(moving));
-        // A unit still moving asks for the next frame but neither for a painting nor for the
-        // pools' passes: its counter's window stands on a track the display frame evaluates at its
-        // own head ([`viewer_foundation::map::anchored`]), so the overlay is painted for what
-        // changes in it, presented for a pool that has a pass to run, and never for motion.
         Running { any: windows.any() || moving, visible, windows }
     }
 }
 
-/// What runs at the last presented frame ([`Presentation::take_running`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Running {
-    /// Something asks for the next frame.
     pub any: bool,
-    /// A window changed on its own or one asked for is still to be made: the next frame paints the
-    /// batch over the pools it presents.
     pub visible: bool,
-    /// The families of windows that have a pass to run on the next frame. With none the frame was
-    /// asked for by a mover alone, which it answers by moving the windows it holds: presenting the
-    /// pools would run every manager's pass over every window for a frame in which none of them
-    /// has anything to do.
     pub windows: Pools,
 }
 
-/// One map view's counter options and memory, which its overlays are laid out with. Two views
-/// are the same only when they share the memory.
 #[derive(Clone, Debug, Default)]
 pub struct CounterView {
     pub settings: CounterSettings,
@@ -365,26 +299,17 @@ pub struct CounterView {
     pub air_bases: Arc<Vec<u64>>,
     pub fleets_selected: Arc<Vec<u64>>,
     pub hovered: Option<Unit>,
-    /// The counter whose `count_bg` the primary button went down on, while it is held.
     pub pressed: Option<Unit>,
-    /// The counter whose `count_bg` is under the pointer.
     pub plate_hovered: Option<Unit>,
-    /// Whether the view shows the Operatives map mode, whose intel icons it then draws.
     pub operatives: bool,
-    /// The exact occupation mode; both share the same counter visibility.
     pub occupation: Option<viewer_world::map::occupation_icons::Mode>,
     pub presentation: Arc<Presentation>,
-    /// What the view's map mode shows of the counters, icons and labels.
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
-    /// The province whose raid offer bubble has its target details window open, with what the
-    /// click built: the game fills the window on the click only.
     pub raid_details: Option<(u32, Arc<viewer_raids::map::raids::tooltips::Details>)>,
-    /// The province whose raid offer bubble is under the pointer, which draws its frame hovered.
     pub raid_hovered: Option<u32>,
 }
 
 impl CounterView {
-    /// Resolve the mode together so shared visibility cannot hide a label-mode change.
     pub fn set_mode(&mut self, mode: &viewer_world::map::map_mode::MapMode) {
         use viewer_world::map::{
             map_mode::{MapMode, Stock},
@@ -399,7 +324,6 @@ impl CounterView {
         };
     }
 
-    /// A new view with no counter history, as a freshly loaded game.
     pub fn new(settings: CounterSettings) -> Self {
         Self {
             settings,
@@ -420,8 +344,6 @@ impl CounterView {
     }
 }
 
-/// Views that lay out the same overlay. A plate's and a raid bubble's state draw on the overlay
-/// laid out ([`crate::document::PreparedOverlay::set_raid_view`]), so they ask for no layout.
 impl PartialEq for CounterView {
     fn eq(&self, other: &Self) -> bool {
         self.settings == other.settings
@@ -442,15 +364,11 @@ mod tests {
     use super::*;
     use dashboard_core::protocol::CounterFilter;
 
-    /// The maker lays a layout out on a memory of its own and the frame takes that memory with it;
-    /// the two then alternate, so the memory the maker lays the next layout on is the one the frame
-    /// has handed back and never the one it draws.
     #[test]
     fn the_memory_a_layout_was_laid_out_on_is_taken_with_it_and_the_two_alternate() {
         use viewer_counters::map::counters::{BaseValues, Kinds, Layered};
         let view = Presentation::default();
         let maker = view.sharing();
-        // Each layout leaves a product of its own on the memory it was laid out on.
         let product = |memory: &Presentation| {
             let bases = Arc::new(BaseValues::default());
             let at = Arc::as_ptr(&bases) as usize;
@@ -464,16 +382,12 @@ mod tests {
         view.take_memory(&maker);
         assert_eq!(drawing(), first, "the view draws on the memory that layout was laid out on");
         assert_eq!(making(), held, "and the maker holds the memory the frame handed back");
-        // The maker's next layout goes on that memory, never on the one the frame draws.
         let second = product(&maker);
         assert_eq!(drawing(), first, "what the frame draws is untouched while the next is laid out");
         view.take_memory(&maker);
         assert_eq!(drawing(), second);
     }
 
-    /// What asks for the next frame and what asks for the pools' passes are separate: a unit still
-    /// moving asks for the frame alone, which places the windows it holds at its own head, and
-    /// only a pool with a pass to run asks for the pools to be presented.
     #[test]
     fn only_a_pool_with_a_pass_to_run_asks_for_the_pools_to_be_presented() {
         let view = Presentation::default();
@@ -481,7 +395,6 @@ mod tests {
         assert_eq!(view.take_running(), idle, "nothing asks for anything");
         view.windows.lock().unwrap().pings.keep_running();
         let running = view.take_running();
-        // The family that has a pass to run asks for it, and no other family is presented for it.
         assert_eq!(
             running,
             Running {
@@ -541,7 +454,6 @@ mod tests {
     fn players_are_placed_through_the_links_and_an_unplaced_one_draws_everyone() {
         let links = [(10, 1), (20, 2), (30, 3)];
         assert_eq!(player_slots(links, [30, 10]), Some(BTreeSet::from([1, 3])));
-        // A link missing for one human-controlled country never hides that player's counters.
         assert_eq!(player_slots(links, [10, 40]), None);
         assert_eq!(player_slots(links, []), Some(BTreeSet::new()));
     }
@@ -581,8 +493,6 @@ mod tests {
             }
             .into()
         };
-        // One recording's tables at an hour, the same allocations at a later hour that left
-        // them unchanged, and another recording's equal tables at that same hour.
         let first: [SharedView; 3] = std::array::from_fn(|_| view());
         let other: [SharedView; 3] = std::array::from_fn(|_| view());
         assert_eq!(first, other);
@@ -599,10 +509,8 @@ mod tests {
             shown.as_ref().unwrap(),
             again.as_ref().unwrap()
         ));
-        // Another recording at the same branch, hour and filter never reuses these owners.
         let switched = owners.get_with(identities(&other), &CounterFilter::Players, &mut read);
         assert_eq!(switched, Some(Arc::new(BTreeSet::from([2]))));
-        // One changed table is enough to read again.
         let mut changed = other.clone();
         changed[1] = view();
         owners.get_with(identities(&changed), &CounterFilter::Players, &mut read);

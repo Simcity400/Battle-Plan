@@ -33,15 +33,12 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     assert.match(live, /Campaign map/);
     assert.match(live, /Live/);
     assert.doesNotMatch(live, /Follow the campaign|Native map/);
-    // Under an open menu the native map is hidden: it says so, with no spinner, even while its view reports loading.
     host.__mapReview.loading = true;
     host.__mapReview.hour = null;
     host.__mapsHidden = true;
     const hidden = render();
     assert.match(hidden, /Map hidden while a menu is open/);
     assert.doesNotMatch(hidden, /spinner|Preparing this map/);
-    // Paused at a new hour, the viewer still presents the frame of the hour before while it builds this one: that frame is
-    // dated and marked as updating, with no placeholder over it. With no frame at all, the map is being prepared.
     host.__mapsHidden = false;
     (props.runtime.clock as { getSnapshot: () => unknown }).getSnapshot = () => ({ position: 106, hour: 106, playing: false, sequence: 3, seekSequence: 1, fraction: 0, hoursPerSecond: 4 });
     host.__mapReview = { ...host.__mapReview, hour: 105, sequence: 2, requestedSequence: 3, loading: true };

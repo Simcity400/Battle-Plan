@@ -1,8 +1,3 @@
-//! The division log: divisions first seen, lost and transferred, as rows of the declared log
-//! `division-events` the recorder writes ([`DivisionLog`], a page of the log with each row's
-//! country, name, template and icon named at the reply), and what a widget needs once a branch
-//! (`division-log-manifest`: whether divisions and their removals were read, the hours they were
-//! not, and every template the log names). Totals are the log's counts by kind (`log-counts`).
 
 use super::{
     LoadContext, Product,
@@ -31,10 +26,8 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-/// The declared log of division events.
 pub const LOG: &str = "division-events";
 
-/// DivisionEvents' columns, as the schema numbers them.
 mod column {
     pub const DISPOSITION: usize = 0;
     pub const CAUSE: usize = 1;
@@ -59,7 +52,6 @@ mod column {
     pub const TEMPLATE_COUNTRY: usize = 25;
 }
 
-/// The columns a division log page carries, by name.
 pub const COLUMNS: [&str; 22] = [
     "division",
     "kind",
@@ -107,7 +99,6 @@ fn bytes(cells: &[Cell], column: usize) -> Option<&[u8]> {
     }
 }
 
-/// An opaque cell's value; not recorded where the cell is not, or its bytes do not decode.
 fn opaque<T: replay_data::value::Value>(cells: &[Cell], column: usize) -> Recorded<T> {
     match cells.get(column) {
         Some(Cell::List(bytes)) => T::decode(&mut Decoder::new(bytes)).map_or(Recorded::NotRecorded, Recorded::Value),
@@ -123,8 +114,6 @@ fn text_cell(value: Option<String>) -> LogCell {
     value.map_or(LogCell::Missing, |value| LogCell::Text { value })
 }
 
-/// What a removal says happened: its cause's event name, else its disposition's; a sighting is
-/// `first_observed`.
 pub fn status(kind: u8, disposition: Option<i64>, cause: Option<i64>) -> String {
     if kind == DivisionEventRow::CREATED {
         return "first_observed".into();
@@ -144,12 +133,10 @@ pub fn status(kind: u8, disposition: Option<i64>, cause: Option<i64>) -> String 
     disposition.as_str().into()
 }
 
-/// A slot a row names, none where no link resolved it.
 fn slot(value: Option<i64>) -> Option<u32> {
     value.map(|slot| slot as u32).filter(|&slot| slot != TagHolderRow::NONE)
 }
 
-/// What a page row says without content: every cell but the names and art, which `named` fills.
 pub struct Mapped {
     pub cells: Vec<LogCell>,
     pub template: Option<(Vec<u8>, Option<Vec<u8>>, i32)>,
@@ -158,13 +145,10 @@ pub struct Mapped {
     pub ambiguous: bool,
 }
 
-/// The cell positions `named` fills.
 const NAME: usize = 7;
 const ICON: usize = 9;
 const TEMPLATE_NAME: usize = 13;
 
-/// A division log row (its hour and key, its cells by column) as a page row's cells, its tags
-/// through `names`.
 pub fn map(hour: i32, key: u128, cells: &[Cell], names: &Names) -> Mapped {
     let kind = (key >> 96) as u8;
     let division = key as u64;
@@ -214,11 +198,8 @@ pub fn map(hour: i32, key: u128, cells: &[Cell], names: &Names) -> Mapped {
     }
 }
 
-/// A page of the division log's rows, named.
 pub struct DivisionLog;
 
-/// A page of division events: `log-page`'s params with the log fixed. The `kind` facet is
-/// required: a page names which of created (0), lost (1) and transferred (2) it shows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -232,13 +213,10 @@ pub struct DivisionLogParams {
     pub page_size: u32,
 }
 
-/// Each reason a name, icon or template name was refused, counted, and what the name groups'
-/// read noted.
 #[derive(Default)]
 struct Refused {
     counts: BTreeMap<String, usize>,
     notes: Vec<String>,
-    /// The name groups' notes are taken once a reply.
     grouped: bool,
 }
 
@@ -336,8 +314,6 @@ impl Product for DivisionLog {
     }
 }
 
-/// `mapped`'s name, icon and template name drawn through `art`, the template's country named at
-/// `hour`.
 fn named(art: &Content, (query, names, source): (&Query<'_>, &Names, &Source), hour: i32, mapped: &mut Mapped, refused: &mut Refused) -> io::Result<()> {
     if art.unavailable().is_some() {
         return Ok(());
@@ -375,7 +351,6 @@ fn named(art: &Content, (query, names, source): (&Query<'_>, &Names, &Source), h
     Ok(())
 }
 
-/// A template the log names, by its handle's id, and its name.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -384,7 +359,6 @@ pub struct DivisionLogTemplate {
     pub name: Option<String>,
 }
 
-/// Hours of a held stretch at which divisions (or their removals) were not read.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -398,9 +372,9 @@ pub struct DivisionLogGap {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogManifestReply {
-    /// Whether the branch read its divisions at any hour.
+    #[doc = " Whether the branch read its divisions at any hour."]
     pub available: bool,
-    /// Whether it read their removals at any hour.
+    #[doc = " Whether it read their removals at any hour."]
     pub losses_available: bool,
     pub gaps: Vec<DivisionLogGap>,
     pub templates: Vec<DivisionLogTemplate>,
@@ -411,7 +385,6 @@ dashboard_base::reply_warnings!(DivisionLogManifestReply);
 
 pub struct DivisionLogManifest;
 
-/// A template's first row in a run's log: its id, the hour, and its display-name operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeenTemplate {
     pub id: u32,
@@ -421,8 +394,6 @@ pub struct SeenTemplate {
     pub country: Option<i32>,
 }
 
-/// Every template run `run`'s division log names, by id, from the first row naming it: four
-/// columns of the log read in the six-hour buckets its summary says hold rows, in one pass.
 pub fn run_templates(recording: &replay::columnar_frames::Recording, run: u32) -> io::Result<Vec<SeenTemplate>> {
     use dashboard_query::{cost::storage, read};
     let held = recording.run(run)?;
@@ -435,7 +406,6 @@ pub fn run_templates(recording: &replay::columnar_frames::Recording, run: u32) -
     let columns = [column::TEMPLATE_ID, column::TEMPLATE_LITERAL, column::TEMPLATE_KEY, column::TEMPLATE_COUNTRY];
     let mut reader = storage(|| replay::cells::TableReader::new(recording, run, TableId::DivisionEvents, Some(&columns)))?;
     for (from, to) in spans {
-        // From the hour before, so a row the log still lists from then is not taken as new.
         let start = if from > first { from - 1 } else { from };
         let mut before: HashSet<u128> = HashSet::new();
         storage(|| reader.go_to(recording, read::ordinal(recording, run, start)?))?;
@@ -465,7 +435,6 @@ pub fn run_templates(recording: &replay::columnar_frames::Recording, run: u32) -
     Ok(seen.into_values().collect())
 }
 
-/// The hours of `first..=last` outside `read` (ascending runs).
 pub fn unread(read: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     let mut at = i64::from(first);

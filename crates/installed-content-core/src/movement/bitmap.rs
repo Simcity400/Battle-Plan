@@ -1,14 +1,3 @@
-//! The native map bitmap loader's stored bytes.
-//!
-//! The map loaders keep BMP rows in file order (row 0 is the bottom of a
-//! positive-height file) and address pixel `(x, y)` at `y * pitch + x *
-//! components`. The unpadded pitch is smaller than the padded file row, so each
-//! padded row is copied over the start of the next one; the next copy then
-//! restores that row. Every row therefore keeps the first `pitch` bytes of its
-//! padded file row, whatever the width. 24-bit files are read from byte 54,
-//! ignoring `bfOffBits`; other depths seek to `bfOffBits`. Movement samples
-//! the first byte of a pixel; even the 1-bit case indexes bytes rather than
-//! decoding packed pixels.
 
 use std::io;
 
@@ -62,8 +51,6 @@ impl NativeBitmap {
             (row + 3) & !3
         };
         let advance = if pitch < 1 { padded } else { pitch };
-        // The native allocation is `pitch * height + 7` in 32 bits; a larger or
-        // wrapped allocation, or row copies past it, are outside what it loads.
         let allocation = pitch * i64::from(height) + 7;
         let written = advance * i64::from(height - 1) + padded;
         if allocation > i64::from(i32::MAX) || allocation < written {
@@ -103,12 +90,10 @@ impl NativeBitmap {
             .ok_or_else(|| invalid("pixel reads outside the native bitmap storage"))
     }
 
-    /// First stored byte of native pixel `(x, y)`; `y` counts file rows.
     pub(super) fn byte(&self, x: usize, y: usize) -> io::Result<u8> {
         Ok(self.at(x, y, 1)?[0])
     }
 
-    /// The three bytes the province loader reads as blue, green and red.
     pub(crate) fn rgb(&self, x: usize, y: usize) -> io::Result<[u8; 3]> {
         let [b, g, r] = self.at(x, y, 3)?.try_into().unwrap();
         Ok([r, g, b])
@@ -143,14 +128,12 @@ mod tests {
         assert_eq!(bitmap.byte(0, 1).unwrap(), 11);
         let wide = NativeBitmap::decode(&test_bmp(2, &[&[7, 99, 8, 77]], 16)).unwrap();
         assert_eq!(wide.byte(1, 0).unwrap(), 8);
-        // Byte indexing runs past the stored bytes of a packed 1-bit row.
         let packed = NativeBitmap::decode(&test_bmp(16, &[&[1, 2, 3, 4]], 1)).unwrap();
         assert!(packed.byte(7, 0).is_err());
     }
 
     #[test]
     fn padded_rows_keep_their_first_width_bytes() {
-        // Width 3 pads each 8-bit row to four bytes.
         let bitmap =
             NativeBitmap::decode(&test_bmp(3, &[&[1, 2, 3, 0xee], &[4, 5, 6, 0xee]], 8)).unwrap();
         let rows: Vec<Vec<u8>> = (0..2)

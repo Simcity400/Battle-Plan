@@ -19,8 +19,6 @@ export const OPTIONS: readonly OptionField[] = [
   ...SUNBURST_OPTIONS.map(field => ({ ...field, visibleWhen: circle })),
 ];
 
-/** Every equipment and view but the defaults is its own card, storing the
- * options that differ from them. */
 const variants = EQUIPMENT.flatMap(equipment => VIEWS.map(view => ({ equipment, view })))
   .filter(({ equipment, view }) => equipment.value !== 'air' || view.value !== 'circle')
   .map(({ equipment, view }) => ({

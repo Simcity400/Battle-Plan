@@ -36,15 +36,9 @@ import { shownUntil } from './view';
 import type { Live } from './live';
 import './charts.css';
 
-/** One thing a chart draws inside its plot, such as a line per country. */
 export interface ChartLayer {
-  /** Draws inside the plot; the canvas is clipped to it. */
-  /** `state.playhead` is the last hour to draw (null: the whole range). */
   draw(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, state: { playhead: number | null }): void;
-  /** The values this layer shows inside a time range, for auto-fitting the value axis. */
   extent?(x: Range): Range | null;
-  /** The lost spans of the reply this layer draws, the union of each product's where it draws
-   * several: it is cut there alone. Without it, the chart's own ([`TimeChartProps::gaps`]). */
   gaps?: readonly LostSpan[];
 }
 
@@ -53,126 +47,67 @@ export type { ChartStrip } from './strip';
 export type { ChartPick } from './pick';
 
 export interface TimeChartProps {
-  /** A categorical row plane, using the same time gestures and hover as lines.
-   * Up/down steps rows; left/right still steps keyHours. Dates sit above it. */
   rows?: { labels: readonly string[]; labelWidth: number; tooltip: (row: number, hour: number) => TooltipContent | null };
-  /** Names the chart for screen readers. */
   label: string;
-  /** Every hour the data can cover: the branch, or the widget's range. */
   extent: Range;
-  /** The playback hour while following; null shows the whole extent. */
   playhead: number | null;
-  /** While following, the head now and the clock's frame signal: the chart moves with it every frame, between
-   * renders. */
   liveHead?: LiveHead;
   playback: PlaybackMode;
-  /** In whole-campaign (cursor) playback, draws, marks and hovers past the playhead too. */
   afterPlayhead?: boolean;
   windowHours?: number;
   hoursPerSecond?: number;
   axes: AxisSettings;
-  /** Fits the value axis to the values drawn in view (null: none), both bounds,
-   * where the axis settings leave it open; without it an open axis starts at zero. */
   fitValues?: (shown: Range | null) => Range | null;
-  /** Axis settings store offsets from this hour. */
   branchStart: number;
-  /** Room around the plot. Without a `left`, the left side grows to fit the widest value label. */
   padding?: Partial<Padding>;
   layers: readonly ChartLayer[];
-  /** The lost spans of the reply every layer draws, in hour order: no layer or strip draws
-   * across them, they are hatched as unknown, and their hours' tooltips say so. A layer drawing
-   * another product's reply names its own ([`ChartLayer::gaps`]). */
   gaps?: readonly LostSpan[];
-  /** A strip under the plot; hovering it hovers the hour above. */
   strip?: ChartStrip;
-  /** A value-axis label; `ticks` is every tick drawn with it, for a precision that keeps
-   * them apart. Without it, `formatAxisValue` writes plain amounts. */
   formatValue?: (value: number, ticks: readonly number[]) => string;
-  /** Fixed semantic value ticks instead of automatically spaced ticks. */
   valueTicks?: readonly number[];
-  /** Event glyphs along the top edge. Hovering one snaps to its hour. */
   badges?: readonly EventBadge[];
-  /** Prepared screen-width marks. Individual events are fetched by stable range,
-   * so drawing and spoken text never materialise campaign-long event rows. */
   markSummary?: MarkSummary;
-  /** Marks, or a reader of them when they come from data the layers read outside props (`data`): it returns the same
-   * objects until they change. */
   markSummaries?: readonly MarkSummary[] | (() => readonly MarkSummary[]);
   markTooltip?: (cluster: MarkCluster) => TooltipContent | null;
   onMarkHover?: (cluster: MarkCluster | null) => void;
-  /** Reached exact event rows only, for pointer/keyboard hour tooltips. */
   badgesAtHour?: (hour: number) => readonly EventBadge[];
-  /** Requests display summaries at actual layout width and playback cutoff; `end` is the frame's last hour. */
   onSummaryView?: (view: { from: number; to: number; end: number; width: number }) => void;
-  /** Prepared navigation queries the next exact stop without retaining all dates. */
   onNavigateHour?: (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null, x: Range, until: number | null) => void;
-  /** The result of the latest owner-scoped navigation request. */
   keyboardHour?: number | null;
   keyboardRevision?: unknown;
-  /** Tooltip content for a pointer or keyboard hour, including its visible event
-   * badges; null shows none. */
   tooltip?: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent | null;
-  /** Requests dated facts at the resolved pointer or keyboard hour; null clears them. */
   onHover?: (hour: number | null) => void;
-  /** Moves an hour hovered over the plot onto something nearby, such as an event tick
-   * (never over a strip, which has its own `describe`). */
   snap?: (hour: number, frame: PlotFrame) => number;
-  /** Hours the arrow keys step the keyboard hover through, ascending (such as every
-   * hour a value changes); without them the keys step a day. Pass them all, not only
-   * those in view: a value going on into the view from an earlier one is reachable at
-   * the view's start (`keyStops`). */
   keyHours?: readonly number[];
-  /** Drawn after the plot, unclipped: end labels and markers. */
   overlay?: (ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens) => void;
-  /** The drawn time range, including zoom/pan, for labels dated to visible ends; called when it changes. */
   onViewChange?: (x: Range) => void;
   onContextMenu?: (hour: number, clientX: number, clientY: number) => void;
-  /** A click (not a drag) on the plot picks that hour, e.g. to open or move a breakdown. */
   onPick?: (hour: number, context?: ChartPick) => void;
-  /** Stable source/selection/numeric-model token. Change it when a pending pick
-   * would refer to different actors/data; exclude playback and label updates. */
   pickOwner?: unknown;
-  /** Off-screen charts stop drawing. */
   active: boolean;
-  /** Why none of its lines holds a value in view (their tables held no row there, or were not recorded): shown over
-   * the plot as not recorded, never a blank chart. */
   notRecorded?: string | null;
-  /** Changes whenever the data changes, so the chart redraws. */
   revision: unknown;
-  /** Data its layers read when they draw rather than from props (tiles landing while it follows the head): what a
-   * repaint compares beside `revision`, and the signal that wakes it, so new data draws without a render. */
   data?: ChartData;
 }
 
-/** Data a chart's layers read as they draw: `revision()` its parts by identity (the same while unchanged), and
- * `subscribe` told when any moves. */
 export interface ChartData { revision(): readonly unknown[]; subscribe(listener: () => void): () => void }
 
-/** The marks a chart draws, read from a reader where it has one. */
 const marksOf = (p: TimeChartProps): readonly MarkSummary[] => [...(p.markSummary ? [p.markSummary] : []),
   ...(typeof p.markSummaries === 'function' ? p.markSummaries() : p.markSummaries ?? [])];
 
 const DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12, bottom: 24 };
-/** Room kept between the canvas edge and the widest value label. */
 const LABEL_MARGIN = 4;
-/** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
-/** The least time between summary requests while the view keeps moving. */
 const SUMMARY_INTERVAL_MS = 150;
-/** How long a pointer rests on an hour before the widget hears it. */
 const HOVER_REST_MS = 80;
 const BOX_THRESHOLD = 8;
 
-/** What a pointer is over: the crosshair's hour, the hour it is about and any badges. */
 type Pointed = { hour: number; describes: number; badges: readonly EventBadge[]; cluster?: MarkCluster };
 
-/** A box started in a strip zooms time only: the strip has no value axis. */
 type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number; timeOnly: boolean };
 
-/** A playback head read as a chart draws: its hour now, and the frame signal that moves it. */
 export type LiveHead = Live<number>;
 
-/** `props` with the playhead its live head is at now, when it follows one. */
 function withLiveHead(props: TimeChartProps): TimeChartProps {
   const live = props.liveHead;
   if (!live || props.playhead == null) return props;
@@ -180,9 +115,6 @@ function withLiveHead(props: TimeChartProps): TimeChartProps {
   return head === props.playhead ? props : { ...props, playhead: head };
 }
 
-/** A canvas time chart: axes from the recording's own dates, zoom that holds during
- * playback, live hover, and redraws only while something moves. Its series paint on one
- * canvas only when what they show changes; the crosshair and selection on another above. */
 export default function TimeChart(props: TimeChartProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -191,31 +123,19 @@ export default function TimeChart(props: TimeChartProps) {
   latest.current = props;
   const motionNow = useMotionNow();
   const [zoomed, setZoomed] = useState(false);
-  // The event badges drawn right now, as text for assistive technology: they follow
-  // the view (window, zoom, playhead), and change only when the drawn set does.
-  // Written as the chart draws, never through React: the events move with every frame of playback.
   const eventsText = useRef<HTMLParagraphElement>(null);
-  // Who drives the hover (the pointer, or the keyboard's hour) and the hour it shows,
-  // which the keys act on; what the keyboard hover shows is read out as it changes.
   type Point = { x: number; y: number; clientX: number; clientY: number };
   const hover = useRef<HoverState<Point>>(NO_HOVER);
   const pendingNavigation = useRef<{ hover: HoverState<Point>; owner: unknown; tooltip: number } | null>(null);
   const shownHour = useRef<number | null>(null);
-  // The last notified callback owns any outstanding hover facts, even after a render changes the owner.
   const hoverObserver = useRef<{ callback: NonNullable<TimeChartProps['onHover']>;
     pickOwner: unknown; branchStart: number; first: number; last: number; hour: number | null } | undefined>(undefined);
   const rowRef = useRef(0);
-  // The keyboard's stop, beside the hover state's hour: two stops can share an hour.
   const keyedStopRef = useRef<KeyStop | null>(null);
-  // The keyboard's stops, built again only when the reads, the strip or the view change.
   const keyStopsFor = useRef(keyStopMemo()).current;
   const [keySpoken, setKeySpoken] = useState('');
-  // The text last read out, so an unchanged tooltip is not announced again.
   const keyText = useRef('');
-  // A fresh key action may take the shared tooltip; later redraws of a kept keyboard hour may not.
-  // A late reply to a key may, only if nothing was pointed at since that key (`since`, the layer's revision).
   const keyIntent = useRef<boolean | { since: number }>(false);
-  // The time range drawn and the last hour shown, for the keyboard hover.
   const shown = useRef<{ x: Range; until: number | null } | null>(null);
   const picks = useRef(new ChartPicks()).current;
   picks.update({ owner: props.pickOwner, extent: props.extent, branchStart: props.branchStart, active: props.active, onPick: props.onPick });
@@ -229,44 +149,31 @@ export default function TimeChart(props: TimeChartProps) {
     const sheet = overlay.current ? drawingSurface(overlay.current) : null, overlayContext = sheet?.context ?? null;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
-    // The badges last described, compared one by one (a count and range could repeat after a pan).
     let spokenFor: readonly EventBadge[] = [];
     let spokenBadges = '', spokenText = '';
-    // The marks last described, each summary's shown clusters by identity: a frame inside them writes no text.
     let spokenMarks: readonly (readonly MarkCluster[])[] = [];
     let clusterText = '';
-    // The view last reported: a handler hears only a new range (or, when it changes, the current one).
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
-    // The report waiting for its update: a view easing every frame moves its range, never queues another (one held a
-    // slot while playing, not one a frame).
     let telling: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
     let frame: PlotFrame | null = null;
-    // What the series canvas shows, by everything its painting reads: a frame with the same
-    // repaints nothing. The overlay holds only the crosshair and selection, cleared as they move.
     let painted: readonly unknown[] | null = null;
     let overlaid = false;
     const surface = watchCanvasSize(element, () => wake());
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
     let drag: Drag | null = null;
-    // The extent the zoom belongs to: another branch or range starts unzoomed.
     let zoomedFor = '';
-    // Tooltip content for the hovered hour, rebuilt only when the hour, the hovered
-    // badges or the data change.
     let hovered: { hour: number; row: number; badges: readonly EventBadge[]; cluster?: MarkCluster; markTooltip: TimeChartProps['markTooltip']; rows: TimeChartProps['rows']; tooltip: TimeChartProps['tooltip']; revision: unknown; content: TooltipContent | null; key: string } | null = null;
     let keyedBadges: { source: TimeChartProps['badges']; hour: number; badges: readonly EventBadge[] } | null = null;
-    // The cluster `onMarkHover` last heard about, and a pointer hour waiting to rest.
     let markHovered: MarkCluster | null | undefined;
     let pendingHover: { hour: number; since: number; timer: ReturnType<typeof setTimeout> } | null = null;
     type SummaryView = { callback: TimeChartProps['onSummaryView']; from: number; to: number; end: number; width: number };
-    // The view last asked for, when, and a newer one waiting for the interval.
     let summaryView: SummaryView | null = null, summaryLatest: SummaryView | null = null;
     let summaryAt = -Infinity, summaryTimer: ReturnType<typeof setTimeout> | null = null;
     const sendSummary = () => {
       summaryTimer = null;
       if (!summaryLatest) return;
       const sent = summaryView = summaryLatest; summaryAt = performance.now();
-      // Callbacks heard from the frame loop render with the next frame's updates, never a commit of their own.
       inFrame(() => sent.callback?.({ from: sent.from, to: sent.to, end: sent.end, width: sent.width }));
     };
 
@@ -285,8 +192,6 @@ export default function TimeChart(props: TimeChartProps) {
       sizeCanvas(drawing.canvas, size.width, size.height);
       if (sheet && sizeCanvas(sheet.canvas, size.width, size.height)) overlaid = false;
 
-      // Badges sit above the plot, so a chart with them keeps room there; a strip
-      // sits between the plot and the dates.
       const strip = p.strip ? Math.max(0, Math.round(p.strip.height(layoutHeight))) : 0;
       const marks = marksOf(p);
       const hasBadgeSummary = marks.some(summary => summary.placement !== 'ticks');
@@ -308,12 +213,8 @@ export default function TimeChart(props: TimeChartProps) {
         : playbackDomain(p.playback, p.extent, p.playhead, p.windowHours ?? 365 * 24, MIN_SPAN, motion === undefined);
       const targetX = resolveX(view, p.axes, p.branchStart, playback);
       const tau = drag && drag.mode !== 'box' ? 0 : easeTau(tokens.motion, motion, tokens.reducedMotion);
-      // Ease the distance to the target, not the absolute value: engine hours are large
-      // enough that a relative snap threshold would jump the last tens of hours.
       const glide = (current: number, target: number) => target + approach(current - target, 0, info.dt, tau);
       const x: [number, number] = eased ? [glide(eased.x[0], targetX[0]), glide(eased.x[1], targetX[1])] : [targetX[0], targetX[1]];
-      // Within half a pixel of its target an eased range looks settled: snap to it, so the
-      // chart stops redrawing instead of easing invisibly for another second or two.
       const plotWidth = Math.max(1, layoutWidth - padding.left - padding.right);
       const plotHeight = Math.max(1, layoutHeight - padding.top - padding.bottom);
       if ((Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1])) * plotWidth < 0.5 * Math.max(1e-9, Math.abs(targetX[1] - targetX[0]))) {
@@ -328,16 +229,12 @@ export default function TimeChart(props: TimeChartProps) {
       const targetY = resolveY(view, fitted ? { ...p.axes, yMin: p.axes.yMin ?? fitted[0], yMax: p.axes.yMax ?? fitted[1] } : p.axes, data);
       const y: [number, number] = eased ? [glide(eased.y[0], targetY.range[0]), glide(eased.y[1], targetY.range[1])] : [targetY.range[0], targetY.range[1]];
       const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
-      // The final scheduled frame must paint the fitted scale exactly.
       if ((Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1])) * plotHeight < 0.5 * ySpan) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
       eased = { x, y };
       frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, targetY.log, strip, !!p.rows);
       frame.valueTicks = p.valueTicks;
-      // The value labels get the room they need: the left padding grows to the widest
-      // one (ticks depend only on the value range and plot height, so they stay the
-      // same), unless the widget chose its own left padding.
       if (!p.rows && p.padding?.left == null) {
         const needed = Math.ceil(valueLabelWidth(context, frame, tokens, (p.formatValue ?? formatAxisValue))) + VALUE_LABEL_GAP + LABEL_MARGIN;
         if (needed > padding.left) {
@@ -347,7 +244,6 @@ export default function TimeChart(props: TimeChartProps) {
       }
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
-      // Callers pass each event category once, as summary or badge, so both are drawn, hit and spoken.
       const summaries = marks.filter(summary => markSummaryMatches(summary, frame!, until));
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
         frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps,
@@ -393,11 +289,6 @@ export default function TimeChart(props: TimeChartProps) {
           inFrame(() => { const told = telling; telling = null; if (told) told.handler(told.x); });
         }
       }
-      // Whole hours, and while the view keeps moving (playback, a pan or zoom) at most
-      // one request per interval, the newest view sent when it ends: not one per
-      // animation frame. The last summary draws in place until the next arrives
-      // (`summaryFits`); a settled view always gets its own. A view wholly past the
-      // playhead has no hour to ask about.
       const summaryRequest = { callback: p.onSummaryView, from: Math.floor(frame.x[0]),
         to: Math.floor(Math.min(frame.x[1], until ?? frame.x[1])), end: Math.floor(frame.x[1]), width: Math.ceil(frame.plotWidth) };
       const sameView = (view: SummaryView | null) => !!view && view.callback === summaryRequest.callback && view.from === summaryRequest.from
@@ -424,18 +315,11 @@ export default function TimeChart(props: TimeChartProps) {
       if (eventText !== spokenText && eventsText.current) { spokenText = eventText; eventsText.current.textContent = eventText ? `Events: ${eventText}.` : ''; }
       if (drag?.mode === 'box' && overlayContext) { drawSelection(overlayContext, tokens, drag); overlaid = true; }
 
-      // Live hover: re-resolved every frame, so a still pointer stays current during playback.
-      // The pointer drives it until a navigation key hands it to the keyboard, whose hour
-      // shows while it is in view and not after the playhead.
       const zone = pointer ? hitZone(pointer, frame) : null;
       const plot = frame;
       const hit = hoverAt(hover.current, frame.x, until, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null);
       const pointed = hit?.by === 'pointer' ? hit as Pointed : null;
-      // Hover callbacks hear only changes: widgets pass new ones each render, and repeating the
-      // same news would render them again, which wakes this chart again, every frame.
       if ((pointed?.cluster ?? null) !== markHovered) { markHovered = pointed?.cluster ?? null; p.onMarkHover?.(markHovered); }
-      // The crosshair sits at `hour`; the tooltip and the keys are about `describes`. A
-      // keyboard stop at a strip bar the view cuts off is about the bar's read.
       const stop = keyedStopRef.current;
       const keyed = hit?.by === 'keyboard' ? (stop && stop.at === hit.hour && stop.describes <= (until ?? Infinity) ? stop.describes : hit.hour) : null;
       const eventHour = keyed != null && keyed >= frame.x[0] && keyed <= Math.min(frame.x[1], until ?? frame.x[1]) ? keyed : null;
@@ -455,10 +339,7 @@ export default function TimeChart(props: TimeChartProps) {
         if (moved) { const callback = previous!.callback; inFrame(() => callback(null)); }
         const told = !previous || moved ? undefined : previous.hour, hour = shownHour.current;
         let tell = hour !== told;
-        // Back at the hour already heard: a later move rests afresh.
         if (!tell && pendingHover) { clearTimeout(pendingHover.timer); pendingHover = null; }
-        // A pointer sweeping the plot is heard where it rests: widgets read exact values for
-        // each hour they hear, which would otherwise rebuild and repaint them every move.
         if (tell && hour !== null && told !== undefined && hit?.by === 'pointer') {
           if (pendingHover?.hour !== hour) {
             if (pendingHover) clearTimeout(pendingHover.timer);
@@ -484,8 +365,6 @@ export default function TimeChart(props: TimeChartProps) {
               : p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, frame, p.badgesAtHour?.(hour) ?? at.badges) ?? null,
             key: `${hour}:${at.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}` };
         }
-        // The keyboard hover's tooltip sits at the top of its crosshair; layout pixels
-        // become screen pixels through the widget's Size zoom.
         let point: { clientX: number; clientY: number } | null = pointed ? pointer : null;
         if (!point) {
           const rect = element.getBoundingClientRect();
@@ -507,10 +386,6 @@ export default function TimeChart(props: TimeChartProps) {
         && Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1]) < 1e-5 * ySpan;
       return !settled || drag != null;
     };
-    /** What the pointer is over, as hover, right-click and pick all use it: an event
-     * badge (at its hour), or an hour of the plot or the strip, kept in view and not
-     * after the playhead, with where its crosshair sits (`hour`) and what it is about
-     * (`describes`: a plot mark it snaps to, or the strip item's own hour). */
     const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): Pointed | null => {
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       const summaries = marksOf(p);
@@ -545,12 +420,10 @@ export default function TimeChart(props: TimeChartProps) {
     const down = (event: PointerEvent) => {
       pendingNavigation.current = null;
       hover.current = reduceHover(hover.current, { type: 'pointer-down' });
-      // A click picks at once; the second press of a double-click never picks again.
       secondPress = event.detail >= 2;
       if (!frame || (event.button !== 0 && event.button !== 1)) return;
       const point = local(event);
       const zone = hitZone(point, frame);
-      // A click on an event badge picks its hour.
       const drawn = pickFrame.current;
       const badges = event.button === 0 && drawn?.props.badges ? badgesAt(point, drawn.context.frame, drawn.props.badges, drawn.context.until) : [];
       if (badges.length && drawn?.onPick) {
@@ -564,14 +437,12 @@ export default function TimeChart(props: TimeChartProps) {
       else if (zone === 'plot' || zone === 'strip') drag = { mode: 'box', x0: point.x, y0: point.y, x1: point.x, y1: point.y, timeOnly: zone === 'strip' || !!latest.current.rows };
       else return;
       event.preventDefault();
-      // Preventing the default also stops the chart taking focus; take it so Escape resets.
       element.focus({ preventScroll: true });
       element.setPointerCapture(event.pointerId);
       wake();
     };
     const move = (event: PointerEvent) => {
       pointer = local(event);
-      // The pointer takes over from the keyboard hover.
       hover.current = reduceHover(hover.current, { type: 'pointer', point: pointer });
       if (drag && frame) {
         if (drag.mode === 'axis-x') dispatch({ type: 'axis-x', grab: drag.grab, fraction: axisFraction(pointer, frame, 'x') });
@@ -618,13 +489,10 @@ export default function TimeChart(props: TimeChartProps) {
     const doubleClick = (event: MouseEvent) => {
       if (!frame) return;
       const zone = hitZone(local(event), frame);
-      // Where a click picks, its first click already did: the axes and Reset zoom reset instead.
       if (latest.current.onPick && (zone === 'plot' || zone === 'strip')) return;
       dispatch({ type: zone === 'x-axis' ? 'reset-x' : zone === 'y-axis' ? 'reset-y' : 'reset' });
     };
     const menu = (event: MouseEvent) => {
-      // The menu key already opened the menu at the hour shown; the browser's own event
-      // after it (at a place of its choosing) must not open another.
       const fromPointer = pointerMenu(hover.current);
       hover.current = reduceHover(hover.current, { type: 'contextmenu' });
       if (!fromPointer) { event.preventDefault(); return; }
@@ -665,7 +533,6 @@ export default function TimeChart(props: TimeChartProps) {
     const [first, last] = props.extent;
     const clear = () => {
       const observed = hoverObserver.current;
-      // A frame may already have handed facts to the new owner before passive cleanup.
       if (observed && (!Object.is(observed.pickOwner, pickOwner) || observed.branchStart !== branchStart
         || observed.first !== first || observed.last !== last)) return;
       shownHour.current = null;
@@ -678,7 +545,6 @@ export default function TimeChart(props: TimeChartProps) {
 
   useEffect(() => {
     if (task.current) scheduler.setVisible(task.current, props.active);
-    // An inactive chart no longer draws, so it must not leave its tooltip on screen.
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
@@ -694,7 +560,6 @@ export default function TimeChart(props: TimeChartProps) {
       if (props.onNavigateHour && (!pending || pending.hover !== hover.current || !Object.is(pending.owner, props.pickOwner))) return;
       pendingNavigation.current = null;
       keyedStopRef.current = null;
-      // Whether the reply may take the tooltip is decided when it is drawn.
       keyIntent.current = pending ? { since: pending.tooltip } : true;
       hover.current = reduceHover(hover.current, { type: 'key', hour: props.keyboardHour });
       if (task.current) scheduler.wake(task.current);
@@ -705,7 +570,6 @@ export default function TimeChart(props: TimeChartProps) {
   const send = (event: HoverEvent<Point>) => { hover.current = reduceHover(hover.current, event); wake(); };
   const clearKeyed = () => { keyedStopRef.current = null; send({ type: 'key-clear' }); keyText.current = ''; setKeySpoken(''); };
   const keyDown = (event: ReactKeyboardEvent) => {
-    // The arrow keys, Home and End hover the chart as the pointer would, with its tooltip read out.
     if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && props.rows && shown.current) {
       event.preventDefault();
       keyIntent.current = true;
@@ -716,10 +580,7 @@ export default function TimeChart(props: TimeChartProps) {
     if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') && shown.current && (props.tooltip || props.rows)) {
       event.preventDefault();
       keyIntent.current = true;
-      // The keyboard takes over from the pointer, stepping on from the hour shown.
-      // The strip's bars in view are stops too, so the keys reach everything the pointer can.
       const { x, until } = shown.current;
-      // A view wholly past the playhead has no hour to step to, nor to ask about.
       if (props.onNavigateHour && Math.min(x[1], until ?? x[1]) < x[0]) {
         pendingNavigation.current = null;
         keyedStopRef.current = null;
@@ -729,7 +590,6 @@ export default function TimeChart(props: TimeChartProps) {
       if (props.onNavigateHour) {
         const since = tooltipStore.revision();
         pendingNavigation.current = { hover: hover.current, owner: props.pickOwner, tooltip: since };
-        // Until the reply arrives, a frame takes the tooltip only if nothing was pointed at since.
         keyIntent.current = { since };
         props.onNavigateHour(event.key, hover.current.keyed ?? shownHour.current, x, until);
         return;
@@ -751,9 +611,7 @@ export default function TimeChart(props: TimeChartProps) {
     if (event.key === 'Escape') pendingNavigation.current = null;
     if (event.key === 'Escape' && hover.current.keyed != null) { event.preventDefault(); clearKeyed(); return; }
     if (event.key === 'Escape' && zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
-    // The hour the hover shows (the keyboard's, or the pointer's), else the playhead.
     const moment = actionHour(shownHour.current, hover.current, props.playhead);
-    // Enter or Space picks the moment shown, as a click on the chart would.
     if ((event.key === 'Enter' || event.key === ' ') && props.onPick) {
       pendingNavigation.current = null;
       event.preventDefault();

@@ -1,20 +1,3 @@
-//! Hourly ordered native inputs with independently bounded owned payloads.
-//! A division occupant the hour's division census holds (a class-zero CArmy
-//! in a country roster, with its handle and location from the census's
-//! batched gather) is taken from the census; every other occupant is read and
-//! authenticated as the walk always did ([`cprovince::KnownUnit`]).
-//!
-//! With [`crate::province_unit_changes`], a [`ProvinceUnitStore`] lent to
-//! the job each hour, whichever frame captures it, holds the latest complete
-//! walk, compact: each province's occupant counts, every handle and the land
-//! visits. Every hour reads the province array header. When the take of the
-//! marked provinces returned the epoch the held walk was certified in and
-//! the header is the held one, only the marked provinces are read (their
-//! slots, records, lanes and occupants), and every other province's row is
-//! rebuilt from the held walk without touching its slot; otherwise every
-//! province is read. The take clears the marks, so a walk that does not
-//! complete is not held and a failed job forgets the store: the next hour
-//! reads every province.
 use crate::{
     division_census::UnitInputs,
     province_unit_changes::{self, Changes, Counts},
@@ -37,7 +20,6 @@ pub(crate) struct CaptureContext {
     pub game_state: usize,
 }
 
-/// Acquisition ticks in TABLES order. Interrupted work has no completed timing.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CaptureReport {
     pub ticks: [u64; N],
@@ -58,8 +40,6 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // Empty row storage still walks all unit-order headers without
-        // acquiring the unit bodies.
         let demand =
             cprovince::count_unit_order_with_land(memory, base, state, |_, _| {
                 Ok(())
@@ -74,27 +54,17 @@ impl Capacities {
     }
 }
 
-/// The latest complete walk, compact, for the next hour's carry.
 #[derive(Default)]
 struct Held {
-    /// The marks' epoch it was certified in; `None` holds nothing.
     epoch: Option<u64>,
-    /// The province array header it walked.
     header: [u8; 16],
-    /// Every province's slot pointer, at `id - 1`.
     pointers: Vec<usize>,
-    /// Per province, at `id - 1`: its mixed and naval occupant counts.
     counts: Vec<[u32; 2]>,
-    /// Every occupant's handle, in walk order.
     handles: Vec<u64>,
-    /// Its land visits, in province order.
     land: Vec<(u32, u64)>,
 }
 
 impl Held {
-    /// Holds a complete walk of every province: its rows' counts, handles
-    /// and land visits, copied, and its slot pointers; `Err` when they cannot
-    /// be stored.
     fn hold(
         &mut self,
         header: [u8; 16],
@@ -128,30 +98,21 @@ impl Held {
     }
 }
 
-/// The marks the hour's take returned.
 #[derive(Clone, Copy)]
 struct Hour {
     epoch: Option<u64>,
-    /// The held walk may be carried, if the array header is still its own.
     carryable: bool,
     marks: u64,
 }
 
-/// The latest complete walk and the carry's scratch, shared by every frame's
-/// capture: the job borrows it each hour, so a walk is held exactly once,
-/// by the store whose take certified it.
 pub(crate) struct ProvinceUnitStore {
     changes: &'static dyn Changes,
     held: Held,
-    /// The provinces this hour reads, ascending: the marked ones.
     listed: Vec<u32>,
-    /// This hour's slot pointers, at `id - 1`.
     slots: Vec<usize>,
-    /// The listed walk's rows, handles and land visits.
     rows: Vec<UnitOrderRow>,
     handles: Vec<u64>,
     land: Vec<(u32, u64)>,
-    /// Allocated bytes as of the last capture, for the game thread.
     bytes: usize,
 }
 
@@ -169,26 +130,19 @@ impl ProvinceUnitStore {
         }
     }
 
-    /// A failed job: its take consumed marks its walk did not hold, so
-    /// nothing held certifies a carry. Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.held.epoch = None;
     }
 
-    /// As of the last capture, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
     }
 
-    /// Whether a walk is held for the next hour's carry.
     #[cfg(test)]
     pub(crate) fn holds(&self) -> bool {
         self.held.epoch.is_some()
     }
 
-    /// Worker, before any read: the take of the marked provinces, which
-    /// visits them in ascending id. The take consumes the marks, so the
-    /// earlier walk is never held again unless this hour carries it.
     fn begin(&mut self) -> Hour {
         self.listed.clear();
         let mut marks = 0;
@@ -221,7 +175,6 @@ impl ProvinceUnitStore {
     }
 }
 
-/// The census's division at `unit` ([`Captured::admit_census`]).
 fn census_unit(known: &[(usize, KnownUnit)], unit: usize) -> Option<KnownUnit> {
     known
         .binary_search_by_key(&unit, |entry| entry.0)
@@ -234,7 +187,6 @@ pub struct Captured {
     arena: Arena<u64>,
     terminal_failure: Option<&'static str>,
     land: Vec<(u32, u64)>,
-    /// This hour's census divisions by pointer, sorted; worker storage only.
     known: Vec<(usize, KnownUnit)>,
 }
 impl Captured {
@@ -244,8 +196,6 @@ impl Captured {
         self.rows.outcome = outcome;
     }
 
-    /// Allocation-free placeholder while the original buffers are owned by an
-    /// acquisition request. Restore that request before publication or growth.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0, arena: 0 })
     }
@@ -279,9 +229,6 @@ impl Captured {
         self.arena.grow(&mut c.arena);
     }
 
-    /// `census` is this callback's division census, when its acquisition
-    /// completed; without it every occupant is read. `store` carries the
-    /// provinces no writer marked; without it every province is read.
     pub(crate) fn capture_owned(
         &mut self,
         memory: &impl Memory,
@@ -300,9 +247,6 @@ impl Captured {
         }
     }
 
-    /// Convert an accepted panic/stop into a terminal publication failure.
-    /// Preserve the original walk's outcome and arena pressure so off-thread
-    /// growth sees the same observed demand; partial rows remain inaccessible.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
         self.terminal_failure = Some(reason);
         CaptureReport::default()
@@ -326,17 +270,14 @@ impl Captured {
         let begin = qpc();
         match store {
             Some(store) => {
-                // The take precedes every read it certifies.
                 let hour = store.begin();
                 let Some(header) = cprovince::unit_order_header(memory, state) else {
-                    // The walk's own first refusal, without a second read.
                     self.rows.outcome = Outcome::Unavailable {
                         reason: "province order root unreadable",
                     };
                     store.measure();
                     return [qpc().saturating_sub(begin).max(0) as u64];
                 };
-                // A carry also needs every slot to hold the held province.
                 let slots = hour.carryable
                     && header == store.held.header
                     && cprovince::unit_order_slots(memory, header, &mut store.slots).is_ok();
@@ -381,7 +322,6 @@ impl Captured {
         [qpc().saturating_sub(begin).max(0) as u64]
     }
 
-    /// Every province, read.
     fn walk(
         &mut self,
         memory: &impl Memory,
@@ -410,11 +350,6 @@ impl Captured {
         self.arena.required = acquired.required;
     }
 
-    /// A carryable hour under an unchanged province array: reads only the
-    /// marked provinces, takes every other province's row, handles and land
-    /// visits from the held walk, and holds the result. `false`, with nothing
-    /// published and nothing held, when a list or a row cannot be stored; the
-    /// caller then reads every province.
     fn carry(
         &mut self,
         memory: &impl Memory,
@@ -463,7 +398,6 @@ impl Captured {
                 len: store.listed.len(),
             })
         {
-            // The listed walk's refusal is the hour's, as a full walk's.
             self.rows.outcome = match fresh {
                 Outcome::Rows { .. } => Outcome::Unavailable {
                     reason: "province order listed walk truncated",
@@ -490,8 +424,6 @@ impl Captured {
             quiet: hour.marks == 0,
             ..Counts::default()
         };
-        // Province by province: a listed one from the fresh walk, every other
-        // one from the held walk, each at its place in the arena.
         let (mut used, mut from, mut held_land, mut fresh_land, mut next) = (0, 0, 0, 0, 0);
         for id in 1..provinces as u32 {
             let [mixed, naval] = held.counts[id as usize - 1];
@@ -543,8 +475,6 @@ impl Captured {
         self.arena.len = used;
         self.arena.required = used;
         province_unit_changes::record(&counts, Some(provinces));
-        // The listed provinces' counts change in place; the arena and land
-        // visits are this hour's.
         for (&id, row) in store.listed.iter().zip(&store.rows) {
             store.held.counts[id as usize - 1] = [row.mixed[1] as u32, row.naval[1] as u32];
         }
@@ -558,15 +488,6 @@ impl Captured {
         true
     }
 
-    /// The census divisions the walk takes without reading them: each seed
-    /// whose primary and secondary vtables are CArmy's, whose class is zero
-    /// and whose handle is its own identity with a nonzero id, with its
-    /// location, all from the census's one gather at this boundary (the
-    /// checks `cunit::counter_identity` makes of a class-zero occupant; the
-    /// roster that lists the division stands for its registry join). Only a
-    /// census that completed is used; a pointer it lists twice with different
-    /// fields, and every pointer when the index cannot be stored, are read
-    /// by the walk.
     fn admit_census(&mut self, base: usize, census: Option<&UnitInputs>) {
         self.known.clear();
         let Some(census) = census else {
@@ -714,10 +635,6 @@ pub(crate) mod owned_tests {
         }
     }
 
-    /// Only a completed census's class-zero CArmy seeds with their own
-    /// nonzero-id identity and a location are taken from the census; a
-    /// pointer listed twice with different fields, and every pointer of an
-    /// incomplete or absent census, are left to the walk.
     #[test]
     fn only_complete_census_divisions_with_their_own_identity_are_known() {
         use engine_native::carmy::DivisionSeed;
@@ -789,12 +706,9 @@ pub(crate) mod owned_tests {
         assert!(captured.known.is_empty());
     }
 
-    /// Province memory for the carry: three provinces whose occupants are
-    /// census divisions, so a walk reads only province records and lanes.
     struct World {
         bytes: Vec<u8>,
         reads: std::cell::RefCell<Vec<usize>>,
-        /// An address whose read fails.
         fault: Option<usize>,
     }
     const STATE: usize = 0x1000;
@@ -836,7 +750,6 @@ pub(crate) mod owned_tests {
             self.bytes[at + 8..at + 12].copy_from_slice(&count.to_le_bytes());
             self.bytes[at + 12..at + 16].copy_from_slice(&count.to_le_bytes());
         }
-        /// Province `id`'s mixed lane lists `units`, in order.
         fn occupy(&mut self, id: u32, units: &[u64]) {
             self.header(
                 province(id) + cprovince::OCCUPANTS,
@@ -847,7 +760,6 @@ pub(crate) mod owned_tests {
                 self.word(lane(id) + 8 * at, unit(index) as u64);
             }
         }
-        /// The census: each unit a division located where the lists put it.
         fn census(&self) -> UnitInputs {
             let listed = |id: u32, index: u64| {
                 let header = province(id) + cprovince::OCCUPANTS;
@@ -870,7 +782,6 @@ pub(crate) mod owned_tests {
                 .collect();
             UnitInputs::fixture(seeds, Outcome::Rows { len: 3 })
         }
-        /// Whether the last hour read province `id`'s record.
         fn read(&self, id: u32) -> bool {
             self.reads.borrow().contains(&province(id))
         }
@@ -890,14 +801,11 @@ pub(crate) mod owned_tests {
         }
     }
 
-    /// A store over a leaked enabled domain.
     fn shared_store() -> (&'static province_unit_changes::Domain, ProvinceUnitStore) {
         let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(64)));
         (domain, ProvinceUnitStore::new(domain))
     }
 
-    /// One hour of `captured` with `store`: each province's mixed handles,
-    /// checked against its land visits (every occupant is a division).
     fn hour(
         captured: &mut Captured,
         world: &World,
@@ -927,7 +835,6 @@ pub(crate) mod owned_tests {
         (1..=3).map(|id| world.read(id)).collect()
     }
 
-    /// A store holding a complete walk, for the job handoff tests.
     pub(crate) fn held_store() -> Box<ProvinceUnitStore> {
         let (_, mut store) = shared_store();
         let mut captured = Captured::with_capacities(&Capacities::default());
@@ -936,10 +843,6 @@ pub(crate) mod owned_tests {
         Box::new(store)
     }
 
-    /// Frames recycle and alternate; the store they share holds the walk. An
-    /// unmarked province's lists are carried without reading its record; a
-    /// province an append or erase marked is read, including a re-append to
-    /// the same province that reorders its list at an unchanged count.
     #[test]
     fn unmarked_provinces_carry_and_marked_ones_read_their_new_order() {
         let mut world = World::new();
@@ -961,11 +864,8 @@ pub(crate) mod owned_tests {
             ]
         );
         assert_eq!(reads(&world), [true; 3]);
-        // A quiet hour reads no province record.
         assert_eq!(next(&world, &mut store), first);
         assert_eq!(reads(&world), [false; 3]);
-        // A fleet merge's unit relocation erases and re-appends in place: the
-        // count is unchanged, the order is not.
         world.occupy(1, &[1, 0]);
         drop(domain.notify(1, Some(1)));
         drop(domain.notify(0, Some(1)));
@@ -973,18 +873,13 @@ pub(crate) mod owned_tests {
         assert_eq!(moved[0], (1, vec![handle(1), handle(0)]));
         assert_eq!(moved[1..], first[1..]);
         assert_eq!(reads(&world), [true, false, false]);
-        // The other frame, which walked before the move, carries nothing of
-        // its own: the store's walk is the moved one.
         assert_eq!(next(&world, &mut store), moved);
         assert_eq!(reads(&world), [false; 3]);
-        // An invalidating hour reads every province.
         domain.boundary(true);
         assert_eq!(next(&world, &mut store), moved);
         assert_eq!(reads(&world), [true; 3]);
     }
 
-    /// A slot that names another province object, with no writer marking
-    /// the province, is read: the carry needs every slot to be the held one.
     #[test]
     fn a_replaced_province_object_is_read() {
         let mut world = World::new();
@@ -998,7 +893,6 @@ pub(crate) mod owned_tests {
         );
         hour(&mut captured, &world, &mut store);
         assert_eq!(reads(&world), [false; 3]);
-        // The same id at another address, with no occupants.
         let replacement = 0x4000;
         world.word(replacement, cprovince::VTABLE_RVA.0 as u64);
         world.bytes[replacement + cprovince::ID..][..4].copy_from_slice(&3_u32.to_le_bytes());
@@ -1007,10 +901,6 @@ pub(crate) mod owned_tests {
         assert!(world.reads.borrow().contains(&replacement));
     }
 
-    /// A walk that fails after its take consumed a mark is not held, and a
-    /// failed job forgets the held walk (the job restore does, which the
-    /// handoff test covers): either way the next hour, in the other recycled
-    /// frame, reads every province and sees the marked change.
     #[test]
     fn a_walk_that_does_not_complete_holds_nothing() {
         for job_failed in [false, true] {
@@ -1046,9 +936,6 @@ pub(crate) mod owned_tests {
         }
     }
 
-    /// A province array of 13,000 provinces in live memory, a sixth of them
-    /// holding one to three census divisions: a full walk, a quiet carried
-    /// hour and a carried hour with 150 marked provinces.
     #[test]
     #[ignore = "release benchmark: ProvinceUnitOrder full walk against the carry"]
     fn province_unit_carry_scale_bench() {
@@ -1123,7 +1010,6 @@ pub(crate) mod owned_tests {
             }
         }
         let census = UnitInputs::fixture(seeds.clone(), Outcome::Rows { len: seeds.len() });
-        // SAFETY: the heap outlives every walk and is not written during one.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(
             PROVINCES + 1,

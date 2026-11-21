@@ -1,16 +1,3 @@
-//! The aircraft the full map's Fly mode flies.
-//!
-//! The host chooses it by name ([`MapAction::FlyAircraft`]); there is no
-//! default. The choice bakes lazily, off the UI thread, from the open map's own
-//! aircraft assets ([`AircraftAssets::player`]), so it flies from the content
-//! stack the map draws. A map that loads again bakes the choice again from its
-//! new content. Each change of state is reported to the host
-//! ([`NativeEvent::FlyAircraft`]); Fly mode flies what [`FlyAircraft::ready`]
-//! gives for the open map, and nothing while it gives nothing: there is no
-//! default aircraft.
-//!
-//! [`MapAction::FlyAircraft`]: dashboard::protocol::MapAction::FlyAircraft
-//! [`NativeEvent::FlyAircraft`]: dashboard::protocol::NativeEvent::FlyAircraft
 
 use job_priority::SpawnCarried as _;
 use dashboard::protocol::{FlyAircraftState, FlyAircraftStatus};
@@ -24,7 +11,6 @@ pub struct FlyAircraft {
     reported: Option<FlyAircraftStatus>,
 }
 
-/// The chosen name's bake for one map's assets.
 struct Bake {
     assets: Arc<AircraftAssets>,
     name: String,
@@ -44,10 +30,6 @@ impl FlyAircraft {
         }
     }
 
-    /// The chosen aircraft once it has baked for the map whose aircraft assets
-    /// are `assets`: its slot in their [`AircraftAssets::library`]. `None`
-    /// while nothing is chosen, while it loads, when it is refused, and for any
-    /// other map's assets, so a slot never outlives the map it was baked for.
     pub fn ready(&self, assets: &Arc<AircraftAssets>) -> Option<&PlayerAircraft> {
         match &self.bake {
             Some(Bake {
@@ -59,7 +41,6 @@ impl FlyAircraft {
         }
     }
 
-    /// Why the chosen aircraft cannot be flown, once its bake refused it.
     pub fn refusal(&self) -> Option<String> {
         match &self.bake {
             Some(Bake {
@@ -71,10 +52,6 @@ impl FlyAircraft {
         }
     }
 
-    /// Advances the choice for the open map, whose aircraft assets are
-    /// `assets` (`None` while no map is open), and returns its status when it
-    /// changed since the last one returned. A bake runs on its own thread and
-    /// calls `repaint` when it is done.
     pub fn poll(
         &mut self,
         assets: Option<&Arc<AircraftAssets>>,
@@ -110,8 +87,6 @@ impl FlyAircraft {
         })
     }
 
-    /// Starts `name`'s bake for `assets` unless it is already theirs, and
-    /// takes its outcome once the bake sent it.
     fn advance(
         &mut self,
         name: String,

@@ -121,7 +121,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         bytes[record + csunk_ship_info::CAUSE_RECORD] = 1;
         bytes[record + csunk_ship_info::ASSISTED_KILL] = 0;
     }
-    // Inline ship/attribution names on both records.
     short(&mut bytes, FIRST + csunk_ship_info::SHIP_NAME, b"Ship");
     short(
         &mut bytes,
@@ -133,7 +132,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         SECOND + csunk_ship_info::SHIP_NAME,
         b"SecondShip",
     );
-    // Heap attribution name on the second record.
     put(
         &mut bytes,
         SECOND + csunk_ship_info::ATTRIBUTION_SOURCE_NAME + msvc_string::DATA,
@@ -151,7 +149,6 @@ pub(crate) fn fixture() -> Vec<u8> {
     );
     put(&mut bytes, HEAP_NAMES, b"Heap");
     bytes[HEAP_NAMES + 4] = 0;
-    // Class definitions with inline names and tokens.
     for (class, token, vtable) in [
         (CLASS, 11u32, csub_unit_definition::VTABLE_RVA),
         (NULL_CLASS, 0u32, csub_unit_definition::NULL_VTABLE_RVA),

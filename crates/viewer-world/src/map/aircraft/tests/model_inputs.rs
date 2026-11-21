@@ -144,8 +144,6 @@ fn memo_primary_index_and_kept_placements_keep_fixed_multi_hour_aircraft_and_fai
         },
     );
     let mut previous: Option<AircraftPlan> = None;
-    // One worker's placements across the hours: only the scenarios whose model changed are placed
-    // again, and the plan is the plan made anew.
     let mut kept = Kept::default();
     for (hour, designer, placed) in [(100, "DesignerA", (4, 0)), (101, "DesignerB", (2, 2)), (102, "DesignerA", (2, 2))] {
         let frame = fixture(hour);
@@ -161,8 +159,6 @@ fn memo_primary_index_and_kept_placements_keep_fixed_multi_hour_aircraft_and_fai
                         .iter()
                         .find(|row| row.id == variant)
                         .unwrap();
-                    // The ordinary shared ladder reaches the designer branch, the
-                    // graphical branch, or a refused variant.
                     aircraft_model::resolve_lazy(
                         row,
                         0x100,
@@ -260,7 +256,6 @@ fn primary_index_keeps_missing_table_lazy_and_preserves_the_reached_refusal() {
     }
     .into();
     let primary = super::super::model_inputs::Primary::new(&frame);
-    // Constructing a plan that emits no actors must not demand equipment.
     for wing in [1, 2] {
         assert_eq!(
             primary.get(wing),

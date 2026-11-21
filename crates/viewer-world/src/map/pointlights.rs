@@ -1,28 +1,10 @@
-//! Tiled point-light inputs for map shading.
-//!
-//! A 64-square index texture covers 512 world units in eight-unit cells. Its
-//! camera-relative origin is truncated, then clamped to the map. The first four
-//! intersecting lights win each cell; at most 64 lights reaching a free cell
-//! enter a 128-by-1 RGBA32F table. Each light uses two texels for position/radius
-//! and linear colour times intensity/falloff. Unused indices are 255.
-//!
-//! Entity events supply authored light curves and reconstructed presentation
-//! clocks. Position is transformed by the attachment matrix; category,
-//! enabled state and lifetime select active lights. Recording combat state
-//! does not establish an active light. Time-zero dumps retain an empty list;
-//! limitations report reconstructed clocks and unavailable event inputs.
-//!
-//! Terrain and arrows use this grid. Other map passes retain their own light
-//! bindings. Content resolves all light definitions and event names.
 
 pub struct PointLightMaps {
     pub indices: Bound,
     pub data: Bound,
-    /// What the two textures hold now.
     written: Written,
 }
 
-/// The tiles a pair of light textures holds, so tiles equal to them are not written again.
 #[derive(Default)]
 struct Written {
     indices: Vec<u8>,
@@ -30,8 +12,6 @@ struct Written {
 }
 
 impl Written {
-    /// Whether the textures must be written to hold `tiles`, taking them as held: the index and
-    /// data textures, apart.
     fn take(&mut self, tiles: &Tiles) -> [bool; 2] {
         let indices = self.indices != tiles.indices;
         if indices {
@@ -74,7 +54,6 @@ impl PointLightMaps {
         })
     }
 
-    /// Writes `tiles` into the textures, each only when it differs from what it holds.
     pub fn write(&mut self, queue: &wgpu::Queue, tiles: &Tiles) {
         use self::{DATA_WIDTH, INDEX_SIZE};
         let [indices, data] = self.written.take(tiles);
@@ -105,7 +84,6 @@ pub const DATA_WIDTH: u32 = 128;
 const CELL: f32 = 8.0;
 const MAX_LIGHTS: usize = 64;
 
-/// Evaluated entity-light output, after its animation and attachment transform.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     pub position: [f32; 3],
@@ -115,15 +93,11 @@ pub struct Light {
     pub falloff: f32,
 }
 
-/// Reused across frames. Only the indices are cleared, as in the engine.
 pub struct Tiles {
     pub grid: [f32; 4],
     pub indices: Vec<u8>,
     pub data: [[f32; 4]; DATA_WIDTH as usize],
     pub count: usize,
-    /// The tile the grid's origin stands at and the lights laid into it: the camera moves by
-    /// whole cells, so a camera that has not left its cell with the same lights has the grid it
-    /// already holds.
     laid: Option<([i32; 2], Vec<Light>)>,
 }
 
@@ -143,7 +117,6 @@ impl Tiles {
     pub fn rebuild(&mut self, camera: Camera, lights: &[Light]) {
         let eye = camera.eye();
         let forward = camera.look_direction();
-        // In the native order: a map under 512 units ends up negative.
         let origin = |eye: f32, forward: f32, size: u32| {
             (((eye + forward * 256.0) / CELL) as i32 - 32)
                 .max(0)
@@ -175,7 +148,6 @@ impl Tiles {
             let [x, _, z] = light.position;
             let r = light.radius;
             let start = [((x - r) / CELL) as i32, ((z - r) / CELL) as i32];
-            // Truncation toward zero and the inclusive upper cell are native.
             let end = [1 - ((x + r) * -0.125) as i32, 1 - ((z + r) * -0.125) as i32];
             let mut admitted = false;
             for cz in start[1].max(origin[1])..end[1].min(origin[1] + 64) {
@@ -295,7 +267,6 @@ mod tests {
         assert_eq!(tiles.grid, [0.0, 0.0, 0.125, 0.125]);
         assert_eq!(tiles.count, 64);
         assert!(tiles.indices.iter().all(|&v| v < 64 || v == 255));
-        // A 300 x 100 map: ceil(37.5) - 64 and ceil(12.5) - 64 cells.
         tiles.rebuild(
             Camera {
                 center: [150.0, 50.0],

@@ -1,4 +1,3 @@
-//! Country-owned goal references and their serialized payloads.
 
 use super::{block, bytes, field, integer_list, invalid, null_permitted_handle, object_id};
 use installed_content_core::parser::Item;
@@ -6,9 +5,7 @@ use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Every saved country, including an omitted (empty) owned-goal roster.
     pub owned_goals: BTreeMap<Vec<u8>, Vec<u64>>,
-    /// Diplomacy owns serialized goal objects independently of its available-goal references.
     pub goals: BTreeMap<u64, Goal>,
 }
 
@@ -41,8 +38,6 @@ pub(super) fn parse_with_countries(
         let mut owned = Vec::new();
         if let Some(diplomacy) = field(fields, b"diplomacy")? {
             let diplomacy = block(diplomacy)?;
-            // The diplomacy writer emits a nonempty roster in native order
-            // as `available_wargoals`, with repeated `wargoal` references.
             if let Some(roster) = field(diplomacy, b"available_wargoals")? {
                 for entry in block(roster)? {
                     if entry.key.as_deref() != Some(b"wargoal") {
@@ -51,8 +46,6 @@ pub(super) fn parse_with_countries(
                     owned.push(null_permitted_handle(&entry.value)?);
                 }
             }
-            // The diplomacy writer emits goal objects under `wargoals`,
-            // with each object's token as its dynamic child key.
             if let Some(goals) = field(diplomacy, b"wargoals")? {
                 for item in block(goals)? {
                     item.key
@@ -60,11 +53,6 @@ pub(super) fn parse_with_countries(
                         .filter(|key| !key.is_empty())
                         .ok_or_else(|| invalid("unkeyed or empty serialized wargoals child"))?;
                     let payload = block(&item.value)?;
-                    // The goal writer always saves actor/recipient/type; states only
-                    // for a nonzero count. Type is the current definition's
-                    // token, not the child key: both start from the same
-                    // definition, but replacing the definition leaves the
-                    // object's child-key token unchanged.
                     super::scalar(
                         field(payload, b"wargoaldata_actor")?
                             .ok_or_else(|| invalid("wargoal lacks actor"))?,

@@ -1,4 +1,3 @@
-//! Viewer-local air-wing selection, in the regional registration order.
 use replay_data::{BranchId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -30,8 +29,6 @@ impl Selection {
         &self.bases
     }
 
-    /// Selected base references are separate from wing membership. Selecting a
-    /// wing appends its pool base; removing that wing does not erase the reference.
     pub fn mission_click(
         &mut self,
         frame: &DecodedFrame,
@@ -77,9 +74,6 @@ impl Selection {
         true
     }
 
-    /// A wing-grid item toggles each live member in item order. A plain click
-    /// first clears wings and base references; Shift preserves both. This is
-    /// distinct from a mission button's all-selected collection test.
     pub fn grid_click(
         &mut self,
         frame: &DecodedFrame,
@@ -126,9 +120,6 @@ impl Selection {
         Ok(*before.0 != *self.wings || *before.1 != *self.bases)
     }
 
-    /// A box appends the live wings it takes, in order, each with its pool base as a wing-grid
-    /// click does. Without Shift it first clears wings and base references; it never takes a
-    /// wing away.
     pub fn box_click(
         &mut self,
         frame: &DecodedFrame,
@@ -169,9 +160,6 @@ impl Selection {
         Ok(true)
     }
 
-    /// Base buttons append every unselected registered wing, including empty
-    /// wings. Shift preserves the previous selection; it never toggles it off.
-    /// A base without positive-plane wings also selects the base itself.
     pub fn base_click(
         &mut self,
         frame: &DecodedFrame,
@@ -203,9 +191,6 @@ impl Selection {
                 bases.push(base);
             }
         }
-        // Selection notifications add each newly selected wing's pool base.
-        // The registered base is already authenticated by its complete census;
-        // a quiet empty base need not have a range-reference witness.
         let mut selected: BTreeSet<_> = self.wings.iter().copied().collect();
         for (handle, pool_base) in members {
             if selected.insert(handle) {
@@ -228,8 +213,6 @@ impl Selection {
         true
     }
 
-    /// Shift removes the entire clicked collection when all of it is selected;
-    /// otherwise it appends the collection's missing members in stored order.
     pub fn click(&mut self, members: &[u64], shift: bool) -> bool {
         let before = Arc::clone(&self.wings);
         let wings = Arc::make_mut(&mut self.wings);
@@ -256,8 +239,6 @@ impl Selection {
         }
     }
 
-    /// A new branch clears the selection; a new viewing country keeps it, as the game's
-    /// observer switch deselects nothing. It reads no rows.
     pub fn context(&mut self, branch: BranchId) {
         if self.context != Some(branch) {
             self.clear();
@@ -289,8 +270,6 @@ fn unavailable(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
 
-/// Resolve the clicked province's state base and the viewer's actual pools.
-/// A missing registration in a complete census proves no access.
 pub fn base_target(
     frame: &DecodedFrame,
     viewer: u32,
@@ -350,9 +329,6 @@ pub fn base_target(
     }))
 }
 
-/// A mission button selects registered wings whose selected mask contains
-/// that mission, including zero-aircraft wings. The effective volunteer country
-/// does not replace the regional pool's owner.
 pub fn mission_members(
     frame: &DecodedFrame,
     viewer: u32,
@@ -606,14 +582,11 @@ mod tests {
         assert!(selected.grid_click(&observed, &[2], false).unwrap());
         assert_eq!(selected.wings().as_slice(), [2]);
         assert_eq!(selected.bases().as_slice(), [9]);
-        // A stale item with no live references returns before DeselectAll.
         assert!(!selected.grid_click(&observed, &[99], false).unwrap());
         assert_eq!(selected.wings().as_slice(), [2]);
-        // The native callback visits repeated references in order.
         selected.grid_click(&observed, &[1, 1], false).unwrap();
         assert!(selected.wings().is_empty());
         assert_eq!(selected.bases().as_slice(), [8]);
-        // A box only adds, live wings in order with their pool bases; without Shift it replaces.
         assert!(selected.box_click(&observed, &[2, 99, 2], true).unwrap());
         assert_eq!((selected.wings().as_slice(), selected.bases().as_slice()), ([2].as_slice(), [8, 9].as_slice()));
         assert!(!selected.box_click(&observed, &[2], true).unwrap());

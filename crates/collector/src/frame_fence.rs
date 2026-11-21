@@ -1,7 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The hourly captures' sequence; each frame's own sequence lives in its slot
-/// ([`crate::frame_pool::Slot::fence`]), zero once recycled.
 #[derive(Default)]
 pub(crate) struct Frames {
     started: AtomicU64,
@@ -14,7 +12,6 @@ pub(crate) struct Capture<'a> {
 }
 
 impl Frames {
-    // The single running capture publishes its frame before it ends.
     pub(crate) fn capture(&self) -> Capture<'_> {
         Capture {
             frames: self,
@@ -26,8 +23,6 @@ impl Frames {
         self.started.load(Ordering::SeqCst)
     }
 
-    /// Whether a capture up to `fence` is still under way, or its frame, among `owned`, is
-    /// still unrecycled.
     pub(crate) fn pending<'a>(
         &self,
         fence: u64,

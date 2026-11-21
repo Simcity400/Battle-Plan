@@ -3,7 +3,6 @@ import test from 'node:test';
 import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, heldPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
 import type { LogRow } from './logData';
 
-// Ten rows over three six-hour bins from hour 100: hours 100, 101, 104 | 106, 106, 110, 111 | 112, 115, 117.
 const hours = [100, 101, 104, 106, 106, 110, 111, 112, 115, 117];
 const counts = validateLogCounts({ branchId: '1', log: 'test', firstHour: 100, binHours: 6, missing: [], warnings: [],
   lines: [{ before: '20', total: '10', bins: [[0, 3], [1, 4], [2, 3]] }] }, 100, 117);
@@ -21,7 +20,6 @@ test('the cut counts every row through its hour, from the bins before it and the
 });
 
 test('a cut inside a bin whose page is not held shows only the bins before it, and says so', () => {
-  // Hour 108 lies in the second bin (ordinals 3 to 6), held by pages 1 and 2 of three rows.
   assert.deepEqual(shownThrough(counts, before, 108, 3, pageOf(3, new Set([1]))), { shown: 3, known: false });
   assert.deepEqual(shownThrough(counts, before, 108, 3, pageOf(3, new Set([1, 2]))), { shown: 5, known: true });
   assert.deepEqual(shownThrough(counts, before, 111, 3, pageOf(3, new Set([0]))), { shown: 3, known: false }, 'other pages do not stand in');
@@ -85,7 +83,6 @@ test('the hours a log was not recorded whole are kept with their reasons, cut at
 });
 
 test('the page after the head is asked only while it holds rows: past the span the service answers none, which no page can be', () => {
-  // Following at the head with the span's ten rows shown, the next page of four starts at 12.
   const head = Math.floor(counts.total / 4);
   assert.deepEqual([head, head + 1].filter(index => pageInSpan(index, 4, counts.total)), [2]);
   assert.equal(pageInSpan(0, 4, 0), false, 'an empty span asks no page');
@@ -108,12 +105,10 @@ test('a family\'s own page is asked without the log it fixes, as its strict para
 });
 
 test('after a seek the cut waits on every page of its bin, and the list asking for the pages it shows releases none of them', () => {
-  // Pages of two rows: hour 108 lies in the second bin (ordinals 3 to 6), held by pages 1, 2 and 3.
   const waiting = binPages(counts, before, 108, 2);
   assert.deepEqual(waiting, [1, 2, 3]);
   const at = shownThrough(counts, before, 108, 2, pageOf(2, new Set([1])));
   assert.deepEqual(at, { shown: 3, known: false });
-  // The list shows the head page (1) and asks for it; following adds the next (2); the bin's last page (3) is kept too.
   assert.deepEqual([...askedPages(['1'], at.shown, 2, true, waiting)].sort(), [1, 2, 3]);
   assert.deepEqual([...askedPages(['1', 'family'], at.shown, 2, false, [])], [1], 'a pinned list asks only what it shows; a key not a page is no page');
   assert.deepEqual(binPages(counts, before, null, 2), [], 'no cut waits on nothing');
@@ -121,7 +116,6 @@ test('after a seek the cut waits on every page of its bin, and the list asking f
 });
 
 test('playing, the pages of the next two seconds of playback are asked with the block; paused, the next page', () => {
-  // Three rows through hour 104; two seconds at one hour a second reach hour 106, whose bin ends at the seventh row.
   assert.equal(aheadThrough(counts, before, 3, 104, 1, true), 7);
   assert.deepEqual([...askedPages([], 3, 2, true, [], aheadThrough(counts, before, 3, 104, 1, true))].sort(), [1, 2, 3], 'pages of rows 3 to 6');
   assert.deepEqual([...askedPages([], 3, 2, true, [], aheadThrough(counts, before, 3, 104, 1, false))].sort(), [1, 2], 'paused: the head page and the next');
@@ -129,15 +123,12 @@ test('playing, the pages of the next two seconds of playback are asked with the 
   const busy = validateLogCounts({ branchId: '1', log: 'test', firstHour: 100, binHours: 6, missing: [], warnings: [],
     lines: [{ before: '0', total: '100000', bins: [[0, 100000]] }] }, 100, 105);
   assert.equal(aheadThrough(busy, cumulativeCounts(busy), 10, 100, 1440, true), 100000);
-  // Run 13's event feed at 1,440 h/s: some 370 rows a second, pages of 64. Two blocks of rows (242) are a quarter second of
-  // playback; the pages are asked through the two seconds of rows instead.
   const feed = validateLogCounts({ branchId: '1', log: 'test', firstHour: 0, binHours: 30, missing: [], warnings: [],
     lines: [{ before: '0', total: String(1000 * 8), bins: Array.from({ length: 1000 }, (_, bin) => [bin, 8]) }] }, 0, 29_999);
   assert.equal(aheadThrough(feed, cumulativeCounts(feed), 800, 3_000, 1440, true), 8 * Math.floor((3_000 + 2880) / 30 + 1), 'every row through the bin two seconds on');
 });
 
 test('a page asks from the first hour its first row can hold: the start of the bin that row is counted in', () => {
-  // Bins from hour 100 of six hours: rows 0 to 2, 3 to 6, 7 to 9.
   assert.deepEqual([0, 2, 3, 6, 7, 9].map(at => pageFirstHour(counts, before, at)), [100, 100, 106, 106, 112, 112]);
   const sparse = validateLogCounts({ branchId: '1', log: 'test', firstHour: 100, binHours: 6, missing: [], warnings: [],
     lines: [{ before: '0', total: '3', bins: [[0, 1], [3, 2]] }] }, 100, 125);
@@ -167,7 +158,6 @@ test('a count painted each frame adds the rows drawn past the cut as the clock r
 });
 
 test('a page answered for the spec shown is held, though the list mounted while its spec was still loading', () => {
-  // A widget's spec waits on a reply (the feed's kinds, the division log's manifest): the list mounts holding pages for none.
   const mounted = noPages<string[], string>(null);
   const held = heldPage(mounted, 'spec', 'spec', 4, ['row'], ['note']);
   assert.equal(held.lane, 'spec');

@@ -17,7 +17,6 @@ interface Props { widget: WidgetSpec; runtime: WidgetRuntime; active?: boolean; 
 const noDiagnostics = () => {};
 const researchWidgets = new Set(['research', 'active-research', 'special-projects', 'doctrine-mastery', 'nuclear-arsenal']);
 
-/** Renders the registered widget for a spec; the grid never switches on a kind. */
 export function WidgetBody({ widget, runtime, active = true, mapOptions, headerSlot, countrySlot, onDiagnostics, setOption, setOptions }: Props) {
   const resolved = useMemo(() => resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), [widget, runtime.campaignTracks, runtime.defaultRoleId]);
   const unavailable = widgetUnavailable(widget);

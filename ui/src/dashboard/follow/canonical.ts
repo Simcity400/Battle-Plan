@@ -1,4 +1,3 @@
-/** `value` as JSON with its keys in order: one text for one query however it was written. */
 export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') {

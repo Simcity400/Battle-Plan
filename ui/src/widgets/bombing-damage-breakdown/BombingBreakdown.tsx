@@ -23,26 +23,20 @@ import type { MilitaryAirLedger } from '../../dashboard/militaryAirLedger';
 
 const UNRECORDED = 'This country’s bombing damage was not recorded at this moment.';
 
-/** The same building → dated-state projection serves the separate widget and drill, from a reply breaking the holder down by building and state.
- * With `headAt` (following the playhead), the sunburst reads its values at the head each frame: the widget renders only
- * when what it shows around them changes. */
 export default function BombingBreakdown({ data, index: given, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, options, active, headAt }: {
   data: MilitaryAirLedger; index?: LedgerIndex; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity?: string; from: number; hour: number; end: number;
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
   dealt: boolean; options: Readonly<Record<string, OptionValue>>; active: boolean;
-  /** The track hour at a clock position while following the playhead; null outside the recording. */
   headAt?: ((position: number) => number | null) | null;
 }) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Bombing damage breakdown actions');
   const index = useMemo(() => given ?? militaryAirIndex(data), [given, data]);
   const row = useMemo(() => ledgerCountryAt(index, tag, from, hour, identity), [index, from, hour, tag, identity]);
-  // Without a pinned holder the header names the country shown: the dashboard's or the one chosen.
   const headerTag = countrySlot ? ledgerHeaderTag(index, row, tag, hour, identity, headerSelection ?? null) : null;
   const wanted = useMemo(() => headerTag ? [{ tag: headerTag, hour }] : [], [headerTag, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !!countrySlot);
   const finalRow = useMemo(() => ledgerCountryAt(index, tag, from, end, identity), [index, tag, from, end, identity]);
-  // The holder's states, named once at the view's end: one request while the holder shown holds, never one per hour.
   const stateIds = useMemo(() => [...new Set((row?.series.parts ?? []).flatMap(leaf => leaf.dealt === dealt && leaf.buildingId !== null && leaf.state ? [leaf.state] : []))]
     .sort((a, b) => a - b), [row?.series, dealt]);
   const stateRequest = stateIds.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
@@ -50,7 +44,6 @@ export default function BombingBreakdown({ data, index: given, runtime, track, t
   const stateNames = useProduct<PlaceNamesReply>(runtime.client, stateRequest, active, validatePlaceNamesReply, track.source);
   const names = useMemo(() => new Map<number, PlaceStateName>(stateNames.data?.states.map(item => [item.stateId, item]) ?? []), [stateNames.data]);
   const namesPending = !stateNames.data && !stateNames.error;
-  // The sunburst's values at an hour: its slices, the whole, or why the whole is missing.
   const valuesAt = (at: number): SunburstValues => {
     const shown = ledgerCountryAt(index, tag, from, at, identity);
     if (!shown) return { items: [], unavailableReason: UNRECORDED };
@@ -75,11 +68,8 @@ export default function BombingBreakdown({ data, index: given, runtime, track, t
   };
   const build = useRef(valuesAt);
   build.current = valuesAt;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const values = useMemo(() => valuesAt(hour), [data, index, tag, identity, dealt, from, hour, end, finalRow, names, namesPending, stateNames.error]);
   const live = useMemo(() => headAt ? liveAt(runtime.clock, position => headAt(position) ?? hour, at => build.current(at)) : undefined,
-    // Made again whenever what the values are made from changes; the head's hour is read each frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [headAt, runtime.clock, data, index, tag, identity, dealt, from, end, finalRow, names, namesPending, stateNames.error]);
   const liveDate = useMemo(() => live ? { read: live.hour, subscribe: live.subscribe } : undefined, [live]);
   const shownHour = () => live?.hour() ?? hour;

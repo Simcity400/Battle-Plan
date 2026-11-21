@@ -1,6 +1,3 @@
-//! Participation state seeded by the existing authenticated war census and
-//! maintained only at native mutation boundaries. Hook paths never allocate or
-//! wait. A lost observation refuses the family until an explicit full refresh.
 use collector_hooks::hook::Hook;
 use collector_observers::war_changes::{self, Changes};
 use collector_primitives::raw_memory;
@@ -156,8 +153,6 @@ impl Drop for Flight {
     }
 }
 
-// Only the writer's existing arguments are inspected here. The cache admits
-// receivers at seed, so this operation neither reads native memory nor grows.
 fn casualty_changed(ledger: usize, known: i32, unknown: i32, capitulated: bool) -> u16 {
     let Ok(mut slot) = STORE.try_lock() else {
         refuse();
@@ -169,8 +164,6 @@ fn casualty_changed(ledger: usize, known: i32, unknown: i32, capitulated: bool) 
     let Some((held, side)) = held_mut(store, ledger) else {
         return 0;
     };
-    // The writer truncates each signed dword to thousands before applying
-    // its factors. Losses within the same quotient cannot change either score.
     let signature = (known / 1000, unknown / 1000, capitulated);
     let changed = match held.signatures[side] {
         None => (1 << 6) | (1 << 7),
@@ -205,8 +198,6 @@ fn changed(ledger: usize, columns: u16, province: Option<i32>) {
         return;
     }
     let revision = held.revision;
-    // Province membership and first-credit score demand are worker work.
-    // The callback queues only the writer's identity and replacement revision.
     let first_mark = province.is_none() && held.dirty[direction] == 0;
     if province.is_none() {
         held.dirty[direction] |= columns;
@@ -253,8 +244,6 @@ fn history_changed(status: usize, field: usize) {
     if store.history_owners.is_empty() || LOST.load(Ordering::SeqCst) {
         return;
     }
-    // The verified delivery writer authenticates its status receiver. Only an
-    // event for an uncached, previously zero history needs identity operands.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let Some(diplomacy) = status
         .checked_add(engine_native::crelation_status::DIPLOMACY_STATUS)
@@ -264,7 +253,6 @@ fn history_changed(status: usize, field: usize) {
         return;
     };
     let Some(&(_, country)) = store.history_owners.get(&(diplomacy as usize)) else {
-        // This status belongs to a country outside every recorded war roster.
         return;
     };
     let target = status
@@ -311,8 +299,6 @@ fn replace(relation: usize) {
     }
 }
 
-// Shared lifetime hooks provide their receiver, so a revision change never
-// forces a world-wide participation seed. Every hook operation is fixed-size.
 fn lifetime_changed(site: war_changes::Site, receiver: usize, diplomacy: usize) {
     if !ENABLED.load(Ordering::SeqCst) {
         return;
@@ -349,8 +335,6 @@ fn lifetime_changed(site: war_changes::Site, receiver: usize, diplomacy: usize) 
     if store.history_owners.is_empty() {
         return;
     }
-    // Construction receives its owner explicitly; its storage has no backlink
-    // before the original initializes it. A null owner names no recorded root.
     if site == war_changes::Site::StatusConstruct && diplomacy == 0 {
         return;
     }
@@ -389,8 +373,6 @@ fn allocation_error(_: std::io::Error) -> &'static str {
     "war participation storage allocation failed"
 }
 
-/// Worker only. `sources` are the successful existing census's rows, not a
-/// second live relation walk. Quiet hours clone three shared table handles.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -578,7 +560,6 @@ fn capture_inner(
 }
 
 fn read_province_events(store: &mut Store) -> Result<(), &'static str> {
-    // Consume by index without replacing or reallocating the warm event vector.
     for index in 0..store.events.len() {
         let (ledger, province, revision) = store.events[index];
         if let Some((held, side)) = held_mut(store, ledger) {
@@ -603,8 +584,6 @@ fn read_province_events(store: &mut Store) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Reconcile census roots and roster membership once per changed topology.
-/// This visits R census rows once, never their candidate ordered pair closure.
 fn reconcile_histories(
     sources: impl IntoIterator<Item = OwnedRow>,
     country_sources: impl Iterator<Item = engine_native::cwar_relation::overview::CountrySource>,
@@ -649,8 +628,6 @@ fn reconcile_histories(
             );
         }
         let root = store.history_roots.get_mut(&country.slot).unwrap();
-        // Existing histories survive a pure roster edit. Their native writers
-        // invalidate only the receiving owner; newly admitted roots seed here.
         let replaced = root.country != country.country || root.diplomacy != country.diplomacy;
         let changed = full || new || replaced;
         if replaced {
@@ -793,8 +770,6 @@ fn seed_history_owner(
         {
             return true;
         }
-        // Storage may have been recycled into another seeded owner. Retiring
-        // this owner's old index must not erase that other owner's new row.
         if histories.get(status).is_some_and(|h| h.country == country) {
             histories.remove(status);
             *changed = true;
@@ -811,8 +786,6 @@ fn seed_history_owners(
     state: usize,
     store: &mut Store,
 ) -> Result<native::DeliverySeedWork, &'static str> {
-    // A fresh owner seed supersedes its queued delivery marks, including
-    // identities whose status storage was replaced in the same interval.
     store.unseen_histories.retain(|event| {
         store
             .history_slots
@@ -1108,7 +1081,6 @@ fn publish(store: &mut Store) -> Result<[Arc<TableRows>; 3], &'static str> {
                 .sum::<usize>()) as u64,
         ..Default::default()
     });
-    // Retire any old shared allocations here on the acquisition worker.
     current.take();
     Ok(rows)
 }
@@ -1117,9 +1089,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// Caller owns this family and the authenticated process image, and retains
-    /// every patch and callback until restoration and native quiescence.
+    #[doc = " # Safety"]
+    #[doc = " Caller owns this family and the authenticated process image, and retains"]
+    #[doc = " every patch and callback until restoration and native quiescence."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if SITES.iter().all(|s| {
@@ -1175,8 +1147,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // Runtime retains this owner until every native original and callback
-        // has quiesced. A failed restoration retains its state with its code.
         if active() == 0 && self.hooks.iter().all(|h| !h.is_enabled()) {
             war_changes::observe_participation(None);
             if let Ok(mut slot) = STORE.try_lock() {
@@ -1208,8 +1178,6 @@ unsafe extern "system-unwind" fn province_capture(ledger: usize, province: usize
     let flight = Flight::enter(4);
     let original: unsafe extern "system-unwind" fn(usize, usize, u32) =
         unsafe { std::mem::transmute(ORIGINAL[4].load(Ordering::Acquire)) };
-    // Province identity is stable through this writer; only a demanded ledger
-    // needs it. The native writer inserts even when this is a repeated capture.
     let wanted = match STORE.try_lock() {
         Ok(mut slot) => slot.as_mut().and_then(|s| held_mut(s, ledger)).is_some(),
         Err(_) => {
@@ -1400,9 +1368,6 @@ mod tests {
         );
     }
 
-    /// A virtual native world counts each real requested entry without storing
-    /// quadratic synthetic memory. Statuses have actual authenticated fields;
-    /// two histories per owner are nonzero, including pairs outside one side.
     struct SeedWorld {
         count: u32,
         matrices: std::cell::Cell<usize>,
@@ -1570,8 +1535,6 @@ mod tests {
         let count = 10u32;
         let world = SeedWorld::new(count);
         let half = count / 2;
-        // Every member fights all of the other side except its matched
-        // counterpart. Every roster differs; no interning shortcut exists.
         let rows = (0..count).flat_map(|owner| {
             (0..half)
                 .filter(move |&member| member != owner % half)
@@ -1611,8 +1574,6 @@ mod tests {
                 .values()
                 .all(|root| root.statuses.len() == 2)
         );
-        // Nothing about candidate side size changes the entry count. A
-        // marked owner alone re-seeds, without reading the other roots.
         world.allowed.set(Some(1));
         world.zero_owner.set(Some(0));
         queue_owner_seed(&mut store, 0).unwrap();
@@ -1667,7 +1628,6 @@ mod tests {
         reconcile_histories(rows, world.countries(), &mut store, true).unwrap();
         seed_history_owners(&world, 0, 0, &mut store).unwrap();
         let untouched = store.histories[&world.status(1, 2)].value;
-        // A former status address can now belong to a different owner.
         store
             .history_roots
             .get_mut(&0)
@@ -1712,8 +1672,6 @@ mod tests {
             4
         );
         assert_eq!(store.histories[&world.status(1, 2)].value, untouched);
-        // A new retained roster member admits just its root; existing histories
-        // remain exact and do not depend on which side playback selects.
         let expanded = rows.into_iter().chain([SeedWorld::row(0, 2, 4)]);
         store.generation += 1;
         reconcile_histories(expanded, world.countries(), store, false).unwrap();
@@ -1949,7 +1907,6 @@ mod tests {
         assert_eq!(held.ledgers[0].captured_provinces.len(), 5_001);
         assert_eq!(held.ledgers[0].captured_provinces[0], -7);
         assert!(store.captures_changed);
-        // A queued identity from before replacement cannot enter the new set.
         store.events.push((ledger, -8, 0));
         store.held.get_mut(&0x10000).unwrap().revision = 1;
         read_province_events(store).unwrap();
@@ -1982,8 +1939,6 @@ mod tests {
         let events = store.unseen_histories.as_ptr();
         *STORE.lock().unwrap() = Some(store);
         LOST.store(false, Ordering::SeqCst);
-        // An owner outside every possible side needs no target identity or
-        // alias resolution (this synthetic store has no alias scope).
         bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
             .copy_from_slice(&((diplomacy + 8) as u64).to_le_bytes());
         bytes[engine_native::crelation_status::TARGET_COUNTRY..][..4].fill(0);
@@ -2047,7 +2002,6 @@ mod tests {
         store.unseen_histories.reserve(1);
         *STORE.lock().unwrap() = Some(store);
         LOST.store(false, Ordering::SeqCst);
-        // The lowest pages are never mapped, so the status's owner backlink is unreadable.
         collector_test_support::with_allocations_denied(|| history_changed(0x1000, 0));
         assert!(LOST.load(Ordering::SeqCst));
         assert!(
@@ -2059,7 +2013,6 @@ mod tests {
                 .unseen_histories
                 .is_empty()
         );
-        // A readable owner outside every recorded roster is not an observation failure.
         LOST.store(false, Ordering::SeqCst);
         let mut bytes = vec![0u8; 0x800];
         let status = bytes.as_ptr() as usize;

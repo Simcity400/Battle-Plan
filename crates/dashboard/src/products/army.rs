@@ -1,8 +1,3 @@
-//! Land army totals and the Army size race, read from the recorder's `ArmyTotals` and `ArmyMix`
-//! (written by `recorder_derive::army`): each window (a block of a run) hour by hour for chosen
-//! countries or the top N there, the whole timeline as a chart, and each country's battalions by
-//! unit group. A tag reads its holder's totals by the one identity rule; an hour a total is not
-//! recorded is a gap, never zero.
 
 use dashboard_base::products::Country;
 use super::{LoadContext, Product};
@@ -31,7 +26,6 @@ use ts_rs::TS;
 mod template_roster;
 pub use template_roster::{TemplateRoster, TemplateRosterParams, TemplateRosterReply};
 
-/// The series kind army charts are asked by.
 pub const SERIES: &str = "army-size";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -68,7 +62,7 @@ pub struct ArmySizeParams {
     pub measure: ArmyMeasure,
     pub count_for: ArmyAttribution,
     pub by_type: bool,
-    /// None is the window manifest; histories name a window by its index.
+    #[doc = " None is the window manifest; histories name a window by its index."]
     #[serde(default)]
     pub window: Option<usize>,
 }
@@ -89,7 +83,6 @@ pub struct ArmyRun {
     pub raw: String,
 }
 
-// Compact hourly totals: [first hour, geometry total, last hour or null, exact raw].
 impl Serialize for ArmyRun {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         (self.first_hour, self.total, (self.last_hour != self.first_hour).then_some(self.last_hour), &self.raw).serialize(serializer)
@@ -103,7 +96,7 @@ pub struct ArmyMixRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub values: Vec<Option<f64>>,
-    /// Decimal counts keep exact labels; values are chart geometry only.
+    #[doc = " Decimal counts keep exact labels; values are chart geometry only."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub raw_values: Option<Vec<Option<String>>>,
@@ -163,7 +156,6 @@ dashboard_base::reply_warnings!(ArmySizeReply);
 
 const MEASURES: [ArmyMeasure; 4] = [ArmyMeasure::Manpower, ArmyMeasure::Divisions, ArmyMeasure::Strength, ArmyMeasure::Battalions];
 
-/// The declared measure of `ArmyTotals` holding `measure` counted for `attribution`.
 fn measure_name(measure: ArmyMeasure, attribution: ArmyAttribution) -> &'static str {
     match (measure, attribution) {
         (ArmyMeasure::Divisions, ArmyAttribution::Owner) => "ownerDivisions",
@@ -184,7 +176,6 @@ fn line<'q, 'a>(query: &'q Query<'a>, measure: ArmyMeasure, attribution: ArmyAtt
     Line::new(query, series, declared)
 }
 
-/// The line an army chart's tiles read; a ranked chart is not served as tiles.
 pub(crate) fn tile_line<'q, 'a>(query: &'q Query<'a>, params: &Value) -> io::Result<Line<'q, 'a>> {
     let family: Family = serde_json::from_value(params.get("family").cloned().unwrap_or(Value::Null)).map_err(|error| invalid(format!("Invalid army tile request: {error}")))?;
     if family.top.is_some() {
@@ -239,7 +230,6 @@ impl Product for ArmySize {
     }
 }
 
-/// The timeline's windows: each block of each run, cut to the hours the timeline holds.
 pub fn windows(query: &Query<'_>) -> io::Result<Vec<ArmySpan>> {
     let recording = query.replay.recording();
     let mut out = Vec::new();
@@ -279,8 +269,6 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
     };
     let line = line(query, params.measure, params.count_for)?;
     let (first, last) = (range.first_hour, range.last_hour);
-    // A ranked window's members from the summaries' top-N at six-hour bins: no country's runs are
-    // read unless it ranks.
     let ranked: Option<BTreeMap<Country, Vec<dashboard_base::span::HourSpan>>> = match params.top {
         Some(top) => {
             let width = ((i64::from(last) - i64::from(first) + 1) / 6).max(1) as u32;
@@ -309,8 +297,6 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
             parts.insert(tag.clone(), held);
         }
     }
-    // By unit group, the window's mix is read beside its totals, not after them: the two reads are
-    // the reply's cost, and neither needs the other.
     let by_type = params.by_type && params.measure == ArmyMeasure::Battalions;
     let attribution = u128::from(params.count_for == ArmyAttribution::Host);
     let totals = line.source();
@@ -374,16 +360,13 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
     Ok(reply)
 }
 
-/// Runs of an `ArmyTotals` column by (run, first hour, last hour) of the parts read, then by key.
 type Found = HashMap<(u32, i32, i32), HashMap<u128, read::Runs>>;
 
-/// The runs of `line` of every part: one read per run and window for every slot asked.
 #[cfg(test)]
 fn totals_runs(query: &Query<'_>, line: &Line<'_, '_>, parts: &BTreeMap<Country, Vec<Part>>) -> io::Result<Found> {
     totals_of(query, line.source(), parts)
 }
 
-/// [`totals_runs`] of the series column `source`.
 fn totals_of(query: &Query<'_>, source: summary::Source, parts: &BTreeMap<Country, Vec<Part>>) -> io::Result<Found> {
     let recording = query.replay.recording();
     let mut by_run: HashMap<(u32, i32, i32), Vec<u128>> = HashMap::new();
@@ -399,7 +382,6 @@ fn totals_of(query: &Query<'_>, source: summary::Source, parts: &BTreeMap<Countr
     Ok(found)
 }
 
-/// Each tag's runs of its parts in `found`.
 fn runs_by_tag(found: &Found, parts: &BTreeMap<Country, Vec<Part>>) -> BTreeMap<Country, Vec<(i32, i32, Option<i64>)>> {
     parts
         .iter()
@@ -413,8 +395,6 @@ fn runs_by_tag(found: &Found, parts: &BTreeMap<Country, Vec<Part>>) -> BTreeMap<
         .collect()
 }
 
-/// `tag`'s identity segments meeting `first..=last`: each keeps its first hour and ends at the
-/// window's end at the latest.
 fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<ArmySpan> {
     query
         .holders
@@ -425,7 +405,6 @@ fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<Army
         .collect()
 }
 
-/// A sub-unit name's unit group: its key, its title, and why it is not known.
 fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catalogue::Catalogue>, name: &str) -> (String, ArmyType, Option<String>) {
     let group = units.map_or_else(|| Err("game content is unavailable".into()), |units| units.group(name.as_bytes()));
     let (key, label, mut warning) = match group {
@@ -459,7 +438,6 @@ fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catal
     (key.clone(), ArmyType { key, name: label }, warning)
 }
 
-/// The content's sub-unit groups each composition names, with every refusal.
 pub fn check_content(catalogue: &dashboard_base::catalogue::Catalogue) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
     let units = installed_content_core::unit_leader::sub_units(&catalogue.content.layers)?;
@@ -483,7 +461,6 @@ struct Groups {
     content: Option<(Arc<dashboard_base::catalogue::Catalogue>, Result<SubUnits, String>)>,
 }
 
-/// Each tag's battalions by unit group over its runs, and the groups in key order.
 #[allow(clippy::too_many_arguments, reason = "the composition reads the source, the window, its totals, the series and the content")]
 fn composition(
     source: &Source,
@@ -583,14 +560,8 @@ fn composition(
     Ok(types)
 }
 
-/// A slot's battalions by sub-unit token: runs of one mix over hours its composition is known.
 type MixRuns = Vec<(i32, i32, BTreeMap<u32, i64>)>;
 
-/// Each part's mix runs by (run, first hour, last hour, slot), and each token's name. The keys
-/// read are the asked slots' `ArmyMix` keys of the attribution live in the part (`lives` gives a
-/// run's keys and their hours, ascending by key), read as hourly runs; a slot's composition is
-/// known where its battalions total in `found` is recorded; names come from one read of
-/// `LexicalTokens` at each run's last hour asked.
 #[cfg(test)]
 fn mix_runs(
     recording: &Recording,
@@ -604,11 +575,8 @@ fn mix_runs(
     mixes_of(recording, parts, found, &read, cancelled)
 }
 
-/// The parts' `ArmyMix` battalions runs by (run, first hour, last hour) of the parts, then by key.
 type MixReads = HashMap<(u32, i32, i32), HashMap<u128, read::Runs>>;
 
-/// The `ArmyMix` keys of the attribution the parts' slots hold live in each part (`lives` gives a
-/// run's keys and their hours, ascending by key), read as hourly runs: one read a stretch.
 fn mix_reads(
     recording: &Recording,
     attribution: u128,
@@ -638,7 +606,6 @@ fn mix_reads(
     Ok(out)
 }
 
-/// Each part's slot and key, by the stretch it lies in.
 fn stretch_slots(parts: &BTreeMap<Country, Vec<Part>>) -> BTreeMap<(u32, i32, i32), BTreeMap<u32, u128>> {
     let mut by_stretch: BTreeMap<(u32, i32, i32), BTreeMap<u32, u128>> = BTreeMap::new();
     for part in parts.values().flatten() {
@@ -647,8 +614,6 @@ fn stretch_slots(parts: &BTreeMap<Country, Vec<Part>>) -> BTreeMap<(u32, i32, i3
     by_stretch
 }
 
-/// Each part's mix runs by (run, first hour, last hour, slot) from the mix read (`read`), its
-/// composition known where its battalions total in `found` is recorded, and each token's name.
 fn mixes_of(
     recording: &Recording,
     parts: &BTreeMap<Country, Vec<Part>>,
@@ -695,8 +660,6 @@ fn mixes_of(
     Ok((out, names))
 }
 
-/// The value of the run in `runs` (ascending) holding `hour`, `at` moved on to it; none where no
-/// run holds it or its value is not recorded.
 fn holding(runs: &[(i32, i32, Option<i64>)], at: &mut usize, hour: i32) -> Option<i64> {
     while runs.get(*at).is_some_and(|run| run.1 < hour) {
         *at += 1;
@@ -704,8 +667,6 @@ fn holding(runs: &[(i32, i32, Option<i64>)], at: &mut usize, hour: i32) -> Optio
     runs.get(*at).filter(|run| run.0 <= hour).and_then(|run| run.2)
 }
 
-/// The mix over `first..=last` of a slot whose battalions total runs are `known` and whose tokens'
-/// runs are `tokens`: runs of an equal mix where the total is recorded, cut where any run changes.
 fn mixes_over(first: i32, last: i32, known: &[(i32, i32, Option<i64>)], tokens: &[(u32, &read::Runs)]) -> MixRuns {
     let mut edges = vec![first];
     for &(from, to, _) in known.iter().chain(tokens.iter().flat_map(|(_, runs)| runs.iter())) {
@@ -730,7 +691,6 @@ fn mixes_over(first: i32, last: i32, known: &[(i32, i32, Option<i64>)], tokens: 
     out
 }
 
-/// The literal `tokens` (LexicalTokens) holds for `token` at `slot`, its row, or why not.
 fn token_name(tokens: &TableView<'_>, slot: Option<u32>, token: u32) -> String {
     let unresolved = || format!("Unresolved sub-unit token {token}");
     let Ok(literal) = dashboard_declare::field(TableId::LexicalTokens, "literal") else { return unresolved() };
@@ -788,8 +748,6 @@ fn hour(value: Option<f64>, name: &str) -> io::Result<i32> {
         .ok_or_else(|| invalid(format!("The request names no {name}")))
 }
 
-/// The army series' charts and navigation: chosen tags, or the top N of every tag at each hour
-/// a total changes over the view.
 pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value, _context: &LoadContext) -> io::Result<Value> {
     let params: SeriesParams = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid army series request: {error}")))?;
     let _ = &params.branch_id;
@@ -801,7 +759,6 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
     match product {
         "series-summary" => {
             let width = params.width.filter(|width| (1..=8192).contains(width)).ok_or_else(|| invalid("Invalid width"))?;
-            // A chart of chosen countries is served as tiles; only a ranking's members change bin by bin.
             let top = params.family.top.ok_or_else(|| invalid("An army chart of chosen countries is served as tiles"))?;
             let (mut tags, mut charts, mut spans) = (Vec::new(), Vec::new(), Vec::new());
             for ranked in line.ranked(from, to, width, top)? {
@@ -827,7 +784,6 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
             let key = params.key.ok_or_else(|| invalid("The request names no key"))?;
             let origin = params.from.map(|from| from.floor() as i32);
             let declared = dashboard_declare::series("army-totals").and_then(|series| series.measure(measure_name(params.family.measure, params.family.count_for))).ok_or_else(|| invalid("Army measure is not declared"))?;
-            // A ranked view steps through the changes of the countries ranking first at the cursor.
             let tags = match params.family.top {
                 Some(top) => {
                     let at = match (origin, key) {

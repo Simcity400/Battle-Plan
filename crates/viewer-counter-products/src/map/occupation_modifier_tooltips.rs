@@ -1,4 +1,3 @@
-//! Definition-specific occupation map badges, using their recorded native scopes.
 use super::counter_content;
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText};
 use installed_content_core::{occupation_modifiers::Definition, occupation_modifiers::Kind};

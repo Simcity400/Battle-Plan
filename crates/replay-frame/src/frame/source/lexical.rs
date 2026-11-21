@@ -29,7 +29,6 @@ impl<'a> OperandStatus<'a> {
             TableView::NotRecorded { mode } => Self::NotRecorded(*mode),
         }
     }
-    /// Whole-table acquisition evidence, independent of the row layout.
     pub fn is_table_complete(self) -> bool {
         matches!(self, Self::Complete | Self::WrongLayout)
     }

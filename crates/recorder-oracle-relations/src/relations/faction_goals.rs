@@ -1,4 +1,3 @@
-//! Projection of retained faction goals through the native save writer's gates.
 use super::*;
 use installed_content_save::faction_goals::{Goal, Status};
 use replay_data::rows::{FactionGoalEntryRow, FactionGoalStatusRow};
@@ -86,7 +85,6 @@ fn project<'a>(
                 },
                 date: row.date,
             }),
-            // A null historical occurrence produces a newline but no saved token.
             1 => {
                 if let Some(token) = row.token {
                     value.completed.push(spelling(token)?);

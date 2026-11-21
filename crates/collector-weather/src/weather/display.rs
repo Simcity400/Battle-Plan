@@ -1,6 +1,3 @@
-//! Bounded live graphics boundary. Header selection and exact copying allocate
-//! nothing; conversion/growth run off the callback. No pre-attach history.
-
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -15,8 +12,6 @@ pub(super) fn observe_capacity(
     base: usize,
 ) -> Result<usize, &'static str> {
     (|| {
-        // The display grid uses a quarter of the map dimensions. The
-        // retained last row/column occupies width+height-1 bytes per plane.
         let [width, height] = cweather_manager::display_grid_size(memory, base)?;
         let bytes = (width as usize)
             .checked_add(height as usize)

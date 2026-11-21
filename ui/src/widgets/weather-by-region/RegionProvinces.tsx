@@ -8,24 +8,18 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { temperatureText, validateProvinces } from './weatherData';
 import type { ProvinceWeather, ProvincesReply } from './weatherData';
 
-/** Snow as the recording stores it, on the game's fixed-point scale. */
 const fixedText = (raw: string | null) => raw === null ? '—' : (Number(raw) / 100000).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const rowKey = (row: ProvinceWeather) => row.id;
 const structure = (reply: ProvincesReply) => JSON.stringify(reply);
 
-/** One region's provinces at the drill's hour: following the playhead (`hour` null) a pushed panel, at most four a
- * second, its temperatures replayed at the head; pinned to a day, asked once for it. `onHour` names the read shown. */
 export default function RegionProvinces({ runtime, widget, region, hour, active, onWarnings, onHour }: {
   runtime: WidgetRuntime; widget: WidgetSpec; region: string; hour: number | null; active: boolean; onWarnings: (warnings: readonly string[]) => void;
   onHour?: (hour: number | null) => void;
 }) {
   const params = useMemo(() => ({ region }), [region]);
   const read = useHeadProduct<ProvincesReply>(runtime, widget, 'regional-weather-provinces', params, { active, validate: validateProvinces, structure, hoverHour: hour });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (read.data) onWarnings(read.data.warnings); }, [read.data]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { onHour?.(read.data?.readHour ?? read.hour); }, [read.data, read.hour]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => onHour?.(null), []);
   const columns = useMemo<readonly TableColumn<ProvinceWeather>[]>(() => [
     { key: 'name', header: 'Province', label: 'Province', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? row.id,

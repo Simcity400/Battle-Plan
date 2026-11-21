@@ -1,5 +1,3 @@
-/// FNV-1a over an owner's fields, for its fingerprint; stable within a
-/// process, never persisted.
 pub struct Digest(u64);
 
 impl Default for Digest {
@@ -45,7 +43,6 @@ impl Digest {
             power(8),
         ];
         let count = (64 - value.leading_zeros()).div_ceil(8) as usize;
-        // Zero suffix bytes only multiply: retain exactly the bytewise FNV hash.
         self.bytes(&value.to_le_bytes()[..count]);
         self.0 = self.0.wrapping_mul(ZERO_SUFFIX[8 - count]);
         self
@@ -56,7 +53,6 @@ impl Digest {
         self.u64(value as u64)
     }
 
-    /// A length-prefixed byte string, so adjacent strings cannot alias.
     pub fn text(&mut self, text: &[u8]) -> &mut Self {
         self.u64(text.len() as u64).bytes(text)
     }

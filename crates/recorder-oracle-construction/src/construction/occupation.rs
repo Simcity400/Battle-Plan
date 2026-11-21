@@ -161,8 +161,6 @@ pub fn occupation_settings(
                             continue;
                         }
                     };
-                    // The game gates on the law pointer, then
-                    // writes the law's string.
                     let field =
                         format!("{subject}.group_laws.{}", String::from_utf8_lossy(occupied));
                     let law = group
@@ -185,8 +183,6 @@ pub fn occupation_settings(
                             .collect::<BTreeMap<_, _>>(),
                     );
                 } else {
-                    // Compare every resolvable law even when another group's
-                    // missing key prevents the complete membership comparison.
                     for (occupied, law) in recorded {
                         let field =
                             format!("{subject}.group_laws.{}", String::from_utf8_lossy(occupied));
@@ -226,8 +222,6 @@ pub fn occupation_settings(
             format!("{subject}.fallback_law"),
         );
         if let Some(law) = &saved.default_law {
-            // The save gates on the default-law pointer,
-            // not on the law's stored string length.
             let field = format!("{subject}.default_law");
             let name = super::super::serialized_text(report, &field, &row.law);
             value(report, &field, name, law.as_slice());
@@ -296,8 +290,6 @@ pub fn occupation_laws(
             continue;
         };
         matched += 1;
-        // Archive and memory streams save only the first-NUL prefix
-        // of an override law's raw name string.
         let name = super::super::serialized_text(report, &subject, &row.name);
         value(report, &subject, name, saved.law.as_slice());
     }
@@ -457,10 +449,6 @@ pub fn assigned_manpower(
     failure.map_or(Ok(()), Err)
 }
 
-/// The save writes variant rows with their zero policy and
-/// ordered nonzero token/amount pairs. Allocation
-/// lookups are derived from the saved variants' archetypes; the running
-/// total is clamped after each addition, as for StockpileArchetypes.
 pub fn garrison_equipment(
     frame: &DecodedFrame,
     saved: &saved::Pack,
@@ -526,8 +514,6 @@ pub fn garrison_equipment(
                 "missing serialized equipment_need",
             ),
         }
-        // Scaling and flooring apply to the allocation records
-        // and each variant separately; the save writes only the variants.
         report.limitation("the garrison save writer saves the variant pool, not the allocation cache used by archetype quantity lookup; resistance damage floors each separately, so the save cannot certify allocations", format!("{subject}.allocations"));
         matched += 1;
         report.limitation("the game omits exactly zero requirements; their membership and absolute ordinal are not save-certified", format!("{subject}.zero_requirements"));
@@ -644,8 +630,6 @@ pub fn resistance(
     failure.map_or(Ok(()), Err)
 }
 
-/// Compare the retained map identities before the display's stable sort.
-/// State occurrences precede the controlling country's occupied-country occurrences.
 pub fn resistance_map(
     rows: &[replay_data::rows::StateResistanceRow],
     saved: &saved::Pack,
@@ -734,7 +718,6 @@ pub fn resistance_map(
                 })?;
             super::super::serialized_text(report, &format!("{subject}.controller"), controller)
         };
-        // A missing whole country wrapper is not evidence of an empty group.
         let settings = saved.occupation_settings.get(controller).ok_or_else(|| {
             invalid(format!(
                 "{subject}: saved controller occupation status is absent"
@@ -871,9 +854,6 @@ pub fn collaboration(
     Ok(())
 }
 
-/// Saved target additions and exile operands behind active province hovers. Runtime spread,
-/// local effect caches and source trees have no save representation; validate their framing
-/// here and certify their display through the matched native hover.
 pub fn resistance_hover(
     rows: &[replay_data::rows::StateResistanceRow],
     saved: &saved::Pack,

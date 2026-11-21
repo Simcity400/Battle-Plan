@@ -1,6 +1,3 @@
-//! The air mission layer's line of the proof tool (`playback_cost::proof`): how it is made from the
-//! loaded recording, and how its regions compare with today's regional Air mission part of the same
-//! hour and with the layer composed anew.
 
 use super::{AirMissionCounters, Content, PHASES, Passes};
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -12,7 +9,6 @@ use std::{
 };
 use viewer_counters::map::counters::{air_mission_counts::MISSIONS, counts_withheld, fragment_withheld, ground_withheld};
 
-/// [`PHASES`] as the nanosecond counters' names.
 const PHASE_NS: [&str; PHASES.len()] = ["ns registrations", "ns holders", "ns regions", "ns by the hour"];
 
 pub fn make(document: &Document) -> Box<dyn Layer> {
@@ -33,8 +29,6 @@ pub fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     marked
 }
 
-/// Gives the layer today's vision of the document's hour and the recording's daily air roster
-/// history with the branch played, until it reads the vision layer and the host gives the rosters.
 pub fn give(layer: &dyn Layer, document: &Document, choice: &viewer_foundation::map::perspective::Choice) -> io::Result<()> {
     let Some(layer) = layer.any().downcast_ref::<AirMissionCounters>() else { return Ok(()) };
     layer.set_vision(choice.clone(), document.vision(choice)?);
@@ -43,9 +37,6 @@ pub fn give(layer: &dyn Layer, document: &Document, choice: &viewer_foundation::
     Ok(())
 }
 
-/// The layer's regions against today's regional Air mission part at the document's hour. Today
-/// records a region's Ground Crews control only when its hover localises: the layer's control is
-/// compared where today has one, and counted apart where today has none.
 pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = air(layer);
     let mut compared = Compared::default();
@@ -56,7 +47,6 @@ pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let Some((choice, _)) = layer.perspective() else {
         return Err(io::Error::other("the air mission layer was given no perspective"));
     };
-    // Today draws its regional part only in the strategic air map mode: neither draws here.
     if layer.hidden() {
         compared.entries = 1;
         if !layer.values().is_empty() || layer.withheld().is_some() {

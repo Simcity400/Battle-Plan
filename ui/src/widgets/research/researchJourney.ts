@@ -15,8 +15,6 @@ export interface ResearchJourneyPeriod extends ResearchPeriod {
   paused?: boolean;
 }
 
-/** Saved days are applied and refunded at the slot's stored assignment rate,
- * not the rate recalculated at the later playback hour. */
 export function savedResearchCredit(state: ResearchSlotState): bigint | null {
   const days = BigInt(state.appliedDaysRaw), speed = BigInt(state.speedMultiplierRaw);
   const product = days * speed;
@@ -58,10 +56,6 @@ function assignmentCredits(slot: ResearchSlotHistory, entry: ResearchEntry, endH
   return { credits, complete };
 }
 
-/** The assignments a technology moved through to `entry`, earliest first, within
- * one continuous country identity. Completion belongs only to its final slot.
- * Never joined across gaps, repeats, ambiguous overlaps, or two definitions: a
- * history without the recorded definition (`databaseIndex`) cannot prove one. */
 export function researchAssignments(slots: readonly ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry) {
   if (entry.databaseIndex == null) return [{ slot, entry }];
   const candidates = slots.flatMap(owner => owner.entries.filter(e =>
@@ -78,11 +72,6 @@ export function researchAssignments(slots: readonly ResearchSlotHistory[], slot:
   return target >= 0 ? candidates.slice(firstIndex, target + 1) : [{ slot, entry }];
 }
 
-/** Whether a technology's first assignment, `entry` in `slot`, is when it
- * started. Seeing a slot assignment does not prove the technology was untouched
- * before recording: the read before must have seen it unassigned, and the
- * progress read at the assignment must be explained by the witnessed credit and
- * at most one native daily update between adjacent hourly observations. */
 export function researchStartKnown(slot: ResearchSlotHistory, entry: ResearchEntry): boolean {
   if (entry.startedAfterHour === null) return false;
   const opening = slot.progress.find(p => p.entryFirstObservedHour === entry.firstObservedHour && p.firstHour === entry.firstObservedHour);
@@ -96,8 +85,6 @@ export function researchStartKnown(slot: ResearchSlotHistory, entry: ResearchEnt
   return initial >= credit && initial <= credit + (day > 0n ? day : 0n);
 }
 
-/** Follow a technology through slots (see `researchAssignments`); its
- * explanation retains the earlier assignments. */
 export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry) {
   const assignments = researchAssignments(slots, slot, entry);
   const parts = assignments.map(p => ({ ...p, data: researchBreakdown(p.slot, p.entry) }));
@@ -117,7 +104,6 @@ export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlot
     creditsComplete &&= attribution.complete;
     previousEnd = part.data.endHour;
   }
-  // Refunds precede new credits when two recorded assignments meet at an hour.
   credits.sort((a, b) => a.hour - b.hour || (a.kind === 'returned' ? -1 : 0) - (b.kind === 'returned' ? -1 : 0));
   const samples = parts.flatMap(part => part.slot.progress.filter(p => p.entryFirstObservedHour === part.entry.firstObservedHour
     && p.firstHour <= part.data.endHour && p.lastHour >= part.entry.firstObservedHour));
@@ -132,8 +118,6 @@ export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlot
     if (amount === null) ratesComplete = false;
     else { work += amount; covered += to - from; }
   }
-  // The first progress sample already contains all credits at that hour.
-  // Include only later events in its observed-gain reconciliation.
   const creditGain = credits.filter(c => c.hour > compareStart && c.hour <= compareEnd).reduce((sum, c) => sum + c.work, 0n);
   const sampleCoverage = parts.every(part => {
     const samples = part.slot.progress.filter(p => p.entryFirstObservedHour === part.entry.firstObservedHour);
@@ -158,24 +142,13 @@ export function researchJourney(slots: ResearchSlotHistory[], slot: ResearchSlot
   };
 }
 
-/** How a technology's time came about, in fixed5 days:
- * base + penalty - bonus - juggle - earlier - remaining = taken.
- * `bonus` is time saved by research bonuses (negative when they slowed it),
- * `juggle` is saved days credited by moving research between slots, `earlier`
- * is progress made before its first witnessed assignment, `remaining` is work still
- * to do (active research) and `paused` is time the technology sat in no slot. */
 export interface ResearchTimeSplit {
   base: bigint; penalty: bigint; bonus: bigint; juggle: bigint; earlier: bigint; remaining: bigint; paused: bigint; taken: bigint;
-  /** `bonus` by modifier, largest effect first: days saved (negative when it slowed research). */
   modifiers: ResearchModifierEffect[];
-  /** Part of `bonus` no modifier explains: the minimum-speed clamp when `floored`. */
   other: bigint; floored: boolean;
 }
 export interface ResearchModifierEffect { key: string; kind: string; label: string; days: bigint }
 
-/** Null when a recording gap, missing modifiers, a changed cost or an
- * unexplainable surplus prevents an honest split. Up to one day of surplus is
- * the daily-update phase and is folded into the bonus figure. */
 export function researchTimeSplit(journey: ReturnType<typeof researchJourney>, active: boolean): ResearchTimeSplit | null {
   const base = active ? journey.latestBase : journey.base;
   if (base === null || base <= 0n || journey.costChanged || !journey.creditsComplete) return null;
@@ -191,8 +164,6 @@ export function researchTimeSplit(journey: ReturnType<typeof researchJourney>, a
     const span = period.endHour - period.firstHour;
     hours += span;
     floored ||= split.floored;
-    // Bonuses add to one another, so each saves exactly its own share: a
-    // modifier worth `raw` saves `raw` of a day for every day it is in effect.
     for (const part of parts) {
       const effect = effects.get(part.key) ?? { key: part.key, kind: part.kind, label: part.label, days: 0n };
       effect.days += part.raw * BigInt(span);
@@ -204,25 +175,18 @@ export function researchTimeSplit(journey: ReturnType<typeof researchJourney>, a
   const juggle = journey.credits.reduce((sum, credit) => sum + credit.work, 0n);
   let earlier = done - work / 24n - juggle;
   if (earlier > -100_000n && earlier < 100_000n) earlier = 0n;
-  // Earlier progress is only a cause when the start is not witnessed; after a
-  // witnessed start a surplus is unexplained, and nothing is shown for it.
   if (earlier < 0n || (earlier > 0n && journey.startKnown)) return null;
   const remaining = active && base > done ? base - done : 0n;
   const taken = BigInt(hours) * 100_000n / 24n;
-  // The bonus closes the sum, so integer rounding never leaves a gap in the bar.
   const bonus = base + penalty / 24n - juggle - earlier - remaining - taken;
   const modifiers = [...effects.values()].map(effect => ({ ...effect, days: effect.days / 24n })).filter(effect => effect.days !== 0n)
     .sort((a, b) => { const size = (days: bigint) => days < 0n ? -days : days;
       return size(b.days) > size(a.days) ? 1 : size(b.days) < size(a.days) ? -1 : b.days > a.days ? 1 : b.days < a.days ? -1 : a.label.localeCompare(b.label); });
   let other = bonus - modifiers.reduce((sum, effect) => sum + effect.days, 0n);
-  // Within a day of agreement is rounding and the daily-update phase, not a cause of its own.
   if (!floored && other > -100_000n && other < 100_000n && modifiers.length) { modifiers[0].days += other; other = 0n; }
   return { base, penalty: penalty / 24n, bonus, juggle, earlier, remaining, paused: BigInt(pausedHours) * 100_000n / 24n, taken, modifiers, other, floored };
 }
 
-/** Called only once per mounted completed explanation. Clip immutable source
- * history at the completion's observation bound before joining earlier work;
- * later assignments and later outcome discoveries must not enter its journey. */
 export function completedResearchJourney(history: ResearchHistory, slotIndex: number, entry: ResearchEntry) {
   if (entry.outcome !== 'completed' || entry.endedByHour === null) return null;
   const hour = Math.max(entry.endedByHour, entry.outcomeObservedHour ?? entry.endedByHour);

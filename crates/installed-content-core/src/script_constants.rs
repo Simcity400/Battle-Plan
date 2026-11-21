@@ -1,19 +1,3 @@
-//! Script constants loaded from `common/script_constants`, used by `constant:` operands
-//! ([`crate::scoped_variable`]).
-//!
-//! This database loads before other script databases, so triggers, effects and text see
-//! the complete set. Direct `.txt` files load in filename-byte order
-//! ([`script_files::paths`]). Each top-level key identifies a category by its
-//! ASCII-folded token.
-//!
-//! A category requires `schema` first; other first entries report and skip the block.
-//! After reading the schema, remaining entries populate the category root. Repeated
-//! categories merge into the first; repeated keys replace the whole entry.
-//!
-//! Bodies read by key ([`native::Shape::ByKey`]); keyless schema children and array
-//! elements use list consumption. Unsettled forms remain named refusals. A file whose
-//! reading stops short leaves every entry its unread rest could define or replace
-//! unknown; the files after it still read, and an entry one of them replaces is known again.
 
 use std::{collections::BTreeMap, io};
 
@@ -29,9 +13,6 @@ use crate::{
     script_files,
 };
 
-/// Token identity uses an ASCII case fold. Empty names and names starting with a digit
-/// or `-` share the rejected token, represented here as the empty key, so those keys
-/// collide.
 fn token(text: &[u8]) -> Vec<u8> {
     match text.first() {
         None | Some(b'0'..=b'9' | b'-') => Vec::new(),
@@ -39,7 +20,6 @@ fn token(text: &[u8]) -> Vec<u8> {
     }
 }
 
-/// A leaf's declared type token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Int,
@@ -49,32 +29,22 @@ enum Kind {
     State,
 }
 
-/// One schema node.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Schema {
-    /// `key = X`.
     key: Option<Vec<u8>>,
-    /// `any_key` with any value.
     any_key: bool,
-    /// A leaf of this type, optionally an `array`. `None` is an
-    /// object (variant 1) with `children`.
     leaf: Option<(Kind, bool)>,
     children: Vec<Schema>,
 }
 
-/// A stored value node: its type and payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Value {
-    /// Type 0: `int`, and every scalar that failed or is unsupported (i32).
     Int(i32),
-    /// Type 1: `fixed_point`, fixed5.
     Fixed(i64),
-    /// Non-scope arrays (5, 6), which a scoped variable does not take.
     Other,
     Collection(CollectionConstant),
 }
 
-/// Stored value types accepted by collection inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CollectionConstant {
     Country(Vec<u8>),
@@ -87,32 +57,23 @@ pub enum CollectionConstant {
 enum Node {
     Value(Value),
     Map(BTreeMap<Vec<u8>, Node>),
-    /// A node the port cannot read as the game does, and why.
     Refused(String),
 }
 
-/// One category: its root map, or why the port cannot read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Category {
     root: BTreeMap<Vec<u8>, Node>,
     refused: Option<String>,
 }
 
-/// The database: every category by its token.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Constants {
     categories: BTreeMap<Vec<u8>, Category>,
-    /// The file in load order that last stored each (category, entry), which a
-    /// repeated entry replaces whole.
     defined: BTreeMap<(Vec<u8>, Vec<u8>), usize>,
-    /// Each file whose reading the port cannot follow to its end, in load order,
-    /// and why.
     gaps: Vec<(usize, String)>,
 }
 
 impl Constants {
-    /// The last gap that could change an entry stored by file `from`: one in or
-    /// after that file, or any gap when no file stores it.
     fn gap(&self, from: Option<usize>) -> Option<&str> {
         self.gaps
             .iter()
@@ -153,8 +114,6 @@ impl Constants {
         Ok(None)
     }
 
-    /// Read an integer constant, rejecting fixed-point values even when numerically
-    /// integral. The caller retains its field on refusal.
     pub fn integer(&self, parts: &[&str]) -> Result<Option<i32>, String> {
         match self.find_value(parts).map_err(str::to_owned)? {
             Some(Value::Int(value)) => Ok(Some(*value)),
@@ -162,9 +121,6 @@ impl Constants {
         }
     }
 
-    /// Find a `constant:` path, then enforce scoped-variable types. Fixed5 literals
-    /// remain stored values; integer literals are multiplied by 100000. Other types
-    /// report and remain unset.
     pub fn value(&self, parts: &[&str]) -> Constant {
         let shown = parts.join(".");
         let Some((category, _)) = parts.split_first() else {
@@ -185,13 +141,10 @@ impl Constants {
             Ok(None) if !self.categories.contains_key(&token(category.as_bytes())) => {
                 Constant::Unset(format!("missing constant category: {category}"))
             }
-            // The walk ended on a map: too few parts.
             _ => Constant::Unset(format!("missing constant value: {shown}")),
         }
     }
 
-    /// Keep a constant path's country/state scalar or array variant. Scoped-variable
-    /// operands deliberately reject these variants.
     pub fn collection(&self, parts: &[&str]) -> Result<Option<&CollectionConstant>, String> {
         match self.find_value(parts).map_err(str::to_owned)? {
             Some(Value::Collection(value)) => Ok(Some(value)),
@@ -200,7 +153,6 @@ impl Constants {
     }
 }
 
-/// The database of the content stack.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Constants> {
     let mut files = Vec::new();
     for path in script_files::paths(layers, "common/script_constants/", Some(".txt"))? {
@@ -214,11 +166,9 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Constants> {
     ))
 }
 
-/// The database from files in load order.
 pub fn parse(files: &[(&str, &[u8])]) -> Constants {
     let mut out = Constants::default();
     for (file, (path, input)) in files.iter().enumerate() {
-        // Use lexer mode 0 for script constants.
         let read = native::read(
             input,
             native::Mode::KeepMark,
@@ -261,7 +211,6 @@ pub fn parse(files: &[(&str, &[u8])]) -> Constants {
     out
 }
 
-/// Read one category block into `root`: the keys of the entries it stores.
 fn read_category(item: &Item, root: &mut BTreeMap<Vec<u8>, Node>) -> Result<Vec<Vec<u8>>, String> {
     let name = String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned();
     let Some(fields) = item.value.items() else {
@@ -271,8 +220,6 @@ fn read_category(item: &Item, root: &mut BTreeMap<Vec<u8>, Node>) -> Result<Vec<
         return Ok(Vec::new());
     };
     if !first.keyword_is("schema") {
-        // A missing initial schema skips the block. A new category keeps
-        // no node, which cannot be read through.
         return Err(format!(
             "category {name} does not start with its schema, and the port does not read the category the game leaves"
         ));
@@ -287,8 +234,6 @@ fn read_category(item: &Item, root: &mut BTreeMap<Vec<u8>, Node>) -> Result<Vec<
         .collect())
 }
 
-/// Read a schema node, refusing reported forms by name when their resulting state
-/// cannot be followed.
 fn read_schema(fields: &[Item]) -> Result<Schema, String> {
     let mut schema = Schema::default();
     for field in fields {
@@ -326,7 +271,6 @@ fn read_schema(fields: &[Item]) -> Result<Schema, String> {
     Ok(schema)
 }
 
-/// A type dispatches on the value token's id ([`Item::value_keyword`]).
 fn kind(value: Option<String>) -> Result<Kind, String> {
     Ok(match value.as_deref() {
         Some("int") => Kind::Int,
@@ -338,16 +282,13 @@ fn kind(value: Option<String>) -> Result<Kind, String> {
     })
 }
 
-/// Read an entry under `schema` into `map`: its key when it stores one.
 fn read_entry(entry: &Item, schema: &Schema, map: &mut BTreeMap<Vec<u8>, Node>) -> Option<Vec<u8>> {
     let key = token(entry.key.as_deref()?);
-    // A key that fails the schema match is not stored.
     if !schema.any_key && schema.key.as_deref() != Some(key.as_slice()) {
         return None;
     }
     let node = match schema.leaf {
         Some((kind, array)) => Node::Value(value(entry, kind, array)),
-        // A nonobject value stores nothing.
         None => {
             let fields = entry.value.items()?;
             let mut inner = BTreeMap::new();
@@ -360,8 +301,6 @@ fn read_entry(entry: &Item, schema: &Schema, map: &mut BTreeMap<Vec<u8>, Node>) 
                     return Some(key);
                 }
                 let field_key = token(field.key.as_deref().unwrap_or_default());
-                // The first child whose key matches or that takes any key;
-                // If none matches, skip the unknown key.
                 if let Some(child) = schema.children.iter().find(|child| {
                     child.any_key || child.key.as_deref() == Some(field_key.as_slice())
                 }) {
@@ -375,7 +314,6 @@ fn read_entry(entry: &Item, schema: &Schema, map: &mut BTreeMap<Vec<u8>, Node>) 
     Some(key)
 }
 
-/// Failed or unsupported scalar conversion stores integer 0, including array elements.
 fn value(entry: &Item, kind: Kind, array: bool) -> Value {
     if array {
         return match (kind, entry.value.items()) {
@@ -385,13 +323,13 @@ fn value(entry: &Item, kind: Kind, array: bool) -> Value {
                     .iter()
                     .map(|item| item.value.scalar().unwrap_or_default().to_vec())
                     .collect(),
-            )), // Retain null tags.
+            )),
             (Kind::State, Some(items)) => Value::Collection(CollectionConstant::States(
                 items
                     .iter()
                     .map(|item| decimal_i32(item.value.scalar().unwrap_or_default()))
                     .collect(),
-            )), // Retain zero IDs.
+            )),
             _ => Value::Other,
         };
     }
@@ -399,12 +337,10 @@ fn value(entry: &Item, kind: Kind, array: bool) -> Value {
         return Value::Int(0);
     };
     match kind {
-        // Signed `%i` scanning treats every nonzero return as success.
         Kind::Int => Value::Int(match scan_i32(text) {
             Scanned::Stored(value) => value,
             Scanned::End | Scanned::NoMatch => 0,
         }),
-        // Use script fixed5 conversion.
         Kind::FixedPoint => script_fixed5(text).map_or(Value::Int(0), Value::Fixed),
         Kind::Country => Value::Collection(CollectionConstant::Country(text.to_vec())),
         Kind::State => match decimal_i32(text) {
@@ -448,7 +384,6 @@ mod tests {
             constants.value(&["propaganda", "SIA", "empty_slot"]),
             Constant::Value(900_000)
         );
-        // `%i` stops at the dot: an int schema keeps 1.
         assert_eq!(
             constants.value(&["propaganda", "sia", "COST_INCREASE"]),
             Constant::Value(100_000)
@@ -487,12 +422,8 @@ mod tests {
         assert_eq!(constants.integer(&["groups", "nordics"]).unwrap(), None);
     }
 
-    /// A file that stops short leaves every constant its unread rest could define or
-    /// replace unknown, an earlier file's included; a later file that replaces an entry
-    /// decides it again.
     #[test]
     fn a_file_that_stops_short_leaves_what_it_could_replace_unknown() {
-        // A block with anonymous values and a variable definition cannot be followed.
         let stops = "propaganda = {
             schema = { any_key = yes data = { { any_key = yes data = int } } }
             GER = { @level = 2 loose }
@@ -529,8 +460,6 @@ mod tests {
         assert_eq!(constants.integer(&["sp", "small", "min"]).unwrap(), Some(7));
     }
 
-    /// A schema type is the value token up to its NUL, as its dispatch reads it; a quoted
-    /// type is no token and is refused.
     #[test]
     fn schema_types_dispatch_on_the_value_token() {
         let constants = parse(&[(
@@ -548,8 +477,6 @@ mod tests {
         assert!(why.contains("unsupported constant data type"), "{why}");
     }
 
-    /// A repeated category merges into the first; a repeated key is
-    /// replaced whole.
     #[test]
     fn repeated_categories_merge_and_keys_are_replaced() {
         let later = "propaganda = {

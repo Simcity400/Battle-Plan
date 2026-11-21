@@ -1,11 +1,3 @@
-//! Railway strips from the recorded graph.
-//!
-//! Join neighbour pairs within provinces, excluding triangles, at the lower edge level. Degree-one
-//! provinces and supply sources also receive spurs. Cubics use three-unit handles and straight bridge
-//! ends. One-unit strips sample centre terrain height; zoom changes opacity alone.
-//!
-//! Static crossings use province boundary pixels and smoothed river points rather than authored
-//! starting railway paths.
 
 use viewer_foundation::map::gpu_contract::Targets;
 use bytemuck::{Pod, Zeroable};
@@ -41,14 +33,9 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Offsets -0.5 and +0.5, independent of camera.
 pub const RAIL_WIDTH: f32 = 1.0;
 pub const RAILROAD_TEXTURE: &str = "gfx/models/supply/railroad.dds";
 
-/// Railway opacity advances each frame: at or above `RAILWAY_CAMERA_CUTOFF`, it falls toward zero
-/// at `RAILWAY_CAMERA_CUTOFF_SPEED`; below, it rises toward one at the same rate. The strip uses
-/// this opacity. Trains draw at or above [`RailFade::TRAINS_VISIBLE`] with it as TrainColor alpha.
-/// The first frame, a still dump or a backwards clock uses the settled value, as a replay seek does.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RailFade {
     alpha: f32,
@@ -56,10 +43,8 @@ pub struct RailFade {
 }
 
 impl RailFade {
-    /// The minimum opacity that draws trains.
     pub const TRAINS_VISIBLE: f32 = 0.001;
 
-    /// Steps the fade to `time` seconds and returns the opacity.
     pub fn update(&mut self, camera: &Camera, time: f32) -> f32 {
         let above = camera.height >= camera.defines.railway_cutoff;
         let target = if above { 0.0 } else { 1.0 };
@@ -85,19 +70,12 @@ impl RailFade {
     }
 }
 
-/// The content's railway geometry operands.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RailDefines {
-    /// `NGraphics.RAILWAY_Y_OFFSET`.
     pub y_offset: f32,
-    /// `RAILWAY_BRIDGE_Y_OFFSET`.
     pub bridge_y_offset: f32,
-    /// Half of `RAILWAY_BRIDGE_WIDTH` and `RAILWAY_BRIDGE_LARGE_WIDTH`: the
-    /// straight run each bridge end keeps.
     pub half_widths: [f32; 2],
-    /// Half of `RAILWAY_BRIDGE_GAP_WIDTH` and `RAILWAY_BRIDGE_GAP_LARGE_WIDTH`.
     pub half_gaps: [f32; 2],
-    /// `NSupply.MAX_RAILWAY_LEVEL`: the texture's level bands.
     pub levels: u32,
 }
 
@@ -125,7 +103,6 @@ impl RailDefines {
         })
     }
 
-    /// (straight half width, half gap) of a bridge end.
     fn bridge(&self, kind: BridgeKind) -> (f32, f32) {
         match kind {
             BridgeKind::None => (0.0, 0.0),
@@ -179,7 +156,6 @@ impl RailMesh {
         }
     }
 
-    /// The bounds, folded in the vertices' emission order, and the bridges in pair order.
     fn finish(&mut self, bridges: impl IntoIterator<Item = Bridge>) {
         self.bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for vertex in &self.native_vertices {
@@ -194,8 +170,6 @@ impl RailMesh {
         self.bridges.extend(bridges);
     }
 
-    /// The mesh [`RailGeometry::build`] makes, from every rail province's run in province order
-    /// and the bridges in pair order.
     pub fn assemble<'a>(runs: impl ExactSizeIterator<Item = &'a RailRun> + Clone, bridges: impl ExactSizeIterator<Item = Bridge>) -> io::Result<Self> {
         let mut mesh = Self::with_capacity(runs.clone().map(|run| run.vertices.len()).sum(), runs.clone().filter(|run| !run.vertices.is_empty()).count(), bridges.len())?;
         for run in runs {
@@ -206,7 +180,6 @@ impl RailMesh {
     }
 }
 
-/// Authored adjacency kind used for bridge selection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BridgeKind {
     #[default]
@@ -224,7 +197,6 @@ pub struct Bridge {
 struct Crossing {
     position: [f32; 3],
     direction: [f32; 3],
-    /// The bridge end's straight half width and half gap; zero off a bridge.
     half_width: f32,
     half_gap: f32,
 }
@@ -236,7 +208,6 @@ struct Boundary {
 
 type RiverPoint = ([f32; 2], [f32; 2]);
 
-/// Static map input, cached once; per-hour work scales with that hour's edges.
 pub struct RailGeometry {
     id: u64,
     identity: Arc<()>,
@@ -329,7 +300,6 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Bilinear height at half-pixel-centred x/z coordinates, clamped to water when requested.
 fn rail_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     let x = x + 0.5;
     let z = z + 0.5;
@@ -348,7 +318,6 @@ fn rail_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     (lo + (hi - lo) * (z - iz as f32)).max(WATER_HEIGHT)
 }
 
-/// Bresenham sorted along the major axis, ties step upward.
 fn pixel_line(a: [i32; 2], b: [i32; 2]) -> Vec<[i32; 2]> {
     let steep = (b[0] - a[0]).abs() < (b[1] - a[1]).abs();
     let swap = |p: [i32; 2]| if steep { [p[1], p[0]] } else { p };
@@ -373,7 +342,6 @@ fn pixel_line(a: [i32; 2], b: [i32; 2]) -> Vec<[i32; 2]> {
     out
 }
 
-/// Largest eight-connected boundary component.
 fn boundary_middle(points: &[[i32; 2]]) -> [i32; 2] {
     let mut unseen: BTreeSet<_> = points.iter().map(|p| (p[1], p[0])).collect();
     let mut best = Vec::new();
@@ -396,7 +364,6 @@ fn boundary_middle(points: &[[i32; 2]]) -> [i32; 2] {
             best = component;
         }
     }
-    // The native mean accumulates fixed5 per-point quotients, then rounds.
     std::array::from_fn(|i| {
         let sum: i64 = best
             .iter()
@@ -406,10 +373,6 @@ fn boundary_middle(points: &[[i32; 2]]) -> [i32; 2] {
     })
 }
 
-/// Recorded rail graph and geometry inputs for one hour.
-///
-/// It is everything [`RailGeometry::build_network`] reads from an hour, so two
-/// hours with equal networks draw the same railway.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RailNetwork {
     resolved: Arc<map_display_data::landscape::RailGraph>,
@@ -422,22 +385,16 @@ impl std::ops::Deref for RailNetwork {
 }
 
 impl RailNetwork {
-    /// The hour's network from its `RailEdges`, `ProvinceSupply` and
-    /// `NavalBases` rows.
     pub fn read(frame: &DecodedFrame) -> io::Result<Self> {
         let edges = rows::<tables::RailEdges>(frame)?;
         let supply = rows::<tables::ProvinceSupply>(frame)?;
         let naval_bases = rows::<tables::NavalBases>(frame)?;
         if !naval_bases.is_complete() {
-            // Absent hash members could select a different graphics anchor;
-            // a truncated list cannot safely fall back to province centroids.
             return Ok(Self::new(&[], &[], &[]));
         }
         Ok(Self::new(edges.rows(), supply.rows(), naval_bases.rows()))
     }
 
-    /// RailEdges is a directed neighbour list. Never reconstruct missing rows
-    /// from the 1936 file, or turn a missing table into a full network.
     pub fn new(
         edges: &[RailEdgeRow],
         supply: &[ProvinceSupplyRow],
@@ -459,8 +416,6 @@ impl RailNetwork {
             })
             .map(|r| r.province)
             .collect();
-        // A present strategic-navy payload selects the harbour graphics anchor even when the naval
-        // base has zero level.
         let ports = naval_bases.iter().map(|r| r.province).collect();
         Self {
             resolved: Arc::new(map_display_data::landscape::RailGraph {
@@ -474,7 +429,6 @@ impl RailNetwork {
     pub fn display(&self) -> &map_display_data::landscape::RailGraph {
         &self.resolved
     }
-    /// The graph to edit in place: a map layer keeps one network and follows the hour's changes.
     pub fn graph_mut(&mut self) -> &mut map_display_data::landscape::RailGraph {
         Arc::make_mut(&mut self.resolved)
     }
@@ -487,8 +441,6 @@ impl RailNetwork {
         }
     }
 
-    /// Whether the province has the requested rail segment between neighbours (excluding triangles),
-    /// or a terminal spur when other is None.
     fn has_segment(&self, province: u32, neighbour: u32, other: Option<u32>) -> bool {
         let Some(ns) = self.graph.get(&province) else {
             return false;
@@ -508,7 +460,6 @@ impl RailNetwork {
     }
 }
 
-/// One province's railway strip and its counts, as the whole build emits them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RailRun {
     pub vertices: Vec<[f32; 6]>,
@@ -517,8 +468,6 @@ pub struct RailRun {
     pub samples: usize,
 }
 
-/// The rail centre line a train follows, and whether it stops short of its
-/// last route province because that province's railway lacks the segment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrainRoute {
     pub points: Vec<[f32; 3]>,
@@ -529,8 +478,6 @@ impl RailGeometry {
     pub fn projection_id(&self) -> u64 {
         self.id
     }
-    /// Anchors come from the slots of the hub types (`supply_node`) and ports
-    /// from the `is_port` spawn buckets, as content declares them.
     pub fn new(
         map: &MapData,
         buildings: &[BuildingPosition],
@@ -567,8 +514,6 @@ impl RailGeometry {
             map.province_ids.iter().copied().max().unwrap_or(0) as usize + 1
         ];
         let mut boundaries: BTreeMap<(u32, u32), Boundary> = BTreeMap::new();
-        // Visit bottom-up rows; each boundary pixel belongs to the lower
-        // province, once even when two of its neighbours have the same id.
         for z in 0..h as i32 {
             for x in 0..w as i32 {
                 let id = at(x, z);
@@ -626,7 +571,6 @@ impl RailGeometry {
             .collect();
         let mut ports = BTreeMap::new();
         for p in buildings {
-            // An ambiguous slot anchors nothing; MapBuildingAssets names it.
             let Some(installed_content_core::buildings::Slot::Bucket(slot)) = types.slot(&p.kind) else {
                 continue;
             };
@@ -664,8 +608,6 @@ impl RailGeometry {
                     w as i32
                 };
             }
-            // Native swaps only the first segment's endpoints, then overwrites
-            // its last element with the entire major-axis-sorted second line.
             first.pop();
             first.extend(pixel_line(middle, far));
             for [x, z] in first {
@@ -684,8 +626,6 @@ impl RailGeometry {
                 }
             }
         }
-        // Railways share the map-order graphics cache and extend the nearest end with preserved
-        // swap-removal ties.
         for boundary in boundaries.values_mut() {
             let pixels: Vec<_> = boundary
                 .points
@@ -705,8 +645,6 @@ impl RailGeometry {
         let mut river_points: BTreeMap<u32, Vec<RiverPoint>> = BTreeMap::new();
         for river in traced.rivers {
             let mut points = river.points;
-            // Apply one in-place five-point average while retaining the first and last two points. Later
-            // samples read updated predecessors.
             for i in 2..points.len().saturating_sub(2) {
                 points[i] = std::array::from_fn(|axis| {
                     (points[i - 2][axis]
@@ -836,7 +774,6 @@ impl RailGeometry {
         Ok(())
     }
 
-    /// `province`'s strip over `network`; none when it has no edge.
     pub fn run(&self, network: &RailNetwork, province: u32) -> io::Result<Option<RailRun>> {
         let Some(neighbors) = network.graph.get(&province) else {
             return Ok(None);
@@ -850,7 +787,6 @@ impl RailGeometry {
         }))
     }
 
-    /// The bridge on the pair `key` (lower province first), whatever edges the pair holds.
     pub fn bridge(&self, network: &RailNetwork, key: (u32, u32)) -> Option<Bridge> {
         self.pair_bridge(network, key, &self.heights())
             .map(|(_, bridge)| bridge)
@@ -898,7 +834,6 @@ impl RailGeometry {
         }
     }
 
-    // The last writer wins; building never holds the base slot's lock.
     pub fn build(&self, network: &Arc<RailNetwork>) -> io::Result<RailMesh> {
         let base = self.last_base();
         let (mesh, next) = self.build_base(base.as_deref(), network)?;
@@ -954,7 +889,6 @@ impl RailGeometry {
             }
             None => Default::default(),
         };
-        // Runs also read neighbour maps for triangles and neighbour port anchors.
         let reach: BTreeSet<u32> = changed.union(&ports).copied().collect();
         let mut runs: Vec<ProvinceRun> = allocation::vec(graph.len())?;
         let mut touched = BTreeSet::new();
@@ -1040,9 +974,6 @@ impl RailGeometry {
         ))
     }
 
-    /// Where the rail crosses the boundary between the pair `key`, and the
-    /// tangent it crosses on: the river crossing itself on a bridge, otherwise
-    /// the straight line between the two anchors.
     fn crossing(
         &self,
         key: (u32, u32),
@@ -1087,7 +1018,6 @@ impl RailGeometry {
                 }
             }
         }
-        // Bilinearly sample terrain at half-pixel-shifted coordinates.
         position[1] = rail_height(heights, position[0] - 1.0, position[2] - 1.0);
         let (half_width, half_gap) = self.defines.bridge(kind);
         Crossing {
@@ -1098,16 +1028,6 @@ impl RailGeometry {
         }
     }
 
-    /// The rail centre line a train follows over `path`.
-    ///
-    /// Cache the rail segment connecting each route province's previous and next province. Terminal
-    /// provinces use a reversed stub toward their anchor. Trains follow drawn rails and water-floored
-    /// heights without the rail strip's vertical lift.
-    ///
-    /// A province whose railway lacks the segment caches none:
-    /// hides cars there and destroys the train once its head
-    /// province has none. The route therefore ends before that province
-    /// (`open_end`), and is `None` if the first province lacks its spur.
     pub fn train_route(
         &self,
         path: &[u32],
@@ -1118,8 +1038,6 @@ impl RailGeometry {
             return None;
         }
         let anchor = |id: u32| self.anchor(network, id);
-        // The crossing's stored direction runs from the lower province id to
-        // the higher one; a segment's ends both point into their own province.
         let into = |neighbour: u32, province: u32| -> Option<Crossing> {
             let key = pair(neighbour, province);
             let mut c = self.crossing(key, *anchor(key.0)?, *anchor(key.1)?, heights);
@@ -1171,7 +1089,6 @@ impl RailGeometry {
         })
     }
 
-    /// A naval base's province is anchored at its harbour.
     fn anchor(&self, network: &RailNetwork, id: u32) -> Option<&[f32; 3]> {
         if network.ports.contains(&id) {
             self.ports.get(&id).or_else(|| self.anchors.get(&id))
@@ -1191,7 +1108,6 @@ impl RailGeometry {
             .expect("the test railway grows")
     }
 
-    /// The railway of one hour's network.
     pub fn build_network(&self, network: &RailNetwork) -> io::Result<RailMesh> {
         let heights = &self.heights();
         let graph = &network.graph;
@@ -1274,7 +1190,6 @@ impl RailMesh {
     }
 }
 
-/// A dead end's short run from a boundary crossing towards the anchor.
 fn stub(start: Crossing, center: [f32; 3]) -> Curve {
     let end = Crossing {
         position: add(center, sub(start.position, center), 0.2),
@@ -1329,7 +1244,6 @@ impl Curve {
                 + self.controls[3][i] * k[3]
         })
     }
-    /// The parameters the pass samples along the curve, bridge gaps included.
     fn samples(&self) -> Vec<f32> {
         let inv = 1.0 / self.length;
         let begin = self.start.half_width * inv;
@@ -1354,7 +1268,6 @@ impl Curve {
         ts
     }
 
-    /// The centre line at `t`: straight over a bridge's half-width, else Bézier.
     fn center(&self, t: f32) -> [f32; 3] {
         let inv = 1.0 / self.length;
         let begin = self.start.half_width * inv;
@@ -1377,7 +1290,6 @@ impl Curve {
         }
     }
 
-    /// The centre line, one point per sample; empty for a degenerate curve.
     fn centers(&self) -> Vec<[f32; 3]> {
         if self.length < 1e-5 || self.curve_length < 1e-5 {
             return Vec::new();
@@ -1433,8 +1345,6 @@ impl Curve {
                 });
             }
         }
-        // Emit world positions with w equal to one and two texture coordinates. Repeat each route
-        // endpoint twice to join nonindexed triangle strips.
         let pack = |v: &RailVertex| {
             [
                 v.position[0],
@@ -1465,18 +1375,13 @@ impl Curve {
     }
 }
 
-// --------------------------------------------------------------------- assets
 
-/// What the railway pass reads from installed content.
 pub struct RailAssets {
     pub shader: Arc<shader_pipeline::library::Effect>,
-    /// `gfx/models/supply/railroad.dds`, the five level bands.
     pub texture: dds::Texture,
 }
 
 impl RailAssets {
-    /// The rail texture is artwork, read through the presentation layers so a selected visual
-    /// mod's rails replace it; like tree and building model textures it is not hash-verified.
     pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Self> {
         Ok(Self {
             shader: super::rail_shader::load(layers, map, decode)?,
@@ -1492,12 +1397,10 @@ impl RailAssets {
     }
 }
 
-/// Static model library; placement follows each recorded hour's edges.
 #[derive(Debug)]
 pub struct Bridges {
     id: u64,
     pub library: ModelLibrary,
-    /// `NGraphics.RAILWAY_BRIDGE_ENTITY` and `RAILWAY_BRIDGE_LARGE_ENTITY`.
     entities: [String; 2],
 }
 impl Bridges {
@@ -1532,7 +1435,6 @@ impl Bridges {
         self.field_of(&mesh.bridges)
     }
 
-    /// The placements of `bridges`, in their order.
     pub fn field_of<'b>(&self, bridges: impl IntoIterator<Item = &'b Bridge>) -> ModelField {
         let placed = bridges
             .into_iter()
@@ -1556,10 +1458,7 @@ impl Bridges {
     }
 }
 
-// ------------------------------------------------------------------- the pass
 
-/// Every run's vertices in order, each run closed by the restart index, so one indexed call of
-/// the strip topology draws each run as its own strip.
 pub fn strip_indices(runs: &[Range<u32>]) -> Vec<u32> {
     let mut indices =
         Vec::with_capacity(runs.iter().map(|run| run.len() + 1).sum::<usize>());
@@ -1570,7 +1469,6 @@ pub fn strip_indices(runs: &[Range<u32>]) -> Vec<u32> {
     indices
 }
 
-/// The joined strips' index buffer and length, made with the runs they draw.
 fn strips(device: &wgpu::Device, runs: &[Range<u32>]) -> io::Result<Option<(wgpu::Buffer, u32)>> {
     if runs.is_empty() {
         return Ok(None);
@@ -1586,12 +1484,9 @@ fn strips(device: &wgpu::Device, runs: &[Range<u32>]) -> io::Result<Option<(wgpu
     Ok(Some((indices, count)))
 }
 
-/// Immutable uploaded railway strips and their province-ordered draw runs.
-/// Hour builders create this independently of the pass's textures and shaders.
 #[derive(Default)]
 pub struct PreparedRailGeometry {
     native_vertices: Option<wgpu::Buffer>,
-    /// The runs joined into one index list ([`strip_indices`]), with its length.
     strips: Option<(wgpu::Buffer, u32)>,
 }
 
@@ -1601,7 +1496,6 @@ impl PreparedRailGeometry {
             None
         } else {
             let usage = wgpu::BufferUsages::VERTEX;
-            // Read back the very same payload in the multi-hour upload oracle.
             #[cfg(test)]
             let usage = usage | wgpu::BufferUsages::COPY_SRC;
             Some(buffer(
@@ -1618,8 +1512,6 @@ impl PreparedRailGeometry {
         Ok(Self { native_vertices, strips })
     }
 
-    /// Strips a caller keeps in its own buffers: the vertices, and the index list drawing them
-    /// with its length ([`strip_indices`]), which the caller writes itself.
     pub fn held(vertices: Option<wgpu::Buffer>, strips: Option<(wgpu::Buffer, u32)>) -> Self {
         Self {
             strips: strips.filter(|_| vertices.is_some()),
@@ -1627,7 +1519,6 @@ impl PreparedRailGeometry {
         }
     }
 
-    /// CPU-only hour builders can defer preparation until a device is available.
     pub fn for_hour(
         device: Option<&wgpu::Device>,
         mesh: &RailMesh,
@@ -1637,8 +1528,6 @@ impl PreparedRailGeometry {
             .transpose()
     }
 
-    /// Publishes the prepared bank, or prepares the same immutable product on
-    /// this frame when the hour was built without a device.
     pub fn for_install(
         device: &wgpu::Device,
         mesh: &RailMesh,
@@ -1651,7 +1540,6 @@ impl PreparedRailGeometry {
     }
 }
 
-/// The GPU railway pass.
 pub struct RailPass {
     effect: Arc<shader_pipeline::library::Effect>,
     compiled: RefCell<Option<Result<super::rail_shader::Rail, String>>>,
@@ -1663,7 +1551,6 @@ pub struct RailPass {
 }
 
 impl RailPass {
-    /// How the program drawn reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self, visit: &mut dyn FnMut(&str)) {
         if let Some(Ok(rail)) = &*self.compiled.borrow()
             && let Some(reads) = &rail.texel_reads
@@ -1672,7 +1559,6 @@ impl RailPass {
         }
     }
 
-    /// Builds the pipeline and uploads the rail texture.
     pub fn new(
         device: &wgpu::Device,
         samples: u32,
@@ -1713,8 +1599,6 @@ impl RailPass {
         })
     }
 
-    /// Adopts a complete hour without copying vertices or draw runs. The host
-    /// retires the displaced bank away from the window thread.
     pub fn adopt_geometry(
         &mut self,
         geometry: Arc<PreparedRailGeometry>,
@@ -1726,7 +1610,6 @@ impl RailPass {
         [&self.rail.view, &self.null]
     }
 
-    /// Compiles the pipeline frames draw with, so they compile nothing.
     pub fn warm(&self, device: &wgpu::Device) {
         let mut compiled = self.compiled.borrow_mut();
         if compiled.is_none() {
@@ -1751,7 +1634,6 @@ impl RailPass {
         inputs: super::rail_shader::Inputs<'_>,
     ) -> io::Result<()> {
         let device = arena.device();
-        // The train visibility threshold also gates railway submission.
         if inputs.alpha < RailFade::TRAINS_VISIBLE {
             return Ok(());
         }

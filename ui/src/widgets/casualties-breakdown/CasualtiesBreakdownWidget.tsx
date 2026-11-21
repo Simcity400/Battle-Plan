@@ -49,7 +49,6 @@ const ROOT = { id: 'positive-losses', label: 'Positive known losses' };
 const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigInt(Math.round(value))), unit: 'casualties', valueLabel: 'Positive amounts' };
 const SORT = { column: 'losses', direction: 'descending' } as const;
 const rowKey = (row: LossRow) => row.id;
-// Columns that name no country keep their accessors: arriving names and flags never re-sort by them.
 const WAR: TableColumn<LossRow> = { key: 'war', header: 'War', label: 'War', priority: 1, inTooltip: true, value: row => row.war };
 const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Losses taken', label: 'Losses taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText };
 
@@ -68,8 +67,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'casualty-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), window: null } } : null;
   const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
-  // Following, the widget renders when the head enters another window (the sunburst paints the hours inside one from
-  // the clock), and a breakdown that follows renders where its rows (or their subtotal marks) change: its numbers are painted.
   const drillFollows = drill.breakdown !== null && drill.follow;
   const drillRows = useRef<() => string>(() => '');
   const headWindow = (at: number) => String(breakdownWindows(manifest.data, at, false)[0] ?? -1);
@@ -83,7 +80,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
   const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
   const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
-  // A pin keeps the tag the country went by at the hour pinned; a stored selection holds tags.
   const pinSlots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
   const pinTag = tag && isSlotKey(tag) ? countryTagAt(pinSlots, countryFromKey(tag), Math.floor(detailHour)) : tag;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
@@ -111,12 +107,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     .map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [snapshot, details, end]);
   const names = useCountryNamesAt(runtime.client, track, nameFacts, active);
   const enemyName = (row: LossRow) => casualtyEnemyName(row, names);
-  // Artwork follows the table viewport, including a removed enemy's last
-  // observed holder. A replacement under its tag cannot supply its old flag.
   const flagFacts = useMemo(() => visible.map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [visible]);
   const flags = useCountryFlagsRead(runtime.client, track, flagFacts, active && open);
   const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => nameReadText(names.get(nameKey(hour, tag)))), [snapshot, end, names]);
-  // Following, the slices at the clock's hour, from the window holding it: painted, never rendered.
   const axisOffset = track?.axisOffset ?? 0;
   const liveSlices = useMemo(() => widget.time.mode !== 'follow' || !manifest.data ? undefined
     : liveAt(runtime.clock, position => Math.floor(position) + axisOffset, at => {
@@ -137,7 +130,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     text: key => key === 'day' ? dayLabel(drillLive.hour()) : drillLive.read().total, subscribe: drillLive.subscribe }, [drillLive]);
   const levels = [options.warLevel !== false, options.enemyLevel !== false];
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
-    [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    [chartWindows.join(','), histories.data]);
   const stack = useMemo(() => lossStack(chartReplies), [chartReplies]);
   const colors = stack.keys.map((_key, index) => tokens.categories[index % tokens.categories.length]);
   const layers = useMemo<ChartLayer[]>(() => [{
@@ -148,7 +141,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       }
     },
     extent: range => stackExtent(stack.model, range[0], range[1]),
-  }], [stack, colors.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  }], [stack, colors.join(',')]);
   const columns = useMemo<TableColumn<LossRow>[]>(() => [WAR,
     { key: 'enemy', header: 'Enemy', label: 'Enemy', value: row => casualtyEnemyName(row, names),
       render: row => <CountryCell {...casualtyCountryCell(row, names, flags)} /> },

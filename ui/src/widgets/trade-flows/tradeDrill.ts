@@ -11,19 +11,15 @@ import { flowPrefix, flowValue, knownHours, knownSpanAt, measureAmount } from '.
 import type { Flow, Measure, SideNode } from './tradeData';
 
 export const TRADE_BREAKDOWN = { id: 'contributions', label: 'Trade contributors' };
-/** A pinned country view is the same breakdown, named for what it shows. */
 export const COUNTRY_BREAKDOWN = { id: 'contributions', label: 'Country trade' };
 
-/** Native holders selected in the drawn diagram, kept together at every day. */
 export type TradeSelection =
   | { kind: 'all' }
   | { kind: 'node'; side: 'source' | 'target'; holders: readonly string[] }
   | { kind: 'link'; sources: readonly string[]; targets: readonly string[]; resource: number }
-  /** One native holder's whole trade: what it bought and what it sold. */
   | { kind: 'country'; holder: string }
   | { kind: 'market'; key: string };
 
-/** A single-country header must not substitute a later holder of its tag. */
 export function contributionCountryTag(index: CountryIdentityIndex | null, tag: string, selection: TradeSelection | null, hour: number | null): string | null {
   if (!index || hour === null || !selection || selection.kind === 'market') return null;
   let keys = index.selected([tag]);
@@ -59,11 +55,10 @@ export function readSelection(value: OptionValue | undefined, context: TradeCont
     if (item.kind === 'node' && (item.side === 'source' || item.side === 'target') && holders(item.holders)) return item;
     if (item.kind === 'country' && holders([item.holder])) return { kind: 'country', holder: item.holder };
     if (item.kind === 'link' && holders(item.sources) && holders(item.targets) && Number.isSafeInteger(item.resource) && item.resource >= 0) return item;
-  } catch { /* A saved selection unavailable in this layout is reported by the view. */ }
+  } catch {   }
   return null;
 }
 
-/** A pinned breakdown keeps the same history and total's origin, as offsets. */
 export function contributionExtent(value: OptionValue | undefined, branch: Pick<BoundTrack['branch'], 'firstHour'>): [number, number] | null {
   if (typeof value !== 'string' || !value) return null;
   try {
@@ -71,12 +66,10 @@ export function contributionExtent(value: OptionValue | undefined, branch: Pick<
     if (Array.isArray(offsets) && offsets.length === 2 && offsets.every(Number.isSafeInteger) && offsets[0] <= offsets[1]) {
       return [branch.firstHour + offsets[0], branch.firstHour + offsets[1]];
     }
-  } catch { /* The recording's own branch extent remains the fallback. */ }
+  } catch {   }
   return null;
 }
 
-/** Other includes every holder not drawn separately, including exact nonpositive
- * and inactive rows. Its ribbon still uses only positive recorded geometry. */
 export function nodeSelections(flows: readonly Flow[], nodes: readonly SideNode[]): ReadonlyMap<string, TradeSelection> {
   const all = { source: new Set<string>(), target: new Set<string>() };
   for (const flow of flows) { all.source.add(flow.sellerIdentity); all.target.add(flow.buyerIdentity); }
@@ -108,7 +101,6 @@ export function selectedContributors(flows: readonly Flow[], selection: TradeSel
   return flows.filter(flow => flow.resource.id === selection.resource && sources.has(flow.sellerIdentity) && targets.has(flow.buyerIdentity));
 }
 
-/** Exact nullable amounts; a known hour without this deal is a recorded zero. */
 export function contributionAmounts(flows: readonly Flow[], measure: Measure, from: number, hour: number,
   known: readonly HourSpan[]): { flow: Flow; raw: bigint | null }[] {
   const missing = measure === 'current' ? knownSpanAt(known, hour) < 0
@@ -116,7 +108,6 @@ export function contributionAmounts(flows: readonly Flow[], measure: Measure, fr
   return flows.map(flow => ({ flow, raw: missing ? null : measureAmount([flow], measure, from, hour) }));
 }
 
-/** Shared known spans, less hours whose group membership was unobserved. */
 export function observedTradeSpans(known: readonly HourSpan[], unobserved: readonly HourSpan[] = []): HourSpan[] {
   const spans: HourSpan[] = [];
   let hole = 0;
@@ -133,8 +124,6 @@ export function observedTradeSpans(known: readonly HourSpan[], unobserved: reado
   return spans;
 }
 
-/** Positive daily history with recorded zeros between deals, broken where the
- * catalogue/deals or hourly group membership were not recorded. No hour grid. */
 export function contributionHistory(flow: Flow, known: readonly HourSpan[]): StackRun[] {
   const runs: StackRun[] = [];
   let at = 0;
@@ -160,9 +149,6 @@ export function contributionHistory(flow: Flow, known: readonly HourSpan[]): Sta
   return runs;
 }
 
-/** Original prefixes plus one scalar guide; full edges exist only at emitted
- * visible points. Average keeps like-denominator terms together; held parts and
- * constant averages never incur a ratio evaluation at every native boundary. */
 export interface ContributionMeasureModel {
   flows: readonly Flow[]; measure: 'total' | 'average'; from: number; hours: number[];
   basis: readonly (readonly [number, number])[];
@@ -173,8 +159,6 @@ type ContributionCurve = { constant: number; coefficient: number; offset: number
 const ZERO_CURVE: ContributionCurve = { constant: 0, coefficient: 0, offset: null, peak: 0 };
 const scalar = (): StackSum => ({ sum: 0, error: 0 });
 
-/** Positive selected-measure curve between one flow's own native changes. Its
- * numerator is linear and its traded-hour denominator is linear while active. */
 function contributionCurve(flow: Flow, index: number, measure: 'total' | 'average', basis: readonly [number, number], hour: number): ContributionCurve {
   if (index < 0) return ZERO_CURVE;
   const run = flow.runs[index];
@@ -188,8 +172,6 @@ function contributionCurve(flow: Flow, index: number, measure: 'total' | 'averag
     const value = Math.max(0, measure === 'total' ? numerator / 24 : numerator / elapsed);
     return { constant: value, coefficient: 0, offset: null, peak: value };
   }
-  // Splitting at a zero crossing preserves the positive geometry clamp without
-  // changing any exact signed amount. The crossing is also a guide boundary.
   const crossing = run.firstHour - 1 - priorAmount / run.amount;
   const positive = run.amount > 0 ? hour >= crossing : run.amount < 0 ? hour < crossing : numerator > 0;
   if (!positive) return ZERO_CURVE;
@@ -267,10 +249,6 @@ export function contributionMeasureModel(flows: readonly Flow[], measure: 'total
     guide.breakBefore.push(false);
     upper.push(Math.max(0, peaks.sum + peaks.error));
   }
-  // Total is linear between the union's native changes/crossings. Average's
-  // per-part monotone peak envelope also bounds unlike-denominator interior rises.
-  // Its first positive ratio can begin just after from - 1, before initialization
-  // at from; the exact origin endpoint bounds that otherwise-zero interval.
   for (let index = 0; index < hours.length; index++) {
     if (measure !== 'total' && hours[index + 1] !== from) continue;
     const before = guide.bounds[index]; const after = guide.bounds[index + 1];
@@ -279,15 +257,12 @@ export function contributionMeasureModel(flows: readonly Flow[], measure: 'total
   return { flows, measure, from, hours, basis, guide, upper, work };
 }
 
-/** Shared pixel thinning retains native gaps and extrema; only emitted endpoints
- * evaluate every part. Exact bars and hovers still evaluate the picked hour. */
 export function forEachContributionMeasureSegment(model: ContributionMeasureModel, from: number, to: number, minHours: number,
   visit: (piece: StackSegment) => void): void {
   forEachCompactStackSegment(model.guide, from, to, minHours, visit,
     hour => stackEdges(model.flows.map((flow, index) => Math.max(0, flowValue(flow, model.measure, model.from, hour, model.basis[index])))));
 }
 
-/** Binary visible lookup over cached interval bounds, without scanning the flows. */
 export function contributionMeasureExtent(model: ContributionMeasureModel, from: number, to: number): [number, number] | null {
   if (to < from) return null;
   let start = 0;
@@ -303,21 +278,16 @@ export function contributionMeasureExtent(model: ContributionMeasureModel, from:
   return highest == null ? null : [0, highest];
 }
 
-/** Initial activation stays at the drawn hour for held main views. Explicit
- * Follow is separate and always resumes the actual dashboard clock. */
 export function openContributions(widget: Pick<WidgetSpec, 'time'>, hour: number, playing: boolean, playhead: number | null): DrillAction {
   return { type: 'open', breakdown: 'contributions', hour, playing, playhead: widget.time.mode === 'follow' ? playhead : null };
 }
 
-/** Follow always uses the dashboard clock, also when the main view is campaign. */
 export function contributionHour(state: DrillState, track: Pick<BoundTrack, 'axisOffset'>, clockHour: number): number | null {
   return drillHour(state, Math.floor(clockHour) + track.axisOffset);
 }
 
 export function pinContributions(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, selection: TradeSelection,
   hour: number, follow: boolean, extent: readonly [number, number], countryTag: string | null = null): WidgetSpec {
-  // A country's view is pinned for that country, so its header names it and the
-  // pinned widget reads that country's whole trade.
   const country = selection.kind === 'country' && countryTag;
   const pinned = pinnedBreakdown(country ? { ...source, countries: { kind: 'tags', tags: [countryTag] } } : source,
     selection.kind === 'country' ? COUNTRY_BREAKDOWN : selection.kind === 'market' ? { id: 'contributions', label: 'Market & lend-lease' } : TRADE_BREAKDOWN, track.id);

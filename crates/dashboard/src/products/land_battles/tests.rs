@@ -50,9 +50,6 @@ fn a_battle_id_names_its_branch_combat_and_start_and_a_roster_counts_each_unit_o
     assert_eq!(distinct(&roster[..5]), None);
 }
 
-/// A window shows a battle as main did: its runs cut to the window, each counter stepped to its new
-/// first hour; a battle whose end the window holds and no run of it, its last run at that run's last
-/// hour; the loss read standing at the window's first hour, then the reads after it through its end.
 #[test]
 fn a_window_cuts_runs_to_itself_and_carries_the_loss_read_standing_at_its_first_hour() {
     let run = |first: i32, last: i32, duration: i32| LandBattleRun { first_hour: first, last_hour: last, counts: [2, 1], roster_unknown: false, countries: [vec!["GER".into()], vec!["POL".into()]], countries_unknown: [false, false], duration };
@@ -70,8 +67,6 @@ fn a_window_cuts_runs_to_itself_and_carries_the_loss_read_standing_at_its_first_
     assert_eq!(carried(&[], 10, 50), 0..0);
 }
 
-/// Two result-only rows of one combat and end hour, written in consecutive hours under one table
-/// key, are two ends; neither is the battle of that combat starting at that hour.
 #[test]
 fn every_written_end_row_is_an_end_of_its_own() {
     let row = |id: i64| Some(vec![Cell::Number(i64::from(LandBattleEndRow::RESULT_ONLY)), Cell::Number(10), Cell::Number(id)].into_boxed_slice());
@@ -88,8 +83,6 @@ fn every_written_end_row_is_an_end_of_its_own() {
     assert_eq!(found, [((7, 10, None), 12, Some(59)), ((7, 10, Some(10)), 10, Some(60)), ((7, 10, Some(11)), 11, Some(61))]);
 }
 
-/// A result without runs is listed from the hour its row was written, by the window holding that
-/// hour, never by the window before, whichever hour its own result names.
 #[test]
 fn a_result_without_runs_is_listed_from_the_hour_it_was_written() {
     let history = |runs: Vec<LandBattleRun>, settled: Option<i32>| LandBattleHistory {

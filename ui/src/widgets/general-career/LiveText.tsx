@@ -2,7 +2,6 @@ import { useLayoutEffect, useRef } from 'react';
 import { setText } from '../../charts/domText';
 import type { Live, LiveValues } from '../../charts/live';
 
-/** A live cell's text, written by its source's painter whenever the cell moves, never by a render. */
 export function LiveText({ live, cell, format, onPaint }: {
   live: Live<LiveValues<number>>; cell: string; format: (value: number | undefined, missing: string) => string; onPaint?: () => void;
 }) {

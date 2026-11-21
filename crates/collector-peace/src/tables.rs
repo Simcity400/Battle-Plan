@@ -1,5 +1,3 @@
-//! One hourly handoff of owned finalizer events. Conversion allocates only on
-//! the spool thread. An unavailable conference remains a manifest row.
 pub use crate::peace_settlements::Capacities;
 use crate::peace_settlements::Storage;
 use engine_native::walk::Outcome;
@@ -42,7 +40,6 @@ impl Captured {
         let current = self.storage.capacity();
         let omitted = usize::try_from(self.omitted()).unwrap_or(usize::MAX);
         if omitted != 0 {
-            // Counts were observed once; only off-thread storage grows.
             *capacity = capacity.merge(Capacities {
                 events: current.events.saturating_add(omitted),
                 countries: current.countries.saturating_add(omitted),
@@ -350,7 +347,6 @@ mod tests {
         captured.fail("synthetic unavailable reason");
         FAILURES.store(0, Ordering::Relaxed);
         OWNER.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
-        // Process-wide hooks must stop only the allocation-denial owner.
         let tables = crate::test_support::with_allocations_denied(|| {
             engine_allocation::set_hooks(None, Some(failed));
             engine_allocation::set_stop_hook(Some(stopped));

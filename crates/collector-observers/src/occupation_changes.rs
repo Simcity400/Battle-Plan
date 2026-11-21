@@ -1,6 +1,3 @@
-//! Carried occupation hover inputs. Hooks only bump registered receiver certificates;
-//! capture reads changed occupied states and shares country/relation source trees.
-//! No native dependency-memory validation runs on an unchanged hour.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -20,16 +17,13 @@ static DEMAND: AtomicUsize = AtomicUsize::new(0);
 static LEGITIMACY_FORWARDER: AtomicPtr<LegitimacyUpdateForwarder> =
     AtomicPtr::new(std::ptr::null_mut());
 
-/// A dependent observer of the daily diplomacy update this family owns,
-/// including war-goal expiry and exile legitimacy. Its guard
-/// spans the original call; admission follows this family's patch publication.
 pub struct LegitimacyUpdateForwarder {
     pub notify: fn(usize) -> Option<Notification<'static>>,
     pub enabled: fn(bool),
 }
 
-/// Register before patch installation, or unregister after native callbacks
-/// quiesce. Callbacks and their static registration live until DLL unload.
+#[doc = " Register before patch installation, or unregister after native callbacks"]
+#[doc = " quiesce. Callbacks and their static registration live until DLL unload."]
 pub fn legitimacy_update_forwarder(receiver: Option<&'static LegitimacyUpdateForwarder>) {
     let next = receiver.map_or(std::ptr::null_mut(), |value| {
         std::ptr::from_ref(value).cast_mut()
@@ -65,7 +59,6 @@ fn observe() {
         OWN.load(Ordering::SeqCst) && FORWARDERS.iter().all(|v| v.load(Ordering::SeqCst)),
     );
 }
-/// Synthetic child-process tests admit the real domain without publishing native patches.
 #[cfg(any(test, feature = "test-support"))]
 pub fn observe_for_tests(own: bool) {
     OWN.store(own, Ordering::SeqCst);
@@ -80,8 +73,6 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
 pub fn changed(receiver: usize) -> Notification<'static> {
     WATCHES.notify(receiver)
 }
-/// A holder lifetime writer whose guarded receiver resolution can fail. Failure
-/// revokes every occupation certificate instead of marking an unrelated zero key.
 pub fn holder_changed(receiver: Option<usize>) -> Notification<'static> {
     match receiver.filter(|&receiver| receiver != 0) {
         Some(receiver) => changed(receiver),
@@ -109,8 +100,8 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The caller has verified this process's executable and owns installation and quiescence.
+    #[doc = " # Safety"]
+    #[doc = " The caller has verified this process's executable and owns installation and quiescence."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")

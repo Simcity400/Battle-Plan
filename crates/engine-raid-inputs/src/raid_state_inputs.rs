@@ -1,11 +1,3 @@
-//! Stored operands of state-scope raid target triggers.
-//!
-//! Resource amounts combine the template amount, state's own pool, three
-//! resource accumulator keys and the global factor. A controller origin for
-//! the state also selects infrastructure and supply-route factors. Healthy
-//! building levels add grants adjusted by the controller's overrides.
-//! These values are computed on demand; this reader acquires their operands.
-//! Dynamic-modifier checks read the state's stored modifier container.
 
 use crate::{
     Memory, cbuilding, cbuilding_database, cbuilding_status, cbuilding_template, ccountry,
@@ -21,15 +13,10 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// The global resource factor key.
-/// Fixed built-in keys are checked once per attachment by
-/// `fixed_layout`; a mismatch withholds the tables that use them.
 pub const GLOBAL_FACTOR_KEY: u32 = crate::modifier_keys::STATE_RESOURCES_FACTOR;
-/// The country infrastructure resource factor key.
 pub const INFRASTRUCTURE_KEY: u32 =
     crate::modifier_keys::LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE;
 
-/// Effective state recruitment operands, in accumulator order.
 const RECRUITMENT_KEYS: [u32; 4] = [
     crate::modifier_keys::LOCAL_MANPOWER,
     crate::modifier_keys::LOCAL_NON_CORE_MANPOWER,
@@ -37,46 +24,30 @@ const RECRUITMENT_KEYS: [u32; 4] = [
     crate::modifier_keys::RECRUITABLE_POPULATION_FACTOR,
 ];
 
-/// Infrastructure building template pointer in the building database.
 const INFRASTRUCTURE_TEMPLATE: usize = 0x3b0;
 
-/// One state's operands shared by every resource.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InputRow {
     pub state: u32,
-    /// `cstate::RESOURCE_MODIFIER_GATE`: the additive keys count only when set.
     pub gate: u8,
-    /// Effective key 0x223 in `cstate::BASE_MODIFIERS`.
     pub global_factor: i64,
-    /// The controller has a resource origin whose own link identifies this state; without one both
-    /// factors are one.
     pub origin: u8,
-    /// The infrastructure building's level, damage included, read only with an origin; `None` when
-    /// the state has no such building.
     pub infrastructure_level: Option<i32>,
-    /// Effective controller key 0x292, read only with an infrastructure level;
-    /// zero otherwise.
     pub infrastructure_modifier: i64,
-    /// Whether the maximum state province-node value is positive, read only with an origin.
     pub supply_route: u8,
     pub recruitment: Option<[i64; 4]>,
 }
 
-/// A resource's stored operands in one state; an all-zero resource has no row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceRow {
     pub state: u32,
-    /// The strategic resource's lexer token.
     pub resource: u32,
-    /// The state's resource record, fixed5.
     pub pool: i64,
-    /// Effective accumulator values of the resource's three keys.
     pub additive: i64,
     pub factor: i64,
     pub cost: i64,
 }
 
-/// One `cstate::DYNAMIC_MODIFIERS` entry, in container order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ModifierRow {
     pub state: u32,
@@ -87,41 +58,30 @@ pub struct ModifierRow {
     pub token_len: usize,
 }
 
-/// One element of a controller's country-resources origin entry. An entry with no elements has one
-/// row with `count` and `resource` zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OverrideRow {
-    /// The country's native id.
     pub country: u32,
     pub ordinal: u32,
     pub entry: u32,
-    /// The building type token the entry applies to.
     pub building: u32,
-    /// The entry's element count.
     pub count: u32,
-    /// The resource's lexer token.
     pub resource: u32,
     pub amount: i64,
 }
 
-/// One resource database item: its lexer token and descriptor address.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Resource {
     token: u32,
     address: usize,
-    /// The state keys copied; they are checked after every identity.
     keys_read: bool,
 }
 
-/// The database's item and key array headers (`cstrategic_resource_database::Reader::new`).
 const DATABASE_FIELDS: [RecordField; 2] = [
     field(cstrategic_resource_database::ITEMS, 0, 16),
     field(cstrategic_resource_database::KEYS, 16, 16),
 ];
 const DATABASE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DATABASE_FIELDS, 32).expect("valid record layout");
-/// A descriptor's vtable, one-based index, token and three state keys, in
-/// the order `cstrategic_resource::row` meets them.
 const DESCRIPTOR_FIELDS: [RecordField; 6] = [
     field(0, 0, 8),
     field(cstrategic_resource::INDEX, 8, 4),
@@ -139,12 +99,6 @@ const KEY_FIELDS: [RecordField; 1] = [field(0, 0, 4)];
 const KEY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&KEY_FIELDS, 4).expect("valid record layout");
 
-/// The resource database as `cstrategic_resource::walk` authenticates it and
-/// each resource's state keys, 64 items, keys and descriptors per guarded
-/// call instead of eight guarded calls per resource. Identity errors keep
-/// their messages and item order; the caller meets each item's key fault
-/// after every identity, as the walk read them.
-/// `Ok(Err(demand))` is a database larger than the buffers.
 fn resource_database(
     memory: &impl Memory,
     base: usize,
@@ -177,14 +131,12 @@ fn resource_database(
         return Err("resource database item and key counts disagree");
     }
     let count = items.count as usize;
-    // Resource accumulation reaches every database item.
     grow(output, count - 1)?;
     grow(keys, count - 1)?;
     grow(bytes, BATCH * DESCRIPTOR_LAYOUT.stride())?;
     if count - 1 > output.len() {
         return Ok(Err(count - 1));
     }
-    // Item pointers and key tokens, each a fault of its own.
     let mut pointers = [0_usize; BATCH];
     let mut sources = [0_usize; BATCH];
     let mut first = 0;
@@ -223,7 +175,6 @@ fn resource_database(
         }
         first += len;
     }
-    // Identity in item order, then the keys, as the walk met them.
     let mut descriptor_fields = [0_usize; BATCH];
     let mut records = [[0_u8; 28]; BATCH];
     let mut key_fields = [0_usize; BATCH];
@@ -291,7 +242,6 @@ fn resource_database(
         }
         for index in 0..len {
             let (fields, record) = (descriptor_fields[index], &records[index]);
-            // A key fault is met only after every identity, at its own item.
             output[first + index].keys_read = fields == DESCRIPTOR_FIELDS.len();
             keys[first + index] = [u32_at(record, 16), u32_at(record, 20), u32_at(record, 24)];
         }
@@ -300,7 +250,6 @@ fn resource_database(
     Ok(Ok(count - 1))
 }
 
-/// Row and scratch sizes; a walk reports the live sizes it needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub states: usize,
@@ -309,20 +258,13 @@ pub struct Capacity {
     pub modifier_rows: usize,
     pub token_bytes: usize,
     pub override_rows: usize,
-    /// Origins read in one batch of countries.
     pub origins: usize,
-    /// Route pairs held for one batch of countries.
     pub routes: usize,
-    /// Provinces read in one batch of states.
     pub provinces: usize,
-    /// Override entries of one country.
     pub entries: usize,
-    /// Country slots.
     pub countries: usize,
-    /// Distinct dynamic modifier definitions whose names a walk keeps.
     pub definitions: usize,
     pub name_bytes: usize,
-    /// Pool, accumulator and modifier entry bytes of one batch of states.
     pub batch_bytes: usize,
 }
 
@@ -369,7 +311,6 @@ impl Capacity {
     }
 }
 
-/// States, countries and records are read in groups of this many.
 const BATCH: usize = 64;
 
 #[derive(Clone, Copy)]
@@ -377,13 +318,11 @@ struct Scratch {
     pointer: usize,
     id: u32,
     controller: u32,
-    /// Canonical controller slot, zero without a controller.
     slot: u32,
     fields: [u8; STATE_RECORD],
     origin: bool,
     level: Option<i32>,
     supply: bool,
-    /// Scratch ran out for this state: it has no rows this hour.
     skipped: bool,
 }
 
@@ -409,13 +348,11 @@ impl Scratch {
     }
 }
 
-/// One controlling country, by canonical slot.
 #[derive(Clone, Copy)]
 struct Nation {
     pointer: usize,
     id: u32,
     resources: usize,
-    /// Its states in `order`.
     first: usize,
     end: usize,
     origins: Array,
@@ -423,7 +360,6 @@ struct Nation {
     companion: usize,
     routes: Array,
     nodes: Array,
-    /// Its route pairs in the route buffer.
     route_start: usize,
 }
 
@@ -447,7 +383,6 @@ impl Default for Nation {
     }
 }
 
-/// Caller-owned rows and scratch; only the worker walk grows storage.
 pub struct Buffers {
     pub recruitment_enabled: bool,
     pub inputs: Vec<InputRow>,
@@ -455,9 +390,6 @@ pub struct Buffers {
     pub modifiers: Vec<ModifierRow>,
     pub tokens: Vec<u8>,
     pub overrides: Vec<OverrideRow>,
-    /// The countries whose overrides the walk read this hour, including
-    /// those with none: only controllers are walked, the selected ones and
-    /// those of every selected state.
     pub read_countries: Vec<u32>,
     descriptors: Vec<Resource>,
     resource_keys: Vec<[u32; 3]>,
@@ -476,7 +408,6 @@ pub struct Buffers {
     names: Vec<(u64, usize, usize)>,
     name_bytes: Vec<u8>,
     batch: Vec<u8>,
-    /// Modifier metadata, read once per walk; its storage is kept.
     memo: DefinitionMemo,
 }
 
@@ -542,7 +473,6 @@ impl Buffers {
         })
     }
 
-    /// No storage at all, for a parked placeholder.
     pub fn empty() -> Self {
         Self {
             recruitment_enabled: true,
@@ -606,7 +536,6 @@ impl Buffers {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
-    /// Inputs, resources, modifiers and overrides.
     pub outcomes: [Outcome; 4],
     pub token_bytes: usize,
     pub required: Capacity,
@@ -616,26 +545,15 @@ pub struct Walk {
 struct Totals {
     lens: [usize; 4],
     token_bytes: usize,
-    /// States and countries whose rows did not fit.
     unread_states: u32,
     unread_countries: u32,
-    /// Rows and name bytes every state and controller needs, fitted or not.
     demand: [usize; 4],
 }
 
-/// The owners one walk reads: native state IDs for StateResourceInputs,
-/// StateResources and StateDynamicModifiers, and native country IDs for
-/// CountryBuildingResources (a sliced hour's slice and early reads). The
-/// controller of every selected state also has its overrides read, since
-/// building resource grant accumulation reads the state's controller's: a
-/// country that has just come to control a state is read with it
-/// (`Buffers::read_countries` lists every country read).
 #[derive(Clone, Copy)]
 pub struct Selection<'a> {
     pub states: &'a dyn Fn(u32) -> bool,
     pub countries: &'a dyn Fn(u32) -> bool,
-    /// `countries` accepts some country: every state's controller is read.
-    /// Otherwise only the selected states are.
     pub any_country: bool,
 }
 
@@ -644,7 +562,6 @@ fn every(_: u32) -> bool {
 }
 
 impl Selection<'static> {
-    /// Every state and every country.
     pub const ALL: Self = Self {
         states: &every,
         countries: &every,
@@ -655,7 +572,6 @@ impl Selection<'static> {
 mod census;
 pub use census::{CoreRow, demand, state_census, state_cores};
 
-/// Worker-only acquisition: grow from each original header before filling it.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -759,8 +675,6 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
     }
 }
 
-// A state's own fields, read in record batches: its identity and controller
-// for every state, everything for the states this hour selects.
 const STATE_VTABLE: usize = 0;
 const STATE_PROVINCES: usize = 8;
 const STATE_ID: usize = 24;
@@ -796,8 +710,6 @@ const STATE_FIELDS: [RecordField; 11] = [
 ];
 const STATE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_FIELDS, STATE_RECORD).expect("valid record layout");
-/// The fields every state is read for: identity and controller, at their
-/// [`STATE_LAYOUT`] places.
 const STATE_HEAD_LAYOUT: RecordLayout<'static> = RecordLayout::new(
     &[STATE_FIELDS[0], STATE_FIELDS[2], STATE_FIELDS[3]],
     STATE_RECORD,
@@ -861,15 +773,10 @@ const BUILDING_FIELDS: [RecordField; 2] = [
 const BUILDING_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&BUILDING_FIELDS, 16).expect("valid record layout");
 
-/// The first bucket's probe distance byte.
 const BUCKET_FIELDS: [RecordField; 1] = [field(4, 0, 1)];
 const BUCKET_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&BUCKET_FIELDS, 8).expect("valid record layout");
 
-/// Each row of `sources` under `layout`, 64 per guard, into `rows`; calls
-/// `visit(index, fields, row)` in order with the row's copied field count
-/// (all of them, or the prefix before a fault). A fault ends only its row:
-/// the batch resumes after it.
 fn each_record(
     memory: &impl Memory,
     sources: &[usize],
@@ -910,7 +817,6 @@ fn each_record(
     }
 }
 
-/// Every record of `sources` in one guarded batch, or `error`.
 fn records(
     memory: &impl Memory,
     sources: &[usize],
@@ -930,8 +836,6 @@ fn records(
     Ok(())
 }
 
-/// Up to `BATCH` independent spans `(address, len)`, laid out back to back in
-/// `destination`, in one guarded batch.
 fn gather(
     memory: &impl Memory,
     spans: &[(usize, usize)],
@@ -954,8 +858,6 @@ fn gather(
     Ok(())
 }
 
-/// `lookup_many_at` over an owned entry copy: every key positive and
-/// increasing; the wanted sorted keys' raw values.
 fn scan_accumulator(
     entries: &[u8],
     keys: &[u32],
@@ -984,7 +886,6 @@ fn scan_accumulator(
     Ok(())
 }
 
-/// `dynamic_modifier_entry::header` over an owned entry copy.
 fn modifier_entry(base: usize, bytes: &[u8]) -> Result<(u32, i32, usize), &'static str> {
     if u64_at(bytes, 0) != site(base, dynamic_modifier_entry::VTABLE_RVA)? as u64 {
         return Err("dynamic modifier entry vtable mismatch");
@@ -1014,7 +915,6 @@ fn modifier_entry(base: usize, bytes: &[u8]) -> Result<(u32, i32, usize), &'stat
     ))
 }
 
-/// Definition names kept for the walk, keyed by definition pointer.
 struct Names<'a> {
     table: &'a mut Vec<(u64, usize, usize)>,
     bytes: &'a mut Vec<u8>,
@@ -1024,7 +924,6 @@ struct Names<'a> {
 }
 
 impl Names<'_> {
-    /// The name's `(start, len)` in `bytes`, or its source when not kept.
     fn get(
         &mut self,
         memory: &impl Memory,
@@ -1102,7 +1001,6 @@ impl Name {
     }
 }
 
-/// The canonical slot `raw` links to, through the shared authenticated census.
 fn canonical<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     raw: u32,
@@ -1150,7 +1048,6 @@ fn walk_inner(
         memo,
     } = buffers;
 
-    // The live resource database and each resource's accumulator keys.
     let resources =
         match resource_database(memory, base, descriptors, resource_keys, bytes)? {
             Ok(len) => len,
@@ -1199,7 +1096,6 @@ fn walk_inner(
     memo.clear();
     let memo = &*memo;
 
-    // Pass 1: every state's identity and controller, in record batches.
     let root = address(game_state, cgame_state::STATES)
         .ok()
         .and_then(|at| Array::read(memory, at, 8))
@@ -1247,7 +1143,6 @@ fn walk_inner(
         if len == 0 {
             continue;
         }
-        // The pointers now live in `words`; the records reuse `bytes`.
         let record = &mut bytes[..];
         records(
             memory,
@@ -1282,7 +1177,6 @@ fn walk_inner(
     }
     let states = &mut states[..count];
 
-    // Controllers, resolved once per walk through the shared authenticated census.
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let country_array = countries.arrays()[0];
     let country_slots = country_array.count as usize;
@@ -1332,7 +1226,6 @@ fn walk_inner(
     }
     let controllers = &mut controllers[..distinct];
     controllers.sort_unstable();
-    // Each controller's resources pointer.
     for chunk in controllers.chunks(BATCH) {
         for (index, &slot) in chunk.iter().enumerate() {
             addresses[index] = nations[slot as usize].pointer;
@@ -1352,7 +1245,6 @@ fn walk_inner(
         }
     }
 
-    // This hour's states; the others keep their earlier rows.
     let mut selected = 0;
     for index in 0..count {
         if (select.states)(states[index].id) {
@@ -1362,8 +1254,6 @@ fn walk_inner(
     }
     let count = selected;
     let states = &mut states[..count];
-    // The selected states' own fields; the others were read for their
-    // controllers alone.
     for batch in states.chunks_mut(BATCH) {
         for (address, state) in addresses.iter_mut().zip(batch.iter()) {
             *address = state.pointer;
@@ -1382,7 +1272,6 @@ fn walk_inner(
         }
     }
 
-    // Each controller's selected states, grouped in `order`.
     for (index, state) in states.iter().enumerate() {
         order[index] = (state.slot, index as u32);
         by_pointer[index] = (state.pointer as u64, index as u32);
@@ -1404,7 +1293,6 @@ fn walk_inner(
         }
         first = end;
     }
-    // Controllers read for a selected state or for their own overrides.
     let mut wanted = 0;
     for index in 0..controllers.len() {
         let nation = nations[controllers[index] as usize];
@@ -1415,7 +1303,6 @@ fn walk_inner(
     }
     let controllers = &mut controllers[..wanted];
 
-    // Pass 2: resources, overrides and origins, in country batches.
     let resources_vtable = site(base, ccountry_resources::VTABLE_RVA)? as u64;
     let origin_vtable = site(base, cresource_origin::VTABLE_RVA)? as u64;
     let skip = |states: &mut [Scratch], nation: &Nation, totals: &mut Totals| {
@@ -1446,7 +1333,6 @@ fn walk_inner(
             }
             let origins = Array::from_header(header16(bytes, at + 16), 8)
                 .ok_or("resource origins invalid")?;
-            // Only a controller of a selected state reads its origins.
             let nation = &mut nations[slot as usize];
             nation.origins = if nation.first != nation.end {
                 origins
@@ -1461,7 +1347,6 @@ fn walk_inner(
         }
         for (index, &slot) in chunk.iter().enumerate() {
             let nation = nations[slot as usize];
-            // A controller of a selected state is read with it.
             if !(select.countries)(nation.id) && nation.first == nation.end {
                 continue;
             }
@@ -1483,8 +1368,6 @@ fn walk_inner(
                 None => totals.unread_countries += 1,
             }
         }
-        // Origin vectors, then each origin's vtable and state, per group of
-        // countries whose origins fit.
         let mut start = 0;
         while start < chunk.len() {
             let mut end = start;
@@ -1546,7 +1429,6 @@ fn walk_inner(
         }
     }
 
-    // Supply systems of controllers with an origin state.
     let supply_root = csupply_system::read_root(memory, base, game_state)?;
     let system_array = Array::read(
         memory,
@@ -1574,7 +1456,6 @@ fn walk_inner(
         site(base, ccountry_supply_system::SECONDARY_VTABLE_RVA)? as u64,
     ];
     let infrastructure = infrastructure_template(memory, base)?;
-    // Only controllers with an origin state read their supply.
     let mut supplied = 0;
     for index in 0..controllers.len() {
         let slot = controllers[index];
@@ -1630,7 +1511,6 @@ fn walk_inner(
                 Array::from_header(header16(bytes, index * 32 + 16), supply_node::STRIDE)
                     .ok_or("supply nodes invalid")?;
         }
-        // Route arrays, per group of countries whose routes fit.
         let mut start = 0;
         while start < chunk.len() {
             let mut end = start;
@@ -1662,7 +1542,6 @@ fn walk_inner(
                 routes,
                 "supply routes unreadable",
             )?;
-            // Their origin states' infrastructure and supply route.
             let mut members = [0_u32; BATCH];
             let mut len = 0;
             for &slot in &chunk[start..end] {
@@ -1711,7 +1590,6 @@ fn walk_inner(
         }
     }
 
-    // Pass 3: rows in state order, in batches whose arrays fit.
     let pool_len = (resources + 1) * cstrategic_resource_pool::VALUE_STRIDE;
     let pool_fields = [field(0, 0, pool_len)];
     let pool_layout =
@@ -1726,7 +1604,6 @@ fn walk_inner(
     names.table.fill((0, 0, 0));
     let mut next = 0;
     while next < count {
-        // Pools, then accumulator entries, then modifier entries.
         let mut members = [0_usize; BATCH];
         let mut accumulator_spans = [(0, 0); BATCH];
         let mut container_spans = [(0, 0); BATCH];
@@ -1780,7 +1657,6 @@ fn walk_inner(
                 .unwrap();
             *pool = cstrategic_resource_pool::from_header(base, header, resources as u32 + 1)?.data;
         }
-        // One batch region per kind keeps each gather contiguous.
         let pool_bytes = len * pool_len;
         let accumulator_bytes: usize = accumulator_spans[..len].iter().map(|span| span.1).sum();
         let (pool_region, rest) = batch[..used].split_at_mut(pool_bytes);
@@ -1805,7 +1681,6 @@ fn walk_inner(
             container_region,
             "dynamic modifier entry unreadable",
         )?;
-        // The first bucket of each origin state's country-modifier hash.
         let mut buckets = [0_usize; BATCH];
         let mut probed = [usize::MAX; BATCH];
         let mut probes = 0;
@@ -1944,7 +1819,6 @@ fn walk_inner(
             let fits = totals.lens[0] < inputs.len()
                 && first_row + rows <= resource_rows.len()
                 && totals.lens[2] + entries <= modifiers.len();
-            // Modifier names: measure every one, copy only when all fit.
             let mut token_end = totals.token_bytes;
             for ordinal in 0..entries {
                 let entry = &container[ordinal * dynamic_modifier_entry::STRIDE..];
@@ -2001,7 +1875,6 @@ fn walk_inner(
     Ok(())
 }
 
-/// The gathered pointer vector words as non-null addresses.
 fn non_null(bytes: &[u8], addresses: &mut [usize]) -> Result<(), &'static str> {
     for (index, address) in addresses.iter_mut().enumerate() {
         *address = usize::try_from(u64_at(bytes, index * 8))
@@ -2012,8 +1885,6 @@ fn non_null(bytes: &[u8], addresses: &mut [usize]) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The first country-modifier probe for the state's controller: the bucket
-/// address, with the header's bounds checks.
 fn first_bucket<M: Memory>(
     state: &Scratch,
     countries: &ccountry::Reader<'_, M>,
@@ -2024,8 +1895,6 @@ fn first_bucket<M: Memory>(
     mask.checked_add(1)
         .filter(|count| count.is_power_of_two() && *count <= i32::MAX as u32)
         .ok_or("state movement hash mask invalid")?;
-    // The first probe, `hash & mask`, is below the bucket count and so
-    // inside the allocation; only a null table has no bucket.
     let index = canonical(countries, state.controller)? & mask;
     if data == 0 {
         return Err("state movement hash probe outside allocation");
@@ -2034,8 +1903,6 @@ fn first_bucket<M: Memory>(
         .ok_or("state movement hash bucket address overflow")
 }
 
-/// Infrastructure levels and supply routes of up to `BATCH` origin states
-/// whose controllers' routes are in `routes`.
 #[allow(clippy::too_many_arguments)]
 fn origin_states(
     memory: &impl Memory,
@@ -2077,8 +1944,6 @@ fn origin_states(
     Ok(())
 }
 
-/// Infrastructure lookup for up to `BATCH` states: the index, building pointer, template and level;
-/// `None` without a building.
 fn infrastructure_levels(
     memory: &impl Memory,
     infrastructure: Infrastructure,
@@ -2165,10 +2030,6 @@ fn infrastructure_levels(
     Ok(levels)
 }
 
-/// Positive maximum province-node value for up to `BATCH` states whose
-/// controllers' routes are in `routes`, reading province vectors and IDs in
-/// groups that fit. A state whose provinces alone do not fit is skipped,
-/// counted in `unread` and its province count kept in `provinces`.
 #[allow(clippy::too_many_arguments)]
 fn route_supply(
     memory: &impl Memory,
@@ -2193,7 +2054,6 @@ fn route_supply(
             .ok_or("state provinces invalid")?;
         let count = provinces.count as usize;
         need(provinces_required, count);
-        // The maximum node value requires the full province vector.
         grow(words, total + count)?;
         grow(addresses, total + count)?;
         grow(bytes, (total + count) * 16)?;
@@ -2203,7 +2063,6 @@ fn route_supply(
                 *unread += 1;
                 continue;
             }
-            // Fits alone: finish these, then take the rest.
             origin_states_supply(
                 memory,
                 base,
@@ -2245,8 +2104,6 @@ fn route_supply(
     )
 }
 
-/// Positive maximum province-node value for states whose province vectors are `spans`: a province's
-/// route node has a positive route value.
 #[allow(clippy::too_many_arguments)]
 fn origin_states_supply(
     memory: &impl Memory,
@@ -2293,7 +2150,6 @@ fn origin_states_supply(
             }
             let id = u32_at(bytes, province * 16 + 8) as i32;
             province += 1;
-            // Lower bound over the sorted (province, node) pairs.
             let (mut low, mut high) = (0, pairs);
             while low < high {
                 let middle = low + (high - low) / 2;
@@ -2310,7 +2166,6 @@ fn origin_states_supply(
             if node as i32 == -1 {
                 continue;
             }
-            // The province addresses are consumed; node addresses reuse them.
             addresses[found] = nation
                 .nodes
                 .element(node, supply_node::STRIDE)
@@ -2319,7 +2174,6 @@ fn origin_states_supply(
             found += 1;
         }
     }
-    // The node records reuse the province record bytes, which are consumed.
     records(
         memory,
         &addresses[..found],
@@ -2382,7 +2236,6 @@ fn infrastructure_template(
     })
 }
 
-/// The state container's authenticated entry array: no country or leader, and this state's ID.
 fn container_array(base: usize, state: &Scratch) -> Result<Array, &'static str> {
     let bytes = &state.fields[STATE_CONTAINER..STATE_CONTAINER + 0x38];
     if u64_at(bytes, 0) != site(base, cdynamic_modifier_container::VTABLE_RVA)? as u64 {
@@ -2400,7 +2253,6 @@ fn container_array(base: usize, state: &Scratch) -> Result<Array, &'static str> 
     .ok_or("state dynamic modifier array invalid")
 }
 
-/// Rows for one country's overrides; `None` when they did not fit.
 #[allow(clippy::too_many_arguments)]
 fn overrides_of(
     memory: &impl Memory,

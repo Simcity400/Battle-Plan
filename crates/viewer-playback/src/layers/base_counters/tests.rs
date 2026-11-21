@@ -12,8 +12,6 @@ use replay_data::rows::TableId;
 use std::sync::Arc;
 use viewer_foundation::map::perspective::{Choice, Country, Vision};
 
-/// Country link 10 at slot 0; provinces 5 (controlled by 10) and 6 (by none); air base 100 in
-/// state 1, registered for slot 0 with wing 900 of five planes.
 fn world(store: &mut Store) {
     put(store, TableId::CountryLinks, 0, Some(10), &[("canonical_slot", Cell::U32(0))]);
     put(store, TableId::Provinces, 0, Some(5), &[("controller", Cell::U32(10)), ("state", Cell::U32(1))]);
@@ -118,9 +116,6 @@ fn a_part_changed_in_a_step_is_made_again_and_equals_composed() {
     assert_eq!(changed.controlled.get(&6), Some(&true));
 }
 
-/// `count` bases in states far enough apart to fill several shards: base `1000 + i` in state
-/// `i * 3 + 2`, each registered for slot 0 with wing `5000 + i` of five planes, each state
-/// flagged, and a controlled province per state.
 const MANY: u32 = 300;
 
 fn many(store: &mut Store, count: u32) {
@@ -134,7 +129,6 @@ fn many(store: &mut Store, count: u32) {
     }
 }
 
-/// `count` bases whose wing 40 (state 122) gets nine planes at hour 200.
 fn one_wing_changes(name: &str, count: u32) -> crate::playhead_host::units::Units {
     campaign(name, |_, _| Status::Complete, move |at, store| {
         if at == 0 {
@@ -151,7 +145,6 @@ fn one_base_s_wings_copy_its_shard_alone_and_share_every_other_part_with_the_win
     let mut side = side_for(one_wing_changes("bases many", MANY));
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // What the window holds while the layer makes the next version.
     let window = Arc::clone(layer(&side).published().expect("the base counters draw"));
     let made = layer(&side).made();
     reach(&mut side, 204);
@@ -212,7 +205,6 @@ fn while_changes_are_carried_it_shows_the_hour_before_the_oldest() {
     let mut held = layer(&side).fresh();
     held.compose(mirrors).unwrap();
     assert_eq!(Layer::published(&held), Published::Current);
-    // A wing marked at a step from hour 180, its site not made yet.
     held.bases.insert(1040);
     held.pending = Some(180);
     assert_eq!(Layer::published(&held), Published::At(179), "the hour before the oldest change it carries, not the last time it carried nothing");
@@ -270,8 +262,6 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert!(layer(&side).values().is_none(), "nothing is kept while hidden");
     settled_equals_composed(&mut side);
     side.set_view(View { fog: false, ..View::default() }).unwrap();
-    // Its tables left the mirrors while it was hidden: they come back as a reset, and it composes
-    // then. That may be at the recording's last step, after which no frame takes a step.
     let waited = |side: &MapSide| match side.parts() {
         None => "the base counters shown again composed from their tables (a compose is under way)".to_owned(),
         Some((mirrors, layers)) => {
@@ -298,10 +288,6 @@ fn fed(side: &MapSide) -> &super::BaseCountersFed {
     side.parts().unwrap().1[0].any().downcast_ref::<super::BaseCountersFed>().unwrap()
 }
 
-/// The window's base counters made on their worker, which keeps its own copies of the tables: the
-/// frame hands it the steps it applied and swaps in the values it hands back. Settled whole at each
-/// hour, through a wing's planes and a province's controller changed and changed back, the values
-/// equal those composed from the frame's mirrors there, and the layer is current.
 #[test]
 fn on_their_worker_the_base_counters_equal_composed_at_each_hour() {
     let units = campaign("bases fed", |_, _| Status::Complete, |at, store| {
@@ -333,14 +319,6 @@ fn on_their_worker_the_base_counters_equal_composed_at_each_hour() {
     }
 }
 
-/// The frame stands at a four-hour step's end with the four-hour steps built past it lent to the
-/// worker's layer; the pace falls to an hour a step, and the next frame applies the first step built
-/// again, of one hour, a wing's planes changed in it. The lent step spanning that hour is void, and
-/// the step built again still reaches the worker: at every hour after, settled whole, the layer is
-/// current and equals the counters composed from the frame's mirrors. Before, the host took every
-/// step through the hour that frame applied as handed, so the step built again never reached the
-/// worker: the layer stayed at the hour before (the stepped map job's "Hour 60828492 was not
-/// submitted" after its pace changed at the first hour) and its copies missed that step for good.
 #[test]
 fn after_a_slower_pace_the_first_step_built_again_reaches_the_worker() {
     use std::time::{Duration, Instant};
@@ -379,9 +357,6 @@ fn after_a_slower_pace_the_first_step_built_again_reaches_the_worker() {
     }
     frame(&mut side, applied, "the four-hour steps built past the head, lent");
     entry.playhead().pace(1.0);
-    // No frame until the first step built again is there: the frame that applies it is the one that
-    // finds the steps lent before it void. The four-hour steps reached `applied + 8`; the ring holds
-    // three steps, so a newest short of that is of the steps built again an hour each.
     let rebuilt = |newest: Option<i32>| newest.is_some_and(|newest| newest > applied && newest < applied + 8);
     while entry.playhead().held().2.resteps == 0 || !rebuilt(entry.playhead().newest()) {
         assert!(Instant::now() < deadline, "the steps past the head were not built again within 120 s (newest {:?})", entry.playhead().newest());

@@ -64,7 +64,6 @@ class Run:
         scale = self.report.get("pixels_a_world_unit") or {}
         self.pixels_a_unit = scale.get("east")
 
-    # the frames a second the run reached
     def fps(self):
         starts = [frame["start_us"] for frame in self.measured if frame.get("start_us") is not None]
         if len(starts) < 2:
@@ -74,7 +73,6 @@ class Run:
     def work_ms(self):
         return [frame["work_us"] / 1e3 for frame in self.measured if frame.get("work_us") is not None]
 
-    # how evenly the replay advanced: the hours the drawn picture moved on by, frame to frame
     def advance(self):
         hours = [frame.get("drawn_hour") for frame in self.measured]
         pairs = [(before, after) for before, after in zip(hours, hours[1:]) if before is not None and after is not None]
@@ -84,7 +82,6 @@ class Run:
         fps = self.fps()
         return self.speed / fps if self.speed and fps == fps and fps > 0 else float("nan")
 
-    # what the movers in view did, split by whether the picture's hour advanced that frame
     def movers(self):
         """Per measured frame: counters that changed place, the largest glide, rebuilds, icon
         windows' largest move and the figures drawn. A frame whose record names none of them had
@@ -162,7 +159,6 @@ def picture_counts(run, seen):
     visible = [row for row in rows if row["screen_seen"] > seen]
     overlay_only = [row for row in changed if row["world"] == 0]
     world = [row for row in changed if row["world"] > 0]
-    # Identical frames run on inside a window only: a window's first frame has no frame before it.
     indexes = {row["frame"] for row in rows}
     identical = longest_run(
         [row for row in rows],

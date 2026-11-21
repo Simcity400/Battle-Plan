@@ -1,12 +1,3 @@
-//! The combat window (land, naval and air region) is read by the map's side for each publication's
-//! own hour and shown with it ([`crate::playhead_host::combat`]): the frame only posts what it reads
-//! and shows the read of the hour on screen, or says it is loading. The land and naval marker
-//! tooltips, the division panel, the terrain and infrastructure hovers and the raid tooltip read
-//! rows at the playback head while the playhead's map is open. Each learns its tables by reading,
-//! asks at most four times a second while playing, and is closed by a frame that did not ask it.
-//! While its rows do not hold a table it reads, it shows what it showed and says it is loading, by
-//! name. The hovers are made on workers; the frame thread only asks and takes results in, and shows
-//! what it holds until a newer one is there.
 
 #[cfg(test)]
 mod tests;
@@ -34,12 +25,9 @@ use viewer_foundation::{
 };
 use viewer_raids::map::raids::tooltips::{Key, lane::Lane};
 
-/// A hover's read: what it is of (a combat and viewing country, a division, a province) and the
-/// settings it shows, and the frame it read, known by identity, which keeps none of its rows alive.
 #[derive(Clone, Debug)]
 pub(crate) struct Hovered {
     target: [u64; 3],
-    /// Inputs that make another text of the same hover (the engaged index's coverage).
     exact: u64,
     frame: Weak<DecodedFrame>,
 }
@@ -50,14 +38,12 @@ impl PartialEq for Hovered {
     }
 }
 
-/// A hover made on its worker, which ends with the hover so it holds no frame.
 pub(crate) struct Hover<T> {
     name: &'static str,
     at: AtHead,
     reads: Option<Reads<Hovered, T>>,
     loading: Loading,
     asked: bool,
-    /// Each build's nanoseconds on its workers, while timing (the proof tool).
     times: Option<Vec<u64>>,
 }
 
@@ -66,9 +52,6 @@ impl<T: Clone + Send + 'static> Hover<T> {
         Self { name, at: AtHead::learning(name), reads: None, loading: Loading::default(), asked: false, times: None }
     }
 
-    /// The hover's newest result for `target` at any hour, while the one over the newest rows is
-    /// made; none before the first. Rows at the head that lack a table its build read make no
-    /// result: the table is learned and the hover is loading until it joins.
     fn ask(&mut self, views: Head<'_>, (target, exact): ([u64; 3], impl FnOnce(&DecodedFrame) -> u64), build: impl FnOnce(&DecodedFrame) -> T + Send + 'static, wake: impl Fn() + Send + 'static) -> Option<T> {
         self.asked = true;
         let frame = {
@@ -127,34 +110,24 @@ impl<T: Clone + Send + 'static> Hover<T> {
     }
 }
 
-/// Each reader's rows at the head with what it made from them.
 pub(crate) struct CombatRows {
-    /// What the combat window waits for, by name, while it shows nothing.
     window_loading: Option<String>,
     window_asked: bool,
-    /// The combat named at load (`--combat`), opened on the first frame that resolves it.
     pub pending: Option<Selector>,
-    /// Why the combat named at load opened nothing, which refuses a saved frame.
     pub(crate) selector_refused: Option<String>,
-    /// Saved frames drawn while the combat named at load waited for its rows.
     pub(crate) selector_waits: u32,
     selector: AtHead,
     land_marker: Hover<Arc<Tooltip>>,
     naval_marker: Hover<Arc<Tooltip>>,
-    /// The division panel's own part; the land counter's tooltip it extends, the panel, and the
-    /// two together, kept while both stay.
     division_panel: Hover<Arc<Tooltip>>,
     extended: Option<(Arc<Tooltip>, Arc<Tooltip>, Arc<Tooltip>)>,
     terrain: Hover<Arc<Tooltip>>,
     infrastructure: Hover<Result<i32, String>>,
     raid: AtHead,
-    /// The raid tooltip's worker, ended with its hover so it holds no frame.
     raid_lane: Lane,
     raid_asked: bool,
     raid_loading: Loading,
-    /// The raid text last shown, for its icon, viewer and naming, kept while its rows load.
     raid_shown: Option<(Key, u32, bool, Arc<Tooltip>)>,
-    /// The open map's engaged index, kept while its layers compose.
     engaged: Option<Arc<History>>,
 }
 
@@ -166,8 +139,6 @@ impl Default for CombatRows {
             pending: None,
             selector_refused: None,
             selector_waits: 0,
-            // The tables the selector reads, declared, on a reader that waits: a combat named at
-            // load resolves on a saved frame too, whose side posts no rows for a table learned late.
             selector: AtHead::new("combat selector", &[TableId::LandCombats, TableId::NavalCombats, TableId::NavalResults], crate::playhead_host::views::Pace::Step),
             land_marker: Hover::new("land marker hover"),
             naval_marker: Hover::new("naval marker hover"),
@@ -186,7 +157,6 @@ impl Default for CombatRows {
 }
 
 impl CombatRows {
-    /// Closes every reader a frame did not ask.
     pub(crate) fn end_frame(&mut self) {
         for at in [&mut self.selector, &mut self.raid] {
             at.end_frame();
@@ -208,14 +178,12 @@ impl CombatRows {
         }
     }
 
-    /// Every open reader's loading state, named for the window's refusals.
     pub(crate) fn loading(&self) -> Vec<(String, usize)> {
         let hovers = [&self.land_marker, &self.naval_marker, &self.division_panel, &self.terrain].into_iter().filter_map(|hover| hover.loading.reason(&format!("the {}", hover.name)));
         let more = [self.window_loading.as_ref().map(|state| format!("the combat window: loading: {state}")), self.infrastructure.loading.reason("the infrastructure hover"), self.raid_loading.reason("the raid tooltip")];
         hovers.chain(more.into_iter().flatten()).map(|reason| (reason, 1)).collect()
     }
 
-    /// Gives reader `name` the tables a run learned before, so it opens with them (the proof tool).
     pub(crate) fn learned(&mut self, name: &str, tables: &[TableId]) {
         let at = match name {
             "land_marker" => &mut self.land_marker.at,
@@ -228,7 +196,6 @@ impl CombatRows {
         at.learn(tables);
     }
 
-    /// Times the hovers' builds on their workers from now on (the proof tool).
     pub(crate) fn time(&mut self) {
         for hover in [&mut self.land_marker, &mut self.naval_marker, &mut self.division_panel, &mut self.terrain] {
             hover.time();
@@ -236,7 +203,6 @@ impl CombatRows {
         self.infrastructure.time();
     }
 
-    /// Each hover build's nanoseconds on its worker, by reader name.
     pub(crate) fn times(&self) -> [(&'static str, Vec<u64>); 5] {
         [
             ("land_marker", self.land_marker.times()),
@@ -267,8 +233,6 @@ impl CombatRows {
         self.naval_marker.ask(from, ([u64::from(viewer), id, 0], |frame| covered(covering.as_deref(), frame)), move |frame| Arc::new(naval_marker_tooltips::build(&content, frame, viewer, id, index.as_deref())), wake)
     }
 
-    /// The land counter's tooltip `base` with the division panel of its one division `id`, once
-    /// the panel is made; `base` alone before.
     pub(crate) fn division_panel(&mut self, head: Head<'_>, document: &Document, base: Arc<Tooltip>, id: u64, wake: impl Fn() + Send + 'static) -> Arc<Tooltip> {
         self.division_panel_from(head, document, base, id, wake)
     }
@@ -298,7 +262,6 @@ impl CombatRows {
         self.terrain.ask(from, ([u64::from(province), u64::from(vision.ours()), 0], |_| 0), move |frame| Arc::new(terrain_mode::hover(&content, frame, province, &vision)), wake)
     }
 
-    /// The infrastructure mode's level at `province`; refused by name until the first read.
     pub(crate) fn infrastructure(&mut self, head: Head<'_>, document: &Document, province: u32, wake: impl Fn() + Send + 'static) -> Result<i32, String> {
         self.infrastructure_from(head, document, province, wake)
     }
@@ -314,8 +277,6 @@ impl CombatRows {
         })
     }
 
-    /// The raid tooltip, built on its worker from rows at the head; none until the first build for
-    /// this icon is done. While its rows load, the text last shown for the icon.
     #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
     pub(crate) fn raid(&mut self, views: Head<'_>, document: &Document, ours: u32, nato: bool, key: Key, ctx: &egui::Context) -> Option<Arc<Tooltip>> {
         self.raid_asked = true;
@@ -337,12 +298,10 @@ impl CombatRows {
     }
 }
 
-/// Whether the engaged index covers the hour of `frame`, which a marker's text depends on.
 fn covered(index: Option<&History>, frame: &DecodedFrame) -> u64 {
     u64::from(index.is_some_and(|index| index.covers(frame.branch, frame.hour)))
 }
 
-/// The land counter's tooltip with the division panel's lines and refusals added.
 fn extend(base: &Tooltip, panel: &Tooltip) -> Tooltip {
     let mut text = base.clone();
     text.line(true, 2, "division panel", Ok(panel.body.clone()));
@@ -353,10 +312,6 @@ fn extend(base: &Tooltip, panel: &Tooltip) -> Tooltip {
 }
 
 impl Viewer {
-    /// Where the map stands for the combat window: the hour this frame's window readers are bounded
-    /// by ([`crate::playhead_host::views::Views::show_through`]), which its head and the timed
-    /// layers' installs set, or for a saved frame the side's own hour; and the seek the side last
-    /// posted its rows at.
     pub(super) fn combat_on_screen(&self) -> Option<viewer_combat::OnScreen> {
         let side = super::live_of(&self.playhead_map)?;
         let views = side.views();
@@ -364,13 +319,8 @@ impl Viewer {
         Some(viewer_combat::OnScreen { branch: side.branch()?, hour, seek: views.seek() })
     }
 
-    /// What the combat window shows this frame: the side's read of the hour the map shows, once it
-    /// is there, and what the window holds while that is of the hour on screen; else nothing,
-    /// loading by name. The combat named at load is opened first, once its rows resolve it. What
-    /// the window let go of is freed off the frame.
     pub(super) fn combat_prepared(&mut self) -> io::Result<Prepared> {
         if let Some(selector) = self.combat_rows.pending.take() {
-            // An air region, a state or a naval region is the window itself: it reads no rows.
             let resolved = match selector.direct() {
                 Some(selection) => Some(Ok(selection)),
                 None => self.rows_head().and_then(|views| {
@@ -409,15 +359,11 @@ impl Viewer {
         Ok(prepared)
     }
 
-    /// The engaged index the open map's engagements layer reads, the one held while its layers
-    /// compose; none with no map open. What the engaged byte check reads, without keeping it.
     pub(super) fn layer_history(&self) -> Option<Arc<History>> {
         let side = self.open_map()?;
         side.products().engaged.clone().or_else(|| self.combat_rows.engaged.clone())
     }
 
-    /// [`Self::layer_history`], kept for the frames its layers compose: the index the marker
-    /// hovers read.
     pub(super) fn layer_engaged(&mut self) -> Option<Arc<History>> {
         let history = self.layer_history();
         self.combat_rows.engaged.clone_from(&history);

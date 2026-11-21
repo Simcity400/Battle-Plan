@@ -1,7 +1,3 @@
-//! Every title, body, option, effect and picture of a script occurrence, built at the reply from
-//! the recorded content stack and the row's typed operands. Scripted text is expanded in the
-//! occurrence's recorded scopes against the naming tables at its hour ([`NAMING`]); sampled state
-//! never stands in for the state an effect ran in.
 
 use super::{EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, row::FeedEvent, row::Slot};
 use crate::{
@@ -22,8 +18,6 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-/// The tables scripted text reads at an occurrence's naming hour: names, looks, politics, places.
-/// Text that reads another table names it and is elided.
 pub(super) const NAMING: [TableId; 9] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -36,8 +30,6 @@ pub(super) const NAMING: [TableId; 9] = [
     TableId::States,
 ];
 
-/// What a reply could not show, each reason once with its count; a varying reason keeps up to
-/// three examples under one entry.
 #[derive(Default)]
 pub(crate) struct Notices {
     list: Vec<EventFeedUnavailable>,
@@ -50,7 +42,6 @@ impl Notices {
         self.merge((kind.to_owned(), label.to_owned(), Some(reason.clone()), count.is_some()), reason, count, Vec::new());
     }
 
-    /// A notice whose reason varies by hour or occurrence: one entry, counted, with examples.
     pub fn sampled(&mut self, kind: &str, label: &str, reason: impl Into<String>, count: u32) {
         let reason: String = reason.into().chars().take(240).collect();
         self.merge((kind.to_owned(), label.to_owned(), None, true), reason.clone(), Some(count), vec![reason]);
@@ -80,8 +71,6 @@ impl Notices {
     }
 }
 
-/// The countries a naming hour's tables link references to, by the writer's rule: the canonical
-/// slot a reference links to, and with an id, only while the country of that id holds it.
 struct Links<'f> {
     countries: &'f [replay_data::rows::CountryRow],
     links: &'f [replay_data::rows::CountryLinkRow],
@@ -108,7 +97,6 @@ impl<'f> Links<'f> {
     }
 }
 
-/// A decision's target as the occurrence recorded it.
 struct DecisionTarget {
     country: Option<u32>,
     numeric: Option<i32>,
@@ -117,22 +105,18 @@ struct DecisionTarget {
 
 struct ScopeInput {
     reference: u32,
-    /// The collector tried to record the country's id and names.
     attempted: bool,
     slot: Option<u32>,
     state: i32,
     bindings: [u32; 3],
     random: [u32; 2],
     unsupported: bool,
-    /// The objects, region or combat the scope carries, which text may read instead of its country.
     opaque: Option<String>,
     names: Option<[Vec<u8>; 3]>,
 }
 
-/// The objects a scope's references name, in native field order.
 const OBJECTS: [&str; 9] = ["a character", "an operation", "an ace", "a unit", "an industrial organisation", "a purchase contract", "a raid", "a project", "a faction"];
 
-/// An occurrence's scope operands with every country resolved at its naming hour.
 pub(super) struct Inputs {
     option: Option<i32>,
     actor_slot: Option<u32>,
@@ -175,7 +159,6 @@ impl Inputs {
                         .chain(scope.strategic_region.map(|_| "a strategic region"))
                         .chain(scope.combat_context_unrecorded.then_some("a combat"))
                         .collect();
-                    // A later alias may give a raw reference to another country: only a recorded id proves it.
                     let id = scope.country_id.or_else(|| identities.iter().find(|party| party.reference == scope.country).and_then(|party| party.id));
                     let resolved = if scope.country as i32 <= 0 {
                         Some(0)
@@ -232,7 +215,6 @@ impl Inputs {
         Ok(self.scope_graph())
     }
 
-    /// The recorded scopes, an unproven country as none: callers decide what may be read.
     fn scope_graph(&self) -> EventScopes {
         let scopes = self
             .scopes
@@ -257,7 +239,6 @@ impl Inputs {
         EventScopes::new(scopes)
     }
 
-    /// The scopes a title reads and where each one's country names come from.
     fn title_graph(&self) -> Result<(EventScopes, Vec<ScopeName>), String> {
         if !self.scopes.iter().any(|scope| scope.attempted) {
             return Ok((self.graph(false)?, Vec::new()));
@@ -280,18 +261,14 @@ impl Inputs {
 #[derive(Default)]
 struct ScriptContentIndex(Mutex<Option<Arc<installed_content_events::events::LazyEvents>>>);
 
-/// The event database of the catalogue's content stack, read once per stack.
 fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events::LazyEvents> {
     let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
     let mut index = cache.0.lock().unwrap_or_else(PoisonError::into_inner);
     Arc::clone(index.get_or_insert_with(|| Arc::new(installed_content_events::events::LazyEvents::from_content(Arc::clone(&catalogue.content)))))
 }
 
-/// Where scripted text whose value is unknown stood: the UI shows it as a "not recorded" token
-/// with the item's `gaps` reason, never an authored character.
 pub const SCRIPTED_GAP: char = '\u{FFFC}';
 
-/// Text with each closed scripted `[...]` shown as [`SCRIPTED_GAP`], its value unknown.
 pub(super) fn elide_scripted(text: &str) -> String {
     let mut shown = String::new();
     let mut rest = text;
@@ -305,7 +282,6 @@ pub(super) fn elide_scripted(text: &str) -> String {
     shown
 }
 
-/// Kinds whose title is a decision's name.
 pub(super) fn names_decision(kind: EventFeedKind) -> bool {
     use EventFeedKind::*;
     matches!(
@@ -329,7 +305,6 @@ fn presents_event(kind: EventFeedKind) -> bool {
     matches!(kind, EventFeedKind::ScriptEventFired | EventFeedKind::NewsEventFired | EventFeedKind::EventOptionSelected)
 }
 
-/// The script items of one reply: the content stack, and the naming tables at each naming hour.
 pub(crate) struct Presenter<'q> {
     query: &'q Query<'q>,
     catalogue: Option<Arc<Catalogue>>,
@@ -337,26 +312,17 @@ pub(crate) struct Presenter<'q> {
     kept: Arc<Mutex<KeptNaming>>,
 }
 
-/// The naming tables' readers the replies on a source left, each with the run and hour it stopped
-/// at, so a reply's frames start from readers behind its first hour instead of restoring nine
-/// tables: a page asked again, the next page forward, or a page beside another each find their
-/// own. A reply takes the readers stopped latest at or before its first hour (moving them back
-/// would restore them, so it takes none then) and leaves its own where it stopped.
 #[derive(Default)]
 pub(crate) struct KeptNaming(Vec<(u32, i32, Readers)>);
 
-/// The most reader sets kept: each holds the nine naming tables at an hour, so the bound is the
-/// memory they hold, never which pages are served. The one left longest ago goes first.
 const KEPT_NAMING: usize = 4;
 
 impl KeptNaming {
-    /// The readers stopped latest at or before `hour` of `run`, taken out.
     pub(super) fn take(&mut self, run: u32, hour: i32) -> Option<Readers> {
         let at = (0..self.0.len()).filter(|&at| self.0[at].0 == run && self.0[at].1 <= hour).max_by_key(|&at| self.0[at].1)?;
         Some(self.0.remove(at).2)
     }
 
-    /// Keeps `readers`, stopped at `hour` of `run`.
     pub(super) fn put(&mut self, run: u32, hour: i32, readers: Readers) {
         if self.0.len() >= KEPT_NAMING {
             self.0.remove(0);
@@ -364,23 +330,16 @@ impl KeptNaming {
         self.0.push((run, hour, readers));
     }
 
-    /// Where each kept set stopped, as kept.
     #[cfg(test)]
     pub(super) fn positions(&self) -> Vec<(u32, i32)> {
         self.0.iter().map(|(run, hour, _)| (*run, *hour)).collect()
     }
 }
 
-/// The naming readers kept on `source` ([`KeptNaming`]).
 pub(crate) fn kept_naming(source: &crate::Source) -> Arc<Mutex<KeptNaming>> {
     source.state::<KeptNaming>()
 }
 
-/// Restores the naming readers at the last hour of `branch`'s timeline, the head a campaign opens
-/// on, and keeps them on `source` ([`KeptNaming`]): the feed's first page there moves on from them
-/// instead of restoring nine tables while it is waited on. The kept readers are held while they are
-/// read, so a page asking meanwhile waits for this read and never repeats it; readers already kept
-/// are left as they are.
 pub(crate) fn warm_naming(source: &crate::Source, branch: u64) -> io::Result<()> {
     let query = crate::answer::query(source, branch)?;
     let Some(stretch) = query.timeline.stretches.last().copied() else { return Ok(()) };
@@ -397,8 +356,6 @@ pub(crate) fn warm_naming(source: &crate::Source, branch: u64) -> io::Result<()>
     Ok(())
 }
 
-/// The naming tables read through one cursor, where it stopped, and the frame of the hour asked
-/// last.
 #[derive(Default)]
 struct Frames<'q> {
     cursor: Option<Cursor<'q, 'static>>,
@@ -415,8 +372,6 @@ impl<'q> Presenter<'q> {
         self.catalogue.as_deref()
     }
 
-    /// The naming tables at `hour`, each table's reader moved on from the hour asked before: a
-    /// reply asking its hours in order ([`super::present_all`]) restores each table once.
     pub(super) fn frame(&self, hour: i32) -> io::Result<Result<Rc<DecodedFrame>, String>> {
         let mut frames = self.frames.borrow_mut();
         if let Some((held, frame)) = &frames.last
@@ -444,8 +399,6 @@ impl<'q> Presenter<'q> {
         Ok(read)
     }
 
-    /// A script occurrence's item, its text built from its content and operands; what could not
-    /// be shown noted in `notices`.
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
         let mut item = EventFeedItem { token, ..Default::default() };
         let Some(catalogue) = self.catalogue.as_deref() else {
@@ -469,8 +422,6 @@ impl Drop for Presenter<'_> {
     }
 }
 
-/// `item` presented: an event's title, body, picture and options, a decision's title, and the
-/// authored effects the occurrence ran.
 fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs, frame: Result<HourFrame<'_>, String>) -> io::Result<()> {
     if !presents_event(kind) {
         if names_decision(kind) {
@@ -589,8 +540,6 @@ fn presentation(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKin
     effects(notices, catalogue, kind, item, inputs)
 }
 
-/// An event's picture, the sprite `picture`, drawn as `catalogue` shows it; none, with why, where
-/// it does not draw.
 fn draw_picture(notices: &mut Notices, catalogue: &Catalogue, token: &str, picture: &str) -> Option<String> {
     let image = catalogue::draw(
         || format!("event {token} picture"),
@@ -610,7 +559,6 @@ fn draw_picture(notices: &mut Notices, catalogue: &Catalogue, token: &str, pictu
     }
 }
 
-/// An event text key expanded in the occurrence's recorded scopes, country names only.
 fn scoped_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, key: &str) -> Result<String, String> {
     let (scopes, names) = inputs.title_graph()?;
     let text = catalogue.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())?;
@@ -618,7 +566,6 @@ fn scoped_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, key
     catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &names)?)
 }
 
-/// A decision's title for its owner, and why any scripted text in it is elided.
 fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, token: &str) -> Result<(String, Option<String>), String> {
     let content = catalogue.scripted_content()?;
     let effects = content.effects()?;
@@ -634,7 +581,6 @@ fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, 
     if !name.contains('[') {
         return Ok((name, None));
     }
-    // A highlighted state would join the title scope; the recording does not hold it.
     let expanded = if !definition.has_state_targets && definition.highlight_conditions.is_empty() {
         decision_title_text(catalogue, inputs, frame, &key)
     } else {
@@ -646,13 +592,11 @@ fn decision_title(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, 
     })
 }
 
-/// A decision title key expanded in the game's title scope: the owner, its FROM the recorded target.
 fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<'_>, key: &str) -> Result<String, String> {
     let mut scopes = inputs.graph(true)?;
     for scope in &mut scopes.scopes {
         scope.random_seed_refusal = Some("decision title random seed was not recorded");
     }
-    // The title's target scope links to itself, unlike the execution scope.
     if let Some(target) = scopes.scopes.get_mut(1) {
         target.from = Link::Itself;
     }
@@ -661,8 +605,6 @@ fn decision_title_text(catalogue: &Catalogue, inputs: &Inputs, frame: HourFrame<
     catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &[])?)
 }
 
-/// Authored effects described against the occurrence's scopes alone: values sampled at an hour
-/// boundary do not prove the state an effect ran in, so every table is unavailable to them.
 fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, items: &[installed_content_core::parser::Item]) -> Result<effect_description::Description, String> {
     let scripted = catalogue.scripted_content()?;
     let content = scripted.effects()?;
@@ -709,8 +651,6 @@ fn body(notices: &mut Notices, catalogue: &Catalogue, item: &mut EventFeedItem, 
     Ok(())
 }
 
-/// The authored effects an occurrence of `kind` ran: an event's immediate or chosen option's, a
-/// decision's completion, removal, cancellation or timeout effects.
 fn effects(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs) -> io::Result<()> {
     use EventFeedKind::*;
     let Some(token) = item.token.clone() else { return Ok(()) };

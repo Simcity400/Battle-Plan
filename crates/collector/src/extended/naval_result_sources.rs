@@ -1,5 +1,3 @@
-//! The admitted acquisition worker drains native combat/result links.
-//! Replay projection runs off-thread and preserves every event, including merges.
 use crate::{
     naval_result_sources as producer,
     sampling::qpc,

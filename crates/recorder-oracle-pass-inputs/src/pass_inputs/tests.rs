@@ -14,7 +14,6 @@ fn known_supply() -> UnitSupplyInputs {
     }
 }
 
-/// Non-strike task forces still capture the current, genuinely empty searching vector.
 fn known_port() -> NavalPortMissionInputs {
     NavalPortMissionInputs {
         sample_hour: replay_data::rows::PacketHour::Host,
@@ -76,7 +75,6 @@ fn port_suffix_oracle_compares_order_raw_dangling_targets_and_each_known_slot() 
         unreachable!()
     };
     packet.searching.as_mut().unwrap().swap(0, 1);
-    // A later refused string leaves every known ordered string comparable.
     packet.avoided_ship_types.as_mut().unwrap()[1] = None;
     packet.avoided_ship_types.as_mut().unwrap()[2] = Some(b"changed".to_vec());
     let mut report = Report::default();
@@ -200,7 +198,6 @@ fn port_suffix_oracle_keeps_historical_fault_and_unreached_domains_distinct() {
     let mut reached = Report::default();
     task_force_port(7, &row, &force, &saved, &mut reached);
     assert_eq!(reached.differences.len(), 2);
-    // Rule4 and a resolving target skip avoidance, but never skip raw target equality.
     for (rule, reference, resolves) in [(4, 0, false), (0, 99, true)] {
         row.engagement_rule = rule;
         row.port_mission = Recorded::Value(Some(NavalPortMissionInputs {
@@ -225,8 +222,6 @@ fn set(frame: &mut DecodedFrame, rows: TableRows) {
     *frame.tables[index] = TableView::Complete(rows);
 }
 
-/// Singleton rows and the fixture country's inputs, so each test exercises only the
-/// tables it changes.
 fn base() -> (DecodedFrame, Save) {
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
     set(
@@ -669,7 +664,6 @@ fn controlled_state_count_follows_the_saved_controller_or_owner() {
             .keys()
             .any(|reason| reason.contains("controlled_state_count"))
     );
-    // Another controller takes the state: GER controls none, owns one.
     let state = save.states.values_mut().next().unwrap();
     state.controller = Some(b"ENG".to_vec());
     let mut report = Report::default();
@@ -842,7 +836,6 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
             .keys()
             .any(|reason| reason.contains("repair_parent only when"))
     );
-    // Saved order, region presence, pride and state ownership are exact.
     let saved = save.counter_inputs.fleets.get_mut(&fleet).unwrap();
     saved.task_forces.push(task + (1 << 32));
     saved.strategic_regions = None;
@@ -853,11 +846,9 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     let task_row = save.counter_inputs.task_forces.get_mut(&task).unwrap();
     task_row.detached_activity = Some(b"refitting".to_vec());
     task_row.repair_last_mission = Some(3);
-    // The saved naval_headquarter block's length is the attached-HQ count.
     task_row.attached_headquarters = 1;
     let mut report = Report::default();
     compare(&frame, &save, &mut report);
-    // Owned and controlled state counts both differ without states.
     assert_eq!(report.differences.len(), 9, "{:?}", report.differences);
     assert!(
         report
@@ -865,7 +856,6 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
             .iter()
             .any(|difference| difference.contains(".mission_regions"))
     );
-    // An omitted pride is exactly the zero reference.
     save.counter_inputs.prides.insert(b"GER".to_vec(), None);
     let mut report = Report::default();
     compare(&frame, &save, &mut report);
@@ -877,7 +867,6 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
         "{:?}",
         report.differences
     );
-    // The TrainInventory membership check follows owned_state_count > 0.
     let mut report = Report::default();
     save.economy.supply = Some(Default::default());
     super::super::supply_trains::compare(
@@ -896,9 +885,6 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     );
 }
 
-/// The task force and naval-combat blocks as the task force save writer (through
-/// the unit save writer) and the naval participant save writer write them: no
-/// combat list on the unit, the side's `unit` references in the combat.
 fn serialized(task_force: &str, combats: &str) -> Save {
     installed_content_save::parse(format!(
         "HOI4txt
@@ -1253,8 +1239,6 @@ fn task_force_missions_compare_the_saved_regions_exactly() {
         accessible_regions,
         ..Default::default()
     };
-    // The W3 census's JAP patrol, with a repeat added; a mission with neither field; and one
-    // saving only its current region.
     save.counter_inputs.task_forces = [
         (patrol, saved(Some(79), Some(vec![76, 79, 87, 79, 177]))),
         (idle, saved(None, None)),
@@ -1285,8 +1269,6 @@ fn task_force_missions_compare_the_saved_regions_exactly() {
     ];
     set(&mut frame, TableRows::TaskForceMissions(exact.to_vec()));
     assert!(run(&frame, &save).is_empty());
-    // Same length, a wrong id; the same ids reordered; a repeat collapsed into another id;
-    // a wrong current region.
     for (current, regions, field) in [
         (79, &[76, 79, 87, 79, 178][..], "regions"),
         (79, &[79, 76, 87, 79, 177][..], "regions"),
@@ -1303,7 +1285,6 @@ fn task_force_missions_compare_the_saved_regions_exactly() {
             "{differences:?}"
         );
     }
-    // Omission: a missing row where the save wrote a field, and a row where it wrote none.
     set(
         &mut frame,
         TableRows::TaskForceMissions(vec![exact[0].clone(), row(idle, 0, &[5])]),
@@ -1321,9 +1302,6 @@ fn task_force_missions_compare_the_saved_regions_exactly() {
                     && d.contains("absent")),
         "{differences:?}"
     );
-    // The key sets must be equal: an extra empty row for a task force that saves neither
-    // field compares None with None field by field, but is still a row the save has no
-    // mission for.
     let mut rows = exact.to_vec();
     rows.push(row(idle, 0, &[]));
     set(&mut frame, TableRows::TaskForceMissions(rows));
@@ -1354,7 +1332,6 @@ fn task_force_style_compares_exact_progress_and_truth_with_independent_refusals(
         withdrawal: Recorded::Value(Some(2)),
         naval_transfer: Recorded::Value(Some(1)),
         combat_links: Recorded::Value(Some([0; 2])),
-        // This style fixture compares the saved prefix independently of fresh ETA.
         fresh: Recorded::NotRecorded,
         ..Default::default()
     };
@@ -1376,7 +1353,6 @@ fn task_force_style_compares_exact_progress_and_truth_with_independent_refusals(
             .keys()
             .any(|reason| reason.contains("does not serialize"))
     );
-    // Numerator omission proves zero. Retreat/withdraw omission proves false.
     let absent = serialized("", "");
     let report = run(
         TaskForceMapMotionRow {
@@ -1413,7 +1389,6 @@ fn task_force_style_compares_exact_progress_and_truth_with_independent_refusals(
     ] {
         let mut row = base.clone();
         change(&mut row);
-        // A failed optional field still permits every prefix comparison.
         row.target = 2;
         let report = run(row, &saved);
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
@@ -1482,7 +1457,6 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
         withdrawal: Recorded::Value(Some(0)),
         naval_transfer: Recorded::Value(Some(0)),
         combat_links: Recorded::Value(Some([(9_u64 << 32) | 62; 2])),
-        // This route/combat fixture compares the saved prefix independently of fresh ETA.
         fresh: Recorded::NotRecorded,
     };
     let us = "unit={id=43 type=51}";
@@ -1515,7 +1489,6 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
         "{:?}",
         report.limitations
     );
-    // The participant side does not certify the unsaved owner-country set.
     let defending = serialized(moving, &naval_combat(9, "", us));
     let report = run(&row, &defending);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1537,7 +1510,6 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
         .differences
         .is_empty()
     );
-    // In no saved combat the role is 0.
     let calm = serialized(moving, &naval_combat(9, "unit={id=44 type=51}", ""));
     assert_eq!(run(&row, &calm).differences.len(), 1);
     assert!(
@@ -1552,8 +1524,6 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
         .differences
         .is_empty()
     );
-    // The writer omits a null target and an empty alternate route, and a stored value that
-    // disagrees with either is a difference, as is a different ordinary route.
     let standing = serialized("", &naval_combat(9, us, ""));
     let report = run(&row, &standing);
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
@@ -1567,8 +1537,6 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
     let mut unsaved = attacking.clone();
     unsaved.task_forces.clear();
     assert_eq!(run(&row, &unsaved).differences.len(), 2);
-    // Direct/post-load registration is not covered by TryJoinUnit's gate.
-    // Repeated listings do not invalidate the identity-selected first combat.
     for listing in [
         format!("{} {}", naval_combat(9, us, ""), naval_combat(10, "", us)),
         format!("{} {}", naval_combat(9, us, ""), naval_combat(10, us, "")),
@@ -1582,7 +1550,6 @@ fn task_force_motion_compares_routes_target_and_saved_combat_membership() {
             report.differences
         );
     }
-    // A role outside the native three values is a torn row, not a difference.
     set(
         &mut frame,
         TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
@@ -1660,7 +1627,6 @@ fn fresh_task_force_packets_require_each_independent_operand() {
         .len(),
         1
     );
-    // Current packets are required even without a stored route or with a target.
     for changed in [
         TaskForceMapMotionRow {
             path: vec![],
@@ -1904,7 +1870,6 @@ fn task_force_combat_links_select_saved_identity_without_a_singleton_assumption(
         withdrawal: Recorded::Value(Some(0)),
         naval_transfer: Recorded::Value(Some(0)),
         combat_links: Recorded::Value(Some([second; 2])),
-        // This combat-identity fixture compares the saved prefix independently of fresh ETA.
         fresh: Recorded::NotRecorded,
         ..Default::default()
     };
@@ -1926,8 +1891,6 @@ fn task_force_combat_links_select_saved_identity_without_a_singleton_assumption(
             .keys()
             .any(|reason| reason.contains("owner-country set"))
     );
-    // The saved first identity itself proves naval class, so a later naval
-    // witness or zero cannot make the first identity an ordering limitation.
     for (naval, differences) in [(second, 1), (0, 2)] {
         let impossible = run(TaskForceMapMotionRow {
             combat_links: Recorded::Value(Some([first, naval])),

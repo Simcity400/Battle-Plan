@@ -89,10 +89,6 @@ fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
     assert!(why.contains(reason), "{why}");
 }
 
-/// Country name selection tries `TAG_token` before the token for a
-/// country that is not dynamic; a dynamic country, or one the hour does
-/// not place, is refused by name, as is the generated advisor name
-/// of an idea without keys in a category of type 0.
 #[test]
 fn an_idea_is_named_for_its_country() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -153,7 +149,6 @@ fn an_idea_is_named_for_its_country() {
         content.idea_name("MOD_spirit", country("SOV", Some(sov))),
         key("MOD_spirit")
     );
-    // A dynamic country whose civil-war inputs the hour lacks.
     let dynamic = CountryLook {
         name_tag: "GER",
         original_or_own_tag: Ok("GER"),
@@ -174,13 +169,10 @@ fn an_idea_is_named_for_its_country() {
             .unwrap_err()
             .contains("name tag of country appearance")
     );
-    // No key and a category of type 0: generate a name
-    // from GER's names: one name and one surname, so the draw is fixed.
     assert_eq!(
         content.idea_name("MOD_nameless", country("GER", Some(fixed))),
         Ok(IdeaName::Generated("Karl :: Weber".to_owned()))
     );
-    // The seed sums the database index (2), slot (3) and level (2).
     let ita = content.names.for_country("", "ITA");
     let (first, surname) = content.names.draw(ita, 7).unwrap();
     assert_eq!(
@@ -191,8 +183,6 @@ fn an_idea_is_named_for_its_country() {
             String::from_utf8_lossy(surname)
         )))
     );
-    // An empty override, including one cut at a leading NUL terminator,
-    // continues down the naming ladder.
     for token in ["MOD_empty", "MOD_cut"] {
         assert!(
             matches!(
@@ -202,7 +192,6 @@ fn an_idea_is_named_for_its_country() {
             "{token}"
         );
     }
-    // A cosmetic tag the names list is used first.
     let cosmetic = CountryLook {
         name_tag: "",
         original_or_own_tag: Ok("GER"),
@@ -213,8 +202,6 @@ fn an_idea_is_named_for_its_country() {
         content.idea_name("MOD_nameless", country("GER", Some(cosmetic))),
         Ok(IdeaName::Generated("Rosa :: Rot".to_owned()))
     );
-    // A country without names or surnames draws from the default, which
-    // has none: empty text.
     assert_eq!(
         content.idea_name("MOD_nameless", country("SOV", Some(sov))),
         Ok(IdeaName::Generated(String::new()))
@@ -282,7 +269,6 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *frame.tables[TableId::CountryAppearance.index()]
     {
-        // The generator's dynamic witness stays empty for this static slot.
         rows[0].original_tag_reference = Recorded::Value(Some(300));
         rows[0].original_tag = Recorded::Value(Some(b"MOD_original".to_vec()));
     }
@@ -347,12 +333,6 @@ fn generated_advisor_names_read_the_ungated_original_only_after_cosmetic_miss() 
     }
 }
 
-/// Name a dynamic country (SOV, named after GER) from a recorded hour.
-/// Civil war holds when its own CountryCivilWars list names a country owning
-/// a state, or an enemy (CountryWars where read, else ongoing WarRelations)
-/// owning a state lists it. Then neither
-/// `TAG_token` nor the token is asked, and an advisor name is generated
-/// only while the cosmetic tag is empty.
 #[test]
 fn a_dynamic_country_in_civil_war_skips_its_keys() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -391,8 +371,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         ),
     ]);
     let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
-    // GER (link 100, slot 0) and SOV (link 200, slot 1) each own a
-    // state; SOV's original tag is GER.
     let frame = |civil: Vec<CountryCivilWarRow>,
                  wars: Vec<CountryWarRow>,
                  relations: Vec<WarRelationRow>| {
@@ -430,10 +408,8 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         end_hour,
         ..Default::default()
     };
-    // No civil war: the country's key first.
     let calm = frame(vec![], vec![], vec![]);
     assert_eq!(name(&calm, "MOD_spirit"), key("SOV_MOD_spirit"));
-    // Its own list names GER, which owns a state.
     let own = frame(vec![list(200, 100)], vec![], vec![]);
     assert_eq!(name(&own, "MOD_spirit"), key("MOD_spirit"));
     assert_eq!(
@@ -447,7 +423,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         rows[1].cosmetic_tag = b"SOV_red".to_vec();
     }
     assert_eq!(name(&cosmetic, "MOD_nameless"), key("MOD_nameless"));
-    // A listed country that owns no state does not count.
     let mut stateless = own.clone();
     *stateless.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(vec![
@@ -463,8 +438,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
             },
         ]));
     assert_eq!(name(&stateless, "MOD_spirit"), key("SOV_MOD_spirit"));
-    // An enemy's list names SOV: the war is ongoing (the hour is 1),
-    // not once it ended; a read enemy vector stands without the war.
     let enemy = frame(vec![list(100, 200)], vec![], vec![war(0)]);
     assert_eq!(name(&enemy, "MOD_spirit"), key("MOD_spirit"));
     let ended = frame(vec![list(100, 200)], vec![], vec![war(1)]);
@@ -481,7 +454,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
         vec![war(1)],
     );
     assert_eq!(name(&read, "MOD_spirit"), key("MOD_spirit"));
-    // An input the hour lacks is refused by name.
     let mut unread = calm.clone();
     *unread.tables[TableId::CountryCivilWars.index()] = TableView::Unavailable {
         reason: "not sampled".into(),
@@ -492,7 +464,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
             && refused.contains("is unavailable: not sampled"),
         "{refused}"
     );
-    // A country outside the dynamic gate never asks about civil war.
     let mut fixed = unread.clone();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixed.tables[TableId::CountryAppearance.index()]
@@ -502,8 +473,6 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
     assert_eq!(name(&fixed, "MOD_spirit"), key("SOV_MOD_spirit"));
 }
 
-/// A spirit's name is its localised key, whatever its art; when the localisation lacks the
-/// key, the artwork has no name and says which key is missing.
 #[test]
 fn a_spirit_without_localisation_says_which_key_is_missing() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -549,7 +518,6 @@ fn a_spirit_without_localisation_says_which_key_is_missing() {
             "{token}"
         );
     }
-    // The hour that cannot place the naming country is the reason, not a missing key.
     let unplaced = IdeaCountry { look: None, ..country };
     assert!(
         content

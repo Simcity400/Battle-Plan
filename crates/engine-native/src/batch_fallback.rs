@@ -1,110 +1,46 @@
-//! Bounded fallbacks of batched walks.
-//!
-//! A walk that reads several objects' spans in one guarded copy and finds
-//! the copy incomplete reads that batch once more object by object, as the
-//! serial walk does, so a persistent fault gives the serial walk's result.
-//! Each such fallback is counted here for status, as is a country link
-//! read ahead of its turn ([`Ahead`]) whose read failed and is read again at
-//! its turn.
 use crate::{Memory, ccountry, read};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A batched walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Batch {
-    /// One block per resource pool (`ccountry_resources`).
     CountryResources,
-    /// One block per agency ([`crate::cintelligence_agency`]).
     IntelligenceAgencies,
-    /// One block per run of decryption states ([`crate::ccryptology`]).
     Cryptology,
-    /// One scatter of shared-census divisions' first viewer entry blocks
-    /// (`unit_viewer_entry`).
     UnitIntel,
-    /// A batch of countries' production status pointers, then their status
-    /// spans ([`crate::cproduction_status`]).
     CountryFactories,
-    /// One batch of an owner's relation candidates' matrix cells, then their
-    /// statuses ([`crate::crelation_status`]).
     RelationLinks,
-    /// The AirWing census's wing-pointer runs and row and name-header
-    /// gathers ([`crate::cair_wing`]).
     AirWingCensus,
-    /// AirReferenceWitnesses' base gathers
-    /// (`map_air_base_reference::Pass::read_bases`).
     BaseWitnesses,
-    /// AirMissionInputs' mission operand and CAS ratio copies
-    /// (`map_air_sortie_inputs::read_missions`); counted as the
-    /// fallback starts, whatever its retry returns.
     MissionInputs,
-    /// AirMissionInputs' pool definition gathers
-    /// (`map_air_sortie_inputs::definition_air_flags_gathered`).
     PoolDefinitions,
-    /// One batch of a country's owned relation entries, type words and
-    /// subject heads ([`crate::csubject_relation`]).
     Subjects,
-    /// One run of up to 64 census ships' fields ([`crate::cfleet`]).
     ShipRuns,
-    /// One census fleet's gathered fields ([`crate::cfleet`]).
     FleetGathers,
-    /// One census task force's gathered fields ([`crate::cfleet`]).
     TaskForceGathers,
-    /// One gathered object or roster-ship record page of the counter walk's
-    /// fresh ETA graph (stat block, province, region, template, fleet, fleet leader;
-    /// [`crate::ctask_force`]).
     FreshEtaGathers,
-    /// One naval combat member's gathered fixed fields
-    /// ([`crate::cfex_member`]).
     NavalMemberRecords,
-    /// One run of up to 64 nested naval combat entries (damage entries, or
-    /// air or naval hits with their records; [`crate::cfex_member`]).
     NavalEntryRuns,
-    /// Governance slot pointers reader.
     GovernanceSlotPointers,
-    /// Governance slots reader.
     GovernanceSlots,
-    /// Governance assigned technologies reader.
     GovernanceAssignedTechnologies,
-    /// Governance assigned templates reader.
     GovernanceAssignedTemplates,
-    /// Governance modifier technologies reader.
     GovernanceModifierTechnologies,
-    /// Governance modifier ideas reader.
     GovernanceModifierIdeas,
-    /// Governance modifier scripts reader.
     GovernanceModifierScripts,
-    /// Governance focus progress reader.
     GovernanceFocusProgress,
-    /// Governance focus pointers reader.
     GovernanceFocusPointers,
-    /// Governance focus definitions reader.
     GovernanceFocusDefinitions,
-    /// Governance research drift reader.
     GovernanceResearchDrift,
-    /// Governance technology drift reader.
     GovernanceTechnologyDrift,
-    /// Bounded serial fallback for order roots.
     OrderRoots,
-    /// Bounded serial fallback for order census.
     OrderCensus,
-    /// Bounded serial fallback for order plans.
     OrderPlans,
-    /// Bounded serial fallback for division maxima.
     DivisionMaxima,
-    /// Bounded serial fallback for division acclimatization.
     DivisionAcclimatization,
-    /// Bounded serial fallback for division naming.
     DivisionNaming,
-    /// Bounded serial fallback for division provinces.
     DivisionProvinces,
-    /// Bounded serial fallback for division movement speed.
     DivisionMovementSpeed,
-    /// One run of up to 64 order-of-battle member or child entries, or one
-    /// member's host identity and group backlink, whose guarded copy
-    /// stopped early: the Naval copy reads on after the failed span.
     OrderOfBattle,
-    /// One ship's organisation metadata guard read ahead of its reader;
-    /// a failed guard runs that ship's original readers once.
     ShipModelGuards,
 }
 
@@ -200,43 +136,30 @@ static FALLBACKS: [AtomicU64; Batch::ALL.len()] = [const { AtomicU64::new(0) }; 
 
 #[cfg(any(test, feature = "batch-fallback-test-counts"))]
 thread_local! {
-    /// This thread's fallbacks, including when engine is a test dependency
-    /// of collector (where engine's cfg(test) is not enabled).
     static THREAD: [std::cell::Cell<u64>; Batch::ALL.len()] =
         const { [const { std::cell::Cell::new(0) }; Batch::ALL.len()] };
 }
 
-/// One batch of `batch` read again object by object.
 pub fn record(batch: Batch) {
     FALLBACKS[batch as usize].fetch_add(1, Ordering::Relaxed);
     #[cfg(any(test, feature = "batch-fallback-test-counts"))]
     THREAD.with(|counts| counts[batch as usize].set(counts[batch as usize].get() + 1));
 }
 
-/// The next census slot of a country walk, read ahead of its turn: its
-/// entry as [`ccountry::Reader::at`] gave it and, for a country, one link
-/// field of the country object. Each is used at its own place in the serial
-/// order.
 pub struct Ahead {
     slot: u32,
     listed: Result<Option<ccountry::Country>, &'static str>,
     link: Link,
 }
 
-/// A country's link field as its walk holds it at the country's turn.
 #[derive(Clone, Copy)]
 pub enum Link {
-    /// Not read ahead.
     Unread,
     Read(u64),
-    /// Its read ahead failed.
     Failed,
 }
 
 impl Ahead {
-    /// Reads slot `slot`'s entry and, for a country, its link at `offset`,
-    /// handing a nonnull link to `hint` (which may only hint); `None` past
-    /// the census.
     pub fn read<M: Memory>(
         memory: &M,
         countries: &ccountry::Reader<'_, M>,
@@ -268,8 +191,6 @@ impl Ahead {
         Some(Self { slot, listed, link })
     }
 
-    /// Slot `slot`'s entry and link: those read ahead for it, else its
-    /// entry read now and its link unread.
     pub fn take<M: Memory>(
         ahead: &mut Option<Self>,
         countries: &ccountry::Reader<'_, M>,
@@ -283,9 +204,6 @@ impl Ahead {
 }
 
 impl Link {
-    /// `country`'s link at `offset`: the value read ahead, else read now. A
-    /// read ahead that failed is read again here, once, and counted under
-    /// `batch`.
     pub fn resolve(
         self,
         memory: &impl Memory,
@@ -305,7 +223,6 @@ impl Link {
     }
 }
 
-/// The fallbacks since attach, per batched walk.
 pub fn counts() -> impl Iterator<Item = (&'static str, u64)> + Clone {
     Batch::ALL.into_iter().map(|batch| {
         (
@@ -315,8 +232,6 @@ pub fn counts() -> impl Iterator<Item = (&'static str, u64)> + Clone {
     })
 }
 
-/// A source over a healthy image whose `ranges` fault on every touch, or
-/// only on their first when `once`: the faults batched walks' tests place.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Faulty<'a> {
     memory: crate::memory::SliceMemory<'a>,
@@ -357,7 +272,6 @@ impl crate::Memory for Faulty<'_> {
     }
 }
 
-/// `batch`'s fallbacks on this thread.
 #[cfg(any(test, feature = "batch-fallback-test-counts"))]
 pub fn count(batch: Batch) -> u64 {
     THREAD.with(|counts| counts[batch as usize].get())

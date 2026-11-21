@@ -1,4 +1,3 @@
-//! Active-state border-conflict tree operands acquired on the States worker.
 use crate::{
     Memory, cland_border_war_combat, cland_border_war_combatant, cland_combat,
     msvc_tree_node as node, read,
@@ -37,7 +36,6 @@ pub(super) fn capture(
             return Err("state border conflict CLandBorderWarCombat identity mismatch");
         }
         let mut countries = [0; 2];
-        // The predicate visits attacker before defender.
         for (country, offset) in countries
             .iter_mut()
             .zip([cland_combat::ATTACKER, cland_combat::DEFENDER])

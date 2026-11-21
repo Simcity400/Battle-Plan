@@ -1,5 +1,3 @@
-//! The in-process recording API the tray recorder drives. The command line
-//! runs the same capture through [`crate::recording`].
 use crate::{
     recording::{self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED},
     windows::{Process, ProcessMemory},
@@ -17,49 +15,24 @@ pub use crate::recording::{
     save_waiting, session_folders, waiting_campaigns, waiting_folder,
 };
 
-/// What one capture records and where.
 pub struct Recording<'a> {
-    /// Capture root: session folders and the active record.
     pub output: &'a Path,
-    /// Folder whose recordings this session continues and publishes into:
-    /// the capture root, or a campaign's own folder after New file.
     pub target: &'a Path,
     pub user: &'a Path,
-    /// Which tables the session records ([`replay_data::scope`]).
     pub capture_mode: CaptureMode,
-    /// Whether a load may be recorded in the session, and if not why, asked
-    /// once per load: each load the probe names while recording, and at save
-    /// each load the spool identifies that was never asked about. The flag
-    /// says the session's spool already holds the campaign's hours from an
-    /// earlier load, which a pending New file counts as an existing recording.
-    /// Each decision is written to the session's admission record as it is
-    /// made, and only admitted loads are ever published; others stay in the
-    /// session folder and are reported in the outcome. A refusal while
-    /// recording ends the session.
     pub admit: &'a dyn Fn(&str, bool) -> Result<(), Refusal>,
-    /// The campaign the game has loaded right now and its load signal, read
-    /// without the collector.
     pub loaded: &'a dyn Fn() -> Option<(String, i64)>,
-    /// The campaign and load signal this session attaches for, already chosen:
-    /// admitted before the collector starts.
     pub opening: Option<(&'a str, i64)>,
-    /// Auto save, asked as each decision is made.
     pub auto_save: &'a dyn Fn() -> bool,
-    /// Whether the names recordings would get are shown now.
     pub names_wanted: &'a dyn Fn() -> bool,
 }
 
-/// The game process discovery selected, opened for recording.
 pub struct OpenedGame(Process);
 
-/// Opens the selected game with injection rights; `None` once its PID names another process.
 pub fn open_game(game: &GameProcess) -> Result<Option<OpenedGame>, String> {
     Ok(Process::open_selected(game, true)?.map(OpenedGame))
 }
 
-/// Attach to `game`, record until `control` stops it or the game exits, then
-/// finalize (or discard, when the user chose Discard). A session that reached
-/// no spool ends with no recordings rather than an error.
 pub fn record(
     game: OpenedGame,
     recording: &Recording<'_>,
@@ -70,7 +43,6 @@ pub fn record(
         output: recording.output,
         target: recording.target,
         user: recording.user,
-        // The capture mode alone decides what the app records.
         game_score: true,
         operation_outcomes: true,
         politics_capture: true,
@@ -88,28 +60,19 @@ pub fn record(
     recording::capture(game.0, &options, control, stage)
 }
 
-/// The campaign a running game has loaded, its current hour and the load
-/// signal that changes with each load of a save.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadedCampaign {
     pub campaign: String,
     pub hour: i32,
-    /// The game's session start stamp, the collector's own load signal: a new
-    /// load of the same campaign changes it.
     pub load: i64,
 }
 
-/// Reads which campaign the game has loaded, without the collector.
-/// The game is opened with read-only rights; nothing is written or injected,
-/// and nothing read here is recorded.
 pub struct Probe {
     process: Process,
     base: usize,
 }
 
 impl Probe {
-    /// Find the game's image base and locate its sites. On a build other than the recognised
-    /// one the campaign is read only once its struct layouts verify.
     pub fn open(game: &GameProcess) -> Result<Self, String> {
         Self::read(
             Process::open_selected(game, false)?
@@ -117,7 +80,6 @@ impl Probe {
         )
     }
 
-    /// The process a caller names by PID, as the smoke driver does.
     pub fn open_pid(pid: u32) -> Result<Self, String> {
         Self::read(Process::open(pid, false)?)
     }
@@ -136,19 +98,14 @@ impl Probe {
         self.process.start_time
     }
 
-    /// The installation the running game was started from.
     pub fn game_dir(&self) -> Option<PathBuf> {
         self.process.path.parent().map(Path::to_path_buf)
     }
 
-    /// The in-game idler's sites, which the pause state and camera read through, or why they are
-    /// withheld on this build.
     pub fn presentation_sites(&self) -> Result<(), &'static str> {
         engine_native::command_inputs::idler_sites(self.base)
     }
 
-    /// The clock when two reads agree, with the pause state and camera when `presentation` and
-    /// they read; none once the game has exited or while its clock is unreadable.
     pub(crate) fn clock(&self, presentation: bool) -> Option<crate::clock::Sample> {
         if self.process.handle.signaled().unwrap_or(true) {
             return None;
@@ -160,8 +117,6 @@ impl Probe {
         )
     }
 
-    /// The loaded campaign when two reads agree on a campaign identity; none
-    /// at the menu, while loading or when unreadable.
     pub fn loaded(&self) -> Option<LoadedCampaign> {
         if self.process.handle.signaled().unwrap_or(true) {
             return None;
@@ -187,8 +142,6 @@ impl Probe {
     }
 }
 
-/// The content identity a session records with (installation, DLC and mods),
-/// from the collector configuration the recorder wrote for it.
 pub fn session_identity(session: &Path) -> Result<replay_data::identity::Identity, String> {
     let config: serde_json::Value = serde_json::from_slice(
         &std::fs::read(session.join("bin/collector.json")).map_err(|e| e.to_string())?,
@@ -203,26 +156,20 @@ pub fn session_identity(session: &Path) -> Result<replay_data::identity::Identit
     Ok(start.identity)
 }
 
-/// The campaign a session loaded first, as the loads its writers met show by clock witness
-/// time, so one that recorded and ended before any probe still counts.
 pub fn first_loaded_campaign(session: &Path) -> Option<String> {
     crate::replay_io::first_loaded_campaign(session)
 }
 
-/// The bytes a session's unsaved hours of a campaign take on disk, in its journal and in the
-/// campaign's recording in `target`; `None` when unreadable.
 pub fn unsaved_bytes(session: &Path, target: &Path, campaign: &str) -> Option<u64> {
     crate::replay_io::unsaved_bytes(session, target, campaign)
 }
 
-/// A campaign identity read twice the same, in the recorded UUID form.
 fn agreed_campaign(first: &[u8], second: &[u8]) -> Option<String> {
     (first == second && replay_data::identity::is_campaign_uuid(first))
         .then(|| String::from_utf8(first.to_vec()).ok())
         .flatten()
 }
 
-/// Every game process, frozen and exiting ones too; [`choose_game`] picks the one to record.
 pub fn game_processes() -> Result<Vec<GameProcess>, String> {
     crate::windows::game_processes()
 }
@@ -237,13 +184,10 @@ pub fn resolve_user_directory() -> Result<PathBuf, String> {
 
 const PROBE_WITHHELD: &str = "the loaded campaign is withheld on this unrecognised game build";
 
-/// A withheld probe stays withheld for the lifetime of that game process.
 pub fn probe_withheld(error: &str) -> bool {
     error.starts_with(PROBE_WITHHELD)
 }
 
-/// A capture error in plain words; the original text stays the detail.
-/// `started` says whether the collector had begun recording.
 pub fn problem_text(error: &str, started: bool) -> &'static str {
     if error.contains("withheld: the game build is unrecognised") {
         "This game build isn't recognised, so nothing it holds could be checked for recording. Nothing recorded."
@@ -321,12 +265,10 @@ mod tests {
             agreed_campaign(id, id).as_deref(),
             Some("00000000-0000-4000-8000-000000000000")
         );
-        // A read that changed between the two copies, as during a load.
         assert_eq!(
             agreed_campaign(id, b"00000000-0000-4000-8000-000000000001"),
             None
         );
-        // Not a campaign identity: an empty menu value or a save name.
         assert_eq!(agreed_campaign(b"", b""), None);
         assert_eq!(agreed_campaign(b"my save", b"my save"), None);
     }

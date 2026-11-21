@@ -5,13 +5,10 @@ import type { LedgerGovernment } from './partyTypes';
 
 const NO_GOVERNMENTS: readonly LedgerGovernment[] = [];
 
-/** The recorded changes of government with their execution causes: the politics ledger's (not served yet), the one
- * place its rows join the ruling party widget. */
 export function governmentChanges(): readonly LedgerGovernment[] {
   return NO_GOVERNMENTS;
 }
 
-/** Neither a census change nor an election date supplies an execution cause. */
 export function governmentCause(cause: string): string {
   switch (cause) {
     case 'ElectionOnAction': return 'Election';
@@ -44,7 +41,6 @@ export function governmentRows(rows: readonly LedgerGovernment[], hour: number, 
   return visibleGovernmentChanges(rows, Math.min(hour, through)).filter(row => Math.floor(row.hour / 24) === day).flatMap(row => governmentEventRows(row, name));
 }
 
-/** A reached event page has already proven the supplying read independently of its native date. */
 export function governmentEventRows(row: LedgerGovernment, name: (token: string) => string): TooltipRow[] {
   return [
     { label: `Government / ${formatDateTime(row.hour)}`, value: governmentCause(row.cause), strong: true, divider: true },

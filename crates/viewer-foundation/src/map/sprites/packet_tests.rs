@@ -1,4 +1,3 @@
-//! Synthetic immutable metadata and fixed multi-frame production-upload expectations.
 use super::*;
 use crate::map::{
     native_shader::draw,
@@ -203,7 +202,6 @@ impl shader_pipeline::cache::Compile for Fail {
 fn sprite_packet_failed_selects_stay_uncached_and_replay_every_refusal() {
     let diagnostics = Arc::new(shader_pipeline::cache::Cache::new(None, Arc::new(Fail)));
     let mut source = program();
-    // Let source assembly reach the synthetic compiler, rather than refusing an absent entry.
     for (stage, name) in [(&mut source.vertex, "V"), (&mut source.pixel, "P")] {
         stage
             .entries
@@ -290,8 +288,6 @@ fn quad(native: draw::Quad) -> Quad {
     }
 }
 
-/// Analytic raster oracle for solid, axis-aligned fixture draws. These bounds and colours
-/// do not call the sprite projection, sort, bake, placement or emission helpers.
 fn expected_pixels(frame: usize) -> Vec<u8> {
     let colour = match frame {
         0 | 1 | 4 | 5 | 9 => [255, 0, 0, 255],
@@ -301,8 +297,6 @@ fn expected_pixels(frame: usize) -> Vec<u8> {
         _ => unreachable!(),
     };
     let mut pixels = vec![0; 16 * 16 * 4];
-    // At UI scale 1.25 the integer GUI viewport is 12: the 2..14 quad projects to
-    // 8/3..56/3 device pixels. The scissors still scale by 1.25, independently.
     let (first, last, middle, split, repair) = if frame == 10 {
         (3, 16, 10, 15, 15)
     } else {
@@ -312,8 +306,6 @@ fn expected_pixels(frame: usize) -> Vec<u8> {
         for x in 0..16 {
             let mut pixel = [0; 4];
             if frame == 6 {
-                // Half-size about (8,8), then half opacity over transparent black.
-                // The composite writes RGB only, leaving the frame alpha unchanged.
                 if (5..11).contains(&x) && (5..11).contains(&y) {
                     pixel = [64, 0, 0, 0];
                 }
@@ -321,12 +313,9 @@ fn expected_pixels(frame: usize) -> Vec<u8> {
                 pixel = colour;
             }
             if (first..last).contains(&x) && (first..last).contains(&y) {
-                // The missing technique inherits the preceding program AND baked texture,
-                // but overwrites constants/projection and draws only the upper-right scissor.
                 if x >= middle && y < middle {
                     pixel = colour;
                 }
-                // An explicit null samples zero; the final repair rebinds the red image.
                 if (middle..split).contains(&x) && y >= middle {
                     pixel = [0; 4];
                 }
@@ -365,8 +354,6 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
     .unwrap();
     let arena = shader_pipeline::gpu::Arena::new(&device);
     let base = draw(effect(), "root/native");
-    // Cover the entire bake target with a solid colour, so its sampled result has a
-    // hand-computed byte oracle independent of the production bake/texture coordinates.
     let mut background = base.clone();
     background.constants[12..14].fill(0.);
     background.vertices = bytemuck::cast_slice(&[
@@ -390,12 +377,8 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
     let mut private_frame = 0;
     for frame in 0..12 {
         let state = frame / 2;
-        // An odd frame uploads what the frame before it did: `state` changes on the even ones,
-        // and each of frames 6, 8 and 10 changes something of its own that the frame after it
-        // changes back (the presentation, the bake recipe, the interface scale).
         private_frame += u64::from(!matches!(frame, 1 | 3 | 5));
         let mut a = base.clone();
-        // Integer UNORM levels avoid rounding ties after the bake's texture conversion.
         a.constants[16] = if state % 2 == 0 { 1. } else { 128. / 255. };
         a.constants[24] = state as f32;
         a.textures[0].1 = Some(state % 2);
@@ -460,8 +443,6 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
         arena.flush(&queue);
         let mut encoder = device.create_command_encoder(&Default::default());
         pass.draw_pages(&mut encoder);
-        // A bake hands its commands to the frame, which submits them ahead of the draws that
-        // sample them ([`SpritePass::bake_buffers`]).
         queue.submit(pass.bake_buffers().into_iter().chain([encoder.finish()]));
         let pixels = crate::map::test_support::gpu::render_with(&device, &queue, |render| {
             pass.draw_runs(render, [16, 16])
@@ -475,17 +456,12 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
             usize::from(frame >= 4),
             "frame {frame}"
         );
-        // The presented quad is a compiled draw into a fade page. What its pipeline cost is not
-        // this stream's to count: a core is built once for the device and shared by every cache
-        // that asks for the same one ([`shader_pipeline::gpu`]).
         assert_eq!(
             pass.fade_draws.len(),
             usize::from(frame == 6),
             "frame {frame}"
         );
         assert_eq!(pass.bakes.len(), usize::from(frame >= 4), "frame {frame}");
-        // The pass's own arena starts a frame for an upload that emits, and an upload that
-        // retained what is resident leaves it alone.
         assert_eq!(
             pass.uploads.as_ref().unwrap().frame(),
             private_frame,

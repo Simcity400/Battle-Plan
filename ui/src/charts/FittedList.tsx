@@ -10,15 +10,11 @@ interface FittedListProps<T> {
   moreClassName: string;
   itemKey: (item: T) => string;
   label: (item: T) => string;
-  /** Complete remainder text, independent of the label measured on the line. */
   describe?: (item: T) => string;
-  /** Padding, artwork and internal gaps beside the text, in layout pixels. */
   extraWidth: (item: T) => number;
   renderItem: (item: T) => ReactNode;
 }
 
-/** An HTML line whose count follows its available width and actual text font.
- * The probe measures the remainder chip without mounting hidden item lists. */
 export default function FittedList<T>({ items, className, moreClassName, itemKey, label, describe = label, extraWidth, renderItem }: FittedListProps<T>) {
   const list = useRef<HTMLDivElement>(null);
   const probe = useRef<HTMLSpanElement>(null);

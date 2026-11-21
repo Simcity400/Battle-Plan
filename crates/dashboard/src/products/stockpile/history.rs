@@ -1,8 +1,3 @@
-//! One holder's stock and logistics over a branch, read once per holder and timeline from the
-//! changes of its own rows: `StockByVariant` of its slots, `LogisticsEquipment` of its raw
-//! countries, the designs its lines made, and the hours `Stockpiles`, `ProductionLines` and
-//! `LogisticsEquipment` were read (from the blocks' page entries, no row decoded). A read is
-//! carried for [`STAGGER_PERIOD`] hours within the same holder; a value is never carried past.
 
 use dashboard_base::products::Country;
 use crate::{Source, span::HourSpan};
@@ -18,18 +13,14 @@ use std::{
     sync::{Arc, PoisonError},
 };
 
-/// A design's stock from an hour on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stock {
-    /// No row: it holds none.
     Absent,
-    /// A row whose amount is not recorded.
     Unknown,
     Amount(i64),
 }
 
 impl Stock {
-    /// What it adds to a sum; none leaves the sum unknown.
     pub fn raw(self) -> Option<i128> {
         match self {
             Self::Absent => Some(0),
@@ -38,15 +29,11 @@ impl Stock {
         }
     }
 
-    /// Whether it holds anything but zero: a design of unknown type holding it leaves every type's
-    /// and arm's total unknown.
     pub fn holds(self) -> bool {
         matches!(self, Self::Unknown) || matches!(self, Self::Amount(amount) if amount != 0)
     }
 }
 
-/// One archetype's logistics row: balance, the stock it counted and the available operand, each
-/// none where not recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Logistics {
     pub balance: Option<i64>,
@@ -54,34 +41,25 @@ pub struct Logistics {
     pub available: Option<i64>,
 }
 
-/// One holder's histories over the branch.
 #[derive(Debug, Default, PartialEq)]
 pub struct Replay {
-    /// Hours its stock is known: each `Stockpiles` read under it and the hours carried from it.
     pub stock: Vec<HourSpan>,
     pub lines: Vec<HourSpan>,
-    /// Logistics reads that held its rows, and those that held none (AI-controlled), carried.
     pub balance: Vec<HourSpan>,
     pub ai: Vec<HourSpan>,
     pub reads: Vec<i32>,
     pub line_reads: Vec<i32>,
     pub logistics_reads: Vec<i32>,
-    /// Every design with a row at some hour, and its stock from each hour it changed.
     pub variants: BTreeMap<u64, Vec<(i32, Stock)>>,
-    /// Every logistics token spelled (its raw token), and its row from each hour it changed.
     pub logistics: BTreeMap<u32, Vec<(i32, Option<Logistics>)>>,
-    /// The designs its production lines made under it.
     pub produced: BTreeSet<u64>,
-    /// Hours its tag had no resolved holder.
     pub unresolved: Vec<HourSpan>,
 }
 
-/// The read hours of `reads` (runs of hours whose sample hour is the hour) within `first..=last`.
 fn read_hours(reads: &[(i32, i32)]) -> Vec<i32> {
     reads.iter().flat_map(|&(first, last)| first..=last).collect()
 }
 
-/// Each read and the hours carried from it, within `last`: to the next read or the carry's end.
 pub fn carried(reads: &[i32], last: i32) -> Vec<HourSpan> {
     let mut spans: Vec<HourSpan> = Vec::new();
     for (at, &read) in reads.iter().enumerate() {
@@ -94,8 +72,6 @@ pub fn carried(reads: &[i32], last: i32) -> Vec<HourSpan> {
     spans
 }
 
-/// `held` (hours a holder's logistics rows came or went: whether any is shown from then) split
-/// over the read spans of `reads`: spans whose read held rows, and spans whose read held none.
 pub fn split_logistics(reads: &[i32], held: &[(i32, bool)], last: i32) -> (Vec<HourSpan>, Vec<HourSpan>) {
     let (mut with, mut without) = (Vec::new(), Vec::new());
     for (at, &read) in reads.iter().enumerate() {
@@ -118,20 +94,17 @@ fn number(cell: Option<&Cell>) -> Option<i64> {
     }
 }
 
-/// Appends `change` to a change list unless it repeats the last.
 fn note<T: PartialEq>(changes: &mut Vec<(i32, T)>, hour: i32, value: T) {
     if changes.last().is_none_or(|(_, last)| *last != value) {
         changes.push((hour, value));
     }
 }
 
-/// The table's read hours of run `run` within `first..=last`.
 fn reads_of(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<i32>> {
     let recording = query.replay.recording();
     Ok(read_hours(&dashboard_query::cost::storage(|| lanes::reads(recording, run, table, first, last))?))
 }
 
-/// `tag`'s histories over `query`'s timeline (see the module).
 pub fn replay(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<Replay> {
     let recording = query.replay.recording();
     let field = |table, name| dashboard_declare::field(table, name);
@@ -166,13 +139,11 @@ pub fn replay(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<R
                     };
                     note(changes, step.hour, value);
                 }
-                // Nothing is carried past the stretch: a later one holds what it reads.
                 note(changes, last.saturating_add(1), Stock::Absent);
             }
             let held = dashboard_query::cost::storage(|| {
                 lanes::history(recording, stretch.run, TableId::LogisticsEquipment, &logistics_columns, Keys::Range(u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)), first, last)
             })?;
-            // Each hour the count of the holder's shown rows moves, by how much.
             let mut moves: BTreeMap<i32, i64> = BTreeMap::new();
             for (_, steps) in &held.keys {
                 let mut shown: Option<u32> = None;
@@ -226,8 +197,6 @@ pub fn replay(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<R
                 }
             }
             let lines_read = reads_of(query, stretch.run, TableId::ProductionLines, first, last)?;
-            // The stockpile is read in the lines' daily slot; a file whose pages date no stockpile read
-            // dates it by theirs.
             let stock_read = reads_of(query, stretch.run, TableId::Stockpiles, first, last)?;
             reads.push((last, if stock_read.is_empty() { lines_read.clone() } else { stock_read }));
             line_reads.push((last, lines_read));
@@ -249,14 +218,11 @@ pub fn replay(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<R
     Ok(replay)
 }
 
-/// What a source keeps of the histories it read: by timeline (its id and last hour) and tag.
 #[derive(Default)]
 struct Kept {
     replays: HashMap<(u64, i32, Country), Arc<Replay>>,
 }
 
-/// [`replay`] of `tag`, read once per timeline and kept by the source; a timeline that grew reads
-/// it again.
 pub fn kept(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<Arc<Replay>> {
     let key = (query.timeline.id, query.timeline.last, tag.clone());
     let state = source.state::<Kept>();

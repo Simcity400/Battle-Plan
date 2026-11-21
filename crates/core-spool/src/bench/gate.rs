@@ -1,7 +1,6 @@
 use super::invalid;
 use std::io::{self, Read};
 
-// Decoder copied from origin/t3/core-gate-memory, encoding.rs at 3a4ae76addd6ff8b45c8447748a2a6ff2243bec1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Event {
     pub hour: i32,

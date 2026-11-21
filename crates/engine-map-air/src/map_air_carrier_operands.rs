@@ -1,36 +1,18 @@
-//! Host-base operands of map aircraft count and admission.
-//!
-//! A stateless base follows its host ship, task force and fleet to add an
-//! eligible leader's key-0x11 sortie modifier, skipping a null task force.
-//! Ordinary carrier bases index the authored sortie-ratio table by task-force
-//! stance. A wing whose host task force is in combat is rejected unless its
-//! mask has bit 0 or 2 and its mission region matches the task-force location.
 
 use crate::{Memory, modifier_accumulator, read as read_native};
 use engine_sites::Rva;
 
-/// Task-force stance index used for ordinary host-base counts.
 pub const CARRIER_STANCE: usize = 0x4ec;
-/// Fleet packed leader reference used for sortie efficiency.
 const FLEET_LEADER_REFERENCE: usize = 0xb0;
-/// Unit-leader modifier cooldown type. A nonzero kind suppresses the
-/// leader's sortie modifier.
 const LEADER_MODIFIER_COOLDOWN: usize = 0xe84;
-/// Navy-leader key-0x11 accumulator used for sortie efficiency.
 const LEADER_MODIFIERS: usize = 0x418;
 const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The stance of an ordinary host base's task force; None otherwise.
     pub carrier_stance: Option<i32>,
-    /// Raw key-0x11 entry; absent without a leader, key or past the cooldown gate.
     pub leader_modifier: modifier_accumulator::Value,
-    /// The host task force's combat references (`cunit::COMBAT_REFERENCE_COUNT`); None for a state
-    /// base or a null task force.
     pub task_force_combats: Option<i32>,
-    /// The strategic region of an in-combat task force's location, compared with
-    /// the mission region. None when not in combat or when the region is null.
     pub task_force_region: Option<u32>,
 }
 
@@ -69,11 +51,6 @@ fn authenticate(
     Ok(())
 }
 
-/// Read one base's host operands. A state base has none. A carrier base must
-/// be its ship's carrier base; a rocket (kind 1) host keeps only the leader
-/// modifier. `None` denotes a stale host or a null or unresolved ship. Only a
-/// wing rejected by an earlier admission gate can have one, so the caller omits
-/// that wing rather than the hour.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -171,7 +148,6 @@ pub fn read(
     }))
 }
 
-/// Region ID of the task-force location, reached only for a task force in combat.
 fn location_region(
     memory: &impl Memory,
     base: usize,

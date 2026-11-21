@@ -52,7 +52,6 @@ const ASSIGN_TRIGGER: Anchor = Anchor {
         fnv: 0xe0a7399faa73c7af,
     },
 };
-// The comparison base is abstract; its concrete subclasses inherit its reader.
 const COMPARISON_TRIGGERS: [Anchor; 2] = [
     Anchor {
         what: "the integer comparison trigger class",
@@ -93,7 +92,6 @@ const CONTEXT_EFFECTS: [Anchor; 2] = [
     },
 ];
 
-/// Set on an identity with no recognised-build counterpart, so it never equals one of its addresses.
 pub const UNMATCHED_IDENTITY: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +102,6 @@ pub enum TriggerReader {
     Own(u64),
 }
 
-/// Reader and class identities are the recognised build's addresses for the same code or class.
 #[derive(Debug, Default)]
 pub struct RegistryTables {
     pub triggers: Vec<(u32, &'static str)>,
@@ -114,12 +111,10 @@ pub struct RegistryTables {
     pub effect_classes: Vec<(u32, u64, u64)>,
     pub effect_identities: Vec<(u32, &'static str, u64)>,
     pub(super) context_effect_names: BTreeMap<u64, &'static str>,
-    /// Each unmatched identity's build-independent stand-in.
     pub(super) unmatched: BTreeMap<u64, u64>,
 }
 
 impl RegistryTables {
-    /// SHA-256 of this table's build-independent content, comparable across builds.
     pub fn content_digest(&self) -> [u8; 32] {
         let identity = |value: u64| match self.unmatched.get(&value) {
             Some(stand_in) => format!("?{stand_in:016x}"),
@@ -173,7 +168,6 @@ impl RegistryTables {
             .or_else(|| self.context_effect_names.get(&vtable).copied())
     }
 
-    /// Whether every reader and class identity has a recognised-build counterpart.
     pub fn identities_matched(&self) -> bool {
         self.unmatched.is_empty()
     }
@@ -277,7 +271,6 @@ struct EffectRow<'a> {
     key: u32,
 }
 
-/// The registries as this build lays them out, before identities are mapped.
 struct Raw<'a> {
     triggers: Vec<TriggerRow<'a>>,
     effects: Vec<EffectRow<'a>>,
@@ -286,10 +279,8 @@ struct Raw<'a> {
     assign: u32,
     comparison: u32,
     body: u32,
-    /// The decorated class names behind the assign, comparison and body readers.
     reader_classes: [&'a str; 3],
     contexts: Vec<(&'a str, u32)>,
-    /// Canonical class-name hashes that several classes share, which identify none of them.
     ambiguous: BTreeSet<u64>,
 }
 
@@ -451,7 +442,6 @@ impl<'a> Raw<'a> {
     }
 }
 
-/// The factory's class for a registered entry, checked against the class its entry names.
 fn registered_class<'a>(
     image: &'a PeImage,
     factories: &mut Factories<'_>,
@@ -540,7 +530,6 @@ fn name_hash(name: &str) -> u64 {
     truncated(Sha256::digest(canonical(name).as_bytes()).into())
 }
 
-/// A decorated name with its anonymous-namespace tags, which change with each compile, reduced to `?A`.
 fn canonical(decorated: &str) -> String {
     let mut result = String::with_capacity(decorated.len());
     let mut rest = decorated;
@@ -556,7 +545,6 @@ fn truncated(digest: [u8; 32]) -> u64 {
     u64::from_le_bytes(digest[..8].try_into().unwrap())
 }
 
-/// Primary virtual tables, by RTTI decorated name, of the classes `wanted` accepts.
 fn primary_vtables<'a>(
     image: &'a PeImage,
     wanted: impl Fn(&str) -> bool,
@@ -608,7 +596,6 @@ fn decorated_name(image: &PeImage, vtable: u32) -> io::Result<&str> {
     image.string(checked_add(descriptor, 16)?)
 }
 
-/// Whether `vtable`'s class lists `base` among its RTTI base classes.
 fn derives(image: &PeImage, vtable: u32, base: Anchor) -> io::Result<bool> {
     let hierarchy = image.u32(checked_add(locator(image, vtable)?, 16)?)?;
     let count = image.u32(checked_add(hierarchy, 8)?)?;
@@ -629,7 +616,6 @@ fn derives(image: &PeImage, vtable: u32, base: Anchor) -> io::Result<bool> {
     Ok(false)
 }
 
-/// Each RIP-relative `lea` of one of `vtables` (sorted), with the table it loads.
 fn vtable_references(image: &PeImage, vtables: &[u32]) -> io::Result<Vec<(u32, u32)>> {
     let (Some(&first), Some(&last)) = (vtables.first(), vtables.last()) else {
         return Ok(Vec::new());
@@ -638,7 +624,6 @@ fn vtable_references(image: &PeImage, vtables: &[u32]) -> io::Result<Vec<(u32, u
     for &(start, end) in image.executable_ranges() {
         let bytes = image.bytes(start, (end - start) as usize)?;
         for at in memchr::memchr_iter(0x8D, bytes) {
-            // REX.W, opcode, a RIP-relative ModRM and a 32-bit displacement.
             if at == 0
                 || at + 6 > bytes.len()
                 || bytes[at - 1] & 0xFB != 0x48
@@ -679,7 +664,6 @@ struct Located {
     allocation: u32,
 }
 
-/// The registration and allocation functions every entry's static initializer agrees on.
 fn locate_registrations(
     image: &PeImage,
     trigger_entries: &[u32],
@@ -724,7 +708,6 @@ fn locate_registrations(
     Ok(located)
 }
 
-/// An entry initializer's final outside call and its one sized allocation, if it has that shape.
 fn initializer(image: &PeImage, site: u32) -> io::Result<Option<(u32, u32)>> {
     let Ok((start, end)) = image.function(site) else {
         return Ok(None);
@@ -759,8 +742,6 @@ fn initializer(image: &PeImage, site: u32) -> io::Result<Option<(u32, u32)>> {
         .map(|(allocation, tail)| (tail, allocation)))
 }
 
-/// The sites of every five-byte relative call or jump whose destination is one
-/// of `targets`, by target, from one pass over the executable sections.
 fn call_sites<const N: usize>(
     image: &PeImage,
     targets: [u32; N],
@@ -768,7 +749,6 @@ fn call_sites<const N: usize>(
     let mut sites = std::array::from_fn(|_| BTreeSet::new());
     for &(start, end) in image.executable_ranges() {
         let bytes = image.bytes(start, (end - start) as usize)?;
-        // A site is the opcode byte of a whole five-byte instruction in the section.
         let Some(last) = bytes.len().checked_sub(5) else {
             continue;
         };
@@ -1303,7 +1283,6 @@ fn record_return(state: &State, summary: &mut Summary) -> io::Result<()> {
     Ok(())
 }
 
-/// The exception-directory extent starting at `start`, or a leaf's span up to the next one.
 fn extent(image: &PeImage, start: u32) -> io::Result<(u32, u32)> {
     if let Ok((begin, end)) = image.function(start) {
         if begin != start {
@@ -1363,20 +1342,14 @@ fn function_body(image: &PeImage, start: u32) -> io::Result<Vec<Instruction>> {
     Err(invalid("registry leaf function has no bounded terminator"))
 }
 
-/// One reachable instruction with its address-dependent bytes masked.
 struct Masked {
     bytes: [u8; 15],
     len: u8,
     outside: Option<u32>,
-    /// A jump table's entries in case order, as offsets in the function, so a reordered
-    /// table changes the fingerprint.
     cases: Vec<u32>,
-    /// The read-only data a RIP-relative operand names, so naming other data changes it.
     data: Vec<u8>,
 }
 
-/// The reachable instructions of the function at `start` in address order, with
-/// RIP-relative, image-address and outside-branch displacements masked.
 fn masked_body(image: &PeImage, start: u32, data: bool) -> io::Result<Vec<Masked>> {
     let (low, high) = extent(image, start)?;
     let bytes = image.bytes(low, (high - low) as usize)?;
@@ -1442,7 +1415,6 @@ fn masked_body(image: &PeImage, start: u32, data: bool) -> io::Result<Vec<Masked
                 {
                     let relative = displacement as u32 - low;
                     masked.bytes[offset..offset + 4].copy_from_slice(&relative.to_le_bytes());
-                    // An indexed dword table inside the function is a jump table of addresses.
                     if instruction.memory_index() != Register::None
                         && instruction.memory_index_scale() == 4
                     {
@@ -1510,8 +1482,6 @@ fn masked_body(image: &PeImage, start: u32, data: bool) -> io::Result<Vec<Masked
     Ok(decoded.into_values().collect())
 }
 
-/// The read-only bytes a RIP-relative operand reads, or the string a `lea` names; nothing for
-/// writable data, whose contents the game owns, or for values that are image addresses.
 fn referenced_data(image: &PeImage, instruction: &Instruction) -> io::Result<Vec<u8>> {
     let target = image.va_to_rva(instruction.ip_rel_memory_address())?;
     if instruction.mnemonic() == Mnemonic::Lea {
@@ -1540,7 +1510,6 @@ fn referenced_data(image: &PeImage, instruction: &Instruction) -> io::Result<Vec
     Ok(bytes.to_vec())
 }
 
-/// Masked-code fingerprints, optionally mixing in each outside branch target's own.
 struct Fingerprints<'a> {
     image: &'a PeImage,
     memo: HashMap<(u32, bool), Option<u64>>,
@@ -1558,7 +1527,6 @@ impl<'a> Fingerprints<'a> {
         if let Some(&found) = self.memo.get(&(start, callees)) {
             return found;
         }
-        // A reader's own data decides its grammar; a callee's, such as logging text, may change.
         let found = match masked_body(self.image, start, callees) {
             Ok(body) => {
                 let mut hasher = Sha256::new();
@@ -1584,7 +1552,6 @@ impl<'a> Fingerprints<'a> {
         found
     }
 
-    /// The fingerprint of every slot of a virtual table, which fixes its layout.
     fn layout(&mut self, vtable: u32) -> io::Result<u64> {
         let mut hasher = Sha256::new();
         let mut slots = 0u32;
@@ -1608,7 +1575,6 @@ impl<'a> Fingerprints<'a> {
     }
 }
 
-/// Maps readers and classes onto the recognised build's addresses by verified code and name.
 struct Identities<'a> {
     code: Fingerprints<'a>,
     ambiguous: &'a BTreeSet<u64>,
@@ -1628,7 +1594,6 @@ impl Identities<'_> {
             match candidates[..] {
                 [] => None,
                 [address] => Some(address),
-                // Identical code in several places: the class and slot decide which.
                 _ => Some(name_hash(class))
                     .filter(|hash| !self.ambiguous.contains(hash))
                     .and_then(|hash| {
@@ -1661,7 +1626,6 @@ impl Identities<'_> {
     }
 }
 
-/// The source of `pinned.rs`, from the recognised build.
 pub(super) fn pinned_source(image: &PeImage, keywords: &KeywordTables) -> io::Result<String> {
     let raw = Raw::decode(image, keywords)?;
     if !raw.ambiguous.is_empty() {
@@ -1993,9 +1957,6 @@ mod tests {
 
     #[test]
     fn one_pass_finds_each_targets_calls_and_jumps() {
-        // The fixture's factory: a 5-byte size, the allocation call, a 3-byte
-        // move, a 7-byte table address, 11 argument bytes, the helper call, a
-        // 3-byte move and the registration jump.
         let image = registration_fixture(true);
         let [allocations, helpers, registrations, unused] = call_sites(
             &image,
@@ -2103,7 +2064,6 @@ mod tests {
         let mut bytes = fixture_bytes();
         let mut code = Vec::new();
         allocation(&mut code);
-        // This input is not established by the factory, so both paths must be read.
         code.extend_from_slice(&[0x85, 0xd2]);
         let alternate_branch = code.len();
         relative(&mut code, FACTORY_START, &[0x0f, 0x84], FACTORY_START);

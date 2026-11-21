@@ -2,7 +2,6 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
 
-/** The Projects choice, in settings and as the log's filter chips. */
 export const PROJECT_CHOICES = [{ value: 'all', label: 'New and repairs' }, { value: 'new', label: 'New buildings' }, { value: 'repair', label: 'Repairs' }] as const;
 
 export const OPTIONS: readonly OptionField[] = [

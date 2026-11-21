@@ -43,14 +43,8 @@ import type { PartyHistoryReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
-/** Events listed a page of a picked mark cluster. */
 export const EVENT_PAGE = 128;
 
-/** One country's politics over time: the ruling party's leader, then party popularity as stacked bands in each
- * ideology's own colour, with changes of ruling party, leader and elections as marks. The branch's history of who
- * ruled is read once; popularity is the declared `party-popularity` series, drawn from its tiles, its head painted
- * from followed values: following playback the header renders only where the government, leader or party name
- * changes, and nothing is asked because the hour moved. A mark cluster lists its events a page at a time. */
 export default function RulingPartyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const root = useRef<HTMLDivElement>(null);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -66,12 +60,10 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const changes = useMemo(() => data ? partyChangeHours(data) : [], [data]);
   useShownEachFrame(runtime.clock, () => data ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
-  // Following, the last hour at or before the head where the government, leader or party name changed.
   const settled = useAtHead(runtime.clock, active && live && !!data, clockHour => {
     const hour = trackHourOf(widget, track, runtime.tracks, clockHour);
     return hour === null ? null : settledHour(changes, hour);
   });
-  // Off the head, the pin's or the window's end, read as rendered.
   const shownHour = live ? settled : trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour());
   const playhead = following ? shownHour : null;
   const head = shownHour ?? extent[1];
@@ -79,17 +71,14 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const liveHead = useMemo(() => live ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [live, runtime.clock, axisOffset]);
   const [hover, setHover] = useState<number | null>(null);
-  // Fallback colours are solved against the current theme, so they follow a theme change.
   const [surface, setSurface] = useState(() => readTokens().surface);
   useEffect(() => subscribeTokens(tokens => setSurface(tokens.surface)), []);
-  // Content order names the lines asked, so a change of ruling party asks nothing again.
   const ordered = useMemo(() => data && tag ? bands(data, tag, categoricalPalette(surface)) : [], [data, tag, surface]);
   const keys = useMemo(() => bandKeys(ordered), [ordered]);
-  // The party ruling at the moment shown goes first: the bottom band and the first legend entry.
   const rulingShown = data ? rulingAt(data, head) : null;
   const list = useMemo(() => rulingFirst(ordered, rulingShown), [ordered, rulingShown]);
   const spec = useMemo(() => track && keys.length ? { source: track.source, branchId: track.branch.id, family: POPULARITY_FAMILY, keys,
-    partBits: POPULARITY_PART_BITS, lastHour: track.branch.lastHour } : null, [track?.source, track?.branch.id, track?.branch.lastHour, keys]); // eslint-disable-line react-hooks/exhaustive-deps
+    partBits: POPULARITY_PART_BITS, lastHour: track.branch.lastHour } : null, [track?.source, track?.branch.id, track?.branch.lastHour, keys]);
   const popularity = useKeyedSeries(runtime.client, runtime.clock, spec, live ? null : head, hover, live, active, root);
   const names = useMemo(() => {
     const names = new Map((data?.ideologies ?? []).map(ideology => [ideology.token, contentTitle(ideology.name, ideology.token, 'Ideology name unavailable')]));
@@ -99,16 +88,14 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const name = useCallback((token: string) => names.get(token) ?? 'Ideology name unavailable', [names]);
   const detailsThrough = shownUntil(playhead, (options.playback as PlaybackMode) ?? 'draw-in', options.afterPlayhead === true) ?? extent[1];
   const governments = governmentChanges();
-  // Every event as a mark: ruling changes and elections, leaders when asked, recorded government changes.
   const events = useMemo(() => {
     if (!data) return [];
     const all = partyBadges(data, name, options.leaders === true, governments);
     return options.changes ? [...all, ...governmentBadges(governments, name, extent[1])].sort((a, b) => a.hour - b.hour)
       : all.filter(badge => badge.glyph === '♔');
-  }, [data, name, options.changes, options.leaders, governments, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, name, options.changes, options.leaders, governments, extent[1]]);
   const index = useMemo(() => markIndex(events), [events]);
   const markHours = useMemo(() => [...new Set(events.map(event => event.hour))].sort((a, b) => a - b), [events]);
-  // The chart's view, held outside React: marks are summarised for it as the chart draws, so a moving head asks nothing.
   const view = useRef<{ from: number; end: number; width: number } | null>(null);
   const marks = useRef<{ index: typeof index; from: number; end: number; width: number; summary: MarkSummary } | null>(null);
   const markSummaries = useCallback((): readonly MarkSummary[] => {
@@ -123,8 +110,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const onSummaryView = useCallback((next: { from: number; to: number; end: number; width: number }) => {
     view.current = { from: next.from, end: next.end, width: next.width };
     popularity.onSummaryView(next);
-  }, [popularity.onSummaryView]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A picked cluster's events, a page at a time.
+  }, [popularity.onSummaryView]);
   const [page, setPage] = useChangedState<{ index: typeof index; cluster: MarkCluster; first: number } | undefined>(undefined);
   const shownPage = page?.index === index ? page : undefined;
   const onMarkHover = useCallback((cluster: MarkCluster | null) => {
@@ -132,7 +118,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     setPage(previous => previous?.index === index && previous.cluster.firstOrdinal === cluster.firstOrdinal && previous.cluster.count === cluster.count
       ? previous : { index, cluster, first: Number(cluster.firstOrdinal) });
   }, [index]);
-  // The keyboard: the nearest hour a mark or a party's popularity changes, within the view up to the head.
   const [keyboard, setKeyboard] = useState<{ index: typeof index; hour: number | null; revision: number }>();
   const navigation = useRef<AbortController | null>(null);
   useEffect(() => () => navigation.current?.abort(), [index, active]);
@@ -156,7 +141,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       land(candidates.length ? (forward ? Math.min(...candidates) : Math.max(...candidates)) : null);
     }).catch(() => land(local));
   }, [markHours, index, track, keys, runtime.client]);
-  // A band's popularity at the head as painted: the followed value while following, else the value read there.
   const headValue = (band: Band | undefined, hour: number): string | null | undefined => {
     if (!band || !data) return undefined;
     const followed = popularity.followed;
@@ -173,8 +157,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   };
   const detail = data ? [leaderShown(data, leaderAt(data, head)).ideology, partyNameAt(data, head)].filter(Boolean).join(' · ') : '';
   const latest = useRef({ data, list, headValue, detail }); latest.current = { data, list, headValue, detail };
-  // The ruling party's share at the head after its separator, painted each frame; read again when the followed answer
-  // or a read lands, though the hour shown stands still (paused, or just sought). Nothing when not known.
   const followedHead = popularity.followed;
   const measured = measuredWidget();
   const share = useMemo(() => liveTexts(runtime.clock, () => live ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) ?? head : head, hour => {
@@ -189,8 +171,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       const painter = followedHead.store.painter(followedHead.entry, changed, true, measured);
       return () => painter.dispose();
     },
-    // `trackHourOf` reads the track and the widget's time, named by its text.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [runtime.clock, live, track, head, JSON.stringify(widget.time), followedHead?.store, followedHead?.entry, measured]);
   const [peopleWarnings, setPeopleWarnings] = useState<string[]>([]);
   const menu = useContextMenu('Chart actions');
@@ -200,7 +180,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, peopleWarnings, onDiagnostics]);
 
-  // The stack reads the newest tiles as it draws; a tile landing repaints through `data`.
   const drawn = useRef({ list, summaryOf: popularity.summaryOf }); drawn.current = { list, summaryOf: popularity.summaryOf };
   const layers = useMemo(() => { const summaryOfBand = bandSummaries(); return [tiledStackLayer(() => {
     const { list, summaryOf } = drawn.current;
@@ -222,8 +201,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const rulingBand = list.find(band => band.token === ruling);
   const leaderRun = leaderAt(data, head);
   const leader = leaderShown(data, leaderRun);
-  // Portrait ringed in the ruling ideology's colour (grey when not known), the leader's name, then
-  // ideology · party · share. The party as the game names it; left out when that is not known.
   const header = <div className="ruling-party-leader">
     <span className="ruling-party-portrait" style={rulingBand ? { borderColor: rulingBand.color } : undefined}>
       {leader.portrait ? <img src={leader.portrait} alt="" /> : <ArtFallback icon="helmet" />}
@@ -233,7 +210,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       <span data-tooltip={contentTitleHint(leaderRun?.ideology)}>{detail}{rulingBand && <LiveText live={share} at="share" />}</span>
     </div>
   </div>;
-  // A recorded leader still shows when no party popularity was recorded.
   if (!list.length) return <div className="ruling-party" ref={root}>{header}
     <WidgetState kind="unavailable" message="Party popularity is unavailable." />
   </div>;
@@ -243,7 +219,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   return <div className="ruling-party" ref={root}>
     {header}
     <CountryPeople runtime={runtime} widget={widget} track={track} tag={tag} hoverHour={hover} active={active} view="politics" onWarnings={setPeopleWarnings} />
-    {/* Names only; each popularity is still read out to assistive technology. */}
+    { }
     <Legend label="Parties" items={list.map(band => {
       const value = headValue(band, head);
       return { id: band.token, label: band.name, color: band.color, spokenValue: value === undefined ? 'not read yet' : value ?? 'not recorded' };

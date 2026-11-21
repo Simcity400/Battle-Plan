@@ -1,7 +1,5 @@
 use super::*;
 
-/// Text projects through the GUI viewport, or the font's viewport when a
-/// component set it, using 2.0 divided by each viewport axis, then the (-1, +1) offset.
 #[test]
 fn a_written_font_viewport_is_the_compiled_projection() {
     let program = installed_content_core::pdxshader::program::read_with::<Vec<u8>>(b"t.lua", &|_| None).unwrap();
@@ -34,6 +32,5 @@ fn a_written_font_viewport_is_the_compiled_projection() {
     assert_eq!((plain[0], plain[5]), (2. / 800., 2. / 600.));
     assert_eq!((written[0], written[5]), (2. / 333., 2. / 600.));
     assert_eq!(written[12..14], [-1., 1.]);
-    // the logical extent is truncated.
     assert_eq!(gui_viewport([1366, 768], 1.25), [1092, 614]);
 }

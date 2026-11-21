@@ -1,12 +1,3 @@
-//! One holder's stockpile at an hour (`equipment-stockpile-at`), a rows-at-an-hour product: the
-//! reply is structure (the designs held or made, the lines making them, the logistics archetypes,
-//! names and types, and whether each table is known at the hour); every number that moves is a
-//! live cell, painted at the head without a push:
-//!
-//! - `v<design>`, `stock`: `StockByVariant.amount` of the holder's slot;
-//! - `l<line>`, `speed` and `cost`: the line's `ProductionLines` speed and cost (the widget sums
-//!   each design's lines' daily units, IC and costs from them);
-//! - `t<archetype key>`, `balance`, `stock`, `available`: the holder's `LogisticsEquipment` row.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{Content, DECIMALS, NAME_TABLES, NEED_BOUND_RAW, StockType, Types, named_in};
@@ -40,9 +31,6 @@ pub struct StockpileAtParams {
     pub country: Country,
 }
 
-/// Whether the game's surplus or shortage is known at the hour: the record held the country's rows
-/// (`player`), was read complete without them (`ai`: the game computes none for an AI-controlled
-/// country), or was not read within a day (`unknown`).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -52,33 +40,31 @@ pub enum StockBalance {
     Unknown,
 }
 
-/// A design the holder holds or makes at the hour.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockAtVariant {
     pub id: String,
-    /// Its equipment token; empty where it has no definition at the hour.
+    #[doc = " Its equipment token; empty where it has no definition at the hour."]
     pub token: String,
     pub archetype: Option<String>,
     pub name: Option<String>,
-    /// False where it has no definition at the hour.
+    #[doc = " False where it has no definition at the hour."]
     pub known: bool,
     pub design: Option<String>,
-    /// It has a stock row (its `stock` cell); a design not held holds none.
+    #[doc = " It has a stock row (its `stock` cell); a design not held holds none."]
     pub held: bool,
-    /// The military lines making it (each its `l<line>` cells).
+    #[doc = " The military lines making it (each its `l<line>` cells)."]
     pub lines: Vec<String>,
-    /// Why its output a day is not known whatever its lines' cells say; null where they decide.
+    #[doc = " Why its output a day is not known whatever its lines' cells say; null where they decide."]
     pub output_missing: Option<String>,
 }
 
-/// A logistics archetype the holder's record lists at the hour (its `t<key>` cells).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockAtLogistics {
-    /// The archetype key, or the unresolved mark and the recorded token's spelling.
+    #[doc = " The archetype key, or the unresolved mark and the recorded token's spelling."]
     pub key: String,
 }
 
@@ -89,13 +75,13 @@ pub struct StockpileAtReply {
     pub tag: String,
     pub campaign_key: String,
     pub decimals: u8,
-    /// Every archetype a listed design or logistics row belongs to, in the equipment database's order.
+    #[doc = " Every archetype a listed design or logistics row belongs to, in the equipment database's order."]
     pub types: Vec<StockType>,
     pub variants: Vec<StockAtVariant>,
     pub logistics: Vec<StockAtLogistics>,
-    /// Why the stock is not known at the hour; null where it is.
+    #[doc = " Why the stock is not known at the hour; null where it is."]
     pub stock_missing: Option<String>,
-    /// Why the production lines are not known at the hour; null where they are.
+    #[doc = " Why the production lines are not known at the hour; null where they are."]
     pub lines_missing: Option<String>,
     pub balance: StockBalance,
     pub balance_missing: Option<String>,
@@ -105,14 +91,11 @@ pub struct StockpileAtReply {
 
 dashboard_base::reply_warnings!(StockpileAtReply);
 
-/// What a reply reads of the content and the recording's identity.
 pub struct AtContext {
     content: Content,
     campaign_key: String,
 }
 
-/// Why a complete daily table is not known at `frame`'s hour: its last read is dated and more than a
-/// day old. A snapshot carried without a date (a restore) holds the last read's values.
 fn stale(frame: &DecodedFrame, table: TableId, what: &str) -> Option<String> {
     let read = frame.tables[table.index()].sampled_at()?;
     (i64::from(frame.hour) - i64::from(read) >= i64::from(STAGGER_PERIOD)).then(|| format!("The {what} was not read within a day of this hour."))
@@ -130,12 +113,10 @@ fn column(table: TableId, name: &str) -> io::Result<usize> {
     dashboard_declare::field(table, name)
 }
 
-/// The raw countries linked to `slot` at the frame's hour.
 fn raws(frame: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
     frame.complete::<tables::CountryLinks>().map(|links| links.iter().filter(|link| link.canonical_slot == slot).map(|link| link.id).collect()).unwrap_or_default()
 }
 
-/// The designs a step-0 frame lists for `owner`: its stock rows' and its lines'.
 fn designs(frame: &DecodedFrame, owner: Owner) -> BTreeSet<u64> {
     let mut ids: BTreeSet<u64> = frame.complete::<tables::StockByVariant>().map(|rows| rows.iter().filter(|row| row.slot == owner.slot).map(|row| row.variant).collect()).unwrap_or_default();
     let raws = raws(frame, owner.slot);
@@ -145,7 +126,6 @@ fn designs(frame: &DecodedFrame, owner: Owner) -> BTreeSet<u64> {
     ids
 }
 
-/// The reply at `frame`'s hour for `owner`.
 pub(super) fn reply(frame: &DecodedFrame, params: &StockpileAtParams, owner: Owner, at: &At<'_, AtContext>) -> io::Result<StockpileAtReply> {
     let context = at.context;
     let content = &context.content;
@@ -220,7 +200,6 @@ pub(super) fn reply(frame: &DecodedFrame, params: &StockpileAtParams, owner: Own
     for row in &logistics_rows {
         let spelling = spelled.get(&row.token).cloned().unwrap_or_else(|| format!("token {}", row.token));
         let key = types.logistics(content, &spelling);
-        // Two rows of one archetype: the later row holds.
         let id = format!("t{key}");
         for (name, column) in columns {
             at.live.value(&id, name, Cell { table: TableId::LogisticsEquipment, column, key: u128::from(row.country) << 32 | u128::from(row.archetype) }, 1.0);
@@ -256,7 +235,6 @@ pub(super) fn reply(frame: &DecodedFrame, params: &StockpileAtParams, owner: Own
     })
 }
 
-/// One holder's stockpile at an hour.
 pub struct EquipmentStockpileAt;
 
 impl AtHour for EquipmentStockpileAt {

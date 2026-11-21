@@ -8,7 +8,6 @@ test('the history keeps every step that ever failed, a catalogue setup step unde
   const earlier = { format: HISTORY_FORMAT, failed: { 'controls|widget/settings|Politics: Decisions: Show': { cause: 'product', why: 'over budget' } }, slowest: ['widget/Old'], updated: 'then' };
   const merged = mergeHistory(earlier, [
     step('catalogue', 'widget/Navy size', 'add', true),
-    // A run from before setup steps named their card: the add before it names it.
     step('catalogue', 'setup', 'discard', false),
     step('catalogue', 'setup', 'delete', false, { card: 'view/Ships' }),
     step('controls', 'widget/settings', 'Overview: Map: Shadows', false),
@@ -17,7 +16,6 @@ test('the history keeps every step that ever failed, a catalogue setup step unde
   assert.deepEqual(Object.keys(merged.failed), ['catalogue|view/Ships|delete', 'catalogue|widget/Navy size|discard', 'controls|widget/settings|Overview: Map: Shadows',
     'controls|widget/settings|Politics: Decisions: Show']);
   assert.equal(merged.format, HISTORY_FORMAT);
-  // A run that did not add the whole catalogue leaves the slowest cards as they were.
   assert.deepEqual(merged.slowest, ['widget/Old']);
   assert.deepEqual(mergeHistory(merged, [], { slowest: ['view/New'] }).slowest, ['view/New']);
   assert.equal(failureKey(step('pages', 'cold/Army', 'switch', false)), 'pages|cold/Army|switch');
@@ -46,13 +44,10 @@ test('a session with no failure history leaves no case out, as any may have fail
 test('each value of a setting is exercised once across its menu\'s states, and again wherever its case ever failed', () => {
   const cover = new Coverage();
   const chips = controlBase({ kind: 'chips', label: 'Show categories', context: '', nth: 0, chips: [{ label: 'Focus' }] });
-  // Revealed under another value of its parent, with another list: the same setting.
   assert.equal(chips, controlBase({ kind: 'chips', label: 'Show categories', context: '', nth: 0, chips: [{ label: 'Focus' }, { label: 'Blockade' }] }));
   assert.deepEqual(['Focus', 'Laws'].map(value => cover.take(chips, value)), [true, true]);
-  // Under the next group: Focus and Laws were covered, Blockade is new, and Laws failed before so it runs again.
   assert.deepEqual([['Focus', false], ['Laws', true], ['Blockade', false]].map(([value, failed]) => cover.take(chips, value, failed)), [false, true, true]);
   assert.equal(cover.skipped, 1);
-  // A control without values is one case.
   const sw = controlBase({ kind: 'switch', label: 'Summary', nth: 0 });
   assert.deepEqual([cover.take(sw, ''), cover.take(sw, '')], [true, false]);
 });
@@ -91,7 +86,6 @@ test('a failure is the suite\'s own only when every reason is: no case, nothing 
   assert.deepEqual(cause('the map reports no graphics or sound state, so whether it applied the setting is unobservable'), { cause: 'suite', why: 'unobservable' });
   assert.deepEqual(cause('Decisions: This group has no members at the end of this campaign.'), { cause: 'suite', why: 'empty group chosen' });
   assert.deepEqual(cause('the recording cannot draw it: Not available in replays: the game computes this map mode itself'), { cause: 'suite', why: 'refused by name' });
-  // The app was wrong or over budget, whatever else the step could not see.
   assert.deepEqual(cause('133 ms, over 100 ms'), { cause: 'product', why: 'over budget' });
   assert.deepEqual(cause('its widget is not in view', 'Event feed: still loading after 6 s'), { cause: 'product', why: 'still loading' });
   assert.deepEqual(cause('showed a loading placeholder for 811 ms (Campaign map)'), { cause: 'product', why: 'placeholder' });

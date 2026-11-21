@@ -25,8 +25,6 @@ fn zero_limit_split_parts_prepare_all_wing_field_certificates_on_their_first_cen
     }
     assert_eq!(census.census.shared.map.len(), 0);
     assert_eq!(parts[0].census.shared.map.len(), 2);
-    // Allocation denial proves the actual zero-grant visitor already grew
-    // every certificate arena; this assertion cannot seed missing storage.
     crate::test_support::with_allocations_denied(|| {
         assert!(parts[0].map_flags.ensure_capacity(2));
     });

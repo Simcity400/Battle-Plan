@@ -76,12 +76,9 @@ fn cost(day_hour: i32, ordinal: u32, component: PowerDailyCostKind, amount: i64,
     }
 }
 
-/// Hours whose politics capture is not read, and whose power changes are not.
 const NO_CAPTURE: i32 = 30;
 const NO_CHANGES: i32 = 26;
 
-/// The test world before its writers, at `hour`: countries 1 (slot 10) and 2 (slot 20), raw 3
-/// linked to no slot, each capture covering every stream since hour 0, and the hour's rows.
 fn edit(store: &mut Store, hour: i32) {
     let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
     if hour == 0 {
@@ -168,7 +165,6 @@ fn through(hours: std::ops::RangeInclusive<i32>) -> (Store, Writers) {
     (store, writers)
 }
 
-/// Cell `name` of `table`'s row `key`, as a number; none when not recorded.
 fn cell<R: replay_data::rows::Fields>(store: &Store, table: TableId, key: u128, name: &str) -> Option<i64> {
     let view = store.view(table.index());
     view.number(column::<R>(name), view.slot(key).expect("a row"))
@@ -178,12 +174,10 @@ fn spend(store: &Store, holder: u32, currency: u8, ordinal: u32, name: &str) -> 
     cell::<Total>(store, TableId::PowerSpendTotals, total_key(holder, currency, ordinal), name)
 }
 
-/// Holder 10's daily cost items' ordinals, ascending.
 fn cost_items(store: &Store) -> Vec<u32> {
     keys(store, TableId::PowerItems).into_iter().filter(|&key| (key >> 32) as u32 == 10 && cell::<Item>(store, TableId::PowerItems, key, "kind") == Some(i64::from(Item::COST))).map(|key| key as u32).collect()
 }
 
-/// Text cell `name` of `table`'s row `key`.
 fn text<R: replay_data::rows::Fields>(store: &Store, table: TableId, key: u128, name: &str) -> String {
     let view = store.view(table.index());
     let id = view.text(column::<R>(name), view.slot(key).expect("a row")).expect("a text cell");
@@ -348,8 +342,6 @@ fn coverage_names_why_spending_is_not_recorded_and_a_stretch_restarts_after_a_br
     assert_eq!(text::<Coverage>(&store, TableId::PowerSpendCoverage, 10, "input_reason"), "PoliticsCaptureCoverage: not read");
 }
 
-/// Each capture's read hour moves every hour, but an hour that moves no country's coverage sets
-/// no coverage row; one that does sets the rows it moved.
 #[test]
 fn an_hour_that_moves_no_coverage_sets_no_coverage_row() {
     let (mut store, mut writers) = (testing::store(), Writers::new(vec![Box::new(testing::noting::Noting(PowerLedger::default()))]));

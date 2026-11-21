@@ -16,7 +16,7 @@ fn caller_selection_preserves_payload_bits_and_deferred_errors() {
     {
         source.game_data = authored;
         for label in labels {
-            let caller = Caller::select(label); // A bad caller is still an inert selector.
+            let caller = Caller::select(label);
             for flags in 0..8 {
                 for alpha in [0., -0., 0.75, f32::from_bits(0x7fc05678)] {
                     let instance = ModelInstance {
@@ -54,7 +54,6 @@ fn compact_supplies_and_reflected_recipes_preserve_slot_order_and_absence() {
         for binding in 0..CONSTANT_BINDINGS as u32 + 4 {
             assert_eq!(supplies.get(binding), expected.get(binding as usize).copied().flatten());
         }
-        // This is reflected dynamic order, deliberately neither slot nor stage order.
         for bindings in [vec![], vec![5, 2, 0, 4, 1, 3], vec![3, 31, 0], vec![1, 0, 1]] {
             let recipe = Recipe::from_bindings(bindings.iter().copied()).unwrap();
             assert_eq!(recipe.sources.len(), bindings.len());
@@ -65,14 +64,12 @@ fn compact_supplies_and_reflected_recipes_preserve_slot_order_and_absence() {
     }
 }
 
-// Embedded scalar payload reference, not an alternate preparation path.
 fn reference_userdata(
     label: &str,
     source: &mesh_pose::Source,
     instance: ModelInstance,
     alpha: f32,
 ) -> io::Result<Option<[f32; 8]>> {
-    // Initialize actor userdata from the two default payload blocks.
     let mut data = [0., 0., 1., 1., 1., 0., 0., 0.];
     match label {
         "city sprawl" | "railway bridges" => return Ok(None),
@@ -82,7 +79,6 @@ fn reference_userdata(
                 && let Some(authored) = &source.game_data
             {
                 let authored = authored.as_ref().map_err(|e| invalid(e.clone()))?;
-                // Initialize the last (at most fourth) atlas column.
                 data[0] = authored.atlas_size[0].wrapping_sub(1).min(3) as f32;
                 data[2] = authored.atlas_size[0] as f32;
                 data[3] = authored.atlas_size[1] as f32;
@@ -94,7 +90,6 @@ fn reference_userdata(
             }
         }
         "supply trains" => {
-            // Send 32 bytes recursively; TrainColor plus endpoint plane.
             data = [
                 1.,
                 1.,

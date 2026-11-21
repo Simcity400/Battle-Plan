@@ -9,7 +9,6 @@ SPEC = importlib.util.spec_from_file_location("check_machine_paths", os.path.joi
 cmp = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cmp)
 
-# Built in pieces so this file does not itself name a machine's folder.
 CHECKOUT = "C:" + "\\" + "hoi4_mp" + "_stats" + "\\captures"
 BUILD = "/c/" + "hoi4_" + "build/ci"
 HOME = "C:" + "\\" + "Users" + "\\" + "jsmith" + "\\x"

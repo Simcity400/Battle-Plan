@@ -12,9 +12,6 @@ const DATABASE: usize = 0x90000;
 const LIST: usize = 0x91000;
 const TYPES: usize = 0x100_0000;
 const TYPE_STRIDE: usize = 0x600;
-/// The human country (raw id 4, an alias of slot 1), the AI country (slot 2)
-/// and the country whose autonomy flag is clear (slot 3), each with the
-/// region its logistics objects live in.
 const HUMAN: (usize, u32, usize) = (0x20000, 4, 0x20_0000);
 const AI: (usize, u32, usize) = (0x30000, 2, 0x30_0000);
 const MANUAL: (usize, u32, usize) = (0x40000, 3, 0x40_0000);
@@ -60,8 +57,6 @@ impl Fixture {
         }
     }
 
-    /// Three countries, `archetypes` archetypes, and the logistics objects
-    /// of the two countries IsCountryAIControlled calls not AI-controlled.
     fn new(archetypes: u32) -> Self {
         let mut f = Self::default();
         f.array(GAME + cgame_state::COUNTRIES, COUNTRIES, 4);
@@ -75,8 +70,6 @@ impl Fixture {
         for (index, slot) in [0_u32, 1, 2, 3, 1].into_iter().enumerate() {
             f.u32(LINKS + index * 4, slot);
         }
-        // Slot 1 has a human controller, slot 2 is autonomous with none, slot
-        // 3 has neither a controller nor the autonomy flag.
         f.array(GAME + cgame_state::HUMAN_STATUS, COUNTS, 4);
         f.bytes(COUNTS, &[0, 1, 0, 0]);
         f.array(GAME + cgame_state::AUTONOMOUS_STATUS, FLAGS, 4);
@@ -104,12 +97,9 @@ impl Fixture {
         self.pointer(country + ccountry::LOGISTICS_STATUS, status);
         self.pointer(status, BASE + VTABLE_RVA.0);
         self.array(status + SERIES, series, SERIES_COUNT);
-        // The copies are contiguous: the words between the fields read (the
-        // allocators, the queue and the other windows) exist in every object.
         self.pointer(status + SERIES + 16, 0xa110c);
         self.pointer(status + COUNTRY, country);
         for index in 0..SERIES_COUNT as usize {
-            // Series other than the two read are never followed.
             self.pointer(series + index * 8, 0xdead_0000 + index);
         }
         for (index, series_index, roll_up) in [
@@ -139,7 +129,6 @@ impl Fixture {
             self.pointer(daily + window::RECORD_FIELDS, record);
             self.pointer(daily + window::HISTORY, history);
             for slot in 0..30 {
-                // Other days' records are never read.
                 self.pointer(records + slot * 8, record + 0x40 + slot);
             }
             self.pointer(records + SLOT as usize * 8, record);
@@ -164,8 +153,6 @@ fn token(index: u32) -> u32 {
     0x5000 + index * 3
 }
 
-/// A distinct fixed5 value per country, series and archetype; balances are
-/// negative for odd archetypes and reach i64 extremes.
 fn value(country: usize, series: u32, archetype: u32) -> i64 {
     let magnitude = (country as i64) << 20 | i64::from(series) << 12 | i64::from(archetype);
     match (series, archetype) {
@@ -270,7 +257,6 @@ fn expected(country: (usize, u32, usize), archetype: u32) -> Row {
     }
 }
 
-/// A change to the fixture that the reader must refuse.
 type Corruption = Box<dyn Fn(&mut Fixture)>;
 
 fn capture(f: &Fixture, capacity: usize) -> (Outcome, Vec<Row>) {
@@ -289,7 +275,6 @@ fn unavailable(f: &Fixture) -> &'static str {
 #[test]
 fn reads_the_current_daily_record_of_countries_the_game_computes_it_for() {
     let mut f = Fixture::new(3);
-    // No logistics memory of the AI-controlled country is read.
     assert!(!f.0.contains_key(&(AI.0 + ccountry::LOGISTICS_STATUS)));
     let (outcome, rows) = capture(&f, 8);
     assert_eq!(outcome, Outcome::Rows { len: 6 });
@@ -298,8 +283,6 @@ fn reads_the_current_daily_record_of_countries_the_game_computes_it_for() {
         .flat_map(|country| (0..3).map(move |archetype| expected(country, archetype)))
         .collect();
     assert_eq!(rows[..6], wanted[..]);
-    // Every country AI-controlled: a complete empty table, and the equipment
-    // database is not needed.
     f.bytes(COUNTS, &[0, 0, 0, 0]);
     f.bytes(FLAGS, &[1, 1, 1, 1]);
     f.forget(BASE + database::SINGLETON_RVA.0, 8);
@@ -456,18 +439,13 @@ const GATHER_FAILED: &str = "human-controller counts or autonomy flags unreadabl
 fn ai_control_fails_at_its_first_operand_failure_without_reading_slots_singly() {
     let reference = capture(&Fixture::new(3), 8);
     assert_eq!(reference.0, Outcome::Rows { len: 6 });
-    // Operands for a fifth slot, inside the arrays' counts, whose bytes are
-    // unreadable: the gather from slot 1 fails, and the walk fails with it
-    // rather than reading each walked slot's operands again.
     let mut f = Fixture::new(3);
     f.array(GAME + cgame_state::HUMAN_STATUS, COUNTS, 5);
     f.array(GAME + cgame_state::AUTONOMOUS_STATUS, FLAGS, 5);
     assert_eq!(unavailable(&f), GATHER_FAILED);
-    // So does a walked slot whose own count is unreadable.
     let mut f = Fixture::new(3);
     f.forget(COUNTS + 3, 1);
     assert_eq!(unavailable(&f), GATHER_FAILED);
-    // A slot past the flags' own count must fail.
     let mut f = Fixture::new(3);
     f.array(GAME + cgame_state::AUTONOMOUS_STATUS, FLAGS, 3);
     assert_eq!(unavailable(&f), "autonomous flag unreadable");
@@ -476,8 +454,6 @@ fn ai_control_fails_at_its_first_operand_failure_without_reading_slots_singly() 
     assert_eq!(unavailable(&f), "negative human-controller count");
 }
 
-/// Fails the first read that covers `address`, then reads normally, and
-/// counts every read that covers it.
 struct FailOnce<'a> {
     memory: &'a Fixture,
     address: usize,
@@ -498,16 +474,12 @@ impl Memory for FailOnce<'_> {
 
 #[test]
 fn a_control_read_that_fails_once_stays_failed_for_the_sample() {
-    // Canonical slot 1 with two-entry control arrays: the gather reads only
-    // slot 1's operands, and slots 2 and 3 follow the (empty) live players.
     let mut f = Fixture::new(3);
     f.array(GAME + cgame_state::HUMAN_STATUS, COUNTS, 2);
     f.array(GAME + cgame_state::AUTONOMOUS_STATUS, FLAGS, 2);
     f.array(GAME + cgame_state::PLAYER_RECORDS, 0x13000, 0);
     let (outcome, _) = capture(&f, 8);
     assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
-    // Slot 1's count read fails once. Reading it again would succeed, so
-    // only a reread could publish rows; the table stays unavailable.
     let memory = FailOnce {
         memory: &f,
         address: COUNTS + 1,
@@ -521,8 +493,6 @@ fn a_control_read_that_fails_once_stays_failed_for_the_sample() {
         }
     );
     assert_eq!(memory.reads.get(), 1);
-    // The control answers every later slot inside the counts with the first
-    // failure, without reading their operands.
     let memory = FailOnce {
         memory: &f,
         address: COUNTS + 1,
@@ -537,7 +507,6 @@ fn a_control_read_that_fails_once_stays_failed_for_the_sample() {
         );
     }
     assert_eq!(memory.reads.get(), 1);
-    // A slot past the counts reads no control operand and still answers.
     assert_eq!(
         control.autonomous(&memory, BASE, &countries, AI.1, 2),
         Ok(true)
@@ -547,8 +516,6 @@ fn a_control_read_that_fails_once_stays_failed_for_the_sample() {
 #[test]
 fn a_slot_past_the_controller_counts_follows_the_live_players() {
     let mut f = Fixture::new(3);
-    // Only slot 1 has operands: slots 2 and 3 are AI-controlled unless a live
-    // player names them.
     f.array(GAME + cgame_state::HUMAN_STATUS, COUNTS, 2);
     f.array(GAME + cgame_state::PLAYER_RECORDS, 0x13000, 1);
     f.pointer(0x13000, BASE + chuman::VTABLE_RVA.0);
@@ -603,9 +570,6 @@ fn actual_balance_write_reads_only_the_native_available_slot_and_exact_store() {
     assert!(balance_identity(&f, record, 0).is_err());
 }
 
-// Virtual native objects reuse one small fixture's bytes. This exercises the
-// real country/control/status/history/value readers at 5,000 countries without
-// allocating 5,000 sparse maps or duplicating native object padding.
 struct Scaled {
     fixture: Fixture,
     count: usize,

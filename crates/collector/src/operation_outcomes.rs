@@ -1,5 +1,3 @@
-//! Every successful native operation completion, copied before its caller can
-//! auto-repeat or destroy the instance. Native paths/sites live in engine.
 use crate::{hook::Hook, shared_lane::SharedLane};
 use engine_events::operation_outcome_sites as native;
 use engine_native::Memory;
@@ -19,16 +17,13 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static LOG: AtomicUsize = AtomicUsize::new(0);
-// A larger generation waiting for the lane boundary to seal the current one.
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
-// Longest description a shared slot could not hold; sizes the next one.
 static SHARED_DESCRIPTION_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static SERIAL: AtomicU64 = AtomicU64::new(1);
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-/// The observation epoch a refused spill allocation started; its interval carries the name.
 static SPILL_REFUSED_EPOCH: AtomicU64 = AtomicU64::new(0);
 const SPILL_REFUSED: &str = "operation completion spill allocation failed";
-#[allow(clippy::vec_box)] // Published pointers stay stable through vector growth.
+#[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<std::borrow::Cow<'static, str>> = OnceLock::new();
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(1);
@@ -113,7 +108,6 @@ impl ByteRing {
 struct Lane {
     records: Box<[UnsafeCell<Record>]>,
     byte_ring: AtomicUsize,
-    // Record pointers keep old rings alive until workers and hooks quiesce.
     #[allow(clippy::vec_box)]
     byte_rings: Mutex<Vec<Box<ByteRing>>>,
     write: UnsafeCell<u64>,
@@ -124,7 +118,6 @@ struct Lane {
     consumed: AtomicU64,
     consumed_attempts: AtomicU64,
     consumed_byte_demand: AtomicU64,
-    // Spool side: where the next interval assembles, at least `consumed`.
     assembled: AtomicU64,
     assembled_attempts: AtomicU64,
     required_entries: AtomicUsize,
@@ -196,22 +189,15 @@ impl Lane {
 struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
-    // Threads registering after every lane is taken publish here, as does a
-    // lane with no room, so a generation never loses an interval to its
-    // writer count or a burst.
     shared: SharedLane<Record>,
     registered: AtomicUsize,
     entries: usize,
     sequence: AtomicU64,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
-    // Admission skips events without releasing their storage.
     assembled: AtomicU64,
     assembled_epoch: AtomicU64,
-    // A spill refused before this epoch belongs to an earlier generation or attachment.
     born_epoch: u64,
-    // Sealed at the lane boundary that installs `next`; stale callbacks
-    // holding this generation follow it instead of losing a completion.
     publishers: AtomicUsize,
     next: AtomicUsize,
 }
@@ -225,8 +211,6 @@ impl Log {
     ) -> Result<Self, &'static str> {
         Self::with_shared(entries, bytes, lanes, required, (0, 0))
     }
-    /// `shared` is the shared lane's (entries, per-slot description bytes)
-    /// demand; the stride starts from the live average description.
     fn with_shared(
         entries: usize,
         bytes: usize,
@@ -238,9 +222,6 @@ impl Log {
             let _ = engine_allocation::oom();
             "operation completion description capacity overflow"
         })?;
-        // One more thread's lane: its records, and one lane's description
-        // bytes spread over them. A longer description spills whole and
-        // raises the next generation's slot.
         let slots = entries
             .div_ceil(lanes.max(1))
             .max(shared.0)
@@ -279,7 +260,6 @@ impl Log {
             next: AtomicUsize::new(0),
         })
     }
-    /// Assemble again from what the writer committed.
     fn reset_admitted(&self) {
         for lane in &self.lanes {
             lane.assembled
@@ -291,7 +271,6 @@ impl Log {
         }
         self.assembled
             .store(self.consumed.load(Ordering::Acquire), Ordering::Release);
-        // Read before the consumed epoch so reset cannot undo boundary priming.
         let assembled = self.assembled_epoch.load(Ordering::SeqCst);
         let _ = self.assembled_epoch.compare_exchange(
             assembled,
@@ -318,8 +297,6 @@ impl Call {
 impl Drop for Call {
     fn drop(&mut self) {
         if !self.returned {
-            // Rust cleanup precedes completion of the foreign unwind. Retain
-            // this thread's claim; later calls cannot release its return path.
             UNWOUND.set(true);
             restart();
         }
@@ -361,8 +338,6 @@ fn offered() -> Option<&'static Log> {
     let pointer = OFFERED.load(Ordering::Acquire) as *const Log;
     (!pointer.is_null()).then(|| unsafe { &*pointer })
 }
-/// Where this thread publishes: its own lane, or the shared lane once every
-/// lane of the generation is registered.
 #[derive(Clone, Copy)]
 enum Target<'a> {
     Lane(&'a Lane),
@@ -378,7 +353,6 @@ fn lane(log: &Log) -> Target<'_> {
             let index = log.registered.fetch_add(1, Ordering::Relaxed);
             cache.set((pointer, log.serial, index));
             if index >= log.lanes.len() {
-                // Growth offers a dedicated lane to the next generation.
                 REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
             }
             index
@@ -392,8 +366,6 @@ impl Drop for Publishing<'_> {
         self.0.publishers.fetch_sub(1, Ordering::Release);
     }
 }
-/// A publication lease on the generation this callback reached; a sealed
-/// one forwards to its prepared successor.
 fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
     loop {
         match log
@@ -417,9 +389,6 @@ fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
         }
     }
 }
-/// Lane boundary: seal the current generation for this handoff once no
-/// callback is publishing into it, and install the offered successor.
-/// Returns the generation this handoff drains.
 fn seal_offered(log: &'static Log) -> &'static Log {
     let Some(offered) = offered() else {
         return log;
@@ -445,7 +414,6 @@ fn seal_offered(log: &'static Log) -> &'static Log {
     );
     log
 }
-/// Called before installing hooks, using the exact retained recording history.
 pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -459,16 +427,9 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Off-thread only. Old published allocations survive every replacement and
-/// are freed only after disabled hooks, active originals and workers drain.
 pub fn resize(entries: usize) {
     presize(entries, 0);
 }
-/// Live operation-description demand and rejected-byte pressure prepare every
-/// lane off-thread. The completion callback still copies its original
-/// retained completion descriptor exactly once into admitted storage.
-/// A larger generation is offered to the lane boundary, which seals the
-/// current one for its handoff, so growth loses no interval.
 pub fn presize(entries: usize, bytes: usize) {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -479,8 +440,6 @@ pub fn presize(entries: usize, bytes: usize) {
     let generations = || sources.into_iter().flatten();
     let entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
     for log in generations() {
-        // A new byte ring is published independently of record storage: old
-        // records retain their ring, so byte growth loses no observation epoch.
         for lane in &log.lanes {
             let _ = lane.grow_bytes_for(bytes);
         }
@@ -547,7 +506,6 @@ pub fn presize(entries: usize, bytes: usize) {
         OFFERED.store(pointer, Ordering::Release);
     }
 }
-/// After draining lost frames, assemble again from the last written interval.
 pub fn reset_admitted() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -557,7 +515,6 @@ pub fn reset_admitted() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
     {
-        // Replaced generations cannot hand off again; report their unwritten events lost.
         if &**log as *const Log as usize != current
             && log.assembled.load(Ordering::Acquire) != log.consumed.load(Ordering::Acquire)
         {
@@ -566,9 +523,9 @@ pub fn reset_admitted() {
         log.reset_admitted();
     }
 }
-/// # Safety
-/// Hooks are disabled; executable ranges/ACTIVE have quiesced and every worker
-/// holding a Handoff or log reference is joined. A premature release retains it.
+#[doc = " # Safety"]
+#[doc = " Hooks are disabled; executable ranges/ACTIVE have quiesced and every worker"]
+#[doc = " holding a Handoff or log reference is joined. A premature release retains it."]
 pub unsafe fn release() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -599,10 +556,6 @@ fn append_observation(
         }
     }
 }
-/// A thread without a dedicated lane in this generation, or a completion its lane has no
-/// room for. The record takes its log-wide order exactly as a lane record does. A full ring
-/// or a description longer than a slot spills whole without a lock; only a refused
-/// allocation gives the record up, by name.
 fn append_shared(
     log: &Log,
     mut event: Event,
@@ -618,7 +571,7 @@ fn append_shared(
     let output = unsafe { std::slice::from_raw_parts_mut(slot.bytes(), length) };
     if observation.copy_description(memory, output).is_err() {
         failed();
-        return; // The dropped reservation publishes void.
+        return;
     }
     (event.description_error, event.description_len) = (0, length);
     let Ok(sequence) = EVENT_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
@@ -629,7 +582,6 @@ fn append_shared(
     };
     event.sequence = sequence + 1;
     let order = log.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-    // Shared descriptions stay in their slot; no byte ring is involved.
     slot.publish(Record {
         event,
         order,
@@ -677,7 +629,6 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
         return;
     }
     if byte_pending.saturating_add(length as u64) > ring.bytes.len() as u64 {
-        // The demand raised above grows the ring; the shared lane keeps this description whole.
         append_shared(log, event, &observation, memory);
         return;
     }
@@ -703,7 +654,6 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
     event.sequence = sequence + 1;
     let order = log.sequence.fetch_add(1, Ordering::Relaxed) + 1;
     unsafe {
-        // Only a published record owns demand and bytes for a sealed commit.
         *lane.byte_demand.get() = byte_demand;
         *ring.write.get() = byte_start + length as u64;
         *lane.records[index].get() = Record {
@@ -752,7 +702,6 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
     let original: NativeFunction = unsafe { std::mem::transmute(ORIGINAL.load(Ordering::Acquire)) };
     let generation = crate::world_lifetime::generation();
     let result = timing.original(|| unsafe { original(instance) });
-    // P: native AL is the new-completion predicate; preserve full RAX.
     if result as u8 != 0 && ENABLED.load(Ordering::Acquire) {
         if generation != crate::world_lifetime::generation()
             || crate::world_lifetime::invalidating()
@@ -837,7 +786,6 @@ pub struct Drained {
     pub bytes: usize,
 }
 impl Handoff {
-    /// Completions after every admitted or written interval.
     pub fn pending(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         self.sequence
@@ -850,7 +798,6 @@ impl Handoff {
         }
         let mut bytes = 0_usize;
         for (lane, end) in log.lanes.iter().zip(cursors).take(self.lanes) {
-            // These sealed records cannot be reused until the spool releases them.
             for cursor in lane.assembled.load(Ordering::Acquire)..end.cursor {
                 let length = unsafe {
                     (*lane.records[cursor as usize & (lane.records.len() - 1)].get())
@@ -867,7 +814,6 @@ impl Handoff {
         }
         Ok(bytes)
     }
-    /// Published shared records of this interval in log-wide order.
     fn shared(self, log: &Log) -> Result<Vec<(u64, u64)>, &'static str> {
         let first = log.assembled.load(Ordering::Acquire);
         let mut shared = log
@@ -877,11 +823,9 @@ impl Handoff {
         shared.retain(|&(order, _)| order > first && order <= self.sequence);
         Ok(shared)
     }
-    /// Allocation-free admission skips this interval without releasing records or bytes.
     pub fn admitted(self, cursors: &[LaneCursor]) {
         let log = unsafe { &*(self.log as *const Log) };
         let assembled = log.assembled.load(Ordering::Acquire);
-        // Handoffs seal in order: an older one, idle or not, admits nothing.
         if self.sequence < assembled
             || (self.sequence == assembled
                 && self.epoch < log.assembled_epoch.load(Ordering::Acquire))
@@ -897,9 +841,6 @@ impl Handoff {
         log.assembled.store(self.sequence, Ordering::Release);
         log.assembled_epoch.store(self.epoch, Ordering::Release);
     }
-    /// Only after the sealed frame (complete or refused) was written. Failed
-    /// conversion/encoding/I/O leaves both lane and byte-ring consumption intact.
-    /// A frame written without admission is admitted too.
     pub fn commit(self, cursors: &[LaneCursor]) {
         let log = unsafe { &*(self.log as *const Log) };
         if self.sequence < log.consumed.load(Ordering::Acquire)
@@ -927,8 +868,6 @@ impl Handoff {
                         Ordering::Release,
                     );
                 }
-                // Demand belongs to this sealed record, never a separately
-                // sampled counter from a later unsealed callback.
                 lane.consumed_byte_demand
                     .store(record.byte_demand, Ordering::Release);
             }
@@ -936,8 +875,6 @@ impl Handoff {
             lane.consumed_attempts
                 .store(end.attempts, Ordering::Release);
         }
-        // Copied shared records, and any of this sealed interval a refused
-        // frame withdrew, leave with it; later orders stay pending.
         if let Ok(shared) = log.shared.published(|record| record.order) {
             for (order, index) in shared {
                 if order <= self.sequence {
@@ -985,7 +922,6 @@ impl Handoff {
             .checked_sub(first)
             .map(|pending| pending as usize)
         else {
-            // Never rewind consumption or the epoch for an idle reused handoff.
             return Err("operation completion stale handoff");
         };
         if log.assembled_epoch.load(Ordering::Acquire) != self.epoch
@@ -1024,8 +960,6 @@ impl Handoff {
             bytes: used,
         })
     }
-    /// Lanes and the shared lane merged by log-wide order into `output`, each
-    /// description copied after the last; stops at the first unpublished order.
     fn merge(
         self,
         cursors: &[LaneCursor],
@@ -1060,8 +994,6 @@ impl Handoff {
             let Some((source, record)) = next else {
                 break;
             };
-            // A reservation not published at the sealed boundary cannot be
-            // silently replaced by a later cross-thread observation.
             if record.order != first + copied as u64 + 1 {
                 break;
             }
@@ -1072,7 +1004,6 @@ impl Handoff {
                 .ok_or("operation completion drain staging short")?;
             match source {
                 Source::Shared => {
-                    // A shared record keeps its description in its own slot or spill.
                     let &(_, slot) = shared.next().unwrap();
                     bytes[used..end]
                         .copy_from_slice(&log.shared.record(slot).1[..event.description_len]);
@@ -1107,7 +1038,6 @@ impl Handoff {
         Ok((copied, used))
     }
 }
-/// Where the drain's next record comes from.
 #[derive(Clone, Copy)]
 enum Source {
     Lane(usize),
@@ -1189,8 +1119,6 @@ mod tests {
     thread_local! {
         static HELD: Cell<bool> = const { Cell::new(false) };
     }
-    /// This module's state is process-wide: its tests and other modules' tests that reach
-    /// it take turns, and a thread already holding the turn passes.
     pub(super) struct Exclusive(Option<std::sync::MutexGuard<'static, ()>>);
     impl Drop for Exclusive {
         fn drop(&mut self) {
@@ -1209,7 +1137,6 @@ mod tests {
         HELD.set(true);
         Exclusive(Some(turn))
     }
-    /// A test starts from the defaults and puts back what it moved, even when it fails.
     struct Serial {
         required: usize,
         active: usize,
@@ -1405,8 +1332,6 @@ mod tests {
             unsafe { &*(log.lanes[0].byte_ring.load(Ordering::Acquire) as *const ByteRing) }
                 .consumed
                 .load(Ordering::Acquire);
-        // Conversion succeeded, but encoding or I/O can still fail. Dropping
-        // that prepared frame is not publication and cannot release its bytes.
         let publication = ledger.assemble_owned(&captured, &mut tables).unwrap();
         assert_eq!(handoff.pending(), 1);
         assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), before);
@@ -1430,7 +1355,6 @@ mod tests {
                 .load(Ordering::Acquire)
                 > bytes_before
         );
-        // The next native completion remains independently recordable.
         complete(&log, &fixture, 1);
         assert_eq!(drain(&log).unwrap().1, b"retained");
     }
@@ -1444,7 +1368,6 @@ mod tests {
             let fixture = Fixture::new(description);
             fixture.identify(owner, owner);
             complete(&log, &fixture, 0xfeed_0001);
-            // Manager deletes both synthetic owners in the same update.
             fixture.delete();
         }
         let (events, bytes) = drain(&log).unwrap();
@@ -1467,11 +1390,9 @@ mod tests {
         let fixture = Fixture::new(&[0xff, 0, b'x']);
         fixture.identify(42, 700);
         complete(&log, &fixture, 1);
-        fixture.identify(42, 701); // Manager creates a new auto-repeat instance.
+        fixture.identify(42, 701);
         complete(&log, &fixture, 1);
         fixture.delete();
-        // The invalidation path calls no completion. An
-        // unsuccessful terminal/completion call returns AL0 and reads nothing.
         complete(&log, &fixture, 0x1234_0000);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 2);
@@ -1554,8 +1475,6 @@ mod tests {
         complete(&log, &fixture, 1);
         assert_eq!(drain(&log).unwrap().0.len(), 1);
     }
-    /// The spool writes nothing for three hours while each seals more completions than the
-    /// lane and its byte ring hold: every hour still assembles whole, in order.
     #[test]
     fn operation_completion_a_burst_past_the_lane_with_hours_in_flight_keeps_every_completion() {
         use crate::extended::operation_outcomes::{Captured, Ledger};
@@ -1589,7 +1508,6 @@ mod tests {
             let mut expected = Vec::new();
             for _ in 0..3 {
                 owner += 1;
-                // Lengths 1 to 9 against an 8-byte ring and a 2-record lane.
                 let description = vec![owner as u8; owner as usize];
                 let fixture = Fixture::new(&description);
                 fixture.identify(owner, owner);
@@ -1614,14 +1532,13 @@ mod tests {
     #[test]
     fn operation_completion_resize_keeps_keys_monotonic_and_abandons_pending_hour_explicitly() {
         let _serial = serial();
-        // A spill refused before these logs existed names neither one's loss.
         spill_refused();
         let old = new_log(2, 16);
         prime(&old);
         let fixture = Fixture::new(b"outcome");
         complete(&old, &fixture, 1);
         let first = drain(&old).unwrap().0[0].sequence;
-        complete(&old, &fixture, 1); // Pending when off-thread replacement occurs.
+        complete(&old, &fixture, 1);
         invalidate();
         let fresh = new_log(4, 32);
         complete(&fresh, &fixture, 1);
@@ -1780,7 +1697,6 @@ mod tests {
         );
         assert_eq!(log.consumed.load(Ordering::Acquire), consumed);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-        // Idle growth uses the retained drain-time demand, not a later cursor.
         assert_eq!(idle.drained_pending(), 1);
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(5_000);
@@ -1856,7 +1772,6 @@ mod tests {
         log.lanes[0].grow_bytes().unwrap();
         assert_ne!(log.lanes[0].byte_ring.load(Ordering::Acquire), old_ring);
         assert_eq!(log.lanes[0].ring().bytes.len(), 65_536);
-        // One sealed batch can include records in both rings and the shared lane.
         complete(&log, &long, 1);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(
@@ -1917,7 +1832,6 @@ mod tests {
                 address != PAYLOAD + 57 && self.0.copy(address, output)
             }
         }
-        // Byte cursor is 71; a 60-byte heap string splits at offset 57.
         observe_return(
             &log,
             Target::Lane(&log.lanes[0]),
@@ -2013,13 +1927,11 @@ mod tests {
         complete(&log, &Fixture::new(b"after reattach"), 1);
         let events = drain(&log).unwrap().0;
         assert_eq!(events[0].sequence, saved + 1);
-        // A second campaign with older events cannot rewind the global key.
         restore_sequence(saved - 1).unwrap();
         complete(&log, &Fixture::new(b"other campaign"), 1);
         assert_eq!(drain(&log).unwrap().0[0].sequence, saved + 2);
     }
 
-    /// The production callback path after the native original returns.
     fn complete_through(log: &Log, fixture: &Fixture) {
         let lease = publishing(log).unwrap();
         observe_return(lease.0, lane(lease.0), fixture, BASE, INSTANCE, 1);
@@ -2028,7 +1940,6 @@ mod tests {
     #[test]
     fn operation_completion_writers_beyond_the_lane_count_lose_nothing_in_one_generation() {
         let _serial = serial();
-        // The generation's only lane is already registered.
         let log = new_log(8, 32);
         prime(&log);
         let epoch = EPOCH.load(Ordering::Acquire);
@@ -2080,8 +1991,6 @@ mod tests {
             (0, 9)
         );
         assert_eq!(bytes, long);
-        // A full shared lane spills and sizes the next; only a refused spill allocation
-        // withholds the interval, under its own name.
         let held: Vec<_> = (0..log.shared.len())
             .map(|_| log.shared.try_reserve().unwrap())
             .collect();
@@ -2106,15 +2015,12 @@ mod tests {
         assert_eq!(drain(&log).unwrap().1, b"after");
     }
 
-    /// The game never waits: completions past the lane and the shared ring spill on the
-    /// hook's thread while the consumer holds the spilled records it is ordering.
     #[test]
     fn operation_completion_spilled_on_the_hook_thread_never_waits_for_the_consumer() {
         use std::sync::mpsc;
         let _serial = serial();
         let log = new_log(1, 8);
         prime(&log);
-        // The lane, the shared ring's one slot, then one spilled record (order 3).
         let held = Fixture::new(b"held");
         for _ in 0..3 {
             complete(&log, &held, 1);
@@ -2125,7 +2031,6 @@ mod tests {
         std::thread::scope(|scope| {
             let log = &log;
             scope.spawn(move || {
-                // A spilled record's order is read under the consumer's lock on its spills.
                 let _ = log.shared.published(|record| {
                     if record.order == 3 {
                         holding.send(()).unwrap();
@@ -2135,8 +2040,6 @@ mod tests {
                 });
             });
             consumer_holds.recv().unwrap();
-            // The consumer is released only once the burst has finished: a completion that
-            // waited for the consumer's lock would never finish.
             let hook = scope.spawn(move || {
                 let burst = Fixture::new(b"burst");
                 for _ in 0..4 {
@@ -2167,19 +2070,16 @@ mod tests {
         prime(old);
         complete(old, &Fixture::new(b"before growth"), 1);
         let epoch = EPOCH.load(Ordering::Acquire);
-        // A thread registered beyond every lane asks for a dedicated one.
         REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
         presize(8, 64);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         assert!(std::ptr::eq(log().unwrap(), old));
         let fresh = offered().unwrap();
         assert!(fresh.lanes.len() > old.lanes.len());
-        // The lane boundary seals the old generation for its own handoff.
         let sealed = crate::test_support::with_allocations_denied(|| seal_offered(old));
         assert!(std::ptr::eq(sealed, old));
         assert!(std::ptr::eq(log().unwrap(), fresh));
         assert!(offered().is_none());
-        // A callback still holding the old generation follows its successor.
         complete_through(old, &Fixture::new(b"after seal"));
         let (events, bytes) = drain(old).unwrap();
         assert_eq!(events.len(), 1);
@@ -2238,7 +2138,6 @@ mod tests {
         first.admitted();
         complete(&log, &Fixture::new(b"second"), 1);
         shared(b"second shared");
-        // The first frame is still queued: the second interval starts after it.
         let second = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
         assert_eq!(
             rows(&tables),
@@ -2250,7 +2149,6 @@ mod tests {
         quiet.admitted();
         assert_eq!(lane.assembled.load(Ordering::Acquire), 2);
         assert_eq!(lane.assembled_attempts.load(Ordering::Acquire), 2);
-        // Nothing queued was written, so no record, byte or demand is free.
         assert_eq!(log.consumed.load(Ordering::Acquire), 0);
         assert_eq!(lane.consumed.load(Ordering::Acquire), 0);
         assert_eq!(lane.consumed_attempts.load(Ordering::Acquire), 0);
@@ -2273,7 +2171,6 @@ mod tests {
             log.shared.published(|record| record.order).unwrap().len(),
             1
         );
-        // Writing the older frame leaves the queued one's place.
         assert_eq!(log.assembled.load(Ordering::Acquire), 4);
         second.commit();
         quiet.commit();
@@ -2317,7 +2214,6 @@ mod tests {
             }
         );
         queued.admitted(&first);
-        // Admitting again, or an older handoff, moves nothing.
         queued.admitted(&first);
         complete(&log, &Fixture::new(b"later"), 1);
         let mut second = vec![LaneCursor::default()];
@@ -2326,7 +2222,6 @@ mod tests {
         later.admitted(&second);
         queued.admitted(&first);
         assert_eq!(log.assembled.load(Ordering::Acquire), 4);
-        // The writer lost both frames.
         log.reset_admitted();
         let lane = &log.lanes[0];
         assert_eq!(log.assembled.load(Ordering::Acquire), 1);
@@ -2339,7 +2234,6 @@ mod tests {
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 3);
         assert_eq!(bytes, b"lostlost sharedlater");
-        // A span rolled back over an invalidation is lost as a whole.
         complete(&log, &Fixture::new(b"before"), 1);
         let mut cursors = vec![LaneCursor::default()];
         handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
@@ -2366,7 +2260,6 @@ mod tests {
             let mut cursors = vec![LaneCursor::default()];
             handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
         }
-        // Each queued interval holds one record; together they fill the lane.
         complete(&log, &fixture, 1);
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 3);
     }
@@ -2391,12 +2284,10 @@ mod tests {
             .unwrap()
             .admitted(&cursors);
         let epoch = EPOCH.load(Ordering::Acquire);
-        // The writer lost the frame; no later handoff drains the old generation.
         reset_admitted();
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch + 1);
         assert_eq!(old.assembled.load(Ordering::Acquire), 0);
         assert_eq!(old.lanes[0].consumed.load(Ordering::Acquire), 0);
-        // Nothing else was queued: a second reset reports nothing.
         reset_admitted();
         unsafe {
             release();

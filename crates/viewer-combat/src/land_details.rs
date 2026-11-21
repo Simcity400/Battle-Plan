@@ -1,4 +1,3 @@
-//! Derived land-window operands from recorded combat state.
 use installed_content_localisation::localisation::Argument;
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::land_combat_members,
@@ -20,8 +19,6 @@ pub(super) fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
     if row.context.template == 0 {
         return Some(0);
     }
-    // Multiply signed count by fixed one before width, preserving 64-bit
-    // overflow. Apply the combined country and leader width multiplier once.
     let base = row.width_terms.iter().fold(0_i64, |sum, term| {
         sum.wrapping_add(
             i64::from(term.count)
@@ -36,8 +33,6 @@ pub(super) fn division_width(row: &LandCombatDivisionRow) -> Option<i64> {
     Some(base.wrapping_mul(factor) / 100_000)
 }
 
-/// A unit's direction key: its location, or its
-/// movement source when it stands in the combat province and has one.
 pub(super) fn direction_key(
     row: &LandCombatDivisionRow,
     province: u32,
@@ -52,11 +47,6 @@ pub(super) fn direction_key(
     })
 }
 
-/// direction count over the attacker committed divisions in
-/// recorded order: one direction per fresh key, except positive
-/// direction-group units after the first, which fold into its direction.
-/// A missing row leaves the count unknown rather than guessed; the error
-/// names the attacker and the table that lacks its row.
 pub(super) fn direction_count<D: std::ops::Deref<Target = LandCombatDivisionRow>>(
     committed: &[u64],
     divisions: &BTreeMap<(u8, u64), D>,
@@ -88,9 +78,6 @@ pub(super) fn direction_count<D: std::ops::Deref<Target = LandCombatDivisionRow>
     Ok(seen.len())
 }
 
-/// the width-factor term over the terrain's `combat_width`, plus
-/// one `combat_support_width` term per direction beyond the first, all fixed5
-/// with native truncation.
 pub(super) fn total_width(
     detail: &LandCombatDetailsRow,
     [width, support]: [i64; 2],
@@ -105,8 +92,6 @@ pub(super) fn total_width(
     width.wrapping_add(extra.wrapping_mul(100_000).wrapping_mul(support) / 100_000)
 }
 
-/// Border combat uses the configured base alone, with wrapped
-/// signed multiplication; terrain and attack directions are not operands.
 fn border_width(detail: &LandCombatDetailsRow) -> Result<i64, String> {
     let base = detail
         .border_war
@@ -127,7 +112,6 @@ fn width_badge(
     border_war: Option<bool>,
     ordinary: impl FnOnce() -> Result<i64, String>,
 ) -> Result<String, String> {
-    // Border combat uses its recorded base width.
     match border_war {
         Some(true) => border_width(detail).map(|width| (width / 100_000).to_string()),
         Some(false) => ordinary().map(|width| (width / 100_000).to_string()),
@@ -138,8 +122,6 @@ fn width_badge(
     }
 }
 
-// The game selects one-based frames 1,2,3,4,5 at strict 2x/1.2x
-// boundaries. Negative offset makes leftward arrows end at the progress edge.
 fn heading(scores: [i64; 2], progress: i64, bar_width: f32, icon_width: f32) -> (u32, f32) {
     let mul = |value: i64, factor: i64| value.wrapping_mul(factor) / 100_000;
     let (frame, shift) = if scores[0] > mul(scores[1], 200_000) {
@@ -160,7 +142,6 @@ fn heading(scores: [i64; 2], progress: i64, bar_width: f32, icon_width: f32) -> 
     (frame, x - shift)
 }
 
-/// Apply after `details::bind`; no additional assets beyond landcombat.gfx.
 pub(super) fn bind(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -168,7 +149,6 @@ pub(super) fn bind(
     id: u64,
 ) -> io::Result<()> {
     let details = rows::<tables::LandCombatDetails>(frame)?;
-    // Without a details row `details::land` reports what the window lacks.
     let Some(detail) = details.rows().iter().find(|row| row.combat == id) else {
         return Ok(());
     };
@@ -179,7 +159,6 @@ pub(super) fn bind(
         .map(|row| ((row.side, row.division), row))
         .collect();
     for (side, prefix) in ["attacker", "defender"].iter().enumerate() {
-        // The game deliberately truncates, unlike the stat formatter.
         let width = army_width(&detail.sides[side].committed, side as u8, &divisions)
             .map(|width| (width / 100_000).to_string())
             .map_err(|reason| format!("Land combat {id} {prefix} army width is hidden: {reason}."));
@@ -189,8 +168,6 @@ pub(super) fn bind(
             hide(&mut out.values, &air_key);
             continue;
         }
-        // LAND_COMBAT_CAS_INFO uses the opposing side's losses as an integer
-        // argument and strength/organisation damage as fixed-point arguments.
         let opponent = &detail.sides[1 - side];
         let line = builtin(
             static_content.assets.as_ref(),
@@ -240,7 +217,6 @@ pub(super) fn bind(
             match widths {
                 Some(&widths) => match directions {
                     Ok(count) => Ok(total_width(detail, widths, count)),
-                    // Without a support width the direction count cannot matter.
                     Err(_) if widths[1] == 0 => Ok(total_width(detail, widths, 0)),
                     Err(reason) => Err(format!("attack direction count is unknown ({reason})")),
                 },
@@ -303,8 +279,6 @@ pub(super) fn bind(
     Ok(())
 }
 
-/// The committed divisions' summed width, or why it is
-/// unknown.
 fn army_width(committed: &[u64], side: u8, divisions: &Divisions<'_>) -> Result<i64, String> {
     committed.iter().try_fold(0_i64, |sum, unit| {
         let row = divisions

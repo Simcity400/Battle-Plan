@@ -1,7 +1,3 @@
-//! `BalanceDrops`: each hour a country's political or command power fell from its value the
-//! recorded hour before, a row living that hour, keyed by kind, raw country id and hour, holding the
-//! balance before and after. A value not recorded on either side is no drop. Read only from the
-//! rows whose balances the hour wrote.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -16,18 +12,14 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Countries' balance columns, political then command power.
 const BALANCES: [usize; 2] = [2, 3];
 
 const READS: &[Read] = &[Read { table: TableId::Countries, columns: Columns::These(&BALANCES), watch: Watch::Changed, required: false }];
 
 #[derive(Default)]
 pub struct Drops {
-    /// Each country's balances as last read, by raw id.
     held: HashMap<u32, [Option<i64>; 2]>,
-    /// The hour those were read.
     last: Option<i32>,
-    /// The rows living this hour, deleted the next.
     living: Vec<u128>,
 }
 
@@ -68,7 +60,6 @@ impl Writer for Drops {
             out.delete(TableId::BalanceDrops, key);
         }
         let countries = hour.table(TableId::Countries);
-        // Only consecutive complete hours compare; anything else starts afresh.
         let consecutive = !hour.fresh && self.last.is_some_and(|last| last + 1 == hour.hour);
         if !hour.complete(TableId::Countries) {
             self.held.clear();
@@ -106,8 +97,6 @@ impl Writer for Drops {
         Ok(())
     }
 
-    /// Its rows living at the commit's hour, and every balance as that hour left them when it read
-    /// them: what a writer never stopped holds there.
     fn prime(&mut self, hour: &Hour<'_>) {
         let drops = hour.table(TableId::BalanceDrops);
         self.living = drops.rows().filter_map(|slot| drops.key(slot)).collect();
@@ -124,7 +113,6 @@ impl Writer for Drops {
         }
     }
 
-    /// Takes nothing: a resume primes it from the store ([`Self::prime`]).
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }
@@ -160,7 +148,6 @@ mod tests {
         writers
     }
 
-    /// Hour `hour`: each country (key, political, command power), complete, then the writer.
     fn hour(store: &mut Store, writers: &mut Writers, hour: i32, countries: &[(u128, i64, i64)]) {
         store.begin_hour(hour, &[]).unwrap();
         let index = TableId::Countries.index();
@@ -193,8 +180,6 @@ mod tests {
 
     const HOURS: [[(u128, i64, i64); 2]; 4] = [[(7, 10, 7), (8, 4, 4)], [(7, 10, 7), (8, 4, 4)], [(7, 5, 7), (8, 4, 4)], [(7, 5, 3), (8, 4, 4)]];
 
-    /// A drop in the first hour after a resume is a row, as it is for a writer never stopped, and
-    /// the row living at the commit's hour goes in the next.
     #[test]
     fn a_drop_in_the_first_hour_after_a_resume_is_a_row() {
         let (mut unbroken, mut writing) = (store(), writers());

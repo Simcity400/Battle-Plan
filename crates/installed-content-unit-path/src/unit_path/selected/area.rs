@@ -1,4 +1,3 @@
-//! Area connectivity search, visited on insertion, with exact heap ties.
 use super::super::Fact;
 use std::collections::BTreeSet;
 
@@ -6,16 +5,11 @@ use std::collections::BTreeSet;
 pub struct AreaNode {
     pub label: u32,
     pub first_land_province: Fact<u32>,
-    /// The recorded first-land nonsea index, independent of viewer indexing.
     pub nonsea_index: Fact<i32>,
-    /// The land count; the cost callback accepts nonzero, including negative.
     pub land_count: Fact<i32>,
-    /// Area neighbours in linked-list order, retaining repeats.
     pub neighbors: Fact<Vec<u32>>,
 }
 
-/// Resolve the first-land state owner only for a nonzero land count.
-/// Reuse mode-0 country access; localisation or path outputs are not captured.
 pub fn area_cost(
     land_count: Fact<i32>,
     owner_raw: i32,
@@ -60,10 +54,6 @@ fn before_or_equal(a: QueueEntry, b: QueueEntry) -> bool {
     (a.cost, a.province) <= (b.cost, b.province)
 }
 
-/// The heap uses cost then first-land province, with no label tie-break.
-/// Equal children pick the right child; pop moves the hole down before
-/// pushing the last entry up. Distinct orphan areas can share a first-land
-/// province, so an additional stable or label ordering changes ties.
 #[derive(Default)]
 struct AreaQueue(Vec<QueueEntry>);
 impl AreaQueue {
@@ -117,12 +107,6 @@ impl AreaQueue {
         Some(result)
     }
 }
-/// Boolean area connectivity. Visit identity is the first-land nonsea
-/// index, marked on insertion; relaxation never replaces a visited node.
-/// Initial neighbours require nonnegative cost, including the target.
-/// Later target neighbours replace their callback cost with 0. Equal heap
-/// costs compare first-land province IDs; initial repeats remain.
-/// Capture faults stop the reached query; topology is never inferred.
 pub fn areas_connect(
     start: u32,
     target: u32,
@@ -135,8 +119,6 @@ pub fn areas_connect(
     }
     let start_node = node(start)?;
     let start_index = start_node.nonsea_index.clone()?;
-    // A known negative start identity returns false before demanding
-    // its neighbours. Reached neighbours still require valid indices.
     if start_index < 0 {
         return Ok(false);
     }
@@ -174,8 +156,6 @@ pub fn areas_connect(
             if visited.contains(&index) {
                 continue;
             }
-            // Callback is reached before the target override. Its output is
-            // immaterial to the later target arm, including a refused output.
             let value = cost(&neighbor);
             let value = if next == target { 0 } else { value? };
             if value < 0 {
@@ -352,7 +332,6 @@ mod tests {
             }),
             Ok(false)
         );
-        // Area2 has not popped when area3 reaches area4's same nonsea index.
         assert_eq!(calls, [2, 3]);
     }
     #[test]

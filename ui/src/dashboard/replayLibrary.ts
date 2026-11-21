@@ -7,7 +7,6 @@ export function useReplayLibrary(client: DashboardClient) {
   const [error, setError] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   const saving = useRef(false);
-  /** Whether the library now lists what its folder holds. */
   const refresh = useCallback(async (): Promise<boolean> => {
     if (saving.current || !client.replayLibrary) return false;
     controller.current?.abort();
@@ -35,8 +34,6 @@ export function useReplayLibrary(client: DashboardClient) {
     finally { saving.current = false; if (!request.signal.aborted) setLoading(false); }
   }, [client]);
   useEffect(() => { void refresh(); return () => controller.current?.abort(); }, [refresh]);
-  // A recording saved or renamed by either app shows without reopening the library. One check at a
-  // time, the next after it ends; a stamp counts once a scan after it succeeded, so none is missed.
   useEffect(() => {
     const stamp = client.replayLibraryStamp;
     if (!stamp) return;
@@ -46,14 +43,13 @@ export function useReplayLibrary(client: DashboardClient) {
         try {
           const now = await stamp();
           if (live && now !== last && await refresh()) last = now;
-        } catch { /* The next check tries again. */ }
+        } catch {  }
       }
       if (live) timer = setTimeout(check, 2000);
     };
     timer = setTimeout(check, 2000);
     return () => { live = false; clearTimeout(timer); };
   }, [client, refresh]);
-  // One object until something changes, so memoised views skip the shell's other renders.
   return useMemo(() => ({ ...library, loading, error, refresh, setFolder }), [library, loading, error, refresh, setFolder]);
 }
 export type ReplayLibraryState = ReturnType<typeof useReplayLibrary>;

@@ -1,5 +1,3 @@
-//! Change-driven country configuration and occupation selections. The existing
-//! template census supplies country identities, including empty template rosters.
 use super::*;
 use crate::template_changes::Changes;
 use std::sync::Arc;
@@ -28,11 +26,9 @@ impl Entry {
     }
 }
 
-/// One country's read, made on a copy of its entry; [`Store::commit`] keeps it in roster order.
 pub(super) struct Visit {
     country: engine_native::ccountry::Country,
     entry: Entry,
-    /// The row, and whether it differs from the held one.
     result: Result<(CountryRow, bool), &'static str>,
 }
 
@@ -44,7 +40,6 @@ pub(super) struct Store {
     cursor: usize,
     payload_bytes: usize,
     pub changed: bool,
-    /// The serial walk's garrison selections, before they are compared with the held row's.
     scratch: Vec<GarrisonTemplateSelection>,
 }
 
@@ -131,8 +126,6 @@ impl Store {
         self.commit(visit)
     }
 
-    /// The country's read on a copy of its entry, changing nothing here; a range of a split walk
-    /// observes its countries on the store the walk began with.
     pub fn observe(
         &self,
         memory: &impl Memory,
@@ -160,8 +153,6 @@ impl Store {
         }
     }
 
-    /// Keeps the next country's observation in roster order; a membership or cache entry that
-    /// cannot be allocated keeps nothing of it, as a read refused before its reads.
     pub fn commit(&mut self, visit: Visit) -> Result<CountryRow, &'static str> {
         let id = visit.country.id;
         if self.order.get(self.cursor) != Some(&id) {
@@ -203,7 +194,6 @@ impl Store {
 }
 
 impl Visit {
-    /// Why the country's garrison selections were refused, for the hour's model failures.
     pub fn garrison_failure(&self) -> Option<&'static str> {
         self.result
             .as_ref()
@@ -212,8 +202,6 @@ impl Visit {
     }
 }
 
-/// One country's configuration and garrison selections, read into `entry` as the held
-/// certificates require; the row, and whether it differs from the held one.
 fn read_entry(
     entry: &mut Entry,
     scratch: &mut Vec<GarrisonTemplateSelection>,
@@ -355,7 +343,6 @@ fn read_entry(
             row.garrisons = None;
             row.garrison_failure = Some("garrison template writer certificate unavailable");
         }
-        // A re-read under moved stamps that found the held row changes nothing.
         let changed = entry.row.as_ref() != Some(&row);
         entry.row = Some(row.clone());
         Ok((row, changed))

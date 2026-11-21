@@ -89,7 +89,6 @@ fn image() -> Image {
 #[test]
 fn naming_failure_preserves_one_count_and_ordered_repeated_state_bodies() {
     let image = image();
-    // No naming database: prefix failure must not discard the earlier count.
     let mut walk = crate::ccountry::read_reserved_naming_observed_inner(&image, 0, STATE, crate::walk::Buffer::Count, None);
     assert!(matches!(
         walk.outcome,

@@ -1,4 +1,3 @@
-//! Raw disruption operands borrowed by the registered-mission worker.
 use super::*;
 use engine_sites::Rva;
 
@@ -9,11 +8,8 @@ const DEFAULT_SPEED: usize = 0x580;
 const COMBAT_ATTACK: u32 = 0x6f;
 const COMBAT_DEFENCE: u32 = 0x70;
 
-/// Loaded dynamic mission spotting-factor array.
 pub const SPOTTING_FACTORS_RVA: Rva = Rva(0x033e_7208);
 
-/// One worker pass's original header and independent per-kind observations.
-/// The fixed width is the simulation mask's bit width, not a content cap.
 #[derive(Default)]
 pub struct SpottingFactors {
     header: Option<Result<Array, &'static str>>,
@@ -65,8 +61,6 @@ pub struct Inputs {
     pub night_applied: Option<i64>,
 }
 
-/// A held clock's last-applied night accumulator factor. Updated clocks
-/// derive it from their existing wire certificate without reading this field.
 const NIGHT_APPLIED: usize = 0x268;
 
 pub fn demanded(input: &super::Mission) -> bool {
@@ -80,8 +74,6 @@ pub struct HeldNight {
 }
 
 impl HeldNight {
-    /// `manager` is the same worker's original authenticated manager result.
-    /// Clear update gates prove no marker acquisition is necessary.
     pub fn read(
         memory: &impl Memory,
         game_state: usize,
@@ -105,7 +97,6 @@ impl HeldNight {
         Ok(Some(Self { clocks, hour }))
     }
 
-    /// Only the original demanded region's single sampled province is read.
     pub fn applied(
         &self,
         memory: &impl Memory,
@@ -148,7 +139,6 @@ impl HeldNight {
     }
 }
 
-/// The selector result is borrowed, including a failure; never select again.
 pub(super) fn read(
     memory: &impl Memory,
     wing: usize,
@@ -167,7 +157,6 @@ pub(super) fn read(
     if inputs.disruption == Some(0) || mask & 0x4400 != 0 || count <= 0 {
         return inputs;
     }
-    // Missing disruption must not broaden acquisition to the conditional subtree.
     if inputs.disruption.is_none() {
         return inputs;
     }
@@ -190,9 +179,6 @@ pub(super) fn read(
     inputs
 }
 
-/// Accumulator setters preserve strictly ascending unique keys. The combat fold
-/// uses raw entries, so feature metadata and clamps must not gate their values.
-/// Probe only the two demanded keys instead of copying the complete accumulator.
 fn header(memory: &impl Memory, accumulator: usize) -> Option<(usize, usize)> {
     let data = usize::try_from(crate::read::<u64>(memory, accumulator)?).ok()?;
     let count = crate::read::<i32>(

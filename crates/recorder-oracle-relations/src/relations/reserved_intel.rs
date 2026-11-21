@@ -1,5 +1,3 @@
-//! Actual-owner-zero intel is admitted only by its paired sample certificate.
-//! Sparse holes are exact zero only inside that complete native vector.
 
 use super::*;
 use installed_content_save::ActualCountry;
@@ -77,8 +75,6 @@ fn compare_records(
     label: &str,
     report: &mut Report,
 ) -> io::Result<()> {
-    // The nested native list writer omits the whole list when count is not
-    // positive. The Save reader refuses an explicitly present empty list.
     let saved_count = saved.map_or(0, |records| records.len());
     let saved_count = u32::try_from(saved_count)
         .map_err(|_| invalid("saved country intel count exceeds its wire width"))?;
@@ -204,10 +200,6 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
             );
             continue;
         }
-        // CountryProjection validates every ORIGINAL Item in physical order
-        // and requires exact whole-Item equality of repeated actual objects.
-        // The typed payload is therefore this occurrence's payload, including
-        // each repeated emission; every one receives its own count/lane checks.
         compare_records(
             &actual,
             save.country_intel
@@ -217,8 +209,6 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
             report,
         )?;
     }
-    // Failure of an unrelated positive link remains a failed join, but does
-    // not conceal the reserved occurrences' exact payload comparisons.
     report.attempt("reserved country intel positive emission joins", |report| {
         if !physical.iter().skip(1).any(|&raw| raw != 0) {
             return Ok(());
@@ -271,8 +261,6 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) ->
 }
 
 pub(super) fn is_serialized_reserved_tag(save: &Save, tag: &[u8]) -> bool {
-    // This metadata exists only after the approved original-tree projection;
-    // raw link aliases to canonical0 and tag spelling alone never qualify.
     save.country_emissions.as_deref().is_some_and(|emissions| {
         emissions.iter().any(|emission| {
             emission.identity.actual == ActualCountry::Reserved

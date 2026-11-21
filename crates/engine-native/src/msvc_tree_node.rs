@@ -1,18 +1,11 @@
-//! Common MSVC _Tree_node links; payload layouts depend on the concrete key/value pair.
 
 use crate::{Memory, read};
 
-/// MSVC tree left link used to find the leftmost node.
 pub const LEFT: usize = 0;
-/// MSVC tree parent link used for successor traversal.
 pub const PARENT: usize = 8;
-/// MSVC tree right link.
 pub const RIGHT: usize = 0x10;
-/// MSVC tree colour byte.
 pub const COLOR: usize = 0x18;
-/// MSVC tree nil flag.
 pub const NIL: usize = 0x19;
-/// Aligned MSVC tree key/value payload.
 pub const PAYLOAD: usize = 0x20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,8 +20,6 @@ pub(crate) enum SetError {
     BudgetOverflow,
 }
 
-/// In-order MSVC set walk shared by province and state trees.
-/// No allocation uses the untrusted declared size.
 pub(crate) fn walk_set<E>(
     memory: &impl Memory,
     head: usize,
@@ -108,8 +99,6 @@ pub(crate) fn walk_set<E>(
 #[cfg(test)]
 mod tests;
 
-/// Stack-only native MSVC map cursor. Successor steps are bounded by the
-/// declared node count. Existing role-map failure names are retained.
 pub struct Cursor {
     head: usize,
     next: usize,
@@ -131,8 +120,6 @@ impl Cursor {
         Self::from_parts(words, sentinel)
     }
 
-    /// The map's head node and declared count from its 16-byte header, in
-    /// `read`'s failure order.
     pub fn header(words: [u8; 16]) -> Result<(usize, u32), &'static str> {
         let head = usize::try_from(u64::from_le_bytes(words[..8].try_into().unwrap()))
             .ok()
@@ -143,8 +130,6 @@ impl Cursor {
         Ok((head, count))
     }
 
-    /// `read` from a header and the head's 26-byte sentinel already copied,
-    /// checking the sentinel exactly as `read` does.
     pub fn from_parts(words: [u8; 16], sentinel: [u8; 26]) -> Result<Self, &'static str> {
         use crate::msvc_tree_node as node;
         let (head, count) = Self::header(words)?;

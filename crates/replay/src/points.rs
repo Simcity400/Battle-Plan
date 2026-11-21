@@ -1,9 +1,3 @@
-//! Each key's changes over hours of one table, read from its tracks: the table restored at the
-//! first hour, then each block's rest read with one advance ([`TableReader::read_stretch`]), its
-//! rows' cells followed through their track events, inserts, deletes, statuses and read rows.
-//! No hour is stepped: a key's state is worked out only at the hours something about it changes.
-//! A read of some keys passes over the blocks in which the table's summary pieces, keyed by row,
-//! show none of them covered.
 
 use crate::{
     cells::{self, Change, Held, Stretch, TableReader},
@@ -24,8 +18,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// A key's state from `hour` on: whether its row is live, its table available and the row read
-/// (`covered`), and its value then (none when not covered or the value holds none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Point {
     pub hour: i32,
@@ -34,30 +26,20 @@ pub struct Point {
     pub value: Option<i64>,
 }
 
-/// A cell of a row as [`cells`] reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cell {
-    /// A number or bool, as a reader reads it.
     Number(i64),
-    /// A text: its index among the texts the read met, equal indexes equal texts.
     Text(u32),
-    /// An optional number holding none.
     Missing,
     Unrecorded,
-    /// A list or opaque cell holding the value written at this game hour, or, when the read met
-    /// it already written, the hour the read first showed it: read the row then for its bytes.
     Written(i32),
 }
 
-/// A selected cell as a read follows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Raw {
-    /// A number's bits or a text's string id.
     Bits(u64),
     Missing,
     Unrecorded,
-    /// A list or opaque cell holding a value written at the game hour given; none when it was
-    /// written before the stretch.
     Written(Option<i32>),
 }
 
@@ -86,7 +68,6 @@ impl Raw {
     }
 }
 
-/// `bits` of a cell of `kind`, cut to its width and widened as a reader reads it.
 fn number(kind: Kind, bits: u64) -> i64 {
     match kind {
         Kind::U8 => i64::from(bits as u8),
@@ -100,17 +81,14 @@ fn number(kind: Kind, bits: u64) -> i64 {
     }
 }
 
-/// The texts a read met, each once, first met first.
 #[derive(Default)]
 struct Texts {
     by_id: HashMap<u32, u32, foldhash::fast::RandomState>,
     by_text: HashMap<Box<[u8]>, u32, foldhash::fast::RandomState>,
-    /// Each text with the first string id the read met it under.
     held: Vec<(u32, Box<[u8]>)>,
 }
 
 impl Texts {
-    /// The index of string `id`'s text: a run may hold one text under several ids.
     fn index(&mut self, id: u32, strings: &Strings) -> io::Result<u32> {
         if let Some(&index) = self.by_id.get(&id) {
             return Ok(index);
@@ -130,20 +108,16 @@ impl Texts {
     }
 }
 
-/// What a read makes of a key: its state while its row is shown, and while it is not.
 trait Look {
     type State: Clone + PartialEq;
 
     fn hidden(&self) -> Self::State;
 
-    /// `key`'s state from game hour `hour` on, its row shown holding `raw` (by selected column);
-    /// `before` its state until then.
     fn shown(&mut self, key: u128, raw: &[Raw], hour: i32, before: Option<&Self::State>, strings: &Strings) -> io::Result<Self::State>;
 
     fn texts(&mut self) -> &mut Texts;
 }
 
-/// One row's selected columns resolved, as a source's value reads a row.
 struct Row<'a> {
     columns: &'a [usize],
     values: &'a [Option<i64>],
@@ -168,8 +142,6 @@ impl Cells for Row<'_> {
     }
 }
 
-/// A source's value of the row: a text cell gives the first string id the read met its text
-/// under, so equal values are equal texts.
 struct Valued {
     columns: Vec<usize>,
     kinds: Vec<Kind>,
@@ -208,7 +180,6 @@ impl Look for Valued {
     }
 }
 
-/// Every selected cell of the row.
 struct Celled {
     columns: Vec<usize>,
     kinds: Vec<Kind>,
@@ -249,12 +220,10 @@ impl Look for Celled {
     }
 }
 
-/// The keys a read follows.
 enum Wanted {
     All,
     These(Vec<u128>),
     Range(u128, u128),
-    /// Ascending and apart, as [`Keys::Ranges`] asks.
     Ranges(Vec<(u128, u128)>),
 }
 
@@ -282,7 +251,6 @@ impl Wanted {
         }
     }
 
-    /// The places in `keys` (ascending) of the keys it follows.
     fn places(&self, keys: &[u128]) -> Vec<usize> {
         match self {
             Self::All => (0..keys.len()).collect(),
@@ -293,24 +261,17 @@ impl Wanted {
     }
 }
 
-/// A row of a stretch: its key and slot, the block hours it is live (`from` until before
-/// `until`), its cells as they stand, and its track events.
 struct Occupant {
     key: u128,
     slot: u32,
     from: u16,
     until: u16,
     raw: Vec<Raw>,
-    /// Inserted in the stretch: its state is new from its insert hour.
     inserted: bool,
-    /// The hour through which `raw` already holds its events: an inserted row's cells as its insert
-    /// hour left them.
     settled: Option<u16>,
     events: Vec<(u16, usize, Change)>,
 }
 
-/// What a read holds between stretches: its columns as asked (ascending), each reader column's
-/// place among them, the keys it follows and each one's state.
 struct Reading<'a, L: Look> {
     columns: &'a [usize],
     places: &'a [usize],
@@ -320,8 +281,6 @@ struct Reading<'a, L: Look> {
 }
 
 impl<L: Look> Reading<'_, L> {
-    /// Cells by asked column from `held`, given by reader column; a column the recording does not
-    /// hold is not recorded.
     fn raw(&self, held: impl Iterator<Item = Held>, written: Option<i32>) -> Vec<Raw> {
         let mut raw = vec![Raw::Unrecorded; self.columns.len()];
         for (&place, held) in self.places.iter().zip(held) {
@@ -330,8 +289,6 @@ impl<L: Look> Reading<'_, L> {
         raw
     }
 
-    /// The states `stretch` changes, in hour then key order; `born` holds the cells of each wanted
-    /// row it inserts at its insert hour, by (hour, slot).
     fn stretch(&mut self, stretch: &Stretch, born: &Born, strings: &Strings) -> io::Result<Vec<(i32, u128, L::State)>> {
         let (from, to) = (stretch.from, stretch.to);
         let at = |hour: u16| usize::from(hour - from);
@@ -340,7 +297,6 @@ impl<L: Look> Reading<'_, L> {
         let truncated: Vec<bool> = stretch.statuses.iter().map(|status| matches!(status, Status::Truncated { .. })).collect();
         let mut read = stretch.read.clone();
         read.sort_unstable();
-        // The hours every live row is looked at again: the first, a status change, a partial read.
         let mut every: Vec<u16> = vec![from];
         for hour in from + 1..=to {
             let (now, before) = (at(hour), at(hour) - 1);
@@ -356,7 +312,6 @@ impl<L: Look> Reading<'_, L> {
                 slot: *slot,
                 from,
                 until: u16::MAX,
-                // A row the read does not follow is kept for its slot alone.
                 raw: if self.wanted.wants(*key) { self.raw(held.iter().copied(), None) } else { Vec::new() },
                 inserted: false,
                 settled: None,
@@ -367,7 +322,6 @@ impl<L: Look> Reading<'_, L> {
         for (index, occupant) in occupants.iter().enumerate() {
             by_slot.entry(occupant.slot).or_default().push(index);
         }
-        // Deletes before inserts at the same hour: a slot freed and taken again holds the new row.
         let mut lives: Vec<(u16, bool, u32, u128)> = stretch.deleted.iter().map(|&(hour, slot, key)| (hour, false, slot, key)).collect();
         lives.extend(stretch.inserted.iter().map(|&(hour, slot, key)| (hour, true, slot, key)));
         lives.sort_unstable_by_key(|&(hour, insert, slot, _)| (hour, insert, slot));
@@ -375,7 +329,6 @@ impl<L: Look> Reading<'_, L> {
             let held = by_slot.entry(slot).or_default();
             if insert {
                 held.push(occupants.len());
-                // A row born and gone within its hour is never shown: its cells are of no account.
                 let (raw, settled) = match born.get(&(hour, slot)) {
                     Some(cells) => (cells.clone(), Some(hour)),
                     None if self.wanted.wants(key) => (vec![Raw::Unrecorded; self.columns.len()], None),
@@ -443,7 +396,6 @@ impl<L: Look> Reading<'_, L> {
         Ok(changes)
     }
 
-    /// Every followed key not hidden is hidden from game hour `hour` on: its changes, by key.
     fn hide(&mut self, hour: i32) -> Vec<(i32, u128, L::State)> {
         let hidden = self.look.hidden();
         let mut changes: Vec<(i32, u128, L::State)> = self
@@ -460,12 +412,8 @@ impl<L: Look> Reading<'_, L> {
     }
 }
 
-/// Each wanted row's selected cells at the hour a stretch inserts it, by (block hour, slot).
 type Born = HashMap<(u16, u32), Vec<Raw>, foldhash::fast::RandomState>;
 
-/// The cells each wanted row `stretch` inserts holds after its insert hour, read by `probe` (a
-/// reader of the same columns) moved to each insert hour: a row's inserted cells are no track's
-/// events, and its track's events count from them.
 fn born<L: Look>(recording: &Recording, (run, table): (u32, TableId), probe: &mut Option<TableReader>, stretch: &Stretch, reading: &Reading<'_, L>) -> io::Result<Born> {
     let mut out = Born::default();
     for &(hour, slot, key) in &stretch.inserted {
@@ -489,10 +437,6 @@ fn born<L: Look>(recording: &Recording, (run, table): (u32, TableId), probe: &mu
     Ok(out)
 }
 
-/// By block of `blocks`, whether it must be read for `wanted`: false for a block wholly inside a
-/// summary piece in which none of the wanted keys is covered for an hour. None when every block
-/// is read: every key followed, or a table the summaries do not hold by row key (a log's pieces
-/// are keyed by its facets).
 fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted, blocks: std::ops::Range<u32>) -> io::Result<Option<Vec<bool>>> {
     let by_key = |shape: &summary::Shape| !matches!(shape, summary::Shape::Log(_));
     if matches!(wanted, Wanted::All) || blocks.is_empty() || !crate::summaries::registry()?.iter().any(|(held, shape)| *held == table.index() && by_key(shape)) {
@@ -502,7 +446,6 @@ fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted,
     let first_hour = i64::from(held.first_hour);
     let count = blocks.len();
     let (mut summarized, mut covered) = (vec![false; count], vec![false; count]);
-    // Block index (from `blocks.start`) of each game hour, clamped to the blocks asked.
     let block_of = |hour: i64| ((hour - first_hour).max(0) / i64::from(BLOCK)).clamp(i64::from(blocks.start), i64::from(blocks.end - 1)) as usize - blocks.start as usize;
     for extent in crate::lanes::pieces(recording, run, table.index(), blocks.clone(), 1)? {
         let bytes = recording.stored_bytes(&extent)?;
@@ -536,18 +479,12 @@ fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted,
     Ok(Some(summarized.iter().zip(&covered).map(|(&summarized, &covered)| !summarized || covered).collect()))
 }
 
-/// Run `run`'s ordinals of game hours `from` and `to`.
 fn ordinals(recording: &Recording, run: u32, from: i32, to: i32) -> io::Result<(u32, u32)> {
     let held = recording.run(run)?;
     let ordinal = |hour: i32| held.ordinal(hour).ok_or_else(|| invalid("The run holds no such hour"));
     Ok((ordinal(from)?, ordinal(to)?))
 }
 
-/// Each key `keys` asks for of `table` of run `run` from hour `from` through `to`, as `look` makes
-/// it of `columns`' cells: first its state at `from` (each key named, live or not; each live key
-/// asked otherwise), then each hour its state changes, in hour then key order. `each` stops the
-/// read by returning false. The columns read (those asked the recording's schema holds,
-/// ascending) and the texts the states name, by [`Cell::Text`] index.
 fn read<L: Look>(
     recording: &Recording,
     (run, table): (u32, TableId),
@@ -643,12 +580,6 @@ fn read<L: Look>(
     Ok((asked, std::mem::take(&mut look.texts().held).into_iter().map(|(_, text)| text).collect()))
 }
 
-/// Each key of `table` of run `run` (each of `keys` when given) from hour `from` through `to`:
-/// first its state at `from` (every wanted key, live or not; every live key when none are
-/// named), then a point at each hour its state changes, in hour then key order. Its value is
-/// `source` of `columns`' cells (none without a source); a text cell's value is the first string
-/// id the read met its text under, so equal values are equal texts. `each` stops the read by
-/// returning false.
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, source, keys and range")]
 pub fn points(
     recording: &Recording,
@@ -673,13 +604,6 @@ pub fn points(
     Ok(())
 }
 
-/// Each key `keys` asks for of `table` of run `run` from hour `from` through `to`, its cells of
-/// `columns`: first at `from` (each key named, live or not; each live key asked otherwise), then
-/// at each hour any of them changes, the row comes or goes, or the table's status or read hides
-/// or shows it, in hour then key order; none while the row is not shown. `each` stops the read
-/// by returning false. The columns the cells are of (those asked the schema holds, ascending; one
-/// the recording does not hold is not recorded), and the texts the cells name, by
-/// [`Cell::Text`] index.
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn cells(
     recording: &Recording,

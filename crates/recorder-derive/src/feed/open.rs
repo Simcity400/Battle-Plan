@@ -1,8 +1,3 @@
-//! The cards still open, held in the writer's own tables: FeedOpenEvents, a dispatch awaiting its
-//! choice, keyed by what a choice is matched by (native event, instance, receiving country); and
-//! FeedOpenDecisions, a selection or activation awaiting a later step, keyed by its occurrence. An
-//! hour's changes are kept here and set once at its end, so a card opened and closed within one
-//! read leaves no row.
 
 use super::invalid;
 use crate::framework::{Rows, Value};
@@ -13,15 +8,12 @@ use replay_data::{
 };
 use std::{collections::HashMap, io};
 
-/// What a decision edge is matched by: country, token, country target, numeric target.
 type Fact = (u32, Box<[u8]>, Option<u32>, Option<i32>);
 
-/// What the openings are of: the generation, the last read, and whether that read was complete.
 #[derive(Default)]
 pub(super) struct Links {
     pub(super) generation: Option<u64>,
     pub(super) read: Option<i32>,
-    /// No cancellation and reselection of a decision can hide in the last read.
     pub(super) covered: bool,
 }
 
@@ -44,15 +36,10 @@ fn optional(view: &TableView<'_>, column: usize, slot: u32) -> io::Result<Option
     }
 }
 
-/// One hour of the open tables: the hour's changes, over the writer's tables as the hour began
-/// (they are set once, at [`Open::flush`]).
 #[derive(Default)]
 pub(super) struct Open {
-    /// Each open dispatch changed this hour: its generation, sequence and read hour, or closed.
     events: HashMap<u128, Option<(u64, u64, i32)>>,
-    /// Each open decision changed this hour, by its key: its fact and read hour, or closed.
     decisions: HashMap<u128, Option<(Fact, i32)>>,
-    /// The open decisions by fact, with key and read hour, read once in an hour that needs them.
     index: Option<HashMap<Fact, (u128, i32)>>,
 }
 
@@ -66,7 +53,6 @@ impl Open {
         Ok(Some((number(&view, 0, slot)?, number(&view, 1, slot)?, number(&view, 2, slot)? as i32)))
     }
 
-    /// Reads the open decisions by fact, once in the hour.
     fn index(&mut self, out: &Rows<'_>) -> io::Result<&mut HashMap<Fact, (u128, i32)>> {
         if self.index.is_none() {
             let view = out.table(TableId::FeedOpenDecisions);
@@ -106,8 +92,6 @@ impl Open {
         Ok(())
     }
 
-    /// A read at `read` begins: decision openings do not survive one that is not complete or does
-    /// not follow the read before.
     pub(super) fn observe_read(&mut self, out: &Rows<'_>, links: &mut Links, read: i32, complete: bool) -> io::Result<()> {
         if !complete || links.read.and_then(|last| last.checked_add(1)) != Some(read) {
             self.clear_decisions(out)?;
@@ -117,8 +101,6 @@ impl Open {
         Ok(())
     }
 
-    /// The sequence and read hour of the occurrence `event`, read at `read`, continues, opening
-    /// `event` for later edges; a new generation closes every opening.
     pub(super) fn link(&mut self, out: &Rows<'_>, links: &mut Links, event: &EventFeedEvent, token: Option<&[u8]>, read: i32) -> io::Result<Option<(u64, i32)>> {
         if links.generation != Some(event.generation) {
             if links.generation.is_some() {
@@ -145,8 +127,6 @@ impl Open {
             Source::EventOption => {
                 let Some(key) = dispatch else { return Ok(None) };
                 let open = self.event(out, key)?;
-                // A negative ordinal is the event's immediate effects, run on dispatch: it joins
-                // the occurrence but leaves it open for the choice.
                 if open.is_some() && !script.option.is_some_and(|ordinal| ordinal < 0) {
                     self.events.insert(key, None);
                 }
@@ -177,8 +157,6 @@ impl Open {
                         }
                         Some((key as u64, opened))
                     }
-                    // An activation with no open selection starts its own episode: a mission, or
-                    // a selection before the recording.
                     None => {
                         if event.source == Source::DecisionActivated {
                             self.open_decision(out, own, fact, read)?;
@@ -191,7 +169,6 @@ impl Open {
         })
     }
 
-    /// The hour's changes to the open tables, in key order.
     pub(super) fn flush(self, out: &mut Rows<'_>) {
         let mut events: Vec<_> = self.events.into_iter().collect();
         events.sort_unstable_by_key(|(key, _)| *key);

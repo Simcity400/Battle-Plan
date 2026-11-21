@@ -1,8 +1,3 @@
-//! The active naval combat's map-icon task-force and convoy children.
-//!
-//! Walk each side's ordered forward groups, count live convoys separately and insert each live ship's
-//! task force once. Same-hour rosters share Index across combats. Client country, selection and
-//! rendered counter caches do not participate.
 
 use std::{
     borrow::Cow,
@@ -17,13 +12,8 @@ use {
     viewer_foundation::map::perspective::Vision,
 };
 
-/// Groups reached only as opponents have no forward-group position and are excluded from the side
-/// walk.
 use viewer_foundation::map::unit_rules::PAIRED_ONLY_GROUP;
 
-/// Each combat's forward-group members, in `(group, member)` order, borrowed from `rows`.
-/// PAIRED_ONLY_GROUP excludes opponent-only groups. HQ frames and combat grids walk the same
-/// members. Grouped from the rows it is walked with, so no two hours' rows are joined by position.
 pub fn forward_members(rows: &[NavalCombatShipRow]) -> BTreeMap<u64, Vec<&NavalCombatShipRow>> {
     let mut by_combat: BTreeMap<u64, Vec<&NavalCombatShipRow>> = BTreeMap::new();
     for row in rows {
@@ -37,10 +27,7 @@ pub fn forward_members(rows: &[NavalCombatShipRow]) -> BTreeMap<u64, Vec<&NavalC
     by_combat
 }
 
-/// A complete table is passed as `Some(rows)`; `None` is unavailable or
-/// truncated. The caller cannot silently treat an incomplete table as empty.
 pub struct Sources<'a> {
-    /// The member census the grids read: the rows of the hour they are drawn over.
     pub combat_ships: Option<&'a [NavalCombatShipRow]>,
     pub ships: Option<ShipCensus<'a>>,
     pub task_forces: Option<&'a [TaskForceRow]>,
@@ -48,9 +35,6 @@ pub struct Sources<'a> {
     pub aggression: Option<&'a [i64]>,
 }
 
-/// The hour's `Ships` census as indexed by `counters::NavalContext`: each ship's task force, each
-/// task force's complete roster length and summed strength, and the table's row count. The grids
-/// reuse this index.
 pub struct ShipCensus<'a> {
     pub task_forces: Cow<'a, BTreeMap<u64, u64>>,
     pub counts: Cow<'a, BTreeMap<u64, (usize, i64)>>,
@@ -59,7 +43,6 @@ pub struct ShipCensus<'a> {
 
 #[cfg(test)]
 impl ShipCensus<'_> {
-    /// The census indexed from its rows, as `NavalContext::read` indexes it.
     pub fn from_rows(ships: &[replay_data::rows::ShipRow]) -> Self {
         let mut counts = BTreeMap::<u64, (usize, i64)>::new();
         for ship in ships {
@@ -80,12 +63,8 @@ impl ShipCensus<'_> {
     }
 }
 
-/// One hour's rosters, indexed once and shared by every combat's grid. A census that cannot
-/// be used keeps its reason, which each grid that needs it reports.
 pub struct Index<'a> {
-    /// Each combat's forward-group members in `(group, member)` order.
     members: Result<BTreeMap<u64, Vec<&'a NavalCombatShipRow>>, &'static str>,
-    /// The ship census, with complete roster lengths for every task force containing a ship.
     ships: Result<ShipCensus<'a>, &'static str>,
     forces: Result<BTreeMap<u64, &'a TaskForceRow>, &'static str>,
     inputs: Option<BTreeMap<u64, &'a TaskForceCounterInputRow>>,
@@ -127,8 +106,6 @@ impl<'a> Index<'a> {
     }
 }
 
-/// One task force admitted by the combat member walk. `ships` is its complete roster length,
-/// independent of how many members are currently live combat ships.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GridTaskForce<'a> {
     pub force: &'a TaskForceRow,
@@ -137,13 +114,11 @@ pub struct GridTaskForce<'a> {
     pub visibility: u16,
 }
 
-/// One naval mission counter item after contiguous-run grouping.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GridGroup<'a> {
     pub task_forces: Vec<GridTaskForce<'a>>,
 }
 
-/// The children attached to one side of the active combat icon.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SideGrid<'a> {
     pub groups: Vec<GridGroup<'a>>,
@@ -154,14 +129,9 @@ pub struct SideGrid<'a> {
 struct Candidate<'a> {
     force: GridTaskForce<'a>,
     allegiance: Allegiance,
-    /// Own task forces with `engagement_refused` true sort before those with it false.
     refused: Option<bool>,
 }
 
-/// Derive both side grids of `combat` from the hour's indexed rosters and the viewer's
-/// independently chosen country/fog. `owner` canonicalises a raw country ID. Missing joins,
-/// incomplete needed tables and a foreign task force whose intel the hour cannot establish
-/// refuse the combat's grids.
 pub fn derive<'a>(
     index: &Index<'a>,
     combat: u64,
@@ -202,16 +172,10 @@ pub fn derive<'a>(
                 .ok_or("live naval combat ship's task force is absent")?;
             let country = owner(force.roster_owner)
                 .ok_or("naval combat task-force country alias is unresolved")?;
-            // The caller's map is built by `allegiance::counter_table`, which
-            // refuses incomplete relation tables. A missing country entry is
-            // therefore a corrupt join, never a default `Other` country.
             let allegiance = allegiances
                 .get(&country)
                 .copied()
                 .ok_or("naval combat task-force allegiance is unresolved")?;
-            // Unit intel: an hour without the unit intel census cannot give a foreign
-            // task force's byte, and a truncated census cannot give an unlisted one's. The byte
-            // orders foreign forces and words a group's counts, so either refuses the grids.
             if country != vision.ours() && vision.undecided().is_some() {
                 return Err("naval task-force visibility inputs are incomplete");
             }
@@ -258,8 +222,6 @@ pub fn derive<'a>(
         {
             return Err("own naval sort needs complete engagement operands");
         }
-        // Stable-sort the side using wrapping fleet_difference comparisons, retaining the order even
-        // with a nontransitive comparator.
         let ours = vision.ours();
         let mut order: Vec<usize> = (0..sides[side].len()).collect();
         sort(&mut order, |&a, &b| {
@@ -267,10 +229,6 @@ pub fn derive<'a>(
         });
         let mut taken: Vec<Option<Candidate<'a>>> = sides[side].drain(..).map(Some).collect();
         let sorted = order.into_iter().filter_map(|index| taken[index].take());
-        // Do not sort again by allegiance. It starts a new run
-        // only when `(run_first, candidate)` says the first has
-        // higher allegiance priority. A lower-priority first can therefore
-        // absorb a later higher-priority candidate. Preserve that asymmetry.
         let mut first: Option<Allegiance> = None;
         for candidate in sorted {
             if first.is_none_or(|first| {
@@ -289,8 +247,6 @@ pub fn derive<'a>(
     Ok(result)
 }
 
-/// Signed priority comparison with viewer selection false for every member. Negative results mean
-/// less.
 fn compare(a: &Candidate<'_>, b: &Candidate<'_>, ours: u32) -> i32 {
     let first = |a_first: bool| if a_first { -1 } else { 1 };
     let a_own = a.force.country == ours;
@@ -318,7 +274,6 @@ fn compare(a: &Candidate<'_>, b: &Candidate<'_>, ours: u32) -> i32 {
     0
 }
 
-/// Subtract low handle words in i32, or high words when low words agree. Both subtractions wrap.
 pub(crate) fn fleet_difference(a: u64, b: u64) -> i32 {
     let ((a_low, a_high), (b_low, b_high)) = (signed_handle(a), signed_handle(b));
     if a_low == b_low {
@@ -328,13 +283,10 @@ pub(crate) fn fleet_difference(a: u64, b: u64) -> i32 {
     }
 }
 
-/// A handle's signed halves, low word first.
 fn signed_handle(handle: u64) -> (i32, i32) {
     (handle as u32 as i32, (handle >> 32) as u32 as i32)
 }
 
-/// Treat every task force as unselected. Compare raw/canonical owner equivalence first, then own,
-/// shared and active-war allegiance. `allegiance::counter_table` uses the same complete relations.
 fn allegiance_priority(side: Allegiance) -> u8 {
     match side {
         Allegiance::Ours => 0,

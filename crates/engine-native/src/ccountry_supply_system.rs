@@ -1,8 +1,3 @@
-//! CCountrySupplySystem, one object per canonical country slot.
-//!
-//! Paired null holes in the country and supply vectors are possible. The owner
-//! backlink must resolve through CGameState's country-link mapping; a raw
-//! CCountry tag is not its canonical vector index.
 
 use crate::{
     Memory, cpdx_array::Array, csupply_system, hub_motorization_entry, memory::Raw, read,
@@ -10,53 +5,29 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CCountrySupplySystem allocation size.
 pub const SIZE: usize = 0x290;
-/// CCountrySupplySystem primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a1_ec78);
-/// CCountrySupplySystem secondary vtable.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x02a1_ecc8);
-/// CCountrySupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
-/// CCountrySupplySystem owning CSupplySystem pointer.
 pub const SUPPLY_SYSTEM: usize = 0x70;
-/// CCountrySupplySystem owning CCountry pointer.
 pub const COUNTRY: usize = 0x78;
-/// CCountrySupplySystem companion pointer, validated against the canonical array slot.
 pub const COMPANION: usize = 0x80;
-/// Allocated train array: 0x18-byte entries with a full variant reference first and the signed
-/// integer count after it.
 pub const ALLOCATED_TRAINS: usize = 0x120;
-/// Allocated trucks, signed i32. Add, return and distribution paths update
-/// this cache; post-load roster counts add without first clearing it.
 pub const ALLOCATED_TRUCKS: usize = 0x138;
-/// CCountrySupplySystem disrupted-supply bucket pointer.
 pub const DISRUPTED_BUCKETS: usize = 0x90;
-/// CCountrySupplySystem disrupted-supply occupied u32 count.
 pub const DISRUPTED_COUNT: usize = 0x98;
-/// CCountrySupplySystem disrupted-supply u32 bucket mask.
 pub const DISRUPTED_MASK: usize = 0x9c;
-/// CCountrySupplySystem disrupted-supply u8 maximum probe distance.
 pub const DISRUPTED_MAX_DISTANCE: usize = 0xa0;
-/// Hub-setting array pointer, with 0x28-byte records.
 pub const HUB_SETTINGS_DATA: usize = 0x188;
-/// CCountrySupplySystem hub-settings u32 count.
 pub const HUB_SETTINGS_COUNT: usize = 0x194;
-/// CCountrySupplySystem foreign-homebase record array pointer.
 pub const FOREIGN_HOMEBASE_DATA: usize = 0x1e0;
-/// CCountrySupplySystem foreign-homebase u32 count.
 pub const FOREIGN_HOMEBASE_COUNT: usize = 0x1ec;
 
-/// Ordered temporary-supply deployments. Floating-harbour lookup
-/// returns the first province match in this array.
 pub const FLOATING_HARBOR_DEPLOYMENTS: usize = 0x1b0;
 pub const FLOATING_HARBOR_DEPLOYMENT_STRIDE: usize = 0x68;
 pub const FLOATING_HARBOR_PROVINCE: usize = 0x48;
 pub const FLOATING_HARBOR_STATUS: usize = 0x60;
 
-/// One deployment record: its supply system's canonical country slot (the key the map's
-/// lookup uses), its place in that system's array (the first-match order), its province and
-/// its status byte.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FloatingHarborDeployment {
     pub country: u32,
@@ -69,8 +40,6 @@ pub fn count_floating_harbor_deployments(memory: &impl Memory, base: usize, game
     walk_floating_harbor_deployments_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads every country supply system's deployment records in slot and array order. A short
-/// output reports the exact number of records it did not read.
 pub fn walk_floating_harbor_deployments(
     memory: &impl Memory,
     base: usize,
@@ -104,7 +73,6 @@ pub fn walk_floating_harbor_deployments_buffer(
                 FLOATING_HARBOR_DEPLOYMENTS,
                 FLOATING_HARBOR_DEPLOYMENT_STRIDE,
             )?;
-            // The floating-harbour lookup reaches this complete array.
             output.ensure(
                 len.checked_add(records.count as usize)
                     .ok_or("floating harbour deployment count overflow")?,
@@ -115,7 +83,6 @@ pub fn walk_floating_harbor_deployments_buffer(
                     .element(ordinal as u32, FLOATING_HARBOR_DEPLOYMENT_STRIDE)
                     .and_then(|address| address.checked_add(FLOATING_HARBOR_PROVINCE))
                     .ok_or("floating harbour deployment address overflow")?;
-                // The span from the province through the status byte, and nothing past it.
                 let bytes = read::<[u8; FLOATING_HARBOR_STATUS - FLOATING_HARBOR_PROVINCE + 1]>(
                     memory, address,
                 )
@@ -146,15 +113,12 @@ pub fn walk_floating_harbor_deployments_buffer(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Current native CCountry link, resolved from the settings owner's canonical slot.
     pub owner: u32,
-    /// Native CCountryTag link stored in the settings map; aliases are preserved.
     pub actor: u32,
     pub node_index: u32,
     pub map_entry_index: u32,
     pub province: i32,
     pub node_type: i32,
-    /// The engine reads one byte; adjacent alignment bytes are not a value.
     pub level: u8,
 }
 
@@ -162,10 +126,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads explicit hub settings through the canonical-country-indexed supply
-/// vector. Empty maps emit no rows: absence does not imply level zero. Capacity
-/// limits only stored output; remaining map counts determine the exact shortfall.
-/// No allocation, retry, inferred motorization or pointer escapes occur.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -287,15 +247,6 @@ fn array(
         .ok_or("country supply array unreadable or invalid")
 }
 
-/// Shared per-country train/access operands; the node count makes empty node
-/// censuses explicit. Access bytes are indexed by canonical country slot,
-/// joined through CountryLinks, not by the raw Countries id.
-///
-/// The access array is kept sparse: `access_count` is its native count, and
-/// `runs_len` runs of the walk's run arena from `runs_start` locate its maximal
-/// runs of nonzero bytes as `[native start, length]`, whose bytes follow one
-/// another in the value arena from `values_start`. An in-array index no run
-/// covers is a native zero byte.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TrainRow {
     pub country: u32,
@@ -315,13 +266,10 @@ pub struct TrainReport {
     pub outcome: Outcome,
     pub entries: usize,
     pub required_entries: usize,
-    /// Nonzero access bytes stored and needed.
     pub access: usize,
     pub required_access: usize,
-    /// Access runs stored and needed.
     pub runs: usize,
     pub required_runs: usize,
-    /// Appended scalar faults never withhold the original inventory payload.
     pub vehicle_failures: [u32; 3],
 }
 pub const VEHICLE_READ_FAILURES: [&str; 3] = [
@@ -329,22 +277,14 @@ pub const VEHICLE_READ_FAILURES: [&str; 3] = [
     "supply required trucks unreadable",
     "supply required trains unreadable",
 ];
-/// Hard bound on allocated entries in any one country. Reads the 12 consumed
-/// bytes per entry in 64-entry batches and authenticates every full reference.
-/// Access bytes read per guarded copy while scanning for nonzero runs: one
-/// copy per country up to 16,384 controllers, as the former dense read made.
 const ACCESS_CHUNK: usize = 16 * 1024;
 
-/// One access array's sparse demand, and whether all of it was stored.
 struct SparseAccess {
     values: usize,
     runs: usize,
     stored: bool,
 }
 
-/// Scans `source` in bulk copies, appending its nonzero bytes to `values` and
-/// one `[start, length]` per maximal nonzero run to `runs` while they fit. The
-/// whole array is always read, so the demand is exact even when nothing fits.
 fn sparse_access(
     memory: &impl Memory,
     source: Array,
@@ -386,7 +326,6 @@ fn sparse_access(
         let mut at = 0;
         while at < n {
             if open.is_none() {
-                // Most controllers are denied: skip zero words outside a run.
                 while at + 8 <= n && bytes[at..at + 8] == [0; 8] {
                     at += 8;
                 }
@@ -423,14 +362,6 @@ fn sparse_access(
     Ok(demand)
 }
 
-/// Walks every canonical supply slot. The country census, each controller-access
-/// array and the aggregate demand are bounded only by the live census and the
-/// validated native headers (count within capacity, capacity within `i32`), with
-/// checked sums; no country count is chosen here. Access arrays are stored
-/// sparse, so the arenas scale with nonzero access, not with the square of the
-/// census. Arena or row pressure omits whole countries, reports `Truncated` and
-/// keeps the exact demand so the collector grows its buffers off-thread; an
-/// omitted country's access array is still read to measure that demand.
 pub fn walk_trains(
     memory: &impl Memory,
     base: usize,
@@ -452,10 +383,6 @@ pub fn walk_trains(
     )
 }
 
-/// [`walk_trains`] for the countries `select` admits by native
-/// country id: an unselected slot's supply objects are not read, and it is
-/// neither a row nor an unread row. A selected country's row equals the
-/// whole walk's.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_trains_selected(
     memory: &impl Memory,
@@ -479,9 +406,6 @@ pub fn walk_trains_selected(
     )
 }
 
-/// `select`, when present, admits countries by native id before their supply
-/// objects are read ([`walk_trains_selected`]); without it every
-/// slot is read and checked.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_trains_buffer(
     memory: &impl Memory,
@@ -596,7 +520,6 @@ pub fn walk_trains_buffer(
             if !fits || !sparse.stored {
                 continue;
             }
-            // Read the stored truck caches passively; the hourly updater must not run here.
             let allocated_trucks = system
                 .pointer
                 .checked_add(ALLOCATED_TRUCKS)
@@ -660,11 +583,9 @@ pub fn walk_trains_buffer(
 pub struct TrainStorageDemand {
     pub countries: usize,
     pub entries: usize,
-    /// Complete byte count is a safe bound for both nonzero values and runs.
     pub access: usize,
 }
 
-/// Original train roster and related-controller header demand.
 pub fn train_storage_demand(
     memory: &impl Memory,
     base: usize,

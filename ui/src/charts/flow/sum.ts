@@ -1,7 +1,6 @@
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { FlowSide } from './layout';
 
-/** Identity of a node that sums a side's remaining countries. */
 export const OTHER = '\u0000other';
 
 export interface SummedNode {
@@ -16,8 +15,6 @@ export interface SummedDiagram<T> { nodes: SummedNode[]; links: SummedLink<T>[];
 const nodeId = (side: FlowSide, tag: string | null) => `${side === 'source' ? 's' : 't'}:${tag == null ? OTHER
   : tag.startsWith('\u0000') ? `\u0000country:${JSON.stringify(tag)}` : tag}`;
 
-/** Keep each side's largest countries and sum the rest, retaining every part for
- * exact tooltips. A sole country beyond the limit keeps its own name. */
 export function sumFlowParts<T>(parts: readonly FlowPart<T>[], perSide: number): SummedDiagram<T> {
   const valued = parts.filter(item => item.value > 0);
   const totals = (side: FlowSide) => {

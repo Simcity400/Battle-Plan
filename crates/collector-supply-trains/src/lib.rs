@@ -1,5 +1,3 @@
-//! Supply train capture: supply nodes and train inventory, read in parts over the daily slice. The host owns dispatch, loans and table assembly.
-
 use collector_certificates::slicing;
 use collector_memory::read_accounting;
 use collector_memory::terminal as allocation;

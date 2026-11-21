@@ -1,6 +1,3 @@
-//! The map's selection input as the game takes it: the primary press that may become a box, the
-//! unit models under the pointer, the cursor the selection and its target ask for, and the sounds
-//! a selection plays.
 use super::MapHit;
 use eframe::egui;
 use crate::document::Document;
@@ -20,13 +17,10 @@ use viewer_world::map::{
     unit_history::{History, LandFigure},
 };
 
-/// Each division's and railway gun's own land-theatre handle (0 for none) at an hour, for the
-/// selection's same-theatre rule, or why it is not known.
 #[derive(Debug, Default)]
 pub(crate) struct Theatres(BTreeMap<Unit, Result<u64, &'static str>>);
 
 impl Theatres {
-    /// The theatres of the divisions and railway guns among `units`, from the hour's rows.
     pub(crate) fn read(frame: &DecodedFrame, units: &[Unit]) -> Self {
         let wants = |gun: bool| units.iter().any(|unit| matches!((unit, gun), (Unit::Division(_), false) | (Unit::RailwayGun(_), true)));
         let divisions = wants(false).then(|| frame.complete::<tables::Divisions>().ok());
@@ -61,8 +55,6 @@ fn theatre_of(theatre: &Recorded<Option<u64>>) -> Result<u64, &'static str> {
     }
 }
 
-/// The recording client's own divisions and railway guns in its unit list's order, and the
-/// country the client views, at the hour.
 pub(crate) type ClientOrder = (Result<Arc<[u64]>, &'static str>, Option<u32>);
 
 pub(crate) fn recorded_unit_order(frame: &DecodedFrame) -> ClientOrder {
@@ -82,7 +74,6 @@ pub(crate) fn recorded_unit_order(frame: &DecodedFrame) -> ClientOrder {
     (list, client)
 }
 
-/// A box's candidates as they were drawn when it was released, held for the rows of its hour.
 #[derive(Clone, Debug)]
 pub(crate) struct HeldBox {
     candidates: Vec<([f32; 4], box_selection::Member, Vec<u64>, bool)>,
@@ -96,7 +87,6 @@ pub(crate) struct HeldBox {
 }
 
 impl HeldBox {
-    /// The divisions and railway guns whose theatres its answer may read.
     pub(crate) fn units(&self) -> Vec<Unit> {
         use box_selection::Member;
         let mut units: Vec<Unit> = self
@@ -115,8 +105,6 @@ impl HeldBox {
     }
 }
 
-/// A click on one of our unit models, held for the rows of its hour: the unit picked, its stack
-/// mates, whether it is ours, and Shift.
 #[derive(Clone, Debug)]
 pub(crate) struct HeldModel {
     picked: u64,
@@ -128,7 +116,6 @@ pub(crate) struct HeldModel {
 }
 
 impl HeldModel {
-    /// The divisions and railway guns whose theatres its answer may read.
     pub(crate) fn units(&self, anchor: Option<Unit>) -> Vec<Unit> {
         let mut units: Vec<Unit> = self.mates.iter().copied().chain([Unit::Division(self.picked)]).chain(anchor).collect();
         units.sort_unstable();
@@ -139,23 +126,16 @@ impl HeldModel {
 
 #[derive(Default)]
 pub(crate) struct SelectionInput {
-    /// The bare-map primary press that may become a box.
     pub press: Option<BoxPress>,
-    /// Each unit model's pick shape by mesh, for the library it was read from; `None` once refused.
     shapes: HashMap<usize, Option<Arc<Shape>>>,
     library: usize,
-    /// The land figures the picks read until the unit history's land stamp changes.
     figures: Option<Figures>,
     recent: selection_sounds::Recent,
     voice: selection_sounds::VoiceGate,
     refused: BTreeMap<String, usize>,
-    /// The province order cursor last chosen and what it was chosen for.
     pub order: super::order_cursor::Held,
 }
 
-/// The unit models the pointer meets: the units the game's picker may take behind them, every
-/// division where those units stand, which its click and hover read, and the reason shown when the
-/// units disagree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Picked {
     pub candidates: Vec<PickDivision>,
@@ -164,7 +144,6 @@ pub(crate) struct Picked {
 }
 
 impl SelectionInput {
-    /// Whether the held press has become a drag, which draws the box and its cursor.
     pub fn dragging(&self) -> bool {
         self.press.is_some_and(|press| box_selection::dragging(press.from_frame, press.at_frame))
     }
@@ -173,7 +152,6 @@ impl SelectionInput {
         *self.refused.entry(reason.into()).or_default() += 1;
     }
 
-    /// Notes a refusal that holds while a state lasts, counted once however many frames it does.
     pub fn note(&mut self, reason: &str) {
         self.refused.entry(reason.to_owned()).or_insert(1);
     }
@@ -182,11 +160,6 @@ impl SelectionInput {
         self.refused.iter().map(|(reason, count)| format!("Map selection: {reason} ({count})"))
     }
 
-    /// The units behind the drawn figures of `history` the ray meets, as the game's picker walks the viewing
-    /// country's unit list (`order`, from just after `after` on a click); on a hover that meets
-    /// none of them, the figures of `fallback`, the province under the pointer, are tried again with
-    /// transfers, any country's. `None` when no unit is found; refused by name when the hour does
-    /// not settle which.
     #[allow(clippy::too_many_arguments, reason = "one pick's whole input, read where it is held")]
     pub fn pick(
         &mut self,
@@ -271,9 +244,6 @@ impl SelectionInput {
         shape
     }
 
-    /// The interface sounds a selection plays at `now`: its effects the content knows, each once a
-    /// frame and not again within the queue's recent time, and its voice-over once the define's
-    /// cooldown has passed. What it could not choose is refused by name.
     pub fn sounds(
         &mut self,
         now: f64,
@@ -308,13 +278,9 @@ impl SelectionInput {
     }
 }
 
-/// Why a box in the Operatives mode selects nothing: the game takes our operatives first there, and
-/// the viewer draws no operative icons to test.
 pub(crate) const OPERATIVES_BOX_WITHHELD: &str =
     "box selection in the Operatives mode: the operative icons the game selects first are not drawn";
 
-/// A bare-map primary press, which a drag can make a box: where it went down and where the pointer
-/// is now, on screen and in frame pixels.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BoxPress {
     pub from: egui::Pos2,
@@ -342,10 +308,6 @@ fn kind_of(unit: Unit) -> Kind {
 }
 
 impl super::Viewer {
-    /// The units behind the unit models under `point` (interface pixels), as the game's picker
-    /// walks the viewing country's unit list; a click starts just after the one selected unit,
-    /// and a hover tries the province under the pointer again outside the Strategic Air and Navy
-    /// modes, any country's units.
     pub(super) fn model_at(&mut self, document: &Document, point: [f32; 2], click: bool) -> Result<Option<Picked>, &'static str> {
         use viewer_world::map::map_mode::{MapMode, Stock};
         let Some(scene) = self.scene.as_ref() else { return Ok(None) };
@@ -374,10 +336,6 @@ impl super::Viewer {
         self.selection_input.pick(&scene.unit_history, divisions, &library, pass, eye, ray, document.map.width as f32, fallback, order, ours, after)
     }
 
-    /// A click on the viewing country's unit models: the picked unit's stack mates are selected,
-    /// and a listed unit not ours (left in the list by an observer's switch) clears the selection;
-    /// neither falls through to the ground. In the Infrastructure and Raids modes the game selects
-    /// the division's province instead, which the ground's province selection takes.
     #[allow(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
     pub(super) fn click_model(
         &mut self,
@@ -419,8 +377,6 @@ impl super::Viewer {
         self.click(document, super::held_clicks::Click::Model(held), frame, ctx);
     }
 
-    /// A model click over the theatres of the hour it was made at: the picked unit and those of
-    /// its stack mates in the selection's theatre. None while those rows are not read.
     pub(super) fn answer_model(&mut self, document: &Document, held: &HeldModel, frame: Option<&DecodedFrame>, ctx: &egui::Context) -> Option<()> {
         let head = super::head_rows::head(super::live_of(&self.playhead_map));
         let units = held.units(self.unit_selection.ordered_units().first().copied());
@@ -443,8 +399,6 @@ impl super::Viewer {
         Some(())
     }
 
-    /// A box from `from` to `to` (interface pixels): the first kind in the game's order with our
-    /// members under it, replacing the selection, or with Shift adding to it.
     #[allow(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
     pub(super) fn select_box(
         &mut self,
@@ -500,9 +454,6 @@ impl super::Viewer {
         self.click(document, super::held_clicks::Click::Box(Box::new(held)), frame, ctx);
     }
 
-    /// A box over the theatres of the hour it was released at: the first kind in the game's order
-    /// with our members under it, replacing the selection, or with Shift adding to it. None while
-    /// those rows are not read.
     pub(super) fn answer_box(&mut self, document: &Document, held: &HeldBox, frame: Option<&DecodedFrame>, ctx: &egui::Context) -> Option<()> {
         use box_selection::{Candidate, Member};
         let units = held.units();
@@ -562,7 +513,6 @@ impl super::Viewer {
         Some(())
     }
 
-    /// Plays the sounds of the units the selection gained since `before`.
     pub(super) fn selection_added(
         &mut self,
         document: &Document,
@@ -581,8 +531,6 @@ impl super::Viewer {
         self.selection_sounds(document, &added, false, ours, frame, order);
     }
 
-    /// The cursor the game's chain asks for at `point` (interface pixels); `over_window` is the
-    /// combat window or the picker under the pointer.
     pub(super) fn map_cursor(&mut self, document: &Document, point: Option<[f32; 2]>, over_window: bool, shift: bool) -> MapCursor {
         let first = self.unit_selection.ordered_units().first().copied();
         let selected = match first {
@@ -623,43 +571,29 @@ impl super::Viewer {
     }
 }
 
-/// What the selection is, by its first object, the only one the cursor reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Selected {
     TaskForce,
-    /// A division, a railway gun, or a fleet chosen from the roster.
     Other,
 }
 
-/// What the pointer is over, for the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
-    /// A window or map icon of the interface.
     Interface,
-    /// A unit model the picker returns: whether it is ours, whether we are at war with its owner
-    /// (none when the hour does not settle it), and its kind.
     Unit { ours: bool, war: Option<bool>, class: Kind },
-    /// The ground: the province order cursor the first selected unit asks for there, the arrow
-    /// where the rule does not decide it.
     Ground(MapCursor),
 }
 
-/// The inputs the game's cursor chain reads.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CursorInputs {
-    /// The ping cursor, in ping mode.
     pub ping: Option<MapCursor>,
     pub air_wings: bool,
     pub dragging: bool,
-    /// A bare-map primary press is held.
     pub pressed: bool,
     pub selected: Option<Selected>,
     pub target: Target,
 }
 
-/// The cursor the game shows, in its chain's order: ping mode, air wings selected, a drag, then with a
-/// selection and no press the picked unit's relation to the first selected object; otherwise the
-/// normal arrow, which also stands, unremarked, where the hour does not settle the relation.
 pub(crate) fn resolve(inputs: CursorInputs) -> MapCursor {
     if inputs.target == Target::Interface {
         return MapCursor::Normal;

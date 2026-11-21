@@ -1,7 +1,3 @@
-//! A save has no direct representation of the actual reserved receiver's
-//! current diplomacy matrix associations. Saved relation payloads continue to
-//! compare through the ordinary relation tables; their equality is not a
-//! witness for these cached receiver-cell inputs.
 
 use super::*;
 

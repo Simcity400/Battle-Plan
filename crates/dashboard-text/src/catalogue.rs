@@ -1,9 +1,3 @@
-//! Content facts every product shares: the recording's localisation in the
-//! user's game language and its interface sprites, read once per source,
-//! folders and presentation, plus the texture decoding every image reply uses.
-//! Recorded facts resolve through the recorded content stack; artwork,
-//! interface, fonts and game-look text through its presentation, the visual
-//! mods the source's widgets show above it. Nothing names a vanilla asset.
 
 use crate::{artwork::png_url, invalid};
 use dashboard_core::{
@@ -26,7 +20,6 @@ use std::{
 
 pub const CONTENT_DIAGNOSTICS_FORMAT: u32 = 1;
 
-/// A fixed-content error retains its native kind and message on cache hits.
 #[derive(Clone, Debug)]
 pub struct ContentError {
     kind: io::ErrorKind,
@@ -51,12 +44,6 @@ impl ContentError {
     }
 }
 
-/// One demanded database per recorded-content binding, including a failed read.
-/// The owning Source/ResolvedLayers supplies the key and lifetime; this policy
-/// only serialises a cold load and retains its result. Cancellation is retryable.
-/// The text refusals and readers the read produced are retained too, and every
-/// later use credits them to its consumer scopes ([`own_refusals`]), so which
-/// consumer read first does not decide whose refusals they are.
 pub struct CachedResult<T> {
     value: Mutex<Option<Result<Arc<T>, ContentError>>>,
     noted: Mutex<OwnRefusals>,
@@ -74,8 +61,6 @@ impl<T> Default for CachedResult<T> {
     }
 }
 impl<T> CachedResult<T> {
-    /// The result already loaded, crediting what its load noted as a later use does, or `None`
-    /// when nothing is loaded yet.
     pub fn get(&self) -> Option<io::Result<Arc<T>>> {
         let value = self.value.lock().unwrap_or_else(|error| error.into_inner());
         let result = value.as_ref()?;
@@ -89,7 +74,6 @@ impl<T> CachedResult<T> {
             #[cfg(any(test, feature = "test-support"))]
             self.loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // The read's notes reach the enclosing scopes as they happen.
             let (result, noted) = capture(read);
             if result
                 .as_ref()
@@ -110,7 +94,6 @@ impl<T> CachedResult<T> {
             .map_err(ContentError::error)
     }
 
-    /// A result already loaded, for tests that supply their own database.
     #[cfg(any(test, feature = "test-support"))]
     pub fn loaded(value: Arc<T>) -> Self {
         let result = Self::default();
@@ -124,9 +107,6 @@ impl<T> CachedResult<T> {
     }
 }
 
-/// Fixed projections of recorded operands within one content binding.
-/// Each key uses the database result policy, including named failures and
-/// retryable cancellation. The Source/ResolvedLayers slot owns the binding.
 pub struct KeyedResults<K, T> {
     values: Mutex<BTreeMap<K, Arc<CachedResult<T>>>>,
 }
@@ -163,10 +143,6 @@ impl<K: Ord + Clone, T> KeyedResults<K, T> {
     }
 }
 
-/// A memoised result with everything its render noted: the texts it refused, the lazy readers
-/// it used and what it drew from the recording because the visual mods could not supply it,
-/// replayed to every consumer that uses it ([`credit`]), so a reply served from the memo names
-/// them as the reply that first rendered it did.
 #[derive(Clone)]
 pub struct Drawn<T> {
     value: T,
@@ -174,14 +150,11 @@ pub struct Drawn<T> {
 }
 
 impl<T> Drawn<T> {
-    /// `render`'s result, with everything noted on this thread while it ran.
     pub fn new(render: impl FnOnce() -> T) -> Self {
         let (value, noted) = capture(render);
         Self { value, noted }
     }
 
-    /// [`Drawn::new`] for a render that can fail: a failure is returned rather than kept, what
-    /// it noted credited to the consumers active on this thread as a value's is.
     pub fn try_new<E>(render: impl FnOnce() -> Result<T, E>) -> Result<Self, E> {
         let (value, noted) = capture(render);
         match value {
@@ -193,15 +166,12 @@ impl<T> Drawn<T> {
         }
     }
 
-    /// The result, crediting what its render noted to the consumers active on this thread.
     pub fn get(&self) -> &T {
         credit(&self.noted);
         &self.value
     }
 }
 
-/// Retry the fallback sprite only when the requested name is absent.
-/// A declared but refused sprite stays refused.
 pub fn created_gui_sprite<'a>(
     sprites: &'a SpriteSet,
     name: &str,
@@ -216,9 +186,6 @@ pub fn created_gui_sprite<'a>(
         .map_err(|why| invalid(format!("{name} is not declared, and its fallback: {why}")))
 }
 
-/// Text icons search the GFX_ prefix before the bare authored alias.
-/// A declared but unsupported sprite is a refusal; only an absent declaration
-/// takes the second lookup.
 pub fn text_icon_sprite<'a>(
     sprites: &'a SpriteSet,
     alias: &str,
@@ -230,33 +197,16 @@ pub fn text_icon_sprite<'a>(
     sprites.lookup(alias).map_err(invalid)
 }
 
-/// How the game's view of a name treats `[...]` scripted text. A text box
-/// stores the string and draws brackets as glyphs; a scripted view evaluates
-/// them before passing the text to the box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
-    /// The name reaches its text box through the plain localiser only:
-    /// brackets are glyphs. Used for party, character, ideology, technology
-    /// and faction names, trait lists, idea slots, character seats and idea
-    /// categories.
     Plain,
-    /// The view evaluates text in a country's event scope. Used for idea
-    /// and focus names and descriptions, idea tooltip modifier lines and
-    /// their postfixes and custom tooltips, and stability breakdown names.
-    /// With the country ([`localised_in`]) the brackets are evaluated
-    /// ([`crate::scripted_text`]); without it a closed `[...]` is refused.
-    /// An unclosed `[` stops evaluation before the preceding text is
-    /// appended, so that text is dropped.
     Scripted,
 }
 
-/// [`localised_with`] with no arguments.
 pub fn localised(localisation: &Localisation, key: &str, view: View) -> Result<String, String> {
     localised_with(localisation, key, &[], view)
 }
 
-/// Saved byte strings take the C-string path:
-/// an embedded NUL ends the key before UTF-8 decoding or content lookup.
 pub fn localised_bytes(
     localisation: &Localisation,
     key: &[u8],
@@ -267,10 +217,6 @@ pub fn localised_bytes(
     plain_text(&text)
 }
 
-/// `key` through the game's localiser (`installed_content_localisation::localisation`), with its
-/// substitution, depth and 0x1800-byte buffer. A key the content lacks is copied
-/// as its own bytes. Then read as `view` shows it ([`View`]) and made
-/// plain text ([`plain_text`]). The error names the key and why.
 pub fn localised_with(
     localisation: &Localisation,
     key: &str,
@@ -282,7 +228,6 @@ pub fn localised_with(
         .map_err(|finding| finding.message)
 }
 
-/// A product's text and typed findings, obtained with one substitution walk.
 pub fn localised_details(
     localisation: &Localisation,
     key: &str,
@@ -327,7 +272,6 @@ fn localised_with_renderer(
     render: impl FnOnce(&str) -> Result<(String, Option<&'static str>), Box<Finding>>,
 ) -> (Result<String, Box<Finding>>, Vec<Finding>) {
     let (text, fallbacks) = localisation.localise_with_fallbacks(key.as_bytes(), arguments);
-    // Keep substitution recovery findings alongside the recovered text.
     let mut findings: Vec<_> = fallbacks
         .into_iter()
         .map(|reason| Finding::new(Kind::Content, key, reason))
@@ -344,7 +288,6 @@ fn localised_with_renderer(
         .and_then(|text| {
             let (text, fallback) = render(&text)?;
             if let Some(reason) = fallback {
-                // The game drops this text during scripted evaluation.
                 findings.push(Finding::new(
                     Kind::Content,
                     key,
@@ -363,7 +306,6 @@ fn localised_with_renderer(
     (text, findings)
 }
 
-/// The text as `view` shows its `[`s ([`View`]).
 fn scripted(
     text: &str,
     view: View,
@@ -391,9 +333,6 @@ fn scripted(
     }
 }
 
-/// [`localised_with`] in a Scripted view evaluated for a country: the
-/// brackets go through [`crate::scripted_text::ScriptedText`], then the
-/// text is made plain.
 pub fn localised_in(
     localisation: &Localisation,
     key: &str,
@@ -428,7 +367,6 @@ pub fn localised_in_details(
 
 pub use installed_content_localisation::localisation::{display_text, plain_text};
 
-/// Issues by reason, with what each names.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Refusals(BTreeMap<String, BTreeSet<String>>);
@@ -443,7 +381,6 @@ impl Refusals {
         }
     }
 
-    /// [`Self::merge`], returning what it added: merging that instead gives the same.
     pub fn merge_new(&mut self, other: &Self) -> Self {
         let mut added = Self::default();
         for (reason, identities) in &other.0 {
@@ -461,7 +398,6 @@ impl Refusals {
         added
     }
 
-    /// Counts `identity` under `reason` once, however often it is met.
     pub fn note(&mut self, reason: impl Into<String>, identity: impl Into<String>) {
         self.0
             .entry(reason.into())
@@ -469,7 +405,6 @@ impl Refusals {
             .insert(identity.into());
     }
 
-    /// One counted warning per reason, without enumerating every identity.
     pub fn counts(&self, what: &str) -> Vec<String> {
         self.0
             .iter()
@@ -477,12 +412,10 @@ impl Refusals {
             .collect()
     }
 
-    /// One warning per reason, naming every `what` it affects.
     pub fn lines(&self, what: &str) -> Vec<String> {
         self.diagnostic_lines(&format!("{what} not shown"))
     }
 
-    /// Counted issues without implying that the affected values were omitted.
     pub fn diagnostic_lines(&self, what: &str) -> Vec<String> {
         self.counted_diagnostic_lines(what)
             .into_iter()
@@ -511,30 +444,19 @@ impl Refusals {
     }
 }
 
-/// A lazily read content input whose reader warnings a consumer's own lines
-/// carry once the consumer has used it ([`Catalogue::reader_warning_lines`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Reader {
-    /// Scripted localisation ([`Catalogue::scripted_content`]).
     Scripted,
-    /// State templates ([`Catalogue::cached_states`]), however scripted text reaches them.
     States,
-    /// Faction templates, as scripted text reads them.
     FactionTemplates,
 }
 
-/// The text refusals one consumer's own catalogue calls produced, and the
-/// lazily read inputs those calls used. A prepared family keeps it in its
-/// saved state, so a family restored from a commit reports what the same
-/// family continued in memory would.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OwnRefusals {
     texts: Refusals,
     readers: BTreeSet<Reader>,
-    /// Artwork the consumer drew in the recording's own style because the selected visual mods
-    /// could not supply it, named with why (`ResolvedLayers::note_overlay_refusal`).
     #[serde(default)]
     fallbacks: BTreeSet<String>,
     diagnostics: Diagnostics,
@@ -555,14 +477,10 @@ impl OwnRefusals {
         self.diagnostics.merge(&other.diagnostics);
     }
 
-    /// The consumer's line for what it drew in the recording's style instead of the selected
-    /// visual mods', named and counted as the map names its own
-    /// (`installed_content_core::content::overlay_refusal_line`).
     pub fn fallback_line(&self) -> Option<String> {
         installed_content_core::content::overlay_refusal_line(&self.fallbacks)
     }
 
-    /// What the consumer drew in the recording's style, each named with why.
     pub fn fallbacks(&self) -> &BTreeSet<String> {
         &self.fallbacks
     }
@@ -571,37 +489,26 @@ impl OwnRefusals {
         &self.diagnostics
     }
 
-    /// The lazy readers the consumer used, whose warnings its lines carry.
     pub fn readers(&self) -> &BTreeSet<Reader> {
         &self.readers
     }
 
-    /// Whether the consumer noted a text refusal, or was credited one a memo noted: either way
-    /// one its catalogue's shared tally holds once first noted.
     pub fn refuses_texts(&self) -> bool {
         !self.texts.is_empty()
     }
 }
 
-/// One consumer scope on this thread. A capture ([`capture`]) collects
-/// without changing what the catalogue reports.
 struct Active {
     own: OwnRefusals,
     reports: bool,
-    /// Keeps what is noted inside it from the scopes outside ([`capture_isolated`]).
     isolated: bool,
 }
 
 thread_local! {
-    /// The consumer scopes active on this thread, innermost last.
     static SCOPES: std::cell::RefCell<Vec<Active>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// This thread's reads of a catalogue's shared tally ([`shared_reads`]).
     static SHARED_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// How many times this thread has read a catalogue's shared refusals or reader warnings outside
-/// every reporting scope ([`own_refusals`]): what such a read gives depends on every consumer of
-/// the source so far, not on the reader's own work.
 pub fn shared_reads() -> u64 {
     SHARED_READS.with(std::cell::Cell::get)
 }
@@ -638,8 +545,6 @@ fn scope<T>(own: &mut OwnRefusals, reports: bool, isolated: bool, run: impl FnOn
             });
         });
         let _exit = Exit(own);
-        // What the selected visual mods could not supply joins this scope, as its text refusals
-        // do; enclosing scopes observe it too, unless it is isolated.
         let (value, fallbacks) = if isolated {
             installed_content_core::content::observe_overlay_refusals_isolated(run)
         } else {
@@ -654,39 +559,26 @@ fn scope<T>(own: &mut OwnRefusals, reports: bool, isolated: bool, run: impl FnOn
     })
 }
 
-/// Runs `run` as one consumer of catalogue text. Every text refusal a
-/// catalogue notes on this thread meanwhile, and every lazy reader used,
-/// joins `own`; memoised reads credit theirs on each use ([`CachedResult`]).
-/// Inside, [`Catalogue::refusal_lines`] reports `own` rather than the
-/// catalogue's shared tally, which every consumer of the source changes at
-/// its own pace. Enclosing scopes receive what inner calls produce; the
-/// innermost scope reports.
 pub fn own_refusals<T>(own: &mut OwnRefusals, run: impl FnOnce() -> T) -> T {
     scoped(own, true, run)
 }
 
-/// What `run` noted, which reaches the enclosing scopes as well, for a memo
-/// or another thread to credit ([`credit`]) to later users.
 pub fn capture<T>(run: impl FnOnce() -> T) -> (T, OwnRefusals) {
     let mut own = OwnRefusals::default();
     let value = scoped(&mut own, false, run);
     (value, own)
 }
 
-/// [`capture`] keeping what `run` noted from the enclosing scopes and observers: the caller
-/// publishes it ([`credit`]) when it keeps `run`'s result, or drops it.
 pub fn capture_isolated<T>(run: impl FnOnce() -> T) -> (T, OwnRefusals) {
     let mut own = OwnRefusals::default();
     let value = scope(&mut own, false, true, run);
     (value, own)
 }
 
-/// Whether an isolated scope ([`capture_isolated`]) is active on this thread.
 fn isolated() -> bool {
     SCOPES.with(|scopes| scopes.borrow().iter().any(|active| active.isolated))
 }
 
-/// The active scopes a note reaches: those from the innermost isolated one in.
 fn reached(scopes: &mut [Active]) -> &mut [Active] {
     let from = scopes
         .iter()
@@ -695,8 +587,6 @@ fn reached(scopes: &mut [Active]) -> &mut [Active] {
     &mut scopes[from..]
 }
 
-/// Credits `noted` to every scope active on this thread, as if the calls
-/// that produced it ran here.
 pub fn credit(noted: &OwnRefusals) {
     if noted.is_empty() {
         return;
@@ -707,11 +597,9 @@ pub fn credit(noted: &OwnRefusals) {
             active.own.merge(noted);
         }
     });
-    // Observers outside every scope (a reply's own, for one) see the fallbacks too.
     installed_content_core::content::credit_overlay_refusals(&noted.fallbacks);
 }
 
-/// Notes that the consumers active on this thread used `reader`.
 pub fn used(reader: Reader) {
     SCOPES.with(|scopes| {
         for active in reached(&mut scopes.borrow_mut()) {
@@ -728,7 +616,6 @@ fn note_own(reason: &str, identity: &str) {
     });
 }
 
-/// `read` of the innermost reporting scope, when one is active.
 fn reporting<T>(read: impl FnOnce(&OwnRefusals) -> T) -> Option<T> {
     SCOPES.with(|scopes| {
         scopes
@@ -740,10 +627,6 @@ fn reporting<T>(read: impl FnOnce(&OwnRefusals) -> T) -> Option<T> {
     })
 }
 
-/// Named, counted refusals whose storage is bounded with a product's reply.
-/// Check after each scan step and before turning them into reply warnings.
-/// Reaching the bound refuses the whole product; it never drops individual
-/// warnings to make an otherwise successful reply fit.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BoundedRefusals {
     refused: Refusals,
@@ -776,9 +659,6 @@ impl BoundedRefusals {
         {
             return;
         }
-        // Each unique note pays for both JSON strings, including escaping,
-        // and the warning's count/label/separators. Repeated reasons paying
-        // again makes this a conservative bound on Refusals::lines output.
         let available = self.budget.saturating_sub(self.bytes + 64);
         let Some(size) = crate::transport::json_len(&(&reason, &identity), available) else {
             self.overflow = true;
@@ -823,7 +703,6 @@ impl BoundedRefusals {
 }
 
 
-// Loaded once a run, and handed through a preparation's spool as it is.
 #[cfg(any(test, feature = "test-support"))]
 impl replay_spool::Spooled for Catalogue {
     const RESIDENT: bool = true;
@@ -837,77 +716,42 @@ impl replay_spool::Spooled for Catalogue {
     }
 }
 
-/// One source's shared content facts for one set of folders and one presentation.
 pub struct Catalogue {
-    /// The recorded layers, with the source's visual mods mounted as their presentation stack.
-    /// Recorded facts read `content.layers` itself; artwork, interface and fonts read the
-    /// presentation through `ResolvedLayers::artwork` and its kin (every texture helper here
-    /// does), which draw what the mods cannot supply from the recording, by name.
     pub content: Arc<ResolvedContent>,
-    /// The visual mods the presentation shows.
     pub presentation: Presentation,
-    /// The recorded localisation, shared with country naming (`content::localisation`): parsed
-    /// once per source. Analytics labels read it; game-look text reads
-    /// [`Catalogue::presentation_localisation`].
     pub localisation: Arc<Localisation>,
-    /// Interface sprites of the presentation.
     pub sprites: SpriteSet,
-    /// Shared native templates of the presentation, loaded only when a consumer needs GUI
-    /// declarations, with what their load drew from the recording instead.
-    /// Kept per artwork mode: a strict draw neither reads nor leaves the registry an ordinary
-    /// read falls back to build.
     guis: installed_content_core::content::ByMode<
         Once<(
             Result<installed_content_core::gui::native::Guis, String>,
             BTreeSet<String>,
         )>,
     >,
-    /// The presentation's localisation, which native windows show, read on first use, with
-    /// what its load drew from the recording instead.
     presentation_localisation:
         installed_content_core::content::ByMode<Once<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
-    /// The current client's texture decode settings, used by native GUI artwork.
     pub gui_decode: Result<installed_content_image::native::Decode, String>,
-    /// Notes from verifying the recording, such as unverified content allowed by the user.
     pub verification: Vec<String>,
-    /// Standing notes about the recorded content, such as native reader logs.
     pub warnings: Vec<String>,
-    /// The recording client's game language (the replay identity's, without
-    /// its `l_`): the language of text the game stored already localised.
     pub recorded_language: String,
-    /// Every key whose text [`Catalogue::localised_with`] or
-    /// [`Catalogue::localise_in`] refused so far, by reason: a fact of the
-    /// content, reported by [`Catalogue::refusal_lines`].
     refused: Mutex<Refusals>,
     findings: Option<Mutex<BTreeSet<Finding>>>,
-    /// Scripted localisation names and the recursion limit, read on first
-    /// use ([`Catalogue::scripted_content`]).
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
     war_names: Once<Result<installed_content_wargoals::wargoals::Names, String>>,
-    /// State templates are usable without the scripted-localisation inputs.
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
-    /// The recording's own catalogue for the same folders, kept by a catalogue that shows visual
-    /// mods ([`Self::keep_recorded`]): art the mods cannot draw is drawn from it again, as one
-    /// operation, the recording's own choice made again.
     recorded: Once<Arc<Catalogue>>,
     #[cfg(any(test, feature = "test-support"))]
     content_loads: std::sync::atomic::AtomicUsize,
 }
 
 impl Catalogue {
-    /// The recording's own catalogue a catalogue showing visual mods keeps; `None` for the
-    /// recording's own.
     pub fn recorded(&self) -> Option<&Arc<Catalogue>> {
         self.recorded.get()
     }
 
-    /// Keeps `recorded`, the recording's own catalogue for these folders, the first time only.
     pub fn keep_recorded(&self, recorded: Arc<Catalogue>) {
         let _ = self.recorded.set(recorded);
     }
 
-    /// Load the presentation's complete native registry once, retaining its template order
-    /// and post-load pass. A failure refuses GUI-dependent fields; text stays usable.
     pub fn guis(&self) -> io::Result<&installed_content_core::gui::native::Guis> {
         let (guis, fallbacks) = self.guis.current().get_or_init(|| {
             #[cfg(any(test, feature = "test-support"))]
@@ -921,14 +765,10 @@ impl Catalogue {
             });
             (guis.map_err(|error| error.to_string()), fallbacks)
         });
-        // Every consumer reports what the shared load drew from the recording.
         installed_content_core::content::credit_overlay_refusals(fallbacks);
         guis.as_ref().map_err(invalid)
     }
 
-    /// The presentation's localisation in the language of [`Self::localisation`], which
-    /// game-look text (native windows) shows, read once; without visual mods it is that
-    /// localisation.
     pub fn presentation_localisation(&self) -> io::Result<Arc<Localisation>> {
         let layers = &self.content.layers;
         if !layers.presentation().shows_visual_mods() {
@@ -955,8 +795,6 @@ impl Catalogue {
         localisation.clone().map_err(invalid)
     }
 
-    /// Whether the native GUI registry has been read, for tests that check a
-    /// read never reaches it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn guis_loaded(&self) -> bool {
         self.guis.ordinary().get().is_some()
@@ -974,8 +812,6 @@ impl Catalogue {
             .as_ref()
             .map_err(Clone::clone)
     }
-    /// A catalogue over resolved content and its localisation, as the per-source
-    /// loader builds it.
     pub fn from_content(
         content: Arc<ResolvedContent>,
         presentation: Presentation,
@@ -985,8 +821,6 @@ impl Catalogue {
         recorded_language: String,
         gui_decode: Result<installed_content_image::native::Decode, String>,
     ) -> io::Result<Self> {
-        // What this load draws from the recording is credited to every later user of the
-        // catalogue's memo ([`CachedResult`]).
         let sprites = content
             .layers
             .artwork("interface sprites", installed_content_gfx::gfx::read)?;
@@ -1002,7 +836,6 @@ impl Catalogue {
         ))
     }
 
-    /// [`Self::from_content`] with its interface sprites already read.
     #[allow(clippy::too_many_arguments, reason = "each is one independent part of the catalogue")]
     pub fn from_parts(
         content: Arc<ResolvedContent>,
@@ -1023,8 +856,6 @@ impl Catalogue {
                 warnings.push(format!("Recorded content contains {count} {label}."));
             }
         }
-        // What the game does not define in the interface files, named and counted; a widget
-        // asking for a refused sprite is told why (`SpriteSet::find`).
         if !sprites.refused.is_empty() {
             warnings.push(format!(
                 "Recorded content contains {} refusals in its interface files: {}.",
@@ -1054,7 +885,6 @@ impl Catalogue {
         }
     }
 
-    /// A content-only catalogue, without a recording or identity verification.
     pub fn of_layers(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
         let localisation = Arc::new(installed_content_localisation::localisation::read(
             &layers, language,
@@ -1076,7 +906,6 @@ impl Catalogue {
         )
     }
 
-    /// Recorded-country text, with recovery notes from the same localiser walk.
     pub fn localise_in(
         &self,
         key: &str,
@@ -1102,8 +931,6 @@ impl Catalogue {
         self.localised_for(key, arguments, view, Kind::Unsupported, None)
     }
 
-    /// The same native text walk, retaining this caller's failures separately
-    /// from refusals already accumulated by other products.
     pub fn localised_with_refusals(
         &self,
         key: &str,
@@ -1114,8 +941,6 @@ impl Catalogue {
         self.localised_for(key, arguments, view, Kind::Unsupported, Some(refusals))
     }
 
-    /// Stability and special projects evaluate this text with the recorded
-    /// country on their live paths.
     pub fn localised_offline_country(&self, key: &str) -> Option<String> {
         self.localised_for(key, &[], View::Scripted, Kind::Offline, None)
     }
@@ -1132,8 +957,6 @@ impl Catalogue {
             .ok()
     }
 
-    /// [`Catalogue::localised`], or why it shows no text: the key is missing from the
-    /// localisation, or its text is refused.
     pub fn localised_or_why(&self, key: &str, view: View) -> Result<String, String> {
         self.localised_or_why_for(key, &[], view, Kind::Unsupported, None)
     }
@@ -1177,7 +1000,6 @@ impl Catalogue {
         })
     }
 
-    /// Keep missing presentation keys distinct from authored empty strings.
     pub fn has_presentation_key(&self, key: &str) -> bool {
         let key = key.split('\0').next().unwrap_or_default();
         if key.is_empty() || self.localisation.get(key).is_some() {
@@ -1191,16 +1013,10 @@ impl Catalogue {
         false
     }
 
-    /// [`Catalogue::localised_with`] with no arguments. Presentation preserves
-    /// absent versus defined empty text; the underlying native localizer retains
-    /// its own missing-key behavior.
     pub fn localised(&self, key: &str, view: View) -> Option<String> {
         self.localised_with(key, &[], view)
     }
 
-    /// The content the scripted text evaluator needs
-    /// ([`crate::scripted_text::ScriptedContent::read`]), read once. Its
-    /// reading's warnings join [`Catalogue::refusal_lines`].
     pub fn scripted_content(&self) -> Result<&crate::scripted_text::ScriptedContent, String> {
         used(Reader::Scripted);
         self.scripted
@@ -1221,12 +1037,10 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
-    /// The defines of the recording's complete evaluated content stack.
     pub fn defines(&self) -> Result<&installed_content_core::defines::Defines, String> {
         Ok(self.scripted_content()?.environment()?.defines())
     }
 
-    /// Participation factors from the recording's complete evaluated content stack.
     pub fn war_participation_factors(
         &self,
     ) -> Result<replay_data::war_participation::Factors, String> {
@@ -1251,7 +1065,6 @@ impl Catalogue {
             && self.content.layers.faction_templates_read()
     }
 
-    /// Reads what [`Self::readers_read`] waits for, as a consumer of each would.
     pub fn read_readers(&self) {
         if let Ok(scripted) = self.scripted_content() {
             drop(scripted.environment());
@@ -1280,7 +1093,6 @@ impl Catalogue {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Notes a text of `identity` not shown for `reason`.
     pub fn refuse(&self, reason: &str, identity: &str) {
         self.refuse_finding(Finding::new(Kind::Refused, identity, reason));
     }
@@ -1291,7 +1103,6 @@ impl Catalogue {
 
     pub fn refuse_finding(&self, finding: Finding) {
         note_own(&finding.message, &finding.subject);
-        // An isolated attempt's refusals stay with it until its caller keeps it ([`credit`]).
         if isolated() {
             return;
         }
@@ -1302,10 +1113,6 @@ impl Catalogue {
         self.note(finding);
     }
 
-    /// The texts refused so far, one warning per reason, and the warnings
-    /// of scripted localisation and shared content reads, including lazy reads.
-    /// Inside a consumer scope ([`own_refusals`]) these are the consumer's own
-    /// refusals and the warnings of the readers it used, in the same form.
     pub fn refusal_lines(&self) -> Vec<String> {
         self.refusal_entries()
             .into_iter()
@@ -1313,8 +1120,6 @@ impl Catalogue {
             .collect()
     }
 
-    /// Text summaries retain their actual identity count; reader warnings have
-    /// no measured affected-item count. Consumers never parse warning prose.
     pub fn refusal_entries(&self) -> Vec<(String, Option<usize>)> {
         let texts = |refused: &Refusals| -> Vec<(String, Option<usize>)> {
             refused
@@ -1340,10 +1145,6 @@ impl Catalogue {
         lines
     }
 
-    /// Shared lazy-reader and uncovered-read warnings without another
-    /// product's accumulated text/artwork refusals. Inside a consumer scope,
-    /// only the lazy readers the consumer used report, without the stack's
-    /// live artwork-effect and uncovered-read diagnostics.
     pub fn reader_warning_lines(&self) -> Vec<String> {
         if let Some(readers) = reporting(|own| own.readers.clone()) {
             return self.used_reader_warning_lines(&readers);
@@ -1384,13 +1185,6 @@ impl Catalogue {
         lines
     }
 
-    /// [`Self::reader_warning_lines`] of the lazy readers one consumer used,
-    /// read now when this process has not read them yet, in the same order.
-    /// The stack's artwork-effect and uncovered-read diagnostics are left
-    /// out: any consumer's read adds to them at its own pace, so they are
-    /// reported where a reply is served
-    /// ([`diagnostics::Diagnostics::append_to`]), never in a consumer's
-    /// published lines.
     fn used_reader_warning_lines(&self, readers: &BTreeSet<Reader>) -> Vec<String> {
         let mut lines = Vec::new();
         if readers.contains(&Reader::Scripted)
@@ -1412,7 +1206,6 @@ impl Catalogue {
             );
         }
         if readers.contains(&Reader::FactionTemplates) {
-            // Diagnostics report an already-read template set.
             let _ = self.content.layers.faction_templates();
             lines.extend(self.content.layers.faction_template_diagnostics());
         }
@@ -1439,7 +1232,6 @@ impl Catalogue {
             .unwrap_or_default()
     }
 
-    /// A collector owned exclusively by one offline preparation, never by a live source.
     pub fn of_layers_for_check(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
         let mut catalogue = Self::of_layers(layers, language)?;
         catalogue.findings = Some(Mutex::default());
@@ -1447,15 +1239,10 @@ impl Catalogue {
     }
 }
 
-/// Loads a texture through the shared native GUI resource path. Textures sit
-/// outside content hash coverage.
 pub fn read_texture(layers: &ResolvedLayers, path: &str, decode: Decode) -> io::Result<Rgba8Image> {
     gui_texture(layers, path.as_bytes(), decode)
 }
 
-/// A bare texture's first frame of a horizontal strip (the normal state; a
-/// sprite sheet is never stretched), point-sampled down to `max_edge`, as its
-/// artwork URL. Sprite artwork goes through [`sprite_frame_png`].
 pub fn texture_png(
     layers: &ResolvedLayers,
     path: &str,
@@ -1466,8 +1253,6 @@ pub fn texture_png(
     texture_frame_png(layers, path, decode, frames, 0, max_edge)
 }
 
-/// One native frame (zero-based) of a horizontal sprite sheet, as
-/// [`texture_png`] reads the first.
 pub fn texture_frame_png(
     layers: &ResolvedLayers,
     path: &str,
@@ -1479,14 +1264,6 @@ pub fn texture_frame_png(
     gui_texture_frame_png(layers, path.as_bytes(), decode, frames, frame, max_edge)
 }
 
-/// Native GUI texture loading: `resources::stack_texture` (the resolver, its
-/// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
-/// then RGBA8. Raw texture paths and shields use this path; decoded edges are
-/// bounded only by the decoder's device limit.
-///
-/// The texture is read from the presentation of `layers` (the recorded stack a
-/// catalogue holds); one the visual mods cannot supply is the recording's, named
-/// like the map's (`ResolvedLayers::artwork`).
 pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::Result<Rgba8Image> {
     layers.artwork(
         &format!("texture {}", String::from_utf8_lossy(name)),
@@ -1494,7 +1271,6 @@ pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::
     )
 }
 
-/// [`gui_texture`] from `layers` alone.
 fn stack_gui_texture(
     layers: &ResolvedLayers,
     name: &[u8],
@@ -1514,8 +1290,6 @@ fn stack_gui_texture(
     installed_content_image::rgba::dds_base(texture.image)
 }
 
-/// One frame of a bare texture's horizontal strip, as [`texture_frame_png`]
-/// reads it. A sprite's frame is drawn by [`sprite_frame_png`] instead.
 pub fn gui_texture_frame_png(
     layers: &ResolvedLayers,
     name: &[u8],
@@ -1545,12 +1319,6 @@ fn image_frame_png(
     png_url(&native_frame(image, &plain, frame, max_edge)?)
 }
 
-/// A sprite's authored frame at time zero, using native strip geometry and
-/// the content's resolved Up program, including overrides of the default effect.
-/// It is drawn from the presentation of `layers`, or, when the visual mods cannot
-/// supply its texture or effect, from the recording, named
-/// (`ResolvedLayers::artwork`); the presentation stack keeps the image of a frame of the
-/// strip (`strip_frame`). A frame past the strip is drawn as the game draws it, every time.
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
     sprite: &installed_content_gfx::gfx::SpriteType,
@@ -1570,8 +1338,6 @@ pub fn sprite_frame_png(
     cache.get(sprite_image_key(sprite, decode, frame, max_edge), render)
 }
 
-/// Whether `frame` is one of the frames `sprite`'s strip declares, the only frames its images
-/// are kept for. Kinds drawn without a strip refuse every frame alike, so only frame 0 is kept.
 fn strip_frame(sprite: &installed_content_gfx::gfx::SpriteType, frame: u32) -> bool {
     use installed_content_core::gui::native::sprites::SpriteKind;
     match &sprite.facts.kind {
@@ -1582,10 +1348,6 @@ fn strip_frame(sprite: &installed_content_gfx::gfx::SpriteType, frame: u32) -> b
     }
 }
 
-/// What `render` draws of `sprite` (a sprite of the presentation of `layers`) from that
-/// presentation, or, when the visual mods cannot supply it, of the recording's own sprite of
-/// that name from the recording, named (`ResolvedLayers::artwork`): the mods' declaration is
-/// never retried against the recording's files.
 pub fn sprite_artwork<T>(
     layers: &ResolvedLayers,
     sprite: &installed_content_gfx::gfx::SpriteType,
@@ -1607,8 +1369,6 @@ pub fn sprite_artwork<T>(
     })
 }
 
-/// The recording's interface sprites, read once per recorded stack (`layers`), which artwork the
-/// visual mods cannot supply is drawn with.
 pub fn recorded_sprites(layers: &ResolvedLayers) -> Arc<Result<SpriteSet, String>> {
     #[derive(Default)]
     struct Recorded(Once<Arc<Result<SpriteSet, String>>>);
@@ -1623,7 +1383,6 @@ pub fn sprite_image_key(
     frame: u32,
     max_edge: u32,
 ) -> String {
-    // A strict draw's image is kept apart from a fallback-permitted one's.
     format!(
         "{:?}/{:?}/{:?}/{frame}/{max_edge}/{:?}",
         sprite.name,
@@ -1633,19 +1392,10 @@ pub fn sprite_image_key(
     )
 }
 
-/// The zero-based frame an authored icon `frame` draws in the Up state: `F - 1`
-/// for `F > 0`, unclamped (past the strip the effect's sampler reads on), and
-/// the first frame for zero or a negative frame.
 pub fn authored_frame(frame: i32) -> u32 {
     u32::try_from(frame).map_or(0, |frame| frame.saturating_sub(1))
 }
 
-/// Render requested (sprite, frame) draws together from the presentation of
-/// `layers` into its sprite images. A draw those images already hold under the
-/// current artwork mode, a repeat, or a frame past the strip (`strip_frame`) is not drawn;
-/// fewer than two left are left to [`sprite_frame_png`]. Callers retry a refused batch
-/// through [`sprite_frame_png`], preserving each draw's refusal and drawing what
-/// the visual mods cannot supply from the recording.
 pub fn sprite_frames_png(
     layers: &ResolvedLayers,
     requests: &[(&installed_content_gfx::gfx::SpriteType, u32)],
@@ -1706,11 +1456,8 @@ pub fn sprite_frames_png(
     Ok(())
 }
 
-/// The image, and what its render drew from the recording instead of the visual mods,
-/// credited to every later user.
 type ImageEntry = Once<(Result<String, String>, BTreeSet<String>)>;
 
-/// The presentation stack's drawn artwork: each strip frame shown, drawn once per content binding.
 #[derive(Default)]
 pub struct SpriteImages {
     entries: Mutex<BTreeMap<String, Arc<ImageEntry>>>,
@@ -1740,7 +1487,6 @@ impl SpriteImages {
         result.clone().map_err(invalid)
     }
 
-    /// An image drawn as [`SpriteImages::get`] draws it, credited alike, and not kept.
     fn unkept(render: impl FnOnce() -> io::Result<String>) -> io::Result<String> {
         let (result, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
         installed_content_core::content::credit_overlay_refusals(&fallbacks);
@@ -1758,8 +1504,6 @@ fn render_sprite_frame_png(
     use installed_content_core::gui::native::sprites::SpriteKind;
     let (plain, animated) = match &sprite.facts.kind {
         SpriteKind::Plain(plain) => (plain, None),
-        // Frame-animated sprites share the plain sprite facts and add
-        // their authored frame animation.
         SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
         _ => {
             return Err(invalid(format!(
@@ -1769,8 +1513,6 @@ fn render_sprite_frame_png(
             )));
         }
     };
-    // Animation initialization supplies the default effect path;
-    // drawing binds that stack-resolved program and its samplers.
     sprite::frame(layers, plain, animated, decode, frame, max_edge)
         .and_then(|image| png_url(&image))
         .map_err(|error| invalid(format!("sprite {}: {error}", sprite.name)))
@@ -1780,9 +1522,6 @@ mod shield;
 mod sprite;
 pub use shield::MaskedShield;
 
-/// One frame of a plain sprite's texture, point-sampled down to `max_edge`.
-/// The query uses the integer extent while geometry steps frames by the
-/// fractional pitch. Both divide the padded texture extent.
 fn native_frame(
     image: &Rgba8Image,
     plain: &Plain,
@@ -2140,7 +1879,6 @@ pub mod tests {
         assert_eq!(caller.len(), 1);
         assert!(caller[0].0.contains(expected));
         assert_eq!(caller[0].1, 1);
-        // The reply owns the reason; the shared catalogue does not grow with each missing key.
         assert_eq!(catalogue.refusal_lines(), before);
     }
 
@@ -2272,7 +2010,6 @@ pub mod tests {
         tga.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255]);
         std::fs::write(folder.0.join("gfx/interface/icon.tga"), tga).unwrap();
         let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
-        // The resolver tries icon.dds, icon.tga, then the supplied name.
         let image = gui_texture(
             &layers,
             b"gfx/interface/icon.png",
@@ -2282,7 +2019,6 @@ pub mod tests {
         )
         .unwrap();
         assert_eq!((image.width, image.height), (4, 1));
-        // Power-of-two padding fills the FreeImage RGB format with opaque black.
         assert_eq!(&image.pixels[12..16], &[0, 0, 0, 255]);
     }
 
@@ -2306,8 +2042,6 @@ pub mod tests {
         )
     }
 
-    /// Localisation as the game content loads it: `yml` is one file of a
-    /// folder layer, read by `installed_content_localisation::localisation::read`.
     pub fn loaded(yml: &str) -> Localisation {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -2325,14 +2059,12 @@ pub mod tests {
         installed_content_localisation::localisation::read(&layers, "english").unwrap()
     }
 
-    /// A faction catalogue through the production reader, without a second parser.
     pub fn loaded_templates(text: &str) -> Arc<installed_content_core::faction_templates::Catalog> {
         let (catalogue, _folder) =
             folder_catalogue(&[("common/factions/templates/test.txt", text)]);
         catalogue.content.layers.faction_templates().unwrap()
     }
 
-    /// A content folder written for a test, removed when dropped.
     pub struct Folder(pub std::path::PathBuf);
 
     impl Drop for Folder {
@@ -2341,9 +2073,6 @@ pub mod tests {
         }
     }
 
-    /// A catalogue over one content folder holding `files` (path, text), read
-    /// by the same readers the dashboard's catalogue loader uses, in English. The folder
-    /// lives as long as the returned guard.
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -2354,7 +2083,6 @@ pub mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let folder = Folder(root.clone());
-        // A content folder must exist even when it holds no files.
         std::fs::create_dir_all(&root).unwrap();
         if files.iter().any(|(path, _)| path.ends_with(".gfx")) {
             super::texture_tests::write_sprite_program(&root);
@@ -2368,7 +2096,6 @@ pub mod tests {
         (layers_catalogue(layers), folder)
     }
 
-    /// The same catalogue seam for fixtures with several content layers.
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -2480,8 +2207,6 @@ pub mod tests {
         }
     }
 
-    /// Stored controls: colour codes and inline images leave the plain text,
-    /// a doubled `§` is the character, and a spacing control is refused.
     #[test]
     fn plain_text_reads_the_stored_controls() {
         let loc = fixture();
@@ -2508,18 +2233,13 @@ pub mod tests {
         );
     }
 
-    /// The shared localiser's rules, not a private engine's: `$$` is one `$`,
-    /// a nested key the content lacks writes nothing, a `]` alone is a
-    /// glyph, and the 0x1800-byte buffer cuts a long text.
     #[test]
     fn text_follows_the_games_localiser() {
         let loc = fixture();
         assert_eq!(localised(&loc, "PRICE", View::Plain), Ok("Price $5".into()));
         assert_eq!(localised(&loc, "BROKEN", View::Plain), Ok("ab".into()));
         assert_eq!(localised(&loc, "BRACKET", View::Plain), Ok("A]B".into()));
-        // 0xC00 two-byte characters fill the buffer exactly; the `x` is cut.
         assert_eq!(localised(&loc, "LONG", View::Plain), Ok("é".repeat(0xC00)));
-        // A key the content lacks is copied as its bytes.
         assert_eq!(
             localised(&loc, "Not a key", View::Plain).as_deref(),
             Ok("Not a key")
@@ -2530,9 +2250,6 @@ pub mod tests {
         );
     }
 
-    /// Scripted views evaluate `[...]`: a plain view shows the
-    /// brackets as glyphs; a scripted view needs a scope for a closed
-    /// expression and drops the text at an unclosed `[`.
     #[test]
     fn brackets_follow_the_view() {
         let loc = fixture();
@@ -2541,7 +2258,6 @@ pub mod tests {
             Ok("[ROOT.GetName]".into())
         );
         assert_eq!(localised(&loc, "OPEN", View::Plain), Ok("A[B".into()));
-        // Without the country it is shown for, a closed expression is refused.
         assert_eq!(
             localised(&loc, "SCOPED", View::Scripted),
             Err(
@@ -2703,7 +2419,6 @@ pub mod tests {
         assert!(refused.check().is_err());
         assert_eq!(refused.refused.0, names);
         assert_eq!(refused.bytes, refused.budget - 1);
-        // Into<String> is never called once the overflow flag is set.
         struct NoConversion;
         impl From<NoConversion> for String {
             fn from(_: NoConversion) -> Self {
@@ -2722,7 +2437,6 @@ pub mod tests {
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
-        // A reply's reads are reported from its own diagnostics scope.
         let ((entries, lines, warnings), _) = installed_content_core::content::diagnostics::capture(|| {
             catalogue
                 .content
@@ -2756,9 +2470,6 @@ pub mod tests {
         assert_eq!(warnings, [reads.warning().unwrap()]);
     }
 
-    /// A consumer's scope reports its own refusals in the shared tally's form;
-    /// another consumer's refusals, before or after, stay out, and the tally a
-    /// consumer saved reports the same when restored.
     #[test]
     fn own_refusal_scopes_report_only_their_own_refusals_and_survive_saving() {
         let (catalogue, _folder) = folder_catalogue(&[(
@@ -2777,7 +2488,6 @@ pub mod tests {
             "{lines:?}"
         );
         catalogue.refuse("later reason", "LATER");
-        // The shared tally holds every consumer's refusals.
         let shared = catalogue.refusal_lines();
         assert_eq!(shared.len(), 3, "{shared:?}");
         let saved: OwnRefusals =
@@ -2791,7 +2501,6 @@ pub mod tests {
         assert_eq!(catalogue.refusal_lines(), shared);
     }
 
-    /// A read of the shared tally is counted on its thread; a consumer's own read is not.
     #[test]
     fn shared_reads_count_only_reads_outside_every_reporting_scope() {
         let (catalogue, _folder) = folder_catalogue(&[(
@@ -2815,8 +2524,6 @@ pub mod tests {
         assert!(shared_reads() > after);
     }
 
-    /// A cached result's read refused once, for whichever consumer read first;
-    /// every consumer that uses the result reports the refusal.
     #[test]
     fn cached_results_credit_their_read_refusals_to_every_consumer() {
         let (catalogue, _folder) = folder_catalogue(&[(
@@ -2845,8 +2552,6 @@ pub mod tests {
         assert_eq!(first, second);
     }
 
-    /// A memo's render refused a text once, for whichever consumer drew it first; every consumer
-    /// that uses the memo reports the refusal.
     #[test]
     fn memos_credit_their_render_refusals_to_every_consumer() {
         let (catalogue, _folder) = folder_catalogue(&[(
@@ -2874,8 +2579,6 @@ pub mod tests {
         assert_eq!(first, second);
     }
 
-    /// Inside a scope, lazy reader warnings report only for readers the
-    /// consumer used, read again on a stack that has not read them yet.
     #[test]
     fn own_scopes_report_the_warnings_of_the_readers_they_used() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2885,7 +2588,6 @@ pub mod tests {
             "bad={name=token:missing_name visible=yes}",
         )];
         let (catalogue, _folder) = folder_catalogue(&files);
-        // Another consumer reads the templates.
         let templates = catalogue.content.layers.faction_templates().unwrap();
         assert!(!templates.warnings.is_empty());
         assert_eq!(catalogue.reader_warning_lines(), templates.warnings);
@@ -2986,9 +2688,7 @@ pub mod tests {
             values(sample(strip(2, 1), 1, 4).unwrap()),
             [8, 9, 10, 11, 12, 13, 14, 15]
         );
-        // Downsampled at pixel centres.
         assert_eq!(values(sample(strip(1, 0), 0, 2).unwrap()), [5, 7, 13, 15]);
-        // Three frames over four texels: one queried texel, a 4/3 pitch.
         assert_eq!(values(sample(strip(3, 0), 1, 4).unwrap()), [2, 6, 10, 14]);
         assert!(sample(strip(5, 0), 0, 4).is_err());
         assert!(sample(strip(1, 0), 0, 0).is_err());

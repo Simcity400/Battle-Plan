@@ -1,6 +1,3 @@
-//! The content the hourly temperature pass reads ([`replay_data::temperature::Content`]), through the
-//! recorded content stack: the loaded `common/weather.txt`, each province record's weather setup
-//! and strategic-region link, and each region template's weather periods.
 
 use std::{collections::BTreeMap, io};
 
@@ -18,13 +15,11 @@ use crate::{
     regions::StrategicRegions,
 };
 
-/// The stack's content, reading the province graph.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Content> {
     let (graph, geometry) = ProvinceGraph::read(layers)?;
     read_with(layers, &graph, &geometry)
 }
 
-/// The stack's content with an already-read province graph and geometry.
 pub fn read_with(
     layers: &ResolvedLayers,
     graph: &ProvinceGraph,
@@ -56,11 +51,6 @@ pub fn read_with(
     )
 }
 
-/// Temperature settings, update window and terrain modifiers. Each `settings` assignment
-/// overwrites; each `terrain_modifiers` block clears every kind before appending its entries.
-/// `temperature` (token 0x2F01) selects kind 1's list. A terrain modifier starts at terrain -1 and
-/// value zero; `type` stores the found terrain's ordinal, or the null terrain's zero when none
-/// matches. `value` reads fixed5 and remains unchanged when conversion fails.
 #[cfg(test)]
 pub(crate) fn settings(bytes: &[u8], ordinal: impl Fn(&[u8]) -> i32) -> io::Result<Settings> {
     let document = super::parse_weather(bytes)?;
@@ -106,7 +96,6 @@ fn settings_from(document: &crate::parser::native::Read, ordinal: impl Fn(&[u8])
                     let Some(text) = field.value.scalar() else {
                         continue;
                     };
-                    // Convert settings to fixed5 or signed integers.
                     let fixed = crate::fixed5::decimal_fixed5(text);
                     let slot = if temperature {
                         if field.keyword_is("temperature_variation") {
@@ -134,14 +123,6 @@ fn settings_from(document: &crate::parser::native::Read, ordinal: impl Fn(&[u8])
     Ok(settings)
 }
 
-/// Every weather slot's setup. A slot is active when its id is positive and its definition has a
-/// pixel; its neighbours are every record of the definition's neighbour table, and its terrain is
-/// the definition terrain's ordinal when that terrain is valid. Every category is valid; the null
-/// terrain's validity is unread, so a null-terrain record is settled only when no temperature
-/// modifier also names the null terrain, and a record invented for an unclaimed colour has an
-/// unread default terrain. Each province's region is the last region, in id order, whose province
-/// vector holds it. Initialization visits regions by id; each insertion overwrites the province's
-/// region link.
 pub(crate) fn from_parts(
     neighbours: impl Fn(u32) -> Vec<u32>,
     geometry: &ProvinceGeometry,

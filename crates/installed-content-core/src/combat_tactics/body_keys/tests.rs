@@ -249,8 +249,6 @@ fn invalid_meta_parameters_use_record_errors_skip_after_the_raw_read() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = read(
-        // Error recovery consumes one closing delimiter; each enclosing loop
-        // then needs its own delimiter before the file resumes.
         "body = { meta_trigger = { text = { ] } @lost = 2 debug = yes } } } @kept = 3 marker = @kept lost = @lost kept = @kept",
         &KeyNames::default(),
     );

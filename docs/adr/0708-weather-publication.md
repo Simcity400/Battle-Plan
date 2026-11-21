@@ -1,0 +1,9 @@
+# 0708. Read committed weather and retain independent stored values
+
+Sample after the weather jobs complete. Province staging finishes before publication, and the display bytes are written serially. Province records are updated in rotating subsets. Each captures its committed state so an unvisited province keeps what the game still stores. Region jobs follow province publication, and the collector reads the completed region flags and custom values used by the map and naval combat window.
+
+Retain signed fixed-point temperature and snow words at full width, including a stored zero. Working drift and staged temperature remain distinct from committed drift and temperature until the record's commit flag is set. The calculation applies the clamped working drift, while the smoothing pass averages the active neighbours' stored drift words. The weather manager's display mud can combine raw and custom mud, so display mud is independent of the province tooltip's raw value. Region flags are independent bytes, and custom sea values follow template entry order. Replacing them with a single weather kind would lose valid combinations.
+
+Read the manager's clock and display arrays in physical province slot order. Join them only when the authenticated arrays agree with the province count. A clock record commits both words only after the whole exact record copies. Province static modifiers retain list order, raw remaining days and authenticated definition names. A nonpositive days value denotes a non-expiring entry. A failed list copy drops the partial list. The typed and owned-copy paths share exact decoding, keeping original field-failure order. Fixed batches avoid allocating on the game thread.
+
+[Province weather](../../crates/engine-native/src/sweather_per_province.rs) · [Region weather](../../crates/engine-native/src/sweather_per_region.rs)

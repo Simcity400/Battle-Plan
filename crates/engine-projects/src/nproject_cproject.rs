@@ -1,6 +1,3 @@
-//! Country-local projects with a serializer-owned history vector. Local IDs
-//! are unique only within the owning country. History count is distinct from
-//! the prototype state's iterations.
 
 use crate::{
     Memory, ccountry,
@@ -13,37 +10,21 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Project primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_f400);
-/// Project reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 86;
-/// Contiguous project-pool stride.
 pub const POOL_STRIDE: usize = 0x1c0;
-/// Project u32 reference type.
 pub const TYPE: usize = 0x08;
-/// Project u32 country-local ID.
 pub const ID: usize = 0x0c;
-/// Static project-definition u32 handle.
 pub const DEFINITION_HANDLE: usize = 0x18;
-/// Project u32 owner country link copied at construction.
 pub const OWNER: usize = 0x1c;
-/// Project-state-machine pointer.
 pub const STATE_MACHINE: usize = 0x28;
-/// Worked-at program u32 reference type.
 pub const PROGRAM_REFERENCE_TYPE: usize = 0x60;
-/// Project-history vector data pointer.
 pub const HISTORY: usize = 0x68;
-/// Project-history u32 capacity.
 pub const HISTORY_CAPACITY: usize = 0x70;
-/// Project-history signed count.
 pub const HISTORY_COUNT: usize = 0x74;
-/// Project started u8 flag, restricted to zero or one.
 pub const STARTED: usize = 0x1bc;
-/// Project completed u8 flag, restricted to zero or one.
 pub const COMPLETED: usize = 0x1bd;
-/// Embedded persistent project variable store.
 pub const VARIABLES: usize = 0x138;
-/// Nullable authored prototype reward awaiting a choice.
 pub const PENDING_REWARD: usize = 0x190;
 pub const REWARD_TOKEN: usize = 0x08;
 pub const REWARD_VTABLE_RVA: Rva = Rva(0x2799268);
@@ -52,9 +33,6 @@ const TEMPLATE_DATA: usize = 0x18;
 const TEMPLATE_VTABLE_RVA: Rva = Rva(0x29b_dee8);
 const TEMPLATE_REWARDS: usize = 0x358;
 
-/// The pending object's occurrence in this project's retained template. The
-/// same token may name distinct inline objects, so its spelling alone is not
-/// identity. This lookup runs only when the certified pending offer changes.
 pub fn pending_reward_ordinal(
     memory: &impl Memory,
     base: usize,
@@ -92,10 +70,6 @@ pub fn pending_reward_ordinal(
     Err("pending reward object is absent from its template")
 }
 
-/// A batch's identity gather and its state-machine gather are both checked for
-/// the whole batch before any record is decoded, so this size is part of the
-/// walker's error precedence, not a free tuning knob: a wider batch would let a
-/// later record's copy fault outrank an earlier record's validation failure.
 const BATCH: usize = 16;
 const HEADER_LEN: usize = HISTORY_COUNT + 4;
 const RECORD_SIZE: usize = HEADER_LEN + 2;
@@ -119,12 +93,10 @@ const PROJECT_HEADER_LAYOUT: RecordLayout<'static> =
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Same-pass acquisition only; never serialized or followed by decoding.
     pub source_pointer: usize,
     pub owner: u32,
     pub local_id: u32,
     pub definition_id: u32,
-    /// Full initialized CProgram reference, including the native empty sentinel.
     pub program_reference: u64,
     pub started: u8,
     pub completed: u8,
@@ -137,10 +109,6 @@ impl Row {
     }
 }
 
-/// Visits the single project pool of each authenticated country `select`
-/// admits by native id; an unselected country's status and pool are not read.
-/// Pool count is the engine's signed live extent; no collector-specific cap or
-/// speculative adjacent pool/status scan is used.
 fn for_each_pool<M: Memory>(
     memory: &M,
     base: usize,
@@ -172,9 +140,6 @@ fn for_each_pool<M: Memory>(
     Ok(())
 }
 
-/// Captures every pool row, including projects never started. IDs are local to
-/// the owning country. Only capacity limits the walk; exact engine-native
-/// values are neither rounded nor inferred from the saved completion flags.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_tables(
         memory,
@@ -191,9 +156,6 @@ pub fn count_with_history(memory: &impl Memory, base: usize, game_state: usize) 
     walk_with_history_buffer(memory, base, game_state, Buffer::Count, Buffer::Count)
 }
 
-/// One authenticated pool census produces both tables. Lifecycle/state failures
-/// affect projects only; malformed history affects history only. Empty output
-/// slices still count omitted rows without reading their state/child payloads.
 #[cfg(test)]
 pub fn walk_with_history(
     memory: &impl Memory,
@@ -228,9 +190,6 @@ pub fn walk_with_history_buffer(
     )
 }
 
-/// [`walk_with_history_buffer`] over the pools of the countries `select`
-/// admits by native id only: their rows, in the same order and with the same
-/// failure precedence, as a walk of every pool returns them.
 pub fn walk_with_history_selected(
     memory: &impl Memory,
     base: usize,
@@ -247,7 +206,6 @@ pub struct PartitionReport {
     pub census_error: Option<&'static str>,
 }
 
-/// Partition capture defers global duplicate checks to its ordered join.
 pub fn walk_partition(
     memory: &impl Memory,
     base: usize,
@@ -308,8 +266,6 @@ fn walk_tables_report(
             game_state,
             select,
             |countries, country, pool| {
-                // The project-pool walker supplies the original signed
-                // project-pool extent.
                 if project_error.is_none() {
                     projects.ensure(
                         project_len
@@ -318,8 +274,6 @@ fn walk_tables_report(
                     )?;
                 }
                 let mut index = 0;
-                // Alias resolution is valid for this one synchronous pool census.
-                // It never survives into another callback or comparison read.
                 let mut authenticated_owner = country.id;
                 while index < pool.count {
                     let capture_project = project_error.is_none() && project_len < projects.len();
@@ -354,9 +308,6 @@ fn walk_tables_report(
                         return Err("project identity unreadable");
                     }
                     if copied < count * fields.len() {
-                        // A flag read failed after its header completed. Keep all
-                        // history headers, then continue after that record without
-                        // retrying its failed field or accessing its state machine.
                         project_error = Some("project lifecycle unreadable");
                     }
                     for ordinal in 0..header_count {
@@ -382,7 +333,6 @@ fn walk_tables_report(
                                 .map_err(|_| "project state address overflow")?;
                     }
                     if capture_project && project_error.is_none() {
-                        // The recorded words, then each row's current phase.
                         let copied = memory.copy_records(
                             RecordSources::Pointers(&machine_pointers[..header_count]),
                             &machine::LAYOUT,
@@ -453,8 +403,6 @@ fn walk_tables_report(
                         {
                             let result = (|| {
                                 let array = history_array(bytes[..HEADER_LEN].try_into().unwrap())?;
-                                // Project history update retains this history
-                                // vector in its parent header.
                                 output.ensure(
                                     history_len
                                         .checked_add(array.count as usize)
@@ -686,7 +634,6 @@ mod tests {
         put32(&mut bytes, PROJECT + TYPE, REFERENCE_TYPE);
         put32(&mut bytes, PROJECT + ID, 17);
         put32(&mut bytes, PROJECT + DEFINITION_HANDLE, 45);
-        // Project retains the original tag while the country's current id is3.
         put32(&mut bytes, PROJECT + OWNER, 1);
         put64(&mut bytes, PROJECT + STATE_MACHINE, MACHINE as u64);
         bytes[PROJECT + STARTED] = 1;
@@ -768,8 +715,6 @@ mod tests {
         bytes
     }
 
-    /// A walk over a selection reads an unselected country's status and pool
-    /// not at all and returns the selected pools' rows as a full walk does.
     #[test]
     fn a_selected_walk_reads_only_the_selected_pools() {
         struct Reads<'a> {

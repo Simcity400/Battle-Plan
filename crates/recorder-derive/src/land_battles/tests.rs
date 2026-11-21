@@ -11,7 +11,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// One combat as the hour's census reads it.
 #[derive(Clone)]
 struct Fought {
     id: u64,
@@ -19,7 +18,6 @@ struct Fought {
     duration: i32,
     attackers: Vec<u64>,
     defenders: Vec<u64>,
-    /// Side country references; none without a LandCombatSides row.
     sides: Option<[Vec<u32>; 2]>,
     manpower: [i32; 2],
 }
@@ -28,7 +26,6 @@ fn fought(id: u64, province: u32, duration: i32, attackers: &[u64], defenders: &
     Fought { id, province, duration, attackers: attackers.to_vec(), defenders: defenders.to_vec(), sides: Some([vec![1], vec![2]]), manpower: [duration * 3, duration * 2] }
 }
 
-/// A finalizer of combat `combat` at `province`, ending at `end_hour`, attacker winning.
 fn finalizer(id: u64, combat: u64, province: u32, end_hour: i32) -> LandCombatResultsRow {
     LandCombatResultsRow {
         id,
@@ -47,9 +44,7 @@ fn finalizer(id: u64, combat: u64, province: u32, end_hour: i32) -> LandCombatRe
 struct Input {
     combats: Vec<Fought>,
     finalizers: Vec<LandCombatResultsRow>,
-    /// The hour's drain and whether it was read whole.
     drain: Option<bool>,
-    /// LandCombats not read this hour.
     unread: bool,
 }
 
@@ -93,7 +88,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, first: bool, input: 
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// LandBattles: combat, start, exact, counter base, peak total and its hour.
 fn battles(store: &Store) -> Vec<(u64, i32, bool, i32, Option<(i64, i64)>)> {
     let view = store.view(TableId::LandBattles.index());
     let mut rows: Vec<_> = view
@@ -168,8 +162,6 @@ fn ending(combat: u64, start: i32, kind: u8, end_hour: i32, last_read: Option<i6
     }
 }
 
-/// The scripted hours, 0 through 8. Finalizers 51 and 52 carry the hour of the read before their
-/// drain, as a command run after that read stamps them.
 fn script(hour: i32) -> Input {
     let drained = Some(true);
     match hour {
@@ -224,11 +216,6 @@ fn battles_begin_peak_and_end_by_absence_reuse_finalizer_and_unread_census() {
     assert_eq!(seen[8].1, vec![ending(10, 7, End::ABSENT, 8, Some(7), None, false)], "an end under a drain not read whole has its result not recorded");
 }
 
-/// A drain holds results stamped with the read before it, from commands run after that read. Such a
-/// result ends a battle still read at the drain's hour (20); a battle the census just closed as
-/// reused before its replacement (30), whose later reads stay that replacement's; a battle gone at
-/// the drain's hour (40, 50); and a battle first read at the drain's hour, begun after the read
-/// before (60).
 #[test]
 fn a_result_of_the_read_before_ends_the_battle_it_belongs_to_never_the_one_that_replaced_it() {
     let (mut store, mut writers) = (testing::store(), writers());
@@ -266,9 +253,6 @@ fn a_result_of_the_read_before_ends_the_battle_it_belongs_to_never_the_one_that_
     assert_eq!(seen[4].1, vec![ending(50, 1, End::ABSENT, 4, Some(3), Some(74), true)], "a result of the hour after its last read");
 }
 
-/// Two results of one combat ending at one hour in one drain, neither ending a battle, share its
-/// result-only row: what both give alike, and not recorded what they give apart; the writer is
-/// not failed for it.
 #[test]
 fn two_results_of_one_combat_ending_at_one_hour_are_one_row_of_what_they_agree_on() {
     let (mut store, mut writers) = (testing::store(), writers());

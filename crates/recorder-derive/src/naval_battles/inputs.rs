@@ -1,5 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{Hour, columns};
 use replay_columnar::store::TableView;
@@ -14,16 +12,12 @@ pub(super) const PROVINCE: [usize; 1] = columns::<NavalCombatRow, 1>(["province"
 pub(super) const MEMBER: [usize; 2] = columns::<NavalCombatParticipantRow, 2>(["ship", "state"]);
 const SOURCE: [usize; 6] = columns::<NavalResultSourceRow, 6>(["game_hour", "result", "combat", "merged", "transient", "combat_created_hour"]);
 
-/// The participant state bit of a sunk member.
 const SUNK: i64 = 0x20;
 
-/// A NavalCombats row's province.
 pub(super) fn province(view: &TableView<'_>, slot: u32) -> io::Result<u32> {
     view.number(PROVINCE[0], slot).map(|province| province as u32).ok_or_else(|| invalid(format!("NavalCombats slot {slot} does not hold its province")))
 }
 
-/// A participant: its combat and side by its key, whether it is a convoy (a zero ship) and sunk;
-/// none for a cell not recorded.
 pub(super) struct Member {
     pub combat: u64,
     pub side: usize,
@@ -40,7 +34,6 @@ pub(super) fn member_combat(key: u128) -> u64 {
     (key >> 33) as u64
 }
 
-/// A combat-to-result transition of the hour's drain.
 pub(super) struct Source {
     pub id: u64,
     pub game_hour: i32,
@@ -51,7 +44,6 @@ pub(super) struct Source {
     pub created: Option<i32>,
 }
 
-/// The sources NavalResultSources gave this hour, by id; none while it is not complete.
 pub(super) fn sources(hour: &Hour<'_>) -> io::Result<Option<Vec<Source>>> {
     let table = TableId::NavalResultSources;
     if !hour.complete(table) {
@@ -73,7 +65,6 @@ pub(super) fn sources(hour: &Hour<'_>) -> io::Result<Option<Vec<Source>>> {
     Ok(Some(out))
 }
 
-/// A NavalBattles row's cells: first hour, peak ships and hour, sunk floors, convoys-sunk floors.
 pub(super) struct Held {
     pub first: i32,
     pub peak: Option<(u32, i32)>,

@@ -1,4 +1,3 @@
-//! Pinned engine layouts, guarded reads and the measured hourly sampling boundary.
 
 pub use engine_air_history::air_history_mutations;
 pub use engine_air_history::air_kamikaze;
@@ -358,7 +357,6 @@ pub use engine_stability::cworld_threat;
 pub use engine_stability::dynamic_modifier_entry;
 pub use engine_stability::localization_root_layout;
 pub use engine_visibility::cplayer_status_cache;
-/// Test-only synthetic capture cost of the daily 3D-model inputs.
 #[cfg(test)]
 mod model_input_cost;
 pub use engine_air_history::sair_wing_combat_data;
@@ -449,7 +447,6 @@ pub use engine_native::raid_speed_inputs;
 pub use engine_native::raid_tooltip_operands;
 pub use engine_native::rail_anchor_selector;
 pub use engine_native::raw_country_observations;
-/// Test-only measurement instrument for the deterministic cost proxies.
 #[cfg(any(test, feature = "test-support"))]
 pub use engine_native::read_census;
 pub use engine_native::read_counts;

@@ -17,18 +17,12 @@ import type { MeasureParts, StabilityPartName, StabilityPartNamesReply } from '.
 export const PARTS_FAMILY = { kind: 'stability-parts', measure: 'value' } as const;
 
 
-/** A country's parts of `measure` from the declared `stability-parts` series: the parts it held over `extent`
- * (`series-parts`), named by `stability-part-names` at the view's end; their lines over the chart's view, from
- * tiles; their values at the hours a reader reaches (the day shown, a hover); and, while `following`, the head's
- * values followed, as a live source the breakdown paints. */
 export function useStabilityParts(client: DashboardClient, clock: PlaybackController, source: DashboardSource | undefined, branchId: string | undefined,
   tag: string | null, within: readonly HourSpan[] | null, extent: readonly [number, number], lastHour: number, measure: Measure,
   hour: number | null, hover: number | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
-  const span = useMemo(() => ({ firstHour: Math.floor(extent[0]), lastHour: Math.floor(extent[1]) }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const span = useMemo(() => ({ firstHour: Math.floor(extent[0]), lastHour: Math.floor(extent[1]) }), [extent[0], extent[1]]);
   const listed = useSeriesParts(client, source, branchId, PARTS_FAMILY, tag, span, active);
   const all = useMemo(() => [...new Set((listed.data?.parts ?? []).map(part => part.part))], [listed.data]);
-  // Each part is named at the last hour it was held in the view, where the parts dictionary still holds it: one
-  // read an hour some part last held.
   const namesRequests = useMemo(() => source && branchId && tag ? namesAt(listed.data?.parts ?? [], span.lastHour)
     .map(([hour, parts]) => ({ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, country: countryFromKey(tag), parts, hour } })) : [],
   [source, branchId, tag, listed.data, span.lastHour]);
@@ -42,8 +36,6 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
     partBits: listed.data.partBits, lastHour, within: within ? new Map(keys.map(key => [keyId(key), within])) : undefined } : null,
   [source, branchId, listed.data, keys, lastHour, within]);
   const series = useKeyedSeries(client, clock, spec, following ? null : hour, hover, following, active, root);
-  // The structure (which parts, their colours) from the lines as rendered; following, a tile landing renders nothing:
-  // the chart reads the newest lines as it draws (`geometryAt`) and is woken by `subscribe`.
   const lines = useMemo(() => new Map<string, ChartSummary | undefined>(keys.map(key => [key.part, series.summaryByKey.get(keyId(key))?.summary])),
     [keys, series.summaryByKey]);
   const geometry = useMemo<MeasureParts>(() => partsFromLines(parts, lines, names), [parts, lines, names]);
@@ -62,7 +54,6 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
   const loadedAt = useCallback((at: number) => tag !== null && parts.length > 0
     && parts.every(part => (states ?? []).some(state => state.tag === tag && state.part === part && state.hour === Math.floor(at))), [parts, states, tag]);
   const followed = series.followed;
-  // The head's parts, painted by the breakdown: rows only where a part's value is recorded.
   const live = useMemo(() => followed && tag ? (render: (values: MeasureParts) => ReturnType<LiveDrillParts['read']>): LiveDrillParts =>
     liveFollowed(followed.store, followed.entry, entry => {
       const states = parts.flatMap(part => {

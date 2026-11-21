@@ -1,4 +1,3 @@
-//! Shared primary unit base for divisions and task forces.
 
 use crate::{Memory, carmy, cpdx_array::Array, memory::FieldBatch, read};
 use engine_sites::Rva;
@@ -7,10 +6,6 @@ mod combat_references;
 pub use combat_references::CombatReferencesCapture;
 pub use combat_references::{COMBAT_BORDER_WAR, COMBAT_LAND, COMBAT_NAVAL, MapCombatReference};
 pub(crate) use combat_references::{MapCombatIdentityMemo, read_unit_combat_references};
-/// Native counter references resolve to the secondary reference object at its secondary base, and
-/// the counter consumes classes 0, 1 and 13. The reference type is not a class witness: id
-/// assignment replaces a null or colliding id with a dynamic id, type 0x1268 plus the dynamic type
-/// counter (4713 in saved divisions). Exact vtable, class and registry join authenticate.
 pub fn counter_identity(
     memory: &impl Memory,
     base: usize,
@@ -22,8 +17,6 @@ pub fn counter_identity(
     })
 }
 
-/// The same native identity with a capture-owned resolver. Transport retains
-/// failed registry roots for its entire quiescent pass as well as failed units.
 pub fn counter_identity_with(
     memory: &impl Memory,
     base: usize,
@@ -59,10 +52,6 @@ pub fn counter_identity_with(
     Ok((handle, class))
 }
 
-/// The handles of the divisions and railway guns in the game state's viewer unit
-/// vector ([`crate::cgame_state::VIEWER_UNITS`]), in its order; task forces are
-/// skipped. An entry whose exact vtable and class are not a division's, railway
-/// gun's or task force's, or whose handle has no id, refuses the read.
 pub fn viewer_land_units(
     memory: &impl Memory,
     base: usize,
@@ -160,116 +149,60 @@ fn viewer_land_units_into(
     Ok(len)
 }
 
-/// CUnit class discriminator u32.
 pub const CLASS: usize = 0x08;
-/// CSelectable selected byte on the unit.
 pub const SELECTED: usize = 0x0c;
-/// CUnit packed type-low/id-high u64 reference handle.
 pub const HANDLE: usize = 0x18;
-/// CUnit handle low u32 type word.
 pub const TYPE: usize = 0x18;
-/// CUnit handle high u32 id word.
 pub const ID: usize = 0x1c;
-/// CSupplyConsumer received-supply ratio, signed fixed5. The railway gun's
-/// low-supply strip reads it (CArmy documents the same base field as
-/// `carmy::COUNTER_SUPPLY_STATUS`).
 pub const RECEIVED_SUPPLY_RATIO: usize = 0x40;
-/// CUnit embedded COrdersGroupMember base.
 pub const SCHEDULED_MEMBER: usize = 0xb8;
-/// CUnit cached CSubUnitDefinition pointer.
 pub const STAT_BLOCK: usize = 0x138;
-/// CUnit combat-reference vector data.
 pub const COMBAT_REFERENCE_DATA: usize = 0x1a8;
-/// CUnit combat-reference vector u32 count.
 pub const COMBAT_REFERENCE_COUNT: usize = 0x1b4;
-/// CUnit roster-owner CCountryTag raw32.
 pub const ROSTER_OWNER: usize = 0x1d8;
-/// CUnit expeditionary-owner CCountryTag raw32.
 pub const EXPEDITIONARY_OWNER: usize = 0x1dc;
-/// CUnit logical-owner CCountryTag raw32.
 pub const LOGICAL_OWNER: usize = 0x1e0;
-/// Movement-target province pointer; setting a target creates a one-entry ordinary route.
 pub const MOVEMENT_TARGET: usize = 0x1e8;
-/// CUnit CProvince location pointer.
 pub const LOCATION: usize = 0x1f0;
-/// CUnit ordinary-route u32 province-id vector.
 pub const ORDINARY_ROUTE_DATA: usize = 0x200;
-/// CUnit ordinary-route u32 capacity.
 #[cfg(any(test, feature = "test-support"))]
 pub const ORDINARY_ROUTE_CAPACITY: usize = 0x208;
-/// CUnit ordinary-route u32 count.
 pub const ORDINARY_ROUTE_COUNT: usize = 0x20c;
-/// Movement-priority enum; independent of arrival time.
 pub const MOVEMENT_PRIORITY: usize = 0x248;
-/// Embark movement denominator, used in place of neighbor distance.
 pub const EMBARK_MOVEMENT_DISTANCE_RVA: Rva = Rva(0x033e_1048);
-/// CUnit alternate-route u32 province-id vector.
 pub const ALTERNATE_ROUTE_DATA: usize = 0x220;
-/// Retreat byte used by action selection.
 pub const RETREAT: usize = 0x24c;
-/// Stored withdrawal byte; serialization retains it, and movement-arrow style
-/// tests the full byte before mission, target and hostility styles.
 pub const WITHDRAWAL: usize = 0x24d;
-/// Invalid-order reason, signed i32; used from the first member with its
-/// invalid-order byte set. Unknown values produce no warning key, so capture
-/// preserves every bit. This reason is not serialized.
 pub const INVALID_ORDERS_REASON: usize = 0x2a8;
-/// Exile byte; railway-gun location status tests it before railway availability.
 pub const EXILED: usize = 0x2ae;
-/// Strategic-redeployment byte used by action selection.
 pub const STRATEGIC_REDEPLOYMENT: usize = 0x2af;
-/// Naval-transfer membership pointer; presence selects coastal stack kinds 19 and 20.
 pub const NAVAL_TRANSFER_MEMBERSHIP: usize = 0x2f8;
-/// CUnit per-viewer level vector data.
 pub const VIEWER_DATA: usize = 0x278;
-/// CUnit per-viewer level u32 count.
 #[cfg(any(test, feature = "test-support"))]
 pub const VIEWER_COUNT: usize = 0x284;
-/// CUnit owned map-entity pointer.
 pub const MAP_ENTITY: usize = 0x298;
-/// The unit's land theatre pointer, null for none: the theatre's add and remove keep it equal
-/// to that theatre's unit membership, and box selection admits only units of one theatre.
 pub const THEATRE: usize = 0x2a0;
-/// Queued order pointer vector count, signed i32; the unit writer saves the list as `commandlist`.
 pub const QUEUED_ACTION_COUNT: usize = 0x2cc;
 
-/// CUnit combat-modifier vector data.
 pub const COMBAT_MODIFIER_DATA: usize = 0x170;
 
-/// CUnit attack accumulator, i64/100000.
 pub const ATTACK_ACCUMULATOR: usize = 0x188;
 
-/// CUnit destructor.
 pub const DESTRUCTOR_RVA: Rva = Rva(0x00c4_e950);
 
-/// Simulation operands for map routes and stack kinds, independent of the map entity.
-/// The caller first authenticates the unit's class and roster. Routes are copied
-/// only into a complete arena slice, so an incomplete route never looks stationary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapMotion {
-    /// Authenticated movement-target province id; zero for null.
     pub target: u32,
-    /// [`first_combat_side`] of the first combat reference: 0 without a combat,
-    /// 1 when the logical owner is on the attacking side, else 2.
     pub combat_role: u8,
-    /// Province of the first combat; zero without one.
     pub combat_province: u32,
-    /// Stored count of the combat-reference vector (`COMBAT_REFERENCE_COUNT`).
     pub combat_count: u32,
-    /// Whether the logical owner attacks in any of this unit's combats.
-    /// Combats are visited in vector order and stop at the first attacking one.
     pub attacking: bool,
     pub ordinary: Array,
     pub alternate: Array,
-    // Current visitor-only roots, reused by the optional combat-link suffix.
-    // They are never projected into a capture row or kept after this unit.
     combat_header: [u8; 16],
     first_combat: usize,
 }
 
-/// Fresh stored movement-arrow operands of an already authenticated unit.
-/// None is an independent guarded-read refusal, never a native zero. No
-/// selection, animator, map entity or other presentation state is read.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MovementArrowScalars {
     pub numerator: Option<i64>,
@@ -278,9 +211,6 @@ pub(crate) struct MovementArrowScalars {
     pub naval_transfer: Option<u8>,
 }
 
-/// Stored movement numerator and independent style bytes and transfer presence.
-/// Each read stands alone so a failed suffix cannot invalidate an established
-/// map-motion row or later units.
 pub(crate) fn read_movement_arrow_scalars(
     memory: &impl Memory,
     unit: usize,
@@ -288,8 +218,6 @@ pub(crate) fn read_movement_arrow_scalars(
     if unit == 0 {
         return MovementArrowScalars::default();
     }
-    // The four fields in one guarded call; each stays independent
-    // (`FieldBatch`: a failed field fails alone, later ones read singly).
     let offsets = [
         carmy::MOVEMENT_NUMERATOR,
         RETREAT,
@@ -328,8 +256,6 @@ pub(crate) fn read_movement_arrow_scalars(
     }
 }
 
-/// `unit`'s field addresses, or `None` when one overflows (the caller then
-/// reads singly, keeping its own refusals).
 fn gathered_addresses<const N: usize>(unit: usize, offsets: [usize; N]) -> Option<[usize; N]> {
     let addresses = offsets.map(|offset| unit.checked_add(offset));
     addresses
@@ -350,7 +276,6 @@ impl MapMotion {
         self.ordinary.count as usize + self.alternate.count as usize
     }
 
-    /// Copies both routes, ordinary first, into exactly `required_paths` cells.
     pub fn copy_paths(self, memory: &impl Memory, output: &mut [u32]) -> Result<(), &'static str> {
         if output.len() != self.required_paths() {
             return Err("unit route arena slice is not the route length");
@@ -371,13 +296,6 @@ impl MapMotion {
     }
 }
 
-/// Reads [`MapMotion`] for one authenticated unit whose raw logical owner is
-/// `owner`; its first combat's side goes through the capture's shared `combats`
-/// memo.
-///
-/// A pathfinder route visits each province at most once, so a route longer
-/// than the live province roster (`provinces.count`) is refused as corrupt.
-/// That bound comes from the loaded map, not from a vanilla size.
 #[allow(clippy::too_many_arguments)]
 pub fn read_map_motion(
     memory: &impl Memory,
@@ -393,9 +311,6 @@ pub fn read_map_motion(
     )
 }
 
-/// Retains the signed count from the original combat-header attempt, including
-/// a failed copy and a count refused by array validation. None means the motion
-/// reader stopped before that attempt.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_map_motion_with_combat_count(
     memory: &impl Memory,
@@ -420,8 +335,6 @@ pub(crate) fn read_map_motion_with_combat_count(
     )
 }
 
-/// Optional full references from the same legacy pointer observations. Old
-/// role/province demand stops as before; only identity capture visits the tail.
 #[allow(clippy::too_many_arguments)]
 pub fn read_map_motion_observed(
     memory: &impl Memory,
@@ -466,9 +379,6 @@ fn read_map_motion_impl(
         unit.checked_add(offset)
             .ok_or("unit motion address overflow")
     };
-    // The target and the three headers in one guarded call, each consulted
-    // where it is read (`FieldBatch`); a unit whose fields would overflow
-    // reads them singly.
     let fields = gathered_addresses(
         unit,
         [
@@ -503,8 +413,6 @@ fn read_map_motion_impl(
     };
     let ordinary = route(1, ORDINARY_ROUTE_DATA)?;
     let alternate = route(2, ALTERNATE_ROUTE_DATA)?;
-    // The vector is walked only until the first combat the owner attacks in, as
-    // `Unit_GetActionCode` walks it; its header bounds the walk.
     let combat_header = header(3, COMBAT_REFERENCE_DATA)
         .and_then(|header| header.ok_or("unit combat vector invalid"));
     if let Some(count) = count {
@@ -545,8 +453,6 @@ fn read_map_motion_impl(
     }
     let mut visited = u32::from(vector.count != 0);
     let mut attacking = combat_role == 1;
-    // Preserve role/province demand exactly. Each pointer used by that demand
-    // also feeds optional identity capture; never walk that prefix twice.
     for index in 1..vector.count {
         if attacking {
             break;
@@ -559,7 +465,6 @@ fn read_map_motion_impl(
         visited = index + 1;
     }
     if let Some((registry, capture)) = references.as_mut() {
-        // No role, country membership or province read is demanded here.
         for index in visited..vector.count {
             if capture.failure.is_some() {
                 break;
@@ -587,11 +492,6 @@ fn read_map_motion_impl(
     })
 }
 
-/// Naval-wrapper roots from the unit's ordered simulation combat vector.
-/// The cached path repeats the first entry; the fresh path selects the first
-/// naval class. Supported primary vtables establish class without a game call.
-/// Zero proves empty/no naval combat. The motion row already authenticates the
-/// first combat's side; extra identity, registry and header failures affect only this suffix.
 pub(crate) fn read_map_motion_combat_links(
     memory: &impl Memory,
     base: usize,
@@ -647,8 +547,6 @@ fn map_combat_identity(
         .ok()
         .filter(|&pointer| pointer >= base)
         .ok_or("map combat primary identity invalid")?;
-    // Land and naval classes have distinct class results. Reference types
-    // are dynamically minted and cannot serve as the class admission gate.
     let classes = [
         crate::cland_combat::VTABLE_RVA,
         crate::cland_border_war_combat::VTABLE_RVA,
@@ -662,7 +560,6 @@ fn map_combat_identity(
             crate::cland_border_war_combat::BODY_VTABLE_RVA,
             COMBAT_BORDER_WAR,
         ),
-        // Authenticate the naval combat's secondary reference-object vtable.
         Some(crate::cnaval_combat::VTABLE_RVA) => (Rva(0x02a5_6e70), COMBAT_NAVAL),
         _ => return Err("map combat class unsupported"),
     };
@@ -680,7 +577,6 @@ fn map_combat_identity(
     Ok((reference, kind))
 }
 
-/// A CProvince pointer's id, checked against its own registry slot; zero for null.
 pub fn registered_province(
     memory: &impl Memory,
     base: usize,
@@ -820,8 +716,6 @@ mod eta_tests {
     }
 }
 
-/// A per-capture memo key: the combat, its owner as recorded raw, and the
-/// module and game state the memo was filled under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FirstCombatKey {
     pub(crate) base: usize,
@@ -830,16 +724,6 @@ pub struct FirstCombatKey {
     pub(crate) owner: u32,
 }
 
-/// Uncached first-combat role: one when the raw logical owner belongs to the
-/// attacking side, exactly or through an alias, otherwise two. Also reads the
-/// combat's authenticated province. Land, border-war and naval combat layouts
-/// share these side and province fields. The attacking side must point back
-/// to its combat.
-///
-/// Read order is native and fixed: combat identity, attacking side, side
-/// identity and backlink, then the owner (a missing owner fails only after
-/// both identities are authenticated), membership (lazy prefix), and last the
-/// province. A membership failure therefore wins over a province failure.
 pub fn first_combat_side(
     memory: &impl Memory,
     base: usize,
@@ -856,7 +740,6 @@ pub fn first_combat_side(
     Ok((role, province_id(province)?))
 }
 
-/// [`first_combat_side`]'s role alone, in the same read order, without the province.
 fn combat_role(
     memory: &impl Memory,
     base: usize,
@@ -906,12 +789,6 @@ fn combat_role(
     Ok(role)
 }
 
-/// First-combat answers shared by every map unit in one capture: divisions and
-/// railway guns in the same combat read it once per raw owner. Only complete
-/// answers are kept; a failed query is never memoised. Construct and
-/// [`Self::reserve`] outside acquisition: a full memo answers from memory
-/// without inserting, so it never allocates inside a callback. `clear` at the
-/// start of each capture.
 #[derive(Debug, Default)]
 pub struct FirstCombatMemo {
     pub entries: std::collections::HashMap<FirstCombatKey, (u8, u32)>,
@@ -933,7 +810,6 @@ impl FirstCombatMemo {
         self.entries.clear();
     }
 
-    /// Room for `rows` answers; call outside acquisition.
     pub fn reserve(&mut self, rows: usize) -> std::io::Result<()> {
         let additional = rows.saturating_sub(self.entries.len());
         crate::allocation::reserve_map(&mut self.entries, additional)
@@ -943,8 +819,6 @@ impl FirstCombatMemo {
         self.entries.capacity() * (size_of::<(FirstCombatKey, (u8, u32))>() + 1)
     }
 
-    /// [`first_combat_side`] through the memo. `combat` is the unit's first
-    /// combat pointer, already read by the caller from its own combat vector.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -972,9 +846,6 @@ impl FirstCombatMemo {
         Ok(value)
     }
 
-    /// `owner`'s role in a combat that is not the unit's first: the memo's answer
-    /// when another unit's first combat already holds it, else read without the
-    /// province and not memoised, since a memo entry carries the province.
     pub fn role(
         &self,
         memory: &impl Memory,
@@ -1000,8 +871,6 @@ impl FirstCombatMemo {
 mod arrow_tests {
     use super::*;
 
-    /// The four movement-arrow fields are read in one guarded call, and each
-    /// keeps its own value.
     #[test]
     fn movement_arrow_scalars_are_gathered_in_one_call() {
         const UNIT: usize = 0x100;
@@ -1038,7 +907,6 @@ mod viewer_unit_tests {
         (u64::from(id) << 32) | 9
     }
 
-    /// `units` as (vtable, class, handle), laid out 0x100 apart in vector order.
     fn world(units: &[(Rva, u32, u64)]) -> Vec<u8> {
         let mut bytes = vec![0; UNITS + units.len() * 0x100];
         let header = STATE + crate::cgame_state::VIEWER_UNITS;

@@ -7,14 +7,6 @@ fn member(row: &LandCombatDivisionRow) -> LandCombatMember<'_> {
         values: row.own.as_ref(),
     }
 }
-/// The reinforcement chance arm from the recorded initiative, context keys and
-/// speed share: REINFORCE_CHANCE, the country's 0xFB, the initiative scaled
-/// by both 0x250 keys and the factor, the share times the bonus and the
-/// leader's 0xFB. The country's 0xFB sources follow the base line and the
-/// commander's name and sources end the arm when its 0xFB is nonzero; a
-/// fragment whose sources are unknown is omitted by name. A recording without
-/// the share refuses the arm, while the rejection arms keep their zero chance
-/// and reason.
 #[test]
 fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_text() {
     use replay_data::rows::LandDivisionModifier;
@@ -62,7 +54,6 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
     row.context.leader_modifier_kind = 1;
     row.context.leader_modifiers[0] = present(3_000);
     row.context.leader_modifiers[2] = present(10_000);
-    // A fighting division within the width reaches the chance arm.
     let condition = Condition {
         strength: ADVANCE_STRENGTH,
         organisation: ADVANCE_ORGANISATION,
@@ -71,8 +62,6 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
     let chance = |row: &LandCombatDivisionRow| {
         reinforcement(&member(row), &condition, Ok((100_000, 0)), Ok(&defines))
     };
-    // Initiative: 1.2 x 0.5 = 0.6, x 1.1 = 0.66, x 0.25 = 0.165; speed:
-    // 0.5 x 0.01 = 0.005; 0.02 + 0.05 + 0.165 + 0.005 + 0.03 = 0.27.
     let result = chance(&row).unwrap();
     assert_eq!(
         result,
@@ -119,7 +108,6 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
             vec!["no country".to_owned(), "no commander".to_owned()]
         ))
     );
-    // A leader whose 0xFB is zero shows no commander line.
     row.context.leader_modifiers[0] = present(0);
     let result = chance(&row).unwrap();
     assert_eq!(
@@ -129,8 +117,6 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
             Vec::new()
         ))
     );
-    // Without a contextual leader neither its 0x250 nor its 0xFB applies,
-    // and a zero term prints no line.
     row.context.leader_modifier_kind = 0;
     row.reinforcement_speed = Some(0);
     assert_eq!(
@@ -143,14 +129,12 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
             leader: 0,
         })
     );
-    // A share refused at capture refuses the arm by name.
     row.reinforcement_speed = None;
     let result = chance(&row).unwrap();
     assert_eq!(
         reinforcement_text(&NoIcons, &loc, &result, None),
         Err(RESERVE_SPEED_REFUSED.into())
     );
-    // The rejection arms need no share.
     let tired = Condition {
         organisation: ADVANCE_ORGANISATION - 1,
         ..condition
@@ -164,8 +148,6 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
 
 use viewer_foundation::tooltip_text::NoIcons;
 
-/// Each refused hover part names the key it could not localise, so the
-/// bind can count repeats by key.
 #[test]
 fn refused_stat_and_reserve_hovers_name_their_key() {
     let loc: Localisation = [
@@ -189,14 +171,12 @@ fn refused_stat_and_reserve_hovers_name_their_key() {
             false,
             Err("x")
         ),
-        // A missing top-level key shows its own bytes.
         Ok("Soft attack: 0.00
 BASE_VALUE
 Total 0.00
 "
         .into())
     );
-    // A missing top-level key shows its own bytes.
     assert_eq!(
         reinforcement_text(
             &NoIcons,
@@ -225,9 +205,6 @@ Total 0.00
 }
 use replay_data::{rows::DivisionMovementRow, rows::DivisionRow, rows::ProvinceRow};
 
-/// Invasion section with fixture text: the
-/// description, the progress (complete from 100000 up, the zero-extended
-/// sentinel included), and the two scales only when either differs.
 #[test]
 fn invasion_section_follows_the_native_order_and_branches() {
     let loc: Localisation = [
@@ -277,15 +254,12 @@ Guard factor: ",
         )
         .unwrap();
     assert!(attack < defense);
-    // A missing top-level key shows its own bytes.
     assert_eq!(
         invasion_section(&NoIcons, &Localisation::default(), 0, neutral),
         Ok("NAVAL_INVASION_COMBAT_PROGRESS_DESC\n\nNAVAL_INVASION_PROGRESS\n\n".into())
     );
 }
 
-/// The default hover names the exact key it lacks or cannot render, even
-/// deep inside the invasion section.
 #[test]
 fn the_division_summary_names_its_missing_or_unrenderable_key() {
     let entries = |extra: &[(&str, &str)]| -> Localisation {
@@ -313,7 +287,6 @@ fn the_division_summary_names_its_missing_or_unrenderable_key() {
         }),
         ..Default::default()
     };
-    // A missing top-level key shows its own bytes.
     assert!(
         division_summary(
             &NoIcons,
@@ -413,8 +386,6 @@ fn naval_invasion_needs_a_sea_to_land_step_against_an_enemy_controller() {
     assert_eq!(invasion(&movement, false, &war), Ok(false));
     assert_eq!(invasion(&movement, true, &war), Ok(true));
     assert_eq!(invasion(&movement, true, &[]), Ok(false));
-    // A retired war is peace; an unlinked live war leaves peace unknown,
-    // but cannot hide a war that is known.
     let mut retired = war.clone();
     retired[0].retired = 1;
     assert_eq!(invasion(&movement, true, &retired), Ok(false));
@@ -434,7 +405,6 @@ fn naval_invasion_needs_a_sea_to_land_step_against_an_enemy_controller() {
     );
     movement[0].path_total = 0;
     assert_eq!(invasion(&movement, true, &war), Ok(false));
-    // An incomplete table is named, not folded into a list of suspects.
     movement[0].path_total = 1;
     let wars = Wars::new(
         &Available::Complete(&links),
@@ -470,21 +440,15 @@ fn organization_is_preformatted_text_not_localization_integer_precision() {
     assert_eq!(one_decimal(1_234_567), "12.3");
     assert_eq!(one_decimal(-19_999), "-0.1");
     assert_eq!(one_decimal(-1), "-0.0");
-    // The whole part is the native signed i32.
     assert_eq!(one_decimal(214_748_364_800_000), "-2147483648.0");
 }
 
-/// trimmed fixed-point formatting: the whole part through the signed
-/// i32 formatter, the magnitude by wrapping negation, so neither a huge
-/// value nor i64::MIN is refused.
 #[test]
 fn a_stat_headline_formats_as_the_native_trimmed_formatter() {
     assert_eq!(fixed_decimal(150_000), "1.5");
     assert_eq!(fixed_decimal(100_000), "1");
     assert_eq!(fixed_decimal(-1_234_567), "-12.34567");
     assert_eq!(fixed_decimal(214_748_364_800_000), "-2147483648");
-    // -(i64::MIN) wraps to itself: `-`, then (MIN / 100000) as i32, then
-    // (MIN % 100000) + 100000 = 24192 with its first digit made `.`.
     assert_eq!(
         fixed_decimal(i64::MIN),
         format!("-{}.4192", (i64::MIN / 100_000) as i32)
@@ -515,7 +479,6 @@ fn reserve_rejection_precedes_movement_inputs() {
         reinforcement(&member(&row), &condition, Ok((100_000, 0)), Ok(&defines)),
         Ok(Reinforcement::Rejected("COMREIC_TOO_MUCH_WIDTH"))
     );
-    // Without the defines or the widths the hover names the operand.
     assert_eq!(
         reinforcement(
             &member(&row),
@@ -536,9 +499,6 @@ fn reserve_rejection_precedes_movement_inputs() {
     );
 }
 
-/// The commander icon hover joins the division row's handle to the hour's UnitLeaders row (name
-/// token, skill level) and its UnitLeaderTraits rows in ordinal order; a missing row refuses by
-/// name.
 #[test]
 fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
     use replay_data::{rows::UnitLeaderRow, rows::UnitLeaderTraitRow};
@@ -610,7 +570,6 @@ fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
             Some(Ok("Not the army's commander".into()))
         ))
     );
-    // No traits: no list header.
     let bare = DivisionCommander {
         traits: Vec::new(),
         ..commander
@@ -621,7 +580,6 @@ fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
             .0,
         "Rommel (4)"
     );
-    // Each missing operand refuses by name.
     assert_eq!(
         division_commander((9 << 32) | 0x55, Ok(&complete), Ok(&all_traits)),
         Err(format!(
@@ -654,10 +612,6 @@ fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
     );
 }
 
-/// The chance arm's fragments join the hour's ReserveModifierTrees: the
-/// reserve's positive expeditionary owner, else its roster owner, and the
-/// commander under its leader modifier kind, whose recorded name is stored
-/// text in the recording's language.
 #[test]
 fn reserve_sources_join_the_recorded_country_and_commander_trees() {
     use replay_data::{
@@ -748,12 +702,10 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
     let (name, sources) = commander.unwrap().unwrap();
     assert_eq!(name, "Rommel");
     assert!(sources.starts_with("Trait: "));
-    // A zero leader 0xFB asks for no commander; the expeditionary owner wins.
     row.division = 12;
     let (country, commander) = text(&row, 0, &loc);
     assert!(country.unwrap().starts_with("Host: "));
     assert!(commander.is_none());
-    // A missing commander row and another language refuse by name.
     row.commander = 78;
     let (_, commander) = text(&row, 1, &loc);
     assert!(
@@ -766,7 +718,6 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
     german.language = "german".into();
     let (country, _) = text(&row, 0, &german);
     assert!(country.unwrap_err().contains("stored in english"));
-    // A source refused at capture refuses only its own fragment.
     let mut refused = test_frame(5);
     for table in [TableId::ModifierDefinitions, TableId::Divisions] {
         refused.tables[table.index()] = frame.tables[table.index()].clone();

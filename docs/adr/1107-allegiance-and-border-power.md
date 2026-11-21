@@ -1,0 +1,13 @@
+# Map allegiance and border power use recorded points of view
+
+The client or observer selection resolves through canonical country links. A missing, partial or unresolved record supplies no viewpoint. Player lists cannot resolve that choice, and fog does not change allegiance. Victory-point labels distinguish the viewing country, its enemies and everyone else. Counter plates also distinguish allies, with canonical equality first and an active war overriding faction or subject relations. Type icons consider logical ownership and sent volunteers. Read the straight RGBA plate multiplier from recorded graphics content. The victory-point texture groups contain a gold slot that no classification selects.
+
+A recorded war is ongoing when its end hour is no greater than its start hour. A strictly later end hour is exclusive, and both endpoints count. The directed relation cache answers its recorded direction and includes target zero, independently of war or same-owner checks. Counters query from the other owner toward the first. Path costs query from owner toward state owner. Deriving the cache from the present relation list would lose native rebuild timing and retired entries. Use the original receiver validity gates when interpreting a slot-zero war pointer and its retired byte.
+
+Share the same border-war calculation between province hovers and fresh division attrition. Power returns the enemy fraction, so the tooltip shows its complement and attrition scales the enemy fraction for the unit's logical owner. The skill operand is read without applying the leader validity gate. Country controllers are collected even when there are no units to contribute power.
+
+Political fill and unit counters inherit colours through the current autonomy status and the active subject-to-overlord relation. The initial definition named by a relation and the current autonomy status can diverge. Follow the chain only while the current definition enables colour inheritance, independent of autonomy score and ratio. Missing evidence from an incomplete table leaves the source unresolved, separately from an inheritance loop.
+
+Land composition and air-base estimates share one fixed-point count law. The caller supplies a subtype salt for land and a country salt for air bases, along with recorded content operands. Preserve zero-based month indexing and fixed-point square-root rounding.
+
+[Allegiance](../../crates/viewer-foundation/src/map/allegiance.rs) · [Border power](../../crates/viewer-foundation/src/map/border_power.rs) · [Colour inheritance](../../crates/viewer-foundation/src/map/color_inheritance.rs) · [Count math](../../crates/viewer-foundation/src/map/count_math.rs)

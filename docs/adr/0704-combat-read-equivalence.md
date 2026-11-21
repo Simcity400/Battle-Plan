@@ -1,0 +1,13 @@
+# 0704. Share combat reads only within one authenticated capture
+
+The capture holds the simulation thread for the entire land combat pass. The division walk can reuse one source's value within that pass, keyed by its address and, for scalar reads, the field width. Authentication of a division and its stat block and the leader-chain lookup can likewise be reused for the same pointer and handle. Starting the next pass discards the values and failures. It retains the allocated buffers on the acquisition worker.
+
+The optimization must preserve the sequential reader's source order and first failure. Compute sources at first use. When a source is read in stages, retain each stage's failure separately. A later enemy's intel or a category operand must never displace a failed earlier regional operand or priority token. Preserve the same address checks and any bytes already copied before a failing field. Keep the original field reads when a complete image is unavailable.
+
+Gather complete records for the army and its stat block separately. The image contains the fixed inputs common to the combat readers, including the naming spans and equipment category mask. It uses only bytes belonging to that object. A failed record invalidates its own image, and a failed army record also prevents using its stat block image. Resume after the failed record. A scatter uses image data only when all its lanes are covered, with no destination writes before that is known. Other scatters and record gathers go to the underlying reader.
+
+The comparison readers remain test fixtures. They represent the older sequential reads, including the bounded modifier and width buffers. They copy native fixed-point values, signed multiplicities, and contextual keys without computing displayed values. They use the authenticated roster when supplied and validate array extents from the native header rather than imposing reader-chosen country limits.
+
+The parity tests use sparse process-like memory and a simulated guard. They compare exact rows and errors with and without an authenticated roster. The fixture includes war and friendly ties, fog-network eligibility, weather by region, generated names, supply, transport, and leader cases, so each shared branch is reached. It injects faults at read spans to check distinct failure ordering, incomplete records, and unchanged lanes. The scale test warms the buffers before measuring and reports in-process copies, not the game's guard latency.
+
+[Shared combat sources](../../crates/engine-native/src/combat_sources.rs) · [Comparison fixtures](../../crates/engine-native/src/combat_sources/tests.rs)

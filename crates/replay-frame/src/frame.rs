@@ -1,4 +1,3 @@
-//! Per-table baselines. A failed table cannot lend its rows to a later delta.
 
 use crate::{
     BranchId, Hour,
@@ -68,7 +67,6 @@ use crate::rows;
 
 pub use replay_data::rows::TABLE_COUNT;
 
-/// Wire reason prefix when a keyframe cannot retain a truncated table baseline.
 pub const TRUNCATED_KEYFRAME_REASON: &str = "truncated at keyframe: ";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,24 +74,13 @@ pub const TRUNCATED_KEYFRAME_REASON: &str = "truncated at keyframe: ";
 pub struct Metrics {
     pub total_ns: u64,
     pub table_ns: [u64; TABLE_COUNT],
-    /// Reserved collector storage. Executor bytes include its actual shared
-    /// allocation, payload cells, state words, metadata, queue, thread ids
-    /// and handles, boxed runner and any enabled help history arrays.
     pub pool_bytes: u64,
     pub dropped_frames: u64,
 }
 
-/// `Metrics::table_ns` of a table read with no time of its own: in an hour whose
-/// recording keeps which tables were read but not how long they took, or by a
-/// walk whose time another table carries. Nonzero, so the read stays a read;
-/// never a time.
 pub const READ_TIME_NOT_RECORDED: u64 = u64::MAX;
 
 impl Metrics {
-    /// The metrics a replay block stores: which tables were read, as
-    /// [`READ_TIME_NOT_RECORDED`], and the exact callback total, pool bytes
-    /// and dropped-frame counter. Spool frames keep every read time in
-    /// nanoseconds.
     pub fn stored(&self) -> Self {
         let mut stored = self.clone();
         for ns in &mut stored.table_ns {
@@ -104,7 +91,6 @@ impl Metrics {
         stored
     }
 
-    /// Whether this hour's table read times were recorded.
     pub fn table_times_recorded(&self) -> bool {
         !self.table_ns.contains(&READ_TIME_NOT_RECORDED)
     }
@@ -131,40 +117,27 @@ pub enum TableView {
     Unavailable {
         reason: String,
     },
-    /// The recording's capture mode leaves the table out ([`crate::scope`]), or the row frame
-    /// leaves it to the native capture.
     NotRecorded {
         mode: CaptureMode,
     },
 }
 
 impl TableView {
-    /// Whether it is the view of a table not selected for reconstruction ([`not_selected`]).
     pub fn is_not_selected(&self) -> bool {
         matches!(self, Self::Unavailable { reason } if reason == NOT_SELECTED)
     }
 }
 
-/// One decoded table, shared between the hours it did not change in.
-///
-/// A decoder hands the same allocation to every hour whose update leaves the
-/// table unchanged, so copying a [`DecodedFrame`] copies no rows. Reading goes
-/// through `Deref`; a write (`DerefMut`) copies the table first when another
-/// hour still shares it.
 #[derive(Clone, Debug)]
 pub struct SharedView(
     Arc<TableView>,
     Option<Hour>,
     Option<Arc<ChangeFacts>>,
     Option<Arc<FieldStamp>>,
-    /// The columns a view at the playback head holds, when not every one.
     Option<u64>,
 );
 
 impl SharedView {
-    /// Last complete acquisition the recording marks read (a nonzero
-    /// `Metrics::table_ns`). A snapshot no hour marks read, a carried keyframe
-    /// included, has unknown provenance.
     pub fn sampled_at(&self) -> Option<Hour> {
         if undeclared::is(&self.0) {
             undeclared::read(&self.0);
@@ -178,29 +151,20 @@ impl SharedView {
             .filter(|facts| facts.previous.same(previous))
     }
 
-    /// The latest edits also apply after skipped deltas that left these fields and membership unchanged.
     pub fn changes_for(&self, previous: &ViewIdentity, fields: u64) -> Option<&ChangeFacts> {
         self.2
             .as_deref()
             .filter(|facts| previous.fields_same(&facts.previous, fields))
     }
 
-    /// This allocation with another last acquisition: the view a frame of a
-    /// later hour holds when the table was carried there unchanged, read or
-    /// not (as a quiet hour of `Replay::read_block_changes` reports it).
-    /// The view holding only the columns of `fields`: a read of any other field is refused by name
-    /// ([`undeclared`]), never served.
     pub fn with_fields(self, fields: u64) -> Self {
         Self(self.0, self.1, self.2, self.3, Some(fields))
     }
 
-    /// The columns it holds, when not every one.
     pub fn fields(&self) -> Option<u64> {
         self.4
     }
 
-    /// The view as its holder keeps it (its status, the bytes it holds), never a reader's read:
-    /// nothing is noted or refused.
     pub fn held(&self) -> &TableView {
         &self.0
     }
@@ -209,19 +173,14 @@ impl SharedView {
         Self(self.0, hour, self.2, self.3, self.4)
     }
 
-    /// Whether two views are the same allocation, not just equal rows.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
     }
 
-    /// Whether it is the view of a table its reader of rows at the head did not declare
-    /// ([`not_declared`]); asking reads nothing.
     pub fn is_not_declared(&self) -> bool {
         undeclared::is(&self.0)
     }
 
-    /// The fields that may differ in `other` from this view, by their stamps, while both hold
-    /// the same row keys; None when the stamps cannot tell.
     pub fn changed_fields(&self, other: &Self) -> Option<u64> {
         if Self::ptr_eq(self, other) {
             return Some(0);
@@ -236,27 +195,22 @@ impl SharedView {
         })
     }
 
-    /// The view, moved out when this is its only holder and copied otherwise.
     pub fn into_inner(self) -> TableView {
         Arc::try_unwrap(self.0).unwrap_or_else(|shared| (*shared).clone())
     }
 
-    /// The view when this is its only holder; the shared view otherwise.
     pub fn try_unwrap(self) -> Result<TableView, Self> {
         Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3, self.4))
     }
 
-    /// Whether another view holds this allocation too, so a write would copy it.
     pub fn is_shared(&self) -> bool {
         Arc::strong_count(&self.0) > 1
     }
 
-    /// The allocation's address, for counting distinct tables.
     pub fn as_ptr(&self) -> *const TableView {
         Arc::as_ptr(&self.0)
     }
 
-    /// This allocation's identity, which does not keep its rows alive.
     pub fn identity(&self) -> ViewIdentity {
         ViewIdentity(
             Arc::downgrade(&self.0),
@@ -266,23 +220,16 @@ impl SharedView {
     }
 }
 
-/// The change facts and field stamp of a complete view built outside a decoder (a columnar
-/// walk's), made before the view is, as a decoder makes them.
 #[derive(Debug)]
 pub struct Stamp(Option<Arc<ChangeFacts>>, Arc<FieldStamp>);
 
 impl Stamp {
-    /// A field stamp of its own and no change facts, as a decoder's snapshot makes them: no
-    /// earlier view is known to share the view's fields.
     pub fn new(hour: Hour) -> Self {
         Self(None, decoder::field_stamp(None, None, hour))
     }
 }
 
 impl SharedView {
-    /// The stamp of the complete view this complete view becomes at `hour` by `changed` rows,
-    /// ascending by key, and `deleted` keys: those are its change facts, and its field stamp
-    /// follows this view's, as a decoder's delta makes them.
     pub fn edited(&self, changed: Vec<RowChange>, deleted: Vec<u128>, hour: Hour) -> Stamp {
         let facts = ChangeFacts {
             previous: self.identity(),
@@ -295,14 +242,12 @@ impl SharedView {
         Stamp(Some(Arc::new(facts)), stamp)
     }
 
-    /// This view with `stamp`'s change facts and field stamp.
     pub fn with_stamp(mut self, stamp: Stamp) -> Self {
         self.2 = stamp.0;
         self.3 = Some(stamp.1);
         self
     }
 
-    /// Drops its change facts when no other view holds them.
     pub fn reclaim_changes(&mut self) {
         if self
             .2
@@ -356,10 +301,6 @@ impl ChangeFacts {
     }
 }
 
-/// A [`SharedView`]'s allocation, named without holding its rows: the
-/// allocation's address cannot be reused while the identity exists, so it
-/// matches only views of that allocation, whether or not they are alive; and
-/// whether that view is of a table not selected for reconstruction.
 #[derive(Clone, Debug)]
 pub struct ViewIdentity(Weak<TableView>, Option<Arc<FieldStamp>>, bool);
 
@@ -371,7 +312,6 @@ struct FieldStamp {
 }
 
 impl ViewIdentity {
-    /// Whether it names the view of a table not selected for reconstruction, held or not.
     pub fn not_selected(&self) -> bool {
         self.2
     }
@@ -386,7 +326,6 @@ impl ViewIdentity {
         self.0.strong_count()
     }
 
-    /// Whether `view` is the named allocation.
     pub fn is(&self, view: &SharedView) -> bool {
         std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&view.0))
             && Self::same_epoch(self.1.as_deref(), view.3.as_deref())
@@ -431,7 +370,6 @@ impl ViewIdentity {
         true
     }
 
-    /// Whether both name one allocation.
     pub fn same(&self, other: &Self) -> bool {
         self.0.ptr_eq(&other.0) && Self::same_epoch(self.1.as_deref(), other.1.as_deref())
     }
@@ -462,8 +400,6 @@ impl std::ops::Deref for SharedView {
     }
 }
 
-/// The table views a computation on this thread reads, for consumers that
-/// reuse a computation's result while every view it read is unchanged.
 pub mod view_reads {
     use super::{SharedView, ViewIdentity};
     use crate::rows::TableId;
@@ -472,7 +408,6 @@ pub mod view_reads {
     thread_local! {
         pub(super) static RECORDING: Cell<bool> = const { Cell::new(false) };
         static READS: RefCell<Vec<ViewIdentity>> = const { RefCell::new(Vec::new()) };
-        /// The tables read through a columnar walk's views, which have no identity.
         static WALKED: RefCell<Vec<TableId>> = const { RefCell::new(Vec::new()) };
     }
 
@@ -485,7 +420,6 @@ pub mod view_reads {
         });
     }
 
-    /// Notes a read of `table` through a walk's views, while this thread records.
     pub(crate) fn note_walked(table: TableId) {
         if RECORDING.with(Cell::get) {
             WALKED.with(|walked| {
@@ -497,20 +431,16 @@ pub mod view_reads {
         }
     }
 
-    /// Note `tables`, read through a walk's views on a helper thread, for this thread's
-    /// recording.
     pub fn credit_walked(tables: &[TableId]) {
         for &table in tables {
             note_walked(table);
         }
     }
 
-    /// [`record`], with the tables `compute` read through a walk's views, each once.
     pub fn record_walked<T>(
         compute: impl FnOnce() -> T,
     ) -> (T, Vec<ViewIdentity>, Vec<TableId>) {
         let outer = WALKED.with(|walked| std::mem::take(&mut *walked.borrow_mut()));
-        // Restore the enclosing recording's tables even when `compute` unwinds.
         struct Restore(Option<Vec<TableId>>);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -535,8 +465,6 @@ pub mod view_reads {
         (value, views, inner)
     }
 
-    /// Run `compute` without recording the views it reads: a caller that
-    /// records `compute`'s result itself already holds everything it used.
     pub fn unrecorded<T>(compute: impl FnOnce() -> T) -> T {
         let was = RECORDING.with(|recording| recording.replace(false));
         struct Restore(bool);
@@ -549,12 +477,10 @@ pub mod view_reads {
         compute()
     }
 
-    /// Whether this thread records the views it reads.
     pub fn recording() -> bool {
         RECORDING.with(Cell::get)
     }
 
-    /// Note `views`, read on a helper thread for this thread's recording.
     pub fn credit(views: &[ViewIdentity]) {
         if !recording() {
             return;
@@ -569,8 +495,6 @@ pub mod view_reads {
         });
     }
 
-    /// Run `compute`, returning the views it read, each once. Recording
-    /// nests: an enclosing recording also holds the views read inside.
     pub fn record<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
         let (value, views, _) = record_walked(compute);
         (value, views)
@@ -579,7 +503,6 @@ pub mod view_reads {
     fn record_views<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
         let outer = READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()));
         let was = RECORDING.with(|recording| recording.replace(true));
-        // Restore the enclosing recording even when `compute` unwinds.
         struct Restore(Option<Vec<ViewIdentity>>, bool);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -593,8 +516,6 @@ pub mod view_reads {
         let value = compute();
         let inner = READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()));
         let mut outer = restore.0.take().unwrap_or_default();
-        // Only an enclosing recording holds the views read inside; an
-        // outermost recording leaves nothing behind on this thread.
         if was {
             for view in &inner {
                 if !outer.iter().any(|read| read.same(view)) {
@@ -726,33 +647,16 @@ fn split_shared_tables(
     (point, tables)
 }
 
-/// Encoder-only input. Compared rows describe the current acquisition boundary
-/// and were compared exactly with this encoder's complete baseline. The producer
-/// may certify owned data through complete mutation observation; carrying older
-/// unchecked values does not satisfy this contract.
-/// Decoders and the wire format continue to use only `TableView`/`TableUpdate`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableInput {
     Sampled(TableView),
-    /// Complete owned replay rows shared with the producer's recovery cache.
-    /// Exact identity with this encoder's immutable committed allocation reuses
-    /// its row-validation/equality result; enclosing-hour checks still run.
     SharedComplete(Arc<TableRows>),
     ComparedEqual(BaselineToken),
-    /// Every current key matches its baseline position, and every omitted row
-    /// was compared exactly with data certified for this boundary. Only differing rows own
-    /// new replay storage. Membership changes require a complete input.
     ComparedChanges {
         token: BaselineToken,
         indices: Vec<usize>,
         rows: TableRows,
     },
-    /// An owner-sliced table as an update of this encoder's shared complete
-    /// baseline: every row of the update's owners is replaced by its rows,
-    /// the read the producer's merge of the same rows describes
-    /// ([`crate::sliced::SliceUpdate`]). It encodes and commits exactly as
-    /// that merged complete table would, without materialising it; commit
-    /// replaces the rows inside the baseline.
     SliceUpdate {
         token: BaselineToken,
         update: Arc<crate::sliced::SliceUpdate>,
@@ -766,10 +670,6 @@ impl From<TableView> for TableInput {
 }
 
 impl TableInput {
-    /// Round the stepped fields of the rows this input owns to their display
-    /// steps ([`crate::display`]): complete, truncated and replacement rows,
-    /// and shared rows only while this input holds their sole reference.
-    /// Compared and slice inputs name rows a baseline already holds.
     pub fn round_to_display(&mut self) {
         match self {
             Self::Sampled(TableView::Complete(rows) | TableView::Truncated { rows, .. })
@@ -786,8 +686,6 @@ impl TableInput {
     }
 }
 
-/// Identifies the exact baseline and destination for a producer's comparison.
-/// The encoder checks these fields again before committing any table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BaselineToken {
     encoder: u64,
@@ -800,19 +698,14 @@ pub struct BaselineToken {
 }
 
 impl BaselineToken {
-    /// Shared recovery snapshots and tables with cross-row constraints cannot
-    /// be edited through sparse replacements.
     pub fn allows_row_updates(self) -> bool {
         self.row_updates
     }
 
-    /// The encoder, branch and committed hour of the baseline this token compares with.
     pub fn baseline(self) -> (u64, BranchId, Hour) {
         (self.encoder, self.branch, self.baseline)
     }
 
-    /// The encoder, branch and hour the comparison is for: the next hour's
-    /// [`Self::baseline`] when this hour commits the compared table.
     pub fn destination(self) -> (u64, BranchId, Hour) {
         (self.encoder, self.branch, self.hour)
     }
@@ -827,7 +720,6 @@ pub struct FrameInput {
 }
 
 impl FrameInput {
-    /// [`TableInput::round_to_display`] for every table.
     pub fn round_to_display(&mut self) {
         for table in &mut self.tables {
             table.round_to_display();
@@ -860,7 +752,6 @@ pub enum TableUpdate {
     Unchanged {
         baseline: Hour,
     },
-    // A partial walk never asserts that absent keys were deleted.
     Truncated {
         rows: TableRows,
         missing: u32,
@@ -868,12 +759,9 @@ pub enum TableUpdate {
     Unavailable {
         reason: String,
     },
-    /// Stored as nothing where the capture mode leaves the table out; elsewhere as its status.
     NotRecorded {
         mode: CaptureMode,
     },
-    /// Discarded incompatible source update. Retain its length for inspection;
-    /// current writers emit only the unavailable reason, never historical rows.
     Incompatible {
         reason: String,
         source_format: crate::format::FormatVersion,
@@ -891,8 +779,6 @@ pub struct Frame {
     pub tables: [TableUpdate; TABLE_COUNT],
 }
 
-/// Validated frame bytes produced without allocating an intermediate delta for
-/// each changed row. Its private payload cannot be modified by a spool caller.
 pub struct EncodedFrame {
     pub(crate) branch: BranchId,
     pub(crate) hour: Hour,
@@ -901,8 +787,6 @@ pub struct EncodedFrame {
 }
 
 impl EncodedFrame {
-    // Reserve the spool envelope once; finalizing it needs neither another
-    // allocation nor a copy of the encoded frame.
     pub(crate) const PREFIX_BYTES: usize = crate::envelope::RECORD_HEADER_BYTES + 1;
     pub fn branch(&self) -> BranchId {
         self.branch
@@ -914,7 +798,6 @@ impl EncodedFrame {
         self.keyframe
     }
 
-    /// Seal the reserved spool envelope without moving or copying its payload.
     pub fn into_spool_record(mut self) -> io::Result<Vec<u8>> {
         self.bytes[crate::envelope::RECORD_HEADER_BYTES] = 2;
         crate::envelope::seal_record(self.bytes)
@@ -945,7 +828,6 @@ fn put_count(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
 }
 
 impl DecodedFrame {
-    /// [`Self::complete`], reading only the fields of `fields` of each row.
     pub fn complete_fields<T: TableSchema>(&self, fields: u64) -> io::Result<&[T::Row]> {
         let rows = undeclared::reading(fields, || self.complete::<T>())?;
         if let Some(held) = self.tables[T::ID.index()].fields() {
@@ -999,8 +881,6 @@ impl DecodedFrame {
         })
     }
 
-    /// Whether the recording holds `table`, from its own marker, which a
-    /// projection keeps for every table it selects; it reads none of its rows.
     pub fn recorded(&self, table: TableId) -> bool {
         !matches!(*self.tables[table.index()].0, TableView::NotRecorded { .. })
     }
@@ -1039,10 +919,6 @@ fn recorded_here(table: TableId) -> bool {
         .present(crate::format::FormatVersion::CURRENT.version())
 }
 
-/// Refused unless every table the mode leaves out is NotRecorded, in that one mode. A table
-/// the mode records may be NotRecorded too: the row frame leaves it to the native capture. A
-/// frame that names no mode is Full, and need not name the tables Full leaves out: none is
-/// stored.
 fn capture_mode(not_recorded: impl Fn(usize) -> Option<CaptureMode>) -> io::Result<CaptureMode> {
     let named = TableId::ALL
         .into_iter()
@@ -1076,8 +952,6 @@ fn validate_rows(table: TableId, rows: &TableRows) -> io::Result<()> {
     rows.validate_keys()?;
     validate_slots(rows)
 }
-/// [`validate_complete`] of rows whose keys a validated delta application
-/// already checked.
 fn validate_applied(table: TableId, rows: &TableRows, hour: Hour) -> io::Result<()> {
     if rows.table() != table {
         return Err(invalid(
@@ -1148,9 +1022,6 @@ fn validate_delta_keys(
     Ok(())
 }
 
-/// The view a current Full recording decodes for a table it does not record (a
-/// retired table, or one Full leaves out), or None for a recorded table. Test
-/// sources that supply every table replace those with it, as decoding would.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn current_absence(table: TableId) -> Option<TableView> {
@@ -1168,8 +1039,6 @@ pub fn current_absence(table: TableId) -> Option<TableView> {
     })
 }
 
-/// [`current_absence`] applied to every table of a test source, whose timing
-/// a current recording also omits.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn retire_absent(mut frame: DecodedFrame) -> DecodedFrame {

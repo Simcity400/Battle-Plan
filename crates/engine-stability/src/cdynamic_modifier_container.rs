@@ -1,8 +1,3 @@
-//! CDynamicModifierContainer, embedded in CCountry (`ccountry::DYNAMIC_MODIFIERS`).
-//!
-//! Current state is read after the joined hourly update. Daily decrement and
-//! synchronous modifier rebuild finish before that boundary; scripted add/remove
-//! paths rebuild synchronously. Lifecycle hooks and inferred removal events are excluded.
 
 use crate::{
     Memory, ccountry, cdynamic_modifier, cpdx_array::Array, dynamic_modifier_entry, read,
@@ -10,26 +5,17 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CDynamicModifierContainer vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0285_3f18);
-/// CDynamicModifierContainer owner CCountry pointer.
 pub const COUNTRY: usize = 0x08;
-/// CDynamicModifierContainer owner state id i32.
 pub const STATE: usize = 0x18;
-/// Timed-modifier entry array with 0x40-byte entries.
 pub const ENTRIES: usize = 0x28;
-/// CDynamicModifierContainer entry capacity u32.
 #[cfg(test)]
 pub const ENTRIES_CAPACITY: usize = 0x30;
-/// CDynamicModifierContainer entry count u32.
 #[cfg(test)]
 pub const ENTRIES_COUNT: usize = 0x34;
 
-/// Timed-modifier add/value/duration entry.
 pub const ADD_RVA: Rva = Rva(0x0059_e540);
-/// Timed-modifier daily decrement and zero-removal entry.
 pub const DAILY_UPDATE_RVA: Rva = Rva(0x0059_f8a0);
-/// Exact timed-modifier daily-update entry bytes.
 pub const DAILY_UPDATE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
 ];
@@ -37,7 +23,6 @@ pub const DAILY_UPDATE_SENTINEL: [u8; 16] = [
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Native array position, not a persistent object identity.
     pub ordinal: u32,
     pub scope_country: u32,
     pub scope_state: i32,
@@ -65,9 +50,6 @@ pub struct Demand {
     pub values: usize,
 }
 
-/// The entry array uses its count and stride 0x40. Each instance's value array is sized by its
-/// definition's value count. Empty capture storage visits every retained token/value header,
-/// including disabled entries, without row or payload allocation.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -93,10 +75,6 @@ pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32)
     walk_into(memory, base, country, country_id, crate::walk::Buffer::Count, 0, crate::walk::Buffer::Count, 0, crate::walk::Buffer::Count, 0)
 }
 
-/// Copies one authenticated country's own current timed modifiers. Output and
-/// arenas are caller-owned; insufficient capacity omits whole entries and
-/// reports the exact missing row count. Names and ordered fixed5 values remain
-/// lossless, including disabled instances and the native -1 duration sentinel.
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     memory: &impl Memory,

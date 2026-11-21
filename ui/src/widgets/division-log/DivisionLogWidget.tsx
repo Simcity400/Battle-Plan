@@ -44,9 +44,6 @@ const sameKeys = (held: readonly LogRow<DivisionLogEntry>[], next: readonly LogR
   && held.every((row, index) => row.key === next[index].key);
 const VANISHED = 3;
 
-/** Every division first seen, lost or transferred through the hour shown: pages of the recorder's division log,
- * following the head a block of rows at a time revealed by the clock, with the totals of each kind from the log's
- * counts and the rows the list already holds, painted each frame. */
 export default function DivisionLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
@@ -70,7 +67,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   })), [manifest.data, campaign, branch]);
   const events = String(options.events);
   const groups = useCountryGroups(runtime, track, active && (widget.countries.kind === 'group' || widget.countries.kind === 'factions'));
-  // A group's members over the branch: a country is listed by the tags it held at its rows' hours.
   const tags = useMemo<string[] | null>(() => {
     if (widget.countries.kind === 'all') return null;
     if (widget.countries.kind !== 'group' && widget.countries.kind !== 'factions') return selectedCountryKeys(widget.countries, track);
@@ -86,7 +82,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     ? { source: track.source, branchId: track.branch.id, log: 'division-events', product: 'division-log', facets, firstHour: first, lastHour: last } : null,
   [track, manifest.data?.available, waiting, facets, first, last]);
   const list = useLogPages<DivisionLogEntry>(runtime.client, runtime.clock, spec, cut, active, divisionEntry);
-  // Each kind's counts on the list's bins, and the rows that left the census unwitnessed: one request a kind per span.
   const counted = useMemo(() => [...(options.totals === true ? facets[0].values : []), VANISHED], [options.totals, facets]);
   const countRequests = useMemo(() => spec ? counted.map(kind => ({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
     params: { branchId: spec.branchId, log: spec.log, facets: [{ name: 'kind', values: [kind], countries: [] }, ...facets.slice(1)],
@@ -103,7 +98,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     counted.forEach((kind, index) => { if (kind !== VANISHED) byKind.set((Object.keys(KINDS) as DivisionKind[])[kind], kindCounts.data![index]); });
     return kindTotals(list.counts, byKind, list.pages, list.shown, list.at);
   }, [list.counts, list.pages, list.shown, list.at, kindCounts.data, counted]);
-  // Following, each kind's total is painted each frame: the totals at the block's hour and the rows revealed since.
   const liveTotals = useMemo(() => totals ? countsAhead(totals, list.ahead, row => row.item.kind) : null, [totals, list.ahead]);
   const totalTexts = useMemo(() => liveTexts(runtime.clock, () => follow ? trackHour(runtime.clock.getHour()) : 0, hour => {
     const at = liveTotals?.(hour);
@@ -116,22 +110,16 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return counts.counts.slice(0, Math.max(0, bin)).reduce((sum, count) => sum + count, 0);
   }, [kindCounts.data, counted.length, until]);
 
-  // Following, the newest rows held (the block drawn and a view beneath it) are named with the block, before the list
-  // draws them; only rows scrolled to beyond them are named as they come into view. Else the rows drawn.
   const newest = list.ahead.length + 2 * AHEAD_ROWS;
   const [visible, setVisible] = useDistinctState<readonly LogRow<DivisionLogEntry>[]>(NO_ROWS, sameKeys);
   const named = useMemo(() => divisionNamedRows(follow, list.pages, newest, visible), [follow, list.pages, newest, visible]);
   const namedKeys = useMemo(() => follow ? new Set(named.map(row => row.key)) : null, [follow, named]);
-  // The list reports a new array whenever it lays out again; following, only rows the block did not name are news.
   const onVisible = useCallback((rows: readonly LogRow<DivisionLogEntry>[]) => {
     if (namedKeys && rows.every(row => namedKeys.has(row.key))) return;
     setVisible(rows);
   }, [namedKeys, setVisible]);
   const wanted = useMemo(() => [...logCountryRequests(named, row => ({ hour: row.item.readHour, tags: [row.item.tag, row.item.killerTag] }))], [named]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(country => country.hour)).size));
-  // Each place is asked once, the first time a row named wants it, those at the list's top leading; a read in flight is
-  // never cancelled by a page landing or a block moving on, so the rows of a log opened, sought or switched to are named
-  // when their read lands.
   const content = useContentRevision(runtime.client);
   const placesOwner = track ? JSON.stringify([track.source.id, track.source.revision, branch, content]) : null;
   const placesAt = follow ? list.at : null;
@@ -154,14 +142,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       killer: row.killerTag === null ? { name: 'Killer not known' } : labelAt(row.readHour)(row.killerTag),
       place: divisionPlace(row, knownPlaces, { pending: ask !== null && placeReads.reads.pending(ask), failed: ask !== null && placeReads.reads.failure(ask) !== undefined }),
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- a new identity as each read's places are taken in
   }, [labelAt, knownPlaces, placeReads.reads, placeReads.version]);
   const warnings = useMemo(() => [...new Set([...(manifest.data?.warnings ?? []),
     ...(manifest.data ? gapWarnings(manifest.data, first, until ?? last) : []),
     ...list.pages.flatMap(page => page.error ? [`Division log: ${page.error.message}`] : []),
     ...(vanished ? [`Division left the census without a removal witness; no loss inferred (${vanished})`] : []),
     ...placeReads.reads.warnings, ...[...placeReads.reads.failures.values()].map(error => `Place names: ${error.message}`)])],
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- the reads' warnings grow as each lands
   [manifest.data, first, until, last, list.pages, vanished, placeReads.reads, placeReads.version]);
   useDiagnostics(onDiagnostics, warnings);
 

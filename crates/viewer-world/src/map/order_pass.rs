@@ -1,4 +1,3 @@
-//! World submission of common battle-plan and raid ribbon draw data.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
@@ -13,18 +12,14 @@ use viewer_foundation::{
         textures::{ColorSpace, upload},
     },
 };
-// ------------------------------------------------------------------- the pass
 
-/// 128-byte allocation; bytes 116..128 remain unknown to shader reads.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
 struct Slot {
     arrow_mask: [f32; 4],
     arrow_color: [f32; 4],
     arrow_secondary_color: [f32; 4],
-    /// `vTime_IsSelected_FadeInOut`.
     time_selected_fade: [f32; 4],
-    /// `vOfsX_vOfsTex_vOfsFx`, with `w` unused.
     ofs_x_tex_fx: [f32; 4],
     body_uv_scale: f32,
     secondary_body_uv_scale: f32,
@@ -46,7 +41,6 @@ struct TypeResources {
     variants: u32,
 }
 
-/// Physical PS slots 2..10; b0 is the original camera (b3 carries wrap).
 #[derive(Clone, Copy)]
 pub struct NativeInputs<'a> {
     pub retained: Option<&'a RefCell<crate::map::shader_scene::State>>,
@@ -61,20 +55,13 @@ struct NativeDraw<'a> {
     bound: shader_pipeline::gpu::Bindings,
 }
 
-/// The order field's parts by their producer, in the order their ribbons join the draw list: the
-/// orders layer's plan, the raid arrows, the trade routes, then the overlay's air orders, which
-/// take the place of the others' air-mode ribbons.
 pub const ORDER_PARTS: usize = 4;
 const AIR: usize = 3;
 
-/// The parts' places in the vertex buffer: the plan, given anew at every step, last, so a plan of
-/// another length moves no other part's vertices.
 const LAYOUT: [usize; ORDER_PARTS] = [1, 2, 3, 0];
 
-/// Vertices compared and written as one unit: a run of changed units is one write.
 const CHUNK: usize = 64;
 
-/// One part as the buffer holds it: its first vertex, its vertices, and its ribbons as given.
 #[derive(Clone, Default)]
 struct Part {
     start: u32,
@@ -82,8 +69,6 @@ struct Part {
     draws: Vec<OrderDraw>,
 }
 
-/// What an upload of the parts did: vertex bytes written, writes made, and whether the draw list
-/// was made again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OrderUpload {
     pub bytes: usize,
@@ -91,7 +76,6 @@ pub struct OrderUpload {
     pub draws: bool,
 }
 
-/// The GPU battle-plan pass.
 pub struct OrderPass {
     types: BTreeMap<(String, usize), TypeResources>,
     native_vertices: Option<wgpu::Buffer>,
@@ -101,8 +85,6 @@ pub struct OrderPass {
     parts: [Part; ORDER_PARTS],
 }
 
-/// Each part's place in the buffer laid out as [`LAYOUT`] (its draws left out), and the vertices
-/// in all.
 fn places(parts: &[Option<&OrderField>; ORDER_PARTS]) -> ([Part; ORDER_PARTS], u32) {
     let mut placed: [Part; ORDER_PARTS] = Default::default();
     let mut at = 0;
@@ -114,8 +96,6 @@ fn places(parts: &[Option<&OrderField>; ORDER_PARTS]) -> ([Part; ORDER_PARTS], u
     (placed, at)
 }
 
-/// The byte runs of `parts` placed at `placed` that differ from `held` (the bytes laid out before),
-/// compared in place a [`CHUNK`] of vertices at a time, neighbouring runs joined.
 fn changed_runs(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_PARTS], held: &[u8]) -> Vec<std::ops::Range<usize>> {
     let stride = std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>();
     let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
@@ -137,7 +117,6 @@ fn changed_runs(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDE
     runs
 }
 
-/// The bytes of `parts` laid out as [`LAYOUT`].
 fn laid_out(parts: &[Option<&OrderField>; ORDER_PARTS]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for &part in &LAYOUT {
@@ -148,9 +127,6 @@ fn laid_out(parts: &[Option<&OrderField>; ORDER_PARTS]) -> Vec<u8> {
     bytes
 }
 
-/// The draw list of `parts` placed at `placed`, as appending each to the one before it makes it:
-/// the plan's ribbons as given, then each other part's after them with its strips moved to its
-/// place and no label, sorted; the air orders replace the air-mode ribbons before them.
 fn draw_list(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_PARTS]) -> Vec<OrderDraw> {
     let moved = |part: usize, draw: &OrderDraw, label: bool| {
         let base = placed[part].start;
@@ -169,9 +145,6 @@ fn draw_list(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_P
 }
 
 impl OrderPass {
-    /// How each arrow program built reads the shadow screen buffer by texel
-    /// ([`super::shadow::texel_reads`]); a program shared by several arrow types is met once per
-    /// type.
     pub fn texel_reads(&self) -> impl Iterator<Item = &str> {
         self.types
             .values()
@@ -179,7 +152,6 @@ impl OrderPass {
             .filter_map(|arrow| arrow.texel_reads.as_deref())
     }
 
-    /// Admits this frame's arrows; a hidden plan family admits none, so its labels go too.
     pub fn prepare(
         &mut self,
         camera: Camera,
@@ -196,7 +168,6 @@ impl OrderPass {
         });
     }
 
-    /// Native labels follow arrow admission, independently of glyph bounds.
     pub fn labels(&self, mode: Mode) -> Vec<(usize, usize)> {
         self.native_plans
             .get(&mode)
@@ -206,7 +177,6 @@ impl OrderPass {
             .flat_map(|(view, plan)| plan.labels.iter().map(move |source| (view, *source)))
             .collect()
     }
-    /// Builds the pipeline and uploads every arrow type's pages.
     pub fn new(
         device: &wgpu::Device,
         samples: u32,
@@ -259,14 +229,13 @@ impl OrderPass {
                 if !mode.admits(arrow.draw_last) || (mode == Mode::Shadow && !arrow.draw_shadows) {
                     continue;
                 }
-                // Append the effect suffix before lookup.
                 let name = if mode == Mode::Seethrough {
                     format!("{}Seethrough", arrow.shader_technique)
                 } else {
                     arrow.shader_technique.clone()
                 };
                 if mode == Mode::Seethrough && effect.select(&name).map_err(invalid)?.is_none() {
-                    continue; // Absent optional technique skips mode 3.
+                    continue;
                 }
                 let key = (name.clone(), mode);
                 let program = if let Some(program) = programs.get(&key) {
@@ -304,11 +273,6 @@ impl OrderPass {
         Ok(())
     }
 
-    /// Uploads one hour's ribbons. Called whenever the hour changes.
-    /// The order field's parts by producer ([`ORDER_PARTS`]): the vertex buffer written only
-    /// where its bytes changed (a part of another length moves the parts placed after it), grown
-    /// when they no longer fit, and the draw list made again only when a part's ribbons or place
-    /// changed. Parts equal to those held write nothing.
     pub fn upload_parts(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, parts: [Option<&OrderField>; ORDER_PARTS]) -> io::Result<OrderUpload> {
         let stride = std::mem::size_of::<viewer_foundation::map::ribbon_content::Vertex>();
         let (mut placed, total) = places(&parts);
@@ -350,7 +314,6 @@ impl OrderPass {
         Ok(done)
     }
 
-    /// A whole field, as one part.
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, field: OrderField) -> io::Result<()> {
         self.upload_parts(device, queue, [Some(&field), None, None, None]).map(drop)
     }
@@ -381,7 +344,6 @@ impl OrderPass {
                 } else {
                     resources.arrow.mask_inner
                 };
-                // Skip the entire loop when all RGB mask components are zero.
                 if mask == [0.; 3] {
                     continue;
                 }
@@ -419,8 +381,6 @@ impl OrderPass {
         Ok(draws)
     }
 
-    /// Submit mode 2 after mesh/tree casters and before receivers; reached only through
-    /// [`PlanSubmissions::cast_shadows`].
     fn draw_shadow(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -454,7 +414,6 @@ impl OrderPass {
         Ok(())
     }
 
-    /// Reached only through [`PlanSubmissions::draw`].
     #[allow(clippy::too_many_arguments)]
     fn draw(
         &self,
@@ -501,7 +460,6 @@ impl OrderPass {
             if mode == Mode::Seethrough {
                 continue;
             }
-            // Clear the whole stencil after both masks in modes 0/1.
             let mut attachment = targets.depth_attachment(wgpu::LoadOp::Load);
             attachment.stencil_ops = Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(0),
@@ -561,16 +519,12 @@ impl OrderPass {
     }
 }
 
-/// The admitted arrow families a frame submits. Both draws and shadow casters respect the
-/// map interface switch; trade routes have their map mode's visibility, plans their own switch.
 pub struct PlanSubmissions<'a, P = OrderPass> {
     shown: Option<&'a P>,
 }
 
-/// A shown plan pass, handed to the frame's shadow casting.
 pub struct ShadowCasting<'a, P = OrderPass>(&'a P);
 
-/// A shown plan pass, handed to the frame's drawing.
 pub struct Drawing<'a, P = OrderPass>(&'a P);
 
 impl<'a, P> PlanSubmissions<'a, P> {
@@ -585,7 +539,6 @@ impl<'a, P> PlanSubmissions<'a, P> {
         }
     }
 
-    /// Casts the shown plans' shadows with `cast`.
     pub fn cast_shadows(
         &self,
         cast: impl FnOnce(ShadowCasting<'a, P>) -> io::Result<()>,
@@ -594,14 +547,12 @@ impl<'a, P> PlanSubmissions<'a, P> {
             .map_or(Ok(()), |plans| cast(ShadowCasting(plans)))
     }
 
-    /// Draws the shown plans with `draw`.
     pub fn draw(&self, draw: impl FnOnce(Drawing<'a, P>) -> io::Result<()>) -> io::Result<()> {
         self.shown.map_or(Ok(()), |plans| draw(Drawing(plans)))
     }
 }
 
 impl PlanSubmissions<'_> {
-    /// Whether the shown plans cast any shadow this frame.
     pub fn casts_shadows(&self) -> bool {
         self.shown.is_some_and(|plans| {
             plans.native_vertices.is_some()
@@ -616,7 +567,6 @@ impl PlanSubmissions<'_> {
 }
 
 impl ShadowCasting<'_> {
-    /// Submits view `view`'s plan shadows after mesh and tree casters and before receivers.
     pub fn draw_shadow(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -630,7 +580,6 @@ impl ShadowCasting<'_> {
 }
 
 impl Drawing<'_> {
-    /// Draws view `view`'s plans in `mode`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -673,7 +622,6 @@ mod tests {
         }
     }
 
-    /// A part of `vertices` vertices, each its own position from `seed`, drawn as one ribbon.
     fn field(arrow: &str, declaration_index: usize, air_mode: bool, seed: f32, vertices: u32) -> OrderField {
         OrderField {
             native_vertices: (0..vertices).map(|at| Vertex { position: [seed, at as f32, 0.0], padding: 0, uv: [0.0; 4] }).collect(),
@@ -682,15 +630,11 @@ mod tests {
         }
     }
 
-    /// The ribbons the pass draws, by type, label and the vertices each strip reads.
     fn drawn(draws: &[OrderDraw], bytes: &[u8]) -> Vec<(String, Option<usize>, Vec<Vertex>)> {
         let vertices: &[Vertex] = bytemuck::cast_slice(bytes);
         draws.iter().map(|draw| (draw.arrow_type.clone(), draw.label, draw.native_strips.iter().flat_map(|strip| vertices[strip.start as usize..strip.end as usize].to_vec()).collect())).collect()
     }
 
-    /// The parts laid out with the plan last draw what appending each part to the one before it
-    /// drew (today's merge: the plan's labels, the others' strips moved, the air orders in place of
-    /// the air-mode ribbons): the same ribbons in the same order reading the same vertices.
     #[test]
     fn the_parts_draw_as_the_field_appended_part_by_part_draws() {
         let (plan, raids, routes, air) = (field("plan", 2, false, 1.0, 300), field("raid", 1, false, 2.0, 70), field("route", 2, true, 3.0, 5), field("air", 0, true, 4.0, 9));
@@ -706,9 +650,6 @@ mod tests {
         assert_eq!(drawn(&draw_list(&without_air, &placed), &laid_out(&without_air)), drawn(&base.draws, bytemuck::cast_slice(&base.native_vertices)));
     }
 
-    /// Parts of the same content, in new allocations, differ nowhere from the bytes laid out: no
-    /// write. A plan changed in one vertex differs in that vertex's chunk alone; a plan of another
-    /// length, laid out last, moves no other part's bytes.
     #[test]
     fn equal_parts_write_nothing_and_a_changed_plan_writes_its_changed_chunks_alone() {
         let (plan, raids) = (field("plan", 2, false, 1.0, 300), field("raid", 1, false, 2.0, 70));
@@ -737,8 +678,6 @@ mod tests {
 
     #[test]
     fn plans_submit_their_shadows_and_draws_only_while_shown() {
-        // A stand-in plan pass through the one gate the frame reaches the order pass's shadows
-        // and draws by, counting the shadow casts and draws a frame submits.
         struct StandIn;
         let submitted = |graphics: dashboard_core::protocol::MapGraphics,
                          interface: bool,
@@ -765,7 +704,6 @@ mod tests {
         };
         let shown = dashboard_core::protocol::MapGraphics::default();
         assert_eq!(submitted(shown, true, false), (1, 1));
-        // A free view with its overlays hidden casts no plan shadows and draws no plans.
         assert_eq!(submitted(shown, false, false), (0, 0));
         let switched_off = dashboard_core::protocol::MapGraphics {
             battle_plans: false,
@@ -774,7 +712,6 @@ mod tests {
         assert_eq!(submitted(switched_off, true, false), (0, 0));
         assert_eq!(submitted(switched_off, true, true), (1, 1));
         assert_eq!(submitted(switched_off, false, true), (0, 0));
-        // A scene without plans submits none, and a failing submission reaches the frame.
         let overlay = crate::map::scene::Overlay::default();
         let none = PlanSubmissions::<StandIn>::new(None, &shown, &overlay, true);
         assert!(none.cast_shadows(|_| unreachable!()).is_ok());

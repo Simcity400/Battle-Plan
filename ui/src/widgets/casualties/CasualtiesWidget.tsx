@@ -48,7 +48,6 @@ const UNKNOWN_FALLBACK = 'Unknown attacker';
 const rankedRows = (answer: FollowedAnswer | undefined) => rankedTags(answer).sort().join(',');
 const NO_LINES: never[] = [];
 
-/** The content's name for losses no attacker dealt. */
 function useUnknownLabel(props: WidgetProps): { label: string; warnings: readonly string[] } {
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-labels', params: { branchId: track.branch.id } } : null;
@@ -56,8 +55,6 @@ function useUnknownLabel(props: WidgetProps): { label: string; warnings: readonl
   return { label: reply.data?.unknownLabel ?? UNKNOWN_FALLBACK, warnings: reply.data?.warnings ?? [] };
 }
 
-/** Each country's casualties dealt and taken (with their ratio), or a race of losses taken; the game's retained
- * Combat Log under either. */
 export default function CasualtiesWidget(props: WidgetProps) {
   const unknown = useUnknownLabel(props);
   const [chartWarnings, setChartWarnings] = useState<readonly string[]>([]);
@@ -69,7 +66,6 @@ export default function CasualtiesWidget(props: WidgetProps) {
   </>;
 }
 
-/** The followed answers of the four measures as one live source of rows, made again only when an answer moves. */
 function liveRows(lives: readonly (Live<FollowEntry> | undefined)[], make: (answers: readonly (FollowedAnswer | undefined)[]) => CasualtyItem[]): Live<readonly CasualtyItem[]> | undefined {
   if (lives.some(live => !live)) return undefined;
   let made: { key: string; items: CasualtyItem[] } | null = null;
@@ -101,7 +97,6 @@ function CasualtyView({ widget, runtime, active, unknownLabel, onWarnings }: Wid
   const resolved = useMemo(() => widget.countries.kind === 'all' ? null
     : resolveCountries(widget.countries, fallbackTag ? [fallbackTag] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
   [widget.countries, fallbackTag, groups.data, lastHour]);
-  // Every country is the top N of all of them: as many as hold a row, ranked.
   const top = widget.countries.kind === 'all' ? Number.MAX_SAFE_INTEGER : resolved?.top ?? null;
   const tags = useMemo(() => resolved?.tags ?? [], [resolved]);
   const membership = resolved?.membership;
@@ -112,12 +107,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const family = (measure: string) => ({ kind: FAMILY, measure });
 
-  // At the head: the top countries followed by rank (their names are the structure), each measure followed for them.
   const rankQuery = useMemo(() => active && following && track && top != null
     ? { product: 'series-state', params: { branchId: track.branch.id, family: family(RANK), top: Math.min(top, 1500) } } : null,
-  [active, following, track?.branch.id, top]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The members are every country the top has ranked since it was asked (`stickyMembers`): the rows shown are its top
-  // by the painted values, so a country entering the top it held before, or the order moving, renders and asks nothing.
+  [active, following, track?.branch.id, top]);
   const sticky = useRef<StickyMembers | null>(null);
   const rankKey = rankQuery ? canonical(rankQuery) : '';
   const rankShape = useCallback((answer: FollowedAnswer | undefined) => {
@@ -130,7 +122,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
     ? { product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, membersKey]);
   const read = useCallback((entry: FollowEntry) => entry, []);
   const measured = [
@@ -139,8 +130,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     useLiveFollow(store, queries[2], root, read, answered),
     useLiveFollow(store, queries[3], root, read, answered),
   ];
-  // A new top's members are followed under new queries: until each has answered, the last answered follows stay
-  // drawn (their rows are named, so a member entering waits a step and none is read as another's), never the fallback.
   const rankFollowed = top == null || followsHead(ranked);
   const lives = useHandoff(measured, rankFollowed, store, track?.branch.id);
   const [dealt, taken, unknown, partial] = lives.map(live => ({ live }));
@@ -151,7 +140,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const moment = Math.floor(window?.lastHour ?? lastHour);
 
-  // Elsewhere (pinned, a range's end, not followed): each measure asked at its hour, a top N's members first.
   const asked = !followedHead && track && window;
   const rankRequest = asked && top != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: family(RANK), hour: moment, top: Math.min(top, 1500) } } : null;
@@ -167,7 +155,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   ];
 
   const drawn = followedHead ? members : askedTags;
-  // At the head the rows are named as they are at the hour shown: read where one of them last changed.
   const identityHour = useIdentityHour(runtime.client, track, drawn, runtime.clock, active && followedHead,
     hour => track ? trackHourOf(widget, track, runtime.tracks, hour) : null);
   const lookRead = looksRead(active && followedHead, identityHour, moment);
@@ -192,10 +179,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const liveItems = useMemo(() => followedHead && !race ? liveRows(followed.map(item => item.live), answers => {
     return toItems.current(casualtyRows(members, heldOf(answers), headHour(), includeUnknown));
   }) : undefined,
-  // The rows are made again when their structure, looks or the unknown option change; values are painted.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, membersKey, includeUnknown, looks, colour, headHour]);
-  // The race at the head: the ranked members' rows read as the chart draws, made again only when an answer moves.
   const rowsAt = useRef((_hour: number): CountryCasualties[] => []);
   rowsAt.current = hour => {
     const lives = followed.map(item => item.live);
@@ -212,18 +196,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       const stops = [source.bind(wake), ...lives.map(live => live!.subscribe(wake))];
       return () => stops.forEach(stop => stop());
     } };
-  // The race is made again when its rows' structure or the unknown option change; values are painted.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, membersKey, includeUnknown, runtime.clock, track?.axisOffset]);
   const askedHeld = useMemo(() => Object.fromEntries(MEASURES.map((measure, at) => [measure, stateHeld(states[at].data)])) as unknown as HeldMeasures,
-    [states[0].data, states[1].data, states[2].data, states[3].data]); // eslint-disable-line react-hooks/exhaustive-deps
+    [states[0].data, states[1].data, states[2].data, states[3].data]);
   const askedRows = useMemo(() => followedHead ? [] : rankCasualties(casualtyRows(askedTags, askedHeld, moment, includeUnknown).filter(row => member(row.tag, row.hour)), limit, positive),
     [followedHead, askedTags, askedHeld, moment, includeUnknown, member, limit, positive]);
   const items = useMemo(() => race ? [] : followedHead ? liveItems?.read() ?? [] : toItems.current(askedRows),
-    [race, followedHead, liveItems, askedRows, looks, colour]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The rows the race shows now: at the head, what its members read at this render (structure); else the asked rows.
+    [race, followedHead, liveItems, askedRows, looks, colour]);
   const raceRows = useMemo(() => race ? followedHead ? rowsAt.current(headHour()) : askedRows : [],
-    [race, followedHead, liveRanked, askedRows, headHour]); // eslint-disable-line react-hooks/exhaustive-deps
+    [race, followedHead, liveRanked, askedRows, headHour]);
   const raceEntries = useMemo(() => casualtyRaceEntries(raceRows), [raceRows]);
   const groupWarnings = useMemo(() => [...(groups.data?.warnings ?? []), ...(groups.error ? [`Country groups could not be loaded: ${groups.error.message}`] : [])], [groups.data, groups.error]);
   useEffect(() => { onWarnings(groupWarnings); }, [groupWarnings, onWarnings]);

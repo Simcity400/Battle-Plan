@@ -36,7 +36,6 @@ import type { LendLeaseBalanceReply, LendLeasePartnersReply } from '../../genera
 const NO_WARNINGS: readonly string[] = [];
 type BalanceItem = ButterflyItem & { row: BalanceRow };
 
-/** Butterfly items for `rows`, named and coloured as the countries look at `hour`. */
 function useItems(runtime: WidgetProps['runtime'], track: WidgetProps['runtime']['tracks'][number] | undefined, rows: readonly BalanceRow[], hour: number, active: boolean) {
   const tokens = useChartTokens();
   const tags = useMemo(() => rows.map(row => row.tag), [rows]);
@@ -54,9 +53,6 @@ function useItems(runtime: WidgetProps['runtime'], track: WidgetProps['runtime']
 const tooltipOf = (item: BalanceItem, hour: number | null): TooltipContent => ({ ...countryNameDetails(item.countryFlag), title: item.label,
   subtitle: hour === null ? undefined : dayLabel(hour), rows: [{ label: 'Sent', value: amountText(item.row.sent) }, { label: 'Received', value: amountText(item.row.received) }] });
 
-/** Who props up whom: each country's cumulative lend-lease sent (right) and received (left) in the game's own
- * measures at the head (a pushed panel) or the pinned, ranged or hovered hour, ranked by both; a country opens its
- * partners. */
 export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
@@ -71,10 +67,8 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   const head = useHeadProduct<LendLeaseBalanceReply>(runtime, widget, LEND_LEASE_BALANCE, track ? {} : null, { active, validate: validateLendLeaseBalance });
   const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
-  // A followed head renders only when the reply differs; names, groups and colours are read at the clock's hour then.
   const hour = head.hour ?? Math.floor(runtime.clock.getHour());
   const selected = useMemo(() => selectedCountryKeys({ kind: 'selected' }, track), [track]);
-  // Rows name their countries by tag: the dashboard's slot is matched by the tag it holds at the hour shown.
   const bySlot = widget.countries.kind === 'selected' && selected.some(isSlotKey);
   const slotTags = useSlotTags(runtime.client, track, active && bySlot);
   const fallback = useMemo(() => bySlot ? selected.flatMap(key => countryTagAt(slotTags, countryFromKey(key), hour) ?? []) : selected, [bySlot, selected, slotTags, hour]);
@@ -128,8 +122,6 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   </div>;
 }
 
-/** One country's record of each partner at the drill's hour, and its totals over time: one reply over the branch,
- * read at any hour here. While the drill follows playback, the bars are painted at the head each frame. */
 function Partners({ widget, runtime, active, tag, name, hour, measure, following, onPick }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; name: string; hour: number; measure: BalanceMeasure; following: boolean; onPick: (hour: number) => void;
 }) {
@@ -145,7 +137,6 @@ function Partners({ widget, runtime, active, tag, name, hour, measure, following
   const axisOffset = track.axisOffset ?? 0;
   const headAt = useCallback((position: number) => Math.min(track.branch.lastHour, Math.max(track.branch.firstHour, Math.floor(position + axisOffset))),
     [track.branch.firstHour, track.branch.lastHour, axisOffset]);
-  // Following, each bar's values at the head; which partners show and their names stay the render's.
   const liveItems = useMemo(() => following && data ? mapLive(liveAt(runtime.clock, headAt, at => partnersAt(data, at)),
     shown => items.map(item => {
       const now = shown.find(row => row.slot === item.row.slot);

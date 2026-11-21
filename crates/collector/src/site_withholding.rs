@@ -1,5 +1,3 @@
-//! A table whose reads found a game site withheld on this build stays withheld by that site's
-//! name in every later frame, instead of carrying rows read without it.
 use crate::read_accounting;
 use replay_data::rows::TableId;
 use replay_frame::frame::{FrameInput, TableView};

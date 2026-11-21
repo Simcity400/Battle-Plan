@@ -1,11 +1,3 @@
-//! Times the recording's content catalogue cold, built from the recording against loaded from its
-//! kept files: before each sample the recording is opened afresh and its cached pages dropped, as
-//! `reply-check --cold` does, so nothing of the catalogue is in the process's memory.
-//! `catalogue_cold --recording R --game G --user U --cache C [--samples N] [--purge-kept]`
-//! `--purge-kept` also drops the kept files' cached pages before each loaded sample.
-//! Each sample's columns, in milliseconds: the installation's mount (`content`), then the rest
-//! of the catalogue built (`built`), or its localisation and sprites loaded (`localisation`,
-//! `catalogue`), and each whole.
 
 use dashboard_base::{Source, SourceKey, catalogue, config::ContentOptions};
 use std::{io, path::PathBuf, sync::atomic::AtomicBool, time::Instant};
@@ -147,7 +139,6 @@ fn ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1e3
 }
 
-/// Drops the pages Windows caches of `path`: opening it unbuffered does.
 fn purge(path: &std::path::Path) {
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;

@@ -1,9 +1,6 @@
-//! The game's map cursors the viewer can show, read through the recorded mod stack.
 use eframe::egui::CustomCursorImage;
 use std::io;
 
-/// An executable constant: the game's ordered cursor list, each a file under `gfx/cursors` that
-/// the mod stack may replace.
 pub const GAME_LIST: [&str; 39] = [
     "normal.cur",
     "busy.ani",
@@ -46,7 +43,6 @@ pub const GAME_LIST: [&str; 39] = [
     "change_government_cursor.cur",
 ];
 
-/// The path of the game's cursor named `name` (its file name without the extension).
 pub fn path(name: &str) -> Option<String> {
     GAME_LIST
         .iter()
@@ -54,8 +50,6 @@ pub fn path(name: &str) -> Option<String> {
         .map(|file| format!("gfx/cursors/{file}"))
 }
 
-/// The map cursors the viewer shows, each named as the game's list names it. A further cursor of
-/// that list is one more variant here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapCursor {
     Normal,
@@ -106,14 +100,12 @@ impl MapCursor {
     }
 }
 
-/// One cursor's frames as the window takes them, and its steps: a frame and the seconds it shows.
 pub struct Animated {
     frames: Vec<CustomCursorImage>,
     steps: Vec<(usize, f64)>,
     period: f64,
 }
 
-/// A jiffy, the unit an animated cursor's step times are in.
 const JIFFY: f64 = 1.0 / 60.0;
 
 impl Animated {
@@ -138,7 +130,6 @@ impl Animated {
         Ok(Self { frames, steps, period })
     }
 
-    /// The frame shown `seconds` into the animation, and the seconds until the next step, if any.
     pub fn at(&self, seconds: f64) -> (&CustomCursorImage, Option<f64>) {
         if self.steps.len() == 1 {
             return (&self.frames[self.steps[0].0], None);
@@ -155,7 +146,6 @@ impl Animated {
     }
 }
 
-/// Every [`MapCursor`], each decoded or refused by name.
 pub struct Cursors([Result<Animated, String>; MapCursor::ALL.len()]);
 
 impl Cursors {
@@ -163,8 +153,6 @@ impl Cursors {
         Self(MapCursor::ALL.map(|cursor| Self::read(cursor.name(), &read)))
     }
 
-    /// The game's cursor named `name` (its file name without the extension), read through `read`,
-    /// or why it is not shown.
     pub fn read<B: AsRef<[u8]>>(name: &str, read: impl Fn(&str) -> io::Result<B>) -> Result<Animated, String> {
         let path = path(name).ok_or_else(|| format!("{name}: not in the game's cursor list"))?;
         read(&path)
@@ -176,7 +164,6 @@ impl Cursors {
         self.0[cursor as usize].as_ref().map_err(String::as_str)
     }
 
-    /// Why each cursor that is not shown is not.
     pub fn refusals(&self) -> impl Iterator<Item = &str> {
         self.0.iter().filter_map(|cursor| cursor.as_ref().err().map(String::as_str))
     }

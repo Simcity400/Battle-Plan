@@ -1,10 +1,6 @@
-/** A stream the host pushes to the page, read off its main thread by a worker (`crates/desktop/src/pull.rs`): each ask
- * is answered with everything waiting, or held until something comes, and says the answer before it was handled. A
- * page's first ask is answered empty at once: from then on the stream is the page's, and nothing it asks for is lost. */
 
 export const PUSH = 'http://push.localhost/';
 
-/** An answer's payloads, each in a buffer of its own: a u32 length and its bytes, little-endian. */
 export function payloads(body: ArrayBuffer): ArrayBuffer[] {
   const view = new DataView(body), out: ArrayBuffer[] = [];
   for (let at = 0; at < body.byteLength;) {
@@ -19,24 +15,16 @@ export function payloads(body: ArrayBuffer): ArrayBuffer[] {
 }
 
 export interface StreamReader {
-  /** The page's session: its first ask makes the stream the page's. */
   session: string;
-  /** The stream is the page's: its first ask was answered. */
   ready(): void;
-  /** An answer's payloads; the next is asked once it resolves. */
   answer(payloads: ArrayBuffer[]): Promise<void>;
-  /** Said once when asks start failing. */
   fail(message: string): void;
   ask?: typeof fetch;
-  /** Waits before asking again after a failure. */
   pause?: () => Promise<void>;
-  /** Whether to stop: asked before each ask. */
   stopped?: () => boolean;
-  /** Told as each ask goes. */
   asking?: () => void;
 }
 
-/** Delivers in order while the next follow response is in flight. */
 export async function readStream(reader: StreamReader): Promise<void> {
   const ask = reader.ask ?? fetch, pause = reader.pause ?? (() => new Promise<void>(resolve => setTimeout(resolve, 1000)));
   const url = `${PUSH}follow?session=${encodeURIComponent(reader.session)}`;
@@ -64,7 +52,6 @@ export async function readStream(reader: StreamReader): Promise<void> {
     }
     failing = false;
     if (!registered) { registered = true; reader.ready(); }
-    // Empty: the page's first answer, or an ask of this page replaced: asked again.
     if (answer.items.length) {
       if (!reader.stopped?.()) next = read();
       await reader.answer(answer.items);

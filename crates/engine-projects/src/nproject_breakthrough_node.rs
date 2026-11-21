@@ -1,16 +1,9 @@
-//! MSVC tree node holding breakthrough progress.
 
-/// Breakthrough tree node left link; sentinel's left link points to the minimum node.
 pub const LEFT: usize = 0x00;
-/// Breakthrough tree node parent link; used by engine-compatible successor traversal.
 pub const PARENT: usize = 0x08;
-/// Breakthrough tree node right link; used by engine-compatible successor traversal.
 pub const RIGHT: usize = 0x10;
-/// Breakthrough-tree nil byte: one for the sentinel, zero for entries.
 pub const IS_NIL: usize = 0x19;
-/// Breakthrough u32 token bits compared as signed i32 keys.
 pub const SPECIALIZATION_HANDLE: usize = 0x1c;
-/// Breakthrough signed i32 points; updates clamp signed addition at zero.
 pub const POINTS: usize = 0x20;
 
 use crate::{Memory, read};
@@ -24,7 +17,6 @@ pub(crate) struct Links {
 }
 
 impl Links {
-    /// Link reads deliberately exclude sentinel payload and node padding.
     pub(crate) fn read(memory: &impl Memory, address: usize) -> Result<Self, &'static str> {
         if address == 0 {
             return Err("breakthrough tree null link");

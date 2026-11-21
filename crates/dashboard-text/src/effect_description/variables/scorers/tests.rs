@@ -28,7 +28,6 @@ fn scorer_highest_keeps_first_tie_sorted_replaces_later_score_and_uses_ties() {
         assert_eq!(evaluator.scoped_value(b"ordered^num", scopes).unwrap(), 300_000);
         assert_eq!(evaluator.scoped_country(b"ordered^2", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_value(b"points^2", scopes).unwrap(), 300_000);
-        // Native map slots for 1/2/3 at eight buckets: 7/0/5.
         assert_eq!(evaluator.scoped_country(b"tied^0", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_country(b"tied^1", scopes).unwrap(), Some(3));
         assert_eq!(evaluator.scoped_country(b"tied^2", scopes).unwrap(), Some(1));
@@ -53,8 +52,6 @@ fn scorer_filters_reverse_from_for_score_and_reads_shared_temporary_array() {
         assert_eq!(evaluator.scoped_country(b"highest_scored_country", scopes).unwrap(), Some(2));
         assert_eq!(evaluator.scoped_value(b"country_list_scores^0", scopes).unwrap(), 300_000);
         assert_eq!(evaluator.scoped_value(b"sorted_country_list^num", scopes).unwrap(), 100_000);
-        // filters entry zero before reading entry one; its setter
-        // changes that next element in the same description session.
         let effects = installed_content_core::effect_keys::read_body(b"set_temp_variable={var=candidates^num value=2} set_temp_variable={var=candidates^0 value=AAA.id} set_temp_variable={var=candidates^1 value=BBB.id} get_highest_scored_country_temp={var=changed scorer=changing}", &names).unwrap();
         assert!(renderer.group(&effects, scopes, 0).is_empty());
         assert!(renderer.out.refusals.is_empty(), "{:?}", renderer.out.refusals);

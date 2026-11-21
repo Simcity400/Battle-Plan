@@ -1,6 +1,3 @@
-//! Serializer projections for naval standing orders and repair work. Optional unconditional
-//! fields retain missing-key evidence; omitted conditional flags and lists retain their native
-//! false/empty meaning. Country occurrences use the same authenticated projection as the save.
 use super::{
     CountriesView, Item, block, boolean, bytes, field, integer, invalid, object_id, scalar,
     typed_handle,
@@ -13,7 +10,6 @@ pub struct Pack {
     pub fleets: BTreeMap<u64, Fleet>,
     pub task_forces: BTreeMap<u64, TaskForce>,
     pub ships: BTreeMap<u64, Ship>,
-    /// Each owning navy's serialized occurrences, preserving repeated province keys.
     pub bases: Vec<Base>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -1,30 +1,3 @@
-//! Weather particles from the recorded content stack and regional weather.
-//!
-//! The first nonzero rain, heavy-rain, snow, blizzard or sandstorm flag selects
-//! the weather kind. Each authored anchor creates a primary/fading entity pair;
-//! its small flag selects the small descriptor bank, falling back to the
-//! regular bank if absent. Choice precedes culling and persists until the
-//! weather kind changes. A region's producer runs on frames whose province
-//! update list holds the region: only then does it compare the field's kind
-//! with the one its pairs hold and swap them, and set its members' camera fade
-//! ([`fade`]): the companion at every height, the primary only in the far band.
-//! Camera thresholds and playback rates come from content.
-//!
-//! Emission accumulates fractional debt, spawns within free capacity and
-//! retains blocked debt. Age expires strictly after lifetime. New births share
-//! one sampled emitter orientation; per-particle ranges use counter-hash draws.
-//! Forces divide time by authored mass before velocity changes, and position
-//! updates afterward. Curves bake 64 Catmull-Rom samples, retaining endpoint
-//! extrapolation, and interpolate by particle age. Each birth retains its atlas
-//! tile for the installed compiled particle shader.
-//!
-//! Presentation history uses region/hour/anchor seeds and per-emitter streams.
-//! New emitters and dumps begin at clock zero. Re-entry retains a frozen
-//! emitter; long suspensions preserve its population. Delta subdivision follows
-//! the game. Forward playback skips retain the populations of the kinds the
-//! producers hold; seeks, step backs, branches, gaps and viewing-country
-//! changes reset them at once.
-//! Renderer seeds, deltas and earlier particle buffers are not recorded.
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 use viewer_foundation::map::presentation::Continuity;
@@ -85,8 +58,6 @@ pub(super) fn number(v: &[Item], key: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
-/// A parameter as its two comma tracks give it: `{ base spread }`. Each track keeps its last
-/// number; the base track's first known animation name is its curve.
 #[derive(Debug, Clone, Default)]
 struct Parameter {
     base: f32,
@@ -122,9 +93,6 @@ impl Parameter {
     fn animate(&self, value: f32, age: f32) -> f32 {
         value * self.curve.as_ref().map_or(1.0, |c| c.sample(age))
     }
-    /// The value the game's evaluator gives outside a particle's life, at subsystem age
-    /// `time`: a spawn-time animation applies to the base at that age, then a nonzero spread
-    /// draws once around it. A constant draws nothing.
     fn at(&self, seed: &mut u64, time: f32) -> f32 {
         let base = match &self.curve {
             Some(curve) if curve.spawn => curve.apply(self.base, time),
@@ -138,7 +106,6 @@ impl Parameter {
     }
 }
 
-/// How an animation combines its sample with the value it animates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
     Add,
@@ -146,8 +113,6 @@ enum Op {
     Abs,
 }
 
-// Entity-light events retain their separately Unverified linear evaluator.
-// Weather and other particle parameters use the baked Curve below.
 pub(super) fn curve(knots: &[[f32; 2]], x: f32) -> f32 {
     for p in knots.windows(2) {
         if x <= p[1][0] {
@@ -158,21 +123,16 @@ pub(super) fn curve(knots: &[[f32; 2]], x: f32) -> f32 {
     knots.last().map_or(1.0, |p| p[1])
 }
 
-/// Bake 64 Catmull-Rom samples retaining extrapolated endpoint controls. Read them linearly by
-/// normalized age.
 #[derive(Debug, Clone)]
 struct Curve {
     samples: [f32; 64],
     start: f32,
     duration: f32,
     op: Op,
-    /// `time = spawn`, the default: the curve runs on subsystem age where a value is
-    /// evaluated outside a particle's life.
     spawn: bool,
     repeat: bool,
 }
 impl Curve {
-    /// The value `op` gives at subsystem age `time`; a repeating curve wraps at its end.
     fn apply(&self, value: f32, time: f32) -> f32 {
         let time = if self.repeat {
             time % (self.start + self.duration)
@@ -226,7 +186,6 @@ impl Curve {
         }
     }
     fn sample(&self, age: f32) -> f32 {
-        // Native uses 64 here, despite baking at i/63, then clamps at 63.
         let x = ((age - self.start) / self.duration * 64.0).clamp(0.0, 63.0);
         let i = (x as usize).min(62);
         self.samples[i] + (self.samples[i + 1] - self.samples[i]) * (x - i as f32)
@@ -234,11 +193,9 @@ impl Curve {
 }
 #[derive(Debug, Clone)]
 pub struct Emitter {
-    /// Authored weather entity scale; generic model events use their event transform.
     scale: f32,
     page: usize,
     registration: usize,
-    /// Weather particle-reference ordinal; its subsystems share one actor.
     actor: usize,
     radius: Parameter,
     sphere_pitch: Parameter,
@@ -259,13 +216,9 @@ pub struct Emitter {
     color: [Parameter; 4],
     emission: Parameter,
     max: usize,
-    /// The subsystem's forces in its own list order; a name listed twice applies twice.
     forces: Vec<Force>,
-    /// The division of each of the particle system's turbulence fields, in declaration order.
     noise_divisions: Vec<usize>,
-    /// The system's first drawn subsystem, which holds the fields its subsystems share.
     leads: bool,
-    /// Seconds after its weather entity's state begins that the particle starts.
     delay: f32,
     local_space: bool,
     render: installed_content_core::particles::RenderDescriptor,
@@ -282,20 +235,16 @@ enum ForceKind {
     Spin,
 }
 
-/// One particle system `force` a subsystem names.
 #[derive(Debug, Clone)]
 struct Force {
     kind: ForceKind,
     amount: Parameter,
     position: [f32; 3],
     direction: [f32; 3],
-    /// The sine and cosine of the authored yaw; both zero when it is zero.
     yaw: [f32; 2],
-    /// `local_force`: the centre moves with the subsystem's transform.
     local: bool,
 }
 
-/// One force's operands for a tick, its amount drawn.
 #[derive(Debug, Clone)]
 enum Applied {
     Planar {
@@ -321,13 +270,10 @@ enum Applied {
         center: [f32; 3],
         forward: [f32; 9],
         back: [f32; 9],
-        /// Displacement scale times the step squared.
         step: f32,
     },
 }
 
-/// The rotation by `angle` radians about the unit `axis`, rows of a matrix row vectors
-/// multiply.
 fn axis_angle(axis: [f32; 3], angle: f32) -> [f32; 9] {
     let (s, c) = (angle.sin(), angle.cos());
     let [x, y, z] = axis;
@@ -349,8 +295,6 @@ fn axis_angle(axis: [f32; 3], angle: f32) -> [f32; 9] {
 }
 
 impl Applied {
-    /// `force` of the tick, with its amount drawn, the subsystem's displacement `scale`,
-    /// the translation a local force's centre follows, and the turbulence fields used so far.
     fn new(
         force: &Force,
         amount: f32,
@@ -396,7 +340,6 @@ impl Applied {
         }
     }
 
-    /// Adds this force on a particle at `p` moving at `v`, of `mass`, to `force`.
     fn add(
         &self,
         force: &mut [f32; 3],
@@ -453,7 +396,6 @@ impl Applied {
                 }
             }
             Self::Turbulence { noise: at, amount } => {
-                // A subsystem advanced apart from its system's leader has no fields to read.
                 if let Some(field) = noise.get(at) {
                     let n = field.force(p);
                     for i in 0..3 {
@@ -491,16 +433,12 @@ impl Applied {
         }
     }
 }
-/// Which of several particle blocks of one name a loader takes.
 #[derive(Clone, Copy)]
 pub enum Pick {
-    /// The weather systems take the last.
     Last,
-    /// The entity particles take the first.
     First,
 }
 
-/// The `particle` block named `name` in the particle file `path`.
 pub fn particle_root<'a>(
     document: &'a parser::Document,
     path: &str,
@@ -544,10 +482,8 @@ pub fn read_emitters(
     Ok(emitters)
 }
 
-/// A system's `force` block, as each subsystem that names it reads it.
 struct SystemForce<'a> {
     name: &'a str,
-    /// `None` for a type the game does not know.
     kind: Option<ForceKind>,
     kind_text: String,
     force: Force,
@@ -599,9 +535,6 @@ fn system_forces<'a>(root: &'a [Item], curves: &BTreeMap<String, Curve>) -> Vec<
         .collect()
 }
 
-/// The emitters of a `particle` block, their texture pages still unassigned. A subsystem
-/// that nests subsystems, or names a force of a type the game does not know, refuses the
-/// block by name.
 fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
     let particle = text(root, "name");
     let mut curves = BTreeMap::new();
@@ -648,7 +581,6 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
         .filter(|i| i.key.as_deref() == Some(b"subsystem"))
     {
         let s = s.value.items().unwrap_or(&[]);
-        // Hidden subsystems contribute no emitter.
         if parser::read_bool_field(s, "hide", false) {
             continue;
         }
@@ -662,8 +594,6 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
         }
         let render = installed_content_core::particles::RenderDescriptor::read(s)?;
         let param = |k, d| Parameter::read(s, k, d, &curves);
-        // The game looks each listed name up among the system's forces, first match, and
-        // skips a number or a name it does not find.
         let mut forces = Vec::new();
         let mut turbulent = 0;
         for name in text(s, "force").split(',') {
@@ -679,7 +609,6 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
                     found.kind_text
                 ))
             })?;
-            // The k-th turbulence force applied reads the system's k-th field.
             if kind == ForceKind::Turbulence {
                 turbulent += 1;
                 if turbulent > turbulence.len() {
@@ -730,7 +659,6 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
             system_local_space: root
                 .iter()
                 .filter(|i| i.key.as_deref() == Some(b"subsystem"))
-                // Any local subsystem makes the system use local space.
                 .any(|item| {
                     parser::read_bool_field(item.value.items().unwrap_or(&[]), "local_space", false)
                 }),
@@ -746,21 +674,15 @@ fn parse_emitters(root: &[Item]) -> io::Result<Vec<Emitter>> {
     Ok(emitters)
 }
 
-/// The particles one system's drawn subsystems hold at most.
 fn system_capacity(emitters: &[Emitter]) -> usize {
     emitters.iter().map(|e| e.max).sum()
 }
-/// One emitter batch with its texture files still local, in local page
-/// order, for the ordered merge in [`Assets::load`].
 type LocalEmitters = (Vec<Emitter>, Vec<(String, dds::Texture)>);
-/// One descriptor pair's emitters: authored `entity`, then `fading_entity`.
 struct WeatherPair {
     members: [Vec<Emitter>; 2],
     radii: [Option<f32>; 2],
-    /// Each member entity's sound events.
     sounds: [Vec<installed_content_weather::weather::WeatherSound>; 2],
 }
-/// One pair job's result: its bank, emitters, local pages and why it is withheld.
 type LocalSystem = (
     (usize, bool),
     WeatherPair,
@@ -768,8 +690,6 @@ type LocalSystem = (
     Option<String>,
 );
 
-/// Move one job's local texture pages into the shared pages, remapping the
-/// emitters' page ids to the global first-seen order of the serial load.
 fn merge_pages(
     pages: &mut Vec<dds::Texture>,
     global: &mut BTreeMap<String, usize>,
@@ -793,8 +713,6 @@ fn merge_pages(
         emitter.page = remap[emitter.page];
     }
 }
-/// `NDefines.NGraphics.WEATHER_*`, the camera fade and playback operands
-/// reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraDefines {
     pub distance_cutoff: f32,
@@ -835,7 +753,6 @@ struct Anchor {
     position: [f32; 3],
     small: bool,
 }
-/// Authored resources, loaded once per document and shared with its GPU scene.
 pub struct Assets {
     effect: Arc<shader_pipeline::library::Effect>,
     max_particles: usize,
@@ -846,15 +763,10 @@ pub struct Assets {
     systems: BTreeMap<(usize, bool), Vec<WeatherPair>>,
     pages: Vec<dds::Texture>,
     entities: BTreeMap<String, (f32, Vec<Emitter>)>,
-    /// Weather effect pairs, `pdxparticle` objects, particle files and anchor lines the map
-    /// cannot present as the game does, each with why; each draws nothing, model events naming
-    /// a withheld object included, and the rest load.
     pub withheld: Vec<String>,
     lights: super::entity_effects::Lights,
 }
 
-/// A `pdxparticle` object's scale and emitters from its parsed particle file, with their local
-/// texture pages.
 fn read_object(
     layers: &ResolvedLayers,
     decode: Decode,
@@ -879,7 +791,6 @@ fn read_object(
     ))
 }
 
-/// A weather pair's emitters read from its particle files, with their local texture pages.
 fn read_pair(
     layers: &ResolvedLayers,
     decode: Decode,
@@ -921,7 +832,6 @@ impl Assets {
         let catalog = Catalog::read(layers)?;
         let mut out = Self {
             effect: super::particle_shader::load(layers, map, decode)?,
-            // Only systems that load count toward the shared buffers.
             max_particles: 0,
             graphics: CameraDefines::load(defines)?,
             anchors: Vec::new(),
@@ -936,7 +846,6 @@ impl Assets {
         const POSITIONS: &str = "map/weatherpositions.txt";
         let (positions, skipped) = match layers.read_uncovered(POSITIONS) {
             Ok(bytes) => installed_content_core::positions::parse_weather_positions(&bytes),
-            // The game logs a missing file and places no anchors.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 out.withheld
                     .push(format!("{POSITIONS} is missing, so no weather is placed"));
@@ -948,8 +857,6 @@ impl Assets {
             format!("{POSITIONS} line {line} has {fields} fields, not region;x;y;z;size")
         }));
         for position in positions {
-            // The installed content an id outside its region table under the null region at 0, and
-            // reports and skips a line whose region is not a defined strategic region.
             let region = u32::try_from(position.region)
                 .ok()
                 .filter(|&region| out.region_provinces.contains(region));
@@ -975,9 +882,6 @@ impl Assets {
             .iter()
             .flat_map(|(&key, pairs)| pairs.iter().map(move |pair| (key, pair)))
             .collect();
-        // Parse the actual named particle blocks. Neither the entity's name nor
-        // pdxparticle.type establishes a filename; content resolves both. A pair
-        // that cannot be read keeps its place in its bank and draws nothing.
         let systems: Vec<LocalSystem> = std::thread::scope(|scope| {
             keys.iter()
                 .map(|(key, pair)| {
@@ -1033,7 +937,6 @@ impl Assets {
                 withheld,
             ) = system;
             out.withheld.extend(withheld);
-            // Each particle reference of a member is one system.
             for member in [&entity, &fading] {
                 for system in member.chunk_by(|a, b| a.actor == b.actor) {
                     out.max_particles = out.max_particles.max(system_capacity(system));
@@ -1049,9 +952,6 @@ impl Assets {
                 sounds,
             });
         }
-        // Every declared pdxparticle object, grouped by its particle file so
-        // each file parses once; files decode on scoped threads and merge in
-        // path order.
         let mut by_file: BTreeMap<
             installed_content_core::script_files::ScriptPath,
             Vec<(String, installed_content_core::particles::Particle)>,
@@ -1065,7 +965,6 @@ impl Assets {
                 Err(why) => out.withheld.push(why.to_string()),
             }
         }
-        // An object that cannot be read is withheld by name; model events naming it draw nothing.
         type Parsed = Vec<(String, Result<(f32, LocalEmitters), String>)>;
         let files: Vec<Parsed> = std::thread::scope(|scope| {
             by_file
@@ -1117,12 +1016,8 @@ impl Assets {
     }
 }
 
-/// Hourly flags. Weather is global simulation state; the engine's dispatch
-/// has no country/intel predicate, so every recorded perspective uses it.
 pub use map_display_data::WeatherField as Field;
 
-/// The camera fade, whether the camera stands in the far band (above its start, the cutoff
-/// included) and the playback rate ([`fade`] applies the first two).
 fn gates(h: f32, defines: &CameraDefines) -> (f32, bool, f32) {
     let (alpha, far) = if h < defines.zoom_in_cutoff {
         (defines.zoom_in_fade_factor, false)
@@ -1147,8 +1042,6 @@ struct RegionPresentation {
     seed_hour: i32,
 }
 
-/// Each weather region's kind and the hour it began. The pass keeps two: the kinds the field
-/// asks for, and the kinds whose pairs the regions' producers hold ([`Pass::produce`]).
 #[derive(Clone, Default)]
 struct Presentation(BTreeMap<u32, RegionPresentation>);
 
@@ -1179,8 +1072,6 @@ impl Presentation {
     }
 }
 
-/// Counter hash with draw counter in the low word and seed in the high word. Use the
-/// hour/region/anchor presentation seed convention.
 fn random_bits(seed: &mut u64) -> u32 {
     let count = *seed as u32;
     let mut v = count
@@ -1196,8 +1087,6 @@ fn random(seed: &mut u64) -> f32 {
     random_bits(seed) as f32 * (1.0 / 2147483648.0)
 }
 
-/// Choose each atlas coordinate with a separate counter-hash modulo
-/// at birth, stores its low byte, and clears zw. Animation retains that tile.
 fn sample_tile(seed: &mut u64, dimensions: [i32; 2]) -> [u8; 4] {
     [
         (random_bits(seed) as i32 % dimensions[0]) as u8,
@@ -1207,10 +1096,6 @@ fn sample_tile(seed: &mut u64, dimensions: [i32; 2]) -> [u8; 4] {
     ]
 }
 
-/// The bank an anchor's pair is drawn from and its place in it. Use the small bank only when
-/// nonempty. Every admitted anchor consumes a counter-hash draw, including off-camera anchors;
-/// presentation supplies the seed. The draw advances a stream the region's anchors share, so
-/// which anchors are walked decides what every later one draws ([`Drawn`]).
 fn select_pair_at(
     systems: &BTreeMap<(usize, bool), Vec<WeatherPair>>,
     kind: usize,
@@ -1229,9 +1114,6 @@ fn unit(v: [f32; 3]) -> [f32; 3] {
     if n == 0.0 { [0.0; 3] } else { v.map(|x| x / n) }
 }
 
-/// Native changing gradient field, not independent
-/// particle jitter. Three linearly interpolated gradient-noise samples are
-/// normalized together, so `amount` is the magnitude before mass division.
 #[derive(Clone)]
 struct Noise {
     permutation: [u8; 256],
@@ -1293,8 +1175,6 @@ impl Noise {
         self.slice = (self.slice + 1) % self.division;
     }
     fn hash(&self, index: usize) -> usize {
-        // Do not mask the second or third gradient index sum. Indices 256..510 read the following
-        // current-gradient bytes.
         if index < 256 {
             self.permutation[index] as usize
         } else {
@@ -1350,15 +1230,11 @@ struct LiveParticle {
 }
 #[derive(Clone)]
 struct Simulation {
-    /// Prepared off-thread before the first render supplied its clock.
     prepared: bool,
     emitting: bool,
     anchor: [f32; 3],
     initial_seed: u64,
     seed: u64,
-    /// The particle system's turbulence fields, held by its leading subsystem and
-    /// shared by all of them. On the heap: at 10.5 KB each inline, every simulation
-    /// moved in or out of the map on an hour change copied them.
     noise: Vec<Noise>,
     particles: Vec<LiveParticle>,
     accumulator: f32,
@@ -1366,22 +1242,13 @@ struct Simulation {
     time: f32,
     previous_translation: Option<[f32; 3]>,
     order: sort::Order,
-    /// The subsystem's sampled position and emission duration.
     origin: [f32; 3],
     duration: f32,
-    /// This tick's forces, kept for their storage.
     applied: Vec<Applied>,
-    /// When, on the presentation clock, the entity event creates a delayed particle system;
-    /// until then it holds nothing, samples nothing and submits nothing.
     event_at: Option<f32>,
-    /// Not yet created: its system's creation draws are still to be made ([`start_members`]).
     fresh: bool,
 }
 
-/// Creates the members of one system that are due at `target`: an undelayed one at once, a
-/// delayed one once its event time is behind the clock. As in the game, every created
-/// subsystem draws its creation values in order from the one system stream, the leading
-/// subsystem's, and only then are the shared turbulence fields seeded from it.
 fn start_members(members: &mut [Member<'_>], target: f32, noise: &mut Vec<Noise>) {
     let due = |m: &Member<'_>| m.sim.fresh && m.sim.event_at.is_none_or(|at| at < target);
     if !members.iter().any(due) {
@@ -1416,7 +1283,6 @@ fn start_members(members: &mut [Member<'_>], target: f32, noise: &mut Vec<Noise>
     }
 }
 
-/// One subsystem of a particle system, advanced with its siblings.
 struct Member<'a> {
     sim: &'a mut Simulation,
     emitter: &'a Emitter,
@@ -1424,10 +1290,6 @@ struct Member<'a> {
 }
 
 impl Simulation {
-    /// Native particle-runtime construction starts with empty storage. The
-    /// producer creates a fresh pair on a weather-kind change, and its active
-    /// bit gates later manager updates. Its creation draws wait for its system's first
-    /// update ([`start_members`]).
     fn cold(e: &Emitter, seed: u64, anchor: [f32; 3], time: f32) -> Self {
         Self {
             prepared: false,
@@ -1450,14 +1312,12 @@ impl Simulation {
         }
     }
 
-    /// The subsystem's creation draws: its position, duration and start, from `stream`.
     fn sample(&mut self, e: &Emitter, stream: &mut u64) {
         self.origin = e.position.each_ref().map(|p| p.at(stream, 0.0));
         self.duration = e.duration.at(stream, 0.0);
         self.age = -e.start.at(stream, 0.0);
     }
 
-    /// Whether the entity event that creates this system has yet to fire.
     fn waiting(&self) -> bool {
         self.event_at.is_some()
     }
@@ -1493,12 +1353,8 @@ impl Simulation {
         if let Some(space) = space
             && self.particles.is_empty()
         {
-            // Initialize the birth interpolation endpoint when empty.
             self.previous_translation = Some(space.world.translation);
         }
-        // Ordinary particles replace an expired slot
-        //with the last live record; trails shift the remaining records. The
-        //replacement has not aged yet, so revisit that slot before moving on.
         let mut index = 0;
         while index < self.particles.len() {
             let p = &mut self.particles[index];
@@ -1516,7 +1372,6 @@ impl Simulation {
         let emitting =
             self.emitting && self.age >= 0.0 && (self.duration < 0.0 || self.age <= self.duration);
         if emitting {
-            // A ranged emission draws a new rate each update.
             self.accumulator += e.emission.at(&mut self.seed, self.age).max(0.0) * dt;
         }
         let births = if emitting {
@@ -1525,7 +1380,6 @@ impl Simulation {
             0
         };
         self.accumulator -= births as f32;
-        // Sample emitter orientation once for this birth batch.
         let basis = if births > 0 {
             emitter_basis(
                 e.emitter_yaw.sample(random(&mut self.seed), 0.0),
@@ -1594,19 +1448,15 @@ impl Simulation {
                 tile: sample_tile(&mut self.seed, e.render.tiles),
             });
         }
-        // Each populated subsystem's update advances every field of its system.
         if !self.particles.is_empty() {
             for n in noise.iter_mut() {
                 n.advance(self.age);
             }
         }
-        // The comparison simulator keeps positions beside its anchor; forces see them placed.
         let (scale, translation, offset) = match space {
             Some(space) => (space.scale, space.world.translation, [0.0; 3]),
             None => (1.0, self.anchor, self.anchor),
         };
-        // Each force draws its amount once an update, in list order; a zero amount applies
-        // nothing and uses no turbulence field.
         self.applied.clear();
         if !self.particles.is_empty() {
             let mut turbulence = 0;
@@ -1625,10 +1475,7 @@ impl Simulation {
             }
         }
         for p in &mut self.particles {
-            // Newborns move in this tick too. The comparison simulator uses unit displacement scale;
-            // world-space motion uses the runtime's retained displacement scale.
             if e.forces.is_empty() {
-                // Without forces the game keeps velocity and only moves.
                 let step = scale * dt;
                 for j in 0..3 {
                     p.position[j] += p.velocity[j] * step;
@@ -1643,7 +1490,6 @@ impl Simulation {
                 if let Some(space) = space {
                     space.integrate(&mut p.position, &mut p.velocity, force, mass, dt);
                 } else {
-                    // Preserve the comparison simulator's original evaluation order.
                     for (j, force) in force.into_iter().enumerate() {
                         p.velocity[j] += force * dt / mass;
                         p.position[j] += p.velocity[j] * dt;
@@ -1663,7 +1509,6 @@ impl Simulation {
     fn advance(&mut self, e: &Emitter, time: f32, rate: f32) {
         self.advance_space(e, time, rate, None);
     }
-    /// Finish emission while live particles continue.
     #[cfg(test)]
     fn advance_event(
         &mut self,
@@ -1697,8 +1542,6 @@ impl Simulation {
     }
 }
 
-/// [`advance_system`] for an entity event's system: emission finishes at `end` while live
-/// particles continue.
 fn advance_event_system(members: &mut [Member<'_>], age: f32, end: Option<f32>) {
     let Some(first) = members.first() else {
         return;
@@ -1714,8 +1557,6 @@ fn advance_event_system(members: &mut [Member<'_>], age: f32, end: Option<f32>) 
     advance_system(members, age, 1.);
 }
 
-/// Advances one particle system's subsystems, created together and on one clock, to `time`:
-/// each frame step updates them in subsystem order, sharing the system's turbulence fields.
 fn advance_system(members: &mut [Member<'_>], time: f32, rate: f32) {
     let Some(first) = members.first() else {
         return;
@@ -1744,9 +1585,6 @@ fn advance_system(members: &mut [Member<'_>], time: f32, rate: f32) {
     let mut noise = leader
         .map(|at| std::mem::take(&mut members[at].sim.noise))
         .unwrap_or_default();
-    // The system is created before the frame's particle updates. The entity fires a delayed
-    // event on its own clock once `previous <= event < current`: a system whose event time the
-    // clock has passed, culled or not, exists from this frame and takes the whole frame's update.
     start_members(members, target, &mut noise);
     if reset || prepared || rate == 0.0 {
         if let Some(at) = leader {
@@ -1754,14 +1592,9 @@ fn advance_system(members: &mut [Member<'_>], time: f32, rate: f32) {
         }
         return settle(members);
     }
-    // Long suspensions have unknown native frame subdivisions. Preserve
-    // the existing population, as a hidden native entity does, instead
-    // of fabricating a full steady-state cloud or replaying many seconds.
     let mut remaining = if delta > 10.0 {
         0.0
     } else {
-        // Subdivide unscaled frame delta in double precision, then multiply each float step by
-        // entity playback.
         delta as f64 / rate as f64
     };
     let max_step = 0.1_f32.max((remaining.abs() * 0.25) as f32) as f64;
@@ -1789,12 +1622,10 @@ fn transform(basis: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 }
 type Simulations = BTreeMap<(usize, bool, usize), Simulation>;
 
-/// One emitter the camera sees: its simulation key, seed and canonical anchor.
 struct Visible<'a> {
     key: (usize, bool, usize),
     emitter: &'a Emitter,
     seed: u64,
-    /// Authored map coordinates; the seam's camera supplies the world wrap.
     anchor: [f32; 3],
     alpha: f32,
     views: native::ViewMask,
@@ -1809,12 +1640,7 @@ fn parent_views(cameras: &[Camera], size: [u32; 2]) -> Vec<ParentView> {
         .collect()
 }
 
-///Dummy sphere distance/side planes, then the frame's accepted
-///stamp. A later failed view keeps prior acceptance, without admitting earlier
-///views. The supported depth-one tree's root bypasses ancestor box admission.
 fn parent_admission(center: [f32; 3], radius: f32, views: &[ParentView]) -> Option<native::ViewMask> {
-    // The mask is false until the first view that accepts and true from there, so the first
-    // accepting view is the whole answer and an anchor no view accepts allocates nothing.
     let first = views.iter().position(|(eye, planes)| {
         let [dx, dy, dz] = std::array::from_fn(|axis| center[axis] - eye[axis]);
         (dy * dy + dx * dx) + dz * dz < f32::MAX
@@ -1827,24 +1653,14 @@ fn parent_admission(center: [f32; 3], radius: f32, views: &[ParentView]) -> Opti
     ))
 }
 
-/// Which weather pair each anchor's region drew, and the hour its weather began: the draw
-/// advances a stream the region's anchors share, so it is made once for a field and a
-/// presentation, and a camera that walks the anchors again reads the same answer instead of
-/// drawing again. No camera is an input ([`Drawn::for_field`]).
 #[derive(Default)]
 struct Drawn {
-    /// The field branch and hour, and the presentation's own change count, the draws were made
-    /// for; `None` before the first walk.
     at: Option<(u64, i32, u64)>,
-    /// Per anchor, in anchor order: the bank its pair came from, its place in it, and the hour
-    /// its region's weather began.
     chosen: Vec<Option<((usize, bool), usize, i32)>>,
-    /// The judge's own call count ([`crate::map::actor_check`]).
     calls: u64,
 }
 
 impl Drawn {
-    /// The draws for this field and presentation, made again only where one of them moved.
     fn for_field(
         &mut self,
         anchors: &[Anchor],
@@ -1867,8 +1683,6 @@ impl Drawn {
             walk(&mut self.chosen);
             self.at = Some(at);
         } else if super::actor_check::due(&mut self.calls) {
-            // The judge makes the draws again and compares: a kept answer that is not the one a
-            // walk over every anchor would give names the anchor.
             let mut again = Vec::new();
             walk(&mut again);
             super::actor_check::checked("weather pairs", again.len() as u64);
@@ -1882,8 +1696,6 @@ impl Drawn {
     }
 }
 
-/// One anchor's pair draw for its region's kind in `presentation`, exactly as a walk over every
-/// anchor in order makes it.
 fn draw_pair(
     systems: &BTreeMap<(usize, bool), Vec<WeatherPair>>,
     presentation: &Presentation,
@@ -1898,8 +1710,6 @@ fn draw_pair(
     Some((bank, at, state.seed_hour))
 }
 
-/// The emitters of `field` the camera sees, in drawing order, over the pairs already drawn, with
-/// each region's member states (`members`).
 fn visible_emitters<'a>(
     assets: &'a Assets,
     members: impl Fn(u32) -> [fade::Member; 2],
@@ -1945,8 +1755,6 @@ fn visible_emitters<'a>(
     out
 }
 
-/// The same emitters for `indices` alone, off the frame's path, where no draws are kept, as the
-/// producer run that creates their pairs at `camera` would leave them.
 fn visible_emitters_at<'a>(
     assets: &'a Assets,
     presentation: &Presentation,
@@ -1966,25 +1774,16 @@ fn visible_emitters_at<'a>(
     visible_emitters(assets, |_| created, views, &drawn)
 }
 
-/// The sound events of the weather entities the map shows: each admitted
-/// anchor's active members, as [`visible_emitters`] admits them. A region
-/// keeps its keys while it keeps its weather.
 struct SoundInputs<'a> {
     anchors: &'a [Anchor],
     systems: &'a BTreeMap<(usize, bool), Vec<WeatherPair>>,
-    /// Each region's member states ([`fade`]).
     fades: &'a fade::Fades,
     presentation: &'a Presentation,
-    /// The pairs the anchors drew for this field and presentation ([`Drawn`]).
     drawn: &'a [Option<((usize, bool), usize, i32)>],
-    /// When each shown member entity first appeared on the presentation
-    /// clock, by anchor, member, region and the hour its weather began.
     starts: &'a mut SoundStarts,
-    /// The presentation clock.
     time: f32,
 }
 
-/// See [`SoundInputs::starts`].
 type SoundStarts = BTreeMap<(usize, usize, u32, i32), f32>;
 
 fn sound_events(
@@ -2019,8 +1818,6 @@ fn sound_events(
             {
                 continue;
             }
-            // The entity enters its state when it first appears; each sound
-            // event fires at its `time` after that.
             let start = starts
                 .entry((index, member, a.region, seed_hour))
                 .or_insert(time);
@@ -2040,7 +1837,6 @@ fn sound_events(
             }
         }
     }
-    // An entity lasts while its region keeps its weather.
     starts.retain(|&(_, _, region, seed_hour), _| {
         presentation
             .0
@@ -2049,7 +1845,6 @@ fn sound_events(
     });
 }
 
-/// Camera admission operands; presentation alone knows which region runtimes survive.
 #[derive(Clone)]
 pub struct Prepared {
     field: Field,
@@ -2057,7 +1852,6 @@ pub struct Prepared {
     size: [u32; 2],
 }
 
-/// Replaced region runtimes, freed off the frame path.
 pub struct Retired(
     #[expect(
         dead_code,
@@ -2066,10 +1860,6 @@ pub struct Retired(
     Vec<Simulation>,
 );
 
-/// Merges an hour's `prepared` runtimes into `current`, keyed by emitter
-/// anchor: a runtime whose anchor's region `kept` stays as it is and the
-/// prepared one for it is let go; every other current runtime is let go and the
-/// prepared one takes its place. Returns everything let go of.
 fn merge_runtimes<K: Ord + Copy, T>(
     current: &mut BTreeMap<K, T>,
     prepared: BTreeMap<K, T>,
@@ -2091,11 +1881,6 @@ fn merge_runtimes<K: Ord + Copy, T>(
     retired
 }
 
-/// The producer runs' kind checks over the `listed` regions, as the game makes them only when a
-/// region's producer runs: a region whose `wanted` kind is not the `held` one lets its pairs go
-/// (member states and `runtimes`) and takes the wanted kind, with the `pending` runtimes prepared
-/// for it; wanting none, it holds nothing and lets those go too. Returns whether any region
-/// swapped and what it let go.
 fn swap_listed<T>(
     listed: &[u32],
     wanted: &Presentation,
@@ -2129,7 +1914,6 @@ fn swap_listed<T>(
     (true, let_go)
 }
 
-/// A kept region also keeps absent emitters; later camera admission creates them.
 pub fn prepare(_assets: &Assets, field: Field, camera: Camera, size: [u32; 2]) -> Prepared {
     Prepared {
         field,
@@ -2138,8 +1922,6 @@ pub fn prepare(_assets: &Assets, field: Field, camera: Camera, size: [u32; 2]) -
     }
 }
 
-/// Empty runtimes for the pairs each region's producer will create when it next runs: those of
-/// the regions whose `wanted` kind is not the `held` one.
 fn prepare_changed(
     assets: &Assets,
     wanted: &Presentation,
@@ -2188,15 +1970,11 @@ fn weather_packets(
     drop(visible_span);
     viewer_foundation::view_record::add("weather packets", "anchors", assets.anchors.len() as u64);
     viewer_foundation::view_record::add("weather packets", "emitters_admitted", seen.len() as u64);
-    // A newly active member starts empty; its first activation accumulates births
-    // over later frame updates rather than inventing a steady-state cloud.
     for visible in &seen {
         simulations.entry(visible.key).or_insert_with(|| {
             Simulation::cold(visible.emitter, visible.seed, visible.anchor, time)
         });
     }
-    // Keys are emitted in anchor/member/emitter order, the numeric map's order too.
-    // Merge the two ordered walks without another keyed allocation or sort.
     debug_assert!(seen.windows(2).all(|pair| pair[0].key < pair[1].key));
     let advance_span = viewer_foundation::profiling::span("weather_advance");
     let eye = sort::Eye::of(camera);
@@ -2207,9 +1985,7 @@ fn weather_packets(
             if let Some(visible) = seen.next_if(|visible| visible.key == *key) {
                 Some((simulation, visible))
             } else {
-                // Unadmitted populations freeze; rebase so reentry invents no hidden births.
                 simulation.time = time.max(0.0);
-                // Only an enabled runtime sorts: a culled member does, a deactivated one not.
                 if fades.members(assets.anchors[key.0].region)[usize::from(key.1)].active {
                     simulation.sort(eye);
                 }
@@ -2217,8 +1993,6 @@ fn weather_packets(
             }
         })
         .collect();
-    // One weather particle reference's subsystems are one particle system: they update
-    // together, sharing its turbulence fields.
     let mut tasks = tasks;
     for system in tasks.chunk_by_mut(|(_, a), (_, b)| {
         (a.key.0, a.key.1, a.emitter.actor) == (b.key.0, b.key.1, b.emitter.actor)
@@ -2227,8 +2001,6 @@ fn weather_packets(
             .iter_mut()
             .map(|(sim, visible)| {
                 let e = visible.emitter;
-                // A delayed event is timed from the entity's creation by its producer,
-                // however long the pair stayed out of view.
                 if sim.waiting()
                     && let Some(born) = fades.born(assets.anchors[visible.key.0].region)
                 {
@@ -2252,9 +2024,6 @@ fn weather_packets(
             .collect();
         advance_system(&mut members, time, rate);
     }
-    // The producer's anchor/member/emitter order, empty packets included: an enabled actor
-    // binds scale/quad IA before inspecting its particle count. A system whose entity event
-    // has not fired yet is no actor.
     for (sim, mut visible) in tasks {
         if sim.waiting() {
             continue;
@@ -2303,8 +2072,6 @@ impl Clock {
     }
 }
 
-/// The weather pairs' particles of one frame, owned so they advance off the frame thread
-/// ([`Pass::begin_frame`]): what [`weather_packets`] reads and changes, and the packets it makes.
 struct Advance {
     assets: Arc<Assets>,
     simulations: Simulations,
@@ -2329,48 +2096,32 @@ impl Advance {
     }
 }
 
-/// Immutable canonical packets prepared once for every seam of this frame.
 pub struct Packets(Vec<native::DrawPacket>);
 
 impl Packets {
-    /// How many draw packets one frame prepared.
     pub fn count(&self) -> usize {
         self.0.len()
     }
 }
 
-/// One shared pass for window and dump. Static textures stay resident; only
-/// particles at the selected hour and visible camera are generated each frame.
 pub struct Pass {
     #[cfg(any(test, feature = "test-support"))]
     pub offline_packets: BTreeMap<String, usize>,
     native: native::Renderer,
     assets: Arc<Assets>,
     field: Field,
-    /// The kinds `field` asks for, each with the hour it began.
     wanted: Presentation,
-    /// The kinds whose pairs the regions' producers hold: a region takes its wanted kind only
-    /// when its producer runs ([`Self::produce`]).
     presentation: Presentation,
-    /// Each region's member states, set by its producer runs.
     fades: fade::Fades,
     clock: Clock,
     simulations: Simulations,
-    /// Empty runtimes made off the frame path for the pairs producers have yet to create
-    /// ([`prepare_changed`]).
     pending: Simulations,
-    /// Runtimes producers let go of, for the next field change to hand off the frame path.
     retired: Vec<Simulation>,
     entity_simulations: native::EntitySimulations,
-    /// See [`SoundInputs::starts`].
     sound_starts: SoundStarts,
     events: Vec<super::entity_animation::Event>,
-    /// The anchors' pair draws, kept for the field and presentation that made them.
     drawn: Drawn,
-    /// How many times the field or the presentation has moved, which is what makes the draws
-    /// again ([`Drawn::for_field`]).
     changes: u64,
-    /// This frame's [`Advance`], which holds `simulations`, `fades` and `drawn` while it runs.
     lane: super::lane::Lane<Advance>,
 }
 impl Pass {
@@ -2437,9 +2188,6 @@ impl Pass {
         self.events = events;
         Ok(lights)
     }
-    /// Moves to `field`: the regions' producers take its kinds when they next run, and runtimes
-    /// for the pairs they will create are prepared at `preparation`'s camera. A discontinuity lets
-    /// every held pair go at once, as a load does. Returns the runtimes it let go of.
     fn adopt_field(
         &mut self,
         field: Field,
@@ -2480,8 +2228,6 @@ impl Pass {
         self.adopt_field(field, None, Continuity::Reset);
     }
 
-    /// Moves to `prepared`'s field ([`Self::adopt_field`]), returning what it let go of for the
-    /// caller to free off the frame path.
     pub fn set_prepared(&mut self, prepared: Prepared, continuity: Continuity) -> Retired {
         Retired(self.adopt_field(
             prepared.field,
@@ -2489,13 +2235,6 @@ impl Pass {
             continuity,
         ))
     }
-    /// This frame's producer runs at camera height `height`: one for each region with a province
-    /// in the frame's update list on `schedule`. Each takes its wanted kind if it holds another
-    /// ([`swap_listed`]), then sets its members' fade ([`fade`]). Called once a frame, after the
-    /// walk that took the list and before the frame's sounds and packets read the states.
-    ///
-    /// As in the game, each run rereads the map's weather switch (`weather`): off, the region
-    /// wants no weather, so a listed region lets its pairs go and an unlisted one keeps them.
     pub fn produce(&mut self, height: f32, schedule: &Schedule, weather: bool) {
         self.settle();
         let none = Presentation::default();
@@ -2534,8 +2273,6 @@ impl Pass {
         );
     }
 
-    /// Appends the shown weather entities' sound events at presentation
-    /// time `time` (see [`sound_events`]).
     pub fn sound_events(
         &mut self,
         camera: Camera,
@@ -2578,9 +2315,6 @@ impl Pass {
         );
     }
 
-    /// Starts this frame's weather pairs on their own thread: the presentation clock, births and
-    /// motion advance once, before any seam view draws. Called after the frame's producer runs
-    /// and sounds, which read what the advance holds until [`Self::finish_frame`] takes it back.
     pub fn begin_frame(
         &mut self,
         camera: Camera,
@@ -2589,7 +2323,6 @@ impl Pass {
         animation_time: f32,
     ) {
         self.settle();
-        // Pairs a producer still holds draw whatever the weather switch says ([`Self::produce`]).
         let time = self
             .clock
             .advance(animation_time, camera.height, &self.assets.graphics);
@@ -2615,8 +2348,6 @@ impl Pass {
         self.lane.start(move || advance.run());
     }
 
-    /// Takes back the advance begun off the frame thread, waiting for it, and returns its packets;
-    /// none when no advance was begun.
     fn settle(&mut self) -> Vec<native::DrawPacket> {
         let Some(advance) = self.lane.take() else {
             return Vec::new();
@@ -2627,13 +2358,10 @@ impl Pass {
         advance.packets
     }
 
-    /// Takes back an advance the frame began and did not finish, as a refused frame leaves it.
     pub fn join_frame(&mut self) {
         self.settle();
     }
 
-    /// The frame's packets at `camera`, the one [`Self::begin_frame`] advanced the pairs for:
-    /// theirs, then the entity events'.
     pub fn finish_frame(&mut self, camera: Camera) -> Packets {
         let _profile = viewer_foundation::profiling::thread_span("weather_packets");
         let mut packets = self.settle();
@@ -2666,7 +2394,6 @@ impl Pass {
         Packets(packets)
     }
 
-    /// Build each content-selected particle pipeline before drawing a frame.
     pub fn warm(&mut self, device: &wgpu::Device) {
         let assets = Arc::clone(&self.assets);
         let emitters: Vec<&Emitter> = assets
@@ -2711,10 +2438,6 @@ impl Pass {
     }
 }
 
-/// Advances every entity-event particle runtime on `events`, hidden ones included, so hiding never
-/// changes a runtime's population, emission accumulator or random stream; then returns the events
-/// with the lights the shown ones give. A kept event's light lasts until its finished runtime has
-/// no living particle; then the event is finished for its player to drop.
 pub(crate) fn advance_entity_effects(
     simulations: &mut EntitySimulations,
     entities: &BTreeMap<String, (f32, Vec<Emitter>)>,

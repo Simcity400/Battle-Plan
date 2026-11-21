@@ -1,6 +1,3 @@
-//! Exact hourly original-tag buckets and physical country-array order.
-//! Changing an original tag can reorder a bucket without changing final
-//! country operands; canonical country rows cannot reconstruct either list.
 use crate::triggers::Failure;
 
 use replay_data::{Hour, rows::TableSchema, rows::tables};
@@ -12,7 +9,6 @@ pub struct OriginalTagLists<'a> {
     table: Lists<'a>,
 }
 
-/// Where the lists are read: a decoded frame's shared view.
 #[derive(Clone, Default)]
 struct Lists<'a>(Option<SharedView>, std::marker::PhantomData<&'a ()>);
 
@@ -31,7 +27,6 @@ impl<'a> OriginalTagLists<'a> {
         }
     }
 
-    /// [`Self::read`] of any frame's tables.
     pub fn read_in(frame: replay_frame::frame::HourFrame<'a>) -> Self {
         match frame {
             replay_frame::frame::HourFrame::Decoded(frame) => Self::read(frame),
@@ -73,7 +68,6 @@ impl<'a> OriginalTagLists<'a> {
         Ok(row)
     }
 
-    /// Raw own-country IDs, in stored order, retaining every occurrence.
     pub fn bucket(&self, canonical: u32) -> Result<&[u32], Failure> {
         let buckets = self
             .row()?
@@ -107,7 +101,6 @@ impl<'a> OriginalTagLists<'a> {
             })
     }
 
-    /// Reserved country's numeric original tag, independent of its name bytes.
     pub(crate) fn original_reference(&self) -> Result<i32, Failure> {
         self.row()?
             .original_tag_reference
@@ -131,7 +124,6 @@ impl<'a> OriginalTagLists<'a> {
             .map(|raw| raw.max(0))
     }
 
-    /// Reserved country owned state count, demanded independently of the lists.
     pub(crate) fn reserved_owned_states(&self) -> Result<i32, Failure> {
         self.row()?
             .owned_state_count
@@ -154,7 +146,6 @@ impl<'a> OriginalTagLists<'a> {
             })
     }
 
-    /// Actual reserved country faction: null is None, not a missing read.
     pub(crate) fn reserved_faction(&self) -> Result<Option<u64>, Failure> {
         self.row()?
             .faction
@@ -178,7 +169,6 @@ impl<'a> OriginalTagLists<'a> {
             .map(|faction| (faction != 0).then_some(faction))
     }
 
-    /// Physical country-array order, including aliases and zero.
     pub fn country_array(&self) -> Result<&[u32], Failure> {
         self.row()?
             .country_array
@@ -202,8 +192,6 @@ impl<'a> OriginalTagLists<'a> {
             })
     }
 
-    /// Read requested snapshots independently; no earlier-hour reconstruction
-    /// can establish the native cache's mutation order.
     pub fn derive(
         replay: &replay::campaign::Replay,
         branch: replay_data::BranchId,

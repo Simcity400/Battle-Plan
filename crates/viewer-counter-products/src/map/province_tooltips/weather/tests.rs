@@ -154,7 +154,6 @@ fn native_text_argument_is_a_copy_then_appended_even_when_content_uses_it() {
 fn compatibility_weather_fields_are_not_native_zero() {
     let mut province = WeatherProvinceRow::default();
     let region = WeatherRegionRow::default();
-    // A temperature the frame cannot establish is its refusal, not zero.
     assert_eq!(
         row(
             &loc(),

@@ -1,9 +1,3 @@
-//! Wargoal type identities from the recorded content stack.
-//!
-//! Read direct `.txt` files in filename order with lexer mode 0; append
-//! every `wargoal_types` declaration. Names are interned and lookup returns
-//! the first matching token. Descriptions only need that first declared
-//! spelling for localisation.
 
 use crate::{
     ResolvedLayers,
@@ -27,13 +21,11 @@ pub struct Database {
     terms: Vec<Terms>,
 }
 
-/// Definition operands, independent of whether an action or peace term is enabled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Terms {
     pub annex: bool,
     pub allowed: Vec<parser::Item>,
     pub available: Vec<parser::Item>,
-    /// Take states, liberate, puppet, force government, in that order.
     pub limits: [i32; 4],
     pub cost_factors: [i64; 4],
     pub threat_factors: [i64; 4],
@@ -125,7 +117,6 @@ impl Terms {
                 } else {
                     &mut out.threat_factors[index - 4]
                 };
-                // The game converts the held factor again even when the read fails.
                 let value = installed_content_core::modifiers::read_fixed5(item).unwrap_or(*factor);
                 *factor = value
                     .wrapping_mul(1000)
@@ -216,8 +207,6 @@ impl Database {
     }
 }
 
-/// Names and war-name prefixes are projected; the trigger/effect/one-value
-/// readers still decide the surrounding consumption.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -335,9 +324,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     Ok(database)
 }
 
-/// Naming uses the same consumption as identity descriptions, including
-/// reached instant_reward effects. Differing same-token definitions stay
-/// unknown because recorded goal operands do not identify their definition pointer.
 pub fn read_names(layers: &ResolvedLayers) -> io::Result<Names> {
     let database = read(layers)?;
     if let Some(why) = database.gap {
@@ -449,8 +435,6 @@ mod tests {
         );
         assert_eq!(database.find(b"first").unwrap(), Some(b"First".as_slice()));
         assert!(database.find(b"undefined").unwrap().is_none());
-        // Fixed5/string/integer readers consume one token, retaining a later
-        // definition rather than skipping the block after the operand.
         let database = parse(
             b"wargoal_types={one={expire={}} two={}}",
             &KeyNames::default(),

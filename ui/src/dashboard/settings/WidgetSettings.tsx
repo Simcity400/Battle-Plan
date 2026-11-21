@@ -22,15 +22,11 @@ import { TimeSection } from './TimeSection';
 import { FactionColoursEditor } from '../FactionColours';
 import './settings.css';
 
-/** Every widget's settings, in the same sections and order for all widgets. Each
- * change is a view preference and saves at once (`onChange(widget, true)`). */
 export function WidgetSettings(props: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onChange: (widget: WidgetSpec, view?: boolean) => void;
 }) {
   const use = widgetDefinition(props.widget.kind)?.useOptionChoices;
-  // Content choices come from a hook; it runs in its own component so the panel's hooks never change.
-  // It sees the widget with its campaign resolved, as the widget itself does.
   return use ? <WithChoices key={props.widget.kind} use={use} widget={resolveWidgetCampaign(props.widget, props.template, props.runtime.defaultRoleId)} runtime={props.runtime}>
     {choices => <SettingsBody {...props} choices={choices} />}</WithChoices> : <SettingsBody {...props} />;
 }
@@ -53,7 +49,6 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
   const setValue = (key: string, value: OptionValue) => {
     const options = setOption(definition?.options, widget.options, key, value);
     if (!options) return;
-    // A title that still names the previous content choice follows the new one.
     const label = (choice: OptionValue) => listedChoices(choices?.[key])?.find(item => item.value === choice)?.label;
     const field = definition?.options?.find(item => item.key === key);
     const named = field?.kind === 'content-choice' && field.titleChoice !== false && [definition?.title, label(values[key])].includes(widget.title);
@@ -84,8 +79,6 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
   </div>;
 }
 
-/** Keeps the title local while typing and saves it on blur or Enter; an empty title
- * goes back to the saved one. */
 function TitleField({ widget, onChange }: { widget: WidgetSpec; onChange: (widget: WidgetSpec) => void }) {
   const [title, setTitle] = useState(widget.title);
   useEffect(() => setTitle(widget.title), [widget.title]);
@@ -97,15 +90,12 @@ function TitleField({ widget, onChange }: { widget: WidgetSpec; onChange: (widge
     onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
 }
 
-/** The header icon every widget of this kind shares. Its pickers open beside the widget's
- * own header icon, as they do from a right-click on it. */
 function HeaderIcon({ widget, definition }: { widget: WidgetSpec; definition: WidgetDefinition }) {
   const icons = useContext(WidgetIconsContext);
   const style = icons.style(widget.kind);
   const image = isIconImage(style.icon);
   const edit = (part: 'icon' | 'colour') => (event: MouseEvent<HTMLButtonElement>) => {
     const header = document.querySelector<HTMLElement>(`[data-widget-icon="${CSS.escape(widget.id)}"]`);
-    // Opening the picker closes the settings menu and unmounts this row, so focus returns to the widget's settings button.
     icons.edit(widget.kind, header ?? event.currentTarget, definition.title, part, header && settingsButtonOf(header));
   };
   return <div className="setting-row"><SettingLabel label="Icon" hint={`Shared by every ${definition.title} widget`} />
@@ -119,7 +109,6 @@ function HeaderIcon({ widget, definition }: { widget: WidgetSpec; definition: Wi
     </div></div>;
 }
 
-/** Zooms everything inside the widget together; charts redraw at the new size. */
 function SizeStepper({ widget, onChange }: { widget: WidgetSpec; onChange: (widget: WidgetSpec) => void }) {
   const scale = widget.contentScale ?? 100;
   const step = (direction: 1 | -1) => {

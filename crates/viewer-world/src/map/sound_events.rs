@@ -1,11 +1,3 @@
-//! The entity events a presented frame holds that name a sound effect.
-//!
-//! An entity event's `sound = { soundeffect = ... }` plays when the event
-//! fires, positioned at the event's node. The scene lists every present
-//! event with a sound after the model passes animate; an audio consumer
-//! diffs the list from frame to frame: a new key, or a key whose age falls,
-//! is a firing. Keys are hashes of the exact [`EventKey`], so a seek or
-//! branch change (a new event namespace) presents new keys.
 
 use super::entity_animation::{Event, EventKey};
 use std::{
@@ -19,14 +11,10 @@ pub struct SoundEvent {
     pub key: u64,
     pub effect: Arc<str>,
     pub position: [f32; 3],
-    /// Seconds since the event fired.
     pub age: f32,
-    /// A combat sound: the producer presents the actor in combat, or the
-    /// actor is a strike's impact.
     pub combat: bool,
 }
 
-/// Effect names, shared across frames.
 #[derive(Default)]
 pub struct Names(BTreeMap<String, Arc<str>>);
 
@@ -47,8 +35,6 @@ pub fn key(key: &EventKey) -> u64 {
     hasher.finish()
 }
 
-/// A weather entity's sound event, keyed by its anchor, member, event,
-/// region and the hour its weather began, `age` seconds after it fired.
 pub fn weather(
     identity: (usize, usize, usize, u32, i32),
     names: &mut Names,
@@ -67,8 +53,6 @@ pub fn weather(
     }
 }
 
-/// Appends the events of `events` that name a sound effect; `combat` says
-/// which are combat sounds.
 pub fn collect(
     events: &[Event],
     names: &mut Names,
@@ -76,14 +60,12 @@ pub fn collect(
     combat: impl Fn(&Event) -> bool,
 ) {
     for event in events {
-        // An actor or layer the display hides does not sound.
         if event.hidden {
             continue;
         }
         let Some(effect) = event.definition.sound.as_deref() else {
             continue;
         };
-        // Native packets resolved without a node keep a degenerate transform.
         if !event
             .transform
             .translation

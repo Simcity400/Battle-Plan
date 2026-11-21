@@ -1,17 +1,3 @@
-//! Content identity coverage and local resolution of machine-free layer ids.
-//!
-//! Covered roots include event scripts, text icons, leader portraits, fonts,
-//! effect sources and post-effect volumes, plus every `.asset` and `.gfx`
-//! descriptor below `gfx`: the engine registers entities, meshes and particles
-//! from every such file.
-//! Other meshes, animations and textures stay outside and are read unverified.
-//! The policy version lives in replay.
-//!
-//! The vanilla hash includes the base covered paths plus the covered paths of
-//! built-in virtual roots in their install-relative namespaces:
-//! `integrated_dlc/<folder>/...` (including each descriptor) and
-//! `tweakergui_assets/...` or `tweakergui_assets.zip/...`. Those roots are mounted
-//! by the pinned engine independently of its selectable DLC roster.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -44,8 +30,6 @@ mod physfs_zip;
 pub mod proof;
 pub mod visual;
 
-// Historical roots from 2ae47c8122 (policy 2), 2df8adf4b3 (3) and 5aea650ab7 (4).
-// Each policy hashes its own roots; `.asset`/`.gfx` coverage is shared since policy 2.
 const COVERAGE_ROOTS: [(&str, u32); 13] = [
     ("map", 2),
     ("common", 2),
@@ -87,7 +71,6 @@ impl CoveragePolicy {
             .filter_map(move |(root, since)| (*since <= self.0).then_some(*root))
     }
 
-    /// From policy 5 a mod descriptor adds only [`portable_descriptor`] to its layer hash.
     fn portable_mod_descriptor(self) -> bool {
         self.0 >= 5
     }
@@ -116,18 +99,14 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Local paths are kept here, never placed in a replay identity.
 #[derive(Clone, Debug)]
 pub struct GatherOptions {
     pub game_dir: PathBuf,
     pub user_dir: PathBuf,
     pub cache_dir: PathBuf,
-    /// Optional observed enabled DLC mount order, expressed as folder ids.
-    /// Dependency-free vanilla uses the proven descriptor-path byte sort.
     pub dlc_order: Option<Vec<String>>,
 }
 
-/// Local locations used to resolve a replay, independently of launcher state.
 #[derive(Clone, Debug)]
 pub struct ResolveOptions {
     pub game_dir: PathBuf,
@@ -139,16 +118,11 @@ pub struct ResolveOptions {
 pub struct ResolvedContent {
     pub layers: ResolvedLayers,
     pub stats: HashStats,
-    /// Recorded layers whose installed bytes differ, from [`resolve`], which only the recorder
-    /// and the upgrader use: playback never reads a fact from the installed game.
     pub changed: Vec<ChangedLayer>,
-    /// What playback shows from where: art from the installed game, art that is not
-    /// installed, and facts the recording withholds, each by name ([`playback`]).
     pub notes: Vec<String>,
 }
 
 impl ResolvedContent {
-    /// This content when every layer is the recording's own, or the first changed layer's refusal.
     pub fn exact(self) -> io::Result<Self> {
         match self.changed.first() {
             Some(changed) => Err(changed.refusal()),
@@ -156,7 +130,6 @@ impl ResolvedContent {
         }
     }
 
-    /// Refresh `warnings` with one line per changed layer and per playback note.
     pub fn append_changed_to(&self, warnings: &mut Vec<String>) {
         warnings.retain(|line| {
             !line.ends_with(CHANGED_LAYER) && !self.notes.iter().any(|note| note == line)
@@ -168,10 +141,8 @@ impl ResolvedContent {
 
 const CHANGED_LAYER: &str = "changed since the recording (content hash mismatch)";
 
-/// A recorded content layer whose installed bytes differ from the recording's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangedLayer {
-    /// "Game" (the executable or the vanilla files), "DLC" or "Mod".
     pub kind: &'static str,
     pub id: String,
     pub recorded: [u8; 32],
@@ -179,7 +150,6 @@ pub struct ChangedLayer {
 }
 
 impl ChangedLayer {
-    /// What a reader that needs the recorded bytes refuses with.
     pub fn refusal(&self) -> io::Error {
         invalid(format!(
             "{} {}: content hash mismatch (expected {}, found {})",
@@ -209,29 +179,19 @@ pub struct HashStats {
     pub bytes_read: u64,
     pub cache_hits: u64,
     pub elapsed_ms: u128,
-    /// Why the rebuilt hash cache could not be saved; the content itself is unaffected.
     pub cache_unsaved: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub enum LayerSource {
-    /// The canonical root after inventory construction.
     Folder(PathBuf),
     Archive(PathBuf),
 }
 
-/// A layer path as the game's virtual file system compares it: raw bytes. PhysFS keys a ZIP
-/// member by its central-directory name bytes, without code-page conversion (see
-/// [`physfs_zip`]), and looks it up by the requested bytes with a djb2 hash and byte comparison,
-/// without case folding (see [`ResolvedLayer::archive_open_observed`]). Folder paths are their file names'
-/// UTF-8. Every layer
-/// index, `replace_path` and lookup keeps these bytes; text is only a view of them.
 pub type LayerPath = Vec<u8>;
 
 pub mod diagnostics;
 
-/// Shared uncovered dependencies, queried when a consumer reports diagnostics.
-/// Without an explicit reporting opt-in, ordinary reads remain strict.
 #[derive(Clone, Debug)]
 pub struct UncoveredReads {
     policy: u32,
@@ -239,25 +199,15 @@ pub struct UncoveredReads {
     overlays: OverlayReads,
 }
 
-/// What visual mods supplied and what of theirs could not be shown, shared by a recorded stack
-/// and its presentation stack.
 type OverlayReads = std::sync::Arc<std::sync::Mutex<OverlayDiagnostics>>;
 
 #[derive(Debug, Default)]
 struct OverlayDiagnostics {
-    /// Files each visual mod supplied, by the mod's display name: presentation reads the
-    /// recording never verified, named and counted apart from uncovered recorded reads.
     reads: BTreeMap<String, BTreeSet<LayerPath>>,
-    /// Artwork a consumer could not load from the presentation stack and drew from the
-    /// recording instead ([`ResolvedLayers::artwork`]), with why.
     refusals: BTreeSet<String>,
-    /// What consumers refused to draw, by stable name, whichever stack they read
-    /// ([`ResolvedLayers::note_refused`]).
     refused: BTreeSet<String>,
 }
 
-/// The folders and files a visual mod's files show under ([`ResolvedLayers::overlay_sees`]): the
-/// artwork folders, and the world normal map in each form the game reads it.
 const PRESENTATION_ROOTS: [&str; 7] = [
     "gfx",
     "interface",
@@ -267,10 +217,8 @@ const PRESENTATION_ROOTS: [&str; 7] = [
     "map/world_normal.tga",
     "map/world_normal.bmp",
 ];
-/// The defines scripts a presentation defines stack also shows.
 const DEFINES_ROOT: &str = "common/defines";
 
-/// [`ResolvedLayers::overlay_sees`] for a stack that does or does not show mods' defines.
 fn overlay_sees(defines_visible: bool, lower: &[u8]) -> bool {
     PRESENTATION_ROOTS
         .iter()
@@ -278,13 +226,8 @@ fn overlay_sees(defines_visible: bool, lower: &[u8]) -> bool {
         || (defines_visible && below(lower, DEFINES_ROOT.as_bytes()))
 }
 
-/// The start of the lines [`UncoveredReads::append_to`] keeps current for visual mod reads.
 const OVERLAY_READS: &str = "Artwork from visual mods";
 
-/// The line naming and counting `refusals`: artwork the selected visual mods could not supply,
-/// drawn in the recording's own style instead ([`ResolvedLayers::note_overlay_refusal`]). The
-/// map reports its content's refusals with it and each widget the refusals its own reply
-/// fell back on ([`observe_overlay_refusals`]), so both read alike.
 pub fn overlay_refusal_line(refusals: &BTreeSet<String>) -> Option<String> {
     (!refusals.is_empty()).then(|| {
         format!(
@@ -296,22 +239,12 @@ pub fn overlay_refusal_line(refusals: &BTreeSet<String>) -> Option<String> {
 }
 
 thread_local! {
-    /// What each [`observe_overlay_refusals`] active on this thread has seen, innermost last.
     static OVERLAY_OBSERVERS: std::cell::RefCell<Vec<BTreeSet<String>>> =
         const { std::cell::RefCell::new(Vec::new()) };
-    /// The first observer refusals reach: the innermost [`observe_overlay_refusals_isolated`]
-    /// one, whose notes reach no observer outside it.
     static OVERLAY_ISOLATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Whether artwork loaders on this thread draw without falling back ([`strict`]).
     static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Runs `run` with every artwork loader drawing strictly: what the selected visual mods cannot
-/// supply fails rather than falling back to the recording ([`ResolvedLayers::artwork`],
-/// [`ResolvedLayers::graphics_define`], [`ResolvedLayers::artwork_item`] and the interface
-/// texture loader honour it). A caller that redraws a whole operation from the recording when
-/// it fails uses it, so the recording's own choice is made again rather than one stage of the
-/// mods' choice patched.
 pub fn strict<T>(run: impl FnOnce() -> T) -> T {
     struct Exit(bool);
     impl Drop for Exit {
@@ -323,14 +256,10 @@ pub fn strict<T>(run: impl FnOnce() -> T) -> T {
     run()
 }
 
-/// Whether artwork loaders on this thread draw strictly ([`strict`]).
 pub fn is_strict() -> bool {
     STRICT.with(std::cell::Cell::get)
 }
 
-/// Whether artwork loaders on this thread may fall back to the recording: what every artwork
-/// memo keeps results apart by, so a strict draw ([`strict`]) never reads or fills a result a
-/// fallback-permitted draw made, nor the other way.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ArtworkMode {
     #[default]
@@ -338,7 +267,6 @@ pub enum ArtworkMode {
     Strict,
 }
 
-/// The mode artwork loaders on this thread draw in.
 pub fn artwork_mode() -> ArtworkMode {
     if is_strict() {
         ArtworkMode::Strict
@@ -347,7 +275,6 @@ pub fn artwork_mode() -> ArtworkMode {
     }
 }
 
-/// A memo kept once per [`ArtworkMode`]: each use reads and fills the current mode's.
 #[derive(Default)]
 pub struct ByMode<T> {
     ordinary: T,
@@ -355,7 +282,6 @@ pub struct ByMode<T> {
 }
 
 impl<T> ByMode<T> {
-    /// The current mode's ([`artwork_mode`]).
     pub fn current(&self) -> &T {
         match artwork_mode() {
             ArtworkMode::Ordinary => &self.ordinary,
@@ -363,19 +289,12 @@ impl<T> ByMode<T> {
         }
     }
 
-    /// The fallback-permitted one, which every ordinary read uses.
     pub fn ordinary(&self) -> &T {
         &self.ordinary
     }
 }
 
-/// Runs `run` and returns, with its value, every refusal [`ResolvedLayers::note_overlay_refusal`]
-/// noted on this thread meanwhile, whichever stack noted it: what `run` drew from the recording
-/// because the selected visual mods could not supply it. Observers nest; each sees what is
-/// noted inside it. A consumer that shares one stack with others reports its own fallbacks
-/// with it rather than the stack's whole tally.
 pub fn observe_overlay_refusals<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
-    // Pops the observer when `run` returns or unwinds.
     struct Exit<'a>(&'a mut BTreeSet<String>);
     impl Drop for Exit<'_> {
         fn drop(&mut self) {
@@ -393,8 +312,6 @@ pub fn observe_overlay_refusals<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Stri
     (value, seen)
 }
 
-/// [`observe_overlay_refusals`] keeping what is noted inside to itself: no observer outside it
-/// sees it, so a caller can publish it ([`credit_overlay_refusals`]) or drop it.
 pub fn observe_overlay_refusals_isolated<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
     struct Exit(usize);
     impl Drop for Exit {
@@ -407,10 +324,6 @@ pub fn observe_overlay_refusals_isolated<T>(run: impl FnOnce() -> T) -> (T, BTre
     observe_overlay_refusals(run)
 }
 
-/// Adds `refusals` to every observer active on this thread, as if noted here: a memo of
-/// artwork loaded once replays what its load fell back on to each later user. Inside an
-/// isolated observer ([`observe_overlay_refusals_isolated`]) it reaches that observer and those
-/// within it only.
 pub fn credit_overlay_refusals(refusals: &BTreeSet<String>) {
     if refusals.is_empty() {
         return;
@@ -443,7 +356,6 @@ impl UncoveredReads {
         ))
     }
 
-    /// The files visual mods supplied, counted per mod in no particular precedence.
     pub fn overlay_warning(&self) -> Option<String> {
         let diagnostics = self
             .overlays
@@ -463,8 +375,6 @@ impl UncoveredReads {
         })
     }
 
-    /// Everything consumers of this content refused to draw, by stable name
-    /// ([`ResolvedLayers::note_refused`]).
     pub fn refused(&self) -> BTreeSet<String> {
         self.overlays
             .lock()
@@ -473,7 +383,6 @@ impl UncoveredReads {
             .clone()
     }
 
-    /// The artwork that could not be loaded from visual mods, which the recording's replaced.
     pub fn overlay_refusals(&self) -> Option<String> {
         overlay_refusal_line(
             &self
@@ -484,7 +393,6 @@ impl UncoveredReads {
         )
     }
 
-    /// Refresh a cached warning list rather than accumulating stale counts.
     pub fn append_to(&self, warnings: &mut Vec<String>) {
         warnings.retain(|line| {
             let uncovered = line.starts_with("Content: ")
@@ -497,9 +405,6 @@ impl UncoveredReads {
     }
 }
 
-/// What a layer is in the game's mount: the base game, one of its built-in roots, the user
-/// folder a new recording's game mounts, a DLC, a mod, a built-in root mounted above every mod,
-/// or a visual mod shown for presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerRole {
     Vanilla,
@@ -536,7 +441,6 @@ impl LayerRole {
     }
 }
 
-/// A played-back layer's facts: its layer of the recording's pack.
 #[derive(Clone, Debug)]
 struct Facts {
     pack: Arc<facts::Pack>,
@@ -556,34 +460,25 @@ pub struct ResolvedLayer {
     inventory_paths: Arc<BTreeSet<LayerPath>>,
     coverage: CoveragePolicy,
     pub role: LayerRole,
-    /// For playback, the recording's facts of this layer: every covered path that is not art is
-    /// answered from them and never from `source`, which then holds the installed art only.
     facts: Option<Facts>,
     pub id: String,
     pub source: LayerSource,
     pub descriptor: Option<PathBuf>,
     pub replace_paths: Vec<LayerPath>,
-    /// Inventory, lookup index and hashes are shared by clones: a presentation stack mounts
-    /// the recorded layers without copying them.
     files: std::sync::Arc<BTreeMap<LayerPath, Member>>,
     lookup: std::sync::Arc<LookupIndex>,
     hashes: std::sync::Arc<BTreeMap<LayerPath, [u8; 32]>>,
     archive_stamp: Option<Stamp>,
     descriptor_hash: Option<DescriptorHash>,
-    /// A visual mod mounted for presentation only ([`ResolvedLayers::presentation`]).
     overlay: Option<Overlay>,
 }
 
-/// A descriptor's digests: of its bytes, which show a change after it was parsed, and the
-/// portable one a mod's layer hash holds instead from policy 5.
 #[derive(Clone, Copy, Debug)]
 struct DescriptorHash {
     bytes: [u8; 32],
     portable: Option<[u8; 32]>,
 }
 
-/// A presentation mount: the mod's display name, and whether its covered bytes still verify
-/// against the recording (a recorded mod selected again keeps its recorded hashes).
 #[derive(Clone, Debug)]
 struct Overlay {
     name: String,
@@ -592,11 +487,8 @@ struct Overlay {
 
 #[derive(Clone, Debug)]
 struct Member {
-    /// The archive record it reads from; `None` for a folder file.
     archive_entry: Option<physfs_zip::Entry>,
     size: u64,
-    /// A recorded folder file's stamp as the content walk listed it, for its hash probe; `None`
-    /// for an archive record, a visual mod's file, or one the listing could not stamp.
     stamp: Option<Stamp>,
 }
 
@@ -606,8 +498,6 @@ struct LookupIndex {
     archive: Option<physfs_zip::Index>,
 }
 
-/// Text for a layer path in messages and in the hash cache's keys, which a non-UTF-8 path
-/// cannot share with a UTF-8 one (a layer path holds no control character).
 fn display(path: &[u8]) -> String {
     match std::str::from_utf8(path) {
         Ok(text) => text.to_owned(),
@@ -792,8 +682,6 @@ impl std::fmt::Debug for ReadTrace {
     }
 }
 impl ReadTrace {
-    /// This trace for a stack of the traced stack's `layers` (their indices, in order): its
-    /// reads keep this purpose and name each layer by its index in the traced stack.
     fn for_layers(&self, layers: Vec<usize>) -> Self {
         let callback = self.callback.clone();
         Self {
@@ -815,21 +703,12 @@ pub struct ResolvedLayers {
     read_trace: Option<ReadTrace>,
     coverage: CoveragePolicy,
     pub layers: Vec<ResolvedLayer>,
-    /// Built-in layers the engine mounts above every mod (the tweaker assets): visual mods
-    /// mount below them, as an enabled mod would.
     above_mods: usize,
-    /// The same recorded layers with the selected visual mods mounted above them, or `None`
-    /// when no visual mod is selected ([`Self::presentation`]).
     presentation: Option<std::sync::Arc<ResolvedLayers>>,
-    /// The presentation stack whose visual mods also show their defines scripts
-    /// ([`Self::presentation_defines`]).
     presentation_defines: Option<std::sync::Arc<ResolvedLayers>>,
-    /// Whether a visual mod's `common/defines` shows through ([`Self::overlay_sees`]).
     defines_visible: bool,
     overlay_reads: OverlayReads,
     effective: Arc<BTreeMap<LayerPath, EffectiveFile>>,
-    /// Ordinary successful uncovered reads and explicit uncovered attempts.
-    /// `None` keeps readers strict until their reporting boundary opts in.
     uncovered_reads: std::sync::Arc<std::sync::Mutex<Option<BTreeSet<LayerPath>>>>,
     derived: std::sync::Arc<std::sync::Mutex<Derived>>,
 }
@@ -875,7 +754,6 @@ struct RecordedHit {
     layer: usize,
     path: LayerPath,
     folder: Option<File>,
-    /// A played-back layer's carried fact, by its file in the pack.
     fact: Option<u32>,
 }
 
@@ -905,15 +783,9 @@ pub struct GatheredContent {
     pub language: String,
     pub layers: ResolvedLayers,
     pub stats: HashStats,
-    /// A roster match alone must not hide an unproved mount order.
     pub order_note: Option<String>,
-    /// Expected successful physical search roots, highest priority first.
-    /// Includes built-in roots and the user directory; never serialized.
     pub expected_mounts: Vec<String>,
-    /// Each mod's descriptor file name under `mod/`, in `mods` order: the
-    /// name the game's mod map holds while the mod is active.
     pub mod_descriptors: Vec<String>,
-    /// The recorded layers whose installed bytes differ; empty for a new recording.
     pub changed: Vec<ChangedLayer>,
 }
 
@@ -944,8 +816,6 @@ impl GatheredContent {
     }
 }
 
-/// A descriptor's `replace_path` as the overlay compares it: its bytes without trailing
-/// separators, then normalized like every layer path.
 fn replace_path(path: &[u8]) -> io::Result<LayerPath> {
     let mut end = path.len();
     while end > 0 && matches!(path[end - 1], b'/' | b'\\') {
@@ -954,15 +824,11 @@ fn replace_path(path: &[u8]) -> io::Result<LayerPath> {
     normalize_path(&path[..end])
 }
 
-/// A coverage path uses `/`, retains case, and cannot escape its layer.
 pub fn normalize_relative(path: &str) -> io::Result<String> {
     normalize_path(path.as_bytes())
         .map(|path| String::from_utf8(path).expect("normalizing keeps UTF-8 text UTF-8"))
 }
 
-/// [`normalize_relative`] over a path's bytes: `\` made `/`, and a path that is empty, starts
-/// with `/`, or has an empty, `.`, `..`, `:`-holding or control-holding part refused (a control
-/// character of the text for UTF-8 bytes, a control byte otherwise).
 pub fn normalize_path(path: &[u8]) -> io::Result<LayerPath> {
     let path: LayerPath = path
         .iter()
@@ -987,14 +853,6 @@ pub fn normalize_path(path: &[u8]) -> io::Result<LayerPath> {
     Ok(path)
 }
 
-/// A requested path as [`ResolvedLayers::lookup_path`] hands it to every layer, through
-/// PhysFS's `sanitizePlatformIndependentPath`: cut at its first NUL,
-/// its leading `/`s dropped, runs of `/` made one and a final `/` dropped; `None`, which fails
-/// the open before any layer is searched (`PHYSFS_ERR_BAD_FILENAME`), for a `:` or a `\`
-/// anywhere, or a `.` or `..` part other than the last (the whole path included). A `\` is
-/// never a separator here: callers that accept it convert `\` to `/` before lookup (see
-/// [`crate::gui::native::fonts::texture_candidates`]), and an archive record whose name
-/// holds a `\` (from a host other than FAT) is found by no request.
 pub fn sanitize(request: &[u8]) -> Option<LayerPath> {
     let request = parser::c_string(request);
     let start = request
@@ -1031,10 +889,6 @@ pub fn sanitize(request: &[u8]) -> Option<LayerPath> {
     Some(out)
 }
 
-/// Whether a sanitized request can open a folder file at all: PhysFS's Windows open
-/// ([`folder_file`]) is `CreateFileW` without `FILE_FLAG_BACKUP_SEMANTICS`, which
-/// opens no directory, so the empty path (the root) or one whose last part is `.` or `..`
-/// opens nothing there, and the search goes on.
 fn folder_opens(relative: &[u8]) -> bool {
     !relative.is_empty()
         && !matches!(
@@ -1043,20 +897,8 @@ fn folder_opens(relative: &[u8]) -> bool {
         )
 }
 
-/// The scheme [`record_digest`] follows, part of every archive record's key in the persistent
-/// hash cache ([`HASH_CACHE`]), so an entry an earlier scheme wrote (a record's content
-/// read through the `zip` crate, or an unopened record hashed without its central fields) is
-/// never served for this one: it is a miss, and the record is hashed again.
 const RECORD_DIGEST_SCHEME: &str = "archive-record-digest-2";
 
-/// How the layer hash holds an archive record, the same at gather and at every verification:
-/// the content a request without a password reads, or, for a record the game does not open that
-/// way (its local header disagrees with its central record, or it is encrypted), everything that
-/// decides what any request opens: the central record's fields that govern opening and decoding
-/// ([`physfs_zip::Entry::opening`], among them the DOS time whose high byte checks a password
-/// under flag 8, with no comparison to the local header's time) and the bytes the record
-/// occupies as stored ([`physfs_zip::Archive::stored`]),
-/// marked apart from content. With the content read, if any, and the bytes read.
 fn record_digest(
     archive: &mut physfs_zip::Archive,
     entry: &physfs_zip::Entry,
@@ -1091,9 +933,6 @@ fn record_digest_observed(
     Ok(result)
 }
 
-/// The files of `listed` directly in `directory` whose name ends in `suffix`
-/// (case-sensitive), in the byte order of their
-/// names. See [`ResolvedLayers::directory_files`].
 fn directory_order(directory: &[u8], suffix: &str, listed: Vec<ScriptPath>) -> Vec<ScriptPath> {
     let mut end = directory.len();
     while end > 0 && directory[end - 1] == b'/' {
@@ -1121,7 +960,6 @@ fn below(path: &[u8], directory: &[u8]) -> bool {
             .is_some_and(|tail| tail.starts_with(b"/"))
 }
 
-/// The root whose `.asset` and `.gfx` descriptors are covered.
 const DESCRIPTOR_ROOT: &str = "gfx";
 
 fn is_descriptor(lower: &[u8]) -> bool {
@@ -1129,21 +967,14 @@ fn is_descriptor(lower: &[u8]) -> bool {
         && (lower.ends_with(b".asset") || lower.ends_with(b".gfx"))
 }
 
-/// Whether the current policy covers a text path. A recording's consumers use
-/// [`ResolvedLayers::covered`] for its own policy. Music, sound, video, loading
-/// screens, launcher, crash reporter and logs are outside this closed set.
-/// A descriptor is added separately to the layer hash.
 pub fn covered(path: &str) -> bool {
     covered_path(path.as_bytes())
 }
 
-/// [`covered`] over a layer path's bytes.
 pub fn covered_path(path: &[u8]) -> bool {
     CoveragePolicy::default().covered_path(path)
 }
 
-/// Sorted (u32 LE path byte length, relative path bytes, SHA-256)
-/// tuples. Length framing makes the list unambiguous, including empty layers.
 pub fn layer_hash(files: &BTreeMap<LayerPath, [u8; 32]>) -> io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
     for (path, digest) in files {
@@ -1269,11 +1100,8 @@ fn descriptor_layer(
     ))
 }
 
-/// The layer-hash key of a portable mod descriptor; no layer path holds a NUL.
 const PORTABLE_DESCRIPTOR: &[u8] = b"\0descriptor";
 
-/// What a mod descriptor says about the content it mounts: its replaced paths and its
-/// `dependencies`, in descriptor order. Its location and file name are the launcher's, per machine.
 fn portable_descriptor(document: &Document, replace_paths: &[LayerPath]) -> io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
     update_count(&mut hash, replace_paths.len())?;
@@ -1300,7 +1128,6 @@ fn update_framed(hash: &mut Sha256, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// A descriptor value, framed so that distinct values never share an encoding.
 fn update_value(hash: &mut Sha256, value: &parser::Value) -> io::Result<()> {
     let (tag, items) = match value {
         parser::Value::Scalar(bytes) => {
@@ -1339,11 +1166,6 @@ fn directory_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
     Ok(entries)
 }
 
-/// A visual mod's folder or archive is mounted as the game mounts it: its folder links are
-/// listed and entered as the game's enumeration takes them ([`walk_folder`]), and its archive
-/// link records are listed but their reads refused by name ([`unfollowed_link`]). Names that
-/// differ only in case stay apart in an archive and the first in a folder. A recorded layer
-/// refuses links and case variants instead, as verification cannot prove what the game read.
 fn collect_folder(
     root: &Path,
     path: &Path,
@@ -1363,8 +1185,6 @@ fn collect_folder(
     )
 }
 
-/// [`collect_folder`], `kind` naming each entry. A visual mod's symbolic link to a folder is
-/// refused: the game lists that folder's files only when it enumerates a folder below the link.
 fn collect_folder_with(
     root: &Path,
     path: &Path,
@@ -1399,7 +1219,6 @@ fn collect_folder_with(
         inventory_paths.insert(relative.clone());
         if coverage.covered_path(&relative) {
             let metadata = entry.metadata()?;
-            // Only hashed files need one; a file the listing cannot stamp is stamped by its probe.
             let stamp = (!overlay).then(|| Stamp::of(&metadata).ok()).flatten();
             files.insert(
                 relative,
@@ -1414,16 +1233,12 @@ fn collect_folder_with(
     })
 }
 
-/// How the game's Windows enumeration of a folder takes one entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Listed {
     File,
     Directory,
-    /// A symbolic link: listed as a file whatever it names, and never entered.
     LinkedFile,
-    /// A junction or other directory link that is no symbolic link: entered.
     LinkedDirectory,
-    /// Neither listed nor entered.
     Other,
 }
 
@@ -1440,7 +1255,6 @@ fn entry_kind(entry: &fs::DirEntry) -> io::Result<Listed> {
     })
 }
 
-/// The game's enumeration and stat enter any directory but a reparse point tagged a symbolic link.
 #[cfg(windows)]
 fn link_kind(path: &Path) -> io::Result<Listed> {
     use std::os::windows::ffi::OsStrExt;
@@ -1475,7 +1289,6 @@ fn link_kind(_path: &Path) -> io::Result<Listed> {
     Ok(Listed::LinkedFile)
 }
 
-/// Each file below `directory` as the game lists it ([`Listed`]); a recorded layer refuses links.
 fn walk_folder(
     root: &Path,
     directory: &Path,
@@ -1486,7 +1299,6 @@ fn walk_folder(
     let start = if !overlay {
         directory.to_path_buf()
     } else {
-        // The game enumerates only a directory: a symbolic link to one lists nothing.
         if fs::symlink_metadata(directory)?.file_type().is_symlink()
             && link_kind(directory)? == Listed::LinkedFile
         {
@@ -1503,7 +1315,6 @@ fn walk_folder(
     walk_below(root, directory, &mut vec![start], overlay, kind, visit)
 }
 
-/// [`walk_folder`] below `directory`; `held` are the real folders it is in.
 fn walk_below(
     root: &Path,
     directory: &Path,
@@ -1541,7 +1352,6 @@ fn walk_below(
                 .join(entry.file_name()),
             Listed::LinkedDirectory => {
                 let target = match fs::canonicalize(&full_path) {
-                    // The game's enumeration of a link to nothing fails and lists nothing.
                     Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                     target => target?,
                 };
@@ -1567,29 +1377,20 @@ fn walk_below(
 }
 
 impl ResolvedLayer {
-    /// Whether reads check this layer's covered bytes against the recording. A visual mod the
-    /// recording does not hold is presentation only and has no recorded bytes to check, and a
-    /// played-back layer reads its facts from the recording and its art as installed.
     fn verifies(&self) -> bool {
         self.facts.is_none() && self.overlay.as_ref().is_none_or(|overlay| overlay.verified)
     }
 
-    /// Whether its files are listed as the game lists them (links and case variants kept)
-    /// rather than refused, as a verified layer's are.
     fn listed_as_game(&self) -> bool {
         self.overlay.is_some() || self.facts.is_some()
     }
 
-    /// Whether `path` is a game fact in this played-back layer: covered by today's policy and not
-    /// art, whatever an older recording's identity hashed.
     fn fact_path(&self, path: &[u8]) -> bool {
         self.facts
             .as_ref()
             .is_some_and(|facts| fact_class(path) && !facts.pack.is_art(path))
     }
 
-    /// The carried fact a lookup of `path` finds here: `Ok(None)` for no fact path or none
-    /// carried, an error when this layer's facts are withheld or its identity never hashed it.
     fn fact_lookup(&self, path: &[u8]) -> io::Result<Option<(LayerPath, u32)>> {
         let Some(facts) = self.facts.as_ref().filter(|_| self.fact_path(path)) else {
             return Ok(None);
@@ -1603,8 +1404,6 @@ impl ResolvedLayer {
             .map(|(real, file)| (real.clone(), file)))
     }
 
-    /// Why this played-back layer cannot list the facts a listing of `prefix` holds, when it
-    /// cannot: its facts are withheld, or the recording's identity never hashed them.
     fn fact_listing_refusal(&self, prefix: &[u8], suffixes: &[String]) -> Option<io::Error> {
         let facts = self.facts.as_ref()?;
         if !lists_facts(prefix, suffixes) {
@@ -1620,7 +1419,6 @@ impl ResolvedLayer {
             .then(|| unproven(prefix, self.coverage))
     }
 
-    /// The `name` a DLC layer's descriptor gives it, which `has_dlc` tests.
     fn dlc_name(&self) -> io::Result<Option<String>> {
         if let Some(facts) = &self.facts {
             let layer = facts.layer();
@@ -1652,8 +1450,6 @@ impl ResolvedLayer {
         required(&parser::parse(&bytes)?, b"name").map(Some)
     }
 
-    /// Whether lookups in this layer compare names exactly, as an archive's do, rather than
-    /// ignoring case, as a folder's do.
     fn exact_names(&self) -> bool {
         match &self.facts {
             Some(facts) => facts.layer().archive,
@@ -1661,7 +1457,6 @@ impl ResolvedLayer {
         }
     }
 
-    /// Every path this layer lists: its carried facts, then the files of its source.
     fn listed_keys(&self) -> impl Iterator<Item = &LayerPath> {
         let facts = self
             .facts
@@ -1685,7 +1480,6 @@ impl ResolvedLayer {
             LayerSource::Folder(root) => {
                 self.inventory_witnesses.directory(root)?;
                 let listed_as_game = self.listed_as_game();
-                // `gfx` holds the descriptors and the covered `gfx/*` roots.
                 let walked = self
                     .coverage
                     .roots()
@@ -1709,14 +1503,10 @@ impl ResolvedLayer {
                 let stamp = Stamp::read(path)?;
                 let mut archive = physfs_zip::Archive::open(path)?;
                 let mounted = archive.mount()?;
-                // Every file record by its tree name, as the game's lookups find it: raw bytes,
-                // never normalized (a `\\` from a host other than FAT stays, and no request finds
-                // it; see [`sanitize`]).
                 for entry in &mounted.entries {
                     if entry.directory {
                         continue;
                     }
-                    // A visual mod lists its link records, as the game does (see `collect_folder`).
                     if entry.symlink && !self.listed_as_game() {
                         return Err(invalid(format!(
                             "archive contains a symbolic link: {}",
@@ -1748,7 +1538,6 @@ impl ResolvedLayer {
         let mut folded = BTreeMap::new();
         for path in self.files.keys() {
             if folded.contains_key(&path.to_ascii_lowercase()) {
-                // See `collect_folder`: a visual mod keeps the first spelling.
                 if self.listed_as_game() {
                     continue;
                 }
@@ -1781,8 +1570,6 @@ impl ResolvedLayer {
                         Ok((root.join(folder_text(relative)?), member.stamp.clone()))
                     })
                     .collect::<io::Result<Vec<_>>>()?;
-                // Files before the first failing one keep their digests, as
-                // hashing them one by one would.
                 for (relative, probe) in self.files.keys().zip(cache.probe_all(&paths)) {
                     hashes.insert(relative.clone(), cache.settle(probe?, stats));
                 }
@@ -1847,8 +1634,6 @@ impl ResolvedLayer {
         layer_hash(&hashes)
     }
 
-    /// Opens and identifies a folder file without reading its payload. Windows aliases
-    /// (dots/spaces, 8.3 and Unicode case) resolve to the inventoried spelling.
     fn folder_lookup(&self, relative: &[u8]) -> io::Result<Option<(LayerPath, File)>> {
         let LayerSource::Folder(root) = &self.source else {
             return Err(invalid(format!("layer {} is not a folder", self.id)));
@@ -1862,7 +1647,6 @@ impl ResolvedLayer {
         let (file, path) = match folder_file(root, text) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return match self.lookup.folders.get(&relative.to_ascii_lowercase()) {
-                    // An unverified mod's listed link to no file passes on, as the game's open does.
                     Some(path) if self.verifies() => Err(changed(path)),
                     _ => Ok(None),
                 };
@@ -1871,7 +1655,6 @@ impl ResolvedLayer {
         };
         let real = match path.strip_prefix(root) {
             Ok(real) => normalize_path(text_path(real)?.as_bytes())?,
-            // The game opens a mod's file through any link, out of its folder too.
             Err(_)
                 if self.listed_as_game()
                     && !(self.verifies() && self.coverage.covered_path(relative)) =>
@@ -1891,7 +1674,6 @@ impl ResolvedLayer {
         {
             return Err(changed(&real));
         }
-        // Played back, a fact is read only from the recording, never through an installed alias.
         if self.fact_path(&real) {
             return Err(fact_alias(relative, &real));
         }
@@ -1936,22 +1718,12 @@ impl ResolvedLayer {
         Ok(())
     }
 
-    /// The one verification point of an archive layer, which every lookup in it passes first,
-    /// covered or not, hit or miss, with or without a `$`: the archive must be the file
-    /// inventoried (its stamp), and its covered records as it mounts now must be the ones
-    /// inventoried, central record for central record (none changed, gone or added). What a
-    /// lookup answers depends on all of it: which record a request names, whether it holds an
-    /// encrypted record (the `$` split), and whether a password opens it (the
-    /// central time under flag 8, as [`record_digest`] describes). A difference is "changed since
-    /// verification". The records' payloads are verified where a lookup names one
-    /// ([`Self::archive_open_observed`]).
     fn verified_archive(&self) -> io::Result<(physfs_zip::Archive, physfs_zip::Mounted)> {
         let LayerSource::Archive(path) = &self.source else {
             return Err(invalid(format!("layer {} is not an archive", self.id)));
         };
         let unchanged =
             Stamp::read(path).is_ok_and(|stamp| self.archive_stamp.as_ref() == Some(&stamp));
-        // A played-back layer's archive holds art only, read as it is installed now.
         if !unchanged && self.verifies() {
             return Err(invalid(format!(
                 "archive changed since verification: {}",
@@ -1990,13 +1762,6 @@ impl ResolvedLayer {
         Ok((archive, mounted))
     }
 
-    /// The one lookup of a request in an archive layer, after [`Self::verified_archive`]: the
-    /// record the request names (exactly, or up to its last `$` with the rest as the password,
-    /// [`physfs_zip::Mounted::lookup`]), with local-header and password admission. A covered
-    /// record is verified by its [`record_digest`] whatever the open does, so a record changed
-    /// so that it no longer opens is "changed since verification", never a silent pass to the
-    /// layers below. `None` when the game's open fails, and its search goes on
-    /// (see [`ResolvedLayers::lookup_path`]).
     #[cfg(test)]
     fn archive_open(
         &self,
@@ -2078,8 +1843,6 @@ impl ResolvedLayer {
         }
     }
 
-    /// The name a read of `request` takes from this layer: an archive record's own, which a
-    /// password request (`name$password`) does not spell, else `request`.
     fn record_name<'a>(&'a self, request: &'a [u8]) -> &'a [u8] {
         self.lookup
             .archive
@@ -2088,7 +1851,6 @@ impl ResolvedLayer {
             .map_or(request, |(entry, _)| entry.name.as_slice())
     }
 
-    /// Whether this archive layer's one lookup of `request` reaches a link record.
     fn reaches_link(&self, request: &[u8]) -> bool {
         self.lookup
             .archive
@@ -2097,10 +1859,6 @@ impl ResolvedLayer {
             .is_some_and(|(entry, _)| entry.symlink)
     }
 
-    /// A lookup this layer answers nothing to, verified as one it answered would be: an archive
-    /// layer's by its one lookup ([`Self::archive_open_observed`], which must still answer nothing), a
-    /// folder layer's by no covered file having appeared under the request's Windows aliases.
-    /// An uncovered folder file is not verified, as the uncovered reads say.
     fn verify_miss(&self, relative: &[u8], observed: &mut ReadObservation) -> ObservedResult<()> {
         if !self.verifies() {
             return Ok(());
@@ -2122,12 +1880,10 @@ impl ResolvedLayer {
     }
 }
 
-/// Whether a path is a game fact's by today's coverage: what playback reads only from a recording.
 fn fact_class(path: &[u8]) -> bool {
     CoveragePolicy::default().covered_path(path)
 }
 
-/// Whether a listing of `prefix` for names ending in one of `suffixes` can hold facts.
 fn lists_facts(prefix: &[u8], suffixes: &[String]) -> bool {
     let lower = prefix.to_ascii_lowercase();
     fact_class(&lower)
@@ -2144,8 +1900,6 @@ fn lists_facts(prefix: &[u8], suffixes: &[String]) -> bool {
                 })))
 }
 
-/// A fact the recording's content identity, made under an older coverage policy, never hashed,
-/// so no game folder can prove it.
 fn unproven(path: &[u8], coverage: CoveragePolicy) -> io::Error {
     invalid(format!(
         "{} is a game fact this recording's content identity (coverage policy {}) never hashed, so it is withheld",
@@ -2154,8 +1908,6 @@ fn unproven(path: &[u8], coverage: CoveragePolicy) -> io::Error {
     ))
 }
 
-/// A request naming a recorded game fact by another spelling, which playback never reads from
-/// the installed game.
 fn fact_alias(request: &[u8], fact: &[u8]) -> io::Error {
     invalid(format!(
         "{} names the recorded game fact {} by another spelling, which playback does not read from the installed game",
@@ -2164,7 +1916,6 @@ fn fact_alias(request: &[u8], fact: &[u8]) -> io::Error {
     ))
 }
 
-/// A covered record that differs from what was verified: changed, gone or added.
 fn changed(relative: &[u8]) -> io::Error {
     invalid(format!(
         "content file changed since verification: {}",
@@ -2172,8 +1923,6 @@ fn changed(relative: &[u8]) -> io::Error {
     ))
 }
 
-/// An archive's link record: the game opens the member its text names, and the port does not
-/// follow it, so neither the link's text nor a lower layer answers.
 fn unfollowed_link(relative: &[u8]) -> io::Error {
     invalid(format!(
         "{} is a symbolic link record, which the port does not follow to the member it names",
@@ -2181,15 +1930,10 @@ fn unfollowed_link(relative: &[u8]) -> io::Error {
     ))
 }
 
-/// A folder layer's path as the file system names it. Every folder path in an index came from
-/// the file system's own (UTF-8) names.
 fn folder_text(relative: &[u8]) -> io::Result<&str> {
     std::str::from_utf8(relative).map_err(|_| invalid("folder layer path is not UTF-8"))
 }
 
-/// A file the game requests by a literal path, opened as [`ResolvedLayers::read_path`] opens it:
-/// `None` when no layer holds it (the requester passes a missing file), an error when the open
-/// fails otherwise (a verification failure included).
 pub(crate) fn open_request(layers: &ResolvedLayers, path: &[u8]) -> io::Result<Option<Bytes>> {
     match layers.read_path(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -2207,7 +1951,6 @@ impl ResolvedLayers {
         self.read_trace.is_some()
     }
 
-    /// Starts a fresh tracing scope whose callback and caches support parallel retained readers.
     pub fn with_read_trace(
         &self,
         trace: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
@@ -2227,7 +1970,6 @@ impl ResolvedLayers {
         }
     }
 
-    /// Isolates a named reader's lazy caches so scheduling cannot change their traced purpose.
     pub fn with_read_purpose(&self, purpose: impl Into<String>) -> Self {
         let Some(trace) = &self.read_trace else {
             return self.clone();
@@ -2283,8 +2025,6 @@ impl ResolvedLayers {
         }
     }
 
-    /// Physical inputs in recorded layer order for plain metadata cache reuse.
-    /// Archive members share their archive stamp; folder files keep their own.
     pub fn recorded_source_files(&self) -> io::Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
         for layer in self.layers.iter().filter(|layer| layer.overlay.is_none()) {
@@ -2303,8 +2043,6 @@ impl ResolvedLayers {
         Ok(paths)
     }
 
-    /// Consumer caches belong to this resolved stack and are shared by its clones.
-    /// A changed mount roster starts fresh; successful reads retain their diagnostics.
     pub fn derived<T: Default + Send + Sync + 'static>(&self) -> std::sync::Arc<T> {
         let mut derived = self
             .derived
@@ -2648,8 +2386,6 @@ impl ResolvedLayers {
         self.context
     }
 
-    /// The language whose text a played-back recording carries, without its `l_`; `None` for
-    /// content read from an installation.
     pub fn recorded_language(&self) -> Option<&str> {
         self.layers
             .iter()
@@ -2664,17 +2400,14 @@ impl ResolvedLayers {
             .map(|facts| facts.pack.language_name())
     }
 
-    /// Whether this recording's coverage policy hashes a text path.
     pub fn covered(&self, path: &str) -> bool {
         self.covered_path(path.as_bytes())
     }
 
-    /// [`Self::covered`] over a layer path's bytes.
     pub fn covered_path(&self, path: &[u8]) -> bool {
         self.coverage.covered_path(path)
     }
 
-    /// The base layer alone, with this recording's coverage policy, for source audits.
     pub fn base_only(&self) -> io::Result<Self> {
         let layer = self
             .layers
@@ -2757,7 +2490,6 @@ impl ResolvedLayers {
                         .as_ref()
                         .is_none_or(|pack| !fact_class(lower) || pack.is_art(lower))
             };
-            // Played back, a layer's installed art is listed as it is now, whatever its spellings.
             let all = |_: &[u8]| true;
             apply_overlay(
                 &mut effective,
@@ -2781,7 +2513,6 @@ impl ResolvedLayers {
         Ok(())
     }
 
-    /// Reuse inventoried test layers while rebuilding the overlay and memos.
     #[cfg(test)]
     pub(crate) fn from_test_layers(layers: Vec<ResolvedLayer>) -> io::Result<Self> {
         let mut assembled = Self {
@@ -2792,7 +2523,6 @@ impl ResolvedLayers {
         Ok(assembled)
     }
 
-    /// Syntax audits whose readers and key-name dependencies all use `common`.
     #[cfg(test)]
     pub(crate) fn from_test_common_folders(folders: &[(&Path, &[&str])]) -> io::Result<Self> {
         let (mut cache, mut stats) = (HashCache::default(), HashStats::default());
@@ -2838,19 +2568,11 @@ impl ResolvedLayers {
         Self::from_test_layers(layers)
     }
 
-    /// Folder layers for consumers' unit tests, in load order: each
-    /// `(root, replace_paths)` is inventoried and hashed as `gather` does and
-    /// overlaid on the ones before it, so reads verify and same-path files
-    /// and `replace_path` directories replace as they do for real content;
-    /// each replace path is normalized as a descriptor's is.
-    /// This crate's tests and the opt-in `layer-fixtures`/`test-support`
-    /// features build it; consumers enable fixtures from dev-dependencies.
     #[cfg(any(test, feature = "test-support", feature = "layer-fixtures"))]
     pub fn from_folders(folders: &[(&Path, &[&str])]) -> io::Result<Self> {
         Self::from_folders_with_coverage_policy(folders, COVERAGE_POLICY_VERSION)
     }
 
-    /// [`Self::from_folders`] under a historical policy, for consumers' coverage tests.
     #[cfg(any(test, feature = "test-support", feature = "layer-fixtures"))]
     pub fn from_folders_with_coverage_policy(
         folders: &[(&Path, &[&str])],
@@ -2899,15 +2621,11 @@ impl ResolvedLayers {
         Ok(layers)
     }
 
-    /// The game loads non-UTF-8 archive paths too; read these with [`Self::read_path`]. Refused
-    /// by name when a played-back layer cannot list its facts.
     pub fn paths(&self) -> io::Result<impl Iterator<Item = &[u8]>> {
         self.refuse_listing(b"", &[])?;
         Ok(self.effective.values().map(|file| file.path.as_slice()))
     }
 
-    /// Paths retain non-UTF-8 bytes; read them with [`Self::read_path`]. Refused by name when a
-    /// played-back layer cannot list its facts.
     pub fn effective_paths(&self) -> io::Result<impl Iterator<Item = (&[u8], usize)>> {
         self.refuse_listing(b"", &[])?;
         Ok(self
@@ -2916,8 +2634,6 @@ impl ResolvedLayers {
             .map(|file| (file.path.as_slice(), file.layer)))
     }
 
-    /// Every effective path that is no game fact (art, and what no policy covers), which a
-    /// played-back layer lists from its installation whatever it withholds.
     pub fn art_paths(&self) -> impl Iterator<Item = &[u8]> {
         let pack = self
             .layers
@@ -2933,8 +2649,6 @@ impl ResolvedLayers {
             })
     }
 
-    /// The first refusal of a played-back layer that cannot list the facts a listing of
-    /// `prefix` for `suffixes` holds: a listing that left them out would read as their absence.
     fn refuse_listing(&self, prefix: &[u8], suffixes: &[String]) -> io::Result<()> {
         match self
             .layers
@@ -2946,8 +2660,6 @@ impl ResolvedLayers {
         }
     }
 
-    /// The `name` of every recorded DLC layer, which `has_dlc` tests: its
-    /// descriptor is reread and must still hash as it did when verified.
     pub fn dlc_names(&self) -> io::Result<BTreeSet<String>> {
         let mut names = BTreeSet::new();
         for layer in &self.layers {
@@ -2956,19 +2668,6 @@ impl ResolvedLayers {
         Ok(names)
     }
 
-    /// Every distinct covered path under `prefix` that a visible layer lists,
-    /// with its own case, as a PhysFS enumeration of the merged tree lists it:
-    /// names that differ only in case stay separate entries, and each reads
-    /// through [`ResolvedLayers::read_path`]. A `replace_path` hides the layers
-    /// below it.
-    ///
-    /// The names are the layers' own bytes, as the game's enumeration returns
-    /// them: an archive record's name (`physfs_zip::Entry::name`), whatever its bytes;
-    /// a folder file's name as PhysFS's Windows enumeration converts it from
-    /// UTF-16 (`PHYSFS_utf16ToUtf8`), always UTF-8. A folder path that is not
-    /// UTF-8 is never listed, as none opens (the conversion described by [`Self::lookup_path`]
-    /// makes each invalid byte `?`, which [`folder_file`] cannot open): a folder layer's
-    /// index holds only its files' UTF-8 names.
     pub fn listed_layer_paths(&self, prefix: &[u8]) -> io::Result<BTreeSet<LayerPath>> {
         self.product("covered file listing", 1, prefix, |reader| {
             reader.watch_listing(prefix);
@@ -2981,8 +2680,6 @@ impl ResolvedLayers {
         self.refuse_listing(prefix, &[])?;
         let prefix = prefix.to_ascii_lowercase();
         let mut listed = BTreeSet::new();
-        // Each replaced root, and whether a visual mod replaced it (that hides only what the
-        // mod shows, `Self::overlay_sees`).
         let mut hidden: Vec<(LayerPath, bool)> = Vec::new();
         for layer in self.layers.iter().rev() {
             for path in layer.listed_keys() {
@@ -3015,7 +2712,6 @@ impl ResolvedLayers {
             .collect()
     }
 
-    /// Listing is byte-exact; lookup ignores folder case but requires exact archive names.
     pub fn descriptor_paths(
         &self,
         prefix: impl AsRef<[u8]>,
@@ -3031,7 +2727,6 @@ impl ResolvedLayers {
         self.listed_with_suffixes(prefix.as_ref(), &extensions)
     }
 
-    /// [`Self::descriptor_paths`] for lower-case name suffixes, which need no dot.
     fn listed_with_suffixes(
         &self,
         prefix: &[u8],
@@ -3072,7 +2767,6 @@ impl ResolvedLayers {
         for layer in &self.layers {
             listings.push(listed_files(layer, &prefix, extensions)?);
         }
-        // Folder lookup ignores case and retains the inventory's first spelling.
         let folded: Vec<BTreeMap<LayerPath, &LayerPath>> = self
             .layers
             .iter()
@@ -3144,12 +2838,6 @@ impl ResolvedLayers {
             .collect())
     }
 
-    /// One directory's files as a database loader lists them, without recursion. Merged
-    /// PhysFS entries are keyed by name in bytewise, case-sensitive order; names ending
-    /// in `suffix`, the loader's own filter, are emitted once each in that order;
-    /// subdirectories are not entered. The filter is a raw suffix: most loaders pass `.txt`,
-    /// but one passing `txt` also lists a name such as `footxt`. Covered or not: read each
-    /// with [`ScriptPath::read_uncovered`]. Names are their bytes.
     pub fn directory_files(
         &self,
         directory: impl AsRef<[u8]>,
@@ -3160,7 +2848,6 @@ impl ResolvedLayers {
         Ok(directory_order(&directory, suffix, listed))
     }
 
-    /// The engine's `gfx/models` texture index.
     pub fn texture_index(&self) -> io::Result<std::sync::Arc<crate::mesh::TextureIndex>> {
         self.retained_product(
             "model texture index",
@@ -3170,13 +2857,10 @@ impl ResolvedLayers {
         )
     }
 
-    /// Every descriptor below `gfx`, as [`crate::mesh::Roster`] reads it.
     pub fn descriptor_roster(&self) -> io::Result<std::sync::Arc<crate::mesh::Roster>> {
         self.retained_product("model descriptor roster", 1, &[], crate::mesh::Roster::read)
     }
 
-    /// The descriptor roster of the recorded stack below this stack's visual mods, built once
-    /// per roster and shared by every model library; `None` without visual mods.
     pub fn recorded_descriptor_roster(
         &self,
     ) -> io::Result<Option<std::sync::Arc<crate::mesh::Roster>>> {
@@ -3186,13 +2870,10 @@ impl ResolvedLayers {
         recorded.descriptor_roster().map(Some)
     }
 
-    /// The content names trigger bodies are read against
-    /// ([`crate::key_names::KeyNames::read`]).
     pub fn key_names(&self) -> io::Result<Arc<crate::key_names::KeyNames>> {
         self.retained_recorded_product("key names", 1, &[], crate::key_names::KeyNames::read)
     }
 
-    /// Faction templates read once per layer roster, including an unreadable result.
     pub fn faction_templates(&self) -> Result<Arc<crate::faction_templates::Catalog>, String> {
         self.retained_product_with_errors("faction templates", 1, &[], true, crate::faction_templates::read)
             .map_err(|error| format!("Faction templates are unreadable: {error}"))
@@ -3218,10 +2899,6 @@ impl ResolvedLayers {
             .clone()
     }
 
-    /// Whether a read of `relative` opens a file the store key stamps
-    /// ([`Self::recorded_source_files`]): a recorded layer's listed covered file or a covered
-    /// record of its archive, as the read's own lookup resolves it, so neither a Windows alias
-    /// of a folder coverage skips nor a password request of a record it skips is one.
     pub fn stamped(&self, relative: &str) -> io::Result<bool> {
         let Some(path) = sanitize(relative.as_bytes()) else {
             return Ok(false);
@@ -3229,7 +2906,6 @@ impl ResolvedLayers {
         let Some(hit) = self.lookup_path(&path)? else {
             return Ok(false);
         };
-        // A recorded fact is stamped with the recording itself.
         if hit.fact.is_some() {
             return Ok(true);
         }
@@ -3244,8 +2920,6 @@ impl ResolvedLayers {
             })
     }
 
-    /// Whether the native lookup opens `relative` (folder metadata and archive opening
-    /// headers, without reading the payload; loading still verifies the covered bytes).
     pub fn has_file(&self, relative: &str) -> io::Result<bool> {
         let mut observed = self.observation();
         let result = self.has_file_untraced(relative, &mut observed);
@@ -3278,7 +2952,6 @@ impl ResolvedLayers {
         Ok(hit.is_some())
     }
 
-    /// Load-order position of the layer an effective covered path comes from.
     pub fn layer_index(&self, relative: &str) -> Option<usize> {
         self.effective
             .get(&relative.as_bytes().to_ascii_lowercase())
@@ -3298,9 +2971,6 @@ impl ResolvedLayers {
         self.shared_read(relative, false)
     }
 
-    /// [`Self::read`] handed to `piece` in file order: a played-back layer's covered fact a chunk
-    /// of the recording's pack at a time, never whole, verified at its end (a refusal voids the
-    /// pieces handed); any other file read whole and handed once.
     pub fn read_pieces(&self, relative: &str, piece: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let path = sanitize(relative.as_bytes()).ok_or_else(|| not_found(relative.as_bytes()))?;
         if self.covered_path(&path)
@@ -3327,7 +2997,6 @@ impl ResolvedLayers {
         self.product("effective file resolution", 1, &parameters, |reader| {
             let mut observed = reader.observation();
             let hit = if uncovered && !reader.covered_path(&path) {
-                // An older coverage policy left out a path that is a fact now: never the installed one.
                 if reader.recorded_fact(&path) {
                     return Err(unproven(&path, reader.coverage));
                 }
@@ -3438,7 +3107,6 @@ impl ResolvedLayers {
                 });
                 (result, reads, diagnostics)
             })?;
-            // A second resolving stack does not retain a redundant open handle.
             file.folder
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -3572,9 +3240,6 @@ impl ResolvedLayers {
         self.layers[index].content_digest
     }
 
-    /// Opt into ordinary uncovered reads and retain this handle at the reporting
-    /// boundary. Layer clones and lazy readers contribute to the same live set.
-    /// Explicit `read_uncovered` attempts also retain missing candidates.
     #[must_use]
     pub fn report_uncovered_reads(&self) -> UncoveredReads {
         self.uncovered_reads
@@ -3584,7 +3249,6 @@ impl ResolvedLayers {
         self.read_warnings()
     }
 
-    /// Current diagnostics without enabling uncovered reads for a strict reader.
     pub fn read_warnings(&self) -> UncoveredReads {
         UncoveredReads {
             policy: self.coverage.0,
@@ -3593,7 +3257,6 @@ impl ResolvedLayers {
         }
     }
 
-    /// Counts a file a visual mod supplied, by the mod's name.
     fn note_overlay(&self, layer: usize, path: &[u8]) {
         if let Some(overlay) = &self.layers[layer].overlay {
             diagnostics::Diagnostics::overlay(&overlay.name, path);
@@ -3607,9 +3270,6 @@ impl ResolvedLayers {
         }
     }
 
-    /// Records that a consumer refused to draw `key`, a stable name of what (a model entity, a
-    /// city building), whichever stack it read: a map compares what it refuses with and without
-    /// visual mods by these names.
     pub fn note_refused(&self, key: String) {
         diagnostics::Diagnostics::refused(key.clone());
         self.overlay_reads
@@ -3619,7 +3279,6 @@ impl ResolvedLayers {
             .insert(key);
     }
 
-    /// Everything consumers of this content refused to draw ([`Self::note_refused`]).
     pub fn refused(&self) -> BTreeSet<String> {
         self.overlay_reads
             .lock()
@@ -3628,8 +3287,6 @@ impl ResolvedLayers {
             .clone()
     }
 
-    /// Names artwork a visual mod supplies that is drawn from the recording instead, with why
-    /// ([`UncoveredReads::overlay_refusals`]).
     pub fn note_overlay_refusal(&self, refusal: String) {
         credit_overlay_refusals(&BTreeSet::from([refusal.clone()]));
         self.overlay_reads
@@ -3639,15 +3296,6 @@ impl ResolvedLayers {
             .insert(refusal);
     }
 
-    /// Artwork as `load` reads it from the [presentation stack](Self::presentation). When a
-    /// visual mod is mounted and the artwork cannot be loaded from it (a format the reader
-    /// refuses, or a lower file its `replace_path` hides), the recorded artwork is loaded instead
-    /// and `name` is reported with why ([`UncoveredReads::overlay_refusals`]); an error loading the
-    /// recorded artwork is returned as it would be without visual mods.
-    ///
-    /// Called on a presentation stack itself, it falls back to the recorded layers below its
-    /// visual mods; on the recorded stack, to that stack without its presentation. Either way
-    /// the fallback reads nothing a visual mod supplies.
     pub fn artwork<T>(
         &self,
         name: &str,
@@ -3673,10 +3321,6 @@ impl ResolvedLayers {
         })
     }
 
-    /// A value an artwork loader reads from the graphics defines (the visual mods' scripts
-    /// merged with the recorded ones), or, when they cannot give it, from the `recorded`
-    /// defines, named with why like [`Self::artwork`]. Without visual mods' defines both are
-    /// the recorded defines and it is read once. Simulation operands never come from here.
     pub fn graphics_define<T, E: std::fmt::Display>(
         &self,
         name: &str,
@@ -3694,12 +3338,6 @@ impl ResolvedLayers {
         })
     }
 
-    /// One item of artwork a loader reads apart from the rest (a tree kind, an arrow texture, an
-    /// aircraft rig), as `load` reads it from the stack it names: `false` the stack the loader
-    /// was handed, `true` the recorded layers below its visual mods, which the caller holds
-    /// when `below`. An item the shown stack cannot give is read from the recorded layers,
-    /// named with why like [`Self::artwork`]; one neither gives is refused by its stable `key`
-    /// for the map's fallback ([`Self::note_refused`]) and its shown error returned.
     pub fn artwork_item<T, E: std::fmt::Display>(
         &self,
         key: &str,
@@ -3721,9 +3359,6 @@ impl ResolvedLayers {
         Err(error)
     }
 
-    /// Whether the file at `relative` comes from a visual mod: the layer a read answers it
-    /// from is one of the mods mounted above the recording. Consumers tag what they draw with
-    /// it, so only failures of a visual mod's own content count against the mods.
     pub fn supplied_by_visual_mod(&self, relative: impl AsRef<[u8]>) -> bool {
         if !self.shows_visual_mods() {
             return false;
@@ -3738,12 +3373,10 @@ impl ResolvedLayers {
         layer.is_some_and(|layer| self.layers[layer].overlay.is_some())
     }
 
-    /// Whether this stack mounts visual mods (a presentation stack).
     pub fn shows_visual_mods(&self) -> bool {
         self.layers.iter().any(|layer| layer.overlay.is_some())
     }
 
-    /// The names of the visual mods this stack shows, in mount order.
     pub fn visual_mod_names(&self) -> Vec<String> {
         self.layers
             .iter()
@@ -3751,10 +3384,6 @@ impl ResolvedLayers {
             .collect()
     }
 
-    /// This stack sharing every inventory, memo and cache, but whose visual mod diagnostics
-    /// (files they supplied, artwork drawn from the recording instead, refusals) start empty and
-    /// are its own: a presentation [`visual::apply`] mounts on it reports apart from the stack it
-    /// came from and from any other presentation of it.
     pub fn with_own_overlay_diagnostics(&self) -> ResolvedLayers {
         let enabled = self.uncovered_reads.lock().unwrap_or_else(|error| error.into_inner()).is_some();
         self.with_reporting(
@@ -3781,8 +3410,6 @@ impl ResolvedLayers {
         }
     }
 
-    /// This recorded stack without its presentation: what is drawn when no visual mod is.
-    /// Its caches are shared with this stack.
     pub fn recorded_only(&self) -> ResolvedLayers {
         ResolvedLayers {
             presentation: None,
@@ -3791,26 +3418,14 @@ impl ResolvedLayers {
         }
     }
 
-    /// The stack artwork is read from: these recorded layers with the selected visual mods
-    /// mounted above every recorded mod, in the engine's order among themselves
-    /// ([`visual::apply`]). Without a selection it is this stack. Map geometry, simulation and
-    /// every recorded fact keep reading this stack itself; only consumers that draw artwork read
-    /// the presentation stack, whose own derived caches start fresh.
     pub fn presentation(&self) -> &ResolvedLayers {
         self.presentation.as_deref().unwrap_or(self)
     }
 
-    /// The presentation stack graphics defines are evaluated over: the visual mods'
-    /// `common/defines` scripts are merged natively with the recorded ones, in the game's own
-    /// file order. `None` without visual mods. Simulation consumers keep the recorded defines.
     pub fn presentation_defines(&self) -> Option<&ResolvedLayers> {
         self.presentation_defines.as_deref()
     }
 
-    /// The recorded stack below a presentation stack's visual mods, sharing their inventories,
-    /// or `None` when no visual mod is mounted here. Artwork readers fall back to it. A traced
-    /// stack's fallback reports its reads to the same trace and purpose, each at the layer's
-    /// index in this stack.
     pub fn without_overlays(&self) -> Option<ResolvedLayers> {
         self.project_recorded().ok().flatten()
     }
@@ -3856,22 +3471,11 @@ impl ResolvedLayers {
         Ok(Some(recorded))
     }
 
-    /// Whether a visual mod's file at `lower` (an ASCII-lowercase path) is part of the
-    /// presentation. Visual mods supply artwork, interface, fonts and text: `gfx`, `interface`,
-    /// `localisation` and the terrain textures below `map/terrain`. Every other path (scripts,
-    /// history, map geometry and the rest of `map`) resolves from the recorded layers alone, with
-    /// a mod's files and `replace_path` there out of sight, so a reader handed a presentation
-    /// stack still reads recorded simulation content. A mod's defines show only in
-    /// [`Self::presentation_defines`].
     fn overlay_sees(&self, lower: &[u8]) -> bool {
-        // Defines are recorded facts, but this stack only lends the graphics sections of the mods'
-        // scripts (`Defines::with_graphics_of`), so it shows the scripts whole.
         (self.defines_visible && below(lower, DEFINES_ROOT.as_bytes()))
             || (overlay_sees(self.defines_visible, lower) && !self.recorded_fact(lower))
     }
 
-    /// Whether `path` is one of the facts a played-back recording carries, which only the
-    /// recording answers: a visual mod shows art alone over it.
     fn recorded_fact(&self, path: &[u8]) -> bool {
         self.layers
             .iter()
@@ -3879,17 +3483,10 @@ impl ResolvedLayers {
             .is_some_and(|facts| fact_class(path) && !facts.pack.is_art(path))
     }
 
-    /// Whether `layer` stays out of a lookup of the lowercase `lower`.
     fn hides(&self, layer: &ResolvedLayer, lower: &[u8]) -> bool {
         layer.overlay.is_some() && !self.overlay_sees(lower)
     }
 
-    /// The presentation stack: `overlays` (in mount order, lowest first) inserted above the
-    /// recorded mods and below the built-in layers the engine mounts above every mod. The
-    /// recorded layers keep their order and verification and share their inventories; the
-    /// presentation stack shares this stack's read diagnostics and has its own lookup memos and
-    /// derived caches. When the whole selection cannot be mounted together, each overlay is
-    /// added in order and only those that cannot be are left out, with why.
     fn with_overlays(
         &self,
         overlays: Vec<ResolvedLayer>,
@@ -3912,8 +3509,6 @@ impl ResolvedLayers {
         (presentation, refused)
     }
 
-    /// This presentation stack with its visual mods' defines scripts showing too, for
-    /// [`Self::presentation_defines`]; its memos and derived caches are its own.
     fn with_defines(&self) -> io::Result<ResolvedLayers> {
         let mut stack = ResolvedLayers {
             generation: Arc::clone(&self.generation),
@@ -3953,15 +3548,8 @@ impl ResolvedLayers {
         diagnostics::Diagnostics::shader(warning);
     }
 
-    /// The one native lookup, without payload reads.
-    /// Folders use Windows aliases; a non-UTF-8 request opens none: each invalid byte becomes
-    /// `?`, which [`folder_file`] (`CreateFileW`) cannot open.
     fn lookup_path(&self, relative: &[u8]) -> io::Result<Option<RecordedHit>> {
         let lower = relative.to_ascii_lowercase();
-        // Resolve each layer's native open: a higher folder's Windows alias can name a
-        // file the ASCII-folded effective inventory does not match. ZIP lookup stays indexed.
-        // A case-missing archive, directory or failed open passes to the next layer
-        // under PhysFS lookup rules; `replace_path` stops the scan below its layer.
         for (index, layer) in self.layers.iter().enumerate().rev() {
             if self.hides(layer, &lower) {
                 continue;
@@ -4022,14 +3610,6 @@ impl ResolvedLayers {
         Ok(None)
     }
 
-    /// Reads a path outside the coverage policy, such as `gfx/world` or
-    /// `gfx/mapitems`, from the resolved layers.
-    ///
-    /// The returned bytes are **not** hash-verified: the layer hash does not
-    /// cover them, so a changed file cannot be detected here and the viewer
-    /// must state that limitation. A covered path is passed straight to
-    /// [`ResolvedLayers::read`], which does verify it. A folder alias whose real
-    /// path is covered is verified too, on every read including memoized hits.
     pub fn read_uncovered(&self, relative: &str) -> io::Result<Bytes> {
         self.read_uncovered_path(relative.as_bytes())
     }
@@ -4083,8 +3663,6 @@ impl ResolvedLayers {
         Ok(None)
     }
 
-    /// Whether an uncovered path resolves from the base game layer, with no
-    /// DLC, mod, `replace_path` or visual mod in its place.
     pub fn uncovered_from_base(&self, relative: &str) -> io::Result<bool> {
         Ok(self
             .resolved_file(relative.as_bytes(), true)?
@@ -4121,7 +3699,6 @@ impl ResolvedLayers {
     }
 }
 
-/// Read and identify through one Windows handle, sharing reads, writes and deletion.
 #[cfg(windows)]
 fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
     use std::{
@@ -4141,7 +3718,6 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
 
     let path = root.join(relative);
     let text = text_path(&path)?;
-    // A canonicalized root has Rust's verbatim prefix; PhysFS uses ordinary Win32 names.
     let ordinary = match text.strip_prefix(r"\\?\UNC\") {
         Some(unc) => format!(r"\\{unc}"),
         None => text.strip_prefix(r"\\?\").unwrap_or(text).to_owned(),
@@ -4160,8 +3736,6 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
     };
     if handle == INVALID_HANDLE_VALUE {
         let error = io::Error::last_os_error();
-        // A missing file is a miss either way: only another failure (a directory's is access
-        // denied) needs the stat that tells a directory, which a lookup passes over.
         return Err(
             if error.kind() != io::ErrorKind::NotFound && path.is_dir() {
                 not_found(relative.as_bytes())
@@ -4170,7 +3744,6 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
             },
         );
     }
-    // The successful handle is owned and closed by File, including on identity failures.
     let file = unsafe { File::from_raw_handle(handle) };
     let mut name = vec![0; 260];
     loop {
@@ -4210,7 +3783,6 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
     Ok((file, fs::canonicalize(path)?))
 }
 
-/// Resolves each path component case-insensitively inside one folder layer.
 fn folded_path(root: &Path, relative: &str) -> io::Result<Option<PathBuf>> {
     let mut path = root.to_path_buf();
     for part in relative.split('/') {
@@ -4239,10 +3811,6 @@ fn folded_path(root: &Path, relative: &str) -> io::Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-/// One layer's files below a lower-case `prefix` with a lower-case suffix,
-/// with the layer's own case and where each is read from. A recorded layer's
-/// links and case-ambiguous names are refused; a visual mod's are listed as the
-/// game lists them ([`walk_folder`]).
 fn listed_files(
     layer: &ResolvedLayer,
     prefix: &[u8],
@@ -4254,7 +3822,6 @@ fn listed_files(
     let mut admit = |relative: LayerPath| -> io::Result<()> {
         let lower = relative.to_ascii_lowercase();
         if below(&lower, prefix) && extensions.iter().any(|e| lower.ends_with(e.as_bytes())) {
-            // A visual mod's case variants are listed as the game lists them (`collect_folder`).
             if !folded.insert(lower) && !overlay {
                 return Err(invalid(format!(
                     "layer holds case-ambiguous paths: {}",
@@ -4265,7 +3832,6 @@ fn listed_files(
         }
         Ok(())
     };
-    // A layer that cannot list the facts asked for refuses the whole listing by name.
     if let Some(refusal) = layer.fact_listing_refusal(prefix, extensions) {
         return Err(refusal);
     }
@@ -4313,7 +3879,6 @@ fn listed_files(
         LayerSource::Archive(_) => {
             let entries = match layer.verified_archive() {
                 Ok((_, mounted)) => mounted.entries,
-                // Its art is unavailable; its facts were listed above.
                 Err(_) if layer.facts.is_some() => Vec::new(),
                 Err(error) => return Err(error),
             };
@@ -4327,7 +3892,6 @@ fn listed_files(
     Ok(paths)
 }
 
-/// What a visual mod shows ([`ResolvedLayers::overlay_sees`]), for [`apply_overlay`].
 type Sees<'a> = &'a dyn Fn(&[u8]) -> bool;
 
 fn apply_overlay<'a>(
@@ -4336,8 +3900,6 @@ fn apply_overlay<'a>(
     archive: bool,
     paths: impl Iterator<Item = &'a LayerPath>,
     replace_paths: &[LayerPath],
-    // A visual mod's visibility (`ResolvedLayers::overlay_sees`): its files and `replace_path`
-    // count only where it shows. `None` for a recorded layer.
     sees: Option<Sees<'_>>,
 ) -> io::Result<()> {
     let overlay = sees.is_some();
@@ -4350,8 +3912,6 @@ fn apply_overlay<'a>(
         if !shows(&path.to_ascii_lowercase()) {
             continue;
         }
-        // Lookups resolve each layer natively; this index only lists. A recorded stack refuses
-        // what verification cannot order, while a visual mod's spelling replaces the entry.
         if !overlay
             && effective
                 .get(&path.to_ascii_lowercase())
@@ -4409,7 +3969,6 @@ struct CachedHash {
     hash: [u8; 32],
 }
 
-/// The persistent hash cache's file in the cache folder ([`HashCache::encode`]).
 const HASH_CACHE: &str = "content-hashes-v2.bin";
 const HASH_CACHE_MAGIC: &[u8; 8] = b"HOI4HC\x00\x02";
 
@@ -4417,11 +3976,9 @@ const HASH_CACHE_MAGIC: &[u8; 8] = b"HOI4HC\x00\x02";
 struct HashCache<'a> {
     entries: BTreeMap<String, CachedHash>,
     dirty: bool,
-    /// Any one set stops the gathering this cache serves: every later probe is refused.
     cancelled: &'a [&'a AtomicBool],
 }
 
-/// The first `count` bytes of `rest`, taken off it; `None` when it holds fewer.
 fn take<'a>(rest: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
     if rest.len() < count {
         return None;
@@ -4432,8 +3989,6 @@ fn take<'a>(rest: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
 }
 
 impl HashCache<'_> {
-    /// [`HASH_CACHE_MAGIC`], the entry count, then each entry in key order: its key's length and
-    /// UTF-8 bytes, its stamp (size, seconds and nanoseconds) and its digest, little-endian.
     fn encode(&self) -> Vec<u8> {
         let mut bytes = HASH_CACHE_MAGIC.to_vec();
         bytes.extend_from_slice(&(self.entries.len() as u64).to_le_bytes());
@@ -4448,7 +4003,6 @@ impl HashCache<'_> {
         bytes
     }
 
-    /// The cache [`Self::encode`] wrote; `None` for any other bytes, which are rebuilt.
     fn decode(bytes: &[u8]) -> Option<Self> {
         let mut rest = bytes.strip_prefix(HASH_CACHE_MAGIC)?;
         let count = u64::from_le_bytes(take(&mut rest, 8)?.try_into().ok()?);
@@ -4498,18 +4052,10 @@ impl HashCache<'_> {
         Ok(self.settle(probe, stats))
     }
 
-    /// A file's stamp and digest, from the cache or read now; the cache is
-    /// changed only by [`HashCache::settle`].
     fn probe(&self, path: &Path) -> io::Result<Probe> {
         self.probe_listed(path, None)
     }
 
-    /// [`HashCache::probe`] for a file the content walk listed with `listed`: a digest kept under
-    /// that stamp is taken without reading the file's metadata again. Any other file is stamped
-    /// and, when no digest is kept under its stamp, read now. A listed stamp a change left behind
-    /// (NTFS keeps a hard link's entry as it was when the file is written through another) only
-    /// makes the file's reads refuse it as changed: every covered read is verified against the
-    /// digest taken here, as for a file changed after resolution.
     fn probe_listed(&self, path: &Path, listed: Option<&Stamp>) -> io::Result<Probe> {
         self.continuing()?;
         #[cfg(test)]
@@ -4559,8 +4105,6 @@ impl HashCache<'_> {
         })
     }
 
-    /// Probes every path, with the stamp the content walk listed it with, on the machine's
-    /// cores, returning each result in path order.
     fn probe_all(&self, paths: &[(PathBuf, Option<Stamp>)]) -> Vec<io::Result<Probe>> {
         let priority = job_priority::JobPriority::current();
         crate::parallel::map_entering(
@@ -4570,7 +4114,6 @@ impl HashCache<'_> {
         )
     }
 
-    /// Refused once the gathering it serves is stopped.
     fn continuing(&self) -> io::Result<()> {
         if self
             .cancelled
@@ -4585,7 +4128,6 @@ impl HashCache<'_> {
         Ok(())
     }
 
-    /// Counts a probe and keeps a digest read now.
     fn settle(&mut self, probe: Probe, stats: &mut HashStats) -> [u8; 32] {
         stats.files += 1;
         stats.bytes += probe.stamp.size;
@@ -4600,7 +4142,6 @@ impl HashCache<'_> {
     }
 }
 
-/// One content file's stamp and digest, and whether its bytes were read.
 struct Probe {
     key: String,
     stamp: Stamp,
@@ -4674,14 +4215,6 @@ fn mod_id(document: &Document, descriptor: &Path) -> io::Result<String> {
         ))
 }
 
-/// Enabled mods, each with its requested descriptor path and parsed descriptor,
-/// in the order the engine mounts them, lowest priority first. The launcher's
-/// list order is not used: each descriptor whose path equals a requested path byte for byte
-/// starts at weight 10000 (DLC 0). Until nothing changes, an entry whose display name another
-/// entry's `dependencies` lists loses one weight while it is not below that entry's. Every
-/// dependencies block contributes names; a dependency that is not enabled changes nothing.
-/// Entries sort by weight, then descriptor path bytes. Each mount is prepended, so later
-/// layers win. The collector's live mount check confirms the result for every recording.
 fn native_mod_order<T>(
     selected: Vec<(String, T, Document)>,
     notes: &mut Vec<String>,
@@ -4714,8 +4247,6 @@ fn native_mod_order<T>(
     for (index, name) in names.iter().enumerate() {
         by_name.entry(name).or_default().push(index);
     }
-    // The engine keys descriptors by display name and keeps the first,
-    // so it mounts only one of a same-named set.
     for (name, indices) in &by_name {
         if indices.len() > 1 {
             notes.push(format!(
@@ -4744,8 +4275,6 @@ fn native_mod_order<T>(
                 }
             }
         }
-        // Acyclic dependencies settle above 10000 - count, still above the
-        // DLC; the engine never finishes a cycle.
         if let Some(index) = weights
             .iter()
             .position(|&weight| weight <= (MOD_WEIGHT - count).max(0))
@@ -4810,8 +4339,6 @@ fn recorded_dlc_paths(game_dir: &Path, recorded: &[Dlc]) -> io::Result<Vec<PathB
     )
 }
 
-/// Whether the game's scan of `mod/` lists a descriptor of this name: it keeps names that end
-/// in `.mod` byte for byte, case included.
 fn listed_mod_descriptor(name: &str) -> bool {
     name.ends_with(".mod")
 }
@@ -4830,8 +4357,6 @@ fn recorded_mod_paths(user_dir: &Path, recorded: &[Mod]) -> io::Result<Vec<Strin
             {
                 continue;
             }
-            // A broken unrelated descriptor must not prevent another replay
-            // from resolving. A selected local descriptor is parsed below.
             let id = match read_document(&path).and_then(|document| mod_id(&document, &path)) {
                 Ok(id) => id,
                 Err(_) => text_path(Path::new(entry.file_name().as_os_str()))?.to_owned(),
@@ -4917,8 +4442,6 @@ fn append_builtin(
 ) -> io::Result<()> {
     layer.inventory()?;
     layer.hash(cache, stats)?;
-    // Built-in virtual roots belong to the vanilla install identity. Keep their
-    // physical install-relative namespace, even when virtual file names overlap.
     for (path, digest) in layer.hashes.iter() {
         vanilla_files.insert([prefix.as_bytes(), b"/", path].concat(), *digest);
     }
@@ -4936,13 +4459,10 @@ fn append_builtin(
     Ok(())
 }
 
-/// Hashes only covered bytes. Call on a background thread before injection.
 pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
     gather_selected(options, None, &[])
 }
 
-/// [`gather`], stopped with [`io::ErrorKind::Interrupted`] once `cancelled` is set: no file is
-/// hashed after, and the digests taken before are kept for the next gathering.
 pub fn gather_cancellable(
     options: &GatherOptions,
     cancelled: Arc<AtomicBool>,
@@ -4950,17 +4470,10 @@ pub fn gather_cancellable(
     gather_selected(options, None, &[&*cancelled])
 }
 
-/// Resolves exactly the replay's recorded ids and order and verifies every
-/// content hash. Current launcher selections, language and user-directory
-/// overrides are not loaded. This verifies local bytes; callers still enforce
-/// the recording's `Verification` state before claiming verified content.
 pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<ResolvedContent> {
     resolve_cancellable(identity, options, &[])
 }
 
-/// [`resolve`], stopped with [`io::ErrorKind::Interrupted`] once any of `cancelled` is set: it is
-/// checked before each layer, file and archive entry is hashed, and the digests taken before are
-/// kept for the next resolution.
 pub fn resolve_cancellable(
     identity: &Identity,
     options: &ResolveOptions,
@@ -4986,11 +4499,6 @@ pub fn resolve_cancellable(
     })
 }
 
-/// The recording's content played back: every layer it recorded, in its recorded order with its
-/// recorded `replace_path`s, answering each fact from `facts` (the recording's pack) and its art
-/// from the same layer as installed now, unverified. A layer that is not installed shows no art;
-/// a layer whose facts the recording withholds refuses every fact read through it, by name.
-/// Nothing is hashed and no fact is ever read from the installed game.
 pub fn playback(
     identity: &Identity,
     facts: Result<Arc<facts::Pack>, String>,
@@ -5091,7 +4599,6 @@ pub fn playback(
             unshown.join("; ")
         ));
     }
-    // Work on the recording reads its own tables, never the installed executable's.
     if let Err(reason) = pack.tables() {
         notes.push(format!(
             "The game's executable tables are withheld: {reason}"
@@ -5105,7 +4612,6 @@ pub fn playback(
     })
 }
 
-/// A recorded layer's name as a reader knows it: the game, a DLC by id, a mod by its name.
 fn layer_name(layer: &facts::PackLayer, identity: &Identity) -> String {
     match layer.role {
         LayerRole::Vanilla => "the base game".to_owned(),
@@ -5122,8 +4628,6 @@ fn layer_name(layer: &facts::PackLayer, identity: &Identity) -> String {
     }
 }
 
-/// The built-in roots the installed game mounts, as [`gather`] finds them: each
-/// `integrated_dlc` folder in descriptor order, then the tweaker assets above every mod.
 fn builtin_roots(game_dir: &Path) -> Vec<(LayerRole, String)> {
     let mut roots = Vec::new();
     let mut integrated = Vec::new();
@@ -5149,7 +4653,6 @@ fn builtin_roots(game_dir: &Path) -> Vec<(LayerRole, String)> {
     roots
 }
 
-/// The DLC and mod descriptors installed now, by the ids a recording names them by.
 #[derive(Default)]
 struct Descriptors {
     dlc: BTreeMap<String, Vec<PathBuf>>,
@@ -5191,7 +4694,6 @@ impl Descriptors {
     }
 }
 
-/// Where a recorded layer's art is installed now, or why it is not.
 fn installed_source(
     layer: &facts::PackLayer,
     descriptors: &Descriptors,
@@ -5262,10 +4764,8 @@ fn gather_selected(
             required(&read_document(&user_dir.join("settings.txt"))?, b"language")?,
         )
     };
-    // A folder that cannot be made only leaves the cache unsaved, reported below.
     let _ = fs::create_dir_all(&options.cache_dir);
     let cache_path = options.cache_dir.join(HASH_CACHE);
-    // An incomplete cache is disposable; the installed bytes remain the authority.
     let mut cache: HashCache = fs::read(&cache_path)
         .ok()
         .and_then(|bytes| HashCache::decode(&bytes))
@@ -5341,8 +4841,6 @@ fn gather_selected(
             }
             layers.layers.push(user_layer);
         }
-        // Startup mounts integrated descriptor parent folders before
-        // selectable DLC. Their old descriptor `path=dlc/...` is not used here.
         let integrated_dir = game_dir.join("integrated_dlc");
         if integrated_dir.try_exists()? {
             let mut integrated = Vec::new();
@@ -5382,8 +4880,6 @@ fn gather_selected(
             find_descriptors(&game_dir.join("dlc"), &mut paths)?;
             paths
         };
-        // The pinned engine compares UTF-8 descriptor bytes, not Windows UTF-16
-        // collation. Reject non-Unicode paths instead of lossy conversion.
         sort_descriptors(&mut descriptors)?;
         let disabled = launcher
             .disabled_dlcs
@@ -5452,9 +4948,6 @@ fn gather_selected(
         if !dlc_layers.is_empty() {
             return Err(invalid("DLC mount order omits enabled installed layers"));
         }
-        // Native ordering follows `native_mod_order`: dependency weight, then descriptor
-        // path bytes. All installed vanilla DLC have
-        // weight zero and no dependencies; PHYSFS mount prepends each sorted layer.
         if has_dependencies && options.dlc_order.is_none() {
             order_notes.push(
                 "DLC dependencies can change mount order; observed mount order is required"
@@ -5464,7 +4957,6 @@ fn gather_selected(
         let mut selected = Vec::new();
         for (index, descriptor) in launcher.enabled_mods.into_iter().enumerate() {
             let descriptor = normalize_relative(&descriptor)?;
-            // The game mounts only descriptors directly in `mod/`, never nested ones.
             if !descriptor.split_once('/').is_some_and(|(folder, file)| {
                 folder.eq_ignore_ascii_case("mod") && !file.contains('/')
             }) {
@@ -5488,7 +4980,6 @@ fn gather_selected(
                     .map_err(|error| named_error("Mod", requested_id, error))?;
             selected.push((descriptor, layer, document));
         }
-        // A replay keeps its recorded order; a new recording takes the engine's.
         if recorded.is_none() {
             selected = native_mod_order(selected, &mut order_notes)?;
         }
@@ -5532,8 +5023,6 @@ fn gather_selected(
                 hash,
             });
         }
-        // The engine mounts the optional tweaker assets last, preferring
-        // the folder and falling back to its ZIP. It includes covered GUI files.
         let tweaker_folder = game_dir.join("tweakergui_assets");
         let tweaker_archive = game_dir.join("tweakergui_assets.zip");
         let tweaker = if tweaker_folder.is_dir() {
@@ -5593,14 +5082,9 @@ fn gather_selected(
             changed,
         })
     })();
-    // Preserve successfully hashed files even when a later descriptor is bad.
-    // A valid, unchanged cache needs no serialization or write. Missing or
-    // unreadable caches are rebuilt and remain disposable after interruptions,
-    // so failing to save one never replaces the content result or its error.
     let unsaved = if cache.dirty {
         let published = publish_hash_cache(&cache_path, cache);
         if published.is_ok() {
-            // The JSON cache this file replaced is disposable.
             let _ = fs::remove_file(options.cache_dir.join("content-hashes-v1.json"));
         }
         published
@@ -5616,9 +5100,6 @@ fn gather_selected(
     })
 }
 
-/// Replaces the cache file at `path` whole with `cache`, joined by the entries another process
-/// published since it was read. Processes share the app's cache: each writes a file of its own
-/// and renames it over the cache, so a reader sees one writer's whole file, never a mix.
 fn publish_hash_cache(path: &Path, mut cache: HashCache) -> io::Result<()> {
     static PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(published) = fs::read(path)

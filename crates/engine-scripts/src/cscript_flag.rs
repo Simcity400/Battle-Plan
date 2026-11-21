@@ -1,4 +1,3 @@
-//! CScriptFlag's exact token, set date, signed value and expiry countdown.
 
 use crate::{
     Memory,
@@ -6,30 +5,19 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CScriptFlag stride.
 pub const STRIDE: usize = 0x30;
-/// CScriptFlag primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0279_f310);
-/// CScriptFlag token id.
 pub const TOKEN_ID: usize = 0x08;
-/// CScriptFlag CGameDate primary vtable.
 pub const DATE_VTABLE_RVA: Rva = Rva(0x0279_63d0);
-/// CScriptFlag date primary object.
 pub const DATE: usize = 0x10;
-/// Latest-set raw hour copied from the current game date.
 pub const SET_HOUR: usize = 0x18;
-/// CScriptFlag CGameDate secondary vtable.
 pub const DATE_SECONDARY_VTABLE_RVA: Rva = Rva(0x0279_6400);
-/// CScriptFlag date secondary interface.
 pub const DATE_SECONDARY: usize = 0x20;
-/// CScriptFlag signed i16 value.
 pub const VALUE: usize = 0x28;
-/// Expiry days, signed i16; positive values decrement daily and remove at zero.
 pub const REMAINING_DAYS: usize = 0x2a;
 
 pub use game_model::script_flag::Row;
 
-/// The three exact field spans `read_row` gathers, packed in its order.
 const FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: 0,
@@ -47,9 +35,7 @@ const FIELDS: [RecordField; 3] = [
         len: 12,
     },
 ];
-/// Packed bytes of one row's three spans.
 pub const FIELD_BYTES: usize = 36;
-/// One dense row's spans for strided record gathers over a manager's rows.
 pub const LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&FIELDS, FIELD_BYTES).expect("script flag field layout");
 
@@ -72,7 +58,6 @@ pub fn read_row(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row
     decode(base, &token, &date, &value)
 }
 
-/// Authenticate and decode one row's spans as gathered by `LAYOUT`.
 pub fn decode_fields(base: usize, fields: &[u8]) -> Result<Row, &'static str> {
     let [token, date, value] = [0, 12, 24].map(|at| &fields[at..at + 12]);
     decode(base, token, date, value)

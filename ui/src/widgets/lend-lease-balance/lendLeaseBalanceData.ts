@@ -21,17 +21,13 @@ export function validateLendLeaseBalance(value: unknown): LendLeaseBalanceReply 
   return value as unknown as LendLeaseBalanceReply;
 }
 
-/** One country's (or partner's) cumulative totals at the reply's hour, in one measure. */
 export interface BalanceRow { slot: number; tag: string; sent: bigint; received: bigint }
 
-/** Each row in `measure` with a tag: sent then received. */
 export function balanceRows(reply: LendLeaseBalanceReply, measure: BalanceMeasure): BalanceRow[] {
   const offset = measure === 'industry' ? 0 : 1;
   return reply.rows.flatMap(row => row.tag === null ? [] : [{ slot: row.slot, tag: row.tag, sent: BigInt(row.values[offset]), received: BigInt(row.values[2 + offset]) }]);
 }
 
-/** The countries a selection names at `hour`: chosen tags (null for every country) and a top group's count; null while
- * the groups load. */
 export function balanceSelection(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number): { tags: Set<string> | null; limit: number; membersUnknown?: true } | null {
   if (selection.kind === 'tags') return { tags: new Set(selection.tags), limit: Infinity };
@@ -46,8 +42,6 @@ export function balanceSelection(selection: CountrySelection, fallback: readonly
 
 const total = (row: BalanceRow) => row.sent + row.received;
 
-/** Rows ranked by sent plus received, ties by slot: those the selection keeps, at most a top group's count. A country
- * with neither leaves the chart. */
 export function rankedRows(rows: readonly BalanceRow[], chosen: { tags: Set<string> | null; limit: number }): BalanceRow[] {
   return rows.filter(row => (row.sent !== 0n || row.received !== 0n) && (!chosen.tags || chosen.tags.has(row.tag)))
     .sort((a, b) => { const x = total(a), y = total(b); return x === y ? a.slot - b.slot : x > y ? -1 : 1; })
@@ -56,9 +50,6 @@ export function rankedRows(rows: readonly BalanceRow[], chosen: { tags: Set<stri
 
 export type EmptyBalance = 'members-unrecorded' | 'zero' | 'partial' | 'none-recorded';
 
-/** Why no bar shows: every selected country's recorded totals are zero ('zero', proven by the rosters); some are zero
- * and the rest have no recorded total ('partial'); none has one ('none-recorded'); or a group's membership was not
- * recorded then. */
 export function emptyBalance(rows: readonly BalanceRow[], chosen: { tags: Set<string> | null; membersUnknown?: true }): EmptyBalance {
   if (chosen.membersUnknown) return 'members-unrecorded';
   const shown = rows.filter(row => !chosen.tags || chosen.tags.has(row.tag));
@@ -85,7 +76,6 @@ export function validateLendLeasePartners(value: unknown): LendLeasePartnersRepl
 
 type ValueRuns = readonly (readonly [number, number, string])[];
 
-/** The value a run holds at `hour`, or null where none does. */
 export function valueAt(list: ValueRuns, hour: number): bigint | null {
   let low = 0, high = list.length;
   while (low < high) { const middle = (low + high) >> 1; if (list[middle][1] < hour) low = middle + 1; else high = middle; }
@@ -93,12 +83,9 @@ export function valueAt(list: ValueRuns, hour: number): bigint | null {
   return run && run[0] <= hour ? BigInt(run[2]) : null;
 }
 
-/** A partner's tag at `hour`, or null where none holds its slot then. */
 export const partnerTagAt = (partner: LendLeasePartner, hour: number): string | null =>
   partner.tags.find(tag => tag.firstHour <= hour && hour <= tag.lastHour)?.tag ?? null;
 
-/** Each partner at `hour` in the reply's measure, largest sent plus received first (ties by slot): those with a
- * recorded value and a tag, a partner whose row left held at zero as the game drops it. */
 export function partnersAt(reply: LendLeasePartnersReply, hour: number): BalanceRow[] {
   return reply.partners.flatMap(partner => {
     const tag = partnerTagAt(partner, hour), sent = valueAt(partner.values[0], hour), received = valueAt(partner.values[1], hour);
@@ -106,19 +93,15 @@ export function partnersAt(reply: LendLeasePartnersReply, hour: number): Balance
   }).sort((a, b) => { const x = total(a), y = total(b); return x === y ? a.slot - b.slot : x > y ? -1 : 1; });
 }
 
-/** The holder's sent and received totals over time in the reply's measure, as plotted runs. */
 export function totalsOverTime(reply: LendLeasePartnersReply): { sent: Run[]; received: Run[] } {
   const plotted = (list: ValueRuns): Run[] => list.map(([firstHour, lastHour, value]) => ({ firstHour, lastHour, value: Number(BigInt(value)) / reply.scale }));
   return { sent: plotted(reply.totals[0]), received: plotted(reply.totals[1]) };
 }
 
-/** The first hour the holder has a recorded partner, or null. */
 export const firstRecorded = (reply: LendLeasePartnersReply): number | null => reply.totals[0][0]?.[0] ?? null;
 
-/** Bars draw positive amounts only; the written values stay exact and signed. */
 export const barValue = (value: bigint) => Number(value > 0n ? value : 0n) / 100000;
 export const amountText = (value: bigint) => formatAmount(value, PLACES, PLACES);
-/** A bar label: two decimals at most, and the exact amount when that would read 0. */
 export function amountLabel(value: bigint): string {
   const hundredths = rescale(value, 100000, 2);
   return hundredths === 0n && value !== 0n ? amountText(value) : formatAmount(hundredths, 2);

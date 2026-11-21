@@ -1,88 +1,41 @@
-//! What each layer's product stands at, publication by publication. The map side's publication
-//! waits for nothing that may be one late: it settles what is ready, takes what is published and
-//! ends. This module is what keeps that honest — per layer, how far behind the publication's hour
-//! its product stands, in publications and in milliseconds, so that nothing starves (a product at
-//! [`BOUND`] publications behind is waited for by name) and nothing goes backwards.
-//!
-//! Everything counted here is counted in **publications**: one of the map side's steps
-//! ([`crate::playhead_host::MapSide::frame`]), which applies one of the playhead's own steps and
-//! carries that step's hourly change sets. [`BOUND`] and a layer's
-//! [`crate::layers::Layer::behind_bound`] are publications too, so the one word covers the bound,
-//! the wait and the refusal.
-//!
-//! The judge behind `BATTLE_PLAN_VIEWER_CHECK_STEP=1` refuses a step by name on a product past the bound
-//! or one that moved backwards, and, once the hours have stopped, on a layer that does not stand
-//! at the hour the picture shows. `BATTLE_PLAN_VIEWER_CHECK_RATES=1` is the same judge for the layers
-//! whose product has a bound of its own ([`crate::layers::Layer::behind_bound`]: a rate's, or a
-//! maker's own pace): what is on screen is then no older than that bound allows, and a stopped
-//! picture stands at the hour it shows.
-
 use crate::layers::{BOUND, Published};
 use replay_data::Hour;
 use std::{collections::VecDeque, io, time::Instant};
 
-/// Publications kept to measure how far behind a product stands; older than all of them counts
-/// as this.
 const KEPT: usize = 64;
 
-/// Publications with the hours standing still after which the picture must be whole: a thing an
-/// hour brings has about 50 ms to reach the screen after the hours stop, and this is about 130 ms
-/// at the rate the simulation holds. A publication the head stands still for
-/// waits for every product ([`crate::layers::Settling::still`]), so the picture is whole at the
-/// first of them; past this many a layer still behind is starving, not pacing.
 const STOPPED: u32 = 4;
 
-/// One layer's product as the publications left it.
 #[derive(Default)]
 struct Standing {
-    /// The hour the newest product it published stands at. A layer that owes nothing publishes
-    /// [`Published::Current`], which is a claim about the step and not about a product's hour, so
-    /// it does not move this.
     at: Option<Hour>,
-    /// The hour it stood at after the publication before, whatever it published.
     last: Option<Hour>,
-    /// Publications at which the hour it stood at fell without a product going backwards: a layer
-    /// that owed nothing and then drew something of an older hour. Counted and reported, not refused.
     fell: u64,
-    /// Publications its product stood behind at the last publication that settled it.
     behind: u32,
-    /// Publications it settled in, and of those the ones it stood behind in.
     publications: u64,
     stood: u64,
-    /// Publications at which it reached the bound, so the publication waited for it.
     held: u64,
     worst: u32,
-    /// Publications behind and milliseconds behind, each publication it stood behind (the flight
-    /// record only).
     behind_publications: Vec<u32>,
     behind_ms: Vec<f64>,
 }
 
-/// Every layer's standing, and the hours the recent publications applied.
 pub struct Standings {
     layers: Vec<Standing>,
-    /// The last [`KEPT`] publications' hours, oldest first, with the instant each was applied.
     publications: VecDeque<(Hour, Instant)>,
-    /// The hour this publication applies through.
     hour: Option<Hour>,
-    /// Publications since the hours last moved: the picture must be whole once they have stopped.
     stopped: u32,
     check: bool,
-    /// The rated layers alone are judged (`BATTLE_PLAN_VIEWER_CHECK_RATES`).
     check_rates: bool,
-    /// The stopped picture has been judged since the hours stopped.
     judged: bool,
-    /// Times the stopped picture was judged whole, so a run can say the judge reached it.
     judges: u64,
 }
 
-/// Whether the judge runs (`BATTLE_PLAN_VIEWER_CHECK_STEP=1`).
 fn checking() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_STEP").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_STEP")).is_some())
 }
 
-/// Whether the rated layers' judge runs (`BATTLE_PLAN_VIEWER_CHECK_RATES=1`).
 fn checking_rates() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_RATES").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_RATES")).is_some())
@@ -93,8 +46,6 @@ impl Standings {
         Self { layers: (0..layers).map(|_| Standing::default()).collect(), publications: VecDeque::new(), hour: None, stopped: 0, check: checking(), check_rates: checking_rates(), judged: false, judges: 0 }
     }
 
-    /// Nothing stood before: a compose or a seek's reset starts the record over, so a product of
-    /// the picture before is never read as one gone backwards.
     pub fn reset(&mut self) {
         for layer in &mut self.layers {
             (layer.at, layer.last, layer.behind) = (None, None, 0);
@@ -103,7 +54,6 @@ impl Standings {
         (self.hour, self.stopped, self.judged) = (None, 0, false);
     }
 
-    /// The publication applying through `hour` begins.
     pub fn step(&mut self, hour: Option<Hour>, now: Instant) {
         let moved = hour.is_some() && hour != self.hour;
         if let Some(hour) = hour.filter(|_| moved) {
@@ -116,21 +66,14 @@ impl Standings {
         (self.hour, self.stopped) = (hour, if moved { 0 } else { self.stopped.saturating_add(1) });
     }
 
-    /// How far layer `at`'s product stood behind at the publication before: what
-    /// [`crate::layers::Settling::behind_bound`] decides this publication's wait for it by.
     pub fn behind(&self, at: usize) -> u32 {
         self.layers.get(at).map_or(0, |layer| layer.behind)
     }
 
-    /// Whether the hours have stopped for longer than the bound: a pause, the end of the
-    /// recording, a stepped frame's held head.
     pub fn hours_stopped(&self) -> bool {
         self.stopped > STOPPED
     }
 
-    /// Layer `at`, named `name`, settled or joined: where its product now stands, waited for at
-    /// `bound` publications behind ([`BOUND`], or the layer's own rate's). Refuses by name under
-    /// the judge when it is past that bound or has gone backwards.
     pub fn settled(&mut self, at: usize, name: &'static str, published: Published, now: Instant, bound: u32) -> io::Result<()> {
         if at >= self.layers.len() {
             self.layers.resize_with(at + 1, Standing::default);
@@ -138,7 +81,6 @@ impl Standings {
         let (stands, product) = match published {
             Published::Current => (self.hour, false),
             Published::At(hour) | Published::Cadence(hour) => (Some(hour), true),
-            // Nothing made yet: it stands nowhere, and what it has not made counts no lateness.
             Published::Nothing => {
                 self.layers[at].behind = 0;
                 return Ok(());
@@ -146,13 +88,8 @@ impl Standings {
         };
         let (behind, since) = self.standing(stands);
         let record = viewer_foundation::view_record::on();
-        // A rated layer is judged by its own rate under its own switch, as well as under the step's.
         let (check, hour) = (self.check || (bound != BOUND && self.check_rates), self.hour);
         let layer = &mut self.layers[at];
-        // A product older than an earlier product is a thing on the map going backwards. A layer
-        // that owed nothing and now draws something of an older hour is not: it published
-        // `Current` because it had nothing to show, which is a claim about the step and not about
-        // a product's hour, so that fall is counted and reported rather than refused.
         if let (Some(product_at), Some(stands)) = (layer.at, stands)
             && stands < product_at
         {
@@ -188,9 +125,6 @@ impl Standings {
         Ok(())
     }
 
-    /// Layer `at` settled whole between publications (a saved frame, a settled plan): the next
-    /// publication waits by where its product now stands, not by where the last one left it. No
-    /// publication is counted.
     pub fn settled_whole(&mut self, at: usize, published: Published) {
         if at >= self.layers.len() {
             self.layers.resize_with(at + 1, Standing::default);
@@ -203,8 +137,6 @@ impl Standings {
         self.layers[at].behind = self.standing(stands).0;
     }
 
-    /// How many of the kept publications are newer than the hour `stands`, and when the oldest of
-    /// those was applied: the publications and the milliseconds a product standing there is behind.
     fn standing(&self, stands: Option<Hour>) -> (u32, Option<Instant>) {
         let Some(stands) = stands else { return (0, None) };
         let mut count = 0_u32;
@@ -218,8 +150,6 @@ impl Standings {
         (count, since)
     }
 
-    /// The hours have stopped and every drawn layer has settled: each must stand at the hour the
-    /// picture shows. Judged once per stop, by name.
     pub fn stopped_whole(&mut self, drawn: &[(usize, &'static str)]) -> io::Result<()> {
         if !(self.check || self.check_rates) || self.judged || !self.hours_stopped() {
             return Ok(());
@@ -237,8 +167,6 @@ impl Standings {
         Ok(())
     }
 
-    /// What every layer stood at over the run: how often it was behind, by how many publications
-    /// and for how long, and how often the bound made the publication wait for it.
     pub fn report(&self, names: &[&'static str]) -> serde_json::Value {
         use serde_json::json;
         let each: Vec<serde_json::Value> = self
@@ -295,8 +223,6 @@ mod tests {
         assert!(!Settling::step().behind_bound(BOUND, BOUND).strict(), "a product at the bound is waited for, not refused by name");
         assert_eq!(Settling::Whole.behind_bound(0, BOUND), Settling::Whole, "a whole settle waits whatever stands where");
         assert!(Settling::Whole.waits() && Settling::Whole.strict());
-        // A publication the head stands still for waits for every product, whatever stands where,
-        // and still refuses none by name: the picture it leaves is whole at the first of them.
         for behind in 0..=BOUND {
             assert_eq!(Settling::still().behind_bound(behind, BOUND), Settling::Step { late: true }, "{behind} behind, the head standing still");
         }
@@ -321,8 +247,6 @@ mod tests {
         assert_eq!(standings.behind(0), 0, "waited for, it is current again");
     }
 
-    /// A product made at a rate of its own stands behind by the publications its interval covers
-    /// and is waited for only past them; its own judge refuses it past that bound by name.
     #[test]
     fn a_rated_product_is_waited_for_at_its_rate_and_judged_by_it() {
         let rate = Rate::a_second(4);
@@ -424,7 +348,6 @@ mod tests {
             standings.step(Some(at), now);
             standings.settled(0, "counters", Published::At(at - 1), now, BOUND).unwrap();
         }
-        // The seek's reset composes the layers afresh, at an hour before the one they showed.
         standings.reset();
         assert_eq!(standings.behind(0), 0, "nothing stands behind the picture a seek has not made yet");
         for at in 20..20 + BOUND as i32 {
@@ -443,7 +366,6 @@ mod tests {
             standings.step(Some(at), now);
             standings.settled(0, "sounds", Published::At(at - 1), now, BOUND).unwrap();
         }
-        // Paused: the hours stand still and the product of the hour shown arrives.
         standings.step(Some(10), now);
         standings.settled(0, "sounds", Published::At(10), now, BOUND).unwrap();
         for _ in 0..=super::STOPPED {
@@ -452,7 +374,6 @@ mod tests {
         }
         assert_eq!(standings.behind(0), 0, "stopped, it stands at the hour shown");
         standings.stopped_whole(&[(0, "sounds")]).expect("the stopped picture is whole");
-        // Resumed: it stands a step behind again and is never refused for it.
         for at in 11..=20 {
             standings.step(Some(at), now);
             standings.settled(0, "sounds", Published::At(at - 1), now, BOUND).unwrap();
@@ -468,7 +389,6 @@ mod tests {
         standings.step(Some(60), now);
         standings.settled(0, "buildings", Published::At(59), now, BOUND).unwrap();
         standings.settled(1, "political", Published::Current, now, BOUND).unwrap();
-        // No hour is ever applied again: within the bound every worker lands the last hour.
         for step in 0..=super::STOPPED {
             standings.step(Some(60), now);
             let stands = if step < BOUND { Published::At(59) } else { Published::At(60) };

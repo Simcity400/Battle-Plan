@@ -1,4 +1,3 @@
-/** Followed widgets mounted in a real browser, fed messages the test writes. */
 import { useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CELL, rowKeys } from './message.ts';
@@ -50,7 +49,6 @@ function Army() {
   </div>;
 }
 
-/** Shown in one element while loading and in another once loaded, as a widget's root is: a follow held across both. */
 const SWAP = { kind: 'series', series: 'country-measure', measure: 'stability', tags: ['FRA'] };
 function Swapping({ loaded }: { loaded: boolean }) {
   const [element, setElement] = useState<Element | null>(null);
@@ -59,7 +57,6 @@ function Swapping({ loaded }: { loaded: boolean }) {
   return loaded ? <section ref={setElement} data-widget="swap" style={{ minHeight: '20px' }} /> : <div ref={setElement} data-widget="swap" style={{ minHeight: '20px' }} />;
 }
 
-/** A root with no box of its own (`display: contents`, as Game score's), its child changing as a loading state gives way. */
 const CONTENTS = { kind: 'series', series: 'country-measure', measure: 'warSupport', tags: ['ITA'] };
 function Contents({ loaded }: { loaded: boolean }) {
   const [element, setElement] = useState<Element | null>(null);
@@ -75,7 +72,6 @@ const root = createRoot(host);
 const swapRoot = createRoot(document.body.insertBefore(document.createElement('div'), host));
 const contentsRoot = createRoot(document.body.insertBefore(document.createElement('div'), host));
 
-/** The id the store followed `query` by. */
 function idOf(query: Record<string, unknown>): number {
   const line = [...transport.sent].reverse().find(sent => sent.startsWith('follow ') && sent.endsWith(JSON.stringify(query)));
   if (!line) throw new Error(`${JSON.stringify(query)} is not followed`);
@@ -99,7 +95,6 @@ export const fixture = {
   },
   renders: () => ({ ...renders }),
   sent: () => [...transport.sent],
-  /** Political power for GER and SOV, and the army's rows (key, divisions). */
   async deliver(hour: number, power: [number, number], army: [number, number][]) {
     const answers = [
       { id: idOf(MEASURE), answer: series(power.map(value => BigInt(value) * 100_000n)) },
@@ -119,8 +114,6 @@ export const fixture = {
     window.scrollTo(0, 0);
     await settle();
   },
-  /** One message of about 30 KB (50 answers, a page's shape) received into the store `rounds` times: each
-   * receive's milliseconds (parse and land, on the page's thread) and the message's bytes. */
   async receiveTimes(rounds: number) {
     const ids = Array.from({ length: 50 }, (_, at) => store.acquire({ receive: at }).entry.id);
     const messages = Array.from({ length: rounds }, (_, round) => message(round, ids.map((id, at) => ({ id, answer: {
@@ -136,7 +129,6 @@ export const fixture = {
     }
     return { times, bytes: messages[0]!.length };
   },
-  /** 500 entries painted into spans, updated by one message: each paint pass's milliseconds. */
   async paintMany(rounds: number) {
     const spans: HTMLSpanElement[] = [];
     const ids: number[] = [];
@@ -149,7 +141,6 @@ export const fixture = {
       const cell = [textCell(span)];
       store.painter(handle.entry, entry => paintMeasure(entry.answer, cell, 5, 0));
     }
-    // Built before, so the fixture's own garbage is not collected inside a timed pass.
     const messages = Array.from({ length: rounds }, (_, round) => message(round, ids.map((id, at) => ({ id, answer: series([BigInt(at + round) * 100_000n]) }))));
     await settle();
     passes.length = 0;
@@ -163,8 +154,6 @@ export const fixture = {
     }
     return { passes: [...passes], delivered, last: spans[499]!.textContent, bytes: message(0, ids.map((id, at) => ({ id, answer: series([BigInt(at) * 100_000n]) }))).length };
   },
-  /** One table of `rows` rows by one column (every country, as `Cells` with every row answers it), its cells
-   * painted from one entry: each paint pass's milliseconds. */
   async paintTable(rows: number, rounds: number) {
     const handle = store.acquire({ table: rows });
     const table = document.body.appendChild(document.createElement('table'));

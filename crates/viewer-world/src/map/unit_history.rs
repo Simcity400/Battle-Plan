@@ -1,28 +1,3 @@
-//! Viewer-owned lifetimes, popup scales and animation histories for unit entities.
-//! All updates use the viewer's frame clock.
-//!
-//! Popup fades change uniform transform scale. Each visit subtracts frame time
-//! times the content's scale-down speed, clamped at zero; destruction happens
-//! when the old scale was already zero. Formation roots use
-//! `SHIP_POPUP_SCALE_DOWN_SPEED`, carrying their hull offsets. Both land and
-//! formation entities grow at `MESH_POPUP_SCALE_UP_SPEED`.
-//!
-//! A newly hidden kind is visited in both the gate-loss loop and inactive pass;
-//! subsequent frames visit once. In-view provinces update every frame. Off-screen
-//! provinces follow the shared modulo-100 schedule ([`viewer_foundation::map::province_schedule`])
-//! and retain entities, transforms and advancing animation clocks until that
-//! visit destroys them. Selected units bypass the phase using local selection.
-//!
-//! Divisions, transports and railway guns share the land path; naval formations
-//! use the ship path. Land-gate loss deactivates naval combat graphics. Aircraft
-//! and trains have their own managers. [`crate::map::mesh_budget`] owns the shared
-//! creation allowance.
-//!
-//! The 38 visual buckets retain reconstructed land order with identity ties.
-//! Naval representatives use recorded occupant order and viewer-owned animator
-//! and selection presentation ([`naval`]). Deferred land selection runs in
-//! parallel, so original completion and RNG order are unavailable; all queued
-//! creations still become visible on one frame.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -50,36 +25,25 @@ use provinces::Provinces;
 mod same_history;
 pub use naval::Sources as NavalSources;
 
-/// The model path an entity follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Land,
     Ship,
 }
 
-/// One figure or hull an hour places.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Target {
     pub province: u32,
-    /// The stack's oldest division, or the formation.
     pub identity: u64,
-    /// The hull within a formation; 0 for a land figure.
     pub part: u32,
-    /// Land: the reconstructed native visual slot the game walks in
-    /// order; stacks the reconstruction puts in one slot follow `identity`.
     pub order: u32,
-    /// The ship a hull shows (the game keeps a hull while its ship and
-    /// graphics stay); a land figure's representative.
     pub occupant: u64,
     pub kind: Kind,
     pub mesh: usize,
     pub instance: ModelInstance,
-    /// Formation root; shrinking also moves hull attachments toward it.
     pub origin: [f32; 3],
 }
 
-/// A land figure as a frame draws it: its province, the stack kind of the native slot it shows
-/// ([`Target::order`]), and its mesh and instance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LandFigure {
     pub province: u32,
@@ -88,7 +52,6 @@ pub struct LandFigure {
     pub instance: ModelInstance,
 }
 
-/// What one native unit slot holds: a land stack or a naval formation.
 type Slot = (Kind, u64);
 
 impl Target {
@@ -97,22 +60,16 @@ impl Target {
     }
 }
 
-/// An hour's models: the field keeps their meshes resident, the targets
-/// feed the [`History`].
 #[derive(Clone, Default)]
 pub struct Field {
     pub models: ModelField,
     pub targets: Targets,
-    /// The raid arrows' units where the hour placed them ([`History::set_raids`]).
     pub raids: Vec<(usize, ModelInstance)>,
     pub naval: NavalSources,
 }
 
-/// One slot's targets, by part.
 type Parts = BTreeMap<u32, Target>;
 
-/// Immutable hourly targets, grouped on the builder before a view installs them.
-/// Iteration retains placement order; duplicate slot parts still use the last target.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Targets(Arc<PreparedTargets>);
 
@@ -168,19 +125,15 @@ impl std::ops::Deref for Targets {
     }
 }
 
-/// One figure, or one hull attached under a formation's root.
 #[derive(Clone, Debug, PartialEq)]
 struct Part {
     target: Target,
     epoch: u32,
     identity: u32,
-    /// Retained attachment's explicit graphics string.
     graphics: Vec<u8>,
 }
 
 impl Part {
-    /// The game retains each unchanged hull's own entity. Dumps sample
-    /// epoch zero, but same-model hulls still need distinct live players.
     fn new(target: Target, identity: &mut u32, steady: bool) -> Self {
         *identity = identity.wrapping_add(1);
         Self {
@@ -192,20 +145,15 @@ impl Part {
     }
 }
 
-/// A slot's entity. Its popup scale belongs to the slot, so the
-/// hulls of a formation share their root's.
 #[derive(Clone, Debug, PartialEq)]
 struct Entity {
     kind: Kind,
     scale: f32,
-    /// Shrinking through the inactive path, which drops the transport scale.
     shrinking: bool,
     parts: BTreeMap<u32, Part>,
 }
 
 impl Entity {
-    /// One fade visit: it tests the OLD scale, then subtracts, so zero
-    /// lasts one visit. False means the entity is destroyed.
     fn shrink(&mut self, delta: f32, gates: Gates) -> bool {
         if self.scale <= 0.0 {
             return false;
@@ -224,8 +172,6 @@ impl Entity {
             let mut instance = part.target.instance;
             instance.animation_epoch = part.epoch;
             instance.animation_identity = part.identity;
-            // Inactive land models use multiplier 1.0, including
-            // transports; the admitted path uses the authored unit multiplier.
             instance.scale = if self.shrinking && self.kind == Kind::Land {
                 self.scale
             } else {
@@ -242,56 +188,31 @@ impl Entity {
     }
 }
 
-/// Float rounding of a drawn point, in world units, for the flight record's motion check.
 const MOTION_SLACK: f32 = 1e-3;
 
-/// What one viewer frame applies to each province it updates.
 #[derive(Clone, Copy)]
 struct Frame {
     delta: f32,
     gates: Gates,
-    /// Whether the camera shows land models and ships.
     shown: [bool; 2],
-    /// Whether it shows unit arrows.
     arrows: bool,
     steady: bool,
 }
 
-/// One province's unit graphics.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Province {
-    /// The land and ship show bits of its last update.
     shown: [bool; 2],
-    /// The arrow flag of its last update.
     arrows: bool,
     entities: BTreeMap<Slot, Entity>,
-    /// Hourly land targets in visual-slot order, with identity ties.
     lands: Arc<[(u32, Slot)]>,
-    /// The round-robin cursor as of [`Self::cursor_pass`]: the visual slot
-    /// ([`Target::order`]) that pass visited last, not its successor, whichever
-    /// representative holds it now. Recreating units does not reset it.
     land_cursor: u32,
-    /// Land passes made: visits at which the camera showed land models and the creation
-    /// allowance had something left, so every visual slot was reached. A pass the frame left
-    /// this province out of counts here too, and steps the cursor; nothing else of it is done
-    /// ([`History::step_with_frame`]).
     land_passes: u64,
-    /// The pass each land slot was last queued at, so a slot's visits are a subtraction at the
-    /// one frame that reads them rather than an increment a slot a frame.
     land_visits: BTreeMap<Slot, u64>,
-    /// The pass at which the slot queued longest ago reaches its hundredth visit: before it, no
-    /// slot can queue.
     due_pass: u64,
-    /// Whether a visit at the same inputs would change nothing but the counter above
-    /// ([`Self::idle`]).
     quiet: bool,
 }
 
 impl Province {
-    /// Queues land creations against what the counter leaves,
-    /// then grows existing figures and attaches hulls, which spend it inline
-    /// The queued land is created after every province's
-    /// visit ([`Province::create_land`]).
     fn visit<'a>(
         &mut self,
         targets: Option<&BTreeMap<Slot, Parts>>,
@@ -308,14 +229,10 @@ impl Province {
                     .any(|formation| *slot == (Kind::Ship, formation.identity))
         };
         let was = self.shown;
-        // Whether this visit leaves anything for the next one: a land pass the allowance cut
-        // short, or a hull it held back.
         let (mut whole, mut held) = (true, false);
         if frame.shown[Kind::Land as usize] {
             let allowance = budget.remaining();
             if allowance == 0 && budget.holding() {
-                // The frame's room is spent: the slots with no figure are what it owes, and the
-                // province stays due ([`Province::settle`]) until a later frame makes them.
                 let owed = self.lands.iter().filter(|(_, slot)| !self.entities.contains_key(slot)).count();
                 budget.hold(owed);
             }
@@ -334,8 +251,6 @@ impl Province {
                     }
                     self.land_cursor = order;
                     let visits = *self.land_visits.entry(slot).or_insert(self.land_passes - 1);
-                    // A slot is queued when its representative changed, which
-                    // here means it has no entity, or on its hundredth visit.
                     if frame.steady
                         || self.land_passes.saturating_sub(visits) > 99
                         || !self.entities.contains_key(&slot)
@@ -345,8 +260,6 @@ impl Province {
                         queue(slot, was[Kind::Land as usize]);
                     }
                 }
-                // A pass the allowance cut short reached only its first slots; the rest did not
-                // count it, so their visits stand where they were.
                 for step in cut..lands.len() {
                     let (_, slot) = lands[(start + step) % lands.len()];
                     if let Some(visits) = self.land_visits.get_mut(&slot) {
@@ -363,13 +276,9 @@ impl Province {
                 return frame.shown[kind] && placed(slot);
             }
             if !frame.shown[kind] {
-                // The gate-loss loop precedes the inactive fade pass, so the first frame
-                // out of range visits twice.
                 return (!was[kind] || entity.shrink(frame.delta, frame.gates))
                     && entity.shrink(frame.delta, frame.gates);
             }
-            // A missing stack of a kind shown now and before is destroyed at
-            // once when popup growth is requested; otherwise it shrinks.
             placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
         });
         viewer_foundation::view_record::add("unit models", "history_destroyed", (before - self.entities.len()) as u64);
@@ -382,8 +291,6 @@ impl Province {
                 if let Some(entity) = self.entities.get_mut(&slot) {
                     for (&index, &target) in parts {
                         if let Some(part) = entity.parts.get_mut(&index) {
-                            // Transform/state follow this frame; the definition waits
-                            // for the game's periodic selection or pointer change.
                             let mesh = part.target.mesh;
                             part.target = target;
                             part.target.mesh = mesh;
@@ -398,25 +305,18 @@ impl Province {
                 }
                 continue;
             }
-            // The game acquires a formation root outside the counter, full
-            // size where ships were already shown, and grows it even while
-            // all its hulls wait.
             let entity = self.entities.entry(slot).or_insert_with(|| Entity {
                 kind: slot.0,
                 scale: if frame.steady || was[kind] { 1.0 } else { 0.0 },
                 shrinking: false,
                 parts: BTreeMap::new(),
             });
-            // Hulls attach and detach under the root without touching its
-            // scale, slot 0 first.
             entity.parts.retain(|part, _| parts.contains_key(part));
             for (&index, &target) in parts {
                 let replace = entity.parts.get(&index).is_none_or(|part| {
                     part.target.mesh != target.mesh || part.target.occupant != target.occupant
                 });
                 if replace {
-                    // The game clears a stale support slot before attaching;
-                    // slot 0 attaches directly and keeps its old hull if held.
                     if index != 0 {
                         entity.parts.remove(&index);
                     }
@@ -438,8 +338,6 @@ impl Province {
                 (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
             };
         }
-        // The game walks native visual slots, not task-force handles. A land
-        // representative in the same slot admits no ordinary naval formation.
         for formation in formations {
             let entity = self
                 .entities
@@ -466,9 +364,6 @@ impl Province {
         self.settle(frame, targets, whole, held);
     }
 
-    /// The cursor one land pass that queued nothing leaves: the pass walks every visual slot
-    /// from the cursor's own and so ends on the slot before it. A pass the frame left this
-    /// province out of is that pass, so it steps the cursor the same way.
     fn step_cursor(&mut self) {
         if self.lands.is_empty() {
             return;
@@ -479,10 +374,6 @@ impl Province {
         self.land_cursor = self.lands[(start + self.lands.len() - 1) % self.lands.len()].0;
     }
 
-    /// Whether another visit at the same inputs, `targets` among them, would change nothing but
-    /// the visit counter and its cursor. `whole` is whether the land pass that ran reached every slot (a frame whose
-    /// allowance was already spent runs none, and so leaves nothing undone), `held` whether the
-    /// allowance held a hull back.
     fn settle(
         &mut self,
         frame: Frame,
@@ -494,15 +385,11 @@ impl Province {
             && !held
             && !frame.steady
             && self.entities.iter().all(|(slot, entity)| {
-                // An entity the hour's targets do not hold stands only while a formation
-                // offers it, and a province whose candidates go must destroy it.
                 targets.is_some_and(|targets| targets.contains_key(slot))
                     && frame.shown[slot.0 as usize]
                     && entity.scale >= 1.0
                     && !entity.shrinking
             })
-            // Where land shows, every visual slot must have been counted and must hold a
-            // figure: one that has not is queued by the next pass, which is work.
             && (!frame.shown[Kind::Land as usize]
                 || (self.land_visits.len() == self.lands.len()
                     && self
@@ -516,10 +403,6 @@ impl Province {
             .map_or(u64::MAX, |visits| visits + 100);
     }
 
-    /// Whether this frame's update of the province would change nothing but the visit counter
-    /// and its cursor, so the walk can leave it alone. `pass` is whether this frame makes a land
-    /// pass, which is the pass a slot's hundredth visit would fall on. The caller adds what it
-    /// alone knows: the hour's targets, the naval candidates and the combat actors.
     fn idle(&self, update: Update, frame: Frame, pass: bool) -> bool {
         if frame.steady || !self.quiet {
             return false;
@@ -530,16 +413,12 @@ impl Province {
                     && self.arrows == frame.arrows
                     && self.land_passes + u64::from(pass) < self.due_pass
             }
-            // Leaving view clears the show bits and the arrow flag and destroys what the gates
-            // already took: a province holding none of those is left alone.
             Update::OffScreen => {
                 self.shown == [false; 2] && !self.arrows && self.entities.is_empty()
             }
         }
     }
 
-    /// The first field of this province that `other` does not match, named for the judge
-    /// ([`crate::map::actor_check`]).
     fn differences(&self, other: &Self) -> Option<String> {
         if self.shown != other.shown {
             return Some(format!("shown {:?} against {:?}", self.shown, other.shown));
@@ -583,8 +462,6 @@ impl Province {
     }
 
     fn finalize_shown(&mut self, frame: Frame, budget: &Budget) {
-        // The game keeps a newly shown kind's bit clear while the counter is
-        // spent, so what it creates next frame still grows from zero.
         for kind in 0..2 {
             if budget.remaining() != 0 || !frame.shown[kind] {
                 self.shown[kind] = frame.shown[kind];
@@ -592,9 +469,6 @@ impl Province {
         }
     }
 
-    /// Resolve a queued land-creation request, recreating
-    /// the figure only if its definition changed, at the scale of the show
-    /// bit the request remembered.
     fn create_land(
         &mut self,
         slot: Slot,
@@ -616,7 +490,6 @@ impl Province {
         if !changed {
             return;
         }
-        // The game has no budget guard; queued work can exceed the limit.
         budget.charge();
         viewer_foundation::view_record::add("unit models", "history_created", 1);
         self.entities.insert(
@@ -633,10 +506,6 @@ impl Province {
         );
     }
 
-    /// The phase update of a province out of view. The gate-loss loops
-    /// destroy each kind shown last update, and a changed arrow flag forces
-    /// the inactive pass, which destroys the rest. Otherwise the update
-    /// returns early and a kind already shrinking keeps its entity.
     fn leave(&mut self, steady: bool) {
         let (shown, arrows) = (self.shown, self.arrows);
         let before = self.entities.len();
@@ -645,15 +514,10 @@ impl Province {
         viewer_foundation::view_record::add("unit models", "history_left_view", (before - self.entities.len()) as u64);
         self.shown = [false; 2];
         self.arrows = false;
-        // What stays is mid-fade and due again; what is gone leaves nothing for a later update
-        // of a province still out of view.
         self.quiet = !steady && self.entities.is_empty();
     }
 }
 
-/// The walk as it was for one province the frame left alone, run on a copy and compared field
-/// by field ([`crate::map::actor_check`]). It must spend nothing: no creation, no incarnation
-/// and no queued land.
 fn judge_idle(
     record: &provinces::Record,
     update: Update,
@@ -709,9 +573,6 @@ fn judge_idle(
     }
 }
 
-/// What one frame's province walk did, summed here and given to the flight record once
-/// ([`viewer_foundation::view_record`], section `unit walk`): a record made per province would
-/// cost more than the walk it measures.
 #[derive(Default)]
 struct WalkCounts {
     updates: u64,
@@ -722,10 +583,7 @@ struct WalkCounts {
     lands: u64,
     entities: u64,
     candidates: u64,
-    /// Updates the walk left alone, their counter carried on ([`Province::idle`]).
     idle: u64,
-    /// What the judge found each visit did ([`crate::map::actor_check`]): nothing at all, nothing
-    /// but the visit counters and their round-robin cursor, or something a frame can see.
     unchanged: u64,
     counters_only: u64,
     changed: u64,
@@ -752,7 +610,6 @@ impl WalkCounts {
         }
     }
 
-    /// What one visit did to a province, against the state it found ([`Self::unchanged`]).
     fn judge(&mut self, before: &Province, after: &Province) {
         if before == after {
             self.unchanged += 1;
@@ -769,102 +626,56 @@ impl WalkCounts {
     }
 }
 
-/// One frame's unit and (when changed) building instance streams.
 pub struct FrameModels {
     pub units: crate::map::models::Moving,
     pub buildings: Option<Vec<(usize, ModelInstance)>>,
 }
 
-/// Every province's unit entities, advanced once per viewer frame.
 #[derive(Default)]
 pub struct History {
-    /// The hour's targets by province and slot.
     targets: Targets,
-    /// This frame's moving figures and formations, by slot.
     movement: Vec<(Slot, MovementDelta)>,
-    /// Every part the hours place, in the order the model field is built in: what the field the
-    /// pass holds was last built from, before any display frame's own movement.
     standing: Vec<(usize, ModelInstance)>,
-    /// This frame's parts, built beside [`Self::standing`] so the two can be compared.
     standing_next: Vec<(usize, ModelInstance)>,
-    /// The pass's field was replaced by an upload of the residency targets: the next walk hands
-    /// its parts whatever they compare to.
     standing_owed: bool,
-    /// The parts this frame moves, by their ordinal in [`Self::standing`], and the ordinals the
-    /// frame before moved, which stand again where their hours place them.
     moving: Vec<(usize, MovementDelta)>,
     was_moving: Vec<usize>,
-    /// This frame's map render delta, which the naval animators advance by as the drawn ones do.
     movement_delta: Option<f32>,
     naval: naval::History,
     combats: naval_combat::History,
     provinces: Provinces,
-    /// The shared schedule's reached updates in native province order.
     updates: Vec<(u32, Update)>,
-    /// Deferred land requests, retaining capacity between frames and province visits.
     queued: Vec<(u32, Slot, bool)>,
     #[cfg(test)]
     queue_trace: Vec<(u32, Slot, bool)>,
-    /// The provinces the last walk left alone, in its order.
     #[cfg(test)]
     left_alone: Vec<u32>,
-    /// Admission operands in province order, refreshed only when the hour installs a roster.
     province_bounds: Vec<(u32, Option<[f32; 4]>)>,
-    /// Bumped whenever the boxes above are rebuilt, so a frame's admission knows whether the ones
-    /// it tested are still these.
     province_boxes: u64,
-    /// Province boxes for camera admission.
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
-    /// The previous frame's animation clock.
     last: Option<f32>,
-    /// Each land figure's root as last drawn, its walk's identity and its animator's drawn point,
-    /// while the flight record is kept ([`Self::note_motion`]).
     drawn_at: BTreeMap<Slot, ([f32; 3], u32, Option<[f32; 3]>)>,
-    /// The view's province phase and dirty bits, shared with its counters ([`Self::share_schedule`]).
     schedule: Shared,
-    /// The last incarnation handed out.
     epoch: u32,
-    /// Offline frames settle for their camera instead of animating.
     steady: bool,
-    /// Walks made, so the judge runs at its own rate ([`crate::map::actor_check`]).
     checks: u64,
-    /// The creations the frame's own room refused on the walks before this one, and the walks in
-    /// a row that refused any: the next walk makes at least a share of them whatever its frame's
-    /// clock says, so a figure an hour brings waits at most
-    /// [`viewer_foundation::map::frame_budget::BOUND`] frames.
     held_slots: usize,
     held_walks: u32,
-    /// The next walk makes every figure whatever the frame's clock says: a load, a seek or a tag
-    /// switch cleared the entities, and the picture that follows is a whole picture, not an hour's
-    /// change to one.
     unbudgeted: bool,
-    /// The raid arrows' units. No unit slot holds them:
-    /// The game creates its entity at once
-    /// without testing or charging the shared creation counter
-    /// ([`crate::map::mesh_budget`]), and
-    /// The game shows it at every camera height with no
-    /// popup scale, so they stand on every frame whatever the gates.
     raids: Vec<(usize, ModelInstance)>,
-    /// The raid units' incarnation: a load-equivalent reset recreates them
-    /// too, so their animation starts again ([`History::reset`]).
     raid_epoch: u32,
-    /// [`Self::land_stamp`].
     land_stamp: u64,
 }
 
-/// Where an entity's root is drawn this frame, against where the hour placed it.
 #[derive(Clone, Copy, Debug)]
 struct MovementDelta {
     base: [f32; 3],
     at: [f32; 3],
     turn: f32,
-    /// The drawn stack scale over the one the hour sized the entity with.
     scale: f32,
 }
 
 impl MovementDelta {
-    /// `rotation` and `scale` are the root rotation and stack scale the hour placed it with: a
-    /// head whose places give neither keeps them.
     fn new(position: &Position, at: AtHead, rotation: f32, scale: f32) -> Self {
         Self {
             base: position.at(),
@@ -878,7 +689,6 @@ impl MovementDelta {
         }
     }
 
-    /// Carries a part with its root, turning and scaling its offset with the root.
     fn apply(self, mut instance: ModelInstance) -> ModelInstance {
         let (sin, cos) = self.turn.sin_cos();
         let [x, y, z] =
@@ -895,8 +705,6 @@ impl MovementDelta {
 }
 
 impl History {
-    /// Changes whenever [`Self::land_figures`] may, to a value no other history has held, so a
-    /// reader keeps what it built from the figures until it does.
     pub fn land_stamp(&self) -> u64 {
         self.land_stamp
     }
@@ -910,12 +718,6 @@ impl History {
         self.naval.set_selection(selected);
     }
 
-    /// Draws the hour's figures and formations where this display frame's own head puts them:
-    /// `positions` are their hour placements, root rotations and settled stack scales, and the
-    /// view's history answers where each one's hours place it at that head
-    /// ([`viewer_foundation::map::counter_move::MovementHistory::at_head`]) — the same places, cut
-    /// at the same publication, its counter stands on, so a figure travels with every display
-    /// frame instead of standing until a publication re-slots it.
     pub fn set_movement<'a>(
         &mut self,
         positions: impl Iterator<Item = (Unit, &'a Position, f32, f32)>,
@@ -940,7 +742,6 @@ impl History {
         self.movement.dedup_by_key(|entry| entry.0);
     }
 
-    /// Arrow admission is map geometry; a refused 3D entity library must not suppress it.
     pub fn prepare_arrow_bounds(
         &mut self,
         map: &installed_content_core::map::MapData,
@@ -981,15 +782,11 @@ impl History {
             .set_selected(provinces);
     }
 
-    /// This frame's native province arrow flag, shared rather than independently reculling
-    /// counters, entities and their selected routes.
     pub fn arrows_admitted(&self, province: u32) -> bool {
         self.provinces
             .get(&province)
             .is_some_and(|province| province.arrows)
     }
-    /// Recorded roster/route inputs; mutable animator and attachment state
-    /// belongs to this viewer's frame history.
     pub fn set_naval(&mut self, sources: NavalSources) {
         self.land_changed();
         let changed = self
@@ -1004,8 +801,6 @@ impl History {
             self.prepare_province_bounds();
         }
     }
-    /// Groups and installs targets from a direct caller. Hour builders prepare
-    /// the shared index in advance and use [`Self::set_prepared`] instead.
     pub fn set(
         &mut self,
         targets: Vec<Target>,
@@ -1015,9 +810,6 @@ impl History {
         self.set_prepared(targets.into(), bounds, steady);
     }
 
-    /// Installs an hour's prepared targets. Entities carry over; the next frame
-    /// admits, grows or retires them. Only provinces whose target lists occur in
-    /// either hour need a new land list; empty provinces keep their show bits.
     pub fn set_prepared(
         &mut self,
         targets: Targets,
@@ -1027,8 +819,6 @@ impl History {
         self.set_prepared_join(targets, bounds, steady, true);
     }
 
-    /// Installs targets and naval inputs in their usual order, joining the final inputs once.
-    /// Standalone setters still prepare immediately for callers that install only one source.
     pub fn set_prepared_with_naval(
         &mut self,
         targets: Targets,
@@ -1036,8 +826,6 @@ impl History {
         steady: bool,
         sources: NavalSources,
     ) {
-        // Keep the setters' ensure and bounds-refresh order, but join only after both
-        // sources are installed. Independent setters still join immediately.
         self.set_prepared_join(targets, bounds, steady, false);
         self.set_naval(sources);
     }
@@ -1052,8 +840,6 @@ impl History {
         self.land_changed();
         let mut changed = false;
         if !bounds.is_empty() && !Arc::ptr_eq(&self.bounds, &bounds) {
-            // Native updates the show bits of empty provinces too: a stack
-            // arriving in a province already shown starts at full scale.
             self.provinces.ensure(bounds.keys().copied());
             self.bounds = bounds;
             changed = true;
@@ -1070,8 +856,6 @@ impl History {
         }
     }
 
-    /// The raid units to stand this frame: the hour's placement, or a
-    /// playing window's placement at its playback fraction.
     pub fn set_raids(&mut self, raids: Vec<(usize, ModelInstance)>) {
         if self.raid_epoch == 0 {
             self.epoch += 1;
@@ -1084,8 +868,6 @@ impl History {
         self.steady = true;
     }
 
-    /// The pass's field no longer holds [`Self::standing`] (an upload replaced it): the next walk
-    /// places every part again.
     pub fn field_replaced(&mut self) {
         self.standing_owed = true;
     }
@@ -1096,9 +878,6 @@ impl History {
         self.steady = false;
     }
 
-    /// Clears the unit slots of `provinces`, or of every province, as a load
-    /// or a tag switch does ([`viewer_foundation::map::presentation::UnitRestart`]): their entities go and their
-    /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         self.land_changed();
         (self.held_slots, self.held_walks, self.unbudgeted) = (0, 0, true);
@@ -1108,9 +887,6 @@ impl History {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .reset(provinces);
-        // A load destroys the raid arrows and their units with the rest of
-        // the map (the raid manager builds them again);
-        // a tag switch shows the new country's raids, other raid ids.
         if provinces.is_none() && self.raid_epoch != 0 {
             self.epoch += 1;
             self.raid_epoch = self.epoch;
@@ -1118,19 +894,12 @@ impl History {
         self.provinces.reset(provinces);
     }
 
-    /// Runs on `schedule`, the view's counters' own, from now on: a view keeps
-    /// one schedule for its units and its map icons.
     pub fn share_schedule(&mut self, schedule: &Shared) {
         if !Arc::ptr_eq(&self.schedule, schedule) {
             self.schedule = Arc::clone(schedule);
         }
     }
 
-    /// The frame's advance of the schedule at this camera, made before the
-    /// view's map icons read the dirty bits (province updates run
-    /// before map-icon updates); the frame's walk
-    /// ([`Self::update_models`]) then takes it instead of advancing again. A
-    /// frame whose walk has not yet taken the last advance advances nothing.
     pub fn advance_schedule(&mut self, camera: Camera, viewport: [u32; 2]) {
         let mut schedule = self
             .schedule
@@ -1139,12 +908,10 @@ impl History {
         schedule.advance_frame_boxes(&self.province_bounds, camera, viewport, self.steady, self.province_boxes);
     }
 
-    /// The view's schedule, whose list the last walk read.
     pub fn schedule(&self) -> &Shared {
         &self.schedule
     }
 
-    /// A rewound clock must reset before taking updates, so leave its cut to the walk.
     pub fn take_province_frame(&self, time: f32) -> Option<(ProvinceFrame, FrameRestore)> {
         if self.last.is_some_and(|previous| time < previous) {
             return None;
@@ -1155,7 +922,6 @@ impl History {
             .take_frame()
     }
 
-    /// Gives back a frame cut whose walk never ran, as if never taken.
     pub fn untake_province_frame(&self, restore: FrameRestore) {
         self.schedule
             .lock()
@@ -1163,8 +929,6 @@ impl History {
             .untake_frame(restore);
     }
 
-    /// The scene's single frame walk: buildings then units per province,
-    /// followed by deferred land creation. Offline exports settle both histories.
     #[allow(clippy::too_many_arguments)]
     pub fn update_models(
         &mut self,
@@ -1188,10 +952,6 @@ impl History {
         )
     }
 
-    /// The creations a walk makes before its frame's room can cut it short: what the walks before
-    /// it held, shared over the walks left before
-    /// [`viewer_foundation::map::frame_budget::BOUND`], so a figure an hour brings waits no longer
-    /// than that however busy the frames are.
     fn floor(&self) -> usize {
         match viewer_foundation::map::frame_budget::BOUND.saturating_sub(self.held_walks) {
             0 => usize::MAX,
@@ -1199,13 +959,11 @@ impl History {
         }
     }
 
-    /// What this walk's frame refused to create, for the next walk's floor.
     fn carried(&mut self, held: usize) {
         self.held_slots = held;
         self.held_walks = if held == 0 { 0 } else { self.held_walks + 1 };
     }
 
-    /// Uses the host's cut without spending the shared schedule twice.
     #[allow(clippy::too_many_arguments)]
     pub fn update_models_with_frame(
         &mut self,
@@ -1222,9 +980,6 @@ impl History {
         let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
-        // The figures this hour brings take the room the frame has left; what does not fit waits
-        // for a later frame ([`Self::floor`] makes what an earlier frame held whatever this
-        // frame's clock says, so nothing waits past the bound).
         use viewer_foundation::map::frame_budget;
         let deadline = frame_budget::deadline(frame_budget::Mark::Actors);
         if let (Some(spent), Some(room)) = (frame_budget::spent(), frame_budget::room(frame_budget::Mark::Actors)) {
@@ -1250,8 +1005,6 @@ impl History {
         self.carried(budget.held());
         viewer_foundation::view_record::add("unit models", "history_held", self.held_slots as u64);
         match deadline {
-            // A frame with no budget creates everything its hour brings, so what it leaves standing
-            // is what a frame with no budget makes: nothing may be pending after it.
             None => frame_budget::check::quiet("unit figures", self.held_slots),
             Some(_) => frame_budget::check::carrying("unit figures", self.held_slots, self.held_walks),
         }
@@ -1315,8 +1068,6 @@ impl History {
         self.drawn(&moving)
     }
 
-    /// One walk whose frame has already spent its room for what an hour brings: the tests' own
-    /// budgeted frame.
     #[cfg(test)]
     fn step_held(&mut self, time: f32, gates: Gates, shown: [bool; 2], budget: &mut Budget) -> Vec<(usize, ModelInstance)> {
         let moving = self.step_with_frame(time, gates, shown, true, |_| true, budget, |_, _| {}, None,
@@ -1325,8 +1076,6 @@ impl History {
         self.drawn(&moving)
     }
 
-    /// Where a frame draws every part: the hours' own placements with the parts this frame moved
-    /// written again at their own place among them.
     #[cfg(test)]
     pub(crate) fn drawn(
         &self,
@@ -1339,7 +1088,6 @@ impl History {
         placed
     }
 
-    /// Uses cut updates, or takes the shared schedule when no cut exists.
     #[allow(clippy::too_many_arguments)]
     fn step_with_frame(
         &mut self,
@@ -1354,8 +1102,6 @@ impl History {
         deadline: Option<std::time::Instant>,
     ) -> crate::map::models::Moving {
         self.land_changed();
-        // The walk after a load, a seek or a tag switch makes a whole picture, not an hour's
-        // change to one, so no frame's clock cuts it.
         let deadline = deadline.filter(|_| !std::mem::take(&mut self.unbudgeted));
         if deadline.is_some() {
             budget.set_floor(self.floor());
@@ -1371,23 +1117,15 @@ impl History {
             steady: self.steady,
         };
         self.last = Some(time);
-        // Naval animators advance by the render delta the view's drawn animators take.
         let animators = Frame {
             delta: self.movement_delta.take().unwrap_or(frame.delta),
             ..frame
         };
         self.combats.begin_frame(frame.delta);
-        // The native literal, advanced before the province updates (unless
-        // the frame already advanced it for its map icons); never indexed by
-        // the replay hour.
         let schedule_span = viewer_foundation::profiling::span("units_schedule");
-        // The frame's update list, the one the map icons' owners read. Buildings consume
-        // every group through each reached province, so omitted unit visits leave their
-        // order and shared budget unchanged.
         self.queued.clear();
         self.updates.clear();
         match province_frame {
-            // The host took exactly this at its frame cut.
             Some(taken) => self.updates.extend_from_slice(taken.updates()),
             None => {
                 let schedule = Arc::clone(&self.schedule);
@@ -1407,8 +1145,6 @@ impl History {
         let mut counts = WalkCounts::default();
         let judged = crate::map::actor_check::due(&mut self.checks);
         let mut judged_before = Vec::new();
-        // A pass of the land round robin is made where the camera shows land models and the
-        // creation allowance has something left; a province the walk leaves alone counts it too.
         let land_pass = frame.shown[Kind::Land as usize];
         let dense = &mut self.provinces;
         let mut at = 0;
@@ -1422,10 +1158,6 @@ impl History {
                 continue;
             };
             counts.updates += 1;
-            // Nothing this province holds is due: no figure is growing, shrinking or fading, no
-            // slot has reached its hundredth visit, the hour kept the targets its last visit
-            // applied, the camera's gates are the ones it answered, and no naval candidate or
-            // combat actor stands in it. Its visit counter runs on; nothing else is done.
             let pass = land_pass && budget.remaining() != 0;
             if record.province.idle(update, frame, pass)
                 && !record.has_candidates
@@ -1448,8 +1180,6 @@ impl History {
                 judged_before.push((at, record.province.clone()));
             }
             let province = &mut record.province;
-            // The buildings of every province the walk left alone spent nothing of the shared
-            // allowance, so their groups are applied here, in the order the game applies them.
             buildings(id, budget);
             match update {
                 Update::InView => {
@@ -1482,9 +1212,6 @@ impl History {
                         budget,
                     );
                     province.finalize_shown(frame, budget);
-                    // The frame's own room is tested only where this province asked for a
-                    // creation, so a frame that brings nothing reads no clock and a visit and the
-                    // judge's copy of it always see one allowance.
                     if let Some(deadline) = deadline
                         && !budget.is_cut()
                         && self.queued.len() > queued_before
@@ -1505,8 +1232,6 @@ impl History {
             } else {
                 dense.populated.insert(at);
             }
-            // This update answered these targets. The record holds the table, so its address
-            // stays its own and one pointer says whether a later hour changed anything.
             let record = &mut dense.records[at];
             record.applied.clone_from(&record.targets);
         }
@@ -1530,7 +1255,6 @@ impl History {
             if !record.province.entities.is_empty() {
                 dense.populated.insert(at);
             }
-            // A figure created here starts at zero where its province was not already shown.
             record.province.quiet &= record
                 .province
                 .entities
@@ -1538,8 +1262,6 @@ impl History {
                 .all(|entity| entity.scale >= 1.0 && !entity.shrinking);
         }
         drop(deferred_span);
-        // The judge compares each province against the state the frame found, after the frame's
-        // deferred creations, which are part of what one visit does.
         if judged {
             for (at, before) in &judged_before {
                 counts.judge(before, &self.provinces.records[*at].province);
@@ -1547,9 +1269,6 @@ impl History {
             crate::map::actor_check::checked("unit walk", counts.updates);
         }
         counts.record();
-        // Graphical province setters and probes run before idle updates
-        // dispatches the animation manager. Admit each private combat player
-        // once here, after this frame's callbacks and before its rendered pose.
         self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
         let _collect_span = viewer_foundation::profiling::span("units_collect");
@@ -1568,8 +1287,6 @@ impl History {
                 },
             )
         }));
-        // A walk that left every part where its hour placed it keeps the field the pass holds,
-        // so a figure this frame moves costs its own parts and nothing else.
         let kept = !std::mem::take(&mut self.standing_owed)
             && next.len() == self.standing.len()
             && std::iter::zip(&next, &self.standing).all(|(now, held)| {
@@ -1582,7 +1299,6 @@ impl History {
             .map(|&(ordinal, delta)| (ordinal, delta.apply(self.standing[ordinal].1)))
             .collect();
         if kept {
-            // A figure the frame before moved and this one does not stands where its hour puts it.
             moved.extend(self.was_moving.iter().copied().filter_map(|ordinal| {
                 moving
                     .binary_search_by_key(&ordinal, |entry| entry.0)
@@ -1608,13 +1324,6 @@ impl History {
         }
     }
 
-    /// The flight record's check of every land figure drawn against the frame before
-    /// ([`viewer_foundation::view_record`], section `units`): `jumps`, a figure whose root moved
-    /// further than its animator's drawn point did (a moving figure is drawn at that point, so
-    /// only a placement, an install or a re-creation can add to it); `restarts`, a figure whose walk
-    /// began again (its entity made anew: the game's own when its model changes); `appeared`, a
-    /// figure drawn that was not the frame before (it grows in at the content's popup speed);
-    /// `figures`, those drawn. Motion's own glides are the counters' animator's, counted there.
     fn note_motion(&mut self) {
         use viewer_foundation::view_record::{add, set};
         let distance = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
@@ -1646,8 +1355,6 @@ impl History {
         self.drawn_at = now;
     }
 
-    /// Each land figure this frame draws and is not fading out, with each part where the frame
-    /// draws it.
     pub fn land_figures(&self) -> Vec<LandFigure> {
         let mut figures = Vec::new();
         for at in self.provinces.populated.iter() {
@@ -1737,10 +1444,6 @@ pub mod tests {
         h.step_with_frame(time, GATES, [true; 2], true, |_| true, &mut Budget::new(i32::MAX, h.steady), |_, _| {}, None, None)
     }
 
-    /// An upload replaces the pass's field with the residency targets, every hull of a roster at
-    /// full scale: the walk after it places its parts again though none moved. Before, a walk that
-    /// left every part where it stood kept the uploaded field, whose same-class hulls raise one
-    /// idle event each and are refused as one presentation.
     #[test]
     fn a_walk_after_an_upload_places_its_parts_though_none_moved() {
         let mut h = history(vec![target(1, Kind::Land)], true);
@@ -1784,7 +1487,6 @@ pub mod tests {
     }
 
     impl Province {
-        // Original per-province allocation/collection is the queue-order oracle.
         fn visit_collected<'a>(
             &mut self,
             targets: Option<&BTreeMap<Slot, Parts>>,
@@ -1818,8 +1520,6 @@ pub mod tests {
                         }
                         self.land_cursor = order;
                         let visits = *self.land_visits.entry(slot).or_insert(self.land_passes - 1);
-                        // A slot is queued when its representative changed, which
-                        // here means it has no entity, or on its hundredth visit.
                         if frame.steady
                             || self.land_passes.saturating_sub(visits) > 99
                             || !self.entities.contains_key(&slot)
@@ -1843,13 +1543,9 @@ pub mod tests {
                     return frame.shown[kind] && placed(slot);
                 }
                 if !frame.shown[kind] {
-                    // The gate-loss loop precedes the inactive fade pass, so the first frame
-                    // out of range visits twice.
                     return (!was[kind] || entity.shrink(frame.delta, frame.gates))
                         && entity.shrink(frame.delta, frame.gates);
                 }
-                // A missing stack of a kind shown now and before is destroyed at
-                // once when popup growth is requested; otherwise it shrinks.
                 placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
             });
             for (&slot, parts) in targets.into_iter().flatten() {
@@ -1861,8 +1557,6 @@ pub mod tests {
                     if let Some(entity) = self.entities.get_mut(&slot) {
                         for (&index, &target) in parts {
                             if let Some(part) = entity.parts.get_mut(&index) {
-                                // Transform/state follow this frame; the definition waits
-                                // for the game's periodic selection or pointer change.
                                 let mesh = part.target.mesh;
                                 part.target = target;
                                 part.target.mesh = mesh;
@@ -1877,25 +1571,18 @@ pub mod tests {
                     }
                     continue;
                 }
-                // The game acquires a formation root outside the counter, full
-                // size where ships were already shown, and grows it even while
-                // all its hulls wait.
                 let entity = self.entities.entry(slot).or_insert_with(|| Entity {
                     kind: slot.0,
                     scale: if frame.steady || was[kind] { 1.0 } else { 0.0 },
                     shrinking: false,
                     parts: BTreeMap::new(),
                 });
-                // Hulls attach and detach under the root without touching its
-                // scale, slot 0 first.
                 entity.parts.retain(|part, _| parts.contains_key(part));
                 for (&index, &target) in parts {
                     let replace = entity.parts.get(&index).is_none_or(|part| {
                         part.target.mesh != target.mesh || part.target.occupant != target.occupant
                     });
                     if replace {
-                        // The game clears a stale support slot before attaching;
-                        // slot 0 attaches directly and keeps its old hull if held.
                         if index != 0 {
                             entity.parts.remove(&index);
                         }
@@ -1917,8 +1604,6 @@ pub mod tests {
                     (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
                 };
             }
-            // The game walks native visual slots, not task-force handles. A land
-            // representative in the same slot admits no ordinary naval formation.
             for formation in formations {
                 let entity = self
                     .entities
@@ -2086,7 +1771,6 @@ pub mod tests {
                     collected[id as usize].leave(frame.steady);
                     continue;
                 }
-                // Buildings charge the same shared allowance before this province.
                 if id % 3 == 0 {
                     assert_eq!(streamed_budget.take(), collected_budget.take());
                 }
@@ -2158,10 +1842,6 @@ pub mod tests {
         }
     }
 
-    /// A province the walk leaves alone ends in the state every visit would have left it in:
-    /// across paused frames, hours that change its targets and hours that do not, the camera
-    /// losing and regaining each height gate, the arrow flag turning, offline settling, and
-    /// frames the creation allowance cuts short.
     #[test]
     fn a_province_left_alone_ends_where_every_visit_would_have() {
         let (mut eager, mut lazy) = (Province::default(), Province::default());
@@ -2170,8 +1850,6 @@ pub mod tests {
         let mut held: Option<Arc<ProvinceTargets>> = None;
         let (mut left, mut visited) = (0, 0);
         for number in 0..900u32 {
-            // The hour changes its figures' meshes every 97 frames and nothing else between,
-            // which is what playback does: most hours leave most provinces alone.
             let hour = number / 97;
             let targets = Targets::from(
                 (0..5u64)
@@ -2184,8 +1862,6 @@ pub mod tests {
                     .collect::<Vec<_>>(),
             );
             let prepared = Arc::clone(&targets.0.provinces[&5]);
-            // The hour keeps the table a province already holds when it builds an equal one, as
-            // [`provinces::Record::install`] does, so an unchanged hour is one pointer away.
             let prepared = match &held {
                 Some(table) if **table == *prepared => Arc::clone(table),
                 _ => {
@@ -2197,10 +1873,8 @@ pub mod tests {
                 province.lands = Arc::clone(&prepared.lands);
             }
             let frame = Frame {
-                // A paused frame, and a frame of play.
                 delta: if number % 7 == 0 { 0.0 } else { 1.0 / 60.0 },
                 gates: GATES,
-                // Each gate lost and regained, together and apart.
                 shown: [number % 211 < 180, number % 307 < 280],
                 arrows: number % 401 < 380,
                 steady: number % 457 == 456,
@@ -2464,8 +2138,6 @@ pub mod tests {
                 .map(|(_, i)| *i)
                 .collect::<Vec<_>>()
         };
-        // Above both cutoffs, out of view and with no creation allowance
-        // left, the raid unit stands at full scale; the figure does not.
         let placed = limited(&mut h, 0.0, 0);
         assert_eq!(placed.len(), 1);
         let first = raids(&placed)[0];
@@ -2473,7 +2145,6 @@ pub mod tests {
         assert_ne!(first.animation_epoch, 0, "its clock starts at creation");
         let hidden = h.step(0.5, GATES, [false; 2], false, |_| false);
         assert_eq!(raids(&hidden), [first]);
-        // A tag switch keeps its history, a load-equivalent reset renews it.
         h.reset(Some(&[40].into()));
         assert_eq!(
             raids(&near(&mut h, 1.0))[0].animation_epoch,
@@ -2484,7 +2155,6 @@ pub mod tests {
             raids(&near(&mut h, 1.5))[0].animation_epoch,
             first.animation_epoch
         );
-        // A playing window moves it by replacing the frame's placement.
         let moved = ModelInstance {
             position: [1.0, 2.0, 3.0],
             ..raid
@@ -2543,7 +2213,6 @@ pub mod tests {
             [30],
             "Recreating units leaves the cursor on the last slot visited"
         );
-        // A new representative in the cursor's slot is visited first.
         h.set(vec![land(1, 10), land(2, 40)], Arc::default(), false);
         assert_eq!(meshes(limited(&mut h, 0.3, 1)), [10]);
     }
@@ -2563,14 +2232,10 @@ pub mod tests {
             .collect();
         let whole: BTreeSet<usize> = targets.iter().map(|target| target.mesh).collect();
         let mut h = history(targets.clone(), false);
-        // Frame by frame, with the frame's room already spent and the content's count never
-        // binding: what the hour brings is made over the frames, and no figure is made twice.
         let mut made: Vec<usize> = Vec::new();
         let mut epochs: BTreeMap<usize, u32> = BTreeMap::new();
         let mut gates = GATES;
         for frame in 0..=BOUND {
-            // A resize and a map-mode change between frames: the gates and the viewed set move,
-            // and what is pending is neither lost nor made again.
             if frame == 1 {
                 gates.arrows = GATES.arrows * 0.5;
             }
@@ -2596,13 +2261,10 @@ pub mod tests {
         assert_eq!(made.len(), whole.len(), "every figure is made");
         assert_eq!(made.iter().copied().collect::<BTreeSet<_>>(), whole);
         assert_eq!(h.held_slots, 0, "and nothing is left pending at the bound");
-        // Paused: the same hour again at a standing clock brings nothing and carries nothing.
         let mut budget = Budget::new(i32::MAX, false);
         let paused = h.step_held(0.4, gates, [true; 2], &mut budget);
         assert_eq!(paused.len(), whole.len(), "a paused frame shows every figure");
         assert_eq!(h.held_slots, 0);
-        // A seek: the entities go, and the walk that follows makes the whole picture whatever the
-        // frame's clock says.
         h.reset(None);
         h.set(targets, Arc::default(), false);
         let mut budget = Budget::new(i32::MAX, false);
@@ -2667,13 +2329,12 @@ pub mod tests {
 
     #[test]
     fn pan_out_keeps_scale_and_entity_until_the_province_id_slot() {
-        // Order and sparse IDs are immaterial; these are native ID array indexes.
         let mut h = history(vec![target(104, Kind::Land), target(99, Kind::Ship)], false);
-        near(&mut h, 0.0); // phase 1
-        let full = near(&mut h, 1.0); // phase 2
-        let hidden = h.step(1.1, GATES, [true; 2], true, |_| false); // phase 3
+        near(&mut h, 0.0);
+        let full = near(&mut h, 1.0);
+        let hidden = h.step(1.1, GATES, [true; 2], true, |_| false);
         assert_eq!(hidden, full, "pan-out does not fade");
-        let hidden = h.step(1.2, GATES, [true; 2], true, |_| false); // phase 4
+        let hidden = h.step(1.2, GATES, [true; 2], true, |_| false);
         assert_eq!(hidden.len(), 1);
         assert_eq!(hidden[0].1.animation_seed, 99);
         let back = near(&mut h, 1.3);
@@ -2802,17 +2463,13 @@ pub mod tests {
         let mut h = history(vec![target(5, Kind::Land)], false);
         near(&mut h, 0.0);
         let epoch = near(&mut h, 1.0)[0].1.animation_epoch;
-        h.step(1.1, GATES, [false; 2], false, |_| true); // also beyond arrow cutoff
+        h.step(1.1, GATES, [false; 2], false, |_| true);
         h.step(1.2, GATES, [false; 2], false, |_| false);
-        let held = h.step(1.3, GATES, [false; 2], false, |_| false); // phase 5
+        let held = h.step(1.3, GATES, [false; 2], false, |_| false);
         assert_eq!(held[0].1.animation_epoch, epoch);
         assert_eq!(near(&mut h, 1.4)[0].1.animation_epoch, epoch);
     }
 
-    /// The game's raids mode clears the same per-province land-model bit its units cutoff
-    /// clears, so a political â†’ raids â†’ political round trip retires and restores land models
-    /// exactly as a camera rising above the cutoff and coming back down does, frame for frame;
-    /// ships are untouched.
     #[test]
     fn a_map_mode_without_land_models_acts_as_a_camera_above_their_cutoff() {
         use crate::map::map_mode::{MapMode, Stock, visibility};
@@ -2837,7 +2494,6 @@ pub mod tests {
             .enumerate()
         {
             let time = step as f32 * 0.25;
-            // Above the land cutoff (100) and below the ship cutoff (200).
             let high = if in_raids { 150.0 } else { 50.0 };
             let a = by_camera.update(camera(high), [1024, 768], time, GATES);
             let mode = if in_raids { &raids } else { &political };
@@ -2913,9 +2569,6 @@ pub mod tests {
         );
     }
 
-    /// The view's units and map icons run on one schedule: a frame whose map icons already
-    /// advanced it (province updates before map-icon updates) walks its
-    /// provinces at that phase instead of advancing again, and a reset sets the dirty bits
     #[test]
     fn the_units_walk_the_phase_their_map_icons_advanced() {
         let mut h = history(vec![target(1, Kind::Land)], false);
@@ -2923,18 +2576,14 @@ pub mod tests {
         h.share_schedule(&schedule);
         schedule.lock().unwrap().advance([1], |_| false, false);
         h.step(0.0, GATES, [true, true], false, |_| false);
-        // One advance: phase 1, which updates province 1 out of view (the walk read that list).
         assert_eq!(schedule.lock().unwrap().update(1), Some(Update::OffScreen));
         assert!(!schedule.lock().unwrap().dirty(1));
-        // A frame the map icons did not advance: the walk advances it, and the clean province
-        // out of view is no longer in the list.
         h.step(0.1, GATES, [true, true], false, |_| false);
         assert_eq!(schedule.lock().unwrap().update(1), None);
         h.reset(None);
         assert!(schedule.lock().unwrap().dirty(1));
     }
 
-    /// Compare cut frames with the independent walk across rewinds, resets and failed frames.
     #[test]
     fn cut_frames_place_and_schedule_like_walks_that_take_their_own() {
         let targets: Vec<_> = (1..=40).map(|id| target(id, Kind::Land)).collect();
@@ -2974,7 +2623,6 @@ pub mod tests {
             }
             let taken = cut.take_province_frame(time);
             if frame % 13 == 12 {
-                // The frame fails before its walk: the cut goes back and neither arm walks.
                 if let Some((_, restore)) = taken {
                     cut.untake_province_frame(restore);
                 }
@@ -2997,7 +2645,6 @@ pub mod tests {
                 assert_eq!(cut.updates, walk.updates, "frame {frame}");
             }
             {
-                // The carried state borrows its guard: bind both before comparing.
                 let cut_guard = cut_schedule.lock().unwrap();
                 let walk_guard = walk_schedule.lock().unwrap();
                 assert_eq!(
@@ -3007,7 +2654,6 @@ pub mod tests {
                 );
             }
         }
-        // The cut path, not only the fallback, was exercised.
         assert!(cut_walks > 200, "{cut_walks} cut walks");
     }
 }

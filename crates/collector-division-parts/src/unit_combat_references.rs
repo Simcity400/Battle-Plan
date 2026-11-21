@@ -1,7 +1,3 @@
-//! Checked pure projection of owned native ordered simulation references.
-//! Complete vector only; repeats/order/full bits survive. Frame request/loan
-//! association admits the attempted hour, not a native admission certificate;
-//! the hourly host row, not the packet, records that hour.
 
 use engine_native::cunit::MapCombatReference;
 use replay_data::{
@@ -81,9 +77,6 @@ pub fn project(
         }
     }
 }
-/// No temporary Vec/allocation for unchanged-row comparison. An equal
-/// acquisition at a later hour is unchanged, including an authentic empty
-/// vector; a missing request still differs from a present packet.
 pub fn matches(
     hour: Option<i32>,
     entries: Option<&[MapCombatReference]>,
@@ -139,7 +132,6 @@ mod tests {
         );
         let previous = Recorded::Value(Some(projected));
         assert!(matches(Some(i32::MIN), Some(&entries), 3, &previous));
-        // The next hour's equal acquisition reuses the unchanged row.
         assert!(matches(Some(i32::MIN + 1), Some(&entries), 3, &previous));
         assert!(!matches(None, Some(&entries), 3, &previous));
         assert!(!matches(

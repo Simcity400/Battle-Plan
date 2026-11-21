@@ -51,7 +51,6 @@ fn the_camera_height_picks_the_level_the_defines_name() {
     };
     assert_eq!(modded.level(350.0), Level::Province);
     assert_eq!(modded.grouping(350.0), Level::Province);
-    // A mod that gives the pass no budget turns grouping off at every height.
     let off = GroupDefines {
         passes: 0,
         ..DEFINES
@@ -68,7 +67,6 @@ fn a_huge_region_is_one_above_the_define_and_not_one_below() {
     let small = extents(DEFINES.state_huge, DEFINES.strategic_area_huge);
     assert!(!small.state_is_huge(7));
     assert!(!small.region_is_huge(9));
-    // An unknown region is not huge, matching the engine's null template.
     assert!(!small.state_is_huge(999));
     assert!(!small.region_is_huge(999));
 }
@@ -91,11 +89,9 @@ fn the_huge_defines_truncate_like_the_native_integer_getter() {
         .unwrap();
     let read = GroupDefines::read(&defines).unwrap();
     assert_eq!(read.province_distance, 90.5);
-    // A fixed5 reading would keep 100.9 and -220.7.
     assert_eq!(read.state_huge, 100.0);
     assert_eq!(read.strategic_area_huge, -220.0);
     assert_eq!(read.passes, 20);
-    // So a state 100.5 wide is huge, which 100.9 would not call it.
     let extents = Extents::build(
         &[(1, [0.0, 0.0, 100.5, 1.0])].into(),
         &[(1, 7)].into(),
@@ -184,7 +180,6 @@ fn the_kind_the_owner_and_the_relation_all_gate_a_group() {
     assert!(!may_group(&a, &other, Level::State, &extents, &|_, _| {
         false
     }));
-    // The native read is directed: the other owner's relation toward the first.
     let toward_first = |first, other| (other, first) == (2, 1);
     assert!(may_group(&a, &other, Level::State, &extents, &toward_first));
     assert!(!may_group(
@@ -194,7 +189,6 @@ fn the_kind_the_owner_and_the_relation_all_gate_a_group() {
         &extents,
         &toward_first
     ));
-    // Level 3 never consults the relation.
     assert!(may_group(
         &a,
         &other,
@@ -258,8 +252,6 @@ fn a_nontransitive_relation_joins_every_accepting_group() {
         icon(0, 2, 200, Some(7), 40.0),
         icon(0, 3, 300, Some(7), 20.0),
     ];
-    // 2 is not friendly toward 1, so it leads its own group; 3 is friendly
-    // toward both leaders, and the native scan appends it to both.
     let directed = |first, other| matches!((other, first), (3, 1) | (3, 2));
     let groups = group(
         &icons,
@@ -276,7 +268,6 @@ fn a_nontransitive_relation_joins_every_accepting_group() {
 
 #[test]
 fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
-    // Brute force: offer each icon to every group, as the game does.
     fn scan(
         icons: &[Icon],
         at: Level,
@@ -298,13 +289,11 @@ fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
         }
         groups
     }
-    // A directed nontransitive relation, everyone allied and no one allied.
     let relations: [fn(u32, u32) -> bool; 3] = [
         |a, b| !(a + 2 * b).is_multiple_of(3),
         |_, _| true,
         |_, _| false,
     ];
-    // The brute force must reach every branch the index narrows on.
     let mut several_groups = false;
     let mut sea_below_level_three = false;
     let mut huge_region_by_state = false;
@@ -315,8 +304,6 @@ fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             (seed >> 16) % modulo
         };
-        // Place metadata is drawn per icon, so one province can also carry
-        // mixed land/sea, state and region facts.
         let icons: Vec<Icon> = (0..300)
             .map(|_| {
                 let sea = next(5) == 0;
@@ -334,7 +321,6 @@ fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
         for friendly in relations {
             for huge_states in [false, true] {
                 for huge_regions in [false, true] {
-                    // State 7 and region 3 have no extent: never huge.
                     let mut extents = Extents {
                         state_huge: DEFINES.state_huge,
                         strategic_area_huge: DEFINES.strategic_area_huge,
@@ -418,8 +404,6 @@ fn level_none_leaves_every_icon_where_it_was() {
 #[ignore = "release unit scaling benchmark"]
 fn unit_scale_grouping() {
     for count in [50_000, 100_000] {
-        // Unique plates distributed among 10,000 synthetic provinces,
-        // 100 states and 20 regions. No country is allied to another.
         let icons: Vec<_> = (0..count)
             .map(|i| Icon {
                 kind: 0,
@@ -506,7 +490,7 @@ fn native_grouping_uses_directed_stored_truth_despite_active_war() {
         native_row(102, vec![], [1, 128]),
     ]);
     let mut links = links(&frame);
-    links.insert(201, 1); // Aliased owner reference, canonical target slots.
+    links.insert(201, 1);
     let native = NativeRelations::read(&frame, &links).unwrap();
     let icon = |owner| Icon {
         kind: 0,
@@ -538,7 +522,6 @@ fn native_grouping_uses_directed_stored_truth_despite_active_war() {
     assert_eq!(native.zero_at_war(2), Ok(false));
 }
 
-/// One level for every icon, as the game's camera groups.
 fn everywhere(level: Level, icons: &[Icon]) -> Vec<Level> {
     vec![level; icons.len()]
 }
@@ -546,8 +529,6 @@ fn everywhere(level: Level, icons: &[Icon]) -> Vec<Level> {
 #[test]
 fn each_icon_groups_at_its_own_level_and_two_icons_at_the_lower_of_theirs() {
     let extents = extents(10.0, 10.0);
-    // One owner's icons in four provinces of one state, as a free eye sees them: the two far
-    // ones gather by their state, the near ones stay where they are.
     let icons = [
         icon(0, 1, 100, Some(7), 0.0),
         icon(0, 1, 101, Some(7), 10.0),
@@ -560,7 +541,6 @@ fn each_icon_groups_at_its_own_level_and_two_icons_at_the_lower_of_theirs() {
         .map(|group| group.members)
         .collect();
     assert_eq!(members, [vec![0, 2], vec![1], vec![3]]);
-    // A province-level icon joins a state-level group only through its own province.
     let icons = [
         icon(0, 1, 100, Some(7), 0.0),
         icon(0, 1, 100, Some(7), 4.0),
@@ -570,8 +550,6 @@ fn each_icon_groups_at_its_own_level_and_two_icons_at_the_lower_of_theirs() {
     let groups = group(&icons, &levels, &extents, &all_friendly);
     let members: Vec<_> = groups.iter().map(|group| group.members.clone()).collect();
     assert_eq!(members, [vec![0, 1], vec![2]]);
-    // A state-level icon in another province no longer joins a group holding a province-level
-    // member: it would gather that member across provinces.
     let icons = [
         icon(0, 1, 100, Some(7), 0.0),
         icon(0, 1, 100, Some(7), 4.0),
@@ -593,8 +571,6 @@ fn each_icon_groups_at_its_own_level_and_two_icons_at_the_lower_of_theirs() {
 #[test]
 fn a_nearer_icon_does_not_lower_a_group_whose_members_span_provinces() {
     let extents = extents(10.0, 10.0);
-    // Two far icons of one state gather from two provinces; a near one in the first's province
-    // would share only that province with the group, so it stands alone.
     let icons = [
         icon(0, 1, 100, Some(7), 0.0),
         icon(0, 1, 101, Some(7), 10.0),
@@ -606,8 +582,6 @@ fn a_nearer_icon_does_not_lower_a_group_whose_members_span_provinces() {
         .map(|group| group.members)
         .collect();
     assert_eq!(members, [vec![0, 1], vec![2]]);
-    // Members that all share the first's province still take it, and the group then gathers by
-    // that province alone.
     let icons = [
         icon(0, 1, 100, Some(7), 0.0),
         icon(0, 1, 100, Some(7), 10.0),
@@ -620,8 +594,6 @@ fn a_nearer_icon_does_not_lower_a_group_whose_members_span_provinces() {
         .map(|group| group.members)
         .collect();
     assert_eq!(members, [vec![0, 1, 2], vec![3]]);
-    // Lowering from a region to a state, a member of another, unfriendly owner in the same state,
-    // which only the region admits, keeps the newcomer out.
     let mut sea_far = icon(0, 1, 200, Some(7), 0.0);
     let mut other_owner = icon(0, 2, 201, Some(7), 10.0);
     let mut near = icon(0, 1, 202, Some(7), 4.0);
@@ -645,8 +617,6 @@ fn only_a_strategic_member_stands_at_its_region_s_centre() {
     sea.region = Some(9);
     let mut other = sea.clone();
     other.anchor = [200.0, 0.0, 0.0];
-    // Region 9's centre is (5, 0, 5): the strategic member stands there, the state-level one
-    // where it is, and their group between them.
     let groups = group(
         &[sea, other],
         &[Level::Strategic, Level::State],
@@ -657,18 +627,11 @@ fn only_a_strategic_member_stands_at_its_region_s_centre() {
     assert_eq!(groups[0].anchor, [102.5, 0.0, 2.5]);
 }
 
-/// A group's anchor and its track are the mean of its members' places, and a mean summed in the
-/// order the members arrived in is not the same number twice: a stopped picture's counters then
-/// stand a pixel apart depending on the order a stack's members joined. The mean is summed over
-/// the members in their own canonical order and in double precision, so two orders of the same
-/// members give the same anchor, bit for bit.
 #[test]
 fn two_orders_of_the_same_members_give_one_anchor_and_one_track() {
     let track = |x: f32| {
         Track::new(&[Place { hour: 100, at: [x, 0.0, x * 0.3] }, Place { hour: 148, at: [x + 11.0, 0.0, x * 0.3] }], WIDTH)
     };
-    // Places whose f32 sum depends on the order they are added in: a large one and many small
-    // ones, as a stack of 1,500 divisions astride a province gives.
     let icons: Vec<Icon> = (0..64)
         .map(|at| {
             let x = if at == 0 { 4096.0 } else { 0.1 + at as f32 * 0.013 };
@@ -691,17 +654,12 @@ fn two_orders_of_the_same_members_give_one_anchor_and_one_track() {
     assert_eq!(track_forwards, track_backwards, "and the same two places");
 }
 
-/// A member whose track stands on other hours than the group's — one the publication before this
-/// one did not place, so it has no place at the group's first hour — contributes where it stands
-/// at both of them. An hour a member has no place for is never filled in with a guess, and never
-/// with a zero: a zeroed place drags the group's mean to the map's origin.
 #[test]
 fn a_member_without_the_group_s_hours_contributes_where_it_stands() {
     let moving = Icon {
         track: Some(Track::new(&[Place { hour: 100, at: [100.0, 0.0, 0.0] }, Place { hour: 148, at: [120.0, 0.0, 0.0] }], WIDTH)),
         ..icon(0, 1, 100, Some(7), 100.0)
     };
-    // Its own places stand on other hours: this publication is the first to place it.
     let joining = Icon {
         track: Some(Track::new(&[Place { hour: 148, at: [100.0, 0.0, 0.0] }, Place { hour: 196, at: [140.0, 0.0, 0.0] }], WIDTH)),
         ..icon(0, 1, 100, Some(7), 100.0)
@@ -712,21 +670,16 @@ fn a_member_without_the_group_s_hours_contributes_where_it_stands() {
     update_anchors(&mut groups, &icons, &levels, &extents(10.0, 10.0));
     let track = groups[0].track.clone().expect("the first member moves");
     assert_eq!((track.places()[0].hour, track.places()[1].hour), (100, 148));
-    // The joining member stands at 100 at both hours: the mean is 100 and 110, never near zero.
     assert_eq!(track.places()[0].at, [100.0, 0.0, 0.0]);
     assert_eq!(track.places()[1].at, [110.0, 0.0, 0.0]);
 }
 
-/// A group astride the map's seam: its members are unwrapped against the lowest-numbered one for
-/// the mean, the track keeps them unwrapped, and the place a frame reads is folded onto the map
-/// once — so the group travels across the seam and not through the middle of the world.
 #[test]
 fn a_group_astride_the_seam_moves_across_it() {
     let member = |x: f32, to: f32| Icon {
         track: Some(Track::new(&[Place { hour: 100, at: [x, 0.0, 0.0] }, Place { hour: 102, at: [to, 0.0, 0.0] }], WIDTH)),
         ..icon(0, 1, 100, Some(7), x)
     };
-    // Two members a unit either side of the seam, both moving two units east.
     let icons = [member(WIDTH - 1.0, 1.0), member(1.0, 3.0)];
     let levels = everywhere(Level::Province, &icons);
     let mut groups = vec![Group { members: vec![0, 1], anchor: [0.0; 3], track: None }];

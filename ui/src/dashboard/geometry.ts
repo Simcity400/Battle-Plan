@@ -14,11 +14,9 @@ import { useTransitionValue } from './playback';
 import { engine } from '../engine/frame.ts';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
 
-/** A picker toggle as its failure names it. */
 const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/night cycle', alliedPlans: 'Allied battle plans', fog: 'Fog of war' };
 
 export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt'>;
-/** Where a surface was last measured; `onScreen` when both its body and visible part have area. */
 interface Layout { bounds: MapBounds; clip: MapBounds; onScreen: boolean }
 interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null; layout: Layout | null; present: boolean }
 interface Rect { left: number; top: number; right: number; bottom: number }
@@ -33,13 +31,6 @@ export function physicalRect(rect: Rect, dpr: number): MapBounds {
   return { x, y, width: Math.max(0, Math.round(rect.right * dpr) - x), height: Math.max(0, Math.round(rect.bottom * dpr) - y) };
 }
 
-/** One batched native geometry/target channel, independently acknowledged per map. Layout is
- * measured only when it can have changed (`schedule`); clock anchors, a target appearing or going,
- * picker options, hiding and map errors recompose views from the measured layout (`retarget`).
- * Between anchors each native map runs its own clock, so forward playback sends nothing. */
-/** What a map widget shows of an acknowledgement. Playing, any ready frame of the branch answers
- * the clock, so the frame's hour and sequences, which change with every frame drawn, are left out;
- * its date is painted, not rendered (`MapViewsStore.paint`). */
 function shownKey(state: DashboardMapState, playing: boolean): string {
   return JSON.stringify([state.sourceId, state.revision, state.branchId, state.loading, state.error ?? null,
     state.behindReason ?? null, state.hour == null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
@@ -47,9 +38,7 @@ function shownKey(state: DashboardMapState, playing: boolean): string {
 
 export class MapViewsStore {
   private surfaces = new Map<string, Surface>();
-  /** Each view's newest acknowledgement. */
   private states = new Map<string, DashboardMapState>();
-  /** The acknowledgement each view's widget renders, replaced only when what it shows changes. */
   private shown = new Map<string, { key: string; state: DashboardMapState }>();
   private painters = new Map<string, (state: DashboardMapState) => void>();
   private paintFrame: (() => void) | null = null;
@@ -65,46 +54,35 @@ export class MapViewsStore {
   private applied = '';
   private active = false;
   private generation = 0;
-  /** What each view's native picker chose, and where its fog toggle goes. */
   private picker = new PickerOptions();
-  /** Applies a picker toggle the host owns to a view's settings. */
   onToggle: ((view: DashboardMapView, toggle: MapToggle) => void) | null = null;
   private lastViews = new Map<string, DashboardMapView>();
   constructor(private client: DashboardClient, private clock: PlaybackController) {}
 
-  /** The options a view shows: the target's, with the map mode and slots its picker set. */
   viewOptions(id: string, options: MapOptions | undefined): MapOptions | undefined {
     return this.picker.merge(id, options);
   }
 
-  /** Keeps what a view's picker chose for its next layouts. */
   pickerChanged(event: MapOptionsEvent): void { this.picker.changed(event); }
 
-  /** Routes a picker toggle: fog to the view's own switch, the rest to the host's settings. */
   pickerToggled(viewId: string, toggle: MapToggle): void {
     if (this.picker.toggled(viewId, toggle)) return;
     const view = this.lastViews.get(viewId);
     if (view) this.onToggle?.(view, toggle);
   }
 
-  /** Lets a view's picker set its fog switch. */
   onFog(viewId: string, flip: () => void): () => void { return this.picker.onFog(viewId, flip); }
 
-  /** Where each view's failed picker toggles are told, for the recording it shows; the latest save of each setting. */
   private toggleFailures = new Map<string, { recording: string; report: (setting: string, failure: Failure | null) => void }>();
   private toggleSaves = new Map<string, number>();
   private toggleSaved = 0;
 
-  /** Lets a view showing `recording` (`sourceId:revision`) show its picker toggles that failed to save, by
-   * setting: null once that setting's latest toggle has saved. Toggles made on another recording are never told. */
   onToggleFailure(viewId: string, recording: string, report: (setting: string, failure: Failure | null) => void): () => void {
     const entry = { recording, report };
     this.toggleFailures.set(viewId, entry);
     return () => { if (this.toggleFailures.get(viewId) === entry) this.toggleFailures.delete(viewId); };
   }
 
-  /** Saves a view's picker toggle with `save`, telling the view whether the setting's latest toggle saved. A toggle
-   * flips the saved choice, so a failed one is never sent again: toggling again is the user's own new flip. */
   saveToggle(view: DashboardMapView, toggle: MapToggle, save: () => Promise<void>): void {
     const recording = `${view.sourceId}:${view.revision}`;
     const key = JSON.stringify([view.id, recording, toggle.setting]);
@@ -116,7 +94,6 @@ export class MapViewsStore {
       const listener = this.toggleFailures.get(view.id);
       if (listener?.recording === recording) listener.report(toggle.setting, failure);
     };
-    // The service can keep a flip and still fail to answer, so the notice never says it was lost.
     save().then(() => tell(null), (error: unknown) => tell(new ShownError(
       `${TOGGLE_NAMES[toggle.setting]}: this change may not have been kept. Toggling it again makes a new change.`, errorMessage(error))));
   }
@@ -129,7 +106,6 @@ export class MapViewsStore {
     this.observer.observe(viewport);
     for (const surface of this.surfaces.values()) this.observer.observe(surface.element);
     const stopClock = this.clock.subscribe(this.retarget);
-    // Playing or paused decides what of an acknowledgement is shown.
     const stopShown = this.clock.subscribe(this.presentAll);
     const stopFrame = this.clock.subscribeFrame(this.checkPresence);
     let stopStates: (() => void) | undefined;
@@ -165,7 +141,6 @@ export class MapViewsStore {
         const old = this.states.get(state.id);
         if (old && (state.requestedSequence ?? state.sequence) < (old.requestedSequence ?? old.sequence)
           && old.sourceId === state.sourceId && old.revision === state.revision) continue;
-        // A view's visibility depends only on whether its map failed.
         errorChanged ||= !old?.error !== !state.error;
         this.states.set(state.id, state);
         this.present(state.id);
@@ -222,7 +197,6 @@ export class MapViewsStore {
     this.retarget();
     for (const listener of this.hiddenListeners) listener();
   }
-  /** Whether every native map is hidden: by layout controls, or under an open menu that native windows would cover. */
   isHidden = (): boolean => this.hidden;
   subscribeHidden = (listener: () => void): (() => void) => {
     this.hiddenListeners.add(listener);
@@ -235,12 +209,8 @@ export class MapViewsStore {
     this.notify(id);
     this.retarget();
   }
-  /** Sends the views again, unchanged or not: a restarted viewer is restored with the last anchor it was sent. */
   resend(): void { this.applied = ''; this.retarget(); }
-  /** The acknowledgement a view's widget renders ([`shownKey`]). */
   getState = (id: string): DashboardMapState | null => this.shown.get(id)?.state ?? null;
-  /** Paints a view's newest acknowledgement now and at most once a frame after acknowledgements arrive:
-   * what changes with every frame the map draws reaches the page this way, never through a render. */
   paint(id: string, painter: (state: DashboardMapState) => void): () => void {
     this.painters.set(id, painter);
     const state = this.states.get(id);
@@ -253,23 +223,17 @@ export class MapViewsStore {
     listeners.add(listener);
     return () => { listeners.delete(listener); if (!listeners.size) this.listeners.delete(id); };
   };
-  /** Layout may have changed: measure again before the next views go out. */
   schedule = (): void => { this.layoutDirty = true; this.retarget(); };
-  /** A scroll moves a map only from the page or an element holding one: a widget's own list or
-   * table scrolling as playback reveals rows must not force the page's layout to be measured. */
   private scrolled = (event: Event): void => {
     const target = event.target as Partial<Node> | null;
     if (target && typeof target.contains === 'function' && target !== document.documentElement
       && ![...this.surfaces.values()].some(surface => target.contains!(surface.element))) return;
     this.schedule();
   };
-  /** Views may have changed but layout has not. */
   retarget = (): void => {
     if (!this.active || this.frame) return;
-    // Layout is read in the frame's measure phase, before anything in it writes.
     this.frame = engine.next('measure', () => { this.frame = null; this.compose(); });
   };
-  /** A followed target appears or goes as the clock crosses its recording's ends. */
   private checkPresence = (): void => {
     const clock = this.clock.getSnapshot();
     for (const surface of this.surfaces.values()) {
@@ -277,7 +241,6 @@ export class MapViewsStore {
     }
   };
 
-  /** Where a map should be now in its own recording's hours: a followed map moves with the clock, a pinned one stays. */
   private expectation = (id: string): MapExpectation | null => {
     const clock = this.clock.getSnapshot();
     const target = this.surfaces.get(id)?.target(clock);
@@ -287,7 +250,6 @@ export class MapViewsStore {
   };
 
   private notify(id: string): void { for (const listener of this.listeners.get(id) ?? []) listener(); }
-  /** Tells a view's widget only when what it shows of the newest acknowledgement changed. */
   private present(id: string): void {
     const state = this.states.get(id);
     if (!state) return;
@@ -368,12 +330,10 @@ export class MapViewsStore {
   }
 }
 
-/** Whether the native maps are hidden ([`MapViewsStore.isHidden`]): a hidden map is not loading. */
 export function useMapsHidden(store: MapViewsStore): boolean {
   return useSyncExternalStore(store.subscribeHidden, store.isHidden, store.isHidden);
 }
 
-/** What a map's widget shows of its acknowledged state ([`MapViewsStore.getState`]), as a transition. */
 export function useMapState(store: MapViewsStore, id: string): DashboardMapState | null {
   const subscribe = useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]);
   const snapshot = useCallback(() => store.getState(id), [store, id]);

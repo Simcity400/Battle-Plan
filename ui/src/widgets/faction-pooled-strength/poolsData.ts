@@ -11,8 +11,6 @@ export const POOL_CHOICES: readonly { value: Pool; label: string }[] = [
   { value: 'research', label: 'Research' }, { value: 'doctrine', label: 'Doctrine' },
 ];
 
-/** The pools a faction has at the hour: only what its recorded state supplies. A locked
- * section is not offered; an unavailable read is not "nothing pooled". */
 export function poolsOffered(data: FactionDetailReply): Pool[] {
   return POOL_CHOICES.map(choice => choice.value).filter(pool =>
     pool === 'resources' ? data.resources !== null
@@ -21,7 +19,6 @@ export function poolsOffered(data: FactionDetailReply): Pool[] {
           : data.doctrineFolders !== null && data.doctrineFolders.length > 0);
 }
 
-/** The shown pool's total or count for the header; a total not recorded says so, never zero. */
 export function poolHeading(data: FactionDetailReply, pool: Pool, values: LiveValues<number>): string {
   if (pool === 'manpower') {
     const total = values.get(manpowerTotalKey);
@@ -32,26 +29,20 @@ export function poolHeading(data: FactionDetailReply, pool: Pool, values: LiveVa
       : `${data.doctrineFolders?.length ?? 0} doctrines`;
 }
 
-/** The saved pool while the faction has it, else the first it has. */
 export const shownPool = (offered: readonly Pool[], saved: unknown): Pool | null =>
   offered.includes(saved as Pool) ? saved as Pool : offered[0] ?? null;
 
-/** A manpower contribution's row: its live cells' row (`manpower:<ordinal>`) and its country at the hour. */
 export interface MemberAmount { key: string; ordinal: number; tag: string | null }
 
-/** Manpower contributions, each recorded occurrence kept (repeats are native, never merged), in native order; the
- * table sorts them by their live values. */
 export function manpowerRows(data: FactionDetailReply): MemberAmount[] {
   return (data.manpower ?? []).map(entry => ({ key: `manpower:${entry.ordinal}`, ordinal: entry.ordinal, tag: entry.tag }));
 }
 
-/** A part of a pool's total in percent, one decimal; none without a positive total. */
 export function shareOf(value: number | undefined, total: number | undefined): string {
   if (value === undefined || total === undefined || !(total > 0)) return '—';
   return `${(Math.round(value / total * 1000) / 10).toFixed(1)}%`;
 }
 
-/** The manpower table's live source: `manpower` a contribution, `share` it over the pool's total. */
 export function manpowerTableValues(values: LiveValues<number>): LiveValues<SortValue> {
   const split = (key: string) => { const at = key.lastIndexOf('\u0000'); return [key.slice(0, at), key.slice(at + 1)] as const; };
   const value = (row: string) => values.get(liveKey(row, 'value'));
@@ -71,5 +62,4 @@ export function manpowerTableValues(values: LiveValues<number>): LiveValues<Sort
   };
 }
 
-/** A contribution's amount for its tooltip. */
 export const memberAmount = (values: LiveValues<number>, ordinal: number) => values.get(manpowerKey(ordinal));

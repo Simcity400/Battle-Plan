@@ -1,10 +1,3 @@
-//! `--visual-toggle`: the desktop app's visual-mod toggle, in one process, through the app's own
-//! path. The map service stands in for the desktop host's: a toggle saves the Campaign map's
-//! selection in the map settings as the host does, then the viewer runs `check_visual_mods` (the
-//! host's `MapSettingsSaved`) and, every frame, `follow_campaign_preferences`,
-//! `follow_visual_checks` and `poll`, then draws, as `embedded_logic` and the window do. Each
-//! toggle's record is its frames until the first correct one (the map drawn at the held hour with
-//! the toggled set and every layer settled), every load stage, and what was reused and made.
 use super::super::{Capture, Playhead, Viewer};
 use super::{drain, frame_ui, memory, render_state, wait_until};
 use crate::Options;
@@ -18,21 +11,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The two sets a run toggles between and how it runs.
 pub(crate) struct Toggle {
-    /// Set A, which the map opens with, and set B; each a selection by installed id and name.
     pub sets: [Vec<Choice>; 2],
     pub toggles: u32,
     pub refresh_hz: f64,
-    /// Frames drawn after the first correct one before the settled picture is written.
     pub settle_frames: u32,
-    /// How long one open or toggle may take to its first correct frame.
     pub timeout: Duration,
-    /// After the toggles, each set is opened afresh in a new map for its picture.
     pub fresh: bool,
 }
 
-/// What the run counts before and after each open or toggle, for the difference.
 struct Totals {
     programs: (u64, u64),
     builds: u64,
@@ -61,7 +48,6 @@ fn ids(set: &[Choice]) -> std::collections::BTreeSet<&str> {
     set.iter().map(|choice| choice.id.as_str()).collect()
 }
 
-/// One map of the run: a viewer whose loads read the run's map service.
 pub(super) fn viewer(
     config: &dashboard::Config,
     options: &Options,
@@ -76,7 +62,6 @@ pub(super) fn viewer(
         None,
         Some((state.device.clone(), state.queue.clone())),
     );
-    // The host's shared workers, as an embedded viewer makes them.
     let pool = crate::worker_pool::WorkerPool::new()?;
     viewer.dropper = Some(Arc::clone(pool.dropper()));
     viewer.worker_pool = Some(Arc::clone(&pool));
@@ -98,7 +83,6 @@ pub(super) fn viewer(
     Ok(viewer)
 }
 
-/// Saves `set` as the Campaign map's visual mods in the map settings, as the host saves them.
 fn save(key: &str, set: &[Choice]) -> io::Result<()> {
     let mut store = dashboard::map_settings::Store::open();
     store.save(
@@ -110,8 +94,6 @@ fn save(key: &str, set: &[Choice]) -> io::Result<()> {
     )
 }
 
-/// One frame of the window: the host's settings and checks followed, a finished load installed,
-/// the map drawn. What it drew: `None` while no document is installed, else its visual mods.
 pub(super) fn frame(
     viewer: &mut Viewer,
     ctx: &egui::Context,
@@ -140,8 +122,6 @@ pub(super) fn frame(
     Ok(Some(mods))
 }
 
-/// Whether the frame just drawn is correct for `target`: the toggled set's document, drawn at the
-/// head's hour with every layer settled.
 fn correct(viewer: &Viewer, drawn: Option<&[Choice]>, target: &[Choice]) -> bool {
     drawn.is_some_and(|mods| ids(mods) == ids(target))
         && viewer.drew_frame
@@ -157,8 +137,6 @@ fn correct(viewer: &Viewer, drawn: Option<&[Choice]>, target: &[Choice]) -> bool
         })
 }
 
-/// Whether the frame just drawn is `target`'s document with its layers alone showing the head's
-/// hour, settled: what readiness asked before the overlay and the counter layers were parts of it.
 fn layers_alone(viewer: &Viewer, drawn: Option<&[Choice]>, target: &[Choice]) -> bool {
     drawn.is_some_and(|mods| ids(mods) == ids(target))
         && viewer.drew_frame
@@ -167,7 +145,6 @@ fn layers_alone(viewer: &Viewer, drawn: Option<&[Choice]>, target: &[Choice]) ->
         })
 }
 
-/// Why the map is not correct yet, for a timeout's message.
 fn waiting(viewer: &Viewer) -> String {
     let layers = viewer
         .playhead_map
@@ -183,8 +160,6 @@ fn waiting(viewer: &Viewer) -> String {
     )
 }
 
-/// Each layer of the map's reader as the last frame left it: whether it draws, the hour its product
-/// shows, whether it was ready and what it still carries.
 fn layers_seen(viewer: &Viewer) -> Value {
     let Some(side) = viewer.playhead_map.as_ref() else {
         return Value::Null;
@@ -199,8 +174,6 @@ fn layers_seen(viewer: &Viewer) -> Value {
         .collect()
 }
 
-/// The frames from `requested` until the first correct one and `settle_frames` after it, each
-/// paced to the refresh; the record of the open or toggle with its pictures written as `name`.
 #[expect(clippy::too_many_arguments, reason = "one open or toggle's whole input")]
 fn until_correct(
     viewer: &mut Viewer,
@@ -323,7 +296,6 @@ fn until_correct(
     }))
 }
 
-/// Opens the recording at `path` in a new map with `set`, until its first correct frame.
 #[expect(clippy::too_many_arguments, reason = "one open's whole input")]
 fn open(
     config: &dashboard::Config,
@@ -337,7 +309,6 @@ fn open(
 ) -> io::Result<(Value, Viewer, Arc<dashboard::Service>, egui::Context, String)> {
     let service = dashboard::Service::new(Arc::new(|_| true))?;
     service.configure_content(config, options.allow_unverified)?;
-    // Named by its revision, so the service never upgrades the recording in place.
     let revision = dashboard::protocol::replay_revision(path)?;
     let source = service
         .open_map(path, Some(&revision))
@@ -352,7 +323,6 @@ fn open(
     viewer_foundation::load_record::begin(requested);
     shader_pipeline::gpu::stats::take();
     let before = Totals::now();
-    // The source stays open, as the host's dashboard holds it: the load shares it.
     viewer.open(path.to_path_buf(), &ctx, Some(source.key().revision.clone()));
     let record = until_correct(&mut viewer, &ctx, state, &service, run, set, requested, before, output, name)?;
     Ok((record, viewer, service, ctx, key))
@@ -387,7 +357,6 @@ pub(crate) fn measure(
         viewer_foundation::load_record::begin(requested);
         shader_pipeline::gpu::stats::take();
         let before = Totals::now();
-        // The host's `MapSettingsSaved`.
         viewer.check_visual_mods(true, &ctx);
         let record = until_correct(&mut viewer, &ctx, &state, &service, &run, target, requested, before, output, &name)?;
         println!("{name}: first correct frame at {:?} ms", record["ms"]["first_correct"]);

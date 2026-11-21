@@ -1,7 +1,3 @@
-//! What the war overview reads at an hour: the raw rows of its tables ([`State`]), resolved to
-//! canonical slots and their holders' tags ([`Hour`]); and one run's changes of those rows, read
-//! once per run as the histories of their structural columns ([`RunWars`]). Casualty counters are
-//! not among them: a war's casualties are read from `CasualtyLifetimes` at the hour asked.
 
 use super::native::{Pair, World, pair};
 use dashboard_query::cost;
@@ -16,14 +12,12 @@ use std::{
     io,
 };
 
-/// A war relation's structural cells: its start hour and whether its first country instigated it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Relation {
     pub start: i32,
     pub instigator: u8,
 }
 
-/// The tables the overview reads, as a change names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Input {
     Relation,
@@ -35,21 +29,17 @@ pub(crate) enum Input {
     Capitulation,
 }
 
-/// One row as an input holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
     Relation(Relation),
     Owned(WarOwnedRelationRow),
     Faction(u64),
     Score(WarOverviewCountryRow),
-    /// The naming rule's prefix and the viewpoint it was read for.
     Rule(Vec<u8>, u32),
     Local(LocalPlayerRow),
-    /// Whether the country is capitulated, and since when.
     Capitulation(u8, i32),
 }
 
-/// A row as an hour shows it: its cells, gone, or held with a cell not recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Shown {
     Row(Row),
@@ -57,7 +47,6 @@ pub(crate) enum Shown {
     Unknown,
 }
 
-/// One row's change at an hour.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Change {
     pub hour: i32,
@@ -66,7 +55,6 @@ pub(crate) struct Change {
     pub shown: Shown,
 }
 
-/// The raw rows the war tables hold at an hour, by their keys.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct State {
     pub relations: BTreeMap<u64, Relation>,
@@ -76,7 +64,6 @@ pub(crate) struct State {
     pub rules: BTreeMap<u32, (Vec<u8>, u32)>,
     pub local: Option<LocalPlayerRow>,
     pub capitulations: BTreeMap<u32, (u8, i32)>,
-    /// Rows held with a cell not recorded: an hour holding one is not read.
     pub unknown: BTreeSet<(Input, u128)>,
 }
 
@@ -134,8 +121,6 @@ impl State {
         }
     }
 
-    /// The rows of `frame`, or why its tables do not hold them whole. The local player and the
-    /// overview's scores are optional, as the overview reads them.
     pub fn of_frame(frame: &DecodedFrame) -> Result<Self, String> {
         let mut state = Self::default();
         for r in frame.complete::<tables::WarOwnedRelations>().map_err(|e| e.to_string())? {
@@ -161,13 +146,11 @@ impl State {
         Ok(state)
     }
 
-    /// Each capitulated country's raw id and date.
     pub fn capitulated(&self) -> Vec<(u32, i32)> {
         self.capitulations.iter().filter(|(_, (capitulated, _))| *capitulated != 0).map(|(&country, &(_, hour))| (country, hour)).collect()
     }
 }
 
-/// The countries an hour reads: each slot's tag and native identity, and each raw link's slot.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub(crate) struct Countries {
     pub tags: HashMap<u32, String>,
@@ -175,17 +158,12 @@ pub(crate) struct Countries {
     pub raw_to_slot: HashMap<u32, u32>,
 }
 
-/// How an hour's raw ids are resolved: a raw id's canonical slot by the hour's links, and a slot's
-/// tag and identity by the one identity rule.
 pub(crate) trait Resolve {
     fn slot(&self, raw: u32) -> Option<u32>;
-    /// The tag holding `slot` and the raw id of its country.
     fn holder(&self, slot: u32) -> Option<(&str, u32)>;
-    /// The slot holding `tag`.
     fn country_slot(&self, country: &dashboard_base::products::Country) -> Option<u32>;
 }
 
-/// What the viewpoint reads at an hour, resolved to canonical slots.
 #[derive(Clone)]
 pub(crate) struct Hour {
     pub world: World,
@@ -198,7 +176,6 @@ pub(crate) struct Hour {
 }
 
 impl Countries {
-    /// `raw`'s slot, its holder added; why not where no link or holder resolves it.
     fn add(&mut self, resolve: &dyn Resolve, raw: u32) -> Result<u32, String> {
         if let Some(&slot) = self.raw_to_slot.get(&raw) {
             return Ok(slot);
@@ -220,8 +197,6 @@ impl Countries {
 }
 
 impl Hour {
-    /// What `view` (the recording client's country where none) reads in `state`, or why it
-    /// cannot: the overview's own refusals, in the order it reads its tables.
     pub fn build(state: &State, resolve: &dyn Resolve, view: Option<&dashboard_base::products::Country>) -> Result<Self, String> {
         if !state.unknown.is_empty() {
             return Err("Not recorded: a war overview row holds a cell not recorded".into());
@@ -277,40 +252,28 @@ impl Hour {
             world.scores.insert(slot, WarOverviewCountryRow { country: slot, ..row.clone() });
         }
         for (raw, _) in state.capitulated() {
-            // A capitulated country no link or holder resolves is left out of the capitulations.
             let _ = countries.add(resolve, raw);
         }
         let Countries { tags, identities, raw_to_slot } = countries;
         Ok(Self { world, tags, identities, raw_to_slot, view, recorded_view, goal_owned })
     }
 
-    /// Every raw id the hour resolved, as the capitulations read them.
     pub fn countries(&self) -> Countries {
         Countries { tags: self.tags.clone(), identities: self.identities.clone(), raw_to_slot: self.raw_to_slot.clone() }
     }
 }
 
-/// One run's changes of the war overview's rows, and the hours its tables were read.
 #[derive(Default)]
 pub struct RunWars {
-    /// In hour order.
     pub(crate) changes: Vec<Change>,
-    /// Every raw country id the rows name over the run.
     pub(crate) raws: BTreeSet<u32>,
-    /// Hours both relation tables were read: the hours the overview is read.
     pub(crate) read: Vec<(i32, i32)>,
-    /// Hours the capitulations were read.
     pub(crate) capitulations: Vec<(i32, i32)>,
-    /// What a war's name reads at the hour it is dated, beside the overview: each side's first
-    /// goal of each owned relation, by its `WarRelationGoals` key.
     pub(crate) goals: Stepped<Goal>,
-    /// The texts of the goals' type tokens, by token.
     pub(crate) tokens: Stepped<Box<[u8]>>,
-    /// The custom and owner names of the goals' first states, by state id.
     pub(crate) states: Stepped<(Box<[u8]>, Box<[u8]>)>,
 }
 
-/// A war goal's naming cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Goal {
     pub resolved: u8,
@@ -321,17 +284,13 @@ pub(crate) struct Goal {
     pub first_country: u32,
 }
 
-/// A key's value from an hour on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Held<T> {
     Value(T),
-    /// Its row is not shown: gone, its table not available or not read in part.
     Gone,
-    /// Its row is shown with a cell not recorded.
     Unknown,
 }
 
-/// Some keys' values over a run: each key's steps in hour order, each holding until the next.
 #[derive(Debug)]
 pub(crate) struct Stepped<T> {
     keys: HashMap<u128, Vec<(i32, Held<T>)>>,
@@ -344,8 +303,6 @@ impl<T> Default for Stepped<T> {
 }
 
 impl<T> Stepped<T> {
-    /// `history`'s keys `keep` keeps, each step's cells made a value by `decode` (none where a
-    /// cell it needs is not recorded).
     fn of(history: &History, keep: impl Fn(u128) -> bool, decode: impl Fn(&History, &[Cell]) -> Option<T>) -> Self {
         let keys = history
             .keys
@@ -368,14 +325,12 @@ impl<T> Stepped<T> {
         Self { keys }
     }
 
-    /// `key`'s value at `hour`; none before its first step, where its row is not shown.
     pub fn at(&self, key: u128, hour: i32) -> Option<&Held<T>> {
         let steps = self.keys.get(&key).map_or(&[][..], Vec::as_slice);
         let at = steps.partition_point(|step| step.0 <= hour);
         at.checked_sub(1).map(|at| &steps[at].1)
     }
 
-    /// Every value any key holds at some hour.
     fn values(&self) -> impl Iterator<Item = &T> {
         self.keys.values().flatten().filter_map(|(_, held)| match held {
             Held::Value(value) => Some(value),
@@ -384,13 +339,11 @@ impl<T> Stepped<T> {
     }
 }
 
-/// Whether `runs` (ascending, apart) hold `hour`.
 pub(crate) fn holds(runs: &[(i32, i32)], hour: i32) -> bool {
     let at = runs.partition_point(|run| run.1 < hour);
     runs.get(at).is_some_and(|run| run.0 <= hour)
 }
 
-/// The hours both of `a` and `b` (each ascending, apart) hold.
 pub(crate) fn both(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let (mut i, mut j, mut out) = (0, 0, Vec::new());
     while i < a.len() && j < b.len() {
@@ -410,7 +363,6 @@ fn number(history: &History, cells: &[Cell], column: usize) -> Option<i64> {
     }
 }
 
-/// The columns each input's history reads, by name.
 const RELATIONS: (TableId, &[&str]) = (TableId::WarRelations, &["start_hour", "first_was_instigator"]);
 const OWNED: (TableId, &[&str]) = (TableId::WarOwnedRelations, &["first_country", "second_country", "retired", "first_goal_count", "second_goal_count"]);
 const FACTIONS: (TableId, &[&str]) = (TableId::FactionMembers, &["faction"]);
@@ -421,13 +373,10 @@ const CAPITULATIONS: (TableId, &[&str]) = (TableId::Capitulation, &["capitulated
 #[cfg(test)]
 pub(crate) const READ: [(TableId, &[&str]); 7] = [RELATIONS, OWNED, FACTIONS, SCORES, RULES, LOCAL, CAPITULATIONS];
 
-/// The schema numbers of `names` in `table`.
 pub(crate) fn columns(table: TableId, names: &[&str]) -> io::Result<Vec<usize>> {
     names.iter().map(|name| dashboard_declare::field(table, name)).collect()
 }
 
-/// `table`'s rows over the run as changes of `input`, each step's cells made a row by `decode`
-/// (none where a cell it needs is not recorded).
 fn steps(
     (recording, run, first, last): (&Recording, u32, i32, i32),
     ((table, names), input): ((TableId, &[&str]), Input),
@@ -448,7 +397,6 @@ fn steps(
     Ok(())
 }
 
-/// Run `run`'s changes of the war overview's rows, from the histories of their structural columns.
 pub fn run_wars(recording: &Recording, run: u32) -> io::Result<RunWars> {
     let held = recording.run(run)?;
     let span = (recording, run, held.first_hour, held.last_hour());
@@ -514,9 +462,6 @@ const GOALS: (TableId, &[&str]) = (TableId::WarRelationGoals, &["resolved", "typ
 const TOKENS: (TableId, &[&str]) = (TableId::LexicalTokens, &["literal"]);
 const STATE_NAMES: (TableId, &[&str]) = (TableId::States, &["custom_name", "owner_name"]);
 
-/// What war names read beside the overview, over the run: the first goal of each side of each
-/// owned relation, then the texts of the tokens and the names of the states those goals name, each
-/// table's history read once for those keys alone.
 fn naming_inputs((recording, run, first, last): (&Recording, u32, i32, i32)) -> io::Result<(Stepped<Goal>, Stepped<Box<[u8]>>, Stepped<(Box<[u8]>, Box<[u8]>)>)> {
     let history = |(table, names): (TableId, &[&str]), keys: Keys<'_>| -> io::Result<(History, Vec<usize>)> {
         let columns = columns(table, names)?;

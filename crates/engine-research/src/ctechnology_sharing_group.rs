@@ -1,36 +1,21 @@
-//! Technology-sharing groups and the fields of their primary base.
-//! Field ownership within that base is not distinguished by this reader.
-//! These layouts do not establish hourly consistency.
 
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// CTechnologySharingGroup primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0279_f740);
-/// CTechnologySharingGroup lexer ordinal u32.
 pub const ID_TOKEN: usize = 0x08;
-/// Raw base bonus, i64 with denominator 100,000.
 pub const BASE_BONUS: usize = 0x10;
-/// CTechnologySharingGroup member u32 country-link array.
 pub const MEMBERS: usize = 0x18;
-/// CTechnologySharingGroup member capacity u32.
 pub const MEMBER_CAPACITY: usize = 0x20;
-/// CTechnologySharingGroup member count u32.
 pub const MEMBER_COUNT: usize = 0x24;
-/// CTechnologySharingGroup dynamic bonus i64 array.
 pub const BONUSES: usize = 0x30;
-/// CTechnologySharingGroup bonus count u32.
 pub const BONUS_COUNT: usize = 0x3c;
-/// Template pointer; this reader does not authenticate its pointee class.
 pub const TEMPLATE: usize = 0x48;
-/// CTechnologySharingGroup country-handle element width.
 pub const MEMBER_STRIDE: usize = 4;
-/// CTechnologySharingGroup signed bonus element width.
 pub const BONUS_STRIDE: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Row {
-    /// Native lexer ordinal, never a pointer or a hash of the definition name.
     pub id: u32,
     pub base_bonus: i64,
     pub member_count: u32,
@@ -39,9 +24,7 @@ pub struct Row {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MemberRow {
     pub group: u32,
-    /// Position in the paired member and bonus arrays.
     pub ordinal: u32,
-    /// Raw country reference; CountryLinks supplies its canonical identity.
     pub country: u32,
     pub bonus: i64,
 }
@@ -56,12 +39,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// A direct census of the native groups and their ordered member/bonus pairs.
-/// Authentication uses the same country-link resolver as the country table.
-/// Capacity is independent for both tables; no allocation, retry or engine call
-/// occurs. A malformed pair cannot become a successful empty membership list.
-/// The group's native lexer ordinal is retained without accessing the global
-/// lexical dictionary; spelling has an independent availability outcome.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

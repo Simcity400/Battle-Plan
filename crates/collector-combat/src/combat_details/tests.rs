@@ -46,10 +46,6 @@ fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
     );
 }
 
-/// The side's CAS and commander hover inputs come from the operands the pass
-/// already copies: the prevented lanes, the skill ratio over the next level
-/// (none at an invalid one), the description token, the timed traits in
-/// order and only the learning rows strictly above the live floor.
 #[test]
 fn side_inputs_project_the_copied_cas_and_commander_operands() {
     let mut captured = Captured::with_capacities(&Capacities {
@@ -85,8 +81,6 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
             token_len: 7,
         };
     captured.learning_traits.first[..3].copy_from_slice(&[
-        // 5% exactly is not shown; one raw unit above it is; a zero
-        // requirement shows the native 0xFFFFFFFF word.
         learning(1, 5_000 * 400, 400, 4),
         learning(2, 5_001 * 400, 400, 11),
         learning(3, 1, 0, 4),
@@ -120,7 +114,6 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
         .unwrap();
     assert_eq!(inputs.anti_air_attack, 7_654_321);
     assert_eq!(inputs.prevented_damage, [1_234_567, 89]);
-    // 3456.789 of 800 experience: 432.098625%, truncated to 432_098 raw.
     assert_eq!(inputs.skill_progress, 432_098);
     assert_eq!(inputs.skill_modifiers, Some([-12_345, 67_891]));
     assert_eq!(inputs.description_token, b"DESC");
@@ -150,7 +143,6 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
             (3, 13, 0xffff_ffff, b"trait_a".as_slice())
         ]
     );
-    // A side without a selected commander read no level: no progress.
     assert_eq!(
         other.skill_progress,
         replay_data::rows::LandCombatSideInputs::NO_PROGRESS
@@ -158,7 +150,6 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
     assert_eq!(other.learning_traits, Some(Vec::new()));
     assert_eq!(other.skill_modifiers, Some([0; 2]));
     assert!(other.description_token.is_empty());
-    // An invalid next level is the at-cap arm, not a zero ratio.
     let side = &mut captured.details.rows[0].row.sides[0];
     side.next_skill.as_mut().unwrap().valid = 0;
     let views = captured.tables();
@@ -170,8 +161,6 @@ fn side_inputs_project_the_copied_cas_and_commander_operands() {
         rows[0].side_inputs.require("side_inputs").unwrap()[0].skill_progress,
         replay_data::rows::LandCombatSideInputs::NO_PROGRESS
     );
-    // A refused optional read leaves only its part unknown, never a value;
-    // the row and its other parts stand.
     let side = &mut captured.details.rows[0].row.sides[0];
     side.next_skill = None;
     side.learning_threshold = None;
@@ -317,9 +306,6 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         [27, 2]
     );
 
-    // The empty division destination grows from the original source
-    // count; native failures still fail both consumers and do not prevent
-    // the independent modifiers census below.
     destination.progress = [Progress::default(); N];
     destination.visit(
         &memory,
@@ -345,9 +331,6 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
     assert_eq!(destination.progress[2].required, 2);
 }
 
-/// The viewer builds the land window's lists straight from these spans, so
-/// each combat's committed and reserve arrays keep their native index
-/// order after the arena offset is applied.
 #[test]
 fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
     let c = Capacities {
@@ -421,7 +404,6 @@ fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
     );
 }
 
-/// The pass's destination over a capture's own buffers, as `pass` builds it.
 fn destination(c: &mut Captured) -> Destination<'_> {
     Destination {
         sources: &mut c.sources,
@@ -464,11 +446,6 @@ fn destination(c: &mut Captured) -> Destination<'_> {
     }
 }
 
-/// Two committed exile divisions of one combat where the second's lists
-/// overflow the arena: the first keeps its rebased spans, the second is
-/// counted out as unread, and after the spool's growth the next pass
-/// keeps both. The native reads before admission are the engine's
-/// `capture_exile` tests; here each division's reads are given.
 #[test]
 fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     let mut c = Capacities {
@@ -507,7 +484,6 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     let pass = |captured: &mut Captured, second: carmy_combat_inputs::Exile| {
         let mut d = destination(captured);
         grow_vec(d.divisions, 2);
-        // What capture_exile leaves: the first division's two cores.
         d.exile_tags[..2].copy_from_slice(&[11, 12]);
         for (ordinal, exile) in [row((0, 2), (2, 0)), second].into_iter().enumerate() {
             d.progress[1].required += 1;
@@ -521,7 +497,6 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
         }
         (d.progress[1], d.exile_progress)
     };
-    // The second division needs three more tags than the arena holds.
     let (divisions, exile) = pass(
         &mut captured,
         carmy_combat_inputs::Exile::DoesNotFit { required: 3 },
@@ -536,12 +511,10 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     assert_eq!((exile.len, exile.required), (2, 5));
     let first = captured.divisions.rows[0].exile.unwrap();
     assert_eq!((first.cores, first.occupiers), ((0, 2), (2, 0)));
-    // The spool grows the arena from the counted demand.
     captured.exile_tags.len = exile.len;
     captured.exile_tags.required = exile.required;
     captured.grow(&mut c);
     assert!(captured.exile_tags.first.len() >= 5);
-    // The next pass keeps both, the second rebased past the first.
     let (divisions, exile) = pass(&mut captured, row((0, 1), (1, 2)));
     assert_eq!(
         divisions.outcome(Outcome::Rows { len: 1 }),
@@ -567,9 +540,6 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     assert_eq!(rows[1].exile.as_ref().unwrap().occupiers, [22, 23]);
 }
 
-/// The CAS hover's operands project from the side read onto the side inputs alone: the stored
-/// anti-air cache and the prevented lanes. The side details keep only their retired places. Capture
-/// rounds the prevented lanes to their display step afterwards, with every other converted table.
 #[test]
 fn cas_operands_project_onto_the_side_inputs_alone() {
     let mut captured = Captured::with_capacities(&Capacities {
@@ -598,13 +568,11 @@ fn cas_operands_project_onto_the_side_inputs_alone() {
         .require("LandCombatDetails.side_inputs")
         .unwrap();
     assert_eq!(attacker.prevented_damage, [0, 0]);
-    // `|R0` truncates; the sentinel word stays, and the anti-air is exact.
     assert_eq!(defender.prevented_damage, [200_000, i64::MAX]);
     assert_eq!(defender.anti_air_attack, 1_234_567);
     assert_eq!(row.cas_inputs(1), Some((1_234_567, [200_000, i64::MAX])));
 }
 
-/// Recycling preserves the original counted demand in the next frame.
 #[test]
 fn exile_arena_grows_off_the_pass_from_its_counted_demand() {
     let mut c = Capacities {
@@ -620,11 +588,6 @@ fn exile_arena_grows_off_the_pass_from_its_counted_demand() {
     assert!(c.exile_tags >= before * 5 + 3);
 }
 
-/// Exile spans index the shared tag arena; a division whose template is
-/// not exiled carries no exile operands. The stat block's
-/// initiative is published; the retired hover operands (commander inputs,
-/// reinforcement packets) publish their tombstones whatever the division
-/// holds, and a reserve's speed share is its own, composed or refused.
 #[test]
 fn naming_direction_and_exile_operands_project_onto_division_rows() {
     let c = Capacities {
@@ -653,7 +616,6 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     captured.divisions.outcome = Outcome::Rows { len: 2 };
     captured.exile_tags.first = vec![99, 7, 8, 11];
     captured.exile_tags.len = 4;
-    // Names index the pass's byte arena: a key and a player's name.
     captured.division_names.first = b"xGER_INF_01Guards".to_vec();
     captured.division_names.len = 17;
     let stats = carmy_combat_inputs::Row {
@@ -730,8 +692,6 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     assert_eq!(divisions[1].exile, None);
     assert_eq!(divisions[0].commander, 0x1234_0000_0021);
     assert_eq!(own.initiative, 2_500);
-    // The committed division has no share; the reserve's is published, and a
-    // refused one is known to be missing.
     assert_eq!(divisions[0].reinforcement_speed, None);
     assert_eq!(divisions[1].reinforcement_speed, Some(35_000));
     captured.divisions.rows[1].reserve_speed = Some(Err("refused"));
@@ -746,7 +706,6 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
         panic!("complete land divisions were not projected")
     };
     assert_eq!(refused[1].reinforcement_speed, None);
-    // A member the division rows publish stores no copy.
     captured.divisions.rows[0].joined = true;
     let [
         _,
@@ -886,8 +845,6 @@ fn combat_sides_project_independently_of_the_larger_tables() {
     );
 }
 
-/// Combat 7's attacker has two members, its defender none; border war 9's
-/// sides have border values and no members.
 fn modifier_capture() -> Captured {
     let mut captured = Captured::with_capacities(&Capacities {
         sides: 4,
@@ -951,15 +908,12 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
     else {
         panic!("member rows were not projected")
     };
-    // A row a member, repeated ids in order; the old layout held a row a
-    // side with every member's list.
     let expected = [
         LandCombatDivisionModifierRow {
             combat: 7,
             side: 0,
             ordinal: 0,
             entries: vec![modifier_entry(4, 10), modifier_entry(4, 10)],
-            // No published member row names the division, so the row keeps it.
             division: Some(70),
         },
         LandCombatDivisionModifierRow {
@@ -977,8 +931,6 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
     };
     assert_eq!(sides.len(), 4);
     assert!(sides.iter().all(|side| side.divisions == Retired));
-    // Unread sides' members count missing from the members' demand; the
-    // read sides' rows stay published.
     captured.members.required = 5;
     captured.sides.outcome = Outcome::Truncated {
         len: 2,
@@ -1000,10 +952,8 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
         panic!("truncated sides did not publish their members' rows")
     };
     assert_eq!((truncated.as_slice(), *missing), (&expected[..], 3));
-    // Unread sides without members leave nothing missing.
     captured.members.required = 2;
     assert_eq!(captured.outcomes()[4], Outcome::Rows { len: 2 });
-    // A failed modifier read refuses both tables with its reason.
     captured.sides.outcome = Outcome::Unavailable {
         reason: "land modifiers source changed",
     };
@@ -1019,8 +969,6 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
     ));
 }
 
-/// Border values publish with their modifier read, whatever the country
-/// sets' read: a country-set failure refuses only LandCombatSides.
 #[test]
 fn border_values_survive_an_independent_country_set_failure() {
     let mut captured = modifier_capture();
@@ -1038,7 +986,6 @@ fn border_values_survive_an_independent_country_set_failure() {
     else {
         panic!("the modifier tables were not projected independently")
     };
-    // Border war 9 has no members, so only its side rows hold its values.
     assert_eq!(
         sides
             .iter()
@@ -1053,8 +1000,6 @@ fn border_values_survive_an_independent_country_set_failure() {
     );
 }
 
-/// No detail list has a chosen bound: every arena follows the demand of
-/// the largest hour, off the game thread.
 #[test]
 fn detail_arenas_grow_from_live_demand() {
     let mut c = Capacities::default();
@@ -1077,8 +1022,6 @@ fn detail_arenas_grow_from_live_demand() {
     assert!(captured.timed_traits.first.len() >= 500);
 }
 
-/// Memory holding reserve modifier trees: zeroed modifier definitions (the
-/// effective value is the raw one) and childless accumulators.
 struct ReserveWorld(Vec<u8>);
 
 impl Memory for ReserveWorld {
@@ -1103,8 +1046,6 @@ impl ReserveWorld {
     fn put(&mut self, at: usize, bytes: &[u8]) {
         self.0[at..at + bytes.len()].copy_from_slice(bytes);
     }
-    /// A childless accumulator at `at` holding 0xFB = `value`, labelled; the value lies in its
-    /// word.
     fn leaf(&mut self, at: usize, value: i64) {
         let entries = at + 0x200;
         self.put(at, &(entries as u64).to_le_bytes());
@@ -1120,8 +1061,6 @@ impl ReserveWorld {
     }
 }
 
-/// One reserve source's failed read refuses only its row; a certified tree is
-/// carried, and a moved certificate reads afresh.
 #[test]
 fn reserve_trees_refuse_per_row_and_carry_certified_trees() {
     struct Fixed(std::cell::Cell<(u64, u64)>);
@@ -1153,17 +1092,13 @@ fn reserve_trees_refuse_per_row_and_carry_certified_trees() {
             .map(|row| (row.owner, row.nodes.as_ref().map(|nodes| nodes[0].value)))
             .collect::<Vec<_>>()
     };
-    // The unreadable source refuses its own row only.
     assert_eq!(rows(&mut captured, &world), [(4, Some(7)), (5, None)]);
-    // A write no hook saw: the certified tree stays carried.
     world.put(0x308, &9_i64.to_le_bytes());
     assert_eq!(rows(&mut captured, &world), [(4, Some(7)), (5, None)]);
     assert_eq!(rows(&mut captured, &world), [(4, Some(7)), (5, None)]);
-    // A moved certificate reads afresh.
     world.put(0x308, &11_i64.to_le_bytes());
     changes.0.set((1, 2));
     assert_eq!(rows(&mut captured, &world), [(4, Some(11)), (5, None)]);
-    // A truncated census keeps the sources it read.
     captured.divisions.outcome = Outcome::Truncated {
         len: 1,
         unread_rows: 3,
@@ -1178,18 +1113,11 @@ fn reserve_trees_refuse_per_row_and_carry_certified_trees() {
     );
 }
 
-/// Over distinct country sources gathered out of key order, a quiet pass
-/// carries every certified tree and a pass whose odd certificates moved reads
-/// exactly those afresh. Each pass finds its carries in one forward walk over
-/// the held trees: it examines at most one held tree per held tree and per
-/// source.
 #[test]
 fn reserve_tree_carries_stay_linear() {
     const SOURCES: usize = 16;
     const FIRST: usize = 0x1000;
     const STRIDE: usize = 0x300;
-    /// Every receiver is certified; the odd sources' certificates move once
-    /// `moved` is set.
     struct Certificates(std::cell::Cell<bool>);
     impl naval_tree_changes::Changes for Certificates {
         fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
@@ -1234,22 +1162,18 @@ fn reserve_tree_carries_stay_linear() {
             .map(|index| (index as u64 + 1, Some(value(index))))
             .collect::<Vec<_>>()
     };
-    // The first pass reads every tree.
     assert_eq!(
         pass(&mut captured, &world),
         expected(&|index| index as i64 + 1)
     );
-    // Writes no hook saw, at every source.
     let unseen = |index: usize| 100_000 + index as i64;
     for index in 0..SOURCES {
         world.put(at(index) + 0x208, &unseen(index).to_le_bytes());
     }
-    // A quiet pass carries every held tree.
     assert_eq!(
         pass(&mut captured, &world),
         expected(&|index| index as i64 + 1)
     );
-    // Moved certificates read afresh; the others still carry.
     changes.0.set(true);
     assert_eq!(
         pass(&mut captured, &world),

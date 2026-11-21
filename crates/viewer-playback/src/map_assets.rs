@@ -1,5 +1,3 @@
-//! Ordered loading of world textures, shaders and movement artwork.
-
 use installed_content_core::{ResolvedLayers, terrain::DefaultMap, terrain::TerrainDefinitions};
 use installed_content_image::native::Decode;
 #[cfg(test)]
@@ -21,12 +19,6 @@ use {
     viewer_world::map::post::PostAssets,
 };
 
-/// Reads and decodes the whole set, appending any limitation to `warnings`.
-///
-/// Everything below `map/` is covered content, so it goes through
-/// [`ResolvedLayers::read`] and is hash-verified. The terrain, water and city-light textures
-/// are artwork, read through [`ResolvedLayers::presentation`] so selected visual mods replace
-/// them; the bitmaps that place terrain, heights, rivers and trees are recorded geometry.
 #[allow(clippy::too_many_arguments, reason = "The loader needs recorded geometry, presentation artwork, and decode settings together.")]
 pub fn load_with_products(
     products: Option<&map_content::loader::Loader>,
@@ -43,16 +35,12 @@ pub fn load_with_products(
     if quality > 2 {
         return Err(invalid("Invalid texture quality"));
     }
-    // The audit names the shaders the map draws: the visual mods' while they show.
     warnings.extend(layers.artwork("shader source audit", |stack| {
         let mut lines = Vec::new();
         viewer_world::map::shader_sources::check(stack, &mut lines).map(|()| lines)
     })?);
     warnings.push("Selected arrow routes use viewer-local selection and animation; particle retained state follows the viewer's submitted world, arrows, labels and meshes.".into());
     let read = |path: &[u8]| layers.read_path(path);
-    // Shaders, arrows and post-processing come from the presentation stack, each falling back to
-    // the recording by name (`ResolvedLayers::artwork`), with the graphics defines while visual
-    // mods show and the recorded defines when it falls back.
     let defines_for = |stack: &ResolvedLayers| {
         if stack.shows_visual_mods() {
             art_defines
@@ -64,8 +52,6 @@ pub fn load_with_products(
     let shader = |name: &str, load: fn(&ResolvedLayers, [u32; 2], Decode) -> io::Result<_>| {
         layers.artwork(name, |stack| load(stack, size, decode))
     };
-    // Each texture is checked for the colour space the scene uploads it in, so artwork a
-    // visual mod supplies that the upload would refuse is drawn from the recording instead.
     let mut texture_warnings = Vec::new();
     let mut texture_with_status = |name: &str, space: ColorSpace| {
         let path = format!("map/terrain/{name}");
@@ -93,14 +79,10 @@ pub fn load_with_products(
         Some(products) => products.heightmap(default_map)?,
         None => installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.heightmap))?,
     };
-    // Load the sampled heightmap as a texture file.
     let height_texture =
         sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, &heightmap);
     let world_normal = world_normal(layers, decode)?;
-    // rivers
     let rivers = installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.rivers))?;
-    // The tree_definition names the tree bitmap. Draw an instance on every nonzero pixel, regardless
-    // of palette index; automatic terrain-assignment indices do not restrict tree placement.
     let trees = installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.tree_definition))?;
     expect_size(
         "map/terrain.bmp",
@@ -117,7 +99,6 @@ pub fn load_with_products(
             [map.width, map.height],
         )?,
     }
-    // rivers
     expect_size(
         "map/rivers.bmp",
         rivers.width,
@@ -133,15 +114,12 @@ pub fn load_with_products(
     )?;
     let reflection = texture_with_status("reflection.dds", ColorSpace::Srgb)?;
     if !reflection.unbound && reflection.texture.faces == 1 {
-        // Retain DDS view type; do not convert strips into cube faces.
         warnings.push("1 2D reflection texture (map/terrain/reflection.dds): cube samples reproduce the native hardware GPU's zero result; native D3D11 software-driver results are device-dependent.".into());
     }
     let reflection = reflection.texture;
     let mut texture = |name: &str, space: ColorSpace| {
         texture_with_status(name, space).map(|loaded| loaded.texture)
     };
-    // The arrow effects, movement arrows and order labels all follow `maparrows.txt`, so they
-    // come from one stack together.
     let (arrow_shader, movement_arrows, order_label_shader) =
         layers.artwork("map arrows", |stack| {
             Ok((
@@ -207,18 +185,13 @@ pub fn load_with_products(
         heightmap: Arc::new(heightmap),
         height_texture,
         terrain_ids,
-        // colour
         post: layers.artwork("post-processing", |stack| {
             PostAssets::load(stack, defines_for(stack), map, decode)
         })?,
         shadow_blur: shader("shadow blur shader", viewer_world::map::shadow_blur::load)?,
-        // rivers
         rivers,
-        // trees
         trees,
-        // weather
         perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
-        // close zoom
         spawn_city: Arc::new(terrain_flag_mask(definitions, &terrain, |kind| {
             kind.spawn_city
         })),
@@ -228,8 +201,6 @@ pub fn load_with_products(
     Ok(assets)
 }
 
-/// The world normal map. It is artwork, so a visual mod's is drawn (in any form the game reads),
-/// and the recording's, named, when the mod's cannot be.
 fn world_normal(
     layers: &ResolvedLayers,
     decode: Decode,
@@ -239,8 +210,6 @@ fn world_normal(
     })
 }
 
-/// A value read from the graphics defines, or, when the visual mods' defines cannot give it, from
-/// the recorded defines with the refusal named. Without visual mods both are the recorded defines.
 pub fn graphics_define<T>(
     layers: &ResolvedLayers,
     name: &str,
@@ -262,7 +231,6 @@ pub fn graphics_define<T>(
 mod tests {
     use super::*;
 
-    /// A 24-bit BMP of one pixel, blue, green and red.
     fn pixel(bgr: [u8; 3]) -> Vec<u8> {
         let mut bytes = b"BM".to_vec();
         bytes.extend(58_u32.to_le_bytes());
@@ -281,8 +249,6 @@ mod tests {
         bytes
     }
 
-    /// The world normal map a visual mod supplies is drawn; one of its that does not read is
-    /// drawn from the recording, named.
     #[test]
     fn a_mods_world_normal_map_is_drawn() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -338,8 +304,6 @@ mod tests {
         assert!(refusals.contains("map/world_normal.bmp ("), "{refusals}");
     }
 
-    /// A graphics define the visual mods' defines cannot give comes from the recorded defines,
-    /// the refusal named; one they give is theirs, and without visual mods it is the recording's.
     #[test]
     fn graphics_defines_a_mod_breaks_fall_back_to_the_recording() {
         let root = std::env::temp_dir().join(format!(

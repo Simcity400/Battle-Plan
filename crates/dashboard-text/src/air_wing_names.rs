@@ -1,6 +1,3 @@
-//! Retained wing-name text. Current capture failures never fall back; older
-//! prefixes can use the authenticated active-raid projection shared by
-//! effect descriptions.
 
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
@@ -38,7 +35,6 @@ pub fn recorded_names<F: Tables + ?Sized>(
     };
     let mut legacy = HashSet::new();
     for &reference in requested {
-        // Wings are keyed by id: a reference names one row or none.
         let wing = wings.get(u128::from(reference));
         let reason = match wing {
             Err(why) => Some(why.to_string()),
@@ -125,7 +121,6 @@ fn raid_names<F: Tables + ?Sized>(
     let mut by_raid: HashMap<u64, Vec<Cow<'_, RaidTooltipOperandRow>>> = HashMap::new();
     let mut unread = None;
     if let Ok(rows) = &operands {
-        // An operand's raid is its key's high bits.
         for row in rows.keyed(|key| ids.contains(&((key >> 32) as u64))) {
             match row {
                 Ok(row) => by_raid.entry(row.raid).or_default().push(row),
@@ -164,8 +159,6 @@ fn raid_names<F: Tables + ?Sized>(
     names
 }
 
-// The name selection resolves an Army before the wing. Retained wing names
-// have no source marker; callers display these bytes with stored_text.
 fn raid_bytes(
     raid: &RaidRow,
     reference: u64,

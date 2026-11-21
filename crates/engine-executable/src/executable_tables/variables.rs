@@ -1,5 +1,3 @@
-//! Built-in variable names from the selected installation's documentation.
-
 use std::{collections::BTreeMap, fs, io, path::Path};
 
 use super::{leak_string, verify_digest};
@@ -14,28 +12,21 @@ const ORGANISATION_DIGEST: &str =
     "3793c302479ab950c505ed3fe798c1141f45201ad724b82c8f51616fc584a0a4";
 const PROJECT_DIGEST: &str = "6d3bcef388838cebd0d362eff5b25279c8c430f0c5f1dab0213449ee38cf9eb7";
 
-/// Exact names in increasing byte order for the supported variable stores.
 #[derive(Debug)]
 pub struct VariableTables {
     pub global: Vec<&'static str>,
     pub country: Vec<&'static str>,
     pub state: Vec<&'static str>,
     pub unit_leader: Vec<&'static str>,
-    /// An industrial organisation's store, documented as
-    /// `military_industrial_organization`.
     pub industrial_organisation: Vec<&'static str>,
-    /// A special project's store, documented as `special_project`.
     pub project: Vec<&'static str>,
 }
 
 impl VariableTables {
-    /// SHA-256 of this table's build-independent content, comparable across builds.
     pub fn content_digest(&self) -> [u8; 32] {
-        // FIXME(lane-b): replace with the canonical build-independent content.
         <sha2::Sha256 as sha2::Digest>::digest(format!("{self:?}").as_bytes()).into()
     }
 
-    /// Read and validate documentation before publishing any names.
     pub fn decode(game_dir: &Path) -> io::Result<Self> {
         let mut scopes = read_documentation(game_dir)?;
         validate_documentation(&scopes)?;
@@ -49,13 +40,11 @@ impl VariableTables {
         })
     }
 
-    /// Validate a new installation binding without retaining its names.
     pub fn verify(game_dir: &Path) -> io::Result<()> {
         validate_documentation(&read_documentation(game_dir)?)
     }
 }
 
-/// The documentation's heading for an industrial organisation's store.
 const ORGANISATION_SCOPE: &str = "military_industrial_organization";
 
 fn read_documentation(game_dir: &Path) -> io::Result<BTreeMap<String, Vec<String>>> {

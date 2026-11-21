@@ -1,5 +1,3 @@
-//! Narrow source/provider writer boundaries. Construction is baselined on first
-//! demand; reset/destruction invalidate the previous native lifetime.
 use engine_sites::Rva;
 pub struct Mutation {
     pub name: &'static str,

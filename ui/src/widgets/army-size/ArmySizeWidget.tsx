@@ -62,15 +62,12 @@ const sameWarnings = (a: readonly string[], b: readonly string[]) => a.length ==
 
 const NO_WARNINGS: string[] = [];
 
-/** The rows of a followed army answer holding a value, by name, whatever their order. */
 function followedNames(answer: FollowedRowsAnswer): string[] {
   const names: string[] = [];
   for (let row = 0; row < answer.rows; row++) if (cellState(answer, row * answer.columns) === CELL.value) names.push(rowName(answer, row) ?? String(row));
   return names;
 }
 
-/** What renders a followed race: every country it has ranked since its query was asked (`stickyMembers`), so a country
- * coming back to the top, or the top reordering, renders nothing; worked out once per answer, never per frame. */
 class FollowedRows {
   private answer: FollowedAnswer | undefined | null = null;
   private held: StickyMembers | null = null;
@@ -88,18 +85,15 @@ class FollowedRows {
   tags(): readonly string[] { return this.held?.reset === this.scope ? this.held.tags : []; }
 }
 
-/** The shared country race owns presentation; Army size supplies land values. */
 export default function ArmySizeWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, normaliseArmyOptions(widget.options));
   const view = (options.view === 'breakdown' ? 'mix' : options.view) as RaceView;
   const pinned = options.view === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
-  // The hour renders the widget only when what it shows changes; values are painted, windows asked from the frame.
   const drillFollowing = drill.breakdown !== null && drill.follow;
   const liveRef = useRef<LiveArmy | null>(null);
   const mixKey = useRef<(hour: number) => string>(() => '');
   const missingKey = useRef<(hour: number) => string>(() => '');
-  // A followed race renders for its rows alone, read from the store where they land; told when one lands paused.
   const followedEntry = useRef<FollowEntry | null>(null);
   const woken = useMemo(() => new Set<() => void>(), []);
   const followedRows = useMemo(() => new FollowedRows(), []);
@@ -109,7 +103,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const reportShown = useShownHour();
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
-  // The breakdown reports its warnings as a new array each time its replies move: equal warnings render nothing.
   const [drillWarnings, setDrillWarnings] = useChangedState<string[]>([], sameWarnings);
   const countFor = options.countFor as ArmyAttribution;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -119,13 +112,11 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const axisOffset = track?.axisOffset ?? 0;
-  // The lines move with the clock every frame while following; their data is tiles, so the head asks nothing.
   const liveHead = useMemo(() => widget.time.mode === 'follow' ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [widget.time.mode, runtime.clock, axisOffset]);
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const moment = Math.floor(playhead ?? extent[1]);
-  // The playhead and moment the widget shows at a clock hour, as a render works them out.
   const headAt = (hour: number) => {
     const at = track && resolveWindow(widget, track, runtime.tracks, hour);
     return at && following ? at.lastHour : null;
@@ -150,8 +141,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const measure = !pinned && view === 'mix' ? 'battalions'
     : armyMeasure(options.measure, metadata.data?.measures);
   const byType = measure === 'battalions' && (pinned || view === 'mix' || (view === 'race' && options.byType === true));
-  // The race at the head is followed: pushed each step and painted by the race chart, never asked for because the hour
-  // moved. Not followed (by unit type, or the service cannot), the windows are asked for as before.
   const liveRaceView = active && widget.time.mode === 'follow' && view === 'race' && !pinned;
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => { if (drillAnchor.current !== rootElement) setRoot(drillAnchor.current); });
@@ -159,7 +148,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const followQuery = useMemo(() => liveRaceView && track && !byType && (resolved.top != null || resolved.tags.length)
     ? { product: 'army-size', params: armySizeRequest(track.branch.id, resolved, measure, countFor, false) } : null,
-  [liveRaceView, track?.branch.id, byType, resolved, measure, countFor]); // eslint-disable-line react-hooks/exhaustive-deps
+  [liveRaceView, track?.branch.id, byType, resolved, measure, countFor]);
   const followed = useFollow(store, followQuery, root, useCallback((entry: FollowEntry) => {
     liveRef.current?.wake();
     for (const wake of [...woken]) wake();
@@ -176,7 +165,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const membershipKey = useMemo(() => JSON.stringify([...(resolved.membership ?? [])]), [resolved.membership]);
   const viewportKey = JSON.stringify([sourceScope, resolved.tags, resolved.top, measure, countFor, byType, view, extent, options.playback,
     options.windowDays, options.afterPlayhead]);
-  // The view the chart reports, kept as it moves with playback: only the windows it needs ask, and a reply renders.
   const viewport = useRef<{ key: string; range: Span } | null>(null);
   const windowsCheck = useRef(() => {});
   const onViewChange = useCallback((x: readonly [number, number]) => {
@@ -187,12 +175,10 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     metadata.data, active && view === 'lines', widget.time.mode === 'follow');
   const [reachedHour, setReachedHour] = useState<number | null>(null);
   const dense = view === 'lines' && prepared.dense;
-  // The windows needed at a clock hour (`required`) and asked (`wanted`), in a render and in the frame alike.
   const windowsAt = (hour: number) => {
     if (followedHead) return { required: [], wanted: [] };
     const at = momentAt(hour), until = shownUntil(headAt(hour), options.playback as PlaybackMode, options.afterPlayhead === true);
     if (dense) {
-      // Each line's end within the hours drawn: tiled bins run past them.
       const reached = [...(prepared.lineData?.read() ?? prepared.summaries).values()].flatMap(summary => {
         const end = Math.min(summary.to, until ?? Infinity);
         for (let index = summary.buckets.length - 1; index >= 0; index--) {
@@ -205,7 +191,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
         armyWindows(metadata.data, { firstHour: end, lastHour: end }, end, false)))].sort((a, b) => a - b);
       return { required, wanted: [...new Set([...required, ...armyWindows(metadata.data, { firstHour: at, lastHour: at }, at, following)])].sort((a, b) => a - b) };
     }
-    // Bootstrap the moment only; the mounted chart reports its actual initial view.
     const seen = view !== 'race' && viewport.current?.key === viewportKey ? viewport.current.range : { firstHour: at, lastHour: at };
     const range = { firstHour: Math.max(extent[0], seen.firstHour), lastHour: Math.min(extent[1], seen.lastHour, until ?? extent[1]) };
     return { required: armyWindows(metadata.data, range, at, false), wanted: armyWindows(metadata.data, range, at, following, view !== 'race') };
@@ -221,7 +206,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   }), () => windowsAt(runtime.clock.getHour()).wanted, subscribeClock, active && offersMeasure(metadata.data, measure),
   value => validateArmyWindow(value, metadata.data!), track?.source);
   windowsCheck.current = history.check;
-  // What renders the widget as the head moves: a window it needs and does not hold (it shows loading until one lands).
   missingKey.current = hour => windowsAt(hour).required.filter(window => !history.holds(window)).join(',');
   const incomingData = useMemo(() => {
     if (!metadata.data) return undefined;
@@ -281,7 +265,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const drillAt = Math.floor((drill.breakdown === null && choices === null ? moment : drillHour(drill, clockHour)) ?? moment);
   const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;
-  // A pin keeps the tag the drilled country went by at its origin; a stored selection holds tags.
   const pinSlots = useSlotTags(runtime.client, track, active && !!drillTag && isSlotKey(drillTag));
   const pinTag = drillTag && isSlotKey(drillTag) ? countryTagAt(pinSlots, countryFromKey(drillTag), originHour) : drillTag;
   const follow = () => { if (active && track) dispatchDrill({ type: 'follow' }); };
@@ -296,7 +279,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       dispatchDrill({ type: 'open', breakdown: actors[0], hour: moment, playing: false,
         playhead: widget.time.mode === 'follow' ? playhead : null });
     } else if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour: moment });
-  }, [pinned, invalidSavedSelection, !!window, drill, model, resolved, moment, playhead, savedSelection?.tag, savedSelection?.hour, widget.countries, widget.time.mode, resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pinned, invalidSavedSelection, !!window, drill, model, resolved, moment, playhead, savedSelection?.tag, savedSelection?.hour, widget.countries, widget.time.mode, resetKey]);
   const drillOpen = choices !== null || drill.breakdown !== null;
   const open = (hour: number, tag?: string, candidates?: readonly string[]) => {
     if (!active) return;
@@ -317,14 +300,14 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, metadata.data, groupWarnings, incomingGroups.error, grouped, pinned, view, drillWarnings, onDiagnostics]);
 
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
     const runs = countryValueLines(model, tag, cutTo(tag), range);
     return runs.length || prepared.summaries.has(tag) ? [{ tag, runs, endLabel: (hour: number, name: string) => {
       const at = countryValueAt(model, tag, hour);
       return { text: name, suffix: at?.rawTotal !== undefined ? formatArmyRaw(at.rawTotal, measure) : at?.total == null ? '—' : formatArmyValue(at.total) };
     } }] : [];
-  }), [model, view, lineTags, resolved.membership, range, measure, prepared.summaries]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [model, view, lineTags, resolved.membership, range, measure, prepared.summaries]);
   const badges = useMemo(() => {
     if (!model || view === 'race') return undefined;
     const tags = view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
@@ -333,7 +316,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       return series ? [{ ...series, membership: membershipOf(tag) }] : [];
     });
     return [...countryCapitulationBadges(groupReply.data, countries, extent, groupReply.data?.countryIdentities).values()].flat();
-  }, [model, view, lineTags, mixTag, groupReply.data, resolved.membership, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [model, view, lineTags, mixTag, groupReply.data, resolved.membership, extent[0], extent[1]]);
   const segmentAt = useCallback((tag: string, hour: number) => countryValueSegmentAt(model, tag, hour), [model]);
   const parts = useMemo(() => (data?.types ?? []).map(type => ({ id: type.key, label: typeName(type) })), [data]);
   const chosen = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
@@ -341,7 +324,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const live = useMemo(() => {
     if (!liveRaceView) return null;
     if (followedHead && followed.entry) return followedArmy(runtime.clock, axisOffset, followed.entry, resolved.top != null ? null : resolved.tags, resolved, slots, measure, scale);
-    // The hour shown is the one the race paints its entries at, once the windows it needs are held.
     return model ? liveArmy(runtime.clock, axisOffset, hour => {
       reportShown(missingKey.current(hour) ? null : hour);
       return replyEntries(model, resolved, chosen, hour, slots, byType, measure);
@@ -349,7 +331,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   }, [liveRaceView, followedHead, followed.entry, runtime.clock, axisOffset, resolved, slots, measure, scale, model, chosen, byType, reportShown]);
   liveRef.current = live;
   const shownEntries = live?.entries();
-  // A followed race names every country it has ranked, so one coming back to the top is drawn with its looks at once.
   const shownTags = view === 'race' ? [...new Set([...(shownEntries ?? ranked).map(entry => entry.tag), ...(followedEntry.current ? followedRows.tags() : [])])]
     : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
   const entries = useMemo(() => model ? countryValueEntries(model, ranked, byType, formatArmyValue).map((entry, index) => ({ ...entry, label: ranked[index].at.rawTotal === undefined ? entry.label : formatArmyRaw(ranked[index].at.rawTotal!, measure) })) : [], [model, ranked, byType, measure]);
@@ -361,16 +342,15 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     const value = model && mixTag && isMember(mixMembership ?? undefined, at) ? countryValueAt(model, mixTag, at) : null;
     return new Map(parts.map((part, index) => [part.id, value?.values[index] == null ? '—' : formatArmyPart(value, index)]));
   };
-  // Following, the legend's values are painted at the head's moment.
   const mixFollows = active && widget.time.mode === 'follow';
   const mixLive = useMemo(() => mixFollows && model && mixTag ? liveTexts(runtime.clock, () => momentAt(runtime.clock.getHour()), mixTexts) : null,
-    [mixFollows, model, mixTag, mixMembership, parts, runtime.clock, runtime.tracks, widget, track, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+    [mixFollows, model, mixTag, mixMembership, parts, runtime.clock, runtime.tracks, widget, track, extent[1]]);
   const mix = useMemo(() => {
     if (!model || !mixTag || !bands) return null;
     const texts = mixLive ? null : mixTexts(moment);
     return { tag: mixTag, compactStack: true, bands, parts: parts.map(part => ({ ...part,
       value: mixLive ? <LiveText live={mixLive} at={part.id} /> : texts!.get(part.id) })) };
-  }, [model, mixTag, bands, mixMembership, moment, parts, mixLive]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [model, mixTag, bands, mixMembership, moment, parts, mixLive]);
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => Math.floor(runtime.clock.getHour()) + axisOffset, hour => new Map([['day', dayLabel(hour)]])),
     [runtime.clock, axisOffset]);
 
@@ -396,7 +376,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   })();
 
   const title = measureName(measure);
-  // Unpinned (a catalogue card), the header names the country the body opened or was given, once it has one.
   const hasOrigin = Object.hasOwn(widget.options ?? {}, 'drillOriginHour');
   const unchosen = !hasOrigin && drillTag === null;
   const neutralHeader = pinned && countrySlot && (state !== undefined || choices !== null || unchosen)
@@ -445,7 +424,6 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       tooltipKeep: parts.length > 1 ? 1 : 0, linePadding: CHART_LAYOUT.countryEndLabels, strongMixName: true, mixKeyHours: 'starts', raceEmptyState: false, resetTimeView: true }}
     tooltip={(tag, hour, name, colours) => {
       if (!model) return null;
-      // Followed, a row's value at the head is the answer's, as the bar shows it.
       const followedAt = followedHead ? live?.entries().find(entry => entry.tag === tag) : undefined;
       if (followedHead) return followedAt ? armyTooltips(model, name, { total: followedAt.value, rawTotal: BigInt(Math.round(followedAt.value * 10 ** scale)).toString(),
         values: model.reply.types.map(() => null), stretch: 0, readHour: hour }, hour, measure, colours) : null;

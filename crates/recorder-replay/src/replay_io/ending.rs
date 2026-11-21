@@ -1,6 +1,3 @@
-//! A session's end, once no collector writes its journals: what they still hold is written
-//! into each campaign's recording, the hours a failed capture lost are named there, and each
-//! campaign's recording is saved or left waiting.
 
 use super::{
     Admissions, Destination, FAILURE_SEGMENT, Finalized, Held, Naming, Refusal, Result,
@@ -38,8 +35,6 @@ pub fn finalize_session(session_dir: &Path, replay_dir: &Path) -> Result<Vec<Pat
     }
 }
 
-/// Keep successfully written campaigns visible when another campaign is
-/// incomplete. A Battle Plan Recorder session publishes only the loads it admitted.
 pub fn finalize_session_outcome(session_dir: &Path, replay_dir: &Path) -> Result<Finalized> {
     finalize_session_outcome_with_progress(session_dir, replay_dir, &|| Ok(()))
 }
@@ -65,9 +60,6 @@ pub fn finalize_session_outcome_with_progress(
     )
 }
 
-/// Ends a session whose collector writes no more, taking over the writers `live` holds: each
-/// campaign `destination` names is written to its journal's end, then saved under its name or
-/// left with its hours waiting.
 pub fn finalize_session_ahead(
     session_dir: &Path,
     replay_dir: &Path,
@@ -83,7 +75,6 @@ pub fn finalize_session_ahead(
         let admissions = session_admissions(session_dir)?;
         let witness = session_witness(session_dir)?;
         let campaigns = written_campaigns(session_dir)?;
-        // An ended session's journals are in its recordings already: there is nothing to add.
         let ended = ["completed.json", "waiting.json"]
             .iter()
             .any(|name| session_dir.join(name).is_file());
@@ -171,7 +162,6 @@ pub fn finalize_session_ahead(
     })
 }
 
-/// What a session's end did to one saved recording, as its last lines say it.
 fn report(path: &Path, hours: u64, started: Instant) {
     let Ok(replay) = Replay::open_path(path) else {
         return;
@@ -196,8 +186,6 @@ fn report(path: &Path, hours: u64, started: Instant) {
     );
 }
 
-/// Ends a session durably: a discard a crash interrupted is finished, then the session's
-/// waiting or completion record is written.
 pub fn write_session_end(
     session_dir: &Path,
     replay_dir: &Path,
@@ -211,10 +199,6 @@ pub fn write_session_end(
     write_json(&session_dir.join(name), value)
 }
 
-/// Names in `campaign`'s recording the hours a failed capture lost of it, once its journal is
-/// written: the gaps and the partial outcome its failure witness gives, for the loads the
-/// session admitted, in a revision that is not saved. A campaign with lost hours and no
-/// recording gets one of these records alone, returned.
 fn name_lost_hours(
     session_dir: &Path,
     replay_dir: &Path,
@@ -298,7 +282,6 @@ fn name_lost_hours(
     Ok(None)
 }
 
-/// The records of a failure's that `held` lacks.
 fn lost_records(found: Vec<Recovered>, held: Option<&Replay>) -> Records {
     let mut records = Records::default();
     for record in found {
@@ -317,7 +300,6 @@ fn lost_records(found: Vec<Recovered>, held: Option<&Replay>) -> Records {
                     records.branches.push(start);
                 }
             }
-            // A gap names only hours the recording lacks: a captured hour is recorded, not lost.
             Recovered::Gap(gap) => {
                 let captured = |hour: i64| {
                     held.is_some_and(|held| {

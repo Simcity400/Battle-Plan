@@ -42,8 +42,6 @@ TABLE_NOTE = (
 )
 BEGIN = "# Begin generated declarations (tools/check-feature-unification.py --fix; do not edit)."
 END = "# End generated declarations."
-# Third-party crates at least this share of member test builds contain go through test-unify;
-# rarer ones are named only by the members whose tests build them.
 WIDE_SHARE = 0.5
 TREE_LINE = re.compile(r"^(?P<prefix>[ |`-]*)(?P<body>.*)$")
 
@@ -69,8 +67,8 @@ def resolve(selection, triple):
     text = cargo("tree", *selection, "--locked", "--target", triple, "-e", "normal,build,dev",
                  "--prefix", "indent", "--charset", "ascii", "-f", "{p}|{f}")
     nodes = {}
-    stack = []  # (depth, built for the host, is a proc-macro)
-    headings = {}  # depth of a node -> the dependency-kind heading its following children sit under
+    stack = []
+    headings = {}
     for line in text.splitlines():
         if not line.strip():
             stack.clear()
@@ -101,8 +99,6 @@ def metadata():
     Each member gets `direct`: {(package, version): the key its manifests name it by}. Each graph
     entry holds its `features` table and `deps`: {manifest key: ((name, version), built for host)}.
     """
-    # Run alone first: it writes Cargo.lock when manifests changed, which the parallel
-    # `cargo tree --locked` resolutions then only read.
     meta = json.loads(cargo("metadata", "--format-version", "1"))
     packages = {p["id"]: p for p in meta["packages"]}
     members = {packages[i]["name"]: packages[i] for i in meta["workspace_members"]}
@@ -176,7 +172,6 @@ def toml_list(items):
 
 def third_party_spec(name, version, features):
     package = f'package = "{name}", ' if name else ""
-    # Cargo ignores, and warns of, build metadata in a requirement.
     version = version.split("+")[0]
     return f'{{ {package}version = "{version}", default-features = false, features = {toml_list(features)} }}'
 
@@ -242,7 +237,6 @@ def write_unify(target, host):
         "test = false",
         "doctest = false",
     ]
-    # Cargo refuses one package version under two names, so both tables share one set of keys.
     keys = keyed(target | host)
     for table, nodes in (("dependencies", target), ("build-dependencies", host)):
         manifest += ["", f"[{table}]"]
@@ -304,9 +298,9 @@ def member_spec(members, shared, owner, name, features):
 def fix():
     strip()
     shared = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["dependencies"]
-    crates = {}  # member -> {workspace crate: features its test build must enable}
-    narrow = {}  # member -> narrow third-party nodes its test build must name
-    unify_target, unify_host, declared = {}, {}, {}  # third-party node -> features
+    crates = {}
+    narrow = {}
+    unify_target, unify_host, declared = {}, {}, {}
     for round_ in range(1, 30):
         members, graph, workspace, selections = scan()
         lacking, unknown = differences(workspace, selections)
@@ -326,9 +320,6 @@ def fix():
         unified = unify_target | unify_host
         for skip_implied in (True, False):
             for member, nodes in lacking.items():
-                # Name the crates whose features reach furthest first, and skip one whose missing
-                # features those already enable through a feature forward. A wrong guess costs a
-                # round; a round that adds nothing names every lacking crate instead.
                 reach = {node: len(implied(graph, {node: workspace[node]})) for node in nodes}
                 chosen = dict(unified)
                 for node in sorted(nodes, key=lambda n: (-reach[n], n)):
@@ -356,8 +347,6 @@ def fix():
             generated = {members[member]["direct"].get((name, members[name]["version"]), name):
                          member_spec(members, shared, member, name, f) for name, f in crates.get(member, {}).items()}
             for node in narrow.get(member, ()):
-                # Cargo refuses one package version under two names, so a crate the member
-                # already names keeps that name, with the features written out.
                 key = members[member]["direct"].get(node[:2])
                 key = None if key == keys[node] else key
                 generated[key or keys[node]] = (

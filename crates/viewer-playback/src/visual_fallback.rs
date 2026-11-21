@@ -1,47 +1,28 @@
-//! The one owner of every map's visual mod fallback: what each recording shows of its visual
-//! mods after a map failed with them, decided from what the recording alone refuses.
-//!
-//! A decision is keyed exactly by the recording and the revision its visual mods held
-//! ([`FallbackKey`]) and never applies outside that key. Content records the key and what it was
-//! built under ([`Built`]); it is shown and reused only while that is what its key holds now
-//! ([`Fallbacks::current`]). Maps report each frame ([`Report`]), and every report of a frame is
-//! reduced here in one place ([`Fallbacks::reduce`]), whatever order the maps sent them in.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-/// A recording and the revision its selected visual mods held
-/// ([`installed_content_core::content::visual::revision`]).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FallbackKey {
-    /// The recording's identity (its source and revision).
     pub recording: String,
     pub revision: String,
 }
 
-/// What a key's maps show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// Without visual mods while the recording alone shows whether it refuses `failures` too:
-    /// it gets `frames_needed` settled frames, as many as the map with the mods drew before
-    /// refusing, of which it has drawn `frames_seen`.
     Probing {
         failures: BTreeSet<String>,
         excused: BTreeSet<String>,
         frames_needed: u32,
         frames_seen: u32,
     },
-    /// Without visual mods: the recording alone did not refuse `failures` in its frames. Still
-    /// watched; the moment it refuses them too, the mods return.
     Confirmed {
         failures: BTreeSet<String>,
         excused: BTreeSet<String>,
     },
-    /// With visual mods, `excused` being refusals the recording alone makes too.
     Restored { excused: BTreeSet<String> },
 }
 
 impl Decision {
-    /// What content of its key is built under.
     pub fn under(&self) -> Under {
         match self {
             Self::Probing { failures, .. } | Self::Confirmed { failures, .. } => Under::Recording {
@@ -53,7 +34,6 @@ impl Decision {
         }
     }
 
-    /// Why the visual mods are not shown, for the load warnings; `None` when they are.
     pub fn reason(&self) -> Option<String> {
         let (failures, verb) = match self {
             Self::Probing { failures, .. } => (
@@ -72,23 +52,18 @@ impl Decision {
     }
 }
 
-/// What content was built under: its visual mods with refusals excused, or the recording alone
-/// for a failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Under {
     Mods { excused: BTreeSet<String> },
     Recording { failures: BTreeSet<String> },
 }
 
-/// The key content was built for and what it was built under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Built {
     pub key: FallbackKey,
     pub under: Under,
 }
 
-/// One map's frame of content built as `built`: what it refused, by stable name, and whether
-/// it drew settled (the playhead's hour drawn this frame with nothing still loading for it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     pub built: Built,
@@ -99,33 +74,26 @@ pub struct Report {
 #[derive(Debug, Default)]
 struct State {
     decision: Option<Decision>,
-    /// Every refusal its content built without visual mods has made.
     seen: BTreeSet<String>,
-    /// Settled frames its content built with visual mods has drawn.
     modded: u32,
 }
 
-/// Every key's decision, shared by every host of a recording's maps.
 #[derive(Debug, Default)]
 pub struct Fallbacks {
     states: BTreeMap<FallbackKey, State>,
 }
 
-/// The owner as hosts share it.
 pub type Shared = Arc<Mutex<Fallbacks>>;
 
-/// A recording's identity in a [`FallbackKey`]: its source and that source's revision.
 pub fn recording(source_id: &str, revision: &str) -> String {
     format!("{source_id}@{revision}")
 }
 
-/// Locks the shared owner, recovering it if a host panicked holding it.
 pub fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, Fallbacks> {
     shared.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 impl Fallbacks {
-    /// The decisions of `recording`'s keys, for a load to look its own up in.
     pub fn decisions(&self, recording: &str) -> BTreeMap<FallbackKey, Decision> {
         self.states
             .iter()
@@ -134,8 +102,6 @@ impl Fallbacks {
             .collect()
     }
 
-    /// What content of `key` is built under now: with its visual mods and nothing excused
-    /// when no map has failed with them.
     pub fn under(&self, key: &FallbackKey) -> Under {
         self.states
             .get(key)
@@ -148,14 +114,10 @@ impl Fallbacks {
             )
     }
 
-    /// Whether content built as `built` is what its key holds now: only such content is
-    /// shown, reused or installed.
     pub fn current(&self, built: &Built) -> bool {
         self.under(&built.key) == built.under
     }
 
-    /// Takes on a decision a load made for a scene that could not be built with the visual
-    /// mods, unless the key decided otherwise meanwhile.
     pub fn adopt(&mut self, key: FallbackKey, decision: Decision) {
         let state = self.states.entry(key).or_default();
         if state
@@ -168,17 +130,6 @@ impl Fallbacks {
         }
     }
 
-    /// Reduces one frame's reports from every map, in one place and whatever their order:
-    ///
-    /// - Content with the visual mods that refused anything not excused fails them: its key
-    ///   probes without them, needing as many settled frames as the mods drew.
-    /// - Content without them adds what it refused to what its key has seen; the moment that
-    ///   includes every failure they are the recording's own and the mods return with them
-    ///   excused, whichever map saw them, before anything else is decided. Otherwise a probe that
-    ///   has drawn its settled frames is confirmed.
-    ///
-    /// Reports of content no longer current are ignored. Returns the keys whose content changed,
-    /// so their maps load again.
     pub fn reduce(&mut self, reports: Vec<Report>) -> BTreeSet<FallbackKey> {
         let mut changed = BTreeSet::new();
         let mut by_key: BTreeMap<FallbackKey, Vec<Report>> = BTreeMap::new();
@@ -256,9 +207,6 @@ impl Fallbacks {
     }
 }
 
-/// Whether a frame drew settled, from the viewer's own render result: it drew this frame, the
-/// hour it drew and the hour on screen are the hour the playhead asks for, built without
-/// error, and nothing it loads lazily is queued or decoding.
 pub fn settled(
     drew: bool,
     requested: (replay_data::BranchId, i32),
@@ -301,9 +249,6 @@ mod tests {
         }
     }
 
-    /// A refusal the recording alone also makes is excused once, the mods coming back; one it
-    /// does not make keeps them off after as many settled frames as the mods drew, and the
-    /// recording making it later still brings them back.
     #[test]
     fn the_recording_alone_decides_whether_the_mods_caused_a_refusal() {
         let mut fallbacks = Fallbacks::default();
@@ -316,7 +261,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Frames that did not draw settled are not the mods' exposure.
         assert!(
             fallbacks
                 .reduce(vec![report(&modded, &[], false)])
@@ -334,7 +278,6 @@ mod tests {
                 failures: names(&["oak"])
             }
         );
-        // The mods drew 3 settled frames (the unsettled one not counted) before refusing.
         let Some(Decision::Probing { frames_needed, .. }) =
             fallbacks.decisions("A").get(&a).cloned()
         else {
@@ -359,8 +302,6 @@ mod tests {
                 excused: names(&["oak"])
             }
         );
-        // The excused refusal no longer fails; another one probes, needing the one settled
-        // frame the mods drew since they came back, counting only settled frames.
         let modded = built(&fallbacks, &a);
         assert!(
             fallbacks
@@ -401,8 +342,6 @@ mod tests {
         );
     }
 
-    /// A decision never applies to another recording, even at the same visual mod revision: a
-    /// refusal excused in A is a failure in B.
     #[test]
     fn decisions_stay_with_their_recording() {
         let mut fallbacks = Fallbacks::default();
@@ -434,8 +373,6 @@ mod tests {
         ));
     }
 
-    /// Content without visual mods confirmed for one failure is not what a probe of another
-    /// failure holds, so it is never lent to it.
     #[test]
     fn content_is_current_only_for_the_failure_it_was_built_for() {
         let mut fallbacks = Fallbacks::default();
@@ -456,7 +393,6 @@ mod tests {
             },
         };
         assert!(!fallbacks.current(&for_elm));
-        // Nor is it current for the same failure in another recording.
         let elsewhere = Built {
             key: key("B", "r1"),
             under: for_oak.under.clone(),
@@ -464,8 +400,6 @@ mod tests {
         assert!(!fallbacks.current(&elsewhere));
     }
 
-    /// A mod updated while its probe runs is a new revision, another key: the update's maps
-    /// show the mods, whatever the old revision's probe decides.
     #[test]
     fn a_mod_update_is_never_held_by_an_old_probe() {
         let mut fallbacks = Fallbacks::default();
@@ -485,9 +419,6 @@ mod tests {
         );
     }
 
-    /// Two maps of one probe reporting in the same frame, one whose recording refused the
-    /// failure and one that drew its last needed frame without it: the mods come back, whatever
-    /// the order.
     #[test]
     fn the_mods_coming_back_beats_keeping_them_off() {
         for order in [false, true] {
@@ -512,8 +443,6 @@ mod tests {
         }
     }
 
-    /// A frame is settled only when it drew the hour the playhead asks for, built without
-    /// error, with nothing still loading.
     #[test]
     fn a_frame_is_settled_only_when_it_drew_the_requested_hour() {
         let at = (1, 100);

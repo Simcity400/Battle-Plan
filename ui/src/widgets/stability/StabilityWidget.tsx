@@ -81,12 +81,9 @@ import { busyWait } from '../../shell/busy.ts';
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
 const NO_PAINT = () => {};
-/** A failed breakdown is asked again after this long, doubling, at most this many times. */
 const BREAKDOWN_RETRY_MS = 3000;
 const BREAKDOWN_RETRIES = 3;
-/** With focus in the widget, the breakdown of the moment shown loads once playback rests this long. */
 const FOCUS_SETTLE_MS = 400;
-/** The gap kept between end labels. */
 const END_LABEL_GAP = 2;
 const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[] }[] = [
   { key: 'stability', label: 'Stability' },
@@ -102,9 +99,6 @@ function validateBreakdown(value: unknown): StabilityBreakdownReply {
   return reply;
 }
 
-/** Stability and war support over time from the declared `country-stability` series: each country in its map
- * colour, stability solid and war support dashed, on a fixed 0–100% scale by default. Hovering one country shows
- * the game's own breakdown of both values at that hour; a click opens what makes up a value. */
 export default function StabilityWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const tokens = useChartTokens();
   const campaignSettings = useCampaignSettings();
@@ -122,7 +116,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const [actorPick, setActorPick] = useState<{ owner: unknown; pick: StabilityPick } | null>(null);
   const [drillNotes, setDrillNotes] = useState<readonly string[]>([]);
   useEffect(() => { if (pinnedMeasure) setDrillMeasure(pinnedMeasure); }, [pinnedMeasure]);
-  const shown = useMemo(() => MEASURES.filter(measure => options[measure.key] !== false), [options.stability, options.warSupport]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = useMemo(() => MEASURES.filter(measure => options[measure.key] !== false), [options.stability, options.warSupport]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const hasSavedCountry = Object.hasOwn(widget.options ?? {}, 'stabilityCountry');
   const bindingKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries, hasSavedCountry, widget.options?.stabilityCountry, pinnedMeasure]);
@@ -139,15 +133,13 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const groupData = groupStore.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]), groups.data, groupNumbers);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupData, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groupData, lastHour]);
   const single = resolved.tags.length === 1 ? resolved.tags[0] : null;
-  // The values at the head are followed and painted; the widget renders by the clock only while a keyboard user
-  // rests on it (the spoken breakdown names the moment shown).
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (measure: Measure) => following && active && track && resolved.tags.length && !pinnedMeasure ? { product: 'series-state', params: { branchId: track.branch.id,
     family: { kind: FAMILY, measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
-  const stabilityQuery = useMemo(() => headQuery('stability'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure]); // eslint-disable-line react-hooks/exhaustive-deps
-  const warQuery = useMemo(() => headQuery('warSupport'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stabilityQuery = useMemo(() => headQuery('stability'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure]);
+  const warQuery = useMemo(() => headQuery('warSupport'), [following, active, track?.branch.id, resolved.tags, pinnedMeasure]);
   const reportShown = useShownHour();
   const stabilityFollowed = useFollow(store, stabilityQuery, root, useCallback((entry: FollowEntry) => reportShown(shownThrough(entry)), [reportShown]));
   const warFollowed = useFollow(store, warQuery, root, NO_PAINT);
@@ -169,9 +161,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const warSupport = useMeasureSeries(runtime.client, track?.source, track?.branch.id, FAMILY, 'warSupport', resolved.tags,
     headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.warSupport !== false, false, membership, lastHour, following);
   const series = { stability, warSupport } as const;
-  // A value is shown only once a state or tile of it has landed, and each carries its decimals.
   const decimals = stability.decimals ?? warSupport.decimals ?? 0;
-  // Each line's last bin to the head is drawn at its followed value.
   const stabilityEntry = headFollowed ? stabilityFollowed.entry : null;
   const warEntry = headFollowed ? warFollowed.entry : null;
   const known = stability.decimals !== null || warSupport.decimals !== null;
@@ -185,8 +175,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     subscribe: listener => { const stops = [stability.subscribe(listener), warSupport.subscribe(listener)]; return () => stops.forEach(stop => stop()); } }),
   [stability.revision, stability.subscribe, warSupport.revision, warSupport.subscribe]);
 
-  // Following, names, colours and flags are read at the hour an identity last changed, never at the moving head: a
-  // render while playing asks nothing.
   const identityHour = useIdentityHour(runtime.client, track, resolved.tags, runtime.clock, active && following,
     hour => track ? trackHourOf(widget, track, runtime.tracks, hour) : null);
   const styleAt = Math.floor(following && identityHour !== null ? identityHour : playhead ?? (widget.time.mode === 'range' && window ? window.lastHour : lastHour));
@@ -206,7 +194,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       const missing = (measure: Measure, hour: number) => lineByMeasure[measure].get(tag)?.missing.get(Math.floor(hour));
       return { tag, hex: colours.get(tag)!, recordedColour: styles.known.has(tag), membership: spans, valueAt, missing };
     });
-  }, [resolved.tags, styles.known, tokens.surface, tokens.countryColours, membership, lineByMeasure, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolved.tags, styles.known, tokens.surface, tokens.countryColours, membership, lineByMeasure, extent[0], extent[1]]);
   const wantedLabels = useMemo(() => [...lines.map(item => ({ tag: item.tag, hour: styleAt })),
     ...(hoverHour === null ? [] : lines.map(item => ({ tag: item.tag, hour: hoverHour })))], [lines, styleAt, hoverHour]);
   const names = useCountryNamesAt(runtime.client, track, wantedLabels, active, MAX_NAME_HOURS);
@@ -219,20 +207,16 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     flag: <CountryFlagUrl className="country-flag" url={looks.flag(item.tag, styleAt)} pending={looks.flagPending(item.tag, styleAt)}
       detail={looks.flagDetail?.(item.tag, styleAt)} reason={looks.flagReason(item.tag, styleAt)} /> })), [lines, labelAt, looks, styleAt]);
 
-  // Event markers for one country: each kind can be switched off.
   const kinds = useMemo(() => new Set(([['wars', 'markWars'], ['factions', 'markFactions'], ['government', 'markGovernment'], ['focus', 'markFocus']] as const)
-    .filter(([, key]) => options[key] !== false).map(([kind]) => kind as MarkerKind)), [options.markWars, options.markFactions, options.markGovernment, options.markFocus]); // eslint-disable-line react-hooks/exhaustive-deps
+    .filter(([, key]) => options[key] !== false).map(([kind]) => kind as MarkerKind)), [options.markWars, options.markFactions, options.markGovernment, options.markFocus]);
   const markerTag = single && kinds.size && !pinnedMeasure ? single : null;
-  // The rosters and wars name tags: a country chosen by its slot is marked under the tag it last went by.
   const singleSlots = useSlotTags(runtime.client, track, active && single !== null && isSlotKey(single));
   const markerName = markerTag && track ? keyNameAt(singleSlots, markerTag, track.branch.lastHour) : null;
   const factionOverrides = campaignSettings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
-  // The marker country's own histories, each read once: laws and advisors, the ruling party, focuses completed.
   const markerRequest = (product: string, used: boolean) => track && markerTag && used ? { sourceId: track.source.id, revision: track.source.revision,
     product, params: { branchId: track.branch.id, country: countryFromKey(markerTag) } } : null;
   const markerIdeas = useProduct<IdeaHistoryReply>(runtime.client, markerRequest('idea-history', kinds.has('government')), active, validateIdeaHistoryReply, track?.source);
   const markerParties = useProduct<PartyHistoryReply>(runtime.client, markerRequest('party-history', kinds.has('government')), active, validatePartyHistoryReply, track?.source);
-  // The focus history (the reply National focus reads) carries each focus's static title: only scoped titles are read dated.
   const markerFocus = useProduct<FocusReply>(runtime.client, markerRequest('national-focus', kinds.has('focus')), active, validateFocusReply, track?.source);
   const focusMarks = useMemo<FocusMarks | undefined>(() => markerFocus.data && historyMarks(markerFocus.data), [markerFocus.data]);
   const markerSources = useMemo(() => !track || !markerTag ? null : {
@@ -241,8 +225,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     factionName: (faction: CountryGroupReply['factions'][number], hour: number) => factionNameAt(faction, hour, factionOverrides?.[faction.id]?.name),
     ideas: answersKey(markerIdeas.data?.asked, markerTag) ? markerIdeas.data : undefined, parties: answersKey(markerParties.data?.asked, markerTag) ? markerParties.data : undefined,
     focus: focusMarks,
-  }, [track, markerTag, markerName, extent[0], extent[1], resolved.membership, groupData, factionOverrides, markerIdeas.data, markerParties.data, focusMarks]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Other countries are named as the game showed them at each event's hour, and focuses as titled when completed.
+  }, [track, markerTag, markerName, extent[0], extent[1], resolved.membership, groupData, factionOverrides, markerIdeas.data, markerParties.data, focusMarks]);
   const markerReads = useMemo(() => {
     const countries: NameAt[] = [], focuses: NameAt[] = [];
     if (markerSources) stabilityMarkers({ ...markerSources, countryName: (other, hour) => { countries.push({ hour, tag: other }); return ''; },
@@ -259,12 +242,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     } }, kinds),
   [markerSources, namesAt, focusText.read, kinds]);
 
-  // The breakdown of the one country shown at the hovered hour, and, for a keyboard user, at the moment shown.
   const breakdownRequest = (hour: number | null) => track && single && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'country-stability-breakdown', params: { branchId: track.branch.id, country: countryFromKey(single), hour: Math.floor(hour) } } : null;
   const hovered = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(!pinnedMeasure ? hoverHour : null), active, validateBreakdown, track?.source);
-  // A failed breakdown is asked again after a growing delay, a few times, with the pointer still; hovering another
-  // hour starts the attempts afresh.
   const retries = useRef(0);
   useEffect(() => { retries.current = 0; }, [hoverHour, single]);
   const retryHovered = useRef(hovered.retry); retryHovered.current = hovered.retry;
@@ -272,7 +252,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     if (!hovered.error || hoverHour === null || !active || retries.current >= BREAKDOWN_RETRIES) return;
     return busyWait(() => { retries.current += 1; retryHovered.current(); }, BREAKDOWN_RETRY_MS * 2 ** retries.current);
   }, [hovered.error, hoverHour, active]);
-  // The hours the stability inputs were read: an hour between reads carries the read before it, marked "as of".
   const readsRequest = track && lines.length > 1 ? { sourceId: track.source.id, revision: track.source.revision, product: 'stability-reads',
     params: { branchId: track.branch.id, from: Math.floor(extent[0]), to: Math.floor(extent[1]) } } : null;
   const inputReads = useProduct<StabilityReadsReply>(runtime.client, readsRequest, active, validateStabilityReads, track?.source);
@@ -285,7 +264,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const spoken = useProduct<StabilityBreakdownReply>(runtime.client, breakdownRequest(focused ? spokenAt : null), active, validateBreakdown, track?.source);
 
   const drillAnchor = useRef<HTMLDivElement | null>(null);
-  // One ref for the widget's life: a new one each render sets the root to null and back, a second commit after each render.
   const rootRef = useCallback((element: HTMLDivElement | null) => { drillAnchor.current = element; setRoot(element); }, []);
   const choiceScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries, widget.time, extent, resolved.tags,
     resolved.membership ? [...resolved.membership] : null, options.stability, options.warSupport, options.scale, options.show, options.playback, options.afterPlayhead, options.windowDays]);
@@ -302,7 +280,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const savedCountry = useMemo(() => readDrillCountry(widget.options?.stabilityCountry, track, widget.countries), [widget.options?.stabilityCountry, track, widget.countries]);
   const selectedCountry = useMemo(() => savedCountry ?? (hasSavedCountry ? null
     : groupData && track && drillTag ? chooseDrillCountry(groupData.countryIdentities, track, drillTag, chosen?.hour ?? origin.current?.hour ?? window?.lastHour ?? lastHour) : null),
-  [savedCountry, hasSavedCountry, groupData, track, drillTag, chosen?.hour, bindingOwner]); // eslint-disable-line react-hooks/exhaustive-deps
+  [savedCountry, hasSavedCountry, groupData, track, drillTag, chosen?.hour, bindingOwner]);
   const actorSpans = useMemo(() => selectedCountry && groupData && track ? drillCountrySpans(groupData.countryIdentities, selectedCountry, track, resolved.membership) : null,
     [selectedCountry, groupData, track, resolved.membership]);
   const liveHour = track ? Math.floor(clockHour) + track.axisOffset : null;
@@ -319,7 +297,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const countryHeader = pinnedMeasure && countrySlot ? createPortal(<DatedCountryChip hour={drillAt === null ? null : Math.floor(drillAt)}
     label={savedCountry && shownTag && drillAt !== null ? drillLabels.labelAt(Math.floor(drillAt))(shownTag) : null}
     reason={hasSavedCountry ? actorReason : 'Choose a country.'} />, countrySlot) : null;
-  // Each marker source shown reports its notes and failures, so a missing kind of event is never silent.
   const markerNotes = useMemo(() => !markerTag ? [] : [
     ...((kinds.has('wars') || kinds.has('factions')) && groups.error ? [`Markers for wars and factions could not be loaded: ${groups.error.message}`] : []),
     ...(([['laws and advisors', markerIdeas, kinds.has('government')], ['ruling party', markerParties, kinds.has('government')],
@@ -329,7 +306,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       return product.error ? [`Markers for ${what} could not be loaded: ${product.error.message}`] : product.data?.warnings ?? [];
     })),
     ...(kinds.has('focus') ? focusText.warnings : []),
-  ], [markerTag, kinds, groups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error, focusText.warnings]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [markerTag, kinds, groups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error, focusText.warnings]);
   useEffect(() => {
     const uncoloured = uncolouredWarning(resolved.tags, styles.known, !!styles.data);
     const warnings = [...(styles.data?.warnings ?? []), ...(styles.error ? [`Map colours could not be loaded: ${styles.error.message}`] : []),
@@ -351,7 +328,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       const summary = series[measure.key].lineOf(item.tag);
       return summary ? summaryExtent(summary, x, until) : null;
     },
-  }))), [lines, shown, until, stability.lineOf, warSupport.lineOf]); // eslint-disable-line react-hooks/exhaustive-deps
+  }))), [lines, shown, until, stability.lineOf, warSupport.lineOf]);
   const error = stability.error ?? warSupport.error;
   const retry = () => { stability.retry(); warSupport.retry(); };
 
@@ -366,7 +343,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}
       within={drillWithin} extent={extent} onPick={onPick} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
       branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens} onDiagnostics={setDrillNotes} />;
-  // A pinned breakdown is the widget itself: the main chart's settings do not apply.
   if (pinnedMeasure) {
     const body = !single ? resolved.known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
       : <WidgetState kind="loading" label="Loading what makes up the values…" />
@@ -389,8 +365,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
 
   const zoom = options.scale === 'zoom';
   const at = Math.floor(head);
-  // The breakdown of the moment shown, every line, once loaded for the keyboard.
-  // A breakdown reply names its country by the tag it goes by at the reply's hour.
   const answersSingle = (reply: StabilityBreakdownReply | undefined, hour: number | null) => !!reply && !!single && reply.hour === hour && reply.tag === keyNameAt(singleSlots, single, reply.hour);
   const spokenFor = answersSingle(spoken.data, spokenAt) ? spoken.data! : null;
   const spokenBreakdown = spokenFor?.breakdown ? shown.map(measure => breakdownRows(spokenFor.breakdown!, measure.key, decimals, measure.label, Number.MAX_SAFE_INTEGER).rows
@@ -402,9 +376,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const hoveredFor = answersSingle(hovered.data, hoverHour) ? hovered.data! : null;
   const main = <div className="stability-main">
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
-    {/* The line styles are named: never the dash pattern alone. */}
+    { }
     <p className="stability-key">{shown.map(measure => <span key={measure.key}><i aria-hidden="true" className={measure.dash ? 'is-dashed' : undefined} />{measure.dash ? 'Dashed' : 'Solid'}: {measure.label.toLowerCase()}</span>)}</p>
-    {/* The values at the moment rendered as text, for keyboard and screen-reader users. */}
+    { }
     <p className="sr-only" aria-live="off">{`${dayLabel(at)}: `}{lines.map(item => `${labelAt(styleAt)(item.tag).name}: ${shown.map(measure => {
       const raw = item.valueAt(measure.key, at);
       return `${measure.label} ${raw == null ? 'not recorded' : formatPercent(raw, decimals)}`;
@@ -441,12 +415,10 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
               ...(hovered.error ? [failureText(hovered.error, 'Couldn’t load the breakdown.')]
                 : hoveredFor && !hoveredFor.breakdown ? [hoveredFor.missing ?? 'No breakdown was recorded for this hour.']
                   : !hoveredFor ? ['Loading the breakdown…'] : []),
-              // Values carried from an earlier read say when they were read.
               ...(hoveredFor?.breakdown && hoveredFor.breakdown.readHour < hour ? [`As of ${formatDateTime(hoveredFor.breakdown.readHour)}.`] : []),
             ];
             return fitTooltip([{ title: dayLabel(hour), rows, detail: hovered.error?.message, note: notes.length ? notes.join(' ') : undefined }], viewport);
           }
-          // Values carried from an earlier read are marked; the note stays one line however many there are.
           const read = inputReads.data ? readHourOf(inputReads.data.reads, Math.floor(hour)) : null;
           let carried = false;
           for (const item of lines) {
@@ -473,7 +445,6 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
             const text = `${lines.length > 1 ? `${labelAt(end)(item.tag).name}: ` : ''}${measure.label} ${formatPercent(at.raw, decimals)}`;
             return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(at.value), text, color: item.hex }];
           }));
-          // Only as many labels as the plot can hold: war support's are dropped first, then all.
           const room = Math.floor((frame.plotHeight + END_LABEL_GAP) / (END_LABEL_HEIGHT + END_LABEL_GAP));
           const fitted = ends.length <= room ? ends : ends.filter(item => item.id.endsWith(':stability'));
           if (fitted.length > room) return;

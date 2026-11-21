@@ -31,10 +31,6 @@ fn organisation_gates_inherit_parent_local_bodies_and_filters_copy() {
     assert_eq!(local.equipment_types, [b"air".to_vec()]);
 }
 
-/// Research categories are held as authored (repeated lists append) and an empty list copies
-/// the included definition's current list, inherited or not, unless deleted. A trait's
-/// `available` and `visible` bodies are its own when not empty, else the included trait's own
-/// body, never what that one falls back to; deletion keeps the fallback out.
 #[test]
 fn research_categories_and_trait_conditions_are_retained_and_inherited() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -73,13 +69,10 @@ fn research_categories_and_trait_conditions_are_retained_and_inherited() {
     let gated = db.trait_definition("local", "gated").unwrap().unwrap();
     assert!(gated.available().is_empty());
     assert_eq!(gated.visible()[0].value.scalar_str(), Some("yes"));
-    // A fresh copy falls back to the included trait's own bodies...
     let copied = db.trait_definition("deleted", "gated").unwrap().unwrap();
     assert_eq!(copied.available()[0].value.scalar_str(), Some("no"));
-    // ...and a copy of that copy to its empty own bodies, not to the first trait's.
     let again = db.trait_definition("copied_again", "gated").unwrap().unwrap();
     assert!(again.available().is_empty() && again.visible().is_empty());
-    // The child's already inherited list is copied on.
     assert_eq!(
         db.tree("grandchild").unwrap().unwrap().research_categories,
         [b"cat_a".to_vec(), b"cat_b".to_vec()]
@@ -150,8 +143,6 @@ fn mio_trait_names_follow_includes_overrides_and_first_match() {
     );
 }
 
-/// The include pass copies an include as it stands when visited; a repeated
-/// token is a duplicate database id whose body is skipped.
 #[test]
 fn mio_trait_include_pass_is_once_in_first_creation_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -195,7 +186,6 @@ fn mio_trait_include_pass_is_once_in_first_creation_order() {
     );
 }
 
-/// A later file's definition of a token is a duplicate too.
 #[test]
 fn a_later_file_cannot_redefine_an_organisation() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -278,7 +268,6 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
             .name,
         "SECOND"
     );
-    // The first file-scoped definition is kept and a duplicate is logged.
     assert_eq!(
         db.trait_definition("custom", "third")
             .unwrap()
@@ -287,7 +276,6 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
         "FIRST"
     );
     assert!(db.warnings.iter().any(|why| why.contains("already taken")));
-    // Trait lookup scans only ordinary traits, excluding the initial trait.
     assert!(
         db.trait_definition("custom", "initial_trait")
             .unwrap()
@@ -310,7 +298,7 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
         &mut BTreeSet::new(),
     ).unwrap();
     assert!(rows[0].traits[0].bonuses.is_empty());
-    assert_eq!(rows[0].traits[1].name, "@name"); // Unknown block cannot leak its variable.
+    assert_eq!(rows[0].traits[1].name, "@name");
 }
 
 #[test]

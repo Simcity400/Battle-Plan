@@ -1,5 +1,3 @@
-/** Several queries followed together while their widget is on screen, as `useFollow` follows one: the widget renders
- * only when what it renders for changes, never as answers land. */
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 import { perfLog } from '../../shell/perf.ts';
@@ -11,20 +9,12 @@ import type { OnScreen } from '../../dashboard/follow/useFollow';
 import type { Live } from '../../charts/live';
 
 export interface FollowedAll {
-  /** Each query's entry as rendered, index for index; null for a query not asked, and every one while off screen. */
   entries: readonly (FollowEntry | null)[];
-  /** Why one is not followed. */
   reason?: string;
-  /** Each query's entry now, read where values are painted: the set the queries asked last, or null while it is not
-   * held (off screen, or the queries just changed). */
   current: (at: number) => FollowEntry | null;
-  /** Told when the entries `current` gives change. */
   subscribe: (changed: () => void) => () => void;
 }
 
-/** `renders`: `entries`, the widget renders when an entry is followed or let go (it reads `entries`); `availability`,
- * only when a query is refused or no longer is (it reads its entries by `current`, so a new set of queries, such as a
- * top's new members, costs no render of its own). Neither renders as a follow settles or answers. */
 export function useFollowedAll(store: FollowStore | null, queries: readonly (FollowQuery | null)[], target: RefObject<Element | null>,
   onScreen: OnScreen = observeOnScreen, renders: 'entries' | 'availability' = 'entries'): FollowedAll {
   const widget = measuredWidget();
@@ -36,8 +26,6 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   const subscribe = useCallback((changed: () => void) => { held.listeners.add(changed); return () => { held.listeners.delete(changed); }; }, [held]);
   const snapshot = useSyncExternalStore(subscribe, () => held.entries.map(entry => !entry ? ''
     : `${renders === 'entries' ? entry.id : ''}\u0001${entry.status === 'unavailable' ? entry.reason ?? 'unavailable' : ''}`).join('\u0000'), () => '');
-  // A new set of queries while on screen is taken in place: the new ones are acquired before the old are let go, so the
-  // entries never empty between them (run 13: a render as the old set left and another as the new one was seen).
   const keyed = useRef(key); keyed.current = key;
   const swap = useRef<(() => void) | null>(null);
   useEffect(() => {
@@ -84,17 +72,11 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
     const entries = held.key === key ? held.entries : queries.map(() => null);
     const unavailable = entries.find((entry, at) => queries[at] && entry?.status === 'unavailable');
     return { entries, reason: unavailable?.reason, current, subscribe: watchSets };
-  }, [snapshot, held, key, current, watchSets]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [snapshot, held, key, current, watchSets]);
 }
 
-/** What a slot was last painted from: an entry that had answered, and its live source. */
 export type HandedSources<T> = Map<string, { entry: FollowEntry; live: Live<T> }>;
 
-/** Query `at` of a set followed with `useFollowedAll` as a live source through a change of the set (a top's new
- * members asked under new queries): the current entry's values once it has answered; until then the last answered
- * entry's of the same `slot` in `held`, so the values never blank for the step a new follow waits (its rows are named,
- * so a row it lacks is missing, never another's); with neither, `waiting`. `entry()` is the entry the values are read
- * from, for the hour they are of. `held` belongs to one store and timeline. */
 export function handedLive<T>(store: Pick<FollowStore, 'watch'>, all: () => FollowedAll, at: number, held: HandedSources<T>, slot: string,
   make: (entry: FollowEntry) => Live<T>, waiting: (entry: FollowEntry | null) => T): Live<T> & { entry: () => FollowEntry | null } {
   const made = new WeakMap<FollowEntry, Live<T>>();

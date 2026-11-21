@@ -1,6 +1,3 @@
-//! Shared projection of unit supply operands for divisions, railway guns and
-//! task forces, at the footer's display step ([`UnitSupplyInputs::STEP`]). No
-//! memory reads or names.
 
 use engine_native::{
     cunit_supply_inputs::Demand, cunit_supply_inputs::Failure, cunit_supply_inputs::Inputs,
@@ -11,8 +8,6 @@ use replay_data::{
     rows::UnitSupplyOrigin,
 };
 
-/// One owned daily footer. A failed pack or origin fragment is itself a sample;
-/// decode never follows its former native header or retries its read.
 #[derive(Default)]
 pub struct Sample {
     pub inputs: Option<Inputs>,
@@ -62,7 +57,6 @@ impl Sample {
     }
 }
 
-/// An amount at the footer's display step ([`UnitSupplyInputs::STEP`]).
 fn displayed(value: i64) -> i64 {
     UnitSupplyInputs::STEP.round(value)
 }
@@ -74,9 +68,6 @@ fn demand(value: Demand) -> UnitSupplyDemand {
     }
 }
 
-/// A unit's footer as the counter rows record it: every amount rounded to
-/// its display step, so a footer that drifted only below a step equals the
-/// baseline.
 pub fn project(current: Option<Inputs>, origins: Option<&[Origin]>) -> Option<UnitSupplyInputs> {
     current.map(|current| UnitSupplyInputs {
         asked: displayed(current.asked),
@@ -99,7 +90,6 @@ pub fn project(current: Option<Inputs>, origins: Option<&[Origin]>) -> Option<Un
     })
 }
 
-/// [`project`] as DivisionStatus records it.
 pub fn project_division(
     current: Option<Inputs>,
     origins: Option<&[Origin]>,
@@ -107,8 +97,6 @@ pub fn project_division(
     project(current, origins).map(Into::into)
 }
 
-/// Whether [`project_division`] would equal the held row's footer, without
-/// building it.
 pub fn matches_division(
     current: Option<Inputs>,
     origins: Option<&[Origin]>,
@@ -203,7 +191,6 @@ mod tests {
         );
         let held = Recorded::Value(Some(footer));
         assert!(matches_division(Some(inputs(Ok(1))), Some(&origins), &held));
-        // Drift inside every printed hundredth equals the held footer.
         let drifted = Inputs {
             asked: 123_499,
             received: 501,
@@ -219,8 +206,6 @@ mod tests {
             Some(&drifted_origins),
             &held
         ));
-        // A printed change, a lost origin fragment or an older recording's
-        // absence does not.
         let moved = Inputs {
             received: 2_500,
             ..inputs(Ok(1))

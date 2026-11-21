@@ -56,7 +56,6 @@ test('tile lines name each key, and the lines of a tag share the spans they are 
 });
 
 test('the followed parts of an owner are found by tag and the part in the low bits of the row key', () => {
-  // ENG's owner key 5 holds parts 7 and 12, GER's owner key 5 too (another series row); GER at 6 holds no rows.
   const key = (owner: bigint, part: bigint) => (owner << 32n) | part;
   const answer = parseFollowed(message(10, [{ id: 1, answer: { keys: [key(5n, 7n), key(5n, 12n), key(5n, 7n), 0n], columns: 1,
     values: [70n, 120n, 1n, 0n], names: ['ENG', 'ENG', 'GER', 'FRA'], reasons: [null, null, null, 'FRA holds no row'] } }])).answers[0]!.answer;

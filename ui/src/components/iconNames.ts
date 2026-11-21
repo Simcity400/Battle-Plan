@@ -1,5 +1,3 @@
-// The names of the outline icon family in Icons.tsx, which draws exactly these. They live
-// apart from the drawings so saved appearance can be checked without rendering anything.
 export const ICON_NAMES = [
   'plane', 'walk', 'map', 'globe', 'grid', 'chart-bars', 'parliament', 'handshake', 'flag', 'eye', 'layout', 'settings', 'folder', 'folder-open',
   'file', 'arrow', 'refresh-cw', 'refresh', 'info', 'alert', 'close', 'check', 'crown', 'trash', 'calendar', 'clock', 'link', 'edit', 'save', 'plus', 'minus',

@@ -1,4 +1,3 @@
-//! Synthetic status and maxima timing over owned native-layout memory.
 use super::*;
 use crate::{
     acclimatization_category as category, acclimatization_data as data,
@@ -58,8 +57,6 @@ struct World {
 
 impl World {
     fn new(countries: usize, divisions: usize) -> Self {
-        // Ten divisions share a block. Most arrays have two entries; a sparse
-        // longer form exercises the serial continuation beyond the first 32.
         let mut arena = Arena::new(divisions * 0x900 + countries * 0x1000 + 0x10000);
         let base = arena.base();
         let state = arena.alloc(0x1000);
@@ -170,7 +167,6 @@ impl World {
     }
 }
 
-// This is the only helper coupled to the private maxima selection interface.
 fn maxima_pass(
     packet: &mut StatusPacket,
     memory: &impl Memory,
@@ -231,7 +227,6 @@ fn bench_division_status_and_maxima() {
         for divisions in [20_000, 60_000] {
             let world = World::new(countries, divisions);
             let base = world.arena.base();
-            // SAFETY: the immutable arena owns every pointee until all runs end.
             let memory = unsafe { LiveMemory::new() };
             let mut packet = StatusPacket::with_capacities(StatusCapacities {
                 acclimatization_categories: 2,

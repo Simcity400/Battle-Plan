@@ -17,16 +17,10 @@ const PENDING_GROUP: usize = 0x8d00;
 const NATIONALITY_LIST: usize = 0x8e00;
 const OPERATIVE_ENTRIES: usize = 0x8e80;
 const COUNTRY_ENTRIES: usize = 0x3700;
-/// The modifier definition table the effective lookups read.
 const DEFINITIONS: usize = 0x8f00;
-/// The root-out factor's key, as the walk's resolver supplies it.
 const KEY: u32 = 1;
 const HANDLE: u64 = 0xffff_ffff_8000_1269;
 
-/// Synthetic memory whose mission implementation vtables all hold the shared
-/// country getter, and whose modifier definition root points at
-/// [`DEFINITIONS`], without allocating up to their addresses. The definition
-/// table header itself stays unreadable, so a key resolved by name fails.
 struct World(Vec<u8>);
 
 impl Memory for World {
@@ -55,8 +49,6 @@ fn put<const N: usize>(bytes: &mut [u8], offset: usize, value: [u8; N]) {
     bytes[offset..offset + N].copy_from_slice(&value);
 }
 
-/// One country whose agency's active roster holds one operative with an
-/// inline portrait. The recruitment holding vectors are left unreadable.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x9000];
     for (offset, data) in [
@@ -103,7 +95,6 @@ fn fixture() -> Vec<u8> {
     bytes[portrait..portrait + 7].copy_from_slice(b"GFX_spy");
     put(&mut bytes, portrait + 16, 7_u64.to_le_bytes());
     put(&mut bytes, portrait + 24, 15_u64.to_le_bytes());
-    // The saved name is not read by this walk.
     put(
         &mut bytes,
         OPERATIVE + coperative_leader::NAME + 24,
@@ -125,7 +116,6 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
-/// A second operative after the first in the same active roster.
 fn two_operatives() -> Vec<u8> {
     let mut bytes = fixture();
     bytes.resize(0xb000, 0);
@@ -157,7 +147,6 @@ fn mission(bytes: &mut [u8], variant: u32, implementation_vtable: usize) {
     );
 }
 
-/// The walk with the root-out factor's key supplied directly.
 fn read(bytes: &[u8], rows: &mut Vec<Row>, arena: &mut Vec<u8>) -> Walk {
     walk_keyed(
         &World(bytes.to_vec()),
@@ -169,7 +158,6 @@ fn read(bytes: &[u8], rows: &mut Vec<Row>, arena: &mut Vec<u8>) -> Walk {
     )
 }
 
-/// The count-only probe with the root-out factor's key supplied directly.
 fn count(bytes: &[u8]) -> Walk {
     walk_keyed(
         &World(bytes.to_vec()),
@@ -271,9 +259,7 @@ fn cooldown_operands_are_read_only_for_the_cooldown_assignment() {
 #[test]
 fn state_variants_read_their_state_and_country_variants_only_their_country() {
     let mut bytes = fixture();
-    // Root out resistance reads its owner's accumulator, so the owner resolves.
     put(&mut bytes, OPERATIVE + OWNER_COUNTRY, 1_u32.to_le_bytes());
-    // The raw country is kept, even when it is not a positive reference.
     put(
         &mut bytes,
         IMPLEMENTATION + operative_action_implementation::TARGET_COUNTRY,
@@ -283,7 +269,6 @@ fn state_variants_read_their_state_and_country_variants_only_their_country() {
         let variant = index as u32 + 1;
         mission(&mut bytes, variant, rva.0);
         let state = operative_action::targets_state(variant);
-        // A country variant's implementation has no state at this offset.
         put(
             &mut bytes,
             IMPLEMENTATION + operative_action_implementation::TARGET_POINTER,
@@ -327,7 +312,6 @@ fn a_null_target_state_is_absent_while_its_country_stands() {
 #[test]
 fn no_mission_reads_no_implementation_whatever_the_assignment() {
     let mut bytes = fixture();
-    // An unreadable implementation is never reached without a variant.
     put(
         &mut bytes,
         OPERATIVE + ACTION + operative_action::IMPLEMENTATION,
@@ -381,7 +365,6 @@ fn a_pending_mission_is_read_only_when_present() {
         ),
         (Some(5), Some(u32::MAX), Some(-3))
     );
-    // A pending mission is independent of the active one.
     assert_eq!(present.variant, None);
     put(
         &mut bytes,
@@ -397,7 +380,6 @@ fn a_pending_mission_is_read_only_when_present() {
         ),
         (Some(5), Some(u32::MAX), None)
     );
-    // Present with any nonzero byte, absent with zero whatever the contents.
     put(&mut bytes, OPERATIVE + PENDING_MISSION_PRESENT, [0x80]);
     assert_eq!(row(&bytes).pending_variant, Some(5));
     put(&mut bytes, OPERATIVE + PENDING_MISSION_PRESENT, [0]);
@@ -524,7 +506,6 @@ fn roster_and_operative_identity_refusals_are_named() {
         put(&mut bytes, address, value.to_le_bytes());
         assert!(matches!(refusal(&bytes).0, Outcome::Unavailable { .. }));
     }
-    // A country without an agency has no roster.
     let mut bytes = fixture();
     put(
         &mut bytes,
@@ -565,7 +546,6 @@ fn portrait_strings_refuse_invalid_headers_terminators_and_lengths() {
             reason: "operative portrait exceeds native string maximum"
         }
     );
-    // A heap string's terminator is validated before its bytes are copied.
     let mut bytes = fixture();
     let heap = 0x8800;
     bytes[heap..heap + 20].copy_from_slice(b"GFX_portrait_spy_one");
@@ -603,7 +583,6 @@ fn the_count_probe_reports_exact_native_demand() {
     assert_eq!(sizing.failed_operative, None);
 }
 
-/// An ideology group at `group` with an inline token string.
 fn group(bytes: &mut [u8], group: usize, name: &[u8]) {
     put(
         bytes,
@@ -616,7 +595,6 @@ fn group(bytes: &mut [u8], group: usize, name: &[u8]) {
     put(bytes, token + 24, 15_u64.to_le_bytes());
 }
 
-/// A boost-ideology mission on the target state naming `group`.
 fn boost_ideology(bytes: &mut [u8], group: usize) {
     mission(bytes, operative_action::BOOST_IDEOLOGY, VTABLE_RVAS[4].0);
     put(
@@ -673,7 +651,6 @@ fn a_null_ideology_group_has_no_name() {
             Name { start: 0, len: 7 }
         )
     );
-    // Another variant never reads the ideology slot, even when it holds a pointer.
     let mut bytes = fixture();
     boost_ideology(&mut bytes, usize::MAX >> 1);
     mission(&mut bytes, operative_action::PROPAGANDA, VTABLE_RVAS[7].0);
@@ -711,14 +688,12 @@ fn a_pending_missions_group_is_copied_after_the_active_one() {
         )
     );
     assert_eq!(&arena, b"fascismcommunismGFX_spy");
-    // A pending group alone, without an active mission.
     mission(&mut bytes, 0, VTABLE_RVAS[4].0);
     let alone = row(&bytes);
     assert_eq!(
         (alone.ideology, alone.pending_ideology),
         (Name::default(), Name { start: 0, len: 9 })
     );
-    // A null pending group has no name.
     put(
         &mut bytes,
         pending + operative_action::PENDING_IDEOLOGY,
@@ -737,7 +712,6 @@ fn an_ideology_group_vtable_mismatch_refuses_the_table() {
         reason: "operative mission ideology vtable mismatch",
     };
     assert_eq!(refusal(&bytes), (mismatch, Some((HANDLE, 1))));
-    // The pending mission's group is authenticated the same way.
     let mut bytes = fixture();
     put(&mut bytes, OPERATIVE + PENDING_MISSION_PRESENT, [1]);
     put(
@@ -748,11 +722,6 @@ fn an_ideology_group_vtable_mismatch_refuses_the_table() {
     assert_eq!(refusal(&bytes), (mismatch, Some((HANDLE, 1))));
 }
 
-/// A root-out-resistance mission on the target state against raw country
-/// `target`, owned by country 1, whose accumulator holds `country_factor`
-/// and whose operative's holds `operative_factor`, both under [`KEY`]. Raw
-/// country 2 is a link alias of country 1, and the operative's nationalities
-/// are `nationalities`.
 fn root_out(
     target: u32,
     country_factor: i64,
@@ -820,7 +789,6 @@ fn root_out(
     bytes
 }
 
-/// Sets the target state's resistance active byte and country.
 fn resistance(bytes: &mut [u8], active: u8, country: u32) {
     let resistance = TARGET_STATE + cstate::RESISTANCE;
     put(bytes, resistance + RESISTANCE_ACTIVE, [active]);
@@ -847,18 +815,15 @@ fn root_out_factors_are_the_owner_and_operative_effective_values() {
         root_out_operands(&bytes),
         (Some(25_000), Some(-7_000), Some(0))
     );
-    // The effective getter applies the key's stored clamp to both values.
     put(
         &mut bytes,
         DEFINITIONS + KEY as usize * modifier_definition::STRIDE + modifier_definition::FLAGS,
         modifier_definition::CLAMP_MAXIMUM.to_le_bytes(),
     );
     assert_eq!(root_out_operands(&bytes), (Some(25_000), Some(0), Some(0)));
-    // An absent key is zero without reading its definition.
     let mut bytes = root_out(1, 25_000, -7_000, &[]);
     put(&mut bytes, OPERATIVE_ENTRIES, (KEY + 1).to_le_bytes());
     assert_eq!(root_out_operands(&bytes), (Some(25_000), Some(0), Some(0)));
-    // Every other variant carries no root-out operands.
     mission(
         &mut bytes,
         operative_action::BUILD_NETWORK,
@@ -871,25 +836,20 @@ fn root_out_factors_are_the_owner_and_operative_effective_values() {
 
 #[test]
 fn root_out_nationality_follows_the_active_resistance_country_or_the_target() {
-    // Raw nationality 2 is an alias of the target country 1.
     let bytes = root_out(1, 0, 0, &[2]);
     assert_eq!(root_out_operands(&bytes).2, Some(1));
-    // A target the nationalities do not hold.
     let mut bytes = root_out(0, 0, 0, &[2]);
     assert_eq!(root_out_operands(&bytes).2, Some(0));
-    // An active resistance with a positive country replaces the target.
     resistance(&mut bytes, 1, 2);
     assert_eq!(root_out_operands(&bytes).2, Some(1));
     resistance(&mut bytes, 0x80, 1);
     assert_eq!(root_out_operands(&bytes).2, Some(1));
-    // An inactive resistance, or a nonpositive resistance country, does not.
     resistance(&mut bytes, 0, 2);
     assert_eq!(root_out_operands(&bytes).2, Some(0));
     resistance(&mut bytes, 1, (-5_i32) as u32);
     assert_eq!(root_out_operands(&bytes).2, Some(0));
     resistance(&mut bytes, 1, 0);
     assert_eq!(root_out_operands(&bytes).2, Some(0));
-    // Without a target state the target country is the context.
     resistance(&mut bytes, 1, 2);
     put(
         &mut bytes,
@@ -901,10 +861,8 @@ fn root_out_nationality_follows_the_active_resistance_country_or_the_target() {
         (row.target_state, row.root_out_nationality),
         (None, Some(0))
     );
-    // The null tag is itself: a zero nationality holds a zero target.
     let bytes = root_out(0, 0, 0, &[0, 2]);
     assert_eq!(root_out_operands(&bytes).2, Some(1));
-    // The lower bound reaches past smaller entries to a raw match.
     let bytes = root_out(1, 0, 0, &[0, 1]);
     assert_eq!(root_out_operands(&bytes).2, Some(1));
 }
@@ -929,7 +887,6 @@ fn root_out_operands_refuse_unresolvable_owners_and_unreadable_accumulators() {
             reason: "modifier accumulator header unreadable or invalid"
         }
     );
-    // A nationality that resolves to no country refuses the comparison.
     let bytes = root_out(1, 0, 0, &[7]);
     assert!(matches!(refusal(&bytes).0, Outcome::Unavailable { .. }));
 }
@@ -938,7 +895,6 @@ fn root_out_operands_refuse_unresolvable_owners_and_unreadable_accumulators() {
 fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
     let bytes = root_out(1, 0, 0, &[]);
     let memory = World(bytes.clone());
-    // No registered definition table: the name cannot resolve.
     let read = walk(&memory, 0, STATE, &mut vec![Row::default(); 1], &mut vec![0; 64], &mut root_out_key());
     assert_eq!(
         (read.outcome, read.failed_operative),
@@ -949,7 +905,6 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
             Some((HANDLE, 1))
         )
     );
-    // Another mission never resolves it.
     let mut other = bytes.clone();
     mission(
         &mut other,
@@ -965,7 +920,6 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
         &mut root_out_key(),
     );
     assert_eq!(read.outcome, Outcome::Rows { len: 1 });
-    // A resolver failure is the walk's refusal.
     let mut asked = 0;
     let read = walk_keyed(
         &memory,

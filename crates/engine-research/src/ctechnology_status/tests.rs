@@ -204,8 +204,6 @@ fn full_census_preserves_native_widths_holes_and_independent_inventory() {
         Outcome::Rows { len: 2 }
     );
     assert_eq!(source_pointers, [TECHNOLOGY_B, TECHNOLOGY_A, usize::MAX]);
-    // Native roster order is retained during acquisition; sorting belongs
-    // to replay conversion on the spool thread.
     assert_eq!(
         (rows[0].technology_handle, rows[1].technology_handle),
         (17, 3)
@@ -383,8 +381,6 @@ fn dictionary_growth_uses_full_sparse_handles_and_preserves_signed_inventory_ord
         assert!(definitions.entries.len() <= 32);
         assert_eq!(definitions.outcome(), Outcome::Rows { len: 2 });
 
-        // Native researched order is signed: a high-bit token precedes 3.
-        // Numeric handle span does not determine allocation demand.
         let high_handle = 0x8000_0001_u32;
         put(
             &mut bytes,
@@ -602,7 +598,6 @@ struct RecordSource<'a, 'b>(&'a ObservedMemory<'b>);
 
 impl Memory for RecordSource<'_, '_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        // Spans inside one gather; the gather itself was already charged.
         self.0.span(address, destination)
     }
 }
@@ -666,14 +661,11 @@ impl Memory for ObservedMemory<'_> {
         self.guards.set(self.guards.get() + 1);
         spans.set(spans.get() + sources.len() * layout.field_count());
         bytes.set(bytes.get() + layout.completed_bytes(sources.len() * layout.field_count()));
-        // Exercise the shared default gather, including partial faults at
-        // its actual source-copy boundary.
         RecordSource(self).copy_records(sources, layout, destination)
     }
 }
 
 impl ObservedMemory<'_> {
-    /// One copied range: the unit the guarded shim moves and charges for.
     fn span(&self, address: usize, destination: &mut [u8]) -> bool {
         self.spans.set(self.spans.get() + 1);
         self.bytes.set(self.bytes.get() + destination.len());
@@ -685,8 +677,6 @@ impl ObservedMemory<'_> {
             .fail
             .is_some_and(|fail| address <= fail && fail < address.saturating_add(destination.len()))
         {
-            // Simulate a partially copied span; its zero/filler bytes must
-            // never be admitted as a complete technology row.
             destination.fill(0xfe);
             return false;
         }
@@ -731,14 +721,8 @@ fn whole_rosters_batch_reads_and_reuse_definitions_only_within_one_pass() {
             assert_eq!(memory.identity_spans.get(), 0);
             assert_eq!(memory.identity_bytes.get(), 0);
             assert_eq!(memory.definition_batches.get(), BULK_COUNT);
-            // Two status guards, two array headers, both pointer censuses,
-            // and only the first full instance batches. The researched
-            // census finds every pointer in this country's owned rows.
             let pages = BULK_COUNT.div_ceil(ctechnology::BATCH)
                 + BULK_COMPLETED_COUNT.div_ceil(ctechnology::BATCH);
-            // The shared dictionary reads each definition once per pass,
-            // so its 3 guards, 5 spans and 61 bytes per template are charged
-            // to the first walk only.
             assert_eq!(
                 memory.guards.get(),
                 pass * (4 + pages + batches) + 3 * BULK_COUNT
@@ -907,8 +891,6 @@ fn oversized_roster_headers_only_grow_for_readable_instance_batches() {
     ] {
         let mut memory = ObservedMemory::new(&bytes);
         memory.fail = Some(fault);
-        // A previous country's row must survive incremental growth, and
-        // the new country's pointer index remains relative to its prefix.
         let previous = ctechnology::Row {
             country: 99,
             ..Default::default()
@@ -1106,8 +1088,6 @@ fn pointer_scratch_reuse_ignores_previous_roster_tail() {
         );
         assert_eq!(source_pointers, [TECHNOLOGY_B, TECHNOLOGY_A, usize::MAX]);
 
-        // The next country's smaller roster leaves A's old pointer and row
-        // in scratch. Neither is a member of the new admitted prefix.
         put(&mut bytes, ALL + 16, 0_u64.to_le_bytes());
         put(&mut bytes, COMPLETED, (TECHNOLOGY_A as u64).to_le_bytes());
         let memory = ObservedMemory::new(&bytes);
@@ -1157,8 +1137,6 @@ fn growth_preserves_batch_fault_precedence_and_prior_page_flags() {
         ] {
             let mut bytes = bulk_fixture();
             if kept == 0 {
-                // Gather failure still precedes an earlier bad vtable in
-                // the same primary batch, even from empty output storage.
                 put(&mut bytes, BULK_INSTANCES + 2 * 0x200, 0_u64.to_le_bytes());
             }
             let mut memory = ObservedMemory::new(&bytes);
@@ -1336,7 +1314,6 @@ fn repeated_handles_keep_native_occurrences_and_exact_researched_membership_at_c
     assert_eq!(dictionary.entry(3).unwrap().row.year, 2001);
     assert_eq!(dictionary.entry(3).unwrap().row.max_level, 2);
     assert_eq!(dictionary.entry(3).unwrap().row.research_cost_raw, 17);
-    // Two template headers, terminators and names, independent of country population.
     assert_eq!(
         memory.spans.get() - 5_000 * (5 + 2 + ctechnology::FIELDS.len() * 2),
         10
@@ -1477,8 +1454,6 @@ fn governance_batch_slots_persistent_and_one_shot_every_serial_operand() {
         };
         (outcome, rows[..outcome.len()].to_vec())
     };
-    // Each selected span faults its own gather, which must be counted exactly
-    // once. Equality and upper bounds alone would miss a removed counter hook.
     let country = World::country(1);
     for (offset, reader) in [
         (SLOTS, "slot_pointers"),

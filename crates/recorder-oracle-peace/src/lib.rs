@@ -1,4 +1,3 @@
-//! peace save comparisons and recorded consistency checks.
 #[cfg(test)]
 use installed_content_save as save;
 #[cfg(test)]

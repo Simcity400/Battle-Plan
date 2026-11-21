@@ -1,4 +1,3 @@
-/** Loadables mounted in a real browser, whose loads the test settles itself. */
 import { Component, StrictMode } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -10,7 +9,6 @@ async function settle() { for (let i = 0; i < 4; i++) await frame(); }
 type Props = { name: string };
 type Pending = { resolve: (component: (props: Props) => ReactNode) => void; reject: (error: Error) => void };
 const pending: Record<string, Pending[]> = { Shown: [], Flaky: [] };
-/** How many times each kind rendered its fallback. */
 const fallbacks: Record<string, number> = { Shown: 0, Flaky: 0 };
 const make = (kind: string) => loadable<Props>(() => new Promise((resolve, reject) => { pending[kind].push({ resolve, reject }); }),
   ({ name }) => { fallbacks[kind]++; return <i>loading {name}</i>; });
@@ -27,7 +25,6 @@ const root = createRoot(host);
 let generation = 0;
 
 export const fixture = {
-  /** Mounts a fresh boundary holding one `kind` loadable per name, as a widget's Retry remounts it. */
   async mount(kind: string, names: string[]) {
     const Loaded = kinds[kind];
     generation++;

@@ -1,15 +1,3 @@
-//! Authored building slots and their selected model entities.
-//!
-//! A slot is drawn while its order/max < level/`NBuildings.MAX_BUILDING_LEVELS`;
-//! multi-mesh types select min(floor(meshes*level/MAX), meshes-1). Health is
-//! healthy_level*10_000_000 + partial_health (fixed5 percent), compared with
-//! the `NGraphics.MAP_BUILDINGS_*` thresholds. [`BuildingHistory`] keeps each
-//! slot's destroyed selector through the hysteresis band and across hiding,
-//! and keeps every entity created below the update cutoff drawn above it, from
-//! this viewer's own camera history; a cold start is healthy and uncreated, as
-//! the native slot constructor is. Damaged entities play their authored
-//! animation and smoke/fire events on the viewer's state-entry clock. Geometry
-//! grows on the frame clock; offline renders use the settled scale.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -39,7 +27,6 @@ mod floating;
 mod incremental;
 pub use available::BuildingInput;
 pub use display::{SlotPages, WireHour};
-/// Slots a chunk of the wire product holds.
 pub const WIRE_CHUNK: usize = incremental::CHUNK_SIZE;
 pub use floating::HarbourCounts;
 pub use incremental::{BuildPath, BuildingsBase};
@@ -59,15 +46,9 @@ use {
     },
 };
 
-/// The game routes this reserved slot name to the floating-harbour path.
-/// The game appends `_entity` to the reserved name.
 const FLOATING_HARBOR_ENTITY: &str = "floating_harbor_entity";
-/// the game's floating-harbour fog gate: hidden below 0x96 with fog on.
 pub const FLOATING_HARBOR_VISIBILITY: u8 = 0x96;
 
-/// Side of the map-building cull grid, in world units. A state's six factory
-/// slots sit within a few tens of units of each other, so 128 keeps them in one
-/// group without merging neighbouring states.
 pub const BUILDING_TILE: f32 = 128.0;
 
 fn unselected_meshless_states(descriptors: &mesh::Descriptors, name: &str) -> Vec<String> {
@@ -77,8 +58,6 @@ fn unselected_meshless_states(descriptors: &mesh::Descriptors, name: &str) -> Ve
     else {
         return Vec::new();
     };
-    // Building updates request idle/damaged after initial default-state selection.
-    // Follow authored next_state links before calling any other state unreached.
     let mut pending = vec!["idle", "damaged", entity.default_state.unwrap_or("idle")];
     let mut reached = BTreeSet::new();
     while let Some(name) = pending.pop() {
@@ -99,22 +78,13 @@ fn unselected_meshless_states(descriptors: &mesh::Descriptors, name: &str) -> Ve
         }).collect()
 }
 
-/// The content's map-building operands. The game converts the f32
-/// thresholds through the fixed5 scale when it compares health.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Defines {
-    /// `NGraphics.MAP_BUILDINGS_SHRINK_DISTANCE`: the update cutoff.
     pub shrink_distance: f32,
-    /// `MAP_BUILDINGS_DESTROYED_STATUS`: at or below, the destroyed mesh.
     pub destroyed: i64,
-    /// `MAP_BUILDINGS_DESTROYED_DEAD_ZONE`: above, recovered.
     pub recovered: i64,
-    /// `MAP_BUILDINGS_DAMAGED_THRESHOLD`: below, the damaged state.
     pub damaged: i64,
-    /// `NBuildings.MAX_BUILDING_LEVELS`.
     pub max_levels: i32,
-    /// `NGraphics.MESH_POPUP_SCALE_UP_SPEED`: scale per second of the popup
-    /// and the shrink step when hiding a building entity.
     pub popup_speed: f32,
 }
 
@@ -141,12 +111,9 @@ impl Defines {
 
 use viewer_foundation::map::province_map::{ProvinceMap, pixel};
 
-/// `map/terrain.bmp`'s city-spawning flag, read with the slot table's own
-/// truncate-and-index rule.
 pub struct CityTerrain<'a> {
     pub width: u32,
     pub height: u32,
-    /// One flag per pixel, rows top-down: `viewer_foundation::map::textures::MapAssets::spawn_city`.
     pub spawn_city: &'a [bool],
 }
 
@@ -158,17 +125,10 @@ impl CityTerrain<'_> {
     }
 }
 
-/// Whether this camera creates or updates building entities: the game
-/// updates a province's records while `height - WATER_HEIGHT` is below
-/// `MAP_BUILDINGS_SHRINK_DISTANCE`. Above it nothing is created or updated,
-/// but an entity created below stays drawn; see [`BuildingHistory`].
-/// `DRAW_MAP_OBJECTS_CUTOFF` only toggles the province's own entity;
-/// it does not update building records.
 pub fn draws_map_buildings(height: f32, shrink_distance: f32) -> bool {
     height - WATER_HEIGHT < shrink_distance
 }
 
-/// Strictly compare the slot fraction with the level divided by MAX_BUILDING_LEVELS.
 pub fn slots_for_level(building: &BuildingType, level: i16, max_levels: i32) -> u32 {
     let Some(shown) = building.show_on_map.filter(|shown| *shown > 0) else {
         return 0;
@@ -182,15 +142,12 @@ pub fn slots_for_level(building: &BuildingType, level: i16, max_levels: i32) -> 
         .count() as u32
 }
 
-/// (destroyed, damaged, in the hysteresis band) for one row.
 pub fn health_state(
     level: i16,
     healthy: i16,
     partial: i64,
     defines: &Defines,
 ) -> (bool, bool, bool) {
-    // Keep the total in signed 64 bits and separately
-    // computes the average with wrapping fixed5 arithmetic and sentinel words.
     let total = (i64::from(healthy) * 10_000_000).wrapping_add(partial);
     let destroyed = total <= defines.destroyed;
     let uncertain = !destroyed && total <= defines.recovered;
@@ -199,8 +156,6 @@ pub fn health_state(
     (destroyed, damaged, uncertain)
 }
 
-/// An hour's slot targets, before the scene's camera history applies them.
-/// The hour is part of equality so a seek always reaches the scene.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedBuildings {
     branch: replay_data::BranchId,
@@ -208,7 +163,6 @@ pub struct PreparedBuildings {
     shrink_distance: f32,
     popup_speed: f32,
     slots: Chunked<PreparedSlot>,
-    /// The slots of each province, which the camera admits together.
     groups: Arc<[ProvinceSlots]>,
     pub city_damage: Arc<super::sprawl::Damage>,
 }
@@ -223,43 +177,32 @@ impl PreparedBuildings {
     }
 }
 
-/// One province's box and its slots' ids.
 #[derive(Clone, Debug, PartialEq)]
 struct ProvinceSlots {
     province: u32,
-    /// The province's box ([`province_boxes`]); the camera admits it before its update.
     bounds: [f32; 4],
     slots: Vec<u32>,
 }
 
-/// One slot's target for an hour, before the scene's camera history applies it.
 #[derive(Clone, Debug)]
 pub struct PreparedSlot {
     source: Option<(usize, u32)>,
-    /// Stable authored-slot ordinal, its index in `slots`.
     id: u32,
-    /// The selected type's `drawn_at_distance`; `None` leaves the retained
-    /// byte alone, as no positive-level type does natively.
     drawn_at_distance: Option<bool>,
     entity: Option<map_display_data::retained::Retained<PreparedEntity>>,
 }
 
-/// The entity request for one damage state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Selection {
     admitted: bool,
-    /// The drawn mesh: the damaged pose's own copy when damaged.
     mesh: usize,
-    /// The entity definition before the damaged-pose choice.
     definition: usize,
-    /// The variant selector.
     variant: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct PreparedEntity {
     healthy: Selection,
-    /// `destroyed` also selects the slot's ruined entity.
     ruined: Selection,
     destroyed: bool,
     uncertain: bool,
@@ -280,17 +223,14 @@ impl PartialEq for PreparedSlot {
     }
 }
 impl PreparedSlot {
-    /// Slot `id` before anything is decided for it: no building.
     pub fn empty(id: u32) -> Self {
         Self { source: None, id, drawn_at_distance: None, entity: None }
     }
 
-    /// Whether a building was selected and no gate hides it.
     pub fn has_entity(&self) -> bool {
         self.entity.is_some()
     }
 
-    /// Bytes it and its entity hold.
     pub fn held(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.entity.as_ref().map_or(0, |_| std::mem::size_of::<PreparedEntity>() + 16)
@@ -305,7 +245,6 @@ impl PreparedSlot {
         entity.get_mut().unwrap()
     }
 
-    // Tail reuse must distinguish signed zero and preserve NaN payloads.
     fn same_bits(&self, other: &Self) -> bool {
         if (self.id, self.source, self.drawn_at_distance)
             != (other.id, other.source, other.drawn_at_distance)
@@ -343,30 +282,10 @@ struct SlotHistory {
     drawn_at_distance: bool,
     entity: Option<Placed>,
     generation: u32,
-    /// The drawn entity's definition, `None` exactly when none is drawn.
     definition: Option<usize>,
-    /// The latched variant selector, kept like `destroyed`.
     variant: usize,
 }
 
-/// The renderer state the engine keeps per slot and a recording cannot hold.
-///
-/// New slots start zeroed; creation latches the destroyed
-/// selector only on admitted creation, and hiding does not clear it.
-/// Above the update cutoff the game touches a visible province once per
-/// near-to-far transition (province byte `0x10`): landmarks (`drawn_at_distance`)
-/// are left alone and every other entity takes one hiding step,
-/// scale minus frame time times `MESH_POPUP_SCALE_UP_SPEED` and the idle
-/// state, which removes it only if the scale reaches zero. Created entities therefore stay drawn, frozen,
-/// at far zoom. The step uses this viewer's frame time; a dump has none.
-///
-/// Playback keeps this history, and a forward skip advances it through the
-/// skipped hours that were built; playing, it passes over those the builders
-/// did not reach, unless the recording has a gap there. A paused seek, a
-/// branch change or a backwards clock starts cold.
-/// The drawn entities are kept by cull tile, and the instance stream is
-/// rebuilt only when an entity in it changes or the view leaves the rectangle
-/// last collected, the visible ground widened by half on each side.
 #[derive(Default)]
 pub struct BuildingHistory {
     prepared: Option<PreparedBuildings>,
@@ -376,39 +295,23 @@ pub struct BuildingHistory {
         PreparedBuildings,
     )>,
     slots: BTreeMap<u32, SlotHistory>,
-    /// Drawn entities by cull tile, then slot.
     tiles: BTreeMap<(i32, i32), BTreeMap<u32, Placed>>,
-    /// Provinces (groups) updated near since their last far step: the
-    /// province byte's `0x10`.
     near: BTreeSet<usize>,
-    /// Near groups already applied at full scale for the installed hour.
     settled: Vec<bool>,
     settled_steady: Option<bool>,
     last_time: Option<f32>,
     last_view: Option<(Camera, [u32; 2])>,
-    /// The rectangle last collected; `Some(None)` collected every tile.
     collected: Option<Option<[f32; 4]>>,
-    /// The hour changed and the slots in view need updating.
     dirty: bool,
-    /// An entity changed since the stream was last collected.
     changed: bool,
-    /// The groups that could come into view, in group order: those a camera held while the real
-    /// one travels inside the padding admits with that padding to spare, so a pan tests every
-    /// group's box only when it leaves the pad.
     candidates: Vec<u32>,
     admitted_against: viewer_foundation::map::camera::Hold,
     candidates_for: Option<(Camera, [u32; 2], viewer_foundation::map::camera::Slack, Arc<[ProvinceSlots]>)>,
-    /// Of those, the ones this camera admits, which the frame walks
-    /// ([`BuildingFrame::through`]): the pad narrows what a moved camera tests, and the camera
-    /// itself still decides, so the set is the one an untested camera would give.
     admitted: Vec<u32>,
     admitted_for: Option<(Camera, [u32; 2])>,
-    /// What this frame's walk did, given to the record once at its end.
     counts: BuildingCounts,
 }
 
-/// What one frame's building walk reached: the groups the camera admitted, those it applied
-/// rather than finding settled, and their slots.
 #[derive(Default)]
 struct BuildingCounts {
     groups: u64,
@@ -417,8 +320,6 @@ struct BuildingCounts {
 }
 
 impl BuildingHistory {
-    /// Installs an hour. `continued` is false for a seek. Returns true when
-    /// entity clocks must start cold too.
     pub fn set(&mut self, prepared: PreparedBuildings, continued: bool) -> bool {
         let reset = !continued
             || self.prepared.as_ref().is_none_or(|previous| {
@@ -429,9 +330,6 @@ impl BuildingHistory {
             self.last_time = None;
             self.last_view = None;
         }
-        // The builder shares every chunk of slots it did not touch, so a group whose chunks all
-        // came through unchanged still holds what it settled on and is not applied again. A
-        // changed group list, popup speed or shrink distance leaves nothing to keep.
         let kept = self.prepared.as_ref().filter(|_| !reset).and_then(|previous| {
             (Arc::ptr_eq(&previous.groups, &prepared.groups)
                 && previous.popup_speed == prepared.popup_speed
@@ -463,8 +361,6 @@ impl BuildingHistory {
         reset
     }
 
-    /// Applies a skipped hour at the last camera, as the frames the engine
-    /// drew during it would have. Ignored unless it continues the history.
     pub fn advance(&mut self, prepared: &PreparedBuildings) {
         let continues = self.prepared.as_ref().is_some_and(|previous| {
             previous.branch == prepared.branch && prepared.hour > previous.hour
@@ -491,8 +387,6 @@ impl BuildingHistory {
         self.changed = true;
     }
 
-    /// Starts one frame. The caller visits provinces in ascending ID order,
-    /// interleaving each province's buildings with its units and hulls.
     pub fn frame(
         &mut self,
         camera: Camera,
@@ -519,9 +413,6 @@ impl BuildingHistory {
         if let Some(prepared) = &self.prepared {
             self.settled.resize(prepared.groups.len(), false);
         }
-        // Which groups the camera admits, of those the held camera's padded view could bring
-        // into view: every group's box is tested only when the held camera, the viewport or the
-        // group list is not the one they were tested against.
         let (against, slack) = self.admitted_against.at(camera, viewport);
         if let Some(groups) = self.prepared.as_ref().map(|prepared| Arc::clone(&prepared.groups))
             && enabled
@@ -577,7 +468,6 @@ impl BuildingHistory {
     }
 
     fn stream(&mut self, camera: Camera, viewport: [u32; 2]) -> Option<Vec<Placed>> {
-        // The renderer culls with the same margin, so nothing pops in at edges.
         let visible = camera.visible_ground(viewport, super::terrain::MARGIN);
         let inside = match (self.collected, visible) {
             (Some(None), _) => true,
@@ -591,7 +481,6 @@ impl BuildingHistory {
             add("map buildings", "stream_kept", 1);
             return None;
         }
-        // Collected again: the view left the rectangle, or an entity in the history changed.
         add("map buildings", if inside { "stream_recollected_changed" } else { "stream_recollected_view" }, 1);
         self.changed = false;
         let rect = visible.map(|[x0, z0, x1, z1]| {
@@ -603,8 +492,6 @@ impl BuildingHistory {
         Some(self.collect(rect, camera.map.x()))
     }
 
-    /// Applies a view the camera passed before the next update, as the
-    /// engine's frames there would have, at a zero frame time.
     pub fn visit(&mut self, camera: Camera, viewport: [u32; 2]) {
         self.view(camera, viewport, 0.0);
     }
@@ -620,8 +507,6 @@ impl BuildingHistory {
         }
     }
 
-    /// Skipped hours carry selection/hysteresis, but create only on a rendered
-    /// frame. Explicit historical dump cameras settle all their models.
     fn apply(
         &mut self,
         prepared: &PreparedBuildings,
@@ -706,9 +591,6 @@ impl BuildingHistory {
                 place(&mut self.tiles, &mut self.changed, id, state, None);
                 continue;
             };
-            // The game destroys an entity whose selectors or definition
-            // changed and latches the selectors BEFORE testing the budget, so
-            // a held replacement is empty until a later frame creates it.
             if state.destroyed != destroyed
                 || state.variant != selection.variant
                 || state.definition != Some(selection.definition)
@@ -754,7 +636,6 @@ impl BuildingHistory {
         self.settled[index] = settled;
     }
 
-    /// The drawn entities in the tiles `rect` reaches in any map copy, or all.
     fn collect(&self, rect: Option<[f32; 4]>, width: f32) -> Vec<Placed> {
         viewer_foundation::view_record::add("map buildings", "collects", 1);
         let Some(rect) = rect else {
@@ -784,8 +665,6 @@ impl BuildingHistory {
     }
 }
 
-/// A borrowed building frame; `through` precedes the unit update of that
-/// province. `finish` restores the hour and collects the changed GPU stream.
 pub struct BuildingFrame<'a> {
     history: &'a mut BuildingHistory,
     prepared: Option<PreparedBuildings>,
@@ -795,7 +674,6 @@ pub struct BuildingFrame<'a> {
     enabled: bool,
     steady: bool,
     active: bool,
-    /// How far through the admitted groups this frame has reached.
     next: usize,
 }
 
@@ -807,8 +685,6 @@ impl BuildingFrame<'_> {
         if !self.active {
             return;
         }
-        // Above the update cutoff only a group left near takes its one hiding step, so with none
-        // left near no admitted group can change.
         if !draws_map_buildings(self.camera.height, prepared.shrink_distance)
             && self.history.near.is_empty()
         {
@@ -850,7 +726,6 @@ impl BuildingFrame<'_> {
     }
 }
 
-/// Replaces one slot's drawn entity and its tile entry.
 fn place(
     tiles: &mut BTreeMap<(i32, i32), BTreeMap<u32, Placed>>,
     changed: &mut bool,
@@ -891,8 +766,6 @@ fn place(
     *changed = true;
 }
 
-/// The slots of each province with a box, given each slot's province in the order `field`
-/// numbers them.
 fn slot_groups(
     provinces: impl Iterator<Item = Option<u32>>,
     bounds: &BTreeMap<u32, [f32; 4]>,
@@ -916,36 +789,23 @@ fn slot_groups(
     groups.into_values().collect()
 }
 
-/// The authored slots of one location and one bucket, in file order.
 type SlotKey = (u32, String);
 
-/// Everything static the layer needs: the slot table, the building types and
-/// the resolved entity meshes.
 pub struct MapBuildingAssets {
     pub facts: Arc<viewer_foundation::map::building_facts::BuildingFacts>,
     pub library: ModelLibrary,
     pub defines: Defines,
-    /// The slot ids of each province with a box, in authored file order.
     groups: Arc<[ProvinceSlots]>,
-    /// Each admitted slot with the province under its own position, which is
-    /// the province the game reads the fog byte of.
     slots: BTreeMap<SlotKey, Vec<(BuildingPosition, Option<u32>)>>,
-    /// Each slot bucket's candidate types, as [`BuildingFacts::ordered`](viewer_foundation::map::building_facts::BuildingFacts::ordered) indices in
-    /// declaration order (`Buildings::slot_candidates`, resolved once).
     candidates: BTreeMap<String, Vec<usize>>,
-    /// Type index and variant index (`usize::MAX` for destroyed) to mesh slot.
     entities: BTreeMap<(usize, usize), usize>,
     damaged_entities: BTreeMap<(usize, usize), usize>,
-    /// Which [`BuildingFacts::ordered`](viewer_foundation::map::building_facts::BuildingFacts::ordered) type each `LexicalTokens` token names, kept
-    /// while the hours share the token table.
     tokens: std::sync::Mutex<
         Option<(
             replay_frame::frame::ViewIdentity,
             map_display_data::retained::Retained<TokenTypes>,
         )>,
     >,
-    /// The reserved floating-harbour slots with the province under each; their ids follow
-    /// the ordinary slots'.
     floating: Vec<(BuildingPosition, u32)>,
     floating_mesh: Option<usize>,
     id: u64,
@@ -953,8 +813,6 @@ pub struct MapBuildingAssets {
     display_keys: std::sync::OnceLock<Vec<Arc<map_display_data::buildings::AssetKey>>>,
     display_binding: std::sync::OnceLock<[u8; 32]>,
     display_sites: std::sync::OnceLock<Arc<Vec<map_display_data::buildings::AuthoredSlot>>>,
-    /// The province boxes and their slot ids as a product holds them: the content's own, so every
-    /// product shares one, cold or not.
     display_groups: std::sync::OnceLock<Arc<Vec<map_display_data::buildings::Group>>>,
     display_bindings: std::sync::OnceLock<
         Result<BTreeMap<Arc<map_display_data::buildings::AssetKey>, usize>, String>,
@@ -979,10 +837,6 @@ impl std::fmt::Debug for MapBuildingAssets {
     }
 }
 
-/// The recorded tokens whose spelling names a building type: `Ok(index)` into
-/// [`BuildingFacts::ordered`](viewer_foundation::map::building_facts::BuildingFacts::ordered) for the one type equal to it under the
-/// lexer's fold, the reason when several are. Every other token is absent;
-/// [`MapBuildingAssets::field`] words why for the ones its rows reference.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TokenTypes(
     map_display_data::value_index::ValueIndex<
@@ -1000,51 +854,29 @@ impl TokenTypes {
     }
 }
 
-/// Counts the viewer reports for the layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapBuildingSummary {
     pub unknown_city_damage: BTreeMap<String, usize>,
-    /// Admitted authored slots.
     pub slots: usize,
-    /// Recorded rows with a level above zero whose type draws.
     pub built: usize,
-    /// Entities the hour selects before camera history.
     pub placed: usize,
-    /// Rows whose average health selects the damaged state.
     pub damaged: usize,
-    /// Rows selecting the destroyed mesh.
     pub destroyed: usize,
-    /// Rows inside the hysteresis band, resolved from slot history.
     pub uncertain_damage: usize,
-    /// Rows whose type token the hour does not spell (absent, among the
-    /// missing rows, or not text); their reasons are in `refused_tokens`.
     pub unnamed_tokens: usize,
-    /// Rows whose type token names no one building type, by reason: an
-    /// unspelled token, a spelling no authored type folds to, or one several do.
     pub refused_tokens: Refusals,
-    /// Rows whose location has no admitted slot of their bucket.
     pub missing_slots: usize,
     pub missing_by_type: BTreeMap<String, usize>,
-    /// Rows whose type resolved to no entity, by building type.
     pub unresolved_by_type: BTreeMap<String, usize>,
-    /// Hub slots the port or city graphics carry instead.
     pub hubs_left_to_another_layer: usize,
-    /// Hub slots kept because `NavalBases` is incomplete this hour.
     pub unknown_hub_membership: usize,
-    /// Built slots the viewing country's fog hides.
     pub fogged: usize,
-    /// Foreign `need_detection` slots the viewer has not detected.
     pub undetected: usize,
-    /// Foreign `need_detection` slots kept because detection is incomplete.
     pub unknown_detection: usize,
-    /// Floating harbours omitted because their fog byte or deployment is unknown, by reason.
     pub unknown_floating_harbors: BTreeMap<&'static str, usize>,
 }
 
 impl MapBuildingSummary {
-    /// The refused type tokens and the undecided floating harbours, one diagnostics line per
-    /// reason. The hour builder hands these to the window's diagnostics, a capture and the
-    /// dashboard's map details.
     pub fn warnings(&self) -> Vec<String> {
         self.refused_tokens
             .iter()
@@ -1068,8 +900,6 @@ impl MapBuildingAssets {
         self.id
     }
 
-    /// Reads the slot table, the building types and every entity a drawable
-    /// type names, from the descriptors anywhere below `gfx`.
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -1082,7 +912,6 @@ impl MapBuildingAssets {
             height: map.height,
             ids: &map.province_ids,
         };
-        // document.rs reports the state id conflicts once.
         let (states, _) = installed_content_states::states::read(layers, defines, &map.definitions)?;
         let defines = Defines::load(defines)?;
         let types = installed_content_core::buildings::read(layers)?;
@@ -1097,15 +926,12 @@ impl MapBuildingAssets {
         let mut authored: BTreeMap<SlotKey, Vec<usize>> = BTreeMap::new();
         let mut ambiguous_slots = BTreeSet::new();
         let mut outside = 0usize;
-        // Each floating harbour with the province under it and its file row.
         let mut floating = Vec::new();
         for (order, position) in installed_content_core::positions::read_buildings(layers)?
             .into_iter()
             .enumerate()
         {
             if is_floating_harbor_slot(&position.kind) {
-                // The game keeps the reserved slot under its bitmap province without the
-                // land and state-membership tests; its seventh field names the deployment.
                 match provinces.at(position.x, position.z) {
                     Some(receiver) if states.definitions().contains_key(&position.state) => {
                         floating.push((position, receiver, order));
@@ -1151,8 +977,6 @@ impl MapBuildingAssets {
                 .or_default()
                 .push((position, province));
         }
-        // Rail and port anchors resolve through the same `Buildings::slot` and skip
-        // the same slots; this warning names them for all three.
         if !ambiguous_slots.is_empty() {
             warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "Map-building slots are not drawn or used as rail and port anchors where content declares their type or bucket more than once differently (names equal but for letter case are one declaration), because the engine's choice is unverified: {}.",
@@ -1173,8 +997,6 @@ impl MapBuildingAssets {
             for (variant, entity) in building.entity_names().into_iter().enumerate() {
                 wanted.push((building.name.clone(), variant, entity));
             }
-            // The game probes the destroyed descriptor whatever
-            // has_destroyed_mesh says; its absence is valid.
             let destroyed = building.destroyed_entity_name();
             if roster.descriptors.entities.contains_key(&destroyed) {
                 wanted.push((building.name.clone(), usize::MAX, destroyed));
@@ -1185,15 +1007,12 @@ impl MapBuildingAssets {
         if !floating.is_empty() {
             names.push(FLOATING_HARBOR_ENTITY.to_owned());
         }
-        // A damaged state with an animation needs its own posed geometry.
         for (_, _, entity) in &wanted {
             if descriptors
                 .inherit(entity)
                 .is_some_and(|value| value.states.contains_key("damaged"))
             {
                 let name = format!("{entity}::damaged");
-                // A viewer alias of the registered snapshot, not a new raw
-                // clone declaration whose registration order is unknown.
                 let mut damaged = descriptors.entities[entity].clone();
                 damaged.name = name.clone();
                 damaged.default_state = Some("damaged".into());
@@ -1241,7 +1060,6 @@ impl MapBuildingAssets {
                 ),
             ));
         }
-        // The floating harbours' ids follow the ordinary slots'.
         let mut groups = slot_groups(
             slots
                 .values()
@@ -1256,8 +1074,6 @@ impl MapBuildingAssets {
             .copied()
             .chain(floating.iter().map(|(_, _, order)| *order))
             .collect();
-        // Read authored rows and append each to its province; a floating
-        // harbour's too.
         for group in Arc::make_mut(&mut groups) {
             group.slots.sort_by_key(|id| order[*id as usize]);
         }
@@ -1278,8 +1094,6 @@ impl MapBuildingAssets {
         Ok(assets)
     }
 
-    /// The layer from its loaded parts, with every name-keyed lookup the hour
-    /// needs resolved to [`BuildingFacts::ordered`](viewer_foundation::map::building_facts::BuildingFacts::ordered) indices once.
     fn assemble(
         library: ModelLibrary,
         types: &Buildings,
@@ -1367,16 +1181,10 @@ impl MapBuildingAssets {
         }
     }
 
-    /// Admitted slots, for reporting.
     pub fn slot_count(&self) -> usize {
         self.ordinary_slot_count() + self.floating.len()
     }
 
-    /// This hour's slot targets.
-    ///
-    /// `StateBuildings` rows are keyed by state and `ProvinceBuildings` rows by
-    /// province; a provincial bucket's slots were keyed by their bitmap
-    /// province at load, so both join on `location`.
     pub fn field(
         &self,
         frame: &DecodedFrame,
@@ -1391,7 +1199,6 @@ impl MapBuildingAssets {
         )
     }
 
-    /// The same hour targets with explicit builder child scopes.
     pub fn field_profiled(
         &self,
         frame: &DecodedFrame,
@@ -1539,8 +1346,6 @@ impl MapBuildingAssets {
             let _cost = replay_frame::cpu::scope("buildings.detection", Some("buildings"));
             Detection::observed(&observation)
         });
-        // The game tests the strategic-navy base hash whatever the
-        // base's level; `NavalBases` walks that hash.
         let naval_bases = rows::<tables::NavalBases>(frame)?;
         let naval_base_provinces = observation.port_membership();
         let mut available = spans.measure("buildings.rows", |_| {
@@ -1717,8 +1522,6 @@ impl MapBuildingAssets {
         Ok(self.select(id, &site, candidates, |key| context.available.get(&key).copied(), context))
     }
 
-    /// One ordinary slot from values: its candidates' rows by (provincial, location, type index)
-    /// and the hour's gates.
     fn select(
         &self,
         id: u32,
@@ -1753,7 +1556,6 @@ impl MapBuildingAssets {
         (prepared, tally)
     }
 
-    /// One selected slot's entity, or `None` where a gate hides it.
     fn entity(
         &self,
         index: usize,
@@ -1767,15 +1569,12 @@ impl MapBuildingAssets {
         let province = site.province;
         let in_order =
             site.ordinal < slots_for_level(building, row.level, self.defines.max_levels) as usize;
-        // Multi-mesh types admit every slot; a destroyed mesh only its ordered ones.
         let healthy_admitted = building.show_on_map_meshes >= 2 || in_order;
         let destroyed_admitted =
             (!building.has_destroyed_mesh && building.show_on_map_meshes >= 2) || in_order;
         if !healthy_admitted && !destroyed_admitted {
             return None;
         }
-        // A province with no recorded byte, or a slot over no province, cannot
-        // be decided and keeps its building.
         if province.is_some() && !building.always_shown {
             tally.mark(Tally::READ_FOG);
         }
@@ -1826,8 +1625,6 @@ impl MapBuildingAssets {
                 .or_else(|| definition(variant))
         };
         let variant = building.variant_for_level(i32::from(row.level), self.defines.max_levels);
-        // The game leaves the variant selector 0 for a destroyed building of
-        // a type with its own destroyed mesh.
         let ruined_variant = if building.has_destroyed_mesh {
             0
         } else {
@@ -1840,7 +1637,6 @@ impl MapBuildingAssets {
             return None;
         };
         let entity = PreparedEntity {
-            // A missing mesh hides only the state that needs it.
             healthy: Selection {
                 admitted: healthy_admitted && normal.is_some(),
                 mesh: normal.unwrap_or(any),
@@ -1879,8 +1675,6 @@ impl MapBuildingAssets {
     }
 }
 
-/// Where an ordinary slot stands: its authored state, position and rotation, the province under
-/// it, and its order among its location's slots of one bucket.
 struct Site {
     state: u32,
     at: [f32; 3],
@@ -1889,15 +1683,11 @@ struct Site {
     ordinal: usize,
 }
 
-/// What a slot's gates read of the hour, from a frame of rows or from a layer's own state.
 pub trait SlotGates {
-    /// Whether the viewing country sees a building in `province`; `None` when undecided.
     fn sees(&self, province: u32, always_shown: bool) -> Option<bool>;
-    /// Whether city terrain spawns at a world position.
     fn on_city(&self, x: f32, z: f32) -> bool;
     fn naval_base(&self, province: u32) -> bool;
     fn naval_bases_complete(&self) -> bool;
-    /// Whether the viewer has detected a foreign `need_detection` building; `None` when undecided.
     fn detected(&self, row: &BuildingInput) -> Option<bool>;
 }
 
@@ -1927,9 +1717,6 @@ impl SlotGates for SlotContext<'_> {
     }
 }
 
-/// The deployment province needs supply flag bit 0 set and a nonzero
-/// controller index. The first deployment record for that controller and
-/// province, ordered by recorded ordinal, decides by its nonzero status.
 #[cfg(test)]
 fn floating_harbor_deployed(
     province: u32,
@@ -1967,9 +1754,6 @@ struct SlotContext<'a> {
     available: &'a available::AvailableRows,
 }
 
-/// Whether the game leaves a hub slot to another layer: the province is
-/// in the naval-base hash or its terrain spawns a city. A province missing from
-/// an incomplete hash is undecided (`None`).
 trait NavalMembership {
     fn has(&self, province: u32) -> bool;
 }
@@ -2012,7 +1796,6 @@ fn raid_targets(frame: &DecodedFrame) -> Option<BTreeMap<Scope, &[u8]>> {
                 .filter(|row| row.scope.building_type != 0)
                 .collect();
             ordered.sort_by_key(|row| row.ordinal);
-            // A later duplicate scope replaces an earlier one, as the loader does.
             ordered
                 .into_iter()
                 .map(|row| {
@@ -2031,14 +1814,11 @@ fn raid_targets(frame: &DecodedFrame) -> Option<BTreeMap<Scope, &[u8]>> {
         })
 }
 
-/// A foreign `need_detection` building is drawn only once the
-/// viewer's bit is set in its raid target status. Fog does not change it.
 struct Detection {
     links: map_display_data::copy_index::CopyIndex<u32, u32>,
     ours: u32,
     provinces: map_display_data::copy_index::CopyIndex<u32, u32>,
     states: map_display_data::copy_index::CopyIndex<u32, u32>,
-    /// Detection bits by building scope; `None` unless the table is complete.
     targets: Option<map_display_data::copy_index::CopyIndex<Scope, bool>>,
 }
 
@@ -2083,7 +1863,6 @@ impl Detection {
         })
     }
 
-    /// `None` when the hour cannot decide it.
     fn detected(&self, row: &available::BuildingInput) -> Option<bool> {
         detected(
             row,
@@ -2101,7 +1880,6 @@ impl Detection {
     }
 }
 
-/// [`building_facts::detected`] for one building row.
 pub fn detected(
     row: &BuildingInput,
     controller: impl FnOnce(bool, u32) -> Option<u32>,
@@ -2118,15 +1896,6 @@ pub fn detected(
     )
 }
 
-/// The `LexicalTokens` tokens that name a building type, with the type.
-///
-/// `Buildings.building_type` is a native token id; the recorder stores the
-/// literal once and every row refers to it. A token names the building type
-/// whose key equals its spelling under the lexer's fold (`keys`, with each
-/// key's index in `index`). An hour may hold the table truncated when its
-/// capture capacity stays short. Token 0 and a literal that is not NUL-free
-/// UTF-8 name nothing (`TokenNames`); the caller words why for the rows that
-/// reference a token this leaves out.
 fn token_types(
     frame: &DecodedFrame,
     keys: &TokenKeys,
@@ -2156,8 +1925,6 @@ fn named_type(
     Ok(named_class(spelling, keys, index).map(map_display_data::retained::Retained::new))
 }
 
-/// The building type a spelling names: `Some(Ok(index))` for one, the reason when several do,
-/// `None` when none does.
 fn named_class(
     spelling: &str,
     keys: &TokenKeys,
@@ -2170,25 +1937,17 @@ fn named_class(
     }
 }
 
-/// What a building row's type token gives the map: a building type, or the words of the refusal
-/// and whether the token has no name at all (absent, among the missing rows, not text), which also
-/// refuses the city damage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TokenClass {
     Type(usize),
     Refused { reason: String, unnamed: bool },
 }
 
-/// A slot read the viewer's fog byte of its province.
 pub const READS_FOG: u8 = 1;
-/// A slot read the naval-base membership of its province (a supply hub).
 pub const READS_HUB: u8 = 2;
-/// A slot read its location's controller, the country links and the raid targets.
 pub const READS_DETECTION: u8 = 4;
 
-/// What a layer reads of the slot table and decides per slot from values, without a frame.
 impl MapBuildingAssets {
-    /// Ordinary slots; the floating harbours' ids follow theirs.
     pub fn ordinary_slots(&self) -> usize {
         self.ordinary_slot_count()
     }
@@ -2197,12 +1956,10 @@ impl MapBuildingAssets {
         self.floating.len()
     }
 
-    /// The province ordinary slot `id` stands over; none for one over no province.
     pub fn slot_province(&self, id: u32) -> Option<u32> {
         self.site(id).3
     }
 
-    /// The sea province harbour `index` reads its fog byte and deployment from.
     pub fn harbour_sea(&self, index: usize) -> u32 {
         self.floating[index].0.adjacent_sea
     }
@@ -2211,10 +1968,6 @@ impl MapBuildingAssets {
         &self.facts.ordered
     }
 
-    /// Ordinary slot `id` from values: `row` gives a candidate's row by (provincial, location,
-    /// type index), `gates` the hour's fog, hub and detection operands. With it, which gates it
-    /// read ([`READS_FOG`], [`READS_HUB`], [`READS_DETECTION`]): a change of a gate it did not read
-    /// leaves it alone.
     pub fn slot_value(
         &self,
         id: u32,
@@ -2234,7 +1987,6 @@ impl MapBuildingAssets {
         (slot, reads.into_iter().filter(|&(flag, _)| tally.reads(flag)).fold(0, |bits, (_, bit)| bits | bit))
     }
 
-    /// Floating harbour `index` from values; see [`Self::harbour_sea`].
     pub fn harbour_value(
         &self,
         index: usize,
@@ -2245,28 +1997,22 @@ impl MapBuildingAssets {
         self.harbour(&self.floating[index].0, id, byte, deployed)
     }
 
-    /// The ordinary slots a row of type `index` at `location` can fill.
     pub fn slots_of(&self, provincial: bool, location: u32, index: usize) -> impl Iterator<Item = u32> + '_ {
         self.sites().slots_of((provincial, location, index))
     }
 
-    /// The ordinary slots with a candidate row at `location`, in either table.
     pub fn slots_at(&self, location: u32) -> impl Iterator<Item = u32> + '_ {
         self.sites().at_location(location)
     }
 
-    /// Each province with an ordinary slot over it, once, ascending.
     pub fn slotted_provinces(&self) -> impl Iterator<Item = u32> + '_ {
         self.sites().provinces()
     }
 
-    /// The ordinary slots standing over `province`.
     pub fn slots_in(&self, province: u32) -> impl Iterator<Item = u32> + '_ {
         self.sites().slots_in(province)
     }
 
-    /// Token `token`'s class from its LexicalTokens literal: `None` when it has no row, `Some(None)`
-    /// when its literal is not text.
     pub fn token_class(&self, token: u32, literal: Option<Option<&[u8]>>, lexical_complete: bool) -> TokenClass {
         use viewer_foundation::table_access::TokenError;
         let unnamed = |error: TokenError| TokenClass::Refused { reason: error.to_string(), unnamed: true };
@@ -2286,8 +2032,6 @@ impl MapBuildingAssets {
         }
     }
 
-    /// The types city damage reads (infrastructure, then the industrial complex), or why the content
-    /// makes them ambiguous.
     pub fn city_templates(&self) -> Result<Vec<usize>, String> {
         let types = &self.facts.ordered;
         let infrastructure = types.iter().filter(|kind| kind.name.eq_ignore_ascii_case("infrastructure")).count();
@@ -2309,8 +2053,6 @@ impl MapBuildingAssets {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MapBuildingAssets {
-    /// Assets of authored slots and types without meshes or groups: `entities` names each
-    /// (type, variant)'s mesh slot by number.
     pub fn stub(
         types: &Buildings,
         defines: Defines,

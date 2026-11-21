@@ -1,6 +1,5 @@
 import type { ChordData } from './layout.ts';
 
-// Chord targets are immutable; motion owns separate geometry.
 const checked = new WeakMap<ChordData, number>();
 
 export function checkChord(data: ChordData): number {

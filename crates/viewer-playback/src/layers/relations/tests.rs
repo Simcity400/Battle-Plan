@@ -72,7 +72,6 @@ fn column(table: TableId, field: &str) -> usize {
     (0..64).find(|&column| table.field_name(column) == Some(field)).unwrap_or_else(|| panic!("{table:?}.{field}"))
 }
 
-/// The relations' tables over `hours` hours, every one complete, written by `hour`.
 fn record(hours: u32, mut hour: impl FnMut(u32, &mut Store)) -> Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -109,7 +108,6 @@ fn delete(store: &mut Store, table: TableId, slot: u32) {
     store.table(table.index()).unwrap().delete(slot).unwrap();
 }
 
-/// Four countries, raw 10 to 13 in slots 1 to 4; the viewer is slot 1.
 fn world(store: &mut Store) {
     for (at, raw) in (10..14u32).enumerate() {
         let (slot, canonical) = (at as u32, at as u32 + 1);
@@ -193,10 +191,6 @@ fn a_war_a_faction_and_a_subject_each_change_exactly_the_countries_they_name() {
     assert_eq!(layer.differ(&layer.composed(mirrors)), (0, None), "stepwise equals composed");
 }
 
-/// Work in proportion to the change: a war naming the viewing country decides the country on its
-/// other side and no other, a war between two other countries decides none, and hours that change
-/// nothing decide none. On the base every settle also cloned the index's whole country map and
-/// walked every link for the first refusal.
 #[test]
 fn a_change_decides_the_countries_it_names_and_no_other() {
     let units = record(BLOCK, |at, store| match at {

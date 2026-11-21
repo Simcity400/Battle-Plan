@@ -1,4 +1,3 @@
-//! One original worker capture of map battle rows and their progress visitor.
 use super::{MAP_TABLES, MapCaptured, elapsed, qpc};
 use crate::{extended::combat_progress, table_capture::CaptureRows};
 use engine_native::{Memory, cland_combat, cnaval_combat, cnaval_combatant, walk::Outcome};
@@ -23,8 +22,6 @@ pub(crate) struct CombatRequest {
     naval_groups: Vec<usize>,
     naval_groups_required: usize,
     progress: combat_progress::Captured,
-    /// False when the capture mode leaves out the progress tables: the walk
-    /// visits no combat for them.
     progress_recorded: bool,
     land_finished: bool,
     naval_finished: bool,
@@ -139,7 +136,6 @@ impl MapCaptured {
         }
     }
 
-    /// Install original outcomes and complete storage without callback allocation.
     pub(crate) fn restore_combat_request(
         &mut self,
         mut request: CombatRequest,

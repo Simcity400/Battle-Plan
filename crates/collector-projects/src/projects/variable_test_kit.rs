@@ -121,7 +121,6 @@ pub fn encoded(captured: &Captured) -> Vec<u8> {
     bytes
 }
 
-/// The row's runtime value as conversion records it, also after a latched terminal failure.
 pub fn variables(captured: &Captured) -> Option<std::sync::Arc<rows::ProjectVariableStore>> {
     let rows::Recorded::Value(runtime) = captured.project_runtime.value(&captured.projects.rows[0])
     else {

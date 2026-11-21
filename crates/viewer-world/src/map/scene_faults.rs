@@ -1,4 +1,3 @@
-//! Controlled scene fault and shader probes, available only to test-support consumers.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use super::scene::passes;
 use eframe::wgpu;
@@ -56,8 +55,6 @@ impl Faults {
         Ok(())
     }
 
-    // An independent draw on Scene's actual encoder/output, after its real passes.
-    // The full Scene assertions below also check pass placement and target history.
     pub fn draw_sentinel(
         &self,
         device: &wgpu::Device,
@@ -116,8 +113,6 @@ impl Faults {
     }
 }
 
-/// Independently authored shader: declared unknown b2 tail, actual texture and vertex reads.
-/// Both the Scene boundary faults and the retained-state test use its real ABI refusal.
 pub struct Probe {
     effect: Arc<shader_pipeline::library::Effect>,
 }

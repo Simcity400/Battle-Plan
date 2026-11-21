@@ -1,8 +1,3 @@
-//! One hourly store loan spans acquisition and FIFO owned settlement. An hour never waits for
-//! the store the hour before still settles: it takes a store of its own, which holds nothing
-//! and so reads every division, as the attach hour does. Only the store of the latest take
-//! carries into the next hour; an older one returns late, forgets what it held and is kept for
-//! the next backlog, and once the latest returns the kept ones are freed.
 use crate::acquisition::lock_unpoisoned;
 use crate::extended::attack_stats::ArmyStatStore;
 use std::{
@@ -14,28 +9,21 @@ use std::{
 };
 
 struct State {
-    /// The latest take's store, once it returned.
     store: Option<Box<ArmyStatStore>>,
-    /// The latest take.
     latest: u64,
-    /// Stores that returned after a later take, forgotten, for the next take that finds the
-    /// latest one still out.
     spares: Vec<Box<ArmyStatStore>>,
 }
 
 struct Shared {
     state: Mutex<State>,
     daily_refresh: AtomicBool,
-    /// The spares' bytes, which the pool's total counts.
     spare_bytes: AtomicU64,
 }
 
-/// A handle on the one store slot; its clones share it.
 #[derive(Clone)]
 pub(crate) struct Slot(engine_allocation::SharedBox<Shared>);
 
 impl Slot {
-    /// A refused allocation is the collector's allocation failure.
     pub(crate) fn new(store: Box<ArmyStatStore>) -> std::io::Result<Self> {
         engine_allocation::shared(Shared {
             state: Mutex::new(State {
@@ -59,14 +47,9 @@ impl Slot {
             )
             .is_refresh(hour)
         {
-            // The preceding FIFO decode may still own the store. Only the
-            // next take consumes this revocation, even if dispatch is skipped.
             self.0.daily_refresh.store(true, Ordering::Release);
         }
     }
-    /// The hour's store, at once: the latest take's when it has returned, else one of its
-    /// own, which samples the daily operands again. None only when a new store cannot be
-    /// allocated, which is the collector's allocation failure.
     pub(crate) fn take(&self) -> Option<Loan> {
         let mut state = lock_unpoisoned(&self.0.state);
         state.latest += 1;
@@ -94,8 +77,6 @@ impl Slot {
     pub(crate) fn spare_bytes(&self) -> u64 {
         self.0.spare_bytes.load(Ordering::Relaxed)
     }
-    /// Takes back a loan's store: the latest take's carries into the next hour and frees the
-    /// spares; an older one forgets what it held and becomes a spare.
     fn give_back(&self, id: u64, mut store: Box<ArmyStatStore>) {
         let mut state = lock_unpoisoned(&self.0.state);
         if id == state.latest {
@@ -149,7 +130,6 @@ impl DerefMut for Loan {
 }
 impl Drop for Loan {
     fn drop(&mut self) {
-        // Aborted acquisition, dropped frames and decode unwind cannot carry a partial baseline.
         self.prepare_return();
         if let Some(store) = self.store.take() {
             self.owner.give_back(self.id, store);
@@ -165,18 +145,15 @@ mod tests {
         let slot = Slot::new(held()).unwrap();
         let first = slot.take().unwrap();
         let first_address = &*first as *const ArmyStatStore;
-        // The decode worker still holds the first hour's store: the next take does not wait.
         let mut second = slot.take().unwrap();
         assert_ne!(&*second as *const ArmyStatStore, first_address);
         assert!(second.held_name(0, 7).is_none());
         second.complete();
         let second_address = &*second as *const ArmyStatStore;
-        // A third take, while both are out, gets another of its own.
         let third = slot.take().unwrap();
         drop(first);
         assert_eq!(slot.0.state.lock().unwrap().spares.len(), 1);
         drop(second);
-        // An older store returning after a later take carries nothing on.
         assert!(slot.0.state.lock().unwrap().store.is_none());
         let third_address = &*third as *const ArmyStatStore;
         drop(third);
@@ -186,7 +163,6 @@ mod tests {
         assert_eq!(state.store.as_deref().unwrap() as *const ArmyStatStore, third_address);
         drop(state);
         assert_ne!(third_address, second_address);
-        // A spare is reused, forgotten, by the next take that finds the latest one out.
         let out = slot.take().unwrap();
         let older = slot.take().unwrap();
         drop(out);
@@ -219,8 +195,6 @@ mod tests {
                     .is_some()
             );
             slot.prepare_hour(hour, full);
-            // This request is rejected before take. Its older FIFO decode can
-            // still return a successful store, but cannot clear the revocation.
             older.complete();
             drop(older);
             slot.prepare_hour(hour + 1, false);

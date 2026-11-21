@@ -1,23 +1,3 @@
-//! `ConstructionProjects`: every construction line, from the first queue read that lists it (or
-//! the output that names it before any does) until the read that settles its ending.
-//!
-//! The building and railway queues are read once a day in their slot; each read settles every
-//! open line over the stretch since the last successful read by the claim algorithm: the line's
-//! building is followed hour by hour (StateBuildings or ProvinceBuildings), and its daily rises
-//! are sorted into repairs, possible completions and damage. Nothing is claimed in a stretch with
-//! an hour the writer did not see whole (`unaccounted`), or while another open line shares the
-//! building; a newcomer at the building since its creation makes the stretch doubtful. New levels
-//! are as many as the count fell, no more than the possible completions, dated by their rise when
-//! those are exactly as many; repairs and damage are the line's while it is listed. A railway's
-//! segments are the fall of its count. A line gone from its queue takes a provisional ending; the
-//! output's final publication decides it (an observed completion or cancellation, or a complete
-//! observation with no outcome: removed), or its absence leaves it unknown. The row is written a
-//! last time there, and deleted at the writer's next hour. That hour `ConstructionLineEnds` logs
-//! the line's end: what it was and did over its life, from that last row.
-//!
-//! State (its resume blob): each queue's building changes since its last successful read and
-//! whether an hour was lost, and per live project its watched buildings, last counts, current
-//! run's first read and output observation; the rows themselves are read back from the table.
 
 use crate::{
     deployed::{invalid, number, row},
@@ -45,11 +25,8 @@ mod tests;
 
 type P = ConstructionProjectRow;
 
-/// A building: province scope, location and type.
 type Key = (bool, u32, u32);
-/// A building's level and healthy level.
 type Levels = (i16, i16);
-/// An hourly change of a building: hour, before, after.
 type Change = (i32, Levels, Levels);
 
 const LEVELS: [usize; 2] = columns::<BuildingRow, 2>(["level", "healthy_level"]);
@@ -129,23 +106,18 @@ fn railway_key(province: u32) -> Key {
     (true, province, RAILWAY_TEMPLATE_TOKEN)
 }
 
-/// Whether a rise at `hour` can be the daily construction update's: it shows at the day's
-/// first sampled hour.
 fn daily(hour: i32) -> bool {
     hour.rem_euclid(24) == 0
 }
 
-/// One queue's buildings' changes since its last successful read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Family {
     changes: HashMap<Key, Vec<Change>>,
-    /// An hour since was not seen whole.
     lost: bool,
     read: Option<i32>,
 }
 
 impl Family {
-    /// Step 1: whether a line created at `created` and first listed now may have worked before.
     fn earlier_unknown(&self, keys: &[Key], created: i32) -> bool {
         if self.read.is_none_or(|read| created <= read) || keys.is_empty() || self.lost {
             return true;
@@ -159,14 +131,12 @@ impl Family {
     }
 }
 
-/// A daily rise: `count` levels at `hour`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Rise {
     hour: i32,
     count: u32,
 }
 
-/// Step 2: what a building line's building did over a stretch.
 #[derive(Debug, Default)]
 struct Stretch {
     repairs: Vec<Rise>,
@@ -202,14 +172,12 @@ impl Stretch {
     }
 }
 
-/// How a building line's building was seen over a stretch.
 enum Seen<'a> {
     Lost,
     Shared,
     Clear(&'a [Change], Option<i32>),
 }
 
-/// A line's last queue read: its buildings and counts left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Open {
     keys: Vec<Key>,
@@ -217,22 +185,18 @@ struct Open {
     repair_levels: i32,
 }
 
-/// A line's final output publication, as the ending reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Ended {
-    /// None when the completion was not recorded; then an outcome hour and whether cancelled.
     completion: Option<Option<(i32, bool)>>,
     linked: bool,
     since: i32,
     railway: bool,
 }
 
-/// A project the writer still writes.
 #[derive(Clone, Debug)]
 struct Line {
     row: P,
     open: Option<Open>,
-    /// The first read of its current run.
     run: Option<i32>,
     since: Option<i32>,
     restarted: bool,
@@ -243,13 +207,9 @@ struct Line {
 pub struct ConstructionProjects {
     families: [Family; 2],
     lines: HashMap<u64, Line>,
-    /// Rows written a last time, deleted at the next hour.
     closing: Vec<u64>,
-    /// Rows changed this hour.
     dirty: HashSet<u64>,
-    /// The rows are to be read back before the next hour: a resume.
     reread: bool,
-    /// Saved state of each line, awaiting its row ([`Self::prime`]).
     saved: HashMap<u64, Line>,
 }
 
@@ -270,7 +230,6 @@ fn rises(of: &[Rise]) -> Vec<ConstructionRise> {
     of.iter().map(|rise| ConstructionRise { hour: rise.hour, count: rise.count }).collect()
 }
 
-/// A line's end as `ConstructionLineEnds` holds it.
 fn end_cells(end: &ConstructionLineEndRow) -> Vec<Value> {
     vec![
         Value::U8(end.kind),
@@ -345,8 +304,6 @@ fn cells(row: &P, out: &mut Rows) -> io::Result<Vec<Value>> {
     ])
 }
 
-/// The claim algorithm for one building line over the stretch to this read; `now` is
-/// this read's row of it (none once gone). Returns its provisional ending once gone.
 fn settle(row: &mut P, open: &Open, now: Option<&BuildingConstructionRow>, seen: Seen<'_>) -> Option<(u8, u8)> {
     let (repair_left, new_left) = (open.repair_levels.max(0), open.remaining.max(0));
     let (repair_now, new_now) = now.map_or((0, 0), |now| (now.repair_levels.max(0), now.amount.max(0)));
@@ -415,8 +372,6 @@ impl ConstructionProjects {
         view.slot(u128::from(province?)).and_then(|slot| number(&view, PROVINCE_STATE[0], slot)).map(|state| state as u32)
     }
 
-    /// Follows the building tables into the hour: each changed building's change, or the hour
-    /// lost for both queues.
     fn buildings(&mut self, hour: &Hour<'_>) {
         let whole = hour.fresh || BUILDINGS.iter().any(|&(table, _)| !hour.complete(table) || hour.changes(table).status_changed);
         if whole {
@@ -468,7 +423,6 @@ impl ConstructionProjects {
         }
     }
 
-    /// Ends a gone line provisionally, or settles its ending from its final output.
     fn depart(&mut self, id: u64, end: (u8, u8), hour: i32) {
         let Some(line) = self.lines.get_mut(&id) else { return };
         line.open = None;
@@ -479,7 +433,6 @@ impl ConstructionProjects {
         }
     }
 
-    /// The final output decides a gone (or output-alone) line's ending; the row is closed.
     fn conclude(&mut self, id: u64, hour: i32) {
         let Some(line) = self.lines.get_mut(&id) else { return };
         if let Some(ended) = line.ended.filter(|ended| ended.railway == (line.row.kind == P::RAILWAY)) {
@@ -497,7 +450,6 @@ impl ConstructionProjects {
         self.closing.push(id);
     }
 
-    /// A new project's row, or an output-alone one's taken over by its first queue read.
     fn first(&mut self, id: u64, mut row: P, hour: i32) {
         if let Some(previous) = self.lines.get(&id).filter(|line| line.row.output_alone) {
             row.first_read = previous.row.first_read;
@@ -517,7 +469,6 @@ impl ConstructionProjects {
         self.dirty.insert(id);
     }
 
-    /// A line's current run from this read.
     fn run(line: &mut Line, factories: i32, remaining: i32, repair_levels: i32, hour: i32) {
         let same = line.row.factories == Recorded::Value(factories) && line.row.remaining == Recorded::Value(remaining) && line.row.repair_levels == Recorded::Value(repair_levels);
         if !same {
@@ -529,7 +480,6 @@ impl ConstructionProjects {
         }
     }
 
-    /// A complete read of the building queue at `hour`.
     fn read_buildings(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         let view = hour.table(TableId::BuildingConstruction);
         let mut present: HashMap<u64, BuildingConstructionRow> = HashMap::new();
@@ -599,7 +549,6 @@ impl ConstructionProjects {
         Ok(())
     }
 
-    /// A complete read of the railway queue at `hour`.
     fn read_railways(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         let view = hour.table(TableId::RailwayConstruction);
         let mut present: HashMap<u64, RailwayConstructionRow> = HashMap::new();
@@ -661,7 +610,6 @@ impl ConstructionProjects {
         Ok(())
     }
 
-    /// A line's output columns from its output row.
     fn output_of(line: &mut Line, output: &ConstructionLineOutputRow, hour: i32) {
         if line.since.is_some_and(|since| since != output.since_hour) || output.railway != (line.row.kind == P::RAILWAY) {
             line.restarted = true;
@@ -696,7 +644,6 @@ impl ConstructionProjects {
         }
     }
 
-    /// The output table's hour: changed rows, rows the game deleted, and the hour's status.
     fn outputs(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         let table = TableId::ConstructionLineOutput;
         if !hour.complete(table) {
@@ -746,7 +693,6 @@ impl ConstructionProjects {
                 self.conclude(id, hour.hour);
             }
         }
-        // A gone line whose final output is not published: its ending stays unknown.
         let missing: Vec<u64> = self
             .lines
             .iter()
@@ -782,7 +728,6 @@ impl Writer for ConstructionProjects {
         READS
     }
 
-    // Hourly: a row written a last time is deleted the next hour.
     fn hourly(&self) -> bool {
         true
     }
@@ -993,7 +938,6 @@ impl Writer for ConstructionProjects {
 }
 
 impl ConstructionProjects {
-    /// Puts each saved line together with its row as the table holds it.
     fn read_rows(&mut self, view: &TableView<'_>) -> io::Result<()> {
         self.reread = false;
         let every: Vec<usize> = (0..TableId::ConstructionProjects.field_count()).collect();

@@ -1,5 +1,3 @@
-//! The relations layer's line of the proof tool: its index against today's type-icon index of the
-//! same hour (the recorded country), and against itself composed anew from the same mirrors.
 
 use super::Relations;
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};

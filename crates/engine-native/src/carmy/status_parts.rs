@@ -1,10 +1,6 @@
-//! Consecutive final-status ranges over one ordered preparation.
 use super::*;
 use std::ops::Range;
 
-/// Reusable scratch for one worker's membership, scalar/exercise, camouflage,
-/// supply and organisation reads. Aliased maxima and country admission stay
-/// ordered; no range can replace another seed's carried maxima.
 pub struct StatusPart {
     packet: StatusPacket,
     membership_cache: super::status_membership::Cache,
@@ -110,7 +106,6 @@ impl StatusPart {
                     countries,
                     false,
                 );
-                // Decisions outlive the range-local membership/manpower arenas.
                 for index in 0..self.packet.units.len() {
                     let has_order = self.packet.units[index].has_order.unwrap_or_else(|| {
                         self.packet
@@ -122,8 +117,6 @@ impl StatusPart {
                     self.packet.units[index].exercising = Some(exercising);
                 }
             }
-            // The serial pass visits the whole prepared prefix, even if its
-            // scalar walk failed. Count optional refusals over that same prefix.
             self.organisation_refused = self
                 .packet
                 .capture_movement_organisation(memory, base, state, seeds);
@@ -133,15 +126,12 @@ impl StatusPart {
     }
 }
 
-/// The census read the division's group identity exactly as membership reads it, or holds it.
 pub(super) fn census_authenticated(seed: &DivisionSeed) -> bool {
     seed.selected
         .is_some_and(|selected| selected.group_identity)
 }
 
 impl StatusPacket {
-    /// Settle the ordered failure verdict, reserve supply-origin storage and
-    /// build the border lookup index without copying status/supply payloads.
     pub fn prepare_status_stitch(&mut self, parts: &[StatusPart]) -> Outcome {
         let result = (|| {
             if let Outcome::Unavailable { reason } = self.outcome {
@@ -163,8 +153,6 @@ impl StatusPacket {
             if end != self.units.len() || end != self.outcome.len() {
                 return Err("division status parts incomplete");
             }
-            // Naming follows this verdict. Preserve its original allocation
-            // failure barrier while deferring the owned payload copies.
             let origins: usize = parts
                 .iter()
                 .map(|part| part.packet.supply_origins_len)
@@ -183,15 +171,11 @@ impl StatusPacket {
         self.outcome
     }
 
-    /// Copy only owned range packets. Border augmentation may already have run
-    /// against the prepared census and must survive installation of the ranges.
     pub fn stitch_status_parts(&mut self, parts: &[StatusPart]) -> Outcome {
         self.prepare_status_stitch(parts);
         self.finish_status_stitch(parts)
     }
 
-    /// Complete the same immutable parts accepted by prepare_status_stitch.
-    /// This owned step follows any native border augmentation.
     pub fn finish_status_stitch(&mut self, parts: &[StatusPart]) -> Outcome {
         let result = (|| {
             if let Outcome::Unavailable { reason } = self.outcome {

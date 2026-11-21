@@ -1,6 +1,3 @@
-//! Synthetic native worlds checked against the predicate itself: every cell of every
-//! positive receiver, read as the country-relation query reads it, equals the derivation
-//! from the WarRelations walk of the same memory.
 use super::*;
 use crate::rows::{CountryLinkRow, WarRelationRow};
 use engine_native::{
@@ -40,12 +37,7 @@ struct War {
     retired: bool,
 }
 
-/// Native state as the war writers leave it: matrix cells' war pointers, status relation lists
-/// (subrelations, first-owner relations) and owned vectors, changed only through relation
-/// replacement as linking and unlinking drive it. Enemy vectors change only where a scenario
-/// rebuilds wartime allies.
 struct World {
-    /// Raw id -> canonical slot; index zero is the sentinel.
     links: Vec<u32>,
     countries: usize,
     wars: Vec<War>,
@@ -57,8 +49,6 @@ struct World {
 }
 
 impl World {
-    /// Countries at canonical slots 1..=countries with raw ids equal to their
-    /// slots, then one extra raw id per alias naming its country's slot.
     fn new(countries: usize, aliases: &[usize]) -> Self {
         let mut links: Vec<u32> = (0..=countries as u32).collect();
         links.extend(aliases.iter().map(|&slot| slot as u32));
@@ -78,7 +68,6 @@ impl World {
         self.links[raw as usize] as usize
     }
 
-    /// Replace the relation in the owner's status toward `target`.
     fn replace(&mut self, owner: usize, target: usize, new: Option<usize>) {
         let key = (owner, target);
         if let Some(old) = self.cells.remove(&key) {
@@ -104,7 +93,6 @@ impl World {
         }
     }
 
-    /// Create a war relation and install its links.
     fn declare(&mut self, first: u32, second: u32) -> usize {
         self.declare_war(War {
             first,
@@ -122,7 +110,6 @@ impl World {
         index
     }
 
-    /// Clear both links when ending a war relation.
     fn end(&mut self, index: usize) {
         let war = self.wars[index];
         let (first, second) = (self.slot(war.first), self.slot(war.second));
@@ -130,7 +117,6 @@ impl World {
         self.replace(first, second, None);
     }
 
-    /// A capitulated country clears every active owned war.
     fn capitulate(&mut self, slot: usize) {
         for index in self.owned[slot].clone() {
             if !self.wars[index].retired {
@@ -139,7 +125,6 @@ impl World {
         }
     }
 
-    /// Rebuild wartime allies: as a set, the other endpoint of every active owned war.
     fn rebuild(&mut self, slot: usize) {
         let mut enemies: Vec<u32> = self.owned[slot]
             .iter()
@@ -260,7 +245,6 @@ impl World {
         bytes
     }
 
-    /// The recorded inputs: the WarRelations walk of this memory and its links.
     fn recorded(&self, memory: &impl Memory) -> Fact<(Vec<WarRelationRow>, Vec<CountryLinkRow>)> {
         let mut rows = vec![cwar_relation::Row::default(); self.wars.len()];
         let len = match cwar_relation::walk(memory, BASE, GAME_STATE, &mut rows) {
@@ -292,8 +276,6 @@ impl World {
     }
 }
 
-/// The country-relation matrix read: the receiver's status for the target slot, its war pointer and
-/// the pointed retired byte.
 fn native(memory: &impl Memory, receiver: usize, target: usize) -> bool {
     let cells = read::<u64>(memory, diplomacy(receiver) + cdiplomacy_status::RELATIONS).unwrap();
     let status = read::<u64>(memory, cells as usize + target * 8).unwrap();
@@ -304,7 +286,6 @@ fn native(memory: &impl Memory, receiver: usize, target: usize) -> bool {
     war != 0 && read::<u8>(memory, war as usize + crelation::RETIRED).unwrap() == 0
 }
 
-/// Every positive receiver's every canonical target, slot zero included.
 #[track_caller]
 fn assert_derived_matches(world: &World) {
     let bytes = world.bytes();
@@ -345,7 +326,6 @@ fn derived_cells_follow_declarations_and_peace() {
     world.declare(4, 5);
     assert_derived_matches(&world);
     assert_eq!(active_targets(&world, 1), [2, 3]);
-    // White peace ends one war; the others stay.
     world.end(first);
     assert_derived_matches(&world);
     assert_eq!(active_targets(&world, 1), [3]);
@@ -367,7 +347,6 @@ fn derived_cells_follow_capitulation() {
 
 #[test]
 fn derived_cells_resolve_alias_endpoints_to_canonical_slots() {
-    // Raw 5 names slot 2 and raw 6 names slot 4.
     let mut world = World::new(4, &[2, 4]);
     world.declare(1, 5);
     world.declare(6, 3);
@@ -378,14 +357,11 @@ fn derived_cells_resolve_alias_endpoints_to_canonical_slots() {
 
 #[test]
 fn derived_cells_follow_a_civil_war_whose_enemy_vector_lags() {
-    // Original 1 fights 2 and 3; revolter 4 takes over those wars.
     let mut world = World::new(4, &[]);
     let wars = [world.declare(2, 1), world.declare(1, 3)];
     for slot in 1..=4 {
         world.rebuild(slot);
     }
-    // Civil-war transfer creates the revolter's wars without rebuilding its vector;
-    // ending the original's wars rebuilds both of their endpoints.
     for (index, enemy) in [(wars[0], 2), (wars[1], 3)] {
         world.declare(4, enemy);
         world.end(index);
@@ -394,9 +370,7 @@ fn derived_cells_follow_a_civil_war_whose_enemy_vector_lags() {
     }
     assert_derived_matches(&world);
     assert_eq!(active_targets(&world, 4), [2, 3]);
-    // The enemy vector is no witness: the revolter's still names nobody.
     assert!(world.enemies[4].is_empty());
-    // The original then declares war on the revolter.
     world.declare(1, 4);
     world.rebuild(1);
     world.rebuild(4);
@@ -421,7 +395,6 @@ fn a_retired_war_reads_inactive_on_both_sides() {
 fn a_cell_outside_its_owned_vector_refuses_instead_of_answering() {
     let mut world = World::new(3, &[]);
     let index = world.declare(1, 2);
-    // Break the writer invariant: the second endpoint loses its membership.
     world.owned[2].retain(|&w| w != index);
     let bytes = world.bytes();
     let memory = SliceMemory {
@@ -440,7 +413,6 @@ fn derivation_refuses_unlinked_or_reserved_partners_and_self_wars() {
         second_country: second,
         ..Default::default()
     };
-    // A row away from the receiver never matters.
     let derived = ReceiverWars::from_rows(&[war(1, 2), war(2, 9)], &links, 1).unwrap();
     assert_eq!(derived.targets(), [2]);
     assert!(!derived.pointer_active(0));

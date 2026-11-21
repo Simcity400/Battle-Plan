@@ -1,4 +1,3 @@
-//! Occupation modifier definitions from the recorded content stack.
 use crate::{
     ResolvedLayers,
     fields::invalid,
@@ -51,7 +50,6 @@ impl Kind {
 pub struct Definition {
     pub token: String,
     pub kind: Kind,
-    /// Fixed5 percentage points, without a fractional-percent conversion.
     pub threshold: i64,
     pub margin: i64,
     pub sprite: String,
@@ -85,10 +83,8 @@ impl Default for Definition {
 
 #[derive(Clone, Debug, Default)]
 pub struct Definitions {
-    /// Exact name identity. A replacement removes the old object entirely.
     pub definitions: BTreeMap<String, Definition>,
     pub notes: Vec<String>,
-    /// A file suffix the reader cannot settle may replace any definition.
     pub refusals: Vec<String>,
 }
 

@@ -1,6 +1,5 @@
 use engine_native::{Memory, ccountry, cfleet, cship, ctask_force, read, walk::Outcome};
 
-// The shared scale fixture also serves benchmarks; this test uses its fleet subset.
 #[allow(dead_code)]
 #[path = "support/unit_world.rs"]
 mod fixture;
@@ -130,6 +129,5 @@ fn named_fleet_walk_keeps_all_countries_empty_bytes_and_independent_refusals() {
     assert!(!rows[1].name_known);
     assert_eq!(rows[1].leader, Some((7001_u64 << 32) | 4713));
     assert!(rows[COUNT - 1].name_known);
-    // The base census is unchanged by the optional name/leader acquisition.
     assert_eq!(rows[COUNT - 1].owner, COUNT as u32);
 }

@@ -1,4 +1,3 @@
-//! Effect operands, child effects and nested body grammars.
 
 use super::{READ_EFFECT, READ_SCRIPT};
 
@@ -6,7 +5,6 @@ const STRATEGIC_LOCATION_VALUE: u64 = 0x14056F280;
 const TARGETED_RESISTANCE_VALUE: u64 = 0x140333C10;
 const COLLECTION_KEYS: u64 = 0x140A6A4C0;
 
-/// Conditional tails share the registered conditional body grammar.
 pub(super) const ELSE_TOKEN: u32 = 0x36D3;
 pub(super) const ELSE_IF_TOKEN: u32 = 0x38ED;
 
@@ -96,7 +94,6 @@ fn reader(token: u32) -> Option<KeyReader> {
         token
     };
     let (value, key) = super::class(token)?;
-    // These value forms enter the body grammar; other forms read their own operands.
     if !matches!(
         value,
         READ_SCRIPT | STRATEGIC_LOCATION_VALUE | TARGETED_RESISTANCE_VALUE
@@ -291,7 +288,6 @@ impl<'n> Shaper<'n> {
             Node::Registry(node) => registries::shape(self.names, node, field).map(Node::Registry),
             Node::AI(node) => self.ai.shape(node, field).map(Node::AI),
             Node::Limit => {
-                // Later limits read only while the conjunction contains no child.
                 let load = key_names::load_key(self.names, field);
                 if !matches!(self.limit, Limit::Children) {
                     match load {
@@ -352,7 +348,6 @@ impl<'n> Shaper<'n> {
                     self.expression = true;
                     Shape::Expression
                 } else if self.expression {
-                    // A scalar cannot replace an operand already stored as an expression.
                     Shape::Unsettled("variable effect: scalar value after an expression cannot use the stored expression".into())
                 } else {
                     Shape::One
@@ -600,7 +595,6 @@ impl<'n> Shaper<'n> {
         }
     }
 
-    // Generated claims are immediate and separate from authored character names.
     fn generate(&mut self, field: &Field<'_>) -> Shape<Node> {
         if matches!(self.generated, Generated::Collision) {
             return Shape::SkipIfOpen;

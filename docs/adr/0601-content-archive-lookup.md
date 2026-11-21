@@ -1,0 +1,11 @@
+# Resolve and verify the same archive member the game would open
+
+Mount from the central directory, preserving member names as bytes. The directory tree distinguishes names that a text decoder would merge, cuts keys at the first NUL, and treats backslashes as separators only for FAT-origin names. A newly encountered ancestor becomes a directory. A later directory or file record that the archive cannot enter consistently fails the whole mount. Handle prefix bytes and Zip64 locator variants before reading the declared record sequence.
+
+Check an exact request before considering the archive's password interpretation. Directory or initial open failure takes the same lower-layer search as a missing game open. Once an admitted member's read comes up short, refuse it. Stored payloads are read as stored, and compressed ones use bounded raw deflate. Retain the separate central opening metadata for admission, rather than inferring opening from local header bytes or an index's guessed name.
+
+Archive enumeration retains symbolic link records. The game opens the archive member a link names. Until link traversal is supported, reads and existence probes stop at the link with a refusal naming its requested path. Direct requests for the target member can still open it. An artwork consumer that falls back uses the separate recorded-artwork path and reports why.
+
+An inventory digest covers the decoded bytes a passwordless open sees. Where admission or encryption prevents such an open, cover the opening fields and the record's stored bytes instead. This includes central metadata that can change an encrypted member's admission even when local bytes are identical. Check the held archive identity and all covered central records on each reached lookup, including a miss or a password-form request. Verify the reached covered payload against its digest. A changed or disappeared verified record never turns into a silent pass to the layer below. A legacy archive digest scheme must miss the cache rather than claiming it carried the stronger proof.
+
+[Archive reader](../../crates/installed-content-core/src/content/physfs_zip.rs) · [Archive verification and overlay](../../crates/installed-content-core/src/content.rs)

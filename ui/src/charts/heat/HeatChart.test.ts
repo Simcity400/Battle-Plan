@@ -8,7 +8,6 @@ import { tokensFromValues } from '../tokens.ts';
 
 const capture = globalThis as typeof globalThis & { heatChartProps?: ComponentProps<typeof import('../TimeChart.tsx').default> };
 
-// Compile JSX with the existing UI toolchain; capture the actual TimeChart props.
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{
   name: 'heat-chart-props',
   enforce: 'pre',
@@ -38,7 +37,6 @@ test('HeatChart wires its keyboard and pointer props to each period read hour', 
     branchStart: 0, playhead: null, look: 'margin', active: true, revision: 1, tooltip: () => null }));
   assert.match(html, /data-keys="18,69"/);
   assert.match(html, /data-snaps="18,69,30"/);
-  // A period summarising several reads keeps the pointer's own hour.
   const folded = renderToStaticMarkup(createElement(HeatChart, { label: 'Reads', periods: periods.map(period => ({ ...period, exact: false })), rows: [],
     extent: [0, 71], branchStart: 0, playhead: null, look: 'margin', active: true, revision: 1, tooltip: () => null }));
   assert.match(folded, /data-snaps="2,52,30"/);
@@ -58,7 +56,7 @@ test('a recording-sized legend keeps every row reachable without growing or draw
   assert.equal(capture.heatChartProps!.label, 'Legend');
   assert.equal(typeof capture.heatChartProps!.overlay, 'function');
   assert.equal(capture.heatChartProps!.padding!.bottom, 8);
-  assert.equal(capture.heatChartProps!.rows!.labelWidth, 0); // Measured after mount.
+  assert.equal(capture.heatChartProps!.rows!.labelWidth, 0);
 });
 
 test('a 5,000-row plot only builds runs and labels for its viewport and margin', () => {
@@ -91,7 +89,6 @@ test('a pick names the row under the pointer and its period, and no pick is offe
   assert.equal(capture.heatChartProps!.onPick, undefined);
   const picked: [string, number | null, number][] = [];
   renderToStaticMarkup(createElement(HeatChart, { ...base, onPick: (row, period, hour) => picked.push([row.id, period?.firstHour ?? null, hour]) }));
-  // Before any pointer or key the first row is under the plot's top edge.
   capture.heatChartProps!.onPick!(30);
   assert.deepEqual(picked, [['North', 24, 30]]);
 });

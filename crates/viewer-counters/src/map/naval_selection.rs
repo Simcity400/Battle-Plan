@@ -1,10 +1,8 @@
-//! Viewer-local naval mission selection uses the viewing navy's actual ledger.
 use replay_data::BranchId;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc};
 
-/// Fleet handles are a distinct ordered selection, never inferred from selected task forces.
 #[derive(Default)]
 pub struct Selection {
     context: Option<BranchId>,
@@ -35,8 +33,6 @@ impl Selection {
         }
         *before != *self.fleets
     }
-    /// A new branch clears the selection; a new viewing country keeps it, as the game's
-    /// observer switch deselects nothing. It reads no rows.
     pub fn context(&mut self, branch: BranchId) {
         if self.context != Some(branch) {
             self.clear();
@@ -52,7 +48,6 @@ impl Selection {
     }
 }
 
-/// Only fleets of the viewing country can give a home base its gold frame.
 pub fn home_bases(frame: &DecodedFrame, viewer: u32, selected: &[u64]) -> io::Result<Vec<u32>> {
     if selected.is_empty() {
         return Ok(Vec::new());
@@ -83,9 +78,6 @@ pub fn home_bases(frame: &DecodedFrame, viewer: u32, selected: &[u64]) -> io::Re
     Ok(result)
 }
 
-/// The owning navy's actual fleet roster, including empty fleets. Counter
-/// clicks do not manufacture a fleet selection; the view offers these handles
-/// as explicit fleet choices in their recorded country-roster order.
 pub fn fleet_choices(frame: &DecodedFrame, viewer: u32) -> io::Result<Vec<(u64, String)>> {
     let links = frame
         .complete::<tables::CountryLinks>()
@@ -131,9 +123,6 @@ pub fn fleet_choices(frame: &DecodedFrame, viewer: u32) -> io::Result<Vec<(u64, 
     Ok(result)
 }
 
-/// A naval base button's plain click: the viewing country's task forces standing in the base's
-/// province or with a ship in its repair queue, by its fleet roster's order. Within one fleet they
-/// follow their handles: the fleet's own task-force order is not recorded.
 pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Result<Vec<u64>> {
     let links = frame
         .complete::<tables::CountryLinks>()
@@ -186,9 +175,6 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
     Ok(members)
 }
 
-/// The mission button replaces selection with matching registrations in their
-/// native order. Current province, combat and mission execution do not filter a
-/// click; those operands belong to the region's separate unit grids.
 pub fn mission_members(
     frame: &DecodedFrame,
     viewer: u32,
@@ -412,8 +398,6 @@ mod tests {
             &mut frame,
             TableRows::CountryGameScoreInputs(vec![roster(7, &[11, 10]), roster(8, &[20])]),
         );
-        // The roster puts fleet 11 first; the foreign task force 5 and the one queued at
-        // another base stay out.
         assert_eq!(base_members(&frame, 3, 5).unwrap(), [2, 3, 1]);
         assert_eq!(base_members(&frame, 4, 5).unwrap(), [5]);
         assert!(base_members(&frame, 3, 7).unwrap().is_empty());

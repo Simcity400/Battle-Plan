@@ -1,4 +1,3 @@
-//! Unit-leader base state, preserving full signed experience and skill widths.
 
 use crate::{
     Memory, carmy_leader, ccharacter, cnavy_leader, coperative_leader, cpdx_array::Array,
@@ -7,70 +6,36 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CUnitLeader base vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_2530);
-/// CUnitLeader reference type u32.
 pub const REFERENCE_TYPE: u32 = 4713;
-/// CUnitLeader reference type u32.
 pub const TYPE: usize = 0x08;
-/// CUnitLeader instance ID u32.
 pub const ID: usize = 0x0c;
-/// CUnitLeader MSVC string (`TOKEN`).
 pub const TOKEN: usize = 0x20;
-/// CUnitLeader inherited MSVC string (`NAME`).
 pub const NAME: usize = 0x40;
-/// Raw saved description token; localized into a separate client-language cache.
 pub const DESCRIPTION_TOKEN: usize = 0x80;
-/// CUnitLeader assigned CUnitLeaderTrait* array.
 pub const TRAIT_DATA: usize = 0xdc8;
-/// CUnitLeader assigned-trait capacity i32.
 pub const TRAIT_CAPACITY: usize = 0xdd0;
-/// CUnitLeader assigned-trait count i32.
 pub const TRAIT_COUNT: usize = 0xdd4;
-/// Timed-trait vector entries contain a definition and signed remaining days.
-/// Trait assignment and daily updates mutate it; first-match queries retain
-/// its stored order.
 pub const TIMED_TRAIT_DATA: usize = 0xde0;
 pub const TIMED_TRAIT_STRIDE: usize = 0x10;
 
-/// CUnitLeader trait-experience entry array.
 pub const TRAIT_EXPERIENCE_DATA: usize = 0xdf8;
-/// CUnitLeader trait-experience count i32.
 #[cfg(any(test, feature = "test-support"))]
 pub const TRAIT_EXPERIENCE_COUNT: usize = 0xe04;
-/// Ordered per-trait XP-factor overrides, independent of acquired traits and progress.
 pub const TRAIT_EXPERIENCE_FACTORS: usize = 0xe10;
-/// CUnitLeader CUnitLeaderSkill pointer.
 pub const SKILL: usize = 0xe60;
-/// CUnitLeader experience i64 /100000.
 pub const EXPERIENCE: usize = 0xe68;
-/// CUnitLeader skill-category i32.
 pub const CATEGORY: usize = 0xe7c;
-/// Raw country reference used by portrait-directory and visibility selection.
-/// Capture does not change it.
 pub const OWNER: usize = 0x120;
-/// Stored signed exile-country reference used by the exile-trait flag builder.
 pub const EXILE_COUNTRY: usize = 0xed4;
-/// Visibility-choice pointer; its predicate is evaluated when non-null.
 pub const VISIBILITY_CHOICE: usize = 0x18;
-/// Template-visibility byte; when set and no direct choice exists, visibility
-/// evaluates the resolved character template's choice.
 pub const TEMPLATE_VISIBILITY: usize = 0xf50;
-/// CUnitLeader copied character ID u32.
 pub const CHARACTER_ID: usize = 0xf4c;
-/// CUnitLeader copied character-reference type u32.
 pub const CHARACTER_TYPE: usize = 0xf48;
-/// CUnitLeader base constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c6_1da0);
-/// CUnitLeader experience update.
 pub const ADD_EXPERIENCE_RVA: Rva = Rva(0x00c6_a580);
-/// CUnitLeader name/token updater.
 pub const SET_NAME_RVA: Rva = Rva(0x00c7_cc10);
 
-/// Raw army-category formation reference used by late-join scaling and communications.
-/// The caller supplies the authenticated kind and category from the established
-/// field prefix. Other categories never access the army extension. Zero is a
-/// known absent reference; no registry lookup or derived formation count occurs.
 pub fn read_formation_reference(
     memory: &impl Memory,
     pointer: usize,
@@ -85,16 +50,11 @@ pub fn read_formation_reference(
         .ok_or("unit leader formation reference unreadable")
 }
 
-/// Replay-side class discriminator; only the inherited fields exist for base and operative rows.
 pub const KIND_BASE: u8 = 0;
-/// Replay-side CArmyLeader discriminator, authenticated by its primary vtable.
 pub const KIND_ARMY: u8 = 1;
-/// Replay-side CNavyLeader discriminator, authenticated by its primary vtable.
 pub const KIND_NAVY: u8 = 2;
-/// Replay-side COperativeLeader discriminator, authenticated by its primary vtable.
 pub const KIND_OPERATIVE: u8 = 3;
 
-/// Definition identity and exact signed countdown of one `TIMED_TRAIT_DATA` entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TimedTrait {
     pub token_id: i32,
@@ -102,9 +62,6 @@ pub struct TimedTrait {
     pub remaining_days: i32,
 }
 
-/// Reads an already validated timed-trait header in stored order, including
-/// duplicates and negative days. Queries select the first matching definition;
-/// serialization preserves that order.
 pub fn read_timed_traits(
     memory: &impl Memory,
     base: usize,
@@ -160,30 +117,19 @@ pub struct Row {
     pub category: i32,
     pub experience: i64,
     pub kind: u8,
-    /// 0: null pointer, 1: native invalid definition, 2: native valid definition.
     pub skill_status: u8,
-    /// Exact native valid byte, retained separately from the presence discriminator.
     pub skill_valid: u8,
     pub skill_level: i32,
     pub skill_required_experience: i32,
     pub skill_category: i32,
-    /// Army: attack, defense, planning, logistics. Navy: attack, defense,
-    /// maneuvering, coordination. Absent for base and operative kinds.
     pub components: [i32; 4],
-    /// [`OWNER`], the raw country reference.
     pub owner: u32,
-    /// [`carmy_leader::CAPTURED`]; zero for the other kinds, which have none.
     pub captured: u8,
-    /// [`VISIBILITY_CHOICE`] is non-null.
     pub visibility_choice: u8,
-    /// [`TEMPLATE_VISIBILITY`], as stored.
     pub template_visibility: u8,
     pub exile_country: i32,
 }
 
-/// Reads one CCharacter-owned role. Null role pointers are handled by the caller;
-/// a non-null role with unreadable fields is never reported as absent. The base
-/// and operative classes retain their shared state without reading army/navy extensions.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -291,7 +237,6 @@ pub fn read(
         }
         row.components = [a, b, c, d].map(i32::from_le_bytes);
     }
-    // Owner and visibility inputs, with the army leader's captured byte.
     let mut owner = [0; 4];
     let mut choice = [0; 8];
     let mut template = [0; 1];
@@ -330,19 +275,14 @@ pub fn read(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextRead {
     pub outcome: Outcome,
-    /// Arena offset of the native `NAME`, which the unit-leader serializer does not emit.
     pub name_start: usize,
     pub name_len: usize,
-    /// Arena offset of the native `TOKEN`, serialized as name. No script-token claim is made.
     pub token_start: usize,
     pub token_len: usize,
     pub bytes_len: usize,
     pub required_bytes: usize,
 }
 
-/// Copies both exact byte strings after `read` authenticates the role. Native `TOKEN` is the saved
-/// name; `NAME` remains a separate unsaved inherited string. Insufficient storage omits the whole
-/// row; callers can grow the arena off-thread.
 pub fn read_text(
     memory: &impl Memory,
     pointer: usize,
@@ -404,14 +344,12 @@ fn text_literals(
     Ok((name, token, required))
 }
 
-/// Lengths of the native `NAME` and `TOKEN` [`read_text_into`] stored, in that order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Text {
     pub name_len: usize,
     pub token_len: usize,
 }
 
-/// [`read_text`] into worker storage from `from`, which grows to hold both strings.
 pub fn read_text_into(
     memory: &impl Memory,
     pointer: usize,
@@ -434,8 +372,6 @@ pub fn read_text_into(
     })
 }
 
-/// Exact inherited string bytes, including unsaved client-language text.
-/// The caller has authenticated the leader. Commits a successful span.
 pub fn read_name(
     memory: &impl Memory,
     pointer: usize,
@@ -475,8 +411,6 @@ pub fn read_name_buffer(
     Ok(Some((start, value.len)))
 }
 
-/// Embedded operative codename operands; serialization and cached naming use
-/// this member. Its descriptor sizes worker storage once.
 pub fn read_codename(
     memory: &impl Memory,
     base: usize,
@@ -519,8 +453,6 @@ pub fn read_codename_buffer(
     Ok(result)
 }
 
-/// [`read_codename_buffer`] into worker storage from `from`, which grows to hold
-/// the codename's bytes; `len` is relative to `from` and commits both spans.
 pub fn read_codename_into(
     memory: &impl Memory,
     base: usize,
@@ -541,14 +473,10 @@ pub fn read_codename_into(
     )
 }
 
-/// Operative leaders construct an embedded naming member of type two.
-/// Category is independent of this layout.
 pub const fn has_codename(kind: u8) -> bool {
     kind == KIND_OPERATIVE
 }
 
-/// UnitLeaders' complete live text demand, including kind-three naming
-/// operands. The header-only capture uses no row or byte storage.
 pub fn text_demand(
     memory: &impl Memory,
     base: usize,
@@ -577,7 +505,6 @@ pub fn text_demand(
                 len: 0,
                 required: 0,
             };
-            // Appended naming refusals must not suppress the old text demand.
             let _ = read_codename(memory, base, pointer, &mut names);
             required = required.saturating_add(names.required);
         }
@@ -599,7 +526,6 @@ pub struct TraitRow {
 #[cfg(test)]
 pub struct TraitExperienceRow {
     pub trait_row: TraitRow,
-    /// Exact stored native i64 /100000 amount. Missing vector entries are not emitted as zero.
     pub experience: i64,
 }
 
@@ -607,9 +533,6 @@ pub struct TraitExperienceRow {
 pub struct TraitWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// Exact for a complete walk. On truncation this is a lower bound: the
-    /// copied prefix plus the first whole token that did not fit the arena.
-    /// At row capacity no later token headers are read just to size the arena.
     pub required_bytes: usize,
 }
 
@@ -619,9 +542,6 @@ pub struct TraitDemand {
     pub bytes: usize,
 }
 
-/// Header-only demand for one complete vector, preserving repeated definitions.
-/// Assigned-trait entries are pointers; trait-experience entries also carry a
-/// signed fixed5 amount. Sizing inspects every token header after row capacity.
 pub fn trait_demand(
     memory: &impl Memory,
     base: usize,
@@ -695,8 +615,6 @@ fn trait_definition(
     ))
 }
 
-/// Preserves the assigned vector order, including repeated definitions. Capacity
-/// failures stop before the remaining rows and count them from the native header.
 pub fn walk_traits(
     memory: &impl Memory,
     base: usize,
@@ -717,9 +635,6 @@ pub fn walk_traits(
     )
 }
 
-/// Visits every native training entry in stored order, including repeated definitions.
-/// The caller has authenticated this leader and its character backlink. Definitions
-/// supply identity only; names, thresholds and effects resolve through content.
 pub fn visit_trait_progress(
     memory: &impl Memory,
     base: usize,
@@ -729,7 +644,6 @@ pub fn visit_trait_progress(
     visit_training(memory, base, pointer, TRAIT_EXPERIENCE_DATA, visit)
 }
 
-/// Visits the complete ordered runtime XP-factor override vector.
 pub fn visit_trait_factors(
     memory: &impl Memory,
     base: usize,
@@ -774,8 +688,6 @@ fn visit_training(
     Ok(array.count as usize)
 }
 
-/// Reads the native trait-XP vector independently of the assigned-trait vector
-/// and any selected UI. Definition identity and source order remain explicit.
 #[cfg(test)]
 pub fn walk_trait_experience(
     memory: &impl Memory,
@@ -800,8 +712,6 @@ pub fn walk_trait_experience(
     )
 }
 
-// All storage belongs to the caller. The only difference between these native
-// containers is whether their element also carries the signed XP qword.
 #[allow(clippy::too_many_arguments)]
 fn walk_definitions<R: Default>(
     memory: &impl Memory,
@@ -854,8 +764,6 @@ fn walk_definitions<R: Default>(
             };
             let definition =
                 usize::try_from(definition).map_err(|_| "unit leader trait pointer overflow")?;
-            // Exact fields share one guard, with the identity first. Do not
-            // follow the string's heap pointer until this identity is checked.
             let (token_id, definition_ordinal, token) = trait_definition(memory, base, definition)?;
             let token_len = token.len;
             required_bytes = required_bytes
@@ -908,19 +816,11 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("unit leader address overflow")
 }
 
-/// Authenticates any unit-leader subclass and returns its full stored handle,
-/// also used by orders-group serialization. Callers needing only identity
-/// avoid the full row walk.
 pub fn handle(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
     let (_, reference_type, id) = identity(memory, base, pointer)?;
     Ok(u64::from(reference_type) | (u64::from(id) << 32))
 }
 
-/// [`handle`] of every pointer of `pointers` into `output`, in order: a null
-/// pointer is handle zero. The leaders are scattered objects, so their
-/// identity headers are copied in one guarded, prefetched batch whose misses
-/// overlap; they are then checked in order, so the first fault is that of a
-/// read per leader.
 pub fn handles(
     memory: &impl Memory,
     base: usize,
@@ -971,7 +871,6 @@ pub fn identity(
     identity_from_header(base, header)
 }
 
-/// [`identity`] over its 16 header bytes, already copied.
 fn identity_from_header(base: usize, header: [u8; 16]) -> Result<(u8, u32, u32), &'static str> {
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
     let relative = engine_sites::which(
@@ -1040,8 +939,6 @@ impl Literal {
             [at(self.source, self.len)?, self.source],
             &mut [&mut terminator, output],
         );
-        // A failed first span never visits payload memory. A readable nonzero
-        // terminator retains precedence over a fault in the second span.
         if completed == 0 || terminator[0] != 0 {
             return Err("unit leader string terminator invalid or unreadable");
         }
@@ -1099,10 +996,7 @@ fn literal_metadata(pointer: usize, header: [u8; 32]) -> Result<Literal, &'stati
 #[cfg(test)]
 mod tests;
 
-/// CUnitLeader raw country reference.
 pub const COUNTRY: usize = 0x120;
-/// Serialization can omit these strings, and portrait fallback can consume
-/// them when character resolution fails. Keep their exact bytes independently.
 pub const PORTRAIT_STRINGS: [usize; 3] = [0xc0, 0xe0, 0x100];
 #[cfg(test)]
 #[path = "cunit_leader/hq_portrait_tests.rs"]
@@ -1118,11 +1012,6 @@ pub struct PortraitWalk {
     pub sources: Outcome,
 }
 
-/// Fresh portrait inputs for every possible land HQ, independent of camera or
-/// viewing country. `roots` must be a complete authenticated orders census
-/// from this capture. A selected HQ requires both its unit and leader. `sources`
-/// receives the distinct selected leaders in handle order for
-/// [`walk_portrait_paths_memo`]; insufficient storage reports its demand.
 pub fn walk_hq_portraits(
     memory: &impl Memory,
     base: usize,
@@ -1151,7 +1040,6 @@ fn walk_hq_portraits_buffer<T: crate::capture_text::Value>(
         outcome: Outcome::Unavailable { reason },
         sources: Outcome::Unavailable { reason },
     };
-    // Select at most one leader per authenticated orders root.
     if let Err(reason) = sources.ensure(roots.len()) {
         return unavailable(reason);
     }
@@ -1193,7 +1081,6 @@ fn walk_hq_portraits_buffer<T: crate::capture_text::Value>(
             },
         };
     }
-    // One leader may head several groups; one identity at two addresses is not native.
     sources[..count].sort_unstable();
     let mut unique = 0;
     for index in 0..count {
@@ -1250,24 +1137,16 @@ fn read_portrait<T: crate::capture_text::Value>(
     Ok(())
 }
 
-/// Picture-directory inputs: raw country reference, original-tag reference and
-/// tag bytes. An unlinked or null country yields zero and an empty tag.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PortraitPathRow<T = crate::msvc_string::Text<64>> {
     pub leader: u64,
     pub country: u32,
     pub tag_reference: u32,
-    /// Country tag strings are a few bytes; longer text fails instead of truncating.
     pub tag: T,
 }
 
 type TagCell<T> = Option<(crate::ccountry::Country, u32, T)>;
 
-/// Caller-owned per-walk tag memo, one cell per canonical country slot. Cells
-/// are valid only for the walk that wrote them (epoch stamp), so nothing
-/// carries across captures and no per-walk clearing is needed. A memo
-/// smaller than the live country table records the demand and falls back to
-/// the ordinary reads for slots it cannot hold; `grow` runs off-thread.
 #[derive(Debug, Default)]
 pub struct PortraitTagMemo<T = crate::msvc_string::Text<64>> {
     cells: Vec<(u32, TagCell<T>)>,
@@ -1276,11 +1155,9 @@ pub struct PortraitTagMemo<T = crate::msvc_string::Text<64>> {
 }
 
 impl<T: crate::capture_text::Value> PortraitTagMemo<T> {
-    /// Country-table slots observed by the latest walk, including slot zero.
     pub fn required(&self) -> usize {
         self.required
     }
-    /// Resize to the observed demand. Allocates; call off the game thread.
     pub fn grow(&mut self) -> std::io::Result<()> {
         if self.cells.len() < self.required {
             crate::allocation::resize_default(&mut self.cells, self.required)?;
@@ -1314,8 +1191,6 @@ impl<T: crate::capture_text::Value> PortraitTagMemo<T> {
     }
 }
 
-/// Test entry point with a memo already sized for 256 country slots, so read
-/// counts match a recycled production capture.
 #[cfg(test)]
 pub fn walk_portrait_paths(
     memory: &impl Memory,
@@ -1332,8 +1207,6 @@ pub fn walk_portrait_paths(
     walk_portrait_paths_memo(memory, base, game_state, sources, output, &mut memo)
 }
 
-/// Picture-directory inputs of `sources`, the distinct leaders a complete
-/// [`walk_hq_portraits`] selected in this same quiescent capture.
 pub fn walk_portrait_paths_memo(
     memory: &impl Memory,
     base: usize,
@@ -1375,10 +1248,6 @@ fn walk_portrait_paths_memo_buffer<T: crate::capture_text::Value>(
             reason: "country tag strings unreadable or invalid",
         };
     };
-    // Tags are shared only within this quiescent walk. Keep every leader's
-    // raw country/link authentication; remember only a fully acquired tag in
-    // the country's own canonical-slot cell, keyed by the complete
-    // authenticated country rather than its address.
     memo.begin(countries.count());
     if output.is_growing() {
         if let Err(reason) = output.ensure(sources.len()) {

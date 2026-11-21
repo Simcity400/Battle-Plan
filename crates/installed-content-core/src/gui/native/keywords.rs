@@ -1,8 +1,3 @@
-//! Keyword classification during interface loading.
-//!
-//! Static identities come from verified executable metadata. Synchronized dynamic tokens
-//! load from the recorded content stack before interface files; later database tokens are
-//! unavailable at that point. Lookup folds ASCII case and stops at the first NUL.
 
 use std::{collections::BTreeSet, io, sync::Arc};
 
@@ -10,8 +5,6 @@ use super::reader::Reader;
 use crate::ResolvedLayers;
 use crate::parser::native::Token;
 
-/// The static keyword `word` (the text up to its first NUL) names, lowered, if the lexer's table
-/// holds it.
 pub(super) fn static_keyword(word: &[u8]) -> Option<&'static str> {
     engine_executable::executable_tables::required(
         engine_executable::executable_tables::get()
@@ -22,20 +15,16 @@ pub(super) fn static_keyword(word: &[u8]) -> Option<&'static str> {
     .map(|(_, name)| name)
 }
 
-/// The dynamic tokens the lexer holds when the interface is read: those of
-/// `common/synchronized_dynamic_tokens`, lowered.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DynamicTokens(Arc<BTreeSet<Vec<u8>>>);
 
 impl DynamicTokens {
-    /// Direct `.txt` files in filename byte order, each read as one string list.
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         layers.product("interface dynamic tokens", 1, &[], Self::read_tokens).map(|tokens| tokens.as_ref().clone())
     }
 
     fn read_tokens(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut files = Vec::new();
-        // Byte paths preserve archive filenames that a text listing cannot represent.
         let directory = b"common/synchronized_dynamic_tokens/";
         for path in layers
             .listed_layer_paths(directory)?
@@ -50,7 +39,6 @@ impl DynamicTokens {
         Ok(Self::from_files(files.iter().map(|bytes| bytes.as_ref())))
     }
 
-    /// Read strings from each file's start to a closing brace or the end.
     pub fn from_files<'a>(files: impl IntoIterator<Item = &'a [u8]>) -> Self {
         let mut tokens = BTreeSet::new();
         for bytes in files {
@@ -59,7 +47,6 @@ impl DynamicTokens {
                 0,
             );
             for name in reader.string_list() {
-                // Empty names and names starting with a digit or minus sign are refused.
                 if name
                     .first()
                     .is_some_and(|first| !first.is_ascii_digit() && *first != b'-')
@@ -76,20 +63,14 @@ impl DynamicTokens {
     }
 }
 
-/// A word token's keyword, number or string classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Class {
-    /// A static keyword, by its lowered spelling.
     Static(&'static str),
-    /// A dynamic token: an id the static table does not name.
     Dynamic,
-    /// Numbered by its first byte, or a miss containing only digits, `-` and `.`.
     Number,
-    /// Quoted, or a miss.
     String,
 }
 
-/// Classify a word token after quoted and numeric token handling.
 pub(super) fn class(token: &Token, dynamic: &DynamicTokens) -> Class {
     if token.quoted() {
         return Class::String;
@@ -132,7 +113,6 @@ mod tests {
         assert!(dynamic.contains(b"SYNTHETICTOKEN"));
     }
 
-    /// The supported table has ASCII names with unique folded identities.
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn supported_static_keywords_keep_folded_identity() {
@@ -146,14 +126,11 @@ mod tests {
         assert_eq!(static_keyword(b"texture_diffuse"), None);
     }
 
-    /// A word's class: quoted and missed words are strings, numbers by their first byte or their
-    /// bytes, keywords by the fold, dynamic tokens once a list adds them.
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn words_are_classed_as_the_lexer_classes_them() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
-        // A word ending at the file's end supplies no token.
         let dynamic = DynamicTokens::from_files([&b"Coal \"-x\" 3y { kept\n"[..], b"cut"]);
         let tokens = lex(b"SIZE \"size\" texture_diffuse 12 1.5.- coal -coal\n");
         let classes: Vec<Class> = tokens[..7]
@@ -172,7 +149,6 @@ mod tests {
                 Class::Number,
             ]
         );
-        // `-x` and `3y` start with a byte the registrar refuses; `kept` and `{` are strings.
         assert_eq!(
             dynamic.0.iter().cloned().collect::<Vec<_>>(),
             [b"coal".to_vec(), b"kept".to_vec(), b"{".to_vec()]

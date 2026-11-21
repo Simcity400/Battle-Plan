@@ -1,0 +1,13 @@
+# Keep desktop requests tied to their page and saved preferences
+
+The dashboard transport holds one unanswered pull for a page session. The first pull of a new session restarts the stream and answers immediately with an empty body. A superseded pull also receives an empty body. Follow payloads retain wire order and are dropped when the page changes. The desktop's separate page and protocol origins require cross-origin responses.
+
+The measuring shell loads a production bundle from disk under the embedded bundle's protocol, origin, and content security policy. The bundle must contain no inline script or style because the production loader has no inline hashes. This lets measurement use a rebuilt bundle without recompiling the desktop app. The desktop command for recording artwork reads off the main thread and treats missing artwork as a request failure.
+
+The replay app starts the recorder as a separate background process without a console or inherited pipes. The recorder serializes ownership of each recording campaign. The user's chosen name is stored before renaming a recording file to avoid a concurrent save undoing the rename. A refused move rolls back the pending choice. The desktop's recording library shares the recorder's save folder and resolves moved files by recorded campaign identity only when there is a unique match. Folder listings are reused while their recording set is unchanged.
+
+Display settings apply to the desktop and do not change display modes or installed content. Legacy window size and mode fields are ignored. Game display settings use case-insensitive keys and take the last value for each key. The game accepts a finite interface scale and fits it to the viewer, while the desktop clamps its own interface scale. Diagnostics, audio mute, and the frame limit are desktop settings. Inheriting game preferences preserves them. Only the frame limit is on the display form, and a missing or unreadable file leaves the switch defaults. A diagnostic command-line request applies until the user changes it.
+
+Save operations reread preferences under the writer lock, send choice updates before releasing the lock, and attach a sequence to switch updates. The frontend accepts the highest sequence because events and replies can arrive in either order. Recovering an unreadable settings file can also discover a changed value for the other switch.
+
+[Dashboard pulls](../../crates/desktop/src/pull.rs) · [Served UI](../../crates/desktop/src/served_ui.rs) · [Recording actions](../../crates/desktop/src/recorder.rs) · [Library](../../crates/desktop/src/replay_library.rs) · [Display preferences](../../crates/desktop/src/video.rs)

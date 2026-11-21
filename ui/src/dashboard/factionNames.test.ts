@@ -59,7 +59,6 @@ test('campaign summaries choose the newest branch read even when its name is una
   const reply = (faction: FactionGroup): CountryGroupReply => ({ branchId: '1', factions: [faction], humans: [], wars: [],
     warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [], unobserved: { humans: [], factions: [], wars: [] }, warnings: [] });
   const first = { ...faction, lastHour: 19, names: [faction.names[0]], name: 'Opening pact', recordedName: 'Original literal' };
-  // The newer name read is independent of an unread roster at that hour.
   const latest = { ...faction, lastHour: 18, name: null, nameReason: 'Template missing', recordedName: '' };
   const [summary] = latestFactionSummaries([reply(first), reply(latest)]);
   assert.equal(summary.name, null);

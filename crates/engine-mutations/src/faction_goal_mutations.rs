@@ -1,13 +1,3 @@
-//! Writer boundaries for stored faction goal state. Sparse structural writers
-//! notify their status; progress refresh compares its one held scalar; taps
-//! notify only actual pending-status stores. The cancellation-history CALL is
-//! observed at its owning occurrence, never through the shared vector helper.
-//!
-//! Insertion, removal, activation, manifest/template selection and load/rebuild
-//! enclose every vector relocation or assignment of live goal data. Activation
-//! encloses the term-date write after insertion. Transition completion includes
-//! the native dates and status, while both historical append paths are distinct.
-//! Constructor/destructor and world invalidation bound receiver lifetimes.
 
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
@@ -15,10 +5,7 @@ use engine_sites::Rva;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
     Status,
-    /// Goal-specific progress CALL: status, incoming cache and update flags;
-    /// the caller also holds the faction in its nonvolatile owner register.
     Progress,
-    /// First argument is the cancellation-history vector inside the status.
     Cancelled,
     PendingRbp,
     PendingRsi,

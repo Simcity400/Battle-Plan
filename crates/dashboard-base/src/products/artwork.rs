@@ -1,6 +1,3 @@
-//! Localised names, descriptions and sprite thumbnails for focus and technology
-//! tokens, read through the source's shared content catalogue.
-//! [`sprites`] draws exact authored sprite keys with the same renderer.
 
 pub mod sprites;
 
@@ -19,21 +16,17 @@ use std::{
     },
 };
 
-/// The fallback sprite for a focus without an icon.
 const UNKNOWN_FOCUS_ICON: &str = installed_content_focus::focus::UNKNOWN_ICON;
 
-/// Longest side of returned product artwork previews.
 pub const ICON_EDGE: u32 = 96;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// The focuses of one database, every lookup by id made in it alone.
     Focus(FocusDatabase),
     Technology,
 }
 
 impl Kind {
-    /// What a fallback note calls one of this kind's items.
     fn noun(self) -> &'static str {
         match self {
             Self::Focus(FocusDatabase::National) => "focus",
@@ -43,7 +36,6 @@ impl Kind {
     }
 }
 
-/// The content database `database` names.
 fn focus_database(database: FocusDatabase) -> installed_content_focus::focus::Database {
     match database {
         FocusDatabase::National => installed_content_focus::focus::Database::National,
@@ -51,13 +43,10 @@ fn focus_database(database: FocusDatabase) -> installed_content_focus::focus::Da
     }
 }
 
-/// Why a token's icon is a placeholder: its sprite is undeclared or has no texture.
 fn undeclared_icon(sprite: &str) -> String {
     format!("sprite {sprite} is undeclared or has no texture; a placeholder is shown")
 }
 
-/// `sprite`'s first frame drawn through `catalogue`, or `None` when it declares no such sprite
-/// or the sprite has no texture.
 fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<String>> {
     let Some(sprite) = catalogue.sprites.find(sprite).map_err(invalid)? else {
         return Ok(None);
@@ -72,23 +61,18 @@ fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<S
     catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, ICON_EDGE).map(Some)
 }
 
-/// Repeated technology IDs remain separate templates, selected by recorded index.
 struct TechnologyName {
     database_index: Option<u32>,
     presentation: Result<installed_content_core::technology::PresentationName, String>,
-    /// The research folders it is placed in, in authored order.
     folders: Vec<String>,
     children: std::sync::OnceLock<catalogue::Drawn<Result<Vec<String>, String>>>,
 }
 
-/// The game compares names with ASCII folding but keeps repeated templates in load order.
 #[derive(Default)]
 struct TechnologyNames {
     names: BTreeMap<String, Vec<TechnologyName>>,
     unread: BTreeMap<String, String>,
-    /// The first file whose read stopped short, and why: it may define any name.
     stopped: Option<String>,
-    /// An unread file or unplaced definition leaves all later template indices unknown.
     unplaced: Option<String>,
 }
 
@@ -184,9 +168,6 @@ fn technology_children(
         |child| {
             let database =
                 database.ok_or_else(|| "native equipment database is unavailable".to_owned())?;
-            // Normalized equipment category bit 9 and feature 0x21's DLC bit 7
-            // use the recorded DLC roster shared with the content-only has_dlc
-            // evaluator, never a row-hour scope.
             let enabled = world
                 .as_ref()
                 .map(|world| {
@@ -221,9 +202,7 @@ struct Preparation {
     inventory: Vec<String>,
     preparation_warnings: Vec<installed_content_core::Diagnostic>,
     warnings: Vec<String>,
-    /// The research folders `common/technology_tags` defines, in content order.
     folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
-    /// Notes from reading research folders; only research replies carry them.
     folder_warnings: Vec<String>,
 }
 
@@ -241,7 +220,6 @@ impl Preparation {
                             .iter()
                             .map(|(_, message)| message.clone()),
                     );
-                    // Both databases share this reading; each context lists its own ids.
                     (
                         definitions,
                         installed_content_focus::focus::point_days(layers)?,
@@ -252,8 +230,6 @@ impl Preparation {
                 }
                 Kind::Technology => {
                     let read = installed_content_core::technology::Database::read(layers)?;
-                    // Folders only colour and group research; a failure to read
-                    // them never withholds technology text or artwork.
                     match installed_content_core::technology::read_folders(layers) {
                         Ok(folders) => {
                             folder_definitions = folders.folders;
@@ -299,20 +275,14 @@ impl Preparation {
     }
 }
 
-/// An icon a context keeps: whether the recording's own catalogue drew it, the artwork mode it
-/// was drawn in and its sprite.
 type IconKey = (bool, installed_content_core::content::ArtworkMode, String);
 
 pub struct Context {
     diagnostics: catalogue::OwnRefusals,
     kind: Kind,
     technology_names: Arc<TechnologyNames>,
-    /// The source's shared localisation and sprites for these folders.
     catalogue: Arc<Catalogue>,
-    /// Each token's artwork, drawn once for this content.
     artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
-    /// Each icon by the catalogue it was drawn through, the artwork mode it was drawn in and its
-    /// sprite ([`IconKey`]).
     icon_cache: std::sync::Mutex<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
     definitions: Arc<installed_content_focus::focus::Focuses>,
     focus_text_needs_frame: OnceLock<bool>,
@@ -322,11 +292,9 @@ pub struct Context {
     preparation_warnings: Vec<installed_content_core::Diagnostic>,
     folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
-    /// Each folder's tab availability, decided once from content.
     folder_availability: OnceLock<catalogue::Drawn<Vec<Option<bool>>>>,
 }
 
-/// The source's artwork context for the configured folders, loaded on first use.
 pub fn ensure<'a>(
     slot: &'a mut Option<Context>,
     source: &Source,
@@ -336,8 +304,6 @@ pub fn ensure<'a>(
     ensure_in(slot, catalogue::catalogue(source, content)?, kind)
 }
 
-/// The source's artwork context for the configured folders, loaded on first use into `slot` and
-/// shared: its readers use it without holding the slot.
 pub fn shared(
     slot: &mut Option<Arc<Context>>,
     source: &Source,
@@ -356,7 +322,6 @@ pub fn shared(
     Ok(context)
 }
 
-/// [`ensure`] over `catalogue`, which a request pins so each of its steps reads the same one.
 pub fn ensure_in(
     slot: &mut Option<Context>,
     catalogue: Arc<Catalogue>,
@@ -373,7 +338,6 @@ pub fn ensure_in(
     Ok(context)
 }
 
-/// A focus country's canonical slot at `frame`'s hour, None when absent.
 fn focus_slot(frame: replay_frame::frame::HourFrame<'_>, tag: &str) -> Result<Option<u32>, String> {
     use replay_data::rows::{CountryLinkRow, CountryRow, column, mask, tables};
     const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
@@ -385,7 +349,6 @@ fn focus_slot(frame: replay_frame::frame::HourFrame<'_>, tag: &str) -> Result<Op
     let links = frame
         .complete::<tables::CountryLinks>(LINK)
         .map_err(|error| error.to_string())?;
-    // The first country of the tag whose link names its own slot, as tagged_country finds it.
     let mut named = false;
     for pair in countries.with_text(|row| &row.tag, TAG) {
         let (country, text) = pair.map_err(|error| error.to_string())?;
@@ -406,13 +369,8 @@ fn focus_slot(frame: replay_frame::frame::HourFrame<'_>, tag: &str) -> Result<Op
     }
 }
 
-/// Resolved artwork and, when refused, its feed-local reason.
 pub type ResolvedArt = (Artwork, Option<String>);
 
-/// An event's focus art at its hour, its icon not yet drawn: its text, the sprite its icon
-/// chose there or why it chose none, and why each piece of its text is refused, in order. A
-/// reply draws the icon as it shows it ([`Context::event_focus_icons`]) and names why the art is
-/// refused ([`refusal`]).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ChosenArt {
@@ -421,7 +379,6 @@ pub struct ChosenArt {
     pub text: Vec<String>,
 }
 
-/// Why a focus's art is refused: its icon's reason, then each of `text`'s not already named.
 pub fn refusal(icon: Option<String>, text: &[String]) -> Option<String> {
     let mut refused = icon;
     for reason in text {
@@ -438,9 +395,6 @@ pub fn refusal(icon: Option<String>, text: &[String]) -> Option<String> {
     refused
 }
 
-/// A focus as a batch resolves it: its art, its icon (drawn, or the sprite chosen where the
-/// batch draws none) or why it has none, none where the projection asks for no icon, and why
-/// each piece of its text is refused, in order.
 struct FocusItem {
     art: Artwork,
     icon: Option<Result<String, String>>,
@@ -479,18 +433,13 @@ pub enum FocusProjection {
     Icons,
 }
 
-/// Immutable scoped inputs for one accepted hour. Each expansion still owns
-/// its fresh caller scopes, random counters and variable session.
 pub struct FocusFrame<'a> {
     pub frame: replay_frame::frame::HourFrame<'a>,
     catalogue: &'a Catalogue,
-    /// The hour's text context, with what building it noted.
     text: OnceLock<(
         Result<crate::scripted_text::ScriptedText<'a>, String>,
         catalogue::OwnRefusals,
     )>,
-    /// Each recorded input reread this hour, read once however many
-    /// countries' evaluations read it.
     rereads:
         std::cell::RefCell<std::collections::HashMap<crate::triggers::inputs::Key, Option<u64>>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -513,7 +462,6 @@ impl<'a> FocusFrame<'a> {
     }
 
 
-    /// The digest a recorded query reads this hour ([`crate::triggers::inputs`]).
     pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
         if let Some(read) = self.rereads.borrow().get(key) {
             return *read;
@@ -553,7 +501,6 @@ impl<'a> FocusFrame<'a> {
                 })
             })
         });
-        // Each item using the shared context names what building it noted, as the first did.
         if !built {
             catalogue::credit(noted);
         }
@@ -667,11 +614,6 @@ impl Context {
         prepared.focus.loads() + prepared.technology.loads() + catalogue.content_loads()
     }
 
-    /// The research folders in content order with their localized names, the
-    /// folder each token is shown in ([`super::research::shown_folders`]) and
-    /// named notes for what could not be resolved. A folder without an
-    /// `available` trigger is always available; a trigger is decided from the
-    /// recorded content and DLC alone; otherwise its availability stays unknown.
     pub fn research_folders(
         &self,
         tokens: &BTreeMap<&str, Option<u32>>,
@@ -681,7 +623,6 @@ impl Context {
         Vec<crate::ResearchTechnologyFolder>,
         Vec<String>,
     ) {
-        // Every reply using it names what reading the scripted content noted.
         let availability = self
             .folder_availability
             .get_or_init(|| {
@@ -759,8 +700,6 @@ impl Context {
         (folders, shown, warnings)
     }
 
-    /// Localized presentation text; absent keys stay unavailable. Defined empty
-    /// strings and authored text identical to its key remain valid.
     pub fn localise(&self, key: &str) -> Option<String> {
         if !self.catalogue.has_presentation_key(key) {
             return None;
@@ -781,8 +720,6 @@ impl Context {
         text
     }
 
-    /// Only country-independent focus text belongs in a history reply. Scoped
-    /// strings wait for their recorded hour without producing an offline refusal.
     fn static_focus_text(&self, key: &str) -> Option<String> {
         if !self.catalogue.has_presentation_key(key) {
             return None;
@@ -794,8 +731,6 @@ impl Context {
         catalogue::plain_text(&raw).ok()
     }
 
-    /// Focus names and descriptions expand scoped text; full technology names
-    /// are plain.
     fn view(&self) -> catalogue::View {
         match self.kind {
             Kind::Focus(_) => catalogue::View::Scripted,
@@ -803,9 +738,6 @@ impl Context {
         }
     }
 
-    /// `token`'s definition in this context's focus database alone: `None`
-    /// when it defines none, `Err` with a refused file of that database that
-    /// could define it. A technology context has no focuses.
     fn focus(
         &self,
         token: &str,
@@ -817,12 +749,10 @@ impl Context {
         }
     }
 
-    /// The texts refused so far, one warning per reason.
     pub fn refusal_lines(&self) -> Vec<String> {
         self.catalogue.refusal_lines()
     }
 
-    /// Content-wide notices once per product reply, rather than per row.
     pub fn standing_warnings(&self) -> Vec<String> {
         let mut warnings = self.warnings.clone();
         warnings.sort();
@@ -830,10 +760,6 @@ impl Context {
         warnings
     }
 
-    /// Descriptions use the owner's own tag, never the dynamic original tag
-    /// used by names. A single non-duplicate child selects the first admitted
-    /// child, then its archetype if neither child key exists; otherwise the
-    /// template's nonempty parent/id supplies the key.
     fn description_key(&self, token: &str, tag: Option<&str>) -> Result<String, String> {
         self.description_key_at(token, tag, None)
     }
@@ -858,7 +784,6 @@ impl Context {
             .as_ref()
             .map_err(Clone::clone)?;
         let key_for = |root: &str| {
-            // Descriptions use the country-specific localisation suffix.
             let key = format!("{root}_desc");
             let prefixed = tag.map(|tag| format!("{tag}_{key}"));
             prefixed
@@ -918,7 +843,6 @@ impl Context {
         days.is_finite().then_some(days)
     }
 
-    /// Without a recorded index, differing definitions are refused rather than guessed.
     fn technology(&self, token: &str, at: Option<u32>) -> Result<&TechnologyName, String> {
         let names = &self.technology_names;
         let definitions = names.get(token).map_or(&[][..], Vec::as_slice);
@@ -967,7 +891,6 @@ impl Context {
         &'a self,
         presentation: &'a TechnologyName,
     ) -> Result<&'a [String], String> {
-        // Every reply using them names what reading the scripted content noted.
         presentation
             .children
             .get_or_init(|| {
@@ -1023,8 +946,6 @@ impl Context {
 
     fn name_at(&self, token: &str, at: Option<u32>) -> Option<String> {
         if self.kind == Kind::Technology {
-            // Topic artwork has no country/hour parameter. It uses the same
-            // native full-name root as the feed, without a country prefix.
             let key = self.technology_root_at(token, at).ok()?;
             return self.localise(&key);
         }
@@ -1033,17 +954,12 @@ impl Context {
         self.localise(key)
     }
 
-    /// The sprite a token's icon is drawn from, as recorded facts choose it: the technology's
-    /// badge, or the focus definition's static icon. `Ok(None)` when the focus is not defined;
-    /// `Err` with the finding when the choice needs the recorded country and hour, or a refused
-    /// file leaves the definition unknown.
     fn selected_icon(
         &self,
         token: &str,
     ) -> Result<Option<String>, dashboard_core::findings::Finding> {
         use dashboard_core::findings::{Finding, Kind as FindingKind};
         match self.kind {
-            // Technology badges use the _medium suffix.
             Kind::Technology => Ok(Some(format!("GFX_{token}_medium"))),
             Kind::Focus(_) => match self.focus(token) {
                 Err(gap) => Err(Finding::grouped(
@@ -1074,7 +990,6 @@ impl Context {
         }
     }
 
-    /// The sprite `selected_icon` names as this context's catalogue declares it, with a texture.
     fn declared_icon(&self, token: &str) -> Option<&installed_content_gfx::gfx::SpriteType> {
         let name = self.selected_icon(token).ok()??;
         self.catalogue
@@ -1149,7 +1064,6 @@ impl Context {
         (&self.inventory, &self.preparation_warnings)
     }
 
-    /// Reply generation and offline checks must use the same icon and text findings.
     pub fn prepare(&self, token: &str) -> (Artwork, Vec<dashboard_core::findings::Finding>) {
         let (art, mut findings) = self.prepare_icon(token);
         findings.extend(self.text_findings(token, None));
@@ -1165,8 +1079,6 @@ impl Context {
                 art
             }
             Err(error) => {
-                // Focus/research widgets draw their own placeholder for None,
-                // so even a native no-texture outcome changes the shown art.
                 findings.push(Finding::grouped(
                     Kind::Refused,
                     token,
@@ -1222,7 +1134,6 @@ impl Context {
         findings
     }
 
-    /// Multiple recorded definitions share text only when their text agrees.
     fn recorded_text(
         &self,
         token: &str,
@@ -1257,10 +1168,6 @@ impl Context {
             .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
     }
 
-    /// A country-qualified sprite makes otherwise static display country-specific.
-    ///
-    /// Asked of every catalogue a tree icon can be drawn through: this context's and, while it
-    /// shows visual mods, the recording's own its draw falls back to ([`Self::drawing_catalogues`]).
     pub fn focus_country_icon_override(&self, token: &str, tag: &str) -> bool {
         self.focus(token).ok().flatten().is_some_and(|definition| {
             definition.button_sprite_overrides(token, Some(tag)).first().is_some_and(|country| {
@@ -1270,14 +1177,10 @@ impl Context {
         })
     }
 
-    /// Every catalogue an icon of this context can be drawn through: its own and, while it shows
-    /// visual mods, the recording's own its draws fall back to as a whole ([`catalogue::draw`]).
-    /// Plans of what a draw reads ask all of them, since the fallback makes its own choice.
     fn drawing_catalogues(&self) -> impl Iterator<Item = &Catalogue> {
         std::iter::once(&*self.catalogue).chain(self.catalogue.recorded().map(|recorded| &**recorded))
     }
 
-    /// Titles and icons do not depend on unrequested description operands.
     pub fn requested_focus_display_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
@@ -1285,7 +1188,6 @@ impl Context {
             .any(|definition| focus_needs_frame(&self.catalogue, definition, false))
     }
 
-    /// Icon requests do not depend on any title or description operands.
     pub fn requested_focus_icons_need_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
@@ -1321,8 +1223,6 @@ impl Context {
             })
     }
 
-    /// Tree buttons stop at the first declared/refused ID override. Conditional
-    /// definition icons cannot read hourly operands on that selection path.
     pub fn requested_tree_focus_needs_frame(
         &self,
         token: &str,
@@ -1330,8 +1230,6 @@ impl Context {
         projection: FocusProjection,
     ) -> bool {
         let tokens = [token.to_owned()];
-        // The definition's conditional icon is evaluated where a drawing catalogue declares no
-        // override: this context's, or the recording's own its draw can fall back to.
         let icons = projection.icons()
             && self.focus(token).ok().flatten().is_some_and(|definition| {
                 let overrides = definition.button_sprite_overrides(token, Some(tag));
@@ -1354,8 +1252,6 @@ impl Context {
             }
     }
 
-    /// Whether focus text or icon cases need recorded country/hour operands.
-    /// Dollar references have already expanded through the content localiser.
     pub fn focus_text_needs_frame(&self) -> bool {
         *self.focus_text_needs_frame.get_or_init(|| {
             let Kind::Focus(database) = self.kind else {
@@ -1367,7 +1263,6 @@ impl Context {
         })
     }
 
-    /// Event focus presentation resolves names and first-true icon cases at the row hour.
     pub fn focuses_at(
         &mut self,
         requests: &[(&str, &str)],
@@ -1378,8 +1273,6 @@ impl Context {
         })
     }
 
-    /// [`Self::focuses_at`] without drawing: each icon's sprite chosen at the hour, drawn when a
-    /// reply shows it ([`Self::event_focus_icons`]); the caller admitting each lazy item.
     pub fn event_focus_choices_at<'f, T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1394,9 +1287,6 @@ impl Context {
         })
     }
 
-    /// Each event icon [`Self::event_focus_choices_at`] chose at one hour, of (token, choice),
-    /// drawn as this context's catalogue shows it, as one batch; the choice's refusal where it
-    /// chose none.
     pub fn event_focus_icons(
         &self,
         chosen: &[(&str, &Result<String, String>)],
@@ -1413,8 +1303,6 @@ impl Context {
             .collect()
     }
 
-    /// `token`'s icon drawn as this context's catalogue shows it ([`catalogue::draw`]), the
-    /// sprite `choose` names for the drawing catalogue.
     fn draw_focus_icon(
         &self,
         token: &str,
@@ -1438,7 +1326,6 @@ impl Context {
         .clone()
     }
 
-    /// The caller admits each lazy item while the batch shares its text context.
     pub fn focus_tree_at<T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1448,7 +1335,6 @@ impl Context {
         self.focuses(requests, frame, true, FocusProjection::Full, collect)
     }
 
-    /// Resolve dated text without selecting, decoding or rendering sprites.
     pub fn focus_text_at<T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1458,7 +1344,6 @@ impl Context {
         self.focuses(requests, frame, true, FocusProjection::Text, collect)
     }
 
-    /// Row titles use their recorded scope without expanding hidden descriptions.
     pub fn focus_titles_at<T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1468,7 +1353,6 @@ impl Context {
         self.focuses(requests, frame, true, FocusProjection::Titles, collect)
     }
 
-    /// Visible row artwork selects icons and titles independently of details.
     pub fn focus_display_at<T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1478,7 +1362,6 @@ impl Context {
         self.focuses(requests, frame, true, FocusProjection::Display, collect)
     }
 
-    /// Select and render dated icons without reaching unrequested text.
     pub fn focus_icons_at<T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1515,8 +1398,6 @@ impl Context {
         })
     }
 
-    /// Decodes together the icons of `requests` (token, and its tag where a tree's overrides are
-    /// probed) whose sprite reads no recorded state.
     fn prefetch_requested<'r>(&self, requests: impl Iterator<Item = (&'r str, Option<&'r str>)>) {
         let sprites = requests
             .filter_map(|(token, tree)| {
@@ -1560,8 +1441,6 @@ impl Context {
         self.prefetch_icons(sprites);
     }
 
-    /// Each of `requests` as one batch resolves it, its icon drawn when `draw`, else its sprite
-    /// chosen; a batch that draws none is an event's, whose icon probes no tree override.
     fn focus_items<T>(
         &mut self,
         requests: &[(&str, &str)],
@@ -1596,15 +1475,11 @@ impl Context {
                 Err(gap) => Err(format!("focus {token}: {gap}")),
                 Ok(None) => Err(format!("focus {token}: definition absent from recorded content")),
                 Ok(Some(definition)) => {
-                    // Focus-tree buttons probe authored country/id and id overrides before
-                    // the definition's icon. Events use the definition.
                     let overrides = if tree {
                         definition.button_sprite_overrides(token, Some(tag))
                     } else {
                         Vec::new()
                     };
-                    // The definition's icon: recorded facts, its triggers evaluated at the
-                    // hour only when no override is declared.
                     let evaluated = std::cell::OnceCell::new();
                     let definition_icon = || {
                         evaluated
@@ -1645,8 +1520,6 @@ impl Context {
                     if !draw {
                         return definition_icon();
                     }
-                    // Which override is drawn is the drawing catalogue's choice, made with
-                    // the draw as one operation.
                     self.draw_focus_icon(token, |drawing| {
                         for name in &overrides {
                             if drawing.sprites.find(name)?.is_some() {
@@ -1686,9 +1559,6 @@ impl Context {
                 let mut scope = crate::scripted_text::EventScope::of(
                     crate::scripted_text::EventObject::Country(slot),
                 );
-                // Focus names and descriptions seed a fresh scope with Clock seed
-                // plus the byte-exact focus ID's FNV-1a hash, then the shared hash lanes.
-                // The seed is an input only when the text draws from it.
                 let seed = crate::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed_in(frame));
                 scope.clock_seed = Some(seed);
                 let scopes = match seed {
@@ -1730,7 +1600,6 @@ impl Context {
                     }
                 }
             } else if !matches!(icon, Some(Err(_))) {
-                // Text alone names the missing or unknown definition as an icon request does.
                 text.push(match definition {
                     Err(gap) => format!("focus {token}: {gap}"),
                     _ => format!("focus {token}: definition absent from recorded content"),
@@ -1747,10 +1616,6 @@ impl Context {
         };
         let layers = &self.catalogue.content.layers;
         let sprites: Vec<_> = sprites.into_iter().map(|sprite| (sprite, 0)).collect();
-        // The batch skips what the presentation's images hold under the mode it draws in.
-        // A refused batch is retried by the ordinary reader so each requested
-        // item retains its output and named refusal. With visual mods shown the draws that
-        // read them are strict attempts at the selection, so the batch is drawn as they are.
         let batch = || catalogue::sprite_frames_png(layers, &sprites, *decode, ICON_EDGE);
         let _ = if self.catalogue.recorded().is_some() {
             installed_content_core::content::strict(batch)
@@ -1759,9 +1624,6 @@ impl Context {
         };
     }
 
-    /// `name`'s icon drawn through `drawing` (this context's catalogue or the recording's own it
-    /// keeps), kept per catalogue and artwork mode, so a strict attempt to draw the selection
-    /// neither reads nor leaves an ordinary draw's image.
     fn cached_icon(&self, drawing: &Catalogue, name: &str) -> io::Result<Option<String>> {
         let key = (
             !std::ptr::eq(drawing, &*self.catalogue),
@@ -1774,7 +1636,6 @@ impl Context {
         if let Some(result) = held(&self.icon_cache.lock().unwrap_or_else(|e| e.into_inner())) {
             return result.map_err(invalid);
         }
-        // Drawn without the cache held, so other replies go on meanwhile.
         let drawn = catalogue::Drawn::new(|| {
             declared_icon_png(drawing, name).map_err(|error| error.to_string())
         });
@@ -1783,7 +1644,6 @@ impl Context {
         result.map_err(invalid)
     }
 
-    /// History supplies authored duration only; names and icons are dated reads.
     pub fn focus_metadata(
         &self,
         tokens: BTreeSet<&str>,
@@ -1803,7 +1663,6 @@ impl Context {
         Ok((items, self.standing_warnings()))
     }
 
-    /// Independent text for history replies; artwork is requested separately.
     pub fn text_catalogue(
         &self,
         tokens: BTreeSet<&str>,
@@ -1833,7 +1692,6 @@ impl Context {
             crate::metadata::check_cancel(cancelled)?;
             let (name, description) = if matches!(self.kind, Kind::Focus(_)) {
                 match self.focus(token) {
-                    // A refused file leaves the focus's text unknown.
                     Err(_) => (None, None),
                     Ok(definition) => {
                         let name_key =
@@ -1861,7 +1719,6 @@ impl Context {
         Ok((items, self.standing_warnings()))
     }
 
-    /// Artwork for every token, with the context's standing warnings first.
     pub fn catalogue(
         &mut self,
         tokens: BTreeSet<&str>,
@@ -1873,7 +1730,6 @@ impl Context {
         )
     }
 
-    /// Sprites use the technology token; text and findings use recorded definitions.
     pub fn recorded_catalogue(
         &mut self,
         tokens: BTreeMap<&str, &[Option<u32>]>,
@@ -1923,12 +1779,6 @@ impl Context {
     }
 }
 
-/// The stockpile indicator's authored image uses the topbar template's nukes
-/// container. Its sole icon supplies the artwork through the authored sprite;
-/// ambiguous content refuses by authored paths.
-///
-/// The container's choice of icon and its sprite are drawn as one operation through the
-/// catalogue the request shows ([`catalogue::draw`]).
 pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
     catalogue::draw(
         || "nuclear stockpile icon".to_owned(),
@@ -1941,7 +1791,6 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
     .map_err(io::Error::from)
 }
 
-/// [`nuke_icon`] drawn through `catalogue` alone.
 fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
     use installed_content_core::{gui::native::Fields, gui::native::Kind};
     let (_, root) = installed_content_core::gui::native::kept_container_window(
@@ -1997,8 +1846,6 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
     };
     let name = std::str::from_utf8(&icon.sprite).map_err(|error| invalid(error.to_string()))?;
     let sprite = catalogue::created_gui_sprite(&catalogue.sprites, name)?;
-    // A positive authored frame stores frame-1 before calculating the
-    // sprite's frame offset.
     let frame = u32::try_from(
         icon.frame
             .checked_sub(1)
@@ -2105,9 +1952,6 @@ mod tests {
         );
     }
 
-    /// One id names a focus in each database. A context looks ids up in its
-    /// own database alone, so neither answers for the other, and a file one
-    /// database refuses leaves only that database's focuses unknown.
     #[test]
     fn each_focus_database_answers_only_for_its_own_focuses() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2142,7 +1986,6 @@ mod tests {
                 ),
             ];
             if refused {
-                // A later continuous file the reader refuses could redefine any continuous focus.
                 files.push((
                     "common/continuous_focus/zz_refused.txt",
                     "continuous_focus_palette={focus={text=continuous_title}}",
@@ -2190,7 +2033,6 @@ mod tests {
                 ("shared".to_owned(), national_title.clone(), Some(14.0)),
             ]
         );
-        // The national focus of the same id lends the continuous focus neither its title nor its cost.
         assert_eq!(
             texts(&continuous),
             [
@@ -2211,7 +2053,6 @@ mod tests {
         );
 
         let (mut national, mut continuous, _folders) = contexts(true);
-        // A refused continuous file leaves every national focus as it was.
         assert_eq!(
             texts(&national),
             [
@@ -2229,7 +2070,6 @@ mod tests {
                 .iter()
                 .all(|finding| !finding.message.contains("continuous_focus"))
         );
-        // Its own focuses are unknown, never the national definition of the same id.
         assert_eq!(
             texts(&continuous),
             [
@@ -2429,7 +2269,7 @@ mod tests {
             .focuses_at(&[("conditional", "Z9")], &frame)
             .remove(0);
         assert!(conditional.0.icon.is_none());
-        assert!(conditional.1.is_some()); // This synthetic stack intentionally lacks trigger defines.
+        assert!(conditional.1.is_some());
         let tree =
             context.focus_tree_at(&[("scalar", "Z9")], &frame, |items| items.next().unwrap());
         assert_eq!(from_url(tree.0.icon.as_deref().unwrap()).pixels[0], 22);
@@ -2607,8 +2447,6 @@ mod tests {
                 .iter()
                 .all(|(art, reason)| art.description.is_none() && reason.is_none())
         );
-        // ROOT selects the country context; its entry fallback constructs a
-        // fresh known 424242 scope.
         assert!(matches!(result[2].0.name.as_deref(), Some("A" | "B")));
         assert!(
             !result[2]
@@ -2633,7 +2471,6 @@ mod tests {
                 .any(|reason| reason.contains("Clock seed is not recorded"))
         );
         frame.hour = 11;
-        // Keep M0 a native tag operand while the row's country renames to M1.
         *frame.tables[TableId::Countries.index()] =
             TableView::Complete(TableRows::from_rows::<tables::Countries>(vec![
                 CountryRow {
@@ -2728,8 +2565,6 @@ mod tests {
     fn technology_limits_use_load_time_dlcs_empty_scope_and_unknown_globals() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // The selected DLC name maps to bit 7, which feature 0x21 tests.
-        // No content key is hard-coded here.
         let feature_dlc = engine_dlc::dlc_feature_state::NAME_MASKS
             .iter()
             .find(|(_, mask)| *mask == 1 << 7)
@@ -2776,7 +2611,6 @@ mod tests {
         };
         let select = |key: &str| technology_name(named(key), Ok(&world), registry.equipment_database());
         assert_eq!(select("dlc").unwrap(), "dlc");
-        // A country predicate is false in the native empty content-load scope.
         assert_eq!(select("empty").unwrap(), "empty");
         let reason = select("global").unwrap_err();
         assert!(
@@ -2791,8 +2625,6 @@ mod tests {
             technology_name(named("dlc"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_child"
         );
-        // The name comes from the feature-mask mapping rather than content
-        // importance. Feature 0x21 tests the same bit 7.
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
         let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
@@ -2996,8 +2828,6 @@ mod tests {
             context.description("forced").as_deref(),
             Some("Parent description")
         );
-        // Two total children use the parent name. The one non-duplicate
-        // description gate still selects the FIRST child, the generated copy.
         assert_eq!(context.technology_root("duplicates").unwrap(), "mod_parent");
         assert_eq!(context.description("duplicates"), None);
         assert_eq!(
@@ -3103,8 +2933,6 @@ mod tests {
             .unwrap();
         let frame = from_url(icon);
         assert_eq!((frame.width, frame.height), (2, 4));
-        // Geometry clips its fractional width at the queried integer extent
-        // instead of squeezing the complete pitch into it.
         assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 1, 20, 30, 200]);
         assert_eq!(&frame.pixels[24..], [0; 8]);
         for (token, reason) in [
@@ -3227,7 +3055,6 @@ mod tests {
     }
 }
 
-// A focus text reply over interface files with refusals keeps their summary.
 #[cfg(test)]
 mod interface_refusals {
     use crate::catalogue::{Catalogue, tests::folder_catalogue};
@@ -3278,7 +3105,6 @@ mod interface_refusals {
     }
 }
 
-// Focus art as the request's visual mods show it.
 #[cfg(test)]
 mod presentation {
     use super::{Context, Kind};
@@ -3302,11 +3128,6 @@ mod presentation {
         }
     }
 
-    /// The recording's focus draws its definition's icon (A). A mod's declaration of the
-    /// tree's country override (B), which would come first, is a recorded fact's and is never
-    /// read: A is drawn, in the mod's art where it loads. Where the mod's art for A does not
-    /// load, the recording's own A is drawn and named on the first reply and on the memoised
-    /// second one. Without a selection, A as it is.
     #[test]
     fn a_mods_focus_tree_override_is_not_read_and_its_art_that_cannot_draw_is_the_recordings() {
         let machine = Machine::new("focus_override");
@@ -3320,7 +3141,6 @@ mod presentation {
         );
         machine.write("gfx/a.png", &png(RED));
         for (name, art) in [("art", png(GREEN)), ("broken", b"not a png".to_vec())] {
-            // Read, the override would draw blue.
             machine.write_mod(
                 name,
                 "interface/override.gfx",
@@ -3364,9 +3184,6 @@ mod presentation {
         }
     }
 
-    /// A focus's own icon whose art a mod replaces with art that does not load is the
-    /// recording's, named, in the catalogue reply and its memo; without a selection it is drawn
-    /// as it is.
     #[test]
     fn a_focus_icon_the_mod_cannot_draw_is_the_recordings_in_the_catalogue_reply() {
         let machine = Machine::new("focus_catalogue_icon");
@@ -3410,10 +3227,6 @@ mod presentation {
         }
     }
 
-    /// What a tree icon's draw reads is planned from the recording's own declarations, which a
-    /// mod's interface file never replaces: its file hiding the German override and declaring a
-    /// generic one is not read, so the conditional recorded icon needs the hour and the German
-    /// override still makes the icon the country's own.
     #[test]
     fn tree_icon_plans_cover_the_recordings_own_choice() {
         let machine = Machine::new("focus_plans");
@@ -3426,8 +3239,6 @@ mod presentation {
             b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}               spriteType={name=GFX_GER_f_one textureFile=gfx/a.png}}",
         );
         machine.write("gfx/a.png", &png(RED));
-        // Read, the mod's file would replace the recording's: hide the German override and
-        // declare a generic one.
         machine.write_mod(
             "override",
             "interface/focus.gfx",
@@ -3442,21 +3253,12 @@ mod presentation {
         assert!(shown.sprites.find("GFX_GER_f_one").unwrap().is_some());
         assert!(shown.sprites.find("GFX_f_one").unwrap().is_none());
         let context = Context::load(shown, Kind::Focus(crate::FocusDatabase::National)).unwrap();
-        // For a country without an override, the recording's conditional icon.
         assert!(context.requested_tree_focus_needs_frame("f_one", "ITA", super::FocusProjection::Icons));
-        // The recording's German override, which the mod's file does not hide, is German art.
         assert!(context.focus_country_icon_override("f_one", "GER"));
         assert!(!context.focus_country_icon_override("f_one", "ITA"));
     }
 }
 
-/// The folder each token is shown in: the first folder it is placed in whose
-/// tab is available, as the game's technology screen shows it in each available
-/// tab. A token placed only in unavailable folders is shown in none. One placed
-/// in a folder whose availability cannot be decided from content, before any
-/// available folder, stays unknown: that folder may be the one shown. A folder
-/// `technology_folders` does not define is never available. Unknown folders and
-/// undefined folders are named and counted.
 pub(crate) fn shown_folders<'a>(
     definitions: &[(&str, Option<bool>)],
     placed: &BTreeMap<(String, Option<u32>), Vec<String>>,

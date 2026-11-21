@@ -8,8 +8,6 @@ fn market<'q>(query: &'q Query<'static>) -> Reader<'q, 'static> {
     Reader::new(query, dashboard_declare::log("market-events").unwrap()).unwrap()
 }
 
-/// The market events the timeline holds from `from` through `to` that `keep` keeps, in hour then
-/// key order: (hour, key, kind, country).
 fn events(query: &Query<'_>, from: i32, to: i32, keep: impl Fn(i32, u8, u32) -> bool) -> Vec<(i32, u128, u8, u32)> {
     let mut out = Vec::new();
     for hour in from..=to {
@@ -31,9 +29,6 @@ fn number(row: &Row, reader: &Reader<'_, '_>, name: &str) -> i64 {
     }
 }
 
-/// Every page of a range, asked forward through the cursor and backward from its end, holds the
-/// range's rows from their ordinals on, across six-hour buckets, blocks and the hours the timeline
-/// does not hold; the total and the first ordinal count from the timeline's first hour.
 #[test]
 fn pages_forward_and_backward_hold_the_logs_rows_from_their_ordinals() {
     let query = query();
@@ -59,7 +54,6 @@ fn pages_forward_and_backward_hold_the_logs_rows_from_their_ordinals() {
             }
         }
         assert_eq!(forward, wanted, "pages from {from}, {size} a page");
-        // Backward: pages asked from the last one down, each its slice of the rows.
         let mut start = before + wanted.len() as u64;
         while start > before {
             start = start.saturating_sub(u64::from(size)).max(before);
@@ -71,8 +65,6 @@ fn pages_forward_and_backward_hold_the_logs_rows_from_their_ordinals() {
     }
 }
 
-/// One reader's walks share the table's one reader, advanced forward and sought backward: walks of
-/// buckets in any order, across blocks and back, each read the rows of its hours alone.
 #[test]
 fn walks_in_any_order_read_each_ranges_rows() {
     let query = query();
@@ -94,8 +86,6 @@ fn walks_in_any_order_read_each_ranges_rows() {
     }
 }
 
-/// One pass over a run gives every row the run inserted, once, in hour order, cells and facet as
-/// a range's read gives them; the pass keeps nothing, so a later range reads its own buckets.
 #[test]
 fn a_pass_over_a_run_gives_each_row_it_inserted_once_as_a_read_does() {
     let query = query();
@@ -115,9 +105,6 @@ fn a_pass_over_a_run_gives_each_row_it_inserted_once_as_a_read_does() {
     assert_eq!(got, wanted);
 }
 
-/// A page reads the buckets holding its rows only: those wholly before its first ordinal are
-/// counted, a bucket without rows between two read ones is passed over, touching ones join and
-/// the range clips them.
 #[test]
 fn a_page_reads_only_the_buckets_holding_its_rows() {
     let buckets: BTreeMap<i64, u64> = [(600, 2), (612, 3), (630, 1), (660, 4)].into_iter().collect();
@@ -128,8 +115,6 @@ fn a_page_reads_only_the_buckets_holding_its_rows() {
     assert_eq!(page_buckets(&BTreeMap::new(), 0, 0, 2, (600, 695)), (0, vec![(600, 695)]));
 }
 
-/// Filtered by a kind's value, or by a country's tag (its holders' rows only, the tag a group with
-/// its own ordinals), a page holds those rows and counts per bin count them.
 #[test]
 fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
     let query = query();
@@ -145,7 +130,6 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
         let wanted = events(&query, FIRST, LAST, &keep);
         let tagged = filters.iter().any(|filter| !filter.countries.is_empty());
         let groups = selection.groups.len();
-        // Every page from the first, each from the cursor the one before gave.
         let (mut rows, mut cursor) = (Vec::new(), 0);
         loop {
             let page = reader.page(&selection.patterns, groups, FIRST, LAST, cursor, 1_024).unwrap();
@@ -156,13 +140,11 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
                 None => break,
             }
         }
-        // Rows of one hour come in group order (ITA's before GER's), then by key.
         let mut ordered = wanted.clone();
         let group_of = |country: u32| if tagged { usize::from(country == 9001) } else { 0 };
         ordered.sort_by_key(|event| (event.0, group_of(event.3), event.1));
         let got: Vec<(i32, u128)> = rows.iter().map(|paged| (paged.row.hour, paged.row.key)).collect();
         assert_eq!(got, ordered.iter().map(|event| (event.0, event.1)).collect::<Vec<_>>());
-        // Every row at once, by a reader that has walked nothing, from the buckets holding them.
         let every: Vec<(i32, u128)> = market(&query).every(&selection.patterns, FIRST, LAST).unwrap().iter().map(|(_, row)| (row.hour, row.key)).collect();
         assert_eq!(every, got, "every row of {filters:?}");
         let mut own = vec![0u64; groups];
@@ -190,9 +172,6 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
     assert!(reader.select(&[FacetFilter { name: "nope".into(), ..FacetFilter::default() }], FIRST, LAST).is_err());
 }
 
-/// A tag filter over the seller and buyer facets keeps each row a tag's holder sells or buys in,
-/// once for each tag holding a side (ITA's sales to GER are ITA's rows and GER's), and the counts
-/// count them so.
 #[test]
 fn a_tag_filter_over_two_facets_keeps_the_rows_either_names() {
     let query = query();
@@ -231,9 +210,6 @@ fn a_tag_filter_over_two_facets_keeps_the_rows_either_names() {
     assert!(reader.select(&[FacetFilter { name: "kind|country".into(), values: vec![1], countries: Vec::new() }], FIRST, LAST).is_err(), "values name one facet");
 }
 
-/// The balance drops' pages on the generic log: every drop of the tags in hour then tag order, each
-/// with its own country's ordinal, and marks counting them, against the drops the fixture's values
-/// make.
 #[test]
 fn balance_drops_page_and_mark_as_the_values_fall() {
     let query = query();

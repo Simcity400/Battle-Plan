@@ -1,6 +1,3 @@
-//! A store's table read as the row decoder's rows: each slot's fields in the wire form a row's
-//! codec reads ([`field`]), a table's view at an hour ([`cells_view`]) and a frame of tables
-//! ([`stored_frame`]).
 
 use crate::{
     BranchId, Hour,
@@ -18,10 +15,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// `slot`'s cell in `column` of the recorder's store table `table` in the wire form a row's
-/// field codec reads: a text cell's string bytes, a list as its items' bytes, an opaque cell as
-/// its payload encoded at `format`. A column past the table's, which a recording of an earlier
-/// format never held, is not recorded.
 pub fn field<'a>(
     table: &TableView<'a>,
     slot: u32,
@@ -75,9 +68,6 @@ pub fn field<'a>(
     })
 }
 
-/// Table `id`'s decoded view of `table`'s cells at an hour of `status`: a complete table's rows,
-/// or a truncated one's `read` rows, in key order with every field; an unavailable one's reason
-/// as its text.
 pub fn cells_view(
     id: TableId,
     table: &TableView<'_>,
@@ -117,9 +107,6 @@ pub fn cells_view(
     })
 }
 
-/// Table `id`'s rows of `table`'s cells at `keyed` (each row's key and slot, ascending by key),
-/// in that order with every field, each as [`cells_view`] builds it: a cell not recorded in a
-/// field its row cannot leave unrecorded refused by name ([`Unsayable`]).
 pub fn cells_rows(
     id: TableId,
     table: &TableView<'_>,
@@ -129,8 +116,6 @@ pub fn cells_rows(
     cells_rows_of(id, table, keyed, format, id.full_mask())
 }
 
-/// [`cells_rows`] holding only the fields `fields` names, every other its row's default and never
-/// decoded: for cells read in some columns only, whose others hold no recorded value.
 pub fn cells_rows_of(
     id: TableId,
     table: &TableView<'_>,
@@ -151,9 +136,6 @@ pub fn cells_rows_of(
     })
 }
 
-/// `error`, which building the row keyed `key` (in `slot`) met just after its `column` was
-/// handed as not recorded, named for its table and field when that field cannot hold the
-/// absence: the row is built again with that field alone, absent.
 fn refusal(
     id: TableId,
     table: &TableView<'_>,
@@ -180,8 +162,6 @@ fn refusal(
     io::Error::new(io::ErrorKind::InvalidData, Unsayable { table: id, field })
 }
 
-/// [`cells_view`]'s refusal of a table holding a cell not recorded in a field its row cannot
-/// leave unrecorded: the table and the field.
 #[derive(Debug)]
 pub struct Unsayable {
     pub table: TableId,
@@ -189,7 +169,6 @@ pub struct Unsayable {
 }
 
 impl Unsayable {
-    /// The refusal `error` carries, when it is one.
     pub fn of(error: &io::Error) -> Option<&Self> {
         error.get_ref().and_then(|inner| inner.downcast_ref::<Self>())
     }
@@ -203,10 +182,6 @@ impl std::fmt::Display for Unsayable {
 
 impl std::error::Error for Unsayable {}
 
-/// A decoded frame of `tables` at `(branch, hour)`, read from the recorder's store as a columnar
-/// walk's frame of the same tables reads them ([`ColumnView::to_table_view`]): each table's rows
-/// in key order with every field, a truncated table's those its hour read, an unavailable one's
-/// reason as its text; every other table not selected.
 pub fn stored_frame<'a>(
     tables: impl IntoIterator<Item = (TableId, TableView<'a>)>,
     (branch, hour): (BranchId, Hour),

@@ -15,7 +15,6 @@ const freed = (hour: number) => holder(3, 'NEW', hour);
 const other = (hour: number) => holder(4, 'OTH', hour);
 const move = (state: number, from: Move['from'], to: Move['to'], after: number, extra: Partial<Move> = {}): Move => ({ state, from, to, before: after - 1, after, ...extra });
 
-/** A settlement where LOS loses two states to WIN and a third to NEW, which it released. */
 function settlement() {
   return deal('peace', [
     move(1, loser(100), winner(101), 101, { vp: '5' }),
@@ -54,14 +53,12 @@ test('a reply from an older bridge still lists released states, without victory 
   const data = decodeTransfers(older);
   const released = data.all.find(occurrence => occurrence.state === 3)!;
   assert.equal(released.released, true);
-  // The giver's identity comes from its other transfers in the same settlement.
   assert.equal(released.from?.key, '[1,1001]');
   assert.equal(released.to.tag, 'NEW');
   assert.equal(released.victoryPoints, null);
   const [balance] = countryBalances(data.all).filter(row => row.side.tag === 'NEW');
   assert.equal(balance.gained, 1);
   assert.equal(netVictoryPoints(balance), null);
-  // Several former owners cannot be split per state.
   const shared = olderBridge(reply([deal('shared', [move(1, loser(100), winner(101), 101), move(5, other(100), winner(101), 101),
     move(3, loser(100), freed(101), 101, { released: true }), move(4, other(100), freed(101), 101, { released: true })])]));
   const unnamed = decodeTransfers(shared).all.filter(occurrence => occurrence.released);
@@ -105,7 +102,6 @@ test('playback reaches each transfer at its date and supplying read; Live waits 
   assert.equal(at(110)[0].victoryPointsPending, true);
   assert.equal(at(120)[0].victoryPoints, 4n);
   assert.equal(at(110, true)[0].victoryPoints, 4n);
-  // Range includes both ends.
   assert.equal(transfersAt(data.all, 200, 101).length, 1);
   assert.equal(transfersAt(data.all, 200, 102).length, 0);
   assert.equal(transferScope(data, 'late').length, 1);
@@ -119,7 +115,6 @@ test('only hourly settlement, ownership and war gaps can hide a transfer', () =>
   const missing = reply([], { ownership: [{ firstHour: 150, lastHour: 160 }], wars: [{ firstHour: 158, lastHour: 170 }], settlements: [{ firstHour: 190, lastHour: 210 }] });
   assert.deepEqual(transferGaps(missing, 100, 200), [{ firstHour: 150, lastHour: 170 }, { firstHour: 190, lastHour: 200 }]);
   assert.equal(transferGapHint(transferGaps(missing, 100, 200)), `2 stretches not fully recorded between ${formatDateTime(150)} and ${formatDateTime(200)}.`);
-  // The empty state is the message alone, gaps or not.
   assert.equal(transferEmptyMessage(false), 'No territory transfers yet.');
   assert.equal(transferEmptyMessage(true), 'No territory transfers for these countries yet.');
 });
@@ -131,7 +126,6 @@ test('how comes from the settlement: release, new subject and the content’s ow
   peace.captured = { hour: 101, publicationHour: 101, winners: [], losers: [], subjects: [], transfers: [], actions: [
     { derived: false, country: 2, countryTag: 'WIN', turn: 1, ordinal: 1, token: 9, tokenName: null, nameKey: 'mod_take', name: 'Annex Province Group', nameCountry: null, taker: 2, giver: 1, negotiator: 2,
       takerTag: 'WIN', giverTag: 'LOS', negotiatorTag: 'WIN', status: 0, cost: 0, form: 0, state: 1, flags: null, countryOperand: null, countryOperandTag: null, puppetAuxiliary: null, ship: null, ratio: null },
-    // A puppet demand naming the released country is not the release's action.
     { derived: false, country: 2, countryTag: 'WIN', turn: 1, ordinal: 2, token: 10, tokenName: 'puppet', nameKey: null, name: 'Puppet {COUNTRY}', nameCountry: 'NEW', taker: 2, giver: 1, negotiator: 2,
       takerTag: 'WIN', giverTag: 'LOS', negotiatorTag: 'WIN', status: 0, cost: 0, form: 2, state: null, flags: null, countryOperand: 3, countryOperandTag: 'NEW', puppetAuxiliary: null, ship: null, ratio: null },
   ] };

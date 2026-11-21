@@ -1,24 +1,16 @@
-//! What a map load did, stage by stage: each stage's thread, its wall span from the record's
-//! start and its thread CPU, and counts of what was reused or made by kind. The playback-cost
-//! harness's toggle mode keeps it ([`begin`], [`take`]); off (the window), a stage and a count
-//! return at once.
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// One stage as it ended: inclusive of the stages it holds.
 #[derive(Clone, Debug)]
 pub struct Stage {
     pub name: &'static str,
     pub thread: String,
-    /// Microseconds from [`begin`] to the stage's start.
     pub start_us: f64,
     pub wall_us: f64,
-    /// The stage's own thread's CPU; `None` where the platform does not give it.
     pub cpu_us: Option<f64>,
 }
 
-/// A kind's count and bytes over the record.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Count {
     pub kind: &'static str,
@@ -44,7 +36,6 @@ fn record() -> std::sync::MutexGuard<'static, Record> {
     RECORD.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// Starts a record at `epoch`, dropping what the last one held.
 pub fn begin(epoch: Instant) {
     *record() = Record {
         epoch: Some(epoch),
@@ -57,7 +48,6 @@ pub fn on() -> bool {
     ON.load(Ordering::Acquire)
 }
 
-/// The stages that ended and the counts since [`begin`], stages in the order they started.
 pub fn take() -> (Vec<Stage>, Vec<Count>) {
     let mut record = record();
     let mut stages = std::mem::take(&mut record.stages);
@@ -65,7 +55,6 @@ pub fn take() -> (Vec<Stage>, Vec<Count>) {
     (stages, std::mem::take(&mut record.counts))
 }
 
-/// Adds `n` and `bytes` to `kind`.
 pub fn count(kind: &'static str, n: u64, bytes: u64) {
     if !on() {
         return;
@@ -80,7 +69,6 @@ pub fn count(kind: &'static str, n: u64, bytes: u64) {
     }
 }
 
-/// Times a stage until the guard drops; `None` while no record is kept.
 #[must_use = "the stage ends when the guard drops"]
 pub fn stage(name: &'static str) -> Option<Timer> {
     on().then(|| Timer {

@@ -1,5 +1,3 @@
-//! Independent provider observations. Native callbacks copy only a demanded
-//! source or owner roster; workers update immutable references for dependants.
 use super::*;
 use std::collections::HashMap;
 
@@ -91,7 +89,6 @@ impl Interests {
     }
 }
 
-/// Callback path: a full watch map grows where it is written.
 fn grow_map<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) -> Result<(), &'static str> {
     engine_allocation::advisory(|| engine_allocation::reserve_map(map, 1))
         .map_err(|_| STORAGE_FAILED)
@@ -193,8 +190,6 @@ fn track_in(
     }
     bind(held, row)
 }
-/// Whether the design's binding changed: only a changed binding can leave an interest unused.
-/// A suspended binding comes back first, so reinstalling the same one changes nothing.
 fn bind(
     held: &mut HashMap<u64, Binding>,
     row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
@@ -262,14 +257,11 @@ pub(super) fn track(
     let mut held = bindings();
     engine_allocation::reserve_map(&mut held, 1)
         .map_err(|_| "design source binding allocation failed")?;
-    // Native staging already registered these interests.
     if bind(&mut held, row)? {
         TRIM.store(true, Ordering::Release);
     }
     Ok(())
 }
-/// A terminal repair did not pass through native staging. Register its freshly
-/// reached dependencies on the worker before certifying the next interval.
 pub(super) fn repair(
     row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
     interests: &mut Interests,
@@ -354,14 +346,12 @@ pub(super) fn remove(variant: u64) {
         TRIM.store(true, Ordering::Release);
     }
 }
-/// Bindings a boundary set aside until its reads reinstall them; nothing else sees them.
 static SUSPENDED: Mutex<Option<HashMap<u64, Binding>>> = Mutex::new(None);
 fn suspended() -> std::sync::MutexGuard<'static, Option<HashMap<u64, Binding>>> {
     SUSPENDED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-/// Removes `variant`'s binding until a read reinstalls it or [`drop_suspended`] runs.
 pub(super) fn suspend(variant: u64) -> Result<(), &'static str> {
     let mut held = bindings();
     let mut suspended = suspended();
@@ -373,7 +363,6 @@ pub(super) fn suspend(variant: u64) -> Result<(), &'static str> {
     }
     Ok(())
 }
-/// Reinstalls `variant`'s suspended binding, which its unchanged read proved current.
 pub(super) fn resume(variant: u64) -> Result<(), &'static str> {
     let mut held = bindings();
     let Some(binding) = suspended()
@@ -387,7 +376,6 @@ pub(super) fn resume(variant: u64) -> Result<(), &'static str> {
     held.insert(variant, binding);
     Ok(())
 }
-/// The suspended bindings no read reinstalled are removed; their interests may be unused.
 pub(super) fn drop_suspended() {
     if let Some(suspended) = suspended().as_mut()
         && !suspended.is_empty()

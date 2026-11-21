@@ -1,4 +1,3 @@
-//! Conservative byte reads after DXC elimination. Struct/matrix padding is not a value.
 use naga::{Expression as E, Handle, TypeInner as T};
 use std::{collections::BTreeMap, ops::Range};
 
@@ -142,8 +141,6 @@ fn function(
     info: &naga::valid::FunctionInfo,
     out: &mut BTreeMap<u32, Vec<Range<u32>>>,
 ) {
-    // Pointer parameters can alias a uniform through a call. Conservatively require
-    // every byte of every uniform in that form; never turn an unresolved alias into no reads.
     if function.arguments.iter().any(|argument| {
         matches!(
             module.types[argument.ty].inner,
@@ -173,8 +170,6 @@ fn function(
             continue;
         }
         let regions = pointer(module, &function.expressions, *source);
-        // A load used exclusively by vector projections needs only those components.
-        // All other uses conservatively consume its entire value.
         let mut projections = 0;
         let mut components = Vec::new();
         for (_, use_) in function.expressions.iter() {
@@ -243,11 +238,6 @@ pub(crate) fn reflect(
 }
 
 impl super::Buffer {
-    /// The bytes of `block` this binding's programs read, in the order they are declared,
-    /// appended to `out`. Bytes beyond the block read zero on the device and are appended as
-    /// zero, so a shorter block that holds the same values gives the same bytes. This is what a
-    /// pass drawn only while its inputs change keys on: a byte no program reads never reaches
-    /// `out`.
     pub fn read_bytes(&self, block: &[u8], out: &mut Vec<u8>) {
         for range in &self.reads {
             let held =
@@ -258,8 +248,6 @@ impl super::Buffer {
         }
     }
 
-    /// Bytes beyond the physical D3D11 binding read zero. Unknown bytes *inside*
-    /// that allocation cannot be replaced by zero when the shader consumes them.
     pub fn check_initialized(&self, physical: u32, known: &[Range<u32>]) -> Result<(), String> {
         for read in &self.reads {
             let end = read.end.min(physical);

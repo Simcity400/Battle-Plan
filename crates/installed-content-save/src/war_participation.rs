@@ -1,4 +1,3 @@
-//! Exact serializer projection of directional war participation accounting.
 
 use super::{Decimal, Item, block, field, integer, invalid, required_bytes, scalar};
 use std::io;
@@ -16,12 +15,9 @@ pub struct Ledger {
     pub casualties: i64,
     pub lend_lease_sent: i64,
     pub lend_lease_received: i64,
-    /// Omitted only for the empty set; native signed-key order is preserved.
     pub captured_provinces: Vec<i32>,
 }
 
-/// Saved only when at least one quantity converts to nonzero native binary
-/// fixed point. An omitted block constrains that class, not exact raw zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeliveryHistory {
     pub owner: Vec<u8>,
@@ -48,8 +44,6 @@ pub fn parse_delivery_history(
     })
 }
 
-/// All scalar fields are emitted unconditionally, including zero and negative
-/// credit. The runtime unknown-casualty score has no serialized counterpart.
 pub fn parse(items: &[Item]) -> io::Result<Ledger> {
     let fixed =
         |key: &[u8]| -> io::Result<i64> { Ok(Decimal::parse(&required_bytes(items, key)?)?.raw) };

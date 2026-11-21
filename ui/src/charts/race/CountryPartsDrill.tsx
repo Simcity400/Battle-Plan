@@ -24,8 +24,6 @@ import { bindCountryParts, countryPartsRemainder, countryPartsSelection, exactPa
 import type { CountryPartsData } from './countryPartsDrillData';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill, UNATTRIBUTED_PART } from './partsRaceDrill';
 
-/** A country's parts over time beside a race: one reply of the country's whole branch (`params(tag)`), decoded by the
- * widget into the parts drill's model. Opened from a bar or a line, or pinned as its own widget. */
 export default function CountryPartsDrill<T>({ widget, runtime, active, countrySlot = null, onDiagnostics, track, options, extent, playhead, moment,
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
   resetKey, state, main, details }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
@@ -35,8 +33,6 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   defaultTag: string | null; pickTag: (hour: number) => string | null; title: string; measure: string;
   virtual?: boolean; positiveGeometry?: boolean; warnings: readonly string[]; resetKey: string; state?: ReactNode;
   main: (onPick: (hour: number, tag?: string, choices?: readonly string[]) => void, visible: boolean) => ReactNode;
-  /** Replaces the parts list and the chart's key with the widget's own: the country's holder at each hour (`tagAt`),
-   * the hour shown, and the chart's parts with their colours and exact values then. */
   details?: (view: { tag: string; hour: number; tagAt: (hour: number) => string | null;
     key: readonly { id: string; label: string; color?: string; value: number | null }[] }) => ReactNode;
 }) {
@@ -105,14 +101,12 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   useEffect(() => {
     onDiagnostics(diagnostics);
     return () => onDiagnostics([]);
-    // The serialized warnings retain their exact text without a playback-tick effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diagnosticsKey, onDiagnostics]);
   const tokens = useChartTokens();
   const read = tag && model ? model.readHour(tag, hour) : null;
-  const parts = useMemo(() => model ? [...model.parts(read ?? hour), UNATTRIBUTED_PART] : [], [model, read, read == null ? hour : null]); // eslint-disable-line react-hooks/exhaustive-deps
+  const parts = useMemo(() => model ? [...model.parts(read ?? hour), UNATTRIBUTED_PART] : [], [model, read, read == null ? hour : null]);
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const bands = useMemo(() => model && tag ? model.bands(tag, range) : null, [model, tag, range]);
   const shownBands = useMemo(() => positiveGeometry ? bands?.map(runs => runs.map(run => ({ ...run, value: Math.max(0, run.value) }))) : bands,
     [bands, positiveGeometry]);

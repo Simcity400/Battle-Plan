@@ -1,6 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone. A row is read from a cell source: the table as the hour left it, or a
-//! row's cells before the hour wrote them ([`before`]), or a deleted row's last cells.
 
 use crate::framework::{Hour, columns};
 use replay_columnar::store::{Kept, TableView, Value};
@@ -33,16 +30,13 @@ pub(super) const ROCKET_COLUMNS: [usize; 12] = columns::<RocketProductionOutputR
 pub(super) const TOKEN: [usize; 2] = columns::<VariantDefinitionRow, 2>(["equipment_token", "archetype_token"]);
 pub(super) const LITERAL: [usize; 1] = columns::<LexicalTokenRow, 1>(["literal"]);
 
-/// A row's applied IC as the collector recorded it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Spent {
     Value(i64),
-    /// Refused at the read.
     Refused,
     NotRecorded,
 }
 
-/// A ProductionLineOutput row as the totals fold it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Output {
     pub country: u32,
@@ -52,7 +46,6 @@ pub(super) struct Output {
     pub ended: bool,
     pub exact: bool,
     pub spent: Spent,
-    /// [`OutputPurpose::raw`]; Unknown when not recorded.
     pub purpose: u8,
 }
 
@@ -63,8 +56,6 @@ fn number(value: Value<'_>) -> Option<i64> {
     }
 }
 
-/// An output row from its cells, `cell(column)`; none while a cell its codec requires is not
-/// recorded.
 fn output<'a>(cell: impl Fn(usize) -> Value<'a>) -> Option<Output> {
     let spent = match cell(SPENT) {
         Value::Number(bits) => Spent::Value(bits as i64),
@@ -84,7 +75,6 @@ fn output<'a>(cell: impl Fn(usize) -> Value<'a>) -> Option<Output> {
     })
 }
 
-/// The cell of `column` of `view`'s row in `slot` before the hour wrote `written` of its cells.
 fn held<'a>(view: &TableView<'a>, slot: u32, written: &'a [(u16, Kept)], column: usize) -> Value<'a> {
     match written.iter().find(|(held, _)| usize::from(*held) == column) {
         Some((_, kept)) => kept.value(),
@@ -96,23 +86,18 @@ fn kept(cells: &[Kept], column: usize) -> Value<'_> {
     cells.get(column).map_or(Value::Unrecorded, Kept::value)
 }
 
-/// The output row in `slot` as the hour left it.
 pub(super) fn output_now(view: &TableView<'_>, slot: u32) -> Option<Output> {
     output(|column| view.value(column, slot))
 }
 
-/// The output row in `slot` before the hour wrote `written` of its cells.
 pub(super) fn output_before<'a>(view: &TableView<'a>, slot: u32, written: &'a [(u16, Kept)]) -> Option<Output> {
     output(|column| held(view, slot, written, column))
 }
 
-/// A deleted output row as the deletion found it.
 pub(super) fn output_dropped(cells: &[Kept]) -> Option<Output> {
     output(|column| kept(cells, column))
 }
 
-/// Each written row of `table` the hour kept, by slot: its columns' values before the hour,
-/// each column once.
 pub(super) fn written(hour: &Hour<'_>, table: TableId) -> HashMap<u32, Vec<(u16, Kept)>> {
     let mut rows: HashMap<u32, Vec<(u16, Kept)>> = HashMap::new();
     for (slot, column, kept) in hour.previous(table) {
@@ -124,7 +109,6 @@ pub(super) fn written(hour: &Hour<'_>, table: TableId) -> HashMap<u32, Vec<(u16,
     rows
 }
 
-/// A RocketProductionOutput row keyed `key` from its cells; none while one is not recorded.
 fn rocket<'a>(key: u128, cell: impl Fn(usize) -> Value<'a>) -> Option<RocketProductionOutputRow> {
     let [spent, instant, since, exact, ticks, inexact_ticks, unknown_design, unknown_country, units, units_exact, deliveries, inexact_deliveries] = ROCKET_COLUMNS.map(|column| number(cell(column)));
     Some(RocketProductionOutputRow {
@@ -145,30 +129,24 @@ fn rocket<'a>(key: u128, cell: impl Fn(usize) -> Value<'a>) -> Option<RocketProd
     })
 }
 
-/// The Rocket row in `slot` as the hour left it.
 pub(super) fn rocket_now(view: &TableView<'_>, slot: u32) -> Option<RocketProductionOutputRow> {
     rocket(view.key(slot)?, |column| view.value(column, slot))
 }
 
-/// The Rocket row in `slot` before the hour wrote `written` of its cells.
 pub(super) fn rocket_before<'a>(view: &TableView<'a>, slot: u32, written: &'a [(u16, Kept)]) -> Option<RocketProductionOutputRow> {
     rocket(view.key(slot)?, |column| held(view, slot, written, column))
 }
 
-/// A deleted Rocket row as the deletion found it.
 pub(super) fn rocket_dropped(key: u128, cells: &[Kept]) -> Option<RocketProductionOutputRow> {
     rocket(key, |column| kept(cells, column))
 }
 
-/// Design `variant`'s equipment token and archetype as VariantDefinitions records them (lexer
-/// tokens); none without its row.
 pub(super) fn definition(hour: &Hour<'_>, variant: u64) -> Option<(u32, u32)> {
     let definitions = hour.table(TableId::VariantDefinitions);
     let slot = definitions.slot(u128::from(variant))?;
     Some((number(definitions.value(TOKEN[0], slot))? as u32, number(definitions.value(TOKEN[1], slot))? as u32))
 }
 
-/// The string id of lexer token `token`'s spelling; none while LexicalTokens does not hold it.
 pub(super) fn spelling(hour: &Hour<'_>, token: u32) -> Option<u32> {
     let tokens = hour.table(TableId::LexicalTokens);
     tokens.text(LITERAL[0], tokens.slot(u128::from(token))?)

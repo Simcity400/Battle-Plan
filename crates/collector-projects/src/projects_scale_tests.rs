@@ -1,10 +1,3 @@
-//! Scale equivalence and cost of the project family's raw copy.
-//!
-//! `Space` is a deterministic address space of many countries built at the
-//! buffer's own addresses, so the same bytes serve `SliceMemory` for
-//! equivalence and the guarded `LiveMemory` copier for the bench. Golden
-//! digests cover the fixture operands, excluding acquisition-only addresses.
-//! Copy and decode also match the independent direct typed walks.
 
 use super::projects_test_kit as kit;
 use super::*;
@@ -67,7 +60,6 @@ impl Space {
 struct Writer {
     bytes: Vec<u8>,
     used: usize,
-    /// State machines live apart in a shuffled order, like heap objects.
     machines: usize,
     machine_count: usize,
     machine_step: usize,
@@ -131,8 +123,6 @@ fn slots(countries: u32) -> Vec<Slot> {
         } else if slot.is_multiple_of(83) && previous != 0 {
             slots.push(Slot::Alias(previous));
         } else {
-            // Every seventh country's id differs from its slot, and its
-            // projects name it by the slot, so owner aliases are resolved.
             let id = if slot.is_multiple_of(7) {
                 70_000 + slot
             } else {
@@ -147,7 +137,6 @@ fn slots(countries: u32) -> Vec<Slot> {
     slots
 }
 
-/// `countries` real countries with about `projects` pool entries each.
 pub fn space(countries: u32, projects: u32) -> Space {
     let slots = slots(countries);
     let plans: Vec<Plan> = slots
@@ -220,7 +209,6 @@ pub fn space(countries: u32, projects: u32) -> Space {
     let game_state = writer.alloc(GAME);
     let table = writer.alloc(slots.len() * 8);
     let links = writer.alloc(links_count as usize * 4);
-    // Null slots and unlinked ids read as zero.
     let used = writer.used;
     writer.bytes[..used].fill(0);
     writer.machines = writer.alloc(machine_count * MACHINE);
@@ -460,7 +448,6 @@ fn write_tree(writer: &mut Writer, state: usize, plan: &Plan) {
         u64::from(plan.nodes),
     );
     let nodes: Vec<usize> = (0..plan.nodes).map(|_| writer.alloc(NODE)).collect();
-    // Keys ascend as signed values, one per specialization.
     for (index, &at) in nodes.iter().enumerate() {
         let seed = mix(u64::from(plan.id) ^ index as u64);
         writer.u8(at + node::IS_NIL, 0);
@@ -559,10 +546,6 @@ fn direct(memory: &impl Memory, game_state: usize, capacities: &Capacities) -> C
     captured
 }
 
-/// FNV-1a over the published values of the four tables. Only the rows'
-/// field values and outcomes enter it, never addresses of the space.
-/// Projects and ProjectHistory come from the direct walks (the raw copy
-/// carries only ProjectPrograms and ProjectBreakthroughs).
 fn digest(captured: &Captured) -> u64 {
     fn rows<R: std::fmt::Debug>(text: &mut String, rows: &CaptureRows<R>) {
         use std::fmt::Write;
@@ -571,7 +554,6 @@ fn digest(captured: &Captured) -> u64 {
     }
     let mut text = String::new();
     rows(&mut text, &captured.programs);
-    // Authenticated object addresses are acquisition metadata, not published facts.
     let mut projects = captured.projects.rows[..captured.projects.outcome.len()].to_vec();
     for project in &mut projects {
         project.source_pointer = 0;
@@ -608,7 +590,6 @@ fn scaled_copy_matches_direct_walks_and_the_recorded_digests() {
         let label = format!("{countries} countries");
         assert_equivalent(&space, &capacities(countries as usize), &label, golden);
     }
-    // Every table starting short of its rows grows to the full digest.
     let mut short = capacities(440);
     short.rows[..4].copy_from_slice(&[100, 5_000, 40, 500]);
     short.program_names = 400;
@@ -643,7 +624,6 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
     let histories = demand(history);
     assert!(projects > Capacities::default().rows[1]);
     assert!(capacity.rows[1] >= projects && capacity.rows[2] >= histories);
-    // Pool misses use Default, so it must grow from the very first header.
     let mut job = ProjectsJob::default();
     let report = copy_projects_refresh(
         &memory,
@@ -670,8 +650,6 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
         matches!(captured.breakthroughs.outcome, Outcome::Rows { len } if len > Capacities::default().rows[3])
     );
     assert!(captured.names.len > Capacities::default().program_names);
-    // Child populations change without any country-count change. The next
-    // original headers must grow the same owned job and frame before publish.
     let later = self::space(5000, 14);
     let later_memory = later.memory();
     assert!(
@@ -710,14 +688,12 @@ impl Memory for Fault<'_> {
     }
 }
 
-/// One faulted byte, and an optional u32 patched in before the walk.
 struct Site {
     label: &'static str,
     fault: usize,
     patch: Option<(usize, u32)>,
 }
 
-/// Addresses inside slot 201's objects, in walk order, then sites elsewhere.
 fn fault_sites(space: &Space) -> Vec<Site> {
     let memory = space.memory();
     let read = |address: usize| engine_native::read::<u64>(&memory, address).unwrap() as usize;
@@ -734,7 +710,6 @@ fn fault_sites(space: &Space) -> Vec<Site> {
     let current = read(state_machine + machine::CURRENT_STATE);
     let header = read(state + status::BREAKTHROUGH + nproject_cbreakthrough_progress::TREE_HEADER);
     let root = read(header + node::PARENT);
-    // The first project from slot 201 on that has a history entry.
     let (history, history_count) = (201..)
         .filter(|&slot| read(table + slot * 8) != 0)
         .flat_map(|slot| {
@@ -752,14 +727,12 @@ fn fault_sites(space: &Space) -> Vec<Site> {
         .find(|(_, count)| *count > 0)
         .unwrap();
     assert!(history_count > 0);
-    // The first country from slot 201 on that has a program.
     let programs = (201..)
         .filter(|&slot| read(table + slot * 8) != 0)
         .map(|slot| status_of(slot) + status::PROGRAMS)
         .find(|&array| read32(array + 12) > 0)
         .map(&read)
         .unwrap();
-    // A project whose owner links past a census that stops at slot 251.
     let later = 252;
     assert_ne!(read(table + later * 8), 0);
     let patch = (project + nproject_cproject::OWNER, later as u32);
@@ -842,14 +815,11 @@ fn scaled_faults_match_direct_walks_and_the_recorded_digests() {
     }
 }
 
-/// Guarded calls and wall time of the acquisition copy, over the real guarded
-/// copier. `cargo test --release -p collector projects_copy_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "bench"]
 fn projects_copy_bench() {
     for countries in [440, 1_500, 5_000] {
         let space = space(countries, 50);
-        // SAFETY: the space is immutable synthetic storage for this loop.
         let memory = engine_native::memory::CountedMemory::new(unsafe {
             engine_native::memory::LiveMemory::new()
         });
@@ -864,7 +834,6 @@ fn projects_copy_bench() {
         }
         let mut samples = Vec::new();
         let mut calls = 0;
-        // A daily walk finds the game's objects cold; evict them first.
         let mut evict = vec![0_u8; 512 << 20];
         for round in 0..9 {
             evict.fill(round as u8);
@@ -891,16 +860,11 @@ fn projects_copy_bench() {
     }
 }
 
-/// Digests of the direct typed walks before the batched copy, except where
-/// noted.
 
 const HISTORY_GOLDEN: u64 = 0x3d00_8951_bdf6_eb40;
 const PROGRAMS_GOLDEN: u64 = 0x345b_47ce_caa9_ee9c;
 const LINKS_GOLDEN: u64 = 0xa7fe_1f61_4eee_5ce6;
 const CENSUS_GOLDEN: u64 = 0x16e7_6d3d_d939_d851;
-/// The narrowed machine read no longer fails on a byte no row records, so the
-/// walk equals the unfaulted one; the walks before it gave
-/// `BEFORE_UNRECORDED` (projects unavailable).
 const UNRECORDED_GOLDEN: u64 = 0xe6d0_2bef_e557_b1b6;
 const BEFORE_UNRECORDED: u64 = 0x73db_88bb_ee04_6cca;
 

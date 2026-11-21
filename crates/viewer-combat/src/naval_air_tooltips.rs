@@ -1,10 +1,8 @@
-//! Air-group icon hovers assembled from each recorded plane's operands.
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::NavalCombatPlane;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, displayable};
 
-// Hover keys and selected category names are resolved through content localisation.
 tooltip_keys! {
     NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER = "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER",
     NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER_EXTERNAL = "NAVAL_COMBAT_AIRWING_TOOLTIP_HEADER_EXTERNAL",
@@ -30,8 +28,6 @@ fn stored(loc: &Localisation, recorded: &str, value: &[u8], what: &str) -> Resul
     dashboard_text::scripted_text::stored_text(loc, recorded, value, what)
 }
 
-/// Round the active wing count times the perspective side's plane-stacking
-/// multiplier, returning zero for an empty array.
 fn wings_striking(total: usize, penalty: i64) -> i32 {
     if total == 0 {
         return 0;
@@ -45,8 +41,6 @@ fn wings_striking(total: usize, penalty: i64) -> i32 {
     rounded.max(1) as i32
 }
 
-/// fixed executable key switch. A category bit set the switch
-/// does not recognise uses its EQUIPMENT_UNKNOWN default.
 fn category_key(mask: u64) -> &'static str {
     match mask {
         1 => "EQUIPMENT_CONVOY",
@@ -102,9 +96,7 @@ fn category_key(mask: u64) -> &'static str {
     }
 }
 
-/// Join distinct wing short names with comma-space,
-/// then formats its two native header branches and the recorded hit vectors.
-#[allow(clippy::too_many_arguments)] // The plane's recorded row, its native texts and text resources.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plane_hover(
     plane: &NavalCombatPlane,
     name: &str,
@@ -156,7 +148,6 @@ pub(super) fn plane_hover(
             ],
         )?
     };
-    // Fold equal wing categories in first occurrence order.
     let mut kills: Vec<(u64, i32)> = Vec::new();
     for hit in &plane.kills {
         if let Some((_, total)) = kills
@@ -230,8 +221,6 @@ pub(super) fn plane_hover(
             }
         }
     }
-    // The game appends first eligible wing text after the
-    // damaged-ship block, inserting one newline only when one is needed.
     if !efficiency_suffix.is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -241,9 +230,7 @@ pub(super) fn plane_hover(
     displayable(icons, text)
 }
 
-/// Start with the first plane's carrier-efficiency text, then ensure two
-/// trailing newlines before each member description.
-#[allow(clippy::too_many_arguments)] // The group's recorded rows, native texts and text resources.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn group_hover(
     planes: &[&NavalCombatPlane],
     presentations: &[(String, String)],
@@ -280,8 +267,6 @@ pub(super) fn group_hover(
     Ok(text)
 }
 
-/// The game appends the overall efficiency and an optional host-organisation
-/// parenthesis for the first wing whose air base has no state.
 pub(super) fn carrier_org_suffix(
     final_efficiency: i64,
     organisation_ratio: i64,
@@ -322,10 +307,6 @@ pub(super) fn carrier_org_suffix(
     Ok(text)
 }
 
-/// The game appends the efficiency explanation only for an active carrier
-/// wing whose sortie efficiency differs from ONE. The factors are the already
-/// recorded sortie inputs; its fixed-base line deliberately uses the define
-/// even during the initial stance interval, as the native formatter does.
 pub(super) fn efficiency_prefix(
     plane: &NavalCombatPlane,
     sortie_efficiency: i64,
@@ -371,7 +352,6 @@ pub(super) fn efficiency_prefix(
         &[("VAL", Argument::Fixed5(sortie_efficiency))],
     )?;
     text.push('\n');
-    // The game formats this base percent at precision zero, green H.
     let base = installed_content_core::fixed5::fixed5_percent(base, 0, true);
     text.push_str(&builtin(icons, loc, STAT_BASE_VALUE, &[])?);
     text.push_str(&format!("\u{11}H{base}\u{11}!\n"));
@@ -413,8 +393,6 @@ pub(super) fn efficiency_prefix(
                 text.push_str("    ");
                 text.push_str(&builtin(icons, loc, MODIFIER_CARRIER_NIGHT_TRAFFIC, &[])?);
                 text.push_str(": ");
-                // The game hard-codes green here, including a negative
-                // country modifier; the subtotal above retains its own red.
                 let country = installed_content_core::fixed5::fixed5_percent(country_night, 0, true);
                 text.push_str(&format!("\u{11}G{country}\u{11}!"));
                 text.push('\n');
@@ -425,8 +403,6 @@ pub(super) fn efficiency_prefix(
     displayable(icons, text)
 }
 
-/// The game emits this line after a nonzero box-2/3 screening bonus; its
-/// caller in the game supplies the two-space indentation string.
 pub(super) fn screening_line(
     value: i64,
     loc: &Localisation,

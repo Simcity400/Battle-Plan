@@ -1,16 +1,3 @@
-//! `wars`: each war a viewpoint sees over one timeline, with its names, sides, participants and
-//! capitulations; `war-losses`: each of those wars' casualties at an hour; `war-contributions`
-//! ([`contributions`]): each native group's contributions at an hour, rows at an hour.
-//!
-//! The game holds no war as such: the war overview groups the viewpoint's active relations into
-//! native groups at each hour ([`native`]), and continuity across hours is the app's
-//! ([`walk`]). Each run's inputs are read once as the changes of the overview tables' structural
-//! columns ([`inputs::RunWars`]); a viewpoint's walk observes the hours they change, each hour's
-//! rows replayed in memory, and extends the wars between. Names are dated at the first hour a
-//! representative relation names a group for the viewpoint, from what stood then: the goals,
-//! token texts and state names the run's inputs hold as histories, the countries' naming operands
-//! from the run's looks, so naming reads no table at an hour. Casualties
-//! are read from `CasualtyLifetimes` at the hour asked, by the relations each war held then.
 
 pub mod contributions;
 mod inputs;
@@ -59,7 +46,7 @@ pub struct WarLosses;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarsParams {
     pub branch_id: String,
-    /// None follows the recording client's playing or observer country.
+    #[doc = " None follows the recording client's playing or observer country."]
     pub viewpoint: Option<Country>,
 }
 
@@ -67,7 +54,7 @@ pub struct WarsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarName {
-    /// Exact plain text, or "Not recorded" with a reason.
+    #[doc = r#" Exact plain text, or "Not recorded" with a reason."#]
     pub text: String,
     pub known: bool,
     pub reason: Option<String>,
@@ -111,11 +98,11 @@ pub struct WarObservation {
     pub first_hour: i32,
     pub last_hour: i32,
     pub viewpoint_tag: String,
-    /// Native order, including any repeated occurrence.
+    #[doc = " Native order, including any repeated occurrence."]
     pub viewpoint_side: Vec<String>,
     pub opposing_side: Vec<String>,
-    /// Orientation follows the representative's instigator, an app convention. None where the
-    /// representative's operands are not recorded.
+    #[doc = " Orientation follows the representative's instigator, an app convention. None where the"]
+    #[doc = " representative's operands are not recorded."]
     pub attackers_are_viewpoint: Option<bool>,
     pub representative: Option<[String; 2]>,
     pub name: WarName,
@@ -125,7 +112,7 @@ pub struct WarObservation {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarTimeline {
-    /// Timeline-local app identity; never a native war id.
+    #[doc = " Timeline-local app identity; never a native war id."]
     pub id: String,
     pub first_hour: i32,
     pub last_hour: i32,
@@ -134,7 +121,6 @@ pub struct WarTimeline {
     pub observations: Vec<WarObservation>,
     pub participants: Vec<WarParticipantRun>,
     pub capitulations: Vec<WarCapitulation>,
-    /// The relation lifetimes the war held and when, for its casualties.
     #[serde(skip)]
     #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
     pub(crate) relations: Vec<WarRelationMembership>,
@@ -146,8 +132,6 @@ pub struct WarTimeline {
     open_relations: HashMap<(WarRelationKey, bool), usize>,
 }
 
-/// A war relation's lifetime: its two country identities (canonical slot and raw id), the lesser
-/// first, and its start hour, as `CasualtyLifetimes` keys it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WarRelationKey {
     pub first: (u32, u32),
@@ -161,17 +145,14 @@ impl WarRelationKey {
         Self { first, second, start }
     }
 
-    /// Its `CasualtyLifetimes` key.
     pub fn lifetime(&self) -> u128 {
         u128::from(self.first.0) << 104 | u128::from(self.first.1) << 80 | u128::from(self.second.0) << 56 | u128::from(self.second.1) << 32 | u128::from(self.start as u32)
     }
 }
 
-/// A war's hold of one relation lifetime over consecutive hours.
 #[derive(Clone, Debug)]
 pub(crate) struct WarRelationMembership {
     pub key: WarRelationKey,
-    /// Whether the key's first country is on the war's viewpoint side.
     pub oriented: bool,
     pub first_hour: i32,
     pub last_hour: i32,
@@ -182,12 +163,12 @@ pub(crate) struct WarRelationMembership {
 #[serde(rename_all = "camelCase")]
 pub struct WarsReply {
     pub branch_id: String,
-    /// The war tables were read at some hour of the timeline.
+    #[doc = " The war tables were read at some hour of the timeline."]
     pub available: bool,
-    /// The overview's viewpoint over consecutive read hours, including peace.
+    #[doc = " The overview's viewpoint over consecutive read hours, including peace."]
     pub viewpoints: Vec<MembershipRun>,
-    /// Names of the countries the wars show, as read where they were named: for measuring labels
-    /// only, never for naming a country at an hour.
+    #[doc = " Names of the countries the wars show, as read where they were named: for measuring labels"]
+    #[doc = " only, never for naming a country at an hour."]
     pub country_names: Vec<String>,
     pub wars: Vec<WarTimeline>,
     pub unobserved: Vec<HourSpan>,
@@ -204,18 +185,15 @@ pub struct WarLossesParams {
     pub hour: i32,
 }
 
-/// [first hour, last hour, viewpoint side's known and unknown-attacker casualties, the opposing
-/// side's]: what the war's relations had counted by then.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct WarCasualtyRun(pub i32, pub i32, pub String, pub String, pub String, pub String);
 
-/// One war's casualties at the hour, or why they are not known.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarCasualties {
-    /// The war's id in the `wars` reply.
+    #[doc = " The war's id in the `wars` reply."]
     pub id: String,
     pub run: Option<WarCasualtyRun>,
     pub reason: Option<String>,
@@ -227,14 +205,13 @@ pub struct WarCasualties {
 pub struct WarLossesReply {
     pub branch_id: String,
     pub hour: i32,
-    /// Each war the viewpoint saw at the hour, in the order of the wars.
+    #[doc = " Each war the viewpoint saw at the hour, in the order of the wars."]
     pub wars: Vec<WarCasualties>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(WarsReply, WarLossesReply);
 
-/// Each canonical slot's holders over a timeline: the tag holding it and its country's raw id.
 pub(crate) struct SlotNames {
     slots: HashMap<u32, Vec<(i32, i32, String, u32)>>,
 }
@@ -261,13 +238,11 @@ impl SlotNames {
         runs.get(at).filter(|run| run.0 <= hour).map(|run| (run.2.as_str(), run.3))
     }
 
-    /// The hours `slot`'s holder changes.
     fn changes(&self, slot: u32) -> impl Iterator<Item = i32> + '_ {
         self.slots.get(&slot).into_iter().flatten().flat_map(|run| [run.0, run.1.saturating_add(1)])
     }
 }
 
-/// An hour's resolution: raw ids by `links`, slots by their holders, tags by the identity rule.
 pub(crate) struct Resolved<'a> {
     pub links: &'a dyn Fn(u32) -> Option<u32>,
     pub names: &'a SlotNames,
@@ -292,9 +267,6 @@ impl Resolve for Resolved<'_> {
     }
 }
 
-/// What a name read for a group depends on that the walk holds: the representative relation and
-/// its instigator, its countries' tags, the owned row its goals are read through, and the viewpoint
-/// and what decides whether it is allied to either country.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct NameKey {
     relation: WarRelationKey,
@@ -308,8 +280,6 @@ struct NameKey {
 
 const LOOKS_UNKNOWN: &str = "the country tables are not complete at this hour";
 
-/// One run's looks, with each tag's spans of looks: a country's naming operands at an hour are
-/// its holder's look then, looked up rather than read from the country tables.
 struct RunNaming {
     looks: Arc<RunLooks>,
     by_tag: HashMap<Arc<str>, Vec<(i32, i32, u32)>>,
@@ -335,8 +305,6 @@ impl RunNaming {
         spans.get(at).filter(|span| span.0 <= hour).and_then(|span| self.looks.looks.get(&span.2))
     }
 
-    /// The naming operands of `slots` at `hour` (each slot's holder's look, with every overlord its
-    /// name reaches), and which of slot zero's names its reserved row has built where one reaches it.
     fn operands(&self, tags: &HashMap<u32, String>, slots: &BTreeSet<u32>, hour: i32) -> (BTreeMap<u32, Result<Operands, String>>, Option<u8>) {
         let unknown = self.looks.unknown.iter().any(|&(a, b)| a <= hour && hour <= b);
         let (mut operands, mut built) = (BTreeMap::new(), None);
@@ -358,8 +326,6 @@ impl RunNaming {
     }
 }
 
-/// What a name is read from beside the walk's hour: the run's naming histories and looks, and the
-/// naming rule's prefix at the hour.
 struct Dated<'r> {
     inputs: &'r RunWars,
     looks: &'r RunNaming,
@@ -367,9 +333,7 @@ struct Dated<'r> {
     at: i32,
 }
 
-/// The names a walk gives its groups, each read once at the first hour its inputs name it.
 struct Names<'a> {
-    /// Only for slot zero's operands, which no look holds.
     frames: at_hour::Frames<'a>,
     cat: Option<&'a Catalogue>,
     held: HashMap<NameKey, WarName>,
@@ -397,8 +361,6 @@ impl Names<'_> {
         }
     }
 
-    /// The name `hour`'s viewpoint gives group `blob`, named for relation `p`, as it stood at
-    /// `dated.at`.
     fn name(&mut self, hour: &Hour, p: Pair, blob: &Blob, dated: &Dated<'_>) -> io::Result<WarName> {
         let Some(cat) = self.cat else {
             return Ok(naming::unknown("Not recorded: the recorded content stack is not resolved"));
@@ -435,8 +397,6 @@ impl Names<'_> {
     }
 }
 
-/// The hours a stretch's walk observes: its first, and each hour in it an input row, the hours
-/// read, a link or a holder of a country the inputs name changes.
 fn observed_hours(inputs: &RunWars, links: &super::country_ids::RunLinks, names: &SlotNames, holders: &Holders, first: i32, last: i32) -> Vec<i32> {
     let mut hours = BTreeSet::from([first]);
     let mut add = |hour: i32| {
@@ -475,7 +435,6 @@ fn observed_hours(inputs: &RunWars, links: &super::country_ids::RunLinks, names:
     hours.into_iter().collect()
 }
 
-/// `view`'s wars over `query`'s timeline, named through `cat`.
 fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat: Option<&Catalogue>, cancelled: &AtomicBool) -> io::Result<WarsReply> {
     let timeline = &query.timeline;
     let names = SlotNames::new(&query.holders);
@@ -547,22 +506,17 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat
     Ok(reply)
 }
 
-/// Each timeline and viewpoint's walk, with the catalogue it was named through: kept while the
-/// recording is open, every request of the viewpoint answered from it.
 #[derive(Default)]
 struct Walks(HashMap<(u64, Option<Country>), (Option<Arc<Catalogue>>, Arc<WarsReply>)>);
 
-/// Forgets every walk of `source`: the next request walks again.
 pub(crate) fn forget(source: &Source) {
     source.state::<Walks>().lock().unwrap_or_else(PoisonError::into_inner).0.clear();
 }
 
-/// The content's catalogue a reply names through, when the request has content.
 fn catalogue_of(source: &Source, context: &LoadContext) -> io::Result<Option<Arc<Catalogue>>> {
     context.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose()
 }
 
-/// `view`'s walk of timeline `branch`, walked once per timeline, viewpoint and catalogue.
 fn walked(source: &Source, branch: u64, view: Option<&Country>, cat: Option<Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
     let key = (branch, view.cloned());
     let same = |held: &Option<Arc<Catalogue>>| match (held, &cat) {
@@ -581,8 +535,6 @@ fn walked(source: &Source, branch: u64, view: Option<&Country>, cat: Option<Arc<
     Ok(reply)
 }
 
-/// `view`'s wars of timeline `branch`, named through the request's content: the walk `wars`
-/// answers that viewpoint from.
 pub(crate) fn viewpoint_wars(source: &Source, branch: u64, view: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
     walked(source, branch, Some(view), catalogue_of(source, context)?, cancelled)
 }
@@ -626,21 +578,15 @@ impl Product for Wars {
     }
 }
 
-/// The relation lifetimes `war` held at `hour`.
 fn held(war: &WarTimeline, hour: i32) -> Vec<&WarRelationMembership> {
     war.relations.iter().filter(|membership| membership.first_hour <= hour && hour <= membership.last_hour).collect()
 }
 
-/// `CasualtyLifetimes`' counters, as the schema numbers them.
 fn lifetime_columns() -> io::Result<[usize; 4]> {
     let field = |name| dashboard_declare::field(TableId::CasualtyLifetimes, name);
     Ok([field("taken_a")?, field("taken_b")?, field("unknown_a")?, field("unknown_b")?])
 }
 
-/// A war's casualties at an hour from the counters of the lifetimes it held then: each side's
-/// known losses summed over its relations, and its unknown-attacker losses taken once per country
-/// (the game copies them into each of the country's relations) at their largest. None where a
-/// lifetime's counters are not known.
 pub(crate) fn losses(held: &[(&WarRelationMembership, Option<[i64; 4]>)]) -> Option<[i128; 4]> {
     let mut sums = [0_i128; 4];
     let mut unknown: HashMap<((u32, u32), usize), i64> = HashMap::new();

@@ -1,11 +1,3 @@
-//! Weather by strategic region over a window, day by day (`regional-weather`), and one region's
-//! provinces at an hour (`regional-weather-provinces`). Each calendar day is sampled at its last
-//! hour WeatherRegions was known; days fold into at most `width` columns, so a reply grows with
-//! the view, not the recording. Conditions are the flag columns' runs. Modifiers and temperature
-//! are read at each sampled day's hour: a modifier is copied from the region's row as recorded
-//! (absent where its witness is), a temperature is the equal mean of the region's provinces,
-//! each replayed from its anchor words through the recorded pass with the recorded content; a
-//! province without a proven temperature leaves its region without a mean, never a guess.
 
 use super::{LoadContext, Product, place_names};
 use crate::{
@@ -37,8 +29,6 @@ mod tests;
 
 pub const DAY_HOURS: i32 = 24;
 
-/// The recorded flag columns, their native localisation keys, and the project's wording when the
-/// text is unavailable.
 pub(crate) const FLAGS: [(&str, &str, &str); 6] = [
     ("light_rain", "weather_rain_light", "Light rain"),
     ("heavy_rain", "weather_rain_heavy", "Heavy rain"),
@@ -48,7 +38,6 @@ pub(crate) const FLAGS: [(&str, &str, &str); 6] = [
     ("arctic_water", "weather_arctic_water", "Arctic water"),
 ];
 
-/// The recorded modifiers, the engine's modifier index naming each, and the project's wording.
 pub(crate) const MODIFIERS: [(&str, u32, &str); 8] = [
     ("air_detection", modifier_keys::REGION_AIR_DETECTION, "Raw air detection modifier"),
     ("naval_detection", modifier_keys::NAVAL_DETECTION, "Raw naval detection modifier"),
@@ -80,13 +69,13 @@ pub struct RegionalWeatherParams {
     pub branch_id: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The most columns the days fold into: the view's pixel columns.
+    #[doc = " The most columns the days fold into: the view's pixel columns."]
     pub width: u32,
     pub show: Show,
-    /// The modifier shown; the first recorded one without.
+    #[doc = " The modifier shown; the first recorded one without."]
     #[serde(default)]
     pub modifier: Option<String>,
-    /// Decimal region ids; every region without.
+    #[doc = " Decimal region ids; every region without."]
     #[serde(default)]
     pub regions: Option<Vec<String>>,
 }
@@ -106,11 +95,11 @@ pub struct Choice {
 pub struct Column {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The latest hour its days were sampled at; none without one.
+    #[doc = " The latest hour its days were sampled at; none without one."]
     pub sampled_hour: Option<i32>,
-    /// The latest read of WeatherRegions at or before a sampled day's hour.
+    #[doc = " The latest read of WeatherRegions at or before a sampled day's hour."]
     pub read_hour: Option<i32>,
-    /// Its sampled days.
+    #[doc = " Its sampled days."]
     pub recorded: u32,
 }
 
@@ -119,12 +108,12 @@ pub struct Column {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumnMeasure"))]
 pub struct ColumnMeasure {
-    /// `<flag>`, `mod:<modifier>` or `temp`.
+    #[doc = " `<flag>`, `mod:<modifier>` or `temp`."]
     pub id: String,
-    /// Sampled days with the flag set, or with a value, per column.
+    #[doc = " Sampled days with the flag set, or with a value, per column."]
     pub days: Vec<u32>,
-    /// Values: each column's lowest raw value, the exact sum of its days' and its highest, as
-    /// decimal text; none without a value.
+    #[doc = " Values: each column's lowest raw value, the exact sum of its days' and its highest, as"]
+    #[doc = " decimal text; none without a value."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub values: Option<Vec<Option<[String; 3]>>>,
@@ -136,15 +125,15 @@ pub struct ColumnMeasure {
 #[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumnRegion"))]
 pub struct ColumnRegion {
     pub id: String,
-    /// Conditions: the days the region's conditions were recorded, per column.
+    #[doc = " Conditions: the days the region's conditions were recorded, per column."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub observed: Option<Vec<u32>>,
-    /// Conditions: those days with no condition set, per column.
+    #[doc = " Conditions: those days with no condition set, per column."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub clear: Option<Vec<u32>>,
-    /// A flag set on no sampled day, or a value on none, is left out.
+    #[doc = " A flag set on no sampled day, or a value on none, is left out."]
     pub measures: Vec<ColumnMeasure>,
 }
 
@@ -153,7 +142,7 @@ pub struct ColumnRegion {
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumns"))]
 pub struct Columns {
-    /// Days per column, counted from the window's first day.
+    #[doc = " Days per column, counted from the window's first day."]
     pub days: u32,
     pub columns: Vec<Column>,
     pub regions: Vec<ColumnRegion>,
@@ -169,7 +158,7 @@ pub struct RegionalWeatherReply {
     pub regions: Vec<Choice>,
     pub flags: Vec<Choice>,
     pub modifiers: Vec<Choice>,
-    /// `available`, or why no temperature is shown.
+    #[doc = " `available`, or why no temperature is shown."]
     pub temperature: String,
     pub columns: Columns,
     pub warnings: Vec<String>,
@@ -191,11 +180,11 @@ pub struct RegionalWeatherProvincesParams {
 pub struct RegionalWeatherProvince {
     pub id: String,
     pub name: Option<String>,
-    /// The stored snow word, fixed5; permanent snow is not added.
+    #[doc = " The stored snow word, fixed5; permanent snow is not added."]
     pub snow: Option<String>,
-    /// Whether the game shows mud: the raw mud byte is nonzero.
+    #[doc = " Whether the game shows mud: the raw mud byte is nonzero."]
     pub mud: Option<bool>,
-    /// The replayed temperature, fixed5 degrees Celsius.
+    #[doc = " The replayed temperature, fixed5 degrees Celsius."]
     pub temperature: Option<String>,
 }
 
@@ -211,8 +200,6 @@ pub struct RegionalWeatherProvincesReply {
 
 dashboard_base::reply_warnings!(RegionalWeatherProvincesReply);
 
-/// What the recorded content says of weather: each region's member provinces and name, the
-/// temperature pass, and the localisation names come from.
 pub struct Weather {
     members: BTreeMap<u32, Vec<u32>>,
     names: BTreeMap<u32, Result<String, String>>,
@@ -221,7 +208,6 @@ pub struct Weather {
     warnings: Vec<String>,
 }
 
-/// The recorded content's weather, read once per binding.
 fn weather(source: &Source, load: &LoadContext) -> io::Result<Arc<Weather>> {
     let options = load.content()?;
     let cat = catalogue::catalogue(source, options)?;
@@ -231,7 +217,6 @@ fn weather(source: &Source, load: &LoadContext) -> io::Result<Arc<Weather>> {
         let regions = dashboard_base::content::strategic_regions(layers)?;
         warnings.extend(regions.notes.iter().cloned());
         let names = regions.regions.keys().map(|&id| (id, super::air_ledger::region_name(&cat, &regions, id))).collect();
-        // Provinces and temperature need the province graph; conditions and modifiers do not.
         let (members, pass) = match ProvinceGraph::read(layers) {
             Err(error) => {
                 warnings.push(format!("1 weather province membership not shown: {error}"));
@@ -252,8 +237,6 @@ fn weather(source: &Source, load: &LoadContext) -> io::Result<Arc<Weather>> {
     })
 }
 
-/// One day of the window: its hours, the last hour WeatherRegions was known in it, and the
-/// latest read at or before that hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Day {
     pub first: i32,
@@ -262,8 +245,6 @@ pub(crate) struct Day {
     pub read: Option<i32>,
 }
 
-/// The days of `first..=last`, sampled from `known` (run, first, last hour WeatherRegions was
-/// available, ascending) and dated by `reads` (ascending runs of read hours).
 pub(crate) fn days(first: i32, last: i32, known: &[(u32, i32, i32)], reads: &[(i32, i32)]) -> Vec<Day> {
     if first > last {
         return Vec::new();
@@ -281,11 +262,8 @@ pub(crate) fn days(first: i32, last: i32, known: &[(u32, i32, i32)], reads: &[(i
         .collect()
 }
 
-/// Each region's sampled value per day of one measure.
 type Daily = BTreeMap<u32, Vec<Option<i128>>>;
 
-/// `days` folded into at most `width` columns: each column's days, sample and read, and each
-/// region's measures; conditions add each region's observed and clear days.
 pub(crate) fn fold(days: &[Day], width: u32, measures: &[(String, Daily)], conditions: bool) -> io::Result<Columns> {
     let size = days.len().div_ceil(width.max(1) as usize).max(1);
     let columns = days
@@ -341,7 +319,6 @@ pub(crate) fn fold(days: &[Day], width: u32, measures: &[(String, Daily)], condi
     Ok(Columns { days: size as u32, columns, regions })
 }
 
-/// A region row's modifier values in [`MODIFIERS`] order: absent where the row's witness of it is.
 pub(crate) fn modifiers(row: &WeatherRegionRow) -> [Option<i128>; 8] {
     let mut values = [None; 8];
     if let Recorded::Value(Some(value)) = row.air_detection {
@@ -362,8 +339,6 @@ pub(crate) fn modifiers(row: &WeatherRegionRow) -> [Option<i128>; 8] {
     values
 }
 
-/// The equal mean of `members`' temperatures, rounded toward zero; none for no members or any
-/// member without a state.
 pub(crate) fn mean(members: &[u32], states: &[State]) -> Option<i128> {
     if members.is_empty() {
         return None;
@@ -376,7 +351,6 @@ fn available(status: Status) -> bool {
     matches!(status, Status::Complete | Status::Truncated { .. })
 }
 
-/// The temperatures of every province slot at `rows`' hour, replayed through `memo`.
 fn states<'m>(memo: &'m mut Memo, weather: &Weather, branch: u64, hour: i32, rows: &[WeatherProvinceRow]) -> Result<&'m [State], String> {
     let (pass, plan) = weather.pass.as_ref().map_err(Clone::clone)?;
     let states = memo.states_changed(branch, hour, rows, Ok(&Planned::new(pass, plan)), None)?;
@@ -409,7 +383,6 @@ fn flag_choices(cat: &Catalogue, warnings: &mut Vec<String>) -> Vec<Choice> {
     choices
 }
 
-/// Modifier titles from their recorded definitions at `frame`'s hour.
 fn modifier_choices(frame: Option<&DecodedFrame>, cat: &Catalogue, warnings: &mut Vec<String>) -> Vec<Choice> {
     let definitions = frame.and_then(|frame| frame.complete::<tables::ModifierDefinitions>().ok());
     let by_index: HashMap<_, _> = definitions.unwrap_or_default().iter().map(|row| (row.index, row)).collect();
@@ -419,7 +392,6 @@ fn modifier_choices(frame: Option<&DecodedFrame>, cat: &Catalogue, warnings: &mu
         .map(|(id, index, fallback)| {
             let name = (|| {
                 let definition = by_index.get(&index).ok_or("modifier name definition not recorded")?;
-                // A C-string key: its byte suffix is never a second name.
                 let key = definition.name_key.split(|byte| *byte == 0).next().unwrap_or_default();
                 let key = std::str::from_utf8(key).map_err(|_| "modifier name key is not UTF-8")?;
                 let argument = dashboard_text::scripted_text::stored_text(&cat.localisation, &cat.recorded_language, &definition.argument, "weather modifier argument")?;
@@ -436,7 +408,6 @@ fn modifier_choices(frame: Option<&DecodedFrame>, cat: &Catalogue, warnings: &mu
     choices
 }
 
-/// The history reply: the days sampled, each asked measure read, folded.
 fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather, cancelled: &AtomicBool) -> io::Result<RegionalWeatherReply> {
     let recording = query.replay.recording();
     let (first, last) = (params.first_hour.max(query.timeline.first), params.last_hour.min(query.timeline.last));
@@ -493,7 +464,6 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
             let mut daily: Daily = BTreeMap::new();
             let mut memo = Memo::default();
             let mut refused = Refusals::default();
-            // Days ascend, so one seeker restores the table once and reads it forward day to day.
             let mut seeker = replay::at::Seeker::new(recording)?;
             for (index, day) in days.iter().enumerate() {
                 crate::metadata::check_cancel(cancelled)?;
@@ -533,8 +503,6 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         }
     }
     if first > last {
-        // A window the timeline does not reach still lists the regions the recording holds weather
-        // for: those of its nearest recorded hour.
         let hour = if params.last_hour < query.timeline.first { query.timeline.first } else { query.timeline.last };
         if let Some(stretch) = query.timeline.at(hour)
             && let Ok(held) = dashboard_query::cost::storage(|| replay::at::frame(recording, stretch.run, hour, &[replay::at::Read::all(TableId::WeatherRegions)]))
@@ -552,7 +520,6 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let mut refused = Refusals::default();
     let regions = rows
         .iter()
-        // A region the content does not map, or maps no province to, is never on the map.
         .filter(|region| weather.names.contains_key(region) && (weather.members.is_empty() || weather.members.get(region).is_some_and(|members| !members.is_empty())))
         .map(|&region| Choice {
             id: region.to_string(),
@@ -618,7 +585,6 @@ impl Product for RegionalWeather {
     }
 }
 
-/// What a region's provinces are named and weighed with: the content's weather and its place names.
 pub struct ProvincesContext {
     weather: Result<Arc<Weather>, String>,
     places: Result<Arc<place_names::Content>, String>,
@@ -631,15 +597,12 @@ impl ProvincesContext {
     }
 }
 
-/// Province `id`'s name at `frame`'s hour by the shared place names (the native ladder), or why
-/// it has none.
 fn province_name(frame: &DecodedFrame, places: &Result<Arc<place_names::Content>, String>, named: &place_names::Places<'_>, id: u32) -> Result<String, String> {
     let content = places.as_ref().map_err(Clone::clone)?;
     let name = named.province(content, id, false);
     name.name.ok_or_else(|| name.missing.unwrap_or_else(|| format!("province {id} has no name at {}", frame.hour)))
 }
 
-/// The region's provinces at `frame`'s hour: names, snow, mud and temperature, each refused alone.
 pub(crate) fn provinces(
     frame: &DecodedFrame,
     members: &[u32],
@@ -656,7 +619,6 @@ pub(crate) fn provinces(
         let name = name_of(id).map_err(|why| refused.note(format!("name: {why}"), &identity)).ok();
         let (snow, mud) = match rows.get(&id) {
             Some(row) => {
-                // The game names mud on a province whenever its raw byte is nonzero.
                 let mud = row.raw_mud.require("raw mud of weather provinces").map(|&mud| mud != 0).map_err(|error| refused.note(format!("raw mud: {error}"), &identity)).ok();
                 (Some(row.snow.to_string()), mud)
             }
@@ -706,7 +668,6 @@ impl AtHour for WeatherProvinces {
         tables
     }
 
-    /// The provinces' weather, then the rows naming the region's provinces alone.
     fn reads_in(params: &Self::Params, _owner: Option<super::at_hour::Owner>, step: usize, held: &DecodedFrame, at: &super::at_hour::ReadsAt<'_, Self::Context>) -> Vec<Read> {
         let context = at.context;
         let members = context.members(&params.region).filter(|_| context.places.is_ok()).unwrap_or_default();
@@ -730,7 +691,6 @@ impl AtHour for WeatherProvinces {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let region = params.region.parse::<u32>().map_err(|_| dashboard_core::invalid("Invalid weather region"))?;
         let mut warnings = Vec::new();
-        // A state table read every hour holds the hour's rows where it is available.
         let read_hour = frame.tables[TableId::WeatherProvinces.index()].sampled_at().or_else(|| frame.complete::<tables::WeatherProvinces>().is_ok().then_some(frame.hour));
         let named = place_names::Places::new(frame);
         let name_of = |id: u32| province_name(frame, &at.context.places, &named, id);

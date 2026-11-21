@@ -19,7 +19,6 @@ const HOURS = 120_000;
 const START = 30_000;
 const track = { id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: { id: '1', firstHour: 0, lastHour: HOURS - 1, gaps: [] } };
 const RAIDERS = ['GER', 'SOV', 'ITA'];
-/** Each raider launched once before the head, then a raid every 150 hours through the played span. */
 const RAIDS = syntheticRaidLog([
   ...RAIDERS.map((tag, at) => syntheticEpisode(`early${at}`, 1_000 + at, tag, 1_100 + at, 1_200 + at, true)),
   ...Array.from({ length: 60 }, (_, at) => syntheticEpisode(String(at), START + at * 150, RAIDERS[at % 3], START + at * 150 + 50, START + at * 150 + 100, at % 2 === 0)),

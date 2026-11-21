@@ -3,7 +3,6 @@ import test from 'node:test';
 import { createServer } from 'vite';
 
 test('widget warnings reach the frame only when their text changes, and clear when their reporter leaves', async () => {
-  // One component's hook cells; an effect whose dependencies changed runs its cleanup, then itself.
   const cells: { deps: readonly unknown[]; value?: unknown; cleanup?: unknown }[] = [];
   let cursor = 0, effects: (() => void)[] = [];
   const changed = (index: number, deps: readonly unknown[]) => !cells[index] || deps.some((value, i) => !Object.is(value, cells[index].deps[i]));

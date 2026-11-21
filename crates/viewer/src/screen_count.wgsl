@@ -1,12 +1,6 @@
-// One counted frame's picture against the picture before it, texel by texel: how many differ and
-// by how much, the rectangle they lie in, and which of a grid of tiles hold a difference a watcher
-// could see. The difference is in steps of 1/255, so a flicker of one step is told apart from a
-// thing that moved, and a change everywhere (the water, the weather, the light) from a change in a
-// few places (a counter, a figure, an icon).
 
 const TILES_X: u32 = 16u;
 const TILES_Y: u32 = 8u;
-/// The first tile's count in the slot, after the counts above.
 const TILES_AT: u32 = 11u;
 
 @group(0) @binding(0) var now: texture_2d<f32>;

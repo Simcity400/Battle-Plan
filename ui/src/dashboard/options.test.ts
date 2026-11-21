@@ -105,7 +105,6 @@ test('a content set accepts more than sixteen long tokens through choosing, stor
   assert.deepEqual(resolveOptions(fields, parseStoredOptions({ picked: stored })!), { picked: stored });
   assert.deepEqual(setOption(fields, undefined, 'picked', stored), { picked: stored });
   assert.equal(toggleContentSet(stored, 'one_more', Number.MAX_SAFE_INTEGER), `${stored} one_more`);
-  // Explicit in-widget limits stay the caller's, without a shared clamp.
   assert.equal(setLimit(8), 8);
   assert.equal(setLimit(40), 40);
   assert.equal(toggleContentSet(stored, 'one_more', 20), null);
@@ -113,7 +112,6 @@ test('a content set accepts more than sixteen long tokens through choosing, stor
   assert.equal(storableToken('x'.repeat(300)), true);
   assert.equal(storableToken('two words'), false);
   assert.equal(storableToken(''), false);
-  // A mod's script tokens may hold any non-space character, non-ASCII included.
   for (const token of ['mod_rés', 'КОМ_idea', 'mod-cat.v2:x', 'ideas@mod']) assert.equal(storableToken(token), true, token);
   assert.equal(storableToken('tab\there'), false);
   const category: readonly OptionField[] = [{ key: 'category', section: 'options', label: 'Category', kind: 'content-choice', automatic: 'First', default: '' }];

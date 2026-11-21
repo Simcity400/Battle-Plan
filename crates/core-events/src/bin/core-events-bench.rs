@@ -373,7 +373,6 @@ fn build<'a>(
                 source: Appearance::Ordinary,
             });
         }
-        // Natural table emission interleaves relation changes before the global step-eight sort.
         for change in 0..count {
             let slot = (change * 43 + hour) % (COUNTRIES - 20);
             let field = change % table.fields.len();
@@ -444,7 +443,6 @@ fn build_reread<'a>(
     }
 }
 
-// Dropping all events releases their borrows while preserving this admitted allocation.
 fn recycle<'a, 'b>(mut events: Vec<Event<'a>>) -> Vec<Event<'b>> {
     events.clear();
     let mut events = ManuallyDrop::new(events);

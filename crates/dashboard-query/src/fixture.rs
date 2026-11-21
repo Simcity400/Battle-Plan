@@ -1,10 +1,3 @@
-//! One synthetic recording the layer's tests read: one run from an hour off every grid, long
-//! enough that its summaries close a level-1 piece. The timeline holds its first seventeen blocks,
-//! then hours it does not hold (recorded, but another history's), then its last two blocks.
-//! GER exists throughout and ITA from [`ITA_FROM`]; each has political power (with drops), resource
-//! rows (parts that come and go), states they control and market events (a log); world tension is one row (key 0).
-//! Both are members of one faction, whose totals the recorder's own writers derive from the states and the roster.
-//! Every table a frame holds is read that hour.
 
 use crate::{
     Query,
@@ -29,7 +22,6 @@ pub const GAP: i32 = 400;
 pub const SECOND: i32 = FIRST + FIRST_HOURS + GAP;
 pub const SECOND_HOURS: i32 = 2 * UNIT_ORDINALS as i32;
 pub const LAST: i32 = SECOND + SECOND_HOURS - 1;
-/// ITA exists from this hour.
 pub const ITA_FROM: i32 = FIRST + 5_000;
 pub const GAP_REASON: &str = "The game was not recorded here";
 pub const TAGS: [&str; 2] = ["GER", "ITA"];
@@ -39,17 +31,14 @@ pub fn exists(id: u32, hour: i32) -> bool {
 }
 
 pub fn power(id: u32, hour: i32) -> Option<i64> {
-    // A few hours each day unrecorded, and values that rise, fall and hold.
     match hour.rem_euclid(97) {
         40..=42 if id == 9001 => None,
         at => Some(i64::from(at) * 1_234 - 50_000 + i64::from(hour / 1_000) * 7 + i64::from(id - 9000) * 100_000),
     }
 }
 
-/// The faction GER and ITA (once it exists) are members of.
 pub const FACTION: u64 = 401;
 
-/// The states `id` controls at `hour`: counts that change by the day, none while it does not exist.
 pub fn states(id: u32, hour: i32) -> u32 {
     match id {
         _ if !exists(id, hour) => 0,
@@ -58,35 +47,25 @@ pub fn states(id: u32, hour: i32) -> u32 {
     }
 }
 
-/// Every state's id, owned and controlled by GER's first, ITA's next and no one's after.
 const STATES: u32 = 16;
-/// A raw country id no link resolves.
 const UNLINKED: u32 = 9099;
 
-/// Whether the last state's controller at `hour` is a country no link resolves, which leaves every country's
-/// controlled states, and so the faction's, not recorded.
 pub fn unresolved(hour: i32) -> bool {
     matches!(hour.rem_euclid(97), 40..=42)
 }
 
-/// The faction's controlled states at `hour`, as the recorder's faction totals sum its members': not recorded while
-/// a member's is not.
 pub fn faction_sum(hour: i32) -> Option<i64> {
     (!unresolved(hour)).then(|| i64::from(states(9001, hour) + states(9002, hour)))
 }
 
-/// World tension at `hour`: a step every day.
 pub fn tension(hour: i32) -> i64 {
     i64::from(hour / 24) * 10
 }
 
-/// Whether `id` dropped at `hour`: its balance fell from the hour before, both recorded.
 pub fn dropped(id: u32, hour: i32) -> bool {
     exists(id, hour - 1) && matches!((power(id, hour - 1), power(id, hour)), (Some(before), Some(after)) if after < before)
 }
 
-/// The resources `id` holds rows of at `hour`: GER 1 to 3 throughout and 4 for a while, ITA 1
-/// and 2.
 pub fn resources(id: u32, hour: i32) -> Vec<u32> {
     match id {
         9001 if (FIRST + 2_000..FIRST + 6_000).contains(&hour) => vec![1, 2, 3, 4],
@@ -96,7 +75,6 @@ pub fn resources(id: u32, hour: i32) -> Vec<u32> {
     }
 }
 
-/// `id`'s row of `resource` at `hour`: values that step every few hours, by resource.
 pub fn resource(id: u32, resource: u32, hour: i32) -> CountryResourceRow {
     let step = i64::from(hour / (5 + resource as i32));
     let base = i64::from(id - 9000) * 1_000_000 + i64::from(resource) * 10_000;
@@ -115,8 +93,6 @@ pub fn resource(id: u32, resource: u32, hour: i32) -> CountryResourceRow {
     }
 }
 
-/// The market events read at `hour`: (id, kind, country). One every thirteenth hour, a second
-/// every thirty-ninth, by turns GER's and ITA's (GER's before ITA exists).
 pub fn market(hour: i32) -> Vec<(u64, u8, u32)> {
     if hour.rem_euclid(13) != 0 {
         return Vec::new();
@@ -130,8 +106,6 @@ pub fn market(hour: i32) -> Vec<(u64, u8, u32)> {
     out
 }
 
-/// The buyer of a market event of `country` at `hour`: GER buys ITA's, ITA (while it exists) GER's
-/// kind 0 events, every other event names none.
 pub fn receiver(country: u32, kind: u8, hour: i32) -> u32 {
     match country {
         9002 => 9001,
@@ -176,7 +150,6 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
     tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: FACTION, ..FactionRow::default() }]));
     tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
     tables[TableId::WorldTension.index()] = TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }]));
-    // A table is read in an hour only where its read time is not zero.
     let mut metrics = Metrics::default();
     for (index, view) in tables.iter().enumerate() {
         if matches!(view, TableView::Complete(_)) {
@@ -226,7 +199,6 @@ pub fn replay() -> &'static Replay {
     HELD.get_or_init(|| Replay::from_records(b"tiles".to_vec(), &[segment(1, FIRST, LAST - FIRST + 1)]).unwrap())
 }
 
-/// The fixture's timeline and holders, as the index would resolve them.
 pub fn query() -> Query<'static> {
     let replay = replay();
     assert_eq!(replay.recording().run_count(), 1);
@@ -252,17 +224,14 @@ pub fn query() -> Query<'static> {
     Query { replay, timeline: Arc::new(timeline), holders: Arc::new(holders) }
 }
 
-/// The tag holding `id`.
 pub fn tag_of(id: u32) -> &'static str {
     if id == 9001 { "GER" } else { "ITA" }
 }
 
-/// Whether the timeline and `tag`'s holder hold `hour`.
 pub fn held(query: &Query<'_>, tag: &str, hour: i32) -> bool {
     query.holders.at(tag, hour).is_some() && query.timeline.at(hour).is_some()
 }
 
-/// Standard padded base64 read back.
 pub fn unbase64(text: &str) -> Vec<u8> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let value = |byte: u8| ALPHABET.iter().position(|&held| held == byte).unwrap() as u32;

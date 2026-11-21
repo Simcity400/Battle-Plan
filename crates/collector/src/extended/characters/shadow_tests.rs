@@ -247,7 +247,6 @@ fn character_shadow_offhours_branch_and_allocation_identity_are_not_inferred_fro
     assert!(fresh.iter().zip(&branch).all(|(a, b)| !Arc::ptr_eq(a, b)));
     let missing = shared(&inputs(&first, &mut shadow, None, 2));
     assert!(branch.iter().zip(&missing).all(|(a, b)| !Arc::ptr_eq(a, b)));
-    // Wrong-table cache references cannot satisfy even an equal native shadow.
     let wrong = std::array::from_fn(|_| Arc::clone(&missing[1]));
     let wrong_result = inputs(&first, &mut shadow, Some(&wrong), 2);
     assert_canonical(&first, &wrong_result);

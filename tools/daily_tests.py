@@ -39,38 +39,25 @@ CAPTURES = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPT
 REPORTS = CAPTURES / "ci"
 MARKER = REPORTS / "TESTS_RUNNING"
 TASK = "Battle Plan daily tests"
-# The acceptance suite's app build, replaced each night, and its baseline history and last run's work.
 E2E_APP = Path(r"ci\e2e-app")
 E2E_STATE = REPORTS / "e2e"
-# From taking the lock, below the task's 20-hour limit, so a run that overruns still reports and
-# cleans up.
 DEADLINE = datetime.timedelta(hours=18)
-# Seconds a git command, or stopping a step that overran, may take.
 GIT_TIMEOUT = 600
 CLEANUP = 120
-# Both stop waits, then one minute to parse logs and write the child's result.
 REPORT_MARGIN = 2 * CLEANUP + 60
 NO_WINDOW = subprocess.CREATE_NO_WINDOW
-# Owner decision 2026-10-23: run folders are kept 30 days; history.tsv keeps every run's line.
 KEEP = datetime.timedelta(days=30)
 RUN_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{4}-[0-9a-f]{10}(?:-\d+)?$")
-# Written in each run folder as it is made: its start and commit, proving the runner made it.
 RUN_MARK = "daily-tests-run.tsv"
 SUMMARY = re.compile(r"^\s*Summary \[")
-# After the summary nextest lists each failing test (final status level "fail"): its status, crate
-# and name.
 LISTED = re.compile(r"^\s*(\S.*?)\s+\[\s*[\d.]+s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+\s+\S+)\s*$")
 GB = 2**30
-# Free space the target's drive needs to compile: a whole rebuild (one build was 10 to 20 GB on
-# 2026-11-02) beside the build it replaces, which stays until the sweep, and the tests' own files.
 DISK_FLOOR = 60 * GB
-# Cargo's unit hash, closing a unit's file name before its extensions, or its folder's name.
 UNIT_HASH = re.compile(r"-([0-9a-f]{16})(?=\.|$)")
 UNIT_FOLDER = re.compile(r"^(.+)-([0-9a-f]{16})$")
 UNHASHED_EXTENSIONS = re.compile(r"[A-Za-z]+(?:\.[A-Za-z]+)?")
 
 
-# Cargo's JSON messages go to stdout for the sweep; nextest's report and diagnostics to stderr.
 RUST_TESTS = [
     "cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--final-status-level", "fail",
     "--cargo-message-format", "json-render-diagnostics",
@@ -337,11 +324,9 @@ def stale(profile, units):
             mine = units.unhashed.intersection(os.listdir(entry.path))
         if not mine:
             removals.append(entry.path)
-        # Each build of an unhashed unit writes its fingerprint, so its newest is this build's.
         for name in mine:
             written = os.stat(os.path.join(entry.path, name)).st_mtime_ns
             owners.setdefault((named.group(1), name), []).append((written, entry.path))
-    # One fingerprint folder can hold several unhashed targets: kept if it is newest for any.
     newest = {max(candidates)[1] for candidates in owners.values()}
     removals += sorted({path for candidates in owners.values() for _, path in candidates} - newest)
     missing = sorted(units.hashes - found) + sorted(units.unhashed - {name for _, name in owners})
@@ -368,7 +353,6 @@ def produced(entry, units, stems):
     """Whether a file in deps or examples belongs to a unit of the build."""
     if os.path.normcase(entry.path) in units.paths:
         return True
-    # Objects a failed link left behind; a finished build has packed or removed its own.
     if entry.name.endswith(".rcgu.o"):
         return False
     hashed = UNIT_HASH.search(entry.name)
@@ -456,7 +440,6 @@ def run_checked_out(args):
     if actual != commit:
         raise RuntimeError(f"checked-out runner expected {commit}, HEAD is {actual}")
     heading = f"main {commit[:10]} {git('log', '-1', '--format=%s')}"
-    # A daily full build gains nothing from incremental files; they were most of the target.
     environment = dict(
         os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
         CARGO_INCREMENTAL="0",
@@ -496,7 +479,6 @@ def run_checked_out(args):
             failures = not_passed(log)
             text = log.read_text(encoding="utf-8", errors="replace").splitlines()
             summary = next((line.strip() for line in reversed(text) if SUMMARY.match(line)), None)
-            # nextest runs tests, and prints their summary, only once the build finished.
             if code is not None and (finished or (finished is None and summary)):
                 build.units = units
                 passed.add("rust-build")
@@ -687,13 +669,10 @@ def parse(argv):
     game_dir = os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None
     for name in ("install", "run"):
         command = commands.add_parser(name)
-        # Made absolute where it is given: the task and every step run from the runner's worktree.
         command.add_argument(
             "--game-dir", type=os.path.abspath, default=game_dir, required=game_dir is None
         )
-        # The acceptance suite's recording folder; without it that step fails and says why.
         command.add_argument("--fixture", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
-        # Without it the recorded-reply browser tests fail and say why.
         command.add_argument(
             "--recorded-replies", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_RECORDED_REPLIES", os.environ.get("HOI4_RECORDED_REPLIES")) or None
         )

@@ -1,6 +1,3 @@
-//! Authored balance ranges.
-//! Files use lexer mode 0, no recursion; a repeated template is rebuilt.
-//! Ranges append, with template ranges before side ranges.
 
 use crate::{
     ResolvedLayers, ideas,
@@ -13,7 +10,6 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-/// Rule name, localisation label, default and fulfilled value by rule index.
 pub fn rules() -> &'static [(&'static str, &'static str, bool, bool)] {
     use engine_executable::executable_tables::{auxiliary_part, required};
     let rules = required(auxiliary_part(|tables| &tables.rules));
@@ -23,13 +19,10 @@ pub fn rules() -> &'static [(&'static str, &'static str, bool, bool)] {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Range {
     pub id: Vec<u8>,
-    /// Inclusive range bounds in fixed5 units.
     pub min: i64,
     pub max: i64,
     pub modifiers: modifiers::Modifiers,
-    /// One boolean per executable rule, including its default.
     pub rules: Vec<bool>,
-    /// Complete bodies, including scopes, operands and conditional siblings.
     pub activation: Vec<Item>,
     pub deactivation: Vec<Item>,
 }
@@ -48,14 +41,12 @@ impl Default for Range {
     }
 }
 
-/// Template fields consumed by effect descriptions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Definition {
     pub id: Vec<u8>,
     pub initial_value: i64,
     pub left: Vec<u8>,
     pub right: Vec<u8>,
-    /// Authored side order; side selection takes its first match.
     pub sides: Vec<Vec<u8>>,
 }
 
@@ -72,8 +63,6 @@ impl Database {
             .get(&parser::c_string(id).to_ascii_lowercase())
     }
 
-    /// A balance's authored ranges in authored order, as the stack resolved
-    /// them; None for a balance the content does not declare.
     pub fn ranges(&self, balance: &[u8]) -> Option<&[Range]> {
         self.balances
             .get(&parser::c_string(balance).to_ascii_lowercase())
@@ -90,8 +79,6 @@ impl Database {
         }
         database
     }
-    /// A recorded id identifies a unique authored range. The active pointer
-    /// is not recorded, so duplicate ids are ambiguous.
     pub fn range(&self, balance: &[u8], range: &[u8]) -> Result<Option<&Range>, String> {
         let balance = parser::c_string(balance);
         let range = parser::c_string(range);
@@ -163,7 +150,6 @@ fn read_file(
                 Some(b"on_activate" | b"on_deactivate") => Shape::ByKey,
                 _ => Shape::Skip,
             },
-            // A range includes the shared progress fields.
             Node::Range => match field.keyword().as_deref() {
                 Some(b"id") => Shape::Current,
                 Some(b"min" | b"max") => Shape::One,
@@ -220,7 +206,6 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
             Some(b"rule") => {
                 for rule in item.value.items().unwrap_or_default() {
                     if let Some(at) = rules().iter().position(|r| rule.keyword_is(r.0)) {
-                        // A failed boolean scan stores false.
                         let value = rule.value.scalar().and_then(parser::read_bool);
                         if value.is_none() {
                             notes.push(format!(
@@ -263,8 +248,6 @@ fn range(items: &[Item], notes: &mut Vec<String>, registry: modifiers::Registry<
     range
 }
 
-/// Reads the recorded content stack. An unsettled file refuses the database
-/// by file and reader: its unread suffix could replace any template.
 pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::Result<Database> {
     let mut database = Database::default();
     let names = layers.key_names()?;
@@ -285,7 +268,6 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
                 id: key.clone(),
                 ..Default::default()
             };
-            // Initial value starts at zero; a repeated failed read retains it.
             for item in items {
                 if item.keyword_is("initial_value") {
                     if let Some(value) = modifiers::read_fixed5(item) {
@@ -343,7 +325,6 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
                     format!("{path}: 1 unread balance file: {cause}"),
                 ));
             }
-            // Template identity is ASCII case insensitive.
             if database
                 .balances
                 .insert(key.to_ascii_lowercase(), ranges)
@@ -359,7 +340,6 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
     Ok(database)
 }
 
-/// Uses the recorded content registry for modifier-token lookup.
 pub fn read_descriptions(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     read(layers, &|key| modifiers::registered(key, Some(&names)))

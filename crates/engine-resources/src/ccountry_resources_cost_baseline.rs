@@ -1,8 +1,5 @@
-//! The country resource walk before its owner gather and prefetched pool
-//! headers, kept for the cost bench and the equality test.
 use super::*;
 
-/// Resource descriptors gathered per guarded round.
 const VALUE_CHUNK: usize = 14;
 
 pub(super) fn walk_buffer(
@@ -35,8 +32,6 @@ pub(super) fn walk_buffer(
             found_country = true;
             let pointer = resources(memory, base, &countries, country)?;
             let pools = pools(memory, base, pointer, count)?;
-            // Descriptors that fit are read; the rest are counted unread
-            // without any access, exactly as the per-descriptor loop did.
             output.ensure(
                 len.checked_add(descriptors.len())
                     .ok_or("country resource row count overflow")?,
@@ -154,8 +149,6 @@ fn pools(
             .checked_add(offset)
             .ok_or("resource pool address overflow")?;
     }
-    // Vtable, data pointer and two signed header words are exactly 24 bytes.
-    // A single guarded scatter reads the nine independent headers once/country.
     let mut headers = [[0_u8; 24]; 9];
     if memory.copy_scattered(addresses, &mut headers.each_mut().map(|h| h.as_mut_slice())) != 9 {
         return Err("resource pool header unreadable");

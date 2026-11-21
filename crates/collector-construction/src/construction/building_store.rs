@@ -1,37 +1,3 @@
-//! StateBuildings and ProvinceBuildings rows held between hours per building
-//! status ([`crate::building_changes`]).
-//!
-//! A walk reads and authenticates every state's and province's identity and
-//! status headers. It registers every status, with or without buildings,
-//! before reading it. A status's held rows are carried, without reading its
-//! buildings, only when all of these hold at this boundary: the same status
-//! address and scope, the same gathered identity (flags, location id,
-//! country) and building, index and active vector headers as the held read,
-//! and no hooked writer touched the status since that read registered it
-//! (same watch epoch and sequence; a load, gap, recovery, table change,
-//! poison, an unnamed receiver or a running writer revokes it). Every writer
-//! of a recorded field is a hooked site ([`engine_mutations::building_mutations`]), so
-//! the fresh read would return the held rows. A status without buildings has
-//! no rows to carry: it is still staged so that its active vector is checked
-//! as every walk checks it.
-//!
-//! A settled hour carries both tables without walking the locations: the latest walk completed both
-//! tables and held every status under a certificate, the hour's take of the domain's marks ([`Changes::take`]) certifies the epoch taken before that
-//! walk, and the state and province table headers (`cgame_state::STATES`, `cgame_state::PROVINCES`)
-//! read as they did then. The take visits every registered status a hooked writer touched since the
-//! previous take, and every walked status is registered, so every other status is the one held. The
-//! sites cover every writer of what locates a status as well as of its rows and headers, and a
-//! status's identity is written only by its constructor (a load or reset changes the epoch, nudge
-//! mode poisons), so every location and every untouched status and building is the one held. The
-//! hour reads each touched status afresh from the status alone ([`cbuilding_status::refresh`],
-//! which requires its identity to be the held one), registering it first, and holds its fresh rows
-//! at its place in walk order; a quiet hour, whose take visited no held status, reads none. When a
-//! touched status does not read, the hour walks every location afresh.
-//!
-//! The store follows the Governance job's loan and holds only the statuses
-//! of the latest complete walk, so its size follows live demand. Allocation
-//! is advisory: a status whose rows cannot be held is read afresh next hour,
-//! and the next hour then walks.
 use crate::building_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
@@ -51,19 +17,13 @@ struct Certificate {
 struct Entry {
     certificate: Certificate,
     rows: Range<usize>,
-    /// Its walk's plan token, which orders the walk.
     order: usize,
 }
 
-/// One walk's held statuses and rows, at their output positions: the state
-/// table's rows, then the province table's.
 #[derive(Default)]
 struct Held {
-    /// In walk order once the walk finishes.
     entries: Vec<Entry>,
-    /// Indices of `entries` by status; a status held twice is left out.
     by_status: Vec<usize>,
-    /// A status that is not held leaves its span unset.
     rows: Vec<cbuilding::Row>,
 }
 
@@ -74,7 +34,6 @@ impl Held {
         self.rows.clear();
     }
 
-    /// The entry holding `status`.
     fn index(&self, status: usize) -> Option<usize> {
         self.by_status
             .binary_search_by_key(&status, |&index| {
@@ -84,15 +43,11 @@ impl Held {
             .map(|at| self.by_status[at])
     }
 
-    /// The held rows of exactly `certificate`.
     fn find(&self, certificate: &Certificate) -> Option<Range<usize>> {
         let entry = &self.entries[self.index(certificate.location.status)?];
         (entry.certificate == *certificate).then(|| entry.rows.clone())
     }
 
-    /// Holds `rows` for `certificate`, planned `order`th, at output position
-    /// `at`; `false` when the storage could not grow, which only withholds
-    /// the certificate.
     fn hold(
         &mut self,
         certificate: Certificate,
@@ -124,9 +79,6 @@ impl Held {
         true
     }
 
-    /// Puts the entries in walk order and indexes them by status; `false`
-    /// when a status occurs twice, naming no single held read, or the index
-    /// could not grow.
     fn order(&mut self) -> bool {
         let Self {
             entries, by_status, ..
@@ -159,7 +111,6 @@ impl Held {
         unique
     }
 
-    /// Rows of the state table: those before the first province's.
     fn state_rows(&self) -> usize {
         self.entries
             .iter()
@@ -174,8 +125,6 @@ impl Held {
     }
 }
 
-/// One planned status: its certificate, carryable held rows and output
-/// position across both tables.
 #[derive(Clone, Debug, Default)]
 struct Plan {
     certificate: Option<Certificate>,
@@ -183,48 +132,32 @@ struct Plan {
     start: usize,
 }
 
-/// The token of a status whose plan could not be stored.
 const UNPLANNED: usize = usize::MAX;
 
-/// What lets an hour carry both tables without walking the locations: the
-/// watch epoch taken before the latest walk that held every status under a
-/// certificate, and the two location table headers read at that walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Settled {
     epoch: u64,
     roots: [[u8; 16]; 2],
 }
 
-/// Rows of the latest complete walk and the walk being made.
 #[derive(Default)]
 pub struct BuildingStore {
     current: Held,
     previous: Held,
-    /// This walk's plans, indexed by token.
     plans: Vec<Plan>,
     counts: Counts,
-    /// Locations this walk planned, without buildings too, for sizing.
     walked: usize,
-    /// Rows this walk planned in both tables: the next status's position.
     planned: usize,
-    /// Rows this walk planned in the state table.
     state_rows: usize,
-    /// Every status this walk planned holds a certificate and its rows.
     held_all: bool,
     settled: Option<Settled>,
-    /// The statuses this hour's take visited.
     touched: Vec<usize>,
-    /// A settled hour's held entries the take visited, in walk order.
     marked: Vec<usize>,
-    /// Their held locations, sequences and fresh locations.
     held: Vec<Location>,
     sequences: Vec<u64>,
     fresh: Vec<Location>,
-    /// A settled hour's statuses read afresh.
     scratch: Vec<cbuilding::Row>,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walk drops every held row.
     forgotten: bool,
 }
 
@@ -233,14 +166,11 @@ impl BuildingStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next capture walks and reads
-    /// afresh. Allocation-free for the game thread.
     pub fn forget(&mut self) {
         self.forgotten = true;
         self.settled = None;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -276,11 +206,6 @@ impl BuildingStore {
             + self.scratch.capacity() * size_of::<cbuilding::Row>();
     }
 
-    /// Keeps this walk's rows only when both tables were read or carried
-    /// completely, and publishes its counts. `candidate` is the watch epoch
-    /// and location table headers taken before the walk; they let the next
-    /// hours carry both tables without walking when the walk held every
-    /// status once.
     fn finish(&mut self, walk: Walk, candidate: Option<(u64, [[u8; 16]; 2])>) {
         let complete = matches!(walk.states, Outcome::Rows { .. })
             && matches!(walk.provinces, Outcome::Rows { .. });
@@ -306,9 +231,6 @@ impl BuildingStore {
         crate::building_changes::record(&self.counts, complete.then_some(self.walked));
     }
 
-    /// Every status a hooked writer touched since the previous take, kept
-    /// for this hour, and the epoch the take certifies; `None` when it
-    /// certifies nothing or a status could not be kept.
     fn take(&mut self, changes: &dyn Changes) -> Option<u64> {
         let touched = &mut self.touched;
         touched.clear();
@@ -322,9 +244,6 @@ impl BuildingStore {
         epoch.filter(|_| kept)
     }
 
-    /// The settled hour this capture may take: the take certifies the epoch
-    /// of the walk that settled the store, and both location tables read as
-    /// then.
     fn settled_hour(&self, taken: Option<u64>, roots: Option<[[u8; 16]; 2]>) -> Option<Settled> {
         let settled = self.settled?;
         (!self.forgotten
@@ -333,10 +252,6 @@ impl BuildingStore {
         .then_some(settled)
     }
 
-    /// The held statuses the take visited, read afresh after registering
-    /// each in `epoch`, with their held locations, sequences and fresh
-    /// locations; `false` when one cannot be registered in that epoch or
-    /// does not read, or storage cannot grow.
     fn refresh(
         &mut self,
         memory: &impl Memory,
@@ -366,7 +281,6 @@ impl BuildingStore {
         }
         for &index in marked.iter() {
             let location = current.entries[index].certificate.location;
-            // Registration precedes the read it certifies.
             match changes.sequence(location.status) {
                 Some((at, sequence)) if at == epoch => sequences.push(sequence),
                 _ => return false,
@@ -377,9 +291,6 @@ impl BuildingStore {
         cbuilding_status::refresh(memory, base, held, fresh, scratch).is_ok()
     }
 
-    /// Holds the refreshed statuses' rows at their place in walk order,
-    /// their certificates taken in `epoch`; `false` when storage cannot
-    /// grow. Rows are rewritten in place unless a building count changed.
     fn hold_refreshed(&mut self, epoch: u64) -> bool {
         let Self {
             current,
@@ -451,15 +362,12 @@ impl BuildingStore {
                 order: entry.order,
             });
         }
-        // The same statuses in the same order: the index carries over.
         std::mem::swap(&mut previous.by_status, &mut current.by_status);
         std::mem::swap(current, previous);
         previous.clear();
         true
     }
 
-    /// A settled hour: the touched statuses read afresh and both tables
-    /// published from the held rows. `None` walks.
     fn settle(
         &mut self,
         memory: &impl Memory,
@@ -469,7 +377,6 @@ impl BuildingStore {
         states: &mut Vec<cbuilding::Row>,
         provinces: &mut Vec<cbuilding::Row>,
     ) -> Option<Walk> {
-        // Statuses the take visited that no entry holds are not walked.
         let Self {
             current,
             touched,
@@ -527,7 +434,6 @@ impl BuildingStore {
     }
 }
 
-/// `rows` into the front of `output`, growing it as the walk grows it.
 fn publish(output: &mut Vec<cbuilding::Row>, rows: &[cbuilding::Row]) -> bool {
     if rows.len() > output.len() {
         if allocation::reserve(output, rows.len() - output.len()).is_err() {
@@ -539,9 +445,6 @@ fn publish(output: &mut Vec<cbuilding::Row>, rows: &[cbuilding::Row]) -> bool {
     true
 }
 
-/// Both tables for one hour, carrying through `store`: a settled hour reads
-/// only the statuses a hooked writer touched; any other hour walks every
-/// location and carries each status it proves current.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -551,8 +454,6 @@ pub fn capture(
     store: &mut BuildingStore,
     changes: &dyn Changes,
 ) -> Walk {
-    // Taken before any registration or read this capture certifies; a
-    // status a writer touches after the take is visited by the next one.
     let roots = cbuilding_status::roots(memory, game_state);
     let taken = store.take(changes);
     if let Some(settled) = store.settled_hour(taken, roots)
@@ -567,7 +468,6 @@ pub fn capture(
     walk
 }
 
-/// One walk's view of the store and the observation that certifies reuse.
 struct BuildingReuse<'a> {
     store: &'a mut BuildingStore,
     changes: &'a dyn Changes,
@@ -581,10 +481,6 @@ impl<'a> BuildingReuse<'a> {
 }
 
 impl Carry for BuildingReuse<'_> {
-    /// Registration precedes every read it certifies. A status without
-    /// buildings is registered and held too, so that a settled hour's take
-    /// visits it once a writer touches it, but staged rather than carried, so
-    /// the walk checks its active vector as it checks every one.
     fn plan(&mut self, location: &Location) -> (usize, bool) {
         let store = &mut *self.store;
         store.walked += 1;
@@ -614,7 +510,6 @@ impl Carry for BuildingReuse<'_> {
             store.held_all = false;
         }
         if planned.is_err() {
-            // Unplanned: read afresh and held for nothing.
             return (UNPLANNED, false);
         }
         store.plans.push(Plan {
@@ -646,7 +541,6 @@ impl Carry for BuildingReuse<'_> {
         output.copy_from_slice(rows);
         counts.reused += 1;
         counts.reused_rows += rows.len() as u64;
-        // A failed hold only withholds the next hour's certificate.
         *held_all &= current.hold(certificate, token, rows, start);
     }
 

@@ -67,7 +67,6 @@ fn unknown_map_texture_outcomes_are_not_replaced_with_zero() {
     assert!(warnings.is_empty());
 }
 
-/// A DDS header for `width` x `height` over `mips` levels: 32-bit BGRA, or `fourcc` blocks.
 fn dds_header(width: u32, height: u32, mips: u32, fourcc: Option<&[u8; 4]>) -> Vec<u8> {
     let mut bytes = vec![0_u8; 128];
     bytes[..4].copy_from_slice(b"DDS ");
@@ -94,7 +93,6 @@ fn dds_header(width: u32, height: u32, mips: u32, fourcc: Option<&[u8; 4]>) -> V
     bytes
 }
 
-/// A 32-bit uncompressed DDS of `width` x `height` texels, every byte `fill`.
 fn dds_file(width: u32, height: u32, fill: u8) -> Vec<u8> {
     let mut bytes = dds_header(width, height, 1, None);
     bytes.extend(std::iter::repeat_n(fill, (width * height * 4) as usize));
@@ -133,7 +131,6 @@ fn bc7_map_and_gui_share_logical_mips_and_header_colour_space() {
         for requested in [ColorSpace::Linear, ColorSpace::Srgb] {
             assert_eq!(format_of(texture.format, requested).unwrap(), format);
         }
-        // A short chain names the resource as well as the affected BC7 level.
         file.pop();
         let read = files(vec![("gfx/test.dds", file)]);
         let why = load_file("gfx/test.dds", &read, Decode::default())
@@ -143,9 +140,6 @@ fn bc7_map_and_gui_share_logical_mips_and_header_colour_space() {
     }
 }
 
-/// BC5 and BC6H are still the engine's BGRA fall-through, including its first-level
-/// overrun failure, through the same map resolver. The old parallel DDS path refused their
-/// dxgiFormat instead of reaching this native outcome.
 #[test]
 fn other_dx10_formats_keep_the_native_bgra_outcome_by_file_name() {
     for dxgi in [83, 95] {
@@ -167,7 +161,6 @@ fn other_dx10_formats_keep_the_native_bgra_outcome_by_file_name() {
     }
 }
 
-/// Reads the named files, every other path absent.
 fn files(files: Vec<(&'static str, Vec<u8>)>) -> impl Fn(&[u8]) -> io::Result<Vec<u8>> {
     move |path| {
         files
@@ -178,10 +171,6 @@ fn files(files: Vec<(&'static str, Vec<u8>)>) -> impl Fn(&[u8]) -> io::Result<Ve
     }
 }
 
-/// A texture file the passes load pads to powers of two only under the client's
-/// `force_pow2_textures`, the image in the top-left corner and the rest the 32-bit format's
-/// zeroed texel, transparent black; a power-of-two file is the same either way. A name no
-/// layer holds is `NotFound`.
 #[test]
 fn texture_files_pad_only_under_force_pow2_textures() {
     let read = files(vec![
@@ -204,9 +193,6 @@ fn texture_files_pad_only_under_force_pow2_textures() {
     assert_eq!(missing.kind(), io::ErrorKind::NotFound);
 }
 
-/// Synthetic 256-by-73 DXT5 fixture with nine mips. Block extent rounds to 256-by-76; later levels
-/// halve that extent, placing level two at byte 24704. Power-of-two decoding pads levels to
-/// 256-by-128 and below.
 #[test]
 fn a_non_block_aligned_mip_chain_loads_as_the_game_reads_it() {
     let sides = [
@@ -251,7 +237,6 @@ fn a_non_block_aligned_mip_chain_loads_as_the_game_reads_it() {
             (4, 2)
         ]
     );
-    // Level 2's five block rows are the game's, then zeroed blocks.
     let row = 16 * 16;
     assert!(
         padded.mips[0][2].data[..5 * row]
@@ -265,8 +250,6 @@ fn a_non_block_aligned_mip_chain_loads_as_the_game_reads_it() {
     );
 }
 
-/// An 8-bit `width` x `height` bitmap whose indices are `indices` (rows top first) over a
-/// grey palette.
 fn indexed_bmp(width: u32, height: u32, indices: &[u8]) -> Vec<u8> {
     let stride = (width as usize).div_ceil(4) * 4;
     let pixels = 54 + 1024;
@@ -291,8 +274,6 @@ fn indexed_bmp(width: u32, height: u32, indices: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// The heightmap the passes sample loads as a texture file: over a grey palette it is the
-/// vertex heights as they are, and under `force_pow2_textures` it pads, its padding reading 0.
 #[test]
 fn the_sampled_heightmap_loads_as_a_texture_file() {
     let file = indexed_bmp(3, 2, &[1, 2, 3, 4, 5, 6]);
@@ -308,11 +289,6 @@ fn the_sampled_heightmap_loads_as_a_texture_file() {
     assert_eq!(sampled(POW2), Some(([4, 2], vec![1, 2, 3, 0, 4, 5, 6, 0])));
 }
 
-/// A province image one six-by-six block wide and two tall, so one texel
-/// covers one province and the block arithmetic is visible.
-///
-/// Province 1 fills the northern half of the image and province 2 the
-/// southern one; `kinds` says which of them is land.
 fn two_block_map(kinds: [ProvinceKind; 2]) -> MapData {
     let mut province_ids = vec![1u32; (FOW_BLOCK * FOW_BLOCK) as usize];
     province_ids.extend(std::iter::repeat_n(2u32, (FOW_BLOCK * FOW_BLOCK) as usize));
@@ -338,11 +314,6 @@ fn two_block_map(kinds: [ProvinceKind; 2]) -> MapData {
     }
 }
 
-/// Complement the truncated block mean: an unseen province byte zero becomes texture fog byte 255.
-///
-/// Row 0 of the result is world `z = 0`, which is the *last* row of the
-/// province image, so province 2 — the image's southern half — is the first
-/// texel.
 #[test]
 fn the_intel_texel_is_the_complement_of_the_block_mean() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
@@ -352,8 +323,6 @@ fn the_intel_texel_is_the_complement_of_the_block_mean() {
     assert_eq!(built.texels, vec![5, 255]);
 }
 
-/// A province the hour does not record contributes no fog rather than the
-/// recorded zero that would fog it whole; `super::super::tables` says so.
 #[test]
 fn an_unrecorded_province_is_not_a_recorded_zero() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
@@ -367,7 +336,6 @@ fn an_unrecorded_province_is_not_a_recorded_zero() {
     );
 }
 
-/// Sea and lake pixels contribute 0xff independently of the visibility array.
 #[test]
 fn sea_and_lake_provinces_never_take_fog() {
     let map = two_block_map([ProvinceKind::Sea, ProvinceKind::Lake]);
@@ -381,7 +349,6 @@ fn sea_and_lake_provinces_never_take_fog() {
     );
 }
 
-/// No visibility input produces an all-clear grid without fog drawing.
 #[test]
 fn no_recorded_visibility_is_the_engines_fog_off_branch() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
@@ -400,15 +367,11 @@ fn identity_lookup() -> [u8; 256] {
 
 #[test]
 fn the_id_map_is_bottom_up_and_names_the_four_blend_neighbours() {
-    // Two rows of three, bitmap order (row 0 is north, world z = 1).
     let indices = [1u8, 2, 3, 4, 5, 6];
     let map = terrain_id_map(3, 2, &indices, &identity_lookup()).unwrap();
     let texel = |x: usize, z: usize| &map[(z * 3 + x) * 4..][..4];
-    // World z = 0 is bitmap row 1: 4, 5, 6. World z = 1 is row 0: 1, 2, 3.
-    // At (x = 0, z = 0): base 4, right 5, up 1, up-right 2.
     assert_eq!(texel(0, 0), [1, 5, 4, 2]);
     assert_eq!(texel(2, 0), [3, 6, 6, 3]);
-    // z clamps at the top row, so up and up-right repeat the row itself.
     assert_eq!(texel(0, 1), [1, 2, 1, 2]);
     assert_eq!(texel(2, 1), [3, 3, 103, 3]);
 }
@@ -420,7 +383,6 @@ fn a_uniform_neighbourhood_sets_the_all_same_flag() {
     for texel in map.chunks_exact(4) {
         assert_eq!(texel, [7, 7, 107, 7]);
     }
-    // `calculate_map_tex_index` recovers the tile and the flag.
     let raw = 107.0f32;
     let all_same = (raw - 98.0).clamp(0.0, 1.0);
     assert_eq!(all_same, 1.0);
@@ -491,11 +453,6 @@ fn all_texture_bytes_keep_native_uniform_encoding_and_mixed_neighbours() {
     }
 }
 
-/// A 16-bit texture keeps the engine's normalisation on the device: every channel goes up
-/// as the `f32` the device's `_UNORM` conversion makes (`c / 31`, `c / 63`), exactly; an
-/// effect's threshold between that and the half float (`0.0322575`, between `1/31` and
-/// `0.0322570801`) sees the exact value; the format is `Rgba32Float` in linear space, and
-/// there is no sRGB one.
 #[test]
 fn sixteen_bit_textures_go_up_at_shader_precision() {
     for format in [dds::TextureFormat::B5G6R5, dds::TextureFormat::B5G5R5A1] {
@@ -506,7 +463,6 @@ fn sixteen_bit_textures_go_up_at_shader_precision() {
         assert!(format_of(format, ColorSpace::Srgb).is_err());
     }
     let exact = |c: u16, max: u16| f32::from(c) / f32::from(max);
-    // 5-6-5: red 1, green 1, blue 31. 5-5-5-1: red 1, green 0, blue 30, alpha 1.
     let cases = [
         (
             dds::TextureFormat::B5G6R5,
@@ -526,7 +482,6 @@ fn sixteen_bit_textures_go_up_at_shader_precision() {
             .map(|value| f32::from_le_bytes(value.try_into().unwrap()))
             .collect();
         assert_eq!(channels, expected, "{format:?}");
-        // The threshold-sensitive effect: a half float of 1/31 falls below it.
         assert!(channels[0] >= 0.032_257_5, "{format:?}");
     }
     assert_eq!(
@@ -577,10 +532,6 @@ fn a_nonsquare_cube_is_refused_by_name_before_gpu_validation() {
     }
 }
 
-/// On the viewer's device a 16-bit texture samples as the game's: `textureLoad` returns
-/// `c / 31` and `c / 63` exactly as `f32`s, arithmetic preserves their precision,
-/// and a threshold between `1/31` and its half float (`0.0322575`) passes. A
-/// device without `FLOAT32_FILTERABLE` also keeps the exact upload.
 #[test]
 #[ignore = "requires an adapter; samples 16-bit texels on the device"]
 fn sixteen_bit_texels_sample_exactly_on_the_device() {
@@ -594,7 +545,6 @@ fn sixteen_bit_texels_sample_exactly_on_the_device() {
     descriptor.required_features =
         descriptor.required_features - wgpu::Features::FLOAT32_FILTERABLE;
     let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).unwrap();
-    // Red, green and blue 1, then white.
     let texture = dds::Texture {
         format: dds::TextureFormat::B5G6R5,
         width: 2,
@@ -727,8 +677,6 @@ fn sixteen_bit_texels_sample_exactly_on_the_device() {
 }
 use installed_content_image::bmp;
 
-/// What every upload refuses is refused before any device exists, so a visual mod's texture the
-/// scene could not upload falls back to the recorded one at load.
 #[test]
 fn upload_refusals_are_known_without_a_device() {
     let texture = |format, width, height, faces| dds::Texture {

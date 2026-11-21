@@ -51,9 +51,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const following = active && widget.time.mode === 'follow';
   const windowAt = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour) : null, [widget, track, runtime.tracks]);
   const trackHour = useCallback((clockHour: number) => Math.floor(windowAt(clockHour)?.lastHour ?? clockHour), [windowAt]);
-  // Following, the log renders a block at once: the sinkings listed through the block's end, within the windows held,
-  // each hidden until the clock reaches it (`reveal`). It renders again only when the clock leaves the block; its end
-  // is read from what the render before held, so a window landing inside a block renders nothing more.
   const windows = manifest.data?.windows;
   const blockInputs = useRef<{ trackHour: typeof trackHour; windows: readonly { firstHour: number; lastHour: number }[]; pages: ReadonlyMap<number, ShipsSunkWindowReply>; edges: readonly number[] }>(
     { trackHour, windows: [], pages: NO_PAGES, edges: [] });
@@ -66,7 +63,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const block = useAheadHour(runtime.clock, following, end);
   const window = windowAt(block.hour);
   const hour = window ? Math.floor(window.lastHour) : undefined;
-  // The last hour whose sinkings are drawn: following, the block's last; else the hour shown.
   const drawnThrough = hour === undefined ? undefined : following ? hour + block.until - 1 - Math.floor(block.hour) : hour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
@@ -83,22 +79,18 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const shownHour = browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, coveredHour ?? browse.hour) : coveredHour;
   const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? 0);
   const [visibleWindows, setVisibleWindows] = useDistinctState<VisibleWindows>(NO_VISIBLE_WINDOWS, sameWindows);
-  // The windows of the rows drawn, until the list reports others: never dropped as the playhead enters a window, which
-  // released the history in view and asked it again at the head.
   const visibleIndices = visibleWindows.identity === identity ? visibleWindows.windows : [];
   const wantedWindows = battleWindows(manifest.data, coveredHour ?? 0, widget.time.mode === 'follow',
     [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], from ?? Number.MIN_SAFE_INTEGER);
   const history = useProductWindows<ShipsSunkWindowReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'ships-sunk', params: { branchId: track!.branch.id, window: index }, asksFrom: manifest.data?.windows[index]?.firstHour }), wantedWindows,
   active && data?.available === true, validateSinkingWindow, track?.source, true);
-  // Where the log's structure changes: a window begins or a sinking is first listed.
   const edges = useMemo(() => [...new Set([...(windows ?? []).map(window => window.firstHour),
     ...[...history.data.values()].flatMap(page => page.reply.rows.map(row => Math.max(row.sinkHour, row.knownAt)))])].sort((a, b) => a - b),
   [windows, history.data]);
   blockInputs.current = { trackHour, windows: windows ?? [], pages: history.data, edges };
   const browsing = shownHour !== coveredHour;
   const reveal = useRevealClock(runtime.clock, following && !browsing, trackHour);
-  // Revealed by the clock, the rows shown are the clock's; browsing or pinned, the hour rendered.
   useShownEachFrame(runtime.clock, () => shownHour == null ? null : reveal ? trackHour(runtime.clock.getHour()) : shownHour);
   const country = useCallback((tag: string | null, namingHour: number) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, namingHour),
     [match, widget.countries.kind]);
@@ -108,7 +100,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   [history.data, rowsThrough, match.ready, classes, role, country, from, campaignKey]);
   const [visible, setVisible] = useDistinctState<readonly LogRow<SinkingItem>[]>(NO_ROWS, sameRows);
   const currentRows = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
-  // Revealed by the clock, the countries of every sinking the block draws are asked with it, never as rows come into view.
   const drawn = useMemo(() => reveal ? rows : visible.flatMap(row => { const current = currentRows.get(row.key); return current ? [current] : []; }),
     [reveal, rows, visible, currentRows]);
   const wanted = useMemo(() => drawn.flatMap(({ item: row }) => [
@@ -120,7 +111,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const onVisible = useCallback((next: readonly LogRow<SinkingItem>[]) => {
     if (!reveal) setVisible(next);
     const windows = [...new Set(next.map(row => row.item.windowIndex))].sort((a, b) => a - b);
-    // Windows already held need no state: only rows scrolled to an older window ask it.
     if (reveal && windows.every(index => wantedWindows.includes(index))) return;
     setVisibleWindows({ identity, at: playheadWindow, windows });
   }, [reveal, identity, playheadWindow, wantedWindows, setVisible, setVisibleWindows]);

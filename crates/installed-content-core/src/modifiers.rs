@@ -1,9 +1,3 @@
-//! Authored modifier blocks, targeted modifiers and equipment bonuses.
-//!
-//! Modifier identity folds ASCII case. Repeated values replace in their original position;
-//! hidden values remain stored, added blocks remain children and custom tooltips follow
-//! their string table's slot order. Fixed names use verified executable metadata, while
-//! authored modifier names come from the recorded content stack at the reader's load point.
 
 use crate::{
     key_names::KeyNames,
@@ -25,9 +19,6 @@ fn builtin_registered(key: &[u8]) -> bool {
     .any(|name| name.as_bytes().eq_ignore_ascii_case(key))
 }
 
-/// Bare keys are lexer-folded; quoted keys fold ASCII before hashing
-/// and comparing. A known name wins even if a later recorded-stack
-/// modifier/sub-unit suffix is unread.
 pub fn registered(key: &[u8], names: Option<&KeyNames>) -> Option<bool> {
     let key = c_string(key);
     if builtin_registered(key) {
@@ -43,56 +34,34 @@ pub fn registered(key: &[u8], names: Option<&KeyNames>) -> Option<bool> {
     }
 }
 
-/// One stored modifier value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Modifier {
-    /// Authored spelling, retained separately from folded identity.
     pub key: String,
-    /// The modifier it names: the key ASCII-folded, whether bare or quoted.
-    /// Entries merge and hide, and join the modifier definitions, by this.
     pub name: String,
-    /// The resolved value token's text, kept apart from the value.
     pub text: String,
     pub value: i64,
 }
 
-/// The fixed5 destination starts at 0. The value token's text is scanned
-/// as an integer, so a numeric prefix reads (`1tail` is 1), `0x10` is
-/// hexadecimal and empty text is 0; text it cannot convert (`yes`, `[?x]`,
-/// an undefined `@name`) is reported and leaves the 0, which the game
-/// then holds.
 pub fn stored(item: &Item) -> i64 {
     read_fixed5(item).unwrap_or(0)
 }
 
-/// Fixed5 conversion: `None` when it fails and the destination keeps
-/// what it held.
 pub fn read_fixed5(item: &Item) -> Option<i64> {
     item.value.scalar().and_then(crate::fixed5::script_fixed5)
 }
 
-/// A modifier block held by one modifier object.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
-    /// One entry per folded identity, in first-read order.
     pub values: Vec<Modifier>,
-    /// The modifiers `hidden_modifier` named: stored in `values`,
-    /// never listed.
     pub hidden: BTreeSet<String>,
     tooltips: TooltipTable,
-    /// `added_modifier` blocks, each its own modifier object.
     pub children: Vec<Modifiers>,
     pub unheld: Unheld,
 }
 
-/// `targeted_modifier`: its tag and its own modifier object.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetedModifier {
-    /// Absent when the target is omitted or requires runtime evaluation.
     pub tag: Option<String>,
-    /// Original string bytes for the country operand. Unlike the
-    /// specifier's uppercase copy, scoped-variable parsing uses these
-    /// bytes unchanged when the tag lookup fails.
     pub operand: Option<Vec<u8>>,
     pub modifiers: Modifiers,
 }
@@ -101,38 +70,19 @@ pub struct TargetedModifier {
 pub struct EquipmentBonus {
     pub equipment: String,
     pub instant: bool,
-    /// One entry per stat; a repeated stat adds its value.
     pub values: Vec<Modifier>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Node {
-    /// A modifier object and its fields.
     Modifier,
-    /// The `hidden_modifier` loop: one modifier value per key.
     Hidden,
-    /// A `targeted_modifier` object.
     Targeted,
-    /// The `equipment_bonus` loop: each entry a specific
-    /// equipment bonus object.
     EquipmentBonuses,
-    /// `instant` reads a boolean; anything else names an equipment
-    /// stat whose value is added to any earlier stored value.
     EquipmentBonus,
-    /// A `research_bonus` loop: each entry reads one fixed5 value.
     ResearchBonus,
 }
 
-/// A field whose reading the port cannot settle, so what follows it is
-/// unknown:
-///
-/// - a block value the game decides by a name the content does not settle:
-///   a registered modifier reads `{` as its fixed5 value and the block
-///   contents as enclosing entries. Any other name is reported and its
-///   block skipped; equipment stats behave the same way. The replay reads
-///   the skip; what follows is known only if the name is not registered;
-/// - a field a reader hands to another reader the port does not trace
-///   ([`Undecided::untraced`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Undecided {
     pub name: String,
@@ -169,16 +119,10 @@ impl std::fmt::Display for Undecided {
     }
 }
 
-/// Whether a name is a registered modifier: `None` only where
-/// the supplied recorded-stack roster has an unread suffix or is absent.
 pub type Registry<'a> = &'a dyn Fn(&[u8]) -> Option<bool>;
 
 pub const UNKNOWN: Registry<'static> = &|_| None;
 
-/// The modifier readers' dispatch of one field. A block value under a
-/// modifier name is read as `registry` decides it; where it does not say,
-/// and for an equipment stat whose stat map the port does not hold, it
-/// is read as the skip and recorded in `undecided`.
 pub fn shape(
     node: Node,
     field: &Field<'_>,
@@ -186,9 +130,6 @@ pub fn shape(
     undecided: &mut Vec<Undecided>,
 ) -> Shape<Node> {
     let keyword = field.keyword();
-    // A registered name reads one fixed5 value and consumes nothing more.
-    // Any other name is reported and its block skipped when the current
-    // token is `{`. A punctuation or number key names no modifier.
     let mut decide = |reader, registry: Registry<'_>| {
         if keyword.is_none() && field.key.kind != native::Kind::Quoted {
             return Shape::Skip;
@@ -211,11 +152,6 @@ pub fn shape(
         }
     };
     match node {
-        // `name` and `custom_modifier_tooltip` read strings; `data` reads
-        // a signed integer. `hidden_modifier` loops only when its value is
-        // `{`, otherwise reporting and skipping a block at the current token.
-        // `added_modifier` reads a new child modifier object. Anything else,
-        // a quoted key included, reads a modifier value.
         Node::Modifier => match keyword.as_deref() {
             Some(b"name" | b"data" | b"custom_modifier_tooltip") => Shape::One,
             Some(b"hidden_modifier") => Shape::ObjectOrSkip(Node::Hidden),
@@ -235,8 +171,6 @@ pub fn shape(
     }
 }
 
-/// A modifier lookup uses the text of a keyword or quoted token.
-/// Punctuation and number tokens never name a modifier.
 fn modifier_name<'a>(item: &'a Item, unheld: &mut Unheld) -> Option<&'a str> {
     if item.keyword().is_none() && !item.key_quoted {
         return None;
@@ -262,8 +196,6 @@ fn value(item: &Item, unheld: &mut Unheld) -> Option<Modifier> {
 }
 
 impl Modifiers {
-    /// Assignment copies tooltip keys by the native table's copy insertion
-    /// order. Numeric entries and hidden identities retain their stored values.
     pub fn copied(&self) -> Self {
         Self {
             values: self.values.clone(),
@@ -274,8 +206,6 @@ impl Modifiers {
         }
     }
 
-    /// The native empty test includes tooltip/child presence and eligible
-    /// stored keys. A present zero still makes the object nonempty.
     pub fn effectively_empty(
         &self,
         eligible: &mut impl FnMut(&str) -> Result<bool, String>,
@@ -293,11 +223,9 @@ impl Modifiers {
         }
         Ok(true)
     }
-    /// One entry of a modifier block as dispatched.
     pub fn read(&mut self, item: &Item) {
         match item.keyword().map(|keyword| keyword.folded()).as_deref() {
             Some(b"name" | b"data") => {}
-            // Read the string; its FNV-1a hash has no case folding.
             Some(b"custom_modifier_tooltip") => {
                 if let Some(text) = self
                     .unheld
@@ -306,8 +234,6 @@ impl Modifiers {
                     self.tooltips.insert(text.to_owned());
                 }
             }
-            // A `{` value opens the loop; any other value is reported,
-            // storing nothing.
             Some(b"hidden_modifier") => {
                 for entry in item.value.items().unwrap_or_default() {
                     if let Some(modifier) = value(entry, &mut self.unheld) {
@@ -329,16 +255,12 @@ impl Modifiers {
         }
     }
 
-    /// Every entry of another block read into this modifier object
-    /// (a repeated `modifier` field reads into the same object).
     pub fn read_all(&mut self, items: &[Item]) {
         for item in items {
             self.read(item);
         }
     }
 
-    /// A new modifier is added; a known one takes the last value
-    /// while keeping its place.
     fn store(&mut self, modifier: Modifier) {
         match self
             .values
@@ -350,8 +272,6 @@ impl Modifiers {
         }
     }
 
-    /// The custom tooltip keys, one per text, listed from the first
-    /// table slot.
     pub fn tooltips(&self) -> Vec<String> {
         self.tooltips.keys().map(str::to_owned).collect()
     }
@@ -360,7 +280,6 @@ impl Modifiers {
         &self.tooltips
     }
 
-    /// Whether the tooltip lists a modifier: hidden entries are skipped.
     pub fn listed(&self) -> impl Iterator<Item = &Modifier> {
         self.values
             .iter()
@@ -368,8 +287,6 @@ impl Modifiers {
     }
 }
 
-/// One tooltip-table slot: the key's hash, its probe distance plus
-/// one (0 empty, 0xFF the end sentinel) and the key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Slot {
     hash: u32,
@@ -377,26 +294,18 @@ struct Slot {
     key: String,
 }
 
-/// The accumulator's load factor, 0.9 as f32; a copy keeps the source's.
 const LOAD: f32 = f32::from_bits(0x3f66_6666);
 
-/// The `custom_modifier_tooltip` string set: insertion, growth, rehashing
-/// and copying ([`Self::copied`]) preserve the slot order used to list
-/// tooltip text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TooltipTable {
     slots: Vec<Slot>,
     count: i32,
     mask: u32,
-    /// The longest distance plus one a slot may take: `n + 2`.
     overflow: u8,
-    /// Still the shared initial static table.
     shared: bool,
 }
 
 impl Default for TooltipTable {
-    /// The shared initial static table: an empty slot then the sentinel,
-    /// mask 0.
     fn default() -> Self {
         Self {
             slots: vec![
@@ -415,7 +324,6 @@ impl Default for TooltipTable {
 }
 
 impl TooltipTable {
-    /// The keys in tooltip display slot order.
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         let end = self.mask as usize + self.overflow as usize + 1;
         self.slots[..end]
@@ -428,10 +336,6 @@ impl TooltipTable {
         self.count == 0
     }
 
-    /// Copy to the default table for an empty source; otherwise rehash to
-    /// 2^ceil(log2(int(max(1.9, 1/load) * count + 1))) buckets without
-    /// reinserting, then copy the source's keys in slot order with their
-    /// stored hashes.
     pub fn copied(&self) -> Self {
         let mut copy = Self::default();
         if self.count == 0 {
@@ -447,7 +351,6 @@ impl TooltipTable {
         copy
     }
 
-    /// Insert or find with the key's FNV-1a hash, without case folding.
     fn insert(&mut self, key: String) {
         let hash = key.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
             (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
@@ -455,13 +358,6 @@ impl TooltipTable {
         self.insert_hashed(hash, key);
     }
 
-    /// The probe from `hash & mask` compares keys while the distance stays
-    /// within the occupant's. Grow first when the distance passes the
-    /// overflow or `(count + 1) / mask` (f32, a zero mask dividing to
-    /// infinity) passes the load. The key takes the slot and carries the
-    /// occupant on, swapping with any occupant nearer its home. A carried
-    /// distance past the overflow puts the carried entry in the key's slot,
-    /// takes the key back out, grows the table and inserts it again.
     fn insert_hashed(&mut self, hash: u32, key: String) {
         let mut position = (self.mask & hash) as usize;
         let mut distance = 1_u8;
@@ -527,7 +423,6 @@ impl TooltipTable {
         self.insert_hashed(carried.hash, carried.key);
     }
 
-    /// Grow from a mask of 0, 1 or 3 to 2^3 buckets; otherwise double.
     fn grow(&mut self) {
         let power = match self.mask {
             0 | 1 | 3 => 3,
@@ -536,11 +431,6 @@ impl TooltipTable {
         self.rehash(power);
     }
 
-    /// Rehash to 2^power buckets, power + 2 overflow slots and the sentinel;
-    /// the old occupied slots, up to the count, are inserted again in slot
-    /// order with their hashes. Leaving the shared static table inserts
-    /// nothing. A power outside 1..=30 reports invalid growth and keeps
-    /// the table.
     fn rehash(&mut self, power: u32) {
         if !(1..=30).contains(&power) {
             return;
@@ -570,21 +460,18 @@ impl TooltipTable {
     }
 }
 
-/// Every entry of a modifier block in document order.
 pub fn values(items: &[Item]) -> Modifiers {
     let mut result = Modifiers::default();
     result.read_all(items);
     result
 }
 
-/// A `targeted_modifier` block as read.
 pub fn targeted(items: &[Item]) -> TargetedModifier {
     let mut tag = None;
     let mut operand = None;
     let mut modifiers = Modifiers::default();
     for item in items {
         match item.keyword().map(|keyword| keyword.folded()).as_deref() {
-            // Read the string and uppercase it before parsing the tag.
             Some(b"key" | b"tag") => {
                 let text = modifiers
                     .unheld
@@ -597,9 +484,6 @@ pub fn targeted(items: &[Item]) -> TargetedModifier {
         }
     }
     TargetedModifier {
-        // `event_target:…`, `var:…`, `[…]` and an undefined `@…` name a
-        // country only at run time; failed tag lookup leaves their text
-        // to be parsed as a scoped variable.
         tag: tag.filter(|tag| !tag.contains(['[', '@', ':'])),
         operand,
         modifiers,
@@ -615,8 +499,6 @@ pub fn equipment_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<EquipmentBo
             let mut values: Vec<Modifier> = Vec::new();
             for field in item.value.items().unwrap_or_default() {
                 if field.keyword_is("instant") {
-                    // Exactly `yes` or `no`; a failed boolean conversion leaves
-                    // it as it was.
                     instant = field
                         .value
                         .scalar()
@@ -627,7 +509,6 @@ pub fn equipment_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<EquipmentBo
                 let Some(stat) = value(field, unheld) else {
                     continue;
                 };
-                // A stat read again adds to the one stored.
                 match values
                     .iter_mut()
                     .find(|existing| existing.name == stat.name)
@@ -645,8 +526,6 @@ pub fn equipment_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<EquipmentBo
         .collect()
 }
 
-/// A `research_bonus` block: each entry a new bonus with a zeroed
-/// fixed5 destination.
 pub fn research_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<Modifier> {
     items
         .iter()
@@ -654,8 +533,6 @@ pub fn research_bonuses(items: &[Item], unheld: &mut Unheld) -> Vec<Modifier> {
         .collect()
 }
 
-/// Failed numeric conversions, named and counted without changing
-/// the stored value the game retains.
 #[derive(Default)]
 pub(crate) struct ScanFailures {
     count: usize,
@@ -729,10 +606,6 @@ impl ScanFailures {
         }
     }
 
-    /// An unrecognized modifier field is looked up before its fixed5 value
-    /// is read; report key lookup failure for a failed text value. Scripted
-    /// and sub-unit names come from the recorded stack, and built-in names
-    /// from the shared modifier registry.
     pub(crate) fn idea_modifiers(&mut self, owner: &str, values: &Modifiers, names: &KeyNames) {
         for value in &values.values {
             if crate::fixed5::script_fixed5(value.text.as_bytes()).is_some() {

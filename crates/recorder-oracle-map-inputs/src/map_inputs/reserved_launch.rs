@@ -1,5 +1,3 @@
-//! The saved signed launch-base list is ordered, including physical aliases.
-//! This comparison never authorizes duplicate countries in the full Save parser.
 
 use super::*;
 use installed_content_save::naval_launch::CountryNavalLaunchOccurrence;
@@ -147,7 +145,6 @@ fn saved_bases(
     };
     for (ordinal, &raw) in physical.iter().skip(1).enumerate() {
         let Some(country) = saved.get(ordinal) else {
-            // The exact physical census difference above already records absence.
             continue;
         };
         if raw != 0 {
@@ -167,8 +164,6 @@ fn saved_bases(
             country.tag.as_slice(),
         );
         match (&words, &country.naval_bases) {
-            // A successfully observed null is accepted only for a saved slot
-            // with no bases, whether its navy block is omitted or empty.
             (None, Some(saved)) if !saved.is_empty() => report.difference(
                 format!("reserved launch country emission {ordinal}.naval_base"),
                 "native-null provider",
@@ -188,8 +183,6 @@ fn saved_bases(
             ),
         }
     }
-    // Verify the other emission tags separately. An unrelated positive-link
-    // failure cannot suppress exact comparisons of the reserved occurrences.
     report.attempt(
         "reserved launch positive country emission joins",
         |report| {

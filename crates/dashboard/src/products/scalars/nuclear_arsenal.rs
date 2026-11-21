@@ -1,9 +1,3 @@
-//! Every country's nuclear stockpile at an hour as the game's top bar shows it: each type's amount
-//! truncated, the amounts added with signed 32-bit wrapping. A rows-at-an-hour product over the
-//! `Nukes` table (a few rows a country, a few kilobytes a campaign), so the total and the rank are
-//! exact at every hour without a table of their own. Each type's line over time is the declared
-//! `country-nukes` series. Type names are the recorded lexical tokens, localised in the reader's
-//! language; a type the game does not name is counted and refused by name.
 
 use super::{Named, rows};
 use crate::{
@@ -36,9 +30,9 @@ pub struct NuclearArsenalParams {
 #[serde(rename_all = "camelCase")]
 pub struct NukeType {
     pub ordinal: u32,
-    /// Its lexical token's spelling; null when the game names no token for it.
+    #[doc = " Its lexical token's spelling; null when the game names no token for it."]
     pub token: Option<String>,
-    /// Its name in the reader's language; null when the content has none.
+    #[doc = " Its name in the reader's language; null when the content has none."]
     pub name: Option<String>,
 }
 
@@ -47,9 +41,9 @@ pub struct NukeType {
 #[serde(rename_all = "camelCase")]
 pub struct NukeCount {
     pub ordinal: u32,
-    /// Whole bombs, as the top bar shows them.
+    #[doc = " Whole bombs, as the top bar shows them."]
     pub value: i32,
-    /// Queued drops whose delay elapsed.
+    #[doc = " Queued drops whose delay elapsed."]
     pub ready: i32,
 }
 
@@ -59,7 +53,7 @@ pub struct NukeCount {
 pub struct NukeCountry {
     pub tag: String,
     pub country_id: u32,
-    /// The top bar's stockpile: every type's count added with signed 32-bit wrapping.
+    #[doc = " The top bar's stockpile: every type's count added with signed 32-bit wrapping."]
     pub total: i32,
     pub counts: Vec<NukeCount>,
 }
@@ -68,21 +62,19 @@ pub struct NukeCountry {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NuclearArsenalReply {
-    /// Every type the game names and every other type a country holds at the hour, by ordinal.
+    #[doc = " Every type the game names and every other type a country holds at the hour, by ordinal."]
     pub types: Vec<NukeType>,
-    /// Every country a tag holds with a stockpile row, greatest total first, ties by tag.
+    #[doc = " Every country a tag holds with a stockpile row, greatest total first, ties by tag."]
     pub countries: Vec<NukeCountry>,
-    /// Why no stockpile is known at the hour.
+    #[doc = " Why no stockpile is known at the hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(NuclearArsenalReply);
 
-/// The nuclear types the game names.
 const NAMED_TYPES: [u32; 2] = [0, 1];
 
-/// The lexical token the game names nuclear type `ordinal` by.
 pub(crate) fn type_token(ordinal: u32) -> Option<u32> {
     match ordinal {
         0 => Some(NUCLEAR_BOMB_TOKEN),
@@ -91,8 +83,6 @@ pub(crate) fn type_token(ordinal: u32) -> Option<u32> {
     }
 }
 
-/// Each country's counts from `rows` (keyed by country, then type), totalled as the top bar adds
-/// them, greatest first, ties by tag; a country no tag holds is left out and counted.
 pub(super) fn countries(rows: &[NukeRow], tag_of: impl Fn(u32) -> Option<String>) -> (Vec<NukeCountry>, usize) {
     let mut by_country: BTreeMap<u32, Vec<NukeCount>> = BTreeMap::new();
     for row in rows {
@@ -204,7 +194,6 @@ impl AtHour for NuclearArsenal {
             reply.warnings.push(format!("{unheld} countries with a stockpile are held by no tag at this hour and are not shown"));
         }
         let spellings: BTreeMap<u32, &[u8]> = rows::<tables::LexicalTokens>(frame).map(|held| held.iter().map(|row| (row.token, row.literal.as_slice())).collect()).unwrap_or_default();
-        // Every type the game names is listed, held or not, so a reply at any hour names every part a line may hold.
         let mut ordinals: Vec<u32> = nukes.iter().map(|row| row.nuke_type).chain(NAMED_TYPES).collect();
         ordinals.sort_unstable();
         ordinals.dedup();

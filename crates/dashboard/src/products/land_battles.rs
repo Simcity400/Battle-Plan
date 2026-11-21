@@ -1,9 +1,3 @@
-//! Land battles, from the recorder's battle tables and the recorded combats: each battle's
-//! identity, peaks and end are the derived `LandBattles` (live) and `LandBattleEnds` (the log of
-//! ends) rows; its hourly sizes, countries and losses are the recorded `LandCombats`,
-//! `LandCombatSides` and `LandCombatProgress`, read over the hours asked as runs of their changes
-//! (`replay::lanes::history`), the changed lists read at their hours (`lanes::at_each`). A window
-//! is a replay block; the ranking reads the ends in its range and the battles live at its end.
 
 use dashboard_base::products::Country;
 use super::{LoadContext, Product, country_ids::Names};
@@ -56,7 +50,6 @@ pub struct LandBattlePeak {
     pub hour: i32,
 }
 
-/// Hours a battle's census read the same sizes and countries, its counter stepping by one an hour.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -67,11 +60,10 @@ pub struct LandBattleRun {
     pub roster_unknown: bool,
     pub countries: [Vec<String>; 2],
     pub countries_unknown: [bool; 2],
-    /// The native counter at `first_hour`.
+    #[doc = " The native counter at `first_hour`."]
     pub duration: i32,
 }
 
-/// Manpower lost as recorded, or why it is unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
@@ -80,7 +72,6 @@ pub enum LandManpower {
     Unknown(String),
 }
 
-/// One side's counters: manpower and the exact signed fixed5 sum of every design's equipment loss.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
@@ -97,7 +88,6 @@ pub enum LandLossTotals {
     Unread(String),
 }
 
-/// A read of the battle's loss counters; `terminal` only for the game's final flush.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleLossRead {
@@ -127,14 +117,14 @@ pub struct LandBattleHistory {
     pub end: Option<BattleEnd>,
     pub end_unknown_hour: Option<i32>,
     pub counter_base: i32,
-    /// The battle's most divisions at once as of the reply's first hour.
+    #[doc = " The battle's most divisions at once as of the reply's first hour."]
     pub prior_peak: Option<LandBattlePeak>,
-    /// Each side's, attacker then defender.
+    #[doc = " Each side's, attacker then defender."]
     pub prior_side_peaks: [Option<LandBattlePeak>; 2],
     pub runs: Vec<LandBattleRun>,
     pub losses: Vec<LandBattleLossRead>,
     pub result: Option<LandBattleResultRead>,
-    /// The hour its end row was written: its end and result are known from then, dated by their own hours.
+    #[doc = " The hour its end row was written: its end and result are known from then, dated by their own hours."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub settled_hour: Option<i32>,
@@ -144,7 +134,7 @@ pub struct LandBattleHistory {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesManifestReply {
-    /// The replay's blocks, cut to the hours the timeline holds.
+    #[doc = " The replay's blocks, cut to the hours the timeline holds."]
     pub windows: Vec<BattleWindow>,
     pub available: bool,
     pub unavailable: Option<String>,
@@ -157,17 +147,16 @@ pub struct LandBattlesManifestReply {
 pub struct LandBattlesReply {
     pub window: usize,
     pub interval: BattleWindow,
-    /// Hours the combat census was read.
+    #[doc = " Hours the combat census was read."]
     pub observed: Vec<(i32, i32)>,
-    /// Warning reasons, which `warnings` name by index.
+    #[doc = " Warning reasons, which `warnings` name by index."]
     pub reasons: Vec<String>,
-    /// (first hour, reason, hours).
+    #[doc = " (first hour, reason, hours)."]
     pub warnings: Vec<(i32, usize, usize)>,
     pub rows: Vec<LandBattleHistory>,
     pub content_warnings: Vec<String>,
 }
 
-/// Countries chosen by slot or tag, or by membership runs (a tag over hours); every country when neither.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -178,8 +167,6 @@ pub struct BattleCountryFilter {
 }
 
 impl BattleCountryFilter {
-    /// Whether a side's countries, read at `hour`, are chosen: a side not known whole is never
-    /// left out, as its countries may be.
     pub fn matches(&self, holders: &dashboard_query::identity::Holders, sides: [(&[String], bool); 2], hour: i32) -> bool {
         if self.countries.is_none() && self.membership.is_none() {
             return true;
@@ -214,9 +201,9 @@ pub struct LandBattlesRankingParams {
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesRankingReply {
     pub rows: Vec<LandBattleHistory>,
-    /// The last hour at or before the range's end the combat census was read.
+    #[doc = " The last hour at or before the range's end the combat census was read."]
     pub census_hour: Option<i32>,
-    /// What it ranked by: casualties fall back to peak size where no battle's were recorded.
+    #[doc = " What it ranked by: casualties fall back to peak size where no battle's were recorded."]
     pub effective_measure: String,
     pub warnings: Vec<BattleWarning>,
     pub content_warnings: Vec<String>,
@@ -227,11 +214,10 @@ pub struct LandBattlesRankingReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattleCourseParams {
     pub branch_id: String,
-    /// A battle id of this branch.
+    #[doc = " A battle id of this branch."]
     pub id: String,
 }
 
-/// An equipment design as a loss read names it; same-named designs stay apart by handle.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandEquipmentDesign {
@@ -239,8 +225,6 @@ pub struct LandEquipmentDesign {
     pub variant: String,
 }
 
-/// One side's counters by design: every design (the side's first read, or its designs changed),
-/// or the positions whose amounts changed since its previous read.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
@@ -266,7 +250,6 @@ pub struct LandBattleCourseRead {
     pub sides: LandLossSides,
 }
 
-/// A battle's whole observed course.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -287,7 +270,7 @@ pub struct LandBattleCourse {
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleCourseReply {
     pub battle: LandBattleCourse,
-    /// The designs the course's reads name by index.
+    #[doc = " The designs the course's reads name by index."]
     pub designs: Vec<LandEquipmentDesign>,
     pub content_warnings: Vec<String>,
 }
@@ -303,7 +286,6 @@ macro_rules! content_warnings {
 }
 content_warnings!(LandBattlesManifestReply, LandBattlesReply, LandBattlesRankingReply, LandBattleCourseReply);
 
-/// The columns each table is read by, by name.
 struct Columns {
     battles: [usize; 9],
     ends: [usize; 27],
@@ -338,7 +320,6 @@ fn try_map<const N: usize>(names: [&str; N], field: impl Fn(&str) -> io::Result<
     Ok(out)
 }
 
-/// A history's cell of column `column`, by the history's own column order.
 fn cell(history: &lanes::History, cells: &[Cell], column: usize) -> Option<Cell> {
     history.columns.binary_search(&column).ok().map(|at| cells[at])
 }
@@ -354,7 +335,6 @@ fn peak(value: Option<i64>, hour: Option<i64>) -> Option<LandBattlePeak> {
     Some(LandBattlePeak { value: u64::try_from(value?).ok()?, hour: hour? as i32 })
 }
 
-/// The distinct handles of a roster of 8-byte items.
 pub fn distinct(bytes: &[u8]) -> Option<u32> {
     if bytes.len() % 8 != 0 {
         return None;
@@ -369,8 +349,6 @@ fn u32s(bytes: &[u8]) -> Option<Vec<u32>> {
     (bytes.len() % 4 == 0).then(|| bytes.chunks_exact(4).map(|item| u32::from_le_bytes(item.try_into().expect("4 bytes"))).collect())
 }
 
-/// The reply's tags of slots, by the one identity rule at `hour`; a slot no tag holds leaves the
-/// side not known whole.
 fn tags_of(names: &Names, slots: &[u32], hour: i32) -> (Vec<String>, bool) {
     let mut unknown = slots.is_empty();
     let mut tags: Vec<String> = Vec::with_capacity(slots.len());
@@ -385,45 +363,33 @@ fn tags_of(names: &Names, slots: &[u32], hour: i32) -> (Vec<String>, bool) {
     (tags, unknown)
 }
 
-/// A battle's key in a reply: its combat and start, and for a result-only row, which has no battle
-/// and is keyed by its end hour, the hour that row was written.
 type Key = (u64, i32, Option<i32>);
 
-/// The reply key of the end row `key` written at `hour`.
 fn end_key(key: u128, hour: i32) -> Key {
     ((key >> 33) as u64, key as u32 as i32, ((key >> 32) & 1 == 1).then_some(hour))
 }
 
-/// Each end row `ended` holds: its reply key, its table key, the hour it was written and its cells.
-/// An end row lives the hour it was written, so each step with cells is a row of its own; two
-/// result-only rows of one combat and end hour are written in consecutive hours under one table key.
 fn written_ends(ended: &lanes::History) -> impl Iterator<Item = (Key, u128, i32, &[Cell])> + '_ {
     ended.keys.iter().flat_map(|(key, steps)| steps.iter().filter_map(move |step| step.cells.as_deref().map(|cells| (end_key(*key, step.hour), *key, step.hour, cells))))
 }
 
-/// A battle's identity in the hours read: its combat, start, and what its rows say.
 #[derive(Clone, Debug, Default)]
 struct Battle {
     combat: u64,
     start: i32,
-    /// A result-only row's hour written, its key's third part.
     result_only: Option<i32>,
     exact: bool,
     counter_base: i32,
     province: Option<u32>,
-    /// The hours its live row was shown in the span: (first, last).
     live: Option<(i32, i32)>,
     peaks: [Option<LandBattlePeak>; 3],
     end: Option<Ended>,
 }
 
-/// What a battle's end row says.
 #[derive(Clone, Debug, Default)]
 struct Ended {
     kind: u8,
     end_hour: i32,
-    /// The hour its row was written, from which it is known: `end_hour`, the hour after for a
-    /// result of a command run after a read, or later for an end not known when its census returns.
     written: i32,
     province: u32,
     last_read: Option<i32>,
@@ -436,14 +402,11 @@ struct Ended {
     winners: Option<u8>,
     result_duration: Option<i32>,
     terminal: [Option<i32>; 2],
-    /// Each side's equipment pool by design after the finalizer's flush; none where not recorded.
     terminal_equipment: [Option<Vec<LandEquipmentLoss>>; 2],
     result_sides: [Vec<u32>; 2],
     result_unknown: u8,
 }
 
-/// Every battle of run `run` live within `from..=to`, by (combat, start); `combat` keeps one
-/// combat's.
 fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
     let one: Vec<u128> = combat.map(u128::from).into_iter().collect();
     let keys = if one.is_empty() { Keys::All } else { Keys::These(&one) };
@@ -468,7 +431,6 @@ fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i
     Ok(())
 }
 
-/// Every battle of run `run` whose end row was written within `from..=to`, by its key.
 fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
     let recording = query.replay.recording();
     let range = combat.map(|combat| (u128::from(combat) << 33, u128::from(combat) << 33 | 0x1_FFFF_FFFF));
@@ -509,7 +471,6 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
         battle.province = Some(end.province);
         battle.end = Some(end);
     }
-    // The end rows' country lists are read at the hour each was written.
     let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
     if !asks.is_empty() {
         let lists = [15, 16, 24, 25];
@@ -524,7 +485,6 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
                 Ok(())
             })
         })?;
-        // Each side's final equipment by design: a recording written before the end row held it reads none.
         let pools = [27, 28];
         let read = dashboard_query::cost::storage(|| {
             lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&pools), &asks, &mut |hour, key, row| {
@@ -547,12 +507,10 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
     Ok(())
 }
 
-/// The end of the battle keyed by the end row `key` written at `hour`, when that row is its end.
 fn end_written(out: &mut BTreeMap<Key, Battle>, key: u128, hour: i32) -> Option<&mut Ended> {
     out.get_mut(&end_key(key, hour))?.end.as_mut().filter(|end| end.written == hour)
 }
 
-/// Every battle of run `run` live or ended within `from..=to`.
 fn battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>) -> io::Result<BTreeMap<Key, Battle>> {
     let mut out = BTreeMap::new();
     live_battles(query, columns, run, from, to, combat, &mut out)?;
@@ -560,7 +518,6 @@ fn battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
     Ok(out)
 }
 
-/// A combat census read: a battle's sizes and duration at an hour.
 #[derive(Clone, Debug, Default)]
 struct CensusRead {
     province: Option<u32>,
@@ -568,20 +525,15 @@ struct CensusRead {
     counts: Option<[u32; 2]>,
 }
 
-/// What the recorded combats say over a span, by combat: each read of its sizes where they changed,
-/// its side references where they changed, and its loss counters where they changed.
 #[derive(Default)]
 struct Combats {
-    /// The span's first hour: each combat's first steps are its state then.
     from: i32,
     census: HashMap<u64, Vec<(i32, Option<CensusRead>)>>,
     sides: HashMap<u64, Vec<(i32, Option<[Vec<u32>; 2]>)>>,
     losses: HashMap<u64, Vec<(i32, Option<Losses>)>>,
-    /// The hour each settled combat's loss counters at `from` were read ([`settle`]).
     since: HashMap<u64, i32>,
 }
 
-/// A loss read: each side's manpower and its equipment pool by design.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Losses {
     manpower: [Option<i32>; 2],
@@ -595,7 +547,6 @@ fn combats(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
     if keys.is_empty() {
         return Ok(out);
     }
-    // Sizes: the rosters' changes (the counter moves every hour and is read where a roster does).
     let shape = [columns.combat[0], columns.combat[2], columns.combat[3]];
     let census = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::LandCombats, &sorted(&shape), Keys::These(&keys), from, to))?;
     let asks: Vec<(i32, u128)> = census.keys.iter().flat_map(|(key, steps)| steps.iter().filter(|step| step.cells.is_some()).map(move |step| (step.hour, *key))).collect();
@@ -616,7 +567,6 @@ fn combats(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
         let combat = *key as u64;
         out.census.insert(combat, steps.iter().map(|step| (step.hour, step.cells.as_ref().and_then(|_| read.get(&(step.hour, combat)).cloned()))).collect());
     }
-    // Countries: the side lists' changes.
     let sides = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::LandCombatSides, &sorted(&columns.sides), Keys::These(&keys), from, to))?;
     let asks: Vec<(i32, u128)> = sides.keys.iter().flat_map(|(key, steps)| steps.iter().filter(|step| step.cells.is_some()).map(move |step| (step.hour, *key))).collect();
     let mut references: HashMap<(i32, u64), [Vec<u32>; 2]> = HashMap::new();
@@ -642,7 +592,6 @@ fn combats(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
         let combat = *key as u64;
         out.sides.insert(combat, steps.iter().map(|step| (step.hour, step.cells.as_ref().and_then(|_| references.get(&(step.hour, combat)).cloned()))).collect());
     }
-    // Losses: the counters' changes, each equipment pool read where it was written.
     let progress = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::LandCombatProgress, &sorted(&columns.progress), Keys::These(&keys), from, to))?;
     let mut pools: Vec<(i32, u128)> = Vec::new();
     for (key, steps) in &progress.keys {
@@ -687,9 +636,6 @@ fn combats(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, c
     Ok(out)
 }
 
-/// The hour each ask's row of `table` last changed at or before the ask's hour, never before the
-/// ask's floor: asks are (key, hour, floor). It looks back a day, then sixteen times further each
-/// round for the keys no change settled, so it costs those keys' changes over the hours looked back.
 fn changed_at(query: &Query<'_>, run: u32, table: TableId, columns: &[usize], asks: &[(u128, i32, i32)]) -> io::Result<HashMap<(u128, i32), i32>> {
     let recording = query.replay.recording();
     let mut by_hour: BTreeMap<i32, Vec<(u128, i32)>> = BTreeMap::new();
@@ -719,9 +665,6 @@ fn changed_at(query: &Query<'_>, run: u32, table: TableId, columns: &[usize], as
     Ok(out)
 }
 
-/// Each combat of `floors` whose loss counters `data` holds from its first hour: the hour those
-/// counters were read, as main dated a read carried into a span, never before the combat's floor
-/// (its battle's first hour in the stretch).
 fn settle(query: &Query<'_>, columns: &Columns, run: u32, data: &mut Combats, floors: &HashMap<u64, i32>) -> io::Result<()> {
     let asks: Vec<(u128, i32, i32)> = data
         .losses
@@ -738,20 +681,15 @@ fn settle(query: &Query<'_>, columns: &Columns, run: u32, data: &mut Combats, fl
     Ok(())
 }
 
-/// The reads of `hours` (ascending) a reply over `first..=last` carries, as main's did: the read
-/// standing at `first`, then each read after it through `last`.
 fn carried(hours: &[i32], first: i32, last: i32) -> std::ops::Range<usize> {
     let end = hours.partition_point(|&hour| hour <= last);
     hours.partition_point(|&hour| hour <= first).saturating_sub(1).min(end)..end
 }
 
-/// A run cut to `first..=last`, its counter stepped to its new first hour.
 fn clipped(run: &LandBattleRun, first: i32, last: i32) -> LandBattleRun {
     LandBattleRun { first_hour: first, last_hour: last, duration: (i64::from(run.duration) + i64::from(first) - i64::from(run.first_hour)) as i32, ..run.clone() }
 }
 
-/// A battle's runs as a reply over `from..=to` shows them, as main's did: those meeting it, cut to
-/// it; with none, a battle whose end it holds shows its last run at that run's last hour.
 fn window_runs(runs: &[LandBattleRun], from: i32, to: i32, ends_within: bool) -> Vec<LandBattleRun> {
     let mut out: Vec<LandBattleRun> = runs.iter().filter(|run| run.first_hour <= to && run.last_hour >= from).map(|run| clipped(run, run.first_hour.max(from), run.last_hour.min(to))).collect();
     if out.is_empty()
@@ -770,7 +708,6 @@ fn sorted(columns: &[usize]) -> Vec<usize> {
     columns
 }
 
-/// The value at `hour` of a change list: the last change at or before it.
 fn at<T>(changes: &[(i32, T)], hour: i32) -> Option<&T> {
     let index = changes.partition_point(|(changed, _)| *changed <= hour);
     index.checked_sub(1).map(|index| &changes[index].1)
@@ -792,7 +729,6 @@ fn total(losses: &Losses, side: usize) -> LandLossTotal {
     }
 }
 
-/// The game's verdict from its winners mask: one side won, else unknown in plain words.
 fn winner(mask: Option<u8>) -> BattleWinner {
     match mask {
         Some(1) => BattleWinner::Side { side: 0 },
@@ -802,17 +738,11 @@ fn winner(mask: Option<u8>) -> BattleWinner {
     }
 }
 
-/// What a whole battle (or its part within the span) says, for a reply.
 struct Shaped {
     history: LandBattleHistory,
-    /// Its loss reads with every design, for its course.
     course: Vec<(i32, bool, Option<Losses>)>,
 }
 
-/// `battle` over `from..=to` as a reply row: its runs from the census reads, cut to the span; its
-/// loss reads, the one standing at the span's first hour at the hour it was read; its end and
-/// result; its peaks as of `peaks_through`; its countries named by the one identity rule. `data`
-/// may begin before `from`.
 #[allow(clippy::too_many_arguments, reason = "a battle is shaped from its reads, names, links, branch, span and peaks' hour")]
 fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_ids::RunLinks, branch: u64, from: i32, to: i32, peaks_through: i32) -> Shaped {
     let combat = battle.combat;
@@ -867,7 +797,6 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_
             _ => runs.push(run),
         }
     }
-    // Losses: each change within the battle's live hours, then its final flush.
     let no_losses: Vec<(i32, Option<Losses>)> = Vec::new();
     let reads = data.losses.get(&combat).unwrap_or(&no_losses);
     let mut course: Vec<(i32, bool, Option<Losses>)> = Vec::new();
@@ -883,7 +812,6 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_
     {
         first.0 = since;
     }
-    // An end and its result are known from the hour their row was written; the final flush is read then.
     let result = end.filter(|end| end.result.is_some() && end.written <= to);
     if let Some(end) = result
         && (end.terminal[0].is_some() || end.terminal[1].is_some())
@@ -938,8 +866,6 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_
     Shaped { history, course }
 }
 
-/// The last hour at or before `to` `table` was read, in whichever stretch of the branch: none
-/// where it was never read by then.
 pub(crate) fn last_read(query: &Query<'_>, table: TableId, to: i32) -> io::Result<Option<i32>> {
     for stretch in query.timeline.stretches.iter().rev().filter(|stretch| stretch.first <= to) {
         let reads = dashboard_query::cost::storage(|| lanes::reads(query.replay.recording(), stretch.run, table, stretch.first, stretch.last.min(to)))?;
@@ -950,13 +876,10 @@ pub(crate) fn last_read(query: &Query<'_>, table: TableId, to: i32) -> io::Resul
     Ok(None)
 }
 
-/// The hours of `from..=to` the combat census was read.
 fn observed(query: &Query<'_>, run: u32, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
     dashboard_query::cost::storage(|| lanes::reads(query.replay.recording(), run, TableId::LandCombats, from, to))
 }
 
-/// Every battle of `from..=to` (one stretch of run `run`, from `first` of it) as reply rows, read
-/// from the hour before so a battle whose end the window holds keeps its last run.
 fn window_rows(source: &Source, query: &Query<'_>, run: u32, first: i32, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Vec<LandBattleHistory>> {
     let columns = Columns::new()?;
     let read_from = (from - 1).max(first);
@@ -973,8 +896,6 @@ fn window_rows(source: &Source, query: &Query<'_>, run: u32, first: i32, from: i
     Ok(rows)
 }
 
-/// A window's row of `history`: a battle with runs in it, or a result without runs settled in it,
-/// shown from that hour with its roster not read, so the window before never lists it early.
 fn listed(mut history: LandBattleHistory, from: i32) -> Option<LandBattleHistory> {
     if history.runs.is_empty() {
         let settled = history.settled_hour.filter(|&hour| hour >= from && history.result.is_some())?;
@@ -983,7 +904,6 @@ fn listed(mut history: LandBattleHistory, from: i32) -> Option<LandBattleHistory
     Some(history)
 }
 
-/// The hours of `from..=to` outside `read`, as warnings of `reason`.
 fn unread_warnings(read: &[(i32, i32)], from: i32, to: i32) -> Vec<(i32, usize, usize)> {
     super::division_log::unread(read, from, to).into_iter().map(|(first, last)| (first, 0, (last - first + 1) as usize)).collect()
 }
@@ -1070,10 +990,8 @@ impl Product for LandBattles {
     }
 }
 
-/// The measures a ranking ranks by.
 pub const MEASURES: [&str; 3] = ["Casualties", "Peak size", "Length"];
 
-/// A battle as a ranking reads it at the range's end: its casualties, length and peak.
 #[derive(Clone, Debug)]
 pub struct Ranked {
     pub casualties: Option<f64>,
@@ -1082,8 +1000,6 @@ pub struct Ranked {
     pub id: String,
 }
 
-/// The order the ranking shows: by the measure ranked, greatest first, ties by id; casualties fall
-/// back to peak size where no battle's were recorded.
 pub fn rank(entries: &mut [Ranked], measure: &str) -> &'static str {
     let effective = match measure {
         "Casualties" if entries.iter().any(|entry| entry.casualties.is_some()) => "Casualties",
@@ -1099,8 +1015,6 @@ pub fn rank(entries: &mut [Ranked], measure: &str) -> &'static str {
     effective
 }
 
-/// Where a ranked battle was read: its stretch's run, its combat, its first hour in the stretch,
-/// the hour the ranking read it, whether it was live at the range's end, and that end.
 #[derive(Clone, Copy, Debug)]
 struct Chosen {
     run: u32,
@@ -1111,9 +1025,6 @@ struct Chosen {
     to: i32,
 }
 
-/// The ranking's rows as main's carried them: the loss read standing at each battle's read, at the
-/// hour it was read; an ended battle's from its last hourly read, before its final flush, with its
-/// last census read's sizes. Reads only the rows shown.
 fn last_reads(query: &Query<'_>, columns: &Columns, rows: &mut [(LandBattleHistory, Chosen)]) -> io::Result<()> {
     let recording = query.replay.recording();
     let mut runs: Vec<u32> = rows.iter().map(|(_, chosen)| chosen.run).collect();
@@ -1214,7 +1125,6 @@ impl Product for LandBattlesRanking {
             let first = query.timeline.at(to).map_or(from, |whole| whole.first);
             let read = observed(&query, stretch.run, from, to)?;
             warnings.extend(unread_warnings(&read, from, to).into_iter().map(|(hour, _, count)| BattleWarning { hour, reason: ROSTER_UNREAD.into(), count }));
-            // The battles that ended in the range, and those live at its end, read at the end.
             let mut all = BTreeMap::new();
             ended_battles(&query, &columns, stretch.run, from, to, None, &mut all)?;
             live_battles(&query, &columns, stretch.run, to, to, None, &mut all)?;
@@ -1224,7 +1134,6 @@ impl Product for LandBattlesRanking {
             for battle in all.values() {
                 let mut shaped = shape(battle, &data, &names, &links, query.timeline.id, from, to, to).history;
                 let read = battle.live.map(|(_, last)| last).or_else(|| battle.end.as_ref().and_then(|end| end.last_read)).unwrap_or(battle.start).min(to);
-                // An ended battle's last read is its end row's.
                 if battle.live.is_none()
                     && let Some(end) = &battle.end
                 {
@@ -1279,8 +1188,6 @@ impl Product for LandBattlesRanking {
     }
 }
 
-/// A battle id's key: `<branch>:<combat>:<start>`, and for a result-only row, keyed by its end
-/// hour, `:<hour written>` after it.
 pub fn parse_id(id: &str, branch: u64) -> Option<Key> {
     let mut parts = id.split(':');
     let (held, combat, start) = (parts.next()?, parts.next()?, parts.next()?);
@@ -1289,8 +1196,6 @@ pub fn parse_id(id: &str, branch: u64) -> Option<Key> {
     Some((combat.parse().ok()?, start.parse().ok()?, written))
 }
 
-/// A side's pools as course reads: every design the first time and when its designs change, else
-/// the positions whose amounts changed.
 fn course_side(previous: Option<&Vec<(usize, i64)>>, pool: Option<&Vec<LandEquipmentLoss>>, manpower_value: LandManpower, designs: &mut Vec<u64>) -> (LandLossSide, Option<Vec<(usize, i64)>>) {
     let Some(pool) = pool else { return (LandLossSide::Unknown { manpower: manpower_value, unknown: NOT_RECORDED.into() }, None) };
     let indexed: Vec<(usize, i64)> = pool
@@ -1377,8 +1282,6 @@ impl Product for LandBattleCourses {
     }
 }
 
-/// `designs` named at `hour` through the shared design naming, in their order, and each reason a
-/// design has no name, counted: a design is shown by its handle then.
 pub(super) fn design_names(query: &Query<'_>, content: &super::divisions::Content, run: u32, hour: i32, designs: &[u64]) -> io::Result<(Vec<LandEquipmentDesign>, Vec<String>)> {
     use super::divisions::{DESIGN_TABLES, Refusals, find};
     use replay::at::Read;

@@ -3,7 +3,6 @@ import { sectionFields } from './options.ts';
 import type { OptionSection, OptionValue } from './options';
 import type { CountrySelection, WidgetTime } from './model';
 
-/** Every widget's settings panel has these sections, always in this order. */
 export const SETTINGS_SECTIONS = ['campaign', 'countries', 'time', 'size', 'options', 'factionColours', 'axes', 'interaction'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 
@@ -12,7 +11,6 @@ export const SECTION_TITLES: Record<SettingsSection, string> = {
   options: 'Options', factionColours: 'Faction colours', axes: 'Axes', interaction: 'Interaction',
 };
 
-/** The sections this widget shows: one appears only when it has something to set. */
 export function settingsSections(meta: WidgetMeta | undefined, resolved: Readonly<Record<string, OptionValue>>,
   countries?: CountrySelection, time?: WidgetTime['mode']): SettingsSection[] {
   const fields = meta?.options;

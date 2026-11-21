@@ -1,9 +1,3 @@
-//! AirRegionalMissions registrations carried between hours per country air
-//! object ([`super::MissionStore`], [`crate::mission_changes`]): quiet hours
-//! read no active-region id, regional vector or mission pointer and publish
-//! a fresh walk's rows; a hooked registration re-reads only its country; an
-//! invalidation re-reads every country; a census disagreement reads the
-//! country afresh and its outcome stands.
 use super::*;
 use crate::mission_changes::{Counts, Watches};
 use engine_native::{
@@ -14,7 +8,6 @@ use engine_native::{
 use std::cell::RefCell;
 
 const GS: usize = 0x1000;
-/// Country slots `1..=SLOTS`; slot `s` holds country id `s`.
 const SLOTS: usize = 4;
 const TABLE: usize = 0x2000;
 const LINKS: usize = 0x2100;
@@ -22,13 +15,9 @@ const COUNTRY: usize = 0x3000;
 const MANAGER: usize = 0x4000;
 const ROSTER: usize = 0x4100;
 const AIR: usize = 0x5000;
-/// Each slot's active-region ids, regional vector headers and mission
-/// pointers lie in its own window: `REGIONAL + slot * WINDOW`.
 const REGIONAL: usize = 0x1_0000;
 const WINDOW: usize = 0x1000;
-/// Unmapped: only the mission pointers' values are read.
 const WINGS: usize = 0x10_0000;
-/// Every country's regional vector covers region ids below this.
 const REGIONS: u32 = 8;
 
 fn air(slot: u32) -> usize {
@@ -41,8 +30,6 @@ fn window(slot: u32) -> usize {
 
 struct World {
     bytes: Vec<u8>,
-    /// Each slot's registered regions, ascending, with their wings' census
-    /// indices in vector order.
     countries: Vec<Vec<(u32, Vec<usize>)>>,
     census: Vec<WingIdentity>,
 }
@@ -57,14 +44,12 @@ impl World {
     fn u64(&mut self, at: usize, value: u64) {
         self.put(at, &value.to_le_bytes());
     }
-    /// A vector header with `capacity` room.
     fn array(&mut self, at: usize, data: usize, count: u32, capacity: u32) {
         self.u64(at, data as u64);
         self.u32(at + cpdx_array::CAPACITY, capacity);
         self.u32(at + cpdx_array::COUNT, count);
     }
 
-    /// Slot `s` registers one to three missions in each of its regions.
     fn new() -> Self {
         let mut world = Self {
             bytes: vec![0; REGIONAL + (SLOTS + 1) * WINDOW],
@@ -103,7 +88,6 @@ impl World {
         world
     }
 
-    /// A census wing of `slot` assigned to `region`.
     fn wing(&mut self, slot: u32, region: u32) -> usize {
         let index = self.census.len();
         self.census.push(WingIdentity {
@@ -116,10 +100,6 @@ impl World {
         index
     }
 
-    /// Writes `slot`'s registrations as mission registration and
-    /// mission unregistration leave them: each region's vector at a fixed place
-    /// with room for 16, so a change of members keeps every header but the
-    /// counts.
     fn layout(&mut self, slot: u32) {
         let base = window(slot);
         let (outer, ids) = (base, base + 0x100);
@@ -156,7 +136,6 @@ impl World {
             regions.len() as u32,
             16,
         );
-        // Only the count is compared; the data is never read.
         self.array(at + cstrategic_air::ALL_ACTIVE_MISSIONS, ids, all, 64);
     }
 
@@ -166,8 +145,6 @@ impl World {
         census
     }
 
-    /// A fresh walk's rows: slots ascending, regions ascending, wings in
-    /// vector order.
     fn rows(&self) -> Vec<Row> {
         self.countries
             .iter()
@@ -182,7 +159,6 @@ impl World {
     }
 }
 
-/// Counts each slot's regional reads.
 struct Traced<'a> {
     bytes: &'a [u8],
     regional: RefCell<[usize; SLOTS + 1]>,
@@ -207,7 +183,6 @@ struct Hour {
     outcome: Outcome,
     failure: FailureContext,
     counts: Counts,
-    /// Regional reads per slot.
     regional: [usize; SLOTS + 1],
 }
 
@@ -219,7 +194,6 @@ impl Hour {
     }
 }
 
-/// One walk with the store, against `census`.
 fn walk_with(
     world: &World,
     census: &[WingIdentity],
@@ -257,7 +231,6 @@ fn walk(world: &World, store: &mut MissionStore, watches: &Watches) -> Hour {
     walk_with(world, &world.sorted_census(), store, watches)
 }
 
-/// What a fresh walk publishes.
 fn fresh(world: &World, census: &[WingIdentity]) -> (Outcome, Vec<Row>) {
     let mut rows = Vec::new();
     let outcome = engine_native::cair_regional_mission::walk_with_diagnostic(
@@ -275,8 +248,6 @@ fn fresh(world: &World, census: &[WingIdentity]) -> (Outcome, Vec<Row>) {
     (outcome, rows)
 }
 
-/// The first hour reads and holds every country; this is what the old
-/// behaviour does every hour.
 fn first_hour(world: &World, store: &mut MissionStore, watches: &Watches) -> Hour {
     let first = walk(world, store, watches);
     assert_eq!(first.rows, world.rows());
@@ -299,8 +270,6 @@ fn first_hour(world: &World, store: &mut MissionStore, watches: &Watches) -> Hou
     first
 }
 
-/// Mission registration or mission unregistration runs on `slot`'s country air
-/// object: the detour notifies it around the original.
 fn register(world: &mut World, watches: &Watches, slot: u32, change: impl FnOnce(&mut World)) {
     let notification = watches.notify(air(slot), 0);
     change(world);
@@ -326,7 +295,6 @@ fn quiet_hours_read_no_regional_vector_and_publish_a_fresh_walks_rows() {
             ),
             (0, SLOTS as u64, first.rows.len() as u64)
         );
-        // Held by the unchanged quiet token, without a lookup.
         assert!(quiet.counts.quiet);
         assert!(quiet.read().is_empty(), "{:?}", quiet.regional);
         assert_eq!(
@@ -337,7 +305,6 @@ fn quiet_hours_read_no_regional_vector_and_publish_a_fresh_walks_rows() {
     }
 }
 
-/// The sidecar never changes strict walk rows or their native observations.
 #[test]
 fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried() {
     fn active(world: &mut World, slot: u32, reverse: bool) {
@@ -418,11 +385,8 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
     let (quiet, reads) = ordered(&world, &mut store, &watches);
     assert_eq!(quiet, first);
     assert_eq!(reads, [0; SLOTS + 1]);
-    // A certification-preserving re-read of the regional vectors must not poll all-active pointers.
     let bad = window(1) + 0x900;
     world.u64(bad, 0);
-    // Carrier combat can list an empty ordinary region and change that
-    // header, without changing the ordinary all-active vector or writer.
     let ordinary = world.countries[1]
         .iter()
         .map(|(_, rows)| rows.len())
@@ -438,7 +402,6 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
     let (moved, reads) = ordered(&world, &mut store, &watches);
     assert_eq!(moved, first);
     assert!(reads[1] > 0);
-    // Notification revokes that order. The independently failed read stays unknown.
     drop(watches.notify(air(1), 0));
     watches.boundary(false);
     let (failed, _) = ordered(&world, &mut store, &watches);
@@ -462,8 +425,6 @@ fn a_hooked_registration_rereads_only_its_country() {
     let watches = Watches::enabled(16);
     let mut store = MissionStore::new();
     first_hour(&world, &mut store, &watches);
-    // SetRegion on slot 2's wing: Unregister there, then Register in
-    // another of its regions.
     let wing = world.countries[2][0].1[0];
     world.census[wing].region = Some(4);
     register(&mut world, &watches, 2, |world| {
@@ -476,15 +437,12 @@ fn a_hooked_registration_rereads_only_its_country() {
     assert_eq!((hour.counts.read, hour.counts.reused), (1, 3));
     assert!(!hour.counts.quiet);
     assert_eq!(hour.rows, world.rows());
-    // The re-read country is carried again from the next quiet hour.
     watches.boundary(false);
     let quiet = walk(&world, &mut store, &watches);
     assert!(quiet.read().is_empty());
     assert_eq!(quiet.rows, world.rows());
 }
 
-/// Unregistering one mission and registering another in the same region
-/// keeps every gathered header; only the notification shows the change.
 #[test]
 fn a_writer_that_keeps_every_header_is_still_seen() {
     let mut world = World::new();
@@ -513,13 +471,11 @@ fn an_invalidating_hour_or_a_forgotten_store_rereads_every_country() {
     let watches = Watches::enabled(16);
     let mut store = MissionStore::new();
     let first = first_hour(&world, &mut store, &watches);
-    // Load, gap or recovery.
     watches.boundary(true);
     let hour = walk(&world, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (SLOTS as u64, 0));
     assert_eq!(hour.read(), [1, 2, 3, 4]);
     assert_eq!(hour.rows, first.rows);
-    // A failed AirMissions job forgets the store.
     watches.boundary(false);
     store.forget();
     let forgotten = walk(&world, &mut store, &watches);
@@ -529,9 +485,6 @@ fn an_invalidating_hour_or_a_forgotten_store_rereads_every_country() {
     );
 }
 
-/// The carrier pass lists a combat region with no ordinary registration
-/// without a hook; its moved header reads the country afresh, with that
-/// region's empty vector.
 #[test]
 fn an_unhooked_carrier_region_moves_the_header_and_rereads() {
     let mut world = World::new();
@@ -545,10 +498,6 @@ fn an_unhooked_carrier_region_moves_the_header_and_rereads() {
     assert_eq!(hour.rows, world.rows());
 }
 
-/// A carried registration this hour's census disagrees with (a wing moved
-/// to another country without a registration change, or gone) reads its
-/// country afresh: the outcome, reason and failure context are a fresh
-/// walk's, and the walk holds nothing.
 #[test]
 fn a_census_disagreement_reads_the_country_afresh_with_the_fresh_outcome() {
     let world = World::new();
@@ -582,10 +531,8 @@ fn a_census_disagreement_reads_the_country_afresh_with_the_fresh_outcome() {
         assert_eq!((hour.outcome, hour.failure), (expected, failure));
         assert_eq!(failure.country_slot, Some(3));
         assert!(hour.regional[3] != 0);
-        // Slots 1 and 2 were carried before the failure.
         assert_eq!(hour.counts.reused, 2);
         watches.boundary(false);
-        // The failed walk holds nothing: the next hour reads every country.
         let after = walk(&world, &mut store, &watches);
         assert_eq!((after.counts.read, after.counts.reused), (SLOTS as u64, 0));
         watches.boundary(false);
@@ -594,9 +541,6 @@ fn a_census_disagreement_reads_the_country_afresh_with_the_fresh_outcome() {
 
 #[test]
 fn an_unobserved_write_is_carried_stale() {
-    // Guards the premise of the family: only hooked writers move a
-    // certificate, so a missed writer would be carried until an
-    // invalidation, which is why both writer sites are hooked.
     let mut world = World::new();
     let watches = Watches::enabled(16);
     let mut store = MissionStore::new();

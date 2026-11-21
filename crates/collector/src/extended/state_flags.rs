@@ -1,4 +1,3 @@
-//! Hourly state flags, using the authenticated States census from this callback.
 use crate::{
     sampling::qpc,
     spooling::table,
@@ -12,7 +11,6 @@ use std::mem::size_of;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::StateFlags];
-// Metadata is emitted once by the combined States/StateFlags source group.
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -94,8 +92,6 @@ impl Captured {
         self.rows.grow(&mut capacity.rows);
         grow_vec(&mut self.first, capacity.rows);
     }
-    /// Retain each original mandatory census occurrence before native
-    /// execution resumes, including a cold empty frame.
     pub fn visit(&mut self, source: cstate::Source) {
         if self.source_failure.is_none() {
             match self
@@ -144,14 +140,10 @@ impl Captured {
         };
     }
 
-    /// Only the prefix certified by the completed mandatory States walk.
-    /// A visited source preceding a failed mandatory field is not admitted.
     pub(crate) fn completed_sources(&self) -> (&[cstate::Source], Outcome, usize) {
         (&self.first[..self.source.len()], self.source, self.required)
     }
 
-    /// Accepted census failure preserves storage and growth demand.
-    /// read_flags rejects the failed parent before touching native memory.
     pub(crate) fn fail_sources(&mut self, reason: &'static str) {
         self.release_sources();
         self.source = Outcome::Unavailable { reason };
@@ -171,7 +163,6 @@ impl Captured {
         self.acquire(memory, base, state)
     }
 
-    /// Runs on the existing States worker, where active tree storage may grow.
     pub(crate) fn acquire_owned(
         &mut self,
         memory: &impl Memory,
@@ -198,7 +189,6 @@ impl Captured {
             self.source,
             &mut self.rows.rows,
         );
-        // Conversion only sees numeric rows, including after a failed read.
         self.release_sources();
         self.source = super::MISSING;
         [qpc().saturating_sub(begin).max(0) as u64]
@@ -270,8 +260,6 @@ mod tests {
         bytes
     }
 
-    /// Empty MSVC strings (capacity 15) at both display-name fields, as every
-    /// live CState holds them.
     fn empty_names(bytes: &mut [u8], state: usize) {
         for field in [cstate::PRIMARY_DISPLAY_NAME, cstate::SECONDARY_DISPLAY_NAME] {
             let capacity = state + field + engine_native::msvc_string::CAPACITY;
@@ -493,8 +481,6 @@ mod tests {
         bytes[0x4000 + cstate::ID..0x4004 + cstate::ID].copy_from_slice(&3_u32.to_le_bytes());
         bytes[0x4000 + cstate::DEMILITARIZED] = 2;
         empty_names(&mut bytes, 0x4000);
-        // The census job also runs the movement pass, whose module globals the
-        // overlay supplies above this dense fixture.
         let memory = Movement(SliceMemory {
             base: 0,
             bytes: &bytes,
@@ -562,7 +548,6 @@ mod tests {
         }
         let mut frame = crate::sampling::Captured::new();
         for canceled in [false, true] {
-            // Room for the census: the worker grows nothing before it panics.
             frame.states = vec![cstate::Row::default(); 4];
             frame
                 .extended
@@ -587,7 +572,6 @@ mod tests {
             })
             .unwrap();
             let mut pending = Some(request);
-            // SAFETY: the fixture and output storage remain owned through collection.
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
             if canceled {
                 pool.shutdown().unwrap();
@@ -646,7 +630,6 @@ mod tests {
         let buffers = request_layout(&request);
         let mut report = request.run(&memory);
         assert_eq!(report.census.result, Outcome::Rows { len: 1 });
-        // A distinct synthetic cost verifies restoration returns the runner's value.
         report.ticks = 137;
         let restored = frame.restore_states_request(request, report, None);
         assert_eq!(restored.ticks, 137);

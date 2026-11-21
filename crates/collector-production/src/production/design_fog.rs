@@ -1,4 +1,3 @@
-//! A changed singleton read on the existing design workers, never a census.
 use super::{design_context::Snapshot, *};
 use collector_observers::world_input_changes::{Changes, Domain, Observer, Token};
 use std::sync::{Arc, Mutex, OnceLock};

@@ -1,6 +1,3 @@
-//! Doctrine notifications share publication and lifetime with world-input hooks.
-//! Coalesced receivers are marked for the parked Slow worker. Occurrence
-//! callbacks retain grant ordering, expiry counts and effective-gain operands.
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 pub use engine_mutations::doctrine_mutations::Domain;
 use engine_mutations::doctrine_mutations::{DOMAINS, SITES};
@@ -29,29 +26,28 @@ static HANDLER: AtomicUsize = AtomicUsize::new(0);
 static COST_HANDLER: AtomicUsize = AtomicUsize::new(0);
 static GAIN_HANDLER: AtomicUsize = AtomicUsize::new(0);
 static CONTEXT: AtomicUsize = AtomicUsize::new(0);
-/// # Safety
-/// The host retains `context` until all owned native callbacks have quiesced.
+#[doc = " # Safety"]
+#[doc = " The host retains `context` until all owned native callbacks have quiesced."]
 pub unsafe fn bind(context: usize, handler: unsafe fn(usize, Domain, usize)) {
     CONTEXT.store(context, Ordering::Release);
     HANDLER.store(handler as *const () as usize, Ordering::Release);
 }
-/// The bound store's address; zero when none is.
 #[cfg(any(test, feature = "test-support"))]
 pub fn bound_context() -> usize {
     CONTEXT.load(Ordering::Acquire)
 }
-/// # Safety
-/// Uses the same retained context and quiescence contract as `bind`.
+#[doc = " # Safety"]
+#[doc = " Uses the same retained context and quiescence contract as `bind`."]
 pub unsafe fn bind_gain(handler: unsafe fn(usize, usize, i64)) {
     GAIN_HANDLER.store(handler as *const () as usize, Ordering::Release);
 }
-/// # Safety
-/// Uses the same retained context and quiescence contract as `bind`.
+#[doc = " # Safety"]
+#[doc = " Uses the same retained context and quiescence contract as `bind`."]
 pub unsafe fn bind_cost_consumption(handler: unsafe fn(usize, usize, usize)) {
     COST_HANDLER.store(handler as *const () as usize, Ordering::Release);
 }
-/// # Safety
-/// The host owns these taps together with the enclosing observer family.
+#[doc = " # Safety"]
+#[doc = " The host owns these taps together with the enclosing observer family."]
 pub unsafe fn gain_taps(
     _memory: &impl Memory,
     base: usize,
@@ -75,8 +71,6 @@ unsafe extern "system-unwind" fn gain_store(registers: &crate::hook::Registers, 
     let handler = GAIN_HANDLER.load(Ordering::Acquire);
     if handler != 0 {
         let handler: unsafe fn(usize, usize, i64) = unsafe { std::mem::transmute(handler) };
-        // The exact destination and source of the intercepted native store.
-        // Neither operand requires a memory read or a country/track walk.
         let pointer = registers.rsi.wrapping_add(registers.r14);
         let value = if index == 0 {
             registers.rax
@@ -110,11 +104,11 @@ pub fn enabled(enabled: bool) {
     refresh::enabled(enabled);
     pending::enabled(enabled);
 }
-/// Free every doctrine certificate table.
-///
-/// # Safety
-/// The world-input hooks and forwarded notifications must be removed and drained,
-/// and the acquisition pool must be stopped so no notification or capture can run.
+#[doc = " Free every doctrine certificate table."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " The world-input hooks and forwarded notifications must be removed and drained,"]
+#[doc = " and the acquisition pool must be stopped so no notification or capture can run."]
 pub unsafe fn release() {
     unsafe { refresh::release() };
     unsafe { pending::release() };
@@ -126,12 +120,12 @@ pub unsafe fn release() {
 }
 
 
-/// Constructed and published with the enclosing world-input family. All sites
-/// take integer/pointer operands and return only RAX (or no value).
-///
-/// # Safety
-/// The host verified the executable and owns restoration and quiescence of
-/// every returned hook and its observer storage before unloading the collector.
+#[doc = " Constructed and published with the enclosing world-input family. All sites"]
+#[doc = " take integer/pointer operands and return only RAX (or no value)."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " The host verified the executable and owns restoration and quiescence of"]
+#[doc = " every returned hook and its observer storage before unloading the collector."]
 pub unsafe fn hooks(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'static str> {
     for site in &SITES {
         engine_sites::hook(base, site.rva)?.sentinel::<16>()?;

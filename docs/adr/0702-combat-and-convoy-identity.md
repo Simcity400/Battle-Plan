@@ -1,0 +1,9 @@
+# Separate combat tactics, theatre areas and convoy operands from transient identity
+
+Use the country's authenticated tactic object and its database ID. Zero denotes the authenticated null-tactic object. A null pointer or another vtable is a read failure. The game's lazily initialized tactic database retains pointers in ID order, with a null slot at zero. Recording does not initialise it. Compare a tactic's counter key with the opposing tactic's ID. Read shared modifier metadata once per callback. Keep weight operands independent of the selected identity and name so a missing name or weight cannot erase a valid identity. Addition belongs to playback, even when the stored terms would overflow when summed. A transient tactic pointer supports the same callback's read and is never part of replay identity.
+
+A theatre lists controller areas in occurrence order. Insertion deduplicates pointers, but a rebuild replaces the vector. An area ordinal is only a position, and the process-local counter is absent from saves. Record the full theatre handle and preserve an absent representative province when its pointer is null. Clearing the world clears member backlinks.
+
+The country-embedded convoy cache supplies a signed quantity only when its validity byte is set. Loading invalidates it. Divide the raw quantity by the fixed-point scale before narrowing for the native getter. The convoy reservation vector and the embedded equipment pool are independent of the ship operands used by combat bars. Preserve the ship's stored variant speed and maxima before applying a bar's minimum denominator.
+
+[Tactic reader](../../crates/engine-native/src/ccombat_tactic.rs) · [Controller area](../../crates/engine-native/src/ccontroller_area.rs) · [Convoy cache](../../crates/engine-native/src/cconvoys.rs) · [Convoy ship operands](../../crates/engine-native/src/cconvoy_ship.rs)

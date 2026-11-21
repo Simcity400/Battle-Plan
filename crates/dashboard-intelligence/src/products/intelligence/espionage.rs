@@ -1,10 +1,3 @@
-//! The espionage log, by the game's rules: operations under way at an hour
-//! ([`EspionageOperations`], rows at an hour), every completed operation paged from the declared
-//! log `operation-completions` ([`EspionageLog`]), every operation that left the census with no
-//! completion row, from `Operations`' lifetimes ([`EspionageEnded`]), one operation at a read
-//! ([`EspionageOperation`]: its operatives and first sighting, for a tooltip), the operation types
-//! the recorded content defines, named ([`EspionageTypes`]), and the tokens the recording gave each
-//! over the history ([`EspionageTypeTokens`]).
 
 use super::{Country, IDENTITY, Tags, branch, missing, operative_content};
 use crate::{
@@ -35,10 +28,8 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The declared log of completed operations.
 pub const LOG: &str = "operation-completions";
 
-/// OperationCompletions' columns, as the schema numbers them.
 const ID: usize = 0;
 const TARGET: usize = 1;
 const DEFINITION: usize = 2;
@@ -50,7 +41,6 @@ const DESCRIPTION: usize = 7;
 const DESCRIPTION_ERROR: usize = 8;
 const DESCRIPTION_REQUIRED: usize = 9;
 
-/// The columns an espionage log page carries, by name.
 pub const COLUMNS: [&str; 16] = [
     "id",
     "owner",
@@ -70,24 +60,23 @@ pub const COLUMNS: [&str; 16] = [
     "lastSeen",
 ];
 
-/// An operation's values at a read, as the game's operation view computes them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperationState {
-    /// Written by the launch with the duration: none before it.
+    #[doc = " Written by the launch with the duration: none before it."]
     pub start_hour: Option<i32>,
     pub duration_days: i32,
-    /// Selected phase definitions, not completed phases.
+    #[doc = " Selected phase definitions, not completed phases."]
     pub phase_count: u32,
-    /// Zero-based, at the read; none where the game's view selects none.
+    #[doc = " Zero-based, at the read; none where the game's view selects none."]
     pub current_phase: Option<u32>,
-    /// Signed days since the start at the read; none before the launch, once terminal, and at the
-    /// game's own -1 and full-duration results.
+    #[doc = " Signed days since the start at the read; none before the launch, once terminal, and at the"]
+    #[doc = " game's own -1 and full-duration results."]
     pub elapsed_days: Option<i32>,
-    /// The resource meter, fixed5 from 0 to 100,000; not equipment readiness.
+    #[doc = " The resource meter, fixed5 from 0 to 100,000; not equipment readiness."]
     pub preparation_ratio: Option<i32>,
-    /// Every assignment slot, assigned or not.
+    #[doc = " Every assignment slot, assigned or not."]
     pub assigned_slots: u32,
     pub auto_repeat: bool,
     pub auto_commence: bool,
@@ -111,8 +100,6 @@ impl OperationState {
     }
 }
 
-/// The resource meter: signed wrapping multiplication and division, zero over a zero requirement,
-/// clamped to [0, 100,000]; the three fixed5 sentinels show a full meter.
 pub fn preparation_ratio(row: &OperationRow) -> Option<i32> {
     let current = row.preparation_current;
     let ratio = if row.preparation_required == 0 {
@@ -125,8 +112,6 @@ pub fn preparation_ratio(row: &OperationRow) -> Option<i32> {
     Some(ratio as i32)
 }
 
-/// Days from the start's day to the read's, each truncated separately; -1 and the full duration
-/// are the view's own "none".
 pub fn elapsed_days(row: &OperationRow, hour: i32) -> Option<i32> {
     if row.duration_days == 0 || row.terminal != 0 {
         return None;
@@ -142,7 +127,6 @@ pub fn current_phase(row: &OperationRow, hour: i32) -> Option<u32> {
     u32::try_from(phase).ok().filter(|phase| *phase < row.phase_count)
 }
 
-/// An assigned operative's saved name, or why it is not shown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -152,8 +136,6 @@ pub struct OperativeName {
     pub unavailable: Option<String>,
 }
 
-/// The operatives in an operation's slots at a read, in slot order; none where its slots were not
-/// all read. `members` are the read's census rows of those operatives.
 pub fn operatives(row: &OperationRow, slots: Option<&[OperationAssignmentRow]>, members: Option<&[OperativeMembershipRow]>) -> Option<Vec<OperativeName>> {
     let mut slots: Vec<&OperationAssignmentRow> = slots?.iter().filter(|slot| slot.operation == row.id).collect();
     slots.sort_unstable_by_key(|slot| slot.ordinal);
@@ -199,18 +181,15 @@ pub fn operatives(row: &OperationRow, slots: Option<&[OperationAssignmentRow]>, 
     )
 }
 
-/// The census keys of the operatives `assignments` place: every roster row of each.
 fn operative_ranges(assignments: &[OperationAssignmentRow]) -> Vec<(u128, u128)> {
     let ids: BTreeSet<u64> = assignments.iter().map(|slot| slot.operative).filter(|id| *id != 0).collect();
     ids.into_iter().map(|id| (u128::from(id) << 40, u128::from(id) << 40 | ((1u128 << 40) - 1))).collect()
 }
 
-/// A definition token's recorded literal, where it is text.
 fn literal(bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(bytes).ok().filter(|text| !text.is_empty()).map(str::to_owned)
 }
 
-/// The literals of `tokens` from LexicalTokens at `hour` of run `run`.
 fn literals(recording: &replay::columnar_frames::Recording, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
         return Ok(HashMap::new());
@@ -221,7 +200,6 @@ fn literals(recording: &replay::columnar_frames::Recording, run: u32, hour: i32,
     Ok(snapshot.rows.iter().filter_map(|&(key, slot)| Some((key as u32, literal(read::text(&view, 0, slot)?)?))).collect())
 }
 
-/// The typed rows of table `T` a read of a recording of row format `format` holds.
 fn typed<T: TableSchema>(snapshot: &lanes::Snapshot, format: u16) -> io::Result<Vec<T::Row>>
 where
     T::Row: Clone,
@@ -230,7 +208,6 @@ where
     Ok(T::take(rows).unwrap_or_default())
 }
 
-/// Whether a read's table was available at its hour.
 fn available(snapshot: &lanes::Snapshot) -> bool {
     matches!(snapshot.status, Status::Complete | Status::Truncated { .. })
 }
@@ -242,7 +219,7 @@ pub struct EspionageOperations;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageOperationsParams {
     pub branch_id: String,
-    /// Only this country's operations, run by it or against it; every one when none.
+    #[doc = " Only this country's operations, run by it or against it; every one when none."]
     #[serde(default)]
     pub country: Option<dashboard_base::products::Country>,
 }
@@ -251,11 +228,11 @@ pub struct EspionageOperationsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperationUnderWay {
-    /// The full handle, as a decimal string.
+    #[doc = " The full handle, as a decimal string."]
     pub id: String,
     pub owner: Country,
     pub target: Country,
-    /// The definition's token as the recording names it; none where its literal was not recorded.
+    #[doc = " The definition's token as the recording names it; none where its literal was not recorded."]
     pub operation: Option<String>,
     pub state: OperationState,
 }
@@ -264,7 +241,7 @@ pub struct OperationUnderWay {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationsReply {
-    /// By handle; an operation that completed and waits for its removal is not one.
+    #[doc = " By handle; an operation that completed and waits for its removal is not one."]
     pub operations: Vec<OperationUnderWay>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
@@ -298,7 +275,6 @@ impl AtHour for EspionageOperations {
         vec![TableId::Operations, TableId::LexicalTokens, IDENTITY[0], IDENTITY[1]]
     }
 
-    /// The operations and the identity first; then the tokens their definitions name.
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<RowRead> {
         match step {
             0 => vec![RowRead::all(TableId::Operations), RowRead::all(IDENTITY[0]), RowRead::all(IDENTITY[1])],
@@ -349,7 +325,6 @@ impl AtHour for EspionageOperations {
     }
 }
 
-/// One operation at a read: its first sighting, its values and the operatives in its slots.
 pub struct EspionageOperation;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -357,9 +332,9 @@ pub struct EspionageOperation;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageOperationParams {
     pub branch_id: String,
-    /// The full handle, as a decimal string.
+    #[doc = " The full handle, as a decimal string."]
     pub id: String,
-    /// The hour asked: the operation is read there, or at its last hour before it.
+    #[doc = " The hour asked: the operation is read there, or at its last hour before it."]
     pub hour: i32,
 }
 
@@ -368,13 +343,13 @@ pub struct EspionageOperationParams {
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationReply {
     pub id: String,
-    /// The first and last hours the census held it in the stretch of the hour asked.
+    #[doc = " The first and last hours the census held it in the stretch of the hour asked."]
     pub first_seen: i32,
     pub last_seen: i32,
-    /// The hour it was read at.
+    #[doc = " The hour it was read at."]
     pub read_hour: i32,
     pub state: OperationState,
-    /// None where its slots or the census of operatives were not read.
+    #[doc = " None where its slots or the census of operatives were not read."]
     pub operatives: Option<Vec<OperativeName>>,
     pub warnings: Vec<String>,
 }
@@ -450,8 +425,6 @@ impl Product for EspionageOperation {
     }
 }
 
-/// Every operation that left the census without a completion row: by the first read that no
-/// longer held it, newest first.
 pub struct EspionageEnded;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -459,7 +432,7 @@ pub struct EspionageEnded;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EspionageEndedParams {
     pub branch_id: String,
-    /// The span's first hour; the timeline's when none.
+    #[doc = " The span's first hour; the timeline's when none."]
     #[serde(default)]
     pub from: Option<i32>,
     pub to: i32,
@@ -475,12 +448,12 @@ pub struct EndedOperation {
     pub operation: Option<String>,
     pub first_seen: i32,
     pub last_seen: i32,
-    /// The first read that no longer held it.
+    #[doc = " The first read that no longer held it."]
     pub by_hour: i32,
-    /// Whether completions were recorded every hour of its life: where not, a completion may have
-    /// gone unseen and its end is not known to be a cancellation.
+    #[doc = " Whether completions were recorded every hour of its life: where not, a completion may have"]
+    #[doc = " gone unseen and its end is not known to be a cancellation."]
     pub completions_recorded: bool,
-    /// As last read.
+    #[doc = " As last read."]
     pub state: OperationState,
 }
 
@@ -494,13 +467,11 @@ pub struct EspionageEndedReply {
 
 dashboard_base::reply_warnings!(EspionageEndedReply);
 
-/// The first hour after `last` that `reads` (ascending runs of hours) holds.
 fn next_read(reads: &[(i32, i32)], last: i32) -> Option<i32> {
     let at = reads.partition_point(|run| run.1 <= last);
     reads.get(at).map(|run| run.0.max(last + 1))
 }
 
-/// Whether `runs` (ascending, apart) hold every hour from `first` through `last`.
 fn covered(runs: &[(i32, i32)], first: i32, last: i32) -> bool {
     let at = runs.partition_point(|run| run.1 < first);
     let mut from = first;
@@ -516,7 +487,6 @@ fn covered(runs: &[(i32, i32)], first: i32, last: i32) -> bool {
     false
 }
 
-/// A life of an operation that the census lost by `by`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ending {
     pub key: u128,
@@ -525,9 +495,6 @@ pub struct Ending {
     pub by: i32,
 }
 
-/// The lives of `lives` (key, first and last hour covered) within a stretch of `stretch` hours that
-/// end within `from..=to`: a read of the table (`reads`) after the last hour, at or before `to`,
-/// no longer holds it. A life the stretch carries to its end has not ended.
 pub fn endings(lives: &[(u128, i64, i64)], stretch: (i32, i32), reads: &[(i32, i32)], from: i32, to: i32) -> Vec<Ending> {
     lives
         .iter()
@@ -612,12 +579,10 @@ impl Product for EspionageEnded {
     }
 }
 
-/// A raw country id as `links` and `names` name it at `hour`.
 fn named(names: &Names, links: &RunLinks, raw: u32, hour: i32) -> Country {
     Country { id: raw, tag: names.tag_at(links, raw, hour).map(str::to_owned) }
 }
 
-/// The operation handles OperationCompletions logged from `from` through `to`.
 fn completed(query: &Query<'_>, run: u32, from: i32, to: i32) -> io::Result<HashSet<u64>> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| dashboard_core::invalid(format!("No log is declared as {LOG}")))?;
     let reader = dashboard_query::log::Reader::new(query, declared)?;
@@ -631,7 +596,6 @@ fn completed(query: &Query<'_>, run: u32, from: i32, to: i32) -> io::Result<Hash
         .collect())
 }
 
-/// Operations' rows at each (hour, key) asked, where the hour shows them.
 fn rows_at(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<(i32, u128), OperationRow>> {
     let format = recording.format();
     let mut rows = HashMap::new();
@@ -653,8 +617,6 @@ fn rows_at(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i3
     Ok(rows)
 }
 
-/// The operation types the recorded content defines, each named and drawn: every row's name and
-/// icon. Read from the content alone, so no name waits on the recording's history.
 pub struct EspionageTypes;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -668,12 +630,12 @@ pub struct EspionageTypesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperationType {
-    /// The definition's token, as the content names it.
+    #[doc = " The definition's token, as the content names it."]
     pub key: String,
     pub name: Option<String>,
-    /// The definition's icon, drawn.
+    #[doc = " The definition's icon, drawn."]
     pub icon: Option<String>,
-    /// Why the name or the icon is not shown.
+    #[doc = " Why the name or the icon is not shown."]
     pub missing: Option<String>,
 }
 
@@ -681,9 +643,9 @@ pub struct OperationType {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageTypesReply {
-    /// By key.
+    #[doc = " By key."]
     pub types: Vec<OperationType>,
-    /// Why there are none: the content is not configured or not read.
+    #[doc = " Why there are none: the content is not configured or not read."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -725,17 +687,15 @@ impl Product for EspionageTypes {
     }
 }
 
-/// The lexical tokens the recording gave each operation type the content defines, over the
-/// branch's history: the type filter's choices and the completions log's facet values.
 pub struct EspionageTypeTokens;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OperationTypeTokens {
-    /// The definition's token, as the content names it.
+    #[doc = " The definition's token, as the content names it."]
     pub key: String,
-    /// The lexical tokens the recording gave it; empty where it never held one.
+    #[doc = " The lexical tokens the recording gave it; empty where it never held one."]
     pub tokens: Vec<u32>,
 }
 
@@ -743,9 +703,9 @@ pub struct OperationTypeTokens {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageTypeTokensReply {
-    /// By key.
+    #[doc = " By key."]
     pub types: Vec<OperationTypeTokens>,
-    /// Why there are none: the content is not configured or not read.
+    #[doc = " Why there are none: the content is not configured or not read."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -799,7 +759,6 @@ impl Product for EspionageTypeTokens {
 
 pub struct EspionageLog;
 
-/// A page of completed operations: `log-page`'s params with the log fixed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -828,7 +787,6 @@ fn text_cell(value: Option<String>) -> LogCell {
     value.map_or(LogCell::Missing, |value| LogCell::Text { value })
 }
 
-/// A completion's stored description, or why it is not shown.
 pub fn description(cells: &[Cell]) -> Result<String, String> {
     match (number(cells, DESCRIPTION_ERROR), cells.get(DESCRIPTION)) {
         (Some(0), Some(Cell::Text(text))) if text.contains('\u{FFFD}') => Err("Stored operation description refused: non-UTF-8 recorded bytes".into()),
@@ -841,8 +799,6 @@ pub fn description(cells: &[Cell]) -> Result<String, String> {
     }
 }
 
-/// When each operation of the asked handles was first and last held in the stretch, and its start
-/// as last read: one read of `Operations`' lifetimes and one of two columns' history.
 struct Sightings(HashMap<u64, (i32, i32, Option<i32>)>);
 
 impl Sightings {

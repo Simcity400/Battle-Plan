@@ -1,9 +1,3 @@
-//! The army-reach cost of the launch gate on synthetic 1,500- and
-//! 5,000-country hours: a faction's naval bases asked by its marine
-//! divisions, `path_source`'s order (sources outer, divisions inner), over a
-//! vanilla-sized province grid. Run in release:
-//! `cargo test -p viewer-raids --release --lib -- --ignored army_reach_bench --nocapture`.
-//! `BATTLE_PLAN_REACH_BENCH_HOURS` shortens the 96 hours for a slow build.
 
 use std::time::Instant;
 
@@ -15,15 +9,11 @@ use replay_data::{
 
 use super::*;
 
-/// 120 x 110 provinces; columns with `x % 30 >= 26` are sea, splitting four
-/// continents.
 pub(super) const WIDTH: u32 = 120;
 pub(super) const HEIGHT: u32 = 110;
-/// A recorded campaign's four days.
 const HOURS: usize = 96;
 const BASES: usize = 300;
 pub(super) const MARINES: usize = 20;
-/// Faction members, all on the first continent.
 const MEMBERS: u32 = 300;
 
 pub(super) fn id(x: u32, y: u32) -> u32 {
@@ -60,8 +50,6 @@ pub(super) fn grid() -> (ProvinceGraph, ProvinceGeometry) {
     (graph, geometry)
 }
 
-/// Land province owners: the first continent split among the faction's
-/// members, the rest among the other countries, in row-major blocks.
 fn owner(x: u32, y: u32, countries: u32) -> u32 {
     let continent = x / 30;
     let (first, count) = if continent == 0 {
@@ -122,7 +110,6 @@ pub(super) fn hour(countries: u32) -> DecodedFrame {
             .collect(),
     );
     super::reserved_faction(&mut frame, 1);
-    // Wars among the other countries, and military access between them.
     put::<tables::WarRelations>(
         &mut frame,
         (MEMBERS..countries - 1)
@@ -148,8 +135,6 @@ pub(super) fn hour(countries: u32) -> DecodedFrame {
             })
             .collect(),
     );
-    // The faction's marines on the first continent, then one garrison
-    // division per two countries across the land.
     let mut divisions = Vec::new();
     for index in 0..MARINES as u32 {
         let (x, y) = (index % 26, 5 + index * 5);
@@ -205,8 +190,6 @@ pub(super) fn hour(countries: u32) -> DecodedFrame {
     frame
 }
 
-/// The faction's coastal bases: two thirds on its own continent's coast,
-/// the rest colonies across the sea, which no march reaches.
 pub(super) fn base_provinces() -> Vec<u32> {
     (0..BASES as u32)
         .map(|index| {

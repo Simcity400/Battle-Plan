@@ -1,15 +1,6 @@
-//! Tests only: the land combat walk as unshared readers read, sharing nothing
-//! between readers (no census members, commander selections or division
-//! images) nor between divisions (the division sources and the country
-//! reader are rebuilt before each; the naming memo, which decides the name
-//! arena's layout, is kept). These are copies of
-//! `Destination::visit` and `Destination::detail` with every share dropped;
-//! the family tests compare the walk with them, table by table and failure by
-//! failure.
 use super::*;
 
 impl Destination<'_> {
-    /// Before each combat reader: forget every share.
     fn forget_shares(&mut self) {
         self.commanders = cland_combat::Commanders::default();
     }
@@ -22,20 +13,14 @@ impl Destination<'_> {
         source: cland_combat::Source,
         members: cland_combat::Members<'_>,
     ) {
-        // Selections are the combat's own.
         self.commanders = cland_combat::Commanders::default();
-        // The census authenticated every participant moments ago in this pass.
         let _ = members;
         let members = cland_combat::Members::none();
         self.forget_shares();
-        // The census has already retained every participant in this combat;
-        // its counts bound the division destination without another read.
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         grow_vec(self.divisions, self.progress[1].required + bound);
         grow_vec(self.sides, self.progress[2].required.saturating_add(2));
-        // A side's committed and reserve lists are subsets of its full
-        // participants, so the larger census count bounds the role scratch.
         grow_vec(
             self.unit_scratch,
             (source.attackers.count.max(source.defenders.count)) as usize,
@@ -73,9 +58,6 @@ impl Destination<'_> {
             }
             self.ticks[2] += elapsed(started);
         }
-        // Every division's army and stat block fields, two gathers for the
-        // combat, for its four readers and its modifier member. Lent while
-        // the visitor borrows `self`.
         let mut images = std::mem::take(self.images);
         images.clear();
         self.forget_shares();
@@ -88,7 +70,6 @@ impl Destination<'_> {
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
-            // Moved out for the visitor's borrow of the destination; no allocation.
             let mut owned = std::mem::take(self.unit_scratch);
             let result = cland_combat::visit_units(
                 memory,
@@ -109,13 +90,7 @@ impl Destination<'_> {
                         let started = qpc();
                         self.progress[1].required += 1;
                         if self.progress[1].failure.is_none() {
-                            // Exile tags reserve their original list counts
-                            // before their payloads, just like the shared walk.
                             let exile_start = self.exile_progress.len;
-                            // Nothing carries over from another division: its
-                            // sources or the country reader. The naming memo is
-                            // storage, not a read share: it keeps each shared
-                            // group key once in the arena, as the walk does.
                             self.sources.clear();
                             let countries =
                                 engine_native::ccountry::Reader::new(memory, base, state);
@@ -195,8 +170,6 @@ impl Destination<'_> {
         }
         *self.images = images;
     }
-    /// The country sets with the marker's indicator and flag words, which
-    /// `read_country_sets` reads itself.
     fn detail_reference(
         &mut self,
         memory: &impl Memory,
@@ -254,8 +227,6 @@ impl Destination<'_> {
                     self.progress[0].failure = Some(reason);
                     return;
                 }
-                // A detail whose lists did not all fit is never published;
-                // its demand grows the arenas for the next hour.
                 if !grow_vec(self.details, self.progress[0].len + 1) || !complete {
                     return;
                 }

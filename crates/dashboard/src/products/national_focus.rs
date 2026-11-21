@@ -1,6 +1,3 @@
-//! `national-focus`: one country's whole focus history over a branch ([`super::focus`]) with its
-//! focuses' authored durations and country-independent text. Dates bound observed completions,
-//! never pre-recording events.
 use super::{CountryParams, LoadContext, Product, artwork, focus};
 use crate::{Artwork, FocusDatabase, FocusHistory, Source};
 use serde::Serialize;
@@ -15,17 +12,17 @@ pub struct NationalFocus;
 #[serde(rename_all = "camelCase")]
 pub struct FocusReply {
     pub history: FocusHistory,
-    /// Hours of the branch the country's focus was not known, with why.
+    #[doc = " Hours of the branch the country's focus was not known, with why."]
     pub missing: Vec<focus::FocusMissing>,
-    /// The national focuses' (completed and current) authored durations.
+    #[doc = " The national focuses' (completed and current) authored durations."]
     pub artwork: Vec<Artwork>,
-    /// The national focuses' country-independent text only; scoped titles
-    /// still require dated reads.
+    #[doc = " The national focuses' country-independent text only; scoped titles"]
+    #[doc = " still require dated reads."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub static_text: Option<Vec<Artwork>>,
-    /// The continuous focuses' country-independent text and authored
-    /// durations, looked up in the continuous database.
+    #[doc = " The continuous focuses' country-independent text and authored"]
+    #[doc = " durations, looked up in the continuous database."]
     pub continuous_static_text: Vec<Artwork>,
     pub warnings: Vec<String>,
 }
@@ -61,7 +58,6 @@ impl Product for NationalFocus {
         artwork::ensure(continuous, source, content, artwork::Kind::Focus(FocusDatabase::Continuous))?;
         let national = national.as_mut().expect("national focus context prepared");
         let continuous = continuous.as_mut().expect("continuous focus context prepared");
-        // Completed and current focuses are national; the continuous focus is continuous.
         let national_tokens = fold
             .segments
             .iter()
@@ -70,7 +66,6 @@ impl Product for NationalFocus {
         let continuous_tokens = fold.segments.iter().filter_map(|segment| segment.order.continuous.as_deref()).collect::<BTreeSet<_>>();
         let (static_text, _) = national.text_catalogue(national_tokens.clone(), cancelled)?;
         let (continuous_static_text, _) = continuous.text_catalogue(continuous_tokens, cancelled)?;
-        // Dated artwork requests report their own selector and localisation refusals.
         let (artwork, warnings) = national.focus_metadata(national_tokens, cancelled)?;
         let reply = FocusReply { history: fold.history(), missing: fold.missing.clone(), artwork, static_text: Some(static_text), continuous_static_text, warnings };
         super::check_reply_budget(&reply)?;

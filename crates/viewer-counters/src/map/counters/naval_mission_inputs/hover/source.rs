@@ -1,4 +1,3 @@
-//! Country sources after the escort task-force descriptions.
 use super::*;
 use viewer_foundation::naval_labels::RecordedLabels;
 

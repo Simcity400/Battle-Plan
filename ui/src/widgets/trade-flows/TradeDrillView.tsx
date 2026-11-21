@@ -27,12 +27,8 @@ import type { Flow, Measure, TradeData, TradeCountryFact } from './tradeData';
 import { TOOLTIP_LIMIT } from './tradeTooltip';
 import { motionOf } from '../../charts/easing.ts';
 
-/** The drill's hour each frame while it follows playback, with its texts. */
 export type LiveHour = Live<number> & { hour(): number; texts: LiveTexts };
 
-/** The complete native holder/resource inventory, and the same measure over time. While it follows
- * playback the amounts and the playhead are painted at the head each frame (`live`); `hour` is then
- * the hour its names are read at, which moves with the look grid, not each hour. */
 export default function TradeDrill({ flows, trade, track, runtime, measure, from, hour, live, extent, known, colours, tokens, identityNote, active, onPick, onContextMenu }: {
   flows: readonly Flow[]; trade: TradeData; track: BoundTrack; runtime: WidgetRuntime; measure: Measure; from: number;
   hour: number | null; live: LiveHour | null; extent: [number, number]; known: readonly HourSpan[];
@@ -76,7 +72,6 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
     queueMicrotask(() => setHovered({ hour: at, flows: selected }));
   }, []);
   const scale = 10 ** trade.reply.decimals;
-  // The parts at an hour: names and flags as read at `hour`, amounts at `at`.
   const partsAt = useCallback((at: number) => {
     const amounts = contributionAmounts(flows, measure, from, at, known);
     const total = !flows.length || amounts.some(item => item.raw == null) ? null : measureAmount(flows, measure, from, at);
@@ -134,7 +129,6 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
         active={active} revision={stack ?? measured} onPick={onPick} onContextMenu={onContextMenu}
         overlay={live ? undefined : (ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
         tooltip={at => {
-          // An unrecorded hour hides only its own amounts: totals so far still add the hours before it.
           if (measure === 'current' && knownSpanAt(known, at) < 0) return { title: dayLabel(at), rows: [{ label: 'Trade contributions', value: 'Not recorded', tone: 'muted' }] };
           const amountsAt = contributionAmounts(flows, measure, from, at, known);
           if (amountsAt.some(item => item.raw == null)) return { title: dayLabel(at), rows: [{ label: 'Trade contributions', value: 'Not recorded', tone: 'muted' }] };
@@ -155,7 +149,6 @@ export default function TradeDrill({ flows, trade, track, runtime, measure, from
   </div>;
 }
 
-/** The texts a following trade view paints: its day and the coverage note at the head. */
 export function tradeTexts(trade: TradeData, measure: Measure, from: number, known: readonly HourSpan[]) {
   return (at: number) => {
     const missingGroupHours = knownHours(trade.reply.known, from, at) - knownHours(known, from, at);

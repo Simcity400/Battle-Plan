@@ -1,9 +1,3 @@
-//! Stored operands of flying-aircraft map admission and count.
-//!
-//! The map recomputes each wing's displayed count from sortie efficiency.
-//! These readers copy the stored operands; the viewer applies the calculation.
-//! Stored mission efficiency and count can be stale because their writer runs
-//! only when period, capacity and combat gates pass (see `AirMissionInputRow`).
 
 use engine_native::cair_wing;
 use engine_sites::Rva;
@@ -20,27 +14,15 @@ use crate::{
     walk::Buffer,
 };
 
-/// Modifier key read from every sortie-efficiency source.
 pub const SORTIE_MODIFIER_KEY: u32 = 0x11;
-/// Mission signed fixed5 region coverage.
 const REGION_COVERAGE: usize = 0x50;
-/// Mission signed fixed5 reassignment penalty. Its complement scales sortie
-/// efficiency; changing region resets it from the matching content define.
 const REASSIGNMENT_PENALTY: usize = 0xc0;
-/// Signed fixed5 CAS diversion ratio, independent of the count cache.
 const CAS_RATIO: usize = 0xd0;
-/// Retained base-to-region trace count tested by the regional interception alert.
 const INTERCEPTION_TRACE_COUNT: usize = 0x64;
-/// Sixteen-byte province ID and distance entries.
 const REACHED_ENTRY: usize = 0x10;
-/// Console efficiency overrides: a PdxArray of 16-byte canonical-slot i32,
-/// padding and fixed5 i64 entries, unique by slot. A matching effective-country
-/// slot supplies the result before any other term or clamp.
 const EFFICIENCY_OVERRIDES_RVA: Rva = Rva(0x033d_da48);
-/// Console command's sole detection-vector writer and verified entry fingerprint.
 pub const DETECTION_OVERRIDE_WRITER_RVA: Rva = Rva(0x0027_ffc0);
 pub const DETECTION_OVERRIDE_WRITER_PREFIX_HASH: u64 = 0x18aa_1a4c_14d9_dba7;
-/// The console's country-keyed fixed5 detection vector.
 const DETECTION_OVERRIDES_RVA: Rva = Rva(0x033d_da60);
 const OVERRIDE_ENTRY: usize = 0x10;
 
@@ -48,19 +30,12 @@ const OVERRIDE_ENTRY: usize = 0x10;
 pub struct Mission {
     pub coverage_raw: i64,
     pub reassignment_penalty_raw: i64,
-    /// The chosen target; zero when no target was chosen.
     pub last_target_province: i32,
-    /// The reached vector (with its count), acquisition context only.
     pub reached: Array,
-    /// The mission's CStrategicRegion*, acquisition context only.
     pub region_pointer: usize,
-    /// Mission operand weighting the CAS diversion draw.
     pub cas_ratio_raw: Option<i64>,
-    /// Exact trace-count predicate, independent of current aircraft and sortie efficiency.
     pub interception_alert_gate: Option<bool>,
-    /// Current simulation execution, independent of the enabled mission mask.
     pub current_type: Option<u32>,
-    /// Reached only for a nonzero current type; stale while execution is zero.
     pub effective_aircraft: Option<i32>,
     pub normalization: Option<Normalization>,
 }
@@ -69,7 +44,6 @@ pub struct Mission {
 pub struct Normalization {
     pub night_stat: Option<i64>,
     pub modifiers: [Option<modifier_accumulator::RequestedOperand>; 2],
-    /// Independent cached aircraft detection leaves for regional Navy spotting.
     pub detection: [Option<i64>; 2],
     pub patrol: patrol::Inputs,
 }
@@ -88,7 +62,6 @@ fn detection_stats(memory: &impl Memory, record: usize) -> [Option<i64>; 2] {
             Some(i64::from_le_bytes(bytes[8..].try_into().unwrap())),
         ];
     }
-    // A fault in either word cannot hide the independent readable neighbour.
     [SURFACE_DETECTION_STAT, SUBMARINE_DETECTION_STAT]
         .map(|stat| record.checked_add(stat * 8).and_then(|at| read(memory, at)))
 }
@@ -165,10 +138,8 @@ fn global<T: crate::memory::Raw>(
         .ok_or("map sortie operand unreadable")
 }
 
-/// Missions read per `copy_records` batch.
 pub const MISSION_BATCH: usize = 64;
 const MISSION_ROW: usize = 72;
-/// The six operand fields every mission must read.
 const OPERAND_FIELDS: [RecordField; 6] = [
     RecordField {
         source_offset: 0,
@@ -201,7 +172,6 @@ const OPERAND_FIELDS: [RecordField; 6] = [
         len: 4,
     },
 ];
-/// Required operands, then the independently optional CAS ratio and interception threshold.
 const MISSION_FIELDS: [RecordField; 9] = {
     let mut fields = [RecordField {
         source_offset: CAS_RATIO,
@@ -225,7 +195,6 @@ const MISSION_FIELDS: [RecordField; 9] = {
     }
     fields
 };
-/// Required operands only; optional operands are then read independently.
 const MISSION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&OPERAND_FIELDS, MISSION_ROW).expect("valid mission layout");
 
@@ -233,13 +202,6 @@ fn word<const N: usize>(row: &[u8], at: usize) -> [u8; N] {
     row[at..at + N].try_into().expect("fixed mission field")
 }
 
-/// Up to [`MISSION_BATCH`] registered missions' operands and CAS ratios in
-/// one gathered copy; the reached IDs and pool definitions are separate
-/// reads. When that copy stops, the operands are copied without the ratios,
-/// which must all read, and each ratio is read alone, an unreadable one
-/// unknown: what the batch and the ratios' own reads give. That fallback
-/// is counted (`batch_fallback`); true when the one copy read
-/// them all.
 pub fn read_missions(
     memory: &impl Memory,
     base: usize,
@@ -256,8 +218,6 @@ pub fn read_missions(
     )
 }
 
-/// Reuse the wing worker's authenticated current-execution leaves, including
-/// their independent failures. Neither a mask nor its count is read again.
 #[cfg(test)]
 pub fn read_missions_with_execution(
     memory: &impl Memory,
@@ -276,7 +236,6 @@ pub fn read_missions_with_execution(
     )
 }
 
-/// The worker shares this stack cache across every original mission batch.
 pub fn read_missions_with_spotting(
     memory: &impl Memory,
     base: usize,
@@ -313,7 +272,6 @@ fn read_missions_inner(
     let gathered = memory.copy_records(RecordSources::Pointers(missions), &layout, rows)
         == missions.len() * fields.len();
     if !gathered {
-        // Counted as it starts, whatever the reads after it return.
         crate::batch_fallback::record(crate::batch_fallback::Batch::MissionInputs);
         if memory.copy_records(RecordSources::Pointers(missions), &MISSION_LAYOUT, rows)
             != missions.len() * MISSION_LAYOUT.field_count()
@@ -388,8 +346,6 @@ fn read_missions_inner(
     Ok(gathered)
 }
 
-/// Only the batch's executing missions demand this retained count. All
-/// storage is bounded by the existing gather size, never the wing census.
 fn read_effective_aircraft(memory: &impl Memory, missions: &[usize], output: &mut [Mission]) {
     const FIELDS: [RecordField; 1] = [RecordField {
         source_offset: air_mission::EFFECTIVE_AIRCRAFTS,
@@ -421,7 +377,6 @@ fn read_effective_aircraft(memory: &impl Memory, missions: &[usize], output: &mu
         output[indices[at]].effective_aircraft = if at < copied {
             Some(i32::from_le_bytes(word(&words, at * 4)))
         } else if at == copied {
-            // The failed gather leaf stays unknown; do not retry it.
             None
         } else {
             pointers[at]
@@ -431,7 +386,6 @@ fn read_effective_aircraft(memory: &impl Memory, missions: &[usize], output: &mu
     }
 }
 
-/// Pools whose definitions [`definition_air_flags_gathered`] reads at once.
 pub const DEFINITION_BATCH: usize = 64;
 const POOL_DEFINITION: [RecordField; 1] = [RecordField {
     source_offset: crate::cair_wing_pool::DEFINITION,
@@ -455,13 +409,6 @@ const DEFINITION_FIELDS: [RecordField; 2] = [
 const DEFINITION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DEFINITION_FIELDS, 16).expect("valid definition layout");
 
-/// [`definition_air_flags`] of up to [`DEFINITION_BATCH`] `pools`: their
-/// definition pointers in one copy, then each definition's identity and
-/// flags in one (the flags read ahead of the identity check). Returns how
-/// many leading pools it read, their flags in `output`; it stops at the
-/// first pool a copy did not complete for or whose identity refuses,
-/// counting that fallback (`batch_fallback`), and the caller
-/// reads that pool and the rest with [`definition_air_flags`].
 pub fn definition_air_flags_gathered(
     memory: &impl Memory,
     base: usize,
@@ -515,7 +462,6 @@ fn gather_definitions(
     read
 }
 
-/// A wing pool's definition AIR_FLAGS; zero for the null sub-unit singleton.
 pub fn definition_air_flags(
     memory: &impl Memory,
     base: usize,
@@ -531,7 +477,6 @@ pub fn definition_air_flags(
     }
 }
 
-/// The reached province IDs in native order; `output` holds exactly its count.
 pub fn read_reached(
     memory: &impl Memory,
     reached: Array,
@@ -556,7 +501,6 @@ pub fn read_reached(
     Ok(())
 }
 
-/// A base's per-country capacity, supply ratio, fuel demand and allocation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Container {
     pub capacity_raw: i64,
@@ -565,7 +509,6 @@ pub struct Container {
     pub fuel_allocated_raw: i64,
 }
 
-/// A base's per-country container vector (`cair_base::COUNTRY_CONTAINERS`), read once per base.
 pub fn country_containers(memory: &impl Memory, air_base: usize) -> Result<Array, &'static str> {
     air_base
         .checked_add(cair_base::COUNTRY_CONTAINERS)
@@ -573,8 +516,6 @@ pub fn country_containers(memory: &impl Memory, air_base: usize) -> Result<Array
         .ok_or("air base country containers invalid")
 }
 
-/// `containers` is [`country_containers`]; `slot` a canonical country slot.
-/// `None` for a null container slot, which the law treats as all zero.
 pub fn read_container<M: Memory>(
     memory: &M,
     base: usize,
@@ -634,7 +575,6 @@ pub fn read_container<M: Memory>(
     }))
 }
 
-/// The weather manager's per-region records, read once per hour.
 pub fn weather_regions(
     memory: &impl Memory,
     base: usize,
@@ -643,7 +583,6 @@ pub fn weather_regions(
     weather_regions_from_manager(memory, weather_manager(memory, base, game_state)?)
 }
 
-/// Authenticated acquisition context, loaned to consumers in the same worker.
 pub fn weather_manager(
     memory: &impl Memory,
     base: usize,
@@ -658,7 +597,6 @@ pub fn weather_manager(
     Ok(manager)
 }
 
-/// `manager` is the original successful [`weather_manager`] observation.
 pub fn weather_regions_from_manager(
     memory: &impl Memory,
     manager: usize,
@@ -669,8 +607,6 @@ pub fn weather_regions_from_manager(
         .ok_or("weather regions invalid")
 }
 
-/// The weather region's key-0x11 accumulator entry.
-/// `regions` is [`weather_regions`].
 pub fn weather_modifier(
     memory: &impl Memory,
     base: usize,
@@ -695,8 +631,6 @@ pub fn weather_modifier(
     )
 }
 
-/// The effective country's own key-0x11 entry (`ccountry::MODIFIER_ACCUMULATOR`); `country` is an
-/// authenticated CCountry.
 pub fn country_modifier(
     memory: &impl Memory,
     country: usize,
@@ -710,13 +644,10 @@ pub fn country_modifier(
     )
 }
 
-/// Key 0x11's runtime definition: clamp flag, feature gate and whether the
-/// gate callback supplies the feature-flags mask.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ModifierMetadata {
     pub flags: u32,
     pub feature_selector: u32,
-    /// 0: null callback; 1: the feature-flags getter.
     pub callback_kind: u8,
 }
 
@@ -751,7 +682,6 @@ pub fn read_modifier_metadata(
     })
 }
 
-/// The console efficiency overrides in native order, as `(slot, raw)`.
 #[cfg(test)]
 pub fn efficiency_overrides(
     memory: &impl Memory,
@@ -792,8 +722,6 @@ pub fn efficiency_overrides_fallible(
     Ok(())
 }
 
-/// First/change-only caller-owned acquisition; never call this as a periodic poll.
-/// The native header supplies allocation demand before any entry is followed.
 pub fn detection_overrides(
     memory: &impl Memory,
     base: usize,
@@ -833,9 +761,6 @@ pub fn count_volunteer_hosts(memory: &impl Memory, country: usize) -> Result<usi
     volunteer_hosts_buffer(memory, country, Buffer::Count)
 }
 
-/// Raw references in a country's outgoing volunteer-host vector. Only these
-/// references admit a base controller. Returns the vector count and fills
-/// `output` only when it fits.
 pub fn volunteer_hosts(
     memory: &impl Memory,
     country: usize,
@@ -853,7 +778,6 @@ fn volunteer_hosts_buffer(
         .checked_add(ccountry::VOLUNTEER_HOSTS)
         .and_then(|at| Array::read(memory, at, 4))
         .ok_or("country volunteer hosts invalid")?;
-    // Admission reaches the complete outgoing volunteer-host vector.
     output.ensure(hosts.count as usize)?;
     if let Some(output) = output.get_mut(..hosts.count as usize) {
         crate::cpdx_array::copy_u32s(memory, hosts, output, "country volunteer hosts unreadable")?;
@@ -861,7 +785,6 @@ fn volunteer_hosts_buffer(
     Ok(hosts.count as usize)
 }
 
-/// Off-thread storage demand; no mission value survives this hint.
 pub fn storage_demand(
     memory: &impl Memory,
     base: usize,
@@ -1603,7 +1526,6 @@ mod tests {
         assert!(definition_air_flags(&memory, 0, POOL).is_err());
     }
 
-    /// The operands and CAS ratios of a batch take one gathered copy.
     #[test]
     fn mission_operands_and_cas_ratios_take_one_copy() {
         let mut bytes = mission_fixture();
@@ -1618,11 +1540,8 @@ mod tests {
         assert_eq!(rows.map(|row| row.cas_ratio_raw), [Some(-3); 2]);
     }
 
-    /// `pools` pools over a quarter as many definitions, the null singleton
-    /// every fifth; definition `d` holds flags `d << 8`.
     fn definition_world(pools: usize) -> (Vec<u8>, Vec<usize>) {
         const POOLS: usize = 0x1000;
-        /// Room for a definition through its flags.
         const DEFINITION: usize = (csub_unit_definition::AIR_FLAGS + 8).next_multiple_of(0x40);
         let definitions = pools / 4 + 1;
         let first = POOLS + pools * 0x40;
@@ -1656,7 +1575,6 @@ mod tests {
         (bytes, pools)
     }
 
-    /// The flags read before the first refusal, and that refusal.
     type Flags = (Vec<u64>, Result<(), &'static str>);
 
     fn flags_serial(memory: &impl Memory, pools: &[usize]) -> Flags {
@@ -1670,8 +1588,6 @@ mod tests {
         (flags, Ok(()))
     }
 
-    /// The gathered reads with their per-pool fallbacks, as the collector
-    /// makes them; with the fallbacks, each also counted for status.
     fn flags_gathered(memory: &impl Memory, pools: &[usize]) -> (Flags, usize) {
         use crate::batch_fallback::{Batch, count};
         let counted = count(Batch::PoolDefinitions);
@@ -1693,8 +1609,6 @@ mod tests {
         ((flags, result), fallbacks)
     }
 
-    /// Healthy, 150 pools' gathered flags are the per-pool reads', in two
-    /// copies a 64 pools rather than three reads a pool.
     #[test]
     fn gathered_definitions_equal_the_per_pool_reads() {
         let (bytes, pools) = definition_world(150);
@@ -1720,9 +1634,6 @@ mod tests {
         assert!(serial >= gathered + 2 * pools.len(), "{serial} {gathered}");
     }
 
-    /// A persistent fault gives the per-pool result, one that clears after
-    /// its first touch the healthy or the per-pool reads' own; a null
-    /// definition's flags, read ahead, refuse nothing.
     #[test]
     fn gathered_definition_faults_refuse_no_more_than_the_per_pool_reads() {
         struct Faulted<'a> {
@@ -1784,8 +1695,6 @@ mod tests {
         }
     }
 
-    /// `read_missions` as it stood before the ratios joined the batch
-    /// (eafc953b4f): the six operand fields in one copy, each ratio alone.
     fn read_missions_parent(
         memory: &impl Memory,
         base: usize,
@@ -1857,7 +1766,6 @@ mod tests {
     const MISSIONS: usize = 0x10_000;
     const MISSION_SIZE: usize = 0x100;
 
-    /// 70 missions, two batches, with distinct operands and ratios.
     fn missions_world() -> (Vec<u8>, Vec<usize>) {
         let mut bytes = vec![0; MISSIONS + 70 * MISSION_SIZE + 0x1000];
         let reached = MISSIONS + 70 * MISSION_SIZE;
@@ -1915,7 +1823,6 @@ mod tests {
         (bytes, missions)
     }
 
-    /// Each batch's result and every output row, partly written ones too.
     type Batches = Vec<(Result<(), &'static str>, Vec<Mission>)>;
 
     fn batches(memory: &impl Memory, missions: &[usize], parent: bool) -> (Batches, u64) {
@@ -1936,12 +1843,6 @@ mod tests {
         (batches, count(Batch::MissionInputs) - counted)
     }
 
-    /// Against the parent reader: a persistent fault gives its result, each
-    /// output row included, and counts one fallback per batch it stops even
-    /// when the retry refuses; a fault that clears after its first touch
-    /// gives the healthy rows or the parent's; a ratio faulted once
-    /// withholds nothing; malformed and foreign missions at the batch
-    /// boundary refuse as the parent does.
     #[test]
     fn mission_batches_refuse_no_more_than_the_parent_reader() {
         struct Faulted<'a> {
@@ -2004,7 +1905,6 @@ mod tests {
                 cases.push(vec![mission(index) + offset]);
             }
         }
-        // Several failures: two ratios and a later required operand.
         cases.push(vec![
             mission(3) + CAS_RATIO,
             mission(40) + CAS_RATIO,
@@ -2041,7 +1941,6 @@ mod tests {
                 assert_eq!(once, healthy, "a ratio faulted once withholds nothing");
             }
         }
-        // A malformed reached header and a foreign mission at the boundary.
         for (index, offset, value) in [
             (63, air_mission::REACHED_PROVINCES_COUNT, 9_u64),
             (64, 0, 0),

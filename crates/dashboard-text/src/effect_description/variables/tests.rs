@@ -67,7 +67,6 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
         ), &mut fresh(), Content::default());
         assert_eq!(out.text, "AAA:3/4\nXP3\n", "{operation}");
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-        // never evaluates the otherwise unsupported RHS without a tooltip.
         let out = fixture.render(
             &format!("{operation}={{var=x value=random_seed tooltip=\"\"}}"),
             &mut fresh(),
@@ -89,12 +88,8 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
         panic!("fixture has a complete country appearance table");
     };
     let country = rows.iter_mut().find(|row| row.country == 100).unwrap();
-    // takes own for a recorded nonpositive
-    // original reference; an unread field must not silently select AAA.
     country.original_tag_reference = Recorded::Value(Some(0));
     country.original_tag = Recorded::Value(Some(Vec::new()));
-    // accepts its original candidate before reading
-    // either native list when this candidate's condition succeeds.
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
         reason: "unused alias country lists not sampled".into(),
     };
@@ -143,7 +138,7 @@ fn temporary_scalars_execute_before_tooltip_in_one_session() {
         &mut fresh(),
         Content::default(),
     );
-    assert_eq!(out.text, "XP0\n"); // Next outer description opens fresh TLS.
+    assert_eq!(out.text, "XP0\n");
 }
 
 #[test]
@@ -161,7 +156,6 @@ fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
         &mut fresh(),
         Content::default(),
     );
-    // Literal `if_zero=9` is an empty TLS key, not Evaluate's literal branch.
     assert_eq!(out.text, "AAA:3/0\nAAA:3/0\nAAA:0/0\nXP4\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
@@ -190,7 +184,7 @@ fn clamp_and_modulo_execute_but_empty_setters_do_not() {
          army_experience=n",
         &mut fresh(), Content::default(),
     );
-    assert_eq!(out.text, "XP1\n"); // max then min -> 5; modulo -> 1.
+    assert_eq!(out.text, "XP1\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
         "add_to_array={} remove_from_array={} resize_array={} clear_array={}
@@ -338,7 +332,6 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
                 .scoped_value(b"random_seed", scopes),
             Ok(1_514_732_982_084_589_112)
         );
-        // A nested description/scope uses the outer TLS generator, not BBB's store.
         let selected = renderer
             .evaluator()
             .unwrap()
@@ -382,7 +375,7 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
             renderer.out.refusals
         );
     });
-    assert_eq!(graph.scopes[0].random_seed, 1); // Independent iterator RNG was untouched.
+    assert_eq!(graph.scopes[0].random_seed, 1);
     let out = fixture.render(
         "set_temp_variable_to_random={var=n min=2 max=4} army_experience=n",
         &mut fresh(),
@@ -414,7 +407,6 @@ fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
     ]);
     fixture.with_renderer(&mut graph, Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
-        // ROOT does not contribute: 37 + 31*13 + 62*17 = 1494.
         assert_eq!(
             renderer
                 .evaluator()
@@ -427,7 +419,6 @@ fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
         )
         .unwrap();
         renderer.group(&body.items, scopes, 0);
-        // Fraction 95061: floor(-2.25)=-3, floor(3.75)=3, floor(6*.95061)=5.
         assert_eq!(
             renderer.evaluator().unwrap().scoped_value(b"n", scopes),
             Ok(200_000)
@@ -468,8 +459,6 @@ fn format98_variable_rng_selects_state_character_and_global_stores() {
             character_id: 9,
             ..Default::default()
         }]));
-    // selects country before state, then character, else global.
-    // hashes state 3 as 177 and character type 73/id 9 as 2033816002.
     for (object, expected) in [
         (
             EventObject::CountryState {
@@ -481,7 +470,7 @@ fn format98_variable_rng_selects_state_character_and_global_stores() {
         (EventObject::State(3), 5_317),
         (EventObject::Character(9), 884_937_927),
         (EventObject::UnitLeader(4 << 32), 884_937_927),
-        (EventObject::State(0), 35), // Empty scope uses its seed 1.
+        (EventObject::State(0), 35),
     ] {
         let mut graph = EventScopes::new(vec![EventScope::of(object)]);
         fixture.with_renderer(&mut graph, Content::default(), |renderer| {
@@ -540,7 +529,7 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
         ("truck", true, i64::MAX, 70_231_305_300_000),
         ("truck", true, i64::MIN, 70_231_305_300_000),
         ("train", true, 1, 0),
-        ("train", true, 2, 0), // Strictly above synthetic NSupply.MIN_TRAIN_REQUIREMENT=2.
+        ("train", true, 2, 0),
         ("train", true, 3, 300_000),
     ] {
         let TableView::Complete(TableRows::TrainInventory(rows)) =

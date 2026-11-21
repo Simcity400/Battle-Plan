@@ -1,5 +1,3 @@
-//! Borrowed status objects and sequences. Constructing them never allocates.
-
 use serde::{
     Serialize, Serializer,
     ser::{SerializeMap, SerializeSeq},
@@ -118,7 +116,6 @@ impl fmt::Display for LossyBytes<'_> {
             match std::str::from_utf8(bytes) {
                 Ok(text) => return formatter.write_str(text),
                 Err(error) => {
-                    // valid_up_to is the checked UTF-8 prefix supplied by from_utf8.
                     formatter.write_str(unsafe {
                         std::str::from_utf8_unchecked(&bytes[..error.valid_up_to()])
                     })?;
@@ -144,7 +141,6 @@ impl<T: fmt::Debug> fmt::Display for DebugValue<T> {
 }
 impl<T: fmt::Debug> Serialize for DebugValue<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // serde_json's collect_str streams through its formatter without a String.
         serializer.collect_str(self)
     }
 }
@@ -183,8 +179,6 @@ impl<T: std::fmt::Display> serde::Serialize for DisplayValue<T> {
         serializer.collect_str(&self.0)
     }
 }
-/// Reuses the previous capacity and streams once. A sticky write failure avoids
-/// passing OOM through serde_json, which would box the I/O error.
 pub fn serialize_into(bytes: &mut Vec<u8>, value: &impl Serialize) -> std::io::Result<()> {
     use std::io::{self, Write};
     struct Writer<'a> {

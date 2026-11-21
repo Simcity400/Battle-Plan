@@ -1,8 +1,3 @@
-//! The per-province two-sided hull actor.
-//!
-//! It uses the ordinary model library and viewer-owned entity players. Combat
-//! membership, strength and the ordered combat references remain simulation
-//! inputs; no native selection, graphics pointer, clock or random state is read.
 
 use std::collections::BTreeSet;
 use std::{collections::BTreeMap, sync::Arc};
@@ -23,9 +18,7 @@ mod tests;
 #[derive(Clone, Default)]
 pub struct Sources {
     pub battles: BTreeMap<u64, Battle>,
-    /// `[first native combat, first native type-2 combat]`, full references.
     pub links: BTreeMap<u64, [u64; 2]>,
-    /// Calling province geometry; a combat's own province need not match it.
     pub roots: BTreeMap<u32, ModelInstance>,
 }
 
@@ -128,14 +121,10 @@ impl Template {
     }
 
     fn attachments(&mut self, names: &[Option<String>; 8]) -> Result<[Option<Matrix>; 8], String> {
-        // The same source-ordered palette and player as a rendered model. This
-        // keeps moving template joints and authored mod locators in one path.
         let instance = self.root_instance();
         if let Some(phase) = &mut self.clock.phase {
             phase.instance = instance;
         }
-        // History::advance admits automatic finishes once per frame. Cached
-        // province probes and drawing only apply setters and read that phase.
         self.player.advance_hidden(&self.rig, &self.clock);
         let actors = mesh_pose::actors(&self.rig, Some(&self.player), false);
         let mut placements = [None; 8];
@@ -206,9 +195,6 @@ impl History {
     }
 
     pub(super) fn advance(&mut self, delta: f32) {
-        // The game runs after province callbacks and before the animation
-        // manager. Birth timestamps stay separate from animation phase: an
-        // actor born this frame has lifetime age zero even with a nonzero delta.
         self.deaths
             .retain(|death| !impacts::expired(self.lifetime_time, death.birth, death.death_time));
         self.effects.retain(|effect| {
@@ -286,15 +272,11 @@ impl History {
         self.refusals.clear();
     }
 
-    /// Whether `province` holds a combat actor, so a frame that leaves the province alone knows
-    /// that releasing it would do nothing.
     pub(super) fn holds(&self, province: u32) -> bool {
         !self.provinces.is_empty() && self.provinces.contains_key(&province)
     }
 
     pub(super) fn leave(&mut self, province: u32, land_was_shown: bool, steady: bool) {
-        // The game deactivates combat graphics directly on the land-gate loss;
-        // unlike ordinary hulls, they have no popup-scale fade.
         if land_was_shown || steady {
             self.release(province);
         }
@@ -304,7 +286,6 @@ impl History {
         if let Some(id) = self.provinces.remove(&province)
             && let Some(entity) = self.entities.get_mut(&id)
         {
-            // The game deactivates the shared wrapper without destroying it.
             entity.active = false;
         }
     }
@@ -327,8 +308,6 @@ impl History {
             return;
         };
         let battle = selection.battle;
-        // The cached native path checks vector[0], while fresh creation scans
-        // to the first type-2 entry. These can differ.
         let fresh = self.provinces.get(&province).copied() != Some(selection.first);
         if fresh {
             self.release(province);
@@ -347,17 +326,13 @@ impl History {
             entity.template.root.target.instance = selection.root;
             entity.template.root.target.province = province;
             self.provinces.insert(province, battle.id);
-            // The new root receives hulls on the next native province update.
-            // Offline settling may do both only when the cache can retain it.
             if !frame.steady || selection.first != battle.id {
                 return;
             }
         }
         let entity = self.entities.get_mut(&battle.id).unwrap();
-        // Cached native updates retain geometry from the last acquisition.
         if entity.stamp != battle.stamp {
             if entity.stamp < 0 || battle.stamp.wrapping_sub(entity.stamp) > 48 {
-                // The game destroys hulls, but deliberately retains slot.status.
                 entity.parts.fill_with(|| None);
             }
             for index in 0..8 {
@@ -375,8 +350,6 @@ impl History {
                             clock,
                         });
                     }
-                    // The game advances status even when the shared budget holds
-                    // an empty hull slot. That slot is not retried as a formation.
                     entity.status[index] = 1;
                 }
                 let health = battle.health[index / 4];

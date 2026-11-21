@@ -1,4 +1,3 @@
-//! Script collection loading and compilation.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -14,7 +13,6 @@ use crate::{
     },
 };
 
-/// Reader identity for a named collection's fields.
 pub(crate) const COLLECTION_KEY_READER: u64 = 0x140A6A4C0;
 
 #[derive(Clone, Debug, Default)]
@@ -119,8 +117,6 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
     Ok(database)
 }
 
-/// Flatten named operators before local operators, retaining the original header
-/// lookup, which is independent of flattening.
 pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, String> {
     fn inner(
         item: &Item,
@@ -146,8 +142,6 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                                 op.value.items().unwrap_or_default().to_vec(),
                             ));
                         } else if op.key.is_none() {
-                            // Unknown bare tokens are reported and do not append an
-                            // operator.
                             match op
                                 .value
                                 .scalar()
@@ -223,8 +217,6 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                 let result = match database.entries.get(&name) {
                     Some(Ok(item)) => inner(item, Some(database), active)?,
                     Some(Err(why)) => return Err(why.clone()),
-                    // A null reference flattens to empty without appending local
-                    // operators.
                     None if database.unread.is_empty() => Collection {
                         input: Input::Empty,
                         operators: Vec::new(),

@@ -1,4 +1,3 @@
-//! Intelligence products over recorded agency, cipher and operative state.
 
 #[cfg(test)]
 #[global_allocator]

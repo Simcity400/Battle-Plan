@@ -12,9 +12,6 @@ const STATE: usize = 0x1000;
 const COUNTRY_DATA: usize = 0x2000;
 const LINK_DATA: usize = 0x10000;
 const BLOCKS: usize = 0x20000;
-/// One country per block: the object (with its civil-war header), then its diplomacy, its relation
-/// matrix (slot zero only), its status to zero, its neighbour data and characters object, and last
-/// the reserved country's status to it.
 const BLOCK: usize = 0x2000;
 const DIPLOMACY: usize = 0x1300;
 const MATRIX: usize = 0x1660;
@@ -28,9 +25,6 @@ fn block(slot: usize) -> usize {
     BLOCKS + slot * BLOCK
 }
 
-/// `countries` positive countries after the reserved one at slot zero, each
-/// with a readable counter row and relation suffix, odd ones co-belligerent
-/// with zero and each with `slot % 4` neighbours.
 struct World {
     bytes: Vec<u8>,
     pride: usize,
@@ -98,7 +92,6 @@ impl World {
         self.put32(at + 12, count);
     }
 
-    /// Rewrites the country's neighbour roster (the neighbour rebuild's).
     fn neighbors(&mut self, slot: usize, values: &[u32]) {
         let data = block(slot) + NEIGHBOR_DATA;
         self.header(block(slot) + ccountry::NEIGHBORS, data, values.len() as u32);
@@ -107,7 +100,6 @@ impl World {
         }
     }
 
-    /// Installs a CCountryCharacters object (no leaders) behind its country characters pointer.
     fn characters(&mut self, slot: usize) {
         let object = block(slot) + CHARACTERS;
         self.put64(block(slot) + ccountry::CHARACTERS, object as u64);
@@ -115,7 +107,6 @@ impl World {
         self.put64(object + ccountry_characters::OWNER, block(slot) as u64);
     }
 
-    /// The country's pride of the fleet: a registered ship named `text`.
     fn pride(&mut self, slot: usize, text: &[u8]) {
         let ship = self.pride;
         let member = ship + 0x1000;
@@ -162,8 +153,6 @@ impl World {
     }
 }
 
-/// Records every read; the reference registry's ship root names the pride
-/// table, and the reserved country is authenticated as the callback's.
 struct Probe<'a> {
     bytes: &'a [u8],
     pride_table: u64,
@@ -209,11 +198,9 @@ fn domain(ids: usize) -> &'static Domain {
     Box::leak(Box::new(Domain::enabled(ids)))
 }
 
-/// One hour's counter pass with the reserved country's reverse visibility.
 struct Hour {
     captured: Captured,
     reverse: Option<replay_data::rows::ReservedReverseVisibilityInputs>,
-    /// The counter pass's reads, after the naming observation.
     reads: Vec<(usize, usize)>,
 }
 
@@ -277,18 +264,13 @@ fn arenas(captured: &Captured) -> Arenas {
     )
 }
 
-/// The same published tables, reverse cells and arenas.
 fn assert_same(carried: &Hour, full: &Hour) {
     assert_eq!(carried.captured.tables(), full.captured.tables());
     assert_eq!(carried.reverse, full.reverse);
     assert_eq!(arenas(&carried.captured), arenas(&full.captured));
 }
 
-/// The slots whose own fields, relation status to zero or roster data the
-/// hour read beyond the identity checks, the carry's pointer words and the
-/// civil-war header.
 fn read_countries(reads: &[(usize, usize)], countries: usize) -> Vec<usize> {
-    // CountryCivilWars still reads every country's civil-war header.
     let allowed = [
         (0, 8),
         (ccountry::ID, 4),
@@ -313,10 +295,6 @@ fn quiet() -> Counts {
     Counts::default()
 }
 
-/// A quiet hour reads no country's counter fields, rosters or relation
-/// suffix, only each one's identity and carry words, its census resolution,
-/// its reverse cell and the pride ship name, and publishes what a full read
-/// of the same memory publishes.
 #[test]
 fn a_quiet_hour_reads_no_carried_country_and_equals_a_full_read() {
     let mut world = World::new(6);
@@ -342,7 +320,6 @@ fn a_quiet_hour_reads_no_carried_country_and_equals_a_full_read() {
     assert_eq!(store.counts(), quiet());
     assert!(read_countries(&carried.reads, 6).is_empty());
     assert_eq!(read_countries(&full.reads, 6), [1, 2, 3, 4, 5, 6]);
-    // The pride ship name is read every hour, carried or not.
     assert!(
         carried
             .reads
@@ -369,7 +346,6 @@ fn a_quiet_hour_reads_no_carried_country_and_equals_a_full_read() {
     assert!(full.reverse.is_some());
 }
 
-/// A marked country is read afresh within the hour.
 #[test]
 fn marked_countries_are_read_afresh() {
     let mut world = World::new(4);
@@ -390,15 +366,12 @@ fn marked_countries_are_read_afresh() {
             ..quiet()
         }
     );
-    // Held again with its new rows, it is carried.
     domain.boundary(false);
     let held = hour(&world, Some(&mut store), 12, None);
     assert_same(&held, &hour(&world, None, 12, None));
     assert!(read_countries(&held.reads, 4).is_empty());
 }
 
-/// A country whose CCountryCharacters pointer moved is read, though no
-/// writer marked it.
 #[test]
 fn a_moved_characters_pointer_reads_the_country() {
     let mut world = World::new(4);
@@ -411,14 +384,11 @@ fn a_moved_characters_pointer_reads_the_country() {
     assert_same(&moved, &hour(&world, None, 11, None));
     assert_eq!(read_countries(&moved.reads, 4), [2]);
     assert_eq!(store.counts(), Counts { read: 1, ..quiet() });
-    // Held again with the new pointer, it is carried.
     domain.boundary(false);
     let held = hour(&world, Some(&mut store), 12, None);
     assert!(read_countries(&held.reads, 4).is_empty());
 }
 
-/// A failed walk holds nothing, and a take that certifies nothing (a new
-/// epoch, or a writer naming no country) reads every country.
 #[test]
 fn a_failed_read_holds_nothing_and_an_uncertified_take_reads_every_country() {
     let world = World::new(4);
@@ -449,7 +419,6 @@ fn a_failed_read_holds_nothing_and_an_uncertified_take_reads_every_country() {
     domain.boundary(false);
     let every = hour(&world, Some(&mut store), 14, None);
     assert_eq!(read_countries(&every.reads, 4), [1, 2, 3, 4]);
-    // A forgotten store (a failed job) reads every country too.
     domain.boundary(false);
     assert!(read_countries(&hour(&world, Some(&mut store), 15, None).reads, 4).is_empty());
     store.forget();
@@ -546,7 +515,6 @@ fn air_modifier_packet_is_carried_under_the_existing_country_certificate() {
             .iter()
             .all(|&(at, _)| at != block(1) + ccountry::MODIFIER_ACCUMULATOR && at != data)
     );
-    // The shared accumulator writer revokes the packet along with the other country terms.
     world.put64(data + modifier_entry::VALUE, 23_456);
     domain.write(Table::Counters, 1);
     domain.boundary(false);
@@ -554,7 +522,6 @@ fn air_modifier_packet_is_carried_under_the_existing_country_certificate() {
     expected[0] = Some(23_456);
     assert_eq!(packet(&changed.captured), Recorded::Value(Some(expected)));
     assert_same(&changed, &hour(&world, None, 12, None));
-    // The packet shares the accumulator's failure boundary, without inventing absent values.
     let failed = hour(
         &world,
         None,

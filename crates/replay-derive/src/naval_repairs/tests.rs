@@ -487,7 +487,6 @@ fn repair_split_ally_access_prohibition_and_actual_location_are_demand_gated() {
             ..Default::default()
         }]),
     );
-    // The last missing model is still reached when no earlier entry qualifies.
     assert!(
         Sources::new(&frame, &links, Ok(&relations))
             .selected(&base)

@@ -1,26 +1,6 @@
-//! Stored supply-footer operands of authenticated divisions, railway guns and
-//! task forces. Railway guns and task forces read one unit at a time
-//! ([`capture`]); divisions read the whole census in record batches
-//! ([`capture_units`]).
-//!
-//! The supply footer follows the owner's shared-vision gate and reads stored
-//! amounts from each member's supply-consumer base. The aggregate is not rebuilt
-//! from supply nodes, weather or the stored ratio.
-//!
-//! Reset clears receipts, origins and demand pairs before asking each consumer
-//! for consumption. Division consumers fill their own demand pair; other classes
-//! can fill the other pairs. State and air allocation add amounts, origin entries
-//! preserve their stored order, and total receipts cannot exceed the amount asked.
-//! Disruption is reset separately and increased by air strikes.
-//!
-//! Saves emit only positive disruption and restore its full signed fixed5 value.
-//! Omission therefore proves only nonpositive disruption. Other operands are
-//! unsaved caches with independent availability. This reader invokes no game
-//! operations and uses the caller's existing unit census.
 
 use crate::{Memory, cpdx_array::Array, memory::RecordLayout, memory::RecordSources, read};
 
-/// Primary CUnit offsets: they lie inside the embedded CSupplyConsumer.
 pub const ASKED: usize = 0x38;
 pub const RECEIVED: usize = 0x50;
 #[cfg(test)]
@@ -38,7 +18,6 @@ pub const SHIP_COUNT: usize = 0xa0;
 pub const SHIP_DEMAND: usize = 0xa8;
 pub const DISRUPTION: usize = 0xb0;
 
-/// Stored distributed-supply records, separate from supply-node objects.
 pub const ORIGIN_STRIDE: usize = 0x30;
 pub const ORIGIN_REQUESTED: usize = 0x10;
 #[cfg(any(test, feature = "test-support"))]
@@ -48,7 +27,6 @@ pub const ORIGIN_PROVINCE: usize = 0x28;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Demand {
     pub count: i32,
-    /// Raw signed fixed5 demand; do not derive it from the count.
     pub value: i64,
 }
 
@@ -65,13 +43,10 @@ pub struct Inputs {
     pub received: i64,
     pub from_state: i64,
     pub air_drops: i64,
-    /// Aggregation overwrites this operand for each member, rather than adding it.
     pub disruption: i64,
     pub division_demand: Demand,
     pub airplane_demand: Demand,
     pub ship_demand: Demand,
-    /// Complete ordered prefix of the caller's origin arena, or the failure of
-    /// this independent node fragment. Scalar footer lines remain available.
     pub origins_len: Result<usize, Failure>,
 }
 
@@ -112,8 +87,6 @@ impl Failure {
     }
 }
 
-// Exact scalar spans only. The independent origin control is acquired below;
-// its read failure must not invalidate these footer lines.
 const INPUT_SPANS: [(usize, usize); 6] = [
     (ASKED, 8),
     (RECEIVED, 16),
@@ -186,8 +159,6 @@ fn capture_origins(
     let header = read::<[u8; 16]>(memory, address).ok_or(Failure::Unreadable)?;
     let array = Array::from_header(header, ORIGIN_STRIDE).ok_or(Failure::InvalidOrigins)?;
     let count = array.count as usize;
-    // Retain every stored origin in order; grow from the original header
-    // before its payload, preserving the later consistency check.
     origins.ensure(count).map_err(|_| Failure::Allocation)?;
     if count > origins.len() {
         return Err(Failure::OriginsCapacity { required: count });
@@ -226,17 +197,11 @@ fn capture_origins(
     Ok(count)
 }
 
-/// One unit of a batched capture ([`capture_units`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitCapture {
-    /// The scalar pack, or why it is unreadable; its `origins_len` is the
-    /// unit's independent origin fragment.
     pub inputs: Result<Inputs, Failure>,
-    /// The unit's first row in the shared origin arena.
     pub origins_start: usize,
-    /// Whether the header admitted an arena range, even if its payload later failed.
     pub(crate) origins_admitted: bool,
-    /// The origin header the scalar batch copied, witnessed after the payload.
     header: [u8; 16],
 }
 
@@ -251,16 +216,12 @@ impl Default for UnitCapture {
     }
 }
 
-/// The origin arena a batched capture filled: its used prefix, and the rows
-/// every readable header asked for, capacity shortages included.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OriginsUse {
     pub len: usize,
     pub required: usize,
 }
 
-// The scalar spans of `INPUT_SPANS` with the origin header between the
-// receipts and the state receipt, in source order: one record per unit.
 const UNIT_SPANS: [(usize, usize); 7] = [
     (ASKED, 8),
     (RECEIVED, 16),
@@ -270,7 +231,6 @@ const UNIT_SPANS: [(usize, usize); 7] = [
     (AIRPLANE_DEMAND, 12),
     (SHIP_DEMAND, 16),
 ];
-/// The origin header's field in [`UNIT_SPANS`]; the others are the scalars.
 const UNIT_HEADER: usize = 2;
 const UNIT_FIELDS: [crate::memory::RecordField; 7] = crate::memory::packed_fields(UNIT_SPANS);
 const UNIT_BYTES: usize = crate::memory::packed_stride(UNIT_SPANS);
@@ -284,10 +244,8 @@ const HEADER_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&HEADER_FIE
     Some(layout) => layout,
     None => panic!("valid supply origin header layout"),
 };
-/// Units, origin rows or headers per gather.
 const BATCH: usize = 64;
 
-/// The scalar pack of one [`UNIT_SPANS`] record.
 fn unit_scalars(record: &[u8]) -> Inputs {
     let i64_at = |at: usize| i64::from_le_bytes(record[at..at + 8].try_into().unwrap());
     let i32_at = |at: usize| i32::from_le_bytes(record[at..at + 4].try_into().unwrap());
@@ -313,17 +271,6 @@ fn unit_scalars(record: &[u8]) -> Inputs {
     }
 }
 
-/// Read the footers of `units.len()` already authenticated primary roots,
-/// `pointer(index)` each, in record batches: the scalar spans and origin
-/// header of up to 64 units per gather, then the origin rows of up to 64
-/// rows across units per gather into one shared arena, then the headers
-/// again. Each unit keeps [`capture`]'s contract: a scalar fault
-/// withholds its pack; an origin header that is unreadable, invalid, larger
-/// than the arena admits or different after its payload, or a faulting
-/// payload row, withholds only its origin rows. A fault fails only its own
-/// unit: the rest of a gather is read again. Every native row is retained in
-/// order, duplicates and nonpositive amounts included. The arena doubles from
-/// its original header demand. No native count becomes a limit.
 pub fn capture_units(
     memory: &impl Memory,
     pointer: impl Fn(usize) -> usize,
@@ -333,8 +280,6 @@ pub fn capture_units(
     capture_selected_units(memory, pointer, |_| true, units, origins)
 }
 
-/// The same batches for selected units only. A carried footer omits its entire
-/// scalar/header read, origin traversal and header witness, not record fields.
 pub fn capture_selected_units(
     memory: &impl Memory,
     pointer: impl Fn(usize) -> usize,
@@ -372,7 +317,6 @@ pub fn capture_selected_units(
             let mut valid = [false; UNIT_FIELDS.len()];
             for (field, layout) in UNIT_FIELDS.iter().enumerate() {
                 let ordinal = row * UNIT_FIELDS.len() + field;
-                // The faulting field fails; later fields are read alone.
                 valid[field] = ordinal < copied
                     || (ordinal > copied
                         && unit_pointer != 0
@@ -407,7 +351,6 @@ pub fn capture_selected_units(
         }
     }
 
-    // Admit each readable header's rows to the arena in unit order.
     let mut used = OriginsUse::default();
     for unit in units.iter_mut() {
         let Ok(inputs) = &mut unit.inputs else {
@@ -439,7 +382,6 @@ pub fn capture_selected_units(
         inputs.origins_len = Ok(count);
     }
 
-    // Origin rows of every admitted unit, a batch of rows per gather.
     let mut batch = OriginBatch::default();
     for index in 0..units.len() {
         let unit = units[index];
@@ -468,8 +410,6 @@ pub fn capture_selected_units(
     }
     batch.flush(memory, units, origins);
 
-    // The same headers again: a header that changed while its rows were read
-    // withholds them, as the single-unit reader's witness does.
     let mut indices = [0usize; BATCH];
     let mut len = 0;
     for index in 0..units.len() {
@@ -492,8 +432,6 @@ pub fn capture_selected_units(
     used
 }
 
-/// Origin rows waiting for one gather: their addresses, owning units and
-/// arena slots.
 struct OriginBatch {
     addresses: [usize; BATCH],
     owners: [usize; BATCH],
@@ -520,8 +458,6 @@ impl OriginBatch {
         self.len += 1;
     }
 
-    /// Gather the waiting rows. A faulting row withholds its unit's origins
-    /// and the gather resumes after it.
     fn flush(&mut self, memory: &impl Memory, units: &mut [UnitCapture], origins: &mut [Origin]) {
         let mut bytes = [0u8; BATCH * ORIGIN_BYTES];
         let mut done = 0;
@@ -553,8 +489,6 @@ impl OriginBatch {
     }
 }
 
-/// Read the origin headers of `indices` again and withhold the origins of
-/// each unit whose header is unreadable or changed.
 fn witness_headers(
     memory: &impl Memory,
     pointer: &impl Fn(usize) -> usize,
@@ -596,8 +530,6 @@ fn witness_headers(
     }
 }
 
-/// Off-hour sizing only: the same native origin header, without scalar or
-/// payload acquisition. Hints never become recorded values.
 pub fn origin_demand(memory: &impl Memory, pointer: usize) -> Result<usize, Failure> {
     let address = pointer
         .checked_add(ORIGINS)

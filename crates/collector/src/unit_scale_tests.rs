@@ -121,7 +121,6 @@ fn unit_scale_orders() {
     use crate::{extended::bench_world, map_capture::MapCaptured};
     for shape in fixture::shapes() {
         let divisions = shape.divisions;
-        // One group per 24 divisions is a fixture topology, not a native cap.
         let groups = divisions.div_ceil(24);
         let world = bench_world::build_groups(
             1_500,
@@ -390,8 +389,6 @@ fn unit_scale_capture() {
         });
         let mut map = crate::map_capture::MapCaptured::new();
         map.air_wings.rows.resize(shape.wings, Default::default());
-        // The frame's storage holds the hour's names, as it does once grown:
-        // each install copies them, and none swaps the job's buffer away.
         map.air_wing_names.resize(job.names_len, 0);
         let copied = std::mem::size_of_val(job.map_rows[..shape.wings].as_ref());
         println!("UNIT_OWNED_COPY name=AirWingMapCallbackCopy bytes={copied}");
@@ -407,12 +404,6 @@ fn unit_scale_capture() {
     }
 }
 
-/// The division inputs walked by one job against the same census walked in
-/// [`crate::division_census::parts_for`] parts on as many threads and
-/// joined in slot order, as the capture splits it. Prints the median
-/// wall time of each (the parted one includes spawning its threads, which
-/// the pool's running workers do not pay) and checks the joined census
-/// equals the serial one.
 #[test]
 #[ignore = "release unit scaling benchmark"]
 fn division_input_parts_scale() {
@@ -458,7 +449,6 @@ fn division_input_parts_scale() {
             std::thread::scope(|scope| {
                 for (census, &slots) in censuses.iter_mut().zip(&ranges) {
                     scope.spawn(move || {
-                        // SAFETY: the fixture outlives the scope and is only read.
                         let memory = unsafe { engine_native::memory::LiveMemory::new() };
                         census.capture_inputs_part(&memory, base, state, slots);
                     });

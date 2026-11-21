@@ -1,4 +1,3 @@
-//! Text shared by combat windows and ordinary-map hovers. Call sites own native keys and scopes.
 use dashboard_text::scripted_text::stored_text;
 use installed_content_localisation::{
     localisation::Argument, localisation::Argument as Arg, localisation::Localisation,
@@ -10,11 +9,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tooltip {
     pub title: String,
-    /// The game's separate delayed part: the map hover shows it below `title` once
-    /// `NGraphics.TOOLTIP_DELAYED_DELAY` passes, as panel hovers show theirs.
     pub body: String,
-    /// Line name and why its input/text cannot be reproduced; no guessed
-    /// text stands in for it. Counts are occurrences, not unique reasons.
     pub refused: BTreeMap<String, usize>,
 }
 
@@ -40,12 +35,9 @@ impl Tooltip {
     }
 }
 
-/// The sprite frame count and the selected frame of a text icon, or `None`
-/// for an icon the content lacks.
 pub trait TextIcons {
     fn icon(&self, name: &str) -> Option<(u32, i64)>;
 }
-/// Content with no text icons, for the text builders' tests.
 #[cfg(any(test, feature = "test-support"))]
 pub struct NoIcons;
 #[cfg(any(test, feature = "test-support"))]
@@ -54,10 +46,6 @@ impl TextIcons for NoIcons {
         None
     }
 }
-/// Text drawn by the combat walk: glyphs, colour codes and text icons
-/// (`native_text`). An authored inline flag, the 0x14 and 0x1A controls and an icon frame
-/// outside its sprite are refused by name. An icon the content lacks is no
-/// refusal: the game draws nothing for it.
 pub fn displayable(icons: &(impl TextIcons + ?Sized), text: String) -> Result<String, String> {
     validate(icons, &text)?;
     Ok(text)
@@ -67,8 +55,6 @@ pub fn validate(icons: &(impl TextIcons + ?Sized), text: &str) -> Result<(), Str
     validate_inner(icons, text, false)
 }
 
-/// Carrier country text is painted with the hour's native flag source in
-/// the host tooltip draw. Other text bindings retain their flag refusal.
 pub fn displayable_flags(
     icons: &(impl TextIcons + ?Sized),
     text: String,
@@ -106,10 +92,6 @@ fn validate_inner(
     }
     Ok(())
 }
-/// A key the executable names, through the game's localiser with
-/// its arguments. A key the content lacks
-/// is drawn as its own bytes; output the localiser or the native text layout
-/// cannot produce as the game does is refused by name.
 pub fn builtin(
     icons: &(impl TextIcons + ?Sized),
     localisation: &Localisation,
@@ -121,9 +103,6 @@ pub fn builtin(
         .map_err(|refusal| refusal.to_string())?;
     displayable(icons, text).map_err(|reason| format!("localisation {key} holds {reason}"))
 }
-/// A recorded localisation token through the game's localiser with no
-/// arguments: a key the content lacks is drawn as its own bytes,
-/// an empty one as nothing.
 pub fn token(
     icons: &(impl TextIcons + ?Sized),
     localisation: &Localisation,
@@ -131,8 +110,6 @@ pub fn token(
 ) -> Result<String, String> {
     token_with(icons, localisation, token, &[])
 }
-/// [`token`] with the call site's native arguments, for a content key such
-/// as a modifier name with its `$ARG$`.
 pub fn token_with(
     icons: &(impl TextIcons + ?Sized),
     localisation: &Localisation,
@@ -149,7 +126,6 @@ pub fn token_with(
         )
     })
 }
-// Native keys used by the tooltip producers.
 #[macro_export]
 macro_rules! tooltip_keys {
     ($($key:ident = $text:literal),* $(,)?) => {
@@ -158,10 +134,6 @@ macro_rules! tooltip_keys {
 }
 pub use crate::tooltip_keys;
 
-/// State display naming uses the stored custom name, else owner name, else
-/// template name. A name change stores localised text. Owner changes, including
-/// load, store the owner-tag-qualified template name or clear it if absent.
-/// Both are [`stored_text`], never localised again or rebuilt from the current owner.
 pub fn state_name(
     loc: &Localisation,
     recorded: &str,
@@ -183,7 +155,6 @@ pub fn localise(loc: &Localisation, key: &str, args: &[(&str, Arg<'_>)]) -> Resu
         .map_err(|e| e.to_string())
 }
 
-/// trailing-newline padding adds only missing trailing newlines.
 pub fn ensure_newlines(text: &mut String, count: usize) {
     if !text.is_empty() {
         let have = text.bytes().rev().take_while(|&b| b == b'\n').count();
@@ -193,7 +164,6 @@ pub fn ensure_newlines(text: &mut String, count: usize) {
     }
 }
 
-/// qualify with the simulation tag before trying the plain key.
 pub fn country_localised(
     loc: &Localisation,
     tag: Result<&str, &str>,
@@ -214,8 +184,6 @@ pub fn country_localised(
     )
 }
 
-/// The raw simulation tag for the viewing canonical slot. Combat text uses
-/// this tag for viewing-country localisation, never a cosmetic alias.
 pub fn viewing_tag<'a>(
     countries: &'a [CountryRow],
     vision: &crate::map::perspective::Vision,
@@ -229,7 +197,6 @@ pub fn viewing_tag<'a>(
         })
 }
 
-/// the game preserves signed integer limits, including an invalid interval.
 pub fn value_limit(
     loc: &Localisation,
     min: Option<i32>,
@@ -276,7 +243,6 @@ mod tests {
         let name = |custom: &[u8], owner: &[u8], recorded| {
             state_name(&loc, recorded, 7, custom, owner, || Ok("template".into()))
         };
-        // The stored bytes are drawn as they are, never localised again.
         assert_eq!(
             name(b"$literal$", b"owner", "english").as_deref(),
             Ok("$literal$")
@@ -337,12 +303,8 @@ mod validation_tests {
         );
     }
 
-    /// Keys go through the game's localiser as the content stores them: a
-    /// missing key, whether the executable names it or it is a recorded
-    /// token, is drawn as its bytes; unsupported controls are refused by name.
     #[test]
     fn localised_text_is_native_and_refused_by_name() {
-        // Authored text, stored as the loader stores it.
         let localisation: Localisation = [
             ("BATTLE_ATTACK", "§YAngriff§! $NESTED$"),
             ("NESTED", "[x] 100§§"),
@@ -393,8 +355,6 @@ mod validation_tests {
     }
 }
 
-/// country-specific short-name localisation checks TAG_key_short, key_short,
-/// then country-specific localisation for the ordinary key.
 pub fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Result<String, String> {
     let short = format!("{key}_short");
     let qualified = format!("{tag}_{short}");

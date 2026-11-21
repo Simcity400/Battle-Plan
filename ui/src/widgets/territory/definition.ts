@@ -27,7 +27,6 @@ export const definition = {
   factionColours: true,
   options: OPTIONS,
   variants: [...raceViewVariants('Territory', OPTIONS),
-    // Occupied territory is the same widget on its rule, a card of its own in each race view.
     { key: 'rule=occupied', initial: { title: 'Occupied territory', options: { rule: 'occupied' } } },
     { key: 'rule=occupied,view=lines', initial: { title: 'Occupied territory over time', options: { rule: 'occupied', view: 'lines' } } }],
 } as const satisfies WidgetMeta;

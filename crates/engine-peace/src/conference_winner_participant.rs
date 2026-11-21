@@ -1,13 +1,9 @@
-//! CConferenceWinnerParticipant automatic civil-war outcomes.
 
 use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
 
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_c848);
-/// Raw winner country reference used when applying state ownership.
 pub const COUNTRY: usize = 8;
-/// Ordered signed state IDs, appended and then consumed during settlement.
 pub const AUTOMATIC_STATES: usize = 0x148;
 
 pub fn copy(

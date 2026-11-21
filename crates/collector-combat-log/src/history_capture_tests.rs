@@ -8,7 +8,6 @@ use engine_native::{
 };
 use std::cell::Cell;
 
-// Each child owns the process-global producer, allocator hooks and terminal witness.
 fn isolated() -> bool {
     const CHILD: &str = "BATTLE_PLAN_COMBAT_LOG_ISOLATED_TEST";
     let thread = std::thread::current();

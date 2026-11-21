@@ -1,5 +1,3 @@
-//! The product contract, its shared parameters and the reply checks every
-//! product uses. The registry in `products/mod.rs` erases products to their keys.
 
 use std::{io, sync::atomic::AtomicBool};
 
@@ -11,17 +9,11 @@ use crate::Source;
 pub use crate::config::{ContentOptions, LoadContext};
 pub use crate::protocol::validate_tag;
 pub use dashboard_query::identity::Country;
-// Products name the air wing reader at this path.
 pub use crate::air_wing_names as air_wings;
-// The public path; products also name the identity helpers through it.
 pub use crate::identity;
 
-/// Leave room for the lease envelope and escaped product JSON inside the
-/// transport's complete-response bound. History products share this reserve.
 pub const MAX_PRODUCT_REPLY_BYTES: usize = 24 * 1024 * 1024;
 
-/// Serialised with the lease identity the frontend used, so a reply can never
-/// be attributed to another recording.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Envelope<'a, T: Serialize> {
@@ -31,7 +23,6 @@ pub struct Envelope<'a, T: Serialize> {
     pub data: T,
 }
 
-/// A refusal of a reply for its size alone, so a paged reply can send fewer lines instead.
 #[derive(Debug)]
 struct OverBudget(String);
 impl std::fmt::Display for OverBudget {
@@ -41,19 +32,16 @@ impl std::fmt::Display for OverBudget {
 }
 impl std::error::Error for OverBudget {}
 
-/// Refuses a reply that does not fit the transport reply budget, saying why.
 pub fn over_budget(message: impl Into<String>) -> io::Error {
     io::Error::other(OverBudget(message.into()))
 }
 
-/// Whether `error` refuses a reply only for not fitting the transport reply budget.
 pub fn is_over_budget(error: &io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(|inner| inner.is::<OverBudget>())
 }
 
-/// Refuse a complete reply instead of dropping recorded entries to fit it.
 pub fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
     if crate::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
         return Err(over_budget(format!(
@@ -63,26 +51,20 @@ pub fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
     Ok(())
 }
 
-/// The fixed64 finite domain excludes the three
-/// infinity/undefined sentinels while preserving every signed finite value.
 pub fn finite_fixed64(raw: i64) -> bool {
     (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// The engine's saturated fixed5 value, which also marks a fixed5 cache it never computed.
 pub const FIXED5_MAX: i64 = 0x53e2_d61f_d320;
 
-/// A goal's progress cache as a percentage; the game leaves [`FIXED5_MAX`] in goals without ratio progress.
 pub fn faction_goal_progress_percent(raw: i64) -> Option<f64> {
     (finite_fixed64(raw) && raw != FIXED5_MAX).then_some(raw as f64 / 1000.0)
 }
 
-/// All product replies carry content diagnostics at the shared serialization boundary.
 pub trait ReplyWarnings {
     fn warnings_mut(&mut self) -> &mut Vec<String>;
 }
 
-/// Implements [`ReplyWarnings`] for replies whose warnings are their `warnings` field.
 #[macro_export]
 macro_rules! reply_warnings {
     ($($reply:ty),+ $(,)?) => {$(
@@ -96,14 +78,8 @@ macro_rules! reply_warnings {
 
 pub trait Product: 'static {
     const KEY: &'static str;
-    /// Whether any reply field reads localisation, artwork or content definitions.
     const CONTENT_DEPENDENT: bool;
-    /// Whether it answers a hover or label at one hour (one block at most): served on its
-    /// own threads, so a whole-recording scan never delays it.
     const INTERACTIVE: bool = false;
-    /// Whether a reply replays recorded tables to the hours its rows name (a page of a log
-    /// named at each row's hour): it waits and runs on threads of its own, so however long it
-    /// takes, no other reply waits behind it.
     const REPLAYS: bool = false;
     type Params: DeserializeOwned + 'static;
     type Reply: Serialize + ReplyWarnings + 'static;
@@ -112,7 +88,6 @@ pub trait Product: 'static {
         Ok(())
     }
 
-    /// TypeScript declarations this product introduces, parameters and reply first.
     #[cfg(feature = "export-types")]
     fn types() -> Vec<String>
     where
@@ -122,7 +97,6 @@ pub trait Product: 'static {
         vec![Self::Params::decl(), Self::Reply::decl()]
     }
 
-    /// The reply.
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -131,12 +105,10 @@ pub trait Product: 'static {
     ) -> io::Result<Self::Reply>;
 }
 
-/// The one check for a requested country: a slot names any country, a tag is checked as a tag.
 pub fn validate_country(country: &Country) -> Result<(), &'static str> {
     country.tag().map_or(Ok(()), validate_tag)
 }
 
-/// What complete Countries and CountryLinks tables say of `country` this hour.
 pub fn country_in_frame<'a>(
     countries: &'a [replay_data::rows::CountryRow],
     links: &[replay_data::rows::CountryLinkRow],
@@ -148,7 +120,6 @@ pub fn country_in_frame<'a>(
     }
 }
 
-/// Parameters shared by the per-country products.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryParams {
@@ -169,7 +140,6 @@ impl CountryParams {
     }
 }
 
-/// Parameters of a product about the whole world of one branch.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchParams {
@@ -189,7 +159,6 @@ impl BranchParams {
     }
 }
 
-/// Selection checks shared by products drawing several countries.
 pub fn validate_countries(branch_id: &str, countries: &[Country]) -> Result<(), &'static str> {
     if countries.is_empty() {
         return Err("Invalid country selection");
@@ -203,7 +172,6 @@ pub fn validate_countries(branch_id: &str, countries: &[Country]) -> Result<(), 
     Ok(())
 }
 
-/// A census API has no warnings field, so an unrepresentable key refuses its map.
 pub fn require_displayable_tags(
     refused: &std::collections::BTreeMap<Vec<u8>, usize>,
 ) -> io::Result<()> {
@@ -217,8 +185,6 @@ pub fn require_displayable_tags(
 
 pub use crate::metadata::recorded_rows;
 
-/// A table-state reason that can be shared across dated history runs. Read
-/// dates and changing truncation counts belong to coverage, not reason text.
 pub fn table_missing_reason(
     frame: &replay_frame::frame::DecodedFrame,
     table: replay_data::rows::TableId,
@@ -235,7 +201,6 @@ pub fn table_missing_reason(
     }
 }
 
-/// [`table_missing_reason`] of `table` from its status, wherever a frame holds it.
 pub fn status_missing_reason(
     status: replay_frame::frame::OperandStatus<'_>,
     table: replay_data::rows::TableId,
@@ -258,8 +223,6 @@ fn unavailable_reason(table: replay_data::rows::TableId, reason: &str) -> String
     if reason.starts_with("missing table baseline") {
         return format!("{}: its first reading is missing", table.words());
     }
-    // FrameEncoder withholds partial rows at keyframes, retaining the
-    // truncation count in its named unavailable marker.
     let truncated = reason
         .strip_prefix("truncated at keyframe: ")
         .and_then(|count| count.strip_suffix(" rows not read"))

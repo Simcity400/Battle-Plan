@@ -1,4 +1,3 @@
-//! Air-base, naval-base, naval-HQ and special-facility icons.
 
 use super::*;
 use installed_content_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
@@ -14,11 +13,6 @@ use {
     viewer_foundation::map::building_facts::SlotAdmission,
 };
 
-/// The zero-based frame of `GFX_mapicon_naval_base`. The game's one-based frames
-/// are reduced by one here. Glyphs form pairs for no ships / ships in port:
-/// 0,1 a port without known detail; 2,3 a known port of ours; 4,5 the same with the red
-/// prohibition; 6,7 a known foreign port's permission flag; 8,9 that with the prohibition.
-/// The gold frame follows local fleet selection, which a replay has none of, so it is never drawn.
 pub fn naval_base_frame(known: bool, foreign: bool, disclosed: bool, ships: bool) -> u32 {
     if !known {
         return u32::from(ships);
@@ -29,9 +23,6 @@ pub fn naval_base_frame(known: bool, foreign: bool, disclosed: bool, ships: bool
 
 pub(super) use replay_derive::naval_repairs::country_list_contains;
 
-/// The ships glyph: a port occupant of any owner the viewer sees above 0x95, or any
-/// occupant when the viewer's port detail on the base's country is at least 2.
-/// `None` when an input it needs is unknown.
 pub(super) fn naval_base_ships(
     roster: &[u64],
     detail: impl FnOnce() -> Option<u8>,
@@ -55,26 +46,15 @@ pub(super) fn naval_base_ships(
     }
 }
 
-/// The building content behind the naval-HQ and special-facility icons.
 #[derive(Clone, Debug, Default)]
 pub struct BuildingIconContent {
-    /// `naval_headquarter` templates in database order.
     headquarters: Vec<IconTemplate>,
-    /// Templates with a specialization, by name, with their first token.
     facilities: BTreeMap<String, (String, IconTemplate)>,
-    /// Types with a declaration that is a naval HQ whose building rows the replay cannot tie
-    /// to one template, with why ([`unattributable`]): kept out of `headquarters` and
-    /// refused by name.
     refused_headquarters: BTreeMap<String, String>,
-    /// The same for a declaration with a specialization: kept out of `facilities`.
     refused_facilities: BTreeMap<String, String>,
-    /// Every building type of the registry by the lexer's token identity.
     keys: TokenKeys,
-    /// The first record the loader admits of each anchoring bucket in each province, in
-    /// source order.
     records: BTreeMap<(u32, String), [f32; 3]>,
     tokens: TokenMemo,
-    /// The tokens carried from one copy of LexicalTokens to the next ([`TokenCarry`]).
     carried: TokenCarry,
 }
 
@@ -93,18 +73,12 @@ impl Default for TokenMemo {
     }
 }
 
-/// The building tokens carried across copies of LexicalTokens: compared,
-/// never assumed to grow. A new branch makes them whole. A new copy within the branch is walked
-/// against the copy held, token by token: the same rows carry; tokens only in the new copy add
-/// what they name; a rewritten text or a token gone makes them whole again. Walked and made with no
-/// lock held: a second caller meanwhile makes its own rather than waiting.
 #[derive(Clone, Default)]
 struct TokenCarry(Arc<std::sync::Mutex<Option<CarriedTokens>>>);
 
 struct CarriedTokens {
     branch: replay_data::BranchId,
     view: replay_frame::frame::SharedView,
-    /// Each needed building key's tokens, in token order, and each token naming several types.
     found: BTreeMap<String, Vec<u32>>,
     several: BTreeMap<u32, String>,
     value: Arc<BuildingTokens>,
@@ -116,7 +90,6 @@ impl std::fmt::Debug for TokenCarry {
     }
 }
 
-/// What the tokens of `names` contribute to the keys they fold to, as [`building_tokens`] reads each.
 fn add_tokens(names: TokenNames<'_>, keys: &TokenKeys, needed: &BTreeSet<&str>, found: &mut BTreeMap<String, Vec<u32>>, several: &mut BTreeMap<u32, String>) {
     for (token, spelling) in names.iter() {
         let group = keys.keys(spelling);
@@ -136,7 +109,6 @@ fn add_tokens(names: TokenNames<'_>, keys: &TokenKeys, needed: &BTreeSet<&str>, 
     }
 }
 
-/// [`building_tokens`]' answer from what the tokens contributed.
 fn tokens_of(found: &BTreeMap<String, Vec<u32>>, several: &BTreeMap<u32, String>) -> BuildingTokens {
     let mut refused: BTreeSet<String> = several.values().cloned().collect();
     let mut out = BTreeMap::new();
@@ -227,23 +199,15 @@ impl std::fmt::Debug for TokenMemo {
 #[derive(Clone, Debug)]
 struct IconTemplate {
     name: String,
-    /// The explicit bucket the icon anchors at, with the offset it adds.
     anchor: Option<(String, [f32; 3])>,
-    /// A repeated building or bucket declaration reaches the bucket, so its record is
-    /// unverified.
     ambiguous: bool,
 }
 
-/// Why one naval-HQ or facility icon is not drawn this hour.
 type Refusal = String;
 
-/// A province's facility building, with its first specialization token and template.
 type FacilityChoice<'c, 'r> = (&'r BuildingRow, &'c (String, IconTemplate));
 
 impl BuildingIconContent {
-    /// Resolve the template's explicit spawn key through admitted port or
-    /// specialization buckets. Keep authored database order and diagnose ambiguous
-    /// records instead of choosing another slot. Missing anchors remain unavailable.
     pub fn load(
         buildings: &Buildings,
         slots: &[positions::BuildingPosition],
@@ -313,7 +277,6 @@ impl BuildingIconContent {
             .chain(facilities.values().map(|(_, template)| template))
             .filter_map(|template| template.anchor.as_ref().map(|(bucket, _)| bucket.as_str()))
             .collect();
-        // A slot's name reaches its bucket under the lexer's fold ([`Buildings::slot`]).
         let mut records = BTreeMap::new();
         for slot in slots {
             if map_buildings::is_floating_harbor_slot(&slot.kind) {
@@ -348,7 +311,6 @@ impl BuildingIconContent {
         }
     }
 
-    /// The two `NMapMode` offsets [`Self::load`] takes.
     pub fn offsets(defines: &Defines) -> io::Result<[[f32; 3]; 2]> {
         let offset = |name: &str| match defines.numbers("NMapMode", name)?[..] {
             [x, y, z] => Ok([x as f32, y as f32, z as f32]),
@@ -362,8 +324,6 @@ impl BuildingIconContent {
         ])
     }
 
-    /// The template names whose `LexicalTokens` ids the icons need, the refused repeats
-    /// included.
     fn names(&self) -> BTreeSet<&str> {
         self.headquarters
             .iter()
@@ -373,19 +333,16 @@ impl BuildingIconContent {
             .collect()
     }
 
-    /// The tokens carried across copies of LexicalTokens ([`TokenCarry`]).
     fn carried_tokens(&self, frame: &DecodedFrame) -> io::Result<Arc<BuildingTokens>> {
         self.carried.tokens(frame, &self.keys, &self.names())
     }
 
-    // Refusals are not cached: each hour keeps its own error context.
     fn tokens(&self, frame: &DecodedFrame) -> io::Result<Arc<BuildingTokens>> {
         self.tokens.0.get_or_build_without_waiting(frame, (), |projected| {
             building_tokens(projected, &self.keys, &self.names()).map(Arc::new)
         })
     }
 
-    /// The facility and refused facility template names.
     fn facility_names(&self) -> impl Iterator<Item = &str> {
         self.facilities
             .keys()
@@ -393,11 +350,6 @@ impl BuildingIconContent {
             .map(String::as_str)
     }
 
-    /// The naval-HQ template the game picks in one province: the first in database order
-    /// whose building there has a positive level, `None` when none has. `tokens` are this
-    /// hour's template tokens. A refused template with an active building there, or one
-    /// without a single token (an unnamed row may be it) ahead of the match, leaves it
-    /// undecided.
     #[cfg(test)]
     fn headquarter<'r>(
         &self,
@@ -445,10 +397,6 @@ impl BuildingIconContent {
         Ok(None)
     }
 
-    /// The first building with a specialization among a province's `active` buildings,
-    /// in recorded order, with its first token and template; `None` when none has one.
-    /// `names` spells this hour's facility template tokens ([`Self::facility_names`]).
-    /// A refused template reached first leaves it undecided.
     fn facility<'r>(
         &self,
         active: impl IntoIterator<Item = &'r BuildingRow>,
@@ -468,15 +416,11 @@ impl BuildingIconContent {
         Ok(None)
     }
 
-    /// The first facility or refused facility name this hour's tokens do not name: an
-    /// unnamed building row could be it.
     fn unnamed_facility(&self, tokens: &BTreeMap<String, u32>) -> Option<&str> {
         self.facility_names()
             .find(|name| !tokens.contains_key(*name))
     }
 
-    /// See [`Self::load`]; `slot0` is the province's unit-stack slot 0. Refused for an
-    /// ambiguous bucket or a province with no slot 0.
     fn anchor(
         &self,
         province: u32,
@@ -499,16 +443,6 @@ impl BuildingIconContent {
     }
 }
 
-/// The explicit buckets the records passing `test` redirect into, each with whether its
-/// anchor is unverified.
-///
-/// Walk every record of the template array (`value`, from index 1), so each
-/// declaration of a repeated type adds its redirect, whichever one `types` kept. A bucket a
-/// repeated declaration reaches, or one [`Buildings::ambiguous_slots`] names, is ambiguous:
-/// the anchor refuses it before it can fall back to slot 0. A repeated declaration is kept
-/// as authored, so its redirect is bound as the game binds one, by token
-/// ([`Buildings::slot`]), and counts only into an explicit bucket no building's token
-/// occupies.
 fn redirect_targets(
     buildings: &Buildings,
     test: fn(&BuildingType) -> bool,
@@ -542,12 +476,6 @@ fn redirect_targets(
     out
 }
 
-/// Why a type's building rows cannot be tied to one template, or `None` when they can.
-///
-/// A repeated type is several records ([`BuildingIconContent::load`]). A row's
-/// `building_type` is the lexer token of the type's name. Keys equal under the game's
-/// case fold share one token, so two registry types equal under that fold share
-/// their rows' token even though the game distinguishes them by template ordinal.
 fn unattributable(buildings: &Buildings, keys: &TokenKeys, name: &str) -> Option<String> {
     if buildings.repeated_types.contains_key(name) {
         return Some("is declared more than once, differently".to_owned());
@@ -566,22 +494,16 @@ fn unattributable(buildings: &Buildings, keys: &TokenKeys, name: &str) -> Option
     })
 }
 
-/// One naval base icon, decided for the hour and the viewing country.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct NavalBaseIcon {
     pub(super) province: u32,
     pub(super) frame: u32,
     pub(super) highlighted: bool,
-    /// Enable the button when the base belongs to the viewer, or the viewer has
-    /// province access and is not at war with its owner. Disabled buttons draw grey
-    /// through `buttonstate.shader`.
     pub(super) enabled: bool,
     pub(super) capacity: Option<naval_repairs::Capacity>,
     pub(super) capacity_refusal: Option<&'static str>,
 }
 
-/// Naval-base, naval-HQ and facility icons this hour did not draw because an input was
-/// unknown or refused, by kind and reason.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BaseUnknowns {
     pub naval_bases: BTreeMap<String, usize>,
@@ -590,7 +512,6 @@ pub struct BaseUnknowns {
 }
 
 impl BaseUnknowns {
-    /// The icons of each kind not drawn: naval bases, naval HQs, facilities.
     pub fn totals(&self) -> [usize; 3] {
         [
             &self.naval_bases,
@@ -600,7 +521,6 @@ impl BaseUnknowns {
         .map(|reasons| reasons.values().sum())
     }
 
-    /// One diagnostics line per kind and reason.
     pub fn lines(&self) -> impl Iterator<Item = String> + '_ {
         [
             ("naval base", &self.naval_bases),
@@ -620,20 +540,15 @@ fn refuse(reasons: &mut BTreeMap<String, usize>, reason: impl Into<String>) {
     *reasons.entry(reason.into()).or_default() += 1;
 }
 
-/// One hour's naval-base, naval-HQ and facility icons for the viewing country; only their
-/// screen placement waits for the camera.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BaseIcons {
     pub(super) naval: Vec<NavalBaseIcon>,
     pub(super) headquarters: Vec<(u32, [f32; 3])>,
-    /// Anchor and `GFX_mapicon_facility_*` sprite.
     pub(super) facilities: Vec<(u32, [f32; 3], String)>,
     pub(super) unknown: BaseUnknowns,
-    /// Building names this hour's token table refuses.
     pub(super) refused: BTreeSet<String>,
 }
 
-/// A raw country reference as a canonical slot: `Ok(None)` for none, `Err` for unresolved.
 fn slot(links: &BTreeMap<u32, u32>, raw: u32) -> Result<Option<u32>, ()> {
     if raw as i32 <= 0 {
         return Ok(None);
@@ -641,22 +556,16 @@ fn slot(links: &BTreeMap<u32, u32>, raw: u32) -> Result<Option<u32>, ()> {
     links.get(&raw).copied().map(Some).ok_or(())
 }
 
-/// The context [`BaseIcons::read_profiled`] needs beyond the frame.
 pub(super) struct BaseContext<'a> {
     pub(super) content: &'a CounterContent,
     pub(super) vision: &'a Vision,
     pub(super) links: &'a BTreeMap<u32, u32>,
-    /// Canonical slot to `Countries.id`, the raw reference the base's list holds.
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
     pub(super) relations: Result<&'a Relations, &'static str>,
     pub(super) order: Option<&'a counter_order::RecordedOrder>,
-    /// The building tokens carried across copies of their table ([`TokenCarry`]).
     pub(super) carry_tokens: bool,
 }
 
-/// Reconstructed province rows have unique ascending `id` keys. Snapshot,
-/// truncated and delta reconstruction all validate that contract before an hour
-/// reaches the viewer.
 struct ProvinceLookup<'a>(&'a [ProvinceRow]);
 
 impl<'a> ProvinceLookup<'a> {
@@ -668,8 +577,6 @@ impl<'a> ProvinceLookup<'a> {
     }
 }
 
-/// ProvinceBuildings reconstructs in unique `(location, building_type)` order.
-/// Borrow contiguous location ranges rather than rebuilding an owned index.
 struct BuildingLookup<'a> {
     rows: &'a [BuildingRow],
 }
@@ -697,7 +604,6 @@ impl BaseIcons {
         let provinces = spans.measure(
             "overlay.tables.counters.native_base_icons.base.provinces",
             |_| {
-                // Preserve the original core refusal before any other base read.
                 Ok::<_, io::Error>(ProvinceLookup(core::<tables::Provinces>(frame)?))
             },
         )?;
@@ -713,8 +619,6 @@ impl BaseIcons {
         Ok(out)
     }
 
-    /// One icon per `NavalBases` row: every province with a naval base draws,
-    /// regardless of the base's level.
     fn read_naval(
         &mut self,
         frame: &DecodedFrame,
@@ -775,7 +679,6 @@ impl BaseIcons {
                 } else {
                     (true, true)
                 };
-                // Compare the list's raw references with the viewer's own.
                 let disclosed = known && {
                     if base.countries_unreadable {
                         return Err("the base's recorded country list is unreadable");
@@ -796,9 +699,6 @@ impl BaseIcons {
                     || vision.naval_port_detail(country),
                     |unit| {
                         let owner = *links.get(forces.get(&unit)?)?;
-                        // `unit visibility` is 255 with fog off and for our own units; a
-                        // foreign unit whose entry a truncated `UnitIntel` may have omitted is
-                        // unknown.
                         if owner != ours && vision.fog() && vision.undecided().is_some() {
                             return None;
                         }
@@ -834,8 +734,6 @@ impl BaseIcons {
         Ok(())
     }
 
-    /// Prepare facility icons and their per-viewer visibility from the recorded
-    /// facility census and resolved content.
     fn read_buildings(
         &mut self,
         frame: &DecodedFrame,
@@ -860,8 +758,6 @@ impl BaseIcons {
         let complete = buildings.is_complete();
         let by_province = BuildingLookup { rows: buildings.rows() };
         let ours = vision.ours();
-        // a positive override, else the province's
-        // controller for a province status; compared as `same_country` with the viewer.
         let ours_building = |row: &BuildingRow| -> Option<bool> {
             let raw = if (row.country as i32) > 0 {
                 row.country
@@ -873,7 +769,6 @@ impl BaseIcons {
             Some(slot(links, raw).ok()? == Some(ours))
         };
 
-        // The recorded DLC feature gates the HQ lookup.
         let headquarters_enabled = match frame.complete::<tables::SimulationFeatures>() {
             Ok([features]) => Some(features.dlc_mask & 0x8000 != 0),
             _ => None,
@@ -912,8 +807,6 @@ impl BaseIcons {
             }
         }
 
-        // Every facility template must be named this hour, or an unnamed building row could
-        // be one of them.
         let unnamed_facility = icons.unnamed_facility(tokens);
         for flag in rows::<tables::FacilityMapFlags>(frame)?.rows() {
             let Some(province) = provinces.get(&flag.province) else {
@@ -922,10 +815,6 @@ impl BaseIcons {
             if flag.flag == 0 || (province.controller as i32) <= 0 {
                 continue;
             }
-            // Take the first active building with a specialization. Active buildings have a
-            // positive level and retain recorded building order; the game rebuilds this list
-            // after each read and whenever a level crosses zero. `ordinal` is its position
-            // in the full recorded building list.
             let mut active: Vec<&BuildingRow> = by_province
                 .get(flag.province)
                 .iter()
@@ -975,30 +864,18 @@ impl BaseIcons {
     }
 }
 
-/// Whether the building status belongs to a province.
 const PROVINCE_STATUS: u32 = 1;
 
-/// Air-base admission uses the province visibility byte and controller.
-/// Only the supported map mode is considered; unavailable controller data
-/// keeps the decision unknown.
 pub(super) fn air_base_hidden(map: &MapData, anchor: [f32; 3], vision: &Vision) -> bool {
     let province = province_at(map, anchor);
     let controller = province.and_then(|province| vision.province_controller(province));
     matches!((province, controller), (Some(province), Some(controller)) if vision.sees_air_base(province, controller) == Some(false))
 }
 
-/// The province under a world position, using a truncating grid lookup. This
-/// also supplies the game's fallback for a state building's slot. `None` off
-/// the map, on an unclaimed pixel or for a non-finite anchor. Bounds are
-/// checked before truncating: truncating -0.1 toward zero would fold it onto
-/// column 0. Authored anchors are never negative, so this guard preserves the
-/// icon only when its input is corrupt.
 pub(super) fn province_at(map: &MapData, world: [f32; 3]) -> Option<u32> {
     if !world[0].is_finite() || !world[2].is_finite() {
         return None;
     }
-    // Bounds first: truncating `-0.1` toward zero would otherwise fold a
-    // sub-pixel negative anchor onto column or row 0, a real province.
     let (width, height) = (map.width as f32, map.height as f32);
     if world[0] < 0.0 || world[2] < 0.0 || world[0] >= width || world[2] >= height {
         return None;
@@ -1015,8 +892,6 @@ pub(super) fn province_at(map: &MapData, world: [f32; 3]) -> Option<u32> {
         .filter(|id| *id != 0)
 }
 
-/// The base kind an `AirBases.kind` names: the game treats any kind other
-/// than a rocket site or gun emplacement as an ordinary air base.
 pub fn site_kind(kind: i32) -> usize {
     match kind {
         1 => building_facts::ROCKET_SITE,
@@ -1025,17 +900,11 @@ pub fn site_kind(kind: i32) -> usize {
     }
 }
 
-/// The states whose listed provinces show their air-base, rocket-site and
-/// gun-emplacement icons, by base kind, and whether every air base is
-/// recorded. The game shows a province's icon of a kind while its state holds
-/// a base of that kind, whichever building type raised it, so the icons read
-/// the recorded bases rather than a type name.
 pub(super) fn site_icon_states(frame: &DecodedFrame) -> io::Result<([BTreeSet<u32>; 3], bool)> {
     let bases = rows::<tables::AirBases>(frame)?;
     Ok((site_states_of(bases.rows().iter().map(|base| (base.state, base.kind))), bases.is_complete()))
 }
 
-/// [`site_icon_states`]'s states from values: each air base's state and kind.
 pub fn site_states_of(bases: impl IntoIterator<Item = (Option<u32>, i32)>) -> [BTreeSet<u32>; 3] {
     let mut states: [BTreeSet<u32>; 3] = Default::default();
     for (state, kind) in bases {
@@ -1046,20 +915,10 @@ pub fn site_states_of(bases: impl IntoIterator<Item = (Option<u32>, i32)>) -> [B
     states
 }
 
-/// The prefix of a strategic location's sprite: the game names it after the
-/// province's first strategic location.
 pub(super) const STRATEGIC_LOCATION_SPRITE_PREFIX: &str = "GFX_strategic_location_";
 
-/// Each province's strategic locations, with the notes naming what the hour
-/// does not record.
 type StrategicLocations = (BTreeMap<u32, Vec<u32>>, Vec<String>);
 
-/// Each province's strategic locations, as the game's icon lists them: the
-/// province's own tokens in stored order, then its own state's locations
-/// anchored on it, in stored order. The game gathers a province's state
-/// locations only through the province's state, so a pair anchored in another
-/// state's province is kept out. Provinces with none are left out; notes
-/// name what the hour does not record.
 pub(super) fn strategic_locations(frame: &DecodedFrame) -> io::Result<StrategicLocations> {
     let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     let mut notes = Vec::new();
@@ -1114,20 +973,12 @@ pub(super) fn strategic_locations(frame: &DecodedFrame) -> io::Result<StrategicL
     Ok((out, notes))
 }
 
-/// The states whose radar icons the hour shows, and why some may be
-/// missing.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RadarStates {
     pub shown: BTreeSet<u32>,
     pub notes: Vec<String>,
 }
 
-/// The game admits a province's radar icon when the viewing country, else
-/// a member of its faction, one of its direct subjects or its direct
-/// overlord, keeps a radar group hosted in the province's state; the icon
-/// stays while the state's current controller keeps a group hosted there.
-/// Groups count whatever they cover. An icon only an unrecorded relation
-/// could admit is withheld and named in the notes.
 pub(super) fn radar_states(frame: &DecodedFrame, ours: u32) -> io::Result<RadarStates> {
     let coverage = rows::<tables::RadarCoverage>(frame)?;
     let held = match &coverage {
@@ -1157,17 +1008,12 @@ pub(super) fn radar_states(frame: &DecodedFrame, ours: u32) -> io::Result<RadarS
     }))
 }
 
-/// What [`radar_states`] reads, as values.
 pub struct RadarInputs<'a> {
-    /// `RadarCoverage`'s groups (country, state) and whether it is whole, or why it is unavailable.
     pub coverage: Result<(&'a [(u32, Option<u32>)], bool), &'a str>,
     pub link: &'a dyn Fn(u32) -> Option<u32>,
-    /// `FactionMembers`: (country, faction).
     pub members: &'a [(u32, u64)],
     pub members_complete: bool,
-    /// The viewing country's `CountryAppearance` subjects and overlord, when it has a row.
     pub appearance: Option<(replay_data::rows::Recorded<Vec<i32>>, i32)>,
-    /// `States`: (state, raw controller).
     pub controllers: &'a [(u32, u32)],
     pub ours: u32,
 }
@@ -1178,7 +1024,6 @@ impl RadarInputs<'_> {
     }
 }
 
-/// [`radar_states`] from values.
 pub fn radar_of(inputs: &RadarInputs<'_>) -> RadarStates {
     let (groups, complete) = match inputs.coverage {
         Err(reason) => return RadarStates { shown: BTreeSet::new(), notes: radar_notes_of(Err(reason), 0, 0, &[]) },
@@ -1213,9 +1058,6 @@ pub fn radar_of(inputs: &RadarInputs<'_>) -> RadarStates {
     out
 }
 
-/// The countries whose radar groups admit the viewer's icons: the viewing country, the members
-/// of its faction, its direct subjects and its direct overlord, by country slot; and the
-/// relation inputs whose absence could hide an admitting country.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RadarCircle {
     pub countries: BTreeSet<u32>,
@@ -1223,10 +1065,7 @@ pub struct RadarCircle {
 }
 
 impl RadarCircle {
-    /// `members` is `FactionMembers` (country, faction) in key order; `appearance` the viewing
-    /// country's `CountryAppearance` subjects and overlord, when it has a row.
     pub fn of(slot: &dyn Fn(u32) -> Option<u32>, members: &[(u32, u64)], members_complete: bool, appearance: Option<&(replay_data::rows::Recorded<Vec<i32>>, i32)>, ours: u32) -> Self {
-        // Which country of the circle answers first does not change whether one does.
         let mut circle = Self { countries: BTreeSet::from([ours]), undecided: Vec::new() };
         if !members_complete {
             circle.undecided.push("FactionMembers");
@@ -1250,9 +1089,6 @@ impl RadarCircle {
         circle
     }
 
-    /// A state hosting radar groups of `hosting` (country slots), controlled by `controller`'s
-    /// slot: the icon stays while its controller keeps a group there, and shows when a country of
-    /// the circle keeps one.
     pub fn outcome(&self, hosting: impl Iterator<Item = u32> + Clone, controller: Option<u32>) -> RadarOutcome {
         let Some(controller) = controller else { return RadarOutcome::Uncontrolled };
         if !hosting.clone().any(|country| country == controller) {
@@ -1267,19 +1103,14 @@ impl RadarCircle {
     }
 }
 
-/// What a radar host state's icon is ([`RadarCircle::outcome`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RadarOutcome {
     Shown,
     Hidden,
-    /// Only an unrecorded relation could admit it.
     Withheld,
-    /// Its controller is not recorded.
     Uncontrolled,
 }
 
-/// The radar icons' notes: `coverage` is whether `RadarCoverage` is whole, or why it is
-/// unavailable; the counts of withheld and uncontrolled host states.
 pub fn radar_notes_of(coverage: Result<bool, &str>, withheld: usize, uncontrolled: usize, undecided: &[&str]) -> Vec<String> {
     let complete = match coverage {
         Err(reason) => return vec![format!("radar icons are not drawn: RadarCoverage is unavailable ({reason})")],
@@ -1303,7 +1134,6 @@ pub fn radar_notes_of(coverage: Result<bool, &str>, withheld: usize, uncontrolle
     notes
 }
 
-/// The base joins shared by every camera of this hour and viewing country.
 #[derive(Clone)]
 pub(super) struct BaseTables {
     values: BaseValues,
@@ -1333,8 +1163,6 @@ impl BaseTables {
         Ok(Self { values, ..Self::rest(frame, vision, content)? })
     }
 
-    /// Nothing read at all: no icon of the base families is drawn at this camera, so every part
-    /// is empty and the allowances say by name that they were not read.
     pub(super) fn none() -> Self {
         Self {
             values: BaseValues::default(),
@@ -1344,8 +1172,6 @@ impl BaseTables {
         }
     }
 
-    /// The parts the base counters layer does not keep: the strategic-location icons and the air
-    /// volunteer allowances. Its site parts are empty: the layer's are drawn.
     pub(super) fn rest(frame: &DecodedFrame, vision: &Vision, content: &CounterContent) -> io::Result<Self> {
         let (locations, location_notes) = location_icons(frame)?;
         Ok(Self {
@@ -1357,23 +1183,17 @@ impl BaseTables {
     }
 }
 
-/// The base tables' parts the base counters layer keeps, as values. Each part is shared between
-/// versions by shard (64 states or provinces), so a version that changes one state copies one
-/// shard. A site (state, base kind) has a count exactly while its state holds a base of that kind.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BaseValues {
     pub wings: Shards<(u32, usize), AirBaseCount>,
     pub complete: bool,
     pub aircraft_complete: bool,
     pub controlled: Shards<u32, bool>,
-    /// The states whose radar icon shows, and why some may not.
     pub radar: Shards<u32, ()>,
     pub radar_notes: Arc<Vec<String>>,
-    /// Each (state, `AirBases.kind`)'s bases, in id order.
     pub site_bases: Shards<(u32, i32), Vec<u64>>,
 }
 
-/// Each `(state, kind)`'s air bases, from (id, state, kind) in key order.
 pub fn site_bases_of(bases: impl IntoIterator<Item = (u64, Option<u32>, i32)>) -> BTreeMap<(u32, i32), Vec<u64>> {
     let mut out = BTreeMap::<_, Vec<_>>::new();
     for (id, state, kind) in bases {
@@ -1385,14 +1205,11 @@ pub fn site_bases_of(bases: impl IntoIterator<Item = (u64, Option<u32>, i32)>) -
 }
 
 impl HourTables {
-    /// The hour's base tables' parts the base counters layer keeps.
     pub fn base_values(&self) -> BaseValues {
         self.bases.values.clone()
     }
 }
 
-/// Whether each recorded province has a controller (a positive raw controller link), as
-/// the game requires of an air-base, rocket-site or gun-emplacement icon.
 pub(super) fn controlled_provinces(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, bool>> {
     Ok(rows::<tables::Provinces>(frame)?
         .rows()
@@ -1401,7 +1218,6 @@ pub(super) fn controlled_provinces(frame: &DecodedFrame) -> io::Result<BTreeMap<
         .collect())
 }
 
-/// Whether a province with raw controller `controller` has one, from its value.
 pub fn controlled_of(controller: u32) -> bool {
     controller > 0
 }
@@ -1428,9 +1244,6 @@ fn location_icons(frame: &DecodedFrame) -> io::Result<LocationIcons> {
     ))
 }
 
-/// Plans the base icons from the hour's shared joins, applying the camera,
-/// map mode and local selection to their retained windows; the site parts are `layered`'s when
-/// the base counters layer draws them.
 pub(super) fn bases(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -1442,8 +1255,6 @@ pub(super) fn bases(
     lay_out_bases(inputs, frame, tables, sites, &mut out.native_bases, &mut out.report, &mut Marks::default())
 }
 
-/// The icons laid out one a province from the site parts, by kind (the `building_facts` kinds):
-/// the air base, rocket site and gun emplacement, and the radar. Each one's family and window.
 const ICON_FAMILIES: [(base_windows::Family, &str); 4] = [
     (base_windows::Family::AirBase, AIR_BASE_WINDOW),
     (base_windows::Family::RocketSite, ROCKET_SITE_WINDOW),
@@ -1452,30 +1263,21 @@ const ICON_FAMILIES: [(base_windows::Family, &str); 4] = [
 ];
 const RADAR_KIND: usize = building_facts::RADAR;
 
-/// Whether this view lays out the icons of `kind`: the raids map mode clears them with the other
-/// province icons; each kind has its camera cutoff.
 fn kind_shown(inputs: &CounterInputs<'_>, kind: usize) -> bool {
     let defines = &inputs.content.defines;
     inputs.visibility.province_icons && inputs.shows(if kind == RADAR_KIND { defines.radar_cutoff } else { defines.air_base_cutoff })
 }
 
-/// The radar icons' notes, each added once while they are laid out.
 fn radar_notes(sites: &BaseValues) -> Vec<String> {
     sites.radar_notes.iter().map(|note| format!("{RADAR_WINDOW}: {note}")).collect()
 }
 
-/// What a layout keeps to lay one icon out again alone.
 #[derive(Default)]
 struct Marks {
-    /// What each kind's icons added to the report, by province.
     icons: [HashMap<u32, SiteMarks>; 4],
-    /// The radar icons' notes, as added.
     radar: Vec<String>,
 }
 
-/// Lays every base icon out into `offers` and `report`: the site and radar icons (keeping in
-/// `marks` what each added to the report), the strategic locations, the headquarters and the
-/// facilities.
 fn lay_out_bases(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -1534,11 +1336,9 @@ fn take_back_notes(target: &mut BTreeMap<String, usize>, notes: &[String]) {
     }
 }
 
-/// The naval headquarters and facility icons.
 fn facilities(inputs: &CounterInputs<'_>, tables: &HourTables, out: &mut CounterFrame) {
     let icons = &tables.base_icons;
     out.report.unknown_bases.clone_from(&icons.unknown);
-    // Both icons draw strictly below `FACILITY_DISTANCE_CUTOFF`, in frame 0.
     if !inputs.shows(inputs.content.defines.facility_cutoff) {
         return;
     }
@@ -1574,7 +1374,6 @@ fn facilities(inputs: &CounterInputs<'_>, tables: &HourTables, out: &mut Counter
     }
 }
 
-/// One radar icon in `state`: drawn while the state's radar shows.
 fn radar_entry(sites: &BaseValues, state: u32, anchor: Result<[f32; 3], String>) -> SiteEntry {
     let mut entry = SiteEntry::default();
     if !sites.radar.contains_key(&state) {
@@ -1587,16 +1386,13 @@ fn radar_entry(sites: &BaseValues, state: u32, anchor: Result<[f32; 3], String>)
     entry
 }
 
-/// What laying out one icon reads besides the icon: the view, the hour and the site parts.
 struct SiteContext<'a, 'b> {
     inputs: &'a CounterInputs<'b>,
     frame: &'a DecodedFrame,
     sites: &'a BaseValues,
     vision: &'a Vision,
     volunteers: &'a Result<air_volunteers::Allowances, String>,
-    /// The sites of the view's selected air bases.
     selected: BTreeSet<(u32, usize)>,
-    /// The wing grids' census, made at the first grid the strategic air map mode lays out.
     census: std::cell::OnceCell<Result<air_grid::Census<'a>, String>>,
 }
 
@@ -1615,7 +1411,6 @@ impl<'a, 'b> SiteContext<'a, 'b> {
         Ok(Self { inputs, frame, sites, vision: &tables.vision, volunteers: &tables.bases.volunteers, selected, census: Default::default() })
     }
 
-    /// One icon of kind `kind` at `province` in `state`.
     fn lay_out(&self, kind: usize, province: u32, state: u32, anchor: Result<[f32; 3], String>) -> SiteEntry {
         #[cfg(test)]
         super::preparation::plan_probe::record(|counts| counts.site_icons += 1);
@@ -1635,8 +1430,6 @@ impl<'a, 'b> SiteContext<'a, 'b> {
                 return entry;
             }
         };
-        // The game shows the three icons only in a province with a controller; a province whose
-        // controller is not recorded is withheld and named.
         match self.sites.controlled.get(&province) {
             Some(true) => {}
             Some(false) => return entry,
@@ -1645,7 +1438,6 @@ impl<'a, 'b> SiteContext<'a, 'b> {
                 return entry;
             }
         }
-        // The three icons share the air base's sight gate.
         if air_base_hidden(inputs.map, anchor, vision) {
             entry.hidden = true;
             return entry;
@@ -1695,7 +1487,6 @@ impl<'a, 'b> SiteContext<'a, 'b> {
     }
 }
 
-/// What one icon lays out: its window's offer, its wing grid, and what it adds to the report.
 #[derive(Default)]
 struct SiteEntry {
     offer: Option<([f32; 3], base_windows::State)>,
@@ -1705,7 +1496,6 @@ struct SiteEntry {
 }
 
 impl SiteEntry {
-    /// Adds it to `offers` and `report`; what a later layout of the icon takes back.
     fn add(self, inputs: &CounterInputs<'_>, kind: usize, province: u32, offers: &mut base_windows::PreparedBases, report: &mut CounterReport) -> SiteMarks {
         add_notes(&mut report.icon_gui_notes, &self.notes, 1);
         report.hidden_air_bases += usize::from(self.hidden);
@@ -1719,7 +1509,6 @@ impl SiteEntry {
     }
 }
 
-/// What one icon added to the report.
 #[derive(Default)]
 struct SiteMarks {
     notes: Vec<String>,
@@ -1737,17 +1526,12 @@ impl SiteMarks {
     }
 }
 
-/// The base icons laid out for one hour's tables, view and camera rules ([`Preparation`]); a new
-/// product of the base counters layer lays out again only the icons of the states, sites and
-/// provinces it changed.
 pub(super) struct BaseLayout {
     rules: [bool; 3],
-    /// The layer's product it is laid out from; none for the hour's own parts.
     values: Option<Arc<BaseValues>>,
     pub(super) offers: base_windows::PreparedBases,
     pub(super) report: CounterReport,
     marks: Marks,
-    /// Each kind's icon provinces by state, made at the first change it lays out.
     by_state: Option<[HashMap<u32, Vec<u32>>; 4]>,
 }
 
@@ -1772,8 +1556,6 @@ impl BaseLayout {
         }
     }
 
-    /// Becomes the layout of `values`: the icons of the sites, states and provinces it changed are
-    /// laid out again; a change of a census' completeness lays everything out anew.
     pub(super) fn update(&mut self, inputs: &CounterInputs<'_>, frame: &DecodedFrame, tables: &HourTables, values: Option<&Arc<BaseValues>>) -> io::Result<()> {
         let (Some(old), Some(new)) = (self.values.clone(), values) else {
             *self = Self::new(self.rules, inputs, frame, tables, values.cloned())?;
@@ -1833,7 +1615,6 @@ impl BaseLayout {
     }
 }
 
-/// Prepare strategic-location icons, deferring free-view cutoffs to each anchor.
 #[cfg(test)]
 pub(super) fn strategic_location_icons(
     inputs: &CounterInputs<'_>,
@@ -1851,8 +1632,6 @@ fn strategic_location_icons_cached(
     out: &mut CounterFrame,
 ) -> io::Result<()> {
     let defines = &inputs.content.defines;
-    // A strategic location shows with the air-base icons' camera cutoff and
-    // map-mode gate, wherever the province lists one.
     if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
         for note in notes {
             *out.report
@@ -1897,7 +1676,6 @@ fn strategic_location_icons_cached(
     Ok(())
 }
 
-/// Prepare admitted radar icons; free views leave the cutoff to each anchor's presentation.
 #[cfg(test)]
 pub(super) fn radars(
     inputs: &CounterInputs<'_>,
@@ -1917,16 +1695,6 @@ pub(super) fn radars(
     Ok(())
 }
 
-/// The `LexicalTokens` ids of the named building types, and the names this hour refuses.
-///
-/// `Buildings.building_type` is a native token id, not a name: the recorder stores the
-/// literal once in `LexicalTokens` and every building row refers to it. A token stands for
-/// every key of the whole building registry (`keys`) equal to its spelling under the lexer's
-/// fold. Each of `names` gets its token even when other registry
-/// keys share it, so the caller can refuse such a name ([`unattributable`]) wherever its
-/// rows are active; the shared token is reported. A key several tokens spell is refused by
-/// name. `LexicalTokens` fills over the first hours of a session, so a token this hour has
-/// not reached matches no building row and its icons are simply not drawn.
 pub(super) fn building_tokens(
     frame: &DecodedFrame,
     keys: &TokenKeys,
@@ -1971,36 +1739,18 @@ pub(super) fn building_tokens(
     Ok((out, refused))
 }
 
-/// What one state base's icon shows: its `wings_count` box, and its frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AirBaseCount {
-    /// Used/allowed air volunteer wings for the base controller.
     pub volunteers: Option<(i32, i32)>,
     pub selected: bool,
-    /// Planes based here, summed over every wing at the base.
     pub planes: i64,
-    /// `AirBases.capacity`, the denominator.
     pub capacity: i32,
-    /// Whether this perspective is shown the box at all; see [`wings_per_site`].
     pub shown: bool,
-    /// Registered air-base country containers. `None` means the registration
-    /// census is incomplete.
     pub stationed: Option<bool>,
-    /// Whether any container at the base holds a wing;
-    /// `None` when `AirBaseRegistrations` is not complete.
     pub occupied: Option<bool>,
-    /// Whether some *other* registered country has wings here;
-    /// `None` when `AirBaseRegistrations` is not complete.
     pub foreign: Option<bool>,
 }
 
-/// The zero-based frame of `GFX_mapicon_air_base`; each one-based game frame is
-/// reduced by one here. Frames six and seven use the view's selected base references.
-///
-/// An hour without complete registrations cannot decide `stationed`, `occupied` or
-/// `foreign`; it keeps the legacy reading, a badge for any recorded plane. Access
-/// certain but stationed unknown stays plain. Decided-no-detail stays plain
-/// because the detail must be positive, whatever the occupancy.
 pub(super) fn air_base_frame(count: &AirBaseCount, detail: Option<bool>) -> u32 {
     let badge = match (count.shown, count.stationed, count.occupied, detail) {
         (true, Some(stationed), _, _) => stationed,
@@ -2020,10 +1770,6 @@ pub(super) fn air_base_frame(count: &AirBaseCount, detail: Option<bool>) -> u32 
         }
 }
 
-/// The one-based frame of a rocket-site or gun-emplacement icon's buttons.
-/// Without access the game shows frame 3, disabled; with it frame 2 while
-/// the site holds a wing and frame 1 otherwise. An hour whose registrations
-/// cannot decide occupancy keeps the reading of any recorded plane.
 pub(super) fn site_frame(count: &AirBaseCount) -> i32 {
     if !count.shown {
         3
@@ -2034,13 +1780,6 @@ pub(super) fn site_frame(count: &AirBaseCount) -> i32 {
     }
 }
 
-/// Air-base visibility combines access and display gates. The viewing country
-/// and relevant controller must resolve, and the base state must permit access
-/// and avoid demilitarisation. Fog alone does not bypass these gates. Missing
-/// reached inputs remain unavailable.
-///
-/// Counts are kept by state and base kind: each icon reads its own state
-/// base, an air base's never a rocket site's or gun emplacement's.
 pub(super) fn wings_per_site(
     frame: &DecodedFrame,
     vision: &Vision,
@@ -2082,7 +1821,6 @@ pub(super) fn wings_per_site(
     }))
 }
 
-/// One `AirWings` row's values that the base counts read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WingFields {
     pub id: u64,
@@ -2093,7 +1831,6 @@ pub struct WingFields {
     pub planes: i32,
 }
 
-/// One `AirBaseRegistrations` row's values.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegistrationFields {
     pub base: u64,
@@ -2102,7 +1839,6 @@ pub struct RegistrationFields {
     pub wings: Vec<u64>,
 }
 
-/// One `AirBases` row's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AirBaseFields {
     pub id: u64,
@@ -2111,9 +1847,7 @@ pub struct AirBaseFields {
     pub capacity: i32,
 }
 
-/// What [`wings_per_site`] reads, as values: each table's rows in key order and whether whole.
 pub struct WingInputs<'a> {
-    /// `StateFlags`: (state, demilitarized).
     pub flags: &'a [(u32, u8)],
     pub flags_complete: bool,
     pub link: &'a dyn Fn(u32) -> Option<u32>,
@@ -2126,14 +1860,7 @@ pub struct WingInputs<'a> {
     pub ours: u32,
 }
 
-/// [`wings_per_site`] from values.
 pub fn wings_of(inputs: &WingInputs<'_>) -> BTreeMap<(u32, usize), AirBaseCount> {
-    // A truncated flag table proves nothing about its missing states — but a
-    // state whose row survived IS decided. Hiding every box because one
-    // unrelated row is missing would push recorded, non-demilitarised bases
-    // onto the detail badge branch, where decided intel can show a badge the
-    // engine's stationed branch keeps plain. So the unknown is per-state: a
-    // recorded state reads its row, and a missing or unavailable one hides.
     let mut flags: BTreeMap<u32, u8> = BTreeMap::new();
     for &(state, demilitarized) in inputs.flags {
         let flag = flags.entry(state).or_default();
@@ -2142,10 +1869,6 @@ pub fn wings_of(inputs: &WingInputs<'_>) -> BTreeMap<(u32, usize), AirBaseCount>
         }
     }
     let planes: BTreeMap<u64, i32> = inputs.wings.iter().map(|wing| (wing.id, wing.planes)).collect();
-    // A country's wings at a base are counted two ways: its own container's pools
-    // hold one, or a wing standing at the base has that effective country tag
-    // (its positive expeditionary owner, else its pool's owner). The second term
-    // is the `AirWings` rows whose location handle is this base.
     let mut located: BTreeSet<(u64, u32)> = BTreeSet::new();
     let mut standing: BTreeMap<u64, i64> = BTreeMap::new();
     for wing in inputs.wings {
@@ -2172,8 +1895,6 @@ pub fn wings_of(inputs: &WingInputs<'_>) -> BTreeMap<(u32, usize), AirBaseCount>
         registrations_truncated: inputs.registrations_truncated,
         ours: inputs.ours,
     };
-    // Each icon reads its state's base of its own kind; a carrier's host base
-    // has no state and is skipped.
     let bases: BTreeMap<u64, (u32, &AirBaseFields)> = inputs.bases.iter().filter_map(|base| Some((base.id, (base.state?, base)))).collect();
     let mut out: BTreeMap<(u32, usize), AirBaseCount> = BTreeMap::new();
     for (state, base) in bases.into_values() {
@@ -2189,7 +1910,6 @@ pub fn wings_of(inputs: &WingInputs<'_>) -> BTreeMap<(u32, usize), AirBaseCount>
     out
 }
 
-/// The country a wing counts for: its positive expeditionary owner, else its pool's owner.
 pub fn wing_country(owner: u32, country_override: i32) -> u32 {
     if country_override > 0 {
         country_override as u32
@@ -2198,7 +1918,6 @@ pub fn wing_country(owner: u32, country_override: i32) -> u32 {
     }
 }
 
-/// What the whole census decides for every base: which tables are whole, and the viewer.
 #[derive(Clone, Copy, Debug)]
 pub struct WingCensus {
     pub flags_complete: bool,
@@ -2208,34 +1927,23 @@ pub struct WingCensus {
     pub ours: u32,
 }
 
-/// One air base's facts its count reads.
 pub struct BaseFacts<'a> {
-    /// `AirBases.capacity`.
     pub capacity: i32,
-    /// Its state's `StateFlags.demilitarized`; `None` without a row.
     pub flag: Option<u8>,
-    /// Its `AirBaseRegistrations` rows.
     pub registrations: &'a [RegistrationFacts],
-    /// Whether a wing standing at the base counts for a country slot.
     pub located: &'a dyn Fn(u32) -> bool,
-    /// The positive planes of the wings standing at the base.
     pub standing: i64,
 }
 
-/// One `AirBaseRegistrations` row's facts a base's count reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegistrationFacts {
     pub slot: u32,
     pub capacity_raw: i64,
-    /// Its wings list is not empty.
     pub listed: bool,
-    /// A listed wing holds a plane: the game counts no wing whose planes are not positive.
     pub occupied: bool,
-    /// A listed wing has no `AirWings` row.
     pub missing: bool,
 }
 
-/// One state base's count, before the bases of its state and kind are merged ([`merge_count`]).
 pub fn base_count(facts: &BaseFacts<'_>, census: &WingCensus) -> AirBaseCount {
     let (mut access, mut ours_row, mut stationed, mut foreign, mut occupied, mut unweighed) = (false, false, false, false, false, false);
     for row in facts.registrations {
@@ -2245,12 +1953,8 @@ pub fn base_count(facts: &BaseFacts<'_>, census: &WingCensus) -> AirBaseCount {
             ours_row = true;
             stationed |= wings;
         } else {
-            // Walk the base's registered containers, so only a country with a container of its
-            // own counts as another country's wings here.
             foreign |= wings;
         }
-        // A base is occupied while a registered wing holds a plane. A registered wing missing
-        // from a partial AirWings could.
         if row.occupied {
             occupied = true;
         } else if !census.wings_complete && row.missing {
@@ -2258,9 +1962,6 @@ pub fn base_count(facts: &BaseFacts<'_>, census: &WingCensus) -> AirBaseCount {
         }
     }
     let complete = census.registrations_complete;
-    // Stationed and occupied follow the registrations table alone: a truncated *flags* table
-    // hides the box through `shown` but says nothing about wings. A surviving row of ours on a
-    // truncated hour decides access and stationed, since both live on that one row.
     AirBaseCount {
         volunteers: None,
         selected: false,
@@ -2279,8 +1980,6 @@ pub fn base_count(facts: &BaseFacts<'_>, census: &WingCensus) -> AirBaseCount {
     }
 }
 
-/// Merges one base's count into its state's of the same kind: bases the recording lists apart
-/// are one icon, `shown` ORs and planes and capacity sum.
 pub fn merge_count(into: &mut AirBaseCount, count: AirBaseCount) {
     into.planes += count.planes;
     into.capacity += count.capacity;
@@ -2290,7 +1989,6 @@ pub fn merge_count(into: &mut AirBaseCount, count: AirBaseCount) {
     into.foreign = merge(into.foreign, count.foreign);
 }
 
-/// The air base a wing stands at: its recorded location when lent out, else its pool's own base.
 pub fn wing_base_of(air_base: u64, base_override: u64) -> u64 {
     if base_override != 0 {
         base_override
@@ -2299,9 +1997,6 @@ pub fn wing_base_of(air_base: u64, base_override: u64) -> u64 {
     }
 }
 
-/// Two optional flags of one state's bases, `Some(true)` when either holds.
-/// against a multi-base state: the engine draws one icon per state
-/// and may read one base rather than OR-ing them.
 pub(super) fn merge(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     match (a, b) {
         (Some(true), _) | (_, Some(true)) => Some(true),

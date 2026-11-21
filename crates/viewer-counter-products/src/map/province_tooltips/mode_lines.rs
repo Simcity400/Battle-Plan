@@ -1,19 +1,14 @@
-//! The province hover of a map mode other than the default and states modes: the mode's own
-//! lines alone, as the game shows them, without the location block, units or selection.
 use super::{Context, ModeHover, line};
 use installed_content_localisation::localisation::Argument as Arg;
 use replay_data::{rows::Recorded, rows::tables};
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::Tooltip;
 
-/// The highlight colour code pair around a name, as the game writes it.
 fn highlighted(text: &str) -> String {
     format!("\u{11}H{text}\u{11}!")
 }
 
 impl Context<'_> {
-    /// The state category line the states mode adds after the controller, naming the state's
-    /// live category (States `category`).
     pub(super) fn category(&self) -> Result<String, String> {
         let token = match self.state_row()?.category {
             Recorded::Value(Some(token)) => token,
@@ -42,7 +37,6 @@ impl Context<'_> {
             .ok_or_else(|| "state row absent".to_owned())
     }
 
-    /// The viewing country's raw reference.
     fn viewer_raw(&self) -> Result<u32, String> {
         let ours = self.vision.ours();
         self.links
@@ -64,7 +58,6 @@ impl Context<'_> {
         if let ModeHover::Terrain { .. } = mode {
             return out.refuse("map mode hover", "the terrain mode's text is made from the combat content".into());
         }
-        // The infrastructure line shows for every province, a stateless one at level zero.
         if let ModeHover::Infrastructure(level) = mode {
             let text = level.clone().and_then(|level| {
                 self.loc(
@@ -74,7 +67,6 @@ impl Context<'_> {
             });
             return line(out, "infrastructure", 0, text);
         }
-        // Every other mode's own lines describe the province's state.
         if self.province.state == 0 {
             if let ModeHover::Unbuilt(why) = mode {
                 out.refuse("map mode hover", why.clone());
@@ -123,9 +115,6 @@ impl Context<'_> {
         }
     }
 
-    /// The state, its owner, and the owner's relation to the viewing country, the first that
-    /// holds of: the viewing country itself, war, a shared faction, a very good opinion and a
-    /// very bad opinion.
     fn diplomacy(&self, very_good: i32, very_bad: i32) -> Result<String, String> {
         let state = self.state_row()?;
         let owner_slot = self.slot(state.owner)?;
@@ -170,7 +159,6 @@ impl Context<'_> {
         Ok(text)
     }
 
-    /// Whether the viewing country is in a faction the owner is a member of.
     fn same_faction(&self, owner_slot: u32) -> Result<bool, String> {
         let members = self
             .frame
@@ -186,7 +174,6 @@ impl Context<'_> {
             .is_some_and(|faction| faction_of(owner_slot) == Some(faction)))
     }
 
-    /// The name of the owner's ruling ideology.
     fn ideology(&self) -> Result<String, String> {
         let state = self.state_row()?;
         if state.owner == 0 {
@@ -215,9 +202,6 @@ impl Context<'_> {
         self.loc(&token, &[])
     }
 
-    /// The resistance and compliance modes' hover, the same in both: the state, its resistance
-    /// and compliance with each line the recorded hour can give, or why resistance cannot grow
-    /// there. A line whose operands are not recorded is refused by its key.
     fn occupation(&self, out: &mut Tooltip, marker: bool) {
         let row = self
             .frame
@@ -256,8 +240,6 @@ impl Context<'_> {
         }
     }
 
-    /// The occupied state's lines in the game's order, blank lines before the target, rate and
-    /// effects sections; `refused` collects each line left out, by key.
     fn occupation_lines(
         &self,
         row: &replay_data::rows::StateResistanceRow,
@@ -275,14 +257,12 @@ impl Context<'_> {
             .as_ref()
             .map_err(Clone::clone)?;
         let mut refuse = |key: &'static str, why: &str| refused.push((key, why.to_owned()));
-        // A line whose own operands are missing is refused alone; the others still show.
         let value = |key: &str, value: i64| self.loc(key, &[("VALUE", Arg::Fixed5(value))]);
         let mut lines = vec![highlighted(&self.state_name()?), String::new()];
         lines.push(self.loc(
             "RESISTANCE_STRENGTH",
             &[("TOT", Arg::Fixed5(percent(row.level)))],
         )?);
-        // The target: its value and each term the hour can give.
         lines.push(String::new());
         refuse("RESISTANCE_TARGET_VALUE", TARGET_UNRECORDED);
         lines.push(value(
@@ -373,7 +353,6 @@ impl Context<'_> {
                 compliance_points * FIXED5 / 100,
             )?);
         }
-        // The rate section follows the target, which is not recorded.
         refuse(
             "RESISTANCE_GROWTH_VALUE, RESISTANCE_DECAY_VALUE, RESISTANCE_DISABLED_INFO",
             TARGET_UNRECORDED,
@@ -382,7 +361,6 @@ impl Context<'_> {
             "RESISTANCE_EFFECTS, COMPLIANCE_EFFECTS",
             "the effect blocks' modifier lines are not built",
         );
-        // Compliance.
         lines.push(String::new());
         lines.push(self.loc(
             "COMPLIANCE_STRENGTH",
@@ -448,7 +426,6 @@ impl Context<'_> {
         Ok(lines.join("\n"))
     }
 
-    /// Claims compare either the raw country reference or its canonical slot, as cores do.
     pub(super) fn occupation_claim(&self) -> Result<bool, String> {
         let controller = self.state_row()?.controller;
         let slot = self.slot(controller)?;
@@ -470,7 +447,6 @@ impl Context<'_> {
         })
     }
 
-    /// This row's peace flag is the native war test excluding an exiled counterpart.
     pub(super) fn occupation_stability(
         &self,
     ) -> Result<&replay_data::rows::CountryStabilityInputRow, String> {
@@ -483,8 +459,6 @@ impl Context<'_> {
             .ok_or_else(|| "the controller's stability inputs are absent".into())
     }
 
-    /// Whether the occupied country (a raw reference) is capitulated as the resistance target
-    /// reads it: it owns a state and controls none.
     pub(super) fn capitulated(&self, occupied: u32) -> Result<bool, String> {
         let slot = self.slot(occupied)?;
         let row = self
@@ -497,7 +471,6 @@ impl Context<'_> {
         Ok(row.owned_state_count >= 1 && row.controlled_state_count == 0)
     }
 
-    /// The victory points of the hovered state's provinces.
     pub(super) fn state_victory_points(&self) -> Result<i64, String> {
         Ok(self
             .frame
@@ -509,10 +482,6 @@ impl Context<'_> {
             .sum())
     }
 
-    /// A scripted mode's tooltip text, expanded in the game's scopes: the viewing country as
-    /// ROOT, THIS and PREV, and the hovered province's state as FROM, whose own ROOT is itself and
-    /// whose FROM is the viewing country. A scope function the shared expansion does not support
-    /// is refused by name.
     fn scripted(&self, key: &str) -> Result<String, String> {
         use dashboard_text::scripted_text::{
             EventObject, EventScope, EventScopes, Link, ScriptedText,
@@ -549,14 +518,11 @@ impl Context<'_> {
     }
 }
 
-/// One in fixed5.
 pub(super) const FIXED5: i64 = 100_000;
 
-/// Why the resistance target's own lines are refused.
 const TARGET_UNRECORDED: &str =
     "the resistance target is not recorded (its modifier, claim, population and spread terms)";
 
-/// A fixed5 percentage-point value as the fraction the percent formats print.
 pub(super) fn percent(points: i64) -> i64 {
     if [i64::MIN, i64::MIN + 1, i64::MAX].contains(&points) {
         i64::from(u32::MAX)
@@ -565,17 +531,14 @@ pub(super) fn percent(points: i64) -> i64 {
     }
 }
 
-/// Fixed5 multiplication, truncated toward zero.
 pub(super) fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / FIXED5
 }
 
-/// A fixed5 value truncated to whole units.
 pub(super) fn whole_points(value: i64) -> i64 {
     value / FIXED5
 }
 
-/// The resistance and compliance defines the occupation hover reads, each fixed5.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct OccupationDefines {
     pub(super) target_base: i64,
@@ -588,7 +551,6 @@ pub(super) struct OccupationDefines {
     pub(super) population_very_low_cutoff: i32,
     pub(super) occupied_capitulated: i64,
     pub(super) per_compliance: i64,
-    /// `RESISTANCE_TARGET_MODIFIER_STATE_VP`: (total victory points, target modifier) pairs.
     pub(super) state_vp: Vec<(i64, i64)>,
     pub(super) compliance_growth_base: i64,
     pub(super) compliance_claim: i64,
@@ -673,8 +635,6 @@ impl OccupationDefines {
         })
     }
 
-    /// The target modifier of the last pair whose victory point total the state reaches.
-    // Visit thresholds in authored order; the final admitted pair supplies the modifier.
     #[allow(clippy::double_ended_iterator_last)]
     pub(super) fn state_vp(&self, victory_points: i64) -> i64 {
         self.state_vp
@@ -694,7 +654,6 @@ impl OccupationDefines {
     }
 
     pub(super) fn stability_loss(&self, stability: i64) -> i64 {
-        // The native target keeps only whole percentage points of this term.
         let points = (self.max_stability.wrapping_sub(stability))
             .wrapping_mul(self.per_stability_loss)
             .wrapping_mul(100)
@@ -764,10 +723,8 @@ mod tests {
 
     #[test]
     fn occupation_arithmetic_truncates_as_the_game_does() {
-        // 12.34567% resistance prints as 12.34%: the level over a hundred, still fixed5.
         assert_eq!(percent(1_234_567), 12_345);
         assert_eq!(percent(i64::MAX), i64::from(u32::MAX));
-        // 40% compliance at -0.5 per point is -20 whole points; just under it, -19.
         assert_eq!(whole_points(mul(4_000_000, -50_000)), -20);
         assert_eq!(whole_points(mul(3_999_999, -50_000)), -19);
         let defines = OccupationDefines {

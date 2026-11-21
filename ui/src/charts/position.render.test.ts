@@ -9,7 +9,6 @@ import type { FrameTask } from './scheduler';
 import type { ChordChartProps } from './chord/ChordChart';
 import type { ButterflyItem, ButterflyProps } from './butterfly/ButterflyChart';
 
-// The production interaction and frame callbacks run against a translated, fixed-size surface.
 for (const kind of ['chord', 'butterfly'] as const) test(`${kind} interaction follows position-only moves without size notifications`, async () => {
   let left = 30, top = 40;
   const bars: number[][] = [];

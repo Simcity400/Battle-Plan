@@ -1,6 +1,3 @@
-//! Each country's stored factory totals:
-//! the military, naval and civilian groups and the civilian consumers, one
-//! row per canonical country, read hourly in the Slow job.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_native::{Memory, cproduction_status as native, walk::Outcome};
 use replay_data::{
@@ -19,7 +16,6 @@ pub struct Capacities {
 
 collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
-    /// One row per canonical country slot. Never lowers.
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
     }
@@ -34,7 +30,6 @@ impl Captured {
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0 })
     }
@@ -214,7 +209,6 @@ mod tests {
                 reason: "slow acquisition failed"
             }
         );
-        // Hourly: every hour walks, so an unreadable census is reported.
         capture.capture(&memory, 0, 0, 7, false);
         assert!(matches!(
             capture.outcomes()[0],

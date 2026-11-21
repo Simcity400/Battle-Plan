@@ -72,7 +72,6 @@ fn state_border_flag_preserves_absence_and_strict_boolean_witness() {
     );
 }
 
-/// Ordered advisor slots, including an empty slot; an omitted list is empty.
 #[test]
 fn faction_advisor_slots_keep_slot_order_and_empty_slots() {
     let faction = installed_content_core::parser::parse(
@@ -327,7 +326,6 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
         save.countries[b"ITA".as_slice()].stability_terms,
         StabilityTerms::default()
     );
-    // The refresh flags are a plain integer; absence stays distinct.
     assert_eq!(save.countries[b"GER".as_slice()].refresh, Some(522));
     assert_eq!(save.countries[b"ITA".as_slice()].refresh, None);
 }
@@ -345,7 +343,6 @@ fn stored_manpower_operands_preserve_signed_values_and_pool_omission() {
     assert_eq!(save.states[&1].manpower_available, Some(i32::MAX));
     assert_eq!(save.states[&1].manpower_locked, Some(-17));
     assert_eq!(save.states[&2].manpower_available, None);
-    // The pool's total is the state's population; an omitted pool leaves it absent.
     assert_eq!(save.states[&1].population, Some(Some(1)));
     assert_eq!(save.states[&2].population, None);
 }
@@ -397,9 +394,6 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
     );
 }
 
-/// A state's `strategic_region_data` reads as (location, anchor province)
-/// pairs and a province's `strategic_province_location` as its tokens, both
-/// in saved order and empty when absent; a malformed entry is refused.
 #[test]
 fn strategic_locations_read_from_states_and_provinces() {
     let text = |state: &str, province: &str| {
@@ -555,7 +549,6 @@ provinces={3={controller=D01}}
 "#,
     )
     .unwrap();
-    // The rename is written only when nonempty.
     assert_eq!(save.states[&1].name.as_deref(), Some(&b"Renamed"[..]));
     assert_eq!(save.states[&2].name, None);
     let map = MapMembership {
@@ -570,8 +563,6 @@ provinces={3={controller=D01}}
     assert_eq!(states[1].controller, b"GER");
     assert!(!states[1].controller_explicit);
     let provinces = save.province_control(&map).unwrap();
-    // A state's explicit controller does not replace province ownership
-    // or its independent sparse controller fields, and vice versa.
     assert_eq!(provinces[0].controller.as_deref(), Some(b"GER".as_slice()));
     assert_eq!(provinces[2].controller.as_deref(), Some(b"D01".as_slice()));
 }
@@ -678,7 +669,6 @@ division={ id={id=2 type=4919} logical_country=SOV strength=0 organisation=0 }
             },
         ]
     );
-    // An omitted field is an empty array, not a refusal.
     assert!(
         save.divisions[&((2_u64 << 32) | 4919)]
             .country_intel
@@ -770,7 +760,6 @@ fn unit_saved_target_and_full_path_preserve_order_and_omission() {
         ] {
             assert!(parse_unit(fields).is_err(), "{kind}: {fields}");
         }
-        // One keyed entry per queued order; the writer omits an empty list.
         for (fields, queued) in [
             ("commandlist={ move_order={ province=7 } attack_order={} }", 2),
             ("", 0),
@@ -1190,7 +1179,6 @@ fn war_relations_preserve_envelopes_order_and_unscaled_signed_integers() {
     let war = &save.war_relations[0];
     assert_eq!(war.roster_owner, b"GER");
     assert_eq!(war.target, b"SOV");
-    // Canonical equivalence and envelope agreement belong to the oracle.
     assert_eq!(war.first, b"D01");
     assert_eq!(war.second, b"GER");
     assert_eq!(war.first_casualties, i64::MIN);
@@ -1550,7 +1538,6 @@ fn air_wings_preserve_pool_and_override_countries_and_required_mission_fields() 
     );
     assert_eq!(wing.region_change_penalty, None);
     assert_eq!((wing.pool_ordinal, assigned.pool_ordinal), (0, 1));
-    // The order runs across a country's pools and restarts per country.
     let saved = diplomacy_save("", "strategic_air={
         GER={
             air_wing_pool={id={id=1 type=70} definition=fixture_plane air_base={id=2 type=63}
@@ -1610,7 +1597,6 @@ fn naval_combat_keeps_full_member_handles_signed_slots_and_required_side_scalars
     let saved = diplomacy_save("", body).unwrap();
     let id = (u64::from(u32::MAX) << 32) | 61;
     assert_eq!(saved.naval_combats[&id].attacker_positioning.raw, -1);
-    // Each side's `unit` references, in the participant array's order.
     assert_eq!(saved.naval_combats[&id].attackers, [(5_u64 << 32) | 61]);
     assert_eq!(
         saved.naval_combats[&id].defenders,
@@ -1685,7 +1671,6 @@ fn naval_save_keeps_nested_ownership_full_handles_and_exact_fixed5() {
     );
     assert_eq!(force.roster_owner, b"GER");
     assert_eq!(force.logical_owner, b"SOV");
-    // The unit writer's motion fields: target, ordinary and alternate routes.
     assert_eq!(
         (
             force.target,
@@ -1715,7 +1700,6 @@ fn naval_save_refuses_ambiguous_census_and_missing_required_values() {
         "task_force={{id={{id=2 type=51}} logical_country=GER mission={{mission=0}} {ship}}}"
     );
     let fleet = format!("fleet={{id={{id=3 type=61}} {force}}}");
-    // The writer omits a null target and empty routes.
     let omitted = &naval_save(&fleet).unwrap().task_forces[&((2_u64 << 32) | 51)];
     assert_eq!(
         (
@@ -1795,7 +1779,6 @@ fn a_header_without_every_counter_is_refused_rather_than_defaulted() {
             .to_string();
         assert!(error.contains("save lacks"), "{error}");
     }
-    // The unsigned counter must not be narrowed into a signed reader.
     let header = HEADER.replace("debug_current_ref_id=4294967295", "debug_current_ref_id=-1");
     assert!(
         parse(format!("{header} countries={{}} states={{}} provinces={{}}").as_bytes()).is_err()
@@ -1825,7 +1808,6 @@ fn relation_records_keep_cached_sums_saved_ordinals_and_class_spellings() {
     assert_eq!(save.relation_opinions[0].owner, b"GER");
     assert_eq!(save.relation_opinions[0].target, b"SOV");
     assert_eq!(save.relation_opinions[0].cached_sum, -100);
-    // war_relation takes ordinal zero even though it has its own table.
     let kinds: Vec<_> = save
         .relation_tuples
         .iter()
@@ -1881,13 +1863,9 @@ fn relation_blocks_without_endpoints_are_not_relations() {
 #[test]
 fn relation_tuples_enforce_the_writers_conditional_date_rules() {
     for body in [
-        // cancel=no is never written by the game writer.
         r#"guarantee={ first="A" second="B" cancel=no start_date="1936.1.1.1" }"#,
-        // start_date and cancel are mutually exclusive.
         r#"guarantee={ first="A" second="B" cancel=yes start_date="1936.1.1.1" }"#,
-        // neither is present.
         r#"guarantee={ first="A" second="B" }"#,
-        // end_date is written only when it is after start_date.
         r#"guarantee={ first="A" second="B" start_date="1936.1.2.1" end_date="1936.1.1.1" }"#,
     ] {
         let error = relations_save(&format!("SOV={{ {body} }}"), "")

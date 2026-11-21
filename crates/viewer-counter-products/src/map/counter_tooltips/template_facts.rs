@@ -1,4 +1,3 @@
-//! Plain sections in the existing division hover, from shared recorded facts.
 #[cfg(test)]
 use dashboard_text::template_facts::{country, hq, template};
 pub(super) use dashboard_text::template_facts::{country_with, hq_with, template_with};

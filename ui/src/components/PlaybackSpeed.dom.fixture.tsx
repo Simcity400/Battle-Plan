@@ -1,4 +1,3 @@
-/** The playback speed menu in a real browser: opened, closed, and opened again as a user does. */
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import PlaybackSpeed from './PlaybackSpeed';
@@ -22,7 +21,6 @@ const presets = () => [...panel().querySelectorAll<HTMLButtonElement>('.playback
 
 export const fixture = {
   async ready() { await settle(); return trigger() !== null; },
-  /** Opens the menu with its button, lets it draw, and closes it: its contents are built and kept. */
   async openAndClose() {
     trigger().click();
     await settle();
@@ -31,8 +29,6 @@ export const fixture = {
     await settle();
     return opened;
   },
-  /** Opens the menu again and, in the same task, before anything else runs, says what a click at each preset's centre
-   * would reach: the preset itself, or what lies under a menu not shown yet. */
   reopened() {
     trigger().click();
     return { open: panel().matches(':popover-open'), visibility: getComputedStyle(panel()).visibility,
@@ -41,7 +37,6 @@ export const fixture = {
         return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2) === button;
       }) };
   },
-  /** Clicks preset `index` once the menu has drawn: the speeds taken so far. */
   async pick(index: number) {
     await settle();
     presets()[index].click();

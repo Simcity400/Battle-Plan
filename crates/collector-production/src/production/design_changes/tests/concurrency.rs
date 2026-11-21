@@ -1,5 +1,3 @@
-//! Deterministic writer overlap: barriers order originals and terminal copies,
-//! never wall-clock delays or scheduler assumptions.
 use super::*;
 use crate::production::variant_scale_tests::{Space, space};
 use std::sync::Barrier;
@@ -34,7 +32,6 @@ fn setup(population: usize) -> (Space, Vec<native::RegistryRow>, Variants) {
         native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry),
         Outcome::Rows { len: population }
     );
-    // These independent synthetic designs are their own version owners.
     for row in &registry {
         unsafe { std::ptr::write_unaligned((row.pointer() + native::ORIGIN_LINK) as *mut i32, 0) };
     }
@@ -148,7 +145,6 @@ fn different_saved_designs_overlap_and_publish_exact_terminal_snapshots() {
     pauses[1].wait();
     assert_eq!(active(), 2);
     assert!(!MISSED.load(Ordering::Acquire));
-    // Finish in the opposite order to the original stores; the boundary reads in design order.
     pauses[1].wait();
     assert_eq!(second.join().unwrap(), 22);
     pauses[0].wait();
@@ -182,7 +178,6 @@ fn same_saved_design_overlap<const SITE: usize>() {
     assert_eq!(active(), 2);
     pauses[0].wait();
     first.join().unwrap();
-    // The rejected original still owns a claim after the initial owner exits.
     let third = collector_test_support::with_allocations_denied(|| unsafe {
         around::<SITE>([registry[0].pointer(), 0, 33, 0], edited)
     });
@@ -269,7 +264,6 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
     assert_eq!(first.join().unwrap(), 77);
     assert_eq!(TARGET.get(), 0);
     let mut changes = Vec::new();
-    // The nested same-receiver writer adds no mark of its own; each receiver is read once.
     assert_eq!(drain(space.base, 7, &mut changes), Ok(3));
     assert_eq!(
         changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
@@ -315,8 +309,6 @@ fn contended_marks_keep_every_receiver_for_one_terminal_snapshot_each() {
                 })
             })
             .collect();
-        // Both distinct receivers have completed their first native edit and
-        // reached the occupied STORE. Neither callback may lose its mark.
         pause.wait();
         drop(store);
         for writer in writers {
@@ -329,7 +321,6 @@ fn contended_marks_keep_every_receiver_for_one_terminal_snapshot_each() {
         changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
         [registry[0].id, registry[1].id]
     );
-    // Each design's last edit, as the boundary reads it.
     assert_eq!(
         changes
             .iter()
@@ -423,7 +414,6 @@ fn a_parent_content_conflict_does_not_poison_an_independent_child_identity_snaps
     pauses[1].wait();
     second.join().unwrap();
     let mut changes = Vec::new();
-    // The conflicted parent and the admitted child are each read once at the boundary.
     assert_eq!(drain(space.base, 7, &mut changes), Ok(2));
     assert_eq!(
         changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
@@ -627,11 +617,8 @@ fn derived_refreshes_of_different_designs_still_refuse_a_shared_version_owner() 
     pauses[0].wait();
     first.join().unwrap();
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-    // The ancestry conflict still refuses globally. A parent identity witness
-    // alone is not poisoned by ordinary content contention on that owner.
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
-    // The owner's mark outlives the refusal; the next boundary takes it dirty.
     assert!(repair::pending());
     let repairs = repair::take(&mut Batch::empty()).unwrap();
     assert!(
@@ -746,7 +733,6 @@ fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    // Both tombstones, then the rebound destination's boundary read; the source is never read.
     assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
     assert_eq!(changes.len(), 3);
     assert!(changes[0].removed && changes[1].removed);
@@ -782,7 +768,6 @@ fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occu
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    // The rebound destination is read at the boundary; the consumed source never is.
     assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
     assert_eq!(changes.len(), 2);
     assert!(changes[0].removed && changes[0].variant == registry[1].id);
@@ -820,7 +805,6 @@ fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_ro
     pauses[0].wait();
     assert_eq!(moving.join().unwrap(), 19);
     let mut changes = Vec::new();
-    // Tombstones in event order, then the rebound destination and the edit in design id order.
     assert_eq!(drain(space.base, 7, &mut changes), Ok(2));
     assert_eq!(changes.len(), 4);
     assert!(changes[0].removed && changes[1].removed);
@@ -861,8 +845,6 @@ fn a_move_source_claim_survives_saved_binding_retirement() {
     ];
     let moving = std::thread::spawn(move || unsafe { around::<9>(args, moved) });
     pause.wait();
-    // Both saved bindings are temporarily absent. The receiver claim, not
-    // membership at this instant, must remember the competing source writer.
     assert_eq!(
         unsafe { around::<0>([registry[1].pointer(), 0, 33, 0], edited) },
         33
@@ -923,7 +905,6 @@ fn parent_snapshot_refuses_a_consuming_move(operand: usize) {
     ];
     let moving = std::thread::spawn(move || unsafe { around::<9>(args, moved) });
     pause.wait();
-    // A mark claims nothing; the boundary refuses the child of a consumed parent.
     collector_test_support::with_allocations_denied(|| {
         mark_design(&space.memory(), space.base, child, false);
     });
@@ -972,8 +953,6 @@ fn different_saved_designs_with_a_parent_link_still_admit_concurrent_ordinary_ed
     let second = spawn::<0>(registry[1].pointer(), &pauses[1], 22);
     pauses[1].wait();
     assert_eq!(active(), 2);
-    // The parent's identity is immutable under its ordinary stats writer.
-    // Complete the child while that writer is still inside its original.
     pauses[0].wait();
     first.join().unwrap();
     pauses[1].wait();
@@ -1115,7 +1094,6 @@ fn a_new_saved_binding_logs_retirement_after_its_first_boundary() {
         return;
     }
     let (space, registry, _) = setup(2);
-    // Remove only this synthetic binding from the first prepared census.
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
     prepare(&registry[..1], &baseline);
@@ -1135,7 +1113,6 @@ fn a_new_saved_binding_logs_retirement_after_its_first_boundary() {
 }
 fn saved_source() -> (Space, Vec<native::RegistryRow>, Variants, usize) {
     let (space, registry, _) = setup(3);
-    // Fixture slack holds a synthetic source, its stat and the pointer roster.
     let source = space.bytes.as_ptr() as usize + space.bytes.len() - 0x100;
     unsafe {
         std::ptr::write_bytes(source as *mut u8, 0, 0x100);
@@ -1211,7 +1188,6 @@ fn a_contended_source_keeps_every_dependant_occurrence_without_terminal_rereads(
     };
     let mut changes = Vec::new();
     assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
-    // The noted source is copied once, at the boundary.
     assert!(memory.reads.get() > 0);
     assert_eq!(changes.len(), 2);
     assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 0);
@@ -1387,7 +1363,6 @@ fn a_contended_new_saved_retirement_logs_without_reading_dead_storage() {
         }
     }
     let mut changes = Vec::new();
-    // Retired before its first boundary, the new design leaves only its tombstone.
     assert_eq!(drain_with(&Dead, space.base, 7, &mut changes), Ok(0));
     assert_eq!(changes.len(), 1);
     assert!(changes[0].removed && changes[0].variant == registry[1].id);
@@ -1430,8 +1405,6 @@ fn a_repaired_child_never_follows_a_new_parent_with_a_consumed_receiver() {
         return;
     }
     let (space, registry, _) = setup(2);
-    // The preceding held child has no parent; only the lost edit reaches this
-    // receiver, so the held-state lifetime preflight alone cannot reject it.
     unsafe {
         std::ptr::write_unaligned(
             (registry[1].pointer() + native::PARENT) as *mut usize,
@@ -1516,8 +1489,6 @@ fn a_delayed_variant_job_keeps_carry_closed_until_its_terminal_repair_finishes()
     let pause = Barrier::new(2);
     let writer = spawn::<0>(registry[0].pointer(), &pause, 77);
     pause.wait();
-    // The serial boundary does not consume marks or admit held data. This
-    // writer completes before the later Variants worker starts its proof.
     boundary(false);
     pause.wait();
     writer.join().unwrap();
@@ -1555,8 +1526,6 @@ fn a_delayed_variant_capture_settles_its_refusal_before_the_census_decision() {
     let (space, _, _) = setup(1);
     boundary(false);
     unknown_receiver!();
-    // Only capture settles the interval and asks for immediate recovery. The
-    // host must not decide to skip the census from this earlier value.
     assert!(!needs_full());
     let mut changes = Captured::vacant();
     changes.capture(space.base, 7);

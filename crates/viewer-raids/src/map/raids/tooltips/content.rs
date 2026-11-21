@@ -1,4 +1,3 @@
-//! Content operands kept apart from the recorded hour.
 use super::{
     super::{RaidDefines, unit_inputs::SpeedDefines},
     intel,
@@ -15,8 +14,6 @@ pub struct Content {
     pub max_wing_xp: Result<i64, String>,
     pub night_threshold: Result<i64, String>,
     pub thresholds: Result<[i64; 2], String>,
-    /// Each state's name key, or why its template's reading of it cannot
-    /// be followed.
     pub state_names: BTreeMap<u32, Result<String, String>>,
     pub terrain_names: Result<Vec<String>, String>,
     pub unit_names: Result<installed_content_raids::raids::names::Groups, String>,

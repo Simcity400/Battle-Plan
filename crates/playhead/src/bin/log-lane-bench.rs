@@ -1,15 +1,3 @@
-//! The log lane's bench over synthetic logs made in memory: no recording holds a log yet. Dev
-//! tool, deleted with the playback build's last step. Prints JSON lines; run it on one core.
-//!
-//! `log-lane-bench <append|forget|seek|held|rows|all> [--repeat=3]`:
-//! - `append`: a step's nanoseconds an appended row, its cells read as it passes: 4 numeric
-//!   columns, one text column, and both; 24 rows an hour, 24-hour steps.
-//! - `forget`: nanoseconds a forgotten row, lone and in runs; a step with no event, inside a part
-//!   and in a block holding none, at 1 and 24 hours.
-//! - `seek`: a seek's milliseconds at 10,000 and 2,000,000 rows listed.
-//! - `held`: what the lane holds stepping logs of 1,000,000 and 10,000,000 rows appended with
-//!   10,000 listed.
-//! - `rows`: 1,000 rows by ordinal spread over the 10,000,000-row log, and where the time goes.
 
 use playhead::{
     Wanted,
@@ -82,7 +70,6 @@ impl Pages for Log {
     }
 }
 
-/// A log of `kinds` (table 0) over `hours` hours, each hour's appends and forgets made by `hour`.
 fn make(kinds: &[Kind], hours: u32, mut hour: impl FnMut(u32, &mut TableChanges<'_>) -> io::Result<()>) -> io::Result<Arc<Log>> {
     let all = vec![kinds.to_vec()];
     let mut store = Store::new(all.clone(), vec![false]);
@@ -108,7 +95,6 @@ fn make(kinds: &[Kind], hours: u32, mut hour: impl FnMut(u32, &mut TableChanges<
     Ok(Arc::new(Log { bytes: memory.bytes, runs: vec![Run::new(0, memory.pages)?], kinds: all }))
 }
 
-/// A row's cells of `kinds`, made from `seed`.
 fn row(kinds: &[Kind], seed: u64) -> Vec<Option<Cell<'static>>> {
     kinds
         .iter()
@@ -145,8 +131,6 @@ struct Timed {
     peak_state: usize,
 }
 
-/// Steps of `step` hours from the lane's head through `to`, each step's parts fetched before it
-/// and outside its time.
 fn step_through(lane: &mut Lane, step: i32, to: i32, changes: &mut Changes) -> io::Result<Timed> {
     let mut timed = Timed::default();
     while lane.head().ok_or_else(|| invalid("not sought"))? < to {
@@ -178,7 +162,6 @@ fn percentiles(values: &[u64]) -> serde_json::Value {
     json!({ "n": sorted.len(), "p50": at(0.5), "p99": at(0.99), "worst": sorted.last().copied().unwrap_or(0), "sum": sorted.iter().sum::<u64>() })
 }
 
-/// The best of `repeat` runs by total time.
 fn best(repeat: usize, mut run: impl FnMut() -> io::Result<Timed>) -> io::Result<Timed> {
     let mut kept: Option<Timed> = None;
     for _ in 0..repeat {
@@ -190,8 +173,6 @@ fn best(repeat: usize, mut run: impl FnMut() -> io::Result<Timed>) -> io::Result
     kept.ok_or_else(|| invalid("no run"))
 }
 
-/// The reader alone over the log's every block: its parts fetched first, then one cursor a block
-/// handing every event to nothing; nanoseconds and rows appended.
 fn reader_alone(log: &Log) -> io::Result<(u64, u64)> {
     let (kinds, run) = (&log.kinds[0], &log.runs[0]);
     let columns: Vec<usize> = (0..kinds.len()).collect();
@@ -233,9 +214,6 @@ fn bench_append(repeat: usize) -> io::Result<()> {
 }
 
 fn bench_forget(repeat: usize) -> io::Result<()> {
-    // Block 0 appends 100 rows an hour; block 1 forgets every other row of 50 an hour (lone);
-    // block 2 forgets 50 consecutive rows an hour (one run); block 3 holds no event; block 4
-    // appends a row at its first and last hour only (the hours between inside a part, no event).
     let kinds = [Kind::U32];
     let log = make(&kinds, 5 * BLOCK, |hour, changes| {
         let (block, at) = (hour / BLOCK, hour % BLOCK);
@@ -262,7 +240,6 @@ fn bench_forget(repeat: usize) -> io::Result<()> {
         println!("{}", json!({ "bench": "forget", "forgets": name, "rows": timed.forgotten, "runs": timed.runs, "ns_a_row": sum as f64 / timed.forgotten as f64, "ns_a_run": sum as f64 / timed.runs as f64, "step_ns": percentiles(&timed.steps) }));
     }
     let timer: Vec<u64> = (0..1_000).map(|_| Instant::now().elapsed().as_nanos() as u64).collect();
-    // (from, through): the lane sought to `from`, stepped through `through`.
     for (name, (from, through), step) in [
         ("a block holding no part, 1 h", (3 * block - 1, 4 * block - 1), 1),
         ("a block holding no part, 24 h", (3 * block - 1, 4 * block - 1), 24),
@@ -295,8 +272,6 @@ fn bench_forget(repeat: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// A log of 4 numeric columns and a text column appending `rate` rows an hour for `hours`
-/// hours, forgetting the oldest while more than `listed` are listed (none when `listed` is 0).
 fn listed_log(rate: u32, hours: u32, listed: u32) -> io::Result<Arc<Log>> {
     let kinds = [NUMERIC.as_slice(), &[Kind::Bytes]].concat();
     let mut oldest = 0;

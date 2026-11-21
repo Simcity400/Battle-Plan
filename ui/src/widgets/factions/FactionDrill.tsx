@@ -31,39 +31,30 @@ import { validateFactionGoalRewards } from './types';
 const CHART_HEIGHT = 70;
 const noMenu = () => {};
 
-/** One faction at the hour shown, opened from the timeline: who it is, how it grew, what it is working towards and what
- * it has done. Its state is the `faction-details` panel, followed at the head: the reply renders when the goals, pools
- * or members change, and every number that moves (projection, the manifest's progress, the pooled amounts) is painted
- * from its live cell; the growth chart reaches the head each frame without a render. */
 export default function FactionDrill({ runtime, widget, track, view, names, at, active, gaps, liveHead, onBack }: {
   runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; view: FactionView; names: readonly FactionNameRun[]; at: number; active: boolean;
   gaps: readonly HourSpan[]; liveHead?: Live<number>; onBack: () => void;
 }) {
   const life = view.lifetime;
-  // Hours not recorded after it was last seen are not its end.
   const lifeState = runState(life, at, gaps);
   const exists = lifeState.kind === 'held';
   const head = useFactionDetails(runtime, widget, exists ? view.id : null, active);
-  // Never a reply kept from when the faction stood, nor one that failed.
   const data = exists && !head.error && head.data?.faction === view.id ? head.data : null;
   const live = head.live;
   const dataHour = head.at ?? head.hour ?? at;
 
   const founded = life[0]?.firstHour ?? null;
   const from = founded == null ? at : Math.min(at, Math.max(track.branch.firstHour, founded));
-  // Runs split across unrecorded hours and renames; only another native country is a change of leader.
   const ledBy = view.leaders.filter(run => run.firstHour <= at);
   const leaders = changes(ledBy, run => view.identities.keyAt(run.tag, run.firstHour) ?? JSON.stringify(['tag', run.tag]));
   const leader = leaderAt(view.leaders, at);
   const leaderRun = leaders.at(-1);
-  // The former leader as it was when it last led: by the tag it held then, at that hour.
   const formerRun = leaders.length > 1 && leaderRun ? ledBy[ledBy.indexOf(leaderRun) - 1] : null;
   const formerLeader = formerRun?.tag ?? null;
   const formerLeaderHour = formerRun ? formerRun.lastHour : at;
   const nameRuns = changes(names.filter(run => run.firstHour <= at && run.name), run => run.name);
   const formerName = nameRuns.length > 1 ? nameRuns.at(-2)! : null;
   const events = useMemo(() => joinEvents(view, at), [view, at]);
-  // A member is named as it was when it last belonged, at or before the hour shown.
   const memberHour = useCallback((member: MemberView) =>
     Math.min(at, member.stretches.filter(stretch => stretch.firstHour <= at).at(-1)?.lastHour ?? at), [at]);
   const memberTag = useCallback((member: MemberView) => tagAt(view, member, memberHour(member)), [view, memberHour]);
@@ -91,7 +82,6 @@ export default function FactionDrill({ runtime, widget, track, view, names, at, 
     return value === undefined ? 'Not recorded' : usNumber.format(value);
   }), [live, manifest]);
 
-  // A goal's rewards are asked when its tooltip opens, described at the hour the panel shows.
   const [describing, setDescribing] = useState<{ goal: string; hour: number } | null>(null);
   const described = useProduct<FactionGoalRewardsReply>(runtime.client, describing ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'faction-goal-rewards', params: { branchId: track.branch.id, faction: view.id, goal: describing.goal, hour: describing.hour } } : null,
@@ -122,7 +112,6 @@ export default function FactionDrill({ runtime, widget, track, view, names, at, 
       const member = view.members.find(entry => entry.key === id);
       const tag = member && memberTag(member);
       const country = member && memberLabel(member);
-      // Only the membership at or last before the hour shown, as the timeline says it.
       const stretch = member?.stretches.filter(span => span.firstHour <= at).at(-1);
       if (!member || !tag || !country || !stretch) return null;
       const state = runState([stretch], at, view.unknown);
@@ -149,15 +138,12 @@ export default function FactionDrill({ runtime, widget, track, view, names, at, 
     const key = tips.hovered;
     const token = key && data ? goalToken(data, key) : null;
     setDescribing(previous => token === null ? null : previous?.goal === token ? previous : { goal: token, hour: dataHour });
-    // The hour is the one shown when the tooltip opened.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tips.hovered, data]);
   const hover = (key: string) => {
     const shown = content(key);
     return <>{shown && <span id={descriptionId(key)} hidden>{tooltipText(shown)}</span>}</>;
   };
 
-  // The pooled resources are ordered by their amounts in the frame those move, never by a render.
   const pool = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     if (!resources?.length) return undefined;
@@ -225,7 +211,6 @@ export default function FactionDrill({ runtime, widget, track, view, names, at, 
   </div>;
 }
 
-/** The token of the goal a tooltip key names, for asking its rewards; null for any other key. */
 function goalToken(data: FactionDetailReply, key: string): string | null {
   const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
   const index = kind === 'goal' ? data.goals.find(entry => String(entry.ordinal) === id)?.definition
@@ -233,7 +218,6 @@ function goalToken(data: FactionDetailReply, key: string): string | null {
   return index === undefined ? null : data.definitions[index]?.token ?? null;
 }
 
-/** Writes each pooled resource's place, largest amount first, into the flex order of its element. */
 function orderResources(root: HTMLElement | null, resources: readonly FactionResourceDetail[], values: LiveValues<number>) {
   if (!root) return;
   const places = resourceOrder(resources, values);
@@ -243,10 +227,8 @@ function orderResources(root: HTMLElement | null, resources: readonly FactionRes
   }
 }
 
-/** Keeps a marker inside the chart at either end. */
 const edge = (percent: number) => percent < 3 ? '0' : percent > 97 ? '-100%' : '-50%';
 
-/** The runs where `key` changes, each from the first hour of its value. */
 function changes<T extends { firstHour: number }>(runs: readonly T[], key: (run: T) => unknown): T[] {
   return runs.filter((run, index) => index === 0 || key(run) !== key(runs[index - 1]));
 }
@@ -263,8 +245,6 @@ function GoalIcon({ definition }: { definition: FactionGoalDefinition | undefine
   return definition?.icon ? <img className="faction-goal-icon" src={definition.icon} alt="" /> : <span className="faction-goal-icon is-empty" />;
 }
 
-/** The manifest, its progress painted from its live cell: the bar and its value shown only while the game holds a share
- * of the goal (0–100%). */
 function Manifest({ held, live, texts }: { held: HeldGoal; live: Live<LiveValues<number>>; texts: LiveTexts }) {
   const { marks, reached } = manifestMarks(held);
   const value = useRef<HTMLSpanElement | null>(null);
@@ -296,8 +276,6 @@ function Manifest({ held, live, texts }: { held: HeldGoal; live: Live<LiveValues
   </div>;
 }
 
-/** The member count from the faction's founding to the head. Drawn in hours from `from` to the branch's end; the
- * head sets how much of it shows (the plot's width in hours) each frame, and every marker's place along it. */
 function MemberChart({ view, from, at, last, liveHead, events, memberLabel, rowProps, hover, leaders }: {
   view: FactionView; from: number; at: number; last: number; liveHead?: Live<number>; events: ReturnType<typeof joinEvents>;
   memberLabel: (member: MemberView) => ReturnType<CountryLabel> | null;
@@ -307,7 +285,6 @@ function MemberChart({ view, from, at, last, liveHead, events, memberLabel, rowP
   const most = bandMaxOf([steps]);
   const x = (hour: number) => hour - from;
   const y = (value: number) => CHART_HEIGHT - 6 - value / most * (CHART_HEIGHT - 16);
-  // Unknown hours between steps break the line and its fill; nothing is drawn across them.
   const runs: (typeof steps)[] = [];
   for (const step of steps) { const run = runs.at(-1); if (run && run.at(-1)!.lastHour + 1 === step.firstHour) run.push(step); else runs.push([step]); }
   const path = (run: typeof steps) => run.map((step, index) => `${index ? 'L' : 'M'}${x(step.firstHour)},${y(step.value)} L${x(step.lastHour + 1)},${y(step.value)}`).join(' ');
@@ -315,7 +292,6 @@ function MemberChart({ view, from, at, last, liveHead, events, memberLabel, rowP
   const area = runs.map(run => `${path(run)} L${x(run.at(-1)!.lastHour + 1)},${CHART_HEIGHT} L${x(run[0].firstHour)},${CHART_HEIGHT} Z`).join(' ');
   const valueAt = (hour: number) => steps.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
   const crowns = leaders.slice(1).filter(run => run.firstHour >= from);
-  // A dark faction colour still reads on a dark panel.
   const ink = `color-mix(in srgb, ${view.color} 65%, var(--text))`;
   const root = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
@@ -347,8 +323,6 @@ function MemberChart({ view, from, at, last, liveHead, events, memberLabel, rowP
   </div>;
 }
 
-/** The growth chart at a head `span` hours after its first: the plot's width in hours, each marker's place along it, and
- * the year labels past the head hidden. */
 function paintGrowth(root: HTMLElement | null, span: number) {
   if (!root) return;
   const box = `0 0 ${span} ${CHART_HEIGHT}`;

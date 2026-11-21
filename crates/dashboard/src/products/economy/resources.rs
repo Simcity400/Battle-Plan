@@ -1,11 +1,3 @@
-//! Resource balance: a country's strategic resources at an hour (its `CountryResources` pools,
-//! one row per resource, keyed by raw country id and resource index), the trade deals naming it
-//! (`ResourceExchanges` rows whose exporter or importer it is), and every recorded resource named
-//! and pictured from the recorded content. The pools are live cells (row: the resource's index), so
-//! the reply carries which resources show and in which order, never their amounts. The balance
-//! over time is the declared series `resource-balance` (computed columns of one row);
-//! `resource-sizes` gives each resource's longest bar over the timeline, the bars' whole-campaign
-//! scale.
 use dashboard_base::products::{Country, validate_country};
 use super::super::{LoadContext, Product};
 use crate::{
@@ -30,8 +22,6 @@ use ts_rs::TS;
 
 pub struct ResourceBalance;
 
-/// What a resource balance reply reads besides its rows: the resources' naming, and the runs'
-/// indexes of deals by country.
 pub struct ResourceContext {
     naming: ResourceNaming,
     deals: crate::answer::ConvoyIndex,
@@ -43,33 +33,26 @@ pub struct ResourceContext {
 pub struct ResourceBalanceParams {
     pub branch_id: String,
     pub country: Country,
-    /// The order `shown` lists the resources in; the game's when absent.
+    #[doc = " The order `shown` lists the resources in; the game's when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub order: Option<ResourceOrder>,
-    /// Leave out of `shown` the resources with nothing in either bar.
+    #[doc = " Leave out of `shown` the resources with nothing in either bar."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hide_empty: Option<bool>,
 }
 
-/// How the balance bars are ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ResourceOrder {
     #[default]
     Game,
-    /// The largest deficit first.
     Shortfall,
-    /// The longer bar first.
     Volume,
 }
 
-/// Each pool's live cell column, as the UI names it, and the `CountryResources` field it reads:
-/// produced, moved from subjects (positive) or to the overlord (negative), imported, set aside for
-/// export, bought by others, available, left after special projects, and minus what production
-/// lines need. Raw fixed-point.
 pub const POOL_CELLS: [(&str, &str); 8] = [
     ("produced", "produced"),
     ("subjects", "adjustment"),
@@ -89,19 +72,17 @@ pub enum TradeDirection {
     Export,
 }
 
-/// One trade deal naming the country at the hour. Its daily amount delivered is the live cell
-/// (`deal`, `delivered`), raw fixed-point; the deals come largest first at the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDeal {
-    /// The deal's native handle, as a decimal string.
+    #[doc = " The deal's native handle, as a decimal string."]
     pub deal: String,
     pub resource: u32,
     pub direction: TradeDirection,
-    /// The other country's tag at the hour.
+    #[doc = " The other country's tag at the hour."]
     pub partner: String,
-    /// Civilian factories the importer pays.
+    #[doc = " Civilian factories the importer pays."]
     pub factories: i32,
     pub convoys_assigned: i32,
     pub convoys_required: i32,
@@ -113,18 +94,18 @@ pub struct ResourceDeal {
 pub struct ResourceBalanceReply {
     pub tag: String,
     pub decimals: u8,
-    /// Every recorded resource, in the game's order.
+    #[doc = " Every recorded resource, in the game's order."]
     pub resources: Vec<ResourceInfo>,
-    /// The resources the country has a row of, in `resources` order: each a row of live cells
-    /// (`POOL_CELLS`).
+    #[doc = " The resources the country has a row of, in `resources` order: each a row of live cells"]
+    #[doc = " (`POOL_CELLS`)."]
     pub pools: Vec<u32>,
-    /// The resources the bars show, in the asked order (those with no row last, in the game's).
+    #[doc = " The resources the bars show, in the asked order (those with no row last, in the game's)."]
     pub shown: Vec<u32>,
-    /// Why the pools are not known at the hour.
+    #[doc = " Why the pools are not known at the hour."]
     pub pools_missing: Option<String>,
-    /// Its deals, largest delivery first.
+    #[doc = " Its deals, largest delivery first."]
     pub deals: Vec<ResourceDeal>,
-    /// Why the deals are not known at the hour: unknown, which is not none.
+    #[doc = " Why the deals are not known at the hour: unknown, which is not none."]
     pub deals_missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -136,7 +117,6 @@ fn range(id: u32) -> Keys {
     Keys::Range(owner, owner | u128::from(u32::MAX))
 }
 
-/// Each deal of country `id` in `frame`: its partner's raw id and direction.
 fn deals_of(frame: &DecodedFrame, id: u32) -> io::Result<Vec<(&replay_data::rows::ResourceExchangeRow, u32, TradeDirection)>> {
     Ok(frame
         .complete::<tables::ResourceExchanges>()?
@@ -149,8 +129,6 @@ fn deals_of(frame: &DecodedFrame, id: u32) -> io::Result<Vec<(&replay_data::rows
         .collect())
 }
 
-/// The recorded resources at the hour, in the game's order, with their tokens; and how many
-/// definitions name a token the recorded dictionary does not spell.
 fn recorded_resources(frame: &DecodedFrame) -> io::Result<(Vec<(u32, String)>, usize)> {
     let definitions = frame.complete::<tables::ResourceDefinitions>()?;
     let tokens = frame.complete::<tables::LexicalTokens>()?;
@@ -170,9 +148,6 @@ fn recorded_resources(frame: &DecodedFrame) -> io::Result<(Vec<(u32, String)>, u
     Ok((out, unnamed))
 }
 
-/// One resource's two bars and its net, from its recorded pools: supply is produced, received from
-/// subjects and imported; demand is what special projects and production lines need, sent to the
-/// overlord and the export reserve; the net is what is left after projects less what lines need.
 struct Bars {
     supply: i128,
     demand: i128,
@@ -191,9 +166,6 @@ impl Bars {
     }
 }
 
-/// The resources the bars show, in `order`: those with pools by the order's key (ties in the
-/// game's order), then those without in the game's order; `hide_empty` leaves out those with no
-/// pools and those with nothing in either bar.
 fn shown_order(order_of: &BTreeMap<u32, usize>, bars: &BTreeMap<u32, Bars>, order: ResourceOrder, hide_empty: bool) -> Vec<u32> {
     let mut ids: Vec<u32> = order_of
         .keys()
@@ -328,8 +300,6 @@ impl AtHour for ResourceBalance {
         vec![TableId::ResourceDefinitions, TableId::LexicalTokens, TableId::CountryResources, TableId::ResourceExchanges, TableId::Countries]
     }
 
-    /// The definitions and every deal first (a deal names the country in a column, not its key),
-    /// with the country's own pools; then the tokens the definitions spell and the partners' rows.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -350,8 +320,6 @@ impl AtHour for ResourceBalance {
         }
     }
 
-    /// The country's deals at the hour by key, from the run's index of deals by importer and
-    /// exporter (kept from open); every deal where the index cannot be read.
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         let (0, Some(owner)) = (step, owner) else { return Self::reads(params, owner, step, held) };
         let deals = match at.context.deals.run(at.run) {
@@ -373,7 +341,6 @@ impl AtHour for ResourceBalance {
     }
 }
 
-/// Each resource's longest balance bar over a span: the bars' whole-campaign scale.
 pub struct ResourceSizes;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -382,7 +349,7 @@ pub struct ResourceSizes;
 pub struct ResourceSizesParams {
     pub branch_id: String,
     pub country: Country,
-    /// The span; the whole timeline when absent.
+    #[doc = " The span; the whole timeline when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub from: Option<i32>,
@@ -395,9 +362,9 @@ pub struct ResourceSizesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSize {
-    /// The resource's native index.
+    #[doc = " The resource's native index."]
     pub id: u32,
-    /// Its longest bar, fixed5; null where no hour of it is recorded.
+    #[doc = " Its longest bar, fixed5; null where no hour of it is recorded."]
     pub longest_raw: Option<String>,
 }
 
@@ -407,7 +374,7 @@ pub struct ResourceSize {
 pub struct ResourceSizesReply {
     pub tag: String,
     pub sizes: Vec<ResourceSize>,
-    /// The span's hours no holder of the tag, or no row, is known, with why.
+    #[doc = " The span's hours no holder of the tag, or no row, is known, with why."]
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
@@ -439,7 +406,6 @@ impl Product for ResourceSizes {
             return Err(dashboard_core::invalid("Invalid span"));
         }
         let line = dashboard_query::series::Line::new(&query, series, measure)?;
-        // Every recorded resource is a part: asked by its index, never found through the lifetimes of every country's rows.
         let Some(last) = query.timeline.stretches.last() else {
             return Ok(ResourceSizesReply { tag: query.holders.name(&params.country, to), sizes: Vec::new(), missing: Vec::new(), warnings: Vec::new() });
         };
@@ -450,7 +416,6 @@ impl Product for ResourceSizes {
         let asks: Vec<(Ask, Vec<(i32, i32)>)> = read[0].rows.iter().map(|&(key, _)| (Ask { country: params.country.clone(), part: parts.key(0, key) }, vec![(from, to)])).collect();
         let scale = 10f64.powi(i32::from(measure.decimals));
         let drawn = line.summaries_within(&asks, from, to, 1)?;
-        // The tag's hours unheld: a resource's own hours without a row are its size's business, not the reply's.
         let missing = asks.first().map(|(ask, _)| line.unheld(&ask.country, from, to, &line.held(ask, from, to))).unwrap_or_default();
         let sizes = drawn
             .into_iter()

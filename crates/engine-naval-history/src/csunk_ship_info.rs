@@ -1,50 +1,23 @@
-//! Persistent sunk-ship records. Combat generation, battle slot and hook
-//! sequence are event metadata rather than record fields. Class pointers
-//! resolve to subunit definitions with literal names, separate from inherited
-//! display strings of unresolved meaning. Neither is ship identity. The
-//! equipment-variant reference can be null or shared; records have no ship
-//! reference subobject. Age pruning swap-erases entries, so vector position
-//! is not persistent ship identity.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_4788);
-/// CSunkShipInfo allocation size 0xa8.
 pub const SIZE: usize = 0xa8;
-/// CSunkShipInfo std::string victim name.
 pub const SHIP_NAME: usize = 0x08;
-/// Attribution-name string permitting empty text.
 pub const ATTRIBUTION_SOURCE_NAME: usize = 0x28;
-/// CSunkShipInfo u32 victim country link.
 pub const VICTIM_COUNTRY: usize = 0x48;
-/// CSunkShipInfo u32 attacker country link.
 pub const ATTACKER_COUNTRY: usize = 0x4c;
-/// Embedded sink date with primary vtable.
 pub const SINK_DATE: usize = 0x50;
-/// CSunkShipInfo i32 raw sink hour.
 pub const SINK_HOUR: usize = 0x58;
-/// Sink-date secondary persistent-base identity.
 pub const SINK_DATE_PERSISTENT: usize = 0x60;
-/// Victim subunit-definition pointer resolved through its class token.
 pub const SHIP_CLASS: usize = 0x68;
-/// Attribution subunit-definition pointer, initially the null definition.
 pub const ATTRIBUTION_CLASS: usize = 0x70;
-/// Model level, i32, from the dominant equipment variant and serialized.
 pub const MODEL_LEVEL: usize = 0x78;
-/// Full victim equipment-variant handle, separate from ship identity.
 pub const VICTIM_EQUIPMENT_VARIANT: usize = 0x7c;
-/// Full damage-source handle, conditionally serialized.
 pub const DAMAGE_SOURCE_REFERENCE: usize = 0x84;
-/// Province pointer copied from the task force by record creation.
 pub const PROVINCE: usize = 0x90;
-/// Full battle handle serialized and restored with both words.
 pub const BATTLE: usize = 0x98;
-/// Cause-record boolean accepting only zero or one.
 pub const CAUSE_RECORD: usize = 0xa0;
-/// Assisted-kill boolean accepting only zero or one.
 pub const ASSISTED_KILL: usize = 0xa1;
-/// Serializer emitting names, countries, classes, level, date and optional
-/// resolving references.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c8_4ef0;
 
@@ -59,8 +32,6 @@ pub struct TextRange {
     pub len: usize,
 }
 
-/// An anonymous native list element. Its slice position is collection order,
-/// not a ship id: duplicate names, references and identical records are valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Record {
     pub ship_name: TextRange,
@@ -87,15 +58,9 @@ pub struct Record {
 pub struct ListWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// Minimum arena size known when the walk stopped. A byte-capacity failure
-    /// includes the entire next record; no partially copied record is returned.
     pub required_bytes: usize,
 }
 
-/// Copies the retained sequence in native vector order into caller-owned rows
-/// and bytes. Its parent replay row must own the list; these records have no
-/// independent native key. The caller applies the hourly consistency protocol.
-/// No allocation, engine call, retry, pointer retention or sorting occurs.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -130,7 +95,6 @@ pub fn walk_buffer(
             .checked_add(cgame_state::SUNK_SHIP_HISTORY)
             .ok_or("sunk-ship history address overflow")?;
         let array = Array::read(memory, header, 8).ok_or("sunk-ship history array invalid")?;
-        // Serialization emits every retained record and its full strings.
         output.ensure(array.count as usize)?;
         let mut bytes_len = 0_usize;
         for index in 0..array.count {
@@ -186,15 +150,11 @@ pub fn walk_buffer(
     })
 }
 
-/// Row/full-string floors for attach/cadence only. Serialization emits both
-/// retained strings and selected class names for each occurrence.
 enum RecordRead {
     Ready(Record),
     NeedsBytes(usize),
 }
 
-/// One embedded sunk-ship record, independent of the global retained list's
-/// pruning/date admission. The caller supplies its lifetime certificate.
 pub fn read_one(
     memory: &impl Memory,
     base: usize,
@@ -661,7 +621,6 @@ mod tests {
         assert_eq!(rows[0].model_level, i32::MIN);
         assert_eq!(rows[0].province, 0x8000_1234);
         assert_eq!(rows[0].battle, 0x8765_4321_fedc_ba98);
-        // Native swap-removal changes collection order without inventing an id.
         put(&mut memory, VECTOR, &(SECOND as u64).to_le_bytes());
         put(
             &mut memory,

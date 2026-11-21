@@ -1,20 +1,3 @@
-//! Equal cells on fixed-size texture pages, as many pages as the cells need.
-//!
-//! The flag atlases hold one cell per flag the map has drawn, and a mod can
-//! ship a flag for every one of thousands of countries. One page cannot hold
-//! every possible flag: a texture side is limited by the device, and most
-//! flags are never drawn. So cells are handed out in load order onto pages of
-//! a fixed size, and a new page starts whenever one is full. A page never
-//! changes size, so a cell's normalised rectangle never moves once handed out.
-//!
-//! A drawn cell is sampled only inside its own rectangle, though cells have no
-//! gutters. At a UI scale of 1.0 the icon layer draws a flag 1:1 or minified
-//! onto whole device pixels, so every bilinear footprint already stays within
-//! the cell. A scaled layer magnifies or minifies further, so the sprite
-//! shader then clamps every tap to the cell's texel-centre window and
-//! averages the texels a minified pixel covers
-//! ([`super::sprites::filter_mode`]); what the neighbours hold (another flag
-//! or nothing) never reaches a pixel.
 
 #[cfg(test)]
 use std::collections::HashSet;
@@ -25,21 +8,12 @@ use std::{
 
 use eframe::wgpu;
 
-/// The device's `max_texture_dimension_2d`, once a device has been asked for.
 static DEVICE_LIMIT: AtomicU32 = AtomicU32::new(0);
 
-/// Records the texture side limit of the device the viewer creates.
-///
-/// [`crate::map::gpu_contract::device_descriptor`] requests the adapter's own limit, so
-/// that is the limit every texture of this process is created under.
 pub fn record_device_limit(limit: u32) {
     DEVICE_LIMIT.store(limit, Ordering::Relaxed);
 }
 
-/// The largest page side an atlas is built with.
-///
-/// The WebGPU default every supported device reaches (8192), lowered to the
-/// device's own limit when a device has reported a smaller one.
 pub fn page_limit() -> u32 {
     let default = wgpu::Limits::default().max_texture_dimension_2d;
     match DEVICE_LIMIT.load(Ordering::Relaxed) {
@@ -48,25 +22,16 @@ pub fn page_limit() -> u32 {
     }
 }
 
-/// Cells per page side an atlas aims for: 1,024 cells a page keeps a
-/// vanilla-sized set on one page without making the first page of a large
-/// cell (82 x 52) much bigger than the flags a session draws.
 const SIDE_CELLS: u32 = 32;
 
-/// Where the cells of one atlas sit across its fixed-size pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CellPages {
-    /// One cell's size in texels.
     pub cell: [u32; 2],
-    /// Cells per page row.
     pub columns: u32,
-    /// Cell rows per page.
     pub rows: u32,
 }
 
 impl CellPages {
-    /// Plans pages of `cell`-sized cells no side of which exceeds `limit`.
-    /// Only a cell that is itself larger than a page is refused.
     pub fn plan(cell: [u32; 2], limit: u32, what: &str) -> io::Result<Self> {
         if cell[0] == 0 || cell[1] == 0 || cell[0] > limit || cell[1] > limit {
             return Err(io::Error::new(
@@ -84,29 +49,24 @@ impl CellPages {
         })
     }
 
-    /// Cells one page holds.
     pub fn cells_per_page(&self) -> u32 {
         self.columns * self.rows
     }
 
-    /// Every page's size in texels.
     pub fn page_size(&self) -> [u32; 2] {
         [self.columns * self.cell[0], self.rows * self.cell[1]]
     }
 
-    /// Bytes of one RGBA8 page.
     pub fn page_bytes(&self) -> usize {
         let [width, height] = self.page_size();
         width as usize * height as usize * 4
     }
 
-    /// Pages `count` cells need.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pages_for(&self, count: u32) -> u32 {
         count.div_ceil(self.cells_per_page())
     }
 
-    /// A cell's page and the texel of its top-left corner on that page.
     pub fn locate(&self, index: u32) -> (u32, [u32; 2]) {
         let page = index / self.cells_per_page();
         let within = index % self.cells_per_page();
@@ -119,7 +79,6 @@ impl CellPages {
         )
     }
 
-    /// A cell's page and its rectangle there in normalised coordinates.
     pub fn uv(&self, index: u32) -> (u32, [f32; 4]) {
         let (page, [x, y]) = self.locate(index);
         let [width, height] = self.page_size().map(|side| side as f32);
@@ -134,7 +93,6 @@ impl CellPages {
         )
     }
 
-    /// The cell a page's normalised rectangle starts at, for reverse lookups.
     pub fn cell_at(&self, page: u32, uv: [f32; 4]) -> Option<u32> {
         let [width, height] = self.page_size().map(|side| side as f32);
         let column = (uv[0] * width / self.cell[0] as f32).round() as u32;
@@ -145,7 +103,6 @@ impl CellPages {
         })
     }
 
-    /// Copies one `cell`-sized RGBA8 image into its place on its page.
     pub fn blit(&self, page: &mut [u8], at: [u32; 2], pixels: &[u8]) {
         let page_width = self.page_size()[0] as usize;
         let row_bytes = self.cell[0] as usize * 4;

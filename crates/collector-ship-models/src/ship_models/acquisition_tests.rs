@@ -49,8 +49,6 @@ impl Source {
     }
 }
 
-// Force Memory's original scalar batch defaults without forwarding any
-// capability. This supplies an independent failure-prefix reference.
 struct Scalar<'a, M>(&'a M);
 impl<M: Memory> Memory for Scalar<'_, M> {
     fn copy(&self, address: usize, out: &mut [u8]) -> bool {
@@ -103,7 +101,6 @@ fn capacities(nodes: usize, entries: usize) -> Capacities {
     }
 }
 
-/// The model selects this nonpositive entry, then refuses its sprite.
 fn model_source() -> (Source, cship::Row) {
     use engine_native::{
         cequipment_variant, cequipment_variant_pool, ctask_force, cunit, msvc_string,
@@ -302,7 +299,6 @@ fn failed_snapshot_prefix_keeps_first_fault_and_releases_without_retry() {
             reason: "modifier accumulator entry unreadable"
         }]
     );
-    // The entries read before the fault: a whole first batch of 64, then 2.
     assert_eq!(capture.required_modifiers.entries, 66);
 }
 
@@ -531,7 +527,6 @@ fn optional_subunit_refusals_are_named_without_replacing_healthy_model_operands(
                 .unwrap()
                 > 0
         );
-        // The strike operands are no longer read, so they have no refusals.
         assert!(status.get("torpedo_cooldown_modifier_refused").is_none());
     }
 }
@@ -546,7 +541,6 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
     capture.capture_model_suffixes(&healthy, 0, BASE, &census, selected.as_ref(), &mut row);
     assert_eq!(row.subunit_index, Some(i32::MIN));
     assert_eq!(row.hull_variant, Some(optional_hull_expected()));
-    // A unit fixture has no naval-power certificate: the selected hull's power is refused.
     assert_eq!(row.naval_power, None);
     let mut wanted = [0; OPTIONAL_REFUSAL_REASONS.len()];
     wanted[14] = 1;
@@ -606,7 +600,6 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
             _ => unreachable!(),
         }
         assert_eq!(row.hull_variant, (index != 6).then_some(packet));
-        // Repair cannot retry the current selected-source packet or its fields.
         let reads = source.0.reads.borrow().len();
         source.0.fault.set(None);
         capture.capture_model_suffixes(&source, 0, BASE, &census, selected.as_ref(), &mut row);
@@ -713,9 +706,6 @@ fn cold_ship_model_modifier_arenas_grow_from_original_mod_sized_headers() {
     }
 }
 
-/// Twelve ships, eight in one task force and four in another, whose model,
-/// maximum organisation and suffix reads all succeed: country, doctrine,
-/// experience, pool, variant and hull definition, without a location.
 mod fleet {
     use engine_native::{
         ccountry, cequipment_database, cequipment_type, cequipment_variant,
@@ -724,9 +714,7 @@ mod fleet {
 
     pub(super) const IMAGE: usize = 0x1_4000_0000;
     pub(super) const LOW: usize = 0x1_0000;
-    /// The game state, which the singleton slot names.
     pub(super) const GAME: usize = LOW;
-    /// The singleton's slot, the one module global these reads reach.
     pub(super) const SINGLETON: usize = IMAGE + cgame_state::SINGLETON_RVA.0;
     const COUNTRIES: usize = LOW + 0x1000;
     const LINKS: usize = LOW + 0x1100;
@@ -745,7 +733,6 @@ mod fleet {
         LOW + 0x8000 + index * 0x1000
     }
 
-    /// Ships 0 to 7 are in the first task force, ships 8 to 11 in the second.
     fn task(index: usize) -> usize {
         usize::from(index >= 8)
     }
@@ -764,8 +751,6 @@ mod fleet {
         }
     }
 
-    /// The census row of ship `index` in task forces of `per_task` ships
-    /// ([`bytes_in_tasks`]).
     pub(super) fn census_in(index: usize, per_task: usize) -> cship::Row {
         cship::Row {
             task_force: task_handle(index / per_task),
@@ -773,14 +758,10 @@ mod fleet {
         }
     }
 
-    /// The world with `ships` ships, each with its pool entry in its own
-    /// object's slack.
     pub(super) fn bytes_for(ships: usize) -> Vec<u8> {
         bytes_with(ships, &TASKS, task)
     }
 
-    /// The world with `ships` ships in task forces of `per_task`, laid out
-    /// after the ships.
     pub(super) fn bytes_in_tasks(ships: usize, per_task: usize) -> Vec<u8> {
         let tasks: Vec<usize> = (0..ships.div_ceil(per_task))
             .map(|task| LOW + 0x8000 + ships * 0x1000 + task * 0x800)
@@ -819,7 +800,6 @@ mod fleet {
             put(task, &word(IMAGE + ctask_force::VTABLE_RVA.0));
             put(task + cunit::HANDLE, &task_handle(index).to_le_bytes());
             put(task + cunit::ROSTER_OWNER, &1_u32.to_le_bytes());
-            // An empty doctrine tree: its head is its own successor.
             put(task + 0x640, &word(DOCTRINE));
         }
         put(DOCTRINE, &word(DOCTRINE));
@@ -880,19 +860,15 @@ mod fleet {
             put(ship + cship::MAXIMUM_STRENGTH, &5_000_000_i64.to_le_bytes());
             put(ship + cship::SUBUNIT_INDEX, &(index as i32).to_le_bytes());
             put(ship + cship::MODEL_NUMBER, &(index as i32).to_le_bytes());
-            // Ship modifier's experience modifier source.
             put(ship + 0x8f8, &word(EXPERIENCE));
         }
         bytes
     }
 }
 
-/// [`fleet`]'s memory: one guarded call per copy, scattered read and record
-/// gather.
 struct Fleet {
     low: Vec<u8>,
     calls: Cell<usize>,
-    /// Reads starting at `watched`, counted in `hits`.
     watched: Cell<usize>,
     hits: Cell<usize>,
 }
@@ -972,7 +948,6 @@ impl Memory for Fleet {
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        // The fields are copied one by one, but the call is one.
         let calls = self.calls.get() + 1;
         let completed = Scalar(self).copy_records(sources, layout, destination);
         self.calls.set(calls);
@@ -980,10 +955,6 @@ impl Memory for Fleet {
     }
 }
 
-/// The detail capture reads each ship through its gathered fields
-/// (`cship::ShipFields`): its rows are the direct readers' over the same
-/// memory, in under half their guarded calls. Reading every field singly, as
-/// the readers do directly, makes as many calls as they do.
 #[test]
 fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls() {
     let world = Fleet::new();
@@ -1002,7 +973,6 @@ fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls
     capture.capture_owned(&world, CaptureContext::new(fleet::IMAGE));
     assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
     let gathered = world.calls.replace(0);
-    // The direct readers, as the detail capture runs them for each ship.
     let mut direct = Captured::part(&capacities(64, 64));
     direct.begin_details();
     let mut rows = Vec::new();
@@ -1056,10 +1026,6 @@ fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls
     );
 }
 
-/// A ship whose handle, task force and certificate are those of its held
-/// read is served from it: its row is the fresh read's, without reading the
-/// ship's own objects. A notified ship is read again and shows its change; an
-/// unnotified change stays carried.
 #[test]
 fn held_ships_are_carried_until_a_writer_touches_them() {
     use crate::ship_model_changes::Watches;
@@ -1093,14 +1059,11 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
     let (fresh, read) = hour(&mut capture, &world);
     let (carried, served) = hour(&mut capture, &world);
     assert_eq!(carried, fresh);
-    // A carried ship gathers neither its fields nor its pool entries.
     assert!(
         read >= served + 2 * fleet::SHIPS,
         "{served} guarded calls carried, {read} read"
     );
 
-    // A task force whose doctrine tree writer ran has its doctrine walked
-    // again; the other's contribution stays served.
     drop(watches.notify(fleet::TASKS[0], 6));
     let (rows, rewalked) = hour(&mut capture, &world);
     assert_eq!(rows, fresh);
@@ -1121,10 +1084,6 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
     assert!(!watches.poisoned());
 }
 
-/// A held ship's variant is gathered only after a design writer touched it,
-/// or every hour while the design domain is unobserved; a quiet hour, and
-/// the hour after the touched one, gather none. An invalidated hour reads
-/// it afresh.
 #[test]
 fn held_variants_are_read_only_after_a_design_writer() {
     use crate::ship_model_changes::Watches;
@@ -1177,9 +1136,6 @@ fn held_variants_are_read_only_after_a_design_writer() {
     assert!(!watches.poisoned());
 }
 
-/// A task force's held fleet-leader terms serve its next hour only while it
-/// names the same fleet and neither that fleet's leader binding nor the
-/// leader's tree was written since they were read.
 #[test]
 fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
     use crate::ship_model_changes::Watches;
@@ -1247,7 +1203,6 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
         ..task
     };
     assert_eq!(served(other, held), None, "another fleet");
-    // The leader binding (`bind_fleet_leader`) names the fleet.
     drop(watches.notify(FLEET, 8));
     assert_eq!(served(task, held), None, "the leader binding was written");
     let held = certificate();
@@ -1257,9 +1212,6 @@ fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
     assert_eq!(world.calls.get(), 0, "no fleet or leader byte is read");
 }
 
-/// Under a domain whose captures share one store, consecutive hours in
-/// different pooled frames carry from the latest complete hour, whichever
-/// frame read it; a forgotten store reads every ship again.
 #[test]
 fn pooled_frames_share_the_latest_held_reads() {
     use crate::ship_model_changes::Watches;
@@ -1395,12 +1347,6 @@ fn deferred_ship_store_publication_preserves_carry_and_discards_unfinished_store
     assert!(deferred.store.next.is_empty());
 }
 
-/// A carried ship keeps its held row's model part even when its task
-/// force's terms are read with it (it is the task force's first ship in the
-/// range): the model reader and its suffixes read only the ship's certified
-/// inputs, its variants and the session's fixed content, so they do not run,
-/// and a hull definition changed under them is not read again while the ship
-/// is carried; a fresh read shows the change.
 #[test]
 fn a_carried_ships_model_part_is_not_read_again() {
     use crate::ship_model_changes::Watches;
@@ -1433,10 +1379,6 @@ fn a_carried_ships_model_part_is_not_read_again() {
     assert_eq!(read[8].hull_sprite.as_bytes(), b"wull");
 }
 
-/// A ship a hooked writer touched is gathered again; when its own objects
-/// and modifier arrays equal its held read's, it carries again under its new
-/// certificate. An organisation-only change retains the equal model part;
-/// changing a model input runs its reader again.
 #[test]
 fn a_touched_ship_with_unchanged_bytes_carries_again() {
     use crate::ship_model_changes::Watches;
@@ -1482,9 +1424,6 @@ fn a_touched_ship_with_unchanged_bytes_carries_again() {
     assert_eq!(read[3].hull_sprite.as_bytes(), b"wull");
 }
 
-/// A carried row the capture's buffer already holds at its position, from
-/// the hour it held the read, is published without rewriting it (a marker
-/// planted in the buffer survives); a ship read afresh is rewritten.
 #[test]
 fn a_held_row_in_the_buffer_is_not_rewritten() {
     use crate::ship_model_changes::Watches;
@@ -1519,9 +1458,6 @@ fn a_held_row_in_the_buffer_is_not_rewritten() {
     assert_eq!(capture.rows.rows[5].model_number, 5, "read afresh");
 }
 
-/// A task force's first ship carries its finished row too: the task force's
-/// terms are read without it, so a quiet hour runs no reader for it and its
-/// row stays in the buffer (a planted marker survives).
 #[test]
 fn a_task_forces_first_ship_carries_its_row() {
     use crate::ship_model_changes::Watches;
@@ -1558,8 +1494,6 @@ fn a_task_forces_first_ship_carries_its_row() {
 #[test]
 fn unavailable_power_certificate_preserves_core_carry_without_suffix_polling() {
     use crate::ship_model_changes::Watches;
-    // Unit fixtures install no native content/world observer. Unknown power
-    // must remain independent of the authenticated core model observations.
     assert!(naval_power_certificate().is_none());
     let watches = Watches::enabled(64);
     let world = Fleet::new();
@@ -1601,8 +1535,6 @@ fn unavailable_power_certificate_preserves_core_carry_without_suffix_polling() {
     );
 }
 
-/// Held rows keep their naval-power packets only under the certificate they were read with,
-/// whichever frame buffer read them: without one now, they are read again.
 #[test]
 fn held_naval_power_from_another_certificate_is_read_again() {
     use crate::ship_model_changes::Watches;
@@ -1627,7 +1559,6 @@ fn held_naval_power_from_another_certificate_is_read_again() {
     };
     hour(&mut capture);
     const MARK: i32 = 0x5eed;
-    // As if another buffer's capture had held these rows under an available certificate.
     capture.store.naval_power = Some((1, 2, 3));
     for held in capture.store.held.iter_mut().flatten() {
         if let Some((row, _)) = held.row.as_mut() {
@@ -1647,9 +1578,6 @@ fn held_naval_power_from_another_certificate_is_read_again() {
     assert_ne!(capture.rows.rows[0].model_number, MARK, "read afresh");
 }
 
-/// A task force's country terms (its modifier tree) are served from the held hour while the
-/// country's naval tree certificate holds: a quiet hour reads no country accumulator, and an hour
-/// after a tree writer touched the country reads it again.
 #[test]
 fn held_country_terms_are_not_read_again() {
     use crate::ship_model_changes::Watches;
@@ -1683,23 +1611,12 @@ fn held_country_terms_are_not_read_again() {
     assert!(world.hits.get() > 0, "a touched country is read again");
 }
 
-/// Compute per ship, in warm memory, over 2,048 ships: the median wall time
-/// of a range's hour read afresh (nothing held) and with finished rows
-/// carried (all but each task force's first ship), in two task forces and in
-/// task forces of three ships (as at 1943), the latter also with each
-/// first ship's model part read again (no model carry: such a ship runs every
-/// reader; later ships' rows are still carried). The live cost per
-/// ship minus these is game-memory latency. Run with
-/// `cargo test --release -p collector ship_model_compute_bench -- --ignored --nocapture`,
-/// and under a profiler to see the hot functions.
 #[test]
 #[ignore]
 fn ship_model_compute_bench() {
     use crate::ship_model_changes::Watches;
     const HOURS: usize = 200;
     const SHIPS: usize = 2048;
-    // (label, ships per task force, read afresh, model carry, every ship
-    // touched by a writer that changed no byte)
     for (label, per_task, afresh, model_carry, touched) in [
         ("read afresh", 1024, true, true, false),
         ("rows carried", 1024, false, true, false),
@@ -1763,10 +1680,6 @@ fn ship_model_compute_bench() {
     }
 }
 
-/// Where a fresh ship's compute goes, in warm memory over 2,048 ships: the
-/// median ns per ship of gathering its fields, then of the model reader and
-/// the organisation reader on top, and of the whole detail capture without
-/// a store. Run like `ship_model_compute_bench`.
 #[test]
 #[ignore]
 fn ship_model_phase_bench() {
@@ -1852,10 +1765,6 @@ fn ship_model_phase_bench() {
     );
 }
 
-/// What a quiet hour pays per ship, in warm memory over 2,048 ships in task
-/// forces of three with every row carried but each task force's first: the
-/// census visit, the three certificate takes, and the whole capture. Run like
-/// `ship_model_compute_bench`.
 #[test]
 #[ignore]
 fn ship_model_quiet_bench() {
@@ -1978,9 +1887,6 @@ mod carry_cost_bench {
                 put(task + cunit::ROSTER_OWNER, &id.to_le_bytes());
                 put(task + cunit::LOCATION, &word(locations[0]));
             }
-            // The ship modifier calculation's province, template, terrain and weather sources,
-            // as in engine_native::cship::organisation_tests::shared_sources_fixture.
-            // The empty class hash selects the native fallback class row.
             for (index, (&location, &definition)) in locations.iter().zip(&definitions).enumerate()
             {
                 put(location, &word(fleet::IMAGE + cprovince::VTABLE_RVA.0));
@@ -2292,7 +2198,6 @@ mod carry_cost_bench {
         capture.rows.rows[..world.census.len()].to_vec()
     }
 
-    /// An hour that reads every ship afresh: the reference a carried hour equals.
     fn fresh_hour(
         world: &World,
         capture: &mut Captured,
@@ -2532,8 +2437,6 @@ mod carry_cost_bench {
         let watches = Watches::enabled(4 * world.census.len());
         let mut capture = capture(world.census.len());
         hour(&world, &mut capture, &watches);
-        // Swap the two occurrences within a task force, keeping parent and
-        // current roster identity intact while changing census positions.
         world.census.swap(0, 1);
         capture.begin_sources();
         for (index, source) in world.census.iter().enumerate() {
@@ -2891,8 +2794,6 @@ mod carry_cost_bench {
                 }]
             );
             let before = held.rows.rows[0].maximum_organisation;
-            // Critical-hit writers reach the ship notification through the
-            // equipment-stat recalculation; the critical header need not change.
             let notification = watches.notify(fleet::ship(0), 0);
             if change_pointer {
                 world.memory.low[first_entry..first_entry + 8]
@@ -2973,7 +2874,6 @@ mod carry_cost_bench {
                     u64::from_le_bytes(world.memory.low[bank..bank + 8].try_into().unwrap())
                         as usize;
                 world.memory.low[variant - fleet::LOW..variant - fleet::LOW + 8].fill(0);
-                // Held variants carry until a design writer touches them.
                 drop(watches.notify_variant(variant));
             }
             let memory = MetadataMemory {
@@ -3045,8 +2945,6 @@ mod carry_cost_bench {
         assert_eq!(initial.version, None);
         assert_eq!(initial.organisation_marker, Some(23));
 
-        // The organisation bonus refresh writes this marker without
-        // changing the fields before the failed VERSION gather.
         world.memory.low[marker..marker + 4].copy_from_slice(&41_i32.to_le_bytes());
         let memory = VariantVersionFault {
             inner: &world.memory,
@@ -3139,8 +3037,6 @@ mod carry_cost_bench {
                 vec![b'a'; len]
             );
 
-            // The equipment-stat recalculation replaces the sprite's
-            // bytes even when its pointer, length and capacity stay equal.
             let writer = watches.notify(ship, 0);
             world.memory.low[at..at + len].fill(b'b');
             drop(writer);
@@ -3224,8 +3120,6 @@ mod carry_cost_bench {
         assert!(!watches.poisoned());
     }
 
-    /// A quiet hour gathers no held location; a task force that moved
-    /// gathers its new one, and its rows equal a fresh read's.
     #[test]
     fn a_held_location_is_gathered_only_after_its_task_force_moves() {
         let mut world = World::new(4);
@@ -3252,8 +3146,6 @@ mod carry_cost_bench {
         assert_eq!(world.memory.hits.get(), 0, "and held again");
     }
 
-    /// A task force replaced by a new one at the same address (a new handle)
-    /// rereads its own ships; every other ship stays carried unread.
     #[test]
     fn a_replaced_task_force_rereads_only_its_ships() {
         let mut world = World::new(4);
@@ -3287,8 +3179,6 @@ mod carry_cost_bench {
         assert_eq!(rows, fresh_hour(&world, &mut direct, &watches));
     }
 
-    /// An invalidated hour (load, gap, recovery) certifies nothing: every
-    /// ship is read afresh, its location gathered again.
     #[test]
     fn an_invalidated_hour_reads_every_ship_and_location() {
         let world = World::new(4);
@@ -3309,10 +3199,6 @@ mod carry_cost_bench {
         assert!(world.memory.hits.get() > 0, "locations are gathered again");
     }
 
-    /// The held-rows generation survives only an hour whose every ship took
-    /// its held row whole at its published roster position; a moved roster
-    /// position, a recomputed row, a removed task force or a forgotten store
-    /// name new rows, and an incomplete hour none.
     #[test]
     fn only_wholly_carried_hours_keep_the_held_rows_witness() {
         let mut world = World::new(4);
@@ -3352,8 +3238,6 @@ mod carry_cost_bench {
         assert_eq!(held.held_witness(), None, "an incomplete hour");
     }
 
-    /// A quiet hour republishes the previous hour's rows unprojected and
-    /// encodes as their conversion does; a change hour converts.
     #[test]
     fn quiet_hours_republish_ship_models_unconverted() {
         use crate::projection::ProjectionScratch;
@@ -3376,7 +3260,6 @@ mod carry_cost_bench {
             frame.tables[TABLES[0].index()] = table;
             frame
         };
-        // Hour 2 moves a roster position; hour 4 reads every ship afresh.
         for (at, republished) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 2), (5, 3)] {
             if at == 2 {
                 world.census[0].roster_ordinal += 7;
@@ -3407,8 +3290,6 @@ mod carry_cost_bench {
         }
     }
 
-    /// A split family witnesses its rows only while every range kept its
-    /// generation; one range's change names new rows.
     #[test]
     fn a_split_family_witnesses_only_when_every_range_is_quiet() {
         let mut world = World::new(4);
@@ -3656,13 +3537,6 @@ mod carry_cost_bench {
             std::mem::size_of::<cship::TaskTerms>(),
             EVICTION_BYTES / (1024 * 1024),
         );
-        // Baseline d16cedeb6c: a carried row does two hint peeks and one
-        // take (three ship-index binary searches away from the range tail),
-        // passes Held's size to prefetch::span (at most sixteen 64-byte steps
-        // and its final byte), copies Heap and both Object<8> variants, compares
-        // the TaskTerms packet, and moves the box without allocating.
-        // Same-position rows write only roster_ordinal; relocated rows clone
-        // ModelRow. These are source counts, not measured cache traffic.
         for cold in [false, true] {
             for path in [Path::Carried, Path::Moved, Path::Revalidated, Path::Fresh] {
                 world.move_tasks(0);
@@ -3710,7 +3584,6 @@ mod carry_cost_bench {
     }
 }
 
-/// Live-sized country rosters, separate carry paths and cold-cache hours.
 #[test]
 #[ignore = "release ship-model carry-cost benchmark"]
 fn ship_model_carry_cost_bench_1500_countries() {

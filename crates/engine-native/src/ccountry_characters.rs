@@ -1,18 +1,3 @@
-//! Per-country character state: appointed and available advisors and active
-//! and retired character records. The scientist roster reads the same owner.
-//!
-//! Appointment authenticates the owner, preserves sorted advisor occurrences,
-//! and scopes on-add effects to that country. Country modifiers traverse the
-//! appointed array in order. Serialization retains advisor slot text and full
-//! character references when appointments exist. Sort order uses idea hash then
-//! idea text; capture preserves the observed order rather than deriving it.
-//! A persistent advisor role alone does not establish appointment. Available
-//! advisors use a separate array, whose exact-name lookup needs character and
-//! idea operands but no slot bytes.
-//!
-//! One country pass copies active and retired records with independent failures.
-//! Synthetic fixtures cover these walks; live capture and fresh-save agreement
-//! remain unverified.
 
 use crate::{
     Memory, cadvisor,
@@ -24,24 +9,15 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Country-character vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_6b48);
-/// Owning country pointer used for appointment scope.
 pub const OWNER: usize = 0x08;
-/// Appointed-advisor pointer array with signed capacity and count.
 pub const APPOINTED_ADVISORS: usize = 0x58;
-/// Available-advisor pointer array maintained by role changes, retirement
-/// and transfers. Exact-name queries walk this roster.
 pub const AVAILABLE_ADVISORS: usize = 0x40;
 
-/// One appointed advisor, in native array order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw id of the CCountry that owns this CCountryCharacters.
     pub country: u32,
-    /// Position in the appointed array; the engine's own order.
     pub ordinal: u32,
-    /// CCharacter numeric id behind `cadvisor::CHARACTER`.
     pub character: u32,
     pub idea_start: usize,
     pub idea_len: usize,
@@ -49,29 +25,18 @@ pub struct Row {
     pub slot_len: usize,
 }
 
-/// Pointers copied per guarded read.
 const POINTERS_PER_READ: usize = 32;
 
-/// Active-character records sorted by character name token, with null
-/// characters ordered as zero. Token lookup selects the first occurrence;
-/// serialization retains every record.
 pub const ACTIVE_CHARACTERS: usize = 0x10;
-/// Record stride; each holds a character pointer and four boolean bytes.
 pub const ACTIVE_RECORD_STRIDE: usize = 0x10;
 
-/// One active-character record, in native array order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ActiveRow {
-    /// Raw id of the CCountry that owns this CCountryCharacters.
     pub country: u32,
-    /// Position in the active array; the engine's own order.
     pub ordinal: u32,
-    /// CCharacter numeric id, `None` for a null record.
     pub character: Option<u32>,
 }
 
-/// The authenticated CCountryCharacters of `country`, `None` for the engine's
-/// null object.
 pub(crate) fn characters_object(
     memory: &impl Memory,
     country: &ccountry::Country,
@@ -96,12 +61,8 @@ pub(crate) fn characters_object(
     Ok(Some(object))
 }
 
-/// Retired records sharing the active layout and name-token order.
-/// Retirement inserts at the lower bound and removes the active record;
-/// retired lookup searches that same token order.
 pub const RETIRED_CHARACTERS: usize = 0x28;
 
-/// One table's rows of the record walk and its own first failure.
 struct Records<'a> {
     output: crate::walk::Buffer<'a, ActiveRow>,
     len: usize,
@@ -119,8 +80,6 @@ impl<'a> Records<'a> {
         }
     }
 
-    /// Appends one country's records at `address`, unless this table already
-    /// failed; a failure here fails this table alone.
     fn read(&mut self, memory: &impl Memory, base: usize, country: u32, address: usize) {
         if self.failure.is_none()
             && let Err(reason) = self.read_array(memory, base, country, address)
@@ -164,10 +123,6 @@ impl<'a> Records<'a> {
             if !read_slice(memory, address, batch) {
                 return Err("character records unreadable");
             }
-            // The characters are scattered objects: one guarded, prefetched
-            // batch copies every nonnull record's identity header so their
-            // misses overlap. Records are then checked in order, so the first
-            // fault is that of a read per record.
             let pointers: [usize; POINTERS_PER_READ] = std::array::from_fn(|index| {
                 batch
                     .get(index * ACTIVE_RECORD_STRIDE..index * ACTIVE_RECORD_STRIDE + 8)
@@ -209,9 +164,6 @@ impl<'a> Records<'a> {
         Ok(())
     }
 
-    /// This table's outcome; `shared` is a failure of the country pass both
-    /// tables share, which a table that already failed on its own does not
-    /// take.
     fn outcome(&self, shared: Option<&'static str>) -> Outcome {
         match self.failure.or(shared) {
             Some(reason) => Outcome::Unavailable { reason },
@@ -228,7 +180,6 @@ pub fn count_records(memory: &impl Memory, base: usize, game_state: usize) -> [O
     walk_records_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk_records(
     memory: &impl Memory,
     base: usize,
@@ -280,7 +231,6 @@ pub fn walk_records_buffer(
     tables.each_ref().map(|table| table.outcome(shared))
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -324,9 +274,6 @@ pub fn walk_buffer(
     }
 }
 
-/// One authenticated country's available-advisor array, before any of its
-/// advisors is read: the country, its `CCountryCharacters` and the array's
-/// data pointer and count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pool {
     pub country: u32,
@@ -335,25 +282,13 @@ pub struct Pool {
     pub count: u32,
 }
 
-/// A caller's held available-advisor rows per country
-/// ([`walk_available_carried`]).
 pub trait AvailableCarry {
-    /// Registers an authenticated pool before any advisor is read: a plan
-    /// token and, when its held rows may be carried, their row and byte
-    /// counts.
     fn plan(&mut self, pool: &Pool) -> (usize, Option<(usize, usize)>);
-    /// Writes a carryable plan's rows, their idea offsets starting at
-    /// `bytes_start`, and their bytes.
     fn carry(&mut self, token: usize, rows: &mut [Row], bytes: &mut [u8], bytes_start: usize);
-    /// One advisor of a pool read afresh: its character, before that
-    /// character's identity and the advisor's idea bytes are read.
     fn advisor(&mut self, token: usize, character: usize);
-    /// A pool read afresh and whole: its rows and their bytes, whose idea
-    /// offsets start at `bytes_start`.
     fn read(&mut self, token: usize, rows: &[Row], bytes: &[u8], bytes_start: usize);
 }
 
-/// No held rows: every pool is read.
 pub struct Fresh;
 impl AvailableCarry for Fresh {
     fn plan(&mut self, _: &Pool) -> (usize, Option<(usize, usize)>) {
@@ -364,12 +299,6 @@ impl AvailableCarry for Fresh {
     fn read(&mut self, _: usize, _: &[Row], _: &[u8], _: usize) {}
 }
 
-/// [`walk_available`] for the countries `select` admits by native
-/// country id, with `carry` supplying the rows of pools whose held read it
-/// proves current: every selected country, `CCountryCharacters` and array
-/// header is still read and authenticated, and a carried pool's advisors,
-/// characters and idea bytes are not. An unselected country is not read and
-/// has no rows; a selected country's rows equal the whole walk's.
 pub fn walk_available_carried(
     memory: &impl Memory,
     base: usize,
@@ -397,7 +326,6 @@ pub fn walk_available_carried(
     })
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk_available(
     memory: &impl Memory,
     base: usize,
@@ -439,7 +367,6 @@ pub fn walk_available_buffer(
     })
 }
 
-/// Live header totals and exact idea lengths; no row storage or allocations.
 pub fn demand_available(
     memory: &impl Memory,
     base: usize,
@@ -712,10 +639,6 @@ fn walk_inner(
                 ))?;
                 bytes.ensure(end)?;
                 if end > bytes.len() {
-                    // A declared length is not allocation evidence: growth is
-                    // certified from read bytes only, one bounded step per
-                    // string that does not fit (as the modifier definitions
-                    // do), continuing while each string is certified whole.
                     let mut used = bytes_len;
                     for literal in [&idea, &slot_text] {
                         let end = used + literal.len;

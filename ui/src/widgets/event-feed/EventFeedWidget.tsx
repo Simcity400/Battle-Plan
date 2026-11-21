@@ -45,9 +45,6 @@ const sameKeys = (held: readonly LogRow<FeedEvent>[], next: readonly LogRow<Feed
 const NO_PAGES: readonly LogPage<FeedEvent>[] = [];
 const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
 
-/** Key moments across every country: the feed's rows (`event-feed`, pages of the declared `feed-events` log, counted by
- * `log-counts` and cut at the head) with the rows other families date (`event-feed-span`, asked once per span), each in
- * the game's words, its countries flagged at its own hour. */
 export default function EventFeedWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
@@ -70,14 +67,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const span = useProduct<EventFeedSpanReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
     params: { branchId: track.branch.id, categories: [...categories] } } : null, active, validateSpan, track?.source);
-  // The pages need only the kinds' codes, asked alone so they wait for no read of the span.
   const coded = useProduct<EventFeedSpanReply>(runtime.client, track ? kindsRequest(track) : null, active, validateSpan, track?.source);
   const kinds = coded.data?.kinds;
   const facets = useMemo(() => kinds ? feedFacets(kinds, categories) : null, [kinds, categories]);
-  // Milestones alone hold no kind of the log: the span's rows are the whole feed.
   const spanOnly = !!kinds && !facets;
-  // The chosen countries are kept by the server: the pages and their counts hold only the rows naming one, so a sparse
-  // group reads its own rows, never the campaign's.
   const scope = useMemo(() => filtered && match.ready ? countryScope(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0) : null,
     [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const spec = useMemo<LogSpec | null>(() => track && facets && (!filtered || scope) ? { source: track.source, branchId: track.branch.id, log: 'feed-events',
@@ -86,14 +79,12 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const feed = useLogPages<FeedEvent, EventFeedUnavailable>(runtime.client, runtime.clock, spec, cut, active && match.ready, feedRow, FEED_PAGE_SIZE, pageNotes);
   const country = filtered ? match.matches : null;
   const family = useMemo(() => span.data ? familyRows(span.data, categories, from, country) : NO_ROWS, [span.data, categories, from, country]);
-  // With no log asked, following renders a block of the span's rows at once, those past the clock hidden until it reaches them.
   const reveals = useMemo(() => familyReveals(family), [family]);
   const familyEnd = useCallback((clockHour: number) => {
     const { hoursPerSecond, playing } = runtime.clock.getSnapshot();
     return aheadEnd(reveals, Math.floor(clockHour) + offset, hoursPerSecond, playing) - offset;
   }, [runtime.clock, reveals, offset]);
   const familyBlock = useAheadHour(runtime.clock, active && follow && spanOnly && !!span.data, familyEnd);
-  // The other families' rows through the hours the feed's pages draw (or, alone, their own block): following, hidden past the clock.
   const through = !spanOnly ? feed.through : cut.follow ? familyBlock.until - 1 + offset : cut.hour;
   const shownFamily = familyShown(family, through);
   const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
@@ -102,11 +93,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const pages = useMemo(() => merged.current = stableLogPages(merged.current, withFamilyRows(feed.pages, family, shownFamily)),
     [feed.pages, family, shownFamily]);
   const [visible, setVisible] = useDistinctState<readonly LogRow<FeedEvent>[]>(NO_ROWS, sameKeys);
-  // Following, the newest rows held (the block drawn and a view beneath it) are named with the block; only rows
-  // scrolled to beyond them are named as they come into view, so the list's render is the only commit.
   const newest = useMemo(() => follow ? newestPageRows(pages, feed.ahead.length + 2 * AHEAD_ROWS) : NO_ROWS, [follow, pages, feed.ahead.length]);
   const newestKeys = useMemo(() => new Set(newest.map(row => row.key)), [newest]);
-  // The list reports a new array whenever it lays out again; only other rows are news.
   const onVisible = useCallback((rows: readonly LogRow<FeedEvent>[]) => {
     if (follow && rows.every(row => newestKeys.has(row.key))) return;
     setVisible(rows);
@@ -114,7 +102,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const named = useMemo(() => newest.length ? [...newest, ...visible.filter(row => !newestKeys.has(row.key))] : visible, [newest, newestKeys, visible]);
   const wanted = useMemo(() => logCountryRequests(named, row => ({ hour: row.item.event.nameHour, tags: eventTags(row.item.event) })), [named]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  // A state is named as it was at the row's hour (`place-names`), only for the rows laid out.
   const wantedStates = useMemo(() => named.flatMap(row => {
     const event = row.item.event;
     return [event.cause?.state, event.strike?.state].flatMap(state => state == null ? [] : [{ hour: event.hour, state }]);
@@ -128,8 +115,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       return { ...label, name: eventCountryName(tag, label) };
     };
   }, [labelAt]);
-  // What this recording could not capture is reported with the warnings, never drawn in the feed: the span's, and what
-  // each page held could not show of its own rows.
   const notes = useMemo(() => span.data ? [...new Set([...spanNotes(span.data), ...pagesNoted(feed.notes)])] : null, [span.data, feed.notes]);
   useDiagnostics(onDiagnostics, notes);
 

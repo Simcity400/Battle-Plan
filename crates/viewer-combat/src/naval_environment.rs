@@ -1,4 +1,3 @@
-//! Native naval environment selection and displayed gun/depth totals.
 use engine_executable::modifier_keys as keys;
 use installed_content_localisation::localisation::Argument;
 use installed_content_localisation::localisation::Localisation;
@@ -38,8 +37,6 @@ fn add(a: i64, b: i64) -> i64 {
     a.wrapping_add(b)
 }
 
-// missing entries return zero; bit4 clamps each individual
-// source before composition. Feature eligibility is captured in scope26.
 fn term(
     context: &NavalShipWeaponContext,
     source: &NavalShipModifierSource,
@@ -71,21 +68,14 @@ fn source_term(context: &NavalShipWeaponContext, scope: u8, key: u32) -> Option<
         .try_fold(0, |sum, source| Some(add(sum, term(context, source, key)?)))
 }
 
-/// Combine doctrine weighting, weather adjustment, critical count/severity
-/// and the maximum contribution over independent HQ influences.
 pub(super) fn modifier(context: &NavalShipWeaponContext, key: u32) -> Option<i64> {
     modifier_with_leader(context, key, false)
 }
 
-/// Surface detection resolves the fleet's default leader rather than the
-/// combat side's selected leader.
 pub(super) fn modifier_default_leader(context: &NavalShipWeaponContext, key: u32) -> Option<i64> {
     modifier_with_leader(context, key, true)
 }
 
-/// the game sends the doctrine weight, critical count times
-/// ONE, or ONE to modifier breakdown formatting. The country factor and
-/// critical severity affect the numeric modifier, not these child labels.
 pub(super) fn breakdown_scale(
     context: &NavalShipWeaponContext,
     scope: u8,
@@ -111,13 +101,10 @@ pub(super) fn breakdown_scale(
     Some(if possible == 0 {
         0
     } else {
-        // `None` where the native division traps.
         progress.checked_div(possible)?.clamp(0, ONE)
     })
 }
 
-/// Only the winning support description is retained. Equal values keep the
-/// first task-force influence; nonpositive values print none.
 pub(super) fn breakdown_visible(
     context: &NavalShipWeaponContext,
     key: u32,
@@ -160,7 +147,6 @@ fn modifier_with_leader(
             9 | 10 if !default_leader => term(context, source, key)?,
             31 | 32 if default_leader => term(context, source, key)?,
             4 => {
-                // Weights are signed achieved/possible counts, not fixed-point fractions.
                 let [achieved, possible] = source.weights;
                 let progress = add(ONE, source_term(context, 0, source.dynamic_keys[0])?)
                     .wrapping_mul(achieved);
@@ -209,8 +195,6 @@ fn modifier_with_leader(
                 *sum = add(*sum, value);
                 0
             }
-            // Raw weapon adjusters and relation operands are not additive.
-            // The unselected leader's pair is excluded in either call path.
             9 | 10 | 16 | 20..=27 | 31 | 32 => 0,
             _ => return None,
         };
@@ -229,12 +213,8 @@ fn adjuster(context: &NavalShipWeaponContext, scope: u8, lane: usize) -> i64 {
         .fold(0, |sum, s| add(sum, s.weights[lane]))
 }
 
-// Current torpedo attack is independent of the historical damage column
-// shown in the counter hover.
 fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Option<i64> {
     if row.live_ship == 0 {
-        // Convoy weapon values come from the equipment definition.
-        // The format-22 convoy reader records bars, not weapon bases.
         return (row.live_convoy == 0).then_some(0);
     }
     let context = &row.weapon_context;
@@ -245,8 +225,6 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
     let lane = usize::from(depth);
     let mut base = context.weapon_bases[case];
     let mut factor = 0;
-    // Use the ship's cached formation flags, without
-    // substituting ship category or adding a strength multiplier.
     if context.formation_flags & (1 << 7) != 0 {
         if !depth {
             base = add(base, modifier(context, keys::SUBMARINE_ATTACK)?);
@@ -270,7 +248,6 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
         );
     }
     for (mask, key, relation) in [
-        // Formation flags add the positive modifier keys 0xC4 and 0xC6.
         (
             1 << 6,
             [
@@ -363,25 +340,10 @@ fn weapon(row: &NavalCombatShipRow, case: usize, pride_in_battle: bool) -> Optio
     Some(mul(add(ONE, factor), base).max(0))
 }
 
-/// [`convoy_weapon_bound`]'s range or why it is unknown, and the misreads.
 pub(super) type ConvoyBound = (Result<[i64; 2], String>, Vec<String>);
 
-/// The weapon stats [`convoy_weapon_bound`] reads:
-/// lg_attack 0x3BF7, hg_attack 0x3BFA, torpedo_attack 0x3016 and sub_attack
-/// 0x2EC4.
 const CONVOY_WEAPON_STATS: [&str; 4] = ["lg_attack", "hg_attack", "torpedo_attack", "sub_attack"];
 
-/// The range of light/heavy gun, torpedo and depth-charge attack declared by
-/// convoy equipment, in fixed5, including zero. Live convoy weapon values read
-/// the equipment fields unmodified. Format 22 lacks the equipment identity and
-/// selected weapon field, so each convoy contributes a value in this range.
-///
-/// Read equipment through [`installed_content_core::equipment::Database`], preserving directory
-/// and file order, generated archetype duplicates and default module categories.
-/// Effective type uses the own type, else the archetype's, plus module additions;
-/// convoys have category bit 1. The second value reports each place the read loses
-/// alignment. `Err` identifies an unsupported block, statement, parent-dependent
-/// slot or link cycle that leaves the remaining content unknown.
 #[cfg(test)]
 fn convoy_weapon_bound(layers: &installed_content_core::ResolvedLayers) -> io::Result<ConvoyBound> {
     Ok(convoy_weapon_bound_from_database(
@@ -414,17 +376,13 @@ pub(super) fn convoy_weapon_bound_from_database(
     (Ok(range), misreads)
 }
 
-/// The displayed whole number of `ships` plus `convoys` live convoys, when
-/// every convoy value in `[low, high]` truncates to the same integer.
 fn bounded_total(ships: i64, convoys: i64, bound: Result<[i64; 2], &str>) -> Option<i64> {
     let [low, high] = bound.ok()?;
     let least = ships.checked_add(convoys.checked_mul(low)?)?;
     let most = ships.checked_add(convoys.checked_mul(high)?)?;
-    // Whole-number fixed-point formatting truncates toward zero, including half ties.
     (least / ONE == most / ONE).then_some(least / ONE)
 }
 
-// the game has different precedence from map weather-particle selection.
 pub(super) fn weather_suffix(weather: &WeatherRegionRow) -> &'static str {
     if weather.heavy_rain != 0 {
         "storm"
@@ -446,8 +404,6 @@ pub(super) fn picture_names(terrain: Option<&str>, night: bool, weather: &str, o
         "GFX_terrain_"
     };
     let mut names = Vec::new();
-    // the game uses the raw terrain token (already water_deep_ocean,
-    // for example). Its generic water fallback retains the battle prefix.
     for terrain in terrain.into_iter().chain(std::iter::once("water")) {
         let stem = format!("{prefix}{terrain}");
         if !weather.is_empty() {
@@ -458,10 +414,7 @@ pub(super) fn picture_names(terrain: Option<&str>, night: bool, weather: &str, o
     names
 }
 
-/// Read the region weather and province modifiers from recorded scopes 6
-/// and 7, with night in the same ship context. Both sources must join a task
-/// force at the battle province.
-#[allow(clippy::too_many_arguments)] // The hover's recorded rows, content and text resources.
+#[allow(clippy::too_many_arguments)]
 fn terrain_hover(
     weather: &WeatherRegionRow,
     context: &NavalShipWeaponContext,
@@ -472,8 +425,6 @@ fn terrain_hover(
     viewing_tag: Result<&str, &str>,
     dropped: &mut Vec<String>,
 ) -> Result<String, String> {
-    // Use the selected terrain category from the ship context rather than
-    // the strategic region's own name.
     let mut output = terrain.prefix(
         &context.terrain_name,
         definitions,
@@ -503,8 +454,6 @@ fn terrain_hover(
     let province = block(7)?
         .describe(definitions, icons, loc, ONE, "  - ", 1)
         .map_err(|reason| reason.to_string())?;
-    // the game visits the six region flags in this order, joins their
-    // localised names with ", ", and uses weather_none if no flag is set.
     let active: Result<Vec<_>, _> = active_weather_events(weather)
         .map(|(_, name, _)| token(icons, loc, name.as_bytes()))
         .collect();
@@ -514,8 +463,6 @@ fn terrain_hover(
     } else {
         active.join(", ")
     };
-    // Ensure two trailing newlines after the terrain prefix, which may already
-    // end in a newline.
     ensure_newlines(&mut output, 2);
     let heading = builtin(
         icons,
@@ -529,8 +476,6 @@ fn terrain_hover(
         output.push_str(region.trim_start_matches("  - "));
     }
     if !province.is_empty() {
-        // the game ensures two trailing newlines and appends one more
-        // before the NIGHT_MODIFIERS heading.
         ensure_newlines(&mut output, 2);
         output.push('\n');
         let heading = builtin(icons, loc, NIGHT_MODIFIERS, &[])?;
@@ -578,18 +523,12 @@ fn joined_weather_context<'a>(
     Ok(&first.weapon_context)
 }
 
-/// The opponent's ship silhouette in planes. ShipModels records the positive
-/// equipment-pool predicate; live ship and convoy references remain separate.
-/// Category priority is capital, screen, carrier, submarine, support, then convoy.
-/// The screen term uses one over one plus capital silhouette times the content
-/// reduction factor.
 fn opposing_silhouette(
     ships: &[&NavalCombatShipRow],
     models: Keyed<'_, ShipModelRow>,
     side: u8,
     defines: &installed_content_naval_combat_defines::naval_combat_defines::Defines,
 ) -> Result<i32, String> {
-    // Round each forward group's silhouette and add with wrapping i32 arithmetic.
     let groups: BTreeSet<_> = ships
         .iter()
         .filter(|row| row.side == side && row.member_source == 0 && row.group_index != u32::MAX)
@@ -645,8 +584,6 @@ fn silhouette_group(
                         .positive_equipment_flags
                 };
                 let carrier_flags = (1_u64 << 22) | (1_u64 << 37);
-                // A submarine flag selects submarine regardless of equipment-pool flags.
-                // Skip that pool read only for this outcome-independent branch.
                 if (flags | pool) & carrier_flags != 0 {
                     others = others.wrapping_add(carrier);
                 } else if flags & (1 << 39) != 0 {
@@ -658,8 +595,6 @@ fn silhouette_group(
             others = others.wrapping_add(convoy);
         }
     }
-    // The fixed-point divider gives the 0xffffffff sentinel for zero;
-    // the numerator is 10000000000, and the result rounds upward.
     let denominator = i64::from(capitals)
         .wrapping_mul(defines.screen_cap_reduction_factor)
         .wrapping_add(ONE);
@@ -676,7 +611,6 @@ fn silhouette_group(
         .wrapping_add(others))
 }
 
-/// multiplier and raw opposing weighted count.
 fn carrier_penalty_values(
     side: &NavalCombatSideDetails,
     opposing: &[&NavalCombatShipRow],
@@ -705,8 +639,6 @@ fn carrier_penalty_values(
     Ok((multiplier, opposing_count))
 }
 
-/// The laurel stays visible: full opacity for an actual penalty, half opacity
-/// otherwise. The same result supplies its hover.
 fn bind_carrier_penalty(out: &mut Bindings, side: usize, result: Result<(i64, i32, i32), String>) {
     let name = ["attacker", "defender"][side];
     let widget = out
@@ -727,9 +659,6 @@ fn bind_carrier_penalty(out: &mut Bindings, side: usize, result: Result<(i64, i3
     out.naval_penalties[side] = Some(result);
 }
 
-/// Resolve the pride ship through the task force's roster owner, then use
-/// its logical owner to find the combat side.
-/// Any ship task force of that country receives the bonus in this combat.
 fn pride_bonus_applies(
     row: &NavalCombatShipRow,
     sides: &[NavalCombatSideDetails; 2],
@@ -756,8 +685,6 @@ fn pride_bonus_applies(
         return Ok(false);
     }
     let Some(pride) = live_ships.get(country.pride_of_the_fleet) else {
-        // The game resolves this reference live and treats a null result as
-        // no pride ship.
         return Ok(false);
     };
     if pride.task_force == 0
@@ -803,15 +730,12 @@ pub(super) fn bind(
             false
         }
     };
-    // an engaged entry of the battle province's whole
-    // combat vector, of any class, selects the ongoing_sea_battle_ prefix.
     let vectors = rows::<tables::NavalProvinceCombats>(frame)?;
     let vector = vectors
         .rows()
         .iter()
         .find(|row| row.province == detail.province);
     let ongoing = flags.engaged_entries(vector, vectors.is_complete(), 1);
-    // Why the prefix is undecided, as `naval_markers::two_engaged` names it.
     let undecided = match vector {
         None => "the battle province's combat vector is unknown (the NavalProvinceCombats table is incomplete)".to_owned(),
         Some(row) => row
@@ -887,8 +811,6 @@ pub(super) fn bind(
                     .get(&region)
                     .and_then(|r| r.naval_terrain.as_deref());
                 let night = *nights.first().expect("one night value");
-                // Night is suppressed above speed 3 only while the UI runs;
-                // replay playback owns this pause decision.
                 let night = if night {
                     let clock = rows::<tables::Clock>(frame)?;
                     match clock.rows() {
@@ -902,7 +824,6 @@ pub(super) fn bind(
                     Some(false)
                 };
                 if let Some(night) = night {
-                    // The first picture the content declares, else every name it lacks.
                     let picture = |ongoing| {
                         let names = picture_names(terrain, night, weather_suffix(weather), ongoing);
                         names
@@ -911,7 +832,6 @@ pub(super) fn bind(
                             .cloned()
                             .ok_or(names)
                     };
-                    // An undecided prefix decides nothing unless both pictures agree.
                     let name = match ongoing {
                         Some(ongoing) => Some(picture(ongoing)),
                         None => match (picture(true), picture(false)) {
@@ -1007,8 +927,6 @@ pub(super) fn bind(
             pride_bonus.insert((row.side, row.battle_slot), value.ok());
         }
         for side in 0..2_u8 {
-            // Sum current torpedo attack for states 2/8 in forward active groups before
-            // whole-number formatting. The hover reads historical damage.
             let members: Vec<_> = ships_at
                 .iter()
                 .copied()
@@ -1126,20 +1044,15 @@ pub(super) fn bind(
     }
     Ok(())
 }
-/// Lead decision: recorded speed plus viewer pause decides picture (the pause state).
 pub(super) fn night_picture(recorded_speed: i32, viewer_paused: bool) -> bool {
     recorded_speed <= 3 || viewer_paused
 }
-/// Read a weather key's localised text: empty output sets nothing. Otherwise
-/// read the sprite before the first colon and a signed one-based frame after it,
-/// defaulting to frame 1 without a colon. Errors name what cannot be shown.
 fn weather_icon_text(text: &str) -> Result<Option<(&str, u32)>, String> {
     if text.is_empty() {
         return Ok(None);
     }
     let mut parts = text.split(':');
     let sprite = parts.next().unwrap_or_default();
-    // Frames use signed decimal prefix parsing.
     let frame = parts.next().map_or(1, |text| {
         installed_content_core::fixed5::decimal_i32(text.as_bytes())
     });
@@ -1152,8 +1065,6 @@ fn weather_icon_text(text: &str) -> Result<Option<(&str, u32)>, String> {
     Ok(Some((sprite, frame - 1)))
 }
 
-/// the game appends the localised entry name, then two newlines and the
-/// static modifier's description to the icon's own hover.
 fn weather_tooltip(
     name: &str,
     block: &Block,
@@ -1168,7 +1079,6 @@ fn weather_tooltip(
     Ok(format!("\u{11}H{name}\u{11}!\n\n{description}"))
 }
 
-/// Weather event and tooltip order after custom sea entries.
 pub(super) const WEATHER_MODIFIERS: [&str; 6] = [
     "weather_rain_light",
     "weather_rain_heavy",
@@ -1177,7 +1087,6 @@ pub(super) const WEATHER_MODIFIERS: [&str; 6] = [
     "weather_sandstorm",
     "weather_arctic_water",
 ];
-// Localisation keys for naval weather hovers.
 tooltip_keys! {
     WEATHER_MODIFIERS_HEADING = "WEATHER_MODIFIERS",
     NIGHT_MODIFIERS = "NIGHT_MODIFIERS",
@@ -1209,7 +1118,6 @@ fn active_weather_events(
     .filter_map(|(slot, (active, (name, key)))| (active != 0).then_some((slot, name, key)))
 }
 
-/// Test each live signed 16-bit value in the template's order.
 pub(super) fn active_custom_sea<'a>(
     names: &'a [String],
     values: &'a [i16],
@@ -1222,12 +1130,10 @@ pub(super) fn active_custom_sea<'a>(
     })
 }
 
-/// A naval combat's custom sea values, held as little-endian signed 16-bit words.
 pub(super) fn custom_sea_words(bytes: &[u8]) -> Vec<i16> {
     bytes.chunks_exact(2).map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect()
 }
 
-/// The region's custom sea values: a live naval combat's in it, else its weather row's.
 pub(super) fn region_custom_sea(
     region_of: &std::collections::BTreeMap<u32, u32>,
     frame: &DecodedFrame,
@@ -1249,12 +1155,8 @@ pub(super) fn region_custom_sea(
     }
 }
 
-/// The entry template the game's regional modifier grid helper instances.
 pub(super) const MODIFIER_ENTRY: &str = "naval_region_modifier_entry";
 
-/// The regional modifier grid's entries: the region's active custom sea modifiers, then its
-/// weather events, each shown only with a category one effect and a localised icon.
-/// `custom_sea` holds the region's custom sea values, or why they are unavailable.
 pub(super) fn weather_entries(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -1265,8 +1167,6 @@ pub(super) fn weather_entries(
 ) -> io::Result<Vec<Values>> {
     let mut entries = Vec::new();
     let definitions = Definitions::read(frame, &static_content.modifier_names)?;
-    // Visit the strategic template's custom sea modifiers before weather.
-    // Each corresponding signed 16-bit value must be nonzero.
     if let Some(template) = static_content.strategic_regions.get(&region) {
         let names = &template.static_modifier_names;
         match &custom_sea {
@@ -1339,7 +1239,6 @@ pub(super) fn weather_entries(
             "Naval strategic region {region} custom sea entries are unavailable: the recorded content stack has no strategic-region template."
         ));
     }
-    // Event and grid order.
     for (slot, name, key) in active_weather_events(weather) {
         let modifier = static_content
             .assets
@@ -1404,8 +1303,6 @@ pub(super) fn weather_entries(
     }
     Ok(entries)
 }
-/// Localise a weather key (an absent key shows its own bytes), then read
-/// [`weather_icon_text`]. Errors name why the icon is refused.
 fn weather_icon(
     localisation: &installed_content_localisation::localisation::Localisation,
     key: &str,

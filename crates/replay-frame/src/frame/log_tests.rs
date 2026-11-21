@@ -14,9 +14,6 @@ fn sampled(view: &SharedView, hour: Option<Hour>) -> SharedView {
     view.clone().with_sampled_at(hour)
 }
 
-/// Hours of a links table: changed rows, an unchanged hour with a new sample
-/// hour, a deletion and an insertion, an unavailable hour and a complete one
-/// again, beside a table whose one view every hour shares.
 fn hours() -> Vec<DecodedFrame> {
     let shared: SharedView = TableView::Unavailable {
         reason: "kept apart".into(),
@@ -72,9 +69,6 @@ fn assert_same(actual: &DecodedFrame, expected: &DecodedFrame) {
     }
 }
 
-/// Each frame read back holds the rows, availability and sample hours kept,
-/// and shares a table's allocation with the frame before exactly when the
-/// frame kept did, whether the reader holds the frame before or not.
 #[test]
 fn frames_read_back_are_the_frames_kept() {
     let kept = hours();
@@ -103,8 +97,6 @@ fn frames_read_back_are_the_frames_kept() {
     assert_eq!(read, kept.len());
 }
 
-/// The log keeps the first frame's views and the last frame's whole, and
-/// only the changed rows of the frames between.
 #[test]
 fn a_log_keeps_no_frame_between_the_first_and_the_last() {
     let kept = hours();
@@ -133,7 +125,6 @@ fn a_log_keeps_no_frame_between_the_first_and_the_last() {
     assert_eq!(*last.tables[index], links(&[(0, 7), (1, 9), (8, 8)]));
 }
 
-/// Hours whose links change a row every hour.
 fn moving(hours: u32) -> Vec<DecodedFrame> {
     (0..hours)
         .map(|hour| {
@@ -155,17 +146,11 @@ fn counted(kind: &str) -> u64 {
         .map_or(0, |count| count[0])
 }
 
-/// A reader holding each frame until it has the next, as a fold comparing
-/// hours does, makes the first changed table read back a copy; every later
-/// one catches up the view the reader let go in place. The frames, and which
-/// of them share an allocation, are those kept.
 #[test]
 fn a_reader_holding_the_frame_before_costs_one_copy() {
-    // Equal frames apart from those kept, which the log alone then holds.
     let kept = moving(6);
     let index = TableId::CountryLinks.index();
     let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
-    // Bound first: the frames logged must drop before reading, not live through the loop.
     let log = logged(&moving(6));
     let mut previous: Option<DecodedFrame> = None;
     for (at, frame) in log.into_frames().enumerate() {
@@ -181,8 +166,6 @@ fn a_reader_holding_the_frame_before_costs_one_copy() {
     assert_eq!(counted("rebuild-reused") - reused, 4);
 }
 
-/// A table left alone between its changes keeps its spare: a reader holding the frame
-/// before still costs one copy, however many hours pass between the changes.
 #[test]
 fn a_table_left_alone_between_changes_keeps_its_spare() {
     let pausing = || -> Vec<DecodedFrame> {
@@ -216,8 +199,6 @@ fn a_table_left_alone_between_changes_keeps_its_spare() {
     assert_eq!(counted("rebuild-reused") - reused, 2);
 }
 
-/// A reader holding every frame keeps every version: each changed table read
-/// back is a copy, and each frame its own rows.
 #[test]
 fn a_reader_holding_every_frame_gets_each_its_own_rows() {
     let kept = moving(5);
@@ -230,9 +211,6 @@ fn a_reader_holding_every_frame_gets_each_its_own_rows() {
     assert_eq!(counted("rebuild-reused"), reused);
 }
 
-/// A second log keeping the same frames on the same thread takes the changes
-/// the first found between the same two allocations instead of comparing the
-/// tables again, and reads back the same frames.
 #[test]
 fn logs_keeping_the_same_frames_compare_each_table_once() {
     let kept = moving(4);
@@ -247,9 +225,6 @@ fn logs_keeping_the_same_frames_compare_each_table_once() {
     }
 }
 
-/// Changes found between two views are taken again only between those same
-/// allocations: once both logs and frames are gone, equal frames at new
-/// allocations are compared anew, never matched to the released pair.
 #[test]
 fn changes_between_released_views_are_never_taken_for_new_ones() {
     let (diffs, shared) = (counted("diff"), counted("diff-shared"));
@@ -263,8 +238,6 @@ fn changes_between_released_views_are_never_taken_for_new_ones() {
     }
 }
 
-/// Only logs keep the changes they found: once the log that found them is
-/// gone, a log keeping the same frames compares the tables again.
 #[test]
 fn changes_found_live_only_as_long_as_a_log_keeps_them() {
     let kept = moving(3);

@@ -1,112 +1,35 @@
-//! The runtime writers of ScriptVariables stores: seed (`cvariables::SEED`);
-//! Robin Hood hash table (`TABLE`) with node storage, count, mask and probe
-//! tail (`cvariables::STORAGE`, `ENTRY_COUNT`, `BUCKET_MASK`, `PROBE_TAIL`);
-//! and node key string and value (`variable_hash_node::KEY`, `VALUE`). Recorded
-//! scopes are global (`cgame_state::GLOBAL_VARIABLES`), country
-//! (`ccountry::VARIABLES`), state (`cstate::VARIABLES`) and character
-//! (`ccharacter::VARIABLES`), embedded. Observing writers tells the collector
-//! which stores to reread; recording never calls them.
-//!
-//! Writer coverage includes relative calls, jumps and eight-byte pointers to table
-//! operations, vtable and empty-storage uses, inline clears and 0x30-stride
-//! probes:
-//! - Find-or-insert returns a node value through lookup, two insertion paths,
-//!   growth and rehash; its caller writes the returned value. Only scoped
-//!   mutable-value access passes a recorded store; seven other callers pass
-//!   the thread-local store. Callers finish writing before returning. Scope
-//!   resolution supplies recorded stores for set, add, subtract, multiply,
-//!   divide, round, clamp and randomize effects, effect-builder helpers,
-//!   array effects, entity creation and console variable setting. Temporary
-//!   effects and triggers, iteration and find-highest triggers, scripted GUI
-//!   updating and two AI paths instead use the thread-local temporary store,
-//!   which is not recorded. Its dedicated setter writes only that store.
-//! - Erase follows variable clear, array clear, array removal and resize,
-//!   plus the temporary-array path.
-//! - Clear also resets the thread-local store in every outermost context.
-//!   Only its three recorded-store calls are observed: country appearance
-//!   reset during dynamic reuse, state reset and game runtime reset.
-//! - Save loading inserts or overwrites values and loads the seed. On token
-//!   0x2A4A, the character parser replaces the embedded store inline before
-//!   calling the reader. Only save or database character loading reaches
-//!   this path, covered by world-lifetime invalidation.
-//! - Store destruction, another destruction path, character destruction and
-//!   thread exit all end in hash-table release (the store's `TABLE`).
-//!   Construction writes only a new empty header and seed. Callers are
-//!   game-state, country, state and both character constructors, raids,
-//!   projects, industrial organisations and that parser. Recorded stores are
-//!   created only with their owners.
-//! - Seed setting runs in those constructors and immediately after each of the
-//!   three observed resets' clears, within the same main-thread call. Scoped
-//!   random-seed begin sets the active byte, change byte and store pointer
-//!   (`CONTEXT_ACTIVE`, `CONTEXT_CHANGE_SEED`, `CONTEXT_STORE`). Context end
-//!   rewrites the store's two seed words (`cvariables::SEED`) only when both
-//!   bytes are set and the thread's random seed moved. Of 68 begin calls, 61
-//!   pass zero change in R8D and seven pass one in R8B. Those functions build
-//!   stack contexts ended by the eight [`Patch::EndContext`] sites in
-//!   [`MUTATIONS`]. Begin alone writes the change byte; the other 71 end calls,
-//!   including trigger checking, never write a recorded seed and stay
-//!   unpatched. Context end also runs during exception unwinding: all seven
-//!   functions' C++ exception maps name it as an object destructor, and 24
-//!   unwind funclets jump to it. Such an exception ends a context without an
-//!   observed call, so the collector moves its variable structure token at
-//!   every first-chance C++ exception. Version 3 and 4 C++ handler-map formats
-//!   name end in 41 functions; no unwind action or funclet reaches clear.
-//! - Nine other table functions only read, including save writing.
 
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
 
-/// How a site's arguments name the store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
-    /// RCX is the variable store.
     First,
-    /// RDX is the variable store.
     Second,
-    /// RCX is the store's hash table, at `TABLE`.
     Table,
-    /// RCX is a scripted context; [`context_store`] reads the store whose
-    /// seed it may rewrite.
     Context,
 }
 
-/// Bytes from a store to its hash table, the release receiver.
 pub const TABLE: usize = 0x10;
 
-/// Store clear invoked by [`Patch::Call`] sites.
 pub const CLEAR_RVA: Rva = Rva(0xc1_b9c0);
 
-/// Context end invoked by [`Patch::EndContext`] sites.
 pub const END_CONTEXT_RVA: Rva = Rva(0x58_9580);
 
-/// Context active byte, stored at begin and tested at end.
 pub const CONTEXT_ACTIVE: usize = 0;
-/// Context change-seed byte: begin's third argument, tested at end.
 pub const CONTEXT_CHANGE_SEED: usize = 1;
-/// Context store pointer, tested at end and used to write its store's seed.
 pub const CONTEXT_STORE: usize = 8;
 
-/// Game static TLS index used to locate the calling thread's temporary store:
-/// the thread's TLS block at this index in the thread's TLS pointer array, with
-/// the store at `TEMPORARY_STORE`.
 pub const TLS_INDEX_RVA: Rva = Rva(0x369_3a98);
-/// The temporary store's offset in the game's TLS block.
 pub const TEMPORARY_STORE: usize = 0x30;
 
-/// Whether a site is a function entry or a five-byte CALL that the detour
-/// replaces and makes itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Patch {
     Entry,
-    /// A CALL of the clear [`CLEAR_RVA`].
     Call,
-    /// A CALL of [`END_CONTEXT_RVA`] ending a context that may change its
-    /// store's seed.
     EndContext,
 }
 
-/// A [`Patch::EndContext`] call site at `rva`, preceded by placing the
-/// frame-local context address in RCX, where begin built it.
 const fn end_context(name: &'static str, rva: Rva) -> (MutationSite, Receiver, Patch) {
     (
         MutationSite { name, rva },
@@ -115,10 +38,7 @@ const fn end_context(name: &'static str, rva: Rva) -> (MutationSite, Receiver, P
     )
 }
 
-/// Every site with its receiver and patch; each returns RAX unchanged from
-/// its original, so a detour returns the original's value.
 pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
-    // Mutable-value access (variable, store, scope, fallback).
     (
         MutationSite {
             name: "get_mutable_value",
@@ -127,7 +47,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::Second,
         Patch::Entry,
     ),
-    // Erase (store, key): the RSI spill to R8's home slot occupies five patched bytes.
     (
         MutationSite {
             name: "erase_variable",
@@ -136,8 +55,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::First,
         Patch::Entry,
     ),
-    // Store save reader (store, reader): saving RBX and reserving 0x40 stack
-    // bytes occupy six relocated bytes.
     (
         MutationSite {
             name: "read_variables",
@@ -146,8 +63,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::First,
         Patch::Entry,
     ),
-    // Release (store hash table): the RBX spill to R9's home slot occupies five
-    // patched bytes.
     (
         MutationSite {
             name: "release_variables",
@@ -156,7 +71,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::Table,
         Patch::Entry,
     ),
-    // Country appearance reset clears its variable store (`ccountry::VARIABLES`).
     (
         MutationSite {
             name: "reset_country_variables",
@@ -165,7 +79,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::First,
         Patch::Call,
     ),
-    // State reset clears its variable store (`cstate::VARIABLES`).
     (
         MutationSite {
             name: "reset_state_variables",
@@ -174,8 +87,6 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::First,
         Patch::Call,
     ),
-    // Game runtime reset clears its global variable store
-    // (`cgame_state::GLOBAL_VARIABLES`).
     (
         MutationSite {
             name: "reset_global_variables",
@@ -184,27 +95,18 @@ pub const MUTATIONS: [(MutationSite, Receiver, Patch); 15] = [
         Receiver::First,
         Patch::Call,
     ),
-    // The registered console scripted-effect command has two context ends on
-    // one stack-local context, following begin with change zero or change one.
+
+
     end_context("end_effect_command", Rva(0x29_69ec)),
     end_context("end_effect_command_run", Rva(0x29_6a94)),
-    // Scope-validated effect execution: a frame-local context addressed through RBP.
     end_context("end_effect_execute", Rva(0x58_4fe9)),
-    // Country daily update: a stack-local context.
     end_context("end_country_daily", Rva(0x72_fb65)),
-    // Country delayed events: a stack-local context.
     end_context("end_delayed_events", Rva(0x74_489f)),
-    // State daily update, from game-state daily update: a stack-local context.
     end_context("end_state_daily", Rva(0xa2_21c9)),
-    // Scripted-window effect execution: a stack-local context.
     end_context("end_scripted_window", Rva(0x11e_089f)),
-    // Event-firing effect execution: a stack-local context.
     end_context("end_fire_event", Rva(0x142_fc2f)),
 ];
 
-/// The store a site's first two arguments name. A [`Receiver::Context`]
-/// names its store only through memory ([`context_store`]); this returns the
-/// context itself.
 pub fn store(receiver: Receiver, first: usize, second: usize) -> usize {
     match receiver {
         Receiver::First | Receiver::Context => first,
@@ -213,10 +115,6 @@ pub fn store(receiver: Receiver, first: usize, second: usize) -> usize {
     }
 }
 
-/// The store whose seed context end may rewrite: `CONTEXT_STORE`, reached
-/// only when active and change-seed bytes are set and the pointer is nonnull,
-/// as the end routine tests. Return `Ok(None)` when no seed is written and
-/// `Err` when the context does not read.
 pub fn context_store(
     memory: &impl crate::Memory,
     context: usize,
@@ -238,7 +136,6 @@ pub fn context_store(
 mod tests {
     use super::*;
 
-    /// Only context-end sites take a context.
     #[test]
     fn only_context_end_sites_take_a_context() {
         let mut ends = 0;
@@ -264,11 +161,9 @@ mod tests {
     fn receivers_name_the_store() {
         assert_eq!(store(Receiver::First, 0x5000, 0x9000), 0x5000);
         assert_eq!(store(Receiver::Second, 0x5000, 0x9000), 0x9000);
-        // Release receives the hash table, at `TABLE`.
         assert_eq!(store(Receiver::Table, 0x5010, 0), 0x5000);
     }
 
-    /// Context end writes a seed only for an active context with change set and a store.
     #[test]
     fn a_context_names_its_store_only_when_it_may_change_the_seed() {
         let context = |active: u8, change: u8, store: u64| {

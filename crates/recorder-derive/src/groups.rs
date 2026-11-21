@@ -1,18 +1,3 @@
-//! `GroupSpans`, `Groups`, `GroupNames` and `WarEvents`: the run's country groups as rows whose
-//! keys hold the whole fact, so each row lives one stretch of it and the tables' lifetimes are the
-//! history ([`replay_data::rows::GroupSpanRow`]). Human players (count above zero), every faction
-//! (its presence, name, members and the member at order zero as leader), and the pairs of
-//! countries at war (a relation is ongoing while its end is not after its start, or the hour is
-//! before its end). Countries are canonical slots through CountryLinks.
-//!
-//! What is not known is not recorded: while a history's tables (or CountryLinks) are not
-//! complete it is unobserved and none of its rows live; a list naming a country no link resolves
-//! leaves that history (a faction's roster, for factions) unobserved that hour while the rows it
-//! does name live. War starts and capitulations are events read while their relation (flag)
-//! stands, dated as the engine dates them, each first read once.
-//!
-//! Each history is read again only at hours its tables change, CountryLinks changes, or a war's
-//! end falls due; otherwise the hour costs nothing.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -41,10 +26,8 @@ const READS: &[Read] = &[
     Read { table: TableId::LexicalTokens, columns: Columns::These(&[0]), watch: Watch::Changed, required: false },
 ];
 
-/// A span's identity, without its epoch.
 type Fact = (u8, u32, u32);
 
-/// One history's live rows: their epochs and cells.
 #[derive(Default)]
 struct History {
     open: HashMap<Fact, (u32, u32)>,
@@ -59,19 +42,13 @@ pub struct Groups {
     factions: History,
     wars: History,
     epochs: u32,
-    /// Each faction's group number, and each name's.
     numbers: HashMap<u64, u32>,
     names: HashMap<(u32, Option<u32>, u32), u32>,
-    /// War starts and capitulations already read.
     starts: HashSet<(u32, u32, i32)>,
     capitulations: HashSet<(u32, i32)>,
-    /// The event rows living this hour, deleted the next.
     events: Vec<u128>,
-    /// The next hour a war's end falls due.
     deadline: Option<i32>,
-    /// Each input's status the hour before.
     statuses: Vec<Option<Status>>,
-    /// The empty string's id, for a name with no spelling.
     empty: u32,
 }
 
@@ -91,7 +68,6 @@ fn optional_u32(table: &TableView<'_>, column: usize, slot: u32) -> Option<u32> 
     }
 }
 
-/// Whether the war relation is ongoing at `hour`.
 fn ongoing(start: i32, end: i32, hour: i32) -> bool {
     end <= start || hour < end
 }
@@ -111,8 +87,6 @@ impl Groups {
         self.links.get(&raw).copied()
     }
 
-    /// Makes `history` hold exactly `now` (fact to ordinal): a fact gone is deleted, a new one
-    /// inserted with a new epoch, a held one's ordinal set where it moved.
     fn settle(&mut self, which: usize, now: BTreeMap<Fact, u32>, out: &mut Rows) -> io::Result<()> {
         let mut history = std::mem::take(match which {
             0 => &mut self.humans,
@@ -191,7 +165,6 @@ impl Groups {
             now.insert((Span::PRESENT, number, 0), 0);
             let literal = cell(&factions, 0, slot).unwrap_or(0) as u32;
             let token = optional_u32(&factions, 1, slot);
-            // A template's spelling, as the lexer table names its token; none where it does not.
             let spelling = match (token, &lexical) {
                 (Some(token), Some(lexical)) => lexical.slot(u128::from(token)).and_then(|at| cell(lexical, 0, at)).map(|id| id as u32),
                 _ => None,
@@ -279,7 +252,6 @@ impl Groups {
         Ok(())
     }
 
-    /// Whether `table` changed this hour in `columns`, or its status did.
     fn moved(&mut self, hour: &Hour<'_>, at: usize, table: TableId, columns: Columns) -> bool {
         let status = Some(hour.status(table));
         let restated = self.statuses[at] != status;
@@ -410,7 +382,6 @@ impl Writer for Groups {
         Ok(())
     }
 
-    /// Takes up the saved histories; the inputs are read whole at the next hour.
     fn load(&mut self, blob: &[u8]) -> io::Result<()> {
         *self = Self::default();
         let mut reader = replay_columnar::leaf::Reader::new(blob);
@@ -485,11 +456,9 @@ mod tests {
         let mut out = Rows::logging(&store);
         groups.settle(0, BTreeMap::from([member(5), member(6)]), &mut out).unwrap();
         assert_eq!(written(&out).0, vec![span_key((Span::MEMBER, 0, 5), 0), span_key((Span::MEMBER, 0, 6), 1)]);
-        // 6 leaves: its row closes; 5 lives on untouched.
         let mut out = Rows::logging(&store);
         groups.settle(0, BTreeMap::from([member(5)]), &mut out).unwrap();
         assert_eq!(written(&out), (vec![], vec![span_key((Span::MEMBER, 0, 6), 1)]));
-        // 6 comes back: a new stretch, under a new epoch.
         let mut out = Rows::logging(&store);
         groups.settle(0, BTreeMap::from([member(5), member(6)]), &mut out).unwrap();
         assert_eq!(written(&out), (vec![span_key((Span::MEMBER, 0, 6), 2)], vec![]));

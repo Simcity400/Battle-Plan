@@ -1,31 +1,3 @@
-//! Construction progress observation boundaries. The game keeps no record of the
-//! civilian-factory output a construction line consumed; collector `construction_ic`
-//! observes these calls without invoking them.
-//!
-//! Construction advances in the daily simulation-thread production pass
-//! ([`crate::line_output_sites`]). Every general construction occurrence is advanced
-//! and then independently checked for completion; completed lines are removed.
-//!
-//! A linked building line whose partner is primary returns early. Every other
-//! building path consumes [`BUILDING_SPEED`] at [`BUILDING_SPEND_RETURN`], adding
-//! the line's speed to produced progress when no levels need repair, or to repair
-//! otherwise. [`INSTANT_CONSTRUCTION`] raises the amount to at least the cost;
-//! otherwise [`CIC_BANK_DRAW`] is withdrawn from the country's bank after spending.
-//! The repair path's additional speed query returns at a different boundary.
-//!
-//! Railway advancement reads stored speed and passes it to [`RAILWAY_PROGRESS`]
-//! for the first unbuilt route segment. Excess progress can carry to the next
-//! segment through a second call, then the normal loop stops and draws the bank.
-//! Speed below one reaches neither progress call. Instant construction applies
-//! only to the player's country and passes exactly 10^10 per segment; other
-//! countries spend normally and draw the bank even while the flag is set.
-//! [`railway_instant`] reads which path an advance takes; an ordinary speed may
-//! equal the instant amount.
-//!
-//! The CIC bank receives effect and international-market contributions, rather
-//! than daily factory production. Speed updates reserve the bank draw and add it
-//! to stored speed. Railway-gun repair also spends civilian output but has no
-//! construction table.
 
 use crate::{
     Memory, cbuilding_production_line, cbuilding_status, cgame_state, cgeneral_production_line,
@@ -120,12 +92,6 @@ fn building_identity(
     .ok()
 }
 
-/// Storage demand for one daily construction pass, never captured data.
-/// Every construction occurrence is visited. Building advancement has one spend,
-/// one possible linked removal, then an independent completion decision. Railway
-/// advancement has at most one call per route edge: instant construction advances
-/// every edge; normal advancement carries only when another edge exists, then stops.
-/// Railway completion is checked independently.
 pub fn events_per_pass(
     memory: &impl Memory,
     base: usize,
@@ -184,33 +150,22 @@ pub fn events_per_pass(
 #[path = "construction_ic_sites/demand_tests.rs"]
 mod demand_tests;
 
-/// A detoured native function.
 pub struct Site {
     pub name: &'static str,
     pub rva: Rva,
 }
 
-/// Building speed query: RCX is the line, RDX is output storage, and the return
-/// value is that storage. It supplies this line's speed or a linked non-primary
-/// line's partner's speed. The relocated prefix saves RBX to the stack; the
-/// following RIP-relative load remains at its original location.
 pub const BUILDING_SPEED: Site = Site {
     name: "building speed",
     rva: Rva(0x00ff_2540),
 };
-/// Return RVA of the [`BUILDING_SPEED`] call whose value building advancement spends.
 pub const BUILDING_SPEND_RETURN: Rva = Rva(0x00fe_edc7);
 
-/// Building completion query: RCX is the line and AL is the result.
-/// Amount and repair count must both be zero.
 pub const BUILDING_COMPLETE: Site = Site {
     name: "building completion",
     rva: Rva(0x00ff_2640),
 };
 
-/// Completion clears amount and repair count before ownership transfer rescales
-/// shared levels. Observe the count before the original. The copied prefix saves
-/// RBX and reserves stack space before the indirect call.
 pub const BUILDING_RESET: Site = Site {
     name: "building count reset",
     rva: Rva(0x00fe_ea50),
@@ -240,27 +195,17 @@ pub fn count_reset(
     Ok((handle, count, building_identity(memory, base, line, None)))
 }
 
-/// Railway completion query: RCX is the line and AL is the result.
-/// Cancellation or every adjacent route edge reaching the target level completes it.
 pub const RAILWAY_COMPLETE: Site = Site {
     name: "railway completion",
     rva: Rva(0x01a9_58c0),
 };
 
-/// The daily production pass checks completion after advancing the line and
-/// removes and deletes it on a true result. Other getter calls are not
-/// queue-completion events.
 pub const COMPLETE_RETURN: Rva = Rva(0x00ed_861e);
 
-/// General-line removal: RCX is the status and RDX is the line.
-/// It removes the roster index and destroys the line.
 pub const REMOVE_GENERAL_LINE: Site = Site {
     name: "linked building completion removal",
     rva: Rva(0x00ee_03b0),
 };
-/// Primary advancement decrements its partner, tests for zero amount, and
-/// deletes it before the daily completion check. Command and hourly removal
-/// callers are not completion events.
 pub const LINKED_COMPLETE_RETURN: Rva = Rva(0x00fe_f2ec);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,7 +216,6 @@ pub struct Completion {
     pub cancelled: bool,
 }
 
-/// The receiver remains alive until its native caller deletes it.
 pub fn completion(
     memory: &impl Memory,
     base: usize,
@@ -304,8 +248,6 @@ pub fn completion(
         .checked_add(crate::cgame_state::CURRENT_HOUR)
         .and_then(|p| read::<i32>(memory, p))
         .ok_or("construction completion hour unreadable")?;
-    // The calendar advances before daily updates: this is the advanced hour
-    // and the next sample's boundary.
     Ok(Completion {
         line: handle,
         identity: if railway {
@@ -323,14 +265,10 @@ pub fn completion(
             building_identity(memory, base, line, Some(state))
         },
         hour,
-        // Cancellation byte, serialized as `cancel`.
         cancelled: railway && bytes[crailway_production_line::COMPLETION_FLAG] != 0,
     })
 }
 
-/// Called before general-line removal destroys the completed linked
-/// receiver. Its owner and priority select the roster slot that will be
-/// removed; authenticate that slot before attributing the event to its CID.
 pub fn linked_completion(
     memory: &impl Memory,
     base: usize,
@@ -382,32 +320,19 @@ pub fn linked_completion(
     Ok(event)
 }
 
-/// Railway advancement entry: RCX is the line.
-/// The relocated prefix comprises four register pushes occupying five bytes.
 pub const RAILWAY_ADVANCE: Site = Site {
     name: "railway advance",
     rva: Rva(0x01a9_44c0),
 };
 
-/// Railway progress query: RCX is the railway manager, EDX is the source province, R8D is the
-/// destination province, R9 is the signed i64 amount, and the country is in its stack argument
-/// slot. The boolean result reports segment completion. The relocated prefix saves RBX to the
-/// stack.
 pub const RAILWAY_PROGRESS: Site = Site {
     name: "railway progress",
     rva: Rva(0x00f0_5d60),
 };
 
-/// Instant-construction console flag (u8). Progress under it consumes the
-/// cost and is not factory output.
 pub const INSTANT_CONSTRUCTION: Rva = Rva(0x033d_da98);
-/// Railway instant progress amount passed in R9, gated by the player's country.
 pub const RAILWAY_INSTANT_AMOUNT: i64 = 10_000_000_000;
 
-/// Whether the advance of railway `line` takes the instant path: the console
-/// flag is set and the line's country is the viewing country (the positive
-/// playing reference, otherwise the observed one) or shares its country link.
-/// Reads only the flag when it is clear. No game function is called.
 pub fn railway_instant(
     memory: &impl Memory,
     base: usize,
@@ -464,7 +389,6 @@ fn railway_instant_country(
     if viewing == 0 || country == 0 {
         return Ok(false);
     }
-    // Compare raw country-link entries without resolving either country.
     let links = state
         .checked_add(cgame_state::COUNTRY_LINKS)
         .and_then(|address| Array::read(memory, address, 4))
@@ -477,37 +401,24 @@ fn railway_instant_country(
     };
     Ok(link(viewing)? == link(country)?)
 }
-/// `creference_registry::invalid_reference` (u64): the empty reference, assigned
-/// at run time (read it live, never a sampled constant).
 pub const INVALID_REFERENCE: Rva = Rva(0x033e_b2a0);
 
-/// The line's own CID (u32 type, u32 id): the construction tables' `id`.
 pub const LINE_HANDLE: usize = cproduction_line::REFERENCE_TYPE;
-/// CIC bank draw included in the line's speed (i64 fixed5), reserved during
-/// speed updates and withdrawn after the spend.
 pub const CIC_BANK_DRAW: usize = cgeneral_production_line::CIC_BANK_DRAW;
-/// A building line's levels still to repair (i32): above zero its advance repairs.
 pub const REPAIR_LEVELS: usize = cbuilding_production_line::REPAIR_LEVELS_REMAINING;
-/// Partner's full reference handle: low u32 type and high u32 ID, matching
-/// LINE_HANDLE. Speed updates resolve it and include the partner's factories.
-/// The linked-line reference is valid for lines built together across countries.
 pub const LINKED_LINE: usize = cbuilding_production_line::LINKED_LINE;
 
-/// The vtables of the construction lines whose output is observed, building then
-/// railway.
 pub const LINE_VTABLES: [Rva; 2] = [
     cbuilding_production_line::VTABLE_RVA,
     crailway_production_line::VTABLE_RVA,
 ];
 
-/// The native advance keeps its receiver alive through both observation sites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Operands {
     pub line: u64,
     pub identity: Option<Identity>,
     pub bank: i64,
     pub cost: i64,
-    /// At BUILDING_SPEND_RETURN the getter returns this object's own value.
     pub speed: i64,
     pub repair: bool,
     pub partner: Option<u64>,
@@ -1065,7 +976,6 @@ mod tests {
         );
     }
 
-    /// Byte regions at their addresses; any other read fails.
     struct Regions(Vec<(usize, Vec<u8>)>);
     impl Memory for Regions {
         fn copy(&self, address: usize, out: &mut [u8]) -> bool {
@@ -1088,7 +998,6 @@ mod tests {
     fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
         bytes[offset..offset + value.len()].copy_from_slice(value);
     }
-    /// A railway line of country 5 whose links file 5 and 7 together and 6 apart.
     fn instant_world(flag: u8, playing: u32, observed: u32) -> Regions {
         let mut line = vec![0; 0x30];
         put(
@@ -1158,20 +1067,15 @@ mod tests {
     }
     #[test]
     fn railway_instant_follows_the_native_flag_and_viewing_country_gate() {
-        // A clear flag reads nothing else: even an absent line is ordinary.
         let clear = Regions(vec![(BASE + INSTANT_CONSTRUCTION.0, vec![0])]);
         assert_eq!(railway_instant(&clear, BASE, LINE), Ok(false));
         for (playing, observed, instant) in [
-            // The playing country itself, then a country sharing its link.
             (5, 0, true),
             (7, 0, true),
-            // Another country, even while the flag is set.
             (6, 5, false),
-            // A non-positive playing reference selects the observed one.
             (0, 5, true),
             (u32::MAX, 7, true),
             (0, 6, false),
-            // No viewing country.
             (0, 0, false),
         ] {
             assert_eq!(

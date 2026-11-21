@@ -82,7 +82,6 @@ fn a_type_keeps_the_fields_offers_read_in_database_order() {
         facility.additional_equipment,
         [("ship_hull_light".to_owned(), 10)]
     );
-    // Equipment amounts are decimal, `nukes` scans `%i` (octal here).
     assert_eq!(facility.additional_nukes, 8);
     assert_eq!(
         facility.launchable[0].key.as_deref(),
@@ -110,9 +109,6 @@ fn a_type_keeps_the_fields_offers_read_in_database_order() {
     );
     assert!(catalog.types[1].any_province);
     let mine = &catalog.types[2];
-    // One selector: its province list (`%i`, a leading zero octal) and
-    // its state arm, ids and trigger together; `state = any` and the
-    // reported `future` change neither.
     assert_eq!(mine.target_types.len(), 2);
     assert_eq!(mine.target_types[0], TargetType::Provinces(vec![3, 4, 8]));
     let TargetType::State { ids, triggers } = &mine.target_types[1] else {
@@ -157,7 +153,6 @@ fn every_field_updates_the_types_persistent_objects() {
         EQUIPMENT,
     )
     .unwrap();
-    // Each field overwrites the selector's flag.
     assert!(catalog.get("leader").unwrap().target_types.is_empty());
     let fort = catalog.get("fort").unwrap();
     let TargetType::State { triggers, .. } = &fort.target_types[1] else {
@@ -172,7 +167,6 @@ fn every_field_updates_the_types_persistent_objects() {
         })
     );
     assert_eq!(triggers.len(), 2);
-    // Source kinds use list tokens: a quoted one is reported.
     assert_eq!(
         (
             fort.starting_point.types.as_slice(),
@@ -180,14 +174,11 @@ fn every_field_updates_the_types_persistent_objects() {
         ),
         (&[SourceKind::AirBase, SourceKind::NavalBase][..], true)
     );
-    // The pool keeps one entry per type; a failed `%i` keeps the nukes.
     assert_eq!(
         (fort.essential_equipment.as_slice(), fort.nukes),
         (&[("convoy".to_owned(), 3)][..], 0)
     );
     assert_eq!(fort.visible.len(), 2);
-    // One battalion-type table per requirement: the repeated `marine`
-    // in the second block is reported and skipped.
     let battalions = &fort.unit_requirements[0].battalions;
     assert_eq!(
         battalions
@@ -196,9 +187,6 @@ fn every_field_updates_the_types_persistent_objects() {
             .collect::<Vec<_>>(),
         [("marine", Some(1), None), ("paratrooper", None, Some(2))]
     );
-    // A quoted key adds no building type, so the empty selector matches
-    // no building. The trigger child retains its quoted key for the
-    // evaluator, which gives it no built-in meaning.
     let quoted = catalog.get("quoted").unwrap();
     let [TargetType::State { triggers, .. }] = quoted.target_types.as_slice() else {
         panic!("{:?}", quoted.target_types);
@@ -219,11 +207,9 @@ fn type_and_category_names_are_folded_tokens() {
         EQUIPMENT,
     )
     .unwrap();
-    // One category token, the later declaration alone; the type finds it.
     assert_eq!(catalog.categories.keys().collect::<Vec<_>>(), ["AIR"]);
     assert!(catalog.categories["AIR"].free_targeting);
     assert_eq!(catalog.types[0].category.as_deref(), Some("AIR"));
-    // `Twice` and `TWICE` are one type declared twice.
     assert_eq!(catalog.refused, ["Twice"]);
     assert_eq!(catalog.types.len(), 1);
 }
@@ -232,8 +218,6 @@ fn type_and_category_names_are_folded_tokens() {
 fn scalar_selector_names_read_the_lexers_current_token() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // `type` has no operator: `no` remains in the value slot, while the
-    // building list registers the lexer's current token, `custom_fort`.
     let catalog = parse(
             &[],
             &[doc(b"types = { t = { target_type = { building = { is_coastal = no type custom_fort } } } }")
@@ -271,8 +255,6 @@ fn launch_buildings_resolve_types_and_tags_in_database_order() {
     )
     .unwrap();
     resolve_launch_buildings(&mut catalog, &buildings);
-    // Folded tokens, tags expanded, database order; a state building is
-    // logged and left out.
     assert_eq!(
         catalog.types[0].starting_point.building_types,
         ["launcher", "Silo"]
@@ -297,7 +279,6 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
         &mut notes,
     )
     .unwrap();
-    // The category container reports `no` and returns: `types` is read as the file's.
     let files = [types];
     let catalog = parse(&files, &files, EQUIPMENT).unwrap();
     assert!(catalog.categories.is_empty());
@@ -317,7 +298,6 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
 fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Known before the loss: convoy. Anything else is undecided.
     let partial: Equipment<'static> = &|key| (key == b"convoy").then_some(true);
     let types = reader::document(
         br#"types = {
@@ -341,7 +321,6 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
         catalog.uncertain[0].kind,
         crate::DiagnosticKind::Unsupported
     );
-    // A block under an undecided key is read by whether it is a type.
     let block = reader::document(
         b"types = { later = { essential_equipment = { tank = { 3 } } } }",
         partial,
@@ -375,8 +354,6 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
     )
     .unwrap();
     let catalog = parse(&[], &[types], EQUIPMENT).unwrap();
-    // The province list leaves `1` in the value slot, which the
-    // operator-less `state` then reads as its id.
     assert_eq!(
         catalog.types[0].target_types,
         [
@@ -387,8 +364,6 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
             }
         ]
     );
-    // A quoted key has no keyword identity: no selector or equipment
-    // demand is added; an unknown type is skipped with its block.
     let q = &catalog.types[1];
     assert!(q.target_types.is_empty());
     assert_eq!(
@@ -426,8 +401,6 @@ fn the_icon_key_follows_the_documented_two_step_lookup() {
 fn raids_empty_custom_map_icon_uses_generated_base_and_building_suffix() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Sprite-key selection tests the authored string's length, so an
-    // explicit empty override uses the generated key just as absence does.
     let catalog = parse(
         &[],
         &[doc(br#"types = { synthetic_empty = { custom_map_icon = "" } }"#).unwrap()],
@@ -465,7 +438,6 @@ fn a_name_declared_twice_or_thrice_is_refused_once() {
     assert_eq!(catalog.refused, ["a"]);
     assert_eq!(catalog.types.len(), 1);
     assert!(catalog.unsupported.is_empty());
-    // The database still holds it: its three declarations are kept.
     assert_eq!(catalog.uncertain.len(), 1);
     assert_eq!(catalog.uncertain[0].name, "a");
     assert_eq!(catalog.uncertain[0].declarations.len(), 3);
@@ -499,9 +471,7 @@ fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
     assert_eq!(uncertain, ["a", "b"]);
     assert!(catalog.uncertain[0].declarations.is_empty());
     assert!(catalog.uncertain[0].reason.contains("tanks"));
-    // Script integers treat a leading zero as octal.
     assert_eq!(catalog.types[0].command_power_raw, 800_000);
-    // Keys the readers report and skip change nothing.
     let d = &catalog.types[1];
     assert_eq!(d.unit_requirements, [UnitRequirement::default()]);
     assert!(d.starting_point.types.is_empty());
@@ -550,7 +520,6 @@ fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
         (1_500_000, 50_000)
     );
     assert_eq!(drop.speed_multiplier_raw, 150_000);
-    // A later block applies its own keys over the earlier one's.
     let convoy = catalog.get("convoy").unwrap();
     assert_eq!(convoy.arrow, RaidArrowKind::Naval);
     assert_eq!(convoy.unit_model.entity.as_deref(), Some("ship_entity"));
@@ -560,9 +529,6 @@ fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
     );
     assert_eq!(convoy.unit_model.scale_raw, 200_000);
     assert!(bare.unit_animations.is_empty());
-    // Arrow kind dispatch uses the value token: an unknown or quoted value
-    // keeps the kind, while a bare one is read without case. The unit model
-    // clears a category outside the air categories and skips unknown keys.
     let odd = catalog.get("odd").unwrap();
     assert_eq!(odd.arrow, RaidArrowKind::Land);
     assert_eq!(odd.unit_model.equipment, 0);
@@ -623,8 +589,6 @@ fn graphics_defines_keep_field_widths() {
     assert_eq!(read.speed_multiplier_raw, 37_500);
 }
 
-/// The counts' loaders raise the getter's 0 for a missing or non-number
-/// value, and any value below 1, to 1.
 #[test]
 fn segment_and_subdivision_counts_are_at_least_one() {
     let counts = |read: RaidGraphicsDefines| {

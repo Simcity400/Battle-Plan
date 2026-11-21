@@ -38,7 +38,6 @@ fn world(slots: u32) -> Vec<u8> {
     put64(&mut bytes, 0x3000, RESERVED);
     put64(&mut bytes, 0x3008, POSITIVE);
     header(&mut bytes, STATE + cgame_state::COUNTRY_LINKS, 0x3100, 3);
-    // Raw2 aliases actual0, while raw1 is the positive owner.
     put32(&mut bytes, 0x3104, 1);
     for (country, id, root, matrix) in [
         (RESERVED, 0, RESERVED_DIPLOMACY, RESERVED_MATRIX),
@@ -317,7 +316,6 @@ fn integration_starts_after_all_positive_prefixes_and_successive_growth_uses_liv
     capture.grow(&mut capacity);
     let retained = capacity;
     assert_eq!(capture.cells.first.len(), retained);
-    // A matrix larger than the retained storage grows in the same pass.
     let next_slots = retained.checked_add(1).unwrap();
     let bytes = world(u32::try_from(next_slots).unwrap());
     let memory = self::memory(&bytes, None);
@@ -353,8 +351,6 @@ fn integration_starts_after_all_positive_prefixes_and_successive_growth_uses_liv
 fn failed_original_prefix_header_is_not_retried_for_a_positive_alias_to_zero() {
     let mut bytes = world(2);
     put32(&mut bytes, status(0) + crelation_status::TARGET_COUNTRY, 2);
-    // Other pre-existing country tables make their own attempts. Compare
-    // against the unchanged pass so only an added reverse retry is rejected.
     let baseline_memory = memory(&bytes, Some(STATE + cgame_state::COUNTRIES));
     let mut baseline = super::super::country_counters::Captured::vacant();
     baseline.capture_with_reverse(&baseline_memory, 0, STATE, None);

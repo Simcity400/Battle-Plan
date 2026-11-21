@@ -118,7 +118,6 @@ fn fixture() -> (Fixture, Folder) {
                 ..Default::default()
             },
         ]));
-    // Supply only synthetic content, through the production name's cache.
     let mut raids = installed_content_raids::raids::Catalog::default();
     let mut kind = installed_content_raids::raids::RaidType {
         name: "synthetic_raid".into(),
@@ -540,7 +539,7 @@ fn unit_name_dispatches_raid_divisions_and_selected_wings() {
             renderer.unit_name(raid.unit).as_deref(),
             Ok("Raid division")
         );
-    }); // The division path needs no RaidTooltipOperands naming rows.
+    });
 }
 
 #[test]

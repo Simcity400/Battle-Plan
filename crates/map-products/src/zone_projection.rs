@@ -28,7 +28,7 @@ impl Zones {
             Clock::Stable,
             |table| match table {
                 TableId::StateFlags => super::landscape::named_fields(table, &["demilitarized"]),
-                TableId::States => 0, // Membership stamps still detect inserted/deleted keys.
+                TableId::States => 0,
                 _ => table.full_mask(),
             },
             || zone(frame, map, regions),
@@ -57,7 +57,6 @@ mod tests {
                     0 => TableRows::one_default(table),
                     _ => TableRows::empty(table),
                 };
-                // A singleton whose default row is no valid read was not read by this fixture.
                 if rows.validate_keys().is_err() {
                     return TableView::Unavailable {
                         reason: "synthetic zone frames did not read this table".into(),

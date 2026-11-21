@@ -1,6 +1,3 @@
-/** The shared time charts following a playing head in a real browser, sized as the dashboard's heaviest pages draw them:
- * what each one's painting costs a frame (timed as the measured run times it, `paint` of the frame record), and what a
- * frame of playback asks of the page besides drawing: layout read back, text measured, colours parsed. */
 import { Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -31,7 +28,6 @@ import '../styles.css';
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<number>(resolve => native(now => resolve(now)));
 
-// Each chart's painting by frame, as the measured run records it; every other measurement is dropped.
 const painted = new Map<number, Map<string, number>>();
 measureWith(new Proxy({ paint: (widget: string, ms: number, at: number) => {
   let widgets = painted.get(at);
@@ -39,7 +35,6 @@ measureWith(new Proxy({ paint: (widget: string, ms: number, at: number) => {
   widgets.set(widget, (widgets.get(widget) ?? 0) + ms);
 } }, { get: (target, name) => (target as Record<string | symbol, unknown>)[name] ?? (() => {}) }) as unknown as PerfRecorder);
 
-// What a frame asks of the page: layout read back, text measured, colours parsed into a context.
 const asked = { layout: 0, measure: 0 };
 let counting = false;
 for (const [owner, names] of [[Element.prototype, ['clientWidth', 'clientHeight', 'scrollTop', 'scrollHeight']], [HTMLElement.prototype, ['offsetWidth', 'offsetHeight']]] as const) {
@@ -52,7 +47,6 @@ const computed = window.getComputedStyle;
 window.getComputedStyle = ((...args: Parameters<typeof computed>) => { if (counting) asked.layout++; return computed.apply(window, args); }) as typeof computed;
 const rect = Element.prototype.getBoundingClientRect;
 Element.prototype.getBoundingClientRect = function () { if (counting) asked.layout++; return rect.call(this); };
-// Charts draw into their canvas's offscreen canvas, so both kinds of context are counted.
 type Context = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 const contexts = [CanvasRenderingContext2D.prototype, OffscreenCanvasRenderingContext2D.prototype] as Context[];
 for (const proto of contexts) {
@@ -64,7 +58,6 @@ const HOURS = 114_000;
 const COLOURS = ['#c0392b', '#2980b9', '#27ae60', '#8e44ad', '#d35400', '#16a085', '#7f8c8d', '#f39c12'];
 const head = new LiveCell(20_000);
 
-/** A country measure's lines as tiles draw them: a vertex per bin in view, eight lines, each to the head. */
 function lines(count: number): ChartLayer[] {
   const bins = 2_000, binHours = HOURS / bins;
   return Array.from({ length: count }, (_, line) => {
@@ -87,8 +80,6 @@ function lines(count: number): ChartLayer[] {
     };
   });
 }
-/** A stack of `bands` lines as tiles give them (World tension's countries, Ruling party's parties): `columns` bins over the
- * campaign, each band its own wave. */
 function stackSummaries(bands: number, columns: number): ChartSummary[] {
   const width = HOURS / columns;
   return Array.from({ length: bands }, (_, band) => {
@@ -101,7 +92,6 @@ function stackSummaries(bands: number, columns: number): ChartSummary[] {
     }) };
   });
 }
-// Fills and strokes made on one canvas while counted.
 let counted: HTMLCanvasElement | null = null;
 const drawn = { fill: 0, stroke: 0 };
 for (const proto of contexts) for (const name of ['fill', 'stroke'] as const) {
@@ -114,7 +104,6 @@ for (const proto of contexts) for (const name of ['fill', 'stroke'] as const) {
 
 const badges: EventBadge[] = Array.from({ length: 60 }, (_, at) => ({ hour: 400 + at * 1_800, glyph: at % 2 ? '⚔' : '★', label: `Event ${at}` }));
 
-/** A diplomacy timeline: factions and their members, each lane a run of coloured bars with names. */
 function timelineLanes(count: number): TimelineLane[] {
   return Array.from({ length: count }, (_, lane) => ({
     id: `lane${lane}`, label: `Country ${lane} of a long name`, heading: lane % 6 === 0,
@@ -123,12 +112,10 @@ function timelineLanes(count: number): TimelineLane[] {
   }));
 }
 
-/** An event feed already scrolling, holding rows ahead of where it was drawn, newest first, revealed by the clock. */
 const feedRows: LogRow<string>[] = Array.from({ length: 600 }, (_, at) => ({ key: `e${at}`, hour: 18_000 + at * 11, item: `Event ${at} at a place with a name` }))
   .sort((a, b) => b.hour - a.hour);
 const feedClock: RevealClock = { hour: () => Math.floor(head.read()), playing: () => true, subscribe: changed => head.subscribe(changed) };
 
-/** The feed's commits while played: a block of rows it had not drawn, which measures its view as it commits. */
 let feedCommits = 0;
 
 const roots: Root[] = [];
@@ -143,8 +130,6 @@ function place(id: string, width: number, height: number): Root {
 
 declare global { interface Window { paintCost: typeof api } }
 const api = {
-  /** Three country measures, an event feed and four diplomacy timelines, as Politics, Overview and Diplomacy show them,
-   * following the head. */
   mount() {
     const axes = { xFrom: null, xTo: null, yMin: null, yMax: null, log: false };
     for (const id of ['measure-a', 'measure-b', 'measure-c']) {
@@ -159,17 +144,13 @@ const api = {
         hoursPerSecond={1440} active revision={0} />);
     }
   },
-  /** `frames` frames of playback at `hours` a frame, after the charts settle: each chart's painting by frame, and what the
-   * played frames asked of the page. */
   async play(frames: number, hours: number, marks?: { from: string; to: string }) {
-    // Past the view's first measures, which a resize observer defers to a later frame.
     for (let at = 0; at < 60; at++) await frame();
     if (marks) performance.mark(marks.from);
     painted.clear();
     asked.layout = 0; asked.measure = 0; feedCommits = 0;
     const times: number[] = [];
     counting = true;
-    // A painter writing the page's text each frame, as the dashboard's live values do, leaves its style to bring up to date.
     const stamp = document.body.appendChild(document.createElement('output'));
     for (let at = 0; at < frames; at++) {
       head.set(head.read() + hours);
@@ -184,8 +165,6 @@ const api = {
     for (const time of times.slice(0, -1)) for (const [widget, ms] of painted.get(time) ?? []) charts.set(widget, [...charts.get(widget) ?? [], ms]);
     return { asked: { ...asked }, frames: times.length - 1, charts: Object.fromEntries(charts), feedCommits };
   },
-  /** A stacked chart of `bands` bands over 700 bins following the head, as World tension and Ruling party draw theirs:
-   * the fills and strokes it makes a frame, and its painting by frame. */
   async stack(bands: number, frames: number, hours: number) {
     const summaries = stackSummaries(bands, 700);
     const axes = { xFrom: null, xTo: null, yMin: null, yMax: null, log: false };
@@ -205,10 +184,6 @@ const api = {
     const paints = times.slice(0, -1).flatMap(time => painted.get(time)?.get('stack') ?? []);
     return { frames: times.length, fills: drawn.fill, strokes: drawn.stroke, paints };
   },
-  /** The event feed alone, revealing a row or two each frame as its clock plays `hours` a frame from halfway through its
-   * rows: the transform transitions started on rows, on the list's glide and on anything else, the frames that revealed
-   * a row, and the scroll's height against the list's. Rows keep their slide; their entry (fade and flash) is off unless
-   * `entries`, so a trace of the window holds what moving the rows costs. */
   async glide(frames: number, hours: number, marks?: { from: string; to: string }, entries = false) {
     const clock = new LiveCell(18_000 + 300 * 11);
     const reveal: RevealClock = { hour: () => Math.floor(clock.read()), playing: () => true, subscribe: changed => clock.subscribe(changed) };
@@ -242,7 +217,6 @@ const api = {
     }
     listening = false;
     if (marks) performance.mark(marks.to);
-    // Rows inside their 700 ms entry at the end, and whether the shared entry layer is drawing them.
     const end = performance.now();
     const entering = reveals.filter(reveal => end - reveal.at < 700).reduce((sum, reveal) => sum + reveal.rows, 0);
     const layer = host.querySelectorAll('canvas.log-entries:not([hidden])').length;
@@ -253,8 +227,6 @@ const api = {
     still?.remove();
     return { frames, revealed, started, scroll, entering, layer, animated };
   },
-  /** A log committed `count` times with rows newer than it drew, as pages landing at the head commit it: the layout read
-   * back while committing and in the frames after, and the commits. */
   async commits(count: number) {
     const root = place('commits', 400, 320);
     const rowsAt = (at: number) => feedRows.slice(Math.max(0, feedRows.length - 200 - at * 12), feedRows.length - at * 12 + 200);
@@ -277,9 +249,6 @@ const api = {
     document.querySelector('[data-widget="commits"]')?.remove();
     return result;
   },
-  /** A virtual list (National focus, a ruling party's people, Research) committed `count` times with rows it had not
-   * shown, as a structure change while playing commits it, its view then scrolled one row on (a following list keeping
-   * its newest row in view): the layout read back while committing and in the frames after, and the list's commits. */
   async virtualCommits(count: number) {
     const root = place('virtual', 400, 320);
     let commits = 0;
@@ -302,7 +271,6 @@ const api = {
       root.render(<Rows at={at} />);
       await frame();
       await frame();
-      // A scroll's own read of the view (its event) is the reader's, not the commit's.
       counting = false;
       document.querySelector<HTMLElement>('[data-case="virtual-scroll"]')!.scrollTop += 30;
       await frame();
@@ -314,8 +282,6 @@ const api = {
     document.querySelector('[data-widget="virtual"]')?.remove();
     return result;
   },
-  /** A ranked table of 40 countries whose live scores, and so their bars, move every frame (Game score, Scoreboard):
-   * played `frames` frames between the marks. */
   async tableBars(frames: number, marks: { from: string; to: string }) {
     type Row = { key: string; name: string };
     const rows: Row[] = Array.from({ length: 40 }, (_, at) => ({ key: `r${at}`, name: `Country ${String(at).padStart(2, '0')}` }));
@@ -334,9 +300,6 @@ const api = {
     performance.mark(marks.to);
     return { bars: document.querySelectorAll('[data-widget="bars"] .table-cellbar').length };
   },
-  /** A live table whose first row's value steps once while playing: its bar's scale on each frame after the step until it
-   * reaches the new value (frames, never elapsed time, end the wait), and the transition its bar carries. The glide's
-   * timing is the engine's, tested with its own clock in engine/glide.test.ts. */
   async barGlide() {
     type Row = { key: string; name: string };
     const rows: Row[] = Array.from({ length: 6 }, (_, at) => ({ key: `r${at}`, name: `Country ${at}` }));
@@ -355,12 +318,9 @@ const api = {
     const samples: number[] = [];
     for (let at = 0; at < 600 && samples.at(-1) !== 0.8; at++) { await frame(); samples.push(scaleOf()); }
     const style = getComputedStyle(bar), durations = style.transitionDuration.split(',').map(value => parseFloat(value));
-    // The properties that move it in time: those with a duration (the default, `all 0s`, moves nothing).
     const transition = style.transitionProperty.split(',').map(name => name.trim()).filter((_, at) => (durations[at % durations.length] ?? 0) > 0).join(', ');
     return { before, samples, transition };
   },
-  /** Two widgets on one playing clock, one off screen until the end: the frames each widget's listener heard, and the
-   * painting each was timed for. */
   async gate() {
     const page = new PlaybackController();
     page.setBounds({ firstHour: 0, lastHour: 1_000_000 });

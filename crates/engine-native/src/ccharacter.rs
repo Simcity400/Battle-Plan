@@ -1,97 +1,48 @@
-//! CCharacter state and role links. Serial writer paths are characterized;
-//! live consistency and capture acceptance are unverified.
-//!
-//! `ccharacter_template` owns template identity fields and their writers.
-//! `FLAGS` is this character's flag manager, read unchanged by `cflag_manager`.
-//! Synthetic fixtures cover template reading, identity reuse, truncation and a
-//! template the loader never read; fresh-save agreement remains unverified.
 
 use crate::{
     Memory, ccharacter_manager, ccharacter_template, msvc_string, read, read_slice, walk::Outcome,
 };
 use engine_sites::Rva;
 
-/// Character vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_b0d0);
-/// Reference type value, u32.
 pub const REFERENCE_TYPE: u32 = 73;
-/// Reference-type field, u32, in the primary object header.
 pub const TYPE: usize = 0x08;
-/// Instance id, u32.
 pub const ID: usize = 0x0c;
-/// Signed lexer token; serialization resolves it and the lossy name index excludes negatives.
 pub const NAME_TOKEN_ID: usize = 0x18;
-/// Optional template pointer, initially null. Definition building and save
-/// loading select it; serialization retains the selected template tag.
 pub const TEMPLATE: usize = 0x20;
-/// Unsaved string member.
 pub const NAME: usize = 0x28;
-/// Saved character name string.
 pub const TOKEN: usize = 0x48;
-/// Raw country handle, u32, requiring country-link resolution.
 pub const COUNTRY: usize = 0x68;
-/// Stored gender enum; pronouns select feminine only for value two.
 pub const GENDER: usize = 0x70;
-/// Embedded portrait container.
 pub const PORTRAITS: usize = 0x78;
-/// Portrait-entry data pointer.
 pub const PORTRAIT_DATA: usize = 0x80;
-/// Portrait-entry count, u32.
 #[cfg(test)]
 pub const PORTRAIT_COUNT: usize = 0x8c;
-/// Ideology-to-CCountryLeader map head.
 pub const LEADER_MAP_HEAD: usize = 0x98;
-/// Ideology-to-CCountryLeader map size, u64.
 pub const LEADER_MAP_SIZE: usize = 0xa0;
-/// Nullable CUnitLeader role pointer.
 pub const UNIT_LEADER: usize = 0xa8;
-/// String-to-CAdvisor map head.
 pub const ADVISOR_MAP_HEAD: usize = 0xb0;
-/// String-to-CAdvisor map size, u64.
 pub const ADVISOR_MAP_SIZE: usize = 0xb8;
-/// CScientist role pointer.
 pub const SCIENTIST: usize = 0xc0;
-/// Unit-leader full reference. A direct leader pointer wins; otherwise
-/// resolve this reference, with both-zero meaning absence. Construction
-/// zeroes it, operative creation copies the full identity, and loading
-/// restores it. Serialization includes it when either word is nonzero.
 pub const OPERATIVE: usize = 0xc8;
-/// Embedded script-variable storage, constructed with the character table
-/// and serialized when nonempty.
 pub const VARIABLES: usize = 0xd8;
-/// Embedded flag storage used by character flag conditions and mutations;
-/// serialized when its count is positive.
 pub const FLAGS: usize = 0x110;
-/// Extent of the fields one `View` can hold, ending after the advisor map
-/// size. It bounds `View`'s copied-range lookup only; it is not a class size,
-/// and no span is read merely because it lies inside this extent.
 pub const VIEW_EXTENT: usize = ADVISOR_MAP_SIZE + 8;
-/// The name token id span a `View` copies: from `NAME_TOKEN_ID` up to `NAME`,
-/// so the character's `TEMPLATE` pointer rides in the same guarded span and
-/// is checked every hour without another read.
 pub const NAME_TOKEN_SPAN: usize = NAME - NAME_TOKEN_ID;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub id: u32,
-    /// Exact native country-reference bits. Unrecruited characters may have zero.
     pub country: u32,
     pub name_token_id: i32,
     pub gender: u32,
-    /// Serialized manager vector: zero historical, one dynamic.
     pub roster: u8,
     pub ordinal: u32,
-    /// Exact unsaved `NAME` string. This legacy field label is not the saved name.
     pub name_start: usize,
     pub name_len: usize,
-    /// Exact `TOKEN` string serialized as name; the script token is NAME_TOKEN_ID.
     pub token_start: usize,
     pub token_len: usize,
-    /// The `TEMPLATE` pointer, zero without a template. It guards a reuse of
-    /// the identity below; it is not published.
     pub template: usize,
-    /// The template's exact fields (`ccharacter_template`); zero and empty
-    /// without a template.
     pub template_identity: ccharacter_template::Identity,
     pub template_file_start: usize,
     pub template_file_len: usize,
@@ -101,13 +52,9 @@ pub struct Row {
 pub struct NameWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// Exact when complete; a lower bound including the first oversized row
-    /// when truncated. Omitted rows are not read merely to size the pool.
     pub required_bytes: usize,
 }
 
-/// One authenticated roster occurrence: pointer, native id and its position
-/// in the serialized manager vectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Occurrence {
     pub pointer: usize,
@@ -116,8 +63,6 @@ pub struct Occurrence {
     pub ordinal: u32,
 }
 
-/// Exact field bytes at `COUNTRY`, `LEADER_MAP_HEAD`, `UNIT_LEADER` and
-/// `ADVISOR_MAP_HEAD`, each copied in the current callback.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AcquiredFields {
     pub country: Option<[u8; 4]>,
@@ -126,9 +71,6 @@ pub struct AcquiredFields {
     pub advisors: Option<[u8; 16]>,
 }
 
-/// Exact current-pass field spans. Unreadable names or role headers cannot hide
-/// another domain; only fully copied spans are exposed to its native walker.
-/// Pointer targets still use guarded memory, and every pass creates a new view.
 pub struct View<'a, M: Memory> {
     memory: &'a M,
     pointer: usize,
@@ -203,8 +145,6 @@ impl<'a, M: Memory> View<'a, M> {
         }
         let mut copied =
             std::array::from_fn::<_, 8, _>(|index| enabled[index] && index < completed);
-        // The failed field may contain a copied prefix and is never retried or
-        // exposed. Resume only later independent fields, each at most once.
         for index in completed.saturating_add(1)..spans.len() {
             if enabled[index] {
                 copied[index] = read_slice(memory, addresses[index], spans[index]);
@@ -232,10 +172,6 @@ impl<'a, M: Memory> View<'a, M> {
         })
     }
 
-    /// The view `read` returns for an occurrence whose identity and role
-    /// fields another acquisition in this callback already authenticated and
-    /// copied. Names are never supplied; `None` fields stay uncopied, exactly
-    /// like fields `read` does not request or fails to copy.
     pub fn acquired(
         memory: &'a M,
         base: usize,
@@ -263,7 +199,6 @@ impl<'a, M: Memory> View<'a, M> {
         })
     }
 
-    /// Unit-leader rows do not depend on the character's country field.
     pub fn reference(&self) -> (usize, u32) {
         (
             self.pointer,
@@ -282,8 +217,6 @@ impl<'a, M: Memory> View<'a, M> {
         })
     }
 
-    /// Ok(None) is foreign memory; Err is an uncopied local field and must never
-    /// fall back to reading the failed or unrequested span a second time.
     fn copied(&self, address: usize, len: usize) -> Result<Option<&[u8]>, ()> {
         let end = address.checked_add(len).ok_or(())?;
         let object_end = self.pointer.saturating_add(VIEW_EXTENT);
@@ -292,9 +225,6 @@ impl<'a, M: Memory> View<'a, M> {
         }
         let start = address.checked_sub(self.pointer).ok_or(())?;
         let end = start.checked_add(len).ok_or(())?;
-        // The same eight spans in the same order, tested one at a time. The
-        // walk asks this question many times per character, so the candidates
-        // are never materialised as a table of slices.
         macro_rules! field {
             ($offset:expr, $size:expr, $bytes:expr) => {
                 if let Some(from) = start.checked_sub($offset)
@@ -352,8 +282,6 @@ impl<M: Memory> Memory for View<'_, M> {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
-        // Foreign role/leader fields retain the native batched SEH path. Mixed
-        // copied/foreign spans remain ordered, including the first fault rule.
         if addresses
             .iter()
             .zip(destinations.iter())
@@ -380,13 +308,6 @@ impl<M: Memory> Memory for View<'_, M> {
     }
 }
 
-/// Reads one entry from the current authenticated manager census. The entry's
-/// ordinal and raw identity are retained; all returned offsets are arena-local.
-///
-/// After both names the character's template (`TEMPLATE`) is read, unless
-/// `known` supplies the identity an earlier hour read for the same template
-/// pointer; the file bytes follow the names in the arena. A row whose file
-/// does not fit is omitted with its whole text demand, like the names.
 pub fn walk_entry<'k>(
     memory: &impl Memory,
     base: usize,
@@ -500,18 +421,12 @@ pub fn walk_entry<'k>(
     })
 }
 
-/// The Characters rows and text bytes a complete walk needs now: one row per
-/// roster occurrence, both names and the template file of each.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Demand {
     pub rows: usize,
     pub bytes: usize,
 }
 
-/// Sizes the Characters buffers from the live roster before a walk needs
-/// them. It reads each character's view (identity, country, name token span
-/// and both string headers) and, with a template, the template's header; it
-/// copies no text, and nothing it reads is recorded.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -547,7 +462,6 @@ pub fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("character address overflow")
 }
 
-/// Authenticates the reference header without narrowing its native id or tag.
 pub fn identity(
     memory: &impl Memory,
     base: usize,
@@ -559,10 +473,6 @@ pub fn identity(
     Ok((id, country))
 }
 
-/// `View::read`'s identity authentication with up to three more fixed spans
-/// of the same object in the same scattered read. Returns the native id and
-/// how many of those spans were copied, in order; an empty span counts as
-/// copied. A span whose address overflows is not copied.
 pub fn identity_with_spans(
     memory: &impl Memory,
     base: usize,
@@ -592,8 +502,6 @@ pub fn identity_with_spans(
     ))
 }
 
-/// The authenticated CCharacter id behind a role's parent pointer: the vtable and reference type
-/// must match before the id is returned.
 pub(crate) fn identity_header(
     memory: &impl Memory,
     base: usize,
@@ -603,7 +511,6 @@ pub(crate) fn identity_header(
     identity_from_header(base, header)
 }
 
-/// [`identity_header`] over its 16 header bytes, already copied.
 pub(crate) fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
     if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64
@@ -614,8 +521,6 @@ pub(crate) fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32,
     Ok(u32::from_le_bytes(header[ID..16].try_into().unwrap()))
 }
 
-/// A copied native string header. Inline bytes are reused directly, so a short
-/// name needs one guarded read rather than several field and payload reads.
 pub struct Literal {
     header: [u8; 32],
     source: usize,
@@ -630,8 +535,6 @@ impl Literal {
         Self::from_header(pointer, header)
     }
 
-    /// The caller validates heap terminators together before publishing a row
-    /// or reporting its byte capacity. Inline terminators are checked here.
     pub fn from_header(pointer: usize, header: [u8; 32]) -> Result<Self, &'static str> {
         let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
         let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
@@ -659,7 +562,6 @@ impl Literal {
         })
     }
 
-    /// Address of the string's first byte (inline storage or heap buffer).
     pub fn source(&self) -> usize {
         self.source
     }
@@ -739,8 +641,6 @@ fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'s
     {
         let mut country = [0; 4];
         let mut header = [0; 16];
-        // Country has no value-dependent gate before the portrait header.
-        // Retain both original spans and their first-fault order under one guard.
         match memory
             .copy_scattered_prefetched([country_at, header_at], &mut [&mut country, &mut header])
         {
@@ -749,7 +649,6 @@ fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'s
             _ => Err("character portrait header unreadable"),
         }
     } else {
-        // A later address overflow must not discard the country observation.
         read::<u32>(memory, country_at).ok_or("character country unreadable")?;
         let address = header_at.ok_or("character portrait address overflow")?;
         read(memory, address).ok_or("character portrait header unreadable")

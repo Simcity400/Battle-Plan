@@ -1,8 +1,3 @@
-//! Demand-driven reads of a country's market holdings and agreed purchase terms.
-//!
-//! The caller supplies an authenticated holder selected by its writer certificate.
-//! These readers neither enumerate countries nor schedule periodic acquisition.
-//! Owned storage is reused across changes; native identities never store pointers.
 
 use engine_native::{
     Memory, allocation, ccountry, cequipment_type, cequipment_variant_pool, cpdx_array::Array,
@@ -65,16 +60,12 @@ pub struct Equipment {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pool {
     pub allow_zero: bool,
-    /// Native order, including zero and signed entries.
     pub equipment: Vec<Equipment>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PriceLevel {
-    /// Full variant reference, including its native reference type.
     pub variant: u64,
-    /// Native low, normal or high level. Normal entries remain present here;
-    /// the save writer omits them, independently of this stored state.
     pub level: i32,
 }
 
@@ -82,7 +73,6 @@ pub struct PriceLevel {
 pub struct Subsidy {
     pub cic_raw: i64,
     pub archetype: u32,
-    /// The native tagged alternative; empty target lists and empty names differ.
     pub kind: u8,
     pub targets: Vec<u32>,
     pub trigger: Vec<u8>,
@@ -98,8 +88,6 @@ pub struct Country {
     pub auto_send_market_access: bool,
 }
 
-/// Independent writer domains. A change to automation must not read inventory,
-/// prices or grants; a change to a grant must not read the stockpile.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Demand {
     pub stockpile: bool,
@@ -109,7 +97,6 @@ pub struct Demand {
 }
 
 impl Demand {
-    /// Initial/load acquisition from the existing authenticated country census.
     pub const ALL: Self = Self {
         stockpile: true,
         price_levels: true,
@@ -146,8 +133,6 @@ fn resize<T: Default>(rows: &mut Vec<T>, count: usize) -> Result<(), &'static st
     allocation::resize_default(rows, count).map_err(|_| "market ledger allocation failed")
 }
 
-/// Read only a selected country's holdings. Failure invalidates the result;
-/// partially updated output must never be published or certified.
 pub fn country(
     memory: &impl Memory,
     base: usize,
@@ -203,8 +188,6 @@ pub fn country(
     Ok(())
 }
 
-/// Read draft terms from an already authenticated request or contract. The
-/// enclosing membership/identity check belongs to the selecting census or hook.
 pub fn draft(
     memory: &impl Memory,
     base: usize,
@@ -230,9 +213,6 @@ pub fn draft(
     )
 }
 
-/// Read a selected contract's definition, preserving its independent per-model
-/// price pool. The contract's existing owning/directional membership census
-/// supplies `id`; an address recycled for another contract is refused.
 pub fn contract_terms(
     memory: &impl Memory,
     base: usize,
@@ -254,9 +234,6 @@ pub fn contract_terms(
     draft(memory, base, definition, terms)
 }
 
-/// Initial snapshots and native whole-pool replacements, reusing the shared
-/// pool and variant authentication. Ordinary item writers should publish their
-/// reached item operands instead of rereading a holder's complete pool.
 pub fn pool(
     memory: &impl Memory,
     base: usize,
@@ -286,7 +263,6 @@ pub fn pool(
     Ok(())
 }
 
-/// Stored price levels use a packed reference payload in the native map.
 pub fn prices(
     memory: &impl Memory,
     address: usize,

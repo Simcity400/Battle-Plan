@@ -1,13 +1,3 @@
-//! The holders' stockpile over the branch (`equipment-stockpile-catalogue`) and each group's line
-//! over a view (`equipment-stockpile-chart`). Each holder's histories are read once per timeline
-//! ([`super::history`]); from them the model (designs named, types, groups and every group's
-//! lines) is built once per holders, included types and content, and kept, so a view asks no
-//! table again.
-//!
-//! A group adds up as the widget's own at-hour figures do (`stockpileData.ts`): a type's or an
-//! arm's stock is unknown wherever a design of unknown type holds anything, and its surplus and
-//! need follow the logistics record's types, an unresolved type deciding a resolved arm's
-//! completeness. Sums are of exact values, so a type's line is exact at every hour.
 
 use dashboard_base::products::validate_country;
 use dashboard_base::products::Country;
@@ -31,7 +21,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// A holder whose history a request reads, only within `within` where it names hours.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,12 +37,11 @@ pub struct StockpileHolder {
 pub struct StockpileCatalogueParams {
     pub branch_id: String,
     pub holders: Vec<StockpileHolder>,
-    /// The types a group counts; empty counts every type.
+    #[doc = " The types a group counts; empty counts every type."]
     #[serde(default)]
     pub included: Vec<String>,
 }
 
-/// What a chart line draws: a group's stock, its surplus as a percentage of its need, or its need.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -67,7 +55,7 @@ pub enum StockpileMeasure {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileLine {
-    /// The group's key: `[kind, key]` as JSON, a design's key its handle.
+    #[doc = " The group's key: `[kind, key]` as JSON, a design's key its handle."]
     pub group: String,
     pub measure: StockpileMeasure,
 }
@@ -108,8 +96,6 @@ fn validate(branch_id: &str, holders: &[StockpileHolder]) -> Result<(), &'static
     Ok(())
 }
 
-/// A group's largest stock or need at any hour within the holders' hours, and whether its stock and
-/// its share of need draw anything there.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -119,28 +105,26 @@ pub struct StockpileChoicePeak {
     pub share_drawable: bool,
 }
 
-/// A design the holders held or produced.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileCatalogueVariant {
-    /// Its native handle, as a decimal string.
+    #[doc = " Its native handle, as a decimal string."]
     pub id: String,
-    /// Its equipment token; empty where no read spelled it.
+    #[doc = " Its equipment token; empty where no read spelled it."]
     pub token: String,
-    /// Its type's archetype key; null where the content does not resolve its type.
+    #[doc = " Its type's archetype key; null where the content does not resolve its type."]
     pub archetype: Option<String>,
     pub names: Vec<StockVariantName>,
-    /// Every design recorded under its handle.
+    #[doc = " Every design recorded under its handle."]
     pub designs: Vec<String>,
 }
 
-/// A logistics type the holders' record listed, and whether it ever held anything but zero.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileCatalogueLogistics {
-    /// The archetype key, or the unresolved mark and the recorded token's spelling.
+    #[doc = " The archetype key, or the unresolved mark and the recorded token's spelling."]
     pub key: String,
     pub nonzero: bool,
 }
@@ -153,22 +137,22 @@ pub struct StockpileCatalogueReply {
     pub countries: Vec<Country>,
     pub campaign_key: String,
     pub decimals: u8,
-    /// Every archetype a design or logistics type belongs to, in the equipment database's order.
+    #[doc = " Every archetype a design or logistics type belongs to, in the equipment database's order."]
     pub types: Vec<StockType>,
     pub variants: Vec<StockpileCatalogueVariant>,
     pub logistics: Vec<StockpileCatalogueLogistics>,
-    /// The hours the stockpile, the production lines and the logistics record were read for the
-    /// holders within their hours, ascending.
+    #[doc = " The hours the stockpile, the production lines and the logistics record were read for the"]
+    #[doc = " holders within their hours, ascending."]
     pub reads: Vec<i32>,
     pub line_reads: Vec<i32>,
     pub logistics_reads: Vec<i32>,
     pub stock_hours: Vec<HourSpan>,
     pub line_hours: Vec<HourSpan>,
     pub balance_hours: Vec<HourSpan>,
-    /// Hours the holder was AI-controlled, so the game computed no balance.
+    #[doc = " Hours the holder was AI-controlled, so the game computed no balance."]
     pub ai_hours: Vec<HourSpan>,
     pub need_bound_raw: String,
-    /// Each group's peak and drawability, by its key (`[kind, key]` as JSON).
+    #[doc = " Each group's peak and drawability, by its key (`[kind, key]` as JSON)."]
     pub choices: BTreeMap<String, StockpileChoicePeak>,
     pub warnings: Vec<String>,
 }
@@ -200,9 +184,7 @@ pub(super) enum Kind {
     Variant,
 }
 
-/// What a group adds up: its designs and its logistics types.
 pub(super) struct Group {
-    /// `[kind, key]` as JSON, as the widget keys it.
     pub wire: String,
     pub kind: Kind,
     pub key: String,
@@ -216,7 +198,6 @@ impl Group {
     }
 }
 
-/// A stretch of a line inside a known span: one value, or unknown; `starts` where the span starts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Piece<T> {
     pub first: i32,
@@ -237,21 +218,16 @@ fn push<T: PartialEq + Copy>(pieces: &mut Vec<Piece<T>>, (first, last): (i32, i3
     pieces.push(Piece { first, last, value, starts });
 }
 
-/// A group's surplus and need at an hour, the need none where it is not derived.
 pub(super) type Balance = (i128, Option<i128>);
 
-/// Each logistics key, its tokens ascending (a key's row at an hour is its greatest token holding
-/// one), and whether it ever held anything but zero.
 type TypeTokens = BTreeMap<String, (Vec<u32>, bool)>;
 
-/// One holder's lines of a group.
 #[derive(Default)]
 pub(super) struct Lines {
     pub stock: Vec<Piece<i128>>,
     pub logistics: Vec<Piece<Balance>>,
 }
 
-/// A design of the holders' catalogue.
 pub(super) struct Member {
     pub token: String,
     pub archetype: Option<String>,
@@ -259,15 +235,12 @@ pub(super) struct Member {
     pub names: Vec<StockVariantName>,
 }
 
-/// The holders' catalogue and every group's lines, built once per holders, included types and
-/// content.
 pub(super) struct Model {
     replays: Vec<Arc<Replay>>,
     variants: BTreeMap<u64, Member>,
     logistics: TypeTokens,
     types: Vec<StockType>,
     groups: Vec<Group>,
-    /// Per holder, each group's lines, by its place in `groups`.
     lines: Vec<Vec<Lines>>,
     first: i32,
     last: i32,
@@ -298,9 +271,6 @@ fn wire(kind: Kind, key: &str) -> String {
     serde_json::to_string(&(kind, key)).expect("a group key serializes")
 }
 
-/// Every group the widget can show, as `stockGroups` builds them: by type, by arm and by design,
-/// each counting only the included types; a logistics type that held anything but zero adds a row
-/// of its own, and every listed type of a row's adds to its sums.
 pub(super) fn groups(variants: &BTreeMap<u64, Member>, logistics: &TypeTokens, domains: &BTreeMap<String, Domain>, included: &[String]) -> Vec<Group> {
     let shown = |key: &str| included.is_empty() || included.iter().any(|item| item == key);
     let type_key = |id: u64, member: &Member| {
@@ -360,7 +330,6 @@ pub(super) fn groups(variants: &BTreeMap<u64, Member>, logistics: &TypeTokens, d
     result
 }
 
-/// A change list's value at each hour, taken in ascending hours.
 struct Cursor<'a, T> {
     changes: &'a [(i32, T)],
     taken: usize,
@@ -382,7 +351,6 @@ impl<'a, T: Copy> Cursor<'a, T> {
     }
 }
 
-/// Each span's first hour, then every hour in it that one of `hours` changes at.
 pub(super) fn points(spans: &[HourSpan], mut hours: Vec<i32>) -> Vec<(i32, i32, bool)> {
     hours.sort_unstable();
     hours.dedup();
@@ -401,7 +369,6 @@ pub(super) fn points(spans: &[HourSpan], mut hours: Vec<i32>) -> Vec<(i32, i32, 
     points
 }
 
-/// Every type's and arm's stock over the holder's stock hours.
 pub(super) fn stock_lines(replay: &Replay, groups: &[(usize, &Group)], untyped: &[u64], cancelled: &AtomicBool) -> io::Result<Vec<Vec<Piece<i128>>>> {
     let mut ids: Vec<u64> = groups.iter().flat_map(|(_, group)| group.variants.iter().copied()).chain(untyped.iter().copied()).collect();
     ids.sort_unstable();
@@ -430,7 +397,6 @@ pub(super) fn stock_lines(replay: &Replay, groups: &[(usize, &Group)], untyped: 
     Ok(lines)
 }
 
-/// A design's stock over the holder's stock hours.
 pub(super) fn variant_line(replay: &Replay, id: u64) -> Vec<Piece<i128>> {
     let changes = replay.variants.get(&id).map_or(&[][..], Vec::as_slice);
     let mut cursor = Cursor::new(changes);
@@ -443,8 +409,6 @@ pub(super) fn variant_line(replay: &Replay, id: u64) -> Vec<Piece<i128>> {
     line
 }
 
-/// What decides each type's and arm's surplus and need: the logistics keys' tokens, their types'
-/// need notes, and the unresolved keys the included types admit.
 pub(super) struct Record<'a> {
     pub logistics: &'a TypeTokens,
     pub notes: BTreeMap<&'a str, Option<&'a str>>,
@@ -453,8 +417,6 @@ pub(super) struct Record<'a> {
 
 const NEED_UNAVAILABLE: &str = "Need unavailable.";
 
-/// Every type's and arm's surplus and need over the hours the holder's record held its rows, as
-/// `balanceOperandsAt` derives them.
 pub(super) fn logistics_lines(replay: &Replay, groups: &[(usize, &Group)], record: &Record<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Vec<Piece<Balance>>>> {
     let mut tokens: Vec<u32> = groups
         .iter()
@@ -503,7 +465,6 @@ pub(super) fn logistics_lines(replay: &Replay, groups: &[(usize, &Group)], recor
                         let available = held.and_then(|held| held.available);
                         let note = if available.is_some() { None } else { *note };
                         let native = available.unwrap_or(type_stock.max(0));
-                        // The native subtraction wraps at signed 64 bits.
                         let need = native.wrapping_sub(type_balance);
                         stock_need = if note.is_some() || need.unsigned_abs() >= bound { None } else { stock_need.map(|sum| sum + i128::from(need)) };
                     }
@@ -519,8 +480,6 @@ pub(super) fn logistics_lines(replay: &Replay, groups: &[(usize, &Group)], recor
     Ok(lines)
 }
 
-/// Each design's names, token and archetype, the archetypes met and the logistics keys, read at the
-/// holders' last hour (a design defined no longer then, at the last hour it was held).
 fn members(query: &Query<'_>, replays: &[Arc<Replay>], content: &Content, types: &mut Types, warnings: &mut Vec<String>) -> io::Result<(BTreeMap<u64, Member>, TypeTokens, BTreeMap<String, Domain>)> {
     let ids: BTreeSet<u64> = replays.iter().flat_map(|replay| replay.variants.keys().copied().chain(replay.produced.iter().copied())).collect();
     let tokens: BTreeSet<u32> = replays.iter().flat_map(|replay| replay.logistics.keys().copied()).collect();
@@ -536,7 +495,6 @@ fn members(query: &Query<'_>, replays: &[Arc<Replay>], content: &Content, types:
             spelled.extend(found.1);
             named.extend(found.0.into_iter().filter(|(_, name)| name.known));
             asked.retain(|id| !named.contains_key(id));
-            // A design no longer defined is named at the last hour it was held.
             let earlier: BTreeSet<i32> = asked
                 .iter()
                 .filter_map(|id| replays.iter().filter_map(|replay| replay.variants.get(id)?.iter().rev().find(|(_, stock)| *stock != Stock::Absent).map(|(at, _)| *at)).max())
@@ -573,7 +531,6 @@ fn members(query: &Query<'_>, replays: &[Arc<Replay>], content: &Content, types:
         if let Some(domain) = types.domain(&key) {
             domains.insert(key.clone(), domain);
         }
-        // A recorded zero is a value; anything else, unknown included, is not.
         let nonzero = replays.iter().any(|replay| {
             replay.logistics.get(&token).is_some_and(|changes| {
                 changes.iter().any(|(_, row)| row.is_some_and(|row| row.balance != Some(0) || row.stock != Some(0) || row.available != Some(0)))
@@ -586,7 +543,6 @@ fn members(query: &Query<'_>, replays: &[Arc<Replay>], content: &Content, types:
     Ok((variants, logistics, domains))
 }
 
-/// The model of `tags`' histories with `included` types, built from scratch.
 fn build(query: &Query<'_>, replays: Vec<Arc<Replay>>, included: &[String], content: &Content, cancelled: &AtomicBool) -> io::Result<Model> {
     let mut warnings = content.warnings.clone();
     let mut types = Types::default();
@@ -621,13 +577,11 @@ fn build(query: &Query<'_>, replays: Vec<Arc<Replay>>, included: &[String], cont
     Ok(Model { replays, variants, logistics, types, groups, lines, first: query.timeline.first, last: query.timeline.last, warnings })
 }
 
-/// What a source keeps of the models it built: by timeline, holders, included types and content.
 #[derive(Default)]
 struct Kept {
     models: HashMap<String, Arc<Model>>,
 }
 
-/// The holders' model, built once per timeline, holders, included types and content and kept.
 fn model(source: &Source, query: &Query<'_>, tags: &[Country], included: &[String], load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Model>> {
     let content = Content::load(source, load)?;
     let binding = content.catalogue.as_ref().map_or(0, |catalogue| Arc::as_ptr(catalogue) as usize);
@@ -648,7 +602,6 @@ fn model(source: &Source, query: &Query<'_>, tags: &[Country], included: &[Strin
     Ok(made)
 }
 
-/// `spans` within `within`, where it names hours.
 fn within(spans: &[HourSpan], within: Option<&[HourSpan]>) -> Vec<HourSpan> {
     let Some(within) = within else { return spans.to_vec() };
     let mut result = Vec::new();
@@ -674,7 +627,6 @@ fn sorted(mut spans: Vec<HourSpan>) -> Vec<HourSpan> {
     spans
 }
 
-/// The holders' catalogue from their model.
 fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCatalogueParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileCatalogueReply> {
     let tags: Vec<Country> = params.holders.iter().map(|holder| holder.country.clone()).collect();
     let model = model(source, query, &tags, &params.included, load, cancelled)?;
@@ -762,7 +714,6 @@ fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCataloguePara
     Ok(reply)
 }
 
-/// A line to draw: a value held over its hours, with its raw magnitude per hour.
 pub(super) struct Drawn {
     pub first: i32,
     pub last: i32,
@@ -771,8 +722,6 @@ pub(super) struct Drawn {
     pub break_before: bool,
 }
 
-/// The pieces a measure draws over `from..=to`, read only where the hours overlap them: breaks where
-/// a span starts and after an unknown stretch.
 pub(super) fn drawn<T: Copy>(pieces: &[Piece<T>], measure: impl Fn(T) -> Option<(f64, u128)>, (from, to): (i32, i32), membership: Option<&[HourSpan]>, into: &mut Vec<Drawn>) {
     let measured = |piece: &Piece<T>| piece.value.and_then(&measure);
     let start = pieces.partition_point(|piece| piece.last < from);
@@ -803,8 +752,6 @@ pub(super) fn drawn<T: Copy>(pieces: &[Piece<T>], measure: impl Fn(T) -> Option<
     }
 }
 
-/// `lines` as a chart over `from..=to` drawn `width` pixels wide: bins on the absolute grid the
-/// declared series use ([`dashboard_query::series::grid`]), and an hourly view's runs themselves.
 pub(super) fn summary(mut lines: Vec<Drawn>, from: i32, to: i32, width: u32) -> ChartSummary {
     lines.sort_by_key(|line| line.first);
     let hours = i64::from(to) - i64::from(from) + 1;
@@ -856,7 +803,6 @@ pub(super) fn summary(mut lines: Vec<Drawn>, from: i32, to: i32, width: u32) -> 
     ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs }
 }
 
-/// The holders' groups as chart lines over a view, each in its measure.
 fn chart(source: &Source, query: &Query<'_>, params: &StockpileChartParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileChartReply> {
     let tags: Vec<Country> = params.holders.iter().map(|holder| holder.country.clone()).collect();
     let model = model(source, query, &tags, &params.included, load, cancelled)?;
@@ -892,7 +838,6 @@ fn chart(source: &Source, query: &Query<'_>, params: &StockpileChartParams, load
     Ok(reply)
 }
 
-/// The holders' designs, logistics types, coverage, reads, groups' peaks and warnings.
 pub struct EquipmentStockpileCatalogue;
 
 impl Product for EquipmentStockpileCatalogue {
@@ -925,7 +870,6 @@ impl Product for EquipmentStockpileCatalogue {
     }
 }
 
-/// The holders' groups as chart lines over a view.
 pub struct EquipmentStockpileChart;
 
 impl Product for EquipmentStockpileChart {

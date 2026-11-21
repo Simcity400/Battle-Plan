@@ -19,10 +19,6 @@ fn header(data: usize, count: u32) -> [u8; 16] {
     header
 }
 
-/// Map's DivisionModelInputs job reads each division's model number,
-/// camouflage and exercising as Full's DivisionStatus records them, through the
-/// split, owned-settlement status path, also on the hour its maxima and
-/// experience are carried.
 #[test]
 fn map_model_witness_equals_full_division_status_columns() {
     let mut populated = Populated::new();
@@ -64,7 +60,6 @@ fn map_model_witness_equals_full_division_status_columns() {
         base + category::REGISTRY_RVA.0,
         &(registry.as_ptr() as u64).to_le_bytes(),
     );
-    // A training group and an idle one.
     let groups: Vec<Box<[u8; 0x200]>> = [1_u8, 0]
         .into_iter()
         .enumerate()
@@ -78,7 +73,6 @@ fn map_model_witness_equals_full_division_status_columns() {
             object
         })
         .collect();
-    // A shown winner, and one below the show threshold.
     let entries: Vec<Box<[u8; 32]>> = [9_000_000_i64, 7_000_000]
         .into_iter()
         .map(|weight| {
@@ -112,19 +106,15 @@ fn map_model_witness_equals_full_division_status_columns() {
             army + carmy::MANPOWER_DATA,
             &header(manpower.as_ptr() as usize, 1),
         );
-        // Level one trains; level two, the maximum, does not.
         let experience = if index % 8 == 5 { 20_000_i64 } else { 15_000 };
         put(world, army + carmy::EXPERIENCE, &experience.to_le_bytes());
         let (training, list) = match index % 4 {
-            // No group and an empty entry list.
             0 => (None, None),
             1 => (Some(true), Some((entries[0].as_ptr() as usize, 2))),
-            // Too weak to exercise, its winner below the threshold.
             2 => {
                 put(world, army + carmy::STRENGTH, &50_000_i64.to_le_bytes());
                 (Some(true), Some((entries[1].as_ptr() as usize, 2)))
             }
-            // An idle group and an entry list that cannot be read.
             _ => (Some(false), Some((0x100, 2))),
         };
         if let Some(training) = training {

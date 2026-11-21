@@ -1,6 +1,3 @@
-//! Private selected common movement adapter. Existing recorded occupants,
-//! raw country links, maximum organisation and naming services are reused.
-//! Missing body/acquisition dependencies stay named refusals at first demand.
 
 use super::*;
 use crate::map::directed_wars::Owner;
@@ -16,8 +13,6 @@ use installed_content_unit_path::{
 };
 use replay_frame::frame::DecodedFrame;
 
-/// Exactly one borrowed frame/request lifetime. One directed Owner per
-/// receiver admits its immutable hour context once; no carried query cache.
 pub struct CommonCells<'a> {
     frame: &'a DecodedFrame,
     wars: Mutex<BTreeMap<Country, Owner<'a>>>,
@@ -32,15 +27,9 @@ impl<'a> CommonCells<'a> {
     }
 }
 
-/// The transport admission's operands retired with the selected transport preview
-/// (`DivisionMovement.transport`, the transport tables): the real-template coastal test, the
-/// transfer, convoy weights and stock, the sea route and the interception risk. Its early
-/// naval-base branches are answered from the naval-base census and its access stage from
-/// the hour's relations.
 const TRANSPORT_RETIRED: &str = "the selected transport preview is retired: transport admission past the naval-base checks, convoys and risk are not recorded";
 
 impl<'w, 'a> Moves<'w, 'a> {
-    /// The hour's runtime scalars, which hold the movement thresholds, when sampled this hour.
     fn runtime_scalars(&self) -> Fact<&replay_data::rows::PoliticalRuntimeScalars> {
         let common = self.common.ok_or("selected common frame context missing")?;
         let [row] = common
@@ -89,13 +78,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(Some((row, inputs)))
     }
 
-    /// The selected transport line's actual-location mode over what is recorded. A target without
-    /// a naval base, a selection with no army or railway gun, or one whose
-    /// units all stand in the target's controller area without a naval base
-    /// has no transport fragment; the transport admission's naval-base rejections are exact.
-    /// Its later operands (the coastal template, transfer, convoys, access,
-    /// sea route) and the risk belonged to the retired selected transport
-    /// preview, so reaching one refuses the fragment by name.
     pub fn selected_transport_message(
         &self,
         selected: &[Unit],
@@ -157,9 +139,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         if actual != 0 && target_raw != 0 && receiver == target {
             return Ok(true);
         }
-        // Preserve the recorded zero-cell observation and its failure domains.
-        // Directed war from another query cannot repair refused forward visibility
-        // or erase historical field absence.
         if receiver == 0 || target == 0 {
             return event_shared(
                 self.world.frame(),
@@ -170,10 +149,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             )
             .map_err(str::to_owned);
         }
-        // The pointer-active check reads the war pointer and retired byte directly: no
-        // signed-positive gate. Access callers pass mode1/flag0: hourly RelationLinks is the
-        // genuine sparse military-access pointer census (access-roster writers), before
-        // faction/subject; no alternate access lookup is selected.
         if self.common_owner(receiver, |owner| owner.pointer_active_slot(target))? {
             return Ok(false);
         }
@@ -281,8 +256,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(Some(&forces[at]))
     }
 
-    /// Bind both strait predicates to this frame's directed owner, preserving
-    /// the caller's raw target. Ordinary raid strait_fleet keeps its own adapter.
     pub fn selected_strait(&self, through: u32, raw_owner: u32) -> Fact<StraitFleet> {
         for &handle in self.province_units(through)? {
             let Some(task_force) = self.common_task_force(handle, through)? else {
@@ -292,9 +265,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             if !self.common_owner(logical_owner, |owner| owner.at_war(raw_owner))? {
                 continue;
             }
-            // Complete Ships is the native task-force ship census: no matching
-            // entries proves a zero-length roster, unlike a missing task-force
-            // or province-order row. Unrelated model rows are not demanded.
             let ships = self.table::<tables::Ships>()?;
             if !ships.iter().any(|ship| ship.task_force == handle)
                 || task_force.route_count >= 1
@@ -313,8 +283,6 @@ impl<'w, 'a> Moves<'w, 'a> {
                             ship.id
                         )
                     })?;
-                // Return at the first clear flag, then read visibility without reaching
-                // later ship models.
                 if models[at].formation_flags & 0x80 == 0 {
                     all_flag_seven = false;
                     break;
@@ -326,8 +294,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             let level = if self.common_discloses_raw(task_force.roster_owner, raw_owner)? {
                 3
             } else {
-                // Complete UnitIntel retains every per-viewer entry; an absent pair
-                // contributes zero.
                 self.intel()?
                     .get(&(handle, self.slot(raw_owner)?))
                     .copied()
@@ -342,8 +308,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(StraitFleet::None)
     }
 
-    /// The caller owns CommonCells only while this exact World/frame lives.
-    /// Native selection remains a caller-local list and never enters capture.
     pub fn for_common(
         world: &'w World<'a>,
         assets: ReadOperands<'w>,
@@ -362,8 +326,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         })
     }
 
-    /// Do not call Moves::army: that eager raid adapter reconstructs land combats
-    /// and demands commander bans before the common access short circuit.
     pub fn common_army_scalars(&self, handle: u64) -> Fact<(Army, u32, u32)> {
         let row = self
             .division(handle)?
@@ -372,15 +334,11 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok((
             Army {
                 location: row.province,
-                // Canonical owner and route-first are demanded only by their
-                // reached native branches. No strategic-navy country is used here.
                 orders_group: row.orders_group,
                 retreating: movement.retreat != 0,
                 naval_transfer: movement.naval_transfer != 0,
                 strength: row.hit_points,
                 organisation: row.organisation,
-                // A full-combat adapter must also bind the commander bans
-                // (DivisionRetreatBans).
                 ..Default::default()
             },
             row.logical_owner,
@@ -433,8 +391,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(&rows[at])
     }
 
-    /// `Provinces.controller_area`: the label of the province's controller-area pointer controller
-    /// area, zero for null.
     fn common_controller_area(&self, province: u32) -> Fact<u32> {
         self.province(province)?
             .controller_area
@@ -442,7 +398,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("province {province} controller-area capture refused"))
     }
 
-    /// The node recorded on the row of the area's label province.
     fn common_area_node(&self, label: u32) -> Fact<&'a replay_data::rows::ControllerAreaNode> {
         if label == 0 || self.common_controller_area(label)? != label {
             return Err(format!(
@@ -456,8 +411,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("selected area {label} graph capture refused"))
     }
 
-    /// The controller area's land count: the provinces linking to the area, which the capture
-    /// checked against it, counted once an hour.
     fn common_area_land_count(&self, label: u32) -> Fact<i32> {
         let counts = get(&self.cells.area_members, || {
             let mut counts = BTreeMap::<u32, i32>::new();
@@ -479,8 +432,6 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("selected area {label} has no member province"))
     }
 
-    /// The transport admission through its naval-base branches. A later operand belonged to
-    /// the retired selected transport preview and refuses the admission.
     fn partial_transport_admission(
         &self,
         unit: transport::Unit,
@@ -500,10 +451,6 @@ impl<'w, 'a> Moves<'w, 'a> {
         .map_err(str::to_owned)
     }
 
-    /// The transport admission's access stage: whether the unit's logical owner may move
-    /// into the target's controller, by the same relation the move search admits with
-    /// access (the owner itself, no direct war, military access from the hour's
-    /// RelationLinks, a shared faction or subject access).
     fn transport_access(&self, unit: transport::Unit, target: u32) -> Fact<bool> {
         let owner = match unit {
             transport::Unit::Army(handle) => {
@@ -519,15 +466,12 @@ impl<'w, 'a> Moves<'w, 'a> {
         self.common_discloses_access(owner, self.controller_raw(target)?, true)
     }
 
-    /// The railway gun's scalars, as [`Self::common_army_scalars`] gives a division's.
     pub(super) fn common_gun_scalars(&self, handle: u64) -> Fact<(Army, u32, u32)> {
         let row = self.common_gun(handle)?;
         let army = Army {
             location: row.province,
             retreating: row.retreat != 0,
             naval_transfer: row.naval_transfer != 0,
-            // Railway organization is this fixed5 constant, independent of the army
-            // scalar getter.
             organisation: 10_000_000,
             ..Default::default()
         };
@@ -578,11 +522,9 @@ impl CommonMoveWorld for Moves<'_, '_> {
     fn province_state(&self, province: u32) -> Fact<Option<u32>> {
         self.state_of(province)
     }
-    /// Controller-area pointer equality, null included, through the labels.
     fn controller_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
         Ok(self.common_controller_area(from)? == self.common_controller_area(to)?)
     }
-    /// Owner-area pointer equality (the owner-area gate's first test), through the labels.
     fn owner_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
         let area = |province: u32| -> Fact<u32> {
             self.province(province)?
@@ -600,7 +542,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let first_land = node
             .first_land
             .ok_or_else(|| format!("selected area {label} representative capture refused"));
-        // The map's nonsea index of the first land is static map content.
         let nonsea_index = first_land.clone().and_then(|first| {
             self.assets
                 .geometry
@@ -621,17 +562,12 @@ impl CommonMoveWorld for Moves<'_, '_> {
         })
     }
     fn area_nonsea_count(&self, label: u32) -> Fact<u32> {
-        // the move-rejection search's visited identity domain is the map's province-record domain:
-        // the content's nonsea index count, demanded with the start node.
         self.common_area_node(label)?;
         u32::try_from(self.assets.geometry.nonsea_indices.len())
             .map_err(|_| "selected area nonsea domain exceeds native u32".into())
     }
     fn unit_exiled_raw(&self, unit: &CommonUnit<'_>) -> Fact<u8> {
         match unit.class {
-            // The movement caller passes the exile byte as the owner-area gate's boolean parameter,
-            // which that gate negates by toggling its zero/one value. It is a C++ bool, so
-            // DivisionStatus's nonzero bit is the raw byte.
             CommonClass::Army => Ok(u8::from(
                 self.move_flags(unit.handle)? & DivisionStatusRow::MOVE_EXILED != 0,
             )),
@@ -685,8 +621,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
                     .binary_search_by_key(&combat.combat, |row| row.id)
                     .map_err(|_| "selected unit references a missing land/border combat")?;
                 let row = &rows[at];
-                // Existing full sides, including participants in neither the
-                // committed nor reserve arrays. Never use combat_role here.
                 Ok((if attacking {
                     &row.attackers
                 } else {
@@ -708,7 +642,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
     }
     fn combat_minimum_duration(&self, combat: CommonCombat) -> Fact<bool> {
         match combat.kind {
-            // Border-war combat uses the land minimum-duration rule.
             0 | 1 => {
                 self.common_land_kind(combat)?;
                 let rows = self.table::<tables::LandCombats>()?;
@@ -718,8 +651,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
                 Ok(self.assets.combat_minimum_time <= rows[at].duration)
             }
             2 => {
-                // Compare signed elapsed combat duration with NNavy.COMBAT_MIN_DURATION.
-                // The hourly details walk already records that operand.
                 let details = rows::<tables::NavalCombatDetails>(self.world.frame())
                     .map_err(|error| error.to_string())?;
                 let rows = match details {
@@ -768,7 +699,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
         }
     }
     fn primary_path_combat(&self, unit: &CommonUnit<'_>, province: u32) -> Fact<bool> {
-        // Read combat location in the unit's full reference order.
         if (unit.combat_count as i32) <= 0 {
             return Ok(false);
         }
@@ -803,8 +733,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
         Ok(&rows[at].mixed)
     }
     fn army_occupant(&self, handle: u64, province: u32) -> Fact<Option<NativeArmyOccupant>> {
-        // Authenticated class censuses, not reference-type constants. This
-        // per-handle lookup happens only as far as the native caller scans.
         let divisions = self.table::<tables::Divisions>()?;
         let forces = self.table::<tables::TaskForces>()?;
         let guns = self.table::<tables::RailwayGunCounterInputs>()?;
@@ -905,11 +833,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
             }
         }
     }
-    /// The retreat-ban lookup's selected commander keys 0x297 (defending) and 0x298
-    /// (attacking), which it reads live: DivisionRetreatBans holds them at
-    /// the frame's hour.
     fn unit_retreat_ban(&self, unit: &CommonUnit<'_>, attacking: bool) -> Fact<bool> {
-        // Railway returns zero without reading group or leader.
         if unit.class == CommonClass::RailwayGun {
             return Ok(false);
         }
@@ -928,8 +852,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let Some((row, inputs)) = self.selected_railway(source)? else {
             return Ok(false);
         };
-        // Require positive indexed level, zero cooldown, then positive building
-        // maximum and health. Read neither sorted pairs nor target rail state.
         let level = inputs
             .levels
             .as_ref()
@@ -950,7 +872,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let at = rows
             .binary_search_by_key(&combat.combat, |row| row.id)
             .map_err(|_| "selected counterattack combat side missing")?;
-        // Any attacker standing there decides, whatever the others' locations.
         let mut unknown = None;
         for location in self.attacker_locations(&rows[at])? {
             match location {
@@ -1011,8 +932,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let Some((row, inputs)) = self.selected_railway(province)? else {
             return Ok(false);
         };
-        // Test cooldown against zero, including signed-negative values. Do not
-        // read pairs, indexed level or building health, or approximate by sign.
         if inputs
             .pair_count
             .ok_or("selected railway raw pair count capture refused")?
@@ -1028,8 +947,6 @@ impl CommonMoveWorld for Moves<'_, '_> {
     }
 }
 
-/// Reached warning arguments resolve through existing content stack services.
-/// No warning key, country-name ladder or state-name ladder is content-guessed.
 pub struct CommonText<'a> {
     pub frame: &'a DecodedFrame,
     pub loc: &'a installed_content_localisation::localisation::Localisation,
@@ -1158,7 +1075,6 @@ impl CommonMoveText for CommonText<'_> {
         key: &str,
         rule: &installed_content_core::adjacency_rules::AdjacencyRule,
     ) -> Fact<String> {
-        // Use the reached adjacency rule's stored name key for localization.
         let name = self.plain(&rule.name)?;
         localise(
             self.loc,
@@ -1170,7 +1086,6 @@ impl CommonMoveText for CommonText<'_> {
         )
     }
     fn warning(&self, key: &str, raw: i64) -> Fact<String> {
-        // Bind `VAL` including its terminating NUL with precision zero.
         let value = installed_content_core::fixed5::fixed5_to_string(raw, 0);
         localise(
             self.loc,
@@ -1183,9 +1098,6 @@ impl CommonMoveText for CommonText<'_> {
     }
 }
 
-/// The selected transport line's message operands over what is recorded: the naval-base census,
-/// actual locations, controller areas and the transport admission's naval-base branches; the
-/// later admission operands, weights and risk refuse by [`TRANSPORT_RETIRED`].
 struct PartialTransport<'m, 'w, 'a> {
     moves: &'m Moves<'w, 'a>,
 }
@@ -1227,9 +1139,6 @@ impl transport::MessageInputs for PartialTransport<'_, '_, '_> {
     }
 }
 
-/// The transport admission's inputs: its naval-base branches read the census and content,
-/// its access stage the hour's relations; the other later branches belonged to the retired
-/// selected transport preview.
 struct PartialAdmission<'m, 'w, 'a> {
     moves: &'m Moves<'w, 'a>,
     unit: transport::Unit,

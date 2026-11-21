@@ -115,14 +115,12 @@ fn certified_temperature_inputs_match_fixed_neighbor_passes_and_synchronous_fall
             Err("province weather absent".into())
         );
     }
-    // A seek and another branch cannot borrow a same-hour frame's certificate.
     let mut sought = (*weather(&[], &[0, 100, 300])).clone();
     sought.branch = 2;
     let sought = Arc::new(sought);
     assert!(prepared.ready(&sought).is_none());
     prepared.prepare(&sought, Ok(&content));
     assert_eq!(&*prepared.ready(&sought).unwrap().unwrap(), &[0, 100, 300]);
-    // Dead frame entries are reclaimed by the next builder, not by the window.
     assert_eq!(prepared.ready.lock().unwrap().len(), 1);
 }
 
@@ -140,7 +138,6 @@ fn certified_temperature_witness_failures_remain_refusals_even_after_a_success()
     assert_eq!(inputs.at(&bad, rows, Ok(&content), 1), reason);
     let fresh = TemperaturesByFrame::default();
     assert_eq!(fresh.at(&bad, rows, Ok(&content), 1), reason);
-    // A witness failure must not poison a different immutable frame's result.
     assert_eq!(
         inputs.at(
             &good,
@@ -366,7 +363,6 @@ fn out_of_order_frames_resume_held_derivations_only_while_their_frames_live() {
         let fallback = inputs.fallback.lock().unwrap();
         assert_eq!((fallback.held(), fallback.held_bytes()), (0, 0));
     }
-    // A dropped frame's derivation goes at the next preparation.
     let kept = Arc::clone(&frames[2]);
     drop(frames);
     let again = weather(&hours[..2], &sequence[1].1);

@@ -1,4 +1,3 @@
-//! Owned synthetic country/diplomacy layouts; no game process or copied content.
 use super::*;
 use engine_native::{
     ccountry_database, cdiplomacy_status, cgame_state, memory::CountedMemory, memory::LiveMemory,
@@ -14,7 +13,6 @@ const COUNTRY_BYTES: usize = 0x1600;
 const DIPLOMACY_BYTES: usize = 0x300;
 const SUBJECTS_PER_COUNTRY: usize = 3;
 
-/// Also the carried-row fixture ([`super::store`]).
 pub(super) struct World {
     pub(super) bytes: Vec<u8>,
     pub(super) origin: usize,
@@ -33,8 +31,6 @@ impl World {
         let subjects = diplomacy + countries * DIPLOMACY_BYTES;
         let mut bytes = vec![0; subjects + countries * SUBJECTS_PER_COUNTRY * 4];
         let origin = bytes.as_ptr() as usize;
-        // The synthetic module's singleton falls at buffer offset zero. Its
-        // vtable addresses are compared, never dereferenced.
         let module = origin
             .checked_sub(ccountry_database::SINGLETON_RVA.0)
             .unwrap();
@@ -208,8 +204,6 @@ enum Hour {
     AllChanged,
 }
 
-/// Real guarded capture and off-thread conversion. Timings have no counters;
-/// the separate accounting pass uses the production raw-source boundary.
 #[test]
 #[ignore = "synthetic ordered-subject capture and hourly encoded delta costs"]
 fn border_effect_subject_scale_bench() {
@@ -226,8 +220,6 @@ fn border_effect_subject_scale_bench() {
             for pass in 0..67 {
                 world.advance(hour, pass);
                 captured.reset();
-                // SAFETY: reads target only world.bytes, whose allocation and
-                // contents stay stable throughout this synchronous call.
                 let live = unsafe { LiveMemory::new() };
                 let start = Instant::now();
                 captured.capture(&live, world.module, world.state());
@@ -246,7 +238,6 @@ fn border_effect_subject_scale_bench() {
                 }
                 black_box(&captured);
             }
-            // SAFETY: the fixture allocation and pointers remain valid.
             let memory = CountedMemory::new(unsafe { LiveMemory::new() });
             let accounting = crate::read_accounting::Capture::new();
             captured.capture(&memory, world.module, world.state());

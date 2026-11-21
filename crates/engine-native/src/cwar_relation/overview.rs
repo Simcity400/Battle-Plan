@@ -1,5 +1,3 @@
-//! Ordered war-overview, representative-selection and naming operands.
-//! See war_overview.md. Worker storage grows from original acquired headers.
 #[cfg(test)]
 #[path = "overview_tests.rs"]
 mod tests;
@@ -13,10 +11,8 @@ use engine_sites::Rva;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnedRow {
-    /// Authenticated sources for consumers in this census; never serialized.
     pub source: Source,
     pub owner: u32,
-    /// Position in diplomacy's complete owned vector, not the filtered war list.
     pub ordinal: u32,
     pub first_country: u32,
     pub second_country: u32,
@@ -25,7 +21,6 @@ pub struct OwnedRow {
     pub second_goal_count: u32,
 }
 
-/// Sources authenticated by the owned-war census at this boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Source {
     pub relation: usize,
@@ -41,10 +36,7 @@ pub struct CountryRow {
     pub major: u8,
     pub divisions: i32,
     pub factories: i32,
-    /// Cached subject predicate toward the recorded viewpoint, including retired
-    /// pointers. This is not the active subject roster or a date-derived test.
     pub view_subject: u8,
-    /// Zero means the strength and subject operands were not read.
     pub score_available: u8,
 }
 
@@ -104,7 +96,6 @@ fn diplomacy(
     Ok(pointer)
 }
 
-/// Headers only; off-thread first-hour sizing from actual owned/goal demand.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let mut demand = Demand::default();
@@ -132,8 +123,6 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand,
                 .owned
                 .checked_add(1)
                 .ok_or("war owned demand overflow")?;
-            // Both owners retain goals, avoiding a lookup from native order to
-            // a synthetic relation identity. Repeated occurrences stay repeated.
             for offset in super::GOALS {
                 demand.goals = demand
                     .goals
@@ -156,18 +145,12 @@ struct OwnerHeader {
     owned_start: usize,
     owned_count: usize,
 }
-/// Country roots authenticated by the same census, including countries with
-/// no owned war occurrence (retired counterpart lists can still name them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CountrySource {
     pub country: u32,
     pub slot: u32,
     pub diplomacy: usize,
 }
-/// Header fingerprints reuse discovery only. Pointer pages are still checked,
-/// and retired bytes, goal lists and every score operand are always fresh.
-/// Full refreshes and failures invalidate the retained discovery.
-/// One census visit of the latest complete walk.
 #[derive(Clone, Copy, Debug)]
 struct Visit {
     country: ccountry::Country,
@@ -175,15 +158,11 @@ struct Visit {
     has_war: bool,
 }
 
-/// The latest complete walk, carried while its caller certifies that no writer
-/// of the owned occurrences, their relations or their goals ran since.
 #[derive(Debug, Default)]
 struct Held {
     visits: Vec<Visit>,
-    /// Owned rows in `DiscoveryCache::rows`.
     owned: usize,
     goals: Vec<cwar_goal::relation::Row>,
-    /// [`ccountry::copy_links_and_roster`] of that walk.
     countries: Vec<u8>,
 }
 
@@ -192,9 +171,6 @@ pub struct DiscoveryCache {
     headers: Vec<OwnerHeader>,
     pointers: Vec<usize>,
     types: Vec<u8>,
-    /// The previous hour's owned rows, which reused pages read, and this hour's,
-    /// swapped in after the walk: a flush partway through a country must never
-    /// overwrite rows a later page of it still has to read.
     rows: Vec<OwnedRow>,
     next_rows: Vec<OwnedRow>,
     reachable: Vec<bool>,
@@ -203,15 +179,12 @@ pub struct DiscoveryCache {
     scope: Option<(usize, usize)>,
     viewpoint: Option<Result<u32, &'static str>>,
     held: Option<Held>,
-    /// The walk being read, held once it completes.
     next: Held,
-    /// The latest walk published the held one.
     carried: bool,
 }
 impl DiscoveryCache {
     pub fn new(countries: usize, relations: usize) -> Self {
         Self::try_new(countries, relations).unwrap_or_else(|error| {
-            // The collector's construction guard stops before using this placeholder.
             let _ = crate::allocation::owned_vec::<u8>(Err(error));
             Self::try_new(0, 0).unwrap()
         })
@@ -256,11 +229,9 @@ impl DiscoveryCache {
         self.held = None;
         self.headers.fill(OwnerHeader::default());
     }
-    /// The owned rows of the held walk, which a carry would publish.
     pub fn held_rows(&self) -> Option<&[OwnedRow]> {
         self.held.as_ref().map(|held| &self.rows[..held.owned])
     }
-    /// Whether the latest walk published the held one without walking.
     pub fn carried(&self) -> bool {
         self.carried
     }
@@ -325,8 +296,6 @@ fn pointer(bytes: &[u8]) -> usize {
     u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize
 }
 
-// Keep the 32 KiB pointer scratch in its own frame, separate from the
-// walker's owned pages and type bytes, without retained storage.
 #[inline(never)]
 fn gather_owned_types(
     memory: &impl Memory,
@@ -494,8 +463,6 @@ fn copy_wars(
             wanted[1] = wanted[1]
                 .checked_add(list.count as usize)
                 .ok_or("war goal count overflow")?;
-            // Serialization visits complete goal lists; reserve from the original
-            // headers before publishing any goal.
             goals.ensure(wanted[1])?;
             let mut first = 0;
             while first < list.count && used[1] + planned < goals.len() {
@@ -533,7 +500,6 @@ fn copy_wars(
     Ok(())
 }
 
-/// Convenience for standalone callers; collector supplies retained scratch.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -569,16 +535,6 @@ pub fn walk_cached(
     )
 }
 
-/// The existing authenticated owner visit, lent to another capture without
-/// repeating the country or diplomacy authentication. Its errors stay with
-/// that capture; this walk keeps its independent outcome.
-///
-/// `certify` is asked whether no writer of the held walk's owned occurrences
-/// ([`DiscoveryCache::held_rows`]), their relations or their goals ran since.
-/// When it says so and the census visits the same countries through equal
-/// country links and roster, the held owned and goal rows are published and
-/// the held owners visited without reading any diplomacy, relation or goal;
-/// the viewpoint and the score rows are read as on every hour.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_cached_with_owners(
     memory: &impl Memory,
@@ -604,8 +560,6 @@ pub fn walk_cached_with_owners(
     )
 }
 
-/// Publishes the held walk when `certify` and the census allow
-/// ([`walk_cached_with_owners`]); false reads nothing.
 #[allow(clippy::too_many_arguments)]
 fn carry_held(
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -649,7 +603,6 @@ fn carry_held(
         return Ok(false);
     }
     output[..held.owned].copy_from_slice(&rows[..held.owned]);
-    // The swap after the walk keeps the held rows.
     next_rows[..held.owned].copy_from_slice(&rows[..held.owned]);
     goals[..held.goals.len()].copy_from_slice(&held.goals);
     (used[0], used[1]) = (held.owned, held.goals.len());
@@ -695,7 +648,6 @@ fn walk_cached_buffer(
     cache.next.visits.clear();
     cache.next.goals.clear();
     let witnessed = ccountry::copy_links_and_roster(memory, state, &mut cache.next.countries);
-    // A visit or goal that cannot be held leaves this walk unheld.
     let mut holdable = witnessed;
     let mut used = [0_usize; 3];
     let mut wanted = [0_usize; 3];
@@ -790,8 +742,6 @@ fn walk_cached_buffer(
                             .ok_or("war owned vector address overflow")?;
                     }
                 }
-                // Most owners fit in one page. Gather those exact spans together;
-                // larger modded vectors keep ordered bounded continuation pages.
                 let mut owned_pages = [0; 64 * 512];
                 let mut chunks = owned_pages.chunks_exact_mut(512);
                 let mut destinations: [&mut [u8]; 64] = std::array::from_fn(|i| {
@@ -886,8 +836,6 @@ fn walk_cached_buffer(
                         let pointers: [usize; 64] =
                             std::array::from_fn(|i| pointer(&handles[i * 8..]));
                         let mut types = [0; 64 * 4];
-                        // The type word is immutable for a relation's lifetime, but a
-                        // pointer can be recycled. Read it even on fingerprint hits.
                         let types = if first_ordinal == 0 {
                             &page_types[type_starts[index] * 4..(type_starts[index] + count) * 4]
                         } else {
@@ -1006,8 +954,6 @@ fn walk_cached_buffer(
                 cache.next.goals.extend_from_slice(&goals[..used[1]]);
             }
         }
-        // Majors have a row for every owned country; strength/subject operands
-        // below are limited to the viewpoint's candidate reach.
         for rows in scores[..used[2]].chunks_mut(64) {
             if score_failure.is_some() {
                 break;
@@ -1042,9 +988,6 @@ fn walk_cached_buffer(
                 }
             }
         }
-        // Both candidate sides include retained owned occurrences. Read every
-        // viewpoint counterpart and every active seed's owned counterpart,
-        // including retired occurrences.
         if let Some(view) = view {
             if cache.reachable.len() < countries.count() as usize {
                 score_failure.get_or_insert("war score reachability storage truncated");
@@ -1079,7 +1022,6 @@ fn walk_cached_buffer(
         if wanted[0] != used[0] {
             score_failure.get_or_insert("war score reachability owned rows truncated");
         }
-        // Building templates authenticated so far in this pass.
         let mut templates = crate::cproduction_status::WarFactoryTemplates::new();
         for row in &mut scores[..used[2]] {
             if score_failure.is_some() {
@@ -1126,7 +1068,6 @@ fn walk_cached_buffer(
     if wanted[0] != used[0] {
         cache.invalidate();
     } else if !cache.carried {
-        // The previous held walk's storage serves the next walk.
         let previous = cache.held.take();
         if holdable && wanted[1] == used[1] {
             let mut held = std::mem::replace(&mut cache.next, previous.unwrap_or_default());
@@ -1153,8 +1094,6 @@ fn walk_cached_buffer(
     outcomes
 }
 
-/// Cached subject predicate tests relation type and either endpoint against
-/// the target; retired status and dates are deliberately unread.
 fn cached_subject(
     memory: &impl Memory,
     base: usize,

@@ -1,6 +1,3 @@
-//! Owned division detail rows. Acquisition consumes the shared authenticated
-//! census once; the decode worker installs its results without replaying live
-//! pointer walks or reconstructing a memory-span index.
 
 use crate::{
     extended::production,
@@ -19,10 +16,6 @@ use replay_data::rows::TableId;
 const EMPTY: Outcome = Outcome::Unavailable {
     reason: "division details not captured",
 };
-/// Order is equipment, groups, requests, deliveries, produced. Every table
-/// retains its own capacity and outcome even though upgrade acquisition shares
-/// the army-owned parent graph. Groups retain one row per accepted census
-/// source; acquisition is worker-only and grows from each original live header.
 #[derive(Debug)]
 pub(crate) struct OwnedDetails {
     equipment: Vec<cequipment_variant_pool::DivisionRow>,
@@ -181,15 +174,10 @@ impl OwnedDetails {
             result.deliveries,
             result.produced,
         ]);
-        // The existing read group assigns its shared traversal cost to groups;
-        // child zero slots therefore never claim that their acquisition is free.
         let upgrade_ticks = qpc().saturating_sub(started).max(0) as u64;
         [equipment_ticks, upgrade_ticks, 0, 0, 0]
     }
 
-    /// Transfer ownership without copying rows. The displaced buffers return
-    /// to the same packet pool for the next callback. Prepare the displaced
-    /// group buffer here so both owners retain the census capacity bound.
     pub(crate) fn install(&mut self, captured: &mut production::Captured) {
         install(
             &mut self.equipment,
@@ -381,8 +369,6 @@ mod tests {
             );
             let reads = memory.reads.take();
             let scalars = memory.scalars.replace(0);
-            // This fixture uses eight-byte scalars and bulk reads. Their
-            // original copy path stays outside the four-byte optimization.
             assert_eq!(scalars, 0);
             let mut owned = OwnedDetails::new(sources.len());
             let allocated = owned.allocated_bytes();
@@ -599,8 +585,6 @@ mod tests {
             captured.tables()[9],
             replay_frame::frame::TableView::Complete(_)
         ));
-        // The actual native pool header, not its allocation capacity, supplied
-        // the exact initial demand above.
         assert_eq!(
             cpdx_array::Array::read(
                 &memory,
@@ -680,8 +664,6 @@ mod tests {
         captured.grow(&mut capacities);
         assert_eq!(capacities.rows[7], captured.groups.rows.len());
         assert!(owned.ready_for([1; 5]));
-        // The displaced packet has smaller logical rows; restore its retained
-        // prepared floors off-thread before measuring allocation-free reuse.
         owned.grow(sources.len());
         let allocated = owned.allocated_bytes();
         owned.capture(&memory, 0, &sources, Outcome::Rows { len: 1 }, [1; 5]);

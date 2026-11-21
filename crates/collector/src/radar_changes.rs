@@ -1,6 +1,3 @@
-//! Radar range operands, read only for newly demanded or writer-changed groups.
-//! The coverage census already authenticates each group and host. Its worker
-//! carries these additional operands under the group-update writer certificate.
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_map_air::{radar_group, radar_group::Symbol};
 use engine_native::Memory;
@@ -21,8 +18,6 @@ static READ: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
-/// Fingerprint of the supported radar-update entry prefix; bytes are read
-/// from the installation at run time, never stored in the source tree.
 #[derive(Clone, Copy)]
 struct Held {
     host: usize,
@@ -93,8 +88,6 @@ impl Cache {
     }
 }
 
-/// Runs inside the existing radar worker. Sizing and registry housekeeping
-/// remain here too; the capture gains no scan, allocation or native read.
 pub(crate) fn with_symbols<R>(
     memory: &impl Memory,
     capacity: usize,
@@ -204,7 +197,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // The enclosing family is disabled and drained before releasing its registries.
         unsafe { WATCHES.release() };
         *CACHE.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }

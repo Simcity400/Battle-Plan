@@ -45,7 +45,6 @@ import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesA
 const NO_WARNINGS: readonly string[] = [];
 type Part = 'efficiency' | 'output';
 
-/** The country's lines over the branch: their steps, final counts and names. */
 export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
@@ -53,7 +52,6 @@ export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, a
   return { track, tag, ...useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply, track?.source) };
 }
 
-/** One line's factor breakdown over the window holding `hour`: asked again only when the window changes. */
 export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | undefined, key: string | null, group: string, hour: number | null, detailHours: number, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const start = hour == null ? null : windowOf(detailHours, hour) * detailHours;
@@ -62,9 +60,6 @@ export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, tag
   return useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
 }
 
-/** One country's production lines. Following playback or pinned: the lines running then, like the game's production tab,
- * pushed at the head. Over the campaign or a range: one lane per line, its thickness the factories assigned. A line's
- * efficiency or output opens its factor breakdown. */
 export default function ProductionLinesWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const lines = useProductionLines(widget, runtime, active);
@@ -78,7 +73,6 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const reportShown = useShownHour();
   const shownAt = useRef(head.shownAt);
   shownAt.current = head.shownAt;
-  // A history lane shows its reply's hours; the hour it reports is the clock's.
   useShownEachFrame(runtime.clock, () => live ? shownAt.current() : Math.floor((track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour) ?? 0), live ? head.live : undefined);
   const motion = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -98,7 +92,6 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const shown: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : extent;
   const savedCountry = pinned && track ? readDatedCountry(options.productionCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null;
-  // The settings name a line by the reply's tag, which is a slot's tag at the branch's end.
   const lineTag = savedCountry?.tag ?? (tag && isSlotKey(tag) ? data?.tag : tag);
   const pinnedKey = pinned && track && lineTag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, lineTag, options.line) : null;
   const key = pinned ? pinnedKey : opened?.key ?? null;
@@ -149,10 +142,6 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   </div>;
 }
 
-/** The lines running at the hour, one row each, in the order asked: the equipment's art and names, factories assigned of
- * those requested, efficiency, output per week and the units made so far; with more columns, the queue place, IC per unit
- * and the organisation. Rows slide when the order changes. The numbers are the reply's live cells, painted in a frame
- * whenever they move, never by a render; missing lines say why, never "none". */
 function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
   reply: ProductionLinesAtReply; history: ProductionLinesReply | undefined; live: Live<LiveValues<number>>; report: () => void; more: boolean; glide: number;
   onBreakdown: (handle: string, part: Part) => void;
@@ -217,7 +206,6 @@ function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
     paint(true);
     return () => { remove(); stop(); repaint.current = () => {}; };
   }, [live]);
-  // Rows mounted or moved by a render are painted before they show.
   useLayoutEffect(() => repaint.current());
   if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
   if (!items.length && !rows.length) return <WidgetState kind="empty" message="No production lines running at this time." />;
@@ -263,8 +251,6 @@ function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
   </div>;
 }
 
-/** One lane per line across the campaign (or the chosen range): a band whose thickness is the factories assigned,
- * accented while it runs and grey once it has ended, named with its factories or when it ended. */
 function History({ data, name, extent, showEnded, active, hoursPerSecond, onMenu }: {
   data: ProductionLinesReply; name: string | null; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number | undefined;
   onMenu: (hour: number, x: number, y: number, key?: string) => void;

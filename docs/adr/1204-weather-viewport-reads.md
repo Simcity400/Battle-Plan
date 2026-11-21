@@ -1,0 +1,9 @@
+# 1204. Bound weather reads to the chart viewport
+
+Regional weather starts with the selected extent and the window's pixel budget until the plotted viewport is known. The plot's width is quantized, and its request waits until a pan, zoom or resize settles. Individual days are read in reusable blocks when the days fit the plot. A longer view requests its whole visible days folded from the first day into at most one column per pixel. Playback paints the moving playhead separately from viewport renders.
+
+The last reply can remain visible while another loads for the same recording, branch, measure and modifier. Hours outside its coverage remain marked as loading. The theatre filter reads membership at the end of the chosen extent and reports unrecorded membership. Within one folded column, conditions are weighted by observed days and retain a separate stripe for unknown days. Temperature averages use complete regional samples. A cell without an average uses the legend's blank “No average” state, while the modifier view hatches a column with no recorded modifier observation. A mixed column is approximate and its tooltip reports coverage and extrema. Fixed-point temperature is in degrees Celsius and modifiers use signed percentages.
+
+The province drill resolves the day under the pointer, including within a folded column, and reads its last displayed hour when pinned. A following drill receives pushed province values at the playback head and reports their read hour. Region, theatre and modifier choices come from the recorded content and the branch's last day.
+
+[Viewport queries](../../ui/src/widgets/weather-by-region/useWeather.ts) · [Weather columns](../../ui/src/widgets/weather-by-region/weatherData.ts) · [Province drill](../../ui/src/widgets/weather-by-region/RegionProvinces.tsx)

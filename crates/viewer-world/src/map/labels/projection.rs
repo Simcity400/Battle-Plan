@@ -1,6 +1,4 @@
 use super::*;
-/// The camera-independent tables the labels read, built once per hour and
-/// viewing country and reused by every camera's [`prepare`].
 #[derive(Clone, Debug, Default)]
 pub struct LabelTables {
     pub display: map_display_data::landscape::Labels,
@@ -8,22 +6,14 @@ pub struct LabelTables {
     pub(super) tags: BTreeMap<u32, String>,
     pub(super) allegiances: BTreeMap<u32, Allegiance>,
     pub(super) capitals: BTreeSet<u32>,
-    /// Positive victory points and capitals in the hour's province row order.
     pub(super) candidates: Vec<usize>,
     pub(super) names: BTreeMap<u32, Result<Option<Arc<str>>, String>>,
-    /// State id to its raw owner link, from `States`.
     state_owners: BTreeMap<u32, u32>,
-    /// Why a state the `States` rows lack has no known owner.
     states_gap: String,
-    /// Canonical slot to exact original tag or tag bytes or its local refusal.
-    /// Slot zero comes from the authenticated ReservedCountryNaming singleton.
     original_tags: BTreeMap<u32, Result<String, String>>,
-    /// Why a country the `CountryAppearance` rows lack has no known one.
     appearance_gap: String,
 }
 
-/// Why a table's rows lack an entry: a complete table lacks it, a truncated
-/// or unavailable one may not have reached it.
 fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> String {
     match available {
         Available::Complete(_) => "the complete table has no row for it".into(),
@@ -38,7 +28,6 @@ fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> Strin
 }
 
 impl LabelTables {
-    /// Reads one hour's links, tags, war sides and capitals for `ours`.
     pub fn read(frame: &DecodedFrame, ours: u32, localisation: &Localisation) -> io::Result<Self> {
         Self::read_inner(frame, Some(ours), localisation)
     }
@@ -178,8 +167,6 @@ impl LabelTables {
         Ok(tables)
     }
 
-    /// State-owner tag operands used by victory-point localisation. The original
-    /// tag and own tag remain separate recorded fields.
     pub(super) fn victory_point_tag(&self, state: u32) -> Result<&str, String> {
         let slot = if state == 0 {
             0
@@ -211,7 +198,6 @@ impl LabelTables {
     }
 }
 
-/// The province carrying each capital star ([`capital_choices`]).
 pub(super) fn capital_provinces(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -222,7 +208,6 @@ pub(super) fn capital_provinces(
         .collect())
 }
 
-/// The capital states whose star is withheld, each with why ([`capital_choices`]).
 pub(super) fn withheld_capitals(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -233,7 +218,6 @@ pub(super) fn withheld_capitals(
         .collect())
 }
 
-/// One limitation line per reason a capital state's star is withheld, naming the states.
 pub fn note_withheld_capitals(
     out: &mut viewer_foundation::map::tables::Limitations,
     frame: &DecodedFrame,
@@ -243,15 +227,12 @@ pub fn note_withheld_capitals(
     Ok(())
 }
 
-/// Why a capital state's star is withheld: no province with victory points.
 pub const NO_VICTORY_POINTS: &str = "none of its provinces has victory points, and the anchor the game falls \
      back on is not recorded";
 
-/// Why a capital state's star is withheld: a tie for the most victory points.
 pub const TIED_VICTORY_POINTS: &str = "its provinces tie for the most victory points, and the state's province \
      order that settles the tie is not recorded";
 
-/// [`note_withheld_capitals`]' lines from the withheld states, in ascending state order, each with why.
 pub fn note_withheld(out: &mut viewer_foundation::map::tables::Limitations, states: impl IntoIterator<Item = (u32, &'static str)>) {
     let mut withheld: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (state, why) in states {
@@ -270,13 +251,6 @@ pub fn note_withheld(out: &mut viewer_foundation::map::tables::Limitations, stat
     }
 }
 
-/// Each controller's current capital state and the province its star stands on.
-/// The game takes the first province of the state's own order with the most
-/// positive victory points, else an unrecorded country or state anchor. The
-/// recorded rows lack that order, so a tie for the most is withheld, as is a
-/// state without victory points. Missing `Politics` or `States` rows cannot
-/// establish a capital; table limitations report those gaps while ordinary
-/// labels remain available.
 fn capital_choices(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -292,8 +266,6 @@ fn capital_choices(
                 .map(|&slot| (slot, politics.capital as u32))
         })
         .collect();
-    // A capital icon is created only when the state controller has this state
-    // as its current capital. `States` records the controller independently.
     let wanted: BTreeSet<u32> = rows::<tables::States>(frame)?
         .rows()
         .iter()
@@ -305,7 +277,6 @@ fn capital_choices(
         })
         .map(|state| state.id)
         .collect();
-    // Each wanted state's most positive victory points and the provinces holding them.
     let mut best: BTreeMap<u32, (i32, Vec<u32>)> = wanted
         .into_iter()
         .map(|state| (state, (0, Vec::new())))
@@ -335,18 +306,6 @@ fn capital_choices(
         .collect())
 }
 
-/// The recorded `ProvinceNames` rows of one hour, by province.
-///
-/// The table is sparse: a province with no row has no override, which is the
-/// whole meaning of absence **from a complete table**. Absence from a truncated
-/// or unavailable one means nothing at all, and this function cannot tell the
-/// two apart — nor does it have to. Either way the province falls through to the
-/// static ladder and keeps the name it had; what changes is whether the hour is
-/// entitled to be silent about it, and that is `viewer_foundation::map::tables::limitations`'
-/// judgement, not this one's.
-///
-/// A later row wins over an earlier one for the same province, which is the only
-/// reading a table keyed by province admits.
 pub(super) fn province_overrides(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, &[u8]>> {
     Ok(rows::<tables::ProvinceNames>(frame)?
         .rows()
@@ -355,8 +314,6 @@ pub(super) fn province_overrides(frame: &DecodedFrame) -> io::Result<BTreeMap<u3
         .collect())
 }
 
-/// The provinces whose recorded override this port cannot lay out, for the
-/// `Field ProvinceNames.name` limitation line.
 pub fn unreadable_overrides(frame: &DecodedFrame) -> io::Result<Vec<u32>> {
     let mut out: Vec<u32> = province_overrides(frame)?
         .into_iter()

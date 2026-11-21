@@ -1,15 +1,3 @@
-//! The game's reading of `interface/**/*.gfx`: all stored sprite fields, fonts and color
-//! tables, read token by token with the GUI reader's lexer, key loop, scanners and variables.
-//!
-//! The file's persistent loop reads `spriteTypes` (0x35), `objectTypes` (0x37) and
-//! `bitmapfonts` (0x128) without checking their values; other keys are unexpected and skip a
-//! block. Within them, the graphics file reader builds and reads each kind. Sprite declarations
-//! are pushed onto their registry bucket's front, so case-sensitive lookup finds the latest.
-//! Object kinds (`arrowType`, `animatedmaptext`, `pdxmesh`, `pdxparticle`) keep their token
-//! walks and common names in a separate registry. Fonts, overrides and `textcolors` use
-//! [`super::fonts`]; global `cursor_offset` and `selection_offset` are also read. Other keys
-//! are unexpected. Each sprite reader hands unmatched keys to common `name`, `loadType` and
-//! `norefcount` handling; remaining keys report an unexpected token and skip a block.
 
 use std::{collections::BTreeMap, io};
 
@@ -24,43 +12,24 @@ use super::{
 };
 use crate::ResolvedLayers;
 
-/// The default effect for plain sprites, cornered tiles and text sprites, restored when their
-/// authored effect is empty during resource initialization.
 pub const DEFAULT_EFFECT: &[u8] = b"gfx/FX/buttonstate.lua";
 
-/// Degrees to radians as the readers multiply.
 const RADIANS: f32 = 0.017_453_292;
 
-/// One `animation` block: a 0x90-byte record with the sprite reader's defaults, retained when
-/// `animationtype` is set.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AnimationData {
-    /// `animationmaskfile` and `animationtexturefile`.
     pub mask_file: Vec<u8>,
     pub texture_file: Vec<u8>,
-    /// `animationrotation`: `%f` into a zeroed local times the radian factor.
     pub rotation: f32,
-    /// `animationlooping` (1).
     pub looping: bool,
-    /// `animationtime` (1.0) and `animationdelay` (0).
     pub time: f32,
     pub delay: f32,
-    /// `animationtexturescale`: the reciprocal of each component (1.0 for 0).
     pub texture_scale: [f32; 2],
-    /// `animationrotationoffset`.
     pub rotation_offset: [f32; 2],
-    /// `animationtype`: `scrolling` 1, `rotating`/`rotating_cw` 2, `rotating_ccw` 3, `pulsing` 4,
-    /// lowered; a third `animationrotationoffset` component writes its bits.
     pub kind: i32,
-    /// `animationblendmode`: `add` 0, `multiply` 1, `overlay` 2, `normal` 3.
     pub blend_mode: i32,
-    /// `animationframes` (all): each listed state's bit (`1 << (v & 31)`).
     pub frames: u32,
-    /// `animationtriggerframes`: ORed across repeats.
     pub trigger_frames: u32,
-    /// The texture's texel size (0, 0), used to scale record UVs. Animation initialization writes
-    /// the loaded texture's size when `animationtexturefile` is set; otherwise it retains the
-    /// eleventh and twelfth `animationrotationoffset` components.
     pub texture_size: [i32; 2],
 }
 
@@ -84,60 +53,28 @@ impl Default for AnimationData {
     }
 }
 
-/// A plain sprite's fields and defaults: `spriteType` or `quadTextureSprite`, and the base of
-/// frame-animated, tile and masked-shield kinds.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Plain {
-    /// `textureFile`.
     pub texture: Vec<u8>,
-    /// `noOfFrames` (`%i`, 1), unchecked.
     pub frames: i32,
-    /// Every kept `animation` block, in order.
     pub animations: Vec<AnimationData>,
-    /// `defaultAnimationTime` (`%f`, 1.0).
     pub default_animation_time: f32,
-    /// `effectFile`, as read; [`Plain::effect`] is what the game loads.
     pub effect_file: Vec<u8>,
-    /// `transparencecheck`, and the flag every assignment sets.
     pub transparence_check: bool,
     pub transparence_check_set: bool,
-    /// `clicksound`.
     pub click_sound: Vec<u8>,
-    /// `allwaystransparent`/`alwaystransparent`: frame hit test passes the pointer through.
     pub always_transparent: bool,
-    /// `can_be_lowres`.
     pub can_be_lowres: bool,
-    /// The frame direction (0): `framedirectiony` stores a boolean read into a zeroed local as 0 or
-    /// 1; values other than `yes` or `no` store 0. A tenth `anchor` component writes its bits.
-    /// Frame dimensions and geometry run down the texture only for 1. Geometry writes the frame
-    /// step for 0, 1 and 2 (both axes), retaining [`Plain::frame_step`] for other values.
     pub frame_direction: i32,
-    /// U and V frame steps (0, 0), used to scale the frame offset. Geometry rewrites them for
-    /// direction 0, 1 or 2; otherwise the seventh and eighth `anchor` components remain.
     pub frame_step: [f32; 2],
-    /// The U flip (0), written by the low byte of an eleventh `anchor` component: geometry mirrors
-    /// U when nonzero. Plain sprite draws replace it with the drawable's flip before each draw;
-    /// frame animation draws do not.
     pub flip_u: bool,
-    /// The texture's registered id (-1), which a 47th `anchor` component writes: The base texture
-    /// loading reads a lazily loaded sprite's texture only while it is -1.
     pub texture_id: i32,
-    /// `masking_texture`.
     pub masking_texture: Vec<u8>,
-    /// `legacy_lazy_load`: the startup flag, set to 1 during application startup.
     pub legacy_lazy_load: bool,
-    /// `dx_offset` ((-0.5, 0.5)): added to each vertex on graphics backend 0.
     pub dx_offset: [f32; 2],
-    /// `anchor`, which icon position update subtracts under `center_on_anchor`. Further components
-    /// write on with no bound (`super::spill`).
     pub anchor: [f32; 2],
-    /// The vertical stretch (1.0), written by a fourth `anchor` component. Plain sprite draws
-    /// replace it and [`Plain::v_scale`] with the drawable's values before every draw; frame
-    /// animation draws do so only when the drawable's values are not both 1.0.
     pub stretch: f32,
-    /// The frame step's V scale (1.0), which a fifth `anchor` component writes.
     pub v_scale: f32,
-    /// `generate_mip_maps`.
     pub generate_mip_maps: bool,
 }
 
@@ -170,8 +107,6 @@ impl Default for Plain {
 }
 
 impl Plain {
-    /// The effect the game loads: `effectFile`, or the default when it is empty
-    /// (animation initialization).
     pub fn effect(&self) -> &[u8] {
         if self.effect_file.is_empty() {
             DEFAULT_EFFECT
@@ -180,14 +115,10 @@ impl Plain {
         }
     }
 
-    /// Whether the frames run down the texture (frame dimensions calculation compares the frame
-    /// direction with 1).
     pub fn frame_direction_y(&self) -> bool {
         self.frame_direction == 1
     }
 
-    /// `(columns, rows)` of frame dimensions calculation: the frame count across, or down when the
-    /// direction is 1 (the row count is 1).
     pub fn grid(&self) -> [i32; 2] {
         if self.frame_direction_y() {
             [1, self.frames]
@@ -196,9 +127,6 @@ impl Plain {
         }
     }
 
-    /// The frame step used to draw, given the step geometry computes along the strip (`along`,
-    /// U for columns and V for rows): `(along, 0)` for direction 0, `(0, along)` for 1, both
-    /// for 2. Other directions retain [`Plain::frame_step`] without rewriting it.
     pub fn draw_step(&self, along: [f32; 2]) -> [f32; 2] {
         match self.frame_direction {
             0 => [along[0], 0.0],
@@ -209,16 +137,11 @@ impl Plain {
     }
 }
 
-/// A `frameAnimatedSpriteType`'s own fields and defaults.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameAnimation {
-    /// Seconds per frame (1.0): `animation_rate_spf` as read, `animation_rate_fps` inverted after
-    /// its scan (a failed scan inverts the old value).
     pub seconds_per_frame: f32,
-    /// `looping` and `play_on_show`.
     pub looping: bool,
     pub play_on_show: bool,
-    /// `pause_on_loop` (`%f`).
     pub pause_on_loop: f32,
 }
 
@@ -233,36 +156,24 @@ impl Default for FrameAnimation {
     }
 }
 
-/// A `maskedShieldType`'s fields, checked before plain sprite fields.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MaskedShield {
-    /// `textureFile1` and `textureFile2`.
     pub texture1: Vec<u8>,
     pub texture2: Vec<u8>,
-    /// `effectFile`; the plain sprite's own effect file keeps its default.
     pub effect_file: Vec<u8>,
-    /// `small`: flag atlas selection takes the small flag atlas.
     pub small: bool,
 }
 
-/// A `corneredTileSpriteType`'s fields and defaults.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CorneredTile {
-    /// `noOfFrames` (`%u`, 1).
     pub frames: u32,
     pub texture: Vec<u8>,
-    /// `size` and `borderSize`: integer point reader into the field.
     pub size: [i32; 2],
     pub border: [i32; 2],
-    /// `effectFile`; [`CorneredTile::effect`] is the resolved effect loaded for it.
     pub effect_file: Vec<u8>,
     pub always_transparent: bool,
-    /// `tilingCenter`.
     pub tiling_center: bool,
-    /// The animation rate: `animation_rate_fps` as read, `animation_rate_spf` inverted; `None`
-    /// while unwritten (the constructor leaves it uninitialised).
     pub animation_rate: Option<f32>,
-    /// `looping`.
     pub looping: bool,
 }
 
@@ -276,118 +187,76 @@ impl CorneredTile {
     }
 }
 
-/// A `progressbartype`'s fields and defaults.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Progress {
-    /// `textureFile1` and `textureFile2`: resource construction uses the "Texture" technique when
-    /// both are set, else "Color".
     pub texture1: Vec<u8>,
     pub texture2: Vec<u8>,
-    /// `size`: integer point reader into the field; size lookup in every mode.
     pub size: [i32; 2],
-    /// `color` and `colorTwo`: color reader, white.
     pub color: [f32; 4],
     pub color_two: [f32; 4],
-    /// `effectFile`, as read.
     pub effect_file: Vec<u8>,
-    /// `horizontal` (1).
     pub horizontal: bool,
     pub always_transparent: bool,
-    /// `steps` (`%i`, 100).
     pub steps: i32,
 }
 
-/// A `textSpriteType`'s fields and defaults.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TextSprite {
-    /// `noOfFrames` (`%u`, 1).
     pub frames: u32,
     pub texture: Vec<u8>,
-    /// `defaultAnimationTime` (`%f`, 1.0).
     pub default_animation_time: f32,
-    /// `effectFile`; empty text loads the default.
     pub effect_file: Vec<u8>,
     pub click_sound: Vec<u8>,
 }
 
-/// A `resizeableSpriteType`'s fields and defaults.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Resizeable {
-    /// The frame count (`%u`, 1): `noOfFrames` and `defaultAnimationTime` both write it.
     pub frames: u32,
     pub texture: Vec<u8>,
-    /// `size`: integer point reader into the field; the drawable's size.
     pub size: [i32; 2],
 }
 
-/// A `circularProgressBarType`'s fields and defaults; its shader is
-/// `gfx/FX/circularprogressbar.shader`, technique `CircularProgressBar`.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CircularProgress {
     pub texture1: Vec<u8>,
     pub texture2: Vec<u8>,
-    /// `size` (`%i`): a scalar.
     pub size: i32,
-    /// `rotation`: `%f`, then the field times the radian factor, even when the scan stored nothing.
     pub rotation: f32,
-    /// `amount` (`%f`).
     pub amount: f32,
 }
 
-/// A `PieChartType`'s fields and defaults; its effect is `gfx/FX/color.lua`, technique `Color`.
 #[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PieChart {
-    /// `size` (`%i`), which the constructor leaves uninitialised: `None` until written.
     pub size: Option<i32>,
-    /// `colors`: one colour per entry, `rgb` a color object, `hsv` a color object then The
-    /// HSV-to-RGB conversion, anything else the current colour again.
     pub colors: Vec<[f32; 4]>,
 }
 
-/// A `LineChartType`'s fields and defaults.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LineChart {
-    /// `size`: integer point reader into the field.
     pub size: [i32; 2],
-    /// `effectFile` (`gfx/FX/linechart.lua`).
     pub effect_file: Vec<u8>,
-    /// Half the line width: `linewidth` read by fixed5 reader into a zeroed `i64`, then `(float)v /
-    /// 100000 * 0.5` (0.5).
     pub half_width: f32,
 }
 
-/// A sprite kind, by the reader that reads it, with every field it stores.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SpriteKind {
-    /// `spriteType` (0x36) or `quadTextureSprite` (0x84).
     Plain(Plain),
-    /// `frameAnimatedSpriteType` (0x1C8).
     FrameAnimated {
         plain: Plain,
         animation: FrameAnimation,
     },
-    /// `tileSpriteType` (0x150): the plain keys and `size`.
     Tile { plain: Plain, size: [i32; 2] },
-    /// `maskedShieldType` (0x10F), built by graphics resource reader.
     MaskedShield { plain: Plain, shield: MaskedShield },
-    /// `corneredTileSpriteType` (0x55).
     CorneredTile(CorneredTile),
-    /// `progressbartype` (0x112).
     Progress(Progress),
-    /// `textSpriteType` (0x47).
     Text(TextSprite),
-    /// `resizeableSpriteType` (0x46).
     Resizeable(Resizeable),
-    /// `circularProgressBarType` (0x310).
     CircularProgress(CircularProgress),
-    /// `PieChartType` (0x153).
     PieChart(PieChart),
-    /// `LineChartType` (0x168).
     LineChart(LineChart),
 }
 
 impl SpriteKind {
-    /// The kind's keyword, as the lexer lowers it.
     pub fn keyword(&self) -> &'static str {
         match self {
             Self::Plain(_) => "spritetype",
@@ -404,7 +273,6 @@ impl SpriteKind {
         }
     }
 
-    /// The `clicksound` the kind declares, empty when it has none.
     pub fn click_sound(&self) -> &[u8] {
         match self {
             Self::Text(text) => &text.click_sound,
@@ -412,7 +280,6 @@ impl SpriteKind {
         }
     }
 
-    /// The plain sprite fields of the plain family.
     pub fn plain(&self) -> Option<&Plain> {
         match self {
             Self::Plain(plain)
@@ -434,23 +301,15 @@ impl SpriteKind {
     }
 }
 
-/// Authored arrow fields and constructor defaults. Asset names retain their string-reader
-/// bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrowDefinition {
-    /// `size` (1) and `endAt` (1).
     pub size: f32,
     pub end_at: f32,
-    /// Both color object objects start white.
     pub color: [f32; 4],
     pub color_two: [f32; 4],
-    /// `height` and `type` are uninitialised until a successful read. Consumers that need either
-    /// unset field must refuse it; the movement draw uses neither.
     pub height: Option<f32>,
     pub arrow_type: Option<i32>,
-    /// `heading` (0.2).
     pub heading: f32,
-    /// `texture`, `normal`, `specular`, `overlay`, `effect`, each initially empty.
     pub texture: Vec<u8>,
     pub normal: Vec<u8>,
     pub specular: Vec<u8>,
@@ -477,17 +336,11 @@ impl Default for ArrowDefinition {
     }
 }
 
-/// An animated map text type: its constructor defaults and the fields its
-/// reader sets.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimatedMapTextDefinition {
-    /// `speed`; the constructor's default is the f32 word `0x3C23D70A`.
     pub speed: f32,
-    /// `textblock`, updated in place by each block.
     pub text_block: TextBlock,
-    /// `position`, initially zero. A fourth component writes `maxwidth`'s bits.
     pub position: [f32; 3],
-    /// `maxwidth`, initially -1.
     pub max_width: i32,
 }
 
@@ -502,8 +355,6 @@ impl Default for AnimatedMapTextDefinition {
     }
 }
 
-/// The four kinds sharing graphics file reader's object registry. Cross-kind replacement retains
-/// the latest identity, so a different kind cannot expose an earlier declaration of that name.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectKind {
     Arrow(ArrowDefinition),
@@ -512,73 +363,49 @@ pub enum ObjectKind {
     PdxParticle,
 }
 
-/// An object declaration's common 3D fields and its kind's facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectFacts {
-    /// `name`, compared byte for byte in the separate object registry.
     pub name: Vec<u8>,
-    /// `scale` (1).
     pub scale: f32,
-    /// `cull_distance`, squared after every assignment, including failed conversions. Its default
-    /// is the square of 430.
     pub cull_distance_squared: f32,
     pub kind: ObjectKind,
     pub refusals: Vec<Refusal>,
 }
 
-/// What the game keeps of one sprite declaration.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpriteFacts {
-    /// `name` (common sprite reader, string reader): the last assignment.
     pub name: Vec<u8>,
-    /// `loadType`: `FRONTEND` 1, `BACKEND` 2, `INGAME` 3, byte for byte; anything else
-    /// 0. Resource timing only.
     pub load_type: u8,
     pub kind: SpriteKind,
-    /// What the game does not define in this declaration, by key.
     pub refusals: Vec<Refusal>,
 }
 
-/// The sprites one file declares, in declaration order, its font events, its last global
-/// `textcolors` block, the global cursor offsets, and what its own level refuses.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sprites {
     pub sprites: Vec<SpriteFacts>,
-    /// The separate object registry's declarations, in reading order.
     pub objects: Vec<ObjectFacts>,
-    /// Each `bitmapfont` and `bitmapfont_override`, in reading order.
     pub fonts: Vec<FontEvent>,
-    /// The global table: each `textcolors` block clears all 256 entries and reads its own, so
-    /// the last block wins.
     pub text_colors: Option<TextColors>,
-    /// `cursor_offset` (kept in the graphics context) and `selection_offset`: The integer component
-    /// reader into a zeroed `i64`, the last of each.
     pub cursor_offset: Option<[i32; 2]>,
     pub selection_offset: Option<[i32; 2]>,
     pub refusals: Vec<Refusal>,
 }
 
 impl Sprites {
-    /// The latest declaration of `name`, compared byte for byte.
     pub fn get(&self, name: &[u8]) -> Option<&SpriteFacts> {
         self.sprites.iter().rev().find(|sprite| sprite.name == name)
     }
 
-    /// The latest object of `name`, including a non-arrow declaration that replaced an arrow.
     pub fn object(&self, name: &[u8]) -> Option<&ObjectFacts> {
         self.objects.iter().rev().find(|object| object.name == name)
     }
 }
 
-/// Reads one `.gfx` file's declarations as the game reads them, with only the static keywords
-/// registered ([`read_sprites_with`] adds the content's dynamic tokens).
 #[cfg(any(test, feature = "test-support"))]
 pub fn read_sprites(bytes: &[u8]) -> Sprites {
     read_sprites_with(bytes, &DynamicTokens::default())
 }
 
-/// Reads one `.gfx` file's declarations as the game reads them, the lexer holding `dynamic`
-/// ([`DynamicTokens::read`]).
 pub fn read_sprites_with(bytes: &[u8], dynamic: &DynamicTokens) -> Sprites {
     let mut reader = Reader::new(
         crate::parser::native::lex(bytes, crate::parser::native::Mode::KeepMark),
@@ -602,18 +429,12 @@ pub fn read_sprites_with(bytes: &[u8], dynamic: &DynamicTokens) -> Sprites {
     read
 }
 
-/// The three bootstrap files, read first in order and excluded by exact name from the main
-/// pass.
 pub const BOOTSTRAP: [&str; 3] = [
     "interface/load_screen.gfx",
     "interface/load_screen_font.gfx",
     "interface/core_bare_minimum.gfx",
 ];
 
-/// Every `.gfx` path under `interface` in load order: existing bootstrap files requested by
-/// literal lowercase path through the virtual file system, then `interface/**/*.gfx` excluding
-/// those exact names. Visit each directory's files in byte order before its subdirectories,
-/// depth first. Enumerated paths retain layer bytes ([`ResolvedLayers::listed_layer_paths`]).
 pub fn gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     let listed = crate::defines::load_order_paths(
         b"interface/",
@@ -623,8 +444,6 @@ pub fn gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
             .iter()
             .map(Vec::as_slice),
     );
-    // Bootstrap requests use folder lookup in any case and archive lookup by exact bytes. The
-    // main pass excludes these exact names.
     let mut order = Vec::new();
     for path in BOOTSTRAP {
         if crate::content::open_request(layers, path.as_bytes())?.is_some() {
@@ -639,17 +458,10 @@ pub fn gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     Ok(order)
 }
 
-/// Every declaration of the content stack's `interface/**/*.gfx`, in the game's load order
-/// ([`gfx_order`]), each read by its path's bytes and its refusals prefixed with the path's text
-/// (a label for messages). The lexer holds the stack's startup dynamic tokens
-/// ([`DynamicTokens::read`]), registered before the interface is read.
 pub fn read_layers(layers: &ResolvedLayers) -> io::Result<Vec<(String, Sprites)>> {
     read_paths(layers, gfx_order(layers)?)
 }
 
-/// The gameplay object's full `.gfx` order: the interface pass ([`gfx_order`]), then every
-/// `gfx/**/*.gfx` in bytewise files-before-subdirectories order (graphics directory pass). All supported
-/// recorded coverage policies hash these descriptors; reads retain the stack's path bytes.
 pub fn object_gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     let mut order = gfx_order(layers)?;
     order.extend(crate::defines::load_order_paths(
@@ -660,8 +472,6 @@ pub fn object_gfx_order(layers: &ResolvedLayers) -> io::Result<Vec<Vec<u8>>> {
     Ok(order)
 }
 
-/// Reads the complete gameplay object registry's files using the same reader, including
-/// declarations in `gfx` that replace interface objects. [`object_registry`] projects lookup.
 pub fn read_object_layers(layers: &ResolvedLayers) -> io::Result<Vec<(String, Sprites)>> {
     read_paths(layers, object_gfx_order(layers)?)
 }
@@ -670,8 +480,6 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
     let dynamic = DynamicTokens::read(layers)?;
     let recorded = layers.without_overlays();
     let mut files = Vec::new();
-    // Each file is read and parsed on the machine's threads as it would be alone; the rest
-    // follows in load order, and the first file that fails to read fails the whole.
     let read = crate::parallel::map(&order, |bytes| {
         layers.product("interface file", 1, bytes, |layers| {
             let dynamic = DynamicTokens::read(layers)?;
@@ -681,8 +489,6 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
     for (bytes, file) in order.into_iter().zip(read) {
         let mut file = file?;
         let path = String::from_utf8_lossy(&bytes).into_owned();
-        // A visual mod's file whose declarations are refused is read as the recording's own
-        // file of that path when that reads whole, named.
         if let Some(refusal) = refusals_of(&file)
             && layers.supplied_by_visual_mod(&bytes)
             && let Some(recorded) = &recorded
@@ -719,7 +525,6 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
     Ok(files)
 }
 
-/// The first refusal anywhere in `file`: of the file itself, a sprite or an object.
 fn refusals_of(file: &Sprites) -> Option<String> {
     file.refusals
         .iter()
@@ -729,11 +534,9 @@ fn refusals_of(file: &Sprites) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// One sprite while its keys are read.
 struct Declaring {
     facts: SpriteFacts,
     refused: BTreeMap<String, String>,
-    /// The plain family's bytes past its named fields.
     image: Image,
 }
 
@@ -744,8 +547,6 @@ impl Declaring {
 }
 
 impl Reader<'_> {
-    /// Read a `spriteTypes`, `objectTypes` or `bitmapfonts` block. A nonblock value causes the
-    /// following tokens to be read as block keys, ending at `}` or EOF.
     fn gfx_block(&mut self, read: &mut Sprites) {
         while self.next_key() {
             let key = self.key.clone();
@@ -822,7 +623,6 @@ impl Reader<'_> {
                     continue;
                 }
                 Some("textcolors") => {
-                    // The global text color reader: the global table cleared, then read.
                     let mut table = TextColors::new();
                     let mut refusals = Vec::new();
                     self.text_colors(&mut table, &mut refusals);
@@ -830,8 +630,6 @@ impl Reader<'_> {
                     read.text_colors = Some(table);
                     continue;
                 }
-                // Read integer components into a zeroed 8-byte local and beyond it
-                // ([`OffsetFrame`]).
                 Some(word @ ("cursor_offset" | "selection_offset")) => {
                     let mut written = Vec::new();
                     let result =
@@ -863,7 +661,6 @@ impl Reader<'_> {
         }
     }
 
-    /// One sprite declaration: its reader's key loop over the tokens after the value.
     fn sprite(&mut self, kind: SpriteKind) -> SpriteFacts {
         let mut sprite = Declaring {
             facts: SpriteFacts {
@@ -907,12 +704,10 @@ impl Reader<'_> {
         facts
     }
 
-    /// The common sprite reader: the keys every sprite kind's reader hands on.
     fn base_key(&mut self, sprite: &mut Declaring, word: &str) -> bool {
         let text = self.value.text.clone();
         match word {
             "name" => sprite.facts.name = read_string(&text),
-            // Compared byte for byte; anything else, a malformed value included, stores 0.
             "loadtype" => {
                 sprite.facts.load_type = match read_string(&text).as_slice() {
                     b"FRONTEND" => 1,
@@ -921,19 +716,16 @@ impl Reader<'_> {
                     _ => 0,
                 };
             }
-            // Read into a local and dropped.
             "norefcount" => {}
             _ => return false,
         }
         true
     }
 
-    /// The kind's own switch; `false` hands the key to [`Self::base_key`].
     fn sprite_key(&mut self, sprite: &mut Declaring, word: &str) -> bool {
         let text = self.value.text.clone();
         match &mut sprite.facts.kind {
             SpriteKind::FrameAnimated { animation, .. } => {
-                // The frame animation reader's own keys, before the plain switch.
                 match word {
                     "animation_rate_fps" => {
                         if let Some(value) = crate::crt::scan_f32(&text) {
@@ -1080,7 +872,6 @@ impl Reader<'_> {
         self.plain_key(sprite, word, &text)
     }
 
-    /// Read the plain family's sprite fields.
     fn plain_key(&mut self, sprite: &mut Declaring, word: &str, text: &[u8]) -> bool {
         let Some(plain) = sprite.facts.kind.plain_mut() else {
             return false;
@@ -1090,7 +881,6 @@ impl Reader<'_> {
                 plain.frames = crate::crt::scan_i32(text).stored().unwrap_or(plain.frames)
             }
             "texturefile" => plain.texture = read_string(text),
-            // A kept record is appended to the animation records' vector ([`Records::append`]).
             "animation" => {
                 let result = self.animation_block().and_then(|record| match record {
                     Some(record) => sprite.image.records.append(record),
@@ -1130,7 +920,6 @@ impl Reader<'_> {
                 plain.always_transparent = read_bool(text).unwrap_or(plain.always_transparent);
             }
             "can_be_lowres" => plain.can_be_lowres = read_bool(text).unwrap_or(plain.can_be_lowres),
-            // A zeroed local: anything but `yes` stores 0.
             "framedirectiony" => {
                 plain.frame_direction = i32::from(read_bool(text).unwrap_or(false));
             }
@@ -1140,7 +929,6 @@ impl Reader<'_> {
             "generate_mip_maps" => {
                 plain.generate_mip_maps = read_bool(text).unwrap_or(plain.generate_mip_maps);
             }
-            // The axis component reader into the anchor or the `dx_offset` flags, and on past them.
             "anchor" | "dx_offset" => {
                 let (components, refused) = self.axis_components();
                 if let Some(reason) = refused {
@@ -1171,7 +959,6 @@ impl Reader<'_> {
         true
     }
 
-    /// The cornered tile reader's own switch.
     fn cornered_key(&mut self, sprite: &mut Declaring, word: &str, text: &[u8]) -> bool {
         let SpriteKind::CorneredTile(own) = &mut sprite.facts.kind else {
             return false;
@@ -1197,13 +984,11 @@ impl Reader<'_> {
             }
             "tilingcenter" => own.tiling_center = read_bool(text).unwrap_or(own.tiling_center),
             "looping" => own.looping = read_bool(text).unwrap_or(own.looping),
-            // Stored as read.
             "animation_rate_fps" => {
                 if let Some(value) = crate::crt::scan_f32(text) {
                     own.animation_rate = Some(value);
                 }
             }
-            // Stored, then inverted: an unwritten field stays unwritten.
             "animation_rate_spf" => {
                 if let Some(value) = crate::crt::scan_f32(text) {
                     own.animation_rate = Some(value);
@@ -1217,7 +1002,6 @@ impl Reader<'_> {
         true
     }
 
-    /// The progress bar reader's own keys.
     fn progress_key(&mut self, sprite: &mut Declaring, word: &str, text: &[u8]) -> bool {
         let SpriteKind::Progress(own) = &mut sprite.facts.kind else {
             return false;
@@ -1261,10 +1045,6 @@ impl Reader<'_> {
         true
     }
 
-    /// A pie chart's `colors` reads without checking the value. Until a peeked `}` or EOF, read
-    /// key/operator/value slots: `hsv` reads a color into one local, scales it and converts to
-    /// RGB; `rgb` reads a color, while unknown keys skip a block. Append the local after each
-    /// entry; it starts white and persists. Consume the closing `}`.
     fn pie_colors(&mut self) -> Vec<[f32; 4]> {
         let mut colors = Vec::new();
         let mut local = [1.0f32; 4];
@@ -1289,18 +1069,12 @@ impl Reader<'_> {
         }
     }
 
-    /// Read key/operator/value slots with extra diagnostics enabled.
     fn key_operator_value_logged(&mut self) {
-        // The same walk as the key loop's.
         if !self.peek().ends_block() {
             self.next_key();
         }
     }
 
-    /// Read animation tokens after the value into the 0x90-byte temporary record. Return
-    /// `Ok(None)` when type stays unset and the record is dropped, retaining any
-    /// component-written texture pointers; return `Err` for a write the game fails on. Default
-    /// handling skips nothing.
     fn animation_block(&mut self) -> Result<Option<(AnimationData, RecordPointers)>, String> {
         let mut data = AnimationData::default();
         let mut pointers = RecordPointers::default();
@@ -1325,7 +1099,6 @@ impl Reader<'_> {
                     data.delay = crate::crt::scan_f32(&text).unwrap_or(data.delay)
                 }
                 Some("animationtype") => {
-                    // `tolower`, then an exact comparison; anything else keeps.
                     match read_string(&text).to_ascii_lowercase().as_slice() {
                         b"scrolling" => data.kind = 1,
                         b"rotating" | b"rotating_cw" => data.kind = 2,
@@ -1344,8 +1117,6 @@ impl Reader<'_> {
                     }
                 }
                 Some("animationtexturescale") => {
-                    // Into a zeroed 8-byte local and beyond ([`ScaleFrame`]), then take
-                    // reciprocals (1.0 for 0).
                     let (components, refused) = self.axis_components();
                     let mut scale = ScaleFrame {
                         local: [0.0; 2],
@@ -1367,7 +1138,6 @@ impl Reader<'_> {
                         .map(|value| if value == 0.0 { 1.0 } else { 1.0 / value });
                 }
                 Some("animationrotationoffset") => {
-                    // Straight into the record from its type on ([`RecordBytes`]).
                     let (components, refused) = self.axis_components();
                     if let Some(reason) = refused {
                         failure.get_or_insert(reason);
@@ -1407,9 +1177,6 @@ impl Reader<'_> {
         Ok((data.kind != 0).then_some((data, pointers)))
     }
 
-    /// The integer array reader: no check of the value; until a peeked `}` or the end
-    /// (read), each token read and resolved is `%i` into a new element (0 when the scan stores
-    /// nothing).
     fn int_array(&mut self) -> Vec<i32> {
         let mut values = Vec::new();
         loop {
@@ -1422,11 +1189,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Read axis components only for a `{` value. Until `}` or EOF, each resolved token is a
-    /// number scanned into the next component without a bound, or the next `x`, `y`, `z`, `w`
-    /// label followed by `=` and a number. Other tokens report errors and skip blocks. Return
-    /// each written component by index, and `Some` when a label is compared past the table of
-    /// four.
     pub(super) fn axis_components(&mut self) -> (Vec<(usize, f32)>, Option<String>) {
         const LABELS: [&str; 4] = ["x", "y", "z", "w"];
         let mut components = Vec::new();
@@ -1476,8 +1238,6 @@ impl Reader<'_> {
         }
     }
 
-    /// An object-registry kind's token walk. Retain arrow and common base fields; other kinds'
-    /// own fields keep their existing consumption.
     fn object(&mut self, word: &str) -> ObjectFacts {
         let kind = match word {
             "arrowtype" => ObjectKind::Arrow(ArrowDefinition::default()),
@@ -1501,7 +1261,6 @@ impl Reader<'_> {
                 continue;
             }
             let handled = match (word, key) {
-                // The animated map text reader.
                 ("animatedmaptext", "position") => {
                     let (components, failure) = self.axis_components();
                     if let ObjectKind::AnimatedMapText(text) = &mut object.kind {
@@ -1551,7 +1310,6 @@ impl Reader<'_> {
                     }
                     true
                 }
-                // The mesh object reader.
                 ("pdxmesh", "file" | "preload_textures") => true,
                 ("pdxmesh", "animation" | "variant") => {
                     let names: &[&str] = if key == "animation" {
@@ -1571,15 +1329,12 @@ impl Reader<'_> {
                     self.mesh_settings();
                     true
                 }
-                // The particle definition lookup.
                 ("pdxparticle", "type") => true,
                 _ => false,
             };
             if handled {
                 continue;
             }
-            // The 3D object reader: failed scalar conversions retain the destination;
-            // cull_distance squares that retained value as well.
             match key {
                 "name" => object.name = read_string(&self.value.text),
                 "scale" => {
@@ -1605,8 +1360,6 @@ impl Reader<'_> {
         object
     }
 
-    /// Read arrow fields. Scalars use shared CRT conversion and consume no further token; both
-    /// colors read the lexer's current token.
     fn arrow_key(&mut self, arrow: &mut ArrowDefinition, key: &str) -> bool {
         let text = &self.value.text;
         match key {
@@ -1627,12 +1380,6 @@ impl Reader<'_> {
         true
     }
 
-    /// Read mesh data by token id ([`keywords::class`]): `name` (0x1B), `shader` (0x1B0),
-    /// `index` (0x20C, `%i`) and `shader_file` (0x2A6) take their value. String keys (0xF:
-    /// quoted or unregistered) are texture overrides: store `texture_diffuse`, report other
-    /// names, and skip nothing. A `{` value therefore leaves its keys to be read as settings,
-    /// and its `}` ends them. Other ids (keywords, dynamic tokens, numbers) are unexpected and
-    /// skip a block.
     fn mesh_settings(&mut self) {
         while self.next_key() {
             let key = self.key.clone();
@@ -1643,11 +1390,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Read text colors into `table` from the token after the value until the current token is
-    /// `}`. Each entry takes a code token's first byte, a token as `=`, and a color. Retain the
-    /// first color of each code, logging later ones; code 0 always looks free. Ignored read
-    /// results leave the frozen token visible at EOF: `}` ends the walk and other tokens loop
-    /// forever. Code bytes from 0x80 index 192 GiB past the table.
     pub(super) fn text_colors(&mut self, table: &mut TextColors, refusals: &mut Vec<Refusal>) {
         self.read_resolved();
         loop {
@@ -1690,7 +1432,6 @@ impl Reader<'_> {
     }
 }
 
-/// Stores what integer point reader wrote into the field, refusing it for an undefined axis.
 fn store_axes(
     refused: &mut BTreeMap<String, String>,
     key: &str,
@@ -1713,11 +1454,8 @@ fn store_axes(
     }
 }
 
-/// The plain sprite's animation record vector (data, capacity, count and allocator): the kept
-/// `animation` records, each with the texture pointers a component wrote into it.
 type Records = Vector<(AnimationData, RecordPointers)>;
 
-/// Where the records' vector sits and who uses it.
 const RECORDS: VectorSite = VectorSite {
     what: "the animation records' vector",
     append: "sprite reader",
@@ -1725,21 +1463,14 @@ const RECORDS: VectorSite = VectorSite {
     destructor: "sprite destructor",
 };
 
-/// A plain-family sprite's bytes past the fields its keys name, as the component readers reach
-/// them (`super::spill`): the animation records, the two strings, and what a component wrote
-/// over fields that decide the game's later reads.
 #[derive(Clone, Debug)]
 struct Image {
     records: Records,
-    /// `masking_texture` and `clicksound`.
     masking: CxxString,
     click: CxxString,
-    /// The two animation records' technique handles (-1).
     handles: [u32; 8],
-    /// The base and masking texture pointers (null), with the key that last wrote each.
     base_texture: [u32; 2],
     mask_texture: [u32; 2],
-    /// The key whose components last wrote a field [`Image::finish`] checks.
     writer: &'static str,
 }
 
@@ -1758,9 +1489,6 @@ impl Default for Image {
 }
 
 impl Image {
-    /// What the declaration leaves once read: the records the readers see, the masking texture
-    /// the resource initialiser loads, and the failures of fields a component left for a later
-    /// read.
     fn finish(&mut self, plain: &mut Plain, end: usize) -> Vec<(&'static str, String)> {
         let mut failures = Vec::new();
         let mut pointers = Vec::new();
@@ -1772,7 +1500,6 @@ impl Image {
         }
         match self.masking.text_within(end - 0x180) {
             Ok(text) => plain.masking_texture = text,
-            // The animation initialization loads it only when its size is not 0.
             Err(reason) => failures.push((
                 self.writer,
                 format!(
@@ -1781,8 +1508,6 @@ impl Image {
                 ),
             )),
         }
-        // Read only when the sprite is clicked (a map icon takes no pointer: census K); its
-        // destructor reads only the capacity and pointer the writes already checked.
         if let Ok(text) = self.click.text_within(end - 0x1A8) {
             plain.click_sound = text;
         }
@@ -1800,10 +1525,6 @@ impl Image {
                     .into(),
             ));
         }
-        // An eagerly loaded sprite's records bind their texture pointers
-        // (effect program selection through animation UV scaling), which
-        // The animation initialization replaces only for a file that is set; a lazily
-        // loaded sprite's records never resolve an effect, so nothing binds them.
         for (record, written) in plain.animations.iter().zip(&pointers) {
             if lazy {
                 break;
@@ -1843,16 +1564,12 @@ impl Image {
     }
 }
 
-/// Which of an animation record's texture pointers (mask, then texture, both null in sprite
-/// reader's record) a component wrote with other bits.
 #[derive(Clone, Copy, Debug, Default)]
 struct RecordPointers {
     mask: bool,
     texture: bool,
 }
 
-/// The temporary animation record's 0x90 bytes from `animationrotationoffset` through the saved
-/// registers immediately after the record.
 struct RecordBytes<'a> {
     data: &'a mut AnimationData,
     pointers: &'a mut RecordPointers,
@@ -1884,22 +1601,13 @@ impl Layout for RecordBytes<'_> {
     }
 }
 
-/// The persistent key-loop frame while reading an animation, as texture-scale components change it.
-/// Duplicate checking is disabled for animation records, so the seen-key buffer is unused during
-/// reading. On return, a nonnull buffer pointer (the inline buffer's stack address while intact) is
-/// freed through the frame's allocator, with its virtual-function table.
 #[derive(Debug, Default)]
 struct KeyLoopFrame {
-    /// The buffer pointer's halves a component wrote; `None` keeps the stack address.
     buffer: [Option<u32>; 2],
-    /// Whether a component wrote the allocator's address or its vtable.
     allocator: bool,
 }
 
 impl KeyLoopFrame {
-    /// What the block's return path meets: a null pointer skips the free; an intact one frees
-    /// through an intact allocator; anything else is a stack or load address the replay does
-    /// not hold.
     fn returned(&self) -> Result<(), String> {
         match self.buffer {
             [Some(0), Some(0)] => Ok(()),
@@ -1920,8 +1628,6 @@ impl KeyLoopFrame {
     }
 }
 
-/// The animation texture-scale reader's zeroed 8-byte local in the enclosing key-loop frame.
-/// Components spill over that frame ([`KeyLoopFrame`]) through its saved floating-point register.
 struct ScaleFrame<'a> {
     local: [f32; 2],
     frame: &'a mut KeyLoopFrame,
@@ -1940,24 +1646,14 @@ impl Layout for ScaleFrame<'_> {
     fn write(&mut self, offset: usize, bits: u32) -> Result<(), String> {
         match offset {
             0 | 4 => self.local[offset / 4] = f32::from_bits(bits),
-            // The buffer pointer.
             0x18 | 0x1C => self.frame.buffer[(offset - 0x18) / 4] = Some(bits),
-            // The allocator's address and vtable.
             0x28..=0x34 => self.frame.allocator = true,
-            // The rest: an outgoing argument written before use; an unused slot; the buffer
-            // capacity and count, read only by disabled duplicate checking (return rewrites count);
-            // the inline entries; the fallback allocator, read only for pointers outside that
-            // buffer; token copies rewritten before each key reads them, and duplicate-path log
-            // objects.
             _ => {}
         }
         Ok(())
     }
 }
 
-/// The graphics file reader's frame from its zeroed 8-byte offset local through saved registers.
-/// The live sub-reader object pointer follows the local; remaining slots are unused here or belong
-/// to a font override whose lifetime has ended.
 struct OffsetFrame {
     value: [i32; 2],
 }
@@ -1988,13 +1684,11 @@ impl Layout for OffsetFrame {
     }
 }
 
-/// A plain-family sprite and its subtype tail as component readers write into them.
 struct SpriteBytes<'a> {
     kind: &'a mut SpriteKind,
     image: &'a mut Image,
 }
 
-/// A plain-family allocation's size and the kind of reader creating it.
 fn allocation(kind: &SpriteKind) -> (usize, &'static str) {
     match kind {
         SpriteKind::FrameAnimated { .. } | SpriteKind::Tile { .. } => {
@@ -2019,20 +1713,16 @@ impl Layout for SpriteBytes<'_> {
             (SpriteKind::FrameAnimated { animation, .. }, 0x1F0..) => {
                 match offset {
                     0x1F0 => animation.seconds_per_frame = float,
-                    // `looping` and `play_on_show`; the other two bytes are padding.
                     0x1FC => {
                         animation.looping = bytes[0] != 0;
                         animation.play_on_show = bytes[1] != 0;
                     }
                     0x1F8 => animation.pause_on_loop = float,
-                    // The upper half of the constructor's 8-byte store over seconds per frame: no
-                    // reader (frame animation draw reads only the lower half).
                     _ => {}
                 }
                 return Ok(());
             }
             (SpriteKind::Tile { size, .. }, 0x1F0..) => {
-                // `size`; the next eight bytes no constructor writes and no reader reads.
                 if let Some(axis) = [0x1F0, 0x1F4].iter().position(|at| *at == offset) {
                     size[axis] = bits as i32;
                 }
@@ -2053,21 +1743,13 @@ impl Layout for SpriteBytes<'_> {
         };
         match offset {
             0xE8 | 0xEC => plain.anchor[(offset - 0xE8) / 4] = float,
-            // The geometry scale: sprite vertex buffer creation writes -1.0 before
-            // any draw, and every draw (sprite draw) rewrites it from the world
-            // matrix before geometry construction reads it.
             0xF0 => {}
             0xF4 => plain.stretch = float,
             0xF8 => plain.v_scale = float,
-            // The frame index sprite draw writes before frame offset calculation reads it.
             0xFC => {}
             0x100 | 0x104 => plain.frame_step[(offset - 0x100) / 4] = float,
-            // The geometry-dirty byte vertex buffer creation sets before any draw; its
-            // other three bytes are padding.
             0x108 => {}
             0x10C => plain.frame_direction = bits as i32,
-            // The flip, then `alwaystransparent`; the constructor writes only these two (the other
-            // two bytes are padding).
             0x110 => {
                 plain.flip_u = bytes[0] != 0;
                 plain.always_transparent = bytes[1] != 0;
@@ -2075,17 +1757,11 @@ impl Layout for SpriteBytes<'_> {
             0x114 => {}
             0x118..=0x12C => image.records.write(offset - 0x118, bits, image.writer)?,
             0x130..=0x14C => image.handles[(offset - 0x130) / 4] = bits,
-            // The base effect's and the text effect's technique handles, which the animation
-            // initialization writes (base technique selection, then text technique selection)
-            // before any draw.
             0x150..=0x16C => {}
             0x170 | 0x174 => image.base_texture[(offset - 0x170) / 4] = bits,
             0x178 | 0x17C => image.mask_texture[(offset - 0x178) / 4] = bits,
             0x180..=0x19C => image.masking.write(offset - 0x180, bits)?,
             0x1A0 => plain.texture_id = bits as i32,
-            // The drawable's opacity, which sprite instance draw and
-            // The frame animation draw write before the type's draw and reset to
-            // 1.0 after.
             0x1A4 => {}
             0x1A8..=0x1C4 => image.click.write(offset - 0x1A8, bits)?,
             0x1C8 | 0x1CC => plain.dx_offset[(offset - 0x1C8) / 4] = float,
@@ -2095,8 +1771,6 @@ impl Layout for SpriteBytes<'_> {
                 plain.can_be_lowres = bytes[2] != 0;
                 plain.legacy_lazy_load = bytes[3] != 0;
             }
-            // The first byte only decides whether effect program selection logs once; the second is
-            // `generate_mip_maps`; the last two are padding.
             0x1D4 => plain.generate_mip_maps = bytes[1] != 0,
             0x1D8 | 0x1DC if bits != 0 => {
                 return Err(
@@ -2105,15 +1779,12 @@ impl Layout for SpriteBytes<'_> {
                         .into(),
                 );
             }
-            // That vector's capacity, count and allocator: the destructor reads them only while the
-            // data pointer is not null, and nothing appends to it.
             _ => {}
         }
         Ok(())
     }
 }
 
-/// The HSV-to-RGB conversion in place on the scaled components.
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     if s == 0.0 {
         return [v, v, v];
@@ -2133,7 +1804,6 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     }
 }
 
-/// Every declaration's refusals and every file's, with their paths.
 pub fn refusals(files: &[(String, Sprites)]) -> Vec<&Refusal> {
     files
         .iter()
@@ -2146,7 +1816,6 @@ pub fn refusals(files: &[(String, Sprites)]) -> Vec<&Refusal> {
         .collect()
 }
 
-/// The latest declaration of every name over files in load order.
 pub fn registry(files: &[(String, Sprites)]) -> BTreeMap<Vec<u8>, &SpriteFacts> {
     let mut registry = BTreeMap::new();
     for (_, file) in files {
@@ -2157,8 +1826,6 @@ pub fn registry(files: &[(String, Sprites)]) -> BTreeMap<Vec<u8>, &SpriteFacts> 
     registry
 }
 
-/// The latest declaration of every object name over files in load order, across all four
-/// object kinds. The sprite and font registries are independent.
 pub fn object_registry(files: &[(String, Sprites)]) -> BTreeMap<Vec<u8>, &ObjectFacts> {
     let mut registry = BTreeMap::new();
     for (_, file) in files {

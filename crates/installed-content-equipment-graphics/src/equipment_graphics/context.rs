@@ -1,12 +1,3 @@
-//! Country, faction and continent operands for authored equipment graphics.
-//!
-//! Visit the supplied country's tag, its faction members in vector order,
-//! then the continent of its original capital state, or its current capital
-//! when no original is set. The variant owner's ideology and culture are
-//! separate inputs to `equipment_graphics::Context`.
-//!
-//! A state's continent comes from its first authored province whose
-//! continent entry is valid; the lookup uses that entry's key.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,8 +14,6 @@ use crate::{
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
-/// Each authored state's continent: `None` is the native null-continent entry,
-/// including a state with no province whose continent index is valid.
 #[derive(Clone, Debug, Default)]
 pub struct Content {
     continent_by_state: BTreeMap<u32, Option<String>>,
@@ -43,8 +32,6 @@ impl Content {
             continents.get(usize::from(index.checked_sub(1)?)).cloned()
         };
         Ok(Self {
-            // Walk the template's province vector, not a sorted set or the province
-            // owning the capital VP. State id conflicts are reported by the state reader.
             continent_by_state: states::read(layers, defines, provinces)?
                 .0
                 .definitions()
@@ -55,12 +42,7 @@ impl Content {
     }
 }
 
-/// `map/default.map`'s continent list, folded, in authored order. Read to
-/// the end of the text; `continents` takes resolved tokens to `}` whatever
-/// its value, each a new continent, and other keys are skipped. Repeated or
-/// empty names leave name lookup undecided and are refused.
 pub fn continent_names(input: &[u8]) -> io::Result<Vec<String>> {
-    // Keep the leading mark in the continent-list lexer.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -111,13 +93,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[derive(replay_spool::Spooled)]
 pub struct CountryContext {
     pub country_tag: String,
-    /// Native faction member order, including the leader at ordinal zero.
     pub faction_tags: Vec<String>,
     pub capital_continent: Option<String>,
 }
 
-/// One hour's strict join. Positive native country references resolve through
-/// CountryLinks; no local viewing country or selected map object is involved.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[derive(replay_spool::Spooled)]
 pub struct Prepared {
@@ -126,7 +105,6 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// The bytes it holds on the heap, about.
     pub fn heap(&self) -> usize {
         let text = |text: &String| std::mem::size_of::<String>() + text.len();
         self.slots.len() * 2 * std::mem::size_of::<u32>()
@@ -174,7 +152,6 @@ impl Prepared {
         }
         let mut capital_by_slot = BTreeMap::new();
         for row in politics {
-            // Native compares exactly with zero, including negative values.
             let capital = if row.original_capital != 0 {
                 row.original_capital
             } else {
@@ -253,8 +230,6 @@ impl Prepared {
         Ok(Self { slots, contexts })
     }
 
-    /// A nonpositive country reference visits only the default pool. A
-    /// positive but unresolved reference is unavailable, never known absence.
     pub fn context(&self, country_ref: u32) -> Result<Option<&CountryContext>, String> {
         if (country_ref as i32) <= 0 {
             return Ok(None);
@@ -281,8 +256,6 @@ mod tests {
         );
         assert!(continent_names(b"continents = { europe EUROPE }").is_err());
         assert!(continent_names(b"other = { }").is_err());
-        // Skip other keys, resolve `@` names, and read the tokens after a
-        // non-brace value as the list.
         assert_eq!(
             continent_names(b"@c = asia other = { europe } continents = x africa @c }").unwrap(),
             ["africa", "asia"]

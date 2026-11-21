@@ -147,9 +147,6 @@ impl Memory for Observed<'_> {
     }
 }
 
-/// Synthetic world of `countries` canonical countries, each with `per`
-/// division slots pointing at one shared army object. Slot 0 is the
-/// reserved sentinel; links are identity.
 mod many {
     use super::*;
     pub(super) const GAME_STATE: usize = 0x1000;
@@ -260,8 +257,6 @@ fn a_roster_past_the_initial_storage_grows_in_one_capture() {
 
 #[test]
 fn entries_past_the_initial_storage_grow_to_the_exact_count_in_one_capture() {
-    // 9,000 non-null entries exceed the 8,192 entry storage while the
-    // 16,384 roster slots still fit.
     const COUNTRIES: u32 = 4500;
     const PER: u32 = 2;
     let total = (COUNTRIES * PER) as usize;
@@ -313,8 +308,6 @@ fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
         reused.unit_inputs().unwrap().outcome(),
         direct.unit_inputs().unwrap().outcome()
     );
-    // No country-table slot, link or country identity is read again:
-    // only each roster header, its pointer page and the division seeds.
     let reads = observed.reads.borrow();
     assert!(!reads.iter().any(|&(address, _)| {
         (many::CTAB..many::LTAB + (COUNTRIES as usize + 1) * 4).contains(&address)
@@ -335,7 +328,6 @@ fn census_reuses_the_callback_country_roster_and_matches_the_native_checks() {
 #[test]
 fn null_slots_are_skipped_but_a_foreign_object_fails_the_census() {
     let mut bytes = many::world(4, 1);
-    // A null slot has no native precedent, but skipping it is harmless.
     bytes[many::CTAB + 16..many::CTAB + 24].fill(0);
     let mut census = Census::new();
     census.capture_inputs(&kit::memory(&bytes), 0, many::GAME_STATE);
@@ -343,7 +335,6 @@ fn null_slots_are_skipped_but_a_foreign_object_fails_the_census() {
         census.unit_inputs().unwrap().outcome(),
         Outcome::Rows { len: 3 }
     );
-    // Every native country loop dereferences each slot as a country object.
     let foreign = many::country(3);
     bytes[foreign..foreign + 8].copy_from_slice(&1_u64.to_le_bytes());
     census.capture_inputs(&kit::memory(&bytes), 0, many::GAME_STATE);
@@ -366,8 +357,6 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
     };
     let mut staged = Census::new();
     staged.capture_inputs(&memory, kit::BASE, kit::GAME_STATE);
-    // The input stage keeps each country's slot end for the next hour's split; the core
-    // allocates nothing.
     let allocated = staged.allocated_bytes();
     assert_eq!(
         staged.outcome(),
@@ -378,7 +367,6 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
     let lease = engine_allocation::SharedBox::clone(staged.unit_inputs().unwrap());
     assert_eq!(lease.outcome(), Outcome::Rows { len: 3 });
     let boundary = memory.reads.borrow().len();
-    // The input stage selects commanders from the group; the core authenticates the rest.
     assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
         address == kit::GAME_STATE + cgame_state::PROVINCES || address == 0x40000
     }));
@@ -412,8 +400,6 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
 #[test]
 fn core_failure_is_not_retried_and_does_not_change_leased_intel_inputs() {
     let mut bytes = kit::fixture();
-    // The full native roster retains counted nulls while typed unit seeds
-    // omit them. UnitIntel must still observe the original null ordinal.
     bytes[0x23008..0x23010].fill(0);
     let mut census = Census::new();
     census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
@@ -499,8 +485,6 @@ fn shared_seeds_keep_the_complete_census_and_private_faults() {
 #[test]
 fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
     let mut bytes = kit::fixture();
-    // Ten entries cross two four-seed boundaries, retaining repeated child
-    // pointers and the fixture's independent null location/template/group.
     let roster = kit::C0 + ccountry::DIVISIONS;
     for offset in [8, 12] {
         bytes[roster + offset..roster + offset + 4].copy_from_slice(&9u32.to_le_bytes());
@@ -510,9 +494,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
         bytes[0x23000 + index * 8..0x23008 + index * 8]
             .copy_from_slice(&(pointer as u64).to_le_bytes());
     }
-    // A failure at any original source must remain the first failure.
-    // Successful repeated child reads are deliberately absent, so an
-    // injected fault on only a removed occurrence is not a source fault.
     for fault in std::iter::once(None).chain(
         [
             kit::GAME_STATE + cgame_state::PROVINCES,
@@ -542,8 +523,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
         };
         let serial = make_memory();
         let mut rows = Vec::new();
-        // A fresh identity set per row forces the original scalar
-        // child reads, including repeated addresses and their gates.
         let expected = (|| {
             let provinces = Array::read(&serial, kit::GAME_STATE + cgame_state::PROVINCES, 8)
                 .ok_or("province array unreadable or invalid")?;
@@ -563,11 +542,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
         let observed = make_memory();
         census.capture_core(&observed);
         let actual_reads = observed.reads.borrow();
-        // OWNER DECISION 2026-10-12 permits bounded read reordering:
-        // province batches can precede the owner link, so their trace
-        // need not be a subsequence of the original row-at-a-time walk.
-        // Persistent faults must still preserve its rows and refusal;
-        // successful reads remain exact below.
         if expected.is_ok() {
             assert_eq!(actual_reads.len(), 1 + seeds.len() + 7);
         }
@@ -575,8 +549,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
         assert_eq!(census.sources.len(), rows.len());
         assert_eq!(census.unit_inputs().unwrap().seeds(), seeds);
         assert_eq!(census.allocated_bytes(), allocated);
-        // The frame's rows start empty: installing grows them, and a failed
-        // row names its source, never a shortfall of the frame.
         let mut installed = Vec::<carmy::Row>::new();
         assert_eq!(
             census.install_rows(&mut installed),
@@ -591,12 +563,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
     }
 }
 
-/// A run of 64 templates, groups or provinces allocated one after another
-/// keeps at least 40 of them in the walk's memo at once, at any object size
-/// from 16 bytes to 32 KiB: a lookup that finds another object's entry reads
-/// the identity again. The multiplicative hash this replaces put such a run
-/// in 5 slots at a 0x2D40 stride and 6 at 0x16A0 or 0x43E0, so cycling
-/// through it read nearly every identity afresh.
 #[test]
 fn strided_core_identities_keep_most_of_a_run_in_the_memo() {
     for base in [0x1_2345_6780_usize, 0x2_0000_0000, 0x7ff0_1234_5670] {
@@ -648,8 +614,6 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
             colliding[1],
             creferenced_division_template::VTABLE_RVA.0 as u64,
         ),
-        // The original core accepts any nonzero template handle. Do not
-        // strengthen that contract by borrowing a stricter engine helper.
         (colliding[1] + creferenced_division_template::TYPE, u64::MAX),
         (
             colliding[2],
@@ -738,8 +702,6 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
         );
     }
 
-    // Reusing Census storage begins a new core walk, even when all child
-    // addresses survive. It must observe the new identities and backlink.
     let mut census = Census::new();
     census.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
     assert_eq!(census.rows[0].province, 1);
@@ -810,11 +772,8 @@ fn growing_inputs_keep_original_fault_precedence_and_read_trace() {
     }
 }
 
-/// A shared province's vtable and id, and a template's vtable, handle and
-/// reveal-skip byte, are each one guarded gather.
 #[test]
 fn core_children_authenticate_in_one_gather_each() {
-    /// Counts guarded calls: a gather is one call, as it is live.
     struct Calls<'a>(&'a [u8], std::cell::Cell<usize>);
     impl Memory for Calls<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -846,17 +805,9 @@ fn core_children_authenticate_in_one_gather_each() {
     let calls = Calls(&bytes, Default::default());
     census.capture_core(&calls);
     assert_eq!(census.outcome(), Outcome::Rows { len: 10 });
-    // The province array, one owner link per row, and the shared children:
-    // the province's gather and registered slot, the template's gather and
-    // the group's identity.
     assert_eq!(calls.1.get(), 1 + 10 + 4);
 }
 
-/// The census walked in parts over consecutive country slots and joined in
-/// slot order equals one walk of every slot: the seeds (a failed span in
-/// each part included), the roster slots, the outcomes and the counts. A
-/// walk failure in a later part is the census's failure, as the serial
-/// walk's first one.
 #[test]
 fn parts_joined_in_slot_order_equal_one_walk() {
     use many::*;
@@ -875,7 +826,6 @@ fn parts_joined_in_slot_order_equal_one_walk() {
             bytes[entry..entry + 8].copy_from_slice(&(at as u64).to_le_bytes());
         }
     }
-    // A failed span in each of the three parts.
     let faults = [army(1, 1), army(4, 0), army(6, 1)].map(|at| at + carmy::STRENGTH);
     struct Faults<'a>(&'a [u8], Vec<usize>);
     impl Memory for Faults<'_> {
@@ -903,7 +853,6 @@ fn parts_joined_in_slot_order_equal_one_walk() {
                 parted.absorb(&mut part).unwrap();
             }
         }
-        // The core reads the joined census as it reads the serial one.
         for census in [&mut serial, &mut parted] {
             census.capture_core(memory);
         }
@@ -944,15 +893,12 @@ fn parts_joined_in_slot_order_equal_one_walk() {
         3
     );
     assert_eq!(observe(&parted), observe(&serial));
-    // The join copied into storage the first part's worker reserved.
     let capacity = parted.entries.capacity();
     assert!(capacity >= 12);
-    // The next hour splits the twelve entries no finer than whole countries.
     let mut starts = [0; MAX_PARTS - 1];
     assert_eq!(parts_for(12), 1);
     assert_eq!(serial.part_starts(&mut starts), 0);
 
-    // A roster failure in the second part is the census's failure.
     let mut failing = faults.to_vec();
     failing.push(country(4) + ccountry::DIVISIONS);
     let (serial, parted) = walk(&Faults(&bytes, failing));
@@ -974,14 +920,11 @@ fn parts_joined_in_slot_order_equal_one_walk() {
     assert!(!parted.joinable());
 }
 
-/// Parts split the census's entries into about equal shares, at country
-/// boundaries.
 #[test]
 fn part_starts_split_entries_evenly_at_country_boundaries() {
     let mut census = Census::new_worker();
     let entries = 4 * 1_500;
     census.entries = vec![Entry::default(); entries];
-    // A country per 100 entries, in slots 1, 2, ...
     census.slot_ends = (1..=60).map(|slot| (slot, slot * 100)).collect();
     let mut starts = [0; MAX_PARTS - 1];
     assert_eq!(parts_for(entries), 4);
@@ -989,8 +932,6 @@ fn part_starts_split_entries_evenly_at_country_boundaries() {
     assert_eq!(starts, [16, 31, 46]);
 }
 
-/// The input stage gathers each mover's route head and location id, and reads a
-/// group two divisions share once for both; a stationary division gathers neither.
 #[test]
 fn input_stage_gathers_the_mover_packet_and_each_group_once() {
     use engine_native::{corders_group, cunit};
@@ -1039,14 +980,12 @@ fn input_stage_gathers_the_mover_packet_and_each_group_once() {
     }
 }
 
-/// Selection and carry storage that cannot grow never ends the recording or changes a result.
 #[test]
 fn refused_selection_storage_never_ends_the_recording() {
     use engine_native::{
         corders_group as group, corders_group_member as member, cunit, cunit_leader,
         modifier_definition::TRADE_FEATURE_FLAGS_RVA,
     };
-    // The terminal hook is process-wide.
     const CHILD: &str = "BATTLE_PLAN_DIVISION_SELECTION_ALLOCATION_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -1062,7 +1001,6 @@ fn refused_selection_storage_never_ends_the_recording() {
         return;
     }
     const LEADER: usize = 0x1000;
-    // Parents and separate HQs make the selection resolve primary roots, growing its memo.
     const GROUPS: [(usize, usize, usize); 2] = [(0x2000, 0x3000, 0x4000), (0x5000, 0x6000, 0x7000)];
     const ARMIES: [(usize, usize); 4] = [
         (0x8000, 0x2000),
@@ -1163,7 +1101,6 @@ fn refused_selection_storage_never_ends_the_recording() {
             false
         )))
     );
-    // Each consumer of an unselected seed reads for itself what the selection read for it.
     for (seed, selected) in template.iter().zip(&first) {
         assert_eq!(
             selected.selected.map(|selected| selected.block),
@@ -1175,7 +1112,6 @@ fn refused_selection_storage_never_ends_the_recording() {
             ))
         );
     }
-    // Every allocation in turn is refused, and every one after it.
     for (cold, attempts) in [(true, cold_attempts), (false, warm_attempts)] {
         assert!(attempts > 0);
         for ordinal in 1..=attempts {
@@ -1208,9 +1144,6 @@ fn refused_selection_storage_never_ends_the_recording() {
     engine_allocation::set_stop_hook(None);
 }
 
-/// A quiet hour reads none of a held group's fields, even ones memory changed under it;
-/// each hooked writer and the forwarded destructor make exactly the group they name be
-/// read again; a new group, an invalidating hour and an unobserved domain read every group.
 #[test]
 fn held_groups_are_read_again_only_after_a_writer_names_them() {
     use engine_mutations::orders_group_mutations::{DAILY_UPDATE, MUTATIONS};
@@ -1257,7 +1190,6 @@ fn held_groups_are_read_again_only_after_a_writer_names_them() {
     watches.enable(16);
     let mut leaders = HeldLeaders::default();
     let mut held = HeldGroups::default();
-    // The groups whose fields an hour read, and each division's training byte.
     let mut hour = |groups: &[usize]| {
         memory.reads.borrow_mut().clear();
         let mut seeds: Vec<_> = groups
@@ -1301,7 +1233,6 @@ fn held_groups_are_read_again_only_after_a_writer_names_them() {
         (read, training)
     };
     assert_eq!(hour(&GROUPS).0, GROUPS);
-    // A store no hooked writer made stays unseen while the group is held.
     memory.bytes.borrow_mut()[GROUPS[0] + group::TRAINING] = 1;
     assert_eq!(hour(&GROUPS), (vec![], vec![Some(Ok(0)); 3]));
     for site in (0..MUTATIONS.len()).filter(|&site| site != DAILY_UPDATE) {
@@ -1311,21 +1242,16 @@ fn held_groups_are_read_again_only_after_a_writer_names_them() {
         assert_eq!(training[0], Some(Ok(1)));
         assert!(hour(&GROUPS).0.is_empty(), "{}", MUTATIONS[site].0.name);
     }
-    // The daily update reads a group again only while it trains to its maximum.
     drop(watches.daily(GROUPS[1], false));
     assert!(hour(&GROUPS).0.is_empty());
     drop(watches.daily(GROUPS[1], true));
     assert_eq!(hour(&GROUPS).0, [GROUPS[1]]);
-    // A group freed at a held address is read again, as is a group new to the census.
     drop(watches.destroy(GROUPS[2]));
     assert_eq!(hour(&GROUPS).0, [GROUPS[2]]);
     assert_eq!(hour(&[GROUPS[0], NEW]).0, [NEW]);
-    // A group the hour no longer reaches is forgotten.
     assert_eq!(hour(&GROUPS).0, [GROUPS[1], GROUPS[2]]);
-    // An invalidating hour certifies nothing held before it.
     watches.boundary(true);
     assert_eq!(hour(&GROUPS).0, GROUPS);
-    // An unobserved domain reads every group every hour.
     watches.disable();
     assert_eq!(hour(&GROUPS).0, GROUPS);
     assert_eq!(hour(&GROUPS).0, GROUPS);

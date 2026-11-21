@@ -14,7 +14,6 @@ function apart(a: Point, b: Point): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) * 100;
 }
 
-/** The same OKLab arithmetic used by the palette's scalar distance. */
 export function colourDistance(first: Rgb, second: Rgb): number {
   return apart(point(first), point(second));
 }
@@ -35,8 +34,6 @@ function nearest(node: Node | null, query: Point, axis: number, best: number): n
   const delta = query[axis] - node.point[axis], next = (axis + 1) % 3;
   const before = delta <= 0;
   best = nearest(before ? node.left : node.right, query, next, best);
-  // Keep equality and rounding-near-boundary cases open. This only prunes work;
-  // every returned gap still comes from the scalar Math.hypot above.
   const bound = Math.abs(delta) * 100;
   if (bound <= best + Math.abs(best) * Number.EPSILON * 4 + Number.MIN_VALUE) {
     best = nearest(before ? node.right : node.left, query, next, best);
@@ -44,8 +41,6 @@ function nearest(node: Node | null, query: Point, axis: number, best: number): n
   return best;
 }
 
-/** Internal to palette adjustment: balanced trees merged in power-of-two
- * buckets as colours arrive. Identical coordinates cannot change a minimum. */
 export class NearestColours {
   private readonly buckets: (Bucket | null)[] = [];
   private readonly seen = new Set<string>();
@@ -57,7 +52,6 @@ export class NearestColours {
 
   add(color: Rgb): void {
     const value = point(color);
-    // Invalid coordinates retain the original scalar NaN/Infinity behaviour.
     if (!value.every(Number.isFinite)) { this.special.push(value); return; }
     const key = value.join(',');
     if (this.seen.has(key)) return;

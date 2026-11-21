@@ -131,7 +131,6 @@ impl ProductContent {
 
 pub use map_display_data::Header;
 
-/// The line for a perspective table the hour truncated: `UnitIntel` or `CountryIntel`.
 pub fn note_truncated_perspective(out: &mut Limitations, table: &str) {
     out.note_field(
         &format!("{table} (perspective)"),
@@ -146,8 +145,6 @@ pub fn note_truncated_perspective(out: &mut Limitations, table: &str) {
     );
 }
 
-/// The line for the provinces, ascending, whose recorded name this port cannot lay out; none
-/// when there are none.
 pub fn note_unreadable_names(out: &mut Limitations, unreadable: &[u32]) {
     if unreadable.is_empty() {
         return;
@@ -182,23 +179,17 @@ pub struct FogProduct {
     pub map_text: Arc<events::Prepared>,
     pub music: Option<Arc<viewer_audio::Chances>>,
     pub battles: Option<Arc<viewer_audio::Battles>>,
-    /// The song evaluations `music` came from, which the next hour of this country confirms
-    /// while this hour is held.
     music_inputs: Option<music_inputs::Kept>,
 }
 
 type ProvinceFog = viewer_foundation::map::perspective::values::Values<u32, u8>;
 
-/// A perspective's latest intel map and the visibility it was made from, while a holder keeps
-/// the map: the next hour of that perspective patches it instead of building it whole.
 struct IntelMemo {
     choice: perspective::Choice,
     visibility: Option<Arc<ProvinceFog>>,
     intel: std::sync::Weak<IntelMap>,
 }
 
-/// What fog products carry from hour to hour, for each perspective a holder still shows and
-/// nothing else.
 #[derive(Default)]
 pub struct FogMemos {
     intel: std::sync::Mutex<Vec<IntelMemo>>,
@@ -210,7 +201,6 @@ impl FogMemos {
         Self::default()
     }
 
-    /// `choice`'s last intel map, while held, and the visibility it was made from.
     fn intel(
         &self,
         choice: &perspective::Choice,
@@ -512,7 +502,6 @@ impl<'a> ProductHour<'a> {
         Some(memo.chances(self.frame, audio, country, world))
     }
 
-    /// [`Self::music_chances_cached`] with the evaluations the next hour confirms while kept.
     pub fn music_chances_kept(
         &self,
         country: u32,
@@ -536,8 +525,6 @@ impl<'a> ProductHour<'a> {
         self.fog_with(choice, memos, spans, true)
     }
 
-    /// [`Self::fog`], the intel texture built only with `intel`; without it the all-clear grid
-    /// stands in (the map draws the texture from its intel layer).
     pub fn fog_with(
         &self,
         choice: &perspective::Choice,
@@ -552,7 +539,6 @@ impl<'a> ProductHour<'a> {
             if !built {
                 return Ok(Arc::new(textures::clear_intel_map(&self.content.map)?));
             }
-            // Taken out of the memo, so views of other perspectives patch theirs meanwhile.
             let previous = memos.intel(choice);
             if let Some((old, intel)) = &previous {
                 match (old, visibility) {

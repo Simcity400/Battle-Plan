@@ -1,7 +1,3 @@
-//! Country flag artwork as the engine reads it.
-//!
-//! Each [`FlagSet`] has its own atlas. Every flag file and the medium set's
-//! cloth overlay use the same flag-image decoding rules in [`decode`].
 
 use std::io;
 
@@ -11,7 +7,6 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// One of the engine's three flag atlases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlagSet {
     Normal,
@@ -20,7 +15,6 @@ pub enum FlagSet {
 }
 
 impl FlagSet {
-    /// The directory the engine names for the set, with its trailing slash.
     pub fn directory(self) -> &'static str {
         match self {
             Self::Normal => "gfx/flags/",
@@ -29,12 +23,6 @@ impl FlagSet {
         }
     }
 
-    /// The exact size every file of the set must have:
-    /// `NGraphics.COUNTRY_FLAG[_MEDIUM|_SMALL]_TEX_WIDTH/HEIGHT`.
-    ///
-    /// Each page holds `(MAX_SIZE / width) x (MAX_SIZE / height)` cells in the
-    /// set's `_TEX_MAX_SIZE` square. A cell larger than the page holds no flags,
-    /// so it is refused before dividing the flag count by the page capacity.
     pub fn cell(self, defines: &Defines) -> io::Result<[u32; 2]> {
         let prefix = match self {
             Self::Normal => "COUNTRY_FLAG_TEX",
@@ -59,29 +47,16 @@ impl FlagSet {
     }
 }
 
-/// A flag file is an uncompressed true-colour Targa
-/// (type 2, no colour map) of exactly `cell` size at 3 or 4 bytes per pixel
-/// (`depth >> 3`). The first stored row is always the bottom one: the engine
-/// never reads the descriptor's origin bits. With an identification field it
-/// seeks to the signed length plus 20: two bytes past a field of 1 to 127,
-/// into the header for 236 to 255, and before the file for 128 to 235, which
-/// is refused. `None` is any status on which the engine tries the flag's next
-/// candidate. The engine never checks its reads, so it accepts a truncated
-/// file with status 0; this refuses one, which is stricter, and allocates the
-/// output only once the file holds every pixel.
 pub fn decode(bytes: &[u8], cell: [u32; 2]) -> Option<Rgba8Image> {
     decode_checked(bytes, cell).ok()
 }
 
-/// Distinguish the engine's header refusal from the port's stricter bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeFailure {
     EngineRefused,
     Truncated,
 }
 
-/// Flag decoding checks the header but ignores failed pixel reads.
-/// A truncated input is refused here because its pixel output is undefined.
 pub fn decode_checked(bytes: &[u8], cell: [u32; 2]) -> Result<Rgba8Image, DecodeFailure> {
     let head = bytes.get(..18).ok_or(DecodeFailure::Truncated)?;
     let size = [[head[12], head[13]], [head[14], head[15]]].map(u16::from_le_bytes);
@@ -140,13 +115,11 @@ mod tests {
         }
         let image = decode(&targa(&[], 2, 24, 0x20, &body[..6]), [1, 2]).unwrap();
         assert_eq!(image.pixels, [6, 5, 4, 255, 3, 2, 1, 255]);
-        // The identification field is followed by two skipped bytes.
         let image = decode(
             &targa(b"ID", 2, 32, 0, &[[0, 0].as_slice(), &body].concat()),
             [1, 2],
         );
         assert_eq!(image.unwrap().pixels, [7, 6, 5, 8, 3, 2, 1, 4]);
-        // Length 255 is -1: the pixels start at byte 19, inside the header.
         let mut header_seek = targa(&[], 2, 32, 0, &[[0].as_slice(), &body].concat());
         header_seek[0] = 255;
         let image = decode(&header_seek, [1, 2]).unwrap();

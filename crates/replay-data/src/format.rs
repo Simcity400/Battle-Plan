@@ -1,4 +1,3 @@
-//! Readers accept proven unchanged contracts; writers emit only today's format.
 use crate::{
     FORMAT_VERSION,
     codec::invalid,
@@ -9,11 +8,8 @@ use crate::{
 };
 use std::io;
 
-/// Preserved when the score family is disabled for a recording session.
 pub const GAME_SCORE_DISABLED_REASON: &str = "game score capture disabled at attachment";
 
-/// A record layout the recording's format predates. It refuses the whole file
-/// by name; readers that recover damaged records must not withhold it as damage.
 #[derive(Debug)]
 struct LayoutRefusal(String);
 
@@ -31,12 +27,10 @@ pub fn is_layout_refusal(error: &io::Error) -> bool {
         .is_some_and(|inner| inner.is::<LayoutRefusal>())
 }
 
-/// A recording version inside the proven compatibility horizon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FormatVersion(u16);
 
-/// The format this build writes, for state built before a recording is known.
 impl Default for FormatVersion {
     fn default() -> Self {
         Self::CURRENT
@@ -63,7 +57,6 @@ impl FormatVersion {
             )));
         }
         let format = Self(version);
-        // Block magic admits containers independently of row and spool versions.
         for kind in [
             RecordKind::ReplayHeader,
             RecordKind::ReplayTrailer,
@@ -132,8 +125,6 @@ impl FormatVersion {
         })
     }
 
-    /// Byte-boundary information for discarding an incompatible row, never
-    /// decoding its contents or producing a row in a different contract.
     #[cfg(any(test, feature = "test-support"))]
     pub fn fields(self, table: TableId) -> usize {
         table.last_change().fields(table, self.0)
@@ -203,7 +194,6 @@ mod tests {
         ] {
             assert_eq!(table as u16, id);
         }
-        // DivisionStatus has been relaid since (STORED_ONCE_FORMAT).
         assert_eq!(
             TableId::DivisionStatus.last_change().format,
             crate::rows::compatibility::STORED_ONCE_FORMAT
@@ -269,7 +259,6 @@ mod tests {
                 continue;
             }
             let format = FormatVersion::read(version).unwrap();
-            // Retired tables are refused by name in every recording.
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
             if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
                 expected.push(TableId::StrategicRegionWeights);
@@ -277,7 +266,6 @@ mod tests {
             if version < crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT {
                 expected.push(TableId::NavalCombatShips);
             }
-            // Format 135 widened the mission flags it keeps; 136 rekeyed the air histories.
             if version < crate::rows::compatibility::AIR_COMBAT_MENU_FORMAT && version >= 104 {
                 expected.push(TableId::AirMissionInputs);
             }
@@ -570,14 +558,12 @@ mod tests {
                 ]);
             }
             if version <= 97 {
-                // OwnedWargoals is already refused as retired.
                 expected.push(TableId::AvailableAdvisors);
             }
             if version <= 93 {
                 expected.push(TableId::RaidTooltipOperands);
             }
             expected.sort_unstable_by_key(|table| table.index());
-            // A table refused for two reasons is refused once.
             expected.dedup();
             assert_eq!(
                 TableId::ALL

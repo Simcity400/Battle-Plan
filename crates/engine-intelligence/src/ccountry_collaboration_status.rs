@@ -1,5 +1,3 @@
-//! Country collaboration status. Each outgoing relation requires a reciprocal
-//! incoming country link.
 
 use engine_sites::Rva;
 use crate::{
@@ -11,16 +9,11 @@ use crate::{
     walk::Outcome,
 };
 
-/// Collaboration-status vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_7748);
-/// Outgoing CCountryCollaborationData pointer array.
 pub const RELATIONS: usize = 0x28;
-/// Outgoing array count, u32.
 #[cfg(test)]
 pub const RELATION_COUNT: usize = 0x34;
-/// Owning CCountry pointer requiring an exact back-reference match.
 pub const OWNER: usize = 0x40;
-/// Incoming u32 country-link array requiring reciprocal membership.
 pub const INCOMING_COUNTRIES: usize = 0x48;
 
 #[derive(Clone, Copy)]
@@ -94,9 +87,6 @@ fn relation(
     ccountry_collaboration_data::read_row(memory, base, pointer, source)
 }
 
-/// Reads outgoing relations and verifies both directions of their native
-/// incoming/outgoing membership. Link aliases are resolved only for validation;
-/// the row retains its target's original link and the source object's native id.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -174,8 +164,6 @@ fn walk_inner<M: Memory>(
             output[len] = row;
             len += 1;
         }
-        // On a complete walk also reject dangling incoming links and two
-        // outgoing records resolving to the same country (including aliases).
         if unread_rows == 0 {
             for incoming in 0..own_status.incoming.count {
                 let source = incoming_country(memory, &countries, own_status.incoming, incoming)?;
@@ -245,8 +233,6 @@ mod tests {
                 &(slot as u32).to_le_bytes(),
             );
         }
-        // Link four aliases source one. Its object id is the alias, so the
-        // source row and reciprocal validation must not assume slot == id.
         put(&mut bytes, 0x2110, &1_u32.to_le_bytes());
         put(&mut bytes, 0x3000 + ccountry::ID, &4_u32.to_le_bytes());
         for (country, status_pointer) in [(0x3000, 0x9000), (0x5000, 0x9100), (0x7000, 0x9200)] {

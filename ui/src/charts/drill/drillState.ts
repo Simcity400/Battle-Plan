@@ -4,14 +4,11 @@ import { choiceVariants } from '../../dashboard/options.ts';
 import type { WidgetPreset } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
-/** Drilling into what a value is made of: one pattern for every widget whose value
- * has parts. The breakdown follows playback until the user picks a day. */
 
 export interface Breakdown { id: string; label: string }
 export interface DrillState { breakdown: string | null; follow: boolean; hour: number | null }
 export const CLOSED: DrillState = { breakdown: null, follow: true, hour: null };
 
-/** Opening within this many hours (45 days) of the playhead follows playback. */
 export const FOLLOW_NEAR_HOURS = 45 * 24;
 
 export type DrillAction =
@@ -32,34 +29,26 @@ export function reduceDrill(state: DrillState, action: DrillAction): DrillState 
   }
 }
 
-/** The hour the breakdown shows: the playhead while following, else the picked day. */
 export function drillHour(state: DrillState, playhead: number | null): number | null {
   return state.follow ? playhead : state.hour;
 }
 
-/** The interaction setting: where a breakdown opens. */
 export const DRILL_OPTION: OptionField = {
   key: 'drill', section: 'interaction', label: 'Breakdown opens',
   kind: 'choice', default: 'inline', choices: [{ value: 'inline', label: 'In the widget' }, { value: 'popout', label: 'Beside it' }],
 };
 
-/** A "Show" setting listing the widget's own view and each breakdown, so a pinned
- * breakdown is simply the same widget showing that breakdown. */
 export function breakdownOption(breakdowns: readonly Breakdown[], mainLabel: string): OptionField {
   return { key: 'show', section: 'options', label: 'Show', kind: 'choice', default: 'main',
     choices: [{ value: 'main', label: mainLabel }, ...breakdowns.map(item => ({ value: item.id, label: item.label }))] };
 }
 
-/** The title of a widget showing one breakdown, pinned or added from the catalogue. */
 export const breakdownTitle = (title: string, label: string) => `${title}: ${label}`.slice(0, 160);
 
-/** A catalogue card for each breakdown in the widget's Show setting, titled as Pin as widget titles it. */
 export function breakdownVariants(title: string, fields: readonly OptionField[]): WidgetPreset[] {
   return choiceVariants(fields.find(field => field.key === 'show'), choice => breakdownTitle(title, choice.label));
 }
 
-/** "Pin as widget": a copy of the widget, for the same campaign, countries and time,
- * that shows one breakdown as its main view. */
 export function pinnedBreakdown(source: WidgetSpec, breakdown: Breakdown, trackId: string): WidgetSpec {
   const base = createWidget(source.kind, trackId);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time: source.time,

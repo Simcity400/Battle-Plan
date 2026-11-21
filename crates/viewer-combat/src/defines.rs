@@ -1,4 +1,3 @@
-//! The content's `NDefines` the land combat window reads, in native form.
 use installed_content_core::defines::Defines;
 use std::io;
 
@@ -6,8 +5,6 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// delayed armour text: deflection factors (fixed5) and the
-/// signed integer dice sizes it divides.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ArmourHover {
     pub(crate) organisation_deflection: i64,
@@ -18,10 +15,6 @@ pub(crate) struct ArmourHover {
     pub(crate) strength_die: i32,
 }
 
-/// Reserve reinforcement operands, fixed5: the width rejection's
-/// `COMBAT_OVER_WIDTH_PENALTY` and `_MAX`, then the chance's `REINFORCE_CHANCE`,
-/// `ARMY_INITIATIVE_REINFORCE_FACTOR` and `SPEED_REINFORCEMENT_BONUS`. The collector
-/// applies `SLOWEST_SPEED` with the share it records.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Reinforce {
     pub(crate) over_width_penalty: i64,
@@ -36,29 +29,18 @@ pub(crate) struct LandDefines {
     pub(crate) combat_speed: i64,
     pub(crate) experience: Option<installed_content_core::unit_leader::DivisionExperience>,
     pub(crate) experience_refusal: Option<String>,
-    /// `COMBAT_{GOOD,SOME}_PIERCING` then `COMBAT_{GOOD,SOME}_ARMOR`, narrowed
-    /// to f32 as the define registry stores them.
     pub(crate) armour_icons: [f32; 4],
-    /// `PIERCING_THRESHOLDS` and `PIERCING_THRESHOLD_DAMAGE_VALUES`, parallel.
     pub(crate) piercing_thresholds: Vec<i64>,
     pub(crate) piercing_damage: Vec<i64>,
-    /// `ENEMY_AIR_SUPERIORITY_DEFENSE_STEEPNESS` and `_DEFENSE`, used by
-    /// the anti-air defence calculation.
     pub(crate) air_superiority: [i64; 2],
-    /// `NAir.ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR` and
-    /// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR`.
     pub(crate) anti_air: [i64; 2],
-    /// `LAND_AIR_COMBAT_MAX_PLANES_PER_ENEMY_WIDTH`.
     pub(crate) planes_per_width: i64,
     pub(crate) fuel_penalty_start_ratio: i64,
     pub(crate) recon_skill_impact: i32,
-    /// `GIE_DIVISION_{ATTACK,DEFENSE}_BONUS_AGAINST_OCCUPIER` and `_ON_CORE`;
-    /// the NCountry loaders clamp a negative value to zero.
     pub(crate) exile_against_occupier: [i64; 2],
     pub(crate) exile_on_core: [i64; 2],
     pub(crate) armour_hover: ArmourHover,
     pub(crate) reinforce: Reinforce,
-    /// Country, general and field-marshal preferred-tactic weight factors
     pub(crate) preference_factors: [i64; 3],
 }
 

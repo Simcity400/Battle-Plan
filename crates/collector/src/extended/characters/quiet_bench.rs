@@ -1,13 +1,3 @@
-//! Ignored bench: where a quiet roster hour's time goes at 13,200 characters,
-//! the late-war roster. The census world is rendered once into host memory,
-//! so a read costs a bounds check and a copy and misses the cache as a live
-//! read does. Each hour's copy is timed whole and inside its reads (the
-//! remainder is compute), warm and after evicting the caches, beside the
-//! decode and the decode worker's rebuilds, then without republished
-//! Characters rows, without a kept role census and without carried
-//! UnitLeaders rows.
-//!
-//! `cargo test -p collector --release --lib quiet_bench -- --ignored --nocapture`
 
 use super::carry::Carry;
 use super::census_tests::{
@@ -22,7 +12,6 @@ use std::cell::Cell;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-/// The world's regions as host buffers; anything else is rendered.
 struct Flat<'a> {
     world: &'a World,
     regions: Vec<(usize, Vec<u8>)>,
@@ -47,7 +36,6 @@ impl<'a> Flat<'a> {
             };
             let mut bytes = vec![0; count * stride];
             for (index, object) in bytes.chunks_exact_mut(stride).enumerate() {
-                // Objects a character does not have stay zero.
                 let _ = world.copy(region + index * stride, object);
             }
             regions.push((region, bytes));
@@ -75,7 +63,6 @@ impl Memory for Flat<'_> {
     }
 }
 
-/// Counts the time spent inside reads, in timestamp ticks.
 struct Timed<'a> {
     inner: &'a Flat<'a>,
     ticks: Cell<u64>,
@@ -84,7 +71,6 @@ struct Timed<'a> {
 
 #[allow(unused_unsafe)]
 fn ticks() -> u64 {
-    // SAFETY: RDTSC has no preconditions on x86-64.
     unsafe { std::arch::x86_64::_rdtsc() }
 }
 
@@ -98,7 +84,6 @@ impl Memory for Timed<'_> {
     }
 }
 
-/// One hour's times: copy, the copy's reads, decode, rebuilds.
 #[derive(Clone, Copy, Default)]
 struct Times {
     copy: Duration,
@@ -157,12 +142,10 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: crate::unit_leader_changes::Watches =
         crate::unit_leader_changes::Watches::new();
-    // Never enabled: no leader is certified.
     static UNOBSERVED: crate::unit_leader_changes::Watches =
         crate::unit_leader_changes::Watches::new();
     static CENSUS: crate::watch_registry::WatchRegistry =
         crate::watch_registry::WatchRegistry::new();
-    // Never enabled: the census is gathered every hour.
     static GATHERED: crate::watch_registry::WatchRegistry =
         crate::watch_registry::WatchRegistry::new();
     const HOURS: usize = 15;
@@ -215,7 +198,6 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
             median(runs.iter().map(|times| times.rebuild).collect()),
         );
     }
-    // The decode the republished rows replace: every quiet hour rebuilds.
     let rebuilt: Vec<Times> = (0..HOURS)
         .map(|_| {
             job.published.forget();
@@ -227,7 +209,6 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
         median(rebuilt.iter().map(|times| times.decode).collect()),
         median(rebuilt.iter().map(|times| times.rebuild).collect()),
     );
-    // The gather a kept census replaces: every quiet hour gathers it.
     job.census_carry = super::census::CensusCarry::with(&GATHERED);
     let gathered: Vec<Times> = (0..HOURS)
         .map(|_| hour(&mut job, &memory, &mut captured, false))
@@ -237,7 +218,6 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
         median(gathered.iter().map(|times| times.copy).collect()),
         median(gathered.iter().map(|times| times.decode).collect()),
     );
-    // The reads carried leaders replace: every quiet hour reads them all.
     job.unit_carry = UnitCarry::with(&UNOBSERVED, UNITS);
     let read: Vec<Times> = (0..HOURS)
         .map(|_| hour(&mut job, &memory, &mut captured, false))
@@ -249,7 +229,6 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
     );
 }
 
-/// The traits job's hour over a loaned role census: copy and decode.
 fn trait_hour(
     job: &mut CharactersJob,
     memory: &Flat<'_>,
@@ -278,7 +257,6 @@ fn trait_hour_costs_at_late_war_scale() {
     let _globals = crate::extended::characters::test_globals();
     use super::leader_carry::{TRAITS as FAMILY, TraitCarry};
     static TRAITS: crate::unit_leader_changes::Watches = crate::unit_leader_changes::Watches::new();
-    // Never enabled: every leader is read.
     static UNOBSERVED: crate::unit_leader_changes::Watches =
         crate::unit_leader_changes::Watches::new();
     const HOURS: usize = 15;
@@ -305,9 +283,6 @@ fn trait_hour_costs_at_late_war_scale() {
     }
 }
 
-/// The advisor job's quiet hours at 13,200 characters: copy and decode into
-/// a frame kept between hours, and into a fresh frame each hour (the decode
-/// a held frame replaces).
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn advisor_hour_costs_at_late_war_scale() {
@@ -362,9 +337,6 @@ fn advisor_hour_costs_at_late_war_scale() {
     );
 }
 
-/// The portrait job's quiet hours at 13,200 characters, every share: with
-/// the census stamp it matched, and with a new stamp each hour (the
-/// comparison the stamp replaces).
 #[test]
 #[ignore = "bench: run in release with --ignored --nocapture"]
 fn portrait_hour_costs_at_late_war_scale() {
@@ -390,7 +362,6 @@ fn portrait_hour_costs_at_late_war_scale() {
         .rows(MODULE, state)
         .unwrap()
         .to_vec();
-    // Acquired again: a census with a fresh stamp and the same rows.
     let acquire = |census: &mut engine_native::ccharacter_manager::PortraitCensus| {
         census.begin(MODULE, state);
         for row in &rows {

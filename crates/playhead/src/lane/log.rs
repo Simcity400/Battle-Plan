@@ -1,8 +1,3 @@
-//! A log table's lane: a log's rows are appended once and later forgotten, never changed, so the
-//! lane holds no key and no cell. It holds the log's count and live set at the head and the part
-//! under it; a step hands over each row appended, with its hour and selected cells read as it
-//! passes, and each run of rows forgotten. A reader that shows the rows listed now asks for their
-//! cells by ordinal ([`rows`]).
 
 use super::{Chain, Lane, Passed, Sought, Stop, next_part};
 use crate::{
@@ -29,11 +24,8 @@ use std::{
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// A log row's place in its run: the rows appended before it.
 pub type Ordinal = u64;
 
-/// Whether `table` is a log in every run of `pages`; a table a log in one run and state in
-/// another is refused by name.
 pub fn is_log(pages: &dyn Pages, table: usize) -> io::Result<bool> {
     let mut class = None;
     for (index, run) in pages.runs().iter().enumerate() {
@@ -46,9 +38,6 @@ pub fn is_log(pages: &dyn Pages, table: usize) -> io::Result<bool> {
     Ok(class == Some(true))
 }
 
-/// A log's rows the game still lists: every 64-ordinal word holding a listed row, with its index,
-/// in order. Words emptied in the middle stay until they are half of those held, so a forget
-/// moves nothing; what it holds follows the rows listed, never the rows ever appended.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LiveSet {
     words: VecDeque<(u64, u64)>,
@@ -57,7 +46,6 @@ pub struct LiveSet {
 }
 
 impl LiveSet {
-    /// The rows a reader's live set lists.
     pub fn from_listed(listed: &Listed) -> Self {
         let mut set = Self::default();
         for ordinal in listed.ones() {
@@ -78,12 +66,10 @@ impl LiveSet {
         self.find(ordinal / 64).is_ok_and(|at| self.words[at].1 >> (ordinal % 64) & 1 == 1)
     }
 
-    /// The lowest ordinal listed.
     pub fn lowest(&self) -> Option<Ordinal> {
         self.words.iter().find(|(_, bits)| *bits != 0).map(|&(word, bits)| word * 64 + Ordinal::from(bits.trailing_zeros()))
     }
 
-    /// Every ordinal listed, rising.
     pub fn ones(&self) -> impl Iterator<Item = Ordinal> + '_ {
         self.words.iter().flat_map(|&(word, bits)| {
             let mut rest = bits;
@@ -105,7 +91,6 @@ impl LiveSet {
         self.words.binary_search_by_key(&word, |&(held, _)| held)
     }
 
-    /// Listed from `ordinal` on, which is past every one held.
     pub(crate) fn append(&mut self, ordinal: Ordinal) {
         let (word, bit) = (ordinal / 64, 1_u64 << (ordinal % 64));
         match self.words.back_mut() {
@@ -115,7 +100,6 @@ impl LiveSet {
         self.listed += 1;
     }
 
-    /// Rows `from..to` no longer listed; how many of them were.
     pub(crate) fn forget(&mut self, from: Ordinal, to: Ordinal) -> u64 {
         let mut at = self.find(from / 64).unwrap_or_else(|at| at);
         let mut cleared = 0;
@@ -150,7 +134,6 @@ impl LiveSet {
     }
 }
 
-/// A log's state at the head: rows appended ever and the rows listed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LogState {
     pub(crate) count: Ordinal,
@@ -171,7 +154,6 @@ impl LogState {
     }
 }
 
-/// The part under a log lane's head and its cursor.
 pub(super) struct LogUnder {
     cursor: LogCursor,
     block: usize,
@@ -180,15 +162,12 @@ pub(super) struct LogUnder {
     pub(super) tracks: usize,
 }
 
-/// What a log lane holds besides what every lane does.
 #[derive(Default)]
 pub(super) struct Logs {
     pub(super) state: LogState,
     pub(super) under: Option<LogUnder>,
 }
 
-/// Applies one event at or after block hour `from` (one before was applied by an earlier read)
-/// to the log's state, and to the step's change set when there is one.
 fn apply(event: LogEvent<'_>, from: u16, start: Hour, state: &mut LogState, logged: Option<&mut Logged>) -> io::Result<()> {
     match event {
         LogEvent::Appended { hour, .. } | LogEvent::Forgotten { hour, .. } if hour < from => {}
@@ -210,27 +189,20 @@ fn apply(event: LogEvent<'_>, from: u16, start: Hour, state: &mut LogState, logg
                 logged.forgotten.push(Forgotten { hour: start + Hour::from(hour), from: first, to });
             }
         }
-        // Every variant is named: a new one must fail to compile here, never fall into an arm.
         other @ LogEvent::Named { .. } => return Err(unread(&other)),
     }
     Ok(())
 }
 
-/// A log event the playhead does not read yet, by name: never passed over in silence.
 pub(crate) fn unread(event: &LogEvent<'_>) -> io::Error {
     invalid(format!("A log hands the playhead an event it does not read: {event:?}"))
 }
 
 impl Lane {
-    /// The log's count and live set at the head, for a log table.
     pub fn log(&self) -> Option<&LogState> {
         self.log.as_deref().map(|logs| &logs.state)
     }
 
-    /// A log's state at the end of game hour `hour`: its restore at the end of the block before the
-    /// hour's (or at the hour's own block's end, or the run's first restore), then the hour's block
-    /// through it: its parts before the one holding the hour walked with no column (their cells
-    /// decompressed only as the next part's prefix), then that one entered as a step enters it.
     pub(super) fn seek_log(&mut self, hour: Hour) -> io::Result<Sought> {
         let pages = Arc::clone(&self.pages);
         let run = &pages.runs()[self.run];
@@ -287,9 +259,6 @@ impl Lane {
         Ok(sought)
     }
 
-    /// Parts `0..count` of block `block` read into the log's state from block hour `from` with no
-    /// column, and their selected columns decompressed in order for the part after them: its
-    /// prefix, and the nanoseconds fetching took.
     fn walk_lean(&mut self, block: usize, count: usize, from: u16) -> io::Result<(Prefix, u64)> {
         let pages = Arc::clone(&self.pages);
         let run = &pages.runs()[self.run];
@@ -329,8 +298,6 @@ impl Lane {
         Ok((full.expect("a part walked"), fetch_ns))
     }
 
-    /// A log's reset: the flag, the head, the status, its count and rows listed, and no row; the
-    /// live set is the lane's ([`Lane::log`]), read by a rebuild.
     pub(super) fn reset_log(&self, out: &mut Changes) -> io::Result<()> {
         let head = self.head().ok_or_else(|| invalid("A lane is reset before it is sought"))?;
         let state = &self.log.as_deref().expect("a log lane").state;
@@ -343,7 +310,6 @@ impl Lane {
         Ok(())
     }
 
-    /// A log's step to the end of game hour `to`, as far as the parts given reach.
     pub(super) fn step_log(&mut self, to: Hour, out: &mut Changes) -> io::Result<Hour> {
         let Some(next) = self.next else { return Err(invalid("A lane steps before it is sought")) };
         out.begin(self.table, &self.columns, self.keyed, false);
@@ -368,8 +334,6 @@ impl Lane {
         Ok(head)
     }
 
-    /// Reads every hour through run hour `target` the parts given reach into the log's state, and
-    /// into `logged` when given.
     fn advance_log(&mut self, target: u32, mut logged: Option<&mut Logged>) -> io::Result<Stop> {
         let Self { pages, run, table, kinds, columns, ahead, retired, texts, known, log, next: lane_next, .. } = self;
         let run = &pages.runs()[*run];
@@ -439,8 +403,6 @@ impl Lane {
     }
 }
 
-/// The part under a log lane's head is passed: checked to hold nothing past it, its cursor
-/// retired to be freed on another thread.
 fn pass(logs: &mut Logs, retired: &mut Vec<Passed>) -> io::Result<()> {
     let mut under = logs.under.take().expect("a part under the head");
     let mut past = false;
@@ -452,7 +414,6 @@ fn pass(logs: &mut Logs, retired: &mut Vec<Passed>) -> io::Result<()> {
     Ok(())
 }
 
-/// Rows of a log asked for by ordinal: the table, its run and the columns wanted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wanted {
     pub run: usize,
@@ -461,23 +422,17 @@ pub struct Wanted {
     pub columns: Vec<usize>,
 }
 
-/// What reading a [`Wanted`] took.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Read {
     pub blocks: u32,
-    /// Parts fetched (each block's from its first: they chain), and walked (holding a row asked).
     pub parts: u32,
     pub walked: u32,
     pub stored: u64,
     pub decompressed: u64,
-    /// Fetching the parts (read, verify, decompress, open) and handing their rows over.
     pub fetch_ns: u64,
     pub rows_ns: u64,
 }
 
-/// The rows a [`Wanted`] named, owned, in rising ordinal: each one's ordinal, game hour and key,
-/// its cells of the columns asked (a column's `slots()` are the rows' places), and the strings
-/// its text cells name.
 #[derive(Clone, Debug, Default)]
 pub struct Rows {
     pub(crate) ordinals: Vec<Ordinal>,
@@ -501,7 +456,6 @@ impl Rows {
         &self.keys
     }
 
-    /// Per column asked, in the order asked.
     pub fn columns(&self) -> &[Written] {
         &self.columns
     }
@@ -523,9 +477,6 @@ impl Rows {
     }
 }
 
-/// The rows `wanted` names, read from the parts that appended them: per block holding any, its
-/// parts from the first (they chain) through the one appending the highest asked. Every ordinal
-/// asked must be a row of the run, refused by name otherwise.
 pub fn rows(pages: &dyn Pages, wanted: &Wanted) -> io::Result<Rows> {
     let table = wanted.table;
     let run = pages.runs().get(wanted.run).ok_or_else(|| invalid(format!("No run {}", wanted.run)))?;

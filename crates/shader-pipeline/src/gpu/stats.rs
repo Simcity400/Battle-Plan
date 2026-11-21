@@ -1,4 +1,3 @@
-//! Counts of the GPU commands and uploads a frame records, read by the playback-cost harness.
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
@@ -6,37 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 #[repr(usize)]
 pub enum Count {
     Draws,
-    /// Render passes begun ([`CountedPasses`]).
     Passes,
     Pipelines,
     BindGroups,
-    /// Vertex, index and blend-constant sets.
     States,
     Uploads,
     UploadBytes,
     CreatedBindGroups,
     CreatedBuffers,
-    /// Shader programs compiled and render pipelines built, on any thread.
     Builds,
-    /// Of those, the ones the window thread made.
     WindowBuilds,
-    /// GUI batches a draw of an unforeseen pipeline left incomplete, which the next frame
-    /// prepares again.
     GuiJoins,
-    /// Compiled GUI draws an upload prepared.
     GuiPrepared,
-    /// Writes and bytes staged for the GPU, counted where they are staged (they reach the GPU
-    /// at a flush, which `Uploads` and `UploadBytes` count).
     Staged,
     StagedBytes,
-    /// Compiled GUI draws handed to the sprite pass.
     GuiHanded,
-    /// Compiled GUI draws prepared to a native packet (not batched).
     GuiNative,
-    /// Nanoseconds inside the queue's write calls: what an install spends handing bytes to wgpu,
-    /// as against preparing them.
     WriteNs,
-    /// Nanoseconds inside buffer and bind group creation.
     CreateNs,
 }
 
@@ -73,17 +58,14 @@ std::thread_local! {
     static WINDOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Marks the calling thread as the one that draws the window's frames.
 pub fn mark_window_thread() {
     WINDOW.with(|window| window.set(true));
 }
 
-/// Whether the calling thread draws the window's frames ([`mark_window_thread`]).
 pub fn on_window_thread() -> bool {
     WINDOW.with(std::cell::Cell::get)
 }
 
-/// A shader compile or pipeline build, attributed to the window thread when it made it.
 #[inline]
 pub fn build() {
     BUILDS_TOTAL.fetch_add(1, Relaxed);
@@ -103,7 +85,6 @@ pub fn draw() {
     add(Count::Draws, 1);
 }
 
-/// A render pass begun; [`CountedPasses::counted_render_pass`] is the only caller.
 #[inline]
 pub fn pass() {
     add(Count::Passes, 1);
@@ -113,8 +94,6 @@ pub fn passes() -> u64 {
     COUNTS[Count::Passes as usize].load(Relaxed)
 }
 
-/// `begin_render_pass`, counted. Every pass of a map frame is begun through this, so a frame's
-/// passes are a number the harness reports beside its draws.
 pub trait CountedPasses {
     fn counted_render_pass<'a>(
         &'a mut self,
@@ -168,19 +147,16 @@ pub fn created_buffer() {
     add(Count::CreatedBuffers, 1);
 }
 
-/// Bytes staged for the GPU ([`Count::StagedBytes`]).
 #[inline]
 pub fn staged(bytes: usize) {
     add(Count::Staged, 1);
     add(Count::StagedBytes, bytes as u64);
 }
 
-/// The counts since the last take, left in place.
 pub fn peek() -> [u64; NAMES.len()] {
     std::array::from_fn(|index| COUNTS[index].load(Relaxed))
 }
 
-/// The counts since the last take.
 pub fn take() -> [u64; NAMES.len()] {
     std::array::from_fn(|index| COUNTS[index].swap(0, Relaxed))
 }
@@ -192,7 +168,6 @@ pub fn write_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, byt
     add(Count::WriteNs, started.elapsed().as_nanos() as u64);
 }
 
-/// [`write_buffer`] through `belt`: the copy is recorded into `encoder`. An empty write is none.
 pub fn belt_write(
     belt: &mut wgpu::util::StagingBelt,
     encoder: &mut wgpu::CommandEncoder,
@@ -209,7 +184,6 @@ pub fn belt_write(
     add(Count::WriteNs, started.elapsed().as_nanos() as u64);
 }
 
-/// A buffer made with no contents, counted as one created.
 pub fn create_buffer(device: &wgpu::Device, descriptor: &wgpu::BufferDescriptor<'_>) -> wgpu::Buffer {
     created_buffer();
     let started = std::time::Instant::now();

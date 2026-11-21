@@ -1,5 +1,3 @@
-// The visual check's captures, in the parity tool's manifest (ui/e2e), so its compareCaptures judges
-// them against the accepted baseline: each item a screenshot and the visible text it showed.
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { surfaceModel } from '../../ui/e2e/capture.mjs';
@@ -19,7 +17,6 @@ export class Visual {
 
   file(caseId) { return `${this.session}-${String(this.items.length + 1).padStart(4, '0')}-${caseId.replace(/[^\w.-]+/g, '_').slice(0, 100)}.png`; }
 
-  /** Moves the pointer where it hovers nothing: empty dashboard background, outside any widget or tooltip. */
   async rest() {
     const at = await this.app.evaluate(`(() => { const g = document.querySelector('.dash-grid-scroll')?.getBoundingClientRect(); if (!g) return null;
       const empty = (x, y) => { const e = document.elementFromPoint(x, y); return e && !e.closest('article, [data-tooltip], button, a, input, [popover]'); };
@@ -32,10 +29,8 @@ export class Visual {
     await this.app.mouse('mouseMoved', at.x, at.y);
   }
 
-  /** Two frames, so what the last change drew is on screen. */
   paint() { return this.app.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'); }
 
-  /** Captures what `selector` (or the whole viewport) shows, clipped to the screen. A widget also gives its surface model. */
   async capture(caseId, kind, selector = null) {
     try {
       await this.rest();
@@ -59,7 +54,6 @@ export class Visual {
     }
   }
 
-  /** A picture the map drew itself (its export), with no text of its own. */
   async addFile(caseId, kind, source) {
     try {
       const screenshot = this.file(caseId);

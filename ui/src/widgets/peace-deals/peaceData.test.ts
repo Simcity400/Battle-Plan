@@ -194,16 +194,13 @@ test('a war-end outcome joins the one recorded conference at its hour naming its
   const card = log.rows[1].item;
   assert.equal(card.warEnd, true);
   assert.equal(log.rows[0].item.warEnd, undefined);
-  // The game's own transfer list names no action; the outcome's ownership supplies the points.
   assert.equal(card.actions.length, 1);
   assert.equal(peaceActionName(card.actions[0]), 'Automatic transfer');
   assert.deepEqual(peaceActionTotals(card.actions[0]), { states: 2, vp: 10n, warScore: null });
   assert.deepEqual(chipsByValue(card.actions[0].chips).map(chip => chip.state), [2, 1]);
   assert.match(peaceDescription(log.rows[1]), /read from ownership when the war ended/);
-  // An outcome whose sides are the conference's the other way round is not its settlement.
   const reversed = { ...outcome, winners: outcome.losers, losers: outcome.winners };
   assert.equal(preparePeaceLog(reply([conference, reversed])).rows.length, 2);
-  // Two conferences at that hour leave the outcome its own card.
   const twin = { ...conference, id: 'twin' };
   assert.equal(preparePeaceLog(reply([conference, twin, outcome])).rows.length, 3);
 });
@@ -225,7 +222,6 @@ test('an outcome fitting two conferences stays its own card whichever outcome jo
     assert.equal(rows.find(row => row.item.deal.id === 'a')?.item.warEnd, true);
     assert.equal(rows.find(row => row.item.deal.id === 'b')?.item.warEnd, undefined);
   }
-  // Every outcome fitting one conference alone joins it.
   const third = outcome('third', ['B'], ['X']);
   assert.deepEqual(preparePeaceLog(reply([a, b, first, third])).rows.map(row => row.item.deal.id).sort(), ['a', 'b']);
 });
@@ -270,7 +266,6 @@ test('unresolved country operands never borrow giver tags, and captured automati
   assert.equal(actions[1].chips[0].derived, false);
   assert.equal(actions.length, 2);
 });
-/** The roster's hours between its daily reads, as the product reports them. */
 const rosterWindows = (days: number) => Array.from({ length: days }, (_, day) => ({ firstHour: day * 24 + 22, lastHour: day * 24 + 44 }));
 test('hours between daily conference roster reads are cadence, never log rows or a gap hint', () => {
   const data = reply([]);

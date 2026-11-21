@@ -1,4 +1,3 @@
-//! Retain an owned read under a complete writer certificate and explicit input identity.
 
 pub struct Certified<T, C> {
     value: T,
@@ -24,7 +23,6 @@ impl<T, C: PartialEq> Certified<T, C> {
         }
     }
 
-    // Equal certificates exclude relevant writes and identity changes since admission.
     pub fn begin(&mut self, signal: impl FnOnce(&T) -> Option<C>) -> Decision<'_, T> {
         let before = signal(&self.value);
         if let (Proof::Current(current), Some(before)) = (&self.proof, &before)

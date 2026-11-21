@@ -26,14 +26,11 @@ export function validateAgencies(value: unknown): AgencyComparisonReply {
   return value as unknown as AgencyComparisonReply;
 }
 
-/** What renders the table: everything it shows. Agencies' numbers move only at game events (an upgrade, an operative recruited or
- * lost), never hour by hour, and a panel is pushed only when it differs. */
 export const agencyStructure = (reply: AgencyComparisonReply) => JSON.stringify(reply);
 
 const rankValue = (agency: Agency, field: AgencyRankField): bigint => field === 'defense' ? BigInt(agency.defenseRaw)
   : BigInt(field === 'active' ? agency.activeCount : agency.maximum);
 
-/** The agencies a selection shows at `hour`: the top `top` by `field` (ties by country), else those the selection matches. */
 export function agencyRows(reply: AgencyComparisonReply | undefined, hour: number, matches: (tag: string, hour: number) => boolean, all: boolean,
   top: { count: number; field: AgencyRankField } | null): Agency[] {
   if (!reply) return [];
@@ -48,7 +45,6 @@ export function agencyRows(reply: AgencyComparisonReply | undefined, hour: numbe
 
 export const agencyName = (agency: Agency) => agency.name ?? 'Unknown';
 
-/** The upgrades column: the level sum, or why there is none. */
 export function upgradesCell(agency: Agency): string {
   const held = agency.upgrades;
   if (!held) return 'Not recorded';

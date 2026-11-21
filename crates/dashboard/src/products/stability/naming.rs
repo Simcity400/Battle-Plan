@@ -1,4 +1,3 @@
-//! A stability line's name and group in the viewer's language, from the recorded content.
 
 use super::BreakdownLine;
 use dashboard_base::catalogue::View;
@@ -6,7 +5,6 @@ use dashboard_base::products::politics_content::{PoliticsContent, RecordedName};
 use dashboard_text::idea_names::{IdeaCountry, IdeaName};
 use installed_content_core::characters::BuiltTemplate;
 
-/// A line's character as recorded: its script token, saved name and template.
 pub struct RecordedCharacter<'a> {
     pub script: Option<&'a str>,
     pub saved: &'a str,
@@ -20,8 +18,6 @@ fn built<'a>(character: Option<&'a RecordedCharacter>) -> Result<&'a BuiltTempla
     }
 }
 
-/// Which slot or kind of category a paired idea or advisor line belongs to: an advisor's role is
-/// its recorded character's.
 pub fn line_group(line: &BreakdownLine, content: &PoliticsContent, character: Option<&RecordedCharacter>) -> (Option<String>, Option<String>) {
     match line.kind.as_str() {
         "advisor" => (
@@ -49,13 +45,10 @@ pub fn line_group(line: &BreakdownLine, content: &PoliticsContent, character: Op
     }
 }
 
-/// A line's name in the viewer's language: a character's saved name first, else the content name
-/// of its script token. No country scope is evaluated, so a name holding a closed `[...]` is none.
 pub fn line_name(line: &BreakdownLine, content: &PoliticsContent, character: Option<RecordedCharacter>, country: IdeaCountry<'_>) -> Option<String> {
     let localise = |key: &str| content.localised(key, View::Scripted);
     let expanded = |name: String| (!name.contains('[')).then_some(name);
     let character_name = |token: &str| content.authored_character_name(token);
-    // A recorded name that cannot be resolved stays unknown (Some(None)): no authored name stands in.
     let recorded = || {
         let character = character.as_ref()?;
         match content.recorded_name(character.saved) {

@@ -1,19 +1,3 @@
-//! The terrain mode's own layer: the game's "simplified colours" of each province's terrain.
-//!
-//! Every province of the census is a region of its own, so the layer never changes after
-//! the content loads. A land province (definition flag 1) takes its definition's terrain
-//! category; any other province, sea or lake, takes its strategic region's `naval_terrain`
-//! category, or `ocean` when it has no region or the region names no category the database
-//! holds. The region's colour is the category's `color` with its alpha replaced by
-//! `MAP_MODE_TERRAIN_TRANSPARENCY` on land and `MAP_MODE_NAVAL_TERRAIN_TRANSPARENCY`
-//! elsewhere. Every region writes the constant gradient [`TERRAIN_GRADIENT`] with no naval
-//! effects, a zero thickness and an unchanged fill, and the channel takes
-//! `GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_TERRAIN` with the state layer's outline
-//! cutoff.
-//!
-//! A province the census has no terrain record for, a land province on the null terrain, a
-//! naval province when the database has no `ocean`, and a category whose colour does not
-//! read are left out of the layer and counted by reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,44 +6,29 @@ use installed_content_regions::regions::StrategicRegion;
 
 use super::{ModeLayer, Style, pack};
 
-/// The constant gradient byte every terrain region writes.
 pub const TERRAIN_GRADIENT: u8 = 127;
-/// The definition flag of a land province.
 const LAND: u8 = 1;
 
-/// The terrain mode's defines.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Defines {
-    /// `MAP_MODE_TERRAIN_TRANSPARENCY` and `MAP_MODE_NAVAL_TERRAIN_TRANSPARENCY`.
     pub alpha: [f32; 2],
-    /// `GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_TERRAIN` and
-    /// `GRADIENT_BORDERS_OUTLINE_CUTOFF_STATE`.
     pub channel: [f32; 2],
 }
 
-/// The content the layer is built from.
 pub struct Sources<'a> {
-    /// The terrain database.
     pub categories: &'a TerrainDefinitions,
-    /// Every province of the census, ascending.
     pub provinces: &'a [u32],
-    /// A province's definition flags and terrain category ordinal; `None` when its record
-    /// was refused.
     pub terrain: &'a dyn Fn(u32) -> Option<ProvinceTerrain>,
-    /// A province's strategic region.
     pub region_of: &'a BTreeMap<u32, u32>,
     pub regions: &'a BTreeMap<u32, StrategicRegion>,
 }
 
-/// The terrain layer and what it leaves out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Built {
     pub layer: ModeLayer,
-    /// One line per reason, with its province count.
     pub warnings: Vec<String>,
 }
 
-/// The category a province shows and whether it is land.
 fn category(
     sources: &Sources,
     province: u32,
@@ -83,7 +52,6 @@ fn category(
         .ok_or_else(|| "sea and lake provinces without a naval terrain, as the terrain database declares no ocean".to_owned())
 }
 
-/// Builds the layer from the content.
 pub fn build(sources: &Sources, defines: &Defines) -> std::io::Result<Built> {
     let len = sources
         .provinces

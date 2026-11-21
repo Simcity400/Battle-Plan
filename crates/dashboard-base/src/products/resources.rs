@@ -1,10 +1,3 @@
-//! Strategic resources as every resource product shows them: the recorded
-//! `ResourceDefinitions` in the game's order, told apart by native index, with
-//! the names and icons the recorded content stack gives them.
-//!
-//! Shared by Resource balance and Trade flows, so a resource is named, pictured
-//! and numbered the same way everywhere, and its icons are drawn once per
-//! catalogue whichever product asks first.
 
 use super::LoadContext;
 use crate::{
@@ -26,41 +19,30 @@ use std::{
 };
 use ts_rs::TS;
 
-/// Decimal places of every recorded resource amount.
 pub const RESOURCE_DECIMALS: u8 = 5;
-/// Longest side of a returned resource icon.
 const ICON_EDGE: u32 = 48;
-/// The trade view's resource row and its icon button, the element that receives
-/// each resource's `icon_frame`. Any GUI file may declare the row.
 const RESOURCE_ROW: &str = "resources_info_entry";
 const RESOURCE_ICON: &str = "resources_icon";
 
-/// A recorded resource, as content names and pictures it. Every declaration
-/// adds its own resource, even when repeating a token. Resources are told
-/// apart by their recorded index and a repeated token is numbered.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceInfo {
-    /// The native index (`ResourceDefinitions.id`).
+    #[doc = " The native index (`ResourceDefinitions.id`)."]
     pub id: u32,
     pub token: String,
-    /// Which declaration of its token this is, from 1, in the game's order.
+    #[doc = " Which declaration of its token this is, from 1, in the game's order."]
     pub ordinal: u32,
     pub name: Option<String>,
-    /// An artwork URL; null when content has no icon for it.
+    #[doc = " An artwork URL; null when content has no icon for it."]
     pub icon: Option<String>,
 }
 
-/// The recorded resources seen so far, by native index, in the game's order.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Learned {
     ids: BTreeMap<u32, String>,
 }
 
 impl Learned {
-    /// Adds the resources a frame's definitions name that were not seen yet. A
-    /// definition whose token the recorded dictionary does not spell is left for
-    /// a later frame.
     pub fn learn(
         &mut self,
         definitions: &[ResourceDefinitionRow],
@@ -97,7 +79,6 @@ impl Learned {
         before != self.ids.len()
     }
 
-    /// Native index and token of every resource seen, in the game's order.
     pub fn list(&self) -> Vec<(u32, String)> {
         self.ids
             .iter()
@@ -106,9 +87,6 @@ impl Learned {
     }
 }
 
-/// Which declaration of its token each resource is, from 1, in the game's order:
-/// the game appends every declaration, so the k-th native resource with a token is
-/// its k-th declaration in load order.
 pub fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
     resources
@@ -121,9 +99,6 @@ pub fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
         .collect()
 }
 
-/// Names and icons, and the standing warnings, for the catalogue they were read
-/// from; one per source and kind of catalogue ([`catalogue::ByCatalogue`]: stored payloads
-/// read the recording's own), whichever resource product asks.
 #[derive(Default)]
 struct ContentState {
     content: Option<ContentCache>,
@@ -131,27 +106,20 @@ struct ContentState {
 
 struct ContentCache {
     catalogue: Arc<Catalogue>,
-    /// By token and which declaration of it (from 1).
     resources: BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
-    /// The standing notes and every warning reading names and icons made, in order, each with
-    /// what it is about.
     warnings: Vec<(Note, String)>,
 }
 
-/// A declaration's name and icon from content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declared {
     pub name: Option<String>,
     pub icon: Option<String>,
 }
 
-/// What resource names and icons are read from: one catalogue's layers, sprites and
-/// localisation, all from the recorded content stack.
 pub struct ContentView<'a> {
     pub layers: &'a ResolvedLayers,
     pub sprites: &'a SpriteSet,
     pub localisation: &'a Localisation,
-    /// The GUI registry or its named read failure; resource names are independent.
     pub guis: Result<&'a installed_content_core::gui::native::Guis, String>,
     pub gui_decode: &'a Result<installed_content_image::native::Decode, String>,
 }
@@ -168,15 +136,11 @@ impl<'a> ContentView<'a> {
     }
 }
 
-/// The icon sprite of the trade view's resource row, and each content declaration's
-/// one-based frame in it.
 struct Icons {
     sprite: installed_content_gfx::gfx::SpriteType,
     frames: Frames,
 }
 
-/// Each numbered declaration's one-based icon frame, per token in load order, and the
-/// first file that stops short, after which no declaration has a known ordinal.
 #[derive(Default)]
 struct Frames {
     by_token: BTreeMap<String, Vec<Option<u32>>>,
@@ -198,8 +162,6 @@ impl Frames {
         }
     }
 
-    /// The `ordinal`th (one-based) declaration's frame of `token`: `Ok(None)` when it has
-    /// none or the content has no such declaration, the gap when the content leaves it unknown.
     fn of(&self, token: &str, ordinal: u32) -> Result<Option<u32>, String> {
         let declared = ordinal
             .checked_sub(1)
@@ -234,10 +196,6 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     ))
 }
 
-/// A resource's name as the game shows it: `PRODUCTION_MATERIALS_` followed by
-/// the upper-cased token, through the plain localiser only. Brackets are glyphs
-/// ([`catalogue::View::Plain`]).
-/// `None`, with the reason in `warnings`, when there is no name to show.
 fn resource_name(
     localisation: &Localisation,
     token: &str,
@@ -246,7 +204,6 @@ fn resource_name(
 ) -> Option<String> {
     let upper = installed_content_localisation::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
-    // Recovery and text share the walk; missing keys are byte copies.
     let (name, notes) = catalogue::localised_details(
         localisation,
         &key,
@@ -264,10 +221,6 @@ fn resource_name(
     name
 }
 
-/// Names and icons for `wanted` declarations (token, ordinal) from content: the name
-/// the game's resource texts use ([`resource_name`]) and the declaration's
-/// frame of the trade view's icon. A missing key shows as that key; a refused name
-/// or missing icon stays unavailable, with a warning.
 pub fn resource_content(
     view: &ContentView,
     wanted: &[(String, u32)],
@@ -284,14 +237,12 @@ pub fn resource_content(
     )
 }
 
-/// What a resource warning is about: the resource's name, or the art its icon is drawn with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Note {
     Name,
     Art,
 }
 
-/// [`resource_content`], each warning given to `note` with what it is about, in order.
 fn resource_content_noted(
     view: &ContentView,
     wanted: &[(String, u32)],
@@ -337,8 +288,6 @@ fn resource_content_noted(
         }
         (None, _) => None,
     };
-    // Draw every wanted frame of the shared sprite in one batch. A refused
-    // batch leaves each frame to its own draw below, which names the refusal.
     if let (Some(icons), Some(decode)) = (&icons, decode) {
         let frames: BTreeSet<u32> = missing
             .iter()
@@ -348,8 +297,6 @@ fn resource_content_noted(
         let requests: Vec<_> = frames.iter().map(|frame| (&icons.sprite, *frame)).collect();
         let _ = catalogue::sprite_frames_png(view.layers, &requests, decode, ICON_EDGE);
     }
-    // A sprite draws every frame or none: only the frame offset differs between
-    // them, and the resolved program samples past the strip as the game does.
     let mut refused = false;
     for (token, ordinal) in missing {
         if cancelled.load(Ordering::Acquire) {
@@ -420,20 +367,12 @@ fn resource_content_noted(
             };
             Declared { name, icon }
         });
-        // What the draw fell back on reaches this request as it does every later one.
         declared.get();
         cached.insert((token.clone(), *ordinal), declared);
     }
     Ok(findings)
 }
 
-/// Every recorded resource (native index and token, in the game's order) with its
-/// content name and icon, and the warnings that go with them. Without the game
-/// folders each keeps its token and has no icon, and a warning says why. Names are the
-/// recording's; while the request shows visual mods, icons are drawn as it shows them, each one
-/// operation ([`present_stored`]), so where the selection cannot draw one the recording's own
-/// is drawn, named, as every resource widget draws it, and the art warnings are the chosen
-/// draws'. Art that cannot be drawn at all leaves the names, by why.
 pub fn resource_infos(
     source: &Source,
     context: &LoadContext,
@@ -470,10 +409,8 @@ pub fn resource_infos(
     Ok((infos, warnings))
 }
 
-/// What a reply showing resource icons says of where they come from.
 const ARTWORK_NOTE: &str = "Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.";
 
-/// [`resource_infos`] for payloads the prepared store keeps ([`ResourceNaming::stored`]).
 pub fn stored_resource_infos(
     source: &Source,
     context: &LoadContext,
@@ -483,9 +420,6 @@ pub fn stored_resource_infos(
     ResourceNaming::stored(source, context).infos(resources, cancelled)
 }
 
-/// Draws the icons of resources a prepared payload stored (drawn with the recording's art, as
-/// preparation is) as the request admitted under `content` shows them, when it shows visual
-/// mods; without them the stored icons are already the ones it shows.
 pub fn present_stored(
     source: &Source,
     content: Option<&dashboard_core::config::ContentOptions>,
@@ -495,8 +429,6 @@ pub fn present_stored(
     present_icons(source, content, resources, cancelled).map(|_| ())
 }
 
-/// [`present_stored`], with why each icon neither the selection nor the recording draws is
-/// unavailable, each reason once.
 fn present_icons(
     source: &Source,
     content: Option<&dashboard_core::config::ContentOptions>,
@@ -542,21 +474,16 @@ fn present_icons(
     Ok(refused)
 }
 
-/// The recorded frames of each resource declaration and the icons drawn for one selection; one
-/// per kind of catalogue ([`catalogue::ByCatalogue`]).
 #[derive(Default)]
 struct ResourceArt {
     frames: Option<(Arc<Catalogue>, Frames)>,
     drawn: Option<catalogue::Redrawn<(String, u32), String>>,
 }
 
-/// Each resource declaration's one-based frame in the trade view's icon: recorded facts.
 fn icon_frames(layers: &ResolvedLayers) -> io::Result<Frames> {
     Ok(Frames::new(&installed_content_core::resources::read(layers)?.0))
 }
 
-/// A resource declaration's icon drawn through `catalogue`: the trade view's icon sprite, as its
-/// GUI selects it, at the declaration's recorded frame.
 fn resource_icon(
     catalogue: &Catalogue,
     frames: &Frames,
@@ -582,8 +509,6 @@ fn resource_icon(
         .map_err(|error| error.to_string())
 }
 
-/// [`present_stored`] over a serialized reply's `resources` list, left as it is when the request
-/// shows no visual mods or the reply has none.
 pub fn present_stored_json(
     source: &Source,
     content: Option<&dashboard_core::config::ContentOptions>,
@@ -599,19 +524,12 @@ pub fn present_stored_json(
     Ok(())
 }
 
-/// What naming recorded resources reads of a source, held apart from it: the
-/// content catalogue of its content stack (or why it is unavailable) and the
-/// source's resource cache. A preparation that publishes names where it holds
-/// no source takes it when it last observed one.
 pub struct ResourceNaming {
     catalogue: Result<Arc<Catalogue>, String>,
     cache: Arc<std::sync::Mutex<catalogue::ByCatalogue<ContentState>>>,
 }
 
 impl ResourceNaming {
-    /// Naming as the recording gives it: names, warnings and the recording's own icons
-    /// (`catalogue::recorded_catalogue`), which a reply showing visual mods draws again as it
-    /// shows them ([`present_stored`]); what preparation publishes for the prepared store.
     pub fn stored(source: &Source, context: &LoadContext) -> Self {
         Self {
             catalogue: context
@@ -622,7 +540,6 @@ impl ResourceNaming {
         }
     }
 
-    /// [`resource_infos`] of `resources`, with the recording's icons and their warnings.
     pub fn infos(
         &self,
         resources: &[(u32, String)],
@@ -632,8 +549,6 @@ impl ResourceNaming {
     }
 }
 
-/// The names and the recording's icons of `resources`, with the warnings reading them made: the
-/// art warnings and the artwork note only with `art`, for a reply that shows these icons.
 fn infos(
     catalogue: &Result<Arc<Catalogue>, String>,
     state: &std::sync::Mutex<catalogue::ByCatalogue<ContentState>>,
@@ -714,7 +629,6 @@ fn infos(
                 .collect()
         }
     };
-    // Each declaration is its own resource in the game, so each is shown, numbered.
     for (index, (_, token)) in resources.iter().enumerate() {
         if ordinals[index] == 2 {
             let count = resources.iter().filter(|(_, other)| other == token).count();

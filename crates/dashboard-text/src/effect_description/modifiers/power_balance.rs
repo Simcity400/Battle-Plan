@@ -1,7 +1,6 @@
 use super::*;
 use replay_data::rows::{PowerBalanceMemberRow, PowerBalanceRangeRow, PowerBalanceRow};
 
-/// The fields of each table the balance descriptions read.
 const BALANCE: u64 = tables::PowerBalances::ID.full_mask();
 const BALANCE_ID: u64 = mask::<PowerBalanceRow>(&["balance"]);
 const MEMBER: u64 = mask::<PowerBalanceMemberRow>(&["country"]);
@@ -19,11 +18,11 @@ fn text(fields: &[Item], name: &str) -> Vec<u8> {
 }
 
 fn same(left: &[u8], right: &[u8]) -> bool {
-    left.eq_ignore_ascii_case(right) // case-insensitive matching, hashed-name lookup.
+    left.eq_ignore_ascii_case(right)
 }
 
 fn absolute(value: i64) -> i64 {
-    value.wrapping_abs() // wrapping absolute value.
+    value.wrapping_abs()
 }
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
@@ -46,7 +45,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         })
     }
 
-    // country lookup: first manager entry containing the caller tag.
     fn balance_current(
         &self,
         scopes: Scopes,
@@ -77,14 +75,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn balance_by_id(&self, id: &[u8]) -> Result<Option<Cow<'f, PowerBalanceRow>>, String> {
         let rows = self.complete::<tables::PowerBalances>(BALANCE)?;
-        // ID lookup.
         match find(rows.with_mask(BALANCE_ID), |row| same(&row.balance, id))? {
             Some(row) => keyed(&rows, row.key()),
             None => Ok(None),
         }
     }
 
-    // localises/expands in a default EMPTY event scope.
     fn balance_name(&self, key: &[u8]) -> Result<String, String> {
         if key.is_empty() {
             return Ok(String::new());
@@ -99,7 +95,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         match definition.sides.iter().find(|side| same(side, id)) {
             Some(side) => self.balance_name(side),
-            None => Ok(String::new()), // The null side.
+            None => Ok(String::new()),
         }
     }
 
@@ -126,7 +122,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 ..Default::default()
             },
         )?;
-        // raw static text, expanded wrapper, no LF.
         self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_POWER_BALANCE_MODIFIER"
@@ -205,7 +200,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let trend = self.balance_side(definition, if value < 0 { &left } else { &right })?;
         let balance = self.balance_name(&definition.id)?;
         let mut out = String::new();
-        // changing the definition emits removal then one 5-arg add.
         if changed {
             if let Some(current) = current {
                 let old = self.balance_name(&self.balance_definition(&current.balance)?.id)?;
@@ -333,10 +327,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )?;
         let Some(current) = current else {
             return Ok(out);
-        }; // Null record has no ranges.
+        };
         let rows = self.complete::<tables::PowerBalanceRanges>(RANGE)?;
         let mut selected = None;
-        // last STRICT interval match in the recorded runtime array.
         let low = u128::from(current.ordinal) << 32;
         for row in each(rows.span(low, low | u128::from(u32::MAX))) {
             let row = row?;
@@ -365,7 +358,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let range = self.localised(&selected.id, &[], scopes, true)?;
         while !out.ends_with("\n\n") {
             out.push('\n');
-        } // trailing newlines.
+        }
         out.push_str(&self.char_native_text(
             b"EFFECT_POWER_BALANCE_VALUE_MOVED",
             &[
@@ -379,7 +372,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
-        // accumulate only numeric entries, not source tooltips/hidden sets.
         let mut difference = Modifiers::default();
         for (source, scale) in old
             .into_iter()

@@ -1,10 +1,3 @@
-//! Fresh railway ETA operands from authenticated hourly map censuses.
-//! Infrastructure divides the selected healthy signed-short level by effective
-//! maximum, independently of the state additive movement term. Railway
-//! efficiency reaches selected building health only after nonpositive cooldown
-//! and a matching directed edge. Existing info/province authentication owns
-//! rows; this supplement cannot alter them. No call, allocation, retry or
-//! pointer retention crosses capture.
 
 use engine_sites::Rva;
 use super::{eta_address, eta_array, eta_building_efficiency, eta_global, eta_global_pointer, eta_key, eta_pointer, eta_ratio, eta_read};
@@ -25,13 +18,11 @@ const NOT_READ: &str = "fresh railway input not acquired";
 pub struct RailwayBuildingHealth {
     pub level: i16,
     pub healthy: i16,
-    /// Unqueried only when level is zero or equals healthy.
     pub partial: Option<i64>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RailwayBuildingState {
-    /// None is the authenticated native null selected-building pointer.
     pub building: Option<RailwayBuildingHealth>,
 }
 
@@ -50,8 +41,6 @@ impl Default for StateFractionRow {
     }
 }
 
-/// Only constructed in the existing railway walk's authenticated window.
-/// No collector or replay object may retain these native pointers.
 #[derive(Clone, Copy)]
 pub(super) struct RailwaySource {
     pub province: u32,
@@ -60,8 +49,6 @@ pub(super) struct RailwaySource {
     pub cooldown: Input<i32>,
     pub pairs: Input<Array>,
     pub selection: Option<super::selected_inputs::SelectionRow>,
-    /// The walk publishes the info's held building row in its place
-    /// ([`super::RailCarry`]); its building is not read.
     pub carried: bool,
 }
 
@@ -82,8 +69,6 @@ impl Default for RailwaySource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailwayBuildingRow {
     pub province: u32,
-    /// Ok(None) means a proven unreached domain (positive cooldown or no
-    /// directed pairs); Err is acquisition failure, never an absent building.
     pub building: Input<Option<RailwayBuildingState>>,
     pub selection: Option<super::selected_inputs::SelectionRow>,
 }
@@ -167,8 +152,6 @@ fn pointer(bytes: &[u8]) -> Input<usize> {
     usize::try_from(word(bytes)).map_err(|_| "fresh railway pointer overflow")
 }
 
-/// Compact one already-known branch before gathering its exact fields. Both
-/// the addresses and original row positions stay in this stack-only window.
 struct Window {
     pointers: [usize; BATCH],
     rows: [usize; BATCH],
@@ -206,8 +189,6 @@ impl Window {
             self.completed[start..start + complete_rows].fill(fields);
             start += complete_rows;
             if start < self.len {
-                // Only this row's state or building is selected. Retain its completed
-                // prefix and skip failed/dependent suffixes without another attempt.
                 self.completed[start] = copied % fields;
                 start += 1;
             }
@@ -232,9 +213,6 @@ struct Definition {
     enabled: bool,
 }
 
-/// Cache failures as well as successes in this invocation. In particular, an
-/// unreadable maximum cannot be retried by a later state, but it cannot deny
-/// an absent building's native zero branch either.
 #[derive(Default)]
 struct Controls {
     definition: Option<Input<Definition>>,
@@ -251,7 +229,6 @@ impl Controls {
     fn definition(&mut self, memory: &impl Memory, base: usize) -> Input<Definition> {
         once(&mut self.definition, || {
             let database = eta_global_pointer(memory, base, database::SINGLETON_RVA)?;
-            // Select the infrastructure definition from its database field.
             let template = eta_pointer(memory, database, 0x3b0)?;
             let enabled =
                 eta_read::<u8>(memory, template, template::LOOKUP_ENABLED_CANDIDATE)? != 0;
@@ -282,8 +259,6 @@ impl Controls {
     }
     fn maximum(&mut self, memory: &impl Memory, base: usize, definition: Definition) -> Input<i32> {
         once(&mut self.maximum, || {
-            // Prefer the first local maximum, then second, then signed global.
-            // Neither healthy level nor effective maximum is clamped.
             let preferred = eta_read::<i32>(memory, definition.template, 0x2bc)?;
             if preferred > 0 {
                 return Ok(preferred);
@@ -297,11 +272,6 @@ impl Controls {
     }
 }
 
-/// Supplement the final completed CState census from this same frozen hour.
-/// The caller retains the `cstate::walk_with` identity proof and must exclude
-/// a visitor source whose mandatory row subsequently failed. No state or
-/// province census is repeated. Row faults are optional-field Results; output
-/// shortage reports every remaining source without following its pointers.
 pub fn state_fractions(
     memory: &impl Memory,
     base: usize,
@@ -311,10 +281,6 @@ pub fn state_fractions(
     state_fractions_carried(memory, base, sources, output, |_| None)
 }
 
-/// [`state_fractions`] where `carried` supplies, by source index, the
-/// fraction of a state the caller proves current; that state's building
-/// status is not read. The shared definition is still read, and its failure
-/// refuses every row as a fresh read does.
 pub fn state_fractions_carried(
     memory: &impl Memory,
     base: usize,
@@ -510,10 +476,6 @@ pub fn state_fractions_carried(
     outcome
 }
 
-/// Field-local supplement, called after the old cooldown/edge work for the
-/// existing authenticated window. A failed field is not retried; later
-/// rows still acquire their independent operands. The caller preserves
-/// Result reasons in source status and serializes only the owned values.
 pub(super) fn railway_buildings(
     memory: &impl Memory,
     base: usize,
@@ -549,8 +511,6 @@ pub(super) fn railway_buildings(
                     if source.cooldown? != 0 {
                         return Ok(false);
                     }
-                    // Either positive indexed level or raw signed nonzero pair count admits
-                    // the same building read, independently of failure in the other input.
                     if selected.pair_count.is_ok_and(|count| count != 0)
                         || selected.levels.is_ok_and(|levels| levels.positive)
                     {
@@ -649,7 +609,6 @@ pub(super) fn railway_buildings(
         }
         current.clear();
         std::mem::swap(&mut current, &mut next);
-        // ETA-only suffixes must not stop another source's selected building-level read.
         current.gather(memory, &RAIL_HEALTHY);
         for index in 0..current.len {
             let row = current.rows[index];
@@ -700,7 +659,6 @@ fn building_failure(row: &mut RailwayBuildingRow, eta: bool, selected: bool, rea
     }
 }
 
-/// The existing native arithmetic remains the single implementation.
 pub fn building_efficiency(health: RailwayBuildingHealth) -> Input<i64> {
     let partial = if health.level != 0 && health.level != health.healthy {
         health
@@ -712,8 +670,6 @@ pub fn building_efficiency(health: RailwayBuildingHealth) -> Input<i64> {
     eta_building_efficiency(health.level, health.healthy, partial)
 }
 
-/// Absent edge and positive cooldown do not demand health. Null selected
-/// building supplies known zero efficiency; unreadable reached health refuses.
 pub fn directed_percentage(
     cooldown: i32,
     edge_level: Option<i32>,
@@ -739,7 +695,6 @@ pub fn directed_percentage(
     }
 }
 
-/// Railway speed before the army outer scale, with signed maximum and fixed5 wrapping.
 pub fn road_or_rail_speed(infrastructure: i64, railway: i64, defines: [i64; 4]) -> i64 {
     let [road_base, road_scale, rail_base, rail_scale] = defines;
     let road = road_base.wrapping_add(infrastructure.wrapping_mul(road_scale) / 100_000);

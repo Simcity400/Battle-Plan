@@ -1,4 +1,3 @@
-//! Assignment stripes derive from this view's selected wings, never recorded UI state.
 use installed_content_core::{defines::Defines, province_geometry::ProvinceGeometry};
 use replay_data::{rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -67,8 +66,6 @@ pub struct Content<'a> {
     pub colors: Result<Colors, &'a str>,
 }
 
-/// Coalesce by resolved pool base before restrictions. A longer-range training
-/// wing can therefore replace an assignable shorter-range wing at that base.
 fn representatives<'a>(
     selected: &[u64],
     wings: &'a [AirWingRow],
@@ -136,7 +133,6 @@ pub fn read(
         for (wing, range) in representatives {
             let candidate = (|| {
                 let base = &registry.bases[&wing.air_base];
-                // Resolve the host before choosing the state or hosted origin.
                 let host = if registry.hosts_without_task_force.contains(&base.id) {
                     return Err("Air assignment host has a null task force".to_owned());
                 } else if registry.host_owners.contains_key(&base.id) {
@@ -232,9 +228,6 @@ pub fn read(
     out
 }
 
-/// Without a resolved selected base the Air mode returns to its country
-/// stripe field. Its diplomacy vectors, rather than reconstructed war sides,
-/// decide both the war gate and the overwrite order of enemy/allied/own colours.
 fn fallback(
     frame: &DecodedFrame,
     viewer: u32,

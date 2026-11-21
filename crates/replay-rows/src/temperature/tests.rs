@@ -1,13 +1,11 @@
 use super::*;
 
-/// A game date: `days` after 1 January of `year`, at `hour`.
 pub fn date(year: i32, days: i32, hour: i32) -> i32 {
     EPOCH + year * HOURS_PER_YEAR + days * 24 + hour
 }
 
 #[test]
 fn the_roll_matches_independent_hash_expectations() {
-    // Expected hash values calculated independently of the implementation.
     for (input, expected) in [
         (0, 42_299),
         (1, 96_854),
@@ -24,11 +22,9 @@ fn the_roll_matches_independent_hash_expectations() {
 fn the_window_wraps_stops_on_its_start_and_visits_at_least_one_slot() {
     assert_eq!(window(3, 3, 5), Ok((vec![3, 4, 0], 1)));
     assert_eq!(window(4, 2, 5), Ok((vec![4, 0], 1)));
-    // A window wider than the array visits each slot once and returns to the start.
     assert_eq!(window(2, 9, 5), Ok((vec![2, 3, 4, 0, 1], 2)));
     assert_eq!(window(1, 0, 5), Ok((vec![1], 2)));
     assert_eq!(window(1, -4, 5), Ok((vec![1], 2)));
-    // A cursor past the count visits nothing and stays.
     assert_eq!(window(5, 3, 5), Ok((vec![], 5)));
     assert!(window(-1, 3, 5).is_err());
 }
@@ -65,7 +61,6 @@ pub fn content() -> Content {
             province(true, &[2, 3, 0], Some(10), Some(5)),
             province(true, &[1, 3], Some(20), Some(2)),
             province(true, &[], Some(30), None),
-            // No region: the pass smooths its stale staged temperature.
             province(true, &[3, 1, 1], None, None),
         ],
         periods: [year(10), year(20), year(30)].into_iter().collect(),
@@ -113,7 +108,6 @@ fn an_update_stages_every_window_province_before_committing_any() {
             state(2_000_000, 10, 1_500_000, -40_000),
         ],
     );
-    // Independently calculated expectations for the synthetic weather inputs.
     let seed = 0x9e37_79b9_u32;
     simulation.advance(&content, Some(seed)).unwrap();
     assert_eq!(simulation.hour, hour);
@@ -122,15 +116,12 @@ fn an_update_stages_every_window_province_before_committing_any() {
         simulation.states,
         [
             state(0, 0, 0, 0),
-            // Slot 1 reads slot 2's committed words of the hour before.
             state(1_157_465, 120_000, 1_157_465, 120_000),
             state(618_397, 212_500, 618_397, 212_500),
-            // No active neighbour: staged and working move, nothing commits.
             state(-50_000, 600_000, 87_991, 0),
             state(2_000_000, 10, 1_500_000, -40_000),
         ]
     );
-    // A suspended hour changes nothing; the next update wraps to slot 0.
     let mut suspended = simulation.clone();
     suspended.advance(&content, None).unwrap();
     assert_eq!(suspended.states, simulation.states);
@@ -153,7 +144,6 @@ fn an_update_stages_every_window_province_before_committing_any() {
 fn unsettled_content_refuses_only_where_the_pass_reads_it() {
     let mut content = content();
     let states = vec![State::default(); 5];
-    // Slot 4 has no region, so its unknown terrain is never read.
     content.provinces[4].terrain = Err("terrain unknown".into());
     let mut simulation = Simulation::new(0, 3, states.clone());
     simulation.update(&content, date(1936, 1, 0), 1).unwrap();
@@ -184,13 +174,11 @@ fn unsettled_content_refuses_only_where_the_pass_reads_it() {
 
 #[test]
 fn the_witness_sums_each_slots_term() {
-    // The recorded definition: collectors and readers must agree on every bit.
     assert_eq!(witness([]), 0);
     assert_eq!(witness([0]), 0x4821_8226_ff3c_d4bf);
     assert_eq!(witness([0, 100_000, -1]), 0x6c78_0239_d499_3e98);
     assert_eq!(province_witness(13_412, -2_000_000), 0xd331_14c6_035a_7339);
     assert_ne!(witness([1, 0]), witness([0, 1]));
-    // A changed slot moves the witness by its own two terms.
     let before = [5, -6, 7_000_000, 0];
     let mut after = before;
     after[2] = -7_000_000;
@@ -245,16 +233,12 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_witness() {
         states.iter().map(|s| s.temperature).collect::<Vec<_>>(),
         derived
     );
-    // The next hour of the same anchor steps once from the kept derivation; a suspended
-    // hour changes nothing.
     let frame = rows(
         &anchored,
         Some(pass(vec![Some(seed), None], super::witness(derived))),
     );
     memo.states(1, hour + 1, &frame, Ok(&content)).unwrap();
     assert_eq!(memo.simulation().unwrap().hour, hour + 1);
-    // A wrong witness, a pass that does not reach the frame, a refused pass and missing
-    // content each refuse every temperature of the frame.
     let wrong = rows(
         &anchored,
         Some(pass(vec![Some(seed ^ 1)], super::witness(derived))),
@@ -286,7 +270,6 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_witness() {
             .states(1, hour, &frame, Err("unread"))
             .is_err()
     );
-    // At its anchor a frame's temperatures are its rows' own.
     let at_anchor = rows(&anchored, Some(pass(vec![], 0)));
     let mut anchor_pass = pass(vec![], super::witness(anchored.map(|s| s.temperature)));
     anchor_pass.anchor = hour;
@@ -302,7 +285,6 @@ fn frames_derive_from_their_anchor_and_must_match_the_recorded_witness() {
     );
 }
 
-/// A pass recorded before the witness certifies nothing, whatever its words and content.
 #[test]
 fn passes_without_a_witness_refuse_by_name() {
     let content = content();
@@ -376,7 +358,6 @@ fn held_derivations_resume_exactly_in_any_order() {
     let seeds: Vec<Option<u32>> = (0..12u32)
         .map(|at| (at % 5 != 3).then(|| 0x9e37_79b9_u32.wrapping_mul(at + 1)))
         .collect();
-    // The reference: one walk from the anchor, every hour's words.
     let mut reference = vec![Simulation::new(anchor, 1, anchored.to_vec())];
     for &seed in &seeds {
         let mut next = reference.last().unwrap().clone();
@@ -404,7 +385,6 @@ fn held_derivations_resume_exactly_in_any_order() {
         )
         .map(<[State]>::to_vec)
     };
-    // A default memo holds nothing on an in-order walk, and stays exact out of order.
     let mut plain = Memo::default();
     for steps in (0..=12).chain([5, 12, 0]) {
         let right = reference[steps].witness();
@@ -420,14 +400,12 @@ fn held_derivations_resume_exactly_in_any_order() {
         let expected = Ok(reference[steps].states.clone());
         assert_eq!(derive(&mut memo, steps, right), expected, "{steps}");
         assert_eq!(derive(&mut Memo::default(), steps, right), expected);
-        // A wrong witness refuses alike and leaves the derivations exact.
         let wrong = right ^ 1;
         assert_eq!(
             derive(&mut memo, steps, wrong),
             derive(&mut Memo::default(), steps, wrong)
         );
     }
-    // Only the hours named alive stay held; the count never exceeds the frames alive.
     memo.retain_held(|branch, hour| branch == 1 && (hour - anchor) % 2 == 0);
     assert!(memo.held.iter().all(|held| (held.hour - anchor) % 2 == 0));
     let window = 3;
@@ -448,7 +426,6 @@ fn held_derivations_resume_exactly_in_any_order() {
     memo.retain_held(|_, _| false);
     assert_eq!((memo.held(), memo.held_bytes()), (0, 0));
     assert_eq!(memo.simulation(), reference.last());
-    // Another branch and missing content refuse or start again exactly as a fresh memo.
     let right = reference[4].witness();
     let other = memo
         .states(2, anchor + 4, &frame(4, right), Ok(&content))
@@ -461,7 +438,6 @@ fn held_derivations_resume_exactly_in_any_order() {
             .states(2, anchor + 4, &frame(4, right), Err("unread"))
             .map(<[State]>::to_vec)
     );
-    // Builders on several threads sharing one memo, in whatever order they lock it.
     let shared = std::sync::Mutex::new(Memo::holding());
     std::thread::scope(|scope| {
         for first in 0..4 {
@@ -731,8 +707,6 @@ fn minimum_signed_window_reserves_every_committed_edit_before_native_update() {
     }
 }
 
-/// The planned pass stages, commits and refuses exactly as the content's own, refusals in the
-/// content's words, and the memo's moved witness is the whole one at every hour.
 #[test]
 fn the_planned_pass_and_moved_witness_match_the_content_pass() {
     let base = content();
@@ -820,8 +794,6 @@ fn the_planned_pass_and_moved_witness_match_the_content_pass() {
     }
 }
 
-/// Dividing by a count's reciprocal gives the guarded division's quotient, on both sides of
-/// the reciprocal's range.
 #[test]
 fn reciprocal_averages_are_the_guarded_division() {
     let edge = (1_i64 << 31) - 1;

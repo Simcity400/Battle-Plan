@@ -4,8 +4,6 @@ use crate::{
     read_census::ReadCensus,
 };
 
-/// One image holding three ships (A and B in task force A, C in task force
-/// B), the province both task forces are at and the game singleton slot.
 const IMAGE: usize = 0x1000_0000;
 const LEN: usize = 0x6000;
 const SHIP_A: usize = IMAGE + 0x1000;
@@ -120,7 +118,6 @@ fn every_object_lists_ascending_disjoint_fields_no_wider_than_its_storage() {
     );
     assert_eq!(SHIP[SHIP_TASK_FORCE].0, TASK_FORCE);
     assert_eq!(TASK[TASK_LOCATION].0, cunit::LOCATION);
-    // Every field lies inside its object.
     assert!(
         SHIP.iter()
             .all(|&(start, width)| start + width <= crate::cship::SIZE)
@@ -137,7 +134,6 @@ fn gathered_fields_serve_every_read_inside_them_without_the_source() {
     let census = ReadCensus::new(&slice);
     let mut fields = ShipFields::new(MODULE);
     fields.visit(&census, SHIP_A);
-    // The ship, the game singleton, the task force and its province.
     assert_eq!(census.calls(), 4);
     census.reset();
     let memory = fields.memory(&census);
@@ -173,7 +169,6 @@ fn gathered_fields_serve_every_read_inside_them_without_the_source() {
         ))
     );
     assert_eq!(census.calls(), 0, "served reads never reach the source");
-    // A read outside every field, or across two, goes to the source.
     let mut outside = [0; 8];
     assert!(memory.copy(SHIP_A + 0x20, &mut outside));
     assert_eq!(outside, at(&bytes, SHIP_A + 0x20, 8));
@@ -253,7 +248,6 @@ fn a_failed_field_fails_again_without_a_read_and_later_fields_read_on_first_use(
         base: IMAGE,
         bytes: &bytes,
     };
-    // The fault lies in the formation flags' second half.
     let source = FaultAt::new(&slice, Some(SHIP_A + FORMATION_FLAGS + 6));
     let mut fields = ShipFields::new(MODULE);
     fields.visit(&source, SHIP_A);
@@ -263,13 +257,10 @@ fn a_failed_field_fails_again_without_a_read_and_later_fields_read_on_first_use(
     let mut flags = [0; 8];
     assert!(!memory.copy(SHIP_A + FORMATION_FLAGS, &mut flags));
     assert_eq!(reads(), gathered, "the failed field is not read again");
-    // Part of the failed field is another observation, from the source.
     let mut low = [0; 4];
     assert!(memory.copy(SHIP_A + FORMATION_FLAGS, &mut low));
     assert_eq!(low, at(&bytes, SHIP_A + FORMATION_FLAGS, 4));
     assert_eq!(reads(), gathered + 1);
-    // A field before the failure is served; one after it reads the source,
-    // and so does the task force, whose pointer the gather did not reach.
     let mut subunit = [0; 4];
     assert!(memory.copy(SHIP_A + SUBUNIT_INDEX, &mut subunit));
     assert_eq!(reads(), gathered + 1);
@@ -279,7 +270,6 @@ fn a_failed_field_fails_again_without_a_read_and_later_fields_read_on_first_use(
     let mut task = [0; 8];
     assert!(memory.copy(TASK_A, &mut task));
     assert_eq!(reads(), gathered + 3);
-    // A scattered read stops at the failed field, its earlier live span read.
     let (mut a, mut b, mut c, mut d) = ([0; 16], [0; 8], [0xaa; 8], [0xaa; 4]);
     assert_eq!(
         memory.copy_scattered(
@@ -335,7 +325,6 @@ fn scattered_reads_keep_their_live_spans_in_one_source_call() {
     for (span, address) in spans.iter().zip(addresses) {
         assert_eq!(span[..], *at(&bytes, address, 8));
     }
-    // Every span served: no source call.
     census.reset();
     let (mut handle, mut model) = ([0; 8], [0; 4]);
     assert_eq!(
@@ -347,8 +336,6 @@ fn scattered_reads_keep_their_live_spans_in_one_source_call() {
     );
     assert_eq!(census.calls(), 0);
     assert_eq!(handle, at(&bytes, SHIP_A + 8, 8));
-    // A live span that fails stops the read; a later served span stays
-    // untouched.
     let (mut first, mut unreadable, mut later) = ([0; 8], [0xaa; 8], [0xaa; 4]);
     assert_eq!(
         memory.copy_scattered(
@@ -395,8 +382,6 @@ fn task_forces_and_provinces_are_gathered_once_per_run_of_ships() {
         }
         assert_eq!(census.calls(), 0, "{ship:#x}");
     }
-    // A: ship, singleton, task force and province; B: ship; C: ship and
-    // task force, at the same province; A again: ship and task force.
     assert_eq!(calls, [4, 1, 2, 2]);
 }
 
@@ -428,7 +413,6 @@ fn record_gathers_go_to_the_source_unless_they_touch_a_gathered_object() {
         2
     );
     assert_eq!(census.calls(), 1, "one source gather");
-    // The ship's vtable is served; the other record reads the source.
     census.reset();
     assert_eq!(
         memory.copy_records(
@@ -441,7 +425,6 @@ fn record_gathers_go_to_the_source_unless_they_touch_a_gathered_object() {
     assert_eq!(census.calls(), 1);
     assert_eq!(output[..8], *at(&bytes, SHIP_A, 8));
     assert_eq!(output[8..], *at(&bytes, IMAGE + 0x200, 8));
-    // A record past the image fails at its field, as the source's would.
     assert_eq!(
         memory.copy_records(
             RecordSources::Pointers(&[SHIP_A, IMAGE + LEN]),

@@ -20,7 +20,6 @@ fn event_fixture() -> (Fixture, installed_content_core::decisions::Database, Fol
 fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Bound arguments cover nested text, country tokens and integer tokens.
 
     let (mut fixture, _, _folder) = event_files_fixture(&[(
         "localisation/bound_l_english.yml",
@@ -55,7 +54,7 @@ fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
         &mut super::super::tests::fresh(),
         content,
     );
-    assert_eq!(output.text, "<first>"); // Native substitution takes the first match.
+    assert_eq!(output.text, "<first>");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
@@ -63,7 +62,6 @@ fn custom_effect_tooltip_binds_nested_arguments_in_the_caller_scope() {
 fn custom_effect_tooltip_idea_callback_reuses_wrapper_and_missing_name() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // The authored doubled brace stores a literal brace.
     let (fixture, _, _folder) = event_files_fixture(&[(
         "localisation/bound_l_english.yml",
         concat!(
@@ -198,7 +196,6 @@ fn format99_inactive_decision_seed_uses_first_stored_random_item() {
                     .map_err(str::to_owned),
                 decision_seed(0, definition, Some(None), 3)
             );
-            // Raw country 200 resolves to canonical slot 2.
             let selected = renderer
                 .decision_seeded_scope(definition, 1, Some(2), 0, false)
                 .unwrap();
@@ -458,8 +455,6 @@ fn unlock_decision_random_body_refuses_only_at_selection_without_seed_row() {
         .get_mut(b"syn_decision".as_slice())
         .unwrap();
     definition.fixed_random_seed = false;
-    // Random-owned-state selection draws even for one candidate.
-    // Unlike a random_list description, it selects a member.
     definition.complete_effect = installed_content_core::parser::parse(
         b"random_owned_state={limit={state=1} custom_effect_tooltip=TIP}",
     )
@@ -561,8 +556,6 @@ fn unlock_decision_modifiers_use_full_mask_and_ordered_target_headings() {
         parse(b"tag=ROOT political_power_cost=-0.3"),
         parse(b"tag=capital custom_modifier_tooltip=MOD_BODY"),
     ];
-    // Targeted decision details use the full mask, while the default raw list masks
-    // out bit 24. A nonpositive target skips every part of the block.
     let masked = installed_content_core::modifiers::values(&parse(b"political_power_gain=0.1"));
     fixture.with_renderer(
         &mut super::super::tests::fresh(),
@@ -678,8 +671,6 @@ fn activate_targeted_decision_random_title_needs_seed_only_on_default_draw() {
         .unwrap();
     definition.fixed_random_seed = false;
     let names = installed_content_core::key_names::KeyNames::default();
-    // A sole entry skips the seed; an explicit seed supplies its own value.
-    // Only the default seed reads need this row.
     for (name, expected, refused) in [
         (b"RANDOM_NAME".as_slice(), "", true),
         (b"SINGLE_NAME".as_slice(), "Targeted detail\n", false),
@@ -736,8 +727,6 @@ fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_p
         .unwrap()
         .items;
     let names = installed_content_core::key_names::KeyNames::default();
-    // The draw only derives the title's seed. Title selection is the
-    // first use that can change title text; do not refuse a plain title.
     for (title, expected, refused) in [
         (
             b"title=SYN_EVENT".as_slice(),
@@ -783,7 +772,6 @@ fn missing_decision_seed_propagates_through_event_title_lanes_without_refusing_p
 fn news_event_id_and_timing_fields() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // News events share the country-event title path.
     let (fixture, _, _folder) = event_fixture();
     let names = installed_content_core::key_names::KeyNames::default();
     let event = std::sync::Arc::new(installed_content_events::events::Event {
@@ -878,8 +866,6 @@ fn unlock_mio_fixture() -> (Fixture, Folder) {
             literal: b"SYN_MIO".to_vec(),
         }],
     );
-    // The pool country selects the instance; its distinct owner selects the
-    // name environment. Native roster order wins over recording order.
     set::<tables::IndustrialOrganisations>(
         &mut fixture,
         vec![
@@ -941,7 +927,6 @@ fn unlock_mio_operand_uses_recorded_instance_and_owner_name() {
 fn show_mio_instance_reuses_the_shared_owner_name_path() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Select the caller's first matching organisation template.
     let (fixture, _folder) = unlock_mio_fixture();
     let names = installed_content_core::key_names::KeyNames::default();
     let mut database = installed_content_core::industrial_organisations::Database::default();
@@ -1095,7 +1080,6 @@ fn unlock_mio_policy_block_refuses_only_unrecorded_roster() {
 fn format99_mio_policy_uses_cached_membership_content_and_modifiers() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // The policy tooltip supplies fixed5 VALUE; its plain $VALUE$ uses two decimals.
     let (mut fixture, _, _folder) = event_fixture();
     let names = installed_content_core::key_names::KeyNames::default();
     let mut database = installed_content_core::industrial_organisations::Database::default();
@@ -1323,7 +1307,6 @@ fn event_option_tooltip_copies_scope_and_swaps_root_from_without_a_new_session()
         scopes.tooltip_targets[&2],
         vec![(b"prior_tip".to_vec(), EventObject::Country(2))]
     );
-    // Nested description does not clean the target just saved to its ROOT.
     assert!(
         scopes.tooltip_targets[&1]
             .iter()
@@ -1383,8 +1366,6 @@ fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let names = scripted.layers.layers.key_names().unwrap();
     let effects = installed_content_core::scripted_effects::read(&scripted.layers.layers, &names).unwrap();
-    // Scripted effect traversal visits attached children; it does
-    // not expand the template body, unlike its description.
     for (name, expected) in [("chosen", "detail"), ("operand", "operand text")] {
         let output = fixture.render_native(
             &format!("event_option_tooltip={name}"),
@@ -1576,7 +1557,6 @@ fn decision_fixture(seed: Option<Option<i32>>) -> (Fixture, installed_content_co
             token: b"SYN_DECISION".to_vec(),
             country_target: 200,
             description_seed: replay_data::rows::Recorded::Value(seed),
-            // The description lookup does not test these execution-state fields.
             lifecycle: -1,
             ignore: 1,
             ..Default::default()
@@ -1612,8 +1592,6 @@ fn removal_description_binds_highlighted_target_from_and_stored_execution_count(
             ..Default::default()
         },
     );
-    // The target seed draws the first candidate.
-    // Candidate order is [2,4], despite authored [4,2,4].
     assert_eq!(description.text, "Remove Conflict in Two\n");
     assert!(
         description.refusals.is_empty(),
@@ -1630,7 +1608,6 @@ fn removal_description_binds_highlighted_target_from_and_stored_execution_count(
             ..Default::default()
         },
     );
-    // The persisted additive count changes the draw to the second candidate.
     assert_eq!(description.text, "Remove Conflict in Four\n");
     assert!(
         description.refusals.is_empty(),
@@ -1850,7 +1827,6 @@ fn inactive_decision_skips_unsupported_title_and_empty_trigger_does_not_enable_h
             ..Default::default()
         },
     );
-    // With no attached children or template expansion, FROM.FROM remains the target itself.
     assert_eq!(output.text, "Remove Conflict in Three\n");
     assert!(output.refusals.is_empty());
     assert!(

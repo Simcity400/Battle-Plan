@@ -39,8 +39,6 @@ const NO_TRANSFERS: readonly TransferOccurrence[] = [];
 const NO_BALANCES: readonly CountryBalance[] = [];
 const NO_REQUESTS: TransferTipRequest = { countries: [], states: [] };
 
-/** Peace-settlement territory as a country table (gained, lost, net) or a table of
- * every transferred state; a country's row opens its own transfers. */
 export default function TerritoryTransfersWidget({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
   const [drillCountry, setDrillCountry] = useState<string | null>(null);
@@ -58,7 +56,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const selectedId = track ? conferenceChoiceId(selectedToken, campaignKey, track.branch.id) : null;
   const storedSelection = useMemo(() => track ? transferSelection(String(options.selection ?? ''), campaignKey, track.branch.id) : null,
     [options.selection, track, campaignKey]);
-  // Following, the tables render only when the head passes a transfer or a conference: the reached rows are their structure.
   const playbackHour = useHeadHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow), at => {
     if (!track || !transfers) return '';
     const reach = transferTime(widget, track, runtime.tracks, at, pinned ? storedSelection?.fromOffset : null).moment;
@@ -78,7 +75,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const through = transfers ? transferCutoff(transfers.hours, moment) : -Infinity;
   const reached = useMemo(() => transfersAt(scoped, through, rangeFrom, wholeCampaign), [scoped, through, rangeFrom, wholeCampaign]);
 
-  // Chosen countries or groups keep transfers involving them, matched at each side's own read.
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
   const tagsKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
@@ -99,7 +95,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
 
-  // Names, flags and state names load for mounted rows and for the open tooltip only.
   const [visibleTransfers, setVisibleTransfers] = useState<readonly TransferOccurrence[]>(NO_TRANSFERS);
   const [visibleCountries, setVisibleCountries] = useState<readonly CountryBalance[]>(NO_BALANCES);
   const [requested, setRequested] = useState<TransferTipRequest>(NO_REQUESTS);
@@ -139,7 +134,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const countryMenu = useCallback((row: CountryBalance) => track ? [...new Set([row.last, row.first])].map(hour => jumpItem(runtime, track.id, hour)) : [], [runtime, track]);
   const transferMenu = useCallback((row: TransferOccurrence) => track ? [jumpItem(runtime, track.id, row.afterHour)] : [], [runtime, track]);
 
-  // The drill shows its country's transfers at its own day, which Follow can move.
   const playhead = track ? Math.floor(playbackHour + track.axisOffset) : null;
   const drillAt = drill.breakdown ? drillHour(drill, playhead) ?? moment : moment;
   const drillThrough = transfers ? transferCutoff(transfers.hours, drillAt) : -Infinity;
@@ -166,7 +160,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
   if (pinned && selectionMissing) return failure ?? <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return failure ?? <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
-  // Chosen countries need the country groups' identity history: a failed read says so and can be retried.
   if (filtered && !match.ready) return <>{failure}{groups.error && !groups.data
     ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : <WidgetState kind="loading" label="Loading territory transfers…" />}</>;

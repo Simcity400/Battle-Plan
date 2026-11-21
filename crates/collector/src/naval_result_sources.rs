@@ -1,9 +1,3 @@
-//! Native result lineage. Constructor witnesses distinguish a short persistent
-//! combat from a stack-local strike; no identity is invented for the latter.
-//! A callback copies what it reads into an event of its own and pushes it
-//! lock-free before it returns to the game, so an object one call makes is in
-//! the order before any later call can use it. The hourly drain folds every
-//! event in push order; only a refused allocation refuses an interval.
 use crate::hook::Hook;
 type Clock = engine_native::cgame_state::Clock<u64>;
 use collector_primitives::spill_stack::SpillStack;
@@ -67,14 +61,12 @@ enum Event {
 }
 static LOG: SpillStack<Event> = SpillStack::new();
 
-/// Hook path: never waits. A refused event refuses the interval it may belong to.
 fn log(event: Event) {
     if LOG.push(event).is_err() {
         STORAGE_REFUSALS.fetch_add(1, Ordering::SeqCst);
     }
 }
 
-/// The drain's fold of the event log. Only the drain, bootstrap and release lock it.
 struct Store {
     entries: Vec<Entry>,
     births: HashMap<usize, Birth>,
@@ -84,7 +76,6 @@ struct Store {
     poisoned: bool,
     recovery: bool,
     unwound: bool,
-    /// Unwind and refused-event counts already charged to an interval.
     charged: (u64, u64),
 }
 impl Store {
@@ -106,8 +97,6 @@ impl Store {
         REFUSALS.fetch_add(1, Ordering::Relaxed);
         self.poisoned = true;
     }
-    /// Folds every pushed event. A failure counted while the log is taken
-    /// cannot be placed on either side of it, so it refuses both intervals.
     fn fold(&mut self) {
         let before = hook_failures();
         let taken = LOG.take();
@@ -131,10 +120,8 @@ impl Store {
                 self.recovery = true;
                 self.poisoned = true;
             }
-            // A refused interval records nothing more until it recovers.
             _ if self.poisoned => {}
             Event::Birth { pointer, birth } => {
-                // A fresh allocator can reuse a receiver within the interval.
                 self.births.remove(&pointer);
                 if let Err(reason) = birth.and_then(|birth| self.birth(pointer, birth)) {
                     self.refuse(reason);
@@ -152,8 +139,6 @@ impl Store {
         }
     }
     fn boundary(&mut self, transition: bool) {
-        // Only birth witnesses from the just-finished interval can prove that an
-        // unobserved combat began after its previous read. Events own their copy.
         self.births.clear();
         if transition {
             self.entries.clear();
@@ -255,7 +240,6 @@ static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 static LOST: AtomicU64 = AtomicU64::new(0);
-/// Events a callback could not allocate.
 static STORAGE_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static POPULATION_READ_FAILURES: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_CONSTRUCTORS: AtomicU64 = AtomicU64::new(0);
@@ -269,13 +253,11 @@ fn hook_failures() -> (u64, u64) {
 pub fn active() -> usize {
     ACTIVE.iter().map(|v| v.load(Ordering::SeqCst)).sum()
 }
-/// Rows an interval may hand over: the live population and the busiest burst seen.
 pub fn demand() -> usize {
     EVENT_DEMAND
         .load(Ordering::Acquire)
         .max(BIRTH_DEMAND.load(Ordering::Acquire))
 }
-/// Loader only, after all relays, callbacks, and spool readers are quiet.
 pub fn release() -> Result<(), &'static str> {
     if ENABLED.load(Ordering::SeqCst)
         || active() != 0
@@ -291,7 +273,6 @@ pub fn release() -> Result<(), &'static str> {
     drop((retained, LOG.take()));
     Ok(())
 }
-/// Bootstrap only, before installing hooks, under the retained replay leases.
 pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     if ENABLED.load(Ordering::Acquire) || active() != 0 {
         return Err("naval result source sequence restoration requires disabled hooks");
@@ -314,8 +295,6 @@ pub fn lost_drain() {
     log(Event::Lost);
 }
 
-/// Attach/sizing thread only. Population and observed demand size the frame's
-/// rows; the drain's own storage grows as it folds.
 pub fn prepare(memory: &impl Memory, base: usize) {
     match native::population(memory, base) {
         Ok(population) => {
@@ -409,7 +388,6 @@ impl Call {
             completed: false,
         }
     }
-    // Only observed paths call this.
     fn observe(&self) {
         let thread =
             unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() } as usize;
@@ -432,8 +410,6 @@ impl Drop for Call {
         ACTIVE[self.site].fetch_sub(1, Ordering::SeqCst);
     }
 }
-// Count every reached append, including calls a refused interval skips.
-// This pressure sizes the frame's rows and resets with each interval.
 fn attempt(attempts: &AtomicUsize, demand: &AtomicUsize) {
     if ENABLED.load(Ordering::SeqCst) {
         let required = attempts.fetch_add(1, Ordering::Relaxed).saturating_add(1);
@@ -446,8 +422,6 @@ fn observing() -> bool {
         && !crate::allocation::failed()
 }
 
-// A frameless tail jump passes the native return PC without changing RCX or
-// RSP. The Rust body has ordinary unwind metadata, as main's aircraft shim.
 #[unsafe(naked)]
 unsafe extern "system" fn constructor_entry() {
     core::arch::naked_asm!("mov rdx, [rsp]", "jmp {body}", body = sym constructor);
@@ -519,7 +493,6 @@ unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
     call.returned(returned)
 }
 
-/// The verified bytes a hook owns at its site, padded to the hook's 16-byte original.
 fn owned_span(code: &engine_sites::Code, span: usize) -> Result<[u8; 16], &'static str> {
     let mut out = [0; 16];
     match span {

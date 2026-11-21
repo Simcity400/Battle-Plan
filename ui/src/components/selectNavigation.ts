@@ -1,5 +1,4 @@
 import type { SelectOption } from './Select';
-/** Navigate the complete roster, retaining disabled options without selecting them. */
 export function selectIndex(options: readonly Pick<SelectOption, 'disabled'>[], at: number, key: string): number | null {
   if (!options.length) return null;
   const step = key === 'ArrowDown' || key === 'Home' ? 1 : key === 'ArrowUp' || key === 'End' ? -1 : 0;

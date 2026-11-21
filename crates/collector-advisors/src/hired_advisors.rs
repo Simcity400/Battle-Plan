@@ -1,12 +1,3 @@
-//! The per-country character object (CCountryCharacters at CCountry pointer): each country's
-//! appointed advisors in native order, with the advisor's character, idea token and slot, hourly,
-//! since `has_idea` triggers read them (a quiet hour publishes the latest complete walk,
-//! [`appointed`]); each country's active-character records (CountryCharacters) and retired ones
-//! (CountryRetiredCharacters), hourly, in one walk (a quiet hour publishes the latest complete
-//! walk, [`records`]); the character manager's advisor idea-token set (AdvisorTokens), hourly; and
-//! each country's available advisors (AvailableAdvisors), the sliced `available_advisors` family:
-//! read once a game day per country, at its owner slice, and for a new country or one whose last
-//! read was not published at the next hour (owner decision 2026-10-11: only panels read the pools).
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -73,18 +64,12 @@ impl Capacities {
         raise(&mut self.rows, rows(count, 1));
         raise(&mut self.bytes, rows(bytes, 1));
     }
-    /// CountryCharacters and CountryRetiredCharacters from the live record
-    /// totals (`country_scale::observe_politics`), with the three-quarters
-    /// growth rule's headroom. Never lowers.
     pub fn raise_for_character_records(&mut self, active: usize, retired: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.active, rows(active, 1));
         raise(&mut self.retired, rows(retired, 1));
     }
 
-    /// AdvisorTokens from the live key count and key bytes
-    /// (`country_scale::observe_politics`), with the three-quarters growth
-    /// rule's headroom. Never lowers.
     pub fn raise_for_advisor_tokens(&mut self, tokens: usize, bytes: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.tokens, rows(tokens, 1));
@@ -107,19 +92,15 @@ pub struct Captured {
     retired: CaptureRows<native::ActiveRow>,
     available: CaptureRows<native::Row>,
     available_bytes: Arena<u8>,
-    /// Which countries this hour's AvailableAdvisors rows cover.
     available_selection: SliceSelection,
-    /// Per table, the held generation this capture published ([`AdvisorStore::published`]).
     witness: [Option<Witness>; N],
 }
 
 impl Captured {
-    /// The countries whose AvailableAdvisors rows this frame's read replaced.
     pub fn available_selection(&self) -> &SliceSelection {
         &self.available_selection
     }
 
-    /// Start a frame's selection at its hour; the job resets it again.
     pub fn reset_selection(&mut self, hour: i32, force_full: bool) {
         self.available_selection.reset(hour, force_full);
     }
@@ -138,7 +119,6 @@ impl Captured {
         self.available
             .fail(super::failed_capture(TABLES[4], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: 0,
@@ -161,7 +141,6 @@ impl Captured {
             retired: CaptureRows::new(capacity.retired),
             available: CaptureRows::new(capacity.available),
             available_bytes: Arena::new(capacity.available_bytes),
-            // Owner storage grows on the worker from the countries it scans.
             available_selection: SliceSelection::new(false),
             witness: [None; N],
         }
@@ -189,11 +168,9 @@ impl Captured {
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
-        // A truncated walk reports at least the bytes of its first unread row.
         self.bytes.grow(&mut capacity.bytes);
         self.active.grow(&mut capacity.active);
         self.tokens.grow(&mut capacity.tokens);
-        // The token walk reports every key's bytes, read or not.
         self.token_bytes.grow(&mut capacity.token_bytes);
         self.retired.grow(&mut capacity.retired);
         self.available.grow(&mut capacity.available);
@@ -211,11 +188,6 @@ impl Captured {
         self.capture_carried(memory, base, game_state, hour, force_full, None, None)
     }
 
-    /// `store` carries the AvailableAdvisors rows of untouched pools and an
-    /// untouched AdvisorTokens table ([`AdvisorStore`]); without it both are
-    /// read. `fingerprints` is the `available_advisors` family's store: with
-    /// it the hour reads its country slice and the countries it selects
-    /// early; without it every country is read.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_carried(
         &mut self,
@@ -238,7 +210,6 @@ impl Captured {
         )
     }
 
-    /// One capture, carrying through `reuse` when present.
     #[allow(clippy::too_many_arguments)]
     fn capture_with(
         &mut self,
@@ -287,8 +258,6 @@ impl Captured {
                 reason: SKIPPED_REASON,
             };
         }
-        // Both record arrays come from one walk of each country's object,
-        // charged to CountryCharacters.
         let active = should_walk(TABLES[1], hour, force_full);
         let retired = should_walk(TABLES[3], hour, force_full);
         if active || retired {
@@ -512,8 +481,6 @@ impl Captured {
             }
         })
     }
-    /// The keys sorted by their bytes, numbered in that order: the set's
-    /// bucket order follows hashes and insertion history, not a meaning.
     fn token_input(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         let Some(bytes) = self.token_bytes.first.get(..self.token_bytes.len) else {
             return unavailable("advisor token arena invalid").into();
@@ -539,8 +506,6 @@ impl Captured {
         if keys.windows(2).any(|pair| pair[0] == pair[1]) {
             return unavailable("advisor token set holds a key twice").into();
         }
-        // A complete, equal fresh set can retain the encoder's allocation,
-        // including on keyframes. Never carry a partial or refused set.
         if matches!(self.tokens.outcome, Outcome::Rows { .. })
             && let Some(previous) = projection
                 .as_deref()
@@ -624,9 +589,6 @@ mod tests {
     use super::*;
     use replay_data::rows::TableRows;
 
-    /// HiredAdvisors, which `has_idea` triggers read, is read every hour
-    /// (here unreadable rather than skipped), as are the advisor roles it
-    /// names.
     #[test]
     fn appointed_advisors_walk_every_hour() {
         let memory = engine_native::memory::SliceMemory {
@@ -729,7 +691,6 @@ mod tests {
         });
         for hour in 0..24 {
             captured.capture(&memory, 0, 0x1000, hour, false);
-            // Hourly: never skipped, and here unreadable rather than stale.
             for index in [1, 3] {
                 assert!(matches!(
                     captured.outcomes()[index],
@@ -788,8 +749,6 @@ mod tests {
                 },
             ]
         );
-        // A failed job hides every table, none skipped: all are hourly or
-        // sliced.
         captured.fail_capture(5, false, "job failed");
         assert_eq!(
             captured.outcomes(),
@@ -889,7 +848,6 @@ mod tests {
                 character: index as u32 + 10_000,
                 idea_start: index * 4,
                 idea_len: 4,
-                // This inaccessible slot must not affect the lean projection.
                 slot_start: usize::MAX,
                 slot_len: 1,
                 ..Default::default()

@@ -4,7 +4,6 @@ import { FrameEngine } from './frame.ts';
 import { ENTRY_MS, EXIT_MS, RowFades } from './entry.ts';
 import { cssEase, rowEase } from './glide.ts';
 
-/** A row's style as the engine writes it. */
 function row() {
   const props = new Map<string, string>();
   return { props, style: { opacity: '', setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { props.delete(name); return ''; } } };

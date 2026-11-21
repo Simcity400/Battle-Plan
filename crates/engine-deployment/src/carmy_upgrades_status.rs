@@ -1,19 +1,10 @@
-//! Army upgrade status and complete army-owned upgrade graph. The country
-//! active-request registry omits delivery-only groups after unregistration.
-//! Walk the supplied division census through each army's requests object to
-//! retain the serialized graph.
 
 use engine_sites::Rva;
-/// Primary upgrade-status vtable.
 pub const VTABLE_RVA: Rva = Rva(0x2a4ba28);
-/// Persistent subobject displacement.
 pub const PERSISTENT_SUBOBJECT: usize = 0x18;
-/// Persistent subobject vtable.
 pub const PERSISTENT_VTABLE_RVA: Rva = Rva(0x2a4ba60);
-/// CArmyUpgradesRequests pointer-array data.
 #[cfg(test)]
 pub const GROUPS_DATA: usize = 0x20;
-/// Group-vector count, i32.
 pub const GROUPS_COUNT: usize = 0x2c;
 
 use crate::{
@@ -46,9 +37,6 @@ pub fn count(memory: &impl Memory, base: usize, sources: &[crate::cequipment_var
     walk_buffer(memory, base, sources, Buffer::Count, Buffer::Count, Buffer::Count, Buffer::Count)
 }
 
-/// Worker graph capture follows request rows and delivery pointers; each
-/// delivery owns its produced pool. Grow each lane from the same acquired
-/// headers without retrying.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -408,7 +396,6 @@ mod tests {
             ARMY + carmy::SECONDARY_BASE,
             carmy::SECONDARY_VTABLE_RVA.0 as u64,
         );
-        // Existing CArmy capture preserves nonzero handles with either word zero.
         put64(&mut bytes, ARMY + crate::cunit::HANDLE, 9000);
         put64(
             &mut bytes,
@@ -680,7 +667,6 @@ mod tests {
     #[test]
     fn delivery_only_group_remains_after_unregistering_and_empty_owned_group_is_retained() {
         let mut bytes = fixture();
-        // Empty requests unregister a group, even when deliveries remain.
         array(&mut bytes, STATUS + GROUPS_DATA, 0, 0);
         array(
             &mut bytes,

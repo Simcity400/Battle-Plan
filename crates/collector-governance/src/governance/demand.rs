@@ -1,4 +1,3 @@
-//! Off-thread capacity hints never supply recorded values or certify a read.
 
 use super::{
     Capacities, Memory, ccountry, cdecision_status, cdynamic_modifier_container, cpolitical_party,
@@ -91,8 +90,6 @@ pub(super) fn presize(
         tactic_bytes = tactic_bytes
             .checked_add(tactic.required_token_bytes)
             .ok_or("preferred tactic sizing byte count overflow")?;
-        // Hints use fallible advisory storage: a failed hint cannot terminate
-        // capture. The original slot population supplies the demand.
         let mut local_slots = 0;
         let prepared = add_rows(&mut local_slots, slot_demand).and_then(|()| {
             research_inputs

@@ -1,5 +1,3 @@
-//! Weather comparisons follow the weather manager writer, the weather region writer and the weather writer. The serializers
-//! preserve fixed5 words but encode byte flags only as zero/nonzero truth.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,23 +18,14 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, invalid};
 
-/// What a province weather record's modifier rebuild reads from content: the
-/// rules of `common/weather.txt` and the static modifiers it can name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceModifierContent {
     pub rules: ProvinceModifierRules,
-    /// The mud, thermal and ground snow modifiers and every name a saved
-    /// province's list holds, by name as written: each one's effective
-    /// definition (an absent one is empty), or why the stack cannot give it.
     pub statics: BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
-    /// Each place the static modifier reading leaves the text; the values
-    /// follow the game's reading.
     pub notes: Vec<String>,
 }
 
 impl ProvinceModifierContent {
-    /// The stack's rules and every static modifier `saved`'s weather
-    /// provinces can name.
     pub fn read(layers: &installed_content_core::ResolvedLayers, saved: &Save) -> io::Result<Self> {
         let rules = installed_content_weather::weather::province_modifier_rules(layers)?;
         let mut names: BTreeSet<&str> = TEMPERATURE_MODIFIERS
@@ -123,8 +112,6 @@ fn compare_provinces(
 ) -> io::Result<()> {
     let rows = complete::<tables::WeatherProvinces>(frame)?;
     let rebuild = ModifierRebuild::prepare(frame, rows, province_modifiers, report);
-    // Derive temperatures at the frame's hour from its anchor and pass.
-    // `recorder derived` checks each hour against the read witness.
     let unrecorded = rows
         .iter()
         .all(|row| matches!(row.temperature.record(), Ok(TemperatureRecord::NotRecorded)));
@@ -144,8 +131,6 @@ fn compare_provinces(
                 .map(|state| state.temperature)
                 .collect::<Vec<_>>()
         });
-    // The save holds every temperature: a refused derivation leaves them all uncompared,
-    // so the comparison is incomplete.
     if let (false, Err(reason)) = (unrecorded, &temperatures) {
         report.failed_comparisons.insert(
             "WeatherProvinces.temperature".into(),
@@ -159,8 +144,6 @@ fn compare_provinces(
         if provinces.insert(row.id, row).is_some() {
             return Err(invalid("duplicate native weather province id"));
         }
-        // Updated clocks are the hour's derivation and held ones the
-        // record's words; neither has a save counterpart.
         if matches!(row.clock.state(row.id), Ok(ClockState::NotRecorded)) {
             report.recorded(
                 &replay_data::rows::Recorded::<()>::NotRecorded,
@@ -192,8 +175,6 @@ fn compare_provinces(
     let mut compared_statics = 0;
     if let Some(expected) = &saved.weather.provinces {
         for (ordinal, expected) in expected.iter().enumerate() {
-            // The weather manager writer emits every slot from zero to count, in array order.
-            // This also rejects repeated keys without collapsing their data.
             dense_slot(ordinal, expected.slot, "saved weather provinces")?;
             let label = format!("weather province {}", expected.slot);
             let Some(actual) = provinces.remove(&expected.slot) else {
@@ -209,11 +190,8 @@ fn compare_provinces(
                 );
             }
             sparse_scalar(report, &label, "snow", actual.snow, expected.snow.as_ref());
-            // The game always emits temperature, even
-            // when zero. Absence is malformed/missing evidence, not zero.
             let recorded = match &temperatures {
                 _ if unrecorded => Some(replay_data::rows::Recorded::NotRecorded),
-                // The derivation holds one state per dense recorded slot.
                 Ok(values) => Some(
                     values
                         .get(actual.id as usize)
@@ -223,7 +201,6 @@ fn compare_provinces(
                         })?
                         .into(),
                 ),
-                // Failed once above; nothing to compare.
                 Err(_) => None,
             };
             if let Some(&temperature) = recorded.as_ref().and_then(|recorded| {
@@ -251,7 +228,6 @@ fn compare_provinces(
             }
             let field = format!("{label}.modifiers");
             match report.recorded(&actual.modifiers, "WeatherProvinces.modifiers", &field) {
-                // The list's part of a refused accumulator is uncertified.
                 Some(None) => {
                     report.failed_comparisons.insert(
                         field.clone(),
@@ -273,15 +249,12 @@ fn compare_provinces(
                                 });
                         match rebuilt {
                             Ok((Fit::One, _)) => compared_modifiers += 1,
-                            // Uncovered: distinct fitting states leave the list's part
-                            // uncertified, so the comparison is incomplete.
                             Ok((Fit::Several(states), _)) => {
                                 report.failed_comparisons.insert(
                                     field.clone(),
                                     format!("{field} save-backed part ambiguous: {states} distinct mud, thermal and ground snow states the content can select fit"),
                                 );
                             }
-                            // Against the load's own rebuild, which names every key.
                             Ok((Fit::None, rebuilt)) => {
                                 compared_modifiers += 1;
                                 rebuild.compare(report, &field, recorded, &rebuilt);
@@ -357,8 +330,6 @@ fn compare_provinces(
     Ok(())
 }
 
-/// Whether a recorded static modifier list is the saved one: the weather writer saves each
-/// entry's name and days in list order, and an empty list as none.
 fn statics_match(recorded: &ProvinceStaticModifiers, saved: Option<&[(String, i64)]>) -> bool {
     let saved = saved.unwrap_or_default();
     recorded.entries.len() == saved.len()
@@ -371,7 +342,6 @@ fn statics_match(recorded: &ProvinceStaticModifiers, saved: Option<&[(String, i6
             })
 }
 
-/// A recorded static modifier list as the save would name it.
 fn static_list(recorded: &ProvinceStaticModifiers) -> Vec<(String, i64)> {
     recorded
         .entries
@@ -385,21 +355,14 @@ fn static_list(recorded: &ProvinceStaticModifiers) -> Vec<(String, i64)> {
         .collect()
 }
 
-/// Definition keys and raw values, as a static modifier adds them.
 type Entries = Vec<(u32, i64)>;
 
-/// Fixed5 one, the multiplier the province accumulator adds each static modifier at.
 const ONE: i64 = 100_000;
 
-/// A static modifier's stored value as the accumulator adds it at multiplier one: a
-/// wrapping multiply by the multiplier, then a signed division by one, so an authored value
-/// whose product wraps adds the wrapped quotient.
 fn scaled(value: i64) -> i64 {
     value.wrapping_mul(ONE) / ONE
 }
 
-/// How many mud, thermal and ground snow states the content can select fit a recorded
-/// accumulator with the saved list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fit {
     None,
@@ -407,20 +370,13 @@ enum Fit {
     Several(usize),
 }
 
-/// The content a province record's modifier accumulator is rebuilt from, joined
-/// to the recorded modifier definitions.
 struct ModifierRebuild<'a> {
     rules: &'a ProvinceModifierRules,
-    /// Each static modifier's values by definition key, or why they are unavailable.
     statics: BTreeMap<&'a str, Result<Entries, String>>,
-    /// The script name of each definition key the static modifiers hold.
     names: BTreeMap<u32, &'a str>,
 }
 
 impl<'a> ModifierRebuild<'a> {
-    /// None when no row holds a recorded accumulator, or when the content or the
-    /// recorded definitions are unavailable: then every recorded accumulator is
-    /// uncompared, one failed comparison, and the comparison is incomplete.
     fn prepare(
         frame: &DecodedFrame,
         rows: &[replay_data::rows::WeatherProvinceRow],
@@ -486,12 +442,6 @@ impl<'a> ModifierRebuild<'a> {
         })
     }
 
-    /// The entries one static modifier adds to an accumulator, as the game adds them.
-    /// Its own entries only: an `added_modifier` child is a separate object the add
-    /// never visits. A name without a recorded definition was dropped when the content
-    /// loaded. A modifier whose every entry is feature-gated off, with no tooltip or child,
-    /// counts as empty and adds nothing; otherwise every entry whose definition has a
-    /// category is added, a zero value included, which still inserts its key.
     fn added(
         registry: &Registry<'_>,
         name: &str,
@@ -516,16 +466,6 @@ impl<'a> ModifierRebuild<'a> {
         Ok(if empty { Vec::new() } else { entries })
     }
 
-    /// The accumulator the game rebuilds for `saved`'s province with `mud`, and `thermal`
-    /// and `snow` as its temperature and ground snow modifiers: it clears it and adds,
-    /// summed per key, the values of `weather_mud` with mud, of `thermal`, of
-    /// every static modifier in its own list in list order, and of `snow`.
-    ///
-    /// The game drops a list entry whose days run out on the daily tick but keeps
-    /// its values in the accumulator until the province's next rebuild, so a live
-    /// accumulator can hold a modifier the save's list no longer names. The rebuild
-    /// follows the saved list alone: such an accumulator differs from it, and the
-    /// comparison reports that difference like any other.
     fn with(
         &self,
         saved: &installed_content_save::weather::Province,
@@ -561,8 +501,6 @@ impl<'a> ModifierRebuild<'a> {
         Ok(accumulator)
     }
 
-    /// The accumulator a load rebuilds from `saved`: the thermal modifier its temperature
-    /// selects and the ground snow modifier its snow and permanent snow select.
     fn expected(
         &self,
         saved: &installed_content_save::weather::Province,
@@ -582,15 +520,6 @@ impl<'a> ModifierRebuild<'a> {
         )
     }
 
-    /// How `recorded` holds the save-backed part: the values of every static modifier in
-    /// `saved`'s list, summed per key, with one mud state and one thermal and ground snow
-    /// modifier the content's intervals can select. Which state that is has no save
-    /// counterpart: the save holds only the current mud, temperature and snow, from which a
-    /// load rebuilds, while the game keeps applying the live accumulator, which keeps those
-    /// of its last rebuild (the hourly window rebuilds only on a change against the record's
-    /// previous hour, and temperatures and mud also change outside that test). States whose
-    /// modifiers add the same entries are one state here; distinct states that both fit
-    /// leave the list's part uncertified.
     fn saved_part_holds(
         &self,
         saved: &installed_content_save::weather::Province,
@@ -622,8 +551,6 @@ impl<'a> ModifierRebuild<'a> {
         })
     }
 
-    /// Every key of either accumulator: a missing, extra or different entry is a
-    /// difference naming the definition key and, when known, its script name.
     fn compare(
         &self,
         report: &mut Report,
@@ -724,7 +651,6 @@ fn sparse_scalar(
     captured: i64,
     saved: Option<&Decimal>,
 ) {
-    // The weather region writer tests each complete i64 before emission, omitting exactly zero.
     let expected = saved.map_or(0, |value| value.raw);
     report.scalar_checks += 1;
     if captured != expected {
@@ -738,7 +664,6 @@ fn custom_sea(
     captured: &replay_data::rows::Recorded<Option<Vec<i16>>>,
     saved: Option<&[i64]>,
 ) {
-    // The weather region writer omits an empty array.
     let expected = saved.unwrap_or_default();
     let label = format!("{label}.active_modifiers");
     match captured {
@@ -755,7 +680,6 @@ fn custom_sea(
 }
 
 fn truth(report: &mut Report, label: &str, captured: u8, saved: Option<bool>) {
-    // The region and weather writers omit exactly zero; boolean writing spells every nonzero byte as yes.
     let expected = saved.unwrap_or(false);
     if (captured != 0) != expected {
         report.difference(label, captured, expected);

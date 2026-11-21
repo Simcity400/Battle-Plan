@@ -1,4 +1,3 @@
-//! The proof tool's line for the buildings layer.
 
 use super::Compared;
 use crate::{
@@ -22,18 +21,15 @@ fn of(layer: &dyn Layer) -> &BuildingsFed {
     layer.any().downcast_ref::<BuildingsFed>().expect("the buildings line's layer")
 }
 
-/// What the worker's buildings hold now.
 fn inspected(layer: &BuildingsFed) -> io::Result<Inspected> {
     layer.inspect().ok_or_else(|| io::Error::other("the buildings' worker stopped"))
 }
 
-/// The window's layer: the buildings made on their worker.
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
     let catalogue: Arc<dyn Catalogue> = Arc::clone(&document.content) as _;
     Box::new(BuildingsFed::new(Buildings::new(catalogue)))
 }
 
-/// Gives the layer today's vision of the document's hour, until it reads the vision layer's.
 pub(super) fn give(layer: &dyn Layer, document: &Document, choice: &Choice) -> io::Result<()> {
     if let Some(buildings) = layer.any().downcast_ref::<BuildingsFed>() {
         buildings.set_vision(choice.clone(), document.vision(choice)?);
@@ -46,9 +42,6 @@ pub(super) fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("building rows", rows as u64), ("slots", slots as u64), ("city provinces", provinces as u64)]
 }
 
-/// Every slot of today's building product at the document's hour against the layer's slot of the
-/// same id as the product carries it, the city damage of every province, its refusal, and the
-/// warnings.
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let choice = of(layer).perspective().cloned().unwrap_or_default();
     let layer = &inspected(of(layer))?;

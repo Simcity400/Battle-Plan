@@ -1,14 +1,11 @@
-//! Successful authored operands belong to immutable content, not live variants or failures.
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
     sync::{Arc, Mutex},
 };
 
-// Catalogue indices retain spellings without borrowing a prior census.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Fact {
-    /// The type the key names, which supplies the model spelling.
     pub(crate) equipment: usize,
     pub(crate) archetype: usize,
     pub(crate) visual_level: i32,
@@ -19,7 +16,6 @@ pub(crate) struct Fact {
 
 type Held = HashMap<String, Fact>;
 
-// Clones share the same immutable catalogue; a replacement Content gets a fresh bank.
 #[derive(Clone, Default)]
 pub(crate) struct Retained(Arc<Mutex<BTreeMap<u64, Arc<Held>>>>);
 
@@ -30,7 +26,6 @@ impl fmt::Debug for Retained {
 }
 
 impl Retained {
-    /// One census's view: the facts held when it starts, then its own successes.
     pub(crate) fn census(&self, module_categories: u64) -> View<'_> {
         let held = self
             .0
@@ -47,7 +42,6 @@ impl Retained {
     }
 }
 
-// Each census reads its initial snapshot and local successes without a per-variant lock.
 pub(crate) struct View<'a> {
     bank: &'a Retained,
     module_categories: u64,
@@ -67,12 +61,10 @@ impl<'a> View<'a> {
             .copied()
     }
 
-    /// A key whose original calls both succeeded in this census.
     pub(crate) fn insert(&mut self, key: &'a str, fact: Fact) {
         self.reached.insert(key, fact);
     }
 
-    // Concurrent censuses derive equal pure facts; retain the first published value.
     pub(crate) fn commit(self) {
         let Self {
             bank,
@@ -83,7 +75,6 @@ impl<'a> View<'a> {
         if reached.is_empty() {
             return;
         }
-        // Release this census's own snapshot so an unshared bank is updated in place.
         drop(held);
         let mut banks = bank.0.lock().unwrap_or_else(|p| p.into_inner());
         let held = Arc::make_mut(banks.entry(module_categories).or_default());

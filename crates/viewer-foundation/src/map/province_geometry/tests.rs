@@ -24,7 +24,6 @@ fn province_geometry_keeps_integer_centroids_and_directed_borders() {
     assert_eq!(geometry.centroid(1), Some([0.0, 0.0]));
     assert_eq!(geometry.centroid(2), Some([2.0, 0.0]));
     assert_eq!(geometry.provinces(), 2);
-    // Province 1's own pixels facing 2 (x = 1), and the wrap seam (x = 0).
     let towards_two = &geometry.borders[&(1, 2)];
     assert!(towards_two.iter().all(|p| p[0] == 1 || p[0] == 0));
     assert!(

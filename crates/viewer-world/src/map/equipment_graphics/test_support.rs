@@ -1,4 +1,3 @@
-//! Existing synthetic worlds for equipment graphic-pool tests.
 use super::*;
 use std::sync::{Arc, OnceLock};
 

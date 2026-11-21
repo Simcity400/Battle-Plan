@@ -1,21 +1,10 @@
-//! A free camera's view volume and the ground it reaches.
-//!
-//! The game's camera always looks down at the water plane, so its four corner rays bound what it
-//! sees. A free camera can look at the horizon or the sky, where a corner ray never meets the
-//! ground. Its view volume is cut at a depth instead, then clipped to the band of heights the map
-//! occupies; the clipped volume's corners bound the ground it reaches.
 
 use super::Camera;
 
-/// The height of the highest terrain surface: 255 height-map steps of a tenth.
 pub const TERRAIN_TOP: f32 = 25.5;
 
-/// The height the map's objects reach: a province box stands this tall
-/// ([`province_admission`](crate::map::province_admission)).
 pub const OBJECT_TOP: f32 = 70.0;
 
-/// The eight corners of the view volume between view depths `near` and `far`: near top-left,
-/// top-right, bottom-left, bottom-right, then the far ones in the same order.
 pub fn corners(camera: &Camera, viewport: [u32; 2], near: f32, far: f32) -> [[f32; 3]; 8] {
     let [right, up, forward] = camera.axes();
     let lens = camera.lens();
@@ -39,16 +28,6 @@ pub fn corners(camera: &Camera, viewport: [u32; 2], near: f32, far: f32) -> [[f3
     out
 }
 
-/// [`corners`] of a volume holding the view volume of every camera at this eye turned by up to
-/// `turn` ([`super::Slack`]); `None` when the turn reaches a corner ray's own angle, which no
-/// volume of this shape holds.
-///
-/// A turned view's direction `v` stands within `turn` of one of this view's, so each side plane's
-/// unit normal `n` and the forward axis `f` give `n.v >= -turn` and `f.v >= c - turn`, where `c` is
-/// the corner rays' cosine. A side leaned out to `n + l f` with `l = turn / (c - turn)` holds it,
-/// which widens each tangent by `l` times its secant. The turned view's depths run from `near` to
-/// `far` along its own axis, `(c - turn) near` to `(1 + turn s) far` along this one's, with `s`
-/// the corners' secant.
 pub fn turned_corners(camera: &Camera, viewport: [u32; 2], near: f32, far: f32, turn: f32) -> Option<[[f32; 3]; 8]> {
     let [right, up, forward] = camera.axes();
     let tangent_y = (camera.lens().fov_y * 0.5).tan();
@@ -74,7 +53,6 @@ pub fn turned_corners(camera: &Camera, viewport: [u32; 2], near: f32, far: f32, 
     Some(out)
 }
 
-/// The view volume's twelve edges, as corner indices of [`corners`].
 const EDGES: [[usize; 2]; 12] = [
     [0, 1],
     [1, 3],
@@ -90,10 +68,6 @@ const EDGES: [[usize; 2]; 12] = [
     [3, 7],
 ];
 
-/// The corners of the convex volume `corners` encloses once clipped to heights `low..=high`.
-///
-/// A clipped convex volume's corners are the original corners inside the band and the points
-/// where its edges cross either bounding plane. Empty when the volume misses the band.
 pub fn in_band(corners: &[[f32; 3]; 8], low: f32, high: f32) -> Vec<[f32; 3]> {
     let mut points: Vec<[f32; 3]> = corners
         .iter()
@@ -116,7 +90,6 @@ pub fn in_band(corners: &[[f32; 3]; 8], low: f32, high: f32) -> Vec<[f32; 3]> {
     points
 }
 
-/// The `(x0, z0, x1, z1)` box around `points`, `None` when there are none.
 pub fn bounds(points: &[[f32; 3]]) -> Option<[f32; 4]> {
     let first = points.first()?;
     let mut rect = [first[0], first[2], first[0], first[2]];
@@ -129,13 +102,10 @@ pub fn bounds(points: &[[f32; 3]]) -> Option<[f32; 4]> {
     Some(rect)
 }
 
-/// The view volume's six planes in the projection's row-vector convention, each `[a, b, c, d]`
-/// with `a x + b y + c z + d >= 0` inside: left, right, top, bottom, near, far.
 pub fn planes(matrix: &[[f32; 4]; 4]) -> [[f32; 4]; 6] {
     let column = |index: usize| -> [f32; 4] { std::array::from_fn(|row| matrix[row][index]) };
     let [x, y, z, w] = [column(0), column(1), column(2), column(3)];
     let add = |a: [f32; 4], b: [f32; 4], sign: f32| std::array::from_fn(|i| a[i] + sign * b[i]);
-    // Depth runs 0..1, so the near plane is z >= 0 and the far plane z <= w.
     [
         add(w, x, 1.0),
         add(w, x, -1.0),

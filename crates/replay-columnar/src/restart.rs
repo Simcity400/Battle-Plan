@@ -1,16 +1,3 @@
-//! A restore: a table's whole state at a block's end, decodable with nothing earlier, so a
-//! reader of the table can start at the block after it.
-//!
-//! Layout: status | acquisition (last read hour, availability start, refusal reason) |
-//! the strings its live text cells and refusal name (count, then ascending ids as gaps, each
-//! string length-prefixed) | the table ([`write_table`]: slot count (varint) | live bits (one
-//! per slot) | the live rows' keys in slot order ([`Writer::keys`]) | each column's byte length
-//! (varint), then every column's values for the live slots in slot order, as a run carries them,
-//! so a reader of some columns skips the others | every column's unrecorded live slots
-//! ([`Writer::slots`])) | for a truncated table, the slots its view holds | its last complete read
-//! ([`Last`]): 0 when there is none or the view is it, read at its last read hour; 1 and the
-//! read's hour when the table's rows are it; 2, the read's hour and its table when reads since
-//! changed the rows.
 
 use crate::{
     leaf::{Reader, Writer},
@@ -23,25 +10,16 @@ use std::io;
 #[cfg(test)]
 mod tests;
 
-/// What a table's reads had established when the block began.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Acquisition {
-    /// Its sample hour: the hour of the acquisition its view holds, none when that is not
-    /// known (never read, or an untimed snapshot).
     pub last_read: Option<i32>,
-    /// The first hour of its current availability.
     pub available_from: Option<i32>,
-    /// Why it is not available, in the dictionary.
     pub refusal: Option<u32>,
 }
 
-/// A kept table's last complete read, while its view may not be it: what a walk starting at
-/// a restart knows of the table without walking the hours before.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Last {
-    /// The table's rows are the read, made at the hour when known: no hour since changed them.
     Held(Option<i32>),
-    /// A partial read since changed the rows: the read's table apart, and its hour when known.
     Apart(Box<Table>, Option<i32>),
 }
 
@@ -52,7 +30,6 @@ impl Last {
         }
     }
 
-    /// The bytes its own table holds.
     pub fn held_bytes(&self) -> usize {
         match self {
             Self::Held(_) => 0,
@@ -60,9 +37,6 @@ impl Last {
         }
     }
 
-    /// Before an hour of `status` applies to `table`, the rows a partial read is about to
-    /// change are kept apart while they are the last complete read: sharing the table's
-    /// pages, so only those the hour writes are copied.
     pub fn before(last: &mut Option<Self>, table: &Table, status: Status) -> io::Result<()> {
         if let (Status::Truncated { .. }, Some(Self::Held(read))) = (status, &*last) {
             let read = *read;
@@ -71,7 +45,6 @@ impl Last {
         Ok(())
     }
 
-    /// A copy sharing its table's pages.
     pub fn share(&self) -> io::Result<Self> {
         Ok(match self {
             Self::Held(read) => Self::Held(*read),
@@ -81,9 +54,6 @@ impl Last {
         })
     }
 
-    /// After an hour of `status`, which wrote a section when `sectioned`, left the view
-    /// sampled at `sampled`: a complete view is the last complete read, at its sample hour or,
-    /// when it changed no row, at the hour of the read it still holds.
     pub fn after(last: &mut Option<Self>, status: Status, sectioned: bool, sampled: Option<i32>) {
         if status != Status::Complete {
             return;
@@ -111,7 +81,6 @@ fn get_hour(reader: &mut Reader<'_>) -> io::Result<Option<i32>> {
     })
 }
 
-/// `table`'s slots, live rows, keys, values and unrecorded cells.
 fn write_table(writer: &mut Writer, table: &Table) -> io::Result<()> {
     writer.varint(table.slots() as u64)?;
     let mut live = engine_allocation::filled(table.slots().div_ceil(64), 0u64)?;
@@ -138,7 +107,6 @@ fn write_table(writer: &mut Writer, table: &Table) -> io::Result<()> {
     for bytes in &columns {
         writer.raw(bytes)?;
     }
-    // A column's unrecorded slots are live slots, so one reservation holds every column's.
     let mut unrecorded = engine_allocation::vec(slots.len())?;
     for column in 0..table.kinds().count() {
         unrecorded.clear();
@@ -148,8 +116,6 @@ fn write_table(writer: &mut Writer, table: &Table) -> io::Result<()> {
     Ok(())
 }
 
-/// What [`write_table`] wrote; a column `wanted` leaves out is skipped, its live cells
-/// unrecorded.
 fn read_table(
     reader: &mut Reader<'_>,
     kinds: &[Kind],
@@ -187,7 +153,6 @@ fn read_table(
     Ok(table)
 }
 
-/// `view` holds the slots of a truncated table's rows read (none otherwise).
 pub fn write(
     table: &Table,
     status: Status,
@@ -197,7 +162,6 @@ pub fn write(
     write_with(table, status, acquisition, view, None)
 }
 
-/// [`write`], with the table's last complete read when it is kept.
 pub fn write_with(
     table: &Table,
     status: Status,
@@ -208,8 +172,6 @@ pub fn write_with(
     write_named(table, status, acquisition, view, last, &[])
 }
 
-/// [`write_with`], holding `strings` (id and text, ascending by id): those its text cells and
-/// refusal name.
 pub fn write_named(
     table: &Table,
     status: Status,
@@ -259,7 +221,6 @@ pub fn write_named(
         writer.slots(view)?;
     }
     match last {
-        // A complete view sampled at its read is that read.
         Some(Last::Held(read)) if status == Status::Complete && *read == acquisition.last_read => {
             writer.varint(0)?
         }
@@ -282,22 +243,16 @@ pub fn write_named(
     Ok(writer.into_bytes())
 }
 
-/// A table as a restart holds it.
 #[derive(Debug)]
 pub struct Restored {
     pub table: Table,
     pub status: Status,
     pub acquisition: Acquisition,
-    /// The slots a truncated table's view holds.
     pub view: Vec<u32>,
-    /// Its last complete read: the view itself when complete, else what the restart kept.
     pub last: Option<Last>,
-    /// The strings it names, ascending by id.
     pub strings: Vec<(u32, Box<[u8]>)>,
 }
 
-/// A [`Restored`] whose tables' pages are held weakly: what walks starting at one restart
-/// find of it again while one of them still shares its pages.
 #[derive(Debug)]
 pub struct WeakRestored {
     table: WeakTable,
@@ -308,7 +263,6 @@ pub struct WeakRestored {
 }
 
 impl Restored {
-    /// A copy sharing its tables' pages.
     pub fn share(&self) -> io::Result<Self> {
         Ok(Self {
             table: self.table.share()?,
@@ -336,7 +290,6 @@ impl Restored {
 }
 
 impl WeakRestored {
-    /// The restored table again, sharing its pages, while every one is still held.
     pub fn upgrade(&self) -> io::Result<Option<Restored>> {
         let Some(table) = self.table.upgrade()? else {
             return Ok(None);
@@ -359,12 +312,10 @@ impl WeakRestored {
         }))
     }
 
-    /// Whether some of its pages may still be held.
     pub fn alive(&self) -> bool {
         self.table.alive()
     }
 
-    /// The bytes it holds of its own.
     pub fn held_bytes(&self) -> usize {
         self.table.held_bytes()
             + self.view.capacity() * size_of::<u32>()
@@ -376,7 +327,6 @@ impl WeakRestored {
     }
 }
 
-/// A restart's status and acquisition alone, its table unread.
 pub fn acquisition(bytes: &[u8]) -> io::Result<(Status, Acquisition)> {
     head(&mut Reader::new(bytes))
 }
@@ -423,7 +373,6 @@ fn read_strings(reader: &mut Reader<'_>) -> io::Result<Vec<(u32, Box<[u8]>)>> {
     Ok(strings)
 }
 
-/// [`read`] of the columns `wanted` marks only; the others hold every live cell unrecorded.
 pub fn read_projected(
     bytes: &[u8],
     kinds: &[Kind],

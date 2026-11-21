@@ -41,7 +41,6 @@ test('chosen countries are listed at zero when they raided none, and only they a
 });
 
 test('a chosen slot counts its country under every tag it held, and never another country holding one of them', () => {
-  // Slot 3 goes by ENG through hour 35, then by PRC from 50; ENG is another country's after.
   const slot = countryKey(3);
   const tally = raidTally(episodes, SPAN, [], [slot, 'ENG'], null, (raider, hour) => (raider === 'ENG' && hour <= 35) || (raider === 'PRC' && hour >= 50) ? slot : raider);
   assert.deepEqual([at(tally, slot, 100), at(tally, 'ENG', 100)], [[2, 2], [1, 0]]);
@@ -50,7 +49,6 @@ test('a chosen slot counts its country under every tag it held, and never anothe
 test('a top keeps each country for the spans it is among the leaders, ties in tag order', () => {
   const tally = raidTally([...episodes, syntheticEpisode('6', 65, 'PRC', 70, null, false)], SPAN, [], [], { count: 1, metric: 'launched' });
   const membership = new Map(tally.series.map(item => [item.tag, item.membership]));
-  // ENG leads from its launch at 20 and through every tie (first by tag); PRC leads alone from its third launch.
   assert.deepEqual(membership.get('ENG'), [{ firstHour: 20, lastHour: 69 }]);
   assert.deepEqual(membership.get('PRC'), [{ firstHour: 70, lastHour: 200 }]);
   const wins = raidTally(episodes, SPAN, [], [], { count: 5, metric: 'succeeded' });

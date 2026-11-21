@@ -51,7 +51,6 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
         Some("peace action vtable unsupported")
     );
     assert!(storage.allocated_bytes() > bytes);
-    // A conference past the prepared events grows the arena in the callback.
     assert!(storage.observe(
         &engine_native::memory::SliceMemory {
             base: 0,

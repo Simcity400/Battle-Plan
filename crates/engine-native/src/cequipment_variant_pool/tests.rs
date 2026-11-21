@@ -173,7 +173,6 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
         (rows[2].division, rows[2].ordinal),
         (sources[1].division, 1)
     );
-    // A filtered walk reads only the admitted divisions.
     assert_eq!(
         walk_divisions_where(
             &memory,
@@ -262,9 +261,6 @@ fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth(
     );
 }
 
-/// Synthetic division equipment bank with contiguous entries and variants.
-/// Each 64-entry batch acquires entries and identities in two copies after
-/// the pool header check, allowing precise batch-fault assertions.
 fn bank(entries: usize) -> Vec<u8> {
     const POOL: usize = 0x3000;
     const DATA: usize = 0x4000;
@@ -296,9 +292,6 @@ fn bank(entries: usize) -> Vec<u8> {
     bytes
 }
 
-/// A fault in the middle of a batch must keep its own reason and stop the
-/// walk there, rather than skipping to the entries staged after it. A
-/// faulting identity leaves the whole batch's entry bytes already copied.
 #[test]
 fn a_mid_batch_bank_fault_keeps_its_reason_and_stops_before_later_entries() {
     const DATA: usize = 0x4000;
@@ -355,7 +348,6 @@ fn a_mid_batch_bank_fault_keeps_its_reason_and_stops_before_later_entries() {
             "refused {address:#x}"
         );
     }
-    // The middle variant's identity is wrong; the third is still valid.
     let mut broken = bank(3);
     p64(&mut broken, VARIANT + 0x40, 0);
     assert_eq!(
@@ -372,8 +364,6 @@ fn a_mid_batch_bank_fault_keeps_its_reason_and_stops_before_later_entries() {
             reason: "variant vtable or reference type mismatch"
         }
     );
-    // usize is 64 bits on the pinned target, so a variant word can never
-    // fail its usize conversion; that reason stays unreachable by design.
 }
 
 #[test]
@@ -425,8 +415,6 @@ fn a_bank_census_costs_two_guarded_gathers_per_batch_not_two_per_entry() {
     assert_eq!(rows[129].ordinal, 129);
     assert_eq!(rows[129].amount_raw, i64::MIN + 129);
     assert_eq!(rows[129].variant_handle >> 32, 130);
-    // The pool vtable and its array header, then one entry gather and one
-    // identity gather per batch of 64 entries.
     assert_eq!(census.calls(), 2 + 2 * ENTRIES.div_ceil(64));
     assert_eq!(
         census.bytes(),

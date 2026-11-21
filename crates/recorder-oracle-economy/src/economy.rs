@@ -1,4 +1,3 @@
-//! Exact native economy comparisons with explicit save coverage limits.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -69,8 +68,6 @@ pub fn compare(
     all_complete &= report.attempt("economy ForeignHomebases", |report| {
         compare_foreign(frame, &saved.economy, &owners, links, report)
     });
-    // These tables still require complete shared decoding, even where the
-    // text save has no proven direct representation of their raw operands.
     for (name, rows, reason) in [
         (
             "ProvinceSupply",
@@ -126,9 +123,6 @@ fn compare_experience(
             continue;
         };
         count += 1;
-        // The game compares these eight qwords against converted zero and
-        // omits precisely equal values. Missing the whole status is handled
-        // above, and its unconditional ninth field is required by the parser.
         for (name, actual, expected) in [
             ("army_raw", actual.army_raw, expected.army_raw),
             (
@@ -185,16 +179,12 @@ fn compare_experience(
     Ok(())
 }
 
-/// One CountryResources operand and the saved pool that carries it.
 type ResourceField = (
     &'static str,
     fn(&CountryResourceRow) -> i64,
     fn(&economy::ResourcePools) -> &economy::ResourcePool,
 );
 
-/// The nine pools the country resource save writer saves. `to_use`
-/// holds the first use pool, the second less the first (prefix sums
-/// minus runtime outflow) and the third.
 const RESOURCE_FIELDS: [ResourceField; 9] = [
     ("produced", |row| row.produced, |pools| &pools.produced),
     (
@@ -225,14 +215,6 @@ const RESOURCE_FIELDS: [ResourceField; 9] = [
 
 const AMBIGUOUS_RESOURCE_JOIN: &str = "a resource name declared more than once (loader appends each declaration) repeats in the saved pools, and the pool writer omits zero amounts, so a pool with fewer occurrences than declarations cannot attribute its amounts to declarations; its nonzero amounts are compared in index order instead";
 
-/// CountryResources against the pools the country resource save writer
-/// saves. The collector emits one row per captured country and resource
-/// definition; that census is checked by itself, since the game omits a zero
-/// amount and an all-zero row leaves no saved entry. Rows join the save by
-/// country tag and resource name (the definition's token, spelled by the
-/// lexical dictionary); an absent entry is 0. A name can own several
-/// definitions (the game does not deduplicate), whose nonzero amounts the
-/// writer emits in index order under the same name.
 fn compare_resources(
     frame: &DecodedFrame,
     saved: &economy::Pack,
@@ -246,7 +228,6 @@ fn compare_resources(
             return Err(invalid("duplicate resource definition id"));
         }
     }
-    // Definition ids by spelling, in index order (the writer's order).
     let mut spelled = BTreeMap::<&[u8], Vec<u32>>::new();
     let mut unspelled = BTreeMap::new();
     for (&id, &token) in &definitions {
@@ -285,8 +266,6 @@ fn compare_resources(
             )));
         }
     }
-    // The census, independent of saved entries: every captured country has a
-    // row for every definition.
     let countries = links
         .values()
         .map(|country| country.tag.as_slice())
@@ -317,7 +296,6 @@ fn compare_resources(
             }
         }
         for (&name, ids) in &spelled {
-            // A missing row is the census difference above.
             let Some(group) = ids
                 .iter()
                 .map(|&id| rows.get(&(tag, id)).copied())
@@ -335,7 +313,6 @@ fn compare_resources(
             compare_resource_name(report, tag, name, ids, &group, pools, &label);
         }
     }
-    // A saved name with no captured row to join.
     for (tag, country) in report.canonical_countries(&saved.countries) {
         let Some(pools) = &country.pools else {
             continue;
@@ -369,11 +346,6 @@ fn compare_resources(
     Ok(())
 }
 
-/// One country's definitions of one resource name against that name's saved
-/// occurrences, pool by pool. With as many occurrences as definitions every
-/// amount was written, so they pair in index order; a single definition
-/// without an occurrence is 0. With fewer, the game skipped zeros and the
-/// recorded nonzero amounts must equal the occurrences in order.
 fn compare_resource_name(
     report: &mut Report,
     tag: &[u8],
@@ -499,9 +471,6 @@ fn compare_exchanges(
                 required_country_tag(actual.exporter, links)?,
                 tag.as_slice(),
             );
-            // the resource writer omits receiver only for a nonpositive raw importer and
-            // resource only for a null descriptor pointer. Complete captured
-            // rows require resolved importers and positive database descriptors.
             equal(
                 report,
                 format!("{label}.importer"),
@@ -574,7 +543,6 @@ fn compare_exchanges(
 
 const STATELESS_SUPPLY: &str = "the supply writer saves a country's supply block only while the country owns a state, so the live supply rows of a country that owns none have no save counterpart";
 
-/// The tags that own a state in the save.
 fn state_owners(saved: &Save) -> BTreeSet<&[u8]> {
     saved
         .states
@@ -583,7 +551,6 @@ fn state_owners(saved: &Save) -> BTreeSet<&[u8]> {
         .collect()
 }
 
-/// Whether the save left out `tag`'s supply block because it owns no state.
 fn unsaved_supply(
     systems: &BTreeMap<Vec<u8>, economy::Supply>,
     owners: &BTreeSet<&[u8]>,
@@ -858,9 +825,6 @@ fn compare_fuel(
             continue;
         };
         count += 1;
-        // The modifier rates, lend-lease consumption, ring position and the
-        // ring's requested sums are retired: nothing reads them, so they are
-        // not compared.
         for (name, actual, expected) in [
             ("current_raw", actual.current_raw, expected.current.raw()?),
             ("maximum_raw", actual.maximum_raw, expected.maximum.raw()?),
@@ -872,7 +836,6 @@ fn compare_fuel(
         ] {
             equal(report, format!("{label}.{name}"), actual, expected);
         }
-        // The ring sums cover the 24 ring slots, never the pending entry.
         let mut sums = [0_i128; 6];
         for entry in expected.history.iter().filter(|entry| entry.index != -1) {
             let values = [
@@ -930,10 +893,6 @@ fn compare_fuel(
     Ok(())
 }
 
-/// CountryFuel records the applied fuel updates before a read as day sums
-/// (`award_day`); the per-update source witness the retired window held, which
-/// only this comparison read, is not recorded, so no saved history slot is
-/// compared with an applied update.
 fn report_fuel_award_witness(row: &replay_data::rows::CountryFuelRow, report: &mut Report) {
     let reason = match &row.award_day {
         replay_data::rows::Recorded::Value(_) => {
@@ -946,9 +905,6 @@ fn report_fuel_award_witness(row: &replay_data::rows::CountryFuelRow, report: &m
     report.limitation(reason, "CountryFuel");
 }
 
-/// Consumer entries by country and array position, the saved `index`.
-/// A country without a saved `fuel_status` is reported by CountryFuel; its
-/// recorded consumers are listed here as unmatched.
 fn compare_fuel_consumers(
     frame: &DecodedFrame,
     saved: &economy::Pack,
@@ -1007,18 +963,10 @@ fn compare_fuel_consumers(
     Ok(())
 }
 
-/// The logistics status series LogisticsEquipment reads: stock and balance.
 const LOGISTICS_STOCK_SERIES: u32 = 15;
 const LOGISTICS_BALANCE_SERIES: u32 = 16;
-/// Records of the daily window the reader accepts (engine_air_history::cloop_history).
 const LOGISTICS_DAILY_RECORDS: i32 = 30;
 
-/// LogisticsEquipment against each country's saved `logistics` history.
-/// The logistics save writer writes the history exactly for the
-/// countries outside AI control, matching the reader's selection,
-/// so a country with rows and no saved history, or the reverse, is a
-/// difference. Each row compares with its index in the record at the saved
-/// daily window's `offset` (the current slot) of series 15 and 16.
 fn compare_logistics(
     frame: &DecodedFrame,
     saved: &economy::Pack,
@@ -1240,11 +1188,6 @@ mod tests {
     };
     use replay_frame::{frame::Metrics, frame::TableView};
 
-    /// A `fuel_status` body in the writer's layout: the scalars,
-    /// three consumers, the pending entry and 24 ring entries. Ring entry `i`
-    /// holds fuel and other of `i + 1` native units and otherwise the values
-    /// of `RING_SUMS / 24`; the pending entry holds values of its own that the
-    /// sums must not include.
     fn fuel_status(scalars: &str) -> String {
         let quantity = |raw: i128| {
             let numerator = raw * 100_000 / 32_768;
@@ -1264,8 +1207,6 @@ mod tests {
         text
     }
 
-    /// The raw sums of `fuel_status`'s 24 ring entries, in CountryFuel's
-    /// column order; 265.14755 is the formatter's text for 8_688_355 units.
     const RING_SUMS: [i64; 6] = [
         24 * 39_040_000,
         24 * 8_688_355,
@@ -1422,8 +1363,6 @@ mod tests {
         assert_eq!(report.compared_tables["HubMotorization"], 0);
     }
 
-    /// The supply writer leaves out the block of a country that owns no state, so its live rows
-    /// are not differences; a state owner's missing block still is.
     #[test]
     fn supply_rows_of_a_country_without_states_have_no_save_counterpart() {
         let saved = economy::parse(
@@ -1555,8 +1494,6 @@ mod tests {
                 .flatten()
                 .any(|subject| subject.contains(".resource token=77"))
         );
-        // The save omits the subscriber of an exchange that requires no convoys: both
-        // counts are zero.
         let TableView::Complete(TableRows::ResourceExchanges(rows)) =
             &mut *frame.tables[TableId::ResourceExchanges.index()]
         else {
@@ -1682,10 +1619,6 @@ mod tests {
         assert!(compare_exchanges(&frame, &saved, &links, &tokens, &mut report).is_err());
     }
 
-    /// CountryResources against the saved country-resource pools:
-    /// all nine operands, `to_use[1]` as the second use pool
-    /// less the first, an omitted amount as zero, and a saved amount
-    /// without a recorded row as a difference.
     #[test]
     fn country_resources_compare_every_saved_pool() {
         let saved = economy::parse(
@@ -1762,7 +1695,6 @@ mod tests {
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["CountryResources"], 2);
 
-        // One native unit off in each operand is one difference each.
         for change in 0..9 {
             let mut row = german.clone();
             let field = [
@@ -1783,19 +1715,16 @@ mod tests {
             set(&mut frame, vec![row, recorded(12)]);
             let mut report = Report::default();
             compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
-            // Moving the first use pool also moves the second's difference.
             let expected = if change == 3 { 2 } else { 1 };
             assert_eq!(report.differences.len(), expected, "operand {change}");
         }
 
-        // A saved amount the recording lacks.
         set(&mut frame, vec![recorded(12)]);
         let mut report = Report::default();
         compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("GER.resources[steel]"));
 
-        // Without the lexical spelling a row is a limitation, not a match.
         set(&mut frame, vec![german, recorded(12)]);
         let mut report = Report::default();
         compare_resources(&frame, &saved, &links, &TokenNames::new(), &mut report).unwrap();
@@ -1807,8 +1736,6 @@ mod tests {
         );
     }
 
-    /// A frame with only the given resource definitions (id, token) and
-    /// CountryResources rows complete; every other table empty.
     fn resource_frame(definitions: &[(u32, u32)], rows: Vec<CountryResourceRow>) -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
@@ -1836,8 +1763,6 @@ mod tests {
         frame
     }
 
-    /// Resource pools of one country's saved `resources` object, empty
-    /// where not given.
     fn saved_resources(countries: &[(&str, &str, &str)]) -> economy::Pack {
         let mut text = String::from("countries={");
         for (tag, produced, to_use) in countries {
@@ -1849,9 +1774,6 @@ mod tests {
         economy::parse(&parser::parse(text.as_bytes()).unwrap().items).unwrap()
     }
 
-    /// The collector emits a row for every captured country and resource
-    /// definition, while the game omits zero amounts: a deleted all-zero
-    /// row leaves the save unchanged and is caught by the census alone.
     #[test]
     fn country_resources_census_detects_deleted_all_zero_rows() {
         let saved = saved_resources(&[
@@ -1889,7 +1811,6 @@ mod tests {
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["CountryResources"], 4);
 
-        // GER's all-zero coal row deleted.
         let frame = resource_frame(&definitions, vec![steel.clone(), row(12, 1), row(12, 2)]);
         let mut report = Report::default();
         compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
@@ -1898,7 +1819,6 @@ mod tests {
         assert!(report.differences[0].contains("one row per captured country"));
         assert_eq!(report.compared_tables["CountryResources"], 3);
 
-        // Every row of a captured country whose pools are all zero.
         let frame = resource_frame(&definitions, vec![steel, row(11, 2)]);
         let mut report = Report::default();
         compare_resources(&frame, &saved, &links, &tokens, &mut report).unwrap();
@@ -1911,11 +1831,6 @@ mod tests {
         );
     }
 
-    /// The loader appends a repeated declaration as another
-    /// resource, and the game writes each nonzero amount in index order
-    /// under the shared name. Both definitions are compared, not refused;
-    /// a pool that omitted a zero joins as a nonzero sequence under a named
-    /// limitation, and unrelated resources compare as before.
     #[test]
     fn country_resources_keep_repeated_resource_names_apart() {
         let saved = saved_resources(&[("GER", "steel=3 coal=2 steel=5", "{ steel=2 } { } { }")]);
@@ -1925,7 +1840,6 @@ mod tests {
             ..Default::default()
         };
         let links = BTreeMap::from([(11, &country)]);
-        // Two declarations of one name intern one token.
         let definitions = [(1, 77), (2, 77), (3, 78)];
         let tokens = TokenNames::from([(77, b"steel".as_slice()), (78, b"coal".as_slice())]);
         let rows = |first_used: i64, second_used: i64, first: i64, second: i64| {
@@ -1976,30 +1890,25 @@ mod tests {
         assert!(subjects[0].contains("used 1/2"));
         assert!(!subjects[0].contains("produced"));
 
-        // The omitted zero hides which declaration used the steel.
         assert!(
             run(rows(0, 200_000, 300_000, 500_000), &saved)
                 .differences
                 .is_empty()
         );
-        // Both amounts written: each declaration is compared by index.
         let report = run(rows(200_000, 0, 500_000, 300_000), &saved);
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("GER.resources[steel id=1].produced:"));
         assert!(report.differences[1].starts_with("GER.resources[steel id=2].produced:"));
-        // A nonzero sequence that differs is a difference.
         let report = run(rows(200_001, 0, 300_000, 500_000), &saved);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(
             report.differences[0].starts_with("GER.resources[steel].used nonzero in index order:")
         );
-        // The unrelated resource is still compared.
         let mut changed = rows(200_000, 0, 300_000, 500_000);
         changed[2].produced += 1;
         let report = run(changed, &saved);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("GER.resources[coal].produced:"));
-        // More occurrences than declarations.
         let repeated = saved_resources(&[(
             "GER",
             "steel=3 coal=2 steel=5 steel=1",
@@ -2130,8 +2039,6 @@ mod tests {
         compare_fuel(&frame, &saved, &links, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         fuel_row(&mut frame).current_raw += 1;
-        // Any one ring slot's saved value moves its sum; the pending entry's
-        // values move nothing.
         fn fuel_text(saved: &mut economy::Pack) -> &mut economy::Fuel {
             saved
                 .countries
@@ -2161,10 +2068,6 @@ mod tests {
         assert!(compare_fuel(&frame, &saved, &links, &mut Report::default()).is_err());
     }
 
-    /// The retired CountryFuel values hold their tombstones' zero while the
-    /// save writes nonzero rates, lend-lease consumption, ring position and
-    /// requested amounts: none is compared, so none is a difference, and
-    /// changing any of them in the save changes nothing.
     #[test]
     fn retired_fuel_values_are_not_compared() {
         let body = fuel_status(
@@ -2233,7 +2136,6 @@ mod tests {
             }
         }
         assert!(run(&frame, &changed).differences.is_empty());
-        // A recorded value beside them still compares.
         fuel_row(&mut frame).current_raw += 1;
         let differences = run(&frame, &changed).differences;
         assert_eq!(differences.len(), 1, "{differences:?}");
@@ -2299,7 +2201,6 @@ mod tests {
         assert_eq!(report.differences, Vec::<String>::new());
         assert_eq!(report.compared_tables["CountryFuelConsumers"], 3);
 
-        // Every consumer field is compared.
         for field in 0..3 {
             let mut rows = consumers.clone();
             match field {
@@ -2313,7 +2214,6 @@ mod tests {
             compare_fuel_consumers(&frame, &saved, &links, &mut report).unwrap();
             assert_eq!(report.differences.len(), 1, "consumer field {field}");
         }
-        // A missing or extra consumer is a difference, not a skipped row.
         let mut rows = consumers.clone();
         rows[2].index = 3;
         *frame.tables[TableId::CountryFuelConsumers.index()] =
@@ -2444,8 +2344,6 @@ mod tests {
         assert!(compare_experience(&frame, &saved, &links, &mut Report::default()).is_err());
     }
 
-    /// A saved series whose 30-record daily window holds `current` at slot 12,
-    /// another day's values at slot 11 and nothing elsewhere.
     fn logistics_series(index: u32, current: &str) -> String {
         let mut data = Vec::new();
         for slot in 0..30 {
@@ -2546,22 +2444,17 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("no matching native write"))
         );
-        // One native unit of either series is a difference.
         let mut changed = matching.clone();
         changed[1].balance_raw = 0;
         changed[2].stock_raw -= 1;
         assert_eq!(run(changed).1.differences.len(), 2);
-        // The AI-controlled country the save writes no history for has no
-        // rows; rows for it, or none for a computed country, are differences.
         let mut extra = matching.clone();
         extra.push(row(12, 0, 0, 0));
         assert_eq!(run(extra).1.differences.len(), 1);
         assert_eq!(run(Vec::new()).1.differences.len(), 1);
-        // A recorded archetype count the saved records do not hold.
         let (ok, report) = run(matching[..2].to_vec());
         assert!(ok);
         assert_eq!(report.differences.len(), 2);
-        // Rows that are not every index from zero cannot be compared.
         assert!(!run(matching[1..].to_vec()).0);
     }
 }

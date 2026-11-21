@@ -51,13 +51,10 @@ fn witness(division: u64, country: u32, disposition: Disposition, cause: Option<
     DivisionEquipmentDeletionRow { division_handle: division, country, expeditionary_owner: 0, disposition, cause }
 }
 
-/// The campaign, hour by hour: country 1 links to slot 10, country 2 to slot 20. Divisions is not
-/// read at hour 4, and the writer does not run then. D1's death is logged at hour 2.
 fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     run_logging(store, writers, hour, 2);
 }
 
-/// [`run`], D1's death logged, dated, at hour `logged`.
 fn run_logging(store: &mut Store, writers: &mut Writers, hour: i32, logged: i32) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     for table in INPUTS {
@@ -103,7 +100,6 @@ fn run_logging(store: &mut Store, writers: &mut Writers, hour: i32, logged: i32)
             testing::put(store, TableId::Divisions, &division(D5, 2, 0, 400, 0), TEXTS).unwrap();
         }
     }
-    // Each hour's drain since the read before, as the collector writes it.
     let span = LandEventCoverageRow { id: 1, epoch: 1, from_hour: hour - 1, to_hour: hour, complete: true, lost_events: 0 };
     testing::put(store, TableId::LandEventCoverage, &span, TEXTS).unwrap();
     if hour == logged {
@@ -120,7 +116,6 @@ fn number(store: &Store, column: usize, key: u128) -> Option<i64> {
     view.number(column, view.slot(key)?)
 }
 
-/// One event as a test reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     kind: u8,
@@ -250,9 +245,6 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
     }
 }
 
-/// DestroyedDivisions is a log: a death logged the hour before its division's removal is kept from
-/// that hour, through a resume, and dates the removal: the removal's drain holds deaths stamped
-/// with the hour of the read before it.
 #[test]
 fn a_death_logged_the_hour_before_its_removal_dates_it_through_a_resume() {
     let lost = key(DivisionEventRow::LOST, 2, D1);

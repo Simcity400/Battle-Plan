@@ -1,6 +1,3 @@
-//! Every camera-mode choice is taken: chosen from the map a free mode waits for the ground it
-//! starts over, and chosen while another free mode runs it takes over the ground that one stands
-//! on, so no choice leaves the eye the mode before it drew.
 
 use super::{Config, Options, Viewer, drop};
 use crate::controls::{Frame, flight::Flight, walker::World};
@@ -40,7 +37,6 @@ fn map_camera() -> Camera {
     }
 }
 
-/// Chooses `mode` and starts it over world `at`, as a click on the map does.
 fn run(viewer: &mut Viewer, mode: CameraMode, ctx: &egui::Context) {
     viewer.set_camera_mode(mode, false, ctx);
     viewer.start_pick = drop::Pick::At(AT);

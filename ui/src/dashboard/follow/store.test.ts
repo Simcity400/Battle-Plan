@@ -35,7 +35,6 @@ test('queued row structures publish only at their hour and a reset removes aband
     'a delayed page frame publishes only the newest eligible structure per subscription');
 });
 
-/** A text cell over plain objects, as an element's text node and title. */
 function cell() {
   const node = { data: '' }, host = { title: '' };
   return { cell: new TextCell(node, host), node, host };
@@ -105,7 +104,6 @@ test('an off-screen widget is not painted and catches up when shown', () => {
 });
 
 test('one message lands in every entry it names, parsed once, and 500 painters take one frame', () => {
-  // Their time is measured in a browser's frames (`follow.dom.test.ts`).
   const transport = fakeTransport();
   const frames = manualFrames();
   const store = new FollowStore(transport, frames.schedule);
@@ -204,7 +202,6 @@ test('the fast amount writes every value as formatAmount does', () => {
   }
 });
 
-/** A message the service wrote (`crates/dashboard-follow/src/tests.rs`, `golden`): the same bytes. */
 const GOLDEN = '464f4c3201000000d204000003000000000000000000000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000';
 
 test('the bytes the service writes read back as it wrote them', () => {

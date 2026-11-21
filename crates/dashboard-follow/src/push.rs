@@ -1,7 +1,3 @@
-//! Pushed messages from the stepper to a pipe: frames of `length u32, kind u8, more u8, two zero
-//! bytes, sequence u32` and the payload, little-endian: followed answers ([`FOLLOW`]) and panels
-//! ([`PANEL`]) share the pipe. A message of any size goes as frames of at most [`PART`] bytes, each
-//! but its last marked `more`. A writer drains the dated queue and reports pipe failures by name.
 
 use crate::{answer, invalid, panel};
 use std::{
@@ -11,17 +7,12 @@ use std::{
     time::Instant,
 };
 
-/// A frame of followed answers ([`crate::Message`]'s bytes).
 pub const FOLLOW: u8 = 1;
-/// A frame of panels ([`panel::dated::message`]).
 pub const PANEL: u8 = 2;
-/// The most payload one frame carries: a longer message goes in parts.
 pub const PART: usize = 1 << 22;
 const HEAD: usize = 12;
-/// `FEN1`: the first bytes of [`failure`]'s payload.
 pub const FAILURE: u32 = u32::from_le_bytes(*b"FEN1");
 
-/// `payload` as one message of frames.
 pub fn write_frame(out: &mut impl Write, kind: u8, sequence: u32, payload: &[u8]) -> io::Result<()> {
     if payload.is_empty() {
         write_part(out, kind, false, sequence, payload)?;
@@ -43,8 +34,6 @@ fn write_part(out: &mut impl Write, kind: u8, more: bool, sequence: u32, part: &
     out.write_all(part)
 }
 
-/// The next message, its parts joined: kind, sequence and payload (into `payload`); none at the
-/// pipe's end.
 pub fn read_frame(input: &mut impl Read, payload: &mut Vec<u8>) -> io::Result<Option<(u8, u32)>> {
     payload.clear();
     let mut named = None;
@@ -73,23 +62,18 @@ pub fn read_frame(input: &mut impl Read, payload: &mut Vec<u8>) -> io::Result<Op
     }
 }
 
-/// What the pipe's reader hands the widgets when pushed answers stop: [`FAILURE`] and `reason`.
 pub fn failure(reason: &str) -> Vec<u8> {
     [&FAILURE.to_le_bytes()[..], reason.as_bytes()].concat()
 }
 
-/// Counted since the queue was made.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PushCounters {
     pub offered: u64,
     pub written: u64,
-    /// Answers dropped because a newer one of the same id was queued behind them.
     pub superseded: u64,
     pub merges: u64,
     pub pressure_merges: u64,
-    /// Merges that failed: both messages are sent as they are.
     pub unmerged: u64,
-    /// Messages not written because the pipe failed ([`Push::failed`]).
     pub unwritten: u64,
     pub most_queued: u64,
     pub bytes: u64,
@@ -136,7 +120,6 @@ struct Queued {
     bytes: Vec<u8>,
     sequence: u32,
     offered: Instant,
-    /// It did not merge into a later one: it is sent as it is.
     kept: bool,
 }
 
@@ -220,12 +203,10 @@ impl Push {
         Self { state: Mutex::new(State::new(budget)), ready: Condvar::new() }
     }
 
-    /// Queues a message of followed answers; never waits.
     pub fn offer(&self, bytes: Vec<u8>) {
         self.offer_kind(FOLLOW, bytes);
     }
 
-    /// Queues a message of `kind`; never waits.
     pub fn offer_kind(&self, kind: u8, bytes: Vec<u8>) {
         let mut state = lock(&self.state);
         if state.stopped {
@@ -267,12 +248,10 @@ impl Push {
         self.ready.notify_one();
     }
 
-    /// The oldest message, its sequence and when it was offered; waits for one, none once stopped.
     pub fn take(&self) -> Option<(Vec<u8>, u32, Instant)> {
         self.take_kind().map(|(_, bytes, sequence, offered)| (bytes, sequence, offered))
     }
 
-    /// [`Self::take`] with the message's kind.
     pub fn take_kind(&self) -> Option<(u8, Vec<u8>, u32, Instant)> {
         let mut state = lock(&self.state);
         loop {
@@ -307,13 +286,10 @@ impl Push {
         lock(&self.state).counters
     }
 
-    /// Why the pipe failed, once a write to it has.
     pub fn failed(&self) -> Option<String> {
         lock(&self.state).failed.clone()
     }
 
-    /// Writes every message to `out` as frames until stopped or the pipe fails; a failure stops
-    /// the queue and is kept by name ([`Self::failed`]).
     pub fn drain(&self, out: &mut impl Write) -> io::Result<()> {
         while let Some((kind, bytes, sequence, _)) = self.take_kind() {
             if let Err(error) = write_frame(out, kind, sequence, &bytes) {

@@ -1,4 +1,3 @@
-/** The map settings' export in a real browser, against a desktop shell that answers each export as it is told. */
 import '../styles.css';
 
 const asked: { view: string | null; menuOpen: boolean }[] = [];
@@ -24,8 +23,6 @@ createRoot(document.body.appendChild(document.createElement('div'))).render(crea
 
 export const fixture = {
   async ready() { await settle(); return !!document.querySelector('.map-controls-trigger'); },
-  /** Opens the menu, exports with the shell answering `error` (none: saved), and says what the shell saw and what
-   * the menu shows once the export ended. */
   async exportWith(error: string | null) {
     answer = error ? { error } : {};
     document.querySelector<HTMLButtonElement>('.map-controls-trigger')!.click();

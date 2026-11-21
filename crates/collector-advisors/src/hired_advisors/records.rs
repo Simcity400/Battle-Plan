@@ -1,39 +1,20 @@
-//! CountryCharacters and CountryRetiredCharacters held between hours
-//! ([`crate::advisor_pool_changes`]).
-//!
-//! A row records one of a country's active or retired character records: its position and its
-//! character's id. Every writer of either array is a hooked site of the advisor pool Family
-//! ([`engine_mutations::advisor_pool_mutations`]: character registration, character retirement, civil-war
-//! character transfer and retired-record copying, the generate-advisor command around its two
-//! registrations, and the pool's constructor and destructor); a character's id, and the name token
-//! the arrays sort by, are written after publication only by `repair_containers`, which the roster
-//! domain observes ([`crate::roster_changes`]). So while the quiet tokens and array headers
-//! HiredAdvisors rests on ([`super::appointed`]) are those taken before the latest complete walk,
-//! every row equals that walk's, and such a quiet hour publishes it without reading any country.
-//! Any hour that is not quiet walks every country, and an hour holds its walk when the tokens and
-//! headers stood still across it.
 use super::appointed::{Domains, Key, key, publish};
 use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
 use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
 
-/// Whether the character records carry a quiet hour.
 pub const CARRY: bool = cfg!(feature = "character_record_changes");
 
-/// The latest complete walk held for quiet hours, with its key.
 #[derive(Default)]
 pub struct Records {
     key: Option<Key>,
     active: Vec<native::ActiveRow>,
     retired: Vec<native::ActiveRow>,
-    /// Names the held walk ([`collector_projection::projection::generation`]).
     generation: u64,
-    /// The held walk's generation when the latest capture published exactly it.
     published: Option<u64>,
 }
 
 impl Records {
-    /// Nothing held certifies anything.
     pub fn forget(&mut self) {
         self.key = None;
         self.active.clear();
@@ -41,7 +22,6 @@ impl Records {
         self.published = None;
     }
 
-    /// The generation of the held walk the latest capture published, if it published one.
     pub fn published(&self) -> Option<u64> {
         self.published
     }
@@ -50,8 +30,6 @@ impl Records {
         (self.active.capacity() + self.retired.capacity()) * size_of::<native::ActiveRow>()
     }
 
-    /// Holds both tables' rows under `key`; storage is advisory, so a walk
-    /// that cannot be held is read again next hour.
     fn hold(&mut self, key: Key, active: &[native::ActiveRow], retired: &[native::ActiveRow]) {
         self.forget();
         let stored = allocation::advisory(|| {
@@ -68,9 +46,6 @@ impl Records {
     }
 }
 
-/// One hour's active and retired records into the capture's buffers: a
-/// quiet hour publishes the held walk; any other hour walks every country.
-/// Records the hour's counts.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -102,7 +77,6 @@ pub fn capture(
         ] => active.get(..active_len).zip(retired.get(..retired_len)),
         _ => None,
     };
-    // Held only when the tokens and headers stood still across the walk.
     match (complete, before) {
         (Some((walked, retired)), Some(before))
             if key(memory, base, game_state, domains) == Some(before) =>
@@ -120,7 +94,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-    /// The domains of one test: a pool token it moves.
     #[derive(Default)]
     struct Fake {
         pools: AtomicU64,
@@ -137,9 +110,6 @@ mod tests {
         }
     }
 
-    /// A game state whose country table holds one null slot and whose link
-    /// table holds its sentinel: the census reads, and a walk finds no
-    /// record.
     fn empty_world() -> Vec<u8> {
         let mut bytes = vec![0_u8; 0x2000];
         let mut header = |at: usize, data: usize, count: u32| {
@@ -160,8 +130,6 @@ mod tests {
         }
     }
 
-    /// A quiet hour publishes the held walk without walking; a moved token
-    /// walks and holds the fresh walk.
     #[test]
     fn a_quiet_hour_publishes_the_held_records_and_a_moved_token_walks() {
         let world = empty_world();
@@ -189,18 +157,14 @@ mod tests {
                 Outcome::Rows { len: retired },
             ]
         };
-        // The first hour walks and holds the (empty) walk.
         assert_eq!(hour(&mut held), rows(0, 0));
         assert!(held.key.is_some());
         let first = held.published().unwrap();
-        // Held records stand in for the walk's: a quiet hour publishes them,
-        // so this hour did not walk.
         held.active.push(record(7, 70));
         held.retired.push(record(7, 71));
         assert_eq!(hour(&mut held), rows(1, 1));
         assert_eq!(hour(&mut held), rows(1, 1));
         assert_eq!(held.published(), Some(first));
-        // A writer moved the pool token: the hour walks and holds its walk.
         domains.pools.fetch_add(1, Relaxed);
         assert_eq!(hour(&mut held), rows(0, 0));
         assert!(held.active.is_empty() && held.retired.is_empty() && held.key.is_some());

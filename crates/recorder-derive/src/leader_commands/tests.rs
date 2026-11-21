@@ -28,10 +28,6 @@ fn fleet(id: u64, leader: Option<u64>) -> FleetRow {
     FleetRow { id, leader: Recorded::Value(leader), name: Recorded::Value(Some(format!("fleet {id}").into_bytes())), ..Default::default() }
 }
 
-/// The campaign: G1 (an army group) led by L1, G2 by L2 and fleet F1 by L3 from the run's first
-/// hour; at hour 1 G1 passes to L2 and G2 is deleted; at hour 2 F1 loses its leader and G3 comes
-/// led by L1, and G1 stops being an army group; OrdersGroups is not read at hour 3; at hour 5 L2
-/// leaves G1 and comes back at hour 6.
 fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     let groups = if hour == 3 { Status::Unavailable { reason: NOT_READ } } else { Status::Complete };
@@ -62,8 +58,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// An ended span as a test reads it: leader, source, formation, kind, first, last, and whether its
-/// name is the formation's own.
 type Span = (u64, u8, u64, u8, i32, i32, bool);
 
 fn named(name: Option<&[u8]>, source: u8, formation: u64) -> bool {
@@ -85,7 +79,6 @@ fn ended(store: &Store) -> Vec<Span> {
         .collect()
 }
 
-/// An open span: source, formation, leader, first, kind, and whether its name is the formation's.
 fn open(store: &Store) -> Vec<(u8, u64, u64, i32, u8, bool)> {
     let view = store.view(TableId::LeaderCommandSpans.index());
     testing::rows(store, TableId::LeaderCommandSpans)
@@ -99,9 +92,6 @@ fn open(store: &Store) -> Vec<(u8, u64, u64, i32, u8, bool)> {
         .collect()
 }
 
-/// A span starts when a formation's leader column names the leader and ends the hour before it
-/// names another or none or the formation goes, its kind and name those of its first hour; after
-/// hours the writer did not run every open span ends at its last hour run and starts again.
 #[test]
 fn a_command_spans_its_leader_column_s_hours_and_ends_where_it_changes_or_is_not_read() {
     let (group_kind, army, army_group, navy) = (Command::ORDERS_GROUP, Command::ARMY, Command::ARMY_GROUP, Command::NAVY);

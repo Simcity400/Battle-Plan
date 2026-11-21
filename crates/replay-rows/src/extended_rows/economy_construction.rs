@@ -1,21 +1,12 @@
 use super::*;
 
-/// What a production tick's applied input was for: the producer the tick's
-/// credit returned to, and for military production whether the line was
-/// converting stockpiled equipment into its design.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum OutputPurpose {
-    /// The collector could not classify the tick, or the recording predates
-    /// the purpose. Never read as new production.
     #[default]
     Unknown = 0,
-    /// New equipment: military production that was not converting, naval
-    /// construction or a railway gun.
     New = 1,
-    /// Military production converting stockpiled equipment.
     Converted = 2,
-    /// Ship refit production.
     Refit = 3,
 }
 
@@ -35,17 +26,6 @@ impl OutputPurpose {
     }
 }
 
-/// Retained rocket totals per country/full design CID, independent of site removal.
-/// Signed fixed5 daily production inputs and signed whole-unit deliveries
-/// accumulate independently; ready counts are unrelated.
-///
-/// Variant-zero rows are world (country zero) or country coverage scopes, with
-/// zero amounts. World exactness proves owner coverage; local flags also cover
-/// unknown designs. Scope counters include designs and must never be summed with
-/// them. Country zero on a design means an unknown producer, never a native slot.
-/// Missing scope evidence stays unknown; a complete empty world proves no events.
-/// Design rows retain known subtotals even when their total is inexact. Spending
-/// and delivery failures, including overflow, never restore either exactness flag.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RocketProductionOutputRow {
@@ -92,18 +72,6 @@ typed_codec!(RocketProductionOutputRow, 96, |row| (row.country as u128) << 64 | 
 #[path = "rocket_output/tests.rs"]
 mod rocket_output_tests;
 
-/// ConstructionLineOutput: key line (64 bits), 23 payload mask bits.
-/// Branch totals from the observed daily advances, fixed5 since `since_hour`.
-/// `construction_raw` and `repair_raw` are factory output, excluding `bank_raw`.
-/// `instant_raw` is progress on the instant path; it has no factory
-/// attribution (`exact` is false). `carry_raw` sums ordinary railway carries
-/// for the progress self-check; carries are never additional spending.
-/// `ticks` counts observed spend-site advances, including zero-IC building
-/// advances; carry calls add no ticks. Linked primary output includes the
-/// partner's factories, whose split is unknown. Its partner row is also linked,
-/// with `exact` false: its amount is an unknown share, never an exact zero.
-/// An ended line is published until a written frame held its final totals.
-/// Lost observation withholds the table until a new branch.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionLineOutputRow {
@@ -115,20 +83,14 @@ pub struct ConstructionLineOutputRow {
     pub instant_raw: i64,
     pub carry_raw: i64,
     pub ticks: i32,
-    /// Repair advances, including zero-IC natural repair.
     pub repair_ticks: i32,
     pub since_hour: i32,
     pub observed_since_creation: bool,
     pub linked: bool,
     pub ended: bool,
     pub exact: bool,
-    /// None means no observed native completion decision since `since_hour`;
-    /// NotRecorded is an older prefix. Independent of IC attribution/exactness.
     pub completion: Recorded<Option<ConstructionCompletion>>,
-    /// Sum of the signed counts cleared on completion, independent of
-    /// completed levels. Older publications retain their readable prefix.
     pub count_reset: Recorded<i64>,
-    /// None when only a linked partner's unknown share was observed.
     pub country: Recorded<Option<u32>>,
     pub building_type: Recorded<Option<u32>>,
     pub target_flags: Recorded<Option<u32>>,
@@ -152,10 +114,6 @@ typed_codec!(ConstructionLineOutputRow, 64, |row| row.line as u128, |key| Self {
     Ok(())
 });
 
-/// A completion decision, observed before the line is deleted by daily
-/// production or linked-partner removal during production advancement.
-/// Railway completion checks also admit the cancel byte; that path is
-/// removal rather than completion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionCompletion {
@@ -168,57 +126,6 @@ value_struct!(ConstructionCompletion {
 });
 opaque_value!(Option<ConstructionCompletion>);
 
-/// VariantDefinitions: key id (64 bits), 14 payload mask bits. The equipment
-/// type's name is content: `equipment_token` spelled by `LexicalTokens`.
-///
-/// `icon_active`, `icon_kind` and `icon` are the variant's raw icon entry: when active, kind 0
-/// names a GFX sprite and kind 1 a texture path, and the kind-1 path `"."` asks the equipment
-/// graphic pool instead.
-///
-/// The production row picks the icon from the variant and content in this
-/// order; every sprite is looked up by name through
-/// the content stack's interface files, and every country comes from the
-/// variant, never from the viewer:
-///
-/// 1. An active entry that is not the path `"."`: a kind-0 sprite that exists,
-///    or a kind-1 path whose file exists. Otherwise continue at step 3.
-/// 2. An active `"."` (auto-designed variants): the graphic pool lookup below
-///    for the creator country (`creator_link`), with its ruling party's
-///    ideology group (the PoliticalParties row with `is_ruling`) and its
-///    `graphical_culture` (CountryAppearance). Without a result, continue at
-///    step 3.
-/// 3. Let L be `origin_link` when positive, else the creator's original tag
-///    when the creator is a dynamic country (CountryAppearance `name_tag`),
-///    else the creator; `tag` is L's tag and S is `_medium`. A capital ship is
-///    `classifier_flags` bit 6.
-/// 4. For the equipment type T and then its archetype A:
-///    `GFX_<tag>_<name><suffix>`, then `GFX_<name><suffix>`, with the suffix
-///    `_capital` + S first for a capital ship, then S.
-/// 5. When exactly one technology enables T (then A), for its id and its
-///    alternate name n: `GFX_<tag>_<n>_medium` (the original tag when L is
-///    dynamic), `GFX_<2D culture of L>_<n>_medium` (CountryAppearance
-///    `graphical_culture_2d`), `GFX_<n>_medium`, capital-suffixed first for a
-///    capital ship.
-/// 6. T's `family`, when it differs from T: steps 4 to 8 for it.
-/// 7. The graphic pool lookup for country L without ideology or culture.
-/// 8. Otherwise the row shows no icon.
-///
-/// The graphic pool lookup reads `gfx/interface/equipmentdesigner/graphic_db`
-/// in content order. It collects, for the country, its tag's root, then
-/// `FACTION_<member>` for each member of its faction in order (FactionMembers),
-/// then its capital's continent (Politics `original_capital` when nonzero, else
-/// `capital`), then `default` (only `default` without a country); in each root,
-/// the pools under T and then under its archetype, last declared first; and the
-/// whole collection again for T's family when it differs. A pool counts when
-/// its `limit` holds (vanilla limits test DLCs), it has no `sub_units` filter,
-/// and its ideology and culture filters, when present, contain the key's. Pools
-/// are stably sorted by `icons_weight` (or `weight` when that is zero), highest
-/// first, and each pool's `icons` are tried last to first; the first existing
-/// sprite or path wins.
-///
-/// The tag-string table's relation to the real tag, the capital-region key
-/// (read as the continent), and the empty-result object's inactive state
-/// remain unestablished.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct VariantDefinitionRow {
@@ -232,23 +139,17 @@ pub struct VariantDefinitionRow {
     pub mission_mask: u32,
     pub display_name: Vec<u8>,
     pub variant_name: Vec<u8>,
-    /// The designer's saved model choice; empty when unset.
     pub explicit_entity: Vec<u8>,
-    /// The definition's archetype lexer token.
     pub archetype_token: u32,
     pub icon_active: u8,
     pub icon_kind: u32,
     pub icon: Vec<u8>,
-    /// Stored variant version byte. Older formats use NotRecorded; zero is
-    /// a recorded version.
     pub version: Recorded<u8>,
-    /// Stored ancestry, attribution, role and bonus state.
     pub design: Recorded<VariantDesignState>,
 }
 typed_codec!(VariantDefinitionRow, 64, |row| row.id as u128, |key| Self { id: key as u64, ..Default::default() },
  { 0 => (equipment_token): U32, 1 => (creator_link): U32, 2 => (origin_link): U32, 3 => (append_variant_name): U8, 4 => (obsolete): U8, 5 => (classifier_flags): U64, 6 => (mission_mask): U32, 7 => (display_name): Bytes, 8 => (variant_name): Bytes, 9 => (explicit_entity): Bytes, 10 => (archetype_token): U32, 11 => (icon_active): U8, 12 => (icon_kind): U32, 13 => (icon): Bytes, 14 => (version): U8, 15 => (design): Opaque }, |row| check_design_state(&row.design));
 
-/// One requirement of a differing clone: archetype lexer token and raw fixed5 amount.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LocalSubunitRequirement {
@@ -260,13 +161,9 @@ value_struct!(LocalSubunitRequirement {
     amount_raw: i64
 });
 
-/// One target of a unit bonus: the sub-unit's or category's lexer token, the
-/// signed fixed5 combat width, the nonzero dense stats in selector order and
-/// the battalion grants in stored order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitBonusTarget {
-    /// False for an exact sub-unit target, true for a sub-unit category target.
     pub category: bool,
     pub token: u32,
     pub combat_width_raw: i64,
@@ -281,9 +178,6 @@ value_struct!(UnitBonusTarget {
     grants: Vec<UnitBonusGrant>
 });
 
-/// One battalion grant: the recipient category's lexer token, the raw add and
-/// display-as-percentage bytes, and its sparse stats in stored order with
-/// zero amounts and repeated selectors.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitBonusGrant {
@@ -299,7 +193,6 @@ value_struct!(UnitBonusGrant {
     stats: Vec<UnitBonusStat>
 });
 
-/// A stat selector, in the executable's stat order, and its raw fixed5 value.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitBonusStat {
@@ -311,9 +204,6 @@ value_struct!(UnitBonusStat {
     value_raw: i64
 });
 
-/// One applied fuel receipt, as the collector observes each update: the
-/// per-update form it keeps for a country's last 24 updates and the
-/// recordings before [`FuelAwardDay`] stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FuelAwardRecipient {
     pub kind: u32,
@@ -321,8 +211,6 @@ pub struct FuelAwardRecipient {
     pub owner: u32,
     pub host: u64,
     pub amount_raw: i64,
-    /// Pure native unit getter's retained text at the write, in game language.
-    /// No air-wing name is guessed for a country/base container receipt.
     pub name: Option<Vec<u8>>,
     pub name_reason: Vec<u8>,
 }
@@ -331,18 +219,13 @@ value_struct!(FuelAwardRecipient { kind: u32, reference: u64, owner: u32, host: 
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FuelAwardHour {
-    /// The settled end sample; update k belongs to (k-1,k].
     pub hour: i32,
-    /// Fixed5: base, state-source, oil and negative-cost gain.
     pub gains_raw: [i64; 4],
     pub own_gain_raw: i64,
-    /// Q15: incoming LL, outgoing LL, positive-cost debit and total other.
     pub transfers_raw: [i64; 4],
     pub consumed_raw: i64,
     pub received_raw: [i64; 3],
     pub recipients: Vec<FuelAwardRecipient>,
-    /// Same-update source witness, before history clear. Its three sums are
-    /// saved in the ring at history_index when remaining_hours was one.
     pub history_index: i32,
     pub remaining_hours: i32,
     pub pending_raw: [i64; 3],
@@ -353,26 +236,16 @@ value_struct!(FuelAwardHour { hour: i32, gains_raw: [i64; 4], own_gain_raw: i64,
     recipients: Vec<FuelAwardRecipient>, history_index: i32, remaining_hours: i32,
     pending_raw: [i64; 3], current_raw: i64 });
 
-/// The 24 applied updates before a supplying read, update by update, as
-/// recordings before [`FuelAwardDay`] stored them (`CountryFuel.awards`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FuelAwardWindow {
     pub country_instance: u32,
-    /// First authenticated update after an observed reset or continuity gap.
-    /// Recorder evidence, not a native monotonic country identity.
     pub continuity_start_hour: Option<i32>,
     pub hours: Vec<FuelAwardHour>,
-    /// Empty only when all 24 native updates in this read's window are known.
-    /// A local refusal preserves the CountryFuel prefix and other countries.
     pub reason: Vec<u8>,
 }
 value_struct!(FuelAwardWindow { country_instance: u32, continuity_start_hour: Option<i32>, hours: Vec<FuelAwardHour>, reason: Vec<u8> });
 opaque_value!(FuelAwardWindow);
 
-/// One recipient's receipts over a [`FuelAwardDay`]: every receipt of the
-/// day with the same native identity, owner, host and retained name and
-/// name reason (each a separate recipient), what the Fuel widget's receipt
-/// list and its history show.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelAwardDayRecipient {
@@ -380,53 +253,29 @@ pub struct FuelAwardDayRecipient {
     pub reference: u64,
     pub owner: u32,
     pub host: u64,
-    /// Pure native unit getter's retained text at the write, in game language.
-    /// No air-wing name is guessed for a country/base container receipt.
     pub name: Option<Vec<u8>>,
     pub name_reason: Vec<u8>,
-    /// The first and last update hours that paid it.
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Fixed5 sum of its receipts.
     pub amount_raw: i64,
 }
 value_struct!(FuelAwardDayRecipient { kind: u32, reference: u64, owner: u32, host: u64,
     name: Option<Vec<u8>>, name_reason: Vec<u8>, first_hour: i32, last_hour: i32,
     amount_raw: i64 });
 
-/// The 24 applied fuel updates before a supplying read, summed as the Fuel
-/// widget shows them: its day's sources, transfers, consumption and receipts
-/// by consumer, the sum of each update's own gain converted to a quantity
-/// (`engine_fuel::fuel_awards::quantity`, which no day sum can reproduce) and its
-/// recipients. The collector sums the updates it observed; an update's
-/// amounts and recipients, and the hourly source witness only the fresh-save
-/// oracle compared, are not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelAwardDay {
     pub country_instance: u32,
-    /// First authenticated update after an observed reset or continuity gap.
-    /// Recorder evidence, not a native monotonic country identity.
     pub continuity_start_hour: Option<i32>,
-    /// The day's last update, the supplying read's own: the day is the
-    /// updates `last_hour - 23 ..= last_hour`.
     pub last_hour: i32,
-    /// Fixed5: base, state-source, oil and negative-cost gain.
     pub gains_raw: [i64; 4],
     pub own_gain_raw: i64,
-    /// Quantity (/32768) units, each update's own gain converted.
     pub own_gain_quantity_raw: i64,
-    /// Q15: incoming LL, outgoing LL, positive-cost debit and total other.
     pub transfers_raw: [i64; 4],
     pub consumed_raw: i64,
-    /// Fixed5, by consumer kind.
     pub received_raw: [i64; 3],
-    /// In order of kind, reference, owner, host, name and name reason.
     pub recipients: Vec<FuelAwardDayRecipient>,
-    /// Empty only when all 24 native updates before this read are known and
-    /// every sum fits its native i64; otherwise the sums and recipients are
-    /// empty. A local refusal preserves the CountryFuel prefix and other
-    /// countries.
     pub reason: Vec<u8>,
 }
 value_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Option<i32>,
@@ -435,28 +284,12 @@ value_struct!(FuelAwardDay { country_instance: u32, continuity_start_hour: Optio
     recipients: Vec<FuelAwardDayRecipient>, reason: Vec<u8> });
 opaque_value!(FuelAwardDay);
 
-/// CountryFuel: key country (32 bits), appended applied-award evidence.
-///
-/// One country's fuel-status scalars in their native representation: the quantities
-/// (current, maximum and lend-lease gain) are i64 /32768.
-///
-/// The `ring_` fields are exact sums of the raw values of the game's 24 fuel
-/// history ring slots: gain and received in fixed5, consumed and other in
-/// /32768 units, received per consumer index. The game
-/// normally writes one slot per hourly fuel update. A loaded non-default
-/// countdown or prefilled ring does not prove 24 actual awards. The appended
-/// `award_day` suffix sums 24 consecutive observed updates at this read and
-/// keeps each recipient's receipts and stored name ([`FuelAwardDay`]); the
-/// retired `awards` held the updates one by one. Unknown intervals preserve
-/// the prefix and carry a reason, never zero. `CountryFuelConsumers` comes
-/// from the same read of each fuel status.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryFuelRow {
     pub country: u32,
     pub current_raw: i64,
     pub maximum_raw: i64,
-    /// Retired fields 2-4, 6-9 and 13-15: only the save comparison read them.
     pub gain_raw: RetiredI64,
     pub cost_raw: RetiredI64,
     pub gain_from_states_raw: RetiredI64,
@@ -475,12 +308,8 @@ pub struct CountryFuelRow {
     pub ring_received_1_raw: i64,
     pub ring_received_2_raw: i64,
     pub country_instance: Recorded<Option<u32>>,
-    /// Retired update-by-update window ([`FuelAwardWindow`]); `award_day`
-    /// holds what the Fuel widget shows of it.
     pub awards: Recorded<Retired>,
-    /// Current required-use rate operands, with their own supplying hour.
     pub demand: Recorded<FuelDemandRead>,
-    /// The day's applied updates before this read, summed.
     pub award_day: Recorded<FuelAwardDay>,
 }
 typed_codec!(CountryFuelRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
@@ -557,18 +386,12 @@ fn check_design_state(value: &Recorded<VariantDesignState>) -> io::Result<()> {
 }
 opaque_value!(VariantBonusSource);
 
-/// Effective country operands requested by published equipment designs.
-/// The key joins ModifierDefinitions; an absent native accumulator key is a
-/// known zero. Failed owner/key reads retain a named scope and no value.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DesignCountryModifierRow {
-    /// Raw creator-country reference, matching VariantDefinitions.creator_link.
-    /// Several raw scopes may resolve to one native notification owner.
     pub country: u32,
     pub modifier: u32,
     pub value: Option<i64>,
-    /// Zero: complete; one: country unavailable; two: modifier unavailable.
     pub failure: u8,
 }
 typed_codec!(DesignCountryModifierRow, 64,
@@ -582,8 +405,6 @@ typed_codec!(DesignCountryModifierRow, 64,
 });
 
 opaque_value!(Vec<Vec<u32>>);
-/// One demanded raw country scope. Independent columns keep consumption of a
-/// use from rewriting unchanged factors and equipment rosters.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DesignCountryTemplatesRow {
@@ -591,7 +412,6 @@ pub struct DesignCountryTemplatesRow {
     pub uses: Vec<i32>,
     pub factors: Vec<i64>,
     pub equipment: Vec<Vec<u32>>,
-    /// Zero: complete, including empty; one: owner unavailable; two: roster unreadable.
     pub failure: u8,
 }
 impl DesignCountryTemplatesRow {
@@ -614,8 +434,6 @@ typed_codec!(DesignCountryTemplatesRow, 32, |row| row.country as u128,
     Ok(())
 });
 
-/// Stable value identity. A capture refuses a collision after comparing the
-/// complete payload, so equal keys never stand in for unequal source values.
 pub fn variant_bonus_snapshot_id(source: &VariantBonusSource) -> u64 {
     struct Digest(u64);
     impl Digest {
@@ -668,8 +486,6 @@ pub fn variant_bonus_snapshot_id(source: &VariantBonusSource) -> u64 {
     digest.0.max(1)
 }
 
-/// A design state at a native mutation boundary. The copied definition is a
-/// typed nested value so history survives deletion and repeated edits in an hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct VariantSnapshotDefinition {
@@ -784,7 +600,6 @@ pub struct VariantSourceReferences {
 value_struct!(VariantSourceReferences { direct: Vec<u64>, named: Vec<u64> });
 opaque_value!(Option<VariantSourceReferences>);
 
-/// Independently current registry liveness for demanded raw design authors.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DesignOrganisationLivenessRow {
@@ -805,7 +620,6 @@ value_struct!(VariantOrganisationChange {
 });
 opaque_value!(Option<VariantOrganisationChange>);
 
-/// A saved design edit that leaves its dependency population unchanged.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct VariantIconChange {
@@ -891,10 +705,6 @@ impl VariantScalarChange {
     }
 }
 
-/// Ordered native changes since the preceding hourly boundary. Sequence zero
-/// is reserved for a named observation failure; no missing interval proves that
-/// a design stayed unchanged. Removal is an identity tombstone; preceding rows
-/// retain the last readable design state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct VariantChangeRow {
@@ -1133,7 +943,7 @@ mod design_contract_tests {
         assert!(row.check_key_fields().is_err());
         let state = row.design.require_mut("design").unwrap();
         state.design_team_serialized = false;
-        state.design_team = u64::MAX; // An unresolved raw reference is retained.
+        state.design_team = u64::MAX;
         state.named_bonuses.push(9);
         assert!(row.check_key_fields().is_err());
         let state = row.design.require_mut("design").unwrap();

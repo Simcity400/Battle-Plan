@@ -1,26 +1,11 @@
-//! A reserve's reinforcement speed share, composed from the operands
-//! [`super::capture_context_buffer`] reads.
-//!
-//! The share multiplies the stat block's base speed by the movement-speed modifier at the location
-//! and next province, with terrain and combat ignored and no unit argument. It divides the product
-//! by `NMilitary.SLOWEST_SPEED` and clamps the excess over one to [0, 2]; reinforcement chance
-//! multiplies that share by `SPEED_REINFORCEMENT_BONUS`. The calculation ignores terrain and combat
-//! movement penalties: it is not the route's effective speed and takes no organisation or fuel
-//! term. Native fixed5 products wrap at 64 bits before their signed division. A refusal names the
-//! operand or form the port cannot follow; it never stands in a value.
 
 use super::{AcclimatizationTerm, ContextRow, ModifierTerm, SupplyTerm, TransportTerm};
 use crate::{Memory, combat_sources::Sources, walk::Buffer};
 use engine_sites::Rva;
 
 const ONE: i64 = 100_000;
-/// The positive sentinel the native fixed5 division returns for a zero
-/// denominator or an exceptional numerator.
 const EXCEPTIONAL: i64 = 0xffff_ffff;
-/// `NDefines::NMilitary::SLOWEST_SPEED`, read live: a define reload or a mod's
-/// value is the reinforcement speed denominator.
 pub const SLOWEST_SPEED_RVA: Rva = Rva(0x033e_1ac8);
-/// The reinforcement share's native bounds, zero and two in fixed5.
 pub const SHARE_MAXIMUM: i64 = 2 * ONE;
 
 type Speed = Result<i64, &'static str>;
@@ -31,16 +16,10 @@ fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-/// The numerators the native division refuses to scale: those within two of
-/// either signed extreme.
 fn exceptional(value: i64) -> bool {
     (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
 }
 
-/// `numerator / denominator` in fixed5: a zero denominator gives `zero` (the
-/// callers pass [`EXCEPTIONAL`] where the game does), an exceptional numerator
-/// gives [`EXCEPTIONAL`], and the one quotient the native division traps on
-/// is refused.
 fn ratio(numerator: i64, denominator: i64, zero: i64) -> Speed {
     if denominator == 0 {
         return Ok(zero);
@@ -54,8 +33,6 @@ fn ratio(numerator: i64, denominator: i64, zero: i64) -> Speed {
         .ok_or(TRAP)
 }
 
-/// One reserve's captured operands: the context row and the prefixes of its
-/// term buffers.
 #[derive(Clone, Copy)]
 pub struct Terms<'a> {
     pub context: &'a ContextRow,
@@ -83,8 +60,6 @@ impl Terms<'_> {
         }
     }
 
-    /// Effective modifier lookup: an absent or feature-ineligible key is zero;
-    /// metadata bit 4 clamps to [0, 1].
     fn effective(&self, term: &ModifierTerm, raw: i64) -> i64 {
         let ids = &self.context.ids;
         if term.present == 0
@@ -103,8 +78,6 @@ impl Terms<'_> {
         Ok(self.effective(term, term.raw))
     }
 
-    /// An entirely absent scope is a null native leader or weather operand;
-    /// a partially present scope cannot turn an omitted key into zero.
     fn optional(&self, scope: u8, key: u32) -> Speed {
         if self.scope(scope).next().is_none() {
             Ok(0)
@@ -113,7 +86,6 @@ impl Terms<'_> {
         }
     }
 
-    /// The scope holds exactly `keys`, or nothing when `optional`.
     fn exact_keys(&self, scope: u8, keys: &[u32], optional: bool) -> Result<(), &'static str> {
         let count = self.scope(scope).count();
         if (optional && count == 0)
@@ -126,7 +98,6 @@ impl Terms<'_> {
     }
 }
 
-/// A recorded flag or id outside the values the native code distinguishes.
 fn check(value: impl Into<i64>, most: i64, reason: &'static str) -> Result<(), &'static str> {
     if value.into() > most {
         return Err(reason);
@@ -134,9 +105,6 @@ fn check(value: impl Into<i64>, most: i64, reason: &'static str) -> Result<(), &
     Ok(())
 }
 
-/// The movement-speed modifier (fixed5) at the location and next province,
-/// ignoring terrain and combat with no unit argument, before the reinforcement
-/// share multiplies base speed by it.
 pub fn movement_factor(terms: &Terms<'_>) -> Speed {
     let context = terms.context;
     if context.ids[0] == 0 {
@@ -184,7 +152,6 @@ pub fn movement_factor(terms: &Terms<'_>) -> Speed {
         return Err("a land reinforcement records a naval-transfer modifier scope");
     }
     let attacking = context.flags[5] != 0;
-    // Country and contextual leader movement, then the attack bonus.
     let mut value = ONE
         .wrapping_add(terms.value(0, 0x2b)?)
         .wrapping_add(terms.optional(1, 0x2b)?);
@@ -206,8 +173,6 @@ pub fn movement_factor(terms: &Terms<'_>) -> Speed {
         }
     }
     value = value.wrapping_add(weather(terms)?);
-    // The priority subunit's own speed key, then each category in native
-    // order; a repeated category key stays a repeated contribution.
     for term in terms.scope(5).chain(terms.scope(6)) {
         value = value.wrapping_add(terms.effective(term, term.raw));
     }
@@ -224,9 +189,6 @@ pub fn movement_factor(terms: &Terms<'_>) -> Speed {
     Ok(value)
 }
 
-/// The province and region weather terms, each scaled by the acclimatization
-/// adjustment: the first strictly greater positive weight wins, and only when
-/// it is the active definition.
 fn weather(terms: &Terms<'_>) -> Speed {
     let context = terms.context;
     let mut factor = ONE;
@@ -258,8 +220,6 @@ fn weather(terms: &Terms<'_>) -> Speed {
     Ok(value)
 }
 
-/// The regional air superiority penalty, which the division's anti-air can
-/// cancel but not reverse.
 fn air(terms: &Terms<'_>) -> Speed {
     let context = terms.context;
     let s = &context.scalar_values;
@@ -277,9 +237,6 @@ fn air(terms: &Terms<'_>) -> Speed {
     Ok(penalty.wrapping_add(reduction).min(0))
 }
 
-/// The out-of-supply penalty: severity is the unsupplied share times the days
-/// out of supply over the penalty days, scaled by the country's and leader's
-/// supply speed keys and the template's special share.
 fn supply(terms: &Terms<'_>) -> Speed {
     let context = terms.context;
     if context.flags[2] != 0 {
@@ -293,7 +250,6 @@ fn supply(terms: &Terms<'_>) -> Speed {
         return Err("an out-of-supply reserve records no ordinary supply mode");
     }
     let s = &context.scalar_values;
-    // These native source fields are i32; their sign extension stays.
     if s[5..8].iter().any(|value| i32::try_from(*value).is_err()) {
         return Err("a supply day or define operand is outside its native i32 field");
     }
@@ -349,7 +305,6 @@ fn supply(terms: &Terms<'_>) -> Speed {
     Ok(value)
 }
 
-/// The missing healthy infrastructure levels' penalty, floored at -0.95.
 fn infrastructure(terms: &Terms<'_>) -> Speed {
     let context = terms.context;
     if context.flags[9] == 0 {
@@ -387,8 +342,6 @@ fn infrastructure(terms: &Terms<'_>) -> Speed {
         .max(-95_000))
 }
 
-/// The naval-transfer branch: weather key 0x29, then the static transport
-/// source scaled by the enemy regional density and the intel difference.
 fn transport(terms: &Terms<'_>) -> Speed {
     let context = terms.context;
     terms.exact_keys(7, &[0x29], true)?;
@@ -406,7 +359,6 @@ fn transport(terms: &Terms<'_>) -> Speed {
     if source.is_none()
         && (!terms.transport.is_empty() || context.scalar_values[25..=29].iter().any(|&v| v != 0))
     {
-        // These operands are captured only after a static definition exists.
         return Err("naval-transfer operands are recorded without their static scopes");
     }
     if context.ids[5] & (1 << 4) == 0 {
@@ -432,7 +384,6 @@ fn transport(terms: &Terms<'_>) -> Speed {
         ));
     }
     let average = ratio(weighted, total, 0)?;
-    // Native ordered clamps keep even a negative definition maximum.
     let density = if total < 0 {
         0
     } else if total > s[25] {
@@ -455,19 +406,12 @@ fn transport(terms: &Terms<'_>) -> Speed {
         }
     }
     if amount > 0 && category_mask != 0 && source.present != 0 {
-        // The naval-transfer source composes the raw static entry before the
-        // regional-factor calculation asks the ordinary metadata-gated getter;
-        // clamping first would differ.
         Ok(value.wrapping_add(terms.effective(source, mul(amount, source.raw))))
     } else {
         Ok(value)
     }
 }
 
-/// The reinforcement share's final scaling: `mul(base_speed, factor)` over
-/// `SLOWEST_SPEED`, less one, clamped to [0, 2]. A zero define or an
-/// exceptional speed stores the sentinel 0xFFFE795F and then the upper bound,
-/// 200000.
 pub fn speed_share(base_speed: i64, factor: i64, slowest: i64) -> Speed {
     let speed = mul(base_speed, factor);
     if slowest == 0 || exceptional(speed) {
@@ -481,7 +425,6 @@ pub fn speed_share(base_speed: i64, factor: i64, slowest: i64) -> Speed {
     Ok(share.clamp(0, SHARE_MAXIMUM))
 }
 
-/// Worker-owned term storage for [`capture_share`], reused by the walk.
 #[derive(Default)]
 pub struct Scratch {
     modifiers: Vec<ModifierTerm>,
@@ -499,11 +442,6 @@ impl Scratch {
     }
 }
 
-/// One reserve's reinforcement share from its live operands: the movement-speed modifier operands,
-/// the base speed `carmy_combat_inputs` read from the same stat block this pass, and the live
-/// `SLOWEST_SPEED`. The buffers grow, so call it only where the caller may allocate (the
-/// acquisition worker). Shared sources and their failures come through `sources` as for every other
-/// division reader.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_share(
     memory: &impl Memory,
@@ -609,7 +547,6 @@ impl Observation {
     }
 }
 
-/// Flat owned operands of the reserves reached by one acquisition pass.
 #[derive(Default)]
 pub struct Observations {
     scratch: Scratch,
@@ -663,7 +600,6 @@ impl Observations {
         Ok(index)
     }
 
-    /// No Memory capability; every term belongs to this observation's prefix.
     pub fn compute(&self, index: usize) -> Speed {
         self.rows
             .get(index)

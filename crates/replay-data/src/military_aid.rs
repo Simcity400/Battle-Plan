@@ -1,7 +1,5 @@
-//! Native military-aid list attribution shared by map and dashboard readers.
 use crate::rows::{DivisionRow, SentVolunteerRow};
 
-/// Source owner used by the native division census; host remains roster owner.
 pub fn owner(division: &DivisionRow) -> u32 {
     if division.expeditionary_owner as i32 > 0 {
         division.expeditionary_owner
@@ -10,21 +8,16 @@ pub fn owner(division: &DivisionRow) -> u32 {
     }
 }
 
-/// Volunteer attribution follows the live division's logical owner, not
-/// roster, expeditionary source or current province ownership.
 pub fn volunteer_host(division: &DivisionRow) -> u32 {
     division.logical_owner
 }
 
-/// Only one alias may hold the sender's list. A complete empty table proves
-/// an empty list, while missing positions refuse the list rather than its tail.
 pub fn volunteer_list<'a>(
     lists: impl IntoIterator<Item = &'a [SentVolunteerRow]>,
 ) -> Result<&'a [SentVolunteerRow], String> {
     volunteer_list_by(lists, |row| row.ordinal)
 }
 
-/// [`volunteer_list`] over any entries, each with its `ordinal`.
 pub fn volunteer_list_by<'a, T>(
     lists: impl IntoIterator<Item = &'a [T]>,
     ordinal: impl Fn(&T) -> u32,
@@ -44,7 +37,6 @@ pub fn volunteer_list_by<'a, T>(
     Ok(list)
 }
 
-/// Null and nonlive references are native skips, not unknown divisions.
 pub fn live_division(divisions: &[DivisionRow], reference: u64) -> Option<&DivisionRow> {
     if reference == 0 {
         return None;
@@ -55,8 +47,6 @@ pub fn live_division(divisions: &[DivisionRow], reference: u64) -> Option<&Divis
         .map(|at| &divisions[at])
 }
 
-/// The deployed-manpower loop keeps repeated references and signed wrapping.
-/// Exile eligibility and sender contribution remain independent demanded reads.
 pub fn listed_manpower(
     references: impl IntoIterator<Item = u64>,
     divisions: &[DivisionRow],
@@ -71,7 +61,6 @@ pub fn listed_manpower(
     )
 }
 
-/// [`listed_manpower`] with `live` finding a live division by its reference.
 pub fn listed_manpower_with<D>(
     references: impl IntoIterator<Item = u64>,
     mut live: impl FnMut(u64) -> Option<D>,
@@ -80,7 +69,6 @@ pub fn listed_manpower_with<D>(
 ) -> Option<i32> {
     let mut total = 0_i32;
     for reference in references {
-        // Null references are native skips, as nonlive ones are.
         if reference != 0
             && let Some(division) = live(reference)
             && ordinary(division)?

@@ -56,7 +56,6 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
     run_at(source, scripted, entries, extra, None)
 }
 
-/// [`run`] through [`describe_at`] at `at`'s indent and mode, else through [`describe`].
 fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(usize, u8)>) -> Result<String, String> {
     let (catalogue, _folder) = folder_catalogue(&[
         (
@@ -145,8 +144,6 @@ fn groups_share_evaluation_and_reset_descendant_mode() {
         .unwrap(),
         "[yes]Attack\n[yes]Any:\n   Attack\n   Full\n[no]Reserve\n"
     );
-    // A scripted trigger has no own description/check prefix; its template
-    // receives the bool operand's inversion, including a block's false value.
     assert_eq!(
         run("SYN_CHECK=no", "SYN_CHECK={is_attacker=yes}", "", "").unwrap(),
         "[no]Defend\n"
@@ -182,10 +179,8 @@ fn an_indented_conjunction_heads_its_children_without_checks_in_mode_zero() {
          Reserve
 "
     );
-    // One child is not grouped; it keeps the indent.
     assert_eq!(run_at("is_attacker=yes", "", "", "", Some((2, 0))).unwrap(), "      Attack
 ");
-    // Indent zero and mode one is the tactic requirements' description.
     assert_eq!(run_at(source, "", "", "", Some((0, 1))), run(source, "", "", ""));
 }
 
@@ -219,8 +214,6 @@ fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
     }
     entries.push_str("entry={name=Hop10 text={trigger={is_attacker=yes check_variable={temp_var:x=7}} localization_key=YES} text={localization_key=NO}}");
     loc.push_str(" YES:0 \"Correct side\"\n NO:0 \"Wrong side\"\n TIP:0 \"[Hop0]\"\n");
-    // Setting a temp is a supported evaluation operation, but its own
-    // text is empty; use a conditional limit to execute it before the tooltip.
     assert_eq!(run("if={limit={set_temp_variable={x=7}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes}}", "", &entries, &loc).unwrap(), "[yes]Correct side\n");
 }
 

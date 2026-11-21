@@ -1,5 +1,4 @@
 import { contentTitle } from './contentTitles.ts';
-/** Recorded totals and parallel content parts for country races, lines and mix. */
 import type { CountryRaceEntry } from '../charts/race/countryRace';
 import type { Run, Span } from '../charts/series';
 import { isOrderedSpans, runAt, runIndexAt, spansCovered, stretchStarts } from '../charts/series.ts';
@@ -21,14 +20,12 @@ export interface PartsRaceReply {
   parts: { key: string; name: string | null; unresolved: boolean }[];
   series: PartsRaceSeries[]; warnings: string[];
 }
-/** Display names/refusals may refresh without changing any recorded operand. */
 export function partsRaceNumbers(reply: PartsRaceReply): PartsRaceReply {
   return { ...reply, warnings: [], parts: reply.parts.map(part => ({ key: part.key, name: null, unresolved: false })) };
 }
 
 const count = (value: unknown) => value === null || (int(value) && value >= 0);
 
-/** Refuse malformed counts, catalogues and spans before any playback lookup. */
 export function validatePartsRaceReply(data: unknown): PartsRaceReply {
   const fail = () => { throw new Error('The parts race reply is malformed.'); };
   if (!object(data) || typeof data.branchId !== 'string' || !Array.isArray(data.parts)
@@ -81,12 +78,10 @@ export function partsRaceAt(model: PartsRaceModel, tag: string, hour: number): P
   return { total: run.total, values: run.values, run, stretch: item.starts[index] };
 }
 
-/** Looks use full identity spans, independent of a country's top-N membership. */
 export function partsRaceSegmentAt(model: PartsRaceModel | null, tag: string, hour: number): number | null {
   return runAt(model?.series.get(tag)?.series.segments ?? [], Math.floor(hour))?.firstHour ?? null;
 }
 
-/** `positive`: a tally's top N ranks only countries above zero, never a list of zeros in tag order. */
 export function rankPartsRace(model: PartsRaceModel, candidates: readonly string[], hour: number, limit: number, positive = false): { tag: string; at: PartsRaceAt & { total: number } }[] {
   return candidates.flatMap(tag => {
     const at = partsRaceAt(model, tag, hour);
@@ -94,7 +89,6 @@ export function rankPartsRace(model: PartsRaceModel, candidates: readonly string
   }).sort((a, b) => b.at.total - a.at.total || compareTags(a.tag, b.tag)).slice(0, Math.max(0, limit));
 }
 
-/** Every candidate with a known total at `hour` holds zero, and one does; an unknown total is not a zero. */
 export function partsRaceAllZero(model: PartsRaceModel, candidates: readonly string[], hour: number): boolean {
   let known = false;
   for (const tag of candidates) {
@@ -109,12 +103,10 @@ export function partsRaceAllZero(model: PartsRaceModel, candidates: readonly str
 export const formatPartsRaceValue = (value: number) => usNumber.format(value);
 export const partsRacePartName = (part: PartsRaceReply['parts'][number]) => contentTitle(part.name, part.key, 'Part name unavailable');
 
-/** A missing classification keeps the independently recorded total visible. */
 export function partsRaceEntries(model: PartsRaceModel, ranked: ReturnType<typeof rankPartsRace>, split: boolean,
   formatValue = formatPartsRaceValue): CountryRaceEntry[] {
   return ranked.map(({ tag, at }) => {
     const known = at.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-    // A type read cannot make a country total less certain or discard its remainder.
     const complete = at.values.every(value => value != null) && known === at.total;
     return { tag, value: at.total, label: formatValue(at.total), stretch: at.stretch,
       ...(split && complete ? { parts: at.values.map((value, index) => ({ id: model.reply.parts[index].key, value: value! })) }
@@ -122,7 +114,6 @@ export function partsRaceEntries(model: PartsRaceModel, ranked: ReturnType<typeo
   });
 }
 
-/** Nullable values are gaps; equal neighbours merge only within one identity. */
 export function partsRaceRuns(model: PartsRaceModel, tag: string, part?: number): Run[] {
   const result: Run[] = [];
   for (const run of model.series.get(tag)?.series.runs ?? []) {
@@ -147,7 +138,6 @@ export interface PartsRaceTooltipOptions {
   colours: ReadonlyMap<string, string>; note?: string; formatValue?: (value: number) => string; referenceLabel?: string;
 }
 
-/** Full and compact forms both preserve unknown parts and the independent total. */
 export function* partsRaceTooltips({ model, name, at, date, measure, ownership, colours, note,
   formatValue = formatPartsRaceValue, referenceLabel }: PartsRaceTooltipOptions): Generator<TooltipContent> {
   const rows: TooltipRow[] = model.reply.parts.map((part, index) => ({ label: partsRacePartName(part),

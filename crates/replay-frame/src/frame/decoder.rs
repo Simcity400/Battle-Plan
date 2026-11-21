@@ -147,8 +147,6 @@ impl FrameDecoder {
         Self::default()
     }
 
-    /// Reconstruct only these tables, retaining the normal wire validation and
-    /// baseline rules. Omitted tables are explicitly unavailable, never empty.
     pub fn for_tables(tables: &[TableId]) -> Self {
         let mut selected = [false; TABLE_COUNT];
         for table in tables {
@@ -162,20 +160,15 @@ impl FrameDecoder {
         }
     }
 
-    /// Emit source-bound changed keys and field masks for the shared display driver.
     pub fn with_change_facts(mut self) -> Self {
         self.change_facts = true;
         self
     }
 
-    /// Share the decoder's output without copying a frame or its table directory.
     pub fn shared_current(&self) -> Option<&Arc<DecodedFrame>> {
         self.current.as_ref()
     }
 
-    /// Decode an hour and return a frame callers can retain. It shares every
-    /// table with the decoder, so it copies no rows; a table is copied only
-    /// when either side writes to it.
     pub fn apply(
         &mut self,
         frame: &(impl super::FrameSource + ?Sized),
@@ -183,8 +176,6 @@ impl FrameDecoder {
         self.advance(frame).cloned()
     }
 
-    /// Advance the same decoder without copying its rows into a separate output.
-    /// The borrowed hour remains available for validation before the next advance.
     pub fn advance(
         &mut self,
         frame: &(impl super::FrameSource + ?Sized),
@@ -192,7 +183,6 @@ impl FrameDecoder {
         self.advance_inner(frame, None)
     }
 
-    /// Cancellation leaves the baseline available for retry.
     pub fn advance_cancellable(
         &mut self,
         frame: &(impl super::FrameSource + ?Sized),
@@ -322,9 +312,6 @@ pub(super) fn reclaim_changes(
     }
 }
 
-/// Whether a keyframe may hold `update`: one that needs no earlier hour.
-/// [`FrameDecoder::advance`] refuses a keyframe holding any other, whichever
-/// tables it reconstructs.
 pub fn keyframe_update(update: &TableUpdate) -> bool {
     matches!(
         update,
@@ -335,13 +322,10 @@ pub fn keyframe_update(update: &TableUpdate) -> bool {
     )
 }
 
-/// The views deltas replaced while another holder still shared them, one
-/// per table, kept until that table's next update.
 #[derive(Clone, Default)]
 pub struct Spares(Vec<Option<Spare>>);
 
 impl Spares {
-    /// Room for every table's spare, made once.
     pub fn reserve(&mut self) -> io::Result<()> {
         if self.0.is_empty() {
             self.0 = allocation::vec(TABLE_COUNT)?;
@@ -350,22 +334,15 @@ impl Spares {
         Ok(())
     }
 
-    /// `index`'s spare; [`Self::reserve`] made room for it.
     pub fn slot(&mut self, index: usize) -> &mut Option<Spare> {
         &mut self.0[index]
     }
 
-    /// Every table's spare by table index, each to borrow on its own.
     pub fn slots(&mut self) -> &mut [Option<Spare>] {
         &mut self.0
     }
 }
 
-/// A view a delta replaced while another holder still shared it, that delta,
-/// and the view the delta made. Once nothing else holds the replaced view,
-/// the next delta catches it up in place instead of copying the shared view
-/// again, so a holder keeping each hour's view until the next costs one copy,
-/// not one each hour.
 #[derive(Clone, Debug)]
 pub struct Spare {
     view: SharedView,
@@ -374,8 +351,6 @@ pub struct Spare {
 }
 
 impl Spare {
-    /// `current`'s rows, owned, when `current` is the view the spare's delta
-    /// made and nothing else holds the spare's view.
     fn take_rows(self, current: &SharedView) -> io::Result<Option<crate::rows::TableRows>> {
         let Self { view, delta, made } = self;
         if !std::ptr::eq(made.as_ptr(), Arc::as_ptr(&current.0)) {
@@ -398,7 +373,6 @@ impl Spare {
     }
 }
 
-/// Apply a public table view, separately attributed from private alias source applications.
 pub fn advance_public_table(
     table: TableId,
     update: &TableUpdate,
@@ -410,9 +384,6 @@ pub fn advance_public_table(
     advance_table(table, update, previous, hour, read)
 }
 
-/// [`advance_public_table`] keeping the view a delta replaces while another
-/// holder still shares it in `spare`, with the delta (`shared` when the
-/// source shares it, else a copy), for the table's next update to reuse.
 pub fn advance_public_table_reusing(
     table: TableId,
     update: &TableUpdate,
@@ -433,17 +404,11 @@ pub fn advance_public_table_reusing(
     )
 }
 
-/// What a reader keeps to reuse replaced views ([`Spare`]).
 struct Reuse<'a> {
     shared: Option<&'a Arc<TableUpdate>>,
     spare: &'a mut Option<Spare>,
 }
 
-/// One table's view at `hour`, from its update and the hour before's complete
-/// view with that hour (`previous`), as [`FrameDecoder::advance`] reconstructs
-/// it: a failed update becomes a named unavailable view, and a complete table
-/// `read` this hour (its own nonzero timing) is sampled at it. Only an
-/// allocation failure is an error.
 pub fn advance_table(
     table: TableId,
     update: &TableUpdate,
@@ -465,10 +430,6 @@ fn advance_table_with(
     let _table = replay_data::measurement::table(table);
     match apply_table(table, update, previous, reuse, hour) {
         Ok(mut view) => {
-            // The collector exports zero timing for skipped tables
-            // (sampling::exported_table_ticks). Equality may encode a
-            // successful acquisition as Unchanged; completeness and this
-            // table's own timing, not the wire update, witness it.
             if matches!(*view, TableView::Complete(_)) && read {
                 view.1 = Some(hour);
             }
@@ -482,13 +443,8 @@ fn advance_table_with(
     }
 }
 
-/// Why a table not selected for reconstruction holds no rows: what tells its view apart
-/// ([`TableView::is_not_selected`]).
 pub const NOT_SELECTED: &str = "Table not selected for reconstruction";
 
-/// One view shared by every unselected table of every hour a thread builds. Each thread holds
-/// its own, so threads building frames at once never contend for one count; the view is told
-/// apart by what it holds, never by its address.
 pub fn not_selected() -> SharedView {
     #[cfg(any(test, feature = "test-support"))]
     UNSELECTED_SHARES.with(|count| count.set(count.get() + 1));
@@ -503,11 +459,9 @@ pub fn not_selected() -> SharedView {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Times this thread shared the unselected view anew.
     static UNSELECTED_SHARES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// `read`'s result and the times it shared the unselected view anew on this thread.
 #[cfg(any(test, feature = "test-support"))]
 pub fn count_unselected<T>(read: impl FnOnce() -> T) -> (T, usize) {
     let before = UNSELECTED_SHARES.with(std::cell::Cell::get);
@@ -518,9 +472,6 @@ pub fn count_unselected<T>(read: impl FnOnce() -> T) -> (T, usize) {
     )
 }
 
-/// An unchanged table is the previous hour's allocation, shared rather than
-/// copied; a delta takes the baseline by value, which copies it only when an
-/// earlier hour's frame still holds it.
 fn apply_table(
     table: TableId,
     update: &TableUpdate,
@@ -528,7 +479,6 @@ fn apply_table(
     reuse: Option<Reuse<'_>>,
     hour: Hour,
 ) -> io::Result<SharedView> {
-    // A spare serves only the update right after the delta that kept it.
     let (spare, reuse) = match reuse {
         Some(Reuse { shared, spare }) => (spare.take(), Some((shared, spare))),
         None => (None, None),
@@ -584,8 +534,6 @@ fn apply_table(
             } = update
             {
                 validate_delta(table, changed, deleted)?;
-                // The baseline passed full row validation, so a delta, in
-                // place or on a copy, checks only the keys it can have changed.
                 let mut replaced = None;
                 let rows = match previous_view.try_unwrap() {
                     Ok(TableView::Complete(previous_rows)) => {
@@ -628,7 +576,6 @@ fn apply_table(
                         Some(shared) => Some(Arc::clone(shared)),
                         None => super::recorded::copy_update(update).ok().map(Arc::new),
                     };
-                    // Only its rows are reused; its change facts go now.
                     replaced.2 = None;
                     replaced.3 = None;
                     *slot = delta.map(|delta| Spare {
@@ -639,8 +586,6 @@ fn apply_table(
                 }
                 Ok(view)
             } else {
-                // This private baseline already passed full row validation. Only
-                // the singleton's relation to the new enclosing hour can have changed.
                 let TableView::Complete(previous_rows) = &*previous_view else {
                     unreachable!("only complete tables become baselines");
                 };
@@ -683,7 +628,6 @@ fn change_facts(
 }
 
 pub(super) fn change_fields(table: TableId, row: &crate::rows::DeltaRow) -> u64 {
-    // Historical schemas keep their column positions; omitted suffixes become NotRecorded.
     let missing = if row.recorded_fields >= u64::BITS as usize {
         0
     } else {

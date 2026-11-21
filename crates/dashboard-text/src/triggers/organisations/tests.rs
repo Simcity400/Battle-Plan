@@ -1,4 +1,3 @@
-//! The coded triggers and persistent store of an industrial organisation's scope.
 use super::carriers::{MIO, OTHER, SIZES, in_organisation, sized};
 use super::*;
 use installed_content_core::{equipment::Groups, mio_traits::Catalog, parser::Item};
@@ -7,18 +6,12 @@ use replay_data::rows::{
     IndustrialOrganisationTask, IndustrialOrganisationVariable, TableRows,
 };
 
-/// An organisation of its own definition, whose `available` reaches itself.
 const RECURSIVE: u64 = 10 << 32 | 79;
-/// An organisation whose `available` would reach itself past a branch that decides first.
 const GUARDED: u64 = 11 << 32 | 79;
-/// The attached-policy value of an organisation with no policy attached.
 const UNSELECTED: u32 = 0x4c17;
-/// The frame's hour: three days and an hour past the day the fixture's flag was set.
 const NOW: i32 = game_model::calendar::HOUR_EPOCH + 1003 * 24 + 1;
-/// The hour the fixture's flag was set: day 1000 (year 2, 28 September), hour 5.
 const SET: i32 = game_model::calendar::HOUR_EPOCH + 1000 * 24 + 5;
 
-/// The lexer tokens the fixture's names take.
 const TOKENS: [(u32, &str); 13] = [
     (10, "synthetic_project"),
     (11, "synthetic_mio"),
@@ -43,7 +36,6 @@ fn token(name: &str) -> u32 {
         .0
 }
 
-/// The organisations' definitions and equipment groups, read through the content reader.
 const DEFINITIONS: &str = "
     synthetic_mio = {
         equipment_type = { synthetic_group loose_type }
@@ -74,7 +66,6 @@ const DEFINITIONS: &str = "
 ";
 const GROUPS: &str = "synthetic_group = { equipment_type = { grouped_type } }";
 
-/// The definitions and groups as the recorded stack's readers leave them.
 fn content() -> (Catalog, Groups) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -102,7 +93,6 @@ fn content() -> (Catalog, Groups) {
     loaded
 }
 
-/// The details row of `organisation` in `frame`, to edit.
 fn details(frame: &mut DecodedFrame, organisation: u64) -> &mut IndustrialOrganisationDetailsRow {
     let TableView::Complete(TableRows::IndustrialOrganisationDetails(rows)) =
         &mut *frame.tables[TableId::IndustrialOrganisationDetails.index()]
@@ -114,10 +104,6 @@ fn details(frame: &mut DecodedFrame, organisation: u64) -> &mut IndustrialOrgani
         .expect("the fixture details the organisation")
 }
 
-/// The size fixture at [`NOW`], with the fixture's tokens and a [`RECURSIVE`] organisation.
-/// [`MIO`] (size 6) has completed `first_trait` and a token no trait has, allows both
-/// policies with `policy_b` attached, holds one empty task slot and two flags set at [`SET`]:
-/// `mio_flag` of value 2 and `zero_flag` of value 0. [`OTHER`] (size 5) has none of these.
 fn organisations() -> DecodedFrame {
     let mut f = sized(NOW, Some(SIZES));
     *f.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
@@ -176,7 +162,6 @@ fn organisations() -> DecodedFrame {
     f
 }
 
-/// Run `check` on a world of `frame` holding the fixture's definitions and groups.
 fn with_organisations(frame: &DecodedFrame, check: impl FnOnce(&World)) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -192,7 +177,6 @@ fn with_organisations(frame: &DecodedFrame, check: impl FnOnce(&World)) {
     check(&world);
 }
 
-/// Assert each `(organisation, trigger, expected)`, `None` for undecided.
 fn assert_cases(world: &World, cases: &[(u64, &str, Option<bool>)]) {
     for &(organisation, trigger, expected) in cases {
         let value = in_organisation(world, organisation, trigger);
@@ -203,10 +187,6 @@ fn assert_cases(world: &World, cases: &[(u64, &str, Option<bool>)]) {
     }
 }
 
-/// An organisation's scope reads its own recorded persistent store by exact key, a key it does
-/// not hold as absent, and a variable operand of its own. Another organisation's store is its
-/// own, and an organisation without a details row leaves the read undecided. A key recorded
-/// twice has no value the game's store could hold, and is refused.
 #[test]
 fn organisation_variables_read_its_own_store() {
     let mut f = organisations();
@@ -228,25 +208,20 @@ fn organisation_variables_read_its_own_store() {
             world,
             &[
                 (MIO, "has_variable = mio_points", Some(true)),
-                // The game lowercases the operand but compares the stored key exactly.
                 (MIO, "has_variable = MIO_POINTS", Some(true)),
                 (MIO, "has_variable = Mixed", Some(false)),
                 (MIO, "has_variable = missing", Some(false)),
                 (MIO, "check_variable = { mio_points > 2 }", Some(true)),
                 (MIO, "check_variable = { mio_points > 3 }", Some(false)),
-                // Size 6 against the store's 3.
                 (MIO, "has_mio_size > mio_points", Some(true)),
                 (MIO, "has_mio_size = mio_points", Some(false)),
                 (OTHER, "has_variable = mio_points", Some(false)),
                 (MIO + (2 << 32), "has_variable = mio_points", None),
                 (MIO, "check_variable = { dup > 0 }", None),
-                // `size` is a built-in, computed before the stored key, which is not
-                // reproduced; existence asks the stored keys alone.
                 (MIO, "check_variable = { size > 1 }", None),
                 (MIO, "has_variable = size", Some(true)),
             ],
         );
-        // A named organisation entered from its holder reads the same store.
         assert_eq!(
             world.evaluate(
                 &items("mio:synthetic_mio = { check_variable = { mio_points = 3 } }"),
@@ -257,9 +232,6 @@ fn organisation_variables_read_its_own_store() {
     });
 }
 
-/// Policy membership is the allowed list's and the attached policy's, by lexer token: a policy
-/// allowed but not attached is not active, and the no-selection value matches no policy. A
-/// quoted operand's token identity is not reproduced.
 #[test]
 fn policies_are_allowed_and_attached_tokens() {
     with_organisations(&organisations(), |world| {
@@ -279,8 +251,6 @@ fn policies_are_allowed_and_attached_tokens() {
     });
 }
 
-/// The definition's token decides identity, for every instance of it; task assignment counts
-/// task slots, an empty one included, against yes or no.
 #[test]
 fn identity_and_task_slots() {
     with_organisations(&organisations(), |world| {
@@ -294,7 +264,6 @@ fn identity_and_task_slots() {
                 (MIO, "is_mio_assigned_to_task = no", Some(false)),
                 (OTHER, "is_mio_assigned_to_task = yes", Some(false)),
                 (OTHER, "is_mio_assigned_to_task = no", Some(true)),
-                // The Boolean reader leaves a scope selector's expectation false.
                 (OTHER, "is_mio_assigned_to_task = THIS", Some(true)),
                 (MIO, "is_mio_assigned_to_task = ROOT", Some(false)),
             ],
@@ -302,9 +271,6 @@ fn identity_and_task_slots() {
     });
 }
 
-/// Trait existence is the definition's first ordinary trait, completed or not, never the
-/// initial trait; completion also needs that definition, so a completed token no trait has is
-/// not completed.
 #[test]
 fn trait_existence_and_completion() {
     with_organisations(&organisations(), |world| {
@@ -326,9 +292,6 @@ fn trait_existence_and_completion() {
     });
 }
 
-/// The completed-trait count compares as an integer trigger: `<` and `>` against a scalar,
-/// `=` through its `value` block (`=` inside is equality), and a scalar `=` keeps threshold
-/// zero.
 #[test]
 fn completed_trait_count_is_an_integer_comparison() {
     with_organisations(&organisations(), |world| {
@@ -345,9 +308,6 @@ fn completed_trait_count_is_an_integer_comparison() {
                 (OTHER, "has_mio_number_of_completed_traits = 2", Some(true)),
                 (OTHER, "has_mio_number_of_completed_traits = { }", Some(true)),
                 (MIO, "has_mio_number_of_completed_traits = { value = 1 value = 2 }", None),
-                // A scope selector leaves the threshold zero; it is no number. Size reads it
-                // the same way, and its reader has no block form.
-                // A bare token ending the text lexes as the end token, never a selector.
                 (MIO, "has_mio_size > THIS\n", Some(true)),
                 (MIO, "has_mio_size < event_target:anything", Some(false)),
                 (MIO, "has_mio_size = { value > 1 }", None),
@@ -359,10 +319,6 @@ fn completed_trait_count_is_an_integer_comparison() {
     });
 }
 
-/// Trait availability runs its tests in order: the trait, its parents (a group needing none is
-/// met by a first uncompleted parent and failed by a first completed one), its exclusions, its
-/// `visible`, then its `available`. A completed trait can be available, each check can be
-/// turned off, a misspelled check is refused, and a trait reaching itself is refused.
 #[test]
 fn trait_availability_follows_the_game_order() {
     with_organisations(&organisations(), |world| {
@@ -393,8 +349,6 @@ fn trait_availability_follows_the_game_order() {
     });
 }
 
-/// Equipment types match the definition's list expanded through the groups, group names kept,
-/// without case; research categories match the definition's list without case.
 #[test]
 fn equipment_types_and_research_categories() {
     with_organisations(&organisations(), |world| {
@@ -413,9 +367,6 @@ fn equipment_types_and_research_categories() {
     });
 }
 
-/// A flag is its first record: with no `value`, its value must be above zero; `value`
-/// compares by its operator; `date` compares the setting hour strictly; `days` compares day
-/// starts strictly; `date =` and `days =` add no test.
 #[test]
 fn flags_compare_value_date_and_days() {
     with_organisations(&organisations(), |world| {
@@ -447,10 +398,6 @@ fn flags_compare_value_date_and_days() {
     });
 }
 
-/// `is_mio_available` is the definition's `available` and then `visible`, `is_mio_visible`
-/// its `visible` alone, each against yes or no (a scope selector reads as `no`). A condition
-/// reaching itself recurses without end in the game: it is refused by name, and no false
-/// condition after it or beside it decides, while one whose self-reference is skipped decides.
 #[test]
 fn organisation_conditions_and_their_recursion() {
     with_organisations(&organisations(), |world| {
@@ -485,7 +432,6 @@ fn organisation_conditions_and_their_recursion() {
                 "{trigger}: {value:?}"
             );
         }
-        // The row gate's composition refuses it the same way, though `visible` is false.
         let tree = |name: &str| -> (Vec<Item>, Vec<Item>) {
             let (catalog, _) = content();
             let tree = catalog.tree(name).unwrap().unwrap();
@@ -503,14 +449,11 @@ fn organisation_conditions_and_their_recursion() {
             matches!(&gate, Err(Undecided::Diverged(why)) if why.contains("inside itself")),
             "{gate:?}"
         );
-        // Empty conditions hold.
         assert_eq!(evaluator.organisation_conditions(MIO, &[]), Ok(true));
-        // An evaluation after it starts afresh.
         assert_eq!(
             evaluator.evaluate(&items("always = yes"), Scopes::of(Scope::IndustrialOrganisation(MIO))),
             Eval::True
         );
-        // Every organisation trigger accepts the organisation scope alone.
         assert_eq!(
             world.evaluate(&items("has_mio_trait = first_trait"), Scopes::of(Scope::Country(1))),
             Eval::False

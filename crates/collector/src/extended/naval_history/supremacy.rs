@@ -1,31 +1,10 @@
 use super::*;
 
-// ===========================================================================
-// Hourly supremacy split (NavalSupremacy).
-//
-// The game thread copies raw bytes only: the strategic-region roster, per
-// region identity with its dominance container, and every dominance value
-// vector. No row is decoded on the game thread. The single FIFO decode
-// worker replays `cnaval_region_dominance::walk` against the recorded spans,
-// so rows, ordinals, skips, truncation counts and failure reasons are
-// identical by construction (see `crate::raw` for the mirror rules).
-//
-// The value vectors are cap-dependent (the typed walk reads a
-// capacity-truncated prefix in 32-entry chunks), so they are bulk spans:
-// the mirror takes each whole value vector once and the replay serves any
-// enclosed chunk from it. Every fault fails the whole table in the typed
-// walk, so bulk granularity is exact here: rows never publish past a fault.
-// ===========================================================================
 
 const SUPREMACY_MASK: u32 = 0x01;
 
-/// Chunking of the typed walk's value reads (informational: bulk spans
-/// serve any enclosed chunk regardless of chunking).
 const SUPREMACY_MIRROR_BATCH: usize = 32;
 
-/// One hour of raw supremacy payload. Flat pools recycle capacities and the
-/// steady state reuses storage. Worker logs grow before each original request;
-/// decode grows from the complete accepted payload.
 #[derive(Debug, Default)]
 pub(crate) struct SupremacyJob {
     pub log: RawLog<SUPREMACY_N>,
@@ -41,7 +20,6 @@ impl SupremacyJob {
     #[cfg(test)]
     pub(super) fn fixture() -> Self {
         Self {
-            // Explicit raw storage for fixed synthetic fault/read fixtures.
             log: RawLog::new(1 << 12, 1 << 20),
             game_state: 0,
             active: false,
@@ -65,9 +43,6 @@ impl SupremacyJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SupremacyCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed
-    /// walk (identical rows through the existing path) and enqueues no
-    /// payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; SUPREMACY_N],
 }
@@ -84,8 +59,6 @@ fn supremacy_pool_u64(log: &RawLog<SUPREMACY_N>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 fn sspan(
     log: &mut RawLog<SUPREMACY_N>,
     memory: &impl engine_native::Memory,
@@ -96,9 +69,6 @@ fn sspan(
     log.take(memory, addr?, len, mask)
 }
 
-/// One structural copy pass: region roster, per-region identity with its
-/// dominance container, and every value vector as one bulk span. The job is
-/// cleared on entry so pooled refreshes never accumulate spans across hours.
 fn copy_supremacy_pass(
     job: &mut SupremacyJob,
     memory: &impl engine_native::Memory,
@@ -120,8 +90,6 @@ fn copy_supremacy_pass_mode(
     job.clear();
     job.active = true;
     job.game_state = game_state;
-    // Value vectors are bulk spans (see above); the flag is set up front so
-    // owned replay serves enclosed chunks identically.
     job.log.has_bulk = true;
     let started = qpc();
     copy_supremacy_tables(job, memory, base, game_state);
@@ -185,7 +153,6 @@ fn copy_supremacy_tables(
             Some(pointer) => pointer,
             None => continue,
         };
-        // copy_scattered triple: vtables word, identity words, dominance word.
         let vtables = match sspan(log, memory, Some(pointer), 16, SUPREMACY_MASK) {
             Some(start) => start,
             None => return,
@@ -265,8 +232,6 @@ fn copy_supremacy_tables(
             let Some(bulk_start) = bulk_start else {
                 return;
             };
-            // Validate every staged value locally, mirroring the walk: any
-            // invalid value fails the whole table there.
             for index in 0..entries.count as usize {
                 let at = bulk_start + index * naval_dominance_entry::STRIDE;
                 let bytes = match log.bytes.get(at..at + naval_dominance_entry::STRIDE) {
@@ -303,7 +268,6 @@ fn copy_supremacy_tables(
     }
 }
 
-/// Acquire one owned hourly supremacy payload.
 pub(crate) fn copy_supremacy_refresh(
     memory: &impl Memory,
     ctx: SupremacyCopyContext,
@@ -322,16 +286,11 @@ pub(crate) fn copy_supremacy_refresh(
 }
 
 impl Captured {
-    /// Finish an accepted failure after independent capture without live retry.
     pub(crate) fn fail_supremacy_capture(&mut self, reason: &'static str) {
         self.supremacy.outcome = failed(self.active[0], reason);
         self.supremacy_raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw supremacy payload: replays the
-    /// supremacy walk against the recorded spans into the pooled buffers,
-    /// with the identical bounded/capacity handling the game thread applies.
-    /// Installs identical rows, truncation counts and failure reasons.
     pub(crate) fn decode_supremacy_payload(
         &mut self,
         base: usize,

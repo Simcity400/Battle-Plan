@@ -17,7 +17,6 @@ fn selected_fixture() -> EtaMemory {
     for (index, level) in [0_i32, 5, i32::MIN].into_iter().enumerate() {
         put(&mut memory.bytes, 0x7500 + index * 4, level.to_le_bytes());
     }
-    // Poisoned spare capacity is outside the native indexed level domain.
     put(&mut memory.bytes, 0x750c, i32::MAX.to_le_bytes());
     memory
 }
@@ -25,7 +24,7 @@ fn selected_fixture() -> EtaMemory {
 #[test]
 fn attach_sizing_reads_only_authenticated_level_headers_and_preserves_faults() {
     let mut memory = selected_fixture();
-    memory.refused = Some(0x8500); // The sizing hint must not read the payload.
+    memory.refused = Some(0x8500);
     let required = selected_inputs::demand(&memory, 0, MEMORY_BASE).unwrap();
     assert_eq!(required, 3);
     assert!(

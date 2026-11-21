@@ -268,10 +268,6 @@ fn fresh_attrition_acclimatization_keeps_first_maximum_and_refuses_foreign_embed
     );
 }
 
-/// Two divisions of one country in one weather province ask the same keyed
-/// reads. The second must receive the first division's exact results, the
-/// unreadable heat factor included, without reading memory again; a disabled
-/// memo reads everything twice, as before the memo existed.
 #[test]
 fn attrition_memo_shares_keyed_reads_and_failures_between_divisions() {
     let mut fixture = Fixture::new();

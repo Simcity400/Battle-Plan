@@ -41,7 +41,6 @@ fn province(id: u32, state: u32) -> ProvinceRow {
     ProvinceRow { id, state, ..Default::default() }
 }
 
-/// Each row as (slot, country, repair, railway, type, state, to-state, total, unknown).
 fn spend(run: &Run) -> Vec<(u32, u32, bool, bool, u32, u32, u32, Option<i64>, i64)> {
     run.rows::<ConstructionSpendRow>(TableId::ConstructionSpend)
         .iter()
@@ -55,7 +54,6 @@ fn spend(run: &Run) -> Vec<(u32, u32, bool, bool, u32, u32, u32, Option<i64>, i6
         .collect()
 }
 
-/// GER builds twice at state 100; ITA lays a railway from province 7 (state 200) to 8 (300).
 fn built() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits)
@@ -67,9 +65,6 @@ fn built() -> Edits {
     edits
 }
 
-/// Lines of one identity, work, type and state sum; an inexact line counts as unknown until an
-/// exact output counts all it spent; an ended line's output stays; a restarted observation keeps
-/// what it counted and counts on from its start.
 #[test]
 fn construction_spend_sums_each_lines_output_by_identity_work_type_and_state() {
     let mut run = Run::new(writers, INPUTS);
@@ -93,7 +88,6 @@ fn construction_spend_sums_each_lines_output_by_identity_work_type_and_state() {
     assert_eq!(spend(&run)[0], (1, 10, false, false, 5, 100, NONE, Some(2_450), 0));
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes.
 #[test]
 fn a_resumed_construction_spend_writer_writes_the_table_of_one_never_stopped() {
     let mut unbroken = Run::new(writers, INPUTS);
@@ -109,8 +103,6 @@ fn a_resumed_construction_spend_writer_writes_the_table_of_one_never_stopped() {
     assert_eq!(spend(&resumed), [(1, 10, false, false, 5, 100, NONE, Some(1_700), 0), (2, 20, false, true, NONE, 200, 300, Some(900), 0)]);
 }
 
-/// A state or building type past 24 bits, as a mod's script may number one, is written whole and
-/// read back; a railway keeps no building type, its key's shared field holding its last state.
 #[test]
 fn construction_spend_keeps_states_and_building_types_past_24_bits_whole() {
     const WIDE: u32 = (1 << 24) + 5;

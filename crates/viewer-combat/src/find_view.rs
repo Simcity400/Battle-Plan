@@ -1,10 +1,3 @@
-//! The game's find view (`find_view`), hosted through the same retained native GUI walk as the
-//! picker.
-//!
-//! The edit box takes the keys while it has focus; every edit searches the hour's index
-//! ([`index`]) and lists each result in a `find_view_item`. A result, or Return for the first,
-//! centres the camera on its target fully zoomed in and closes the view; nothing is selected.
-//! The home button goes to the viewing country's capital the same way.
 
 pub mod index;
 
@@ -25,8 +18,6 @@ pub const WINDOW: &str = "find_view";
 pub const ITEM: &str = "find_view_item";
 pub const TEMPLATES: &[&[u8]] = &[b"find_view", b"find_view_item"];
 
-/// The inline icon a victory point result opens with: the map's victory point strip at `frame`,
-/// counted from one.
 pub fn victory_point_icon(frame: u32) -> String {
     format!("{}onmap_victorypoints_strip|{frame}", viewer_foundation::map::native_text::ICON)
 }
@@ -35,21 +26,16 @@ const FIELD: &str = "to_find_text";
 const GRID: &str = "results_window/results_grid_box";
 const RESULTS: &str = "results_window";
 
-/// The caret shows for this long, then hides until the period ends.
 const CARET_SHOWN: f32 = 0.5;
 const CARET_PERIOD: f32 = 1.0;
 
-/// A control of the find view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
-    /// The edit box.
     Field,
-    /// The result at this index.
     Result(usize),
     Find,
     Home,
     Back,
-    /// The window background: absorbs clicks without an action.
     Window,
 }
 
@@ -66,7 +52,6 @@ impl Control {
     }
 }
 
-/// A key the edit box takes besides text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditKey {
     Backspace,
@@ -77,13 +62,11 @@ pub enum EditKey {
     End,
 }
 
-/// The edit box's text, its caret (a codepoint index) and focus.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Field {
     text: String,
     caret: usize,
     pub focused: bool,
-    /// When the caret's blink last started again.
     blink: f32,
 }
 
@@ -92,7 +75,6 @@ impl Field {
         &self.text
     }
 
-    /// Empties the box and gives it the keys, as opening the view does.
     pub fn open(&mut self, now: f32) {
         *self = Self {
             focused: true,
@@ -101,7 +83,6 @@ impl Field {
         };
     }
 
-    /// Gives the box the keys or takes them away; the caret's blink starts again on focus.
     pub fn focus(&mut self, focused: bool, now: f32) {
         if focused && !self.focused {
             self.blink = now;
@@ -109,7 +90,6 @@ impl Field {
         self.focused = focused;
     }
 
-    /// A press in the box: it takes the keys, and the caret stands where the press put it.
     pub fn press(&mut self, caret: usize, now: f32) {
         self.focus(true, now);
         self.caret = caret.min(self.text.chars().count());
@@ -123,7 +103,6 @@ impl Field {
             .map_or(self.text.len(), |(at, _)| at)
     }
 
-    /// Types `text` at the caret, leaving out control characters; `true` when the text changed.
     pub fn insert(&mut self, text: &str, now: f32) -> bool {
         let typed: String = text.chars().filter(|ch| !ch.is_control()).collect();
         if typed.is_empty() {
@@ -136,7 +115,6 @@ impl Field {
         true
     }
 
-    /// An editing key; `true` when the text changed.
     pub fn key(&mut self, key: EditKey, now: f32) -> bool {
         let count = self.text.chars().count();
         self.blink = now;
@@ -174,43 +152,31 @@ impl Field {
         }
     }
 
-    /// The caret's index while it shows at `now`: the box has focus and the blink is on.
     pub fn caret(&self, now: f32) -> Option<usize> {
         let phase = (now - self.blink).max(0.0) % CARET_PERIOD;
         (self.focused && phase < CARET_SHOWN).then_some(self.caret)
     }
 
-    /// Whether the caret's next change is due within the clock.
     pub fn blinking(&self) -> bool {
         self.focused
     }
 }
 
-/// What the find view shows this frame.
 pub struct State<'a> {
-    /// The edit box's text: the query, or the prompt while it is empty and unfocused.
     pub text: &'a str,
-    /// The query itself, in which a press in the box places the caret.
     pub query: &'a str,
     pub caret: Option<usize>,
-    /// Each result's text.
     pub results: &'a [String],
-    /// Changes whenever `results` does.
     pub fingerprint: u64,
 }
 
-/// One frame of the find view.
 #[derive(Clone, Default)]
 pub struct FindDrawn {
     pub controls: Vec<Placed>,
     pub clicked: Vec<(PickerControl, usize)>,
-    /// A press on the edit box this frame: the caret it puts in the box.
     pub caret: Option<usize>,
 }
 
-/// Where a `moveable` window dragged by `moved` stands: moved, then held on its parent, its left
-/// and top edges at 0 or more and its right and bottom edges within the parent, as the game
-/// holds a dragged window.
 pub fn dragged(at: [i32; 2], size: [i32; 2], moved: [i32; 2], parent: [i32; 2]) -> [i32; 2] {
     let x = at[0] + moved[0];
     let y = at[1] + moved[1];
@@ -231,7 +197,6 @@ pub fn dragged(at: [i32; 2], size: [i32; 2], moved: [i32; 2], parent: [i32; 2]) 
     [x, y]
 }
 
-/// The find view's retained window; a new content or viewport rebuilds it.
 #[derive(Default)]
 pub struct FindView {
     built: Option<(
@@ -242,17 +207,12 @@ pub struct FindView {
     generation: u64,
     last: Option<(u64, String, Option<usize>)>,
     controls: BTreeMap<String, Control>,
-    /// Where the window was dragged to, and the pointer's last whole pixel while it is held.
     position: Option<[i32; 2]>,
     dragging: Option<[i32; 2]>,
-    /// The scrollbar slider a press holds: the pointer along its axis at the press, and where
-    /// the slider stood then.
     slider: Option<(i32, native_gui::Slide)>,
-    /// The results' scrolling container as last drawn.
     results: Option<[f32; 4]>,
 }
 
-/// The pointer's whole interface pixel, as the game's GUI reads it.
 fn pixel(at: [f32; 2]) -> [i32; 2] {
     at.map(|value| value as i32)
 }
@@ -266,8 +226,6 @@ impl FindView {
         self.window.as_ref().is_some_and(Retained::pointing)
     }
 
-    /// Scrolls the results by wheel notches over their container, `notches` positive away from
-    /// the user.
     pub fn wheel(
         &mut self,
         content: &super::content::Content,
@@ -308,7 +266,6 @@ impl FindView {
         Ok(())
     }
 
-    /// Lays out and draws the find view for `state`.
     #[allow(
         clippy::too_many_arguments,
         reason = "one frame's view, pointer and clock, as the picker's draw takes them"
@@ -371,8 +328,6 @@ impl FindView {
         let retained = gui::ensure(&mut self.window, WINDOW, root, viewport, &resources)
             .map_err(super::invalid)?;
         let frame = native_gui::container_frame(root, Some(viewport)).map_err(super::invalid)?;
-        // The window's background is its drag button: held, it moves the window with the
-        // pointer.
         let background = root
             .container()
             .and_then(|container| container.backgrounds.first())
@@ -465,7 +420,6 @@ impl FindView {
         };
         drawn.sounds.extend(prepared.sounds.iter().cloned());
         let results_element = root.path_named(RESULTS);
-        // A result is its item's background button; the scrollbar's arrows step its container.
         let scroll_of = |path: &str| {
             prepared
                 .layout
@@ -502,7 +456,6 @@ impl FindView {
                 }
             }
         }
-        // A press on the scrollbar's slider holds it; the pointer then moves it along its rail.
         let axis =
             |slide: native_gui::Slide, at: [i32; 2]| at[usize::from(slide.vertical)];
         let sliders: Vec<([f32; 4], native_gui::Slide)> = prepared
@@ -576,7 +529,6 @@ impl FindView {
             ];
             out.controls
                 .push(Placed::new(rect, PickerControl::Find(Control::Field)));
-            // A press in the box puts the caret where the game's text buffer puts it.
             let press = input
                 .iter()
                 .flat_map(|input| &input.buttons)
@@ -634,9 +586,6 @@ impl FindView {
     }
 }
 
-/// The text each of the window's buttons with a font shows: its authored `buttonText`,
-/// localised, as the game's button sets it. A text the localisation refuses is named in
-/// `refused`, and its button keeps the window's marker for text not given.
 fn button_texts(
     root: &installed_content_core::gui::native::Element,
     localisation: &installed_content_localisation::localisation::Localisation,
@@ -666,7 +615,6 @@ fn button_texts(
         .collect()
 }
 
-/// The view's buttons' first authored shortcuts.
 pub fn shortcuts(
     content: &super::content::Content,
     extent: [f32; 2],
@@ -686,8 +634,6 @@ pub fn shortcuts(
     .collect())
 }
 
-/// The countries owning at least one state, by their name then their tag, and every state, by
-/// its name then its id, in the game's list orders, with why any name is unknown.
 pub fn countries_and_states(
     content: &super::content::Content,
     frame: &DecodedFrame,
@@ -795,7 +741,6 @@ mod tests {
         field.key(EditKey::Home, 0.0);
         assert!(field.key(EditKey::Delete, 0.0));
         assert_eq!(field.text(), "ln");
-        // Control characters are not typed.
         assert!(!field.insert("\u{8}\r", 0.0));
     }
 
@@ -817,13 +762,11 @@ mod tests {
         let mut refused = BTreeMap::new();
         let values = button_texts(root, &localisation, &mut refused);
         assert_eq!(values["find_button"].text.as_deref(), Some("Find"));
-        // A key the localisation lacks shows itself, as the game's localiser gives it.
         assert_eq!(
             values["goto_home_button"].text.as_deref(),
             Some("GOTO_CAPITAL")
         );
         assert!(refused.is_empty());
-        // A button with no text binds none.
         assert!(!values.contains_key("back_button"));
     }
 
@@ -833,7 +776,6 @@ mod tests {
         let size = [285, 300];
         assert_eq!(dragged([1000, 500], size, [10, -20], parent), [1010, 480]);
         assert_eq!(dragged([5, 5], size, [-10, -10], parent), [0, 0]);
-        // A right edge reaching the parent's is held a size in; a bottom edge only past it.
         assert_eq!(dragged([1600, 700], size, [35, 80], parent), [1635, 780]);
         assert_eq!(dragged([1600, 700], size, [36, 81], parent), [1635, 780]);
         assert_eq!(dragged([1600, 700], size, [34, 80], parent), [1634, 780]);
@@ -848,7 +790,6 @@ mod tests {
         assert_eq!(field.caret(10.2), Some(2));
         assert_eq!(field.caret(10.7), None);
         assert_eq!(field.caret(11.1), Some(2));
-        // Typing starts the blink again.
         field.insert("c", 10.7);
         assert_eq!(field.caret(10.8), Some(3));
         field.focused = false;

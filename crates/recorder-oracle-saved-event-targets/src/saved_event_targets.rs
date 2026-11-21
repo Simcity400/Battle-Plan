@@ -1,4 +1,3 @@
-//! Ordered saved-global registry: header writer, row writer.
 use super::{Report, complete, counters::eq, country_tag};
 use installed_content_save::saved_event_targets::Target;
 use replay_data::{rows::CountryRow, rows::GlobalSavedEventTargetRow, rows::tables};
@@ -31,8 +30,6 @@ fn compare_rows(
             None
         };
         let label = format!("saved_event_target[{}]", r.ordinal);
-        // The game omits name for ID 0, which the game assigns to the
-        // first interned string. The recorded name still serves lookup.
         let name = if r.live & GlobalSavedEventTargetRow::UNSAVED_NAME != 0 {
             b"".as_slice()
         } else {

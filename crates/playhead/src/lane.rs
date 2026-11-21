@@ -1,9 +1,3 @@
-//! One table's selected cells kept at the playback head of one run. A seek restores them at the
-//! table's last restore before the hour and replays the parts since; afterwards the lane asks for
-//! the parts it needs as a [`Fetch`] of plain data that runs on any thread, and is given what it
-//! read ([`Lane::give`]). A step never touches the file: it advances the cells over the parts
-//! given, one cursor a part, and fills one owned change set ([`Changes`]). A part passed leaves
-//! with its cursor ([`Lane::retire_into`]) to be freed on another thread.
 
 use crate::{
     changes::{Changes, Passing, Texts, Written},
@@ -31,11 +25,8 @@ pub mod log;
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// Bytes the reader holds per open track: the track and its next hour.
 const TRACK_BYTES: usize = 34;
 
-/// Every string a lane named since its seek, by id: what a reader rebuilt from the lane in memory
-/// names, where [`Lane::texts`] holds only those since the last change set.
 #[derive(Default)]
 pub(crate) struct Known(HashMap<u32, Box<[u8]>>);
 
@@ -63,28 +54,23 @@ impl Known {
     }
 }
 
-/// A part's cursor once the head has passed it, to be freed on another thread.
 pub enum Passed {
     State(Cursor),
     Log(LogCursor),
 }
 
-/// A part fetched for a lane: its block and index there.
 pub struct Given {
     block: usize,
     index: usize,
     part: Part,
 }
 
-/// Where a lane's fetching stands: the next part to read, and the streams of the newest part read
-/// while the next one may be chained to them.
 #[derive(Default)]
 pub struct Chain {
     next: Option<(usize, usize)>,
     prefix: Option<(usize, Prefix)>,
 }
 
-/// A lane's next read, as plain data: the parts to fetch and what the first is chained to.
 pub struct Fetch {
     pages: Arc<dyn Pages>,
     run: usize,
@@ -94,7 +80,6 @@ pub struct Fetch {
     through: Hour,
 }
 
-/// What a [`Fetch`] read.
 pub struct Fetched {
     given: Vec<Given>,
     chain: Chain,
@@ -115,14 +100,11 @@ impl Fetch {
         self.table
     }
 
-    /// The game hour the first part it reads starts at.
     pub fn first_hour(&self) -> Hour {
         let run = &self.pages.runs()[self.run];
         self.chain.next.map_or(Hour::MAX, |(block, index)| part_hour(run, self.table, block, index))
     }
 
-    /// Reads, verifies, decompresses and opens the next part, then those after it that start by
-    /// hour `through`, each chained to the one before it in its block.
     pub fn run(self) -> io::Result<Fetched> {
         let Self { pages, run, table, columns, mut chain, through } = self;
         let held = &pages.runs()[run];
@@ -152,7 +134,6 @@ fn part_hour(run: &Run, table: usize, block: usize, index: usize) -> Hour {
     run.first_hour + (block as u32 * BLOCK + u32::from(run.pages[block].tables[table].parts[index].first)) as Hour
 }
 
-/// The first part at or after part `index` of block `block`.
 fn next_part(run: &Run, table: usize, mut block: usize, mut index: usize) -> Option<(usize, usize)> {
     while let Some(page) = run.pages.get(block) {
         if index < page.tables[table].parts.len() {
@@ -164,14 +145,11 @@ fn next_part(run: &Run, table: usize, mut block: usize, mut index: usize) -> Opt
     None
 }
 
-/// What a lane holds, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Held {
     pub cells: usize,
-    /// Parts given and not let go: their count and bytes decompressed.
     pub parts: usize,
     pub part_bytes: usize,
-    /// Their open tracks, and the reader's bytes for them.
     pub tracks: usize,
     pub track_bytes: usize,
 }
@@ -190,22 +168,17 @@ impl Held {
     }
 }
 
-/// What a seek took.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sought {
     pub restore_ns: u64,
-    /// Fetching the parts since the restore, and advancing over them.
     pub fetch_ns: u64,
     pub replay_ns: u64,
     pub parts: u64,
-    /// The block whose end it restored (none for the run's first restore), and blocks replayed.
     pub restored: Option<usize>,
     pub blocks: u32,
-    /// The reader's own count of what it replayed (counted while the lane is timed).
     pub spent: Spent,
 }
 
-/// The part under the head: its cursor, and the strings it names first, given once it is entered.
 struct Under {
     cursor: Cursor,
     block: usize,
@@ -215,20 +188,12 @@ struct Under {
     texts: Vec<u32>,
 }
 
-/// A passing table's rows born and gone inside the step under way, each handed over by the reader
-/// as it goes ([`Cursor::advance_seeing`]) with its cells at its last live hour. A bit a slot says
-/// which rows were live at the step's start, so a row older than the step costs one test when it
-/// goes; only the rows that pass are copied. It holds a bit a slot and the step's passing rows.
 #[derive(Default)]
 struct Passage {
-    /// Live at the step's start and not gone since, by slot; none until stepped after a seek.
     live: Option<Vec<u64>>,
-    /// Each passing row's run hour of delete, slot and key, in delete order.
     gone: Vec<(u32, u32, u128)>,
-    /// Per selected column, the passing rows' cells in delete order.
     staged: Vec<Written>,
     failed: Option<io::Error>,
-    /// The step's inserts and its passing rows, each in slot order, and the pairs (insert, row).
     inserts: Vec<u32>,
     by_slot: Vec<u32>,
     pairs: Vec<(u32, u32)>,
@@ -246,8 +211,6 @@ impl Passage {
         self.gone.clear();
     }
 
-    /// Row `key` at `slot`, deleted at run hour `hour`: kept unless it was live at the step's
-    /// start.
     fn see(&mut self, hour: u32, slot: u32, key: u128, cells: &TableState, columns: &[usize]) {
         let live = self.live.as_mut().expect("a step begun");
         if let Some(word) = live.get_mut(slot as usize / 64) {
@@ -266,9 +229,6 @@ impl Passage {
         }
     }
 
-    /// The rows gone, in birth order, into `out`, each paired with its insert among the step's
-    /// (run hour, slot, key) `inserts`: the k-th insert at a slot is the k-th passing row there.
-    /// The bits are brought to the step's end over the slots its lives name.
     #[expect(clippy::too_many_arguments, reason = "the lane's fields, borrowed apart")]
     fn write(&mut self, out: &mut Passing, keyed: bool, cells: &TableState, columns: &[usize], inserts: &[(u32, u32, u128)], deletes: &[(u32, u32, u128)], game: impl Fn(u32) -> Hour) -> io::Result<()> {
         if let Some(error) = self.failed.take() {
@@ -339,42 +299,30 @@ impl Passage {
     }
 }
 
-/// Why advancing stopped short of its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stop {
     Reached,
-    /// A part is not given yet.
     Waiting,
-    /// A packed block ended: the cells are renumbered before anything else.
     Packed,
 }
 
-/// One table's selected cells at the head of one run.
 pub struct Lane {
     pages: Arc<dyn Pages>,
     run: usize,
     table: usize,
     kinds: Vec<Kind>,
-    /// The columns it was declared with.
     declared: Arc<[usize]>,
-    /// The declared columns its pages hold, which it reads; the rest hold no cell and read not
-    /// recorded.
     columns: Arc<[usize]>,
     keyed: bool,
     cells: TableState,
     under: Option<Under>,
-    /// Parts given and not under the head yet, in order.
     ahead: VecDeque<Given>,
-    /// The next run hour to apply; none before the first seek.
     next: Option<u32>,
-    /// None before the first seek and while a fetch is out.
     chain: Option<Chain>,
     retired: Vec<Passed>,
-    /// Strings named since the last change set.
     texts: Texts,
     known: Known,
     status: (Status, Option<Hour>),
-    /// The run hour the status must be read again at, and whether its sample hour is each hour.
     status_until: u32,
     status_moving: bool,
     timed: bool,
@@ -383,24 +331,16 @@ pub struct Lane {
     lives: Lives,
     deletes: Vec<(u32, u32, u128)>,
     inserts: Vec<(u32, u32, u128)>,
-    /// Cursor calls the step took: more than one may name a slot twice.
     pieces: u32,
     marks: Vec<u64>,
-    /// Per selected column, what [`Self::written`] held before the hour under way, while the step
-    /// walks an hour at a time ([`Self::step_hours`]).
     marks_at: Vec<usize>,
     passage: Option<Box<Passage>>,
-    /// A log table's state at the head and the part under it: such a lane holds no cell.
     log: Option<Box<log::Logs>>,
-    /// Restores and cursors of a table holding state it opened.
     #[cfg(test)]
     pub(crate) state_reads: usize,
 }
 
 impl Lane {
-    /// A lane of `columns` (indexes into the table's kinds) of `table` in run `run`, with the
-    /// rows' keys in its change sets when `keyed`; it holds nothing until sought. A log table's
-    /// lane reads it as a log ([`Lane::log`], [`Changes::log`]).
     pub fn new(pages: Arc<dyn Pages>, run: usize, table: usize, columns: &[usize], keyed: bool) -> io::Result<Self> {
         let held_run = pages.runs().get(run).ok_or_else(|| invalid(format!("No run {run}")))?;
         let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("No table {table} in the schema")))?.to_vec();
@@ -413,7 +353,6 @@ impl Lane {
             }
         }
         let log = reader::class_of(&held_run.pages, table)?.then(Box::default);
-        // Its cells hold the columns the pages hold, decoded as written; any later reads not recorded.
         let kinds = kinds[..pages.held(table).min(kinds.len())].to_vec();
         let read: Arc<[usize]> = columns.iter().copied().filter(|&column| column < kinds.len()).collect();
         Ok(Self {
@@ -459,12 +398,10 @@ impl Lane {
         self.run
     }
 
-    /// The columns it was declared with; those its pages do not hold read not recorded.
     pub fn requested(&self) -> &[usize] {
         &self.declared
     }
 
-    /// The requested columns its pages hold: the only columns its cells and change sets hold.
     pub fn reads(&self) -> &[usize] {
         &self.columns
     }
@@ -473,12 +410,10 @@ impl Lane {
         self.keyed
     }
 
-    /// The row format its pages' cells were written in: an opaque cell decodes at it.
     pub fn format(&self) -> u16 {
         self.pages.format()
     }
 
-    /// Its change sets hold the rows born and gone inside a step ([`Changes::passing`]).
     pub fn set_passing(&mut self, passing: bool) {
         self.passage = passing.then(Box::default);
     }
@@ -487,12 +422,10 @@ impl Lane {
         self.passage.is_some()
     }
 
-    /// What it was declared to read: its columns, whether keyed, and whether passing.
     pub fn declared(&self) -> (&[usize], bool, bool) {
         (self.requested(), self.keyed(), self.passing())
     }
 
-    /// The selected cells, live bits and keys at the head. Its own status is [`Self::status`].
     pub fn cells(&self) -> &TableState {
         &self.cells
     }
@@ -501,8 +434,6 @@ impl Lane {
         self.status
     }
 
-    /// The text of the head's refusal reason, while the part under the head or the seek's restore
-    /// names it: a part names its refusal's reason as it names a text cell's.
     pub fn reason(&self) -> Option<&[u8]> {
         let Status::Unavailable { reason } = self.status.0 else { return None };
         self.under
@@ -511,12 +442,10 @@ impl Lane {
             .or_else(|| self.texts.iter().find(|&(id, _)| id == reason).map(|(_, text)| text))
     }
 
-    /// The last game hour applied.
     pub fn head(&self) -> Option<Hour> {
         self.next.map(|next| self.game(next) - 1)
     }
 
-    /// Times the reader's work by kind ([`Self::spent`]).
     pub fn time(&mut self, timed: bool) {
         self.timed = timed;
         if let Some(under) = &mut self.under {
@@ -524,7 +453,6 @@ impl Lane {
         }
     }
 
-    /// The reader's own time and counts, over the lane's life.
     pub fn spent(&self) -> Spent {
         let mut spent = self.spent;
         if let Some(under) = &self.under {
@@ -561,8 +489,6 @@ impl Lane {
         self.pages.runs()[self.run].first_hour + run_hour as Hour
     }
 
-    /// The parts it needs read: those starting by game hour `through`, and at least the one after
-    /// the last given. None while a fetch is out, before a seek, or when nothing is needed.
     pub fn want(&mut self, through: Hour) -> Option<Fetch> {
         let (block, index) = self.chain.as_ref()?.next?;
         if !self.ahead.is_empty() && part_hour(&self.pages.runs()[self.run], self.table, block, index) > through {
@@ -572,12 +498,10 @@ impl Lane {
         Some(Fetch { pages: Arc::clone(&self.pages), run: self.run, table: self.table, columns: Arc::clone(&self.columns), chain, through })
     }
 
-    /// Whether the parts given reach game hour `through`: stepping there waits on no read.
     pub(crate) fn holds_through(&self, through: Hour) -> bool {
         self.chain.as_ref().is_some_and(|chain| chain.next.is_none_or(|(block, index)| part_hour(&self.pages.runs()[self.run], self.table, block, index) > through))
     }
 
-    /// What its [`Fetch`] read.
     pub fn give(&mut self, fetched: Fetched) -> io::Result<()> {
         if self.chain.is_some() {
             return Err(invalid(format!("Table {}'s lane is given parts it did not ask for", self.table)));
@@ -587,7 +511,6 @@ impl Lane {
         Ok(())
     }
 
-    /// Fetches on this thread what [`Self::want`] names for `through`; the nanoseconds and parts.
     pub fn fetch_through(&mut self, through: Hour) -> io::Result<(u64, usize)> {
         let (mut ns, mut parts) = (0, 0);
         while let Some(fetch) = self.want(through) {
@@ -599,14 +522,10 @@ impl Lane {
         Ok((ns, parts))
     }
 
-    /// Cursors of parts passed, for another thread to free.
     pub fn retire_into(&mut self, out: &mut Vec<Passed>) {
         out.append(&mut self.retired);
     }
 
-    /// The cells at the end of game hour `hour` (the run's first restore for an hour before it):
-    /// the table's last restore at or before the hour's block, then every part since, fetched in
-    /// order and advanced in whole parts. [`Self::reset_into`] gives its change set.
     pub fn seek(&mut self, hour: Hour) -> io::Result<Sought> {
         if self.log.is_some() {
             return self.seek_log(hour);
@@ -670,8 +589,6 @@ impl Lane {
         Ok(sought)
     }
 
-    /// The reset change set at the head: the flag, the head and the status, and no row. Readers
-    /// rebuild from the lane itself ([`crate::Rebuild`]).
     pub fn reset_into(&self, out: &mut Changes) -> io::Result<()> {
         if self.log.is_some() {
             return self.reset_log(out);
@@ -686,26 +603,19 @@ impl Lane {
         Ok(())
     }
 
-    /// The strings named since the last change set; after a seek, every string named since it,
-    /// those of the restore included.
     pub fn texts(&self) -> &Texts {
         &self.texts
     }
 
-    /// Its reset is shown: the strings of the seek are no step's.
     pub(crate) fn clear_texts(&mut self) {
         self.texts.clear();
     }
 
-    /// Every string named since the seek moves to a change set: a crossing's cells are this run's
-    /// ids, so the reader is given the texts a rebuild would have read here.
     pub(crate) fn texts_into(&mut self, out: &mut Changes) {
         std::mem::swap(&mut out.texts, &mut self.texts);
         self.texts.clear();
     }
 
-    /// [`Self::texts`] becomes every string named since the seek, for a reader rebuilt from the lane
-    /// in memory; the strings since the last change set are given back to [`Self::hide_known`].
     pub(crate) fn show_known(&mut self) -> Texts {
         std::mem::replace(&mut self.texts, self.known.texts())
     }
@@ -714,22 +624,10 @@ impl Lane {
         self.texts = pending;
     }
 
-    /// Advances the cells to the end of game hour `to`, as far as the parts given reach, and fills
-    /// `out` with the step's change set; the head reached. A step that reaches a packed block's
-    /// end stops there with the renumber.
     pub fn step(&mut self, to: Hour, out: &mut Changes) -> io::Result<Hour> {
         self.step_hours(to, out, None)
     }
 
-    /// [`Self::step`], with each hour of the step that wrote the table appended to `hours` as its
-    /// own change set, in rising hour order ([`Changes::head`] is the hour): the cells written at
-    /// that hour with the values it left them, and the rows born and gone in it. The step's own
-    /// change set is filled as always, so a reader of the interval and a reader of its hours take
-    /// the same walk of the file.
-    ///
-    /// An hour's set names no string and carries no status, no renumber and no passing rows: those
-    /// are the step's own, which covers the same hours. Its slots are the step's, before any
-    /// renumber the step ends with.
     pub fn step_hours(&mut self, to: Hour, out: &mut Changes, hours: Option<&mut Vec<Changes>>) -> io::Result<Hour> {
         if self.log.is_some() {
             return self.step_log(to, out);
@@ -760,10 +658,6 @@ impl Lane {
         Ok(head)
     }
 
-    /// Applies every hour through run hour `target` the parts given reach. With `collect` the
-    /// slots written and the lives go to the change set; without, a packed block's end is
-    /// renumbered at once. With `hours` the cursor walks an hour at a time and each hour that
-    /// wrote something leaves its own change set there ([`Self::step_hours`]).
     fn advance(&mut self, target: u32, collect: bool, mut hours: Option<&mut Vec<Changes>>) -> io::Result<Stop> {
         let pages = Arc::clone(&self.pages);
         let run = &pages.runs()[self.run];
@@ -860,7 +754,6 @@ impl Lane {
         Ok(Stop::Reached)
     }
 
-    /// The head moves into a fetched part at block hour `hour`: a cursor of its own.
     fn enter(&mut self, given: Given, hour: u16) {
         #[cfg(test)]
         {
@@ -874,7 +767,6 @@ impl Lane {
         self.under = Some(Under { cursor, block: given.block, last, bytes, tracks, texts });
     }
 
-    /// The part under the head is passed: checked to hold nothing past it, its cursor retired.
     fn pass(&mut self) -> io::Result<()> {
         let mut under = self.under.take().expect("a part under the head");
         under.cursor.advance(under.last + 1, 1, &mut self.cells, &mut self.written, &mut self.lives)?;
@@ -883,9 +775,6 @@ impl Lane {
         Ok(())
     }
 
-    /// The step's change set from what the reader wrote: lives netted, each slot once, values.
-    /// Within one part a slot is written twice only when a lifetime names it, so only a step that
-    /// crosses a part has every slot checked.
     fn finish(&mut self, out: &mut Changes) -> io::Result<()> {
         let words = (self.cells.slots() as usize).div_ceil(64);
         if self.marks.len() < words {
@@ -938,8 +827,6 @@ impl Lane {
         Ok(())
     }
 
-    /// The first game hour through the head at which the table's status is not `held`, the status
-    /// it held up to the last status read; none when every hour since kept it.
     fn status_left(&self, held: Status) -> io::Result<Option<Hour>> {
         let head = self.next.expect("sought") - 1;
         let mut hour = self.status_until;
@@ -956,14 +843,11 @@ impl Lane {
         Ok(None)
     }
 
-    /// The rows live before the step and gone after it, and those live after it and new, from the
-    /// step's lives in hour order (deletes before inserts within an hour).
     fn net_lives(&mut self, out: &mut Changes) {
         let first = self.game(0);
         let Self { deletes, inserts, marks, cells, .. } = self;
         let Changes { deleted, inserted, .. } = out;
         let game = |hour: u32| first + hour as Hour;
-        // A slot is deleted twice, or inserted twice, only with the other between.
         if inserts.is_empty() || deletes.is_empty() {
             deletes.iter().for_each(|&(hour, slot, key)| deleted.push(game(hour), slot, key));
             inserts.iter().filter(|&&(_, slot, key)| cells.key(slot) == Some(key)).for_each(|&(hour, slot, key)| inserted.push(game(hour), slot, key));
@@ -992,7 +876,6 @@ impl Lane {
         inserts.iter().for_each(|&(_, slot, _)| unmark(marks, slot));
     }
 
-    /// The status and sample hour at the head, read again only where its runs change.
     fn read_status(&mut self) -> io::Result<()> {
         let head = self.next.expect("sought") - 1;
         if head < self.status_until {
@@ -1017,8 +900,6 @@ impl Lane {
     }
 }
 
-/// The part under the head brought to block hour `to` in steps of `span` hours, a declared passing
-/// table's rows handed over as they go.
 #[expect(clippy::too_many_arguments, reason = "the lane's fields, borrowed apart")]
 fn cursor_advance(cursor: &mut Cursor, to: u16, span: u16, cells: &mut TableState, written: &mut [Vec<u32>], lives: &mut Lives, passage: Option<&mut Passage>, columns: &[usize], start: u32) -> io::Result<Advanced> {
     match passage {
@@ -1030,11 +911,6 @@ fn cursor_advance(cursor: &mut Cursor, to: u16, span: u16, cells: &mut TableStat
     }
 }
 
-/// One hour's own change set appended to `out`, from what the cursor wrote in it: the slots each
-/// column took past `at`, and the slots the hour inserted (whose cells the reader puts straight
-/// into the lane and names in no write), each once, with the values the hour left them; and the
-/// rows it deleted and inserted past `lived`. An hour that wrote nothing leaves nothing. A slot
-/// the hour wrote and left dead is not a cell of it: its row's delete says what became of it.
 #[expect(clippy::too_many_arguments, reason = "the lane's fields, borrowed apart")]
 fn hour_changes(out: &mut Vec<Changes>, table: usize, columns: &[usize], keyed: bool, hour: Hour, cells: &TableState, written: &[Vec<u32>], at: &[usize], marks: &mut Vec<u64>, lives: &Lives, lived: (usize, usize), first: Hour) -> io::Result<()> {
     let wrote = written.iter().zip(at).any(|(held, &mark)| held.len() > mark);

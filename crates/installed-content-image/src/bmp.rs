@@ -1,9 +1,3 @@
-//! Windows BMP decoding for the map's index and colour bitmaps.
-//!
-//! Both entry points return rows from the top-left corner whichever way the
-//! file stores them. The shipped map bitmaps declare a `biSizeImage` two bytes
-//! larger than their pixels occupy, so the declared size is never used as an
-//! offset; only the file's own length bounds a read.
 
 use std::io;
 
@@ -11,7 +5,6 @@ use std::io;
 use super::Rgba8Image;
 use super::{IndexedImage, invalid, reserved};
 
-/// DIB header sizes the game's bitmaps use: BITMAPINFOHEADER through V5.
 const DIB_SIZES: [u32; 5] = [40, 52, 56, 108, 124];
 
 fn u32_at(bytes: &[u8], offset: usize) -> io::Result<u32> {
@@ -34,29 +27,22 @@ fn u16_at(bytes: &[u8], offset: usize) -> io::Result<u16> {
     ))
 }
 
-/// The parts of a BI_RGB Windows BMP header both decoders need.
 struct Header {
     width: u32,
     height: u32,
-    /// True when the file stores the top row first, that is, a negative height.
     top_down: bool,
-    /// Offset and stride of the pixel array, padded to four bytes per row.
     pixels: usize,
     row_bytes: usize,
     stride: usize,
-    /// Start and declared entry count of the color table.
     palette: usize,
     palette_entries: usize,
 }
 
-/// The validated 24-bit bitmap extent without allocating its decoded pixels.
 #[cfg(any(test, feature = "test-support"))]
 pub fn rgb_dimensions(input: &[u8]) -> io::Result<[u32; 2]> {
     rgb_dimensions_prefix(input, input.len() as u64)
 }
 
-/// Validate dimensions using the complete DIB header and full verified file
-/// length, without retaining or decoding the pixel array.
 pub fn rgb_dimensions_prefix(prefix: &[u8], length: u64) -> io::Result<[u32; 2]> {
     let header = header(prefix, 24)?;
     let total = header
@@ -146,7 +132,6 @@ fn header(input: &[u8], bits: u16) -> io::Result<Header> {
 }
 
 impl Header {
-    /// Yields each stored row in top-to-bottom display order.
     fn rows<'a>(&self, input: &'a [u8]) -> io::Result<Vec<&'a [u8]>> {
         let total = self
             .stride
@@ -176,10 +161,6 @@ impl Header {
     }
 }
 
-/// Decodes an 8-bit BI_RGB BMP into palette indices and an RGBA color table.
-///
-/// Entries the color table does not declare stay all zero; declared entries are
-/// opaque, because the fourth byte of a BMP palette entry is reserved.
 pub fn decode_indexed(input: &[u8]) -> io::Result<IndexedImage> {
     let header = header(input, 8)?;
     let mut palette = [[0_u8; 4]; 256];
@@ -202,7 +183,6 @@ pub fn decode_indexed(input: &[u8]) -> io::Result<IndexedImage> {
     })
 }
 
-/// Decodes a 24-bit BI_RGB BMP into opaque RGBA8 pixels.
 #[cfg(any(test, feature = "test-support"))]
 pub fn decode_rgb(input: &[u8]) -> io::Result<Rgba8Image> {
     let header = header(input, 24)?;
@@ -238,8 +218,6 @@ mod tests {
         declared_entries: u32,
         pixels: &[u8],
     ) -> Vec<u8> {
-        // Always leave room for the fields this helper writes, even when the
-        // declared DIB size is one the decoder must refuse.
         let header_bytes = (14 + dib_size as usize).max(54);
         let offset = header_bytes + palette.len() * 4;
         let mut bytes = vec![0_u8; header_bytes];
@@ -251,7 +229,6 @@ mod tests {
         bytes[22..26].copy_from_slice(&height.to_le_bytes());
         bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
         bytes[28..30].copy_from_slice(&bits.to_le_bytes());
-        // A deliberately wrong biSizeImage, as the shipped map bitmaps carry.
         bytes[34..38].copy_from_slice(&(pixels.len() as u32 + 2).to_le_bytes());
         bytes[46..50].copy_from_slice(&declared_entries.to_le_bytes());
         for entry in palette {
@@ -271,7 +248,6 @@ mod tests {
     #[test]
     fn indexed_rows_pad_to_four_bytes_and_come_out_top_left_first() {
         let palette = [[9_u8, 8, 7, 0], [1, 2, 3, 0]];
-        // Width 3 pads each row to 4 bytes; the fourth byte is not a pixel.
         let bottom_up = bitmap(40, 3, 2, 8, &palette, 2, &[1, 1, 0, 77, 0, 1, 0, 77]);
         let image = decode_indexed(&bottom_up).unwrap();
         assert_eq!((image.width, image.height), (3, 2));
@@ -304,7 +280,6 @@ mod tests {
         let bytes = bitmap(40, 1, 1, 8, &palette, 0, &[5, 0, 0, 0]);
         let image = decode_indexed(&bytes).unwrap();
         assert_eq!(image.palette[255], [0, 0, 255, 255]);
-        // A short table still fills only what the file actually stores.
         let bytes = bitmap(40, 1, 1, 8, &palette[..3], 0, &[2, 0, 0, 0]);
         let image = decode_indexed(&bytes).unwrap();
         assert_eq!(image.palette[2], [0, 0, 2, 255]);
@@ -313,7 +288,6 @@ mod tests {
 
     #[test]
     fn twenty_four_bit_pixels_become_opaque_rgba() {
-        // Two 24-bit pixels occupy six bytes; each row pads to eight.
         let bytes = bitmap(
             40,
             2,
@@ -368,7 +342,6 @@ mod tests {
 
     #[test]
     fn a_declared_image_size_larger_than_the_pixels_is_still_read() {
-        // Every shipped 8-bit map bitmap declares two extra bytes.
         let bytes = bitmap(124, 4, 1, 8, &[[0; 4]], 1, &[0, 0, 0, 0]);
         assert_eq!(decode_indexed(&bytes).unwrap().indices.len(), 4);
     }

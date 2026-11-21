@@ -1,5 +1,3 @@
-//! Shared first/change regional mine snapshots. Reusable frame buffers share
-//! one worker cache, so each native slice is acquired once per certificate.
 use engine_native::{Memory, cpdx_array::Array, naval_mine_inputs as native};
 use replay_data::rows::NavalRegionalMineRow;
 use std::{collections::HashMap, sync::Mutex};
@@ -64,8 +62,6 @@ impl Held {
             }
         }
         if !validate() {
-            // Modified owned rows must never survive under old certificates.
-            // Only affected slices are retried after this observed writer.
             for (part, token) in self.parts.iter_mut().zip(current) {
                 if changed_lifecycle || part.certificate != token {
                     part.certificate = None;
@@ -108,8 +104,6 @@ struct Cache {
 }
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
-/// A frame owns no duplicate snapshot; native acquisition is shared across
-/// the worker's reusable frame buffers. Only emitted wire rows are frame-owned.
 #[derive(Default)]
 pub(crate) struct Captured;
 impl Captured {

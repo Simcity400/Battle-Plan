@@ -118,7 +118,6 @@ test('a 5,000-row windowed redraw mounts only the rows in view and those sliding
   let history = commitRows(EMPTY_HISTORY, rows.map(row => ({ key: row.key, item: row })), 0, 450);
   const retained = new Set(rows.slice(992, 1028).map(row => row.key));
   let drawn = 0;
-  // Sorted one way, then redrawn sorted the other: every row slides.
   for (let i = 0; i < 2; i++) {
     const sorted = sortRows(rows, row => BigInt(row.value), i % 2 ? 'ascending' : 'descending', row => row.key);
     const items = sorted.map(row => ({ key: row.key, item: row }));
@@ -176,8 +175,6 @@ test('dated faction changes move existing country keys through the shared row mo
   assert.ok(shownRows(history, changed, 100, 450).every(row => row.phase === 'staying'));
 });
 
-// Run 13: a commit after every row joining a table, each measured at the height every row has (a compact row is a pixel
-// over the stylesheet's minimum, so every one of them was "taller").
 test('a row measured at the height the rows have changes nothing; only a taller row, or the rows shrinking, does', () => {
   const empty = { scope: 's', heights: new Map<string, number>(), floor: 0 };
   const first = withRowHeights(empty, [['a', 23], ['b', 23], ['c', 46]], 22, 's');

@@ -1,8 +1,3 @@
-//! A state's strategic resource amount from its recorded operands,
-//! compared as a whole 32-bit integer in a state scope. The shared trigger
-//! evaluator ([`crate::triggers`], used by the viewer's raids and by scripted
-//! text) and the viewer's tactic triggers both evaluate it here, from one
-//! recorded hour.
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
@@ -14,7 +9,6 @@ use replay_data::{
 };
 use replay_frame::frame::{HourFrame, Rowset};
 
-/// The fields of each table the resource operands read.
 const ACTIVE: u64 = mask::<ResourceDefinitionRow>(&["token", "active"]);
 const INPUT: u64 = mask::<StateResourceInputRow>(&[
     "gate",
@@ -31,43 +25,30 @@ const OVERRIDE: u64 =
     mask::<CountryBuildingResourceRow>(&["building", "count", "resource", "amount"]);
 
 type Index<T> = OnceLock<crate::triggers::refusal::Resolved<Result<T, crate::triggers::Failure>>>;
-/// Building type token to its `local_resources` grants by resource token.
 type Grants = BTreeMap<u32, Result<Vec<(u32, i64)>, crate::triggers::Failure>>;
 
-/// One in fixed5.
 pub const ONE: i64 = 100_000;
 
-/// The operands combined for one state and resource, all fixed5.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ResourceOperands {
-    /// `StateBaseResources`: the template amount.
     pub template: i64,
-    /// The retained resource pool.
     pub pool: i64,
-    /// Whether `additive` counts.
     pub gate: bool,
     pub additive: i64,
     pub factor: i64,
     pub global_factor: i64,
-    /// The controller's origin for the state; `None` makes both factors one.
     pub origin: Option<OriginFactors>,
     pub cost: i64,
-    /// The healthy-level building grants.
     pub grants: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OriginFactors {
-    /// The infrastructure level and the controller's infrastructure modifier.
     pub infrastructure: Option<(i32, i64)>,
     pub supply_route: bool,
-    /// `INFRASTRUCTURE_RESOURCE_BONUS` and `SUPPLY_ROUTE_RESOURCE_BONUS`.
     pub bonuses: [i64; 2],
 }
 
-/// The unscaled base amount: `(template + pool + additive under the gate) x factor x global
-/// factor`, each product truncated, each factor one plus its modifier and never below zero.
-/// It is also the full amount a resource origin holds for the resource.
 pub fn base_amount(operands: &ResourceOperands) -> i64 {
     let additive = if operands.gate { operands.additive } else { 0 };
     let factor = operands.factor.wrapping_add(ONE).max(0);
@@ -81,9 +62,6 @@ pub fn base_amount(operands: &ResourceOperands) -> i64 {
     base.wrapping_mul(global) / ONE
 }
 
-/// The origin's infrastructure factor: one, plus the level times
-/// `INFRASTRUCTURE_RESOURCE_BONUS`, plus the controller's modifier (scaled by the level when
-/// positive); one without an infrastructure building.
 pub fn infrastructure_factor(infrastructure: Option<(i32, i64)>, bonus: i64) -> i64 {
     match infrastructure {
         None => ONE,
@@ -101,9 +79,6 @@ pub fn infrastructure_factor(infrastructure: Option<(i32, i64)>, bonus: i64) -> 
     }
 }
 
-/// One resource in the game's order: base amount, then the origin's
-/// infrastructure and supply-route factors, clamped at zero, minus the cost,
-/// plus the grants. Uses signed i64 with truncating division and wrapping products.
 pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
     let base = base_amount(operands);
     let (infrastructure, supply) = match operands.origin {
@@ -124,8 +99,6 @@ pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
         .wrapping_add(operands.grants)
 }
 
-/// One building's resource grant: `bonus` is the controller's override
-/// amount when the building has an override, which keeps only a positive sum.
 pub fn building_grant(healthy: i16, amount: i64, bonus: Option<i64>) -> i64 {
     if healthy <= 0 {
         return 0;
@@ -144,13 +117,10 @@ pub fn building_grant(healthy: i16, amount: i64, bonus: Option<i64>) -> i64 {
     }
 }
 
-/// The resource amount truncated to whole units and to 32 bits, then compared.
 pub fn resource_comparison(amount: i64, comparison: Operator, wanted: i32) -> bool {
     int_comparison((amount / ONE) as i32, comparison, wanted)
 }
 
-/// `>` is `N < v`, `<` is `v < N`, `=` is equality, over the
-/// one-character operators the lexer reads.
 pub fn int_comparison(value: i32, comparison: Operator, wanted: i32) -> bool {
     match comparison {
         Operator::Greater => wanted < value,
@@ -159,8 +129,6 @@ pub fn int_comparison(value: i32, comparison: Operator, wanted: i32) -> bool {
     }
 }
 
-/// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and
-/// `SUPPLY_ROUTE_RESOURCE_BONUS`, fixed5, as [`OriginFactors::bonuses`].
 pub fn resource_bonuses(defines: &Defines) -> io::Result<[i64; 2]> {
     Ok([
         defines.fixed5("NBuildings", "INFRASTRUCTURE_RESOURCE_BONUS")?,
@@ -168,35 +136,20 @@ pub fn resource_bonuses(defines: &Defines) -> io::Result<[i64; 2]> {
     ])
 }
 
-/// The hour's joins a state's amount reads through.
 pub trait Links {
-    /// A raw country reference's canonical slot (`CountryLinks`), `None`
-    /// when the hour has none.
     fn slot(&self, raw: u32) -> Option<u32>;
-    /// The lexer token of a name, as the game finds a token for a key.
     fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String>;
-    /// Typed input errors for trigger consumers; content-only implementations
-    /// retain their ordinary unsupported diagnostics.
     fn token_input(&self, name: &[u8]) -> Result<Option<u32>, crate::triggers::Failure> {
         self.token_of(name).map_err(Into::into)
     }
 }
 
-/// One hour's recorded state resource operands, each index built on first
-/// use.
 pub struct StateResources<'a> {
     frame: HourFrame<'a>,
-    /// Building types, for their `local_resources_<resource>` grants.
     buildings: &'a Buildings,
-    /// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and
-    /// `SUPPLY_ROUTE_RESOURCE_BONUS`, fixed5.
     resource_bonuses: [i64; 2],
-    /// Resource token to its `active` byte.
     resources: Index<BTreeMap<u32, u8>>,
-    /// Each state's buildings: type token and healthy level.
     state_buildings: Index<BTreeMap<u32, Vec<(u32, i16)>>>,
-    /// Each canonical country's overrides in native order: building, count, resource and
-    /// amount.
     overrides: Index<BTreeMap<u32, Vec<(u32, u32, u32, u32, i64)>>>,
     grants: Index<Grants>,
 }
@@ -210,7 +163,6 @@ fn table<T: TableSchema>(
         .map_err(|error| crate::triggers::Failure::input(T::ID, "", None, error.to_string()))
 }
 
-/// `rows`' failure to build a row of `T`, refused where it is reached.
 fn walked<T: TableSchema>(why: io::Error) -> crate::triggers::Failure {
     crate::triggers::refusal::input_error(T::ID, why)
 }
@@ -247,7 +199,6 @@ impl<'a> StateResources<'a> {
         }
     }
 
-    /// The recorded resource database: each resource token's `active` byte.
     pub fn resource_database(&self) -> Result<&BTreeMap<u32, u8>, crate::triggers::Failure> {
         get(&self.resources, || {
             table::<tables::ResourceDefinitions>(self.frame, ACTIVE)?
@@ -260,8 +211,6 @@ impl<'a> StateResources<'a> {
         })
     }
 
-    /// `local_resources` grants by building token; the game drops a name
-    /// that is not an active resource.
     fn grants(&self, links: &impl Links) -> Result<&Grants, crate::triggers::Failure> {
         get(&self.grants, || {
             let resources = self.resource_database()?;
@@ -277,8 +226,6 @@ impl<'a> StateResources<'a> {
         })
     }
 
-    /// The fixed5 amount for the state's resource token; `controller` is
-    /// the state's controller's canonical slot, whose building overrides apply.
     pub fn amount(
         &self,
         state: u32,
@@ -291,8 +238,6 @@ impl<'a> StateResources<'a> {
         ))
     }
 
-    /// The operands [`Self::amount`] combines for the state's resource token: what the
-    /// resources map mode's origins read too (the full amount, [`base_amount`], and the grants).
     pub fn operands(
         &self,
         state: u32,
@@ -300,7 +245,6 @@ impl<'a> StateResources<'a> {
         controller: Option<u32>,
         links: &impl Links,
     ) -> Result<ResourceOperands, crate::triggers::Failure> {
-        // Each table is keyed by the state, and the resource after it.
         let key = (u128::from(state) << 32) | u128::from(resource);
         let input = table::<tables::StateResourceInputs>(self.frame, INPUT)?
             .get(u128::from(state))
@@ -313,10 +257,6 @@ impl<'a> StateResources<'a> {
                 format!("state {state} has no recorded resource inputs"),
             )
         })?;
-        // The operands are the game's at the frame's hour (the raid state
-        // family reads every state and country a hooked writer touched),
-        // except the supply-route flag, the value at the state's last read,
-        // up to a day old.
         let stored = table::<tables::StateResources>(self.frame, STORED)?
             .get(key)
             .map_err(walked::<tables::StateResources>)?;
@@ -341,7 +281,6 @@ impl<'a> StateResources<'a> {
         ))
     }
 
-    /// The state's buildings' grants of one resource, with the controller's overrides.
     fn building_grants(
         &self,
         state: u32,
@@ -406,16 +345,12 @@ impl<'a> StateResources<'a> {
     }
 }
 
-/// The amount a building's grant list gives of `resource`, if it names it.
 pub fn grant_of(list: &[(u32, i64)], resource: u32) -> Option<i64> {
     list.iter()
         .find(|(token, _)| *token == resource)
         .map(|&(_, amount)| amount)
 }
 
-/// A state's buildings' grants of one resource: each building (type token, healthy level)
-/// whose `grant` names the resource, under the controller's `overrides` (ordinal, building,
-/// count, resource, amount, in native order).
 pub fn building_grants_from<E>(
     buildings: &[(u32, i16)],
     overrides: &[(u32, u32, u32, u32, i64)],
@@ -427,9 +362,6 @@ pub fn building_grants_from<E>(
         let Some(amount) = grant(building)? else {
             continue;
         };
-        // Override presence reads the first entry; value lookup reads the
-        // first matching element.
-        // The amounts are the country's at the frame's hour.
         let bonus = overrides
             .iter()
             .find(|row| row.1 == building)
@@ -445,9 +377,6 @@ pub fn building_grants_from<E>(
     Ok(total)
 }
 
-/// Each building type's `local_resources` grants by its token, the game dropping a name that is
-/// not an active resource; a building whose grants are refused holds the reason. `token_of`
-/// spells a name to its lexer token.
 pub fn grant_lists<E>(
     buildings: &Buildings,
     active: impl Fn(u32) -> bool,
@@ -481,10 +410,6 @@ pub fn grant_lists<E>(
     Ok(out)
 }
 
-/// The operands of one state resource from its recorded values: the template amount, the
-/// retained (pool, additive, factor, cost), the state's resource inputs (gate, global factor,
-/// and, when the controller holds an origin, the infrastructure level with its modifier and the
-/// supply-route flag) and the building grants.
 pub fn resource_operands(
     template: i64,
     stored: Option<[i64; 4]>,
@@ -525,7 +450,6 @@ mod tests {
             additive: 100_000,
             ..Default::default()
         };
-        // The additive key counts only under the gate.
         assert_eq!(amount(&plain), 2_300_000);
         assert_eq!(
             amount(&ResourceOperands {
@@ -534,7 +458,6 @@ mod tests {
             }),
             2_400_000
         );
-        // Factor then global factor, each truncated; a factor below -1 is zero.
         let factored = ResourceOperands {
             factor: -50_000,
             global_factor: 33_333,
@@ -550,8 +473,6 @@ mod tests {
             }),
             -49_993
         );
-        // Origin factors: 1 + 3 * 0.15, a positive modifier scaled by the
-        // level, a negative one added as is; the supply route adds 0.2.
         let origin = |modifier, supply_route| OriginFactors {
             infrastructure: Some((3, modifier)),
             supply_route,
@@ -576,7 +497,6 @@ mod tests {
             }),
             2_300_000
         );
-        // A negative scaled amount clamps to zero before cost and grants.
         assert_eq!(
             amount(&ResourceOperands {
                 template: -5_000_000,

@@ -1,19 +1,3 @@
-//! Multi-producer lane for per-thread observer logs.
-//!
-//! A log gives each registered native thread its own single-producer lane.
-//! A thread registering after every lane is taken writes here instead of
-//! invalidating the interval: it reserves the next index by compare-exchange,
-//! fills that slot and its byte span, and publishes the slot with a release
-//! mark. The hourly consumer merges published slots with the dedicated lanes
-//! by the log-wide order each record carries, releases each slot after
-//! copying it, and frees ring space only over a released prefix, so
-//! out-of-order publication never lets a producer overwrite an unread slot.
-//!
-//! The ring never moves and [`SharedLane::reserve`] never refuses for room: a
-//! record that finds every slot unreleased, or needs more bytes than a slot
-//! holds, gets storage of its own from the global allocator and is pushed on
-//! a lock-free stack the consumer takes whole. Its demand sizes the next lane;
-//! only a refused allocation refuses a record.
 use engine_allocation as allocation;
 use std::{
     cell::UnsafeCell,
@@ -24,11 +8,9 @@ use std::{
     },
 };
 
-// A slot mark holds its index + 1 once published, with these flags.
 const RELEASED: u64 = 1 << 63;
 const VOID: u64 = 1 << 62;
 const FLAGS: u64 = RELEASED | VOID;
-// An index with this bit names a spilled record by its address.
 const SPILLED: u64 = 1 << 63;
 
 struct Slot<R> {
@@ -38,8 +20,6 @@ struct Slot<R> {
 
 struct Spill<R> {
     next: AtomicPtr<Spill<R>>,
-    /// The ring position it was spilled at and its place among spills, so records
-    /// of one order keep the producer's publication order.
     ticket: u64,
     sequence: u64,
     released: AtomicBool,
@@ -48,7 +28,6 @@ struct Spill<R> {
 }
 
 struct Taken<R>(*mut Spill<R>);
-// Only the consumer holds the taken list, under its lock.
 unsafe impl<R: Send> Send for Taken<R> {}
 
 pub struct SharedLane<R> {
@@ -60,20 +39,15 @@ pub struct SharedLane<R> {
     rejected: AtomicU64,
     consumed_rejected: AtomicU64,
     required_entries: AtomicUsize,
-    /// Published spilled records the consumer has not taken, newest first.
     pushed: AtomicPtr<Spill<R>>,
     taken: Mutex<Taken<R>>,
-    /// Spilled reservations not yet freed, and their bytes.
     spilled: AtomicUsize,
     spilled_bytes: AtomicUsize,
     spill_sequence: AtomicU64,
 }
-// Each reserved index or spilled record has one producer until it publishes; the
-// consumer reads a record only after its publication and frees it only after copying it.
 unsafe impl<R: Send> Sync for SharedLane<R> {}
 
 impl<R: Copy + Default> SharedLane<R> {
-    /// `entries` rounds up to a power of two; `stride` bytes follow each slot.
     pub fn new(entries: usize, stride: usize) -> io::Result<Self> {
         let entries = entries
             .max(1)
@@ -110,8 +84,6 @@ impl<R: Copy + Default> SharedLane<R> {
     pub fn stride(&self) -> usize {
         self.stride
     }
-    /// No reservation can still own an element. The owner must separately
-    /// exclude new producers before replacing the lane.
     pub fn is_drained(&self) -> bool {
         self.reserved.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
             && self.spilled.load(Ordering::Acquire) == 0
@@ -122,7 +94,6 @@ impl<R: Copy + Default> SharedLane<R> {
             + self.spilled.load(Ordering::Relaxed) * size_of::<Spill<R>>()
             + self.spilled_bytes.load(Ordering::Relaxed)
     }
-    /// Unreleased demand including spilled and refused records, for off-thread growth.
     pub fn required_entries(&self) -> usize {
         self.required_entries.load(Ordering::Relaxed)
     }
@@ -136,14 +107,9 @@ impl<R: Copy + Default> SharedLane<R> {
             .saturating_sub(self.tail.load(Ordering::Acquire)) as usize)
             .saturating_add(self.spilled.load(Ordering::Acquire))
     }
-    /// Callback side: never waits, and never refuses for room. `None` only when
-    /// a full ring's record could not be allocated; that refusal counts toward
-    /// the demand the next lane must hold.
     pub fn reserve(&self) -> Option<Reservation<'_, R>> {
         self.reserve_bytes(0)
     }
-    /// [`Self::reserve`] for a record of `len` bytes; one longer than the
-    /// stride is spilled with a span of exactly its length.
     pub fn reserve_bytes(&self, len: usize) -> Option<Reservation<'_, R>> {
         if len > self.stride {
             return self.spill(len, 0, self.reserved.load(Ordering::Acquire));
@@ -158,14 +124,11 @@ impl<R: Copy + Default> SharedLane<R> {
             }
         }
     }
-    /// Ring only, for an owner that keeps whole records elsewhere when the
-    /// ring is full: `None` when every slot holds an unreleased record.
     pub fn try_reserve(&self) -> Option<Reservation<'_, R>> {
         self.ring()
             .map_err(|(pending, _)| self.refuse(pending))
             .ok()
     }
-    /// A full ring gives its pending count and reservation position.
     fn ring(&self) -> Result<Reservation<'_, R>, (u64, u64)> {
         let len = self.slots.len() as u64;
         let mut index = self.reserved.load(Ordering::Acquire);
@@ -242,8 +205,6 @@ impl<R: Copy + Default> SharedLane<R> {
     fn spilled_record(index: u64) -> *mut Spill<R> {
         ptr::with_exposed_provenance_mut((index & !SPILLED) as usize)
     }
-    /// Where a record stands among those of its order: a spilled record after the
-    /// ring records reserved before it and before those reserved after it.
     fn position(&self, index: u64) -> (u64, bool, u64) {
         if index & SPILLED != 0 {
             let spill = unsafe { &*Self::spilled_record(index) };
@@ -252,15 +213,11 @@ impl<R: Copy + Default> SharedLane<R> {
             (index, true, 0)
         }
     }
-    /// Consumer side: every published, unreleased record as (order, index),
-    /// sorted by the log-wide order, then by publication. Void reservations are
-    /// released here.
     pub fn published(&self, order: impl Fn(&R) -> u64) -> Result<Vec<(u64, u64)>, &'static str> {
         let mut entries = Vec::new();
         self.published_into(&mut entries, order)?;
         Ok(entries)
     }
-    /// Reuse the sole consumer's ordering arena across drains.
     pub fn published_into(
         &self,
         entries: &mut Vec<(u64, u64)>,
@@ -312,7 +269,6 @@ impl<R: Copy + Default> SharedLane<R> {
         entries.sort_unstable();
         Ok(())
     }
-    /// A published, unreleased record and its byte span.
     pub fn record(&self, index: u64) -> (R, &[u8]) {
         if index & SPILLED != 0 {
             let spill = unsafe { &*Self::spilled_record(index) };
@@ -325,7 +281,6 @@ impl<R: Copy + Default> SharedLane<R> {
         let bytes = unsafe { std::slice::from_raw_parts(self.byte_pointer(index), self.stride) };
         (record, bytes)
     }
-    /// After the record and its bytes are copied or withdrawn.
     pub fn release(&self, index: u64) {
         if index & SPILLED != 0 {
             unsafe { &*Self::spilled_record(index) }
@@ -335,9 +290,6 @@ impl<R: Copy + Default> SharedLane<R> {
         }
         self.slot(index).mark.fetch_or(RELEASED, Ordering::Release);
     }
-    /// Frees ring space over the released prefix and every released spilled
-    /// record. When nothing is left unreleased, refusals up to `rejected`
-    /// belong to the drained interval.
     pub fn advance(&self, rejected: u64) {
         let end = self.reserved.load(Ordering::Acquire);
         let mut tail = self.tail.load(Ordering::Acquire);
@@ -401,23 +353,18 @@ enum At<R> {
     Spill(*mut Spill<R>),
 }
 
-/// One reserved slot or spilled record. Dropped unpublished (an early refusal
-/// after the reservation), a slot is published void so the ring never keeps a
-/// hole, and a spilled record is freed.
 pub struct Reservation<'a, R: Copy + Default> {
     lane: &'a SharedLane<R>,
     at: At<R>,
     published: bool,
 }
 impl<R: Copy + Default> Reservation<'_, R> {
-    /// This record's byte span, written only by its producer.
     pub fn bytes(&mut self) -> *mut u8 {
         match self.at {
             At::Slot(index) => self.lane.byte_pointer(index),
             At::Spill(spill) => unsafe { (&*spill).bytes.as_ptr().cast::<u8>().cast_mut() },
         }
     }
-    /// The length of [`Self::bytes`].
     pub fn stride(&self) -> usize {
         match self.at {
             At::Slot(_) => self.lane.stride,
@@ -476,7 +423,6 @@ mod tests {
         let lane = SharedLane::<u64>::new(2, 1).unwrap();
         let first = lane.try_reserve().unwrap();
         let second = lane.try_reserve().unwrap();
-        // A full ring refuses before taking an index and records demand.
         assert!(lane.try_reserve().is_none());
         assert_eq!(lane.rejected(), 1);
         assert!(lane.required_entries() >= 3);
@@ -484,7 +430,6 @@ mod tests {
         assert_eq!(lane.published(|&r| r).unwrap(), vec![(7, 1)]);
         lane.release(1);
         lane.advance(lane.rejected());
-        // The earlier slot is still being written: no space is freed yet.
         assert!(lane.try_reserve().is_none());
         first.publish(9);
         assert_eq!(lane.published(|&r| r).unwrap(), vec![(9, 0)]);
@@ -492,7 +437,6 @@ mod tests {
         lane.advance(lane.rejected());
         let third = lane.try_reserve().unwrap();
         drop(third);
-        // An abandoned reservation is void, never a hole.
         assert!(lane.published(|&r| r).unwrap().is_empty());
         lane.advance(lane.rejected());
         assert!(lane.try_reserve().is_some());
@@ -516,7 +460,6 @@ mod tests {
             write(&mut reservation, value);
             reservation.publish(value);
         }
-        // A record longer than the stride keeps its whole span.
         let mut long = lane.reserve_bytes(9).unwrap();
         assert_eq!(long.stride(), 9);
         write(&mut long, burst);
@@ -545,7 +488,6 @@ mod tests {
                     .all(|(at, &byte)| byte == (order as u8).wrapping_add(at as u8))
             );
         }
-        // An unreleased spilled record stays for the next drain.
         let (_, kept) = published[published.len() - 2];
         for &(_, index) in &published {
             if index != kept {
@@ -574,7 +516,6 @@ mod tests {
             publish(&lane);
         }
         let published = lane.published(|&(order, _)| order).unwrap();
-        // The consumer frees the ring while spilled records of the order wait.
         for &(_, index) in &published[..2] {
             lane.release(index);
         }
@@ -597,8 +538,6 @@ mod tests {
         let threads = 4_u64;
         let each = 2_000_u64;
         std::thread::scope(|scope| {
-            // The consumer holds its taken spills until every producer has finished its burst:
-            // a producer that waited for the consumer's lock would never finish.
             let taken = lane.taken.lock().unwrap();
             let producers: Vec<_> = (0..threads)
                 .map(|thread| {

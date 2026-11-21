@@ -24,7 +24,6 @@ test('tension and contributions read their own scales as percentages', () => {
 });
 
 test('a contribution’s share of the tension shown is its part of the sum, in contribution units, as the game divides it', () => {
-  // A 30% contribution of a 60% sum, with 50% shown (50,000 tension units): half of it, 25%.
   assert.equal(shareUnits(3_000_000n, 50_000n, 6_000_000n), 2_500_000n);
   assert.equal(shareUnits(1n, 50_000n, 3n), 1_666_666n);
   assert.equal(shareUnits(5n, 10n, 0n), 0n, 'nothing adds: no share');

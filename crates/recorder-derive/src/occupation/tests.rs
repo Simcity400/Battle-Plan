@@ -6,9 +6,6 @@ use crate::{
 use replay_columnar::{manifest::Status, store::Store};
 use replay_data::rows::{CountryLinkRow, CountryRow, OccupierTotalRow, StateGarrisonRow};
 
-/// One hour of the inputs: states (id, controller), resistance rows (state, occupied country,
-/// level, compliance, active), garrisons (controller, state), StateGarrisons' status, and the
-/// countries and links (raw id, slot).
 #[derive(Clone)]
 struct World {
     countries: Vec<(u32, u32)>,
@@ -55,7 +52,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// An occupier's resistance and compliance sums, states, held states and held_complete.
 fn totals(store: &Store, identity: Identity) -> Option<Vec<Option<i64>>> {
     cells(store, TableId::OccupierTotals, holders::key(identity))
 }
@@ -64,9 +60,6 @@ const A: Identity = (1, 10);
 const B: Identity = (2, 20);
 const C: Identity = (3, 30);
 
-/// Only active resistance with a positive occupied country counts, for the state's controller;
-/// held states unite the garrisoned and the occupied; held_complete wants a garrison on every
-/// occupied state; an occupier that holds nothing has no row.
 #[test]
 fn occupier_totals_sum_occupied_states_and_unite_held_ones() {
     let states = [(1, 10), (2, 10), (3, 10), (4, 20), (5, 20)];
@@ -96,8 +89,6 @@ fn occupier_totals_sum_occupied_states_and_unite_held_ones() {
     }
 }
 
-/// An occupied state whose controller resolves to no identity leaves every row's sums and counts
-/// unknown; garrisons not read in full leave held states to the occupied ones and never complete.
 #[test]
 fn an_unresolved_controller_or_unread_garrisons_say_what_is_not_known() {
     let states = [(1, 10), (2, 20), (3, 99)];
@@ -126,8 +117,6 @@ fn an_unresolved_controller_or_unread_garrisons_say_what_is_not_known() {
     }
 }
 
-/// A resume rebuilds every contribution from the tables: every hour after it equals a run that
-/// never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let states = [(1, 10), (2, 10), (3, 20)];

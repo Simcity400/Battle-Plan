@@ -1,4 +1,3 @@
-//! Exact serializer projections of retained history, including empty entries.
 use crate::{Report, complete, invalid, required_country_tag};
 use installed_content_save::{Save, production};
 use replay_data::rows;
@@ -45,8 +44,6 @@ pub fn compare(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // Managers serialize only while holding a group. Their country membership
-    // therefore derives exactly from group rows, including empty group logs.
     let mut countries = BTreeMap::new();
     for row in complete::<tables::CombatLogGroups>(frame)? {
         countries.insert(

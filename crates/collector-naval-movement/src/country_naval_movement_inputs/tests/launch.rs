@@ -64,8 +64,6 @@ fn launch_capacity() -> (Capacities, LaunchCapacities) {
 
 #[test]
 fn unreadable_countries_short_physical_arenas_or_area_faults_cannot_suppress_launch_zero() {
-    // Launch has no movement-owner input: no country table, physical arena
-    // or province-domain observation is its prerequisite.
     for scenario in 0..4 {
         let mut memory = launch_world();
         let (mut capacity, launch_capacity) = launch_capacity();
@@ -105,8 +103,6 @@ fn launch_fault_is_independent_of_the_physical_pass() {
     let mut launch = Launch::new(launch_capacity);
     let mut reader = captured.begin(&memory, 0, STATE, Some(71), &mut launch);
     assert!(words(&launch).is_none());
-    // The same slot-zero control still lends its ledgers; other slots are
-    // untouched by the launch refusal.
     assert_eq!(
         captured.borrow_navy(0).unwrap().ledger_navy(),
         Ok(ZERO_NAVY)
@@ -167,7 +163,6 @@ fn slot_zero_identity_failure_is_not_retried_for_launch_or_borrowers() {
 fn short_physical_arena_still_transfers_the_fixed_slot_zero_attempt_once() {
     let memory = launch_world();
     let (mut capacity, launch_capacity) = launch_capacity();
-    // The original physical arena starts below the manager's four slots.
     capacity.navies = 1;
     let mut captured = Captured::new(capacity);
     let mut launch = Launch::new(launch_capacity);

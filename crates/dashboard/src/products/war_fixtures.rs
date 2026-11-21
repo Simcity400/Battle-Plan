@@ -1,10 +1,7 @@
-//! Recorded war frames for tests.
 
 use replay_data::rows::{self, TableId};
 use replay_frame::frame::DecodedFrame;
 
-/// One recorded hour with three countries, their links and names, and a war
-/// between the first two.
 pub fn recorded(hour: i32) -> DecodedFrame {
     use replay_data::{
         rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LocalPlayerRow,

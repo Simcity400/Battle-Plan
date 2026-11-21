@@ -1,4 +1,3 @@
-//! Checked conversion from bounded native rows to recorded table outcomes.
 
 use engine_native::walk::Outcome;
 use replay_data::{rows::RowCodec, rows::TableRows, rows::TableSchema};
@@ -9,8 +8,6 @@ pub fn unavailable(reason: &str) -> TableView {
         reason: if crate::allocation::failed() {
             String::new()
         } else {
-            // prepare_frame and write_prepared reject the latched terminal
-            // state before any unavailable fallback can be published.
             engine_allocation::string(reason).unwrap_or_default()
         },
     }
@@ -27,8 +24,6 @@ pub fn table<S: TableSchema, T>(
     table_iter::<S, _>(outcome, source.iter(), convert)
 }
 
-/// A reusable permutation, never a certificate for row values or membership.
-/// Every conversion verifies strict replay-key order against the current source.
 #[derive(Default)]
 pub struct RowOrder {
     indices: Vec<usize>,
@@ -38,8 +33,6 @@ impl RowOrder {
         self.indices.capacity() * std::mem::size_of::<usize>()
     }
 
-    /// `key` must be exactly the key produced by `convert`. Source storage is
-    /// borrowed unchanged, including its native order and retained capacity.
     pub fn table<S: TableSchema, T>(
         &mut self,
         outcome: Outcome,
@@ -129,7 +122,6 @@ impl RowOrder {
     }
 }
 
-/// Convert borrowed rows without first materializing a parallel reference list.
 pub fn table_iter<S: TableSchema, T>(
     outcome: Outcome,
     source: impl Iterator<Item = T>,

@@ -1,7 +1,3 @@
-//! Where the map's playhead takes its pages: the format-12 recording a document has open, read
-//! whole, and the timeline one branch plays over them: the recording's own pieces of the branch
-//! ([`Replay::pieces`]), each cut to the runs of its segment. A revision's pages are read once
-//! while anyone holds them, whoever asks and for whichever branch.
 
 use playhead::{
     Piece, Timeline,
@@ -22,17 +18,13 @@ use std::{
 #[cfg(test)]
 pub mod tests;
 
-/// A recording's pages as units, the timeline of one branch over them, and its tables' column
-/// kinds.
 pub struct Units {
-    /// Recording identity shared by map and follow readers.
     pub name: String,
     pub pages: Arc<dyn Pages>,
     pub timeline: Timeline,
     pub kinds: Arc<Vec<Vec<Kind>>>,
 }
 
-/// A revision's pages as read, its column kinds, and the branch each of its runs records.
 pub struct Read {
     pub pages: Arc<dyn Pages>,
     pub kinds: Arc<Vec<Vec<Kind>>>,
@@ -43,8 +35,6 @@ type Held = (String, Weak<dyn Pages>, Arc<Vec<Vec<Kind>>>, Arc<[BranchId]>);
 
 static OPENED: Mutex<Vec<Held>> = Mutex::new(Vec::new());
 
-/// The reads under way, by name: a second caller waits for the first's read and shares it (the
-/// map and follow open the same recording at once), never reads beside it.
 static BUILDING: Mutex<Vec<(String, Weak<Mutex<()>>)>> = Mutex::new(Vec::new());
 
 fn build_gate(name: &str) -> Arc<Mutex<()>> {
@@ -58,7 +48,6 @@ fn build_gate(name: &str) -> Arc<Mutex<()>> {
     gate
 }
 
-/// The revision named `name` as read: the one held, or `read`'s, read once however many ask at once.
 pub fn shared(name: &str, read: impl FnOnce() -> io::Result<Read>) -> io::Result<Read> {
     if let Some(held) = held(name) {
         return Ok(held);
@@ -75,8 +64,6 @@ pub fn shared(name: &str, read: impl FnOnce() -> io::Result<Read>) -> io::Result
     Ok(read)
 }
 
-/// The units of branch `branch` of the recording `replay` reads, its pages shared with it; a
-/// branch the recording does not hold is refused by name.
 pub fn of(replay: &Replay, branch: BranchId) -> io::Result<Units> {
     let pieces = replay.pieces(branch);
     if pieces.is_empty() {
@@ -93,8 +80,6 @@ pub fn of(replay: &Replay, branch: BranchId) -> io::Result<Units> {
     Ok(Units { name, pages: read.pages, timeline, kinds: read.kinds })
 }
 
-/// The units of the recording at `path` read as its timelines, of branch `branch` or of the
-/// main timeline when none is named, and that branch.
 pub fn at_path(path: &Path, branch: Option<BranchId>) -> io::Result<(Units, BranchId)> {
     let replay = Replay::open_timelines(path)?;
     let branch = match branch {
@@ -104,9 +89,6 @@ pub fn at_path(path: &Path, branch: Option<BranchId>) -> io::Result<(Units, Bran
     Ok((of(&replay, branch)?, branch))
 }
 
-/// The playhead's pieces of a timeline's `pieces`: each cut to the runs of its segment that hold
-/// its hours, in rising hours. Hours no run holds (a recorded gap, play the recorder missed) stay
-/// a gap between two pieces.
 fn cut(runs: &[Run], branches: &[BranchId], pieces: &[timelines::Piece]) -> Vec<Piece> {
     let mut cut = Vec::new();
     for piece in pieces {
@@ -122,8 +104,6 @@ fn cut(runs: &[Run], branches: &[BranchId], pieces: &[timelines::Piece]) -> Vec<
     cut
 }
 
-/// The branch of `replay` whose timeline `pages` and `timeline` play, the first when several play
-/// the same; none when no branch of it does.
 pub fn branch_playing(replay: &Replay, pages: &dyn Pages, timeline: &Timeline) -> Option<BranchId> {
     let branches = run_branches(replay.recording());
     if branches.len() != pages.runs().len() {
@@ -132,12 +112,10 @@ pub fn branch_playing(replay: &Replay, pages: &dyn Pages, timeline: &Timeline) -
     replay.branches.iter().map(|start| start.id).find(|&branch| cut(pages.runs(), &branches, &replay.pieces(branch)) == timeline.pieces())
 }
 
-/// The branch each run [`Span::Whole`] reads records: the readable runs, in order.
 fn run_branches(recording: &Recording) -> Vec<BranchId> {
     (0..recording.run_count()).filter_map(|run| recording.run(run).ok().map(|run| run.branch)).collect()
 }
 
-/// `recording`'s every readable run, read; [`shared`] keeps it while anyone holds its pages.
 fn read(recording: Recording) -> io::Result<Read> {
     let opened = WorldPages::over(recording, Span::Whole)?;
     let branches: Arc<[BranchId]> = run_branches(opened.recording()).into();
@@ -149,7 +127,6 @@ fn read(recording: Recording) -> io::Result<Read> {
     Ok(Read { pages, kinds, branches })
 }
 
-/// A revision's name: its root's digest and length, whatever path reached it.
 pub fn name(recording: &Recording) -> String {
     let revision = recording.revision();
     let digest: String = revision.root.iter().map(|byte| format!("{byte:02x}")).collect();

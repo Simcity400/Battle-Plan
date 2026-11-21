@@ -1,0 +1,19 @@
+# Recover the verified spool prefix and publish only acknowledged writes
+
+Each spool segment is independently recoverable. The reader checks the envelope version before using its payload and uses the same control-record tags as the replay trailer. Per-hour control entries do not reserve frame or session identity storage. The segment state validates branch and hour order, while frame decoding owns table baselines. Dropped work is represented by a recorded gap. Overflow of the loss log does not supply an invented range.
+
+An event-loss record names a detach and reattach interval using the preceding captured hour and the first observed hour after reattachment. Those hours are read anchors. An event captured within the interval stays observed, and a gap separately represents a lost frame at the second anchor. Retry may repeat this control entry, which the replay deduplicates. A failed capture can leave a verified readable prefix and declare partial termination. A new segment starts from fresh context and a keyframe on cleared table encoders. Recovery accepts a gap-only continuation after an earlier keyframe and a frameless checkpoint carrying its own session context. A bare branch needs an initial frame or recorded loss.
+
+## Recover only what was verified
+
+Recovery stops at the first damaged envelope or invalid record. It never searches the rest of the bytes for a later header. Optional parallel payload decode has the same acceptance and damage order as sequential decode. I/O and allocation failures propagate as resource errors. Header length is checked against the actual remaining extent before allocating payload space. Retaining frame metadata instead of every decoded table bounds memory use on a long spool. A later frame read checks its saved header offset, payload length and checksum. It copies the immutable payload under the seek lock, then validates and decodes it outside the lock. Recovery retains the original envelope format for finalization.
+
+Incremental recovery keeps the accepted byte count and a fingerprint of the accepted record positions, lengths, checksums and formats. An incomplete tail waits for the next growth pass. Finalizing a cached tail refuses to continue from it after the committed extent shrinks or those placements no longer match. The single-record reader instead reuses one payload buffer independently of segment size.
+
+## Keep capture, writing and durability ordered
+
+A writer validates context and prepares an entire record before creating a segment or writing it. The borrowed frame API preserves context error precedence. The write-start callback sends the preceding campaign watermark before a new record goes in flight. The commit callback follows a complete write before periodic sync can allocate and separately identifies a completed frame. Both callbacks must stay allocation-free. The row baseline advances only after a complete spool write. A retired sink is final even if its last record is only partially written.
+
+The ordered write-behind path performs its own durability without overlapping its writes. The live sink can instead overlap writes with one persistent periodic durability worker per segment. That worker reopens the file object on a separate handle so flushing does not serialize with the writer's synchronous I/O, and takes no capture or record buffers. It starts on first use, allows one in-flight request, reports a failure before the writer accepts more records, and polls also on idle timeouts. A forced barrier collects the outstanding result and flushes again to include writes accepted since the earlier request. Drop joins the thread even while unwinding an error, because the collector DLL cannot unload while the worker still executes. Timing for periodic work excludes forced barriers.
+
+[Spool recovery](../../crates/replay/src/spool.rs) · [Spool writer](../../crates/replay/src/spool/writer.rs) · [Spool tests](../../crates/replay/src/spool/writer/tests.rs)

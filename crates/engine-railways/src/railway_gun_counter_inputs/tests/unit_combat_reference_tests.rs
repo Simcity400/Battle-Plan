@@ -1,4 +1,3 @@
-// Reuses the gun/motion fixture and observer.
 use super::*;
 
 const LAND_REFERENCE: u64 = 0xffff_fffe_0000_1b59;
@@ -36,8 +35,6 @@ fn full_reference_fixture() -> EtaFixture {
         put64(&mut bytes, pointer + 0x10, secondary as u64);
         put64(&mut bytes, pointer + 0x18, handle);
     }
-    // No transfer in standing(); four distinct undisplaced buckets, as the
-    // existing helper requires. Reference types differ from gun's low word.
     bytes[BUCKETS..BUCKETS + 14 * reference_bucket::STRIDE].fill(0);
     registry(
         &mut bytes,

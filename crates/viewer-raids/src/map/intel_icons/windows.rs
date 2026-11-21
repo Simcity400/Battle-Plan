@@ -1,10 +1,3 @@
-//! The containers' windows: projection and placement, the instances a view keeps from frame to
-//! frame, the list's places, the draw and the hover shapes.
-//!
-//! Each state's container is one lifecycle instance and each entry another, kept while the state
-//! and the entry stay; every frame applies the entries' writes, sets the list's places, ticks
-//! the windows and draws each container under its own layer, far containers first. Nothing is
-//! clipped to the viewport.
 
 use super::*;
 use installed_content_core::{gui::native::Element, gui::native::Kind};
@@ -22,16 +15,11 @@ use viewer_foundation::map::{
     sprites::{self, Batch},
 };
 
-/// Everything one frame of intel icons needs besides the hour's icons.
 pub struct IntelInputs<'a> {
-    /// A province's label anchor (its finalised unit-stack slot 38).
     pub anchor: &'a dyn Fn(u32) -> Option<[f32; 3]>,
     pub camera: Camera,
-    /// The frame in device pixels, which the projection uses.
     pub viewport: [u32; 2],
-    /// Device pixels per interface pixel.
     pub ui_scale: f32,
-    /// Whether the map shows the Operatives mode.
     pub operatives: bool,
 }
 
@@ -42,7 +30,6 @@ struct Placed {
     anchor: IconAnchor,
 }
 
-/// A frame's containers, far to near, and what laying them out noted.
 #[derive(Clone, Debug, Default)]
 pub struct PreparedIntel {
     icons: Arc<IntelIcons>,
@@ -50,7 +37,6 @@ pub struct PreparedIntel {
     pub report: IntelReport,
 }
 
-/// Operatives icons use eye-height cutoff in the game camera, anchor-distance cutoff in free view.
 pub fn prepare(
     assets: &IntelAssets,
     inputs: &IntelInputs<'_>,
@@ -85,7 +71,6 @@ pub fn prepare(
             },
             Anchor::Centre(world) => world,
         };
-        // A point the camera cannot project places nothing, as for the raid icons.
         let Some(projection) = inputs
             .camera
             .project_map_icon(world, inputs.viewport, viewport)
@@ -111,17 +96,12 @@ pub fn prepare(
     out
 }
 
-/// One container's window and its entries' windows, in list order.
 #[derive(Debug)]
 struct Retained {
     root: Instance,
-    /// Each entry's window, with the children a withheld write hid: the next write that
-    /// sets one shows it again.
     entries: Vec<(EntryKey, EntryKind, Instance, BTreeSet<String>)>,
 }
 
-/// The intel windows of one map view, kept from frame to frame and built from one registry in
-/// one GUI viewport.
 #[derive(Debug, Default)]
 pub struct IntelView {
     built: Option<(NativeWindows, [i32; 2])>,
@@ -131,7 +111,6 @@ pub struct IntelView {
 }
 
 impl IntelView {
-    /// Whether a window changed on its own at the last frame, not cleared.
     pub fn running(&self) -> bool {
         self.active
     }
@@ -142,14 +121,11 @@ impl IntelView {
         })
     }
 
-    /// Whether a window changed on its own at the last presented frame, cleared.
     pub fn take_running(&mut self) -> bool {
         std::mem::take(&mut self.active)
     }
 }
 
-/// An entry's hover shapes: the union of its eligible children's own hit shapes, in screen
-/// interface pixels.
 #[derive(Clone, Debug)]
 pub struct IntelHit {
     pub shapes: Vec<HitGeometry>,
@@ -158,13 +134,10 @@ pub struct IntelHit {
 }
 
 impl IntelHit {
-    /// An entry takes the point when any eligible child survives its own hit test.
-    /// Alpha-zero pixels remove only that child, leaving siblings and lower entries eligible.
     pub fn contains(&self, point: [f32; 2]) -> bool {
         self.shapes.iter().any(|shape| shape.contains(point))
     }
 
-    /// The shapes' joined footprint, where the hover's tooltip is anchored.
     pub fn bounds(&self) -> [f32; 4] {
         let mut out: Option<[f32; 4]> = None;
         for [x, y, w, h] in self.shapes.iter().filter_map(HitGeometry::bounds) {
@@ -181,12 +154,10 @@ impl IntelHit {
     }
 }
 
-/// The topmost entry under `point`: the latest drawn of the highest layer.
 pub fn hit_at(hits: &[IntelHit], point: [f32; 2]) -> Option<&IntelHit> {
     hit_seen(hits, |_| Some((point, 0)))
 }
 
-/// `seen` returns entry-local pointer coordinates and draw rank, or None for hidden containers.
 pub fn hit_seen(
     hits: &[IntelHit],
     seen: impl Fn(&IntelHit) -> Option<([f32; 2], u32)>,
@@ -203,7 +174,6 @@ pub fn hit_seen(
     top.map(|(_, hit)| hit)
 }
 
-/// The container template, its list and the entry templates, as the content declares them.
 struct Windows<'w> {
     root: &'w Element,
     list: &'w Element,
@@ -243,7 +213,6 @@ fn find_windows(native: &NativeWindows) -> Result<Windows<'_>, String> {
     })
 }
 
-/// The first element below `window` named `name`, in declaration order.
 fn find<'e>(window: &'e Element, name: &str) -> Option<&'e Element> {
     let mut stack: Vec<&Element> = window.nested().into_iter().rev().collect();
     while let Some(element) = stack.pop() {
@@ -255,7 +224,6 @@ fn find<'e>(window: &'e Element, name: &str) -> Option<&'e Element> {
     None
 }
 
-/// The element of `window` at `path`.
 fn by_path<'e>(window: &'e Element, path: &str) -> Option<&'e Element> {
     if window.path == path {
         return Some(window);
@@ -266,7 +234,6 @@ fn by_path<'e>(window: &'e Element, path: &str) -> Option<&'e Element> {
         .find_map(|nested| by_path(nested, path))
 }
 
-/// Whether the child passes the pointer through: its own `alwaystransparent`.
 fn transparent(element: &Element) -> bool {
     element
         .button()
@@ -293,7 +260,6 @@ impl Write {
     }
 }
 
-/// Makes `writes` on an entry window of `template`.
 fn apply(
     instance: &mut Instance,
     withheld: &mut BTreeSet<String>,
@@ -302,8 +268,6 @@ fn apply(
     resources: &dyn native_gui::Resources,
     report: &mut IntelReport,
 ) -> Result<(), String> {
-    // A refusal wins over ancillary writes to the same child in this update
-    // (for example a portrait's enabled state or an operation icon's frame).
     for write in writes
         .iter()
         .filter(|write| !matches!(write, Write::Withheld(..)))
@@ -326,8 +290,6 @@ fn apply(
         } else {
             SpriteSetter::Icon
         };
-        // A write that decides the child shows it again if only a withheld write hid it;
-        // the game's own visibility writes decide it outright.
         match write {
             Write::Withheld(..) => {}
             Write::Shown(..) => {
@@ -367,7 +329,6 @@ fn apply(
                 }
             }
             Write::Portrait(_, sprite) => {
-                // The portrait supplies a texture; this icon keeps its authored circular mask.
                 instance.set_sprite(
                     template,
                     child,
@@ -388,7 +349,6 @@ fn apply(
     Ok(())
 }
 
-/// An entry's eligible hover shapes among its placed `regions`, moved to `origin`.
 fn shapes(
     template: &Element,
     regions: &[native_gui::Region],
@@ -409,8 +369,6 @@ fn shapes(
 }
 
 impl PreparedIntel {
-    /// The containers drawn, at most one per state, each under `(priority, ordinal)` in far to
-    /// near order; `hits` takes each drawn entry's hover shapes in paint order.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
@@ -441,7 +399,6 @@ impl PreparedIntel {
             }
         };
         if !view.same(context) {
-            // A replacement before a presented frame has no window history to draw.
             if context.time.is_none() {
                 return 0;
             }
@@ -484,8 +441,6 @@ impl PreparedIntel {
         drawn
     }
 
-    /// One state's container: its windows updated, placed, ticked and drawn. `Ok(false)` when it
-    /// draws nothing.
     #[allow(clippy::too_many_arguments)]
     fn present(
         &self,
@@ -521,7 +476,6 @@ impl PreparedIntel {
             retained.root.gui_show(root, root)?;
         }
         retained.root.take_held();
-        // The entries in list order, each keeping its window while its identity holds.
         let mut kept = std::mem::take(&mut retained.entries);
         let mut entries = Vec::with_capacity(icon.entries.len());
         let mut templates = Vec::with_capacity(icon.entries.len());
@@ -561,7 +515,6 @@ impl PreparedIntel {
                 report,
             )?;
         }
-        // The list's places, from the first entry's size.
         let laid = retained
             .root
             .layout(root, resources, None)
@@ -664,7 +617,6 @@ fn describe(refusals: &[native_gui::Refusal]) -> String {
 
 #[cfg(any(test, feature = "test-support"))]
 impl PreparedIntel {
-    /// Prepared containers of `icons` at the given screen points, far to near.
     pub fn test_placed(icons: Arc<IntelIcons>, screens: &[[f32; 2]]) -> Self {
         Self {
             placed: screens

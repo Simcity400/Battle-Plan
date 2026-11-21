@@ -1,6 +1,3 @@
-//! Certify an unchanged owned result using its exact ordered read dependencies.
-//! Compilation happens on recycle. A stopped pass supplies its observed prefix
-//! to the ordinary reader, including its failed read; it never retries memory.
 use engine_native::{
     Memory, memory::RecordLayout, memory::RecordSources, read_plan::Control, read_plan::Hint,
     read_plan::Outcome, read_plan::PreparedPlan, read_plan::Read,
@@ -95,9 +92,6 @@ impl SnapshotPlan {
         self.rebuild = true;
     }
 
-    /// True certifies identical controlled observations. Explicit data reads
-    /// remain fresh in completed_bytes and must be applied by the caller.
-    /// The caller separately certifies any values omitted through mutation reuse.
     pub fn begin(&mut self, memory: &impl Memory, certified: bool) -> bool {
         self.complete = false;
         self.prefix = 0;
@@ -130,10 +124,6 @@ impl SnapshotPlan {
         false
     }
 
-    /// Omit freshly acquired payload reads from control discovery. These reads
-    /// must not select any later tracked source address. The caller must prove
-    /// payload reuse independently (e.g. uninterrupted mutation revisions).
-    /// Owned controls still retain their ordinary first-observation semantics.
     pub fn untracked_reads(&self) -> Untracked<'_> {
         Untracked {
             tracking: &self.tracking,
@@ -151,7 +141,6 @@ impl SnapshotPlan {
         valid
     }
 
-    /// Pending dependencies, inspected only off-thread during preparation.
     pub fn pending_reads(&self) -> Option<Ref<'_, [Read]>> {
         let trace = self.trace.borrow();
         if self.rebuild && trace.eligible {
@@ -161,22 +150,15 @@ impl SnapshotPlan {
         }
     }
 
-    /// Fresh data from the most recent fully completed execution, never from
-    /// a stopped prefix or an unexecuted prepared program.
     pub fn completed_bytes(&self, offset: usize, len: usize) -> Option<&[u8]> {
         self.complete.then_some(())?;
         self.destination.get(offset..offset.checked_add(len)?)
     }
 
-    /// Called off-thread alongside the owning row/arena growth.
     pub fn prepare(&mut self) {
         self.prepare_with_data(&[]);
     }
 
-    /// Sorted read indexes omitted from equality comparisons, but still read
-    /// and fault-checked in original order. They must not select later source
-    /// addresses or affect their validation. Callers apply these fresh values
-    /// through completed_bytes before publishing their retained result.
     pub fn prepare_with_data(&mut self, data_reads: &[usize]) {
         if engine_allocation::advisory(|| self.try_prepare(data_reads)).is_err() {
             self.compiled = None;
@@ -359,8 +341,6 @@ impl<M: Memory> Memory for Observed<'_, M> {
         completed
     }
 
-    /// One gather outside a stopped prefix; inside it, one observation at a
-    /// time in row-major order, like `copy_scattered`.
     fn copy_records(
         &self,
         sources: RecordSources<'_>,

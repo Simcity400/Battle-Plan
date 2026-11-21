@@ -4,7 +4,6 @@ import type { CountryIdentityHistory } from '../generated/dashboard';
 import { readDatedCountry, datedCountryToken } from './datedCountry.ts';
 import { choiceAt, resolveChoice, settleChoice } from './reachedCountry.ts';
 
-/** GER is renamed DEU at hour 100 and ends at 150; at hour 200 another country takes the tag GER. */
 const histories: CountryIdentityHistory[] = [
   { tag: 'GER', identities: [{ slot: 7, countryId: 1, firstHour: 0, lastHour: 99 }, { slot: 9, countryId: 2, firstHour: 200, lastHour: 300 }] },
   { tag: 'DEU', identities: [{ slot: 7, countryId: 1, firstHour: 100, lastHour: 150 }] },
@@ -34,7 +33,6 @@ test('a tag naming no country at the choice hour rebinds to its only identity, e
 });
 
 test('a provisional history keeps the choice hour and never rebinds it', () => {
-  // Keyframe samples have not seen GER's holder at hours 50 to 200 yet; another holder first appears at 720.
   const sampled: CountryIdentityHistory[] = [{ tag: 'GER', identities: [{ slot: 9, countryId: 2, firstHour: 720, lastHour: 800 }] }];
   const loading = resolveChoice(sampled, false, choiceAt('c', '1', 0, 'GER', 100), 0, 800, 100);
   assert.deepEqual(loading, { country: { chosen: 'GER', tag: null, absent: false, reason: null }, holders: null, rebind: null },

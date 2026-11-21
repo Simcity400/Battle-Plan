@@ -12,13 +12,6 @@ fn branch_start(reason: BranchReason, loaded_hour: Option<Hour>) -> BranchStart 
     }
 }
 
-/// Production branch starts: the collector records the loaded hour as
-/// the first hour for a load signal and an hour discontinuity alike, and
-/// none for a session start. Only a load signal sampled at its loaded
-/// hour is a native load: the collector drops the origin after an
-/// unreadable callback (spooling `suppress_origin`) while still seeing
-/// the new signal, and a first sample after the loaded hour follows
-/// unobserved ones.
 #[test]
 fn only_a_load_signal_at_its_loaded_hour_is_a_native_load() {
     let start = branch_start;
@@ -38,11 +31,6 @@ fn only_a_load_signal_at_its_loaded_hour_is_a_native_load() {
     assert_eq!(native_load(&start(BranchReason::SessionStart, None)), None);
 }
 
-/// A load signal whose origin was lost or precedes the first sample does
-/// not rebuild its sides as historical: the pass folds that first hour as
-/// a gap, so the flag stays unknown until a side rebuilds, where a load
-/// sampled at its loaded hour rebuilds it (No: AAA shares vision with
-/// neither side).
 #[test]
 fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
     let fold = |loaded_hour| {
@@ -71,9 +59,6 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
     assert_eq!(fold(Some(19)), flag(Engaged::Unknown));
 }
 
-/// the game's battle picture needs one engaged entry of the province's
-/// vector, of any class; an undecided entry before it leaves it undecided
-/// only when no later entry decides it.
 #[test]
 fn one_engaged_entry_of_any_class_makes_a_battle_ongoing() {
     let row = NavalProvinceCombatRow {
@@ -92,7 +77,6 @@ fn one_engaged_entry_of_any_class_makes_a_battle_ongoing() {
     assert_eq!(ongoing(flags(Engaged::Unknown, Engaged::Yes)), Some(true));
     let ambiguous = Engaged::Ambiguous(engaged::Ambiguity::Scope);
     assert_eq!(ongoing(flags(ambiguous, Engaged::No)), None);
-    // The entry's class picks the kind: a naval flag under the land entry's id is not it.
     let crossed = CombatFlags {
         naval: BTreeMap::from([(2, Engaged::Yes)]),
         land: BTreeMap::from([(1, Engaged::Yes)]),
@@ -101,12 +85,6 @@ fn one_engaged_entry_of_any_class_makes_a_battle_ongoing() {
     assert_eq!(crossed.engaged_entries(Some(&row), true, 1), None);
 }
 
-/// Countries at slots 1..=`countries` (raw id = slot, tag `C<slot>`), the
-/// `players` rows, `factions` pairs allied in one faction each, and
-/// `combats` naval combats `c`: attackers task force `2c + 7` of country
-/// `2 + c`, defenders task force `2c + 8` of country 5, both sides' stored
-/// bytes `bytes`. Land combat 100 always stands beside them: division 300
-/// of country 2 attacks division 301 of country 5.
 fn naval_frame(
     countries: u32,
     players: &[u32],
@@ -249,9 +227,6 @@ fn naval_frame(
     frame
 }
 
-/// A pass for the perspective `tag`, folding `hours` of combat 0 (whose
-/// attacker is country 2) on branch 3 from a load at the first; each hour
-/// is (hour, players, factions, bytes).
 #[allow(clippy::type_complexity, reason = "Each fixture hour includes players, faction links, and both combat sides.")]
 fn fold_hours(tag: &str, hours: &[(Hour, &[u32], &[(u32, u32)], [u8; 2])]) -> Pass {
     let mut pass = Pass::new(Arc::default(), Country::Tag(tag.into()));
@@ -267,7 +242,6 @@ fn index(pass: &Pass) -> EngagedIndex {
     EngagedIndex { shared: Arc::clone(&pass.shared) }
 }
 
-/// The flags `CombatFlags::read` serves `viewer` at `hour` of that frame.
 fn flags(index: &EngagedIndex, frame: &mut DecodedFrame, hour: Hour, viewer: u32) -> CombatFlags {
     frame.branch = 3;
     frame.hour = hour;
@@ -283,16 +257,10 @@ fn flags(index: &EngagedIndex, frame: &mut DecodedFrame, hour: Hour, viewer: u32
     .unwrap()
 }
 
-/// Naval combat 0's flag of [`flags`].
 fn naval_flag(index: &EngagedIndex, frame: &mut DecodedFrame, hour: Hour, viewer: u32) -> Engaged {
     flags(index, frame, hour, viewer).naval[&0]
 }
 
-/// The recording player goes A (1), B (2), A while A and B ally in
-/// between, with no unit change. The client rebuilt every side for B and
-/// again for A on its return, so A
-/// is engaged through its new ally at the last hour: a fixed-A view
-/// serves that, not its own held answer, and it agrees with the byte.
 #[test]
 fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     let none: &[(u32, u32)] = &[];
@@ -310,16 +278,11 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     assert_eq!((summary.agreements, summary.mismatches), (8, 0));
     let index = index(&pass);
     let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
-    // Land combat 100 has the same sides: A is served its rebuilt Yes for
-    // both kinds.
     let served = flags(&index, &mut frame, 13, 1);
     assert_eq!(
         (served.naval[&0], served.land[&100]),
         (Engaged::Yes, Engaged::Yes)
     );
-    // The perspective's own history held its load-hour answer until the
-    // roster moved a player into its country, which it can only take as a
-    // possible controller refresh.
     let branches = pass.shared.branches.lock().unwrap();
     for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
         let points = &branches[&3].folds()[0].points()[kind][&(combat, 0)];
@@ -331,9 +294,6 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     }
 }
 
-/// Another viewer's flags take no rebuild from the recording player's
-/// change: country 5 stays unengaged on the attacking side it allied
-/// with at the player change, until that side rebuilds.
 #[test]
 fn a_player_change_rebuilds_nothing_for_another_viewer() {
     let none: &[(u32, u32)] = &[];
@@ -344,8 +304,6 @@ fn a_player_change_rebuilds_nothing_for_another_viewer() {
     );
     let index = index(&pass);
     let mut frame = naval_frame(6, &[2], allied, 1, [1, 1]);
-    // Country 5 defends: engaged either way, so read the attacking side,
-    // of the naval combat and of the land one beside it.
     let branches = pass.shared.branches.lock().unwrap();
     for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
         assert_eq!(
@@ -355,20 +313,10 @@ fn a_player_change_rebuilds_nothing_for_another_viewer() {
     }
     drop(branches);
     assert_eq!(naval_flag(&index, &mut frame, 11, 5), Engaged::Yes);
-    // The recording player (2) is engaged as the attacker, and agrees; its
-    // defending side's player-change rebuild cannot be ordered against the
-    // alliance, so that side is undecided.
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.undecided), (3, 1));
 }
 
-/// Viewing a fixed B (3): the recording player changes from A (1) to B
-/// inside an unreadable block, and B then allies with both combats'
-/// attacker (2) with no unit change. The rebuild for B happened at the
-/// hidden change, before the alliance, and the alliance refreshes
-/// nothing, so on recovery neither history may evaluate it: land stays
-/// unknown, and the naval flag for B, the recording player, is the
-/// recorded byte.
 #[test]
 fn a_player_change_hidden_in_an_unreadable_block_rebuilds_nothing_on_recovery() {
     let none: &[(u32, u32)] = &[];
@@ -392,9 +340,6 @@ fn a_player_change_hidden_in_an_unreadable_block_rebuilds_nothing_on_recovery() 
     assert_eq!((summary.failed_blocks, summary.undecided), (1, 2));
 }
 
-/// A byte the derivation contradicts is a named mismatch; a side the
-/// derivation cannot decide (the branch joined a running game) is
-/// counted apart, and the byte settles it for the recording player.
 #[test]
 fn mismatches_are_named_and_undecided_sides_counted_apart() {
     let none: &[(u32, u32)] = &[];
@@ -411,39 +356,30 @@ fn mismatches_are_named_and_undecided_sides_counted_apart() {
             derived: false,
         }]
     );
-    // Without a load the first hour follows unobserved rebuilds.
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     let mut frame = naval_frame(6, &[1], none, 1, [0, 1]);
     pass.fold_hour(3, 10, Some(&frame), None, false);
     assert_eq!(pass.check.summary.undecided, 2);
     let index = index(&pass);
     assert_eq!(naval_flag(&index, &mut frame, 10, 1), Engaged::Yes);
-    // Another viewer (3, on neither side) keeps its own derivation, not the byte.
     assert_eq!(naval_flag(&index, &mut frame, 10, 3), Engaged::No);
 }
 
-/// Hours the check could not compare are counted, never mistaken for an
-/// hour without naval combat.
 #[test]
 fn unread_and_unnamed_hours_are_counted_through_the_pass() {
     let none: &[(u32, u32)] = &[];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
-    // An undecodable hour.
     pass.fold_hour(3, 10, None, Some(10), false);
-    // Country links unavailable while naval combats are recorded: neither
-    // the perspective nor the recording player resolves.
     let mut frame = naval_frame(6, &[1], none, 1, [0, 0]);
     *frame.tables[TableId::CountryLinks.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "not captured".into(),
     };
     pass.fold_hour(3, 11, Some(&frame), Some(10), false);
-    // A failed client read is unidentified even with two humans.
     let mut frame = naval_frame(6, &[1, 5], none, 1, [0, 0]);
     *frame.tables[TableId::LocalPlayer.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "not captured".into(),
     };
     pass.fold_hour(3, 12, Some(&frame), Some(10), false);
-    // An unreadable block.
     pass.failed_block(3, 20);
     pass.fold_hour(
         3,
@@ -466,7 +402,6 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
     assert_eq!(summary.agreements + summary.undecided, 0);
     let lines = summary.lines();
     assert!(lines[1].contains("2 hours whose player the recording does not name, 1 unreadable hours, 1 unreadable blocks"), "{lines:?}");
-    // Only a fully read span without naval sides says it had none.
     let mut clean = Pass::new(Arc::default(), Country::Tag("C1".into()));
     clean.fold_hour(
         3,
@@ -478,16 +413,6 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
     assert!(clean.check.summary.lines()[0].contains("no naval combat side in the 1 folded hours"));
 }
 
-/// The recording client has no player country and uses its observer country.
-/// Another player's observer change moves that view from 3 to 4
-/// between hours 10 and 11. A controller change
-/// refreshes every combat only when the viewing
-/// country is the command's target country, and an
-/// observe's target is none, so nothing rebuilds at once: the hour-11
-/// sample still holds 3's flags, and the next tick's combat-manager
-/// hourly check rebuilds for 4, which hour 12 shows. Country 3
-/// allies with the attacker (2); 4 with no one. A tag switch, whose target
-/// is the new country, rebuilds at once instead.
 #[test]
 fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
     let allied: &[(u32, u32)] = &[(2, 3)];
@@ -507,7 +432,6 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         }
         pass
     };
-    // The observer's bytes: 3's flags at 10 and 11, 4's at 12.
     let pass = fold([(0, 3, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
     let summary = &pass.check.summary;
     assert_eq!(
@@ -516,7 +440,6 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         "{:?}",
         summary.first
     );
-    // Viewing 4, the recording's client, is served its stale flag at 11.
     let index = index(&pass);
     let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
     *frame.tables[TableId::LocalPlayer.index()] =
@@ -528,13 +451,9 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         ]));
     assert_eq!(naval_flag(&index, &mut frame, 11, 4), Engaged::Yes);
     assert_eq!(naval_flag(&index, &mut frame, 12, 4), Engaged::No);
-    // A tag switch to 4 rebuilds at once: 4's flags already at 11.
     let pass = fold([(3, 0, [1, 0]), (4, 0, [0, 0]), (4, 0, [0, 0])]);
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.mismatches), (6, 0));
-    // The client's own observer change with no target from playing 3 to
-    // observing 4 (3 annexed, so the game moves the view) skips
-    // that combat refresh as well: 3's flags at 11, 4's at 12.
     let pass = fold([(3, 0, [1, 0]), (0, 4, [1, 0]), (0, 4, [0, 0])]);
     let summary = &pass.check.summary;
     assert_eq!(
@@ -545,14 +464,6 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
     );
 }
 
-/// The client's combat icons take their frames from its own flag
-/// (the icon reads the client's engaged flag), so a viewer
-/// who is the recording player at the hour is served the icon history
-/// folded over the client's flags, not the perspective's. Viewing a fixed
-/// C3: the client plays the attacker (2) at hours 10 and 11, engaged, its
-/// convoy's frame 1 set; at 12 it switches to C3 (at once after the controller refresh), not
-/// allied with 2, so the combat is unengaged and the icon keeps frame 1.
-/// C3's own history never saw the combat engaged.
 #[test]
 fn the_recording_players_icons_keep_the_clients_carried_frame() {
     use replay_data::{rows::NavalCombatShipRow, rows::TableRows};
@@ -585,8 +496,6 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
         kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(index.shared.as_ref())).unwrap();
     assert_eq!(provenance, Provenance::Indexed);
     assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Frame(1)));
-    // Before the switch C3 is not the recording player: its own icon
-    // history, which never saw the combat engaged.
     let mut frame = frames[1].clone();
     let naval = flags(&index, &mut frame, 11, 3).naval;
     let (kept, _) =
@@ -594,14 +503,6 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
     assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Unobserved));
 }
 
-/// A recording that joins a running game (no load) starts every flag
-/// unknown, but the client's recorded engagement byte says
-/// whether it saw the combat engaged, and the game sets the icon frame
-/// from that byte and keeps it after. The client (1) allies with the
-/// attacker (2) at hours 10 and 11 (bytes [1, 0]); the alliance ends at 11,
-/// and at 12 a defending task force leaves (a naval removal rebuilds both
-/// sides), so the combat is unengaged with both sides still
-/// holding countries: the icon keeps the frame the engaged hours set.
 #[test]
 fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
     use replay_data::{rows::NavalCombatShipRow, rows::TableRows, rows::TaskForceRow};
@@ -641,7 +542,6 @@ fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
     ];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     for frame in &frames {
-        // No load: the branch joined a running game.
         pass.fold_hour(3, frame.hour, Some(frame), None, false);
     }
     let index = index(&pass);
@@ -651,8 +551,6 @@ fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
         kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(index.shared.as_ref())).unwrap();
     assert_eq!(provenance, Provenance::Indexed);
     assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Frame(1)));
-    // The byte check keeps the independent derivation: the joined hours
-    // are undecided, the rebuilt one agrees.
     let summary = &pass.check.summary;
     assert_eq!(
         (summary.undecided, summary.agreements, summary.mismatches),
@@ -688,9 +586,6 @@ fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
     );
 }
 
-/// Every side-hour contradicting its byte is counted exactly, and only the first five are
-/// kept by name: 10 combats over 48 hours are 960 mismatches in a summary that stays five
-/// entries long.
 #[test]
 fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
     const COMBATS: u64 = 10;
@@ -710,15 +605,6 @@ fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
     );
 }
 
-/// The game sets the icon's frame only
-/// while either side is engaged, so an unengaged combat's icon
-/// keeps the frame of its last engaged hour, which the index carries. C1
-/// shares vision with the attacker (2) at the load, so combat 0 is engaged
-/// and its convoy (a live forward-group convoy on the attacking side, no
-/// other ship) sets the convoy variant, frame 1. The alliance ends at
-/// hour 11 (the flag lags, still engaged) and a task force joins the
-/// attackers at hour 12, which rebuilds them for C1: unengaged, the icon
-/// keeps frame 1, carried, at that hour and on a seek back to it.
 #[test]
 fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
     use replay_data::{rows::NavalCombatShipRow, rows::TableRows};
@@ -766,7 +652,6 @@ fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
     assert_eq!(kept(0), (Engaged::Yes, Kept::Frame(1)));
     assert_eq!(kept(1), (Engaged::Yes, Kept::Frame(1)));
     assert_eq!(kept(2), (Engaged::No, Kept::Frame(1)));
-    // Without the index only the hour is known: an unengaged icon's frame is unindexed.
     let (unindexed, provenance) = kept_frames(
         &frames[2],
         NAVAL_ICON,
@@ -835,7 +720,6 @@ fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() 
         [(10, Engaged::No), (14, Engaged::Yes)]
     );
     shared.branches.lock().unwrap().insert(3, covered);
-    // The hour log names the combats a side changed at, and only those.
     let changed = |from, to| shared.flags_changed(LAND, 3, from, to, 1);
     assert_eq!(changed(10, 14), Some(vec![62]), "side 1 took a new value at 14");
     assert_eq!(changed(14, 20), Some(Vec::new()), "nothing changed after it");
@@ -844,7 +728,6 @@ fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() 
     let at = |hour, viewer| index.shared.lookup(LAND, 3, hour, viewer, &[62]);
     assert_eq!(at(13, 1), Ok(BTreeMap::from([(62, Engaged::No)])));
     assert_eq!(at(14, 1), Ok(BTreeMap::from([(62, Engaged::Yes)])));
-    // Past the fold, another viewer or another branch is not covered.
     assert_eq!(at(21, 1), Err(Provenance::Pending));
     assert_eq!(at(14, 2), Err(Provenance::OtherViewer));
     assert_eq!(
@@ -853,9 +736,6 @@ fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() 
     );
 }
 
-/// Countries 1..=4 (slot = id, tags AAA to DDD) and land combat 62:
-/// country 2 attacks country 3. `players` are (key, country), `None`
-/// leaving `Players` unrecorded; `allied` puts 1 and 2 in one faction.
 fn roster_frame(hour: Hour, players: Option<&[(i32, u32)]>, allied: bool) -> DecodedFrame {
     use replay_data::{
         rows::CountryLinkRow, rows::CountryRow, rows::FactionMemberRow, rows::HumanControllerRow,
@@ -973,8 +853,6 @@ fn roster_frame(hour: Hour, players: Option<&[(i32, u32)]>, allied: bool) -> Dec
     frame
 }
 
-/// Folds `hours` for AAA from a load at hour 0 and answers the last one
-/// through [`combats`], as the window does.
 fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) {
     let shared = Arc::new(History::default());
     let country = Country::Tag("AAA".into());
@@ -996,10 +874,6 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
     .unwrap()
 }
 
-/// Player 40 moving from DDD to AAA may be a controller change into the
-/// viewer's country, which would refresh the
-/// flag the earlier alliance left stale: the rosters make it ambiguous,
-/// never Yes. Unrecorded rosters cannot rule it out either.
 #[test]
 fn a_controller_joining_the_viewer_reaches_the_index_as_a_possible_refresh() {
     let fold = |last: Option<&[(i32, u32)]>| {
@@ -1016,8 +890,6 @@ fn a_controller_joining_the_viewer_reaches_the_index_as_a_possible_refresh() {
     assert_eq!(fold(None), flag(scope));
 }
 
-/// A flag the index does not answer is still the load rebuild, and says
-/// why: not folded yet, no index at all, or no viewer read on the branch.
 #[test]
 fn a_load_rebuilt_flag_reports_its_provenance() {
     let frames = [
@@ -1046,7 +918,6 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
         rebuilt(Some(index.shared.as_ref())),
         (yes.clone(), Provenance::Pending)
     );
-    // An unreadable first hour folds no viewer.
     let mut unread = frames[1].clone();
     unread.hour = 0;
     pass.fold_hour(2, 0, None, None, false);
@@ -1079,19 +950,13 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
 }
 
 
-/// The timeline index lists one physical block (a run and its page) under every branch that
-/// plays it, so a fold of one branch's hours that took every listed block would fold those hours
-/// once a branch: the second pass starts behind the hours already folded, which reads as a gap
-/// and loses every side that does not rebuild again.
 #[test]
 fn a_block_played_by_two_branches_is_read_once() {
     let block = |branch, page: u32, first: Hour| replay::campaign::BlockIndex { branch, first_hour: first, last_hour: first + 719, run: 2, page };
     let index = [block(3, 0, 1000), block(7, 0, 1000), block(3, 1, 1720), block(7, 1, 1720), block(3, 0, 1000)];
     let taken: Vec<(u32, Hour)> = piece_blocks(&index, 2, 1000, 2439).iter().map(|block| (block.page, block.first_hour)).collect();
     assert_eq!(taken, [(0, 1000), (1, 1720)]);
-    // Another run's pages are another piece's.
     assert!(piece_blocks(&index, 0, 1000, 2439).is_empty());
-    // Only the pages holding an hour of the range.
     let taken: Vec<u32> = piece_blocks(&index, 2, 1800, 2000).iter().map(|block| block.page).collect();
     assert_eq!(taken, [1]);
 }

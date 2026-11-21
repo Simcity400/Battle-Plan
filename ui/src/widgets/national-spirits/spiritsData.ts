@@ -5,9 +5,6 @@ import { describeRun, runState, startUnseen } from '../../charts/timeline/runSta
 import type { RunState, RunWords } from '../../charts/timeline/runState';
 import type { Artwork, HourSpan, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
 
-/** National spirits from the idea history: the ideas whose content category is a
- * national-spirit category (`type = national_spirit` in content, whatever a mod
- * names it). `national_spirit` is the category type keyword. */
 export const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 
 export type SpiritSort = 'gained' | 'ended' | 'name';
@@ -15,7 +12,6 @@ export type SpiritSort = 'gained' | 'ended' | 'name';
 export interface Spirit {
   token: string;
   name: string;
-  /** Why it has no name, for its tooltip. */
   nameMissing: string | null;
   icon?: string;
   spans: IdeaSpan[];
@@ -43,10 +39,8 @@ export function spirits(reply: IdeaHistoryReply): Spirit[] {
 
 const asTimeline = (span: IdeaSpan) => ({ id: `${span.token}:${span.firstHour}`, firstHour: span.firstHour, lastHour: span.lastHour, label: span.token });
 
-/** The span a spirit holds at an hour, if any. */
 const heldAt = (spirit: Spirit, hour: number) => spanAt(spirit.spans.map(asTimeline), hour);
 
-/** Spirits held at an hour, in the order they were last gained (the game's order). */
 export function activeAt(list: readonly Spirit[], hour: number): Spirit[] {
   return list.filter(spirit => heldAt(spirit, hour) != null)
     .sort((a, b) => heldAt(a, hour)!.firstHour - heldAt(b, hour)!.firstHour || a.name.localeCompare(b.name));
@@ -54,25 +48,19 @@ export function activeAt(list: readonly Spirit[], hour: number): Spirit[] {
 
 const firstGained = (spirit: Spirit) => spirit.spans[0]?.firstHour ?? Infinity;
 
-/** A spirit's state at an hour, by the timeline kit's rule (`runState`): held,
- * ended (or ended by a day), unknown after its last recorded hour, or not yet gained. */
 export type SpiritState = RunState;
 
 export function spiritState(spirit: Spirit, hour: number, unobserved: readonly HourSpan[] = []): SpiritState {
   return runState(spirit.spans, hour, unobserved);
 }
 
-/** When a spirit ended as of `hour`, or null while held, unknown or not yet gained. */
 export function endedBy(spirit: Spirit, hour: number, unobserved: readonly HourSpan[] = []): number | null {
   const state = spiritState(spirit, hour, unobserved);
   return state.kind === 'ended' ? state.at : null;
 }
 
-/** Whether a spirit was gained at an unknown time up to `firstHour` (the kit's `startUnseen`). */
 export { startUnseen };
 
-/** One lane per spirit gained by `hour`: the spirit named in the left column, its
- * spans as bars (accented while still held), sorted as chosen. */
 export function historyLanes(list: readonly Spirit[], hour: number, sort: SpiritSort, showEnded: boolean,
   describe: RunWords, unobserved: readonly HourSpan[] = [], branchFirstHour = Number.NEGATIVE_INFINITY): TimelineLane[] {
   const seen = list.filter(spirit => firstGained(spirit) <= hour && (showEnded || endedBy(spirit, hour, unobserved) == null));

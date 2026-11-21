@@ -1,11 +1,3 @@
-//! Naval battle titles and naval result names.
-//!
-//! Without a port-strike result, the name is the
-//! battle province's strategic region name, replaced by the localised name of
-//! the best-scoring province of the region's states once that score reaches
-//! `NNavy.BATTLE_NAME_VP_CUTOFF`, all through `NAVAL_BATTLE_TITLE` with the
-//! text argument `NAME`. A port strike localises
-//! `NAVAL_PORT_STRIKE_TITLE` with the region name alone.
 use dashboard_text::naval_battle_name::Picker;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::tables;
@@ -18,40 +10,22 @@ use {
     viewer_foundation::table_access::{Available, rows},
 };
 
-/// Recorded province facts used by the name fallback chain.
 struct Province<'a> {
     id: u32,
-    /// The recorded rename (`ProvinceNames`): `Ok(None)` for
-    /// none, or why the hour cannot say.
     rename: Result<Option<&'a [u8]>, String>,
-    /// The tag qualifying the victory point key: the province's
-    /// state owner's original tag or own tag, or why it is unavailable.
     vp_tag: Result<&'a str, String>,
-    /// The province's recorded state (`Provinces.state`):
-    /// `None` for no state, else the state's recorded names and the name key
-    /// of its definition, or why they are unavailable.
     state: Option<Result<StateNames<'a>, String>>,
-    /// The key of the province's strategic region name,
-    /// which the ladder takes for a province without a state.
     region_name_key: Option<&'a str>,
 }
 
-/// What the state display name reads.
 pub(crate) struct StateNames<'a> {
     pub(crate) id: u32,
-    /// The state's recorded custom and owner names.
     pub(crate) custom_name: &'a [u8],
     pub(crate) owner_name: &'a [u8],
-    /// The recording client's language, in which the game stored those two.
     pub(crate) recorded_language: &'a str,
-    /// The definition's `name` key, or why the
-    /// definition's reading cannot be followed.
     pub(crate) name_key: Result<&'a str, &'a str>,
 }
 
-/// State display naming through [`viewer_foundation::tooltip_text::state_name`]:
-/// the template's `name` key is localised when the definition is read.
-/// A key the localisation lacks is its own text.
 pub(crate) fn state_display_name(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -67,13 +41,6 @@ pub(crate) fn state_display_name(
     })
 }
 
-/// For a province with a state: a nonempty recorded rename through
-/// the localiser (a key the localisation lacks is its own text); else
-/// victory-point localisation, which localises the first of
-/// `<TAG>_VICTORY_POINTS_<id>` and `VICTORY_POINTS_<id>` the localisation
-/// holds, or gives nothing; a nonempty result is the name. Otherwise the
-/// state's display name ([`state_display_name`]), else for a province
-/// without a state its strategic region's name, else its id.
 fn province_name(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -91,8 +58,6 @@ fn province_name(
     let tag = province.vp_tag.as_deref().map_err(|reason| {
         format!("province {id}'s qualified victory point key needs a tag, but {reason}")
     })?;
-    // the game picks one key, and its localised text, empty included, is
-    // the result; the game goes on only when that is empty.
     let chosen = [
         format!("{tag}_VICTORY_POINTS_{id}"),
         format!("VICTORY_POINTS_{id}"),
@@ -116,8 +81,6 @@ fn province_name(
     }
 }
 
-/// The naval battle title for `province`, or for a result whose port-strike
-/// flag is `port_strike`; the error names the missing operand.
 pub(super) fn title(
     static_content: &StaticContent,
     frame: &DecodedFrame,
@@ -135,9 +98,6 @@ pub(super) fn title(
             "strategic region {region} has no content definition"
         )));
     };
-    // The strategic region name is the template's name, localised
-    // when the definition is read; the instance override is only
-    // a nudger edit or a copy of that same name.
     let region_name = match token(icons, loc, definition.name_key.as_bytes()) {
         Ok(name) => name,
         Err(reason) => return Ok(Err(format!("strategic region {region}'s name: {reason}"))),
@@ -171,7 +131,6 @@ pub(super) fn title(
         })
     };
     let geometry = &static_content.province_geometry;
-    // A province with no pixels keeps the zero position the game leaves.
     let position = |id: u32| geometry.map_position(id).unwrap_or([0, 0]);
     let picker = Picker {
         width: static_content.map.width as i32,
@@ -200,7 +159,6 @@ pub(super) fn title(
     ))
 }
 
-/// The same province display-name chain for history and battle captions.
 pub(super) fn province_display_name(
     static_content: &StaticContent,
     frame: &DecodedFrame,
@@ -215,8 +173,6 @@ pub(super) fn province_display_name(
         .map(|at| &provinces.rows()[at]);
 
     let renames = rows::<tables::ProvinceNames>(frame)?;
-    // The sparse table proves no rename only when complete; a row
-    // present in a partial one is still the recorded rename.
     let rename = match renames
         .rows()
         .iter()
@@ -237,8 +193,6 @@ pub(super) fn province_display_name(
             )),
         },
     };
-    // The picked province's state from Provinces.state, its names
-    // from the States row and its definition's `name` key.
     let states = rows::<tables::States>(frame)?;
     let states_complete = states.is_complete();
     let vp_tag = match province {
@@ -292,11 +246,6 @@ pub(super) fn province_display_name(
     ))
 }
 
-/// The tag qualifying a province's victory point key: a positive original
-/// tag, otherwise the country's own tag. This selection has no dynamic-name gate.
-/// The country is the province's state owner, resolved to its canonical slot;
-/// a null link resolves to country index 0. A province without a state uses the
-/// first link to country index 0, or 0 itself; both resolve to that country.
 fn vp_tag(
     frame: &DecodedFrame,
     state: u32,

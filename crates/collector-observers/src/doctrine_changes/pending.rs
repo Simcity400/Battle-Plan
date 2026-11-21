@@ -1,5 +1,3 @@
-//! Prepared scalar operands and expiry counts. Row reduction belongs to Slow;
-//! grant snapshots settle their owner's earlier expiry counts before reanchoring.
 use super::WatchRegistry;
 use std::sync::{
     RwLock,
@@ -69,8 +67,6 @@ impl Pending {
             self.lose();
             return;
         }
-        // Only preparation takes the exclusive lock. A callback never waits
-        // for it and never touches the doctrine Store or its row journals.
         let Ok(slots) = self.slots.try_read() else {
             self.lose();
             return;
@@ -164,8 +160,8 @@ pub(super) fn invalidate() {
     GAINS.watches.boundary(true);
     EXPIRIES.watches.boundary(true);
 }
-/// # Safety
-/// The doctrine callbacks and acquisition worker have quiesced.
+#[doc = " # Safety"]
+#[doc = " The doctrine callbacks and acquisition worker have quiesced."]
 pub(super) unsafe fn release() {
     for pending in [&GAINS, &EXPIRIES] {
         unsafe { pending.watches.release() };

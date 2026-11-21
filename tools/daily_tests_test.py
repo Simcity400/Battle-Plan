@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import daily_tests as dt  # noqa: E402
+import daily_tests as dt
 
 
 class GameDir(unittest.TestCase):
@@ -405,7 +405,6 @@ class Sweep(unittest.TestCase):
             removed = [os.path.relpath(path, profile) for path in dt.stale(profile, units)]
             self.assertEqual(removed.count(os.path.join(".fingerprint", old)), 1)
             self.assertNotIn(os.path.join(".fingerprint", new), removed)
-            # Newest for the example though older for the binary: still this build's.
             touch(profile / ".fingerprint" / old / "example-fixture", 3_000)
             removed = [os.path.relpath(path, profile) for path in dt.stale(profile, units)]
             self.assertNotIn(os.path.join(".fingerprint", old), removed)

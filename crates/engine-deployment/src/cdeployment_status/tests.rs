@@ -34,7 +34,6 @@ fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x8000];
     array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x2000, 3);
     array(&mut bytes, BASE + cgame_state::COUNTRY_LINKS, 0x2100, 3);
-    // Current id 2 aliases canonical slot 1; both table slots are occupied.
     for slot in [1, 2] {
         put(
             &mut bytes,
@@ -424,9 +423,6 @@ fn queue_keeps_full_handles_native_order_zero_training_and_signed_counts() {
     );
 }
 
-/// The owning-line back pointer is authenticated by equality, not merely by
-/// being non-null: a deployment that points at some other live object is as
-/// unusable as one that points at nothing.
 #[test]
 fn a_deployment_pointing_at_another_object_is_refused_like_a_null_one() {
     for value in [0_u64, CONVEYOR as u64, LINE as u64 + 8, NAME_OBJECT as u64] {
@@ -458,7 +454,6 @@ fn a_deployment_pointing_at_another_object_is_refused_like_a_null_one() {
         assert_eq!(outcomes.lines, reason, "back pointer {value:#x}");
         assert_eq!(outcomes.conveyors, reason, "back pointer {value:#x}");
     }
-    // The unmodified fixture, whose back pointer is the line itself, passes.
     let bytes = fixture();
     let (mut conveyors, mut lines, mut manpower, mut equipment, mut names, mut custom) = buffers();
     let outcomes = walk(

@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 
 const KINDS: [Kind; 4] = [Kind::U32, Kind::OptionalI64, Kind::U32List, Kind::Bool];
 
-/// A row as the model holds it, independent of the columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
     key: u128,
@@ -110,7 +109,6 @@ fn runs_apply_in_place_like_an_independent_row_model() {
     table.set(0, &[1, 70], Values::U32(&[20, 40])).unwrap();
     model.get_mut(&1).unwrap().count = 20;
     model.get_mut(&70).unwrap().count = 40;
-    // Slot 0 becomes missing, slot 1 present: missing is never zero.
     table
         .set(
             1,
@@ -137,7 +135,6 @@ fn runs_apply_in_place_like_an_independent_row_model() {
     model.get_mut(&70).unwrap().members = vec![8, 9];
     assert_matches(&table, &model);
 
-    // Deltas wrap at the column width, as the writer encodes them.
     table.add(0, &[0, 2], Values::U32(&[u32::MAX, 5])).unwrap();
     model.get_mut(&0).unwrap().count = 0;
     model.get_mut(&2).unwrap().count = 8;
@@ -169,7 +166,6 @@ fn runs_apply_in_place_like_an_independent_row_model() {
     }
     assert_matches(&table, &model);
 
-    // A slot freed and taken again in one hour holds the new row only.
     table.delete(&[1, 2]).unwrap();
     model.remove(&1);
     model.remove(&2);

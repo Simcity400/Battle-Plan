@@ -83,7 +83,6 @@ impl Factors for Winter {
 }
 pub fn read_post_effects(layers: &ResolvedLayers) -> io::Result<parser::Document> {
     let file = "gfx/posteffect_volumes.txt";
-    // Native post-effect readers finish an open block at EOF too.
     parser::parse_unclosed(&layers.read(file)?)
         .map(|(document, _)| document)
         .map_err(|error| invalid(format!("{file}: {error}")))
@@ -142,13 +141,9 @@ impl Winter {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceExtent {
-    /// The lowest column and lowest bottom-up row.
     pub min: [i32; 2],
-    /// Volume width and height.
     pub size: [i32; 2],
-    /// Pixel count summed from the province's raster runs.
     pub area: i32,
-    /// Terrain-kind bits distinguish land, lake and sea.
     pub land: bool,
 }
 
@@ -158,7 +153,6 @@ pub struct SnowRecord {
     pub weight: f32,
 }
 
-/// One winter factor per box volume, prepared in the content's volume order.
 pub use map_display_data::winter::SnowFactors;
 
 #[derive(Clone, Debug)]
@@ -188,7 +182,6 @@ pub fn saturate(value: f32) -> f32 {
     if 0.0 <= value { value.min(1.0) } else { 0.0 }
 }
 
-// Degenerate bands retain the live epsilon and NaN-to-zero behaviour.
 pub fn band(value: f32, low: f32, high: f32) -> f32 {
     let width = if high - low <= BAND_EPSILON {
         BAND_EPSILON
@@ -213,7 +206,6 @@ pub fn province_extents(map: &MapData) -> Vec<Option<ProvinceExtent>> {
             ..ProvinceExtent::default()
         });
     }
-    // Inclusive pixel bounds while scanning; `[i32::MAX, i32::MAX, -1, -1]` is unseen.
     let mut bounds = vec![[i32::MAX, i32::MAX, -1, -1]; len];
     let width = map.width as usize;
     let height = map.height as i32;
@@ -234,7 +226,6 @@ pub fn province_extents(map: &MapData) -> Vec<Option<ProvinceExtent>> {
         if let Some(extent) = extent
             && b[2] >= 0
         {
-            // Raster rows become world z before even-pixel outward rounding.
             extent.min = [b[0] & !1, b[1] & !1];
             extent.size = [
                 ((b[2] + 2) & !1) - extent.min[0],
@@ -245,7 +236,6 @@ pub fn province_extents(map: &MapData) -> Vec<Option<ProvinceExtent>> {
     extents
 }
 
-/// Snow records for one grading volume's ground bounds.
 pub fn snow_records<'a>(
     bounds: [f32; 4],
     regions: impl IntoIterator<Item = &'a [u32]>,
@@ -263,7 +253,6 @@ pub fn snow_records<'a>(
             let Some(Some(extent)) = extents.get(id as usize) else {
                 continue;
             };
-            // Append each province at most once per region.
             if seen.contains(&id) {
                 continue;
             }
@@ -291,7 +280,6 @@ pub fn snow_records<'a>(
         .collect()
 }
 
-/// Weighted snow factor from one volume's records.
 pub fn snow_factor(
     records: &[SnowRecord],
     snow: &[Option<i64>],
@@ -332,7 +320,6 @@ fn scalar(document: &parser::Document, key: &str) -> Option<String> {
     document.get(key).and_then(Value::scalar_str).map(unquote)
 }
 
-/// An optional number; a value that is present but not a number is refused.
 fn number(document: &parser::Document, key: &str) -> Result<Option<f32>, String> {
     let Some(value) = document.get(key) else {
         return Ok(None);
@@ -344,7 +331,6 @@ fn number(document: &parser::Document, key: &str) -> Result<Option<f32>, String>
         .ok_or_else(|| format!("{key} is not a number"))
 }
 
-/// A required `{ x y z }`.
 fn triple(document: &parser::Document, key: &str) -> Result<[f32; 3], String> {
     let items = document
         .get(key)

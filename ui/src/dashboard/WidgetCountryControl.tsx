@@ -8,9 +8,6 @@ import type { WidgetRuntime } from './definitions';
 import type { CountrySelection, DashboardTemplate, WidgetSpec } from './model';
 import { CountriesSection } from './settings/CountriesSection';
 
-/** The widget header's country chip. Every widget's chip looks and opens the same way: its
- * countries chooser, with the searchable list in place. Choices save at once; picking a
- * one-country widget's country closes the chooser. */
 export default function WidgetCountryControl({ widget, template, runtime, onApply, children }: {
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime; onApply: (widget: WidgetSpec, view?: boolean) => void; children: ReactNode;
 }) {

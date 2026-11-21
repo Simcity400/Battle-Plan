@@ -1,4 +1,3 @@
-//! Certified acquisition ownership, with replay projection only on the spool.
 
 use crate::table_conversion::unavailable;
 use collector_projection::table_conversion::RowOrder;
@@ -58,7 +57,6 @@ impl AcquiredRows {
             }
         }
     }
-    /// The ordinary spool conversion also sorts keys and refuses duplicates.
     fn project(&self, order: &mut RowOrder) -> TableView {
         let outcome = Outcome::Rows { len: self.len() };
         match self {
@@ -104,7 +102,6 @@ pub(crate) struct Snapshot {
     ordering: OnceLock<Arc<ProjectionOrder>>,
 }
 impl Snapshot {
-    /// Spool only. The joined worker never enters this lock or projection.
     fn projection(&self) -> Option<&TableInput> {
         if let Some(projected) = self.projected.get() {
             return Some(projected);
@@ -132,9 +129,6 @@ impl Snapshot {
                 fresh_order = Some(rows);
                 view
             };
-            // Advisory frame return can fail allocation without stopping
-            // capture. Keep the original acquisition for a later spool retry;
-            // never cache that failure as an empty/unnamed observation.
             if matches!(&view, TableView::Unavailable { reason } if reason.is_empty()) {
                 return None;
             }
@@ -161,8 +155,6 @@ impl Snapshot {
             None => TableInput::Sampled(unavailable(refusal(self.table))),
         }
     }
-    /// Spool frame return: project even an unadmitted acquisition before
-    /// returning its original vector to that frame's prepared capture storage.
     pub(crate) fn recycle_acquired(&self) -> Option<AcquiredRows> {
         self.projection()?;
         let rows = self
@@ -189,9 +181,6 @@ impl RetainedSnapshot {
         self.rows = None;
     }
 
-    /// Only the family's own certificate admits a cut. Changed cuts transfer
-    /// the existing native vector in constant time; quiet cuts clone a handle.
-    /// No replay conversion, sorting, table allocation or copy runs here.
     pub(crate) fn publish(
         &mut self,
         table: TableId,
@@ -216,9 +205,6 @@ impl RetainedSnapshot {
                     acquired: Mutex::new(Some(acquired)),
                     acquired_bytes: AtomicUsize::new(bytes),
                     projected: OnceLock::new(),
-                    // No worker projection lock or extra handoff allocation.
-                    // If the preceding cut is already projected, lend its
-                    // key-only scratch; otherwise spool prepares it lazily.
                     ordering: self
                         .rows
                         .as_ref()
@@ -260,8 +246,6 @@ fn refusal(table: TableId) -> &'static str {
 
 #[cfg(test)]
 pub(crate) fn fixture(rows: rows::TableRows) -> AcquiredRows {
-    // Acquisition deliberately disagrees with replay-key order, including
-    // owner headers before their lower-key held-reference rows.
     match rows {
         rows::TableRows::PropagandaEfforts(mut rows) => {
             rows.reverse();
@@ -319,7 +303,6 @@ mod tests {
                 refused
             );
             assert!(shared.is_none());
-            // Observed empty membership is a complete baseline, unlike loss.
             assert_eq!(
                 retained.publish(
                     table,
@@ -364,7 +347,6 @@ mod tests {
                 Outcome::Rows { len: 0 }
             );
             assert!(shared.is_some());
-            // A short or mismatched acquisition revokes the previous handle.
             assert_eq!(
                 retained.publish(
                     table,
@@ -495,8 +477,6 @@ mod tests {
         let mut retained = RetainedSnapshot::new();
         let mut shared = None;
         {
-            // Permit the one fixed-size Arc allocation, deny any subsequent
-            // allocation. A full-table projection/copy here would fail.
             let guard = crate::test_support::NullGuard::new(2);
             assert_eq!(
                 retained.publish(
@@ -525,8 +505,6 @@ mod tests {
             assert_eq!(rows.capacity(), capacity);
             assert_eq!(rows[0].source, u32::MAX);
         }
-        // Spool projection sorts the copy, preserving the original native
-        // allocation for frame reuse. No worker contends for this mutex.
         let TableInput::SharedComplete(projected) = snapshot.input() else {
             panic!()
         };

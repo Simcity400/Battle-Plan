@@ -1,4 +1,3 @@
-//! Factions and ordered membership acquired once within the country lease.
 
 use crate::{
     acquisition_gather::{Report as GatherReport, Request as GatherRequest},
@@ -119,8 +118,6 @@ fn run_with(request: &mut Request, memory: &impl Memory) -> Report {
     let mut goal_ticks = 0;
     let mut companion_ticks = 0;
     let factions = if request.goal_store.is_some() || request.companion_store.is_some() {
-        // SAFETY: this worker exclusively owns both companion stores inside
-        // the existing native world's quiescent acquisition lease.
         unsafe {
             crate::faction_goal_changes::install_growth();
             crate::faction_companion_changes::install_growth();
@@ -208,7 +205,6 @@ mod tests {
     const SYSTEM: usize = 0x2200;
     const FACTIONS: usize = 0x2300;
     const FIRST: usize = 0x3000;
-    // A faction spans past its colour field, so the second one sits after every other object.
     const SECOND: usize = 0xb000;
     const MEMBERS: usize = 0x4300;
     const C1: usize = 0x5000;
@@ -237,7 +233,6 @@ mod tests {
         let mut bytes = vec![0; 0xc000];
         array(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 4);
         array(&mut bytes, GS + cgame_state::COUNTRY_LINKS, LINKS, 8);
-        // Canonical country one has native reference seven and an alias slot.
         for (slot, country) in [(1, C1), (2, C2), (3, C1)] {
             put64(&mut bytes, COUNTRIES + slot * 8, country as u64);
         }
@@ -281,7 +276,6 @@ mod tests {
                 faction + cfaction::NAME + msvc_string::CAPACITY,
                 15,
             );
-            // No template, and the default colour: the colour object's vtable with 1.0 components.
             put64(
                 &mut bytes,
                 faction + cfaction::COLOR,
@@ -301,7 +295,6 @@ mod tests {
             FIRST + cfaction::NAME + msvc_string::LENGTH,
             NAME.len() as u64,
         );
-        // Country two leads; the second faction is valid and empty.
         array(&mut bytes, FIRST + cfaction::MEMBERS, MEMBERS, 2);
         put64(&mut bytes, MEMBERS, C2 as u64);
         put64(&mut bytes, MEMBERS + 8, C1 as u64);
@@ -371,7 +364,6 @@ mod tests {
         let bytes = fixture();
         for cells in [0, 512] {
             let countries = snapshot(&bytes, cells);
-            // Storage that holds the census: it is kept and not reallocated.
             for (capacity, name_capacity, member_capacity) in [(2, 16, 2)] {
                 let reference = Traced::new(&bytes);
                 let cached = countries.view(&reference);
@@ -379,7 +371,6 @@ mod tests {
                 let mut expected_names = vec![0; name_capacity];
                 let mut expected_members =
                     vec![cfaction_system::MemberRow::default(); member_capacity];
-                // Membership supplies the demanded companion operands before the owner visit.
                 let members = cfaction_system::walk_members(&cached, 0, GS, &mut expected_members);
                 let names = cfaction::walk(&cached, 0, GS, &mut expected_rows, &mut expected_names);
                 let actual = Traced::new(&bytes);
@@ -502,7 +493,6 @@ mod tests {
             let mut members = vec![cfaction_system::MemberRow::default(); 2];
             let pointers = (rows.as_ptr(), names.as_ptr(), members.as_ptr());
             let mut pending = Some(take(&countries, &mut rows, &mut names, &mut members));
-            // SAFETY: synthetic memory and every output are owned through collection.
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
             let completion = pool.finish(ticket).unwrap();
             let report = completion.report.unwrap();

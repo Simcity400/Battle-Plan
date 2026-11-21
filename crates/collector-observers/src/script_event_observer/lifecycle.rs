@@ -1,4 +1,3 @@
-//! Actual retained-container writers; no state-wide before/after walk.
 use super::*;
 use super::{hook_failure, verify_hook};
 pub(super) mod adjustments;
@@ -31,8 +30,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                     .ok_or("taken decision erase ordinal overflow")?;
                 feed::decisions::taken_erase(registers.rsi, registers.rdi, Some(ordinal), true);
             }
-            // Both reached taken-membership writers run even with no remove
-            // effects. The effect entry emits a different execution fact.
             decision(
                 EventFeedSource::DecisionRemoved,
                 if index == 0 {
@@ -307,7 +304,7 @@ fn duration_result(
     )?;
     if state == 0 {
         return Ok(None);
-    } // removal effects reactivated it; native skipped the duration store
+    }
     Ok(Some((
         state,
         field(memory, instance, engine_decisions::ctargeted_decision::DAYS)?,
@@ -356,7 +353,6 @@ unsafe extern "system-unwind" fn remove_decision(a: usize, b: usize, c: usize) -
 unsafe extern "system-unwind" fn remove_mission(a: usize, b: usize, c: usize) -> usize {
     unsafe { remove(a, b, c, 1) }
 }
-// A fixed number of count reads, independent of roster/timer size.
 fn removal_counts(
     memory: &impl Memory,
     status: usize,
@@ -384,8 +380,6 @@ fn removal_edges(before: [u32; 3], after: [u32; 3]) -> Result<(u32, u32), &'stat
             .checked_sub(after)
             .ok_or("decision removal container grew during its writer")?;
     }
-    // A removal timer and its taken entry describe the same cleared decision.
-    // Duplicate timers/members remain counted; no roster scan is needed.
     Ok((removed[0].max(removed[1]), removed[2]))
 }
 unsafe extern "system-unwind" fn clear_cooldown(status: usize, definition: usize) -> usize {
@@ -403,8 +397,6 @@ pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'stati
                 .named(site.label()),
         );
     }
-    // The duration extensions' scalar adds are CALL detours of the decision
-    // family: their old pre-add taps are not installed.
     for (index, (site, callback)) in native::LIFECYCLE_ENTRIES
         .into_iter()
         .zip([

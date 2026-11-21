@@ -1,6 +1,3 @@
-//! The gun counters layer's line of the proof tool (`playback_cost::proof`): how it is made from
-//! the loaded recording, and how its guns compare with today's class-13 pass of the same hour and
-//! with the layer composed anew.
 
 use super::{Content, GunCounters, PHASES};
 use crate::{document::Document, layers::Layer, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -12,7 +9,6 @@ use std::{
 };
 use viewer_counters::map::counters::{Gun, GunGround};
 
-/// [`PHASES`] as the nanosecond counters' names.
 const PHASE_NS: [&str; PHASES.len()] = ["ns guns", "ns on rail", "ns names"];
 
 pub fn make(document: &Document) -> Box<dyn Layer> {
@@ -34,8 +30,6 @@ pub fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     marked
 }
 
-/// Gives the layer today's vision, type-icon relations and destination hostility of the
-/// document's hour, until it reads the layers that own them.
 pub fn give(layer: &dyn Layer, document: &Document, choice: &viewer_foundation::map::perspective::Choice) -> io::Result<()> {
     let Some(layer) = layer.any().downcast_ref::<GunCounters>() else { return Ok(()) };
     layer.set_vision(choice.clone(), document.vision(choice)?);
@@ -45,8 +39,6 @@ pub fn give(layer: &dyn Layer, document: &Document, choice: &viewer_foundation::
     Ok(())
 }
 
-/// The layer's guns against today's class-13 pass at the document's hour, under the perspective
-/// the layer was given. A gun's position on its route is laid out at the camera and left out.
 pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = guns(layer);
     let hour = document.hour()?;
@@ -58,7 +50,6 @@ pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let Some((choice, _)) = layer.perspective() else {
         return Err(io::Error::other("the gun counters layer was given no perspective"));
     };
-    // Today's class-13 pass draws no gun at a view that hides the layer: neither draws here.
     if layer.hidden() {
         compared.entries = 1;
         if layer.guns().next().is_some() || layer.census().is_some() {

@@ -1,35 +1,3 @@
-//! Fixed fields of a ship, its task force, the task force's location and the
-//! game singleton, each object's gathered in one guarded call ahead of the
-//! ShipModels readers ([`super::read_model_with_selection`],
-//! [`super::read_maximum_organisation_memo`] and the suffix readers).
-//!
-//! Those readers read about thirty fixed fields of these objects per ship,
-//! one guarded call each. [`ShipFields::visit`] gathers each object's fields
-//! in one scattered call: the ship's every time, its task force's and the
-//! task force's location's when they differ from the previous ship's (ships
-//! of a task force are consecutive in the census), and the game singleton
-//! once per capture. [`GatheredMemory`] then serves the readers' reads: a
-//! read inside a gathered field is served from its bytes, a read of exactly
-//! the field a gather failed on fails again without another read, and every
-//! other read, including one of a field after that failure, goes to the
-//! source, live spans of one scattered read still in one guarded call. Every
-//! gathered object is one the readers dereference for that ship, so in the
-//! stopped world each served byte is the byte a direct read returns, and the
-//! rows and failure reasons are the direct readers' (tests). No
-//! byte outlives the capture that gathered it.
-//!
-//! What a ship's fields point at follows in one more call ([`Heap`]): its
-//! equipment pool entries when it holds at most [`POOL_ENTRIES`], as the
-//! model reader copies them, and its heap fallback sprite with the
-//! terminator. The variants the model reader reads from the entries (each
-//! positive entry's and the selected one) are gathered too; ships of a class
-//! share variants, so a variant is gathered once per capture while it stays
-//! among the latest [`VARIANT_SLOTS`].
-//!
-//! A ship's own objects ([`HeldShip`]) can also be served from an earlier
-//! hour's read ([`ShipFields::visit_held`]) while no hooked writer touched
-//! them (`ship_model_mutations`); everything else is read in the
-//! hour.
 
 use super::{
     ANTI_AIR_BASE, BASE_ORGANISATION, DEFINITION_VALID, EQUIPMENT_POOL, FALLBACK_SPRITE,
@@ -44,26 +12,14 @@ use crate::{
 };
 use std::cmp::Ordering;
 
-/// The widest gathered field, a string header.
 const WIDTH: usize = msvc_string::STRIDE;
 
-/// Ship modifier calculation's weather factor, ship modifier accumulator,
-/// experience modifier source and critical-effect array, as
-/// [`super::read_maximum_organisation_memo`] reads them.
 const WEATHER_FACTOR: usize = 0x270;
 const MODIFIERS: usize = 0x750;
 const EXPERIENCE: usize = 0x8f8;
 const CRITICALS: usize = 0x918;
-/// The province definition used to select terrain or the ocean fallback.
 const PROVINCE_DEFINITION: usize = 0xc8;
 
-/// Every fixed ship field the readers read, each the exact span (or a span enclosing the exact
-/// spans) they request: identity (vtable and handle), the equipment pool's vtable and array header,
-/// the embedded subunit definition's identity (its class id, `cship::CLASS_DATABASE_ID`), the
-/// definition-valid byte, the fallback sprite's header, the anti-air base, the weather factor, the
-/// base organisation with the maximum strength, the subunit index (also the leader-class selector),
-/// the formation flags, the task force with the carrier air base, the modifier accumulator's
-/// header, the model number, the experience source and the critical array's header.
 const SHIP: [(usize, usize); 16] = [
     (0, 16),
     (EQUIPMENT_POOL, 8),
@@ -82,24 +38,15 @@ const SHIP: [(usize, usize); 16] = [
     (EXPERIENCE, 8),
     (CRITICALS, 16),
 ];
-/// The ship field holding the task force pointer, with the carrier air base
-/// pointer in its second word.
 const SHIP_TASK_FORCE: usize = 11;
-/// The ship fields holding the fallback sprite's header and the medal store.
 const SHIP_SPRITE: usize = 5;
 const SHIP_MEDALS: usize = 14;
-/// The ship fields holding the equipment pool's vtable and array header.
 const SHIP_POOL: usize = 1;
 const SHIP_POOL_ITEMS: usize = 2;
 const SHIP_SUBUNIT: usize = 3;
 
-/// Pool entries gathered ahead of the model reader at most: as many as one
-/// gathered field holds.
 const POOL_ENTRIES: usize = WIDTH / equipment_entry::STRIDE;
 
-/// Variant fields the model and hull-variant readers read: identity (vtable
-/// and handle), equipment token, module count, definition, classifier flags,
-/// upgrade level and module priority sums, version and organisation marker.
 const VARIANT: [(usize, usize); 8] = [
     (0, 16),
     (cequipment_variant::EQUIPMENT_TOKEN, 4),
@@ -110,7 +57,6 @@ const VARIANT: [(usize, usize); 8] = [
     (cequipment_variant::VERSION, 1),
     (0x4b0, 4),
 ];
-/// Independent worker-only dominance fields; ordinary synchronous gathers do not touch them.
 const NAVAL_POWER: [(usize, usize); 3] = [
     (super::naval_power::HEAVY_ATTACK, 8),
     (super::naval_power::SPEED_RANGE, 16),
@@ -135,20 +81,12 @@ fn same_naval_power(variant: &Object<8>, left: &Object<3>, right: &Object<3>) ->
     }
     naval_power_fields(variant).is_some_and(|fields| left.same(right, &fields))
 }
-/// Variants kept for later ships of the capture.
 const VARIANT_SLOTS: usize = 16;
 
-/// The longest heap fallback sprite gathered, with its terminator: the
-/// model reader's inline text capacity. A longer one is read by the reader.
 const SPRITE_BYTES: usize = super::MODEL_TEXT_CAPACITY + 1;
 
-/// The medal store's modifier accumulator, as ship modifier calculation reads
-/// it.
 const MEDAL_MODIFIERS: usize = 0x1b0;
 
-/// Task-force fields: vtable, handle, roster owner, location, fleet, the mine exposure its
-/// modifier accumulator (`TASK_MODIFIERS`) is built from, and the attached-headquarters array
-/// header, which the pre-hourly update clears and refills every hour.
 const TASK: [(usize, usize); 7] = [
     (0, 8),
     (cunit::HANDLE, 8),
@@ -158,21 +96,14 @@ const TASK: [(usize, usize); 7] = [
     (MINE_EXPOSURE, 8),
     (ctask_force::ATTACHED_HEADQUARTERS, 16),
 ];
-/// Mine-exposure updating rebuilds `TASK_MODIFIERS` every hour from this value and content alone.
 const MINE_EXPOSURE: usize = 0x650;
-/// The task-force accumulator ship modifier calculation reads beside the
-/// location's terms.
 const TASK_MODIFIERS: usize = 0x668;
-/// The task-force field holding the location pointer.
 const TASK_LOCATION: usize = 3;
 
-/// Location fields: vtable and province definition.
 const LOCATION: [(usize, usize); 2] = [(0, 8), (PROVINCE_DEFINITION, 8)];
 
-/// Global fields: the game state singleton's slot, gathered at its located address.
 const GLOBALS: [(usize, usize); 1] = [(0, 8)];
 
-/// Where a read's bytes come from.
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 pub enum Lookup<'a> {
@@ -181,26 +112,16 @@ pub enum Lookup<'a> {
     Source,
 }
 
-/// Gathered bytes a [`GatheredMemory`] serves ahead of its source: a read
-/// inside a gathered field is served, a read of exactly the field a gather
-/// failed on fails, and every other read goes to the source.
 pub trait Served {
-    /// Where a read of `len` bytes at `address` comes from.
     fn lookup(&self, address: usize, len: usize) -> Lookup<'_>;
 }
 
-/// One object's fixed fields, gathered in one guarded call ahead of the
-/// readers of that object and served to them through [`Self::memory`] as
-/// [`ShipFields`] serves a ship's. `fields` are `(offset, len)` spans that
-/// ascend, are disjoint and are at most 32 bytes each, and must be fields
-/// the readers dereference on that object.
 pub struct GatheredObject<const N: usize> {
     object: Object<N>,
     fields: [(usize, usize); N],
 }
 
 impl<const N: usize> GatheredObject<N> {
-    /// One guarded call; a null `pointer` gathers nothing.
     pub fn gather(memory: &impl Memory, pointer: usize, fields: [(usize, usize); N]) -> Self {
         debug_assert!(fields.iter().all(|&(_, len)| len <= WIDTH));
         debug_assert!(
@@ -214,13 +135,10 @@ impl<const N: usize> GatheredObject<N> {
         }
     }
 
-    /// Whether the gather copied every field: when not, the readers read
-    /// the rest from the source.
     pub fn complete(&self) -> bool {
         self.object.completed >= N
     }
 
-    /// The readers' memory for the gathered object over `source`.
     pub fn memory<'a, M: Memory>(&'a self, source: &'a M) -> GatheredMemory<'a, M, Self> {
         GatheredMemory {
             source,
@@ -235,13 +153,9 @@ impl<const N: usize> Served for GatheredObject<N> {
     }
 }
 
-/// One object's gathered fields.
 #[derive(Clone, Copy)]
 struct Object<const N: usize> {
-    /// Zero: nothing gathered, and every read goes to the source.
     pointer: usize,
-    /// Fields copied, in order. The field at this index, when there is one,
-    /// failed, and later fields were not read.
     completed: usize,
     bytes: [[u8; WIDTH]; N],
 }
@@ -253,8 +167,6 @@ impl<const N: usize> Object<N> {
         bytes: [[0; WIDTH]; N],
     };
 
-    /// One guarded call. An overflowing address is null for the gather, so
-    /// that field fails, as a single read of it would.
     fn gather(memory: &impl Memory, pointer: usize, fields: [(usize, usize); N]) -> Self {
         if pointer == 0 {
             return Self::NONE;
@@ -277,8 +189,6 @@ impl<const N: usize> Object<N> {
         object
     }
 
-    /// Whether `other` gathered the same object and bytes, field by copied
-    /// field.
     fn same(&self, other: &Self, fields: &[(usize, usize); N]) -> bool {
         self.pointer == other.pointer
             && self.completed == other.completed
@@ -288,7 +198,6 @@ impl<const N: usize> Object<N> {
                 .all(|(index, &(_, len))| self.bytes[index][..len] == other.bytes[index][..len])
     }
 
-    /// A pointer-sized field the gather copied, else zero.
     fn word(&self, index: usize) -> usize {
         if index < self.completed {
             usize::try_from(u64::from_le_bytes(
@@ -310,8 +219,6 @@ impl<const N: usize> Object<N> {
         let Some(end) = offset.checked_add(len) else {
             return Lookup::Source;
         };
-        // The fields ascend and are disjoint, so at most one encloses the
-        // read, and none past the last one's end.
         if fields
             .last()
             .is_none_or(|&(start, width)| offset >= start + width)
@@ -336,10 +243,6 @@ impl<const N: usize> Object<N> {
     }
 }
 
-/// The bytes a ship's fields point at, gathered in one call after them: its
-/// pool entries and its heap fallback sprite with the terminator, each an
-/// absolute `(address, len)` span; an empty span is not gathered. Served
-/// like an object's fields.
 #[derive(Clone, Copy)]
 struct Heap {
     spans: [(usize, usize); 2],
@@ -356,9 +259,6 @@ impl Heap {
         sprite: [0; SPRITE_BYTES],
     };
 
-    /// The spans `ship`'s copied fields select: the model reader's pool
-    /// entries (after its vtable and header checks) and the heap sprite span
-    /// its header names.
     fn gather(memory: &impl Memory, base: usize, ship: &Object<16>) -> Self {
         let mut heap = Self::NONE;
         let vtable = engine_sites::at(base, cequipment_variant_pool::VTABLE_RVA).unwrap_or(0);
@@ -400,7 +300,6 @@ impl Heap {
         }
     }
 
-    /// The copied pool entries, if any.
     fn entries(&self) -> Option<&[u8]> {
         (self.spans[0].1 != 0 && self.completed > 0).then(|| self.bytes(0))
     }
@@ -432,7 +331,6 @@ impl Heap {
     }
 }
 
-/// The task-force fields a carry of its terms compares hour to hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskForceFields {
     pub pointer: usize,
@@ -440,27 +338,18 @@ pub struct TaskForceFields {
     pub roster_owner: u32,
     pub location: usize,
     pub fleet: usize,
-    /// `MINE_EXPOSURE`, raw.
     pub mine_exposure: u64,
-    /// The address of `TASK_MODIFIERS`.
     pub modifiers: usize,
 }
 
-/// A ship's own gathered objects, its fixed fields and [`Heap`], kept from
-/// one hour's read to serve a later hour's ([`ShipFields::visit_held`]).
 #[derive(Clone, Copy)]
 pub struct HeldShip {
     ship: Object<16>,
     heap: Heap,
-    /// The variants read from its pool entries, by entry; not the ship's
-    /// own, so [`Self::same`] leaves them out.
     variants: [Object<8>; POOL_ENTRIES],
     naval_variants: [Object<3>; POOL_ENTRIES],
 }
 
-/// One variant's exact gathered observation from a held ship. Its pointer
-/// selects the same model-selection and hull-variant fields; equality includes the copied
-/// prefix and failure position, as a ship's variant comparison does.
 #[derive(Clone, Copy)]
 pub struct HeldVariant(Object<8>, Object<3>);
 
@@ -473,15 +362,12 @@ impl HeldVariant {
         self.0.same(&other.0, &VARIANT) && same_naval_power(&self.0, &self.1, &other.1)
     }
 
-    /// Every field the readers read was gathered, its power suffix included.
     pub fn complete(&self) -> bool {
         variant_complete(&self.0) && (self.1.pointer == 0 || self.1.completed == NAVAL_POWER.len())
     }
 }
 
 impl HeldShip {
-    /// Every pool-selected variant is represented by the held observations.
-    /// Larger pools and incomplete entry or variant gathers use the model reader.
     pub fn variants_complete(&self) -> bool {
         pool_complete(&self.ship, &self.heap)
             && self.variants.iter().all(variant_complete)
@@ -491,9 +377,6 @@ impl HeldShip {
                 .all(|v| v.pointer == 0 || v.completed == NAVAL_POWER.len())
     }
 
-    /// A moved certificate can be revalidated only when every owned byte
-    /// the reader could have served was gathered, including the heap sprite
-    /// and its terminator. Larger payloads use the original reader.
     pub fn revalidation_complete(&self) -> bool {
         self.ship.completed == SHIP.len()
             && pool_complete(&self.ship, &self.heap)
@@ -501,17 +384,14 @@ impl HeldShip {
                 .is_none_or(|span| self.heap.completed > 1 && self.heap.spans[1] == span)
     }
 
-    /// The pool-selected observations, without copying the ship or heap.
     pub fn variants(&self) -> [HeldVariant; POOL_ENTRIES] {
         std::array::from_fn(|index| HeldVariant(self.variants[index], self.naval_variants[index]))
     }
 
-    /// The task force the ship named.
     pub fn task_force(&self) -> usize {
         self.ship.word(SHIP_TASK_FORCE)
     }
 
-    /// The carrier air base the ship named, else zero.
     pub fn carrier_air_base(&self) -> usize {
         if self.ship.completed > SHIP_TASK_FORCE {
             u64::from_le_bytes(self.ship.bytes[SHIP_TASK_FORCE][8..16].try_into().unwrap()) as usize
@@ -520,14 +400,10 @@ impl HeldShip {
         }
     }
 
-    /// The medal store the ship named, else zero.
     pub fn medal_store(&self) -> usize {
         self.ship.word(SHIP_MEDALS)
     }
 
-    /// The two modifier accumulators the organisation reader reads at fixed
-    /// addresses of the ship: its experience modifiers and its medal store's
-    /// (zero without a store).
     pub fn accumulators(&self) -> [usize; 2] {
         let store = self.medal_store();
         [
@@ -540,8 +416,6 @@ impl HeldShip {
         ]
     }
 
-    /// Whether both reads gathered every owned input and its bytes match,
-    /// so a moved certificate can be revalidated.
     pub fn same(&self, other: &Self) -> bool {
         self.revalidation_complete()
             && other.revalidation_complete()
@@ -549,9 +423,6 @@ impl HeldShip {
             && self.heap.same(&other.heap)
     }
 
-    /// The model reader's own inputs, independently of maximum organisation.
-    /// Both gathers must be complete; pool/sprite payloads and the census class
-    /// still match. Variants require their separate current-hour comparison.
     pub fn same_model(&self, other: &Self, class_id: i32) -> bool {
         let class = super::CLASS_DATABASE_ID - SUBUNIT_DEFINITION;
         self.revalidation_complete()
@@ -591,9 +462,6 @@ fn pool_complete(ship: &Object<16>, heap: &Heap) -> bool {
         })
 }
 
-/// One capture's gathered objects: the ship being read, the task force and
-/// location of the latest ship that named them, and the game singleton.
-/// Create one per capture; it holds nothing a later capture may use.
 pub struct ShipFields {
     base: usize,
     ship: Object<16>,
@@ -604,15 +472,12 @@ pub struct ShipFields {
     variants: [Object<8>; VARIANT_SLOTS],
     naval_variants: [Object<3>; VARIANT_SLOTS],
     naval_power: bool,
-    /// The next slot a new variant replaces.
     next_variant: usize,
-    /// The slots of the visited ship's gathered variants, by pool entry.
     current: [Option<usize>; POOL_ENTRIES],
     current_power: Option<usize>,
 }
 
 impl ShipFields {
-    /// Nothing gathered yet; `base` is the module base.
     pub fn new(base: usize) -> Self {
         Self {
             base,
@@ -630,14 +495,10 @@ impl ShipFields {
         }
     }
 
-    /// Worker-only suffix admission; call before the first variant observation.
     pub fn enable_naval_power(&mut self) {
         self.naval_power = true;
     }
 
-    /// Before reading the ship at `ship`: gather its fields, its task
-    /// force's and that task force's location's when they differ from the
-    /// previous ship's, and the game singleton on the capture's first ship.
     pub fn visit(&mut self, memory: &impl Memory, ship: usize) {
         self.ship = Object::gather(memory, ship, SHIP);
         self.visit_shared(memory);
@@ -645,25 +506,17 @@ impl ShipFields {
         self.visit_variants(memory);
     }
 
-    /// [`Self::visit`] serving the ship's own objects from `held` without
-    /// reading them; its task force, location, the game singleton and its
-    /// variants are gathered as for a read. Incomplete owned observations
-    /// are refreshed, so a prior gather failure never supplies a later hour.
     pub fn visit_held(&mut self, memory: &impl Memory, held: &HeldShip) {
         if !held.revalidation_complete() {
             self.visit(memory, held.ship.pointer);
             return;
         }
         self.ship = held.ship;
-        // The held variants are not served: they are gathered for this hour.
         self.visit_shared(memory);
         self.heap = held.heap;
         self.visit_variants(memory);
     }
 
-    /// [`Self::visit_held`] serving `held`'s variants too, which the caller
-    /// certified unchanged since they were gathered: nothing of the ship or
-    /// its variants is read.
     pub fn visit_held_certified(&mut self, memory: &impl Memory, held: &HeldShip) {
         if !held.revalidation_complete() {
             self.visit(memory, held.ship.pointer);
@@ -689,8 +542,6 @@ impl ShipFields {
         }
     }
 
-    /// The visited ship's task force: its pointer, handle, roster owner, mine
-    /// exposure and modifier accumulator address, when all were gathered.
     pub fn task_force(&self) -> Option<TaskForceFields> {
         let word =
             |index: usize| u64::from_le_bytes(self.task.bytes[index][..8].try_into().unwrap());
@@ -705,8 +556,6 @@ impl ShipFields {
         })
     }
 
-    /// The visited ship's own objects, to serve a later hour's read, with
-    /// the variants this hour gathered for it.
     pub fn held(&self) -> HeldShip {
         HeldShip {
             ship: self.ship,
@@ -716,19 +565,12 @@ impl ShipFields {
         }
     }
 
-    /// Whether `held`'s variants, gathered for this hour as
-    /// [`Self::visit_held`] gathers them, have the bytes `held` holds,
-    /// without serving its objects or its task force: a ship whose finished
-    /// row is carried needs nothing else. A later read visits its ship.
     pub fn held_variants_unchanged(&mut self, memory: &impl Memory, held: &HeldShip) -> bool {
         let heap = held.heap;
         self.visit_variants_of(memory, &heap);
         held.variants_complete() && self.same_variant_observations(held)
     }
 
-    /// Compare one held observation with this capture's gathered bytes.
-    /// The certified pool's selection is already represented by the held
-    /// observations; no heap copy or selection walk is needed to repeat it.
     pub fn held_variant_unchanged(&mut self, memory: &impl Memory, held: &HeldVariant) -> bool {
         if !variant_complete(&held.0) {
             return false;
@@ -747,8 +589,6 @@ impl ShipFields {
                     && self.naval_variants[slot].completed == NAVAL_POWER.len())
     }
 
-    /// Whether the visited ship's variants were gathered with the same bytes
-    /// as `held`'s.
     pub fn same_variants(&self, held: &HeldShip) -> bool {
         held.variants_complete()
             && pool_complete(&self.ship, &self.heap)
@@ -786,9 +626,6 @@ impl ShipFields {
             .map(|slot| slot.map_or(Object::NONE, |slot| self.variants[slot]))
     }
 
-    /// The task force `held`'s ship named and the game singleton, without
-    /// serving the ship or gathering the location ([`Self::visit_location`]):
-    /// for reading its terms ahead of its ships.
     pub fn task_force_of(
         &mut self,
         memory: &impl Memory,
@@ -798,8 +635,6 @@ impl ShipFields {
         self.task_force()
     }
 
-    /// Gather the task force named by a certified ship's compact record, as
-    /// [`Self::task_force_of`] does.
     pub fn task_force_at(
         &mut self,
         memory: &impl Memory,
@@ -809,8 +644,6 @@ impl ShipFields {
         self.task_force()
     }
 
-    /// Gather the visited task force's location, unless it is the one
-    /// gathered last; a location whose terms are held needs none.
     pub fn visit_location(&mut self, memory: &impl Memory) {
         let location = self.task.word(TASK_LOCATION);
         if location != self.location.pointer {
@@ -837,15 +670,11 @@ impl ShipFields {
         }
     }
 
-    /// The model reader's pool walk (`model_selection_entries`) reads each
-    /// copied positive entry's variant identity and flags and the selected
-    /// (first largest) entry's identity, token and definition.
     fn visit_variants(&mut self, memory: &impl Memory) {
         let heap = self.heap;
         self.visit_variants_of(memory, &heap);
     }
 
-    /// [`Self::visit_variants`] for the pool entries `heap` holds.
     fn visit_variants_of(&mut self, memory: &impl Memory, heap: &Heap) {
         self.current = [None; POOL_ENTRIES];
         self.current_power = None;
@@ -874,8 +703,6 @@ impl ShipFields {
                 self.current[index] = Some(self.variant(memory, variant));
             }
         }
-        // Power does not participate in model selection. Only the completed
-        // pool's selected occurrence demands this independent suffix.
         if self.naval_power
             && let Some(slot) = self.current[selected]
         {
@@ -884,8 +711,6 @@ impl ShipFields {
         }
     }
 
-    /// The slot holding `variant`, gathering it into the next slot no
-    /// variant of the visited ship holds when it is not kept.
     fn variant(&mut self, memory: &impl Memory, variant: usize) -> usize {
         match self.slot(variant) {
             Ok(slot) => slot,
@@ -897,8 +722,6 @@ impl ShipFields {
         }
     }
 
-    /// The slot keeping `variant`, else the next slot no variant of the
-    /// visited ship holds, for the caller to fill.
     fn slot(&mut self, variant: usize) -> Result<usize, usize> {
         if let Some(slot) = self
             .variants
@@ -935,7 +758,6 @@ impl ShipFields {
         self.naval_variants[slot] = Object::gather(memory, original.pointer, fields);
     }
 
-    /// The readers' memory for the visited ship over `source`.
     pub fn memory<'a, M: Memory>(&'a self, source: &'a M) -> GatheredMemory<'a, M> {
         GatheredMemory {
             source,
@@ -983,22 +805,16 @@ impl Served for ShipFields {
     }
 }
 
-/// The readers' memory: gathered fields first ([`ShipFields`] for the
-/// ShipModels readers, or a [`GatheredObject`]), then the source.
 pub struct GatheredMemory<'a, M, F = ShipFields> {
     source: &'a M,
     fields: &'a F,
 }
 
 impl<'a, M: Memory, F: Served> GatheredMemory<'a, M, F> {
-    /// `fields` served ahead of `source`.
     pub(crate) fn new(source: &'a M, fields: &'a F) -> Self {
         Self { source, fields }
     }
 
-    /// The ordered scattered copy: served spans from their fields, the live
-    /// spans before the first failed field in one call to the source, and
-    /// nothing at or after the first failure.
     fn copy_mixed<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -1024,7 +840,6 @@ impl<'a, M: Memory, F: Served> GatheredMemory<'a, M, F> {
                 .enumerate()
                 .all(|(index, destination)| destination.is_empty() || live(index))
         {
-            // Nothing gathered: the source's own single call.
             return if prefetched {
                 self.source
                     .copy_scattered_prefetched(addresses, destinations)
@@ -1033,8 +848,6 @@ impl<'a, M: Memory, F: Served> GatheredMemory<'a, M, F> {
             };
         }
         let copied = if (0..failed).any(|index| !destinations[index].is_empty() && live(index)) {
-            // Served and later spans are empty for the source: empty spans
-            // complete without a read, so the count stays in span order.
             let mut spans = destinations.iter_mut().enumerate();
             let mut live_spans: [&mut [u8]; N] = std::array::from_fn(|_| {
                 let (index, destination) = spans.next().unwrap();
@@ -1103,8 +916,6 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
         self.copy_mixed(addresses, destinations, true)
     }
 
-    /// The source's gather unless a field lies in a gathered object; then
-    /// the ordered field-by-field copy, served or failed field by field.
     fn copy_records(
         &self,
         sources: RecordSources<'_>,
@@ -1191,10 +1002,6 @@ impl<M: Memory, F: Served> Memory for GatheredMemory<'_, M, F> {
     }
 }
 
-/// A source serving one selected object's gathered fields at a time
-/// ([`GatheredObject`]): readers built once over it (a walk's collectors)
-/// read each object the walk [`Self::select`]s from that object's single
-/// gather, and every other read from the source.
 pub struct SwitchedObject<'a, M, const N: usize> {
     source: &'a M,
     fields: [(usize, usize); N],
@@ -1202,7 +1009,6 @@ pub struct SwitchedObject<'a, M, const N: usize> {
 }
 
 impl<'a, M: Memory, const N: usize> SwitchedObject<'a, M, N> {
-    /// Nothing selected yet; `fields` as for [`GatheredObject::gather`].
     pub fn new(source: &'a M, fields: [(usize, usize); N]) -> Self {
         Self {
             source,
@@ -1211,14 +1017,10 @@ impl<'a, M: Memory, const N: usize> SwitchedObject<'a, M, N> {
         }
     }
 
-    /// Gather the object at `pointer` (one guarded call) and serve it until
-    /// the next selection.
     pub fn select(&self, pointer: usize) {
         *self.current.borrow_mut() = GatheredObject::gather(self.source, pointer, self.fields);
     }
 
-    /// Whether the selected object's gather copied every field: when not,
-    /// its readers read the rest from the source.
     pub fn complete(&self) -> bool {
         self.current.borrow().object.completed >= N
     }
@@ -1315,8 +1117,6 @@ impl<M: Memory, const N: usize> Memory for SwitchedObject<'_, M, N> {
     }
 }
 
-/// Tests: a source whose reads fail when they touch `fault`, recording every
-/// read and every failed read. Scattered and record reads copy span by span.
 #[cfg(test)]
 pub(super) struct FaultAt<'a, M> {
     pub(super) source: &'a M,
@@ -1336,7 +1136,6 @@ impl<'a, M> FaultAt<'a, M> {
         }
     }
 
-    /// Whether one failed read was made again.
     pub(super) fn retried(&self) -> bool {
         let failed = self.failed.borrow();
         failed
@@ -1345,7 +1144,6 @@ impl<'a, M> FaultAt<'a, M> {
             .any(|(index, read)| failed[..index].contains(read))
     }
 
-    /// The first and last byte of every read: the faults worth sweeping.
     pub(super) fn edges(&self) -> Vec<usize> {
         let mut edges: Vec<usize> = self
             .reads

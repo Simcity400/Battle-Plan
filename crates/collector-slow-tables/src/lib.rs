@@ -1,5 +1,3 @@
-//! Slow job country and state tables: country factories, country tactic unlocks, faction theatres, logistics availability, modifier definitions and state building inputs. The host owns the Slow job's dispatch, loans and table assembly.
-
 use collector_extended_support::outcomes::failed_capture;
 use collector_logistics::logistics_balance;
 use collector_memory::read_accounting;

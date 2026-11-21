@@ -132,7 +132,6 @@ product! {
 pub struct Placements {
     pub country: Vec<WorldName>,
     pub warnings: Vec<String>,
-    // Upload generations are local presentation identities, not display content.
     pub generation: u64,
     pub near: Option<Arc<Placements>>,
 }
@@ -155,7 +154,6 @@ impl Product for Placements {
         schema.field("placements/content/v1");
         Vec::<WorldName>::schema(schema);
         Vec::<String>::schema(schema);
-        // Recurse through values, not the recursive schema type.
         schema.field("optional-near/placements");
     }
 }
@@ -607,8 +605,6 @@ pub fn apply_mode(
 }
 
 impl WorldName {
-    /// A battle-plan label: one flat quad per glyph, corners top-left,
-    /// top-right, bottom-right, bottom-left, drawn at `alpha`.
     pub fn from_glyphs(
         key: String,
         text: String,
@@ -649,7 +645,6 @@ impl WorldName {
         self.uvs.len()
     }
 
-    /// One line naming the area, its string and the fit the engine produced.
     pub fn summary(&self) -> String {
         format!(
             "{}: {:?} font size {:.2}, {} spaces between characters, {} glyphs,              world x {:.0}..{:.0} z {:.0}..{:.0}",

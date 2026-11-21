@@ -10,9 +10,6 @@ fn dates(runs: &[(i32, i32, Option<i64>)], reads: &[(i32, i32)]) -> Dates {
     fold.dates
 }
 
-/// An ace is first seen at the first hour its row held a value; a death is dated from the last
-/// read that saw it alive (across hours the table was not available) to the first hour it held
-/// dead; one first seen dead has no interval; a death after a revival is a death of its own.
 #[test]
 fn an_aces_dates_are_its_first_value_and_the_reads_around_its_death() {
     let reads = [(201, 201), (225, 225), (249, 290), (321, 321), (345, 345)];
@@ -51,9 +48,6 @@ fn history() -> History {
     }
 }
 
-/// The roster at an hour: each ace's country and its killer's through the links to the slot's
-/// holder, its dates from the timeline's history, its wing's name and aircraft in equipment order,
-/// an aircraft name not recorded named so, and a roster not recorded missing, never empty.
 #[test]
 fn the_roster_names_and_dates_each_ace_from_its_row_and_history() {
     let mut frame = frame(310);

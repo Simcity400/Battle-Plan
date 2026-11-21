@@ -1,8 +1,3 @@
-//! `AirTheatreRegions`: the wings of each air theatre by mission region, so a view filtered by
-//! theatres reads which regions each theatre held from the table's changes, never from the theatre
-//! tables at every hour. A wing counts in its group's theatre and its own mission region while it is
-//! a member. State is the tables and each member wing's group, theatre and region; a fresh hour or a
-//! resume reads the inputs whole.
 
 use crate::{
     forces::{invalid, written},
@@ -25,13 +20,10 @@ const READS: &[Read] = &[
     Read { table: TableId::AirWings, columns: Columns::These(&REGION), watch: Watch::Changed, required: true },
 ];
 
-/// The key of `theatre`'s row of `region`.
 pub fn key(theatre: u64, region: u32) -> u128 {
     u128::from(theatre) << 32 | u128::from(region)
 }
 
-/// The mission region of the wing `wing` in an AirWings view; none for a wing without one or not
-/// held.
 fn region_of(wings: &TableView<'_>, wing: u64) -> io::Result<Option<u32>> {
     let Some(slot) = wings.slot(u128::from(wing)) else { return Ok(None) };
     match wings.value(REGION[0], slot) {
@@ -43,17 +35,11 @@ fn region_of(wings: &TableView<'_>, wing: u64) -> io::Result<Option<u32>> {
 
 #[derive(Default)]
 pub struct AirTheatreRegions {
-    /// The writer must read its inputs whole before its next hour: a resume.
     rebuild: bool,
-    /// Each member wing's group.
     groups: HashMap<u64, u64>,
-    /// Each group's member wings.
     members: HashMap<u64, HashSet<u64>>,
-    /// Each group's theatre.
     theatres: HashMap<u64, u64>,
-    /// Each member wing's mission region.
     regions: HashMap<u64, u32>,
-    /// Each member wing's place: its theatre and region, where it has both.
     placed: HashMap<u64, (u64, u32)>,
     counts: HashMap<(u64, u32), i64>,
     dirty: HashSet<(u64, u32)>,
@@ -69,7 +55,6 @@ impl AirTheatreRegions {
         self.dirty.insert(place);
     }
 
-    /// Counts `wing` where its group's theatre and its region now place it.
     fn place(&mut self, wing: u64) {
         let place = self.groups.get(&wing).and_then(|group| self.theatres.get(group)).copied().zip(self.regions.get(&wing).copied());
         let before = match place {
@@ -217,7 +202,6 @@ impl Writer for AirTheatreRegions {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads the inputs whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

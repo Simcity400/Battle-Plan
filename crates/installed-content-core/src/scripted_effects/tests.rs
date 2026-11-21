@@ -27,7 +27,7 @@ fn body_pass_uses_readers_and_appends_duplicate_templates() {
     let unknown =
         crate::effect_keys::read_body(b"unknown_key={army_experience=2}", &names).unwrap();
     assert!(unknown[0].keyword_is("unknown_key"));
-    assert!(unknown[0].value.items().unwrap().is_empty()); // The game skips the invalid key's body; dispatcher names it.
+    assert!(unknown[0].value.items().unwrap().is_empty());
 }
 
 #[test]
@@ -63,7 +63,6 @@ fn names_resolve_recorded_stack_and_only_directory_files() -> io::Result<()> {
         ResolvedLayers::from_folders(&[(&vanilla, &[]), (&modded, &["common/scripted_effects"])])?;
     let loaded = names(&layers)?;
     assert_eq!(loaded, [b"new".to_vec()].into());
-    // The body pass is recursive, but only root-file registered names bind.
     std::fs::write(
         modded.join("common/scripted_effects/mod.txt"),
         b"New = {army_experience=2}",
@@ -89,7 +88,6 @@ fn names_resolve_recorded_stack_and_only_directory_files() -> io::Result<()> {
         [b"2".as_slice(), b"3"]
     );
     assert!(!bodies.bodies.contains_key(b"nested".as_slice()));
-    // This test owns the process-specific scratch directory.
     std::fs::remove_dir_all(root)?;
     Ok(())
 }

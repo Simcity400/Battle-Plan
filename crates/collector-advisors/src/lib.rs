@@ -1,4 +1,3 @@
-//! Hired advisors capture: appointed and available advisors, advisor tokens, the country character records and their held walks. The host owns dispatch, loans and table assembly.
 
 use collector_certificates::slicing;
 use collector_extended_support::outcomes::failed_capture;

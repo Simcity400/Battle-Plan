@@ -1,4 +1,3 @@
-//! Native Event feed CALL observers, with hourly owned copies and output receipts.
 
 pub use crate::event_feed_history::Fact;
 pub mod decisions;
@@ -28,15 +27,11 @@ const RETURNED_FAULT: u32 = 2;
 const NATIVE_ESCAPE: u32 = 4;
 const OWNERSHIP_FAULT: u32 = 8;
 
-// Permanent aligned qword: low63 native flights; bit63 irreversible retention.
-// Only entry ASM acquires and normal exit ASM releases. No reset or Rust Drop.
 static FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static FAULT: AtomicU32 = AtomicU32::new(0);
 static SHARED: AtomicPtr<Owner> = AtomicPtr::new(ptr::null_mut());
 static TARGETS: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
-/// One receipt cell per seal; a backlog cannot overflow it.
 struct Ledger {
-    /// The [`Owner::serial`] the cells belong to.
     owner: u64,
     cells: Vec<crate::event_feed_history::Receipt>,
 }
@@ -45,7 +40,6 @@ static LEDGER: Mutex<Ledger> = Mutex::new(Ledger {
     cells: Vec::new(),
 });
 static OWNERS: AtomicU64 = AtomicU64::new(1);
-/// `owner`'s cells; an earlier owner's can never be received and are dropped.
 fn ledger(owner: &Owner) -> std::sync::MutexGuard<'static, Ledger> {
     let mut ledger = LEDGER
         .lock()
@@ -80,8 +74,6 @@ fn script_capacities(store: &Store) {
     }
 }
 
-/// The existing country worker's recovery of owner certificates, sealed in
-/// the same hour's row. A certified owner does no additional native read.
 #[derive(Clone, Copy)]
 pub struct DelayedCensus {
     base: usize,
@@ -91,17 +83,11 @@ pub struct DelayedCensus {
     epoch: u64,
 }
 
-/// Owner certificates were retired, refused or may be missing since the
-/// last complete census. Atomics only; no store entry.
 pub fn recovery_pending() -> bool {
     crate::event_feed_history::RECOVERY.load(Ordering::Acquire)
         > crate::event_feed_history::RECOVERED.load(Ordering::Acquire)
 }
 
-/// Collector worker threads only. `full`, the daily census, requests a
-/// recovery walk even with nothing pending. `None` without any refusal while
-/// nothing may be read: a loss or refusal awaits its receipt, or the
-/// boundary's registry baseline has not established this world.
 pub fn begin_delayed_census(
     base: usize,
     state: usize,
@@ -134,7 +120,6 @@ pub fn begin_delayed_census(
         .ok()
         .flatten()
 }
-/// Collector worker threads only: one live country of the census walk.
 pub fn baseline_delayed_country(
     memory: &impl Memory,
     context: DelayedCensus,
@@ -169,9 +154,6 @@ pub fn baseline_delayed_country(
     if !work.into_iter().any(|work| work) {
         return;
     }
-    // Keep each registry independent: its completed baseline is published
-    // before the next registry starts reading. Every merge still rechecks
-    // the cut of the complete private baseline it is about to publish.
     for registry in [
         crate::event_feed_history::OwnerRegistry::Decisions,
         crate::event_feed_history::OwnerRegistry::Delayed,
@@ -181,8 +163,6 @@ pub fn baseline_delayed_country(
         }
         let mut selected = [false; 2];
         selected[registry as usize] = true;
-        // Reuse the selected owner's existing readers with a private owned
-        // transaction. Neither its native reads nor its growth holds the lease.
         let prepared = crate::event_feed_history::recovery::PreparedOwner::read(
             memory,
             context.base,
@@ -216,8 +196,6 @@ pub fn baseline_delayed_country(
             store.prepare_owner_demand(&prepared);
             script_demands(store);
         });
-        // The whole owner, surviving unacknowledged facts and its local refusal
-        // reserve are now measured. Prepare the offered allocation off-lease.
         presize(0);
         let _ = owner.worker(Role::Census, |store| {
             if retained()
@@ -241,9 +219,6 @@ pub fn baseline_delayed_country(
         });
     }
 }
-/// Collector worker threads only. `complete`: the walk visited every live
-/// country without a census error. Otherwise recovery stays pending for the
-/// next hour's visit.
 pub fn finish_delayed_census(context: DelayedCensus, complete: bool) {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
@@ -293,8 +268,6 @@ pub fn scheduled_delayed(country: usize) {
         script_demands(store);
     });
 }
-/// `pass`: the authenticated iteration owner and the world its pass was
-/// anchored in. A destroy outside a pass forwards none.
 pub fn retired_delayed(pointer: usize, pass: Option<(usize, u64)>, visited: bool) {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
@@ -351,8 +324,8 @@ pub fn reset_delayed_country(pointer: usize) {
     });
 }
 
-/// Snapshot offsets are duplicated only in the matching ASM/header.
-/// The ticket bytes are opaque to C++; only Rust creates/consumes the ticket.
+#[doc = " Snapshot offsets are duplicated only in the matching ASM/header."]
+#[doc = " The ticket bytes are opaque to C++; only Rust creates/consumes the ticket."]
 #[repr(C)]
 struct Frame {
     rsp_before_call: usize,
@@ -383,7 +356,6 @@ const _: () = {
     assert!(std::mem::offset_of!(Frame, target) == 216);
 };
 
-/// Who holds or wanted the shared store. Pointer-free admission and diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum Role {
@@ -406,45 +378,26 @@ enum Role {
 }
 const ROLES: usize = 16;
 impl Role {
-    /// The busy word: zero is free.
     fn held(self) -> u8 {
         self as u8 + 1
     }
-    /// The holder role in a busy word.
     fn holder(busy: u64) -> usize {
         ((busy & HOLDER) as usize).saturating_sub(1).min(ROLES - 1)
     }
 }
-/// Declined entries by (declined role, holder role).
 static DECLINED: [[AtomicU64; ROLES]; ROLES] =
     [const { [const { AtomicU64::new(0) }; ROLES] }; ROLES];
-/// Callback entries declined, by role, because a worker that lost a race
-/// for the free store was owed it.
 static DECLINED_FOR_WAITING_WORKER: [AtomicU64; ROLES] = [const { AtomicU64::new(0) }; ROLES];
-/// Worker entries that waited, by (worker role, first observed holder role).
 static WORKER_WAITS: [[AtomicU64; ROLES]; ROLES] =
     [const { [const { AtomicU64::new(0) }; ROLES] }; ROLES];
-/// Worker entries that lost a race for the store and claimed the next one.
 static WORKER_LOST_RACES: [AtomicU64; ROLES] = [const { AtomicU64::new(0) }; ROLES];
-/// Worker entries refused because the owner was retained while they waited.
 static WORKER_REFUSALS: [AtomicU64; ROLES] = [const { AtomicU64::new(0) }; ROLES];
-/// Polling before a worker yields or a Candidate parks. Admission does not
-/// depend on it: an owed worker has priority and a Candidate retries a live
-/// Candidate holder without counting a decline.
 const WORKER_SPINS: u32 = 64;
 const WORKER_RETAINED: &str = "Event feed owner retained while the worker waited";
 
-/// The busy word carries the holder's role and admission/wakeup flags.
 const HOLDER: u64 = 0xff;
-/// A worker that lost a race is owed the store: callbacks decline until it
-/// enters.
 const WORKER_WAITING: u64 = 1 << 8;
-/// Only Candidate publication has the short, non-reentrant holder proof
-/// needed for another native Candidate to wait. Other DecisionWriter sites
-/// keep try-only admission. Separate from optional diagnostic attribution.
 const CANDIDATE: u64 = 1 << 20;
-/// A parked Candidate may need a wake on release. Cleared with ownership;
-/// an uncontended release makes no address-wake call.
 const CANDIDATE_WAITING: u64 = 1 << 21;
 
 fn candidate_held(word: u64) -> bool {
@@ -452,63 +405,37 @@ fn candidate_held(word: u64) -> bool {
         == (u64::from(Role::DecisionWriter.held()) | CANDIDATE)
 }
 
-/// Bumped by every native callback's store entry attempt, entered or not,
-/// and by the entry and return of every bracketed native original. A
-/// baseline sample is cut against it. Constant work.
 static WRITER_EPOCH: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn writer_moved() {
     WRITER_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
-/// Inside a worker lease: a baseline sample's cut, or `None` while an
-/// event-feed native original is in flight.
 pub(crate) fn writer_cut() -> Option<u64> {
     let epoch = WRITER_EPOCH.load(Ordering::SeqCst);
     (active() & !RETAIN == 0).then_some(epoch)
 }
-/// No native writer attempted the store, ran a bracketed original or is in
-/// flight since `cut`.
 pub(crate) fn writer_cut_holds(cut: u64) -> bool {
     active() & !RETAIN == 0 && WRITER_EPOCH.load(Ordering::SeqCst) == cut
 }
 
 struct Owner {
     base: usize,
-    /// Unique per owner, unlike its address: keys its receipt cells.
     serial: u64,
     armed: AtomicBool,
-    /// [`HOLDER`] role, Candidate identity/wakeup flags and [`WORKER_WAITING`].
     busy: AtomicU64,
-    /// Releases of the store, so a waiting worker sees that the holder it
-    /// found left and another entry took the store first.
     releases: AtomicU64,
-    /// The decline accounting interval. Each seal advances it before its
-    /// release; its low bit selects the slot of the counters below.
     phase: AtomicU64,
-    /// Callback entry attempts in progress in each slot's phase, from
-    /// their validated increment until their decline, if any, is recorded.
     entering: [AtomicU64; 2],
-    /// Callback entries declined in each slot's phases. Only grows.
     declines: [AtomicU64; 2],
-    /// Declines of each slot some entry or seal has taken. Only grows:
-    /// whoever raises it owns the raised range exactly once.
     taken: [AtomicU64; 2],
-    /// Declines the last seal drained for its row, stored before
-    /// [`Self::seal_loss_publication`].
     seal_loss_count: AtomicU64,
-    /// That row's publication, [`NO_SEAL`] when it published none, or zero.
-    /// The next entrant applies it to the store before anything else: the
-    /// seal never touches the store after its release.
     seal_loss_publication: AtomicU64,
     store: UnsafeCell<Store>,
 }
-/// A drained seal loss with no sealed row: plain missed observations.
 const NO_SEAL: u64 = u64::MAX;
-// Each short store phase has exclusive checked access. No lease crosses native.
 unsafe impl Send for Owner {}
 unsafe impl Sync for Owner {}
 
 impl Owner {
-    /// Off-thread setup with live-sized storage and the retained sequence seed.
     fn new(base: usize, store: Store) -> Arc<Self> {
         Arc::new(Self {
             base,
@@ -534,12 +461,6 @@ impl Owner {
         self.access_mode(role, apply, true, false)
     }
 
-    /// Failure to enter acquires no store entry or ticket. The native call
-    /// still runs and releases its own flight on normal return. Only the
-    /// missed interval is lost; settlement and escape faults stay terminal.
-    /// These callbacks never wait. A burst past the storage the boundary
-    /// grew ahead grows it in place through the thread's own heap cache;
-    /// only a failed allocation refuses an occurrence, by name.
     fn observe<T>(
         &self,
         role: Role,
@@ -548,18 +469,10 @@ impl Owner {
         self.access_mode(role, apply, false, false)
     }
 
-    /// Candidate publication alone may wait for another Candidate callback.
-    /// Its holder copies selected guarded operands into prepared storage: no
-    /// original, getter, forwarded notification or game-thread wait, so it
-    /// cannot nest another callback or wait for this native caller. The
-    /// enclosing native Flight and its operand lifetime remain on the caller.
     fn observe_candidate<T>(&self, apply: impl FnOnce(&mut Store) -> T) -> Result<T, &'static str> {
         self.access_mode(Role::DecisionWriter, apply, false, true)
     }
 
-    /// Outside the decline phase: a parked attempt must not hold up a seal.
-    /// The next admission attempt joins the then-current phase and moves the
-    /// writer cut again. A changed holder or owed worker is never waited on.
     fn wait_candidate(&self, mut word: u64) {
         for _ in 0..WORKER_SPINS {
             if !candidate_held(word) {
@@ -571,8 +484,6 @@ impl Owner {
         if !candidate_held(word) || retained() {
             return;
         }
-        // Register against this exact Candidate ownership word before
-        // parking. Release clears the flag even if its wake precedes wait.
         let parked = word | CANDIDATE_WAITING;
         if self
             .busy
@@ -587,10 +498,6 @@ impl Owner {
                 hook();
             }
         });
-        // A foreign escape can retain ownership without changing busy or
-        // releasing it. Periodically recheck that terminal state rather than
-        // sleeping forever. Timeout/spurious wake never discards a Candidate.
-        // SAFETY: a stable aligned qword and same-size local comparison.
         unsafe {
             WaitOnAddress(
                 self.busy.as_ptr().cast(),
@@ -601,20 +508,6 @@ impl Owner {
         };
     }
 
-    /// Join the current decline phase: increment its slot's entering
-    /// count, then validate that the phase is still the one read.
-    ///
-    /// Validation closes the window between reading the phase and the
-    /// increment. A seal flips the phase (SeqCst) as the last act of its
-    /// lease, before releasing, and then drains the old slot (SeqCst
-    /// loads). If this validating load still reads the old phase, it
-    /// precedes the flip in the single SeqCst order, so the earlier
-    /// increment precedes the seal's drain: the seal waits for this
-    /// attempt's decline. If it reads a newer phase, the attempt leaves the
-    /// old slot and joins the new one, so its decline belongs to the next
-    /// seal. No attempt can record into a slot already settled.
-    ///
-    /// Join from a phase read earlier; returns the phase actually joined.
     fn join_phase(&self, mut phase: u64) -> u64 {
         loop {
             let slot = (phase & 1) as usize;
@@ -627,12 +520,10 @@ impl Owner {
             phase = now;
         }
     }
-    /// Test-only: join the current phase; its slot.
     #[cfg(test)]
     fn enter_phase(&self) -> usize {
         self.validate_phase(self.phase.load(Ordering::SeqCst))
     }
-    /// Test-only: join from a phase read earlier; its slot.
     #[cfg(test)]
     fn validate_phase(&self, phase: u64) -> usize {
         (self.join_phase(phase) & 1) as usize
@@ -641,12 +532,6 @@ impl Owner {
         self.entering[slot].fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// Enter the free store, or decline while it is held or owed to a
-    /// waiting worker. The attempt runs inside its validated phase, and a
-    /// decline is recorded in that phase before the attempt leaves it. A
-    /// settlement follows the same protocol and is never declined for a
-    /// waiting worker: its overlap would retain the owner. Only a Candidate
-    /// facing another Candidate retries, outside the decline phase.
     fn access_mode<T>(
         &self,
         role: Role,
@@ -684,7 +569,6 @@ impl Owner {
             DECLINED[role as usize][Role::holder(word)].fetch_add(1, Ordering::Relaxed);
         }
         if retain_overlap {
-            // Retained; there is no missed observation to count.
             self.leave_phase(slot);
             fault(OWNERSHIP_FAULT);
             return Err("Event feed store overlap; owner retained");
@@ -698,19 +582,9 @@ impl Owner {
             fault(OWNERSHIP_FAULT);
             return Err("Event feed declined observation count exhausted; owner retained");
         }
-        // The holder's own work stays armed; the next entry names this
-        // loss as an overlap.
         Err(OBSERVATION_OVERLAP)
     }
 
-    /// Collector worker threads only. A live holder never crosses native
-    /// code while it holds the store, so it always releases; a retained
-    /// owner ends the wait.
-    /// The worker races for each release. Once it has lost one (the holder
-    /// it found released and another entry took the store first) it is
-    /// owed the next: callbacks decline until it enters, which is after at
-    /// most the current hold. Nothing native was missed, so a refused
-    /// worker counts no observation.
     fn worker<T>(
         &self,
         role: Role,
@@ -720,24 +594,6 @@ impl Owner {
         self.held(apply, true, None)
     }
 
-    /// The sealing lease. `apply` returns its value and the publication it
-    /// sealed, if any. Its last act while still holding the store flips the
-    /// decline phase; it then releases unconditionally and drains the old
-    /// phase: it waits for every attempt that joined that phase to record
-    /// its decline, then takes the slot's remaining declines. They were
-    /// declined before the next interval began, so they refuse the sealed
-    /// row. The store effects go to the next entrant. Returns how many the
-    /// seal took.
-    ///
-    /// Flipping before the release means no entrant after the release can
-    /// take the closing phase's declines: one that joined the new phase
-    /// takes only that phase, and one that joined the old phase before the
-    /// flip takes nothing ([`Self::take_missed`]), leaving them to this
-    /// drain.
-    ///
-    /// The wait is bounded: only attempts that joined before the flip are
-    /// counted, and each runs a few atomics with no native code before it
-    /// leaves. Collector worker only.
     fn sealing<T>(
         &self,
         role: Role,
@@ -747,7 +603,6 @@ impl Owner {
         let (value, publication, old) = self.held(
             |store| {
                 let (value, publication) = apply(store);
-                // The flip precedes the release.
                 let old = (self.phase.fetch_add(1, Ordering::SeqCst) & 1) as usize;
                 (value, publication, old)
             },
@@ -774,17 +629,12 @@ impl Owner {
         Ok((value, if publication.is_some() { owned } else { 0 }))
     }
 
-    /// Wait for the store and enter it. Entry is a single update of the
-    /// ownership word, so only ownership transitions bound it: counting
-    /// declines never touches that word.
     fn enter_worker(&self, role: Role) -> Result<(), &'static str> {
         let mut spins = 0;
         let mut found: Option<u64> = None;
         let mut owed = false;
         loop {
-            // Read before the claim: a release clears busy before it counts itself.
             let releases = self.releases.load(Ordering::SeqCst);
-            // This worker's claim is spent on entering.
             let word = match self
                 .busy
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |word| {
@@ -805,16 +655,12 @@ impl Owner {
                     found = Some(releases);
                 }
                 Some(seen) if !owed => {
-                    // Held although a release came since it found the store held:
-                    // another entry won the race for that release.
                     if releases != seen {
                         owed = true;
                         self.busy.fetch_or(WORKER_WAITING, Ordering::SeqCst);
                         WORKER_LOST_RACES[role as usize].fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                // Another owed worker entering spends the shared claim; keep
-                // this one's.
                 Some(_) if word & WORKER_WAITING == 0 => {
                     self.busy.fetch_or(WORKER_WAITING, Ordering::SeqCst);
                 }
@@ -842,19 +688,12 @@ impl Owner {
         }
     }
 
-    /// The store is held. Applies the last seal's drained loss before
-    /// anything else, then this entry's missed observations; releases
-    /// unconditionally.
-    /// `phase` is the decline phase a callback joined for its entry; a
-    /// worker, which joins none, passes `None` and takes the current phase.
     fn held<T>(
         &self,
         apply: impl FnOnce(&mut Store) -> T,
         take_missed: bool,
         phase: Option<u64>,
     ) -> Result<T, &'static str> {
-        // A Rust panic is contained. A foreign escape is contained by the C++
-        // observer-only guard; it may leave busy set, which retains the owner.
         let result = catch_unwind(AssertUnwindSafe(|| {
             let store = unsafe { &mut *self.store.get() };
             let publication = self.seal_loss_publication.swap(0, Ordering::Acquire);
@@ -879,32 +718,25 @@ impl Owner {
                     .fetch_and(!(HOLDER | CANDIDATE | CANDIDATE_WAITING), Ordering::SeqCst);
                 self.releases.fetch_add(1, Ordering::SeqCst);
                 if held & CANDIDATE_WAITING != 0 {
-                    // SAFETY: the ownership qword stays live through every
-                    // synchronous callback and any enclosing native Flight.
                     unsafe { WakeByAddressAll(self.busy.as_ptr().cast()) };
                 }
                 Ok(value)
             }
             Err(payload) => {
                 fault(OWNERSHIP_FAULT);
-                // No payload destructor or guessed lock/ticket cleanup after fault.
                 std::mem::forget(payload);
                 Err("Event feed callback panic; owner retained")
             }
         }
     }
 
-    /// Declines of `slot` recorded so far that nobody has taken; raising
-    /// its `taken` owns them exactly once.
     fn take_declines(&self, slot: usize) -> u64 {
         let declines = self.declines[slot].load(Ordering::SeqCst);
         declines.saturating_sub(self.taken[slot].fetch_max(declines, Ordering::SeqCst))
     }
-    /// The current phase's slot.
     fn current(&self) -> usize {
         (self.phase.load(Ordering::SeqCst) & 1) as usize
     }
-    /// Declines recorded in the current phase that nobody has taken.
     fn untaken(&self) -> u64 {
         let slot = self.current();
         self.declines[slot]
@@ -912,11 +744,6 @@ impl Owner {
             .saturating_sub(self.taken[slot].load(Ordering::SeqCst))
     }
 
-    /// Declines of the entry's own phase nobody has taken refuse its
-    /// interval, and only while that phase is still current: a callback
-    /// that joined the closing phase before a seal's flip takes nothing,
-    /// leaving its declines to that seal's drain. One still in flight is
-    /// caught by the next seal's drain, which then refuses the row it seals.
     fn take_missed(&self, store: &mut Store, phase: Option<u64>) -> bool {
         let current = self.phase.load(Ordering::SeqCst);
         if phase.is_some_and(|phase| phase != current) {
@@ -931,8 +758,6 @@ impl Owner {
         true
     }
 
-    /// Revoke before any unobserved mutation. This atomic operation does not
-    /// settle tickets/flights or establish that a world replacement succeeded.
     fn revoke_world(&self) {
         self.armed.store(false, Ordering::SeqCst);
     }
@@ -941,28 +766,19 @@ impl Owner {
 #[cfg(test)]
 thread_local! {
     static BEFORE_CANDIDATE_WAIT: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
-    // Initial release sampling and any lost-race accounting are complete;
-    // the next worker iteration has not re-read busy yet.
     static BEFORE_WORKER_RETRY: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
-    // A worker's claim failed; it has not yet counted a wait or a lost race for it.
     static AFTER_FAILED_CLAIM: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
 }
 
-/// Declines recorded in the current interval that no entry has taken: a
-/// writer was lost while the caller held the store, so it certifies nothing.
 pub(crate) fn untaken_declines() -> u64 {
     let lost = unsafe { SHARED.load(Ordering::SeqCst).as_ref() }.map_or(0, Owner::untaken);
     #[cfg(test)]
     let lost = lost + TEST_UNTAKEN_DECLINES.load(Ordering::SeqCst);
     lost
 }
-/// Test only: declines recorded in the current interval by a store a
-/// history test does not own.
 #[cfg(test)]
 pub(crate) static TEST_UNTAKEN_DECLINES: AtomicU64 = AtomicU64::new(0);
 
-/// Test-only: the seal has just released its lease and waits here until a
-/// test admits a callback in exactly that window.
 #[cfg(test)]
 static SEAL_RELEASED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
@@ -978,14 +794,11 @@ fn after_seal_release() {
 pub(crate) const OBSERVATION_OVERLAP: &str =
     "Event feed observation overlapped another acquisition";
 
-/// Native or callback ownership is retained: nothing may enter the store.
 fn retained() -> bool {
     FAULT.load(Ordering::SeqCst) != 0 || active() & RETAIN != 0
 }
 
 fn fault(code: u32) {
-    // Static pointer-free, allocation-free sink. Even an unacquired escape
-    // prevents later certification/free; no logical or physical count settles.
     FAULT.fetch_or(code, Ordering::SeqCst);
     FLIGHT.fetch_or(RETAIN, Ordering::SeqCst);
 }
@@ -1036,16 +849,11 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
         let ticket = ticket?;
         frame.ticket.write(ticket);
         frame.generation = generation;
-        // Only this final normal write grants the single terminal callback.
         frame.terminal = 1;
         Ok(true)
     })?
 }
 
-/// Record an event a provenance hook proved ([`crate::war_provenance`]):
-/// `observe` reads it from the current world, `Ok(None)` when the operation
-/// changed nothing. Refused, counted and named like a CALL observation when
-/// the world is not observed, an operand does not read or storage is full.
 pub fn record(
     observe: impl FnOnce(
         &native::provenance::World<'_, engine_native::memory::LiveMemory>,
@@ -1065,7 +873,6 @@ pub fn record(
             let hour = world.hour()?;
             Ok(observe(&world, &memory, owner.base)?.map(|fact| (hour, fact)))
         });
-        // A refusal is counted and named by the store.
         match fact {
             Ok(Some((hour, fact))) => {
                 let _ = store.known(generation, hour, fact);
@@ -1079,8 +886,6 @@ pub fn record(
     });
 }
 
-/// Same owned occurrence stream and receipt boundary as diplomacy events.
-/// Only the native writer's reached definition and bound graph are acquired.
 pub fn record_script(
     observe: impl FnOnce(
         &native::provenance::World<'_, engine_native::memory::LiveMemory>,
@@ -1159,32 +964,22 @@ pub fn registered_script_instance(state: usize, event: usize, scope: usize, inst
     }
 }
 
-/// A native original with no event-feed callback after its stores, which
-/// a writer bracketed by another family forwards: from before its
-/// publication through the original's return. Like a script Flight, it moves
-/// the writer epoch on entry and drop, and an exit without
-/// [`Self::returned`] retains native-flight ownership.
 pub struct WriterFlight(crate::script_event_observer::Flight);
 impl WriterFlight {
     pub fn enter() -> Self {
         Self(crate::script_event_observer::Flight::enter())
     }
-    /// The original returned normally.
     pub fn returned(&mut self) {
         self.0.returned();
     }
 }
 
-/// Refuse a provenance event whose operands did not read.
 pub fn refuse(reason: &'static str) {
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
         let _ = owner.observe(Role::Refusal, |store| store.reject(reason));
     }
 }
 
-/// A detour latch appends its witness to the store's arena, tagged with its
-/// frame token. A declined entry is a missed observation like any callback,
-/// and arena exhaustion refuses by name and raises demand.
 pub(crate) fn stage_witness(token: u64, witness: crate::event_feed_history::Witness) {
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
         let _ = owner.observe(Role::Staging, |store| {
@@ -1195,18 +990,12 @@ pub(crate) fn stage_witness(token: u64, witness: crate::event_feed_history::Witn
         });
     }
 }
-/// The witness arena's epoch, recorded by a detour at entry. `None` when
-/// the entry was declined: a missed observation refuses the interval anyway.
 pub(crate) fn staging_epoch() -> Option<u64> {
     let owner = unsafe { SHARED.load(Ordering::SeqCst).as_ref() }?;
     owner
         .observe(Role::Staging, |store| store.staged_epoch())
         .ok()
 }
-/// A detour's publication takes its frame's next staged witness in native
-/// order. `Ok(None)` ends the frame, including when the entry was declined:
-/// a missed observation refuses the interval either way. An arena reset
-/// since `epoch` is a named refusal.
 pub(crate) fn take_staged(
     token: u64,
     epoch: Option<u64>,
@@ -1219,8 +1008,6 @@ pub(crate) fn take_staged(
         .unwrap_or(Ok(None))
 }
 
-/// The observed world's generation, or `None` after refusing, as a CALL
-/// observation does.
 fn observed(owner: &Owner, store: &mut Store) -> Option<u64> {
     if FAULT.load(Ordering::SeqCst) != 0 {
         store.reject("Event feed native flight unavailable");
@@ -1236,8 +1023,8 @@ fn observed(owner: &Owner, store: &mut Store) -> Option<u64> {
     }
 }
 
-/// C++ invokes only on this exact original's normal return. It never repeats
-/// this callback after Err/panic/SEH, and never guesses an incomplete settlement.
+#[doc = " C++ invokes only on this exact original's normal return. It never repeats"]
+#[doc = " this callback after Err/panic/SEH, and never guesses an incomplete settlement."]
 unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         fault(RETURNED_FAULT);
@@ -1247,8 +1034,6 @@ unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
         fault(RETURNED_FAULT);
         return Err("Event feed terminal ownership differs");
     }
-    // The store entry/proof was durable before original; ticket consumption is
-    // once-only even if this callback fails after taking the opaque token.
     frame.terminal = 2;
     let ticket = unsafe { frame.ticket.assume_init_read() };
     let result = owner.access(Role::Settlement, |store| {
@@ -1279,7 +1064,6 @@ unsafe fn returned(frame: &mut Frame) -> Result<(), &'static str> {
     }
 }
 
-// C++/ASM own these stack frames. No game pointer is dereferenced directly.
 #[unsafe(no_mangle)]
 unsafe extern "system-unwind" fn hoi4_event_before(frame: *mut Frame) -> u32 {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeed);
@@ -1314,24 +1098,22 @@ unsafe extern "system-unwind" {
 }
 
 struct Held {
-    /// The two CALL hooks, then the provenance entry detours.
     hooks: Vec<Hook>,
     taps: Vec<Tap>,
     owner: Arc<Owner>,
     restored: bool,
 }
-/// Hooks and history remain owned until restoration and the final quiet check.
 pub struct Hooks {
     held: Option<ManuallyDrop<Held>>,
 }
 
 impl Hooks {
-    /// Build verified, unpublished CALL hooks using the shared patch owner.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " Build verified, unpublished CALL hooks using the shared patch owner."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
@@ -1412,8 +1194,6 @@ impl Hooks {
         let Some(held) = self.held.as_mut() else {
             return Ok(true);
         };
-        // A delayed pass holds a cursor anchor until its original returns.
-        // Keep its observations installed until that native flight completes.
         if !enabled && active() != 0 {
             return Ok(false);
         }
@@ -1495,20 +1275,16 @@ impl Held {
 
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // Also releases unpublished bootstrap storage on cancellation.
         let _ = self.release_after_quiet();
     }
 }
 
-/// Under the lease; resolved cells are applied without allocation.
 fn take_receipts(owner: &Owner, store: &mut Store) {
     let mut ledger = ledger(owner);
     store.receipts(&ledger.cells);
     ledger.cells.retain(|(_, outcome)| outcome.is_none());
 }
 
-/// Native flights of the CALL hooks (bit 63 retains the owner) and the
-/// provenance entry detours in flight.
 pub fn active() -> usize {
     FLIGHT
         .load(Ordering::SeqCst)
@@ -1516,18 +1292,10 @@ pub fn active() -> usize {
         .saturating_add(crate::script_event_observer::active())
 }
 
-/// A family whose patch forwards provenance to the event feed. While one is
-/// not enabled its events or causes go unobserved, so no interval is
-/// complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Forwarder {
-    /// [`crate::politics_changes`]: the diplomatic dispatch and civil war
-    /// start that declarations happen in.
     Politics,
-    /// [`crate::territory_changes`]: set owner, every state
-    /// transfer.
     Territory,
-    /// The script-variable family owns and forwards delayed event passes.
     DelayedPass,
 }
 
@@ -1540,8 +1308,6 @@ pub fn forwarder(forwarder: Forwarder, enabled: bool) {
     FORWARDERS[forwarder as usize].store(enabled, Ordering::SeqCst);
 }
 
-/// An observed interval's coverage: complete only when the capture is and
-/// every forwarder is enabled.
 fn coverage(partial: bool) -> replay_data::event_feed_rows::EventFeedCoverage {
     use replay_data::event_feed_rows::EventFeedCoverage;
     if partial
@@ -1555,8 +1321,6 @@ fn coverage(partial: bool) -> replay_data::event_feed_rows::EventFeedCoverage {
     }
 }
 
-/// Live war relations the latest Wars walk counted, for sizing: one
-/// conference can end every one of them in an hour.
 static WARS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn note_wars(count: usize) {
@@ -1569,7 +1333,6 @@ pub fn lost_drain() {
     }
 }
 
-/// The interval's input failure, read again by each boundary half.
 fn input_failure(owner: &Owner) -> Option<&'static str> {
     if retained() {
         Some("Event feed native or callback ownership retained")
@@ -1580,10 +1343,6 @@ fn input_failure(owner: &Owner) -> Option<&'static str> {
     }
 }
 
-/// The observer boundary job's half on a collector worker: take receipts
-/// and missed observations, install offered capacity and acquire the
-/// registry baseline. The same hour's census may then recover owners before
-/// [`seal`] publishes it. An error invalidates and is returned.
 pub fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
     let generation = crate::world_lifetime::generation();
     let owner =
@@ -1615,8 +1374,6 @@ pub fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
         .and_then(|result| result)
 }
 
-/// Only pointer-stable, ticket-free storage may be replaced. Allocation and
-/// destruction remain on the sizing worker, outside this short merge lease.
 fn install_offered(store: &mut Store) {
     if active() == 0
         && let (Ok(mut spare), Ok(mut retired)) = (SPARE.try_lock(), RETIRED.try_lock())
@@ -1641,14 +1398,10 @@ pub(crate) fn presize_owner_for_test(
     crate::test_support::with_allocations_denied(|| install_offered(store));
 }
 
-/// The prepared hour's publication on a collector worker, after its census.
-/// Grow output and receipts off-lease from the measured demand; one owner
-/// never seals concurrently.
 pub fn seal(output: &mut Snapshot, hour: i32, partial: bool) {
     seal_hour(output, hour, partial, || {});
 }
 
-/// `during` runs while the sealing lease is held, after the seal.
 fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnce()) {
     let generation = crate::world_lifetime::generation();
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
@@ -1659,7 +1412,6 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
         (store.seal_demand(), store.receipt_room())
     }) {
         Ok((demand, room)) => {
-            // The sealing lease names any demand or storage failure.
             if let Ok(demand) = demand {
                 let _ = output.reserve_with_headroom(demand);
             }
@@ -1671,7 +1423,6 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
             return;
         }
     };
-    // Receipts only free room, so what is grown here still fits the seal.
     let mut spare = room
         .and_then(|room| engine_allocation::vec(room).ok())
         .unwrap_or_default();
@@ -1684,8 +1435,6 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
             coverage: coverage(partial),
             failure: input_failure(owner),
         };
-        // Callbacks may have added facts since the measure: a shortfall
-        // refuses the hour with its storage reason.
         let result = if cell {
             store.seal(output, boundary)
         } else {
@@ -1704,42 +1453,34 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
     drop(spare);
     match sealed {
         Ok((Ok(()), declined)) => {
-            // Before the output leaves this boundary, so before its receipt.
             let mut ledger = ledger(owner);
             if ledger.cells.len() < ledger.cells.capacity() {
                 ledger.cells.push((output.publication(), None));
             } else {
-                // Only seals add cells, one at a time, each into reserved room.
                 fault(OWNERSHIP_FAULT);
             }
             drop(ledger);
             if declined != 0 {
-                // Declined while this seal held the store: before the next
-                // interval began, so they refuse this row and only this row.
                 output.declined_during_seal(declined);
             }
         }
         Ok((Err(reason), _)) => output.refuse(generation, hour, reason),
         Err(reason) => {
-            // Like a lost drain: the next interval is named unavailable.
             owner.revoke_world();
             output.refuse(generation, hour, reason);
         }
     }
 }
 
-/// Resolve only after the real write; the reserved cell cannot overflow.
 pub fn accepted(pack: &crate::event_feed_history::Prepared) -> std::io::Result<()> {
     resolve(pack.publication(), true);
     Ok(())
 }
 
-/// Allocation-free rejection of an unwritten or uncertain publication.
 pub fn discarded(publication: u64) {
     resolve(publication, false);
 }
 
-/// Only a pending publication's first outcome counts.
 fn resolve(publication: u64, accepted: bool) {
     if publication == 0 {
         return;
@@ -1755,15 +1496,12 @@ fn resolve(publication: u64, accepted: bool) {
     }
 }
 
-/// Growth ahead of the next interval from measured demand, off the callbacks,
-/// so growth inside a callback is rare and small.
 pub fn presize(slots: usize) {
     engine_allocation::advisory(|| presize_storage(slots));
 }
 
 fn staging_capacity(current: usize, required: usize) -> usize {
     let required = current.max(required);
-    // Certificate indexes round up too; doubling an uneven capacity never catches them.
     required.checked_next_power_of_two().unwrap_or(required)
 }
 
@@ -1776,8 +1514,6 @@ fn presize_storage(slots: usize) {
     }
     let capacity = staging_capacity(
         CAPACITY.load(Ordering::Acquire),
-        // Two war links per country, and one hour's state owner changes and
-        // ended war relations at most every state and war at once.
         slots
             .saturating_mul(2)
             .saturating_add(crate::territory_changes::state_slots())
@@ -1833,9 +1569,9 @@ fn presize_storage(slots: usize) {
     }
 }
 
-/// Test only: the event feed's process-wide state for one test at a time,
-/// from its initial values. The owner, target, fault and flight are restored
-/// on drop; a failed test never poisons the lock.
+#[doc = " Test only: the event feed's process-wide state for one test at a time,"]
+#[doc = " from its initial values. The owner, target, fault and flight are restored"]
+#[doc = " on drop; a failed test never poisons the lock."]
 #[cfg(test)]
 pub(crate) struct TestGlobals {
     shared: *mut Owner,
@@ -1843,7 +1579,6 @@ pub(crate) struct TestGlobals {
     faults: u32,
     flights: usize,
     _guard: std::sync::MutexGuard<'static, ()>,
-    /// The owner refusal reserve is sized from the live country census hint.
     _slots: std::sync::MutexGuard<'static, ()>,
 }
 #[cfg(test)]
@@ -1901,15 +1636,10 @@ impl TestGlobals {
 #[cfg(test)]
 impl Drop for TestGlobals {
     fn drop(&mut self) {
-        // Test fixture isolation only. Production never resets a terminal
-        // fault or a retained flight, including after an observation gap.
         self.restore();
     }
 }
 
-/// Test only: install a fresh SHARED owner whose store has a prepared
-/// staging arena, under [`test_globals`].
-/// Lets other modules' detour tests drive staging through the real store.
 #[cfg(test)]
 pub(crate) struct StagingTest {
     _owner: Arc<Owner>,
@@ -1932,11 +1662,9 @@ pub(crate) fn staging_test(capacity: usize) -> StagingTest {
 }
 #[cfg(test)]
 impl StagingTest {
-    /// Live witnesses staged in the store but not yet published.
     pub(crate) fn staged_live(&self) -> usize {
         unsafe { (*self._owner.store.get()).staged_live() }
     }
-    /// A boundary's first half on a worker, which resets the witness arena.
     pub(crate) fn prepare(&self, hour: i32) {
         self._owner
             .worker(Role::BoundaryPrepare, |store| {
@@ -1953,7 +1681,6 @@ impl StagingTest {
             .unwrap()
             .unwrap();
     }
-    /// The store's interval failure and rejections, read between entries.
     pub(crate) fn failure(&self) -> (Option<&'static str>, u64) {
         let store = unsafe { &*self._owner.store.get() };
         (store.failure_for_test(), store.rejected_for_test())
@@ -1962,7 +1689,6 @@ impl StagingTest {
 #[cfg(test)]
 impl Drop for StagingTest {
     fn drop(&mut self) {
-        // No callback may reach the owner once it is dropped.
         self.globals.restore();
     }
 }
@@ -2013,7 +1739,6 @@ mod tests {
         assert_eq!(hooks.set_enabled(false), Ok(true));
     }
 
-    /// Declines counted that no store entry has taken.
     fn untaken(owner: &Owner) -> u64 {
         (0..2)
             .map(|slot| {
@@ -2022,7 +1747,6 @@ mod tests {
             })
             .sum()
     }
-    /// Declines recorded in either phase slot.
     fn total_declines(owner: &Owner) -> u64 {
         owner
             .declines
@@ -2055,8 +1779,6 @@ mod tests {
         assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
         assert_eq!(untaken(&owner), 1);
-        // The exact holder is named, and the holder's own later work is not
-        // misreported as an unobserved world.
         assert_eq!(declined.load(Ordering::SeqCst), declined_before + 1);
         assert!(owner.armed.load(Ordering::SeqCst));
         let mut snapshot = Snapshot::new(0);
@@ -2124,8 +1846,6 @@ mod tests {
             .sum()
     }
 
-    /// Already copied Candidate operands: repeated tokens remain separate
-    /// occurrences. No native pointer is needed by this admission fixture.
     fn append_candidate(store: &mut Store, ordinal: u32) {
         use replay_data::event_feed_rows::{EventFeedScriptChange, decisions::*};
         struct NoReads;
@@ -2170,7 +1890,6 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut output = Snapshot::new(0);
-        // Production establishes the world before callbacks can publish.
         assert_eq!(
             publish_hour(&owner, &mut output, 1, &|| {}).row().coverage,
             EventFeedCoverage::Partial
@@ -2182,8 +1901,6 @@ mod tests {
         let earlier = std::thread::scope(|scope| {
             let first = scope.spawn(|| {
                 owner.observe_candidate(|store| {
-                    // The allocator's denial guard names one thread at a
-                    // time: finish this guard before starting the waiter.
                     crate::test_support::with_allocations_denied(|| append_candidate(store, 1));
                     held.wait();
                     release.wait();
@@ -2204,8 +1921,6 @@ mod tests {
             assert_eq!(first.join().unwrap(), Ok(()));
             let earlier = seal_between.then(|| publish_hour(&owner, &mut output, 2, &|| {}));
             let cut = writer_cut().unwrap();
-            // Release (and optionally seal/phase flip) before the actual
-            // address wait: its compare must prevent a missed wakeup.
             RESUME.wait();
             assert_eq!(second.join().unwrap(), Ok(()));
             assert!(!writer_cut_holds(cut));
@@ -2326,8 +2041,6 @@ mod tests {
                 owner.observe_candidate(|_| panic!("a retained Candidate store was entered"))
             });
             REGISTERED.wait();
-            // An escaped holder need not release or change the address being
-            // waited on. The wait must still observe terminal retention.
             fault(OWNERSHIP_FAULT);
             assert_eq!(waiter.join().unwrap(), Err::<(), _>(OBSERVATION_OVERLAP));
         });
@@ -2377,8 +2090,6 @@ mod tests {
         });
         assert_eq!(store.capacity_demand(), 4097);
         script_demands(&store);
-        // Entry and script capacities already cover demand, on both the
-        // active store and offered spare. Only witnesses force replacement.
         presize(0);
         assert!(SPARE.lock().unwrap().as_ref().unwrap().witness_capacity() >= 4097);
         crate::test_support::with_allocations_denied(|| {
@@ -2395,7 +2106,6 @@ mod tests {
     fn a_worker_that_wins_the_first_race_waits_for_a_live_holder_without_any_decline() {
         static SECOND_CLAIM_FAILED: Barrier = Barrier::new(2);
         static RELEASED: AtomicBool = AtomicBool::new(false);
-        // The holder releases between the worker's failed second claim and its accounting.
         fn release_after_the_claim() {
             SECOND_CLAIM_FAILED.wait();
             while !RELEASED.load(Ordering::SeqCst) {
@@ -2427,7 +2137,6 @@ mod tests {
                 owner
                     .observe(Role::DelayedPass, |_| {
                         entered.store(true, Ordering::SeqCst);
-                        // Release only once the worker has had to wait twice.
                         SECOND_CLAIM_FAILED.wait();
                     })
                     .unwrap();
@@ -2449,7 +2158,6 @@ mod tests {
                 .sum::<u64>(),
             declined
         );
-        // It won the race at the release: no claim, no callback declined.
         assert_eq!(
             WORKER_LOST_RACES[Role::Census as usize].load(Ordering::SeqCst),
             lost
@@ -2483,14 +2191,11 @@ mod tests {
         let held_before = held_by_worker.load(Ordering::SeqCst);
         let waiting = &DECLINED_FOR_WAITING_WORKER[Role::Script as usize];
         let for_waiting = waiting.load(Ordering::SeqCst);
-        // A callback holds the store when the worker arrives.
         owner
             .busy
             .store(u64::from(Role::Script.held()), Ordering::SeqCst);
         let entered = Barrier::new(2);
         let leave = Barrier::new(2);
-        // Observations are asserted after the scope: a panic inside it would
-        // leave the worker parked on a barrier and the scope's join hung.
         let (first_waits, owed, lost_after, free, held, worker) = std::thread::scope(|scope| {
             let worker = scope.spawn(|| {
                 BEFORE_WORKER_RETRY.with(|hook| hook.set(Some(pause_first_retry)));
@@ -2499,8 +2204,6 @@ mod tests {
                     leave.wait();
                 })
             });
-            // The worker has sampled the first holder's release count and
-            // cannot re-read busy until the replacement holder is installed.
             RETRY.wait();
             let first_waits = waits.load(Ordering::SeqCst);
             owner
@@ -2508,19 +2211,14 @@ mod tests {
                 .store(u64::from(Role::Provenance.held()), Ordering::SeqCst);
             owner.releases.fetch_add(1, Ordering::SeqCst);
             RESUME.wait();
-            // The next failed entry has finished both the owed claim and
-            // its lost-race counter, not merely published WORKER_WAITING.
             RETRY.wait();
             let owed = owner.busy.load(Ordering::SeqCst);
             let lost_after = WORKER_LOST_RACES[Role::Census as usize].load(Ordering::SeqCst);
-            // Release the second holder with the worker still gated. A
-            // callback must decline even though the store is otherwise free.
             owner.busy.fetch_and(!HOLDER, Ordering::SeqCst);
             owner.releases.fetch_add(1, Ordering::SeqCst);
             let free = owner.observe(Role::Script, |_| ());
             RESUME.wait();
             entered.wait();
-            // Held by the worker, the store still declines.
             let held = owner.observe(Role::Script, |_| ());
             leave.wait();
             (first_waits, owed, lost_after, free, held, worker.join())
@@ -2549,7 +2247,6 @@ mod tests {
         let waiting = &DECLINED_FOR_WAITING_WORKER[Role::Script as usize];
         let for_waiting = waiting.load(Ordering::SeqCst);
         let held = total(&DECLINED[Role::Script as usize]);
-        // Free, but owed to a worker that lost a race.
         owner.busy.store(WORKER_WAITING, Ordering::SeqCst);
         assert_eq!(
             owner.observe(Role::Script, |_| panic!("an owed store is never taken")),
@@ -2558,12 +2255,8 @@ mod tests {
         assert_eq!(waiting.load(Ordering::SeqCst), for_waiting + 1);
         assert_eq!(total(&DECLINED[Role::Script as usize]), held);
         assert_eq!(total_declines(&owner), 1);
-        // A settlement is never declined for a waiting worker: its overlap
-        // would retain the owner.
         assert_eq!(owner.access(Role::Settlement, |_| 3), Ok(3));
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
-        // A settlement takes no missed observation: the decline waits for
-        // the next observing entry.
         owner.busy.fetch_and(!WORKER_WAITING, Ordering::SeqCst);
         assert_eq!(untaken(&owner), 1);
     }
@@ -2578,8 +2271,6 @@ mod tests {
             .worker(Role::Census, |_| {
                 let cut = writer_cut().unwrap();
                 assert!(writer_cut_holds(cut));
-                // A native callback on another thread is declined while this
-                // worker holds the store, yet its attempt crosses the sample.
                 std::thread::scope(|scope| {
                     scope
                         .spawn(|| assert!(owner.observe(Role::DelayedWriter, |_| ()).is_err()))
@@ -2587,7 +2278,6 @@ mod tests {
                         .unwrap();
                 });
                 assert!(!writer_cut_holds(cut));
-                // So does a bracketed native original, even after it returned.
                 let cut = writer_cut().unwrap();
                 let mut flight = crate::script_event_observer::Flight::enter();
                 assert!(writer_cut().is_none());
@@ -2599,8 +2289,6 @@ mod tests {
             .unwrap();
     }
 
-    /// An armed published owner, every forwarder enabled and this thread's
-    /// world observed: the production seal path without native memory.
     fn sealing_owner() -> Arc<Owner> {
         crate::world_lifetime::observe_for_test(true);
         forwarder(Forwarder::Politics, true);
@@ -2618,8 +2306,6 @@ mod tests {
         forwarder(Forwarder::Territory, false);
         forwarder(Forwarder::DelayedPass, false);
     }
-    /// The boundary's first half without a registry baseline, then the seal
-    /// with `during` inside its lease, and the output's receipt.
     fn publish_hour(
         owner: &Owner,
         output: &mut Snapshot,
@@ -2630,7 +2316,6 @@ mod tests {
         accepted(&pack).unwrap();
         pack
     }
-    /// One hour's boundary and seal, its output not yet written.
     fn seal_unwritten(
         owner: &Owner,
         output: &mut Snapshot,
@@ -2655,7 +2340,7 @@ mod tests {
         seal_hour(output, hour, false, during);
         output.prepare_pack().unwrap()
     }
-    /// Test only: the store while nothing holds it.
+    #[doc = " Test only: the store while nothing holds it."]
     fn store(owner: &Owner) -> &Store {
         assert_eq!(owner.busy.load(Ordering::SeqCst) & HOLDER, 0);
         unsafe { &*owner.store.get() }
@@ -2667,13 +2352,11 @@ mod tests {
         let _globals = test_globals();
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
-        // Far more hours than any frame pool, none written yet.
         let packs: Vec<_> = (1..=64)
             .map(|hour| seal_unwritten(&owner, &mut output, hour, &|| {}))
             .collect();
         assert!(packs.iter().all(|pack| pack.row().failure.is_none()));
         assert_eq!(ledger(&owner).cells.len(), 64);
-        // First outcome wins, even when later receipts disagree.
         discarded(packs[9].publication());
         for pack in &packs {
             accepted(pack).unwrap();
@@ -2728,9 +2411,6 @@ mod tests {
             Some(OBSERVATION_OVERLAP.as_bytes())
         );
         assert_eq!(declined.row().counts.unwrap().rejected, 1);
-        // The seal drained the decline after its release; the store never
-        // saw it then. The next entrant applies the certificate retirement,
-        // pinned to the sealed row.
         assert_eq!(untaken(&owner), 0);
         assert_eq!(store(&owner).failure_for_test(), None);
         assert_eq!(
@@ -2742,7 +2422,6 @@ mod tests {
                 .unwrap(),
             (Some(OBSERVATION_OVERLAP), 1)
         );
-        // Its receipt ends the loss: the first healthy endpoint is Partial.
         let next = publish_hour(&owner, &mut output, 3, &|| {});
         assert_eq!(next.row().coverage, EventFeedCoverage::Partial);
         assert!(next.row().failure.is_none());
@@ -2772,8 +2451,6 @@ mod tests {
                 declined
             });
             let at = total_declines(&owner);
-            // Hold the sealing lease until callbacks have been declined in
-            // it; they keep arriving while it releases.
             let sealed = publish_hour(&owner, &mut output, 2, &|| {
                 while total_declines(&owner) < at + 8 {
                     std::thread::yield_now();
@@ -2783,12 +2460,10 @@ mod tests {
             (sealed, spammer.join().unwrap())
         });
         assert_eq!(sealed.row().coverage, EventFeedCoverage::Unavailable);
-        // One more entry takes whatever the seal's read did not.
         owner.observe(Role::Script, |_| ()).unwrap();
         let total = total_declines(&owner) - before;
         assert_eq!(spammed, total);
         assert_eq!(untaken(&owner), 0);
-        // The seal's share and every later entry's share add up exactly.
         assert_eq!(store(&owner).rejected_for_test() - rejected, total);
         forwarders_off();
     }
@@ -2828,7 +2503,6 @@ mod tests {
             while waits.load(Ordering::SeqCst) == waited {
                 std::thread::yield_now();
             }
-            // The holder releases amid the declines; the worker enters.
             release.store(true, Ordering::SeqCst);
             assert_eq!(worker.join().unwrap(), Ok(7));
             stop.store(true, Ordering::SeqCst);
@@ -2848,8 +2522,6 @@ mod tests {
         let phase = owner.phase.load(Ordering::SeqCst);
         let slot = (phase & 1) as usize;
         let sealed = std::thread::scope(|scope| {
-            // A callback failed its entry during the seal's hold and pauses
-            // before recording its decline, until after the release and flip.
             let paused = scope.spawn(|| {
                 while owner.phase.load(Ordering::SeqCst) == phase {
                     std::thread::yield_now();
@@ -2869,7 +2541,6 @@ mod tests {
             Some(OBSERVATION_OVERLAP.as_bytes())
         );
         assert_eq!(sealed.row().counts.unwrap().rejected, 1);
-        // Settled once: the first healthy endpoint remains Partial.
         let next = publish_hour(&owner, &mut output, 3, &|| {});
         assert_eq!(next.row().coverage, EventFeedCoverage::Partial);
         assert_eq!(next.row().counts.unwrap().rejected, 1);
@@ -2886,15 +2557,9 @@ mod tests {
         publish_hour(&owner, &mut output, 1, &|| {});
         let phase = owner.phase.load(Ordering::SeqCst);
         let old = (phase & 1) as usize;
-        // The seal pauses right after its release; nothing waits for the
-        // flip. Had the flip followed the release, the phase would still be
-        // the old one here and this callback's take_missed would take the
-        // decline below, leaving the sealed row Complete.
         SEAL_RELEASED.store(false, Ordering::SeqCst);
         SEAL_RESUME.store(false, Ordering::SeqCst);
         let (sealed, seen) = std::thread::scope(|scope| {
-            // A callback that joined the old phase during the hold reaches
-            // its entry attempt in the window right after the release.
             let late = scope.spawn(|| {
                 while !SEAL_RELEASED.load(Ordering::SeqCst) {
                     std::thread::yield_now();
@@ -2905,8 +2570,6 @@ mod tests {
                         (word & HOLDER == 0).then(|| word | u64::from(Role::Script.held()))
                     })
                     .unwrap();
-                // It still holds the old phase, so the seal cannot settle
-                // yet: anything it saw comes from its own take_missed.
                 let seen = owner
                     .held(
                         |store| (store.failure_for_test(), store.rejected_for_test()),
@@ -2919,18 +2582,14 @@ mod tests {
                 seen
             });
             let sealed = publish_hour(&owner, &mut output, 2, &|| {
-                // Declined during the hold: recorded in the old phase.
                 assert_eq!(owner.enter_phase(), old);
                 owner.declines[old].fetch_add(1, Ordering::SeqCst);
                 owner.leave_phase(old);
-                // The late callback's validated join of the old phase.
                 assert_eq!(owner.enter_phase(), old);
             });
             (sealed, late.join().unwrap())
         });
-        // The late entrant took nothing from the closing phase.
         assert_eq!(seen, (None, 0));
-        // The seal settled the decline into the sealed row.
         assert_eq!(sealed.row().coverage, EventFeedCoverage::Unavailable);
         assert_eq!(
             sealed.row().failure.as_deref(),
@@ -2950,7 +2609,6 @@ mod tests {
         publish_hour(&owner, &mut output, 1, &|| {});
         let sealed = publish_hour(&owner, &mut output, 2, &|| {});
         assert_eq!(sealed.row().coverage, EventFeedCoverage::Complete);
-        // After the flip, the next holder declines a callback.
         owner
             .worker(Role::Census, |_| {
                 std::thread::scope(|scope| {
@@ -2974,19 +2632,15 @@ mod tests {
         let owner = sealing_owner();
         let mut output = Snapshot::new(0);
         publish_hour(&owner, &mut output, 1, &|| {});
-        // The callback read the phase, then paused before its increment.
         let stale = owner.phase.load(Ordering::SeqCst);
-        // Meanwhile the seal releases, flips and drains: nothing joined.
         let sealed = publish_hour(&owner, &mut output, 2, &|| {});
         assert_eq!(sealed.row().coverage, EventFeedCoverage::Complete);
-        // The callback resumes: its validation moves it to the new phase.
         let slot = owner.validate_phase(stale);
         assert_eq!(slot, ((stale + 1) & 1) as usize);
         assert_eq!(
             owner.entering[(stale & 1) as usize].load(Ordering::SeqCst),
             0
         );
-        // Declined by the next holder, it is recorded in the new phase.
         owner.declines[slot].fetch_add(1, Ordering::SeqCst);
         owner.leave_phase(slot);
         let next = publish_hour(&owner, &mut output, 3, &|| {});
@@ -3006,15 +2660,11 @@ mod tests {
         let (old, new) = ((phase & 1) as usize, ((phase + 1) & 1) as usize);
         let done = AtomicBool::new(false);
         let sealed = std::thread::scope(|scope| {
-            // Sustained callback entries throughout.
             let stream = scope.spawn(|| {
                 while !done.load(Ordering::SeqCst) {
                     let _ = owner.observe(Role::Script, |_| ());
                 }
             });
-            // An attempt of the old phase is paused across the release. After
-            // the flip it joins the new phase and stays there, then records
-            // its old decline.
             let paused = scope.spawn(|| {
                 while owner.phase.load(Ordering::SeqCst) == phase {
                     std::thread::yield_now();
@@ -3030,7 +2680,6 @@ mod tests {
             let sealed = publish_hour(&owner, &mut output, 2, &|| {
                 assert_eq!(owner.enter_phase(), old);
             });
-            // The drain finished while the new phase still had an attempt.
             assert!(owner.entering[new].load(Ordering::SeqCst) >= 1);
             done.store(true, Ordering::SeqCst);
             stream.join().unwrap();
@@ -3057,11 +2706,9 @@ mod tests {
                         .join()
                         .unwrap();
                 });
-                // A writer was lost while this lease held the store.
                 assert_eq!(untaken_declines(), 1);
             })
             .unwrap();
-        // The next entry takes it as missed.
         owner.observe(Role::Script, |_| ()).unwrap();
         assert_eq!(untaken_declines(), 0);
     }
@@ -3073,8 +2720,6 @@ mod tests {
         let owner = Owner::new(0, Store::new(None).unwrap());
         owner.armed.store(true, Ordering::SeqCst);
         SHARED.store(Arc::as_ptr(&owner).cast_mut(), Ordering::SeqCst);
-        // A callback escaped while holding the store; its guard retained
-        // the owner.
         owner
             .busy
             .store(u64::from(Role::Script.held()), Ordering::SeqCst);
@@ -3099,7 +2744,6 @@ mod tests {
             snapshot.boundary.coverage,
             replay_data::event_feed_rows::EventFeedCoverage::Unavailable
         );
-        // Like a lost drain, the next interval is named unavailable.
         assert!(!owner.armed.load(Ordering::SeqCst));
         assert_eq!(total_declines(&owner), 0);
     }
@@ -3130,9 +2774,6 @@ mod tests {
         assert_eq!(held.detach_losses(0), Ok(DetachLosses::default()));
     }
 
-    /// An interval is complete only while both provenance forwarders are
-    /// enabled: without them its state transfers or declaration causes went
-    /// unobserved.
     #[test]
     fn a_disabled_forwarder_leaves_the_interval_partial() {
         use replay_data::event_feed_rows::EventFeedCoverage;

@@ -1,4 +1,3 @@
-//! Saved portrait identities and province membership witnesses.
 use super::*;
 pub fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: T) {
     r.scalar_checks += 1;
@@ -243,8 +242,6 @@ fn characters(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<(
     r.limitation("The portrait writers serialize category, size and the identity string for kinds0/1; the set byte and kind distinction are not serialized. Text identity comparison ends at embedded NUL; trailing resource/cache pointers are not part of the contract", "CharacterPortraits descriptor");
     Ok(())
 }
-/// Check the recorded scope and the independent saved selection. An omitted HQ
-/// cannot pass merely because both portrait tables omitted the same leader.
 pub fn hq_leader_scope(
     frame: &DecodedFrame,
     save: &Save,

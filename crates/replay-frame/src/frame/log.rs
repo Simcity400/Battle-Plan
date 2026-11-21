@@ -1,7 +1,3 @@
-//! Frames kept in hour order, each holding only what changed since the frame
-//! before it: a reader keeping a block's frames for later keeps one whole
-//! frame and the rows each later one changed, rather than a copy of every
-//! table each hour it changed. Read back in order they are the frames kept.
 
 use super::{
     BranchId, DecodedFrame, FieldStamp, Hour, Metrics, SharedView, TABLE_COUNT, TableView,
@@ -15,12 +11,9 @@ use std::{
     sync::{Arc, Weak},
 };
 
-/// Frames kept in hour order ([`Self::push`]), read back with
-/// [`Self::into_frames`].
 #[derive(Default)]
 pub struct FrameLog {
     entries: Vec<Entry>,
-    /// The last frame kept, whole, to find what the next one changes.
     last: Option<DecodedFrame>,
 }
 
@@ -28,24 +21,15 @@ struct Entry {
     branch: BranchId,
     hour: Hour,
     metrics: Metrics,
-    /// The tables whose view differs from the frame before's, every table
-    /// for the first.
     tables: Vec<(usize, Kept)>,
 }
 
 enum Kept {
-    /// The view itself.
     View(SharedView),
-    /// The frame before's allocation, with this frame's acquisition.
     Same(Acquisition),
-    /// A new allocation of the frame before's rows with these changes.
     Changed(Arc<RowChanges>, Acquisition),
 }
 
-/// Changes this thread found lately between two allocations, which another
-/// log keeping the same frames takes rather than compare the tables again.
-/// Weak identities keep both addresses from being reused while it is held,
-/// and only the logs keeping the changes keep them alive.
 struct Found {
     before: Weak<TableView>,
     now: Weak<TableView>,
@@ -56,10 +40,8 @@ thread_local! {
     static FOUND: RefCell<Vec<Found>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Changes found at once by other logs on this thread at most.
 const FOUND_KEPT: usize = 16;
 
-/// `now`'s rows' changes since `before`'s, found on this thread before or now.
 fn changes_between(before: &SharedView, now: &SharedView) -> io::Result<Option<Arc<RowChanges>>> {
     let (TableView::Complete(old), TableView::Complete(rows)) = (&*before.0, &*now.0) else {
         return Ok(None);
@@ -102,7 +84,6 @@ fn changes_between(before: &SharedView, now: &SharedView) -> io::Result<Option<A
     Ok(Some(changes))
 }
 
-/// A view's acquisition beside its rows. A frame log keeps no change facts.
 struct Acquisition {
     sampled: Option<Hour>,
     stamp: Option<Arc<FieldStamp>>,
@@ -145,9 +126,6 @@ impl FrameLog {
         self.entries.is_empty()
     }
 
-    /// Keep `frame` after those kept before it. A frame whose views carry
-    /// change facts is refused: a view read back is a new allocation, which
-    /// the facts of the view after it do not name as its predecessor.
     pub fn push(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         if frame.tables.iter().any(|view| view.2.is_some()) {
             return Err(super::invalid("a frame log keeps no change facts"));
@@ -193,7 +171,6 @@ impl FrameLog {
         Ok(())
     }
 
-    /// Every view the log keeps whole: each entry's and the last frame's.
     pub fn views(&self) -> impl Iterator<Item = &SharedView> {
         self.entries
             .iter()
@@ -205,8 +182,6 @@ impl FrameLog {
             .chain(self.last.iter().flat_map(|last| &last.tables))
     }
 
-    /// The bytes the log holds beside [`Self::views`]: its entries and the
-    /// rows and keys it keeps as changes.
     pub fn bytes(&self) -> usize {
         let mut bytes = self.entries.capacity() * size_of::<Entry>();
         for entry in &self.entries {
@@ -220,11 +195,6 @@ impl FrameLog {
         bytes
     }
 
-    /// The frames kept, in order. A table changed since the frame before is
-    /// changed in place once the frame before is no longer held. A reader
-    /// holding it makes it a copy, and the view so replaced is kept until the
-    /// table next changes or is replaced, to catch up in place then once the
-    /// reader lets it go.
     pub fn into_frames(self) -> LoggedFrames {
         LoggedFrames {
             entries: self.entries.into_iter(),
@@ -234,16 +204,12 @@ impl FrameLog {
     }
 }
 
-/// [`FrameLog::into_frames`].
 pub struct LoggedFrames {
     entries: std::vec::IntoIter<Entry>,
     current: Option<Box<[SharedView; TABLE_COUNT]>>,
-    /// Each table's spare, kept until the table changes or is replaced again.
     spares: Vec<Option<Spare>>,
 }
 
-/// A view read back that a reader held when the next one was built from it,
-/// and the changes that built the next one.
 struct Spare {
     view: SharedView,
     changes: RowChanges,
@@ -251,8 +217,6 @@ struct Spare {
 }
 
 impl Spare {
-    /// `current`'s rows, owned, when `current` is the view these changes made
-    /// and nothing else holds the spare's view.
     fn take_rows(self, current: &SharedView) -> io::Result<Option<TableRows>> {
         let Self {
             view,
@@ -284,7 +248,6 @@ impl LoggedFrames {
                     self.spares[index] = None;
                     view
                 }
-                // The same allocation: a spare made for it still catches up to it.
                 Kept::Same(acquisition) => acquisition.on(current[index].clone()),
                 Kept::Changed(changes, acquisition) => {
                     let spare = self.spares[index].take();

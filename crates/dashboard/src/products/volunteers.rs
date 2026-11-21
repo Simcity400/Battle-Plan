@@ -1,10 +1,3 @@
-//! Volunteers and expeditionary forces between countries over the whole timeline, read from the
-//! recorder's MilitaryAid (a sub-keyed series: the sender's slot, then the host's slot above the
-//! channel): each link a sender and host holder pair with its runs of listed live divisions, and
-//! the game's own volunteer tallies. A pair without a row holds none while its sender's channel is
-//! known and the table was available at the hour; while the table is unavailable, or the sender's
-//! channel or an unresolved sender's list is not known, it is not known. Observed deployments, not
-//! dispatches: nothing is integrated or carried across a gap.
 
 use dashboard_base::products::Country;
 use super::{LoadContext, Product};
@@ -41,7 +34,7 @@ pub enum MilitaryAidKind {
 pub struct VolunteersExpeditionariesParams {
     pub branch_id: String,
     pub kind: MilitaryAidKind,
-    /// Links touching these tags only; none for every link.
+    #[doc = " Links touching these tags only; none for every link."]
     pub countries: Option<Vec<Country>>,
 }
 
@@ -51,7 +44,7 @@ pub struct VolunteersExpeditionariesParams {
 pub struct MilitaryAidRun {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Null where not known; never zero for that.
+    #[doc = " Null where not known; never zero for that."]
     pub divisions: Option<f64>,
     pub starts_segment: bool,
 }
@@ -75,10 +68,10 @@ pub struct MilitaryAidLink {
 #[serde(rename_all = "camelCase")]
 pub struct VolunteersExpeditionariesReply {
     pub links: Vec<MilitaryAidLink>,
-    /// The game's own tally of each sender's volunteer hosts (kind `land` only).
+    #[doc = " The game's own tally of each sender's volunteer hosts (kind `land` only)."]
     pub tallies: Vec<MilitaryAidLink>,
-    /// Hours whose aid is not known for every sender: the timeline holds none, or a list's sender
-    /// resolves through no link.
+    #[doc = " Hours whose aid is not known for every sender: the timeline holds none, or a list's sender"]
+    #[doc = " resolves through no link."]
     pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
@@ -119,7 +112,6 @@ impl Product for VolunteersExpeditionaries {
     }
 }
 
-/// A slot's holders: (first, last, tag, raw country id), in hour order.
 type SlotHolders<'q> = HashMap<u32, Vec<(i32, i32, &'q str, u32)>>;
 
 fn slot_holders<'q>(query: &'q Query<'_>) -> SlotHolders<'q> {
@@ -141,8 +133,6 @@ fn key(sender: u32, host: u32, channel: u8) -> u128 {
     u128::from(sender) << 40 | u128::from(host) << 8 | u128::from(channel)
 }
 
-/// The sender and host pairs of MilitaryAid `keys`, each once whichever channels hold it: as main,
-/// a land pair known by its tally alone has a link, and one known by its link a tally.
 fn pairs(keys: &[u128]) -> Vec<(u32, u32)> {
     let mut out: Vec<(u32, u32)> = keys.iter().map(|&key| ((key >> 40) as u32, (key >> 8) as u32)).filter(|&(sender, host)| sender != TagHolderRow::NONE && host != TagHolderRow::NONE).collect();
     out.sort_unstable();
@@ -150,7 +140,6 @@ fn pairs(keys: &[u128]) -> Vec<(u32, u32)> {
     out
 }
 
-/// Whether a row living over `lives` lives at `hour`.
 fn lives(lives: &[(i64, i64)], hour: i32) -> bool {
     lives.iter().any(|&(born, gone)| born <= i64::from(hour) && i64::from(hour) <= gone)
 }
@@ -159,13 +148,10 @@ fn value_at(runs: Option<&read::Runs>, hour: i32) -> Option<i64> {
     runs?.iter().find(|run| run.0 <= hour && hour <= run.1)?.2
 }
 
-/// Whether `hour` lies in one of `spans` (ascending, apart).
 fn within(spans: &[(i32, i32)], hour: i32) -> bool {
     spans.get(spans.partition_point(|span| span.1 < hour)).is_some_and(|span| span.0 <= hour)
 }
 
-/// A pair's count at `hour`: its row's, where the table was available and read then; none (a
-/// pair without a row) where its sender's list is known and the table available; else not known.
 fn pair_value(pair_runs: Option<&read::Runs>, available: &[(i32, i32)], unknown: bool, hour: i32) -> Option<i64> {
     if !within(available, hour) {
         return None;
@@ -181,8 +167,6 @@ fn clamped(hour: i64) -> i32 {
     hour.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-/// The links of `params.kind` (and for `land` the tallies) over every stretch of `query`'s
-/// timeline; `lifetimes` gives a run's MilitaryAid keys and their hours, ascending by key.
 fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: impl Fn(u32) -> io::Result<Vec<(u128, i64, i64)>>, cancelled: &AtomicBool) -> io::Result<VolunteersExpeditionariesReply> {
     let channel = match params.kind {
         MilitaryAidKind::Land => MilitaryAidRow::VOLUNTEERS,
@@ -196,10 +180,8 @@ fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: i
     for gap in &query.timeline.unheld {
         reply.unobserved.push(HourSpan { first_hour: gap.first, last_hour: gap.last });
     }
-    // By pair (sender and host, their ids and tags): a land pair has a link and a tally.
     let mut links: BTreeMap<String, MilitaryAidLink> = BTreeMap::new();
     let mut tallies: BTreeMap<String, MilitaryAidLink> = BTreeMap::new();
-    // The pairs a row of either channel lived for while both holders held their tags: listed even at zero divisions, as main.
     let mut lived: BTreeSet<String> = BTreeSet::new();
     for stretch in &query.timeline.stretches {
         crate::metadata::check_cancel(cancelled)?;
@@ -211,7 +193,6 @@ fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: i
             continue;
         }
         let runs = read::runs(recording, stretch.run, TableId::MilitaryAid, divisions, Some(&keys), stretch.first, stretch.last)?;
-        // The hours the table was read and available: elsewhere no row is not proof of none.
         let available = dashboard_query::cost::storage(|| replay::lanes::available_reads(recording, stretch.run, TableId::MilitaryAid, stretch.first, stretch.last))?;
         let mut lifetime: HashMap<u128, Vec<(i64, i64)>> = HashMap::new();
         for &(key, born, gone) in lives_of.iter().filter(meets) {
@@ -221,7 +202,6 @@ fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: i
         let pairs = pairs(&keys);
         for &channel in &channels {
             let nobody = life(self::key(TagHolderRow::NONE, TagHolderRow::NONE, channel));
-            // Hours an unresolved sender's list hides links of any pair.
             if channel != MilitaryAidRow::TALLIES {
                 for &(born, gone) in nobody {
                     let (first, last) = (clamped(born).max(stretch.first), clamped(gone).min(stretch.last));

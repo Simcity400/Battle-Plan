@@ -46,15 +46,10 @@ import type { HourSpan, SubjectReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: HourSpan[] = [];
-/** A lane's height. */
 const LANE_HEIGHT = 54;
-/** Room between a lane's edge and its thresholds. */
 const LANE_PAD = 8;
 const NO_PAINT = () => {};
 
-/** One subject's lane: its level over time as coloured bands, the move-up and move-down
- * scores as the dashed top and bottom edges, its progress between them as a line, and a dot
- * where the level changed. */
 function paintLane(ctx: CanvasRenderingContext2D, lane: AutonomyLane, geometry: LaneGeometry, tokens: ChartTokens, colour: (level: string | null) => string, summary: ChartSummary | undefined): void {
   const top = geometry.top + LANE_PAD;
   const height = geometry.height - 2 * LANE_PAD;
@@ -81,7 +76,6 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: AutonomyLane, geometry: 
   ctx.restore();
   ctx.save();
   ctx.strokeStyle = tokens.text; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  // Tiles hold progress scaled (1 is the score it moves up at); one past either threshold is drawn at that edge.
   if (summary) drawLineSummary(ctx, { ...frame, toY }, tokens, summary, tokens.text, false, end === Infinity ? null : end, { endDot: false });
   for (const hour of lane.changes) {
     if (hour > end) continue;
@@ -92,11 +86,6 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: AutonomyLane, geometry: 
   ctx.restore();
 }
 
-/** Each subject's autonomy over time: one lane per subject with its flag and name, its level
- * at the moment shown as a coloured pill, its level stretches and its progress towards moving
- * up or down a level. Lanes and levels come from `subjects`, the progress line from the declared
- * `autonomy` series' tiles. Level names and order are the recording's content's; colours follow
- * that order, never a level's name. */
 export default function AutonomyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
@@ -128,18 +117,16 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const series = useMeasureSeries(runtime.client, track?.source, track?.branch.id, 'autonomy', 'progress', tags,
     following && !followsClock ? head : null, hoverHour, active, false, within, lastHour, followsClock);
   const axisOffset = track?.axisOffset ?? 0;
-  // The clock's frames move the playhead; a progress tile landing repaints the lanes without a render.
   const tilesLanded = series.subscribe;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => {
     const stops = [clock.subscribeFrame(changed), tilesLanded(changed)];
     return () => { for (const stop of stops) stop(); };
   } } : undefined, [followsClock, track, clock, axisOffset, tilesLanded]);
-  // Each lane's head bin is drawn at the followed progress, registered once per lane.
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, clock, track.axisOffset) : null, [runtime.client, clock, track?.source, track?.axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const store = useMemo(() => track ? followStore(runtime.client, track.source, clock, track.axisOffset) : null, [runtime.client, clock, track?.source, track?.axisOffset]);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const headQuery = useMemo(() => followsClock && active && track && tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [followsClock, active, track?.branch.id, tags]); // eslint-disable-line react-hooks/exhaustive-deps
+    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [followsClock, active, track?.branch.id, tags]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const entry = followsHead(followed) ? followed.entry : null;
   const places = series.decimals;
@@ -148,7 +135,6 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     return () => stops.forEach(stop => stop());
   }, [entry, places, tags, series.head]);
   useShownEachFrame(clock, () => data ? liveHead ? Math.min(liveHead.read(), lastHour) : head : null);
-  // The score and the two it moves at, read only at the hour hovered.
   const hovered = hoverHour === null ? null : Math.floor(hoverHour);
   const scoreRequest = (measure: string) => track && hovered !== null && tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
@@ -166,11 +152,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     const at = level == null ? undefined : order.get(level);
     return at ? palette[at.index % palette.length] : neutral;
   }, [order, palette, neutral]);
-  // Names for every lane (the label and order use them); flags only for the lanes in view.
   const [inView, setInView] = useState<[number, number]>([0, 24]);
   const onLanesInView = useCallback((from: number, to: number) => setInView([from, to]), []);
   const flagTags = useMemo(() => laneRequests(tags, inView).looks, [tags, inView]);
-  // Each lane is named as its tag's holder at the hour shown, never as a later or earlier holder of the tag.
   const holders = useMemo(() => groups.data ? new Map(groups.data.countryIdentities.map(history => [history.tag, history.identities])) : null, [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => holderSince(holders, tag, hour) ?? null, [holders]);
   const { country, revision } = useCountriesAt(runtime.client, track, flagTags, head, active, tags, holders ? segmentAt : undefined, undefined,
@@ -202,11 +186,10 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       id: lane.tag, label: labels.label, spans: lane.spans.map(span => ({ id: span.id, firstHour: span.firstHour, lastHour: span.lastHour, label: levelName(data.levels, span.level) })),
       identity: named,
       pill: { text: labels.pill, color: level !== undefined ? colour(level) : neutral },
-      // Not a subject at the moment shown (released, not yet a subject, or not recorded): faded.
       muted: level === undefined,
       paint: (ctx, geometry, chartTokens) => paintLane(ctx, lane, geometry, chartTokens, colour, lineOf(lane.tag)),
     };
-  }), [data, lanesData, head, unobserved, country, holders, colour, neutral, lineOf, series.held]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, lanesData, head, unobserved, country, holders, colour, neutral, lineOf, series.held]);
 
   const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   const content = (() => {

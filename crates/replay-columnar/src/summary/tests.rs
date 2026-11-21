@@ -23,14 +23,11 @@ fn columns() -> Shape {
     ])
 }
 
-/// One hour of the test table: rows (key, value, optional) it holds, and its status.
 struct Hour {
     rows: Vec<(u128, i64, Option<i32>)>,
     status: Status,
 }
 
-/// The test's hours from `first`: rows come and go, values change mid-bucket and at bucket and
-/// day edges, a value goes unrecorded, the table is unavailable for some hours.
 fn hours(count: i32) -> Vec<Hour> {
     (0..count)
         .map(|at| {
@@ -47,7 +44,6 @@ fn hours(count: i32) -> Vec<Hour> {
         .collect()
 }
 
-/// Applies `hour` to `state` as a section that replaces the table's rows.
 fn apply(state: &mut State, at: i32, hour: &Hour) {
     let held = state.table(0).unwrap();
     let live: Vec<(u32, u128)> = held.live().ones().map(|slot| (slot, held.key(slot).unwrap())).collect();
@@ -181,7 +177,6 @@ fn apply(state: &mut State, at: i32, hour: &Hour) {
     state.apply(&manifest, |_| Ok(&bytes)).unwrap();
 }
 
-/// What a bucket of `level` holds of `key`'s column `column`, from the hours alone.
 fn expected(hours: &[Hour], first: i32, key: u128, column: usize, level: u8) -> HashMap<i64, Fold> {
     let mut out: HashMap<i64, Fold> = HashMap::new();
     let mut before: Option<i64> = None;
@@ -217,12 +212,10 @@ fn expected(hours: &[Hour], first: i32, key: u128, column: usize, level: u8) -> 
     out
 }
 
-/// Builds one piece per block of 720 hours from `first`, applying the hours to a state.
 fn pieces(hours: &[Hour], first: i32, block: usize) -> Vec<Vec<u8>> {
     pieces_of(&columns(), hours, first, block)
 }
 
-/// Builds one piece of `shape` per block of `block` hours from `first`, applying the hours to a state.
 fn pieces_of(shape: &Shape, hours: &[Hour], first: i32, block: usize) -> Vec<Vec<u8>> {
     let mut state = State::new(vec![KINDS.to_vec()]).unwrap();
     let mut out = Vec::new();
@@ -249,7 +242,6 @@ fn check(piece: &[u8], hours: &[Hour], first: i32) {
         for (at, &key) in read.keys.iter().enumerate() {
             for (bucket, fold) in frame.buckets(&read, at).unwrap().into_iter().enumerate() {
                 let index = read.directory.first_bucket + bucket as i64;
-                // A piece's edge buckets hold its own hours only: compare within the piece.
                 let piece_first = read.directory.first_hour.max(index * bucket_hours(level));
                 let piece_end = (read.directory.first_hour + i64::from(read.directory.hours)).min((index + 1) * bucket_hours(level));
                 let inside = expected(
@@ -277,12 +269,8 @@ fn check(piece: &[u8], hours: &[Hour], first: i32) {
     }
 }
 
-/// A block's piece holds, per key and bucket, exactly what the hours held: values, absent hours
-/// as none, sums; across a block edge in mid-bucket and a day edge. Compressed again at another
-/// level, it holds the same, its frames decoding to the same bytes.
 #[test]
 fn a_blocks_piece_holds_what_its_hours_held() {
-    // Hour 1,000,003 starts mid-bucket and mid-day; 720-hour blocks end mid-bucket too.
     let first = 1_000_003;
     let hours = hours(1500);
     let built = pieces(&hours, first, 720);
@@ -300,8 +288,6 @@ fn a_blocks_piece_holds_what_its_hours_held() {
     }
 }
 
-/// Pieces folded to the level above hold what that level's buckets of the hours held, falls
-/// and changes across the pieces' edges counted once.
 #[test]
 fn pieces_fold_into_the_level_above() {
     let first = 1_000_003;
@@ -323,8 +309,6 @@ fn pieces_fold_into_the_level_above() {
     }
 }
 
-/// Twelve keys whose first column ties often, each coming and going on its own period, the
-/// table unavailable for a while.
 fn ranked_hours(count: i32) -> Vec<Hour> {
     (0..count)
         .map(|at| {
@@ -338,8 +322,6 @@ fn ranked_hours(count: i32) -> Vec<Hour> {
         .collect()
 }
 
-/// Each bucket's ranks of `piece`, as keys, against the three keys the hours give as greatest in
-/// their last value there (ties by key).
 fn check_ranks(piece: &[u8], hours: &[Hour], first: i32) -> usize {
     let read = Piece::read(piece).unwrap();
     let level = read.directory.level;
@@ -363,9 +345,6 @@ fn check_ranks(piece: &[u8], hours: &[Hour], first: i32) -> usize {
     nonempty
 }
 
-/// A ranked column's pieces keep, per bucket, the keys greatest in their last value there,
-/// ties by key, keys entering and leaving, across the table's gap, at level 0 and folded to
-/// levels 1 and 2; read back from their encoding against the bucket before.
 #[test]
 fn ranks_are_each_buckets_keys_greatest_in_their_last_value() {
     let shape = Shape::Values(vec![
@@ -395,9 +374,6 @@ fn ranks_are_each_buckets_keys_greatest_in_their_last_value() {
     assert!(nonempty > 700, "{nonempty} buckets ranked a key");
 }
 
-/// Folding merges the pieces' ascending keys without gathering them, into the very bytes the old
-/// fold gave from every piece's keys gathered, sorted and deduplicated: each piece lacking a third
-/// of the keys, a key leaving and coming back between pieces, at levels 1 and 2.
 #[test]
 fn a_fold_of_merged_keys_is_the_fold_of_gathered_keys() {
     let shape = Shape::Values(vec![
@@ -429,7 +405,6 @@ fn a_fold_of_merged_keys_is_the_fold_of_gathered_keys() {
     gathered(&ones, i64::from(first), 5000);
 }
 
-/// A log's piece counts the rows inserted per bucket, by facet.
 #[test]
 fn a_log_counts_its_inserts_per_bucket() {
     let shape = Shape::Log(vec![Facet::Column(1)]);
@@ -445,11 +420,9 @@ fn a_log_counts_its_inserts_per_bucket() {
     let read = Piece::read(&piece).unwrap();
     let frame = read.column(0).unwrap();
     let total: u64 = (0..read.keys.len()).map(|at| frame.counts(&read, at).unwrap().iter().sum::<u64>()).sum();
-    // Key 1 at the first hour, key 5 at the first hour and again at hour 40 and 80, key 9 at 31.
     assert_eq!(total, 5);
 }
 
-/// A walk hour's changes of a table as the store's hour log holds them.
 fn hour_log(changes: &crate::section::Changes) -> crate::store::TableHour {
     let mut log = crate::store::TableHour::default();
     log.inserted = changes.inserted.clone();
@@ -468,7 +441,6 @@ fn hour_log(changes: &crate::section::Changes) -> crate::store::TableHour {
     log
 }
 
-/// A table of `keys` rows of `width` numeric columns, each row's key its slot spread out.
 struct Grid {
     width: usize,
     values: Vec<i64>,
@@ -499,8 +471,6 @@ impl Cells for Grid {
     }
 }
 
-/// Hour `at`'s cells of a grid of `keys` rows by `width` columns: each row whose turn it is (once
-/// a day, the rows taking their turns at different hours) writes every column.
 fn grid_log(keys: u32, width: usize, at: i32) -> crate::store::TableHour {
     let mut log = crate::store::TableHour::default();
     for slot in (0..keys).filter(|&slot| (slot as i32 + at) % 24 == 0) {
@@ -509,7 +479,6 @@ fn grid_log(keys: u32, width: usize, at: i32) -> crate::store::TableHour {
     log
 }
 
-/// Each cell `log` names moves by a small step of its own.
 fn grid_step(grid: &mut Grid, log: &crate::store::TableHour) {
     for &(slot, column) in &log.written {
         grid.values[slot as usize * grid.width + usize::from(column)] += i64::from(slot % 13) * 1_000 + i64::from(column) - 3;
@@ -520,8 +489,6 @@ fn grid_shape(width: usize) -> Shape {
     Shape::Values((0..width).map(|column| Column { source: Source::Cell(column), aggregates: aggregate::FALLS, rank: if column == 0 { 32 } else { 0 } }).collect())
 }
 
-/// A builder's piece is what its hours give, whatever the shape of its changes: the grid's rows,
-/// each moving once a day, read back bucket by bucket against the grid's own values.
 #[test]
 fn a_grids_piece_holds_each_rows_value_at_every_bucket() {
     const KEYS: u32 = 40;
@@ -556,7 +523,6 @@ fn a_grids_piece_holds_each_rows_value_at_every_bucket() {
     }
 }
 
-/// Memory labels, in a build counting them.
 #[cfg(feature = "memory-labels")]
 mod labelled {
     use super::*;
@@ -565,7 +531,6 @@ mod labelled {
     #[global_allocator]
     static COUNTING: labels::Counting<std::alloc::System> = labels::Counting(std::alloc::System);
 
-    /// `labels::phases` takes every phase the process holds: tests that read them take turns, each from a phase of its own.
     fn measured<T>(name: &'static str, work: impl FnOnce() -> T) -> (T, Vec<labels::Phase>) {
         static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _turn = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -575,9 +540,6 @@ mod labelled {
         (out, labels::phases())
     }
 
-    /// A builder of 3,000 keys by six columns, each cell moving once a day through a block of 720
-    /// hours, holds no more than the cost model says: its cells' values and the block's changes,
-    /// not a stream per cell.
     #[test]
     fn a_builders_held_bytes_stay_within_the_cost_model() {
         const KEYS: u32 = 3_000;
@@ -608,14 +570,10 @@ mod labelled {
         let model = cost::held(&shape, load);
         assert!(held > 0 && held as u64 <= model, "the builder holds {held} bytes; the model says at most {model}");
         assert!(builder.held_bytes() as u64 <= model, "the builder counts {} bytes; the model says at most {model}", builder.held_bytes());
-        // A stream per cell, as the builder kept before: about 280 bytes a cell before any token.
         assert!((held as u64) < u64::from(KEYS) * WIDTH as u64 * 280 / 2, "the builder holds {held} bytes");
         assert!(builder.finish(first + HOURS).unwrap().is_some());
     }
 
-    /// Folding a span of sixteen pieces of 20,000 still keys holds no more than the cost model
-    /// says, the pieces read back as the recorder reads them: each piece's keys and a column
-    /// decoded, and their keys merged once each.
     #[test]
     fn a_folds_held_bytes_stay_within_the_cost_model() {
         const KEYS: u32 = 20_000;

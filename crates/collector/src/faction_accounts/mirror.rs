@@ -1,4 +1,3 @@
-//! Preallocated scalar operands. No callback allocates or follows native pointers.
 use super::Account;
 use engine_allocation as allocation;
 use std::{
@@ -10,7 +9,6 @@ static CLOSED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static VERSION: AtomicU64 = AtomicU64::new(0);
 static MISSED: AtomicBool = AtomicBool::new(false);
-/// Scalar lanes independent of the influence vector.
 pub const INITIATIVE: usize = 0;
 pub const CONTRIBUTION: usize = 1;
 pub const GAIN_A: usize = 2;
@@ -143,8 +141,6 @@ impl Storage {
         })
         .map_err(|_| "faction operand storage allocation failed")
     }
-    /// The native array's fixed stride is prepared with this storage. Validate
-    /// both its geometry and the stored address; no slot survives replacement.
     fn index(&self, address: usize) -> Option<usize> {
         let offset = address.checked_sub(self.data)?;
         if offset % self.stride != 0 {
@@ -253,7 +249,6 @@ impl Storage {
         let Some(index) = self.index(address) else {
             return;
         };
-        // A newly created faction is ranked before its first pool census.
         let (faction, phase, count) = crate::faction_pools::phase(1).unwrap_or_default();
         for (target, value) in self.slots[index].rank_pending.iter().zip([
             numerator.max(0),
@@ -433,8 +428,6 @@ impl Storage {
         Ok(changed)
     }
 }
-/// Owned by the faction worker. Publication closes callback admission without
-/// waiting; a concurrent write refuses capture rather than authorizing a scan.
 #[derive(Default)]
 pub struct Holder {
     storage: Option<Box<Storage>>,
@@ -486,7 +479,6 @@ impl Drop for Holder {
         }
     }
 }
-/// Caller holds a Flight through its native original or is a bounded store tap.
 pub fn observe(address: usize, influence: bool, field: usize, value: i64, operation: Operation) {
     if CLOSED.load(Ordering::SeqCst) {
         MISSED.store(true, Ordering::SeqCst);
@@ -496,8 +488,6 @@ pub fn observe(address: usize, influence: bool, field: usize, value: i64, operat
     if pointer.is_null() {
         return;
     }
-    // SAFETY: Flight admission precedes the pointer load; publication and Drop
-    // close admission and retain old storage when a flight is active.
     unsafe { &*pointer }.write(address, influence, field, value, operation);
 }
 thread_local! {static RANK_RECEIVER:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
@@ -525,8 +515,6 @@ pub fn rank_commit(receiver: usize, native: i32) {
     }
 }
 thread_local! { static PROJECTION_SOURCE: std::cell::Cell<([i64;7],u8)> = const {std::cell::Cell::new(([0;7],0))}; }
-/// Getter temporaries do not publish game state. Only the authenticated
-/// simulation setter consumes the complete supplying operands on this thread.
 pub fn projection_operand(index: usize, value: i64) {
     PROJECTION_SOURCE.with(|cell| {
         let (mut values, mut mask) = cell.get();
@@ -573,12 +561,9 @@ pub fn projection_sources(address: usize, term: usize, value: i64) {
         } else {
             storage.projection_sources(index, term, &source.0);
         }
-        // Even a missing-source refusal retains the reached scalar store.
         storage.write_at(index, false, PROJECTION_START + term, value, Operation::Set);
     }
 }
-/// The arithmetic input versions and the reached refresh boundary are retained
-/// together, even if the source tables change again before hourly publication.
 pub fn refresh(address: usize, projection: bool, numerator: i64, denominator: i64) {
     if CLOSED.load(Ordering::SeqCst) {
         MISSED.store(true, Ordering::SeqCst);
@@ -589,8 +574,6 @@ pub fn refresh(address: usize, projection: bool, numerator: i64, denominator: i6
         unsafe { &*pointer }.refresh(address, projection, numerator, denominator);
     }
 }
-/// Passive sites supply the canonical product for the already-truncated native
-/// increment, never the resulting balance.
 pub fn passive(address: usize, product: i64) {
     if CLOSED.load(Ordering::SeqCst) {
         MISSED.store(true, Ordering::SeqCst);
@@ -602,8 +585,6 @@ pub fn passive(address: usize, product: i64) {
     }
 }
 
-// The native account array is indexed by canonical country slot. Raw references
-// retained in an account and in the current member need not be equal.
 fn rank_address(storage: &Storage, canonical_slot: Option<u32>) -> Option<usize> {
     canonical_slot
         .and_then(|slot| storage.slots.get(slot as usize))
@@ -710,8 +691,6 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             let _flight = Flight::new();
             projection_operand(2, 999);
-            // An unregistered receiver consumes its getter operands but cannot
-            // dirty or refuse the registered account.
             projection_sources(0x1001, 1, 80);
             assert!(!storage.missing_projection_sources.load(Ordering::SeqCst));
             assert!(!storage.drain(&mut rows).unwrap());

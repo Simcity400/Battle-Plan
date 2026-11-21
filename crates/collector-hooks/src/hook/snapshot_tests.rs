@@ -2,7 +2,6 @@ use super::*;
 use std::cell::{Cell, RefCell};
 
 type ContextState = (Vec<Result<u64, u32>>, Vec<usize>, Vec<usize>);
-// Intercept the shared context boundary, including production range checks.
 thread_local! {
     static CONTEXTS: RefCell<ContextState> = RefCell::default();
 }
@@ -43,7 +42,6 @@ fn thread(id: u32, handle: usize) -> Thread {
         priority: None,
     }
 }
-// Synthetic handles never reach Windows, including on an assertion failure.
 pub(super) fn fixture(count: usize, ips: &[Result<u64, u32>]) -> ManuallyDrop<Threads> {
     CONTEXTS.with(|state| *state.borrow_mut() = (ips.to_vec(), vec![0; ips.len()], Vec::new()));
     let mut threads = Vec::with_capacity(count + count / 2 + 16);
@@ -302,7 +300,7 @@ fn exits_preserve_errors_recapture_survivors_and_bind_replacements_to_handles() 
             assert_eq!(counts(), [first_calls, 2, 0]);
             if survivor.is_ok() {
                 set_ips(&[Ok(1), Ok(1), Ok(105)]);
-                threads.threads.push(thread(1, 3)); // Same ID, distinct owned handle and IP.
+                threads.threads.push(thread(1, 3));
                 stable(&mut threads).unwrap();
                 assert_eq!(
                     threads.contains_ip(std::slice::from_ref(&(105..106))),
@@ -413,7 +411,7 @@ fn hold_measurement_excludes_off_hold_work_and_publishes_only_after_resolution()
                 private(family);
                 let grown = threads.census.len() + 1;
                 threads.census.resize(grown, 0);
-                time.set(time.get() + 1000); // Resumed storage growth.
+                time.set(time.get() + 1000);
             }
         }
         let boundary = off_hold + precheck;
@@ -451,7 +449,6 @@ fn hold_measurement_excludes_off_hold_work_and_publishes_only_after_resolution()
             summary["slowest_context_thread_id"],
             if held_stall == 0 { 1 } else { 2 }
         );
-        // Synthetic threads are never raised, so none needs its priority back.
         assert_eq!(summary["slowest_context_priority"], 0);
         assert_eq!(summary["priority_restore_failures"], 0);
         assert_eq!(summary.as_object().unwrap().len(), 8);

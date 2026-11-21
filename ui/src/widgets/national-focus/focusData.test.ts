@@ -35,16 +35,12 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   const art = { token: 'one', name: 'One', description: 'Game description', baseDurationDays: 70, icon: null };
   assert.equal(validateFocusReply({ ...reply, artwork: [art] }).artwork[0].baseDurationDays, 70);
   for (const baseDurationDays of [-1, NaN, Infinity]) assert.throws(() => validateFocusReply({ ...reply, artwork: [{ ...art, baseDurationDays }] }));
-  // An icon that is not an artwork URL is never drawn: it shows as missing art,
-  // and the rest of the reply still loads.
   for (const icon of ['https://example.com/remote.png', 'data:text/html;base64,YQ==', 'data:image/png;base64,YQ==', `/api/artwork/../${'a'.repeat(32)}.png`]) {
     assert.equal(validateFocusReply(structuredClone({ ...reply, artwork: [{ ...art, icon }] })).artwork[0].icon, null);
   }
-  // A malformed entry is still refused rather than reaching the widget.
   for (const bad of [null, 'one', {}, { ...art, token: 7 }]) {
     assert.throws(() => validateFocusReply({ ...reply, artwork: [bad] } as unknown as FocusReply));
   }
-  // Continuous focuses' static text is their own list, never drawn and always present.
   assert.equal(validateFocusReply({ ...reply, continuousStaticText: [art] }).continuousStaticText[0].name, 'One');
   for (const continuousStaticText of [undefined, [{ ...art, icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }], [null]]) {
     assert.throws(() => validateFocusReply({ ...reply, continuousStaticText } as unknown as FocusReply));
@@ -133,19 +129,14 @@ test('many focus widgets share one load while playback advances without requests
 });
 
 test('focus progress reports exact days and days left only from a known daily rate', () => {
-  // The second day of `two`: 69 of 70 days done, one day gained, one day left.
   const late = focusProgressAt(reply.history, 115)!;
   assert.deepEqual(late, { progress: 6_900_000n, dailyGain: 100_000n });
   assert.deepEqual(focusCompletion(late, 70), { fraction: 0.9857, elapsedDays: 69, totalDays: 70, daysLeft: 1 });
-  // The first recorded day has no earlier day to measure a rate from.
   assert.equal(focusProgressAt(reply.history, 105)!.dailyGain, null);
   assert.equal(focusCompletion(focusProgressAt(reply.history, 105)!, 70)!.daysLeft, null);
-  // Hour 124 is a gap: nothing is reported there, and the next run never measures across it.
   assert.equal(focusProgressAt(reply.history, 124), null);
   assert.equal(focusProgressAt(reply.history, 130)!.dailyGain, null);
-  // No current focus after 125, so banked progress has no rate toward a focus.
   assert.equal(focusProgressAt(reply.history, 150)!.dailyGain, null);
-  // A faster rate shortens the estimate; completion clamps to the base duration.
   assert.equal(focusCompletion({ progress: 3_500_000n, dailyGain: 125_000n }, 70)!.daysLeft, 28);
   assert.equal(focusCompletion({ progress: 9_000_000n, dailyGain: 100_000n }, 70)!.fraction, 1);
   assert.equal(focusCompletion({ progress: 0n, dailyGain: null }, 0), null);
@@ -157,7 +148,6 @@ test('dated focus artwork authenticates the read, retains empty text and refuses
   const dated = { branchId: '1', hour: 10, tag: 'synthetic', database: 'national', items: [{ artwork: art, reason: 'focus-window mode is not recorded' as string | null }], warnings: ['Named content warning'] };
   assert.equal(validateFocusArtworkReply(dated, params).items[0].reason, 'focus-window mode is not recorded');
   assert.equal(dated.items[0].artwork.name, '');
-  // A continuous focus's art never answers a national request of the same id.
   for (const bad of [{ ...dated, hour: 11 }, { ...dated, tag: 'other' }, { ...dated, branchId: '2' }, { ...dated, database: 'continuous' }, { ...dated, items: [] },
     { ...dated, items: [...dated.items, ...dated.items] }, { ...dated, warnings: [null] }]) {
     assert.throws(() => validateFocusArtworkReply(bad, params));
@@ -210,7 +200,6 @@ test('Follow schedules the current and newest focus first while every time mode 
     for (const mode of ['follow', 'pin', 'campaign'] as const) {
       props.widget.time = mode === 'pin' ? { mode, windows: { track: { firstOffset: 100, lastOffset: 100 } } } : { mode };
       const markup = render();
-      // The active focus is named as at the hour its order was first read, not the moving head.
       const current = { tag: 'current_focus', hour: 100 };
       const expected = mode === 'follow' ? [current, ...completionPairs.slice().reverse()]
         : mode === 'pin' ? [current, ...completionPairs] : [...completionPairs, current];

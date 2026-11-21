@@ -295,8 +295,6 @@ fn timed_rows_keep_nonactive_states_and_full_signed_fields() {
 #[test]
 fn targeted_container_labels_match_native_serializer_sources() {
     let mut bytes = empty();
-    // Native serde emits the active array under active_targeted_decision and the timed one under
-    // active_targeted_timed_decision. Source positions retain keys 3 and 4.
     vector(&mut bytes, 0xe8, 1);
     vector(&mut bytes, 0x100, 1);
     qword(
@@ -527,7 +525,7 @@ fn description_seed_reads_only_demanded_targeted_rows_and_preserves_first_match(
         -18,
     );
     assert_eq!(run(&bytes, &demand), (Outcome::Rows { len: 1 }, Some(None)));
-    word(&mut bytes, STATUS_ADDRESS + RANDOM_ITEMS + 12, 3); // invalid header
+    word(&mut bytes, STATUS_ADDRESS + RANDOM_ITEMS + 12, 3);
     assert_eq!(run(&bytes, &[]), (Outcome::Rows { len: 1 }, None));
     assert!(matches!(
         run(&bytes, &demand).0,

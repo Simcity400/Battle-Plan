@@ -1,0 +1,13 @@
+# 0201. Reconcile regional air combat records from named writes
+
+The FinalInputs worker reads the retained air-combat holders while the game thread is parked. The only observed updater names the holder it changes. A complete retained capture includes empty holders and remembers their addresses and keys. A quiet hour can reuse its table allocation. A newly touched holder is authenticated through its owner's table and read whole. If a new holder occupies a key, its fresh row replaces the old one.
+
+For a known touched holder, the native vector's prefix count accounts for the daily prune. The collector drops the corresponding leading records from held data and replaces the maximal suffix from the previous capture hour with the fresh native tail. It preserves the order of earlier records, including an out-of-order older record within the prefix. A discrepancy in the old prefix or a native refusal invalidates the carry, so a later hourly capture must rebuild rather than publishing a partly guessed row. Equipment field refusals have their own count. A verified complete row may still be published when its equipment details cannot be read.
+
+The observer inserts into preallocated open-addressed storage. Each address claims one slot until the next exclusive take, and a separate list of claims lets the worker visit only touched slots. The set grows from measured holders. The worker swaps in a larger set only after draining the previous one. Diagnostic status reads separately retained slot counts so it does not borrow storage the worker may retire.
+
+The writer takes a lease before testing the gate, and the worker closes the gate before testing leases. Sequential consistency ensures either the worker sees the lease or the writer sees the gate. That lease spans the original call. Any missed writer, exhausted set, busy lease, disabled observation or lost interval defeats carry. Newly installed observation starts with a lost interval because earlier writes are unnamed. The runtime owns the dispatch and retires storage only after every possible reader has finished.
+
+`Touched::notify` borrows the published set within the writer lease. `Touched::take` loads or swaps that set only after closing the gate and confirming no remaining lease. `Touched::replace` recovers the replaced allocation through its original box pointer. `Hooks::new` initializes that pointer before installing the updater, and `Hooks::drop` releases the set only after the updater has been restored and drained, or while it is still unpublished.
+
+[Regional air combat observer and store](../../crates/collector-air-records/src/air_record_changes.rs) · [Capture adapter](../../crates/collector-air-records/src/air_records.rs)

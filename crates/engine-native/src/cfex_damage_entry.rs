@@ -1,16 +1,10 @@
-//! Unnamed damage-attribution entry in the member's damage array (`cfex_member::DAMAGE_ENTRIES`).
 
 use engine_sites::Rva;
-/// CFEXMember damage-entry stride.
 pub const STRIDE: usize = 0x20;
-/// CFEXMember damage-entry source reference (two u32 words).
 pub const SOURCE_HANDLE: usize = 0x08;
-/// CFEXMember damage-entry country id u32.
 pub const COUNTRY: usize = 0x10;
-/// CFEXMember damage-entry amount i64.
 pub const DAMAGE: usize = 0x18;
 
-/// Received-damage entry primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a9_a208);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

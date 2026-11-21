@@ -1,5 +1,3 @@
-//! Per-view Air wing windows. Pool membership, clocks and selection are
-//! presentation state; every simulation input comes from the prepared hour.
 use super::super::*;
 use super::{PreparedItem, prepared};
 use std::collections::HashMap;
@@ -25,7 +23,6 @@ pub(crate) struct View {
     last: Option<f32>,
     active: bool,
 }
-/// One icon's composed wing grid: its parts, and the hits it takes once the icon draws.
 #[derive(Debug)]
 pub(crate) struct Composed {
     pub parts: Vec<Vec<native_gui::Part>>,
@@ -35,14 +32,12 @@ pub(crate) struct Composed {
     )>,
 }
 impl Composed {
-    /// No wing grid: the icon's own holders, empty.
     pub fn empty(holders: usize) -> Self {
         Self {
             parts: vec![Vec::new(); holders],
             hits: Vec::new(),
         }
     }
-    /// Publishes the grid's hits; only an icon that drew takes them.
     pub fn commit(self, report: &mut CounterReport) {
         for (blocker, hover) in self.hits {
             report.air_grid_hits.insert(report.base_hits.len(), hover);
@@ -63,7 +58,6 @@ impl View {
     pub fn take_running(&mut self) -> bool {
         std::mem::take(&mut self.active)
     }
-    /// Whether an item changed on its own at the last frame, not cleared.
     pub fn running(&self) -> bool {
         self.active
     }
@@ -195,9 +189,6 @@ impl View {
             report,
         )
     }
-    /// Compose in the item's own coordinates; apply the outer holder to hit
-    /// regions only. The caller places the composed drawing through that holder,
-    /// and commits its hits once that drawing succeeds.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_held(
         &mut self,
@@ -570,7 +561,6 @@ mod tests {
                 composed.parts = drawn.layout.composed_parts(&grid.parts).cloned().collect();
                 let placed = outer.place([3, 4], &composed);
                 assert!(placed.iter().any(|part| part.path.ends_with("count_bg")));
-                // Nothing takes a hit until its icon draws.
                 assert!(report.base_hits.is_empty() && report.air_grid_hits.is_empty());
                 grid.commit(&mut report);
                 assert_eq!(report.air_grid_hits.len(), 1);
@@ -595,8 +585,6 @@ mod tests {
         );
     }
 
-    /// A drawn icon's wing grid takes its hits after those already taken, each hover keyed by
-    /// its own hit.
     #[test]
     fn a_committed_wing_grid_follows_the_hits_already_taken() {
         let blocker = |x| viewer_foundation::map::counter_hovers::unit_hits::Blocker {

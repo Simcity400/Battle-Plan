@@ -1,22 +1,3 @@
-//! How a compiled stage's output depends on its constant buffers' scalars, read from the program
-//! itself (the naga module DXC's SPIR-V translates to), so a caller can tell how long a draw keeps
-//! changing on the clock alone: sprite draws upload the graphics clock `Time`
-//! and the drawable's `AnimationTime` (the restart of its state effect) into buffer `b0`, and the
-//! program decides what it does with them.
-//!
-//! The analysis over-approximates, per scalar component. It is flow-insensitive over variables
-//! (every store to a local or private variable, the naga SPIR-V frontend's entry-point wrapper
-//! globals included, joins its value) and interprocedural (arguments and results join over every
-//! call). A value is either an affine combination of buffer scalars and a literal, with a bound on
-//! how far the program's f32 operations, each rounded as they are written, stray from it, or
-//! opaque: the buffer bytes it may depend on directly, and the saturating functions (`clamp`,
-//! `saturate`, `min`, `max`, `smoothstep`, `step`) of an affine combination with literal bounds it
-//! may depend on through their result. A branch, a loop's exits and a switch add the deps of
-//! their condition to everything stored, returned or discarded under them. What reaches the
-//! stage's output (the entry point's result, a `discard`, a return taken under a condition, a
-//! write outside the variables) is the [`Clock`]. A form it does not follow (atomics, image
-//! stores, subgroup, ray or cooperative operations, a fixpoint that does not converge) makes every
-//! buffer byte a direct input, which never settles.
 use naga::{
     AddressSpace, BinaryOperator, Block, Expression, Function, Handle, Literal, MathFunction,
     Module, Scalar, Statement, TypeInner, UnaryOperator, VectorSize,
@@ -24,44 +5,27 @@ use naga::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// A 32-bit scalar of a group-0 buffer: its binding and byte offset.
 pub type Slot = (u32, u32);
 
-/// A saturating function of an affine combination of buffer scalars: constant once
-/// `Σ k·slot + constant` has reached `high` going up, or `low` going down (passed it, when
-/// `open_low`), as the program's f32 operations evaluate it.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bounded {
     pub terms: Vec<(Slot, f64)>,
     pub constant: f64,
     pub low: Option<f64>,
     pub high: Option<f64>,
-    /// At `low` itself the output is not yet the one below it: `step(edge, x)` is `x >= edge`
-    /// (GLSL.std.450 `Step`, naga's `step`), 1 at the edge and 0 only once `x` is below it.
     pub open_low: bool,
-    /// How far the f32 value of the combination, and of the bound it is compared with, may be
-    /// from the exact ones: `slack` plus `per` times each slot's magnitude.
     pub slack: f64,
     pub per: Vec<(Slot, f64)>,
-    /// The largest `|constant| + slack` and `Σ |k|` of any value computing it: its f32 values
-    /// stay finite while `reach + peak·|slot|` does.
     pub reach: f64,
     pub peak: f64,
 }
 
-/// What a stage's output depends on among its group-0 buffers' bytes.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Clock {
-    /// Byte ranges `(binding, start, end)` whose value reaches the output other than through a
-    /// [`Bounded`] function.
     pub direct: Vec<(u32, u32, u32)>,
     pub bounded: Vec<Bounded>,
 }
 
-/// From when an output no longer changes on the clock: `after` seconds past its restart, plus
-/// `per_clock` seconds per second of the larger of the clock and the restart, at whose magnitude
-/// f32 operations on them round. It holds while that magnitude is at most `limit`, past which an
-/// f32 value on the way may overflow.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Settling {
     pub after: f32,
@@ -70,10 +34,8 @@ pub struct Settling {
 }
 
 impl Settling {
-    /// An output that does not change on the clock.
     pub const NOW: Self = Self::after(0.0);
 
-    /// Settled `seconds` after the restart, whatever the clock reads.
     pub const fn after(seconds: f32) -> Self {
         Self {
             after: seconds,
@@ -82,13 +44,10 @@ impl Settling {
         }
     }
 
-    /// Whether an output `elapsed` seconds past its restart no longer changes, the larger of
-    /// the clock and the restart being `clock` in magnitude.
     pub fn reached(&self, elapsed: f32, clock: f32) -> bool {
         clock <= self.limit && elapsed >= self.after + self.per_clock * clock
     }
 
-    /// Settled once both are.
     pub fn and(self, other: Self) -> Self {
         Self {
             after: self.after.max(other.after),
@@ -98,7 +57,6 @@ impl Settling {
     }
 }
 
-/// `value` as an `f32` no smaller than it.
 fn up(value: f64) -> f32 {
     let rounded = value as f32;
     if f64::from(rounded) < value {
@@ -108,7 +66,6 @@ fn up(value: f64) -> f32 {
     }
 }
 
-/// `value` as an `f32` no larger than it.
 fn down(value: f64) -> f32 {
     let rounded = value as f32;
     if f64::from(rounded) > value {
@@ -119,14 +76,6 @@ fn down(value: f64) -> f32 {
 }
 
 impl Clock {
-    /// When the output, after the restart `since` (a scalar that stays fixed), no longer changes
-    /// as `time` grows; `None` when it keeps changing; [`Settling::NOW`] for an output that does
-    /// not read `time`. Only `k·(time - since) + c` saturating at the bound it moves towards
-    /// settles: any other use of `time` keeps changing, or changes at a moment that is not a
-    /// duration since the restart. Its f32 value settles once the exact one is past the bound by
-    /// what rounding may take from it. A bound reached going down that is still open there
-    /// ([`Bounded::open_low`]) settles only past it, at the next `f32` duration, so a caller
-    /// comparing `elapsed < settles` keeps presenting frames at the boundary itself.
     pub fn settles(&self, time: Slot, since: Slot) -> Option<Settling> {
         let covers = |&(binding, start, end): &(u32, u32, u32)| {
             binding == time.0 && start < time.1 + 4 && time.1 < end
@@ -137,7 +86,6 @@ impl Clock {
         let mut settling = Settling::NOW;
         for bounded in &self.bounded {
             let Some(&(_, k)) = bounded.terms.iter().find(|(slot, _)| *slot == time) else {
-                // A value the clock reaches only through its rounding changes as the clock does.
                 if bounded.per.iter().any(|&(slot, _)| slot == time) {
                     return None;
                 }
@@ -151,7 +99,6 @@ impl Clock {
             if !exact || k == 0.0 {
                 return None;
             }
-            // Rounding at another scalar's magnitude has no bound in the clock's terms.
             if bounded
                 .per
                 .iter()
@@ -187,7 +134,6 @@ impl Clock {
     }
 }
 
-/// The [`Clock`] of the module's first entry point.
 pub fn analyse(module: &Module, info: &ModuleInfo) -> Clock {
     let mut analysis = Analysis {
         module,
@@ -201,8 +147,6 @@ pub fn analyse(module: &Module, info: &ModuleInfo) -> Clock {
         changed: false,
         unsupported: false,
     };
-    // Each pass only grows the joined states, which range over finite sets of spans and bounded
-    // functions of the module's own expressions; the bound only guards that argument.
     const PASSES: usize = 64;
     let mut converged = false;
     for _ in 0..PASSES {
@@ -231,7 +175,6 @@ pub fn analyse(module: &Module, info: &ModuleInfo) -> Clock {
     }
 }
 
-/// Every group-0 buffer's whole byte range.
 fn buffers(module: &Module) -> Vec<(u32, u32, u32)> {
     module
         .global_variables
@@ -253,7 +196,6 @@ struct Deps {
 }
 
 impl Deps {
-    /// Adds `other`; whether that grew it.
     fn union(&mut self, other: &Deps) -> bool {
         let before = (self.direct.len(), self.bounded.len());
         self.direct.extend(other.direct.iter().copied());
@@ -270,17 +212,11 @@ impl Deps {
     }
 }
 
-/// Bounds of correctly rounded f32 addition, subtraction and multiplication (half a ULP), and of
-/// division (two and a half ULPs), relative to the exact result of the rounded operands.
 const ROUNDED: f64 = 1.0 / (1u64 << 24) as f64;
 const DIVIDED: f64 = 5.0 / (1u64 << 24) as f64;
-/// What flushing a subnormal operand or result to zero, as GPUs may, can take from it.
 const FLUSH: f64 = f32::MIN_POSITIVE as f64;
 const LARGEST: f64 = f32::MAX as f64;
 
-/// How far an f32 evaluation may be from the exact value: `slack`, plus `per[slot]` times the
-/// slot's magnitude. With it, the largest `|constant| + slack` and `Σ |k|` of any value on the
-/// way, which keep the f32 values finite while the scalars stay small enough.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Rounding {
     slack: f64,
@@ -303,7 +239,6 @@ impl Rounding {
         }
     }
 
-    /// The bound scaled by `factor`; the values on the way stay what they were.
     fn times(&self, factor: f64) -> Rounding {
         Rounding {
             slack: self.slack * factor,
@@ -318,7 +253,6 @@ impl Rounding {
     }
 }
 
-/// `Σ k·slot + constant`, and how far the program's f32 value of it may be from that.
 #[derive(Clone, Debug, PartialEq)]
 struct Affine {
     terms: BTreeMap<Slot, f64>,
@@ -327,10 +261,6 @@ struct Affine {
 }
 
 impl Affine {
-    /// The operation producing `self` exactly from operands off by `error`, rounded with relative
-    /// bound `unit`: its rounding is at most `unit` of the exact result's magnitude,
-    /// `|constant| + Σ |k|·|slot|`, and of the operands' own error, or a flushed subnormal. A
-    /// constant or coefficient f32 cannot hold is no bound.
     fn rounded(mut self, error: Rounding, unit: f64) -> Val {
         let mut bound = error.times(1.0 + unit);
         bound.slack += unit * self.constant.abs() + FLUSH;
@@ -355,12 +285,10 @@ enum Val {
 }
 
 impl Val {
-    /// A value no buffer scalar reaches (an input, a texel, an integer).
     fn free() -> Self {
         Val::Opaque(Deps::default())
     }
 
-    /// A literal; a subnormal one may be flushed, and one f32 cannot hold bounds nothing.
     fn literal(value: f64) -> Self {
         if !(value.abs() <= LARGEST) {
             return Val::free();
@@ -381,7 +309,6 @@ impl Val {
         })
     }
 
-    /// A buffer scalar as the program reads it, which a subnormal value would flush.
     fn slot(slot: Slot) -> Self {
         Val::Affine(Affine {
             terms: [(slot, 1.0)].into(),
@@ -395,7 +322,6 @@ impl Val {
         })
     }
 
-    /// The scalars it reads, and those at whose magnitude its rounding varies.
     fn deps(&self) -> Deps {
         match self {
             Val::Affine(affine) => Deps {
@@ -411,7 +337,6 @@ impl Val {
         }
     }
 
-    /// The value reading no scalar, and its slack; `None` when its rounding varies with one.
     fn constant(&self) -> Option<(f64, f64)> {
         match self {
             Val::Affine(affine) if affine.terms.is_empty() && affine.error.per.is_empty() => {
@@ -421,7 +346,6 @@ impl Val {
         }
     }
 
-    /// Exact negation.
     fn negated(&self) -> Self {
         match self {
             Val::Affine(affine) => Val::Affine(Affine {
@@ -442,7 +366,6 @@ fn opaque<'a>(values: impl IntoIterator<Item = &'a Val>) -> Val {
     Val::Opaque(deps)
 }
 
-/// Joins `new` into a slot; whether the slot changed.
 fn join_into(slot: &mut Option<Val>, new: &Val) -> bool {
     let joined = match slot {
         None => new.clone(),
@@ -483,7 +406,6 @@ fn add(a: &Val, b: &Val, sign: f64) -> Val {
     }
 }
 
-/// `x·y` when one is a constant `c` off by at most `e`: `|x̃ỹ - xy| <= |x̃ - x|(|c| + e) + |x|e`.
 fn product(x: &Val, y: &Val) -> Val {
     let (value, (c, e)) = match (x.constant(), y.constant()) {
         (Some(c), _) => (y, c),
@@ -506,8 +428,6 @@ fn product(x: &Val, y: &Val) -> Val {
     .rounded(error, ROUNDED)
 }
 
-/// `x / y` when `y` is a nonzero constant `c` off by at most `e < |c|`:
-/// `|x̃/ỹ - x/c| <= (|x̃ - x| + |x/c|·e) / (|c| - e)`.
 fn quotient(x: &Val, y: &Val) -> Val {
     let (Val::Affine(value), Some((c, e))) = (x, y.constant()) else {
         return opaque([x, y]);
@@ -529,8 +449,6 @@ fn quotient(x: &Val, y: &Val) -> Val {
     .rounded(error.times(1.0 / room), DIVIDED)
 }
 
-/// `value` saturating at `low`/`high` (either may be absent) when it is affine in some scalar and
-/// each bound given is a constant; otherwise the operands join. `open_low`: [`Bounded::open_low`].
 fn bounded(value: &Val, low: Option<&Val>, high: Option<&Val>, open_low: bool) -> Val {
     let constant = |bound: Option<&Val>| match bound {
         None => Some(None),
@@ -538,7 +456,6 @@ fn bounded(value: &Val, low: Option<&Val>, high: Option<&Val>, open_low: bool) -
     };
     match (value, constant(low), constant(high)) {
         (Val::Affine(affine), Some(low), Some(high)) if !affine.terms.is_empty() => {
-            // A bound off by its slack moves where the value meets it by as much.
             let bound_slack = [low, high]
                 .into_iter()
                 .flatten()
@@ -568,7 +485,6 @@ fn bounded(value: &Val, low: Option<&Val>, high: Option<&Val>, open_low: bool) -
     }
 }
 
-/// A type as the analysis walks it: a module type, or a column or component of one.
 #[derive(Clone, Copy)]
 enum Shape<'m> {
     Of(&'m TypeInner),
@@ -600,7 +516,6 @@ impl<'m> Shape<'m> {
     }
 }
 
-/// Scalars a value of `shape` holds.
 fn comps(module: &Module, shape: Shape) -> usize {
     match shape.normal() {
         Shape::Scalar(_) => 1,
@@ -619,7 +534,6 @@ fn comps(module: &Module, shape: Shape) -> usize {
     }
 }
 
-/// Bytes a buffer member of `shape` spans (matrix columns at their vector alignment).
 fn size(shape: Shape) -> u32 {
     match shape.normal() {
         Shape::Scalar(scalar) => u32::from(scalar.width),
@@ -642,7 +556,6 @@ fn size(shape: Shape) -> u32 {
     }
 }
 
-/// The shape one index into `shape` selects (an element, a column, a component).
 fn element<'m>(module: &'m Module, shape: Shape<'m>) -> Shape<'m> {
     match shape.normal() {
         Shape::Of(TypeInner::Array { base, .. }) => Shape::of(module, *base),
@@ -652,7 +565,6 @@ fn element<'m>(module: &'m Module, shape: Shape<'m>) -> Shape<'m> {
     }
 }
 
-/// The scalars before member `index` of a struct shape, and the member's.
 fn member(module: &Module, shape: Shape, index: u32) -> Option<(usize, usize)> {
     let Shape::Of(TypeInner::Struct { members, .. }) = shape.normal() else {
         return None;
@@ -666,7 +578,6 @@ fn member(module: &Module, shape: Shape, index: u32) -> Option<(usize, usize)> {
     Some((before, own))
 }
 
-/// Each scalar of a buffer value of `shape` at `offset`.
 fn buffer_values(module: &Module, binding: u32, offset: u32, shape: Shape, out: &mut Vec<Val>) {
     match shape.normal() {
         Shape::Scalar(scalar) if scalar.width == 4 => {
@@ -694,7 +605,6 @@ fn buffer_values(module: &Module, binding: u32, offset: u32, shape: Shape, out: 
                 buffer_values(module, binding, at, Shape::of(module, member.ty), out);
             }
         }
-        // A matrix, or a scalar of another width: every scalar depends on the whole span.
         shape => {
             let whole = Val::Opaque(Deps {
                 direct: [(binding, offset, offset + size(shape))].into(),
@@ -705,31 +615,25 @@ fn buffer_values(module: &Module, binding: u32, offset: u32, shape: Shape, out: 
     }
 }
 
-/// A variable a store or load reaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Var {
     Local(Option<Handle<Function>>, Handle<naga::LocalVariable>),
     Global(Handle<naga::GlobalVariable>),
 }
 
-/// Where a pointer points.
 enum Place<'m> {
-    /// A buffer's bytes from `offset`, of `shape`; `whole` once an index the analysis cannot
-    /// read, or a matrix, hides the exact scalars (the span, and the index's deps).
     Buffer {
         binding: u32,
         offset: u32,
         shape: Shape<'m>,
         whole: Option<((u32, u32, u32), Deps)>,
     },
-    /// Scalars `start..start + len` of a variable; `dynamic` when an index picks among them.
     Var {
         var: Var,
         start: usize,
         len: usize,
         dynamic: Option<Deps>,
     },
-    /// Anything else (storage, handles): a write there is output.
     Other,
 }
 
@@ -739,16 +643,13 @@ struct Analysis<'m> {
     vars: HashMap<Var, Vec<Option<Val>>>,
     args: HashMap<Handle<Function>, Vec<Vec<Option<Val>>>>,
     results: HashMap<Handle<Function>, Vec<Option<Val>>>,
-    /// The joined control context every call of a function runs under.
     contexts: HashMap<Handle<Function>, Deps>,
-    /// Each loop's exit conditions, by its body's address.
     loops: HashMap<*const Block, Deps>,
     output: Deps,
     changed: bool,
     unsupported: bool,
 }
 
-/// One function's pass: its expression values, each computed once.
 struct Frame<'m> {
     id: Option<Handle<Function>>,
     function: &'m Function,
@@ -801,7 +702,6 @@ impl<'m> Analysis<'m> {
         }
     }
 
-    /// The context under a condition; inside loops, it is each loop's exit condition too.
     fn condition(
         &mut self,
         frame: &mut Frame<'m>,
@@ -872,7 +772,6 @@ impl<'m> Analysis<'m> {
                     .map(|value| self.value(frame, value))
                     .unwrap_or_default();
                 match frame.id {
-                    // The entry point's result is the stage's output.
                     None => {
                         let mut deps = opaque(&values).deps();
                         deps.union(context);
@@ -888,7 +787,6 @@ impl<'m> Analysis<'m> {
                             changed |= join_into(slot, &under(value, context));
                         }
                         self.changed |= changed;
-                        // Whether it returns here at all decides what it goes on to write.
                         self.grow(context);
                     }
                 }
@@ -996,7 +894,6 @@ impl<'m> Analysis<'m> {
         }
     }
 
-    /// The type of an expression's value.
     fn shape(&self, frame: &Frame<'m>, expression: Handle<Expression>) -> Shape<'m> {
         let module: &'m Module = self.module;
         let info: &'m FunctionInfo = frame.info;
@@ -1013,7 +910,6 @@ impl<'m> Analysis<'m> {
         )
     }
 
-    /// The type a pointer expression points at.
     fn pointee(&self, frame: &Frame<'m>, pointer: Handle<Expression>) -> Shape<'m> {
         let module: &'m Module = self.module;
         let info: &'m FunctionInfo = frame.info;
@@ -1035,7 +931,6 @@ impl<'m> Analysis<'m> {
         }
     }
 
-    /// A literal integer an index expression is.
     fn literal_index(&self, frame: &Frame<'m>, expression: Handle<Expression>) -> Option<u32> {
         let module = self.module;
         let mut expression = &frame.function.expressions[expression];
@@ -1097,8 +992,6 @@ impl<'m> Analysis<'m> {
         }
     }
 
-    /// The place `index` (or an index the analysis cannot read, with its `deps`) selects inside
-    /// `base`'s.
     fn step(
         &mut self,
         frame: &mut Frame<'m>,
@@ -1143,7 +1036,6 @@ impl<'m> Analysis<'m> {
                         offset + index * u32::from(scalar.width),
                         None,
                     ),
-                    // A matrix column, or an index read at run time: the whole span.
                     (_, None, _) => (element(module, shape), offset, known(None, deps)),
                 };
                 Place::Buffer {
@@ -1176,7 +1068,6 @@ impl<'m> Analysis<'m> {
                 };
                 Place::Var {
                     var,
-                    // A dynamic index anywhere reads and writes the whole variable.
                     start: if dynamic.is_some() {
                         0
                     } else {
@@ -1203,7 +1094,6 @@ impl<'m> Analysis<'m> {
         comps(self.module, self.shape(frame, expression))
     }
 
-    /// Every scalar of `expression` depending on everything `operands` do.
     fn joined(
         &mut self,
         frame: &mut Frame<'m>,
@@ -1401,7 +1291,6 @@ impl<'m> Analysis<'m> {
                             _ => opaque([&from, &to, &x]),
                         }
                     }),
-                    // `x >= edge`: final at the edge going up, only past it going down.
                     MathFunction::Step => each(&|i| {
                         let (edge, x) = (at(0, i), at(1, i));
                         bounded(&x, Some(&edge), Some(&edge), true)
@@ -1424,7 +1313,6 @@ impl<'m> Analysis<'m> {
                     }
                     Shape::Of(_) => false,
                 };
-                // A narrower float rounds coarser than the bounds the values carry.
                 if *kind == naga::ScalarKind::Float
                     && convert.is_none_or(|width| width >= 4)
                     && float(self.shape(frame, *expr))
@@ -1507,7 +1395,6 @@ fn literal_value(literal: &Literal) -> Val {
     }
 }
 
-/// A module-scope constant's scalars (literals, compositions, zeros, splats).
 fn global_value(module: &Module, expression: Handle<Expression>) -> Vec<Val> {
     match &module.global_expressions[expression] {
         Expression::Literal(literal) => vec![literal_value(literal)],
@@ -1557,21 +1444,16 @@ mod tests {
         Some(Settling::after(seconds))
     }
 
-    /// A shade saturating on the time since the restart settles when it saturates; the time
-    /// read directly, a moment that is not a duration, or a bound it moves away from never do.
     #[test]
     fn only_a_saturating_duration_settles() {
         let clock = |direct: Vec<(u32, u32, u32)>, bounded: Vec<Bounded>| Clock { direct, bounded };
         assert_eq!(clock(vec![], vec![]).settles(TIME, SINCE), after(0.0));
-        // `AnimationTime` alone is fixed.
         assert_eq!(
             clock(vec![(0, 100, 104)], vec![]).settles(TIME, SINCE),
             after(0.0)
         );
         assert_eq!(clock(vec![(0, 96, 100)], vec![]).settles(TIME, SINCE), None);
-        // A matrix or array span covering it.
         assert_eq!(clock(vec![(0, 64, 128)], vec![]).settles(TIME, SINCE), None);
-        // Another binding (the other stage's) is another buffer.
         assert_eq!(
             clock(vec![(1, 96, 100)], vec![]).settles(TIME, SINCE),
             after(0.0)
@@ -1586,29 +1468,22 @@ mod tests {
             clock(vec![], vec![over, down]).settles(TIME, SINCE),
             after(0.25)
         );
-        // Going down to its low bound: `clamp(1 - 2d, 0, 1)` at 0.5 s.
         let falling = saturating(-2.0, 1.0, Some(0.0), Some(1.0));
         assert_eq!(
             clock(vec![], vec![falling]).settles(TIME, SINCE),
             after(0.5)
         );
-        // `min(-d, 0)` falls forever.
         let unbounded = saturating(-1.0, 0.0, None, Some(0.0));
         assert_eq!(clock(vec![], vec![unbounded]).settles(TIME, SINCE), None);
-        // `saturate(Time * 4)`: a moment on the clock, not a duration since the restart.
         let moment = Bounded {
             terms: vec![(TIME, 4.0)],
             ..saturating(0.0, 0.0, Some(0.0), Some(1.0))
         };
         assert_eq!(clock(vec![], vec![moment]).settles(TIME, SINCE), None);
-        // Already past its bound at the restart: settled at once.
         let past = saturating(1.0, 2.0, Some(0.0), Some(1.0));
         assert_eq!(clock(vec![], vec![past]).settles(TIME, SINCE), after(0.0));
     }
 
-    /// `step(edge, x)` is `x >= edge`. Going up it is final at the edge; going down it is still
-    /// 1 at the edge and changes only past it, so it settles at the next duration: at the
-    /// boundary itself `elapsed < settles` still holds.
     #[test]
     fn a_descending_step_settles_only_past_its_edge() {
         let step = |k: f64, constant: f64| Clock {
@@ -1618,21 +1493,16 @@ mod tests {
                 ..saturating(k, constant, Some(0.0), Some(0.0))
             }],
         };
-        // `step(0, AnimationTime - Time)`: 1 at the restart, 0 after it.
         let drop = step(-1.0, 0.0).settles(TIME, SINCE).unwrap().after;
         assert!(0.0 < drop);
         assert_eq!(drop, 0.0_f32.next_up());
-        // `step(0, 0.5 - (Time - AnimationTime))`: 1 up to and at half a second.
         let late = step(-1.0, 0.5).settles(TIME, SINCE).unwrap().after;
         assert!(0.5 < late);
         assert_eq!(late, 0.5_f32.next_up());
-        // `step(0, Time - AnimationTime - 0.5)`: going up, final at the edge.
         assert_eq!(step(1.0, -0.5).settles(TIME, SINCE), after(0.5));
-        // Already below its edge at the restart: settled at once.
         assert_eq!(step(-1.0, -1.0).settles(TIME, SINCE), after(0.0));
     }
 
-    /// The clock of `saturate(value)` as the analysis builds it.
     fn saturated(value: &Val) -> Clock {
         let Val::Opaque(deps) = bounded(
             value,
@@ -1652,15 +1522,11 @@ mod tests {
         add(&Val::slot(TIME), &Val::slot(SINCE), -1.0)
     }
 
-    /// `precise` keeps `(elapsed + 2^25) - 2^25` as two f32 operations. Exact algebra cancels the
-    /// constant and settles at one second; in f32 the sum steps four at a time, so the value
-    /// stays 0 until past two seconds. The settling allows for that rounding.
     #[test]
     fn rounding_that_cancellation_hides_delays_settling() {
         let big = Val::literal(33_554_432.0);
         let value = add(&add(&elapsed(), &big, 1.0), &big, -1.0);
         let settling = saturated(&value).settles(TIME, SINCE).unwrap();
-        // What f32 itself does: still 0 at a second and a quarter, 1 once past the step.
         let f32_value =
             |elapsed: f32| ((elapsed + 33_554_432.0_f32) - 33_554_432.0).clamp(0.0, 1.0);
         assert_eq!(f32_value(1.25), 0.0);
@@ -1672,15 +1538,12 @@ mod tests {
         assert!(!settling.reached(1.25, 1000.0));
     }
 
-    /// A duration scaled by literals settles where it saturates, the clock's own rounding allowed
-    /// for in proportion to its magnitude.
     #[test]
     fn a_scaled_duration_settles_where_it_saturates() {
         let value = product(&elapsed(), &Val::literal(4.0));
         let settling = saturated(&value).settles(TIME, SINCE).unwrap();
         assert_eq!(settling.after, 0.25);
         assert!(0.0 < settling.per_clock && settling.per_clock < 1e-6);
-        // `(elapsed - 1) / 2`: saturates at three seconds.
         let shifted = quotient(
             &add(&elapsed(), &Val::literal(1.0), -1.0),
             &Val::literal(2.0),
@@ -1690,8 +1553,6 @@ mod tests {
             3.0 <= settling.after && settling.after < 3.0001,
             "{settling:?}"
         );
-        // Rounding varying with another scalar, or a constant whose own rounding varies with the
-        // clock, settles nothing.
         let other = add(&elapsed(), &Val::slot((0, 104)), 1.0);
         let other = add(&other, &Val::slot((0, 104)), -1.0);
         assert_eq!(saturated(&other).settles(TIME, SINCE), None);
@@ -1701,7 +1562,6 @@ mod tests {
             -1.0,
         );
         assert!(matches!(product(&elapsed(), &scale), Val::Opaque(_)));
-        // `(Time + AnimationTime) - Time` reads the clock only through its rounding.
         let since = add(
             &add(&Val::slot(TIME), &Val::slot(SINCE), 1.0),
             &Val::slot(TIME),
@@ -1710,8 +1570,6 @@ mod tests {
         assert_eq!(saturated(&since).settles(TIME, SINCE), None);
     }
 
-    /// A GPU may flush a subnormal to zero: `(elapsed·2^-126)·2^126` stays 0 below a second
-    /// there, so `saturate(2·that)` settles only past a second, not at half of one.
     #[test]
     fn flushed_subnormals_delay_settling() {
         let tiny = Val::literal(f64::from(f32::MIN_POSITIVE));
@@ -1719,7 +1577,6 @@ mod tests {
         let doubled = product(&undone, &Val::literal(2.0));
         let settling = saturated(&doubled).settles(TIME, SINCE).unwrap();
         assert!(settling.after >= 1.0, "{settling:?}");
-        // A constant f32 cannot hold bounds nothing; the clock's own magnitude is bounded.
         assert!(matches!(Val::literal(1e39), Val::Opaque(_)));
         let huge = product(&elapsed(), &Val::literal(1e38));
         let settling = saturated(&huge).settles(TIME, SINCE).unwrap();
@@ -1727,7 +1584,6 @@ mod tests {
         assert!(!settling.reached(1.0, 100.0));
     }
 
-    /// A settling reached at the larger clock magnitude it names.
     #[test]
     fn settling_is_reached_past_its_duration_and_the_clocks_rounding() {
         let settling = Settling {

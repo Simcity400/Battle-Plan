@@ -22,7 +22,6 @@ import sys
 from pathlib import Path
 
 FRAMES = 3
-# name, share of the history the first frame stands at, hours between frames, viewer arguments.
 SCENES = (
     ("world", 0.60, 240, []),
     ("world-early", 0.05, 24, []),
@@ -70,7 +69,6 @@ def capture(args):
     seed = Path(args.seed_cache).resolve() if args.seed_cache else None
     identity = {"name": recording.name, "bytes": recording.stat().st_size}
     listing = out / "golden.json"
-    # A capture of some scenes keeps the others' frames, of the same recording.
     held = json.loads(listing.read_text(encoding="utf-8")) if listing.is_file() else {}
     frames = dict(held.get("frames", {})) if held.get("recording") == identity else {}
     failed = []
@@ -92,7 +90,6 @@ def capture(args):
             print(f"{name}: the viewer failed ({done.returncode}): {last_line}", file=sys.stderr)
             failed.append(name)
             continue
-        # Later scenes start from the first one's compiled shaders.
         seed = seed or (scene / "cache")
         for frame in made:
             frames[f"{name}/{frame.name}"] = sha256(frame)

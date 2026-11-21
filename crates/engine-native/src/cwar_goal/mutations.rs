@@ -1,7 +1,3 @@
-//! Native writers of goal inventories and justification activities.
-//! Only the owning country is invalidated. Loading and unknown receivers
-//! revoke every certificate. The occupation-owned daily diplomacy update forwards
-//! goal expiry observation; it is not a second patch in this inventory.
 use engine_sites::Rva;
 #[derive(Clone, Copy)]
 pub enum Receiver {
@@ -92,7 +88,6 @@ pub const SITES: [Site; 16] = [
         rva: Rva(0xb2a380),
         receiver: Receiver::Activity,
     },
-    // Virtual deletion inlines teardown instead of calling the direct destructor.
     Site {
         name: "delete_justification",
         rva: Rva(0xb2a630),
@@ -103,7 +98,6 @@ pub const SITES: [Site; 16] = [
         rva: Rva(0x1679340),
         receiver: Receiver::Goal,
     },
-    // Post-peace and country-rebuild validity pruning also compacts activity ordinals.
     Site {
         name: "prune_activities",
         rva: Rva(0xc01840),

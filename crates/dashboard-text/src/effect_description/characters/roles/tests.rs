@@ -161,7 +161,7 @@ fn fixture_with_advisor_modifier(modifier: &str) -> (Fixture, Folder) {
             ordinal: 0,
             idea: b"synthetic_advisor".to_vec(),
             slot: b"synthetic_slot".to_vec(),
-            tooltip_keys: Recorded::NotRecorded, // Historical zero/one-key derivation.
+            tooltip_keys: Recorded::NotRecorded,
             modifier_cache: Recorded::Value(Some(AdvisorModifierCache {
                 entries: vec![CachedModifier {
                     definition: 0,
@@ -208,7 +208,6 @@ fn text(source: &str, expected: &str) {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// A legacy name, ideology and trait block.
 #[test]
 fn create_country_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -219,7 +218,6 @@ fn create_country_leader() {
     );
 }
 
-// A role with an explicit character and ideology.
 #[test]
 fn add_country_leader_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -250,7 +248,6 @@ fn country_role_description_keeps_trait_lines_and_core_children() {
         "add_country_leader_role={character=synthetic_character country_leader={ideology=synthetic_ideology traits={synthetic_numeric}} army_experience=2}",
         &mut country_scopes(),
     );
-    // Own fields never enter the child array.
     assert_eq!(
         out.text,
         "Role Current name/Group [Root.GetTag]\n    \u{11}HNumeric\u{11}!\n      - Power: \u{11}G+0.10\u{11}!\n\nXP2\n",
@@ -258,7 +255,6 @@ fn country_role_description_keeps_trait_lines_and_core_children() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// An explicit character/ideology promotion block.
 #[test]
 fn promote_character() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -269,8 +265,6 @@ fn promote_character() {
     );
 }
 
-// A character scope reads a scalar ideology; exact yes means empty.
-// A block's character key cannot replace THIS.
 #[test]
 fn promote_character_uses_character_scope_reader_fields() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -364,8 +358,6 @@ fn promote_scalar_and_template_fallback_keep_single_role_gate() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Select the registered template rather than a runtime holder's template.
-// An older instance can be copied into a later character ID.
 #[test]
 fn template_promote_names_the_unrecorded_tag_map_winner() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -386,7 +378,6 @@ fn template_promote_names_the_unrecorded_tag_map_winner() {
     );
 }
 
-// Only startup-allowed templates are registered after clearing the maps.
 #[test]
 fn agreeing_conditional_templates_do_not_prove_tag_presence() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -407,7 +398,6 @@ fn agreeing_conditional_templates_do_not_prove_tag_presence() {
     );
 }
 
-// Select a character by scalar token.
 #[test]
 fn retire_character() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -418,7 +408,6 @@ fn retire_character() {
     );
 }
 
-// The boolean is execution-only.
 #[test]
 fn retire_country_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -429,7 +418,6 @@ fn retire_country_leader() {
     );
 }
 
-// Use the current ruling leader.
 #[test]
 fn kill_country_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -437,7 +425,6 @@ fn kill_country_leader() {
     text("kill_country_leader=yes", "Kill leader Current name AAA\n");
 }
 
-// Map the ideology subgroup to its group.
 #[test]
 fn remove_country_leader_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -448,7 +435,6 @@ fn remove_country_leader_role() {
     );
 }
 
-// Select a leader by ideology group.
 #[test]
 fn retire_ideology_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -459,7 +445,6 @@ fn retire_ideology_leader() {
     );
 }
 
-// Select the killed leader by ideology group.
 #[test]
 fn kill_ideology_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -470,7 +455,6 @@ fn kill_ideology_leader() {
     );
 }
 
-// An authored advisor role with activation disabled.
 #[test]
 fn add_advisor_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -491,7 +475,6 @@ fn advisor_role_sums_trait_and_authored_modifiers_before_formatting() {
     );
 }
 
-// Use the full 32-bit category mask rather than the core's default 24 bits.
 #[test]
 fn advisor_role_includes_the_high_category_bit() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -515,8 +498,6 @@ fn advisor_role_includes_the_high_category_bit() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Format raw modifiers, substitute MODIFIER, then expand the wrapper.
-// It can complete an expression begun in the postfix.
 #[test]
 fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -558,7 +539,6 @@ fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// A character scope needs no explicit character selector.
 #[test]
 fn remove_advisor_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -573,7 +553,6 @@ fn remove_advisor_role() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// An explicit character with no slot.
 #[test]
 fn set_can_be_fired_in_advisor_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -598,8 +577,6 @@ fn current_character_omission_and_slot_parentheses_match_inverted_guard() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Construction and loading add the own block after rebuilding;
-// later rebuilds omit it.
 #[test]
 fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -694,7 +671,6 @@ fn complete_rosters_prove_absent_advisor_is_empty() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Look up the global character token.
 #[test]
 fn recruit_character() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -705,7 +681,6 @@ fn recruit_character() {
     );
 }
 
-// Use literal name, surname and callsign fields.
 #[test]
 fn add_ace() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -741,7 +716,6 @@ fn faction_fixture(name: &[u8], template_token: Option<u32>) -> (Fixture, Folder
     (fixture, _folder)
 }
 
-// A later faction member can become its leader.
 #[test]
 fn set_faction_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -886,8 +860,6 @@ fn advisor_roster_and_cache_capture_failures_are_named() {
     assert_eq!(out.refusals, BTreeMap::from([("synthetic effect activate_advisor: key activate_advisor: hour 1 AvailableAdvisors is unavailable: format 97 lacks available advisors".into(), 1)]));
 }
 
-// Primary exact strings and retired folded maps use different lookup rules;
-// roster and map ordinals break ties.
 #[test]
 fn advisor_primary_order_precedes_retired_case_folded_lookup() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -935,7 +907,7 @@ fn advisor_primary_order_precedes_retired_case_folded_lookup() {
     if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
     {
-        rows[0].category_mask = 1 << 31; // Raw full mask, unlike the default 00FFFFFF.
+        rows[0].category_mask = 1 << 31;
     }
     for (token, name) in [
         ("synthetic_advisor", "Current name"),
@@ -954,8 +926,6 @@ fn advisor_primary_order_precedes_retired_case_folded_lookup() {
     }
 }
 
-// Consume the selected advisor role rather than the first folded role.
-// The shared character ID can lose the selected cache.
 #[test]
 fn advisor_cache_role_requires_unambiguous_pointer_identity() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1012,8 +982,6 @@ fn advisor_cache_role_requires_unambiguous_pointer_identity() {
                     1,
                 )])
             );
-            // No exact role matches this spelling: it must be the retired
-            // path's first folded ordinal, even if rows arrive out of order.
             let out = render(
                 &fixture,
                 &format!("{key}=SyNtHeTiC_AdViSoR"),
@@ -1025,8 +993,6 @@ fn advisor_cache_role_requires_unambiguous_pointer_identity() {
     }
 }
 
-// The cache's string table is separate from its numeric entries.
-// Omit the whole wrapper rather than draw a partial DESC.
 #[test]
 fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1037,7 +1003,7 @@ fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
     {
         rows.push(ModifierDefinitionRow {
             index: 1,
-            token: 32, // The stored numeric definition needs no lexer spelling.
+            token: 32,
             ..rows[0].clone()
         });
     }
@@ -1184,8 +1150,6 @@ fn recorded_advisor_tooltip_keys_override_authored_blocks_and_failed_captures_re
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture_with_advisor_modifier("custom_modifier_tooltip=SYN_TIP");
-    // Recorded-empty proves the stale cache has no keys even when authored
-    // modifiers contain them; current trait data is not needed either.
     *fixture.frame.tables[TableId::CharacterRoleTraits.index()] = TableView::Unavailable {
         reason: "unused by recorded tooltip cache".into(),
     };

@@ -1,8 +1,3 @@
-//! The map's clicks the game answers at once from the hour's state. Each reads the rows of the
-//! hour of the overlay it was made on ([`super::head_rows::HeadRows::clicks`]). One whose rows of
-//! that hour are not read yet is held, in order with the clicks after it, named loading, and
-//! answered over that hour's rows the moment they come. Once the map shows another hour without
-//! them it is refused by name: no other hour's rows answer it.
 
 use super::{Document, InterfaceSound, Viewer, read_click};
 use eframe::egui;
@@ -18,41 +13,24 @@ use viewer_foundation::{
 use viewer_raids::map::raids::offers::TooltipTarget;
 use viewer_world::map::map_mode::{MapMode, Stock};
 
-/// A click's target as the frame it was made in resolved it, with the viewing country it was made
-/// under where its answer reads that country's units.
 #[derive(Clone, Debug)]
 pub(super) enum Click {
-    /// A naval mission bubble: its task forces are selected.
     NavalMission { viewer: u32, region: u32, mission: u32, rect: [f32; 4], layer: u64, order: usize },
-    /// An air grid's wings.
     AirGrid { members: Arc<Vec<u64>>, shift: bool },
-    /// An air base button: its wings, in the strategic air mode.
     AirBase { viewer: u32, province: u32, kind: i32, shift: bool },
-    /// A naval base button: its task forces, or the strategic navy mode when it has none.
     NavalBase { viewer: u32, province: u32, rect: [f32; 4], layer: u64 },
-    /// An air mission's wings.
     AirMission { viewer: u32, region: u32, mission: usize, shift: bool },
-    /// A raid offer bubble: its targets' details window opens.
     Raid { viewer: u32, province: u32, targets: Arc<[TooltipTarget]> },
-    /// The ground: the province's state or region, in the map mode it was clicked in.
     Province { province: u32, mode: MapMode },
-    /// A Ctrl+click on a province: the country it switches the view to, or else the ground's click
-    /// when `ground` (no Shift beside a selection), under the Shift of its own button event.
     Observe { viewer: u32, province: u32, mode: MapMode, ground: bool, shift: bool },
-    /// A box's air wings.
     BoxAir { members: Vec<u64>, shift: bool },
-    /// The selection sounds of the units a click added, and of a fleet chosen from the roster.
     Sounds { viewer: u32, added: Vec<Unit>, fleet: bool, order: usize },
-    /// A right release with air wings selected: on an air base, or in a strategic region.
     AirOrder { region: Option<u32>, wings: Arc<Vec<u64>>, shift: bool, order: usize },
-    /// A box: what it takes reads its divisions' and railway guns' theatres.
     Box(Box<super::selection_input::HeldBox>),
-    /// A click on one of our unit models: its stack mates are taken by theatre.
     Model(super::selection_input::HeldModel),
 }
 
 impl Click {
-    /// What it reads, as its loading and refusal name it.
     fn name(&self) -> &'static str {
         match self {
             Self::NavalMission { .. } => "the naval mission's members",
@@ -72,14 +50,12 @@ impl Click {
     }
 }
 
-/// A click held for the rows of the branch and hour it was made at.
 #[derive(Debug)]
 pub(super) struct Held {
     click: Click,
     at: Option<(BranchId, Hour)>,
 }
 
-/// Whether a click was answered, or waits for its hour's rows.
 #[must_use]
 enum Answer {
     Done,
@@ -87,14 +63,10 @@ enum Answer {
 }
 
 impl Viewer {
-    /// The branch and hour of the overlay on screen, which a click made now is answered at.
     pub(super) fn click_hour(&self) -> Option<(BranchId, Hour)> {
         super::live_of(&self.playhead_map).and_then(|side| side.branch()).zip(self.overlay_hour)
     }
 
-    /// What the map can be clicked on at this frame: the icon families of the overlay on screen and
-    /// of the one asked for, the air clicks with either's bases, the strategic air mode or wings
-    /// selected, divisions with their counters or models drawn, and a raid offer drawn.
     pub(super) fn clickable(&self, document: &Document) -> super::head_rows::Clickable {
         use viewer_counters::map::counters::Shown;
         let defines = &document.content.counters.defines;
@@ -111,8 +83,6 @@ impl Viewer {
         super::head_rows::Clickable { shown, air: shown.bases || strategic_air || !self.air_selection.wings().is_empty(), divisions: shown.units || figures, raids }
     }
 
-    /// The viewing country a click reading `what` reads the units of; none, refused by name, while
-    /// it is not known.
     pub(super) fn viewing(&mut self, ours: Option<u32>, what: &str) -> Option<u32> {
         if ours.is_none() {
             self.selection_input.refuse(format!("{what}: the click came while the viewing country was loading"));
@@ -120,8 +90,6 @@ impl Viewer {
         ours
     }
 
-    /// `click`, made now: answered at once over the rows of the hour it was made at, or held behind
-    /// any click held before it.
     pub(super) fn click(&mut self, document: &Document, click: Click, frame: Option<&DecodedFrame>, ctx: &egui::Context) {
         if self.held_clicks.is_empty() && matches!(self.answer(document, &click, frame, ctx), Answer::Done) {
             return;
@@ -129,8 +97,6 @@ impl Viewer {
         self.hold(click);
     }
 
-    /// `click` held for the rows of the hour clicks read now. With no open map there is nothing
-    /// to wait for, so it is refused by name.
     fn hold(&mut self, click: Click) {
         if super::live_of(&self.playhead_map).is_none() {
             self.selection_input.refuse(format!("{}: the map holds no rows to answer it", click.name()));
@@ -139,9 +105,6 @@ impl Viewer {
         self.held_clicks.push_back(Held { click, at: self.head_rows.clicked_at() });
     }
 
-    /// The held clicks answered in order as their hours' rows come, before any click of this
-    /// frame. One whose hour the map still shows waits, named loading, and so do those behind it;
-    /// one whose hour the map has left, or whose map closed, is refused by name.
     pub(super) fn answer_held(&mut self, document: &Document, frame: Option<&DecodedFrame>, ctx: &egui::Context) {
         if self.held_clicks.is_empty() {
             return;
@@ -169,8 +132,6 @@ impl Viewer {
         }
     }
 
-    /// `click` over the rows of the hour clicks read now; loading, with nothing changed, while
-    /// those rows are not read.
     fn answer(&mut self, document: &Document, click: &Click, frame: Option<&DecodedFrame>, ctx: &egui::Context) -> Answer {
         let head = super::head_rows::head(super::live_of(&self.playhead_map));
         match click {
@@ -256,7 +217,6 @@ impl Viewer {
                     return Answer::Loading;
                 };
                 self.counter_view.raid_details = Some((*province, Arc::new(details)));
-                // Registering the open window deselects everything.
                 self.ground_selection = None;
                 self.unit_selection.clear();
                 self.air_selection.clear();
@@ -272,7 +232,6 @@ impl Viewer {
                 match read {
                     Err(why) => self.overlay_loading.push(format!("{}: {why}", click.name())),
                     Ok(Some(target)) => self.observe(target),
-                    // No country to switch to: the click is the ground's, as the frame routes it.
                     Ok(None) => {
                         if matches!(mode, MapMode::Stock(Stock::Diplomacy))
                             && *ground
@@ -281,8 +240,6 @@ impl Viewer {
                             self.diplomatic_selected = Some(country);
                         }
                         if *ground {
-                            // Under Shift it adds nothing and clears nothing, as the ground click it is: a
-                            // selection made while its rows loaded stays.
                             self.click_units(None, *shift, ctx);
                             self.click(document, Click::Province { province: *province, mode: mode.clone() }, frame, ctx);
                         }
@@ -323,8 +280,6 @@ impl Viewer {
         Answer::Done
     }
 
-    /// The ground's click on `province` in `mode` over the rows of the click's hour: the state or
-    /// region it selects, outlined, and the view it opens or closes.
     fn answer_province(&mut self, document: &Document, frame: Option<&DecodedFrame>, province: u32, mode: &MapMode) -> Answer {
         use super::ground_click::{Ground, Outline, Picked, Selected, has_state, naval_region, route, selects, state_provinces};
         let head = super::head_rows::head(super::live_of(&self.playhead_map));
@@ -368,8 +323,6 @@ impl Viewer {
         Answer::Done
     }
 
-    /// The selection sounds of `added`, and of a fleet chosen from the roster, over the rows of the
-    /// click's hour, through the content's sound effects.
     fn answer_sounds(&mut self, document: &Document, added: &[Unit], fleet: bool, viewer: u32, frame: Option<&DecodedFrame>, order: usize) -> Answer {
         let Some(audio) = document.audio.as_ref() else { return Answer::Done };
         let mut queued = selection_sounds::Queued::default();
@@ -397,8 +350,6 @@ impl Viewer {
         Answer::Done
     }
 
-    /// A right release's answer with `wings` selected, on an air base or in `region`, over the
-    /// rows of the click's hour: the orders' sounds and the attached-wing confirmation.
     fn answer_air_order(&mut self, document: &Document, region: Option<u32>, wings: &Arc<Vec<u64>>, shift: bool, order: usize) -> Answer {
         use viewer_counters::map::air_orders;
         let head = super::head_rows::head(super::live_of(&self.playhead_map));
@@ -416,13 +367,10 @@ impl Viewer {
         Answer::Done
     }
 
-    /// The selection sounds of the newly `added` units, and of a fleet newly selected from the
-    /// fleet roster: played now, or held with the click for its hour's rows.
     pub(super) fn selection_sounds(&mut self, document: &Document, added: &[Unit], fleet: bool, ours: Option<u32>, frame: Option<&DecodedFrame>, order: usize) {
         if document.audio.is_none() || (added.is_empty() && !fleet) {
             return;
         }
-        // A fleet chosen from the roster sounds with no unit read.
         let Some(viewer) = ours.or(added.is_empty().then_some(0)) else { return };
         let click = Click::Sounds { viewer, added: added.to_vec(), fleet, order };
         if self.held_clicks.is_empty() && matches!(self.answer_sounds(document, added, fleet, viewer, frame, order), Answer::Done) {
@@ -439,8 +387,6 @@ mod tests {
     use viewer_foundation::map::{counter_hovers::unit_hits, sprites::layer};
     use viewer_raids::map::raids::tooltips::{Hit, Key};
 
-    /// A new hour's layout is installed early in the frame and drawn later in it: until then the
-    /// map shows the last draw, and a click is resolved against the icons that draw laid out.
     #[test]
     fn a_click_before_the_installed_layout_is_drawn_hits_the_icons_on_screen() {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);

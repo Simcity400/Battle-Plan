@@ -1,12 +1,3 @@
-//! Hourly slot-local research inputs. No game calls, catalogue census,
-//! cross-hour pointer cache, or ETA calculation. Worker storage grows from
-//! original slot/bonus headers before publication; fixed readers retain shortages.
-//!
-//! Captures current progress/cost operands and applied limited-use bonus IDs;
-//! `climited_use_tech_bonus` owns their layout and serialization fields. The
-//! slot multiplier is assigned once, not a current countdown.
-//! Synthetic fixtures cover short reads, identities, truncation, lazy bonus
-//! lookup and guarded batch counts.
 use crate::{
     Memory, climited_use_tech_bonus as bonus, cpdx_array::Array, cresearch_slot, ctechnology,
     ctechnology_status, ctechnology_template, read, read_slice, walk::Outcome,
@@ -20,8 +11,6 @@ mod tests;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// Acquisition-only links, consumed by the modifier walk in this same pass.
-    /// Never serialized or followed by deferred conversion.
     pub technology_pointer: usize,
     pub template_pointer: usize,
     pub status_pointer: usize,
@@ -43,13 +32,11 @@ pub struct Row {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BonusRow {
-    /// Same-pass authenticated grant object; never serialized.
     pub source_pointer: usize,
     pub country: u32,
     pub index: u32,
     pub ordinal: u32,
     pub technology_handle: u32,
-    /// Unresolved IDs are retained, never mistaken for an empty bonus list.
     pub resolved: u8,
     pub value: bonus::Value,
     pub cost_reduction_raw: Option<i64>,
@@ -82,9 +69,6 @@ impl Context {
         })
     }
 
-    /// One value for the globals every input row of a read carries: the cost
-    /// scale and the cost-debug flag, which only the research-cost console
-    /// command writes after load.
     pub fn digest(&self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
         for byte in self
@@ -99,7 +83,6 @@ impl Context {
     }
 }
 
-/// Bonuses fail independently: missing attribution must not discard slot state.
 pub fn walk_country(
     memory: &impl Memory,
     base: usize,
@@ -141,7 +124,6 @@ pub fn walk_country_buffer(
     (inputs, bonuses)
 }
 
-/// Same acquisition with its authenticated status retained for inventory capture, including zero-slot countries.
 pub fn walk_country_buffer_with_status(
     memory: &impl Memory,
     base: usize,
@@ -265,7 +247,6 @@ pub fn walk_country_buffer_with_status(
                     row.progress_raw = instance.row.progress_raw;
                     row.ahead_reduction_raw = instance.row.ahead_reduction_years_raw;
                     row.cost_raw = template.research_cost_raw;
-                    // Adjacent fixed bonus and applied-ID array header, one guarded read.
                     let extra =
                         read::<[u8; 24]>(memory, at(technology, ctechnology::APPLIED_SPEED_BONUS)?)
                             .ok_or("research bonus operands unreadable")?;
@@ -374,8 +355,6 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("research input address overflow")
 }
 
-/// One country roster pass, regardless of how many slots use a bonus. Pointer
-/// pages and identity fields are batched; only selected objects need strings.
 fn resolve_bonuses(
     memory: &impl Memory,
     base: usize,
@@ -427,7 +406,6 @@ fn resolve_bonus_roster(
         8,
     )
     .ok_or("research bonus roster invalid")?;
-    // Use the complete stored bonus rosters.
     let vtable = engine_sites::at(
         base,
         if cost {

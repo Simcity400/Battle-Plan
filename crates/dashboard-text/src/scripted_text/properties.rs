@@ -1,9 +1,7 @@
-//! Country and date properties whose operands are recorded.
 
 use super::*;
 use replay_data::rows::PoliticalPartyRow;
 
-// Property labels and their ideology-group bindings.
 const GROUPS: [(&str, &str); 4] = [
     ("Communist", "communism"),
     ("Democratic", "democratic"),
@@ -25,27 +23,20 @@ fn group(name: &str, suffix: &str) -> Option<&'static str> {
         .find_map(|(label, token)| named(name, &format!("Get{label}{suffix}")).then_some(*token))
 }
 
-/// Which party a property reads.
 #[derive(Clone, Copy)]
 pub(super) enum Party<'a> {
-    /// The ruling party, used by party support and pronouns.
     Ruling,
-    /// The first party of the group a lexer token names, with ASCII A-Z folding.
     Token(&'a str),
-    /// The first party whose group name is these exact bytes.
     Named(&'a str),
 }
 
 const POPULARITY: u64 = replay_data::rows::mask::<PoliticalPartyRow>(&["popularity"]);
 
-/// The PartyLeaders key of `party`'s first leader: country, party and ordinal zero.
 fn first_leader(party: &PoliticalPartyRow) -> u128 {
     u128::from(party.country) << 64 | u128::from(party.id) << 32
 }
 
 impl<'a> ScriptedText<'a> {
-    /// Normalizes the ruling group's stored popularity by the sum of every
-    /// party before trimmed fixed5 formatting, without a `%`.
     pub(super) fn party_support(&self, slot: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::PartySupport(slot)),
@@ -90,11 +81,6 @@ impl<'a> ScriptedText<'a> {
         ))
     }
 
-    /// The stored country residual plus the stored available pool of each
-    /// state in the controlled-state array, with signed 32-bit wrapping
-    /// addition. A state with no provinces is excluded; a controlled state
-    /// no recorded province names as its state is refused, since its count
-    /// is not recorded.
     pub(super) fn manpower(&self, slot: u32) -> Result<i32, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::Manpower(slot)),
@@ -150,9 +136,6 @@ impl<'a> ScriptedText<'a> {
         Ok(total)
     }
 
-    /// A created agency's stored name, even if empty; otherwise the
-    /// localisation key `AGENCY_NAME`. Every country holds an agency object,
-    /// so a missing row is a gap, not "no agency".
     pub(super) fn agency(&self, slot: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::Agency(slot)),
@@ -170,13 +153,9 @@ impl<'a> ScriptedText<'a> {
         if agency.created == 0 {
             return self.localise("AGENCY_NAME");
         }
-        // The name is a user's literal or a historical name
-        // localised before it was stored.
         self.stored_text(&agency.name, "GetAgency: the agency's name")
     }
 
-    /// Copies the retained old name, definite name or adjective,
-    /// or the current text when it is empty.
     pub(super) fn old_name(&self, slot: u32, entry: &str, suffix: &str) -> Result<String, String> {
         crate::triggers::inputs::query(
             || {
@@ -228,7 +207,6 @@ impl<'a> ScriptedText<'a> {
             .ok_or_else(|| format!("character {id}'s gender: {}: {gap}", replay_data::rows::TableId::Characters.words()))
     }
 
-    // A missing party, leader or parent is gender 0.
     pub(super) fn country_pronoun(&self, slot: u32, name: &str) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::CountryPronoun(slot, name.to_owned())),
@@ -259,9 +237,6 @@ impl<'a> ScriptedText<'a> {
         self.pronoun(name, female)
     }
 
-    // Pronoun localisation keys are shared by country and character properties.
-    // A character is feminine exactly when gender == 2. The Cap calls capitalise the
-    // localised first byte; they do not select different localisation keys.
     pub(super) fn pronoun(&self, name: &str, female: bool) -> Result<String, String> {
         let index = PRONOUNS
             .iter()
@@ -278,13 +253,10 @@ impl<'a> ScriptedText<'a> {
         if index % 2 == 0 {
             Ok(text)
         } else {
-            // Uppercase the first byte using the "C" locale's toupper.
             Ok(crt_case_text(&text, true, true))
         }
     }
 
-    /// The recorded party `which` names, `None` where the frame proves there
-    /// is none.
     pub(super) fn party(
         &self,
         slot: u32,
@@ -302,7 +274,6 @@ impl<'a> ScriptedText<'a> {
             None
         };
         let (parties, gap) = rows::<tables::PoliticalParties>(self.frame, PARTY);
-        // The country is the key's high word, the party id its low word.
         let mut party = None;
         for row in parties.keyed(|key| self.scopes.slot((key >> 32) as u32) == Some(slot)) {
             let row = row.map_err(built)?;
@@ -333,8 +304,6 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// The leader of the ruling party (`group` none) or of the group's first
-    /// party.
     pub(super) fn party_leader(&self, slot: u32, group: Option<&str>) -> Result<String, String> {
         crate::triggers::inputs::query(
             || {
@@ -355,8 +324,6 @@ impl<'a> ScriptedText<'a> {
         self.first_party_leader(slot, group.map_or(Party::Ruling, Party::Token))
     }
 
-    /// The long name of the country's first party of exactly `group`, or
-    /// empty text where the frame proves there is none.
     pub(super) fn named_party_name(
         &self,
         slot: u32,
@@ -387,7 +354,6 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// The date text of the country's last election.
     pub(super) fn last_election(&self, slot: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::LastElection(slot)),
@@ -402,8 +368,6 @@ impl<'a> ScriptedText<'a> {
         self.date_text(row.last_election)
     }
 
-    /// Selects vector entry zero. A null character gives empty text,
-    /// rather than falling through to the next leader.
     fn first_party_leader(&self, slot: u32, which: Party<'_>) -> Result<String, String> {
         let Some(party) = self.party(slot, which)? else {
             return Ok(String::new());
@@ -421,7 +385,6 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// The event scope's date properties use the sampled date.
     pub(super) fn date_property(&self, name: &str) -> Result<Option<String>, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::DateProperty(name.to_owned())),
@@ -438,8 +401,6 @@ impl<'a> ScriptedText<'a> {
     }
 }
 
-/// The event scope's date property `name` at `hour`, its months localised by `localise`; None
-/// for a name that is no date property.
 pub(super) fn date_property_at(
     hour: i32,
     name: &str,
@@ -459,7 +420,6 @@ pub(super) fn date_property_at(
     }))
 }
 
-// Month localisation keys.
 fn month(
     month: usize,
     localise: impl Fn(&str) -> Result<String, String>,
@@ -483,8 +443,6 @@ fn month(
         .map_or_else(|| Ok(String::new()), |&key| localise(key))
 }
 
-/// Preserves the leading space and uses hours 1..24, including
-/// for GetLastElection. This is not a UI date formatter.
 fn date_text_at(
     hour: i32,
     localise: impl Fn(&str) -> Result<String, String>,
@@ -499,7 +457,6 @@ fn date_text_at(
     ))
 }
 
-// Uses the fixed 365-day calendar with signed arithmetic.
 fn date_parts(raw: i32) -> (i32, usize, i32, i32) {
     let hours = raw.wrapping_sub(game_model::calendar::HOUR_EPOCH);
     let mut day = hours / 24 % 365;

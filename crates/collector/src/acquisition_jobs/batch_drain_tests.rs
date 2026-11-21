@@ -1,12 +1,7 @@
-//! The callback's drainage barrier: a `Batch` dropped by an unwinding
-//! callback returns only once every job it accepted has been collected,
-//! finished or cancelled before it started, a terminal allocation failure
-//! included. Gates, not sleeps, order each job against the unwind.
 use super::*;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-/// A one-way gate a job waits at.
 #[derive(Default)]
 struct Gate {
     open: Mutex<bool>,
@@ -32,18 +27,11 @@ impl Gate {
     }
 }
 
-/// Per job (its request's `base`): whether it started and finished, the gate
-/// it waits at before finishing, and whether it records a terminal
-/// allocation failure as it ends (and then opens `failed`).
 struct Jobs {
     started: [Gate; 2],
     finished: [Mutex<bool>; 2],
-    /// Opened once the callback has begun to unwind: no job can finish
-    /// before its ticket is left to the batch's drop.
     unwinding: Gate,
-    /// Opened by the job that records the failure, after recording it.
     failed: Gate,
-    /// The job waits for `failed` rather than `unwinding`.
     after_failure: [bool; 2],
     fails: Option<usize>,
 }
@@ -95,7 +83,6 @@ fn pool(workers: usize, jobs: &Arc<Jobs>) -> Pool {
     Pool::with_test_runner(workers, move |job| runner.run(job))
 }
 
-/// A worker-only job no join may run on the collector.
 fn job(index: usize) -> Job {
     Job::Provinces(ProvincesRequest {
         base: index,
@@ -104,10 +91,6 @@ fn job(index: usize) -> Job {
     })
 }
 
-/// A callback that submits `count` jobs, waits for each of `running` to
-/// start, lets `before_unwind` act, then panics. Its gate guard is declared
-/// after the batch, so the unwind drops it first: the jobs are released only
-/// once the unwind has begun and their tickets are left to the batch's drop.
 fn unwinding_callback(
     pool: &Pool,
     jobs: &Jobs,
@@ -124,7 +107,6 @@ fn unwinding_callback(
     let unwound = catch_unwind(AssertUnwindSafe(|| {
         let mut batch = Batch::new(pool);
         for index in 0..count {
-            // SAFETY: the jobs read no memory; the batch drains them.
             unsafe { batch.submit(&mut Some(job(index))) }.unwrap();
         }
         for &index in running {
@@ -137,8 +119,6 @@ fn unwinding_callback(
     assert!(unwound.is_err());
 }
 
-/// After the unwinding callback returned: every job that started has
-/// finished, and the pool holds no running, queued or uncollected job.
 fn assert_drained(pool: &Pool, jobs: &Jobs) {
     let executor = pool.calibration().executor;
     assert_eq!(
@@ -155,14 +135,10 @@ fn assert_drained(pool: &Pool, jobs: &Jobs) {
     }
 }
 
-/// The cases run in a child process (`allocation_failure_tests`): the
-/// terminal allocation state is process-wide.
 pub(crate) fn exercise(case: &str) {
     crate::allocation::reset();
     crate::allocation::install_hooks();
     match case {
-        // A terminal failure recorded before the callback unwinds, with a
-        // job running and another queued behind it on the one worker.
         "terminal" => {
             let jobs = Jobs::new([false; 2], None);
             let pool = pool(1, &jobs);
@@ -174,12 +150,9 @@ pub(crate) fn exercise(case: &str) {
                 assert!(crate::allocation::failed());
             });
             assert!(jobs.finished(0));
-            // Claimed after the failure, the queued job never started.
             assert!(!jobs.started(1));
             assert_drained(&pool, &jobs);
         }
-        // A terminal failure the first job records while the drain waits
-        // for it, with the second running on another worker until then.
         "midway" => {
             let jobs = Jobs::new([false, true], Some(0));
             let pool = pool(2, &jobs);
@@ -195,14 +168,6 @@ pub(crate) fn exercise(case: &str) {
     println!("collector-batch-drain-{case}=ok");
 }
 
-/// A stitch whose body panicked publishes a contained report and leaves the
-/// pool running ([`StitchReport`]); its join settles that panic. A callback
-/// that unwinds before the join, with a sibling job running and another
-/// queued behind it on the one worker, leaves the stitch to the batch's
-/// drop: the drain counts its panic exactly once, against the executor and
-/// the stitch's role, and stops the pool, and still collects every sibling
-/// (the running one finishes, the queued one runs or is cancelled before it
-/// starts) before the callback returns.
 #[test]
 fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() {
     let jobs = Jobs::new([false; 2], None);
@@ -234,7 +199,6 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
     }
     let unwound = catch_unwind(AssertUnwindSafe(|| {
         let mut batch = Batch::new(&pool);
-        // SAFETY: the jobs read no memory; the batch drains them.
         let ticket = unsafe { batch.submit(&mut Some(stitch())) }.unwrap();
         let started = std::time::Instant::now();
         while !batch.is_complete(ticket) {
@@ -246,10 +210,8 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
             "a contained panic leaves the pool running"
         );
         for index in 0..2 {
-            // SAFETY: as above.
             unsafe { batch.submit(&mut Some(job(index))) }.unwrap();
         }
-        // The first sibling runs on the one worker; the second waits behind it.
         jobs.started[0].wait();
         let _gate = OpenOnUnwind(&jobs.unwinding);
         panic!("injected callback fault");

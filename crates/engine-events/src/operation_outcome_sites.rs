@@ -1,8 +1,3 @@
-//! Operation completion observation before the manager can destroy an instance.
-//! Successful completion returns AL=1 after storing bonus, description, terminal
-//! state and detection. The observer copies every success before the caller can
-//! repeat or clean up the instance, without a controller predicate. Invalidation
-//! does not store outcomes; its cleanup is cancellation, distinct from completion.
 
 use crate::{
     Memory, ccharacter::Literal, ccountry, cgame_state, coperation,
@@ -10,9 +5,6 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Completion entry with a five-byte stack-spill patch span. It has no
-/// relative operand, call-return PC or interior branch target. The remaining
-/// bytes authenticate the entry without extending the patched span.
 pub const COMPLETION_RVA: Rva = Rva(0x0149_f710);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +19,6 @@ pub struct Row {
     pub detected: u8,
 }
 
-/// Callback-local validated description. Its game pointer cannot be exposed
-/// to an off-thread consumer; only the copied bytes and Row leave the callback.
 pub struct Observation {
     pub row: Row,
     description: Literal,
@@ -45,7 +35,6 @@ impl Observation {
         Literal::copy_all(memory, [&self.description], output)
             .map_err(|_| "operation completion description bytes unreadable")
     }
-    /// Copy the stored description string across a byte-ring boundary into this callback's lane.
     pub fn copy_description_parts(
         &self,
         memory: &impl Memory,
@@ -75,8 +64,6 @@ impl Observation {
     }
 }
 
-/// Only the successful native return is admitted. No pre-completion read is
-/// needed: terminal calls return AL=0 and never produce a duplicate event.
 pub fn observe(
     memory: &impl Memory,
     base: usize,

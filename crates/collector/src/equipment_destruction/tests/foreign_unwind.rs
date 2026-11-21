@@ -13,9 +13,6 @@ struct Invocation {
     continued: usize,
 }
 
-// The authored native caller uses a two-argument five-byte CALL for the HQ
-// return. Production hq_returned owns the actual observation.
-// The native original credits first, then calls the real DLL throw/raise export.
 core::arch::global_asm!(
     ".text", ".globl land_foreign_return_caller", ".seh_proc land_foreign_return_caller",
     "land_foreign_return_caller:", "push rbx", ".seh_pushreg rbx",
@@ -39,9 +36,6 @@ unsafe extern "system-unwind" {
     fn land_foreign_return_continuation();
     fn land_foreign_credit_original(reserves: usize, pool: usize);
 }
-// Authored native eight-slot caller/entry for the actual Land damage detour.
-// Its displaced MOV matches the damage hook; exception originates only after
-// its registered prologue and the real collector pre observation have run.
 core::arch::global_asm!(
     ".text", ".globl land_foreign_damage_caller", ".seh_proc land_foreign_damage_caller",
     "land_foreign_damage_caller:", "sub rsp, 0x48", ".seh_stackalloc 0x48", ".seh_endprologue",
@@ -263,8 +257,6 @@ fn production_land_detour_foreign_unwind() {
         SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
         if normal == 0 {
             assert!(release().is_err());
-            // The native handler has returned and the fixture owns all callers.
-            // Production has no completion witness and cannot clear this count.
             ACTIVE[SiteId::Land as usize].store(0, Ordering::SeqCst);
         }
         release().unwrap();
@@ -390,7 +382,6 @@ fn production_return_call_foreign_unwind() {
             unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
             sentinel
         );
-        // Loads do not prove that Windows has finished traversing the callback.
         boundary(clock(22, 2));
         boundary(clock(23, 2));
         boundary(clock(24, 2));
@@ -401,7 +392,6 @@ fn production_return_call_foreign_unwind() {
         SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
         if normal == 0 {
             assert!(release().is_err());
-            // Fixture teardown only, after its native handler and callers returned.
             ACTIVE[SiteId::HqReturn as usize].store(0, Ordering::SeqCst);
         }
         release().unwrap();

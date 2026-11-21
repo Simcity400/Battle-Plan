@@ -1,11 +1,3 @@
-//! Ideologies (`common/ideologies`): each ideology group, its colour and its
-//! sub-ideologies. The recording names a party by its group token and a leader
-//! by a sub-ideology; this joins both to the group and its colour, so a mod's
-//! ideologies chart with their own colours.
-//!
-//! Each file has its own reader replay ([`native`]): `ideologies` opens
-//! the group loop, which reads each group and its fields. Any other
-//! top-level key stops that file.
 
 use crate::{
     ResolvedLayers,
@@ -21,32 +13,23 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-// Default colours start white.
 const WHITE: [f32; 4] = [1.0; 4];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ideology {
     pub token: String,
-    /// The group's colour as its reads leave it (red, green, blue,
-    /// alpha), or why a read the port does not follow makes it unknown.
     pub color: Result<[f32; 4], String>,
-    /// Sub-ideologies (`types`), in source order.
     pub types: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ideologies {
-    /// In load order.
     groups: Vec<Ideology>,
-    /// Each group's frame ([`Ideologies::frame`]) and the file that first read
-    /// it, by the token's ASCII case fold; byte-exact file paths must remain distinct.
     frames: BTreeMap<String, (u32, script_files::ScriptPath)>,
     coverage: Coverage,
 }
 
 impl Ideologies {
-    /// A group by token under the lexer's ASCII case fold: None when no file
-    /// defines it, the gap when a file that could define or redefine it stops short.
     pub fn get(&self, token: &str) -> Result<Option<&Ideology>, &Gap> {
         let token = token.to_ascii_lowercase();
         match self.coverage.unknown(&token) {
@@ -58,9 +41,6 @@ impl Ideologies {
         }
     }
 
-    /// The group a sub-ideology belongs to, matched as the game finds it: by
-    /// lexer token, under the ASCII case fold. Any file that stops short could
-    /// declare it.
     pub fn group_of(&self, sub_ideology: &str) -> Result<Option<&Ideology>, &Gap> {
         match self.coverage.any_gap() {
             Some(gap) => Err(gap),
@@ -73,11 +53,6 @@ impl Ideologies {
         }
     }
 
-    /// The group's frame as raw bits, used by a naval counter's
-    /// `counter_ideology` (`number_groups`): its place in the last `ideologies`
-    /// block of its file that listed it, or `0xFFFFFFFF` when a later block
-    /// of that file reset it. `Ok(None)` when no file defines the group;
-    /// `Err` when any file stops short (it could define the group first or shift its place).
     pub fn frame(&self, token: &str) -> Result<Option<u32>, String> {
         if let Some(gap) = self.coverage.any_gap() {
             return Err(gap.to_string());
@@ -88,13 +63,10 @@ impl Ideologies {
             .map(|(frame, _)| *frame))
     }
 
-    /// Every group read, in load order, and the gap that may hide more.
     pub fn groups(&self) -> (&[Ideology], Option<&Gap>) {
         (&self.groups, self.coverage.any_gap())
     }
 
-    /// A database of these groups, with a file stopping short where `gap`
-    /// names one, for other modules' tests.
     #[cfg(test)]
     pub(crate) fn from_groups(groups: Vec<Ideology>, gap: Option<(&str, &str)>) -> Self {
         let mut coverage = Coverage::default();
@@ -109,44 +81,26 @@ impl Ideologies {
     }
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    /// The file loop.
     Top,
-    /// The ideology-group loop.
     Groups,
-    /// One ideology group and its fields.
     Group,
-    /// The `types` loop: each key a sub-ideology.
     Types,
-    /// One sub-ideology and its fields.
     Ideology,
     Rule(RuleNode),
     Modifier(modifiers::Node),
 }
 
-/// Dispatch one ideology-group field by its keyword.
 fn group_field(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
-        // `color` reads into the group's stored colour.
         Some(b"color") => Shape::Color,
-        // `types` opens its own loop.
         Some(b"types") => Shape::Object(Node::Types),
-        // `rules` opens the group's rule object; `modifiers` and
-        // `faction_modifiers` each read into their own modifier object.
         Some(b"rules") => Shape::Object(Node::Rule(RuleNode::Rule)),
         Some(b"modifiers" | b"faction_modifiers") => {
             Shape::Object(Node::Modifier(modifiers::Node::Modifier))
         }
-        // `dynamic_faction_names` reads a string list.
         Some(b"dynamic_faction_names") => Shape::List,
-        // Fixed5 fields: `war_impact_on_world_tension`,
-        // `faction_impact_on_world_tension`, `ai_ideology_wanted_units_factor`;
-        // signed integer: `ai_give_core_state_control_threshold`;
-        // boolean fields: `ai_democratic`, `ai_fascist`, `ai_communist`,
-        // `can_be_boosted`, `ai_neutral`, `can_collaborate`,
-        // `can_host_government_in_exile`.
         Some(
             b"war_impact_on_world_tension"
             | b"faction_impact_on_world_tension"
@@ -160,12 +114,10 @@ fn group_field(field: &Field<'_>) -> Shape<Node> {
             | b"can_collaborate"
             | b"can_host_government_in_exile",
         ) => Shape::One,
-        // Unknown fields are reported and skipped.
         _ => Shape::Skip,
     }
 }
 
-/// Duplicates skip their bodies; later blocks in the owning file reread the group.
 fn read_file_in(
     input: &[u8],
     path: &script_files::ScriptPath,
@@ -178,7 +130,6 @@ fn read_file_in(
         .collect();
     let mut listed = Vec::new();
     let mut refusals = Vec::new();
-    // One mode-0 lexer per file.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -189,10 +140,8 @@ fn read_file_in(
                 listed.clear();
                 Shape::Object(Node::Groups)
             }
-            // An unexpected top-level key reports and returns; the next file still loads.
             Node::Top => Shape::StopFile,
             Node::Groups => {
-                // Fold once for the stored group identity.
                 let key = crate::parser::c_string(&field.key.text).to_ascii_lowercase();
                 if let Some(owner) = owners.get(&key)
                     && (owner != path || listed.contains(&key))
@@ -209,10 +158,7 @@ fn read_file_in(
                 }
             }
             Node::Group => group_field(field),
-            // Each key reads one sub-ideology object.
             Node::Types => Shape::Object(Node::Ideology),
-            // `color` reads the sub-ideology colour, and `can_be_randomly_selected`
-            // reads a boolean. Any other key goes to its modifier object.
             Node::Ideology => match field.keyword().as_deref() {
                 Some(b"color") => Shape::Color,
                 Some(b"can_be_randomly_selected") => Shape::One,
@@ -234,14 +180,10 @@ fn read_file_in(
     (read, undecided, refusals)
 }
 
-/// A colour object as its `color` reads leave it, starting white. A packed
-/// colour, which the port does not convert, leaves every component unknown
-/// until a later read stores it again.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorReads {
     color: [f32; 4],
     unknown: [bool; 4],
-    /// The last packed colour's refusal, which the unknown components carry.
     cause: String,
 }
 
@@ -256,13 +198,6 @@ impl Default for ColorReads {
 }
 
 impl ColorReads {
-    /// One `color` read updates the state earlier reads left. After `{`,
-    /// three components are scanned as floating-point text, whatever the
-    /// token kind; a failed scan keeps the component. Each component, stored
-    /// or not, is then divided by 255 when above 1.0. Alpha is set to 1.0; a
-    /// fourth component is the alpha as read, not divided. A number token
-    /// alone is a packed hexadecimal value, which the port does not convert;
-    /// any other token, a quoted one included, is reported and changes nothing.
     pub fn read(&mut self, item: &Item) {
         let Some(components) = item.value.items() else {
             if item.number() {
@@ -298,7 +233,6 @@ impl ColorReads {
         }
     }
 
-    /// The colour, or the packed colour a component still comes from.
     pub fn color(&self) -> Result<[f32; 4], String> {
         if self.unknown.contains(&true) {
             Err(self.cause.clone())
@@ -308,9 +242,6 @@ impl ColorReads {
     }
 }
 
-/// The groups of one file's `ideologies` blocks, up to the first whose
-/// stored text (its token or a sub-ideology's) the port cannot hold, and
-/// that one's cause.
 fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
     let mut groups = Vec::new();
     let roots = items.iter().filter(|item| item.keyword_is("ideologies"));
@@ -321,10 +252,8 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
         let mut types: Vec<String> = Vec::new();
         for field in item.value.items().unwrap_or_default() {
             if field.keyword_is("color") {
-                // Each read updates the same colour from where the last left it.
                 color.read(field);
             } else if field.keyword_is("types") {
-                // Every `types` loop adds its keys.
                 for kind in field
                     .value
                     .items()
@@ -350,7 +279,6 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
     (groups, None)
 }
 
-/// Accepted groups are numbered from 1; omitted groups reset to -1.
 fn number_groups(
     path: &script_files::ScriptPath,
     items: &[Item],
@@ -376,14 +304,11 @@ fn number_groups(
     }
 }
 
-/// Parses one ideologies file.
 pub fn parse(input: &[u8]) -> Vec<Ideology> {
     let path = script_files::ScriptPath::new(Vec::new());
     groups(&read_file_in(input, &path, &BTreeMap::new()).0.items).0
 }
 
-/// Every ideology group in file order: one reader per enumerated file.
-/// The first file defining a group owns it.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
     layers.recorded_product("ideologies", 1, &[], read_ideologies).map(|ideologies| ideologies.as_ref().clone())
 }
@@ -405,9 +330,6 @@ fn read_ideologies(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate
                 .iter()
                 .map(|misread| (misread.kind, format!("Ideologies in {path}: {misread}."))),
         );
-        // A modifier block the registry decides, or a block the port cannot
-        // settle, leaves the rest of the file unknown: every group the file
-        // could define or redefine is refused, with the place and why.
         let (_, unheld) = groups(&read.items);
         let stop = undecided
             .first()
@@ -425,7 +347,6 @@ fn read_ideologies(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate
             result.coverage.gap(&path, cause.clone());
         }
         number_groups(&listed, &read.items, &mut result.frames);
-        // Each later block resets this file's omitted groups.
         for root in read
             .items
             .iter()

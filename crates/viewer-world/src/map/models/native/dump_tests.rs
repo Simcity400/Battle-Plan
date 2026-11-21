@@ -74,7 +74,6 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
     let directory = TestDir::new();
     let root = &directory.0;
     std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
-    // Independently authored geometry and effect, with no installed content.
     std::fs::write(root.join("gfx/FX/defines_hlsl_dx11.fxh"), []).unwrap();
     std::fs::write(
         root.join("gfx/FX/test.shader"),
@@ -141,8 +140,6 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
     "#,
     )
     .unwrap();
-    // A program that reads its figure's whole world, for the kept lists: a move changes what it
-    // draws.
     std::fs::write(
         root.join("gfx/FX/kept.shader"),
         br#"
@@ -382,7 +379,6 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
             "the defined entity still draws in each wrap view"
         );
 
-        // A missing shared effect is fatal, never an actor refusal.
         library.meshes[1].native[0].lods[0][0].material.shader = Some("Missing".into());
         let field = ModelField::build(
             &library,
@@ -477,7 +473,6 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
         );
     }
 
-    // Device capacity errors must also escape material preparation.
     library.textures[blank].width = device.limits().max_texture_dimension_2d + 1;
     let field = ModelField::build(
         &library,
@@ -498,15 +493,8 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
     assert!(oversized.material_refusals.is_empty());
 }
 
-// Independent fixture expectations: only meshes 0/1 can submit. The last two
-// descriptors always refuse (except when their opaque queue is not demanded).
 fn expected_draw_instances(frame: usize, kind: Queue) -> Vec<usize> {
     let mut result = Vec::new();
-    // ObjectShadow/ObjectSkinnedShadow/AlphaShadow read no material textures,
-    // and no authored diffuse path admits a caster texture. Removing the
-    // material view in frame 4 therefore refuses lit draws only: both views
-    // keep three skinned casters plus two parts of each of three rigid actors
-    // (2 * (3 + 2 * 3) == 18). A material refusal still precedes every queue.
     if frame == 5 || (frame == 4 && kind != Queue::Caster) {
         return result;
     }
@@ -862,8 +850,6 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
                 );
                 assert!(a.bindings.same_resources(&b.bindings));
             }
-            // The first part staged successfully, but its descriptor's later b3 refusal
-            // must leave it cold; this includes queue-filtered and forced-alpha binds.
             let native = model.native.borrow();
             let native = native.as_ref().unwrap();
             if let Some(lods) = native.slots.get(3).and_then(|nodes| nodes.first()) {
@@ -887,9 +873,6 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
         }
     }
 
-    // Demand a previously unused mesh only after warm frames. Its shared selection error
-    // must escape after the identical earlier staging/descriptor prefix, without applying
-    // this invocation's Pending state or drawn count.
     let mut missing = library.meshes[1].clone();
     missing.name = "missing_shared".into();
     missing.native[0].lods[0][0].material.shader = Some("Missing".into());
@@ -1051,7 +1034,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
     let mut refusals = 0;
     let mut seen = [false; 5];
     for samples in [1, 4] {
-        // Each arm starts cold with independent mutable residency, retained state and Arena.
         let mut models = [0, 1].map(|_| {
             let mut model = ModelPass::new(&library, "unit models");
             model.upload_library(&device, &queue, &library).unwrap();
@@ -1107,7 +1089,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
                 } else {
                     BTreeSet::new()
                 });
-                // Exercise real optional-metadata absence, not another renderer.
                 if arm == 0 && frame % 3 == 0 { model.native_walk.installed = false; }
                 if frame % 13 == 4 {
                     globals[arm] = model.textures[blank].as_ref().unwrap().texture.create_view(&Default::default());
@@ -1124,7 +1105,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
             seen[1] |= absent.iter().any(Option::is_some);
             let scene = [0; 416];
             let frames = [scene.as_slice(), scene.as_slice()];
-            // Finite, nonzero alpha makes alternate draws an order-sensitive pixel proof.
             let grid = [0.125_f32, 0.25, 0.5, 50.];
             let model_frame = ModelFrame {
                 camera,
@@ -1136,7 +1116,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
             for kind in [Queue::Regular, Queue::Alternate, Queue::Caster] {
                 let mut outputs = [None, None];
                 let mut reports = Vec::new();
-                // Alternate arm order without changing source order inside either walk.
                 for arm in if frame % 2 == 0 { [0, 1] } else { [1, 0] } {
                     let model = &models[arm];
                     let inputs = Inputs {
@@ -1146,8 +1125,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
                     model.drawn.set(0);
                     *model.refusals.borrow_mut() = (arenas[arm].frame(), BTreeSet::new());
                     objects[arm].begin();
-                    // Recipe allocation is optional. Exercise the actual direct-source
-                    // fallback while the other owner uses its installed reflected recipe.
                     if arm == 0 && let Some(native) = model.native.borrow_mut().as_mut() {
                         for resident in &mut native.residents {
                             if let Some((_, program)) = &mut resident.program {
@@ -1198,9 +1175,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
                             true
                         })
                 );
-                // Check every actual upload identity against the SAME bijection used by
-                // draw geometry, constant groups and retained textures. All other operands
-                // compare raw; checkpoint is the exact existing flush boundary.
                 let checkpoints = arenas.each_ref().map(shader_pipeline::gpu::Arena::checkpoint);
                 assert_eq!(checkpoints[0].frame(), checkpoints[1].frame());
                 let mut other = checkpoints[1].writes();
@@ -1232,7 +1206,6 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
                 {
                     nonempty += 1;
                 }
-                // Return only the optimized arm's capacity, exactly as Scene does.
                 models[1].recycle_native(installed);
                 seen[3] |= !models[1].redirects.is_empty();
                 seen[4] |= kind == Queue::Alternate && !direct.draws.is_empty();
@@ -1345,11 +1318,6 @@ fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
     }
 }
 
-/// A kept list's draws cover a fresh walk of `figures` figures, all of one part: one instanced
-/// draw whose instances name the walk's draws, each of them once, with the same pipeline,
-/// resources and range. Each instance reads, where its draw's bindings send the shader, what the
-/// fresh walk staged for its own draw: a row at its base in the draw's rows block, as long as the
-/// row's stride, and any other block at its own offset.
 fn same_draws(
     (kept, list): (&DrawList, &kept::Kept),
     fresh: &DrawList,
@@ -1366,14 +1334,10 @@ fn same_draws(
     assert_eq!(fresh.draws.len(), figures, "the walk draws every figure placed");
     assert_eq!(kept.draws.len(), 1, "one draw a part the walk drew");
     let programs = part_programs(residents);
-    // Draws of different parts can be alike, so which walk draws a kept draw stands for is the
-    // list's to say, not inferred from their likeness.
     let mut covered = vec![false; fresh.draws.len()];
     for (at, keep) in kept.draws.iter().enumerate() {
         let rows = programs(list.key_at(at)).expect("a resident program").program.instanced_rows();
         let (reads, offsets) = keep.bindings.preparation_proof();
-        // A read taken per instance is bound whole, from the base its rows block gives; that
-        // block's offset is the draw's last.
         let (block, offsets) = match offsets.split_last() {
             Some((block, offsets)) if !rows.is_empty() => (Some(*block as usize), offsets),
             _ => (None, offsets),
@@ -1410,8 +1374,6 @@ fn same_draws(
     assert!(covered.into_iter().all(|drawn| drawn), "every draw of the walk");
 }
 
-/// The fixture with its plain triangle drawn by `World`, which reads each figure's whole world
-/// and the scene's block.
 fn kept_fixture() -> (TestDir, ModelLibrary, usize) {
     let (directory, mut library, blank) = fixture();
     let material = &mut library.meshes[1].native[0].lods[0][0].material;
@@ -1420,9 +1382,6 @@ fn kept_fixture() -> (TestDir, ModelLibrary, usize) {
     (directory, library, blank)
 }
 
-/// Three figures of the kept fixture's triangle, from `x`. The fixture's other meshes stay
-/// unplaced: their actors are refused, and a walk that refuses an actor is walked again the next
-/// frame, never kept.
 fn placed_kept(x: f32) -> Vec<(usize, ModelInstance)> {
     (0..3)
         .map(|at| {
@@ -1439,11 +1398,6 @@ fn placed_kept(x: f32) -> Vec<(usize, ModelInstance)> {
         .collect()
 }
 
-/// The retained casters equal a fresh caster walk draw for draw, byte for byte: after the walk
-/// that makes them, in a kept frame (no walk), after an instance moved (its own nodes rewritten)
-/// and after the camera moved (kept: a list holds no camera); a figure leaving and another
-/// joining are walked alone into the list. Each frame says whether its casters draw what the
-/// frame before drew: only a kept frame whose read bytes are all the same does.
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
@@ -1506,7 +1460,6 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     assert_eq!(walks(step(&mut model, camera, 1)), (1, 0), "the first frame walks");
     assert_eq!(walks(step(&mut model, camera, 2)), (1, 1), "the same inputs walk nothing");
     assert_eq!(walks(step(&mut model, camera, 3)), (1, 2));
-    // Kept, but the casters read the shared block that changed: they draw otherwise.
     assert!(!repeats(step(&mut model, camera, 4)), "another shared block");
     assert!(repeats(step(&mut model, camera, 4)), "the same inputs draw the same");
     model.update_placed(placed(0.), 128.);
@@ -1517,14 +1470,11 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     assert!(!repeats(moved), "a move draws otherwise");
     assert_eq!(walks(moved), (1, 7), "a move rewrites its nodes in place");
     assert!(repeats(step(&mut model, camera, 4)));
-    // A list holds no camera: one that travels keeps it, and the casters read the same bytes.
     camera.center[0] += 1.;
     let travelled = step(&mut model, camera, 4);
     assert_eq!(walks(travelled), (1, 9), "a camera move walks nothing");
     assert!(repeats(travelled));
     assert_eq!(walks(step(&mut model, camera, 7)), (1, 10));
-    // The first entity's figure leaves and the second's is another actor: that one is walked
-    // alone and the list equals a fresh walk, draw for draw.
     let mut other = placed(0.5);
     other.remove(0);
     other[0].1.animation_identity = 100;
@@ -1533,7 +1483,6 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     let (counts, repeated) = step(&mut model, camera, 7);
     assert_eq!((counts.walks, counts.spliced, counts.figures), (1, 1, 1));
     assert!(!repeated, "a splice draws otherwise");
-    // The first entity's figure comes back: walked alone again, the others kept.
     model.update_placed(placed(0.5).into_iter().take(1).chain(other).collect(), 128.);
     figures.set(3);
     let (counts, repeated) = step(&mut model, camera, 7);
@@ -1542,7 +1491,6 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     let kept = step(&mut model, camera, 7);
     assert_eq!(walks(kept), (1, 13));
     assert!(repeats(kept));
-    // A field that places nothing casts nothing: otherwise than figures, as nothing did before.
     model.update_placed(Vec::new(), 128.);
     let nothing = |model: &ModelPass| {
         arena.reset();
@@ -1557,11 +1505,6 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     queue.submit([]);
 }
 
-/// A list gathers against a held camera and draws exactly what the frame's own camera's ground
-/// and cull admit: a group it gathers and that ground leaves out draws nothing (a turned view's
-/// widened ground reaching past the object range), and while the held camera holds, a frame whose
-/// camera moved takes the figures that crossed in or out. Each frame the kept list holds the
-/// figures a list walked whole for that frame holds.
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
@@ -1594,7 +1537,6 @@ fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
         pose: viewer_foundation::map::camera::Pose::Map,
     };
     let near = GameCull::of(&camera, [800, 600]);
-    // A free eye low between the clusters looking east: the western figures stand behind it.
     let lens = viewer_foundation::map::camera::Lens { near: 1., far: 20_000., ..viewer_foundation::map::camera::Lens::MAP };
     let east_eye = Camera {
         center: [40., 50.],
@@ -1630,7 +1572,6 @@ fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
     assert!(both_figures.len() > west_figures.len(), "the ground widened: the eastern figures join");
     assert_eq!(both_figures, whole(camera, both));
     assert_eq!(step(&model, camera, west).2, west_figures, "and leave again");
-    // The drawn cull moves while the candidates hold.
     let moved = step(&model, east_eye, both).2;
     assert_eq!(moved, whole(east_eye, both), "the cull moved");
     assert!(!moved.is_empty() && moved.len() < both_figures.len(), "the western figures left");
@@ -1638,9 +1579,6 @@ fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
     queue.submit([]);
 }
 
-/// A lit queue's kept list equals a fresh lit walk draw for draw, and leaves the same object
-/// block and pixel snapshot for the next pass: after the walk that makes it, in kept frames,
-/// after an instance moved and after a figure left and another joined.
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() {
@@ -1713,9 +1651,6 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
     queue.submit([]);
 }
 
-/// A pass with no content stack (its library built empty) that places nothing, at a camera that
-/// draws no figure, gives empty kept lit lists and casters and asks for no renderer: it needs
-/// none, as the walks it replaced never did.
 #[test]
 #[ignore = "requires a GPU"]
 fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_renderer() {

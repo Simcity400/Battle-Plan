@@ -1,5 +1,3 @@
-//! Which build-specific pieces may touch the game. An unrecognised build is a warning, not a
-//! refusal: each piece is verified or withheld by name before it reads or patches anything.
 
 use engine_executable::{
     availability::{Verified, Withheld},
@@ -19,7 +17,6 @@ struct Build {
 static BUILD: OnceLock<Build> = OnceLock::new();
 static WITHHELD: Mutex<Vec<Withheld>> = Mutex::new(Vec::new());
 
-/// Records the running build before any piece is queried; the first record stands.
 pub fn record(recognised: bool, warning: Option<String>) {
     let _ = BUILD.set(Build {
         recognised,
@@ -27,8 +24,6 @@ pub fn record(recognised: bool, warning: Option<String>) {
     });
 }
 
-/// A build-specific piece: its game sites verify themselves where it hooks or reads them, and
-/// its struct layouts through the located executable.
 #[derive(Clone, Copy, Debug)]
 pub struct Piece {
     pub name: &'static str,
@@ -39,11 +34,9 @@ impl Piece {
         Self { name }
     }
 
-    /// Whether this piece may touch the game on the running build: one load once recorded.
     pub fn verified(self) -> Verified<()> {
         match BUILD.get() {
             Some(build) if build.recognised => Ok(()),
-            // On any other build the located image must witness every struct layout.
             Some(_) => match engine_sites::located() {
                 Some(located) => located.layouts().map_err(|withheld| withheld.requires(self.name)),
                 None => Err(Withheld::new(
@@ -59,7 +52,6 @@ impl Piece {
     }
 }
 
-/// Lists a piece the caller keeps out of the game, for status.
 pub fn report(withheld: &Withheld) -> io::Result<()> {
     let mut list = WITHHELD.lock().unwrap_or_else(PoisonError::into_inner);
     if list.iter().any(|known| known.part == withheld.part) {
@@ -70,8 +62,6 @@ pub fn report(withheld: &Withheld) -> io::Result<()> {
     Ok(())
 }
 
-/// `{"recognised", "warning", "withheld": [{"part", "reason"}]}`: executable tables, game sites,
-/// then pieces.
 pub fn status() -> impl Serialize {
     struct Status;
     struct Withholding;

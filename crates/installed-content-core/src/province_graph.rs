@@ -1,11 +1,3 @@
-//! Province neighbours in scan order with signed fixed5 edge distances.
-//!
-//! Raster neighbours scan file-order pixels right, down, left, up with
-//! horizontal wrapping and a four-distinct southeast diagonal; authored
-//! adjacency rows follow. Each edge's distance sums the terrain's authored
-//! `movement_cost` over an integer line from the source centroid through
-//! the border crossing to the destination centroid, scaled by 1/3.
-//! These operands depend only on content.
 
 #[path = "province_graph/terrain_cost.rs"]
 mod terrain_cost;
@@ -25,36 +17,22 @@ use crate::{
 };
 use terrain_cost::TerrainCosts;
 
-/// Every province's neighbours in native order, each with its edge distance;
-/// `None` when the edge's terrain cost is unavailable in the content.
 #[derive(Clone, Debug, Default)]
 pub struct ProvinceGraph {
     pub edges: BTreeMap<u32, Vec<(u32, Option<i64>)>>,
-    /// Why unavailable edges are unavailable, by (lower, higher) province.
     pub unavailable: BTreeMap<(u32, u32), String>,
-    /// Authored crossings by directed pair; the last row naming a pair wins.
     pub crossings: BTreeMap<(u32, u32), Crossing>,
-    /// `map/adjacency_rules.txt` in file order, which crossings name.
     pub rules: Vec<AdjacencyRule>,
 }
 
-/// An authored neighbour's crossing kind, Through province and rule name.
-/// Raster neighbours have none of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Crossing {
-    /// 1 sea, 2 river, 3 large river, 4 impassable, else 0.
     pub kind: u8,
-    /// The raw `Through` column; -1 when unset.
     pub through: i32,
-    /// The rule name, unless blank, `-1` or no rule of that name exists.
     pub rule: Option<String>,
 }
 
 impl ProvinceGraph {
-    /// The graph of `default.map`'s `adjacencies` and `adjacency_rules`
-    /// files. A map naming either file that cannot be read is refused; so is
-    /// a map without the `adjacencies` key, which natively loads no straits
-    /// (see [`adjacency_rules::map_file`](crate::adjacency_rules::map_file)).
     pub fn read(layers: &ResolvedLayers) -> io::Result<(Self, ProvinceGeometry)> {
         let files = crate::terrain::read_default_map(layers)?;
         let map = engine_map(
@@ -78,29 +56,16 @@ impl ProvinceGraph {
         Ok((graph, geometry))
     }
 
-    /// The authored fields of the neighbour record `from -> to`, if any.
     pub fn crossing(&self, from: u32, to: u32) -> Option<&Crossing> {
         self.crossings.get(&(from, to))
     }
 
-    /// Why the edge `a -> b` has no distance, when it has none.
     pub fn unavailable_reason(&self, a: u32, b: u32) -> &str {
         self.unavailable
             .get(&(a.min(b), a.max(b)))
             .map_or("its terrain cost is unavailable", String::as_str)
     }
 
-    /// Each state's neighbours, which `any_neighbor_state` and
-    /// `all_neighbor_state` traverse. `members` holds each state's authored
-    /// province list in order.
-    ///
-    /// Built once from content at map load. Province state ids start at zero;
-    /// each state in id order writes its signed i16 id over its provinces,
-    /// so a later id wins. Walk each state's province list and each province's
-    /// neighbours in order, including every authored row regardless of kind;
-    /// append every other nonzero state once, in first-seen order. An id the
-    /// i16 cannot hold, or an undefined province the game would write
-    /// unchecked, is refused.
     pub fn neighbor_states(
         &self,
         members: &BTreeMap<u32, Vec<u32>>,
@@ -140,7 +105,6 @@ impl ProvinceGraph {
             .collect())
     }
 
-    /// The first entry naming `to`, else `100000` for a pair that is no edge.
     pub fn distance(&self, from: u32, to: u32) -> Option<i64> {
         match self.edges.get(&from)?.iter().find(|(id, _)| *id == to) {
             Some((_, distance)) => *distance,
@@ -172,14 +136,12 @@ fn append_pair(targets: &mut BTreeMap<u32, Vec<u32>>, source: u32, target: u32) 
         .ok_or_else(|| invalid("native adjacency template identity unavailable"))?
         .contains(&target)
     {
-        // Raster pairs append the reciprocal first.
         append_target(targets, target, source)?;
         append_target(targets, source, target)?;
     }
     Ok(())
 }
 
-/// The id at native (x, y), narrowed to u16; zero off the map.
 fn at(map: &EngineMap, x: i32, y: i32) -> u32 {
     if x < 0 || y < 0 || x as usize >= map.width || y as usize >= map.height {
         return 0;
@@ -216,12 +178,9 @@ fn ordered_bitmap_targets(map: &EngineMap) -> io::Result<BTreeMap<u32, Vec<u32>>
     Ok(targets)
 }
 
-/// Which provinces a raid path may enter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RaidPath {
-    /// Sea provinces (neither the land nor lake flag) and the target itself.
     Naval,
-    /// Land provinces (flag bit 0).
     Land,
 }
 
@@ -231,12 +190,6 @@ struct Node {
     g: i64,
 }
 
-/// Raid search with neighbours in definition order. A pushed entry's
-/// heuristic is the floor square root of the wrapped centroid delta times
-/// 100000; it is not admissible, so the result need not be a shortest path.
-/// Heap ties preserve the game's search order. `Ok(None)` means the target
-/// was not reached; `Err` means an edge distance or definition flag is unknown.
-/// Land and lake flags come from the content definitions.
 pub fn raid_distance(
     graph: &ProvinceGraph,
     geometry: &ProvinceGeometry,
@@ -247,10 +200,6 @@ pub fn raid_distance(
     raid_search(graph, geometry, from, to, path, None)
 }
 
-/// [`raid_distance`]'s search with a path output for the raid arrow,
-/// bypassing the session memo. Each improved node keeps its predecessor;
-/// walking that chain backwards from the target yields provinces from
-/// source to target. `Ok(None)` means the target was not reached.
 pub fn raid_route(
     graph: &ProvinceGraph,
     geometry: &ProvinceGeometry,
@@ -367,7 +316,6 @@ fn raid_search(
     Ok(None)
 }
 
-/// Floor square root by integer Newton iteration.
 fn isqrt(squared: i32) -> i32 {
     let mut root = squared;
     let mut next = squared / 2;
@@ -383,7 +331,6 @@ fn isqrt(squared: i32) -> i32 {
     root
 }
 
-/// Pops the root's id; the last entry replaces the root and sifts down.
 pub fn heap_pop(heap: &mut Vec<(i64, u32)>) -> u32 {
     let id = heap[0].1;
     if heap.len() < 2 {
@@ -396,7 +343,6 @@ pub fn heap_pop(heap: &mut Vec<(i64, u32)>) -> u32 {
     id
 }
 
-/// Append, then sift up while the parent is not smaller.
 pub fn heap_push(heap: &mut Vec<(i64, u32)>, entry: (i64, u32)) {
     heap.push(entry);
     let mut index = heap.len() - 1;
@@ -410,8 +356,6 @@ pub fn heap_push(heap: &mut Vec<(i64, u32)>, entry: (i64, u32)) {
     }
 }
 
-/// Stop only below both children; ties go right, and a lone left child is
-/// taken when not larger.
 fn sift_down(heap: &mut [(i64, u32)]) {
     let mut index = 0;
     loop {
@@ -438,7 +382,6 @@ fn sift_down(heap: &mut [(i64, u32)]) {
     }
 }
 
-/// Applies authored rows source before target, in both directions.
 fn add_authored_targets(
     targets: &mut BTreeMap<u32, Vec<u32>>,
     rows: &[Adjacency],
@@ -456,10 +399,6 @@ fn add_authored_targets(
     Ok(())
 }
 
-/// For every wanted (lower, higher) pair, the lower province's pixels with a
-/// four-neighbour in the higher one, in native row order, in one pass over
-/// the raster: rows bottom-up, runs left to right, and each pixel's x, y and
-/// run length narrowed to u16 as the native runs store them.
 fn border_pixels(
     map: &EngineMap,
     targets: &BTreeMap<u32, Vec<u32>>,
@@ -503,7 +442,6 @@ fn border_pixels(
     borders
 }
 
-/// The first largest 8-connected border component; connectivity does not wrap.
 fn first_largest_component(pixels: &[[i32; 2]]) -> Vec<[i32; 2]> {
     let mut by_coordinate: HashMap<[i32; 2], Vec<usize>> = HashMap::new();
     for (index, &point) in pixels.iter().enumerate() {
@@ -552,7 +490,6 @@ fn first_largest_component(pixels: &[[i32; 2]]) -> Vec<[i32; 2]> {
     best
 }
 
-/// Each border pixel's contribution is divided before it is added.
 fn component_crossing(component: &[[i32; 2]]) -> io::Result<[i32; 2]> {
     let divisor = i64::try_from(component.len())
         .ok()
@@ -573,7 +510,6 @@ fn component_crossing(component: &[[i32; 2]]) -> io::Result<[i32; 2]> {
     Ok(sums.map(|value| ((value + if value < 0 { -50_000 } else { 50_000 }) / 100_000) as i32))
 }
 
-/// The native integer line rasterizer; capacity truncates the prefix.
 fn native_line(a: [i32; 2], b: [i32; 2], capacity: usize) -> Vec<[i32; 2]> {
     let steep = b[0].wrapping_sub(a[0]).wrapping_abs() < b[1].wrapping_sub(a[1]).wrapping_abs();
     let (mut a, mut b) = if steep {
@@ -601,7 +537,6 @@ fn native_line(a: [i32; 2], b: [i32; 2], capacity: usize) -> Vec<[i32; 2]> {
     out
 }
 
-/// The border crossing of every raster or authored pair.
 fn crossings(
     map: &EngineMap,
     geometry: &ProvinceGeometry,
@@ -642,8 +577,6 @@ fn crossings(
     Ok(out)
 }
 
-/// Centroid-to-crossing-to-centroid line, with the far end moved across
-/// the seam when that is nearer.
 fn route_points(
     a: [i32; 2],
     mut b: [i32; 2],
@@ -676,7 +609,6 @@ fn route_points(
     Ok(points)
 }
 
-/// Signed fixed5 scaling by 1/3, with the native overflow sentinel.
 fn scale(sum: i64) -> i64 {
     if (sum as u64).wrapping_add(0x7fff_ffff_ffff_fffe) <= 0xffff_ffff_ffff_fffc {
         sum.wrapping_mul(100_000) / 300_000
@@ -701,11 +633,6 @@ fn edge_distance(
     Ok(scale(sum))
 }
 
-/// The authored kind, through and rule of each row, both directions, in
-/// file order so a later row replaces an earlier one. The rule is the first
-/// loaded rule whose stored name has the row's bytes; a name no rule has
-/// leaves none, as the game reports it. Consumers find the rule again by its
-/// text name, so a rule that text cannot single out refuses the graph.
 fn authored_crossings(
     rows: &[Adjacency],
     rules: &[AdjacencyRule],
@@ -806,8 +733,6 @@ mod tests {
         }
     }
 
-    /// The one-pass border scan equals filtering each lower province's
-    /// pixels, in native order, for a four-neighbour in the higher one.
     #[test]
     fn border_pixels_match_a_per_pair_scan_of_every_pixel() {
         let (width, height, count) = (9_usize, 7_usize, 6_u32);
@@ -909,11 +834,9 @@ mod tests {
         let search =
             |geometry: &ProvinceGeometry, path| raid_distance(&graph, geometry, 1, 4, path);
         assert_eq!(search(&geometry, RaidPath::Naval), Ok(Some(150_000)));
-        // Land paths need land; the naval target itself is always admitted.
         geometry.land.insert(4);
         assert_eq!(search(&geometry, RaidPath::Naval), Ok(Some(150_000)));
         assert_eq!(search(&geometry, RaidPath::Land), Ok(None));
-        // A lake blocks a naval path as land does.
         geometry.lake.insert(3);
         assert_eq!(search(&geometry, RaidPath::Naval), Ok(None));
         geometry.centroids.remove(&2);
@@ -922,7 +845,6 @@ mod tests {
 
     #[test]
     fn the_raid_route_is_the_predecessor_chain_source_first() {
-        // A square 1-2-4 and 1-3-4 where the cheaper side wins, and a spur.
         let mut graph = ProvinceGraph::default();
         graph
             .edges
@@ -994,12 +916,8 @@ mod tests {
         assert_eq!(graph.distance(9, 1), None);
     }
 
-    /// Member provinces in list order, their neighbours in table order
-    /// (authored rows too), each other state once. Stateless provinces are
-    /// skipped; a province listed by two states belongs to the later id.
     #[test]
     fn neighbour_states_keep_member_and_neighbour_order() {
-        // 1 2 3 4 5 in a row, 6 sea next to 5, 7 joined to 1 by an authored row.
         let input = map(&[&[1, 2, 3, 4, 5, 6]], 8);
         let mut targets = ordered_bitmap_targets(&input).unwrap();
         add_authored_targets(
@@ -1021,10 +939,7 @@ mod tests {
             (40, vec![7]),
         ]);
         let neighbours = graph.neighbor_states(&members).unwrap();
-        // 2 meets 3 (20) first, then 1 meets 7 (40) by the authored row;
-        // 1 also wraps round to 6, which no state holds.
         assert_eq!(neighbours[&10], [20, 40]);
-        // 4 belongs to 30, the later id, so 20's own 4 makes 30 its neighbour.
         assert_eq!(neighbours[&20], [10, 30]);
         assert_eq!(neighbours[&30], [20]);
         assert_eq!(neighbours[&40], [10]);
@@ -1061,8 +976,6 @@ mod tests {
         );
     }
 
-    /// Rows match a rule by its stored bytes, as the game compares them: a name
-    /// that is not UTF-8 still reaches its rule, which is refused, not absent.
     #[test]
     fn authored_crossings_match_rule_names_by_their_bytes() {
         let rules = crate::adjacency_rules::parse(
@@ -1076,7 +989,6 @@ mod tests {
         let refused = rule.unsupported.as_deref().unwrap();
         assert!(refused.contains("not UTF-8"), "{refused}");
         assert_eq!(crossings[&(2, 3)].rule, None);
-        // A text name an earlier rule already holds cannot single the rule out.
         let clash = crate::adjacency_rules::parse(
             b"adjacency_rule = { name = \\xc9X } adjacency_rule = { name = \"\xc9X\" }",
         )

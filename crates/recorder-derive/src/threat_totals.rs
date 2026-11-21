@@ -1,8 +1,3 @@
-//! `ThreatTotals`: every country's contribution to world tension added, before the game caps the
-//! sum into the tension it shows, so the sum draws over time as a declared series and world
-//! tension's layers can be shares of it. State is the tables: each slot's contribution as
-//! ThreatCountryAggregates holds it, applied as the hour changes them; a fresh hour or a resume
-//! reads the table whole.
 
 use crate::{
     forces::{invalid, written},
@@ -23,12 +18,9 @@ const READS: &[Read] = &[Read {
 
 #[derive(Default)]
 pub struct ThreatTotals {
-    /// The writer must read its input whole before its next hour: a resume.
     rebuild: bool,
-    /// Each slot's contribution; none while its cell is not recorded.
     held: HashMap<u32, Option<i64>>,
     sum: i128,
-    /// How many held contributions are not recorded.
     unknown: usize,
 }
 
@@ -104,7 +96,6 @@ impl Writer for ThreatTotals {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads ThreatCountryAggregates whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

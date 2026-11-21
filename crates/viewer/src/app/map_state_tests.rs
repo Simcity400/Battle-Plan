@@ -1,4 +1,3 @@
-//! The map's report says the hour on screen: the one the playhead's layers draw.
 use super::{Config, Options, Playhead, Viewer};
 use crate::{
     layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
@@ -18,8 +17,6 @@ use std::{
 
 const BRANCH: replay_data::BranchId = 1;
 
-/// A layer whose worker the test holds: it publishes the hour of the last step it was handed only
-/// while `open`, and until then shows the hour it published last.
 struct Held {
     open: Arc<AtomicBool>,
     next: Option<Hour>,
@@ -64,15 +61,12 @@ impl Layer for Held {
     }
 }
 
-/// A layer that owes the GPU an install after every step it applies, and takes it when its
-/// upload runs. Nothing but the install stands between the hour it applied and the hour it shows.
 struct Owing {
     owes: bool,
     installs: u32,
 }
 
 impl Owing {
-    /// What its upload does, without a device: the test's stand-in for [`Layer::upload`].
     fn install(&mut self) -> io::Result<()> {
         (self.owes, self.installs) = (false, self.installs + 1);
         Ok(())
@@ -114,7 +108,6 @@ impl Layer for Owing {
     }
 }
 
-/// A map drawing only [`Held`] over twelve recorded hours, its worker open.
 fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
     let units = record(name, 12, |at, store| {
         store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
@@ -122,15 +115,12 @@ fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
     joins(&open(units, hourly_steps()).unwrap())
 }
 
-/// Another [`Held`] map of `entry`, as a reopened widget's reader is: the playhead outlives the
-/// reader that closed.
 fn joins(entry: &Arc<Entry>) -> (MapSide, Arc<AtomicBool>) {
     let gate = Arc::new(AtomicBool::new(true));
     let layer = Held { open: Arc::clone(&gate), next: None, published: None };
     (MapSide::new(Arc::clone(entry), vec![Box::new(layer)], View::default()).unwrap(), gate)
 }
 
-/// Frames at `hour` until `done` holds; fails by name within 120 s.
 fn frames_at(side: &mut MapSide, hour: Hour, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -145,13 +135,11 @@ fn frames_at(side: &mut MapSide, hour: Hour, what: &str, mut done: impl FnMut(&M
     }
 }
 
-/// Held at `hour` with its worker open, the map shows it.
 fn shown_at(side: &mut MapSide, hour: Hour) {
     side.anchor(hour, false, 0.0, true);
     frames_at(side, hour, &format!("hour {hour} shown"), |side| !side.composing() && side.last_frame().drawn == Some(hour));
 }
 
-/// With the worker held, the step to `hour` is taken while the layer still shows the hour before.
 fn applied_held(side: &mut MapSide, gate: &AtomicBool, hour: Hour, seek: bool) {
     gate.store(false, Ordering::Release);
     if seek {
@@ -160,7 +148,6 @@ fn applied_held(side: &mut MapSide, gate: &AtomicBool, hour: Hour, seek: bool) {
     frames_at(side, hour, &format!("hour {hour} applied"), |side| !side.composing() && side.applied() == Some(hour));
 }
 
-/// A viewer whose frame drew `hour`, with `side` drawing the playhead's layers.
 fn viewer(hour: Hour, side: MapSide) -> Viewer {
     let mut side = SideThread::new(side).unwrap();
     side.driven(|_| ());
@@ -195,8 +182,6 @@ fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
     }
 }
 
-/// After a seek, a drawn layer's worker still shows the hour before: the report is loading at the
-/// layer's hour, and stops loading at the frame the layer shows the head.
 #[test]
 fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     let (mut side, gate) = side("map state seek");
@@ -217,8 +202,6 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     assert_eq!(state.hour, Some(8));
 }
 
-/// Playing, the clock is at hour 10 while a drawn layer's worker is four hours behind: the report
-/// is behind by the layers' lag, named by the layer furthest behind.
 #[test]
 fn playing_the_report_is_behind_by_the_layers_lag() {
     let (mut side, gate) = side("map state behind");
@@ -231,18 +214,12 @@ fn playing_the_report_is_behind_by_the_layers_lag() {
     assert_eq!(state.hour, Some(6));
 }
 
-/// A window that is not shown (minimised, covered, or hidden by the desktop host on a dashboard
-/// page) runs only eframe's logic pass: its map draws no frame. It lets its playhead go there, so
-/// nothing waits on a map that is not drawing: a seek made meanwhile (from the dashboard) is
-/// answered by the rows at the head at the hour sought. Before, the map stayed counted while it
-/// drew nothing, and the rows took nothing of the new seek until the window was shown again.
 #[test]
 fn a_window_not_shown_lets_its_map_go_and_the_rows_answer_a_seek_meanwhile() {
     use crate::playhead_host::views::{Need, Pace, apart::Apart};
     let (mut side, _) = side("window not shown");
     shown_at(&mut side, 2);
     let entry = Arc::clone(side.entry());
-    // A reader of this playhead that is not the map: the dashboard's panels have one of these.
     let mut apart = Apart::new(&entry, BRANCH).unwrap();
     let reader = apart.store().handle().reader_at("not the map", &[Need::every(TableId::Countries)], Pace::Step);
     let mut viewer = viewer(2, side);
@@ -257,10 +234,6 @@ fn a_window_not_shown_lets_its_map_go_and_the_rows_answer_a_seek_meanwhile() {
     assert_eq!(rows_at.hour, 6);
 }
 
-/// A seek the page asks for while the map's reader is closed or still being made reaches no
-/// reader, and the playhead outlives the reader: its clock stands where it stood. The page raises
-/// its seek counter once, so no later anchor is a seek of its own. The seek is owed until a reader
-/// takes it, and play that follows runs from the hour sought, backwards and forwards.
 #[test]
 fn a_seek_no_reader_took_is_owed_until_one_does_and_play_runs_from_it() {
     for (stood, sought) in [(8, 2), (2, 8)] {
@@ -273,18 +246,14 @@ fn a_seek_no_reader_took_is_owed_until_one_does_and_play_runs_from_it() {
         let at = |ms| now + Duration::from_millis(ms);
         viewer.anchor_playback(head(stood), false, 1.0, true, None, now, 11);
         assert_eq!(entry.playhead().head(now), stood, "the map stands where it played to");
-        // The widget is scrolled out of the page: its reader closes, its playhead lives on.
         viewer.close_playhead();
-        // The page seeks while paused, and plays a second later: no reader took either anchor.
         viewer.anchor_playback(head(sought), false, 1.0, true, None, at(10), 11);
         viewer.anchor_playback(head(sought), true, 1.0, false, None, at(1_010), 11);
-        // The reader comes back and the page sends its next anchor, the same as its last.
         let (back, _) = joins(&entry);
         viewer.playhead_map = Some(SideThread::new(back).unwrap());
         viewer.anchor_playback(head(sought), true, 1.0, false, None, at(1_020), 11);
         assert_eq!(entry.playhead().head(Instant::now()), sought, "the map seeks to {sought}, never plays on from {stood}");
         assert!(!entry.paused(), "and plays from the hour sought");
-        // Paused, the page sends no further anchor: the reader that opens takes the seek itself.
         viewer.anchor_playback(head(sought), false, 1.0, true, None, at(1_030), 11);
         viewer.close_playhead();
         viewer.anchor_playback(head(stood), false, 1.0, true, None, at(1_040), 11);
@@ -292,9 +261,6 @@ fn a_seek_no_reader_took_is_owed_until_one_does_and_play_runs_from_it() {
         viewer.side_opened(SideThread::new(back).unwrap());
         assert_eq!(entry.playhead().head(Instant::now()), stood, "the reader that opens takes the seek owed");
         assert!(entry.paused(), "and stands there");
-        // A speed change, a resume, a pause, a second seek while the seek's reset is still to be
-        // taken, and a step forward, which keeps the page's seek counter, each leave the hour exact.
-        // Before, a paused step left the playhead at the hour before while the page said the next.
         for (hour, playing, speed, seek) in [(stood, false, 24.0, false), (stood, true, 24.0, false), (stood, false, 1.0, false), (sought, false, 1.0, true), (sought + 1, false, 1.0, false)] {
             viewer.anchor_playback(head(hour), playing, speed, seek, None, at(1_050), 11);
             assert_eq!(entry.playhead().head(Instant::now()), hour, "{hour} at {speed} playing {playing}");
@@ -302,9 +268,6 @@ fn a_seek_no_reader_took_is_owed_until_one_does_and_play_runs_from_it() {
     }
 }
 
-/// Playing, a picture of an hour the page's clock has not reached answers nothing: the map says
-/// the hour it shows and that it is still loading, and no lag at all, never that the target asked
-/// for is shown by a frame exactly up to date.
 #[test]
 fn a_picture_beyond_the_clock_is_not_reported_as_the_target_shown() {
     let (mut side, _) = side("map state beyond");
@@ -319,9 +282,6 @@ fn a_picture_beyond_the_clock_is_not_reported_as_the_target_shown() {
 
 #[test]
 fn a_layers_install_runs_on_the_frame_that_takes_its_publication_whatever_the_frames_clock_says() {
-    // A frame whose interval is spent before its first ask: the budget's install ration, while it
-    // stood, left every layer's install for a later frame and held the hour the picture showed
-    // with it. The publication's products reach the GPU in the window that takes them.
     let units = record("install-on-the-publication", 12, |at, store| {
         store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
     });

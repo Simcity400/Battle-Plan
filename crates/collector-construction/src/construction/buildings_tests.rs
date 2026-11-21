@@ -7,13 +7,8 @@ const BASE: usize = 0x1000;
 struct Fixture {
     bytes: Vec<u8>,
     first_building: usize,
-    /// The first building pointer vector; every building, pointer, index
-    /// and active vector lies at or above it.
     first_vector: usize,
-    /// The state slot array; the province slot array, every location (and
-    /// its embedded status) and everything above lies at or above it.
     first_slots: usize,
-    /// The first state object; the slot arrays lie below it.
     first_location: usize,
 }
 
@@ -234,7 +229,6 @@ fn fixture(countries: usize, types: usize) -> Fixture {
                     building + cbuilding::TEMPLATE,
                     &((templates + ordinal * cbuilding_template::SIZE) as u64).to_le_bytes(),
                 );
-                // Active buildings keep positive signed levels in order.
                 if ordinal % 3 == 2 {
                     put(
                         &mut bytes,
@@ -317,8 +311,6 @@ fn cold_building_worker_keeps_countries_and_later_mod_sized_location_vectors() {
                 assert_eq!(row.active, ordinal % 3 == 2);
             }
         }
-        // The existing reader grows even a one-row destination; sufficient
-        // storage and short storage consume exactly the same original fields.
         for available in [1, rows] {
             let mut control = Captured::with_capacities(&Capacities::for_test_buildings(available))
                 .take_buildings();
@@ -386,8 +378,6 @@ fn building_worker_growth_preserves_original_fault_order_and_the_independent_sco
     }
 }
 
-/// Building rows carried between hours per status, and both tables on
-/// settled hours ([`super::BuildingStore`], [`crate::building_changes`]).
 mod carried {
     use super::*;
     use crate::building_changes::{Changes, Counts, Watches};
@@ -405,9 +395,7 @@ mod carried {
         states: Vec<cbuilding::Row>,
         provinces: Vec<cbuilding::Row>,
         counts: Counts,
-        /// Reads of any building, pointer, index or active vector.
         building_reads: usize,
-        /// Reads of a slot array, location, status or anything above.
         location_reads: usize,
         reads: Vec<(usize, usize)>,
     }
@@ -445,7 +433,6 @@ mod carried {
         }
     }
 
-    /// One capture whose two tables are complete and unchanged in size.
     fn hour(fixture: &Fixture, store: &mut BuildingStore, watches: &Watches) -> Hour {
         let hour = capture(fixture, store, watches);
         assert_eq!(hour.outcomes, [Outcome::Rows { len: ROWS }; 2]);
@@ -459,7 +446,6 @@ mod carried {
         }
     }
 
-    /// The status of state (or province) `id`.
     fn status(fixture: &Fixture, province: bool, id: usize) -> usize {
         let memory = memory(fixture);
         let slots = if province {
@@ -478,7 +464,6 @@ mod carried {
             }
     }
 
-    /// The status of state (or province) `id` and its building `ordinal`.
     fn building(fixture: &Fixture, province: bool, id: usize, ordinal: usize) -> (usize, usize) {
         let status = status(fixture, province, id);
         let memory = memory(fixture);
@@ -489,8 +474,6 @@ mod carried {
         (status, building as usize)
     }
 
-    /// The statuses, as scope and id, whose buildings or building, index or
-    /// active vectors `reads` touched.
     fn statuses_read(fixture: &Fixture, reads: &[(usize, usize)]) -> Vec<(bool, usize)> {
         let memory = memory(fixture);
         let mut read = Vec::new();
@@ -527,7 +510,6 @@ mod carried {
         read
     }
 
-    /// No slot array, location vtable or location id was read.
     fn no_location_walk(fixture: &Fixture, reads: &[(usize, usize)]) {
         for &(address, _) in reads {
             assert!(
@@ -551,7 +533,6 @@ mod carried {
         }
     }
 
-    /// Both tables as a fresh walk reads them.
     fn fresh(fixture: &Fixture) -> (Vec<cbuilding::Row>, Vec<cbuilding::Row>) {
         let memory = memory(fixture);
         let mut buildings = Buildings::vacant();
@@ -570,7 +551,6 @@ mod carried {
         first
     }
 
-    /// The nudge-mode entry site.
     fn nudge_site() -> usize {
         building_mutations::MUTATIONS
             .iter()
@@ -578,8 +558,6 @@ mod carried {
             .unwrap()
     }
 
-    /// A quiet hour walks no location: it reads the two location table
-    /// headers and nothing else, and publishes the rows the first hour read.
     #[test]
     fn quiet_hours_read_only_the_location_tables_and_publish_identical_rows() {
         let fixture = fixture(COUNTRIES, TYPES);
@@ -605,17 +583,12 @@ mod carried {
         }
     }
 
-    /// A hooked write settles the hour around it: no location is walked,
-    /// only the written status is read afresh, from the status alone, and
-    /// every other is carried; a status the take visits that no table walks
-    /// is not read. The next hour is quiet.
     #[test]
     fn a_hooked_write_rereads_only_its_status() {
         let mut fixture = fixture(COUNTRIES, TYPES);
         let watches = Watches::enabled(64);
         let mut store = BuildingStore::new();
         let first = first_hour(&fixture, &mut store, &watches);
-        // set_level on state 2's building 1: the detour names its status.
         let (status, building) = building(&fixture, false, 2, 1);
         let notification = watches.notify(Some(status), 0);
         put(
@@ -624,7 +597,6 @@ mod carried {
             &9_i16.to_le_bytes(),
         );
         drop(notification);
-        // A registered status no table walks (a country's own) is touched.
         let unwalked = BASE + 8;
         Changes::sequence(&watches, unwalked).unwrap();
         drop(watches.notify(Some(unwalked), 6));
@@ -673,8 +645,6 @@ mod carried {
             (STATUSES, 0)
         );
         assert!(!forgotten.counts.quiet);
-        // A writer whose building backlink did not read revokes every
-        // certificate too.
         watches.boundary(false);
         drop(watches.notify(None, 0));
         let unnamed = hour(&fixture, &mut store, &watches);
@@ -682,15 +652,12 @@ mod carried {
         assert!(!unnamed.counts.quiet);
     }
 
-    /// A changed location table header walks every location, which still
-    /// carries every status its certificate proves current.
     #[test]
     fn a_changed_location_table_header_walks_every_location() {
         let mut fixture = fixture(COUNTRIES, TYPES);
         let watches = Watches::enabled(64);
         let mut store = BuildingStore::new();
         let first = first_hour(&fixture, &mut store, &watches);
-        // The province table's capacity grows without a notification.
         put(
             &mut fixture.bytes,
             BASE + cgame_state::PROVINCES + 8,
@@ -708,10 +675,6 @@ mod carried {
         assert_eq!(quiet.location_reads, 0);
     }
 
-    /// A written status whose building count changed (as GetOrCreateBuilding
-    /// grows it) is read in a settled hour with its new headers, and the rows
-    /// after it move: both tables equal a fresh walk's, and the next hours
-    /// carry the new layout.
     #[test]
     fn a_written_status_whose_building_count_changed_moves_the_later_rows() {
         let mut fixture = fixture(COUNTRIES, TYPES);
@@ -746,8 +709,6 @@ mod carried {
         }
     }
 
-    /// Entering nudge mode poisons the domain: no later hour is quiet or
-    /// carries a status.
     #[test]
     fn entering_nudge_mode_reads_every_status_afterwards() {
         let fixture = fixture(COUNTRIES, TYPES);
@@ -765,10 +726,6 @@ mod carried {
         }
     }
 
-    /// A status without buildings is registered and held, counts as
-    /// neither read nor reused, publishes as a fresh walk does and still has
-    /// its active vector checked; settled hours follow, and one whose take
-    /// visits it after a writer built there reads its new buildings.
     #[test]
     fn statuses_without_buildings_are_held_and_read_once_written() {
         let mut fixture = fixture(COUNTRIES, TYPES);
@@ -806,8 +763,6 @@ mod carried {
         );
         assert_eq!(watches.registered(), STATUSES as usize);
 
-        // GetOrCreateBuilding builds on province 1, which then lists its
-        // buildings again.
         watches.boundary(false);
         let built = status(&fixture, true, 1);
         let notification = watches.notify(Some(built), 4);
@@ -836,8 +791,6 @@ mod carried {
         assert_eq!((built.states, built.provinces), fresh(&fixture));
         assert_eq!(built.counts.empty, 1);
 
-        // An empty status whose active vector lists a building fails its
-        // table, as a fresh walk fails it.
         let status = status(&fixture, false, 2);
         put(
             &mut fixture.bytes,

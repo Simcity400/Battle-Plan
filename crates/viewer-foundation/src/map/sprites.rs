@@ -1,8 +1,3 @@
-//! Screen-space sprites and compiled GUI draws.
-//! Callers lay out rectangles in interface pixels. The simple atlas path snaps their corners
-//! to device pixels and supplies clip-space vertices; compiled GUI draws retain their own
-//! geometry, constants, sampler states and scissors. Layer keys preserve icon-child ordering
-//! while grouping compatible glyphs by texture. The pass draws after the world without depth.
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
 #[cfg(test)]
@@ -35,21 +30,15 @@ mod retained;
 
 pub use resident::failures as overlay_check_failures;
 
-/// One frame-animated sprite: a horizontal strip of equal-width frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpriteSheet {
-    /// The `GFX_...` name.
     pub name: String,
-    /// Texture id in the shared static image list.
     pub texture: usize,
-    /// `noOfFrames`.
     pub frames: u32,
-    /// Whole-strip size in texels.
     pub size: [u32; 2],
 }
 
 impl SpriteSheet {
-    /// One frame's size, with its horizontal extent truncated to whole texels.
     pub fn frame_size(&self) -> [f32; 2] {
         [
             (self.size[0] / self.frames.max(1)) as f32,
@@ -57,8 +46,6 @@ impl SpriteSheet {
         ]
     }
 
-    /// The atlas rectangle of a zero-based frame, clamped to the last frame.
-    /// Frames retain their evenly divided strip pitch even when their width is fractional.
     pub fn frame_uv(&self, frame: u32) -> [f32; 4] {
         let frames = self.frames.max(1);
         let index = frame.min(frames - 1);
@@ -71,16 +58,12 @@ impl SpriteSheet {
     }
 }
 
-/// The interface files as the game read them (the resources and each sprite by name), and the
-/// client's texture decode state.
 pub struct Interface {
     pub registry: installed_content_core::gui::native::resources::Registry,
     pub sprites: gfx::SpriteSet,
     pub decode: Decode,
 }
 
-/// What a refused GUI shader draw drew, by identity: its quad's path, effect file and
-/// technique ([`shader_pipeline::gpu::Arena::refuse`]).
 pub fn gui_refusal(draw: &super::native_shader::draw::Quad) -> String {
     format!(
         "GUI shader {:?}: effect {:?} technique {:?}",
@@ -88,7 +71,6 @@ pub fn gui_refusal(draw: &super::native_shader::draw::Quad) -> String {
     )
 }
 
-/// Loads one declared sprite and appends its texture to `images`.
 pub fn load_sheet(
     layers: &ResolvedLayers,
     sprites: &gfx::SpriteSet,
@@ -107,8 +89,6 @@ pub fn load_sheet(
     })
 }
 
-/// Reads and decodes one declared sprite without appending it anywhere, so
-/// callers can decode sheets on scoped threads and append in a fixed order.
 pub fn decode_sheet(
     layers: &ResolvedLayers,
     sprites: &gfx::SpriteSet,
@@ -120,7 +100,6 @@ pub fn decode_sheet(
         .texture
         .as_deref()
         .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?;
-    // A sheet the visual mods break is the recording's own, named.
     let recorded = layers.without_overlays();
     let texture =
         resources::stack_texture_or_recorded(layers, recorded.as_ref(), path.as_bytes(), decode)?
@@ -136,92 +115,41 @@ pub fn decode_sheet(
     Ok((texture, sprite.frames, size))
 }
 
-/// One textured quad in device pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Quad {
-    /// Texture id in the shared static image list.
     pub texture: usize,
-    /// `x, y, width, height` in device pixels, `y` down from the top.
     pub rect: [f32; 4],
-    /// Normalised atlas rectangle `[u0, v0, u1, v1]`.
     pub uv: [f32; 4],
-    /// Straight RGBA multiplier; `[1, 1, 1, 1]` draws the texture as authored.
     pub color: [f32; 4],
-    // counters
-    /// Clockwise rotation about the rectangle's centre, in radians. Zero retains the snapped
-    /// axis-aligned path.
     pub rotation: f32,
-    // counters
-    /// The sort key [`layer`] builds; see it for the field order.
     pub layer: u64,
-    /// Signed brightness adjustment after tinting: positive brightens, negative darkens.
     pub shade: f32,
-    /// A quad [`super::native_gui`] places and shades as the game does; `rect`, `uv`, `rotation`
-    /// and `shade` are then unused.
     pub exact: Option<Exact>,
-    /// The map icon the quad belongs to, which a free eye shows standing in the world
-    /// ([`super::free_icons`]); `None` for screen interface.
     pub anchor: Option<IconAnchor>,
-    /// How a free eye shows the quad's icon ([`super::free_icons::present`]); `None` draws the
-    /// quad as laid out, in layer order.
     pub present: Option<Present>,
 }
 
-/// An unsnapped GUI draw with compiled resources, or layout-fixture geometry and metadata.
-/// Its scissor clips interface-pixel corners after scaling. Compiled draws carry their own
-/// complete vertex and constant payload in `native`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exact {
     pub native: Option<Arc<super::native_shader::draw::Quad>>,
-    /// Where the vertices land, in interface pixels.
     pub corners: [[f32; 2]; 4],
-    /// Each vertex's texture coordinate as the vertex buffer holds it (before `Offset`).
     pub uv: [[f32; 2]; 4],
-    /// The scissor `x0, y0, x1, y1` in whole interface pixels: the device's is each coordinate
-    /// times the interface scale, truncated.
     pub scissor: Option<[i32; 4]>,
-    /// Selected technique ID for compiler-independent layout fixtures.
     pub technique: u32,
     pub blend: super::native_effects::Blend,
-    /// The samplers of slot 0, slot 1 and the masking slot 5, ten bits each from bit 0, 10 and
-    /// 20 ([`super::native_effects::Sampler::packed`]).
     pub samplers: u32,
-    /// Each slot's `MipMapLodBias` (slot 0, slot 1, slot 5).
     pub lod_bias: [f32; 3],
-    /// Slot 1 (a progress bar's `TextureTwo`) and slot 5 (the masking texture).
     pub second: Option<usize>,
     pub masking: Option<usize>,
-    /// `Offset` and `NextOffset`.
     pub offsets: [f32; 4],
-    /// `Time - AnimationTime`, `AnimationTime` and a progress bar's `CurrentState`.
     pub inputs: [f32; 4],
-    /// A progress bar's `vSecondColor`, or a text's `ModColor`.
     pub second_color: [f32; 4],
 }
 
-// counters
-/// A quad's sort key: the engine's icon priority, then the icon's own place in
-/// the pass, then the child's place inside its window.
-///
-/// Quads are uploaded sorted by `(layer, texture)`. The engine sorts map icons
-/// by the content priorities and draws each icon's children in
-/// the order `mapicons.gui` declares them, so **only quads that are the same
-/// child of the same icon may be reordered** — which is what batches a run of
-/// glyphs onto one page without ever letting one counter's flag overtake
-/// another counter's plate. Each icon has [`CHILD_SLOTS`] child slots, more
-/// than the land counter's 19 child kinds; a caller that would need more
-/// refuses rather than share a slot.
-///
-/// The key is 64-bit so every `u32` icon ordinal keeps its own range under its
-/// priority: the icon count grows with the countries and units a recording
-/// holds, and a narrower key let icon 62,500 of one priority collide with the
-/// next priority's first icon. The signed priority maps onto bands 0 to 255 in order.
 pub const fn layer(priority: i8, icon: u32, child: u32) -> u64 {
     band_layer((priority as u8 ^ 0x80) as u64, icon, child)
 }
 
-/// A window containing the active GUI object adds five to its signed content priority.
-/// The sum can exceed i8::MAX, so it must not wrap back below the map.
 pub const fn hovered_layer(priority: i8, hovered: bool, icon: u32, child: u32) -> u64 {
     band_layer(
         (priority as i32 + 128 + if hovered { 5 } else { 0 }) as u64,
@@ -230,8 +158,6 @@ pub const fn hovered_layer(priority: i8, hovered: bool, icon: u32, child: u32) -
     )
 }
 
-/// A key in the band above every map-icon priority, where the combat window
-/// draws over the map icons as the GUI does.
 pub const fn gui_layer(icon: u32, child: u32) -> u64 {
     band_layer(GUI_BAND, icon, child)
 }
@@ -240,43 +166,32 @@ const fn band_layer(band: u64, icon: u32, child: u32) -> u64 {
     band * PRIORITY_STRIDE + icon as u64 * CHILD_SLOTS as u64 + child as u64
 }
 
-/// Reads an icon's content priority as a sign-extended low byte.
 pub fn priority(defines: &installed_content_core::defines::Defines, name: &str) -> io::Result<i8> {
     Ok(defines.int32("NMapIcons", name)? as i8)
 }
 
-/// Child slots per icon in a [`layer`] key.
 pub const CHILD_SLOTS: u32 = 32;
 
-/// Keys one priority spans: room for every `u32` icon of [`CHILD_SLOTS`] children.
 const PRIORITY_STRIDE: u64 = 1 << 40;
 const _: () = assert!((u32::MAX as u64 + 1) * CHILD_SLOTS as u64 <= PRIORITY_STRIDE);
-/// The band [`gui_layer`] keys, above every signed-byte map-icon priority
-/// including the native five-point GUI-hover lift.
 const GUI_BAND: u64 = 261;
 
-/// Tooltips use the final GUI pass above ordinary windows.
 pub const TOOLTIP_LAYER: u64 = band_layer(GUI_BAND + 1, 0, 0);
 
-/// The priority a [`layer`] key was built with.
 #[cfg(any(test, feature = "test-support"))]
 pub const fn layer_priority(layer: u64) -> i64 {
     (layer / PRIORITY_STRIDE) as i64 - 128
 }
 
-/// The icon ordinal of a [`layer`] key, within its priority.
 #[cfg(any(test, feature = "test-support"))]
 pub const fn layer_icon(layer: u64) -> u64 {
     layer % PRIORITY_STRIDE / CHILD_SLOTS as u64
 }
 
-/// What moves a [`layer`] key by `icons` whole icons.
 pub const fn icon_offset(icons: u32) -> u64 {
     icons as u64 * CHILD_SLOTS as u64
 }
 
-/// A producer of map-icon windows, one value per kind of pool, so a batch window and a check's
-/// refusal name the window they mean.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WindowPool {
     Base,
@@ -288,8 +203,6 @@ pub enum WindowPool {
     AdjacencyIcon,
 }
 
-/// One drawn map-icon window in a batch: the pool that holds it, which of that producer's pools,
-/// and the owner the window is held for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowKey {
     pub pool: WindowPool,
@@ -313,28 +226,18 @@ impl std::fmt::Display for WindowKey {
     }
 }
 
-/// Everything a window's quads in a batch are a function of: the painting they came from
-/// ([`next_painting`]) and what the batch did to them as it took them (their sort key, the anchor
-/// they stand on, the opacity they are drawn at). Equal stamps mean equal quads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowStamp {
     pub painting: u64,
     pub taken: u64,
 }
 
-/// A window's quads where they stand in a batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatchWindow {
     pub key: WindowKey,
     pub stamp: WindowStamp,
     pub first: u32,
     pub count: u32,
-    /// How far these quads stand from where the painting named by the stamp drew them: the
-    /// composition took a window it kept and placed elsewhere
-    /// ([`Batch::at_window_standing`]), the camera moved over the map and its anchor went with
-    /// it, or both ([`crate::map::anchored`]). Its quads are its painting's quads moved by this,
-    /// so an upload that holds the painting still has to write them again when it changes, and
-    /// nothing else about the window did.
     pub shift: [i32; 2],
 }
 
@@ -344,45 +247,25 @@ impl BatchWindow {
     }
 }
 
-/// A fresh value for every painting of a window, so a kept painting is recognised by value and
-/// no two paintings of one window are ever confused.
 pub fn next_painting() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A frame's worth of screen-space quads, in the order the caller pushed them.
 #[derive(Clone, Debug)]
 pub struct Batch {
     pub quads: Vec<Quad>,
-    /// The windows whose quads this batch holds, in push order. Quads outside one belong to no
-    /// window and are compared quad for quad.
     windows: Vec<BatchWindow>,
-    /// The window later pushes belong to, and the quad it starts at.
     open: Option<(WindowKey, WindowStamp, u32, [i32; 2])>,
-    // counters
-    /// The layer subsequent pushes are tagged with.
     layer: u64,
-    /// The map icon subsequent pushes belong to.
     anchor: Option<IconAnchor>,
-    /// A named part of the icon standing on its own anchor: parts whose element path ends with
-    /// the name take it instead ([`Batch::at_part_anchor`]).
     part_anchor: Option<(String, IconAnchor)>,
-    /// What the current part's pushes take ([`Batch::at_part`]).
     current: Option<IconAnchor>,
-    /// A fresh value for every painting of the batch ([`Batch::clear`], which every composition
-    /// begins with): the quads of one painting stand where that painting put them, so anything
-    /// holding where they have been moved to ([`crate::map::anchored::Shifts`]) can tell a
-    /// painting it has moved from one it has not.
     painting: u64,
-    /// Where each mover this batch holds stands over the hours its publication covers, by the
-    /// serial its anchors carry ([`IconAnchor::moves`]). The display frame reads them to place
-    /// every mover at its own head ([`crate::map::anchored`]).
     tracks: Vec<(u32, Track)>,
 }
 
 impl Default for Batch {
-    /// Every batch is a painting of its own ([`Batch::painting`]), so no two are confused.
     fn default() -> Self {
         Self {
             quads: Vec::new(),
@@ -399,7 +282,6 @@ impl Default for Batch {
 }
 
 impl Batch {
-    /// A batch of `quads` belonging to no window.
     pub fn loose(quads: Vec<Quad>) -> Self {
         Self {
             quads,
@@ -407,7 +289,6 @@ impl Batch {
         }
     }
 
-    /// A batch of `quads`, all of them `key`'s window drawing what `stamp` says.
     pub fn of_window(key: WindowKey, stamp: WindowStamp, quads: Vec<Quad>) -> Self {
         let count = quads.len() as u32;
         Self {
@@ -424,14 +305,10 @@ impl Batch {
         self.quads.is_empty()
     }
 
-    /// The painting the batch's quads belong to: a new value after every [`Batch::clear`], so no
-    /// two paintings are confused. Zero for a batch nothing has been painted into.
     pub fn painting(&self) -> u64 {
         self.painting
     }
 
-    /// Empties the batch as [`Batch::default`] does, keeping its storage. What it holds next is a
-    /// painting of its own ([`Batch::painting`]).
     pub fn clear(&mut self) {
         self.painting = next_painting();
         self.tracks.clear();
@@ -444,32 +321,25 @@ impl Batch {
         self.current = None;
     }
 
-    /// Later pushes are `key`'s window, drawing what `stamp` says. Closes any window open.
     pub fn at_window(&mut self, key: WindowKey, stamp: WindowStamp) {
         self.at_window_standing(key, stamp, [0; 2]);
     }
 
-    /// [`Self::at_window`] for a window whose quads are the quads `stamp`'s painting drew already
-    /// offset by `from` whole interface pixels: a window the composition kept and placed
-    /// elsewhere ([`crate::map::icon_windows::Painted::paint`]), which draws what it drew.
     pub fn at_window_standing(&mut self, key: WindowKey, stamp: WindowStamp, from: [i32; 2]) {
         self.no_window();
         self.open = Some((key, stamp, self.quads.len() as u32, from));
     }
 
-    /// Takes `track` into the batch and gives the serial an anchor carries to stand on it.
     pub fn add_track(&mut self, track: Track) -> u32 {
         let serial = super::free_icons::next_track();
         self.tracks.push((serial, track));
         serial
     }
 
-    /// The track `anchor` stands on, when it carries one.
     pub fn track_of(&self, anchor: &IconAnchor) -> Option<&Track> {
         self.track(anchor.moves?)
     }
 
-    /// The track `serial` names, as the anchors standing on it carry it.
     pub fn track(&self, serial: u32) -> Option<&Track> {
         self.tracks
             .iter()
@@ -477,13 +347,10 @@ impl Batch {
             .find_map(|(at, track)| (*at == serial).then_some(track))
     }
 
-    /// Whether any anchor of this batch carries a track, so the display frame has movers to place
-    /// at its own head.
     pub fn moves(&self) -> bool {
         !self.tracks.is_empty()
     }
 
-    /// Later pushes belong to no window.
     pub fn no_window(&mut self) {
         if let Some((key, stamp, first, shift)) = self.open.take()
             && self.quads.len() as u32 > first
@@ -498,14 +365,11 @@ impl Batch {
         }
     }
 
-    /// The windows this batch holds, to be told where they now stand when the camera moved them
-    /// ([`crate::map::anchored::Shifts::move_to`]); the batch has no window open while they are.
     pub fn standing_windows(&mut self) -> &mut [BatchWindow] {
         self.no_window();
         &mut self.windows
     }
 
-    /// Every window whose quads this batch holds, in push order.
     pub fn windows(&self) -> impl Iterator<Item = BatchWindow> + '_ {
         let open = self.open.and_then(|(key, stamp, first, shift)| {
             (self.quads.len() as u32 > first).then_some(BatchWindow {
@@ -519,7 +383,6 @@ impl Batch {
         self.windows.iter().copied().chain(open)
     }
 
-    /// Appends `other`'s quads and the windows they belong to, where they now stand.
     pub fn append(&mut self, other: &Batch) {
         self.no_window();
         self.tracks.extend_from_slice(&other.tracks);
@@ -531,8 +394,6 @@ impl Batch {
         }));
     }
 
-    /// Replaces the quads at `range`, and the windows standing among them, with `other`'s, moving
-    /// the windows after them to where they now stand. Where `other`'s quads now are.
     pub fn splice(&mut self, range: std::ops::Range<usize>, other: &Batch) -> std::ops::Range<usize> {
         self.no_window();
         self.tracks.extend_from_slice(&other.tracks);
@@ -554,28 +415,20 @@ impl Batch {
         start..start + other.quads.len()
     }
 
-    // counters
-    /// Tags every later push with this sort layer.
     pub fn at_layer(&mut self, layer: u64) {
         self.layer = layer;
     }
 
-    /// Tags every later push as part of the map icon standing at `anchor`; `None` for screen
-    /// interface. Forgets any named part's own anchor.
     pub fn at_anchor(&mut self, anchor: Option<IconAnchor>) {
         self.anchor = anchor;
         self.part_anchor = None;
         self.current = anchor;
     }
 
-    /// Gives the icon's parts whose element path ends with `name` their own `anchor`, as a city
-    /// label's name fades by its own cutoff. Later [`Batch::at_part`] calls apply it.
     pub fn at_part_anchor(&mut self, name: &str, anchor: IconAnchor) {
         self.part_anchor = Some((name.to_owned(), anchor));
     }
 
-    /// Later pushes draw the GUI part at element `path`: they take its own anchor when the icon
-    /// gave it one, else the icon's.
     pub fn at_part(&mut self, path: &str) {
         self.current = match &self.part_anchor {
             Some((name, anchor)) if path.ends_with(name.as_str()) => Some(*anchor),
@@ -583,7 +436,6 @@ impl Batch {
         };
     }
 
-    /// Adds `quad` at the current layer, as part of the current icon.
     pub fn push(&mut self, quad: Quad) {
         self.quads.push(Quad {
             layer: self.layer,
@@ -592,12 +444,6 @@ impl Batch {
         });
     }
 
-    // counters
-    /// Adds one sprite frame drawn into an explicit device-pixel size.
-    ///
-    /// `mapicons.gui` gives several children a `scale`, and the flag cells are
-    /// drawn from an atlas whose cell is not the sprite's frame, so the size
-    /// cannot always come from the sheet.
     pub fn scaled(
         &mut self,
         sheet: &SpriteSheet,
@@ -620,8 +466,6 @@ impl Batch {
         });
     }
 
-    // counters
-    /// Adds an explicit atlas rectangle of an already-known page.
     pub fn cell(
         &mut self,
         texture: usize,
@@ -644,17 +488,6 @@ impl Batch {
         });
     }
 
-    // counters
-    /// Adds the leftmost `pixels` of one frame, clipping the rectangle and the uv.
-    ///
-    /// This is how the counter bars are filled: `mapicons.gui` declares
-    /// `bar_org` and `bar_str` with `rotation = 1.5708`, which turns the
-    /// 3 x 17 texture into a 17 x 3 horizontal bar. Both textures are a
-    /// **single flat colour** — `mapicon_bar_org_sprite.dds` is
-    /// `(105, 195, 115)` in every one of its 51 texels and
-    /// `mapicon_bar_str_sprite.dds` is `(195, 145, 75)` — so the quarter turn
-    /// produces exactly the same pixels as drawing the frame into the rotated
-    /// rectangle, and the caller passes the already-rotated size.
     pub fn bar(
         &mut self,
         sheet: &SpriteSheet,
@@ -663,9 +496,6 @@ impl Batch {
         pixels: f32,
         color: [f32; 4],
     ) {
-        // A full native counter bar covers one pixel past its sprite
-        // (the counter bar geometry); the texture is one flat colour, so the quad
-        // simply stretches over it.
         let width = pixels.clamp(0.0, size[0] + 1.0).floor();
         if width < 1.0 {
             return;
@@ -686,7 +516,6 @@ impl Batch {
         });
     }
 
-    /// Adds a laid-out run of glyphs.
     pub fn text(&mut self, glyphs: &[text::TextGlyph], color: [f32; 4]) {
         self.quads.extend(glyphs.iter().map(|glyph| Quad {
             texture: glyph.page,
@@ -703,15 +532,6 @@ impl Batch {
     }
 }
 
-/// A quad's `x, y, width, height` in interface pixels as device-pixel corners
-/// `x0, y0, x1, y1`.
-///
-/// The rectangle is rounded to whole interface pixels first: the layout adds up
-/// `.gui` integers on top of a projected anchor, so the fractional part is the
-/// anchor's alone, and keeping it would resample a 1:1 sprite. The corners are
-/// then scaled and rounded to device pixels, corners rather than sizes, so
-/// quads that touch in interface pixels still touch on screen and every edge
-/// stays on the pixel grid. At a scale of 1.0 this is the plain rounding.
 pub fn device_corners(rect: [f32; 4], ui_scale: f32) -> [f32; 4] {
     let x0 = rect[0].round();
     let y0 = rect[1].round();
@@ -719,9 +539,6 @@ pub fn device_corners(rect: [f32; 4], ui_scale: f32) -> [f32; 4] {
     corners.map(|value| (value * ui_scale).round())
 }
 
-/// An exact quad's scissor in device pixels, `x, y, width, height`, within a target of `size`:
-/// Each coordinate is scaled and truncated, then clipped to the target bounds.
-/// `None` when nothing is left.
 pub fn device_scissor(scissor: [i32; 4], ui_scale: f32, size: [u32; 2]) -> Option<[u32; 4]> {
     let device = scissor.map(|value| (value as f32 * ui_scale) as i64);
     let x0 = device[0].clamp(0, i64::from(size[0]));
@@ -731,16 +548,6 @@ pub fn device_scissor(scissor: [i32; 4], ui_scale: f32, size: [u32; 2]) -> Optio
     (x1 > x0 && y1 > y0).then(|| [x0, y0, x1 - x0, y1 - y0].map(|value| value as u32))
 }
 
-/// The texel-centre window a quad's atlas rectangle is sampled inside, as the
-/// shader uses: the rectangle inset by half a texel on every
-/// side, so no bilinear tap reaches a neighbouring frame, glyph or flag cell.
-/// A rectangle narrower than a texel collapses to its centre.
-///
-/// A 1:1 or minified quad on whole device pixels already samples inside it,
-/// so this changes nothing there. A magnified one, which a UI scale above 1.0
-/// draws, samples its edge pixels past the last texel centre; clamping them to
-/// the window repeats the cell's edge texels, which is what an edge-extended
-/// gutter around the cell would hold. Tests use this window to check atlas bounds.
 #[cfg(any(test, feature = "test-support"))]
 pub fn sample_window(uv: [f32; 4], texels: [u32; 2]) -> [f32; 4] {
     let mut out = [0.0; 4];
@@ -755,8 +562,6 @@ pub fn sample_window(uv: [f32; 4], texels: [u32; 2]) -> [f32; 4] {
     out
 }
 
-/// `position`, `uv` and `color`, already in clip space; `cell` is the quad's
-/// whole atlas rectangle and `filter` one of [`filter_mode`]'s values.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -768,10 +573,6 @@ struct Vertex {
     shade: f32,
 }
 
-/// How the shader samples a batch drawn at `ui_scale`: 0 the plain bilinear
-/// tap of the unscaled layer, whose output a scale of 1.0 keeps exactly; 1 that
-/// tap clamped to the cell's texel-centre window when magnified; 2 clamped and averaged over
-/// every texel a pixel covers when minified, so the icon does not alias.
 pub fn filter_mode(ui_scale: f32) -> f32 {
     if ui_scale == 1.0 {
         0.0
@@ -782,15 +583,9 @@ pub fn filter_mode(ui_scale: f32) -> f32 {
     }
 }
 
-/// Every icon page on the GPU, shared by the sprite batch and the name pass.
-///
-/// Both passes sample the same font atlases, so the pages are uploaded once and
-/// each pass builds its own bind groups over them with the sampler its shader
-/// declares.
 pub struct IconTextures {
     bound: Vec<GuiTexture>,
     unpack: Arc<wgpu::ComputePipeline>,
-    /// Clamped and pinned to the top mip: what a 1:1 screen quad needs.
     screen: wgpu::Sampler,
 }
 
@@ -799,7 +594,6 @@ impl IconTextures {
         self.bound.iter().map(GuiTexture::binding).collect()
     }
 
-    /// Uploads every page in image order.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -824,17 +618,10 @@ impl IconTextures {
         Ok(Self {
             bound,
             unpack,
-            // The batch samples the top mip only: at 1:1 on integer pixel
-            // corners that is the only one a sample can land in, and a mip of
-            // an atlas would blend neighbouring cells. Scaled quads keep to
-            // their cells through the shader's window and area filter instead
-            // (`SpritePass::upload`); saying so outright keeps a driver's
-            // derivative estimate out of the result.
             screen: clamp("icon screen sampler", wgpu::MipmapFilterMode::Nearest, 0.0),
         })
     }
 
-    /// One bind group per page, in page order, for a texture + sampler layout.
     pub fn bind_all(
         &self,
         device: &wgpu::Device,
@@ -869,23 +656,18 @@ impl IconTextures {
         &self.screen
     }
 
-    /// Pages uploaded, for reporting.
     pub fn page_count(&self) -> usize {
         self.bound.len()
     }
 }
 
-/// Which pipeline a run draws with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Pipe {
-    /// The snapped screen-space sprites.
     Legacy,
     Native(usize),
-    /// A fading icon's cell of a fade page, drawn over the frame ([`fade`]).
     Composite(usize),
 }
 
-/// One run of consecutive vertices sharing a pipeline, its textures and a scissor.
 struct Run {
     pipe: Pipe,
     texture: usize,
@@ -893,36 +675,26 @@ struct Run {
     range: std::ops::Range<u32>,
 }
 
-/// Where a quad draws: the frame, or a fading icon's cell (`[x0, y0, x1, y1]` page pixels) of a
-/// fade page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Frame,
     Page { page: usize, cell: [u32; 4] },
 }
 
-/// Opacity from which an icon draws straight onto the frame.
 const OPAQUE: f32 = 1.0 - 0.5 / 255.0;
 
-/// A lazy texture on the GPU, at the revision it was uploaded from.
 struct DynamicPage {
     revision: u64,
     texture: GuiTexture,
     group: wgpu::BindGroup,
 }
 
-/// A slot no texture fills: [`SpritePass`] binds its one transparent texel there.
 pub const NO_TEXTURE: usize = usize::MAX;
 
-/// The screen-space pipeline and the frame's vertices.
 pub struct SpritePass {
-    /// These submissions outlive a scene frame, so no other pass may reset their uploads.
     uploads: Option<shader_pipeline::gpu::Arena>,
     retained: Option<retained::Upload>,
     retained_valid: bool,
-    /// The compiled GUI draw the last emission prepared of each quad of the batch, by its place
-    /// in it: a batch whose windows only stand somewhere else binds the same blocks with a new
-    /// world transform, and prepares none of them again ([`SpritePass::upload`]).
     prepared_packets: Vec<Option<shader_pipeline::gpu::batch::Data>>,
     retained_diagnostics: installed_content_core::content::diagnostics::Diagnostics,
     packets: packets::Cache,
@@ -935,75 +707,45 @@ pub struct SpritePass {
     array_views: shader_pipeline::gpu::batch::Views,
     native_format: wgpu::TextureFormat,
     bakes: Vec<CachedBake>,
-    /// Text bakes recorded this frame, for the frame's one submission ahead of the draws that
-    /// sample them ([`SpritePass::bake_buffers`]).
     bake_buffers: Vec<wgpu::CommandBuffer>,
     bake_stream: super::native_shader::stream::Stream,
-    /// Refusals of the most recent frame, by effect/path/compiler reason.
     pub native_refusals: BTreeMap<String, u64>,
     pipeline: wgpu::RenderPipeline,
-    /// Keeps the device's sprite pipelines for the next view.
     _pipelines: Arc<SpritePipelines>,
     bind_groups: Vec<wgpu::BindGroup>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// Static page views used by compiled effect bindings.
     views: Vec<shader_pipeline::gpu::TextureBinding>,
-    /// One transparent texel for an empty slot.
     empty: Bound,
-    /// The content's lazy textures, mirrored into `dynamic` by [`SpritePass::sync`].
     lazy: Arc<LazyTextures>,
     synced: Option<u64>,
     dynamic: HashMap<usize, DynamicPage>,
-    /// Lazy textures the device refused, at the revision it refused.
     failed: HashMap<usize, u64>,
     vertices: Stream,
     runs: Vec<Run>,
     count: u32,
-    /// Fade pages: the composite program, the pages and the snapped program drawing into them.
     fade: fade::Pages,
     fade_legacy: wgpu::RenderPipeline,
-    /// Compiled draws into fade pages, with the binds they inherit from the frame's stream.
     fade_stream: super::native_shader::stream::Stream,
     fade_draws: Vec<super::native_shader::stream::Submission>,
-    /// Each fade page's runs, in draw order, by page; cleared every upload, storage kept.
     fade_runs: Vec<Vec<Run>>,
     fade_vertices: Stream,
     composite_vertices: Stream,
-    /// Fade pages the last upload filled.
     fade_pages: usize,
-    /// The vertex lists an upload fills, kept between frames for their storage.
     scratch: Scratch,
-    /// The frame is a layer composited later ([`SpritePass::set_layer`]).
     layer: bool,
-    /// Where the streams' missing pipelines build while their draws wait
-    /// ([`SpritePass::defer_builds`]).
     builds: super::native_shader::stream::Builds,
-    /// A draw of the last upload waited for its pipeline, so the next frame uploads again.
     waited: bool,
-    /// Refusals this frame's preparations logged.
     logged: HashSet<String>,
-    /// Made at load, so a lazy texture uploaded during a frame crops with it.
     unpack: Arc<wgpu::ComputePipeline>,
-    /// Bytes the last upload wrote to the GPU: the vertex streams' and the arena's. An upload
-    /// that retained everything wrote none.
     written: u64,
-    /// Compiled GUI draws the last upload prepared as their own native packet, and as a row of a
-    /// batched one. The split decides what per-window GPU residency can keep.
     prepared: [u64; 2],
-    /// What the last upload left resident, while the overlay check records it
-    /// ([`resident`]).
     resident: resident::Record,
-    /// Whether this upload is recording what it leaves resident.
     recording: bool,
-    /// The window the quad being emitted belongs to, for the record.
     window: Option<WindowKey>,
-    /// Uploads since the pass was made, which paces the check.
     uploaded: u64,
 }
 
-/// One upload's lists: the frame's snapped quads, the fade pages' and the composites' vertices,
-/// and the free eye's icons.
 #[derive(Default)]
 struct Scratch {
     order: Vec<usize>,
@@ -1013,8 +755,6 @@ struct Scratch {
     icons: Vec<Icon>,
 }
 
-/// A free eye's icon in one upload: its quads (a run of the draw order), where they land, and for
-/// a fading icon its frame rectangle `[x, y, width, height]`, opacity and fade-page cell.
 #[derive(Clone, Debug)]
 struct Icon {
     quads: std::ops::Range<usize>,
@@ -1023,11 +763,8 @@ struct Icon {
     cell: (usize, [u32; 2]),
 }
 
-/// Vertices a freshly built pass can hold before it grows; six per quad.
 const INITIAL_VERTICES: u64 = 6 * 4096;
 
-/// The sprite pipelines and their layout, one per device and format. They draw into the
-/// single-sample output.
 struct SpritePipelines {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -1064,8 +801,6 @@ impl SpritePipelines {
             })]
         };
         let legacy_targets = target(Some(wgpu::BlendState::ALPHA_BLENDING));
-        // A fade page keeps premultiplied colour: the program's alpha accumulates
-        // `One, OneMinusSrcAlpha` and is written.
         let page_targets = [Some(wgpu::ColorTargetState {
             format,
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -1125,7 +860,6 @@ impl SpritePipelines {
                 cull_mode: None,
                 ..Default::default()
             },
-            // Priorities order the final icon layer; they do not participate in depth tests.
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
@@ -1146,7 +880,6 @@ impl SpritePipelines {
 }
 
 impl SpritePass {
-    /// Builds the pipeline over already-uploaded icon pages.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1228,8 +961,6 @@ impl SpritePass {
         })
     }
 
-    /// Whether pipelines the streams lack build elsewhere while their draws wait, drawing
-    /// nothing until ready, rather than in place.
     pub fn defer_builds(&mut self, defer: bool) {
         let builds = defer.then(|| self.builds.clone());
         for stream in [
@@ -1241,8 +972,6 @@ impl SpritePass {
         }
     }
 
-    /// Compiles every technique of `effects` and builds the pipelines a draw of each makes on
-    /// its own, into the frame, into a fade page and into a text bake, so no frame builds them.
     pub fn warm(
         &mut self,
         device: &wgpu::Device,
@@ -1257,7 +986,6 @@ impl SpritePass {
                     effect: Arc::clone(&effect),
                     index,
                 };
-                // A retained program under the renderer's default blend draws too.
                 for (topology, default_blend) in [TriangleStrip, TriangleList]
                     .into_iter()
                     .flat_map(|topology| [(topology, false), (topology, true)])
@@ -1275,7 +1003,6 @@ impl SpritePass {
                         (format, 1, topology),
                     );
                 }
-                // Text bakes draw lists, their backgrounds under the renderer's default blend.
                 for default_blend in [false, true] {
                     self.bake_stream.warm(
                         device,
@@ -1288,12 +1015,6 @@ impl SpritePass {
         }
     }
 
-    /// Mirrors the content's lazy textures: uploads new and changed ones and
-    /// drops evicted ones. Costs one atomic read when nothing changed.
-    ///
-    /// A texture the device refuses is warned about once and left undrawn,
-    /// rather than failing every frame's render; a later revision of it is
-    /// tried again.
     pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let version = self.lazy.version();
         if self.synced == Some(version) {
@@ -1375,18 +1096,15 @@ impl SpritePass {
                 },
             );
         }
-        // A combination may name a page that changed or left.
         self.synced = Some(version);
     }
 
-    /// The bind group of a static page or a resident lazy texture.
     fn group(&self, texture: usize) -> Option<&wgpu::BindGroup> {
         self.bind_groups
             .get(texture)
             .or_else(|| self.dynamic.get(&texture).map(|page| &page.group))
     }
 
-    /// The view of a static page or a resident lazy texture, the empty texel for no texture.
     fn view(&self, texture: usize) -> Option<shader_pipeline::gpu::TextureBinding> {
         if texture == NO_TEXTURE {
             return Some(shader_pipeline::gpu::TextureBinding {
@@ -1402,14 +1120,6 @@ impl SpritePass {
         })
     }
 
-    /// Turns changed quads into vertices, grouped by texture. Compiled GUI draws keep their
-    /// own upload arena until the batch, viewport, scale or resident artwork changes. The
-    /// scene's frame `arena` receives the same refusal names, including on retained frames.
-    ///
-    /// `batch` is in interface pixels and `ui_scale` device pixels per
-    /// interface pixel; see [`device_corners`] for the snapping and
-    /// [`filter_mode`] for the sampling. [`Exact`] quads are not snapped, keep their push
-    /// order within their layer and are cut by their scissor.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -1435,7 +1145,6 @@ impl SpritePass {
         size: [u32; 2],
         ui_scale: f32,
     ) {
-        // The lazy textures this frame draws stay pinned in their LRU.
         self.lazy.mark_drawn(
             batch
                 .quads
@@ -1470,8 +1179,6 @@ impl SpritePass {
         );
         self.written = 0;
         self.uploaded += 1;
-        // The check compares the standing record with a whole rebuild, so every upload that
-        // changes what is resident records it.
         self.recording = resident::every().is_some();
         let uploads = self
             .uploads
@@ -1483,7 +1190,6 @@ impl SpritePass {
                 .retained
                 .as_ref()
                 .is_some_and(|retained| retained.matches(batch, size, ui_scale, self.synced));
-        // A batch whose windows only changed their places among others draws the same.
         let reordered = current && !same && self.retained.is_some() && {
             let _order = crate::profiling::span("sprite_order");
             sort_order(batch, &mut self.scratch.order);
@@ -1491,9 +1197,6 @@ impl SpritePass {
                 retained.matches_in_order(batch, &self.scratch.order, size, ui_scale, self.synced)
             })
         };
-        // A batch whose windows only stand somewhere else draws the compiled draws it drew,
-        // bound to the world transforms their new places give them: those are prepared again by
-        // binding the blocks alone, and nothing else about the emission changes.
         let moved = (!same && !reordered && current)
             .then(|| {
                 let _span = crate::profiling::span("sprite_moved_windows");
@@ -1507,8 +1210,6 @@ impl SpritePass {
         if same || reordered {
             self.retained_diagnostics.credit();
             if reordered {
-                // The windows stand at other places in the batch, so the packet the emission
-                // prepared of each of its quads no longer names the same quad.
                 self.prepared_packets.clear();
                 if let Some(retained) = self.retained.as_mut() {
                     retained.update(batch, &self.scratch.order, size, ui_scale, self.synced);
@@ -1554,10 +1255,6 @@ impl SpritePass {
         self.uploads = Some(uploads);
     }
 
-    /// The overlay's resident-bytes check ([`resident`]): on a frame in which nothing the batch
-    /// draws changed, nothing may have been written; and every Nth upload, what is resident must
-    /// be what a whole rebuild of this frame's batch leaves. The rebuild goes through the same
-    /// arena and leaves the frame drawing it, so a run with the check on is a run for it alone.
     #[allow(
         clippy::too_many_arguments,
         reason = "the upload's own inputs, which the rebuild is made with"
@@ -1585,8 +1282,6 @@ impl SpritePass {
         let held = std::mem::take(&mut self.resident);
         self.waited = false;
         self.logged.clear();
-        // The rebuild is this batch emitted whole, from the same cursor a frame of its own would
-        // stage from, so a checked run's arena grows no further than one frame's uploads.
         arena.reset();
         self.upload_changed(device, queue, arena, batch, size, ui_scale, None);
         self.note_waiting(arena);
@@ -1606,10 +1301,6 @@ impl SpritePass {
         }
     }
 
-    /// Which quads of `batch` draw the compiled draw the last emission prepared of them, when
-    /// `moved` names the windows that only stand somewhere else: `None` when any of them does
-    /// not, because a draw prepared afresh among kept ones would inherit none of the binds the
-    /// draws before it leave ([`super::native_shader::stream::Stream`]).
     fn keeps_packets(&self, batch: &Batch, moved: Option<&[usize]>) -> Option<Vec<bool>> {
         let moved = moved?;
         let retained = self.retained.as_ref()?;
@@ -1632,10 +1323,6 @@ impl SpritePass {
         Some(stands)
     }
 
-    /// `keeps` names, by quad, the windows that only stand somewhere else: their compiled draws
-    /// are bound again and prepared no further, and every other quad of the batch draws the
-    /// packet it drew. An emission that keeps them prepares none, so the label and text-bake
-    /// caches keep what they hold.
     #[allow(clippy::too_many_arguments, reason = "the upload's inputs and what it keeps")]
     fn upload_changed(
         &mut self,
@@ -1655,7 +1342,6 @@ impl SpritePass {
         self.fade_packets.clear();
         self.runs.clear();
         self.native_draws.clear();
-        // The fade pages' draws are this frame's alone.
         self.fade_draws.clear();
         for runs in &mut self.fade_runs {
             runs.clear();
@@ -1711,8 +1397,6 @@ impl SpritePass {
         pages.clear();
         composites.clear();
         icons.clear();
-        // The free eye's icons come first: each the run of quads sharing a rank, and for a fading
-        // one the frame pixels it covers, placed and within the frame.
         let mut at = 0;
         while at < order.len() {
             let Some(present) = batch.quads[order[at]].present else {
@@ -1750,7 +1434,6 @@ impl SpritePass {
                         ]
                     })
                     .and_then(|rect| fade::cut(rect, [0, 0, size[0], size[1]]));
-                // A fading icon with no pixels on the frame draws nothing.
                 let Some(rect) = bounds else {
                     continue;
                 };
@@ -1766,8 +1449,6 @@ impl SpritePass {
             });
         }
         let screen = at;
-        // The fading icons' cells, on pages as large as this frame's largest cell needs, and each
-        // page then as large as what it holds; pages no icon uses this frame go.
         let largest = icons
             .iter()
             .filter_map(|icon| icon.fading)
@@ -1832,7 +1513,6 @@ impl SpritePass {
                 );
             }
         }
-        // The screen interface follows, where it was laid out.
         for &index in &order[screen..] {
             self.window = owners.get(index).copied().flatten();
             self.emit(
@@ -1935,9 +1615,6 @@ impl SpritePass {
         }
     }
 
-    /// Draws `quad` at `placement` onto `target`: snapped quads become vertices in `frame` or
-    /// `pages`, compiled draws become submissions. A draw into a fade page takes the frame
-    /// stream's binds at this point and leaves its own behind, as drawing it on the frame would.
     #[allow(clippy::too_many_arguments, reason = "one quad's own inputs and what it may keep")]
     fn emit(
         &mut self,
@@ -1976,8 +1653,6 @@ impl SpritePass {
             let clip = (!placement.is_identity()).then(|| placement.clip());
             use shader_pipeline::gpu::stats::{Count, add};
             add(Count::GuiHanded, 1);
-            // A window that only stands somewhere else draws the draw it drew, bound to the
-            // world transform its new place gives it.
             let kept = keeping.and_then(|stands| {
                 let held = prepared_packets[index].as_mut()?;
                 if stands[index] {
@@ -2060,18 +1735,12 @@ impl SpritePass {
                         }
                     }
                 }
-                // A draw whose pipeline builds elsewhere waits, unrefused.
                 Err(_) if self.take_waiting() => self.waited = true,
-                // The refused draw left the binds the game makes for it, less what the
-                // replay lacks ([`prepare_draw`]).
                 Err(reason) => {
-                    // Logged once a frame, however often a joined batch is prepared.
                     if self.logged.insert(reason.clone()) {
                         eprintln!("{reason}");
                     }
                     *self.native_refusals.entry(reason).or_default() += native.source_draws;
-                    // By what was refused, whatever refused it (program selection, textures,
-                    // bakes or the draw): a map compares these across loads.
                     arena.refuse(&gui_refusal(native));
                 }
             }
@@ -2128,8 +1797,6 @@ impl SpritePass {
         }
     }
 
-    /// Prepares a compiled draw onto the frame, or onto a fade page with the frame stream's
-    /// binds, leaving the page's on the frame stream after, as drawing it on the frame would.
     fn prepare_target(
         &mut self,
         (device, queue, arena): (&wgpu::Device, &wgpu::Queue, &shader_pipeline::gpu::Arena),
@@ -2157,12 +1824,10 @@ impl SpritePass {
         }
     }
 
-    /// Resets the frame stream's binds.
     fn reset_stream(&mut self) {
         self.native.invalidate_bindings();
     }
 
-    /// Fade page `page`'s runs this frame.
     fn page_runs(&mut self, page: usize) -> &mut Vec<Run> {
         if self.fade_runs.len() <= page {
             self.fade_runs.resize_with(page + 1, Vec::new);
@@ -2170,10 +1835,6 @@ impl SpritePass {
         &mut self.fade_runs[page]
     }
 
-    /// Draws the uploaded quads over whatever the target already holds, after drawing the
-    /// fading icons into their fade pages.
-    /// The text bakes recorded since the last call, which the caller submits before the draws
-    /// that sample them. A frame that fails submits them alone: a bake is rendered once.
     pub fn bake_buffers(&mut self) -> Vec<wgpu::CommandBuffer> {
         std::mem::take(&mut self.bake_buffers)
     }
@@ -2195,8 +1856,6 @@ impl SpritePass {
         self.draw_runs(&mut pass, [width, height]);
     }
 
-    /// Draws the fading icons of the last upload into their fade pages, which the frame's
-    /// composite runs then read.
     fn draw_pages(&self, encoder: &mut wgpu::CommandEncoder) {
         for (index, page) in self.fade.pages.iter().take(self.fade_pages).enumerate() {
             let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
@@ -2318,16 +1977,10 @@ impl SpritePass {
         }
     }
 
-    /// Makes the frame a layer composited later, as a GUI window drawn outside the map is:
-    /// its draws keep their programs' colour blend and accumulate premultiplied colour, as a
-    /// fade page's do. Takes effect at the next upload.
     pub fn set_layer(&mut self, layer: bool) {
         self.layer = layer;
     }
 
-    /// Draws the uploaded layer ([`SpritePass::set_layer`]) into `view`, cleared first, after
-    /// the fading icons' pages. Only compiled native draws accumulate as a layer: a snapped
-    /// quad is refused.
     pub fn draw_layer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -2361,24 +2014,18 @@ impl SpritePass {
         Ok(())
     }
 
-    /// Quads the last upload produced, for reporting.
     pub fn quad_count(&self) -> u32 {
         self.count / 6 + self.native_draws.len() as u32
     }
 
-    /// Fade pages the last upload drew fading icons into, for reporting and checks.
     pub fn fade_pages(&self) -> usize {
         self.fade_pages
     }
 
-    /// Bytes the last upload wrote to the GPU: none when nothing it draws changed. An upload on
-    /// the caller's arena counts only its vertex streams, the arena being flushed by the caller.
     pub fn written_bytes(&self) -> u64 {
         self.written
     }
 
-    /// Prepares `draw` for the frame of `size`, or for a fade page (`page`, the page format) on
-    /// the fade stream, which accumulates premultiplied colour; `clip` places it.
     #[allow(clippy::too_many_arguments)]
     fn prepare_native(
         &mut self,
@@ -2449,10 +2096,6 @@ impl SpritePass {
         prepared
     }
 
-    /// The batch just prepared may have met pipelines no warm-up foresaw (a draw sampling a slot
-    /// it does not bind takes the preceding draw's sampler, and a pipeline can reveal its texture
-    /// variant only once built). The frame draws what is ready and names the rest; `waited` makes
-    /// the next frame prepare the batch again, which picks the pipeline up once it is built.
     fn note_waiting(&mut self, arena: &shader_pipeline::gpu::Arena) {
         if !self.waited {
             return;
@@ -2468,17 +2111,13 @@ impl SpritePass {
         shader_pipeline::gpu::stats::add(shader_pipeline::gpu::stats::Count::GuiJoins, 1);
     }
 
-    /// Whether a stream's draw waited for its pipeline since the last call.
     fn take_waiting(&mut self) -> bool {
-        // Each stream is asked, so none carries a wait into a later draw.
         let native = self.native.take_waiting();
         let fade = self.fade_stream.take_waiting();
         let bake = self.bake_stream.take_waiting();
         native || fade || bake
     }
 
-    /// Each slot `draw` binds: its texture, `None` for a null bind, `Err` naming a texture that
-    /// is not resident.
     fn native_views(
         &self,
         draw: &super::native_shader::draw::Quad,
@@ -2518,9 +2157,6 @@ impl SpritePass {
         bake: &Arc<super::native_shader::draw::Bake>,
     ) -> Result<wgpu::TextureView, String> {
         let _span = crate::profiling::span("sprite_bake");
-        // Changed lazy pages invalidate a bake even if its layout is unchanged. The bake
-        // inherits the caller's retained binds, so only a bake that reads nothing it does not
-        // bind itself gives the same pixels wherever it is drawn.
         let revision = self.lazy.version();
         let stable = bake.draws.iter().all(self_contained);
         if stable
@@ -2625,8 +2261,6 @@ impl SpritePass {
                 previous = Some(&submission.draw);
             }
         }
-        // The bake's uploads are written here, and its commands go out with the frame's own,
-        // ahead of the draws that sample it: a frame submits once.
         arena.flush(queue);
         self.bake_buffers.push(encoder.finish());
         self.bakes.push(CachedBake {
@@ -2640,11 +2274,6 @@ impl SpritePass {
     }
 }
 
-/// The order an upload draws `batch`'s quads in, into `order`: by `(layer, texture)`, so a page
-/// batch never overtakes an icon child that has to draw under or over another. An exact quad
-/// keeps its push order in its layer: the game's GUI draws in attach order, whatever the
-/// texture. A free eye's icons come first, farthest first, each in that order among its own
-/// quads; the screen interface follows them. A quad's layer is read here and nowhere else.
 fn sort_order(batch: &Batch, order: &mut Vec<usize>) {
     order.clear();
     order.extend(0..batch.quads.len());
@@ -2717,7 +2346,6 @@ fn batch_runs(
     output
 }
 
-/// What text sprites bake into.
 const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 struct CachedBake {
@@ -2728,9 +2356,6 @@ struct CachedBake {
     diagnostics: installed_content_core::content::diagnostics::Diagnostics,
 }
 
-/// Whether `draw`'s compiled program reads only what the draw binds itself: its technique is
-/// declared, and every constant buffer, texture and sampler it reflects is one of its own binds
-/// (with the effect's own sampler state), none retained from an earlier draw.
 fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
     use super::native_shader::binding;
     use installed_content_core::pdxshader::program::Stage;
@@ -2765,34 +2390,22 @@ fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
         })
 }
 
-/// A slot's texture as the replay holds it: `Ok(None)` a null bind, `Err` one it does not hold.
 type View = Result<Option<shader_pipeline::gpu::TextureBinding>, String>;
 
-/// What a compiled draw is prepared for: the GUI viewport it projects over, the target's format
-/// (every GUI target is single-sample), a placement after its projection and whether the target
-/// keeps premultiplied colour (a fade page).
 struct Output {
     viewport: [u32; 2],
     format: wgpu::TextureFormat,
     clip: Option<fade::ClipAffine>,
     premultiply: bool,
-    /// The frame is a layer composited later as a straight-alpha image
-    /// ([`SpritePass::set_layer`]): only draws that flatten into one exactly are submitted.
     layer: bool,
 }
 
-/// The colour blend that flattens exactly into a layer composited later: source over.
 const SOURCE_OVER: wgpu::BlendComponent = wgpu::BlendComponent {
     src_factor: wgpu::BlendFactor::SrcAlpha,
     dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
     operation: wgpu::BlendOperation::Add,
 };
 
-/// Why a draw with `blend` and `mask` cannot be flattened into a layer composited later as one
-/// straight-alpha image: the layer keeps premultiplied colour and accumulates coverage, which
-/// reproduces a source-over colour blend over anything beneath it. Its alpha write is the
-/// layer's own; a draw that leaves colour channels unwritten, or blends colour another way
-/// (additive or multiplied over transparent pixels, or no blend), has no such image.
 fn unflattenable(blend: Option<wgpu::BlendState>, mask: wgpu::ColorWrites) -> Option<String> {
     match blend {
         Some(blend) if blend.color == SOURCE_OVER && mask.contains(wgpu::ColorWrites::COLOR) => {
@@ -2809,10 +2422,6 @@ fn unflattenable(blend: Option<wgpu::BlendState>, mask: wgpu::ColorWrites) -> Op
     }
 }
 
-/// Applies the draw's program, constants, textures and samplers before preparing submission.
-/// A refusal retains available bindings and forgets missing resources, so later inherited
-/// draws cannot accidentally use resources from an earlier successful draw. Missing techniques
-/// retain the program; a declared technique that fails compilation makes it unavailable.
 #[allow(clippy::too_many_arguments)]
 fn bind_draw(
     native: &mut super::native_shader::stream::Stream,
@@ -2838,7 +2447,6 @@ fn bind_draw(
             .iter()
             .find_map(|(_, view)| view.as_ref().err().cloned());
     }
-    // A declared technique's record carries the effect's samplers, compiled or not.
     let declared = !matches!(selection, Ok(None));
     match selection {
         Ok(selection) => {
@@ -2875,12 +2483,8 @@ fn bind_draw(
         if stage == Stage::Pixel && !draw.pixel_constants {
             continue;
         }
-        // The whole native allocation, of which the draw writes only `known` bytes: a read of
-        // the rest is refused by name where the draw is prepared (`Stream::check_constants`),
-        // through retained and null-technique binds alike.
         native.bind_partial_constants(0, stage, Some(bytemuck::cast_slice(&constants)), &known);
     }
-    // Animation records' b1: the whole allocation, known only where the game writes it.
     for (slot, constants, known) in &draw.extra_constants {
         for stage in [Stage::Vertex, Stage::Pixel] {
             native.bind_partial_constants(
@@ -2908,8 +2512,6 @@ fn bind_draw(
     (label, refused)
 }
 
-/// A compiled draw's buffer zero as it binds it: its world matrix projected over `viewport`, then
-/// placed by `clip`, then laid out as its effect multiplies it.
 fn buffer_zero(
     draw: &super::native_shader::draw::Quad,
     viewport: [u32; 2],
@@ -2919,7 +2521,6 @@ fn buffer_zero(
     if let Some(clip) = clip {
         fade::apply(clip, &mut constants);
     }
-    // Line charts multiply a row vector; the other GUI effects multiply a column.
     if draw.declaration == shader_pipeline::vertices::Declaration::LineChart {
         for row in 0..4 {
             for column in row + 1..4 {
@@ -2930,7 +2531,6 @@ fn buffer_zero(
     constants
 }
 
-/// Prepares `draw` on `native` for `output`: its binds ([`bind_draw`]), then its packet.
 fn prepare_draw(
     native: &mut super::native_shader::stream::Stream,
     packets: &mut packets::Cache,
@@ -2961,13 +2561,9 @@ fn prepare_draw(
         })
 }
 
-/// What [`SpritePass::sync`] does with the lazy textures.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SyncPlan {
-    /// Uploaded or refused textures that are no longer resident.
     drop: Vec<usize>,
-    /// Resident textures to upload: new, changed, or a new revision of one
-    /// the device refused. A refused revision is not tried again.
     upload: Vec<usize>,
 }
 
@@ -2995,13 +2591,9 @@ fn plan_sync(
     SyncPlan { drop, upload }
 }
 
-/// A vertex buffer the pass keeps between uploads, written only where its bytes changed: an
-/// upload that lays out what the last one laid out writes nothing.
 struct Stream {
     buffer: wgpu::Buffer,
-    /// Elements the buffer has room for.
     capacity: u64,
-    /// What the buffer holds, as far as it has ever been written.
     held: Vec<u8>,
     stride: usize,
 }
@@ -3021,8 +2613,6 @@ impl Stream {
         self.buffer.slice(..)
     }
 
-    /// Writes `vertices`, growing the buffer to the next power of two when it is too small;
-    /// the bytes written.
     fn write<T: bytemuck::Pod>(
         &mut self,
         device: &wgpu::Device,
@@ -3036,13 +2626,11 @@ impl Stream {
         if count > self.capacity {
             self.capacity = count.next_power_of_two();
             self.buffer = buffer(device, self.capacity, self.stride);
-            // A fresh buffer holds nothing.
             self.held.clear();
         }
         let fresh: &[u8] = bytemuck::cast_slice(vertices);
         let known = self.held.len().min(fresh.len());
         let mut written = 0;
-        // Only the written blocks are copied back: the rest the buffer already holds.
         for span in shader_pipeline::gpu::unheld(0, &fresh[..known], &self.held[..known]) {
             written += (span.end - span.start) as u64;
             shader_pipeline::gpu::stats::write_buffer(
@@ -3068,8 +2656,6 @@ impl Stream {
     }
 }
 
-/// Where a compiled GUI draw binds its world transform, in each stage: the block
-/// [`buffer_zero`] makes, which is all a window standing somewhere else changes.
 static TRANSFORM_BINDINGS: std::sync::LazyLock<[u32; 2]> = std::sync::LazyLock::new(|| {
     use installed_content_core::pdxshader::program::Stage;
     [
@@ -3078,11 +2664,8 @@ static TRANSFORM_BINDINGS: std::sync::LazyLock<[u32; 2]> = std::sync::LazyLock::
     ]
 });
 
-/// The six vertices a snapped quad draws, placed and in clip space.
 fn plain_corners(quad: &Quad, placement: fade::Placement, ui_scale: f32) -> [Vertex; 6] {
     let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
-    // counters: a rotated quad turns about its own centre, with `y`
-    // down, so a positive angle is clockwise on screen.
     let spin = (quad.rotation != 0.0).then(|| {
         let (sin, cos) = quad.rotation.sin_cos();
         ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
@@ -3121,14 +2704,10 @@ fn plain_corners(quad: &Quad, placement: fade::Placement, ui_scale: f32) -> [Ver
     ]
 }
 
-/// The device pixels `[x0, y0, x1, y1]` a quad covers as laid out, on a target of `size` at
-/// `ui_scale`, with a pixel to spare on every side for filtering; `None` for a compiled quad
-/// without geometry.
 fn quad_bounds(quad: &Quad, size: [u32; 2], ui_scale: f32) -> Option<[f32; 4]> {
     let corners: [[f32; 2]; 4] = match &quad.exact {
         Some(exact) => {
             let native = exact.native.as_ref()?;
-            // A compiled draw projects over its font viewport or the GUI viewport.
             let viewport = native
                 .font_viewport
                 .map(|font| font.map(|v| v as f32))
@@ -3191,7 +2770,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The screen-space atlas program.
 pub const SHADER: &str = r#"
 struct SpriteVertex {
     @location(0) clip_xy: vec2<f32>,
@@ -3298,7 +2876,6 @@ fn fragment_main(fragment: SpriteFragment) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Disabled-state tint: negative alpha selects luminance greyscale, its magnitude the opacity.
 pub const DISABLED: [f32; 4] = [1.0, 1.0, 1.0, -1.0];
 
 pub fn dump_sprites<'a>(batch: &Batch, extra: &Batch, sprites: &'a mut Batch) -> &'a Batch {
@@ -3313,7 +2890,6 @@ mod tests {
     use super::oracle::{render_presented, render_presented_at};
     use super::*;
 
-    /// The sprite pass's draws on one device: opening it is most of each check's cost.
     #[test]
     fn sprite_pass_draws() {
         let (_serial, device, queue) = crate::map::test_support::gpu::device();
@@ -3325,9 +2901,6 @@ mod tests {
         every_upload_draws_its_own_fading_icons_alone(device.clone(), queue.clone());
     }
 
-    /// A GUI draw refused before it reaches the shader stream (here a quad without a compiled
-    /// effect) is recorded in the frame's arena by what was refused, as every other refusal
-    /// is, so a map comparing its refusals with and without visual mods sees it.
     fn a_gui_draw_refused_before_the_stream_is_recorded(device: wgpu::Device, queue: wgpu::Queue) {
         let page = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
             width: 1,
@@ -3428,22 +3001,18 @@ mod tests {
 
     #[test]
     fn frames_slice_the_strip_evenly() {
-        // Twenty frames of 29 by 27 pixels share one strip.
         let vp = strip(20, 580);
         assert_eq!(vp.frame_size(), [29.0, 27.0]);
         assert_eq!(vp.frame_uv(0), [0.0, 0.0, 29.0 / 580.0, 1.0]);
         assert_eq!(vp.frame_uv(19), [551.0 / 580.0, 0.0, 1.0, 1.0]);
-        // A frame past the end clamps rather than sampling outside the strip.
         assert_eq!(vp.frame_uv(20), vp.frame_uv(19));
     }
 
     #[test]
     fn a_strip_that_does_not_divide_evenly_keeps_the_authored_pitch() {
-        // A fractional frame pitch retains the full strip extent.
         let naval = strip(11, 301);
         assert_eq!(naval.frame_size()[0], 27.0);
         assert_eq!(naval.frame_uv(10), [10.0 / 11.0, 0.0, 1.0, 1.0]);
-        // `mapicon_building_airbase_large.dds` is 309 wide with 7 frames.
         assert_eq!(strip(7, 309).frame_size()[0], 44.0);
     }
 
@@ -3451,8 +3020,6 @@ mod tests {
     fn layer_keys_stay_distinct_and_ordered_past_62500_icons() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // The old `priority * 1_000_000 + icon * 16 + child` key made icon
-        // 62,500 of priority 5 equal to priority 6's first key.
         assert_ne!(layer(5, 62_500, 0), layer(6, 0, 0));
         assert!(layer(5, 62_500, 0) < layer(6, 0, 0));
         assert!(layer(5, u32::MAX, CHILD_SLOTS - 1) < layer(6, 0, 0));
@@ -3497,8 +3064,6 @@ mod tests {
         let base = DYNAMIC_BASE;
         let uploaded = HashMap::from([(base, 1), (base + 1, 3)]);
         let failed = HashMap::from([(base + 2, 5)]);
-        // base + 1 changed, base + 2 still at its refused revision, base + 3 new,
-        // and base was evicted.
         let resident = [(base + 1, 4), (base + 2, 5), (base + 3, 0)];
         assert_eq!(
             plan_sync(&uploaded, &failed, &resident),
@@ -3507,8 +3072,6 @@ mod tests {
                 upload: vec![base + 1, base + 3],
             }
         );
-        // A later revision of the refused texture is tried again, and an
-        // evicted refused texture is forgotten.
         assert_eq!(
             plan_sync(&uploaded, &failed, &[(base + 2, 6)]).upload,
             [base + 2]
@@ -3516,8 +3079,6 @@ mod tests {
         assert_eq!(plan_sync(&HashMap::new(), &failed, &[]).drop, [base + 2]);
     }
 
-    /// Every device pixel of a quad: its bilinear footprint in texels along x,
-    /// with the sample clamped to `window` when one is given.
     fn footprints(
         rect: [f32; 4],
         ui_scale: f32,
@@ -3541,13 +3102,10 @@ mod tests {
 
     #[test]
     fn a_scaled_flag_does_not_bleed_into_the_next_cell() {
-        // A 41-texel flag cell at texels 82..123 of a 512-texel page, with other
-        // flags on both sides, drawn 1:1 at 41 interface pixels.
         let texels = 512;
         let uv = [82.0 / 512.0, 0.0, 123.0 / 512.0, 1.0];
         let rect = [100.0, 0.0, 41.0, 26.0];
         let inside = |(low, high): (f32, f32)| low >= 82.0 - 1e-3 && high <= 123.0 + 1e-3;
-        // At 1.25 the edge pixels' taps reach a quarter texel into each neighbour.
         let unclamped = footprints(rect, 1.25, uv, texels, None);
         assert!(!inside(unclamped[0]) && !inside(*unclamped.last().unwrap()));
         let window = sample_window(uv, [texels, 1]);
@@ -3555,7 +3113,6 @@ mod tests {
             let pixels = footprints(rect, scale, uv, texels, Some(window));
             assert!(pixels.iter().copied().all(inside), "{scale}");
         }
-        // At 1:1 the window moves no sample: every pixel is a texel centre.
         let clamped = footprints(rect, 1.0, uv, texels, Some(window));
         let free = footprints(rect, 1.0, uv, texels, None);
         assert_eq!(clamped.len(), 41);
@@ -3575,7 +3132,6 @@ mod tests {
     fn a_window_narrower_than_a_texel_collapses_to_its_centre() {
         let window = sample_window([0.5, 0.25, 0.5, 0.75], [4, 4]);
         assert_eq!(window, [0.5, 0.375, 0.5, 0.625]);
-        // Flipped rectangles keep their bounds ordered.
         assert_eq!(sample_window([0.75, 0.0, 0.25, 1.0], [4, 1])[0], 0.375);
     }
 
@@ -3603,7 +3159,6 @@ mod tests {
         assert!(!drawn(&batch([7, 9], [1, 3])), "another quad");
     }
 
-    /// A one-colour quad over `rect` on image page `texture`, shown as `present`.
     fn shown(texture: usize, rect: [f32; 4], layer: u64, present: Option<Present>) -> Quad {
         Quad {
             texture,
@@ -3638,8 +3193,6 @@ mod tests {
                 .unwrap()
         };
         let near = |a: [u8; 4], b: [u8; 3]| (0..3).all(|i| a[i].abs_diff(b[i]) <= 2);
-        // A red plate under a green one covering it, as one icon at half opacity: the green
-        // shows at half and the red under it not at all, as a whole-icon fade gives.
         let half = Present {
             pivot: [8.0, 8.0],
             scale: 1.0,
@@ -3659,8 +3212,6 @@ mod tests {
             pixel(&pixels, 8, 8)
         );
         assert!(near(pixel(&pixels, 0, 0), [0, 0, 0]));
-        // Whole, the same icon draws straight onto the frame, and at half its size about its
-        // anchor it covers the middle alone.
         let whole = Present {
             scale: 0.5,
             alpha: 1.0,
@@ -3682,7 +3233,6 @@ mod tests {
             pixel(&pixels, 2, 2)
         );
         assert!(near(pixel(&pixels, 13, 13), [0, 0, 0]));
-        // Nearer icons draw over farther ones whatever their layers: rank 1 is nearer.
         let far = Present {
             rank: 0,
             alpha: 1.0,
@@ -3709,8 +3259,6 @@ mod tests {
         device: wgpu::Device,
         queue: wgpu::Queue,
     ) {
-        // A plate as wide as a 2,200-pixel frame, as a mod's layout or a long column may draw,
-        // with a red part under a green one, at a quarter opacity.
         let size = [2200, 8];
         let pages = [solid([255, 0, 0, 255]), solid([0, 255, 0, 255])];
         let quarter = Present {
@@ -3737,7 +3285,6 @@ mod tests {
         }
     }
 
-    /// A pass over one red and one green image page.
     fn red_and_green(device: &wgpu::Device, queue: &wgpu::Queue) -> SpritePass {
         let images = IconTextures::new(
             device,
@@ -3755,7 +3302,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Icon `rank`'s quad of image page `texture` over `rect`, at half opacity.
     fn half(texture: usize, rect: [f32; 4], rank: u32, child: u32) -> Quad {
         let present = Present {
             pivot: [8.0, 8.0],
@@ -3768,10 +3314,8 @@ mod tests {
 
     fn each_fade_page_draws_this_upload_s_icons_alone(device: wgpu::Device, queue: wgpu::Queue) {
         let mut pass = red_and_green(&device, &queue);
-        // Cells pack within 20 pixels a side: no two of these icons share a page.
         pass.fade.side = 20;
         let arena = shader_pipeline::gpu::Arena::new(&device);
-        // One upload and draw on the same pass: its pixels, fade pages and runs on each page.
         let at = std::cell::Cell::new(0);
         let frame = |pass: &mut SpritePass, quads: Vec<Quad>| {
             let batch = Batch {
@@ -3801,8 +3345,6 @@ mod tests {
                 );
             }
         };
-        // A far red icon at the top left and a near green one at the bottom right over part of
-        // it, each on its own page.
         let (pixels, used, runs, kept) = frame(
             &mut pass,
             vec![
@@ -3819,9 +3361,6 @@ mod tests {
                 ([8, 8], [64, 128, 0]),
             ],
         );
-        // The next upload's two icons on the same two pages are two corners each, with holes
-        // between them: nothing of the last upload's icons, nor of each other, shows there. The
-        // red icon's second corner lands on its page where the green icon's hole is on the next.
         let corners = || {
             vec![
                 half(0, [0.0, 0.0, 2.0, 2.0], 0, 0),
@@ -3842,7 +3381,6 @@ mod tests {
         let (pixels, used, runs, kept) = frame(&mut pass, corners());
         assert_eq!((used, runs, kept), (2, vec![1, 1], 2));
         check(&pixels, &changed);
-        // An upload with no fading icon draws none and keeps no page.
         let (pixels, used, runs, kept) =
             frame(&mut pass, vec![shown(0, [6.0, 6.0, 4.0, 4.0], 0, None)]);
         assert_eq!((used, runs, kept), (0, vec![0, 0], 0));
@@ -3855,7 +3393,6 @@ mod tests {
                 ([15, 15], [0, 0, 0]),
             ],
         );
-        // Then the corners again, on fresh pages.
         let (pixels, used, runs, kept) = frame(&mut pass, corners());
         assert_eq!((used, runs, kept), (2, vec![1, 1], 2));
         check(&pixels, &changed);
@@ -3879,9 +3416,6 @@ mod tests {
                 .map(|page| page.size)
                 .collect::<Vec<_>>()
         };
-        // Demand alternating by a pixel between the two sides (bounds of 256 by 257 and 257 by 256,
-        // a pixel to spare around each quad) grows the short side once, keeping the other, and then
-        // keeps the page: no upload makes a new one.
         let mut alternating = red_and_green(&device, &queue);
         let tall_by_one = vec![half(1, [1.0, 1.0, 254.0, 255.0], 0, 0)];
         let wide_by_one = vec![half(1, [1.0, 1.0, 255.0, 254.0], 0, 0)];
@@ -3903,8 +3437,6 @@ mod tests {
             assert_eq!(sizes(&mut alternating, quads, [300, 300]), [[512, 512]]);
             assert_eq!(alternating.fade.pages[0].view, kept);
         }
-        // A wide frame's wide icon, a tall frame's tall icon, then a small frame's small icon: each
-        // page is as large as this upload's icons need, never the larger of earlier uploads'.
         let wide = sizes(
             &mut pass,
             vec![half(1, [0.0, 0.0, 2500.0, 8.0], 0, 0)],
@@ -3923,8 +3455,6 @@ mod tests {
             [16, 16],
         );
         assert_eq!(small, [[256, 256]]);
-        // A little more than a step keeps a page within twice what it needs; a page far larger
-        // than needed is replaced.
         let grown = sizes(
             &mut pass,
             vec![half(1, [0.0, 0.0, 300.0, 8.0], 0, 0)],
@@ -3937,8 +3467,6 @@ mod tests {
             [16, 16],
         );
         assert_eq!(back, [[512, 256]]);
-        // Pages the upload does not fill go: two icons on two pages, then one, then none, then an
-        // empty batch.
         pass.fade.side = 20;
         let two = vec![
             half(0, [0.0, 0.0, 12.0, 12.0], 0, 0),
@@ -3993,9 +3521,7 @@ mod tests {
             pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
             seen.push(counts(&pass));
         }
-        // Two icons, each one run on the one page and one composite on the frame, every frame.
         assert_eq!(seen, vec![(1, 2, 0, 2); 3]);
-        // A frame without fading icons keeps none of an earlier frame's.
         batch.quads = vec![shown(0, [2.0, 2.0, 4.0, 4.0], layer(10, 0, 0), None)];
         arena.reset();
         pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
@@ -4012,14 +3538,11 @@ mod tests {
 
     #[test]
     fn scaled_quads_that_touch_in_interface_pixels_still_touch_on_screen() {
-        // Two 10-pixel cells side by side at 1.25: rounding sizes would give
-        // 13 + 13 from 13 and 25, overlapping by a pixel.
         let left = device_corners([10.0, 0.0, 10.0, 10.0], 1.25);
         let right = device_corners([20.0, 0.0, 10.0, 10.0], 1.25);
         assert_eq!(left, [13.0, 0.0, 25.0, 13.0]);
         assert_eq!(right[0], left[2]);
         assert_eq!(right, [25.0, 0.0, 38.0, 13.0]);
-        // The owner's display: 2048 interface pixels fill 2560 device pixels.
         assert_eq!(
             device_corners([0.0, 0.0, 2048.0, 1152.0], 1.25),
             [0.0, 0.0, 2560.0, 1440.0]
@@ -4031,8 +3554,6 @@ mod tests {
 mod layer_tests {
     use super::*;
 
-    /// Only a source-over colour blend writing every colour channel flattens into a layer; its
-    /// alpha write is the layer's own.
     #[test]
     fn only_source_over_colour_flattens_into_a_layer() {
         let over = wgpu::BlendState {

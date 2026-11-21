@@ -1,6 +1,5 @@
 use super::*;
 
-/// Pooled owned movement inputs, grown from retained seed headers before the payload.
 pub struct MovementPacket {
     pub(super) units: Vec<MovementRow>,
     pub(super) paths: Vec<u32>,
@@ -9,9 +8,7 @@ pub struct MovementPacket {
     combat_identities: cunit::MapCombatIdentityMemo,
     sample_hour: Option<i32>,
     required_combat_references: usize,
-    /// Pooled route bytes: one division's scratch, or the deferred route journal.
     route_bytes: Vec<u8>,
-    /// FIFO projection can decode the ordered raw route journal after resume.
     defer_routes: bool,
     raw_paths_len: usize,
     raw_paths_prefix: usize,
@@ -71,8 +68,6 @@ impl MovementPacket {
             .ok_or_else(crate::allocation::oom)
     }
 
-    /// Keep copied route bytes in native order. Only the first ordinary word
-    /// is decoded during acquisition because it gates subsequent native reads.
     pub fn defer_route_decode(&mut self) {
         self.defer_routes = true;
     }
@@ -178,7 +173,6 @@ impl MovementPacket {
         }
         Ok(())
     }
-    /// Rows with an ordinary route whose base speed was refused.
     pub fn base_speed_refusals(&self) -> usize {
         self.units[..self.result.outcome.len()]
             .iter()
@@ -198,9 +192,6 @@ pub(super) fn movement_route_prefixes(
     if path.is_empty() && alternate_path.is_empty() {
         return Ok(());
     }
-    // Sized to the routes read: zeroing the whole staging buffer per division
-    // would cost more than the copy. Stale bytes are
-    // harmless because only a fully copied span is decoded.
     let bytes = path
         .len()
         .checked_add(alternate_path.len())
@@ -224,8 +215,6 @@ pub(super) fn movement_route_prefixes(
         if index >= copied {
             return Err("movement route unreadable");
         }
-        // Retain a completed ordinary prefix even if the alternate copy failed.
-        // A failed span may be partial and must never enter the owned arena.
         for (slot, word) in output.iter_mut().zip(bytes.chunks_exact(4)) {
             *slot = u32::from_le_bytes(word.try_into().unwrap());
         }
@@ -235,10 +224,6 @@ pub(super) fn movement_route_prefixes(
 
 const MOVEMENT_AHEAD: usize = 4;
 
-/// Addresses come only from owned census controls. The hourly movement step
-/// walks the two u32 routes and the eight-byte combat pointers. Hint later
-/// divisions without moving a payload copy, a capacity gate, or a header
-/// recheck.
 fn prefetch_movement_seed(memory: &impl Memory, seed: &DivisionSeed) {
     for header in [seed.ordinary_route, seed.alternate_route] {
         if let Some(route) = header.and_then(|header| Array::from_header(header, 4))
@@ -254,9 +239,6 @@ fn prefetch_movement_seed(memory: &impl Memory, seed: &DivisionSeed) {
     }
 }
 
-/// Acquire exact admitted routes and dependent inputs from the shared census.
-/// `geometry` is initialized for this current pass and belongs to this worker;
-/// only the immutable fixed division seeds are shared between workers.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_movement_inputs(
     memory: &impl Memory,
@@ -279,8 +261,6 @@ pub fn capture_movement_inputs(
     )
 }
 
-/// Existing callback census, with caller-associated attempted hour. This
-/// enables only optional field acquisition; legacy readers pass no hour.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_movement_inputs_with_combat_references(
     memory: &impl Memory,
@@ -305,7 +285,6 @@ pub fn capture_movement_inputs_with_combat_references(
     )
 }
 
-/// Existing movement census with a worker-owned, demand-filtered companion observation.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_movement_inputs_with_extra(
     memory: &impl Memory,
@@ -332,8 +311,6 @@ pub fn capture_movement_inputs_with_extra(
         packet
             .reserve(seeds.len(), 0)
             .map_err(|_| "movement seed allocation failed")?;
-        // Preserve independent root availability even with a shared country
-        // census. Geometry admits its own current province roster in begin().
         for (offset, stride) in [(cgame_state::COUNTRIES, 8), (cgame_state::COUNTRY_LINKS, 4)] {
             game_state
                 .checked_add(offset)
@@ -395,7 +372,6 @@ pub fn capture_movement_inputs_with_extra(
                 .alternate_route
                 .and_then(|header| Array::from_header(header, 4))
                 .ok_or("alternate route invalid")?;
-            // Whole routes, sized from the original live count before payload.
             let path_len = route.count as usize;
             let alternate_len = alternate.count as usize;
             let needed = path_len + alternate_len;
@@ -405,8 +381,6 @@ pub fn capture_movement_inputs_with_extra(
             packet
                 .reserve(seeds.len(), required_paths)
                 .map_err(|_| "movement route allocation failed")?;
-            // Pressure reuses the already-owned seed header. An invalid optional
-            // hint supplies no demand; the established reader retains its own error.
             let mut reference_demand_overflow = false;
             if sample_hour.is_some()
                 && let Some(combat) = seed.combat.and_then(|header| Array::from_header(header, 8))
@@ -555,13 +529,6 @@ pub fn capture_movement_inputs_with_extra(
         })
     })();
     let outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
-    // Every established row and route finishes before the optional style
-    // suffix. The admitted rows retain census order with capacity gaps, so
-    // stream the same authenticated seeds without retaining another pointer
-    // arena or allocating. A refusal neither erases a row nor skips its peer.
-    // The two style fields come from the seed's batched gather, read once at
-    // this boundary with their own field-local outcomes; this pass rereads
-    // neither.
     let mut speeds = SpeedBatch::new();
     let mut index = 0;
     for (ordinal, seed) in seeds.iter().enumerate() {
@@ -581,11 +548,8 @@ pub fn capture_movement_inputs_with_extra(
         let row = &mut packet.units[index];
         row.withdrawal = seed.withdrawal;
         row.movement_priority = seed.movement_priority;
-        // Already acquired on the status line; stationary fuel feeds the division panel too.
         row.fuel = seed.fuel;
         row.queued_actions = seed.queued_actions;
-        // Only a division with an ordinary route moves (path_total is the
-        // route's signed count, as the movement gate tests it).
         if (row.path_total as i32) > 0 {
             row.base_speed = speeds.read(memory, base, seed).ok();
         }
@@ -615,9 +579,6 @@ const SPEED_FIELDS: [crate::memory::RecordField; 2] = [
 const SPEED_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&SPEED_FIELDS, 16).expect("valid movement speed layout");
 
-/// The movement-speed calculation starts from the same signed stat-block maximum speed. Gather only
-/// admitted ordinary movers, after the complete route prefix; missing rows and stationary rows
-/// supply no speed read.
 struct SpeedBatch {
     pointers: [usize; 64],
     bytes: [u8; 64 * 16],
@@ -688,12 +649,6 @@ impl SpeedBatch {
     }
 }
 
-/// The division's raw signed fixed5 maximum speed. No field caches the current speed: the
-/// movement-speed calculation starts from the maximum speed in the division's stat block. The
-/// hourly step adds the result of the unit's movement-speed virtual to the unit's movement
-/// numerator (`MOVEMENT_NUMERATOR`) without storing the speed, and the division view recomputes it.
-/// One gather reads the stat block's vtable and speed; the speed is kept only when the vtable
-/// authenticates the sub-unit definition.
 fn movement_base_speed(
     memory: &impl Memory,
     base: usize,
@@ -719,8 +674,6 @@ fn movement_base_speed(
     Ok(i64::from_le_bytes(speed))
 }
 
-/// Pure projection from owned inputs. This function has no native-memory,
-/// module-base or game-state parameter and cannot follow retained pointers.
 pub fn project_movement(
     packet: &MovementPacket,
     output: &mut [MovementRow],
@@ -741,8 +694,6 @@ pub fn project_movement(
     }
     output[..packet.units.len()].copy_from_slice(&packet.units);
     if packet.defer_routes {
-        // A failed gathered span can contain a partial native copy. Only
-        // completed spans enter the owned output, as in movement_route_prefixes.
         paths[..path_len].fill(0);
         for (output, bytes) in paths[..packet.raw_paths_prefix]
             .iter_mut()
@@ -756,8 +707,6 @@ pub fn project_movement(
     packet.result
 }
 
-/// Reads only sources from this callback's independently authenticated census.
-/// No engine call, retained live pointer, allocation, or pathfinding request.
 #[cfg(test)]
 pub fn walk_movement(
     memory: &impl Memory,
@@ -780,8 +729,6 @@ pub fn walk_movement(
     )
 }
 
-/// Acquire shared geography lazily within the current call. Failed unit, route,
-/// or render inputs retain their original outcome.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub fn walk_movement_with_inputs(
@@ -1020,9 +967,6 @@ fn walk_movement_internal(
         })
     })();
     let outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
-    // Keep this test-only reference's optional suffix behind the same complete
-    // movement-table prefix as capture_movement_inputs. A later first-combat
-    // failure must not add style reads to already withheld prefix rows.
     let mut index = 0;
     for source in sources {
         let Some(row) = output[..outcome.len()].get_mut(index) else {
@@ -1092,8 +1036,6 @@ mod capacity_tests {
                     return false;
                 };
                 output.copy_from_slice(bytes);
-                // Even a failure that changed its whole destination must not
-                // turn an uncompleted span into a published path prefix.
                 self.fault != Some(at)
             }
         }

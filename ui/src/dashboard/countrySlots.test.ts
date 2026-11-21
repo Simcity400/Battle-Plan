@@ -5,7 +5,6 @@ import { countryNameAt, countryTagAt, SlotTags } from './countrySlots.ts';
 import { defaultCountryKey, selectedCountryKeys } from './countrySelection.ts';
 import type { BoundTrack } from './model';
 
-// Slot 5 is GER until hour 109, then takes DEU; from 110 GER is held by slot 9.
 const identities = new SlotTags({ countries: [
   { tag: 'GER', identities: [{ firstHour: 100, lastHour: 109, slot: 5, countryId: 50 }, { firstHour: 110, lastHour: 119, slot: 9, countryId: 90 }], unresolved: [] },
   { tag: 'DEU', identities: [{ firstHour: 110, lastHour: 119, slot: 5, countryId: 50 }], unresolved: [] },

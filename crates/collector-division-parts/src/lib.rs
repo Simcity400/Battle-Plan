@@ -1,4 +1,3 @@
-//! Per-division input parts: attack stats and the army stat writer observer, dig-in factors, land inputs, supply inputs and unit combat references, which division presentation, railway guns and naval counters read. The host owns the presentation jobs, loans and table assembly.
 
 use collector_certificates::watch_registry;
 use collector_hooks::hook;
@@ -48,7 +47,6 @@ mod allocation_denial_tests {
             let (entered, left) = (Arc::clone(&entered), Arc::clone(&left));
             std::thread::spawn(move || {
                 entered.wait();
-                // Another test's interval begins and ends inside this one.
                 drop(collector_test_support::NullGuard::new(usize::MAX));
                 left.wait();
             })

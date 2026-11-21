@@ -1,6 +1,3 @@
-//! CLandCombat complete-object layout. All offsets use its primary base; the secondary base is
-//! `BODY`. The location is a province pointer. The walker captures two ordered participant vectors
-//! without event-hook or presentation data.
 
 use engine_sites::Rva;
 use crate::{
@@ -23,60 +20,29 @@ pub use details::{
     Span, commander_sources, read_details, read_details_sharing,
 };
 
-/// CLandCombat primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a2_37b8);
-/// CLandCombat secondary vtable (`BODY`).
 pub const BODY_VTABLE_RVA: Rva = Rva(0x02a2_3898);
-/// CLandCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
-/// Packed full u64 handle: low u32 type and high u32 id, in the reference base.
 pub const HANDLE: usize = 0x18;
-/// Land-combat u32 reference type.
 pub const TYPE: usize = 0x18;
-/// Ordinary CLandCombat type word.
 pub const TYPE_WORD: u32 = 62;
-/// Land-combat u32 reference id.
 pub const ID: usize = 0x1c;
-/// Attacking combat-side pointer.
 pub const ATTACKER: usize = 0x28;
-/// Defending combat-side pointer.
 pub const DEFENDER: usize = 0x30;
-/// Location province pointer; history uses its u32 id.
 pub const PROVINCE: usize = 0x38;
-/// Signed round counter, initially -1 and incremented on nonterminating
-/// rounds. This is neither elapsed days nor an absolute start date.
 pub const DAY: usize = 0x40;
-/// CLandCombat signed duration field.
 pub const DURATION: usize = 0x44;
-/// Stored combat terrain, distinct from province-definition terrain.
 pub const STORED_TERRAIN: usize = 0x48;
-/// Land-indicator byte, not a replay frame id.
 pub const INDICATOR_FRAME_HIGH: usize = 0x98;
-/// CLandCombat attacker bonus, i64 fixed point /100000.
 pub const ATTACKER_BONUS: usize = 0xa8;
-/// CLandCombat defender bonus, i64 fixed point /100000.
 pub const DEFENDER_BONUS: usize = 0xb0;
-/// Signed fixed5 terrain-width factor, applied as one plus this value.
 pub const WIDTH_FACTOR: usize = 0xa0;
-/// Signed tactic-phase dictionary index.
 pub const PHASE: usize = 0xd0;
-/// Unit class of a division (`cunit::CLASS`).
 pub const DIVISION_CLASS: u32 = 0;
-/// Unit class of a naval task force.
 pub const TASK_FORCE_CLASS: u32 = 1;
-/// Unit class of a railway gun.
 pub const RAILWAY_GUN_CLASS: u32 = 13;
-/// Signed fixed5 movement word of a land or border-war combat: the land
-/// movement speed of a division on its attacking side, not withdrawing, starts
-/// from the combat movement speed define plus this word.
 pub const MOVEMENT_MODIFIER: usize = 0xb8;
 
-/// What the land movement speed reads of one combat in a division's combat
-/// list: the combat's [`MOVEMENT_MODIFIER`] for a land or border-war combat,
-/// `None` for a naval one, and its attacking side's unit pointers, appended to
-/// `attackers` in native order. Land, border-war and naval combats share the
-/// side and unit-list layout; the attacking side must point back to its
-/// combat. On a refusal `attackers` keeps only what it held before.
 #[cfg(test)]
 pub fn movement_combat(
     memory: &impl Memory,
@@ -95,15 +61,12 @@ pub fn movement_combat(
     result
 }
 
-/// A readable attacking-side prefix and the verdict for the remaining slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MovementCombatSide {
     pub land: bool,
     pub complete: Result<(), &'static str>,
 }
 
-/// Read only the authenticated attacking membership. The movement word is
-/// demanded separately, only when a division first matches this side.
 pub fn movement_combat_side(
     memory: &impl Memory,
     base: usize,
@@ -171,7 +134,6 @@ pub fn movement_combat_side(
     }
     result
 }
-/// The movement word of an already authenticated, selected combat side.
 pub fn movement_combat_word(
     memory: &impl Memory,
     combat: usize,
@@ -189,13 +151,10 @@ pub fn movement_combat_word(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Complete native reference: low u32 type, high u32 id; no collector generation.
     pub id: u64,
     pub province: u32,
-    /// Native counters, without converting either one to elapsed days.
     pub duration: i32,
     pub day: i32,
-    /// Ranges of complete CArmy reference handles in the caller's participant arena.
     pub attacker_start: usize,
     pub attacker_len: usize,
     pub defender_start: usize,
@@ -206,34 +165,23 @@ pub struct Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub participants_len: usize,
-    /// Sum of both native vector lengths, including whole rows omitted for capacity.
     pub required_participants: usize,
 }
 
-/// Transient authenticated census inputs, valid only inside the caller's walk.
 #[derive(Clone, Copy)]
 pub struct Source {
-    /// Authenticated complete object, transient and never serialized.
     pub pointer: usize,
     pub id: u64,
-    /// Authenticated attacker/defender pointers, reused by hourly loss reads.
     pub sides: [usize; 2],
     pub attackers: Array,
     pub defenders: Array,
     pub provinces: Array,
 }
 
-/// The census's authenticated full participants of one combat: each element's
-/// pointer and the handle `unit()` authenticated for it, attackers then
-/// defenders. The hourly pass holds the simulation thread, so a later reader
-/// of the same combat in the same pass would read these very words and pass
-/// the same checks; it takes them instead. A reader given [`Members::none`],
-/// or lists that do not match the side's count, reads them itself.
 #[derive(Clone, Copy)]
 pub struct Members<'a> {
     pub pointers: &'a [usize],
     pub handles: &'a [u64],
-    /// Attackers are `[..attackers]`, defenders the rest.
     pub attackers: usize,
 }
 
@@ -262,7 +210,6 @@ impl<'a> Members<'a> {
         (pointers, handles)
     }
 
-    /// The census's participant at `index` of `side`, when it holds that side.
     fn at(&self, side: usize, units: Array, index: u32) -> Option<(usize, u64)> {
         let (pointers, handles) = self.side(side);
         if pointers.len() != units.count as usize || handles.len() != pointers.len() {
@@ -271,8 +218,6 @@ impl<'a> Members<'a> {
         Some((*pointers.get(index as usize)?, handles[index as usize]))
     }
 
-    /// The handle the census authenticated for `pointer` on `side`, searching
-    /// from `hint`: role lists usually follow the census order.
     fn handle(&self, side: usize, pointer: usize, hint: &mut usize) -> Option<u64> {
         let (pointers, handles) = self.side(side);
         if handles.len() != pointers.len() {
@@ -290,21 +235,14 @@ impl<'a> Members<'a> {
     }
 }
 
-/// Outcome of [`visit_units`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visited {
     Complete,
-    /// The role-subset scratch was too small for this combat's committed and
-    /// reserve lists; no unit was visited. Grow it to `required` off-thread.
     Scratch {
         required: usize,
     },
 }
 
-/// Visit authenticated full participants once. Side 0 is attacker and side 1
-/// defender. The province is the current native location, not movement target.
-/// `scratch` holds one side's committed and reserve pointers; the live lists
-/// are its only bound.
 pub fn visit_units(
     memory: &impl Memory,
     base: usize,
@@ -383,12 +321,9 @@ pub fn visit_units(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ModifierContext {
-    /// Modifier, dig-in factor, terrain factor. None for ordinary land combat.
     pub border_values: [Option<[i64; 3]>; 2],
 }
 
-/// Side-icon operands are independent of terrain, tactic and CAS summary
-/// fields. Flag-only icons use static text without a number.
 pub fn read_modifiers_context(
     memory: &impl Memory,
     base: usize,
@@ -420,9 +355,6 @@ pub fn read_modifiers_context(
     Ok(row)
 }
 
-/// Reads the mixed registry once, skipping only authenticated naval objects.
-/// Off-thread sizing census: authenticate the same combat/side headers without
-/// reading participant payloads or retaining native pointers after this call.
 pub fn visit_sides(
     memory: &impl Memory,
     base: usize,
@@ -449,16 +381,6 @@ pub fn visit_sides(
     Ok(())
 }
 
-/// Reads the mixed registry once, skipping only authenticated naval objects.
-/// A combat is retained only with both complete, ordered participant lists.
-/// Capacity omits whole combats; the spool thread grows the row/participant pool.
-/// No allocation, engine calls, retries or presentation reads occur here.
-/// Duplicate combat handles and duplicate members must be rejected when converting
-/// these rows off the game thread, as with the other native roster walkers.
-///
-/// `classes` runs beside `participants`: each participant's unit class. The
-/// game's save loader appends a combatant's saved unit references without a
-/// class check, so a side may hold any unit kind; each is kept with its class.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -478,8 +400,6 @@ pub fn walk(
     )
 }
 
-/// Worker rows and participant handles grow from original registry and
-/// side headers without retaining optional unit pointers.
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,
@@ -507,7 +427,6 @@ pub struct CoreDemand {
     pub participants: usize,
 }
 
-/// Authenticated header demand only; no participant or presentation payload.
 pub fn core_demand(
     memory: &impl Memory,
     base: usize,
@@ -542,8 +461,6 @@ pub fn core_demand(
     Ok(demand)
 }
 
-/// Original registry and side counts bound worker destinations before
-/// rows or participant payloads are acquired.
 pub fn walk_members(
     memory: &impl Memory,
     base: usize,
@@ -576,7 +493,6 @@ fn walk_members_buffer(
     mut output: crate::walk::Buffer<'_, Row>,
     mut participants: crate::walk::Buffer<'_, u64>,
     mut pointers: crate::walk::Buffer<'_, usize>,
-    // Each participant's class; `None` admits only divisions.
     mut classes: Option<crate::walk::Buffer<'_, u32>>,
     mut visit: impl FnMut(Source, Members<'_>),
 ) -> Walk {
@@ -585,7 +501,6 @@ fn walk_members_buffer(
     let result = (|| {
         let registry = game_state
             .checked_add(cgame_state::COMBATS)
-            // The mixed registry's CPdxArray begins after its eight-byte vptr.
             .and_then(|address| address.checked_add(8))
             .and_then(|address| Array::read(memory, address, 8))
             .ok_or("combat registry unreadable or invalid")?;
@@ -704,8 +619,6 @@ struct Reader<'a, M> {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    /// The full participant at `index` of `side`'s `units`: the census's
-    /// pointer and handle when it holds them, else read.
     fn participant(
         &self,
         members: &Members<'_>,
@@ -720,8 +633,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok((unit, self.division(unit)?))
     }
 
-    /// `unit(pointer)` for a division of `side`: the census's handle when it
-    /// is one of that side's participants, else read.
     fn known_unit(
         &self,
         members: &Members<'_>,
@@ -811,7 +722,6 @@ impl<M: Memory> Reader<'_, M> {
         pointer: usize,
         border_war: bool,
     ) -> Result<(u64, Array, Array, [usize; 2]), &'static str> {
-        // The secondary vptr and full reference occupy one exact 16-byte span.
         let identity = self.field::<[u8; 16]>(pointer, BODY)?;
         let secondary = u64::from_le_bytes(identity[..8].try_into().unwrap());
         let expected = engine_sites::at(
@@ -847,7 +757,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 
     fn row(&self, pointer: usize, id: u64) -> Result<Row, &'static str> {
-        // Location pointer and two signed counters fill these 16 bytes exactly.
         let fields = self.field::<[u8; 16]>(pointer, PROVINCE)?;
         let province = usize::try_from(u64::from_le_bytes(fields[..8].try_into().unwrap()))
             .map_err(|_| "land combat pointer overflow")?;
@@ -893,13 +802,9 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("land combat participant vector unreadable or invalid")
     }
 
-    /// A participant's handle and unit class, authenticated by that class's
-    /// own vtables. The class shares the primary vtable's 12-byte read.
     fn unit(&self, pointer: usize) -> Result<(u64, u32), &'static str> {
         let mut primary = [0; 12];
-        // Secondary vptr and handle occupy the exact contiguous 16 bytes.
         let mut secondary_and_handle = [0; 16];
-        // Every unit kind keeps its secondary base where a division does.
         debug_assert_eq!(carmy::SECONDARY_BASE, ctask_force::SECONDARY_BASE);
         let secondary = pointer
             .checked_add(carmy::SECONDARY_BASE)
@@ -911,7 +816,6 @@ impl<M: Memory> Reader<'_, M> {
         {
             return Err("land combat participant identity unreadable");
         }
-        // cunit::CLASS follows the primary vtable.
         debug_assert_eq!(cunit::CLASS, 8);
         let class = u32::from_le_bytes(primary[8..].try_into().unwrap());
         let (primary_rva, secondary_rva) = match class {
@@ -931,13 +835,11 @@ impl<M: Memory> Reader<'_, M> {
         if id == 0 {
             Err("land combat participant has null handle")
         } else {
-            // cunit::HANDLE follows the secondary base's vtable; both words remain native.
             debug_assert_eq!(cunit::HANDLE, carmy::SECONDARY_BASE + 8);
             Ok((id, class))
         }
     }
 
-    /// A participant the detail readers read as a division.
     fn division(&self, pointer: usize) -> Result<u64, &'static str> {
         match self.unit(pointer)? {
             (handle, DIVISION_CLASS) => Ok(handle),

@@ -1,5 +1,3 @@
-//! Isolated native sprite shader output for straight-alpha dashboard images.
-//! GUI layout and compositing remain the caller's; programs and samplers come from content.
 
 use crate::gpu::stats::CountedPasses as _;
 use job_priority::SpawnCarried as _;
@@ -18,28 +16,22 @@ use sha2::{Digest, Sha256};
 
 use crate::{cache, gpu, library, stream, vertices};
 
-/// Native register bytes and textures, including explicitly null texture binds.
 pub struct Draw {
     pub effect: Vec<u8>,
     pub defines: Vec<String>,
     pub size: [u32; 2],
     pub vertices: [[f32; 5]; 4],
     pub constants: Vec<(u32, Vec<f32>, Vec<std::ops::Range<u32>>)>,
-    /// Whether the constants bind the pixel stage too. Sprites bind both stages;
-    /// a masked shield's flag pass binds the vertex stage only.
     pub pixel_constants: bool,
     pub textures: Vec<(u32, Option<dds::Texture>)>,
 }
 
-/// The colour blend a pass must author to flatten into a layer: source over.
 const SOURCE_OVER: wgpu::BlendComponent = wgpu::BlendComponent {
     src_factor: wgpu::BlendFactor::SrcAlpha,
     dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
     operation: wgpu::BlendOperation::Add,
 };
 
-/// A layer's target keeps premultiplied colour and coverage without quantizing
-/// between passes.
 pub const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 struct Renderer {
@@ -56,12 +48,8 @@ struct Renderer {
 
 static RENDERER: OnceLock<Result<Mutex<Renderer>, String>> = OnceLock::new();
 
-/// Whether any artwork failed to draw in this process: a failure may be this machine's (its GPU,
-/// its shader compiler) rather than the content's, and what refused it answers later draws too.
 static DRAW_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether any artwork failed to draw in this process ([`DRAW_FAILED`]): an answer drawn since may
-/// hold a refusal another run, on a machine that can draw it, would not.
 pub fn draw_failed() -> bool {
     DRAW_FAILED.load(std::sync::atomic::Ordering::Acquire)
 }
@@ -77,14 +65,12 @@ fn noted<T>(drawn: Result<T, String>) -> Result<T, String> {
 struct Inputs {
     map_size: installed_content_core::content::diagnostics::Once<Result<[u32; 2], String>>,
     programs: Mutex<BTreeMap<Vec<u8>, Arc<ParsedProgram>>>,
-    /// Set once the renderer has retried, for this stack, what failed under earlier ones.
     retried: OnceLock<()>,
 }
 
 type ParsedProgram =
     installed_content_core::content::diagnostics::Once<Result<Arc<program::Program>, String>>;
 
-/// Parse each resolved artwork program once, retaining reporting reads and refusals.
 pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Program>, String> {
     let inputs = layers.derived::<Inputs>();
     let slot = {
@@ -98,8 +84,6 @@ pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Pr
         .clone()
 }
 
-/// Executes the authored Up program with the native Sprite declaration and four-record strip.
-/// Sprite draws bind b0 to both stages, textures to the pixel stage and a triangle strip.
 pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgba8Image, String> {
     render_batch(layers, vec![draw], decode)?
         .pop()
@@ -110,13 +94,6 @@ pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgb
         .ok_or_else(|| "empty artwork submission".to_owned())
 }
 
-/// Drawables whose passes the game draws in order over the frame, such as a
-/// masked shield's flag and overlay, one image each. Each pass blends with its
-/// technique's authored colour terms into a layer that keeps premultiplied colour
-/// and accumulates coverage, returned as straight alpha, so the page compositing
-/// the image over its background gives what the passes give over the frame. That
-/// holds only for source-over colour blending; any other pass is refused by its
-/// effect. A drawable's passes draw into one extent.
 pub fn render_layers(
     layers: &ResolvedLayers,
     drawables: Vec<Vec<Draw>>,
@@ -132,10 +109,6 @@ pub fn render_layers(
         .collect())
 }
 
-/// Refuses, naming the effect, a masked flag program whose Up technique reads its flag's
-/// atlas rectangle (`FlagCoords`, b0 bytes 64..80) other than to map its texture coordinate
-/// into the flag's cell ([`crate::atlas`]): only then does the flag drawn from a page of its
-/// own at `[0, 0, 1, 1]` draw what the game's atlas cell draws.
 pub fn flag_rectangle_mapped(
     layers: &ResolvedLayers,
     effect: &[u8],
@@ -186,11 +159,8 @@ fn flag_rectangle_checked(
     .map_err(named)
 }
 
-/// The byte offset of a masked flag pass's atlas rectangle in b0, after its matrix.
 const FLAG_RECTANGLE: u32 = 64;
 
-/// Creates the renderer on a thread of its own, so the first artwork drawn does not wait while
-/// the graphics driver creates its device, which takes it about a second.
 pub fn warm() {
     let _ = std::thread::Builder::new()
         .name("artwork renderer".into())
@@ -204,8 +174,6 @@ fn renderer() -> Result<&'static Mutex<Renderer>, String> {
         .map_err(Clone::clone)
 }
 
-/// The renderer, which a content stack first using it has retry what failed before: a
-/// shader compiler repaired since then is found.
 fn renderer_for(layers: &ResolvedLayers) -> Result<MutexGuard<'static, Renderer>, String> {
     let mut renderer = renderer()?.lock().unwrap_or_else(|e| e.into_inner());
     if layers.derived::<Inputs>().retried.set(()).is_ok() {
@@ -231,8 +199,6 @@ fn variant(
     ))
 }
 
-/// Several independent sprite targets share one submission and one mapped readback.
-/// Only preparation/submission uses the renderer lock; waiting and copying do not.
 pub fn render_batch(
     layers: &ResolvedLayers,
     draws: Vec<Draw>,
@@ -242,7 +208,6 @@ pub fn render_batch(
     render_targets(layers, targets, decode)
 }
 
-/// Each target's draws, and whether they compose into a layer ([`render_layers`]).
 fn render_targets(
     layers: &ResolvedLayers,
     targets: Vec<(bool, Vec<Draw>)>,
@@ -297,8 +262,6 @@ fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, Strin
     Ok(library::globals(map_size(layers)?, decode))
 }
 
-/// The map size GUI effects' globals carry: map shader constants use the provinces bitmap
-/// `default.map` names, read once per stack.
 pub fn map_size(layers: &ResolvedLayers) -> Result<[u32; 2], String> {
     let inputs = layers.derived::<Inputs>();
     inputs
@@ -375,7 +338,6 @@ impl Renderer {
         })
     }
 
-    /// Forget failed compiles, their effects and a compiler that was not found.
     fn retry_failures(&mut self) {
         self.cache.retry_failures();
         self.effects.retain(|_, effect| !effect.failed());
@@ -419,7 +381,6 @@ impl Renderer {
                 }
             }
         } else {
-            // A PNG carries the shader's straight-alpha output; the image's host composites it.
             self.stream.bind_blend(None, wgpu::ColorWrites::ALL);
         }
         let stages: &[Stage] = if draw.pixel_constants {
@@ -517,8 +478,6 @@ impl Renderer {
         });
         for (level, mip) in image.mips[0].iter().enumerate() {
             let (bw, bh) = format.block_dimensions();
-            // The backend has no B5G6R5/B5G5R5A1 format. Float expansion keeps
-            // native UNORM sample precision, rather than quantizing to RGBA8.
             let expanded: Vec<f32> = if image.format.sample_16(0).is_some() {
                 mip.data
                     .chunks_exact(2)
@@ -704,10 +663,8 @@ impl Renderer {
     }
 }
 
-/// One target's draws, and whether they compose into a layer.
 type Target = (bool, Vec<(Draw, Arc<library::Effect>)>, Diagnostics);
 
-/// Where one target's rows sit in the readback.
 struct Region {
     size: [u32; 2],
     pitch: u32,
@@ -764,12 +721,10 @@ impl Readback {
     }
 }
 
-/// A layer's premultiplied half-float RGBA texels ([`LAYER_FORMAT`]) as straight RGBA8.
 pub fn layer_pixels(texels: &[u8]) -> Vec<u8> {
     texels.chunks_exact(8).flat_map(straight).collect()
 }
 
-/// A layer texel's premultiplied half-float colour and coverage as straight RGBA8.
 fn straight(texel: &[u8]) -> [u8; 4] {
     let [r, g, b, a] = [0, 2, 4, 6].map(|at| half(u16::from_le_bytes([texel[at], texel[at + 1]])));
     let unorm = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -777,7 +732,6 @@ fn straight(texel: &[u8]) -> [u8; 4] {
     [colour(r), colour(g), colour(b), unorm(a)]
 }
 
-/// An IEEE binary16 value.
 fn half(bits: u16) -> f32 {
     let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
     let exponent = i32::from((bits >> 10) & 0x1F);
@@ -797,7 +751,6 @@ mod tests {
     #[test]
     fn layer_texels_return_straight_alpha_from_premultiplied_half_floats() {
         let texel = |values: [f32; 4]| -> Vec<u8> {
-            // Exact binary16 encodings of the values used below.
             values
                 .iter()
                 .flat_map(|value| {
@@ -814,7 +767,6 @@ mod tests {
         };
         assert_eq!(straight(&texel([0.25, 0.5, 0.0, 0.5])), [128, 255, 0, 128]);
         assert_eq!(straight(&texel([0.25, 0.0, 0.0, 1.0])), [64, 0, 0, 255]);
-        // Nothing covered has no colour.
         assert_eq!(straight(&texel([0.0, 0.0, 0.0, 0.0])), [0; 4]);
         assert_eq!(half(0x0001), 2f32.powi(-24));
         assert_eq!(half(0xC000), -2.0);
@@ -980,7 +932,6 @@ Effect Up { VertexShader=V PixelShader=P }
         assert!(super::globals(&fresh, Decode::default()).is_err());
     }
 
-    /// A draw that fails, for whatever reason, is noted for the whole process.
     #[test]
     fn a_failed_draw_is_noted() {
         let layers = ResolvedLayers::default();

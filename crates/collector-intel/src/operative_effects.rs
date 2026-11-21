@@ -36,13 +36,10 @@ struct Cache {
     generation: u64,
     roots: HashMap<(usize, u32), Held>,
     effects: HashMap<(u64, bool), HeldEffect>,
-    /// This hour's trade opinions by (target, owner); read live every hour.
     trade: HashMap<(u32, u32), Option<i64>>,
     root_out: NamedKey,
-    /// Held entries this generation visited, to sweep only when some were not.
     touched_roots: usize,
     touched_effects: usize,
-    /// Held storage changed since [`BYTES`] was measured.
     changed: bool,
 }
 
@@ -101,7 +98,6 @@ impl Cache {
             }
             return held.tree.clone();
         }
-        // Only what the breakdown prints: unrelated zero sources never change the row.
         let mut tree = modifier_breakdown::printed_nodes(memory, base, root, key)
             .ok()
             .filter(|tree| tree.first().is_some_and(|node| node.value == value))

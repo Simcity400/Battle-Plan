@@ -1,5 +1,3 @@
-//! Ship model selection chooses a registered definition before creating
-//! its actor. An unsupported chosen definition must not select a later hull.
 
 use super::*;
 use installed_content_core::{parser::c_string, parser::text};
@@ -48,7 +46,6 @@ fn name_with_generated<'t>(
     })
 }
 
-// Cache only successful generated results; surrounding selection stays per occurrence.
 fn generated(
     assets: &UnitModelAssets,
     row: &replay_data::rows::ShipModelRow,
@@ -60,8 +57,6 @@ fn generated(
         .variants
         .get(row.variant)
         .ok_or_else(|| format!("naval_entity: variant {} is unavailable", row.variant))?;
-    // Use the variant creator directly; the division adapter instead
-    // chooses a model country. The explicit override never reaches these operands.
     let country = creator_country(variant.creator_link)?;
     let (owner, token) =
         definition.ok_or("naval_entity: ship's roster owner or Ships.class_id is unavailable")?;
@@ -85,8 +80,6 @@ fn generated(
         country: owner,
         token,
     };
-    // The game rebuilds this pool from the roster owner's deployment
-    // definition. Its first entry can differ from the global need.
     let requirements = assets
         .sub_units
         .requirements(identity, subunit, &hour.sources)
@@ -94,7 +87,6 @@ fn generated(
     let first = requirements.first().map(|(key, _)| key.as_str());
     let mut effective = subunit.clone();
     effective.category = row.formation_flags;
-    // The game returns before reading the sprite when count is zero.
     if first.is_some() {
         effective.sprite = identifier(&row.fallback_sprite, "embedded sub-unit sprite")?.to_owned();
     }
@@ -115,8 +107,6 @@ fn creator_country(raw: u32) -> Result<u32, String> {
     }
 }
 
-/// The two closures keep later native inputs lazy: an explicit primary winner
-/// needs neither generated graphics nor the task force's fallback country.
 fn choose<'t>(
     row: &replay_data::rows::ShipModelRow,
     graphics: &[u8],
@@ -131,8 +121,6 @@ fn choose<'t>(
     if counter.definition_valid == 0 {
         return Ok(registered(PLACEHOLDER_ENTITY)?.then(|| PLACEHOLDER_ENTITY.to_owned()));
     }
-    // The game tests the stored string's length, then lookup consumes a C
-    // string. A stored NUL does not turn an explicit override into generation.
     if row.variant != 0 {
         let primary = if graphics.is_empty() {
             generated()?
@@ -145,8 +133,6 @@ fn choose<'t>(
             return Ok(Some(name));
         }
     }
-    // Native reads the fallback country before checking the explicit entity
-    // again, and only after the primary registry lookup failed.
     let tag = tag()?;
     if row.variant != 0 && !graphics.is_empty() {
         let name = identifier(graphics, "explicit variant entity")?;
@@ -162,7 +148,6 @@ fn choose<'t>(
             }
         }
     }
-    // Try the ship's own sprite even when it is empty.
     let sprite = identifier(&row.fallback_sprite, "fallback hull sprite")?;
     for name in ship_candidates(tag, sprite, row.model_number) {
         if registered(&name)? {
@@ -364,7 +349,6 @@ mod tests {
             "TAG_fallback_-3_entity".into(),
             "TAG_fallback_entity".into(),
         ]);
-        // A previously refused bake is remembered by the real shared baker.
         assets.bakes.lock().unwrap().insert(
             "TAG_fallback_-3_entity".into(),
             std::sync::Arc::new(std::sync::Mutex::new(true)),

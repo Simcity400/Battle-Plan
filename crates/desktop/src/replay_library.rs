@@ -51,7 +51,6 @@ pub(super) fn scan_with(
     })
 }
 
-/// Each recording the library lists, with its folder; returns the canonical root.
 fn walk(
     folder: &Path,
     checkpoint: &mut impl FnMut() -> Result<(), String>,
@@ -107,7 +106,6 @@ fn hidden(metadata: &std::fs::Metadata) -> bool {
     metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
 }
 
-/// The recorder's save folder, shared through its settings.
 pub(super) fn configured_folder() -> Result<PathBuf, String> {
     RecorderSettings::load()
         .map(|shared| shared.effective_save_folder())
@@ -118,7 +116,6 @@ pub(super) fn configured_folder() -> Result<PathBuf, String> {
 pub async fn replay_library() -> Result<ReplayLibrary, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let folder = configured_folder()?;
-        // The recorder creates its default folder when it first saves.
         if folder == replay::recorder_settings::default_save_folder() {
             std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         }
@@ -128,8 +125,6 @@ pub async fn replay_library() -> Result<ReplayLibrary, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Changes when the library's folder changes or a recording it lists is added, removed, renamed
-/// or rewritten; opens no file.
 #[tauri::command]
 pub async fn replay_library_stamp() -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(|| stamp(&configured_folder()?))
@@ -157,7 +152,6 @@ pub async fn set_replay_folder(folder: String) -> Result<ReplayLibrary, String> 
             return Err("Choose a replay folder.".into());
         }
         let library = scan(Path::new(&folder))?;
-        // Kept as chosen: the recorder shows it under Save to.
         let chosen = PathBuf::from(folder);
         RecorderSettings::update(|shared| shared.choose_save_folder(chosen))
             .map_err(|error| format!("Recorder settings could not be saved: {error}"))?;

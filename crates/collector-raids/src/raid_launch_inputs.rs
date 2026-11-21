@@ -1,17 +1,3 @@
-//! The stored inputs of a raid offer's launch gate, which the game computes
-//! per viewing country on demand (`engine_native::raid_launch_inputs`).
-//! RaidAirSites is the sliced `raid_launch` family (owner: canonical slot)
-//! with no slice: each hour reads a country new to the census, the owners
-//! of a read that was not published and every country a site list writer
-//! marked since the previous hour ([`crate::raid_changes`],
-//! [`SliceSelection::mark`]); every other country's sites carry. A take
-//! that does not certify the previous hour's read reads every country
-//! ([`SliceSelection::certify`]).
-//! RaidCountryInputs, AceRangeInputs, StockpileArchetypes (the essential
-//! stock, capped) and CountryCommandPower, which the stability dashboard
-//! also reads, are read for every country each hour in the same walk: the
-//! game moves stockpiles, command power and aces every hour and no hook
-//! observes their writers.
 use crate::{
     clock::qpc,
     raid_changes::{Changes, Counts, Family},
@@ -39,10 +25,8 @@ pub const TABLES: [TableId; N] = [
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
-    /// RaidCountryInputs, StockpileArchetypes, RaidAirSites, AceRangeInputs.
     rows: [usize; 4],
     reservations: usize,
-    /// Command power rows: one per country.
     command_power: usize,
 }
 
@@ -53,16 +37,12 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// One launch-input row and one command-power row per country.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(slots, 1));
         raise(&mut self.command_power, rows(slots, 1));
     }
 
-    /// The live reservation words of every country
-    /// ([`crate::country_scale::observe_raid_arenas`]): a country whose
-    /// reservations do not fit is not read, so a full hour needs them all.
     pub fn raise_for_reservations(&mut self, words: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.reservations, rows(words, 1));
@@ -102,19 +82,13 @@ pub struct Captured {
     sites: CaptureRows<native::SiteRow>,
     aces: CaptureRows<native::AceRow>,
     reservations: Arena<u32>,
-    /// Every country's command power, each hour.
     command_power: CaptureRows<native::CommandPowerRow>,
-    /// The canonical slots this hour's sliced rows cover.
     selection: SliceSelection,
-    /// The raid types' essential archetypes, read each walk; the storage is
-    /// kept.
     essentials: Vec<native::Essential>,
-    /// Modifier metadata, read once per walk; its storage is kept.
     memo: engine_native::modifier_definition::DefinitionMemo,
     volunteer_air: native::VolunteerAir,
 }
 
-/// The family's owner store and the site list writers' marks.
 pub struct Owners<'a> {
     pub store: &'a mut SliceFingerprints,
     pub changes: &'a dyn Changes,
@@ -130,7 +104,6 @@ impl Captured {
         self.aces.fail(outcomes[3]);
         self.selection.reset_hooked(hour, force_full);
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; 4],
@@ -179,17 +152,14 @@ impl Captured {
         self.aces.grow(&mut capacity.rows[3]);
         self.reservations.grow(&mut capacity.reservations);
     }
-    /// Start a frame's selection at its hour; the capture resets it again.
     pub fn reset_selection(&mut self, hour: i32, force_full: bool) {
         self.selection.reset_hooked(hour, force_full);
     }
 
-    /// The canonical slots whose sliced rows this frame's read replaced.
     pub fn selection(&self) -> &SliceSelection {
         &self.selection
     }
 
-    /// Fixture read of every country without the family's owner store.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
         &mut self,
@@ -202,11 +172,6 @@ impl Captured {
         self.capture_sliced(memory, base, game_state, hour, force_full, None)
     }
 
-    /// Scan the country census into the store with a constant print (a new
-    /// country, or the owner of an unpublished read, joins this hour's read)
-    /// and add every country a site list writer marked, then read the sliced
-    /// table for those countries, and the country inputs, aces and command
-    /// power for every country.
     pub fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -232,7 +197,6 @@ impl Captured {
             return [0; N];
         }
         let started = qpc();
-        // The link ids a complete census saw, sizing the site mark set.
         let mut links = None;
         if let Some(owners) = owners.as_mut() {
             let store = &mut *owners.store;
@@ -253,17 +217,12 @@ impl Captured {
                 }
             };
             store.finish_scan();
-            // Without a complete census every owner is read this hour.
             self.selection.finish_pass(store, census);
             if census {
                 links = reader
                     .as_ref()
                     .map(|countries| countries.arrays()[1].count as usize);
             }
-            // Every country a site list writer marked joins this hour's
-            // read, by its link's canonical slot; a take that does not
-            // certify the previous hour's read, or an unresolved link, reads
-            // every country.
             let selection = &mut self.selection;
             let mut resolved = true;
             let epoch = owners.changes.take(Family::Sites, &mut |raw| match reader
@@ -276,8 +235,6 @@ impl Captured {
             selection.certify(store, epoch.filter(|_| resolved));
             self.selection.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
         }
-        // The launch keys are fixed built-ins, checked by the fixed layout
-        // contract, which withholds these tables on a mismatch.
         let keys = native::Keys::FIXED;
         let selection = &self.selection;
         use collector_model_inputs::local_subunit_changes::{Changes as _, Observer};
@@ -331,7 +288,6 @@ impl Captured {
         ticks
     }
 
-    /// Record the hour's counts.
     fn record_sites(&self, links: Option<usize>) {
         crate::raid_changes::record(
             Family::Sites,
@@ -442,10 +398,6 @@ impl Captured {
 mod tests {
     use super::*;
 
-    /// The walk's by-name modifier values map to their columns, an
-    /// unregistered name stays `None`, and command power with the ace country
-    /// modifiers is its own table: the hourly columns are not repeated in
-    /// RaidCountryInputs.
     #[test]
     fn the_country_conversion_maps_the_named_modifiers_and_the_allocation() {
         let mut captured = Captured::with_capacities(&Capacities {
@@ -503,9 +455,6 @@ mod tests {
         );
     }
 
-    /// No slice: an unchanged, unmarked country is never read again, a
-    /// country new to the census is read at once, and the owners of a read
-    /// that was not published are read at the next hour.
     #[test]
     fn launch_owners_are_read_only_when_new_marked_or_unpublished() {
         let mut store = SliceFingerprints::new();
@@ -525,12 +474,10 @@ mod tests {
             assert!(!selection.reads_any(), "hour {hour}");
             assert_eq!(selection.carried(), 48);
         }
-        // A new country joins the hour's read, and a marked one.
         selection.reset_hooked(30, false);
         scan(&mut selection, &mut store, 49);
         selection.mark(5);
         assert!(selection.contains(49) && selection.contains(5) && !selection.contains(6));
-        // Hour 30's read was not published: its owners are read again.
         selection.invalidate(&mut store);
         selection.reset_hooked(31, false);
         scan(&mut selection, &mut store, 49);

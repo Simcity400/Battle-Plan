@@ -1,4 +1,3 @@
-//! Typed prepared rows use fixed keys and raw decoded fields, never wire deltas.
 use crate::{
     codec::{Decoder, invalid_static as invalid},
     rows::RowCodec,

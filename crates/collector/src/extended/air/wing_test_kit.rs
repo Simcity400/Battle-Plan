@@ -143,7 +143,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             accidents as u32,
         );
         p64(&mut bytes, wing + cair_wing::EXPERIENCE, exp as u64);
-        // Equipment pool: two entries on WING, one on WING2.
         let (items, entries) = if wing == WING {
             (0x39000usize, vec![(VARIANT, 100i64), (VARIANT2, -50i64)])
         } else {
@@ -178,7 +177,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             ((id as u64) << 32) | cequipment_variant::REFERENCE_TYPE as u64,
         );
     }
-    // Alias ENTRIES to the first wing's item vector for the fault test.
     let _ = ENTRIES;
     bytes
 }
@@ -194,8 +192,6 @@ pub(crate) struct Split {
     pub cumulative: Vec<engine_native::cair_wing::CumulativeRow>,
 }
 
-/// The independent reference: the wing walk, then each wing's equipment and
-/// cumulative operands read afresh, in walk order.
 fn collect_typed(memory: &impl Memory, _capacity: &Capacities) -> Split {
     use engine_native::cair_wing;
     let mut collected: Vec<(usize, usize, cair_wing::Row)> = Vec::new();
@@ -386,9 +382,6 @@ pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
     );
 }
 
-/// Decode-worker assertion against pooled buffers (same module, so
-/// private rows are visible). Compares outcomes and rows with the typed
-/// reference without cloning through public views.
 pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
     assert_eq!(
         captured.equipment.outcome, direct.equipment_outcome,

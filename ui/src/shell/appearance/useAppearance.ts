@@ -8,8 +8,6 @@ import { getBackdrop } from './backdrops';
 import { APPEARANCE_EVENT } from './events';
 import { SIDEBAR_ICONS, sidebarIconIds } from './sidebarIcons';
 
-/** A media query as an external store. Its list and functions are made once, so a render
- * neither queries nor resubscribes. */
 function mediaStore(query: string) {
   let list: MediaQueryList | undefined;
   const media = () => list ??= window.matchMedia(query);
@@ -24,15 +22,12 @@ function useMedia(store: ReturnType<typeof mediaStore>): boolean {
   return useSyncExternalStore(store.subscribe, store.matches, () => false);
 }
 
-/** Writes the resolved appearance onto the root as CSS variables and data attributes. */
 export function applyAppearance(root: HTMLElement, settings: AppearanceSettings, resolved: ResolvedAppearance, themed: ThemeColors = resolved.colors, mode: ThemeMode = resolved.mode): void {
   const colors = contrastColors(themed, settings.contrast);
   for (const role of themeRoles) root.style.setProperty(cssVariable(role), colors[role]);
   for (const id of sidebarIconIds) root.style.setProperty(`--sidebar-icon-${id}`, settings.sidebarIcons[id]?.colour ?? SIDEBAR_ICONS[id][mode]);
   root.style.setProperty('--glass', `${settings.glass}%`);
   root.style.setProperty('--glass-blur', settings.glass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.glass) * 0.2)}px`);
-  // The sidebar and top bar were 0.8 × glass + 20 opaque and blurred as the glass was:
-  // in their own opacity that blur is 12 + (100 − opacity) × 0.25.
   root.style.setProperty('--chrome-opacity', `${settings.chromeGlass}%`);
   root.style.setProperty('--chrome-blur', settings.chromeGlass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.chromeGlass) * 0.25)}px`);
   root.style.setProperty('--radius', `${settings.radius}px`);
@@ -45,18 +40,15 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   root.dataset.mode = mode;
   root.dataset.theme = resolved.theme.id;
   root.dataset.motion = resolved.reducedMotion ? 'reduced' : 'full';
-  // Panels in the main view frost whatever backdrop is behind them there.
   root.dataset.backdrop = settings.workspaceBackdrop.kind === 'same' ? settings.backdrop.kind : settings.workspaceBackdrop.kind;
   root.dataset.headerFlag = settings.headerFlag;
   root.dataset.chartMotion = settings.charts.motion;
   root.dataset.playbackRate = settings.charts.frameRate;
   root.dataset.countryColours = settings.charts.countryColours;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.chrome);
-  // Canvas charts cannot see CSS changes; tell them to re-read their tokens.
   if (root === document.documentElement) window.dispatchEvent(new Event(APPEARANCE_EVENT));
 }
 
-/** Apply the saved appearance before React renders, so the first frame is already themed. */
 export function applySavedAppearance(): void {
   const { settings } = loadAppearance();
   applyAppearance(document.documentElement, settings, resolveAppearance(settings, dark.matches(), motion.matches()));
@@ -64,7 +56,6 @@ export function applySavedAppearance(): void {
 
 export interface ThemePreview { colors: ThemeColors; mode: ThemeMode }
 
-/** The stored image a backdrop shows, once it has loaded; null for other kinds. */
 function useBackdropImage(backdrop: Backdrop<string>): string | null {
   const [image, setImage] = useState<string | null>(null);
   const imageId = backdrop.kind === 'image' ? backdrop.imageId : null;
@@ -89,7 +80,6 @@ export function useAppearance() {
 
   useLayoutEffect(() => {
     const root = document.documentElement;
-    // Colour changes should snap, not animate every control at once.
     root.classList.add('theme-switching');
     applyAppearance(root, settings, resolved, preview?.colors, preview?.mode);
     const frame = requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));

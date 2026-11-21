@@ -1,4 +1,3 @@
-//! Border-war power shared by province hovers and fresh division attrition.
 use replay_data::{rows::DivisionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -49,7 +48,6 @@ pub fn combat_value(d: &DivisionRow, stats: [i64; 3], skill: i32, defines: &Defi
     (factor.wrapping_mul(stats) / 100_000).wrapping_mul(100) / 100_000
 }
 
-/// Power returns the enemy fraction; tooltip text uses its complement.
 pub fn enemy_ratio(power: [i64; 2]) -> i64 {
     let total = power[0].wrapping_add(power[1]);
     if total < 1 {
@@ -147,7 +145,7 @@ pub fn power(
             for handle in &roster.mixed {
                 let Some(division) = division_by_id.get(handle) else {
                     continue;
-                }; // native class !=0
+                };
                 let stats = statuses
                     .get(handle)
                     .ok_or_else(|| format!("selected border army {handle} status unavailable"))?
@@ -166,7 +164,6 @@ pub fn power(
                         let leader = leaders
                             .get(&group.leader)
                             .ok_or("border army leader absent")?;
-                        // Read the skill value without testing the validity gate.
                         if leader.skill_status == 0 {
                             return Err("border army leader skill unavailable".into());
                         }
@@ -177,7 +174,6 @@ pub fn power(
                 power[side] =
                     power[side].wrapping_add(combat_value(division, stats, skill, defines));
             }
-            // Native controller collection is outside the unit-loop/nonempty gate.
             let mut known = false;
             for &raw in &controllers {
                 known |= same(links, raw, province.controller)?;
@@ -205,10 +201,6 @@ pub fn power(
     Ok(power)
 }
 
-/// The enemy share of border-war power around `state`, seen from `country`
-/// (a raw link, mode zero), which the
-/// attrition hover asks for the unit's
-/// logical owner and scales by `BORDER_WAR_ATTRITION_FACTOR`.
 pub fn enemy_share(
     content: &Inputs<'_>,
     frame: &DecodedFrame,

@@ -1,8 +1,4 @@
-//! Widget data for the desktop dashboard: recording sources, data products,
-//! the host/viewer protocol and the native data service. No map assets are
-//! rendered here and no live game memory is read.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -30,8 +26,6 @@ pub use reply_dto::*;
 pub use service::Service;
 pub use source::{Source, SourceKey};
 
-/// The generated TypeScript contract: shared types, then every product's
-/// parameters and reply. One deterministic file, exported explicitly.
 #[cfg(any(test, feature = "export-types"))]
 pub fn typescript_contract() -> String {
     #[cfg(any(test, feature = "export-types"))]
@@ -105,9 +99,6 @@ pub fn typescript_contract() -> String {
     for product in products::PRODUCTS {
         declarations.extend(product.types.expect("every exported product registers its types")());
     }
-    // Products may share a type (CountryParams, LandOwners); declare each name
-    // once. Two different types under one name would silently drop one, so
-    // that refuses the contract.
     let mut seen = std::collections::BTreeMap::new();
     declarations.retain(|declaration| {
         let name = declaration
@@ -152,10 +143,6 @@ pub fn typescript_contract() -> String {
         "/** Data requests outstanding at once; one past it is refused for want of room. */\nexport const MAX_PENDING_REQUESTS = {};\n",
         transport::MAX_PENDING_REQUESTS
     ));
-    // The refusals that say nothing of the product, only that a host or the service had
-    // no room: a reader tries these again; other errors remain failures until retry
-    // or a content/configuration change. Each is named, so a frontend producer and tests use
-    // the constant, never their own text.
     text.push_str(
         "/** Refusals for want of room: a message starting with one may be tried again. */\n",
     );

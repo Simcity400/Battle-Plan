@@ -3,11 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// Every probed content path and the thread that probed it.
 pub(super) static PROBED: std::sync::Mutex<Vec<(PathBuf, std::thread::ThreadId)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Every content path whose metadata was read.
 pub(super) static STAMPED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
 struct Fixture {
@@ -21,7 +19,6 @@ impl Fixture {
         Self::with_files(name, 0)
     }
 
-    /// The fixture with `extra` more covered files in `common`.
     fn with_files(name: &str, extra: usize) -> Self {
         let root = std::env::temp_dir().join(format!(
             "hoi4_hash_cache_{name}_{}_{:?}_{}_{}",
@@ -93,7 +90,6 @@ impl Fixture {
         HashCache::decode(&fs::read(self.cache_path()).unwrap()).unwrap()
     }
 
-    /// The cache's bytes, its time set far in the past, so that any write of it shows.
     fn mark_cache(&self) -> Marked {
         let time = UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
         fs::File::options()
@@ -108,7 +104,6 @@ impl Fixture {
         }
     }
 
-    /// That the cache was not written since `marked`.
     fn assert_unwritten(&self, marked: &Marked) {
         assert_eq!(fs::read(self.cache_path()).unwrap(), marked.bytes);
         assert_eq!(
@@ -129,8 +124,6 @@ impl Drop for Fixture {
     }
 }
 
-/// A gathering stopped before it starts hashes nothing and says it was stopped; one never
-/// stopped gathers as [`gather`] does, the cache it leaves kept for the next.
 #[test]
 fn a_stopped_gathering_hashes_no_more_files() {
     let fixture = Fixture::with_files("stopped", 16);
@@ -196,7 +189,6 @@ fn cold_content_hashes_are_read_on_several_threads() {
     assert_eq!(resolved.stats.files, 259);
     assert_eq!(resolved.stats.files_read, resolved.stats.files);
     assert_eq!(fixture.cache().entries.len(), expected.entries.len());
-    // Probed paths are canonical; the fixture's folder name is unique.
     let folder = fixture
         .root
         .file_name()
@@ -323,7 +315,6 @@ fn missing_or_malformed_hash_cache_is_rebuilt_before_first_hash_failure() {
         } else {
             fs::write(fixture.cache_path(), b"incomplete hash cache {").unwrap();
         }
-        // A missing executable fails before any file is hashed.
         fs::remove_file(fixture.options.game_dir.join("hoi4.exe")).unwrap();
         let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
         assert!(error.to_string().starts_with("Game hoi4.exe: "), "{error}");
@@ -341,14 +332,11 @@ fn dirty_hash_cache_write_errors_leave_resolution_intact() {
     let resolved = resolve(&fixture.identity, &fixture.options).unwrap();
     assert!(resolved.stats.cache_unsaved.is_some());
     assert!(fixture.cache_path().is_dir());
-    // A content failure keeps its own error, not the cache's.
     fs::remove_file(fixture.options.game_dir.join("hoi4.exe")).unwrap();
     let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
     assert!(error.to_string().starts_with("Game hoi4.exe: "), "{error}");
 }
 
-/// A warm resolve takes every listed folder file's stamp from the content walk, reading none of
-/// their metadata again, and those stamps are what reading the metadata gives.
 #[test]
 fn warm_resolution_stamps_listed_files_from_the_walk() {
     let fixture = Fixture::with_files("walk_stamps", 20);
@@ -387,7 +375,6 @@ fn warm_resolution_stamps_listed_files_from_the_walk() {
     assert_eq!(members, 22);
 }
 
-/// The cache file is exactly what it encodes: a truncated, extended or foreign file is rebuilt.
 #[test]
 fn hash_cache_files_decode_only_whole() {
     let fixture = Fixture::with_files("whole", 3);

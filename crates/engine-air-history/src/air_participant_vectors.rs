@@ -1,13 +1,3 @@
-//! Country vectors selecting whose wings the flying-aircraft map draws:
-//! reciprocal donors, wartime allies and enemies, each in native order. These
-//! simulation vectors are shared by all viewers. The viewer builds its arrays
-//! and authenticates each reference through CountryLinks. Writers are listed
-//! in `diplomacy_mutations`; the collector copies touched countries.
-//!
-//! Copies are batched: diplomacy pointers, donor headers and diplomacy identities
-//! and headers first. Once all headers size the destination, [`copy_entries`]
-//! copies up to [`BATCH`] vectors per scattered read. Entries remain raw until
-//! [`rows`] expands them.
 
 use crate::{
     Memory, ccountry, cdiplomacy_status,
@@ -15,29 +5,20 @@ use crate::{
     memory::{RecordField, RecordLayout, RecordSources},
 };
 
-/// Reciprocal air-volunteer donor vector. Presentation appends donors not yet
-/// present and, when requested, their own donors.
 pub const RECIPROCAL_DONORS: usize = 0x1410;
 
 pub use game_model::air_participants::{DONOR, ALLY, ENEMY};
 
-/// Countries per gather and vectors per scattered copy.
 pub const BATCH: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
-    /// Canonical slot of the country owning the vector.
     pub country: u32,
     pub kind: u8,
-    /// Position in the vector; repeated references keep their own rows.
     pub ordinal: u32,
-    /// Raw country reference as stored.
     pub other: u32,
 }
 
-/// One country's vectors: `counts` entries of donors, allies and enemies, in
-/// that order, from `sources`, copied to `offset` bytes into the staging
-/// buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Staged {
     pub slot: u32,
@@ -66,7 +47,6 @@ const POINTER: [RecordField; 1] = [field(ccountry::DIPLOMACY_STATUS, 0, 8)];
 const POINTER_LAYOUT: RecordLayout<'static> = RecordLayout::new(&POINTER, 8).expect("valid layout");
 const DONORS: [RecordField; 1] = [field(RECIPROCAL_DONORS, 0, 16)];
 const DONORS_LAYOUT: RecordLayout<'static> = RecordLayout::new(&DONORS, 16).expect("valid layout");
-/// The diplomacy vtable, then the enemy and wartime-ally headers.
 const STATUS: [RecordField; 3] = [
     field(0, 0, 8),
     field(cdiplomacy_status::ENEMY_COUNTRIES, 8, 16),
@@ -89,8 +69,6 @@ fn gather(
     Ok(())
 }
 
-/// The diplomacy status pointers of up to [`BATCH`] countries, which the
-/// enemy and ally writers receive.
 pub fn diplomacy_pointers(
     memory: &impl Memory,
     countries: &[usize],
@@ -108,11 +86,6 @@ pub fn diplomacy_pointers(
     Ok(())
 }
 
-/// The vector headers of up to [`BATCH`] countries, each
-/// `(slot, country, diplomacy)`, emitted in order with `offset` unset. The
-/// diplomacy status is authenticated by its vtable before its headers are
-/// followed. A vector longer than `links`, the live country-link count, is
-/// refused, so no copy is sized from a torn header.
 pub fn headers(
     memory: &impl Memory,
     base: usize,
@@ -146,7 +119,6 @@ pub fn headers(
         3,
         &mut status[..len * 40],
     )?;
-    // Each vector's first entry and count.
     let header = |bytes: &[u8]| {
         let vector = Array::from_header(bytes.try_into().expect("16-byte header"), 4)
             .ok_or("air participant vector header invalid")?;
@@ -184,8 +156,6 @@ pub fn headers(
     Ok(())
 }
 
-/// Copy the staged countries' entries to their offsets in `bytes`, which
-/// must hold them, [`BATCH`] nonempty vectors per scattered copy.
 pub fn copy_entries(
     memory: &impl Memory,
     staged: &[Staged],
@@ -197,7 +167,6 @@ pub fn copy_entries(
     let mut flush = |addresses: &mut [usize; BATCH],
                      spans: &mut [(usize, usize); BATCH],
                      count: usize| {
-        // The spans are in ascending, disjoint order.
         let mut rest = &mut *bytes;
         let mut consumed = 0;
         let mut destinations: [&mut [u8]; BATCH] = std::array::from_fn(|_| <&mut [u8]>::default());
@@ -238,7 +207,6 @@ pub fn copy_entries(
     Ok(())
 }
 
-/// A staged country's rows in native order: donors, allies, enemies.
 pub fn rows(staged: &Staged, entries: &[u32], mut emit: impl FnMut(Row)) {
     let mut entries = entries.iter();
     for (kind, &count) in [DONOR, ALLY, ENEMY].into_iter().zip(&staged.counts) {
@@ -273,7 +241,6 @@ mod tests {
         put(bytes, at + 8, &count.to_le_bytes());
         put(bytes, at + 12, &count.to_le_bytes());
     }
-    /// Countries A and B with their diplomacy statuses.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x19000];
         for (country, diplomacy) in [(A, A_DIP), (B, B_DIP)] {
@@ -346,7 +313,6 @@ mod tests {
                 |row| out_rows.push((row.country, row.kind, row.ordinal, row.other)),
             );
         }
-        // Every vector in native order, enemies included; raw aliases stay.
         assert_eq!(
             out_rows,
             [

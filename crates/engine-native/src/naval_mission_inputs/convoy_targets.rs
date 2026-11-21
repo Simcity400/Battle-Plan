@@ -1,5 +1,3 @@
-//! Raw operands from the raider's first live convoy target and its country's first convoy design.
-//! All native permissions come from the caller's same-pass reference/country observations.
 use crate::{
     Memory, allocation, cconvoys, ccountry, cequipment_variant, cequipment_variant_pool,
     equipment_entry, read,
@@ -23,8 +21,6 @@ pub struct SourceSpeed {
     pub terrain_class: Option<i32>,
 }
 
-/// Independent leaves for an already demanded live-target source. The stat
-/// selector is the existing mission observation; an absent attempt is not retried.
 pub fn read_source_speed(memory: &impl Memory, stats: Option<usize>) -> SourceSpeed {
     SourceSpeed {
         base: stats.and_then(|pointer| word(memory, pointer, SOURCE_SPEED)),
@@ -63,7 +59,6 @@ pub(super) fn target(
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvoyDesign {
-    /// Zero proves that the complete convoy pool has no nonzero-amount variant.
     pub variant: Option<u64>,
     pub surface_detection: Option<i64>,
     pub sub_detection: Option<i64>,
@@ -71,7 +66,6 @@ pub struct ConvoyDesign {
     pub maximum_speed: Option<i64>,
 }
 
-/// A retained memo scoped to one frozen worker pass; clear before its first mission.
 #[derive(Default)]
 pub struct ConvoyDesigns {
     rows: Vec<(u32, ConvoyDesign)>,

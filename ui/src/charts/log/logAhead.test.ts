@@ -7,8 +7,6 @@ import { anchoredScrollTop, logItems, logOffsets, logSectionItems, MONTH_HEIGHT,
 import { logPageEntries } from './logPages.ts';
 import type { LogItem, LogRow } from './logData';
 
-// Newest first, as a list holds them ahead of a clock at 100 hours past the 10th of March 1937: the row of May and the
-// row of 101 wait, 100 and 90 show, and the row of 80 is replaced by its successor at 101.
 const at = (hours: number) => engineHour({ year: 1937, month: 3, day: 10, hour: 1 })! + hours;
 const MAY = at(62 * 24);
 const row = (key: string, hour: number, extra: Partial<LogRow<string>> = {}): LogRow<string> => ({ key, hour, item: key, ...extra });
@@ -27,7 +25,6 @@ test('rows held ahead show from their reveal, a month from its first row\'s, a r
 });
 
 test('one row drawn with its states shows the state its hour reaches, its first before it, the last it showed after or between', () => {
-  // A battle under way from 90, ended (dated 104) from 104 until it leaves at 110, back at 120 from a later read.
   const items = logItems([row('x#ended', at(104), { id: 'x', leftHour: at(110) }), row('y', at(100)), row('x#under way', at(90), { id: 'x', leftHour: at(104) }),
     row('x#again', at(95), { id: 'x', revealedHour: at(120) })], false);
   const spans = logSpans(items);
@@ -52,7 +49,6 @@ test('the keyboard steps over the rows the clock shows only, never onto a row or
   assert.deepEqual(stops(items, at(100)), ['b', 'a', 'old'], 'the rows waiting above are never reached; the first stop is the newest shown');
   assert.deepEqual(stops(items, at(101)), ['c', 'b', 'a'], 'a row revealed is reached, a row replaced is not');
   assert.deepEqual(stops(items, MAY), ['d', 'c', 'b', 'a']);
-  // One row drawn with its states is one stop, at the state shown; while none shows it is no stop.
   const states = logItems([row('x#ended', at(104), { id: 'x', leftHour: at(110) }), row('y', at(100)), row('x#under way', at(90), { id: 'x', leftHour: at(104) })], false);
   assert.deepEqual(stops(states, at(100)), ['y', 'x#under way'], 'never the state held ahead');
   assert.deepEqual(stops(states, at(104)), ['x#ended', 'y'], 'the state reached, in its own place');
@@ -77,8 +73,6 @@ test('the layout at an hour closes up over the items not shown, and changes only
 });
 
 test('a block drawn once holds every row the view reaches until the clock leaves it, however many rows leave or arrive', () => {
-  // A battle log held from hour 0 to 200: five rows held ahead at the top, then thirty shown, every other one leaving
-  // during the block (a battle ending and moving out of view), the rest staying. Eight rows fit the view.
   const held = [...Array.from({ length: 5 }, (_, at) => row(`ahead ${at}`, 0, { revealedHour: 190 - at * 40 })),
     ...Array.from({ length: 30 }, (_, at) => row(`shown ${at}`, -1 - at, at % 2 ? {} : { leftHour: 5 + at * 6 }))];
   const items = logItems(held, false);
@@ -96,15 +90,11 @@ test('a block drawn once holds every row the view reaches until the clock leaves
       assert.ok(within(visibleRange(now, at, height, 3), drawn), `top ${top}${anchored ? ', anchored' : ''}: the view at ${hour} is drawn`);
     }
   }
-  // The window of the rows in view alone, widened over those hidden next to it, runs out as rows leave from the view.
   const plain = widenOverHidden(laid, ...visibleRange(laid, 0, height, 6));
   assert.ok(hours.some(hour => !within(visibleRange(logShownOffsets(full, spans, hour), 0, height, 3), plain)), 'the view outgrows the window of the rows in view');
 });
 
 test('at the top, a block draws every row held ahead above the first shown, however many arrive, with no month divider above them', () => {
-  // Month headers off, as the battle logs and the event feed default: twenty battles beginning during the block, each
-  // revealed at the top, newest first, above thirty shown. Run 12's naval battles redrew every frame once a fourth
-  // arrived beyond the overscan (532 commits at 1,440 h/s).
   const held = [...Array.from({ length: 20 }, (_, at) => row(`beginning ${at}`, 200 - at * 10)),
     ...Array.from({ length: 30 }, (_, at) => row(`under way ${at}`, -1 - at))];
   const items = logItems(held, false);
@@ -123,7 +113,6 @@ test('at the top, a block draws every row held ahead above the first shown, howe
       assert.ok(within(visibleRange(now, at, height, 3), drawn), `${anchored ? 'anchored' : 'unanchored'}: the view at ${hour} is drawn`);
     }
   }
-  // The window from the first row shown less the overscan, as it was, runs out after the fourth arrival.
   const firstShown = 20;
   const before: [number, number] = [firstShown - 6, logHeldRange(laid, full, spans, 0, 0, height, 6, true)[1]];
   assert.ok(hours.some(hour => !within(visibleRange(logShownOffsets(full, spans, hour), 0, height, 3), before)), 'the old window misses the rows arriving at the top');

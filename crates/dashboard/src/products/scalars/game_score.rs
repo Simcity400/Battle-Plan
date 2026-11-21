@@ -1,10 +1,3 @@
-//! Every country's end-screen game scores at an hour, as the recorder's `CountryGameScores` holds
-//! them (`recorder_derive::game_score`): six fixed5 parts a country, each with its value or why it
-//! is not recorded, and the six multipliers. A rows-at-an-hour product: requested for an hour,
-//! followed as a panel at the head. The scores themselves move most hours, so each known one is a live
-//! cell (row the tag, column the part) the head follows and the table paints; the panel carries the
-//! rows and why a score is not known, so it is pushed when those change. Names, colours, flags and factions are the shared country
-//! looks' and groups', read by the widget for the tags here.
 
 use super::{Named, rows};
 use crate::{
@@ -33,7 +26,6 @@ pub struct GameScoreParams {
     pub branch_id: String,
 }
 
-/// Why one part is not recorded; none where it is, and its value is the live cell (tag, part).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -55,7 +47,6 @@ pub struct GameScoreRow {
     pub land: GameScoreCell,
 }
 
-/// A score multiplier the game read, fixed5, or why it was not read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -65,27 +56,24 @@ pub struct GameScoreMultiplier {
     pub missing: Option<String>,
 }
 
-/// No field of the frame's hour: a panel's data is pushed only when it differs, and the push carries the hour it is
-/// of (a request's is the hour it asked).
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GameScoreReply {
-    /// Every country scored at the hour that a tag holds, in tag order.
+    #[doc = " Every country scored at the hour that a tag holds, in tag order."]
     pub rows: Vec<GameScoreRow>,
     pub multipliers: Vec<GameScoreMultiplier>,
-    /// Each column's hint as the game's end screen words its sort control, by column (`country`,
-    /// `total`, `army`, `navy`, `air`, `industry`, `land`); a column the content cannot word is
-    /// absent, and a warning says why.
+    #[doc = " Each column's hint as the game's end screen words its sort control, by column (`country`,"]
+    #[doc = " `total`, `army`, `navy`, `air`, `industry`, `land`); a column the content cannot word is"]
+    #[doc = " absent, and a warning says why."]
     pub hints: BTreeMap<String, String>,
-    /// Why no country's scores are known at the hour.
+    #[doc = " Why no country's scores are known at the hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(GameScoreReply);
 
-/// A part's cell: none missing when its value is recorded and its reason known, else why not.
 pub(super) fn cell(value: &Recorded<i64>, reason: u8) -> GameScoreCell {
     match (value, reason) {
         (Recorded::Value(_), CountryGameScoreRow::KNOWN) => GameScoreCell { missing: None },
@@ -109,10 +97,8 @@ pub(super) fn row(tag: &str, score: &CountryGameScoreRow) -> GameScoreRow {
     }
 }
 
-/// The scores' columns of `CountryGameScores`, by the part each is.
 const SCORES: [&str; 6] = ["total", "army", "navy", "air", "industry", "land"];
 
-/// Names each recorded score of `score` a live cell (`tag`, part), scaled to score points.
 pub(super) fn name_cells(live: &Cells, tag: &str, score: &CountryGameScoreRow, columns: &[usize; 6]) {
     let shown = row(tag, score);
     for ((part, column), cell) in SCORES.iter().zip(columns).zip([&shown.total, &shown.army, &shown.navy, &shown.air, &shown.industry, &shown.land]) {
@@ -138,7 +124,6 @@ fn multipliers(row: &GameScoreMultiplierRow) -> Vec<GameScoreMultiplier> {
     ]
 }
 
-/// The end screen's sort controls, by the column each sorts.
 const SORT_KEYS: [(&str, &str); 7] = [
     ("country", "ENDGAME_SORT_NAME"),
     ("total", "ENDGAME_SORT_SCORE"),
@@ -149,7 +134,6 @@ const SORT_KEYS: [(&str, &str); 7] = [
     ("land", "ENDGAME_SORT_PROVINCE"),
 ];
 
-/// Each column's hint in `localisation`'s language, and why a column has none.
 pub(super) fn hints(localisation: &Localisation) -> (BTreeMap<String, String>, Vec<String>) {
     let mut out = BTreeMap::new();
     let mut warnings = Vec::new();
@@ -175,7 +159,6 @@ impl AtHour for GameScore {
     const CONTENT_DEPENDENT: bool = true;
     type Params = GameScoreParams;
     type Reply = GameScoreReply;
-    /// The column hints and why any is missing, made once per request or follow.
     type Context = (BTreeMap<String, String>, Vec<String>);
 
     #[cfg(any(test, feature = "export-types"))]

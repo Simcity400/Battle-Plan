@@ -1,5 +1,3 @@
-//! Outcome, sizing, hourly-boundary and timing-distribution contracts shared by the
-//! extended capture families. The host composes the families; they reach no host module.
 
 #[cfg(any(test, feature = "test-support"))]
 use collector_memory::read_accounting;

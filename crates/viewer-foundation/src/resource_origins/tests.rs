@@ -12,19 +12,15 @@ fn with_hour<R>(run: impl FnOnce(&Hour<'_>) -> R) -> R {
 fn every_resource_with_a_listing_pool_gate_grant_or_cost_gives_its_state_an_icon() {
     with_hour(|hour| {
         let has = |state| hour.has_icon(state).unwrap();
-        // Template listings, a cost alone, the additive gate alone, building grants alone.
         assert!(has(MIXED));
         assert!(has(COSTED));
         assert!(has(GATED));
         assert!(has(GRANTED));
         assert!(has(ORPHAN));
-        // Nothing of those: no icon, though the controller holds an origin.
         assert!(!has(EMPTY));
         assert_eq!(hour.icon(EMPTY).unwrap(), None);
-        // An icon whose values would read a missing origin is refused by name.
         let refused = hour.icon(ORPHAN).unwrap_err();
         assert!(refused.contains("holds no resource origin"), "{refused}");
-        // Only resources of a positive nominal amount are rows.
         for state in [GATED, COSTED] {
             assert_eq!(
                 hour.icon(state).unwrap(),
@@ -40,9 +36,6 @@ fn every_resource_with_a_listing_pool_gate_grant_or_cost_gives_its_state_an_icon
 #[test]
 fn rows_read_the_rights_holders_origin_with_damage_temporary_oil_and_efficiency() {
     with_hour(|hour| {
-        // Oil goes to AFG: AFG's origin (efficiency 1, no local factor), the refinery's grant
-        // scaled by GER's oil factor, the infrastructure factor 1.6, two damaged levels and the
-        // temporary oil.
         let oil = hour.amounts(MIXED, 0).unwrap();
         assert_eq!(oil.holder, Some(AFG));
         assert_eq!((oil.origin.country, oil.origin.list), (AFG, 1));
@@ -53,13 +46,11 @@ fn rows_read_the_rights_holders_origin_with_damage_temporary_oil_and_efficiency(
         assert_eq!(oil.operands.grants, 100_000);
         assert_eq!(oil.nominal, 100_000 * 150_000 / ONE + 320_000);
         assert_eq!(oil.delivered, 470_000 - 60_000 + 90_000);
-        // Steel is GER's own: local resources +10% on both terms, efficiency 0.8.
         let steel = hour.amounts(MIXED, 1).unwrap();
         assert_eq!(steel.holder, None);
         assert_eq!((steel.origin.country, steel.origin.list), (GER, 0));
         assert_eq!(steel.nominal, 640_000 * 110_000 / ONE);
         assert_eq!(steel.delivered, (704_000 - 132_000) * 80_000 / ONE);
-        // Rubber only costs.
         let rubber = hour.amounts(MIXED, 2).unwrap();
         assert_eq!((rubber.nominal, rubber.delivered), (-30_000, -30_000));
         let icon = hour.icon(MIXED).unwrap().unwrap();
@@ -108,12 +99,10 @@ fn one_foreign_holder_of_every_row_takes_the_windows_flag() {
             RowColour::of(given.rows[0].delivered, given.rows[0].nominal),
             RowColour::Plain
         );
-        // Rights to the controller under another reference are the controller's own.
         let aliased = hour.icon(ALIASED).unwrap().unwrap();
         assert_eq!(aliased.flag, None);
         assert_eq!(aliased.rows[0].flag, None);
         assert_eq!(hour.amounts(ALIASED, 1).unwrap().origin.country, GER);
-        // Grants alone, through the controller's oil factor and no infrastructure building.
         let granted = hour.icon(GRANTED).unwrap().unwrap();
         assert_eq!(granted.rows[0].nominal, 300_000);
         assert_eq!(granted.rows[0].delivered, 300_000);
@@ -152,10 +141,8 @@ fn delivered_clamps_before_efficiency_and_subtracts_the_cost_after() {
         temporary: 0,
         efficiency: 50_000,
     };
-    // 1.2 produced, 2 lost to damage: clamped to zero, then the cost.
     assert_eq!(delivered(&operands), -50_000);
     assert_eq!(nominal(&operands), 70_000);
-    // A negative base counts in full in the nominal amount and as zero in the delivered one.
     let negative = Operands {
         full: -100_000,
         damage: 0,

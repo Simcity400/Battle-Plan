@@ -1,120 +1,62 @@
-//! Parsed scoped-variable operands shared by variable-reading triggers, effects and
-//! value fields: `var:x`, `temp_var:x`, `global.x`, country/state/scope-qualified
-//! names, event targets, defaults, indices, explicit targets, constant paths and
-//! numbers. [`parse`] recognizes the text grammar; consumers evaluate it over a
-//! recorded hour.
-//!
-//! Content readers begin with an empty default scope. Character lookups in that scope
-//! therefore cannot match and are omitted from content parsing.
 
 use crate::fixed5::{decimal_i32, parse_fixed5_string};
 
-/// The content facts the grammar reads.
 pub trait Content {
-    /// Whether uppercased three-byte text names a country tag or tag alias.
     fn is_country(&self, tag: &str) -> bool;
-    /// A `constant:` path in the script-constants database, split on dots with the
-    /// category first.
     fn constant(&self, parts: &[&str]) -> Constant;
 }
 
-/// What the script constants database answers for a `constant:` path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Constant {
-    /// A value the operand keeps as a fixed5 literal.
     Value(i64),
-    /// The game logs why and sets nothing (a missing category or value, or a
-    /// value that is not a number).
     Unset(String),
 }
 
-/// Which saved event-target store to search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventTargetKind {
-    /// 1, `global_event_target:`: the game state's saved targets only.
     Global,
-    /// 3, `event_target:` or a name before the last `.`: the scope's own
-    /// targets, then the game state's.
     Scoped,
 }
 
-/// A scope link held in the operand chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Link {
-    /// The `from` scope.
     From,
-    /// The `root` scope.
     Root,
-    /// The previous scope.
     Prev,
-    /// `this` or `id`: retained as a walk step without moving the scope.
     This,
 }
 
-/// One parsed scoped-variable operand.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScopedVariable {
-    /// Whether parsing began. Empty text is reported and leaves every field unset.
     pub parsed: bool,
-    /// a literal, fixed5.
     pub literal: Option<i64>,
-    /// `token:` records token text for the consumer's lexer, whose existing token id
-    /// times 100000 becomes the literal.
     pub token: Option<String>,
-    /// `constant:` that set nothing, with the game's reason.
     pub unset: Option<String>,
-    /// `mtth:`: a mean time's name.
     pub mtth: Option<String>,
-    /// `mio:` token text.
     pub mio: Option<String>,
-    /// `sp:` token text.
     pub special_project: Option<String>,
-    /// the word `random`.
     pub random: bool,
-    /// the word `ai_random`.
     pub ai_random: bool,
-    /// `global.`.
     pub global: bool,
-    /// `temp_var:`: the thread-local store.
     pub temp: bool,
-    /// which saved event targets, `None` for none.
     pub event_target: Option<EventTargetKind>,
-    /// the event target's name, as the grammar cuts it; `None` while
-    /// only the kind is set.
     pub event_target_name: Option<String>,
-    /// a country specifier's upper-cased text.
     pub country: Option<String>,
-    /// an explicit state id (`123.x`).
     pub state: Option<i32>,
-    /// `a:` other than the event-target prefixes: the store is the
-    /// scope operand `a` evaluates to.
     pub prefix: Option<Box<ScopedVariable>>,
-    /// the scope links, left to right.
     pub chain: Vec<Link>,
-    /// the variable name, lower-cased.
     pub name: Vec<u8>,
-    /// `?default`.
     pub default: Option<Box<ScopedVariable>>,
-    /// `@target`.
     pub target: Option<Box<ScopedVariable>>,
-    /// this operand is the word `num` (an `^num` index).
     pub num: bool,
-    /// `^index`.
     pub index: Option<Box<ScopedVariable>>,
-    /// Invalid syntax was reported: a part before the name is
-    /// not a scope link in text with more than two parts. Fields stay
-    /// as set.
     pub invalid_syntax: bool,
 }
 
-/// The `var:` prefix.
 const VARIABLE: &str = "var:";
 
-/// Backstop for nested defaults, indices, targets and prefixes: parsing,
-/// evaluating and dropping an operand recurse once per level.
 pub const MAX_NESTING: usize = 64;
 
-/// Parse one operand text, or `None` when it nests deeper than [`MAX_NESTING`].
 pub fn parse(text: &str, content: &impl Content) -> Option<ScopedVariable> {
     nested(text, content, 0)
 }
@@ -128,7 +70,6 @@ fn nested(text: &str, content: &impl Content, depth: usize) -> Option<ScopedVari
         return Some(out);
     }
     out.parsed = true;
-    // Step 2: compare prefixes at the text's start, with exact case.
     let rest = if let Some(rest) = text.strip_prefix(VARIABLE) {
         rest
     } else if let Some(rest) = text.strip_prefix("temp_var:") {
@@ -157,13 +98,10 @@ fn nested(text: &str, content: &impl Content, depth: usize) -> Option<ScopedVari
         text
     };
     let mut w = rest;
-    // Step 4: text containing only `-+0123456789.` is a fixed5 constant.
     if w.bytes().all(|byte| b"-+0123456789.".contains(&byte)) {
         out.literal = Some(parse_fixed5_string(w.as_bytes()));
         return Some(out);
     }
-    // Steps 5-7: cut `?default`, `^index` and `@target` at each first occurrence and
-    // parse them with a default scope.
     if let Some(at) = w.find('?').filter(|at| *at > 0) {
         out.default = Some(Box::new(nested(&w[at + 1..], content, depth + 1)?));
         w = &w[..at];
@@ -179,13 +117,11 @@ fn nested(text: &str, content: &impl Content, depth: usize) -> Option<ScopedVari
         out.target = Some(Box::new(nested(&target, content, depth + 1)?));
         w = &w[..at];
     }
-    // Step 8: `prefix:`, lower-cased.
     if let Some(at) = w.find(':') {
         let prefix = w[..at].to_ascii_lowercase();
         match prefix.as_str() {
             "event_target" => out.event_target = Some(EventTargetKind::Scoped),
             "global_event_target" => out.event_target = Some(EventTargetKind::Global),
-            // Parse the string target independently.
             _ => out.prefix = Some(Box::new(nested(&prefix, content, depth + 1)?)),
         }
         w = &w[at + 1..];
@@ -194,12 +130,6 @@ fn nested(text: &str, content: &impl Content, depth: usize) -> Option<ScopedVari
     Some(out)
 }
 
-/// Normalize an `@` target (step 7) to `T.id` for positive state-range integers, scope
-/// words, colon text, dotted text whose rest is not a scope word, or country
-/// specifiers. Use `T` for other integers, `var:`/`token:` text or dotted text ending
-/// in a scope word; otherwise use `token:T`. The integer bound is the map's count, but
-/// consumers resolve both positive-integer forms identically, so this parser does not
-/// need that bound.
 fn target_text(target: &str, content: &impl Content) -> String {
     let with_id = || format!("{target}.id");
     if signed_integer(target) {
@@ -231,20 +161,16 @@ fn target_text(target: &str, content: &impl Content) -> String {
     format!("token:{target}")
 }
 
-/// Every byte is a digit, except the first may also be `+` or `-`.
 fn signed_integer(text: &str) -> bool {
     text.bytes()
         .enumerate()
         .all(|(at, byte)| byte.is_ascii_digit() || (at == 0 && matches!(byte, b'+' | b'-')))
 }
 
-/// Recognize exact `id`, `this`, `from`, `root` or `prev` after target text is
-/// lowercased.
 fn scope_word(text: &str) -> bool {
     matches!(text, "id" | "this" | "from" | "root" | "prev")
 }
 
-/// Step 9: split the text on dots.
 fn parts(out: &mut ScopedVariable, w: &str, content: &impl Content) {
     let parts: Vec<&str> = w.split('.').collect();
     let same = |part: &str, word: &str| part.eq_ignore_ascii_case(word);
@@ -285,7 +211,6 @@ fn parts(out: &mut ScopedVariable, w: &str, content: &impl Content) {
                 false
             };
             if matched {
-                // A second part `id` (compared exactly) names no variable.
                 if *second != "id" {
                     out.name = second.to_ascii_lowercase().into_bytes();
                 }
@@ -294,7 +219,6 @@ fn parts(out: &mut ScopedVariable, w: &str, content: &impl Content) {
         }
         _ => {}
     }
-    // The loop over the parts, without case.
     let count = parts.len();
     let mut named = false;
     for (at, part) in parts.iter().enumerate() {
@@ -313,11 +237,8 @@ fn parts(out: &mut ScopedVariable, w: &str, content: &impl Content) {
             out.chain.push(link);
             continue;
         }
-        // Cut the event-target name from the beginning of the text using this part's
-        // length. It equals the part itself only for the first part.
         let cut = || w.get(..part.len()).unwrap_or(w).to_owned();
         if count >= 2 && at == count - 2 && !named {
-            // "nNumTokens == 2" (scopedvariable.cpp 0x36B), logged and kept.
             out.invalid_syntax |= count != 2;
             out.event_target_name = Some(cut());
             out.event_target.get_or_insert(EventTargetKind::Scoped);
@@ -334,7 +255,6 @@ fn parts(out: &mut ScopedVariable, w: &str, content: &impl Content) {
 }
 
 impl ScopedVariable {
-    /// Construct a plain literal operand.
     pub fn literal(value: i64) -> Self {
         Self {
             parsed: true,
@@ -420,7 +340,6 @@ mod tests {
                 ..named("x")
             }
         );
-        // A three-byte tag alone is the country, not a variable.
         assert_eq!(
             p("SB1"),
             ScopedVariable {
@@ -429,7 +348,6 @@ mod tests {
                 ..ScopedVariable::default()
             }
         );
-        // `GER.id` names the country only.
         assert_eq!(
             p("GER.id"),
             ScopedVariable {
@@ -467,12 +385,9 @@ mod tests {
         let target = p("global_event_target:T.x");
         assert_eq!(target.event_target, Some(EventTargetKind::Global));
         assert_eq!(target.event_target_name.as_deref(), Some("T"));
-        // A bare name before the last `.` is an event target.
         let target = p("t.x");
         assert_eq!(target.event_target, Some(EventTargetKind::Scoped));
         assert_eq!(target.event_target_name.as_deref(), Some("t"));
-        // Only FROM, ROOT, PREV and THIS chain; the name is cut from the
-        // start for the part's length.
         let target = p("ROOT.owner.x");
         assert_eq!(target.chain, vec![Link::Root]);
         assert_eq!(target.event_target_name.as_deref(), Some("ROOT."));
@@ -499,7 +414,6 @@ mod tests {
         let value = p("x^num");
         assert!(value.index.as_deref().is_some_and(|index| index.num));
         assert_eq!(p("x^var:i").index.as_deref(), Some(&named("i")));
-        // `@` targets: a scope word or tag becomes `T.id`, a word a token.
         let value = p("x_@ROOT");
         assert_eq!(value.name, b"x_");
         assert_eq!(

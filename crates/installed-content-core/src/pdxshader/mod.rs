@@ -1,25 +1,3 @@
-//! An effect's full facts as the game reads its `.shader` file: every stage's samplers, constant
-//! buffers, vertex structs and code, the file's techniques (`Effect` blocks) and render states,
-//! and the identity of every byte they come from, so a consumer can execute the effect.
-//!
-//! - A sprite's `effectFile` becomes a path by replacing its first `.lua` with `.shader`.
-//!   Replacement is case-sensitive; a name without that suffix is used as it is. The path
-//!   is read through the recorded virtual file system, with one parse per path. A missing
-//!   file parses empty: no technique resolves, and the lookup retains an empty record
-//!   ([`load`] gives `None`).
-//! - The standard lexer takes `[[ ... ]]` code raw ([`native::lex_effect`]). `Includes`
-//!   holds a list of paths. `Samplers`, `VertexStruct`, `ConstantBuffer`, `MainCode` and
-//!   `Code` fill the common stage; `VertexShader` and `PixelShader` blocks accept the same
-//!   five keys for their own stage. `Effect` holds a named technique; `BlendState`,
-//!   `DepthStencilState` and `RasterizerState` hold named states. Key reading consumes one
-//!   token after the key whether or not it is `=`, and name reading takes the current token
-//!   and advances once, so `Effect Up {`, `Effect = Up {` and `X {` read alike.
-//! - Includes are `gfx/FX/` plus the text, read children first, each once (exact bytes, the root
-//!   not counted), missing ones empty. Their stage declarations come before the file's own;
-//!   techniques and states come from the root file only.
-//! - Sampler slots are filled from the common stage then the pixel stage. Each row replaces
-//!   its `Index`'s slot. Every non-empty slot binds at its own index; an empty slot keeps
-//!   whatever the previous draw bound.
 
 use std::collections::BTreeSet;
 
@@ -36,8 +14,6 @@ use crate::{
 
 pub mod program;
 
-/// A sampler's texture addressing, lowered to D3D11 as its value
-/// plus one; W is always wrap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Address {
     Wrap,
@@ -47,8 +23,6 @@ pub enum Address {
     MirrorOnce,
 }
 
-/// A sampler filter: lowering treats `None` as point,
-/// and any anisotropic filter as D3D11 0x55.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filter {
     None,
@@ -57,28 +31,18 @@ pub enum Filter {
     Anisotropic,
 }
 
-/// One sampler row. There is no `AddressW` (always wrap), no border colour (0),
-/// and the lowering sets 16 for the anisotropy whatever `MaxAnisotropy` reads.
-/// Authored filter, addressing and LOD fields retain their read defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SamplerRow {
-    /// The key it is declared under.
     pub name: Vec<u8>,
-    /// `Type`: `2d`/`shadow` 0, `cube` 1, `3d` 2.
     pub kind: u32,
-    /// `Index` (`%u`, 0): the slot.
     pub index: u32,
-    /// `MipMapLodBias` (`%f`), `MipMapMinLod` and `MipMapMaxLod` (`%i`, 0 and 1024),
-    /// `MaxAnisotropy` (`%i`, -1).
     pub lod_bias: f32,
     pub min_lod: i32,
     pub max_lod: i32,
     pub max_anisotropy: i32,
-    /// `MagFilter`, `MinFilter`, `MipFilter` (linear each).
     pub mag: Filter,
     pub min: Filter,
     pub mip: Filter,
-    /// `AddressU`, `AddressV` (wrap).
     pub address_u: Address,
     pub address_v: Address,
 }
@@ -102,17 +66,12 @@ impl SamplerRow {
     }
 }
 
-/// A `ConstantBuffer( first, second ) { type name; ... }`: `cbuffer
-/// dx11_cb<first> : register(b<first>)`; the second argument is unused.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConstantBuffer {
     pub arguments: [u32; 2],
-    /// `(type, name, count)`: a name holding `[` is cut there, `%i` of what follows the count.
     pub members: Vec<(Vec<u8>, Vec<u8>, i32)>,
 }
 
-/// One `VertexStruct` member: a directive (`#ifdef NAME`, `#endif`, `#else`,
-/// or empty for another `@` word) or `type name : semantic`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Member {
     pub directive: Vec<u8>,
@@ -127,8 +86,6 @@ pub struct VertexStruct {
     pub members: Vec<Member>,
 }
 
-/// One stage's declarations: its samplers, constant buffers,
-/// vertex structs, `MainCode` programs by name and its `Code`, concatenated.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stage {
     pub samplers: Vec<SamplerRow>,
@@ -150,41 +107,27 @@ impl Stage {
     }
 }
 
-/// An `Effect` block: a technique.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Technique {
     pub name: Vec<u8>,
-    /// `VertexShader` and `PixelShader`: `MainCode` names, found common stage first.
     pub vertex_shader: Vec<u8>,
     pub pixel_shader: Vec<u8>,
-    /// The state names (defaults `BlendState`, `DepthStencilState`, `RasterizerState`).
     pub blend_state: Vec<u8>,
     pub depth_stencil_state: Vec<u8>,
     pub rasterizer_state: Vec<u8>,
-    /// `Defines`, appended.
     pub defines: Vec<Vec<u8>>,
 }
 
-/// A `BlendState` with read defaults and authored overrides.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlendState {
     pub enable: bool,
-    /// `AlphaTest` and `AlphaToCoverage` (one byte, which the lowering does not read).
     pub alpha_test: bool,
-    /// Factors: `zero` 0, `one` 1, `src_color`, `inv_src_color`,
-    /// `src_alpha`, `inv_src_alpha`, `dest_alpha`, `inv_dest_alpha`, `dest_color`,
-    /// `inv_dest_color`, `src_alpha_sat`, `blend_factor`, `inv_blend_factor`, `src1_color`,
-    /// `inv_src1_color`, `src1_alpha`, `inv_src1_alpha` (16).
     pub source: u32,
     pub dest: u32,
-    /// Operations: `blend_op_add` 0, `_subtract`,
-    /// `_rev_subtract`, `_min`, `_max`.
     pub op: u32,
     pub source_alpha: u32,
     pub dest_alpha: u32,
     pub op_alpha: u32,
-    /// `WriteMask`: `ALL` 0xF, else `RED` 1, `GREEN` 2, `BLUE`
-    /// 4, `ALPHA` 8 ORed; always overwritten.
     pub write_mask: u32,
 }
 
@@ -204,19 +147,14 @@ impl Default for BlendState {
     }
 }
 
-/// A `DepthStencilState` with read defaults; GUI sprite draws never
-/// bind one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DepthStencilState {
     pub depth_enable: bool,
-    /// `depth_write_zero` 0, `depth_write_all` 1.
     pub depth_write_mask: u32,
-    /// `comparison_never` 0 to `comparison_always` 7.
     pub depth_function: u32,
     pub stencil_enable: bool,
     pub stencil_read_mask: u32,
     pub stencil_write_mask: u32,
-    /// `stencil_op_keep` 0 to `stencil_op_decr` 7.
     pub front_fail: u32,
     pub front_depth_fail: u32,
     pub front_pass: u32,
@@ -242,13 +180,9 @@ impl Default for DepthStencilState {
     }
 }
 
-/// A `RasterizerState` with read defaults; GUI sprite draws never
-/// bind one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterizerState {
-    /// `fill_wireframe` 1, `fill_solid` 2.
     pub fill_mode: u32,
-    /// `none`/`cull_none` 0, `front` 1, `back` 2.
     pub cull_mode: u32,
     pub front_ccw: bool,
     pub depth_bias: i32,
@@ -273,7 +207,6 @@ impl Default for RasterizerState {
     }
 }
 
-/// What one shader file declares.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct File {
     includes: Vec<Vec<u8>>,
@@ -284,19 +217,12 @@ struct File {
     rasterizer_states: Vec<(Vec<u8>, RasterizerState)>,
 }
 
-/// An effect as the game resolves it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Effect {
-    /// The `.shader` path read.
     pub path: String,
-    /// SHA-256 of the file's bytes.
     pub identity: [u8; 32],
-    /// Every include in the order it is read (children first), with the SHA-256 of its bytes,
-    /// `None` when no layer holds it.
     pub includes: Vec<(String, Option<[u8; 32]>)>,
-    /// The common, vertex and pixel stages: the includes' declarations, then the file's.
     pub stages: [Stage; 3],
-    /// The file's own techniques and states.
     pub techniques: Vec<Technique>,
     pub blend_states: Vec<(Vec<u8>, BlendState)>,
     pub depth_stencil_states: Vec<(Vec<u8>, DepthStencilState)>,
@@ -304,14 +230,12 @@ pub struct Effect {
 }
 
 impl Effect {
-    /// The first `Effect` whose name matches without ASCII case differences.
     pub fn technique(&self, name: &[u8]) -> Option<&Technique> {
         self.techniques
             .iter()
             .find(|technique| technique.name.eq_ignore_ascii_case(name))
     }
 
-    /// The blend state a technique names (first case-insensitive match), else the default.
     pub fn blend(&self, technique: &Technique) -> BlendState {
         self.blend_states
             .iter()
@@ -320,9 +244,6 @@ impl Effect {
             .unwrap_or_default()
     }
 
-    /// Common-stage rows then pixel-stage rows: each row replaces its
-    /// index's slot; empty slots keep what the previous draw bound. `Err` for an index the array
-    /// cannot grow to (from 0x7FFFFFFF: the game writes out of bounds).
     pub fn sampler_slots(&self) -> Result<Vec<Option<&SamplerRow>>, String> {
         let mut slots: Vec<Option<&SamplerRow>> = Vec::new();
         for stage in [&self.stages[0], &self.stages[2]] {
@@ -347,8 +268,6 @@ impl Effect {
     }
 }
 
-/// The path read for an effect name: its first `.lua`
-/// made `.shader`, byte for byte.
 pub fn effect_path(effect: &[u8]) -> Vec<u8> {
     let effect = crate::parser::c_string(effect);
     match effect.windows(4).position(|window| window == b".lua") {
@@ -357,16 +276,10 @@ pub fn effect_path(effect: &[u8]) -> Vec<u8> {
     }
 }
 
-/// `effect`'s facts through the content stack, every path (the effect's and each include's)
-/// opened by its bytes; `None` for the zeroed record a missing file gives. The files are read as
-/// [`ResolvedLayers::read_uncovered`] reads them: verified under the covered `gfx/FX`, unverified
-/// elsewhere.
 pub fn load(layers: &ResolvedLayers, effect: &[u8]) -> Option<Effect> {
     load_with(effect, &|path| layers.read_uncovered_path(path).ok())
 }
 
-/// [`load`] over `read`, a path's contents by its bytes when some layer holds it. The paths kept
-/// in the [`Effect`] are text for messages.
 pub fn load_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     effect: &[u8],
     read: &dyn Fn(&[u8]) -> Option<B>,
@@ -378,7 +291,6 @@ pub fn load_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::c
     let mut includes = Vec::new();
     let mut files = Vec::new();
     let mut visited = BTreeSet::new();
-    // Children first, each once, in post-order, on a stack of its own.
     type Open = (Vec<u8>, usize, Option<(File, String, Option<[u8; 32]>)>);
     for include in &root.includes {
         let mut stack: Vec<Open> = vec![(include.clone(), 0, None)];
@@ -409,7 +321,6 @@ pub fn load_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::c
             }
         }
     }
-    // The stages merge children first, then the file's own.
     let mut stages: [Stage; 3] = Default::default();
     for file in files.iter().chain(std::iter::once(&root)) {
         for (merged, own) in stages.iter_mut().zip(&file.stages) {
@@ -432,7 +343,6 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-/// One shader file's declarations.
 fn read_file(bytes: impl Into<crate::content::Bytes>) -> std::io::Result<File> {
     let bytes = bytes.into();
     crate::content::Generation::derive(&bytes, "shader file grammar", 1, &[], || {
@@ -490,7 +400,6 @@ fn parse_file(bytes: &[u8]) -> File {
     file
 }
 
-/// A value's keyword index among `names`, ignoring ASCII case differences.
 fn value_index(text: &[u8], names: &[&str]) -> Option<u32> {
     let text = crate::parser::c_string(text);
     names
@@ -499,9 +408,6 @@ fn value_index(text: &[u8], names: &[&str]) -> Option<u32> {
         .and_then(|index| u32::try_from(index).ok())
 }
 
-/// Render-state values ignore ASCII case and stop at the first NUL. Unknown
-/// values leave the current state unchanged; ordinals match the renderer's state
-/// representation.
 fn blend_factor(text: &[u8]) -> Option<u32> {
     match crate::parser::c_string(text)
         .to_ascii_lowercase()
@@ -588,21 +494,16 @@ fn depth_write_mask(text: &[u8]) -> Option<u32> {
 }
 
 impl Reader<'_> {
-    /// The current token's text up to its NUL, keeping any line feed,
-    /// followed by one token read.
     fn name(&mut self) -> Vec<u8> {
         let name = self.current.c_str().to_vec();
         self.read_resolved();
         name
     }
 
-    /// Reads the five declaration constructs into `stage`.
     fn stage_key(&mut self, word: &str, stage: &mut Stage) {
         match word {
             "samplers" => {
                 while self.next_key() {
-                    // Sampler names retain the key up to its NUL,
-                    // keeping any line feed.
                     let mut row = SamplerRow::new(self.key.c_str().to_vec());
                     while self.next_key() {
                         let key = keyword_of(&self.key.clone()).unwrap_or_default();
@@ -694,7 +595,6 @@ impl Reader<'_> {
         }
     }
 
-    /// The current token's raw code, or empty for another token kind.
     fn code(&mut self) -> Vec<u8> {
         if self.current.kind == TokenKind::Code {
             self.current.text.clone()
@@ -703,8 +603,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Reads the name, then members to a `}` or the end. Each pass peeks;
-    /// a closing or end token is read and resolved before the block ends.
     fn vertex_struct(&mut self) -> VertexStruct {
         let mut out = VertexStruct {
             name: self.name(),
@@ -717,7 +615,6 @@ impl Reader<'_> {
             }
             let kind = self.read_resolved();
             let mut member = Member::default();
-            // Each declaration string stops at its NUL.
             let kind = crate::parser::c_string(&kind.text).to_vec();
             if kind.starts_with(b"@") {
                 if kind.starts_with(b"@ifdef") {
@@ -732,7 +629,6 @@ impl Reader<'_> {
             } else {
                 member.kind = kind;
                 member.name = crate::parser::c_string(&self.read_resolved().text).to_vec();
-                // The `:`, only checked.
                 self.read_resolved();
                 member.semantic = crate::parser::c_string(&self.read_resolved().text).to_vec();
             }
@@ -740,8 +636,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Reads `(`, two `%u` arguments with a `,`, `)`, `{`, then `type name` members
-    /// to a `}` or the end, peeked before each member as in [`Self::vertex_struct`].
     fn constant_buffer(&mut self) -> ConstantBuffer {
         let mut out = ConstantBuffer::default();
         let first = self.read_resolved();
@@ -770,7 +664,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Reads a technique's stage references, state names and appended defines.
     fn technique(&mut self, name: Vec<u8>) -> Technique {
         let mut technique = Technique {
             name,
@@ -916,7 +809,6 @@ impl Reader<'_> {
                     state.depth_bias_clamp =
                         crate::crt::scan_f32(&text).unwrap_or(state.depth_bias_clamp);
                 }
-                // Registered as `slopescaledepthbias` (0x238).
                 "slopescaledepthbias" => {
                     state.slope_scaled_depth_bias =
                         crate::crt::scan_f32(&text).unwrap_or(state.slope_scaled_depth_bias);
@@ -1014,8 +906,6 @@ Effect = Below
 }
 "#;
 
-    /// The `.lua` name reads as `.shader`, every declaration is kept, techniques
-    /// match without case differences, and sampler slots fill by index.
     #[test]
     fn an_effect_keeps_its_full_facts() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1066,14 +956,11 @@ Effect = Below
         assert_eq!(structs.members[0].semantic, b"TEXCOORD7");
         let buffer = &effect.stages[0].constant_buffers[0];
         assert_eq!(buffer.members[2], (b"int".to_vec(), b"steps".to_vec(), 3));
-        // Space up to and including the first line feed is skipped.
         assert!(effect.stages[0].code.starts_with(b" struct Helper"));
         assert_eq!(effect.stages[1].main_code[0].0, b"Emit");
         assert_eq!(load_with(b"gfx/FX/missing.lua", &read), None);
     }
 
-    /// Includes come first and each once; a common-stage row loses to a pixel-stage one of the
-    /// same index.
     #[test]
     fn includes_and_stages_order_the_rows() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1107,9 +994,6 @@ Effect = Below
         );
     }
 
-    /// Structure and buffer readers peek before each member and read and resolve a
-    /// closing or end token. A file ending inside the block, at the end of the text
-    /// or at a 0xFF, ends that declaration.
     #[test]
     fn members_end_at_the_end_of_the_text() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1128,11 +1012,6 @@ Effect = Below
         }
     }
 
-    /// Declaration and sampler names keep line feeds and stop at their NUL. A
-    /// technique's references replace a line feed with `Unreadable String`, so a
-    /// multiline state name is never found by a reference, while a state declared
-    /// as `Unreadable String` is. Declaration and reference spellings therefore
-    /// remain distinct even when they start from the same authored text.
     #[test]
     fn declaration_names_keep_their_line_feeds() {
         engine_executable::executable_tables::initialize_for_tests()

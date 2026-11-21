@@ -1,10 +1,6 @@
-//! Native state payloads. Fixed arrays and records retain independent field-mask bits.
 use super::*;
 use crate::value::value_struct;
 
-/// Name generator operands, rather than the cached display name. `custom` keeps the override name
-/// bytes shown by the generator, including its stored programmatic fallback for a null group;
-/// `group` is a content key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NameOperands {
@@ -149,11 +145,9 @@ mod country_appearance_tests {
         };
         assert_eq!(row([0.4, 0.6, 0.8]).map_color(), [102, 153, 204]);
         assert_eq!(row([0.5; 3]).map_color(), [127; 3]);
-        // Out-of-range floats saturate rather than wrap.
         assert_eq!(row([1.5, -0.5, 0.0]).map_color(), [255, 0, 0]);
     }
 }
-// Variable records borrow their typed values during encoding and allocate only on decode.
 opaque_value!(Option<Vec<u8>>);
 opaque_value!(Option<Vec<u32>>);
 opaque_value!(Option<std::sync::Arc<Vec<u32>>>);

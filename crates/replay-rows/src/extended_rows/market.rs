@@ -1,4 +1,3 @@
-//! International market holdings and terms, and native lend-lease occurrences.
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -20,8 +19,6 @@ pub struct MarketPool {
 value_struct!(MarketPool { allow_zero: bool, items: Vec<MarketEquipment> });
 opaque_value!(MarketPool);
 
-/// Owned market values shared by held rows, sparse updates and encoder baselines.
-/// Only an actual write copies a value that still has another owner.
 macro_rules! shared_market_value {
     ($name:ident, $value:ty) => {
         #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,8 +26,6 @@ macro_rules! shared_market_value {
         pub struct $name(pub std::sync::Arc<$value>);
         impl Default for $name {
             fn default() -> Self {
-                // Row codec key initializers must not allocate a fresh empty
-                // collection before replacing it with a carried field.
                 static EMPTY: std::sync::OnceLock<std::sync::Arc<$value>> =
                     std::sync::OnceLock::new();
                 Self(

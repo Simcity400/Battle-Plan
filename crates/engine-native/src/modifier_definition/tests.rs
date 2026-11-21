@@ -61,8 +61,6 @@ fn effective_preserves_raw_or_clamps_without_category_or_callback_reads() {
     for key in [KEY, u32::MAX] {
         for flags in [0, CLAMP_MAXIMUM, u32::MAX] {
             let memory = Fixture::new(key, 0, flags);
-            // Neither the category word nor callback storage exists. Selector0 bypasses
-            // eligibility, including for native signed indexing.
             for raw in [i64::MIN, -1, 0, 99999, 100000, 100001, i64::MAX] {
                 let expected = if flags & CLAMP_MAXIMUM == 0 {
                     raw
@@ -92,7 +90,6 @@ fn effective_uses_only_authenticated_feature_flags_and_null_disables() {
         effective(&memory, BASE, KEY, 123456),
         Err("modifier eligibility callback unsupported")
     );
-    // A disabled feature does not consult clamp flags at all.
     memory.callback(0, 0);
     memory.bytes.remove(&(Fixture::row(KEY) + FLAGS));
     assert_eq!(effective(&memory, BASE, KEY, 123456), Ok(0));
@@ -118,7 +115,6 @@ fn effective_first_faults_never_become_a_derived_value() {
     assert!(effective(&memory, usize::MAX, KEY, 1).is_err());
 }
 
-/// A registered row: (index, token, name key, postfix key, argument).
 type Definition = (u32, u32, &'static [u8], &'static [u8], &'static [u8]);
 const HEAP: usize = 0x8000;
 const NAMES: usize = 0xa000;
@@ -129,7 +125,6 @@ struct Table {
 }
 
 impl Table {
-    /// Writes an MSVC string inline up to 15 bytes, otherwise in a terminated heap buffer.
     fn string(&mut self, address: usize, value: &[u8]) {
         let mut storage = [0_u8; 16];
         let capacity = if value.len() <= 15 {
@@ -148,7 +143,6 @@ impl Table {
         self.memory.put(address + 24, &capacity.to_le_bytes());
     }
 
-    /// `rows[i]` is table position i; `None` is a default-constructed gap.
     fn new(rows: &[Option<Definition>]) -> Self {
         let mut table = Self {
             memory: Fixture::default(),
@@ -156,7 +150,6 @@ impl Table {
         };
         let count = rows.len() as u32;
         table.header(TABLE, count + 3, count);
-        // The process-wide eligibility callback: the flags getter.
         table.memory.put(
             BASE + ELIGIBILITY_CALLBACK_RVA.0,
             &((BASE + ELIGIBILITY_FLAGS_GETTER_RVA.0) as u64).to_le_bytes(),
@@ -197,7 +190,6 @@ impl Table {
         self.memory.put(BASE + TABLE_RVA.0, &header);
     }
 
-    /// Lexer reverse dictionary `names[id]`, read with no active writer.
     fn lexer(&mut self, names: &[&[u8]]) {
         let mut header = [0_u8; 64];
         let at = |rva: usize| rva - cpdx_lexer::INITIALIZED_RVA.0;
@@ -234,14 +226,11 @@ fn registry() -> Table {
     Table::new(&[
         Some((0, 357, b"MODIFIER_NONE", b"", b"")),
         Some((1, 0x3433, LONG, b"MOD_DAYS", b"")),
-        // A dynamic key's argument; the gap before it is row 0x29a's shape.
         None,
         Some((3, 0x4b00, b"custom", b"", b"an_argument_of_20b")),
     ])
 }
 
-/// Every row carries the one eligibility callback state; a null callback
-/// is recorded as such and an unknown one fails the table.
 #[test]
 fn walk_records_the_eligibility_callback_state() {
     let mut table = registry();
@@ -279,7 +268,6 @@ fn walk_copies_registered_rows_and_skips_the_default_gap() {
             .collect::<Vec<_>>(),
         [(0, 357), (1, 0x3433), (3, 0x4b00)]
     );
-    // Inline (SSO) and heap strings copy exactly; empty stays empty.
     assert_eq!(bytes(rows[0].name_key), b"MODIFIER_NONE");
     assert_eq!(bytes(rows[1].name_key), LONG);
     assert_eq!(bytes(rows[1].postfix_key), b"MOD_DAYS");
@@ -299,7 +287,6 @@ fn walk_copies_registered_rows_and_skips_the_default_gap() {
 
 #[test]
 fn inconsistent_rows_and_every_short_read_are_unavailable() {
-    // A nonzero token at a position whose own index disagrees is refused.
     let mut table = registry();
     table
         .memory
@@ -311,7 +298,6 @@ fn inconsistent_rows_and_every_short_read_are_unavailable() {
     for address in [
         BASE + TABLE_RVA.0 + 12,
         TABLE + STRIDE + FLAGS,
-        // The heap bytes and the terminator of the long name key.
         HEAP + 3,
         HEAP + LONG.len(),
     ] {
@@ -324,14 +310,12 @@ fn inconsistent_rows_and_every_short_read_are_unavailable() {
         );
         assert_eq!(result.text_len, 0);
     }
-    // A missing heap terminator is not a shorter string.
     let mut table = registry();
     table.memory.put(HEAP + LONG.len(), b"!");
     assert!(matches!(
         table.walk(8, 128).0.outcome,
         Outcome::Unavailable { .. }
     ));
-    // A count beyond the capacity is an invalid header, not an empty table.
     let mut table = registry();
     table.header(TABLE, 2, 4);
     assert!(table.walk(8, 128).0.outcome.is_empty());
@@ -346,7 +330,6 @@ fn the_header_is_the_refresh_control_and_a_moved_table_discards_the_copy() {
     let mut table = registry();
     let before = super::table(&table.memory, BASE).unwrap();
     assert_eq!((before.data, before.count), (TABLE, 4));
-    // Registering a key grows the count (and may reallocate the rows).
     table.header(TABLE, 7, 5);
     table.memory.put(TABLE + 4 * STRIDE, &[0; STRIDE]);
     for field in [NAME_KEY, POSTFIX_KEY, ARGUMENT] {
@@ -359,7 +342,6 @@ fn the_header_is_the_refresh_control_and_a_moved_table_discards_the_copy() {
     assert_ne!(before, after);
     assert_eq!(table.walk(8, 128).0.outcome, Outcome::Rows { len: 3 });
 
-    /// Reports a moved header on the second (closing) header read.
     struct Moving<'a> {
         inner: &'a Fixture,
         header_reads: std::cell::Cell<usize>,
@@ -403,7 +385,6 @@ fn key_by_name_resolves_the_registered_index_through_the_lexer() {
     assert_eq!(key(&table.memory, b"stability_factor").unwrap(), Some(2));
     assert_eq!(key(&table.memory, b"war_support_factor").unwrap(), Some(3));
     assert_eq!(key(&table.memory, b"none").unwrap(), Some(0));
-    // One pass resolves several names, absent ones included.
     let (keys, header) = keys_by_names_at(
         &table.memory,
         BASE,
@@ -412,14 +393,11 @@ fn key_by_name_resolves_the_registered_index_through_the_lexer() {
     .unwrap();
     assert_eq!(keys, [Some(3), None, Some(2)]);
     assert_eq!((header.data, header.count), (TABLE, 4));
-    // An unregistered name is absent, not a guessed index.
     assert_eq!(key(&table.memory, b"stability").unwrap(), None);
-    // Two indices under one name cannot be resolved.
     table
         .memory
         .put(TABLE + 3 * STRIDE + TOKEN, &3_u32.to_le_bytes());
     assert!(key(&table.memory, b"stability_factor").is_err());
-    // A token outside the dictionary or an active writer fails the lookup.
     table
         .memory
         .put(TABLE + 3 * STRIDE + TOKEN, &9_u32.to_le_bytes());
@@ -446,13 +424,11 @@ fn named_key_resolves_once_per_table_header() {
     let mut absent = NamedKey::new(b"stability");
     assert_eq!(held.get(&table.memory, BASE), Ok(Some(2)));
     assert_eq!(absent.get(&table.memory, BASE), Ok(None));
-    // Rows behind an unchanged header are not read again.
     table
         .memory
         .put(TABLE + 2 * STRIDE + TOKEN, &9_u32.to_le_bytes());
     assert_eq!(held.get(&table.memory, BASE), Ok(Some(2)));
     assert_eq!(absent.get(&table.memory, BASE), Ok(None));
-    // A new header resolves again; a failed lookup holds nothing.
     table.header(TABLE, 7, 3);
     assert!(held.get(&table.memory, BASE).is_err());
     table
@@ -509,7 +485,6 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
         assert_eq!(&rows[..count], expected_rows.as_slice());
         assert_eq!(&text[..captured.text_len], expected_text.as_slice());
         assert_eq!(*source.calls.borrow(), trace);
-        // Original header plus the retained native table-change guard; no growth restart.
         assert_eq!(
             trace
                 .iter()
@@ -520,7 +495,6 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
     }
 }
 
-// regression: 74a0f0fa8c Follow original engine demand without chosen content limits
 #[test]
 fn pass_metadata_memo_retains_original_keys_past_sixty_four() {
     let mut source = Fixture::new(KEY, 0, 0);

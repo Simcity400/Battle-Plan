@@ -11,9 +11,6 @@ const variant = (id: string, archetype: string, name: string, stock: number, dai
 const logistics = (key: string, balance: number, stock: number, available: number) => ({ key, balance: run(balance), stock: run(stock), available: run(available) });
 const spans = [{ firstHour: 100, lastHour: 130 }];
 
-/** German Reich on one read, as recorded on 22 Jun 1944: most types need nothing, so
- * the surplus is what is available; trains count fewer available than held; tactical
- * bombers are short of everything needed; close air support holds nothing at all. */
 const REPLY: EquipmentStockpileReply = {
   branchId: '1', tag: 'GER', campaignKey: 'campaign', decimals: 5, needBoundRaw: '9223372036854775807', warnings: [],
   types: [
@@ -47,14 +44,10 @@ test('the table lists only types with something, led by the surplus, with models
   const { rows: listed, quiet } = rows(validateStockpileReply(structuredClone(REPLY)));
   assert.deepEqual(Object.fromEntries(listed.map(row => [row.group.key, [row.models, row.surplus, row.share]])), {
     infantry_equipment: ['Karabiner 98k', 15_562_900_000n, null],
-    // Fewer trains are available than held: both are named, the model once.
     train_equipment: ['Class 18.4-5 · 71 in stock, 56 available', 5_600_000n, null],
-    // Counts lead, so they never run into a model's own numbers.
     light_tank_chassis: ['1,554 Panzer II Ausf. A · 720 Panzer I Ausf. A', 227_400_000n, null],
-    // None held explains the shortage; the model is named once.
     tac_bomber_equipment: ['He 111 · 0 in stock', -10_400_000n, -1],
   });
-  // Close air support holds, makes and needs nothing: counted, not listed.
   assert.equal(quiet, 1);
 });
 
@@ -82,7 +75,6 @@ test('for an AI-controlled country the game computes no surplus: the table holds
 });
 
 test('a type showing nothing only because a table was not read is not recorded, never empty', () => {
-  // The production lines were not read at the hour shown: close air support's output is unknown.
   const { quiet, unrecorded } = rows(validateStockpileReply({ ...structuredClone(REPLY), lineHours: [], lineReads: [] }));
   assert.equal(quiet, 0);
   assert.equal(unrecorded, 1);

@@ -1,40 +1,23 @@
-//! CHuman, a live session-player record in CGameState.
-//!
-//! Country tags and session-player keys are separate identities; display names can repeat. The live
-//! roster (`cgame_state::PLAYER_RECORDS`) is distinct from the saved header roster
-//! (`cgame_state::SAVED_PLAYER_RECORDS`), which retains user-upserted players.
 
 use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,
 };
 
-/// CHuman primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0279_edb8);
-/// CHuman constructor; the exact-build export names CHuman and writes the country tag and player key separately.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c1_0190);
-/// CHuman array stride.
 pub const STRIDE: usize = 0xa0;
-/// Exact stored human user string, saved and loaded without transformation.
 pub const FIRST_STRING: usize = 0x20;
-/// CHuman display-name std::string.
 pub const NAME: usize = 0x40;
-/// CHuman raw country Tag/link i32.
 pub const COUNTRY_TAG: usize = 0x70;
-/// CHuman embedded CGameDate.
 pub const DATE: usize = 0x78;
-/// Human raw flags; save retains bit zero as country-leader state.
-/// Other bits remain uninterpreted.
 pub const FLAGS: usize = 0x94;
-/// Session-player key, signed i32, independent of country id.
 pub const PLAYER_KEY: usize = 0x98;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub ordinal: u32,
-    /// Native signed session key; reuse after removal is not ruled out.
     pub id: i32,
-    /// Exact native country reference bits, including unassigned zero.
     pub country: u32,
     pub flags: u8,
     pub user_start: usize,
@@ -46,21 +29,16 @@ pub struct Row {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameWalk {
     pub outcome: Outcome,
-    /// Exact user and display-name bytes copied for the returned prefix.
     pub bytes_len: usize,
-    /// Total native string lengths, including whole rows omitted for capacity.
     pub required_bytes: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ControllerRow {
-    /// Authenticated country's current native reference, which may be an alias.
     pub country: u32,
-    /// Independent signed native count, never inferred from the live roster.
     pub count: i8,
 }
 
-/// Worker storage grows from the original live roster and string descriptors.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -77,7 +55,6 @@ pub fn walk(
     )
 }
 
-/// Shared native protocol for fixed callback storage and growing worker storage.
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -92,7 +69,6 @@ pub fn walk_buffer(
             .ok_or("live player roster unreadable or invalid")?;
         let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")?;
-        // Walk every original contiguous human record in the live roster.
         output.ensure(roster.count as usize)?;
         let mut len = 0_usize;
         let mut bytes_len = 0_usize;
@@ -106,8 +82,6 @@ pub fn walk_buffer(
             if output[..len].iter().any(|row| row.id == fields.id) {
                 return Err("duplicate native player key");
             }
-            // The common complete walk compares copied keys, not foreign memory.
-            // Only omitted rows require reading their earlier native key words.
             for previous in len as u32..index {
                 let previous_key = roster
                     .element(previous, STRIDE)
@@ -127,7 +101,6 @@ pub fn walk_buffer(
             required_bytes = required_bytes
                 .checked_add(row_bytes)
                 .ok_or("player string byte count overflow")?;
-            // Worker payload copies grow from the acquired descriptors.
             if !names.is_growing() {
                 truncated |= row_bytes > names.len() - bytes_len;
             }
@@ -176,7 +149,6 @@ pub fn count_controllers(memory: &impl Memory, base: usize, game_state: usize) -
     walk_controllers_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Worker rows grow from the original country census before publication.
 pub fn walk_controllers(
     memory: &impl Memory,
     base: usize,
@@ -191,7 +163,6 @@ pub fn walk_controllers(
     )
 }
 
-/// Shared native protocol for fixed callback storage and growing worker storage.
 pub fn walk_controllers_buffer(
     memory: &impl Memory,
     base: usize,
@@ -204,7 +175,6 @@ pub fn walk_controllers_buffer(
             .and_then(|p| Array::read(memory, p, 1))
             .ok_or("human controller array unreadable or invalid")?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        // Retain the independent country-indexed status vector.
         output.ensure(countries.count() as usize)?;
         let mut len = 0_usize;
         let mut unread_rows = 0;
@@ -277,7 +247,6 @@ impl Fields {
             return Err("player key unreadable");
         }
         let id = i32::from_le_bytes(key);
-        // Player admission rejects only the -1 key sentinel.
         if id == -1 {
             return Err("live player has invalid native key -1");
         }
@@ -300,7 +269,6 @@ impl Fields {
 }
 
 struct Literal {
-    /// None denotes the inline bytes already present in the copied header.
     source: Option<usize>,
     len: usize,
 }
@@ -480,7 +448,6 @@ mod tests {
         }
 
         fn countries(&mut self) {
-            // Country 1's native id is alias 7; slot 7 repeats that same object.
             let pointers = [0_u64, 0x7000, 0x7100, 0, 0x7200, 0x7300, 0, 0x7000];
             let links = [0_u32, 1, 2, 0, 4, 5, 0, 1];
             self.array(
@@ -514,7 +481,6 @@ mod tests {
         world.player(0, i32::MIN, 0, 0xff, b"same user", &binary_name);
         world.player(1, -2, u32::MAX, 0, b"same user", &binary_name);
         world.player(2, i32::MAX, u32::MAX, 9, b"", b"123456789012345");
-        // A malformed saved-header roster must have no effect on the live walk.
         world.put(
             GS + cgame_state::SAVED_PLAYER_RECORDS,
             &u64::MAX.to_le_bytes(),
@@ -755,7 +721,6 @@ mod tests {
                 },
             ]
         );
-        // No live humans are needed to record the independent controller state.
         assert_eq!(
             walk(&world.memory(), BASE, GS, &mut Vec::new(), &mut Vec::new()).outcome,
             Outcome::Rows { len: 0 }

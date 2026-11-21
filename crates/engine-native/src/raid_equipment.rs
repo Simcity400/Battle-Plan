@@ -1,9 +1,3 @@
-//! Raid-owned equipment pool and nuke count used by prepared-raid admission
-//! and raid speed. Two pool arrays are acquired: exact variant/amount items and
-//! stored per-archetype totals. Requirement selection matches archetype IDs and
-//! uses those totals. Item and archetype running sums clamp independently, so
-//! totals cannot always be reconstructed from items. Archetypes are recorded by
-//! their lexer tokens. No game function is called.
 
 use crate::{
     Memory, allocation_equipment_row, cequipment_type, cequipment_variant, cequipment_variant_pool,
@@ -20,15 +14,10 @@ pub struct Row {
     pub id: u32,
     pub phase: i32,
     pub end_hour: Option<i32>,
-    /// The pool's `(variant, amount)` entries in pool order, in the caller's
-    /// arenas; the variant is its full reference.
     pub items_start: usize,
     pub items_len: usize,
-    /// The pool's `(archetype token, total)` entries in native order, in the
-    /// caller's archetype arenas.
     pub archetypes_start: usize,
     pub archetypes_len: usize,
-    /// The raid's nukes (`craid_instance::NUKES`).
     pub nukes: i32,
 }
 
@@ -66,24 +55,18 @@ impl<'a> From<Arenas<'a>> for ArenasBuffer<'a> {
 pub struct Walk {
     pub outcome: Outcome,
     pub items_len: usize,
-    /// Entries every recorded raid needs, fitted or not.
     pub required_items: usize,
     pub archetypes_len: usize,
-    /// Archetype totals every recorded raid needs, fitted or not.
     pub required_archetypes: usize,
 }
 
-/// Record pools before launch in phases one to three and while flying ([`raid_speed_inputs::live`]).
 pub fn recorded(raid: &Raid, hour: i32) -> bool {
     (craid_instance::PHASE_ASSEMBLING..=craid_instance::PHASE_PREPARED).contains(&raid.phase)
         || raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
 }
 
-/// Pool bytes from the archetype array's header through the item array's, read in one guarded copy.
 const HEADERS: usize = cequipment_variant_pool::COUNT + 4 - cequipment_variant_pool::ALLOCATIONS;
 
-/// Every recorded raid's pool, in raid-system order. A raid whose items or
-/// archetype totals do not fit has no row and is counted.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

@@ -1,21 +1,3 @@
-//! The battle ambience's battle list, as the game holds it.
-//!
-//! A global pointer names the game's battle-sound manager (null while it holds
-//! none). The manager keeps its battles in a spatial tree whose nodes form one
-//! array: node `i`'s children are `4i+1..=4i+4`, those below the node count.
-//! Each node lists battle pointers; each battle holds its centre, radius, the
-//! provinces it covers and the handle of its main sound instance. The game's
-//! per-frame ambience pass visits the nodes in pre-order (a node, then each of
-//! its children's subtrees in order) and each node's battles in array order;
-//! the walk records the battles in exactly that order. Battles change only
-//! where the game adds and removes combats (the hourly update and save
-//! loading), never per frame, so the list read at the hourly boundary is the
-//! one the next hour's frames sound. A merge keeps the battle that is sounding
-//! for this client, so the list can depend on the recording client's camera.
-//!
-//! The battle's own division count and per-layer sounds are recomputed every
-//! frame and not read. Reads are bounded by the live node, battle and member
-//! counts; no allocation or game call happens outside caller-owned storage.
 use crate::{
     Memory, cpdx_array,
     cpdx_array::Array,
@@ -24,48 +6,30 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Global pointer to the battle-sound manager; null while the game holds none.
 pub const MANAGER_RVA: Rva = Rva(0x033d_ea38);
-/// The manager's spatial tree of battles.
 pub const MANAGER_TREE: usize = 0x08;
-/// The tree's node array header, relative to the tree.
 pub const TREE_NODES: usize = 0x10;
-/// Tree node stride.
 pub const NODE_STRIDE: usize = 0x30;
-/// A node's array of battle pointers.
 pub const NODE_BATTLES: usize = 0x18;
-/// Children per tree node.
 pub const NODE_CHILDREN: u32 = 4;
-/// Battle centre: f32 map x, then f32 map z (the map's y).
 pub const BATTLE_CENTER: usize = 0x00;
-/// Battle radius, f32.
 pub const BATTLE_RADIUS: usize = 0x08;
-/// The battle's array of member province pointers.
 pub const BATTLE_PROVINCES: usize = 0x10;
-/// Handle of the battle's main sound instance; nonzero while it sounds.
 pub const BATTLE_SOUND: usize = 0x28;
-/// The bytes read from each battle: everything up to its sound handle's end.
 const BATTLE_BYTES: usize = BATTLE_SOUND + 8;
 
-/// One battle, in the list's order. The coordinates keep their exact f32 bits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
-    /// Position in the list; the game keeps no battle id.
     pub ordinal: u32,
     pub center_x: u32,
     pub center_z: u32,
     pub radius: u32,
-    /// The member province ids in the caller's arena, in member-array order.
     pub provinces_start: usize,
     pub provinces_len: usize,
-    /// The battle's main sound instance is live for the recording client.
     pub sounding: bool,
-    /// The battle object's address: the identity its sounds keep while it
-    /// lives, through merges it survives and regroupings it keeps.
     pub object: u64,
 }
 
-/// Storage the whole list needs: battles and member provinces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Demand {
     pub battles: usize,
@@ -87,12 +51,10 @@ impl Demand {
 
 pub struct Walk {
     pub outcome: Outcome,
-    /// Member provinces written to the arena.
     pub provinces: usize,
     pub required: Demand,
 }
 
-/// Off-thread sizing from the live counts.
 pub fn demand(memory: &impl Memory, base: usize) -> Option<Demand> {
     let walk = count(memory, base);
     (!matches!(walk.outcome, Outcome::Unavailable { .. })).then_some(walk.required)
@@ -102,8 +64,6 @@ pub fn count(memory: &impl Memory, base: usize) -> Walk {
     walk_buffer(memory, base, Buffer::Count, Buffer::Count)
 }
 
-/// The list into worker storage, grown from the acquired counts before each
-/// battle is copied.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -118,9 +78,6 @@ pub fn walk(
     )
 }
 
-/// The node after `node` in the pre-order of a tree of `count` nodes: its
-/// first child, else the next sibling of it or of its nearest ancestor that
-/// has one.
 pub fn next_node(node: u32, count: u32) -> Option<u32> {
     if let Some(child) = node
         .checked_mul(NODE_CHILDREN)
@@ -146,7 +103,6 @@ struct State<'a> {
     len: usize,
     used: usize,
     required: Demand,
-    /// A battle did not fit: later battles are counted, not read.
     full: bool,
 }
 
@@ -290,7 +246,6 @@ fn visit(
     Ok(())
 }
 
-/// A member's province id, after its province identity.
 fn province_id(memory: &impl Memory, base: usize, province: usize) -> Result<u32, &'static str> {
     if province == 0 {
         return Err("battle sound member province null");

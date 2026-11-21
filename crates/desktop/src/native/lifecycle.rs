@@ -4,8 +4,6 @@ use std::{sync::Arc, thread};
 use tauri::{AppHandle, Emitter, WebviewWindow};
 use viewer::host::{Ending, Launch, Map, Role};
 
-/// The folders a new map starts with: the last ones Apply sent, which may be
-/// newer than the preferences read before taking the host lock.
 fn launch_folders(
     applied: Option<&dashboard::Config>,
     saved: Option<&dashboard::Config>,
@@ -13,8 +11,6 @@ fn launch_folders(
     applied.or(saved).map(folder_arguments).unwrap_or_default()
 }
 
-/// The effective folders as the map's folder options; the last occurrence
-/// of an option wins over one forwarded from the host's own command line.
 fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
     [
         ("--game-dir", &config.game_dir),
@@ -27,8 +23,6 @@ fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
 }
 
 impl super::Inner {
-    /// Tells the frontend a map stopped or could not start: its status, and each dashboard map
-    /// its views wait on, with why.
     fn publish_stopped(&self, app: &AppHandle) {
         self.publish(app);
         if let Some(views) = &self.dashboard_views {
@@ -45,10 +39,6 @@ impl super::Inner {
         }
     }
 
-    /// The map of this generation ended: whether to start a new one. A lost device is recovered
-    /// by a new map, which makes a new device and surface and is sent what the last one showed,
-    /// unless the device was lost again before the new map was ready. Any other end is shown by
-    /// name; the dashboard's data does not depend on the map and keeps working.
     pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
         self.refuse_exports("The map stopped before the export finished");
         let was_ready = self.status.ready;
@@ -80,20 +70,14 @@ impl super::Inner {
     }
 }
 
-/// How a launch finished.
 #[derive(Debug, PartialEq, Eq)]
 enum Launched {
-    /// The map it installed ended meanwhile and asked for the next: it launches again.
     Again,
     Running,
-    /// It could not start the map, and says why.
     Stopped,
 }
 
 impl super::Inner {
-    /// What the map of `generation` said that the host goes on to read: none from a map that is
-    /// not this one's or that is closing, and none of an export, which is answered here. A closing
-    /// map's exports are still its own, so each it ended is answered as it ended it.
     pub(super) fn hear(&mut self, event: NativeEvent, generation: u64) -> Option<NativeEvent> {
         if let NativeEvent::Export { request, answer } = event {
             self.export_ended(generation, request, answer);
@@ -102,8 +86,6 @@ impl super::Inner {
         (self.generation == generation && !self.shutting_down && self.map.is_some()).then_some(event)
     }
 
-    /// Whether to launch a map: not while one runs, and while one is launching only once that
-    /// launch finishes, for its map may already have ended.
     fn begin_launch(&mut self) -> Result<bool, String> {
         if self.map.is_some() {
             return Ok(false);
@@ -122,7 +104,6 @@ impl super::Inner {
         Ok(true)
     }
 
-    /// A launch [`begin_launch`](Self::begin_launch) began finished, as `started`.
     fn launch_finished(&mut self, started: Result<(), String>) -> Launched {
         if std::mem::take(&mut self.relaunch) && self.map.is_none() && !self.shutting_down {
             self.status.running = true;
@@ -144,7 +125,6 @@ impl super::Inner {
         }
     }
 
-    /// What waits for the map to end, once none runs or starts.
     fn take_ended_waiters(&mut self) -> Vec<Box<dyn FnOnce() + Send>> {
         if self.map.is_some() || self.starting {
             return Vec::new();
@@ -154,9 +134,6 @@ impl super::Inner {
 }
 
 impl NativeHost {
-    /// Starts a map unless one runs or is starting, on a thread of its own: reading the display
-    /// preferences takes the window's getters, which the caller, the main thread for a command,
-    /// must not wait on. Meanwhile it reports running and not ready; a start that fails says why.
     pub(crate) fn ensure_started(&self, window: &WebviewWindow) -> Result<(), String> {
         use tauri::Manager;
         let popout = {
@@ -166,8 +143,6 @@ impl NativeHost {
             }
             inner.popout.is_some()
         };
-        // Read here: off the main thread a window getter waits on it, which may wait on this lock.
-        // A pop-out's parent is its own window, already known.
         let own = (!popout).then(|| {
             window
                 .hwnd()
@@ -202,15 +177,12 @@ impl NativeHost {
     ) -> Result<(), String> {
         use tauri::Manager;
 
-        // Preference resolution itself reads host status, so no lock is held across it.
         let since = self
             .shared
             .lock()
             .map_err(|e| e.to_string())?
             .display_sent;
         let display = crate::video::launch_actions(window)?;
-        // The host owns the content folders; the map reads none of its own.
-        // Unreadable preferences start it without folders, and Settings shows why.
         let saved_folders = crate::dashboard_service::host_config()
             .ok()
             .map(|(config, _)| config);
@@ -218,7 +190,6 @@ impl NativeHost {
             crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
         let saved_muted =
             crate::video::current_map_muted(&window.state::<crate::video::VideoState>());
-        // The map reads its sources and map settings from the host's one service; it makes none.
         let service = window
             .state::<crate::dashboard_service::DashboardService>()
             .runtime(window.app_handle())?;
@@ -226,8 +197,6 @@ impl NativeHost {
             Some(window) => window.parent,
             None => own.unwrap_or_else(|| Err("The map's window has no handle".into()))?,
         };
-        // The map's own window is a child of the host's, made and pumped by the app's thread; no
-        // lock is held while that thread makes it.
         let (made, created) = std::sync::mpsc::sync_channel(1);
         window
             .run_on_main_thread(move || {
@@ -243,8 +212,6 @@ impl NativeHost {
             map_window.destroy();
             return Err("The application is closing".into());
         }
-        // A pop-out shows only what the app sends it; the app's own command line (a recording,
-        // an hour, a camera) belongs to the main map.
         let mut args: Vec<std::ffi::OsString> = if inner.popout.is_some() {
             std::env::args_os()
                 .skip(1)
@@ -254,8 +221,6 @@ impl NativeHost {
             std::env::args_os().skip(1).collect()
         };
         args.extend(launch_folders(inner.folders.as_ref(), saved_folders.as_ref()));
-        // Choices saved while the preferences were read, which `set_diagnostics`, `set_muted`
-        // and `set_folders` kept.
         let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
         let muted = inner.muted.unwrap_or(saved_muted);
         if inner.generation > 0 {
@@ -266,8 +231,6 @@ impl NativeHost {
         inner.status.running = true;
         inner.status.ready = false;
         inner.status.error = None;
-        // A new map starts at the game's camera with its overlays hidden, holding no controller
-        // until the host hands it over; nothing queued for the last one reaches it.
         inner.status.camera_mode = Default::default();
         inner.status.camera_overlays = false;
         inner.pending.gamepad = None;
@@ -280,7 +243,6 @@ impl NativeHost {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);
         }
-        // A display choice sent since the read above began has already reached `set_display`.
         let display = super::launch_display(display, &inner.display, since);
         inner.pending.actions.extend(display);
         inner
@@ -299,7 +261,6 @@ impl NativeHost {
         let events: viewer::host::Events = Arc::new(move |event| receiver.receive(event, generation, &app));
         let ending = self.clone();
         let ended_window = window.clone();
-        // The map's events wait on this lock until its map is installed.
         let closing = map_window.clone();
         let map = Map::start(Launch { args, window: map_window, inputs, events, role, service }, move |end| {
             ending.ended(end, generation, &ended_window)
@@ -345,7 +306,6 @@ impl NativeHost {
                     Some(dashboard::protocol::FlyAircraftStatus { aircraft, state });
             }
             NativeEvent::ToggleDiagnostics => {
-                // The shortcut pressed in the native map; the host owns the choice.
                 drop(inner);
                 if let Err(error) = crate::video::change_map_diagnostics(app, None) {
                     let _ = app.emit("map-diagnostics-error", error);
@@ -353,8 +313,6 @@ impl NativeHost {
                 return;
             }
             NativeEvent::MapOptions { view_id, options } => {
-                // The picker changed a view's options; the web interface stores them per view so
-                // its next layout carries them back.
                 drop(inner);
                 let _ = app.emit(
                     "dashboard-map-options",
@@ -363,7 +321,6 @@ impl NativeHost {
                 return;
             }
             NativeEvent::MapModes { view_id, modes } => {
-                // The web interface's own map mode control offers what the view's picker does.
                 drop(inner);
                 let _ = app.emit(
                     "dashboard-map-modes",
@@ -418,8 +375,6 @@ impl NativeHost {
             }
             NativeEvent::Ready { sample_counts, .. } => {
                 inner.status.ready = true;
-                // The host's own data service advertises and checks map anti-aliasing against
-                // the renderer that draws it.
                 if let Some(counts) = sample_counts {
                     dashboard::map_settings::set_sample_counts(counts);
                 }
@@ -463,14 +418,9 @@ impl NativeHost {
             }
             NativeEvent::Export { .. } => unreachable!("answered above"),
         }
-        // Publish while holding the state lock so events and ends reach the frontend in
-        // mutation order.
         inner.publish(app);
     }
 
-    /// Closes the map for good. `after` runs once no map runs or starts, so once the map has let
-    /// go of the surface on its window, which its parent window may then take with it: at once
-    /// when none runs, else on the thread that saw the map end. Its last state is kept.
     pub fn shutdown(&self, after: impl FnOnce() + Send + 'static) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if !inner.shutting_down {
@@ -509,8 +459,6 @@ mod tests {
         assert!(folder_arguments(&config("", "")).is_empty());
     }
 
-    /// Apply can save between the launch's preference read and the host lock;
-    /// the folders it sent win over that older read.
     #[test]
     fn a_new_viewer_starts_with_the_folders_apply_last_sent() {
         let config = |game: &str| dashboard::Config {
@@ -545,8 +493,6 @@ mod tests {
         }
     }
 
-    /// A ready map that lost its device is started again, and the new one is sent the recording
-    /// and hour the last one showed; one that loses it again before it is ready is not.
     #[test]
     fn a_lost_device_starts_a_new_map_at_the_hour_the_last_showed() {
         let mut inner = showing("A");
@@ -556,7 +502,6 @@ mod tests {
         inner.restore_commands();
         assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
         assert_eq!(inner.pending.seek.as_ref().map(|seek| seek.hour), Some(12));
-        // The new map lost it again before it was ready.
         assert!(!inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: hung)".into())));
         assert_eq!(
             inner.status.error.as_deref(),
@@ -564,8 +509,6 @@ mod tests {
         );
     }
 
-    /// A map that panicked is not started again: its status names why, and the next start (the
-    /// frontend reopening the map) is sent what it showed.
     #[test]
     fn a_map_that_stopped_is_shown_by_name_and_reopens_where_it_was() {
         let mut inner = showing("A");
@@ -577,14 +520,12 @@ mod tests {
         assert!(!inner.status.running);
         inner.restore_commands();
         assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
-        // Closing the app is no failure.
         let mut closing = showing("A");
         closing.shutting_down = true;
         assert!(!closing.map_ended(Ending::Failed("late".into())));
         assert!(closing.status.error.is_none());
     }
 
-    /// An export the map was asked for, as [`Inner::ask_export`] registers and queues it.
     fn asked(inner: &mut Inner, path: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
         inner.export_requests += 1;
         let request = inner.export_requests;
@@ -598,7 +539,6 @@ mod tests {
         dashboard::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
     }
 
-    /// Two exports to one path are each answered with their own end, whichever ends first.
     #[test]
     fn each_export_is_answered_with_its_own_end() {
         let mut inner = showing("A");
@@ -611,8 +551,6 @@ mod tests {
         assert!(inner.exports.is_empty());
     }
 
-    /// A closing map's export it already ended is answered as it ended it, not dropped with the
-    /// rest of what a closing map says; what it never ended is refused when it ends.
     #[test]
     fn a_closing_map_answers_the_exports_it_ended_and_refuses_the_rest() {
         let mut inner = showing("A");
@@ -624,8 +562,6 @@ mod tests {
         assert_eq!(waiting.try_recv(), Ok(Err("The map stopped before the export finished".into())));
     }
 
-    /// The map that ends takes its exports with it: their askers are refused, the requests not yet
-    /// sent are never sent to the map started after it, and its late answer answers nothing.
     #[test]
     fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
         let mut inner = showing("A");
@@ -640,14 +576,10 @@ mod tests {
         assert_eq!(next.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 13".into())));
     }
 
-    /// A map that is ready and loses its device before its launch has finished is started again
-    /// once that launch finishes: the restart it asked for while the launch was finishing is kept.
     #[test]
     fn a_map_lost_before_its_launch_finished_is_started_again_once_it_finishes() {
         let mut inner = Inner::default();
         assert_eq!(inner.begin_launch(), Ok(true));
-        // The launch installed its map, which became ready and lost its device before the
-        // launch finished.
         inner.status.ready = true;
         assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
         assert_eq!(inner.begin_launch(), Ok(false), "a launch is still finishing");

@@ -1,4 +1,3 @@
-//! Patch changed building slots and share every untouched chunk.
 use super::*;
 use map_display_data::copy_index::CopyIndex;
 use replay_data::rows::RowCodec;
@@ -6,7 +5,6 @@ use replay_frame::frame::ViewIdentity;
 use std::sync::atomic::{AtomicU64, Ordering};
 use viewer_foundation::map::perspective::MAP_OBJECT_VISIBILITY;
 
-// Chunk size bounds copying, not the number of building slots.
 const CHUNK_SHIFT: u32 = 6;
 pub(super) const CHUNK_SIZE: usize = 1usize << CHUNK_SHIFT;
 
@@ -158,7 +156,6 @@ impl<T: PartialEq> Chunked<T> {
             chunks: Arc::new(ChunkDirectory::new(values)),
         })
     }
-    /// The chunks this one holds that `previous` did not, by chunk index: what the hour touched.
     pub(super) fn changed_chunks(&self, previous: &Self) -> io::Result<CopyIndex<usize, ()>> {
         self.chunks.changed_pages(&previous.chunks)
     }
@@ -542,7 +539,6 @@ impl BuildingsBase {
     }
 }
 
-// A base holds its own inputs, never an earlier base.
 pub struct BuildingsBase {
     assets: u64,
     defines: Defines,
@@ -735,7 +731,6 @@ impl Sites {
         Self::reached(&self.by_key, key)
     }
 
-    /// Each province with an ordinary slot over it, once, ascending.
     pub(super) fn provinces(&self) -> impl Iterator<Item = u32> + '_ {
         let mut last = None;
         self.by_province.iter().filter_map(move |&(province, _)| (last.replace(province) != Some(province)).then_some(province))
@@ -839,7 +834,6 @@ fn row_key(row: &BuildingRow) -> (u32, u32) {
     (row.location, row.building_type)
 }
 
-// Slots read health classifications, not raw health, ordinal or active flags.
 type SlotRead = (i16, (bool, bool, bool), u32, u32);
 
 fn slot_fields(table: TableId) -> u64 {
@@ -867,7 +861,6 @@ fn slot_read(row: &BuildingRow, defines: &Defines) -> SlotRead {
     )
 }
 
-// Unchanged row operands preserve the base's gate dependencies.
 fn read_by(base: &BuildingsBase, flag: u16, slot: u32) -> bool {
     base.tallies[slot as usize].reads(flag)
 }
@@ -1739,7 +1732,6 @@ impl MapBuildingAssets {
 
 #[cfg(any(test, feature = "test-support"))]
 impl PreparedBuildings {
-    // Float bits distinguish signed zeros and NaN payloads.
     pub fn bit_eq(&self, other: &Self) -> bool {
         let float = |a: f32, b: f32| a.to_bits() == b.to_bits();
         let entity = |a: &PreparedEntity, b: &PreparedEntity| {

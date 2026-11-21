@@ -1,4 +1,3 @@
-//! Daily production slot capture: industrial organisations and the country and production line modifiers, read in census slot ranges. The host owns dispatch, the range split and table assembly.
 
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;

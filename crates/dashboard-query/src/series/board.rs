@@ -1,8 +1,3 @@
-//! A table of declared measures across countries at one hour (the scoreboard): its rows the chosen
-//! countries, or the countries greatest (or least) by one column ([`Line::rank_at_by`]), and each row's
-//! value of every column. One read of the ranking column's table at the hour, then one read at the
-//! hour of each table the columns name, its columns and the rows' keys only: no country's history,
-//! no other hour and no other row is read.
 
 use super::{Line, invalid};
 use crate::{
@@ -13,46 +8,36 @@ use replay::lanes::Keys;
 use replay_columnar::manifest::Status;
 use std::{collections::HashMap, io};
 
-/// A column: its measure, and the measure that marks its value a partial subtotal, if any.
 pub struct Column<'q, 'a> {
     pub line: Line<'q, 'a>,
     pub partial: Option<Line<'q, 'a>>,
 }
 
-/// Which countries a board holds.
 pub enum Rows<'r> {
-    /// These countries, in order: each one held at the hour.
     Countries(&'r [Country]),
-    /// The `n` countries greatest by column `by` at the hour, greatest first, or with `least` the
-    /// `n` least, least first; a country whose value is not known there never ranks.
     Top { by: usize, n: usize, least: bool },
 }
 
-/// A country's value of one column: its raw value, or why there is none, never zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub value_raw: Option<String>,
     pub missing: Option<String>,
-    /// The value is a subtotal of what was recorded: some of its history was not.
     pub partial: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub country: Country,
-    /// The tag it goes by at the hour.
     pub tag: String,
     pub cells: Vec<Cell>,
 }
 
-/// A board at an hour: its rows, or why the hour holds none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Board {
     pub rows: Vec<Row>,
     pub missing: Option<String>,
 }
 
-/// The board of `columns` at `hour` over `rows`.
 pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<Board> {
     let Some(first) = columns.first() else {
         return Err(invalid("A board names no column"));
@@ -87,8 +72,6 @@ pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<B
     Ok(Board { rows: out, missing: None })
 }
 
-/// Each line's value for each tag at `hour`, or why there is none: one read per table the lines
-/// name, of their columns and the tags' keys.
 fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -> io::Result<Vec<Vec<Result<i64, String>>>> {
     let query = lines[0].query();
     let recording = query.replay.recording();
@@ -164,7 +147,6 @@ mod tests {
         Column { line: line(query, "politicalPower"), partial: None }
     }
 
-    /// An hour both countries exist and hold a recorded balance.
     fn both_recorded() -> i32 {
         (ITA_FROM..FIRST + FIRST_HOURS).find(|&hour| power(9001, hour).is_some() && power(9002, hour).is_some()).unwrap()
     }
@@ -181,7 +163,6 @@ mod tests {
         assert_eq!(tags, wanted.iter().map(|(_, id)| tag_of(*id)).collect::<Vec<_>>());
         for (row, (value, _)) in board.rows.iter().zip(&wanted) {
             assert_eq!(row.cells[0], Cell { value_raw: Some(value.to_string()), missing: None, partial: false });
-            // The fixture records command power as zero: a recorded zero, marked partial by the power beside it.
             assert_eq!(row.cells[1], Cell { value_raw: Some("0".into()), missing: None, partial: *value != 0 });
         }
         assert_eq!(at(&columns, Rows::Top { by: 0, n: 1, least: false }, hour).unwrap().rows.len(), 1);
@@ -193,14 +174,12 @@ mod tests {
     #[test]
     fn countries_of_equal_value_rank_by_tag_as_the_followed_top_and_the_ui_do() {
         let mut query = query();
-        // Tags whose order is the reverse of their keys': 9001 is ZZZ, 9002 is AAA.
         let held = std::sync::Arc::make_mut(&mut query.holders);
         let ger = held.tags.remove("GER").unwrap();
         let ita = held.tags.remove("ITA").unwrap();
         held.tags.insert("ZZZ".into(), ger);
         held.tags.insert("AAA".into(), ita);
         let hour = both_recorded();
-        // Command power is a recorded zero for both: a tie.
         let columns = [Column { line: line(&query, "commandPower"), partial: None }];
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["AAA", "ZZZ"]);

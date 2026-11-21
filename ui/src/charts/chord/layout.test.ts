@@ -232,8 +232,6 @@ test('5,000 nodes retain positive geometry and a chosen fold preserves every flo
   assert.ok(layout.arcs.every(arc => arc.end > arc.start));
   assert.ok(layout.ribbons.every(ribbon => ribbon.sourceEnd > ribbon.sourceStart && ribbon.targetEnd > ribbon.targetStart));
   near(layout.arcs.reduce((sum, arc) => sum + arc.end - arc.start + chordGap(nodes.length) * arc.presence, 0), 2 * Math.PI);
-  // This chosen fold has 13 nodes and 169 aggregate flows; no recorded flow
-  // is discarded, and folding is independent of the diagram's capacity.
   const folded = foldChord({ nodes, flows }, new Set(nodes.slice(0, 12).map(node => node.id)), node('fold'));
   assert.equal([...folded.flows.values()].reduce((sum, members) => sum + members.length, 0), 20_000);
   assert.equal(folded.data.nodes.length, 13); assert.equal(folded.data.flows.length, 13 ** 2);

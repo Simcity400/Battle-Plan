@@ -132,8 +132,6 @@ fn hours_apply_their_sections_and_appends_and_clear_the_last_hours_changes() {
 }
 
 
-/// A journal of fewer columns applies as the schema: its sections apply as it wrote them, and
-/// the columns past its own hold no recorded cell.
 #[test]
 fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
     let older = vec![vec![Kind::U32], vec![Kind::I64]];
@@ -167,8 +165,6 @@ fn a_recording_of_fewer_columns_leaves_the_later_columns_unrecorded() {
     assert!(State::recorded(schema(), vec![3, 1]).is_err());
 }
 
-/// A read table is sampled at its hour, others keep theirs, and a listed sample overrides
-/// both: a reset leaves the table with no sample hour although it holds the same rows.
 #[test]
 fn sample_hours_follow_reads_and_listed_samples() {
     let mut state = State::new(schema()).unwrap();
@@ -193,8 +189,6 @@ fn sample_hours_follow_reads_and_listed_samples() {
     assert_eq!((state.sampled_at(0), state.sampled_at(1)), (None, Some(4)));
 }
 
-/// A truncated table's view is the rows its hour read or added, and a truncated table with no
-/// section is refused.
 #[test]
 fn a_truncated_view_is_the_hours_rows_read() {
     let mut walked = State::new(schema()).unwrap();
@@ -251,7 +245,6 @@ fn a_truncated_view_is_the_hours_rows_read() {
     assert!(walked.apply(&silent, |_| unreachable!()).is_err());
 }
 
-/// A FILL's targets are the hour's changes only: quiet hours after it report none.
 #[test]
 fn fill_targets_clear_with_the_next_hour() {
     let mut state = State::new(schema()).unwrap();
@@ -310,8 +303,6 @@ fn fill_targets_clear_with_the_next_hour() {
     }
 }
 
-/// A truncated hour that deletes a row it read, and one that fills the freed slot again,
-/// keep views of live rows, once each.
 #[test]
 fn a_truncated_view_drops_deleted_rows_and_holds_a_reused_slot_once() {
     let mut walked = State::new(schema()).unwrap();

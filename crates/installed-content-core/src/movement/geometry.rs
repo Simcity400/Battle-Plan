@@ -1,10 +1,8 @@
-//! Native province anchors, neighbour crossings and pixel lines.
 
 use std::{collections::HashMap, io};
 
 use crate::fields::invalid;
 
-/// Native file-row raster of province IDs.
 pub(crate) struct Raster<'a> {
     pub width: usize,
     pub height: usize,
@@ -12,7 +10,6 @@ pub(crate) struct Raster<'a> {
 }
 
 impl Raster<'_> {
-    /// Record at native `(x, y)`, zero outside the map.
     fn at(&self, x: i32, y: i32) -> u32 {
         if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
             return 0;
@@ -32,8 +29,6 @@ impl Raster<'_> {
     }
 }
 
-/// Signed 32-bit sums of run pixels divided by the pixel count.
-/// Unpainted records keep the origin.
 pub(crate) fn anchors(raster: &Raster, count: usize) -> Vec<[i32; 2]> {
     let mut sums = vec![(0_i32, 0_i32, 0_u32); count];
     for y in 0..raster.height {
@@ -52,9 +47,6 @@ pub(crate) fn anchors(raster: &Raster, count: usize) -> Vec<[i32; 2]> {
         .collect()
 }
 
-/// Border pixels of each lower record next to each higher one, in native row
-/// order: a pixel of `a` joins `(a, b)` when one of its four neighbours is
-/// `b`, wrapping horizontally.
 fn borders(raster: &Raster) -> HashMap<(u32, u32), Vec<[i32; 2]>> {
     let mut borders: HashMap<_, Vec<_>> = HashMap::new();
     for y in 0..raster.height as i32 {
@@ -73,7 +65,6 @@ fn borders(raster: &Raster) -> HashMap<(u32, u32), Vec<[i32; 2]>> {
     borders
 }
 
-/// A province's pixels that touch itself, for an authored self-neighbour.
 fn self_border(raster: &Raster, id: u32) -> Vec<[i32; 2]> {
     let mut pixels = Vec::new();
     for y in 0..raster.height as i32 {
@@ -90,10 +81,6 @@ fn self_border(raster: &Raster, id: u32) -> Vec<[i32; 2]> {
     pixels
 }
 
-/// The first largest 8-connected component wins ties. Connectivity does not
-/// wrap at the horizontal seam, although neighbour discovery does. Native
-/// discovery scans the indices after the seed; coordinate buckets limit that
-/// scan, and sorting keeps the native ascending push order onto its stack.
 fn first_largest_component(pixels: &[[i32; 2]]) -> Vec<[i32; 2]> {
     let mut by_coordinate: HashMap<[i32; 2], Vec<usize>> = HashMap::new();
     for (index, &point) in pixels.iter().enumerate() {
@@ -140,7 +127,6 @@ fn first_largest_component(pixels: &[[i32; 2]]) -> Vec<[i32; 2]> {
     best
 }
 
-/// Native rounding divides each border pixel's contribution before adding it.
 fn component_crossing(component: &[[i32; 2]]) -> io::Result<[i32; 2]> {
     let divisor = component.len() as i64 * 100_000;
     let mut sums = [0_i64; 2];
@@ -154,7 +140,6 @@ fn component_crossing(component: &[[i32; 2]]) -> io::Result<[i32; 2]> {
     Ok(sums.map(|value| ((value + if value < 0 { -50_000 } else { 50_000 }) / 100_000) as i32))
 }
 
-/// Native integer line rasteriser. Capacity truncates the prefix.
 pub(crate) fn native_line(a: [i32; 2], b: [i32; 2], capacity: usize) -> Vec<[i32; 2]> {
     let steep = b[0].wrapping_sub(a[0]).wrapping_abs() < b[1].wrapping_sub(a[1]).wrapping_abs();
     let (mut a, mut b) = if steep {
@@ -182,7 +167,6 @@ pub(crate) fn native_line(a: [i32; 2], b: [i32; 2], capacity: usize) -> Vec<[i32
     out
 }
 
-/// Moves `b` across the seam when that is the shorter way from `a`.
 pub(crate) fn unwrap_towards(a: [i32; 2], mut b: [i32; 2], width: i32) -> [i32; 2] {
     if b[0].wrapping_sub(a[0]).wrapping_abs() > width / 2 {
         b[0] = b[0].wrapping_add(if a[0] < width / 2 { -width } else { width });
@@ -190,8 +174,6 @@ pub(crate) fn unwrap_towards(a: [i32; 2], mut b: [i32; 2], width: i32) -> [i32; 
     b
 }
 
-/// The route from `a` through `crossing` to `b`, with the crossing point
-/// once, shared by terrain-cost and river sampling.
 pub(crate) fn route_points(
     a: [i32; 2],
     b: [i32; 2],
@@ -217,16 +199,12 @@ pub(crate) fn route_points(
     Ok(points)
 }
 
-/// A neighbour pair's crossing point and midpoint flag: a land pair whose
-/// direct line stays inside the pair, or a coast, needs no inserted arrow
-/// midpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Crossing {
     pub point: [i32; 2],
     pub no_midpoint: bool,
 }
 
-/// Crossings for every listed pair, keyed by `(lower, higher)` ID.
 pub(crate) fn crossings(
     raster: &Raster,
     lists: &[Vec<u32>],
@@ -351,8 +329,6 @@ mod tests {
         );
     }
 
-    /// The pre-bucket reference: scan every later index in ascending order,
-    /// mark before pushing, and pop the pending stack LIFO.
     fn slow_first_largest_component(pixels: &[[i32; 2]]) -> Vec<[i32; 2]> {
         let mut seen = vec![false; pixels.len()];
         let mut best = Vec::new();

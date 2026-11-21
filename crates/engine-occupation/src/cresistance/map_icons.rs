@@ -1,6 +1,3 @@
-//! Passive map-marker operands from the retained state and occupation-data lists.
-//! Membership and occurrence order come from the native lists, including inactive
-//! resistance objects; no threshold or aggregate-effect reconstruction is performed.
 use super::*;
 use crate::{
     ccountry, ccountry_occupation_data, ccountry_occupation_status, msvc_string,
@@ -21,10 +18,8 @@ pub use game_model::occupation_map::Markers;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Inputs {
-    /// None proves the occupied-country reference is nonpositive.
     pub markers: Option<Markers>,
     pub controller: u32,
-    /// Controller, resolved occupied country, occupation holder and retained country.
     pub receivers: [usize; 4],
 }
 
@@ -82,8 +77,6 @@ fn target(memory: &impl Memory, object: usize, row: Row) -> Result<Option<i64>, 
     }
 }
 
-/// Reads alongside the existing authenticated state census, only when its writer
-/// certificate changed. Returned receivers certify the core lists and retained country identity.
 pub fn read_inputs(
     memory: &impl Memory,
     base: usize,
@@ -236,8 +229,6 @@ mod tests {
         assert_eq!(map.resistance, [b"S".to_vec(), b"C".to_vec()]);
         assert_eq!(map.core_country, Some(2));
         assert_eq!(map.stored_target, None);
-        // The saved group key follows its retained pointer, independently of
-        // the embedded lookup reference and even when both core lists are empty.
         bytes[0xd000 + ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER..][..8]
             .copy_from_slice(&0x2000u64.to_le_bytes());
         bytes[0xd000 + CORE_RESISTANCE_DEFINITIONS + 12..][..4].fill(0);
@@ -250,16 +241,12 @@ mod tests {
         let map = input.markers.unwrap();
         assert_eq!(map.core_country, Some(1));
         assert_eq!(map.resistance, [b"S".to_vec()]);
-        // An unreadable retained key cannot silently turn an existing empty
-        // group into the native no-group outcome.
         bytes[0xd000 + ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER..][..8].fill(0);
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
         };
         assert!(read_inputs(&memory, 0, 0x1000, source, row).is_err());
-        // Empty bucket storage may retain the stale group and its invalid pointer.
-        // Neither is followed once native lookup proves absence.
         bytes[0x11300 + 4] = 0;
         bytes[0xc000 + ccountry_occupation_status::OCCUPATION_DATA_TABLE + 8..][..4].fill(0);
         let memory = SliceMemory {
@@ -290,9 +277,7 @@ mod tests {
         }
         bytes[0x480 + DEFINITION_NAME..][..5].copy_from_slice(b"state");
         bytes[0x500 + DEFINITION_NAME..][..4].copy_from_slice(b"core");
-        // The state object is at a nonzero base; retain the same absolute fixture addresses.
         let mut output = Vec::new();
-        // Rebase just the pointers stored in this fixture.
         for at in [
             STATE_RESISTANCE_DEFINITIONS,
             0x300 + CORE_RESISTANCE_DEFINITIONS,

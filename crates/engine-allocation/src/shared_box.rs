@@ -1,5 +1,3 @@
-//! A reference-counted shared value whose one allocation is checked: stable `Arc` has no
-//! fallible constructor, so a refused `Arc::new` aborts the process.
 
 use std::fmt;
 use std::io;
@@ -13,19 +11,14 @@ struct Inner<T> {
     value: T,
 }
 
-/// `Arc` without weak references, made by [`shared`].
 pub struct SharedBox<T> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,
 }
 
-// SAFETY: as `Arc`: owners on several threads share `&T` and the last one drops `T`.
 unsafe impl<T: Send + Sync> Send for SharedBox<T> {}
-// SAFETY: as `Arc`.
 unsafe impl<T: Send + Sync> Sync for SharedBox<T> {}
 
-/// `value` in a new shared allocation; a refused allocation is the allocation failure, and
-/// `value` is dropped.
 pub fn shared<T>(value: T) -> io::Result<SharedBox<T>> {
     let inner = crate::boxed(Inner {
         owners: AtomicUsize::new(1),
@@ -38,18 +31,14 @@ pub fn shared<T>(value: T) -> io::Result<SharedBox<T>> {
 }
 
 impl<T> SharedBox<T> {
-    /// The one allocation's size, allocator metadata aside.
     pub const BYTES: usize = std::mem::size_of::<Inner<T>>();
 
     fn inner(&self) -> &Inner<T> {
-        // SAFETY: the allocation lives while any owner does, and self is one.
         unsafe { self.inner.as_ref() }
     }
 
-    /// The value, when this is its only owner.
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         if this.inner().owners.load(Ordering::Acquire) == 1 {
-            // SAFETY: the only owner, borrowed mutably: no other reference exists or can be made.
             Some(unsafe { &mut this.inner.as_mut().value })
         } else {
             None
@@ -71,7 +60,6 @@ impl<T> SharedBox<T> {
 
 impl<T> Clone for SharedBox<T> {
     fn clone(&self) -> Self {
-        // As Arc: past isize::MAX owners, clones were leaked, never held.
         if self.inner().owners.fetch_add(1, Ordering::Relaxed) > isize::MAX as usize {
             std::process::abort();
         }
@@ -88,7 +76,6 @@ impl<T> Drop for SharedBox<T> {
             return;
         }
         fence(Ordering::Acquire);
-        // SAFETY: the last owner; `shared` made the allocation as a Box.
         drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
     }
 }

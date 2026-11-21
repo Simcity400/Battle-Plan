@@ -20,12 +20,8 @@ test('a tag names one country until it is renamed; a later holder of the tag is 
   const lineage = new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }]);
   const first = lineage.countryAt('AAA', 150);
   assert.equal(lineage.countryAt('BBB', 250), first);
-  // Nothing continues AAA after 200: whoever holds it later is someone else, even with no
-  // run of the old country reaching the rename (it may have left a faction at 150).
   assert.notEqual(lineage.countryAt('AAA', 400), first);
-  // A tag with no recorded change is one country throughout.
   assert.equal(lineage.countryAt('GER', 0), lineage.countryAt('GER', 1e6));
-  // Before BBB was AAA's, BBB named another country (or none).
   assert.notEqual(lineage.countryAt('BBB', 150), first);
 });
 
@@ -37,7 +33,6 @@ test('chains and swaps in one hour move whole countries', () => {
   const [aaa, bbb] = [lineage.countryAt('AAA', 50), lineage.countryAt('BBB', 50)];
   assert.equal(lineage.countryAt('BBB', 150), aaa);
   assert.equal(lineage.countryAt('AAA', 150), bbb);
-  // The country that took AAA at 100 is CCC at 300 and D01 at 400.
   assert.equal(lineage.countryAt('D01', 450), bbb);
   assert.equal(lineage.countryAt('CCC', 350), bbb);
 });
@@ -46,15 +41,12 @@ test('a country is named by the tag it had at the hour, through every rename', (
   const lineage = new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }, { hour: 300, from: 'BBB', to: 'CCC' }]);
   const country = lineage.countryAt('AAA', 100);
   assert.deepEqual([100, 199, 200, 299, 300, 1e6].map(hour => lineage.tagOf(country, hour)), ['AAA', 'AAA', 'BBB', 'BBB', 'CCC', 'CCC']);
-  // Whoever takes AAA later is named AAA, and a country never renamed keeps its tag.
   assert.equal(lineage.tagOf(lineage.countryAt('AAA', 400), 450), 'AAA');
   assert.equal(lineage.tagOf(lineage.countryAt('GER', 0), 1e6), 'GER');
 });
 
 test('runs group by the country their tag named, however the tags were reused', () => {
   const lineage = new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }]);
-  // AAA is a member 100-150 and leaves; it is renamed BBB at 200 (and rejoins as BBB at 250);
-  // a new AAA joins at 400.
   const groups = joinTagChanges([run('AAA', 100, 150), run('BBB', 250, 300), run('AAA', 400, 450)], lineage);
   assert.deepEqual(groups.map(group => group.map(item => `${item.tag}@${item.firstHour}`)), [['AAA@100', 'BBB@250'], ['AAA@400']]);
   assert.equal(joinTagChanges([run('GER', 0, 10), run('GER', 20, 30)], new Lineage([])).length, 1);

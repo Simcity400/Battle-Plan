@@ -1,5 +1,3 @@
-//! A `feed-events` row as the log hands it (cells by column), typed: what was not recorded stays
-//! so, an optional operand without a value is none.
 
 use dashboard_query::log::{Cell, Row};
 use replay_data::{
@@ -10,17 +8,13 @@ use replay_data::{
 };
 use std::io;
 
-/// The canonical slot a role names at the row's read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Slot {
-    /// The role holds no country (reference zero or below).
     None,
     Of(u32),
-    /// No link and holder witnessed the country at the read.
     NotRecorded,
 }
 
-/// A country role: the raw reference the game passed and its id where recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Party {
     pub reference: u32,
@@ -28,7 +22,6 @@ pub(crate) struct Party {
     pub slot: Slot,
 }
 
-/// The cause the collector observed: the operations running and their operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Cause {
     pub route: u8,
@@ -49,9 +42,7 @@ pub(crate) struct FeedEvent {
     pub code: u8,
     pub actor: Party,
     pub target: Party,
-    /// None when the cause was not recorded.
     pub cause: Option<Cause>,
-    /// None when the capture did not capture it; empty with no script.
     pub token: Option<Vec<u8>>,
     pub native_event: Option<(u32, u32)>,
     pub instance: Option<u32>,
@@ -60,12 +51,9 @@ pub(crate) struct FeedEvent {
     pub numeric_target: Option<i32>,
     pub lifecycle: Option<i32>,
     pub days: Option<i32>,
-    /// None when the scope graph was not captured.
     pub scopes: Option<Vec<EventFeedScope>>,
     pub opener: Option<u64>,
     pub dated: Option<i32>,
-    /// Political and command power a decision execution was proven to charge; None when not
-    /// proven.
     pub costs: Option<[Option<i64>; 2]>,
     pub coverage: Option<u32>,
     pub outstanding: Option<u64>,
@@ -78,7 +66,6 @@ impl FeedEvent {
         self.generation == FeedEventRow::DERIVED
     }
 
-    /// The occurrence's script operands, when it is a script occurrence.
     pub fn scripted(&self) -> bool {
         (8..=23).contains(&self.code) && self.code != 17
     }
@@ -92,7 +79,6 @@ impl FeedEvent {
     }
 }
 
-/// The columns of FeedEvents, by name, resolved once.
 pub(crate) struct Columns {
     at: [usize; NAMES.len()],
 }
@@ -141,8 +127,6 @@ const NAMES: [&str; 41] = [
     "backlog",
 ];
 
-/// A cell read three ways: recorded with a value, recorded without one (an optional's none), or
-/// not recorded.
 enum Held<'a> {
     Value(&'a Cell),
     Missing,
@@ -173,7 +157,6 @@ impl Columns {
         }
     }
 
-    /// An optional operand: Some(None) recorded without a value, None not recorded.
     fn optional(&self, row: &Row, name: usize) -> Option<Option<i64>> {
         match self.cell(row, name) {
             Held::Value(Cell::Number(value)) => Some(Some(*value)),
@@ -198,7 +181,6 @@ impl Columns {
         }
     }
 
-    /// The row typed; an error when a column the writer always records is not there.
     pub fn read(&self, row: &Row) -> io::Result<FeedEvent> {
         let required = |name: usize| self.number(row, name).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("A feed row's {} is not recorded", NAMES[name])));
         let some = |name: usize| self.optional(row, name).flatten();
@@ -262,7 +244,6 @@ impl Columns {
     }
 }
 
-/// A scopes cell's recorded list.
 pub(crate) fn scopes(bytes: &[u8]) -> io::Result<Vec<EventFeedScope>> {
     let mut decoder = Decoder::new(bytes);
     let scopes = <Vec<EventFeedScope> as Value>::decode(&mut decoder)?;

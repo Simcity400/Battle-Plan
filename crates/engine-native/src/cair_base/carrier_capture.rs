@@ -1,9 +1,3 @@
-//! Optional carrier observation inside the existing registration walk.
-//!
-//! The native mirror and owned decoder feed the same authenticated occurrences.
-//! The optional Memory acquires only missing operands; it may consult an exact
-//! owned-key view of the main log first. Source addresses are transient keys,
-//! never replay values and never a deferred native-memory permission.
 
 use super::{ResolvedLink, Resolver, Row, carrier, fuel};
 use crate::{
@@ -22,7 +16,6 @@ pub use fuel::{
 type Span = (usize, usize);
 type Available<T> = Result<T, &'static str>;
 
-/// Independent base suffixes. A failed dense census never erases a host name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CarrierBase {
     pub base: u64,
@@ -40,7 +33,6 @@ impl Default for CarrierBase {
     }
 }
 
-/// The two container scalars remain independent of pool membership success.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CarrierRegistration {
     pub base: u64,
@@ -65,8 +57,6 @@ impl Default for CarrierRegistration {
     }
 }
 
-/// One complete registered pool. Wing boundaries are relative to its current
-/// registration, including every repeated occurrence and every empty pool.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CarrierPool {
     pub type_index: i32,
@@ -74,11 +64,9 @@ pub struct CarrierPool {
     pub wings_start: usize,
     pub wings_len: u32,
     pub fuel: CarrierPoolFuel,
-    /// Signed-i32 wrapping sum of each wing's plane count, independent of fuel.
     pub planes_raw: Option<i32>,
 }
 
-/// Worker-owned carrier arenas grow from original headers before admission.
 pub struct CarrierBuffers<'a> {
     pub bases: &'a mut Vec<CarrierBase>,
     pub registrations: &'a mut Vec<CarrierRegistration>,
@@ -105,8 +93,6 @@ struct CaptureBuffers<'a> {
     forecasts: Buffer<'a, CarrierForecastSlot>,
 }
 
-/// Off-thread growth demand. Checked overflow is retained in `failure`; it
-/// never influences the predecessor's walk or becomes a smaller known demand.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CarrierDemand {
     pub bases: usize,
@@ -158,9 +144,6 @@ struct PoolRead {
     planes: Available<i32>,
 }
 
-/// Exactly one admitted observation, with no self-referential storage. The
-/// caller's country reader has the same lifetime/Memory as these optional
-/// operands. Its headers and every memo belong to this pass only.
 pub struct CarrierCapture<'a, M: Memory> {
     memory: &'a M,
     image: usize,
@@ -280,9 +263,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// The collector supplies the copied callback's numerical admission. A refusal leaves every
-    /// legacy carrier/fuel attempt unchanged and forbids added wing plane-count reads, including
-    /// when both fuel branches never reached it.
     pub fn with_transport_planes(mut self, admission: Available<()>) -> Self {
         self.transport_planes = admission;
         self
@@ -295,9 +275,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         self.demand
     }
 
-    /// Call after the original base identity, BEFORE its `COUNTRY_CONTAINERS` header read. An
-    /// accepted base-row/name therefore survives a failed registration header. State-indexed bases
-    /// pass `host_base = false`.
     pub fn begin_base(&mut self, pointer: usize, handle: u64, host_base: bool) {
         self.finish_base(false);
         if !host_base {
@@ -332,8 +309,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         });
     }
 
-    /// The original registration reader supplies its validated live `COUNTRY_CONTAINERS` count. No
-    /// optional header read or guessed country-count bound is substituted.
     pub fn indexed_header(&mut self, indexed_count: u32) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -349,9 +324,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         base.indexed_complete = count <= self.indexed.len();
     }
 
-    /// Only an accepted current AirBases row may demand host bytes. The
-    /// decoder supplies its O(1) traversal-order join; this method never reads
-    /// base fields absent from the original registration log.
     pub fn authenticated_base(&mut self, source: Row) {
         let Some(base) = self.current.as_ref() else {
             return;
@@ -385,8 +357,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         self.demand.name_bytes = self.names.required;
     }
 
-    /// The main pass already authenticated the exact container vtable, raw
-    /// country reference and indexed ordinal. No E0/F0 success is needed.
     pub fn indexed_container(&mut self, country: u32, slot: u32, pointer: usize) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -409,9 +379,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         base.registration = Some(certificate);
     }
 
-    /// Begins one accepted indexed container before its original pool-header
-    /// read, with the fuel scalars the original pass read in that container's
-    /// span ([`super::container_span_words`]).
     pub fn begin_registration(&mut self, fuel: ContainerFuel) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -443,8 +410,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// Full pool demand comes from the original validated container header,
-    /// even if a later pointer/identity fault stops its observed prefix.
     pub fn registration_header(&mut self, pool_count: u32) {
         let Some(base) = self
             .current
@@ -464,8 +429,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// Called after the ORIGINAL pool vtable/header checks and before its
-    /// original wing loop. Missing pool fields are acquired exactly once.
     pub fn begin_pool(&mut self, pointer: usize, members: Array) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -484,8 +447,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
                     .get_or_insert("carrier pool count overflow");
             }
         }
-        // Twice the copied header's full member count bounds distinct ace and
-        // forecast keys, including demand after a later original wing fault.
         match (members.count as usize).checked_mul(2) {
             Some(count) => {
                 add(&mut self.demand.aces, count, &mut self.demand.failure);
@@ -529,8 +490,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         });
     }
 
-    /// Called once per already authenticated primary-wing occurrence, before
-    /// the predecessor decides whether its own destination slice has space.
     pub fn wing(&mut self, pointer: usize) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -557,8 +516,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
             }
             return;
         }
-        // Each original occurrence enters the fuel accumulator exactly once; admitted transport
-        // borrows that attempt's plane-count result.
         let planes = if let Some(read) = pool.fuel.as_mut() {
             self.fuel.wing_with_planes(read, pointer)
         } else {
@@ -572,8 +529,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
             .and_then(|sum| planes.map(|planes| sum.wrapping_add(planes)));
     }
 
-    /// Only the normal return after every original member calls this event.
-    /// Empty pools reach it too; a failed member is never a complete empty sum.
     pub fn finish_pool(&mut self) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -619,8 +574,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// `accepted_wings` is the original whole registration's admitted local
-    /// length, or None on truncation/fault. Scalars survive either result.
     pub fn finish_registration(&mut self, accepted_wings: Option<usize>) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -656,8 +609,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// Dense `REGISTERED_CONTAINERS` reading runs only after complete original indexed membership.
-    /// A prefix/short certificate arena is never a complete indexed proof.
     pub fn finish_base(&mut self, original_complete: bool) {
         self.finish_registration(None);
         let Some(base) = self.current.take() else {
@@ -666,10 +617,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         let result = if !original_complete {
             Err("carrier indexed registrations incomplete")
         } else if !base.indexed_complete {
-            // The complete original pass established this base, but admitted
-            // scratch did not hold all indexed certificates. Discover only
-            // its validated dense-header capacity; never walk uncertified
-            // pointers or turn this sizing read into an available suffix.
             match carrier::dense_demand(self.memory, base.pointer) {
                 Ok(required) => add(
                     &mut self.demand.countries,
@@ -712,8 +659,6 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// The owner calls this on every early original return; no optional pool
-    /// or dense prefix can then be mistaken for complete membership.
     pub fn finish_walk(&mut self) {
         self.finish_base(false);
     }

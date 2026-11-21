@@ -1,4 +1,3 @@
-//! Raid database dispatch; projection lives in the parent module.
 use crate::{
     fields::invalid,
     key_names::KeyNames,
@@ -40,7 +39,6 @@ enum Node {
 }
 
 impl Node {
-    /// The object a node reads, as its field names it.
     fn what(self) -> &'static str {
         use Node::*;
         match self {
@@ -72,7 +70,6 @@ impl Node {
         }
     }
 
-    /// The reader context used in field diagnostics.
     fn reader(self) -> &'static str {
         use Node::*;
         match self {
@@ -105,8 +102,6 @@ impl Node {
     }
 }
 
-/// One file's dispatch. `equipment` resolves equipment keys; triggers are
-/// read against `names`. Reported fields and misreads go to `notes`.
 pub(super) fn document(
     bytes: &[u8],
     equipment: super::Equipment<'_>,
@@ -116,16 +111,12 @@ pub(super) fn document(
     use Node::*;
     let mut reported = Vec::new();
     let mut battalions = BTreeSet::new();
-    // The file loop runs to EOF; nested loops stop at close. Unknown fields
-    // report and skip blocks. Each file uses the lexer's keep-mark mode.
     let read = native::read(
         bytes,
         native::Mode::KeepMark,
         native::Top::File(File),
         Some(names),
         &mut |node, field| match (node, field.keyword().as_deref()) {
-            // Categories and types need an opening brace; otherwise report the
-            // token and return without entering a container.
             (File, Some(b"categories")) if field.opens() => Shape::Object(Categories),
             (File, Some(b"types")) if field.opens() => Shape::Object(Types),
             (File, Some(key @ (b"categories" | b"types"))) => {
@@ -168,8 +159,6 @@ pub(super) fn document(
                 Shape::Object(EquipmentAmounts)
             }
             (Raid, Some(b"starting_point")) => Shape::Object(StartingPoint),
-            // Each field creates a new requirement, whose battalion-type table
-            // persists across all of its `battalion_types` fields.
             (Raid, Some(b"unit_requirements")) => {
                 battalions.clear();
                 Shape::Object(Requirements)
@@ -202,12 +191,10 @@ pub(super) fn document(
                     | b"nuke_type",
                 ),
             ) => Shape::One,
-            // Resolve each list token into the value slot.
             (Target, Some(b"province")) if field.opens() => Shape::List,
             (Target, Some(b"state")) if field.opens() => Shape::Trigger,
             (Target, Some(b"province" | b"state" | b"captured_army_leader")) => Shape::One,
             (Target, Some(b"building")) => Shape::Object(Building),
-            // Any other key, including a quoted one, is reported; no selector is added.
             (Target, _) => {
                 reported.push(format!(
                     "line {}: target_type key {} is reported and skipped",
@@ -216,17 +203,11 @@ pub(super) fn document(
                 ));
                 Shape::Skip
             }
-            (Building, Some(b"type" | b"tags")) if field.opens() => Shape::List, // list tokens fill the value slot
-            // Register the lexer's current token, rather than the value slot's token.
+            (Building, Some(b"type" | b"tags")) if field.opens() => Shape::List,
             (Building, Some(b"type" | b"tags")) => Shape::Current,
             (Building, Some(b"is_coastal")) => Shape::One,
             (Building, Some(b"level")) | (Equipment, Some(b"amount")) => Shape::Object(Bounds),
             (Bounds, Some(b"min" | b"max")) => Shape::One,
-            // `nukes` uses integer scanning; a known equipment key reads only its
-            // value token as a decimal amount. Any other key, including a quoted
-            // one, is reported and its block skipped. An undecided key consumes a
-            // scalar either way, but block consumption depends on whether it names
-            // equipment; the projection refuses that uncertainty.
             (EquipmentAmounts, Some(b"nukes")) => Shape::One,
             (EquipmentAmounts, Some(key)) if equipment(key) == Some(true) => Shape::One,
             (EquipmentAmounts, Some(key)) if equipment(key).is_none() => {
@@ -252,8 +233,6 @@ pub(super) fn document(
             (Requirements, Some(b"battalion_types")) => Shape::Object(BattalionTypes),
             (Requirements, Some(b"equipment")) => Shape::Object(Equipment),
             (BattalionTypes, _) => {
-                // A repeated battalion token is reported and its block skipped.
-                // A quoted key has no battalion identity; the projection refuses it.
                 let key = field.keyword().unwrap_or_default();
                 if battalions.insert(key) {
                     Shape::Object(Bounds)
@@ -266,7 +245,6 @@ pub(super) fn document(
                     Shape::Skip
                 }
             }
-            // Each equipment type or module token is read into the value slot.
             (Equipment, Some(b"type" | b"modules")) => Shape::List,
             (Animations, Some(b"stage")) => Shape::Object(Stage),
             (Stage, Some(b"state" | b"intro" | b"at_progress")) => Shape::One,
@@ -284,8 +262,6 @@ pub(super) fn document(
             ) => Shape::One,
             (Factors, Some(b"success" | b"critical" | b"disaster")) => Shape::Object(Formula),
             (Formula, Some(b"base")) => Shape::One,
-            // Folded standard keys select standard modifiers; every other name,
-            // including a quoted one, constructs a custom modifier.
             (Formula, Some(key)) if super::tooltips::standard(key).is_some() => {
                 Shape::Object(StandardModifier)
             }
@@ -294,7 +270,7 @@ pub(super) fn document(
                 StandardModifier | CustomModifier,
                 Some(b"weight" | b"reference" | b"start_weight" | b"start_reference"),
             ) => Shape::One,
-            (CustomModifier, Some(b"enable")) => Shape::ByKey, // assignment-form trigger
+            (CustomModifier, Some(b"enable")) => Shape::ByKey,
             (CustomModifier, Some(b"formula")) => Shape::Object(Mtth),
             (CustomModifier, Some(b"scope" | b"can_target_affect" | b"can_actor_affect")) => {
                 Shape::One
@@ -305,17 +281,14 @@ pub(super) fn document(
             }
             (Outcome, Some(b"division_effects" | b"actor_effects" | b"victim_effects")) => {
                 if field.keyword_is("division_effects") {
-                    // Division effects use unit scope.
                     Shape::EffectIn(ScopeKind::Unit.bit())
                 } else {
-                    // Actor and victim effects use raid-instance scope.
                     Shape::EffectIn(ScopeKind::RaidInstance.bit())
                 }
             }
             (Outcome, Some(b"custom_sound" | b"destroy_additional_equipment")) => Shape::One,
             (Outcome, Some(b"visual_effect")) => Shape::Object(Visual),
             (Visual, Some(b"animation" | b"entity")) => Shape::One,
-            // Every reader here reports other fields and skips their blocks.
             _ => {
                 reported.push(format!(
                     "line {}: {} field {} is reported and skipped by {}",

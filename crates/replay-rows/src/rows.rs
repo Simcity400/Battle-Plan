@@ -1,5 +1,3 @@
-//! Engine-native typed tables and lossless field-mask codecs.
-
 use crate::codec::{Decoder, invalid_static as invalid, put_bytes, put_varint};
 use crate::display::{Rounding, Step};
 pub use crate::event_feed_rows::EventFeedHistoryRow;
@@ -17,12 +15,6 @@ pub use naval_mission_rows::*;
 pub use politics_rows::*;
 pub use production_modifier_rows::*;
 use std::io;
-/// The sampled hour plus the engine's own monotonic allocation counters.
-///
-/// Every counter is the value the save-header serializer prints for its
-/// named key at the sampled tick. Comparing with a save header establishes
-/// whether it was written at that tick or after further engine work.
-/// `debug_current_ref_id` keeps its printed unsigned width; the rest keep signed i32.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ClockRow {
@@ -30,9 +22,6 @@ pub struct ClockRow {
     pub play_time: u64,
     pub play_session_started_at: i64,
     pub seed: i32,
-    /// Stored speed index, clamped to 0..=4 by the setter and saved
-    /// unconditionally under token 0x6e. Pause lives on the application object
-    /// behind a virtual call and is not recorded.
     pub speed: i32,
     pub debug_current_ref_id: Option<u32>,
     pub unit: Option<i32>,
@@ -58,7 +47,6 @@ pub struct CampaignRow {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryRow {
-    /// Raw country link id, which need not equal its canonical array slot.
     pub id: u32,
     pub canonical_slot: u32,
     pub tag: Vec<u8>,
@@ -67,32 +55,24 @@ pub struct CountryRow {
     pub stability_raw: i64,
     pub war_support_raw: i64,
     pub convoys_raw: Option<i64>,
-    /// Unit counters hide while the viewing country's stored hide flag is set.
     pub peace_conference_participant: u8,
-    /// Stored signed residual manpower.
     pub manpower_residual: i32,
-    /// Stored signed land-doctrine level. Hourly and present only for province
-    /// controllers reached by active border wars; None means outside that
-    /// hour's demand, never a failed read.
     pub border_land_doctrine_level: Recorded<Option<i32>>,
 }
 
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Rows whose keys this thread validated.
     pub static VALIDATED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryLinkRow {
-    /// Raw country reference used by provinces and other engine tables.
     pub id: u32,
     pub canonical_slot: u32,
 }
 
-/// A daily rise of a construction line's building: `count` levels at `hour`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionRise {
@@ -105,55 +85,22 @@ crate::value::value_struct!(ConstructionRise { hour: i32, count: u32 });
 pub struct ProvinceRow {
     pub id: u32,
     pub state: u32,
-    /// Raw country link id; zero is retained as read from the engine.
     pub owner: u32,
-    /// Raw country link id; resolve through CountryLinks to a canonical slot.
     pub controller: u32,
-    /// Stored signed, unscaled province value.
     pub victory_points: i32,
-    /// Hourly: nonzero when the native fort sum over this province's buildings
-    /// is positive, which is the only thing the movement graph asks of it.
     pub fort_positive: u8,
-    /// Hourly province-movement access gates, the `MOVE_*` bits.
     pub move_gate: u8,
-    /// The id of the sea province this land province's port opens onto, used
-    /// by path-edge port classification; zero without a port. Static: one delta
-    /// on the first hour.
     pub port_sea: i32,
-    /// The selected-attack fort sum and state factor recordings through
-    /// format 101 captured ([`ProvinceAttackInputs`]); current writers leave
-    /// it empty ([`Witnessed`]).
     pub attack: Recorded<Witnessed<ProvinceAttackInputs>>,
-    /// Retired controller-area graph operands of the selected-route preview.
     pub selected_areas: Recorded<Retired>,
-    /// For a province whose healthy land fort level (the walk's fort sum) is positive and
-    /// whose controller is positive, its state's effective
-    /// `land_bunker_effectiveness_factor` for that controller added to the controller's
-    /// own factor by the fort-base calculation. None for every other province, which no
-    /// attack list asks for it, and for a fortified one's read refusal. Older formats use
-    /// NotRecorded.
     pub fort_bunker: Recorded<Option<i64>>,
-    /// The province's controller area (compared and searched during route finding), as the id of
-    /// its smallest member province, whose row holds its [`Self::area_node`]; zero for a null area.
-    /// None is a capture refusal. The collector reads an area again only when a controller change
-    /// can have touched it (`engine_native::controller_areas`).
     pub controller_area: Recorded<Option<u32>>,
-    /// The province's owner area labelled the same way; the route search reads only equality and
-    /// null.
     pub owner_area: Recorded<Option<u32>>,
-    /// On the province whose id labels its controller area, that area's node;
-    /// None on every other province. On the label province None refuses the
-    /// node.
     pub area_node: Recorded<Option<ControllerAreaNode>>,
 }
 
 impl ProvinceRow {
-    /// A land, non-lake province (terrain flags bit 0 set, bit 1 clear) whose
-    /// A null owner area refuses province movement access.
     pub const MOVE_NULL_OWNER_AREA: u8 = 1;
-    /// The size of the province's border-conflict set is nonzero. Province movement
-    /// access then refuses entry unless the army's own location has this bit or the
-    /// province's BorderConflicts row lists the army's orders group.
     pub const MOVE_BORDER_CONFLICT: u8 = 2;
 }
 
@@ -162,47 +109,19 @@ impl ProvinceRow {
 pub struct StateRow {
     pub infrastructure: Recorded<Option<StateInfrastructure>>,
     pub id: u32,
-    /// Raw country link id; zero is retained as read from the engine.
     pub owner: u32,
-    /// Raw country link id; resolve through CountryLinks to a canonical slot.
     pub controller: u32,
-    /// Hourly native `cstate::movement_infrastructure` result, fixed5. Not
-    /// derivable from the staggered StateBuildings table.
     pub movement_infrastructure: i64,
-    /// Stored signed available manpower.
     pub manpower_available: i32,
-    /// Stored state pool population unavailable for recruitment.
     pub manpower_locked: Recorded<i32>,
-    /// Exact localised bytes set by `set_state_name`, empty when absent;
-    /// the display name prefers this rename.
     pub custom_name: Vec<u8>,
-    /// Exact owner-qualified name bytes set on every owner change, empty
-    /// when the owner has no such key.
     pub owner_name: Vec<u8>,
-    /// Retained continent lexer token, zero for a null continent; None is an
-    /// independent capture failure.
     pub continent: Recorded<Option<u32>>,
-    /// Exact hourly healthy/MAX infrastructure fraction used by railway ETA,
-    /// independent of the additive normal-movement term. None is a counted
-    /// read refusal; Some(0) retains native disabled or absent infrastructure.
     pub railway_infrastructure: Recorded<Option<i64>>,
-    /// Stored state population, read every hour beside `manpower_available`
-    /// and saved as the manpower pool's `total`: the value the
-    /// `state_population` triggers compare and the manpower map mode colours
-    /// each state by. Available manpower is not population.
     pub population: Recorded<i32>,
-    /// Cached index into the native state province list, in recorded-content order.
     pub best_vp_index: Recorded<Option<i32>>,
-    /// Whether the cached controller grouping takes the whole-state branch.
-    /// None is a capture refusal; false groups positive province controllers.
     pub single_controller: Recorded<Option<u32>>,
-    /// The token of the state's live category, read every hour beside
-    /// `population` and saved as `state_category`: what the states map mode
-    /// colours each state by and whose `buildings_max_level` limits building
-    /// levels. None is a counted read refusal.
     pub category: Recorded<Option<u32>>,
-    /// Raw country links of the state's contested owners in stored order, saved as
-    /// `contested_owners`: the state view's marked owner flags. None is a read refusal.
     pub marked_owners: Recorded<Option<Vec<u32>>>,
 }
 
@@ -218,70 +137,36 @@ crate::value::value_struct!(StateInfrastructure { building_type: u32, level: i32
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionRow {
-    /// Full native handle: type in the low 32 bits, id in the high 32 bits.
     pub id: u64,
-    /// Raw country reference of the roster containing this division.
     pub roster_owner: u32,
-    /// Raw unit owner reference.
     pub logical_owner: u32,
-    /// Raw expeditionary-owner reference, including the engine's null value.
     pub expeditionary_owner: u32,
     pub province: u32,
-    /// Full native standard-template handle, with the same type/id packing as id.
     pub template: u64,
-    /// Native signed fixed-point hit points, with denominator 100,000.
     pub hit_points: i64,
-    /// Native signed fixed-point organisation, with denominator 100,000.
     pub organisation: i64,
-    /// Full orders group handle of the army holding this division, or zero for the
-    /// engine's own null parent. It is an independent second source for
-    /// OrdersGroupMembers, never a substitute for that ordered vector.
     pub orders_group: u64,
-    /// The standard template's native fog reveal-skip byte (zero for none).
     pub reveal_skip: u8,
-    /// Full handle of the division's own land theatre, the LandTheatres key; Some(0) for
-    /// none. None refuses a pointer outside its roster country's theatres.
     pub theatre: Recorded<Option<u64>>,
 }
 
 impl DivisionRow {
-    /// `hit_points` at the game's display precision ([`crate::display`]). The game shows
-    /// a division's strength only as a share of its maximum (whole percentages in combat,
-    /// army-average and current-strength text) and its maximum at one highlighted
-    /// decimal, so hit points keep that tenth, truncated as the fixed5 formatter does. A
-    /// nonzero value below a tenth keeps one tenth with its sign, so the zero and sign
-    /// tests consumers apply (`hp >= 0`, the retreat sum's `<= 0`) read the same. By
-    /// owner decision 2026-10-11 the derived displays (strength percentages and bars,
-    /// army totals, border war power, the retreat-admission sum and the move-strength
-    /// warning) read the stepped value and can differ from the game in their last digit
-    /// at boundaries.
     pub const HIT_POINTS_STEP: Step = Step::fixed5(10_000, Rounding::TowardZeroNonzero);
-    /// `organisation` at the game's finest display of it: the combat window prints
-    /// current organisation with one decimal truncated toward zero by the fixed5
-    /// formatter; the counter hover's whole units in a fixed colour and every installed
-    /// mod's override are coarser. Damage application clamps it at zero. By owner
-    /// decision 2026-10-11 the derived displays (land combat progress and the marker's
-    /// whole-unit progress text, the combat heading frame, average organisation, bars,
-    /// border war power and the move-organisation warning) read the stepped value and can
-    /// differ from the game in their last digit at boundaries.
     pub const ORGANISATION_STEP: Step = Step::fixed5(10_000, Rounding::TowardZero);
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WarRelationRow {
-    /// Ordered country identities form the row key; this is not a full war id.
     pub first_country: u32,
     pub second_country: u32,
     pub start_hour: i32,
     pub end_hour: i32,
-    /// Raw engine byte, retained without boolean normalization.
     pub cancel: u8,
     pub first_casualties: i64,
     pub second_casualties: i64,
     pub first_unknown_casualties: i64,
     pub second_unknown_casualties: i64,
-    /// Raw engine byte, retained without boolean normalization.
     pub first_was_instigator: u8,
 }
 
@@ -289,45 +174,29 @@ pub struct WarRelationRow {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionRow {
     pub id: u64,
-    /// Literal engine name bytes; an empty name is valid.
     pub name: Vec<u8>,
-    /// The faction template's lexer token (its spelling is in LexicalTokens), the
-    /// save's `template`; None when the faction has no template. The game shows the
-    /// template's localised name when the literal name is empty.
-    /// That localised name is not recorded; resolve it through the content's
-    /// faction templates.
     pub template_token: Option<u32>,
-    /// The faction colour, the save's `color`: the native `colour` components as raw f32
-    /// bits. The save writes each of red, green and blue as `(int)(c * 255.0f)` and alpha
-    /// only when it is not 1.0.
     pub color_red: u32,
     pub color_green: u32,
     pub color_blue: u32,
     pub color_alpha: u32,
-    /// Raw engine byte, the save's `is_color_overridden`: zero when the colour was
-    /// taken from the leader's country colour, retained without boolean normalization.
     pub color_overridden: u8,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionMemberRow {
-    /// Raw country identity; a country has at most one faction membership.
     pub country: u32,
     pub faction: u64,
-    /// Recorded member order; ordinal zero identifies the first member.
     pub ordinal: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PlayerRow {
-    /// Native roster position; formats before 137 did not record it.
     pub ordinal: Recorded<u32>,
-    /// Native signed session id; its raw u32 bits form the row key.
     pub id: i32,
     pub country: u32,
-    /// Raw byte, including bits other than the save's country-leader bit.
     pub flags: u8,
     pub user: Vec<u8>,
     pub name: Vec<u8>,
@@ -336,9 +205,7 @@ pub struct PlayerRow {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct HumanControllerRow {
-    /// Raw country link id, independently authenticated from the player roster.
     pub country: u32,
-    /// Native signed byte; neither zero nor negative values are normalized.
     pub count: i8,
 }
 
@@ -349,13 +216,9 @@ pub struct LandCombatRow {
     pub province: u32,
     pub duration: i32,
     pub day: i32,
-    /// Ordered native unit handles, including the complete type word.
     pub attackers: Vec<u64>,
     pub defenders: Vec<u64>,
-    /// Each attacker's native unit class, in `attackers` order: 0 is a
-    /// division, 1 a task force, 13 a railway gun.
     pub attacker_classes: Vec<u32>,
-    /// Each defender's native unit class, in `defenders` order.
     pub defender_classes: Vec<u32>,
 }
 
@@ -365,9 +228,7 @@ pub struct FleetRow {
     pub id: u64,
     pub owner: u32,
     pub home_base: u32,
-    /// Stored fleet-name bytes; ordinary serialization writes even empty.
     pub name: Recorded<Option<Vec<u8>>>,
-    /// Full fleet-leader reference, distinct from a mission commander.
     pub leader: Recorded<Option<u64>>,
 }
 
@@ -381,29 +242,20 @@ pub struct TaskForceRow {
     pub expeditionary_owner: u32,
     pub province: u32,
     pub mission: u32,
-    /// Signed task-force route length. An enemy fleet in a strait's sea blocks
-    /// only while this is below 1; saved as the length of the task force's `path`.
     pub route_count: i32,
-    /// Stored combat-reference count; combat presence tests it as positive.
     pub combat_references: i32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ShipRow {
-    /// Exact retained display cache; None is an independent acquisition refusal.
     pub name: Recorded<Option<Vec<u8>>>,
-    /// Raw saved naming state, independent of the unsaved display cache.
     pub naming: Recorded<Option<ShipNamingOperands>>,
     pub required_manpower: Recorded<Option<i32>>,
     pub id: u64,
     pub task_force: u64,
     pub strength: i64,
     pub organisation: i64,
-    /// The ship's experience, signed fixed5, at [`Self::EXPERIENCE_STEP`]. Its run-time writers are
-    /// experience awards (accepted fixed5 addition, then the ship's experience cap), assignment
-    /// during transfer and captain replacement, and damage scaling. Construction zeroes it and
-    /// loading floors a negative saved value at zero. Save serialization writes all eight bytes.
     pub experience: i64,
     pub category: u32,
     pub sunk_convoys: i32,
@@ -411,7 +263,6 @@ pub struct ShipRow {
     pub acquired_manpower: Recorded<Option<i32>>,
 }
 
-/// Ship name-member serialization operands, not a generated display name.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ShipNamingOperands {
@@ -420,7 +271,6 @@ pub struct ShipNamingOperands {
     pub ordered: u8,
     pub override_name: Vec<u8>,
     pub programmatic: u8,
-    /// Full retained naming-variant identity; None is a known null pointer.
     pub equipment: Option<u64>,
 }
 crate::value::value_struct!(ShipNamingOperands {
@@ -429,18 +279,6 @@ crate::value::value_struct!(ShipNamingOperands {
 });
 
 impl ShipRow {
-    /// `experience` at the game's finest display of it ([`crate::display`]). The game
-    /// shows a ship's experience only through its ratio to the maximum, flooring
-    /// experience at zero and truncating the fixed5 ratio: the level counts the
-    /// `NMilitary.UNIT_EXP_LEVELS` thresholds the ratio reaches (`>=`), and the tooltip
-    /// prints progress through the current level as a whole percentage in a fixed colour,
-    /// truncated by the fixed5 formatter. One percent of the narrowest level of any
-    /// installed mod (UNIT_EXP_LEVELS steps of 0.02 at NNavy.NAVY_MAX_XP 100) is 0.02,
-    /// and of vanilla's 0.1, so a hundredth truncated toward zero is never coarser than
-    /// the game. Every installed threshold times NAVY_MAX_XP is a whole multiple of the
-    /// step, so the level read from the stepped value is the game's; by owner decision
-    /// 2026-10-11 the progress percent can differ from the game's in its last digit at
-    /// boundaries.
     pub const EXPERIENCE_STEP: Step = Step::fixed5(1_000, Rounding::TowardZero);
 }
 
@@ -453,20 +291,15 @@ pub struct NavalCombatRow {
     pub defender_positioning: i64,
     pub attacker_anti_air: i64,
     pub defender_anti_air: i64,
-    /// Index in the mixed native active-combat registry, before naval filtering; it
-    /// orders the spillover pass of the naval combat map icons.
     pub registry_ordinal: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatParticipantRow {
-    /// All 64 handle bits, the side bit, and all 32 slot bits form the 97-bit key.
     pub combat: u64,
-    /// Attacker zero, defender one; this selects the native participant vector.
     pub side: u8,
     pub battle_slot: u32,
-    /// Full native ship handle; zero is retained for convoy entries.
     pub ship: u64,
     pub owner: u32,
     pub state: u32,
@@ -485,48 +318,20 @@ pub struct AirWingRow {
     pub exile_country: Recorded<Option<i32>>,
     pub mission_mask: u32,
     pub mission_region: Option<u32>,
-    /// Stored raid range-limit operand.
     pub base_range_raw: i64,
-    /// The assigned ace's full reference.
     pub ace: u64,
-    /// Scenario-eligibility operands: saved mission active byte, veto byte,
-    /// and the counter and its limit.
     pub mission_active: u8,
     pub eligibility_veto: u8,
     pub eligibility_counter: i32,
     pub eligibility_limit: i32,
-    /// Attached orders group's authenticated full handle, `Some(0)` when
-    /// null; `None` when the same-pass group identity is unavailable.
     pub attached_orders_group: Option<u64>,
-    /// The wing's position in its owner's pools as stored: pools in order,
-    /// each pool's wings in order, from zero for each owner. The training pass
-    /// admits its first 50 candidates in this order, and the save lists wings in it.
     pub pool_ordinal: u32,
-    /// Stored name bytes. No generator operands survive; display only in the
-    /// recording language. `None` is a guarded-read/arena refusal, `Some(empty)`
-    /// is an observed empty name. Older recordings are absent. Ordinary text
-    /// saves write `name` even when empty; only checksum mode omits it.
     pub name: Recorded<Option<Vec<u8>>>,
-    /// Containing pool's authenticated subunit definition database index, joined to the
-    /// recorded content stack. Some(0) is the null subtype; None is an optional
-    /// acquisition refusal, older formats NotRecorded.
     pub pool_subunit: Recorded<Option<u32>>,
-    /// Stored full paired raid reference and certified liveness for pool-backed
-    /// wings. Never derive liveness from the raid roster.
     pub raid_reference: Recorded<Option<AirWingRaidReference>>,
-    /// Selected fixed5 stat 0x32, mission 0x8; no graphical choice. None means
-    /// another mission or an optional read refusal; older formats use
-    /// NotRecorded, while Some(0) is an observed zero.
     pub strategic_bombing_raw: Recorded<Option<i64>>,
-    /// Independent writer-certified saved reinforcement preference byte.
-    /// None is unavailable admission/read; every raw byte remains representable.
     pub replacement_setting: Recorded<Option<u8>>,
-    /// Bit 0/1: training-stop known/value; bit 2/3: attachment coverage
-    /// known/value; bit 4/5: raid-assignment liveness known/value.
-    /// Unreached fields and missing certificates remain unknown.
     pub map_flags: Recorded<Option<u32>>,
-    /// Independent numeric columns keep a changing execution count from
-    /// repeating the quiet cached statistic, context and training operands.
     pub fuel_base_raw: Recorded<Option<i64>>,
     pub fuel_current_type: Recorded<Option<i32>>,
     pub fuel_effective_aircraft: Recorded<Option<i32>>,
@@ -602,32 +407,27 @@ pub struct AirWingFuelInputs {
     pub effective_aircraft: Option<i32>,
     pub context_mode: Option<u8>,
     pub capacity_class: Option<i32>,
-    /// Raw registry liveness for the reached training override gate.
     pub override_resolved: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ArmyOrderRow {
-    /// All 64 owner handle bits and all 32 instance bits form the 96-bit row key.
     pub owner_group: u64,
     pub instance: u32,
     pub country: u32,
     pub order_type: i32,
     pub active: u8,
-    /// Native ordered geometry; no derived path replaces these entries.
     pub path: Vec<u32>,
     pub target_states: Vec<u32>,
     pub paradrop_target: u32,
 }
 
-/// One table's rows by their own type, as [`TableRows::visit`] hands them over.
 pub trait RowsVisit {
     type Output;
     fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output;
 }
 
-/// A visit of two tables' rows of the same type at once.
 pub trait RowsPairVisit {
     type Output;
     fn rows<R: RowCodec>(self, rows: &[R], other: &[R]) -> Self::Output;
@@ -635,9 +435,7 @@ pub trait RowsPairVisit {
 
 pub trait RowCodec: Default + Clone + Eq {
     fn try_clone(&self) -> io::Result<Self>;
-    /// Copy admitted rows without repeating their key/nested validation.
     fn try_clone_validated(&self) -> io::Result<Self>;
-    /// Bytes this row's strings, lists and nested values hold beyond the row.
     fn heap_bytes(&self) -> usize;
     fn encoded_bound(&self) -> io::Result<usize>;
     fn snapshot_bytes(&self) -> io::Result<usize>;
@@ -645,28 +443,19 @@ pub trait RowCodec: Default + Clone + Eq {
     fn key(&self) -> u128;
     fn check_key_fields(&self) -> io::Result<()>;
     fn not_recorded_fields(&self) -> u64;
-    /// A bit per schema field that differs from `previous`'s; every bit for a row type that
-    /// does not compare its fields.
     fn differing_fields(&self, previous: &Self) -> u64 {
         let _ = previous;
         u64::MAX
     }
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str));
-    /// Each schema field in order as the wire holds it: stepped fields in their step's
-    /// units, a field this row did not record as [`Field::NotRecorded`], a restored
-    /// field's tombstone as its empty payload.
     fn visit_wire(
         &self,
         visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
     ) -> io::Result<()>;
-    /// The row keyed `key` whose schema fields `wire` hands by index, as [`Self::visit_wire`]
-    /// visits them: step units become native units again, as [`Self::decode_fields`] reads them.
     fn from_wire<'a>(
         key: u128,
         wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
     ) -> io::Result<Self>;
-    /// Sets the schema fields `mask` names from `wire`, as [`Self::from_wire`] reads them.
-    /// False leaves the row as it was, for its caller to build it whole instead.
     fn patch_from_wire<'a>(
         &mut self,
         mask: u64,
@@ -675,9 +464,6 @@ pub trait RowCodec: Default + Clone + Eq {
         let _ = (mask, wire);
         Ok(false)
     }
-    /// The row keyed `key` holding the schema fields `mask` names as `wire` hands them, every
-    /// other default, for a reader of those fields alone: whole, as [`Self::from_wire`] builds
-    /// it, where `mask` names every field or the row type is built only whole.
     fn from_wire_fields<'a>(
         key: u128,
         mask: u64,
@@ -688,8 +474,6 @@ pub trait RowCodec: Default + Clone + Eq {
     }
     fn recorded_fields_bytes(&self) -> io::Result<usize>;
     fn delta(&self, previous: Option<&Self>) -> io::Result<Option<DeltaRow>>;
-    /// Encode one changed row directly, including its key difference and mask.
-    /// Returns false without writing when no field changed.
     fn encode_change(
         &self,
         previous: Option<&Self>,
@@ -710,28 +494,20 @@ pub trait RowCodec: Default + Clone + Eq {
         self.encode_fields_reserved(output)
     }
     fn encode_fields_reserved(&self, output: &mut Vec<u8>) -> io::Result<()>;
-    /// The fields [`Self::encode_fields`] writes, but those this row did not record, which
-    /// it skips; and a bit per skipped field.
     fn encode_recorded_fields(&self, output: &mut Vec<u8>) -> io::Result<u64> {
         self.encode_fields(output)?;
         Ok(0)
     }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self>;
-    /// Takes ownership so an unchanged string or list keeps its existing allocation.
     fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self>;
-    /// Whether a field of this row, or a part nested in one, has a display
-    /// step ([`crate::display`]).
     fn has_display_steps(&self) -> bool;
-    /// Round every stepped field to its display step, in place.
     fn round_to_display(&mut self);
 }
 
 #[doc(hidden)]
 pub trait Fields {
     const SCHEMA: &'static [Kind];
-    /// Each field's display step ([`crate::display`]), in schema order.
     const STEPS: &'static [Option<Step>];
-    /// Each field's row member, in schema order.
     const NAMES: &'static [&'static str];
 }
 
@@ -741,9 +517,6 @@ pub mod compatibility;
 #[path = "rows/checkpoint.rs"]
 pub mod checkpoint;
 
-/// Playback absence is distinct from every native value, including None/empty.
-/// Current producers default to a recorded native default; old decoders set
-/// NotRecorded explicitly. No absence tag is written to disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Recorded<T> {
@@ -778,13 +551,10 @@ impl<T> Recorded<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DeltaRow {
-    /// Layout of values; retained for nested fields and old insert masks.
     pub format: u16,
     pub key: u128,
     pub mask: u64,
-    /// Decoder-only field presence; never changes current wire bytes.
     pub recorded_fields: usize,
-    /// Selected native fields in schema order; exact numeric differences use zigzag varints.
     pub values: Vec<u8>,
 }
 impl DeltaRow {
@@ -918,9 +688,6 @@ pub fn decode_typed<T: RowCodec>(count: usize, input: &mut Decoder<'_>) -> io::R
     }
     Ok(rows)
 }
-/// The rows a change encoding wrote, each as its index beside its baseline row's (none for a new
-/// row), and the keys it deleted, in key order. Recording is advisory: one that cannot grow is
-/// dropped ([`ChangedRows::lost`]) while the encoding goes on.
 #[derive(Debug, Default)]
 pub struct ChangedRows {
     pub pairs: Vec<(u32, Option<u32>)>,
@@ -952,8 +719,6 @@ impl ChangedRows {
     }
 }
 
-/// A change encoding's row count, zero until its rows are counted, with room for its deletion
-/// count; returns where the count is.
 pub fn count_header(output: &mut Vec<u8>) -> io::Result<usize> {
     allocation::reserve(output, 8)?;
     let at = output.len();
@@ -970,10 +735,6 @@ pub fn encode_changes_typed<T: RowCodec>(
 ) -> io::Result<bool> {
     u32::try_from(rows.len()).map_err(|_| invalid("too many rows"))?;
     u32::try_from(previous.len()).map_err(|_| invalid("too many rows"))?;
-    // Size a row only after the merge establishes that it changed. Walking
-    // every nested payload here repeats work for the often-quiet baseline.
-    // A recorded merge writes its header only once a row differs, so a table
-    // that did not change needs no room.
     let start = output.len();
     let mut count_at = None;
     if changed.is_none() {
@@ -1005,8 +766,6 @@ pub fn encode_changes_typed<T: RowCodec>(
         } else {
             None
         };
-        // Both tables were validated before this merge. Preserve the cheap
-        // unchanged-row exit instead of entering the larger field encoder.
         if baseline.is_some_and(|(_, baseline)| baseline == row) {
             continue;
         }
@@ -1017,7 +776,6 @@ pub fn encode_changes_typed<T: RowCodec>(
             changed_count += 1;
             changed_key = key;
             if let Some(changed) = &mut changed {
-                // Both lengths were checked to fit 32 bits above.
                 changed.pair(at as u32, baseline.map(|(before, _)| before as u32));
             }
         }
@@ -1071,7 +829,7 @@ pub fn encode_replacements_typed<T: RowCodec>(
     }
     output[count_at..count_at + 4].copy_from_slice(&changed_count.to_le_bytes());
     allocation::reserve(output, 4)?;
-    output.extend_from_slice(&0_u32.to_le_bytes()); // unchanged membership: no deletions
+    output.extend_from_slice(&0_u32.to_le_bytes());
     Ok(changed_count != 0)
 }
 
@@ -1091,13 +849,11 @@ pub fn apply_typed<T: RowCodec>(
     apply_typed_at(previous, changed, deleted).map(|(rows, _)| rows)
 }
 
-/// [`apply_typed`], and the changed rows' final positions when deletions were located.
 pub fn apply_typed_at<T: RowCodec>(
     mut previous: Vec<T>,
     changed: &[DeltaRow],
     deleted: &[u128],
 ) -> io::Result<(Vec<T>, Option<Vec<usize>>)> {
-    // Keys ascend on both sides, so each is found searching on from the last.
     let mut at = allocation::vec(changed.len())?;
     let mut from = 0;
     for delta in changed {
@@ -1109,7 +865,6 @@ pub fn apply_typed_at<T: RowCodec>(
     let mut from = 0;
     for &key in deleted {
         let Ok(position) = locate(&previous, from, key) else {
-            // The merge reports an absent key where a row-by-row walk meets it.
             let len = previous.len();
             return merge_typed(previous, len, changed, deleted, Ok, None).map(|rows| (rows, None));
         };
@@ -1117,8 +872,6 @@ pub fn apply_typed_at<T: RowCodec>(
         gone.push(position);
     }
     let inserted = at.iter().filter(|found| found.is_err()).count();
-    // Changes to rows already present keep the table's length and order: they apply
-    // in place, rather than moving every row of the table into a new one.
     if inserted == 0 && gone.is_empty() {
         let mut positions = allocation::vec(at.len())?;
         for (delta, found) in changed.iter().zip(at) {
@@ -1129,13 +882,10 @@ pub fn apply_typed_at<T: RowCodec>(
         }
         return Ok((previous, Some(positions)));
     }
-    // A merge moves every row once; an insertion or deletion in place moves the
-    // rows after it, so only a few edits are cheaper in place.
     if inserted + gone.len() > IN_PLACE_EDITS {
         return merge_runs(previous, changed, &at, &gone)
             .map(|(rows, positions)| (rows, Some(positions)));
     }
-    // Rows change in key order, as a merge changes them, then the edits move rows.
     let mut rows_in = allocation::vec(inserted)?;
     for (delta, found) in changed.iter().zip(&at) {
         match *found {
@@ -1171,11 +921,8 @@ pub fn apply_typed_at<T: RowCodec>(
     Ok((previous, Some(positions)))
 }
 
-/// Insertions plus deletions applied in place rather than by a merge.
 const IN_PLACE_EDITS: usize = 2;
 
-/// Where `key` is in ascending `rows`, searching on from `from`: Ok for a
-/// present key, Err for where it would go.
 fn locate<T: RowCodec>(rows: &[T], from: usize, key: u128) -> Result<usize, usize> {
     let rest = &rows[from..];
     let mut bound = 1;
@@ -1190,9 +937,6 @@ fn locate<T: RowCodec>(rows: &[T], from: usize, key: u128) -> Result<usize, usiz
     }
 }
 
-/// [`merge_typed`] of an owned baseline whose deleted keys are all present,
-/// `at` and `gone` the changed and deleted keys' places in it: unchanged rows
-/// move in runs between them. Changes apply in key order, as the merge applies them.
 fn merge_runs<T: RowCodec>(
     previous: Vec<T>,
     changed: &[DeltaRow],
@@ -1228,26 +972,22 @@ fn merge_runs<T: RowCodec>(
     Ok((rows, positions))
 }
 
-/// A baseline's rows moved out in order, `next` the position of the first left.
 struct Runs<T> {
     rows: std::vec::IntoIter<T>,
     next: usize,
 }
 
 impl<T> Runs<T> {
-    /// Move the rows before position `end` to `out`.
     fn move_to(&mut self, out: &mut Vec<T>, end: usize) {
         out.extend(self.rows.by_ref().take(end - self.next));
         self.next = end;
     }
-    /// The row at the next position.
     fn take(&mut self) -> T {
         self.next += 1;
         self.rows.next().expect("a located row is present")
     }
 }
 
-/// Kept baseline rows stay valid; check changed rows in whole-validation error order.
 pub fn apply_typed_validated<T: RowCodec>(
     previous: Vec<T>,
     changed: &[DeltaRow],
@@ -1261,8 +1001,6 @@ pub fn apply_typed_validated<T: RowCodec>(
     Ok(rows)
 }
 
-/// [`validate_typed`] of rows whose keys were valid before the rows at the
-/// ascending positions `at` changed.
 pub fn validate_typed_at<T: RowCodec>(rows: &[T], at: &[usize]) -> io::Result<()> {
     let unordered = || invalid("table rows must have matching types and unique ascending keys");
     for (index, &position) in at.iter().enumerate() {
@@ -1275,8 +1013,6 @@ pub fn validate_typed_at<T: RowCodec>(rows: &[T], at: &[usize]) -> io::Result<()
         if position > 0 && rows[position - 1].key() >= key {
             return Err(unordered());
         }
-        // The next row's own checks hold unless it changed too, when its
-        // turn checks this order.
         let next = position + 1;
         if at.get(index + 1) != Some(&next) && rows.get(next).is_some_and(|row| key >= row.key()) {
             return Err(unordered());
@@ -1285,9 +1021,6 @@ pub fn validate_typed_at<T: RowCodec>(rows: &[T], at: &[usize]) -> io::Result<()
     Ok(())
 }
 
-/// One pass over a baseline another hour still holds: a row is cloned only
-/// once the merge keeps or changes it, never a deleted one, rather than cloning
-/// the whole table and merging again.
 pub fn apply_typed_shared<T: RowCodec>(
     previous: &[T],
     changed: &[DeltaRow],
@@ -1303,9 +1036,6 @@ pub fn apply_typed_shared<T: RowCodec>(
     )
 }
 
-/// [`apply_typed_shared`] of a validated baseline: kept rows are copied
-/// without checking them again, and only the changed rows are checked, in
-/// whole-validation error order.
 pub fn apply_typed_shared_validated<T: RowCodec>(
     previous: &[T],
     changed: &[DeltaRow],
@@ -1324,8 +1054,6 @@ pub fn apply_typed_shared_validated<T: RowCodec>(
     Ok(rows)
 }
 
-/// `own` turns a baseline row into an output row; it runs only for rows the
-/// merge keeps or changes. `at` receives the changed rows' positions.
 pub fn merge_typed<T: RowCodec, R: std::borrow::Borrow<T>>(
     previous: impl IntoIterator<Item = R>,
     len: usize,
@@ -1418,9 +1146,6 @@ pub fn changes_typed<T: RowCodec>(rows: &[T], previous: &[T]) -> io::Result<(Vec
     Ok((changed, deleted))
 }
 
-/// `rows` with `changed` set at their keys and `deleted` removed, in place: each change and
-/// deletion found by its key from the one before, so only the rows after the first insertion
-/// or deletion move, and none is copied or keyed again.
 #[inline(never)]
 pub fn apply_changes_typed<T: RowCodec>(
     mut rows: Vec<T>,
@@ -1435,7 +1160,6 @@ pub fn apply_changes_typed<T: RowCodec>(
     if !ascending(keys.iter()) || !ascending(deleted.iter()) {
         return merge_changes(rows, changed, deleted);
     }
-    // Ok where a change sets a row, Err where it is inserted.
     let mut places = allocation::vec(keys.len())?;
     let mut from = 0;
     for &key in &keys {
@@ -1454,7 +1178,6 @@ pub fn apply_changes_typed<T: RowCodec>(
         gone.push(position);
         from = position + 1;
     }
-    // A key deleted and set again is set.
     let mut set = places.iter().filter_map(|at| at.ok()).peekable();
     gone.retain(|&position| {
         while set.next_if(|&at| at < position).is_some() {}
@@ -1466,7 +1189,6 @@ pub fn apply_changes_typed<T: RowCodec>(
     for (at, row) in places.into_iter().zip(changed) {
         match at {
             Ok(position) => rows[position] = row,
-            // Where it goes once the deleted rows are gone.
             Err(position) => {
                 while removed.next_if(|&&gone| gone < position).is_some() {
                     before += 1;
@@ -1484,7 +1206,6 @@ pub fn apply_changes_typed<T: RowCodec>(
         });
     }
     if !inserted.is_empty() {
-        // Holes at the end move down past each run of rows an insertion goes before.
         let (mut read, holes) = (rows.len(), inserted.len());
         allocation::resize_default(&mut rows, allocation::add(read, holes)?)?;
         let mut write = rows.len();
@@ -1501,8 +1222,6 @@ pub fn apply_changes_typed<T: RowCodec>(
     Ok(rows)
 }
 
-/// [`apply_changes_typed`] by merging into a new table, for changes or deletions out of key
-/// order.
 pub fn merge_changes<T: RowCodec>(
     rows: Vec<T>,
     changed: Vec<T>,
@@ -1533,22 +1252,12 @@ pub fn merge_changes<T: RowCodec>(
 
 #[doc(hidden)]
 pub trait NativeValue: Sized {
-    /// Whether this field holds nested parts with display steps
-    /// ([`crate::display`]).
     const HAS_STEPS: bool = false;
-    /// A whole Opaque row field restored after a provisional retirement
-    /// (`opaque_value!(T, restored)`): the tombstone's empty payload, which
-    /// format-102 writers stored meanwhile and no recorded value encodes,
-    /// reads as [`Recorded::NotRecorded`].
     const RESTORED: bool = false;
-    /// This field holds a restored field's tombstone ([`Self::RESTORED`]),
-    /// which writes the provisional writer's empty payload again.
     fn restored_tombstone(&self) -> bool {
         false
     }
     fn try_clone(&self) -> io::Result<Self>;
-    /// Bytes this field's own allocations hold: its string or list at its
-    /// capacity, and what a nested value holds in turn ([`Value::heap_bytes`]).
     fn heap_bytes(&self) -> usize;
     fn field(&self) -> Field<'_>;
     fn from_field(field: Field<'_>) -> io::Result<Self>;
@@ -1556,15 +1265,11 @@ pub trait NativeValue: Sized {
         Err(invalid("uncatalogued absent row field"))
     }
     fn visit_field_gaps(&self, _visit: &mut dyn FnMut(&'static str)) {}
-    /// Round every nested stepped part to its step, in place.
     fn round_display(&mut self) {}
-    /// Round this field's numbers to its own `step`, in place.
     fn round_to(&mut self, _step: Step) {}
-    /// This field's numbers rounded and divided by `step`, as the wire holds them.
     fn to_units(&self, _step: Step) -> io::Result<Self> {
         Err(invalid("row field takes no display step"))
     }
-    /// A decoded field's numbers multiplied back by `step`.
     #[allow(clippy::wrong_self_convention, reason = "the decoded value is consumed into native units")]
     fn from_units(self, _step: Step) -> io::Result<Self> {
         Err(invalid("row field takes no display step"))
@@ -1641,7 +1346,6 @@ pub fn read_field<T: NativeValue>(index: usize, kind: Kind, input: &mut Decoder<
         read_value(kind, input)
     }
 }
-/// [`read_field`] for a declared field: step units become native units.
 pub fn read_stepped_field<T: NativeValue>(
     index: usize,
     kind: Kind,
@@ -1654,7 +1358,6 @@ pub fn read_stepped_field<T: NativeValue>(
         _ => Ok(value),
     }
 }
-/// Round a declared field: to its own step, or each nested stepped part.
 pub fn round_native_field<T: NativeValue>(value: &mut T, step: Option<Step>) {
     match step {
         Some(step) => value.round_to(step),
@@ -1665,9 +1368,6 @@ pub fn round_native_field<T: NativeValue>(value: &mut T, step: Option<Step>) {
 pub fn native_has_steps<T: NativeValue>(_: &T, step: Option<Step>) -> bool {
     step.is_some() || T::HAS_STEPS
 }
-/// The field a declared value writes: its own, or for a restored field's
-/// tombstone ([`NativeValue::RESTORED`]) the empty payload a provisional
-/// writer stored, so a recording holding one is written again byte for byte.
 pub fn native_wire_field<T: NativeValue>(value: &T) -> Field<'_> {
     if value.restored_tombstone() {
         Field::Opaque(Opaque::Encoded(&[], crate::FORMAT_VERSION))
@@ -1675,7 +1375,6 @@ pub fn native_wire_field<T: NativeValue>(value: &T) -> Field<'_> {
         value.field()
     }
 }
-/// One declared field as [`encode_native_field`] would write it, handed to `visit`.
 pub fn visit_wire_field<T: NativeValue>(
     value: &T,
     index: usize,
@@ -1688,7 +1387,6 @@ pub fn visit_wire_field<T: NativeValue>(
     }
 }
 
-/// `R`'s schema field `name`'s column; a name `R` does not hold fails to compile in a const.
 pub const fn column<R: Fields>(name: &str) -> usize {
     let mut at = 0;
     while at < R::NAMES.len() {
@@ -1700,7 +1398,6 @@ pub const fn column<R: Fields>(name: &str) -> usize {
     panic!("no such schema field")
 }
 
-/// The change-mask bits of `R`'s schema fields `names` ([`column`]).
 pub const fn mask<R: Fields>(names: &[&str]) -> u64 {
     let (mut mask, mut at) = (0_u64, 0);
     while at < names.len() {
@@ -1725,7 +1422,6 @@ pub const fn same_name(a: &str, b: &str) -> bool {
     true
 }
 
-/// A declared field from the wire form [`visit_wire_field`] hands: step units become native.
 pub fn from_wire_field<T: NativeValue>(field: Field<'_>, step: Option<Step>) -> io::Result<T> {
     if matches!(field, Field::NotRecorded) {
         return T::not_recorded();
@@ -1736,8 +1432,6 @@ pub fn from_wire_field<T: NativeValue>(field: Field<'_>, step: Option<Step>) -> 
         None => Ok(value),
     }
 }
-/// [`RowCodec::from_wire`] through a row's own field decoding: its `fields` wire fields
-/// encoded as the wire holds them, then decoded.
 pub fn from_wire_encoded<'a, T: RowCodec>(
     key: u128,
     fields: usize,
@@ -1752,7 +1446,6 @@ pub fn from_wire_encoded<'a, T: RowCodec>(
     input.finish()?;
     Ok(row)
 }
-/// Encode a declared field, in step units when it has a step.
 pub fn encode_native_field<T: NativeValue>(
     value: &T,
     step: Option<Step>,
@@ -1763,8 +1456,6 @@ pub fn encode_native_field<T: NativeValue>(
         Some(step) => value.to_units(step)?.field().encode_reserved(output),
     }
 }
-/// Encode a declared field's change from `previous`, in step units when it has
-/// a step: both sides are rounded, so the difference is a whole number of steps.
 pub fn encode_native_change<T: NativeValue>(
     value: &T,
     previous: Option<&T>,
@@ -1785,8 +1476,6 @@ pub fn encode_native_change<T: NativeValue>(
         }
     }
 }
-/// Apply a recorded change to a declared field: a stepped field in a stepped
-/// format changes by whole steps.
 pub fn apply_stepped_value<T: NativeValue>(
     target: &mut T,
     kind: Kind,
@@ -1917,8 +1606,6 @@ pub fn apply_value<T: NativeValue>(
     *target = value;
     Ok(())
 }
-/// Names the column an error came from: one function for every codec field, not a closure
-/// per field, which took most of the compiler's memory.
 #[doc(hidden)]
 pub fn column_error(key: u128, column: &'static str) -> impl FnOnce(io::Error) -> io::Error {
     move |error| column_context(error, key, column)
@@ -1928,8 +1615,6 @@ pub fn column_error(key: u128, column: &'static str) -> impl FnOnce(io::Error) -
 fn column_context(error: io::Error, key: u128, column: &str) -> io::Error {
     crate::codec::error_context(error, format_args!("row {key} column {column}"))
 }
-/// A field written `5 => (hit_points): I64 @ STEP` is stored at a display
-/// step ([`crate::display`]).
 #[macro_export]
 #[doc(hidden)]
 macro_rules! typed_codec {
@@ -1961,7 +1646,6 @@ macro_rules! typed_codec {
         }
         impl $ty {
             pub const fn key(&self) -> u128 { let $row = self; $key }
-            /// Restored fields holding their tombstone, which encode again.
             fn restored_tombstones(&self) -> u64 {
                 let mut mask = 0;
                 $(if NativeValue::restored_tombstone(&self.$($field)+) { mask |= 1 << $index; })+
@@ -2001,7 +1685,6 @@ macro_rules! typed_codec {
                 $(if self.$($field)+ != previous.$($field)+ { mask |= 1 << $index; })+
                 mask
             }
-            // Key initializers also serve rows with nested fields.
             #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn try_clone(&self) -> io::Result<Self> {
                 self.check_key_fields()?;
@@ -2100,7 +1783,6 @@ macro_rules! typed_codec {
                 self.check_key_fields()?;
                 Ok(true)
             }
-            // A partial row's other fields are defaults, which its whole-row checks do not hold.
             #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn from_wire_fields<'a>(key: u128, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<Self> {
                 let all = full_mask(Self::SCHEMA.len());
@@ -2164,8 +1846,6 @@ row_codec!(CampaignRow, 0, |_row| 0, |_key| {  }, {0 => id: Bytes}, |_row| Ok(()
 mod event_feed;
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
-/// For tests: CountryExperience's columns, each of which may be not recorded, so a test can write
-/// into that table a cell its own row cannot say is not recorded.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -2183,8 +1863,6 @@ pub struct CountryExperienceUnsayableRow {
 }
 #[cfg(any(test, feature = "test-support"))]
 row_codec!(CountryExperienceUnsayableRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => army_raw: I64, 1 => army_daily_raw: I64, 2 => army_daily_training_raw: I64, 3 => navy_raw: I64, 4 => navy_daily_raw: I64, 5 => navy_daily_training_raw: I64, 6 => air_raw: I64, 7 => air_daily_raw: I64, 8 => armies_for_training_raw: I64}, |_row| Ok(()));
-/// For tests: Divisions as format 141 framed it, before `theatre`, so a test can write a
-/// recording of that format.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -2202,8 +1880,6 @@ pub struct DivisionRowAt141 {
 }
 #[cfg(any(test, feature = "test-support"))]
 row_codec!(DivisionRowAt141, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ DivisionRow::HIT_POINTS_STEP, 6 => organisation: I64 @ DivisionRow::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
-/// For tests: States as format 141 framed it, before `marked_owners`, so a test can write a
-/// recording of that format.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -2626,7 +2302,6 @@ impl<'a> Field<'a> {
             },
         )
     }
-    /// The enclosing row reserved every field's snapshot bound already.
     pub fn encode_reserved(self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::Opaque(value) => value.encode_reserved(output),
@@ -2659,8 +2334,6 @@ impl<'a> Field<'a> {
         Ok(())
     }
 }
-// `opaque_value!(T, restored)` marks a whole field restored after a
-// provisional retirement (`NativeValue::RESTORED`).
 macro_rules! opaque_value {
     ($ty:ty, restored) => {
         opaque_value!($ty, true);
@@ -2720,8 +2393,6 @@ opaque_value!(Vec<ConstructionRise>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedEvent>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedScope>);
 
-/// A field borrows either decoded native values or checked wire bytes. Decoding a
-/// list allocates only when constructing its owning row, never a temporary list.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum List<'a, T> {
     Native(&'a [T]),

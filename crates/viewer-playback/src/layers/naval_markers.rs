@@ -1,14 +1,3 @@
-//! The map's naval combat and retained result icons, from the mirrors: where each combat's icons
-//! stand (direct entries and spill-over chains), what each shows, its HQ frame, and the results by
-//! province, decided for the viewing country. These are the hour part of today's naval icons
-//! (`viewer_counters::map::counters::naval_marker_values` decides them for both); placing them
-//! for the camera stays camera-bound.
-//!
-//! An icon's place depends on other provinces' combat vectors and on transfers, so the hour part is
-//! made whole whenever an input changed: naval combats are few. The engaged flags come from the
-//! engagement layer, registered before this one; an unengaged icon's frame from the same engaged
-//! index, given to the constructor. Vision is an input set from outside until the vision layer can
-//! be read.
 
 use super::{
     Carried, Change, Settling, Inputs, KeptAt, Keys, Layer, List, Num, Text, Upstream, View,
@@ -43,7 +32,6 @@ use viewer_foundation::{
     naval_icon_frames::CensusMember,
 };
 
-/// What the naval icons read of the content: the provinces' kinds and stack anchors.
 pub trait Shore: Send + Sync {
     fn province_kind(&self, province: u32) -> Option<ProvinceKind>;
     fn anchor(&self, province: u32, slot: u32) -> Option<[f32; 3]>;
@@ -59,12 +47,10 @@ impl Shore for crate::document::Content {
     }
 }
 
-/// The rows of a table held whole at the head.
 fn whole(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| mirror.status() == Some(Status::Complete))
 }
 
-/// A held table's live rows in key order.
 fn sorted(mirror: &Mirror) -> Vec<(u128, u32)> {
     let mut rows: Vec<(u128, u32)> = mirror.rows().filter_map(|slot| Some((mirror.key(slot)?, slot))).collect();
     rows.sort_unstable();
@@ -123,7 +109,6 @@ const TABLES: [TableId; 15] = [
     TableId::CountryLinks,
 ];
 
-/// Tables any change of which remakes the hour part.
 const NAVAL_TABLES: [TableId; 10] = [
     TableId::NavalCombats,
     TableId::NavalProvinceCombats,
@@ -137,30 +122,21 @@ const NAVAL_TABLES: [TableId; 10] = [
     TableId::CountryLinks,
 ];
 
-/// Tables whose rows matter only for the units, ships and task forces the hour part reads.
 const WATCHED: [TableId; 5] = [TableId::Ships, TableId::TaskForces, TableId::TaskForceCounterInputs, TableId::Divisions, TableId::RailwayGunCounterInputs];
 
-/// The naval markers layer's product and what keeps it.
 pub struct NavalMarkers {
     shore: Arc<dyn Shore>,
     index: Option<Index>,
     columns: Option<Columns>,
     refused: Option<String>,
     values: Option<Arc<NavalMarkerValues>>,
-    /// The units, ships and task forces the last make read: a change of theirs remakes it.
     watched: HashSet<u64>,
-    /// Each live combat's kept frame as the index keeps it at the head, and where that stands.
     kept: BTreeMap<u64, Kept>,
     kept_at: KeptAt,
-    /// Combats whose row a step changed: their kept frame is read again.
     kept_owed: Keys,
-    /// Per read table, the columns the product reads: a write to another changes nothing it draws.
     reads: BTreeMap<usize, Vec<usize>>,
-    /// Combats the last make read, which the next one reads again.
     read: usize,
-    /// Combats whose kept frame was read, since the layer was made.
     frames_read: usize,
-    /// The engagement layer's naval flags and provenance, as last taken.
     flags: Option<(BTreeMap<u64, Engaged>, Provenance)>,
     dirty: bool,
     since: Option<u64>,
@@ -171,7 +147,6 @@ pub struct NavalMarkers {
     vision_new: AtomicBool,
     statuses: HashMap<usize, Status>,
     frame: u64,
-    /// Makes since it was made.
     made: usize,
 }
 
@@ -204,7 +179,6 @@ impl NavalMarkers {
         }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let index = self.index.as_ref().map(|index| Index { history: Arc::clone(&index.history), branch: index.branch });
         let fresh = Self { columns: self.columns, hidden: self.hidden, flags: self.flags.clone(), reads: self.reads.clone(), ..Self::new(Arc::clone(&self.shore), index) };
@@ -230,7 +204,6 @@ impl NavalMarkers {
         self.refused.as_deref()
     }
 
-    /// The view draws no naval combat marker: today places none there either.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
@@ -239,7 +212,6 @@ impl NavalMarkers {
         self.values.as_deref()
     }
 
-    /// The hour part the window's counters draw; none while refused or hidden.
     pub fn published(&self) -> Option<&Arc<NavalMarkerValues>> {
         self.values.as_ref().filter(|_| self.refused.is_none() && !self.hidden)
     }
@@ -248,7 +220,6 @@ impl NavalMarkers {
         self.made
     }
 
-    /// Combats whose kept frame was read from the index, since the layer was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn frames_read(&self) -> usize {
         self.frames_read
@@ -258,8 +229,6 @@ impl NavalMarkers {
         self.columns.expect("the naval markers layer is declared before it composes")
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it; its view, index, the engagement
-    /// layer's flags, vision and counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.shore), None);
         let kept = std::mem::replace(self, empty);
@@ -267,7 +236,6 @@ impl NavalMarkers {
         (self.vision, self.vision_new, self.reads) = (kept.vision, kept.vision_new, kept.reads);
     }
 
-    /// Refused for `why`: nothing held, marked or carried until it draws again, whole.
     fn refuse(&mut self, why: String) {
         if self.refused.as_ref() != Some(&why) {
             self.release();
@@ -289,7 +257,6 @@ impl NavalMarkers {
         Ok(vision)
     }
 
-    /// The kept frames of `combats` at the head, as the index keeps them.
     fn kept_of(&self, mirrors: &Mirrors, vision: &Vision, combats: &[u64]) -> BTreeMap<u64, Kept> {
         let head = mirrors.get(TableId::NavalCombats).and_then(Mirror::head);
         let found = match (&self.index, head) {
@@ -302,10 +269,6 @@ impl NavalMarkers {
         }
     }
 
-    /// The kept frames brought to the head: the hours the steps moved through name the icons the
-    /// index changed and the steps' own rows the combats that began or ended, while a change of
-    /// where the index answers from reads every live combat's again. A frame that moved remakes
-    /// the product, which draws it.
     fn take_kept(&mut self, mirrors: &Mirrors, vision: &Vision) {
         let index = self.index.as_ref().map(|index| (&index.history, index.branch));
         let now = KeptAt::of(index, mirrors.get(TableId::NavalCombats).and_then(Mirror::head), vision.ours());
@@ -344,7 +307,6 @@ impl NavalMarkers {
         }
     }
 
-    /// The hour part made whole from the mirrors.
     fn make(&mut self, mirrors: &Mirrors, vision: &Vision, flags: &BTreeMap<u64, Engaged>, provenance: Provenance, kept: &BTreeMap<u64, Kept>) {
         let columns = self.columns();
         let get = |table| held(mirrors.get(table));
@@ -512,7 +474,6 @@ impl NavalMarkers {
 
     fn settle_dirty(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, bool)>) {
         self.frame += 1;
-        // Hidden, it holds not even the engagement layer's flags: shown again, it takes them anew.
         if self.hidden {
             self.flags = None;
             self.refuse("not drawn at this view".to_owned());
@@ -552,7 +513,6 @@ impl NavalMarkers {
         }
     }
 
-    /// Whether the product reads `column` of `table`, as the layer declared it.
     fn reads(&self, table: TableId, column: usize) -> bool {
         self.reads.get(&table.index()).is_some_and(|columns| columns.binary_search(&column).is_ok())
     }
@@ -682,8 +642,6 @@ impl Layer for NavalMarkers {
     }
 
 
-    /// A remake reads every naval combat: what it owes is that many, as the last make read them,
-    /// never one unit for a walk of them all. A combat is counted once for the frames it waits.
     fn carried(&self) -> Carried {
         let remake = self.dirty || self.all;
         let entities = if remake { self.read.max(self.kept.len()).max(1) } else { 0 };

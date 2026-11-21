@@ -1,6 +1,3 @@
-//! A reply's data built once: a product's typed reply written straight to JSON text within the
-//! product budget ([`Built::of`]), its root's fields set afterwards without parsing it again
-//! ([`Fields`]), and the places in it its server marks found by one scan of the text ([`reach`]).
 
 use super::{MAX_PRODUCT_REPLY_BYTES, over_budget};
 use serde::Serialize;
@@ -11,7 +8,6 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-/// A reply's data: a tree a reader assembled, or text a typed reply was written to once.
 pub enum Data {
     Tree(Value),
     Built(Built),
@@ -37,7 +33,6 @@ impl Data {
         }
     }
 
-    /// The root's field `name`, when the root is an object holding it.
     pub fn field(&self, name: &str) -> io::Result<Option<Value>> {
         match self {
             Self::Tree(value) => Ok(value.get(name).cloned()),
@@ -46,14 +41,12 @@ impl Data {
     }
 }
 
-/// A typed reply's JSON text, with the root fields set since ([`Fields`]).
 #[derive(Debug)]
 pub struct Built {
     text: String,
     set: Vec<(String, String)>,
 }
 
-/// Writes within `limit` bytes, stopping once the request is cancelled.
 struct Budgeted<'a> {
     text: Vec<u8>,
     limit: usize,
@@ -83,8 +76,6 @@ impl Write for Budgeted<'_> {
 }
 
 impl Built {
-    /// `reply` written once as JSON, refused as over budget past the product reply budget, as
-    /// [`super::check_reply_budget`] refuses it.
     pub fn of(reply: &impl Serialize, cancelled: &AtomicBool) -> io::Result<Self> {
         Self::within(reply, cancelled, MAX_PRODUCT_REPLY_BYTES, || {
             over_budget(format!(
@@ -93,7 +84,6 @@ impl Built {
         })
     }
 
-    /// `reply` written once as JSON, refused with the product's own `refusal` past `limit` bytes.
     pub fn within(
         reply: &impl Serialize,
         cancelled: &AtomicBool,
@@ -123,7 +113,6 @@ impl Built {
         self.text.trim_start().starts_with('{')
     }
 
-    /// The root's field `name`: as set, else as written.
     pub fn field(&self, name: &str) -> io::Result<Option<Value>> {
         if let Some((_, value)) = self.set.iter().find(|(field, _)| field == name) {
             return Ok(Some(serde_json::from_str(value)?));
@@ -139,13 +128,10 @@ impl Built {
             .transpose()
     }
 
-    /// The reply as a tree, for a reader inspecting it.
     pub fn into_value(self) -> io::Result<Value> {
         Ok(serde_json::from_str(&self.finish()?)?)
     }
 
-    /// The text with every set field in place: one written already is replaced where it stands,
-    /// the rest follow the written ones.
     pub fn finish(self) -> io::Result<String> {
         if self.set.is_empty() {
             return Ok(self.text);
@@ -181,8 +167,6 @@ impl Built {
     }
 }
 
-/// What a server sets on a reply's root after its product built it: its coverage, what it waits
-/// for. A root that is not an object takes none.
 pub trait Fields {
     fn set_field(&mut self, name: &str, value: &impl Serialize) -> io::Result<()>;
 }
@@ -223,7 +207,6 @@ fn malformed() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "A built reply is not JSON")
 }
 
-/// Walks one JSON text.
 struct Scan<'t> {
     text: &'t [u8],
     at: usize,
@@ -249,7 +232,6 @@ impl<'t> Scan<'t> {
         Ok(())
     }
 
-    /// A string's range, quotes included.
     fn string(&mut self) -> io::Result<Range<usize>> {
         let start = self.at;
         self.expect(b'"')?;
@@ -265,7 +247,6 @@ impl<'t> Scan<'t> {
         }
     }
 
-    /// A key's text.
     fn key(&mut self, text: &str) -> io::Result<String> {
         let range = self.string()?;
         let raw = &text[range.start + 1..range.end - 1];
@@ -276,7 +257,6 @@ impl<'t> Scan<'t> {
         }
     }
 
-    /// Past one value, returning its range.
     fn skip(&mut self) -> io::Result<Range<usize>> {
         let start = {
             self.space();
@@ -321,7 +301,6 @@ impl<'t> Scan<'t> {
     }
 }
 
-/// The root object's fields of `text`, each value's range, and where its closing brace stands.
 fn root_fields(text: &str) -> io::Result<(Vec<(String, Range<usize>)>, usize)> {
     let mut scan = Scan {
         text: text.as_bytes(),
@@ -345,9 +324,6 @@ fn root_fields(text: &str) -> io::Result<(Vec<(String, Range<usize>)>, usize)> {
     Ok((fields, scan.at))
 }
 
-/// Each value of `text` a path of `paths` reaches, in text order: the path's index, the value's
-/// range and whether it is a list. A key segment follows an object's member, `*` every item of an
-/// array.
 pub fn reach(text: &str, paths: &[&[&str]]) -> io::Result<Vec<(usize, Range<usize>, bool)>> {
     let mut scan = Scan {
         text: text.as_bytes(),
@@ -436,8 +412,6 @@ fn value<'p>(
     Ok(())
 }
 
-/// The range of the root object's closing brace and whether it holds any field; None when the
-/// root is no object.
 pub fn root_close(text: &str) -> io::Result<Option<(usize, bool)>> {
     if !text.trim_start().starts_with('{') {
         return Ok(None);

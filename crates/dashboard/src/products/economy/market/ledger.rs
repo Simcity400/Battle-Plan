@@ -1,9 +1,3 @@
-//! The market ledger (`market-ledger`): a page of the declared log `market-events`, each
-//! occurrence's seller and buyer (giver and receiver) named by their tags at its hour and its
-//! equipment by its design's name at the page's reads. A delivery whose amount the recording names
-//! unavailable keeps its refusal, never an amount. Totals and marks are the log's counts
-//! (`log-counts`); a country's ledger asks the facets `country|receiver`, so it lists what it buys
-//! as well as what it sells.
 
 use crate::{
     Source,
@@ -27,12 +21,8 @@ use ts_rs::TS;
 
 pub const LOG: &str = "market-events";
 
-/// The occurrences a page shows: lend-lease deliveries (3 delivered, 4 lost, 5 fuel, 6 ended),
-/// requests posted (10), contracts made (11) and removed (12), purchase deliveries (20),
-/// payments (21) and amounts unavailable (34).
 pub const KINDS: [i64; 10] = [3, 4, 5, 6, 10, 11, 12, 20, 21, 34];
 
-/// The columns a ledger page carries, by name.
 pub const COLUMNS: [&str; 15] = [
     "id",
     "occurrence",
@@ -51,7 +41,6 @@ pub const COLUMNS: [&str; 15] = [
     "reason",
 ];
 
-/// MarketEvents' columns, as the schema numbers them.
 struct Columns {
     occurrence: usize,
     agreement: usize,
@@ -102,7 +91,6 @@ fn text_cell(value: Option<String>) -> LogCell {
     value.map_or(LogCell::Missing, |value| LogCell::Text { value })
 }
 
-/// One occurrence as a page shows it, its equipment cells filled by [`name`].
 pub struct Mapped {
     pub cells: Vec<LogCell>,
     pub variant: u64,
@@ -110,8 +98,6 @@ pub struct Mapped {
 
 const EQUIPMENT: usize = 8;
 
-/// An occurrence (its hour, key and cells by column) as a page row's cells, its parties named by
-/// `tag` (a raw country id at the row's hour).
 fn map(key: u128, cells: &[Cell], columns: &Columns, tag: impl Fn(u32) -> Option<String>) -> Mapped {
     let kind = number(cells, columns.kind).and_then(|kind| u8::try_from(kind).ok()).unwrap_or(u8::MAX);
     let ordinal = number(cells, columns.ordinal).and_then(|ordinal| u32::try_from(ordinal).ok()).unwrap_or(0);
@@ -143,8 +129,6 @@ fn map(key: u128, cells: &[Cell], columns: &Columns, tag: impl Fn(u32) -> Option
 
 pub struct MarketLedger;
 
-/// A page of market occurrences: `log-page`'s params with the log fixed. The `kind` facet is
-/// required; a country's page filters `country|receiver` by tags.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -220,7 +204,6 @@ impl Product for MarketLedger {
                 warnings.push(why.clone());
             }
             Ok(_) => {
-                // Each run's designs named at its newest row on the page, those it does not name at its oldest.
                 let recording = query.replay.recording();
                 for (run, ats) in by_run {
                     let variants: BTreeSet<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect();
@@ -279,7 +262,6 @@ impl Product for MarketLedger {
     }
 }
 
-/// `variants`' names at `hour` of run `run`, from the tables a design's name reads.
 fn plain_names(recording: &replay::columnar_frames::Recording, run: u32, hour: i32, variants: &[u64], context: &names::Context) -> io::Result<BTreeMap<u64, Option<String>>> {
     let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
     let mut reads: Vec<replay::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens].into_iter().map(replay::at::Read::all).collect();

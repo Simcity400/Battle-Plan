@@ -1,8 +1,6 @@
-//! Observed native mutations, never spending inferred from hourly net balances.
 use super::*;
 use crate::value::value_struct;
 
-// Strict scalar kinds keep the wire compact and reject unknown tags on decode.
 macro_rules! politics_kind {
     ($name:ident, $ty:ident, $kind:ident, $($variant:ident = $value:literal),+ $(,)?) => {
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +16,6 @@ macro_rules! politics_kind {
                 match value { $($value => Ok(Self::$variant),)+ _ => Err(invalid(concat!("unknown ", stringify!($name)))) }
             }
         }
-        /// The recorded wire value, so consumers can persist and restore a kind.
         impl TryFrom<$ty> for $name {
             type Error = io::Error;
             fn try_from(value: $ty) -> io::Result<Self> { Self::from_field(Field::$kind(value)) }
@@ -184,8 +181,6 @@ politics_kind!(
     Stop = 11
 );
 
-/// All links are raw country IDs; tokens join LexicalTokens, characters join Characters,
-/// and object references retain all native reference bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerIdentity {
@@ -225,8 +220,6 @@ impl PowerIdentity {
     }
 }
 
-/// Last observed midnight application, carried with its original epoch/day.
-/// Quantities are signed fixed5, including negative net rates and components.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryPowerDailyRow {
@@ -244,9 +237,6 @@ pub struct CountryPowerDailyRow {
     pub cp_sequence: Option<u64>,
 }
 
-/// Hourly batch of native observations; sequence orders both currencies.
-/// An absent requested amount is unknown, never a zero charge. A clamp is a
-/// separate reconciliation entry, not an unidentified or apportioned spend.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryPowerChangeRow {
@@ -284,14 +274,11 @@ impl CountryPowerDailyRow {
     }
 }
 impl CountryPowerChangeRow {
-    /// i128 preserves the difference even across the signed i64 endpoints.
     pub fn realized_delta_raw(&self) -> i128 {
         i128::from(self.balance_after_raw) - i128::from(self.balance_before_raw)
     }
 }
 
-/// Decomposition of daily PP net income; these are not extra mutations.
-/// Ordinals preserve native occurrences of identical relation/MIO items.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryPowerDailyCostRow {
@@ -308,8 +295,6 @@ pub struct CountryPowerDailyCostRow {
     pub identity: PowerIdentity,
 }
 
-/// Old ideology is retained even if the old party is no longer in the frame.
-/// Cause is execution provenance; election dates never identify a cause.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GovernmentChangeRow {
@@ -330,8 +315,6 @@ pub struct GovernmentChangeRow {
     pub site: PowerSite,
 }
 
-/// Completeness of this country's observed interval, independent of whether
-/// its event batch is empty. Mismatches clear only the affected currency bit.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PoliticsCaptureCoverageRow {

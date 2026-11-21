@@ -1,10 +1,6 @@
 import type { DashboardClient, ProductReply, ProductRequest } from './client';
 import { busyCount, inBackground } from '../shell/busy.ts';
 
-/** The prepare lane: what the page does not show (its rows below the fold, every other page) is asked through it once the
- * page has settled, so a scroll or a page switch finds its replies held. It holds one request in flight at a time, and
- * sends none while the page has anything of its own in flight. Every lane of the service has at least two threads, so a
- * prepared request holds at most one of any lane's and a request the page asks finds another. */
 
 const requestKey = (request: ProductRequest) => JSON.stringify([request.sourceId, request.revision, request.product, request.params]);
 
@@ -24,13 +20,11 @@ export class PrepareGate {
   private readonly idle: () => boolean;
   private readonly frames: PrepareFrames;
 
-  /** `idle`: whether the page has nothing of its own in flight; asked each frame while a request waits. */
   constructor(idle: () => boolean = () => busyCount() === 0, frames: PrepareFrames = animationFrames) {
     this.idle = idle;
     this.frames = frames;
   }
 
-  /** `send`s `request` in its turn: once nothing else of the lane is in flight and the page is idle. */
   ask<T>(request: ProductRequest, send: (signal: AbortSignal, background: boolean) => Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) return Promise.reject(new DOMException('Request cancelled', 'AbortError'));
     return new Promise<T>((resolve, reject) => {
@@ -58,7 +52,6 @@ export class PrepareGate {
     });
   }
 
-  /** A request the page itself now waits on goes at once, out of the lane. */
   promote(request: ProductRequest): void {
     const key = requestKey(request);
     const at = this.waiting.findIndex(entry => entry.key === key);
@@ -68,23 +61,17 @@ export class PrepareGate {
     this.told();
   }
 
-  /** Every request still waiting goes at once, out of the lane: called once the lane's own askers have left, so what
-   * waits is wanted by the page. */
   release(): void {
     for (const entry of this.waiting.splice(0)) entry.send(false);
     this.told();
   }
 
-  /** Requests waiting or in flight. */
   get pending(): number { return this.waiting.length + this.running; }
 
-  /** Notes a product the lane's widgets read, asked or held. */
   note(request: ProductRequest): void { this.asked.push(request); }
 
-  /** The products noted since the last call. */
   drain(): ProductRequest[] { return this.asked.splice(0); }
 
-  /** Hears each change of `pending`. */
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
@@ -104,14 +91,11 @@ export class PrepareGate {
 
 interface Prepared { base?: DashboardClient; gate?: PrepareGate }
 
-/** The client `client` asks through: a prepared client's base. Everything kept per client is kept per base, so what the
- * lane reads is held for the page. */
 export function baseClient(client: DashboardClient): DashboardClient {
   return (client as Prepared).base ?? client;
 }
 
 const gates = new WeakMap<DashboardClient, PrepareGate>();
-/** The prepare lane of `client`'s base. */
 export function prepareGate(client: DashboardClient): PrepareGate {
   const base = baseClient(client);
   let gate = gates.get(base);
@@ -119,7 +103,6 @@ export function prepareGate(client: DashboardClient): PrepareGate {
   return gate;
 }
 
-/** `base`, its product requests asked through its prepare lane. */
 export function preparingClient(base: DashboardClient): DashboardClient {
   const gate = prepareGate(base);
   const client = Object.create(base) as DashboardClient & Prepared;
@@ -130,20 +113,16 @@ export function preparingClient(base: DashboardClient): DashboardClient {
   return client;
 }
 
-/** Whether `client` asks through the prepare lane. */
 export const preparing = (client: DashboardClient): boolean => (client as Prepared).gate !== undefined;
 
-/** `client` reads `request`: noted when it is the lane's. */
 export function noteRead(client: DashboardClient, request: ProductRequest): void {
   (client as Prepared).gate?.note(request);
 }
 
-/** The page asks `request` through `client` and joins a load the lane may hold waiting: it goes at once. */
 export function askedByPage(client: DashboardClient, request: ProductRequest): void {
   if (!preparing(client)) gates.get(baseClient(client))?.promote(request);
 }
 
-/** A map kept per client, each prepared client standing for its base. */
 export class PerClient<V> {
   private held = new WeakMap<DashboardClient, V>();
   get(client: DashboardClient): V | undefined { return this.held.get(baseClient(client)); }

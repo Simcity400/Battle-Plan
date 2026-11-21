@@ -1,4 +1,3 @@
-//! Serializer projections of held faction effects and ordered extracted pools.
 use super::*;
 
 pub fn projection(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
@@ -23,8 +22,6 @@ pub fn projection(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io:
     if !owners.is_empty() {
         return Err(invalid("faction projection has absent owners"));
     }
-    // The two retained refresh totals are not serialized. Their screen comparison
-    // is a separate integration check; no sum at another refresh time is substituted.
     if !rows.is_empty() {
         for field in ["projection_raw", "influence_raw"] {
             report.limitation("faction projection/influence totals are unsaved retained refresh outputs; verify the matching faction screen",format!("FactionProjection.{field}"));

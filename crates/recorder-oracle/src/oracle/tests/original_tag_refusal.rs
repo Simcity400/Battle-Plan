@@ -72,7 +72,6 @@ fn nonpositive_original_reference_does_not_demand_unused_byte_capture() {
             ..Default::default()
         };
         let mut report = Report::default();
-        // Exercise the full appearance group with this row's canonical parent.
         let (mut frame, mut saved, _, _) = fixture();
         saved
             .countries

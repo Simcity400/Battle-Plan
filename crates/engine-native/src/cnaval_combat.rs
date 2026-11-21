@@ -1,4 +1,3 @@
-//! CNavalCombat layout, with one acquisition per scheduled table.
 
 use engine_sites::Rva;
 use crate::{
@@ -14,65 +13,41 @@ use std::collections::{HashMap, HashSet};
 type GroupOrdinals = HashMap<usize, Option<u32>>;
 type GroupSet = HashSet<usize>;
 
-/// CNavalCombat vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_6d98);
-/// Observed combat reference type comes from the runtime registry; it is not an admission filter.
 #[cfg(any(test, feature = "test-support"))]
 pub const OBSERVED_REFERENCE_TYPE: u32 = 4713;
-/// CNavalCombat packed (type, id) u64 handle.
 pub const HANDLE: usize = 0x18;
-/// CNavalCombat attacker CNavalCombatant pointer.
 pub const ATTACKER: usize = 0x28;
-/// CNavalCombat defender CNavalCombatant pointer.
 pub const DEFENDER: usize = 0x30;
-/// CNavalCombat CProvince pointer.
 pub const PROVINCE: usize = 0x38;
-/// CNavalCombat participant transfer handle array.
 pub const PARTICIPANTS: usize = 0xf0;
-/// Combat flag byte copied to the retained result's first flag.
 pub const RESULT_FLAG_A: usize = 0x10c;
-/// Combat flag byte copied to the retained result's second flag.
 pub const RESULT_FLAG_B: usize = 0x10d;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Complete native reference, low u32 type and high u32 id.
     pub id: u64,
     pub province: u32,
-    /// Complete signed i64 fixed-point operands.
     pub attacker_positioning: i64,
     pub defender_positioning: i64,
     pub attacker_anti_air: i64,
     pub defender_anti_air: i64,
-    /// Ordinal in the mixed active-combat registry (`cgame_state::COMBATS`), which orders the naval
-    /// icon spillover pass.
     pub registry_ordinal: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub combat: u64,
-    /// Same-pass native pointer for the live side modifier capture; not replayed.
     pub native_combat: usize,
     pub province: u32,
     pub day: i32,
     pub duration: i32,
     pub progress: i64,
     pub sides: [cnaval_combatant::DetailsRow; 2],
-    /// Active custom sea entries for this live combat's strategic region.
-    /// Start/count in the caller's bounded signed sea-word arena.
     pub custom_sea: Option<[usize; 2]>,
     pub custom_sea_error: Option<&'static str>,
 }
 
-/// Independent hourly details walk. The existing authenticated registry and
-/// group topology are reused; all output and deduplication storage is owned by
-/// the caller. Ship rows and group scratch grow on the acquisition worker at
-/// their original admission points. Each table fails independently after
-/// shared-root authentication.
-///
-/// Clock boundaries name the following phase: shared/details = 0, ships = 1.
-/// Ship completion and the final boundary restore 0 on every outcome.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_details_timed(
     memory: &impl Memory,
@@ -107,8 +82,6 @@ pub fn walk_details_timed(
         let at = game_state
             .checked_add(cgame_state::COMBATS + 8)
             .ok_or("naval details registry overflow")?;
-        // The mixed combat registry bounds worker storage. Filtering preserves
-        // naval, land and border-war occurrence order.
         let registry = Array::read(memory, at, 8).ok_or("naval details registry invalid")?;
         details.ensure(registry.count as usize)?;
         let mut lengths = [0usize; 2];
@@ -233,9 +206,6 @@ pub fn walk_details_timed(
                 let member_start = now(1);
                 let result = (|| {
                     let mut group_count = 0usize;
-                    // Walk each forward-group vector once to its own count. Retain
-                    // ordinals and refuse repeated groups when used. Already admitted groups
-                    // are found in `taken` without rescanning scratch.
                     let mut ordinals: [GroupOrdinals; 2] = Default::default();
                     let mut taken = GroupSet::default();
                     for (side_index, side) in sides.into_iter().enumerate() {
@@ -276,7 +246,6 @@ pub fn walk_details_timed(
                                 required_group_capacity =
                                     required_group_capacity.max(group_count + 1);
                                 if group_count == groups.len() {
-                                    // The actual count follows native ownership and deduplication.
                                     if groups.len() == groups.capacity() {
                                         crate::allocation::reserve(groups, 1)
                                             .map_err(|_| "collector allocation failed")?;
@@ -292,14 +261,11 @@ pub fn walk_details_timed(
                     for &group in &groups[..group_count] {
                         let owner = field::<u64>(memory, group, cfex_group::SIDE)? as usize;
                         let side = u8::from(owner == roots[1]);
-                        // A paired-only group has no serialized forward-side ordinal.
                         let group_index = match ordinals[usize::from(side)].get(&group) {
                             Some(Some(ordinal)) => *ordinal,
                             Some(None) => return Err("naval duplicate forward group"),
                             None => u32::MAX,
                         };
-                        // Each group member vector uses its own count. Reserve its validated
-                        // vector as one batch, publishing each row after successful member reads.
                         for (member_source, member_offset) in [(0, cfex_group::MEMBERS), (1, 0x70)]
                         {
                             let array = Array::read(memory, group + member_offset, 8)
@@ -361,8 +327,6 @@ pub fn walk_details_timed(
     }
 }
 
-/// The strategic-region template counts its modifier definitions; the weather record uses the same
-/// ordinals.
 fn custom_sea(
     memory: &impl Memory,
     base: usize,
@@ -467,7 +431,6 @@ fn read_planes(
     let start = buffers.planes_len;
     let mut count = 0usize;
     let mut fits = true;
-    // Both forward vectors to their own counts; `taken` holds the groups already kept.
     let mut taken = GroupSet::default();
     for root in [roots[side], roots[1 - side]] {
         let array = Array::read(memory, root + cnaval_combatant::GROUPS, 8)
@@ -499,7 +462,6 @@ fn read_planes(
                 }
                 *required_groups = (*required_groups).max(count + 1);
                 if count == groups.len() {
-                    // The owner check and deduplication determine the actual count.
                     if groups.len() == groups.capacity() {
                         crate::allocation::reserve(groups, 1)
                             .map_err(|_| "collector allocation failed")?;
@@ -544,14 +506,9 @@ fn read_planes(
     Ok([start, buffers.planes_len - start])
 }
 
-/// Expected CFEXAir owner for one plane array.
 #[derive(Clone, Copy)]
 enum PlaneOwner<'a> {
-    /// Group plane arrays; merge can rewrite their owner.
     Group(usize),
-    /// Side plane array. External waves construct with null group, append to this array, then
-    /// attach to the side's first group and its plane array. The owner is null or one of this
-    /// side's groups.
     Side(&'a GroupSet),
 }
 
@@ -567,8 +524,6 @@ fn append_planes(
     group_index: u32,
     buffers: &mut crate::cfex_member::DetailBuffers<'_>,
 ) -> Result<bool, &'static str> {
-    // Each plane vector uses its stored count. Grow worker storage from
-    // this header before reading original entries.
     let array = Array::read(memory, address, 8).ok_or("naval plane array invalid")?;
     buffers.planes_required = buffers
         .planes_required
@@ -624,22 +579,15 @@ fn append_planes(
 pub struct Capture {
     pub combats: Outcome,
     pub participants: Outcome,
-    /// Original paired-group scratch demand. Worker storage grows in this walk;
-    /// a fixed fixture shortage is an explicit failure, never an empty table.
     pub required_group_capacity: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimedCapture {
     pub capture: Capture,
-    /// Caller-clock ticks: combat registry/rows, then participant roots/rows.
-    /// Their sum covers this entire walk, including authentication.
     pub read_ticks: [u64; 2],
 }
 
-/// Reads the mixed combat registry once and visits both naval sides together.
-/// Output and group scratch belong to the caller; deduplication growth is checked.
-/// No engine call, address cache, retry or event hook is used.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -660,8 +608,6 @@ pub fn walk(
     .capture
 }
 
-/// Worker rows and scratch follow original registry/group/member
-/// headers before this capture publishes its first row.
 pub fn walk_timed(
     memory: &impl Memory,
     base: usize,
@@ -682,9 +628,6 @@ pub fn walk_timed(
     )
 }
 
-/// Attach/cadence row and scratch demand from the same authenticated original
-/// registry and membership headers. Empty row buffers skip sampled body fields;
-/// group scratch still holds every paired occurrence before member counting.
 pub fn storage_demand(memory: &impl Memory, base: usize, game_state: usize) -> Capture {
     crate::allocation::advisory(|| storage_demand_advisory(memory, base, game_state))
 }
@@ -722,7 +665,6 @@ fn walk_timed_buffer(
             .ok_or("naval combat registry address overflow")?;
         let registry = Array::read(memory, registry, 8)
             .ok_or("naval combat registry unreadable or invalid")?;
-        // The original mixed registry bounds every admitted naval row.
         combats.ensure(registry.count as usize)?;
         let body_vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("naval combat vtable overflow")?;
@@ -742,14 +684,10 @@ fn walk_timed_buffer(
         for index in 0..registry.count {
             let body = pointer(memory, registry, index)?;
             if body == 0 {
-                // Active-combat entries are initialized before insertion and removed
-                // by swapping. A null slot cannot imply absent combat.
                 return Err("null combat registry entry");
             }
             let vtable = field::<u64>(memory, body, 0)?;
             if vtable != body_vtable as u64 {
-                // Skip only identified land classes. An unknown or corrupted
-                // naval vtable must not become a clean deletion in the replay.
                 if land_vtables.contains(&vtable) {
                     continue;
                 }
@@ -775,9 +713,6 @@ fn walk_timed_buffer(
                     .checked_add(1)
                     .ok_or("naval combat count overflow")?;
             } else if read_combat {
-                // Side roots are already authenticated. Scalar and province
-                // failures belong only to the combat table; participants can
-                // still be read through these same side roots.
                 let row = (|| {
                     let (attacker_positioning, attacker_anti_air) = attacker.scalars?;
                     let (defender_positioning, defender_anti_air) = defender.scalars?;
@@ -893,8 +828,6 @@ fn members(
         .ok_or("naval group vtable overflow")?;
     let mut group_len = 0_usize;
     let mut seen = GroupSet::default();
-    // The native opponent link pairs opposing groups. Taking both forward vectors and the linked
-    // group also recovers an opponent absent from its vector.
     for (side_index, side) in sides.into_iter().enumerate() {
         let roots = cnaval_combatant::groups(memory, side)?;
         let capacity = (roots.count as usize)
@@ -960,7 +893,6 @@ fn members(
             8,
         )
         .ok_or("naval member array unreadable or invalid")?;
-        // Group membership retains the complete original occurrence list.
         output.ensure(
             len.checked_add(array.count as usize)
                 .ok_or("naval member count overflow")?,

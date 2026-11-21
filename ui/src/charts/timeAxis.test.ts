@@ -26,7 +26,6 @@ test('a partial first year is labelled at the middle of its visible part, if it 
   const label = ticks.labels[0];
   assert.equal(label.text, '1936');
   assert.equal(label.hour, (first + at(1937)) / 2);
-  // Three days of 1936 have no room for a label.
   const tight = timeTicks(at(1936, 12, 29), at(1946, 1, 1), 800, measure);
   assert.equal(tight.labels[0].text, '1937');
 });
@@ -42,7 +41,6 @@ test('zooming in moves to quarters, months and days', () => {
 });
 
 test('the first month label has room for the year it names', () => {
-  // 20 September has room for "Sep" but not for "Sep 1940".
   const ticks = timeTicks(at(1940, 9, 20), at(1941), 320, measure);
   assert.equal(ticks.level, 'month');
   assert.deepEqual(ticks.labels.map(label => label.text), ['Oct 1940', 'Nov', 'Dec']);
@@ -55,10 +53,8 @@ test('hours before the calendar epoch give no ticks rather than invented dates',
 test('quarters are labelled with month names like months are', () => {
   const ticks = timeTicks(at(1940, 1), at(1942, 1), 900, measure);
   assert.equal(ticks.level, 'quarter');
-  // Labels sit on their quarter's first tick; the one at the very edge has no room.
   assert.deepEqual(ticks.labels.map(label => label.text), ['Apr 1940', 'Jul', 'Oct', 'Jan 1941', 'Apr', 'Jul', 'Oct']);
   assert.ok(ticks.labels.every(label => ticks.grid.includes(label.hour)));
-  // Without a visible January, the first label still names the year.
   assert.equal(timeTicks(at(1940, 2), at(1940, 12, 20), 700, measure).labels[0].text.endsWith('1940'), true);
 });
 
@@ -75,7 +71,6 @@ test('a short year is named once on the first month label', () => {
 
 test('log ticks thin to powers of ten, then fewer of them, to fit the height', () => {
   const ticks = logTicks(1, 1e9);
-  // 160 px over nine decades, as a log axis maps it.
   const toPixel = (value: number) => 160 - Math.log10(value) / 9 * 160;
   const kept = thinLogTicks(ticks, toPixel, 17);
   assert.ok(kept.length > 1 && kept.every(value => value.toExponential(0).startsWith('1e')));

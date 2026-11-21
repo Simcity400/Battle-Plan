@@ -1,18 +1,3 @@
-//! The writer's side of the change grammar: one table's held columns, an hour's candidate
-//! rows compared once with them, and the section that hour writes. Each changed cell is
-//! written as the held cell's ADD or PATCH when that takes no more bytes than its SET; a
-//! column whose changed cells all take one value writes it once, as a FILL when they are at
-//! least half its rows. [`TableWriter::commit`] applies the section through the reader's own
-//! [`section::apply`], so after the same hours the writer holds exactly the table, status,
-//! sample hour and view a walker holds.
-//!
-//! An hour's rows come one at a time ([`Hour::row`]) or together as a [`Batch`]
-//! ([`TableWriter::prepare`]), which compares each column with the held one in one pass and
-//! writes the same section.
-//!
-//! An hour clears and finishes only the columns it or the hour before staged a cell in, so
-//! an hour that changes nothing costs its table no work per column. An hour after one that
-//! did not finish (refused, dropped or unwound) clears every column.
 
 use crate::{
     invalid_static,
@@ -34,23 +19,17 @@ mod tests;
 
 type Hasher = foldhash::fast::RandomState;
 
-/// Names each writer, so a preparation commits only to the writer that made it.
 static WRITERS: AtomicU64 = AtomicU64::new(1);
 
-/// The fewest changed cells of one value a FILL writes; fewer take one SET run.
 const FILL_MINIMUM: usize = 16;
 
-/// A batch row the table does not hold. No slot is `u32::MAX`: an hour keeps the table's
-/// extent within 32 bits.
 const NEW: u32 = u32::MAX;
 
-/// A run's strings: exact bytes with append-only ids, each appended before its first use.
 #[derive(Default)]
 pub struct Dictionary {
     ids: HashMap<Box<[u8]>, u32, Hasher>,
     len: u32,
     appended: Vec<Box<[u8]>>,
-    /// Every string by id: string `id` ends at `ends[id]` in `bytes`.
     bytes: Vec<u8>,
     ends: Vec<usize>,
 }
@@ -68,7 +47,6 @@ impl Dictionary {
         self.len == 0
     }
 
-    /// String `id`'s bytes.
     pub fn get(&self, id: u32) -> Option<&[u8]> {
         let id = id as usize;
         let end = *self.ends.get(id)?;
@@ -76,7 +54,6 @@ impl Dictionary {
         Some(&self.bytes[start..end])
     }
 
-    /// The id of `bytes`, appending it when the run has not used it.
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<u32> {
         if let Some(&id) = self.ids.get(bytes) {
             return Ok(id);
@@ -103,22 +80,17 @@ impl Dictionary {
         Ok(id)
     }
 
-    /// The strings appended since the last take, in id order: the hour's manifest appends.
     pub fn take_appended(&mut self) -> Vec<Box<[u8]>> {
         std::mem::take(&mut self.appended)
     }
 }
 
-/// The run's dictionary as one table's hour uses it. Tables prepared side by side share it
-/// [`Strings::Reading`], where a string the run has not used fails the hour: that table is
-/// prepared again interning, in table order, so every id is the one a single thread assigns.
 pub enum Strings<'a> {
     Interning(&'a mut Dictionary),
     Reading(&'a Dictionary),
 }
 
 impl Strings<'_> {
-    /// The id of `bytes`; reading, a string the run has not used fails.
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<u32> {
         match self {
             Self::Interning(dictionary) => dictionary.intern(bytes),
@@ -144,52 +116,35 @@ impl<'a> From<&'a mut Dictionary> for Strings<'a> {
     }
 }
 
-/// Which held rows an hour's visits cover.
 #[derive(Clone, Copy, Debug)]
 pub enum Coverage<'a> {
-    /// A complete census: a held row the hour does not visit is deleted.
     Complete,
-    /// A partial read: the held rows visited are the rows read, and nothing is deleted.
     Partial,
-    /// Proven sparse changes on a complete table: only the visited rows change, and
-    /// `removed` rows are deleted.
     Changes { removed: &'a [u128] },
 }
 
-/// One candidate cell.
 #[derive(Clone, Copy, Debug)]
 pub enum Input<'a> {
     Value(Cell<'a>),
-    /// A Bytes column's string, interned in the run's dictionary.
     Text(&'a [u8]),
-    /// The recording did not record this cell.
     Unrecorded,
-    /// The cell the held row already holds: neither compared nor written. Only a held row's.
     Kept,
 }
 
-/// The sample hour a table's view holds after an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sample {
-    /// The read bit decides: a read table is sampled at the hour, another keeps its last.
     FromReadBit,
-    /// Not known: an untimed snapshot.
     Reset,
-    /// A carried acquisition's hour.
     Carried(i32),
 }
 
-/// A table's evidence for one hour, beside its rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Evidence {
     pub status: Status,
-    /// The manifest's read bit.
     pub read: bool,
     pub sample: Sample,
 }
 
-/// What an hour's runs carry: their values by op, and its FILLs with the slots they set and
-/// the live slots they leave.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Census {
     pub set: u64,
@@ -200,40 +155,27 @@ pub struct Census {
     pub fill_exceptions: u64,
 }
 
-/// Which columns a writer's hours clear and finish.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sweep {
-    /// Those the hour or the hour before staged a cell in.
     #[default]
     Touched,
-    /// Every column, every hour, and an hour of no rows staged as any other: the reference,
-    /// which writes the same sections.
     Every,
 }
 
-/// What a writer's hours have cost it so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Work {
-    /// Hours begun.
     pub hours: u64,
-    /// Columns an hour cleared or finished.
     pub columns: u64,
 }
 
-/// One column of a [`Batch`]: every row's cell, in the order the rows came.
 #[derive(Default)]
 struct Cells {
-    /// A scalar cell's bits as [`word`] takes them; a text, list or opaque cell's end in its
-    /// items.
     words: Vec<u64>,
-    /// An optional cell's presence, a bit per row.
     present: Vec<u64>,
     u32s: Vec<u32>,
     u64s: Vec<u64>,
     bytes: Vec<u8>,
-    /// The rows whose cell the recording did not record, ascending.
     unrecorded: Vec<u32>,
-    /// The rows whose cell is the one their held row holds, ascending.
     kept: Vec<u32>,
 }
 
@@ -255,7 +197,6 @@ impl Cells {
         self.kept.clear();
     }
 
-    /// The end of the items a `kind` column's cells take so far.
     fn end(&self, kind: Kind) -> u64 {
         (match kind {
             Kind::U32List => self.u32s.len(),
@@ -265,7 +206,6 @@ impl Cells {
         }) as u64
     }
 
-    /// The items of row `row`'s text, list or opaque cell.
     fn span(&self, row: usize) -> std::ops::Range<usize> {
         let start = row
             .checked_sub(1)
@@ -279,7 +219,6 @@ impl Cells {
             .is_some_and(|bits| bits >> (row % 64) & 1 != 0)
     }
 
-    /// Row `row`'s cell of a `kind` column other than text, none when it is unrecorded.
     fn cell(&self, kind: Kind, row: u32) -> Option<Cell<'_>> {
         if self.unrecorded.binary_search(&row).is_ok() {
             return None;
@@ -309,13 +248,10 @@ impl Cells {
     }
 }
 
-/// An hour's rows by column, a row at a time: each row's key, then one cell per column in
-/// any order. Kept between hours, so a warm batch allocates nothing.
 #[derive(Default)]
 pub struct Batch {
     kinds: Vec<Kind>,
     keys: Vec<u128>,
-    /// One per column of `kinds`, and those wider tables left.
     columns: Vec<Cells>,
 }
 
@@ -324,10 +260,7 @@ impl Batch {
         Self::default()
     }
 
-    /// Starts an hour of about `rows` rows of a table with these columns.
     pub fn begin(&mut self, kinds: &[Kind], rows: usize) -> io::Result<()> {
-        // A cell follows its row's key, so only a batch with rows holds cells, and only in
-        // its own columns.
         if !self.keys.is_empty() {
             for cells in self.columns.iter_mut().take(self.kinds.len()) {
                 cells.clear();
@@ -355,13 +288,11 @@ impl Batch {
         self.keys.len()
     }
 
-    /// Starts the next row.
     #[inline]
     pub fn key(&mut self, key: u128) -> io::Result<()> {
         push(&mut self.keys, key)
     }
 
-    /// The current row's cells of `column`, which holds `kind`, and the row.
     #[inline]
     fn next(&mut self, column: usize, kind: Kind) -> io::Result<(&mut Cells, usize)> {
         let row = self.keys.len().wrapping_sub(1);
@@ -381,7 +312,6 @@ impl Batch {
         Ok((cells, row))
     }
 
-    /// The current row's cell of `column`: any but a text cell, which is its bytes.
     #[inline]
     pub fn value(&mut self, column: usize, cell: Cell<'_>) -> io::Result<()> {
         let (cells, row) = self.next(column, cell_kind(&cell))?;
@@ -414,7 +344,6 @@ impl Batch {
         }
     }
 
-    /// The current row's string in a Bytes column.
     #[inline]
     pub fn text(&mut self, column: usize, text: &[u8]) -> io::Result<()> {
         let (cells, _) = self.next(column, Kind::Bytes)?;
@@ -423,7 +352,6 @@ impl Batch {
         push(&mut cells.words, end)
     }
 
-    /// The current row's opaque cell, as `write` appends it.
     #[inline]
     pub fn opaque_with(
         &mut self,
@@ -436,7 +364,6 @@ impl Batch {
         push(&mut cells.words, end)
     }
 
-    /// The current row's U32List cell, as `write` appends its items.
     #[inline]
     pub fn u32s_with(
         &mut self,
@@ -449,7 +376,6 @@ impl Batch {
         push(&mut cells.words, end)
     }
 
-    /// The current row's U64List cell, as `write` appends its items.
     #[inline]
     pub fn u64s_with(
         &mut self,
@@ -462,8 +388,6 @@ impl Batch {
         push(&mut cells.words, end)
     }
 
-    /// The current row's cell of `column`, which its held row already holds: the hour leaves
-    /// it as it is, without comparing it. Only a held row's cell can be kept.
     #[inline]
     pub fn kept(&mut self, column: usize) -> io::Result<()> {
         let kind = *self
@@ -479,7 +403,6 @@ impl Batch {
         push(&mut cells.words, end)
     }
 
-    /// The current row's cell of `column`, which the recording did not record.
     #[inline]
     pub fn unrecorded(&mut self, column: usize) -> io::Result<()> {
         let kind = *self
@@ -496,7 +419,6 @@ impl Batch {
     }
 }
 
-/// Row `row`'s presence bit, set when `present`.
 fn presence(cells: &mut Cells, row: usize, present: bool) -> io::Result<()> {
     if row % 64 == 0 {
         push(&mut cells.present, 0)?;
@@ -507,11 +429,8 @@ fn presence(cells: &mut Cells, row: usize, present: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// A held scalar column's value type and the cells it makes.
 trait Word: Copy {
-    /// The bits [`word`] takes of its cell.
     fn word(self) -> u64;
-    /// The cell of `word`'s bits.
     fn plain(word: u64) -> Cell<'static>;
 }
 
@@ -538,7 +457,6 @@ impl Word for bool {
     }
 }
 
-/// An optional column's value type.
 trait Present: Word {
     fn optional(value: Option<u64>) -> Cell<'static>;
 }
@@ -554,12 +472,9 @@ macro_rules! present {
 }
 present!(i32 => OptionalI32, u32 => OptionalU32, i64 => OptionalI64, u64 => OptionalU64);
 
-/// A list or opaque column's item type.
 trait Items: Copy + PartialEq {
-    /// The items one [`Matcher`] window holds: eight bytes of them.
     const PROBE: usize;
     fn cell(items: &[Self]) -> Cell<'_>;
-    /// A window's [`Self::PROBE`] items as one word.
     fn probe(items: &[Self]) -> u64;
 }
 
@@ -593,23 +508,16 @@ impl Items for u8 {
     }
 }
 
-/// One batch column beside its held column: the cells it changes go to `pending`, those it
-/// no longer records to `unrecord`.
 struct Staged<'s> {
-    /// Each batch row's held slot, or [`NEW`].
     slots: &'s [u32],
     cells: &'s Cells,
-    /// The held column's unrecorded slots, when it has any.
     marked: Option<&'s Bits>,
     pending: &'s mut Pending,
     unrecord: &'s mut Vec<u32>,
-    /// A cell was staged in `pending` or `unrecord`.
     dirty: bool,
 }
 
 impl Staged<'_> {
-    /// Each held row the batch records, with whether the table records it: `change` stages
-    /// what differs, saying whether it did. A cell the batch leaves unrecorded is staged here.
     #[inline]
     fn each(
         &mut self,
@@ -697,17 +605,12 @@ impl Staged<'_> {
     }
 }
 
-/// An empty vector keeping `values`' allocation (std collects in place), for items of
-/// another lifetime.
 fn recycle<T, U>(values: Vec<T>) -> Vec<U> {
     values.into_iter().filter_map(|_| None).collect()
 }
 
-/// One cell's value kept by its own type: integers by their bits, lists and opaque
-/// cells as spans of item arrays. A changed cell also keeps how its run writes it.
 #[derive(Default)]
 struct Pending {
-    /// The held slot, or the insert's index, of each entry.
     at: Vec<u32>,
     words: Vec<u64>,
     present: Vec<bool>,
@@ -715,14 +618,10 @@ struct Pending {
     u32s: Vec<u32>,
     u64s: Vec<u64>,
     bytes: Vec<u8>,
-    /// Each changed entry's op: SET, ADD or PATCH.
     ops: Vec<Op>,
-    /// An integer column's entries' ADD deltas at the column's width; zero for a SET.
     deltas: Vec<u64>,
-    /// A list or opaque column's entries' PATCH edits in `edits`; none for a SET.
     hunks: Vec<(u32, u32)>,
     edits: Vec<(u32, u32, u32)>,
-    /// Every entry holds the first entry's value.
     uniform: bool,
 }
 
@@ -746,7 +645,6 @@ fn extend<T: Copy>(values: &mut Vec<T>, items: &[T]) -> io::Result<()> {
     Ok(())
 }
 
-/// A cell's integer bits and presence; a list or opaque cell keeps its items apart.
 fn word(cell: Cell<'_>) -> (u64, bool) {
     match cell {
         Cell::U8(value) => (u64::from(value), true),
@@ -766,8 +664,6 @@ fn word(cell: Cell<'_>) -> (u64, bool) {
     }
 }
 
-/// The bits and signedness of a column an ADD can shorten: byte-wide values are raw either
-/// way, and other kinds take no ADD.
 fn integer(kind: Kind) -> Option<(u32, bool)> {
     Some(match kind {
         Kind::U16 => (16, false),
@@ -780,7 +676,6 @@ fn integer(kind: Kind) -> Option<(u32, bool)> {
     })
 }
 
-/// The varint a `bits`-wide integer takes in a run: its low bits, zigzagged when signed.
 fn wire(word: u64, bits: u32, signed: bool) -> u64 {
     let shift = 64 - bits;
     if signed {
@@ -795,7 +690,6 @@ fn count(items: usize) -> io::Result<u32> {
     u32::try_from(items).map_err(|_| invalid_static("Cell items exceed 32 bits"))
 }
 
-/// The bytes `hunks` take as a PATCH's edits.
 fn edit_bytes(hunks: &[(u32, u32, u32)]) -> usize {
     varint_len(hunks.len() as u64)
         + hunks
@@ -806,13 +700,6 @@ fn edit_bytes(hunks: &[(u32, u32, u32)]) -> usize {
             .sum::<usize>()
 }
 
-/// Appends to `edits` the hunks turning `held` into `new`: equal lengths edit their
-/// differing runs, merged across fewer than `gap` equal items; otherwise one hunk replaces
-/// what lies between the common prefix and suffix. When that leaves more than
-/// [`MATCH_FLOOR`] items to insert, [`Matcher`] also looks for the runs of `held` that
-/// `new` keeps elsewhere, such as behind a changed count, and its hunks are kept when
-/// cheaper and at most half `new` whole. Whether the kept hunks and the items they
-/// insert, `bytes` each, are shorter than `new` whole.
 fn hunks<T: Items>(
     held: &[T],
     new: &[T],
@@ -868,7 +755,6 @@ fn hunks<T: Items>(
         MATCHER.with(|matcher| {
             let mut matcher = matcher.borrow_mut();
             let found = matcher.find(held, new, (prefix, suffix), &items)?;
-            // Scattered hunks keeping under half the cell compress worse than the whole cell.
             if found < cost && found * 2 <= whole {
                 edits.truncate(start);
                 extend(edits, &matcher.edits)?;
@@ -880,10 +766,8 @@ fn hunks<T: Items>(
     Ok(cost < whole)
 }
 
-/// Items the cheap hunks may leave to insert before [`Matcher`] looks for moved runs.
 const MATCH_FLOOR: usize = 32;
 
-/// Chain positions a [`Matcher`] compares at one item of `new`.
 const MATCH_PROBES: usize = 8;
 
 const NO_POSITION: u32 = u32::MAX;
@@ -892,8 +776,6 @@ thread_local! {
     static MATCHER: std::cell::RefCell<Matcher> = std::cell::RefCell::default();
 }
 
-/// A greedy linear diff: each window of `new` copies the longest run among the nearest
-/// equal windows of `held` at or past the last copy, as PATCH hunks only move forward.
 #[derive(Default)]
 struct Matcher {
     heads: Vec<u32>,
@@ -902,8 +784,6 @@ struct Matcher {
 }
 
 impl Matcher {
-    /// Leaves in `edits` the hunks turning `held` into `new` around their common `prefix`
-    /// and `suffix` items, and returns the bytes they and their inserted items take.
     fn find<T: Items>(
         &mut self,
         held: &[T],
@@ -930,7 +810,6 @@ impl Matcher {
             (start, start, start, prefix, 0);
         while at + probe <= new_end {
             let head = &mut self.heads[bucket(T::probe(&new[at..at + probe]))];
-            // Copies only move forward: a position before the last copy never matches again.
             let mut position = *head;
             while position != NO_POSITION && (position as usize) < cursor {
                 position = self.next[position as usize - start];
@@ -1028,7 +907,6 @@ impl Pending {
         Ok(())
     }
 
-    /// Whether entries `a` and `b` of a `kind` column hold one value.
     fn equal(&self, kind: Kind, a: usize, b: usize) -> bool {
         let items = |at: usize| {
             let (start, len) = self.spans[at];
@@ -1042,8 +920,6 @@ impl Pending {
         }
     }
 
-    /// A held row's changed cell, written as an ADD or PATCH of `held`, the value the
-    /// recording recorded there, when that takes no more bytes than a SET.
     fn change(&mut self, at: u32, cell: Cell<'_>, held: Option<Cell<'_>>) -> io::Result<()> {
         let entry = self.len();
         self.push(at, cell)?;
@@ -1084,7 +960,6 @@ impl Pending {
     }
 }
 
-/// One run's values, laid out as [`Values`] borrows them.
 #[derive(Default)]
 struct Out {
     u8s: Vec<u8>,
@@ -1097,7 +972,6 @@ struct Out {
     i64s: Vec<i64>,
     present: Vec<u64>,
     ends: Vec<u32>,
-    /// Values pushed: the next one's presence bit.
     count: usize,
 }
 
@@ -1116,7 +990,6 @@ impl Out {
         self.count = 0;
     }
 
-    /// `pending`'s entry `at` as `kind`'s next value, its integer bits taken from `words`.
     fn push(&mut self, kind: Kind, pending: &Pending, words: &[u64], at: usize) -> io::Result<()> {
         let word = words[at];
         match kind {
@@ -1164,7 +1037,6 @@ impl Out {
         Ok(())
     }
 
-    /// `pending`'s entries at `order` (indices into it), as `kind`'s values.
     fn fill(&mut self, kind: Kind, pending: &Pending, order: &[u32]) -> io::Result<()> {
         self.clear();
         for &at in order {
@@ -1173,7 +1045,6 @@ impl Out {
         Ok(())
     }
 
-    /// The items `edits` insert into `pending`'s entry `at`, a list or opaque cell.
     fn inserted(
         &mut self,
         kind: Kind,
@@ -1247,21 +1118,16 @@ impl Out {
     }
 }
 
-/// One column's runs for an hour, laid out as [`Run`] borrows them; kept between hours.
 #[derive(Default)]
 struct Runs {
-    /// The column's changed entries, by slot.
     order: Vec<u32>,
-    /// A FILL writes every changed cell, and `except` names the other live slots.
     fill: bool,
     except: Vec<u32>,
     set_positions: Vec<u32>,
     add_positions: Vec<u32>,
     patch_positions: Vec<u32>,
     noop_positions: Vec<u32>,
-    /// SET values, or a FILL's one value.
     values: Out,
-    /// ADD deltas of an integer column, or the items a list or opaque column's PATCH inserts.
     deltas: Out,
     hunks: Vec<u32>,
     edits: Vec<(u32, u32, u32)>,
@@ -1283,8 +1149,6 @@ impl Runs {
     }
 }
 
-/// The slots live after an hour, the held live ones it does not delete and those it
-/// inserts, that ascending `covered` does not name.
 fn exceptions(
     live: &Bits,
     deleted: &[u32],
@@ -1303,7 +1167,6 @@ fn exceptions(
     let mut inserted = inserted.iter().copied().peekable();
     let mut covered = covered.peekable();
     loop {
-        // An insert takes a slot no held row keeps.
         let slot = match (held.peek().copied(), inserted.peek().copied()) {
             (Some(kept), Some(new)) if new < kept => {
                 inserted.next();
@@ -1348,12 +1211,10 @@ fn cell_kind(cell: &Cell<'_>) -> Kind {
     }
 }
 
-/// A kept cell names no held row to keep.
 fn kept_insert() -> io::Error {
     invalid_static("A kept cell's row is not held")
 }
 
-/// The value an unrecorded inserted cell holds: never read, since the cell is unrecorded.
 fn placeholder(kind: Kind) -> Cell<'static> {
     match kind {
         Kind::U8 => Cell::U8(0),
@@ -1376,12 +1237,10 @@ fn placeholder(kind: Kind) -> Cell<'static> {
     }
 }
 
-/// Marks `column` as holding the hour's cells.
 fn mark_dirty(dirty: &mut [u64], column: usize) {
     dirty[column / 64] |= 1 << (column % 64);
 }
 
-/// Marks the first `columns` columns.
 fn mark_all_dirty(dirty: &mut [u64], columns: usize) {
     for (index, word) in dirty.iter_mut().enumerate() {
         *word = match columns.saturating_sub(index * 64) {
@@ -1391,7 +1250,6 @@ fn mark_all_dirty(dirty: &mut [u64], columns: usize) {
     }
 }
 
-/// The marked columns, ascending.
 fn dirty_columns(dirty: &[u64]) -> impl Iterator<Item = usize> + '_ {
     dirty.iter().enumerate().flat_map(|(index, &word)| {
         let mut rest = word;
@@ -1409,7 +1267,6 @@ fn dirty_count(dirty: &[u64]) -> u64 {
     dirty.iter().map(|word| u64::from(word.count_ones())).sum()
 }
 
-/// Marks a held slot visited, refusing a second visit.
 fn see(seen: &mut [u64], visited: &mut Vec<u32>, slot: u32) -> io::Result<()> {
     let word = &mut seen[slot as usize / 64];
     let bit = 1u64 << (slot % 64);
@@ -1422,39 +1279,26 @@ fn see(seen: &mut [u64], visited: &mut Vec<u32>, slot: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// One table's held state and the buffers its hours reuse.
 pub struct TableWriter {
     kinds: Box<[Kind]>,
     table: Table,
     status: Status,
     acquisition: Acquisition,
-    /// A truncated table's view: its last hour's read and inserted slots, ascending.
     view: Vec<u32>,
-    /// Whether its restarts carry its last complete read ([`Self::keep_last`]).
     keeps: bool,
-    /// Its last complete read, while it keeps one.
     last: Option<Last>,
-    /// Slots below the table's extent that hold no row, lowest first.
     free: BinaryHeap<Reverse<u32>>,
-    /// This writer's name and the hours begun, so only its latest preparation commits.
     identity: u64,
     generation: u64,
-    /// The last hour that finished. One begun and not finished may have staged cells in
-    /// columns it did not mark.
     finished: u64,
-    /// A commit failed part way: the held table is not one a walker holds.
     poisoned: bool,
-    // Per hour, reused. `seen` holds one bit per visited held slot and is zero between
-    // hours: the hour clears only the bits `visited` names.
     seen: Vec<u64>,
     visited: Vec<u32>,
     updates: Vec<Pending>,
     unrecord: Vec<Vec<u32>>,
     noops: Vec<Vec<u32>>,
     touched: Vec<u32>,
-    /// A changes hour's removed keys, ascending.
     removed: Vec<u128>,
-    /// The hour's new keys, in visit order: an insert's index is its position.
     new_keys: Vec<u128>,
     inserts: Vec<Pending>,
     insert_unrecorded: Vec<Vec<u32>>,
@@ -1462,40 +1306,29 @@ pub struct TableWriter {
     insert_outs: Vec<Out>,
     scratch: Scratch,
     changes: Changes,
-    /// The Bytes columns, which a batch stages row by row as their strings intern.
     texts: Box<[usize]>,
-    /// A batch's held slot of each row, or [`NEW`], and its new rows.
     slots: Vec<u32>,
     insert_rows: Vec<u32>,
-    /// Each text column's next unrecorded and next kept row while a batch is staged.
     cursors: Vec<(usize, usize)>,
     order: Order,
     parts: Parts,
-    /// A bit per column whose per-hour buffers (staged cells, runs, insert values and
-    /// unrecorded slots) may hold anything; after a finished hour, every other column's are
-    /// empty.
     dirty: Vec<u64>,
     sweep: Sweep,
     work: Work,
 }
 
-/// The rows the last complete batch visited, in its order, with their slots.
 #[derive(Default)]
 struct Order {
     keys: Vec<u128>,
     slots: Vec<u32>,
-    /// The table holds exactly these rows at these slots.
     held: bool,
 }
 
-/// An hour's section in the making, kept between hours.
 #[derive(Default)]
 struct Parts {
     deleted: Vec<u32>,
     read: Vec<u32>,
-    /// The hour's new keys by key, with their insert index.
     sorted_keys: Vec<(u128, u32)>,
-    /// Each insert's slot, by its index.
     by_index: Vec<u32>,
     by_slot: Vec<(u32, u128, u32)>,
     popped: Vec<u32>,
@@ -1503,13 +1336,10 @@ struct Parts {
     keys: Vec<u128>,
     insert_order: Vec<u32>,
     changed: Vec<u32>,
-    /// Per column, its changed and inserted slots left unrecorded.
     unrecorded: Vec<Vec<u32>>,
-    // Empty between hours; only their allocations are kept.
     runs: Vec<Run<'static>>,
     inserts: Vec<Values<'static>>,
     unrecorded_runs: Vec<(usize, &'static [u32])>,
-    /// The last committed hour's column bits and section, written over by the next.
     columns: Vec<u64>,
     section: Vec<u8>,
 }
@@ -1569,8 +1399,6 @@ impl TableWriter {
         })
     }
 
-    /// A writer continuing from a restart: the next hour writes what it would have written
-    /// had the writer never stopped.
     pub fn restore(kinds: &[Kind], restored: Restored) -> io::Result<Self> {
         if !restored.table.kinds().eq(kinds.iter().copied()) {
             return Err(invalid_static(
@@ -1593,18 +1421,14 @@ impl TableWriter {
         Ok(writer)
     }
 
-    /// From now on its restarts carry its last complete read, so a walk starting at one knows
-    /// it while the view is not that read.
     pub fn keep_last(&mut self) {
         self.keeps = true;
     }
 
-    /// Its last complete read, while it keeps one.
     pub fn last(&self) -> Option<&Last> {
         self.last.as_ref().filter(|_| self.keeps)
     }
 
-    /// The restart a block beginning now carries.
     pub fn restart(&self) -> io::Result<Vec<u8>> {
         self.usable()?;
         restart::write_with(
@@ -1628,12 +1452,10 @@ impl TableWriter {
         &self.acquisition
     }
 
-    /// The slots of the rows a truncated table read, ascending.
     pub fn view(&self) -> &[u32] {
         &self.view
     }
 
-    /// The table's column kinds, in schema order.
     pub fn kinds(&self) -> &[Kind] {
         &self.kinds
     }
@@ -1642,7 +1464,6 @@ impl TableWriter {
         self.sweep
     }
 
-    /// The columns the next hours clear and finish; the sections are the same either way.
     pub fn set_sweep(&mut self, sweep: Sweep) {
         self.sweep = sweep;
     }
@@ -1660,7 +1481,6 @@ impl TableWriter {
         Ok(())
     }
 
-    /// Starts an hour's rows. Nothing held changes until its preparation commits.
     pub fn begin<'w>(
         &'w mut self,
         dictionary: impl Into<Strings<'w>>,
@@ -1729,10 +1549,6 @@ impl TableWriter {
         })
     }
 
-    /// An hour's rows as one batch, each column compared with the held column in one pass:
-    /// the section [`Hour::row`] writes of the same rows in the same order. A complete hour
-    /// visiting the rows the last complete batch did, in its order, finds their slots
-    /// without looking up a key. Nothing held changes until the preparation commits.
     pub fn prepare<'w>(
         &'w mut self,
         dictionary: impl Into<Strings<'w>>,
@@ -1747,7 +1563,6 @@ impl TableWriter {
         Ok(prepared)
     }
 
-    /// Holds the order the committed complete batch visited its rows in, and their slots.
     fn hold_order(&mut self) -> io::Result<()> {
         let Self {
             table,
@@ -1759,7 +1574,6 @@ impl TableWriter {
         order.held = false;
         order.slots.clear();
         engine_allocation::reserve(&mut order.slots, slots.len())?;
-        // Inserts took their indices in the order the batch visited them.
         let mut inserted = parts.by_index.iter().copied();
         for &slot in slots.iter() {
             order.slots.push(match slot {
@@ -1781,7 +1595,6 @@ impl TableWriter {
         Ok(())
     }
 
-    /// Applies a section to the held table and keeps the free slots it leaves.
     fn apply(&mut self, bytes: &[u8], truncated: bool) -> io::Result<()> {
         let extent = self.table.slots();
         section::apply(
@@ -1793,8 +1606,6 @@ impl TableWriter {
             &mut self.changes,
         )?;
         let changes = &self.changes;
-        // Inserts below the old extent the hour did not free itself took the lowest free
-        // slots, in order, as the preparation did.
         for &slot in &changes.inserted {
             if slot as usize >= extent || changes.deleted.binary_search(&slot).is_ok() {
                 continue;
@@ -1820,8 +1631,6 @@ impl TableWriter {
         Ok(())
     }
 
-    /// Applies an hour: its section (none for an hour that changed no row, or one that
-    /// read none) and its evidence, as a walker applies its manifest and section.
     pub fn commit(
         &mut self,
         prepared: Option<Prepared>,
@@ -1858,7 +1667,6 @@ impl TableWriter {
         }
         let sectioned = written.is_some();
         if self.keeps {
-            // Nothing held has changed yet: a failure here leaves the writer usable.
             Last::before(&mut self.last, &self.table, evidence.status)?;
         }
         if let Some(bytes) = &written
@@ -1907,8 +1715,6 @@ impl TableWriter {
                 self.poisoned = true;
                 return Err(error);
             }
-            // A read row the hour deleted is gone; a slot it deleted and filled again holds
-            // the inserted row, once.
             self.view
                 .extend(changes.read.iter().copied().filter(|&slot| live.get(slot)));
             self.view.extend_from_slice(&changes.inserted);
@@ -1932,33 +1738,23 @@ impl TableWriter {
     }
 }
 
-/// An hour's rows while they are visited.
 pub struct Hour<'w> {
     writer: &'w mut TableWriter,
     dictionary: Strings<'w>,
     coverage: Coverage<'w>,
     inserted: u32,
-    /// A row, NOOP or touch was refused: the hour is partly staged and never finishes.
     failed: bool,
-    /// A batch visited the held rows in the last complete batch's order: every live row,
-    /// each at the slot that order gives it.
     ordered: bool,
 }
 
-/// An hour's section and what its manifest says of it.
 #[derive(Debug)]
 pub struct Prepared {
     identity: u64,
     generation: u64,
     partial: bool,
-    /// A complete batch's order, which its commit holds.
     order: bool,
-    /// None: the hour changed no row of a fully read table, so it writes no section.
     pub section: Option<Vec<u8>>,
-    /// One bit per column a run or unrecorded cell names.
     pub columns: Vec<u64>,
-    /// [`manifest::INSERTS`], [`manifest::DELETES`], [`manifest::FILLS`] and
-    /// [`manifest::TOUCHES`].
     pub ops: u8,
     pub census: Census,
 }
@@ -1972,7 +1768,6 @@ impl Hour<'_> {
         see(&mut self.writer.seen, &mut self.writer.visited, slot)
     }
 
-    /// Runs one staging step; a refusal fails the whole hour.
     fn staged(&mut self, step: impl FnOnce(&mut Self) -> io::Result<()>) -> io::Result<()> {
         if self.failed {
             return Err(invalid_static("An earlier row of this hour was refused"));
@@ -2008,8 +1803,6 @@ impl Hour<'_> {
         Ok(Some(cell))
     }
 
-    /// One candidate row, with one input per column in schema order. A held row's cells
-    /// are compared once with what it holds; a new key becomes an insert.
     pub fn row(&mut self, key: u128, cells: &[Input<'_>]) -> io::Result<()> {
         self.staged(|hour| hour.stage_row(key, cells))
     }
@@ -2081,7 +1874,6 @@ impl Hour<'_> {
         Ok(())
     }
 
-    /// A batch's rows, a column at a time: what [`Hour::row`] stages of each row in turn.
     fn stage(&mut self, batch: &Batch) -> io::Result<()> {
         let complete = matches!(self.coverage, Coverage::Complete);
         let dictionary = &mut self.dictionary;
@@ -2112,7 +1904,6 @@ impl Hour<'_> {
             return Err(invalid_static("A batch holds more than 2^32 rows"));
         }
         let columns = &batch.columns[..kinds.len()];
-        // A batch of no rows holds no cells.
         if rows > 0 && columns.iter().any(|cells| cells.words.len() != rows) {
             return Err(invalid_static(
                 "A batch row carries other than one cell per column",
@@ -2147,7 +1938,6 @@ impl Hour<'_> {
         if rows == 0 {
             return Ok(());
         }
-        // Every column takes a cell of each inserted row.
         if !insert_rows.is_empty() {
             mark_all_dirty(dirty, kinds.len());
         }
@@ -2159,7 +1949,6 @@ impl Hour<'_> {
             let held = table
                 .column(column)
                 .ok_or_else(|| invalid_static("A batch names a column past the table"))?;
-            // Fewer rows than bit words test their own bits rather than scan them all.
             let marked = table.unrecorded_bits(column).filter(|bits| {
                 let words = bits.words();
                 words.len() > rows || words.iter().any(|&word| word != 0)
@@ -2214,8 +2003,6 @@ impl Hour<'_> {
         if texts.is_empty() {
             return Ok(());
         }
-        // Strings intern in row order, then column order, as rows visited one by one intern
-        // them; a held cell whose bytes are its string's needs none.
         cursors.clear();
         engine_allocation::resize_default(cursors, texts.len())?;
         let mut index = 0u32;
@@ -2269,8 +2056,6 @@ impl Hour<'_> {
         Ok(())
     }
 
-    /// The producer's explicit write of a value the held row already holds, preserved as
-    /// a NOOP. The row must be visited this hour.
     pub fn noop(&mut self, key: u128, column: usize) -> io::Result<()> {
         self.staged(|hour| hour.stage_noop(key, column))
     }
@@ -2288,7 +2073,6 @@ impl Hour<'_> {
         Ok(())
     }
 
-    /// The producer's touch of a held row that changes no cell.
     pub fn touch(&mut self, key: u128) -> io::Result<()> {
         self.staged(|hour| hour.stage_touch(key))
     }
@@ -2302,7 +2086,6 @@ impl Hour<'_> {
         Ok(())
     }
 
-    /// The hour's section. Nothing held changes: [`TableWriter::commit`] applies it.
     pub fn finish(self) -> io::Result<Prepared> {
         let Self {
             writer,
@@ -2340,10 +2123,8 @@ impl Hour<'_> {
             columns: spare_columns,
             section: spare_section,
         } = &mut writer.parts;
-        // Deletes, ascending.
         deleted.clear();
         match coverage {
-            // An ordered batch visited every live row.
             Coverage::Complete if !ordered => {
                 for slot in writer.table.live().ones() {
                     if !seen(slot) {
@@ -2364,14 +2145,11 @@ impl Hour<'_> {
                 deleted.sort_unstable();
             }
         }
-        // The read held slots of a partial read, ascending.
         read.clear();
         if partial {
             extend(read, &writer.visited)?;
             read.sort_unstable();
         }
-        // New rows by key, at the lowest free slots (deletes free theirs first), then at
-        // new slots past the table's extent.
         sorted_keys.clear();
         engine_allocation::reserve(sorted_keys, writer.new_keys.len())?;
         sorted_keys.extend(
@@ -2399,8 +2177,6 @@ impl Hour<'_> {
         popped.clear();
         engine_allocation::reserve(popped, sorted_keys.len())?;
         {
-            // The lowest free slots come off the heap here and go back below, so the held
-            // heap is unchanged until the hour commits; nothing in between can fail.
             let mut reused = deleted.iter().copied().peekable();
             let mut next = extent;
             for &(key, index) in sorted_keys.iter() {
@@ -2441,9 +2217,6 @@ impl Hour<'_> {
         insert_order.clear();
         engine_allocation::reserve(insert_order, by_slot.len())?;
         insert_order.extend(by_slot.iter().map(|entry| entry.2));
-        // Each column's changed cells by slot, and its NOOPs of cells it did not change. A
-        // column whose changed cells all take one value, covering at least half the rows live
-        // after the hour, FILLs them. A column the hour did not mark holds no cell.
         let mut live_after = None;
         for column in dirty_columns(&writer.dirty) {
             let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
@@ -2477,8 +2250,6 @@ impl Hour<'_> {
                 }
             }
         }
-        // Changed held slots: those with a SET, ADD, PATCH or NOOP, or a cell no longer
-        // recorded.
         changed.clear();
         for column in dirty_columns(&writer.dirty) {
             let set = if writer.runs[column].fill {
@@ -2513,7 +2284,6 @@ impl Hour<'_> {
         writer.touched.dedup();
         let changed = changed.as_slice();
         let position = |slot: u32| changed.binary_search(&slot).expect("changed slot") as u32;
-        // Each changed cell in its op's run, by slot; a column of one value SETs it.
         let mut census = Census::default();
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
@@ -2625,7 +2395,6 @@ impl Hour<'_> {
                 (0..columns).map(|column| writer.insert_outs[column].values(writer.kinds[column])),
             );
         }
-        // Unrecorded cells per column: held slots no longer recorded and inserted ones.
         for column in dirty_columns(&writer.dirty) {
             let slots = &mut unrecorded_slots[column];
             slots.clear();

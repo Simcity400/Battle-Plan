@@ -42,7 +42,6 @@ import type { FuelBranchesReply } from '../../generated/dashboard';
 const NO_WARNINGS: readonly string[] = [];
 const UNNAMED = 'Country name unavailable';
 const SHARE = { kind: FUEL_CONSUMERS, measure: 'receivedShare' } as const;
-/** The received share's fixed-point places. */
 const SHARE_PLACES = 4;
 
 export default function FuelBranchesWidget(props: WidgetProps) {
@@ -52,8 +51,6 @@ export default function FuelBranchesWidget(props: WidgetProps) {
 const isMember = (within: ComparisonProps['within'], hour: number | null) =>
   !within || hour === null || within.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
-/** One country's fuel consumers: bars of received against requested at the hour shown, or each branch's share
- * received over time. */
 function FuelBranchesCountry(props: ComparisonProps) {
   const { widget, runtime } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -64,11 +61,8 @@ function FuelBranchesCountry(props: ComparisonProps) {
   return options.view === 'time' ? <FuelBranchesOverTime {...props} tag={tag} /> : <FuelBranchBars {...props} tag={tag} />;
 }
 
-/** The painted parts of one bar row. */
 interface RowCells { received?: HTMLElement | null; requested?: HTMLElement | null; unmet?: HTMLElement | null; delivered?: HTMLElement | null; short?: HTMLElement | null }
 
-/** Bars at the head (a pushed panel whose amounts are painted, rendering only when which consumers or how they are drawn
- * changes), or at the pinned, ranged or hovered hour (asked once). */
 function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }: ComparisonProps & { tag: string }) {
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
@@ -168,17 +162,12 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
   </div>;
 }
 
-/** The Fuel widget's current-consumption breakdown of one country at the drill's date. It is the fuel family's
- * (`ui/src/widgets/fuel`, its consumption products), which another builder is bringing back: until it is in this tree,
- * the drill says so by name. */
 function FuelConsumptionDrill() {
   return <WidgetState kind="unavailable" message="Current consumption comes with the Fuel widget, which is not back in this build yet." />;
 }
 
 const EMPTY: FuelBranchesReply = { tag: '', scale: 100000, consumerNames: [], readHour: null, consumers: [], missing: null, warnings: [] };
 
-/** Each branch's received share of what it requested, a line per branch drawn from the declared series' tiles; hours
- * without a request or a read are gaps. */
 function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, tag }: ComparisonProps & { tag: string }) {
   const options = resolveOptions(OPTIONS, widget.options);
   const viewport = useViewportHeight();

@@ -1,4 +1,3 @@
-//! Native decisions readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, ccountry, cgame_state, cland_border_war_combat, cland_border_war_combatant,

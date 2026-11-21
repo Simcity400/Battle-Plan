@@ -1,18 +1,3 @@
-//! Restores: a table's state at a block's end, per stream, each stream cut at slot boundaries into
-//! chunks of about [`CHUNK`] raw bytes, each chunk its own frame. A whole restore's chunks are
-//! compressed alone and fix the chunk boundaries until the table's next whole one; any other is
-//! compressed chunk by chunk with the same chunk of the table's last whole restore as the prefix,
-//! so a column at any restored block's end is read from at most two extents a chunk.
-//!
-//! Streams: rows (`live bits of the chunk's slots | each live row's key, its difference from the
-//! one before in the chunk`; in a chunk against a whole one's, the keys only of the live slots
-//! whose key is not the whole one's there, each `slot gap | key's difference from the one
-//! before`), meta (one chunk: `slots | status | sample | rows read | strings live
-//! cells name | last complete read`), and one per column (`each live cell in slot order`: a number's
-//! code, a list's `length << 1 | unrecorded` and bytes).
-//!
-//! A log's restore is its meta (`slots` its count, 64 bits) and its live set as the rows stream, one chunk:
-//! `lowest listed ordinal | the listed bits of ordinals from it to the count`; no key, no column.
 
 use super::{FrameEntry, get_status, get_varint, get_wide, put_status, put_varint, put_wide, unzig_wide, zig, zig_wide};
 use crate::{
@@ -23,10 +8,8 @@ use crate::{
 };
 use std::io;
 
-/// Raw bytes after which a whole restore cuts a stream's chunk.
 pub const CHUNK: usize = 1 << 20;
 
-/// Slots a whole restore's rows chunk holds.
 pub const ROWS_CHUNK: u32 = 1 << 16;
 
 pub const ROWS: u32 = 0;
@@ -36,8 +19,6 @@ pub const fn column_stream(column: usize) -> u32 {
     column as u32 + 2
 }
 
-/// One chunk of a restore stream: its first slot, its frame, and for a restore that is not whole
-/// the frame of the same chunk of the last whole one, its prefix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
     pub first: u32,
@@ -48,13 +29,10 @@ pub struct Chunk {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RestoreEntry {
     pub whole: bool,
-    /// Per stream, its chunks in slot order.
     pub streams: Vec<(u32, Vec<Chunk>)>,
-    /// A log's restore: its count and live set. Its table's entry says so.
     pub log: bool,
 }
 
-/// A number cell's code in a restore: its value, missing, or unrecorded.
 fn cell_code(value: Value<'_>) -> u128 {
     match value {
         Value::Unrecorded => 3,
@@ -65,7 +43,6 @@ fn cell_code(value: Value<'_>) -> u128 {
     }
 }
 
-/// `table`'s live cells of `column` at slots `from..to`, appended to `out`.
 pub(crate) fn column_chunk(table: &TableState, column: usize, from: u32, to: u32, out: &mut Vec<u8>) {
     let Some(held) = table.column(column) else { return };
     let list = matches!(held.kind(), Kind::U32List | Kind::U64List | Kind::Opaque);
@@ -95,7 +72,6 @@ pub(crate) fn column_chunk(table: &TableState, column: usize, from: u32, to: u32
     }
 }
 
-/// `table`'s live bits and keys of slots `from..to`, appended to `out`.
 pub(crate) fn rows_chunk(table: &TableState, from: u32, to: u32, out: &mut Vec<u8>) {
     let to = to.min(table.slots());
     live_bits(table, from, to, out);
@@ -108,8 +84,6 @@ pub(crate) fn rows_chunk(table: &TableState, from: u32, to: u32, out: &mut Vec<u
     }
 }
 
-/// A log's live set: its lowest listed ordinal (the count when none is listed), then a bit per
-/// ordinal from it to the count.
 pub(crate) fn listed_chunk(table: &TableState, out: &mut Vec<u8>) {
     let (Some(count), Some(listed)) = (table.count(), table.listed()) else { return };
     let lowest = listed.lowest().unwrap_or(count);
@@ -126,7 +100,6 @@ pub(crate) fn listed_chunk(table: &TableState, out: &mut Vec<u8>) {
     }
 }
 
-/// The live set [`listed_chunk`] wrote, of a log of `count` rows.
 pub(crate) fn read_listed(bytes: &[u8], count: u64) -> io::Result<crate::store::Listed> {
     let mut at = 0;
     let lowest = Some(get_varint(bytes, &mut at)?).filter(|&lowest| lowest <= count).ok_or_else(|| invalid("A log's live set starts past its count"))?;
@@ -146,7 +119,6 @@ pub(crate) fn read_listed(bytes: &[u8], count: u64) -> io::Result<crate::store::
     Ok(listed)
 }
 
-/// The live bits of slots `from..to` of `table`, appended to `out`.
 fn live_bits(table: &TableState, from: u32, to: u32, out: &mut Vec<u8>) {
     let mut bits = 0_u8;
     for slot in from..to {
@@ -160,7 +132,6 @@ fn live_bits(table: &TableState, from: u32, to: u32, out: &mut Vec<u8>) {
     }
 }
 
-/// A whole restore's rows chunk read slot by slot: each live slot's key in turn.
 struct WholeRows<'a> {
     bytes: &'a [u8],
     count: u32,
@@ -177,8 +148,6 @@ impl<'a> WholeRows<'a> {
         Ok(Self { bytes, count, at, key: 0 })
     }
 
-    /// The whole restore's key at chunk offset `offset`, when a row lived there; offsets are asked
-    /// in order, each once.
     fn at(&mut self, offset: u32) -> io::Result<Option<u128>> {
         if offset >= self.count || self.bytes[(offset / 8) as usize] >> (offset % 8) & 1 == 0 {
             return Ok(None);
@@ -195,8 +164,6 @@ impl<'a> WholeRows<'a> {
     }
 }
 
-/// `table`'s rows of slots `from..to` against the same chunk of its whole restore, `whole` (slots
-/// `from..whole_to`): the live bits, then each live slot whose key is not the whole one's there.
 pub(crate) fn changed_rows_chunk(table: &TableState, from: u32, to: u32, whole: &[u8], whole_to: u32, out: &mut Vec<u8>) -> io::Result<()> {
     let to = to.min(table.slots()).max(from);
     live_bits(table, from, to, out);
@@ -229,7 +196,6 @@ fn get_sample(bytes: &[u8], at: &mut usize) -> io::Result<Option<i32>> {
     })
 }
 
-/// A whole table, every stream unchunked: a last complete read inside the meta stream.
 fn whole_table(table: &TableState, out: &mut Vec<u8>) {
     put_varint(out, u64::from(table.slots()));
     let mut rows = Vec::new();
@@ -244,9 +210,6 @@ fn whole_table(table: &TableState, out: &mut Vec<u8>) {
     }
 }
 
-/// The meta stream: the table's slots, status, sample hour, rows read, the strings its live text
-/// cells and refusal name (but those `listed`, its whole restore's, which a reader reads in the
-/// prefix), and its last complete read when one is apart. The ids it lists.
 pub(crate) fn meta(table: &TableState, strings: &Strings, listed: Option<&std::collections::HashSet<u32, foldhash::fast::FixedState>>, out: &mut Vec<u8>) -> io::Result<Vec<u32>> {
     put_varint(out, table.count().unwrap_or(u64::from(table.slots())));
     put_status(out, table.status());
@@ -311,11 +274,9 @@ pub(crate) fn meta(table: &TableState, strings: &Strings, listed: Option<&std::c
     Ok(ids)
 }
 
-/// What a restore's meta stream holds besides the table's cells.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Meta {
     pub slots: u32,
-    /// A log's count (its `slots` field, 64 bits); a state table's slots.
     pub count: u64,
     pub strings: Vec<(u32, Vec<u8>)>,
 }
@@ -342,8 +303,6 @@ fn read_whole_table(bytes: &[u8], at: &mut usize, kinds: &[Kind]) -> io::Result<
     Ok(table)
 }
 
-/// Reads a restore's meta stream into `table`.
-/// A log's `table` takes the field of slots as its count, 64 bits.
 pub(crate) fn read_meta(bytes: &[u8], kinds: &[Kind], table: &mut TableState) -> io::Result<Meta> {
     let mut at = 0;
     let count = get_varint(bytes, &mut at)?;

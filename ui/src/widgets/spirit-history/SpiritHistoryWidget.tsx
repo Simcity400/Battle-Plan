@@ -20,16 +20,12 @@ import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
-/** Every national spirit the country had: one lane per spirit from when it was
- * gained to when it ended; ongoing ones run to the playhead. */
 export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
-  // Following, the last hour at or before the head where a holding changed: the widget renders only there.
   const hour = useIdeaHour(widget, runtime, track, data, active);
   const window = track && widget.time.mode !== 'follow' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
-  // The lanes are cut at that hour; following, the cursor is drawn at the clock each frame.
   const playhead = following ? hour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
@@ -40,11 +36,8 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const list = useMemo(() => data ? spirits(data) : [], [data]);
   const gaps = data?.unobserved;
-  // The game's tooltip for each spirit: its effects formatted as the game does, then its description.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
   const branchFirstHour = track?.branch.firstHour;
-  // A spirit already held when recording began (or after an unrecorded stretch)
-  // was gained at an unknown time: it says so rather than dating the gain.
   const lanes = useMemo(() => historyLanes(list, at, options.sort as SpiritSort, options.ended === 'shown',
     { since: hour => `Active since ${dayLabel(hour)}`, before: hour => `Held before ${dayLabel(hour)}`, ended: hour => `Ended ${dayLabel(hour)}`, endedBy: hour => `Ended by ${dayLabel(hour)}`,
       lastSeen: hour => `Last recorded ${dayLabel(hour)}` },
@@ -61,20 +54,17 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
-  // Held ideas content cannot classify might be spirits: then the set is not known.
   const unplaced = new Set(data.ideas.filter(info => !info.category).map(info => info.token));
   if (!lanes.length) return <>{failure}{data.spans.some(span => unplaced.has(span.token) && span.firstHour <= at)
     ? <WidgetState kind="unavailable" message="National spirits unavailable: some held ideas could not be classified." />
     : <WidgetState kind="empty" message="No national spirits recorded yet." />}</>;
 
   const byToken = new Map(list.map(spirit => [spirit.token, spirit]));
-  // The spirits held at the moment shown, with their effects, for keyboard and screen-reader users.
   const heldNow = list.flatMap(spirit => {
     const held = spirit.spans.find(span => span.firstHour <= at && at <= span.lastHour);
     return held && tooltips ? [tooltipText(ideaTooltip({ title: spirit.name }, tooltips.infos.get(spirit.token), tooltips.sources,
       tooltips.art.get(spirit.token)?.description, [], undefined, held.firstHour, Infinity))] : [];
   });
-  // An unrecorded moment is not the same as holding no spirits.
   const unclassified = data.spans.some(span => unplaced.has(span.token) && span.firstHour <= at && at <= span.lastHour);
   const description = `${dayLabel(Math.floor(at))}: ${inSpans(data.unobserved, Math.floor(at)) ? 'national spirits not recorded'
     : !heldNow.length && unclassified ? 'national spirits not known (some held ideas could not be classified)'
@@ -86,7 +76,6 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
       tooltip={(lane, span, _hour, full) => {
         const spirit = byToken.get(lane.id);
         if (!spirit) return null;
-        // The hovered bar's own acquisition, or the latest one at the playhead from the name column.
         const held = span ? spirit.spans.find(item => item.firstHour === span.firstHour) : spirit.spans.filter(item => item.firstHour <= at).at(-1);
         const tip = (subtitle: string, note?: string) => tooltips ? ideaTooltip({ title: spirit.name, icon: spirit.icon, subtitle },
           tooltips.infos.get(spirit.token), tooltips.sources, tooltips.art.get(spirit.token)?.description, [],
@@ -95,7 +84,6 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
         const open = at < held.lastHour + 1;
         const unseen = startUnseen(held.firstHour, track.branch.firstHour, data.unobserved);
         const start = unseen ? `held before ${dayLabel(held.firstHour)}` : dayLabel(held.firstHour);
-        // A span that stops where recording stops ends at an unknown time: its last recorded day is shown instead.
         const end = inSpans(data.unobserved, held.lastHour + 1) ? `last recorded ${dayLabel(held.lastHour)}` : null;
         const value = open ? (unseen ? start : `since ${start}`)
           : end ? `${unseen ? start : `from ${start}`}, ${end}`

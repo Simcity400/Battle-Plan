@@ -1,5 +1,3 @@
-//! Test-only acquisition baseline using the same synthetic world for count
-//! and timing comparisons.
 use super::super::*;
 pub fn walk(
     memory: &impl Memory,
@@ -97,7 +95,6 @@ pub fn walk(
                     }
                 }
             }
-            // Only countries in an owned war vector can enter a native blob.
             if has_war {
                 wanted[2] += 1;
                 if let Some(row) = scores.get_mut(used[2]) {

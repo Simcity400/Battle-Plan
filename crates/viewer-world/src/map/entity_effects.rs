@@ -1,7 +1,3 @@
-//! Authored entity-light curves evaluated on the state event clock.
-//! Event transforms follow curve evaluation; lights receive linear RGB times
-//! intensity. Curve interpolation remains unverified
-//! beyond linear segments; sampled native event timelines would settle it.
 use super::{
     entity_animation::Event,
     pointlights::Light,
@@ -26,8 +22,6 @@ impl Parameter {
         let values = get(items, key).map(tokens).unwrap_or_default();
         let mut value = values.first().copied().unwrap_or("").split(',');
         let base = value.next().and_then(|s| s.parse().ok()).unwrap_or(default);
-        // `intensity = 1.5, fade` is a scalar followed by an anonymous
-        // scalar in the shared grammar; do not lose the curve after the space.
         let curve = value
             .next()
             .and_then(|name| {
@@ -79,8 +73,6 @@ pub struct Lights {
     definitions: BTreeMap<String, Definition>,
 }
 impl Lights {
-    /// Every `light` the engine registers from `gfx/**/*.asset`, as the shared
-    /// descriptor roster holds them.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
         let mut definitions = BTreeMap::new();
@@ -123,7 +115,6 @@ impl Lights {
         }
         Ok(Self { definitions })
     }
-    /// The lights the shown events give; a hidden event contributes none.
     pub fn evaluate(&self, events: &[Event]) -> Vec<Light> {
         events
             .iter()

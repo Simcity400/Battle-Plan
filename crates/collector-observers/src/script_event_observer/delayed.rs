@@ -1,5 +1,3 @@
-//! Anchor each native pass once. Only fire evaluation, retirement and queue
-//! mutation boundaries are observed; quiet timers have no hook or callback.
 use super::*;
 use super::{hook_failure, verify_hook};
 use std::cell::Cell;
@@ -21,8 +19,6 @@ impl Pass {
         Ok(count)
     }
     fn finish(&mut self, end: u32) -> u32 {
-        // In-pass cancellation can shrink the vector behind the native
-        // cursor. That closes the pass without visiting any additional entry.
         let count = end.saturating_sub(self.cursor);
         self.cursor = end;
         count
@@ -42,8 +38,6 @@ impl Pass {
 }
 std::thread_local! {static PASS:Cell<Pass>=const {Cell::new(Pass {owner:0,generation:0,cursor:0,fire:0,bad:false})};}
 static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
-// The pass entry's native Flight covers its anchor through the original's
-// return, including unwind retention. No per-timer flight counter is needed.
 
 fn flush_to(end: u32, finished: bool) {
     let mut pass = PASS.get();
@@ -93,9 +87,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         pass.fire = registers.rbx;
         PASS.set(pass);
     } else {
-        // R8 retains the selected ordinal; RSI has already been decremented
-        // by native swap-removal. Invalid definitions bypass the decrement
-        // and fire boundary, so they must not consume a countdown step.
         let visited = pass.fire == registers.rbx && registers.rbx != 0;
         let Some(ordinal) = u32::try_from(registers.r8).ok() else {
             feed::refuse("delayed-event retirement ordinal exceeds native word");
@@ -106,7 +97,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             return;
         };
         flush_to(end, false);
-        // The pass this tap authenticated owns the retired timer.
         feed::retired_delayed(registers.rbx, Some((pass.owner, pass.generation)), visited);
         let mut pass = PASS.get();
         if let Err(reason) = pass.retired(ordinal, visited) {
@@ -127,8 +117,6 @@ unsafe extern "system-unwind" fn schedule(
     let mut flight = Flight::enter();
     type Original = unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize;
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
-    // Any in-pass script mutation follows the fire boundary, whose cursor
-    // was already emitted before entering event evaluation/effects.
     let result = timing.original(|| unsafe { original(country, event, originator, scope, hours) });
     feed::scheduled_delayed(country);
     flight.returned();
@@ -169,8 +157,6 @@ pub(super) fn forwarded_pass(country: usize, run: impl FnOnce() -> usize) -> usi
         opened: false,
         completed: false,
     };
-    // A single header word at the actual writer filters empty passes. No
-    // timer is read and no queue is walked. Quiet members do no extra work.
     match field::<i32>(
         &memory,
         country,
@@ -255,18 +241,16 @@ mod tests {
     fn sparse_cursor_anchors_derive_five_thousand_quiet_decrements_without_timer_callbacks() {
         let _globals = crate::event_feed_observer::test_globals();
         let mut pass = Pass::default();
-        assert_eq!(pass.advance(5000), Ok(5000)); // one pass end, no visits
+        assert_eq!(pass.advance(5000), Ok(5000));
         let mut pass = Pass::default();
-        assert_eq!(pass.advance(3), Ok(3)); // third timer fires after decrement
-        // Its effect appends a timer and cancels one beyond the cursor.
-        assert_eq!(pass.retired(2, true), Ok(())); // swap is revisited
+        assert_eq!(pass.advance(3), Ok(3));
+        assert_eq!(pass.retired(2, true), Ok(()));
         assert_eq!(pass.advance(4), Ok(2));
         assert_eq!(pass.advance(5), Ok(1));
-        assert_eq!(pass.retired(5, false), Ok(())); // invalid timer, no decrement
+        assert_eq!(pass.retired(5, false), Ok(()));
         assert_eq!(pass.advance(5000), Ok(4995));
         assert!(pass.advance(4999).is_err());
     }
-    // regression: a306568425 Fix event registry writers, terminal results and delayed pass capture cost
     #[test]
     fn delayed_hooks_observe_only_passes_and_sparse_cursor_boundaries() {
         let _globals = crate::event_feed_observer::test_globals();

@@ -1,38 +1,8 @@
-//! The simulation edges behind the game's floating map text, for the
-//! supported executable, and the operands each one needs.
-//!
-//! Each site is where the game decides an event, before the game's own
-//! local-viewpoint filter, so one recording can show what any country would
-//! have seen:
-//!
-//! - [`FAKE_REVEAL_VISIBILITY_CALL_RVA`]: a fake division is revealed. The site
-//!   is the call that asks the local viewer's intel level, reached only after
-//!   the game has refused a division already queued for deletion.
-//! - [`RAILWAY_OVERRUN_RVA`]: a railway gun is overrun, at its entry, before
-//!   the local intel test, the capture or the deletion.
-//! - [`CRITICAL_BOMBARDMENT_TAP_RVA`]: a shore bombardment hits critically, on
-//!   the rare critical branch after its random draw. Ordinary bombardment
-//!   never reaches it.
-//! - [`GENERAL_CAPTURE_CALL_RVA`]: a general is captured, at the one call that
-//!   emits the capture notification.
-//! - [`PARADROP_LANDING_CALL_RVA`]: a paradrop deployment completes, at the
-//!   call that notifies the landing, before its friendship and fog tests.
-//! - [`RESISTANCE_ACTIVITY_RVA`]: a selected resistance activity executes, at
-//!   its entry, before its effects and its local test.
-//! - [`BUILDING_NOTIFICATION_RVA`]: a building's health is notified, at the one
-//!   notifier every damage, repair and destruction path shares, before its
-//!   text and client tests.
-//!
-//! Readers copy plain values through guarded reads only; they never call the
-//! game. A refused read refuses the whole event.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, cunit, read};
 use engine_sites::Rva;
 
-/// A forced scripted map refresh, after its native mode-name and limit gates.
 pub const SCRIPTED_REFRESH_CALL_RVA: Rva = Rva(0x0036_fe21);
-/// The current map-mode object; its first word is the selected mode.
 pub const MAP_MODE_SINGLETON_RVA: Rva = Rva(0x033e_ad00);
-/// The first scripted mode follows the native modes.
 pub const FIRST_SCRIPTED_MAP_MODE: i32 = 40;
 
 pub fn scripted_map_mode(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
@@ -46,51 +16,26 @@ pub fn scripted_map_mode(memory: &impl Memory, base: usize) -> Result<u32, &'sta
         .ok_or("forced map refresh names no scripted mode")
 }
 
-/// The call asking the local viewer's intel level of a revealed fake division
-/// (`RCX`, the division), after the queued-for-deletion refusal.
 pub const FAKE_REVEAL_VISIBILITY_CALL_RVA: Rva = Rva(0x0134_af20);
-/// The overrun entry: `RCX` the gun, `RDX` its province, `R8` the province
-/// it is overrun into, where the text stands.
 pub const RAILWAY_OVERRUN_RVA: Rva = Rva(0x00ef_e970);
-/// The first instruction after the critical branch's random draw returns:
-/// it loads the bombarded province's building list from `R13`, the province.
 pub const CRITICAL_BOMBARDMENT_TAP_RVA: Rva = Rva(0x0133_bcda);
-/// The capture notification call: `RCX` the general's unit leader, `RDX` the
-/// captor's country reference, `R8` the province (null shows no text).
 pub const GENERAL_CAPTURE_CALL_RVA: Rva = Rva(0x00c6_7ec0);
-/// The landing notification call: `RCX` the province, `RDX` the dropping
-/// country's reference, `R8B` whether the landing took losses.
 pub const PARADROP_LANDING_CALL_RVA: Rva = Rva(0x0100_8fcd);
-/// The activity execution entry: `RCX` the state's resistance, `RDX` the
-/// activity definition.
 pub const RESISTANCE_ACTIVITY_RVA: Rva = Rva(0x0101_c8d0);
-/// The building health notifier: `RCX` the building, `RDX` the change's
-/// source (its first dword is the reason), `R8W` the level, `R9` that level's
-/// health before the change, then a byte that enables the client branch and a
-/// byte that enables its text.
 pub const BUILDING_NOTIFICATION_RVA: Rva = Rva(0x0116_3760);
 
-/// The game's fog of war switch, a byte: zero shows every province.
 pub const FOG_OF_WAR_RVA: Rva = Rva(0x033d_daaa);
 
-/// A unit's intel array (the unit viewer entries): 24-byte entries holding
-/// a canonical country ordinal and, at [`INTEL_LEVEL`], a signed level.
 pub const INTEL_STRIDE: usize = 0x18;
 pub const INTEL_LEVEL: usize = 0x10;
 
-/// A unit leader's raw country reference.
 pub const UNIT_LEADER_COUNTRY: usize = 0x120;
-/// A resistance object's state.
 pub const RESISTANCE_STATE: usize = 0x08;
-/// An activity definition's authored map text key, a native string.
 pub const ACTIVITY_MAP_TEXT: usize = 0x370;
-/// A state's best victory-point province index; negative selects the first.
 pub const STATE_BEST_PROVINCE: usize = 0x85c;
-/// A country's diplomacy block, holding its overlord's raw reference.
 pub const COUNTRY_DIPLOMACY: usize = 0xf88;
 pub const DIPLOMACY_OVERLORD: usize = 0x188;
 
-/// A building's health per level and the notifier's reason source.
 pub const BUILDING_LEVEL: usize = 0x40;
 pub const BUILDING_HEALTHY_LEVEL: usize = 0x42;
 pub const BUILDING_PARTIAL_HEALTH: usize = 0x48;
@@ -99,7 +44,6 @@ pub const BUILDING_STATUS: usize = 0x1d8;
 pub const BUILDING_STATUS_FLAGS: usize = 0x68;
 pub const BUILDING_STATUS_ID: usize = 0x6c;
 pub const BUILDING_STATUS_STATE_FLAG: u32 = 2;
-/// The health of one full building level.
 pub const LEVEL_HEALTH: i64 = 10_000_000;
 
 fn at(object: usize, offset: usize) -> Result<usize, &'static str> {
@@ -129,7 +73,6 @@ fn pointer(
     usize::try_from(field::<u64>(memory, object, offset, reason)?).map_err(|_| reason)
 }
 
-/// The game state singleton.
 pub fn game_state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     const UNREADABLE: &str = "map event game state unreadable";
     let singleton = engine_sites::at(base, cgame_state::SINGLETON_RVA).ok_or(UNREADABLE)?;
@@ -140,7 +83,6 @@ pub fn game_state(memory: &impl Memory, base: usize) -> Result<usize, &'static s
     Ok(state)
 }
 
-/// The game hour the event happens at.
 pub fn hour(memory: &impl Memory, game_state: usize) -> Result<i32, &'static str> {
     field(
         memory,
@@ -150,14 +92,12 @@ pub fn hour(memory: &impl Memory, game_state: usize) -> Result<i32, &'static str
     )
 }
 
-/// Whether fog of war is on.
 pub fn fog(memory: &impl Memory, base: usize) -> Result<bool, &'static str> {
     const UNREADABLE: &str = "map event fog switch unreadable";
     let switch = engine_sites::at(base, FOG_OF_WAR_RVA).ok_or(UNREADABLE)?;
     field::<u8>(memory, switch, 0, UNREADABLE).map(|fog| fog != 0)
 }
 
-/// A province's id.
 pub fn province_id(memory: &impl Memory, province: usize) -> Result<u32, &'static str> {
     field(
         memory,
@@ -179,16 +119,13 @@ fn province_at(memory: &impl Memory, provinces: Array, id: u32) -> Result<usize,
     pointer(memory, slot, 0, "map event province slot unreadable")
 }
 
-/// A unit's intel array.
 pub fn intel(memory: &impl Memory, unit: usize) -> Result<Array, &'static str> {
     Array::read(memory, at(unit, cunit::VIEWER_DATA)?, INTEL_STRIDE)
         .ok_or("map event intel array unreadable")
 }
 
-/// One intel entry: (canonical country ordinal, signed level).
 pub type IntelEntry = (u32, i8);
 
-/// Entries `start..start + output.len()` of `intel`, in native order.
 pub fn intel_entries(
     memory: &impl Memory,
     intel: Array,
@@ -217,11 +154,6 @@ pub fn intel_entries(
     Ok(())
 }
 
-/// The province the game reads a viewer's visibility of a unit at, and the
-/// province a fake division's text stands on: the first province of its
-/// route when the division is embarking from land onto a sea province that
-/// an enemy of its owner controls, otherwise its current province. Only a
-/// division (class 0) can take the route province.
 pub fn unit_province(
     memory: &impl Memory,
     base: usize,
@@ -291,8 +223,6 @@ pub fn unit_province(
         cunit::LOGICAL_OWNER,
         "map event unit logical owner unreadable",
     )?;
-    // A zero controller reaches the reserved country, which is at war with
-    // nobody while its id is not positive.
     let enemy = if controller == 0 {
         let reserved = ccountry::Reader::new(memory, base, game_state)?.reserved()?;
         if (reserved.id as i32) > 0 {
@@ -309,7 +239,6 @@ pub fn unit_province(
     }
 }
 
-/// A unit's raw owner reference.
 pub fn unit_owner(memory: &impl Memory, unit: usize) -> Result<u32, &'static str> {
     field(
         memory,
@@ -319,7 +248,6 @@ pub fn unit_owner(memory: &impl Memory, unit: usize) -> Result<u32, &'static str
     )
 }
 
-/// A general's raw country reference.
 pub fn general_owner(memory: &impl Memory, leader: usize) -> Result<u32, &'static str> {
     field(
         memory,
@@ -329,7 +257,6 @@ pub fn general_owner(memory: &impl Memory, leader: usize) -> Result<u32, &'stati
     )
 }
 
-/// A country reference's raw word.
 pub fn reference(memory: &impl Memory, reference: usize) -> Result<u32, &'static str> {
     field(
         memory,
@@ -339,7 +266,6 @@ pub fn reference(memory: &impl Memory, reference: usize) -> Result<u32, &'static
     )
 }
 
-/// What a resistance activity's text needs from its state.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Resistance {
     pub province: u32,
@@ -347,8 +273,6 @@ pub struct Resistance {
     pub overlord: u32,
 }
 
-/// The state's best victory-point province, its controller and its owner's
-/// overlord.
 pub fn resistance(
     memory: &impl Memory,
     base: usize,
@@ -419,7 +343,6 @@ pub fn resistance(
     })
 }
 
-/// A native string's length and bytes address, for copying an authored key.
 pub fn string(memory: &impl Memory, at_: usize) -> Result<(usize, usize), &'static str> {
     use crate::msvc_string::{CAPACITY, INLINE_CAPACITY, LENGTH, STRIDE};
     let header = read::<[u8; STRIDE]>(memory, at_).ok_or("map event string unreadable")?;
@@ -441,7 +364,6 @@ pub fn string(memory: &impl Memory, at_: usize) -> Result<(usize, usize), &'stat
     Ok((source, len))
 }
 
-/// The activity's authored map text key.
 pub fn activity_key(memory: &impl Memory, activity: usize) -> Result<(usize, usize), &'static str> {
     if activity == 0 {
         return Err("map event activity absent");
@@ -449,8 +371,6 @@ pub fn activity_key(memory: &impl Memory, activity: usize) -> Result<(usize, usi
     string(memory, at(activity, ACTIVITY_MAP_TEXT)?)
 }
 
-/// One building level's health, as the game computes it: a full level below
-/// the healthy level, the partial health at the next level, none above.
 pub fn level_health(
     memory: &impl Memory,
     building: usize,
@@ -468,7 +388,6 @@ pub fn level_health(
     Ok(health_of(total, healthy, partial, level))
 }
 
-/// [`level_health`]'s arithmetic on the copied fields.
 pub fn health_of(total: u16, healthy: i16, partial: i64, level: i16) -> i64 {
     if total == 0 {
         0
@@ -481,7 +400,6 @@ pub fn health_of(total: u16, healthy: i16, partial: i64, level: i16) -> i64 {
     }
 }
 
-/// What a building notification's text needs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Building {
     pub building_type: u32,
@@ -489,9 +407,6 @@ pub struct Building {
     pub controller: u32,
 }
 
-/// The building's type token and the province its text stands on with that
-/// province's controller: a state building's state's first province,
-/// otherwise its own province.
 pub fn building(
     memory: &impl Memory,
     game_state: usize,

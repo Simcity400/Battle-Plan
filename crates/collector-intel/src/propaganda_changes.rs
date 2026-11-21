@@ -1,7 +1,3 @@
-//! Daily append observations, not an hourly history poll. Hooks mark only the
-//! native receiver. The residual worker reads its new saved pair, retains history
-//! and derives the daily weekly sum. A load/refresh reads the independently
-//! restored history and weekly cache inside the existing strategic census.
 
 use crate::{hook::Hook, hook_errors};
 use collector_primitives::shared_lane::SharedLane;
@@ -54,9 +50,6 @@ struct DailyAppend {
     effort: Effort,
 }
 
-/// Header uses the unused final sequence; real sequences increase only when
-/// logical history changes. The header preserves an independent loaded drift
-/// until a daily writer makes it the sum of the retained logical entries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub slot: u32,
@@ -128,8 +121,6 @@ impl Owner {
         let mut changed = !self.derived;
         self.derived = true;
         self.drift = Effort::default();
-        // When a full ring contains one repeated value, appending that value
-        // leaves the logical saved list unchanged. Keep every row key stable.
         let same = append.length as usize == self.history.len()
             && self.history.iter().all(|row| {
                 row.stability == append.effort.stability
@@ -160,7 +151,6 @@ impl Owner {
 }
 
 struct Store {
-    // Published lanes never move or die until all hooks are restored and quiet.
     #[allow(
         clippy::vec_box,
         reason = "Published lane pointers must remain stable when the retention vector grows."
@@ -199,7 +189,6 @@ impl Store {
         }
     }
 
-    /// Why observation was lost since the last capture: the first writer refusal by name.
     fn loss(&self, failures: &[u64; 3]) -> &'static str {
         FAILURE_NAMES
             .into_iter()
@@ -266,10 +255,6 @@ impl Store {
             }
         }
         events.sort_unstable_by_key(|event| event.0);
-        // Manager slots and owner fields are written by initialization/load
-        // (which moves the lifetime epoch), and runtime growth changes this
-        // header. The two observed writers cover every history/cache mutation.
-        // Thus a quiet hour needs no scan even of retained owner histories.
         if self.valid && !bootstrap && self.objects == objects && events.is_empty() {
             if ACTIVE.load(Ordering::SeqCst) != 0
                 || ORDER.load(Ordering::SeqCst) != sequence
@@ -286,10 +271,6 @@ impl Store {
         if !self.valid && !bootstrap {
             return Err(self.loss(&failures));
         }
-        // Reuse the existing census's manager header and authenticated roots.
-        // Only bootstrap or a changed manager membership visits its other
-        // actual objects: reserved and unused-country slots are saved too.
-        // Regular hours add no native membership or history read.
         if bootstrap || self.objects != objects {
             self.seeds.clear();
             if let Some(objects) = objects {
@@ -433,8 +414,6 @@ impl Store {
                         effort,
                     })?;
                 } else if owner.appends > 1 {
-                    // Several actual writes before one cut need the affected
-                    // logical ring once; the last daily writer certifies its sum.
                     owner.bootstrap(memory, seed, false)?;
                     changed = true;
                 }
@@ -511,8 +490,6 @@ impl Drop for Store {
     }
 }
 
-/// Worker-only. Incomplete publication revokes retention; an unchanged capture
-/// hands the ordinary table carry back without allocating or converting rows.
 #[allow(
     clippy::too_many_arguments,
     reason = "The worker shares native census inputs and transfers acquired rows to the existing lazy snapshot."
@@ -644,9 +621,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The host authenticated this executable and owns hook restoration and
-    /// quiescence before unloading this module.
+    #[doc = " # Safety"]
+    #[doc = " The host authenticated this executable and owns hook restoration and"]
+    #[doc = " quiescence before unloading this module."]
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
@@ -660,7 +637,6 @@ impl Hooks {
             .and_then(|at| read::<u64>(memory, at))
             .and_then(|state| usize::try_from(state).ok())
             .ok_or("propaganda bootstrap game state unreadable")?;
-        // A collector attached before any load sizes for nothing; captures grow the lane.
         let manager = if state == 0 {
             0
         } else {
@@ -877,7 +853,6 @@ mod tests {
             None
         );
         world.u32(roots + native::HISTORY + 16, 0);
-        // The first cut's resets are a burst past the prepared lane; every one is read.
         for expected in [Some(COUNTRIES + 1), None] {
             let lane = store.lanes.last().unwrap();
             let burst = if expected.is_some() {
@@ -917,7 +892,6 @@ mod tests {
                 expected
             );
         }
-        // A refused append names its reason in the status and in the interval's refusal.
         let lane = store.lanes.last().unwrap();
         assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &**lane));
         for order in 0..lane.len() as u64 {

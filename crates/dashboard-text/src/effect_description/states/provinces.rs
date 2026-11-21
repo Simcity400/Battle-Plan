@@ -4,8 +4,6 @@ use installed_content_core::{crt::Scanned, crt::scan_i32};
 use replay_data::rows::TableId;
 
 impl Renderer<'_, '_, '_> {
-    // int effect: selectors leave the integer
-    // zero; numeric tokens scan %i, scoped values truncate toward zero.
     fn province_integer(&self, item: &Item, scopes: Scopes) -> Result<i32, String> {
         if scope_selector(item).is_some() {
             return Ok(0);
@@ -23,7 +21,6 @@ impl Renderer<'_, '_, '_> {
         if id != 0 {
             return Ok(id as u32);
         }
-        // with default state zero.
         if scope_selector(item).is_some() {
             self.state_target(item, scopes)
         } else {
@@ -75,7 +72,7 @@ impl Renderer<'_, '_, '_> {
             return if goto {
                 Err("goto_province has an invalid province; the description requires an existing target".into())
             } else {
-                Ok(String::new()) // checks the province pointer.
+                Ok(String::new())
             };
         };
         if province.state == 0 {
@@ -86,7 +83,7 @@ impl Renderer<'_, '_, '_> {
         if goto {
             self.line(b"EFFECT_GO_TO_PROVINCE", &args, scopes, true)
         } else {
-            self.localised(b"EFFECT_SET_PROVINCE_CONTROLLER", &args, scopes, true) // no LF.
+            self.localised(b"EFFECT_SET_PROVINCE_CONTROLLER", &args, scopes, true)
         }
     }
 
@@ -96,7 +93,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         add: bool,
     ) -> Result<String, String> {
-        // Parse the ID, then evaluate and round it.
         let id = match field(children(item), "province") {
             Some(operand) => {
                 let value = scalar_operand(operand)?;
@@ -109,8 +105,6 @@ impl Renderer<'_, '_, '_> {
         };
         let mut label = self.context.text.province_display_name(id)?;
         if label.is_empty() {
-            // Both VP descriptions copy the raw override after an empty display.
-            // province_display_name already checked this sparse table's coverage.
             let frame = self.tables();
             let raw = match frame.status(TableId::ProvinceNames) {
                 replay_frame::frame::OperandStatus::Unavailable(reason) => {
@@ -150,8 +144,6 @@ impl Renderer<'_, '_, '_> {
                 return Ok(String::new());
             }
         }
-        // Native reads the amount only after a usable name. Constructor
-        // gives the missing field a literal zero; fixed-point rounding.
         let value = match field(children(item), "value") {
             Some(operand) => {
                 crate::triggers::fixed_round(self.scoped_value(scalar_operand(operand)?, scopes)?)
@@ -181,7 +173,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // expansion, no LF.
+        )
     }
 
     pub(in crate::effect_description) fn rename_province(
@@ -189,8 +181,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // a failed %i scan keeps the
-        // previous ID, including a repeated field; factory starts at 0.
         let mut id = 0;
         for operand in children(item)
             .iter()
@@ -207,14 +197,13 @@ impl Renderer<'_, '_, '_> {
                 .description_province(id as u32)?
                 .is_none_or(|province| province.victory_points < 1)
         {
-            // Return the literal without localisation or LF.
             return Ok("ERROR: Invalid location or missing victory point for rename".into());
         }
         let name = field(children(item), "name")
             .map(scalar_operand)
             .transpose()?
             .unwrap_or_default();
-        let name = self.localised(name, &[], scopes, true)?; // Resolve NAME first.
+        let name = self.localised(name, &[], scopes, true)?;
         let old_name = self.context.text.province_display_name(id as u32)?;
         self.line(
             b"EFFECT_SET_PROVINCE_NAME",
@@ -224,7 +213,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // one LF.
+        )
     }
 
     pub(in crate::effect_description) fn reset_province_name(
@@ -242,6 +231,6 @@ impl Renderer<'_, '_, '_> {
             &[("NAME", Argument::Text(&name))],
             scopes,
             true,
-        ) // no LF.
+        )
     }
 }

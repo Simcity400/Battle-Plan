@@ -11,7 +11,6 @@ fn links(count: u32) -> TableRows {
     )
 }
 
-/// Division-free row change: `key`'s canonical slot moves by `by`.
 fn slot_change(key: u128, by: i64) -> DeltaRow {
     let mut values = Vec::new();
     put_varint(&mut values, zigzag(i128::from(by)));
@@ -50,7 +49,6 @@ fn validated_in_place_deltas_check_only_their_rows() {
     );
 }
 
-/// The row-by-row merge every delta used, as the reference result.
 fn merged(rows: &TableRows, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<TableRows> {
     let rows = rows.apply_delta_shared(changed, deleted)?;
     rows.validate_keys()?;
@@ -95,7 +93,6 @@ fn many_insertions_and_deletions_merge_and_check_only_changed_rows() {
 
 #[test]
 fn every_mix_of_changes_insertions_and_deletions_matches_the_merge() {
-    // Rows 2, 4, .., 40; odd keys are absent.
     let table = || {
         TableRows::CountryLinks(
             (1..=20)
@@ -115,14 +112,11 @@ fn every_mix_of_changes_insertions_and_deletions_matches_the_merge() {
     };
     let (mut kept, mut edited) = (0, 0);
     for _ in 0..4000 {
-        // Sparse to dense deltas, so both in-place edits and merges succeed.
         let spread = 6 + random(60);
         let (mut changed, mut deleted) = (Vec::new(), Vec::new());
         for key in 0..=42_u128 {
             match random(spread) {
-                // A present row changes, an absent one is inserted.
                 0 | 1 => changed.push(slot_change(key, i64::from(random(5)) - 2)),
-                // Deleting an absent key fails exactly as the merge fails.
                 2 => deleted.push(key),
                 _ => {}
             }
@@ -235,8 +229,6 @@ fn bulk_merge_keeps_apply_before_final_validation_and_absent_delete_precedence()
     }
 }
 
-/// A later version rebuilt from an earlier one and the rows it changed,
-/// added and dropped is that version, whatever mix of edits it made.
 #[test]
 fn row_changes_rebuild_every_later_version() {
     let mut state = 0x2545_f491_u32;

@@ -1,6 +1,3 @@
-//! A country's focuses, parties, characters and ideas read from its own
-//! rows answer exactly as a scan of every row does: the same verdicts and
-//! the same refusals, naming the same unresolved country.
 
 use super::*;
 use replay_data::{
@@ -22,7 +19,6 @@ fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(World<'_>) -> T) -> T {
     ))
 }
 
-/// A small deterministic generator.
 struct Draw(u64);
 
 impl Draw {
@@ -38,8 +34,6 @@ impl Draw {
 const COUNTRIES: std::ops::RangeInclusive<u32> = 101..=106;
 const TOKENS: [&[u8]; 3] = [b"a", b"b", b"c"];
 
-/// A frame whose country-keyed tables hold random rows of six raw
-/// countries, some sharing a slot and some without a link.
 fn scenario(draw: &mut Draw) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 0,
@@ -142,7 +136,6 @@ fn country_lookups_answer_as_whole_table_scans() {
                     world.country_characters_scanned(slot)
                 );
             }
-            // Each read its country's rows rather than every row.
             for rows in [
                 &world.focus_rows,
                 &world.party_rows,
@@ -171,8 +164,6 @@ fn rows_out_of_country_order_are_scanned_whole() {
             canonical_slot: 1,
         }],
     );
-    // Unvalidated rows: a scan finds the focus of slot 1 after an
-    // unresolved row, which an index over every row also holds.
     set::<tables::CompletedFocuses>(&mut frame, vec![rows(105, b"x"), rows(102, b"a")]);
     with_world(&frame, |world| {
         assert_eq!(world.has_focus_unrecorded(1, b"a"), Ok(true));

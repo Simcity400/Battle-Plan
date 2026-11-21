@@ -37,9 +37,6 @@ const NO_ROWS: readonly MissionRow[] = [];
 const count = (value: NonNullable<SortValue>) => typeof value === 'string' ? value : value.toLocaleString('en-US');
 const wingsStructure = (reply: AirMissionWingsReply) => JSON.stringify([reply.wings, reply.missing, reply.warnings]);
 
-/** Where a country's air wings are assigned at the hour shown: planes per mission in each strategic region, wings
- * counted once per region. Following playback it is a pushed panel: it renders when the regions, their missions or
- * the theatres change, and every count is painted from its live cell each frame. */
 export default function AirMissionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const anchor = useRef<HTMLDivElement | null>(null);
@@ -57,13 +54,9 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const rows = useMemo(() => {
     const regions = chosenRegions.length ? new Set(chosenRegions.filter(region => !inTheatres || inTheatres.has(region))) : inTheatres;
     return regionRows(allRows, regions);
-    // The region choice is rebuilt each render from the same options.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allRows, regionKey]);
   const missions = useMemo(() => data ? shownMissions(data.missions, rows, chosenMissions) : [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, rows, JSON.stringify(chosenMissions)]);
-  // Every frame the table paints its counts reports the hour they are of.
   const values = useMemo(() => mapLive(reporting(live, () => shown(shownNow.current())), from => missionValues(from, allRows)), [live, shown, allRows]);
   const notFlown = useMemo(() => flownBy(allRows), [allRows]);
   const readHour = data?.readHour ?? null;
@@ -74,7 +67,6 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
       render: row => <span className="air-missions-region" data-tooltip={row.nameMissing ?? undefined}>{row.name}</span> },
     ...missions.map((mission, index) => ({ key: `m${mission.id}`, headerRevision: icon(mission.icon), header: <MissionHeader name={mission.name} icon={icon(mission.icon)} />,
       label: mission.name, numeric: true, width: 'max-content', priority: index + 1, inTooltip: true, bar: 'visible' as const, value: () => null, paint: count,
-      // A mission a region has no registration for is empty, not unknown.
       missingText: (key: string) => notFlown(key) ? '' : '—' })),
     { key: 'wings', header: 'Wings', label: 'Wings', numeric: true, width: 'max-content', inTooltip: true, value: () => null, paint: count },
   ], [missions, icon, notFlown]);
@@ -86,7 +78,6 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   useEffect(() => { dispatch({ type: 'close' }); setRegion(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const following = widget.time.mode === 'follow';
   const onRowClick = useCallback((row: MissionRow) => {
-    // The hour is read when the region is opened, never by a render.
     const hour = headRead(widget, track, runtime.tracks, null).hourAt(runtime.clock.getHour());
     if (hour === null) return;
     setRegion(row);
@@ -129,8 +120,6 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   </div>;
 }
 
-/** One region's wings at the drill's hour: followed with the widget, or read at the day picked. Planes are painted
- * from their live cells. */
 function WingTable({ reply, error, missions, live, hoursPerSecond }: { reply?: AirMissionWingsReply; error?: Failure; missions: readonly { id: string; name: string }[];
   live: Live<LiveValues<number>>; hoursPerSecond: number | undefined }) {
   const names = useMemo(() => new Map(missions.map(mission => [mission.id, mission.name])), [missions]);
@@ -163,7 +152,6 @@ function WingTable({ reply, error, missions, live, hoursPerSecond }: { reply?: A
     sort={{ column: 'planes', direction: 'descending' }} hoursPerSecond={hoursPerSecond} tooltip={tooltip} live={live} />;
 }
 
-/** A mission column's head: the game's mission icon, when drawable, before its name. */
 function MissionHeader({ name, icon }: { name: string; icon: string | null }) {
   return <span className="air-missions-head">{icon && <img src={icon} alt="" />}<span>{name}</span></span>;
 }

@@ -11,7 +11,6 @@ doctest = false
 
 [features]
 export-types = []
-# The source, catalogue and product fixtures, for the tests of crates above this one.
 test-support = ["replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-province-area/test-support", "installed-content-regions/test-support", "installed-content-settings/test-support", "installed-content-states/test-support"]
 
 [dependencies]
@@ -78,12 +77,8 @@ replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
-# Folder layers, so tests load localisation files as the game content does.
 png.workspace = true
-# Grouped-table decode counts, so tests can see which tables a read decodes.
-# Prepared files publish without disk flushes, which no test can observe.
 
-# Parse production map readers for the prepared-table coverage guard only.
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = "1"
 

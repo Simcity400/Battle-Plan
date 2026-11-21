@@ -139,7 +139,6 @@ pub(crate) fn capture(
         }
         let index = shared.take_frame(&mut 0).unwrap();
         let reads = crate::read_accounting::Capture::new();
-        // The fixture outlives every worker and the dispatcher joins all reads.
         unsafe {
             acquire_with_memory(
                 &shared,

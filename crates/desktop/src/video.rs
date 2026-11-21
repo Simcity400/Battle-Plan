@@ -1,5 +1,3 @@
-//! Application UI scale, the native map's interface scale, presentation settings
-//! and the maps' diagnostics and mute switches. Never changes the user's monitor mode or installed content.
 use crate::native::NativeHost;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,28 +11,18 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-// Ignore legacy window dimensions/mode when reading existing preferences.
 #[serde(rename_all = "camelCase")]
 pub struct VideoSettings {
     #[serde(default)]
     pub use_game_settings: bool,
     pub ui_scale: f64,
     pub vsync: bool,
-    /// The native map interface's scale in percent; `None` matches the game on screen.
     #[serde(default)]
     pub map_ui_scale: Option<f64>,
-    /// Whether maps show technical stats and data limitations. Off by default.
-    /// It is not a game setting: inheriting the game's display settings and the
-    /// Apply form keep it, and only [`set_map_diagnostics`] changes it.
     #[serde(default)]
     pub map_diagnostics: bool,
-    /// Whether the maps' audio is muted. Off by default. Not a game setting
-    /// either: only [`set_map_muted`] changes it.
     #[serde(default)]
     pub map_muted: bool,
-    /// Frames a second every map presents at most; `None` (the default) draws as the display and
-    /// VSync allow. The game has no frame rate limit of its own to read, so this is the app's own
-    /// choice and inheriting the game's display settings keeps it.
     #[serde(default)]
     pub map_frame_limit: Option<f64>,
 }
@@ -51,7 +39,6 @@ impl Default for VideoSettings {
         }
     }
 }
-/// The app interface scales, in percent, that the app supports.
 const UI_SCALE_RANGE: std::ops::RangeInclusive<f64> = 75.0..=150.0;
 impl VideoSettings {
     fn validate(&self) -> Result<(), String> {
@@ -71,22 +58,17 @@ impl VideoSettings {
         }
         Ok(())
     }
-    /// The viewer's map action for the map interface scale.
     fn map_ui_scale_action(&self) -> dashboard::protocol::MapAction {
         dashboard::protocol::MapAction::UiScale {
             scale: self.map_ui_scale.map(|percent| (percent / 100.0) as f32),
         }
     }
-    /// The viewer's map action for the frame rate limit.
     fn map_frame_limit_action(&self) -> dashboard::protocol::MapAction {
         dashboard::protocol::MapAction::FrameLimit {
             hz: self.map_frame_limit,
         }
     }
 }
-/// The saved settings, whether `--diagnostics` turned the maps'
-/// diagnostics on for this run without saving it, and how many times the
-/// maps' switches changed, counted under the settings' lock.
 pub struct VideoState(
     pub Mutex<Result<VideoSettings, String>>,
     AtomicBool,
@@ -129,7 +111,6 @@ fn load_from(path: &Path) -> Result<VideoSettings, String> {
     settings.validate()?;
     Ok(settings)
 }
-/// Re-read under the lock so another window's saved choices are not overwritten.
 fn update(
     path: &Path,
     fallback: Option<&VideoSettings>,
@@ -149,7 +130,6 @@ fn update(
         Err(error) => fallback.cloned().ok_or(error)?,
     };
     change(&mut settings);
-    // The lock makes this process the only writer, so its staging file is its own.
     let temp = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(
         &temp,
@@ -159,7 +139,6 @@ fn update(
     .map_err(|e| e.to_string())?;
     Ok(settings)
 }
-/// Keep this window's applied settings; recover unreadable local settings from the saved ones.
 fn commit(
     path: &Path,
     stored: &mut Result<VideoSettings, String>,
@@ -173,8 +152,6 @@ fn commit(
     }
     Ok(())
 }
-/// Diagnostics and mute are absent from the display form and must stay as saved; the frame rate
-/// limit the form carries, so it comes from the form.
 fn with_display(saved: &mut VideoSettings, form: &VideoSettings) {
     *saved = VideoSettings {
         map_diagnostics: saved.map_diagnostics,
@@ -189,12 +166,9 @@ pub struct VideoReply {
     settings: VideoSettings,
     game_settings: Option<VideoSettings>,
     game_settings_error: Option<String>,
-    /// What "match the game" works out to on these monitors, in percent.
     game_map_ui_scale: Option<f64>,
-    /// The manual map interface scales to offer, in percent.
     map_ui_scale_choices: &'static [u32],
 }
-/// `read` of the host's effective user folder, as the selected installed game reads it now.
 fn read_game_settings<T>(read: impl FnOnce(&Path) -> io::Result<T>) -> Result<T, String> {
     let (config, _) = crate::dashboard_service::host_config()?;
     if config.user_dir.as_os_str().is_empty() {
@@ -208,7 +182,6 @@ fn game_settings() -> Result<VideoSettings, String> {
         installed_content_settings::settings::read_keys,
     )?)
 }
-/// The viewer computes the same from the recording's user folder and the same monitors.
 fn game_map_ui_scale() -> Option<f64> {
     let display = read_game_settings(installed_content_settings::settings::read_display).ok()?;
     let scale = display.screen_scale(&installed_content_settings::settings::desktops().ok()?)?;
@@ -216,15 +189,10 @@ fn game_map_ui_scale() -> Option<f64> {
         .contains(&scale)
         .then(|| (f64::from(scale) * 100.0).round())
 }
-/// The preferences from `settings.txt`'s keys as the game reads them
-/// ([`installed_content_settings::settings::SettingsKeys`]: any case, the last stored value of each field).
-/// The game accepts any finite interface scale and fits it to its own window; the app
-/// interface takes it within the scales the app supports.
 fn parse_game_display(
     keys: &installed_content_settings::settings::SettingsKeys,
 ) -> Result<VideoSettings, String> {
     use installed_content_settings::settings::constructed;
-    // Without the file the game reads nothing and keeps its constructed settings.
     if !keys.is_absent() && !keys.has(&["graphics"]) {
         return Err("Missing graphics block in game settings".to_owned());
     }
@@ -249,8 +217,6 @@ fn parse_game_display(
     Ok(settings)
 }
 fn reply(settings: VideoSettings) -> VideoReply {
-    // What reverting to the game's display settings would give: the game's own, with the choices
-    // the game does not have (the maps' switches and the frame rate limit) kept.
     let (game_settings, game_settings_error) = match game_settings() {
         Ok(game) => (Some(inherit_game(&settings, game)), None),
         Err(error) => (None, Some(error)),
@@ -263,8 +229,6 @@ fn reply(settings: VideoSettings) -> VideoReply {
         map_ui_scale_choices: &dashboard::protocol::MAP_UI_SCALE_CHOICES,
     }
 }
-/// Resolve at process launch too, including after the user configured folders:
-/// the vsync, map interface scale and frame rate limit actions a new viewer starts with.
 pub fn launch_actions(
     window: &WebviewWindow,
 ) -> Result<[dashboard::protocol::MapAction; 3], String> {
@@ -282,8 +246,6 @@ pub fn launch_actions(
     } else {
         settings.vsync
     };
-    // Using the game's settings also matches its interface scale; the game has no frame rate
-    // limit, so the app's own choice stands either way.
     let map_ui_scale = if settings.use_game_settings {
         VideoSettings::default()
     } else {
@@ -362,8 +324,6 @@ pub fn set_video_settings(
     }
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     let previous = stored.clone().unwrap_or_default();
-    // The form does not carry the diagnostics choice; keep the saved one, from
-    // the file when the settings could not be restored.
     settings.map_diagnostics = match &*stored {
         Ok(stored) => stored.map_diagnostics,
         Err(_) => load().is_ok_and(|saved| saved.map_diagnostics),
@@ -372,7 +332,6 @@ pub fn set_video_settings(
         Ok(stored) => stored.map_muted,
         Err(_) => load().is_ok_and(|saved| saved.map_muted),
     };
-    // The game has no frame rate limit to inherit, so taking its display settings keeps the app's.
     if settings.use_game_settings {
         settings.map_frame_limit = match &*stored {
             Ok(stored) => stored.map_frame_limit,
@@ -383,7 +342,6 @@ pub fn set_video_settings(
         if stored.is_err() || settings.ui_scale != previous.ui_scale {
             apply_scale(&window, &settings)?;
         }
-        // Kept for a viewer starting now too, which takes them over its launch-time read.
         host.set_display(dashboard::protocol::MapAction::Vsync {
             enabled: settings.vsync,
         });
@@ -413,8 +371,6 @@ pub fn set_video_settings(
     Ok(reply(settings))
 }
 
-/// Settings taken over from the game's display settings. The diagnostics
-/// choice is not a game setting, so the current one is kept.
 fn inherit_game(current: &VideoSettings, game: VideoSettings) -> VideoSettings {
     VideoSettings {
         map_diagnostics: current.map_diagnostics,
@@ -424,8 +380,6 @@ fn inherit_game(current: &VideoSettings, game: VideoSettings) -> VideoSettings {
     }
 }
 
-/// Whether maps show diagnostics: `--diagnostics` for this run until the user
-/// changes it, otherwise the saved choice.
 fn effective_map_diagnostics(requested: bool, stored: &Result<VideoSettings, String>) -> bool {
     requested
         || stored
@@ -433,16 +387,12 @@ fn effective_map_diagnostics(requested: bool, stored: &Result<VideoSettings, Str
             .is_ok_and(|settings| settings.map_diagnostics)
 }
 
-/// One of the maps' switches as the host holds it, with the number of the
-/// switches' last change it reflects. Events and replies reach the frontend in
-/// any order, so it keeps the value with the highest number.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct MapSwitch {
     value: bool,
     sequence: u64,
 }
 
-/// A switch's value and the number of the last change, read under the settings' lock.
 fn read_switch(
     state: &VideoState,
     value: impl FnOnce(&Result<VideoSettings, String>) -> bool,
@@ -454,7 +404,6 @@ fn read_switch(
     }
 }
 
-/// Numbers a change to the switches; the caller holds the settings' lock.
 fn next_change(state: &VideoState) -> u64 {
     state.2.fetch_add(1, Ordering::AcqRel) + 1
 }
@@ -469,8 +418,6 @@ fn diagnostics_switch(state: &VideoState) -> MapSwitch {
     })
 }
 
-/// Saves the maps' diagnostics choice (`None` flips it), sends it to the
-/// native viewer and tells the frontend. Returns the new choice.
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
@@ -481,10 +428,7 @@ pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<
         settings.map_diagnostics = enabled
     })?;
     state.1.store(false, Ordering::Release);
-    // Sent before the lock is released, so two changes reach the viewer in the
-    // order they were saved.
     let changed = announce_diagnostics(app, &state, enabled);
-    // Saving over settings that could not be read loads the file, which can change the other switch.
     let muted = (muted_in(&stored) != muted).then(|| announce_muted(app, &state, !muted));
     drop(stored);
     let _ = app.emit("map-diagnostics", changed);
@@ -494,12 +438,10 @@ pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<
     Ok(changed)
 }
 
-/// The saved mute choice in `stored`; unreadable settings leave the maps sounding.
 fn muted_in(stored: &Result<VideoSettings, String>) -> bool {
     stored.as_ref().is_ok_and(|settings| settings.map_muted)
 }
 
-/// Sends a mute choice to every map, numbered for the frontend; the caller holds the lock.
 fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool) -> MapSwitch {
     app.state::<NativeHost>().set_muted(muted);
     app.state::<crate::popout::PopOuts>()
@@ -510,7 +452,6 @@ fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool) -> MapSwitch
     }
 }
 
-/// Sends a diagnostics choice to every map, numbered for the frontend; the caller holds the lock.
 fn announce_diagnostics(app: &AppHandle, state: &VideoState, enabled: bool) -> MapSwitch {
     app.state::<NativeHost>().set_diagnostics(enabled);
     app.state::<crate::popout::PopOuts>()
@@ -521,7 +462,6 @@ fn announce_diagnostics(app: &AppHandle, state: &VideoState, enabled: bool) -> M
     }
 }
 
-/// The saved mute choice; an unreadable file leaves the maps sounding.
 pub fn current_map_muted(state: &VideoState) -> bool {
     muted_switch(state).value
 }
@@ -530,16 +470,12 @@ fn muted_switch(state: &VideoState) -> MapSwitch {
     read_switch(state, muted_in)
 }
 
-/// Saves the maps' mute choice, sends it to the native viewer and tells the
-/// frontend. Returns the new choice.
 pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored);
     commit(&path()?, &mut stored, |settings| settings.map_muted = muted)?;
-    // Sent before the lock is released, so changes arrive in saved order.
     let changed = announce_muted(app, &state, muted);
-    // Saving over settings that could not be read loads the file, which can change the other switch.
     let diagnostics = (effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored)
         != diagnostics)
         .then(|| announce_diagnostics(app, &state, !diagnostics));
@@ -568,7 +504,6 @@ pub fn map_diagnostics(state: State<'_, VideoState>) -> MapSwitch {
 
 #[tauri::command]
 pub fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
-    // Settings shows the failure even when the keyboard shortcut asked.
     change_map_diagnostics(&app, enabled).inspect_err(|error| {
         let _ = app.emit("map-diagnostics-error", error);
     })
@@ -591,14 +526,11 @@ mod tests {
         )
         .unwrap();
         assert!(!old.use_game_settings);
-        // Diagnostics stay off unless a saved file turned them on.
         assert!(!old.map_diagnostics && !settings.map_diagnostics);
         assert!(!VideoSettings::default().map_diagnostics);
         assert_eq!(old.map_ui_scale, None);
     }
 
-    /// Any finite game interface scale is valid: the app interface takes it within
-    /// the app's scales, and the game's VSync choice stays.
     #[test]
     fn a_game_scale_outside_the_app_range_keeps_the_game_settings() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -619,7 +551,6 @@ mod tests {
             parse("graphics={gui_scale=inf VSync=no}").unwrap_err(),
             "Invalid game UI scale"
         );
-        // The manual form keeps the app's own scales.
         let manual = VideoSettings {
             use_game_settings: false,
             ui_scale: 200.0,
@@ -635,14 +566,10 @@ mod tests {
             ..VideoSettings::default()
         };
         let off = Ok(VideoSettings::default());
-        // `--diagnostics` shows them for the run whatever is saved; without it
-        // the saved choice decides, and an unreadable file means off.
         assert!(effective_map_diagnostics(true, &off));
         assert!(effective_map_diagnostics(false, &Ok(on.clone())));
         assert!(!effective_map_diagnostics(false, &off));
         assert!(!effective_map_diagnostics(false, &Err("unreadable".into())));
-        // Inheriting the game's display settings (restore, video_settings)
-        // keeps the choice.
         let game = VideoSettings {
             ui_scale: 125.0,
             ..VideoSettings::default()
@@ -677,7 +604,6 @@ mod tests {
         update(&path, Some(&form), |saved| with_display(saved, &form)).unwrap();
         let saved = load_from(&path).unwrap();
         assert!(saved.map_muted && saved.map_diagnostics && saved.ui_scale == 110.0);
-        // The form carries the frame rate limit, so saving the form saves it.
         assert_eq!(saved.map_frame_limit, Some(60.0));
         let mut lost = Err("zoom failed".to_owned());
         commit(&path, &mut lost, |settings| settings.map_muted = false).unwrap();
@@ -704,8 +630,6 @@ mod tests {
         assert!(inherit_game(&current, game_like(125.0)).map_muted);
     }
 
-    /// Off by default and absent from every recognised saved file; it is the app's own choice, so
-    /// taking the game's display settings keeps it, and a rate no map could draw is refused.
     #[test]
     fn the_frame_rate_limit_is_off_by_default_survives_game_settings_and_refuses_a_rate_no_map_draws()
     {

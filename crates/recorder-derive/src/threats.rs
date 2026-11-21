@@ -1,12 +1,3 @@
-//! `ThreatEvents`: each hour a threat source was first listed or listed again, what it adds
-//! changed, or it was no longer listed, a row living that hour. ThreatSources is a compacted
-//! list keyed by place, so a source is its own country and second country references, date and
-//! reason, and its place among sources equal in all four, which each row holds; a source moving up
-//! the list is no event.
-//! A run's first hour, and an hour after one the writer did not run, list none: they are the
-//! baseline the next listing compares with.
-//!
-//! State is the listing as the source table last held it, read again from the table at a resume.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
 use replay_columnar::{
@@ -20,7 +11,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// ThreatSources' country, second country, date, reason and what it adds once its ramp ends.
 const WATCHED: [usize; 5] = columns::<ThreatSourceRow, 5>(["country", "second_country", "date", "reason", "final_raw"]);
 const LINK: [usize; 1] = [0];
 
@@ -39,7 +29,6 @@ const READS: &[Read] = &[
     },
 ];
 
-/// A listed source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Source {
     ordinal: u32,
@@ -47,10 +36,8 @@ struct Source {
     second: u32,
     date: i32,
     reason: Box<[u8]>,
-    /// Among the sources before it equal in the four above.
     place: u32,
     final_raw: i64,
-    /// The canonical slot its country resolved to when listed.
     slot: u32,
 }
 
@@ -65,7 +52,6 @@ impl Source {
 #[derive(Default)]
 pub struct Threats {
     listing: Vec<Source>,
-    /// The rows living this hour, deleted the next.
     living: Vec<u128>,
     last: Option<i32>,
 }
@@ -77,7 +63,6 @@ fn number(table: &TableView<'_>, column: usize, slot: u32) -> Option<i64> {
     }
 }
 
-/// `country`'s canonical slot, while CountryLinks is complete and resolves it.
 fn resolve(hour: &Hour<'_>, country: u32) -> Option<u32> {
     if !hour.complete(TableId::CountryLinks) {
         return None;
@@ -86,7 +71,6 @@ fn resolve(hour: &Hour<'_>, country: u32) -> Option<u32> {
     links.slot(u128::from(country)).and_then(|slot| number(&links, LINK[0], slot)).map(|canonical| canonical as u32)
 }
 
-/// The sources ThreatSources lists this hour, in its order.
 fn listing(hour: &Hour<'_>) -> io::Result<Vec<Source>> {
     let table = hour.table(TableId::ThreatSources);
     let mut rows: Vec<(u32, u32)> = table.rows().filter_map(|slot| Some((table.key(slot)? as u32, slot))).collect();
@@ -142,7 +126,6 @@ impl Writer for Threats {
         READS
     }
 
-    // Hourly: its rows live one hour, and a listing is compared with the hour before's alone.
     fn hourly(&self) -> bool {
         true
     }
@@ -185,8 +168,6 @@ impl Writer for Threats {
         Ok(())
     }
 
-    /// Its rows living at the commit's hour, and the listing as that hour left it: what a writer
-    /// never stopped holds there.
     fn prime(&mut self, hour: &Hour<'_>) {
         let events = hour.table(TableId::ThreatEvents);
         self.living = events.rows().filter_map(|slot| events.key(slot)).collect();
@@ -202,7 +183,6 @@ impl Writer for Threats {
         }
     }
 
-    /// Takes nothing: a resume primes it from the store ([`Self::prime`]).
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }
@@ -231,13 +211,10 @@ mod tests {
         writers
     }
 
-    /// A source of country `country` dated `date` for `reason` (an index of [`TEXTS`]), adding
-    /// `added`, ramping at `current`.
     fn source(country: u32, date: i32, reason: usize, added: i64, current: i64) -> ThreatSourceRow {
         ThreatSourceRow { country, date, reason: TEXTS[reason].to_vec(), final_raw: added, current_raw: current, ..Default::default() }
     }
 
-    /// Each hour's listing, in order: country 1 links to slot 10, country 2 to none.
     fn listing_at(hour: i32) -> Vec<ThreatSourceRow> {
         let a = |added| source(1, 100, 0, added, hour.into());
         let b = source(2, 200, 1, 5, hour.into());
@@ -272,7 +249,6 @@ mod tests {
         store.end_hour(&mut Discard).unwrap();
     }
 
-    /// The hour's rows: kind, slot, ordinal, country and place among equal sources.
     fn events(store: &Store) -> Vec<(u8, u32, u32, u32, u32)> {
         let view = store.view(TableId::ThreatEvents.index());
         testing::rows(store, TableId::ThreatEvents)

@@ -1,12 +1,3 @@
-//! The viewed country's trade-route lines and the convoys the unit models sail on them, from the
-//! mirrors: the values of the rows today's builder reads ([`trade_routes::build_lines`]) kept per
-//! row from change sets, the product made again when a row it reads changed, and each route's
-//! stops (the content's search) kept while the route and the provinces' ports and states are
-//! unchanged.
-//!
-//! Which country is viewed is the vision's (P6's layer): the window's layer reads it from the
-//! vision layer, the proof gives a vision whole ([`Convoys::set_vision`]); without one the layer is
-//! refused by name.
 
 use super::{Carried, Settling, Inputs, Layer, List, Num, Published, Text, Upstream, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors, UNREAD_REASON};
@@ -33,7 +24,6 @@ use viewer_world::map::{
     trade_routes::{self, ClientFields, Countries, Emit, ExchangeOrder, LinksGap, OriginFields, RegionalFields, RouteFields, RouteKey, Shaped, Stops, Tables, TradeRoutes},
 };
 
-/// A `ResourceOrigins` row's values the lines read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Origin {
     country: u32,
@@ -44,7 +34,6 @@ pub struct Origin {
     convoys_assigned: i32,
 }
 
-/// A `ConvoyClients` row's values the lines read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Client {
     handle: u32,
@@ -60,7 +49,6 @@ pub struct Client {
     other_ordinal: Option<u32>,
 }
 
-/// A `TradeRoutes` row's values the lines and their stops read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Route {
     country: u32,
@@ -74,7 +62,6 @@ pub struct Route {
     destination_state: Option<u32>,
 }
 
-/// A `RegionalConvoyEfficiency` row's values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Regional {
     country: u32,
@@ -129,17 +116,14 @@ impl RouteFields for Route {
     }
 }
 
-/// The provinces' ports and states, which a route's stops read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Provinces {
     pub ports: BTreeMap<u32, u32>,
     pub state_of: BTreeMap<u32, u32>,
 }
 
-/// The lines' tables, as the builder reads them; each why it cannot be read whole.
 pub type Read<'a> = Result<Tables<'a, Origin, Client, Route, Regional>, String>;
 
-/// Today's builder over the content: a route's stops and the lines and convoys of the tables.
 pub trait Routes: Send + Sync {
     fn stops(&self, route: &Route, reverse: bool, provinces: &Provinces) -> Result<Option<Stops>, String>;
 
@@ -251,15 +235,11 @@ impl Routes for crate::document::Content {
     }
 }
 
-/// What a line's ribbon is made from: its arrow, colours and shaped controls.
 type RibbonKey = (String, [u32; 4], [u32; 4], Vec<[i64; 2]>, Vec<u8>);
 
-/// The rows a product reads, as the frame held them when it was asked for.
 type Owned = (Vec<Origin>, Vec<Client>, Vec<Route>, Vec<Regional>);
 
-/// What the worker makes one product from.
 struct Job {
-    /// The hour of the mirrors the rows were taken from.
     hour: Option<Hour>,
     ours: u32,
     tables: Result<Owned, String>,
@@ -269,16 +249,12 @@ struct Job {
     culture: Result<String, String>,
     provinces: Arc<Provinces>,
     provinces_read: Result<(), String>,
-    /// Bumped by every change of a province's state or port: the stops found before are dropped.
     provinces_version: u64,
 }
 
-/// A product, the jobs it answers (newer ones replace older ones not started), and what it cost.
 struct Made {
     product: TradeRoutes,
-    /// The viewing country's slot it was made for.
     ours: u32,
-    /// The hour of the mirrors the product was made from.
     hour: Option<Hour>,
     jobs: usize,
     reused: usize,
@@ -287,13 +263,9 @@ struct Made {
     bytes: usize,
 }
 
-/// The layer's own worker: makes the products off the frame, keeping each route's stops and each
-/// drawn line's ribbon from one product to the next.
 struct Maker {
     routes: Arc<dyn Routes>,
-    /// Each route's stops by key and direction, with the route they were found for.
     stops: HashMap<(RouteKey, bool), (Route, Result<Option<Stops>, String>)>,
-    /// Each drawn line's ribbon by what it is made from, as the last product drew them.
     ribbons: HashMap<RibbonKey, Option<Arc<Ribbon>>>,
     provinces_version: u64,
 }
@@ -380,7 +352,6 @@ impl Maker {
     }
 }
 
-/// `CountryLinks`' status in the builder's words.
 fn links_gap(links: Option<&Mirror>) -> LinksGap {
     match links.and_then(Mirror::status) {
         Some(Status::Complete) => LinksGap::Complete,
@@ -390,15 +361,12 @@ fn links_gap(links: Option<&Mirror>) -> LinksGap {
     }
 }
 
-/// The tables whose rows the layer holds; a changed row that cannot touch the lines waits by key.
 const DEFERRED: [TableId; 5] = [TableId::ResourceOrigins, TableId::ConvoyClients, TableId::TradeRoutes, TableId::RegionalConvoyEfficiency, TableId::ResourceExchanges];
 
 fn deferred_at(table: TableId) -> Option<usize> {
     DEFERRED.iter().position(|&deferred| deferred == table)
 }
 
-/// One line's ribbon as `emit` drew it: its vertices, its native vertices with its strips relative
-/// to them, its draw, and its drawn centre line.
 #[derive(Clone, Debug)]
 struct Ribbon {
     vertices: Vec<OrderVertex>,
@@ -407,7 +375,6 @@ struct Ribbon {
     points: Vec<[f32; 2]>,
 }
 
-/// One table's rows' values, sorted by key: the builder reads them as a slice in key order.
 #[derive(Debug)]
 struct Rows<T> {
     keys: Vec<u128>,
@@ -421,7 +388,6 @@ impl<T> Default for Rows<T> {
 }
 
 impl<T: PartialEq> Rows<T> {
-    /// Whether the row's values changed.
     fn put(&mut self, key: u128, value: T) -> bool {
         if self.keys.last().is_none_or(|&last| last < key) {
             self.keys.push(key);
@@ -499,7 +465,6 @@ struct Columns {
     province_port: Num<i32>,
 }
 
-/// The tables the layer reads, each a change of which may change the lines.
 const TABLES: [TableId; 8] = [
     TableId::ResourceOrigins,
     TableId::ConvoyClients,
@@ -511,8 +476,6 @@ const TABLES: [TableId; 8] = [
     TableId::Provinces,
 ];
 
-/// Why `mirror`'s table cannot be read whole at the head, in the words of today's reader where the
-/// mirror holds them.
 fn incomplete(mirror: Option<&Mirror>, table: TableId) -> Result<(), String> {
     let Some(mirror) = mirror else { return Err(format!("{table:?} is not read yet")) };
     let hour = mirror.head().unwrap_or_default();
@@ -532,13 +495,10 @@ fn path_of(mirror: &Mirror, column: List, slot: u32) -> Vec<u32> {
     }
 }
 
-/// The trade-route lines' and convoys' product and what keeps it.
 pub struct Convoys {
     routes: Arc<dyn Routes>,
     given: Mutex<Option<(Choice, Arc<Vision>)>>,
     fresh_vision: AtomicBool,
-    /// The perspective and the viewing country's slot the product is made for: all it reads of a
-    /// vision.
     vision: Option<(Choice, u32)>,
     columns: Option<Columns>,
     refused: Option<String>,
@@ -548,55 +508,32 @@ pub struct Convoys {
     regional: Rows<Regional>,
     exchanges: Rows<ExchangeOrder>,
     links: Arc<BTreeMap<u32, u32>>,
-    /// A link inserted, changed or removed since the last product: which references name the
-    /// viewed country may have changed.
     links_changed: bool,
     provinces: Arc<Provinces>,
     provinces_version: u64,
-    /// Changed rows not taken, by [`DEFERRED`] table: they could not touch the lines then.
     behind: [HashSet<u128>; 5],
-    /// Raw country references that link to the viewed country, the routes its lines look up and
-    /// its clients' handles, as the last product found them: what a changed row must touch to
-    /// change the lines.
     viewed: HashSet<u32>,
-    /// Whether CountryLinks' rows were held: without them every reference is unresolved.
     links_held: bool,
     referenced: HashSet<RouteKey>,
     serving: HashSet<u32>,
     worker: Option<(Sender<Job>, Receiver<Made>)>,
-    /// Jobs sent and not answered yet.
     in_flight: usize,
-    /// Exchanges that waited on the worker: a whole settle's only.
     #[cfg(test)]
     blocking_waits: usize,
-    /// What the worker's stops and ribbons held at its last product.
     worker_bytes: usize,
-    /// Steps applied since the last job was sent: a product that names its hour is old on arrival.
     moved: bool,
-    /// Registered in the window: its vision is read from the vision layer before it.
     window: bool,
-    /// Bumped by every product taken, for the window's merge of the ribbons.
     product_seq: u64,
-    /// The newest hour of the mirrors the product stands for: made from them, or settled at them
-    /// with nothing marked or out. While a job is out, what it publishes.
     product_hour: Option<Hour>,
-    /// The viewed country's graphical culture, until its appearance or the viewed links change.
     culture: Option<Result<String, String>>,
-    /// Rows a step changed, by table index: slots written or inserted, keys deleted.
     pending: Vec<(usize, Vec<u32>, Vec<u128>)>,
     stale: bool,
-    /// Made whole by the worker and shared from there: the frame's window takes it by reference
-    /// count and the scene reads that one.
     product: Arc<TradeRoutes>,
-    /// The viewing country's slot the product was made for; none before the first.
     product_for: Option<u32>,
     statuses: HashMap<usize, Status>,
-    /// The map mode draws no trade route: it declares, holds and carries nothing.
     hidden: bool,
     frame: u64,
     since: Option<u64>,
-    /// Rows changed, products made, ribbons kept and made, and the products' microseconds, since
-    /// the layer was made.
     marked: [usize; 5],
 }
 
@@ -647,18 +584,15 @@ impl Convoys {
         }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         Self { columns: self.columns, hidden: self.hidden, vision: self.vision.clone(), stale: self.vision.is_some(), ..Self::new(Arc::clone(&self.routes)) }
     }
 
-    /// What the viewer sees at the head: whose lines are drawn; the product is made again with it.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         *self.given.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((choice, vision));
         self.fresh_vision.store(true, Ordering::Release);
     }
 
-    /// The perspective of the vision the product is made with.
     pub fn perspective(&self) -> Option<&Choice> {
         self.vision.as_ref().map(|(choice, _)| choice)
     }
@@ -667,13 +601,10 @@ impl Convoys {
         self.refused.as_deref()
     }
 
-    /// The map mode draws no trade route: today draws none there either.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
 
-    /// Hidden: everything it holds dropped, as a layer made anew holds it, its worker let go; the
-    /// vision it was given, its place in the window and its counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.routes));
         let kept = std::mem::replace(self, empty);
@@ -683,35 +614,28 @@ impl Convoys {
         self.refused = Some(NOT_DRAWN.into());
     }
 
-    /// Registered in the window: its vision is read from the vision layer before it.
     pub fn in_window(mut self) -> Self {
         self.window = true;
         self
     }
 
-    /// Bumped by every product taken.
     pub fn product_seq(&self) -> u64 {
         self.product_seq
     }
 
-    /// The lines, convoys and report at the head.
     pub fn product(&self) -> &TradeRoutes {
         &self.product
     }
 
-    /// The product the frame's window takes: the same one, by reference count.
     pub fn product_shared(&self) -> Arc<TradeRoutes> {
         Arc::clone(&self.product)
     }
 
-    /// The product with its [`Self::product_seq`] while it was made for the viewing country the
-    /// layer is given; none while that country's is being made.
     pub fn shown(&self) -> Option<(u64, Arc<TradeRoutes>)> {
         let ours = self.vision.as_ref().map(|&(_, ours)| ours)?;
         (self.product_for == Some(ours)).then(|| (self.product_seq, self.product_shared()))
     }
 
-    /// Rows changed, products made, ribbons kept and made, and the products' microseconds.
     pub fn marked(&self) -> [usize; 5] {
         self.marked
     }
@@ -779,7 +703,6 @@ impl Convoys {
         ExchangeOrder { resource: number(c.exchange_resource), import_ordinal: number(c.exchange_import), export_ordinal: number(c.exchange_export) }
     }
 
-    /// One row of `table` at `slot` (live) or `key` (deleted) taken again; whether anything changed.
     fn take_row(&mut self, mirrors: &Mirrors, table: TableId, slot: Option<u32>, key: u128) -> bool {
         let Some(mirror) = mirrors.get(table) else { return false };
         if let Some(at) = deferred_at(table) {
@@ -839,8 +762,6 @@ impl Convoys {
         }
     }
 
-    /// Whether a country reference may change the viewed country's lines: it links to it, or it
-    /// links nowhere (a refusal the report counts).
     fn names(&self, country: u32) -> bool {
         country != 0 && (self.viewed.contains(&country) || !self.links_held || !self.links.contains_key(&country))
     }
@@ -851,7 +772,6 @@ impl Convoys {
             || self.names(client.other)
     }
 
-    /// Whether the row of `table` at `key`, as held now, may change the viewed country's lines.
     fn touches(&self, table: TableId, key: u128) -> bool {
         match table {
             TableId::ResourceOrigins => self.names(key as u32),
@@ -864,7 +784,6 @@ impl Convoys {
         }
     }
 
-    /// Every row read again from the mirrors.
     fn read_all(&mut self, mirrors: &Mirrors) {
         self.origins.clear();
         self.clients.clear();
@@ -889,7 +808,6 @@ impl Convoys {
         self.stale = true;
     }
 
-    /// The rows behind in `tables` that the lines now read, taken from the mirrors.
     fn take_behind(&mut self, mirrors: &Mirrors, tables: &[TableId]) {
         for &table in tables {
             let (Some(at), Some(mirror)) = (deferred_at(table), mirrors.get(table)) else { continue };
@@ -907,8 +825,6 @@ impl Convoys {
         }
     }
 
-    /// Whether the row at `slot` of `table`, as the mirror holds it now, may change the lines: a
-    /// client by its new countries (every other row by key, [`Self::touches`]).
     fn would_touch(&self, table: TableId, mirror: &Mirror, slot: u32) -> bool {
         if table != TableId::ConvoyClients {
             return false;
@@ -919,7 +835,6 @@ impl Convoys {
         !matches!(category, trade_routes::SUPPLY_TRANSFER | trade_routes::IMPORT | trade_routes::LEND_LEASE | trade_routes::MARKET) || self.names(number(c.client_owner)) || self.names(number(c.client_other))
     }
 
-    /// The viewed country's graphical culture from its appearance row.
     fn read_culture(&self, mirrors: &Mirrors, countries: &Countries<'_>) -> Result<String, String> {
         let appearance = mirrors.get(TableId::CountryAppearance);
         incomplete(appearance, TableId::CountryAppearance)?;
@@ -937,8 +852,6 @@ impl Convoys {
         String::from_utf8(bytes).map_err(|_| "the viewed country's graphical culture is not text".to_owned())
     }
 
-    /// Asks the worker for the product of the values: the rows that can change the viewed lines,
-    /// whose lines, why a table cannot be read; rows behind that the lines now read are taken first.
     fn make(&mut self, mirrors: &Mirrors) {
         self.marked[1] += 1;
         let ours = self.vision.as_ref().map_or(0, |&(_, ours)| ours);
@@ -954,7 +867,6 @@ impl Convoys {
         if renamed {
             self.take_behind(mirrors, &[TableId::ResourceOrigins, TableId::ConvoyClients, TableId::RegionalConvoyEfficiency]);
         }
-        // Only rows that can change the lines: the builder skips every other one without a word.
         let origins: Vec<Origin> = self.origins.values.iter().filter(|origin| self.names(origin.country)).cloned().collect();
         let clients: Vec<Client> = self.clients.values.iter().filter(|client| self.serves(client)).cloned().collect();
         let regional: Vec<Regional> = self.regional.values.iter().filter(|row| self.names(row.country)).cloned().collect();
@@ -1013,7 +925,6 @@ impl Convoys {
         }
     }
 
-    /// Takes the products the worker made; `wait` waits for every job in flight.
     fn exchange(&mut self, wait: bool) {
         #[cfg(test)]
         if wait && self.in_flight > 0 {
@@ -1024,7 +935,6 @@ impl Convoys {
             let next = if wait { made.recv().ok() } else { made.try_recv().ok() };
             let Some(made) = next else { break };
             self.in_flight = self.in_flight.saturating_sub(made.jobs);
-            // Asked before the viewing country changed: another country's lines.
             if self.vision.as_ref().is_none_or(|&(_, ours)| ours != made.ours) {
                 continue;
             }
@@ -1037,13 +947,11 @@ impl Convoys {
             self.marked[4] += made.micros;
             self.worker_bytes = made.bytes;
         }
-        // Today's words for a table that cannot be read name the hour.
         self.stale |= self.moved && self.product.report.unavailable.is_some();
     }
 
     fn settle_dirty(&mut self, mirrors: &Mirrors, wait: bool) {
         self.frame += 1;
-        // A table back after a view that drew none returns as a reset, which composes the layer.
         if self.columns.is_none() || TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
             return;
         }
@@ -1052,8 +960,6 @@ impl Convoys {
             self.stale = true;
         }
         if self.vision.is_none() {
-            // Nothing is drawn and every row is read again with the next vision: no work is carried,
-            // and the worker goes with the jobs out, so none is taken for that vision.
             self.refused = Some("The convoys layer is refused: it is given no vision of the viewing country yet".into());
             (self.pending, self.stale, self.since) = (Vec::new(), false, None);
             (self.worker, self.in_flight, self.worker_bytes) = (None, 0, 0);
@@ -1062,7 +968,6 @@ impl Convoys {
         if self.refused.take().is_some() {
             self.read_all(mirrors);
         }
-        // Nothing out and nothing marked: the product stands for the rows the mirrors are at.
         if self.in_flight == 0 && !self.stale && self.pending.is_empty() {
             self.product_hour = TABLES.iter().find_map(|&table| mirrors.get(table).and_then(Mirror::head)).or(self.product_hour);
         }
@@ -1099,13 +1004,11 @@ impl Convoys {
         self.since = self.stale.then(|| self.since.unwrap_or(self.frame));
     }
 
-    /// The products of `self` and `other` compared: the convoys, the lines drawn and the report.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         differ(&self.product, &other.product, self.refused(), other.refused())
     }
 }
 
-/// Two products compared: convoys, the drawn lines' count and the report; the first difference.
 pub fn differ(ours: &TradeRoutes, theirs: &TradeRoutes, refused: Option<&str>, their_refusal: Option<&str>) -> (u64, Option<String>) {
     let mut differing = 0;
     let mut first = None;
@@ -1238,24 +1141,19 @@ impl Layer for Convoys {
     }
 
     fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
-        // Only a whole settle waits on the worker: a publication runs under the side's lock, so a
-        // job out is polled and its product joins a later one.
         self.settle_dirty(mirrors, settling.strict());
         Ok(())
     }
 
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
-        // Only whose lines or plan are drawn: the viewing country, taken when it changes.
         if self.window
             && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
         {
             match vision.ours() {
-                // Held at once: a mode that draws no convoys settles nothing, so a given vision would wait.
                 Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
                     self.vision = Some((vision.choice().clone(), ours));
                     self.stale |= self.columns.is_some();
                 }
-                // No viewing country: the lines of the one before are withheld at once.
                 None => self.vision = None,
                 Some(_) => {}
             }
@@ -1266,8 +1164,6 @@ impl Layer for Convoys {
 
 
     fn carried(&self) -> Carried {
-        // A job out is the worker's: counted here it froze the shown hour while playing. Refused, a
-        // settle can do none of the marked work; it waits there for the next vision.
         if self.refused.is_some() {
             return Carried::default();
         }
@@ -1275,8 +1171,6 @@ impl Layer for Convoys {
         Carried { entities }
     }
 
-    /// Current once no job is out; while one is, the newest hour its product stands for, or
-    /// nothing before its first product.
     fn published(&self) -> Published {
         if self.in_flight == 0 {
             return Published::Current;
@@ -1301,7 +1195,6 @@ impl Layer for Convoys {
 }
 
 impl Convoys {
-    /// Records the rows `changes` touched in the columns `read`, to take again at the settle.
     fn mark(&mut self, changes: &Changes, read: &[usize]) {
         let deleted: Vec<u128> = changes.deleted().keys().unwrap_or_default().to_vec();
         let mut slots: Vec<u32> = changes.inserted().slots().to_vec();

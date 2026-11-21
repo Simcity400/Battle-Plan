@@ -1,8 +1,3 @@
-//! Hourly CCountry active-ability records for the land counter's ability grid.
-//!
-//! Abilities start, end and change phase at any hour, so the table is hourly. It runs in the
-//! Ordinary pool job over the authenticated country roster view, never on the game thread;
-//! rows and token bytes grow from the original headers before publication.
 use crate::sampling::qpc;
 use engine_land_inputs::active_ability_record;
 use engine_native::{Memory, walk::Outcome};
@@ -43,7 +38,6 @@ pub struct Captured {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0, bytes: 0 })
     }
@@ -144,8 +138,6 @@ mod tests {
         assert!(captured.buffer.bytes.first.len() >= 40);
     }
 
-    /// A synthetic world of `countries` live countries; every `active_every`th one holds one
-    /// ability record without caster or region.
     fn world(countries: u32, active_every: u32) -> Vec<u8> {
         use engine_land_inputs::cability;
         use engine_native::{ccountry, cgame_state};
@@ -217,16 +209,11 @@ mod tests {
     const CTAB: usize = 0x10000;
     const LTAB: usize = 0x20000;
     const COUNTRY0: usize = 0x30000;
-    // Country objects overlap: only the vtable, the id and the ability header are populated.
     const STRIDE: usize = 0x50;
     const RECORDS: usize = 0x100000;
     const DEFINITION: usize = 0x1c0000;
     const WORLD_BYTES: usize = 0x1d0000;
 
-    /// The Ordinary job's cost for the hourly walk on the pool worker, over the job's cached
-    /// roster view, at 150 and 500 live countries with one country in ten holding an
-    /// active ability. The roster view serves the country authentication from the prepared
-    /// census, so the per-country cost is the ability array header alone.
     #[test]
     fn the_hourly_walk_on_the_cached_roster_view_costs_one_call_per_country() {
         use engine_native::{read_counts::CountedMemory, read_counts::ReadCounts};
@@ -236,7 +223,6 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            // Sized for every census read, as the collector sizes it from the live registry.
             let mut storage = engine_allocation::shared(
                 engine_native::country_memory::Cache::try_with_capacity(
                     (countries as usize + 1) * 16,
@@ -259,8 +245,6 @@ mod tests {
             let active = (countries / 10) as usize;
             let mut rows = vec![active_ability_record::Row::default(); active];
             let mut arena = vec![0; active * 7];
-            // `Captured::capture` charges these reads to the table's accounting slot; the
-            // walk itself is counted here.
             ReadCounts::take_current();
             let counted = CountedMemory::new(memory);
             let walk = walk_abilities(
@@ -273,8 +257,6 @@ mod tests {
             let reads = ReadCounts::take_current();
             assert_eq!(walk.outcome, Outcome::Rows { len: active });
             let calls = reads.copy_calls + reads.scattered_calls;
-            // One guarded array-header read per country (the prepared census answers the
-            // country authentication) and three per record without caster or region.
             assert_eq!(
                 calls,
                 u64::from(countries) + 3 * active as u64,

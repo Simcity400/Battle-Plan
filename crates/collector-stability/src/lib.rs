@@ -1,5 +1,3 @@
-//! Country stability capture: stability inputs and lines, read beside the daily slice for the countries a writer marked. The host owns dispatch, the fingerprint store loan and table assembly.
-
 use collector_certificates::slicing;
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;

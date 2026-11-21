@@ -1,5 +1,3 @@
-//! Shared design writer notifications. Control-thread publication may wait;
-//! callback invalidation withdraws admission immediately without waiting.
 use std::sync::{
     Mutex,
     atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
@@ -18,10 +16,7 @@ pub enum Writer {
     ProviderInvalidation,
     CountryInvalidation,
     ContentInvalidation,
-    /// Every other writer naming one variant: organisation, obsolescence,
-    /// highlight, upgrade, niche and command edits.
     Edit,
-    /// A bulk upgrade over a pointer array; its receiver is zero.
     Roster,
 }
 
@@ -31,9 +26,6 @@ pub enum Phase {
     After,
     Unwound,
 }
-/// Admission for one dependency-baseline epoch. Notifications are hints, not a
-/// cached boolean permission. Retain this capability with the dependent baseline
-/// and validate it before/after acquisition and before every carry/publication.
 #[derive(Clone, Copy)]
 pub struct Availability {
     word: u64,
@@ -42,13 +34,9 @@ pub struct Availability {
     published: &'static AtomicU64,
 }
 impl Availability {
-    /// Store this stamp atomically if a dependent cache cannot retain the
-    /// capability directly; validate it through `availability_is_current`.
     pub fn stamp(self) -> u64 {
         self.word
     }
-    /// False after reset or a dispatch gap, including for a late notification.
-    /// A later baseline cannot make an earlier capability current again.
     pub fn is_current(self) -> bool {
         self.word & 1 != 0
             && self.proof.load(Ordering::SeqCst) == self.word
@@ -57,11 +45,11 @@ impl Availability {
             && self.proof.load(Ordering::SeqCst) == self.word
     }
 }
-/// Receivers are process-static. Neither callback may panic, re-enter
-/// registration, block, or change hook availability. Reset delivers a withdrawn
-/// capability on the native callback; active calls retain their terminal phase.
-/// Never convert availability into an unchecked cached boolean. A native pointer
-/// is borrowed only for this invocation, not a reference-lifetime witness.
+#[doc = " Receivers are process-static. Neither callback may panic, re-enter"]
+#[doc = " registration, block, or change hook availability. Reset delivers a withdrawn"]
+#[doc = " capability on the native callback; active calls retain their terminal phase."]
+#[doc = " Never convert availability into an unchecked cached boolean. A native pointer"]
+#[doc = " is borrowed only for this invocation, not a reference-lifetime witness."]
 pub struct Forwarder {
     pub call: unsafe fn(Writer, usize, Phase),
     pub enabled: fn(Availability),
@@ -96,8 +84,6 @@ impl Forwarding {
         self.published.store(0, Ordering::SeqCst);
         self.dispatch.store(0, Ordering::SeqCst);
         self.receiver.store(std::ptr::null_mut(), Ordering::SeqCst);
-        // Only the external control thread waits. Live callbacks never wait
-        // for registration, availability, or another native invocation.
         self.drain_writers();
     }
     fn drain_writers(&self) {
@@ -117,8 +103,6 @@ impl Forwarding {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Every dispatch gap creates a new capability epoch, even when the
-        // three native baselines themselves remain admitted.
         let token = self
             .admission
             .fetch_add(2, Ordering::SeqCst)
@@ -184,12 +168,6 @@ impl Forwarding {
             return;
         }
         if token & 1 != 0 {
-            // Open dispatch before draining the shared callback census. A writer
-            // rejected in the preceding gap remains counted through its original
-            // and terminal work. After the last zero census, every new writer's
-            // sequentially consistent entry precedes its dispatch check, so it
-            // must notify this epoch. No rejected original can cross publication.
-            // Both waits are control-thread only; no callback waits or allocates.
             self.receiver
                 .store(std::ptr::from_ref(receiver).cast_mut(), Ordering::SeqCst);
             self.dispatch.store(token, Ordering::SeqCst);
@@ -201,8 +179,6 @@ impl Forwarding {
                 return;
             }
         }
-        // Delivery may be suspended at any instruction. The receiver keeps the
-        // live epoch capability, never a sampled boolean permission.
         (receiver.enabled)(capability);
     }
 
@@ -234,8 +210,6 @@ impl Forwarding {
             self.active.fetch_sub(1, Ordering::SeqCst);
             return None;
         }
-        // Static receiver storage survives concurrent removal. The active
-        // handshake makes removal wait for the paired terminal notification.
         let invocation = Invocation {
             owner: self,
             receiver: unsafe { &*receiver },
@@ -268,23 +242,15 @@ impl Drop for Invocation<'_> {
         self.owner.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
-// Reuse the callback families' existing flight accounting, including shared
-// moves which bypass this receiver while world-input observation is withdrawn.
-// The admitted-notification counter alone cannot cover those originals.
 fn writers_active() -> bool {
     super::ACTIVE.load(Ordering::SeqCst) != 0
         || super::super::design_template_changes::active() != 0
         || collector_observers::world_input_changes::design_forwarder_active() != 0
 }
 static FORWARDING: Forwarding = Forwarding::new(writers_active);
-/// Register or remove the experience receiver, including while hooks are live.
-/// Removal waits for in-flight original calls and their terminal notification.
-/// Call only on a control thread, never from a native callback or receiver.
 pub fn forwarder(receiver: Option<&'static Forwarder>) {
     FORWARDING.register(receiver);
 }
-/// Validate an atomically retained notification stamp before/after a dependent
-/// read and on every baseline carry/publication. Zero is never admitted.
 pub fn availability_is_current(stamp: u64) -> bool {
     FORWARDING.capability(stamp).is_current()
 }
@@ -308,7 +274,6 @@ fn writer(site: usize) -> Option<Writer> {
         "Destroy" => Some(Writer::Destroy),
         _ => match MUTATIONS[site].receiver {
             Receiver::Roster => Some(Writer::Roster),
-            // Creation publishes its new variant through Publish.
             Receiver::CreateCommand => None,
             _ => Some(Writer::Edit),
         },

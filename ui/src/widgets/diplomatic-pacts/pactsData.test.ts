@@ -13,24 +13,19 @@ const pact = (id: string, kind: string, firstSeen: number, lastSeen: number, val
 };
 
 test('a pact is gone only from the first read of its owner that no longer lists it', () => {
-  // The owner's reads at 0, 24, 48 and 72: the first after its last listing at 24 is 48.
   const listed = pact('1', 'guarantee', 0, 24, { goneBy: 48 });
   assert.deepEqual(pactState(listed, 24), { state: 'present' });
   assert.deepEqual(pactState(listed, 30), { state: 'unknown', since: 24 }, 'between the last listing read and the next read nothing is known');
   assert.deepEqual(pactState(listed, 48), { state: 'gone', by: 48 }, 'dated by the first missing read, not the hour after the last listing');
   assert.deepEqual(pactState(pact('1', 'guarantee', 0, 24), 200), { state: 'unknown', since: 24 }, 'coverage loss is not disappearance');
   assert.deepEqual(pactState(pact('2', 'mod_access', 30, 100, { presentAtEnd: true }), 150), { state: 'present' }, 'still listed at the last read');
-  // A gap ended this episode at 24; the owner's recovery read at 48 lists the pact again in a new episode.
   assert.deepEqual(pactState(pact('3', 'guarantee', 0, 24, { endedBy: true }), 48), { state: 'unknown', since: 24 }, 'a suspended episode is not gone');
 });
 
 test('agreements are those of the chosen country, one per relation, with offers turned round and kinds shown elsewhere left out', () => {
-  // The owner's reads at 0, 50, 100, 300 and 400.
   const pacts = [
     pact('1', 'guarantee', 10, 50, { goneBy: 100 }),
-    // One relation listed in two episodes: its stored start names it, so they join.
     pact('2', 'military_access', 30, 60, { startHour: 25 }), pact('3', 'military_access', 90, 100, { startHour: 25, presentAtEnd: true }),
-    // An offered access is held by the second country.
     pact('4', 'offer_military_access', 40, 100, { first: 'C', second: 'A' }),
     pact('5', 'lend_lease', 10, 100), pact('6', 'improve_relation', 10, 100),
     pact('7', 'guarantee', 200, 300, { goneBy: 400 }), pact('8', 'guarantee', 10, 100, { first: 'C', second: 'D' }),

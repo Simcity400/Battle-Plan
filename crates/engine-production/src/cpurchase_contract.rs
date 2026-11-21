@@ -1,6 +1,3 @@
-//! Purchase contract authenticated by owning vector and seller/buyer indices.
-//! Progress retains full delivery and serialization qwords. Heuristic
-//! equipment-subbuffer scans are not used.
 
 use crate::{
     Memory, ccountry, cequipment_market_status, market_contract_manager::Contracts, read,
@@ -8,39 +5,23 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CPurchaseContract primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29e83d0);
-/// CPurchaseContract persistent handle type, u32.
 pub const ID_TYPE: usize = 0x08;
-/// CPurchaseContract persistent handle id, u32.
 pub const ID: usize = 0x0c;
-/// Native identity registration byte; cleared after contract retirement.
 pub const REGISTERED: usize = 0x10;
-/// CPurchaseContract handle type 81.
 pub const TYPE: u32 = 81;
-/// CPurchaseContract seller raw country link, u32.
 pub const SELLER: usize = 0x58;
-/// CPurchaseContract buyer/delivery raw country link, u32.
 pub const BUYER: usize = 0x5c;
-/// CPurchaseContract speed i32.
 pub const SPEED: usize = 0xc0;
-/// CPurchaseContract assigned convoys i32.
 pub const CONVOYS_ASSIGNED: usize = 0x118;
-/// CPurchaseContract required convoys i32.
 #[cfg(test)]
 pub const CONVOYS_TOTAL: usize = 0x11c;
-/// CPurchaseContract accumulated route efficiency i64 /100000.
 pub const EFFICIENCY: usize = 0x1c0;
-/// CPurchaseContract route sample days i32.
 pub const DAYS: usize = 0x1d0;
-/// CPurchaseContract factory CIC progress i64 /100000.
 pub const FACTORY_PROGRESS: usize = 0x1e0;
-/// CPurchaseContract equipment transfer progress i64 /100000.
 pub const EQUIPMENT_PROGRESS: usize = 0x1e8;
-/// CPurchaseContract collected CIC i64 /100000.
 #[cfg(test)]
 pub const COLLECTED: usize = 0x1f0;
-/// Completed delivery count, i32, separate from a boolean flag.
 pub const COMPLETED: usize = 0x25c;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +40,6 @@ pub struct Row {
     pub completed_deliveries: i32,
 }
 
-/// Caller-owned per-walk membership index. Foreign pointers never leave the
-/// callback; scratch can be reused only after this walk has finished.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Membership {
     pointer: usize,
@@ -73,8 +52,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Reads all native owned contracts, including countries beyond the static
-/// country set. Capacity is caller-owned; no allocation, retry or polling occurs.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -113,7 +90,6 @@ fn walk_inner(
 ) -> Result<Outcome, &'static str> {
     let contracts = Contracts::read(memory, game_state)?;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    // Corroborate a valid global root even when the native owner census is empty.
     let mut corroborated = false;
     for slot in 1..countries
         .count()
@@ -194,9 +170,6 @@ fn verify_memberships(
             entry.matches = 0;
         }
         let rows = Contracts::country_rows(memory, outer, country)?;
-        // The former path scanned this same vector for every owned contract.
-        // Scan it once, retaining every unreadable-pointer failure and counting
-        // exact occurrences for each owned pointer in this country group.
         for index in 0..rows.count {
             let pointer = rows
                 .element(index, 8)
@@ -547,8 +520,6 @@ mod tests {
             Outcome::Rows { len: 2 }
         );
         assert_eq!(count(&memory, 0, GS), Outcome::Truncated { len: 0, unread_rows: 2 });
-        // A complete pointer census still checks unreadable unrelated slots,
-        // while an unrelated readable pointer is not treated as an owned row.
         header(&mut bytes, 0xa100 + 0x18, SELLERS, 3);
         p64(&mut bytes, SELLERS + 16, 0xdead_beef);
         let memory = SliceMemory {

@@ -1,0 +1,11 @@
+# Version compiled shaders separately from GPU objects
+
+The persistent shader cache stores CPU artifacts. GPU pipelines, layouts and bind groups belong to a specific device and are never loaded from the disk cache. The persistent key and entry both include the compatibility version. A change to source assembly, compile flags, the bundled compiler, translation or reflection requires a new version. The emitted source also contributes to the key because callers can construct a program directly.
+
+The runtime finds the bundled compiler on the first cache miss, checks its product version and resolves its companion DLL beside it. It keeps the compiler module for the process lifetime. A missing compiler or a refused compile is cached with the effect and technique. Retrying clears those failures and discovers a newly repaired installation while keeping successful compilations. A cache without a disk path still compiles. The aggregate counters are process-wide.
+
+`product_version` provides a NUL-terminated path and a live version-information block of the size Windows requested. It reads values borrowed from that block only after the API reports success and a sufficient length. `Library::load` passes a NUL-terminated path and uses the documented `DxcCreateInstance` signature. A module that supplies the export remains loaded for every use of its function pointer. `Library::compiler` requests `IDxcCompiler3`, which the export writes on success.
+
+`Com::from_raw` accepts null or a live interface pointer with the `V` vtable layout and transfers one owned reference. `Com::vtbl` reads the first word of that live pointer. Each supported vtable begins with `IUnknown`, so `Com::drop` can release the owned reference. `blob_bytes` copies the byte range owned by the blob while the interface is still live. In `Library::compile`, the source buffer and terminated arguments outlive the compile call. The source names no files, so it needs no include handler. Status, result and error methods are called on the live operation result, and returned blobs transfer their references to `Com`.
+
+[CPU cache](../../crates/shader-pipeline/src/cache.rs) · [DXC adapter](../../crates/shader-pipeline/src/dxc.rs) · [Pinned translator](../../crates/shader-pipeline/Cargo.toml)

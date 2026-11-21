@@ -1,16 +1,7 @@
-//! Naval result side embedded in a retained result. It stores ship/convoy
-//! entries and raw country references.
-//!
-//! The HQ range is borrowed from the task force's attached headquarters and is copied only when its
-//! retained HQ commander resolves. HQ items dereference their character reference before character
-//! authentication. Failure withholds this result detail row alone; its independent result identity
-//! survives with unknown details.
 
 use engine_sites::Rva;
 use crate::{Memory, read};
 
-/// Commander references and HQ support character references. The native range
-/// borrows customizable-building item pointers; none are copied into replay rows.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub leader: u64,
@@ -18,8 +9,6 @@ pub struct DetailsRow {
     pub hq_influences: Vec<u64>,
 }
 
-/// Resolve both full leader handles. Visit the borrowed HQ range only when the HQ commander
-/// resolves; each item selects its character reference.
 pub fn capture_details(
     memory: &impl Memory,
     base: usize,
@@ -79,8 +68,6 @@ pub fn capture_details(
     Ok(row)
 }
 
-/// Reads the same influence definitions that the result HQ tooltip evaluates,
-/// even after the active combat no longer exists. Definitions remain raw terms.
 pub fn capture_influences(
     memory: &impl Memory,
     base: usize,
@@ -133,8 +120,6 @@ pub fn capture_influences(
     Ok([start, buffers.lengths[0] - start])
 }
 
-/// Unresolved retained HQ commanders hide HQ controls and skip the
-/// borrowed range. A failed lookup still means unknown.
 fn hq_range(
     memory: &impl Memory,
     base: usize,
@@ -151,8 +136,6 @@ fn hq_range(
     Ok((leader, begin, end))
 }
 
-/// Walks one retained native pointer list; callers authenticate each concrete
-/// entry. The first validated header supplies the native order and entry count.
 pub fn visit_entries(
     memory: &impl Memory,
     base: usize,
@@ -182,21 +165,14 @@ pub fn visit_entries(
     Ok(array.count as usize)
 }
 
-/// CNavalCombatResultSide vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a670);
 
-/// CNavalCombatResultSide extent 0x70.
 pub const SIZE: usize = 0x70;
-/// CNavalCombatResultSide member pointer array.
 pub const MEMBERS: usize = 0x20;
-/// CNavalCombatResultSide country-id u32 array.
 pub const COUNTRIES: usize = 0x38;
-/// CNavalCombatResultSide country capacity u32.
 #[cfg(test)]
 pub const COUNTRIES_CAPACITY: usize = 0x40;
-/// CNavalCombatResultSide country count u32.
 pub const COUNTRIES_COUNT: usize = 0x44;
-/// CNavalCombatResultSide constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d4_1340);
 
 pub(crate) fn authenticate(
@@ -501,8 +477,6 @@ mod detail_tests {
         };
         let complete = run(8, None);
         assert_eq!(complete.0, Ok([0, 8]));
-        // Every source reaches accumulator 0x4000, so all eight keep their
-        // native occurrence and share the first one's term span.
         assert_eq!(complete.1, [8, 1]);
         assert_eq!(complete.2, [8, 1]);
         for (index, source) in complete.3.iter().enumerate() {
@@ -531,8 +505,6 @@ mod detail_tests {
         let base = 0x1_4000_0000usize;
         let mut bytes = vec![0; 0x200];
         bytes[0x100..0x108].copy_from_slice(&((base + VTABLE_RVA.0) as u64).to_le_bytes());
-        // Even a malformed/unreadable range is irrelevant when the native
-        // window hides HQ controls. Known absence is distinct from a fault.
         bytes[0x160..0x168].copy_from_slice(&0xffff_ffff_ffff_fff0u64.to_le_bytes());
         bytes[0x168..0x170].copy_from_slice(&1u64.to_le_bytes());
         let memory = SliceMemory {
@@ -557,7 +529,6 @@ mod detail_tests {
             Ok([0; 2])
         );
 
-        // A nonzero retained handle can also be known gone after deletion.
         live_hq(&mut bytes);
         bytes[0x158..0x160].copy_from_slice(&HQ.to_le_bytes());
         bytes[0x1010..0x1014].copy_from_slice(&0u32.to_le_bytes());

@@ -1,4 +1,3 @@
-//! Mesh input declarations, compact vertices and skin weights.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use installed_content_core::{
@@ -12,10 +11,8 @@ use shader_pipeline::{
 use std::sync::Arc;
 use std::{collections::BTreeMap, io};
 
-/// Imported geometry stays in mesh space; actor transforms belong to b1/b2.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Geometry {
-    /// the game's compact native allocation.
     pub vertices: Vec<f32>,
     pub skin: Vec<SkinVertex>,
     pub indices: Vec<u32>,
@@ -29,7 +26,6 @@ impl Geometry {
         if count == 0 {
             return Err(io::Error::other("native mesh has no positions"));
         }
-        // The game packs correctly sized p,n,ta,u0,u1,u2,u3 without holes.
         let normals = (sub.normals.len() == count).then_some(&sub.normals);
         let tangents = (sub.tangents.len() == count).then_some(&sub.tangents);
         let uv0 = (sub.uv0.len() == count).then_some(&sub.uv0);
@@ -41,7 +37,6 @@ impl Geometry {
             + usize::from(uv0.is_some()) * 2
             + coordinates.iter().filter(|v| v.is_some()).count() * 2;
         let mut vertices = Vec::with_capacity(count * width);
-        // The game writes bit pattern 0x3C23D70A for both repairs, including -0.
         let direction = |mut v: [f32; 3]| {
             if v == [0.; 3] {
                 v[1] = 0.01;
@@ -76,13 +71,11 @@ impl Geometry {
             vertices,
             skin,
             indices: sub.indices.clone(),
-            // The game clears the UV1 bit only when u1 is absent, not wrong-sized.
             uv1: sub.uv1.is_some(),
             stride: (width * 4) as u64,
         })
     }
 
-    /// Fixed vertex fetches, always including UV1 for trees.
     pub fn packed(&self, uv1: bool) -> io::Result<Vec<f32>> {
         let bytes = bytemuck::cast_slice(&self.vertices);
         let known = 0..bytes.len() as u64;
@@ -107,23 +100,11 @@ impl Geometry {
 
 pub struct Pass {
     pub pipeline: Arc<gpu::Pipeline>,
-    /// The technique the pipeline was built from: the recorded effect's when a visual mod's
-    /// replacement fell back, so its vertex inputs are the ones drawn.
     pub selection: shader_pipeline::library::Selection,
     reference: u32,
-    /// What draws of this pass must agree on for their order among a list's figures to leave
-    /// every pixel the same; none where no agreement makes it so ([`Order`]).
     order: Option<Order>,
 }
 
-/// What two draws must agree on for no order of them to leave another pixel: the channels they
-/// write, the bias their depth is tested at, and the stencil bits they set and the value they
-/// set them to. Where they do, the nearer fragment wins whichever was drawn first, the one that
-/// loses leaves nothing of itself behind, and the stencil ends as the same bits whether the
-/// farther draw wrote them before the nearer one hid it or never passed at all. A pass that
-/// could leave another pixel whatever it is drawn beside has none of this: it blends with what
-/// is there, keeps a fragment that is not the nearest, reads or accumulates a stencil, or writes
-/// colour to more than the one target this test weighs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Order {
     writes: u32,
@@ -133,16 +114,12 @@ pub(crate) struct Order {
 
 #[cfg(test)]
 impl Order {
-    /// An order of these channels and stencil, for a test of what two draws must agree on.
     pub(crate) fn for_tests(writes: u32, stencil: (u32, u32)) -> Self {
         Self { writes, bias: [0; 3], stencil }
     }
 }
 
 impl Pass {
-    /// `cache` is shared by the caller's parts, so parts with one program and state share
-    /// a pipeline and consecutive draws rebind only what changed. `instanced` names the constant
-    /// bindings the pass reads one block of per instance ([`gpu::Pass::instanced`]).
     #[allow(clippy::too_many_arguments, reason = "the technique, its geometry and its target")]
     pub fn new(
         cache: &mut gpu::Cache,
@@ -159,8 +136,6 @@ impl Pass {
         )
     }
 
-    /// The game applies the shadow material handles; its map callback does not
-    ///bind the lit map samplers, and the material can update only PS0.
     pub fn caster(
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
@@ -187,7 +162,6 @@ impl Pass {
         caster: bool,
         instanced: u32,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded_selection(selection, |selection| {
             Self::build(
                 cache, device, selection, geometry, format, depth, samples, caster, instanced,
@@ -214,7 +188,6 @@ impl Pass {
             .compiled(selection.index)
             .map_err(io::Error::other)?;
         let mut state = gpu::State::authored(source, technique).map_err(io::Error::other)?;
-        // The game binds material samplers only for physicalPS0..2.
         state.samplers.retain(|key, _| {
             (0..if caster { 1 } else { 3 }).any(|i| *key == binding(i, Stage::Pixel))
         });
@@ -250,21 +223,16 @@ impl Pass {
         self.reference
     }
 
-    /// What this pass's draws must agree on for their order to leave the same pixels.
     pub(crate) fn order(&self) -> Option<Order> {
         self.order
     }
 
-    /// Dynamic mesh state; resource bindings select the executable pipeline.
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_stencil_reference(self.reference);
         pass.set_blend_constant(wgpu::Color::WHITE);
     }
 }
 
-/// What the draws of a pass must agree on for their order to leave every pixel the same, or none
-/// where it keeps a fragment that is not the nearest, blends it with what is there, writes a
-/// stencil a later draw reads, or writes colour to more than one target.
 fn order(
     targets: &[Option<wgpu::ColorTargetState>],
     depth: Option<&wgpu::DepthStencilState>,
@@ -297,10 +265,6 @@ fn order(
     })
 }
 
-/// The stencil bits a pass's draw sets and the value it sets them to, or none where the order of
-/// two draws could leave another stencil: one the pass itself reads, one it counts up or down
-/// from what is there, or one a fragment that fails the depth test writes, which the draw after
-/// it would hide.
 fn stencil(state: &wgpu::StencilState, reference: u32) -> Option<(u32, u32)> {
     use wgpu::StencilOperation as O;
     let kept = |face: &wgpu::StencilFaceState| {
@@ -325,7 +289,6 @@ fn stencil(state: &wgpu::StencilState, reference: u32) -> Option<(u32, u32)> {
     Some((state.write_mask, value))
 }
 
-/// The game copies only three weights. The content vertex shader derives the fourth.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct SkinVertex {
@@ -342,7 +305,6 @@ impl SkinVertex {
     }
 }
 
-// Trees use the same fields with unconditional UV1.
 const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
     0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2
 ];
@@ -357,7 +319,6 @@ fn declaration(uv1: bool, stride: u64) -> gpu::VertexLayout {
     }
 }
 
-/// Omitted UV1 or skin inputs prevent input-layout creation.
 pub fn vertex_layouts(
     inputs: &[VertexInput],
     uv1: bool,
@@ -408,8 +369,6 @@ pub fn vertex_layouts(
     Ok(layouts)
 }
 
-/// Allocate these physical handles and bind them independently
-/// of the material's authored sampler vector, shared by map meshes and particles.
 pub fn map_samplers() -> BTreeMap<u32, Sampler> {
     (4..14)
         .map(|index| {
@@ -459,7 +418,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The depth-stencil state of a pass that keeps the nearest fragment and nothing else.
     fn nearest() -> wgpu::DepthStencilState {
         wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth24PlusStencil8,
@@ -483,9 +441,6 @@ pub(crate) mod tests {
         })
     }
 
-    /// Only a pass whose every kept fragment is the nearest one, blended with nothing and
-    /// writing no stencil, may have its draws reordered among a list's figures; and two of them
-    /// only where they write the same channels at the same bias.
     #[test]
     fn draws_stand_in_any_order_only_where_no_order_of_two_fragments_leaves_another_pixel() {
         let targets = [opaque()];
@@ -504,7 +459,6 @@ pub(crate) mod tests {
             ..nearest()
         };
         assert_eq!(order(&targets, Some(&equal), 0), None, "every fragment passes");
-        // A stencil the pass itself reads, or counts, makes the order of two draws its own.
         let marked = |pass_op, compare| wgpu::DepthStencilState {
             stencil: wgpu::StencilState {
                 front: wgpu::StencilFaceState { compare, pass_op, ..wgpu::StencilFaceState::IGNORE },
@@ -517,9 +471,6 @@ pub(crate) mod tests {
         use wgpu::{CompareFunction as C, StencilOperation as O};
         assert_eq!(order(&targets, Some(&marked(O::Replace, C::Equal)), 4), None, "read");
         assert_eq!(order(&targets, Some(&marked(O::IncrementClamp, C::Always)), 4), None, "counted");
-        // Two passes stand in either order only where they agree: a channel one leaves is a
-        // channel the other's farther fragment keeps, a bias of its own ties them, and a stencil
-        // bit it sets is one the other's hidden fragment would have set differently.
         let set = order(&targets, Some(&marked(O::Replace, C::Always)), 4).expect("set, not read");
         assert_eq!(set.stencil, (4, 4), "the bit it sets and what it sets it to");
         assert_eq!(order(&targets, Some(&marked(O::Replace, C::Always)), 12), Some(set), "4 of 12");
@@ -645,10 +596,6 @@ pub(crate) mod tests {
         assert!(!samplers.contains_key(&binding(4, Stage::Vertex)));
     }
 
-    /// A mesh pass asked for a visual mod's replacement that cannot be laid out (it reads
-    /// COLOR0, which the native mesh declaration cannot supply), built: with the replacement's
-    /// selection, the recorded effect (whose technique blends, unlike the replacement's) and
-    /// the geometry.
     pub(crate) fn fallen_back_pass() -> (
         Pass,
         shader_pipeline::library::Selection,

@@ -1,9 +1,3 @@
-//! Scripted text expanded later from what it read at its hour, without the recording.
-//! Preparation expands a text as [`ScriptedText`] does and records what each of its commands
-//! read ([`Operands`]): the tag and naming operands of each country it names, the key each
-//! scripted localisation selected, each variable's value, and any other property's text as the
-//! preparation's language read it. A reader expands the text again in its own language from
-//! them alone ([`expand`]), and refuses by name what the preparation did not read.
 
 use job_priority::SpawnCarried as _;
 use super::{numeric::format_variable, properties::date_property_at, *};
@@ -14,7 +8,6 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-/// The country properties read from a country's tag and naming operands alone.
 const COUNTRY_TEXT: [&str; 15] = [
     "GetName",
     "GetNameDef",
@@ -33,9 +26,6 @@ const COUNTRY_TEXT: [&str; 15] = [
     "GetRulingIdeologyNoun",
 ];
 
-/// [`COUNTRY_TEXT`]'s property `name` of the country tagged `tag`, from its names (`names`, by
-/// key suffix) and its ruling party's ideology group (`group`) in `localisation`; None for any
-/// other property. The hour's evaluation and a reader share it.
 pub(super) fn country_text(
     name: &str,
     tag: &str,
@@ -49,7 +39,6 @@ pub(super) fn country_text(
             .localise(key.as_bytes())
             .map_err(|refusal| refusal.to_string())
     };
-    // Non-ideology properties probe the current tag without ideology.
     let non_ideology = |suffix: &str| -> Result<String, String> {
         let key = format!("{tag}{suffix}");
         if localisation.get(&key).is_some() {
@@ -58,7 +47,6 @@ pub(super) fn country_text(
             names(suffix)
         }
     };
-    // The first byte's toupper in the "C" locale ([`crt_case_text`]).
     let upper_first = |text: String| crt_case_text(&text, true, true);
     Ok(Some(if is("GetName") {
         names("")?
@@ -95,19 +83,15 @@ pub(super) fn country_text(
         } else {
             group
         };
-        // Lowercase with the "C" locale's tolower.
         crt_case_text(&localise(&key)?, false, false)
     } else {
         return Ok(None);
     }))
 }
 
-/// A country an expansion names, as its hour held it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Country {
-    /// Its tag, or why the hour holds none.
     pub(crate) tag: Result<String, String>,
-    /// Its naming operands, or why the hour holds none.
     pub(crate) naming: Result<Naming, String>,
 }
 
@@ -147,31 +131,18 @@ impl<'de> Deserialize<'de> for Country {
     }
 }
 
-/// A command's value, as its hour decided it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Value {
-    /// A [`COUNTRY_TEXT`] property of the country of a canonical slot, named again from its
-    /// tag and naming operands.
     Country(u32),
-    /// The key a scripted localisation selected and the context its own commands were recorded
-    /// in; none when it selected no text.
     Entry(Option<(Vec<u8>, u32)>),
-    /// A variable's value.
     Number(i64),
-    /// A date property of the hour.
     Date,
-    /// Text the same in every language: an id, a null object's, or none.
     Text(String),
-    /// Text as the preparation's language read it, and whether computing it evaluated what may
-    /// set what later commands read.
     Read { text: String, stateful: bool },
-    /// Why it has no value.
     Refused(String),
 }
 
 impl Value {
-    /// `text`, `object`'s property `name`, whose computing evaluated what may set what later
-    /// commands read when `stateful`: kept as the same in every language where it is.
     pub(super) fn of_property(object: Object, name: &str, text: &str, stateful: bool) -> Self {
         let same = match object {
             Object::FactionEnvironment(_) => true,
@@ -189,8 +160,6 @@ impl Value {
         }
     }
 
-    /// Whether it may read or set what the commands before and after it read: a scripted
-    /// localisation's triggers, a variable read, and a property computed by either.
     fn stateful(&self) -> bool {
         matches!(
             self,
@@ -207,29 +176,19 @@ impl Value {
     }
 }
 
-/// A command between brackets, and its value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Command {
     pub(crate) inner: String,
     pub(crate) value: Value,
 }
 
-/// What expansions read at one hour: one text per localisation key. Texts expanded in other
-/// scopes at the same hour take operands of their own.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Operands {
     hour: i32,
-    /// The preparation's language, which [`Value::Read`] texts are in.
     language: String,
-    /// Each country the expansions name, sorted by canonical slot.
     countries: Vec<(u32, Country)>,
-    /// Which of slot zero's names its reserved row had built.
     reserved: Option<u8>,
-    /// Each text recorded, sorted by its localisation key: the context of its commands, or why
-    /// none were read.
     texts: Vec<(Vec<u8>, Result<u32, String>)>,
-    /// The commands each context evaluated, in order: a text's, and each scripted
-    /// localisation's it selected.
     contexts: Vec<Vec<Command>>,
 }
 
@@ -245,12 +204,10 @@ impl Operands {
         self.hour
     }
 
-    /// Whether it records no text.
     pub fn is_empty(&self) -> bool {
         self.texts.is_empty()
     }
 
-    /// The bytes it holds on the heap.
     pub fn heap_bytes(&self) -> usize {
         let text = |text: &Result<String, String>| match text {
             Ok(text) | Err(text) => text.capacity(),
@@ -290,7 +247,6 @@ impl Operands {
                 .sum::<usize>()
     }
 
-    /// The country of canonical `slot`, when recorded.
     fn country(&self, slot: u32) -> Option<&Country> {
         self.countries
             .binary_search_by_key(&slot, |(held, _)| *held)
@@ -298,7 +254,6 @@ impl Operands {
             .map(|at| &self.countries[at].1)
     }
 
-    /// The recording of the text of `key`.
     fn text(&self, key: &[u8]) -> Option<&Result<u32, String>> {
         self.texts
             .binary_search_by(|(held, _)| held.as_slice().cmp(key))
@@ -306,7 +261,6 @@ impl Operands {
             .map(|at| &self.texts[at].1)
     }
 
-    /// Records the text of `key` as `recorded`, unless one is recorded already.
     fn begin_text(&mut self, key: &[u8], recorded: Result<u32, String>) -> bool {
         match self
             .texts
@@ -320,22 +274,17 @@ impl Operands {
         }
     }
 
-    /// A context for commands of its own.
     fn context(&mut self) -> u32 {
         self.contexts.push(Vec::new());
         (self.contexts.len() - 1) as u32
     }
 }
 
-/// An expansion recording what it reads: into `operands`, its commands into context `at`.
 #[derive(Default)]
 pub(super) struct Recording {
     operands: Operands,
     at: u32,
-    /// The key the scripted localisation being evaluated selected, and its context.
     selected: Option<(Vec<u8>, u32)>,
-    /// Properties being computed, whose texts are recorded whole ([`ExpansionScopes::muted`]),
-    /// and whether what they evaluated may set what later commands read.
     muted: u32,
     stateful: bool,
 }
@@ -345,7 +294,6 @@ fn lock(recording: &Mutex<Recording>) -> MutexGuard<'_, Recording> {
 }
 
 impl ExpansionScopes<'_, '_> {
-    /// The recording, unless none is made or a property being computed mutes it.
     fn recorded(&self) -> Option<MutexGuard<'_, Recording>> {
         self.recording
             .as_deref()
@@ -353,14 +301,10 @@ impl ExpansionScopes<'_, '_> {
             .filter(|recording| recording.muted == 0)
     }
 
-    /// Whether the expansion records what it reads.
     pub(super) fn recording(&self) -> bool {
         self.recorded().is_some()
     }
 
-    /// `compute`, recording nothing it evaluates: a property's text, whatever it expanded inside,
-    /// is recorded whole, so a reader never takes those commands for the text's own. Whether
-    /// what it evaluated may set what later commands read is given back with it.
     pub(super) fn muted<T>(&self, compute: impl FnOnce() -> T) -> (T, bool) {
         let Some(recording) = self.recording.as_deref() else {
             return (compute(), false);
@@ -378,8 +322,6 @@ impl ExpansionScopes<'_, '_> {
         (value, stateful)
     }
 
-    /// Records `value` as the value of command `inner`, when the expansion records; while a
-    /// property is computed, only whether it may set what later commands read.
     pub(super) fn note(&self, inner: &str, value: impl FnOnce() -> Value) {
         let Some(mut recording) = self.recording.as_deref().map(lock) else {
             return;
@@ -396,15 +338,11 @@ impl ExpansionScopes<'_, '_> {
         });
     }
 
-    /// Records `reason` as the value of command `inner`, and gives it back.
     pub(super) fn refuse(&self, inner: &str, reason: String) -> String {
         self.note(inner, || Value::Refused(reason.clone()));
         reason
     }
 
-    /// Before a scripted localisation is evaluated: what it selects is kept apart from what
-    /// the one being evaluated around it selected, which this gives back. Its triggers may set
-    /// what later commands read, which a property computing it records.
     pub(super) fn begin_entry(&self) -> Option<(Vec<u8>, u32)> {
         let mut recording = self.recording.as_deref().map(lock)?;
         if recording.muted != 0 {
@@ -414,14 +352,11 @@ impl ExpansionScopes<'_, '_> {
         recording.selected.take()
     }
 
-    /// After it: what it selected, the one around it's `outer` restored.
     pub(super) fn end_entry(&self, outer: Option<(Vec<u8>, u32)>) -> Option<(Vec<u8>, u32)> {
         self.recorded()
             .and_then(|mut recording| std::mem::replace(&mut recording.selected, outer))
     }
 
-    /// The scripted localisation being evaluated selected `key`: the commands of its text go to
-    /// a context of their own until [`Self::leave`] restores the outer one this gives back.
     pub(super) fn select(&self, key: &[u8]) -> Option<u32> {
         let mut recording = self.recorded()?;
         let context = recording.operands.context();
@@ -439,8 +374,6 @@ impl ExpansionScopes<'_, '_> {
 }
 
 impl<'a> ScriptedText<'a> {
-    /// What a reader reads again of `object`'s property `name` in its own language, recorded
-    /// with what that reads; None for a property a reader is given as text.
     pub(super) fn rereads(
         &self,
         object: Object,
@@ -459,8 +392,6 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// Records the tag and naming operands of the country of canonical `slot`, and of the
-    /// overlords its names reach, once.
     fn record_country(&self, operands: &mut Operands, slot: u32) {
         let mut pending = vec![slot];
         while let Some(slot) = pending.pop() {
@@ -490,9 +421,6 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// [`Self::expand_in`], recording in `operands` what `text`, the localisation of `key`,
-    /// reads: each command's value as this hour decides it, and each country its names read.
-    /// A key `operands` records already keeps that recording; text without `[` reads nothing.
     pub fn record(
         &self,
         key: &[u8],
@@ -503,8 +431,6 @@ impl<'a> ScriptedText<'a> {
         self.record_with(key, text, scopes, None, operands)
     }
 
-    /// [`Self::expand`], recorded as [`Self::record`] records: in the root country's own event
-    /// scope.
     pub fn record_root(
         &self,
         key: &[u8],
@@ -515,7 +441,6 @@ impl<'a> ScriptedText<'a> {
         self.record(key, text, &scopes, operands)
     }
 
-    /// [`Self::expand_in_without_random_seed`], recorded as [`Self::record`] records.
     pub fn record_unseeded(
         &self,
         key: &[u8],
@@ -579,7 +504,6 @@ impl<'a> ScriptedText<'a> {
         }
         let expanded = self.process(text, 0, &expansion, 0, Object::Event);
         if let Some(recording) = expansion.recording.take() {
-            // Its copies on larger stacks are gone once the expansion returns.
             let recording = Arc::try_unwrap(recording)
                 .map(|recording| {
                     recording
@@ -593,9 +517,6 @@ impl<'a> ScriptedText<'a> {
     }
 }
 
-/// Expands `text`, the localisation of `key`, from what its preparation recorded of its hour
-/// ([`ScriptedText::record`]), `operands`, in `localisation`'s language; None when it recorded
-/// nothing.
 pub fn expand(
     text: &str,
     key: &[u8],
@@ -607,7 +528,6 @@ pub fn expand(
     let operands = operands.unwrap_or(&empty);
     let context = match operands.text(key) {
         Some(Ok(context)) => Some(*context),
-        // As the hour could not expand it at all.
         Some(Err(reason)) => return Err(reason.clone()),
         None => None,
     };
@@ -616,35 +536,25 @@ pub fn expand(
     recorded.text(text, 0, context, &mut cursor, Nesting::default())
 }
 
-/// Scripted localisations a reader is inside, and whether it reads on a stack that holds as many
-/// as the game nests ([`MAX_SCRIPTED_NESTING`]).
 #[derive(Clone, Copy, Default)]
 struct Nesting {
     entries: usize,
     large: bool,
 }
 
-/// How deep a reader nests scripted localisations on the stack it was called on, as the hour's
-/// evaluation hands deeper ones to a larger stack.
 const SHALLOW: usize = 8;
 
-/// How far an expansion has read each context it reached.
 #[derive(Default)]
 struct Cursor<'r> {
     contexts: HashMap<u32, Reading<'r>>,
 }
 
-/// How far an expansion has read one context.
 struct Reading<'r> {
     evaluated: usize,
-    /// Whether the context holds a command whose value depends on those evaluated before it.
     stateful: bool,
-    /// Once a command is read out of its recorded order: how many of each name were read, and
-    /// the context's commands by name.
     unordered: Option<(HashMap<&'r str, usize>, HashMap<&'r str, Vec<usize>>)>,
 }
 
-/// An hour's recorded operands, named and localised in a reader's language.
 struct Recorded<'r> {
     operands: &'r Operands,
     localisation: &'r Localisation,
@@ -670,7 +580,6 @@ impl<'r> Recorded<'r> {
             .map_err(|refusal| refusal.to_string())
     }
 
-    /// [`ScriptedText::process`] from the commands recorded in `context`; None where none were.
     fn text(
         &self,
         text: &str,
@@ -713,7 +622,6 @@ impl<'r> Recorded<'r> {
         }
     }
 
-    /// The value recorded for this evaluation of `inner` in `context`: its next one there.
     fn command(
         &self,
         context: Option<u32>,
@@ -736,7 +644,6 @@ impl<'r> Recorded<'r> {
         reading.evaluated += 1;
         let (seen, by_name) = match &mut reading.unordered {
             Some(unordered) => unordered,
-            // Read in order so far, the command at this position is this one's next of its name.
             None if commands
                 .get(position)
                 .is_some_and(|command| command.inner == inner) =>
@@ -774,7 +681,6 @@ impl<'r> Recorded<'r> {
         Ok(commands[index].value.clone())
     }
 
-    /// The text of command `inner`, whose recorded value is `value`.
     fn value(
         &self,
         inner: &str,
@@ -819,8 +725,6 @@ impl<'r> Recorded<'r> {
         }
     }
 
-    /// `read`, one scripted localisation deeper: past [`SHALLOW`], on a stack that holds as many
-    /// as the hour's evaluation nested, as that evaluation reads them.
     fn entered(
         &self,
         nesting: Nesting,
@@ -841,7 +745,6 @@ impl<'r> Recorded<'r> {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
-                // As the hour's evaluation reserves: 64 KiB per backstop level.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
                 .spawn_scoped_carried(scope, move || {
                     let _memory = engine_allocation::labels::resume(memory);
@@ -865,8 +768,6 @@ impl<'r> Recorded<'r> {
         })
     }
 
-    /// Whether a scripted localisation's text read every command recorded in `context` that later
-    /// values may depend on: those it left unread may have set what the hour's later commands read.
     fn complete(&self, context: u32, cursor: &Cursor<'r>) -> Result<(), String> {
         let evaluated = cursor
             .contexts
@@ -884,8 +785,6 @@ impl<'r> Recorded<'r> {
         Ok(())
     }
 
-    /// [`country_text`] of the country of canonical `slot`, from its recorded tag and naming
-    /// operands.
     fn country(&self, slot: u32, name: &str) -> Result<Option<String>, String> {
         let tag = match self.operands.country(slot) {
             Some(country) => country.tag.as_deref().map_err(Clone::clone)?,
@@ -895,7 +794,6 @@ impl<'r> Recorded<'r> {
                 ));
             }
         };
-        // Built only for the properties that name it, not its tag or flag.
         let names = std::cell::OnceCell::new();
         let names = || names.get_or_init(|| self.names(slot));
         country_text(
@@ -907,8 +805,6 @@ impl<'r> Recorded<'r> {
         )
     }
 
-    /// Names of the country of canonical `slot` from its recorded naming operands and those of
-    /// the overlords its names reach, which name it as all of them would.
     fn names(&self, slot: u32) -> CountryNames<'r> {
         let mut reached = BTreeMap::new();
         let mut next = Some(slot);

@@ -1,6 +1,3 @@
-//! FactionTheatres against each saved faction's `icon` and `pings.regions`.
-//! The theatre writer walks the native theatre array in order, so the
-//! saved list position is the recorded ordinal.
 
 use std::{collections::BTreeMap, io};
 
@@ -247,7 +244,6 @@ mod tests {
                 name: b"Western Front".to_vec().into(),
                 owner: Recorded::Value(ENG),
                 commander: Some(COMMANDER).into(),
-                // An alias link resolves to the same saved tag.
                 countries: vec![101, ENG].into(),
             },
             FactionTheatreRow {

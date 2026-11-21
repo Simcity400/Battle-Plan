@@ -1,6 +1,3 @@
-//! The quiet token of acquired air/naval crews. The native country-input hooks
-//! own the refresh/damage writers; equipment destruction forwards aircraft
-//! removal. While either family is unobserved no crew read is certified.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicBool, Ordering};
 static WATCHES: WatchRegistry = WatchRegistry::new();
@@ -20,7 +17,6 @@ pub fn observe_kills(value: bool) {
 pub fn notify(object: usize) -> Notification<'static> {
     WATCHES.notify(object)
 }
-/// `(epoch, revision)` while every crew writer is observed and none runs.
 pub fn quiet() -> Option<(u64, u64)> {
     WATCHES.quiet()
 }
@@ -33,11 +29,11 @@ pub fn collect() {
 pub fn active() -> usize {
     WATCHES.active()
 }
-/// Free the crew certificate tables.
-///
-/// # Safety
-/// Every owning and forwarding hook must be removed and drained, and the
-/// acquisition pool must be stopped so no notification or capture can run.
+#[doc = " Free the crew certificate tables."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " Every owning and forwarding hook must be removed and drained, and the"]
+#[doc = " acquisition pool must be stopped so no notification or capture can run."]
 pub unsafe fn release() {
     unsafe { WATCHES.release() };
 }

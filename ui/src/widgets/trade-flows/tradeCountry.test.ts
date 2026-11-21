@@ -5,8 +5,6 @@ import { bandGroups, countryParts, countryTotal, countryTrade, countryTradeTags,
 import type { TradeFlowsReply } from '../../generated/dashboard';
 
 const A = '[1,1]', B = '[2,2]', C = '[3,3]';
-// A was renamed (AAA, then AAZ); B and C keep their tags. Steel comes after oil in
-// the content's own order, whatever its native index.
 const reply: TradeFlowsReply = { branchId: 'b', decimals: 0,
   countries: ['AAA', 'AAZ', 'BBB', 'CCC'],
   countryIdentities: [
@@ -18,16 +16,12 @@ const reply: TradeFlowsReply = { branchId: 'b', decimals: 0,
   resources: [{ id: 2, token: 'mod_oil', ordinal: 1, name: 'Oil', icon: null }, { id: 9, token: 'mod_steel', ordinal: 1, name: 'Steel', icon: null }],
   firstHour: 0, lastHour: 2000, known: [{ firstHour: 0, lastHour: 95 }], partial: [], warnings: [],
   flows: [
-    // A sells steel to B for two days, across its rename.
     { seller: 0, buyer: 2, sellerIdentity: A, buyerIdentity: B, resource: 9, firstHours: [0, 48], lastHours: [47, 71], deliveredRaw: ['10', '10'],
       sellerTags: [0, 1], buyerTags: [2, 2], factories: [1, 1], convoysAssigned: [0, 0], convoysRequired: [0, 0], deals: [1, 1] },
-    // B sells oil to A from the second day.
     { seller: 2, buyer: 0, sellerIdentity: B, buyerIdentity: A, resource: 2, firstHours: [24, 48], lastHours: [47, 71], deliveredRaw: ['5', '5'],
       sellerTags: [2, 2], buyerTags: [0, 1], factories: [1, 1], convoysAssigned: [0, 0], convoysRequired: [0, 0], deals: [1, 1] },
-    // C's steel deal with A delivers nothing on the first day: still a recorded deal.
     { seller: 3, buyer: 0, sellerIdentity: C, buyerIdentity: A, resource: 9, firstHours: [0], lastHours: [23], deliveredRaw: ['0'],
       sellerTags: [3], buyerTags: [0], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] },
-    // Trade A takes no part in.
     { seller: 3, buyer: 2, sellerIdentity: C, buyerIdentity: B, resource: 2, firstHours: [0], lastHours: [95], deliveredRaw: ['7'],
       sellerTags: [3], buyerTags: [2], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] },
   ] };
@@ -50,16 +44,13 @@ test('a country’s trade is what it bought and sold, in content resource order,
 
 test('partners and resources list the deals running at the day or in the time, with exact amounts', () => {
   const { imports, exports } = countryTrade(trade, A, null);
-  // Day one: only C's deal runs, delivering a recorded zero.
   assert.deepEqual(countryParts(imports, 'imports', 'partner', 'current', 0, 10, reply.known).map(part => [part.id, part.raw]), [[C, 0n]]);
   assert.equal(countryTotal(imports, 'current', 0, 10, reply.known), 0n);
   assert.deepEqual(countryParts(imports, 'imports', 'partner', 'current', 0, 30, reply.known).map(part => [part.id, part.raw]), [[B, 5n]]);
-  // Over two days, both partners traded: B delivered one day of 5, C nothing.
   assert.deepEqual(countryParts(imports, 'imports', 'partner', 'total', 0, 47, reply.known).map(part => [part.id, part.raw]), [[B, 5n], [C, 0n]]);
   assert.deepEqual(countryParts(imports, 'imports', 'resource', 'total', 0, 47, reply.known).map(part => [part.id, part.raw]), [['2', 5n], ['9', 0n]]);
   assert.equal(countryTotal(exports, 'total', 0, 71, reply.known), 30n);
   assert.equal(countryTotal(exports, 'average', 0, 71, reply.known), 10n);
-  // A renamed holder's partner name is dated to the day shown.
   const [buyer] = countryParts(exports, 'exports', 'partner', 'current', 0, 60, reply.known);
   assert.equal(partnerFact(buyer, 'exports', 60)?.tag, 'BBB');
   assert.equal(partnerFact(countryParts(countryTrade(trade, B, null).imports, 'imports', 'partner', 'current', 0, 60, reply.known)

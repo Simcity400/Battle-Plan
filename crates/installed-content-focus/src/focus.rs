@@ -1,4 +1,3 @@
-//! Focus presentation definitions, using the shared Clausewitz and layer readers.
 use crate::key_names::KeyNames;
 use crate::{
     ResolvedLayers,
@@ -16,16 +15,10 @@ use installed_content_core::{
 };
 use std::{collections::BTreeMap, io};
 
-/// The default focus icon resolved through content.
 pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
 
-/// One file's focus definitions by id.
 pub type Definitions = BTreeMap<String, FocusDefinition>;
 
-/// Each database's definitions by id, a later file's replacing an earlier
-/// one's. The national and continuous databases are separate, so one id can
-/// name a focus in each. A file the port refuses leaves whatever it could
-/// define or redefine in its own database unknown.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Focuses {
     national: Store,
@@ -47,12 +40,9 @@ impl Store {
     }
 }
 
-/// Why a focus lookup by id alone has no answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unknown<'a> {
-    /// A refused file could define or redefine it.
     Gap(&'a Gap),
-    /// Both databases define it, differently.
     Ambiguous,
 }
 
@@ -68,15 +58,10 @@ impl std::fmt::Display for Unknown<'_> {
 }
 
 impl Focuses {
-    /// A focus of one database by id: `None` when none of its files defines
-    /// it; `Err` with the refused file that could define or redefine it.
     pub fn get_in(&self, database: Database, id: &str) -> Result<Option<&FocusDefinition>, &Gap> {
         self.store(database).get(id)
     }
 
-    /// A focus by id alone, for a caller that does not know its database: a
-    /// refused file of either database leaves it unknown, and an id both
-    /// databases define differently is refused.
     pub fn get(&self, id: &str) -> Result<Option<&FocusDefinition>, Unknown<'_>> {
         let national = self.national.get(id).map_err(Unknown::Gap)?;
         let continuous = self.continuous.get(id).map_err(Unknown::Gap)?;
@@ -87,8 +72,6 @@ impl Focuses {
         }
     }
 
-    /// Every id a read file of either database defines, a refused file's
-    /// redefinition aside.
     pub fn ids(&self) -> impl Iterator<Item = &str> {
         self.national
             .definitions
@@ -99,20 +82,16 @@ impl Focuses {
             .into_iter()
     }
 
-    /// Every id a read file of one database defines, a refused file's
-    /// redefinition aside.
     pub fn ids_in(&self, database: Database) -> impl Iterator<Item = &str> {
         self.store(database).definitions.keys().map(String::as_str)
     }
 
-    /// Each database's definitions no refused file could change.
     pub fn known(&self) -> impl Iterator<Item = &FocusDefinition> {
         [Database::National, Database::Continuous]
             .into_iter()
             .flat_map(|database| self.known_in(database))
     }
 
-    /// One database's definitions no refused file could change.
     pub fn known_in(&self, database: Database) -> impl Iterator<Item = &FocusDefinition> {
         let store = self.store(database);
         store
@@ -136,7 +115,6 @@ impl Focuses {
         }
     }
 
-    /// The next file's definitions, replacing earlier ones of its database.
     fn read_file(&mut self, database: Database, definitions: Definitions) {
         let store = self.store_mut(database);
         store.coverage.next_file();
@@ -146,7 +124,6 @@ impl Focuses {
         }
     }
 
-    /// The next file, refused.
     fn refuse_file(&mut self, database: Database, path: &str, cause: String) {
         let coverage = &mut self.store_mut(database).coverage;
         coverage.next_file();
@@ -158,24 +135,16 @@ impl Focuses {
 pub struct FocusDefinition {
     pub localisation: String,
     pub description: String,
-    /// Authored points before saved progress or country-specific modifiers.
     pub cost: Option<f64>,
-    /// First unconditional icon case, for consumers without an event scope.
     pub icon: Option<String>,
-    /// An authored trigger-chosen icon block, distinct from no icon field.
     pub scripted_icon: bool,
-    /// An `icon` field was authored, even an empty block: only then are the qualified sprites tried.
     pub icon_present: bool,
     pub icons: crate::scripted_keys::ScriptedKey,
     pub alternate_icons: crate::scripted_keys::ScriptedKey,
-    /// Parsed alternate icon definitions, including an empty block.
     pub alternate_icon_present: bool,
 }
 
 impl FocusDefinition {
-    /// Alternate icon cases are read only when present and selected by
-    /// window mode. Without that operand, equal normalized choices remain
-    /// exact; differing choices retain a named refusal.
     pub fn icon(
         &self,
         alternate: Option<bool>,
@@ -199,8 +168,6 @@ impl FocusDefinition {
         }
     }
 
-    /// Try country-qualified and token-qualified sprites before icon
-    /// selection. Notification thumbnails use an empty suffix.
     pub fn sprite_overrides(&self, token: &str, tag: Option<&str>) -> Vec<String> {
         let mut sprites = Vec::new();
         if let Some(tag) = tag {
@@ -210,14 +177,10 @@ impl FocusDefinition {
         sprites
     }
 
-    /// [`Self::sprite_overrides`] as focus-tree buttons and continuous-focus items try them:
-    /// only for a focus with an `icon` field; without one they show the unknown icon.
     pub fn button_sprite_overrides(&self, token: &str, tag: Option<&str>) -> Vec<String> {
         if self.icon_present { self.sprite_overrides(token, tag) } else { Vec::new() }
     }
 
-    /// Normal icon selection is independent of the unrecorded alternate-mode
-    /// flag and retains the default icon fallback.
     pub fn select_normal_icon(
         &self,
         evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -238,21 +201,15 @@ fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<Option<&'a str>> {
         .transpose()
 }
 
-/// The database a file is read into, by its directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Database {
-    /// `common/national_focus`.
     National,
-    /// `common/continuous_focus`.
     Continuous,
 }
 
 #[derive(Clone, Copy)]
 enum Node {
-    /// The national database's tokens: `focus_tree`,
-    /// `shared_focus`, `joint_focus`, `search_filter_prios`, `style`.
     NationalFile,
-    /// The continuous database reads only `continuous_focus_palette` roots.
     ContinuousFile,
     Tree,
     Palette,
@@ -270,10 +227,6 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-/// National files read trees, shared focuses, and joint focuses; continuous
-/// files read palettes and continuous focuses. Both use persistent object
-/// semantics, and focus reads add source metadata. Each database reports
-/// and skips roots belonging to the other.
 pub fn parse(
     input: &[u8],
     database: Database,
@@ -286,7 +239,6 @@ pub fn parse(
         Database::National => NationalFile,
         Database::Continuous => ContinuousFile,
     };
-    // National files use lexer mode 1; continuous files use mode 0.
     let mode = match database {
         Database::National => native::Mode::SkipMark,
         Database::Continuous => native::Mode::KeepMark,
@@ -313,8 +265,6 @@ pub fn parse(
                 (Tree, Some(b"shortcut")) => Shape::Object(Shortcut),
                 (Tree, Some(b"inlay_window")) => Shape::Object(Inlay),
                 (Tree, Some(b"initial_show_position")) => Shape::Object(Position),
-                // Some lists read lexer tokens while retaining the value slot;
-                // `search_filters` resolves entries into that slot.
                 (Tree, Some(b"continuous_focus_position")) | (Palette, Some(b"position")) => {
                     if field.opens() {
                         Shape::RawList
@@ -362,10 +312,8 @@ pub fn parse(
                 )
                 | (Continuous, Some(b"select_effect" | b"cancel_effect" | b"daily_reward")) => {
                     if field.keyword_is("complete_tooltip") {
-                        // Complete-tooltip effects use a zero scope mask.
                         Shape::EffectIn(0)
                     } else {
-                        // Other effects use country scope.
                         Shape::EffectIn(ScopeKind::Country.bit())
                     }
                 }
@@ -430,8 +378,6 @@ pub fn parse(
                         | b"current",
                     ),
                 ) => Shape::One,
-                // Point reads consume `{` followed by seven tokens, `x = n y = n }`.
-                // Only that exact form matches list consumption, as checked below.
                 (Inlay, Some(b"position")) => {
                     if !field.opens() {
                         refused.push(format!(
@@ -451,7 +397,6 @@ pub fn parse(
                     Shape::One
                 }
                 (Style, _) => {
-                    // An unknown token would stall the game reader; refuse it by name.
                     refused.push(format!(
                         "focus style field {}: unsupported native nonterminating dispatch",
                         String::from_utf8_lossy(&field.key.text)
@@ -478,8 +423,6 @@ pub fn parse(
     if let Some(cause) = refused.first() {
         return Err((crate::DiagnosticKind::Refused, invalid(cause)));
     }
-    // Offsets accept two-number or x/y forms. Fixed-length point reads accept
-    // only `x = n y = n`; other recovery forms remain refused.
     fn vectors(items: &[Item], inlay: bool) -> io::Result<()> {
         for item in items {
             if let Some(children) = item.value.items() {
@@ -555,7 +498,6 @@ pub fn parse(
                     FocusDefinition {
                         localisation: localisation.into(),
                         description: format!("{localisation}_desc"),
-                        // Failed fixed5 scans retain the previous cost.
                         cost: children
                             .iter()
                             .rev()
@@ -579,7 +521,6 @@ pub fn parse(
         Ok(())
     }
     let mut result = BTreeMap::new();
-    // A root the database does not read was reported and skipped.
     let roots: &[&str] = match database {
         Database::National => &["focus_tree", "shared_focus", "joint_focus"],
         Database::Continuous => &["continuous_focus_palette"],
@@ -600,9 +541,6 @@ pub fn parse(
     ))
 }
 
-/// `NDefines.NFocus.FOCUS_POINT_DAYS` from the evaluated defines. Content
-/// the defines reader refuses, or a missing or non-positive value, leaves the
-/// days unavailable; file errors still fail.
 pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
     let defines = match crate::defines::read(layers) {
         Ok(defines) => defines,
@@ -615,17 +553,14 @@ pub fn point_days(layers: &ResolvedLayers) -> io::Result<Option<f64>> {
         .filter(|days| days.is_finite() && *days > 0.0))
 }
 
-/// Reader diagnostics with severity retained from their creation sites.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     read_databases(layers, true)
 }
 
-/// National-focus lookup does not read the separate continuous database.
 pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     read_databases(layers, false)
 }
 
-/// Folder lookup ignores case, but paths retain their layer's spelling.
 fn focus_database(path: &[u8]) -> Option<Database> {
     let lower = path.to_ascii_lowercase();
     if lower.starts_with(b"common/national_focus/") {
@@ -637,7 +572,6 @@ fn focus_database(path: &[u8]) -> Option<Database> {
     }
 }
 
-/// Layer then byte-path order; non-UTF-8 archive filenames must still load.
 fn database_paths(
     layers: &ResolvedLayers,
     continuous: bool,
@@ -677,9 +611,6 @@ fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut result = Focuses::default();
     let mut warnings = Vec::new();
-    // Verify reads in order: an I/O error must never reach a later path or
-    // contribute its uncovered-read diagnostics. Only parsing is parallel.
-    // Each wave retains at most one file per worker; every path is consumed.
     for wave in paths.chunks(workers.max(1)) {
         let files = wave
             .iter()
@@ -716,7 +647,6 @@ fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
                     .collect::<Vec<_>>()
             })
         };
-        // Completion order cannot change duplicate precedence or diagnostics.
         for ((path, _), parsed) in files.into_iter().zip(parsed) {
             match parsed {
                 Ok((definitions, notes)) => {
@@ -727,8 +657,6 @@ fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
                             .map(|(kind, note)| (kind, format!("{path}: {note}"))),
                     );
                 }
-                // What the refused file defines or redefines is unknown, never an earlier
-                // file's definition or an absence.
                 Err((kind, error)) => {
                     warnings.push((
                         kind,
@@ -906,8 +834,6 @@ free_operative = { operative = a } free_operative = { operative = b }
     fn inlay_positions_take_only_the_read_int_point_form() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // This malformed point would consume closing braces and the next
-        // focus identifier, so it remains refused.
         assert!(
             parse(
                 br#"focus_tree={inlay_window={id=w position={1 2}} focus={id=A}}"#,
@@ -1090,13 +1016,10 @@ mod sprite_override_tests {
                 ["GFX_SYN_f_icon", "GFX_f_icon"]
             );
         }
-        // An empty block is still an icon field.
         let empty = definition(b"focus_tree={focus={id=f_empty icon={}}}", "f_empty", Database::National);
         assert_eq!(empty.button_sprite_overrides("f_empty", Some("SYN")), ["GFX_SYN_f_empty", "GFX_f_empty"]);
-        // Without one the focus shows the unknown icon, whatever qualified sprites exist.
         let bare = definition(b"focus_tree={focus={id=f_bare}}", "f_bare", Database::National);
         assert!(bare.button_sprite_overrides("f_bare", Some("SYN")).is_empty());
-        // Summaries outside the tree still try them.
         assert_eq!(bare.sprite_overrides("f_bare", Some("SYN")), ["GFX_SYN_f_bare", "GFX_f_bare"]);
     }
 }

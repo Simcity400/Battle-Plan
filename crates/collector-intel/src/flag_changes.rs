@@ -1,11 +1,3 @@
-//! Allocation-free notifications from the native writers of every scripted
-//! flag manager ([`engine_mutations::script_flag_mutations`]). A detour only notifies
-//! the shared watch registry ([`WatchRegistry`]) for the manager its first
-//! argument names, counts its site and calls the original; it never changes
-//! game behaviour. Receivers are the `CFlagManager` addresses a ScriptFlags
-//! capture registered; a notification never infers a scope. Anything
-//! unobserved (disabled, poisoned, a refused registration, an epoch change, a
-//! running writer) makes the capture read that manager afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -20,22 +12,14 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read managers; reused and read rows; quiet hours.
 static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-/// Scopes observed by the complete sizing census or capture, for off-thread sizing.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
 static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the watched managers, which every writer marks,
-/// the structure token, and each writer site's calls.
 pub struct Watches {
     registry: WatchRegistry,
-    /// Moved by the [`STRUCTURE_SITES`]: the writers that build, release,
-    /// destroy, clear or replace a whole manager, which every writer of a
-    /// scope root calls in the same call.
     structure: WatchRegistry,
     calls: [AtomicU64; SITES],
-    /// Tests: stands in for the roster domain ([`crate::roster_changes`]).
     #[cfg(any(test, feature = "test-support"))]
     roster: WatchRegistry,
 }
@@ -57,10 +41,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `manager`, which it marks; a [`STRUCTURE_SITES`]
-    /// writer also moves the structure token. Dropping the guards notifies
-    /// its return.
     pub fn notify(&self, manager: usize, site: usize) -> Notifications<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         Notifications(
@@ -71,7 +51,6 @@ impl Watches {
         )
     }
 
-    /// An enabled domain with a table for `managers` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(managers: usize) -> Self {
         let watches = Self::new();
@@ -83,7 +62,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -91,31 +69,16 @@ impl Watches {
         self.roster.boundary(invalidate);
     }
 
-    /// Tests: a roster writer runs and returns.
     #[cfg(any(test, feature = "test-support"))]
     pub fn roster_write(&self) {
         drop(self.roster.notify(0));
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// `(epoch, sequence)` of one manager, registering it; `None` when it
-    /// cannot be observed. Equal values across hours prove that no observed
-    /// writer touched it.
     fn sequence(&self, manager: usize) -> Option<(u64, u64)>;
-    /// `(epoch, revision)` of the structure token while it is observed and
-    /// no writer runs: equal values across hours prove that no flag manager
-    /// was built, released, destroyed, cleared or replaced whole in between,
-    /// and with them that no global, country or state scope root changed
-    /// (every root writer builds, destroys or clears a manager in the same
-    /// call).
     fn structure(&self) -> Option<(u64, u64)>;
-    /// The single consumer's hourly take of the managers a writer marked
-    /// ([`WatchRegistry::take`]); `None` certifies nothing.
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// The character roster's token ([`crate::roster_changes::roster`]):
-    /// equal values prove the roster's occurrences, order and ids unchanged.
     fn roster(&self) -> Option<(u64, u64)>;
 }
 
@@ -127,7 +90,6 @@ impl Changes for Watches {
         self.structure.quiet()
     }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
-        // A running writer withholds the token and the take alike.
         self.structure.quiet()?;
         self.registry.take(visit)
     }
@@ -141,7 +103,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn sequence(&self, manager: usize) -> Option<(u64, u64)> {
@@ -158,40 +119,26 @@ impl Changes for Observer {
     }
 }
 
-/// The writers that build, release, destroy, clear or replace a whole
-/// Manager  ([`MUTATIONS`] indices: the save reader, clear flags, the row
-/// array assignment, the constructor, the embedded release and the
-/// destructor). Every writer of a scope root calls one of them in the same
-/// call, so they move the structure token besides marking their manager.
 const STRUCTURE_SITES: [usize; 6] = [2, 5, 6, 7, 8, 9];
 
-/// A writer's notifications: its manager's mark and, for a
-/// [`STRUCTURE_SITES`] writer, the structure token's.
 pub struct Notifications<'a>(
     #[allow(dead_code)] Notification<'a>,
     #[allow(dead_code)] Option<Notification<'a>>,
 );
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active() + WATCHES.structure.active()
 }
 
-/// Slots of the installed manager table.
 #[cfg(test)]
 pub(crate) fn capacity() -> usize {
     WATCHES.registry.capacity()
 }
 
-/// Tests: holds every test on this domain's process-wide state, which starts
-/// as a fresh process's (no table installed or offered, no scope or embedded
-/// demand, no counts).
 #[cfg(test)]
 pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     static TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = TEST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: every test that notifies, sizes or captures through these
-    // statics holds the guard, and no hook is installed in tests.
     unsafe {
         WATCHES.registry.release();
         WATCHES.structure.release();
@@ -206,26 +153,16 @@ pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
     WATCHES.structure.boundary(invalidate);
 }
 
-/// The existing pre-install sizing walk observed every ScriptFlags scope,
-/// including empty managers. Replace an embedded-only offer before the
-/// first boundary installs it: later growth waits for an invalidating hour.
 pub(crate) fn offer_scopes(scopes: usize) {
     SCOPES.fetch_max(scopes, Ordering::Relaxed);
     presize();
 }
 
-/// Off the game thread: size watches from the complete scope census plus
-/// embedded stores. A later larger table waits for an invalidating hour,
-/// while the first installs at once. Existing daily MIO sizing contributes
-/// embedded stores without an hourly scan.
 pub fn offer_embedded(scopes: usize) {
     EMBEDDED_SCOPES.fetch_max(scopes, Ordering::Relaxed);
     presize();
@@ -244,25 +181,19 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's managers and rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
-    /// The walk published the held rows of a quiet hour without walking a
-    /// scope.
     pub quiet: bool,
 }
 
-/// A worker publishes one capture's counts and, when it walked every scope,
-/// their number for sizing.
 pub fn record(counts: &Counts, scopes: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -283,14 +214,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A withheld site leaves the family uninstalled; ScriptFlags then
-    /// reads every manager afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A withheld site leaves the family uninstalled; ScriptFlags then"]
+    #[doc = " reads every manager afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "flag_changes")
@@ -326,10 +257,6 @@ impl Hooks {
             WATCHES.registry.set_enabled(false);
             WATCHES.structure.set_enabled(false);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -349,9 +276,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe {
             WATCHES.registry.release();
             WATCHES.structure.release();
@@ -359,10 +283,6 @@ impl Drop for Hooks {
     }
 }
 
-// Each site takes at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original; the first names the manager as
-// its [`engine_mutations::script_flag_mutations::Receiver`] says. The notification
-// covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($first:ident $(, $arg:ident)*)) => {
         unsafe extern "system" fn $name($first: usize $(, $arg: usize)*) -> usize {
@@ -374,16 +294,9 @@ macro_rules! callback {
         }
     };
 }
-// Set flag (manager, token, value, duration).
 callback!(set_flag, 0, (manager_, token, value, duration));
-// Set playthrough flag (manager, token, value, duration).
 callback!(set_playthrough_flag, 1, (manager_, token, value, duration));
-// Read flags (manager, reader).
 callback!(read_flags, 2, (manager_, reader));
-// Daily flags (manager): every scope's daily update calls it, but it writes only
-// a manager holding a positive remaining duration
-// ([`engine_scripts::cflag_manager::daily_expiry_writes`]), so only such a call
-// notifies; the others leave the quiet token standing.
 unsafe extern "system" fn daily_flags(manager_: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FlagChanges);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -393,15 +306,9 @@ unsafe extern "system" fn daily_flags(manager_: usize) -> usize {
         unsafe { std::mem::transmute(ORIGINAL[3].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(manager_) })
 }
-// Clear flag (manager, token).
 callback!(clear_flag, 4, (manager_, token));
-// Clear flags (manager).
 callback!(clear_flags, 5, (manager_));
-// Assign flags (the manager's row array, rows, count).
 callback!(assign_flags, 6, (rows_, source, count));
-// Construct flags (manager).
 callback!(construct_flags, 7, (manager_));
-// Release flags (manager).
 callback!(release_flags, 8, (manager_));
-// Destroy flags (manager, flags).
 callback!(destroy_flags, 9, (manager_, flags));

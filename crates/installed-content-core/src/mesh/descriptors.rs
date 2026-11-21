@@ -7,13 +7,9 @@ use crate::{ResolvedLayers, crt, parser, script_files::ScriptPath};
 
 use super::{Material, SubMesh, Transform, invalid, parse};
 
-/// One `meshsettings` block: a per (shape, material index) override of the
-/// `.mesh`'s own textures and effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshSetting {
-    /// The shape node name inside the `.mesh`.
     pub name: String,
-    /// Raw child ordinal within the named shape; exactly -1 matches every ordinal.
     pub index: i32,
     pub diffuse: Option<String>,
     pub normal: Option<String>,
@@ -24,7 +20,6 @@ pub struct MeshSetting {
 
 impl Default for MeshSetting {
     fn default() -> Self {
-        // An unset index matches every child ordinal.
         Self {
             name: String::new(),
             index: -1,
@@ -38,7 +33,6 @@ impl Default for MeshSetting {
 }
 
 impl MeshSetting {
-    /// An empty name matches immediately, regardless of index.
     pub fn applies(&self, shape: &str, child_index: usize) -> bool {
         self.name.is_empty()
             || (self.name == shape
@@ -46,23 +40,15 @@ impl MeshSetting {
     }
 }
 
-/// The engine's squared cull distance of a 3D type that sets none: 430 map units.
 pub const DEFAULT_CULL_DISTANCE_SQUARED: f32 = 430.0 * 430.0;
 
-/// One `pdxmesh` block of a `gfx/entities/*.gfx` file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshDefinition {
     pub name: String,
-    /// The `.mesh` path, relative to the content root.
     pub file: String,
-    /// `scale`, default 1.0.
     pub scale: f32,
     pub settings: Vec<MeshSetting>,
-    /// `animation = { id = … type = … }`: the animation **name** this mesh
-    /// plays for each state animation id, in file order.
     pub animations: Vec<(String, String)>,
-    /// `cull_distance`, squared after every assignment, a failed conversion squaring the value
-    /// it keeps, as the engine reads it; [`DEFAULT_CULL_DISTANCE_SQUARED`] when none is set.
     pub cull_distance_squared: f32,
 }
 
@@ -80,8 +66,6 @@ impl Default for MeshDefinition {
 }
 
 impl MeshDefinition {
-    /// Selects the first matching row and applies only
-    /// nonempty texture/shader overrides; later matching rows are never merged.
     pub fn material(&self, shape: &str, sub: &SubMesh) -> Material {
         let mut material = sub.material.clone().unwrap_or_default();
         if let Some(setting) = self
@@ -111,27 +95,14 @@ impl MeshDefinition {
     }
 }
 
-/// One `attach` block of an `entity`.
-///
-/// The block is `attach = { name = "<own name>" <joint> = "<entity>" }`: the
-/// `name` is the attachment's own handle, which `propagate_state` addresses and
-/// which a `clone` overrides by, and the one other key is a joint of the
-/// parent's skeleton verbatim. Its spelling is retained so the attachment
-/// can resolve the same joint in the matching `.mesh`, independently of
-/// the attachment's own handle.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Attachment {
-    /// The attachment's own handle.
     pub name: String,
-    /// The parent skeleton's joint it hangs from.
     pub joint: String,
-    /// The entity attached there.
     pub entity: String,
 }
 
 impl Attachment {
-    /// The name `propagate_state` addresses the attachment by: its own
-    /// handle, or its joint when the block names no handle.
     pub fn handle(&self) -> &str {
         if self.name.is_empty() {
             &self.joint
@@ -141,39 +112,23 @@ impl Attachment {
     }
 }
 
-/// One `entity` block of a `gfx/entities/*.asset` file.
-///
-/// Definitions retain states and events; consumers own their playback clocks.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityDefinition {
     pub name: String,
-    /// `pdxmesh`, the key of a [`MeshDefinition`].
     pub mesh: Option<String>,
-    /// Failed authored binding when no registered mesh survives.
     pub unbound_mesh: Option<String>,
-    /// `clone`, the entity this one inherits from before its own overrides.
     pub clone: Option<String>,
     pub scale: Option<f32>,
-    /// Held `cull_radius`, default 1. A clone keeps its parent's radius.
     pub cull_radius: Option<f32>,
-    /// `attach`, in file order.
     pub attachments: Vec<Attachment>,
-    /// `default_state`; the engine's own default is `idle`.
     pub default_state: Option<String>,
-    /// `state = { name = … animation = … }` pairs, in file order. A state name
-    /// occurs several times when the engine picks between weighted variants;
-    /// the first is taken.
     pub states: Vec<EntityState>,
     pub get_state_from_parent: Option<bool>,
     pub locators: Vec<(String, Locator)>,
     pub game_data: Option<Result<EntityGameData, String>>,
-    /// The descriptor files it was declared from, its own first and then each clone parent's
-    /// copied into it, so its origin (the recording or a visual mod) is known; empty for a
-    /// definition parsed from bytes alone.
     pub sources: Vec<ScriptPath>,
 }
 
-/// Allocated on the first entity-level `game_data` field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EntityGameData {
     pub texture_anim_speed: f32,
@@ -200,7 +155,6 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
         return None;
     }
     let mut data = EntityGameData::default();
-    // Float and signed-integer fields use the shared CRT scans.
     for field in fields {
         match field.key.as_deref() {
             Some(b"texture_anim_speed") => {
@@ -225,7 +179,6 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
                     ));
                 }
                 for (index, value) in values.iter().enumerate() {
-                    // Ordered x/y labels are accepted as well as bare values.
                     if value
                         .key
                         .as_deref()
@@ -247,27 +200,19 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
                     data.atlas_size[index] = value;
                 }
             }
-            _ => {} // Unknown keys are logged after allocating the defaults.
+            _ => {}
         }
     }
     Some(Ok(data))
 }
 
-/// One entity `locator`: a transform in entity space, or in the space of its
-/// `parent_joint`. Its fields are `name`, `position`, `rotation` (degrees),
-/// `scale` (default 1) and `parent_joint`. Registration resolves the joint
-/// name against the bound mesh's skeleton. A joint absent from that skeleton
-/// is logged and the locator stays in entity space. A clone keeps the
-/// parent's registered locator order and joint ordinals.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Locator {
     pub transform: Transform,
     pub parent_joint: Option<String>,
-    /// Registration mesh whose skeleton ordinal a clone copies unchanged.
     pub origin_mesh: Option<String>,
 }
 
-/// Authored state variants retain their order and events, including states with no clip.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityState {
     pub name: String,
@@ -275,9 +220,6 @@ pub struct EntityState {
     pub looping: bool,
     pub next_state: Option<String>,
     pub chance: f32,
-    /// Fixed5 chance, stored as the low i32 word.
-    /// Parsed states retain the genuine omitted/failed-read zero. `None`
-    /// preserves legacy manually constructed states' float weighting.
     pub chance_weight: Option<i32>,
     pub blend: f32,
     pub speed: f32,
@@ -285,30 +227,23 @@ pub struct EntityState {
     pub random_start: f32,
     pub propagate: Vec<(String, String)>,
     pub events: Vec<EntityEvent>,
-    /// State-mode `game_data.hitmiss_effect` rows, in authored order.
     pub naval_hitmiss_effects: Vec<NavalHitMissEffect>,
-    /// A named unsupported form. Consumers
-    /// must refuse these timings instead of treating the retained prefix as complete.
     pub naval_hitmiss_error: Option<String>,
 }
 
-/// Each appended hit/miss row starts at zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NavalHitMissEffect {
     pub time: f32,
-    /// `small` = 0 and `big` = 1; an unknown type retains the previous value.
     pub kind: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EntityEvent {
-    /// Callback name dispatched when the event fires.
     pub id: Option<String>,
     pub time: f32,
     pub node: String,
     pub light: Option<String>,
     pub particle: Option<String>,
-    /// Sound played by the event; retained for consumers without audio.
     pub sound: Option<String>,
     pub keep_particle: bool,
     pub trigger_once: bool,
@@ -326,14 +261,9 @@ fn state_naval_hitmiss_effects(
         };
         for field in fields {
             if !field.keyword_is("hitmiss_effect") {
-                // An unexpected field is reported. Recovery does nothing
-                // for a consumed literal scalar; the surrounding reader
-                // clears that error and continues with subsequent fields.
                 if fully_consumed_literal(field) {
                     continue;
                 }
-                // An unknown block skip resolves variables. The tree cannot
-                // reproduce that table or an unresolved value's block expansion.
                 error.get_or_insert_with(|| {
                     format!(
                         "state game_data has unexpected field {}",
@@ -346,15 +276,11 @@ fn state_naval_hitmiss_effects(
                 error.get_or_insert_with(|| "state hitmiss_effect is not a native block".into());
                 continue;
             };
-            // Each eight-byte row starts at zero before it is read and appended.
             let mut effect = NavalHitMissEffect::default();
             for member in record {
                 let time = member.keyword_is("time");
                 let kind = member.keyword_is("type");
                 if !time && !kind {
-                    // Unknown scalar fields are ignored. An unconsumed
-                    // block is read as subsequent keys by the state reader;
-                    // unresolved variables can alter that same reader table.
                     if !fully_consumed_literal(member) {
                         error.get_or_insert_with(|| {
                             "state hitmiss_effect has an unsettled unknown member".into()
@@ -375,17 +301,10 @@ fn state_naval_hitmiss_effects(
                     continue;
                 }
                 if time {
-                    // Float reads use the shared CRT prefix scan;
-                    // a conversion that stores nothing leaves the previous bits.
-                    // Its scalar error recovery does not poison the following rows.
                     if let Some(value) = crt::scan_f32(value) {
                         effect.time = value;
                     }
                 } else {
-                    // String reads compare the entire value without case
-                    // differences, including quoted values.
-                    // A reported LF becomes "Unreadable String", hence leaves
-                    // the prior kind just as every other unknown type does.
                     let value = parser::read_string(value);
                     if value.eq_ignore_ascii_case(b"small") {
                         effect.kind = 0;
@@ -400,8 +319,6 @@ fn state_naval_hitmiss_effects(
     (effects, error)
 }
 
-/// Unknown scalar fields are fully consumed only when no script-variable
-/// definition/reference can change the native token's kind or block recovery.
 fn fully_consumed_literal(item: &parser::Item) -> bool {
     item.key
         .as_deref()
@@ -414,8 +331,6 @@ fn literal_value(item: &parser::Item) -> Option<&[u8]> {
     (item.quoted() || !value.starts_with(b"@")).then_some(value)
 }
 
-/// Structural consumption checks for the reached state text and naval-data
-/// readers only. Encoding refusals and known scalar no-ops do not unsettle a file.
 fn unsettled_state_data(fields: &[parser::Item]) -> Option<&'static str> {
     for field in fields {
         if field.keyword_is("name") || field.keyword_is("animation") {
@@ -453,8 +368,6 @@ fn unsettled_state_data(fields: &[parser::Item]) -> Option<&'static str> {
     None
 }
 
-/// State names and animations retain at most 255 bytes followed by a NUL.
-/// Neither whitespace trimming nor LF replacement is applied.
 fn state_text(items: &[parser::Item], key: &str, error: &mut Option<String>) -> String {
     let mut stored: &[u8] = b"";
     for field in items.iter().filter(|item| item.keyword_is(key)) {
@@ -471,8 +384,6 @@ fn state_text(items: &[parser::Item], key: &str, error: &mut Option<String>) -> 
         let value = parser::c_string(value);
         stored = &value[..value.len().min(255)];
     }
-    // Each native write replaces the stored bytes. An earlier unrepresentable
-    // truncation must not refuse a later valid overwrite of the same field.
     match std::str::from_utf8(stored) {
         Ok(value) => value.to_owned(),
         Err(_) => {
@@ -495,82 +406,41 @@ fn number(items: &[parser::Item], key: &[u8], fallback: f32) -> f32 {
         .unwrap_or(fallback)
 }
 
-/// One `animation = { name = … file = … }` block of a `gfx/models/**/*.asset`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AnimationDefinition {
     pub name: String,
-    /// The `.anim` path, already resolved against the descriptor's own
-    /// directory and relative to the content root.
     pub file: String,
 }
 
-/// What a name resolved to: the `.mesh` to load, its world scale and its
-/// material overrides.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedMesh<'a> {
     pub definition: &'a MeshDefinition,
-    /// `entity.scale` times `pdxmesh.scale`.
-    ///
-    /// Simultaneous authored scales compose here; their relative precedence
-    /// in the game remains unverified. When only one is authored, the other
-    /// contributes its default factor of one, so both readings agree.
     pub scale: f32,
 }
 
-/// The `pdxmesh` and `entity` blocks of a set of descriptor files.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Descriptors {
     pub meshes: BTreeMap<String, MeshDefinition>,
     pub entities: BTreeMap<String, EntityDefinition>,
-    /// `animation` blocks, keyed by the name a `pdxmesh` refers to them by.
     pub animations: BTreeMap<String, AnimationDefinition>,
 }
 
-/// An entity with its `clone` chain already applied.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InheritedEntity<'a> {
-    /// `pdxmesh`, from the nearest link that declares one.
     pub mesh: Option<&'a str>,
-    /// Diagnostic name when the registered binding stayed absent.
     pub unbound_mesh: Option<&'a str>,
-    /// `scale`, from the nearest link that declares one.
     pub scale: Option<f32>,
-    /// The ordinary ancestor's held radius: clone declarations never mark
-    /// the radius as authored for replacement.
     pub cull_radius: Option<f32>,
-    /// `default_state`, from the nearest link that declares one.
     pub default_state: Option<&'a str>,
-    /// Every attachment reachable through the chain, merged down it as each
-    /// clone merges its own: a declaration replaces the held attachment
-    /// in its slot, while a new slot is appended.
     pub attachments: Vec<&'a Attachment>,
-    /// State name to animation id, the nearest declaration winning.
     pub states: BTreeMap<&'a str, Vec<&'a EntityState>>,
     pub get_state_from_parent: Option<bool>,
     pub locators: BTreeMap<&'a str, &'a Locator>,
     pub game_data: Option<&'a Result<EntityGameData, String>>,
-    /// The descriptor files of every link of the chain, nearest first
-    /// ([`EntityDefinition::sources`]).
     pub sources: Vec<&'a ScriptPath>,
 }
 
 impl Descriptors {
-    /// Resolves an entity's `clone` chain into one flattened definition.
-    ///
-    /// **The engine's `clone` copies the whole entity and then applies the
-    /// overrides**, so a field the child does not declare is the parent's even
-    /// when the child declares some other field. A mesh override alone
-    /// therefore leaves the parent's scale, default state and undeclared
-    /// state variants in place. Attachments follow their own handle-based
-    /// merge: a child can replace an attached entity while keeping the
-    /// parent's other attachments and their order. State names likewise
-    /// select the nearest declaration, while unrelated states remain
-    /// reachable through the chain. The flattened result retains references
-    /// to those declarations so consumers share their timing and event data.
-    /// Registered clones keep the parent's locator snapshot and radius.
-    ///
-    /// The walk is bounded by the number of entities, so a cyclic `clone`
-    /// terminates.
     pub fn inherit(&self, name: &str) -> Option<InheritedEntity<'_>> {
         let mut out = InheritedEntity::default();
         let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
@@ -609,7 +479,6 @@ impl Descriptors {
             };
             current = parent;
         }
-        // From the farthest ancestor down, as each clone's merge left them.
         for link in chain.into_iter().rev() {
             for attachment in &link.attachments {
                 match out
@@ -625,12 +494,6 @@ impl Descriptors {
         Some(out)
     }
 
-    /// Resolves an entity name to its mesh, world scale, attachments and the
-    /// animation its default state plays.
-    ///
-    /// A name that is a `pdxmesh` and not an entity resolves to that mesh with
-    /// no attachments, which is what every `mapobject_<paletteIndex>` the tree
-    /// layer asks for is.
     pub fn resolve_entity(&self, name: &str) -> Option<ResolvedEntity<'_>> {
         let Some(inherited) = self.inherit(name) else {
             let definition = self.meshes.get(name)?;
@@ -664,34 +527,17 @@ impl Descriptors {
     }
 }
 
-/// The state an entity that declares no `default_state` is in.
 pub const DEFAULT_STATE: &str = "idle";
 
-/// What an entity name resolved to, with its `clone` chain applied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedEntity<'a> {
     pub definition: &'a MeshDefinition,
-    /// `entity.scale * pdxmesh.scale`.
     pub scale: f32,
     pub attachments: Vec<&'a Attachment>,
-    /// The `.anim` the entity's default state plays, when one resolves.
     pub animation: Option<&'a AnimationDefinition>,
 }
 
 impl Descriptors {
-    /// Resolves an entity or mesh name to its `.mesh` and world scale.
-    ///
-    /// **Entities are tried first.** The two tables share a namespace and the
-    /// same name can identify a mesh definition and an entity that binds
-    /// that mesh. Taking the mesh first would discard the entity's scale,
-    /// states and inherited fields. An entity lookup preserves those fields
-    /// before choosing its final mesh definition. A name held only by the
-    /// mesh table instead resolves directly to that mesh and its authored
-    /// scale, with no entity chain to apply. Missing bindings remain absent
-    /// rather than selecting an unrelated mesh.
-    ///
-    /// An entity name follows its whole `clone` chain, field by field; see
-    /// [`Descriptors::inherit`].
     pub fn resolve(&self, name: &str) -> Option<ResolvedMesh<'_>> {
         self.resolve_entity(name).map(|entity| ResolvedMesh {
             definition: entity.definition,
@@ -700,8 +546,6 @@ impl Descriptors {
     }
 }
 
-/// Reads the blocks of one already-read descriptor file. `path` is the file's
-/// own path, which an `animation` block's `file` resolves against.
 pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
     settled_state_carriers(&document, path)?;
@@ -710,9 +554,6 @@ pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     Ok(out)
 }
 
-/// Unsupported entity-field consumption can shift the surrounding native file
-/// out of tree alignment. Refuse the file before registering any declaration;
-/// representation-only failures remain scoped to the final stored state text.
 fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result<()> {
     for item in document
         .items
@@ -756,7 +597,6 @@ fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result
     Ok(())
 }
 
-/// Adds one file's blocks; returns the names that replaced an earlier block.
 fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Vec<String> {
     let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
     let mut replaced = Vec::new();
@@ -792,9 +632,6 @@ fn collect(document: &parser::Document, path: &str, out: &mut Descriptors) -> Ve
     replaced
 }
 
-/// Drops unmatched closing braces and closes blocks left open at the end,
-/// leaving strings and comments alone. Several shipped descriptors need it,
-/// and the game loads them; callers use it only after a parse fails.
 pub fn balanced_blocks(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let (mut depth, mut quoted, mut comment, mut escaped) = (0usize, false, false, false);
@@ -833,51 +670,18 @@ pub fn balanced_blocks(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Every descriptor the engine loads, registered as the engine registers it.
-///
-/// Three registries, each filled in its own pass; no file name is derived from
-/// an identifier, and stray braces are balanced as the engine's reader
-/// tolerates them:
-/// - Meshes. Each object in the `.gfx` files follows the particle catalog's
-///   order (startup, `interface`, then `gfx`). Registration prepends it to
-///   its name's bucket; lookup takes the first exact match, so the last
-///   object of a name wins. An entity's `pdxmesh` binds only to a mesh
-///   object, so a name whose last object is an `arrowType`,
-///   `animatedmaptext` or `pdxparticle` is no mesh.
-/// - Animations and lights. Every `gfx/**/*.asset` is read in recursive
-///   directory order. An `animation` registers when its file loads with
-///   `[info]` and `[samples]` blocks; a later successful declaration of the
-///   name replaces its clip. Each `light` registers its fields in the same
-///   pass, and a later declaration of its name rewrites the held record.
-/// - Entities. The same files are read again for `entity` blocks only, after
-///   the other asset registries are ready: see [`Entities`].
 #[derive(Clone, Debug, Default)]
 pub struct Roster {
     pub descriptors: Descriptors,
-    /// Each `light` block's fields by name, the last declaration's.
     pub lights: BTreeMap<String, Vec<parser::Item>>,
-    /// What entity registration logs: dropped clones and failed mesh bindings, each with why.
     pub logged: Vec<String>,
-    /// Files that do not parse even when closed, with the error.
     pub unreadable: Vec<String>,
-    /// Every word such a file holds ([`lexical_names`]), with the first
-    /// such file. Which of its blocks the engine still registers is
-    /// unverified, so each could be a declaration a consumer cannot see. A
-    /// clone whose parent is such a word is one too, with the parent's file:
-    /// the parent it copied may be that file's.
     pub unreadable_names: BTreeMap<String, String>,
-    /// Each registered entity that is a copy of another: the parent its `clone`
-    /// named when the block registered. A later plain block of the name
-    /// replaces the copy, and it is no longer one.
     pub clones: BTreeMap<String, String>,
 }
 
-/// The registered object kinds; only the first is a mesh.
 const OBJECTS: [&str; 4] = ["pdxmesh", "arrowType", "animatedmaptext", "pdxparticle"];
 
-/// Animation and light names occupy 64 bytes. An entity's name, `clone`
-/// and `pdxmesh` each occupy 256 bytes, ending with a NUL. A
-/// longer name would be cut, which is not modelled.
 const ANIMATION_NAME: usize = 63;
 const ENTITY_NAME: usize = 255;
 
@@ -904,7 +708,6 @@ impl Roster {
                 continue;
             };
             let path = file.text();
-            // Animation paths need a UTF-8 folder, but the descriptor filename need not be UTF-8.
             let directory = file.folder_text();
             for item in &document.items {
                 if item.keyword_is("animation") {
@@ -956,9 +759,6 @@ impl Roster {
         Ok(roster)
     }
 
-    /// The file's document when it holds any of `words` (without case, as the
-    /// lexer folds keywords), else `None`; a file that does not parse is
-    /// recorded as unreadable.
     fn parse(
         &mut self,
         layers: &ResolvedLayers,
@@ -967,7 +767,6 @@ impl Roster {
     ) -> io::Result<Option<parser::Document>> {
         let text = file.text();
         let path: &str = &text;
-        // A listed file that cannot be read is recorded by path; only what it declares is missing.
         let bytes = match file.read_uncovered(layers) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -993,8 +792,6 @@ impl Roster {
         match read(&bytes) {
             Ok(document) => Ok(Some(document)),
             Err(error) => {
-                // A visual mod's file that does not parse is read as the recording's own file
-                // of that path, named; the names only the mod's file holds stay undecided.
                 if layers.supplied_by_visual_mod(file)
                     && let Some(recorded) = layers.without_overlays()
                     && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
@@ -1022,22 +819,12 @@ impl Roster {
         }
     }
 
-    /// Why a name a descriptor file that does not parse holds is unverified:
-    /// which of that file's blocks the engine still registers is unknown, so
-    /// the name may be declared there ([`Self::unreadable_names`]).
     pub fn unreadable(&self, name: &str) -> Option<String> {
         self.unreadable_names
             .get(name)
             .map(|path| format!("may be declared in {path}, which does not parse"))
     }
 
-    /// The first declaration an entity uses, with the entities attached to it,
-    /// that cannot be played as registered, and why: one a descriptor file that
-    /// does not parse may hold ([`Self::unreadable`]), an attachment cycle, or
-    /// a state whose `animation_speed` is not positive, which entity playback
-    /// refuses. It checks the entity, the `pdxmesh` it names, the animation that
-    /// mesh plays for each state it declares and each attached entity. A name
-    /// no entity registers has no declaration to refuse.
     pub fn refused_declaration(&self, entity: &str) -> Option<String> {
         self.refused_below(entity, &BTreeSet::new())
     }
@@ -1092,8 +879,6 @@ impl Roster {
     }
 }
 
-/// Registers one `.gfx` file's objects: the latest object of a name is the one
-/// found, a mesh or, for another kind, `None`.
 fn add_objects(
     document: &parser::Document,
     objects: &mut BTreeMap<String, Option<MeshDefinition>>,
@@ -1120,9 +905,6 @@ fn add_objects(
     }
 }
 
-/// The declaration of an animation name the engine keeps: the last whose file
-/// loads. Declarations of one file need no reading, and when
-/// none loads no clip does either, so the last stands.
 fn loaded_animation(
     layers: &ResolvedLayers,
     mut declarations: Vec<AnimationDefinition>,
@@ -1146,17 +928,6 @@ fn loaded_animation(
     Ok(last)
 }
 
-/// The entity registry fills block by block, each name with
-/// its definition and stored version.
-///
-/// A plain block creates or reuses a definition. A block with a `clone`
-/// updates a copy of the parent as registered at that moment, selected by
-/// exact name, and is dropped when no parent is registered yet. Either way
-/// a registered name keeps its definition when the block's `version` is
-/// lower than the stored one, and is replaced otherwise. The stored
-/// version is the one the name was created with; a clone copies its
-/// parent's stored version rather than the block's authored version.
-/// Mesh binding and attachment merging apply to the retained definition.
 #[derive(Default)]
 struct Entities(BTreeMap<String, (EntityDefinition, i32)>);
 
@@ -1215,8 +986,6 @@ impl Entities {
         let Some(mut definition) = entity_definition(value) else {
             return Ok(());
         };
-        // An unsupported state name can prevent lookup of its timing list
-        // altogether. Surface the refusal through the existing entity diagnostics.
         roster
             .logged
             .extend(definition.states.iter().filter_map(|state| {
@@ -1230,10 +999,6 @@ impl Entities {
         definition.name = name.clone();
         definition.sources.insert(0, path.clone());
         definition.clone = None;
-        // A named object binds only when it is a `pdxmesh`; otherwise the
-        // failed lookup is logged and the held binding stays. That binding
-        // belongs to the parent's copy or the definition being redefined,
-        // and reuse does not clear it.
         let held = parent.as_ref().or(registered).map(|(held, _)| held);
         let kept = held.and_then(|held| held.mesh.clone());
         let mut unbound = held.and_then(|held| held.unbound_mesh.clone());
@@ -1265,13 +1030,9 @@ impl Entities {
     }
 }
 
-/// A clone starts with the parent's definition, each field the
-/// block declares replacing the parent's as [`Descriptors::inherit`] reads a
-/// chain, and its attachments merged ([`merge_attachments`]).
 fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinition {
     let mut attachments = parent.attachments;
     merge_attachments(&mut attachments, child.attachments);
-    // The parent's ordered locator array is copied; child locators are ignored.
     let locators = parent.locators;
     let own: BTreeSet<String> = child
         .states
@@ -1291,7 +1052,6 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
         unbound_mesh: child.unbound_mesh,
         clone: None,
         scale: child.scale.or(parent.scale),
-        // Clone radius declarations never mark the held value for replacement.
         cull_radius: parent.cull_radius,
         attachments,
         default_state: child.default_state.or(parent.default_state),
@@ -1303,9 +1063,6 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
     }
 }
 
-/// Attachment merging: each attachment the clone declares
-/// replaces, where it stands, the held one of the same name (of the same
-/// joint when both names are empty), and is appended otherwise.
 fn merge_attachments(held: &mut Vec<Attachment>, declared: Vec<Attachment>) {
     for attachment in declared {
         match held.iter().position(|slot| same_slot(slot, &attachment)) {
@@ -1315,14 +1072,10 @@ fn merge_attachments(held: &mut Vec<Attachment>, declared: Vec<Attachment>) {
     }
 }
 
-/// Whether a clone's attachment replaces a held one: the same
-/// name, and the same joint when both names are empty.
 fn same_slot(held: &Attachment, declared: &Attachment) -> bool {
     held.name == declared.name && (!held.name.is_empty() || held.joint == declared.joint)
 }
 
-/// The text of the last `key` a block holds, as the reader's last write of
-/// that field leaves it.
 pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
     fields
         .iter()
@@ -1332,10 +1085,6 @@ pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
         .map(unquote)
 }
 
-/// Every name a descriptor file could declare, read without parsing it:
-/// each scalar the shared lexer reads ([`parser::scalars`], which keeps
-/// scanning past the error that made the parse fail), decoded and trimmed
-/// as a parsed name is (`scalar_str`, then [`unquote`]).
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
     parser::scalars(bytes)
         .iter()
@@ -1344,29 +1093,21 @@ pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
         .collect()
 }
 
-/// Indexes every `.dds` and
-/// `.tga` below `gfx/models` by its stored basename's bytes.
 #[derive(Clone, Debug, Default)]
 pub struct TextureIndex {
     paths: BTreeMap<Vec<u8>, ScriptPath>,
 }
 
 impl TextureIndex {
-    /// Walks `gfx/models` recursively at any depth, in
-    /// [`crate::defines::load_order`].
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let paths = layers.descriptor_paths("gfx/models", &[".dds", ".tga"])?;
         Ok(Self::new(crate::defines::load_order("gfx/models/", "", &paths)))
     }
 
-    /// Indexes `paths` in enumeration order: each basename keeps the first
-    /// file by exact byte spelling. A later file of that basename does not
-    /// replace the held path.
     pub fn new(paths: impl IntoIterator<Item = ScriptPath>) -> Self {
         let mut index = Self::default();
         for path in paths {
             let bytes = path.as_bytes();
-            // The suffix test is byte-exact.
             if !(bytes.ends_with(b".dds") || bytes.ends_with(b".tga")) {
                 continue;
             }
@@ -1380,10 +1121,6 @@ impl TextureIndex {
         index
     }
 
-    /// The one path requested for a material texture.
-    /// Looks the authored string up byte-exactly after spelling
-    /// its first `.tga` as `.dds`; a miss keeps the mesh directory plus the
-    /// authored name. Non-UTF-8 matches are refused because texture loading requires text paths.
     pub fn resolve(&self, directory: &str, authored: &str) -> io::Result<String> {
         let key = authored.replacen(".tga", ".dds", 1);
         match self.paths.get(key.as_bytes()) {
@@ -1407,8 +1144,6 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
     }
     Some(AnimationDefinition {
         name,
-        // Joins the descriptor's directory, `/` and the file,
-        // whatever the file holds.
         file: if directory.is_empty() {
             file
         } else {
@@ -1420,9 +1155,6 @@ fn animation_definition(value: &parser::Value, directory: &str) -> Option<Animat
 fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
     let items = value.items()?;
     let name = unquote(text(items, b"name")?);
-    // Leading slashes are dropped by the content path sanitizer, so
-    // `/gfx/models/...` resolves from the content root rather than the
-    // descriptor's directory.
     let file = unquote(text(items, b"file")?)
         .trim_start_matches('/')
         .to_owned();
@@ -1468,7 +1200,6 @@ fn mesh_definition(value: &parser::Value) -> Option<MeshDefinition> {
 fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
     let items = value.items()?;
     let mut setting = MeshSetting::default();
-    // Fields are written in reader order; failed numeric conversions retain the field.
     for item in items {
         let Some(value) = item.value.scalar_str() else {
             continue;
@@ -1484,7 +1215,6 @@ fn mesh_setting(value: &parser::Value) -> Option<MeshSetting> {
             Some(b"texture_normal") => setting.normal = Some(unquote(value)),
             Some(b"texture_specular") => setting.specular = Some(unquote(value)),
             Some(b"shader") => setting.shader = Some(unquote(value)),
-            // An authored shader file overrides the material's source path.
             Some(b"shader_file") => setting.shader_file = Some(unquote(value)),
             _ => {}
         }
@@ -1503,8 +1233,6 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         .filter(|item| item.key.as_deref() == Some(b"attach"))
         .filter_map(|item| {
             let block = item.value.items()?;
-            // The joint is whichever key is not `name`; the shipped blocks
-            // carry exactly those two.
             let (joint, entity) = block.iter().find_map(|field| {
                 let key = field.key.as_deref()?;
                 if key == b"name" {
@@ -1527,8 +1255,6 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         .iter()
         .filter(|item| item.keyword_is("state"))
         .filter_map(|item| {
-            // Both public and layered registration paths preflight these
-            // immediate carriers before projecting any declaration in the file.
             let parser::Value::Block(block) = &item.value else {
                 return None;
             };
@@ -1539,7 +1265,6 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
             Some(EntityState {
                 name,
                 animation,
-                // Looping defaults to true when no read overrides it.
                 looping: parser::read_bool_field(block, "looping", true),
                 next_state: text(block, b"next_state").map(unquote),
                 chance: number(block, b"chance", 1.0),
@@ -1576,7 +1301,6 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                             .filter_map(|item| item.value.items())
                             .filter_map(|fields| last_text(fields, "soundeffect"))
                             .next_back(),
-                        // Both event flags default to false.
                         keep_particle: parser::read_bool_field(event, "keep_particle", false),
                         trigger_once: parser::read_bool_field(event, "trigger_once", false),
                     })
@@ -1594,8 +1318,6 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
         scale: text(items, b"scale").and_then(|value| crt::scan_f32(value.as_bytes())),
-        // Radius starts at one; each scan writes into the held value,
-        // so a failed later scan preserves its previous value.
         cull_radius: Some(
             items
                 .iter()
@@ -1606,7 +1328,6 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         ),
         attachments,
         default_state: text(items, b"default_state").map(unquote),
-        // Field presence marks authorship even when its boolean read fails.
         get_state_from_parent: items
             .iter()
             .any(|item| item.keyword_is("get_state_from_parent"))
@@ -1661,8 +1382,6 @@ fn text<'a>(items: &'a [parser::Item], key: &[u8]) -> Option<&'a str> {
         .and_then(|item| item.value.scalar_str())
 }
 
-/// Each chance read starts with zero; only a positive Fixed5 result
-/// is copied to the state's low word.
 fn state_chance_weight(items: &[parser::Item]) -> i32 {
     items
         .iter()

@@ -1,5 +1,3 @@
-//! A timeline as the recording's runs hold it: each stretch of consecutive recorded hours of one
-//! run, how it follows the stretch before (SPEC 3.4), and the hours of the timeline no run holds.
 
 use replay::campaign::Replay;
 use std::io;
@@ -8,19 +6,13 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// How a stretch follows the one before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Join {
-    /// The timeline's first stretch.
     Start,
-    /// A load into a recorded hour of the stretch before, with no hour missing: derived columns
-    /// carry across it by their declared rule; `parent` is the last hour the parent stretch holds.
     Load { parent: i32 },
-    /// Anything else: hours missing between them, or a run that starts over. Nothing carries.
     Break,
 }
 
-/// Consecutive recorded hours of one run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stretch {
     pub run: u32,
@@ -29,7 +21,6 @@ pub struct Stretch {
     pub join: Join,
 }
 
-/// Hours of the timeline no run holds, with the recording's reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unheld {
     pub first: i32,
@@ -42,19 +33,16 @@ pub struct Timeline {
     pub id: u64,
     pub first: i32,
     pub last: i32,
-    /// In hour order, never overlapping.
     pub stretches: Vec<Stretch>,
     pub unheld: Vec<Unheld>,
 }
 
 impl Timeline {
-    /// The stretch holding `hour`.
     pub fn at(&self, hour: i32) -> Option<&Stretch> {
         let at = self.stretches.partition_point(|stretch| stretch.last < hour);
         self.stretches.get(at).filter(|stretch| stretch.first <= hour)
     }
 
-    /// The stretches meeting `from..=to`, each cut to it.
     pub fn within(&self, from: i32, to: i32) -> impl Iterator<Item = Stretch> + '_ {
         let start = self.stretches.partition_point(|stretch| stretch.last < from);
         self.stretches[start..]
@@ -67,7 +55,6 @@ impl Timeline {
             })
     }
 
-    /// The unheld hours meeting `from..=to`, each cut to it.
     pub fn unheld_within(&self, from: i32, to: i32) -> Vec<Unheld> {
         self.unheld
             .iter()
@@ -80,7 +67,6 @@ impl Timeline {
             .collect()
     }
 
-    /// Why `hour` holds no recorded value: the recording's reason for its gap.
     pub fn reason(&self, hour: i32) -> String {
         self.unheld
             .iter()
@@ -89,7 +75,6 @@ impl Timeline {
     }
 }
 
-/// Timeline `id` of `replay` as its runs hold it.
 pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
     let timeline = replay
         .timelines()
@@ -98,7 +83,6 @@ pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
     let mut stretches: Vec<Stretch> = Vec::new();
     let mut unheld: Vec<Unheld> = Vec::new();
     for (at, piece) in timeline.pieces.iter().enumerate() {
-        // The recorded pages, by segment: the replay's own index names each page's timeline.
         let mut blocks: Vec<_> = replay
             .pages()
             .iter()
@@ -158,7 +142,6 @@ pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
     Ok(Timeline { id, first, last, stretches, unheld })
 }
 
-/// The recording's reason for the gap of timeline `id` holding `hour`.
 fn gap_reason(replay: &Replay, id: u64, hour: i32) -> String {
     replay
         .gaps
@@ -199,7 +182,6 @@ mod tests {
     #[test]
     fn a_history_of_several_segments_holds_every_segment_s_hours() {
         use crate::fixture::segment;
-        // Three sessions: 2 goes on from 1, 3 after play the recorder missed; one history, id 1.
         let records = [segment(1, 100, 50), segment(2, 150, 50), segment(3, 250, 50)];
         let replay = Replay::from_records(b"tiles".to_vec(), &records).unwrap().into_timelines(&Default::default()).unwrap();
         let pieces: Vec<_> = replay.timelines().unwrap().get(1).unwrap().pieces.iter().map(|piece| piece.segment).collect();

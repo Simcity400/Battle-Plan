@@ -1,36 +1,3 @@
-//! CountryCounterInputs rows held between hours
-//! ([`crate::country_input_changes::Table::Counters`]).
-//!
-//! The Ordinary counter part walks the country census every hour. A
-//! country's counter row (pride of the fleet, attack modifiers, state counts,
-//! first division, owned/controlled/core states, army and navy leaders,
-//! neighbours and MIO policies) and its relation suffix (co-belligerents,
-//! zero war, zero subject and forward visibility) are read afresh only when a
-//! hooked writer marked it since the previous take, it is new to the census
-//! or its last read was not held. Every other country's row is copied from
-//! its held read, with its roster and co-belligerent entries placed in the
-//! hour's arenas where a full read puts them
-//! ([`ccountry::CarriedRosters::append`]), so the published table equals a
-//! full read of the same memory.
-//!
-//! A country is carried only while all of these hold: the hour's take returned the epoch its held
-//! read was certified under; it is not marked; the census country and link headers are the held
-//! ones and the census names the held object and native id at its canonical slot; its production
-//! status, diplomacy status and country characters (CCountryCharacters) pointers, read for every
-//! country each hour in one guarded copy, are the held ones. Its identity (vtable and `+ID`) is
-//! still checked before the carry, as before any read.
-//!
-//! Every hour still reads, for every country, carried or not: the pride ship
-//! name behind a nonzero pride handle (no hookable writer per country), the
-//! census resolution of its id and its cell of the reserved country's reverse
-//! visibility matrix (with no forward observation to share).
-//!
-//! A sent-reference refusal is held with the row; other required read
-//! refusals prevent holding it (a native null production status is not a
-//! refusal). Rows are held only from a complete walk and relation pass under
-//! a take that returned an epoch: a failed or incomplete read, or a failed
-//! job, holds nothing, so the next hour reads every country. Storage is
-//! advisory and worker-only.
 use super::{Captured, RelationRow, valid_span};
 use crate::{
     country_input_changes::{self as changes, Changes, Counts, Table},
@@ -42,40 +9,26 @@ use engine_native::{
     walk::Outcome,
 };
 
-/// The first of the country words a carry certifies; one guarded copy of
-/// [`WORDS_LEN`] bytes covers all three.
 const WORDS: usize = ccountry::PRODUCTION_STATUS;
 const WORDS_LEN: usize = ccountry::CHARACTERS + 8 - WORDS;
-/// The production status pointer holds production status and its policy roster for MIO policies;
-/// the diplomacy status pointer holds diplomacy status, whose relation matrix and rebuilt wartime
-/// ally candidates the relation suffix reads; the country characters pointer holds the country
-/// character pool, through which the army and navy leader lookups reach rosters (the leader
-/// rosters).
 const WORD_OFFSETS: [usize; 3] = [
     ccountry::PRODUCTION_STATUS,
     ccountry::DIPLOMACY_STATUS,
     ccountry::CHARACTERS,
 ];
 
-/// One country's held read.
 #[derive(Clone, Copy)]
 struct Entry {
     country: ccountry::Country,
     words: [u64; 3],
-    /// Spans name the held arenas.
     row: CounterInputsRow,
-    /// The co-belligerent span names the held arena; pride fields unused.
     relation: RelationRow,
 }
 
-/// The latest held complete read.
 #[derive(Default)]
 struct Held {
-    /// The take epoch it was certified under; `None` holds nothing.
     epoch: Option<u64>,
-    /// The census country and link headers it walked.
     arrays: [Array; 2],
-    /// By canonical slot, ascending.
     entries: Vec<Entry>,
     states: Vec<u32>,
     leaders: Vec<u64>,
@@ -105,38 +58,27 @@ impl Held {
     }
 }
 
-/// The hour's view before the walk.
 #[derive(Default)]
 struct Hour {
     epoch: Option<u64>,
     arrays: Option<[Array; 2]>,
-    /// The marks and the walk's scratch are complete: the hour may carry
-    /// and hold.
     complete: bool,
-    /// Held reads may be carried this hour.
     certified: bool,
 }
 
-/// What the hour did with one walked country, in walk (row) order.
 #[derive(Clone, Copy)]
 struct Walked {
     country: ccountry::Country,
-    /// `None`: unreadable, so nothing of this read is held.
     words: Option<[u64; 3]>,
-    /// The held entry its row was copied from.
     carried: Option<usize>,
 }
 
-/// The Ordinary counter part's held rows and scratch.
 pub struct CounterStore {
     changes: &'static dyn Changes,
     held: Held,
     hour: Hour,
-    /// Set on the game thread; the next capture drops every held row.
     forgotten: bool,
-    /// Allocated bytes as of the last capture, for the game thread.
     bytes: usize,
-    /// The hour's marked native ids, ascending.
     marked: Vec<u32>,
     walked: Vec<Walked>,
     counts: Counts,
@@ -156,7 +98,6 @@ impl CounterStore {
         }
     }
 
-    /// The hooks' domain.
     pub fn observed() -> Self {
         Self::new(&changes::Observer)
     }
@@ -166,19 +107,14 @@ impl CounterStore {
         self.counts
     }
 
-    /// Nothing held certifies anything: the next capture reads afresh.
-    /// Allocation-free for the game thread.
     pub fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last capture, so the game thread need not measure.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
 
-    /// Worker, before the walk: take the hour's marks and the census
-    /// headers that certify carried rows.
     pub(super) fn begin(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
@@ -197,11 +133,9 @@ impl CounterStore {
         });
         self.marked.sort_unstable();
         self.marked.dedup();
-        // The walk's own headers: the callback census's when it is reused.
         let arrays = ccountry::Reader::new(memory, base, game_state)
             .ok()
             .map(|reader| reader.arrays());
-        // One walked entry per census slot at most, so the walk never grows it.
         let slots = arrays.map_or(0, |[countries, _]| countries.count as usize);
         if allocation::advisory(|| allocation::reserve(&mut self.walked, slots)).is_err() {
             complete = false;
@@ -222,9 +156,6 @@ impl CounterStore {
         self.hour.epoch.is_some()
     }
 
-    /// The walk offers `country` once its identity is confirmed: its row
-    /// from the held read, with its rosters placed in the hour's arenas, or
-    /// `None` to read it.
     pub(super) fn offer(
         &mut self,
         memory: &impl Memory,
@@ -233,7 +164,6 @@ impl CounterStore {
         effects: &mut ccountry::EffectRosters<'_>,
     ) -> Option<CounterInputsRow> {
         if self.walked.len() == self.walked.capacity() {
-            // Unrecorded: nothing later is carried or held.
             self.hour.complete = false;
             self.hour.certified = false;
             return None;
@@ -262,8 +192,6 @@ impl CounterStore {
         row
     }
 
-    /// The held entry that certifies `country` this hour, when it is not
-    /// marked.
     fn certified_entry(
         &self,
         country: ccountry::Country,
@@ -287,9 +215,6 @@ impl CounterStore {
         .then_some(index)
     }
 
-    /// The held row of entry `index` with its rosters appended to the
-    /// hour's arenas; `None`, with nothing appended, when they cannot hold
-    /// them.
     fn place(
         &self,
         index: usize,
@@ -328,9 +253,6 @@ impl CounterStore {
         })
     }
 
-    /// The held relation suffix and co-belligerent targets of row `index`
-    /// (country `country`) of a `len`-row walk, when its counter row was
-    /// carried.
     pub(super) fn carried_relation(
         &self,
         index: usize,
@@ -349,8 +271,6 @@ impl CounterStore {
         Some((entry.relation, targets))
     }
 
-    /// Worker, after the relation pass: holds a complete read and records
-    /// the hour.
     pub(super) fn finish(&mut self, capture: &Captured) {
         let len = capture.rows.outcome.len();
         let tracked = self.walked.len() == len;
@@ -380,8 +300,6 @@ impl CounterStore {
             + self.walked.capacity() * size_of::<Walked>();
     }
 
-    /// Holds every complete row of a complete walk and relation pass under
-    /// the hour's take; otherwise holds nothing.
     fn hold(&mut self, capture: &Captured, tracked: bool) {
         let len = capture.rows.outcome.len();
         let complete = self.hour.complete
@@ -459,13 +377,10 @@ fn span<T>(arena: &[T], span: RosterSpan) -> Option<&[T]> {
     arena.get(span.start..span.start.checked_add(span.count)?)
 }
 
-/// The arena's filled entries, when its length is within its storage.
 fn arena_len<T>(arena: &Arena<T>) -> Option<usize> {
     (arena.len <= arena.first.len()).then_some(arena.len)
 }
 
-/// A row and relation suffix without any read refusal: the only rows held.
-/// A null production status is the country's native state, not a refusal.
 fn clean(row: &CounterInputsRow, relation: &RelationRow) -> bool {
     let policies = match row.policy_reason {
         None => row.mio_policies.is_some(),
@@ -495,7 +410,6 @@ fn clean(row: &CounterInputsRow, relation: &RelationRow) -> bool {
         && relation.forward_visibility.is_some()
 }
 
-/// Every span of the row lies within the capture's filled arenas.
 fn within(capture: &Captured, row: &CounterInputsRow, relation: &RelationRow) -> bool {
     let states = row.state_rosters.is_some_and(|spans| {
         spans

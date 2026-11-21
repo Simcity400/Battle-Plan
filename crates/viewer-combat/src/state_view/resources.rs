@@ -1,5 +1,3 @@
-//! The state view's resource entries: each resource in database order the state holds a
-//! non-zero amount of, with its strip frame and its amount rounded to whole units.
 use super::{paths_named, withhold_named};
 use crate::binding::Bindings;
 use crate::content::Content;
@@ -37,9 +35,6 @@ pub(super) fn bind(content: &Content, frame: &DecodedFrame, root: &native::Eleme
     }
 }
 
-/// The resources container's hover: `STATE_NO_RESOURCES` when the state's template lists no
-/// resource, its pool holds none and its additive resource modifiers do not count; otherwise the
-/// game builds none and an authored one stands.
 pub(super) fn none_text(frame: &DecodedFrame, state: u32) -> Result<bool, String> {
     let listed = frame.complete::<tables::StateBaseResources>().map_err(|e| e.to_string())?.iter().any(|row| row.state == state);
     let pooled = frame.complete::<tables::StateResources>().map_err(|e| e.to_string())?.iter().any(|row| row.state == state && row.pool > 0);
@@ -57,7 +52,6 @@ fn none(listed: bool, pooled: bool, gate: u8) -> bool {
     !listed && !pooled && gate == 0
 }
 
-/// One listed resource, `None` for a zero amount, which the game leaves out.
 fn entry(out: &mut Bindings, definition: &Definition, amount: i64) -> Option<crate::Values> {
     if amount == 0 {
         return None;
@@ -71,7 +65,6 @@ fn entry(out: &mut Bindings, definition: &Definition, amount: i64) -> Option<cra
     Some(values)
 }
 
-/// Fixed5 to whole units, halves away from zero.
 fn round(value: i64) -> i64 {
     let (whole, rest) = (value / 100_000, value % 100_000);
     if rest > 49_999 {

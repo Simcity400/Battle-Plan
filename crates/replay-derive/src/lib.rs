@@ -1,4 +1,3 @@
-//! Playback calculations over recorded operands, independent of recording I/O.
 
 pub mod air_mission_counts;
 pub mod air_mission_sources;

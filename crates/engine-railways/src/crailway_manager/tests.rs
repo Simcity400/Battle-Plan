@@ -28,7 +28,6 @@ fn fixture() -> Vec<u8> {
     array(&mut bytes, cgame_state::PROVINCES, 0x1540, 5, 4);
     put(&mut bytes, 0x508, 0x2000_u64.to_le_bytes());
     put(&mut bytes, 0x518, 0x2080_u64.to_le_bytes());
-    // Spare capacity contains poison and must not become live rows.
     put(&mut bytes, 0x520, u64::MAX.to_le_bytes());
     put(&mut bytes, 0x560, u64::MAX.to_le_bytes());
     for (id, offset) in [(1_u32, 0x600), (2, 0x900), (3, 0xc00)] {
@@ -342,7 +341,6 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
     put(bytes, 0x7000 + b::TEMPLATE, 0x7000_u64.to_le_bytes());
     put(bytes, 0x7000 + b::LEVEL, 4_i16.to_le_bytes());
     put(bytes, 0x7000 + b::HEALTHY_LEVEL, 2_i16.to_le_bytes());
-    // Distinct provinces in one state reach the same infrastructure lookup.
     put(bytes, 0x600 + cprovince::STATE, 0x5000_u64.to_le_bytes());
     struct Observed<'a> {
         source: &'a EtaMemory,
@@ -369,7 +367,6 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
         eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1600),
         Ok(50_000)
     );
-    // Every read on the successful path is required.
     for address in direct_reads {
         memory.refused = Some(address);
         assert!(eta_infrastructure(&memory, 0, MEMORY_BASE, 0x1900).is_err());
@@ -582,10 +579,6 @@ fn faults_are_scoped_to_the_table_that_reads_the_field() {
         }
     }
     let bytes = fixture();
-    // The first live info's cooldown, the first live info's neighbour
-    // header, and a neighbour row. Refusing the first record's edge-only
-    // field must not make the second record's identity fatal, and must not
-    // cost the first record its cooldown row.
     for (address, provinces, edges) in [
         (
             0x2000 + info::COOLDOWN_TICKS,
@@ -608,7 +601,6 @@ fn faults_are_scoped_to_the_table_that_reads_the_field() {
                 reason: "rail neighbor rows unreadable",
             },
         ),
-        // The building pointer shares the identity span: no row claims it unread.
         (
             0x2000 + info::BUILDING,
             Outcome::Unavailable {
@@ -637,7 +629,6 @@ fn faults_are_scoped_to_the_table_that_reads_the_field() {
         assert_eq!(result.edges, edges, "refused {address:#x}");
     }
 }
-// Frozen pre-hoist helper: its scratch starts initialized on every call.
 #[allow(clippy::too_many_arguments)]
 fn fresh_scratch_reference_edges(
     memory: &impl Memory,
@@ -662,9 +653,6 @@ fn fresh_scratch_reference_edges(
         if !read_slice(memory, address, &mut buffer[..count * edge::STRIDE]) {
             return Err("rail neighbor rows unreadable");
         }
-        // The sorted, non-self neighbor rule is a pure decode, so it selects
-        // the prefix whose far endpoints are authenticated in one batch. The
-        // first invalid pair still fails before any later pair is stored.
         let mut staged = 0;
         let mut invalid = false;
         let mut ordered = previous;
@@ -801,7 +789,6 @@ fn compare_reused_edge_scratch(
         to_province: 72,
         level: -73,
     };
-    // Storage at least the demand: the fixed-width reference never grows.
     let mut rows = vec![sentinel; capacity.max(pairs.count as usize)];
     let mut old_rows = rows.clone();
     assert_eq!(
@@ -845,7 +832,6 @@ fn reused_edge_scratch_matches_fresh_windows_and_partial_faults() {
     let mut scratch = EdgeScratch::new();
     scratch.bytes.fill(0xa5);
     scratch.neighbors.fill(u32::MAX);
-    // Long-to-short and empty transitions consume the same scratch.
     for count in [66, 1, 0, 63, 64, 65, 1, 0] {
         let (bytes, provinces, pairs) = many_edge_pairs(count);
         for capacity in [count, count + 1] {
@@ -909,8 +895,6 @@ fn reused_edge_scratch_keeps_invalid_prefixes_and_overflow_independent_of_old_by
             compare_reused_edge_scratch(&bytes, None, provinces, pairs, 68, 66, &mut scratch);
         }
     }
-    // No stale pair/id can escape a failed first read, an empty census,
-    // an address overflow, or a capacity-only omission.
     let (bytes, provinces, pairs) = many_edge_pairs(1);
     compare_reused_edge_scratch(
         &bytes,

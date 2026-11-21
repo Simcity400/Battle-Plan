@@ -1,6 +1,3 @@
-//! Upgrades recordings to the current format, each in place as a revision of its own.
-//!
-//!     recording-upgrade --game <folder> [--game <folder>]... --user <folder> [--cache <folder>] <recording or folder>...
 
 use std::path::PathBuf;
 
@@ -52,7 +49,6 @@ fn main() {
     std::process::exit(i32::from(failed));
 }
 
-/// Every recording at `path`, below it when it is a folder, outside `.originals` folders.
 fn collect(path: &std::path::Path, out: &mut Vec<PathBuf>) {
     if path.is_dir() {
         let Ok(entries) = std::fs::read_dir(path) else {

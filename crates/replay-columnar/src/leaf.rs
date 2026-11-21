@@ -1,6 +1,3 @@
-//! The grammar's leaf encodings, written and read by the same code: unsigned LEB128
-//! varints, sorted slot lists, positions within a list, and little-endian value arrays
-//! aligned to their width from the start of the buffer they are written in.
 
 use crate::invalid;
 use std::io;
@@ -8,7 +5,6 @@ use std::io;
 #[cfg(test)]
 mod tests;
 
-/// A fixed-width little-endian value.
 pub trait Le: Copy + Default {
     const WIDTH: usize;
     fn put(self, out: &mut Vec<u8>);
@@ -30,7 +26,6 @@ macro_rules! le {
 }
 le!(u8, i8, u16, i16, u32, i32, u64, i64);
 
-/// An integer value written as a varint; signed values are zigzagged first.
 pub trait Int: Copy + Default {
     fn wire(self) -> u64;
     fn unwire(wire: u64) -> io::Result<Self>;
@@ -67,12 +62,10 @@ signed_int!(i16, i32, i64);
 
 const SLOT_DELTAS: u8 = 0;
 const SLOT_BITMAP: u8 = 1;
-/// Words of a bitmap with one bit for every `u32` slot.
 pub const SLOT_WORDS: usize = u32::MAX as usize / 64 + 1;
 const POSITION_BITMAP: u8 = 0;
 const POSITION_RUNS: u8 = 1;
 
-/// Varint bytes of `value`.
 pub(crate) fn varint_len(value: u64) -> usize {
     (64 - value.max(1).leading_zeros() as usize).div_ceil(7)
 }
@@ -87,7 +80,6 @@ impl Writer {
         Self::default()
     }
 
-    /// A writer into `bytes`, emptied first, keeping its allocation.
     pub(crate) fn reusing(mut bytes: Vec<u8>) -> Self {
         bytes.clear();
         Self { bytes }
@@ -135,7 +127,6 @@ impl Writer {
         Ok(())
     }
 
-    /// Cumulative cell `ends` as each cell's length.
     pub fn lengths(&mut self, ends: &[u32]) -> io::Result<()> {
         let mut start = 0;
         for &end in ends {
@@ -148,7 +139,6 @@ impl Writer {
         Ok(())
     }
 
-    /// Keys in order, each the zigzag of its wrapping difference from the one before.
     pub fn keys(&mut self, keys: &[u128]) -> io::Result<()> {
         let mut previous = 0u128;
         for &key in keys {
@@ -165,7 +155,6 @@ impl Writer {
         Ok(())
     }
 
-    /// Zero bytes up to a multiple of `width`.
     pub fn align(&mut self, width: usize) -> io::Result<()> {
         let padding = self.bytes.len().next_multiple_of(width) - self.bytes.len();
         self.reserve(padding)?;
@@ -182,7 +171,6 @@ impl Writer {
         Ok(())
     }
 
-    /// Strictly ascending slots, as deltas or as a bitmap, whichever is shorter.
     pub fn slots(&mut self, slots: &[u32]) -> io::Result<()> {
         if slots.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(invalid("Slot list is not strictly ascending"));
@@ -213,8 +201,6 @@ impl Writer {
         }
     }
 
-    /// Strictly ascending positions within a list of `of` entries, as a bitmap over the
-    /// list or as runs, whichever is shorter.
     pub fn positions(&mut self, of: usize, positions: &[u32]) -> io::Result<()> {
         if positions.windows(2).any(|pair| pair[0] >= pair[1])
             || positions.last().is_some_and(|&last| last as usize >= of)
@@ -245,7 +231,6 @@ impl Writer {
         }
     }
 
-    /// Ascending `bits`, all below `words` words, as those words' values.
     fn bitmap(&mut self, words: usize, bits: &[u32]) -> io::Result<()> {
         self.align(u64::WIDTH)?;
         self.reserve(words * u64::WIDTH)?;
@@ -261,7 +246,6 @@ impl Writer {
     }
 }
 
-/// Ascending positions as runs of consecutive ones: each run's first and its length.
 fn runs(positions: &[u32]) -> impl Iterator<Item = (u32, u32)> + '_ {
     let mut at = 0;
     std::iter::from_fn(move || {
@@ -296,17 +280,14 @@ impl<'a> Reader<'a> {
         self.at
     }
 
-    /// Bytes not read yet.
     pub fn left(&self) -> usize {
         self.bytes.len() - self.at
     }
 
-    /// The bytes not read yet.
     pub fn rest(&self) -> &'a [u8] {
         &self.bytes[self.at..]
     }
 
-    /// Refuses bytes left over after the last value.
     pub fn finish(&self) -> io::Result<()> {
         if self.at != self.bytes.len() {
             return Err(invalid(format!(
@@ -317,8 +298,6 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Refuses bytes left over after the last value but the zero padding up to a multiple of
-    /// `width`.
     pub fn finish_padded(&self, width: usize) -> io::Result<()> {
         let rest = &self.bytes[self.at..];
         if rest.is_empty()
@@ -345,7 +324,6 @@ impl<'a> Reader<'a> {
         self.take(length)
     }
 
-    /// Each value takes at least a byte, so `count` past the bytes left fails before growing.
     fn reserve_for<T>(&self, into: &mut Vec<T>, count: usize) -> io::Result<()> {
         engine_allocation::reserve(into, count.min(self.bytes.len() - self.at))
     }
@@ -359,7 +337,6 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// `count` cell lengths, as cumulative ends.
     pub fn lengths(&mut self, count: usize, into: &mut Vec<u32>) -> io::Result<()> {
         into.clear();
         self.reserve_for(into, count)?;
@@ -373,7 +350,6 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// `count` keys, as [`Writer::keys`] writes them.
     pub fn keys(&mut self, count: usize, into: &mut Vec<u128>) -> io::Result<()> {
         into.clear();
         self.reserve_for(into, count)?;
@@ -432,13 +408,11 @@ impl<'a> Reader<'a> {
         u32::try_from(self.varint()?).map_err(|_| invalid("Varint exceeds 32 bits"))
     }
 
-    /// A varint count of things that follow.
     pub fn count(&mut self) -> io::Result<usize> {
         let count = self.varint()?;
         usize::try_from(count).map_err(|_| invalid("Count exceeds this platform"))
     }
 
-    /// Skips padding up to a multiple of `width`; padding is zero.
     pub fn align(&mut self, width: usize) -> io::Result<()> {
         let padding = self.at.next_multiple_of(width) - self.at;
         if self.take(padding)?.iter().any(|&byte| byte != 0) {
@@ -456,19 +430,15 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// `count` words as [`Reader::values`] reads them, left in place.
     fn words(&mut self, count: usize) -> io::Result<&'a [u8]> {
         self.align(u64::WIDTH)?;
         self.take(count.checked_mul(u64::WIDTH).ok_or_else(short)?)
     }
 
-    /// A strictly ascending slot list, as [`Writer::slots`] writes it.
     pub fn slots(&mut self, into: &mut Vec<u32>) -> io::Result<()> {
         self.slots_below(u32::MAX as usize + 1, into)
     }
 
-    /// Strictly ascending slots, each below `end`: a list that could not be is refused before
-    /// anything is allocated for it.
     pub fn slots_below(&mut self, end: usize, into: &mut Vec<u32>) -> io::Result<()> {
         let count = self.count()?;
         if count > end {
@@ -520,7 +490,6 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Strictly ascending positions within a list of `of` entries.
     pub fn positions(&mut self, of: usize, into: &mut Vec<u32>) -> io::Result<()> {
         into.clear();
         match self.u8()? {

@@ -1,25 +1,3 @@
-//! `PeaceOutcomes` and `PeaceConferenceSpans`: what peace changed, by comparing the world before
-//! a conference with the world after it, and owner changes between consecutive hours no sampled
-//! conference explains.
-//!
-//! The conference roster is read once a day: at each read a listed conference is open, and its
-//! "before" is the last complete read before it, moved forward at each read while it is not
-//! finalized. Once it is finalized or gone its comparison waits for the next complete read and is
-//! made against that read: unless several sampled conferences overlap it, when no outcome can be
-//! assigned to one. A state transfer counts only when its former and new owners had an ongoing war
-//! pair before the change and that pair records its end, or is gone, by the after read; a tag
-//! change of a raw country is never a transfer. Owner changes between consecutive complete hours
-//! that no single resident conference can claim are outcomes of their own, grouped by connected
-//! pairs. Beside transfers a comparison names new subjects of a winner, government changes of a
-//! loser, and countries released from a loser's states. Every row lives the after hour. A
-//! conference's span is a row of `PeaceConferenceSpans` at each hour that moved it, living that
-//! hour.
-//!
-//! State: the world as its tables stand, raw where it can be (state owners, existence), resolved
-//! to tags where a rule compares tags (war pairs, subjects, governments), each updated by the rows
-//! an hour changed and read again whole after a break; the previous complete read, one "before"
-//! per open or waiting conference, the first hour each tag existed, and each conference's
-//! bookkeeping, in the resume blob (bounded by states, countries and war pairs per snapshot).
 
 mod compare;
 mod saved;
@@ -72,19 +50,14 @@ const READS: &[Read] = &[
     Read { table: TableId::PeaceConferences, columns: Columns::These(&CONFERENCE), watch: Watch::EveryRead, required: false },
 ];
 
-/// A tag, numbered by the writer.
 type Tag = u32;
 
-/// Each raw country's tag and each tag's holder (canonical slot, country id): none while two
-/// countries share a tag or a canonical slot, or a link names another tag for a country.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Countries {
     tags: HashMap<u32, Tag>,
     identities: HashMap<Tag, (u32, u32)>,
 }
 
-/// War pairs by their tags, lower first, with their start and end; the raw pairs no tags resolve
-/// or whose tags name two relations.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Wars {
     pairs: HashMap<(Tag, Tag), (i32, i32)>,
@@ -98,39 +71,31 @@ struct Government {
     ideology: Option<Box<[u8]>>,
 }
 
-/// The world at one complete read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Snapshot {
     hour: i32,
     roster_complete: bool,
     countries: Arc<Countries>,
-    /// Each state's raw owner.
     owners: Arc<HashMap<u32, u32>>,
     wars: Arc<Wars>,
-    /// Victory points summed by state.
     vps: Option<Arc<HashMap<u32, i64>>>,
-    /// Each live subject relation (overlord, subject) by tags, with its start.
     subjects: Option<Arc<HashMap<(Tag, Tag), i32>>>,
     governments: Option<Arc<HashMap<Tag, Government>>>,
-    /// Whether each raw country owns a state.
     exists: Option<Arc<HashMap<u32, bool>>>,
 }
 
-/// The world as the tables stand: none where a table is not complete.
 #[derive(Default)]
 struct World {
     countries: Option<Arc<Countries>>,
     owners: Option<Arc<HashMap<u32, u32>>>,
     wars: Option<Arc<Wars>>,
     subjects: Option<Arc<HashMap<(Tag, Tag), i32>>>,
-    /// The first hour a live subject relation ends, when the subjects are read again.
     subject_expiry: Option<i32>,
     governments: Option<Arc<HashMap<Tag, Government>>>,
     exists: Option<Arc<HashMap<u32, bool>>>,
     vps: Option<Arc<HashMap<u32, i64>>>,
 }
 
-/// A listed conference's published row, its "before" and its bookkeeping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Conference {
     row: PeaceConferenceSpanRow,
@@ -141,7 +106,6 @@ struct Conference {
     unassigned: bool,
 }
 
-/// What an outcome row says of the comparison it comes from.
 #[derive(Clone, Copy)]
 struct Head {
     observation: u8,
@@ -159,7 +123,6 @@ pub struct Peace {
     has_active: bool,
     has_ambiguous: bool,
     first_existing: HashMap<Tag, i32>,
-    /// The outcome rows living this hour, deleted the next.
     living: Vec<u128>,
     last: Option<i32>,
 }
@@ -168,7 +131,6 @@ fn complete(hour: &Hour<'_>, table: TableId) -> bool {
     hour.complete(table)
 }
 
-/// Whether `table` must be read again: its status or watched columns changed, or `whole`.
 fn dirty(hour: &Hour<'_>, table: TableId, watched: &'static [usize], whole: bool) -> bool {
     whole || hour.changes(table).status_changed || hour.wrote(table, Columns::These(watched))
 }
@@ -219,8 +181,6 @@ impl Peace {
         Ok(Some(countries))
     }
 
-    /// The owners as the hour left them, updated by the rows it changed: the states whose owner
-    /// may have moved, every state when read whole; none while States is not complete.
     fn owners(&mut self, hour: &Hour<'_>, whole: bool) -> Option<Vec<u32>> {
         if !complete(hour, TableId::States) {
             self.world.owners = None;
@@ -282,8 +242,6 @@ impl Peace {
         wars
     }
 
-    /// The live subject relations at `at`, and the first hour one of them ends; none when a
-    /// relation's countries do not resolve.
     fn subjects(hour: &Hour<'_>, countries: &Countries, at: i32) -> (Option<HashMap<(Tag, Tag), i32>>, Option<i32>) {
         let table = hour.table(TableId::Subjects);
         let mut subjects = HashMap::new();
@@ -339,8 +297,6 @@ impl Peace {
         Some(governments)
     }
 
-    /// Existence as the hour left it, updated by the rows it changed: the raw countries it may
-    /// have changed, every one when read whole.
     fn exists(&mut self, hour: &Hour<'_>, whole: bool) -> Vec<u32> {
         let table = hour.table(TableId::CountryCounterInputs);
         if !complete(hour, TableId::CountryCounterInputs) {
@@ -385,9 +341,6 @@ impl Peace {
         Some(totals)
     }
 
-    /// Brings the world to the hour: the states whose owner may have moved (every one when read
-    /// whole, none while the owners are unknown), the raw countries whose existence may have, and
-    /// whether the identities changed.
     fn advance(&mut self, hour: &Hour<'_>, whole: bool) -> io::Result<(Option<Vec<u32>>, Vec<u32>, bool)> {
         let at = hour.hour;
         let mut holders = false;
@@ -426,7 +379,6 @@ impl Peace {
         Ok((moved, changed, holders))
     }
 
-    /// The hour's complete read, when owners, wars and identities are all known.
     fn snapshot(&self, at: i32, roster_complete: bool) -> Option<Snapshot> {
         Some(Snapshot {
             hour: at,
@@ -447,8 +399,6 @@ impl Peace {
         self.has_ambiguous = active().any(|conference| conference.unassigned);
     }
 
-    /// Holds `conference`'s span row as it stands for the hour's end: an hour may move a conference
-    /// twice (its roster read, then its comparison), and its row is set once, as it ends the hour.
     fn publish(conference: &Conference, spans: &mut BTreeMap<u64, Vec<Value>>) {
         let row = &conference.row;
         let optional = |value: Option<i32>| Value::OptionalI32(value);
@@ -468,7 +418,6 @@ impl Peace {
         );
     }
 
-    /// Writes `items` as outcome rows of the hour `at` from `ordinal` on, each headed `head`.
     fn write(&mut self, out: &mut Rows, at: i32, ordinal: &mut u32, head: Head, items: &[compare::Item]) {
         for item in items {
             let key = u128::from(at as u32) << 32 | u128::from(*ordinal);
@@ -494,7 +443,6 @@ impl Peace {
         }
     }
 
-    /// The complete PeaceConferences roster: each conference's id, turn and finalized flag.
     fn roster(hour: &Hour<'_>) -> Option<Vec<(u64, i32, u8)>> {
         if !complete(hour, TableId::PeaceConferences) {
             return None;
@@ -508,7 +456,6 @@ impl Peace {
         Some(rows)
     }
 
-    /// A roster read at `at`: conferences listed, gone, finalized; each "before" moved forward.
     fn read_roster(&mut self, at: i32, rows: &[(u64, i32, u8)], current: Option<&Arc<Snapshot>>, spans: &mut BTreeMap<u64, Vec<Value>>) {
         let active: Vec<u64> = self.conferences.iter().filter(|(_, conference)| conference.open && !conference.processed).map(|(&id, _)| id).collect();
         if active.len() > 1 {
@@ -538,7 +485,6 @@ impl Peace {
             };
             let conference = self.conferences.entry(id).or_insert_with(|| listed.clone());
             if !conference.open {
-                // Listed again after it was gone: a conference of its own under the same id.
                 *conference = listed;
             }
             conference.row.last_observed_hour = at;
@@ -566,8 +512,6 @@ impl Peace {
         self.recount();
     }
 
-    /// The comparisons a complete read at the hour settles, and the owner changes since the hour
-    /// before that no conference claims.
     fn compare(&mut self, current: &Arc<Snapshot>, moved: Option<&[u32]>, had: (bool, bool), spans: &mut BTreeMap<u64, Vec<Value>>, out: &mut Rows) {
         let (had_open, had_active) = had;
         let at = current.hour;
@@ -644,7 +588,6 @@ impl Writer for Peace {
         READS
     }
 
-    // Hourly: its rows live one hour, and a break in the hours reads the world again.
     fn hourly(&self) -> bool {
         true
     }
@@ -693,8 +636,6 @@ impl Writer for Peace {
         Ok(())
     }
 
-    /// Its rows living at the commit's hour and the world as that hour left it: the rest is in
-    /// the blob ([`Self::load`]).
     fn prime(&mut self, hour: &Hour<'_>) {
         let events = hour.table(TableId::PeaceOutcomes);
         self.living = events.rows().filter_map(|slot| events.key(slot)).collect();

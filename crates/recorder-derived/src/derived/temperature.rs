@@ -1,6 +1,3 @@
-//! Province temperatures against the hourly pass ([`replay_data::temperature`]).
-//! Each hour must reproduce its read witness. An anchor whose preceding
-//! frame proves its pass must match the derived words and cursor.
 
 use replay_data::{
     rows::Recorded, rows::TemperatureRecord, rows::WeatherProvinceRow, rows::tables,
@@ -8,24 +5,19 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-/// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
 
 #[derive(Default)]
 pub(super) struct Stats {
     refused: std::collections::BTreeMap<String, u64>,
     listed: Vec<String>,
-    /// Frames holding anchored words and the pass's inputs.
     anchored_hours: u64,
-    /// Hours whose derivation reproduced the read witness.
     witness_equal: u64,
     witness_mismatches: u64,
-    /// Anchors whose own hour the hour before proves an ordinary pass, compared word for word.
     anchors_compared: u64,
     anchor_rows_equal: u64,
     anchor_rows_differing: u64,
     anchor_cursor_differing: u64,
-    /// Anchors whose own hour no earlier frame proves.
     anchors_unproven: u64,
 }
 
@@ -43,7 +35,6 @@ impl Stats {
 
 pub(super) struct Checker {
     content: Result<Content, String>,
-    /// The derivation of anchored frames, and the hour before's derived words.
     memo: Memo,
     derived: Option<(u64, Simulation)>,
     pub(super) stats: Stats,
@@ -163,7 +154,6 @@ impl Checker {
     }
 }
 
-/// The anchored words against the pass from the hour before.
 fn compare_anchor(
     stats: &mut Stats,
     frame: &DecodedFrame,

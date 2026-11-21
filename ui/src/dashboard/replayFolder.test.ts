@@ -38,7 +38,6 @@ test('the saved replay folder follows the profile in effect when it is read or w
   try {
     const folder = path.join(root, 'replays');
     await mkdir(folder);
-    // A profile chosen after the module loaded, as the parity harness does.
     process.env.APPDATA = path.join(root, 'profile');
     assert.equal(await savedReplayFolder('fixture'), 'fixture');
     await saveReplayFolder(folder);

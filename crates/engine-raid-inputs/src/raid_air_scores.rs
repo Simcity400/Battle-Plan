@@ -1,27 +1,3 @@
-//! Stored regional air-superiority weights and active-mission counters used by raids and the Air map mode.
-//! Copy these region-slot pairs rather than reconstructing them from wings.
-//!
-//! The game rewrites a region's pairs only in its phase hour. Its phase roster
-//! lists slots from 1 whose region has provinces and whose
-//! [`cstrategic_region::AIR_PHASE`] equals the signed 32-bit remainder of
-//! `CURRENT_HOUR - 43,800,000` over twice
-//! `NAir::HOURS_DELAY_AFTER_EACH_COMBAT`. At those slots alone the
-//! strategic-air phase pass clears every active country's entry and the
-//! regional update accumulates it and rebuilds the aircraft spotting scale;
-//! setup zeroes new entries. The hook samples
-//! at hourly-update entry, whose previous call advanced to the hour it reads
-//! before updating air. After one complete read, each hour therefore re-reads
-//! only its phase slots and carries every other pair.
-//!
-//! One other writer clears pairs off phase: country strategic-air reset, called
-//! during dynamic country reuse, zeroes every region entry in place after
-//! clearing its site lists through two clearing operations. The caller
-//! certifies the carry with a token those two sites move ([`Held::certify`]),
-//! and a country is carried only under the raw id it was read with.
-//!
-//! Each entry's air-power menu is read with its pair. A menu equal to the one
-//! its row held keeps that allocation, and copying a row whose menu is
-//! unchanged touches no reference count.
 
 use crate::{
     Memory, cgame_state,
@@ -37,45 +13,32 @@ use std::sync::Arc;
 mod menu;
 pub use menu::{Contribution, Menu};
 
-/// Strategic-air region-entry selector.
 const SCORES: usize = 0xe0;
 const STRIDE: usize = 0xa0;
-/// The entry's movement impact, which the land movement speed scales by the enemy's
-/// share of the pair; the phase pass rewrites it with the pair.
 const IMPACT: usize = 0x18;
-/// Active-mission counters cleared and rebuilt in the same regional phase as the weights.
 const FRIENDLY_MISSIONS: usize = 0x28;
 const ENEMY_MISSIONS: usize = 0x2a;
-/// The weights, movement impact and active-mission counters in one guarded read.
 const ENTRY: usize = ENEMY_MISSIONS + 2;
-/// Raw fixed5 normalization applied to regional aircraft spotting.
 const AIR_SPOTTING_SCALE: usize = 0x80;
-/// Loaded signed i32 combat delay, doubled for the phase period.
 pub const COMBAT_DELAY_RVA: Rva = Rva(0x033e_0bbc);
-/// Epoch subtracted from the game hour before signed remainder.
 const HOUR_EPOCH: i32 = 43_800_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
     pub region: u32,
-    /// Runtime slot, used only to merge carried pairs; not recorded.
     pub slot: u32,
     pub friendly: i64,
     pub enemy: i64,
-    /// The entry's movement impact ([`IMPACT`]).
     pub impact: i64,
     pub friendly_missions: u16,
     pub enemy_missions: u16,
     pub air_spotting_scale: Option<i64>,
-    /// Shared with the recorded row; `None` when unreadable.
     pub menu: Option<Arc<Menu>>,
-    /// The menu's allocation, summed without dereferencing it; zero when shared.
     menu_bytes: u32,
 }
 
 impl Row {
-    /// Takes `values` with `menu`, keeping this row's menu when it is the same allocation.
     fn assign(&mut self, values: &Row, menu: Option<&Arc<Menu>>, menu_bytes: u32) {
         self.country = values.country;
         self.region = values.region;
@@ -104,7 +67,6 @@ pub struct Region {
 }
 
 impl Region {
-    /// Whether this region slot is reached in the current phase hour.
     fn updated(self, slot: usize, phase: i32) -> bool {
         slot != 0 && self.provinces && self.phase == phase
     }
@@ -113,15 +75,12 @@ impl Region {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Country {
     canonical_slot: u32,
-    /// The raw country id the pairs were read under.
     id: u32,
     address: usize,
     data: usize,
     rows: usize,
 }
 
-/// The last complete table and the roster it was read under, kept by the
-/// caller across hours. [`grow`](Self::grow) sizes it off the game thread.
 #[derive(Default)]
 pub struct Held {
     hour: Option<i32>,
@@ -135,25 +94,17 @@ pub struct Held {
     next_regions: Vec<Region>,
     next_countries: Vec<Country>,
     slots: Vec<u32>,
-    /// The token the held table was read under.
     token: Option<u64>,
-    /// Every zero menu's one allocation.
     zero: Option<Arc<Menu>>,
     menu_scratch: menu::Scratch,
-    /// The held rows' menu allocations.
     menu_bytes: usize,
 }
 
 impl Held {
-    /// The next walk reads every pair.
     pub fn invalidate(&mut self) {
         self.hour = None;
     }
 
-    /// The next walk carries off-phase pairs only under `token`, which the
-    /// caller takes before it from the writers that clear pairs in place (both
-    /// site-list clears called by strategic-air reset): an absent token, or one
-    /// other than the held table's, reads every pair.
     pub fn certify(&mut self, token: Option<u64>) {
         if token.is_none() || token != self.token {
             self.hour = None;
@@ -190,20 +141,11 @@ impl Held {
 
 pub struct Walk {
     pub outcome: Outcome,
-    /// Live roster and strategic-air country counts, for sizing [`Held`].
     pub regions: usize,
     pub countries: usize,
-    /// Whether every pair was read, rather than this hour's phase slots.
     pub full: bool,
 }
 
-/// Entries with zero weights, active-mission counters and an observed zero
-/// aircraft spotting scale are omitted, except at the roster's last region for every
-/// country: a complete table so proves the country's strategic-air object,
-/// and any other absent pair of that country is zero.
-///
-/// Runs on a worker: `held` and `output` grow to the live roster, score
-/// headers and retained nonzero pairs, and only a failed allocation refuses.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -263,7 +205,6 @@ fn read_table(
     let delay = engine_sites::at(base, COMBAT_DELAY_RVA)
         .and_then(|at| read::<i32>(memory, at))
         .ok_or("air combat delay define unreadable")?;
-    // Signed division traps when no remainder exists.
     let period = delay.wrapping_add(delay);
     let phase = hour
         .wrapping_sub(HOUR_EPOCH)
@@ -274,7 +215,6 @@ fn read_table(
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("raid air region roster unreadable")?;
     walk.regions = roster.count as usize;
-    // Setup sizes regional entries from the live strategic-region roster.
     held.grow(walk.regions, held.next_countries.len(), held.rows.len())
         .map_err(|_| "capture buffer allocation failed")?;
     read_regions(memory, base, roster, &mut held.next_regions[..walk.regions])?;
@@ -385,7 +325,6 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
     }
 }
 
-/// Every positive region slot is dereferenced; slot zero may be null.
 fn read_regions(
     memory: &impl Memory,
     base: usize,
@@ -458,7 +397,6 @@ struct Target<'a> {
 }
 
 impl Target<'_> {
-    /// `held` is the row this slot held before, whose menu an equal read keeps.
     #[allow(clippy::too_many_arguments)]
     fn push(
         &self,
@@ -527,7 +465,6 @@ impl Target<'_> {
     }
 }
 
-/// Writes `row` with `menu` over the output's slot, which usually still holds the same menu.
 fn push(
     output: &mut Vec<Row>,
     len: &mut usize,
@@ -617,8 +554,6 @@ fn read_all(
     Ok(())
 }
 
-/// Reads this hour's phase `slots` and keeps every other held pair. Held rows
-/// and `slots` are both in slot order.
 #[allow(clippy::too_many_arguments)]
 fn carry(
     memory: &impl Memory,
@@ -650,7 +585,6 @@ fn carry(
             return Err("raid air score pair unreadable");
         }
         let scales = read_scales(memory, &addresses[..batch.len()]);
-        // Each slot's previous row, found ahead of the merge below.
         let mut previous: [Option<&Row>; BATCH] = [None; BATCH];
         let mut ahead = next;
         for (found, slot) in previous.iter_mut().zip(batch) {
@@ -708,7 +642,6 @@ mod tests {
     const MEMORY: usize = 0x1000_0000;
     const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA.0;
     const GAME: usize = MEMORY + 0x1000;
-    /// Synthetic phase-three hour with combat delay four and period eight.
     const HOUR: i32 = 43_800_000 + 8 * 1_000 + 3;
 
     struct World {
@@ -720,7 +653,6 @@ mod tests {
     }
 
     impl World {
-        /// Slot zero is null; fixture regions have provinces and phase equal to slot modulo eight.
         fn new(countries: usize, regions: usize) -> Self {
             let slots = countries + 1;
             let countries_at = 0x3000;
@@ -862,7 +794,6 @@ mod tests {
             self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         }
 
-        /// A fresh balanced contribution map for one side of an entry's menu.
         fn contributions(
             &mut self,
             country: usize,
@@ -942,7 +873,6 @@ mod tests {
         world.coverage(1, 3, 70);
         world.contributions(1, 3, 0, &[(2, 10), (5, 20), (9, 30)]);
         world.pair(1, 4, 1, 0);
-        // An empty map is its count: its head is never read.
         let empty = world.entry(1, 4) + 0x60;
         world.put(empty, MEMORY + 0x0fff_0000);
         let mut held = held(12, 1, 16);
@@ -970,13 +900,11 @@ mod tests {
         assert!(zero.is_zero());
         assert!(held.allocated_bytes() >= read.allocated_bytes());
 
-        // Phase three re-reads slot three: the equal menu is the same allocation.
         let same = world.walk(HOUR, &mut held, &mut rows);
         assert!(!same.full);
         assert!(Arc::ptr_eq(&menu(&same, &rows, 3).unwrap(), &read));
         assert!(Arc::ptr_eq(&menu(&same, &rows, 4).unwrap(), &zero));
 
-        // Off phase, a change is carried until the slot's own phase hour reads it.
         world.contributions(1, 3, 0, &[(2, 10), (5, 25)]);
         world.coverage(1, 4, 8);
         let next = world.walk(HOUR + 1, &mut held, &mut rows);
@@ -996,7 +924,6 @@ mod tests {
             [(2, 10), (5, 25)]
         );
 
-        // A node that does not name its parent makes the menu unreadable, never empty.
         let at = world.entry(1, 3) + 0x50;
         let head =
             u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap()) as usize - MEMORY;
@@ -1213,7 +1140,6 @@ mod tests {
         };
         let first = world.walk(HOUR - 1, &mut held, &mut rows);
         assert_eq!(impacts(&first, &rows), [(1_005, -40_000), (1_019, 0)]);
-        // Slot 5 is off HOUR's phase: its pair and impact are carried.
         world.impact(1, 5, -1);
         let next = world.walk(HOUR, &mut held, &mut rows);
         assert!(!next.full);
@@ -1240,8 +1166,6 @@ mod tests {
                 (3, 1_019, 0, 0),
             ]
         );
-        // HOUR rewrites slots 3, 11 and 19. A change anywhere else cannot
-        // come from the game; reading it would prove a full read.
         world.pair(1, 3, 6, 0);
         world.pair(1, 5, 9, 9);
         world.pair(2, 11, 1, 2);
@@ -1259,8 +1183,6 @@ mod tests {
                 (3, 1_019, i64::MIN, i64::MAX),
             ]
         );
-        // Each slot is reread in its own phase hour; a rewritten zero pair
-        // then leaves the table, and the witness stays.
         world.pair(1, 3, 0, 0);
         world.pair(3, 19, 0, 0);
         world.pair(1, 4, 1, 1);
@@ -1285,7 +1207,6 @@ mod tests {
                 (3, 1_019, 0, 0),
             ]
         );
-        // A gap in the hours reads everything again.
         assert!(world.walk(HOUR + 11, &mut held, &mut rows).full);
     }
 
@@ -1296,7 +1217,6 @@ mod tests {
         let mut rows = Vec::new();
         assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
         assert!(!world.walk(HOUR, &mut held, &mut rows).full);
-        // The define is read live: a different period rereads everything.
         world.put32(0x100, 3);
         assert!(world.walk(HOUR + 1, &mut held, &mut rows).full);
         world.put32(0x100, 4);
@@ -1305,7 +1225,6 @@ mod tests {
         world.put32(region + cstrategic_region::AIR_PHASE, 6);
         assert!(world.walk(HOUR + 3, &mut held, &mut rows).full);
         assert!(!world.walk(HOUR + 4, &mut held, &mut rows).full);
-        // A moved score array rereads its own country alone.
         world.pair(1, 6, 3, 0);
         world.pair(2, 6, 4, 0);
         let air = world.air(1);
@@ -1319,30 +1238,23 @@ mod tests {
         assert!(got.contains(&(1, 1_006, 3, 0)) && !got.contains(&(2, 1_006, 4, 0)));
     }
 
-    /// Strategic-air reset zeroes a country's pairs in place, off phase: a
-    /// token its clears moved, an absent token or a new raw id at the same slot
-    /// and address rereads the pairs a carry would keep.
     #[test]
     fn an_in_place_reset_or_a_new_raw_id_rereads_the_carried_pairs() {
         let mut world = World::new(2, 12);
-        // Slot 5 is rewritten only at phase 5; HOUR is phase 3.
         world.pair(1, 5, 9, 9);
         let mut held = held(12, 2, 16);
         let mut rows = Vec::new();
         held.certify(Some(1));
         assert!(world.walk(HOUR - 1, &mut held, &mut rows).full);
         world.pair(1, 5, 0, 0);
-        // Under the same token the pair is carried, as before the token.
         held.certify(Some(1));
         let carried = world.walk(HOUR, &mut held, &mut rows);
         assert!(!carried.full);
         assert!(pairs(&carried, &rows).contains(&(1, 1_005, 9, 9)));
-        // The reset moved the token: every pair is read.
         held.certify(Some(2));
         let reread = world.walk(HOUR + 1, &mut held, &mut rows);
         assert!(reread.full);
         assert!(!pairs(&reread, &rows).contains(&(1, 1_005, 9, 9)));
-        // Without a token nothing is carried, nor the hour after one returns.
         for (hour, token, full) in [
             (HOUR + 2, None, true),
             (HOUR + 3, None, true),
@@ -1352,8 +1264,6 @@ mod tests {
             held.certify(token);
             assert_eq!(world.walk(hour, &mut held, &mut rows).full, full, "{hour}");
         }
-        // A new raw id for slot one's object (an alias linked to slot one)
-        // rereads that country alone.
         const LINKS: usize = 0x3000 + 3 * 8;
         let links = world.bytes.len();
         world.bytes.extend_from_within(LINKS..LINKS + 3 * 4);
@@ -1434,7 +1344,6 @@ mod tests {
         let countries = variable("BATTLE_PLAN_RAID_SCORE_COUNTRIES", 1_500);
         let regions = variable("BATTLE_PLAN_RAID_SCORE_REGIONS", 305);
         let mut world = World::new(countries, regions);
-        // A sparse war: every twentieth country holds ten nonzero pairs.
         for country in (1..=countries).step_by(20) {
             for slot in (1..regions).step_by(regions / 10) {
                 world.pair(country, slot, country as i64, slot as i64);

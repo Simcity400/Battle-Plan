@@ -1,4 +1,3 @@
-//! Native map-counter tooltips. Missing reached inputs are refused by their line.
 
 #[cfg(test)]
 use viewer_foundation::diagnostics_panel::test_support::assert_diagnostics;
@@ -45,9 +44,6 @@ use {
     viewer_foundation::map::perspective::Vision, viewer_foundation::tooltip_text::Tooltip,
 };
 
-/// How a hover reads: the counters' NATO naming, and whether the map's diagnostics add the
-/// recorded template, garrison, HQ deployment and naval management sections, which the game's
-/// own hover does not show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Style {
     pub nato: bool,
@@ -175,7 +171,6 @@ impl Cache {
     }
 }
 
-/// A diagnostics export visits each presented counter control, without needing a pointer.
 pub fn count_refusals(tooltips: impl IntoIterator<Item = Tooltip>) -> BTreeMap<String, usize> {
     let mut refused = BTreeMap::new();
     for tooltip in tooltips {
@@ -223,7 +218,6 @@ fn append_facts(
 
 struct Context<'a> {
     nato: bool,
-    /// Whether the recorded sections the game's hover lacks are shown ([`Style::diagnostics`]).
     diagnostics: bool,
     content: Option<&'a counter_content::Content>,
     reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
@@ -412,7 +406,6 @@ impl<'a> Context<'a> {
             .map_err(|_| format!("DivisionStatus division {id} is absent"))
     }
 
-    /// The division's maximum strength and organisation as the game shows them: the panel's words.
     fn maxima(&self, id: u64) -> Result<[i64; 2], String> {
         let rows = self
             .frame
@@ -468,8 +461,6 @@ impl<'a> Context<'a> {
             .binary_search_by_key(&handle, |row| row.template)
             .map(|i| &rows[i])
             .map_err(|_| format!("DivisionTemplates template {handle} is absent"))?;
-        // Use the recorded composition country rather than the census owner.
-        // The country is recorded even when the composition model was unreadable.
         let icons = self
             .frame
             .complete::<tables::DivisionTemplateIcons>()
@@ -481,8 +472,6 @@ impl<'a> Context<'a> {
         let raw = u32::try_from(icon.country)
             .map_err(|_| format!("template {handle} country {} is unresolved", icon.country))?;
         let slot = self.slot(raw)?;
-        // Use literal text first, otherwise the key and raw composition-country tag.
-        // A name_key older recordings lack refuses only the key fallback.
         let name_key: &[u8] = if row.name.is_empty() {
             row.name_key.require("DivisionTemplates.name_key")?
         } else {
@@ -522,7 +511,6 @@ impl<'a> Context<'a> {
             || Ok(self.names),
         )?;
         let division = self.division(id)?;
-        // Use the roster country; the game picks its red/yellow control.
         let owner = self.slot(division.roster_owner)?;
         let country = self.country_name(owner)?;
         let colour = if self.vision.at_war_proven(owner).map_err(|e| e.describe())? {
@@ -578,7 +566,6 @@ impl<'a> Context<'a> {
         if maximum <= 0 {
             return Ok(String::new());
         }
-        // COUNT integer, MAX fixed5, then one newline.
         localise(
             self.loc,
             "ATTRITION_SOME_UNITS",
@@ -673,7 +660,6 @@ fn template_header_key(
     disclosed: bool,
     hostile: impl FnOnce() -> Result<bool, String>,
 ) -> Result<&'static str, String> {
-    // The game checks disclosure before hostility, except for our own country.
     Ok(if disclosed && !ours {
         "DIVISION_TEMPLATE_HEADER_FRIEND"
     } else if hostile()? {
@@ -734,7 +720,6 @@ fn statistics(
     }
     let mut text = if single {
         let (division, _, [_, maximum_organisation]) = known[0];
-        // absolute CUR and native getter MAX, never a percentage.
         localise(
             loc,
             "CURRENT_ORGANIZATION",
@@ -747,7 +732,6 @@ fn statistics(
             ],
         )?
     } else {
-        // Mean of known members' supply ratios, with wrapping and truncation.
         let value =
             counter_inputs::member_mean(known.iter().map(|(division, _, maxima)| {
                 counter_status::ratio(division.organisation, maxima[1])
@@ -790,7 +774,6 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
         let remaining = timing
             .next
             .ok_or_else(|| format!("unit {id} has no next-province arrival estimate"))?;
-        // The next-province duration rounds each first edge up to whole hours.
         let hours = game_model::movement::unit::eta_hours(remaining) as i32;
         minimum = Some(minimum.map_or(hours, |previous: i32| previous.min(hours)));
     }
@@ -824,7 +807,6 @@ fn supply(
     context: &Context<'_>,
     known: &[(&DivisionRow, &DivisionStatusRow, [i64; 2])],
 ) -> Result<String, String> {
-    // Use one getter; the game averages known members with fixed5 division.
     let values = known
         .iter()
         .map(|(_, status, _)| {
@@ -874,7 +856,6 @@ pub fn build(
     Batch::new(content, reads, frame, vision, style).build(input)
 }
 
-/// Counter inventory shares lazy arrival indexes for its immutable frame.
 pub struct Batch<'a> {
     context: Context<'a>,
     arrival: super::division_eta::CounterQueries<'a>,
@@ -968,9 +949,6 @@ impl<'a> Batch<'a> {
         )
     }
 
-    /// A division's own hover, as the game builds it for a unit model: the army-list text over
-    /// every division standing in its `province`. The unit's own further lines are a debug view the
-    /// game shows only under a development switch.
     pub fn build_location(&self, province: u32) -> Tooltip {
         build_location(&self.context, province)
     }
@@ -1003,8 +981,6 @@ fn build_context(
     nato: bool,
     arrival_remaining: impl FnOnce(ArrivalUnit<'_>, bool) -> Result<i64, String>,
 ) -> Tooltip {
-    // The active-ability item has its own handler, independent of the unit counter's
-    // representative-reference gate.
     if matches!(
         input.control,
         viewer_foundation::map::counter_hovers::land::CounterControl::Ability { .. }
@@ -1053,8 +1029,6 @@ fn build_context(
     } else {
         build_divisions(context, input, nato, arrival_remaining)
     };
-    // Text presence does not establish handling. Detailed arrival formatting marks
-    // the handler, while coarse counters handle their body independently.
     if !input.coarse
         && let Some(authored) = &input.authored
     {
@@ -1071,8 +1045,6 @@ fn build_context(
     out
 }
 
-/// Resolve before either ownership branch,
-/// including the foreign branch which will query only its first edge.
 fn ordinary_destination(context: &Context<'_>, path: &[u32], count: u32) -> Result<bool, String> {
     if path.len() != count as usize {
         return Err("ordinary route count does not match its captured path".into());
@@ -1103,9 +1075,6 @@ fn build_divisions(
             return (out, Err(reason));
         }
     };
-    // The first representative was resolved strictly by the dispatcher.
-    // Detailed and coarse gathers skip later unresolved references;
-    // those refs neither become unknown-intel units nor alter composition.
     let members: Vec<_> = input
         .members
         .iter()
@@ -1131,11 +1100,9 @@ fn build_divisions(
     }
     let first = input.members[0];
     let mut handled = Ok(false);
-    // Test the first member's route and target before either line.
     match context.movement(first) {
         Ok(movement) if movement.path_total as i32 > 0 && movement.target == 0 => {
             let arrival: Result<Option<counter_eta::Arrival>, String> = (|| {
-                // Hidden foreign counters omit arrival text.
                 if !input.ours && input.hidden {
                     return Ok(None);
                 }
@@ -1171,8 +1138,6 @@ fn build_divisions(
                     .members
                     .iter()
                     .zip(input.timing.iter())
-                    // Match timing by original ordinal before omitting a
-                    // complete-census dangling ref.
                     .filter(|(id, _)| divisions.binary_search_by_key(*id, |row| row.id).is_ok())
                     .map(|(&id, timing)| {
                         let division = context.division(id)?;
@@ -1196,7 +1161,6 @@ fn build_divisions(
         context.template_sections(&mut out, &members);
     }
     children::append(context, input, &mut out);
-    // Header fragments terminate their lines; the painter supplies the newline before its divider.
     if !out.body.is_empty() && out.title.ends_with('\n') {
         out.title.pop();
     }
@@ -1222,10 +1186,6 @@ fn build_location(context: &Context<'_>, province: u32) -> Tooltip {
     out
 }
 
-/// The game's army-list text over `members`, as both a unit counter and a unit's own hover build
-/// it: the intel counts, the single division's name and real template or the template headers and
-/// attrition, then organisation and strength, supply and composition. `first` is the
-/// representative a single division's lines name.
 fn army_list(context: &Context<'_>, members: &[u64], first: u64, nato: bool, out: &mut Tooltip) {
     let frame = context.frame;
     let vision = context.vision;
@@ -1297,7 +1257,6 @@ fn army_list(context: &Context<'_>, members: &[u64], first: u64, nato: bool, out
                     context.attrition(&known),
                 );
             }
-            // Single undisclosed and zero-known never reach supply.
             if !known.is_empty() && (members.len() != 1 || disclosed == Some(true)) {
                 let values = known
                     .iter()
@@ -1846,8 +1805,6 @@ mod tests {
                     .map(|division| DivisionStatusRow {
                         division,
                         strength_factor: 50_000,
-                        // This baseline exercises historical missing-grace refusals;
-                        // a recorded zero maximum instead proves native zero supply.
                         supply_grace_maximum: Recorded::NotRecorded,
                         supply_grace_remaining: Recorded::NotRecorded,
                         name: if named {
@@ -1964,7 +1921,6 @@ mod tests {
         frame
     }
 
-    // Formatting fixtures supply an explicit duration; production reads the hour's estimate.
     fn fixture_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Tooltip {
         build_context(context, input, nato, |unit, _| match unit {
             ArrivalUnit::Division(movement) => input
@@ -2075,7 +2031,6 @@ mod tests {
                 .title
                 .contains("Guard")
         );
-        // A current cache failure cannot substitute usable generator operands.
         status[0].name = Recorded::Value(None);
         status[0].naming = Recorded::Value(Some(NameOperands {
             custom: b"Generator name".to_vec(),
@@ -2272,7 +2227,6 @@ mod tests {
             },
             &[format!("Tooltip: 1 × {reason}")],
         );
-        // The dump/capture census builds these hovers without a pointer, counting each once.
         let refused = count_refusals([unnamed.clone(), unnamed]);
         assert_eq!(refused[reason], 2);
     }
@@ -2298,8 +2252,6 @@ mod tests {
         assert_eq!(coarse.title, "2 divisions\n");
         assert_eq!(coarse.body, "");
         assert!(coarse.refused.is_empty());
-        // A unit model's own hover is the army list over every division at its location, without
-        // the counter's arrival and next-location lines.
         let loc = loc();
         let defines = installed_content_core::defines::Defines::new().unwrap();
         defines
@@ -3002,7 +2954,6 @@ mod tests {
                 coarse,
                 hidden,
                 railway_gun: false,
-                // A legacy hover duration must not provide the arrival query's result.
                 remaining: None,
                 ours,
             };
@@ -3037,9 +2988,6 @@ mod tests {
         }
     }
 
-    /// The division arrival line words the hour's estimate: the stored route's
-    /// content distance over the recorded base speed, less the progress behind
-    /// it. A recording without that speed refuses the line by its own name.
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
         use installed_content_core::{
@@ -3079,8 +3027,6 @@ mod tests {
         let names = installed_content_division_names::division_names::Database::default();
         let units = Err("unused".into());
         let mut frame = frame(true);
-        // Arrival composes all recorded speed terms; keep everything but the
-        // base speed neutral while preserving the counter's status text.
         let status = frame
             .complete::<tables::DivisionStatus>()
             .unwrap()
@@ -3116,8 +3062,6 @@ mod tests {
             &mut frame,
             TableRows::DivisionTemplateIcons(neutral_templates),
         );
-        // 2900000 over 100000 per hour is 29 hours; 400000 of progress is
-        // 4 hours behind. A slower stat block still moves at the 1 km/h floor.
         for (base_speed, ours, expected) in [
             (Recorded::Value(Some(100_000)), true, Ok("arrival 1d 1h\n")),
             (
@@ -3126,7 +3070,6 @@ mod tests {
                 Ok("other arrival 1d 1h\n"),
             ),
             (Recorded::Value(Some(40_000)), true, Ok("arrival 1d 1h\n")),
-            // 14.5 hours less 2 ceilings to 13.
             (Recorded::Value(Some(200_000)), true, Ok("arrival 13h\n")),
             (
                 Recorded::NotRecorded,
@@ -3259,8 +3202,6 @@ mod tests {
             next: Some(100_001),
             kind: Some(2),
         };
-        // The missing ref's deliberately unreadable timing must not be paired
-        // with the surviving second member by zipping after filtering IDs.
         let missing = Timing {
             next: None,
             kind: None,
@@ -3313,7 +3254,6 @@ mod tests {
                 }
             );
             assert!(skipped.refused.is_empty());
-            // Later-ref skips never relax the first representative gate.
             let absent_first = build(&frame, &known, railway_gun, true, &[dangling, 1], &[]);
             assert_eq!(absent_first, Tooltip::default());
             let mut incomplete = frame.clone();
@@ -3613,8 +3553,6 @@ mod tests {
                     .collect();
                 let vision = Vision::sharing(if ours { 1 } else { 2 }, [1]);
                 let context = context(&frame, &loc, &vision, &names, &units);
-                // Class 13's captured path is complete by its row contract;
-                // class 0 also has an independent count and can expose truncation.
                 if case == "partial route" && railway_gun {
                     continue;
                 }

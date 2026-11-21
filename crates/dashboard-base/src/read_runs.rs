@@ -1,25 +1,9 @@
-//! Values of a daily table, keyed (by variant, archetype, …), as runs over the
-//! hours each read covers: a value starts only at a read of its table, is
-//! carried over the following hours of the same country identity, and ends at
-//! a gap, an incomplete table or a change of identity. The spans say at which
-//! hours the table's values are known at all.
-//!
-//! A run is a recorded value, zero included, so a key the table recorded as zero
-//! is told apart from one it never listed: inside a span, a key without a run had
-//! no row at that read (for a stockpile or a production total, none), and outside
-//! every span its value is unknown, never zero. A value read but not computable
-//! (such as a production rate with no cost) is a run with no amount: unknown for
-//! that read, never zero and never part of a sum. Every product that turns a daily
-//! table into runs builds them here.
 
 use crate::span::HourSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::TS;
 
-/// One recorded value held over consecutive hours while unchanged. The raw value
-/// is an exact decimal string of the table's fixed point; null when the value was
-/// read but cannot be computed exactly, so it is unknown at those hours.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AmountRun {
@@ -28,21 +12,14 @@ pub struct AmountRun {
     pub amount_raw: Option<String>,
 }
 
-/// Runs of one table's keyed values, built read by read.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadRuns<K: Ord + Copy> {
-    /// Direct consumers must `seal()` after deferred `advance()` calls.
     pub runs: BTreeMap<K, Vec<AmountRun>>,
-    /// Hours the table's values are known: each read and the hours carried from it.
     pub spans: Vec<HourSpan>,
-    /// The keys whose last run is still carried, and their values (none: unknown).
     open: BTreeMap<K, Option<i64>>,
-    /// Totals that did not fit the table's i64 and were kept unknown, never clamped.
     pub overflowed: usize,
     carried: bool,
     frontier: Option<i32>,
-    /// Optional change collection for a consumer that publishes and prunes
-    /// the runs after each step. Rebuilt by use after restore.
     #[serde(skip)]
     changes: Option<BTreeSet<K>>,
     #[cfg(test)]
@@ -51,7 +28,6 @@ pub struct ReadRuns<K: Ord + Copy> {
 }
 
 impl<K: Ord + Copy> ReadRuns<K> {
-    /// No runs yet; each read adds the keys and changes it recorded.
     pub fn new() -> Self {
         Self {
             runs: BTreeMap::new(),
@@ -66,12 +42,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
         }
     }
 
-    /// A read at `hour`: every key's value then. A key read twice sums exactly, as a
-    /// pool with repeated entries holds their total; one value that cannot be computed
-    /// (`None`), or a total that does not fit the table's i64, makes the key's total
-    /// unknown for this read (the latter counted in `overflowed`), never clamped. A key
-    /// missing from the read had no row. A value continues its run only when the hour before was
-    /// carried and the value is unchanged.
     pub fn read(&mut self, hour: i32, values: impl IntoIterator<Item = (K, Option<i64>)>) {
         self.seal();
         let follows = self.carried
@@ -86,8 +56,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
                 last_hour: hour,
             }),
         }
-        // Exact sums: i128 holds any partial sum of i64 entries, so intermediate
-        // totals never saturate; only the final total must fit.
         let mut sums = BTreeMap::<K, Option<i128>>::new();
         for (key, value) in values {
             let total = sums.entry(key).or_insert(Some(0));
@@ -142,8 +110,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
         self.frontier = Some(hour);
     }
 
-    /// Authenticate an unchanged hour without visiting the open keys. A missing
-    /// hour closes at the previous frontier; it never extends a run over a gap.
     pub fn advance(&mut self, hour: i32) {
         if let Some(frontier) = self.frontier
             && frontier != hour
@@ -154,16 +120,12 @@ impl<K: Ord + Copy> ReadRuns<K> {
         self.frontier = Some(hour);
     }
 
-    /// Authenticate every unchanged hour in `first..=last` in one step.
-    /// Only the first can break the preceding carry; the rest are consecutive.
     pub fn advance_span(&mut self, first: i32, last: i32) {
         debug_assert!(first <= last);
         self.advance(first);
         self.frontier = Some(last);
     }
 
-    /// Materialise effective endpoints before direct `runs`/`spans` access,
-    /// publication or a checkpoint. Only currently open keys are visited.
     pub fn seal(&mut self) {
         if !self.carried {
             return;
@@ -189,8 +151,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
         }
     }
 
-    /// An hour carried from the last read: its values and span go on, but only
-    /// while nothing broke since that read.
     pub fn carry(&mut self, hour: i32) {
         self.seal();
         if !self.carried {
@@ -214,8 +174,6 @@ impl<K: Ord + Copy> ReadRuns<K> {
         }
     }
 
-    /// The recording broke (a gap, a missing or incomplete table, another
-    /// identity): nothing is carried until the next read.
     pub fn close(&mut self) {
         self.seal();
         self.carried = false;
@@ -225,22 +183,14 @@ impl<K: Ord + Copy> ReadRuns<K> {
         self.open.clear();
     }
 
-    /// Keys whose interval started or stopped since the preceding call.
-    /// The first call (also after restore) returns none: the consumer must
-    /// inspect its current runs once before collecting changes from then on.
-    /// Extending an equal interval changes only its endpoint, never its key.
     pub fn take_changes(&mut self) -> Option<BTreeSet<K>> {
         self.changes.replace(BTreeSet::new())
     }
 
-    /// The pending interval changes, without consuming another publisher's
-    /// collection. None until collection starts, including after restore.
     pub fn changed_keys(&self) -> Option<&BTreeSet<K>> {
         self.changes.as_ref()
     }
 
-    /// Whether the current change collection contains an interval change;
-    /// none before a consumer starts collecting, including after restore.
     pub fn has_changes(&self) -> Option<bool> {
         self.changes.as_ref().map(|changes| !changes.is_empty())
     }
@@ -305,7 +255,6 @@ mod tests {
             hourly.carry(hour);
             deferred.advance(hour);
         }
-        // A missing hour closes the old endpoint before a new accepted frame.
         hourly.carry(32);
         deferred.advance(32);
         assert_eq!(deferred.runs, hourly.runs);
@@ -355,7 +304,6 @@ mod tests {
         let mut built = ReadRuns::new();
         built.read(10, [(1, Some(5)), (2, Some(7)), (1, Some(3))]);
         built.carry(11);
-        // Unchanged at the next read: one run; key 2 has no row, so its run ends.
         built.read(12, [(1, Some(8))]);
         built.carry(13);
         assert_eq!(runs(&built, 1), [(10, 13, Some("8"))]);
@@ -372,12 +320,10 @@ mod tests {
     #[test]
     fn a_recorded_zero_is_a_value_and_an_uncomputable_one_poisons_the_sum() {
         let mut built = ReadRuns::new();
-        // A zero is kept as a run, told apart from a key never listed.
         built.read(10, [(1, Some(0)), (2, Some(4)), (2, None)]);
         built.carry(11);
         built.read(12, [(1, Some(0)), (2, Some(4))]);
         assert_eq!(runs(&built, 1), [(10, 12, Some("0"))]);
-        // One uncomputable value makes the key's total unknown at that read, not 4.
         assert_eq!(runs(&built, 2), [(10, 11, None), (12, 12, Some("4"))]);
         assert!(runs(&built, 3).is_empty());
     }
@@ -387,10 +333,8 @@ mod tests {
         let mut built = ReadRuns::new();
         built.read(10, [(1, Some(5))]);
         built.close();
-        // Hours after a break are unknown, not carried.
         built.carry(11);
         built.read(12, [(1, Some(5))]);
-        // A carried hour that skips one is a break too.
         built.carry(14);
         built.carry(15);
         assert_eq!(runs(&built, 1), [(10, 10, Some("5")), (12, 12, Some("5"))]);
@@ -408,7 +352,6 @@ mod tests {
             ]
         );
         let mut exact = ReadRuns::new();
-        // Intermediate sums past i64 do not clamp: the total is exactly 100000.
         exact.read(
             1,
             [
@@ -418,7 +361,6 @@ mod tests {
             ],
         );
         assert_eq!(runs(&exact, 1), [(1, 1, Some("100000"))]);
-        // A total that does not fit is unknown and counted, never clamped.
         exact.read(2, [(1, Some(i64::MAX)), (1, Some(1))]);
         assert_eq!(runs(&exact, 1)[1], (2, 2, None));
         assert_eq!(exact.overflowed, 1);

@@ -12,9 +12,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// One hour's inputs of country 1, the holder of slot 1: its slots (technology present, token
-/// index, classifier, level, occurrence), its inventory (occurrence, classifier, level,
-/// researched), whether the hour reads it, and whether ResearchInputs is complete.
 struct World {
     slots: Vec<(u8, usize, u32, i32, i32)>,
     inventory: Vec<(i32, u32, i32, u8)>,
@@ -22,7 +19,6 @@ struct World {
     complete: bool,
 }
 
-/// Makes `table` hold exactly `rows`.
 fn sync<R: RowCodec>(store: &mut Store, table: TableId, rows: &[R]) {
     let keep: Vec<u128> = rows.iter().map(RowCodec::key).collect();
     for (key, _) in testing::rows(store, table) {
@@ -39,7 +35,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, world: &World) {
     run_tagged(store, writers, hour, world, 0);
 }
 
-/// [`run`] with country 1 holding tag `TEXTS[tag]`.
 fn run_tagged(store: &mut Store, writers: &mut Writers, hour: i32, world: &World, tag: usize) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     for read in READS {
@@ -80,16 +75,12 @@ fn run_tagged(store: &mut Store, writers: &mut Writers, hour: i32, world: &World
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// Reads at hours 0, 10, 15 and 45: slot 0 researches occurrence 7 (tech_a), switches to 8
-/// (tech_b) at 10; occurrence 7's level rises in the inventory by 15; slot 1 stays empty.
 fn switching(hour: i32) -> World {
     let slots = if hour < 10 { vec![(1, 1, ACTIVE_CLASSIFIER, 0, 7), (0, 0, 0, 0, 0)] } else { vec![(1, 2, ACTIVE_CLASSIFIER, 0, 8), (0, 0, 0, 0, 0)] };
     let level = if hour < 15 { 0 } else { 1 };
     World { slots, inventory: vec![(7, ACTIVE_CLASSIFIER, level, 0), (8, ACTIVE_CLASSIFIER, 0, 0)], read: matches!(hour, 0 | 10 | 15 | 45), complete: true }
 }
 
-/// An assignment row: slot index, lane, occurrence, continuity start, first observed, started
-/// after, last observed, ended by, outcome, outcome observed and awaiting.
 type Row = (u32, u16, i32, i32, i32, Option<i32>, Option<i32>, Option<i32>, u8, Option<i32>, u8);
 
 fn assignments(store: &Store) -> Vec<Row> {
@@ -108,7 +99,6 @@ fn assignments(store: &Store) -> Vec<Row> {
     rows
 }
 
-/// The coverage rows: member and since.
 fn coverage(store: &Store) -> Vec<(u32, i32)> {
     let view = store.view(TableId::ResearchCoverage.index());
     let mut rows: Vec<(u32, i32)> = view.rows().map(|slot| (view.key(slot).unwrap() as u32, view.number(SINCE[0], slot).unwrap() as i32)).collect();
@@ -154,9 +144,6 @@ fn an_assignment_ends_switched_awaits_its_completion_in_a_lane_of_its_own_and_a_
     assert_eq!(covered[45], read_at(45));
 }
 
-/// A holder whose tag changes is closed, its active assignment ended unknown; when the hour also
-/// reads the slot's technology, the new holder of the key starts it in the first lane and the
-/// ended one moves to a lane of its own, gone the hour after: each row set once.
 #[test]
 fn a_holder_closed_and_started_again_in_one_hour_moves_its_ended_assignment_to_a_lane_of_its_own() {
     let (mut store, mut writers) = (testing::store(), writers());

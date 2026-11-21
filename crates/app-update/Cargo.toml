@@ -8,9 +8,7 @@ license.workspace = true
 
 [dependencies]
 tauri = { version = "2", features = [] }
-# Windows' own TLS, and the system proxy, as Tauri's updater uses.
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy"] }
-# What Tauri's updater verifies its signatures with.
 minisign-verify = "0.2"
 semver = "1"
 base64 = "0.22"

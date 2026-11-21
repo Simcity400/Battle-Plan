@@ -19,8 +19,6 @@ export function validateLicences(value: unknown): ProductionLicencesReply {
   return reply;
 }
 
-/** One licence standing at the hour shown, by its parties' tags (null where a party has no country then) and canonical
- * slots (null where not linked). */
 export interface LicenceRow {
   key: string;
   licensor: string | null;
@@ -36,8 +34,6 @@ export interface LicenceRow {
 const row = (licence: LicenceNow): LicenceRow => ({ key: licence.key, licensor: licence.licensor.tag, licensee: licence.licensee.tag,
   licensorSlot: licence.licensor.slot, licenseeSlot: licence.licensee.slot, lent: licence.lent, required: licence.required, since: licence.since, designs: licence.designs });
 
-/** Every licence whose licensor or licensee the matcher keeps at `hour`, and how many others it cannot rule out: a
- * party with no country then may be one it keeps. */
 export function licencesAt(reply: ProductionLicencesReply, hour: number, matches: (tag: string, hour: number) => boolean): { rows: LicenceRow[]; unattributed: number } {
   const rows: LicenceRow[] = [];
   let unattributed = 0;
@@ -49,11 +45,8 @@ export function licencesAt(reply: ProductionLicencesReply, hour: number, matches
   return { rows, unattributed };
 }
 
-/** A country picked from the diagram: its canonical slot where its node's licences name one, so the drill keeps it
- * through a change of tag, and the tag it was picked by. */
 export interface PickedCountry { slot: number | null; tag: string }
 
-/** The canonical slot the licences give `tag`'s country, null where none of its licences is linked. */
 export function slotOf(reply: ProductionLicencesReply, tag: string): number | null {
   for (const licence of reply.licences) for (const party of [licence.licensor, licence.licensee]) if (party.tag === tag && party.slot !== null) return party.slot;
   return null;
@@ -61,21 +54,17 @@ export function slotOf(reply: ProductionLicencesReply, tag: string): number | nu
 
 const holds = (party: LicenceParty, picked: PickedCountry) => picked.slot !== null ? party.slot === picked.slot : party.tag === picked.tag;
 
-/** The licences one country grants or holds, and how many more it may grant: their licensor has no country then. */
 export function countryLicences(reply: ProductionLicencesReply, picked: PickedCountry): { rows: LicenceRow[]; unattributed: number } {
   const rows = reply.licences.filter(licence => holds(licence.licensor, picked) || holds(licence.licensee, picked)).map(row);
   return { rows, unattributed: reply.licences.filter(licence => licence.licensor.slot === null && licence.licensor.tag === null && !holds(licence.licensee, picked)).length };
 }
 
-/** The tag the picked country holds in `reply`, null where none of its licences names its country. */
 export function pickedTag(reply: ProductionLicencesReply, picked: PickedCountry): string | null {
   if (picked.slot === null) return picked.tag;
   for (const licence of reply.licences) for (const party of [licence.licensor, licence.licensee]) if (party.slot === picked.slot && party.tag !== null) return party.tag;
   return null;
 }
 
-/** Why a group selection shows no licence at `hour`: its membership was not recorded, or it has no members; null where
- * it has members or is not a group. */
 export function groupReasonAt(selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number,
   lastHour: number): { kind: 'empty' | 'unavailable'; message: string } | null {
   if (selection.kind !== 'group' || selection.group.type === 'top' || !groups) return null;
@@ -88,7 +77,6 @@ export function groupReasonAt(selection: CountrySelection, groups: CountryGroupR
     : selection.membership === 'end' ? 'This group has no members at the end of this campaign.' : 'This group has no members in this campaign.' };
 }
 
-/** A licensor → licensee pair: its licences and the ribbon's width in the measure. */
 export interface LicencePair { licensor: string | null; licensee: string | null; licences: LicenceRow[]; width: number }
 
 export function licencePairs(rows: readonly LicenceRow[], width: LicenceWidth): LicencePair[] {

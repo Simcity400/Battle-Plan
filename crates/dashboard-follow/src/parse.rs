@@ -1,6 +1,3 @@
-//! A followed query as the UI sends it: the request a widget would send for the same value at the
-//! head (`{product, params}`), parsed once into a [`Query`]. A request follow cannot answer is
-//! refused by name, and the widget keeps asking it as before.
 
 use crate::{
     invalid,
@@ -11,7 +8,6 @@ use dashboard_query::identity::Country;
 use serde_json::Value;
 use std::io;
 
-/// The followed query `request` asks, its countries read through `identity`.
 pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
     let product = request.get("product").and_then(Value::as_str).ok_or_else(|| invalid("A followed query names no product"))?;
     let params = request.get("params").ok_or_else(|| invalid("A followed query has no params"))?;
@@ -36,7 +32,6 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
                 Some(top) => Some(top.as_u64().and_then(|top| usize::try_from(top).ok()).filter(|top| *top >= 1).ok_or_else(|| invalid("A followed top names one row or more"))?),
             };
             let parts = series.parts.is_some();
-            // Owners ranked: the `top` countries greatest of every tag held, named by no read.
             if let (Some(n), false, true) = (top, parts, tags.is_empty()) {
                 if series.key.unowned() {
                     return Err(invalid(format!("{} is rows no country owns: it is not ranked", series.kind)));
@@ -121,12 +116,10 @@ fn measure(series: &'static Series, name: &str) -> io::Result<&'static dashboard
     series.measure(name).ok_or_else(|| invalid(format!("{} has no measure {name}", series.kind)))
 }
 
-/// A country a request names: a canonical slot or a tag.
 fn country(value: Option<&Value>) -> io::Result<Country> {
     value.and_then(|value| serde_json::from_value(value.clone()).ok()).ok_or_else(|| invalid("A followed read names no country"))
 }
 
-/// The countries a request lists; none where it lists none.
 fn countries(value: Option<&Value>) -> io::Result<Vec<Country>> {
     match value {
         None | Some(Value::Null) => Ok(Vec::new()),

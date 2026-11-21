@@ -1,5 +1,3 @@
-//! Coordinated extended acquisition. Public arrays use global TableId indices;
-//! individual packs keep compact local arrays. Allocation is off-thread.
 
 #[cfg(test)]
 use collector_output::output_continuity;
@@ -19,12 +17,8 @@ use replay_data::scope::CaptureMode;
 use replay_frame::frame::TableInput;
 use std::mem::size_of;
 
-/// The refusal of a pack its session's capture mode leaves out; the spool
-/// replaces it with NotRecorded before the frame is written.
 pub(crate) const NOT_RECORDED: &str = "not recorded in this capture mode";
 
-/// Whether `mode` records any of `tables`: a job or walk none of whose tables
-/// `mode` records does not run.
 pub(crate) fn records_any(mode: CaptureMode, tables: &[TableId]) -> bool {
     tables
         .iter()
@@ -52,7 +46,6 @@ pub(crate) use packs::{
 };
 pub(crate) use production::registry::Registry;
 
-/// Outputs supplied after pack conversion by the existing faction census.
 const FACTION_PROVIDER_TABLES: [TableId; 14] = {
     let mut tables = [TableId::LexicalTokens; 14];
     let mut next = 0;
@@ -71,7 +64,6 @@ const FACTION_PROVIDER_TABLES: [TableId; 14] = {
     assert!(next == tables.len());
     tables
 };
-// Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
     (combat_progress, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
@@ -164,9 +156,6 @@ macro_rules! spool_inputs {
     };
 }
 
-/// One pack's conversion on the spool thread. A pack with a helper marker
-/// (`@helper`, `@helper_appearance`, `@helper_exclusive`, `@helper_cached`) is
-/// skipped there while the hour's queue hands it to a thread.
 macro_rules! spool_pack {
     ($all:expr, $pack:ident; $skip:expr, $destination:ident, $conversion:ident, $hour:ident, $slots:ident) => {
         spool_pack!(@convert $all, $pack; $destination, $conversion, $hour, $slots)
@@ -187,16 +176,6 @@ macro_rules! spool_pack {
     }};
 }
 
-/// One helper pack's conversion on the thread that took it from the hour's
-/// queue. `@helper` packs are statically `Sync` through
-/// [`HelperView::sync_pack`] and see only themselves; `@helper_appearance`
-/// (country appearance) also reads the air pack through `sync_pack`.
-/// `@helper_cached` packs (characters, intel, character portraits) and the
-/// `@helper_exclusive` pack (division presentation) need not be `Sync`: the
-/// queue hands each to one thread, which has sole use of it (see
-/// [`HelperView`]). Characters and intel convert with the spool conversion
-/// caches lent for the join, which only that thread takes (`lend!`); the
-/// exclusive pack converts through the owner arm, which supplies the hour.
 macro_rules! helper_pack {
     ($view:expr, $pack:ident; $($rest:tt)*) => {};
     ($view:expr, $pack:ident, helper; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {
@@ -226,8 +205,6 @@ macro_rules! helper_pack {
     }};
 }
 
-/// Moves into `$conversion` the lent spool caches `$pack` converts with; the
-/// one thread converting the pack takes them.
 macro_rules! lend {
     (intel, $lent:ident, $conversion:ident) => {{
         let mut lent = $lent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -247,7 +224,6 @@ macro_rules! lend {
     ($pack:ident, $lent:ident, $conversion:ident) => {};
 }
 
-/// Whether a pack has a helper marker.
 macro_rules! helper_marked {
     () => {
         false
@@ -257,10 +233,6 @@ macro_rules! helper_marked {
     };
 }
 
-/// What a helper pack converts with: the projection, and for the characters
-/// or intel pack the spool caches it needs, lent by the spool thread for the
-/// join. Packs needing any other spool conversion cache cannot compile as
-/// helper packs.
 pub(crate) struct HelperConversion<'a, 'cache> {
     pub(crate) projection: Option<&'a mut crate::projection::Projection<'cache>>,
     pub(crate) characters: Option<&'a mut characters::CharacterConversion<'cache>>,
@@ -272,8 +244,6 @@ pub(crate) struct HelperConversion<'a, 'cache> {
     pub(crate) variables_scratch: &'a mut intel::ScriptVariableComparison,
 }
 
-/// The spool conversion caches the characters and intel packs convert with,
-/// lent for one join to whichever thread converts each.
 #[derive(Default)]
 pub(crate) struct LentCaches<'a, 'cache> {
     pub(crate) characters: Option<&'a mut characters::CharacterConversion<'cache>>,
@@ -294,7 +264,6 @@ macro_rules! merge_pack_capacity {
     };
 }
 
-// The packs whose stores every frame shares are built without them.
 macro_rules! pack_frame {
     (intel, $capacity:expr) => {
         intel::Captured::without_home($capacity)
@@ -313,8 +282,6 @@ macro_rules! pack_frame {
 macro_rules! packs {
     ($($pack:ident $(@ $helper:ident)?),+ $(,)?) => {
         pub const PACK_NAMES: &[&str] = &[$(stringify!($pack)),+];
-        /// Whether each pack has a helper marker: any one thread may convert
-        /// it, the others being the spool thread's.
         pub(crate) const HELPER_PACKS: [bool; PACK_NAMES.len()] =
             [$(helper_marked!($($helper)?)),+];
         pub const PACK_N: usize = 0 $(+ $pack::N)+;
@@ -338,7 +305,6 @@ macro_rules! packs {
             assert!(next == N);
             tables
         };
-        /// Only pack-owned tables use the pack acquisition tick array.
         pub const PACK_TABLES: [TableId; PACK_N] = {
             let mut tables = [TableId::LexicalTokens; PACK_N];
             let mut index = 0;
@@ -375,7 +341,6 @@ macro_rules! packs {
             variants_ticks: Option<[u64; production::N]>,
             presentation_report: Option<division_presentation::CaptureReport>,
             intel_residual_report: Option<intel::CaptureReport>,
-            /// The separate ScriptVariables walk's ticks, joined after the final borrowers.
             script_variables_ticks: Option<u64>,
             supply_trains_report: Option<supply_trains::CaptureReport>,
             character_portraits_report: Option<character_portraits::CaptureReport>,
@@ -386,8 +351,6 @@ macro_rules! packs {
             ordinary_spare: Option<Box<OrdinaryPacks>>,
             ordinary_part_spares: [Option<OrdinaryPart>; ORDINARY_PARTS],
             slow_ticks: Option<[u64; TABLE_COUNT]>,
-            /// Slow's refusal this hour, which also refuses the daily
-            /// production tables split from it ([`ProductionDailyPacks`]).
             slow_refusal: Option<&'static str>,
             slow_spare: Option<Box<SlowPacks>>,
             stability_ticks: Option<[u64; TABLE_COUNT]>,
@@ -415,8 +378,6 @@ macro_rules! packs {
             overhead: [u64; TABLE_COUNT],
             capture_mode: CaptureMode,
         }
-        /// The stores a Governance job returns: the technology and focus
-/// fingerprint stores and the held building, party-leader and party stores.
 pub(crate) type GovernanceStores = (
     Box<crate::slicing::SliceFingerprints>,
     Box<crate::slicing::SliceFingerprints>,
@@ -431,7 +392,6 @@ impl Captured {
                 self.intel = intel::intel_shadow_fixture(value);
             }
 
-            /// A frame with homes of its own, for tests.
             #[cfg(test)]
             pub fn with_capacities(capacity: &Capacities) -> Self {
                 let mut captured = Self::frame(capacity);
@@ -439,8 +399,6 @@ impl Captured {
                 captured
             }
 
-            /// A frame with no home: the pool shares its own into it ([`Homes`]). Every
-            /// allocation is checked: a refused one is the collector's allocation failure.
             pub fn frame(capacity: &Capacities) -> Self {
                 let mut captured = Self {
                     $($pack: pack_frame!($pack, &capacity.$pack),)+
@@ -493,8 +451,6 @@ impl Captured {
                 captured.plans.reserve_units(capacity.division_sources);
                 captured
             }
-            /// Reset before the shared division and map walks, not between
-            /// source visitation and capture().
             pub fn reset(&mut self) {
                 $(self.$pack.reset();)+
                 self.fuel_awards.reset();
@@ -523,7 +479,6 @@ impl Captured {
             pub fn allocated_bytes(&self) -> usize {
                 0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
             }
-            /// This buffer's native row and scratch allocations by pack.
             #[cfg(test)]
             pub fn allocated_by_pack(&self) -> std::io::Result<Vec<(&'static str, usize)>> {
                 engine_allocation::copy_vec(&[
@@ -550,11 +505,6 @@ impl Captured {
                 );
                 self.registry.grow(&mut capacity.variant_registry);
             }
-            /// Spool-thread conversion only. Existing core slots survive. With
-            /// `helper_converts`, packs with a helper marker are left to the
-            /// hour's queue ([`Self::helper_view`]) and the caller applies the
-            /// ordinary-job refusal ([`Self::refuse_failed_ordinary`]) after
-            /// merging them. The packs converted here land in `costs`.
             pub(crate) fn insert_tables(
                 &self,
                 hour: i32,
@@ -572,8 +522,6 @@ impl Captured {
                     self.refuse_failed_ordinary(destination);
                 }
             }
-            /// A failed ordinary job refuses every ordinary pack table, after
-            /// all of them were converted.
             pub(crate) fn refuse_failed_ordinary(&self, destination: &mut [TableInput; TABLE_COUNT]) {
                 if crate::allocation::failed() { return; }
                 if let Some(reason) = self.ordinary_failure {
@@ -582,36 +530,17 @@ impl Captured {
                     }
                 }
             }
-            /// The packs with a helper marker, shareable by the threads that convert them.
             pub(crate) fn helper_view(&self) -> HelperView<'_> {
                 HelperView(self)
             }
         }
-        /// The converting threads' view of one hour's helper packs.
         pub(crate) struct HelperView<'a>(&'a Captured);
-        // SAFETY: threads convert through this view only while the spool
-        // thread is inside `Helpers::join_some`, which orders each helper's
-        // accesses with the spool thread's through its mutex. `@helper` and
-        // `@helper_appearance` packs, and what the latter reads (the air
-        // pack), are reached through `sync_pack`, whose bound proves them
-        // `Sync`, so any threads may read them at once. The `@helper_cached`
-        // packs (characters, intel, character portraits) and the
-        // `@helper_exclusive` pack (division presentation) need not be `Sync`:
-        // the hour's queue (`pack_conversion::Queue`) hands each to exactly
-        // one thread, the spool thread's own packs skip them while the queue
-        // runs, and no other pack reads them. The exclusive pack's observers
-        // (`observe_*`) run before conversion, and outcomes, slice selections
-        // and merging after the join. The thread that takes one of these
-        // packs therefore has exclusive use, as if it held `&mut`. No other
-        // pack is reachable through the view.
         unsafe impl Sync for HelperView<'_> {}
         unsafe impl Send for HelperView<'_> {}
         impl<'a> HelperView<'a> {
             fn sync_pack<T: Sync>(pack: &'a T) -> &'a T {
                 pack
             }
-            /// Convert the packs taken from `queue` until it is empty into
-            /// `out`; their costs land in `costs`.
             pub(crate) fn convert_queued<'cache>(
                 &self,
                 queue: &crate::pack_conversion::Queue<'_>,
@@ -842,22 +771,15 @@ impl Capacities {
     pub(crate) fn raise_reserved_visibility(&mut self, slots: usize) {
         self.country_appearance.raise_reverse_visibility(slots);
     }
-    /// The States census and its numeric supplement share the same source
-    /// visitor, so its pointer arena must hold the final core States capacity.
     pub(crate) fn raise_for_states(&mut self, states: usize) {
         self.state_flags.raise_for_states(states);
     }
 
-    /// Rail manager validation bounds both rail supplements by the same
-    /// positive physical province slots; every province definition bounds the
-    /// division movement geometry.
     pub(crate) fn raise_for_provinces(&mut self, provinces: usize) {
         self.naval_history.rows[2] = self.naval_history.rows[2].max(provinces.saturating_sub(1));
         self.division_presentation.raise_for_provinces(provinces);
     }
 
-    /// Independent off-thread hints must retry after load even if the registry
-    /// did not grow. One failed family cannot withhold another family's demand.
     pub(crate) fn presize_live_inputs(
         &mut self,
         memory: &impl Memory,
@@ -890,8 +812,6 @@ impl Capacities {
                     }
                 })
             }),
-            // Native land-event writers cannot grow their bounded word log.
-            // Unlike the two worker-grown hints above, this stays prompt.
             Some(
                 crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
                     if let Some(words) = demand {
@@ -920,10 +840,7 @@ impl Capacities {
         crate::country_scale::raise(&mut self.air.scores.regions, regions);
     }
 
-    /// Presize every table whose rows scale with the number of country slots,
-    /// so a large mod's first hour is not truncated. Never lowers a capacity.
     pub fn raise_for_countries(&mut self, slots: usize) {
-        // country_scale slots is the largest country/link/tag registry count.
         self.plans.raise_for_countries(slots);
         crate::country_scale::raise(
             &mut self.event_feed.events,
@@ -961,14 +878,10 @@ impl Capacities {
         self.naval_mission_inputs.raise_for_countries(slots);
     }
 
-    /// Presize CountryIntel from the live dense record total.
     pub fn raise_for_country_intel(&mut self, native_rows: usize) {
         self.intel.raise_for_country_intel(native_rows);
     }
 
-    /// Presize Characters, ScriptFlags and ScriptVariables from the live
-    /// roster, flag managers and variable stores
-    /// (`country_scale::observe_characters`).
     pub fn raise_for_characters(&mut self, demand: crate::country_scale::CharacterDemand) {
         self.characters.raise_for_characters(demand.characters);
         crate::country_scale::raise(
@@ -979,7 +892,6 @@ impl Capacities {
         self.intel.raise_for_script_variables(demand.variables);
     }
 
-    /// Presize the raid arenas whose per-country demand content decides.
     pub fn raise_for_raid_arenas(&mut self, demand: crate::country_scale::RaidArenas) {
         self.projects.raise_for_raid_type_tokens(demand.type_tokens);
         self.projects.raise_for_raid_paths(demand.path_rows);
@@ -993,8 +905,6 @@ impl Capacities {
             .raise_for_reservations(demand.reservation_words);
     }
 
-    /// Presize the political tables from their live demand
-    /// (`country_scale::observe_politics`).
     pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
         self.war_overview.raise_for_demand(demand.war_overview);
         characters::advisors::note_modifier_demand(demand.advisor_modifiers);
@@ -1078,9 +988,6 @@ impl Captured {
     }
 }
 
-/// The stores every frame of a pool shares, made once at attach. A frame is built without
-/// them ([`Captured::frame`]), so building one never allocates a shared pointer, whose
-/// allocation cannot be refused.
 pub(crate) struct Homes {
     pub(crate) country_intel: daily_intel::Home,
     pub(crate) templates: division_templates::Home,
@@ -1101,8 +1008,6 @@ impl Homes {
 }
 
 impl Captured {
-    /// The CountryIntel buffer this frame uses; `None` only while the intel
-    /// pack is out on a residual job.
     #[cfg(test)]
     pub(crate) fn country_intel_home(&self) -> Option<daily_intel::Home> {
         self.intel.country_intel_home().cloned()
@@ -1113,7 +1018,6 @@ impl Captured {
         self.naval_combat_sources.home()
     }
 
-    /// Take the province combat walk from the pool's home.
     pub(crate) fn share_naval_combat_home(&mut self, home: &naval_combat_sources::Home) {
         self.naval_combat_sources.share_home(home);
     }
@@ -1123,12 +1027,10 @@ impl Captured {
         self.division_templates.home()
     }
 
-    /// Take the division template stores from the pool's home.
     pub(crate) fn share_template_home(&mut self, home: &division_templates::Home) {
         self.division_templates.share_home(home);
     }
 
-    /// Use the pool's CountryIntel buffer.
     pub(crate) fn share_country_intel(&mut self, home: &daily_intel::Home) {
         self.intel.share_country_intel(home);
     }
@@ -1140,11 +1042,6 @@ impl Captured {
         self.share_naval_combat_home(&homes.naval_combat);
     }
 
-    /// [`Self::reset`] off the game thread: every verdict is cleared, but the
-    /// CountryIntel buffer this frame borrowed stays with it until the next
-    /// callback returns it to the frames' shared home
-    /// ([`Self::release_country_intel`]), so another frame's walk finds it
-    /// held exactly as long as when the callback reset its frame.
     pub(crate) fn reset_keeping_country_intel(&mut self) {
         let loan = self.intel.take_country_intel_loan();
         self.reset();
@@ -1186,7 +1083,6 @@ impl Captured {
         &self.map_events
     }
 
-    /// Game thread, at the hourly cut; returns its ticks.
     pub(crate) fn seal_map_events(&mut self, hour: i32) -> u64 {
         let ticks = self.map_events.seal(hour);
         self.overhead[TableId::MapEvents.index()] =
@@ -1197,13 +1093,9 @@ impl Captured {
     pub(crate) fn discard_event_feed(&mut self) {
         self.event_feed.discard();
     }
-    /// The observer boundary prepared the hour's event feed; a worker seals
-    /// it once the Governance job's census has joined.
     pub(crate) fn take_event_feed_seal(&mut self) -> event_feed::Captured {
         std::mem::replace(&mut self.event_feed, event_feed::Captured::vacant())
     }
-    /// A seal job that did not run refuses its prepared hour, so no hour
-    /// stays prepared but unsealed.
     pub(crate) fn restore_event_feed_seal(
         &mut self,
         mut feed: event_feed::Captured,
@@ -1222,23 +1114,18 @@ impl Captured {
         &self.fuel_awards
     }
 
-    /// The sample's load signal, which names the session the Combat Log's
-    /// kept rows belong to.
     pub(crate) fn set_load_signal(&mut self, signal: i64) {
         self.combat_log.set_signal(signal);
     }
 
-    /// The production ticks this frame handed over, for the spool's totals.
     pub(crate) fn line_output(&self) -> &line_output::Captured {
         &self.line_output
     }
 
-    /// The construction output this frame handed over, for the spool's totals.
     pub(crate) fn construction_ic(&self) -> &construction_ic::Captured {
         &self.construction_ic
     }
 
-    /// Grows the selected packs only; the holder measures the frame after.
     pub(crate) fn apply_combat_hints(
         &mut self,
         land: Option<&combat_details::Capacities>,
@@ -1264,7 +1151,6 @@ impl Captured {
         &mut self.line_output
     }
 
-    /// The session's capture mode; the callback sets it before each hour's dispatch.
     pub(crate) fn set_capture_mode(&mut self, mode: CaptureMode) {
         self.capture_mode = mode;
     }
@@ -1274,14 +1160,12 @@ impl Captured {
         self.capture_mode
     }
 
-    /// Whether this frame's capture mode records any of `tables`.
     pub(crate) fn records_any(&self, tables: &[TableId]) -> bool {
         records_any(self.capture_mode, tables)
     }
 
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.group_counters.prepare_hour(force_full);
-        // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
         self.air_relations.prepare_hour(hour, force_full);
         self.air_histories.prepare_hour(hour, force_full);
@@ -1302,9 +1186,6 @@ impl Captured {
         self.session.prepare_hour(hour, force_full);
     }
 
-    /// Leases the same immutable native input packet to movement, status and
-    /// the other division borrowers. The owning census accounts for its
-    /// allocation once.
     pub(crate) fn install_unit_inputs(
         &mut self,
         inputs: Option<engine_allocation::SharedBox<UnitInputs>>,
@@ -1312,7 +1193,6 @@ impl Captured {
         self.unit_inputs = inputs;
     }
 
-    /// Release after every consumer joins, before the census returns to its pool.
     pub(crate) fn release_unit_inputs(&mut self) {
         self.unit_inputs = None;
     }
@@ -1321,7 +1201,6 @@ impl Captured {
         self.division_presentation.take_settled_store()
     }
 
-    /// No native-memory capability reaches the independent owned publication tails.
     pub(crate) fn decode_owned_censuses(&mut self) -> [u64; 4] {
         let start = crate::sampling::qpc();
         self.naval_bases.decode_owned();
@@ -1343,8 +1222,6 @@ impl Captured {
         self.naval_bases.discard_owned();
     }
 
-    /// Independent, frame-owned mission tails. Native-demand indexes and
-    /// certificate comparisons were completed before either pack returned.
     pub(crate) fn decode_mission_tails(&mut self) -> [u64; 2] {
         let start = crate::sampling::qpc();
         self.naval_mission_inputs.decode_owned();
@@ -1355,7 +1232,6 @@ impl Captured {
         [navies, railway]
     }
 
-    /// Project owned operands after their single live acquisition has finished.
     pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
         let ticks = self.division_presentation.decode_inputs();
         #[cfg(feature = "acquisition_profile")]
@@ -1367,8 +1243,6 @@ impl Captured {
         &self.politics
     }
 
-    /// Final scoped scalar acquisition, after the existing States, Provinces,
-    /// ProvinceUnitOrder and Presentation jobs have all returned their leases.
     pub(crate) fn capture_border_inputs(
         &mut self,
         memory: &impl Memory,
@@ -1458,7 +1332,6 @@ impl Captured {
         }
     }
 
-    /// Returns the `army_stat` store it lent, forgotten if the job failed.
     pub(crate) fn restore_presentation_request(
         &mut self,
         mut request: crate::acquisition_jobs::PresentationRequest,
@@ -1502,8 +1375,6 @@ impl Captured {
         })
     }
 
-    /// Take the direct walk's ticks once the template job has joined;
-    /// nothing is read here.
     pub(crate) fn take_preacquired_templates(
         &mut self,
         base: usize,
@@ -1517,8 +1388,6 @@ impl Captured {
         );
     }
 
-    /// Loan the governance family's hourly research tables to their own job.
-    /// Take before the family itself; restore after the family is restored.
     pub(crate) fn take_research_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -1541,8 +1410,6 @@ impl Captured {
         }
     }
 
-    /// Refuse the research tables a capture mode leaves out, after the family
-    /// returned and without their job.
     pub(crate) fn omit_research(&mut self, base: usize, state: usize, hour: i32, force_full: bool) {
         let mut part = self.governance.take_research();
         part.fail(
@@ -1557,12 +1424,6 @@ impl Captured {
         self.governance.restore_research(part);
     }
 
-    /// Return the research rows and charge their costs to the family report.
-    /// A failed job publishes its own failure; it never erases the family.
-    /// Returns the fingerprint store: forgotten if the job was interrupted
-    /// (every owner is then new and read at the next hour), and with this
-    /// hour's selection invalidated if any research table was not read
-    /// completely, so its owners are read again at the next hour.
     pub(crate) fn restore_research_request(
         &mut self,
         mut request: crate::acquisition_jobs::ResearchRequest,
@@ -1602,7 +1463,6 @@ impl Captured {
         request.fingerprints
     }
 
-    /// One sliced family's read at this frame's hour (`slicing::FAMILIES`).
     pub(crate) fn family_selection(&self, family: usize) -> &crate::slicing::SliceSelection {
         match family {
             crate::slicing::RESEARCH => self.governance.research_selection(),
@@ -1625,7 +1485,6 @@ impl Captured {
         }
     }
 
-    /// The owners whose rows this frame read for a sliced table.
     pub(crate) fn slice_selection(
         &self,
         table: TableId,
@@ -1633,8 +1492,6 @@ impl Captured {
         crate::slicing::family_of(table).map(|family| self.family_selection(family))
     }
 
-    /// Loan the worker-only families after Focus delegation is decided.
-    /// Restore after Gated returns construction and before table publication.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_governance_request(
         &mut self,
@@ -1672,8 +1529,6 @@ impl Captured {
         }
     }
 
-    /// Loan the hourly design changes with the variant registry and its detail
-    /// tables. The worker drains changes before deciding its roster read.
     pub(crate) fn take_variants_request(
         &mut self,
         base: usize,
@@ -1720,10 +1575,6 @@ impl Captured {
         self.production.restore_design_changes(request.changes);
     }
 
-    /// Returns the technology and focus fingerprint stores and the held
-    /// building, party-leader and party stores; a failed job forgets each. A
-    /// family whose table was not read completely has this hour's selection
-    /// invalidated, so its owners are read at the next hour.
     pub(crate) fn restore_governance_request(
         &mut self,
         mut request: crate::acquisition_jobs::GovernanceRequest,
@@ -1783,10 +1634,6 @@ impl Captured {
         )
     }
 
-    /// Loan existing hourly buffers before independent acquisition begins.
-    /// Restore them before ordinary capture, table views, growth or publication.
-    /// Loan one share of the supply node census; part 0 carries the trains,
-    /// the hour's owner selection and the family's fingerprint store.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_supply_trains_request(
         &mut self,
@@ -1819,11 +1666,6 @@ impl Captured {
         }
     }
 
-    /// Every part adds its ticks; one failed part is terminal for the family.
-    /// Keeping the report Some prevents the ordinary stage from retrying reads.
-    /// Returns the family's fingerprint store with part 0: forgotten if the
-    /// job failed, and with this hour's selection invalidated when a table
-    /// was not read whole, so its countries are read again at the next hour.
     pub(crate) fn restore_supply_trains_request(
         &mut self,
         mut request: crate::acquisition_jobs::SupplyTrainsRequest,
@@ -1889,7 +1731,6 @@ impl Captured {
         })
     }
 
-    /// Loan one share of the character roster.
     pub(crate) fn take_character_portraits_request(
         &mut self,
         base: usize,
@@ -1910,7 +1751,6 @@ impl Captured {
         }
     }
 
-    /// Every part adds its ticks; one failed part is terminal for the family.
     pub(crate) fn restore_character_portraits_request(
         &mut self,
         request: crate::acquisition_jobs::CharacterPortraitsRequest,
@@ -1952,8 +1792,6 @@ impl Captured {
         })
     }
 
-    /// Loan the DivisionModelInputs pack, with the hour's division census when
-    /// it completed, to its job beside Divisions.
     pub(crate) fn take_division_model_inputs_request(
         &mut self,
         base: usize,
@@ -1971,8 +1809,6 @@ impl Captured {
         }
     }
 
-    /// Takes back the rows and releases the census lease; a failed job fails
-    /// the rows. Returns the rows whose group trained, when the job read them.
     pub(crate) fn restore_division_model_inputs_request(
         &mut self,
         mut request: crate::acquisition_jobs::DivisionModelInputsRequest,
@@ -1988,10 +1824,6 @@ impl Captured {
         training
     }
 
-    /// Loan the complete ProvinceUnitOrder rows and handle arena to the flat
-    /// acquisition pool, with the hour's division census when it completed
-    /// and the shared held walk. Restore before capture_tables publishes this
-    /// pack.
     pub(crate) fn take_province_unit_order_request(
         &mut self,
         base: usize,
@@ -2014,8 +1846,6 @@ impl Captured {
         }
     }
 
-    /// Takes back the rows and releases the census lease. Returns the held
-    /// walk's store it lent, forgotten if the job failed.
     pub(crate) fn restore_province_unit_order_request(
         &mut self,
         mut request: crate::acquisition_jobs::ProvinceUnitOrderRequest,
@@ -2027,8 +1857,6 @@ impl Captured {
         {
             store.forget();
         }
-        // Some, including terminal failure, prevents capture_tables from
-        // retrying an accepted request. Zero failure ticks are unmeasured.
         self.province_unit_order_report = Some(match report {
             Ok(report) => report,
             Err(failure) => request.captured.fail_owned_capture(match failure {
@@ -2062,7 +1890,6 @@ impl Captured {
         })
     }
 
-    /// Account for the reusable boxes and any payload they currently own.
     fn spare_bytes(&self) -> usize {
         self.ordinary_spare
             .as_ref()
@@ -2121,7 +1948,6 @@ impl Captured {
                 .map_or(0, |packs| packs.allocated_bytes())
     }
 
-    /// Loan one part of the AirCountryRelations copies to its job.
     pub(crate) fn take_air_relations_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2138,7 +1964,6 @@ impl Captured {
         }
     }
 
-    /// An interrupted part is failed; the decode thread applies the rest.
     pub(crate) fn restore_air_relations_request(
         &mut self,
         mut request: crate::acquisition_jobs::AirRelationsRequest,
@@ -2152,9 +1977,6 @@ impl Captured {
             .restore_part(request.part, request.staging);
     }
 
-    /// Loan the air pack, every history part and the held registrations to
-    /// the AirMissions job, which runs on the owned census's identities. It
-    /// borrows nothing an Ordinary part holds.
     pub(crate) fn take_air_missions_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2175,9 +1997,6 @@ impl Captured {
         }
     }
 
-    /// An interrupted job fails the registrations and combats, and leaves
-    /// the history parts without regions; nothing is read again. Returns
-    /// the held registrations, which such a job forgets.
     pub(crate) fn restore_air_missions_request(
         &mut self,
         mut request: crate::acquisition_jobs::AirMissionsRequest,
@@ -2198,7 +2017,6 @@ impl Captured {
         mission_store
     }
 
-    /// Loan one part of the naval-patrol history copies to its job.
     pub(crate) fn take_air_histories_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2229,19 +2047,15 @@ impl Captured {
             .restore_part(request.part, request.staging);
     }
 
-    /// Game thread, once every history part joined: certify the hour, or
-    /// withdraw every part's certificates before the next hour opens.
     pub(crate) fn settle_air_histories(&self) {
         self.air_histories.settle(&mut air_histories::opening());
     }
 
-    /// Decode thread: turn this frame's staged relation and history copies into rows.
     pub(crate) fn decode_air_copies(&mut self) {
         self.air_relations.decode();
         self.air_histories.decode();
     }
 
-    /// FIFO-owned tails of completed native acquisitions. None accepts Memory.
     pub(crate) fn decode_capture_tails(&mut self) -> [u64; 5] {
         let mut ticks = [0; 5];
         macro_rules! settle {
@@ -2263,22 +2077,17 @@ impl Captured {
         ticks
     }
 
-    /// The frame is dropped before decoding.
     pub(crate) fn drop_air_copies(&mut self) {
         self.air_relations.dropped();
         self.air_histories.dropped();
     }
 
-    /// Tests reuse a frame without decoding it: drop its copies, as
-    /// production does before freeing an undecoded frame, then reset it.
     #[cfg(test)]
     pub(crate) fn drop_and_reset(&mut self) {
         self.drop_air_copies();
         self.reset();
     }
 
-    /// Loan the order census and the plans to the Orders job, which hands
-    /// them on to the ChildFronts job.
     pub(crate) fn take_orders_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2296,13 +2105,10 @@ impl Captured {
         }
     }
 
-    /// The fronts the Fronts job read, into the plans the Late job returned.
     pub(crate) fn install_fronts(&mut self, fronts: plans::Fronts, completed: bool) {
         self.plans.install_fronts(fronts, completed);
     }
 
-    /// Restore terminal outcomes without retrying either allocating walk;
-    /// returned by the ChildFronts join.
     pub(crate) fn restore_orders_request(
         &mut self,
         mut request: crate::acquisition_jobs::OrdersRequest,
@@ -2312,14 +2118,10 @@ impl Captured {
         if !completed {
             request.fail("army order acquisition failed");
         }
-        // Request Drop owns an unreturned Naval loan on every unwind path.
-        // Swap the capture buffers back instead of moving out of that owner.
         std::mem::swap(orders, &mut request.orders);
         std::mem::swap(&mut self.plans, &mut request.plans);
     }
 
-    /// The job walks the ship census into `census` first; the ships seed the
-    /// model details.
     pub(crate) fn take_ship_models_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2338,9 +2140,6 @@ impl Captured {
         }
     }
 
-    /// Returns the ship census; a failed job leaves it unavailable and the
-    /// details terminal. A walked census waits for its detail parts
-    /// (`take_ship_model_parts`).
     pub(crate) fn restore_ship_models_request(
         &mut self,
         mut request: crate::acquisition_jobs::ShipModelsRequest,
@@ -2361,9 +2160,6 @@ impl Captured {
         request.census
     }
 
-    /// Split the walked census into detail parts sized from its ship count
-    /// and lend them to their jobs; part 0 is the family's own capture. A
-    /// failed census lends nothing. Allocation-free.
     pub(crate) fn take_ship_model_parts(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2375,8 +2171,6 @@ impl Captured {
         crate::acquisition_jobs::ship_details::take_parts(&mut self.ship_models, countries, base)
     }
 
-    /// Return one detail part; part 0 first. Ticks add up to the family's
-    /// worker time. An interrupted part is terminal for the family.
     pub(crate) fn restore_ship_model_part(
         &mut self,
         mut request: crate::acquisition_jobs::ShipModelDetailsRequest,
@@ -2400,7 +2194,6 @@ impl Captured {
         }
     }
 
-    /// Join the returned parts' outcomes in census order.
     pub(crate) fn finish_ship_model_parts(&mut self) {
         self.ship_models.finish_split();
     }
@@ -2413,19 +2206,12 @@ impl Captured {
         if let Some(report) = self.ship_models_report.take() {
             report
         } else if self.ship_models.has_terminal_failure() {
-            // A consumed accepted failure remains authoritative until a normal
-            // reset/new first source census starts a new epoch. Never reuse its
-            // deliberately scrubbed raw seed pointers.
             ship_models::CaptureReport::default()
         } else {
             self.ship_models.capture_owned(memory, context)
         }
     }
 
-    /// Loan Intel's residual tables until the independent raw-job reports are
-    /// ready, and ScriptVariables to its own job, joined only when the pack is
-    /// published ([`Self::restore_script_variables`]). The callback restores this
-    /// family before applying those reports.
     pub(crate) fn take_intel_residual_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
@@ -2459,9 +2245,6 @@ impl Captured {
         )
     }
 
-    /// Returns ScriptVariables to the Intel pack, once the final borrowers have
-    /// returned it, and the held store; a failed job refuses the table by name
-    /// and forgets the store.
     pub(crate) fn restore_script_variables(
         &mut self,
         mut request: crate::acquisition_jobs::ScriptVariablesRequest,
@@ -2491,7 +2274,6 @@ impl Captured {
         store
     }
 
-    /// Returns the held ScriptFlags store; a failed job forgets it.
     pub(crate) fn restore_intel_residual_request(
         &mut self,
         mut request: crate::acquisition_jobs::IntelResidualRequest,
@@ -2518,9 +2300,6 @@ impl Captured {
         self.intel = request.captured;
         flags
     }
-    /// Resolve the hour's residual Intel report now, exactly as
-    /// `capture_tables` would, so the final borrowers can take the intel pack
-    /// before it: `capture_tables` then takes the settled report.
     pub(crate) fn settle_intel_residual(
         &mut self,
         memory: &impl Memory,
@@ -2559,78 +2338,34 @@ impl Captured {
         }
     }
 
-    /// Decode-worker handoff for the relations family (copy/decode split).
-    /// Sole cross-thread entry to the intel relations buffers: the game thread
-    /// stages raw-copy state through it on refresh hours and the single FIFO
-    /// decode worker decodes the staged payload into these pooled typed rows
-    /// before the spool ready-queue handoff.
     pub(crate) fn relations_pilot(&mut self) -> &mut intel::Captured {
         &mut self.intel
     }
 
-    /// Decode-worker handoff for the characters family (copy/decode split).
-    /// Sole cross-thread entry to the characters slot-0 buffers: the game
-    /// thread stages raw-copy state through it on refresh hours and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff. No other extended state
-    /// crosses threads here.
     pub(crate) fn characters_pilot(&mut self) -> &mut characters::Captured {
         &mut self.characters
     }
 
-    /// Decode-worker handoff for the projects family (copy/decode split).
-    /// Sole cross-thread entry to the projects slot-3 buffers: the game
-    /// thread stages raw-copy state through it on refresh hours and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn projects_pilot(&mut self) -> &mut projects::Captured {
         &mut self.projects
     }
 
-    /// Decode-worker handoff for the lexical family (copy/decode split).
-    /// Sole cross-thread entry to the lexical slot-3 buffers: the game
-    /// thread stages raw-copy state through it on refresh hours and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn lexical_pilot(&mut self) -> &mut lexical::Captured {
         &mut self.lexical
     }
 
-    /// Decode-worker handoff for the wing-fed air pair (copy/decode split).
-    /// Sole cross-thread entry to the air wing-extension buffers: the game
-    /// thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn air_wing_pilot(&mut self) -> &mut air::Captured {
         &mut self.air
     }
 
-    /// Decode-worker handoff for the hourly air-statistics table (copy/decode
-    /// split). Sole cross-thread entry to the statistics buffers: the game
-    /// thread stages raw-copy state through it every hour and the single FIFO
-    /// decode worker decodes the staged payload into these pooled typed rows
-    /// before the spool ready-queue handoff. Shares the air pack buffers with
-    /// the wing extensions; each stages its own copies with no cross-family
-    /// decoded roots.
     pub(crate) fn air_stats_pilot(&mut self) -> &mut air::Captured {
         &mut self.air
     }
 
-    /// Decode-worker handoff for the shared hourly bases payload
-    /// (copy/decode split). Sole cross-thread entry to the air bases/aces
-    /// buffers: the game thread stages raw-copy state through it every hour
-    /// and the single FIFO decode worker decodes the staged payload into
-    /// these pooled typed rows before the spool ready-queue handoff. The fog
-    /// registrations half decodes from the same log (see below).
     pub(crate) fn air_bases_pilot(&mut self) -> &mut air::Captured {
         &mut self.air
     }
 
-    /// Decode-worker handoff for the source-fed naval block (copy/decode
-    /// split). Sole cross-thread entry to the naval theatre/OOB buffers: the
-    /// game thread stages raw-copy state through it every hour and the
-    /// single FIFO decode worker decodes the staged payload into these
-    /// pooled typed rows before the spool ready-queue handoff.
     pub(crate) fn naval_pilot(&mut self) -> &mut naval_history::Captured {
         &mut self.naval_history
     }
@@ -2653,102 +2388,46 @@ impl Captured {
         self.install_reserved_land_certificate();
     }
 
-    /// Decode-worker handoff for the hourly session family (copy/decode
-    /// split). Sole cross-thread entry to the session buffers: the game
-    /// thread stages raw-copy state through it every hour and the single FIFO
-    /// decode worker decodes the staged payload into these pooled typed rows
-    /// before the spool ready-queue handoff.
     pub(crate) fn session_pilot(&mut self) -> &mut session::Captured {
         &mut self.session
     }
 
-    /// Decode-worker handoff for the hourly supremacy payload (copy/decode
-    /// split). Sole cross-thread entry to the supremacy buffers: the game
-    /// thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn supremacy_pilot(&mut self) -> &mut naval_history::Captured {
         &mut self.naval_history
     }
 
-    /// Decode-worker handoff for the hourly sunk-ships payload (copy/decode
-    /// split). Sole cross-thread entry to the sunk buffers: the game thread
-    /// stages raw-copy state through it every hour and the single FIFO
-    /// decode worker decodes the staged payload into these pooled typed rows
-    /// before the spool ready-queue handoff.
     pub(crate) fn sunk_pilot(&mut self) -> &mut naval_history::Captured {
         &mut self.naval_history
     }
 
-    /// Decode-worker handoff for the hourly radar payload (copy/decode
-    /// split). Sole cross-thread entry to the radar buffers: the game thread
-    /// stages raw-copy state through it every hour and the single FIFO
-    /// decode worker decodes the staged payload into these pooled typed rows
-    /// before the spool ready-queue handoff.
     pub(crate) fn radar_pilot(&mut self) -> &mut fog::Captured {
         &mut self.fog
     }
 
-    /// Decode-worker handoff for the hourly intel payload (copy/decode
-    /// split). Sole cross-thread entry to the intel buffers: the game thread
-    /// stages raw-copy state through it every hour and the single FIFO
-    /// decode worker decodes the staged payload into these pooled typed rows
-    /// before the spool ready-queue handoff.
     pub(crate) fn intel_pilot(&mut self) -> &mut fog::Captured {
         &mut self.fog
     }
 
-    /// Decode-worker handoff for the hourly weather family (copy/decode
-    /// split). Sole cross-thread entry to the weather buffers: the game
-    /// thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn weather_pilot(&mut self) -> &mut weather::Captured {
         &mut self.weather
     }
 
-    /// Decode-worker handoff for the hourly production rest (copy/decode
-    /// split). Sole cross-thread entry to the production rest buffers: the
-    /// game thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn production_rest_pilot(&mut self) -> &mut production::Captured {
         &mut self.production
     }
 
-    /// Decode-worker handoff for the hourly construction rest (copy/decode
-    /// split). Sole cross-thread entry to the construction rest buffers: the
-    /// game thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff.
     pub(crate) fn construction_rest_pilot(&mut self) -> &mut construction::Captured {
         &mut self.construction
     }
 
-    /// Decode-worker handoff for the hourly economy rest (copy/decode split).
-    /// Sole cross-thread entry to the economy rest buffers: the game thread
-    /// stages raw-copy state through it every hour and the single FIFO decode
-    /// worker decodes the staged payload into these pooled typed rows before
-    /// the spool ready-queue handoff.
     pub(crate) fn economy_rest_pilot(&mut self) -> &mut economy::Captured {
         &mut self.economy
     }
 
-    /// Decode-worker handoff for the hourly capitulation table (copy/decode
-    /// split). Sole cross-thread entry to the capitulation buffers: the game
-    /// thread stages raw-copy state through it every hour and the single
-    /// FIFO decode worker decodes the staged payload into these pooled typed
-    /// rows before the spool ready-queue handoff. Shares the intel pack
-    /// buffers with the relations/rest families; each stages its own copies
-    /// with no cross-family decoded roots.
     pub(crate) fn capitulation_pilot(&mut self) -> &mut intel::Captured {
         &mut self.intel
     }
 
-    /// Decode-worker interpretation of a raw shared bases payload, in pack
-    /// order: bases and aces rows first, then the fog registrations half,
-    /// all from the same shared log. Disjoint borrows keep both packs alive
-    /// at once.
     pub(crate) fn decode_air_bases_payload(
         &mut self,
         base: usize,
@@ -2761,10 +2440,6 @@ impl Captured {
         memo.decode(&mut self.air, &mut self.fog, job, context, decode_ticks)
     }
 
-    /// Which divisions this hour's `NewDivisionEquipment` covers.
-    /// Whether the modifier definition table header (data pointer, count)
-    /// changed since the previous hour; set before the Slow job is taken so
-    /// the flag travels with the pack that walks it.
     pub(crate) fn set_modifier_definitions_moved(&mut self, moved: bool) {
         self.modifier_definitions.header_changed = moved;
     }
@@ -2773,13 +2448,10 @@ impl Captured {
         self.new_divisions.set_mark(mark);
     }
 
-    /// Suppress typed division detail reads while the owned acquisition supplies
-    /// this hour's rows or terminal failure.
     pub(crate) fn set_divisions_raw_mode(&mut self, raw: bool) {
         self.production.divisions_raw_mode = raw;
     }
 
-    /// The worker installs owned native rows without replaying pointer reads.
     pub(crate) fn install_division_detail(
         &mut self,
         details: &mut crate::division_detail::OwnedDetails,
@@ -2787,9 +2459,6 @@ impl Captured {
         details.install(&mut self.production);
     }
 
-    /// Publish an accepted division job's failure after the ordinary stage.
-    /// The raw-mode gate keeps its live reads suppressed while the original
-    /// buffers remain available for off-thread recycling.
     pub(crate) fn fail_division_details(&mut self, reason: &'static str) {
         let reason = if self.production.division_details_active() {
             reason
@@ -2817,9 +2486,6 @@ impl Captured {
         )
     }
 
-    /// Test-only buffer resize for the divisions-group decode harness:
-    /// shrinks the pooled row buffers to the harness lengths, mirroring a
-    /// truncated production frame. Capacities are untouched.
     #[cfg(test)]
     pub(crate) fn test_resize_division_buffers(&mut self, lens: [usize; 6]) {
         use engine_deployment::{
@@ -2833,15 +2499,11 @@ impl Captured {
         self.production.produced.rows = vec![cupgrade_delivery::ProducedRow::default(); lens[5]];
     }
 
-    /// Test-only read of the production division-detail buffers for the
-    /// divisions-group decode harness.
     #[cfg(test)]
     pub(crate) fn test_division_detail(&mut self) -> &mut production::Captured {
         &mut self.production
     }
 
-    /// Loan the complete visitor until the original States collection point.
-    /// Its allocation-free replacement is never used for the later flag read.
     pub(crate) fn take_state_visitor(&mut self) -> state_flags::Captured {
         std::mem::take(&mut self.state_flags)
     }
@@ -2849,9 +2511,6 @@ impl Captured {
         self.state_flags = visitor;
     }
 
-    /// Source copies remain inside the enclosing Divisions measurement. The
-    /// shared read group includes equipment and upgrade tables without per-row
-    /// timers or repeated source censuses for individual tables.
     pub(crate) fn install_division_sources(
         &mut self,
         rows: &mut Vec<DivisionSource>,
@@ -2882,9 +2541,6 @@ impl Captured {
             base,
         }
     }
-    /// Run after root division acquisition and map.sample. Returned arrays use
-    /// global TableId indices; core slots remain zero. The registry census and
-    /// variant details run together on their existing cadence.
     #[cfg(test)]
     pub(crate) fn capture_tables_all(
         &mut self,
@@ -2894,8 +2550,6 @@ impl Captured {
         current_hour: i32,
         force_full: bool,
     ) -> [u64; TABLE_COUNT] {
-        // Synthetic direct-walk fixtures supply the same typed request that a
-        // worker owns in production. Production assembly never acquires it.
         if self.ordinary_ticks.is_none() && self.ordinary_failure.is_none() {
             let countries = engine_allocation::shared(
                 engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
@@ -2975,17 +2629,6 @@ impl Captured {
         ticks
     }
 
-    /// All frame-owned acquisition except ShipModels, which the callback joins
-    /// at the end of its parallel region.
-    /// The daily production tables' share of the assembly. The slot's job is
-    /// queued exactly when its walks run; its ticks are taken once, and a
-    /// second assembly neither reruns nor changes them. A missing job on the
-    /// slot refuses them as a missing Slow did, unless `inline` (unit-test
-    /// fixtures without jobs) walks them here. Off the slot both captures run
-    /// here and skip without a read or an allocation (reset and SKIPPED).
-    /// Slow's refusal refuses them too, with its reason and no cost, as when
-    /// they were Slow's packs (off the slot, failed_capture keeps them
-    /// SKIPPED).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble_production_daily(
         &mut self,
@@ -3044,7 +2687,6 @@ impl Captured {
         }
     }
 
-    // Keep the assembly's table-sized temporaries off the hourly body's frame.
     #[inline(never)]
     pub(crate) fn capture_tables(
         &mut self,
@@ -3069,7 +2711,6 @@ impl Captured {
                 scatter(&$pack::TABLES, cost, &mut ticks);
             )+};
         }
-        // StateFlags was read by the States worker; capture consumes its ticks.
         #[cfg(test)]
         let weather_ticks = self.weather.capture(memory, base, game_state);
         #[cfg(not(test))]
@@ -3082,11 +2723,8 @@ impl Captured {
             }
         } else {
             self.ordinary_failure = Some("ordinary acquisition not supplied");
-            // A family that never completed holds no counter census.
             self.naval_counters.forget_censuses();
         }
-        // Keep the completion marker after consuming its cost: accepted
-        // failure cannot become an inline retry on a second assembly call.
         if let Some(done) = self.slow_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
@@ -3133,7 +2771,6 @@ impl Captured {
         } else {
             #[cfg(test)]
             {
-                // No loaned fingerprint store: only the hour's slice is read.
                 let cost = self.country_stability.capture(
                     memory,
                     base,
@@ -3153,8 +2790,6 @@ impl Captured {
                 );
             }
         }
-        // A missing job on its slot fails its tables outside unit tests;
-        // their direct-walk fixtures read them inline instead.
         self.assemble_production_daily(
             memory,
             base,
@@ -3184,7 +2819,6 @@ impl Captured {
                 );
             }
         }
-        // The Countries job read the template dictionary with its naming.
         if let Some(done) = self.template_ticks.replace([0; division_templates::N]) {
             scatter(&division_templates::TABLES, done, &mut ticks);
         } else {
@@ -3253,7 +2887,6 @@ impl Captured {
                 self.fail_missing_raid_launch(current_hour, force_full);
             }
         }
-        // The parts' copies are decoded later, off the game thread.
         let cost = if self.air_relations.staged() {
             self.air_relations.ticks()
         } else {
@@ -3354,8 +2987,6 @@ impl Captured {
         ticks
     }
 
-    /// The rest of the hour's tables, after the late pool job is back: its
-    /// packs' ticks when it ran, the same walks inline when it did not.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     pub(crate) fn capture_tables_late(
@@ -3381,7 +3012,6 @@ impl Captured {
             {
                 let mut packs = self.late_spare.take().expect("late spare present");
                 self.swap_late(&mut packs, orders);
-                // Without a loaned held table, RaidAirScores reads every pair.
                 packs.capture(
                     memory,
                     base,
@@ -3414,7 +3044,6 @@ impl Captured {
                 self.fail_missing_late(current_hour, force_full, orders);
             }
         }
-        // The parts' copies are decoded later, off the game thread.
         let cost = if self.air_histories.staged() {
             self.air_histories.ticks()
         } else {
@@ -3466,16 +3095,11 @@ impl Captured {
         }
     }
 
-    /// Finish the ShipModels family after its owned detail request has had the
-    /// whole independent callback region to run. A rejected request is
-    /// executed exactly once by the caller before this function. An accepted
-    /// panic/stop is terminal: the restored report suppresses any detail retry.
     pub(crate) fn capture_ship_models(&mut self, memory: &impl Memory, base: usize) -> u64 {
         let context = ship_models::CaptureContext::new(base);
         let report = self.acquire_ship_models(memory, context);
         let table = TableId::ShipModels;
         if self.ship_models.has_terminal_failure() {
-            // Interrupted jobs have no complete acquisition duration.
             0
         } else {
             report.ticks[0].saturating_add(self.overhead[table.index()])
@@ -3519,7 +3143,6 @@ impl<M: Memory> MapSources for Sources<'_, M> {
     }
 }
 
-/// Whether a table was selected but not published (skipped is not a read).
 fn unpublished(outcomes: &[Outcome]) -> bool {
     outcomes.iter().any(|outcome| {
         !matches!(outcome, Outcome::Rows { .. })
@@ -3589,7 +3212,6 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::mode_gated_walks;
 
-/// The naval live shape's hour, captured as production captures it.
 #[cfg(test)]
 pub(crate) fn capture_live_shape(captured: &mut Captured) {
     use naval_details::fixtures::{IMAGE, STATE, live_shape};

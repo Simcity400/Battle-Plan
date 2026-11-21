@@ -1,4 +1,3 @@
-/** getRandomValues also works on an HTTP LAN preview, unlike randomUUID. */
 export function newId(): string {
   if (crypto.randomUUID) return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));

@@ -31,7 +31,6 @@ pub enum Object {
 }
 
 impl Object {
-    /// Every object, in discriminant order.
     pub const ALL: [Self; 25] = [
         Self::Unit,
         Self::Group,
@@ -85,7 +84,6 @@ pub enum Source {
 }
 
 impl Source {
-    /// The command fields this source reads.
     pub(super) fn fields(self) -> [Option<u32>; 2] {
         match self {
             Self::Country(field)
@@ -100,7 +98,6 @@ impl Source {
     }
 }
 
-/// The owner operands each command class's permission check reads, by class hash.
 pub(super) fn target(class: u64) -> Target {
     use Object::*;
     use Source::{Country, Reference as R, References as A};
@@ -770,7 +767,6 @@ pub(super) fn target(class: u64) -> Target {
         .map_or(Target::Unknown, |&(target, _)| target)
 }
 
-// FNV-1a hashes of the decorated class names whose objects command operands reference.
 const FAMILIES: [(u64, Object); 27] = [
     (0x1256_3b1d_6ded_890e, Object::Fleet),
     (0x15da_6aad_d0a2_5798, Object::Ship),
@@ -801,7 +797,6 @@ const FAMILIES: [(u64, Object); 27] = [
     (0xfa45_06ab_ff95_ef58, Object::ConveyorLine),
 ];
 
-/// The object family of a decorated class name's hash.
 pub(super) fn family(class: u64) -> Option<Object> {
     FAMILIES
         .binary_search_by_key(&class, |&(hash, _)| hash)

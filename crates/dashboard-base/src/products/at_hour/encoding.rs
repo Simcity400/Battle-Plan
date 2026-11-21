@@ -2,7 +2,6 @@ use super::{Edits, Live};
 use serde_json::Value;
 use std::{io, ops::Range, sync::Arc};
 
-/// A complete MessagePack record, indexed at the scalar cells a product can patch.
 pub(super) struct Encoding {
     pub body: Arc<[u8]>,
     offsets: Vec<Vec<Range<usize>>>,

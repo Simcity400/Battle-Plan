@@ -1,12 +1,8 @@
-//! Synthetic native weather layout for census benchmarks.
-//! Values change in place between captures.
 use super::*;
 use engine_native::{cpdx_array::Array, memory::LiveMemory, memory::SliceMemory};
 use replay_data::rows::RowCodec;
 use std::{cell::Cell, hint::black_box, time::Instant};
 
-// This test must delegate batching to LiveMemory without using engine's
-// cfg(test)-only census, which is unavailable to a dependent crate.
 struct ReadCensus<'a, M> {
     source: &'a M,
     calls: Cell<usize>,
@@ -77,8 +73,6 @@ impl<M: Memory> Memory for ReadCensus<'_, M> {
     }
 }
 
-// Benchmark dimensions only. Quiet/typical/all-changed are controlled
-// synthetic shapes, not live cost.
 const TYPICAL_CHANGED: usize = 584;
 const STATE: usize = 0x100;
 const MANAGER: usize = 0x1000;
@@ -191,12 +185,10 @@ impl World {
                 + slot * sweather_per_province::STRIDE
                 + sweather_per_province::TEMPERATURE;
             let raw = i64::from_le_bytes(self.bytes[offset..offset + 8].try_into().unwrap());
-            // +/-1..2 degrees and full fixed5 fractions, selected deterministically.
             let step =
                 ((slot * 131 % 200_000 + 1) as i64) * if slot.is_multiple_of(2) { 1 } else { -1 };
             let committed = raw.wrapping_add(step).to_le_bytes();
             self.bytes[offset..offset + 8].copy_from_slice(&committed);
-            // A commit leaves the staged temperature equal to the committed one.
             let staged = offset - sweather_per_province::TEMPERATURE
                 + sweather_per_province::STAGED_TEMPERATURE;
             self.bytes[staged..staged + 8].copy_from_slice(&committed);
@@ -217,7 +209,6 @@ fn temperature_delta(
             .encode_change(Some(old), previous_key, &mut bytes)
             .unwrap()
         {
-            // Each typed read anchors the pass, whose witness slot zero carries.
             let mask = new.delta(Some(old)).unwrap().unwrap().mask & !(1 << 13);
             if mask != 0 {
                 assert_eq!(mask, 1 << 4);
@@ -229,8 +220,6 @@ fn temperature_delta(
     (changed, bytes.len())
 }
 
-/// Production raw-copy callback and decode, plus an isolated old/new province
-/// exact-field gather. Guarded reads target this owned allocation only.
 #[test]
 #[ignore = "synthetic guarded weather capture timing and encoded delta sizes"]
 fn province_hover_weather_bench() {
@@ -258,8 +247,6 @@ fn province_hover_weather_bench() {
         let mut delta = (0, 0);
         for pass in 0..67 {
             world.advance(hour, pass);
-            // SAFETY: pointers refer only to world.bytes, which stays allocated
-            // and unchanged throughout this synchronous capture/decode pass.
             let live = unsafe { LiveMemory::new() };
             let start = Instant::now();
             let report = copy_weather_refresh(
@@ -285,8 +272,6 @@ fn province_hover_weather_bench() {
                 delta = temperature_delta(before, &after);
             }
             previous = Some(after);
-            // Alternate the comparison order so neither layout always
-            // benefits from the preceding gather's cache residency.
             let gathers = if pass % 2 == 0 {
                 [
                     (&mut old_payload, &old_layout, &mut old_gather),
@@ -313,8 +298,6 @@ fn province_hover_weather_bench() {
                 decode.push(decoded);
             }
         }
-        // Census instrumentation stays outside every measured interval.
-        // SAFETY: all fixture pointers still refer to the owned live buffer.
         let live = unsafe { LiveMemory::new() };
         let memory = ReadCensus::new(&live);
         copy_weather_refresh(
@@ -346,12 +329,6 @@ fn province_hover_weather_bench() {
     }
 }
 
-/// Where a weather hour's guarded read time goes at the vanilla census size:
-/// province records, province clocks, the two display arrays and the
-/// province window one ordinary pass visits (`provinces_per_update`, 584 in
-/// vanilla `common/weather.txt`). Cold: the world is evicted from cache
-/// before each pass, as a game hour finds it.
-/// `cargo test --release -p collector weather_component_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "synthetic guarded weather component timing"]
 fn weather_component_bench() {

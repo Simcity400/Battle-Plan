@@ -1,5 +1,3 @@
-//! Carrier air-base summaries shared by at-sea and port controls.
-//! Membership uses registered base pools rather than wings merely located there.
 
 use super::{Arg, Context, Localisation, Tooltip, append, localise, refuse};
 use replay_data::{
@@ -23,8 +21,6 @@ use viewer_foundation::tooltip_text::displayable_flags;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::wing_short_name;
 
-/// The game has an exact single-mask switch. Unknown and combined masks
-/// produce empty mission text, rather than selecting the first active bit.
 fn mission_key(mask: u32) -> Option<&'static str> {
     Some(match mask {
         0x1 => "AIRWING_MISSION_TYPE_AIR_SUPERIORITY",
@@ -49,9 +45,6 @@ fn mission_key(mask: u32) -> Option<&'static str> {
     })
 }
 
-/// Count positive-plane WINGS by their native (pool short name,
-/// status) string pair; the game sorts the pair by bytes. The caller passes
-/// the authentic pool owner's name selection, independently of wing overrides.
 pub(super) fn wing_groups<'a>(
     loc: &Localisation,
     kind: i32,
@@ -114,9 +107,6 @@ pub(super) fn wing_groups<'a>(
     Ok(text)
 }
 
-/// Stateless tier-three header; native capacity comparison is signed, and
-/// positive total occupancy alone admits the country-group text. This helper
-/// leaves the caller's separately reached fuel footer and delayed body intact.
 pub(super) fn full_header(
     loc: &Localisation,
     kind: i32,
@@ -171,8 +161,6 @@ fn occupancy(loc: &Localisation, kind: i32, planes: i32, capacity: i32) -> Resul
     Ok(text)
 }
 
-/// The tier-zero/estimated title branch. `None` selects native
-/// NO_INTEL; a missing reached estimate must instead be refused by the caller.
 pub(super) fn low_header(
     loc: &Localisation,
     kind: i32,
@@ -208,14 +196,10 @@ pub(super) fn low_header(
     Ok(text)
 }
 
-/// The native country group intro ends with ':\n'; the base title above
-/// uses its own localisation and does not gain this punctuation.
 pub(super) fn full_country_header(tag: &str, name: &str) -> String {
     format!("\u{12}{tag}\u{11}H{name}\u{11}!:\n")
 }
 
-/// The fuel quantity formatter. This is not the localisation
-/// metric suffix modifier: its positive cutoffs and rounding differ.
 fn fuel_amount(raw: i64) -> String {
     use installed_content_core::fixed5::format_fixed5;
     let (add, divisor, precision, suffix) = match raw {
@@ -233,8 +217,6 @@ fn fuel_amount(raw: i64) -> String {
     format!("{}{suffix}", format_fixed5(value, false, precision))
 }
 
-/// Supply hourly stored amounts; the game displays daily
-/// values. Native shows both numbers on surplus, not on shortage.
 pub(super) fn fuel_header(
     loc: &Localisation,
     allocated: i64,
@@ -266,8 +248,6 @@ pub(super) fn fuel_header(
     Ok(text)
 }
 
-/// The maximum heading. The caller sums before multiplying by24;
-/// the delayed description is formatted independently.
 fn maximum_header(loc: &Localisation, maximum: i64) -> Result<String, String> {
     let maximum = fuel_amount(maximum.wrapping_mul(24));
     let mut title = localise(
@@ -279,8 +259,6 @@ fn maximum_header(loc: &Localisation, maximum: i64) -> Result<String, String> {
     Ok(title)
 }
 
-/// Read its known byte independently from the signed range.
-/// Carrier ranges use a hyphen delimiter.
 pub(super) fn count_text([lower, upper]: [i32; 2], known: bool) -> String {
     if !known {
         "?".into()
@@ -291,8 +269,6 @@ pub(super) fn count_text([lower, upper]: [i32; 2], known: bool) -> String {
     }
 }
 
-/// The game emits a line for every subtype pool group, including empty
-/// pools and signed-nonpositive plane totals. Fuel is summed before times24.
 pub(super) fn fuel_line(
     loc: &Localisation,
     planes: i32,
@@ -317,8 +293,6 @@ fn registration<'a>(
         .ok_or_else(|| format!("AirBaseRegistrations base {base} slot {slot} is absent"))
 }
 
-/// The viewer's registration may be absent through a null indexed container.
-/// Every reached registered-country occurrence still requires its recorded row.
 fn optional_registration<'a>(
     context: &Context<'a>,
     base: u64,
@@ -381,9 +355,6 @@ fn seed(context: &Context<'_>, numeric_id: u32) -> Result<u32, String> {
     Ok((clock.seed as u32).wrapping_add(numeric_id))
 }
 
-/// Fall back to controller zero for an absent host, but the
-/// stateless summary's subsequent mission pretest dereferences that same host
-/// and its task force. Do not invent a completed null-host summary.
 fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), String> {
     if let Some(id) = base.state {
         let state = context
@@ -427,7 +398,6 @@ fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), St
             ));
         }
     };
-    // Seed the estimate from the numeric id, the high word of the full reference.
     Ok((
         slot(context, force.roster_owner)?,
         (ship.id >> 32) as u32,
@@ -608,7 +578,6 @@ fn country_groups(
     })
 }
 
-/// Bound flag validation is used only for the carrier country fragment.
 fn append_country(out: &mut Tooltip, context: &Context<'_>, text: String) {
     match displayable_flags(context.icons, text) {
         Ok(text) => out.title.push_str(&text),
@@ -616,8 +585,6 @@ fn append_country(out: &mut Tooltip, context: &Context<'_>, text: String) {
     }
 }
 
-/// Both carrier controls share this stateless air-base consumer. Captured
-/// simulation facts are independent of the viewer's local selection and NATO.
 pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     if context
         .frame
@@ -656,7 +623,6 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     };
     let name = host_name(context, base);
     if tier == 0 {
-        // Lower intel tiers bypass the full-detail fuel gate.
         append(
             out,
             context,
@@ -724,7 +690,6 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
                             if estimate.0[1] <= 0 {
                                 return Ok(String::new());
                             }
-                            // The country branch forces the known byte true.
                             let amount = count_text(estimate.0, true);
                             let name = context.country_name(occurrence.slot)?;
                             let mut text = localise(
@@ -918,8 +883,6 @@ fn state_header_text(
     Ok(text)
 }
 
-/// Rocket-site controls have their own summary; they do not use air-port
-/// intelligence tiers, the ordinary base's occupancy key or its fuel footer.
 fn rocket_summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     let base = context
         .frame
@@ -1005,8 +968,6 @@ fn rocket_summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
                         &[("MIS", Arg::Text(&mission))],
                     )?
                 } else {
-                    // This wrapper is state-backed. Its registered pools name
-                    // this base, so the carrier-mission pretest is false.
                     let raid = wing
                         .assigned_to_raid()
                         .ok_or("rocket-site wing raid liveness unavailable")?;
@@ -1186,9 +1147,6 @@ fn fuel_footer(context: &Context<'_>, base: u64, state: bool, out: &mut Tooltip)
             )
         })
     };
-    // The complete sort is stable, including its >=33 low-buffer
-    // merges/rotations. Equal signed keys keep original inventory order;
-    // Use the first pool's definition even when DB indices differ.
     for pool in inventory {
         groups.entry(pool.type_index).or_default().push(pool);
     }
@@ -1507,7 +1465,6 @@ mod tests {
                     ("AAA", "Alpha"),
                     ("BBB", "Beta"),
                     ("CCC", "Host country"),
-                    // A recorded name_tag selects a key; let the refusal fixture reach text validation.
                     ("Broken\u{14}", "Broken\u{14}"),
                     ("AAA_DeckPlane_short", "Own plane"),
                     ("BBB_DeckPlane_short", "Foreign plane"),
@@ -2100,7 +2057,6 @@ mod tests {
                 ..Default::default()
             });
         }
-        // Separate authentic null definition: zero category/name, zero planes.
         pools.push(CarrierAirPool {
             type_index: 0,
             subunit_index: 0,
@@ -2407,7 +2363,6 @@ mod tests {
         with_context(&frame, false, false, None, |context| {
             assert_eq!(slot(context, 0), Ok(0));
             assert_eq!(tag(context, 0), Ok("ZERO"));
-            // Constructor-era display cache stays empty independently of tag.
             assert_eq!(context.country_name(0), Ok(String::new()));
         });
     }

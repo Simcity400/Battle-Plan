@@ -1,5 +1,3 @@
-//! Development-only stdio adapter for the browser UI, plus an explicit native
-//! folder-picker mode. No renderer or live game access.
 
 use base64::Engine;
 use dashboard::{
@@ -14,7 +12,6 @@ use std::{
     sync::Arc,
 };
 
-/// The data service as the viewer hosts it (see the viewer's `main.rs`).
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
@@ -34,7 +31,6 @@ enum LocalCommand {
         id: String,
         paths: Vec<PathBuf>,
     },
-    /// An image a reply named, which the development server serves: its PNG, or null.
     Artwork {
         id: String,
         name: String,
@@ -121,7 +117,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("Unknown bridge option: {option}").into()),
         }
     }
-    // The URL the development server routes to [`LocalCommand::Artwork`].
     if let Err(error) = dashboard::artwork::configure(
         &artwork_url.ok_or("The bridge needs --artwork-url")?,
         dashboard::artwork::local_folder(),

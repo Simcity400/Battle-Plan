@@ -1,21 +1,3 @@
-//! RIFF WAVE sample files as the game's audio loader opens them.
-//!
-//! The game opens samples with SDL's WAVE loader, which hands over linear PCM
-//! at 8 bits unsigned, 16 bits, and 24 or 32 bits widened to 32, IEEE float
-//! at 32 bits, and A-law, mu-law and ADPCM decoded to 16 bits. [`decode`]
-//! returns the same samples with the [`Format`] the loader reports, as
-//! interleaved `f32` values exactly as SDL's converter reads that format
-//! into float. IMA and Microsoft ADPCM decode through Symphonia. Other
-//! encodings (64-bit float among them, which the loader rejects) and more
-//! than two channels are refused by name: [`Refusal`] names the form so
-//! consumers can count it.
-//!
-//! As the loader does, the first format chunk and the first data chunk are
-//! read and the scan stops once it has both; a format chunk first met after
-//! the data is refused. An extensible format needs its whole extension and a
-//! subtype GUID of one of the plain tags. PCM and float blocks must divide a
-//! frame and G.711 blocks hold one byte per channel; other block alignments
-//! are refused.
 
 use std::{fmt, ops::Range};
 
@@ -26,7 +8,6 @@ const FORMAT_MULAW: u16 = 7;
 const FORMAT_EXTENSIBLE: u16 = 0xfffe;
 const FORMAT_MS_ADPCM: u16 = 2;
 const FORMAT_IMA_ADPCM: u16 = 0x11;
-/// The plain tags an extensible subtype GUID can name.
 const SUBTYPE_TAGS: [u16; 6] = [
     FORMAT_PCM,
     FORMAT_MS_ADPCM,
@@ -35,28 +16,20 @@ const SUBTYPE_TAGS: [u16; 6] = [
     FORMAT_MULAW,
     FORMAT_IMA_ADPCM,
 ];
-/// The bytes of a plain tag's subtype GUID after the tag itself.
 const SUBTYPE_TAIL: [u8; 14] = [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71];
 
-/// SDL's float scale for 16-bit samples.
 pub const DIVBY32768: f32 = 1.0 / 32_768.0;
-/// SDL's float scale for 8-bit samples.
 const DIVBY128: f32 = 1.0 / 128.0;
-/// SDL's float scale for 32-bit samples after their low byte is dropped.
 const DIVBY8388607: f32 = 0.000_000_119_209_3;
 
-/// The sample format SDL's WAVE loader reports for a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     U8,
     S16,
-    /// 24-bit samples widened to 32 bits, and 32-bit samples.
     S32,
     F32,
 }
 
-/// Decoded samples, interleaved by channel, as SDL's converter reads the
-/// loader's [`Format`] into float.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pcm {
     pub rate: u32,
@@ -70,7 +43,6 @@ impl Pcm {
         self.samples.len() / usize::from(self.channels.max(1))
     }
 
-    /// The frame's left and right samples; mono plays on both sides.
     pub fn frame(&self, index: usize) -> [f32; 2] {
         match self.channels {
             1 => {
@@ -85,32 +57,24 @@ impl Pcm {
     }
 }
 
-/// Why a file is not decoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     NotWave,
     Truncated,
     MissingFormat,
     MissingData,
-    /// A format chunk after the data chunk, with none before it.
     FormatAfterData,
-    /// An extensible format chunk shorter than 40 bytes or declaring fewer
-    /// than 22 extension bytes.
     ExtensibleHeader,
-    /// An extensible format whose subtype GUID is none of the plain tags'.
     Subtype([u8; 16]),
-    /// The format tag and bits per sample of an unsupported encoding.
     Encoding {
         tag: u16,
         bits: u16,
     },
-    /// A block alignment the loader does not take for the encoding.
     BlockAlign {
         block: u16,
         channels: u16,
         bits: u16,
     },
-    /// An ADPCM stream the decoder refuses.
     Adpcm(String),
     Channels(u16),
     Rate(u32),
@@ -201,7 +165,6 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
     }
     let mut format = None;
     let mut data = None;
-    // Later format chunks before the data, which the loader skips.
     let mut skipped = Vec::new();
     let mut at = 12;
     while at + 8 <= bytes.len() {
@@ -209,7 +172,6 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
         let size =
             u32::from_le_bytes(bytes[at + 4..at + 8].try_into().expect("four bytes")) as usize;
         let start = at + 8;
-        // A data chunk whose declared size runs past the end keeps the bytes present.
         let end = start.saturating_add(size).min(bytes.len());
         let body = &bytes[start..end];
         let next = start.saturating_add(size).saturating_add(size & 1);
@@ -275,7 +237,6 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
                 (FORMAT_PCM, 2) => {
                     f32::from(i16::from_le_bytes([sample[0], sample[1]])) * DIVBY32768
                 }
-                // The loader widens 24 bits to 32; the converter drops the low byte.
                 (FORMAT_PCM, 3) => {
                     let value = i32::from_le_bytes([0, sample[0], sample[1], sample[2]]) >> 8;
                     value as f32 * DIVBY8388607
@@ -299,8 +260,6 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
     })
 }
 
-/// The file without `chunks`, its RIFF size shortened by what they held, so
-/// the ADPCM reader sees only the format chunk the loader keeps.
 fn without(bytes: &[u8], chunks: &[Range<usize>]) -> Vec<u8> {
     let mut kept = Vec::with_capacity(bytes.len());
     let mut from = 0;
@@ -310,7 +269,6 @@ fn without(bytes: &[u8], chunks: &[Range<usize>]) -> Vec<u8> {
     }
     kept.extend_from_slice(&bytes[from..]);
     let size = u32::from_le_bytes(kept[4..8].try_into().expect("four bytes"));
-    // An all-ones size is an unknown length.
     if !chunks.is_empty() && size != u32::MAX {
         let removed = u32::try_from(bytes.len() - kept.len()).unwrap_or(u32::MAX);
         kept[4..8].copy_from_slice(&size.saturating_sub(removed).to_le_bytes());
@@ -318,7 +276,6 @@ fn without(bytes: &[u8], chunks: &[Range<usize>]) -> Vec<u8> {
     kept
 }
 
-/// The 16-bit value of a G.711 A-law byte.
 fn alaw(byte: u8) -> i16 {
     let byte = byte ^ 0x55;
     let segment = (byte >> 4) & 7;
@@ -329,7 +286,6 @@ fn alaw(byte: u8) -> i16 {
     if byte & 0x80 != 0 { value } else { -value }
 }
 
-/// The 16-bit value of a G.711 mu-law byte.
 fn mulaw(byte: u8) -> i16 {
     const BIAS: i16 = 0x84;
     let byte = !byte;
@@ -341,7 +297,6 @@ fn mulaw(byte: u8) -> i16 {
     }
 }
 
-/// A synthetic PCM file for tests in this and consumer crates.
 pub fn encode_pcm16(rate: u32, channels: u16, samples: &[i16]) -> Vec<u8> {
     let data = samples.len() * 2;
     let mut out = Vec::with_capacity(44 + data);
@@ -380,7 +335,6 @@ mod tests {
     #[test]
     fn mono_plays_on_both_sides_and_odd_chunks_are_padded() {
         let mut bytes = encode_pcm16(48_000, 1, &[8_192]);
-        // Insert an odd-sized chunk before the data chunk: one pad byte follows it.
         let data = bytes.split_off(36);
         bytes.extend_from_slice(b"LIST");
         bytes.extend_from_slice(&3u32.to_le_bytes());
@@ -394,14 +348,12 @@ mod tests {
     #[test]
     fn twenty_four_bit_samples_keep_their_sign() {
         let mut bytes = encode_pcm16(44_100, 1, &[]);
-        // Rewrite the format as 24-bit mono with one frame of -0.5.
         bytes[32..34].copy_from_slice(&3u16.to_le_bytes());
         bytes[34..36].copy_from_slice(&24u16.to_le_bytes());
         bytes[40..44].copy_from_slice(&3u32.to_le_bytes());
         bytes.extend_from_slice(&[0x00, 0x00, 0xc0]);
         let pcm = decode(&bytes).unwrap();
         assert_eq!(pcm.format, Format::S32);
-        // SDL scales the 24-bit value by 1/8388607, not 1/8388608.
         assert_eq!(pcm.samples, vec![-4_194_304.0 * DIVBY8388607]);
         assert_ne!(pcm.samples, vec![-0.5]);
     }
@@ -418,7 +370,6 @@ mod tests {
             (pcm.format, pcm.samples.clone()),
             (Format::U8, vec![-1.0, 0.5])
         );
-        // SDL's loader takes IEEE float at 32 bits only.
         let mut bytes = encode_pcm16(44_100, 1, &[0, 0, 0, 0]);
         bytes[20..22].copy_from_slice(&FORMAT_FLOAT.to_le_bytes());
         bytes[32..34].copy_from_slice(&8u16.to_le_bytes());
@@ -448,8 +399,6 @@ mod tests {
         assert_eq!(decode(b"OggS"), Err(Refusal::NotWave));
     }
 
-    /// The first format and data chunks are kept and the scan stops at the
-    /// data; a format chunk first met after the data is refused.
     #[test]
     fn later_chunks_never_replace_the_first_format_and_data() {
         let mut bytes = encode_pcm16(8_000, 1, &[8_192]);
@@ -473,8 +422,6 @@ mod tests {
         assert_eq!(decode(&bytes), Err(Refusal::FormatAfterData));
     }
 
-    /// A mono 16-bit file whose format chunk is extensible, cut to `length`
-    /// bytes.
     fn extensible(extension: u16, subtype: [u8; 16], length: usize) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&FORMAT_EXTENSIBLE.to_le_bytes());
@@ -522,8 +469,6 @@ mod tests {
         );
     }
 
-    /// PCM blocks must divide a frame and G.711 blocks hold one byte per
-    /// channel; padding is refused, never skipped.
     #[test]
     fn block_alignments_the_loader_refuses_are_refused() {
         let mut bytes = encode_pcm16(8_000, 1, &[8_192, 0]);
@@ -576,8 +521,6 @@ mod tests {
         assert_eq!(values, [0.0, 0.0, 32124.0, -32124.0]);
     }
 
-    /// One mono IMA ADPCM block: a zero predictor at step index 0, then
-    /// nibbles of positive 7 steps, so the samples rise from zero.
     fn ima_adpcm() -> (Vec<u8>, u16) {
         let block_align: u16 = 36;
         let per_block: u16 = (block_align - 4) * 2 + 1;
@@ -618,7 +561,6 @@ mod tests {
         assert!(*pcm.samples.last().unwrap() > 0.0);
     }
 
-    /// A second format chunk before the data never reaches the ADPCM reader.
     #[test]
     fn adpcm_reads_only_the_first_format_chunk() {
         let (original, _) = ima_adpcm();
@@ -633,8 +575,6 @@ mod tests {
         assert!(decode(&doubled).is_ok());
     }
 
-    /// Truncated and corrupted files are refused, never a panic, whether
-    /// this decoder or the ADPCM one reads them.
     #[test]
     fn truncated_or_garbage_files_are_refused_without_panicking() {
         let (adpcm, _) = ima_adpcm();

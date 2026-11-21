@@ -1,6 +1,3 @@
-//! P6's layers on a recording made in memory with the real schema: stepped equals composed at
-//! every frame, a change is marked once and settles to the newest value, rows inserted and
-//! deleted reach every array, a table not recorded draws as today does.
 
 use super::{Layer, View, vision, vision::Vision, weather::Weather};
 use crate::playhead_host::{MapSide, mirror::Mirrors, open, units::Units};
@@ -72,8 +69,6 @@ fn column(table: TableId, name: &str) -> usize {
     (0..64).find(|&at| table.field_name(at) == Some(name)).unwrap_or_else(|| panic!("{table:?}.{name}"))
 }
 
-/// `hours` hours of the real schema from hour 0; `hour` writes each hour's changes; `tables` are
-/// recorded whole every hour unless `hour` says otherwise by returning their status.
 fn record(hours: u32, tables: &[TableId], mut hour: impl FnMut(u32, &mut Store) -> Vec<(TableId, Status)>) -> Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -100,28 +95,21 @@ fn record(hours: u32, tables: &[TableId], mut hour: impl FnMut(u32, &mut Store) 
     let recording = Arc::new(Recording { bytes: memory.bytes, runs: vec![run], kinds: kinds.clone() });
     let pages: Arc<dyn Pages> = recording;
     let timeline = Timeline::whole(&*pages).unwrap();
-    // `open` shares a playhead by name and span: two tests playing one would seek each other's.
     static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     Units { name: format!("p6 test {}", MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)), pages, timeline, kinds: Arc::new(kinds) }
 }
 
-/// Four hours a step.
 fn quick() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
-/// Plays from hour 0 to `last`, calling `each` with the mirrors and the layer after every frame
-/// that applied a step and settled whole.
 pub(super) fn play(units: Units, layer: Box<dyn Layer>, last: i32, mut each: impl FnMut(i32, &Mirrors, &dyn Layer)) {
     play_all(units, vec![layer], last, |hour, mirrors, layers| each(hour, mirrors, &*layers[0]));
 }
 
-/// [`play`] with layers registered in order, each reading those before it.
 fn play_all(units: Units, layers: Vec<Box<dyn Layer>>, last: i32, mut each: impl FnMut(i32, &Mirrors, &[Box<dyn Layer>])) {
     let entry = open(units, quick()).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
-    // The clock is never started: `quick()` sets the steps' four hours, and each frame's head is
-    // the newest step built, at most four hours past the last applied.
     entry.playhead().seek(0);
     let mut seen = BTreeSet::new();
     let mut applied: Option<i32> = None;
@@ -150,7 +138,6 @@ fn play_all(units: Units, layers: Vec<Box<dyn Layer>>, last: i32, mut each: impl
     panic!("the playhead never reached hour {last}");
 }
 
-/// The kind today's field gives a region with these flags.
 fn kind(flags: [u8; 5]) -> Option<usize> {
     flags.iter().position(|&flag| flag != 0)
 }
@@ -181,7 +168,6 @@ fn weather_regions_are_marked_once_settle_to_their_newest_flags_and_none_draw_wh
                 }
             }
             5 => put(&mut changes, 1, 2, [0, 0, 0, 1, 0]),
-            // Changed twice inside one step: the newest shows.
             6 => put(&mut changes, 2, 3, [1, 0, 0, 0, 0]),
             7 => put(&mut changes, 2, 3, [0, 0, 1, 1, 0]),
             9 => {
@@ -208,7 +194,6 @@ fn weather_regions_are_marked_once_settle_to_their_newest_flags_and_none_draw_wh
         let expected: BTreeMap<u32, usize> =
             if (16..24).contains(&hour) { BTreeMap::new() } else { history[&(hour as u32)].iter().filter_map(|(&id, &flags)| kind(flags).map(|kind| (id, kind))).collect() };
         assert_eq!(layer.kinds(), expected, "today's kinds at hour {hour}");
-        // A loaded machine can make a longer step; the count holds for the step of hours 4 to 7.
         if hour == 7 && previous == Some(3) {
             assert_eq!(layer.marked() - marked_before, 2, "regions 2 and 3, each once");
         }
@@ -218,20 +203,14 @@ fn weather_regions_are_marked_once_settle_to_their_newest_flags_and_none_draw_wh
     assert!(checked >= 5);
 }
 
-/// Six land provinces in a row; 1 to 3 held by country 101 (slot 1, the viewer), 4 to 6 by 102;
-/// a division of the viewer walks 3, 4, 5; province 4 changes hands at hour 13. Country 102 takes
-/// the tag "text 1" at hour 1 (both spell "text 0" before).
 pub(super) fn vision_world() -> Units {
     vision_world_with(&[])
 }
 
-/// [`vision_world`] with `extra` tables recorded whole and empty every hour.
 fn vision_world_with(extra: &[TableId]) -> Units {
     vision_world_and(extra, |_, _| Vec::new())
 }
 
-/// [`vision_world_with`], `more` writing what else each hour holds and returning the further
-/// statuses it records.
 fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store) -> Vec<(TableId, Status)>) -> Units {
     let empty = [
         TableId::FactionMembers,
@@ -285,7 +264,6 @@ fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store) -> 
                 write(store, TableId::Divisions, 0, field, Cell::U32(value));
             }
             write(store, TableId::Divisions, 0, "reveal_skip", Cell::U8(0));
-            // A division at sea, about to land in province 6, held by the enemy until hour 17.
             store.table(TableId::Divisions.index()).unwrap().insert_at(1, 901).unwrap();
             for (field, value) in [("roster_owner", 101), ("logical_owner", 101), ("province", 7)] {
                 write(store, TableId::Divisions, 1, field, Cell::U32(value));
@@ -306,7 +284,6 @@ fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store) -> 
         let mut statuses = more(at, store);
         match at {
             20..=23 => statuses.push((TableId::UnitIntel, Status::NotRecorded)),
-            // Truncated by a count that moves every hour: the same status for every term.
             25.. => statuses.push((TableId::CountryIntel, Status::Truncated { missing: at })),
             _ => {}
         }
@@ -339,7 +316,6 @@ fn a_moving_division_and_a_province_changing_hands_refold_only_what_they_touch_a
         let (ours, composed) = (layer.vision().expect("the layer draws"), fresh.vision().expect("composed draws"));
         assert_eq!(ours.differences(&composed), (0, Vec::new()), "stepped equals composed at hour {hour}");
         assert_eq!(ours.ours(), 1);
-        // Its limitation notes, made on its worker, in today's words for the vision it draws.
         let notes = layer.notes().expect("notes while it draws");
         assert_eq!(Some(notes), fresh.notes(), "the notes stepped equal those composed at hour {hour}");
         let fog = if (20..24).contains(&hour) { "off, the game's fow console switch" } else { "on, so a stack text 0 has no intelligence" };
@@ -375,28 +351,19 @@ fn a_moving_division_and_a_province_changing_hands_refold_only_what_they_touch_a
             _ => &[255, 255, 255, 255, 255, 255, 0],
         };
         assert_eq!(bytes, expected, "province bytes at hour {hour}");
-        // The landing takes its intel from province 6 while its controller is at war with us: the
-        // stepped sight equals the composed one above, before and after province 6 changes hands.
         checked += 1;
     });
     assert!(checked >= 4);
-    // Every step wholly after the last change (province 6 at hour 26) refolds nothing, though the
-    // truncated census's missing count moves every hour.
     let quiet: Vec<(i32, i32)> = refolded.keys().zip(refolded.keys().skip(1)).map(|(&a, &b)| (a, b)).filter(|&(a, _)| a >= 26).collect();
     assert!(!quiet.is_empty(), "no step after hour 26 was seen: {refolded:?}");
     for &(a, b) in &quiet {
         assert_eq!(refolded[&b], refolded[&a], "hours {a} to {b}: provinces refolded {} then {}; a truncated census whose missing count moves refolds nothing: {refolded:?}", refolded[&a], refolded[&b]);
         assert_eq!(published[&b], (false, Vec::new()), "nothing is published after the last change: {published:?}");
     }
-    // Province 4 changing hands is published as that province, not as everything (the census
-    // turning truncated at hour 25 moves the intel lanes, which is everything).
     let (&hour, (all, provinces)) = published.range(13..).next().expect("a step at hour 13 or after");
     assert!(!all && provinces.contains(&4), "hour {hour} publishes province 4 alone: {published:?}");
 }
 
-/// Country 102's intel of division 900 comes at hour 2, is written at hour 6 and goes at hour 10;
-/// the viewer's air and navy intel of country 102 come at hour 3 and are written at hour 7. Each
-/// step's apply marks those rows reading none, and the settle makes the vision composed anew.
 #[test]
 fn vision_applies_mark_their_intel_rows_reading_none_and_settle_to_the_composed_vision() {
     let units = vision_world_and(&[], |at, store| {
@@ -525,7 +492,6 @@ fn snow_cells_follow_their_provinces_and_go_unknown_where_a_truncated_or_unrecor
 fn the_intel_texture_steps_with_the_vision_it_reads_and_equals_itself_composed() {
     use super::intel::{self, Intel};
     use installed_content_core::map::{MapData, ProvinceDefinition, ProvinceKind};
-    // Seven provinces of one six-pixel cell each, in a row; the seventh is sea.
     let ids: Vec<u32> = (0..42 * 6u32).map(|at| at % 42 / 6 + 1).collect();
     let definitions = (1..=7u32).map(|id| (id, ProvinceDefinition { id, rgb: [0; 3], kind: if id == 7 { ProvinceKind::Sea } else { ProvinceKind::Land }, continent: 0 })).collect();
     let map = MapData { width: 42, height: 6, province_ids: ids, definitions, country_colors: Default::default() };
@@ -546,7 +512,6 @@ fn the_intel_texture_steps_with_the_vision_it_reads_and_equals_itself_composed()
     assert!(checked >= 4);
 }
 
-/// The trains' yard: an empty plan, each asked for the viewing slot it was given.
 struct Asked(std::sync::Mutex<Vec<u32>>);
 
 impl super::trains::Yard for Asked {
@@ -564,16 +529,10 @@ impl super::trains::Yard for Asked {
     }
 }
 
-/// The perspective's country changed at a held hour is a change for the engagements, trains and
-/// labels the window registers after vision: each takes vision's slot without a reopening, and
-/// equals itself made from the mirrors as a reader opened on that country makes it.
-/// The window's layers that read the viewing country (vision, engagements, rails, trains and labels)
-/// over a recording of two countries, `asked` hearing the trains' plans.
 fn viewing_world(asked: &Arc<Asked>) -> (Arc<crate::playhead_host::Entry>, Vec<Box<dyn Layer>>) {
     viewing_world_and(asked, |_, _| Vec::new())
 }
 
-/// [`viewing_world`], `more` as [`vision_world_and`]'s.
 fn viewing_world_and(asked: &Arc<Asked>, more: impl FnMut(u32, &mut Store) -> Vec<(TableId, Status)>) -> (Arc<crate::playhead_host::Entry>, Vec<Box<dyn Layer>>) {
     use super::{engagements::Engagements, labels::Labels, rails::{Rails, tests::Stub}, trains::Trains};
     let extra = [
@@ -641,8 +600,6 @@ fn a_viewing_country_change_reaches_engagements_trains_and_labels_through_vision
     opened_on(&side, 2, "text 1");
 }
 
-/// While a compose has the layers away (a seek), what every window asks of the vision is answered
-/// without them, as unknown: never a reach into layers that are not home.
 #[test]
 fn a_compose_answers_the_windows_vision_questions_without_its_layers() {
     const HOUR: i32 = 8;
@@ -673,18 +630,11 @@ fn a_compose_answers_the_windows_vision_questions_without_its_layers() {
     assert_eq!(side.viewer(), Some(1), "the viewer answered again once the layers are home");
 }
 
-/// A switch of the viewing country is never a freeze and never a mix: with the new country's
-/// vision not made (its settles held, as a fold or an overlay that never arrives) the frame is still
-/// handed windows and the new view, every part of it that needs the vision withheld; once made it is
-/// handed whole; and a country whose vision is refused is handed over with that refusal named. No
-/// window ever hands a view with a part made for another viewing country, either way round.
 #[test]
 fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before() {
     use crate::playhead_host::{Head, side::SideThread};
     use viewer_foundation::map::perspective::{Choice, Country};
     const HOUR: i32 = 8;
-    // An hour that records no countries: every viewing country's vision is refused there. A tag
-    // the hour does not hold is no refusal: the map is viewed as the recorded player, named so.
     const REFUSED: i32 = 16;
     let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
     let (entry, layers) = viewing_world_and(&asked, |at, _| if at == REFUSED as u32 { vec![(TableId::Countries, Status::NotRecorded)] } else { Vec::new() });
@@ -692,8 +642,6 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     side.anchor(HOUR, false, 0.0, true);
     let chosen = View { perspective: Choice { country: Country::Tag("text 1".into()), ..Choice::default() }, ..View::default() };
     let refused = View { perspective: Choice { country: Country::Tag("text 0".into()), ..Choice::default() }, ..View::default() };
-    // The slot each view's parts may hold: the recorded viewer is slot 1, the chosen one slot 2, and
-    // the refused one slot 1 where it is held and none at all at the hour that refuses it.
     let slot = |side: &MapSide| {
         let view = side.view_shown();
         if view.perspective == chosen.perspective {
@@ -704,8 +652,6 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
             Some(1)
         }
     };
-    // Every viewer the side holds for the frame: the vision copied out, then each drawn layer's,
-    // the engagements' (whose flags are read for the viewer they hold) among them.
     let viewers = |side: &MapSide| -> (Option<u32>, Vec<Option<u32>>) {
         let mut layers: Vec<Option<u32>> = side.caught_up().iter().map(|layer| layer.viewer).collect();
         if side.draws("engagements") {
@@ -717,14 +663,12 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
         let (shown, layers) = viewers(side);
         side.applied() == Some(HOUR) && !side.composing() && shown == Some(slot) && layers.iter().all(|held| held.is_none_or(|held| held == slot))
     };
-    // Each part handed is withheld or made for the viewing country of the view handed with it.
     let never_mixed = |side: &MapSide| {
         let want = slot(side);
         let (shown, layers) = viewers(side);
         let other = |held: &Option<u32>| held.is_some_and(|held| Some(held) != want);
         assert!(!other(&shown) && !layers.iter().any(other), "a part made for another viewing country handed with {:?}: {:?}; {}", side.view_shown().perspective, viewers(side), side.shown_states());
     };
-    // Windows until one hands a picture `done` accepts, each checked; how many were handed.
     let windows = |side: &mut SideThread, what: &str, done: &dyn Fn(&MapSide) -> bool| {
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut handed = 0;
@@ -744,8 +688,6 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     };
     side.ask(View::default(), Head::Paced(HOUR), None, None);
     windows(&mut side, "the recorded viewer, slot 1, wholly", &|side| wholly(side, 1));
-    // The chosen country's vision is never made while the settles are held: the frame is handed
-    // the chosen view all the same, never a freeze, with nothing of slot 1 on it.
     let held = side.with_side(MapSide::hold_settles);
     side.ask(chosen.clone(), Head::Paced(HOUR), None, None);
     windows(&mut side, "the chosen view handed while its vision is not made", &|side| side.view_shown().perspective == chosen.perspective);
@@ -754,8 +696,6 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     windows(&mut side, "a further window handed while the vision is not made", &|_| true);
     drop(held);
     windows(&mut side, "the chosen country, slot 2, wholly", &|side| wholly(side, 2));
-    // Another country, played into the hour that refuses its vision (each layer hears its viewer
-    // go in a settle): handed over with the refusal named, and nothing of slot 2 stands for it.
     side.anchor(REFUSED - 4, false, 0.0, true);
     side.ask(chosen.clone(), Head::Paced(REFUSED - 4), None, None);
     windows(&mut side, "slot 2 at the hour before the refusal", &|side| side.applied() == Some(REFUSED - 4) && !side.composing() && side.viewer() == Some(2));
@@ -768,20 +708,15 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     assert!(side.products().vision_refused.as_deref().is_some_and(|why| !why.is_empty()), "the frame is told why the vision is withheld");
     assert!(!side.products().overlay_coming(), "no overlay is laid out without a vision: the frame draws without one");
     assert_eq!(side.with_side(|side| side.parts().map(|(_, layers)| layers[0].carried().entities)), Some(0), "a settled refusal is the vision's whole answer: it carries nothing");
-    // Rails and trains upload only to a GPU, which this side has none of: every other layer, the
-    // labels that heard the viewer go among them, waits on nothing a refusal leaves it.
     let caught = |side: &MapSide| {
         let layers = side.caught_up();
         ["vision", "engagements", "labels"].iter().all(|name| layers.iter().any(|layer| layer.name == *name && layer.caught))
     };
     windows(&mut side, "the refused view caught up, so a paused map waits on nothing of it", &|side| side.view_shown().perspective == refused.perspective && caught(side));
-    // A layout the frame holds for this same choice, made at an hour that held its tag (a seek to
-    // one that does not): the settled refusal lets it go.
     side.with_side_mut(|side| {
         side.hand_viewer(refused.perspective.clone(), 1);
         assert!(side.take_overlay_withdrawal(), "a refused vision never keeps the layout of the hour before");
     });
-    // The countries recorded again: the labels are read anew for slot 1, as a reader opened there.
     side.ask(refused.clone(), Head::Paced(REFUSED + 1), None, None);
     windows(&mut side, "slot 1 again once the countries are recorded", &|side| side.applied() > Some(REFUSED) && !side.composing() && side.viewer() == Some(1) && caught(side));
     side.with_side(|side| {
@@ -794,11 +729,6 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     });
 }
 
-/// Plays from hour 0 a step a frame, as at 1,440 hours a second: between two steps, frames at the
-/// hour applied (taking none) hand the layers the steps the playhead built past the head, until
-/// `made` says the first layer's worker has made the next step's product; then the frame that takes
-/// the step, which `each` sees as the frame left it (before any whole settle), with the mirrors and
-/// the layers.
 fn play_ahead(units: Units, layers: Vec<Box<dyn Layer>>, last: i32, made: impl Fn(&dyn Layer, i32) -> bool, mut each: impl FnMut(&crate::playhead_host::Frame, &mut MapSide)) {
     let entry = open(units, quick()).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
@@ -829,8 +759,6 @@ fn play_ahead(units: Units, layers: Vec<Box<dyn Layer>>, last: i32, made: impl F
     assert!(seen >= 4, "steps seen: {seen}");
 }
 
-/// A layer reading vision: per frame, the last hour of the step it applied in it (if any) and the
-/// provinces vision published as changed when it settled.
 #[derive(Default)]
 struct Listens {
     stepped: Option<i32>,
@@ -876,11 +804,6 @@ impl Layer for Listens {
     }
 }
 
-/// Fed the steps ahead, vision's worker folds each before the frame applies it: in the frame that
-/// takes a step, vision shows that step's hour (its product was ready), equal to the vision composed
-/// from the mirrors there, and a layer reading it hears province 4 change hands (hour 13) in the
-/// frame that applies the step of hour 13. Before, vision handed the step to its worker in that
-/// frame and showed the hour before it; the change reached its readers a frame later.
 #[test]
 fn vision_folded_ahead_shows_the_hour_applied_in_its_frame_and_its_readers_hear_it_there() {
     let mut heard_four = None;
@@ -910,9 +833,6 @@ fn vision_folded_ahead_shows_the_hour_applied_in_its_frame_and_its_readers_hear_
     assert_eq!(heard_four, Some(true), "province 4 changing hands at hour 13 reached the reader in the frame of its step");
 }
 
-/// Fed the steps ahead, snow's worker builds each step's grid before the frame applies it: in the
-/// frame that takes a step, snow shows that step's hour, equal to the grid composed from the mirrors
-/// there. Before, it showed the hour before.
 #[test]
 fn snow_folded_ahead_shows_the_hour_applied_in_its_frame() {
     use super::snow::{self, Snow};
@@ -958,11 +878,6 @@ fn snow_folded_ahead_shows_the_hour_applied_in_its_frame() {
     );
 }
 
-/// Plays four-hour steps fed ahead from hour 0 to `from`, lets the first layer's worker fold the
-/// steps built past it (`made`), then gives the playhead a pace of an hour a step: the steps built
-/// past the head are built again an hour each, and what was lent ahead of them is void. `each` sees
-/// every hour after `from` to `last`, one step of one hour a frame, settled whole. The layers voided
-/// and restarted meanwhile, counted.
 fn ahead_then_hourly(units: Units, layers: Vec<Box<dyn Layer>>, from: i32, last: i32, made: impl Fn(&dyn Layer, i32) -> bool, mut each: impl FnMut(i32, &mut MapSide)) -> u32 {
     let entry = open(units, quick()).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
@@ -1009,10 +924,6 @@ fn ahead_then_hourly(units: Units, layers: Vec<Box<dyn Layer>>, from: i32, last:
     voided
 }
 
-/// Vision folded the four-hour steps built ahead when the pace fell to an hour a step: those steps
-/// are built again an hour each, its worker starts over from the mirrors at the hour applied, and
-/// at every hour after, a step of one hour a frame, it equals the vision composed from the mirrors
-/// there and shows that hour: nothing made from a step that was void is shown.
 #[test]
 fn vision_after_a_slower_pace_starts_over_and_equals_the_composed_vision_at_each_hour() {
     let voided = ahead_then_hourly(
@@ -1033,9 +944,6 @@ fn vision_after_a_slower_pace_starts_over_and_equals_the_composed_vision_at_each
     assert!(voided >= 1, "the steps vision folded ahead were voided and it started over");
 }
 
-/// Snow built the grids of the four-hour steps built ahead when the pace fell to an hour a step:
-/// its worker starts over from the mirrors at the hour applied, and at every hour after, a step of
-/// one hour a frame, its grid equals the grid composed from the mirrors there.
 #[test]
 fn snow_after_a_slower_pace_starts_over_and_equals_the_composed_grid_at_each_hour() {
     use super::snow::{self, Snow};

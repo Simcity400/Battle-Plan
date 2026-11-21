@@ -35,7 +35,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW = ROOT / "tools" / "leak-gate.allow"
-# A known top-level domain, so that random bytes in compressed data or code read as no address.
 EMAIL = (rb"[A-Za-z0-9._%+-]{2,}@[A-Za-z0-9-]{2,}(?:\.[A-Za-z0-9-]+)*\.(?:com|org|net|io|dev|edu|gov|info|biz|me|co|uk|de|fr|"
          rb"au|ca|us|eu|ru|jp|cn|nl|se|no|fi|ch|at|be|it|es|pl|cz|br|in|nz|app|xyz|ai|gg|sh|cc)(?![A-Za-z0-9-])")
 NOREPLY = re.compile(rb"@users\.noreply\.github\.com$|^noreply@github\.com$", re.IGNORECASE)
@@ -47,13 +46,11 @@ RULES = {
     "private-key": [rb"-----BEGIN[A-Z ]*PRIVATE KEY-----"],
     "aws-key": [rb"AKIA[0-9A-Z]{16}"],
     "slack-token": [rb"xox[abprs]-[A-Za-z0-9-]{10,}"],
-    # Minisign and Tauri secret keys, as text and as the base64 Tauri stores them in.
     "secret-key": [rb"encrypted secret key",
                    re.escape(base64.b64encode(b"untrusted comment: rsign encrypted secret key")[:40]),
                    re.escape(base64.b64encode(b"untrusted comment: minisign encrypted secret key")[:40])],
 }
 NEVER_EXEMPT = {"term", "updater-key", "github-token", "private-key", "aws-key", "slack-token", "secret-key"}
-# 7-Zip opens these into the files they carry; a PE is a plain binary, scanned as it is.
 OPENED = {"Nsis", "zip", "7z", "Cab", "Rar", "gzip", "tar", "xz"}
 BINARY = {"PE"}
 ARCHIVES = {".exe", ".zip", ".7z", ".cab", ".gz", ".tar", ".xz"}
@@ -148,7 +145,6 @@ class Matcher:
             counts["pdb"] = 1
         if lowered.endswith((".js.map", ".css.map")):
             counts["source-map"] = 1
-        # As bytes, which covers UTF-8; and as UTF-16 at both alignments, narrowed to its low bytes.
         views = [data]
         for offset in (0, 1):
             chunk = data[offset:len(data) - ((len(data) - offset) % 2)]
@@ -163,7 +159,6 @@ class Matcher:
         return [(kind, count) for kind, count in counts.items() if not self.exempt(name, kind)]
 
 
-# The artifact walk: files and folders, with installers and archives opened down to what they carry.
 
 def seven_zip():
     found = shutil.which("7z") or (r"C:\Program Files\7-Zip\7z.exe" if os.name == "nt" else None)
@@ -195,7 +190,6 @@ def walk(path, label, matcher, tool, scratch, depth, found):
     if path.suffix.lower() not in ARCHIVES:
         return
     kind = archive_type(tool, path, label)
-    # An installer is checked by what it installs, never by its compressed bytes alone.
     if kind in BINARY and not path.name.lower().endswith("-setup.exe"):
         return
     if kind not in OPENED:
@@ -228,7 +222,6 @@ def main():
     with tempfile.TemporaryDirectory() as scratch:
         given = list(files(args.paths))
         for path in given:
-            # Named from where it runs: a full path would show the build machine's folders in the log.
             try:
                 label = path.resolve().relative_to(Path.cwd().resolve()).as_posix()
             except ValueError:

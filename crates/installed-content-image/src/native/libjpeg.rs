@@ -1,29 +1,10 @@
-//! IJG libjpeg 9a, the version FreeImage 3.17 bundles, as the
-//! game's FreeImage JPEG loader drives it: `jpeg_read_header`, then (flags 0) `dct_method =
-//! JDCT_IFAST` and `do_fancy_upsampling = FALSE`,
-//! `jpeg_start_decompress`, every scanline, `jpeg_finish_decompress`. It follows the library's
-//! sources function by function (`jdmarker.c`, `jdinput.c`, `jdhuff.c`, `jdarith.c`,
-//! `jdcoefct.c`, `jddctmgr.c`, `jidctfst.c`, `jdsample.c`, `jdcolor.c`), computing on the whole
-//! image where the library streams it (the values are the same).
-//!
-//! The source is FreeImage's (`jpeg_freeimage_src`): at the end of the file it keeps supplying
-//! a fake EOI (`FF D9`) with a warning. Warnings never stop the decode; FreeImage's error exit
-//! returns for `JERR_UNKNOWN_MARKER` (the library then goes on as if the marker were not
-//! there) and ends the load for every other error.
-//!
-//! Without fancy upsampling every component is transformed at the block size: 8 by
-//! `jpeg_idct_ifast`, a SmartScale size (a sequential first scan whose `Se` is `N * N - 1`,
-//! libjpeg 8 and later) by `jidctint.c`'s `jpeg_idct_NxN` ([`libjpeg_idct`](super::libjpeg_idct)).
 
 use super::Failure;
 
-/// Why the decode stopped: the library's error exit (the load fails) or an undefined outcome.
 pub(super) enum Stop {
     Fatal(String),
     Undefined(String),
-    /// The device decides ([`Failure::Device`]).
     Device(String),
-    /// The caller's budget refuses the extent ([`Failure::OverBudget`]).
     OverBudget(String),
 }
 
@@ -31,15 +12,12 @@ fn fatal<T>(why: impl Into<String>) -> Result<T, Stop> {
     Err(Stop::Fatal(why.into()))
 }
 
-/// `jpeg_natural_order`, with the 16 extra entries the decoders may index.
 const NATURAL: [usize; 80] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
     52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
     63, 63, 63, 63, 63, 63,
 ];
-/// `jpeg_natural_order2` to `7` (with their 16 extra entries), which `get_dqt` uses for a short
-/// table and a SmartScale block size of 2 to 7 decodes with.
 const NATURAL2: [usize; 20] = [
     0, 1, 8, 9, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
 ];
@@ -65,8 +43,6 @@ const NATURAL7: [usize; 65] = [
     63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
 ];
 
-/// `jpeg_aritab` (`jaricom.c`): `Qe << 16 | Next_Index_MPS << 8 | Switch_MPS << 7 |
-/// Next_Index_LPS`.
 const ARITAB: [u32; 114] = [
     0x5A1D0181, 0x2586020E, 0x11140310, 0x080B0412, 0x03D80514, 0x01DA0617, 0x00E50719, 0x006F081C,
     0x0036091E, 0x001A0A21, 0x000D0B23, 0x00060C09, 0x00030D0A, 0x00010D0C, 0x5A7F0F8F, 0x3F251024,
@@ -85,7 +61,6 @@ const ARITAB: [u32; 114] = [
     0x59EB6FF0, 0x5A1D7171,
 ];
 
-/// `aanscales` (`jddctmgr.c`), scaled up by 14 bits.
 const AANSCALES: [i32; 64] = [
     16384, 22725, 21407, 19266, 16384, 12873, 8867, 4520, 22725, 31521, 29692, 26722, 22725, 17855,
     12299, 6270, 21407, 29692, 27969, 25172, 21407, 16819, 11585, 5906, 19266, 26722, 25172, 22654,
@@ -107,17 +82,14 @@ fn extend(x: i32, s: i32) -> i32 {
     }
 }
 
-/// `JHUFF_TBL`.
 #[derive(Clone)]
 struct HuffTable {
     bits: [u8; 17],
     values: [u8; 256],
 }
 
-/// The derived tables a scan's four table slots hold.
 type Tables = Vec<Option<Derived>>;
 
-/// `d_derived_tbl`.
 struct Derived {
     maxcode: [i32; 18],
     valoffset: [i32; 17],
@@ -126,7 +98,6 @@ struct Derived {
     values: [u8; 256],
 }
 
-/// `jpeg_make_d_derived_tbl`.
 fn derive(table: Option<&HuffTable>, is_dc: bool, number: usize) -> Result<Derived, Stop> {
     let Some(table) = table else {
         return fatal(format!("Huffman table 0x{number:02x} was not defined"));
@@ -206,17 +177,13 @@ struct Component {
     ac_table: usize,
     width_in_blocks: usize,
     height_in_blocks: usize,
-    /// The blocks' row length in the coefficient array (rounded up to `h`).
     stride: usize,
-    /// The latched quantisation table (`latch_quant_tables`), set at its first scan.
     quant: Option<[u16; 64]>,
     coefficients: Vec<[i16; 64]>,
-    // Per scan (`per_scan_setup`).
     mcu_width: usize,
     mcu_height: usize,
 }
 
-/// Where an arithmetic-coding statistics bin lives.
 #[derive(Clone, Copy)]
 enum Bin {
     Dc(usize, usize),
@@ -224,14 +191,12 @@ enum Bin {
     Fixed,
 }
 
-/// The decompressor's state.
 struct Jpeg<'a> {
     data: &'a [u8],
     position: usize,
     unread_marker: u8,
     saw_soi: bool,
     saw_sof: bool,
-    // Header facts.
     restart_interval: u32,
     arith_dc_l: [u8; 16],
     arith_dc_u: [u8; 16],
@@ -250,7 +215,6 @@ struct Jpeg<'a> {
     quant_tables: [Option<[u16; 64]>; 4],
     dc_tables: [Option<HuffTable>; 4],
     ac_tables: [Option<HuffTable>; 4],
-    // Scan.
     scan: Vec<usize>,
     ss: i32,
     se: i32,
@@ -259,11 +223,9 @@ struct Jpeg<'a> {
     max_h: usize,
     max_v: usize,
     lim_se: i32,
-    /// `block_size` and `natural_order` (`initial_setup`).
     block_size: usize,
     natural: &'static [usize],
     coef_bits: Vec<[i32; 64]>,
-    // Huffman bit reader.
     get_buffer: u32,
     bits_left: i32,
     insufficient: bool,
@@ -271,7 +233,6 @@ struct Jpeg<'a> {
     last_dc: [i32; 4],
     restarts_to_go: u32,
     next_restart: u8,
-    // Arithmetic decoder.
     c: i32,
     a: i32,
     ct: i32,
@@ -282,7 +243,6 @@ struct Jpeg<'a> {
 }
 
 impl<'a> Jpeg<'a> {
-    /// The next source byte: the file, then FreeImage's endless fake EOIs.
     fn byte(&mut self) -> u8 {
         let at = self.position;
         self.position += 1;
@@ -304,7 +264,6 @@ impl<'a> Jpeg<'a> {
         }
     }
 
-    // ---- jdmarker.c ----
 
     fn next_marker(&mut self) {
         loop {
@@ -524,7 +483,6 @@ impl<'a> Jpeg<'a> {
         Ok(())
     }
 
-    /// `get_lse`: the colour transform marker (JPEG-LS parameters, id 0x0D).
     fn get_lse(&mut self) -> Result<(), Stop> {
         if !self.saw_sof {
             return fatal("Invalid JPEG file structure: LSE before SOF");
@@ -536,7 +494,6 @@ impl<'a> Jpeg<'a> {
         if self.word() != 24 {
             return fatal("Bogus marker length");
         }
-        // An id other than 0x0D is JERR_UNKNOWN_MARKER, which FreeImage lets pass.
         let _ = self.byte();
         let checks: [(bool, i32); 13] = [
             (true, 255),
@@ -570,7 +527,6 @@ impl<'a> Jpeg<'a> {
         Ok(())
     }
 
-    /// An APPn or COM marker: saved (FreeImage saves them all), APP0 and APP14 examined.
     fn get_app(&mut self, marker: u8) {
         let length = self.word() - 2;
         let data: Vec<u8> = (0..length.max(0)).map(|_| self.byte()).collect();
@@ -587,7 +543,6 @@ impl<'a> Jpeg<'a> {
         self.skip(length);
     }
 
-    /// `read_markers`: until SOS (true) or EOI (false).
     fn read_markers(&mut self) -> Result<bool, Stop> {
         loop {
             if self.unread_marker == 0 {
@@ -646,14 +601,12 @@ impl<'a> Jpeg<'a> {
                 marker @ (0xE0..=0xEF | 0xFE) => self.get_app(marker),
                 0xD0..=0xD7 | 0x01 => {}
                 0xDC => self.skip_variable(),
-                // JERR_UNKNOWN_MARKER: FreeImage's error exit returns.
                 _ => {}
             }
             self.unread_marker = 0;
         }
     }
 
-    /// `read_restart_marker` and `jpeg_resync_to_restart`.
     fn read_restart_marker(&mut self) {
         if self.unread_marker == 0 {
             self.next_marker();
@@ -691,9 +644,7 @@ impl<'a> Jpeg<'a> {
         self.next_restart = (self.next_restart + 1) & 7;
     }
 
-    // ---- jdinput.c ----
 
-    /// `initial_setup`, at the first SOS: `Ok(false)` for a SmartScale block size.
     fn initial_setup(&mut self) -> Result<(), Stop> {
         if self.height > 65500 || self.width > 65500 {
             return fatal("Maximum supported image dimension is 65500 pixels");
@@ -751,7 +702,6 @@ impl<'a> Jpeg<'a> {
         Ok(())
     }
 
-    /// `per_scan_setup`, `latch_quant_tables` and the entropy decoder's `start_pass`.
     fn start_scan(&mut self) -> Result<(), Stop> {
         let blocks: usize = if self.scan.len() == 1 {
             let component = &mut self.components[self.scan[0]];
@@ -832,7 +782,6 @@ impl<'a> Jpeg<'a> {
         Ok(())
     }
 
-    /// The Huffman tables the scan uses, derived (`start_pass_huff_decoder`): DC, then AC.
     fn derive_tables(&self) -> Result<(Tables, Tables), Stop> {
         let mut dc: Vec<Option<Derived>> = (0..4).map(|_| None).collect();
         let mut ac: Vec<Option<Derived>> = (0..4).map(|_| None).collect();
@@ -862,9 +811,7 @@ impl<'a> Jpeg<'a> {
         Ok((dc, ac))
     }
 
-    // ---- jdhuff.c ----
 
-    /// `jpeg_fill_bit_buffer` (FreeImage's source never suspends).
     fn fill(&mut self, nbits: i32) {
         if self.unread_marker == 0 {
             while self.bits_left < 25 {
@@ -907,7 +854,6 @@ impl<'a> Jpeg<'a> {
         ((self.get_buffer >> self.bits_left) as i32) & BMASK[n as usize]
     }
 
-    /// `HUFF_DECODE` and `jpeg_huff_decode`.
     fn decode(&mut self, table: &Derived) -> i32 {
         let mut l = 9;
         if self.bits_left < 8 {
@@ -936,7 +882,6 @@ impl<'a> Jpeg<'a> {
         i32::from(table.values[((code + table.valoffset[l as usize]) & 0xFF) as usize])
     }
 
-    /// `finish_pass_huff` then `process_restart`.
     fn restart(&mut self) {
         if !self.arith {
             self.bits_left = 0;
@@ -967,8 +912,6 @@ impl<'a> Jpeg<'a> {
         self.restarts_to_go = self.restart_interval;
     }
 
-    /// One MCU (`decode_mcu` and the progressive variants), `blocks` the MCU's block positions
-    /// with their scan component.
     fn decode_mcu_huffman(
         &mut self,
         blocks: &[(usize, usize)],
@@ -980,7 +923,6 @@ impl<'a> Jpeg<'a> {
         }
         let refine = self.ah != 0;
         if self.progressive && refine && self.ss == 0 {
-            // decode_mcu_DC_refine: always reads.
             let p1 = 1 << self.al;
             for &(component, block) in blocks {
                 if self.get_bits(1) != 0 {
@@ -1004,8 +946,6 @@ impl<'a> Jpeg<'a> {
                     self.last_dc[component] = self.last_dc[component].wrapping_add(s);
                     let value = self.last_dc[component] as i16;
                     self.components[index].coefficients[block][0] = value;
-                    // decode_mcu, or decode_mcu_sub for a SmartScale size: coefficients up to
-                    // lim_Se (the coef_limit of a full-size transform), in the size's order.
                     let limit = self.lim_se as usize + 1;
                     let Some(ac) = ac[ac_table].as_ref().filter(|_| limit > 1) else {
                         continue;
@@ -1080,7 +1020,6 @@ impl<'a> Jpeg<'a> {
         self.restarts_to_go = self.restarts_to_go.wrapping_sub(1);
     }
 
-    /// `decode_mcu_AC_refine` (never undone: FreeImage's source never suspends).
     fn decode_ac_refine(&mut self, (component, block): (usize, usize), ac: &[Option<Derived>]) {
         let index = self.scan[component];
         let table = ac[self.components[index].ac_table].as_ref().unwrap();
@@ -1148,7 +1087,6 @@ impl<'a> Jpeg<'a> {
         self.eobrun = eobrun;
     }
 
-    // ---- jdarith.c ----
 
     fn arith_byte(&mut self) -> i32 {
         i32::from(self.byte())
@@ -1162,7 +1100,6 @@ impl<'a> Jpeg<'a> {
         }
     }
 
-    /// `arith_decode`.
     fn arith_decode(&mut self, bin: Bin) -> i32 {
         while self.a < 0x8000 {
             self.ct -= 1;
@@ -1230,7 +1167,6 @@ impl<'a> Jpeg<'a> {
         sv >> 7
     }
 
-    /// The DC difference `decode_mcu`/`decode_mcu_DC_first` decode for scan component `ci`.
     fn arith_dc(&mut self, ci: usize, table: usize) -> Option<i32> {
         let context = self.dc_context[ci];
         if self.arith_decode(Bin::Dc(table, context)) == 0 {
@@ -1272,8 +1208,6 @@ impl<'a> Jpeg<'a> {
         Some(if sign != 0 { -v } else { v })
     }
 
-    /// The AC magnitude after the sign (`decode_mcu`/`decode_mcu_AC_first`), `st` the bin the
-    /// sign followed.
     fn arith_ac_value(&mut self, table: usize, k: i32, mut st: usize) -> Option<i32> {
         let sign = self.arith_decode(Bin::Fixed);
         st += 2;
@@ -1454,7 +1388,6 @@ impl<'a> Jpeg<'a> {
         }
     }
 
-    /// Every MCU of the current scan (`consume_data` / `decompress_onepass`).
     fn decode_scan(&mut self) -> Result<(), Stop> {
         let tables = if self.arith {
             None
@@ -1498,19 +1431,14 @@ impl<'a> Jpeg<'a> {
     }
 }
 
-/// A decoded image: `components` samples per pixel, rows top first.
 pub(super) struct Decoded {
     pub width: usize,
     pub height: usize,
     pub components: usize,
-    /// The output colour space: 1 grey, 3 RGB, 4 CMYK (from CMYK or YCCK), else the raw
-    /// components (`JCS_UNKNOWN`).
     pub cmyk: bool,
     pub samples: Vec<u8>,
 }
 
-/// `IDCT_range_limit(cinfo)[x & RANGE_MASK]` (the wrapped table `prepare_range_limit_table`
-/// builds).
 pub(super) fn idct_limit(x: i32) -> u8 {
     let v = x & 1023;
     if v < 128 {
@@ -1524,12 +1452,10 @@ pub(super) fn idct_limit(x: i32) -> u8 {
     }
 }
 
-/// `cinfo->sample_range_limit[x]` for the colour converters' range.
 fn sample_limit(x: i32) -> u8 {
     x.clamp(0, 255) as u8
 }
 
-/// `jpeg_idct_ifast`.
 fn idct_ifast(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     const FIX_1_082392200: i32 = 277;
     const FIX_1_414213562: i32 = 362;
@@ -1622,7 +1548,6 @@ fn idct_ifast(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     }
 }
 
-/// `decompress_smooth_data`'s coefficient estimates for block `(row, column)`.
 fn smoothed(component: &Component, bits: &[i32; 64], row: usize, column: usize) -> [i16; 64] {
     let quant = component.quant.unwrap();
     let block = |r: usize, c: usize| component.coefficients[r * component.stride + c];
@@ -1631,8 +1556,6 @@ fn smoothed(component: &Component, bits: &[i32; 64], row: usize, column: usize) 
     let last_column = component.width_in_blocks - 1;
     let prev = if row == 0 { row } else { row - 1 };
     let next = if row == last_row { row } else { row + 1 };
-    // DC1..DC9 as the column walk leaves them (the first column repeats its own DCs on the left,
-    // the last its own on the right).
     let dc = |r: usize, c: usize| i32::from(block(r, c)[0]);
     let left = if column == 0 { column } else { column - 1 };
     let right = if column == last_column {
@@ -1696,7 +1619,6 @@ fn smoothed(component: &Component, bits: &[i32; 64], row: usize, column: usize) 
     workspace
 }
 
-/// The decode (`jpeg_read_header` through `jpeg_finish_decompress`).
 pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
     let mut jpeg = Jpeg {
         data,
@@ -1748,7 +1670,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
         ac_stats: [[0; 256]; 16],
         fixed_bin: [113, 0, 0, 0],
     };
-    // jpeg_read_header: markers to the first SOS (a pseudo scan in a progressive file skipped).
     let mut in_headers = 1;
     loop {
         if !jpeg.read_markers()? {
@@ -1769,7 +1690,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
     }
     let count = jpeg.components.len();
     let multiple_scans = jpeg.scan.len() < count || jpeg.progressive;
-    // default_decompress_parms and the colour deconverter's checks.
     enum Space {
         Gray,
         YCbCr,
@@ -1813,9 +1733,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
         Failure::Device(why) => Stop::Device(why),
         Failure::OverBudget(why) => Stop::OverBudget(why),
     })?;
-    // jpeg_calc_output_dimensions without fancy upsampling: a subsampled component of a block
-    // size of 4 or less is scaled up in its inverse DCT (by powers of 2, while the result stays
-    // at most 8 and divides the maximum sampling), at most 2:1 between the axes.
     let size = jpeg.block_size;
     let scaled = |samp: usize, max: usize| {
         let mut ssize = 1;
@@ -1840,7 +1757,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
             (h, v)
         })
         .collect();
-    // jinit_upsampler: box expansion by whole factors of each component's scaled group.
     for (component, &(h_size, v_size)) in jpeg.components.iter().zip(&dct_sizes) {
         let (h_in, v_in) = (component.h * h_size / size, component.v * v_size / size);
         if !jpeg.max_h.is_multiple_of(h_in) || !jpeg.max_v.is_multiple_of(v_in) {
@@ -1850,7 +1766,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
     if jpeg.progressive {
         jpeg.coef_bits = vec![[-1; 64]; count];
     }
-    // The first scan, then (for several scans) every later one up to EOI.
     jpeg.start_scan()?;
     jpeg.decode_scan()?;
     loop {
@@ -1866,7 +1781,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
         jpeg.start_scan()?;
         jpeg.decode_scan()?;
     }
-    // Output: the inverse DCT (with block smoothing for an incomplete progressive image).
     let smoothing = jpeg.progressive
         && jpeg.components.iter().enumerate().all(|(ci, component)| {
             component
@@ -1881,8 +1795,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
     let mut planes = Vec::with_capacity(count);
     for (ci, component) in jpeg.components.iter().enumerate() {
         let (h_size, v_size) = dct_sizes[ci];
-        // jddctmgr.c: the IFAST table for 8x8 (the method FreeImage selects), else the
-        // ISLOW-style table the scaled transforms read; zeros for a component no scan latched.
         let multipliers: [i32; 64] = match component.quant {
             Some(quant) if (h_size, v_size) == (8, 8) => {
                 std::array::from_fn(|i| (i32::from(quant[i]) * AANSCALES[i] + (1 << 11)) >> 12)
@@ -1920,7 +1832,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
         }
         planes.push((plane, stride));
     }
-    // Upsampling (box) and colour conversion.
     let (width, height) = (jpeg.width, jpeg.height);
     let sample = |ci: usize, x: usize, y: usize| {
         let component = &jpeg.components[ci];
@@ -1959,7 +1870,6 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
                 Space::YCbCr | Space::BgYcc => {
                     let bg = matches!(space, Space::BgYcc);
                     let (r, g, b) = tables(bg)(sample(0, x, y), sample(1, x, y), sample(2, x, y));
-                    // The BG_YCC converter's own table saturates the same way here.
                     samples.extend([r, g, b].map(sample_limit));
                 }
                 Space::Rgb => {

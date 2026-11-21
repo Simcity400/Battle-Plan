@@ -1,17 +1,3 @@
-//! One off-screen province schedule per map view: the frame's province update list and the
-//! presentation-dirty bit it drives for each province.
-//!
-//! Advance phase modulo 100 per frame. Update every admitted province; otherwise update dirty
-//! provinces in their phase or under a positive force counter. Selection alone does not add a clean
-//! off-screen province. Forced updates pass the in-view flag, retaining dirtiness. Raise selected
-//! counters to at least two before updates and decrement each reached update, retaining one forced
-//! frame after deselection. After updating, set the dirty bit for in-view provinces or newly
-//! populated unit slots, then clear the population bit. Ordinary off-screen updates clear show bits
-//! first and thus clear dirtiness. Reset initializes bit two; selected forced updates preserve it.
-//!
-//! Units and icon owners share this schedule's update list. Dirty off-screen provinces retain history
-//! until their ordinary phased update. Advance the schedule once per frame before units and icon
-//! pools read its list and bits.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,17 +6,12 @@ use std::{
 
 use super::{camera::Camera, province_admission::Admission};
 
-/// How a province is updated this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Update {
-    /// Native in-view update flag 1: camera admission or a positive selected force counter.
     InView,
-    /// Out of view, in the list by its bit, at its phase: updated with the in-view flag 0, which
-    /// clears its show bits, so its owners erase what they hold.
     OffScreen,
 }
 
-/// Province ids, one bit each, iterated in ascending order.
 #[derive(Clone, Debug, Default)]
 struct Ids(Vec<u64>);
 
@@ -92,55 +73,35 @@ impl Ids {
     }
 }
 
-/// One view's phase, dirty bits and the frame's update list.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schedule {
-    /// The retained off-screen update cursor.
     phase: u32,
-    /// The provinces whose bit `0x2` is clear; every other is set, as the constructor leaves it.
     clean: Ids,
-    /// This frame's provinces updated with the native in-view flag 1.
     in_view: Ids,
-    /// This frame's provinces updated out of view.
     off_screen: Ids,
-    /// The frame's advance was made and its unit walk has not yet read it.
     pending: bool,
-    /// The presentation clock of the last advance the view's counters made themselves
-    /// ([`Self::present`]).
     presented: Option<f32>,
-    /// The provinces that could come into view: those a camera held while the real one travels
-    /// inside the padding admits with that padding to spare, so a pan tests all the boxes only
-    /// when it leaves the pad. The boxes are named by the generation their owner rebuilt them at.
     candidates: Ids,
     admitted_against: super::camera::Hold,
     candidates_for: Option<(Camera, [u32; 2], u64, super::camera::Slack)>,
-    /// Of those, the ones this camera admits, and the camera they were tested against: the pad
-    /// narrows what a moved camera tests, and the camera itself still decides, so the set is the
-    /// one an untested camera would give.
     admitted: Ids,
     admitted_for: Option<(Camera, [u32; 2], u64)>,
-    /// Provinces containing this viewer's selected units, admitted while their selection count is positive.
     selected: BTreeSet<u32>,
-    /// Selection counts rise to 2 on selection and decrease only when an update reaches the province.
     forced: BTreeMap<u32, u8>,
 }
 
-/// The schedule a view's scene and counters share.
 pub type Shared = Arc<Mutex<Schedule>>;
 
-/// Province-ordered updates shared by this frame's unit walk and text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceFrame {
     updates: Vec<(u32, Update)>,
 }
 
 impl ProvinceFrame {
-    /// The reached updates in province order.
     pub fn updates(&self) -> &[(u32, Update)] {
         &self.updates
     }
 
-    /// How `province` is updated this frame, or `None` when it is not ([`Schedule::update`]).
     pub fn update(&self, province: u32) -> Option<Update> {
         self.updates
             .binary_search_by_key(&province, |&(id, _)| id)
@@ -149,15 +110,12 @@ impl ProvinceFrame {
     }
 }
 
-/// Force counts to restore if the frame never reaches its walk.
 #[derive(Debug)]
 pub struct FrameRestore {
-    /// Each spent force count, by province, before it was spent.
     spent: Vec<(u32, u8)>,
 }
 
 impl Schedule {
-    /// Canonical carried state for cross-crate presentation oracles.
     #[cfg(any(test, feature = "test-support"))]
     pub fn presentation_state(&self) -> impl PartialEq + std::fmt::Debug {
         let sorted = |values: &Ids| values.iter().collect::<BTreeSet<_>>();
@@ -175,8 +133,6 @@ impl Schedule {
 
     pub fn set_selected(&mut self, selected: BTreeSet<u32>) {
         let previous = std::mem::replace(&mut self.selected, selected);
-        // A click after the overlay advanced, before its unit walk, applies its force to
-        // the already-built list. Repeated offers must not extend the same frame twice.
         if self.pending {
             for &id in self.selected.difference(&previous) {
                 self.forced.insert(id, 2);
@@ -188,7 +144,6 @@ impl Schedule {
             }
         }
     }
-    /// Prepare one scene frame; its unit walk consumes the pending advance.
     pub fn advance_frame(
         &mut self,
         bounds: &BTreeMap<u32, [f32; 4]>,
@@ -202,11 +157,6 @@ impl Schedule {
         }
     }
 
-    /// One frame of and over `provinces`: the phase advanced, then each
-    /// camera-admitted province listed and dirty. An out-of-view dirty province updates with
-    /// flag 1 while forced, otherwise with flag 0 at its phase and becomes clean.
-    /// `steady` (an offline frame settling for its camera) updates every
-    /// dirty province out of view.
     pub fn advance(
         &mut self,
         provinces: impl IntoIterator<Item = u32>,
@@ -216,8 +166,6 @@ impl Schedule {
         self.advance_admitted(provinces.into_iter().map(|id| (id, in_view(id))), steady);
     }
 
-    /// Advance over retained province boxes without looking each one up in a tree.
-    /// The caller refreshes this list whenever its province roster or boxes change.
     pub fn advance_frame_boxes(
         &mut self,
         provinces: &[(u32, Option<[f32; 4]>)],
@@ -257,8 +205,6 @@ impl Schedule {
     }
 
     fn advance_admitted(&mut self, provinces: impl IntoIterator<Item = (u32, bool)>, steady: bool) {
-        // Direct callers finish the previous list before asking for another frame.
-        // A scene instead retains it through advance_frame until its unit walk.
         self.take_pending();
         self.phase = (self.phase + 1) % 100;
         self.in_view.clear();
@@ -282,7 +228,6 @@ impl Schedule {
         self.pending = true;
     }
 
-    /// [`Self::advance`] at a camera: a province is in view when the camera admits its box.
     pub fn advance_view(
         &mut self,
         bounds: &BTreeMap<u32, [f32; 4]>,
@@ -299,10 +244,6 @@ impl Schedule {
         );
     }
 
-    /// The advance for a view whose scene does not advance the schedule (a headless frame, a
-    /// window before its scene exists): made by its counters over `bounds`, once per presented
-    /// frame of the view's presentation clock (`time`); nothing when the scene's advance of this
-    /// frame is pending. The counters' own advance is not left pending for a unit walk.
     pub fn present(
         &mut self,
         bounds: &BTreeMap<u32, [f32; 4]>,
@@ -324,7 +265,6 @@ impl Schedule {
         self.presented = Some(time);
     }
 
-    /// How `province` is updated this frame, or `None` when it is not.
     pub fn update(&self, province: u32) -> Option<Update> {
         if self.in_view.contains(&province) {
             Some(Update::InView)
@@ -335,8 +275,6 @@ impl Schedule {
         }
     }
 
-    /// This frame's reached updates. Owners that share native province order sort by ID
-    /// before walking; dirty provinces waiting for their phase are not reached updates.
     pub fn updates(&self) -> impl Iterator<Item = (u32, Update)> + '_ {
         self.in_view
             .iter()
@@ -344,20 +282,14 @@ impl Schedule {
             .chain(self.off_screen.iter().map(|id| (id, Update::OffScreen)))
     }
 
-    /// Whether `province` is in this frame's update list: in view, or out of view with its dirty bit
-    /// set when the list was built, regardless of whether this phase updates it ([`Self::update`]).
     pub fn listed(&self, province: u32) -> bool {
         self.update(province).is_some() || self.dirty(province)
     }
 
-    /// Whether this frame's advance was made and its unit walk has not yet taken it.
     pub fn pending(&self) -> bool {
         self.pending
     }
 
-    /// Consume the frame's work and spend one force count for each reached update.
-    /// Preparing a list alone cannot spend the final frame after deselection: a
-    /// refused scene may leave that list unread until another hour replaces it.
     pub fn take_pending(&mut self) -> bool {
         let pending = std::mem::take(&mut self.pending);
         if pending {
@@ -373,7 +305,6 @@ impl Schedule {
         pending
     }
 
-    /// Takes pending updates in province order, spending force counts once.
     pub fn take_frame(&mut self) -> Option<(ProvinceFrame, FrameRestore)> {
         if !self.pending {
             return None;
@@ -390,7 +321,6 @@ impl Schedule {
         Some((ProvinceFrame { updates }, FrameRestore { spent }))
     }
 
-    /// Puts a taken frame back as if never taken: its walk did not run.
     pub fn untake_frame(&mut self, restore: FrameRestore) {
         self.pending = true;
         for (id, count) in restore.spent {
@@ -398,10 +328,6 @@ impl Schedule {
         }
     }
 
-    /// A successfully applied hour supersedes a scene frame whose unit walk
-    /// never ran (for example, a viewport too small for the native post seed).
-    /// Restore its unconsumed dirty work and retain the force counts, selection,
-    /// phase and the map-icon owners' pools; the next frame builds a fresh list.
     pub fn cancel_pending(&mut self) {
         if !std::mem::take(&mut self.pending) {
             return;
@@ -412,18 +338,14 @@ impl Schedule {
         self.presented = None;
     }
 
-    /// Whether `province`'s bit `0x2` is set.
     pub fn dirty(&self, province: u32) -> bool {
         !self.clean.contains(&province)
     }
 
-    /// Whether `province` is dirty out of view: a coming frame's phase cleans it, and its owners'
-    /// icons kept off screen are erased then. A dirty province in view stays dirty while it is.
     pub fn cleans(&self, province: u32) -> bool {
         self.dirty(province) && self.update(province) != Some(Update::InView)
     }
 
-    /// Reset listed provinces, or every province, to dirty bit two.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         match provinces {
             None => self.clean.clear(),
@@ -437,10 +359,8 @@ mod tests {
     use super::*;
     use crate::map::camera::Pose;
 
-    /// Restoring a cut must undo its spent force counts, not just its pending bit.
     #[test]
     fn taken_frames_match_the_walk_and_restore_exactly() {
-        // An owned snapshot: the carried state borrows its schedule.
         let state = |schedule: &Schedule| format!("{:?}", schedule.presentation_state());
         let mut schedules = [Schedule::default(), Schedule::default()];
         for schedule in &mut schedules {
@@ -465,7 +385,6 @@ mod tests {
         assert_eq!(frame.update(3), None);
         schedules[1].untake_frame(restore);
         assert_eq!(state(&schedules[1]), before);
-        // Nothing pending: nothing taken, nothing changed.
         let mut idle = Schedule::default();
         let idle_state = state(&idle);
         assert!(idle.take_frame().is_none());
@@ -505,9 +424,6 @@ mod tests {
                 }
             }
             let steady = frame % 29 == 0;
-            // The camera returns to a placement it held 30 frames ago: the retained schedule then
-            // reuses the admission it kept rather than testing every box, and must still advance
-            // exactly as the tree does.
             retained.advance_frame_boxes(&boxes, camera, [1024, 768], steady, 0);
             tree.advance_frame(
                 &bounds,
@@ -533,15 +449,12 @@ mod tests {
         }
     }
 
-    /// The kept admission belongs to a camera, a viewport and a set of boxes: a window resized at
-    /// one camera, and boxes rebuilt under one camera and viewport, are both tested again.
     #[test]
     fn a_resize_or_rebuilt_boxes_test_the_admission_again() {
         use crate::map::camera::{MapDefines, MapSize, Placement};
         let camera = Placement { center: [3000., 1000.], height: 50., pose: Pose::Map }.on(MapSize::TEST, MapDefines::test());
         let bounds = super::super::province_admission::edge_boxes();
         let wide: Vec<_> = bounds.iter().map(|(&id, &bounds)| (id, Some(bounds))).collect();
-        // The same provinces with no box at all: admitted under no camera.
         let boxless: Vec<_> = wide.iter().map(|&(id, _)| (id, None)).collect();
         let admitted = |schedule: &Schedule| wide.iter().filter(|&&(id, _)| schedule.update(id) == Some(Update::InView)).count();
         let mut schedule = Schedule::default();
@@ -601,27 +514,20 @@ mod tests {
         assert_eq!(schedule.update(99), None);
     }
 
-    /// A province is dirty from its constructor or its last update in view until the frame
-    /// whose phase is its id modulo 100 updates it out of view; a clean province out of view is
-    /// not in the list and is never updated.
     #[test]
     fn a_province_stays_dirty_until_its_phase_updates_it_out_of_view() {
         let mut schedule = Schedule::default();
         let provinces = [3, 103, 7];
-        // The constructor leaves every bit set.
         assert!(provinces.iter().all(|&id| schedule.dirty(id)));
-        // Frames 1 and 2 update 1 and 2 out of view: nothing here clears.
         schedule.advance(provinces, |id| id == 7, false);
         assert_eq!(schedule.update(7), Some(Update::InView));
         assert_eq!(schedule.update(3), None);
         schedule.advance(provinces, |id| id == 7, false);
         assert!(schedule.dirty(3) && schedule.dirty(103));
-        // Frame 3: both provinces of phase 3 are updated out of view.
         schedule.advance(provinces, |_| false, false);
         assert!(!schedule.dirty(3) && !schedule.dirty(103));
         assert_eq!(schedule.update(3), Some(Update::OffScreen));
         assert_eq!(schedule.update(103), Some(Update::OffScreen));
-        // 7 was in view until frame 2 and stays dirty until frame 7.
         for _ in 4..7 {
             schedule.advance(provinces, |_| false, false);
             assert!(schedule.dirty(7));
@@ -630,28 +536,22 @@ mod tests {
         schedule.advance(provinces, |_| false, false);
         assert!(!schedule.dirty(7));
         assert_eq!(schedule.update(7), Some(Update::OffScreen));
-        // A hundred frames on, 3 is at its phase again but clean: not in the list.
         for _ in 0..96 {
             schedule.advance(provinces, |_| false, false);
         }
         assert_eq!(schedule.update(3), None);
-        // In view again: dirty at once; a reset sets the bit too.
         schedule.advance(provinces, |id| id == 3, false);
         assert!(schedule.dirty(3));
         schedule.reset(Some(&BTreeSet::from([103])));
         assert!(schedule.dirty(103) && !schedule.dirty(7));
         schedule.reset(None);
         assert!(schedule.dirty(7));
-        // A settling frame updates every dirty province out of view.
         schedule.advance(provinces, |_| false, true);
         assert!(provinces.iter().all(|&id| !schedule.dirty(id)));
         assert!(schedule.pending() && schedule.take_pending());
         assert!(!schedule.pending() && !schedule.take_pending());
     }
 
-    /// A province is in view while the camera admits its box: past the view's
-    /// right edge within the side planes' ten-unit margin, and south of its bottom edge while the
-    /// box's top, 70 up, shows.
     #[test]
     fn provinces_the_camera_admits_are_in_view() {
         let camera = super::super::camera::Placement {
@@ -684,8 +584,6 @@ mod tests {
         assert_eq!(schedule.update(6), Some(Update::InView));
     }
 
-    /// A view whose scene does not advance the schedule advances it from its counters once per
-    /// presented frame, and never over a pending advance of the scene.
     #[test]
     fn the_counters_advance_only_what_no_scene_advanced() {
         let mut schedule = Schedule::default();
@@ -750,7 +648,6 @@ mod tests {
         schedule.advance([1], |_| false, false);
         assert!(!schedule.listed(1));
         assert_eq!(schedule.update(1), None);
-        // A reset puts the province back in the list; its unconsumed force then applies.
         schedule.reset(Some(&BTreeSet::from([1])));
         schedule.advance([1], |_| false, false);
         assert_eq!(schedule.update(1), Some(Update::InView));
@@ -783,8 +680,6 @@ mod tests {
         assert_eq!(schedule.update(2), Some(Update::OffScreen));
         assert_eq!(schedule.update(88), Some(Update::InView));
 
-        // Scene::render refuses this native post seed before update_models can
-        // take the list the overlay already advanced.
         let tiny_world = [1_u32, 64];
         assert!(
             super::super::gpu_contract::validate_size(tiny_world.map(|side| side / 2), 8192)
@@ -792,8 +687,6 @@ mod tests {
         );
         assert!(schedule.pending());
         assert_eq!(schedule.forced.get(&88), Some(&1));
-        // Successful hour, seek, branch or perspective applications all use
-        // this boundary; an abandoned update cannot spend the force or clean 2.
         for _ in 0..4 {
             let phase = schedule.phase;
             schedule.cancel_pending();
@@ -804,13 +697,11 @@ mod tests {
             assert_eq!(schedule.forced.get(&88), Some(&1));
             assert_eq!(schedule.phase, phase);
             assert!(schedule.selected.is_empty());
-            // Build a replacement camera list, then refuse its render again.
             schedule.advance([2, 88, 99], |id| id == 99, false);
             assert_eq!(schedule.update(88), Some(Update::InView));
             assert_eq!(schedule.update(99), Some(Update::InView));
             assert_eq!(schedule.forced.get(&88), Some(&1));
         }
-        // The real unit walk consumes the final force exactly once.
         assert!(schedule.take_pending());
         assert!(!schedule.take_pending());
         assert!(!schedule.forced.contains_key(&88));
@@ -841,8 +732,6 @@ mod tests {
             center: [4000.0, 1000.0],
             ..camera
         };
-        // A failed hour apply never calls cancel_pending, so retries retain the
-        // list and phase instead of consuming work or admitting a second list.
         schedule.advance_frame(&bounds, bounds.keys().copied(), moved, [1024, 768], false);
         assert_eq!(schedule.phase, phase);
         assert_eq!(schedule.update(5), Some(Update::InView));
@@ -888,8 +777,6 @@ mod tests {
         assert_eq!(schedule.forced.get(&5), Some(&2));
     }
 
-    /// A province dirty in view stays dirty and does not clean; one dirty out of view cleans until
-    /// its phase updates it out of view, which makes it clean.
     #[test]
     fn a_province_cleans_only_while_dirty_out_of_view() {
         let mut schedule = Schedule::default();

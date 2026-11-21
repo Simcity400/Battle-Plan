@@ -1,5 +1,3 @@
-// The market widgets' drill: one offer, request, contract or agreement's recorded terms at the drill's hour (Trade flows'
-// market view), and its parties' deliveries and payments through that hour.
 import { countryFromKey } from './countryKey.ts';
 import { useEffect } from 'react';
 import WidgetState from '../components/WidgetState';
@@ -13,11 +11,8 @@ import TradeMarketView from '../widgets/trade-flows/TradeMarketView';
 import '../widgets/trade-flows/tradeFlows.css';
 import type { MarketLendLeaseReply } from '../generated/dashboard';
 
-/** `selected` is Trade flows' key: `offer:<country>`, `contract:<request>:<id>` or `agreement:<id>`. Following, it is the
- * market at the head (a pushed panel); otherwise it is asked once for `hour`. */
 export default function MarketDrill({ runtime, widget, hour, following, tags, selected, active, onAnswered }: {
   runtime: WidgetRuntime; widget: WidgetSpec; hour: number; following: boolean; tags: readonly string[]; selected: string | null; active: boolean;
-  /** The hour the shown reply is of. */
   onAnswered?: (hour: number | undefined) => void;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

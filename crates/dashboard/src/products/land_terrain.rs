@@ -1,10 +1,3 @@
-//! Each battle province's terrain as the game's land combat window titles it.
-//!
-//! The window takes the province's terrain name from the content map
-//! definitions that `map/default.map` names, finds the first terrain database
-//! category with that name without regard to ASCII case, and shows that
-//! category's localised name. No recorded row is read: the recording's content
-//! stack decides, so a mod's map and terrain database apply.
 use dashboard_base::{
     catalogue,
     products::{MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings},
@@ -34,7 +27,7 @@ pub struct LandBattleTerrainParams {
 #[serde(rename_all = "camelCase")]
 pub struct LandTerrainName {
     pub province_id: u32,
-    /// The terrain title the combat window shows; null when it cannot be resolved.
+    #[doc = " The terrain title the combat window shows; null when it cannot be resolved."]
     pub name: Option<String>,
     pub missing: Option<String>,
 }
@@ -50,7 +43,6 @@ impl ReplyWarnings for LandBattleTerrainReply {
     }
 }
 
-/// One content stack's province terrain names and terrain database categories.
 pub struct Terrains {
     provinces: BTreeMap<u32, Vec<u8>>,
     categories: Vec<Vec<u8>>,
@@ -69,7 +61,6 @@ impl Terrains {
                 .collect(),
         })
     }
-    /// The province's terrain category name, as the database authored it.
     pub fn category(&self, province: u32) -> Result<&[u8], String> {
         let name = self
             .provinces
@@ -86,7 +77,6 @@ impl Terrains {
                 )
             })
     }
-    /// Every distinct terrain name the provinces use, for the offline check.
     pub fn used(&self) -> impl Iterator<Item = (u32, &[u8])> {
         let mut seen = std::collections::BTreeSet::new();
         self.provinces
@@ -96,7 +86,6 @@ impl Terrains {
     }
 }
 
-/// Offline check: the reason each distinct terrain the content map uses has no title.
 pub fn check_content(cat: &Catalogue) -> io::Result<Vec<String>> {
     let terrains = Terrains::read(&cat.content.layers)?;
     Ok(terrains
@@ -110,7 +99,6 @@ pub fn check_content(cat: &Catalogue) -> io::Result<Vec<String>> {
         .collect())
 }
 
-/// The category's localised title; a missing key stays unavailable, never shown as its key.
 pub fn title(cat: &Catalogue, category: &[u8]) -> Result<String, String> {
     let key = String::from_utf8_lossy(category);
     if !cat.has_presentation_key(&key) {

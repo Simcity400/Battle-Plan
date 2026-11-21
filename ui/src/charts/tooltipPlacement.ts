@@ -1,5 +1,3 @@
-/** Where a tooltip goes: beside the pointer, flipped to the other side when it would
- * leave the window and clamped so it is never cut off. */
 export function placeTooltip(anchor: { x: number; y: number }, size: { width: number; height: number },
   viewport: { width: number; height: number }, offset = 14, margin = 8): { x: number; y: number } {
   let x = anchor.x + offset;

@@ -124,7 +124,6 @@ mod tests {
 
     #[test]
     fn incomplete_weather_names_its_unknown_snow_and_mud_in_the_status_line() {
-        // The status line is the only place the gap is worded; ordinary viewing hatches it.
         let whole = Summary {
             complete: true,
             ..Summary::default()
@@ -145,23 +144,14 @@ mod tests {
     }
 }
 
-/// One hour's `SnowMudData` payload.
 #[derive(Clone, Debug)]
 pub struct SnowMud {
     pub width: u32,
     pub height: u32,
-    /// `width * height` RGBA8 texels, row 0 at world `z = 0`. A cell is the mud, snow, snow and
-    /// mud it draws, so it reads the same backwards: its planes are its bytes, whichever maker
-    /// wrote it.
     pub texels: Paged<u8>,
-    /// One byte per cell in texel order: 1 where the hour's observation leaves the cell's snow
-    /// and mud unknown, so its texels hold no observed value; else 0.
     pub unknown: Paged<u8>,
-    /// Raw winter-grading snow words by province; absent rows remain unknown.
     pub province_snow: Paged<Option<i64>>,
-    /// Content-ordered winter factors, including unknown representatives.
     pub post_factors: Option<winter::SnowFactors>,
-    /// Wall time of the rasterisation, for reporting.
     pub build: Duration,
     pub summary: Summary,
     pub refresh: Option<Refresh>,
@@ -173,21 +163,13 @@ pub struct Refresh {
     pub identity: u64,
 }
 
-/// What the hour's weather table held, for the status line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
-    /// Recorded `WeatherProvinces` rows.
     pub provinces: usize,
-    /// Whether the table is whole. Otherwise the cells of the provinces it does not hold are
-    /// unknown ([`SnowMud::unknown`]), hatched over the ground their zero bytes draw.
     pub complete: bool,
-    /// Rows whose native snow word is above zero.
     pub with_snow: usize,
-    /// Rows with a nonzero snow display byte.
     pub shown_snow: usize,
-    /// Rows with a nonzero mud display byte.
     pub shown_mud: usize,
-    /// Retained native edge cells unavailable in this sample.
     pub missing_edges: usize,
 }
 
@@ -201,8 +183,6 @@ product_codec::product! {
 }
 
 impl Summary {
-    /// One line for the status bar and the headless dump. Ordinary viewing shows no notice
-    /// over the map: the scene hatches the cells this line calls incomplete or unavailable.
     pub fn line(&self) -> String {
         format!(
             "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}",

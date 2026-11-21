@@ -29,23 +29,18 @@ const hour: EquipmentStockpileReply = {
 
 test('an hour’s values join the catalogue: its variants, reads and peaks, with any variant it names first', () => {
   assert.equal(validateStockpileCatalogue(catalogue), catalogue);
-  // Eleven variants at the 64-bit maximum peak past twenty digits, which a group's peak may.
   const peaked = { ...catalogue, choices: { '["type","infantry_equipment"]': { raw: '101457092405402533877', stockDrawable: true, shareDrawable: false } } };
   assert.equal(validateStockpileCatalogue(peaked), peaked);
   assert.throws(() => validateStockpileCatalogue({ ...catalogue, choices: { x: { raw: '-1', stockDrawable: true, shareDrawable: false } } }));
   const view = stockpileView(catalogue, hour, 120);
   assert.deepEqual(view.variants.map(variant => [variant.id, variant.stock.length]), [['10', 1], ['20', 0], ['30', 1]]);
-  // The catalogue names a variant over the whole branch; the hour's reply adds its values.
   assert.equal(view.variants[0].names[0].name, 'Rifle');
-  // The hour's values keep the reads that supply them; the catalogue's reads are for stepping through.
   assert.deepEqual(view.reads, [100]);
   assert.deepEqual(view.warnings, ['catalogue', 'hour']);
   assert.deepEqual(view.prepared, { hour: 120, reads: [100, 124], logisticsReads: [100], stockRecorded: true, linesRecorded: true,
     balanceRecorded: true, aiRecorded: false, nonzeroLogistics: ['infantry_equipment'], choices: catalogue.choices, designs: { 10: ['design-a'], 20: [] } });
-  // A variant of unknown type the hour holds leaves its arm's total unknown, never partial.
   const land = stockGroups(view, 'domain', 120).find(group => group.key === 'land')!;
   assert.equal(stockAt(view, land, 120), null);
-  // Without the hour's reply nothing is known at it.
   assert.equal(stockAt(stockpileView(catalogue, undefined, 120), land, 120), null);
 });
 
@@ -61,7 +56,6 @@ test('an alias history reads each hour from the tag it held then', () => {
 test('a reply held while the next hour loads is shown at its own hour, never read as the next', () => {
   const held = stockpileView(catalogue, hour, 120);
   const rifles = stockGroups(held, 'variant', 120)[0];
-  // Playback asks 121; the shown reply still answers 120, whose figures stay known there.
   assert.equal(servedHour(held, 121), 120);
   assert.equal(stockAt(held, rifles, servedHour(held, 121)), 30n);
   assert.equal(stockAt(held, rifles, 121), null);

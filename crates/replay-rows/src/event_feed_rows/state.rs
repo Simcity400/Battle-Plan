@@ -1,5 +1,3 @@
-//! Demand-driven retained script state reduced from the existing event feed.
-//! Baselines prove membership at attachment; they never create past fires.
 use super::decisions::{ALL, CLEAR_ALL_CANDIDATES, Operation};
 use super::*;
 use std::{
@@ -23,26 +21,18 @@ pub struct PendingEvent {
     pub definition: ScriptIdentity,
     pub originator: EventFeedCountry,
     pub due_hour: i32,
-    /// Binding IDs are local to this graph, preserving shared/self links.
     pub scopes: Vec<EventFeedScope>,
 }
 
-/// The parts of the retained state the last observed row may have changed, so an observer
-/// of changes visits those alone.
 #[derive(Debug, Default)]
 pub struct Touched {
-    /// Any part may have changed: a new generation, a gap, a loss or a refusal.
     pub all: bool,
     pub pending: bool,
     pub fired: bool,
-    /// Delayed-event owners, by [`ScriptEventState::delayed_owner`] key.
     pub delayed: std::collections::BTreeSet<(u32, u32)>,
-    /// Decision owners, by [`ScriptEventState::decision_owner`] key.
     pub decisions: std::collections::BTreeSet<(u32, u32)>,
 }
 
-/// A part's version: what the part holds, but its countdowns and its availability, changes
-/// only with it, and the state never gives one twice. 0 is a change not yet stamped.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Version(u64);
 impl Version {
@@ -60,8 +50,6 @@ impl Version {
     }
 }
 
-/// What a reduction reads of a pack besides its changes, with what is shown of its coverage: its
-/// world, read hour and coverage, and the sequences of its first and last occurrences.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PackHeader {
@@ -71,7 +59,6 @@ pub struct PackHeader {
     pub outstanding: u64,
     pub failure: Option<Vec<u8>>,
     pub script_refusals: u8,
-    /// The sequences of its first and last occurrences.
     pub sequences: Option<(u64, u64)>,
 }
 impl PackHeader {
@@ -111,7 +98,6 @@ fn sequences(row: &EventFeedHistoryRow) -> Option<(u64, u64)> {
         .map(|(first, last)| (first.sequence, last.sequence))
 }
 
-/// What a reduction reads of a pack besides its changes ([`PackHeader`]).
 #[derive(Clone, Copy)]
 struct Reading {
     generation: u64,
@@ -134,8 +120,6 @@ impl Reading {
     }
 }
 
-/// A retained-state change as a reduction reads it: its occurrence, the arenas its spans index,
-/// and its sequence.
 #[derive(Clone, Copy)]
 pub struct Change<'a> {
     pub sequence: u64,
@@ -144,7 +128,6 @@ pub struct Change<'a> {
     scopes: &'a [EventFeedScope],
 }
 impl<'a> Change<'a> {
-    /// Occurrence `event` of `row`.
     pub fn of(row: &'a EventFeedHistoryRow, event: &'a EventFeedEvent) -> Self {
         Self {
             sequence: event.sequence,
@@ -153,12 +136,10 @@ impl<'a> Change<'a> {
             scopes: &row.script_scopes,
         }
     }
-    /// The token `script`'s span names.
     pub fn token(&self, script: EventFeedScript) -> &'a [u8] {
         let start = script.token_start as usize;
         &self.tokens[start..start + script.token_len as usize]
     }
-    /// The scopes `script`'s span names.
     pub fn scopes(&self, script: EventFeedScript) -> &'a [EventFeedScope] {
         let start = script.scope_start as usize;
         &self.scopes[start..start + script.scope_len as usize]
@@ -173,14 +154,11 @@ impl<'a> Change<'a> {
     }
 }
 
-/// A retained-state change but for its sequence and hour, with its own token and scopes: what
-/// recurs from read to read, held once by its walk ([`Payloads`]).
 #[derive(Debug)]
 pub struct Payload {
     event: EventFeedEvent,
     token: Token,
     scopes: Box<[EventFeedScope]>,
-    /// Its place among its walk's payloads.
     id: u32,
 }
 impl PartialEq for Payload {
@@ -198,7 +176,6 @@ impl Payload {
             scopes: &self.scopes,
         }
     }
-    /// Whether it is the payload of `occurrence`, as [`Payloads::intern`] would make it.
     fn holds(&self, occurrence: Change<'_>) -> bool {
         let (held, event) = (&self.event, occurrence.event);
         held.source == event.source
@@ -220,11 +197,8 @@ impl Payload {
     }
 }
 
-/// The longest token a payload holds in place.
 const SHORT: usize = 63;
 
-/// A change's token as its payload holds it: in place when it fits, so finding the payload
-/// reads no other allocation.
 #[derive(Debug, PartialEq, Eq)]
 enum Token {
     Short(u8, [u8; SHORT]),
@@ -250,7 +224,6 @@ impl Token {
 }
 impl Hash for Payload {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Equal payloads hash alike: these words and the token are what tells roster changes apart.
         let event = &self.event;
         state.write_u64(u64::from(event.actor.id) << 32 | u64::from(event.target.reference));
         state.write_u64(u64::from(event.target.id) << 32 | event.source as u64);
@@ -267,7 +240,6 @@ impl Hash for Payload {
                         | u64::from(change.container) << 8
                         | change.operation as u64,
                 );
-                // A rebuild's balance tells one owner's rebuilds apart.
                 state.write_u64(
                     change
                         .political_power
@@ -279,7 +251,6 @@ impl Hash for Payload {
     }
 }
 
-/// A walk's own hash of its payloads and targets, which are its keys.
 #[derive(Default)]
 struct Mixed(u64);
 impl Hasher for Mixed {
@@ -301,23 +272,17 @@ impl Hasher for Mixed {
     }
 }
 
-/// The payloads a walk's packs planned so far, each held once.
 #[derive(Default)]
 pub struct Payloads {
     held: HashSet<Arc<Payload>, BuildHasherDefault<Mixed>>,
-    /// Every payload by id, with the id of the one that followed it last.
     all: Vec<(Arc<Payload>, u32)>,
-    /// The id of the payload last interned.
     last: Option<u32>,
 }
 impl Payloads {
-    /// The id of the walk's payload of `occurrence`, and that payload with the bytes it adds when
-    /// the walk held none like it.
     fn intern(
         &mut self,
         occurrence: Change<'_>,
     ) -> io::Result<(u32, Option<(Arc<Payload>, usize)>)> {
-        // Changes recur in the order they came: the last one's successor is tried first.
         if let Some(last) = self.last {
             let next = self.all[last as usize].1;
             if let Some((payload, _)) = self.all.get(next as usize)
@@ -334,7 +299,6 @@ impl Payloads {
         self.last = Some(id);
         Ok((id, added))
     }
-    /// Forgets the payloads from id `count` on, which a pack that failed to plan introduced.
     fn truncate(&mut self, count: usize) {
         for (payload, _) in self.all.drain(count.min(self.all.len())..) {
             self.held.remove(&payload);
@@ -384,15 +348,9 @@ impl Payloads {
     }
 }
 
-/// The payloads of a walk's prepared packs by id, as the reduction of those packs holds them: a
-/// pack names its changes' payloads by id ([`PreparedHistory`]), so its walk and its reduction
-/// share no count of them, and each pack brings those it introduced.
 #[derive(Default)]
 pub struct HeldPayloads(Vec<Arc<Payload>>);
 impl HeldPayloads {
-    /// Takes in the payloads `prepared` introduced, which follow those of its walk's earlier
-    /// packs; a walk's first pack begins anew. Every prepared pack of a walk is admitted, in
-    /// order, whether or not it is reduced.
     pub fn admit(&mut self, prepared: &PreparedHistory) -> io::Result<()> {
         if prepared.first == 0 {
             self.0.clear();
@@ -407,17 +365,11 @@ impl HeldPayloads {
     }
 }
 
-/// An event pack validated and planned once, for a reduction that need not validate it again:
-/// its [`PackHeader`], and of its occurrences only its retained-state changes, each with the
-/// work its reduction leaves out ([`Plan`]) and the id of its payload as its walk holds it.
 pub struct PreparedHistory {
     header: PackHeader,
     steps: Vec<(Step, u64, u32)>,
-    /// How many payloads its walk held before it, and those it was the first to hold, which
-    /// follow them by id.
     first: u32,
     introduced: Vec<Arc<Payload>>,
-    /// The bytes those add.
     added: usize,
 }
 impl PreparedHistory {
@@ -425,8 +377,6 @@ impl PreparedHistory {
         row.validate()?;
         Self::planned(row, Plan::of(row, None), &mut Payloads::default())
     }
-    /// [`Self::new`] of a walk's next pack, knowing what the walk's earlier packs wrote and the
-    /// payloads it holds.
     pub fn following(
         row: &EventFeedHistoryRow,
         walk: &mut Written,
@@ -435,10 +385,6 @@ impl PreparedHistory {
         row.validate()?;
         Self::decoded(row, walk, payloads)
     }
-    /// [`Self::following`] of a pack as its decoding left it ([`RowCodec::decode_fields`],
-    /// [`Value::decode`]), which validates it.
-    ///
-    /// [`RowCodec::decode_fields`]: crate::rows::RowCodec::decode_fields
     pub fn decoded(
         row: &EventFeedHistoryRow,
         walk: &mut Written,
@@ -478,8 +424,6 @@ impl PreparedHistory {
     pub fn header(&self) -> &PackHeader {
         &self.header
     }
-    /// The bytes it owns on the heap: its steps', its refusal text's, and those of the payloads
-    /// it was its walk's first to hold.
     pub fn heap_bytes(&self) -> usize {
         self.steps.capacity() * size_of::<(Step, u64, u32)>()
             + self.header.failure.as_ref().map_or(0, Vec::capacity)
@@ -488,13 +432,11 @@ impl PreparedHistory {
     }
 }
 
-/// A prepared pack with the payloads its ids name.
 struct Admitted<'a> {
     prepared: &'a PreparedHistory,
     payloads: &'a [Arc<Payload>],
 }
 impl<'a> Admitted<'a> {
-    /// `prepared`, the pack `held` admitted last.
     fn of(prepared: &'a PreparedHistory, held: &'a HeldPayloads) -> io::Result<Self> {
         if prepared.first as usize + prepared.introduced.len() != held.0.len() {
             return Err(invalid(
@@ -508,10 +450,8 @@ impl<'a> Admitted<'a> {
     }
 }
 
-/// A pack's retained-state changes in plan order, as a reduction reads them.
 trait Planned {
     fn len(&self) -> usize;
-    /// The plan's `at`th step and its change.
     fn step(&self, at: usize) -> (Step, Change<'_>);
 }
 struct RowPlan<'a> {
@@ -540,19 +480,14 @@ impl Planned for Admitted<'_> {
     }
 }
 
-/// The decision owners' target countries a walk's packs wrote since it began, each with the
-/// pack that last wrote it. They hold while every one of those packs was reduced to its end.
 #[derive(Clone, Default)]
 pub struct Written {
     generation: Option<u64>,
     packs: u64,
-    /// By owner, each target reference's country and the pack that wrote it.
     targets: Keyed<Keyed<(EventFeedCountry, u64)>>,
 }
 type Keyed<T> = HashMap<u32, T, BuildHasherDefault<Mixed>>;
 
-/// A pack's retained-state changes in order, each with the work its reduction leaves out
-/// because the pack, or the walk before it, already shows that work's effect.
 #[derive(Default)]
 struct Plan {
     steps: Vec<Step>,
@@ -561,18 +496,12 @@ struct Plan {
 struct Step {
     event: u32,
     flags: u8,
-    /// The event whose clear or baseline cancels this candidate change ([`CANCELLED`]).
     cancelled: u32,
 }
-/// The change writes a target country.
 const TARGETED: u8 = 1;
-/// An earlier change of the pack wrote the same target country for the same owner.
 const REWRITE: u8 = 2;
-/// An earlier pack of the walk wrote it.
 const WRITTEN: u8 = 4;
-/// A candidate change a later clear or baseline of the same owner in the pack cancels.
 const CANCELLED: u8 = 8;
-/// A candidate change whose owner country and touch an earlier change of the pack made.
 const QUIET: u8 = 16;
 
 impl Plan {
@@ -586,7 +515,6 @@ impl Plan {
         walk.packs += 1;
         let pack = walk.packs;
         let mut steps = Vec::with_capacity(row.events.len());
-        // Each decision owner so far: its last change's actor, and whether it is touched.
         let mut owners: Keyed<(EventFeedCountry, bool)> = Keyed::default();
         for (index, event) in row.events.iter().enumerate() {
             let Some(script) = event.script else {
@@ -626,7 +554,6 @@ impl Plan {
                         }
                     }
                 }
-                // A baseline makes its owner anew, after its own target write.
                 if decision.operation == Operation::Baseline
                     && !script.token_unrecorded
                     && let Some(targets) = walk.targets.get_mut(&id)
@@ -640,7 +567,6 @@ impl Plan {
                 cancelled: 0,
             });
         }
-        // Walked back, each owner's nearest later clear of every kind and of each kind.
         let mut clears: Keyed<(Option<u32>, [Option<u32>; 4])> = Keyed::default();
         for step in steps.iter_mut().rev() {
             let event = &row.events[step.event as usize];
@@ -663,7 +589,6 @@ impl Plan {
                 *every = Some(step.event);
                 continue;
             }
-            // Validation keeps candidate kinds below four.
             let kind = decision.container as usize;
             if decision.flags & ALL != 0 {
                 kinds[kind] = Some(step.event);
@@ -676,12 +601,9 @@ impl Plan {
     }
 }
 
-/// The decision owner a run of a pack's changes reduces.
 struct Run<'a> {
     key: (u32, u32),
-    /// The run made the owner, and has not reduced a change of it yet.
     made: bool,
-    /// The run touched it.
     touched: bool,
     owner: &'a mut super::decisions::DecisionState,
 }
@@ -709,36 +631,28 @@ pub struct ScriptEventState {
     pending_version: Version,
     #[serde(skip)]
     fired_version: Version,
-    /// The last version given.
     #[serde(skip)]
     clock: u64,
 }
 impl ScriptEventState {
-    /// What the last observed row may have changed.
     pub fn touched(&self) -> &Touched {
         &self.touched
     }
-    /// The pending instances' version: they hold the same, but their availability, while it
-    /// stays the same.
     pub fn pending_version(&self) -> Option<u64> {
         self.pending_version.get()
     }
-    /// The fired set's version, as [`Self::pending_version`].
     pub fn fired_version(&self) -> Option<u64> {
         self.fired_version.get()
     }
-    /// Each decision owner's key, in order.
     pub fn decision_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.decisions.keys().copied()
     }
     pub fn decision_owner(&self, key: (u32, u32)) -> Option<&super::decisions::DecisionState> {
         self.decisions.get(&key)
     }
-    /// Each delayed-event owner's key, in order.
     pub fn delayed_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.delayed.keys().copied()
     }
-    /// The owner, its version (as [`Self::pending_version`], countdowns aside) and its timers.
     pub fn delayed_owner(
         &self,
         key: (u32, u32),
@@ -786,8 +700,6 @@ impl ScriptEventState {
             .then_some(self.pending.as_slice())
             .ok_or("pending event registry has no complete baseline and writer coverage")
     }
-    /// Native membership retains duplicates; callers may sort for set display
-    /// without inventing an occurrence time for pre-attachment members.
     pub fn fired(&self) -> Result<&[ScriptIdentity], &'static str> {
         self.fired_ready
             .then_some(self.fired.as_slice())
@@ -799,8 +711,6 @@ impl ScriptEventState {
     pub fn observe(&mut self, row: &EventFeedHistoryRow) -> io::Result<()> {
         self.observe_decisions(row, |_, _| Ok(()))
     }
-    /// Visit each decision boundary after reducing its preceding changes; a candidate change
-    /// that leaves its owner as the change before it left it is no boundary.
     pub fn observe_decisions(
         &mut self,
         row: &EventFeedHistoryRow,
@@ -815,9 +725,6 @@ impl ScriptEventState {
             &mut visit,
         )
     }
-    /// [`Self::observe_decisions`] of a pack validated when it was prepared, the pack `held`
-    /// admitted last. `sure`: every earlier pack of its walk was reduced to its end, so what they
-    /// wrote holds.
     pub fn observe_prepared(
         &mut self,
         prepared: &PreparedHistory,
@@ -858,15 +765,12 @@ impl ScriptEventState {
                 owner.gap();
             }
         }
-        // A loss known on this row already makes the retained queues stale;
-        // its deltas must not meet them before the row's own baselines.
         if row.coverage != EventFeedCoverage::Complete || row.failed {
             self.touched.all = true;
             for owner in self.delayed.values_mut() {
                 owner.gap();
             }
         }
-        // Validation keeps a pack's occurrences in order: only its first can repeat one seen.
         if let Some((first, _)) = row.sequences
             && self.sequence.is_some_and(|last| first <= last)
         {
@@ -920,8 +824,6 @@ impl ScriptEventState {
         self.stamp();
         Ok(())
     }
-    /// The plan's steps in order, changes of the read at `read_hour`, or the event a failing one
-    /// stopped at and its sequence.
     fn steps(
         &mut self,
         read_hour: i32,
@@ -981,8 +883,6 @@ impl ScriptEventState {
                     run.owner
                         .apply(read_hour, occurrence, script, change, write, cancelled)
                         .map_err(fail)?;
-                    // A rebuild's roster is its own occurrence: it changes the retained state
-                    // only when it makes, renames or loses its owner.
                     if !run.touched
                         && (change.operation != Operation::Rebuild
                             || before != Some((run.owner.country, run.owner.complete())))
@@ -1033,7 +933,6 @@ impl ScriptEventState {
                     if let Some(index) =
                         self.pending.iter().position(|row| row.instance == instance)
                     {
-                        // Both native removal writers replace with the last entry.
                         self.pending.swap_remove(index);
                         self.pending_version.change();
                     } else if self.pending_ready {
@@ -1066,8 +965,6 @@ impl ScriptEventState {
                     }
                     let removed = occurrence.identity(script).map_err(fail)?;
                     if let Some(index) = self.fired.iter().position(|member| *member == removed) {
-                        // Native replacement erases one matched definition, not every
-                        // equal identity. Initial duplicates retain multiplicity.
                         self.fired.remove(index);
                         self.fired_version.change();
                     } else if self.fired_ready {
@@ -1107,8 +1004,6 @@ impl ScriptEventState {
         }
         Ok(())
     }
-    /// The candidate changes the plan left to a clear or baseline of the pack that the
-    /// reduction, stopping at `at`, never reached.
     fn restore_cancelled(&mut self, plan: &impl Planned, at: usize) {
         for index in 0..plan.len() {
             let (step, occurrence) = plan.step(index);
@@ -1132,7 +1027,6 @@ impl ScriptEventState {
             }
         }
     }
-    /// Gives each part the row may have changed a version of its own.
     fn stamp(&mut self) {
         let clock = &mut self.clock;
         self.pending_version.stamp(clock);
@@ -1158,7 +1052,6 @@ impl ScriptEventState {
         }
     }
 }
-// Continuations retain the first raw witness; only the published link identifies its owner.
 fn owner_key<T>(owners: &BTreeMap<(u32, u32), T>, country: EventFeedCountry) -> (u32, u32) {
     owners
         .range((country.id, 0)..=(country.id, u32::MAX))
@@ -1182,7 +1075,6 @@ mod tests {
     use super::super::decisions::{DecisionChange, Operation};
     use super::*;
     use EventFeedScriptChange::*;
-    /// Owner refusals carry this reason after the shared definition token.
     const REASON: &[u8] = b"synthetic owner refusal";
     fn refusal(change: &EventFeedScriptChange) -> bool {
         matches!(
@@ -1638,8 +1530,6 @@ mod tests {
                 ],
             ))
             .unwrap();
-        // Fire the first timer; its immediate effects append another timer.
-        // Swap-removal visits the newly appended timer in this same pass.
         state
             .observe(&row(
                 2,
@@ -1836,9 +1726,6 @@ mod tests {
             Some(definition),
         )
     }
-    /// Every row also passes through the value codec, the table field codec
-    /// and a table patch against its predecessor; all four reductions keep
-    /// the same state and readiness.
     #[derive(Default)]
     struct Reductions([ScriptEventState; 4], Option<EventFeedHistoryRow>);
     impl Reductions {
@@ -1888,8 +1775,6 @@ mod tests {
     #[test]
     fn delayed_writer_deltas_without_a_baseline_keep_their_owner_unavailable() {
         let mut state = Reductions::default();
-        // Partial startup: a store, then an orphan pass and retirements,
-        // before the owner's first census.
         state
             .observe(&lost(
                 row(1, 0, &[store(360, 1, 31)]),
@@ -1908,23 +1793,17 @@ mod tests {
             .observe(&row(3, 4, &[retire(4, false, false)]))
             .unwrap();
         assert!(state.timers().is_err());
-        // A loss between rows, then a different timer under a reused label
-        // in a Complete interval: no uncertified timer is kept to collide.
         state.observe(&row(5, 5, &[store(1, 1, 20)])).unwrap();
-        // The same on a row that itself records the loss.
         state
             .observe(&lost(
                 row(6, 6, &[store(5, 1, 21)]),
                 EventFeedCoverage::Unavailable,
             ))
             .unwrap();
-        // Complete transport alone restores nothing.
         for hour in 7..9 {
             state.observe(&row(hour, 7 + hour as u64, &[])).unwrap();
             assert!(state.timers().is_err());
         }
-        // A native queue reset opens a baseline; a loss interrupts it, so its
-        // timers must not meet later stores either.
         state
             .observe(&row(
                 9,
@@ -1941,7 +1820,6 @@ mod tests {
             .unwrap();
         state.observe(&row(11, 23, &[store(8, 2, 23)])).unwrap();
         assert!(state.timers().is_err());
-        // The explicit census baseline restores exact ordered state.
         state
             .observe(&row(
                 12,
@@ -1974,8 +1852,6 @@ mod tests {
         };
         state.observe(&baseline(1, 0)).unwrap();
         assert_eq!(state.timers().unwrap(), [(1, 40, 10)]);
-        // A loss-qualified row neither certifies its deltas nor checks them
-        // against the queue it has already made stale.
         for (hour, coverage) in [
             (2, EventFeedCoverage::Partial),
             (3, EventFeedCoverage::Unavailable),
@@ -1997,12 +1873,10 @@ mod tests {
         failed.failure = Some(b"synthetic writer refusal".to_vec());
         state.observe(&failed).unwrap();
         assert!(state.timers().is_err());
-        // A baseline inside an Unavailable interval cannot certify it.
         state
             .observe(&lost(baseline(6, 60), EventFeedCoverage::Unavailable))
             .unwrap();
         assert!(state.timers().is_err());
-        // A Partial interval's own baseline does, as before.
         state
             .observe(&lost(baseline(7, 70), EventFeedCoverage::Partial))
             .unwrap();
@@ -2010,7 +1884,6 @@ mod tests {
         state
             .observe(&lost(row(8, 80, &[]), EventFeedCoverage::Unavailable))
             .unwrap();
-        // So does an empty certificate, after which writer deltas apply.
         state
             .observe(&row(9, 90, &[(DelayedEmpty, None, None), store(2, 1, 42)]))
             .unwrap();
@@ -2040,8 +1913,6 @@ mod tests {
             event.script.as_mut().unwrap().scope_start = n as u32;
         }
         state.observe(&baseline).unwrap();
-        // The middle timer fires: the swapped tail is revisited in the same
-        // pass, and the first timer's countdown wraps.
         state
             .observe(&row(
                 2,
@@ -2057,8 +1928,6 @@ mod tests {
             .map(|timer| timer.scopes[0].random)
             .collect::<Vec<_>>();
         assert_eq!(scopes, [[0, 10], [2, 12]]);
-        // Within one certified queue a repeated label stays corrupt, whether
-        // it reaches a carried queue or one baseline.
         assert!(state.0[0].observe(&row(3, 8, &[store(4, 3, 90)])).is_err());
         assert!(
             ScriptEventState::default()
@@ -2123,8 +1992,6 @@ mod tests {
     fn decision(operation: Operation) -> Change {
         (Decision(DecisionChange::new(operation, 0)), None, None)
     }
-    /// `row` with each occurrence's owner chosen: a delayed change's target,
-    /// a decision change's actor. Registry changes ignore it.
     fn owned(hour: i32, first: u64, changes: &[(u32, Change)]) -> EventFeedHistoryRow {
         let plain: Vec<_> = changes.iter().map(|(_, change)| *change).collect();
         let mut row = row(hour, first, &plain);
@@ -2188,8 +2055,6 @@ mod tests {
             );
         };
         others(&state, &[(2, 41, 20)]);
-        // A Complete row refuses A alone. A's later writer is not checked
-        // against the retired queue; B's pass still applies.
         let refused = owned(
             2,
             13,
@@ -2203,7 +2068,6 @@ mod tests {
         state.observe(&refused).unwrap();
         assert!(state.timers_of(owner(a)).is_err());
         others(&state, &[(2, 41, 19)]);
-        // A's next baseline restores it.
         state
             .observe(&owned(
                 3,
@@ -2217,7 +2081,6 @@ mod tests {
             .unwrap();
         assert_eq!(state.timers_of(owner(a)).unwrap(), [(1, 40, 9)]);
         others(&state, &[(2, 41, 19)]);
-        // A refusal also closes an open baseline.
         assert!(
             state.0[0]
                 .observe(&owned(
@@ -2245,7 +2108,6 @@ mod tests {
                     (a, decision(Operation::Ready)),
                     (b, decision(Operation::Baseline)),
                     (b, decision(Operation::Ready)),
-                    // C's baseline stays open.
                     (c, decision(Operation::Baseline)),
                     (b, (DelayedEmpty, None, None)),
                     (0, (PendingBaseline, None, None)),
@@ -2282,7 +2144,6 @@ mod tests {
             .unwrap();
         assert!(state.0[0].decisions(owner(a)).is_ok());
         assert!(state.0[0].decisions(owner(b)).is_ok());
-        // C's refused baseline has nothing left to complete.
         assert!(
             state.0[0]
                 .observe(&owned(4, 12, &[(c, decision(Operation::Ready))]))
@@ -2338,8 +2199,6 @@ mod tests {
             );
         }
     }
-    /// Each row names the parts it may have changed: the delayed owner whose timers it
-    /// passed and no other, and every part after a gap or a new generation.
     #[test]
     fn rows_name_the_parts_they_may_have_changed() {
         let mut state = ScriptEventState::default();
@@ -2385,7 +2244,6 @@ mod tests {
         state.observe(&row(14, 4, &[])).unwrap();
         assert!(state.touched().all);
     }
-    /// A rebuild touches its owner only when it makes, renames or loses it.
     #[test]
     fn rebuilds_touch_only_the_owners_they_make_rename_or_lose() {
         let mut state = ScriptEventState::default();
@@ -2430,8 +2288,6 @@ mod tests {
             [(24, 0)]
         );
     }
-    /// A part's version moves with what it holds, never with its countdowns alone, and no
-    /// part of a later generation takes an earlier part's version.
     #[test]
     fn versions_move_with_what_a_part_holds_and_never_repeat() {
         let version = |state: &ScriptEventState| {
@@ -2459,7 +2315,6 @@ mod tests {
         state.observe(&row(3, 4, &[store(5, 2, 91)])).unwrap();
         let stored = version(&state);
         assert_ne!(stored, first);
-        // A gap retires the timers; a later loss finds nothing left to change.
         state.observe(&row(5, 5, &[])).unwrap();
         let gapped = version(&state);
         assert_ne!(gapped, stored);
@@ -2477,7 +2332,6 @@ mod tests {
     }
 }
 
-// JSON continuations encode tuple-keyed owner maps as ordered pairs.
 mod owner_pairs {
     use super::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

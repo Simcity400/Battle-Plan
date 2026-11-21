@@ -1,5 +1,4 @@
 
-/** A part's total as of one change: `[hour, readHour, totalRaw]`, the native application hour, the supplying read hour and the exact total. */
 type LedgerPoint = MilitaryAirPart['points'][number];
 import { countryFromKey, isSlotKey } from './countryKey.ts';
 import { clipToSpans, isOrderedSpans, runAt } from '../charts/series.ts';
@@ -16,25 +15,19 @@ import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
 import type { SunburstText } from '../charts/sunburst/layout';
 
-/** Consecutive windows joined: each part's totals carried from the first, its holders' memberships laid end to end.
- * `countedFrom` absent: the first observed hour; `openings` absent: nothing carried in, the count starts with it. */
 export type MilitaryAirLedger = Omit<MilitaryAirReply, 'window' | 'notes' | 'countedFrom' | 'openings'>
   & { countedFrom?: number | null; openings?: MilitaryAirOpening[] };
 
 const signed128 = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);
-// Below 39 characters a decimal is under 10^38 < 2^127, so only longer text is parsed.
 const exact128 = (value: unknown): value is string => typeof value === 'string' && /^(?:0|-?[1-9]\d*)$/.test(value)
   && (value.length < 39 || signed128(BigInt(value)));
 const optional = <T>(value: unknown, valid: (value: unknown) => value is T): value is T | null => value === null || valid(value);
 const text = (value: unknown): value is string => typeof value === 'string';
 const bool = (value: unknown): value is boolean => typeof value === 'boolean';
-/** Whether ordered, disjoint `spans` hold all of `span` in one of them. */
 const within = (span: Span, spans: readonly Span[]) => (runAt(spans, span.firstHour)?.lastHour ?? -Infinity) >= span.lastHour;
 
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 
-/** What `value` carries in before its hours, keyed once each; of air losses each says whether the opponents were
- * recorded, of bombing none does. */
 function isOpenings(value: unknown, family: unknown): value is MilitaryAirOpening[] {
   if (!Array.isArray(value)) return false;
   const keys = new Set<string>();
@@ -48,8 +41,6 @@ function isOpenings(value: unknown, family: unknown): value is MilitaryAirOpenin
   return true;
 }
 
-/** Both families preserve the same exact prefix, date, endpoint and coverage rules; a window (`windowed`) names its index,
- * notes, the hour it counts from and what it carries in, and past the timeline holds nothing. */
 function isMilitaryAirReply(value: unknown, windowed = false): value is MilitaryAirLedger {
   if (!object(value) || !['airLosses', 'bombing'].includes(String(value.family)) || !signed32(value.firstHour) || !signed32(value.lastHour)
     || typeof value.available !== 'boolean' || !isOrderedSpans(value.observed) || !isOrderedSpans(value.incomplete)
@@ -60,11 +51,9 @@ function isMilitaryAirReply(value: unknown, windowed = false): value is Military
   if ((windowed || value.openings !== undefined) && !isOpenings(value.openings, value.family)) return false;
   if (value.firstHour > value.lastHour && !(windowed && !value.observed.length && !value.countries.length && !value.parts.length)) return false;
   const observed = value.observed, first = value.firstHour, lastHour = value.lastHour;
-  // The observed hours running on into the first may reach back to where they began, never before the first counted.
   const reachesBack = (span: Span, index: number) => index === 0 && span.lastHour >= first && typeof value.countedFrom === 'number' && span.firstHour >= value.countedFrom;
   if (observed.some((span, index) => (span.firstHour < first && !reachesBack(span, index)) || span.lastHour > lastHour) || value.available !== (observed.length > 0)
     || !value.incomplete.every(span => within(span, observed))) return false;
-  // Present spans by tag, then native identity.
   const countries = new Map<string, Map<string, Span[]>>();
   for (const country of value.countries) {
     if (!object(country) || !opaqueTag(country.tag) || !text(country.identity) || !country.identity || !isOrderedSpans(country.present)) return false;
@@ -82,8 +71,6 @@ function isMilitaryAirReply(value: unknown, windowed = false): value is Military
     if (!object(part) || !optional(part.tag, opaqueTag) || !optional(part.identity, text) || (part.tag === null) !== (part.identity === null)
       || typeof part.dealt !== 'boolean' || !optional(part.cause, unsigned32) || !optional(part.opponentKnown, bool) || !optional(part.buildingId, unsigned32)
       || !optional(part.buildingToken, text) || !optional(part.state, unsigned32) || !Array.isArray(part.points)) return false;
-    // Air losses keep each cause and whether its opponents were recorded; bombing keeps a cause
-    // only with the building and state a breakdown asked for.
     if (value.family === 'airLosses' ? part.cause === null || part.opponentKnown === null || part.buildingId !== null || part.buildingToken !== null || part.state !== null
       : part.opponentKnown !== null || (part.cause === null) !== (part.buildingId === null) || (part.buildingId === null) !== (part.state === null)) return false;
     const key = JSON.stringify([part.tag, part.identity, part.dealt, part.cause, part.opponentKnown, part.buildingId, part.buildingToken, part.state]);
@@ -112,33 +99,26 @@ function isMilitaryAirReply(value: unknown, windowed = false): value is Military
   return true;
 }
 
-/** The ledger its windows joined into, as the widgets read it. */
 export function validateMilitaryAirReply(value: unknown): MilitaryAirLedger {
   if (!isMilitaryAirReply(value)) throw new Error('Invalid military air ledger reply');
   return value;
 }
 
-/** One window of the ledger as the service sends it. */
 export function validateMilitaryAirWindow(value: unknown): MilitaryAirReply {
   if (!isMilitaryAirReply(value, true)) throw new Error('Invalid military air ledger reply');
   return value as unknown as MilitaryAirReply;
 }
 
 export interface LedgerTotal { readHour: number; nativeHour: number | null; dealt: bigint; taken: bigint }
-/** A holder's totals by read hour (the first, before the ledger's hours, what it carried in) and its parts and openings. */
 export interface LedgerSeries { country: MilitaryAirCountry; points: LedgerTotal[]; parts: MilitaryAirPart[]; openings: MilitaryAirOpening[] }
 export interface LedgerIndex { reply: MilitaryAirLedger; series: LedgerSeries[]; byTag: ReadonlyMap<string, LedgerSeries[]>; unknown: LedgerTotal[] }
 const sharedIndices = new WeakMap<MilitaryAirLedger, LedgerIndex>();
-/** Totals by holder identity (null: the unattributed) a join kept as it appended its windows, so an index of the ledger
- * it gives reads them rather than summing every point again. */
 const keptTotals = new WeakMap<MilitaryAirLedger, ReadonlyMap<string | null, LedgerTotal[]>>();
 
-/** `ledger`'s totals by holder identity, as its join kept them. */
 export function keepLedgerTotals(ledger: MilitaryAirLedger, totals: ReadonlyMap<string | null, LedgerTotal[]>) {
   keptTotals.set(ledger, totals);
 }
 
-/** What `openings` carry in for each holder identity (null: the unattributed), by side. */
 export function openingTotals(openings: readonly MilitaryAirOpening[] = []): Map<string | null, { dealt: bigint; taken: bigint }> {
   const out = new Map<string | null, { dealt: bigint; taken: bigint }>();
   for (const opening of openings) {
@@ -149,24 +129,18 @@ export function openingTotals(openings: readonly MilitaryAirOpening[] = []): Map
   return out;
 }
 
-/** `totals` after what was carried in before `firstHour`: a first total the hour before it, then each moved by it. */
 export function carriedTotals(totals: readonly LedgerTotal[], carried: { dealt: bigint; taken: bigint } | undefined, firstHour: number): LedgerTotal[] {
   if (!carried || carried.dealt === 0n && carried.taken === 0n) return totals as LedgerTotal[];
   return [{ readHour: firstHour - 1, nativeHour: null, ...carried },
     ...totals.map(total => ({ ...total, dealt: total.dealt + carried.dealt, taken: total.taken + carried.taken }))];
 }
 
-/** Accumulate exact per-read deltas once; playback then uses a binary search. Summed as
- * numbers while every total and sum is a safe integer, which gives what bigints give, and as
- * bigints otherwise. */
 export function ledgerTotals(parts: readonly MilitaryAirPart[]): LedgerTotal[] {
   return safeLedgerTotals(parts) ?? exactLedgerTotals(parts);
 }
 
-/** A total of at most fifteen digits, which a number holds exactly. */
 const SAFE_TOTAL = /^-?\d{1,15}$/;
 
-/** {@link ledgerTotals} in numbers, or null once a total or a sum is not a safe integer. */
 function safeLedgerTotals(parts: readonly MilitaryAirPart[]): LedgerTotal[] | null {
   const deltas = new Map<number, { dealt: number; taken: number; nativeHour: number }>();
   for (const part of parts) {
@@ -193,7 +167,6 @@ function safeLedgerTotals(parts: readonly MilitaryAirPart[]): LedgerTotal[] | nu
   return totals;
 }
 
-/** {@link ledgerTotals} in bigints, for totals or sums past a safe integer. */
 function exactLedgerTotals(parts: readonly MilitaryAirPart[]): LedgerTotal[] {
   const deltas = new Map<number, { dealt: bigint; taken: bigint; nativeHour: number }>();
   for (const part of parts) {
@@ -214,7 +187,6 @@ function exactLedgerTotals(parts: readonly MilitaryAirPart[]): LedgerTotal[] {
   });
 }
 
-/** The reply's parts by native holder; the server applied the widget's regions and causes. */
 export function militaryAirIndex(reply: MilitaryAirLedger): LedgerIndex {
   const shared = sharedIndices.get(reply);
   if (shared) return shared;
@@ -231,8 +203,6 @@ export function militaryAirIndex(reply: MilitaryAirLedger): LedgerIndex {
     kept?.get(identity) ?? (kept ? [] : carriedTotals(ledgerTotals(parts), carried!.get(identity), reply.firstHour));
   const byHolder = new Map<string, LedgerTotal[]>(), byTag = new Map<string, LedgerSeries[]>();
   const series = reply.countries.map(country => {
-    // All aliases of the same native holder share totals, while their dated
-    // presence and labels remain separate. A reused tag has a different holder.
     const parts = byCountry.get(country.identity) ?? [];
     let points = byHolder.get(country.identity);
     if (!points) { points = totalsOf(country.identity, parts); byHolder.set(country.identity, points); }
@@ -273,8 +243,6 @@ export function militaryAirAt(index: LedgerIndex, from: number, hour: number): L
   });
 }
 
-/** A chosen tag follows its recorded holder through later changes of tag. */
-/** Whether `country` is the one a [`countryKey`] names: its tag, or for a slot any holder of that slot (`slot:id`). */
 export function ledgerNames(key: string, country: Pick<MilitaryAirCountry, 'tag' | 'identity'>): boolean {
   const slot = countryFromKey(key);
   return typeof slot === 'number' ? country.identity.startsWith(`${slot}:`) : country.tag === key;
@@ -290,9 +258,6 @@ export function ledgerCountryAt(index: LedgerIndex, tag: string, from: number, h
   return rows.find(row => row.tag === tag) ?? rows[0] ?? null;
 }
 
-/** The tag a breakdown's header names at `hour`: the holder `row` shows when the tag names it alone (and is the pinned
- * selection's, if any); with no holder pinned and no row, the chosen tag itself, whose damage is only not recorded
- * there (before counting starts, or in a gap). None when a pinned holder has no row. */
 export function ledgerHeaderTag(index: LedgerIndex, row: LedgerRow | null, tag: string, hour: number, identity: string | undefined,
   selection: { tag: string; identity: string } | null): string | null {
   if (!row) return identity === undefined ? tag : null;
@@ -302,7 +267,6 @@ export function ledgerHeaderTag(index: LedgerIndex, row: LedgerRow | null, tag: 
   return pinned && index.byTag.get(row.tag)?.filter(series => runAt(series.country.present, hour)).length === 1 ? row.tag : null;
 }
 
-/** A pinned native holder belongs to this campaign, branch and selected tag. */
 export function ledgerPinnedIdentity(value: unknown, campaign: string, branch: string, tag: string): string | undefined {
   if (typeof value !== 'string') return undefined;
   try {
@@ -333,23 +297,19 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
 export const ledgerShare = (raw: bigint, total: bigint) => total === 0n ? '—' : `${formatFixed(raw * 1000n / total, 1, 1)}%`;
 export const ledgerScale = (family: MilitaryAirLedger['family']) => family === 'airLosses' ? 100_000 : 10_000_000;
 const ledgerDigits = (family: MilitaryAirLedger['family']) => family === 'airLosses' ? 5 : 7;
-/** The exact recorded amount, without trailing zeros; for tooltips and breakdowns. */
 export const ledgerFormat = (raw: bigint | null, family: MilitaryAirLedger['family']) => raw === null ? 'Not recorded'
   : formatAmount(raw, ledgerDigits(family), ledgerDigits(family));
-/** The amount as a chart label: at most two decimals, and never 0 when it is not. */
 export function ledgerLabel(raw: bigint | null, family: MilitaryAirLedger['family']): string {
   if (raw === null) return 'Not recorded';
   const text = formatAmount(raw, ledgerDigits(family));
   return text === '0' && raw !== 0n ? formatRate(raw, ledgerDigits(family)) : text;
 }
-/** The bombing breakdown's slices, centre and legend, as the ledger's labels write them. */
 export const BOMBING_SUNBURST_TEXT: SunburstText = { format: (_value, exact) => ledgerLabel(exact, 'bombing'), unit: 'building levels', valueLabel: 'Damage', countLabel: 'Locations' };
 export const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
 export const LEDGER_GAP_NOTE = 'Some losses may be missing.';
 export const BOMBING_GAP_NOTE = 'Some damage may be missing.';
 export const airCauseName = (cause: number) => ({ 1: 'Aircraft combat', 2: 'Anti-air / raid effect', 3: 'Air accidents', 4: 'Airbase bombing', 5: 'Train anti-air', 6: 'Kamikaze anti-air' } as Record<number, string>)[cause] ?? 'Other';
 
-/** Draw only complete, present intervals; prefix totals never create a bridge. */
 export function ledgerRuns(series: LedgerSeries, from: number, to: number, dealt: boolean, scale: number, membership: readonly Span[] | null = null): Run[] {
   const runs: Run[] = [];
   for (const span of series.country.present) {
@@ -365,7 +325,6 @@ export function ledgerRuns(series: LedgerSeries, from: number, to: number, dealt
   return membership ? clipToSpans(runs, membership) : runs;
 }
 
-/** Country-look requests need only that tag's holders, rather than a world scan. */
 export const ledgerSegmentAt = (index: LedgerIndex) => (tag: string, hour: number): number | null => {
   for (const series of index.byTag.get(tag) ?? []) {
     const span = runAt(series.country.present, hour);
@@ -374,8 +333,6 @@ export const ledgerSegmentAt = (index: LedgerIndex) => (tag: string, hour: numbe
   return null;
 };
 
-/** A holder's losses at `hour` since `from` by cause, its accidents, and its other losses whose opponent was not recorded:
- * its parts' points, and what the ledger carried in before its hours. */
 export function airLossParts(row: LedgerRow, from: number, hour: number) {
   const causes = new Map<number, { dealt: bigint; taken: bigint }>();
   let operational = 0n, unknownOpponent = 0n;
@@ -392,7 +349,6 @@ export function airLossParts(row: LedgerRow, from: number, hour: number) {
   return { causes, operational, unknownOpponent };
 }
 
-/** Exact text is shared by race, butterfly and line hovers; plotting numbers never supply it. */
 export function militaryAirTooltip(row: LedgerRow, from: number, family: MilitaryAirLedger['family'], name: string): TooltipContent {
   const air = family === 'airLosses', parts = air ? airLossParts(row, from, row.readHour) : null;
   return { title: name,
@@ -419,7 +375,6 @@ export function militaryAirLineTooltip(index: LedgerIndex, from: number, hour: n
     note: [AIR_LEDGER_NOTE, rows.some(row => !row.complete) ? LEDGER_GAP_NOTE : ''].filter(Boolean).join(' ') };
 }
 
-/** Range replies already select the native lower bound; prefixes gate supplying reads. */
 export function partAmount(part: MilitaryAirPart, from: number, hour: number): bigint {
   const total = (point: LedgerPoint | null) => point ? BigInt(point[2]) : 0n;
   return total(at(part.points, hour, point => point[1])) - total(at(part.points, from - 1, point => point[1]));

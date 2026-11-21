@@ -4,7 +4,6 @@ use replay_data::rows::{
     SimulationFeatureRow, UnitLeaderRow, WargoalTargetRow, tables,
 };
 
-/// The fields of each table the diplomacy descriptions read.
 const RULING: u64 = mask::<PoliticsRow>(&["ruling_party"]);
 const PARTY_TOKEN: u64 = mask::<PoliticalPartyRow>(&["token"]);
 const GOAL: u64 = mask::<CountryWargoalRow>(&["handle", "recipient", "goal_type"]);
@@ -14,17 +13,12 @@ const FEATURES: u64 = mask::<SimulationFeatureRow>(&["dlc_mask"]);
 const SCORES: u64 = mask::<AutonomyRow>(&["lower_score", "upper_score"]);
 const LEADER_CHARACTER: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 
-/// A reached inventory predicate requires both complete goal tables.
 pub(super) const CREATE_WARGOAL_UNRECORDED: &str =
     "create_wargoal requires recorded country wargoals and wargoal targets";
 
 impl Renderer<'_, '_, '_> {
     pub(super) fn purchase_contract(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // seller/buyer are scoped operands; factory count floors to
-        // int32 text. Equipment uses the seller, but naming uses game-state country.
         let fields = children(item);
-        // effect parsing reuses these scoped variables. Their reader
-        // retains prior flags; final-field parsing cannot.
         for (fields, names) in std::iter::once((fields, ["seller", "buyer", "civilian_factories"]))
             .chain(
                 fields
@@ -92,8 +86,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn start_civil_war(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // ideology is only the heading. Politics uses
-        // ruling_party, falling back to the current ruling group.
         let fields = children(item);
         let ideology = self.politics_ideology(
             field(fields, "ideology").map(scalar_operand).transpose()?,
@@ -116,7 +108,6 @@ impl Renderer<'_, '_, '_> {
         let ruling = match ruling {
             Ok(Some(ruling)) => ruling,
             Err(why) if why != super::politics::NULL_IDEOLOGY => return Err(why),
-            // tests the result's valid byte, not operand presence.
             Ok(None) | Err(_) => {
                 let recorded = self.context.text.recorded();
                 let id = self
@@ -139,8 +130,6 @@ impl Renderer<'_, '_, '_> {
                 self.politics_ideology(Some(&token.token), scopes)?
             }
         };
-        // receives elections=0, frequency=-1, empty long_name.
-        // Unlike the heading, this appended helper text is not expanded.
         text.push_str(&self.line(b"EFFECT_SET_POLITICS", &[], scopes, false)?);
         let party = if country > 0 {
             self.selected_party_name(country, &ruling)?
@@ -176,8 +165,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn create_wargoal(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // resolve target, validate the type, test the owned roster,
-        // then localise COUNTRY/WARGOAL/TARGET, expand in caller scope, and LF.
         let target = self
             .country_target_field(item, "target")?
             .map(|target| self.country_target(target, scopes))
@@ -186,7 +173,7 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or(0);
         let fields = children(item);
         let Some(goal) = field(fields, "type").and_then(Item::value_keyword) else {
-            return Ok(String::new()); // Missing/quoted/numeric token is not a type.
+            return Ok(String::new());
         };
         let cached = self.context.text.content().effects()?;
         let database = self
@@ -196,7 +183,7 @@ impl Renderer<'_, '_, '_> {
             .or(cached.wargoals.as_ref())
             .ok_or_else(|| self.content_gap("Wargoal definitions"))?;
         let Some(definition_name) = database.find(goal.as_bytes())? else {
-            return Ok(String::new()); // No matching wargoal type.
+            return Ok(String::new());
         };
         let source = self.current_country(scopes)?;
         if target == 0 || source == 0 {
@@ -210,8 +197,6 @@ impl Renderer<'_, '_, '_> {
         let targets = frame
             .complete::<tables::WargoalTargets>(TARGET_VALUE)
             .map_err(|_| CREATE_WARGOAL_UNRECORDED.to_string())?;
-        // Definition identity matters only if every other covering-goal
-        // predicate succeeds. Non-covering inventories remain decidable.
         let ambiguous_definition = database
             .names
             .iter()
@@ -227,8 +212,6 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .map(|state| scalar_operand(state).map(integer))
             .collect::<Result<Vec<_>, _>>()?;
-        // WargoalTargets' key is country, kind, goal and ordinal; CountryWargoals' country and
-        // ordinal.
         for member in targets.keyed(|key| {
             (key >> 64) as u8 == 3 && world.recorded().slot((key >> 72) as u32) == Some(source)
         }) {
@@ -329,8 +312,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         ratio: bool,
     ) -> Result<String, String> {
-        // faction lookup, scoped amount, plain country
-        // name, then expansion in the copied scope + faction.
         let country = self.current_country(scopes)?;
         let faction = if country > 0 {
             self.context
@@ -341,7 +322,7 @@ impl Renderer<'_, '_, '_> {
             None
         };
         let value = if scope_selector(item).is_some() {
-            0 // Generic selector reader retains the default amount.
+            0
         } else {
             self.scoped_value(scalar_operand(item)?, scopes)?
         };
@@ -379,10 +360,9 @@ impl Renderer<'_, '_, '_> {
                 false,
             )?
         };
-        self.expanded_with_faction_environment(&text, scopes, Some(faction)) // No LF.
+        self.expanded_with_faction_environment(&text, scopes, Some(faction))
     }
 
-    // target first, then the stored ordered subject roster.
     pub(super) fn faction(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let source = self.current_country(scopes)?;
         let Some(target) = self.country_target(item, scopes)? else {
@@ -400,8 +380,6 @@ impl Renderer<'_, '_, '_> {
             .transpose()
             .map_err(built)?
             .ok_or("country appearance lacks ordered target subjects")?;
-        // The ordered subject roster is reached only inside a removal or join
-        // branch. A same-faction nonleader needs no subject roster.
         let subject = |raw: i32| {
             world
                 .recorded()
@@ -533,7 +511,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // reader; country-zero gate precedes the factory.
         if !matches!(scopes.this, Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0)
         {
             return Ok(String::new());
@@ -544,7 +521,6 @@ impl Renderer<'_, '_, '_> {
         let Some(target) = self.country_target(country, scopes)? else {
             return Ok(String::new());
         };
-        // Static keywords select the relation name.
         let relation = field(children(item), "relation").and_then(Item::value_keyword);
         let label: &[u8] = match relation.as_deref() {
             Some("naval_blockade") => b"DIPLOMACY_NAVAL_BLOCKADE_TITLE",
@@ -561,7 +537,7 @@ impl Renderer<'_, '_, '_> {
             Some("licence_production_access") => b"DIPLOMACY_LICACC",
             Some("puppet" | "lend_lease" | "equipment_purchase_contract_relation") => b"",
             Some("boost_party_popularity") => return Err("temporary boost-party relation needs the null ideology-group identifier; shared content does not expose that null-object identity".into()),
-            _ => return Ok("BROKEN DIPLOMATIC RELATION EFFECT".into()), // no LF.
+            _ => return Ok("BROKEN DIPLOMATIC RELATION EFFECT".into()),
         };
         let name = self.localised(label, &[], scopes, false)?;
         let country = self.country_name(target, true)?;
@@ -582,8 +558,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn add_to_war(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // enemy precedes targeted_alliance; both are named
-        // even at country zero. Repeated field reads append their selector chain.
         let mut names = Vec::new();
         for name in ["enemy", "targeted_alliance"] {
             let Some(operand) = self.country_target_field(item, name)? else {
@@ -603,8 +577,6 @@ impl Renderer<'_, '_, '_> {
                 ));
             }
             let country = if value.contains(&b'.') || scope_selector(operand).is_some() {
-                // lowercases dotted links; follows each
-                // link before projecting the last country's/state owner's tag.
                 let mut terminal = Keyword::Root;
                 for link in value.split(|byte| *byte == b'.') {
                     terminal = match Keyword::named(link) {
@@ -662,7 +634,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn set_border_war(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // unchanged current state, no scoped expansion.
         let Scope::State(state) = scopes.this else {
             return Ok(String::new());
         };
@@ -702,7 +673,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn border_state_label(&self, state: u32) -> Result<String, String> {
-        // state display name, '(', inline controller flag, ')'.
         let row = self.valid_state(state)?.ok_or_else(|| {
             format!("invalid state {state}: marked-state naming requires an existing state")
         })?;
@@ -730,7 +700,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         finalize: bool,
     ) -> Result<String, String> {
-        // both evaluate state operands before flags.
         let mut states = self.border_states(item, scopes)?;
         if finalize {
             let attacker =
@@ -764,7 +733,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn update_border_war(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // combat-side context supplies both states.
         if scopes.this == Scope::Combat {
             return Err(
                 "combat-side target and attacker flag are not exposed by the description graph"
@@ -809,7 +777,6 @@ impl Renderer<'_, '_, '_> {
                 true,
             )?);
         }
-        // Common max_units/modifier operands apply only with combat context.
         for (name, max, modifier) in [
             (&first, "max_attackers", "attacker_modifier"),
             (&second, "max_defenders", "defender_modifier"),
@@ -837,7 +804,6 @@ impl Renderer<'_, '_, '_> {
         Ok(body)
     }
 
-    // The autonomy feature accepts any runtime DLC mask bit 1, 2 or 3.
     fn diplomacy_autonomy_feature(&self) -> Result<bool, String> {
         let features = self.complete::<tables::SimulationFeatures>(FEATURES)?;
         let (1, Some(features)) = (features.len(), each(features).next().transpose()?) else {
@@ -852,8 +818,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         ratio: bool,
     ) -> Result<String, String> {
-        // The localisation field
-        // labels the recorded autonomy change and is not read by the ratio or score description.
         if !self.diplomacy_autonomy_feature()? {
             return Ok(String::new());
         }
@@ -867,8 +831,6 @@ impl Renderer<'_, '_, '_> {
             let Some(current) = current else {
                 return Ok(String::new());
             };
-            // Country -> diplomacy is current autonomy status;
-            // a complete Autonomy table's absent row is a null pointer.
             let statuses = self.complete::<tables::Autonomy>(SCORES)?;
             let recorded = self.context.text.recorded();
             let Some(status) = statuses
@@ -883,15 +845,12 @@ impl Renderer<'_, '_, '_> {
                 Some(value) => self.scoped_value(scalar_operand(value)?, scopes)?,
                 None => 0,
             };
-            // two wrapping i64 operations, then signed /100000.
             status
                 .upper_score
                 .wrapping_sub(status.lower_score)
                 .wrapping_mul(value)
                 / 100_000
         } else {
-            // Fixed-point parsing keeps the amount on failure; it never
-            // drops the effect. The amount starts at zero.
             fixed_field(children(item), "value", 0)
         };
         if current.is_some() {
@@ -899,7 +858,6 @@ impl Renderer<'_, '_, '_> {
                 b"ADD_AUTONOMY_SCORE_DESC",
                 &[
                     ("VALUE", Argument::Fixed5(value)),
-                    // Native quirk: type5 int32 literal1, NOT a country name.
                     ("COUNTRY", Argument::Int32(1)),
                 ],
                 scopes,
@@ -920,7 +878,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Capitalized definite country name, no LF.
         let Some(target) = self.country_target(item, scopes)? else {
             return Ok(String::new());
         };
@@ -942,7 +899,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Resolve the target, then describe its country name.
         let Some(target) = self.country_target(item, scopes)? else {
             return Ok(String::new());
         };
@@ -979,7 +935,6 @@ impl Renderer<'_, '_, '_> {
             None => false,
         };
         if positive {
-            // The native performs neither scope expansion nor LF append.
             self.localised(b"EFFECT_REMOVE_EXILE_TAG", &[], scopes, false)
         } else {
             Ok(String::new())
@@ -992,11 +947,9 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         release: bool,
     ) -> Result<String, String> {
-        // release returns empty for null before target.
-        // set checks target first; no freedom_level evaluation.
         let state = children(item).iter().rev().find(|field| {
             field.keyword_is("autonomy_state") || field.keyword_is("autonomous_state")
-        }); // both spellings write the same field.
+        });
         if release && state.is_none() {
             return Ok(String::new());
         }
@@ -1023,7 +976,6 @@ impl Renderer<'_, '_, '_> {
             .content
             .autonomy_states
             .ok_or_else(|| self.content_gap("autonomy states"))?;
-        // Compares exact definition bytes.
         let state = states
             .get(id)
             .map_err(|gap| format!("autonomy state {id}: {gap}"))?;
@@ -1041,8 +993,6 @@ impl Renderer<'_, '_, '_> {
                 target
             }
         };
-        // The free-autonomy sentinel selects its own text. A defined
-        // state with this id takes the ordinary state branch instead.
         if !release && state.is_none() && id == "autonomy_free" {
             let country = self.country_name(target, true)?;
             return self.line(
@@ -1054,8 +1004,8 @@ impl Renderer<'_, '_, '_> {
         }
         let name = match state {
             Some(state) => self.localised(state.id.as_bytes(), &[], scopes, false)?,
-            None => String::new(), // Set's default empty name.
-        }; // Release name; set name.
+            None => String::new(),
+        };
         if release {
             let country = self.country_name(target, false)?;
             self.line(
@@ -1088,8 +1038,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // make puppet effect; COUNTRY=current name,
-        // TARGET is the selected country's name.
         let Some(target) = self.country_target(item, scopes)? else {
             return Ok(String::new());
         };
@@ -1107,8 +1055,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn create_faction(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // localises the raw value, unlike scope-selector parsing readers.
-        // no current country or empty stored name gives no text.
         if !matches!(scopes.this, Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0)
         {
             return Ok(String::new());
@@ -1131,7 +1077,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn create_faction_template(&self, scopes: Scopes) -> Result<String, String> {
-        // a positive country is required before using the template.
         if !matches!(scopes.this, Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0)
         {
             return Ok(String::new());
@@ -1140,7 +1085,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn current_faction(&self, scopes: Scopes) -> Result<Option<(u32, u64)>, String> {
-        // no country gives no faction.
         let (Scope::Country(source)
         | Scope::CountryLeader {
             country: source, ..
@@ -1160,7 +1104,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn dismantle_faction(&self, scopes: Scopes) -> Result<String, String> {
-        // faction leader only; the effect's boolean never selects text.
         let Some((source, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
@@ -1183,7 +1126,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn leave_faction(&self, scopes: Scopes) -> Result<String, String> {
-        // current country definite name, not the operand's selector.
         let Some((source, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
@@ -1205,7 +1147,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // target country name; current country's faction and leader gate.
         let Some(target) = self.country_target(item, scopes)? else {
             return Ok(String::new());
         };
@@ -1245,8 +1186,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn set_faction_name(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // name key expands once before OLDNAME/NEWNAME substitution,
-        // and EFFECT_SET_FACTION_NAME expands again; clears selector names.
         let Some((_, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
@@ -1271,7 +1210,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn set_faction_spymaster(&self, scopes: Scopes) -> Result<String, String> {
-        // Only current country/faction are read; the description ignores the operand.
         let Some((_, faction)) = self.current_faction(scopes)? else {
             return Ok(String::new());
         };
@@ -1285,8 +1223,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn faction_goal_slot(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // category reader, label helper.
-        // Category 4 is the constructor/default/invalid value.
         let category = match field(children(item), "category")
             .and_then(Item::value_keyword)
             .as_deref()
@@ -1330,8 +1266,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn faction_initiative(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // selector flags leave constructor operand zero.
-        // Native own text has no appended LF.
         let amount = if crate::triggers::scope_selector(item).is_some() {
             0
         } else {
@@ -1361,7 +1295,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn faction_goal_content(&self, scopes: Scopes) -> Result<String, String> {
-        // Add, remove and manifest descriptions are empty without a faction.
         if self.current_faction(scopes)?.is_none() {
             return Ok(String::new());
         }
@@ -1369,7 +1302,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn faction_upgrade_min(&self, scopes: Scopes) -> Result<String, String> {
-        // absent country/faction is empty before any display output.
         if self.current_faction(scopes)?.is_none() {
             return Ok(String::new());
         }
@@ -1377,8 +1309,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn faction_rule_content(&self, scopes: Scopes) -> Result<String, String> {
-        // absent faction is empty. Its map is static content,
-        // rebuilt from every rule/type, independently of the active-rule state.
         if self.current_faction(scopes)?.is_none() {
             return Ok(String::new());
         }
@@ -1390,8 +1320,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // has no country gate and no LF.
-        // uses exact strncmp("yes", raw scalar, 4), not scope-selector parsing.
         let unlock = installed_content_core::parser::c_string(scalar_operand(item)?) == b"yes";
         let name = self.localised(b"FACTION_ACCESS_TAB_MILITARY", &[], scopes, false)?;
         self.localised(

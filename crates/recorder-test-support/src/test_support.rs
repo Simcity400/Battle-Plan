@@ -72,11 +72,8 @@ pub fn allocation_records() -> Vec<replay::spool::Record> {
     records
 }
 
-/// The collector's reason for a table it does not acquire, as every derived table is.
 const NOT_ACQUIRED: &str = "table was not acquired";
 
-/// One complete keyframe of the synthetic campaign on `branch`, loaded at `load_signal`, holding
-/// no derived table, as the collector writes it.
 pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_frame::frame::Frame {
     use replay_data::{rows::CampaignRow, rows::ClockRow};
     use replay_frame::{frame::Frame, frame::TableUpdate};
@@ -128,15 +125,11 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_fram
                         ..Default::default()
                     }])
                 }
-                // Each hour's map-event interval runs from the previous hour to
-                // this frame's hour, so consecutive frames continue it.
                 TableId::MapEvents => TableRows::MapEvents(vec![replay_data::rows::MapEventsRow {
                     from_hour: hour - 1,
                     to_hour: hour,
                     ..Default::default()
                 }]),
-                // Every other singleton takes one default row, so a newly
-                // registered singleton table keeps the frame complete.
                 table if table.key_bits() == 0 => TableRows::one_default(table),
                 table => TableRows::empty(table),
             };
@@ -145,15 +138,10 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_fram
     }
 }
 
-/// The first load signal (19) of the synthetic campaign's session.
 pub const FIRST_LOAD: i64 = 19;
-/// A second load of the same campaign later in the session.
 pub const RELOAD: i64 = 23;
-/// A third load of the same campaign after that.
 pub const THIRD_LOAD: i64 = 29;
 
-/// An hour of the modded country Z01 ruled by `group`, with `players` humans, played by the
-/// recording client.
 pub fn named_frame(
     branch: u64,
     hour: i32,
@@ -211,8 +199,6 @@ pub fn named_frame(
     frame
 }
 
-/// One recorder session of the synthetic campaign on `branch`: `(hour, ruling group, players)`
-/// per frame of [`named_frame`].
 pub fn named_session_records(
     session: u64,
     branch: u64,
@@ -246,9 +232,6 @@ pub fn named_session_records(
     records
 }
 
-/// Replace the closing detach of `records` with another load of the synthetic
-/// campaign, as the collector writes it (a load-signal branch, then each
-/// hour's clock witness before its frame), and detach after it.
 fn push_load(
     records: &mut Vec<replay::spool::Record>,
     branch: u64,
@@ -282,23 +265,18 @@ fn push_load(
     }));
 }
 
-/// [`allocation_records`] (branch 9, hours 2 to 4) followed by a second load
-/// of the same campaign (branch 10, hours 3 and 4).
 pub fn two_load_records() -> Vec<replay::spool::Record> {
     let mut records = allocation_records();
     push_load(&mut records, 10, 3..=4, RELOAD);
     records
 }
 
-/// [`two_load_records`] followed by a third load (branch 11, hours 5 and 6).
 pub fn three_load_records() -> Vec<replay::spool::Record> {
     let mut records = two_load_records();
     push_load(&mut records, 11, 5..=6, THIRD_LOAD);
     records
 }
 
-/// Write `records` as the finished journal of the synthetic campaign's first capture in
-/// `session`, as a collector that detached leaves it.
 pub fn write_campaign_journal(
     session: &std::path::Path,
     records: &[replay::spool::Record],
@@ -308,9 +286,6 @@ pub fn write_campaign_journal(
     campaign
 }
 
-/// The journal of capture `number` of `records` in the campaign folder `campaign`, named for
-/// its campaign, as the collector writes it: ended when `finish`, left as a collector that
-/// stopped leaves it otherwise.
 pub fn write_capture(
     campaign: &std::path::Path,
     number: u32,
@@ -322,7 +297,6 @@ pub fn write_capture(
         .unwrap();
 }
 
-/// The records of one capture of the synthetic campaign: `branch`'s hours at `load`.
 pub fn load_segment_records(
     branch: u64,
     hours: std::ops::RangeInclusive<i32>,
@@ -351,7 +325,6 @@ pub fn load_segment_records(
     records
 }
 
-/// The finished journal of capture `number` of the synthetic campaign: [`load_segment_records`].
 pub fn write_load_capture(
     campaign: &std::path::Path,
     number: u32,
@@ -362,7 +335,6 @@ pub fn write_load_capture(
     write_capture(campaign, number, &load_segment_records(branch, hours, load), true);
 }
 
-/// Each recorded frame of a recording, as (branch, hour).
 pub fn recorded_frames(path: &std::path::Path) -> Vec<(u64, i32)> {
     let replay = replay::campaign::Replay::open(std::fs::read(path).unwrap()).unwrap();
     replay
@@ -394,7 +366,6 @@ pub fn allocation_witness(committed_bytes: u64) -> replay_data::witness::Termina
     }
 }
 
-/// Hours of the synthetic campaign's `branch` an ordered writer admitted but did not commit.
 pub fn allocation_range(
     branch: u64,
     load_signal: Option<i64>,
@@ -427,10 +398,6 @@ mod tests {
     use super::*;
     use replay_frame::frame::TableUpdate;
 
-    /// Every recorded singleton table in the registry is complete with one row (or
-    /// names its retirement), and every derived table is left to the recorder as
-    /// the collector leaves it, so a newly registered table cannot leave the
-    /// shared fixture's frames unencodable or its journal refused.
     #[test]
     fn allocation_frames_complete_every_recorded_singleton_and_hold_no_derived_table() {
         let frame = allocation_frame(9, 2, FIRST_LOAD);

@@ -2,7 +2,6 @@ import { fontStack, MONOSPACE_STACK } from './fonts.ts';
 
 export type FontRole = 'interface' | 'display' | 'tables' | 'diagnostics';
 export type FontFamilies = Record<FontRole, string>;
-/** Roles with their own text size; tables take the interface's, as charts do. */
 export type SizedRole = Exclude<FontRole, 'tables'>;
 export interface TypographySettings {
   advanced: boolean;
@@ -29,9 +28,6 @@ export function parseTypography(input: unknown, hasHeadingsOverride = false): Ty
   };
 }
 
-/** Tables use the interface font unless given their own, at the interface's text size, so they
- * match the charts beside them. Diagnostics stay monospace at their default size unless Advanced
- * chooses otherwise. */
 export function typographyVariables(fonts: FontFamilies, settings: TypographySettings): Record<string, string> {
   const ui = fontStack(fonts.interface);
   const diagnostics = settings.advanced ? fonts.diagnostics : '';

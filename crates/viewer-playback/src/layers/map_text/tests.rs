@@ -1,10 +1,3 @@
-//! The map text layer on recordings made in memory with the real schema, read after the vision
-//! layer: each interval the head steps to is made once, with the viewer's own events shown and
-//! another's withheld; an interval holding events is made on the layer's worker, never on the frame
-//! thread, and presented once on a later frame; a step of several hours makes its last hour's; a
-//! seek makes the head's as sought, deciding its events from the sought hour's rows; several steps
-//! in one frame decide each step's events from its own rows; a MapEvents not recorded makes today's
-//! unavailable interval; the worker ends with the layer.
 
 use super::{MapText, Presented, Source, TABLES};
 use crate::{
@@ -62,7 +55,6 @@ fn source() -> Arc<dyn Source> {
     Arc::new(Content { text: events::Content::new(&Buildings::default()), localisation, fog: Ok(fog()) })
 }
 
-/// Land province 1 and sea province 2, neighbours.
 fn fog() -> FogContent {
     use viewer_foundation::map::visibility::{Topology, test_defines};
     let neighbors = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
@@ -80,13 +72,10 @@ fn opaque(value: &impl NativeValue) -> Vec<u8> {
     bytes
 }
 
-/// A general of `owner` captured by `captor` in province 1.
 fn captured(sequence: u64, hour: i32, owner: u32, captor: u32) -> MapEvent {
     MapEvent { sequence, hour, payload: MapEventPayload::GeneralCaptured(MapEventGeneralCapture { owner, captor, province: 1 }) }
 }
 
-/// The events of hour `at`: at hour 6 the viewer's (101) general captured, sequence 5, and one of
-/// 102 captured by 103, sequence 6, which the viewer is not shown; at hour 10 the viewer's, 9.
 fn events_at(at: u32) -> Vec<MapEvent> {
     match at {
         6 => vec![captured(5, 6, 101, 102), captured(6, 6, 102, 103)],
@@ -95,21 +84,14 @@ fn events_at(at: u32) -> Vec<MapEvent> {
     }
 }
 
-/// One past the last sequence published by the end of hour `at`'s interval: its `next_sequence`
-/// and the next interval's first, so every event lies inside its interval as the row's codec
-/// demands.
 fn next(at: u32) -> u64 {
     (0..=at).flat_map(events_at).map(|event| event.sequence + 1).max().unwrap_or(1)
 }
 
-/// A recording of 30 hours: countries 101 to 103 (slots 1 to 3), the viewer 101, and the MapEvents
-/// interval of every hour, recorded while `recorded` says so.
 fn record(recorded: impl Fn(u32) -> bool) -> crate::playhead_host::units::Units {
     record_with(recorded, |_, _| {})
 }
 
-/// Inserts `key` at `slot` of `table` with every cell written: zero, none, an empty list or the
-/// first text; an opaque cell is left to the caller. Today's typed rows refuse a row missing one.
 fn insert_whole(store: &mut Store, table: TableId, slot: u32, key: u128) {
     use replay_columnar::state::Kind;
     let kinds = replay::columnar_frames::schema().unwrap();
@@ -139,7 +121,6 @@ fn insert_whole(store: &mut Store, table: TableId, slot: u32, key: u128) {
     }
 }
 
-/// [`record`] with `more` written at each hour.
 fn record_with(recorded: impl Fn(u32) -> bool, more: impl Fn(u32, &mut Store)) -> crate::playhead_host::units::Units {
     let mut tables: Vec<TableId> = viewer_foundation::map::perspective::VISION_TABLES.to_vec();
     tables.extend(TABLES);
@@ -148,7 +129,6 @@ fn record_with(recorded: impl Fn(u32) -> bool, more: impl Fn(u32, &mut Store)) -
     let column = recorded::column;
     let health = [MapEventFamilyHealth { installed: true, enabled: true, complete: true, ..MapEventFamilyHealth::default() }; MapEventFamily::COUNT];
     let health = opaque(&health);
-    // Each test its own recording: one name is one playhead, and tests run side by side.
     static RECORDED: AtomicUsize = AtomicUsize::new(0);
     let name = format!("map text test {}", RECORDED.fetch_add(1, Ordering::Relaxed));
     recorded::record_naming(&name, 30, &[b"AAA", b"BBB", b"CCC"], |at, store| {
@@ -190,7 +170,6 @@ fn record_with(recorded: impl Fn(u32) -> bool, more: impl Fn(u32, &mut Store)) -
     })
 }
 
-/// `hours` hours a step.
 fn settings(hours: f64) -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: hours, rate: 1.0, ..Settings::default() }
 }
@@ -199,10 +178,6 @@ fn layer(side: &MapSide) -> &MapText {
     side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<MapText>()).unwrap()
 }
 
-/// The vision and map text layers sought to hour 0, then played `step` hours a frame to `last`:
-/// `each` sees every frame that applied a step or swapped a composed reset in, with the hour
-/// applied and whether the frame swapped a reset in; settled whole first (the worker's intervals
-/// waited for) when `settled`. The head moves only here. The map, at `last`.
 fn play(units: crate::playhead_host::units::Units, step: i32, last: i32, settled: bool, mut each: impl FnMut(i32, bool, &mut MapSide)) -> MapSide {
     let entry = open(units, settings(f64::from(step))).unwrap();
     let text = MapText::new(source(), BRANCH).with_rows(Arc::clone(&entry));
@@ -235,7 +210,6 @@ fn play(units: crate::playhead_host::units::Units, step: i32, last: i32, settled
     }
 }
 
-/// The interval's events: sequence and whether the viewer is shown a popup (its text), or why not.
 fn shown(presented: &Presented) -> (i32, Vec<(u64, Result<Option<Vec<u8>>, String>)>) {
     let text = presented.shown().unwrap_or_else(|reason| panic!("an interval, not {reason}"));
     let MapTextResult::Value { interval } = text.interval else { panic!("a recorded interval: {:?}", text.interval) };
@@ -282,8 +256,6 @@ fn a_step_of_four_hours_makes_its_last_hour_and_a_seek_makes_the_head_as_sought(
     });
     assert_eq!(steps.iter().map(|&(hour, _)| hour).collect::<Vec<_>>(), [4, 8, 12], "steps of four hours");
     assert!(steps.iter().all(|&(hour, events)| events == events_at(hour as u32).len()), "each step its last hour's events, never those of the hours it passed (6, 10): {steps:?}");
-    // Frames at the sought hour, as the window's clock holds the head there until the seek's
-    // picture is in: a frame asking a later head would also take the steps after it.
     side.entry().playhead().seek(6);
     loop {
         let frame = side.frame(6).unwrap();
@@ -312,7 +284,6 @@ fn a_map_events_table_not_recorded_makes_today_s_unavailable_interval_by_name() 
     });
 }
 
-/// Frames at `hour` until `done` holds; fails by name when it never does.
 fn frames_until(side: &mut MapSide, hour: i32, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
     for _ in 0..50_000_000u64 {
         if done(side) {
@@ -340,8 +311,6 @@ fn a_step_with_a_map_event_makes_nothing_on_the_frame_thread_and_is_presented_on
     assert_eq!(events, [5, 6, 9], "each event once");
 }
 
-/// A seek back decides the sought hour's events from that hour's rows: the worker's own context
-/// tables take the seek's reset, never the old head's rows.
 #[test]
 fn a_seek_back_decides_the_sought_hours_events_from_its_own_rows_not_the_old_heads() {
     let mut side = play(record(|_| true), 1, 12, true, |_, _, _| {});
@@ -353,16 +322,12 @@ fn a_seek_back_decides_the_sought_hours_events_from_its_own_rows_not_the_old_hea
     assert_eq!(shown(&made).1, [(5, Ok(Some(b"Captured".to_vec()))), (6, Ok(None))], "hour 6's events decided from hour 6's rows");
 }
 
-/// Country 102's link joins the viewer's slot at hour 8, so from then a general of 102 is the
-/// viewer's own: hour 6's capture of one is shown only when decided from hour 8's rows.
 fn relinked(at: u32, store: &mut Store) {
     if at == 8 {
         store.table(TableId::CountryLinks.index()).unwrap().write(1, recorded::column(TableId::CountryLinks, "canonical_slot"), Cell::U32(1)).unwrap();
     }
 }
 
-/// A map of the vision and map text layers over `entry`, `text` attached when given, sought to 0
-/// and stepped a frame an hour, each settled whole, to `last`; the clock does not play.
 fn stepped_to(entry: &Arc<crate::playhead_host::Entry>, attached: bool, last: i32) -> MapSide {
     let mut text = MapText::new(source(), BRANCH);
     if attached {
@@ -370,7 +335,6 @@ fn stepped_to(entry: &Arc<crate::playhead_host::Entry>, attached: bool, last: i3
     }
     let mut side = MapSide::new(Arc::clone(entry), vec![Box::new(vision::Vision::new(vision_content())), Box::new(text)], View::default()).unwrap();
     entry.playhead().seek(0);
-    // The frame that takes the seek's reset composes; the swap frame takes no step, so its hour is the map's.
     frames_until(&mut side, 0, "the seek composed", |side| !side.composing() && side.applied() == Some(0));
     for hour in 1..=last {
         frames_until(&mut side, hour, "a step an hour", |side| side.last_frame().applied == Some(hour));
@@ -379,9 +343,6 @@ fn stepped_to(entry: &Arc<crate::playhead_host::Entry>, attached: bool, last: i3
     side
 }
 
-/// Three steps taken in one frame (head 5 to 8): hour 6's events are decided from the rows as hour
-/// 6's step left them, not refused for want of them and not from hour 8's. On the base the rows at
-/// the head reached hour 8 before hour 6's interval was made, and its context was refused.
 #[test]
 fn three_steps_in_one_frame_decide_the_first_steps_events_from_its_own_rows() {
     let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
@@ -395,11 +356,6 @@ fn three_steps_in_one_frame_decide_the_first_steps_events_from_its_own_rows() {
     assert_eq!(shown(six).1, [(5, Ok(Some(b"Captured".to_vec()))), (6, Ok(None))], "decided from hour 6's rows: 102's general is not the viewer's yet");
 }
 
-/// A seek back from hour 12 to 6, with the new seek's steps through hour 8 built, and a settle
-/// before the map takes its reset: the frame side still hands the worker the old head, hour 12, in
-/// the channel before the sought hour's interval. That request is of a superseded seek, so the
-/// worker's rows never step into the new seek for it, and hour 6's events are decided from hour
-/// 6's rows. On the base it took the new seek's steps through hour 12 first.
 #[test]
 fn a_request_from_before_a_seek_back_never_steps_the_context_past_the_sought_hour() {
     let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
@@ -414,9 +370,6 @@ fn a_request_from_before_a_seek_back_never_steps_the_context_past_the_sought_hou
     assert_eq!(shown(&made).1, [(5, Ok(Some(b"Captured".to_vec()))), (6, Ok(None))], "decided from hour 6's rows: 102's general is not the viewer's yet");
 }
 
-/// The context tables declared at hour 5, while the head stands there (a layer attached late): they
-/// join the playhead with a later step. Hour 6's interval waits for them and is made then, once, its
-/// events decided, never refused for want of rows.
 #[test]
 fn an_interval_whose_tables_arrive_with_a_later_step_is_made_then_once() {
     let entry = open(record(|_| true), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
@@ -432,10 +385,6 @@ fn an_interval_whose_tables_arrive_with_a_later_step_is_made_then_once() {
     assert_eq!(shown(six).1, [(5, Ok(Some(b"Captured".to_vec()))), (6, Ok(None))], "its events decided from rows, not refused");
 }
 
-/// The proof's `composed` line after a seek: the layer composed anew at hour 6, which holds events,
-/// while the clock plays and steps past the head are built. Its context tables are declared then and
-/// land at the newest step, past the head, while its compose holds the frame on the worker. On the
-/// base nothing reached that step and the compose failed after the worker's whole limit.
 #[test]
 fn a_layer_composed_anew_while_steps_past_the_head_are_built_makes_the_heads_interval() {
     let side = play(record(|_| true), 1, 6, true, |_, _, _| {});
@@ -449,8 +398,6 @@ fn a_layer_composed_anew_while_steps_past_the_head_are_built_makes_the_heads_int
     assert_eq!(text.differ(&fresh), (0, None), "the same as the layer stepped there");
 }
 
-/// The viewer (101) controls province 1 through hour 6 and 103 takes it at hour 7, so the viewer
-/// sees it at 6 and not at 7; hour 6's events are 103's paradrop there.
 fn paradropped(at: u32, store: &mut Store) {
     let provinces = TableId::Provinces;
     if at == 0 {
@@ -466,9 +413,6 @@ fn paradropped(at: u32, store: &mut Store) {
     }
 }
 
-/// Hours 6 and 7 in one frame: hour 6's paradrop is decided by the viewer's sight at hour 6, when it
-/// sees the province, not at hour 7, the hour the vision layer settled at, when it does not. On the
-/// base every interval took the settled vision, and the landing was withheld.
 #[test]
 fn two_steps_in_one_frame_decide_the_first_steps_paradrop_by_its_own_hours_fog() {
     let entry = open(record_with(|_| true, paradropped), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
@@ -486,16 +430,12 @@ fn two_steps_in_one_frame_decide_the_first_steps_paradrop_by_its_own_hours_fog()
     assert_eq!(shown(six).1, [(5, Ok(Some(b"Landed".to_vec())))], "decided by hour 6's fog: the viewer sees the landing");
 }
 
-/// The recorded viewer is 101 through hour 6 and 102 from hour 7, as an observer switching country.
 fn switched(at: u32, store: &mut Store) {
     if at == 7 {
         store.table(TableId::LocalPlayer.index()).unwrap().write(0, recorded::column(TableId::LocalPlayer, "country"), Cell::U32(102)).unwrap();
     }
 }
 
-/// Hours 6 and 7 in one frame, the recorded viewer 101 at hour 6 and 102 at hour 7: hour 6's
-/// captures, which read no province, are decided for hour 6's viewer, so 101's general is shown and
-/// 102's withheld. On the base they took the vision layer's viewer, hour 7's, and the two swapped.
 #[test]
 fn two_steps_in_one_frame_decide_the_first_steps_events_for_its_own_hours_viewer() {
     let entry = open(record_with(|_| true, switched), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();

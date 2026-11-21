@@ -1,5 +1,3 @@
-//! Modifier descriptions from recorded definition tables and authored content.
-//! Names use localisation; numbers use fixed-point and percentage formatting.
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{rows::ModifierDefinitionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -15,26 +13,14 @@ use {
     viewer_foundation::tooltip_text::{TextIcons, builtin, token, token_with},
 };
 
-/// clamp of the getter to [0, 1].
 const CLAMP: u32 = 1 << 4;
-/// the game prints the entry even when its value is zero.
 const SHOW_ZERO: u32 = 1 << 8;
 
-/// Why a modifier description cannot be rebuilt exactly.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Refusal {
-    /// The recorded definition table, lexical dictionary or DLC mask is
-    /// missing or lacks the named row, so names cannot be resolved or
-    /// eligibility is unknown.
     Tables(String),
-    /// Two recorded tokens whose names differ only in case. Static keyword
-    /// names are unique after folding; a dynamic token is added only when
-    /// no existing token folds to its name. These rows violate that
-    /// uniqueness, so the lexer result is unknown.
     Ambiguous(String),
-    /// A localisation key refused, naming the key and why.
     Localisation(String),
-    /// A recorded definition field that is not UTF-8, named.
     NotText(String),
 }
 
@@ -51,28 +37,19 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// The static tables the name index reads; the index is cached on their
-/// identities ([`viewer_foundation::map::memo::Keyed`]), so a playback hour whose frame
-/// shares them reuses it.
 pub(crate) const NAME_INDEX_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::ModifierDefinitions,
     replay_data::rows::TableId::LexicalTokens,
 ];
 
-/// Script name to definition index (`None` when two recorded tokens fold to
-/// the name), or why the tables cannot give one. Keys use ASCII-lowercase names;
-/// the lexer uses case-folding FNV-1a and case-insensitive comparison against the
-/// recorded dictionary.
 pub type NameIndex = Result<BTreeMap<Vec<u8>, Option<u32>>, Refusal>;
 
-/// The document's cache of [`NameIndex`], built on first use.
 pub type NameIndexCache = Keyed<NameIndex>;
 
 pub fn name_index_cache() -> NameIndexCache {
     Keyed::new(NAME_INDEX_TABLES)
 }
 
-/// Indexes the definitions by script name through the lexical dictionary.
 fn index_names(frame: &DecodedFrame) -> io::Result<NameIndex> {
     let definitions = rows::<tables::ModifierDefinitions>(frame)?;
     let Available::Complete(definitions) = definitions else {
@@ -86,12 +63,6 @@ fn index_names(frame: &DecodedFrame) -> io::Result<NameIndex> {
             "the recorded lexical dictionary is incomplete".into(),
         )));
     };
-    // Only registered rows are recorded (the native table keeps a default gap
-    // at 0x29A before the dynamic keys the game appends), so a definition is
-    // found by its recorded index, never by its position.
-    //
-    // Names resolve through their tokens. The last registration of a token wins,
-    // so rows sharing a token keep the highest index.
     let mut by_token: BTreeMap<u32, u32> = BTreeMap::new();
     for row in definitions.iter().filter(|row| row.token != 0) {
         let index = by_token.entry(row.token).or_insert(row.index);
@@ -102,7 +73,6 @@ fn index_names(frame: &DecodedFrame) -> io::Result<NameIndex> {
         .iter()
         .filter(|row| row.token != 0 && by_token.get(&row.token) == Some(&row.index))
     {
-        // LexicalTokens rows are sorted by token.
         let Ok(found) = tokens.binary_search_by_key(&row.token, |token| token.token) else {
             return Ok(Err(Refusal::Tables(format!(
                 "modifier definition {}'s token {} is not in the recorded lexical dictionary",
@@ -117,17 +87,13 @@ fn index_names(frame: &DecodedFrame) -> io::Result<NameIndex> {
     Ok(Ok(names))
 }
 
-/// The recorded definition table, keyed by script name through the recorded
-/// lexical dictionary.
 pub(super) struct Definitions<'frame> {
     rows: &'frame [ModifierDefinitionRow],
     names: Arc<NameIndex>,
-    /// The simulation's feature flags, when a gated definition needs them.
     features: Option<u32>,
 }
 
 impl<'frame> Definitions<'frame> {
-    /// The hour's definitions, with the name index from `cache`.
     pub(super) fn read(
         frame: &'frame DecodedFrame,
         cache: &NameIndexCache,
@@ -169,18 +135,10 @@ impl<'frame> Definitions<'frame> {
         }
     }
 
-    /// The name index these definitions use, as a strong reference: a cache
-    /// keyed by it compares with [`Arc::ptr_eq`] and, holding
-    /// it, keeps the allocation alive, so no later index can take its
-    /// address.
     pub(super) fn identity(&self) -> Arc<NameIndex> {
         Arc::clone(&self.names)
     }
 
-    /// Settles each [`Conditional`](installed_content_core::unit_leader::Conditional):
-    /// a name no definition carries was skipped with its block, a registered
-    /// one left the content after it out of step. `Err` names the condition
-    /// and why it holds or cannot be settled.
     pub(super) fn settle(
         definitions: Result<&Self, &Refusal>,
         conditions: &[installed_content_core::unit_leader::Conditional],
@@ -202,9 +160,6 @@ impl<'frame> Definitions<'frame> {
         Ok(())
     }
 
-    /// `Ok(None)`: no definition has the name, so the native reader
-    /// reports it and drops it. The name folds as the lexer
-    /// folds it ([`NameIndex`]).
     pub(super) fn index(&self, name: &str) -> Result<Option<u32>, Refusal> {
         let Ok(names) = self.names.as_ref() else {
             unreachable!("read refuses a failed index");
@@ -216,8 +171,6 @@ impl<'frame> Definitions<'frame> {
         }
     }
 
-    /// The definition recorded at native index `index`. The rows are sorted
-    /// by index (the table's key) and sparse.
     fn row(&self, index: u32) -> Result<&ModifierDefinitionRow, Refusal> {
         self.rows
             .binary_search_by_key(&index, |row| row.index)
@@ -229,8 +182,6 @@ impl<'frame> Definitions<'frame> {
             })
     }
 
-    /// An unselected feature is always eligible; a null callback makes every
-    /// selected feature ineligible.
     fn eligible(&self, row: &ModifierDefinitionRow) -> Result<bool, Refusal> {
         if row.feature_selector == 0 {
             return Ok(true);
@@ -250,23 +201,15 @@ impl<'frame> Definitions<'frame> {
     }
 }
 
-/// One described block: raw values by definition index (ascending, as the
-/// accumulator's sorted array), the hidden set and custom tooltip keys.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Block {
     pub(super) values: BTreeMap<u32, i64>,
     pub(super) hidden: BTreeSet<u32>,
-    /// The custom tooltip keys, listed in their slot order.
     pub(super) custom_tooltips: Vec<Vec<u8>>,
-    /// An `added_modifier` child.
     pub(super) added: bool,
 }
 
 impl Block {
-    /// The block the reader built from authored entries
-    /// ([`installed_content_core::modifiers::Modifiers`]): one entry per
-    /// modifier in source order, its last value, hidden by name); names
-    /// without a definition are returned, dropped as the game drops them.
     pub(super) fn build(
         definitions: &Definitions<'_>,
         authored: &installed_content_core::modifiers::Modifiers,
@@ -294,8 +237,6 @@ impl Block {
         Ok((block, dropped))
     }
 
-    /// The accumulator getter's value of `index`: zero without an entry or for an ineligible
-    /// definition, clamped to [0, 1] by its definition's clamp flag.
     pub(super) fn value(&self, definitions: &Definitions<'_>, index: u32) -> Result<i64, Refusal> {
         let Some(&raw) = self.values.get(&index) else { return Ok(0) };
         let row = definitions.row(index)?;
@@ -305,8 +246,6 @@ impl Block {
         Ok(if row.flags & CLAMP != 0 { raw.clamp(0, ONE) } else { raw })
     }
 
-    /// Whether the game keeps a sub-unit's block: custom tooltip keys, a
-    /// child, or an entry whose definition is eligible.
     pub(super) fn kept(&self, definitions: &Definitions<'_>) -> Result<bool, Refusal> {
         if !self.custom_tooltips.is_empty() || self.added {
             return Ok(true);
@@ -319,10 +258,6 @@ impl Block {
         Ok(false)
     }
 
-    /// Weather-event entries use include mask 1 and exclude mask 0. Scan
-    /// every accumulator entry, including hidden ones, for a nonzero
-    /// effective value whose category mask includes bit 0 and whose feature
-    /// selector is eligible.
     pub(super) fn has_category_one(&self, definitions: &Definitions<'_>) -> Result<bool, Refusal> {
         for (&index, &raw) in &self.values {
             let row = definitions.row(index)?;
@@ -341,9 +276,6 @@ impl Block {
         Ok(false)
     }
 
-    /// Format trait descriptions at precision 2 without colour, with newline
-    /// separators, `include_mask`, `scale`, and `prefix` before each line's
-    /// name. Filter by the definition's category mask.
     pub(super) fn describe(
         &self,
         definitions: &Definitions<'_>,
@@ -356,7 +288,6 @@ impl Block {
         self.describe_at(definitions, icons, loc, scale, prefix, include_mask, 2)
     }
 
-    /// [`Self::describe`] with the caller's precision cap.
     #[allow(clippy::too_many_arguments, reason = "the native description options, each its own operand")]
     pub(super) fn describe_at(
         &self,
@@ -373,7 +304,6 @@ impl Block {
         for (&index, &raw) in &self.values {
             let row = definitions.row(index)?;
             let eligible = definitions.eligible(row)?;
-            // ineligible reads zero, bit 4 clamps to [0, 1].
             let value = if !eligible {
                 0
             } else if row.flags & CLAMP != 0 {
@@ -382,8 +312,6 @@ impl Block {
                 raw
             };
             let value = mul(value, scale);
-            // shown or nonzero, in an included category that
-            // no excluded mask (none) removes, and eligible.
             if !((row.flags & SHOW_ZERO != 0 || value != 0)
                 && row.category_mask & include_mask != 0
                 && eligible)
@@ -402,7 +330,6 @@ impl Block {
             text.push_str(": ");
             text.push_str(&value_text(row, value, precision, false, false, icons, loc)?);
         }
-        // The key set in slot order; the game skips an empty key.
         for key in self.custom_tooltips.iter().filter(|key| !key.is_empty()) {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
@@ -413,7 +340,6 @@ impl Block {
     }
 }
 
-/// A recorded definition field as text; `what` names the field.
 fn text<'a>(row: &ModifierDefinitionRow, what: &str, bytes: &'a [u8]) -> Result<&'a str, Refusal> {
     std::str::from_utf8(bytes).map_err(|_| {
         Refusal::NotText(format!(
@@ -424,8 +350,6 @@ fn text<'a>(row: &ModifierDefinitionRow, what: &str, bytes: &'a [u8]) -> Result<
     })
 }
 
-/// the name key, with `$ARG$` when the definition stores one.
-/// A key the content lacks shows as itself.
 fn name(
     row: &ModifierDefinitionRow,
     icons: &dyn TextIcons,
@@ -441,8 +365,6 @@ fn name(
     token_with(icons, loc, key.as_bytes(), arguments).map_err(Refusal::Localisation)
 }
 
-/// sign, number or yes/no, colour and postfix. `precision` is
-/// the caller's cap; `plus` forces a sign; `invert` flips good and bad.
 pub(crate) fn value_text(
     row: &ModifierDefinitionRow,
     value: i64,

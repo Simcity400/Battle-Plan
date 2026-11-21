@@ -1,0 +1,9 @@
+# 0207. Record session changes in the first observing hour
+
+Province overrides and world tension can change between daily refreshes. Their observers select the hour immediately following a rename, reset or tension update. A complete quiet interval can carry the latest committed read without copying native bytes. Invalidating boundaries or incomplete observation force fresh reads. The acquisition worker plans against a held-state identity and the FIFO decode worker validates it again. A failed intervening decode can withdraw that baseline before it publishes. Retain a fresh read only if its observation token stands still across acquisition. No later hour can recreate an unobserved earlier change.
+
+The tension job owns the authenticated manager, ordered source list and dense per-country aggregate cache. The scheduled split stages those raw bytes and each reason string into an owned log. Typed decode uses the ordinary reader and preserves positions, reasons and error scope. A flagged bulk header serves its contained scalar reads. Inline text stays in the header and the log separately owns heap payload and terminator reads. A fault in the contiguous aggregate cache leaves that table unavailable. The raw-mode handoff leaves the typed packets reset until FIFO decode fills them and clears the gate. Accepted staging failures withhold the appropriate outcomes without restarting acquisition.
+
+The native Clock sample already owns the game speed, so the session job does not make a separate speed observation. Pause use is outside the recorded facts. Worker-owned buffers grow from original header demand, and conversion keeps the outcomes and exact reason bytes.
+
+[World tension](../../crates/collector-session/src/session.rs) · [Province names](../../crates/collector-session/src/map_names.rs) · [Session tests](../../crates/collector-session/src/session/tests.rs)

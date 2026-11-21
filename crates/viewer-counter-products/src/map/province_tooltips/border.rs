@@ -1,4 +1,3 @@
-//! Border power and tooltip.
 use super::localise;
 use installed_content_localisation::localisation::{Argument as Arg, Localisation};
 #[cfg(test)]
@@ -107,8 +106,6 @@ pub(super) fn build(
     let share = 100_000_i64.wrapping_sub(enemy_ratio(power));
     let mut text = format!("    {}", localise(loc, "BORDER_WAR_HEADER", &[])?);
     let mut block = String::new();
-    // Append the indented block directly after the header. Leave a blank line
-    // before the ratio and final hint.
     for (key, value, blank) in [
         ("BORDER_WAR_POWER", power[0], false),
         ("BORDER_WAR_POWER_ENEMY", power[1], true),
@@ -133,7 +130,7 @@ pub(super) fn build(
             text.push('\n');
         }
         if !part.is_empty() {
-            text.push_str("        "); // Level 2 is eight spaces.
+            text.push_str("        ");
             text.push_str(part);
         }
     }

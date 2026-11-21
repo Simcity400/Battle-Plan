@@ -1,5 +1,3 @@
-//! Hourly naval-base map inputs beside the bases themselves: the country supply systems'
-//! floating-harbour deployment records and the special-facility flags of program provinces.
 use crate::{
     clock::qpc,
     table_capture::CaptureRows,
@@ -57,7 +55,6 @@ pub struct Captured {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             deployments: 0,
@@ -114,7 +111,6 @@ impl Captured {
 
     pub fn tables(&self) -> [TableView; N] {
         let [deployments, facilities] = self.outcomes();
-        // Two programs can name one province; its flag is one byte, so the first reading stands.
         let mut flagged: Vec<&special_facility_flags::Row> = match collect_vec(
             self.facilities
                 .rows
@@ -130,7 +126,6 @@ impl Captured {
                 ];
             }
         };
-        // Owned row addresses preserve the first captured occurrence without sort scratch.
         flagged.sort_unstable_by_key(|row| (row.province, std::ptr::from_ref(*row) as usize));
         flagged.dedup_by_key(|row| row.province);
         let facilities = match facilities {

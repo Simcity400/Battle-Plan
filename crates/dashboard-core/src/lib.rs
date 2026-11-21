@@ -1,9 +1,4 @@
-//! The dashboard's shared contract: host/viewer protocol, data transport,
-//! reply DTOs, configuration, map settings, content findings and the block
-//! scanner every product reads recordings through. Nothing here names a
-//! product.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;

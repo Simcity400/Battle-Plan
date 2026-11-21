@@ -1,8 +1,3 @@
-//! What the trains' plan reads, held by the layer's plan maker: per table whether the mirrors hold
-//! it, its status, refusal and head, and its rows by key with the cells the plan reads. The layer's
-//! worker copies the newest values of the rows the steps changed out of its own tables into a
-//! [`Batch`], each row once however often it changed; the maker takes the batch whole. At a
-//! compose the maker's store is made from the mirrors the same way.
 
 use super::Columns;
 use crate::{
@@ -13,15 +8,12 @@ use crate::{
     playhead_host::mirror::{Cell, Mirror, Mirrors},
 };
 
-/// Rows a batch is copied from: the mirrors at a compose, the worker's own tables after it.
 pub(super) trait Source {
     fn live(&self, slot: u32) -> bool;
     fn key(&self, slot: u32) -> Option<u128>;
     fn number<T: Number>(&self, column: Num<T>, slot: u32) -> Cell<T>;
     fn list(&self, column: List, slot: u32) -> Cell<&[u8]>;
-    /// A text cell's string bytes; `Err` for a string the strings never named.
     fn text(&self, column: Text, slot: u32) -> Result<Cell<&[u8]>, ()>;
-    /// The row format its cells were written in: an opaque cell decodes at it.
     fn format(&self) -> u16;
 }
 
@@ -84,8 +76,6 @@ use replay_columnar::manifest::Status;
 use replay_data::{Hour, rows::TableId};
 use std::collections::{BTreeSet, HashMap};
 
-/// A text cell's bytes as the plan reads them: the string's, empty for a cell without one, none
-/// for a string the mirror was never named.
 fn bytes<S: Source>(rows: &S, column: Text, slot: u32) -> Option<Vec<u8>> {
     match rows.text(column, slot) {
         Ok(Cell::Value(bytes)) => Some(bytes.to_vec()),
@@ -94,7 +84,6 @@ fn bytes<S: Source>(rows: &S, column: Text, slot: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// An opaque cell as copied, with the row format it was written in, which it decodes at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Encoded {
     pub(super) cell: Cell<Vec<u8>>,
@@ -110,7 +99,6 @@ fn opaque<S: Source>(rows: &S, column: List, slot: u32) -> Encoded {
     Encoded { cell, format: rows.format() }
 }
 
-/// A SupplyNodes row: its census cells, and for the plan country's rows every cell the plan reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Node {
     pub(super) province: u32,
@@ -126,13 +114,11 @@ pub(super) struct Node {
 }
 
 impl Node {
-    /// The same row but for its supply: a change of supply alone moves only the weights.
     pub(super) fn same_but_supply(&self, other: &Self) -> bool {
         Self { available: 0, consumed: 0, ..self.clone() } == Self { available: 0, consumed: 0, ..other.clone() }
     }
 }
 
-/// A SupplyNodes row as copied: whole for the plan country's rows, its census cells for the rest.
 #[derive(Clone, Debug)]
 pub(super) enum NodeCopy {
     Whole(Node),
@@ -166,13 +152,10 @@ pub(super) struct Reserved {
     pub(super) reference: Cell<i32>,
 }
 
-/// A table's state beside its rows, as the mirrors hold it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Meta {
-    /// The mirrors hold the table.
     pub(super) held: bool,
     pub(super) status: Option<Status>,
-    /// Why it is not wholly recorded, in the mirror's words.
     pub(super) refusal: Option<String>,
     pub(super) head: Option<Hour>,
 }
@@ -182,17 +165,14 @@ impl Meta {
         mirror.map_or_else(Self::default, |mirror| Self { held: true, status: mirror.status(), refusal: mirror.not_recorded(), head: mirror.head() })
     }
 
-    /// A worker's own table's state, as [`Self::of`] reads the mirror's.
     pub(super) fn of_table(table: Option<&Table>) -> Self {
         table.map_or_else(Self::default, |table| Self { held: true, status: table.status(), refusal: table.not_recorded(), head: table.head() })
     }
 
-    /// A table the worker keeps only the standing of.
     pub(super) fn of_standing(standing: Option<&Standing>) -> Self {
         standing.map_or_else(Self::default, |standing| Self { held: true, status: standing.status(), refusal: standing.not_recorded(), head: standing.head() })
     }
 
-    /// Rows a lookup may read: the table holds the hour's rows, whole or truncated.
     pub(super) fn readable(&self) -> bool {
         self.held && matches!(self.status, Some(Status::Complete | Status::Truncated { .. }))
     }
@@ -202,7 +182,6 @@ impl Meta {
     }
 }
 
-/// One table's rows by key, each with its slot, and each slot's key.
 #[derive(Debug)]
 pub(super) struct Rows<V> {
     pub(super) meta: Meta,
@@ -221,7 +200,6 @@ impl<V: Clone + PartialEq> Rows<V> {
         self.by_key.get(&key).map(|(_, value)| value)
     }
 
-    /// The row of `key` where a lookup may read rows.
     pub(super) fn row(&self, key: u128) -> Option<&V> {
         self.meta.readable().then(|| self.get(key)).flatten()
     }
@@ -230,13 +208,10 @@ impl<V: Clone + PartialEq> Rows<V> {
         self.by_key.iter().map(|(&key, (_, value))| (key, value))
     }
 
-    /// Copied rows taken in: each slot live with its key and value, or gone. What changed, by key,
-    /// with the value before; a row moved to another slot is the same row.
     fn take<C>(&mut self, copies: HashMap<u32, Option<(u128, C)>>, merge: impl Fn(Option<&V>, C) -> V) -> Vec<(u128, Option<V>)> {
         let mut before: HashMap<u128, Option<V>> = HashMap::new();
         for (slot, copy) in copies {
             let incoming = copy.as_ref().map(|&(key, _)| key);
-            // The slot's row before, when the slot now holds another row or none.
             if let Some(&key) = self.by_slot.get(&slot)
                 && Some(key) != incoming
             {
@@ -267,7 +242,6 @@ impl<V: Clone + PartialEq> Rows<V> {
     }
 }
 
-/// The tables the plan reads, as the maker holds them.
 #[derive(Debug, Default)]
 pub(super) struct Store {
     pub(super) countries: Rows<Country>,
@@ -281,15 +255,11 @@ pub(super) struct Store {
     pub(super) variants: Rows<(u32, u32)>,
     pub(super) edges: Rows<()>,
     pub(super) cooldowns: Rows<i32>,
-    /// ProvinceSupply and NavalBases: whether they are wholly recorded, nothing else.
     pub(super) supply: Meta,
     pub(super) naval: Meta,
-    /// For the proof: each SupplyNodes row's hour of the batch that last copied it (none: made from
-    /// the mirrors).
     pub(super) copied: HashMap<u128, Hour>,
 }
 
-/// The tables whose rows the plan reads, in the order a batch is copied.
 pub(super) const ROWS: [TableId; 11] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -304,7 +274,6 @@ pub(super) const ROWS: [TableId; 11] = [
     TableId::RailCooldowns,
 ];
 
-/// What changed in a batch, by table, each row with its value before.
 #[derive(Default)]
 pub(super) struct Moved {
     pub(super) countries: Vec<(u128, Option<Country>)>,
@@ -318,12 +287,9 @@ pub(super) struct Moved {
     pub(super) variants: Vec<(u128, Option<(u32, u32)>)>,
     pub(super) edges: Vec<(u128, Option<()>)>,
     pub(super) cooldowns: Vec<(u128, Option<i32>)>,
-    /// Tables whose status changed class.
     pub(super) restated: Vec<TableId>,
 }
 
-/// What a plan reads of a status: a truncated table's count of missing rows moves with the hour
-/// and its rows arrive as changes, so only its class counts.
 pub(super) fn class(status: Option<Status>) -> Option<Status> {
     match status {
         Some(Status::Truncated { .. }) => Some(Status::Truncated { missing: 0 }),
@@ -332,8 +298,6 @@ pub(super) fn class(status: Option<Status>) -> Option<Status> {
 }
 
 impl Store {
-    /// Every table whole from the mirrors; SupplyNodes rows whole for country `whole`, the census
-    /// cells for the rest.
     pub(super) fn from_mirrors(mirrors: &Mirrors, columns: &Columns, whole: Option<u32>) -> Self {
         let mut batch = Batch::default();
         for table in ROWS {
@@ -387,7 +351,6 @@ impl Store {
         })
     }
 
-    /// A batch's rows and states taken in: what changed.
     pub(super) fn take(&mut self, batch: Batch) -> Moved {
         let mut moved = Moved::default();
         if let Some(at) = batch.at {
@@ -440,15 +403,12 @@ impl Store {
     }
 }
 
-/// The rails layer's redrawn provinces since the maker last took them: its curves through them go.
 #[derive(Debug, Default)]
 pub(super) struct Forget {
     pub(super) all: bool,
     pub(super) provinces: BTreeSet<u32>,
 }
 
-/// The newest values of the rows the steps changed, each slot once, copied out of the mirrors; the
-/// tables' states; the rails redrawn since the maker last took a batch.
 #[derive(Default)]
 pub(super) struct Batch {
     metas: Vec<(TableId, Meta)>,
@@ -464,18 +424,12 @@ pub(super) struct Batch {
     edges: HashMap<u32, Option<(u128, ())>>,
     cooldowns: HashMap<u32, Option<(u128, i32)>>,
     pub(super) forget: Forget,
-    /// A status the plan reads moved: the batch goes even with no row in it.
     pub(super) restated: bool,
-    /// The hour the worker had folded through when it copied these rows, for the proof.
     pub(super) at: Option<Hour>,
-    /// For the proof: the steps folded into it, the SupplyNodes writes of the cells only the plan
-    /// country's rows are copied with (flag, supply, the walk's cells), and of those the writes to
-    /// the plan country's rows, which mark them.
     pub(super) seen: [u64; 3],
 }
 
 impl Batch {
-    /// The SupplyNodes rows copied into it.
     pub(super) fn node_copies(&self) -> usize {
         self.nodes.len()
     }
@@ -494,24 +448,18 @@ impl Batch {
             + self.cooldowns.len()
     }
 
-    /// The rows copied so far let go, the redrawn provinces kept.
     pub(super) fn drop_rows(&mut self) {
         *self = Self { forget: std::mem::take(&mut self.forget), ..Self::default() };
     }
 
-    /// Every table's state as the mirrors hold it now.
     pub(super) fn metas(&mut self, mirrors: &Mirrors) {
         self.metas = ROWS.into_iter().chain([TableId::ProvinceSupply, TableId::NavalBases]).map(|table| (table, Meta::of(mirrors.get(table)))).collect();
     }
 
-    /// Every table's state as the worker's own tables hold it now.
     pub(super) fn metas_of(&mut self, metas: Vec<(TableId, Meta)>) {
         self.metas = metas;
     }
 
-    /// Row `slot` of `table` as the mirror holds it now, replacing any copy of it taken before: its
-    /// key and the cells the plan reads, or gone. SupplyNodes rows of country `whole` are copied
-    /// whole, the rest by their census cells.
     pub(super) fn copy<S: Source>(&mut self, table: TableId, slot: u32, mirror: &S, columns: &Columns, whole: Option<u32>) {
         let key = mirror.live(slot).then(|| mirror.key(slot)).flatten();
         macro_rules! put {

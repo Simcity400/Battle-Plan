@@ -9,7 +9,6 @@ const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstH
 const part = (id: string, runs: StabilityPart['runs'], extra: Partial<StabilityPart> = {}): StabilityPart => ({ id, term: null, line: null, runs, ...extra });
 const line = { line: 0, kind: 'idea', identity: 'idea_a', identityId: 0, secondaryRaw: '0', valueRaw: '10000', text: null, label: 'Idea A', group: null, groupKind: 'national_spirit' };
 
-// Hours 0-9 and 20-29 known; base 50%, a spirit +10% until hour 4, a remainder -5%.
 const PARTS: MeasureParts = {
   observed: [{ firstHour: 0, lastHour: 9 }, { firstHour: 20, lastHour: 29 }],
   parts: [
@@ -34,19 +33,14 @@ test('parts are known only where recorded, and a part without a run there is zer
 });
 
 test('the largest parts take the palette in order, the rest share one grey layer', () => {
-  // Every colour is used first: with one colour the other two share grey.
   const layers = partLayers(PARTS, 'stability', ['#a'], '#grey');
   assert.deepEqual(layers.map(layer => [layer.id, layer.color]), [['term:base', '#a'], ['__smaller', '#grey']]);
   assert.equal(layers[1].name, SMALLER_LABEL);
-  // Equal weights (10% for 5 hours, 5% for 10) keep id order.
   assert.deepEqual(layers[1].members, ['line:idea:idea_a:0:0', 'remainder']);
-  // With two colours, the one part left over keeps its own name in grey.
   const two = partLayers(PARTS, 'stability', ['#a', '#b'], '#grey');
   assert.deepEqual(two.map(layer => layer.color), ['#a', '#b', '#grey']);
   assert.equal(two[2].name, REMAINDER_LABEL);
-  // With room for every part, none is folded.
   assert.equal(partLayers(PARTS, 'stability', ['#a', '#b', '#c'], '#grey').length, 3);
-  // Only the hours shown count: outside them a part does not take a colour.
   const late = partsWithin(PARTS, [{ firstHour: 20, lastHour: 29 }]);
   assert.deepEqual(partLayers(late, 'stability', ['#a'], '#grey').map(layer => layer.id), ['term:base']);
 });
@@ -63,7 +57,6 @@ test('the stack breaks at unrecorded hours and samples both ends of every change
   const segments = partsStack(PARTS, layers, 5, 0, 29);
   assert.equal(segments.length, 2);
   assert.deepEqual(segments[0].hours, [0, 4, 5, 9]);
-  // At hour 4 the spirit is on top of the base; at hour 5 it is gone.
   const base = segments[0].bands[layers.findIndex(layer => layer.id === 'term:base')];
   const spirit = segments[0].bands[layers.findIndex(layer => layer.id === 'line:idea:idea_a:0:0')];
   assert.deepEqual([base.high[1], spirit.high[1], spirit.high[2]], [50, 60, 50]);
@@ -101,7 +94,6 @@ test('a measure’s parts over a view are their lines’ bins, known where the d
   assert.ok(parts.parts.every(item => item.id !== 'total'));
   const unnamed = partsFromLines(['1', '9'], new Map([['1', lines.get('1')!], ['9', summary([bucket(0, 5, 0.2)])]]), new Map([['1', names.get('1')!]]));
   assert.equal(unnamed.parts[0].id, 'part:9', 'a part not named yet keeps its key, never another’s name');
-  // Tiled lines with the head at hour 8: bins stop at the head's bin (6-11), which holds the value at the head to it.
   const tiled = (summary: ChartSummary, value: number): ChartSummary => ({ ...summary, tiles: { binHours: 6, valueAt: () => value } });
   const headed = partsFromLines(['1', '2'], new Map([['1', tiled(lines.get('1')!, 0.7)], ['2', tiled(lines.get('2')!, 0.4)]]), names, 8);
   assert.deepEqual(headed.observed, [{ firstHour: 0, lastHour: 8 }]);
@@ -144,7 +136,6 @@ test('the value range counts a band crossing the whole view', () => {
   const flat: MeasureParts = { observed: [{ firstHour: 0, lastHour: 1000 }], parts: [part('term:base', [run(0, 1000, '50000')], { term: 'base' })] };
   const layers = partLayers(flat, 'stability', ['#a'], '#grey');
   const segments = partsStack(flat, layers, 5, 0, 1000);
-  // No sample falls between hours 200 and 800, yet the band covers them.
   assert.deepEqual(stackRange(segments, 200, 800), [0, 50]);
   assert.equal(stackRange(segments, 2000, 3000), null);
 });
@@ -170,7 +161,6 @@ test('grouped parts of opposite sign stay on their own side of zero', () => {
 test('a negative part closes below zero when it ends', () => {
   const bands = divergingStack([[50, 50, 50], [-10, -10, 0]]);
   assert.deepEqual([bands[1].low, bands[1].high], [[-10, -10, 0], [0, 0, 0]]);
-  // Leading zeros sit on the side the layer takes later.
   assert.deepEqual(divergingStack([[0, -5]])[0], { low: [0, -5], high: [0, 0] });
 });
 
@@ -187,7 +177,6 @@ test('a thousand staggered parts are stacked by sweeping their changes', () => {
     part(`p${index}`, Array.from({ length: 100 }, (_, runIndex) => run(runIndex * 1000 + index, runIndex * 1000 + index, '1000')))) };
   const layers = partLayers(many, 'stability', ['#a', '#b', '#c', '#d', '#e', '#f', '#g', '#h'], '#grey');
   const [segment] = partsStack(many, layers, 5, 0, 99_999);
-  // At hour 5 exactly one part (p5) holds 1%.
   const at = segment.hours.indexOf(5);
   assert.equal(Math.max(...segment.bands.map(band => band.high[at])), 1);
 });
@@ -200,7 +189,6 @@ test('twenty thousand parts over twenty thousand stretches are stacked a segment
 });
 
 test('parts add up as the engine adds them, wrapping at 64 bits', () => {
-  // The reviewer's case: base and modifier wrap negative; the clamp brings the value to 0.
   assert.equal(engineSum(['9223372036854775000', '1000', '9223372036854775616']), 0n);
   assert.equal(engineSum(['100', '-40']), 60n);
 });

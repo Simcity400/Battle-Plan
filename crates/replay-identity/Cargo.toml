@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-# A valid identity (`test_fixtures::identity`), for other crates' tests.
 test-support = []
 
 [dependencies]

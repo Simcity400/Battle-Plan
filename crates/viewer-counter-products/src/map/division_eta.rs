@@ -1,32 +1,3 @@
-//! Selected route queries and counter projections over shared movement timing.
-//!
-//! Each moving division's first-edge progress follows route integration over its
-//! recorded `DivisionMovement` route ([`replay_derive::eta_derive::division_progress`]). Its
-//! arrival times are estimates ([`replay_derive::eta_derive::estimate`]): the native walk
-//! over the recorded route from `Divisions.province`, each edge at the native
-//! land speed of the recorded stat-block base speed (`DivisionMovement.base_speed`)
-//! with the recorded speed terms ([`viewer_foundation::movement_timing::HourTerms`]):
-//! the combat movement base of a division in combat, the country and commander block
-//! modifiers and armour speed, the location state's speed and controller terms, the
-//! priority sub-unit's and its categories' entries, location weather, supply (at the
-//! template's special-forces share, with the noncore-supply term), enemy air and
-//! retreat terms, each edge's terrain, fort, snow, commander terrain, river (with the
-//! relation's river crossing factor) and infrastructure terms, and the organisation and
-//! fuel factors, floored at the native 1 km/h and scaled by the content's movement
-//! scale; a strategic redeployment no modifier blocks at the road or rail speed, and a
-//! naval transfer or an edge to or from the sea at the logical owner's transport speed.
-//! Edge distances, terrain flags and the movement defines come from the
-//! matching content stack ([`MovementContent`]), never the recording.
-//!
-//! The progress is the game's movement-arrow fill target, and The game draws that arrow only for a
-//! unit of the player's own country that is selected (the unit's selected byte; for a navy also its
-//! task force's selection word). The viewer's selection drives the movement-arrow layer. Counter
-//! and figure positions use the settled route point in [`viewer_foundation::map::counter_move`].
-//!
-//! Counter hovers ([`CounterQueries`]) word a division's estimate, a railway
-//! gun's fresh native route query and a task force's stored route. A row the
-//! hour cannot measure has no estimate or no progress rather than a
-//! substituted zero, and keeps its reason.
 
 use super::counter_content::Content;
 use viewer_foundation::map::movement_reads::ReadOperands;
@@ -51,17 +22,11 @@ pub(crate) enum CounterUnit {
 
 #[derive(Debug)]
 pub(crate) struct CounterPreview {
-    // Independent signed fixed5 result; caller owns ceiling/i32 narrowing/visibility.
     pub(crate) duration: Result<i64, String>,
-    // Actual fresh search output, source excluded; no actual-route substitute.
     pub(crate) route: Vec<u32>,
 }
 
 impl CounterQueries<'_> {
-    /// A prospective route to `target`: the native route search
-    /// for divisions and railway guns. A task force's search needs range,
-    /// theatre and nearest-base admission inputs the recording does not hold,
-    /// so its preview refuses by name.
     pub(crate) fn preview(
         &self,
         unit: CounterUnit,
@@ -80,8 +45,6 @@ impl CounterQueries<'_> {
     }
 }
 
-/// Reached counter queries in one hover or diagnostics batch. Whole-frame
-/// indexes are built lazily once; every requested route still runs native A*.
 pub(crate) struct CounterQueries<'a> {
     content: &'a Content,
     reads: ReadOperands<'a>,
@@ -111,7 +74,6 @@ impl<'a> CounterQueries<'a> {
         }
     }
 
-    /// Share this hover's existing World/Cells; no new graph or prospective query.
     pub(crate) fn selected_strait(
         &self,
         through: u32,
@@ -129,7 +91,6 @@ impl<'a> CounterQueries<'a> {
         moves.selected_strait(through, raw_owner)
     }
 
-    /// The same hover's borrowed World, directed owners and text services.
     pub(crate) fn selected_move_message(
         &self,
         unit: CounterUnit,
@@ -185,8 +146,6 @@ impl<'a> CounterQueries<'a> {
         moves.selected_transport_message(selected, target, &content)
     }
 
-    /// A division's arrival duration from this hour's shared estimates
-    /// (the shared hourly ETA cache); see [`arrival`].
     pub(super) fn division_remaining(&self, division: u64, ours: bool) -> Result<i64, String> {
         let etas = self.etas.get_or_init(|| {
             self.content
@@ -206,8 +165,6 @@ impl<'a> CounterQueries<'a> {
         self.query(|inputs, moves| railway::derive(inputs, moves, gun, ours, local_option))
     }
 
-    /// A task force's arrival over its stored ordinary route
-    /// (`TaskForceMapMotion.path`), searching no route.
     pub(crate) fn task_force_remaining(
         &self,
         motion: &replay_data::rows::TaskForceMapMotionRow,

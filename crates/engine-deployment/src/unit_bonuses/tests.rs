@@ -71,9 +71,6 @@ const TARGET_CATEGORY: usize = 0x6000;
 const RECIPIENT: usize = 0x6100;
 const HEAP_LABEL: &[u8] = b"a label on the heap.";
 
-/// One country with two entries: an effect's, with an inline label, an exact
-/// target carrying a battalion grant and a category target; and a doctrine
-/// reward's, with a heap label and no targets.
 fn fixture() -> Fixture {
     let mut memory = Fixture(vec![0; 0x7000]);
     memory.array(0x1000 + crate::cgame_state::COUNTRIES, 0x2000, 2);
@@ -100,11 +97,9 @@ fn fixture() -> Fixture {
     memory.word(GRANT + GRANT_CATEGORY, RECIPIENT as u64);
     memory.array(GRANT + GRANT_STATS, GRANT_VALUES, 2);
     memory.0[GRANT + GRANT_ADD] = 1;
-    // Stored order, with a repeated selector and a zero amount.
     memory.put(GRANT_VALUES, &3_u32.to_le_bytes());
     memory.put(GRANT_VALUES + GRANT_STAT_AMOUNT, &10_000_i64.to_le_bytes());
     memory.put(GRANT_VALUES + GRANT_STAT_STRIDE, &3_u32.to_le_bytes());
-    // The category arm names the target; the definition's own token is not it.
     memory.definition(BY_CATEGORY, 99, 0, &[(5, 7)]);
     memory.put(TARGET_CATEGORY + CATEGORY_TOKEN, &61_u32.to_le_bytes());
     memory.put(RECIPIENT + CATEGORY_TOKEN, &62_u32.to_le_bytes());
@@ -227,7 +222,6 @@ fn entries_keep_their_source_targets_grants_and_labels_in_stored_order() {
     );
 }
 
-/// The demand probe counts every entry and stores none.
 #[test]
 fn the_demand_probe_counts_every_entry() {
     let memory = fixture();
@@ -250,8 +244,6 @@ fn walk_demand(memory: &Fixture) -> Walk {
 fn growing_outputs_follow_a_longer_list_and_larger_payloads() {
     let mut memory = fixture();
     let (_, mut captured) = capture(&memory);
-    // A third entry repeating the first's exact target, and a grant with
-    // more stats than the first capture held.
     memory.array(DEPLOYMENT + cdeployment_status::UNIT_BONUSES, FIRST, 3);
     let third = SECOND + STRIDE;
     memory.entry(third, 0, 0, 0);

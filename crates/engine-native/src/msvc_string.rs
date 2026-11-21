@@ -1,21 +1,13 @@
-//! The supported executable's 64-bit MSVC string layout and exact byte reader.
 
 use engine_sites::Rva;
 use crate::{Memory, read, read_slice};
 
-/// MSVC string inline union or heap pointer, selected by capacity.
 pub const DATA: usize = 0;
-/// MSVC string u64 character length.
 pub const LENGTH: usize = 16;
-/// MSVC string u64 capacity.
 pub const CAPACITY: usize = 24;
-/// MSVC string inline capacity, excluding the terminator.
 pub const INLINE_CAPACITY: u64 = 15;
-/// MSVC string object stride.
 pub const STRIDE: usize = 32;
-/// MSVC string pointer-union alignment.
 pub const ALIGNMENT: usize = 8;
-/// String constructor used for callback filenames.
 pub const CONSTRUCT_BYTES_CANDIDATE_RVA: Rva = Rva(0x0011_f030);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,15 +34,12 @@ impl<const N: usize> Text<N> {
     }
 }
 
-/// Copies the engine's bytes without rounding, truncating, or lossy text conversion.
 pub fn read_text<const N: usize>(memory: &impl Memory, address: usize) -> Option<Text<N>> {
     let mut value = Text::default();
     read_text_inner::<N, false>(memory, address, &mut value)?;
     Some(value)
 }
 
-/// Opt-in exact length/capacity scatter; all string validation, dependent heap
-/// reads and payload observations retain the scalar reader's protocol.
 pub fn read_text_prefetched<const N: usize>(
     memory: &impl Memory,
     address: usize,
@@ -60,9 +49,6 @@ pub fn read_text_prefetched<const N: usize>(
     Some(value)
 }
 
-/// Fill an existing owned string without clearing or copying its unused tail.
-/// Failure may alter payload bytes, but publishes no length; callers must keep
-/// the failed row unavailable. Native observations match `read_text_prefetched`.
 pub(crate) fn read_text_prefetched_into<const N: usize>(
     memory: &impl Memory,
     address: usize,
@@ -95,8 +81,6 @@ fn read_text_inner<const N: usize, const PREFETCHED: bool>(
         }
         (u64::from_le_bytes(length), u64::from_le_bytes(capacity))
     } else {
-        // A later address/range overflow cannot discard a readable length.
-        // The original API also always takes this scalar path.
         (
             read::<u64>(memory, length_address)?,
             read::<u64>(memory, capacity_address?)?,
@@ -105,8 +89,6 @@ fn read_text_inner<const N: usize, const PREFETCHED: bool>(
     read_text_with_layout_into(memory, address, len, capacity, value)
 }
 
-/// Complete the ordinary string protocol after the caller copied its exact
-/// length/capacity fields. The caller must preserve their observation order.
 #[inline]
 pub(crate) fn read_text_with_layout_into<const N: usize>(
     memory: &impl Memory,
@@ -135,9 +117,6 @@ pub(crate) fn read_text_with_layout_into<const N: usize>(
     Some(())
 }
 
-/// Acquisition-local validated string descriptor for caller-owned variable arenas.
-/// Stage heap payloads before the acquisition callback returns; descriptors
-/// must not be retained for deferred reads from live game memory.
 #[derive(Clone, Copy)]
 pub struct Descriptor {
     header: [u8; STRIDE],
@@ -147,9 +126,6 @@ pub struct Descriptor {
     observation: Option<usize>,
 }
 
-/// Acquire an exact payload into a reusable arena, growing only for bytes
-/// already copied successfully. The caller validates the string header and
-/// terminator in its original order; this helper reads neither one.
 pub fn copy_growing(
     memory: &impl Memory,
     source: usize,
@@ -162,8 +138,6 @@ pub fn copy_growing(
     copy_with_policy::<true>(memory, source, len, output, start, unreadable, allocation)
 }
 
-/// Identical payload acquisition for capture and advisory sizing. Hint growth
-/// uses fallible reservations without the capture's terminal allocation hook.
 pub(crate) fn copy_with_policy<const TERMINAL: bool>(
     memory: &impl Memory,
     source: usize,
@@ -177,7 +151,6 @@ pub(crate) fn copy_with_policy<const TERMINAL: bool>(
     {
         return Err(unreadable);
     }
-    // Never initialized: only a successful chunk's bytes are read.
     let mut scratch = [std::mem::MaybeUninit::<u8>::uninit(); GROWING_CHUNK];
     let mut copied = 0;
     while copied < len {
@@ -195,11 +168,8 @@ pub(crate) fn copy_with_policy<const TERMINAL: bool>(
     Ok(())
 }
 
-/// The chunk [`copy_growing`] acquires and grows the arena by.
 const GROWING_CHUNK: usize = 256;
 
-/// One [`copy_growing`] growth step: the arena's initialized length reaches
-/// `end` exactly.
 fn grow_to<const TERMINAL: bool>(
     output: &mut Vec<u8>,
     end: usize,
@@ -217,9 +187,6 @@ fn grow_to<const TERMINAL: bool>(
     Ok(())
 }
 
-/// [`copy_growing`] of bytes already acquired (a held read's): the same
-/// validation, chunks and growth steps, so the arena's initialized length
-/// and failures are those of the fresh copy.
 pub(crate) fn place(
     bytes: &[u8],
     output: &mut Vec<u8>,
@@ -239,8 +206,6 @@ pub(crate) fn place(
     Ok(())
 }
 
-/// Appends one validated string's bytes to a growing arena at `*used` and
-/// returns its span. Only acquisition workers that may grow payloads call it.
 pub fn append(
     memory: &impl Memory,
     address: usize,
@@ -251,15 +216,8 @@ pub fn append(
     append_with_header(memory, &header, arena, used)
 }
 
-/// Heap texts shorter than this take their payload and terminator in one
-/// guarded copy through a stack buffer.
 const JOINED_PAYLOAD: usize = 256;
 
-/// [`append`] for a header the caller already copied in a gathered
-/// record. Validation, failures and bytes are the same. A heap
-/// text under [`JOINED_PAYLOAD`] bytes reads its payload and terminator in one
-/// copy; if that copy fails, the terminator and payload are read separately
-/// in the original order, so the reported failure is unchanged.
 pub(crate) fn append_with_header(
     memory: &impl Memory,
     header: &[u8; STRIDE],
@@ -300,8 +258,6 @@ pub(crate) fn append_with_header(
             .ok()
             .filter(|p| *p != 0)
             .ok_or("string heap pointer invalid")?;
-        // Never initialized: only the bytes of a joined copy that succeeded
-        // are read, and a failed one falls back to the separate reads.
         let mut scratch = [std::mem::MaybeUninit::<u8>::uninit(); JOINED_PAYLOAD];
         if let Some(joined) = (len < JOINED_PAYLOAD)
             .then(|| crate::memory::read_slice_uninit(memory, source, &mut scratch[..len + 1]))
@@ -331,8 +287,6 @@ pub(crate) fn append_with_header(
     Ok((start, len))
 }
 
-/// The heap payload and terminator span a gathered header selects, as
-/// `(address, len)`; `None` for an inline or invalid header. Hints only.
 pub(crate) fn heap_span(header: &[u8; STRIDE]) -> Option<(usize, usize)> {
     let word = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
     let (length, capacity) = (word(LENGTH), word(CAPACITY));
@@ -344,8 +298,6 @@ pub(crate) fn heap_span(header: &[u8; STRIDE]) -> Option<(usize, usize)> {
 }
 
 impl Descriptor {
-    /// Allocation-free owned-word staging for event logs. The callback may
-    /// retain words only, never this descriptor or its native source pointer.
     pub fn copy_words(
         &self,
         memory: &impl Memory,
@@ -373,7 +325,6 @@ impl Descriptor {
         Self::from_header(memory, address, header)
     }
 
-    /// [`Self::read`] over the header the caller already copied from `address`.
     pub fn from_header(
         memory: &impl Memory,
         address: usize,
@@ -412,8 +363,6 @@ impl Descriptor {
         })
     }
 
-    /// Heap bytes to stage during this acquisition, excluding the terminator
-    /// already validated by the reader. Inline bytes need no dependent read.
     pub fn heap_payload(&self) -> Option<(usize, usize)> {
         if self.inline {
             return None;
@@ -422,7 +371,6 @@ impl Descriptor {
         Some((self.source, self.len))
     }
 
-    /// Copies a bounded part of an already validated native string.
     pub fn copy_chunk(
         &self,
         memory: &impl Memory,
@@ -459,8 +407,6 @@ impl Descriptor {
         Ok(())
     }
 
-    /// Worker-owned arenas grow only after payload chunks have been copied;
-    /// a declared foreign length alone never authorizes a large allocation.
     pub fn copy_buffer(
         &self,
         memory: &impl Memory,
@@ -504,8 +450,6 @@ impl Descriptor {
     }
 }
 
-/// The ordinary bounded reader's exact protocol, with a typed owned attempt.
-/// A size-policy rejection retains readable controls for demand-only completion.
 pub(crate) fn read_text_observed<const N: usize, const PREFETCHED: bool>(
     memory: &impl Memory,
     address: usize,

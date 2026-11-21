@@ -1,47 +1,28 @@
-//! CStrategicResource descriptors. Ordinals are engine indices, not dense wire slots.
 
 use crate::{Memory, cstrategic_resource_database, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// Resource primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29ce150);
 
-/// Interned resource token ID, u32.
 pub const TOKEN_ID: usize = 0x08;
-/// CStrategicResource active flag, byte.
 pub const ACTIVE: usize = 0x10;
-/// One-based resource index, i32, assigned from database count.
 pub const INDEX: usize = 0xd8;
-/// CStrategicResource factory cost, i64 fixed point.
 pub const FACTORY_COST: usize = 0xe0;
-/// Additive state resource-modifier key, u32, applied behind the state gate.
 pub const STATE_ADDITIVE_KEY: usize = 0xf0;
-/// State resource-factor key, u32, scaling by nonnegative one plus modifier.
 pub const STATE_FACTOR_KEY: usize = 0xf4;
-/// Temporary state resource modifier key, u32: the term the resources map icon adds while
-/// the state's temporary-resource gate is set.
 pub const TEMPORARY_KEY: usize = 0xf8;
-/// State resource-accumulator modifier key, u32.
 pub const MODIFIER_KEY: usize = 0xfc;
-/// Resource constructor initializing token and ordinal.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0xc1ff60);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// One-based native database index. Zero denotes the null object, not a row.
     pub id: u32,
-    /// Native lexer token, kept distinct from its text and from the database index.
     pub token: u32,
     pub active: u8,
     pub factory_cost: i64,
-    /// Callback-local descriptor address, never serialized or reused next hour.
     pub(crate) address: usize,
 }
 
-/// Reads the authenticated native descriptor census, including inactive rows.
-/// The native token is distinct from its text; no global lexer memory is read.
-/// Reuse this complete census for the dependent pool and exchange walks within
-/// this callback. Capacity is caller-owned and never causes allocation.
 pub fn walk(memory: &impl Memory, base: usize, output: &mut Vec<Row>) -> Outcome {
     walk_buffer(memory, base, crate::walk::Buffer::Growing(output))
 }
@@ -55,7 +36,6 @@ pub fn walk_buffer(
         let database = cstrategic_resource_database::Reader::new(memory, base)?;
         let mut len = 0;
         let mut unread_rows = 0;
-        // Construction assigns one-based database indices.
         output.ensure(database.count().saturating_sub(1) as usize)?;
         for index in 1..database.count() {
             let (_, row) = database.at(index)?;

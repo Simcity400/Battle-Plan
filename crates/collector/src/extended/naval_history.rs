@@ -1,18 +1,3 @@
-//! Pooled naval/history acquisition; conversion and membership joins run off-thread.
-//!
-//! Source-fed split (copy/decode): hourly LandTheatres headers, daily
-//! LandTheatreGroups/LandTheatreMembers/AirTheatres/AirTheatreGroups/
-//! AirTheatreMembers details, and the hourly order-of-battle block (OrdersGroups,
-//! OrdersGroupMembers, ArmyGroupMembers) move to the single FIFO decode
-//! worker in their own source-fed payload. The four
-//! non-source-fed theatres move with the five source-fed tables because
-//! they share the `ctheatre::walk` and OOB walks; splitting would duplicate
-//! those walks with separate censuses. Each stages its own root refs from
-//! its own copies with no cross-family decoded roots. The optional actual
-//! Country0 header batch reuses complete OOB roster proof or freshly observed
-//! empty regular/army headers before its count certificate commits. Rail, convoys and battle
-//! results use their typed callback paths; supremacy and sunk ships retain
-//! independent raw payloads.
 
 use crate::{
     raw::RawLog,
@@ -78,7 +63,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Explicit storage for fixed synthetic read/fault fixtures.
     #[cfg(test)]
     fn fixture() -> Self {
         Self {
@@ -95,7 +79,6 @@ impl Capacities {
         }
     }
 
-    /// Live attach/cadence hints; successful siblings retain their floors.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -254,11 +237,6 @@ impl Capacities {
     }
 }
 
-/// The shared rail walk's tables (RailCooldowns, RailEdges and the selected
-/// rail building inputs), captured in their own job with the held
-/// [`RailStore`] and then installed in the frame's pack
-/// ([`Captured::install_rails`]). The walk reads only the game state, so it
-/// leaves in the first burst.
 pub(crate) struct RailPart {
     cooldowns: CaptureRows<cprovince_railway_info::Row>,
     rail_buildings: CaptureRows<crailway_manager::fresh_inputs::RailwayBuildingRow>,
@@ -270,7 +248,6 @@ pub(crate) struct RailPart {
 }
 
 impl RailPart {
-    /// Empty storage, which the walk grows on its worker.
     pub(crate) fn vacant() -> Self {
         Self {
             cooldowns: CaptureRows::new(0),
@@ -299,9 +276,6 @@ impl RailPart {
         self.edges.reset();
     }
 
-    /// The hour's rail walk; `rails`, the held outputs, carries unchanged
-    /// batches ([`RailStore`]), and absent every info is read afresh.
-    /// Returns the worker ticks, also kept for the install.
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -332,8 +306,6 @@ impl RailPart {
         self.ticks
     }
 
-    /// The job did not complete: every rail table fails, as the Late capture
-    /// fails them.
     pub(crate) fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.reset();
         let active = |table| {
@@ -402,7 +374,6 @@ pub struct Captured {
     results: CaptureRows<cnaval_combat_results::Row>,
     result_members: CaptureRows<cnaval_combat_results::MemberRow>,
     result_countries: CaptureRows<cnaval_combat_results::CountryRow>,
-    /// One scratch slot per result row: the walk pairs rows with their province buckets in it.
     result_slots: Vec<cnaval_combat_results::ResultSlot>,
     sunk: CaptureRows<csunk_ship_info::Record>,
     groups: CaptureRows<corders_group::GroupRow>,
@@ -420,26 +391,9 @@ pub struct Captured {
     wings_finished: bool,
     source_ticks: [u64; 3],
     active: [bool; N],
-    /// This hour's rail tables were captured by their own job
-    /// ([`Self::install_rails`]); the Late capture keeps them, and its
-    /// worker ticks.
     rails_early: Option<u64>,
-    /// Raw-copy split gate for the hourly source-fed naval block (9 tables).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
-    /// then skips the theatre/OOB walks and the decode worker replays them
-    /// before the ready handoff.
     pub(crate) raw_mode: bool,
-    /// Raw-copy split gate for the hourly supremacy payload
-    /// (NavalSupremacy). Set by the game thread every hour with a valid raw
-    /// payload; `capture` then skips the typed walk and the decode worker
-    /// fills the rows before the ready handoff. Preserved across resets,
-    /// cleared by the worker after decode.
     pub(crate) supremacy_raw_mode: bool,
-    /// Raw-copy split gate for the hourly sunk-ships payload (SunkShips).
-    /// Set by the game thread every hour with a valid raw payload; `capture`
-    /// then skips the typed walk and the decode worker fills the rows before
-    /// the ready handoff. Preserved across resets, cleared by the worker
-    /// after decode.
     pub(crate) sunk_raw_mode: bool,
 }
 
@@ -447,12 +401,10 @@ const SKIPPED: Outcome = Outcome::Unavailable {
     reason: replay_data::cadence::SKIPPED_REASON,
 };
 
-/// The hour staged no supremacy payload for the decode worker.
 const SUPREMACY_NOT_STAGED: Outcome = Outcome::Unavailable {
     reason: "naval supremacy payload not staged this hour",
 };
 
-/// The hour staged no source-fed naval payload for the decode worker.
 const THEATRES_NOT_STAGED: &str = "naval theatre payload not staged this hour";
 
 fn reserved_raw_demand(count: Option<u32>) -> Option<(usize, usize)> {
@@ -472,8 +424,6 @@ fn failed(active: bool, reason: &'static str) -> Outcome {
 }
 
 impl Captured {
-    /// Late owns the residual typed walks; independent raw payloads keep their
-    /// gates and are installed normally after this terminal result.
     pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
         self.reserved_land_count = None;
@@ -482,7 +432,6 @@ impl Captured {
             self.supremacy.fail(failed(self.active[0], reason));
         }
         self.convoys.fail(failed(self.active[1], reason));
-        // Rails captured by their own job keep that job's outcome.
         if self.rails_early.take().is_none() {
             self.cooldowns.fail(failed(self.active[2], reason));
             self.rail_buildings.fail(failed(self.active[2], reason));
@@ -507,7 +456,6 @@ impl Captured {
         }
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -565,13 +513,11 @@ impl Captured {
         }
     }
 
-    /// Freeze the requested tables before contexts and shared map callbacks.
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.active =
             TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
     }
 
-    /// The daily theatre details; LandTheatres headers are walked every hour.
     pub(crate) fn theatres_active(&self) -> bool {
         self.active[5]
     }
@@ -585,7 +531,6 @@ impl Captured {
         self.theatre_names.reset();
     }
 
-    /// Call before shared map acquisition; capture() preserves these source visits.
     pub fn reset(&mut self) {
         self.reset_tables();
         self.orders_sources.reset();
@@ -675,7 +620,7 @@ impl Captured {
             Outcome::Unavailable { .. } => 0,
         };
         let reserved_demand = if self.reserved_land_count.is_some() {
-            0 // The committed Rows length already includes this suffix.
+            0
         } else {
             self.reserved_land_required_rows
         };
@@ -808,7 +753,6 @@ impl Captured {
         self.set_order_of_battle(memory, base, roots, source);
     }
 
-    /// All three tables use the same authenticated registry census.
     fn set_order_of_battle(
         &mut self,
         memory: &impl Memory,
@@ -916,8 +860,6 @@ impl Captured {
         self.wings_finished = true;
         self.source_ticks[1] = self.source_ticks[1].saturating_add(elapsed(begin));
     }
-    /// Typed fallback takes the joined original membership payload. Larger
-    /// storage swaps into the frame, parking its old buffer without allocation.
     pub(crate) fn install_owned_wings(&mut self, job: &mut NavalJob) {
         let begin = qpc();
         self.wing_sources.reset();
@@ -965,8 +907,6 @@ impl Captured {
         self.source_ticks[1] = self.source_ticks[1].saturating_add(ticks);
     }
 
-    /// `rails`: the held rail outputs ([`RailStore`]) the Late job lends;
-    /// absent reads every rail info afresh.
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -979,7 +919,6 @@ impl Captured {
         self.prepare_hour(current_hour, force_full);
         self.reset_tables();
         let mut ticks = [0; N];
-        // The decode worker fills supremacy from the hour's staged payload.
         if !self.active[0] {
             self.supremacy.outcome = SKIPPED;
         } else if !self.supremacy_raw_mode {
@@ -1006,7 +945,6 @@ impl Captured {
             }
         };
 
-        // The decode worker replays the theatres from the hour's staged payload.
         if !self.theatres_active() {
             self.skip_theatre_details();
         }
@@ -1039,15 +977,9 @@ impl Captured {
         ticks[10] = elapsed(begin);
         drop(result_reads);
 
-        // Hourly sunk-ships raw-copy split: on hours with a valid raw payload
-        // the game thread stages bytes via `copy_sunk_refresh` and the decode
-        // worker fills the typed rows before the ready handoff, so the typed
-        // walk is skipped here.
         if !self.active[13] {
             self.sunk.outcome = SKIPPED;
         } else if self.sunk_raw_mode {
-            // Refresh payload staged: leave the reset outcome for the decode
-            // worker, which installs identical rows and outcomes.
             ticks[13] = 0;
         } else {
             let _reads = read_accounting::table(TableId::SunkShips);
@@ -1058,9 +990,6 @@ impl Captured {
         ticks
     }
 
-    /// The shared rail walk (RailCooldowns with its building and selection
-    /// inputs, RailEdges); whether all three outcomes are whole rows.
-    /// Exchanges this pack's rail tables with `part`'s.
     fn swap_rails(&mut self, part: &mut RailPart) {
         std::mem::swap(&mut self.cooldowns, &mut part.cooldowns);
         std::mem::swap(&mut self.rail_buildings, &mut part.rail_buildings);
@@ -1073,9 +1002,6 @@ impl Captured {
         std::mem::swap(&mut self.edges, &mut part.edges);
     }
 
-    /// The hour's rail tables, captured by the ScoresRails job: they replace
-    /// this pack's, which `part` takes back as its storage, and the Late
-    /// capture keeps them. Call after the map sample's [`Self::reset`].
     pub(crate) fn install_rails(&mut self, part: &mut RailPart) {
         let ticks = part.ticks;
         self.swap_rails(part);
@@ -1086,9 +1012,6 @@ impl Captured {
         self.reserved_land_count
     }
 
-    /// Final assembly cannot expose a zero suffix without its singleton.
-    /// Only this private successful count identifies the committed tail;
-    /// unavailable payloads and incomplete positives never have such a count.
     pub(crate) fn withhold_reserved_land_certificate(&mut self) {
         let Some(count) = self.reserved_land_count.take() else {
             return;
@@ -1127,8 +1050,6 @@ impl Captured {
         let positive_len = match self.land.outcome {
             Outcome::Rows { len } if len <= self.land.rows.len() => len,
             _ => {
-                // Header-only demand survives, but incomplete positives can
-                // never be promoted by an optional zero batch.
                 let walk = ctheatre::walk_reserved_land_headers_buffer(
                     memory,
                     base,
@@ -1205,8 +1126,6 @@ impl Captured {
         }
         let (positive, spare) = self.land.rows.split_at_mut(positive_len);
         let zero = &mut spare[..len];
-        // Validate in existing spare storage, restore native order before the
-        // single commit. Positives are never sorted or mutated by this check.
         zero.sort_unstable_by_key(|row| row.id);
         let duplicate = zero.windows(2).any(|rows| rows[0].id == rows[1].id)
             || positive
@@ -1298,12 +1217,10 @@ impl Captured {
         {
             result[9] = source_unavailable();
         }
-        // The list has one replay row. A partial native list omits that whole row.
         result[13] = singleton_outcome(result[13]);
         result
     }
 
-    /// Off-thread only: exact native source joins, byte copies and replay rows.
     pub fn tables(&self) -> [TableView; N] {
         let mut outcomes = self.outcomes();
         if let Some(reason) = membership_issue(
@@ -1683,8 +1600,6 @@ fn valid_sunk(
     })
 }
 
-/// Exact join, never a hash/fingerprint acceptance: native full references are
-/// the keys. Both censuses must be complete; duplicate membership is rejected.
 fn membership_issue<A, B>(
     forward: Outcome,
     rows: &[A],
@@ -1752,7 +1667,6 @@ pub(crate) use theatres::{
 #[cfg(test)]
 pub(crate) use theatres::{copy_naval_oob, copy_naval_theatres, dedup_first_seen};
 
-/// Hourly payload slots in calibration/report order: [supremacy].
 pub(crate) const SUPREMACY_N: usize = 1;
 
 mod supremacy;
@@ -1760,8 +1674,6 @@ pub(crate) use supremacy::{
     SupremacyCopyContext, SupremacyCopyReport, SupremacyJob, copy_supremacy_refresh,
 };
 
-/// Hourly payload slots in calibration/report order: [sunk ships]. The
-/// singleton table carries one row with the retained entry list.
 pub(crate) const SUNK_N: usize = 1;
 
 mod sunk;
@@ -1774,34 +1686,17 @@ pub(crate) use sunk::{SunkCopyContext, SunkCopyReport, SunkJob, copy_sunk_refres
 #[cfg(test)]
 mod tests;
 
-/// Shared synthetic address space for the naval-pack copy/decode harness:
-/// one country, one land theatre with a named group and two members, one
-/// OOB group with members, and the reference registry. Air theatres are
-/// empty (matching the live campaign) with wing handles recorded as a
-/// superset.
 #[cfg(test)]
 pub(crate) mod naval_test_kit;
 
 #[cfg(test)]
 mod reserved_land_tests;
 
-/// Shared synthetic address space for the supremacy copy/decode harness:
-/// two region slots (one null) with dominance containers and value entries.
-/// Mirrors the engine supremacy fixture shapes.
 #[cfg(test)]
 pub(crate) mod supremacy_test_kit;
 
-/// Shared synthetic address space for the sunk-ships copy/decode harness:
-/// two retained records (one with an attribution class and province, one
-/// minimal) with inline and heap names. Mirrors the engine sunk-ship fixture
-/// shapes.
 #[cfg(test)]
 pub(crate) mod sunk_test_kit;
 
-/// Ignored capture-cost bench; see `bench_world` for the assumed scale. Run
-/// with `cargo test -p collector --release -- --ignored l3b_bench --nocapture`.
-/// Each case times the copies through the plain slice and through the
-/// production guarded source, counts one copy's source requests, and times
-/// the decode of the recorded log.
 #[cfg(test)]
 mod l3b_bench;

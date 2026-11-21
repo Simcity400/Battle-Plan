@@ -40,7 +40,6 @@ pub(crate) fn present(
     size: [u32; 2],
     pixels_per_point: f32,
 ) -> io::Result<Vec<u8>> {
-    // Only native scene textures are read; eframe still owns all managed uploads and frees.
     if !matches!(texture, egui::TextureId::User(_)) {
         return Err(invalid(
             "scene presentation requires the registered native scene texture",
@@ -72,7 +71,6 @@ pub(crate) fn present(
     Ok(pixels)
 }
 
-/// The registered scene texture drawn as the window draws it into a texture of `size`, read back.
 fn draw_and_read(
     state: &egui_wgpu::RenderState,
     ctx: &egui::Context,
@@ -105,7 +103,6 @@ fn draw_and_read(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("scene image readback encoder"),
         });
-    // The next window paint rewrites these renderer buffers before using them.
     let mut renderer = state.renderer.write();
     if renderer.texture(&texture).is_none() {
         return Err(invalid(

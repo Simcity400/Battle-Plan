@@ -9,8 +9,6 @@ mod tests {
     use replay_frame::frame::{DecodedFrame, TableView};
     use std::sync::{Arc, atomic::AtomicBool};
 
-    /// Token 7 is `spy_steal` throughout; 8 is `spy_steal` until 109, then `spy_other`; 9 appears
-    /// at 120 as `spy_steal`; 10 holds no text.
     fn frame(hour: i32) -> DecodedFrame {
         let mut frame = source(1, hour, Some(1_000));
         let row = |token: u32, text: &str| LexicalTokenRow { token, literal: text.as_bytes().to_vec() };
@@ -56,8 +54,6 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &crate::answer::lexicon(&source, run).unwrap()), "a forgotten index reads it again");
     }
 
-    /// A token's text at an hour is read once for every reply on a source: asked again, alone or with others already
-    /// read, nothing is read from storage; another hour reads its own texts.
     #[test]
     fn a_tokens_spelling_at_an_hour_is_read_once_for_every_reply_on_a_source() {
         let source = recording();

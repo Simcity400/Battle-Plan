@@ -1,5 +1,3 @@
-//! Country-scoped goal and justification writer certificates. The country
-//! input hook owner installs these patches and forwards diplomacy resets.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -69,15 +67,10 @@ fn observe() {
     }
 }
 
-/// The goal writers' token over every country; equal tokens prove that no
-/// goal writer ran in between.
 pub fn goals_quiet() -> Option<(u64, u64)> {
     WATCHES[0].quiet()
 }
 
-/// The goal writers' sequence of `country`, the first part of its
-/// [`certificate`]: a goal it acts in was added to a war, created, read or
-/// destroyed when it moves.
 pub fn goal_sequence(country: u32) -> Option<(u64, u64)> {
     WATCHES[0].sequence(watch_key(country))
 }
@@ -89,8 +82,6 @@ pub fn certificate(country: u32) -> Option<Certificate> {
     ])
 }
 
-// The shared registry hashes aligned receiver keys. Give each country its
-// own hash input instead of clustering eight dense country ids together.
 fn watch_key(country: u32) -> usize {
     (country as usize + 1) * size_of::<u64>()
 }
@@ -127,7 +118,6 @@ pub fn note_inventory_bytes(bytes: usize) {
     INVENTORY_BYTES.store(bytes, Ordering::Relaxed);
 }
 
-/// A reset names the diplomacy owner; an unreadable receiver revokes all.
 pub fn diplomacy_reset(diplomacy: usize) -> Guard {
     notify_both(named(Receiver::Diplomacy, diplomacy, 0))
 }
@@ -155,8 +145,6 @@ static DAILY_UPDATE_FORWARDER: crate::occupation_changes::LegitimacyUpdateForwar
         },
     };
 
-/// The occupation-owned daily diplomacy update supplies the same diplomacy
-/// receiver. Its returned notification stays live until the native call returns.
 fn expire_goals(diplomacy: usize) -> Option<Notification<'static>> {
     EXPIRY_CALLS.fetch_add(1, Ordering::Relaxed);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -210,9 +198,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// # Safety
-    /// The host has authenticated the image and owns patch publication and
-    /// quiescence for the enclosing country-input hook family.
+    #[doc = " # Safety"]
+    #[doc = " The host has authenticated the image and owns patch publication and"]
+    #[doc = " quiescence for the enclosing country-input hook family."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         BASE.store(base, Ordering::Release);
@@ -292,7 +280,6 @@ impl Drop for Hooks {
     }
 }
 
-/// Whether a payload's vtable may be a justification; a withheld vtable keeps every payload.
 fn justification(vtable: u64) -> bool {
     engine_sites::at(
         BASE.load(Ordering::Acquire),
@@ -307,12 +294,9 @@ macro_rules! callback {
             CALLS[$site].fetch_add(1, Ordering::Relaxed);
             let site = &mutations::SITES[$site];
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            // The shared daily activity writer is reached by other activity
-            // types too. Only justification payloads demand this capture.
             let interested = !matches!(site.receiver, Receiver::Activity)
                 || engine_native::read::<u64>(&memory, a).is_none_or(justification)
                 || site.name == "read_activity";
-            // Other activity types do not demand payloads on insertion.
             let interested = interested
                 && (!matches!(site.receiver, Receiver::ActivityInsert)
                     || engine_native::read::<u64>(&memory, b).is_none_or(justification))
@@ -377,7 +361,6 @@ mod tests {
         assert_eq!(watches[0].sequence(watch_key(2)), Some(other));
         assert_eq!(watches[1].sequence(watch_key(1)), Some(activity));
         let before = watches[0].sequence(watch_key(1));
-        // An unreadable roster/owner must revoke carry rather than assert empty.
         drop(expiry_in(&watches, None, || None));
         assert_ne!(watches[0].sequence(watch_key(1)), before);
         assert_ne!(watches[0].sequence(watch_key(2)), Some(other));
@@ -418,7 +401,7 @@ mod tests {
             .expect("virtual invalid-activity deletion needs its own hook");
         let mut activities = vec![17];
         let guard = notify_in(&watches, Some(1), deletion.receiver.part());
-        activities.clear(); // The native validity pass deletes before progress is visited.
+        activities.clear();
         assert!(watches[1].sequence(watch_key(1)).is_none());
         drop(guard);
         assert!(activities.is_empty());

@@ -1,7 +1,3 @@
-//! Forward status0 operands have no proved text-save counterpart. These are
-//! structural self-checks and explicit native-witness limitations, independent
-//! of CountryCounterInputs' unchanged saved-country comparisons. The existing
-//! hourly table dates the packet; it contains no separate sample-hour scalar.
 use super::{Report, invalid};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -22,8 +18,6 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
             );
             continue;
         };
-        // A bad receiver cannot grant general actual-Country0 support. This
-        // independent admission does not suppress the packet's field checks.
         report.attempt(&format!("{label}.receiver"), |_| {
             positive_receiver(frame, row.country)
         });
@@ -47,8 +41,6 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
         match packet.war {
             Some([presence, retired]) => {
                 report.attempt(&format!("{label}.war"), |_| {
-                    // Retirement is an exact byte, not a boolean domain.
-                    // A null pointer has no pointed retirement byte.
                     if presence > 1 || (presence == 0 && retired != 0) {
                         Err(invalid("forward visibility war is not native null or nonnull presence with an exact retired byte"))
                     } else {
@@ -118,7 +110,6 @@ pub(super) fn compare(frame: &DecodedFrame, report: &mut Report) -> io::Result<(
             }
         }
     }
-    // None of these native-only self-checks counts as a saved comparison.
     Ok(())
 }
 

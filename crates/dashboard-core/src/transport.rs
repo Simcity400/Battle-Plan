@@ -1,6 +1,3 @@
-//! Data requests and bounded, fragmented replies between the host and the
-//! native data service. Only compact JSON crosses; never replay tables or
-//! map pixels.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,35 +8,20 @@ use ts_rs::TS;
 
 use crate::ReplayMetadata;
 
-/// Includes one serialized response, before the control-envelope escaping.
 pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
-/// Data requests a host keeps outstanding at once: the service and the desktop host each refuse
-/// one past it with [`CAPACITY_REACHED`], and the frontend waits for room rather than send it.
 pub const MAX_PENDING_REQUESTS: usize = 64;
 
-/// The service had no room for the request: nothing is said of the product, and
-/// the request may be tried again. The desktop host refuses past the same
-/// admission budget with a message starting with it.
 pub const CAPACITY_REACHED: &str = "Dashboard request capacity reached";
-/// The browser adapter has no room until one of its pending requests finishes.
 pub const BROWSER_BRIDGE_BUSY: &str = "The recording bridge is busy";
-/// The desktop host's pipe to the native service is full (by count or bytes): the
-/// request may be tried again once queued requests have been sent.
 pub const NATIVE_QUEUE_FULL: &str = "Native dashboard request queue is full";
-/// The desktop host's map controls queue is full: the action may be tried again.
 pub const MAP_CONTROLS_BUSY: &str = "Map controls are busy";
-/// Every refusal for want of room that a host or the service may give, by its name in
-/// the frontend's contract. A producer's message starts with one of these, and each
-/// producer builds its message from the constant, never from its own text.
 pub const TRANSIENT_ERROR_NAMES: [(&str, &str); 4] = [
     ("CAPACITY_REACHED", CAPACITY_REACHED),
     ("BROWSER_BRIDGE_BUSY", BROWSER_BRIDGE_BUSY),
     ("NATIVE_QUEUE_FULL", NATIVE_QUEUE_FULL),
     ("MAP_CONTROLS_BUSY", MAP_CONTROLS_BUSY),
 ];
-/// The refusals a reader may try again, exported to the frontend's contract; any
-/// other error is the product's own answer.
 pub const TRANSIENT_ERRORS: [&str; TRANSIENT_ERROR_NAMES.len()] = {
     let mut texts = [""; TRANSIENT_ERROR_NAMES.len()];
     let mut index = 0;
@@ -50,16 +32,12 @@ pub const TRANSIENT_ERRORS: [&str; TRANSIENT_ERROR_NAMES.len()] = {
     texts
 };
 
-/// Whether an error only says there was no room, so the request may be tried again:
-/// it starts with one of [`TRANSIENT_ERRORS`]. The frontend classifies the same way.
 #[cfg(any(test, feature = "test-support"))]
 pub fn transient_error(message: &str) -> bool {
     TRANSIENT_ERRORS
         .iter()
         .any(|refusal| message.starts_with(refusal))
 }
-/// JSON has already escaped control characters. Escaping its quotes/backslashes
-/// again uses at most twice this size, leaving room in the control frame.
 const FRAGMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -86,8 +64,6 @@ impl MapSettingsTarget {
     }
 }
 
-/// A product request against an open source lease. `params` are the product's
-/// own typed parameters, validated by the product.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductRequest {
@@ -124,8 +100,6 @@ pub enum DataCommand {
         source_id: String,
         revision: String,
         settings: Option<crate::protocol::CampaignMapSettings>,
-        /// Flips this setting of the target's stored choices under the store's lock, the
-        /// opposite of its value when the flip runs; never with `settings`.
         flip: Option<crate::protocol::MapSetting>,
     },
     Open {
@@ -137,8 +111,6 @@ pub enum DataCommand {
         id: String,
         request: ProductRequest,
     },
-    /// Joins a recorded stretch of play of the recording at `path` to the history the viewer
-    /// chose: `choice` names the segment it goes on from; null lets the recording decide again.
     HistoryChoice {
         id: String,
         path: String,
@@ -188,18 +160,17 @@ pub enum DataEvent {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceReply {
-    /// A client lease. Several leases may share one underlying source and cache.
+    #[doc = " A client lease. Several leases may share one underlying source and cache."]
     pub id: String,
     pub path: String,
     pub revision: String,
     pub metadata: ReplayMetadata,
-    /// The service's presentation generation as the source opened: a later one means some
-    /// source's widget artwork changed and content-dependent replies are fetched again.
+    #[doc = " The service's presentation generation as the source opened: a later one means some"]
+    #[doc = " source's widget artwork changed and content-dependent replies are fetched again."]
     #[ts(type = "number")]
     pub presentation_generation: u64,
 }
 
-/// Keeps only one serialized result plus the current small transport fragment.
 pub struct ReplyChunks {
     id: String,
     payload: String,
@@ -312,8 +283,6 @@ struct JsonBuffer<'a> {
 impl Write for JsonBuffer<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.cancelled.load(Ordering::Acquire) {
-            // Write::write_all retries Interrupted; cancellation must terminate
-            // serialization instead of entering that retry loop.
             return Err(io::Error::other("Dashboard request was cancelled"));
         }
         let length = self
@@ -341,7 +310,6 @@ impl Write for JsonBuffer<'_> {
     }
 }
 
-/// Serialize within the reply budget, stopping as soon as the request is cancelled.
 pub fn bounded_json(value: &impl Serialize, cancelled: &AtomicBool) -> Result<String, String> {
     let mut output = JsonBuffer {
         bytes: Vec::new(),
@@ -354,9 +322,6 @@ pub fn bounded_json(value: &impl Serialize, cancelled: &AtomicBool) -> Result<St
     String::from_utf8(output.bytes).map_err(|error| error.to_string())
 }
 
-/// The bytes `value` takes as JSON, counted without keeping them; none once past
-/// `limit`, where counting stops. For a product that refuses an over-long reply
-/// with its own message before the transport would.
 pub fn json_len(value: &impl Serialize, limit: usize) -> Option<usize> {
     struct Counter {
         bytes: usize,

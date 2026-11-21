@@ -8,8 +8,6 @@ use std::collections::BTreeMap;
 const STABILITY: u8 = StabilityPartRow::STABILITY;
 const WAR_SUPPORT: u8 = StabilityPartRow::WAR_SUPPORT;
 
-/// Stability `base` plus its modifier term `factor` (none: the key is not registered), clamped
-/// to 0.5; war support 0.2.
 fn inputs_row(country: u32, base: i64, factor: Option<i64>) -> CountryStabilityInputRow {
     let mut keys: Vec<u32> = (0..10).collect();
     if factor.is_none() {
@@ -38,8 +36,6 @@ fn line(country: u32, at: u32, key: u32, kind: u8, identity: &[u8], identity_id:
     CountryStabilityLineRow { country, line: at, key, kind, identity: identity.to_vec(), identity_id, secondary: 0, value, text: text.to_vec() }
 }
 
-/// Country 1's lines: an idea in two lines, an advisor, an unpaired line, a line of nothing, and a
-/// line of another key.
 fn lines() -> Vec<CountryStabilityLineRow> {
     vec![
         line(1, 0, 0, CountryStabilityLineRow::IDEA, b"a", 0, 10_000, b""),
@@ -55,8 +51,6 @@ fn spelled(bytes: Option<&[u8]>) -> String {
     bytes.map_or_else(|| "?".to_owned(), |bytes| String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// A source as `kind:identity:id:secondary:script:saved:template`, anything unknown as `?`, no
-/// template as `-`, a template as `tag@file:line:generated`.
 fn label(source: &Source) -> String {
     let naming = &source.naming;
     let template = match &naming.template {
@@ -163,7 +157,6 @@ fn character(store: &mut Store, token: &[u8]) {
     testing::put(store, TableId::Characters, &row, TEXTS).unwrap();
 }
 
-/// Countries 1 (with lines, its adviser character 7) and 2 (no lines), both read at hour 0.
 fn world(store: &mut Store, hour: i32) {
     for table in TABLES {
         store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
@@ -183,7 +176,6 @@ fn world(store: &mut Store, hour: i32) {
     testing::put(store, TableId::LexicalTokens, &LexicalTokenRow { token: 4, literal: b"TPL".to_vec() }, TEXTS).unwrap();
 }
 
-/// The hours of the store tests, as each edits the world before the writers run.
 fn edit(store: &mut Store, hour: i32) {
     match hour {
         0 => world(store, hour),
@@ -223,7 +215,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// Country `country`'s parts of `measure` as the store holds them, by their sources' labels.
 fn named(store: &Store, country: u32, measure: u8) -> BTreeMap<String, Option<i64>> {
     let keys = store.view(TableId::StabilityPartKeys.index());
     let sources: HashMap<u32, String> = keys
@@ -315,8 +306,6 @@ fn an_hour_recomputes_only_the_countries_its_changes_reach() {
     assert_eq!(owners, [vec![1, 2], vec![1], vec![]], "country 1's read reaches it alone; a renamed character reaches no country");
 }
 
-/// Reads dated anew with nothing they read changed write no part: a country whose parts name no
-/// character is not recomputed, one whose parts do is, for the character's naming at its read.
 #[test]
 fn a_read_dated_anew_with_nothing_changed_sets_no_part() {
     let edit = |store: &mut Store, at: i32| {

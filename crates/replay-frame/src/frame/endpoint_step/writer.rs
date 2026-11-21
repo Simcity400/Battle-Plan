@@ -8,8 +8,6 @@ thread_local! {
     static KEY_BY_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// `run` with this thread's writers applying every delta key by key, for
-/// tests comparing that with the walk of ascending deltas.
 #[cfg(any(test, feature = "test-support"))]
 pub fn key_by_key<T>(run: impl FnOnce() -> T) -> T {
     struct Restore;
@@ -41,7 +39,6 @@ pub struct EndpointWriter {
     observed: Option<Point>,
     emitted: Option<Point>,
     poisoned: bool,
-    /// Each complete table's allocation as an emitted step validated it.
     validated: [Option<Weak<TableView>>; TABLE_COUNT],
 }
 impl EndpointWriter {
@@ -118,12 +115,10 @@ impl EndpointWriter {
                             }
                             state.deleted = deleted;
                         }
-                        // Rows the plain delta cannot describe are written whole.
                         None => state.reset = true,
                     }
                 }
                 (_, TableView::Complete(_)) => state.reset = true,
-                // `encode` writes a truncated or unavailable view as `frame` holds it.
                 _ => {}
             }
         }
@@ -270,9 +265,6 @@ impl EndpointWriter {
         result
     }
 
-    /// Whether [`Self::root`] of `tables` writes one output for both frames,
-    /// as `encode` reads only their point, metrics, and each table's view and
-    /// sample hour.
     pub fn same_root(tables: &[TableId], a: &DecodedFrame, b: &DecodedFrame) -> bool {
         Point::of(a) == Point::of(b)
             && a.metrics == b.metrics
@@ -319,7 +311,6 @@ impl EndpointWriter {
             put(&sample, &mut payload)?;
             match &**view {
                 TableView::Complete(rows) => {
-                    // A named allocation cannot change; only the clock's check reads the hour.
                     if table == TableId::Clock
                         || self.validated[table.index()]
                             .as_ref()
@@ -389,7 +380,6 @@ impl Pending {
         self.introduced.clear();
     }
 
-    /// A delta's deletions, then its changes, key by key.
     fn apply_each(
         &mut self,
         changed: &[DeltaRow],
@@ -445,10 +435,6 @@ impl Pending {
         Ok(())
     }
 
-    /// [`Self::apply_each`] of a delta whose deleted and changed keys each
-    /// ascend, as every validated delta's do. Each key touches only its own
-    /// entries, so every set is searched forward once against its state
-    /// before the pass and then changed in one pass, never shifted per key.
     fn apply_ascending(
         &mut self,
         changed: &[DeltaRow],
@@ -536,8 +522,6 @@ fn ascending(mut keys: impl Iterator<Item = u128>) -> bool {
     };
     keys.all(|key| std::mem::replace(&mut previous, key) < key)
 }
-/// The binary search of `key` among the ascending `items` from `*from`, no
-/// further than any later key's; `*from` becomes where it was found or goes.
 fn gallop<T>(
     items: &[T],
     from: &mut usize,
@@ -557,7 +541,6 @@ fn gallop<T>(
     *from = found.unwrap_or_else(|at| at);
     found
 }
-/// Removes the items at the ascending `positions`.
 fn remove_at<T: Copy>(items: &mut Vec<T>, positions: &[usize]) {
     let Some(&first) = positions.first() else {
         return;
@@ -570,7 +553,6 @@ fn remove_at<T: Copy>(items: &mut Vec<T>, positions: &[usize]) {
     }
     items.truncate(to);
 }
-/// Inserts the ascending `added`, none of them present, into the ascending `items`.
 fn insert_ascending<T: Copy>(
     items: &mut Vec<T>,
     added: &[T],

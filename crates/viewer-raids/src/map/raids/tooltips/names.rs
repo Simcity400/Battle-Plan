@@ -1,6 +1,3 @@
-//! Use the first resolving army, otherwise the wing. An army's name is its recorded
-//! cached name (`DivisionStatus.name`) and a wing's its recorded stored name
-//! (`AirWings.name`); the raid's own naming operands answer recordings without them.
 use super::{content::Content, rules::Text};
 use engine_native::{cname_group_member as member, raid_tooltip_operands::*};
 use installed_content_localisation::localisation::Argument as Arg;
@@ -15,7 +12,6 @@ use viewer_foundation::tooltip_text::localise;
 pub struct Name<'a> {
     rows: Vec<&'a RaidTooltipOperandRow>,
     wing_name: Option<&'a Recorded<Option<Vec<u8>>>>,
-    /// The assigned army's DivisionStatus row, whose cached name the game shows.
     army: Option<&'a DivisionStatusRow>,
 }
 
@@ -176,8 +172,6 @@ impl<'a> Name<'a> {
                 .bytes(WING_NAME)
                 .map_err(|reason| format!("raid wing name was not recorded: {reason}"))?
                 .ok_or("raid wing name was not recorded")?;
-            // Generated inputs and a rename marker are not retained. Share the
-            // ship-name fallback, including language refusal.
             return dashboard_text::scripted_text::stored_text(
                 loc,
                 recorded_language,
@@ -217,11 +211,6 @@ impl<'a> Name<'a> {
             self.value(scalar, member::FLAG_A as u32)? != 0,
         )
     }
-    /// The source ship's name: the display text the game retained for the
-    /// ship, as the army's cached name ([`dashboard::unit_names::army_name`]):
-    /// a stored player name as written, other text in the recording's
-    /// language. Where it cannot show (not recorded, a failed read, another
-    /// display language) the name is rebuilt from its operands.
     pub fn source(
         &self,
         content: &Content,
@@ -235,9 +224,6 @@ impl<'a> Name<'a> {
         if self.value(NAME, SOURCE_SHIP_RESOLVED)? == 0 {
             return Ok(String::new());
         }
-        // The game shows the ship's retained display name. The naming operands
-        // answer where it cannot show: a recording without it, a failed read,
-        // or text stored in another language than the viewer's.
         let rebuild = |reason: String| {
             self.member(
                 content,
@@ -271,7 +257,6 @@ impl<'a> Name<'a> {
                 return rebuild(format!("raid source ship retained display name: {reason}"));
             }
         };
-        // A stored player name shows as written in every language.
         let literal = self.value(SOURCE_NAME, member::FLAG_B as u32)? == 0
             && self
                 .string(SOURCE_CUSTOM_NAME)?
@@ -380,8 +365,6 @@ mod tests {
                 .contains("stored in english without its key")
         );
     }
-    /// A programmatic or generated army name the raid's operands cannot rebuild is the
-    /// army's recorded cached name.
     #[test]
     fn raid_army_names_are_the_recorded_cached_division_name() {
         let raid = RaidRow {
@@ -401,7 +384,6 @@ mod tests {
                 (REFERENCES, 1, 0),
                 (NAME, ARMY_RESOLVED, 1),
                 (NAME, WING_RESOLVED, 0),
-                // A programmatic name: the operands keep no localisation provenance.
                 (NAME, member::FLAG_B as u32, 1),
                 (NAME, member::OVERRIDE_NAME_LENGTH as u32, 1),
             ]
@@ -451,7 +433,6 @@ mod tests {
                 Err(expected) => assert!(raw(&frame, &loc).unwrap_err().contains(expected)),
             }
         }
-        // Stored text keeps the recording-language guard.
         put::<tables::DivisionStatus>(
             &mut frame,
             vec![DivisionStatusRow {
@@ -690,7 +671,6 @@ mod tests {
             values
         };
         for (cached, literal, language, expected) in [
-            // The game shows its cache, a stored programmatic name included.
             (
                 chunks(b"Schlachtschiff Bismarck"),
                 false,
@@ -704,9 +684,7 @@ mod tests {
                 "german",
                 Err("stored in english without its key"),
             ),
-            // A stored player name shows as written in every language.
             (chunks(b"Hood"), true, "german", Ok("Hood")),
-            // Text in another language falls back to the naming operands.
             (chunks(b"Bismarck"), true, "german", Ok("Hood")),
             (
                 vec![(
@@ -718,7 +696,6 @@ mod tests {
                 "english",
                 Err("retained display name was not recorded: native string terminator"),
             ),
-            // A recording without the cache keeps the rebuild's refusal.
             (vec![], false, "english", Err("programmatic unit name")),
         ] {
             let mut values = vec![

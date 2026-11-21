@@ -1,36 +1,22 @@
-//! The recording's modifier definitions by script name, with the native rules playback
-//! applies to modifier entries the content stores: the eligibility shared by the
-//! emptiness test and effective-value getter, and the getter's clamp. Each definition
-//! joins its lexical token's literal (ModifierDefinitions, LexicalTokens); the
-//! eligibility callback's flags are the hour's `SimulationFeatures.dlc_mask`.
 
 use crate::rows::{LexicalTokenRow, ModifierDefinitionRow, column, mask, tables};
 use replay_frame::frame::{Rowset, Tables};
 use std::{borrow::Cow, collections::BTreeMap};
 
-/// `engine_native::modifier_definition::CLAMP_MAXIMUM`: the getter clamps an eligible value to
-/// [0, 100000].
 pub const CLAMP_MAXIMUM: u32 = engine_native::modifier_definition::CLAMP_MAXIMUM;
 
-/// The fields of a definition the registry itself reads.
 pub const DEFINITION: u64 =
     mask::<ModifierDefinitionRow>(&["token", "flags", "feature_selector", "eligibility"]);
 const LITERAL: usize = column::<LexicalTokenRow>("literal");
 const DLC_MASK: u64 = mask::<crate::rows::SimulationFeatureRow>(&["dlc_mask"]);
 
 pub struct Registry<'a> {
-    /// Each definition, in index order.
     definitions: Vec<Cow<'a, ModifierDefinitionRow>>,
-    /// Each named definition's folded literal, to its place in `definitions`.
     by_name: BTreeMap<Vec<u8>, usize>,
-    /// `SimulationFeatures.dlc_mask`: flags returned by the authenticated eligibility
-    /// callback; `None` when the hour did not record it.
     dlc_mask: Option<u32>,
 }
 
 impl<'a> Registry<'a> {
-    /// Joins each definition to its lexical token's literal. A definition
-    /// whose token the recording does not hold is refused by name.
     pub fn new<'t>(
         definitions: &'a [ModifierDefinitionRow],
         tokens: impl Into<replay_frame::frame::Rows<'t, LexicalTokenRow>>,
@@ -81,8 +67,6 @@ impl<'a> Registry<'a> {
         })
     }
 
-    /// The frame's complete ModifierDefinitions and LexicalTokens, and its
-    /// SimulationFeatures flags when recorded.
     pub fn from_frame(frame: &'a dyn replay_frame::frame::DecodedSource) -> Result<Self, String> {
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
@@ -96,9 +80,6 @@ impl<'a> Registry<'a> {
         Self::new(definitions, tokens, dlc_mask)
     }
 
-    /// [`Self::from_frame`] of any frame's tables, each definition holding the fields `fields`
-    /// names beside the registry's own ([`DEFINITION`]); a spelling is read only for a
-    /// definition's token.
     pub fn from_tables<F: Tables + ?Sized>(frame: &'a F, fields: u64) -> Result<Self, String> {
         let definitions = frame
             .complete_rows::<tables::ModifierDefinitions>(fields | DEFINITION)
@@ -123,8 +104,6 @@ impl<'a> Registry<'a> {
         )
     }
 
-    /// The definition a content-stored entry names (its script name, which
-    /// the lexer folds).
     pub fn named(&self, name: &str) -> Result<&ModifierDefinitionRow, String> {
         self.by_name
             .get(name.as_bytes().to_ascii_lowercase().as_slice())
@@ -139,9 +118,6 @@ impl<'a> Registry<'a> {
             .map_err(|_| format!("modifier definition {index} is missing"))
     }
 
-    /// Eligibility used by the emptiness test and effective-value getter: a zero feature selector, or a
-    /// selector the callback's flags meet. A null callback (`eligibility`
-    /// 0) makes every selected feature ineligible.
     pub fn eligible(&self, definition: &ModifierDefinitionRow) -> Result<bool, String> {
         if definition.feature_selector == 0 {
             return Ok(true);
@@ -158,14 +134,10 @@ impl<'a> Registry<'a> {
         Ok(definition.feature_selector & flags != 0)
     }
 
-    /// Effective value of a present entry: zero for an ineligible key, the stored value
-    /// clamped to [0, 100000] under `CLAMP_MAXIMUM`, else the stored value. An absent
-    /// entry is zero without consulting the definition.
     pub fn effective(&self, definition: &ModifierDefinitionRow, raw: i64) -> Result<i64, String> {
         Ok(self.rule(definition)?.of(raw))
     }
 
-    /// What [`Self::effective`] makes of every present entry of `definition`.
     pub fn rule(&self, definition: &ModifierDefinitionRow) -> Result<Effective, String> {
         Ok(if !self.eligible(definition)? {
             Effective::Zero
@@ -177,14 +149,10 @@ impl<'a> Registry<'a> {
     }
 }
 
-/// A definition's effective value of a present entry ([`Registry::rule`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effective {
-    /// Ineligible: zero.
     Zero,
-    /// Clamped to [0, 100000].
     Clamped,
-    /// The stored value.
     Stored,
 }
 

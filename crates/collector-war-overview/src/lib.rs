@@ -1,7 +1,3 @@
-//! War overview capture: owned relations, goals, overview countries, name rules,
-//! directional participation, captured provinces and same-side delivery history.
-//! The host owns the WarOverview job's dispatch, loans and table assembly.
-
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;
 use collector_primitives::clock;

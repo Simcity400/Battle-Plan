@@ -4,7 +4,6 @@ import { liveKey } from '../../charts/live.ts';
 import { ZERO_DIVISOR, liveSection, repliedCells } from './liveCells.ts';
 import type { LiveSection } from './liveCells.ts';
 
-/** Two countries' power (group 0: Countries, column 2, keys 100 and 101) and one's coal (group 1: two columns of key 7). */
 const section = (groups: LiveSection['groups']): LiveSection => ({
   groups,
   rows: ['100', '101'],

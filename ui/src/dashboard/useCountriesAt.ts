@@ -18,10 +18,8 @@ import { useContentRevision } from './contentRevision.ts';
 import { useThrottled } from './useThrottled.ts';
 import { heldFacts } from './countryTimeline.ts';
 
-/** How often names and flags follow a moving hour, in milliseconds. */
 export const FOLLOW_MS = 400;
 
-/** Styles from `country-styles`, every country in one request. */
 export const STYLES: FactSpec<CountryStyle> = {
   product: 'country-styles', perRequest: Infinity, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
@@ -29,26 +27,8 @@ export const STYLES: FactSpec<CountryStyle> = {
   held: heldFacts(({ tag, name, color }) => ({ tag, name, color })),
 };
 
-/** A country as a lane names it: its name and flag. */
 export type CountryAt = CountryLabel;
 
-/** Countries named and flagged as the recording showed them at `hour` (a timeline's
- * playhead, or its end). `tags` names the lanes in view; `nameTags` may add names
- * needed for sorting. While the hour moves it is read at most every
- * `FOLLOW_MS`, not once per hour played. What is shown follows the looks rule of the
- * shared kit (`nextLooks`), each part on its own: while a part's read is still going a
- * country keeps the part shown before, so nothing flashes; once it completes, what it
- * gave replaces it, and a part it did not give is not known, never an older value.
- * Looks are held within one recorded stretch and identity bound (`lookPlan`): an hour in a gap reads
- * nothing, and a moment past a gap starts afresh. A name not known falls back to the
- * loading/unavailable wording; a flag not known shows none. `revision`
- * changes as reads arrive, for a chart to redraw. Flag status describes the current
- * read independently of any URL held while it loads. `nameTags` may include every
- * lane being sorted by name; flag requests still use only `tags`. `segmentAt` gives
- * the current identity bound from recorded evidence, or null when unknown. Even
- * before the throttle advances, an older holder's sample is never applied. Name
- * status follows the read; a held native name remains known while its replacement loads. */
-/** The playback head a view follows: its clock, the hour shown at a clock hour, and whether it follows now. */
 export interface CountriesHead { clock: PlaybackController; hour: (clockHour: number) => number | null; on: boolean }
 const IDLE = new PlaybackController();
 const noHour = () => null;
@@ -59,8 +39,6 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const content = useContentRevision(client);
   const moment = Math.floor(hour);
   const throttled = useThrottled(moment, FOLLOW_MS);
-  // Following the head, names are read where one of them last changed at or before it: as at the hour shown, whatever
-  // hour the caller last rendered at.
   const identityHour = useIdentityHour(client, track, nameTags, head?.clock ?? IDLE, active && !!head?.on, head?.hour ?? noHour);
   const read = looksRead(active && !!head?.on, identityHour, throttled, segmentAt);
   const shownHour = read.hour;
@@ -73,10 +51,7 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const tagSets = useMemo(() => ({ flags: new Set(JSON.parse(tagsKey) as string[]), names: new Set(JSON.parse(nameTagsKey) as string[]) }), [tagsKey, nameTagsKey]);
   const allTags = useMemo(() => [...new Set([...tagSets.flags, ...tagSets.names])].sort(), [tagSets]);
   const plan = useMemo(() => lookPlan(track?.branch, allTags, shownHour, read.segmentAt, undefined, true), [track?.branch, allTags, shownHour, read.segmentAt]);
-  // Held looks are replaced, never changed in place, so the map's identity stands for its countries.
   const heldTags = useMemo(() => JSON.stringify([...new Set([...held.looks.keys(), ...allTags])].sort()), [held.looks, allTags]);
-  // Retained leaving rows are guarded too, without asking for their artwork.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], read.segmentAt ? moment : shownHour, read.segmentAt, undefined, true).samples.map(sample => [sample.tag, sample.stretch])),
     [heldTags, track?.branch, moment, shownHour, read.segmentAt]);
   const samples = useMemo(() => plan.samples.filter(sample => segments.get(sample.tag) === sample.stretch), [plan, segments]);
@@ -85,7 +60,6 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const styles = useCountryFactsByKey(client, track, nameWanted, active, STYLES);
   const flags = useCountryFlagsRead(client, track, wanted, active);
   return useMemo(() => {
-    // Merging what finished is idempotent, so a repeated render changes nothing.
     const next = sampledLooks(held, samples, sample => {
       const key = nameKey(sample.hour, sample.tag);
       const flag = flags.get(key);
@@ -114,7 +88,6 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   }, [samples, segments, wanted, styles, flags, held, shownHour, wording, active, track]);
 }
 
-/** Native empty names stay known; only an absent or failed completed read is missing. */
 export function countryReadName(style: LookRead['style'], pending: ReturnType<CountryLabel>, missing: string): Pick<ReturnType<CountryLabel>, 'name' | 'known' | 'nameFailed' | 'nameFailure' | 'nameDetail'> {
   return { name: style === undefined ? pending.name : isFailedFact(style) ? failureText(style, 'Couldn’t load country name.') : style?.name ?? missing,
     known: style === undefined ? pending.known : !isFailedFact(style) && typeof style?.name === 'string',

@@ -1,12 +1,3 @@
-//! Unit leaders (family 32): the leaderboard at an hour ([`UnitLeaders`], rows at an hour), one
-//! leader at an hour ([`career::LeaderHour`]), a leader's whole career ([`career::LeaderCareer`]),
-//! the picker's leaders ([`career::LeaderChoices`]) and portraits ([`LeaderPortraits`]).
-//!
-//! A leader's row, traits and training are the recorded tables at the hour. Battles and trait dates
-//! are the recorder's running `LeaderBattleTotals` and `LeaderTraitDates`, read at the last hour of
-//! each run of the timeline through the hour and summed or folded over them. Visibility is
-//! evaluated at the hour asked in the owner's scope; a leader whose visibility cannot be decided is
-//! withheld by name.
 
 pub mod career;
 #[cfg(test)]
@@ -42,7 +33,6 @@ const PORTRAIT_NAVY: u32 = 2;
 pub const RESULTS_MISSING: &str = "Outcomes require a recorded native result linked to the observed combat. Unfinished combats and missing result coverage remain unknown.";
 const UNCONFIGURED: &str = "Game content is not configured";
 
-/// A leader's full handle: its id above its reference type, as UnitLeaders keys it.
 pub fn handle(row: &UnitLeaderRow) -> u64 {
     (u64::from(row.id) << 32) | u64::from(row.reference_type)
 }
@@ -80,7 +70,6 @@ pub enum LeaderSelection {
 }
 
 impl LeaderSelection {
-    /// Whether a leader whose owner is (canonical slot, tag) is chosen.
     fn keeps(&self, owner: Option<(u32, &str)>) -> bool {
         match self {
             Self::All => true,
@@ -89,12 +78,10 @@ impl LeaderSelection {
     }
 }
 
-/// A raw owner's (canonical slot, tag) at the frame's hour, when both are named.
 fn owned(tags: &Tags, raw: u32) -> Option<(u32, String)> {
     Some((tags.slot(raw)?, tags.tag(raw)?))
 }
 
-/// A trait a reply names by its place in the reply's list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -102,11 +89,10 @@ pub struct LeaderTrait {
     pub token: String,
     pub name: Option<String>,
     pub icon: Option<String>,
-    /// Why the icon is not drawn.
+    #[doc = " Why the icon is not drawn."]
     pub missing: Option<String>,
 }
 
-/// A role as the content names it: rank, the four skills' names and the skill ceiling.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -119,7 +105,6 @@ pub struct LeaderRole {
     pub maximum_skill: Option<i32>,
 }
 
-/// A leader no reply shows at an hour, and why.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -131,7 +116,6 @@ pub struct LeaderWithheld {
     pub reason: String,
 }
 
-/// What the leader replies read of the recorded content, each part with why it is missing.
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     politics: Result<Arc<PoliticsContent>, String>,
@@ -179,8 +163,6 @@ impl Content {
         LeaderRole { owner, kind, category, rank, attribute_names, maximum_skill }
     }
 
-    /// The highest level the content's skill table reaches from `level`; none where a skill's
-    /// requirement is conditional or the table is not read.
     fn maximum_skill(&self, level: i32, category: i32) -> Option<i32> {
         let skills = &self.leaders.as_ref().ok()?.skills;
         if !skills.conditions().is_empty() || level < 0 {
@@ -193,13 +175,11 @@ impl Content {
         Some(ceiling)
     }
 
-    /// The experience the next skill level needs, fixed5.
     pub fn next_required(&self, level: i32, category: i32) -> Option<i64> {
         let required = self.leaders.as_ref().ok()?.skills.next_required_experience(level, category)??;
         Some(i64::from(required) * 100_000)
     }
 
-    /// The experience training `token` needs, fixed5.
     pub fn trait_required(&self, token: &str) -> Option<i64> {
         Some(i64::from(self.leaders.as_ref().ok()?.traits.get(token)?.required_experience()) * 100_000)
     }
@@ -221,7 +201,6 @@ impl Content {
         LeaderTrait { token: token.to_owned(), name, icon, missing }
     }
 
-    /// A character's name: its script token's localisation, else its stored name.
     pub fn person_name(&self, character: Option<&CharacterRow>, lexical: Option<&[LexicalTokenRow]>) -> Option<String> {
         let character = character?;
         let saved = std::str::from_utf8(&character.token).ok()?;
@@ -229,12 +208,10 @@ impl Content {
         self.politics.as_ref().ok()?.character_name(token, saved)
     }
 
-    /// A character's name from its stored name token alone.
     pub fn character_name(&self, saved: &str) -> Option<String> {
         self.politics.as_ref().ok()?.character_name(None, saved)
     }
 
-    /// Formation names are stored text in the recording client's language.
     pub fn stored_text(&self, bytes: &[u8]) -> Option<String> {
         let catalogue = self.catalogue.as_ref().ok()?;
         dashboard_text::scripted_text::stored_text(&catalogue.localisation, &catalogue.recorded_language, bytes, "formation name").ok()
@@ -258,9 +235,6 @@ fn trait_icon(catalogue: &Catalogue, leaders: &Leaders, token: &str) -> Result<S
     catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 32).map_err(|error| error.to_string())
 }
 
-/// The trigger world of `frame`'s hour, built when the first leader needs it: over a frame of the
-/// leaders, their characters and the tokens it decides which roles have conditions; over every
-/// trigger table it evaluates them.
 fn world_of<'a, 'w>(frame: &'a DecodedFrame, content: &'a Content, world: &'w mut Option<Result<World<'a>, String>>) -> Result<&'w World<'a>, String> {
     world
         .get_or_insert_with(|| {
@@ -271,10 +245,6 @@ fn world_of<'a, 'w>(frame: &'a DecodedFrame, content: &'a Content, world: &'w mu
         .map_err(Clone::clone)
 }
 
-/// Whether the roster shows `row` at the frame's hour: the captured-role gate, then the leader's
-/// or its template's visibility in the owner's scope. `Err` names why it cannot be decided.
-/// The trigger world is read once per reply, when the first leader needs it; the core tables'
-/// gaps refuse only a role whose conditions are evaluated.
 pub fn visible<'a>(row: &UnitLeaderRow, frame: &'a DecodedFrame, content: &'a Content, world: &mut Option<Result<World<'a>, String>>) -> Result<bool, String> {
     if row.kind == KIND_ARMY && (row.category as u32) < 2 && row.captured != 0 {
         return Ok(false);
@@ -295,52 +265,36 @@ pub fn visible<'a>(row: &UnitLeaderRow, frame: &'a DecodedFrame, content: &'a Co
     }
 }
 
-/// Whether deciding `row`'s visibility evaluates its role's conditions in the owner's scope: a
-/// role with a nonempty `visible`, which only the hour's every trigger table decides.
 fn conditioned(row: &UnitLeaderRow, world: &World<'_>) -> bool {
     needs_world(row) && matches!(world.decoded_leader_visibility(row), LeaderVisibility::Conditioned(_))
 }
 
-/// The verdicts of leaders whose roles' conditions were evaluated, by run and hour, and the
-/// catalogue they were evaluated through: kept while the recording is open, so an hour asked
-/// again reads no trigger table. Bounded by the hours answered times the leaders with conditions.
 #[derive(Default)]
 pub struct Verdicts {
     catalogue: Option<Arc<Catalogue>>,
     at: HashMap<(u32, i32), HashMap<u64, Result<bool, String>>>,
 }
 
-/// Forgets every kept verdict of `source`.
 pub(crate) fn forget(source: &Source) {
     *source.state::<Verdicts>().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Verdicts::default();
 }
 
-/// Whether deciding `row`'s visibility evaluates a trigger.
 pub fn needs_world(row: &UnitLeaderRow) -> bool {
     row.visibility_choice != 0 || row.template_visibility != 0
 }
 
-/// Every asked leader's battles and trait dates through an hour of a timeline: per run of the
-/// timeline, the recorder's `LeaderBattleTotals` and `LeaderTraitDates` at its last hour through
-/// the hour (less the totals before the timeline enters the run, where it enters late), summed and
-/// folded in run order.
 #[derive(Default)]
 pub struct Tally {
-    /// Counted by facet key (leader id, entry, outcome), as the `leader-battles` log counts them.
     counts: HashMap<u128, u64>,
-    /// Per (leader handle, trait spelling): the hour and class of its date.
     dates: HashMap<(u64, String), (i32, u8)>,
 }
 
-/// One run's tables at an hour: each handle's fought, won and lost, and each (handle, spelling)'s
-/// first gain row and last gain.
 #[derive(Default)]
 struct RunTally {
     battles: Vec<(u64, [u64; 3])>,
     dates: HashMap<(u64, String), ((i32, u8), Option<i32>)>,
 }
 
-/// The leaders a tally reads: every one, or those of one leader id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Asked {
     All,
@@ -356,7 +310,6 @@ impl Asked {
     }
 }
 
-/// One leader's battles counted through an hour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Battles {
     pub fought: u64,
@@ -373,8 +326,6 @@ fn facet(id: u32, entry: u32, outcome: u32) -> u128 {
     (u128::from(id) << 96) | (u128::from(entry) << 64) | (u128::from(outcome) << 32)
 }
 
-/// Run `run`'s totals and dates after `hour`, of the leaders `asked`: the rows the tables hold
-/// then, whatever their status (a writer not run keeps its rows as they were).
 fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked) -> io::Result<RunTally> {
     let recording = query.replay.recording();
     let totals = dashboard_query::cost::storage(|| replay::lanes::at(recording, run, TableId::LeaderBattleTotals, hour, None))?;
@@ -383,8 +334,6 @@ fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked) -> io::Result
 }
 
 impl RunTally {
-    /// The rows of `LeaderBattleTotals` (`totals`) and `LeaderTraitDates` (`dated`) of the leaders
-    /// `asked`.
     fn of(totals: &StoreView<'_>, dated: &StoreView<'_>, asked: Asked) -> Self {
         let mut out = Self::default();
         let view = totals;
@@ -428,7 +377,6 @@ impl Tally {
         self.dates.get(&(leader, token.to_owned())).copied()
     }
 
-    /// The tally of the leaders `asked` through `hour` of `query`'s timeline.
     pub fn read(query: &Query<'_>, hour: i32, asked: Asked) -> io::Result<Self> {
         let mut runs: Vec<(u32, i32, i32)> = Vec::new();
         for stretch in query.timeline.within(query.timeline.first, hour) {
@@ -449,8 +397,6 @@ impl Tally {
         Ok(out)
     }
 
-    /// Adds one run's tables through its last hour on the timeline, `before` them where the
-    /// timeline enters the run at `first`, later than its first hour.
     fn fold(&mut self, through: RunTally, before: Option<&RunTally>, first: i32) {
         let mut add = |battles: &[(u64, [u64; 3])], sign: i64| {
             for &(handle, [fought, won, lost]) in battles {
@@ -478,7 +424,6 @@ impl Tally {
 
 use dashboard_query::log;
 
-/// A logged text or bytes cell as text.
 pub fn cell_text(cell: &log::Cell) -> Option<String> {
     match cell {
         log::Cell::Text(text) => Some(text.clone()),
@@ -487,7 +432,6 @@ pub fn cell_text(cell: &log::Cell) -> Option<String> {
     }
 }
 
-/// A logged number cell; none where it is not recorded or holds none.
 pub fn cell_number(cell: &log::Cell) -> Option<i64> {
     match cell {
         log::Cell::Number(value) => Some(*value),
@@ -495,8 +439,6 @@ pub fn cell_number(cell: &log::Cell) -> Option<i64> {
     }
 }
 
-/// A trait's date as the logs give it: a gain always moves it; a trait held before or first
-/// observed dates it only when the run has no earlier date for it.
 pub fn fold_date(dates: &mut HashMap<(u64, String), (i32, u8)>, key: (u64, String), hour: i32, class: u8) {
     use replay_data::rows::LeaderTraitGainRow as Gain;
     match (dates.get(&key), class) {
@@ -507,7 +449,6 @@ pub fn fold_date(dates: &mut HashMap<(u64, String), (i32, u8)>, key: (u64, Strin
     }
 }
 
-/// The first hour from `from` through `to` the derived battle log was not read, if any.
 pub fn battles_partial_from(query: &Query<'_>, from: i32, to: i32) -> io::Result<Option<i32>> {
     let recording = query.replay.recording();
     for stretch in query.timeline.within(from, to) {
@@ -525,8 +466,6 @@ pub fn battles_partial_from(query: &Query<'_>, from: i32, to: i32) -> io::Result
     Ok(None)
 }
 
-/// What the leader products need beside the frame: the content, the recording's query index and
-/// each run's leader lifetimes.
 pub struct LeadersContext {
     pub content: Content,
     replay: Arc<Replay>,
@@ -557,12 +496,10 @@ impl LeadersContext {
         Ok(Self { content, replay: source.replay(), index: crate::answer::index(source), lifetimes, verdicts })
     }
 
-    /// The verdicts kept for the hour `hour` of run `run`.
     fn verdicts_at(&self, run: u32, hour: i32) -> HashMap<u64, Result<bool, String>> {
         self.verdicts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).at.get(&(run, hour)).cloned().unwrap_or_default()
     }
 
-    /// Keeps `made`, the verdicts evaluated for the hour `hour` of run `run`.
     fn keep(&self, run: u32, hour: i32, made: HashMap<u64, Result<bool, String>>) {
         if made.is_empty() {
             return;
@@ -578,7 +515,6 @@ impl LeadersContext {
         self.index.query(&self.replay, branch)
     }
 
-    /// The first hour of the leader's life holding `hour` in that hour's run.
     pub fn first_seen(&self, run: u32, key: u128, hour: i32) -> Option<i32> {
         let lives = self.lifetimes.get(&run)?;
         let start = lives.partition_point(|life| life.0 < key);
@@ -602,7 +538,6 @@ pub struct UnitLeadersParams {
     pub leaders: LeaderKinds,
 }
 
-/// A leader as the leaderboard shows it at the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -612,10 +547,10 @@ pub struct LeaderRow {
     pub role: LeaderRole,
     pub skill: Option<i32>,
     pub components: [i32; 4],
-    /// The traits held, by place in the reply's `traits`; none where they were not recorded.
+    #[doc = " The traits held, by place in the reply's `traits`; none where they were not recorded."]
     pub traits: Option<Vec<u32>>,
-    /// Each held trait's date, aligned with `traits`: [hour, class] (0 held before, 1 gained, 2
-    /// first observed); none where the logs hold none.
+    #[doc = " Each held trait's date, aligned with `traits`: [hour, class] (0 held before, 1 gained, 2"]
+    #[doc = " first observed); none where the logs hold none."]
     pub trait_dates: Vec<Option<(i32, u8)>>,
     pub first_seen_hour: Option<i32>,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
@@ -633,9 +568,9 @@ pub struct UnitLeadersReply {
     pub leaders: Vec<LeaderRow>,
     pub traits: Vec<LeaderTrait>,
     pub withheld: Vec<LeaderWithheld>,
-    /// Why the leaders are not shown at this hour, when they are not.
+    #[doc = " Why the leaders are not shown at this hour, when they are not."]
     pub missing: Option<String>,
-    /// The first hour up to this one the battle log was not recorded: counts are then lower bounds.
+    #[doc = " The first hour up to this one the battle log was not recorded: counts are then lower bounds."]
     pub battles_partial_from: Option<i32>,
     pub results_missing: String,
     pub warnings: Vec<String>,
@@ -645,7 +580,6 @@ dashboard_base::reply_warnings!(UnitLeadersReply, LeaderPortraitsReply);
 
 const BASE_TABLES: [TableId; 4] = [TableId::UnitLeaders, TableId::UnitLeaderTraits, TableId::Countries, TableId::CountryLinks];
 
-/// The traits a reply names, each once in the order first named.
 #[derive(Default)]
 pub struct TraitList {
     pub traits: Vec<LeaderTrait>,
@@ -664,7 +598,6 @@ impl TraitList {
     }
 }
 
-/// Each leader's held trait spellings in list order, by leader handle.
 pub fn held_traits(rows: &[UnitLeaderTraitRow]) -> BTreeMap<u64, Vec<String>> {
     let mut out: BTreeMap<u64, Vec<(u32, String)>> = BTreeMap::new();
     for row in rows {
@@ -724,8 +657,6 @@ impl AtHour for UnitLeaders {
                 }
                 vec![Read::these(TableId::Characters, kept.iter().map(|row| u128::from(row.character_id))), Read::all(TableId::LexicalTokens)]
             }
-            // Every trigger table, only where a kept leader's role has conditions whose verdict at
-            // this hour is not kept: the leaders, characters and tokens read decide which do.
             2 => {
                 let kept = kept();
                 if !kept.iter().any(|row| needs_world(row)) {
@@ -771,7 +702,6 @@ impl AtHour for UnitLeaders {
         let mut withheld = Vec::new();
         let mut world = None;
         let decided = run.map(|run| context.verdicts_at(run, at.hour)).unwrap_or_default();
-        // Verdicts are kept only from a frame holding the trigger tables.
         let evaluable = core_gap(frame).is_none();
         let mut made = HashMap::new();
         for row in leaders {
@@ -779,7 +709,6 @@ impl AtHour for UnitLeaders {
             if !params.leaders.includes(row.kind) {
                 continue;
             }
-            // Raw owner 0 is no country: a retired character's leader is on no roster, as in the game.
             if row.owner == 0 {
                 continue;
             }
@@ -875,7 +804,6 @@ pub struct LeaderPortraitsReply {
     pub warnings: Vec<String>,
 }
 
-/// A leader's large army or navy portrait as its character's recorded holder selects it.
 fn portrait(frame: &DecodedFrame, reference: u64, politics: &PoliticsContent, edge: u32) -> Result<String, String> {
     let leaders = frame.complete::<tables::UnitLeaders>().map_err(|error| error.to_string())?;
     let row = leaders.binary_search_by_key(&reference, handle).ok().map(|at| &leaders[at]).ok_or("Leader not recorded at this hour")?;

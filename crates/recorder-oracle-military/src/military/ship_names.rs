@@ -1,4 +1,3 @@
-//! Compare serialized naming state; the retained display cache is unsaved.
 use super::Report;
 use installed_content_save::ShipName;
 use replay_data::rows::{Recorded, ShipNamingOperands};

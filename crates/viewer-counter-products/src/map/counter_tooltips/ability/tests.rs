@@ -126,7 +126,6 @@ fn tooltip_commander_is_the_first_army_even_when_the_icon_has_another_caster() {
             first
         );
     });
-    // A native null commander makes this item's entire tooltip absent.
     *frame.tables[TableId::OrdersGroups.index()] =
         TableView::Complete(TableRows::OrdersGroups(vec![OrdersGroupRow {
             handle: 10,
@@ -307,7 +306,6 @@ fn fresh_formation_count_sums_compositions_recursively_and_keeps_repeated_childr
     with_context(&frame, |context| {
         assert_eq!(formation_count(context, &leader).unwrap(), 4)
     });
-    // Complete member coverage never turns a missing army into another class.
     *frame.tables[TableId::OrdersGroupMembers.index()] =
         TableView::Complete(TableRows::OrdersGroupMembers(vec![OrdersGroupMemberRow {
             group: 20,
@@ -334,7 +332,6 @@ fn fresh_formation_count_sums_compositions_recursively_and_keeps_repeated_childr
                 .contains("recursive group cycle")
         )
     });
-    // The native null formation returns zero without reading these tables.
     let null = UnitLeaderRow {
         formation_reference: Recorded::Value(Some(0)),
         ..Default::default()
@@ -377,7 +374,6 @@ fn communications_reads_only_the_selected_native_distance_suffix() {
         TableView::Complete(TableRows::SimulationFeatures(vec![
             SimulationFeatureRow::default(),
         ]));
-    // A disabled feature needs neither formation, content nor either distance.
     with_context(&frame, |context| {
         assert_eq!(communications(context, &leader).unwrap(), "")
     });

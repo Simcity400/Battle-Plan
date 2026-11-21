@@ -1,6 +1,3 @@
-//! Naval invasion routes use mode 0 with forced transfer and region
-//! checks enabled, all other flags clear. Keep heap ties, land-port dead
-//! ends and duplicate entries: they can change equal-cost route selection.
 
 use super::*;
 use crate::province_graph::{heap_pop, heap_push};
@@ -14,9 +11,6 @@ struct Node {
 }
 
 fn heuristic(squared: i32) -> i64 {
-    // Truncate the square root to signed i32, multiply twice with wrapping,
-    // then divide by signed fixed5 scale. A negative square sum produces
-    // INT_MIN from the invalid square root, rather than zero.
     let root = if squared < 0 {
         i32::MIN
     } else {
@@ -26,8 +20,6 @@ fn heuristic(squared: i32) -> i64 {
 }
 
 impl<W: MoveWorld + ?Sized> Mover<'_, W> {
-    /// Use the stored port sea if it resolves, otherwise the first sea
-    /// neighbour in definition order, even across an impassable edge.
     pub fn invasion_sea(&self, province: u32) -> Fact<Option<u32>> {
         let Some(at) = self.graph.dense(province).filter(|_| (province as i32) > 0) else {
             return Ok(None);
@@ -49,10 +41,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         Ok(None)
     }
 
-    /// Source sea excluded, target sea included; equal seas return one entry
-    /// without a search. Post-search navy permission changes only the return
-    /// flag, not the route. `stop_at_owner` is the resolved request country
-    /// only when its raw reference is signed-positive; otherwise it is absent.
     pub fn invasion_route(
         &self,
         army: &Army,
@@ -63,10 +51,7 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         if from == to {
             return Ok(vec![from]);
         }
-        // Preserve this caller's unsupported-content refusal before task-force
-        // access; counter requests use a different precheck order.
         self.native_endpoints(from, to)?;
-        // Check task-force access with naval mode enabled, without a mode-2 node gate.
         if !self.province_access_for_move(army, to, true)? {
             return Ok(Vec::new());
         }
@@ -77,8 +62,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
             .unwrap_or_default())
     }
 
-    /// Shared A* loop. None is failure; Some(empty) is successful equal
-    /// endpoints. Request callers own their prechecks.
     pub(super) fn native_route(
         &self,
         army: &Army,
@@ -117,7 +100,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
             }
             closed[at] = true;
             let id = graph.ids[at];
-            // Stop expansion at the request country's state owner.
             if let Some(country) = stop_at_owner
                 && self.world.state_owner(id)? == country
             {
@@ -180,7 +162,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
     }
 
     fn native_endpoints(&self, from: u32, to: u32) -> Fact<(usize, usize)> {
-        // MoveGraph::new sorts definition IDs, so its last ID proves the bound.
         if self
             .graph
             .ids
@@ -209,8 +190,6 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         {
             return Ok(false);
         }
-        // Forced transfer uses sea/sea or exact port/sea classification,
-        // without mode-2 embarkation/base-level rules. Land-to-land is refused.
         match [self.is_land(from)?, self.is_land(to)?] {
             [true, true] => return Ok(false),
             [true, false] if self.world.port_sea(from)? != to => return Ok(false),

@@ -7,45 +7,28 @@ import { tileHead, valueAtHead } from './head.ts';
 import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, tileLast, tilesOf } from './tile.ts';
 import type { Tile, TileReply } from './tile.ts';
 
-/** A chart's view as it reports it: its first hour, the last hour drawn (the head while playing), the last hour of
- * the frame and its width in pixels. Its bins follow the frame, so a head moving inside it never changes them. */
 export interface TileViewport { from: number; to: number; end: number; width: number }
 
-/** Bins past the hour drawn whose tile is asked ahead, so the head never waits on the next tile. */
 export const AHEAD_BINS = 32;
 
-/** A view that grows (a chart drawing in from its start as the head moves) keeps its bins until it holds this many
- * a pixel: new bins would ask every tile of the view again, where the head's travel asks one per 256 bins. */
 export const HELD_BINS_PER_PIXEL = 4;
 
-/** The bins a view of `hours` hours `width` pixels wide reads, holding `held` (the bins it reads now, at `heldWidth`)
- * while the view only grew past them and they stay within `HELD_BINS_PER_PIXEL` a pixel. */
 export function viewBinHours(hours: number, width: number, held?: { binHours: number; width: number }): number {
   const ideal = binHoursOf(hours, width);
   return held && held.width === width && ideal > held.binHours && hours <= HELD_BINS_PER_PIXEL * width * held.binHours ? held.binHours : ideal;
 }
 
-/** One series of one history, as its tiles are asked. */
 export interface TileLane {
-  /** Names the series: recording, revision, history and family. */
   key: string;
   tags: readonly string[];
-  /** Each tag's spans drawn, when not its whole line. */
   within?: ReadonlyMap<string, readonly HourSpan[]>;
-  /** The history's last hour: a tile filled short of it is asked again. */
   lastHour: number;
-  /** Each tile also carries its drops per bin, drawn as marks. */
   marks?: boolean;
   ask(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): Promise<TileReply>;
-  /** The lane asks through the prepare lane: what it asks may wait there, and it never sends another's tile early. */
   prepared?: boolean;
-  /** Sends at once the ask of these arguments the prepare lane holds waiting (a prepared lane's own asks only). */
   promote?(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): void;
 }
 
-/** A tag's line made of tiles: whole tiles' bins (an hourly line's runs too), its hours not recorded, the holders
- * it meets, and asked with marks, a mark cluster per bin with drops; `head` names it for `followAtHead`. */
-/** What `unrecordedReason` reads of a line: its view and the hours it names not recorded. */
 export interface SpannedLine { summary: Pick<ChartSummary, 'from' | 'to'>; missing: readonly MissingSpan[] }
 
 export interface TiledLine { tag: string; head: string; decimals: number; summary: ChartSummary; missing: MissingSpan[]; parts: TilePart[]; marks: MarkSummary | null }
@@ -53,19 +36,14 @@ export interface TiledLine { tag: string; head: string; decimals: number; summar
 interface Wanted { binHours: number; first: number; last: number; width: number; cell: number; keys: string[] }
 interface Assembled { binHours: number; first: number; last: number; width: number; cell: number }
 
-/** Pixels a mark cluster spans, as the cluster reply drew them. */
 export const CLUSTER_PIXELS = 18;
 
-/** Bins of `binHours` in a mark cell of a view of `hours` hours `width` pixels wide: the whole number of bins nearest
- * eighteen pixels, at least one. `held`, the count in use, is kept until the view's own figure is three quarters of a
- * bin from it, so an hour's jitter in a following view's span never regroups its marks; a zoom does. */
 export function cellBins(hours: number, width: number, binHours: number, held?: number): number {
   const exact = CLUSTER_PIXELS * hours / (Math.max(1, width) * binHours);
   if (held !== undefined && Math.abs(exact - held) < 0.75) return held;
   return Math.max(1, Math.round(exact));
 }
 
-/** A tag's spans of `within` clipped to the hours tile `index` reads, as its address names them. */
 function spansFor(within: TileLane['within'], tag: string, binHours: number, index: number): HourSpan[] | undefined {
   if (!within) return undefined;
   const from = index * TILE_BINS * binHours - binHours, to = (index + 1) * TILE_BINS * binHours - 1;
@@ -78,15 +56,10 @@ const tileKey = (lane: TileLane, tag: string, binHours: number, index: number) =
   return `${lane.key}${lane.marks ? '|marks' : ''}|${binHours}|${index}|${tag}${spans ? `|${JSON.stringify(spans)}` : ''}`;
 };
 
-/** Whether `tile` answers its address for a history whose last hour is `lastHour`. */
 const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.immutable
   || (tile.askedFor ?? -Infinity) >= lastHour
   || (tile.filled === null ? tile.firstHour > lastHour : tile.filled >= Math.min(tileLast(tile), lastHour));
 
-/** The tiles a chart's view needs, kept outside React: a view asks only the tiles the cache lacks, one request per
- * tile for each group of up to `TILE_GROUP` tags lacking it, all at once; a view that moves inside the tiles it
- * holds asks nothing and changes nothing. Its lines are assembled when every tile it needs is held, once per change
- * of that set, never per frame. */
 export class TileView {
   private wanted: Wanted | null = null;
   private lines: ReadonlyMap<string, TiledLine> | null = null;
@@ -96,14 +69,12 @@ export class TileView {
   private readonly cache: TileCache;
   private readonly lane: TileLane;
   private readonly changed: () => void;
-  /** Tile requests sent. */
   asked = 0;
 
   constructor(cache: TileCache, lane: TileLane, changed: () => void) {
     this.cache = cache; this.lane = lane; this.changed = changed;
   }
 
-  /** The lines last assembled, or null before the first. */
   get current(): ReadonlyMap<string, TiledLine> | null { return this.lines; }
   get error(): unknown { return this.failure; }
 
@@ -123,7 +94,6 @@ export class TileView {
     if (held) this.cache.unpin(held.keys);
     this.wanted = { binHours, first, last, width: view.width, cell, keys };
     this.fetch();
-    // The lines held still draw a view inside them: they are made again only with a tile they lack.
     const made = this.assembled;
     if (made && made.binHours === binHours && made.width === view.width && made.cell === cell && made.first <= first && last <= made.last) return;
     this.assemble();
@@ -153,7 +123,6 @@ export class TileView {
         const flight = this.cache.inflight.get(key);
         if (!flight) { lacking.push(tag); continue; }
         waiting.add(flight);
-        // The page waits on a tile the prepare lane asked: it goes now, not in the lane's turn.
         if (!this.lane.prepared) this.cache.joins.get(key)?.();
       }
       for (const flight of waiting) void flight.then(() => this.assemble(), () => {});
@@ -184,7 +153,6 @@ export class TileView {
     });
   }
 
-  /** Every tag's line over the tiles wanted, once all are held. */
   private assemble(): void {
     const wanted = this.wanted;
     if (this.closed || !wanted) return;
@@ -209,7 +177,6 @@ export class TileView {
   }
 }
 
-/** A tile's bins as buckets. */
 export function tileBuckets(tile: Tile, out: (ChartBucket | null)[] = []): (ChartBucket | null)[] {
   const { flags, values, hours, scale, binHours } = tile;
   let present = 0, v = 0;
@@ -227,7 +194,6 @@ export function tileBuckets(tile: Tile, out: (ChartBucket | null)[] = []): (Char
   return out;
 }
 
-/** An hourly tile's runs, each joined to the run of the tile before it goes on from. */
 export function tileRuns(tile: Tile, out: Run[] = []): Run[] {
   const { flags, values, scale } = tile;
   let at = 0;
@@ -243,7 +209,6 @@ export function tileRuns(tile: Tile, out: Run[] = []): Run[] {
   return out;
 }
 
-/** Hourly bins from `runs`, as an hourly view's reply holds them, from `from` through `to`. */
 export function hourlyBuckets(runs: readonly Run[], from: number, to: number): (ChartBucket | null)[] {
   const out: (ChartBucket | null)[] = new Array<ChartBucket | null>(to - from + 1).fill(null);
   for (const run of runs) {
@@ -255,7 +220,6 @@ export function hourlyBuckets(runs: readonly Run[], from: number, to: number): (
   return out;
 }
 
-/** A tile's bins with drops, as (first hour, drops, the line's drops before the bin). */
 function tileDrops(tile: Tile, out: [number, number, bigint][]): void {
   if (!tile.marks) return;
   let ordinal = BigInt(tile.marks.before);
@@ -265,10 +229,6 @@ function tileDrops(tile: Tile, out: [number, number, bigint][]): void {
   }
 }
 
-/** Bins with drops (first hour, drops, drops before, in hour order) as mark clusters: one per cell of `cell` bins of
- * `binHours` on the absolute grid holding any, its hours from its first such bin's first to its last such bin's last,
- * its drops their sum, its first ordinal its first drop's, and its bins (last hour, drops) for the head inside it. A
- * cell's members follow from its hours alone, so a scroll never changes a cluster. */
 export function cellClusters(drops: readonly (readonly [number, number, bigint])[], binHours: number, cell: number): MarkCluster[] {
   const out: MarkCluster[] = [], hours = binHours * cell;
   let at = 0;
@@ -309,9 +269,6 @@ function line(tag: string, head: string, tiles: readonly Tile[], from: number, t
   return { tag, head, decimals: tiles[0].decimals, summary, missing, parts, marks: cell !== null ? { from, to, width, clusters: cellClusters(drops, binHours, cell), tiles: true } : null };
 }
 
-/** Why no line of `lines` (tiled lines by tag, or a ranked reply's lines) holds a value anywhere in its view, when every
- * one's hours not recorded cover the whole of it: the reason naming the most hours. Null while any line may hold a value,
- * or no lines have landed. */
 export function unrecordedReason(lines: ReadonlyMap<string, SpannedLine> | readonly SpannedLine[] | null | undefined): string | null {
   const all = lines ? [...lines.values()] : [];
   if (!all.length) return null;
@@ -334,15 +291,12 @@ export function unrecordedReason(lines: ReadonlyMap<string, SpannedLine> | reado
   return best;
 }
 
-/** The reason most of `reasons` give: a chart of several series, each not recorded, says the commonest. */
 export const mostNamed = (reasons: readonly string[]): string => {
   const counts = new Map<string, number>();
   for (const reason of reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
   return [...counts].reduce((best, entry) => entry[1] > best[1] ? entry : best)[0];
 };
 
-/** The runs of an hourly `line` a view from `from` through `to` reads, as its reply cuts them: the run holding `from`
- * starts a line only where `from` starts its holder's segment. */
 export function viewRuns(line: TiledLine, from: number, to: number): Run[] {
   const segment = line.parts.find(part => part.firstHour <= from && from <= part.lastHour)?.segmentFirstHour;
   return (line.summary.runs ?? []).filter(run => run.lastHour >= from && run.firstHour <= to).map(run => run.firstHour <= from
@@ -350,8 +304,6 @@ export function viewRuns(line: TiledLine, from: number, to: number): Run[] {
     : { ...run, lastHour: Math.min(to, run.lastHour) });
 }
 
-/** The bins of `summary` a view from `from` through `to` reads, as a reply for that view widened to whole bins
- * would hold them: the first starts its line. */
 export function viewBins(summary: ChartSummary, from: number, to: number): (ChartBucket | null)[] {
   const binHours = summary.tiles!.binHours;
   const first = Math.floor(from / binHours) - Math.floor(summary.from / binHours), last = Math.floor(to / binHours) - Math.floor(summary.from / binHours);
@@ -361,7 +313,6 @@ export function viewBins(summary: ChartSummary, from: number, to: number): (Char
 }
 
 const caches = new WeakMap<object, TileCache>();
-/** The tile cache of a dashboard's client. */
 export function tileCache(client: object): TileCache {
   client = (client as { base?: object }).base ?? client;
   let cache = caches.get(client);

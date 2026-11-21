@@ -1,5 +1,3 @@
-//! Region assignment feedback from this view's selection and simulation operands, and the
-//! per-wing check the game's assignment order makes before its sound.
 use super::{Arg, Context, keyed};
 use replay_data::{rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -10,17 +8,13 @@ use viewer_foundation::map::{
     movement_reads::ReadOperands,
 };
 
-/// The wing equipment mission types whose assignment the game checks apart: rockets, gun
-/// emplacements and a kind it never accepts.
 const ROCKET_TYPES: u32 = 0x10000;
 const GUN_EMPLACEMENT_TYPES: u32 = 0x20000;
 const REFUSED_TYPES: u32 = 0x20;
-/// The DLC mask bit of the features rockets and gun emplacements take.
 const SITE_FEATURE: u32 = 1 << 13;
 
 type Counters = super::super::counter_content::Content;
 
-/// The operands an assignment's per-wing reasons read.
 struct Assigning<'a> {
     content: &'a Counters,
     reads: ReadOperands<'a>,
@@ -37,8 +31,6 @@ impl<'a> Assigning<'a> {
         Ok(Self { content, reads, frame, registry, sources: FrameSources::new(frame) })
     }
 
-    /// The assignment restriction (0 accepted, 1 out of reach, 2 carrier on a mission, 3 training,
-    /// 4 raid, 5 no live base) of `wing` to `region`.
     fn reason(&self, wing: &AirWingRow, region: u32) -> Result<usize, String> {
         reason(self.frame, wing, &self.registry, || {
             let members = &self
@@ -77,10 +69,6 @@ impl<'a> Assigning<'a> {
         })
     }
 
-    /// Whether the game's assignment command for `wing` to `region` passes its check, which
-    /// decides its sound: rockets and gun emplacements need their DLC feature, a gun emplacement
-    /// assigns only to its own region, one kind never assigns, and every other wing is accepted
-    /// unrestricted, or on a carrier on a mission when the carrier is in the region.
     fn accepts(&self, wing: &AirWingRow, region: u32) -> Result<bool, String> {
         let feature = || -> Result<bool, String> {
             let mask = self
@@ -109,9 +97,6 @@ impl<'a> Assigning<'a> {
     }
 }
 
-/// The assignment check over its operands, each read only where the game reads it: a rocket's
-/// or gun emplacement's DLC `feature`, a gun emplacement's `site` region (none without a base),
-/// the restriction `reason`, and for a carrier on a mission its `pool` region.
 fn accepted(
     types: u32,
     region: u32,
@@ -131,7 +116,6 @@ fn accepted(
     }
 }
 
-/// A wing's equipment mission types: those its pool's variants were made with, which all match.
 fn mission_types(frame: &DecodedFrame, wing: &AirWingRow) -> Result<u32, String> {
     let variant = frame
         .complete::<tables::WingEquipment>()
@@ -147,7 +131,6 @@ fn mission_types(frame: &DecodedFrame, wing: &AirWingRow) -> Result<u32, String>
         .ok_or_else(|| format!("wing {}'s equipment variant is absent from VariantDefinitions", wing.id))
 }
 
-/// A gun emplacement's region: its state's first province's, or its carrier host's.
 fn site_region(
     content: &Counters,
     frame: &DecodedFrame,
@@ -168,8 +151,6 @@ fn site_region(
     }
 }
 
-/// For each selected wing, in order, whether the game's assignment to `region` passes its
-/// check: the sound it plays, and whether an attached wing waits for confirmation.
 pub fn assignment_checks(
     content: &Counters,
     reads: ReadOperands<'_>,
@@ -223,8 +204,6 @@ pub(super) fn text(context: &Context<'_>, region: u32, selected: &[u64]) -> Resu
     })
 }
 
-/// Assignment restrictions and wording use the pool base. The subsequent
-/// reach query resolves a live transfer override before falling back to it.
 fn range_base<'a>(
     wing: &AirWingRow,
     registry: &'a AirRegistrySources,
@@ -328,8 +307,6 @@ fn feedback(
             &[],
         )?);
         text.push('\n');
-        // Raid and unresolved-base rejections contribute to the partial gate but
-        // deliberately have no explanation text in the native reason loop.
         for (count, key) in counts[1..4].iter().zip([
             "AIR_REGION_RIGHT_CLICK_REASON_NO_COVERAGE",
             "AIR_REGION_RIGHT_CLICK_REASON_CARRIER_ON_MISSION",
@@ -355,20 +332,16 @@ mod tests {
         let no_site = || -> Result<Option<u32>, String> { Err("unread".into()) };
         let no_reason = || -> Result<usize, String> { Err("unread".into()) };
         let no_pool = || -> Result<u32, String> { Err("unread".into()) };
-        // An ordinary wing: unrestricted, out of reach, or on a carrier on a mission there.
         assert_eq!(accepted(0x1, 7, fail, no_site, || Ok(0), no_pool), Ok(true));
         assert_eq!(accepted(0x1, 7, fail, no_site, || Ok(1), no_pool), Ok(false));
         assert_eq!(accepted(0x1, 7, fail, no_site, || Ok(2), || Ok(7)), Ok(true));
         assert_eq!(accepted(0x1, 7, fail, no_site, || Ok(2), || Ok(0xaa)), Ok(false));
-        // Rockets need their feature, then are checked as any wing.
         assert_eq!(accepted(ROCKET_TYPES, 7, || Ok(false), no_site, no_reason, no_pool), Ok(false));
         assert_eq!(accepted(ROCKET_TYPES, 7, || Ok(true), no_site, || Ok(0), no_pool), Ok(true));
-        // Gun emplacements need their feature and assign only to their own region.
         assert_eq!(accepted(GUN_EMPLACEMENT_TYPES, 7, || Ok(false), no_site, no_reason, no_pool), Ok(false));
         assert_eq!(accepted(GUN_EMPLACEMENT_TYPES, 7, || Ok(true), || Ok(Some(7)), no_reason, no_pool), Ok(true));
         assert_eq!(accepted(GUN_EMPLACEMENT_TYPES, 7, || Ok(true), || Ok(Some(8)), no_reason, no_pool), Ok(false));
         assert_eq!(accepted(GUN_EMPLACEMENT_TYPES, 7, || Ok(true), || Ok(None), no_reason, no_pool), Ok(false));
-        // One kind never assigns.
         assert_eq!(accepted(REFUSED_TYPES, 7, fail, no_site, no_reason, no_pool), Ok(false));
     }
 

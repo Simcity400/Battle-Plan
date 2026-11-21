@@ -1,5 +1,3 @@
-//! Base-equipment launch effects: the record lifecycle, the site bases and
-//! the records over a pass.
 use super::*;
 use crate::map::aircraft::launches::{
     AIR_BASE, GUN_EMPLACEMENT, Launch, PASS_SECONDS, ROCKET_SITE,
@@ -22,14 +20,9 @@ fn launch(spawn: f32, length: f32) -> Launch {
     }
 }
 
-/// A record comes on a pass, spawns its entity after its delay, shows it
-/// until its root reads its clip's length, and the next record comes on the
-/// first pass after that. Before, launch effects were only counted.
 #[test]
 fn launch_records_come_on_the_passes_after_their_entity_finishes() {
     assert_eq!(PASS_SECONDS, 2.0);
-    // 0.5 + 2 seconds take two passes; finishing on a pass waits for the
-    // next one, as the builder runs before the record is removed.
     assert_eq!(launch(0.5, 2.0).period(), 4.0);
     assert_eq!(launch(0.5, 1.5).period(), 4.0);
     assert_eq!(launch(0.2, 1.0).period(), 2.0);
@@ -50,29 +43,23 @@ fn launch_records_come_on_the_passes_after_their_entity_finishes() {
     let next = effect.instance(3, 4.6).unwrap();
     assert_eq!(next.animation_epoch, 1);
     assert!((next.animation_phase - 0.1).abs() < 1e-5);
-    // The heading is a whole turn times a fixed-point draw.
     for record in 0..20 {
         let heading = effect.heading(record);
         assert!((0.0..std::f32::consts::TAU).contains(&heading));
     }
     assert_ne!(effect.heading(0), effect.heading(1));
-    // Each record's entity finishes at 2.5 + 4n.
     assert_eq!(effect.finished(2.4, 2.5), Some(0));
     assert_eq!(effect.finished(2.5, 6.4), None);
     assert_eq!(effect.finished(6.4, 6.5), Some(1));
     assert_eq!(effect.finished(0.0, 30.0), Some(6));
     assert_eq!(effect.finished(3.0, 1.0), None);
-    // The delay is the define times a unit draw, on the aircraft clock.
     for seed in 0..50 {
         let delay = Launch::delay(seed, 3.0, 2.0);
         assert!((0.0..1.5).contains(&delay));
     }
-    // A zero-length entity is never shown.
     assert!(launch(0.5, 0.0).instance(0, 0.5).is_none());
 }
 
-/// A launch-flagged record explodes in a province of its mission region's
-/// list, duplicates included, when that province has a place.
 #[test]
 fn a_launch_flagged_record_explodes_in_its_mission_region() {
     let place = |province: u32| Some(([province as f32, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0]));
@@ -95,11 +82,6 @@ fn a_launch_flagged_record_explodes_in_its_mission_region() {
     assert_eq!(effect.explosion(0), None);
 }
 
-/// Every state base takes off where the game's base position finder puts
-/// it ([`viewer_foundation::map::building_facts::SiteSlots::base`]); a kind
-/// other than a rocket site or gun emplacement is an ordinary air base.
-/// Before, every state base took off from the slot literally named
-/// `air_base`.
 #[test]
 fn state_bases_take_off_where_the_game_s_finder_puts_them() {
     let content = launches::Content::for_tests(
@@ -141,8 +123,6 @@ fn state_bases_take_off_where_the_game_s_finder_puts_them() {
     );
 }
 
-/// The smallest drawable mesh the library loads: one triangle with a
-/// material.
 fn mesh_bytes() -> Vec<u8> {
     let mut mesh = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
     for (name, values) in [
@@ -160,9 +140,6 @@ fn mesh_bytes() -> Vec<u8> {
     mesh
 }
 
-/// Assets whose content declares two launch entities, with a strategic
-/// region 5 listing provinces 3, 4 and 3, and their content folder, which
-/// lazy bakes read until the caller removes it.
 fn launch_assets() -> (AircraftAssets, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "viewer-aircraft-launch-effects-{}",
@@ -237,9 +214,6 @@ fn launch_assets() -> (AircraftAssets, std::path::PathBuf) {
     (assets, root)
 }
 
-/// A frame whose wings 1..=5 fly variants 11..=15, whose equipment tokens
-/// spell the SAM, the gun ammunition (wings 3 and 5) and an equipment no
-/// entity is declared for (wing 4).
 fn launch_frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
@@ -284,9 +258,6 @@ fn launch_frame() -> DecodedFrame {
     frame
 }
 
-/// Over one pass a base's province holds one record: a wing whose entity no
-/// content declares starts none and leaves the base free; a launch-flagged
-/// record explodes in its mission region; a bit-17 record does not.
 #[test]
 fn a_pass_starts_one_record_per_base_and_names_what_it_cannot_start() {
     let (assets, root) = launch_assets();
@@ -379,8 +350,6 @@ fn a_pass_starts_one_record_per_base_and_names_what_it_cannot_start() {
         ],
         "{diagnostics:?}"
     );
-    // The entity plays nothing here, so it finishes as it spawns; the delay
-    // is a draw under the define over the clock speed.
     for launch in &started {
         assert_eq!(launch.length, 0.0);
         assert!((0.0..1.5).contains(&launch.spawn));
@@ -397,11 +366,6 @@ fn a_pass_starts_one_record_per_base_and_names_what_it_cannot_start() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// A launch with no delay (a zero maximum) whose entity has no root clip
-/// spawns and finishes at the clock's opening instant. The first drain
-/// reaching that instant takes its explosion once, a swapped-in plan does
-/// not take it again, and the later records come on the passes. Before, no
-/// `(from, to]` covered the opening instant and the first explosion was lost.
 #[test]
 fn a_launch_finishing_at_the_opening_instant_explodes_once() {
     assert_eq!(Launch::delay(9, 0.0, 1.0), 0.0);
@@ -418,7 +382,6 @@ fn a_launch_finishing_at_the_opening_instant_explodes_once() {
         launches: vec![effect],
         ..Default::default()
     };
-    // The scene's first frame drains an empty interval at zero.
     assert_eq!(records(plan.missile_explosions(0.0, 0.0)), [0]);
     assert_eq!(
         records(plan.missile_explosions(0.0, 0.016)),
@@ -434,7 +397,6 @@ fn a_launch_finishing_at_the_opening_instant_explodes_once() {
         Vec::<u32>::new()
     );
     assert_eq!(records(swapped.missile_explosions(0.5, 2.0)), [1]);
-    // A plan whose first drain starts after the opening instant never takes it.
     let mut late = AircraftPlan {
         launches: plan.launches.clone(),
         ..Default::default()
@@ -443,7 +405,6 @@ fn a_launch_finishing_at_the_opening_instant_explodes_once() {
         records(late.missile_explosions(0.5, 1.0)),
         Vec::<u32>::new()
     );
-    // A drain from before the instant takes record 0 once, not twice.
     let mut early = AircraftPlan {
         launches: plan.launches.clone(),
         ..Default::default()

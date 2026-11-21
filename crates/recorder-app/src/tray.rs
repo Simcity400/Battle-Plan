@@ -1,4 +1,3 @@
-//! The tray icon, a ring whose dot is the status at a glance, its tooltip and its right-click menu.
 use crate::{
     panel,
     snapshot::{Light, Phase, Snapshot},
@@ -25,34 +24,25 @@ const SAVE: &str = "save";
 const DISCARD: &str = "discard";
 const QUIT: &str = "quit";
 const NAME: &str = "Battle Plan Recorder";
-/// Start or Stop stands second, after Open.
 const RECORD_AT: usize = 1;
-/// UTF-16 units a notification area tooltip holds before its terminator.
 const TOOLTIP_UNITS: usize = 127;
-/// Windows scales this to the notification area's size.
 const ICON_SIZE: u32 = 32;
 
-/// Last drawn taskbar theme: 0 before drawing, 1 dark, 2 light.
 static DRAWN_THEME: AtomicU8 = AtomicU8::new(0);
 
 fn theme(light_taskbar: bool) -> u8 {
     1 + u8::from(light_taskbar)
 }
 
-/// Start, or Stop with its Save and Discard, never both; separate ids, so a click does what its
-/// item said if the menu changes.
 pub struct TrayMenu {
     menu: Menu<Wry>,
     start: MenuItem<Wry>,
     stop: Submenu<Wry>,
-    /// The latest (can start, can stop) to show.
     wanted: Mutex<(bool, bool)>,
-    /// Stop is in the menu; changed only on the main thread.
     stop_shown: AtomicBool,
 }
 
 impl TrayMenu {
-    /// On the main thread, one change at a time, so the menu ends on the latest state.
     fn follow(&self) -> tauri::Result<()> {
         let (can_start, can_stop) = *self.wanted.lock().unwrap_or_else(PoisonError::into_inner);
         if self.stop_shown.load(Ordering::Relaxed) != can_stop {
@@ -64,7 +54,6 @@ impl TrayMenu {
             self.menu.remove(hidden)?;
             self.menu.insert(shown, RECORD_AT)?;
             if can_stop {
-                // The handle the menu shows the submenu by, not the submenu's own popup handle.
                 without_check_column(unsafe {
                     GetSubMenu(self.menu.hpopupmenu()? as HMENU, RECORD_AT as i32)
                 });
@@ -75,7 +64,6 @@ impl TrayMenu {
     }
 }
 
-/// No item is ever checked, so Windows need not keep a column for check marks.
 fn without_check_column(menu: HMENU) {
     let style = MENUINFO {
         cbSize: size_of::<MENUINFO>() as u32,
@@ -91,7 +79,6 @@ fn without_check_column(menu: HMENU) {
     }
 }
 
-/// The app, then the status the panel's head shows and the recording's name, then any problem.
 pub fn tooltip(snapshot: &Snapshot) -> String {
     let status = match snapshot.phase {
         Phase::Waiting => "Waiting for the game",
@@ -103,7 +90,6 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
         Phase::Unsaved => "Not saved yet",
     };
     let mut text = format!("{NAME}\n{status}");
-    // Waiting names no campaign, as in the panel.
     if let Some(name) = snapshot
         .name
         .as_ref()
@@ -132,7 +118,6 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     cut
 }
 
-/// Mid-tone shades that stand out from both a light and a dark taskbar.
 fn dot_colour(light: Light) -> [u8; 3] {
     match light {
         Light::Ready => [0x22, 0xb0, 0x5a],
@@ -142,9 +127,6 @@ fn dot_colour(light: Light) -> [u8; 3] {
     }
 }
 
-/// RGBA pixels of a `size`-pixel ring around a dot, in the design's 16-pixel
-/// proportions: an 8-pixel ring radius with a 2-pixel stroke and a 3-pixel dot.
-/// Each pixel samples a 4x4 grid so the edges stay smooth.
 pub fn icon_pixels(light: Light, size: u32, light_taskbar: bool) -> Vec<u8> {
     const SAMPLES: u32 = 4;
     let ring: [u8; 3] = if light_taskbar {
@@ -155,7 +137,6 @@ pub fn icon_pixels(light: Light, size: u32, light_taskbar: bool) -> Vec<u8> {
     let dot = dot_colour(light);
     let scale = f64::from(size) / 16.0;
     let centre = f64::from(size) / 2.0;
-    // Half a design pixel inside the edge, so the ring is not clipped.
     let outer = 7.5 * scale;
     let inner = outer - 2.0 * scale;
     let dot_radius = 3.0 * scale;
@@ -201,7 +182,6 @@ fn icon(light: Light) -> Image<'static> {
     )
 }
 
-/// Called on unchanged status polls too, since the taskbar theme can change independently.
 pub fn follow_theme(app: &AppHandle, light: Light) {
     let drawn = DRAWN_THEME.load(Ordering::Relaxed);
     if drawn == 0 || drawn == theme(crate::startup::light_taskbar()) {
@@ -216,7 +196,6 @@ pub fn follow_theme(app: &AppHandle, light: Light) {
 
 pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, OPEN, "Open", true, None::<&str>)?;
-    // Enabled once the recorder has looked for a game.
     let start = MenuItem::with_id(app, START, "Start recording", false, None::<&str>)?;
     let save = MenuItem::with_id(app, SAVE, "Save", true, None::<&str>)?;
     let discard = MenuItem::with_id(app, DISCARD, "Discard…", true, None::<&str>)?;
@@ -259,7 +238,6 @@ pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Show the snapshot's light and tooltip, and whether Start or Stop applies.
 pub fn show(app: &AppHandle, light: Light, tooltip: &str, can_start: bool, can_stop: bool) {
     if let Some(tray) = app.tray_by_id(TRAY_ID)
         && let Err(error) = tray
@@ -317,8 +295,6 @@ mod tests {
         );
     }
 
-    /// A spool slower than the game: the backlog grows past the frames the collector keeps,
-    /// the status line says by how many hours, and says nothing once the spool catches up.
     #[test]
     fn the_status_line_says_how_far_a_slow_spool_falls_behind_and_clears_when_it_catches_up() {
         let mut snapshot = Snapshot {
@@ -355,7 +331,6 @@ mod tests {
                 quiet.to_owned(),
             ]
         );
-        // Only while recording.
         snapshot.behind = Some(9);
         snapshot.phase = Phase::Saving;
         assert_eq!(tooltip(&snapshot), "Battle Plan Recorder\nSaving recording · Germany 1936–1943");
@@ -385,21 +360,16 @@ mod tests {
         ] {
             let pixels = icon_pixels(light, size, false);
             assert_eq!(pixels.len(), (size * size * 4) as usize);
-            // The centre is the dot's colour, fully opaque.
             let centre = pixel(&pixels, size, 16, 16);
             assert_eq!(centre, [colour[0], colour[1], colour[2], 255]);
-            // Between the dot and the ring is clear.
             assert_eq!(pixel(&pixels, size, 16, 16 + 8)[3], 0);
-            // The ring is light on a dark taskbar.
             assert_eq!(pixel(&pixels, size, 16, 16 + 12), [0xd8, 0xd8, 0xd8, 255]);
-            // The corners stay clear.
             assert_eq!(pixel(&pixels, size, 0, 0)[3], 0);
         }
         let light = icon_pixels(Light::Ready, size, true);
         assert_eq!(pixel(&light, size, 16, 16 + 12), [0x3a, 0x3a, 0x3a, 255]);
     }
 
-    /// WCAG relative luminance of an sRGB colour.
     fn luminance(colour: [u8; 3]) -> f64 {
         let linear = |channel: u8| {
             let value = f64::from(channel) / 255.0;
@@ -415,7 +385,6 @@ mod tests {
     #[test]
     fn each_status_colour_stands_out_on_a_light_and_a_dark_taskbar() {
         let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
-        // Windows 11's light and dark taskbars.
         let (light, dark) = (luminance([0xf3, 0xf3, 0xf3]), luminance([0x20, 0x20, 0x20]));
         let lights = [
             Light::Ready,
@@ -428,7 +397,6 @@ mod tests {
             assert!(contrast(dot, light) >= 1.9, "{status:?} on a light taskbar");
             assert!(contrast(dot, dark) >= 3.0, "{status:?} on a dark taskbar");
         }
-        // Four colours, none mistaken for another.
         for (at, first) in lights.iter().enumerate() {
             for second in &lights[at + 1..] {
                 let [a, b] = [dot_colour(*first), dot_colour(*second)];

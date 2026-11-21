@@ -160,8 +160,6 @@ fn a_witnessed_template_hour_compares_equal_unprojected_even_after_a_change_hour
     let scratch = ProjectionScratch::default();
     let mut optimized = FrameEncoder::new();
     let mut reference = FrameEncoder::new();
-    // Hour, whether the capture read nothing, and the hours compared equal
-    // unprojected so far. Hour 2 renames a template.
     for (hour, held, republished) in [
         (0, true, 0),
         (1, true, 1),
@@ -194,8 +192,6 @@ fn a_witnessed_template_hour_compares_equal_unprojected_even_after_a_change_hour
                 };
                 assert_eq!(indices, &[0]);
             }
-            // The first quiet hour after it projects; its configuration
-            // table has no projection.
             3 => assert_eq!(compared, 2),
             _ => {}
         }

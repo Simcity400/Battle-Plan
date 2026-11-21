@@ -1,14 +1,8 @@
-//! Allocation-free retained-log mutation acquisition. Addresses in this private
-//! stream are lifetime keys only; the reducer replaces them with replay keys.
-//! A failed stream invalidates its whole transaction, including earlier parts.
 use crate::combat_log_history as layout;
 use crate::{Memory, cpdx_array::Array, equipment_entry, read};
 use crate::{ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as group};
 use engine_sites::Rva;
 
-/// Fixed-size staging element. Neither a machine pointer nor this private wire
-/// is written to a recording. `root` identifies the affected group or battle;
-/// `item` identifies a month/template, or an ordered array element.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fact {
     pub kind: u64,
@@ -75,7 +69,6 @@ pub const ARRAYS: [usize; 9] = [
     layout::REFERENCES,
 ];
 
-/// Off-thread demand includes attrition/training variants before any log exists.
 pub fn noncombat_writer_demand(
     memory: &impl Memory,
     base: usize,
@@ -177,8 +170,6 @@ pub fn counts(memory: &impl Memory, base: usize, pointer: usize) -> Result<[u32;
     Ok(output)
 }
 
-/// The settled last month only. Own amounts already have a replay source;
-/// enemy amounts are acquired once for this changed month, in native order.
 pub fn last_month(
     memory: &impl Memory,
     base: usize,
@@ -309,8 +300,6 @@ pub fn manpower(
     Ok(())
 }
 
-/// At the total-counter increment, wins has already settled. Predict exactly
-/// the native wrapping increment before the displaced instruction executes.
 pub fn template(
     memory: &impl Memory,
     base: usize,
@@ -376,7 +365,6 @@ fn reference(
     Ok(())
 }
 
-/// Copies complete retained history from an authenticated group header.
 pub fn seed_group(
     memory: &impl Memory,
     base: usize,
@@ -602,9 +590,6 @@ fn side_data_inner(
     Ok(())
 }
 
-/// Supplemental active operands on an already authenticated census side.
-/// The aggregate loss pool's payload is supplied by the existing LossPlan
-/// acquisition, so it is never acquired or authenticated again here.
 pub fn observer(
     memory: &impl Memory,
     base: usize,
@@ -729,7 +714,6 @@ pub fn observer(
         {
             return Err("combat log activity pool class differs");
         }
-        // This pool uses the same serializer admission as side pools.
         let allocations = array(
             &entry,
             pool_at + crate::cequipment_variant_pool::ALLOCATIONS,
@@ -787,7 +771,6 @@ pub fn observer(
     Ok(())
 }
 
-/// Read one reached slot's lifetime state, never the other slots.
 pub fn count(memory: &impl Memory, base: usize, id: u32) -> Result<i16, &'static str> {
     let list = Array::read(
         memory,
@@ -799,9 +782,6 @@ pub fn count(memory: &impl Memory, base: usize, id: u32) -> Result<i16, &'static
     field(memory, element(list, id, 2)?, 0)
 }
 
-/// At the quiet acquisition boundary, settle only slots native writers reached.
-/// Pool growth/reuse is already covered by allocation and lifetime events; the
-/// index names its current occupant. No record payload or unrelated slot is read.
 pub fn settled_counts(
     memory: &impl Memory,
     base: usize,

@@ -10,7 +10,6 @@ import { runAt } from '../series.ts';
 import { usWhole } from '../numberFormat.ts';
 import { signed32, unsigned32 } from '../../dashboard/validation.ts';
 
-/** A native compact model supplies lookups and histories without expanding its samples. */
 export interface CountryPartsAt { total: number | null; values: readonly (number | null)[]; note?: string }
 export interface CountryPartsData {
   histories: readonly CountryDrillHistory[];
@@ -28,7 +27,6 @@ export interface CountryPartsSelection { tag: string; hour: number; key: string 
 
 export function countryPartsSelection(histories: readonly CountryDrillHistory[], tag: string, hour: number): CountryPartsSelection | null {
   if (!signed32(hour)) return null;
-  // A slot is selected as the tag its country holds then.
   const held = historyAt(histories, tag, hour)?.tag;
   if (held === undefined) return null;
   const identity = runAt(histories.find(history => history.tag === held)?.identities ?? [], hour);
@@ -36,7 +34,6 @@ export function countryPartsSelection(histories: readonly CountryDrillHistory[],
   return identity && countryDrillTagAt(spans, hour) === held ? { tag: held, hour, key: countryIdentityKey(identity) } : null;
 }
 
-/** An explicitly saved holder must validate against its source, branch and origin. */
 export function savedCountryPartsSelection(widget: WidgetSpec, track: BoundTrack | undefined): CountryPartsSelection | null | undefined {
   if (!Object.hasOwn(widget.options ?? {}, 'holder')) return undefined;
   const tag = widget.countries.kind === 'tags' && widget.countries.tags.length === 1 ? widget.countries.tags[0] : null;
@@ -59,7 +56,6 @@ export function pinNativeCountryParts(source: WidgetSpec, track: BoundTrack, sel
     holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, selection.tag, slot, countryId]) } };
 }
 
-/** Bind once at the clicked native holder. A later tag reuse cannot replace it. */
 export function bindCountryParts(model: CountryPartsData, tag: string, originHour: number, holder?: string | null) {
   const selected = countryPartsSelection(model.histories, tag, originHour);
   const spans = holder !== undefined && (holder === null || selected?.key !== holder)
@@ -79,7 +75,6 @@ export function bindCountryParts(model: CountryPartsData, tag: string, originHou
           for (const run of shownRuns(runs, identitySpans, range)) bands[index].push(run);
         });
       }
-      // Conflicting aliases are unavailable in both the body and history.
       const events = new Map<number, number>();
       for (const identitySpans of spans.values()) for (const span of identitySpans) {
         events.set(span.firstHour, (events.get(span.firstHour) ?? 0) + 1);
@@ -97,7 +92,6 @@ export function bindCountryParts(model: CountryPartsData, tag: string, originHou
   return { data, tagAt };
 }
 
-/** Shares use exact signed operands; plotting proxies never supply percentages. */
 export function exactPartShare(value: bigint | null, total: number | null): string {
   if (value == null || total == null || total === 0) return '—';
   const denominator = BigInt(total);
@@ -105,7 +99,6 @@ export function exactPartShare(value: bigint | null, total: number | null): stri
   const negative = (numerator < 0n) !== (denominator < 0n);
   const raw = numerator < 0n ? -numerator : numerator;
   const divisor = denominator < 0n ? -denominator : denominator;
-  // Nearest tenth, the existing shared row precision, with exact integer division.
   const tenths = (raw + (negative ? (divisor - 1n) / 2n : divisor / 2n)) / divisor;
   return `${negative && tenths !== 0n ? '-' : ''}${tenths / 10n}${tenths % 10n ? `.${tenths % 10n}` : ''}%`;
 }
@@ -116,7 +109,6 @@ export function pinCountryParts(source: WidgetSpec, track: Pick<BoundTrack, 'id'
   return { ...pinned, options: { ...pinned.options, drillOriginHour: originHour } };
 }
 
-/** The independent total owns the residual, including signed corrections. */
 export function countryPartsRemainder(at: CountryPartsAt | null): bigint | null {
   return at?.total == null ? null : BigInt(at.total) - at.values.reduce<bigint>((sum, value) => sum + BigInt(value ?? 0), 0n);
 }

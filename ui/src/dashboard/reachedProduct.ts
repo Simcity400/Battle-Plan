@@ -18,12 +18,6 @@ import { useViewRead } from './viewRead';
 
 export type { ReachedState };
 
-/** A reached-hour product (one country or unit at the playback hour). Requests
- * are transient, so playback never pushes branch histories out of the shared
- * cache. One read runs at a time per subject: a newer hour never cancels it, so
- * it lands and stays shown while the newest hour is read. `subject` names what
- * the answer is about apart from the hour: a changed subject cancels and drops
- * the old answer. */
 export function useReachedProduct<T>(client: DashboardClient, source: DashboardSource | undefined, request: ProductRequest | null,
   subject: string, active: boolean, validate: (data: unknown) => T): ReachedState<T> {
   const content = useContentRevision(client);
@@ -33,7 +27,6 @@ export function useReachedProduct<T>(client: DashboardClient, source: DashboardS
   return { ...reachedView(read, key), retry: read.retry };
 }
 
-/** Rebinding waits for complete identity history; held history remains usable alongside errors. */
 export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, hour: number, active: boolean, stored: unknown,
   setOption?: (key: string, value: string) => void)
   : ReachedCountry & { holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: Failure; retry: () => void; historyHeld: boolean } {
@@ -41,7 +34,6 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
   const groups = useCountryGroups(runtime, track, active);
   const histories = groups.data?.countryIdentities;
   const chosen = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  // A slot follows its country through tag changes by itself: it is asked by the tag it goes by at the hour, never bound.
   const slot = chosen === null ? null : countryFromKey(chosen);
   const bySlot = typeof slot === 'number';
   const slots = useSlotTags(runtime.client, track, active && bySlot);
@@ -51,7 +43,6 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     const selection = campaign !== undefined && branch !== undefined ? readDatedCountry(stored, campaign, branch) : null;
     return selection?.tag === chosen ? selection : null;
   }, [stored, campaign, branch, chosen]);
-  // A dashboard that cannot keep options binds for this session.
   const [local, setLocal] = useState<{ owner: string; selection: DatedCountrySelection } | null>(null);
   const held = saved ?? (local?.owner === owner ? local.selection : null);
   const keep = (selection: DatedCountrySelection) => {
@@ -63,13 +54,10 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
   const resolved = useMemo(() => selection && histories && track
     ? resolveChoice(histories, groups.complete, selection, track.branch.firstHour, track.branch.lastHour, hour) : null,
   [selection, histories, groups.complete, track, hour]);
-  // Keep a new choice's hour, and a rebinding the complete history settled, once each.
   const kept = fresh ? datedCountryToken(fresh) : resolved?.rebind ? datedCountryToken(resolved.rebind) : null;
   useEffect(() => {
     const next = fresh ?? resolved?.rebind;
     if (next) keep(next);
-    // `kept` names the binding to keep; `keep` and the objects are rebuilt each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kept]);
   const slotTag = typeof slot === 'number' && slots ? slots.tagAt(slot, hour) : null;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
@@ -81,7 +69,6 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     error: groups.error, retry: groups.retry, historyHeld: bySlot || !!histories };
 }
 
-/** Preserve the dated name state for the widget's messages and developer detail. */
 export function useCountryNameAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tag: string | null, hour: number, active: boolean) {
   const available = !!track && !!tag && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const wanted = useMemo(() => available && tag ? [{ hour, tag }] : [], [available, tag, hour]);

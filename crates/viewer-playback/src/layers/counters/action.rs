@@ -1,8 +1,3 @@
-//! The action of the viewing country's divisions (`counter_action::Actions` today), from the
-//! mirrors: the movement row, the destination's controller and whether it is at war with the
-//! division's logical owner (the relations layer), the naval transfers a naval combat names, and
-//! the land and naval combats' attacker countries. Each division remembers what its action read,
-//! so a change of a controller, a transfer or a combat marks only the divisions that read it.
 
 use super::{Columns as Counted, Tables, bytes_of, row, u32s, u64s};
 use crate::{
@@ -21,7 +16,6 @@ use std::{
 };
 use viewer_foundation::map::counter_action::{self, Action};
 
-/// The action's tables besides the movement row and the division's own.
 pub(super) const TABLES: [TableId; 6] = [
     TableId::Provinces,
     TableId::NavalCombatTransfers,
@@ -67,8 +61,6 @@ impl Columns {
         })
     }
 
-    /// Whether a change of `table` in `column` can change an action that read it: a controller,
-    /// a transfer list, a combat's members or attacker countries.
     pub(super) fn reads(&self, table: TableId, column: usize) -> bool {
         match table {
             TableId::Provinces => column == self.controller.column,
@@ -80,18 +72,13 @@ impl Columns {
     }
 }
 
-/// What one division's action read, so a change of it marks the division.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Read {
-    /// The route's last province, whose controller decided.
     pub(super) destination: Option<u32>,
-    /// Its transfer-combat membership was asked.
     pub(super) transfer: bool,
-    /// Its standing attack read combats' attacker countries.
     pub(super) standing: bool,
 }
 
-/// One settle's view of the action's tables, with what more than one division reads made once.
 pub(super) struct Facts<'a> {
     mirrors: &'a Mirrors,
     columns: Columns,
@@ -114,7 +101,6 @@ impl<'a> Facts<'a> {
         })
     }
 
-    /// The divisions in a transfer a naval combat names, and whether both lists are whole.
     fn transfer(&self, division: u64) -> Option<bool> {
         let (units, complete) = self.transfer_units.get_or_init(|| {
             let (combats, transfers) = (self.mirrors.get(TableId::NavalCombatTransfers), self.mirrors.get(TableId::NavalTransferUnits));
@@ -135,7 +121,6 @@ impl<'a> Facts<'a> {
         counter_action::transfer_membership(units.contains(&division), *complete)
     }
 
-    /// A land combat's (kinds 0, 1) or naval combat's (2) ordered attacker countries.
     fn attackers(&self, kind: u8, combat: u64) -> Option<Vec<u32>> {
         if kind <= 1 {
             let sides = self.mirrors.get(TableId::LandCombatSides)?;
@@ -150,7 +135,6 @@ impl<'a> Facts<'a> {
         Some(first.summary.countries)
     }
 
-    /// Each division's land combats, from the combats' attacker and defender lists.
     fn combats_of(&self, division: u64) -> Option<&BTreeSet<u64>> {
         self.membership
             .get_or_init(|| {
@@ -168,8 +152,6 @@ impl<'a> Facts<'a> {
             .get(&division)
     }
 
-    /// The action of the viewing country's division `id` (raw logical owner `owner`), and what
-    /// it read.
     pub(super) fn action(&self, tables: &Tables<'_>, counted: Counted, id: u64, owner: u32, wars: Option<&Wars>, strategic_layout: bool) -> (Action, Read) {
         let mut read = Read::default();
         let Some((movement, slot)) = row(tables.movement, u128::from(id)) else {

@@ -1,4 +1,3 @@
-//! Air country relation capture: each country's air relation vectors, re-read only for the countries a native writer touched, and the relation writer observer. The host owns dispatch, the fingerprint loan and table assembly.
 
 use collector_certificates::slicing;
 use collector_certificates::watch_registry;

@@ -1,5 +1,3 @@
-//! Presentation fields of the native special-project databases. Definitions
-//! are keyed by lexer token, not by their position in the database.
 
 use crate::{
     ResolvedLayers,
@@ -59,14 +57,9 @@ pub struct Catalog {
     pub projects: BTreeMap<String, Project>,
     pub rewards: BTreeMap<Token, PrototypeReward>,
     pub specializations: BTreeSet<String>,
-    /// First registered token spelling, before any repeated definition is
-    /// skipped. The public raw-name set remains for its existing consumers;
-    /// effect display names use this token-identity projection.
     specialization_tokens: BTreeMap<Token, String>,
-    /// Copies the manager's registration array, not token order.
     specialization_order: Vec<String>,
     pub warnings: Vec<String>,
-    /// An unreadable stream may override prior tokens; none are assumed valid.
     pub unsettled: Option<String>,
 }
 
@@ -107,8 +100,6 @@ fn read_mode(
     earlier: Option<&BTreeSet<Token>>,
 ) -> io::Result<Vec<crate::parser::Item>> {
     let mut registered = earlier.cloned().unwrap_or_default();
-    // Projects: mode 0, reuse repeated templates. Specializations: mode 0,
-    // first token only, repeated bodies skipped. Each field retains its reader.
     let read = native::read(
         bytes,
         Mode::KeepMark,
@@ -142,8 +133,6 @@ fn read_mode(
                 Some(b"ai_will_do" | b"empty_reward_weight") => Shape::Object(Node::Mtth),
                 Some(b"resource_cost") => Shape::Object(Node::Body),
                 Some(b"breakthrough_cost") => Shape::Object(Node::Costs),
-                // The shared custom statement loop supports both references and
-                // inline reward definitions.
                 Some(b"unique_prototype_rewards" | b"generic_prototype_rewards") => {
                     Shape::Statements(Node::Uniform)
                 }
@@ -156,7 +145,7 @@ fn read_mode(
             Node::Specialization => match field.keyword().as_deref() {
                 Some(b"icon" | b"blueprint_image" | b"program_background") => Shape::One,
                 Some(b"color") => Shape::Color,
-                _ => Shape::One, // Unknown fields return without reporting.
+                _ => Shape::One,
             },
             Node::Complexity => match field.keyword().as_deref() {
                 Some(b"min" | b"max") => Shape::One,
@@ -171,8 +160,6 @@ fn read_mode(
                     Shape::One
                 }
             }
-            // Scalar reward presentation is projected away, but every reached
-            // reader still consumes its form.
             Node::Reward => match field.keyword().as_deref() {
                 Some(b"option") => Shape::Object(Node::Option),
                 Some(b"threshold") => Shape::Object(Node::Complexity),
@@ -187,9 +174,8 @@ fn read_mode(
                 Some(b"iteration_output") => Shape::Object(Node::Output),
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                 Some(b"default" | b"token") => Shape::One,
-                _ => Shape::Skip, // Unknown option fields are skipped.
+                _ => Shape::Skip,
             },
-            // Output fields share custom statement and uniform-list readers.
             Node::Output => match field.keyword().as_deref() {
                 Some(b"country_effects") => Shape::EffectIn(4),
                 Some(b"scientist_effects") => Shape::EffectIn(8),
@@ -216,14 +202,11 @@ fn read_mode(
                         .as_deref()
                         .is_some_and(|key| crate::equipment::stat_index(key).is_some())
                 {
-                    Shape::One // Stats read and combine one token.
+                    Shape::One
                 } else {
                     Shape::Skip
                 }
             }
-            // These fields do not supply project presentation. The shared
-            // by-key reader walks their ordinary nested trigger/effect forms;
-            // ambiguous consumption is a named refusal, never a tree guess.
             Node::Body => Shape::ByKey,
         },
     );
@@ -279,8 +262,6 @@ impl Catalog {
         Ok(&self.specialization_order)
     }
 
-    /// Token identity uses the first registered spelling for specialization
-    /// names. An unsettled stream cannot prove a lookup's answer.
     pub fn specialization(&self, token: &Token) -> Result<Option<&str>, String> {
         if let Some(why) = &self.unsettled {
             return Err(why.clone());
@@ -291,7 +272,6 @@ impl Catalog {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut result = Self::default();
         let mut project_tokens = BTreeMap::<Token, String>::new();
-        // Project bodies load after buildings.
         let names = layers.key_names()?;
         for path in script_files::paths(
             layers,
@@ -368,8 +348,6 @@ impl Catalog {
                         .entry(Token::c_str(token.as_bytes()))
                         .or_insert_with(|| token.clone());
                     let project = result.projects.entry(registered.clone()).or_default();
-                    // Reuse the earlier template: scalars overwrite,
-                    // omitted fields retain their previous value.
                     for field in item.value.items().unwrap_or_default() {
                         if field.keyword_is("prototype_time") {
                             project.prototype_time.push(field.clone());
@@ -402,7 +380,6 @@ impl Catalog {
                                         .push(RewardOccurrence::Inline(occurrence));
                                 } else {
                                     let identity = Token::c_str(token);
-                                    // Missing references do not create native candidate objects.
                                     if result.rewards.contains_key(&identity) {
                                         project
                                             .reward_order
@@ -604,7 +581,6 @@ mod tests {
             catalog.specialization(&Token::c_str(b"MOD_KIND")).unwrap(),
             Some("mod_kind")
         );
-        // Preserve the public raw-name set used by existing consumers.
         assert!(catalog.specializations.contains("MOD_KIND"));
         assert_eq!(
             catalog.specialization(&Token::c_str(b"missing")).unwrap(),
@@ -624,7 +600,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Read-only audit of the installed vanilla and Workshop corpus. No game.
     #[test]
     #[ignore = "requires BATTLE_PLAN_SP_GAME and BATTLE_PLAN_SP_WORKSHOP read-only content folders"]
     fn installed_content_corpus() {

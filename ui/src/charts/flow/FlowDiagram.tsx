@@ -23,54 +23,31 @@ import { setStyle } from '../domText.ts';
 
 export type { FlowLink, FlowNode } from './layout';
 
-/** What the pointer or the keyboard is on. */
 export type FlowHit = { kind: 'node'; node: FlowNode } | { kind: 'link'; link: FlowLink };
 
 export interface FlowDiagramProps {
-  /** Names the diagram for screen readers. */
   label: string;
   nodes: readonly FlowNode[];
   links: readonly FlowLink[];
-  /** Changes whenever what is shown may not glide from what was drawn (across a gap
-   * in the recording, say): the next frame jumps there. */
   stretch: unknown;
-  /** The value that fills the height (one scale for a whole campaign); null fits
-   * what is shown now. */
   scale?: number | null;
-  /** Node slots per side the height is shared between, so the scale holds as nodes
-   * come and go. */
   slots?: number;
   hoursPerSecond?: number;
-  /** Last hour included in cumulative data; moving backward discards future geometry. */
   playbackHour?: number;
-  /** A line drawn over the diagram, such as why nothing shows. */
   message?: string | null;
-  /** The tooltip for a node or ribbon; its `spoken` form, when trimmed, is read out.
-   * Memoize with every input it reads: a changed callback refreshes a still hover. */
   tooltip?: (hit: FlowHit) => TooltipContent | null;
-  /** Supplying hour of the model, retained with the frame actually drawn. */
   hour?: number;
-  /** Click or Enter/Space opens this drawn node or ribbon's full breakdown. */
   onPick?: (hit: FlowHit, hour: number) => void;
-  /** Clicking a node's drawn flag or name opens what the widget shows for that node.
-   * Without it, flags and names are not pointed at. */
   onLabelPick?: (node: FlowNode, hour: number) => void;
   onContextMenu?: (hit: FlowHit | null, clientX: number, clientY: number) => void;
-  /** What the diagram shows, as text for screen readers. */
   description?: string;
   active: boolean;
-  /** Told how many nodes a side can show at the diagram's size (`flowCapacity`) when
-   * that changes: the widget folds the rest into one node. */
   onCapacity?: (perSide: number) => void;
-  /** The playhead's nodes, ribbons and hours, read as each frame draws in place of the same props: the ribbons grow
-   * and shrink with no render. A ribbon or node it does not hold is not drawn; `message` says why nothing is. */
   live?: Live<FlowValues>;
 }
 
-/** What moves at the playhead: the nodes and ribbons, the hours they are at, and why nothing shows. */
 export type FlowValues = Pick<FlowDiagramProps, 'nodes' | 'links' | 'hour' | 'playbackHour' | 'message'>;
 
-/** `props` with the live values now, when it reads them. */
 const withLive = (props: FlowDiagramProps): FlowDiagramProps => props.live ? { ...props, ...props.live.read() } : props;
 
 const NODE_WIDTH = 12;
@@ -78,20 +55,10 @@ const PAD = 8;
 const FLAG_WIDTH = 18;
 const FLAG_HEIGHT = 12;
 const LABEL_GAP = 6;
-/** Ribbon opacity at rest, highlighted and dimmed (another ribbon hovered). */
 const RIBBON_ALPHA = 0.55;
 const RIBBON_HOT = 0.8;
 const RIBBON_DIM = 0.12;
 
-/** A Sankey of sources (left) to targets (right) on Canvas 2D:
- * ribbons sized by value that grow, shrink, appear and vanish as playback moves,
- * nodes that glide to their new places, and inside each node a fixed ribbon order,
- * so nothing jumps. Hovering a ribbon or a node dims the rest and shows its tooltip,
- * live while playback runs; right-click (or the context-menu key) asks the widget
- * for its menu. With the keyboard, the arrow keys step through each source node and
- * its ribbons, then the target nodes (Home and End go to either end, Escape leaves),
- * showing each tooltip and reading it out; Enter/Space activates the drawn stop,
- * and the context-menu key opens its menu. */
 export default function FlowDiagram(props: FlowDiagramProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -103,7 +70,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
   const drawnLabels = useRef<LabelBox[]>([]);
   const drawnHour = useRef<number | null>(null);
   const keyed = useRef<FlowStop | null>(null);
-  // After Escape, no tooltip until the pointer moves again.
   const quiet = useRef(false);
   const [spoken, setSpoken] = useState('');
   const showKeyed = useRef<(explicit?: boolean) => void>(() => {});
@@ -122,7 +88,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const tooltips = new FlowTooltipCache<FlowHit>();
     let capacity = 0;
 
-    // A flag or name is a place to point only for a widget that opens it.
     const labelHit = (x: number, y: number) => latest.current.onLabelPick ? labelAt(drawnLabels.current, x, y) : null;
     const hitAt = (x: number, y: number): FlowHit | null => {
       const frame = drawn.current;
@@ -151,14 +116,11 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       context.clearRect(0, 0, width, height);
 
-      // Label columns as wide as the longest name shown so far, so they never jump
-      // back and forth during playback; at most a third of the width each side.
       context.font = font(tokens, tokens.fontSize.body, 500);
       for (const node of p.nodes) labelWidth = Math.max(labelWidth, textWidth(context, node.label) + FLAG_WIDTH + LABEL_GAP * 2);
       const column = Math.min(labelWidth, width / 3);
       const geometry = { left: PAD + column + NODE_WIDTH, right: width - PAD - column - NODE_WIDTH, top: PAD, bottom: height - PAD,
         nodeWidth: NODE_WIDTH, gap: Math.max(2, Math.min(10, height / 40)), slots: p.slots, scale: p.scale };
-      // How many nodes a side can show with a label each; the widget folds the rest.
       const fits = flowCapacity(geometry.bottom - geometry.top, tokens.fontSize.body + 4);
       if (fits !== capacity) { capacity = fits; queueMicrotask(() => latest.current.onCapacity?.(fits)); }
       const snap = stretch !== p.stretch || tokens.reducedMotion || flowPlaybackSnap(playbackHour, p.playbackHour);
@@ -168,7 +130,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       drawn.current = frame;
       drawnHour.current = Number.isSafeInteger(p.hour) ? p.hour! : null;
 
-      // What is hot: the keyboard's stop, else what is under the pointer.
       const keyStop = keyed.current;
       const hit = keyStop ? (keyStop.kind === 'node' ? frame.nodes.find(box => box.id === keyStop.id)?.node && { kind: 'node' as const, node: frame.nodes.find(box => box.id === keyStop.id)!.node }
         : frame.links.find(shape => shape.id === keyStop.id) && { kind: 'link' as const, link: frame.links.find(shape => shape.id === keyStop.id)!.link }) ?? null
@@ -185,7 +146,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       }
       context.globalAlpha = 1;
 
-      // Nodes, then their flags and names, placed apart with a leader line where moved.
       for (const box of frame.nodes) {
         if (box.height <= 0 || box.alpha <= 0) continue;
         context.globalAlpha = box.alpha;
@@ -214,7 +174,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
             const flag = box.node.flag ? canvasImage(box.node.flag, wake) : null;
             if (flag) context.drawImage(flag, flagX, at - FLAG_HEIGHT / 2, FLAG_WIDTH, FLAG_HEIGHT);
             else if (box.node.flag !== undefined) {
-              // Generic optional images retain their existing outlined slot.
               context.strokeStyle = mix(tokens.surface, tokens.text, 0.35); context.lineWidth = 1;
               context.setLineDash([2, 2]);
               context.strokeRect(flagX + 0.5, at - FLAG_HEIGHT / 2 + 0.5, FLAG_WIDTH - 1, FLAG_HEIGHT - 1);
@@ -238,7 +197,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
         context.fillText(p.message, width / 2, height / 2, Math.max(40, width - PAD * 4));
       }
 
-      // Live hover: what is under a still pointer is described again every frame.
       if (!keyStop) {
         if (hit && pointer) describe(hit, pointer.clientX, pointer.clientY);
         else { tooltips.clear(); hideTooltip(owner); }
@@ -257,7 +215,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const unsubscribe = subscribeTokens(next => { tokens = next; labelWidth = 0; wake(); });
     const local = (event: PointerEvent | MouseEvent) => ({ ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY });
     const move = (event: PointerEvent) => {
-      // Moving the pointer hands the tooltip back to it.
       if (keyed.current) { keyed.current = null; setSpoken(''); }
       quiet.current = false;
       pointer = local(event);
@@ -308,7 +265,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
   useEffect(() => props.live?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.live]);
 
-  // The keyboard's stop: its tooltip beside it, read out in full.
   const stopHit = (stop: FlowStop): { hit: FlowHit; x: number; y: number } | null => {
     const frame = drawn.current;
     if (stop.kind === 'node') {
@@ -318,14 +274,12 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const shape = frame.links.find(item => item.id === stop.id);
     return shape ? { hit: { kind: 'link', link: shape.link }, x: (shape.x0 + shape.x1) / 2, y: (shape.y0 + shape.y1 + shape.width) / 2 } : null;
   };
-  // Only while no other chart holds the shared tooltip, unless a key just chose the stop.
   const ownsTooltip = () => { const held = tooltipStore.get(); return held == null || held.owner === owner; };
   showKeyed.current = (explicit = false) => {
     const stop = keyed.current;
     const element = canvas.current;
     if (!stop || !element || !latest.current.active || (!explicit && !ownsTooltip())) return;
     const found = stopHit(stop);
-    // A stop playback took away is left: the tooltip closes.
     if (!found) { keyed.current = null; hideTooltip(owner); setSpoken(''); return; }
     const described = latest.current.tooltip?.(found.hit) ?? null;
     const flag = found.hit.kind === 'node' ? found.hit.node.countryFlag : undefined;
@@ -367,7 +321,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       if (found && drawnHour.current != null) props.onPick(found.hit, drawnHour.current);
       return;
     }
-    // Consumers without a breakdown keep Enter's existing menu action.
     if ((event.key === 'ContextMenu' || event.key === 'Enter' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu) {
       event.preventDefault();
       const found = keyed.current ? stopHit(keyed.current) : null;
@@ -385,8 +338,6 @@ export default function FlowDiagram(props: FlowDiagramProps) {
   </div>;
 }
 
-/** A ribbon's outline: its upper edge from source to target along the curve
- * `ribbonTop` measures, down its width, and back along the lower edge. */
 export function traceRibbon(context: CanvasRenderingContext2D, shape: Pick<LinkShape, 'x0' | 'x1' | 'y0' | 'y1' | 'width'>): void {
   const middle = (shape.x0 + shape.x1) / 2;
   const width = Math.max(0.75, shape.width);

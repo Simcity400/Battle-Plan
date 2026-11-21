@@ -5,7 +5,6 @@ use replay_data::rows::{
 };
 use replay_frame::frame::{DecodedFrame, Metrics, TableView};
 
-/// The tables [`choices`] reads, its ruling groups included.
 const TABLES: [TableId; 5] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -184,8 +183,6 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
             .unwrap_err()
             .contains("cosmetic tag is not UTF-8")
     );
-    // A nonpositive raw reference chooses own independently of the
-    // unused optional original bytes, including a failed byte capture.
     for reference in [0, -7] {
         let mut frame = flag_frame(Recorded::Value(None), b"COS");
         let appearance = match &mut *frame.tables[TableId::CountryAppearance.index()] {
@@ -265,7 +262,6 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
         choices(&frame).unwrap()[0].candidates,
         ["COS_group", "COS", "ORI_group", "ORI"]
     );
-    // A reader reconstructing only these tables holds everything choices reads.
     let mut selected = frame.clone();
     for table in TableId::ALL {
         if !TABLES.contains(&table) {
@@ -286,8 +282,6 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
             ..Default::default()
         }]));
     assert_eq!(ruling_groups(&frame).unwrap()[&10], Ok(Some(String::new())));
-    // The ordinary group's capture identity proves an active flag even with
-    // an empty token, so the qualified candidates keep the underscore.
     assert_eq!(
         choices(&frame).unwrap()[0].candidates,
         ["COS_", "COS", "ORI_", "ORI"]
@@ -336,8 +330,6 @@ fn flag_aliases_use_the_resolved_country_objects_operands() {
     );
     assert_eq!(choices[0].candidates, choices[1].candidates);
     assert!(choices.iter().all(|choice| choice.refusal.is_none()));
-    // The resolved object's own link need not occur in a partial alias
-    // list for its already captured politics and appearance to be usable.
     *frame.tables[TableId::CountryLinks.index()] =
         TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
             id: 11,

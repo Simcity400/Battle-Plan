@@ -5,7 +5,6 @@ fn content() -> Content {
     content_with(b"")
 }
 
-/// [`content`] with `extra` read after it, as a later file would be.
 fn content_with(extra: &[u8]) -> Content {
     from_documents(&[
         &br#"
@@ -27,8 +26,6 @@ fn content_with(extra: &[u8]) -> Content {
     ])
 }
 
-/// Sub-units and equipment from documents read in order, as
-/// [`Content::load`] reads the files.
 fn from_documents(documents: &[&[u8]]) -> Content {
     Content::from_test_documents(documents)
 }
@@ -96,8 +93,6 @@ fn sources(local: &Overrides) -> Sources<'static> {
     Sources::read(Box::leak(Box::new(frame))).unwrap()
 }
 
-/// Equipment type spellings; `Tanks_1` differs from its authored key
-/// only in ASCII case, and `trucks` is not authored.
 fn names() -> TokenNames<'static> {
     let rows: &'static [LexicalTokenRow] = Box::leak(
         [
@@ -163,7 +158,6 @@ fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
         .unwrap();
     let mut variants = variants();
-    // Variant 40's token is not in the hour's LexicalTokens.
     variants.push(VariantDefinitionRow {
         id: 40,
         equipment_token: 999,
@@ -189,8 +183,6 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
         .unwrap();
     let variants = variants();
-    // The representative is armor: tanks is its largest need, so rifles
-    // never qualify, and equal quantities keep the older ordinal.
     let rows = [
         equipment(10, 900, 0),
         equipment(30, 500, 7),
@@ -202,7 +194,6 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
         .unwrap()
         .unwrap();
     assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (20, "armor"));
-    // A null representative draws no pair at all.
     let null = content
         .template(&row((0, 0), &[(2, 0, 1)]), &sources(&[]))
         .unwrap();
@@ -229,13 +220,11 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
         equipment(10, 1, 2),
     ];
     let refs = &rows[..];
-    // Armor wins the tanks pair: the only group needing tanks.
     let pair = content
         .select_pair(&template, Some(1 << 2), &[20], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (30, "armor"));
-    // Rifles: infantry's two entries outscore armor's one.
     let pair = content
         .select_pair(&template, Some(1 << 5), &[], refs, Variants::new(&variants[..]), &names())
         .unwrap()
@@ -325,7 +314,6 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             .map(|pair| pair.map(|pair| (pair.variant.id, pair.subunit.key.clone(), pair.identity)))
             .map_err(|error| (error.kind(), error.to_string()))
     };
-    // Repeated stage calls emit one aggregate per stage, never per input row.
     let stages = profile::Stages::new(true);
     for frame in 0_usize..128 {
         let amount = [i64::MIN, -1, 0, 500, i64::MAX][frame % 5];
@@ -372,8 +360,6 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             "units.selection.pair_rank",
         ]
     );
-    // Independent witnesses: equal amount+ordinal retains original input order,
-    // even for negative quantities, and excluded rows are read before ranking.
     for handles in [[20, 30], [30, 20]] {
         let rows = handles.map(|handle| equipment(handle, -1, 7));
         let refs = &rows[..];
@@ -478,8 +464,6 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
             }
         }
         if hour.is_multiple_of(9) {
-            // Variant 20 defined again as another type, and 40 added: the rows stay one per id,
-            // ascending, as a frame's are.
             let mut rows = definitions.clone();
             rows[1].equipment_token = 103;
             rows.push(VariantDefinitionRow {
@@ -568,8 +552,6 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
                 reasons.entry(why.clone()).or_insert((0, hour)).0 += 1;
             }
         }
-        // The immutable authored clone shares index facts, but replacing Content
-        // above starts a fresh bank even for the same held replay tables.
         let cloned = content.clone();
         let facts = cloned.classification_facts(&frame).unwrap();
         let rows = [equipment(20, 500, 0), equipment(30, 500, 0)];

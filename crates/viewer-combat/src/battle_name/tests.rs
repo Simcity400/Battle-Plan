@@ -1,8 +1,6 @@
 use super::*;
 use viewer_foundation::tooltip_text::NoIcons;
 
-/// Victory-point keys use the state owner's original tag or own tag
-/// from its independent exact suffix; missing rows are refused.
 #[test]
 fn the_victory_point_tag_is_the_state_owners_original_tag() {
     use replay_data::{
@@ -89,7 +87,6 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
         vp_tag(&frame, 9, &states, true).unwrap(),
         Err("state 9 has no States row".into())
     );
-    // No state and a null owner link resolve the separate reserved zero object.
     let states = [
         states[0].clone(),
         StateRow {
@@ -126,7 +123,6 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
             .unwrap_err()
             .contains("CountryAppearance.original_tag not recorded")
     );
-    // Reserved success stays independent of unavailable positive-country rows.
     *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
         reason: "unrelated positive roster".into(),
     };
@@ -166,7 +162,6 @@ fn a_picked_province_is_named_through_the_native_ladder() {
         province_name(&NoIcons, &loc, &province(Some(b"Literal"), Err("x".into()))).as_deref(),
         Ok("Literal")
     );
-    // Without a victory point name and without a state, the region name.
     assert_eq!(
         province_name(
             &NoIcons,
@@ -176,8 +171,6 @@ fn a_picked_province_is_named_through_the_native_ladder() {
         .as_deref(),
         Ok("STRATEGICREGION_5")
     );
-    // the game picks the qualified key once: its empty text goes to the
-    // state ladder, never to the generic key.
     let empty: Localisation = [
         ("VICTORY_POINTS_10", "Midway"),
         ("JAP_VICTORY_POINTS_10", ""),
@@ -189,7 +182,6 @@ fn a_picked_province_is_named_through_the_native_ladder() {
         province_name(&NoIcons, &empty, &province(None, Ok("JAP"))).as_deref(),
         Ok("STRATEGICREGION_5")
     );
-    // A rename the hour cannot rule out is refused by province and cause.
     let unknown = Province {
         rename: Err("the ProvinceNames table is unavailable this hour (x)".into()),
         ..province(None, Ok("USA"))
@@ -198,8 +190,6 @@ fn a_picked_province_is_named_through_the_native_ladder() {
             province_name(&NoIcons, &loc, &unknown),
             Err("province 10's recorded rename is unknown: the ProvinceNames table is unavailable this hour (x)".into())
         );
-    // State display naming: the rename, else the owner name,
-    // else the definition's localised name key.
     let mut loc: Localisation = [("STATE_7", "Bohemia")]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -238,8 +228,6 @@ fn a_picked_province_is_named_through_the_native_ladder() {
         province_name(&NoIcons, &loc, &named(b"\xff", b"")),
         Err("state 7: the custom name is not UTF-8".into())
     );
-    // Stored without its key, a name is refused in another language; the
-    // template's is not.
     let mut german = loc.clone();
     german.language = "german".into();
     assert!(

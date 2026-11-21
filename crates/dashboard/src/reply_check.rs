@@ -1,11 +1,3 @@
-//! The reply check: every request of a reference transcript (recorded from the old preparation by
-//! main's `served-check record`) asked again of this build, its reply compared with the kept one
-//! member by member ([`check`]). Transcripts are the only reference for whether a moved product
-//! answers what users were served.
-//!
-//! A chart this build serves as tiles (`series-tiles`) is answered as the UI draws it: the view
-//! assembled from the tiles covering it ([`dashboard_query::tile::view`]), timed as the sum of its
-//! tile requests, which the kept exchange counts.
 
 use dashboard_query::tile::{self, SeriesTileReply, view};
 use serde::{Deserialize, Serialize};
@@ -20,16 +12,12 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-/// The transcript's layout.
 const VERSION: u32 = 1;
 
 
-/// A store's reply to one request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Reply {
-    /// The reply without the request it echoes: its data, and the gate a
-    /// pending or partial one waits for.
     Answered(Value),
     Refused(String),
 }
@@ -45,7 +33,6 @@ impl Reply {
     }
 }
 
-/// The transcript's first line.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Header {
@@ -55,7 +42,6 @@ pub struct Header {
     pub branches: Value,
 }
 
-/// One request and the reference's reply, as the transcript keeps it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Exchange {
@@ -66,7 +52,6 @@ pub struct Exchange {
     pub unordered: Vec<Vec<String>>,
 }
 
-/// The transcript's header, read from its first line.
 pub fn read_header(transcript: &mut dyn BufRead) -> io::Result<Header> {
     let mut line = String::new();
     transcript.read_line(&mut line)?;
@@ -77,7 +62,6 @@ pub fn read_header(transcript: &mut dyn BufRead) -> io::Result<Header> {
     Ok(header)
 }
 
-/// What a report counts a request under: its product, and the series family kind it routes by.
 fn label(product: &str, params: &Value) -> String {
     match params.get("family").and_then(|family| family.get("kind")).and_then(Value::as_str) {
         Some(kind) => format!("{product}:{kind}"),
@@ -85,8 +69,6 @@ fn label(product: &str, params: &Value) -> String {
     }
 }
 
-/// Asks `serve` every request of the transcript after its header that `asked` selects,
-/// comparing each reply with the reference's, not comparing what lies at an `ignored` path.
 pub fn check(
     transcript: &mut dyn BufRead,
     asked: &dyn Fn(&str, &Value) -> bool,
@@ -152,17 +134,13 @@ struct Compared {
     mismatch: Option<Mismatch>,
 }
 
-/// The candidate's reply to one exchange, and what serving it cost.
 struct Served {
     reply: Reply,
-    /// Wall time of the requests asked, serialisation included.
     seconds: f64,
-    /// Storage time of those requests, milliseconds.
     storage: f64,
     tiles: Option<Tiles>,
 }
 
-/// The tile requests a chart was answered by.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Tiles {
@@ -182,7 +160,6 @@ struct TileTime {
     storage_milliseconds: f64,
 }
 
-/// `product` asked `params` of the candidate once, timed as the service serves it.
 fn timed(serve: &mut dyn FnMut(&str, &Value) -> Reply, product: &str, params: &Value) -> Served {
     dashboard_query::cost::take();
     let started = Instant::now();
@@ -191,9 +168,6 @@ fn timed(serve: &mut dyn FnMut(&str, &Value) -> Reply, product: &str, params: &V
     Served { reply, seconds, storage: dashboard_query::cost::take() as f64 / 1e6, tiles: None }
 }
 
-/// A chart request answered as the UI draws it: from the tiles covering its view when the build
-/// serves it so, else as asked (a ranking, whose members change bin by bin). A chart costs its
-/// tiles: their requests' times summed; assembling them is the UI's work and is not timed.
 fn chart(serve: &mut dyn FnMut(&str, &Value) -> Reply, params: &Value) -> Served {
     let Ok((asked, requests)) = view::requests(params) else {
         return timed(serve, "series-summary", params);
@@ -242,28 +216,21 @@ fn chart(serve: &mut dyn FnMut(&str, &Value) -> Reply, params: &Value) -> Served
     Served { reply, seconds, storage, tiles: Some(tiles) }
 }
 
-/// How the candidate's replies compare with the reference's.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub queries: usize,
     pub differing: usize,
-    /// Requests of products this build does not answer from the query layer yet.
     pub skipped: usize,
-    /// The paths not compared.
     pub ignored: Vec<String>,
     #[serde(skip)]
     patterns: Vec<Vec<String>>,
-    /// By product, or by product and the series family kind it routes by.
     pub products: BTreeMap<String, Tally>,
-    /// The slowest requests the candidate served, slowest first.
     pub slowest: Vec<Slow>,
 }
 
-/// How many of the slowest requests a report names.
 const SLOWEST: usize = 10;
 
-/// A request the candidate served, and how long it took.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Slow {
@@ -272,24 +239,18 @@ pub struct Slow {
     pub milliseconds: f64,
 }
 
-/// The requests of one product, by the reference's replies.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tally {
     pub queries: usize,
     pub answered: usize,
-    /// Answered null: its coverage not accepted.
     pub pending: usize,
     pub refused: usize,
     pub differing: usize,
-    /// Tile requests its charts were answered by.
     pub tile_requests: usize,
-    /// Its first request whose replies differ, and where.
     pub first: Option<Mismatch>,
-    /// The transcript line of `first`.
     #[serde(skip)]
     first_at: usize,
-    /// Serve times in milliseconds: median, 95th percentile and slowest.
     pub p50_milliseconds: Option<f64>,
     pub p95_milliseconds: Option<f64>,
     pub max_milliseconds: Option<f64>,
@@ -305,22 +266,17 @@ pub struct Mismatch {
     pub difference: Difference,
 }
 
-/// Where two replies first differ, and what each holds there.
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Difference {
-    /// From the reply's root, as `data.series[3].runs[1]`; empty for the
-    /// replies as a whole.
     pub path: String,
     pub reference: Side,
     pub candidate: Side,
 }
 
-/// What one reply holds where two differ.
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Side {
-    /// Nothing, not even null.
     Absent,
     Value(Value),
     Refused(String),
@@ -335,7 +291,6 @@ impl Report {
         }
     }
 
-    /// Counts the request at transcript line `index`, in any order, which took `seconds`.
     fn count(&mut self, index: usize, compared: Compared, seconds: f64) {
         let milliseconds = seconds * 1e3;
         let tally = self.products.entry(compared.label).or_default();
@@ -377,7 +332,6 @@ impl Report {
         }
     }
 
-    /// Each product's serve times, from the requests counted.
     fn time(&mut self) {
         for tally in self.products.values_mut() {
             let times = &mut tally.milliseconds;
@@ -394,9 +348,6 @@ impl Report {
     }
 }
 
-/// Where `candidate` first differs from `reference`: objects member by
-/// member, arrays element by element, those at an `unordered` path from the
-/// data as multisets, numbers by their exact value, absent apart from null.
 pub fn difference(
     reference: &Reply,
     candidate: &Reply,
@@ -405,7 +356,6 @@ pub fn difference(
     difference_ignoring(reference, candidate, unordered, &[])
 }
 
-/// [`difference`], passing over what lies at an `ignored` path.
 fn difference_ignoring(
     reference: &Reply,
     candidate: &Reply,
@@ -462,7 +412,6 @@ fn differs(path: &[Step], reference: Option<&Value>, candidate: Option<&Value>) 
     }
 }
 
-/// Whether the array at `path` is one whose order means nothing.
 fn unordered_at(path: &[Step], unordered: &[Vec<String>]) -> bool {
     let Some((Step::Key(root), rest)) = path.split_first() else {
         return false;
@@ -476,7 +425,6 @@ fn unordered_at(path: &[Step], unordered: &[Vec<String>]) -> bool {
         })
 }
 
-/// Whether `path` is one of the `ignored` paths.
 fn ignored_at(path: &[Step], ignored: &[Vec<String>]) -> bool {
     ignored.iter().any(|pattern| {
         pattern.len() == path.len()
@@ -546,21 +494,18 @@ fn first(
     }
 }
 
-/// The first element one array holds more often than the other.
 fn multiset(
     reference: &[Value],
     candidate: &[Value],
     path: &mut Vec<Step>,
     ignored: &[Vec<String>],
 ) -> Option<Difference> {
-    // An element path matches only `*`, so ignoring one ignores them all.
     path.push(Step::Index(0));
     let every = ignored_at(path, ignored);
     path.pop();
     if every {
         return None;
     }
-    // An element's ignored members are left out of what it is counted as.
     let mut key = |item: &Value| {
         path.push(Step::Index(0));
         let text = canonical_at(item, path, ignored);
@@ -596,7 +541,6 @@ fn multiset(
     None
 }
 
-/// `value` at `path` as text, every object's members in key order and `ignored` paths left out.
 fn canonical_at(value: &Value, path: &mut Vec<Step>, ignored: &[Vec<String>]) -> String {
     match value {
         Value::Object(members) => {
@@ -635,8 +579,6 @@ fn integer(number: &Number) -> Option<i128> {
         .or_else(|| number.as_u64().map(i128::from))
 }
 
-/// Whether two numbers hold the same value exactly: floats bit for bit, an
-/// integer and a float only when the float is that integer.
 fn same_number(a: &Number, b: &Number) -> bool {
     let whole = |integer: i128, float: f64| {
         float.fract() == 0.0

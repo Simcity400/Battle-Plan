@@ -24,8 +24,6 @@ struct State {
     failure: Option<&'static str>,
     request: Option<PresentationRequest>,
     pending: Option<RangeTicket>,
-    /// The capture mode leaves the status side out: the last publisher joins
-    /// the census and submits nothing.
     omit_status: bool,
     movement: Option<PresentationMovementRequest>,
     speed_terms: Option<PresentationSpeedTermsRequest>,
@@ -87,7 +85,6 @@ impl PresentationInputs {
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
-        // Successful tickets can publish before their notifications run.
         if !state.closed
             && state.remaining != 0
             && state
@@ -141,7 +138,6 @@ impl Drop for FailureOnDrop<'_> {
 impl acquisition::Publication for PresentationInputs {
     fn failed(&self) {
         let _ready = ReadyOnDrop(&self.executor);
-        // Install the failure on return or unwind, before notifying readiness.
         let _failure = FailureOnDrop(&self.state);
         #[cfg(test)]
         if let Some(hook) = self.before_failure.get() {
@@ -153,7 +149,6 @@ impl acquisition::Publication for PresentationInputs {
         let mut state = lock_unpoisoned(&self.state);
         let wake = self.publish_locked(&mut state);
         if !state.closed {
-            // A published ticket is not a settled continuation, especially on unwind.
             state.remaining -= 1;
         }
         drop(state);
@@ -170,7 +165,6 @@ impl PresentationInputs {
         if state.remaining != 1 {
             return false;
         }
-        // Failed inputs retain the unchanged slot-ordered callback settlement.
         if !state
             .master
             .as_ref()
@@ -216,16 +210,12 @@ impl PresentationInputs {
         if crate::allocation::failed() {
             return false;
         }
-        // The last input publisher takes the hour's store here, beside the independent jobs;
-        // the take never waits on the preceding decode's loan.
         if let Some(store) = &state.store {
             #[cfg(test)]
             if let Some(hook) = self.before_store.get() {
                 hook();
             }
             request.army_stats = store.take();
-            // One take of every carry registry for the hour, before the preparation ranges read
-            // what it certifies.
             if let Some(store) = request.army_stats.as_deref_mut() {
                 store.observations.take(&crate::army_stat_changes::Observer);
             }
@@ -281,7 +271,6 @@ mod tests;
 
 pub(crate) struct ClosedInputs<'a>(MutexGuard<'a, State>);
 impl ClosedInputs<'_> {
-    // Late notifications and rejected inputs keep the callback fallback.
     pub(crate) fn restore_master(&mut self, census: &mut Census) -> (bool, Option<&'static str>) {
         let state = &mut self.0;
         state.closed = true;

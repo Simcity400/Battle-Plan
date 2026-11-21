@@ -18,7 +18,6 @@ pub struct Bytes {
     origin: Option<Origin>,
 }
 
-// Opaque provenance never mutates the immutable payload across an unwind.
 impl std::panic::UnwindSafe for Bytes {}
 impl std::panic::RefUnwindSafe for Bytes {}
 

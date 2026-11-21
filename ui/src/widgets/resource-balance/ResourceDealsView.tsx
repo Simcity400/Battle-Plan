@@ -11,10 +11,8 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { ResourceDeal } from '../../generated/dashboard';
 import { balanceOf, dealAccounting, dealAt, poolsAt } from './resourceData';
 
-// Fixed presentation height, not a deal limit: every recorded row is scrollable.
 const ROW_HEIGHT = 32;
 
-/** What one row shows at an hour: its amount, bar width, colour and share of the pool. */
 function rowLook(deal: ResourceDeal, values: LiveValues<number>, decimals: number, pool: bigint | null, widest: bigint) {
   const raw = dealAt(deal, values).deliveredRaw;
   if (raw === null) return { amount: '—', width: '0%', negative: false, share: '—', title: values.missing(`${deal.deal}\u0000delivered`) };
@@ -23,9 +21,6 @@ function rowLook(deal: ResourceDeal, values: LiveValues<number>, decimals: numbe
     share: pool ? `${Number(value * 1000n / pool) / 10}%` : '—', title: '' };
 }
 
-/** One direction's deals of a resource, every one reachable by scrolling; partners named only for the rows on screen.
- * The rows are the reply's (which deals, in its order); their amounts, bars and shares, what the pool holds beyond them
- * and the total are painted from the live cells in each frame they move, with no render. */
 export default function ResourceDeals({ deals, live, resource, decimals, hour, direction, runtime, track, active }: {
   deals: readonly ResourceDeal[]; live: Live<LiveValues<number>>; resource: number; decimals: number; hour: number; direction: 'imports' | 'exports';
   runtime: WidgetRuntime; track: BoundTrack; active: boolean;
@@ -63,7 +58,7 @@ export default function ResourceDeals({ deals, live, resource, decimals, hour, d
     };
     paint();
     return live.subscribe(paint);
-  }); // eslint-disable-line react-hooks/exhaustive-deps
+  });
   const texts = useMemo<LiveTexts>(() => ({
     text: key => {
       const values = live.read(), pool = poolOf(values), { total } = dealAccounting(deals.map(deal => dealAt(deal, values)));
@@ -72,7 +67,7 @@ export default function ResourceDeals({ deals, live, resource, decimals, hour, d
       return rest === null || rest === 0n ? '' : `Other (not from a listed deal): ${formatSigned(rest, decimals, decimals)}.`;
     },
     subscribe: changed => live.subscribe(changed),
-  }), [live, deals, decimals, resource, direction]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [live, deals, decimals, resource, direction]);
   const label = direction === 'imports' ? 'Imports by deal' : 'Exports by deal';
   const values = live.read(), pool = poolOf(values), { widest } = dealAccounting(deals.map(deal => dealAt(deal, values)));
   return <div>

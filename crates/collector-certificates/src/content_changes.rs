@@ -1,4 +1,3 @@
-//! One patch owner per reload command; dependent baselines retire together.
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Writer {
@@ -12,7 +11,6 @@ pub struct Forwarder {
 }
 static RECEIVER: AtomicPtr<Forwarder> = AtomicPtr::new(std::ptr::null_mut());
 static ENABLED: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
-/// Attach/detach only, with native callbacks quiescent. The receiver is static.
 pub fn forwarder(receiver: Option<&'static Forwarder>) {
     RECEIVER.store(
         receiver.map_or(std::ptr::null_mut(), |receiver| {
@@ -30,12 +28,12 @@ pub fn enabled(writer: Writer, enabled: bool) {
         (receiver.enabled)(ENABLED.iter().all(|flag| flag.load(Ordering::Acquire)));
     }
 }
-/// Preserve every argument and the original result. An absent receiver costs
-/// only its null atomic check; no native reads or allocation occur here.
-///
-/// # Safety
-/// `original` must be the native reload function for `writer`, and `args` must
-/// satisfy its call contract and that of the registered forwarder.
+#[doc = " Preserve every argument and the original result. An absent receiver costs"]
+#[doc = " only its null atomic check; no native reads or allocation occur here."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " `original` must be the native reload function for `writer`, and `args` must"]
+#[doc = " satisfy its call contract and that of the registered forwarder."]
 pub unsafe fn invoke(writer: Writer, args: [usize; 4], original: Original) -> usize {
     if let Some(receiver) = unsafe { RECEIVER.load(Ordering::Acquire).as_ref() } {
         unsafe { (receiver.call)(writer, args, original) }

@@ -1,12 +1,6 @@
-//! Ship and capital-count text at partial naval intel.
-//!
-//! The first grouped task force's visibility byte selects the low or medium `NNavy` count range.
-//! Signed count arithmetic produces the displayed bounds; deterministic jitter uses that task
-//! force's simulation handle ID.
 
 use std::io;
 
-/// The `NNavy` intel-level count ranges; each native loader clamps to 0..=100.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Defines {
     pub low_half_range_percent: i32,
@@ -15,8 +9,6 @@ pub struct Defines {
     pub medium_half_range_percent: i32,
     pub medium_min_ships: i32,
     pub medium_min_capitals: i32,
-    /// `NIntel.NAVY_MAPICON_NAVAL_PORT_VISIBILITY_DETAIL_THRESHOLDS` in fixed5, which a naval base
-    /// tooltip's intel level is read against; `None` unless it holds the five the game indexes.
     pub port_detail: Option<[i64; 5]>,
 }
 
@@ -41,7 +33,6 @@ impl Defines {
         })
     }
 
-    /// The shipped values, for tests only.
     #[cfg(any(test, feature = "test-support"))]
     pub const VANILLA: Self = Self {
         low_half_range_percent: 10,
@@ -55,20 +46,14 @@ impl Defines {
 }
 
 impl Defines {
-    /// The naval base tooltip's detail level at an intel ratio in fixed5: the highest threshold
-    /// it reaches, scanned from the top, else 0.
     pub fn port_detail_level(&self, ratio: i64) -> Option<u32> {
         let thresholds = self.port_detail?;
         Some((0..5).rev().find(|&at| thresholds[at] <= ratio).map_or(0, |at| at as u32))
     }
 }
 
-/// Below this first-member visibility the count is "?" whatever it is.
 const COUNT_INTEL: u16 = 100;
 
-/// Count text for one naval mission counter child. `total_ships` includes the complete
-/// task-force rosters, including partly visible members; a capital child uses the capital sum
-/// as `total`. Every signed arithmetic result is formatted.
 pub fn format_count(
     total: i32,
     first_force_handle: u64,
@@ -83,7 +68,7 @@ pub fn format_count(
     if visibility >= 250 {
         return total.to_string();
     }
-    let medium = visibility >= 150; // The medium threshold includes byte 150.
+    let medium = visibility >= 150;
     let (percent, minimum) = match (medium, capital) {
         (false, false) => (defines.low_half_range_percent, defines.low_min_ships),
         (false, true) => (defines.low_half_range_percent, defines.low_min_capitals),
@@ -97,9 +82,8 @@ pub fn format_count(
             },
         ),
     };
-    let seed = (first_force_handle >> 32) as u32; // High handle word seeds the count jitter.
+    let seed = (first_force_handle >> 32) as u32;
     let (lower, upper) = count_range(total, percent, minimum, seed);
-    // Equal bounds, a range below 100, or greater-than-100 text. Reversed bounds retain their order.
     if lower == upper {
         lower.to_string()
     } else if upper < 100 {
@@ -109,8 +93,6 @@ pub fn format_count(
     }
 }
 
-/// [`format_count`] when either count may be unrecorded: "?" below the count intel, which
-/// reads neither, and otherwise `None` while either is unknown.
 pub fn format_recorded_count(
     total: Option<i32>,
     first_force_handle: u64,
@@ -132,9 +114,6 @@ pub fn format_recorded_count(
     ))
 }
 
-/// Counts use wrapping signed 32-bit arithmetic and a wrapping seed hash. The signed jitter
-/// modulus has size `2h + 1` for an even half-range and `2h` for an odd one, and is never zero.
-/// Half-ranges above `2^30` produce a negative modulus, which signed remainder accepts.
 pub fn count_range(total: i32, percent: i32, minimum: i32, seed: u32) -> (i32, i32) {
     let half_range = (total.wrapping_mul(percent) / 100).max(minimum);
     let jitter = if half_range > 0 {
@@ -148,7 +127,6 @@ pub fn count_range(total: i32, percent: i32, minimum: i32, seed: u32) -> (i32, i
         let b = b ^ (b >> 8);
         let b = mix(b.wrapping_add(0xb4f3_c315)).wrapping_mul(0x387a_9f3a);
         let combined = (a ^ (a >> 8)).wrapping_sub((b ^ (b >> 8)).wrapping_mul(0x4ad6_85b3));
-        // Both hashes are below 2^31, so the signed remainder cannot overflow.
         let first = (jitter_hash(combined) as i32) % modulus;
         let second = (jitter_hash(combined.wrapping_add(0xb529_7a4d)) as i32) % modulus;
         first
@@ -197,7 +175,6 @@ mod tests {
         assert_eq!(format_count(15, FORCE, 250, false, 15, &defines), "15");
     }
 
-    /// An unrecorded count is unknown wherever the text shows it, and nowhere else.
     #[test]
     fn unrecorded_counts_are_unknown_only_where_the_text_reads_them() {
         let defines = vanilla();
@@ -250,9 +227,6 @@ mod tests {
         assert_eq!(format_count(15, FORCE, 100, false, 15, &defines), "11-19");
     }
 
-    /// The game words whatever its arithmetic gives: a negative exact count, more capitals
-    /// than ships, a negative ship total, bounds the wrapping arithmetic reverses and a
-    /// negative jitter modulus are all formatted, none refused.
     #[test]
     fn every_count_words_a_text_as_the_game_formats_it() {
         let defines = vanilla();
@@ -262,8 +236,6 @@ mod tests {
             format_count(1, FORCE, 100, false, -1, &defines),
             format_count(1, FORCE, 100, false, 15, &defines)
         );
-        // `center + h` wraps negative, so the upper bound falls to twice the minimum (80)
-        // while the lower stays near `i32::MAX`: reversed, and formatted as a range.
         let mut modded = vanilla();
         modded.low_half_range_percent = 0;
         modded.low_min_ships = 40;
@@ -277,8 +249,6 @@ mod tests {
             format_count(total, u64::from(seed) << 32, 100, false, total, &modded),
             format!("{lower}-80")
         );
-        // A half range past 2^30 makes the signed modulus negative; the game's remainder takes
-        // it as it is.
         let _ = count_range(i32::MAX, 100, i32::MAX / 2 + 2, 7);
     }
 }

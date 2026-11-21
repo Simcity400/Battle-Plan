@@ -1,4 +1,3 @@
-//! Authored aircraft scenario callbacks and entity-clock requests.
 use super::entity_animation::Request;
 use installed_content_core::mesh;
 

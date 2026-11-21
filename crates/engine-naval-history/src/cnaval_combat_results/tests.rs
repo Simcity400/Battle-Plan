@@ -93,8 +93,6 @@ impl Heap {
         heap.array(RECORD + ADMITTED, 0x6040, 2);
         heap.u32(0x6040, 10);
         heap.u32(0x6044, 30);
-        // One node, holding province 12_345's results [other, RECORD], linked after the
-        // list's sentinel and in its only bucket.
         heap.u64(STATE + cgame_state::NAVAL_RESULTS_MAP_LIST_HEAD, 0x6100);
         heap.u64(STATE + cgame_state::NAVAL_RESULTS_MAP_LIST_SIZE, 1);
         heap.u64(0x6100, 0x6300);
@@ -337,8 +335,6 @@ fn empty_retention_is_valid_and_corrupt_root_is_never_a_successful_empty() {
     assert!(matches!(result.countries, Outcome::Unavailable { .. }));
 }
 
-/// A synthetic retained-result map: `provinces` nodes after the list sentinel, each holding
-/// its share of `count` results. Returns the bytes, the rows and their scratch slots.
 fn ordinal_fixture(count: usize, provinces: usize) -> (Vec<u8>, Vec<Row>, Vec<ResultSlot>) {
     const GAME_STATE: usize = 0x1000;
     const SENTINEL: usize = 0x2000;
@@ -355,8 +351,6 @@ fn ordinal_fixture(count: usize, provinces: usize) -> (Vec<u8>, Vec<Row>, Vec<Re
         &(provinces as u64).to_le_bytes(),
     );
     put(SENTINEL, &(NODES as u64).to_le_bytes());
-    // Results are spread round-robin; a province's vector lists them in reverse, so its
-    // ordinals differ from the global order.
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); provinces];
     for result in 0..count {
         members[result % provinces].push(result);
@@ -398,8 +392,6 @@ fn ordinal_fixture(count: usize, provinces: usize) -> (Vec<u8>, Vec<Row>, Vec<Re
     (bytes, rows, slots)
 }
 
-/// Synthetic 1,500/5,000-result censuses in one province and spread over
-/// 300 provinces: one read per node and per 64 bucket entries.
 #[test]
 fn province_ordinals_read_each_bucket_once() {
     for count in [1_500, 5_000] {
@@ -415,14 +407,12 @@ fn province_ordinals_read_each_bucket_once() {
                 province_ordinals(&census, 0x1000, &mut rows, &mut slots),
                 Ok(())
             );
-            // Synthetic memory: the blocking cost here is the pairing's, not the reads'.
             println!(
                 "{count} results in {provinces} provinces: {} reads, {:.3} ms",
                 census.calls(),
                 started.elapsed().as_secs_f64() * 1e3
             );
             let per_province = count.div_ceil(provinces);
-            // Head, size, sentinel; one per node; one per 64-entry chunk of each vector.
             let expected = 3 + provinces + provinces * per_province.div_ceil(64);
             assert!(
                 census.calls() <= expected,
@@ -445,14 +435,12 @@ fn province_ordinals_refuse_a_missing_misfiled_or_repeated_result() {
         base: 0,
         bytes: &bytes,
     };
-    // A row whose province disagrees with its node.
     let mut misfiled = rows.clone();
     misfiled[0].province = 2;
     assert_eq!(
         province_ordinals(&memory, 0x1000, &mut misfiled, &mut slots.clone()),
         Err("naval result filed under another province")
     );
-    // A row no bucket holds.
     let mut extra = rows.clone();
     extra.push(Row {
         province: 1,
@@ -467,7 +455,6 @@ fn province_ordinals_refuse_a_missing_misfiled_or_repeated_result() {
         province_ordinals(&memory, 0x1000, &mut extra, &mut extra_slots),
         Err("naval result absent from its province bucket")
     );
-    // A list whose size claims one node too many.
     let mut short = bytes.clone();
     short[0x1000 + cgame_state::NAVAL_RESULTS_MAP_LIST_SIZE] = 3;
     let memory = SliceMemory {

@@ -1,56 +1,24 @@
-//! Division-name member held by a deployment line or an army
-//! (`carmy_combat_inputs::NAME_GROUP_MEMBER`).
-//!
-//! The layout has `TYPE`, the strings `FIRST_NAME_TEXT`, `CACHED_NAME` and `OVERRIDE_NAME`, the
-//! signed `ORDER` and the flag bytes `FLAG_A` and `FLAG_B`. Serialization always writes type,
-//! nonzero order, nonempty override and the two flags under their respective clear/set gates.
-//! Omitted order proves zero; the -1 sentinel is saved. The `CACHED_NAME` string is a generated
-//! language-specific display cache. Refresh can copy a legacy name to `OVERRIDE_NAME` and mark it
-//! programmatic.
-//!
-//! [`inputs`] acquires the member in one guarded read, excluding the cache.
-//! It publishes nonempty override bytes for a nonprogrammatic name, or for
-//! a programmatic name with a null group. [`cached_name`] independently
-//! reads retained display text without generating or refreshing it.
 
 use engine_sites::Rva;
 use crate::{Memory, msvc_string, read, read_slice};
 
-/// Division-name object vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029b_3c88);
-/// Division-name type word, signed i32, initially zero and saved unconditionally; not recorded.
 pub const TYPE: usize = 0x08;
-/// Type-two name-group key hashed in the name database; not serialized.
 pub const FIRST_NAME_TEXT: usize = 0x10;
-/// Type-zero template reference selects its resolved name group (`TEMPLATE_NAME_GROUP`).
 pub const TEMPLATE_REFERENCE: usize = 0x58;
-/// Nullable retained naming-equipment variant pointer of a ship member.
 pub const NAMING_EQUIPMENT: usize = 0x50;
 pub const TEMPLATE_NAME_GROUP: usize = 0x1d0;
-/// Name-group vtable and authored key string.
 pub const GROUP_VTABLE_RVA: Rva = Rva(0x029b_3cd8);
 pub const GROUP_KEY: usize = 8;
-/// Division-name signed order, initially zero. Nonpositive setter
-/// arguments store -1; save omits only zero.
 pub const ORDER: usize = 0x80;
-/// Retained display name cache. Refresh rebuilds it; serialization omits it.
 pub const CACHED_NAME: usize = 0x60;
-/// Division-name override MSVC string, saved when nonempty and retained
-/// raw, including empty text.
 pub const OVERRIDE_NAME: usize = 0x88;
-/// Division-name override length, u64.
 pub const OVERRIDE_NAME_LENGTH: usize = 0x98;
-/// First division-name flag byte, initially one; save emits only when clear. Recorded raw.
 pub const FLAG_A: usize = 0xa8;
-/// Programmatic-override flag byte, initially zero; save emits only when set. Recorded raw.
 pub const FLAG_B: usize = 0xa9;
-/// Division-name constructor.
 pub const CONSTRUCT_RVA: Rva = Rva(0x00a0_ac50);
-/// Operative name-database global used for type-two group lookup.
 const NAME_DATABASE_RVA: Rva = Rva(0x033d_d2d0);
 
-/// Authenticate the object and return its signed order unchanged,
-/// including zero and the -1 sentinel.
 pub fn order(memory: &impl Memory, base: usize, pointer: usize) -> Result<i32, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
@@ -63,10 +31,6 @@ pub fn order(memory: &impl Memory, base: usize, pointer: usize) -> Result<i32, &
         .ok_or("division name order unreadable")
 }
 
-/// Custom division-name bytes and flag bytes. The override string (`OVERRIDE_NAME`) is an MSVC
-/// string whose length (`OVERRIDE_NAME_LENGTH`) gates token 0x38e1; the two flag bytes (`FLAG_A`,
-/// `FLAG_B`) gate tokens 0x38e2/0x3936. Returns the heap or inline source pointer, the byte length,
-/// and the two raw flag bytes.
 pub fn custom(
     memory: &impl Memory,
     base: usize,
@@ -133,8 +97,6 @@ pub fn custom(
     Ok((source, len, flag_a, flag_b))
 }
 
-/// Copies the override bytes into the caller's arena slice. Returns the arena
-/// start and length on success; empty names copy nothing and are valid.
 pub fn copy_custom(
     memory: &impl Memory,
     source: usize,
@@ -151,54 +113,34 @@ pub fn copy_custom(
     Ok((used, len))
 }
 
-/// A `(start, len)` span of the caller's name-byte arena.
 pub type Span = (usize, usize);
 
-/// A division's raw naming operands; the viewer renders the name from the
-/// content's name groups in its own language. Text lives in [`Names`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Inputs {
     pub kind: i32,
     pub order: i32,
     pub ordered: u8,
     pub programmatic: u8,
-    /// Stored override name shown when `FLAG_B` is clear, or when set with a null resolved group.
-    /// Empty otherwise. Write uncommitted at [`Names::len`]; the caller commits on admission.
     pub custom: Span,
-    /// The selected historical group key of a type-zero member whose stored name is not shown, or
-    /// the type-two member's `FIRST_NAME_TEXT` lookup key. Group keys are committed when first
-    /// written, since later divisions share them.
     pub group: Span,
-    /// The member's own template reference, whose name group a type-zero member's generator
-    /// resolves. It can name a template deleted since, which resolves to no group; a save rebinds
-    /// it on load.
     pub template: u64,
 }
 
-/// One division's naming acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Naming {
     Row(Inputs),
-    /// A player's name or a group key does not fit the arena; its bytes were
-    /// added to [`Names::required`] for growth off the game thread.
     DoesNotFit,
 }
 
-/// The caller's preallocated name-byte arena for one pass. Nothing here
-/// allocates; `required` counts every byte a complete pass would need.
 pub struct Names<'a> {
     pub bytes: crate::walk::Buffer<'a, u8>,
     pub len: usize,
     pub required: usize,
 }
 
-/// Every field [`inputs`] reads lies in `[vtable, FLAG_B]`, so one guarded copy acquires them.
-/// `inputs` ignores the `CACHED_NAME` cache inside that span; [`cached_name`] independently
-/// publishes its exact retained bytes.
 pub const INPUT_SPAN: usize = FLAG_B + 1;
 
 
-/// Worker acquisition grows from the original retained header and payload.
 pub fn cached_name_growing(
     memory: &impl Memory,
     base: usize,
@@ -218,13 +160,6 @@ pub fn cached_name_growing(
     result
 }
 
-/// Copy the exact retained army display string independently of [`inputs`].
-/// Missing groups, failed templates and exhausted authored names cannot hide
-/// a readable cache. No game call, generated name or ordinal allocation occurs.
-///
-/// The span is uncommitted at `names.len`, as in [`copy_string`]. Admission
-/// advances that length. `Some((start, 0))` is valid empty text; `None` keeps
-/// proved demand for growth outside acquisition. Preserve raw bytes, including NULs.
 pub fn cached_name(
     memory: &impl Memory,
     base: usize,
@@ -244,9 +179,6 @@ pub fn cached_name(
     copy_string(memory, &header, names, &CACHED)
 }
 
-/// The same authenticated cache/header/terminator admission as [`cached_name`]
-/// with no payload arena, for sizing outside acquisition. No heap text payload
-/// is copied; only the established boundary probes validate its byte demand.
 pub fn cached_name_demand(
     memory: &impl Memory,
     base: usize,
@@ -265,13 +197,6 @@ pub fn cached_name_demand(
 #[path = "cname_group_member/cached_name_tests.rs"]
 mod cached_name_tests;
 
-/// Pass-scoped naming lookups. Within one quiescent acquisition a template's selected group and a
-/// group's authored key cannot change, so the pass memoizes template handle -> key span and group
-/// pointer -> key span after authenticating them once. A key that did not fit is memoized too, so
-/// its demand is counted once per pass. Template references share only the registry header
-/// (`HeaderResolver`), never a bucket. Both tables are bounded caches: a full table only costs a
-/// fresh read, never a row. Entries carry the pass's generation stamp, so a new pass forgets them
-/// without clearing the tables.
 #[derive(Default)]
 pub struct GroupKeys {
     templates: Vec<Entry<u64>>,
@@ -287,9 +212,7 @@ struct Entry<K> {
     span: Span,
 }
 
-/// A memoized key that did not fit this pass's arena; its demand is counted.
 const UNFIT: Span = (usize::MAX, 0);
-/// A memoized template whose `TEMPLATE_NAME_GROUP` group is null.
 const NULL_GROUP: Span = (usize::MAX - 1, 0);
 
 const PROBES: usize = 16;
@@ -300,7 +223,6 @@ fn slot(hash: u64, len: usize) -> usize {
 }
 
 impl GroupKeys {
-    /// Power-of-two table sizes; zero disables that memo.
     pub fn try_with_capacity(templates: usize, groups: usize) -> std::io::Result<Self> {
         let size = |n: usize| {
             if n == 0 {
@@ -327,14 +249,11 @@ impl GroupKeys {
         [self.templates.len(), self.keys.len()]
     }
 
-    /// Bytes held by both memo tables, from their own entry types.
     pub fn allocated_bytes(&self) -> usize {
         self.templates.capacity() * size_of::<Entry<u64>>()
             + self.keys.capacity() * size_of::<Entry<usize>>()
     }
 
-    /// Start a new pass: advance the stamp instead of clearing the tables.
-    /// Only a stamp wraparound, once every 2^32 passes, clears them.
     pub fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         if self.generation == 0 {
@@ -345,7 +264,6 @@ impl GroupKeys {
         self.registry = Default::default();
     }
 
-    /// `Ok` is this pass's span; `Err(Some(slot))` a free slot for it.
     fn find<K: Copy + PartialEq>(
         table: &[Entry<K>],
         generation: u32,
@@ -392,7 +310,6 @@ impl GroupKeys {
         let span =
             match copy_string(memory, &header[GROUP_KEY..GROUP_KEY + 32], names, &KEY)? {
                 Some(span) => {
-                    // Committed now: later divisions and templates share it.
                     names.len += span.1;
                     span
                 }
@@ -409,7 +326,6 @@ impl GroupKeys {
     }
 }
 
-/// Error texts for [`copy_string`]: header, pointer, bytes, terminator.
 pub type StringErrors = [&'static str; 4];
 const CUSTOM: StringErrors = [
     "division name override header invalid",
@@ -431,14 +347,6 @@ const CACHED: StringErrors = [
 ];
 
 
-/// Validates an MSVC string from its 32-byte header (inline bytes, length,
-/// capacity) and copies its bytes to `names` at `names.len`, uncommitted.
-/// The length belongs to the game's own allocation: it is bounded by the
-/// capacity, and a heap string's first byte, last byte and terminator must
-/// all be readable before any demand is counted, so a torn header cannot ask
-/// for more arena than the game has mapped at that address. `Ok(None)` counts
-/// it into `required` without copying. Inline strings need no further read;
-/// heap strings one two-span scatter and one copy of their bytes.
 pub(crate) fn copy_string(
     memory: &impl Memory,
     header: &[u8],
@@ -500,9 +408,7 @@ pub(crate) fn copy_string(
     Ok(Some((start, len)))
 }
 
-/// A string header [`string_source`] validated.
 enum StringSource<'h> {
-    /// A heap string of no bytes: nothing is read or counted.
     Empty,
     Inline(&'h [u8]),
     Heap {
@@ -511,7 +417,6 @@ enum StringSource<'h> {
     },
 }
 
-/// [`copy_string`]'s validation, before any demand is counted.
 fn string_source<'h>(
     memory: &impl Memory,
     header: &'h [u8],
@@ -536,7 +441,6 @@ fn string_source<'h>(
     if len == 0 {
         return Ok(StringSource::Empty);
     }
-    // The first byte, then the last byte with its terminator.
     let last = source.checked_add(len - 1).ok_or(errors[3])?;
     source.checked_add(len).ok_or(errors[3])?;
     let (mut first, mut tail) = ([0_u8; 1], [0_u8; 2]);
@@ -557,7 +461,6 @@ fn demand(required: usize, len: usize) -> Result<usize, &'static str> {
         .ok_or("division name demand overflow")
 }
 
-/// [`copy_string`] into worker storage at `at`, which grows to hold it. Returns its length.
 fn copy_string_into(
     memory: &impl Memory,
     header: &[u8],
@@ -596,10 +499,6 @@ fn copy_string_into(
     Ok(len)
 }
 
-/// Read division naming operands in one member copy; heap-held names add
-/// terminator and byte reads. A type-zero member whose stored name is hidden
-/// resolves its template once per pass. Later divisions with that template
-/// reuse the key span and need only their member copy.
 pub fn inputs(
     memory: &impl Memory,
     base: usize,
@@ -610,15 +509,10 @@ pub fn inputs(
     read_inputs(memory, base, pointer, groups, names, false)
 }
 
-/// One guarded copy of a member's span from its vtable through `FLAG_B`: every field [`inputs`]
-/// reads and the `CACHED_NAME` header [`cached_name`] reads.
 pub fn member(memory: &impl Memory, pointer: usize) -> Result<[u8; INPUT_SPAN], &'static str> {
     read::<[u8; INPUT_SPAN]>(memory, pointer).ok_or("division name unreadable")
 }
 
-/// The constructor owns exactly the member span through `FLAG_B`. Zero pointers mark rows whose
-/// member is absent or carried, and cause no native read. Each serial naming gate still validates
-/// the returned span.
 pub struct MemberBatch {
     bytes: [u8; 64 * INPUT_SPAN],
     rows: [usize; 64],
@@ -680,9 +574,6 @@ impl MemberBatch {
     }
 }
 
-/// [`inputs`] over the member span [`member`] copied, as stored-name and
-/// group-name selection use it. Only worker storage grows; acquired
-/// member/group headers and failed payloads are never retried.
 #[allow(clippy::too_many_arguments)]
 pub fn inputs_growing(
     memory: &impl Memory,
@@ -705,8 +596,6 @@ pub fn inputs_growing(
     result
 }
 
-/// Copies held cache bytes into the arena at `len`, uncommitted, as a read
-/// of the same text would; the caller advances `len` on admission.
 pub fn held_cached_name(
     text: &[u8],
     bytes: &mut Vec<u8>,
@@ -726,10 +615,6 @@ pub fn held_cached_name(
     Ok(Some((start, text.len())))
 }
 
-/// [`cached_name_growing`] over the member span [`member`] copied, which holds the vtable and the
-/// `CACHED_NAME` header. A heap text that fits the arena with its terminator is one copy of both;
-/// any other text, or a copy that faults, takes [`copy_string`]'s reads, which name the
-/// fault.
 pub fn cached_name_from_member(
     memory: &impl Memory,
     base: usize,
@@ -755,8 +640,6 @@ pub fn cached_name_from_member(
     result
 }
 
-/// Copy the raw override, including hidden programmatic text, from an
-/// authenticated member's original descriptor. No name selection is performed.
 pub fn raw_override_from_member(
     memory: &impl Memory,
     member: &[u8; INPUT_SPAN],
@@ -780,8 +663,6 @@ pub fn raw_override_from_member(
     result
 }
 
-/// [`copy_string`] with one copy of a fitting heap string's bytes and
-/// terminator in place of its first/last-byte gather and payload copy.
 fn copy_fitting_string(
     memory: &impl Memory,
     header: &[u8],
@@ -810,13 +691,6 @@ fn copy_fitting_string(
     copy_string(memory, header, names, errors)
 }
 
-/// An operative codename's operands ([`read_inputs`]); `heap` receives
-/// whether its group key and its stored name are heap-held (their header's
-/// capacity is not the inline one), which decides how
-/// [`copy_string`] grows a growing arena for them.
-/// [`codename_inputs_buffer`] into worker storage from `from`, which grows to hold
-/// every byte, so the member's operands are its row or a read's refusal. `len` is
-/// relative to `from` and commits both spans.
 pub(crate) fn codename_inputs_into(
     memory: &impl Memory,
     base: usize,
@@ -826,7 +700,6 @@ pub(crate) fn codename_inputs_into(
     len: &mut usize,
     required: &mut usize,
 ) -> Result<Inputs, &'static str> {
-    // The module check precedes the member copy, as it always has.
     engine_sites::at(base, VTABLE_RVA).ok_or("division name module address overflow")?;
     let member = member(memory, pointer)?;
     let mut row = member_row(base, &member)?;
@@ -859,7 +732,6 @@ pub(crate) fn codename_inputs_buffer(
     required: &mut usize,
     heap: &mut [bool; 2],
 ) -> Result<Naming, &'static str> {
-    // read_inputs, with the member's two string headers kept.
     engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     let member = member(memory, pointer)?;
@@ -886,17 +758,10 @@ pub(crate) fn codename_inputs_buffer(
     result
 }
 
-/// Whether [`member_inputs`] copied a type-two codename's stored name: it does whenever `FLAG_B` is
-/// clear, and with it set only for a nonzero stored length, which is then the name's own length. A
-/// skipped name keeps the default span.
 pub fn custom_copied(row: &Inputs) -> bool {
     row.programmatic == 0 || row.custom.1 != 0
 }
 
-/// [`member_inputs`]' type-two path over a held read's operands: `held`'s
-/// fields, its group key's bytes and its stored name's (`None` when it was
-/// not copied, [`custom_copied`]), placed as [`copy_string`] places
-/// them, `heap` deciding each one's growth ([`codename_inputs_buffer`]).
 pub fn carry_codename(
     names: &mut Names<'_>,
     held: Inputs,
@@ -930,8 +795,6 @@ pub fn carry_codename(
     })
 }
 
-/// [`copy_string`] of held bytes: demand, fit, growth and span as
-/// the fresh copy of an inline or heap-held string of the same bytes.
 fn place_string(
     names: &mut Names<'_>,
     bytes: &[u8],
@@ -990,7 +853,6 @@ pub(crate) fn read_inputs(
     names: &mut Names<'_>,
     codename: bool,
 ) -> Result<Naming, &'static str> {
-    // The module check precedes the member copy, as it always has.
     engine_sites::at(base, VTABLE_RVA)
         .ok_or("division name module address overflow")?;
     let member = member(memory, pointer)?;
@@ -1011,7 +873,6 @@ fn member_inputs(
     if codename && row.kind != 2 {
         return Err("operative codename member is not type two");
     }
-    // Type-two group lookup hashes this exact authored key.
     let mut fits = true;
     if row.kind == 2 {
         match copy_string(
@@ -1043,8 +904,6 @@ fn member_inputs(
     }
     match template_group(memory, base, word(TEMPLATE_REFERENCE), groups, names)? {
         UNFIT => Ok(Naming::DoesNotFit),
-        // With `FLAG_B` set, only a null group shows a nonempty stored override. A null group
-        // without it generates a legacy name, which is not captured.
         NULL_GROUP if word(OVERRIDE_NAME + msvc_string::LENGTH) != 0 => {
             match copy_string(memory, header, names, &CUSTOM)? {
                 Some(span) => row.custom = span,
@@ -1060,7 +919,6 @@ fn member_inputs(
     }
 }
 
-/// The member's authenticated scalar operands, with no string copied.
 fn member_row(base: usize, member: &[u8; INPUT_SPAN]) -> Result<Inputs, &'static str> {
     let expected =
         engine_sites::at(base, VTABLE_RVA).ok_or("division name module address overflow")?;
@@ -1079,7 +937,6 @@ fn member_row(base: usize, member: &[u8; INPUT_SPAN]) -> Result<Inputs, &'static
     })
 }
 
-/// A nonempty stored override is shown when `FLAG_B` is clear, independently of the group.
 fn shows_custom(
     memory: &impl Memory,
     base: usize,
@@ -1098,10 +955,6 @@ fn shows_custom(
             && operative_group_is_null(memory, base, pointer, member)?))
 }
 
-/// Type-two name-group resolution uses the member's stored hash to select
-/// a database bucket, then compares group hash and authored key case-insensitively.
-/// Only a nonempty programmatic override reaches this query; a null result
-/// selects display of its stored bytes.
 pub fn operative_group_is_null(
     memory: &impl Memory,
     base: usize,
@@ -1191,8 +1044,6 @@ fn group_keys_equal(
                 .ok_or("operative name group key bytes unreadable")
         };
         let (left, right) = (byte(left)?, byte(right)?);
-        // Identical bytes need no locale. As in `border_effect_demand::matches`,
-        // differing non-ASCII bytes require the unavailable locale and are refused.
         if left != right {
             if !left.is_ascii() || !right.is_ascii() {
                 return Err("operative name group comparison locale unavailable");
@@ -1210,9 +1061,6 @@ fn group_keys_equal(
     }
 }
 
-/// Type-zero group lookup resolves `TEMPLATE_REFERENCE`, then its `TEMPLATE_NAME_GROUP` group key
-/// span. A null/unresolved template or null group yields [`NULL_GROUP`]; unreadable storage yields
-/// [`UNFIT`].
 fn template_group(
     memory: &impl Memory,
     base: usize,
@@ -1300,8 +1148,6 @@ mod tests {
             database: None,
         }
     }
-    /// One division read into a fresh `arena`-byte name arena: the result,
-    /// the arena and its counted demand.
     fn run(memory: &impl Memory, arena: usize) -> (Result<Naming, &'static str>, Vec<u8>, usize) {
         let mut bytes = vec![0; arena];
         let mut names = Names {
@@ -1319,7 +1165,6 @@ mod tests {
         let required = names.required;
         (result, bytes, required)
     }
-    /// The census count probe: no bytes stored, the demand counted.
     fn count(memory: &impl Memory) -> (Result<Naming, &'static str>, usize) {
         let mut names = Names {
             bytes: crate::walk::Buffer::Count,
@@ -1413,7 +1258,6 @@ mod tests {
         let (result, _, required) = run(&memory, 5);
         assert_eq!(row(result).custom.1, 0);
         assert_eq!(required, 5);
-        // A different hash follows the next node to null, so the override name is shown.
         memory.bytes[0x428..0x42c].copy_from_slice(&124_u32.to_le_bytes());
         assert_eq!(row(run(&memory, 11).0).custom.1, 6);
         memory.bytes[0x428..0x42c].copy_from_slice(&123_u32.to_le_bytes());
@@ -1424,9 +1268,6 @@ mod tests {
         );
     }
 
-    /// A programmatic stored name is shown only for a null group. A null
-    /// template reference admits the override; without stored bytes it
-    /// publishes neither name nor group.
     #[test]
     fn a_programmatic_name_is_published_for_a_null_group() {
         let mut bytes = [0_u8; 0xb0];
@@ -1445,13 +1286,10 @@ mod tests {
         );
         assert_eq!((named.group.1, required), (0, 3));
         assert_eq!(count(&guard(&bytes)), (Ok(Naming::DoesNotFit), 3));
-        // A stored length of zero: the game builds the legacy name.
         let mut unnamed = bytes;
         unnamed[OVERRIDE_NAME + 16..OVERRIDE_NAME + 24].fill(0);
         let named = row(run(&guard(&unnamed), 64).0);
         assert_eq!((named.custom.1, named.group.1), (0, 0));
-        // A nonzero type resolves a ship, operative or railway gun, which
-        // the capture does not read: the stored name is not published.
         bytes[TYPE] = 3;
         assert_eq!(row(run(&guard(&bytes), 64).0).custom.1, 0);
     }
@@ -1472,8 +1310,6 @@ mod tests {
         );
         assert_eq!(first.custom.1, 0);
         assert_eq!(*memory.reads.borrow(), [(0x1000, INPUT_SPAN)]);
-        // A player's name: inline "Guard", length 5, capacity 15. Its bytes and
-        // terminator come from the same copy.
         bytes[FLAG_B] = 0;
         bytes[OVERRIDE_NAME..OVERRIDE_NAME + 6].copy_from_slice(b"Guard\0");
         bytes[OVERRIDE_NAME + 16..OVERRIDE_NAME + 24].copy_from_slice(&5_u64.to_le_bytes());
@@ -1487,11 +1323,9 @@ mod tests {
         );
         assert_eq!((named.group.1, required), (0, 5));
         assert_eq!(memory.reads.borrow().len(), 1);
-        // The generated `CACHED_NAME` cache never reaches the published row.
         let mut changed = bytes;
         changed[0x60..0x80].fill(0x5a);
         assert_eq!(run(&guard(&changed), 64).0, Ok(Naming::Row(named)));
-        // The count probe counts the name and omits nothing silently.
         assert_eq!(count(&guard(&bytes)), (Ok(Naming::DoesNotFit), 5));
         bytes[OVERRIDE_NAME + 5] = b'!';
         assert_eq!(
@@ -1506,7 +1340,6 @@ mod tests {
         bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
         bytes[TYPE..TYPE + 4].copy_from_slice(&3_i32.to_le_bytes());
         bytes[FLAG_A] = 1;
-        // Longer than any fixed text buffer the reader used to carry.
         let name: Vec<u8> = (0..300).map(|i| b'a' + (i % 26) as u8).collect();
         bytes[0x100..0x100 + name.len()].copy_from_slice(&name);
         bytes[OVERRIDE_NAME..OVERRIDE_NAME + 8].copy_from_slice(&0x1100_u64.to_le_bytes());
@@ -1527,7 +1360,6 @@ mod tests {
                 (0x1100, name.len())
             ]
         );
-        // The count probe: the demand is counted, nothing is copied.
         let memory = guard(&bytes);
         assert_eq!(count(&memory), (Ok(Naming::DoesNotFit), 300));
         assert_eq!(memory.reads.borrow().len(), 3);
@@ -1557,7 +1389,6 @@ mod tests {
             if at == OVERRIDE_NAME + 24 {
                 bad[at..at + 8].copy_from_slice(&3_u64.to_le_bytes());
             }
-            // No demand is published for an unproved length.
             let (result, _, required) = run(&guard(&bad), 512);
             assert_eq!((result, required), (Err(reason), 0));
         }

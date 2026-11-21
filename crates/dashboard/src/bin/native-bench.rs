@@ -1,6 +1,3 @@
-//! native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG|auto [--audit|--capacity|--hourly-check]
-//! Prints one JSON trace. Set Windows process affinity before launch so all workers inherit it.
-//! --audit compares each delivered record with an independent exact read and counts materialized rows.
 
 #[path = "native-bench/widgets.rs"]
 mod widgets;
@@ -130,11 +127,9 @@ fn main() -> io::Result<()> {
     let metadata = source.metadata().map_err(io::Error::other)?;
     let branch = metadata.branches.iter().find(|b| b.main).ok_or_else(|| io::Error::other("no main branch"))?;
     let q = answer::query(&source, branch.id.parse().map_err(io::Error::other)?)?;
-    // End late in one continuous run, with enough history left for a full lead and a timed window.
     let span = q.timeline.stretches.iter().rev().find(|s| s.last - s.first >= 3600 + QUANTUM)
         .ok_or_else(|| io::Error::other("no continuous recording long enough for the late window"))?;
     let pages = Arc::new(WorldPages::open(&path, Span::Run(span.run as usize))?);
-    // Align step ends with storage block ends so 30 steps can prefill all 720 hours.
     let end = span.last - (span.last - pages.pieces()[0].first + 1).rem_euclid(QUANTUM);
     let first = end - 3600;
     let last = if hourly { first + QUANTUM } else { end };
@@ -209,7 +204,6 @@ fn main() -> io::Result<()> {
             Some(_) if capacity => newest,
             Some(_) => ph.head(now),
         };
-        // Keep the native catch-up shortcut from skipping hours when the independent clock wins.
         let consumed = head.min(newest);
         seat.advance(consumed);
         seat.take(consumed, &mut taken);

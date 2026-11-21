@@ -81,15 +81,12 @@ fn positions_choose_the_shorter_form_and_read_back_exactly() {
 
 #[test]
 fn bitmaps_and_runs_are_written_word_by_word() {
-    // Runs: their count, then each one's gap from the last one's end and its length less one.
     let runs = positions_round_trip(10, &[0, 1, 2, 5]);
     assert_eq!(runs, [POSITION_RUNS, 2, 0, 2, 2, 0]);
-    // Every other position of 64: the form, padding to a word's width, then the word.
     let alternate: Vec<u32> = (0..64).step_by(2).collect();
     let mut bitmap = vec![POSITION_BITMAP, 0, 0, 0, 0, 0, 0, 0];
     bitmap.extend_from_slice(&0x5555_5555_5555_5555_u64.to_le_bytes());
     assert_eq!(positions_round_trip(64, &alternate), bitmap);
-    // Slots 0 to 63 and 130: their count, the form and three words, the middle one empty.
     let mut slots: Vec<u32> = (0..64).collect();
     slots.push(130);
     let mut bitmap = vec![65, SLOT_BITMAP, 3, 0, 0, 0, 0, 0];
@@ -138,14 +135,12 @@ fn malformed_lists_are_refused_by_name() {
     assert!(writer.slots(&[2, 2]).is_err(), "repeated slot");
     assert!(writer.positions(4, &[4]).is_err(), "position past the list");
     let mut read = Vec::new();
-    // A bitmap whose bits disagree with its count.
     let mut writer = Writer::new();
     writer.varint(2).unwrap();
     writer.u8(SLOT_BITMAP).unwrap();
     writer.varint(1).unwrap();
     writer.values(&[1u64]).unwrap();
     assert!(Reader::new(writer.bytes()).slots(&mut read).is_err());
-    // A run reaching past the list.
     let mut writer = Writer::new();
     writer.u8(POSITION_RUNS).unwrap();
     writer.varint(1).unwrap();
@@ -164,7 +159,6 @@ fn malformed_lists_are_refused_by_name() {
 
 #[test]
 fn a_slot_bitmap_past_the_last_u32_slot_is_refused_before_its_words() {
-    // The last word's top bit is the last slot; a word more would name slot 2^32 and up.
     assert_eq!(SLOT_WORDS * 64 - 1, u32::MAX as usize);
     let mut read = Vec::new();
     let mut writer = Writer::new();
@@ -195,7 +189,6 @@ fn integers_lengths_and_keys_round_trip_as_varints() {
     assert_eq!(narrow, [0, u16::MAX]);
     assert_eq!(ends, [0, 3, 3, 10]);
     assert_eq!(keys, [5, 3, u128::MAX, 0, 1 << 100]);
-    // A varint wider than its column is refused.
     let mut writer = Writer::new();
     writer.varint(1 << 16).unwrap();
     assert!(
@@ -214,7 +207,6 @@ fn a_slot_list_past_its_end_is_refused_before_anything_is_allocated() {
     let mut read = Vec::new();
     let mut writer = Writer::new();
     writer.slots(&(0..4096).collect::<Vec<u32>>()).unwrap();
-    // 4,096 slots where the table holds one: refused by the count alone.
     let error = Reader::new(writer.bytes())
         .slots_below(1, &mut read)
         .unwrap_err();

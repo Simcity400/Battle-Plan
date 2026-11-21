@@ -1,4 +1,3 @@
-//! Writer certificates, dirty marks, owner-slice selection and held research drift. Stores require complete reads, stable epochs, successful publication and valid writer certificates. Native capture orchestration and collector feature defaults belong to the DLL host.
 
 use collector_primitives::{clock, table_hash};
 #[cfg(test)]

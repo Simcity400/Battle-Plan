@@ -11,7 +11,6 @@ use replay_data::rows::{
     ModifierDefinitionRow, ReservedCountryNamingRow, SimulationFeatureRow, TimedIdeaRow, tables,
 };
 
-/// The fields of each table the modifier descriptions read.
 pub(super) const DEFINITION_TEXT: u64 = mask::<ModifierDefinitionRow>(&[
     "token",
     "name_key",
@@ -29,8 +28,6 @@ const RESERVED_LOOK: u64 = mask::<ReservedCountryNamingRow>(&["name_tag", "cosme
 const TIMED: u64 = mask::<TimedIdeaRow>(&["token", "days"]);
 const ADVISOR_TOKEN: usize = replay_data::rows::column::<AdvisorTokenRow>("token");
 
-/// The first definition, in index order, whose token LexicalTokens spells `name` without case,
-/// holding the fields `definitions` builds; a walk builds the others' tokens alone.
 fn named_definition<'f>(
     definitions: Rowset<'f, ModifierDefinitionRow>,
     tokens: &Rowset<'f, LexicalTokenRow>,
@@ -94,8 +91,6 @@ fn clean_modifiers(text: &str, remove_spaced_colon: bool) -> String {
     text.replace("    ", " ")
 }
 
-// floor into fixed5 first, wrapping that intermediate,
-// then divide and narrow. This differs from integer floor near i64::MIN.
 fn timed_component_integer(value: i64) -> i32 {
     let floored = if value % 100_000 == 0 {
         value
@@ -120,14 +115,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         operand: &str,
         scopes: Scopes,
     ) -> Result<Option<&'c installed_content_core::ideas::Idea>, String> {
-        // treats token: as a literal; ':' or '.' chooses a variable.
         if let Some(token) = operand.strip_prefix("token:") {
             return self.idea(token);
         }
         if !operand.bytes().any(|byte| matches!(byte, b':' | b'.')) {
             return self.idea(operand);
         }
-        // signed /100000 then lexer token lookup.
         let token = (self.scoped_value(operand.as_bytes(), scopes)? / 100_000) as u32;
         let rows = self
             .context
@@ -142,14 +135,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.idea(literal)
     }
 
-    // shared by all idea effects.
     fn idea_name(
         &self,
         idea: &installed_content_core::ideas::Idea,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // The caller supplies its country carrier, including zero for a
-        // non-country scope; name expansion uses a fresh country-only scope.
         let country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => country,
             _ => 0,
@@ -188,7 +178,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 original_or_own_tag: original_or_own_tag.as_deref().map_err(String::as_str),
                 cosmetic_tag: std::str::from_utf8(&row.cosmetic_tag)
                     .map_err(|_| "reserved idea cosmetic_tag is not UTF-8")?,
-                civil_war: Ok(false), // tests canonical zero, not a dynamic country.
+                civil_war: Ok(false),
             })
         } else {
             appearance = frame
@@ -233,7 +223,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Preserve fragment order.
     fn idea_details(
         &self,
         idea: &installed_content_core::ideas::Idea,
@@ -277,8 +266,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         text.push_str(&self.modifier_list_with(&idea.modifiers, "", scopes, options)?);
         newline(&mut text);
         for target in &idea.targeted {
-            // resolves in a default-empty scope, copies the caller,
-            // and only a positive country builds a header.
             let country = target
                 .operand
                 .as_deref()
@@ -320,7 +307,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // authored category key + "_research".
     fn research_bonus_line(
         &self,
         bonus: &installed_content_core::modifiers::Modifier,
@@ -343,7 +329,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // uses the short wrapper only when the complete detail text is empty.
     fn idea_tooltip(
         &self,
         idea: &installed_content_core::ideas::Idea,
@@ -371,7 +356,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Bound idea_desc callback; a missing token is empty.
     pub(in crate::effect_description) fn bound_idea_description(
         &self,
         token: &str,
@@ -383,7 +367,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map(Option::unwrap_or_default)
     }
 
-    // concatenates four fragments, cleans them, then expands the wrapper.
     pub(super) fn timed_idea(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let token = text_field(fields, "idea")?;
@@ -406,7 +389,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn idea_advisor(&self, token: &str) -> Result<bool, String> {
-        // registered advisor tokens take precedence over idea.
         for text in self
             .complete::<tables::AdvisorTokens>(0)?
             .texts(|row| &row.token, ADVISOR_TOKEN)
@@ -430,12 +412,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         for token in &tokens {
             if self.idea_advisor(token)? {
                 let Some(character) = self.advisor_idea_character(token, scopes)? else {
-                    // returns empty for a missing association;
-                    // The multi-token loop continues with other names.
                     if !show || tokens.len() == 1 {
                         return Ok(String::new());
                     }
-                    // still tries idea when the association misses.
                     let name = self
                         .idea(token)?
                         .map(|idea| self.idea_name(idea, scopes))
@@ -451,7 +430,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     self.advisor_idea_tooltip(&character, token, scopes, remove, show)?
                 } else {
                     let mut name = self.effect_character_name(&character)?;
-                    // also tries the idea name, even for an advisor.
                     if show && let Some(idea) = self.idea(token)? {
                         name.push_str(&self.idea_name(idea, scopes)?);
                     }
@@ -469,13 +447,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     self.idea_tooltip(idea, scopes)?
                 } else {
                     let name = self.idea_name(idea, scopes)?;
-                    // Show describes both the advisor name and the idea name.
                     if show { format!("{name}{name}") } else { name }
                 });
             }
         }
         let mut name = names.join(", ");
-        // removes the literal ".\n", not indentation.
         if !show {
             name = name.replace(".\n", "");
         }
@@ -501,7 +477,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // localises the authored trait and current country's name.
         let trait_ = self.localised(scalar_operand(item)?, &[], scopes, true)?;
         let country = self.country_name(self.current_country(scopes)?, false)?;
         self.char_native_text(
@@ -515,8 +490,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // returns the first entry's stored days, or -1 without one.
-    // Keep membership separate: an entry itself may store -1.
     fn timed_idea_days(
         &self,
         idea: &installed_content_core::ideas::Idea,
@@ -546,10 +519,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let Some(days) = self.timed_idea_days(idea, scopes)? else {
-            return Ok(String::new()); // membership gate.
+            return Ok(String::new());
         };
         let mut added = 0_i32;
-        // floors each component before native signed32 arithmetic.
         for (field_name, scale) in [("days", 1), ("years", 365), ("months", 30)] {
             if let Some(field) = field(children(item), field_name) {
                 let raw = self.scoped_value(field.value.scalar().unwrap_or_default(), scopes)?;
@@ -561,11 +533,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .hour()
                 .wrapping_add(added.wrapping_add(days).wrapping_mul(24)),
         );
-        // localises the month key.
         let month = self.char_native_text(month.as_bytes(), &[], scopes, false)?;
         let date = format!("{day} {month}, {year}");
         let name = self.idea_name(idea, scopes)?;
-        // cleans ':,' but, unlike add-timed, retains ':,'.
         let description = clean_modifiers(&self.idea_details(idea, scopes)?, false);
         let duration = self.duration(children(item), scopes)?;
         self.char_native_text(
@@ -596,7 +566,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         };
         let old = self.timed_idea_days(remove, scopes)?.unwrap_or(-1);
         let mut days = old;
-        // The negative add-days result describes removal alone.
         if let Some(days) = field(fields, "add_days") {
             let added = crate::triggers::fixed_round(
                 self.scoped_value(days.value.scalar().unwrap_or_default(), scopes)?,
@@ -611,7 +580,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     true,
                 );
             }
-            // add_days takes precedence even when days is also authored.
             return self.swap_idea_description(add, remove, old, total, scopes);
         } else if let Some(value) = field(fields, "days") {
             days = crate::triggers::fixed_round(
@@ -621,8 +589,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.swap_idea_description(add, remove, old, days, scopes)
     }
 
-    // compares display-name bytes, not idea tokens, before choosing
-    // the duration wrapper. Its fragments stay plain; only the header expands.
     fn swap_idea_description(
         &mut self,
         add: &installed_content_core::ideas::Idea,
@@ -655,7 +621,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
         }
         let mut text = self.char_native_text(key, &args, scopes, true)?;
-        text.push('\n'); // The header appends LF unconditionally.
+        text.push('\n');
         for fragment in [
             self.modifier_difference(&add.modifiers, &remove.modifiers, true),
             self.idea_targeted_difference(add, remove, scopes),
@@ -669,12 +635,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
             newline(&mut text);
         }
-        text.push('\n'); // terminal LF even after a fragment's LF.
+        text.push('\n');
         Ok(text)
     }
 
-    // each raw contribution multiplies before division;
-    // the new accumulator does not copy hidden flags or custom tooltip slots.
     fn modifier_difference(
         &self,
         add: &Modifiers,
@@ -713,8 +677,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // first matching target per country, in country
-    // index order. Each operand evaluates in a fresh default-empty scope.
     fn idea_targeted_difference(
         &self,
         add: &installed_content_core::ideas::Idea,
@@ -735,8 +697,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let empty = Modifiers::default();
         let mut text = String::new();
         for country in countries {
-            // evaluates only the prefix up to the first match for
-            // this country; a later variable may never be evaluated at all.
             let mut selected = [&empty, &empty];
             for (index, idea) in [add, remove].into_iter().enumerate() {
                 for target in &idea.targeted {
@@ -774,8 +734,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // new order, first old folded match, then remaining
-    // old entries in their order. Matched values subtract with signed64 wrap.
     fn idea_research_difference(
         &self,
         add: &installed_content_core::ideas::Idea,
@@ -814,7 +772,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // a changed rule restored to its native default contributes an empty line.
     fn idea_rule_difference(
         &self,
         add: &installed_content_core::ideas::Idea,
@@ -880,8 +837,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    // group equipment names in first-seen order
-    // and add/subtract each stored stat; omits zero stats.
     fn idea_equipment_difference(
         &self,
         add: &installed_content_core::ideas::Idea,
@@ -1000,7 +955,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             (false, false, true) => b"EFFECT_ADD_TRADE_OPINION",
             (false, false, false) => b"EFFECT_ADD_OPINION",
         };
-        // append LF; days affects execution, not this text.
         self.char_native_line(
             key,
             &[
@@ -1042,7 +996,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let country = self.country_name(target, false)?;
         let name = self.localised(name.as_bytes(), &[], scopes, false)?;
         let description = self.modifier_description_with(&modifiers, "", Default::default())?;
-        // target TARGET, static NAME, raw DESC, scoped wrapper.
         self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_RELATION_MODIFIER"
@@ -1107,7 +1060,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let mut description =
             self.modifier_list_with(&modifier.modifiers, "", selected_scopes, Default::default())?;
         newline(&mut description);
-        // formats each scoped entry in authored order.
         let mut scoped_lines = Vec::new();
         for (key, operand) in &modifier.scoped_modifiers {
             let value = self.scoped_value(operand, selected_scopes)?;
@@ -1200,7 +1152,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             )?);
             list.push('\n');
         }
-        // compute days/province list but omit them from own text.
         let description = self.char_native_text(
             if remove {
                 b"EFFECT_REMOVE_PROVINCE_MODIFIER"
@@ -1270,7 +1221,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         .map_err(|why| why.to_string())
                 },
             )?;
-            // passes colour byte 1 and includes zero.
             text.push_str("\n\u{11}\u{1}");
             text.push_str(&name);
             text.push_str(": ");
@@ -1287,7 +1237,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 
     fn duration(&self, fields: &[Item], scopes: Scopes) -> Result<String, String> {
         let mut text = String::new();
-        // floors each stored component separately, then casts to i32.
         for (name, key, trailing) in [
             ("years", b"FREQUENCY_YEAR".as_slice(), true),
             ("months", b"FREQUENCY_MONTH".as_slice(), true),
@@ -1316,7 +1265,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
-    /// Expands the raw modifier list in the supplied event scope.
     pub(super) fn modifier_list_with(
         &self,
         modifiers: &Modifiers,
@@ -1330,7 +1278,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    /// raw text; its direct callers choose when to expand it.
     pub(super) fn modifier_description_with(
         &self,
         modifiers: &Modifiers,
@@ -1363,7 +1310,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.modifier_description_values(&values, &modifiers.tooltips(), prefix, options)
     }
 
-    /// stored definition IDs and numeric-array order.
     pub(in crate::effect_description) fn cached_modifier_description_with(
         &self,
         entries: &[CachedModifier],
@@ -1373,8 +1319,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.cached_modifier_description(entries, &[], prefix, options)
     }
 
-    /// occupied tooltip slots are stored string bytes,
-    /// independent of authored traits and the cache's refresh history.
     pub(in crate::effect_description) fn advisor_cache_description(
         &self,
         row: &replay_data::rows::AdvisorRoleRow,
@@ -1454,19 +1398,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let frame = self.tables();
         let mut out = String::new();
         if options.outer_colour != 0 {
-            // these bytes precede the first line's separator check.
             out.push('\u{11}');
             out.push(char::from(options.outer_colour));
         }
         for &(raw_value, definition) in values {
-            // separate include/exclude intersections.
             if definition.category_mask & options.category_mask == 0
                 || definition.category_mask & !options.excluded_category_mask == 0
             {
                 continue;
             }
-            // Clamp before wrapping multiplication and
-            // signed /100000; tests the scaled zero.
             let effective =
                 if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
                     raw_value.clamp(0, 100_000)
@@ -1505,7 +1445,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 },
             )?;
             if !out.is_empty() {
-                // appends the separator as a NUL-terminated string.
                 out.push_str(options.separator.split('\0').next().unwrap_or_default());
             }
             out.push_str(prefix);
@@ -1517,7 +1456,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             if tooltip.is_empty() {
                 continue;
             }
-            // LF only if needed, no numeric prefix.
             if !out.is_empty() && !out.ends_with('\n') {
                 out.push('\n');
             }
@@ -1530,15 +1468,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             );
         }
         if options.outer_colour != 0 {
-            // appends the reset even when there were no lines.
             out.push_str("\u{11}!");
         }
         Ok(out)
     }
 }
 
-/// Whether `definition`'s feature selector, if it has one, is in the
-/// recorded DLC mask.
 fn feature_enabled(frame: HourFrame<'_>, definition: &ModifierDefinitionRow) -> Result<bool, String> {
     if definition.feature_selector == 0 {
         return Ok(true);

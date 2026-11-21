@@ -1,19 +1,3 @@
-//! Combat-side division death before unit deletion, without game calls or allocation.
-//!
-//! Lifecycle processing follows removal of the triggering combat when retreat
-//! is impossible or strength falls below the content-loaded threshold. It logs
-//! the victim's remaining pool and shares leader experience among opposing units
-//! without selecting a killer division. Tail-jump deletion bypasses the separate
-//! selected-killer destruction route.
-//!
-//! The later leader on-action chooses its own country; it does not change casualty attribution.
-//! Attribution uses the opposite side's first raw country. An empty side selects
-//! the first raw link to reserved slot zero, or zero when no link matches. Keep
-//! the triggering combat separate from remaining references because it is already
-//! removed. Observation begins after land leader-experience effects and before
-//! country selection; intervening unit and reserved-link accessors run no scripts.
-//! No selected killer was observed, so killer attribution is unavailable rather
-//! than a known null. This layout does not establish live hook coverage or cost.
 
 use crate::{
     Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
@@ -23,10 +7,7 @@ use crate::{
 use engine_sites::Rva;
 
 pub const RETURN_RVA: Rva = Rva(0x147fa46);
-/// Base lifecycle after land leader-experience effects. Naval combatants
-/// share this virtual path and their vtable is excluded below.
 pub const LIFECYCLE_RVA: Rva = Rva(0x147d4a0);
-/// CPdxArray<u32>; base lifecycle loads its data and signed count.
 const COUNTRY_ARRAY: usize = 0x68;
 
 #[derive(Clone, Copy)]
@@ -62,7 +43,6 @@ impl WipePlan {
             side::VTABLE_RVA
         };
         identity(memory, base, army, carmy::VTABLE_RVA)?;
-        // Authenticate the division primary class discriminator.
         if field::<u32>(memory, army, cunit::CLASS)? != 0 {
             return Err("combat wipe unit class unsupported");
         }
@@ -123,7 +103,6 @@ impl WipePlan {
         }))
     }
 
-    /// Words include the caller's framing-size word, as for DestructionPlan.
     pub fn copy(
         self,
         memory: &impl Memory,
@@ -166,7 +145,7 @@ fn null_country(memory: &impl Memory, state: usize) -> Result<u32, &'static str>
             return Ok(raw);
         }
     }
-    Ok(0) // Preserve the reserved-link search's empty and no-match fallback.
+    Ok(0)
 }
 
 fn address(pointer: usize, offset: usize) -> Result<usize, &'static str> {

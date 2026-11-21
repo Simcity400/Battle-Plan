@@ -36,8 +36,6 @@ const tieKey = (row: ExileRow) => row.tag;
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
 const count = (value: unknown) => usNumber.format(value as number);
 
-/** The table's columns: countries by `label` (sorted by `sortName`), the hiding columns' values in the row tooltip; the
- * numbers painted from `values` (the live cells), Manpower beside its cap. */
 export function exileColumns(sortName: (tag: string) => string, label: CountryLabel, values: () => LiveValues<number>): TableColumn<ExileRow>[] {
   return [
     { key: 'exile', header: 'Exile', label: 'Exile', width: 'minmax(var(--table-name-min), 2fr)',
@@ -54,7 +52,6 @@ export function exileColumns(sortName: (tag: string) => string, label: CountryLa
   ];
 }
 
-/** Every government in exile at the playback date: the hour's rows, followed at the head as a pushed panel. */
 export default function GovernmentsInExileWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -68,19 +65,16 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
   shownAt.current = head.shownAt;
-  // The table's painted cells report the hour they are of at each frame they read.
   const tableLive = useMemo(() => mapLive(reporting(live, () => shown(shownAt.current())), exileTableValues), [live, shown]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const unrecorded = useCallback((at: number) => membershipUnrecordedAt(widget.countries, groups.data, at), [widget.countries, groups.data]);
-  // A held panel's rows are chosen again where the chosen group changes, at the hour its values are current through.
   const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
   const view = useMemo(() => data && match.ready && !match.reason ? exilesAt({ exiles: data.exiles, hour: choiceAt }, match.matches, unrecorded) : null,
     [data, match, unrecorded, choiceAt]);
@@ -89,7 +83,6 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const onVisibleRows = useCallback((rows: readonly ExileRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => visible.flatMap(row => [{ hour, tag: row.tag }, ...row.host === null ? [] : [{ hour, tag: row.host }]]), [visible, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  // A name sort needs every name; flags still load only for mounted rows.
   const sortingNames = useMemo(() => sort.column === 'exile' ? rows.map(row => ({ hour, tag: row.tag }))
     : sort.column === 'host' ? rows.flatMap(row => row.host === null ? [] : [{ hour, tag: row.host }]) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);

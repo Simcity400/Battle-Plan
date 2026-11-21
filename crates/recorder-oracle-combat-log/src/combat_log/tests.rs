@@ -7,7 +7,6 @@ use replay_frame::frame::TableView;
 
 const GER: u32 = 4;
 const SOV: u32 = 9;
-/// 1943.10.30.11 in the save's text form.
 const DATE: i32 = 60_827_938;
 const SEPTEMBER: i32 = DATE - 24 * 30;
 const AUGUST: i32 = DATE - 24 * 61;
@@ -67,12 +66,10 @@ fn census_compares_all_saved_divisions_groups_and_expeditionary_owners() {
     let mut report = Report::default();
     division_census(&recorded, &saved, &links, &mut report).unwrap();
     assert_eq!(report.differences.len(), 2);
-    // No definitions mean no grouped divisions, even when totals match.
     let saved = save_with(&[], units);
     assert!(saved.naval_history.theatre_countries.is_some());
     let mut report = Report::default();
     division_census(&recorded, &saved, &links, &mut report).unwrap();
-    // Both countries' grouped and ungrouped fields differ, never waived.
     assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
     for tag in ["GER.", "SOV."] {
         assert_eq!(
@@ -184,8 +181,6 @@ fn army_group_members_do_not_duplicate_child_army_members() {
     );
 }
 
-/// One saved division has a reciprocally observed group in the omitted
-/// slot-zero theatre; the other remains independently ungrouped.
 fn omitted_group_census_fixture() -> (DecodedFrame, Save) {
     use replay_data::{
         rows::DivisionCensusRow, rows::DivisionRow, rows::LandTheatreRow,
@@ -431,7 +426,7 @@ fn recorded_grouped_count_cannot_fall_below_the_certified_omitted_members() {
 #[test]
 fn serialized_definitions_cannot_be_qualified_as_omitted_group_members() {
     let (recorded, mut saved) = omitted_group_census_fixture();
-    theatre_groups(&mut saved, b"GER", &[9]); // Same full group identity, serialized empty.
+    theatre_groups(&mut saved, b"GER", &[9]);
     let countries = links();
     let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
     let mut report = Report::default();
@@ -459,8 +454,6 @@ fn serialized_definitions_cannot_be_qualified_as_omitted_group_members() {
     assert!(report.differences.is_empty());
 }
 
-/// Read-only check of an external text save with the oracle's parser and
-/// census attribution. Set BATTLE_PLAN_CENSUS_SAVE to its path before running.
 #[test]
 #[ignore]
 fn division_census_from_text_save() {
@@ -560,7 +553,6 @@ fn row(kind: u8, variant: u32, amount_raw: i64) -> CombatLogEquipmentRow {
     row_at(DATE, kind, variant, amount_raw)
 }
 
-/// One saved month entry: its key, reason, date and (variant, amount) pairs.
 fn month_at(key: &str, reason: i32, date: &str, pool: &[(u32, &str)]) -> String {
     let entries: String = pool
         .iter()
@@ -675,7 +667,6 @@ fn a_missing_log_of_a_still_existing_group_is_a_difference() {
         &[GER],
     );
     let mut save = save(&[]);
-    // Reference ids are global: a transfer to another country is not deletion.
     theatre_groups(&mut save, b"SOV", &[999]);
     let report = run(&frame, &save, false).unwrap();
     assert!(
@@ -704,7 +695,6 @@ fn every_mismatch_is_a_difference() {
     ]);
     let report = run(&frame, &save, true).unwrap();
     let differences = report.differences.join("\n");
-    // GER's four plus SOV's saved month, never recorded.
     assert_eq!(report.differences.len(), 6, "{differences}");
     assert!(differences.contains("[kind 0]") && differences.contains("amount_raw"));
     assert!(differences.contains("[variant 1327]"));
@@ -715,8 +705,6 @@ fn every_mismatch_is_a_difference() {
 
 #[test]
 fn a_sliced_hour_compares_the_countries_read_and_their_last_two_months() {
-    // GER was read now: its window (September, October) is recorded; its
-    // August entry is not expected. SOV was not read: not compared.
     let frame = frame(
         vec![
             row_at(SEPTEMBER, 0, 1326, 200_000),
@@ -732,28 +720,21 @@ fn a_sliced_hour_compares_the_countries_read_and_their_last_two_months() {
     let report = run(&frame, &save, false).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CombatLogEquipment"], 2);
-    // The same rows at a full hour miss August and SOV.
     let report = run(&frame, &save, true).unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     let _ = AUGUST;
 }
 
-/// A read SliceReads dates to this hour that found no rows still compares the
-/// country's required saved months.
 #[test]
 fn a_country_read_now_without_rows_is_still_compared() {
     let save = save(&[month("equipment", 0, &[(1326, "3")])]);
     let report = run(&frame(vec![], &[GER]), &save, false).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].starts_with("GER.combat_log[group 12793][kind 0]"));
-    // Without that read GER is not compared.
     let report = run(&frame(vec![], &[]), &save, false).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
-/// A country whose last complete read is older is read whole outside a
-/// full hour: its older months are compared, never differences for
-/// being there.
 #[test]
 fn a_whole_read_at_a_sliced_hour_compares_its_older_months() {
     let save = save(&[
@@ -809,7 +790,6 @@ fn a_deleted_logs_final_rows_are_listed_not_compared() {
         &[GER],
     );
     let mut save = save(&[month("equipment", 0, &[(1326, "3")])]);
-    // The saved census still contains the live group, but not group 777.
     theatre_groups(&mut save, b"GER", &[12793]);
     let report = run(&frame, &save, false).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -882,7 +862,6 @@ fn lend_lease_compares_every_saved_amount_and_receiver() {
     lend_lease(&frame, &save, &links, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["LendLeaseEquipment"], 1);
-    // An omitted zero still belongs to its saved exchange, whose receiver it must name.
     let mut redirected = rows.clone();
     redirected[1].receiver = GER;
     let mut report = Report::default();
@@ -963,7 +942,6 @@ fn retained_oracle_checks_empty_month_membership_enemy_order_and_all_manpower_co
     let mut report = Report::default();
     crate::retained::compare(&recorded, &saved, &links, &mut report).unwrap();
     assert!(!report.differences.is_empty());
-    // A payload cannot stand in for missing membership, even if its amount is zero.
     *recorded.tables[TableId::CombatLogEnemyEquipment.index()] =
         TableView::Complete(TableRows::CombatLogEnemyEquipment(vec![
             CombatLogEnemyEquipmentRow {

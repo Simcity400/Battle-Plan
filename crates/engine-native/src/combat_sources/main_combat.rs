@@ -1,24 +1,13 @@
-//! Test-only sequential, unshared combat-input readers. Row types match
-//! the shared reader so outputs compare directly. The exile reader shares
-//! no inputs and is omitted. Equivalence tests compare every read in the
-//! unshared order and every failure with its reason.
 #![allow(dead_code, clippy::all)]
 
 use crate::{Memory, carmy, cpdx_array::Array, csub_unit_definition, cunit, read, read_slice};
 
-/// Explicit bound, exceeding it makes this division unavailable.
 pub const MODIFIER_LIMIT: usize = 256;
-/// Stat-block armour and piercing operands consumed together by combat calculations.
 pub const ARMOUR: usize = 0x298;
-/// Anti-air operand used by combat calculations.
 pub const AIR_ATTACK: usize = 0x220;
-/// Combat width traverses one term per subunit type and count.
 pub const WIDTH_TERM_LIMIT: usize = 64;
-/// The division's generated name-group member, drawn for committed and reserve entries.
 pub const NAME_GROUP_MEMBER: usize = 0x340;
-/// A positive value groups attacking units into one direction.
 pub const DIRECTION_GROUP: usize = 0x4a8;
-/// Raw contextual keys used by combat width and reinforcement.
 pub const CONTEXT_MODIFIER_KEYS: [u32; 3] = [0xfb, 0x10f, 0x250];
 
 pub use crate::carmy_combat_inputs::{ContextModifier, ContextRow, Modifier, Row, WidthTerm};
@@ -40,8 +29,6 @@ fn values<const N: usize>(source: &[u8]) -> [i64; N] {
     })
 }
 
-/// Keep checked-address errors at their original ordinal, after every readable
-/// prefix span. No failed scatter is retried, including a partially copied field.
 fn copy_input_spans<const N: usize>(
     memory: &impl Memory,
     addresses: [Result<usize, &'static str>; N],
@@ -57,10 +44,6 @@ fn copy_input_spans<const N: usize>(
     }
 }
 
-/// The caller supplies the authenticated combat/side/role membership.
-/// CArmy, stat-block and formation leader identities are authenticated on entry.
-/// Strength, organisation and their maxima are the Divisions and DivisionStatus
-/// values and are not read again here.
 pub fn capture_stats(
     memory: &impl Memory,
     base: usize,
@@ -91,8 +74,6 @@ pub fn capture_stats(
     {
         return Err("land combat division stat identity mismatch");
     }
-    // Every remaining CArmy and stat-block operand in one guarded scatter; the
-    // commander and name reads depend only on its group and member pointers.
     let (mut armour, mut group_pointer, mut member_pointer) = ([0; 16], [0; 8], [0; 8]);
     let (mut strength_factor, mut fuel, mut fuel_capacity, mut stats, mut air_attack) =
         ([0; 8], [0; 8], [0; 8], [0; 40], [0; 8]);
@@ -183,8 +164,6 @@ fn naming(
     )
 }
 
-/// Independent modifier acquisition: no stat-block or commander dependency.
-/// Arena pressure fails before copying any modifier; publication is all or none.
 pub fn capture_modifiers(
     memory: &impl Memory,
     base: usize,
@@ -233,20 +212,12 @@ pub fn capture_modifiers(
     Ok(count)
 }
 
-/// Last complete country and leader modifier inputs within one acquisition
-/// pass. Construct a fresh value for every pass; no observation crosses hours.
-/// Each slot keeps only the three raw values and presence bits, never a partial
-/// census or error. Different accumulator addresses take the ordinary full walk.
 #[derive(Default)]
 pub struct ContextModifiers {
     country: Option<(usize, [ContextModifier; 3])>,
     leader: Option<(usize, [ContextModifier; 3])>,
 }
 
-/// Width composition and contextual reinforcement operands. Terms preserve
-/// native order, signed multiplicities and unscaled definition widths. No
-/// width, chance, modifier clamp or speed bonus is calculated here. The caller
-/// supplies the pass's country reader rather than rebuilding one per division.
 pub fn capture_context(
     memory: &impl Memory,
     base: usize,
@@ -409,7 +380,6 @@ pub fn capture_context(
     })
 }
 
-/// Complete bounded accumulator census in64-entry copies, shared across keys.
 fn context_modifiers(
     memory: &impl Memory,
     pointer: usize,
@@ -463,8 +433,6 @@ fn commander(memory: &impl Memory, base: usize, group: usize) -> Result<u64, &'s
     if group == 0 {
         return Ok(0);
     }
-    // The identity and leader pointer share one guarded scatter; an identity
-    // mismatch still takes precedence over an unreadable leader word.
     let (mut group_identity, mut leader) = ([0_u8; 16], [0_u8; 8]);
     let copied = memory.copy_scattered_prefetched(
         [

@@ -104,7 +104,6 @@ fn the_arrow_file_parses_into_the_engines_own_fields() {
     assert_eq!(types.text_font.as_deref(), Some("some_arrow_font"));
     let move_thick = types.get("move_thick").unwrap();
     assert_eq!(move_thick.shader_technique, "MapArrowDefault");
-    // The first definition of a name wins and keeps its bucket.
     assert_eq!(move_thick.body_width, [20.5, 6.0]);
     assert_eq!(move_thick.declaration_index, 0);
     assert_eq!(move_thick.head_length, 19.5);
@@ -116,7 +115,6 @@ fn the_arrow_file_parses_into_the_engines_own_fields() {
     assert_eq!(line.texture_loop, 2.0);
     assert_eq!(line.culling_direction, 1);
     assert_eq!(line.declaration_index, 1);
-    // The constructor's text defaults.
     assert_eq!(line.text_size, 1.0);
     assert_eq!(line.text_offset, 0.0);
 }
@@ -232,7 +230,6 @@ fn a_bound_line_is_identified_by_its_binding_and_styled_by_the_owner() {
         ..Default::default()
     };
     assert_eq!(classify(&line, Some(&plan)), Classified::FrontLine);
-    // The bound style ignores the override; the unbound one does not.
     assert_eq!(
         Classified::FrontLine.arrow_type(&plan, true),
         Some("ag_defence_line_no_child")
@@ -267,15 +264,11 @@ fn front_span_uses_section_ids_and_inclusive_pairs_without_clamping() {
     assert_eq!(front_pairs(&plan, &front), pairs(vec![[1, 2], [2, 3]]));
     plan.segment_start = 1;
     assert_eq!(front_pairs(&plan, &front), pairs(vec![[2, 3]]));
-    // A negative start or end, or an end past the section, is the arrow
-    // the native destroys: no arrow, not a refusal.
     for (start, end) in [(-1, 1), (0, -1), (0, 2), (3, 2)] {
         plan.segment_start = start;
         plan.segment_end = end;
         assert_eq!(front_pairs(&plan, &front), Some(FrontSpan::Destroyed));
     }
-    // A start after the end, even past the section, is an empty span: only
-    // the signs and end are checked.
     for start in [1, 5] {
         plan.segment_start = start;
         plan.segment_end = 0;
@@ -390,8 +383,6 @@ fn root_and_child_order_control_native_shared_child_suppression() {
         ids(drawing_order(&[&group], &indexed, &plans, &mut refused)),
         [1, 2, 3, 4]
     );
-    // With several successors the sole-child gate does not apply, and the
-    // repeated visits reach geometry preparation.
     let multiple = ArmyOrderPlanRow {
         successors: vec![3, 4],
         ..Default::default()
@@ -487,7 +478,6 @@ fn group_roots_follow_theatre_then_subtype_roster_order() {
     assert_eq!(ordered.len(), 3);
     assert_eq!(refused["duplicate theatre roster position"], 1);
 
-    // A group plan whose group row is missing is counted, not skipped.
     let orphan = [OrdersGroupPlanRow {
         group: 99,
         ..Default::default()
@@ -513,7 +503,6 @@ fn allied_roots_follow_country_occurrences_and_allow_cross_country_groups() {
     let theatres = [theatre(10, 1, 0), theatre(20, 2, 0)];
     let groups = [
         group(100, 1, 10, Some(0)),
-        // Allied plans remove this country guard.
         group(200, 3, 20, Some(0)),
     ];
     let indexed = groups.iter().map(|group| (group.handle, group)).collect();
@@ -554,7 +543,6 @@ fn theatre_admission_skips_known_foreign_and_refuses_unknown_identities() {
     let groups = [
         group(100, 1, 10, Some(0)),
         group(200, 77, 10, Some(1)),
-        // A known foreign theatre is not traversed, even with an own group.
         group(300, 1, 20, None),
         group(400, 1, 30, Some(0)),
         group(500, 1, 99, Some(0)),
@@ -647,7 +635,6 @@ fn every_refusal_reaches_the_warning_area() {
 fn the_culling_offset_flips_only_against_a_declared_direction() {
     assert_eq!(culling_offset(1, 1), 0.0);
     assert_eq!(culling_offset(1, -1), 1.0);
-    // The arrow constructor's zero side against a declared direction.
     assert_eq!(culling_offset(1, 0), 1.0);
     assert_eq!(culling_offset(0, -1), 0.0);
 }
@@ -677,7 +664,6 @@ fn ribbon_v_zero_is_on_the_native_left_edge_in_both_directions() {
         assert_eq!(edge.uv_head_variant[1], 0.0);
         assert_eq!(edge.position[2], expected_z);
         assert_eq!(field.vertices[1].uv_head_variant[1], 1.0);
-        // A culling flip changes the texture side, never the geometry.
         assert_eq!(culling_offset(1, -1) - edge.uv_head_variant[1], 1.0);
     }
 }
@@ -724,7 +710,6 @@ fn ribbon_uses_fixed_smoothed_controls_and_interpolates_between_them() {
         field.draws[0].native_strips,
         std::iter::once(0..512).collect::<Vec<_>>()
     );
-    // Truncate each fixed5 product before converting to float.
     assert_eq!(field.vertices[2].position[0], 10.00002);
     assert_eq!(field.vertices[2].position[1], 1.0);
     assert_eq!(field.vertices[4].position[1], 4.0);
@@ -764,8 +749,6 @@ fn paradrop_strip_lift_uses_control_indices_even_at_a_head_cut() {
         .unwrap();
         assert_eq!(observed.into_inner(), expected_indices);
         assert!((field.vertices[4].position[1] - body_end_height).abs() < 1e-5);
-        // Native corrects the head root from the crossed body rails. Its tip
-        // keeps sample C+2, while no-head ends at sample C-1 over divisor C.
         assert!((field.vertices.last().unwrap().position[1] - tip_height).abs() < 1e-5);
     }
 }
@@ -796,8 +779,6 @@ fn ribbon_head_cut_keeps_the_crossed_controls_width_uv_and_height() {
     assert_eq!(field.vertices[8].position, [30.0, 5.0, 2.0]);
     assert_eq!(field.draws[0].uv_to_length, 30.0);
 
-    // Ground rising towards +z: the head base follows the cut pair's 3D
-    // edge, (0, 2, 2) normalised, at the head's half width either side.
     let mut field = OrderField::default();
     emit(
         &mut field,
@@ -820,7 +801,6 @@ fn ribbon_head_cut_keeps_the_crossed_controls_width_uv_and_height() {
     }
 }
 
-/// Every character is 10 font pixels square.
 struct Square;
 
 impl GlyphMetrics for Square {
@@ -851,7 +831,6 @@ impl labels::LabelFont for Square {
     }
 }
 
-/// The label operands of the bench: a named move order and an army.
 fn bench_localisation() -> installed_content_localisation::localisation::Localisation {
     [
         (
@@ -870,15 +849,6 @@ fn bench_localisation() -> installed_content_localisation::localisation::Localis
     .collect()
 }
 
-/// A timing bench, not a check: the per-hour cost of a 1943-sized plan's
-/// stored controls, its ribbons and its labels, each timed alone. [`build`]
-/// pays all three on every hour whose [`TABLES`] changed. 80 fronts of 40 pairs, 80 moves
-/// of 9 provinces and 80 offensive lines of 20 provinces (centroid
-/// polylines) on a 100 x 100 province grid of 10-pixel cells; the moves'
-/// full label is wider than their path, so their layout tries a second
-/// variant. Run in release:
-///
-/// `cargo test --release -p viewer bench_synthetic_1943_plan -- --ignored --nocapture`
 #[test]
 #[ignore = "timing bench; run with --release -- --ignored --nocapture"]
 fn bench_synthetic_1943_plan() {
@@ -948,12 +918,10 @@ fn bench_synthetic_1943_plan() {
     let types = types();
     let arrow = types.get("offence_line").unwrap();
 
-    // Every order's stored controls.
     let plan_controls = || {
         let mut plan: Vec<(i32, Vec<Point>)> = Vec::new();
         for index in 0..80 {
             let row = 5 + index;
-            // A front along a row boundary.
             let pairs: Vec<chain::Pair> = (0..40)
                 .map(|x| chain::Pair {
                     source: id(10 + x, row),
@@ -970,11 +938,9 @@ fn bench_synthetic_1943_plan() {
                 probe_teeth: false,
             };
             let front = chain::build(&pairs, &chain_world, params).unwrap();
-            // A move north onto a line one row up.
             let mut approach: Vec<u32> = (0..9).map(|k| id(30, row - 4 + k / 2)).collect();
             approach.dedup();
             let line: Vec<u32> = (0..20).map(|x| id(20 + x, row)).collect();
-            // The line one row up, as its centroid polyline.
             let mut line_controls: Vec<Point> = line
                 .iter()
                 .filter_map(|&p| centroid(p).map(fixed::from_pixel))
@@ -994,8 +960,6 @@ fn bench_synthetic_1943_plan() {
         plan
     };
     let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
-    // Each round is one hour's work; the minimum and median over the
-    // rounds are robust to other load on the machine.
     let summary = |mut rounds: Vec<Duration>| {
         rounds.sort();
         format!(
@@ -1014,7 +978,6 @@ fn bench_synthetic_1943_plan() {
     }
     let plan = plan_controls();
 
-    // Ribbons alone, over the stored controls above.
     let ribbon_field = || {
         let mut field = OrderField::default();
         for (_, controls) in &plan {
@@ -1032,7 +995,6 @@ fn bench_synthetic_1943_plan() {
     }
     let field = ribbon_field();
 
-    // Labels alone, over the stored controls above.
     let loc = bench_localisation();
     let name = labels::OrderName {
         unique: b"South Sudetenland",
@@ -1076,8 +1038,6 @@ fn bench_synthetic_1943_plan() {
     );
 }
 
-/// One hour's plan through [`build`]: a paradrop drawn and lifted, and every
-/// refusal and no-arrow case counted once per order.
 #[test]
 fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
     use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
@@ -1085,8 +1045,6 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
         rows::OrderExecutionInputs, rows::ProvinceRow, rows::Recorded, rows::TableRows,
     };
     use replay_frame::{frame::Metrics, frame::TableView};
-    // Provinces 1..=4 in a row of 2x2-pixel blocks, then 5 to keep the
-    // hop from 1 to 4 off the map seam; 9 has no pixels.
     let width = 16u32;
     let map = MapData {
         width,
@@ -1149,23 +1107,14 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
         ..order(kind, GROUP, instance, path)
     };
     let mut orders = vec![
-        // 1: a paradrop from province 1 to 4, drawn and lifted.
         with(1, TYPE_PARADROP, &[4], 1),
-        // 2: an invasion, refused by name.
         with(2, TYPE_INVASION, &[3], 1),
-        // 3: a move through a province without a centroid, visited twice.
         with(3, TYPE_MOVE, &[2, 9], 0),
-        // 4: a front bound to a front the hour does not record.
         with(4, TYPE_LINE, &[2], 0),
-        // 5: a move no root reaches.
         with(5, TYPE_MOVE, &[2, 3], 0),
-        // 6: a paradrop whose source is -1, visited twice: one no arrow.
         with(6, TYPE_PARADROP, &[4], u32::MAX),
-        // 7: an order type no arrow is known for.
         with(7, 9, &[2], 0),
     ];
-    // Once its own-country group is admitted, the callback does not gate
-    // this successor's independently recorded order-country metadata.
     orders[2].country = 2;
     let plans: Vec<ArmyOrderPlanRow> = orders
         .iter()
@@ -1174,8 +1123,6 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
             instance: order.instance,
             front: 77,
             front_valid: u8::from(order.instance == 4),
-            // This geometry fixture observes a blocked paradrop, so its
-            // active ribbon has genuine callback inputs without transport demand.
             execution: Recorded::Value((order.order_type == TYPE_PARADROP).then_some(
                 OrderExecutionInputs {
                     route_is_ok: Some(0),
@@ -1196,7 +1143,6 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
             primary_orders: vec![1, 2, 3, 3, 4, 6, 6, 7],
             ..Default::default()
         },
-        // A group plan whose group row is missing.
         OrdersGroupPlanRow {
             group: 200,
             ..Default::default()
@@ -1264,8 +1210,6 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
             ("group plan whose orders group is not recorded", 1),
         ]),
     );
-    // The paradrop's ribbon rises over flat ground by the sine lift: three
-    // world units at the middle of a six-unit hop, capped by the maximum.
     let floor = heights.native_height(0.0, 0.0);
     let top = field
         .vertices
@@ -1355,14 +1299,14 @@ fn own_order_count_preserves_decoded_admission_and_table_gaps() {
         .collect();
     *frame.tables[TableId::OrdersGroups.index()] =
         TableView::Complete(TableRows::OrdersGroups(vec![
-            group(100, 11, 10, Some(0)), // Different raw group/theatre owners alias our slot.
-            group(200, 21, 20, Some(0)), // Known foreign group and theatre.
-            group(300, 77, 10, Some(1)), // Group country has no link.
-            group(400, 11, 99, Some(0)), // Theatre row missing.
-            group(500, 11, 30, Some(0)), // Theatre owner has no link.
-            group(600, 11, 20, Some(1)), // Own group in a known foreign theatre.
-            group(700, 0, 40, Some(0)),  // Reserved raw zero ignores its conflicting link.
-            group(800, 30, 50, Some(0)), // Nonzero raw references can alias canonical zero.
+            group(100, 11, 10, Some(0)),
+            group(200, 21, 20, Some(0)),
+            group(300, 77, 10, Some(1)),
+            group(400, 11, 99, Some(0)),
+            group(500, 11, 30, Some(0)),
+            group(600, 11, 20, Some(1)),
+            group(700, 0, 40, Some(0)),
+            group(800, 30, 50, Some(0)),
         ]));
     *frame.tables[TableId::LandTheatres.index()] =
         TableView::Complete(TableRows::LandTheatres(vec![
@@ -1393,7 +1337,7 @@ fn own_order_count_preserves_decoded_admission_and_table_gaps() {
         order(TYPE_MOVE, 600, 1, &[]),
         order(TYPE_MOVE, 700, 1, &[]),
         order(TYPE_MOVE, 800, 1, &[]),
-        order(TYPE_MOVE, 900, 1, &[]), // No group row.
+        order(TYPE_MOVE, 900, 1, &[]),
     ]));
     assert_eq!(own_order_count(&frame, &links, 1).unwrap(), 2);
     assert_eq!(own_order_count(&frame, &links, 0).unwrap(), 2);

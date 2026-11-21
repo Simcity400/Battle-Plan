@@ -69,8 +69,6 @@ fn rounded_demands_use_stored_positioning_and_two_stage_fixed_arithmetic() {
     authored.summary_fixed[10] = 2 * ONE;
     let side = NavalCombatSideDetails {
         positioning: 50_000,
-        // These recorded values are deliberately unrelated to the fresh
-        // window result and must have no influence on it.
         capital_screening: 3,
         carrier_screening: 7,
         ..Default::default()
@@ -120,10 +118,10 @@ fn census_uses_forward_state_mask_and_carrier_before_submarine_bit() {
         member(5, 1 << 6),
         member(6, 1 << 8),
     ];
-    ships[2].detection_state = 0; // detect=1 bypasses this test.
-    ships[3].state = 4; // incoming is outside the category mask.
-    ships[4].member_source = 1; // retired group is not traversed.
-    ships[5].group_index = u32::MAX; // paired-only group is not traversed.
+    ships[2].detection_state = 0;
+    ships[3].state = 4;
+    ships[4].member_source = 1;
+    ships[5].group_index = u32::MAX;
     let carrier_with_sub = member(7, (1 << 7) | (1 << 22));
     ships.push(carrier_with_sub);
     let mut convoy = member(8, 0);
@@ -152,7 +150,6 @@ fn missing_required_carrier_model_fails_closed() {
         census(0, 0, &[ship], &models(&[])).err(),
         Some("current live ship has no ShipModels row")
     );
-    // A capital's formation bit settles its category without the model.
     assert!(census(0, 0, &[member(1, 1 << 6)], &models(&[])).is_ok());
 }
 

@@ -9,7 +9,6 @@ import { parseTemplate } from './storage.ts';
 import { registerWidgets, widgetUnavailable } from './definitions.ts';
 import '../widgets/definitions.ts';
 
-// Synthetic kinds exercise the time model independently of the shipped widgets.
 registerWidgets([
   { kind: 'current', version: 1, title: 'Test moment data', icon: 'grid', timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
   { kind: 'history', version: 1, title: 'Test history data', icon: 'grid', timeModes: ['follow', 'pin', 'range', 'campaign'], defaultTime: 'campaign', scope: 'history', data: true, history: true, minSize: { w: 2, h: 3 }, defaultSize: { w: 4, h: 6 } },
@@ -22,21 +21,16 @@ test('two settings changed from the same drawn widget both stay', () => {
     { key: 'markers', section: 'options', label: 'Markers', kind: 'toggle', default: true },
   ];
   const drawn = { ...createWidget('history', 'main', 'w'), options: { markers: false } };
-  // Both controls act on the widget as drawn, before it is drawn again.
   const first = { ...drawn, options: setOption(fields, drawn.options, 'layers', '8')! };
   const second = { ...drawn, options: setOption(fields, drawn.options, 'markers', true)! };
-  // Applied in turn to the latest widget, as the dashboard does.
   let current = rebaseWidget(drawn, drawn, first);
   current = rebaseWidget(current, drawn, second);
   assert.deepEqual(current.options, { layers: '8' });
-  // Before the fix the second replaced the whole widget and lost the first:
   assert.deepEqual(second.options, {});
-  // Other fields rebase too; an unchanged field keeps the latest value.
   const renamed = rebaseWidget({ ...current, contentScale: 150 }, drawn, { ...drawn, title: 'Renamed' });
   assert.equal(renamed.title, 'Renamed');
   assert.equal(renamed.contentScale, 150);
   assert.deepEqual(renamed.options, { layers: '8' });
-  // A reset (a fresh widget) clears what the drawn widget had.
   assert.equal(rebaseWidget(current, current, createWidget('history', 'main', 'w')).options, undefined);
 });
 
@@ -63,7 +57,6 @@ test('branch selection on a non-first track leaves sibling branches and saved pi
   assert.equal(template.tracks[1].branchIndex, 1);
   assert.deepEqual(resolveWindow(pinned, tracks[1], tracks, 1700), { firstHour: 1020, lastHour: 1040 });
   assert.deepEqual(bindTracks(template, new Map([['primary', replay]]), { main: '8' }).map(track => track.branch.id), ['8', '8']);
-  // A chosen history whose play joined another since follows it; one gone falls back to the template's.
   replay.metadata.branches[1] = { ...replay.metadata.branches[1], joins: [{ hour: 1, segmentId: '9', parentId: '8', evidence: 'chosen', choices: [] }] };
   assert.deepEqual(bindTracks(template, new Map([['primary', replay]]), { main: '9', comparison: '10' }).map(track => track.branch.id), ['8', '8']);
 });
@@ -140,7 +133,6 @@ test('unlinked maps hold the branch end and linked maps follow the shared axis',
   const linked = createWidget('map', 'main');
   assert.equal(linked.time.mode, 'follow');
   assert.equal(createWidget('current', 'main').time.mode, 'follow');
-  // A widget about the whole world (`countries.all`) starts on all countries; others on the dashboard's country.
   assert.deepEqual(createWidget('world', 'main').countries, { kind: 'all' });
   assert.deepEqual(createWidget('current', 'main').countries, { kind: 'selected' });
   const map = { ...linked, time: { mode: 'campaign' as const } };
@@ -172,7 +164,6 @@ test('a widget is at its default only when a reset would change nothing visible'
   assert.equal(widgetAtDefault({ ...widget, trackIds: ['other'] }, 'main'), true, 'a widget following the sidebar ignores stale tracks');
   for (const changed of [{ ...widget, title: 'My army' }, { ...widget, contentScale: 90 }, { ...widget, options: { view: 'lines' } },
     { ...widget, time: { mode: 'campaign' } } as typeof widget, { ...widget, campaign: 'tracks', trackIds: ['other'] } as typeof widget,
-    // Saved by a newer version: unsupported here, and a reset restores a supported one.
     { ...widget, configVersion: widget.configVersion + 1 }])
     assert.equal(widgetAtDefault(changed, 'main'), false, JSON.stringify(changed));
 });

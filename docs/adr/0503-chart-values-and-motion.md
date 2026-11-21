@@ -1,0 +1,11 @@
+# Preserve meaningful values and committed chart motion
+
+Chart positions can use numbers while labels and amounts retain recorded precision. Fixed-point output rounds half away from zero. Native Fixed5 display follows the game's i32 whole part and truncates its fractional digits, and sorting and tooltips keep the full value. Fractional aggregates group equal denominators and reduce the sum before rounding once. Rate labels keep two significant figures below ten to show nonzero rates, up to the precision present in the recording. Larger rates display whole units.
+
+Axis fitting works on stable tick steps. Linear ticks round to the step's decimals to avoid binary noise and keep nearby large values distinct. A linear index outside the safe integer range uses the endpoints because incrementing such an index can stop advancing. Axis formatting normally decodes doubles at 15 significant digits to suppress binary noise and uses 17 if ticks would otherwise coincide. Labels abbreviate thousands only when the abbreviated ticks remain distinct with at most one decimal digit. Log ticks are thinned by pixel separation.
+
+User zoom overrides saved bounds, then playback or auto-fit. Saved time bounds are offsets from the branch start. An unset zoom keeps following, including after a reset. A minimum-span zoom grows about the grabbed point. Dragging the value axis holds its start and works in decades for a positive log range. An unusable log range falls back to linear, and linear auto-fit keeps zero visible for all-negative and all-positive data. For a sliding playback window, pauses and seeks end it at the playhead, while advancing playback holds the initial window until the playhead reaches its end.
+
+Chart row motion derives each render from the last committed state. A layout effect records transitions only after commit, so StrictMode's repeated render and abandoned renders cannot consume an entrance. The history lives in a ref. Only an expired fade needs another render. The expiry agrees with the CSS opacity transition, and quiet charts drop the faded history and let their normal frame updates remove the inert row.
+
+[Axis values](../../ui/src/charts/valueAxis.ts) · [Chart view](../../ui/src/charts/view.ts) · [Committed row motion](../../ui/src/charts/useRowMotion.ts)

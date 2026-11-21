@@ -1,23 +1,5 @@
-//! Script variables over the recorded hour: parse operand text
-//! ([`installed_content_core::scoped_variable`]), evaluate its value,
-//! select its store and build its key.
-//!
-//! The persistent stores (global, country, state and character) are the
-//! recorded `ScriptVariables` rows; a project's and an industrial
-//! organisation's are their own rows' recorded stores. The thread-local store holds known local
-//! setter results and the caller's injected temps, including raid event
-//! scope temps, in a trigger-check context. Starting a new context
-//! clears the store when no context is active. A read the thread-local store
-//! may answer otherwise (an unsupported writer's results,
-//! or any temp outside a context) is refused by
-//! name, as are unreproduced built-in game variables ([`installed_content_core::variable_builtins`],
-//! looked up before the stored keys), and other runtime-only
-//! forms. Saved targets select stores through the caller's event graph when
-//! present, then the recorded global registry; flat callers retain explicit
-//! refusals for event-chain links they cannot describe.
 use crate::triggers::Failure;
 
-// Complete country rosters bound these lookups, so present partial rows remain exact.
 fn localisation_status(
     frame: replay_frame::frame::HourFrame<'_>,
     table: replay_data::rows::TableId,
@@ -52,9 +34,6 @@ use crate::state_resources::ONE;
 mod random;
 pub(super) mod temps;
 
-/// Coded triggers whose evaluation writes the thread-local store:
-/// scalar setters and arithmetic, rounding and clamping, array writers,
-/// iterators, element selection and career-profile setters.
 pub(super) const TEMP_WRITERS: [&str; 19] = [
     "add_to_temp_array",
     "add_to_temp_variable",
@@ -77,19 +56,11 @@ pub(super) const TEMP_WRITERS: [&str; 19] = [
     "subtract_from_temp_variable",
 ];
 
-/// What the thread-local store may hold besides the caller's temps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Temps {
-    /// An active trigger-check context: only the caller's temps and what
-    /// the evaluation's own setters write.
     #[default]
     Fresh,
-    /// Outside any context (a localisation's `[?...]`,
-    /// which begins none): closing a variable context clears only
-    /// the active flag, so the thread keeps the temps its last context set.
     Stale,
-    /// A refresh invoked inside an unrecorded outer script context. Even
-    /// inside a nested check, an unwritten name may already have a TLS value.
     Inherited,
 }
 
@@ -97,30 +68,21 @@ pub(super) fn inherited_temps_failure() -> Failure {
     "force_update_map_mode caller temporary variables are not recorded".into()
 }
 
-/// A variable store, as `ScriptVariables`
-/// keys it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Store {
-    /// Global store (scope kind 0).
     Global,
-    /// Country store of a canonical slot (kind 1, by the raw country id).
     Country(u32),
-    /// State store (kind 2).
     State(u32),
-    /// Character store (kind 3, by the character id).
     Character(u32),
     Project {
         owner: u32,
         id: u32,
     },
-    /// An industrial organisation's persistent store, by its full reference
-    /// (`IndustrialOrganisationDetails.variables`).
     IndustrialOrganisation(u64),
 }
 
 impl Store {
-    /// The store's built-in table.
     fn builtins(self) -> &'static [&'static str] {
         match self {
             Self::Global => &variable_builtins::GLOBAL,
@@ -133,22 +95,17 @@ impl Store {
     }
 }
 
-/// An evaluated operand: a raw fixed5 value, or a scope object whose
-/// encoded value is computed only where it is needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Value {
     Raw(i64),
     Object(Scope),
 }
 
-/// Where an operand's store is, and the scope object encoded
-/// for an operand without a name.
 struct Resolved {
     store: Option<Store>,
     object: Option<Scope>,
 }
 
-/// The content facts the grammar reads, over the recorded hour.
 struct Content<'c, 'e, 'a> {
     evaluator: &'c Evaluator<'e, 'a>,
 }
@@ -170,7 +127,6 @@ impl scoped_variable::Content for Content<'_, '_, '_> {
 }
 
 impl<'e, 'a> Evaluator<'e, 'a> {
-    /// Parse an operand text.
     pub fn operand(&self, text: &[u8]) -> Result<ScopedVariable, Failure> {
         let text = std::str::from_utf8(text).map_err(|_| {
             format!(
@@ -187,8 +143,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Evaluate an operand text in `scopes`,
-    /// as a raw fixed5 value.
     pub fn scoped_value(&self, text: &[u8], scopes: Scopes) -> Result<i64, Failure> {
         let within =
             |why: Failure| why.context(|why| format!("{}: {why}", String::from_utf8_lossy(text)));
@@ -201,9 +155,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     pub(crate) const NULL_IDEOLOGY: &'static str =
         "ideology database null-object identity is unrecorded";
 
-    /// Admit a named group or scoped variable;
-    /// select its ideology ID, then a decoded country's ruling group,
-    /// evaluating only once.
     pub(crate) fn ideology_specifier(
         &self,
         operand: Option<&[u8]>,
@@ -236,8 +187,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             return Ok((id, token));
         }
-        // Decode the already evaluated value; a repeated authored read could
-        // consume random/alias/temp state a second time.
         let constant = installed_content_core::fixed5::fixed5_to_string(value, 5);
         let Some(country) = self.scoped_country(constant.as_bytes(), scopes)? else {
             return Err(Self::NULL_IDEOLOGY.into());
@@ -253,8 +202,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok((id, token))
     }
 
-    /// Numeric localisation uses the character fallback flag.
-    /// Nested defaults, targets and indices still use the ordinary evaluator.
     pub fn scoped_localisation_value(&self, text: &[u8], scopes: Scopes) -> Result<i64, Failure> {
         let within =
             |why: Failure| why.context(|why| format!("{}: {why}", String::from_utf8_lossy(text)));
@@ -270,8 +217,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .map_err(within)
     }
 
-    /// Search the parsing scope's positive country, including
-    /// retired records.
     pub(crate) fn admit_localisation_parse_character(
         &self,
         candidate: &str,
@@ -333,15 +278,12 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             if owner != country {
                 continue;
             }
-            // The roster bounds this lookup. Unrelated truncated manager or
-            // dictionary rows cannot shadow this country's parsed operand.
             let frame = self.world().tables();
             localisation_status(
                 frame,
                 replay_data::rows::TableId::Characters,
                 frame.status(replay_data::rows::TableId::Characters),
             )?;
-            // Both are keyed: Characters by id, LexicalTokens by token.
             let character = frame
                 .held::<replay_data::rows::tables::Characters>(NAME)
                 .get(u128::from(id))
@@ -413,15 +355,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// Test operand existence, used by effect-list weights.
     pub fn scoped_exists(&self, text: &[u8], scopes: Scopes) -> Result<bool, Failure> {
         self.exists(&self.operand(text)?, scopes)
     }
 
-    /// The scope an operand text names: evaluate, then decode the value,
-    /// as a `var:` scope key and a country or state operand read it.
-    /// `None` names
-    /// nothing.
     pub fn scoped_scope(&self, text: &[u8], scopes: Scopes) -> Result<Option<Scope>, Failure> {
         let within =
             |why: Failure| why.context(|why| format!("{}: {why}", String::from_utf8_lossy(text)));
@@ -432,8 +369,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.decoded(value, scopes).map_err(within)
     }
 
-    /// The decoded scope's country, as a
-    /// canonical slot; `None` is country 0.
     pub fn scoped_country(&self, text: &[u8], scopes: Scopes) -> Result<Option<u32>, Failure> {
         Ok(match self.scoped_scope(text, scopes)? {
             Some(Scope::Country(slot) | Scope::CountryLeader { country: slot, .. }) => Some(slot),
@@ -442,9 +377,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// The decoded state, else the value's
-    /// `fixed_round` as the game state's state list keeps it
-    /// ([`super::World::state_of_value`]); [`NULL_STATE`] for none.
     pub fn scoped_state(&self, text: &[u8], scopes: Scopes) -> Result<u32, Failure> {
         let within =
             |why: Failure| why.context(|why| format!("{}: {why}", String::from_utf8_lossy(text)));
@@ -461,7 +393,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// State operand evaluation returns a signed ID without roster validation.
     pub fn scoped_state_id(&self, text: &[u8], scopes: Scopes) -> Result<i32, Failure> {
         let operand = self.operand(text)?;
         let value = self.evaluate_operand(&operand, scopes, None)?;
@@ -473,8 +404,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(fixed_round(self.raw(value)?) as i32)
     }
 
-    /// Evaluate with `index` overriding the
-    /// operand's own `^index`, `char_fallback` clear.
     pub(super) fn evaluate_operand(
         &self,
         operand: &ScopedVariable,
@@ -501,8 +430,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         index: Option<&ScopedVariable>,
         fallback: Option<&str>,
     ) -> Result<Value, Failure> {
-        // Evaluation checks the literal flag before the other operand fields;
-        // constructor literals need not have the parsed flag set.
         if let Some(value) = operand.literal {
             return Ok(Value::Raw(value));
         }
@@ -512,8 +439,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         if let Some(token) = &operand.token {
             return self.token_value(token);
         }
-        // Evaluation tests MIO, then project,
-        // before its store path; a missing match is the raw value zero.
         for (prefix, name) in [("mio", &operand.mio), ("sp", &operand.special_project)] {
             if let Some(name) = name {
                 let country = match scopes.this {
@@ -541,7 +466,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .map_or(Value::Raw(0), Value::Object));
             }
         }
-        // No name and no draw: use the resolved scope's encoded value.
         if operand.name.is_empty() && !operand.random {
             let object = self.resolve(operand, scopes, true)?.object;
             if fallback.is_some()
@@ -563,14 +487,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let key = self.key(operand, scopes, index)?;
         match self.temp(&key, scopes)? {
             Some(value) => Ok(value),
-            // A temp operand reads the thread-local store only; its
-            // `?default` is not read.
             None if operand.temp => Ok(Value::Raw(0)),
             None => self.stored(operand, scopes, index, fallback),
         }
     }
 
-    /// Script target indexed array reads, using evaluation's own override path.
     pub fn scoped_array_scopes(
         &self,
         text: &[u8],
@@ -584,8 +505,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(values)
     }
 
-    /// Check each target before evaluating the next array index;
-    /// its trigger can write the shared TLS store used by that next index.
     pub(crate) fn visit_scoped_array_scopes(
         &self,
         text: &[u8],
@@ -598,10 +517,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Operand existence, `has_variable`: a literal is
-    /// present; a temp operand is looked up in the thread-local store only,
-    /// any other in its store, then the thread-local store. The built-in
-    /// table is not consulted; only stored keys are probed.
     pub(super) fn exists(&self, operand: &ScopedVariable, scopes: Scopes) -> Result<bool, Failure> {
         if let Some(why) = unported(operand) {
             return Err(why.into());
@@ -626,9 +541,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(stored || self.temp(&key, scopes)?.is_some())
     }
 
-    /// The array operand's values: `<name>^num` rounded
-    /// entries, each read with its index as the
-    /// override.
     pub(super) fn array(
         &self,
         operand: &ScopedVariable,
@@ -662,13 +574,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// Array membership: signed truncated i32
-    /// length, exact fixed5 equality, and no reads after the first match.
     pub(super) fn is_in_array(&self, block: &[Item], scopes: Scopes) -> Result<bool, Failure> {
         let (mut array, mut count, mut wanted) = (temps::zero(), temps::zero(), temps::zero());
         for item in block {
-            // Reading assigns size/index only to the length operand,
-            // which array membership does not evaluate.
             if item.keyword_is("size") || item.keyword_is("index") {
                 continue;
             }
@@ -676,8 +584,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 temps::assign(self, &mut wanted, item.value.scalar().unwrap_or_default())?;
                 continue;
             }
-            // Array reading assigns both
-            // the array text and that exact text followed by "^num".
             let text = if item.keyword_is("array") {
                 item.value.scalar().unwrap_or_default()
             } else {
@@ -698,7 +604,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Evaluation's shared literal-index override; stop when the visitor matches.
     pub(super) fn visit_indexed_values(
         &self,
         operand: &ScopedVariable,
@@ -719,8 +624,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(false)
     }
 
-    /// A value as the raw fixed5 the game holds; a scope object by its
-    /// encoding.
     pub(super) fn raw(&self, value: Value) -> Result<i64, Failure> {
         match value {
             Value::Raw(raw) => Ok(raw),
@@ -728,12 +631,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// A value decoded as a scope.
     pub(super) fn decoded(&self, value: Value, scopes: Scopes) -> Result<Option<Scope>, Failure> {
         match value {
-            // Encode the positive country out-parameter;
-            // decode it with a clearing setter. The lazy identity
-            // shortcut must not carry the original character into var:THIS.
             Value::Object(scope @ Scope::CountryLeader { .. }) => {
                 self.decode(self.encode(scope)?, scopes)
             }
@@ -742,8 +641,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// `token:`: the token's id times
-    /// 100000, through the recorded lexer.
     fn token_value(&self, token: &str) -> Result<Value, Failure> {
         match self.world().token_of(token.as_bytes())? {
             Some(id) => Ok(Value::Raw(i64::from(id).wrapping_mul(ONE))),
@@ -754,9 +651,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// The store path: the store, then a draw from its random
-    /// state, then its built-in table, then the stored key, else the
-    /// `?default` (0 without one). No store reads the `?default`.
     fn stored(
         &self,
         operand: &ScopedVariable,
@@ -795,8 +689,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// Builtin callback arguments: an index evaluated in
-    /// the caller, and the target evaluated by its callback in the store's scope.
     fn builtin_variable(
         &self,
         store: Store,
@@ -833,8 +725,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             return Ok(Some(value));
         }
         if let (Store::Country(slot), b"faction_leader") = (store, operand.name.as_slice()) {
-            // Take member zero from the faction's stored roster,
-            // then encode its tag.
             let value = match self.world().recorded().faction_leader(slot)? {
                 Some(leader) => self.encode(Scope::Country(leader))?,
                 None => 0,
@@ -842,7 +732,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             return Ok(Some(value));
         }
         if let (Store::Country(slot), b"opinion") = (store, operand.name.as_slice()) {
-            // Resolve the callback's country through its scoped operand.
             let callback = self.builtin_scope(store, operand, scopes)?;
             let target = match operand.target.as_deref() {
                 Some(target) => {
@@ -890,7 +779,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             callback = if self.walk(&operand.chain, scopes)? == Scope::Combat {
                 Scopes::combat()
             } else {
-                // The linked scope's own links are not described here.
                 Scopes {
                     unknown: super::UnknownLinks {
                         root: true,
@@ -901,7 +789,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 }
             };
         }
-        // Setting country clears carried objects, keeping links.
         callback.this = match store {
             Store::Country(slot) => Scope::Country(slot),
             Store::State(state) => Scope::State(state),
@@ -927,12 +814,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// Resolve storage: `global.`, a country specifier,
-    /// an explicit state, an `a:` prefix's decoded scope, a saved event
-    /// target, else the scope the chain walks to: a country's
-    /// store, a state's, a unit leader's character's, a character's, a
-    /// project's, an industrial organisation's, and with none of them the
-    /// global store.
     fn resolve(
         &self,
         operand: &ScopedVariable,
@@ -950,7 +831,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             });
         }
         if let Some(tag) = &operand.country {
-            // Resolve the script country tag, then the country's store.
             return match self.resolve_tag(tag, scopes)? {
                 Some(slot) => Ok(at(Scope::Country(slot), Store::Country(slot))),
                 None => Err(format!(
@@ -959,7 +839,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             };
         }
         if let Some(state) = operand.state.filter(|state| *state >= 1) {
-            // No existence test: a state the game lacks is a null read.
             let id = state as u32;
             if self.world().state_row(id).is_none() {
                 return Err(format!(
@@ -995,7 +874,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.scope_store(here, identity_only)
     }
 
-    /// The store of the scope the chain walked to.
     fn scope_store(&self, scope: Scope, identity_only: bool) -> Result<Resolved, Failure> {
         let at = |store| Resolved {
             store: Some(store),
@@ -1007,7 +885,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 Scope::IndustrialOrganisation(_) | Scope::Project { .. } | Scope::Raid(_)
             )
         {
-            // Encoding reads the out-object identity, not stored variable keys.
             return Ok(Resolved {
                 store: None,
                 object: Some(scope),
@@ -1025,20 +902,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     object: Some(Scope::Country(slot)),
                 }
             }
-            // The null state holds nothing: the global store.
             Scope::State(NULL_STATE) => Resolved {
                 store: Some(Store::Global),
                 object: None,
             },
-            // A state the game lacks is logged and has
-            // no store.
             Scope::State(id) if self.world().state_row(id).is_none() => Resolved {
                 store: None,
                 object: Some(scope),
             },
             Scope::State(id) => at(Store::State(id)),
             Scope::Character(id) => at(Store::Character(id)),
-            // The organisation's own persistent store.
             Scope::IndustrialOrganisation(reference) => {
                 at(Store::IndustrialOrganisation(reference))
             }
@@ -1046,13 +919,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Scope::Raid(reference) => {
                 return Err(format!("raid {reference:#x} variable store is not recorded").into());
             }
-            // Storage resolution does not examine UNIT.
             Scope::Unit(_) => Resolved {
                 store: Some(Store::Global),
                 object: None,
             },
-            // Use the unit leader's character;
-            // the branch sets no character out-parameter.
             Scope::Leader(reference)
             | Scope::CountryLeader {
                 leader: reference, ..
@@ -1078,9 +948,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Follow FROM, ROOT and PREV in order from THIS; THIS stays.
-    /// A link read from a linked scope is its own, which only the combat
-    /// scope (whose links are itself) describes here.
     fn walk(&self, chain: &[Link], scopes: Scopes) -> Result<Scope, Failure> {
         if let Some(at) = scopes.cursor
             && let Some(graph) = self.event_graph.borrow().as_ref()
@@ -1126,10 +993,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(here)
     }
 
-    /// Build the key: the name, the `@` target's text (a country's
-    /// lower-case tag, a state's id, else the value's whole part and, when
-    /// its fraction is not zero, `_` and the fraction), and the `^` index
-    /// (`^num`, or `^` and the rounded index).
     fn key(
         &self,
         operand: &ScopedVariable,
@@ -1146,8 +1009,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 Some(Scope::Combat) => key.extend(self.tag_text(self.combat_country()?)?),
                 Some(Scope::State(id)) => key.extend(id.to_string().into_bytes()),
                 _ => {
-                    // Numeric suffixes evaluate the target again.
-                    // Alias conditions can change temps between the reads.
                     let value = self.evaluate_operand(target, scopes, None)?;
                     let raw = self.raw(value)?;
                     let fraction =
@@ -1173,7 +1034,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(key)
     }
 
-    /// A country's stored tag spelling, lower-cased.
     fn tag_text(&self, slot: u32) -> Result<Vec<u8>, Failure> {
         self.world()
             .tag(slot)
@@ -1181,9 +1041,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .ok_or_else(|| -> Failure { format!("country slot {slot} has no recorded tag").into() })
     }
 
-    /// The thread-local store at
-    /// `key`: a temp the caller injected, else nothing in a fresh context;
-    /// what the evaluator cannot know is refused.
     fn temp(&self, key: &[u8], scopes: Scopes) -> Result<Option<Value>, Failure> {
         if let Some(value) = self.local_temps.borrow().get(key) {
             if let Err(failure) = value {
@@ -1204,7 +1061,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             _ => None,
         };
         let shown = String::from_utf8_lossy(key);
-        // An unreproduced writer may overwrite even an injected temp.
         if let Some(writer) = self.temps_written() {
             writer.reached();
             return Err(writer.context(|writer| format!(
@@ -1241,8 +1097,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// Decode an encoded object, or a
-    /// whole number that is an existing state's id.
     fn decode(&self, raw: i64, scopes: Scopes) -> Result<Option<Scope>, Failure> {
         if raw == 0 {
             return Ok(None);
@@ -1257,8 +1111,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         };
         match raw as u64 & 0xffff_ffff_f000_0000 {
             0x4000_0000 => {
-                // Resolve the low three bytes as a NUL-terminated country
-                // specifier.
                 let bytes = (raw as u32 & 0x00ff_ffff).to_le_bytes();
                 let tag: Vec<u8> = bytes.iter().copied().take_while(|b| *b != 0).collect();
                 if let Ok(tag) = std::str::from_utf8(&tag)
@@ -1268,7 +1120,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 }
             }
             0xffff_ffff_c000_0000 => {
-                // A hole in the state list decodes to no state.
                 let state = world.state_of_value(raw)?;
                 return Ok((state != NULL_STATE).then_some(Scope::State(state)));
             }
@@ -1291,7 +1142,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             _ => {}
         }
-        // A whole number whose state exists.
         if raw > 0 && raw % ONE == 0 {
             let state = world.state_of_value(raw)?;
             if state != NULL_STATE {
@@ -1301,8 +1151,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(None)
     }
 
-    /// Scope object encoding: a country's tag bytes or a state's id,
-    /// with the matching object discriminator.
     pub(super) fn encode(&self, scope: Scope) -> Result<i64, Failure> {
         let slot = match scope {
             Scope::State(NULL_STATE) => return Ok(0),
@@ -1353,7 +1201,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             if reserved.len() != 1 {
                 return Err("reserved country naming does not hold one reserved country".into());
             }
-            // The one reserved row is keyed zero.
             reserved
                 .text(0, |row| &row.tag, TAG)
                 .map_err(|why| {
@@ -1374,7 +1221,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 }
 
-/// A `check_variable` compare token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Compare {
     Equals,
@@ -1383,22 +1229,10 @@ enum Compare {
     LessOrEquals,
     Greater,
     GreaterOrEquals,
-    /// A token the reader reports but keeps: evaluation asserts an invalid
-    /// comparison and is false.
     Invalid,
 }
 
 impl Evaluator<'_, '_> {
-    /// Read a variable comparison:
-    /// `var` and `value` parse their value tokens,
-    /// `compare` keeps the value's token (default
-    /// `greater_than_or_equals`), `tooltip` is text, and any other key is the
-    /// shorthand: the key text is the var side, the value text the value
-    /// side, and `=`, `>` and `<` set equals, greater and less. A side never
-    /// set is the initial literal 0. The value side is
-    /// evaluated first, then the var side, both in the trigger's scope, and
-    /// compared as signed fixed5. A value that is not a block reads no key
-    /// and is reported: 0 >= 0, true.
     pub(super) fn check_variable(&self, item: &Item, scopes: Scopes) -> Result<bool, Failure> {
         let Some(fields) = item.value.items() else {
             return Ok(true);
@@ -1406,8 +1240,6 @@ impl Evaluator<'_, '_> {
         let mut var: Option<&[u8]> = None;
         let mut value: Option<&[u8]> = None;
         let mut compare = Compare::GreaterOrEquals;
-        // A second parse into the same operand keeps what the first left;
-        // it does not reset every field.
         fn set<'t>(side: &mut Option<&'t [u8]>, text: &'t [u8]) -> Result<(), Failure> {
             if side.replace(text).is_some() {
                 return Err(
@@ -1461,10 +1293,6 @@ impl Evaluator<'_, '_> {
         })
     }
 
-    /// Read the value token as one operand (a literal is reported and stays
-    /// a literal, which is present), then [`Self::exists`].
-    /// A block is no form
-    /// its reader takes.
     pub(super) fn has_variable(&self, item: &Item, scopes: Scopes) -> Result<bool, Failure> {
         let text = item
             .value
@@ -1476,7 +1304,6 @@ impl Evaluator<'_, '_> {
     }
 }
 
-/// The operand forms refused before evaluating, by name.
 fn unported(operand: &ScopedVariable) -> Option<String> {
     if !operand.parsed {
         return Some(

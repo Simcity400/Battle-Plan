@@ -36,12 +36,10 @@ export function validateMeasureDrops(value: unknown): SeriesEventPage {
   return value as unknown as SeriesEventPage;
 }
 
-/** A tag's exact runs and drops among the hours read: display extrema never supply a balance. */
 export interface ReachedLine {
   tag: string;
   runs: SeriesRun[];
   drops: SeriesDrop[];
-  /** Why each read hour without a value has none. */
   missing: Map<number, string>;
 }
 

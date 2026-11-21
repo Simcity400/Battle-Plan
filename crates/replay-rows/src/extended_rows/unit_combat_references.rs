@@ -1,14 +1,9 @@
-//! Unit-owned ordered combat references, sampled once with existing motion.
-//! Stored unit combat references and count, independent of saved combat-side membership.
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitCombatReference {
-    /// Complete registry handle. Reference-type words are runtime minted;
-    /// they never select the class or lose their high word during transport.
     pub combat: u64,
-    /// Authenticated primary native vtable: ordinary land0, border war1, naval2.
     pub kind: u8,
 }
 
@@ -55,9 +50,7 @@ impl Value for UnitCombatReference {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitCombatReferences {
-    /// The authenticated acquisition request's callback hour, not a UI clock.
     pub sample_hour: PacketHour,
-    /// Native order including repeats. A present empty vector is known zero.
     pub entries: Vec<UnitCombatReference>,
 }
 value_struct!(UnitCombatReferences {
@@ -82,8 +75,6 @@ pub fn check_unit_combat_references(
 }
 
 impl UnitCombatReferences {
-    /// Consumer admission also binds the immutable frame hour. Historical
-    /// absence and field-local refusal stay distinct at the caller's require.
     pub fn valid_at(&self, hour: i32, count: u32) -> bool {
         self.sample_hour.fresh_at(hour)
             && self.entries.len() == count as usize

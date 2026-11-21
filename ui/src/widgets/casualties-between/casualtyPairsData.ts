@@ -13,8 +13,6 @@ export type CasualtyPairsReply = Readonly<Omit<WireCasualtyPairsReply, 'pairs' |
   warnings: ReadonlyArray<string>;
 }>;
 
-// Country-pair sums can exceed i64; preserve the native signed counters in BigInt.
-// Fewer than 39 digits always fit, so only the longest counters are parsed.
 const inRange = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);
 const amount = (value: unknown): value is string => typeof value === 'string'
   && value.length <= 40
@@ -55,7 +53,6 @@ export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
       }
     }
   }
-  // Successive holders may share tags; one holder cannot occupy two aliases at once.
   for (const runs of [...endpoints.values(), ...identities.values()]) if (!isOrderedSpans(runs.sort((a, b) => a.firstHour - b.firstHour))) return bad();
   if (value.window === null && (value.pairs.length || value.observed.length)) return bad();
   if (value.window !== null) {
@@ -68,11 +65,8 @@ export function validateCasualtyPairs(value: unknown): CasualtyPairsReply {
 export interface PairFlow { readonly id: string; readonly from: string; readonly to: string; readonly value: bigint; readonly readHour: number; readonly incomplete: boolean }
 export interface PairSnapshot { readonly countries: ReadonlyArray<string>; readonly flows: ReadonlyArray<PairFlow> }
 
-// pairs.rs orders endpoints by native identity, independently of their current tags.
 export const pairFlowId = (identity: string, direction: 'first' | 'second') => JSON.stringify([identity, direction]);
 
-/** Source deals the losses, target takes them. Absent relations produce no flow,
- * not zero. Different holders of a tag never sum together. */
 export function casualtyPairsAt(reply: CasualtyPairsReply, hour: number, includes: (tag: string) => boolean = () => true,
   between = false): PairSnapshot {
   return readCasualtyPairs(reply, hour, includes, between).snapshot;
@@ -122,7 +116,6 @@ function pairSelection(reply: CasualtyPairsReply, tags: ReadonlySet<string> | nu
   }
   return selection;
 }
-// Hourly confirmations change exact read dates while retaining the run's geometry.
 const geometry = new WeakMap<PairSnapshot, PairSnapshot>();
 export const pairGeometry = (snapshot: PairSnapshot): PairSnapshot => geometry.get(snapshot) ?? snapshot;
 
@@ -159,7 +152,6 @@ export const exactCount = (value: number | bigint) => usNumber.format(value);
 export const pairAmount = (flow: Pick<PairFlow, 'value' | 'incomplete'>) =>
   `${flow.incomplete ? 'Recorded subtotal · ' : ''}${exactCount(flow.value)}`;
 
-/** Every country the pairs of `replies` name, in tag order: each a chord drawn from them can show at any of their hours. */
 export function casualtyPairTags(replies: readonly (CasualtyPairsReply | undefined)[]): readonly string[] {
   const tags = new Set<string>();
   for (const reply of replies) if (reply) for (const pair of reply.pairs) { tags.add(pair.firstCountry); tags.add(pair.secondCountry); }

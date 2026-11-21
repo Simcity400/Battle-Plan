@@ -1,8 +1,5 @@
 import type { LogRow } from './logData';
 
-/** A page's filtered, date-ordered rows, indexed once by their supplying reads.
- * Exact dates can precede observation, so the display order and reveal order
- * deliberately remain separate. */
 export interface LogPlaybackIndex<T> {
   readonly rows: ReadonlyArray<LogRow<T>>;
   readonly reads: ReadonlyArray<number>;
@@ -20,8 +17,6 @@ export function logPlaybackIndex<T>(rows: readonly LogRow<T>[], reveal?: (row: L
   return { rows, reads: rows.map(reveal ?? revealHour).sort((a, b) => a - b), ...(reveal ? { reveal } : {}) };
 }
 
-/** A binary read cutoff preserves the last slice until a read is crossed. Only
- * a changed cutoff needs to select rows; it never changes their order. */
 export function logPlaybackAt<T>(index: LogPlaybackIndex<T>, hour: number | null,
   held?: LogPlaybackSlice<T>): LogPlaybackSlice<T> {
   if (held?.index === index && (hour === null ? held.count === 0
@@ -45,9 +40,7 @@ export class LogPlayback<T> {
   at(hour: number | null): ReadonlyArray<LogRow<T>> {
     return (this.held = logPlaybackAt(this.index, hour, this.held)).rows;
   }
-  /** Every row, shown or not. */
   get size(): number { return this.index.rows.length; }
-  /** The hours, from `first` to before `end`, over which the rows shown at `hour` stay the same. */
   span(hour: number): { first: number; end: number } {
     const { count } = this.held = logPlaybackAt(this.index, hour, this.held);
     return { first: count ? this.index.reads[count - 1] : -Infinity, end: this.index.reads[count] ?? Infinity };

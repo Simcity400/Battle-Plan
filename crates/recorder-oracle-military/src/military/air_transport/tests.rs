@@ -262,9 +262,6 @@ fn identical_native_reverse_aliases_keep_exact_writer_bytes_and_conflicts_stay_a
         br#"sub_units={">"={type=air_transport}}"#,
         "fixture/reverse-alias.txt",
     );
-    // Dictionary rebuilding replaces static0x1D3's `greater_than` reverse name
-    // with `>`; a subsequent token insertion(">") can hold the same bytes
-    // under another ID because the forward static registry kept its name.
     let report = run_literals(
         wing(),
         saved(b">", Some(RAID)),

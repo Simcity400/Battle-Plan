@@ -1,4 +1,3 @@
-//! The complete published status row through fresh and certified quiet hours.
 use super::*;
 use crate::{
     army_stat_changes::{Changes, Watches},
@@ -29,7 +28,6 @@ impl Changes for ObservedChanges {
     }
 }
 
-// regression: d1569a7b46 Share pass-local province reads in division organisation movement
 #[test]
 fn division_presentation_rows_share_one_experience_certificate() {
     const DIVISIONS: usize = 48;
@@ -62,8 +60,6 @@ fn division_presentation_rows_share_one_experience_certificate() {
     for hour in 1..=4 {
         changes.refuse_experience.store(hour == 4, Relaxed);
         if hour == 3 {
-            // Only the independent XP writer changes. A stat/name carry must
-            // not suppress this fresh value, including its signed extremes.
             for (index, &army) in world.armies.iter().enumerate().step_by(7) {
                 let at = army - world.base + carmy::EXPERIENCE;
                 let value = if index % 2 == 0 { i64::MIN } else { i64::MAX };
@@ -103,7 +99,6 @@ fn division_presentation_rows_share_one_experience_certificate() {
         assert_eq!(changes.experience.swap(0, Relaxed), DIVISIONS);
         held.capture_attack(&world.live(), context, sources(), Some(&mut store));
         held.decode_inputs();
-        // A new store exercises all native operands rather than carrying them.
         let mut baseline = ArmyStatStore::new();
         fresh.capture_owned_observed(
             &world.live(),

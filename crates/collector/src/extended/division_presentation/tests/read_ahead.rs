@@ -167,9 +167,6 @@ fn batched_naming_one_shot_refuses_no_more_and_counts_fallback() {
             .filter(|row| row.inputs.is_none() || row.cached_name.is_none())
             .count()
     };
-    // OWNER DECISION 2026-10-12 (relaxed): the speculative gather may consume
-    // a one-shot fault before the serial retry. It may recover rows that the
-    // serial walk refused, but must never withhold more rows.
     assert!(refused(&actual) <= refused(&direct));
     same(&actual, &capture(&reads(&bytes, true, None, false), &seeds));
 }
@@ -243,16 +240,8 @@ fn batched_naming_heap_faults_equal_serial_and_one_shot_never_refuses_more() {
     for once in [false, true] {
         let actual = capture(&reads(&bytes, false, Some(heap + 7), once), &seeds);
         let serial = capture(&reads(&bytes, true, Some(heap + 7), once), &seeds);
-        // A payload fault remains authoritative: only the member record is
-        // speculative. The relaxed rule permits recovery of a consumed
-        // one-shot gather fault, never additional refusals.
         same(&actual, &serial);
         assert!(actual.naming.first[20].inputs.is_some());
-        // A lasting fault refuses row 20's cached name. Met once, it is spent
-        // by the heap string's one-copy read, and the string reader's own
-        // fallback (cname_group_member::copy_fitting_string, then
-        // copy_string) reads the bytes again and recovers the name,
-        // in the serial walk as in the batched one (`same` above).
         assert_eq!(actual.naming.first[20].cached_name.is_none(), !once);
         assert!(actual.naming.first[21].cached_name.is_some());
     }
@@ -262,8 +251,6 @@ fn batched_naming_heap_faults_equal_serial_and_one_shot_never_refuses_more() {
 fn batched_naming_admitted_status_prefix_equals_serial() {
     let (bytes, seeds) = fixture(129);
     for admitted in [0, 1, 63, 64, 65, 128] {
-        // The status walk admits only its outcome prefix. Naming must not
-        // read or publish the remaining census seeds beyond that prefix.
         let batch = reads(&bytes, false, None, false);
         let actual = capture(&batch, &seeds[..admitted]);
         same(
@@ -344,8 +331,6 @@ fn batched_naming_selects_once_with_touched_and_reordered_seeds() {
         if hour == 1 {
             seeds.rotate_left(23);
             seeds.remove(40);
-            // Independent pointer failures keep their original naming and
-            // cache refusals and never enter carry selection.
             seeds[90].name_member = None;
             seeds[91].name_member = Some(0);
             let touched = seeds
@@ -374,8 +359,6 @@ fn batched_naming_selects_once_with_touched_and_reordered_seeds() {
         };
         actual.capture_naming_holding(&memory, 0, &seeds, Some(&mut store), &watches);
         assert_eq!(store.name_lookups - before, expected);
-        // Reused: valid members still held and untouched. The notified member
-        // loses its held eligibility and is read fresh.
         let reused = seeds
             .iter()
             .enumerate()

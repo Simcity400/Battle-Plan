@@ -1,24 +1,3 @@
-//! `SupplyHealth`: each live country's divisions by canonical slot, counted by the supply icon the
-//! game draws on each one's counter, for its owner (its positive expeditionary owner, else its
-//! roster owner).
-//!
-//! A division has low supply unless it is in a naval transfer when its effective supply (the
-//! greater of its received ratio and its remaining grace's share of `NMilitary.SUPPLY_GRACE`
-//! hours, clamped to one; zero without a positive maximum grace) is under `NMilitary.LOW_SUPPLY`.
-//! Its icon compares the received ratio when low, else one: strictly under
-//! `NGraphics.SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD` is no supply, then under
-//! `SUPPLY_UNIT_COUNTER_LOW_THRESHOLD` strained; otherwise strained when low, else in supply.
-//! The four defines are the recorded content's definitions: while one is absent the table is
-//! unavailable by name.
-//!
-//! What is not known is not recorded, never zero, the three counts together: every country's
-//! while some division's owner no link resolves; a country's while one of its divisions has no
-//! land row, no status row, or a supply operand not recorded. Every live country's slot has a
-//! row, so a country with no division holds recorded zeros.
-//!
-//! State: per live division its owner's slot and state, its inputs read from the store by key; a
-//! fresh hour, a resume, new definitions, or a change of links or country slots rebuilds it from
-//! the current tables.
 
 use crate::{
     deployed::{Identity, invalid, row},
@@ -72,7 +51,6 @@ const DEFINITIONS: &[Uses] = &[
     Uses { definition: Definition::Define(LOW_ICON), required: true },
 ];
 
-/// The states, in the table's column order, and a division's whose state is not known.
 const NO_SUPPLY: u8 = 0;
 const STRAINED: u8 = 1;
 const IN_SUPPLY: u8 = 2;
@@ -80,7 +58,6 @@ const UNKNOWN: u8 = 3;
 
 const ONE: i64 = 100_000;
 
-/// The supply defines: grace in whole hours, the rest fixed5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Thresholds {
     grace: i64,
@@ -89,8 +66,6 @@ struct Thresholds {
     low_icon: i64,
 }
 
-/// A division's supply-icon operands: received ratio, maximum and remaining grace (fixed5), and
-/// whether it is in a naval transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Operands {
     received: i64,
@@ -111,7 +86,6 @@ impl Thresholds {
             return 0;
         }
         let divisor = self.grace * ONE;
-        // The sentinel words read as unbounded grace.
         let sentinel = matches!(division.remaining_grace, i64::MAX | i64::MIN | -0x7fff_ffff_ffff_ffff);
         let grace = if divisor == 0 || sentinel { 0xffff_ffff } else { division.remaining_grace.wrapping_mul(ONE) / divisor };
         division.received.max(grace).clamp(0, ONE)
@@ -130,7 +104,6 @@ impl Thresholds {
     }
 }
 
-/// Division `id`'s owner as a raw country id; none when Divisions holds no row of it.
 fn owner(hour: &Hour<'_>, id: u64) -> io::Result<Option<u32>> {
     let view = hour.table(TableId::Divisions);
     let Some(at) = view.slot(u128::from(id)) else { return Ok(None) };
@@ -138,14 +111,11 @@ fn owner(hour: &Hour<'_>, id: u64) -> io::Result<Option<u32>> {
     Ok(Some(military_aid::owner(&division)))
 }
 
-/// Whether division `id` is in a naval transfer; none without its land row.
 fn transfer(hour: &Hour<'_>, id: u64) -> Option<bool> {
     let view = hour.table(TableId::DivisionLandInputs);
     view.bool(TRANSFER[0], view.slot(u128::from(id))?)
 }
 
-/// Division `id`'s received ratio (as the game shows it), maximum and remaining grace; none
-/// without its status row or with one of them not recorded.
 fn supply(hour: &Hour<'_>, id: u64) -> io::Result<Option<[i64; 3]>> {
     let view = hour.table(TableId::DivisionStatus);
     let Some(at) = view.slot(u128::from(id)) else { return Ok(None) };
@@ -156,15 +126,12 @@ fn supply(hour: &Hour<'_>, id: u64) -> io::Result<Option<[i64; 3]>> {
     })
 }
 
-/// The keys of `table`'s rows the hour deleted, wrote one of `columns` of, or inserted.
 fn touched(hour: &Hour<'_>, table: TableId, columns: &'static [usize], keys: &mut Vec<u64>) {
     let view = hour.table(table);
     keys.extend(hour.deleted_keys(table).map(|key| key as u64));
     keys.extend(hour.written_rows(table, Columns::These(columns)).into_iter().filter_map(|slot| view.key(slot)).map(|key| key as u64));
 }
 
-/// A division as the counts hold it: its owner's slot ([`NONE`] when no link resolves it) and
-/// its state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Division {
     slot: u32,
@@ -173,27 +140,21 @@ struct Division {
 
 #[derive(Default)]
 pub struct SupplyHealth {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     identity: Identity,
     divisions: HashMap<u64, Division>,
-    /// Each slot's divisions by state, the last those of unknown state.
     counts: HashMap<u32, [i64; 4]>,
-    /// Divisions whose owner no link resolves.
     unresolved: i64,
-    /// The slots the table holds rows of.
     held: HashSet<u32>,
 }
 
 impl SupplyHealth {
-    /// Division `id` as the store holds it now; none when Divisions holds no row of it.
     fn division(&self, hour: &Hour<'_>, thresholds: Thresholds, id: u64) -> io::Result<Option<Division>> {
         let Some(raw) = owner(hour, id)? else { return Ok(None) };
         let slot = self.identity.resolve(raw).unwrap_or(NONE);
         Self::placed(hour, thresholds, id, slot).map(Some)
     }
 
-    /// Division `id` of the owner whose slot is `slot`, its state read from the store.
     fn placed(hour: &Hour<'_>, thresholds: Thresholds, id: u64, slot: u32) -> io::Result<Division> {
         if slot == NONE {
             return Ok(Division { slot, state: UNKNOWN });
@@ -218,7 +179,6 @@ impl SupplyHealth {
         dirty.insert(division.slot);
     }
 
-    /// Division `id` counted as `next` (none: not at all), its old count taken out.
     fn place(&mut self, id: u64, next: Option<Division>, dirty: &mut HashSet<u32>) {
         let old = self.divisions.get(&id).copied();
         if old == next {
@@ -238,7 +198,6 @@ impl SupplyHealth {
         }
     }
 
-    /// Every count again from the tables as they stand, and the rows the table holds.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &Rows<'_>, thresholds: Thresholds) -> io::Result<()> {
         let table = out.table(TableId::SupplyHealth);
         *self = Self { identity: Identity::read(hour), held: table.rows().filter_map(|slot| table.key(slot)).map(|key| key as u32).collect(), ..Self::default() };
@@ -253,8 +212,6 @@ impl SupplyHealth {
         Ok(())
     }
 
-    /// Counts again each division whose owner, transfer or supply the hour changed; one whose
-    /// Divisions row the hour left keeps its owner's slot.
     fn apply(&mut self, hour: &Hour<'_>, thresholds: Thresholds, dirty: &mut HashSet<u32>) -> io::Result<()> {
         let mut owned = Vec::new();
         touched(hour, TableId::Divisions, &OWNERS, &mut owned);
@@ -287,7 +244,6 @@ impl SupplyHealth {
         counts[..3].iter().map(|&count| Value::I64(count)).collect()
     }
 
-    /// Writes the rows of `dirty` live countries, and deletes the rows of slots no longer one.
     fn write(&mut self, dirty: HashSet<u32>, out: &mut Rows) {
         for slot in dirty {
             if self.identity.countries.contains(&slot) {
@@ -344,7 +300,6 @@ impl Writer for SupplyHealth {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every count from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

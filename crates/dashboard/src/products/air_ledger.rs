@@ -1,16 +1,3 @@
-//! Aircraft losses and applied bombing damage: the declared logs `air-losses` (AirLossEvents) and
-//! `bombing-damage` (BuildingBombingDamage) folded into running totals at the reply. A point is
-//! dated by the event's own game hour and ordered by the hour its drain was read; a range starts
-//! at the game hour, which totals kept by read hour could not reproduce, so the events are read.
-//! Bombing counts only the air-mission and air-naval callers of building damage. An hour the event
-//! table or the links were not complete certifies nothing; a complete hour certifies no events.
-//! Nothing walks hours: which hours were complete comes from the tables' status runs, the events
-//! from the log's buckets that hold rows. A reply is one window of hours ([`super::windows`]), its
-//! points running from the window's first hour and its openings each part's total before it, read
-//! from the running totals the recorder derives (AirLossTotals, BombingTotals) at the edges of the
-//! stretches before the window, so one window shows and ranks every holder's totals since the
-//! first hour counted. Where those tables cannot say (withheld, a total past 64 bits), and for the
-//! events read after a range's first hour but dated before it, the events are folded instead.
 
 use super::{LoadContext, Product};
 use crate::{Source, catalogue, ranking, span::HourSpan};
@@ -68,7 +55,6 @@ pub enum MilitaryAirMetric {
     Total,
 }
 
-/// A top N the holders of a window are ranked by, each by its total since the first hour counted.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -87,7 +73,7 @@ pub struct MilitaryAirParams {
     pub regions: Vec<u32>,
     #[serde(default)]
     pub causes: Vec<u32>,
-    /// A range starts at the events' own game hour.
+    #[doc = " A range starts at the events' own game hour."]
     #[serde(default)]
     pub from_hour: Option<i32>,
     pub window: u32,
@@ -100,16 +86,13 @@ pub struct MilitaryAirParams {
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirCountry {
     pub tag: String,
-    /// Canonical slot and raw country id of the holder; tag changes do not join holders.
+    #[doc = " Canonical slot and raw country id of the holder; tag changes do not join holders."]
     pub identity: String,
     pub present: Vec<HourSpan>,
-    /// Null means no ranking filter. Empty means never in the requested top N within the window.
+    #[doc = " Null means no ranking filter. Empty means never in the requested top N within the window."]
     pub membership: Option<Vec<HourSpan>>,
 }
 
-/// A total from the first hour counted through the hour before the window: a holder's (by its
-/// identity) or the unattributed, on one side, of one cause and, of air losses, whether the
-/// opponents were recorded; summed over the regions, buildings and states asked.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -121,9 +104,6 @@ pub struct MilitaryAirOpening {
     pub total: String,
 }
 
-/// One running total a reply shows: a holder's, or the unattributed, on one side. Air losses keep
-/// each cause and whether its opponents were recorded; bombing keeps each cause, building and
-/// state, so a holder's breakdown opens from the reply it is in.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -132,13 +112,13 @@ pub struct MilitaryAirPart {
     pub identity: Option<String>,
     pub dealt: bool,
     pub cause: Option<u32>,
-    /// Air losses: whether the opposite endpoint was resolved for every loss in it.
+    #[doc = " Air losses: whether the opposite endpoint was resolved for every loss in it."]
     pub opponent_known: Option<bool>,
     pub building_token: Option<String>,
     pub building_id: Option<u32>,
     pub state: Option<u32>,
-    /// Each point is `[hour, readHour, totalRaw]`: the event's game hour, the hour its drain was
-    /// read and the exact total through it since the window's first hour, in read order.
+    #[doc = " Each point is `[hour, readHour, totalRaw]`: the event's game hour, the hour its drain was"]
+    #[doc = " read and the exact total through it since the window's first hour, in read order."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, string]>"))]
     pub points: Vec<(i32, i32, String)>,
 }
@@ -152,7 +132,6 @@ pub struct MilitaryAirName {
     pub missing: Option<String>,
 }
 
-/// How many events of a window one reason left out or left unnamed.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -169,12 +148,12 @@ pub struct MilitaryAirReply {
     pub window: u32,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The hour the totals count from: the range's first, else the timeline's first observed;
-    /// none while no hour through the window's last is observed.
+    #[doc = " The hour the totals count from: the range's first, else the timeline's first observed;"]
+    #[doc = " none while no hour through the window's last is observed."]
     pub counted_from: Option<i32>,
     pub available: bool,
     pub observed: Vec<HourSpan>,
-    /// Reads holding a caller whose membership in aircraft bombing is unknown.
+    #[doc = " Reads holding a caller whose membership in aircraft bombing is unknown."]
     pub incomplete: Vec<HourSpan>,
     pub countries: Vec<MilitaryAirCountry>,
     pub openings: Vec<MilitaryAirOpening>,
@@ -187,7 +166,6 @@ pub struct MilitaryAirReply {
 
 dashboard_base::reply_warnings!(MilitaryAirReply);
 
-/// A holder as the reply names it: its tag and `"slot:id"`.
 type Named = (String, String);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -196,22 +174,17 @@ struct LeafKey {
     dealt: bool,
     opponent: Option<String>,
     region: Option<u32>,
-    /// The building type token and its spelling.
     building: Option<(u32, Option<String>)>,
     state: Option<u32>,
     cause: u32,
 }
 
-/// One event as the fold reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     Air { id: u64, game_hour: i32, country: u32, region: u32, cause: u32, credited_enemy: bool, amount: i64, opponent: Option<u32> },
     Bombing { id: u64, game_hour: i32, attacker: Option<u32>, victim: u32, state: u32, building: u32, cause: BuildingBombingDamageCause, amount: i64 },
 }
 
-/// What a stretch of hours certified: the event table not complete (an unread interval), the
-/// event table complete without the links (events not attributable, nothing certified), or both
-/// complete (every event of the stretch read).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Held {
     Unread,
@@ -226,7 +199,6 @@ pub(crate) struct Span {
     pub held: Held,
 }
 
-/// What the fold of one family's hours holds: the reply before naming and ranking.
 #[derive(Default)]
 pub(crate) struct Fold {
     observed: Vec<HourSpan>,
@@ -234,8 +206,6 @@ pub(crate) struct Fold {
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
     warnings: BTreeMap<String, usize>,
     last_event: Option<u64>,
-    /// The first hour of an unread interval since the last read with events: the collector may
-    /// restart its event identities across it.
     unread_since: Option<i32>,
 }
 
@@ -257,9 +227,6 @@ impl Fold {
         Ok(())
     }
 
-    /// The first read with events after an unread interval may restart the identities only when
-    /// every event in it is dated within or after that interval; else they are earlier events
-    /// recorded again.
     fn begin_read(&mut self, events: &str, first: Option<u64>, earliest: Option<i32>) -> io::Result<()> {
         let (Some(first), Some(earliest), Some(since)) = (first, earliest, self.unread_since) else { return Ok(()) };
         self.unread_since = None;
@@ -282,8 +249,6 @@ impl Fold {
         Ok(())
     }
 
-    /// One stretch of `family`'s hours and, when it is observed, the events each of its hours
-    /// read, ascending by hour: `resolve` names a raw country at an hour, `spell` a building token.
     pub(crate) fn span(&mut self, family: MilitaryAirFamily, span: Span, reads: &[(i32, Vec<Event>)], resolve: impl Fn(u32, i32) -> Option<Named>, spell: impl Fn(u32) -> Option<String>) -> io::Result<()> {
         match span.held {
             Held::Unread => {
@@ -303,7 +268,6 @@ impl Fold {
         Ok(())
     }
 
-    /// The events one observed hour's drain read, ascending by ordinal.
     fn read(&mut self, family: MilitaryAirFamily, hour: i32, events: &[Event], resolve: impl Fn(u32) -> Option<Named>, spell: impl Fn(u32) -> Option<String>) -> io::Result<()> {
         let first = events.first().map(|event| match event {
             Event::Air { id, .. } | Event::Bombing { id, .. } => *id,
@@ -372,7 +336,6 @@ impl Fold {
     }
 }
 
-/// Each canonical slot's holders over the timeline: tag, `"slot:id"` and hours.
 pub(crate) fn slot_holders(query: &Query<'_>) -> HashMap<u32, Vec<(String, String, i32, i32)>> {
     let mut out: HashMap<u32, Vec<(String, String, i32, i32)>> = HashMap::new();
     for (tag, runs) in &query.holders.tags {
@@ -395,7 +358,6 @@ fn number(row: &Row, column: usize) -> Option<i64> {
     }
 }
 
-/// An optional number cell: none when missing, refused (outer none) when not recorded.
 fn optional(row: &Row, column: usize) -> Option<Option<u32>> {
     match row.cells.get(column)? {
         Cell::Missing => Some(None),
@@ -404,7 +366,6 @@ fn optional(row: &Row, column: usize) -> Option<Option<u32>> {
     }
 }
 
-/// The log's table columns the fold reads, by name.
 struct Columns(Vec<usize>);
 
 impl Columns {
@@ -413,8 +374,6 @@ impl Columns {
     }
 }
 
-/// The event a logged row of `family`'s table holds; none when a cell the fold needs is not
-/// recorded.
 fn event(family: MilitaryAirFamily, row: &Row, columns: &Columns) -> Option<Event> {
     let id = row.key as u64;
     let c = &columns.0;
@@ -449,8 +408,6 @@ fn available(status: Status) -> bool {
     matches!(status, Status::Complete | Status::Truncated { .. })
 }
 
-/// A stretch's hours as the fold reads them, from the event table's and the links' status runs
-/// over it: runs of one [`Held`], joined. An hour neither table's runs cover was not recorded.
 pub(crate) fn spans(first: i32, last: i32, events: &[StatusRun], links: &[StatusRun]) -> Vec<Span> {
     let status_at = |runs: &[StatusRun], at: &mut usize, hour: i32| -> (Status, i32) {
         while *at < runs.len() && runs[*at].last < hour {
@@ -486,17 +443,12 @@ pub(crate) fn spans(first: i32, last: i32, events: &[StatusRun], links: &[Status
     out
 }
 
-/// The canonical slot `runs` held at `hour`.
 fn slot_at(runs: &read::Runs, hour: i32) -> Option<u32> {
     let at = runs.partition_point(|run| run.0 <= hour).checked_sub(1)?;
     let (_, last, value) = runs[at];
     (hour <= last).then_some(value? as u32)
 }
 
-/// The fold of `family`'s log over `first..=last` of `query`'s timeline, stretch by stretch: the
-/// hours observed from the two tables' status runs; the events from the log's buckets that hold
-/// rows within them, each row once; a raw country named by its canonical slot's holder at the read
-/// hour, from the links' runs of the raw ids the events name.
 fn scan(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, last): (i32, i32), cancelled: &AtomicBool) -> io::Result<Fold> {
     let log = dashboard_declare::log(family.log()).ok_or_else(|| dashboard_core::invalid(format!("No declared log {}", family.log())))?;
     let columns = Columns::of(log.table, if family == MilitaryAirFamily::AirLosses { &AIR_COLUMNS } else { &BOMBING_COLUMNS })?;
@@ -538,7 +490,6 @@ fn scan(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, l
         }
         let keys: Vec<u128> = raws.into_iter().collect();
         let links = if keys.is_empty() { HashMap::new() } else { read::runs(recording, stretch.run, TableId::CountryLinks, summary::Source::Cell(links_slot), Some(&keys), from, to)? };
-        // Spelled at the stretch's last hour whatever the window, as the whole stretch is.
         let spelled = crate::answer::spellings(source, stretch.run, stretch.last, &tokens)?;
         let resolve = |raw: u32, hour: i32| {
             let slot = slot_at(links.get(&u128::from(raw))?, hour)?;
@@ -554,7 +505,6 @@ fn scan(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, l
     Ok(fold)
 }
 
-/// Every holder over the timeline, its hours cut to the observed ones.
 fn countries(query: &Query<'_>, observed: &[HourSpan]) -> BTreeMap<Named, Vec<HourSpan>> {
     let mut out: BTreeMap<Named, Vec<HourSpan>> = BTreeMap::new();
     for (tag, runs) in &query.holders.tags {
@@ -582,7 +532,6 @@ fn countries(query: &Query<'_>, observed: &[HourSpan]) -> BTreeMap<Named, Vec<Ho
     out
 }
 
-/// A leaf's points after `from` (by game hour): (game hour, read hour, total), in read order.
 type Points = Vec<(i32, i32, i128)>;
 
 fn points(deltas: &BTreeMap<(i32, i32), i128>, from: Option<i32>) -> io::Result<Points> {
@@ -597,7 +546,6 @@ fn points(deltas: &BTreeMap<(i32, i32), i128>, from: Option<i32>) -> io::Result<
         .collect()
 }
 
-/// The leaves a reply keeps: `params`' regions and causes, their points from its first hour.
 fn selected<'f>(fold: &'f Fold, params: &MilitaryAirParams) -> io::Result<Vec<(&'f LeafKey, Points)>> {
     fold.leaves
         .iter()
@@ -606,9 +554,6 @@ fn selected<'f>(fold: &'f Fold, params: &MilitaryAirParams) -> io::Result<Vec<(&
         .collect()
 }
 
-/// `leaves` regrouped as the parts a reply shows: each part's points are its leaves' increments
-/// summed at each (read, game) hour and run on, so every total read from them is the sum of its
-/// leaves'.
 fn parts(leaves: &[(&LeafKey, Points)], family: MilitaryAirFamily) -> io::Result<Vec<MilitaryAirPart>> {
     let air = family == MilitaryAirFamily::AirLosses;
     let mut grouped = BTreeMap::<MilitaryAirPart, BTreeMap<(i32, i32), i128>>::new();
@@ -655,7 +600,6 @@ fn named(id: String, result: Result<String, String>) -> MilitaryAirName {
     }
 }
 
-/// The names of every region and building the family's events name, in the reader's language.
 fn names(source: &Source, context: &LoadContext, fold: &Fold, warnings: &mut Vec<String>) -> (Vec<MilitaryAirName>, Vec<MilitaryAirName>) {
     let regions: BTreeSet<u32> = fold.leaves.keys().filter_map(|key| key.region).collect();
     let buildings: BTreeSet<String> = fold.leaves.keys().filter_map(|key| key.building.as_ref().and_then(|building| building.1.clone())).collect();
@@ -712,7 +656,6 @@ fn included(dealt: bool, top: &MilitaryAirTop) -> bool {
     }
 }
 
-/// Each holder's increments by read hour from `from`, from the leaves.
 fn leaf_deltas<'l>(leaves: &'l [(&LeafKey, Points)], from: i32, top: &MilitaryAirTop) -> io::Result<BTreeMap<&'l str, BTreeMap<i32, i128>>> {
     let mut deltas: BTreeMap<&str, BTreeMap<i32, i128>> = BTreeMap::new();
     for (leaf, points) in leaves {
@@ -739,9 +682,6 @@ struct RankRun {
     value: i128,
 }
 
-/// Each tag's hours in the top `top.count` by its holder's total since `from` (its increments
-/// `deltas` by read hour, a total carried in before the hours at `i32::MIN`), exact to the hour. A
-/// holder ranks only while its total is above zero: a top N is never filled with zeros in tag order.
 fn ranked(countries: &BTreeMap<Named, Vec<HourSpan>>, mut deltas: BTreeMap<&str, BTreeMap<i32, i128>>, from: i32, top: &MilitaryAirTop, cancelled: &AtomicBool) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
     for values in deltas.values_mut() {
         let mut total = 0_i128;
@@ -778,7 +718,6 @@ fn ranked(countries: &BTreeMap<Named, Vec<HourSpan>>, mut deltas: BTreeMap<&str,
     ranking::top_membership_exact(&series, top.count, |run| (run.span.first_hour, run.span.last_hour), |run| Some(run.value), true, cancelled)
 }
 
-/// `countries` as a reply names them, each with its hours in `membership` when a top N is asked.
 fn ranked_countries(countries: &BTreeMap<Named, Vec<HourSpan>>, membership: Option<&BTreeMap<String, Vec<HourSpan>>>, cancelled: &AtomicBool) -> io::Result<Vec<MilitaryAirCountry>> {
     countries
         .iter()
@@ -798,8 +737,6 @@ fn ranked_countries(countries: &BTreeMap<Named, Vec<HourSpan>>, membership: Opti
         .collect()
 }
 
-/// What a window's openings are keyed by: the holder's identity (none: unattributed), the side, the
-/// cause and, of air losses, whether the opponents were recorded.
 pub(crate) type OpeningKey = (Option<String>, bool, u32, Option<bool>);
 pub(crate) type Openings = BTreeMap<OpeningKey, i128>;
 
@@ -809,7 +746,6 @@ fn add_opening(out: &mut Openings, key: OpeningKey, amount: i128) -> io::Result<
     Ok(())
 }
 
-/// The fold's selected leaves' totals as openings.
 fn folded_openings(fold: &Fold, params: &MilitaryAirParams, out: &mut Openings) -> io::Result<()> {
     let air = params.family == MilitaryAirFamily::AirLosses;
     for (leaf, points) in selected(fold, params)? {
@@ -825,9 +761,6 @@ fn holder_identity(slot: u32, id: u32) -> Option<String> {
 
 const _: () = assert!(AirLossTotalRow::NONE == BombingTotalRow::NONE);
 
-/// The family's running totals of run `run` after `hour`, as openings under `params`' regions and
-/// causes, and the most hours late a counted event was read; none where the table cannot say (not
-/// complete, a total not recorded).
 fn table_totals(recording: &Recording, run: u32, hour: i32, params: &MilitaryAirParams) -> io::Result<Option<(Openings, i32)>> {
     let air = params.family == MilitaryAirFamily::AirLosses;
     let table = if air { TableId::AirLossTotals } else { TableId::BombingTotals };
@@ -868,11 +801,6 @@ fn table_totals(recording: &Recording, run: u32, hour: i32, params: &MilitaryAir
     Ok(Some((out, late)))
 }
 
-/// Each part's total from the first hour counted (`params`' range's, else the timeline's) through
-/// the hour before `before`: per stretch, the recorder's running totals at its last hour less those
-/// before its first; the reads after a range's first hour that may hold events dated before it
-/// (within the most hours late any counted event was read) folded instead, and a stretch the tables
-/// cannot say for folded whole. `tables` false folds every stretch, for proof.
 pub(crate) fn openings(source: &Source, query: &Query<'_>, params: &MilitaryAirParams, before: i32, tables: bool, cancelled: &AtomicBool) -> io::Result<Openings> {
     let mut out = Openings::new();
     let (start, end) = (params.from_hour.unwrap_or(query.timeline.first), before.saturating_sub(1));
@@ -907,18 +835,13 @@ pub(crate) fn openings(source: &Source, query: &Query<'_>, params: &MilitaryAirP
     Ok(out)
 }
 
-/// Each run's observed stretches of each family's log, behind a slot held while they are read: a
-/// request asking during the read waits for it instead of reading the status runs again.
 #[derive(Default)]
 struct Observed(HashMap<(u32, &'static str), Arc<Mutex<Option<Arc<Vec<(i32, i32)>>>>>>);
 
-/// Forgets every run's observed stretches: the next window reads them cold.
 pub(crate) fn forget(source: &Source) {
     *source.state::<Observed>().lock().unwrap_or_else(PoisonError::into_inner) = Observed::default();
 }
 
-/// The hours of run `run` the family's log and the links were both available, ascending and
-/// joined: read once over the whole run from the two tables' status runs, then kept on `source`.
 fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: u32) -> io::Result<Arc<Vec<(i32, i32)>>> {
     let slot = Arc::clone(source.state::<Observed>().lock().unwrap_or_else(PoisonError::into_inner).0.entry((run, family.log())).or_default());
     let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -944,8 +867,6 @@ fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: 
     Ok(made)
 }
 
-/// Keeps every run of `branch`'s timeline's observed stretches of both families on `source`: the
-/// open warms them on a thread of its own, so a late window's reach back is a lookup.
 pub(crate) fn warm_observed(source: &Source, branch: u64) -> io::Result<()> {
     let query = crate::answer::query(source, branch)?;
     let mut runs: Vec<u32> = Vec::new();
@@ -962,7 +883,6 @@ pub(crate) fn warm_observed(source: &Source, branch: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// The runs and families whose observed stretches are kept on `source`, ascending.
 #[cfg(test)]
 pub(crate) fn kept_observed(source: &Source) -> Vec<(u32, &'static str, Vec<(i32, i32)>)> {
     let index = source.state::<Observed>();
@@ -973,8 +893,6 @@ pub(crate) fn kept_observed(source: &Source) -> Vec<(u32, &'static str, Vec<(i32
     kept
 }
 
-/// The first hour of `first..=last` the family's log and the links were both available, looked up
-/// in each run's observed stretches.
 fn first_observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, last): (i32, i32)) -> io::Result<Option<i32>> {
     for stretch in query.timeline.within(first, last) {
         let spans = observed(source, query, family, stretch.run)?;
@@ -986,9 +904,6 @@ fn first_observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily,
     Ok(None)
 }
 
-/// The first hour of the observed hours running unbroken up to `at`, an observed hour, looked for
-/// no further back than `floor`: each run's observed stretch holding the hour before looked up,
-/// across stretches that meet.
 fn observed_since(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, at: i32, floor: i32) -> io::Result<i32> {
     let mut since = at;
     let stretches: Vec<_> = query.timeline.within(floor, at.saturating_sub(1)).collect();
@@ -1007,9 +922,6 @@ fn observed_since(source: &Source, query: &Query<'_>, family: MilitaryAirFamily,
     Ok(since)
 }
 
-/// The latest read of `from..=to` holding a bombing caller whose membership in aircraft bombing is
-/// unknown, from the log's counts by cause: the last of about eight coarse bins holding one, then
-/// the last six-hour bucket of it, read row by row.
 fn latest_incomplete(query: &Query<'_>, (from, to): (i32, i32)) -> io::Result<Option<i32>> {
     let log = dashboard_declare::log(MilitaryAirFamily::Bombing.log()).ok_or_else(|| dashboard_core::invalid("No declared bombing log"))?;
     let reader = log::Reader::new(query, log)?;
@@ -1029,11 +941,6 @@ fn latest_incomplete(query: &Query<'_>, (from, to): (i32, i32)) -> io::Result<Op
     Ok(latest)
 }
 
-/// `fold`'s observed hours over a window from `first` reaching back, where they run on from before
-/// it, to where that observation began (never before `counted`, the first hour counted), and of
-/// bombing the latest read in that reach holding a caller of unknown membership: so the window
-/// alone says whether its holders' totals since the first hour counted are complete, and where
-/// each holder's hours began.
 fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fold: &mut Fold, first: i32, counted: Option<i32>) -> io::Result<()> {
     let (Some(counted), Some(span)) = (counted, fold.observed.first()) else { return Ok(()) };
     if span.first_hour != first || counted >= first {
@@ -1056,8 +963,6 @@ fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fol
     Ok(())
 }
 
-/// `params.window`'s reply from `fold`, over `first..=last`, whose holders are `countries` and its
-/// parts' totals before it `openings`; its holders ranked by `params`' top.
 pub(crate) fn reply(fold: &Fold, (first, last): (i32, i32), countries: &BTreeMap<Named, Vec<HourSpan>>, params: &MilitaryAirParams, openings: &Openings, warnings: Vec<String>, cancelled: &AtomicBool) -> io::Result<MilitaryAirReply> {
     let leaves = selected(fold, params)?;
     let from = params.from_hour.unwrap_or_else(|| fold.observed.first().map_or(first, |span| span.first_hour)).max(first);
@@ -1097,8 +1002,6 @@ pub(crate) fn reply(fold: &Fold, (first, last): (i32, i32), countries: &BTreeMap
     })
 }
 
-/// `params.family`'s ledger over `first..=last`, a window of the timeline: its observed hours, and
-/// so its holders' hours, reaching back to where they began since the first hour counted.
 pub(crate) fn window_reply(source: &Source, query: &Query<'_>, params: &MilitaryAirParams, (first, last): (i32, i32), context: &LoadContext, cancelled: &AtomicBool) -> io::Result<MilitaryAirReply> {
     let mut fold = if first <= last { scan(source, query, params.family, (first, last), cancelled)? } else { Fold::default() };
     let counted_from = match params.from_hour {

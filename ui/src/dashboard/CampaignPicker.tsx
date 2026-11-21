@@ -7,8 +7,6 @@ import { recordingDisplayName, recordingFilename, recordingNameMatches } from '.
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './definitions';
 
-/** A widget's campaign: the default, an open campaign, or a recording to open. Opening a
- * recording loads it once and shares it with every widget and map, as the sidebar does. */
 export default function CampaignPicker({ widget, template, runtime }: { widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime }) {
   const id = useId();
   const menu = usePopover('end');

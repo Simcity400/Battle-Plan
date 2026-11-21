@@ -1,17 +1,10 @@
-//! Current selected-design dominance operands, sharing the model's selection.
-//! Definition operands carry under equipment reload and world lifetime only.
 use super::SelectedModelVariant;
 use crate::{Memory, allocation, cequipment_type, cequipment_variant, read};
 
-/// Selected-design heavy-attack statistic.
 pub(super) const HEAVY_ATTACK: usize = 0x1d8;
-/// Consecutive selected-design speed and naval range statistics.
 pub(super) const SPEED_RANGE: usize = 0x208;
-/// Classification-selected retained carrier-size statistics.
 pub(super) const CARRIER_SIZE: usize = 0x340;
-/// Definition's ship dominance weight.
 const DOMINANCE_WEIGHT: usize = 0x450;
-/// The classification flag selects the alternate retained carrier-size statistic.
 pub(super) const CARRIER_SIZE_SELECTOR: u64 = 1 << 7;
 
 #[derive(Default)]
@@ -21,8 +14,6 @@ pub struct NavalPowerCache {
     definitions: Vec<(usize, Option<i64>)>,
 }
 impl NavalPowerCache {
-    /// Returns whether the definition certificate changed. An already
-    /// unavailable certificate keeps the independent packet unknown.
     pub fn prepare(&mut self, certificate: Option<(u64, u64, u64)>) -> bool {
         let changed = self.certificate != certificate;
         if changed || certificate.is_none() {
@@ -65,9 +56,6 @@ impl NavalPowerCache {
     }
 }
 
-/// Current raw [definition weight, range, speed, classification-selected carrier size, heavy
-/// attack]. A nonship source is known zero; an unavailable source stays absent.
-/// The transient selection must come from this stopped model observation.
 pub fn read_naval_power(
     memory: &impl Memory,
     base: usize,

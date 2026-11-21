@@ -27,8 +27,6 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
 
-/** One country's diplomatic agreements over time: a section per kind of relation, split by
- * which side holds it, and a bar per partner from when it started to when it was last listed. */
 export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';
@@ -57,14 +55,11 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const kinds = useMemo(() => { const chosen = contentSet(options.kinds).map(contentKey); return chosen.length ? new Set(chosen) : null; }, [options.kinds]);
   const bySlot = tag !== null && isSlotKey(tag);
   const slots = useSlotTags(runtime.client, track, active && bySlot);
-  // A pact names the chosen country by the tag it went by at the pact's last hour held.
   const pacts = useMemo(() => !data || !tag || !bySlot ? data?.pacts ?? [] : data.pacts.map(pact => {
     const own = keyNameAt(slots, tag, pact.lastSeen);
     return own === null ? pact : { ...pact, first: pact.first === own ? tag : pact.first, second: pact.second === own ? tag : pact.second };
   }), [data, tag, bySlot, slots]);
   const agreements = useMemo(() => data && tag ? agreementsOf(pacts, tag, at, kinds) : [], [data, pacts, tag, at, kinds]);
-  // Partners are named as they were when last listed (or at the hour shown, if earlier):
-  // a tag a later country takes never renames an earlier agreement's partner.
   const [inView, setInView] = useChangedState<[number, number]>([0, 40]);
   const [shown, setShown] = useState('[]');
   const wanted = useMemo(() => [...(tag ? [{ hour: at, tag }] : []),
@@ -80,7 +75,6 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
     name: tag ? country(tag, at).name : '', country, colors: tokens.categories,
     kindName: kind => kindNames.get(kind) ?? 'Relation name unavailable',
   }), [agreements, options.ended, track?.branch.lastHour, at, tag, country, tokens.categories, kindNames]);
-  // Only the partners of lanes in view (and a margin) are named and flagged.
   const visible = lanes.slice(Math.max(0, inView[0] - 8), inView[1] + 9).flatMap(lane => info.get(lane.id)?.agreement ?? []);
   const visibleKey = JSON.stringify(visible.flatMap(item => item.partner ? [[item.partner, item.lastSeen]] : []));
   useEffect(() => { setShown(visibleKey); }, [visibleKey]);

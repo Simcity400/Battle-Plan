@@ -38,15 +38,10 @@ export function validateReports(value: unknown): MinefieldReportsReply {
   return reply;
 }
 
-/** A region as a row: its name, its owners (largest first at the reply's hour), and how many owners' amounts are
- * unknown there. The amounts are live cells: (region, owner tag) each, and (region, `total`). */
 export interface RegionRow { region: string; name: string; owners: { tag: string }[]; unknownOwners: number }
 
 const regionName = (names: ReadonlyMap<string, string>, region: string) => names.get(region) ?? 'Region name unavailable';
 
-/** The rows shown, largest total first at the reply's hour: every mined region, or with `chosen` regions only those,
- * each listed while an owner's amount there is unknown even with none known; `unlisted` counts the regions left out
- * whose mines are unknown. */
 export function regionRows(reply: MinefieldsReply, chosen: readonly string[] = []): { rows: RegionRow[]; unlisted: number } {
   const names = new Map(reply.choices.map(choice => [choice.id, choice.name]));
   const wanted = chosen.length ? new Set(chosen) : null;
@@ -60,12 +55,10 @@ export function regionRows(reply: MinefieldsReply, chosen: readonly string[] = [
   return { rows, unlisted: wanted ? 0 : unknown.length };
 }
 
-/** By name, or as the reply orders them: most mines first at its hour (a change of that order is a new reply). */
 export function orderRegions(rows: readonly RegionRow[], order: 'mines' | 'name'): RegionRow[] {
   return order === 'name' ? [...rows].sort((a, b) => a.name.localeCompare(b.name) || a.region.localeCompare(b.region)) : [...rows];
 }
 
-/** Mines on the reply's scale, exactly. */
 export function minesText(value: bigint, scale: number): string {
   const negative = value < 0n, magnitude = negative ? -value : value, unit = BigInt(scale);
   const fraction = (magnitude % unit).toString().padStart(String(scale).length - 1, '0').replace(/0+$/u, '');
@@ -73,20 +66,15 @@ export function minesText(value: bigint, scale: number): string {
 }
 
 const exact = (value: number | undefined) => value === undefined ? null : BigInt(Math.trunc(value));
-/** An owner's mines in a region from the live cells; null where not known now. */
 export const ownerMines = (values: LiveValues<number>, region: string, tag: string) => exact(values.get(liveKey(region, tag)));
-/** A region's total from the live cells; null where an owner's amount is not known now. */
 export const regionTotal = (values: LiveValues<number>, region: string) => exact(values.get(liveKey(region, 'total')));
 
-/** A region's total on the scale: a dash where no owner's amount there is known, the reason where it is not read now,
- * never a zero. */
 export function regionTotalText(row: RegionRow, values: LiveValues<number>, scale: number): string {
   if (!row.owners.length) return row.unknownOwners ? '—' : minesText(0n, scale);
   const total = regionTotal(values, row.region);
   return total === null ? values.missing(liveKey(row.region, 'total')) : minesText(total, scale);
 }
 
-/** Each owner segment's width in percent of the greatest region total now: what each frame paints. */
 export function segmentWidths(rows: readonly RegionRow[], values: LiveValues<number>): Map<string, number[]> {
   const highest = rows.reduce((max, row) => { const total = regionTotal(values, row.region); return total !== null && total > max ? total : max; }, 0n);
   return new Map(rows.map(row => [row.region, row.owners.map(owner => {
@@ -95,13 +83,11 @@ export function segmentWidths(rows: readonly RegionRow[], values: LiveValues<num
   })]));
 }
 
-/** What a render shows: the rows in order, their owners and unknown counts. Amounts are painted. */
 export function minefieldsStructure(reply: MinefieldsReply): string {
   const { rows } = regionRows(reply);
   return JSON.stringify([rows.map(row => [row.region, row.owners.map(owner => owner.tag), row.unknownOwners]), reply.unknown, reply.choices.length]);
 }
 
-/** An owner's history runs as chart runs on the reply's scale; hours with no value are left out. */
 export function historyRuns(line: MineLine, scale: number): { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] {
   const out: { firstHour: number; lastHour: number; value: number; breakBefore: boolean }[] = [];
   let gap = true;

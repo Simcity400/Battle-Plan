@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-/** The bytes of `value` as JSON, the body the bridge sends. */
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).buffer;
 
 test('a page going away names itself, the owner of everything it opened or imported, so the bridge lets go of it all', async () => {
@@ -9,7 +8,6 @@ test('a page going away names itself, the owner of everything it opened or impor
   const owners: unknown[] = [];
   Object.assign(globalThis, { window: globalThis, addEventListener: (type: string, handler: (event: { persisted: boolean }) => void) => handlers.set(type, handler) });
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { sendBeacon: (_url: string, body: Blob) => beacons.push(body) } });
-  // The file input the picker opens, choosing one recording.
   const listeners = new Map<string, () => void>();
   const input = { files: [{ name: 'Imported.battleplan', size: 1 }], addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
     click: () => listeners.get('change')!(), remove: () => {} };
@@ -81,7 +79,6 @@ test('actual browser transport reserves focus capacity while five histories wait
   const histories = Array.from({ length: 5 }, () => client.product(query('national-focus'), new AbortController().signal));
   try {
     await tick();
-    // Histories hold two of the six connections (one waits for replaying pages, two for dated facts, one for control).
     assert.equal(transport.requests.length, 2, 'ordinary reads leave the interactive connections free before fetch');
     const focus = client.product<{ name: string }>(query('focus-artwork'), new AbortController().signal);
     await tick();

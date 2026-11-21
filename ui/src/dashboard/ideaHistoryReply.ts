@@ -7,19 +7,14 @@ export type IdeaTooltipData = Pick<IdeaHistoryReply, 'ideas' | 'artwork' | 'modi
 
 export const NAME_NOT_RECORDED = 'Name not recorded';
 
-/** An idea's name: its artwork's, else "Name not recorded" where the recording says why (`ideaNameMissing`), else
- * `unavailable`. The reason names lookup keys, so it belongs in a tooltip, never in the name. */
 export function ideaName(art: Artwork | undefined, info: IdeaInfo | undefined, unavailable: string): string {
   return contentTitle(art?.name, art?.token ?? info?.token, info?.nameMissing ? NAME_NOT_RECORDED : unavailable);
 }
 
-/** Why an idea shown without a name has none, for its tooltip; null when it is named or no reason is given. */
 export function ideaNameMissing(art: Artwork | undefined, info: IdeaInfo | undefined): string | null {
   return art?.name == null && info?.nameMissing ? `${NAME_NOT_RECORDED}: ${info.nameMissing}` : null;
 }
 
-/** Shared tooltip inputs can accompany another history product. Validate their
- * effect arrays before the tooltip walks them; unrenderable art keeps its text. */
 function isIdeaTooltipData(data: unknown): data is IdeaTooltipData {
   const reply = data as IdeaTooltipData;
   const object = (value: unknown): value is Record<string, unknown> => value != null && typeof value === 'object';
@@ -52,7 +47,6 @@ export function validateIdeaTooltipData(data: unknown): IdeaTooltipData {
   return data;
 }
 
-/** Checks the reply's shape before the widget reads it. */
 export function validateIdeaHistoryReply(data: unknown): IdeaHistoryReply {
   const reply = data as IdeaHistoryReply;
   const ok = typeof reply === 'object' && reply != null && Array.isArray(reply.spans) && Array.isArray(reply.holders)

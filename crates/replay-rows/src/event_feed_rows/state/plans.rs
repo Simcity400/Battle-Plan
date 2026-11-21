@@ -4,7 +4,6 @@ use super::super::decisions::{
 };
 use super::*;
 
-/// The reduction plans replace: every change of the read, in order, each owner looked up anew.
 fn reduce_every(
     state: &mut ScriptEventState,
     row: &EventFeedHistoryRow,
@@ -215,7 +214,6 @@ fn reduce_every(
     Ok(())
 }
 
-/// Token spans of [`TOKENS`].
 const TOKENS: &[u8] = b"alphabravocharliedelta";
 const SPANS: [(u32, u32); 4] = [(0, 5), (5, 5), (10, 7), (17, 5)];
 
@@ -227,7 +225,6 @@ fn country(reference: u32, id: u32, instance: u32) -> EventFeedCountry {
     }
 }
 
-/// A retained-state change of `actor` (and `target`), its token one of [`SPANS`] or unrecorded.
 struct Op {
     change: EventFeedScriptChange,
     actor: EventFeedCountry,
@@ -330,7 +327,6 @@ fn is_rebuild(event: &EventFeedEvent) -> bool {
     )
 }
 
-/// What a roster capture reads of an owner at its rebuild: all but its candidates.
 fn rostered(owner: &DecisionState) -> serde_json::Value {
     let members: Vec<_> = (0..CONTAINERS)
         .map(|container| owner.members(container as u8).map(<[_]>::to_vec).ok())
@@ -356,7 +352,6 @@ fn touched(state: &ScriptEventState) -> serde_json::Value {
     ])
 }
 
-/// The state, rosters, touched parts and outcome of one read reduced every way.
 struct Reductions {
     every: ScriptEventState,
     rows: ScriptEventState,
@@ -380,14 +375,12 @@ impl Reductions {
         }
     }
 
-    /// A new walk, knowing nothing its packs wrote.
     fn restart(&mut self) {
         self.walk = Written::default();
         self.payloads = Payloads::default();
         self.sure = true;
     }
 
-    /// `row` reduced every way, which must agree; the event it stopped at, if it failed.
     fn reduce(&mut self, row: &EventFeedHistoryRow) -> Option<usize> {
         let mut visits: [Vec<(u64, serde_json::Value)>; 3] = Default::default();
         let [every, rows, planned] = &mut visits;
@@ -443,7 +436,6 @@ impl Reductions {
         })
     }
 
-    /// `row` compiled by the walk but never reduced, as a read whose occurrences repeat.
     fn skip(&mut self, row: &EventFeedHistoryRow) {
         let prepared = PreparedHistory::following(row, &mut self.walk, &mut self.payloads).unwrap();
         self.held.admit(&prepared).unwrap();
@@ -451,9 +443,6 @@ impl Reductions {
     }
 }
 
-/// A read's candidates cancelled by its later clear are left out, as are its owner's repeated
-/// target writes, unless the read stops before the clear: then they are applied as reducing
-/// every change applies them.
 #[test]
 fn a_read_leaves_out_candidates_its_clear_cancels_unless_it_stops_first() {
     let owner = country(5, 5, 1);
@@ -466,7 +455,6 @@ fn a_read_leaves_out_candidates_its_clear_cancels_unless_it_stops_first() {
             Op::decision(owner, DecisionChange::new(Operation::Rebuild, 3)),
         ];
         if stop {
-            // A completion with no baseline ends the reduction.
             ops.push(Op::decision(
                 owner,
                 DecisionChange::new(Operation::Ready, 0),
@@ -503,8 +491,6 @@ fn a_read_leaves_out_candidates_its_clear_cancels_unless_it_stops_first() {
     assert_eq!(owner.candidates.len(), 3);
 }
 
-/// A walk holds each payload once: a read repeating an earlier one's changes adds none, and its
-/// changes reduce as the row's.
 #[test]
 fn a_walk_holds_each_payload_once() {
     let owner = country(5, 5, 1);
@@ -523,7 +509,6 @@ fn a_walk_holds_each_payload_once() {
     assert_eq!(reductions.reduce(&again), None);
 }
 
-/// A token too long to hold in place is held apart, and found again as one held in place is.
 #[test]
 fn a_long_token_is_held_once_and_reduces_as_its_row() {
     let owner = country(5, 5, 1);
@@ -549,8 +534,6 @@ fn a_long_token_is_held_once_and_reduces_as_its_row() {
     assert_eq!(owner.candidates.iter().next().unwrap().1.len(), 66);
 }
 
-/// A reduction holds its walk's payloads as the walk's packs bring them, in order: a pack whose
-/// predecessors it did not admit is refused, and another walk's first pack begins anew.
 #[test]
 fn a_reduction_holds_its_walk_payloads_in_order() {
     let owner = country(5, 5, 1);
@@ -579,8 +562,6 @@ fn a_reduction_holds_its_walk_payloads_in_order() {
     assert_eq!(held.0.len(), 1);
 }
 
-/// A target an earlier read of the walk wrote is not written again while every read since was
-/// reduced; after one that was not, it is.
 #[test]
 fn targets_a_walk_wrote_hold_only_while_it_reduced_every_read() {
     let owner = country(5, 5, 1);
@@ -621,7 +602,6 @@ fn targets_a_walk_wrote_hold_only_while_it_reduced_every_read() {
     );
     assert_eq!(reductions.reduce(&failed), Some(0));
     assert!(!reductions.sure);
-    // Trusting the walk after the failed read would leave its second target unwritten.
     let mut trusting = ScriptEventState::default();
     trusting.observe_decisions(&first, |_, _| Ok(())).unwrap();
     let _ = trusting.observe_decisions(&failed, |_, _| Ok(()));
@@ -652,12 +632,6 @@ fn targets_a_walk_wrote_hold_only_while_it_reduced_every_read() {
     );
 }
 
-/// Planned reductions leave the state, its touched parts, the rosters their rebuilds read and
-/// their outcomes as reducing every change does: across candidate refills cleared or not,
-/// baselines, rebuilds, passes, members, counts and ignores, unrecorded tokens, repeated and
-/// changed targets, actors renamed within an owner, delayed timers, gaps, generations, partial
-/// and lost reads, reads failing part way, reads never reduced, and walks restarting at every
-/// read or rarely.
 #[test]
 fn plans_reduce_as_every_change_does() {
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;

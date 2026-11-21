@@ -1,55 +1,3 @@
-//! Naval-invasion preparation operands and stored accumulated preparation.
-//! Required hours are computed on demand rather than stored. This reader
-//! records country, target relation, selected HQ leader and content-loaded
-//! preparation terms without calling the game.
-//!
-//! The target is the first path province's state controller, or zero without a
-//! path or state. Country preparation speed is always selected. Relation
-//! preparation speed requires a positive target distinct under country aliases;
-//! the relation-day term uses any present row, including reserved slot zero.
-//! Leader speed requires both leader and HQ provider, and the provider's root
-//! order must be this invasion. The country's preparation-day term remains
-//! separate. Fixed5 scaling, truncation to days and the final hour conversion
-//! retain their order.
-//!
-//! Root-order selection uses the first primary order assigned to the member,
-//! searching its own group before its parent. A disagreeing cache is not
-//! simulation state. HQ providers are embedded unit members; their primary unit
-//! accessors and member vtables authenticate that relationship. The selected
-//! leader accumulator is independently scaled by the content-loaded HQ
-//! communication factor.
-//!
-//! The root order is the answer `root_order` computes before it compares its cache: the first
-//! primary order (`corders_group::PRIMARY_ORDER_DATA`, with its count) of the member's group whose
-//! assigned members (`corder_instance::ASSIGNED_MEMBER_DATA`, with its count) include the member
-//! (first assigned-order search), else the same over the group's parent. A cache that disagrees is
-//! the game's own stale-cache assertion, not simulation state.
-//!
-//! The provider is read as the orders-group member embedded in `single_hq_unit`. HQ unit lookup
-//! returns the provider's unit-accessor vtable slot
-//! (`corders_group_member::UNIT_ACCESSOR_VTABLE_SLOT`). The only orders-group member objects are
-//! embedded by unit construction at `cunit::SCHEDULED_MEMBER`. The member vtables of units,
-//! divisions, task forces and railway guns, each embedded there, return the primary unit (the
-//! object enclosing the member) in that slot. Every store to the group's HQ provider
-//! (`corders_group::HQ_PROVIDER`) is a unit's embedded member or zero: deployed-leader assignment,
-//! the loader (token 0x41BF, a unit dynamic cast) and HQ-provider clearing. So `single_hq_unit`'s
-//! embedded member is the provider, as the group's HQ-order virtual passes the HQ provider to
-//! `root_order` directly.
-//!
-//! The leader's movement accumulator is the accumulator of its movement CModifier
-//! (`carmy_leader::MOVEMENT_MODIFIER`), the block unit modifier selection returns. HQ modifier
-//! scaling, called on the group's leader (`corders_group::LEADER`) during deployed-leader
-//! assignment, clears it, copies the leader's own unit-modifier accumulator into it and scales it
-//! by the HQ communication define.
-//!
-//! The walk also records the owner of the unit the naval-invasion route check
-//! searches with (see `route_unit`). The path-cost operands read for that owner
-//! in its mode-0 search, its slot-0 relation bytes and nonzero co-belligerent
-//! targets, are the owner's CountryCounterInputs row of the same hour, so this
-//! walk reads no relation. `ccountry::walk_counter_inputs` also records each
-//! country's first roster division handle, the route's last unit fallback.
-//!
-//! No engine function is called.
 
 use crate::{
     Memory, carmy_leader, ccountry, cdiplomacy_status, cgame_state, corder_instance, corders_group,
@@ -62,36 +10,22 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// A CModifier's accumulator, inside it.
 const MODIFIER_ACCUMULATOR: usize = 0x10;
-/// Selected HQ leader modifier accumulator.
 pub const LEADER_ACCUMULATOR: usize = carmy_leader::MOVEMENT_MODIFIER + MODIFIER_ACCUMULATOR;
-/// Selected relation modifier accumulator.
 pub const RELATION_ACCUMULATOR: usize = crelation_status::MODIFIER + MODIFIER_ACCUMULATOR;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The owning group's handle and the order's instance id, as ArmyOrders.
     pub owner_group: u64,
     pub instance: u32,
-    /// The accumulated preparation (`corder_instance::ACCUMULATED_PREPARATION`).
     pub progress: i64,
-    /// `T`, the first path province's state controller; zero without a path
-    /// or a state.
     pub target: u32,
-    /// Key 0x1A on the country.
     pub country_term: i64,
-    /// Preparation-speed key on the target relation when the target gate admits it.
     pub relation_term: Option<i64>,
-    /// Key 0x1CE on the relation with `T`, when that row exists.
     pub relation_bonus: Option<i64>,
-    /// Key 0x1A on the leader, when the group has a leader and an HQ provider.
     pub leader_term: Option<i64>,
-    /// The HQ provider's root order is this order: the leader term counts.
     pub leader_applies: u8,
-    /// Key 0x184 on the country.
     pub days_term: i64,
-    /// Raw logical owner (`cunit::LOGICAL_OWNER`) of the route unit, zero without one.
     pub unit_owner: u32,
 }
 
@@ -154,12 +88,10 @@ fn effective(
     effective_memo(memory, base, key, value.raw, memo)
 }
 
-/// Province table used by invasion-path lookup.
 pub fn provinces(memory: &impl Memory, game_state: usize) -> Result<Array, &'static str> {
     array(memory, game_state, cgame_state::PROVINCES, 8)
 }
 
-/// First path province's state controller, or zero.
 fn target(
     memory: &impl Memory,
     base: usize,
@@ -171,8 +103,6 @@ fn target(
         return Ok(0);
     }
     let id: u32 = field(memory, path.data, 0)?;
-    // Path lookup requires a positive in-range province ID. An out-of-range
-    // dereference is refused rather than guessed.
     let province = if id == 0 {
         None
     } else {
@@ -192,7 +122,6 @@ fn target(
     field(memory, state, cstate::CONTROLLER)
 }
 
-/// First primary order of `group` assigned to `member`.
 fn first_assigned(
     memory: &impl Memory,
     group: usize,
@@ -229,8 +158,6 @@ fn first_assigned(
     Ok(None)
 }
 
-/// Root order without cache reuse: first assigned primary order of the
-/// member's group, then its parent.
 fn root_order(memory: &impl Memory, member: usize) -> Result<Option<usize>, &'static str> {
     let group = pointer(memory, member, corders_group_member::GROUP)?;
     if group == 0 {
@@ -246,7 +173,6 @@ fn root_order(memory: &impl Memory, member: usize) -> Result<Option<usize>, &'st
     first_assigned(memory, parent, member)
 }
 
-/// `C`'s diplomacy row at `slot`, or zero.
 fn relation(
     memory: &impl Memory,
     base: usize,
@@ -268,7 +194,6 @@ fn relation(
     Ok(row)
 }
 
-/// One order's row; `None` for any order that is not a naval invasion.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -322,8 +247,6 @@ fn read_invasion(
         ..Row::default()
     };
     let target = row.target;
-    // A positive target resolves through its country link. Zero targets
-    // select reserved slot zero without reading that link.
     let slot = countries.canonical_slot(target)?;
     let relation = relation(memory, base, country.pointer, slot)?;
     let relation_accumulator = || {
@@ -370,11 +293,6 @@ fn read_invasion(
     Ok(row)
 }
 
-/// Route unit: the first assigned member, then the group's first member,
-/// then the request country's first division. Member access authenticates its
-/// enclosing unit. A positive theatre volunteer reference selects the request
-/// country; otherwise use its owner. The game reaches these only when both
-/// port seas resolve; this reader records them for every invasion.
 fn route_unit(
     memory: &impl Memory,
     countries: &ccountry::NativeReferenceContext<'_, impl Memory>,
@@ -417,14 +335,11 @@ fn route_unit(
     pointer(memory, roster.data, 0)
 }
 
-/// What [`walk`] wrote: its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
 }
 
-/// Worker acquisition follows the same complete order census and original
-/// route-check unit, without publishing a capacity-short hour.
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     memory: &impl Memory,

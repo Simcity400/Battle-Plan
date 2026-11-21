@@ -1,11 +1,3 @@
-//! Construction (family 42): every construction line of a branch for the Construction log
-//! ([`log`]), and the civilian-factory output each country spent by work, building type and state
-//! for Construction spending ([`spending`]). A line is its `ConstructionProjects` row, from the
-//! first read that lists it (or the output read that names it alone) until the read that settles
-//! its ending; each run's lines are read once and kept ([`RunLines`]): those that ended from the
-//! `ConstructionLineEnds` row logged at their last hour, those still open at the run's end from
-//! their row there, so the index never replays the projects' history. Building and state
-//! names and the queue's art come from the recorded content at the reply.
 
 pub mod log;
 pub mod spending;
@@ -31,7 +23,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// `ConstructionProjects`' columns, as the schema numbers them.
 pub(crate) mod col {
     pub const KIND: usize = 0;
     pub const OUTPUT_ALONE: usize = 1;
@@ -71,7 +62,6 @@ pub(crate) mod col {
     pub const OBSERVED_SINCE_CREATION: usize = 35;
     pub const OUTPUT_REASON: usize = 36;
     pub const FIRST_REPAIR_TICK: usize = 37;
-    /// Every column, in order: a step's cells index by column.
     pub const ALL: [usize; 38] = {
         let mut all = [0; 38];
         let mut at = 0;
@@ -83,16 +73,12 @@ pub(crate) mod col {
     };
 }
 
-/// Units per factory output point of a fixed5 amount.
 pub const COST_SCALE: u32 = 100_000;
-/// Longest side of a returned building icon.
 const ICON_EDGE: u32 = 48;
-/// The construction queue's line entry gives each building's picture strip and the repair marker.
 const LINE_ENTRY: &str = "production_building_line_entry";
 const LINE_PICTURE: &str = "picture";
 const LINE_REPAIR: &str = "repair";
 
-/// A building line or a railway line.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -101,12 +87,10 @@ pub enum ProjectKind {
     Railway,
 }
 
-/// Why a stretch of a line's output is not counted.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum SpendingGap {
-    /// The output table was not read, or does not list the line.
     NotRecorded,
     LinkedOutput,
     InexactOutput,
@@ -115,7 +99,6 @@ pub enum SpendingGap {
     OwnerUnknown,
 }
 
-/// The gap an output reason code names; none when the output is known.
 pub fn gap_of(reason: u8) -> Option<SpendingGap> {
     Some(match reason {
         P::OUTPUT_KNOWN => return None,
@@ -128,16 +111,15 @@ pub fn gap_of(reason: u8) -> Option<SpendingGap> {
     })
 }
 
-/// A building type the replies name, by its recorded lexer id, with its name and icon from content.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionType {
     pub id: u32,
-    /// Its script name; null when the recorded dictionary lacks it.
+    #[doc = " Its script name; null when the recorded dictionary lacks it."]
     pub token: Option<String>,
     pub name: Option<String>,
-    /// The construction queue's picture of it.
+    #[doc = " The construction queue's picture of it."]
     pub icon: Option<String>,
 }
 
@@ -164,33 +146,25 @@ pub(crate) fn id32(cells: &[Cell], column: usize) -> Option<u32> {
     number(cells, column).and_then(|value| u32::try_from(value).ok())
 }
 
-/// One construction line as its row last stood in a run: what the replies read of every line
-/// without reading its history.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
     pub id: u64,
-    /// The first and last hour its row was shown in the run.
     pub first: i32,
     pub last: i32,
     pub railway: bool,
     pub output_alone: bool,
-    /// The queue owner's raw country id as first read (0: no output owner was recorded).
     pub country: u32,
     pub first_read: i32,
     pub building: Option<u32>,
     pub state: Option<u32>,
     pub to_state: Option<u32>,
-    /// It built or was to build new levels; it repaired or was to repair.
     pub new_work: bool,
     pub repair_work: bool,
-    /// Its output was published before observation of it began.
     pub before_observation: bool,
-    /// Its output table row was published at some read.
     pub had_output: bool,
     pub output_reason: u8,
 }
 
-/// The columns a line's final row is read with.
 const LINE_COLUMNS: [usize; 22] = [
     col::KIND,
     col::OUTPUT_ALONE,
@@ -216,21 +190,18 @@ const LINE_COLUMNS: [usize; 22] = [
     col::FIRST_REPAIR_TICK,
 ];
 
-/// A run's lines, in order of first hour.
 #[derive(Default)]
 pub struct RunLines {
     pub lines: Vec<Line>,
 }
 
 impl RunLines {
-    /// The lines shown at some hour of `from..=to`.
     pub fn within(&self, from: i32, to: i32) -> impl Iterator<Item = &Line> + '_ {
         let end = self.lines.partition_point(|line| line.first <= to);
         self.lines[..end].iter().filter(move |line| line.last >= from)
     }
 }
 
-/// A line's final row from the cells of `LINE_COLUMNS` (`value` reads one).
 pub(crate) fn line_of(id: u64, first: i32, last: i32, value: &dyn Fn(usize) -> Option<i64>) -> Line {
     let positive = |column: usize| value(column).is_some_and(|count| count > 0);
     let output_since = value(col::OUTPUT_SINCE);
@@ -254,7 +225,6 @@ pub(crate) fn line_of(id: u64, first: i32, last: i32, value: &dyn Fn(usize) -> O
     }
 }
 
-/// `ConstructionLineEnds`' columns the index reads.
 mod end {
     use super::{ConstructionLineEndRow as E, column};
     pub const KIND: usize = column::<E>("kind");
@@ -271,7 +241,6 @@ mod end {
     pub const OUTPUT_REASON: usize = column::<E>("output_reason");
 }
 
-/// A line from the end its writer logged (`value` reads one of `ConstructionLineEnds`' columns).
 pub(crate) fn line_of_end(id: u64, first: i32, last: i32, value: &dyn Fn(usize) -> Option<i64>) -> Line {
     let yes = |column: usize| value(column) == Some(1);
     Line {
@@ -293,10 +262,6 @@ pub(crate) fn line_of_end(id: u64, first: i32, last: i32, value: &dyn Fn(usize) 
     }
 }
 
-/// Run `run`'s lines: each key's lifetime, and what it was and did: from the end logged at its last
-/// hour, or, for a line with none there (open at the run's end), from its row at that hour. Two
-/// readers moved forward through the run, one over the logged ends only, one to the open lines'
-/// last hours (the run's last, but for an end not logged).
 pub fn run_lines(source: &Source, run: u32) -> io::Result<RunLines> {
     let recording = source.replay_ref().recording();
     let lives = crate::answer::lifetimes(source, run, TableId::ConstructionProjects)?;
@@ -330,7 +295,6 @@ pub fn run_lines(source: &Source, run: u32) -> io::Result<RunLines> {
     Ok(RunLines { lines })
 }
 
-/// The branch's windows: each block of each stretch of its timeline, cut to the stretch, with its run.
 pub fn windows(query: &Query<'_>) -> io::Result<Vec<(u32, BattleWindow)>> {
     let recording = query.replay.recording();
     let mut out = Vec::new();
@@ -346,8 +310,6 @@ pub fn windows(query: &Query<'_>) -> io::Result<Vec<(u32, BattleWindow)>> {
     Ok(out)
 }
 
-/// Whether either construction queue was recorded in the branch: held available at any hour, from
-/// the blocks' page entries. Not its reads: the journal door stamps the queues no sample hour.
 pub fn recorded(query: &Query<'_>) -> io::Result<bool> {
     let recording = query.replay.recording();
     for stretch in &query.timeline.stretches {
@@ -361,7 +323,6 @@ pub fn recorded(query: &Query<'_>) -> io::Result<bool> {
     Ok(false)
 }
 
-/// The timeline's hours from `from` through `to` it does not hold, with why.
 pub fn missing(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
     query
         .timeline
@@ -371,7 +332,6 @@ pub fn missing(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
         .collect()
 }
 
-/// The spelling of each of `ids` in run `run`'s lexical dictionary at `hour`.
 pub fn spellings(query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>, into: &mut BTreeMap<u32, Option<String>>) -> io::Result<()> {
     let wanted: Vec<u128> = ids.iter().filter(|id| into.get(id).is_none_or(Option::is_none)).map(|&id| u128::from(id)).collect();
     for &id in ids {
@@ -391,13 +351,10 @@ pub fn spellings(query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>, in
     Ok(())
 }
 
-/// What a reply names building types and states with: the content's catalogue, or why it is
-/// unavailable.
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
 }
 
-/// Names and art from content for one reply.
 pub struct Named {
     pub types: Vec<ConstructionType>,
     pub repair_icon: Option<String>,
@@ -409,9 +366,6 @@ impl Content {
         Self { catalogue: context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string()) }
     }
 
-    /// `types` (lexer id and spelling) and `states` named and pictured as the recorded content
-    /// shows them. Whatever content cannot give is left null and each kind of refusal is one counted
-    /// warning.
     pub fn name(&self, source: &Source, types: &BTreeMap<u32, Option<String>>, states: &BTreeSet<u32>, warnings: &mut Vec<String>) -> Named {
         let catalogue = match &self.catalogue {
             Ok(catalogue) => catalogue,
@@ -433,7 +387,6 @@ impl Content {
 #[derive(Default)]
 struct NamingCache(Option<(Arc<Catalogue>, Arc<Mutex<Naming>>)>);
 
-/// What naming read of `catalogue`, read once per source and catalogue.
 fn naming(source: &Source, catalogue: &Arc<Catalogue>) -> Arc<Mutex<Naming>> {
     let state = source.state::<NamingCache>();
     let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -449,11 +402,9 @@ fn naming(source: &Source, catalogue: &Arc<Catalogue>) -> Arc<Mutex<Naming>> {
 
 struct LineSprite {
     sprite: installed_content_gfx::gfx::SpriteType,
-    /// One-based GUI frame.
     frame: i32,
 }
 
-/// The queue entry's sprite for `element` and its authored icon frame.
 fn line_sprite(catalogue: &Catalogue, element: &str) -> io::Result<LineSprite> {
     let entry = catalogue
         .guis()?
@@ -473,7 +424,6 @@ fn line_sprite(catalogue: &Catalogue, element: &str) -> io::Result<LineSprite> {
     Ok(LineSprite { sprite: sprite.clone(), frame: icon.frame })
 }
 
-/// The counted warnings that list building types, in the order given.
 #[derive(Clone, Copy)]
 enum Listing {
     Undictionaried,
@@ -495,10 +445,8 @@ const LISTINGS: [&str; 7] = [
     "building icons could not be read from the queue's building strip and show a placeholder",
 ];
 
-/// Names shown in a warning before the rest are counted.
 const LISTED: usize = 12;
 
-/// "N <what>: a, b, c and N more", or nothing for none.
 fn counted(warnings: &mut Vec<String>, what: &str, names: &[String]) {
     if names.is_empty() {
         return;
@@ -509,7 +457,6 @@ fn counted(warnings: &mut Vec<String>, what: &str, names: &[String]) {
     warnings.push(format!("{} {what}: {shown}{rest}.", names.len()));
 }
 
-/// One building type as content names and pictures it.
 struct NamedType {
     name: Option<String>,
     icon: Option<String>,
@@ -517,10 +464,8 @@ struct NamedType {
     fallbacks: Diagnostics,
 }
 
-/// What naming reads of a catalogue, read once, and every type it has named.
 struct Naming {
     buildings: Result<installed_content_core::buildings::Buildings, String>,
-    /// Each defined state's name key, or why states are unavailable.
     state_keys: Result<dashboard_text::scripted_text::StateNames, String>,
     state_warnings: Vec<String>,
     strip: Result<LineSprite, String>,
@@ -620,7 +565,6 @@ impl Naming {
                     None
                 }
             });
-            // A building's name is its own key in the localisation.
             let key = declaration.map_or(token, |building| building.name.as_str());
             let name = catalogue.localised(key, View::Plain);
             if name.is_none() {

@@ -1,4 +1,3 @@
-//! Where emits spill finished bytes; hand it to every thread their work goes on, as labels are.
 
 use std::{
     any::Any,
@@ -11,7 +10,6 @@ thread_local! {
     static ROOM: RefCell<Option<Room>> = const { RefCell::new(None) };
 }
 
-/// A spill folder, and what one family's emit keeps there ([`Self::lane`]).
 #[derive(Clone)]
 pub struct Room {
     folder: Arc<Path>,
@@ -30,12 +28,10 @@ impl Room {
         &self.folder
     }
 
-    /// The same folder, keeping nothing yet: one family's emit's own.
     pub fn lane(&self) -> Self {
         Self::new(&self.folder)
     }
 
-    /// What it keeps, made by `make` at the first ask; none when it keeps another type.
     pub fn kept<T: Any + Send + Sync>(&self, make: impl FnOnce(&Path) -> T) -> Option<Arc<T>> {
         let held = self.kept.get_or_init(|| Arc::new(make(&self.folder)));
         Arc::clone(held).downcast::<T>().ok()

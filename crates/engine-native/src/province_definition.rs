@@ -1,66 +1,32 @@
-//! Province definition reached through a province.
 
 use engine_sites::Rva;
-/// Province-definition allocation size.
 pub const SIZE: usize = 0xd8;
-/// Run-length pixel-span array.
 pub const PIXEL_SPANS: usize = 0x58;
-/// Province-neighbour array.
 pub const NEIGHBOURS: usize = 0x70;
-/// Signed i32 neighbour count.
 pub const NEIGHBOUR_COUNT: usize = 0x7c;
-/// Province-definition u32 ID.
 pub const ID: usize = 0xc4;
-/// Province-definition terrain flag byte.
 pub const TERRAIN_FLAGS: usize = 0xd2;
-/// The [`TERRAIN_FLAGS`] bit set for a land province; clear, the province is
-/// sea, and the land movement speed moves a leg to or from it at the owner's
-/// transport speed.
 pub const LAND_FLAG: u8 = 1;
-/// The lake bit; invasion selection requires both land and lake bits clear.
 pub const LAKE_FLAG: u8 = 2;
-/// Signed i32 port sea-zone ID identifying the sea province reached by a
-/// land port. Construction clears it. Authored port slots store their seventh
-/// field even below one; path-edge classification compares it with the sea neighbour.
 pub const PORT_SEA: usize = 0xc8;
-/// Terrain-type pointer reached through the province definition.
 pub const TERRAIN: usize = 0xa8;
-/// ID-taking constructor, clearing centroid fields.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x014a_4460);
 
-/// Province IDs in the raster are u16, bounding the oracle census to their
-/// representable range. Refuse a larger count before sizing allocation.
 pub const MAX_CENSUS_RECORDS: u32 = 1 << 16;
 
-/// The movement operands one definition stores, for the one-shot load oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovementDefinition {
-    /// Raw `TERRAIN_FLAGS` byte.
     pub terrain_flags: u8,
-    /// One-based terrain ID in the definition's selected terrain object.
-    /// The null terrain object holds zero.
     pub terrain_index: i32,
-    /// The `NEIGHBOURS` entries in native order.
     pub neighbours: Vec<crate::province_neighbour::Record>,
 }
 
-/// The province census's definitions, by province ID. Record zero is the
-/// native null record and is not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovementCensus {
-    /// The census count, record zero included.
     pub records: u32,
-    /// `provinces[id - 1]`: the definition, or why that province could not
-    /// be read. One failure never hides the others.
     pub provinces: Vec<Result<MovementDefinition, &'static str>>,
 }
 
-/// Reads every province definition's movement operands for the recorder's
-/// one-shot load oracle. It allocates and reads the whole map, so it never
-/// runs in the capture path. Each province is authenticated as the capture
-/// readers do: census backlink, `CProvince` vtable and ID, the definition's own
-/// ID, and a `CTerrainType` or null-terrain vtable. Counts read from the game
-/// are bounded before they size an allocation.
 pub fn read_movement_census(
     memory: &impl crate::Memory,
     base: usize,
@@ -122,7 +88,6 @@ pub fn read_movement_census(
             neighbour::STRIDE,
         )
         .ok_or("neighbour header unreadable or invalid")?;
-        // Appending skips an existing target, so the neighbour list holds distinct census records.
         if entries.count > census.count {
             return Err("neighbour count exceeds the province census");
         }
@@ -146,9 +111,6 @@ pub fn read_movement_census(
     })
 }
 
-/// Independently demanded definition fields retained by one owned geometry
-/// acquisition. A failed field is remembered without invalidating another
-/// branch that never consumes it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GeometryFields {
     pub id: Option<Result<u32, &'static str>>,
@@ -207,8 +169,6 @@ mod tests {
         province(id) + 0x2000
     }
 
-    /// Province 1 has a real terrain and two neighbours; province 2 the null
-    /// terrain and one neighbour.
     fn fixture() -> Image {
         let mut image = Image(vec![0; 0x40_000]);
         image.u64(START, GAME_STATE as u64);
@@ -280,7 +240,6 @@ mod tests {
                     at + neighbour::CROSSING_POINT + 4,
                     record.crossing[1] as u32,
                 );
-                // Padding the reader must ignore.
                 image.put(at, &[0xAA; 8]);
             }
         }
@@ -339,7 +298,6 @@ mod tests {
         ] {
             let mut image = fixture();
             if at == definition(2) + NEIGHBOURS + 8 {
-                // Capacity below the count.
                 image.u32(at, value as u32);
             } else if at == province(2) + cprovince::ID || at == definition(2) + ID {
                 image.u32(at, value as u32);
@@ -354,7 +312,6 @@ mod tests {
 
     #[test]
     fn counts_beyond_the_census_or_u16_ids_are_refused_before_allocating() {
-        // A neighbour header claiming i32::MAX entries over readable data.
         let mut image = fixture();
         image.array(definition(2) + NEIGHBOURS, entries(2), i32::MAX as u32);
         let census = read_movement_census(&image.memory(), MODULE).unwrap();
@@ -363,7 +320,6 @@ mod tests {
             census.provinces[1],
             Err("neighbour count exceeds the province census")
         );
-        // One more entry than the census has records.
         image.array(definition(2) + NEIGHBOURS, entries(2), 4);
         assert_eq!(
             read_movement_census(&image.memory(), MODULE)

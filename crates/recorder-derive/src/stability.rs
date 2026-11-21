@@ -1,12 +1,3 @@
-//! `CountryStability`: each country's displayed stability, war support and maximum command power
-//! (less allocated), by raw country id, from its CountryStabilityInputs row as last read and its
-//! CountryCommandPower row this hour, by the game's arithmetic
-//! ([`replay_data::country_stability`]). A country has a row while it is a country and its inputs
-//! row has been read; the ceiling is not recorded while its command power row is not.
-//!
-//! State is the tables: an hour recomputes the countries whose inputs, command power row or
-//! slot changed; a fresh hour, a resume, or CountryCommandPower becoming complete or not
-//! recomputes every country.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -51,14 +42,10 @@ const READS: &[Read] = &[
 
 #[derive(Default)]
 pub struct Stability {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
-    /// Each live country's canonical slot, by raw id, and the ids of each slot.
     slots: HashMap<u32, u32>,
     ids: HashMap<u32, Vec<u32>>,
-    /// Whether CountryCommandPower was complete at the hour before.
     command: bool,
-    /// The countries the table holds.
     held: HashSet<u32>,
 }
 
@@ -69,10 +56,8 @@ fn u32_cell(table: &TableView<'_>, column: usize, slot: u32) -> Option<u32> {
     }
 }
 
-/// The inputs' columns the formulas read: every operand before the modifier tree and its text.
 const INPUT_COLUMNS: u64 = (1 << 34) - 1;
 
-/// `table`'s row in `slot`, the columns `mask` names, as the row decoder reads them.
 fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io::Result<R> {
     let held = hour.table(table);
     let key = held.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
@@ -80,7 +65,6 @@ fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io
     R::from_wire_fields(key, mask, &mut |column| replay_frame::frame::field(&held, slot, column, format))
 }
 
-/// The keys of the rows the hour inserted, deleted or wrote.
 fn edited(hour: &Hour<'_>, table: TableId) -> Vec<u128> {
     let held = hour.table(table);
     let slots = hour.written_rows(table, Columns::Every);
@@ -91,7 +75,6 @@ fn value(value: Option<i64>) -> Value {
     value.map_or(Value::Unrecorded, Value::I64)
 }
 
-/// A country's cells from its inputs row and its command power row this hour, if read.
 fn cells(read: &CountryStabilityInputRow, command: Option<&CountryCommandPowerRow>) -> Vec<Value> {
     vec![
         value(country_stability::stability(read).value),
@@ -113,7 +96,6 @@ impl Stability {
         Ok(())
     }
 
-    /// Country `id`'s row this hour, or none.
     fn compute(&self, hour: &Hour<'_>, id: u32) -> io::Result<Option<Vec<Value>>> {
         let Some(&canonical) = self.slots.get(&id) else {
             return Ok(None);
@@ -195,7 +177,6 @@ impl Writer for Stability {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume recomputes every country from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

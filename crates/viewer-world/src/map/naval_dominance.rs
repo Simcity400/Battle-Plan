@@ -1,4 +1,3 @@
-//! Political mode's naval control and gaining-side gradient attributes.
 use std::{collections::BTreeMap, sync::OnceLock};
 use viewer_foundation::naval_math::dominance_value;
 
@@ -16,7 +15,6 @@ use {
 
 pub type Fact<T> = Result<T, String>;
 
-/// The relation tuple type of an installed naval blockade.
 pub const BLOCKADE: u32 = 0x27f8;
 
 #[derive(Clone)]
@@ -39,7 +37,6 @@ pub struct Fill {
     pub warnings: Vec<String>,
 }
 
-/// One country's supremacy in a region: what the classification reads of its row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Supremacy {
     pub country: u32,
@@ -47,21 +44,13 @@ pub struct Supremacy {
     pub previous: i64,
 }
 
-/// What the attributes read beyond the supremacy rows, at one hour.
 pub trait Relations {
-    /// Raw country reference to canonical slot, or why CountryLinks is not read.
     fn links(&self) -> Result<&BTreeMap<u32, u32>, String>;
-    /// Whether canonical `source` is the viewer's family: itself, a faction partner, an overlord
-    /// or a subject.
     fn family(&self, links: &BTreeMap<u32, u32>, source: u32, viewer: u32) -> Fact<bool>;
-    /// Whether the raw source country's directed war pointer toward the viewer's slot is active.
     fn war(&self, source: u32, viewer: u32) -> Fact<bool>;
-    /// The installed naval-blockade tuples' first and second raw countries.
     fn blockades(&self) -> Fact<&[(u32, u32)]>;
 }
 
-/// Sources' sides toward one viewer, kept while the relations they read stand; by raw country,
-/// ascending (a region's sources are a few countries).
 #[derive(Clone, Debug, Default)]
 pub struct Sides(Vec<(u32, Fact<Side>)>);
 
@@ -78,7 +67,6 @@ impl Sides {
         self.0.is_empty()
     }
 
-    /// Every kept side read again toward `viewer`; the sources whose side moved.
     pub fn reread(&mut self, relations: &dyn Relations, viewer: u32) -> Vec<u32> {
         let mut moved = Vec::new();
         for (raw, held) in &mut self.0 {
@@ -101,14 +89,12 @@ impl Content {
     ) -> Self {
         Self {
             regions: regions.iter().map(|(&id, region)| {
-                // Resolve the region's naval terrain category, falling back to the content's ocean category.
                 let minimum = terrain.map_err(str::to_owned).and_then(|terrain| {
                     let category = region.naval_terrain.as_ref().and_then(|name| terrain.category(name.as_bytes()))
                         .or_else(|| terrain.category(b"ocean"));
                     category.map(|index| terrain.categories[index].minimum_seazone_dominance)
                         .ok_or_else(|| format!("naval terrain {} and executable ocean fallback absent from recorded content", region.naval_terrain.as_deref().unwrap_or("ocean")))
                 });
-                // Count unique valid provinces; below one percent sea, use constant 255.
                 let kinds = region.provinces.iter().filter_map(|id| map.definitions.get(id)).map(|p| (p.id, p.kind)).collect::<BTreeMap<_,_>>();
                 let sea = kinds.values().filter(|&&kind| kind == ProvinceKind::Sea).count() as u64;
                 let fraction = if kinds.is_empty() { 0 } else { sea * 100_000 / kinds.len() as u64 };
@@ -168,7 +154,6 @@ impl Content {
         fill
     }
 
-    /// Regions given directly, each `(id, holds sea, minimum dominance)`, with the control ratio.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_tests(regions: &[(u32, bool, i64)], ratio: i64) -> Self {
         Self {
@@ -183,18 +168,14 @@ impl Content {
         }
     }
 
-    /// The strategic region ids, ascending.
     pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.regions.keys().copied()
     }
 
-    /// Whether region `id` holds a sea province: only those read supremacy.
     pub fn sea(&self, id: u32) -> bool {
         self.regions.get(&id).is_some_and(|region| region.has_sea)
     }
 
-    /// One region's attributes from its countries' supremacy, and why they are withheld, worded
-    /// for [`withheld`]; `epoch` is [`cache_epoch`] at the hour.
     pub fn region(
         &self,
         id: u32,
@@ -214,7 +195,6 @@ impl Content {
             return (Attributes::default(), None);
         };
         let result = (|| {
-            // Pure land regions have no province in this gradient layer.
             if !has_sea {
                 return Ok([0, 0]);
             }
@@ -250,7 +230,6 @@ impl Content {
     }
 }
 
-/// The warning naming every region whose attributes are withheld, in region order.
 pub fn withheld(refused: &[String]) -> Option<String> {
     (!refused.is_empty()).then(|| {
         format!(
@@ -261,7 +240,6 @@ pub fn withheld(refused: &[String]) -> Option<String> {
     })
 }
 
-/// Today's relations: read from a frame of rows.
 struct FrameRelations<'a> {
     frame: &'a DecodedFrame,
     links: Fact<BTreeMap<u32, u32>>,
@@ -301,7 +279,6 @@ impl Relations for FrameRelations<'_> {
     }
 }
 
-/// The source's side toward the viewer: family before its directed war pointer.
 fn side(relations: &dyn Relations, raw: u32, viewer: u32) -> Fact<Side> {
     let links = relations.links()?;
     let slot = canonical(links, raw)?;
@@ -321,8 +298,6 @@ fn blockade(relations: &dyn Relations, raw: u32, viewer: u32) -> Fact<bool> {
     if source == 0 || viewer == 0 {
         return Err("naval blockade pointer for canonical Country0 is not recorded".into());
     }
-    // Installed naval-blockade tuples retain source-to-viewer direction and membership. Retired,
-    // date and cancellation flags do not add another gate here.
     for &(first, second) in relations.blockades()? {
         if canonical(links, first)? == source && canonical(links, second)? == viewer {
             return Ok(true);
@@ -339,12 +314,9 @@ fn family(
     factions: &OnceLock<Fact<Families>>,
     subjects: &OnceLock<Fact<Families>>,
 ) -> Fact<bool> {
-    // Positive faction membership is authenticated in both directions;
-    // Country0's cached faction may omit itself from the roster.
     if source == viewer && source != 0 {
         return Ok(true);
     }
-    // Test the target faction roster before the cached subject pointer.
     let zero_faction = if viewer == 0 {
         let [row] = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -361,7 +333,6 @@ fn family(
         None
     };
     let roster_member = if zero_faction == Some(0) {
-        // Native null faction yields a singleton target, without a roster read.
         source == 0
     } else {
         let faction = factions
@@ -401,8 +372,6 @@ fn zero_subject(
     source: u32,
     viewer: u32,
 ) -> Fact<bool> {
-    // The positive Subjects census excludes canonical Country0. Exact hourly visibility packets
-    // supply its cached subject endpoints.
     if source == 0 {
         let rows = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -439,8 +408,6 @@ fn zero_subject(
         .iter()
         .find(|r| r.canonical_slot == source)
         .ok_or("naval family source country missing")?;
-    // RelationLinks' complete-owner certificate excludes target Country0. The source's hourly forward
-    // visibility packet supplies the subject pointer for this branch.
     let row = frame
         .complete::<tables::CountryCounterInputs>()
         .map_err(|e| e.to_string())?;
@@ -466,10 +433,7 @@ fn zero_subject(
     )
 }
 
-/// Whether NavalSupremacy sampled at `sampled` certifies the sorted cache at `hour`.
 pub fn cache_epoch(hour: replay_data::Hour, sampled: Option<replay_data::Hour>) -> Fact<()> {
-    // The sorted supremacy cache rebuilds at midnight. Daily acquisition can straddle that boundary;
-    // retain certified values within their cache epoch, without interpolating updates.
     match sampled {
         Some(sample) if sample <= hour && sample.div_euclid(24) == hour.div_euclid(24) => Ok(()),
         Some(sample) => Err(format!(
@@ -479,7 +443,6 @@ pub fn cache_epoch(hour: replay_data::Hour, sampled: Option<replay_data::Hour>) 
     }
 }
 
-/// A raw country reference's canonical slot; raw zero is Country0.
 pub fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
     if raw == 0 {
         Ok(0)
@@ -491,7 +454,6 @@ pub fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
     }
 }
 
-/// Whether a cached subject pointer joins its recorded target, references resolved through `links`.
 pub fn subject(
     subject: &replay_data::rows::ZeroSubjectInputs,
     target: Fact<u32>,
@@ -508,7 +470,6 @@ pub enum Side {
 }
 
 fn quotient(numerator: i64, denominator: i64) -> Fact<i64> {
-    //fixed5 signed guard, wrapping multiplication, truncation.
     if denominator == 0 {
         return Ok(100_000);
     }
@@ -537,8 +498,6 @@ fn classify(
         } else if highest[1].is_none_or(|value| row.current > value) {
             highest[1] = Some(row.current);
         }
-        // Zero contributes no bits to either wrapping sum. The independent
-        //top/second gaining predicate below still admits a zero-current row.
         if row.current == 0 {
             continue;
         }
@@ -558,9 +517,6 @@ fn classify(
     } else {
         128
     };
-    // Select the top candidate when control is zero, otherwise the second candidate. A gaining side
-    // requires current supremacy above previous supremacy. Sorting uses only current supremacy, so
-    // ties are usable only when every possible selected candidate writes alike.
     let rank = usize::from(control != 0);
     let Some(selected) = highest[rank] else {
         return Ok([control, 0]);
@@ -1019,8 +975,6 @@ mod tests {
 
     #[test]
     fn the_scheduled_read_certifies_every_hour_of_its_day() {
-        // The sorted cache is rebuilt inside the update entered at hour 23,
-        // so the latest scheduled read must belong to the hour's own day.
         use replay_data::rows::TableId;
         for hour in 24..24 * 4 {
             let sampled = (0..=hour)

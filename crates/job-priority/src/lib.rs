@@ -1,15 +1,3 @@
-//! The scheduling priority of the preparation job a thread works for.
-//!
-//! A job prepared ahead of the user (from the recording library) runs each
-//! of its threads one step below the level that thread has in a job the user
-//! is waiting for, so the relative order of a job's threads stays the same.
-//! A thread's priority does not pass to the threads it starts, so every
-//! preparation thread is started with [`JobPriority::current`] and enters it
-//! first with [`JobPriority::enter`].
-//!
-//! Work read ahead of the user runs at the user's priority on half the
-//! processors instead ([`confined`]), so a request that comes to wait for it
-//! never waits behind other work, and the rest is left to the user's.
 
 pub mod accounting;
 
@@ -21,22 +9,16 @@ use std::{
     },
 };
 
-/// What a thread's work reads besides its priority: the executable tables of the recording it
-/// works on. Every thread it starts with [`JobPriority::current`] or [`Caller::current`] works
-/// with it too.
 pub type Context = &'static (dyn std::any::Any + Send + Sync);
 
-/// The calling thread's [`Context`].
 pub fn context() -> Option<Context> {
     CONTEXT.get()
 }
 
-/// Makes `context` the calling thread's from now on, for a thread that works on one thing alone.
 pub fn set_context(context: Option<Context>) {
     CONTEXT.set(context);
 }
 
-/// Runs `work` with `context` as the calling thread's, restoring the previous one afterward.
 pub fn with_context<T>(context: Option<Context>, work: impl FnOnce() -> T) -> T {
     struct Restore(Option<Context>);
     impl Drop for Restore {
@@ -48,20 +30,17 @@ pub fn with_context<T>(context: Option<Context>, work: impl FnOnce() -> T) -> T 
     work()
 }
 
-/// `work`, run with the calling thread's [`Context`] on whichever thread runs it.
 pub fn carry<T>(work: impl FnOnce() -> T) -> impl FnOnce() -> T {
     let context = CONTEXT.get();
     move || with_context(context, work)
 }
 
-/// [`std::thread::spawn`], the new thread working with the calling thread's [`Context`].
 pub fn spawn<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> std::thread::JoinHandle<T> {
     std::thread::spawn(carry(work))
 }
 
-/// [`std::thread::Scope::spawn`], the new thread working with the calling thread's [`Context`].
 pub fn spawn_in<'scope, 'env, T: Send + 'scope>(
     scope: &'scope std::thread::Scope<'scope, 'env>,
     work: impl FnOnce() -> T + Send + 'scope,
@@ -69,7 +48,6 @@ pub fn spawn_in<'scope, 'env, T: Send + 'scope>(
     scope.spawn(carry(work))
 }
 
-/// A named thread working with the calling thread's [`Context`].
 pub trait SpawnCarried {
     fn spawn_carried<T: Send + 'static>(
         self,
@@ -100,7 +78,6 @@ impl SpawnCarried for std::thread::Builder {
     }
 }
 
-/// A [`Context`] handed to another thread.
 #[derive(Clone, Copy, Default)]
 struct Carried(Option<Context>);
 
@@ -113,17 +90,11 @@ impl std::fmt::Debug for Carried {
 thread_local! {
     static CONTEXT: Cell<Option<Context>> = const { Cell::new(None) };
     static JOB: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
-    /// The thread runs in background mode, and so do the threads it starts.
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
-    /// The processors the thread's confined work runs on, and so do the threads it starts.
     static CONFINED: Cell<Option<Processors>> = const { Cell::new(None) };
-    /// The level the thread entered its job at, and whether it runs lowered ([`follow`]).
     static LEVEL: Cell<Option<(Level, bool)>> = const { Cell::new(None) };
 }
 
-/// Brings the calling thread's priority up to date with its job: one the user joined since the
-/// thread entered it runs at the thread's own level, no longer lowered. A thread in background
-/// mode, or that entered no job, is left as it is.
 pub fn follow() {
     let Some((level, lowered)) = LEVEL.get() else {
         return;
@@ -134,11 +105,6 @@ pub fn follow() {
     }
 }
 
-/// Runs `work`, and every thread it starts with [`JobPriority::current`] or [`Caller::current`],
-/// on half the cores the calling thread may run on: work ahead of the user, which leaves the
-/// other half to the work the user waits for and runs at its priority, so a request that comes to
-/// wait for it never waits behind other work. A system of more than one processor group, whose
-/// threads a group affinity cannot restore, runs it unconfined.
 pub fn confined<T>(work: impl FnOnce() -> T) -> T {
     struct Restore(Option<Processors>, Option<Processors>);
     impl Drop for Restore {
@@ -158,7 +124,6 @@ pub fn confined<T>(work: impl FnOnce() -> T) -> T {
     work()
 }
 
-/// A set of processors a thread may run on, within its processor group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Processors {
     mask: usize,
@@ -166,7 +131,6 @@ struct Processors {
 }
 
 impl Processors {
-    /// The processors the calling thread may run on.
     fn current() -> Option<Self> {
         #[cfg(windows)]
         unsafe {
@@ -184,7 +148,6 @@ impl Processors {
         None
     }
 
-    /// Whether the system has a single processor group.
     fn one_group() -> bool {
         #[cfg(windows)]
         unsafe {
@@ -194,7 +157,6 @@ impl Processors {
         false
     }
 
-    /// The processors the process may run on, in a system of one processor group.
     fn process() -> Option<Self> {
         #[cfg(windows)]
         unsafe {
@@ -210,7 +172,6 @@ impl Processors {
         None
     }
 
-    /// The upper half of these processors' cores, whole; none of a single core.
     fn half(self) -> Option<Self> {
         let cores: Vec<usize> = cores(self.group)
             .into_iter()
@@ -223,7 +184,6 @@ impl Processors {
         })
     }
 
-    /// Runs the calling thread on these processors.
     fn enter(self) {
         #[cfg(windows)]
         unsafe {
@@ -240,8 +200,6 @@ impl Processors {
         }
     }
 
-    /// Enters the confined processors of the thread that started this one's work, or leaves a
-    /// confinement earlier work left for the process's processors.
     fn confine(processors: Option<Self>) {
         match processors {
             Some(processors) => {
@@ -259,7 +217,6 @@ impl Processors {
     }
 }
 
-/// The upper half of `cores`, each a mask of one core's processors; none of a single core.
 fn upper_half(mut cores: Vec<usize>) -> Option<usize> {
     if cores.len() < 2 {
         return None;
@@ -269,7 +226,6 @@ fn upper_half(mut cores: Vec<usize>) -> Option<usize> {
     Some(cores[cores.len() - kept..].iter().fold(0, |mask, core| mask | core))
 }
 
-/// Each core of processor group `group`, as the mask of its processors.
 fn cores(group: u16) -> Vec<usize> {
     #[cfg(windows)]
     unsafe {
@@ -290,8 +246,6 @@ fn cores(group: u16) -> Vec<usize> {
         {
             return Vec::new();
         }
-        // A core's record is shorter than its type, whose union holds larger relationships: each
-        // field is read where it lies, within the record's own size.
         let bytes = std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), length as usize);
         let field = |at: usize, offset: usize, size: usize| bytes.get(at + offset..)?.get(..size);
         let relationship = (
@@ -343,14 +297,11 @@ fn cores(group: u16) -> Vec<usize> {
     }
 }
 
-/// Run the calling thread in background mode from now on, at the lowest CPU, I/O and memory
-/// priority, and so every thread it starts with [`JobPriority::current`]: work no one waits for.
 pub fn background_thread() {
     BACKGROUND.set(true);
     enter_background_mode();
 }
 
-/// Leave background CPU, I/O and memory mode on the calling worker only.
 pub fn foreground_thread() {
     let _ = worker(false);
 }
@@ -359,7 +310,6 @@ pub fn is_background_thread() -> bool {
     BACKGROUND.get()
 }
 
-/// Apply a promotable recorder job without claiming a refused mode transition succeeded.
 pub fn worker(background: bool) -> std::io::Result<()> {
     if BACKGROUND.get() == background {
         return Ok(());
@@ -393,23 +343,16 @@ fn enter_background_mode() {
     }
 }
 
-/// The level a thread runs at in a job the user is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// Coordinators and the families' own threads.
     Normal,
-    /// Pre-pass and helper work that yields to the coordinators.
     BelowNormal,
 }
 
-/// The job a thread works for: whether it is (still) ahead of the user. The
-/// flag is shared with the job's progress, so a job the user joins stops
-/// lowering the threads it starts from then on.
 #[derive(Clone, Debug, Default)]
 pub struct JobPriority(Option<Arc<AtomicBool>>, bool, Option<Processors>, Carried);
 
 impl JobPriority {
-    /// The job this thread works for, to hand to a thread it starts.
     pub fn current() -> Self {
         JOB.with(|job| {
             Self(
@@ -421,8 +364,6 @@ impl JobPriority {
         })
     }
 
-    /// Run `work` at the coordinator level for the job whose flag is
-    /// `background`, restoring the previous job and thread priority afterward.
     pub fn run<T>(background: Arc<AtomicBool>, work: impl FnOnce() -> T) -> T {
         struct Restore(Option<Option<Arc<AtomicBool>>>);
         impl Drop for Restore {
@@ -447,16 +388,12 @@ impl JobPriority {
         work()
     }
 
-    /// Whether the job is prepared ahead of the user now.
     pub fn background(&self) -> bool {
         self.0
             .as_ref()
             .is_some_and(|background| background.load(Ordering::Acquire))
     }
 
-    /// Enter the job on a new or reused thread, which runs at `level`, one
-    /// step lower while the job is ahead of the user; in background mode when
-    /// the thread that started it is.
     pub fn enter(self, level: Level) {
         let lowered = self.background();
         Processors::confine(self.2);
@@ -472,8 +409,6 @@ impl JobPriority {
     }
 }
 
-/// The calling thread's job and its own priority, for a helper thread that
-/// works for it synchronously and so runs exactly as it does.
 #[derive(Clone, Debug)]
 pub struct Caller {
     job: JobPriority,
@@ -497,7 +432,6 @@ impl Caller {
         }
     }
 
-    /// Enter the caller's job at the caller's priority on a new thread, on its processors.
     pub fn enter(self) {
         Processors::confine(self.job.2);
         CONTEXT.set(self.job.3.0);
@@ -533,7 +467,6 @@ fn set_thread_priority(level: Level, lowered: bool) {
 mod tests {
     use super::*;
 
-    /// The priority a thread started for `priority` runs at, entering `level`.
     #[cfg(windows)]
     fn started_at(priority: &JobPriority, level: Level) -> i32 {
         use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority};
@@ -546,8 +479,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Existing runner threads and reused helpers must enter the requested
-    /// level just as freshly spawned family threads do, and restore on return.
     #[test]
     #[cfg(windows)]
     fn jobs_set_and_restore_the_calling_threads_priority() {
@@ -569,7 +500,6 @@ mod tests {
                             THREAD_PRIORITY_NORMAL
                         }
                     );
-                    // Switching a reused helper back from BelowNormal matters.
                     JobPriority::current().enter(Level::BelowNormal);
                     JobPriority::current().enter(Level::Normal);
                     assert_eq!(
@@ -638,7 +568,6 @@ mod tests {
                 THREAD_PRIORITY_BELOW_NORMAL
             );
             assert_eq!(started_at(&job, Level::BelowNormal), THREAD_PRIORITY_LOWEST);
-            // The user joins: threads started from then on run at their level.
             background.store(false, Ordering::Release);
             assert_eq!(started_at(&job, Level::Normal), THREAD_PRIORITY_NORMAL);
         });
@@ -696,7 +625,6 @@ mod tests {
         JobPriority::run(Arc::clone(&background), || {
             let priority = JobPriority::current();
             assert!(priority.background());
-            // A thread started for the job, and one it starts in turn.
             let nested = std::thread::spawn(move || {
                 priority.enter(Level::BelowNormal);
                 let inner = JobPriority::current();
@@ -710,8 +638,6 @@ mod tests {
             .join()
             .unwrap();
             assert!(nested, "nested threads keep the job");
-            // The user joins the job: threads started from then on run at
-            // their own level.
             background.store(false, Ordering::Release);
             assert!(!JobPriority::current().background());
         });
@@ -732,7 +658,6 @@ mod tests {
         assert_eq!(upper_half(vec![0b11]), None);
     }
 
-    /// The half is whole cores of the system's own topology.
     #[test]
     #[cfg(windows)]
     fn half_the_processors_never_splits_a_core() {
@@ -745,8 +670,6 @@ mod tests {
         }
     }
 
-    /// Confined work and the threads it starts run on half the processors, and the thread runs
-    /// on all of them again afterwards.
     #[test]
     #[cfg(windows)]
     fn confined_work_and_its_threads_run_on_half_the_processors() {
@@ -776,7 +699,6 @@ mod tests {
             assert_eq!((inside, helper, job), (confined, confined, confined));
             assert_eq!(Processors::current(), Some(all));
             assert_eq!(CONFINED.get(), None);
-            // A thread that ran confined work and then enters unconfined work leaves it.
             let unconfined = JobPriority::current();
             let left = std::thread::spawn(move || {
                 confined_thread(|| unconfined.enter(Level::Normal));
@@ -795,7 +717,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Runs `then` on a thread confined as one a confined thread started is.
     #[cfg(windows)]
     fn confined_thread(then: impl FnOnce()) {
         let caller = confined(Caller::current);

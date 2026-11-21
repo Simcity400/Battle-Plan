@@ -1,12 +1,3 @@
-//! Allocation-free notifications from the native writers of every political
-//! party's country-leader vector ([`engine_mutations::party_leader_mutations`]). A
-//! detour only notifies the shared watch registry ([`WatchRegistry`]) for each
-//! party its arguments name, counts its site and calls the original; it never
-//! changes game behaviour. A carried PartyLeaders row also needs its leader's
-//! character certificate from [`crate::character_changes`], whose sites cover
-//! every write of a character's leader map. Anything unobserved (disabled,
-//! poisoned, a refused registration, an epoch change, a running writer)
-//! makes the capture read afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -21,12 +12,9 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read countries; reused and read rows.
 static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-/// Parties the latest complete capture walked, for off-thread sizing.
 static PARTIES: AtomicUsize = AtomicUsize::new(0);
 
-/// One observation domain: the watched parties and each writer site's calls.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
@@ -46,14 +34,11 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `party`. Dropping the guard notifies its return.
     pub fn notify(&self, party: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(party)
     }
 
-    /// An enabled domain with a table for `parties` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(parties: usize) -> Self {
         let watches = Self::new();
@@ -63,7 +48,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -75,22 +59,12 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications: parties and the characters of
-/// listed leaders.
 pub trait Changes: Sync {
-    /// `(epoch, revision)` of the party domain while it is observed and no
-    /// writer runs; `None` otherwise. Equal values across hours prove that no
-    /// observed writer touched any party's leader vector in between.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of a party, registering it; `None` when it cannot
-    /// be observed.
     fn party(&self, party: usize) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of a character in the character domain,
-    /// registering it; `None` when it cannot be observed.
     fn character(&self, character: usize) -> Option<(u64, u64)>;
 }
 
-/// The hooks' domains.
 pub struct Observer;
 impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
@@ -104,7 +78,6 @@ impl Changes for Observer {
     }
 }
 
-/// A test domain over its own party and character watches.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Pair<'a> {
     pub parties: &'a Watches,
@@ -123,26 +96,18 @@ impl Changes for Pair<'_> {
     }
 }
 
-/// The hooks' domain's quiet token ([`Changes::quiet`]).
 pub fn quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the parties the latest capture
-/// walked. Nothing is offered before a capture walked them: a later larger
-/// table waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
     let parties = PARTIES.load(Ordering::Relaxed);
     if parties != 0 {
@@ -150,12 +115,10 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's countries and rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
@@ -164,8 +127,6 @@ pub struct Counts {
     pub read_rows: u64,
 }
 
-/// A worker publishes one capture's counts and, when it walked every
-/// country, the number of parties for sizing.
 pub fn record(counts: &Counts, parties: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -185,14 +146,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A withheld site leaves the family uninstalled; PartyLeaders then
-    /// reads every country afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A withheld site leaves the family uninstalled; PartyLeaders then"]
+    #[doc = " reads every country afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "party_leader_changes")
@@ -232,10 +193,6 @@ impl Hooks {
                 false,
             );
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -244,7 +201,6 @@ impl Hooks {
         WATCHES
             .registry
             .set_enabled(enabled && !self.hooks.is_empty());
-        // The stability inputs observe the ruling party's leaders here.
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::PartyLeaders,
             enabled && !self.hooks.is_empty(),
@@ -257,17 +213,10 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-// Each site takes integer or pointer arguments only (RCX..R9 and, for the
-// transfer, two stack slots a Win64 detour forwards) and returns RAX
-// unchanged from its original. `$party` names each written party; every
-// notification covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($($arg:ident),+), [$($party:expr),+]) => {
         unsafe extern "system" fn $name($($arg: usize),+) -> usize {
@@ -284,35 +233,24 @@ macro_rules! callback {
         }
     };
 }
-// Insert leader front (party, leader).
 callback!(insert_leader_front, 0, (party, leader), [party]);
-// Append leader (party, leader).
 callback!(append_leader, 1, (party, leader), [party]);
-// Remove leader (party, leader, flag) -> bool.
 callback!(remove_leader, 2, (party, leader, flag), [party]);
-// Promote leader (party, leader).
 callback!(promote_leader, 3, (party, leader), [party]);
-// Retire first leader (party).
 callback!(retire_first_leader, 4, (party), [party]);
-// Kill first leader (party).
 callback!(kill_first_leader, 5, (party), [party]);
-// Clear leaders (party).
 callback!(clear_leaders, 6, (party), [party]);
-// Transfer leaders (source, destination, list, out, flag, flag): both parties.
 callback!(
     transfer_leaders,
     7,
     (source, destination, list, out, first, second),
     [source, destination]
 );
-// Validate leaders (party).
 callback!(validate_leaders, 8, (party), [party]);
-// Read leaders (reader, token, the party's country leaders).
 callback!(
     read_leaders,
     9,
     (reader, token, vector),
     [vector.wrapping_sub(VECTOR)]
 );
-// Destroy party (party, flags).
 callback!(destroy_party, 10, (party, flags), [party]);

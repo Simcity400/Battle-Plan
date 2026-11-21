@@ -1,6 +1,3 @@
-//! Read only the variant reached by a pool mutation, preserving its actual
-//! destination position and bounded cumulative value. Both native sorted
-//! ranges are searched, never copied or enumerated.
 use engine_native::{
     Memory, ccountry, cequipment_type as definition, cequipment_variant as variant,
     cequipment_variant_pool as pool, equipment_entry, read,
@@ -45,9 +42,6 @@ fn key<M: Memory>(
     ))
 }
 
-/// Post-write lookup. Comparator-equivalent source identities may resolve to a
-/// different retained destination identity; return that actual entry. Quantity
-/// and position are absolute after the entire native operand was applied.
 pub fn item(
     memory: &impl Memory,
     base: usize,

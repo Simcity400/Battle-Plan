@@ -1,10 +1,3 @@
-//! The proof's line for the window's readers of rows at the head (`--rows window@x,z,height`):
-//! the selection observers, a selection's movement arrows, the clock's speed, the picker's fourth
-//! button, the walk camera's figure, the naval mode's fleet menu, the air grid's click, and the
-//! overlay's camera-bound inputs in the five map modes that draw them. At every comparison each
-//! output over rows at the head against the same over today's frame of every table at the hour;
-//! the selections are what today's frame held at the previous comparison, so the observers drop
-//! what left since. Tables are learned by reading, as the window's readers learn them.
 
 use super::super::views::{Need, Pace, Reader as ViewReader, Views};
 use crate::{
@@ -32,10 +25,8 @@ use viewer_world::map::map_mode::{MapMode, Stock};
 
 const VIEWPORT: [u32; 2] = [3840, 2160];
 const MODES: [Stock; 5] = [Stock::StrategicAir, Stock::StrategicNavy, Stock::Resistance, Stock::Compliance, Stock::Resources];
-/// At most this many of each kind are selected, spread over the table.
 const PICKS: usize = 400;
 
-/// What the selections hold: today's at the previous comparison.
 #[derive(Default)]
 struct Picks {
     units: Vec<Unit>,
@@ -49,19 +40,12 @@ pub(crate) struct WindowLine {
     placement: String,
     camera: Option<Camera>,
     picks: Option<Picks>,
-    /// Per output, the tables it was first found to read.
     reads: BTreeMap<String, BTreeSet<TableId>>,
-    /// Comparisons laid out again because a flag or portrait finished decoding in the background
-    /// between today's layout and the one at the head.
     pub(crate) relaid: u64,
-    /// Per output read from the rows at a compared sample: wall nanoseconds and thread cycles.
     spent: BTreeMap<String, Vec<(u64, u64)>>,
-    /// The thread cycle counter's rate, cycles a second.
     hz: f64,
 }
 
-/// One output by name: today's text and the text at the head, or for the overlay's quads whether
-/// they are the same.
 pub(crate) struct Output {
     pub(crate) name: String,
     pub(crate) entries: u64,
@@ -70,8 +54,6 @@ pub(crate) struct Output {
 }
 
 impl WindowLine {
-    /// `spec` is the camera's placement (`fit`, or `x:z:height` since the sets are split at commas),
-    /// and after a `+` a file naming tables to declare at once, one a line, for a timed run.
     pub(crate) fn open(views: &Views, spec: &str, pace: Pace) -> io::Result<Self> {
         let (placement, listed) = spec.split_once('+').map_or((spec, None), |(placement, file)| (placement, Some(file)));
         let mut tables = Vec::new();
@@ -83,7 +65,6 @@ impl WindowLine {
         Ok(Self { reader: views.reader_at("proof window", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), pace), tables, placement: placement.replace(':', ","), camera: None, picks: None, reads: BTreeMap::new(), relaid: 0, spent: BTreeMap::new(), hz: cycle_rate() })
     }
 
-    /// Per output, what reading it from the rows took: wall and thread CPU milliseconds.
     pub(crate) fn spent(&self, distribution: fn(Vec<f64>) -> serde_json::Value) -> serde_json::Value {
         let spent: serde_json::Map<String, serde_json::Value> = self
             .spent
@@ -101,13 +82,10 @@ impl WindowLine {
         &self.tables
     }
 
-    /// Per output, the tables it was first found to read.
     pub(crate) fn reads(&self) -> &BTreeMap<String, BTreeSet<TableId>> {
         &self.reads
     }
 
-    /// Every output at `rows` against `today`; `Err` names the tables the rows lacked, which are
-    /// declared, and the sample is not compared.
     pub(crate) fn compare(&mut self, document: &Document, today: &Arc<DecodedFrame>, rows: &Arc<DecodedFrame>) -> io::Result<Result<Vec<Output>, Vec<TableId>>> {
         if self.camera.is_none() {
             let (size, defines) = (MapSize::of(&document.content.map), document.content.map_defines);
@@ -164,7 +142,6 @@ impl WindowLine {
     }
 }
 
-/// Up to [`PICKS`] of each kind today holds, spread over its table.
 fn picks(today: &DecodedFrame) -> Picks {
     fn spread<R>(rows: Result<&[R], impl Sized>, id: impl Fn(&R) -> u64) -> Vec<u64> {
         let Ok(rows) = rows else { return Vec::new() };
@@ -179,16 +156,12 @@ fn picks(today: &DecodedFrame) -> Picks {
 
 struct Evaluated {
     texts: Vec<(String, String)>,
-    /// Per output: wall nanoseconds and thread cycles.
     spent: Vec<(String, u64, u64)>,
-    /// Per output, the tables it read that the rows did not hold.
     reads: Vec<(String, Vec<TableId>)>,
     quads: Vec<(String, Vec<viewer_foundation::map::sprites::Quad>)>,
     missed: Vec<TableId>,
 }
 
-/// Each reader's output over `frame`; the overlay is laid out on today's hour with its inputs over
-/// `rows` when given.
 fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, rows: Option<&Arc<DecodedFrame>>, ours: u32, picks: &Picks, camera: Camera) -> io::Result<Evaluated> {
     let content = &document.content;
     let (mut texts, mut reads, mut spent) = (Vec::new(), Vec::new(), Vec::new());
@@ -279,14 +252,12 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
     Ok(Evaluated { texts, spent, reads, quads, missed })
 }
 
-/// `read` under discovery, with its wall nanoseconds and thread cycles.
 fn timed(read: impl FnOnce() -> String) -> ((String, Vec<TableId>), u64, u64) {
     let (started, cycles) = (std::time::Instant::now(), replay_frame::cpu::thread_cycles());
     let read = discovering(read);
     (read, started.elapsed().as_nanos() as u64, replay_frame::cpu::thread_cycles().saturating_sub(cycles))
 }
 
-/// The thread cycle counter's rate, from a short busy wait.
 fn cycle_rate() -> f64 {
     let (started, cycles) = (std::time::Instant::now(), replay_frame::cpu::thread_cycles());
     while started.elapsed() < std::time::Duration::from_millis(50) {

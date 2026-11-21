@@ -1,17 +1,10 @@
-//! Market contract manager reached through game state.
-//! Its two tables use canonical country indices from the country-link map,
-//! rather than raw tags.
 
 use crate::{Memory, cgame_state, cpdx_array::Array, read};
 
-/// Owning purchase-contract unique_ptr vector.
 pub const OWNED_CONTRACTS: usize = 0;
 
-/// First directional contract-table header.
 pub const CONTRACT_TABLE_A: usize = 0x30;
-/// Second directional contract-table header.
 pub const CONTRACT_TABLE_B: usize = 0x48;
-/// Per-country vector stride, indexed by canonical country slot.
 pub const COUNTRY_VECTOR_STRIDE: usize = 0x18;
 
 pub(crate) struct Contracts {
@@ -49,8 +42,6 @@ impl Contracts {
         })
     }
 
-    /// Selects a canonical country's directional vector. The caller checks the
-    /// complete vector once for all owned contracts at this endpoint.
     pub(crate) fn country_rows(
         memory: &impl Memory,
         outer: Array,

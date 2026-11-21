@@ -1,0 +1,11 @@
+# 0101. Observe advisor maps by exact authenticated receiver
+
+Advisor notifications track authenticated exact map addresses because the native tree helpers also operate on unrelated maps. Reusing an address keeps its invalidation history. Registry collision or capacity refusal cannot certify another receiver. A guarded owner-metadata failure revokes the domain's certificates. The collector never invokes a game getter to resolve the owner. Observer lifetimes also cover a callback when its QPC call temporarily leaves the collector's code.
+
+The advisor family shares its native calls with the character role, roster, stability and role census observers. Completion recording for the advisor family runs before its forwarded role notification ends. Advisor map edits, merge, parser, destructor and leader-map inserts can affect the role census. Container repair may reconstruct the name and identity, so the roster also observes it. Before destruction the character link still names the owning character. A role writer whose parent is unreadable, or an effect whose target resolves internally, invalidates every certificate.
+
+Role writes share the advisor hook publication. If any required role site is withheld, no partial role family is admitted and every hour reads fresh. Batch publication suspends once for the full family and backs off if a thread is at a hook or in a tap. The role watch tables outlive the installed hooks and their in-flight callbacks. The observer preserves the native arguments and return, including preserving the return register for a void writer.
+
+The air-base slot optimization needs no hook. Registration and removal writers update the sparse country vector and the dense list in the same call. The dense list must authenticate each listed container's identity, span, link entry and vector slot, in slot order. A refusal keeps the full scan available and records its reason. A base read still includes its pools, wings, capacity and fuel. Production selects the dense path by feature, while tests can choose either path. Statistics publish off the game thread after acquisition.
+
+[Advisor notifications](../../crates/collector/src/advisor_changes.rs) · [Air-base branch selection](../../crates/collector/src/air_base_changes.rs)

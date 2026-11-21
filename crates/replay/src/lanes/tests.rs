@@ -1,8 +1,6 @@
 use super::*;
 use crate::columnar_frames::fixtures;
 
-/// Lifetimes read from the highest level a run's pieces could reach: a run that closes no piece
-/// of the higher levels reads the levels below.
 #[test]
 fn lifetimes_read_past_levels_a_run_closes_no_piece_of() {
     let recording = Recording::open(fixtures::native_recording(20, |_| {})).unwrap();
@@ -10,9 +8,6 @@ fn lifetimes_read_past_levels_a_run_closes_no_piece_of() {
     assert!(!lives.is_empty());
 }
 
-/// A chart read from coarser pieces names its values' level-0 buckets, as a walk does: the bins
-/// a key holds throughout agree in every field, a least or greatest value placed at the first
-/// level-0 bucket of the coarser bucket holding it.
 #[test]
 fn coarse_chart_names_level_zero_buckets() {
     let recording = Recording::open(fixtures::native_recording(20, |_| {})).unwrap();
@@ -48,8 +43,6 @@ fn coarse_chart_names_level_zero_buckets() {
     assert!(compared > 0 && moved > 0, "{compared} bins compared, {moved} holding more than one value");
 }
 
-/// `column` of `table` hour by hour through `from..=to`, every key, each hour stepped through
-/// the cursor: the reference a read of the tracks is held to.
 fn stepped(recording: &Recording, run: u32, table: TableId, column: usize, from: i32, to: i32) -> Vec<(u128, Runs)> {
     let mut reader = TableReader::new(recording, run, table, Some(&[column])).unwrap();
     reader.index_keys();
@@ -87,9 +80,6 @@ fn stepped(recording: &Recording, run: u32, table: TableId, column: usize, from:
     out
 }
 
-/// Runs and next changes read from the tracks, a block at a time, are those stepping every hour
-/// through the cursor gives: over runs, rows that leave and come back, a table going unavailable
-/// and back, and stretches starting mid-block.
 #[test]
 fn runs_and_next_from_tracks_are_the_hours_stepped() {
     const RUNS: [(u64, i32, u32); 3] = [(1, 100, 5), (2, 50_000, 3), (1, 100 + 5 * UNIT_ORDINALS as i32, 2)];
@@ -125,10 +115,6 @@ fn runs_and_next_from_tracks_are_the_hours_stepped() {
     assert!(compared > 0);
 }
 
-/// A row inserted inside a block holds the cells it was inserted with from its insert hour on,
-/// not zeros or nothing: its runs read from the tracks, every key's and a few keys', are the hours
-/// stepped, for cells its row never changes again (row 2, back every hundred hours) and cells that
-/// change after it came (row 3).
 #[test]
 fn a_row_inserted_inside_a_block_runs_from_the_cells_it_was_inserted_with() {
     use crate::{
@@ -165,10 +151,6 @@ fn a_row_inserted_inside_a_block_runs_from_the_cells_it_was_inserted_with() {
     }
 }
 
-/// Countries over two runs, the first starting off the bucket grid: 12 countries (more than the
-/// [`crate::summaries::TEST_RANK`] each bucket ranks) whose political power ties often and is now
-/// and then not recorded, each country coming and going on its own period, the table unavailable
-/// for 200 hours of the first run.
 fn ranked_recording() -> Recording {
     use crate::{
         columnar_frames::synthetic::{Input, Sample},
@@ -194,10 +176,6 @@ fn ranked_recording() -> Recording {
     Recording::open(bytes).unwrap()
 }
 
-/// A ranked view read from the summaries' ranks is the view folding every key: at bins of the
-/// six-hour and 96-hour levels and wider than any piece the file holds, with ties, countries
-/// entering and leaving, cells not recorded, the table's gap, buckets split between pieces and a
-/// view off the grid; and past the rank, where both fold.
 #[test]
 fn a_ranked_view_from_the_ranks_is_the_view_folding_every_key() {
     let recording = ranked_recording();
@@ -214,8 +192,6 @@ fn a_ranked_view_from_the_ranks_is_the_view_folding_every_key() {
     for run in 0..recording.run_count() {
         let held = recording.run(run).unwrap();
         let (first, last) = (held.first_hour, held.last_hour());
-        // (from, to, hours a bin at least): six-hour bins, wider level-0 bins, 96-hour bins and wider,
-        // bins of a level no piece of the file holds, and views off the grid.
         let views = [(first, last, 6), (first, last, 30), (first, last, 96), (first, last, 600), (first, last, 4800), (first + 333, last - 17, 70), (first + 7, (first + 2000).min(last), 39)];
         for (from, to, least) in views {
             let width = ((to - from + 1) / least).max(1) as u32;
@@ -231,8 +207,6 @@ fn a_ranked_view_from_the_ranks_is_the_view_folding_every_key() {
     assert!(compared == 56 && full > 100, "{compared} views, {full} full bins");
 }
 
-/// The hours `table` was read through `from..=to`, each hour stepped through the cursor: those
-/// whose sample hour is the hour itself.
 fn stepped_reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> Vec<(i32, i32)> {
     let mut reader = TableReader::new(recording, run, table, Some(&[0])).unwrap();
     reader.seek(recording, recording.run(run).unwrap().ordinal(from).unwrap()).unwrap();
@@ -251,10 +225,6 @@ fn stepped_reads(recording: &Recording, run: u32, table: TableId, from: i32, to:
     out
 }
 
-/// A table's read hours from its blocks' page entries are the hours stepping finds sampled at
-/// themselves: a daily read, a stretch read every hour across a block's end, hours not read that
-/// carry the last read, a sample reset, the table unavailable, and spans starting and ending
-/// mid-block.
 #[test]
 fn reads_from_page_entries_are_the_hours_stepped_sampled_at_themselves() {
     use crate::{
@@ -293,14 +263,6 @@ fn reads_from_page_entries_are_the_hours_stepped_sampled_at_themselves() {
     assert!(daily > 100, "{daily} single-hour reads compared");
 }
 
-/// Countries and Fleets over two runs, the first of three blocks. Country 1's tag is set at hours
-/// 100 and 101 and again across the first block's end (719 to 720); country 2 is gone for hours
-/// 300 to 339 and 700 to 759 and comes back under its key; country 3 lives only for hours 1500 to
-/// 1599; country 4's tag cycles through 40 texts, each back 2,000 hours after it was last held.
-/// Countries is unavailable for hours 1000 to 1009 and 1435 to 1444 (across a block's end) and
-/// read in part every 97th hour, country 4 alone read. Fleet 10's name is set alike and not
-/// recorded for hours 400 to 409; fleet 11 is gone for hours 200 to 260; Fleets is unavailable for
-/// hours 1200 to 1205.
 fn histories() -> Recording {
     use crate::{
         columnar_frames::synthetic::{Input, Sample},
@@ -360,7 +322,6 @@ fn histories() -> Recording {
     Recording::open(bytes).unwrap()
 }
 
-/// A cell as a reader shows it, its text and bytes resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Seen {
     Number(i64),
@@ -370,12 +331,8 @@ enum Seen {
     Bytes(Vec<u8>),
 }
 
-/// By key, runs of a row's cells (none where not shown), each run's first and last hour.
 type SeenRuns = Vec<(u128, Vec<(i32, i32, Option<Vec<Seen>>)>)>;
 
-/// `columns` (ascending) of `table` hour by hour through `from..=to`, for the keys `keys` asks for,
-/// each hour stepped through the cursor: the reference a history is held to. A key named is there
-/// from `from`; another from the first hour its row is live.
 fn stepped_cells(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> SeenRuns {
     use replay_columnar::store::Value;
     let mut reader = TableReader::new(recording, run, table, Some(columns)).unwrap();
@@ -427,8 +384,6 @@ fn stepped_cells(recording: &Recording, run: u32, table: TableId, columns: &[usi
     out.into_iter().collect()
 }
 
-/// `history`'s steps as runs of what a reader shows, unjoined: each text resolved, and each step
-/// holding a list or opaque cell read at its hour, all in one batch ([`at_each`]).
 fn seen(recording: &Recording, run: u32, table: TableId, history: &History) -> SeenRuns {
     let asks: Vec<(i32, u128)> = history
         .keys
@@ -479,8 +434,6 @@ fn field(table: TableId, name: &str) -> usize {
     (0..table.field_count()).find(|&field| table.field_name(field) == Some(name)).unwrap()
 }
 
-/// The history read, held to stepping every hour: its steps are exactly the stepped runs, no step
-/// that changes nothing.
 fn checked(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, from: i32, to: i32) -> History {
     let read = history(recording, run, table, columns, keys, from, to).unwrap_or_else(|error| panic!("run {run} {table:?} {columns:?} {keys:?} {from}..={to}: {error}"));
     assert_eq!(read.columns, columns);
@@ -488,17 +441,12 @@ fn checked(recording: &Recording, run: u32, table: TableId, columns: &[usize], k
     read
 }
 
-/// The spans each history test reads of a run: whole, mid-block at both ends, around two changes
-/// in consecutive hours, across a block's end, and through an unavailable stretch.
 fn spans(recording: &Recording, run: u32) -> Vec<(i32, i32)> {
     let held = recording.run(run).unwrap();
     let (first, last) = (held.first_hour, held.last_hour());
     [(first, last), (first + 333, last - 17), (first + 99, first + 102), (first + 719, first + 720), (first + 1001, first + 1500)].into_iter().filter(|&(_, to)| to <= last).collect()
 }
 
-/// A text column's history holds each change with its text, as stepping shows it: set twice in
-/// consecutive hours of one block and once across the block's end, its text the same index while
-/// the row is hidden and shown again, and a text met again under another string id the same.
 #[test]
 fn a_text_columns_history_holds_each_change_with_its_text() {
     let recording = histories();
@@ -524,10 +472,6 @@ fn a_text_columns_history_holds_each_change_with_its_text() {
     assert_eq!(whole.texts.len(), 40, "country 4's 40 texts, each one index however many string ids it was held under");
 }
 
-/// A row is hidden while it is gone, its table unavailable or the hour reads others in part, and
-/// shown again with the cells it then holds: a row deleted and inserted again under its key,
-/// unavailable stretches inside a block and across its end, numbers and optional numbers holding
-/// none beside a text.
 #[test]
 fn a_rows_history_is_hidden_while_it_is_gone_unavailable_or_unread() {
     let recording = histories();
@@ -554,9 +498,6 @@ fn a_rows_history_is_hidden_while_it_is_gone_unavailable_or_unread() {
     assert!(missing, "country 1's political power holds none at times");
 }
 
-/// A history of some keys is the history of those keys alone, as stepping shows it: keys named
-/// (one never held), one living in a single block of the run so the blocks without it are passed
-/// over, a range and a range holding no key.
 #[test]
 fn a_history_of_some_keys_is_those_keys_history() {
     let recording = histories();
@@ -584,10 +525,6 @@ fn a_history_of_some_keys_is_those_keys_history() {
     assert!(none.keys.is_empty());
 }
 
-/// A history of some keys of a declared log the store holds as state (balance drops, rows living an
-/// hour) reads every block its rows are in: the log's summary pieces count rows by facet, not by
-/// key, so they pass no block over. Country 7's political power falls once in each of three
-/// blocks, country 9's beside it and once alone. A log the store holds as a log has no history.
 #[test]
 fn a_logs_history_of_some_keys_reads_every_block_its_rows_are_in() {
     use crate::{
@@ -629,10 +566,6 @@ fn a_logs_history_of_some_keys_reads_every_block_its_rows_are_in() {
     checked(&recording, 0, TableId::BalanceDrops, &columns, Keys::Range(low, high), first + 333, last - 17);
 }
 
-/// An opaque column's history gives the hours its cell changed, and the rows read at those hours
-/// in one batch hold what stepping shows: a name set in consecutive hours, not recorded for a
-/// stretch and recorded again, set across a block's end, a fleet gone and back, and the table
-/// unavailable.
 #[test]
 fn an_opaque_columns_change_hours_read_in_one_batch_are_the_hours_stepped() {
     let recording = histories();
@@ -655,9 +588,6 @@ fn an_opaque_columns_change_hours_read_in_one_batch_are_the_hours_stepped() {
     assert_eq!(runs[0].1[4].2, Some(Cell::Written(first + 410)), "recorded again: written at that hour");
 }
 
-/// `runs` of a text column are its runs of equal text, as stepping shows them, its values standing
-/// one for one for texts within the read; `next` of a text column is the next hour its text
-/// changes or its row is hidden or shown.
 #[test]
 fn runs_and_next_of_a_text_column_follow_its_text() {
     let recording = histories();
@@ -711,9 +641,6 @@ fn stepped_statuses(recording: &Recording, run: u32, table: TableId, from: i32, 
     out
 }
 
-/// A table's statuses from its blocks' page entries are the statuses stepping finds, hour for
-/// hour: complete, read in part, unavailable with its reason, runs of one status across a
-/// block's end, and spans starting and ending mid-block.
 #[test]
 fn statuses_from_page_entries_are_the_statuses_stepped() {
     use crate::{

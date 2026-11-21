@@ -20,25 +20,18 @@ export function validateTrainingQueue(value: unknown): TrainingQueueReply {
   return reply;
 }
 
-/** What the table's rows are: a render is due only when an order or a division in training comes, goes or moves, or
- * a read is replaced; the queue is read once a day, so a pushed panel differs at most daily. */
 export const queueStructure = (reply: TrainingQueueReply) => JSON.stringify([reply.readHour, reply.missing, reply.orders]);
 
-/** Orders in the game's queue order, each with its divisions in training in their order. */
 export function queueRows(reply: TrainingQueueReply): QueueRow[] {
   return reply.orders.map(order => ({ kind: 'order', key: `order:${order.order}`, order,
     children: order.divisions.map(division => ({ kind: 'division', key: `line:${division.line}`, division })) }));
 }
 
-/** Training as a share of its maximum; null when the maximum is not positive. */
 export function trainingRatio(division: TrainingDivision): number | null {
   const maximum = BigInt(division.maxTrainingRaw);
   return maximum > 0n ? fixedNumber(division.trainingRaw, 1) / fixedNumber(division.maxTrainingRaw, 1) : null;
 }
 
-/** The share of the template's equipment need a division holds, counting no type past
- * its need; null when the need is unknown or empty, or when a held design's type is
- * unresolved, since what it fills is unknown. */
 export function equipmentFill(division: TrainingDivision): number | null {
   if (division.comparisonMissing !== null || !division.need.length) return null;
   let held = 0n, needed = 0n;
@@ -52,8 +45,6 @@ export function equipmentFill(division: TrainingDivision): number | null {
   return needed > 0n ? Number(held * 1_000_000n / needed) / 1_000_000 : null;
 }
 
-/** The lowest equipment fill among an order's divisions; null when none is known, or when
- * any division's fill is unknown, since that one could be lower. */
 export function lowestFill(order: TrainingOrder): number | null {
   let lowest: number | null = null;
   for (const division of order.divisions) {
@@ -64,7 +55,6 @@ export function lowestFill(order: TrainingOrder): number | null {
   return lowest;
 }
 
-/** The order's template icon, none where its artwork is refused (`iconMissing` says why). */
 export const orderIcon = (order: TrainingOrder): string | null => order.icon;
 export const orderName = (order: TrainingOrder) => order.templateName ?? 'Template name unavailable';
 export const divisionName = (division: TrainingDivision) => division.name ?? 'Division name unavailable';

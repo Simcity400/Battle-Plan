@@ -1,6 +1,4 @@
-//! Fixed modifier indices for the reference executable.
 
-/// Air-wing, ace and country keys authenticated by the transport air family.
 pub const TRANSPORT_AIR_NORMALIZATION: [u32; 16] = [
     2, 0xb, 0xd, 0xf, 0x10, 0x6f, 0x70, 0x72, 0x74, 0x75, 0x76, 0x104, 0x105, 0x106, 0x10d, 0x25a,
 ];
@@ -25,15 +23,10 @@ keys! {
     AIR_SUPERIORITY_DETECTION = 0x9;
 
     AIR_STRATEGIC_BOMBER_BOMBING_FACTOR = 0xa;
-    /// Current air-superiority mission branch.
     AIR_SUPERIORITY_EFFICIENCY = 0xb;
-    /// Current interception mission branch.
     AIR_INTERCEPT_EFFICIENCY = 0xd;
-    /// Preparation for project type four.
     AIR_INVASION_PREPARATION = 0xe;
-    /// Current close-air-support mission branch.
     AIR_CAS_EFFICIENCY = 0xf;
-    /// Current naval mission branch.
     AIR_NAV_EFFICIENCY = 0x10;
 
     NAVAL_COORDINATION = 0x19;
@@ -70,33 +63,23 @@ keys! {
     CONSCRIPTION_FACTOR = 0x4a;
     LOCAL_INTEL_TO_ENEMIES = 0x4b;
 
-    /// Fresh own-army attrition.
     ATTRITION = 0x4f;
-    /// Fresh weather attrition.
     WINTER_ATTRITION_FACTOR = 0x50;
-    /// Fresh weather attrition.
     WINTER_ATTRITION = 0x51;
-    /// Fresh weather attrition.
     HEAT_ATTRITION = 0x52;
-    /// Fresh weather attrition.
     HEAT_ATTRITION_FACTOR = 0x53;
 
     UNIT_UPKEEP_ATTRITION_FACTOR = 0x54;
 
     SPOTTING_CHANCE = 0x55;
-    /// Selected for naval escape chance.
     NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT = 0x59;
 
     NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK = 0x5a;
-    /// Selected for naval escape chance.
     NAVAL_RETREAT_SPEED = 0x5b;
-    /// Selected for naval escape chance.
     SUB_RETREAT_SPEED = 0x5c;
-    /// Selected for naval escape chance.
     CONVOY_RETREAT_SPEED = 0x5d;
 
     OUT_OF_SUPPLY_FACTOR = 0x5e;
-    /// Direct attack and positive-type scans.
     AIR_ATTACK_FACTOR = 0x6f;
 
     AIR_DEFENCE_FACTOR = 0x70;
@@ -122,17 +105,11 @@ keys! {
     POWER_BALANCE_DAILY = 0x98;
 
     POWER_BALANCE_WEEKLY = 0x99;
-    /// Selected-attack weather-region modifier.
     ARMY_ATTACK_FACTOR = 0xad;
-    /// Production-switch efficiency retention.
     LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR = 0xa5;
-    /// Powered factory fraction.
     OUT_OF_POWER_IMPACT_FACTOR = 0xa8;
-    /// Production efficiency cap.
     PRODUCTION_FACTORY_MAX_EFFICIENCY_FACTOR = 0xa9;
-    /// Factory efficiency growth.
     PRODUCTION_FACTORY_EFFICIENCY_GAIN_FACTOR = 0xaa;
-    /// Starting production efficiency.
     PRODUCTION_FACTORY_START_EFFICIENCY_FACTOR = 0xab;
 
     NAVY_SUBMARINE_ATTACK_FACTOR = 0xc2;
@@ -152,21 +129,15 @@ keys! {
     RESEARCH_SPEED_FACTOR = 0xcd;
 
     RESEARCH_SHARING_PER_COUNTRY_BONUS_FACTOR = 0xcf;
-    /// Military factory output.
     INDUSTRIAL_CAPACITY_FACTORY = 0xd4;
-    /// Powered military factory output.
     INDUSTRIAL_CAPACITY_FACTORY_POWERED = 0xd5;
-    /// Naval factory output.
     INDUSTRIAL_CAPACITY_DOCKYARD = 0xd6;
-    /// Powered naval factory output.
     INDUSTRIAL_CAPACITY_DOCKYARD_POWERED = 0xd7;
-    /// Equipment-conversion speed.
     EQUIPMENT_CONVERSION_SPEED = 0xdc;
 
     AIR_VOLUNTEER_CAPACITY = 0xf5;
 
     LAND_REINFORCE_RATE = 0xfb;
-    /// Selected-attack own-country modifier.
     LAND_NIGHT_ATTACK = 0x103;
 
     AIR_STRATEGIC_BOMBER_NIGHT_PENALTY = 0x104;
@@ -192,13 +163,11 @@ keys! {
     RIVER_CROSSING_FACTOR = 0x16c;
 
     RIVER_CROSSING_FACTOR_AGAINST = 0x16d;
-    /// Transport weight.
     PARATROOPER_WEIGHT_FACTOR = 0x171;
 
     SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR = 0x17f;
 
     NAVAL_INVASION_PREP_DAYS = 0x184;
-    /// Preparation for project type four.
     AIR_INVASION_PREP_DAYS = 0x185;
 
     AIR_FUEL_CONSUMPTION_FACTOR = 0x19e;
@@ -220,10 +189,7 @@ keys! {
     NAVAL_DEFENSE_FACTOR = 0x1b8;
 
     NAVAL_CRITICAL_EFFECT_FACTOR = 0x1bb;
-    /// The torpedo gun-rate term of port-strike readiness, recorded in the
-    /// naval source trees.
     NAVAL_TORPEDO_COOLDOWN_FACTOR = 0x1be;
-    /// Targeted spotting reads the current relation accumulator.
     SPOTTING_CHANCE_AGAINST = 0x1c5;
 
     NAVY_CAPITAL_SHIP_ATTACK_FACTOR_AGAINST = 0x1c8;
@@ -245,9 +211,7 @@ keys! {
     NAVAL_HAS_POTF_IN_COMBAT_ATTACK = 0x1d1;
 
     NAVAL_HAS_POTF_IN_COMBAT_DEFENSE = 0x1d2;
-    /// Selected-attack weather-region modifier.
     BREAKTHROUGH_FACTOR = 0x1dd;
-    /// Refit output.
     REFIT_SPEED = 0x1d5;
 
     ARMY_SPEED_FACTOR_FOR_CONTROLLER = 0x1e7;
@@ -259,9 +223,7 @@ keys! {
     DISABLE_STRATEGIC_REDEPLOYMENT = 0x1ea;
 
     DISABLE_STRATEGIC_REDEPLOYMENT_FOR_CONTROLLER = 0x1eb;
-    /// Fresh state attrition.
     ATTRITION_FOR_CONTROLLER = 0x1ee;
-    /// Fresh state attrition.
     ENEMY_ATTRITION = 0x1ef;
 
     RECRUITABLE_POPULATION = 0x1f7;
@@ -280,11 +242,8 @@ keys! {
     INITIATIVE_FACTOR = 0x250;
 
     ACE_EFFECTIVENESS_FACTOR = 0x25a;
-    /// Scales the experience a design's organisation change costs.
     MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST = 0x269;
-    /// The owner country's share of a military-industrial organisation's policy attach quote.
     MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST = 0x26e;
-    /// Selected-attack country/state modifier.
     LAND_BUNKER_EFFECTIVENESS_FACTOR = 0x272;
 
     SCIENTIST_RESEARCH_BONUS_FACTOR = 0x27a;
@@ -296,7 +255,6 @@ keys! {
     ARMY_RETREAT_SPEED_FACTOR = 0x286;
 
     LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE = 0x292;
-    /// Fresh own-counter dig-in.
     COMBAT_ENTRENCHMENT = 0x293;
 
     CANNOT_RETREAT_WHILE_DEFENDING = 0x297;

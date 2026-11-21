@@ -5,7 +5,6 @@ import type { SeriesTileReply } from '../../generated/dashboard';
 import { TILE_BINS } from './tile.ts';
 import { useTiles } from './useTiles.ts';
 
-/** Renders a hook outside React, counting the state changes that would render it. */
 function mount<T>(read: () => T) {
   type Slot = { value?: any; initialized?: boolean; deps?: readonly unknown[]; cleanup?: () => void };
   const slots: Slot[] = [];
@@ -73,14 +72,12 @@ test('a chart on tiles renders when a tile lands, never because its view or the 
     await settle();
     assert.ok(hook.render().lines, 'the lines are assembled once their tiles land');
     const landed = hook.changes(), tiles = asked.length;
-    // Up to 32 bins before the next tile, which is then asked ahead.
     for (let head = 8760; head + 32 * 12 < 3 * TILE_BINS * 12; head += 1) {
       hook.render().onView({ from: head - 8759, to: head, end: head, width: 600 });
       await settle();
     }
     assert.equal(asked.length, tiles, 'nothing asked inside the tiles held');
     assert.equal(hook.changes(), landed, 'no render while the head moves inside them');
-    // Not recorded hours come with the tiles, never as zero.
     assert.ok(hook.render().lines!.get('GER')!.summary.buckets.every(bucket => bucket === null));
     assert.equal(hook.render().lines!.get('GER')!.missing[0].reason, 'not recorded');
   } finally { hook.unmount(); }

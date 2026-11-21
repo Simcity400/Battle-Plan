@@ -1,8 +1,3 @@
-//! Dense carrier-air-base wing occurrences used by naval combat calculations.
-//! Aircraft counting walks the dense container vector rather than country-indexed
-//! registration. Save loading may append a container twice, so neither container
-//! occurrences nor wing handles are deduplicated. Only combat-referenced bases
-//! are supplied; `UniqueHandles` gathers them once in first-reference order.
 
 use engine_sites::Rva;
 use crate::{
@@ -14,10 +9,6 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
 };
 
-/// Hashes one handle with the 64-bit finalizer of MurmurHash3. A handle's low
-/// word is its type (`cair_base::TYPE`), the same for every base, so a hasher
-/// whose low output bits follow the low input bits would put every base in
-/// one bucket; the finalizer mixes the id word into all of them.
 #[derive(Default)]
 struct HandleHasher(u64);
 
@@ -40,9 +31,6 @@ impl Hasher for HandleHasher {
     }
 }
 
-/// Distinct base handles in first-reference order. Membership is indexed, so
-/// selecting `n` references costs O(n); both allocations are reused across
-/// hours and grown with checked reservations.
 #[derive(Debug, Default)]
 pub struct UniqueHandles {
     order: Vec<u64>,
@@ -59,7 +47,6 @@ impl UniqueHandles {
         self.order.clear();
         self.members.clear();
     }
-    /// Appends `handle` unless it is already present.
     pub fn try_insert(&mut self, handle: u64) -> std::io::Result<()> {
         if self.order.len() == self.order.capacity()
             || self.members.len() == self.members.capacity()
@@ -70,7 +57,6 @@ impl UniqueHandles {
             crate::allocation::reserve(&mut self.order, 1)?;
             crate::allocation::reserve_set(&mut self.members, 1)?;
         }
-        // Both structures have a vacant slot; neither insertion can grow.
         if self.members.insert(handle) {
             self.order.push(handle);
         }
@@ -85,7 +71,6 @@ impl UniqueHandles {
     pub fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
-    /// Handles both structures can hold without reallocating.
     pub fn capacity(&self) -> usize {
         self.order.capacity().min(self.members.capacity())
     }
@@ -95,14 +80,11 @@ impl UniqueHandles {
         let additional = capacity.saturating_sub(self.members.len());
         crate::allocation::reserve_set(&mut self.members, additional)
     }
-    /// Approximate heap bytes: the order vector and the set's slots with
-    /// their one control byte each.
     pub fn allocated_bytes(&self) -> usize {
         self.order.capacity() * size_of::<u64>() + self.members.capacity() * (size_of::<u64>() + 1)
     }
 }
 
-/// One explicitly resolved combat-referenced base, including an empty base.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub base: u64,
@@ -114,12 +96,9 @@ pub struct Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub wings_len: usize,
-    /// Complete wing occurrence demand, including rows omitted for space.
     pub required_wings: usize,
 }
 
-/// Aircraft counting reaches every dense container and pool occurrence.
-/// Grow worker storage from those acquired headers before publishing a base.
 pub fn walk(
     memory: &impl Memory,
     module_base: usize,
@@ -430,7 +409,6 @@ mod tests {
         for countries in [3_u64, 11] {
             let mut unique = UniqueHandles::try_with_capacity(countries as usize).unwrap();
             let reserved = unique.allocated_bytes();
-            // Every country's base referenced three times, interleaved.
             for round in 0..3 {
                 for country in 0..countries {
                     let index = (country * 7 + round) % countries;
@@ -444,7 +422,6 @@ mod tests {
                 .map(|country| ((country * 7) % countries + 1) << 32 | u64::from(cair_base::TYPE))
                 .collect();
             assert_eq!(unique.as_slice(), expected);
-            // Reserved storage absorbs the hour without reallocating.
             assert_eq!(unique.allocated_bytes(), reserved);
             unique.clear();
             assert!(unique.is_empty() && unique.capacity() >= countries as usize);

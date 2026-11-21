@@ -1,32 +1,3 @@
-//! Allocation-free notifications from the native writers of the relation opinion
-//! (`crelation_status::OPINION`) and of the serializable relation vector
-//! (`crelation_status::SERIALIZABLE_RELATIONS`) ([`engine_mutations::opinion_mutations`]). A detour only
-//! records and calls the original; it never changes game behaviour.
-//!
-//! `RecomputeOpinion` appends its status to a log when the opinion it leaves
-//! differs from the one it found; `Reset`, the fifteen relation slot
-//! replacements ([`engine_mutations::opinion_mutations::RELATIONS`]) and the war body,
-//! which the stability family patches and forwards ([`relation_replaced`]),
-//! append theirs on every call, since they rewrite the status's relation
-//! vector. The status's owner is then read again, opinions and relation
-//! tuples alike. The observation holds only while that forwarder is enabled
-//! ([`set_war_forward`]). `LoadToken` and the
-//! constructor run only while a game state is loaded or rebuilt, so they end
-//! the observation (a new epoch) instead. Each hour's relations refresh drains
-//! the log since its last one ([`drain`]) and reads every owner a mark names;
-//! anything unobserved (disabled, a writer running, an overflowed or
-//! missing log, a new epoch) makes it read every owner.
-//!
-//! The log is sized from observed demand: the refresh offers a larger one off
-//! the game thread ([`offer`]) from the marks it found pending and the nonzero
-//! opinions it holds, and the next drain installs it while no writer runs.
-//! The hook path never allocates; a write with no log installed ends the
-//! observation.
-//!
-//! A writer whose prologue differs from the pinned sentinel, or that cannot be
-//! detoured, leaves every hook uninstalled: opinions have an exact full-read
-//! fallback, so the collector still attaches and reads every status on every
-//! refresh (`unhooked` and `unobserved_refreshes` in `status.json`).
 use crate::hook::Hook;
 use engine_mutations::{opinion_mutations::MUTATIONS, opinion_mutations::RELATIONS};
 use engine_native::{Memory, crelation_status::Mark};
@@ -36,16 +7,12 @@ use std::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
 };
 
-/// Marks between two drains, slot `n % len` holding mark `n`: each mark's status and its owning
-/// diplomacy (`crelation_status::DIPLOMACY_STATUS`), from which the refresh finds the owner to
-/// read.
 struct Log {
     statuses: Box<[AtomicUsize]>,
     owners: Box<[AtomicUsize]>,
 }
 
 impl Log {
-    /// Off the game thread.
     fn new(len: usize) -> Option<Box<Self>> {
         let slots = || {
             let mut slots = engine_allocation::vec(len).ok()?;
@@ -61,36 +28,23 @@ impl Log {
     }
 }
 
-/// The installed log; null until the first drain after an offer.
 static LOG: AtomicPtr<Log> = AtomicPtr::new(ptr::null_mut());
-/// A larger log allocated off-thread, awaiting a drain.
 static OFFERED: AtomicPtr<Log> = AtomicPtr::new(ptr::null_mut());
-/// A replaced log a writer begun before its replacement may still hold.
 static DRAINING: AtomicPtr<Log> = AtomicPtr::new(ptr::null_mut());
-/// A replaced log nothing holds, awaiting [`collect`].
 static RETIRED: AtomicPtr<Log> = AtomicPtr::new(ptr::null_mut());
-/// Logs installed.
 static INSTALLS: AtomicU64 = AtomicU64::new(0);
-/// Slots of the installed and the offered log, read without touching either.
 static INSTALLED_LEN: AtomicUsize = AtomicUsize::new(0);
 static OFFERED_LEN: AtomicUsize = AtomicUsize::new(0);
 
-/// Free a log this module owns exclusively.
 fn free(log: *mut Log) {
     if !log.is_null() {
-        // SAFETY: each pointer came from Box::into_raw and is owned here.
         drop(unsafe { Box::from_raw(log) });
     }
 }
 
-/// The installed log's slots, while a writer or the consumer holds it.
 fn installed() -> Option<&'static Log> {
-    // SAFETY: a log is freed only after a drain replaced it and saw no
-    // writer running, and the consumer is the only drain.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
-/// A value on its own cache line: writers on every TBB worker update it, so
-/// it must not share a line with anything the capture or the writers read.
 #[repr(align(64))]
 pub struct Padded<T>(pub T);
 impl<T> std::ops::Deref for Padded<T> {
@@ -100,41 +54,31 @@ impl<T> std::ops::Deref for Padded<T> {
     }
 }
 
-/// Marks ever appended; the slot of mark `n` is `n % len` of the log.
 static CURSOR: Padded<AtomicU64> = Padded(AtomicU64::new(0));
 static EPOCH: AtomicU64 = AtomicU64::new(1);
 static ENABLED: AtomicBool = AtomicBool::new(false);
-/// The stability family forwards replace relation (the war body).
 static WAR_FORWARD: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 const SITES: usize = MUTATIONS.len() + RELATIONS.len();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Calls per site, except `RecomputeOpinion`: it runs over every existing
-/// pair each day, so only its changes are counted (as marks). Then the
-/// forwarded war body.
 static EVENTS: [AtomicU64; SITES + 1] = [const { AtomicU64::new(0) }; SITES + 1];
-/// Why the hooks are not installed, when they are not.
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-/// `[observed refreshes, unobserved refreshes, overflowed logs, refreshes
-/// that found the store lent, marks drained]`.
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-/// The walks' own counts (`crelation_status::BaselineCounts`), accumulated.
 static WALKS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 
-/// A load, gap or recovery: no baseline recorded before it is current.
 pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
-/// The opinion a live status holds. The receiver is the status the native
-/// writer is about to read and write.
+#[doc = " The opinion a live status holds. The receiver is the status the native"]
+#[doc = " writer is about to read and write."]
 fn opinion(status: usize) -> i32 {
     let address = status.wrapping_add(engine_native::crelation_status::OPINION);
     unsafe { std::ptr::read_volatile(address as *const i32) }
 }
 
-/// The owning diplomacy of a live status the native writer is writing. Only
-/// the status constructor writes it (`engine_native::crelation_status::DIPLOMACY_STATUS`).
+#[doc = " The owning diplomacy of a live status the native writer is writing. Only"]
+#[doc = " the status constructor writes it (`engine_native::crelation_status::DIPLOMACY_STATUS`)."]
 fn diplomacy(status: usize) -> usize {
     let address = status.wrapping_add(engine_native::crelation_status::DIPLOMACY_STATUS);
     unsafe { std::ptr::read_volatile(address as *const usize) }
@@ -150,23 +94,18 @@ impl Mutation {
         Self
     }
 
-    /// Append `status` and its owning diplomacy when its opinion changed.
     fn mark(&self, status: usize, before: i32) {
         if opinion(status) != before {
             self.mark_always(status);
         }
     }
 
-    /// Append `status` and its owning diplomacy: a writer of its relation
-    /// vector.
     fn mark_always(&self, status: usize) {
         let index = CURSOR.fetch_add(1, Ordering::SeqCst);
         publish(index, status, diplomacy(status));
     }
 }
 
-/// A forwarded writer of a status's relation vector, running; dropping it
-/// marks the status, after the original returns.
 pub struct Replaced {
     mutation: Mutation,
     status: usize,
@@ -178,9 +117,6 @@ impl Drop for Replaced {
     }
 }
 
-/// Hook path: the stability family's detour of replace relation
-/// (`status`, new relation, slot) is about to run the original. Without this
-/// family's hooks nothing is observed and nothing is marked.
 pub fn relation_replaced(status: usize) -> Option<Replaced> {
     if !ENABLED.load(Ordering::SeqCst) {
         return None;
@@ -192,19 +128,11 @@ pub fn relation_replaced(status: usize) -> Option<Replaced> {
     })
 }
 
-/// The stability family's patch of replace relation is enabled.
-/// Writes while it was not went unobserved.
 pub fn set_war_forward(enabled: bool) {
     WAR_FORWARD.store(enabled, Ordering::SeqCst);
     invalidate();
 }
 
-/// Store mark `index`, from inside a [`Mutation`]. A writer that stalled until
-/// writers had appended a whole log after its index may have overwritten a
-/// newer mark in its slot. Every drain meanwhile saw it active and handed
-/// nothing over, so it ends the observation (a new epoch) before it leaves,
-/// and no drain after it can rely on that slot; so does a write with no log.
-/// Returns whether it ended the observation.
 fn publish(index: u64, status: usize, diplomacy: usize) -> bool {
     let Some(log) = installed() else {
         invalidate();
@@ -225,25 +153,11 @@ impl Drop for Mutation {
     }
 }
 
-/// What a refresh may rely on: `None` when writes go unobserved (disabled).
-/// Otherwise the epoch the observation continues, with the count
-/// of marks since `consumed` copied into `output`, or `None` for them when
-/// they cannot all be handed over (a writer mid-append, an overflowed or
-/// missing log or short storage); the refresh then reads every owner.
-///
-/// `consumed` always advances. A mark below the cursor read here belongs to a
-/// write that completed before this call, so a walk that follows it and reads
-/// every status sees that write; later writes land at or after the cursor.
-/// `required` receives the marks pending, so the caller can grow `output` and
-/// [`offer`] a larger log off the game thread. A drain that saw no writer
-/// running then installs an offered log.
 pub fn drain(
     consumed: &mut u64,
     output: &mut [Mark],
     required: &mut usize,
 ) -> Option<(u64, Option<usize>)> {
-    // The cursor before the writer check: a writer that took an earlier
-    // index is still active until its slot is stored.
     let cursor = CURSOR.load(Ordering::SeqCst);
     let epoch = EPOCH.load(Ordering::SeqCst);
     let observing = ENABLED.load(Ordering::SeqCst) && WAR_FORWARD.load(Ordering::SeqCst);
@@ -265,7 +179,6 @@ pub fn drain(
         COUNTS[1].fetch_add(1, Ordering::Relaxed);
         return None;
     }
-    // Without a log nothing was appended: every write ended the observation.
     let fits = log.map_or(pending == 0, |log| pending <= log.len());
     let marks = if fits {
         if !settled || pending as usize > output.len() {
@@ -278,12 +191,6 @@ pub fn drain(
             COUNTS[2].fetch_add(1, Ordering::Relaxed);
             None
         } else if EPOCH.load(Ordering::SeqCst) != epoch {
-            // A writer that ended the observation (one lapped while it
-            // stalled, say) left between the first epoch read and the
-            // writer check: the copy may hold its stale mark, so none is
-            // handed over. A writer still active is caught by the check;
-            // one that left before the first read moved the epoch the
-            // caller's baseline was recorded under.
             None
         } else {
             COUNTS[4].fetch_add(pending, Ordering::Relaxed);
@@ -297,11 +204,6 @@ pub fn drain(
     Some((epoch, marks))
 }
 
-/// The consumer, after copying the marks under the installed log while no
-/// writer ran: install an offered larger log. Marks after the cursor land in
-/// it. A writer that began meanwhile may still store into the replaced log,
-/// so it ends the observation, and the replaced log is freed only once a
-/// later drain sees no writer running.
 fn install_offered() {
     let previous = DRAINING.swap(ptr::null_mut(), Ordering::SeqCst);
     if !previous.is_null()
@@ -330,8 +232,6 @@ fn install_offered() {
     }
 }
 
-/// Off the game thread: allocate a log for `marks` marks between two drains
-/// when the installed and offered logs are smaller. A drain installs it.
 pub fn offer(marks: usize) {
     let Some(len) = marks
         .checked_add(marks / 4)
@@ -345,19 +245,16 @@ pub fn offer(marks: usize) {
     let Some(log) = Log::new(len) else {
         return;
     };
-    // A drain that takes the previous offer between these stores installs
-    // it with this length; the next drain installs this larger one.
     OFFERED_LEN.store(len, Ordering::SeqCst);
     free(OFFERED.swap(Box::into_raw(log), Ordering::SeqCst));
 }
 
-/// Off the game thread: free a replaced log nothing holds any more.
 pub fn collect() {
     free(RETIRED.swap(ptr::null_mut(), Ordering::SeqCst));
 }
 
-/// Free every log. No writer or drain may run: the hooks were removed and
-/// drained and the acquisition pool has stopped.
+#[doc = " Free every log. No writer or drain may run: the hooks were removed and"]
+#[doc = " drained and the acquisition pool has stopped."]
 fn release() {
     for log in [&LOG, &OFFERED, &DRAINING, &RETIRED] {
         free(log.swap(ptr::null_mut(), Ordering::SeqCst));
@@ -369,14 +266,10 @@ fn release() {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Tests: runs inside [`drain`] between its epoch read and its writer check.
     static BETWEEN_READS: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Copy the marks from `first` into `output`. False when writers appended a
-/// whole log's worth since `first` by the end of the copy (`cursor` reads the
-/// position then): a slot copied above may hold a later mark instead.
 fn copy_marks(log: &Log, first: u64, output: &mut [Mark], cursor: impl Fn() -> u64) -> bool {
     for (offset, mark) in output.iter_mut().enumerate() {
         let slot = ((first + offset as u64) % log.len()) as usize;
@@ -388,18 +281,14 @@ fn copy_marks(log: &Log, first: u64, output: &mut [Mark], cursor: impl Fn() -> u
     cursor().wrapping_sub(first) <= log.len()
 }
 
-/// The log position now: where a new consumer starts.
 pub fn cursor() -> u64 {
     CURSOR.load(Ordering::SeqCst)
 }
 
-/// A refresh ran without the shared baseline because another job held it.
 pub fn store_lent() {
     COUNTS[3].fetch_add(1, Ordering::Relaxed);
 }
 
-/// The baseline's cumulative counts after a walk; `previous` is what was
-/// last reported for this baseline.
 pub fn record(
     counts: engine_native::crelation_status::BaselineCounts,
     previous: &mut engine_native::crelation_status::BaselineCounts,
@@ -468,13 +357,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// Never fails: without every hook, refreshes read every status.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " Never fails: without every hook, refreshes read every status."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let hooks = if cfg!(feature = "opinion_changes") {
             unsafe { Self::install(base) }.unwrap_or_else(|reason| {
@@ -492,7 +381,6 @@ impl Hooks {
         Ok(Self { hooks })
     }
 
-    /// Every sentinel is checked before any detour is created.
     unsafe fn install(base: usize) -> Result<Vec<Hook>, &'static str> {
         let callbacks: [usize; SITES] = [
             recompute_opinion as *const () as usize,
@@ -530,8 +418,6 @@ impl Hooks {
         Ok(hooks)
     }
 
-    /// Writes while the hooks were not all enabled went unobserved, so every
-    /// change of state starts a new epoch.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             crate::occupation_changes::forwarder(
@@ -545,27 +431,16 @@ impl Hooks {
                 false,
             );
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared_prepared(&mut self.hooks, enabled, invalidate)
             .map_err(|_| "native hook state change failed")?
         {
             return Ok(false);
         }
         ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
-        // The war domain observes the status reset, constructor and reader and
-        // the relation slot replacements, which move a war's place in its
-        // owners' vectors ([`crate::war_changes`]).
         crate::war_changes::forwarder(
             crate::war_changes::Forwarder::Opinions,
             enabled && !self.hooks.is_empty(),
         );
-        // The country counter inputs observe the status reset and the
-        // relation slot replacements, which rewrite the owner's
-        // co-belligerent byte and slot-zero relations
-        // ([`crate::country_input_changes`]).
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::Opinions,
             enabled && !self.hooks.is_empty(),
@@ -583,9 +458,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // Like each Hook's relay, the logs are dropped only once the hooks
-        // were never enabled, or were removed and drained after the last
-        // refresh.
         release();
     }
 }
@@ -594,7 +466,6 @@ fn original(site: usize) -> usize {
     ORIGINAL[site].load(Ordering::Acquire)
 }
 
-// Every argument is an integer register and each is passed through unchanged.
 unsafe extern "system" fn recompute_opinion(status: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::OpinionChanges);
     let mutation = Mutation::enter(0);
@@ -619,12 +490,9 @@ unsafe extern "system" fn reset(status: usize, first: usize, second: usize, valu
     let original: unsafe extern "system" fn(usize, usize, usize, usize) =
         unsafe { std::mem::transmute(original(1)) };
     timing.original(|| unsafe { original(status, first, second, value) });
-    // It also clears and deletes the residual relation vector.
     mutation.mark_always(status);
 }
 
-// Each relation slot replacement takes (status, new relation, slot) in
-// RCX, RDX and R8 and returns nothing; it marks its status on every call.
 macro_rules! relation {
     ($name:ident, $index:expr) => {
         unsafe extern "system" fn $name(status: usize, relation: usize, slot: usize) {
@@ -666,8 +534,6 @@ relation!(blockade_relation, 13);
 relation!(non_aggression_relation, 14);
 
 unsafe extern "system" fn load_token(status: usize, reader: usize, token: i32) {
-    // A refresh during the call sees the writer active and reads everything;
-    // the epoch moves before it ends, so no baseline recorded then survives.
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::OpinionChanges);
     let _mutation = Mutation::enter(2);
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::StatusLoad);
@@ -696,7 +562,6 @@ unsafe extern "system" fn construct(storage: usize, diplomacy: usize, target: us
     result
 }
 
-/// Tests that touch the process-wide observation state take this first.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -704,7 +569,6 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Observation on (true) or off. Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn observe_for_test(enabled: bool) {
     WAR_FORWARD.store(enabled, Ordering::SeqCst);
@@ -715,12 +579,8 @@ pub fn observe_for_test(enabled: bool) {
 mod tests {
     use super::*;
 
-    /// Slots of the log the tests install.
     const LEN: usize = 8;
 
-    /// Install a fresh `LEN`-slot log, as an offer and a drain would, with no
-    /// replaced or retired log left by an earlier test to defer the next
-    /// install.
     fn install_for_test() -> &'static Log {
         release();
         let log = Box::into_raw(Log::new(LEN).unwrap());
@@ -730,7 +590,6 @@ mod tests {
         installed().unwrap()
     }
 
-    /// A copy that writers lapped is refused.
     #[test]
     fn a_lapped_log_refuses_its_copy() {
         let log = Log::new(LEN).unwrap();
@@ -739,9 +598,6 @@ mod tests {
         assert!(!copy_marks(&log, 5, &mut output, || 6 + LEN as u64));
     }
 
-    /// A writer that stalls while writers append a whole log after its index
-    /// may store its mark over a newer one. Drains meanwhile see it active and
-    /// hand nothing over; it ends the observation before it leaves.
     #[test]
     fn a_writer_lapped_while_stalled_ends_the_observation() {
         let _lock = test_lock();
@@ -749,10 +605,8 @@ mod tests {
         let log = install_for_test();
         let mut consumed = cursor();
         let (mut output, mut required) = ([Mark::default(); 4], 0);
-        // The stalled writer takes its index and pauses before storing.
         let stalled = Mutation::enter(0);
         let index = CURSOR.fetch_add(1, Ordering::SeqCst);
-        // A whole log of marks lands after it, the last one in its slot.
         for offset in 0..LEN {
             let writer = Mutation::enter(0);
             let at = CURSOR.fetch_add(1, Ordering::SeqCst);
@@ -763,15 +617,12 @@ mod tests {
             log.statuses[(index % LEN as u64) as usize].load(Ordering::SeqCst),
             0x1000 + LEN - 1
         );
-        // A drain meanwhile sees the stalled writer and hands nothing over.
         assert_eq!(
             drain(&mut consumed, &mut output, &mut required).map(|(_, marks)| marks),
             Some(None)
         );
-        // It stores its stale mark over the newer one and ends the observation.
         assert!(publish(index, 0xdead, 0xbeef));
         drop(stalled);
-        // A writer that was not lapped does not.
         let writer = Mutation::enter(0);
         let at = CURSOR.fetch_add(1, Ordering::SeqCst);
         assert!(!publish(at, 0x3000, 0x2000));
@@ -779,9 +630,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// The lapped writer finishes between a drain's epoch read and its writer
-    /// check: the drain sees no active writer and a whole log of pending marks
-    /// that fits, yet hands none over under the epoch it read first.
     #[test]
     fn a_lapped_writer_leaving_mid_drain_hands_over_no_marks() {
         let _lock = test_lock();
@@ -792,7 +640,6 @@ mod tests {
         let mut required = 0;
         let stalled = Mutation::enter(0);
         let index = CURSOR.fetch_add(1, Ordering::SeqCst);
-        // A drain while it is stalled hands nothing over and moves past it.
         assert_eq!(
             drain(&mut consumed, &mut output, &mut required).map(|(_, marks)| marks),
             Some(None)
@@ -807,7 +654,6 @@ mod tests {
         let before = EPOCH.load(Ordering::SeqCst);
         BETWEEN_READS.with_borrow_mut(|between| {
             *between = Some(Box::new(move || {
-                // Its stale store over the newest mark, then it leaves.
                 assert!(publish(index, 0xdead, 0xbeef));
                 drop(stalled);
             }))
@@ -817,17 +663,11 @@ mod tests {
         let (epoch, marks) = drained.unwrap();
         assert_eq!(epoch, before, "the epoch read before the writer left");
         assert_eq!(marks, None, "no marks handed over under that epoch");
-        // The next drain is under the new epoch, which no baseline recorded
-        // before it can continue.
         let (next, _) = drain(&mut consumed, &mut output, &mut required).unwrap();
         assert!(next > before);
         observe_for_test(false);
     }
 
-    /// The log is sized from demand: an hour with more marks than it holds
-    /// hands none over and reports them, an offer sized from them is
-    /// installed by the next drain, and the same burst then fits. A write
-    /// with no log installed ends the observation.
     #[test]
     fn an_overflowing_hour_offers_a_log_the_next_drain_installs() {
         let _lock = test_lock();
@@ -852,8 +692,6 @@ mod tests {
         assert_eq!(required, 3 * LEN);
         offer(required);
         assert_eq!(INSTALLED_LEN.load(Ordering::SeqCst), LEN);
-        // The drain that installs it hands over the hour's marks, which
-        // landed in the new log.
         assert_eq!(
             drain(&mut consumed, &mut output, &mut required).map(|(_, marks)| marks),
             Some(Some(0))
@@ -866,7 +704,6 @@ mod tests {
         );
         assert_eq!(output[3 * LEN - 1].status, 0x1000 + 3 * LEN - 1);
         collect();
-        // No log: a write ends the observation instead of being logged.
         release();
         let before = EPOCH.load(Ordering::SeqCst);
         let writer = Mutation::enter(0);
@@ -880,8 +717,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// An unrecognised prologue installs nothing and fails nothing: every
-    /// refresh then reads every status, and the reason is reported.
     #[test]
     fn unrecognised_prologues_degrade_to_full_reads() {
         let _lock = test_lock();
@@ -903,8 +738,6 @@ mod tests {
         );
     }
 
-    /// The log hands each mark over once, refuses when a writer is active,
-    /// overflowed or disabled, and always advances the consumer.
     #[test]
     fn drained_marks_are_exact_and_refuse_what_they_cannot_account_for() {
         let _lock = test_lock();
@@ -915,19 +748,15 @@ mod tests {
         install_for_test();
         let mut consumed = cursor();
         let (mut output, mut required) = ([Mark::default(); 4], 0);
-        // The status's owning diplomacy, as the constructor stores it.
         status[engine_native::crelation_status::DIPLOMACY_STATUS / 4..][..2]
             .copy_from_slice(&[0x5678, 0x1234]);
-        // Other tests may start epochs concurrently: compare the marks only.
         let drained = |consumed: &mut u64, output: &mut [Mark], required: &mut usize| {
             drain(consumed, output, required).map(|(_, marks)| marks)
         };
-        // A write that leaves the value is not marked; one that changes it is.
         let mutation = Mutation::enter(0);
         mutation.mark(address, 0);
         status[at] = 7;
         mutation.mark(address, 0);
-        // Active: no marks are handed over, but the consumer advances.
         assert_eq!(
             drained(&mut consumed, &mut output, &mut required),
             Some(None)
@@ -952,7 +781,6 @@ mod tests {
                 diplomacy: 0x1234_0000_5678,
             }
         );
-        // Too many for the caller's storage: refused, and its demand noted.
         for _ in 0..5 {
             let mutation = Mutation::enter(0);
             status[at] += 1;

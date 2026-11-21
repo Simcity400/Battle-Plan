@@ -1,7 +1,3 @@
-//! Viewer-selected unit routes and their movement arrows.
-//!
-//! Simulation routes and first-edge progress come from the recording. Selection and the
-//! expansion/fill animation belong to this viewer; they are never recording inputs.
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
@@ -31,7 +27,6 @@ use {
     viewer_foundation::map::textures::ColorSpace, viewer_foundation::unit_handle::Unit,
 };
 
-// Unit selector keys. Their definitions and resources are content facts.
 const STYLES: [&[u8]; 8] = [
     b"retreatArrow",
     b"withdrawArrow",
@@ -50,8 +45,6 @@ struct Style {
     textures: [Result<Option<dds::Texture>, String>; 4],
 }
 
-/// Resolved through the recorded stack, once per document. Invalid declarations refuse only
-/// units that reach their selector, so an unused unsupported arrow does not hide other styles.
 pub struct Assets {
     styles: BTreeMap<&'static [u8], Result<Style, String>>,
     orders: BTreeMap<&'static [u8], Option<usize>>,
@@ -75,7 +68,6 @@ impl Assets {
             .collect();
         let (mut library, shader_defines) =
             crate::map::shader_sources::library(layers, map, decode);
-        // A texture the visual mods break is the recording's own, named ([`arrow_texture`]).
         let recorded = layers.without_overlays();
         let mut styles = BTreeMap::new();
         let mut orders = BTreeMap::new();
@@ -116,8 +108,6 @@ impl Assets {
                     return Err("arrowType size is not finite and positive".into());
                 }
                 let effect = if definition.effect.is_empty() {
-                    // An unregistered effect leaves the handle unset. Its empty record
-                    // preserves the prior program at draw time.
                     shader_pipeline::library::Effect::from_compiled(
                         Arc::new(installed_content_core::pdxshader::program::Program::default()),
                         Vec::new(),
@@ -195,8 +185,6 @@ impl Phase {
         }
     }
 
-    /// The native process rate can seed on an unselected unit. This viewer deterministically
-    /// seeds on its first selected route; that presentation lifetime and clock are local.
     fn step(
         &mut self,
         delta: f32,
@@ -216,7 +204,6 @@ impl Phase {
         }
         let rate = *rate.get_or_insert(self.fill_scale * 10.0);
         let fill = self.fill + rate * delta;
-        // Native ordered clamp also handles a negative recorded numerator/target.
         self.fill = if fill >= 0.0 {
             if target < fill { target } else { fill }
         } else {
@@ -239,10 +226,7 @@ struct Arrow {
     admitted: bool,
 }
 
-/// One scene's selected routes and local native arrow objects. CPU geometry changes only when
-/// the simulation route or selected set changes; drawing binds the existing vertex allocation.
 pub struct Player {
-    /// Device pipelines persist across frames; bindings still inherit the caller's queue.
     retained: shader_scene::State,
     styles: BTreeMap<&'static [u8], Result<Uploaded, String>>,
     orders: BTreeMap<&'static [u8], Option<usize>>,
@@ -430,8 +414,6 @@ impl Player {
         self.warnings = warnings;
     }
 
-    /// Run once before any wrapped view is submitted. A gate miss destroys the native arrow's
-    /// expansion state; the stored route remains ready for the next camera admission.
     pub fn advance(
         &mut self,
         delta: f32,
@@ -473,13 +455,9 @@ impl Player {
         planes: &viewer_foundation::map::province_admission::Planes,
         visible: bool,
     ) -> bool {
-        // Hidden arrows still bind and prepare everything they would, so the models drawn after
-        // them read the same retained inputs; only the render passes are left out.
         self.retained.inherit(caller);
         let retained = &mut self.retained;
         let mut pixel_replaced = false;
-        // A reached definition/geometry we cannot reconstruct must not leave a later native
-        // producer reading an earlier program/resource in place of this omitted arrow.
         let mut bucket = None;
         let mut last_order = None;
         for unit in &self.draw_order {
@@ -578,8 +556,6 @@ fn forget_unknown(retained: &mut shader_scene::State) {
     }
 }
 
-/// Physical b1 allocation: 112 bytes; written prefix: 100 bytes. Mark only
-/// that prefix known, so a mod reading the unwritten tail is explicitly refused.
 fn constants(
     matrix: &[[f32; 4]; 4],
     phase: &Phase,
@@ -611,7 +587,6 @@ struct Bounds {
 }
 
 impl Bounds {
-    /// Use the smoothed pre-height controls, before ribbon expansion.
     fn of([min, max]: [[f32; 3]; 2], width: f32) -> Self {
         Self {
             min,
@@ -637,8 +612,6 @@ impl Bounds {
     }
 }
 
-/// The arrow texture `path` names, read from `layers`, or, when it does not load or read from
-/// them and `recorded` holds the layers below their visual mods, from those, named.
 fn arrow_texture(
     layers: &ResolvedLayers,
     recorded: Option<&ResolvedLayers>,

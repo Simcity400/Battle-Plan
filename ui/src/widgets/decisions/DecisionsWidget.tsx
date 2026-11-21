@@ -35,16 +35,12 @@ import { trackHourOf } from '../../dashboard/settledHour';
 
 const NO_ROWS: readonly LogRow<DecisionAt>[] = [];
 
-/** Every decision and mission the chosen countries took, as the construction log's rows: newest first by the date
- * selected, each with its art, name over how it ran or ended, the country, a status pill and what it is proven to have
- * cost. A row keeps its place while its status changes with the hour shown. */
 export default function DecisionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const filtered = widget.countries.kind !== 'all';
-  // One country is named by the header chip, so its rows leave the country out.
   const oneCountry = widget.countries.kind === 'selected' || (widget.countries.kind === 'tags' && widget.countries.tags.length === 1);
   const groups = useCountryGroups(runtime, track, active && filtered);
   const tagsKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
@@ -55,7 +51,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const statuses = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(statusesKey)), [statusesKey]);
   const artwork = options.artwork !== false;
   const country = filtered ? match.matches : null;
-  // The chosen countries are kept by the server, so a sparse group pages through its own cards only.
   const scope = useMemo(() => filtered && match.ready ? countryScope(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0) ?? undefined : undefined,
     [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const list = useMemo<CardList<DecisionCard, DecisionAt>>(() => ({ product: 'decisions', scope, openers: OPENERS, continuing: CONTINUING, row: decisionRow,
@@ -109,7 +104,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
         : <span className={`log-value${cost === 'None' ? ' is-muted' : ''}`}>{cost}</span>}
     </>;
   };
-  // Running decisions are counted once every page is held: an unread page could hold more.
   const held = cards.pages.length > 0 && cards.pages.every(page => page.rows);
   const total = held && statuses.has('active') ? cards.pages.reduce((sum, page) => sum + activeCount(page.rows ?? []), 0) : null;
   const header = headerSlot && total !== null && createPortal(<span className="pill">{total.toLocaleString()} active{cards.feed.missing.length ? ' (recorded hours)' : ''}</span>, headerSlot);

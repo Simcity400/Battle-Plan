@@ -1,4 +1,3 @@
-//! CTheatre land-theatre state, distinct from CTheaterGroup.
 
 use crate::{
     Memory, cair_group, cair_theatre, cair_wing, carmy, carmy_group, ccontroller_area, ccountry,
@@ -14,34 +13,19 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CTheatre vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_22b8);
-/// CTheatre reference type.
 pub const REFERENCE_TYPE: u32 = 67;
-/// CTheatre packed type/id handle.
 pub const HANDLE: usize = 0x08;
-/// CTheatre CControllerArea pointer-vector data.
 pub const CONTROLLER_AREA_DATA: usize = 0x18;
-/// CTheatre stationed-unit vector data.
 pub const STATIONED_UNIT_DATA: usize = 0x68;
-/// CTheatre regular COrdersGroup vector data.
 pub const ORDERS_GROUP_DATA: usize = 0x80;
-/// CTheatre CArmyGroup vector data.
 pub const ARMY_GROUP_DATA: usize = 0x98;
-/// CTheatre CTheaterGroup pointer-vector data.
 pub const THEATER_GROUP_DATA: usize = 0xc8;
-/// CTheatre raw owner country.
 pub const OWNER: usize = 0x48;
-/// CTheatre signed volunteer-country tag.
 pub const VOLUNTEERS_THEATRE: usize = 0x110;
-/// CTheatre allocation size.
 pub const SIZE: usize = 0x1d0;
-/// CTheatre constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f6_8bf0);
 
-/// The CTheatre spans of one LandTheatres header row, as `(offset, len)`:
-/// identity (vtable and handle), raw owner, and volunteer key. The land walk
-/// gathers them in one record per theatre.
 pub const HEADER_SPANS: [(usize, usize); 3] = [(0, 16), (OWNER, 4), (VOLUNTEERS_THEATRE, 4)];
 const HEADER_FIELDS: [RecordField; 3] = packed_fields(HEADER_SPANS);
 const HEADER_STRIDE: usize = packed_stride(HEADER_SPANS);
@@ -54,11 +38,9 @@ pub struct Row {
     pub id: u64,
     pub owner: u32,
     pub volunteers_theatre: i32,
-    /// Native `ccountry::THEATRES` pointer-vector position, not a generated row key.
     pub ordinal: u32,
 }
 
-/// Optional actual Country0 roster, independent of every positive outcome.
 #[derive(Debug, Clone, Copy)]
 pub struct ReservedLandWalk {
     pub len: Result<usize, &'static str>,
@@ -114,8 +96,6 @@ pub fn walk_reserved_land_headers_buffer(
             let mut identity = [0; 16];
             let mut owner = [0; 4];
             let mut volunteers = [0; 4];
-            // Preserve the first failed span. The positive land walk's gather
-            // fallback is intentionally not used: it would reread a failure.
             if memory.copy_scattered(
                 [theatre, owner_address, volunteers_address],
                 &mut [&mut identity, &mut owner, &mut volunteers],
@@ -152,15 +132,12 @@ pub fn walk_reserved_land_headers_buffer(
     }
 }
 
-/// Reverse membership from an already authenticated complete orders registry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OrdersMembership {
     pub orders_group: u64,
-    /// Zero preserves a null native group pointer; otherwise the full group reference.
     pub theater_group: u64,
 }
 
-/// Reverse membership copied during the authoritative air-wing visitor.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WingMembership {
     pub wing: u64,
@@ -169,7 +146,6 @@ pub struct WingMembership {
 
 const NOT_ROSTER_THEATRE: &str = "unit theatre is not one of its roster country's theatres";
 
-/// [`UnitTheatres::handle`] for one unit, reading `country`'s vector without holding it.
 pub fn unit_theatre(
     memory: &impl Memory,
     base: usize,
@@ -192,10 +168,6 @@ pub fn unit_theatre(
     found.ok_or(NOT_ROSTER_THEATRE)
 }
 
-/// A unit's own land theatre ([`cunit::THEATRE`]) as the handle LandTheatres keys it by. The
-/// theatre's add asserts that the theatre belongs to the unit's country, so the pointer is
-/// looked up in that roster country's theatre vector ([`ccountry::THEATRES`]), read and
-/// authenticated as the land walk reads it, once per run of that country's units.
 #[derive(Debug, Default)]
 pub struct UnitTheatres {
     country: usize,
@@ -204,7 +176,6 @@ pub struct UnitTheatres {
 }
 
 impl UnitTheatres {
-    /// Forgets the held vector; each capture starts afresh.
     pub fn clear(&mut self) {
         self.country = 0;
         self.read = None;
@@ -215,9 +186,6 @@ impl UnitTheatres {
         (self.theatres.capacity() * size_of::<(usize, u64)>()) as u64
     }
 
-    /// The handle of the theatre at `theatre` for a unit on `country`'s roster, zero for a null
-    /// pointer. A pointer outside that country's theatres refuses, as does a vector or theatre
-    /// that does not read or authenticate.
     pub fn handle(
         &mut self,
         memory: &impl Memory,
@@ -260,9 +228,6 @@ impl UnitTheatres {
     }
 }
 
-/// Extends an authenticated registry root without walking that registry again.
-/// A non-null orders-group parent is authenticated by type and vtable
-/// before its full reference replaces the pointer.
 pub fn read_orders_membership(
     memory: &impl Memory,
     base: usize,
@@ -285,8 +250,6 @@ pub fn read_orders_membership(
     })
 }
 
-/// The caller supplies the primary pointer from the authenticated wing visitor.
-/// The stored full group reference is cleared to zero when the wing leaves.
 pub fn read_wing_membership(
     memory: &impl Memory,
     pointer: usize,
@@ -302,8 +265,6 @@ pub fn read_wing_membership(
     })
 }
 
-/// Caller-owned row storage and a shared exact-byte name arena. All storage is
-/// allocated outside the game thread. Naval theatre state has its own reader.
 pub struct Buffers<'a> {
     pub land: &'a mut Vec<Row>,
     pub land_groups: &'a mut Vec<ctheater_group::Row>,
@@ -314,7 +275,6 @@ pub struct Buffers<'a> {
     pub names: &'a mut Vec<u8>,
 }
 
-/// Worker storage grows from each original native header before filling.
 pub struct Storage<'a> {
     pub land: Buffer<'a, Row>,
     pub land_groups: Buffer<'a, ctheater_group::Row>,
@@ -334,7 +294,6 @@ pub struct Walk {
     pub air_groups: Outcome,
     pub air_members: Outcome,
     pub names_len: usize,
-    /// Full native string byte demand, including whole rows omitted for space.
     pub names_required: usize,
 }
 
@@ -429,8 +388,6 @@ impl Names<'_> {
     }
 }
 
-/// Daily nested land data has its own failure scope; a failed child must not
-/// discard the hourly theatre header or stop later header reads.
 struct LandDetails {
     active: bool,
     failure: Option<&'static str>,
@@ -478,7 +435,6 @@ impl<M: Memory> Reader<'_, M> {
         self.identity_from(pointer, None, vtable, reference_type)
     }
 
-    /// [`Self::identity`] from an already gathered header, if there is one.
     fn identity_from(
         &self,
         pointer: usize,
@@ -511,7 +467,6 @@ impl<M: Memory> Reader<'_, M> {
         counts: &mut [Count; 6],
     ) -> Result<(), &'static str> {
         let theatres = self.array(country.pointer, ccountry::THEATRES)?;
-        // The serializer writes the complete country theatre vector.
         buffers.land.ensure(
             counts[0]
                 .len
@@ -522,9 +477,6 @@ impl<M: Memory> Reader<'_, M> {
         let mut complete = [false];
         for ordinal in 0..theatres.count {
             let theatre = self.pointer(theatres, ordinal)?;
-            // One guarded record for the header's three spans. A record that
-            // did not complete leaves the original per-field reads, in their
-            // order, so the values and the first failure are theirs.
             gather_records(
                 self.memory,
                 &[theatre],
@@ -542,8 +494,6 @@ impl<M: Memory> Reader<'_, M> {
                 Some(volunteers) => volunteers,
                 None => self.field::<i32>(theatre, VOLUNTEERS_THEATRE)?,
             };
-            // The country roster is canonical; preserve the theatre's raw owner
-            // rather than normalizing the stored country-reference bits.
             if countries.resolve(owner)?.pointer != country.pointer {
                 return Err("land theatre owner differs from country roster");
             }
@@ -755,14 +705,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Walks the canonical country roster once for persistent land theatre headers
-/// and, when requested, the daily land/air theatre details. Names retain
-/// arbitrary bytes, handles retain both native words and every ordinal is the
-/// actual unfiltered vector position. Land and air faults are independent.
-/// Capacity omits whole rows and reports full remaining demand; the daily
-/// walk checks child headers to census its nested tables.
-/// Duplicate row identities and reverse wing membership belong to the spool's
-/// complete-table checks. No retries, engine calls, allocations or UI reads occur.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -787,7 +729,6 @@ pub fn walk(
     )
 }
 
-/// Growing acquisition is restricted to worker-owned storage.
 pub fn walk_buffers(
     memory: &impl Memory,
     base: usize,
@@ -850,23 +791,14 @@ pub fn walk_buffers(
     }
 }
 
-/// One stationed unit listed by one volunteer theatre, in native order.
-///
-/// `ordinal` is part of the key: the stored vector is traversed and serialized
-/// in order, including repeated occurrences.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StationedUnitRow {
-    /// Full native CTheatre handle (`HANDLE`).
     pub theatre: u64,
     pub ordinal: u32,
-    /// Full native CUnit handle (`cunit::HANDLE`) of the stationed division or task force.
     pub unit: u64,
 }
 
-/// Caller-owned storage for the stationed walk. Allocation is off the game thread.
 pub struct StationedBuffers<'a> {
-    /// Whether the caller requested controller-area rows in this acquisition.
-    /// Stationed unit rows and their shared theatre census remain independent.
     pub areas_active: bool,
     pub areas: &'a mut Vec<ccontroller_area::Row>,
     pub area_provinces: &'a mut Vec<u32>,
@@ -878,22 +810,9 @@ pub struct StationedWalk {
     pub areas: Outcome,
     pub units: Outcome,
     pub provinces_len: usize,
-    /// Full native province demand, including whole rows omitted for space.
     pub required_provinces: usize,
 }
 
-/// Reads the controller areas and stationed units of every volunteer theatre.
-///
-/// Only a positive signed volunteer-country key admits areas and units.
-/// LandTheatres records that key for every theatre, so the recording retains
-/// which theatres are in scope.
-///
-/// A null pointer inside a counted vector, a failed CTheatre, CControllerArea,
-/// CProvince or CUnit identity, an invalid vector header and a zero province id
-/// or unit handle refuse the affected table with a named reason; the engine
-/// dereferences all of these unconditionally, so a hole is a torn read. Area and
-/// unit faults are independent. Capacity omits whole rows and reports the full
-/// remaining demand. No engine call, retry or allocation occurs.
 pub struct StationedStorage<'a> {
     pub areas_active: bool,
     pub areas: Buffer<'a, ccontroller_area::Row>,
@@ -939,7 +858,6 @@ pub fn count_stationed(
     )
 }
 
-/// Worker storage grows from the original controller-area and unit headers.
 pub fn walk_stationed_buffers(
     memory: &impl Memory,
     base: usize,
@@ -962,7 +880,6 @@ pub fn walk_stationed_buffers(
             for ordinal in 0..theatres.count {
                 let theatre = reader.pointer(theatres, ordinal)?;
                 let id = reader.identity(theatre, VTABLE_RVA, REFERENCE_TYPE)?;
-                // Only positive signed volunteer-country keys reach this walk.
                 if reader.field::<i32>(theatre, VOLUNTEERS_THEATRE)? <= 0 {
                     continue;
                 }
@@ -1024,7 +941,6 @@ impl<M: Memory> Reader<'_, M> {
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&FIELDS, 16).expect("valid record layout");
         let areas = self.array(theatre, CONTROLLER_AREA_DATA)?;
-        // Fog rebuilding consumes all controller areas.
         buffers.areas.ensure(
             count
                 .len
@@ -1063,9 +979,6 @@ impl<M: Memory> Reader<'_, M> {
                 continue;
             }
             let start = *provinces_len;
-            // The pointer vector is copied in bounded batches and each batch's
-            // vtables and ids are gathered in one guarded record copy, instead
-            // of three guarded reads per province.
             const BATCH: usize = 32;
             let mut pointers = [0_usize; BATCH];
             let mut raw = [0_u8; BATCH * 8];
@@ -1092,7 +1005,6 @@ impl<M: Memory> Reader<'_, M> {
                     }
                     let id = u32::from_le_bytes(record[8..12].try_into().expect("four bytes"));
                     if id == 0 {
-                        // Province scans start at one, matching the map census.
                         return Err("theatre province id is zero");
                     }
                     buffers.area_provinces[*provinces_len] = id;
@@ -1114,7 +1026,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok(())
     }
 
-    /// One contiguous window of a pointer vector, in a single guarded copy.
     fn pointer_batch(
         &self,
         array: Array,
@@ -1149,7 +1060,6 @@ impl<M: Memory> Reader<'_, M> {
         }
         let id = self.field::<u32>(province, cprovince::ID)?;
         if id == 0 {
-            // Province scans start at one, matching the map census.
             return Err("theatre province id is zero");
         }
         Ok(id)
@@ -1163,7 +1073,6 @@ impl<M: Memory> Reader<'_, M> {
         count: &mut Count,
     ) -> Result<(), &'static str> {
         let units = self.array(theatre, STATIONED_UNIT_DATA)?;
-        // Unit visibility consumes the complete stationed vector.
         buffers.units.ensure(
             count
                 .len
@@ -1174,8 +1083,6 @@ impl<M: Memory> Reader<'_, M> {
             let unit = self
                 .pointer(units, ordinal)
                 .map_err(|_| "stationed unit pointer unreadable or null")?;
-            // A stationed unit is a lent division or task force; both concrete
-            // classes are accepted and nothing else is.
             let vtable = read::<u64>(self.memory, unit);
             if ![carmy::VTABLE_RVA, ctask_force::VTABLE_RVA]
                 .into_iter()

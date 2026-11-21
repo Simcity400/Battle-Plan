@@ -7,7 +7,6 @@ import { CATEGORY_LIMIT, categoricalPalette, distance, GREY_CHROMA, MARK_CONTRAS
 import { tokensFromValues } from './tokens.ts';
 import { NearestColours } from './paletteDistance.ts';
 
-// Literal scalar arithmetic and trial order from before the indexed gap lookup.
 function scalarDistance(first: Rgb, second: Rgb): number {
   const a = rgbToOklch(first), b = rgbToOklch(second);
   const ax = a.c * Math.cos(a.h * Math.PI / 180), ay = a.c * Math.sin(a.h * Math.PI / 180);
@@ -63,7 +62,6 @@ test('nudged colours are readable, never grey, apart from each other and stable'
   const input = ['#3a6ea5', '#3b6fa6', '#808080', '#101010'].map(hex => parseColor(hex)!);
   const first = nudgeApart(input, background);
   assert.deepEqual(nudgeApart(input, background), first);
-  // Later colours never move earlier ones.
   assert.deepEqual(nudgeApart(input.slice(0, 2), background), first.slice(0, 2));
   for (const color of first) {
     assert.ok(contrast(color, background) >= MARK_CONTRAST - 0.05);
@@ -123,7 +121,6 @@ test('nearest gaps match every scalar operand at 5000 colours, with fewer compar
   queries.push(...dense.filter((_, index) => index % 79 === 0));
   const hypot = Math.hypot;
   let comparisons = 0, counting = false;
-  // Count comparisons without retaining a mock call record for every distance.
   context.after(() => { Math.hypot = hypot; });
   Math.hypot = (...values: number[]) => {
     if (counting && values.length === 3) comparisons++;
@@ -150,7 +147,6 @@ test('all 5000 fixed country colours stay present without quadratic gap scans', 
   const repeated = Array.from({ length: 5000 }, () => parseColor('#3a6ea5')!);
   const hypot = Math.hypot;
   let comparisons = 0;
-  // Count comparisons without retaining a mock call record for every distance.
   context.after(() => { Math.hypot = hypot; });
   Math.hypot = (...values: number[]) => {
     if (values.length === 3) comparisons++;

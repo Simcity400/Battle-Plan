@@ -10,12 +10,7 @@ import type { CountryIdentityIndex } from './countryIdentity.ts';
 import { PlaybackIntervals, spanChanges } from '../charts/playbackIntervals.ts';
 import { NO_MEMBERS } from './noMembers.ts';
 
-/** Smart country groups, resolved from the recording's own history: human players,
- * any recorded faction (including ones founded or dissolved partway through),
- * everyone at war with a country, and the top N by the widget's own measure. */
 
-/** Membership runs for a group; null for top N, which the widget ranks itself,
- * and for a faction the branch never recorded. */
 export function groupRuns(reply: CountryGroupReply, group: CountryGroup): MembershipRun[] | null {
   switch (group.type) {
     case 'humans': return reply.humans;
@@ -26,11 +21,9 @@ export function groupRuns(reply: CountryGroupReply, group: CountryGroup): Member
   }
 }
 
-/** The hours this group's own history was not observed. */
 export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): HourSpan[] {
   switch (group.type) {
     case 'humans': return reply.unobserved.humans;
-    // A faction's own incomplete rosters as well as the hours no faction was read.
     case 'faction': return [...reply.unobserved.factions, ...(reply.factions.find(faction => faction.id === group.id)?.incomplete ?? [])]
       .sort((a, b) => a.firstHour - b.firstHour);
     case 'war': return reply.unobserved.wars;
@@ -38,11 +31,6 @@ export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): 
   }
 }
 
-/** The group's members under a membership rule, in order of first membership:
- * at `hour`, at the branch's last hour, or anyone ever a member. At most `max`,
- * the widget's own country limit, when given. Null when membership was not
- * recorded at the hour counted (for anyone ever: no member was recorded and some
- * hours were not), so a missing hour never reads as an empty group. */
 export function groupMembers(runs: readonly MembershipRun[], membership: GroupMembership, hour: number, lastHour: number,
   max = Infinity, unobserved: readonly HourSpan[] = []): string[] | null {
   const at = membership === 'hour' ? hour : lastHour;
@@ -55,10 +43,6 @@ export function groupMembers(runs: readonly MembershipRun[], membership: GroupMe
 
 export interface MembershipChange { hour: number; tag: string; change: 'joined' | 'left' }
 
-/** Joins and leaves as timeline markers. A run that starts at the first recorded
- * hour or ends at the last is where the recording starts or stops, and a run that
- * starts or ends next to an unobserved hour is a gap in the recording; neither is
- * a change. */
 export function membershipChanges(runs: readonly MembershipRun[], firstHour: number, lastHour: number, unobserved: readonly HourSpan[] = []): MembershipChange[] {
   const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const changes: MembershipChange[] = [];
@@ -69,10 +53,8 @@ export function membershipChanges(runs: readonly MembershipRun[], firstHour: num
   return changes.sort((a, b) => a.hour - b.hour || a.tag.localeCompare(b.tag) || a.change.localeCompare(b.change));
 }
 
-/** How many countries a top-N group holds unless the user chooses. */
 export const DEFAULT_TOP = 10;
 
-/** Shared selection choices for ranked country and faction widgets. */
 export function countrySelectionModes(limits: { factions?: boolean; all?: boolean }): { value: string; label: string }[] {
   return [...(limits.all ? [{ value: 'all', label: 'All' }] : []), { value: 'countries', label: 'Countries' }, { value: 'group', label: 'Group' },
     ...(limits.factions ? [{ value: 'factions', label: 'Factions' }] : [])];
@@ -82,21 +64,17 @@ export function countrySelectionMode(selection: CountrySelection): string {
   return selection.kind === 'all' ? 'all' : selection.kind === 'factions' ? 'factions' : selection.kind === 'group' ? 'group' : 'countries';
 }
 
-/** New choices use the same hourly membership rule and top count everywhere. */
 export function countrySelectionFor(mode: string, max: number): CountrySelection {
   const count = Math.min(DEFAULT_TOP, max);
   return mode === 'all' ? { kind: 'all' } : mode === 'factions' ? { kind: 'factions', count, membership: 'hour' }
     : mode === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } : { kind: 'selected' };
 }
 
-/** The `count` countries with the highest values, highest first; a country with
- * no value this hour is left out rather than ranked as zero. */
 export function topCountries(values: ReadonlyMap<string, number | null>, count: number): string[] {
   return [...values].filter((entry): entry is [string, number] => entry[1] != null && Number.isFinite(entry[1]))
     .sort((a, b) => b[1] - a[1] || compareTags(a[0], b[0])).slice(0, count).map(([tag]) => tag);
 }
 
-/** A group's name for headers and pickers. Faction names are the game's own. */
 export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undefined, countryName: (tag: string) => string, hour?: number,
   overrides?: Readonly<Record<string, { name?: string }>>): string {
   switch (group.type) {
@@ -110,18 +88,14 @@ export function groupLabel(group: CountryGroup, reply: CountryGroupReply | undef
   }
 }
 
-/** Whether `hour` falls in one of the membership runs; always true without them. */
 export function isMember(membership: readonly HourSpan[] | undefined, hour: number): boolean {
   return !membership || membership.some(run => run.firstHour <= hour && hour <= run.lastHour);
 }
 
-/** Runs cut to the hours a country was a group member, so a line starts when it
- * joins and stops when it leaves (`clipToSpans`). */
 export function clipRuns(runs: readonly Run[], membership: readonly MembershipRun[]): Run[] {
   return clipToSpans(runs, membership);
 }
 
-/** Why a group's members are unknown under a membership rule (`groupMembers` null). */
 function unrecorded(membership: GroupMembership): string {
   switch (membership) {
     case 'hour': return 'Group membership is unavailable at this time.';
@@ -130,25 +104,17 @@ function unrecorded(membership: GroupMembership): string {
   }
 }
 
-/** Whether a country choice's membership is known at every hour `firstHour..lastHour`
- * (one hour when `lastHour` is left out), so a country it leaves out there is proven
- * not to be chosen: false only while the group history the choice needs loads. A
- * recorded gap is known: it is unrecorded. */
 export type MembershipKnown = (firstHour: number, lastHour?: number) => boolean;
 
 const ALWAYS: MembershipKnown = () => true;
 const NEVER: MembershipKnown = () => false;
 
-/** Whether the group history a choice needs has loaded: a group needs the groups reply. */
 const choiceLoaded = (selection: CountrySelection, groups: CountryGroupReply | undefined) => selection.kind !== 'group' || groups !== undefined;
 
 export interface WorldFilter {
   readonly tags: ReadonlySet<string> | null;
   readonly reason: string | null;
-  /** Whether the countries are known (`MembershipKnown`): false while the identities or the
-   * group history load, and then `reason` is null and an empty set is loading. */
   readonly known: boolean;
-  /** Native identity keys resolved at the hours membership counts. */
   readonly countryIds?: ReadonlySet<string> | null;
 }
 
@@ -156,19 +122,11 @@ function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIden
   return index === undefined ? groups && Array.isArray(groups.countryIdentities) ? countryIdentityIndex(groups.countryIdentities) : null : index;
 }
 
-/** The countries a widget about the whole world (`countries.all`) narrows to: null for
- * every country; else the chosen tags (the dashboard's country by default), or the
- * chosen group's members under its membership setting (`groupMembers`): at `hour`,
- * the moment shown; at the branch's `lastHour`; or anyone ever a member. `reason`
- * says why the set is empty or not known: a membership not recorded at the hour it is
- * counted is unknown, never an empty group. Native keys resolve smart members at
- * the counted dates; manual picks include all holders ever carrying their tags. */
 function readWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
   const identities = identitiesFor(groups, index);
   const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, identities);
   if (selection.kind === 'all' || filter.reason === CHOOSE) return { ...filter, known: true };
-  // No reason holds until the identities and the group history the choice needs have loaded.
   const known = !!identities && choiceLoaded(selection, groups);
   return known ? { ...filter, known } : { ...filter, reason: null, known };
 }
@@ -255,21 +213,11 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
     : selection.membership === 'ever' ? NO_MEMBERS.ever : selection.membership === 'end' ? NO_MEMBERS.end : NO_MEMBERS.hour };
 }
 
-/** Whether a dated row of a country passes a widget's country choice, for logs, whose
- * rows are each about one country at one hour: every country for "all", the chosen
- * countries, or a group's members under its rule, at the row's own hour, else as
- * `worldFilter` counts them at the branch end or ever. `ready` is false while the
- * group history loads; a row whose group membership at its hour was not recorded
- * does not pass. Manual picks include all native holders of their literal tags;
- * rows resolve at their own hours. Null means identity history is still loading.
- * `known` is false only while loading. */
 export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; known: MembershipKnown; reason: string | null }
 
 const matchChanges = new WeakMap<CountryMatch['matches'], ReadonlyArray<number>>();
 export const countryMatchChangeHours = (matches: CountryMatch['matches']) => matchChanges.get(matches);
 
-/** Why a group counted at each hour has no known members at `hour`: its history was not recorded there. Null for any
- * other choice, or a recorded hour. */
 export function membershipUnrecordedAt(selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number): string | null {
   if (selection.kind !== 'group' || selection.membership !== 'hour' || !groups) return null;
   return groupUnobserved(groups, selection.group).some(span => span.firstHour <= hour && hour <= span.lastHour) ? unrecorded('hour') : null;
@@ -293,14 +241,12 @@ function readCountryMatch(selection: CountrySelection, fallback: readonly string
     const runs = groupRuns(groups!, selection.group);
     if (!runs) return { ready: true, matches: () => false, known: ALWAYS, reason: UNAVAILABLE };
     const unobserved = groupUnobserved(groups!, selection.group);
-    // A group no one ever joined says so at once: a log would otherwise read its whole history to find no row of it.
     if (!runs.length) return { ready: true, matches: () => false, known: ALWAYS, reason: unobserved.length ? unrecorded('ever') : NO_MEMBERS.ever };
     const byTag = new Map<string, MembershipRun[]>();
     for (const run of runs) {
       const history = byTag.get(run.tag);
       if (history) history.push(run); else byTag.set(run.tag, [run]);
     }
-    // Hours not recorded have no known members.
     const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
     return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
       && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), known: ALWAYS, reason: null };
@@ -314,26 +260,15 @@ function readCountryMatch(selection: CountrySelection, fallback: readonly string
 
 export interface ResolvedCountries {
   tags: string[];
-  /** For a group counted at each hour: each country's membership runs. */
   membership: Map<string, MembershipRun[]> | null;
-  /** Hours the group's own history was not recorded: breaks there are not joins or leaves. */
   unobserved: HourSpan[];
-  /** Countries left out beyond the widget's limit. */
   dropped: number;
-  /** Why no countries are shown, if none are. Null while membership is not known. */
   reason: string | null;
-  /** Whether the countries are known at the hours asked: the tags counted at the branch
-   * end or ever, and for a group counted at each hour its members at those hours
-   * (`rankedCandidates`). Chosen tags and top N need no group history. */
   known: MembershipKnown;
-  /** For a top-N group: N, at most the widget's limit. The widget ranks every
-   * country itself at each hour (`rankedCandidates`), so `tags` is empty. */
   top?: number;
-  /** A summed faction reads the shared server total instead of country lines. */
   factionId?: string;
 }
 
-/** A complete world total cannot prove a smart group's missing membership. */
 export function groupShareReason(resolved: ResolvedCountries, membership: GroupMembership, hour: number): string | null {
   if (resolved.reason) return resolved.reason;
   if (membership === 'ever' && resolved.unobserved.length) return 'Group membership is incomplete for this campaign.';
@@ -341,17 +276,12 @@ export function groupShareReason(resolved: ResolvedCountries, membership: GroupM
   return null;
 }
 
-/** The countries a ranked widget (a race) may show at `hour`, before it ranks them
- * and keeps its count: every country (`all`) for a top-N group; else the chosen
- * countries, or a group's members, those counted at each hour only while members. */
 export function rankedCandidates(resolved: ResolvedCountries, hour: number, all: readonly string[]): string[] {
   if (resolved.top != null) return [...all];
   if (!resolved.membership) return resolved.tags;
   return resolved.tags.filter(tag => isMember(resolved.membership!.get(tag), hour));
 }
 
-/** The countries a multi-country widget draws: chosen tags, or a group's members
- * under its rule, at most `max` (the widget's own limit). */
 export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number, max: number, factionTotals = false): ResolvedCountries {
   const none = { tags: [], membership: null, unobserved: [], dropped: 0, known: ALWAYS };
   if (selection.kind === 'factions') return { ...none, reason: 'This widget does not show faction totals.' };
@@ -362,16 +292,13 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
     return { ...none, tags: tags.slice(0, max), dropped: Math.max(0, tags.length - max), reason: tags.length ? null : CHOOSE };
   }
-  // Top N needs no group history: the widget ranks by its own value.
   if (selection.group.type === 'top') return { ...none, reason: null, top: Math.max(1, Math.min(max, selection.group.count)) };
-  // A group's members are known once the groups reply has loaded.
   if (!groups) return { ...none, reason: null, known: NEVER };
   const known = ALWAYS;
   const runs = groupRuns(groups, selection.group);
   if (!runs) return { ...none, reason: UNAVAILABLE, known };
   const unobserved = groupUnobserved(groups, selection.group);
   const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
-  // Unknown is not empty: the membership counted was not recorded.
   if (!members) return { ...none, unobserved, reason: unrecorded(selection.membership === 'end' ? 'end' : 'ever'), known };
   const tags = members.slice(0, max);
   const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
@@ -380,10 +307,6 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
     reason: members.length ? null : NO_MEMBERS.ever };
 }
 
-/** For a widget that asks its product only for a group's members: when it has none to ask
- * for, so no reply will come, why nothing shows at `hour` (a recorded gap, or no member
- * then). Null when there are members to ask for, the choice is not such a group, or
- * `resolved` already says why. */
 export function noMembersAt(selection: CountrySelection, resolved: ResolvedCountries, groups: CountryGroupReply | undefined,
   hour: number, lastHour: number): { reason: string } | null {
   if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
@@ -391,7 +314,6 @@ export function noMembersAt(selection: CountrySelection, resolved: ResolvedCount
   return reason === null ? null : { reason };
 }
 
-/** Drawing projection only: keep the original resolved tags as backend roots. */
 export function projectResolvedCountries(resolved: ResolvedCountries, filter: ReturnType<typeof countryMatchFilter>): ResolvedCountries {
   if (resolved.reason || resolved.top != null || resolved.factionId != null || filter.membership === null) return resolved;
   const membership = new Map<string, MembershipRun[]>();
@@ -407,9 +329,6 @@ export function projectResolvedCountries(resolved: ResolvedCountries, filter: Re
     unobserved: [...unobserved.values()].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour) };
 }
 
-/** Sum a resolved group's clipped lines once. Every expected member must have a
- * recorded value, and unknown rosters remain gaps. Events avoid rescanning all
- * members at each change; a member's identity break also breaks the total. */
 export function aggregateGroupRuns(lines: readonly { tag: string; runs: readonly Run[] }[], resolved: ResolvedCountries, range: HourSpan): Run[] {
   if (resolved.factionId != null) throw new Error('Summed faction groups must read the faction-totals product.');
   type Change = { expected: number; recorded: number; value: number; unknown: number; breaks: boolean };
@@ -453,9 +372,6 @@ export function aggregateGroupRuns(lines: readonly { tag: string; runs: readonly
 }
 
 export interface WorldRequestTags { tags: string[]; ready: boolean; reason: string | null }
-/** A whole-branch world's request: [] means all, chosen countries stay chosen,
- * and an hourly group requests its branch-wide union before local filtering.
- * Pending or empty choices never accidentally request the entire world. */
 export function worldRequestTags(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number,
   index?: CountryIdentityIndex | null): WorldRequestTags {
   if (selection.kind === 'all' || (selection.kind === 'group' && selection.group.type === 'top')) return { tags: [], ready: true, reason: null };
@@ -464,13 +380,9 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
   const counted = selection.kind === 'group' && selection.membership === 'hour' ? { ...selection, membership: 'ever' as const } : selection;
   const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, lastHour, identities).reason;
-  // Backends expand these literal roots; an alias is never a new manual pick.
   return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
 }
 
-/** The countries `selection` keeps, as a scope the server keeps a log to (a feed page's and its counts' `scope`): each
- * tag over the hours it counts, less the hours its group's history was not recorded, where `countryMatch` knows no
- * member either; null for every country. Empty while the identities are not known. */
 export function countryScope(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
   firstHour?: number): MembershipRun[] | null {
   const filter = countryMatchFilter(selection, fallback, groups, lastHour, undefined, firstHour);
@@ -480,7 +392,6 @@ export function countryScope(selection: CountrySelection, fallback: readonly str
   return hidden.length ? withoutHours(runs, hidden) : runs;
 }
 
-/** Serializable countryMatch predicate. Native alias runs bound every holder. */
 export function countryMatchFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
   index?: CountryIdentityIndex | null, firstHour = -2147483648): {
     tags: string[] | null; membership: MembershipRun[] | null; unobserved: HourSpan[];

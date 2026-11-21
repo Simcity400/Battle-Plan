@@ -1,12 +1,8 @@
-//! The game's unit-selection sounds: the effects each newly selected object queues, the queue's
-//! once-a-frame and recent-start rule, and the selection voice-over's gate.
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;
 use viewer_foundation::unit_handle::Unit;
 
-/// Executable constants: the sub-unit type bits that choose a division's effect, and how long after
-/// an effect starts the queue skips it again, in seconds.
 const TANK: u64 = 0x4;
 const VEHICLE: u64 = 0x18;
 pub const RECENT: f64 = 0.4;
@@ -15,7 +11,6 @@ pub const FLEET: &str = "select_fleet";
 
 pub const COMBAT_VOICE_WITHHELD: &str = "selection voice-over: the in-combat voice choice is withheld, as the side value the game compares is not resolved";
 
-/// A division's effects in the order the game queues them.
 pub fn division_effects(mask: u64, separate_counter: bool) -> impl Iterator<Item = &'static str> {
     let unit = if mask & TANK != 0 {
         "select_tank"
@@ -27,8 +22,6 @@ pub fn division_effects(mask: u64, separate_counter: bool) -> impl Iterator<Item
     separate_counter.then_some("select_general").into_iter().chain([unit])
 }
 
-/// What a selection queues: its effects, the voice-over effect or why it is withheld, and what
-/// could not be chosen.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Queued {
     pub effects: Vec<&'static str>,
@@ -36,9 +29,6 @@ pub struct Queued {
     pub refused: Vec<String>,
 }
 
-/// The effects the newly `added` units queue, each through its own selection callback. `mask`
-/// answers a sub-unit's type mask by name; `ours` is the viewing country's canonical slot, the
-/// only country whose units are selected.
 pub fn queued(
     frame: &DecodedFrame,
     added: &[Unit],
@@ -96,7 +86,6 @@ pub fn queued(
     Ok(queued)
 }
 
-/// The idle voice-over of the viewing country, `<TAG>_infantry_idle`, for the first added division.
 fn voice(frame: &DecodedFrame, division: u64, ours: u32) -> Result<String, &'static str> {
     let combats = frame.complete::<tables::LandCombats>().map_err(|_| "selection voice-over: LandCombats is not recorded at this hour")?;
     if combats.iter().any(|combat| combat.attackers.contains(&division) || combat.defenders.contains(&division)) {
@@ -112,7 +101,6 @@ fn voice(frame: &DecodedFrame, division: u64, ours: u32) -> Result<String, &'sta
             _ => None,
         })
         .ok_or("selection voice-over: the country database's dynamic-tag boundary is not recorded")?;
-    // A dynamic country speaks with its original country's voice when it has one.
     let tag = if i64::from(ours) >= i64::from(boundary) {
         let appearance = frame
             .complete::<tables::CountryAppearance>()
@@ -132,8 +120,6 @@ fn voice(frame: &DecodedFrame, division: u64, ours: u32) -> Result<String, &'sta
     Ok(format!("{tag}_infantry_idle"))
 }
 
-/// The queue's play rule: each distinct effect once a frame, and none started less than
-/// [`RECENT`] seconds ago.
 #[derive(Default)]
 pub struct Recent(Vec<(String, f64)>);
 
@@ -152,7 +138,6 @@ impl Recent {
     }
 }
 
-/// The voice-over starts only once its cooldown has passed since the last one started.
 #[derive(Default)]
 pub struct VoiceGate(Option<f64>);
 
@@ -185,8 +170,6 @@ mod tests {
         assert_eq!(effects(0x0, true), ["select_general", "select_army"]);
     }
 
-    /// Our country GER in slot 3, its appearance's original reference, and the database's first
-    /// dynamic slot.
     fn frame(combat: bool, reference: i32, boundary: i32) -> DecodedFrame {
         let mut frame = test_frame(42);
         put(&mut frame, TableRows::Divisions(vec![

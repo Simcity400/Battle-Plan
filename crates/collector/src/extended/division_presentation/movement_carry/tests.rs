@@ -3,7 +3,6 @@ use super::*;
 const LOCATION: usize = 0x1000;
 const REGION: usize = 0x2000;
 
-/// Memory at address zero; every read address is recorded.
 struct Traced {
     bytes: Vec<u8>,
     reads: std::cell::RefCell<Vec<usize>>,
@@ -20,7 +19,6 @@ impl Memory for Traced {
     }
 }
 
-/// A location bound to the strategic region at `region`, whose id is `id`.
 fn located_at(region: usize, id: u32) -> Traced {
     let mut bytes = vec![0; 0x3000];
     let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
@@ -58,8 +56,6 @@ fn region(id: u32) -> TransportRegion {
     }
 }
 
-/// A location's region binding is read every hour, so a rebound province reports its new
-/// region the next hour; each region is authenticated once an hour.
 #[test]
 fn a_locations_region_is_read_every_hour_and_authenticated_once() {
     let mut transport = Transport::default();
@@ -73,7 +69,6 @@ fn a_locations_region_is_read_every_hour_and_authenticated_once() {
     transport.push(&memory, 0, 1, &transfer(LOCATION));
     assert_eq!(transport.pending, [(0, Ok((7, held))), (1, Ok((7, held)))]);
 
-    // The map editor moved the province to another region.
     let moved = REGION + 0x400;
     let memory = located_at(moved, 9);
     transport.begin(2).unwrap();
@@ -93,7 +88,6 @@ fn a_locations_region_is_read_every_hour_and_authenticated_once() {
         )]
     );
 
-    // A location without a region is refused and not held.
     transport.push(&memory, 0, 1, &transfer(0x2800));
     assert_eq!(
         transport.pending[1],
@@ -111,7 +105,6 @@ fn answer(owner: u32, region: u32) -> &'static str {
     }
 }
 
-/// One query per owner over its distinct regions; each division gets its own answer or refusal.
 #[test]
 fn each_owner_is_one_query_over_its_distinct_regions() {
     let mut transport = Transport::default();

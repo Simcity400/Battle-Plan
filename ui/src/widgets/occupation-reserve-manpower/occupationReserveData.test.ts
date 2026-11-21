@@ -24,7 +24,6 @@ test('a holder holds the sum of its positive entries, by source largest first; a
   assert.equal(reserve.positive, 500);
   assert.deepEqual(sourceParts(reserve), [{ source: 'T9', amount: 500 }]);
   assert.deepEqual(reserve.negative.map(entry => entry.amount), [-50]);
-  // An amount not read yet leaves the total unknown, never zero.
   assert.equal(reserveOf(reply.holders[1], values({ '2:0/amount': 5 })).positive, null);
   assert.equal(reserveOf(reply.holders[0], amounts).positive, 0);
 });

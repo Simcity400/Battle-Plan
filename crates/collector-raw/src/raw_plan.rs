@@ -1,4 +1,3 @@
-//! Bounded discovery traces for fresh raw acquisition with exact read occurrences.
 
 use engine_native::{
     read_plan::Control, read_plan::Hint, read_plan::PreparedPlan, read_plan::Read,
@@ -322,7 +321,6 @@ impl<const N: usize> CapturePlan<N> {
         CANONICAL_READS.fetch_add(self.canonical_reads as u64, Ordering::Relaxed);
     }
 
-    /// Called only by the recycle worker, before clearing the captured bytes.
     pub fn prepare(
         &mut self,
         observations: &mut Observations,
@@ -333,7 +331,6 @@ impl<const N: usize> CapturePlan<N> {
         if engine_allocation::advisory(|| self.try_prepare(observations, has_bulk, raw_bytes, len))
             .is_err()
         {
-            // A failed compilation never installs partial geometry.
             self.compiled = None;
             self.sealed = false;
             self.retire = false;
@@ -432,11 +429,6 @@ impl<const N: usize> CapturePlan<N> {
     }
 }
 
-/// Raw destinations are append-only: after a control has checked owned bytes,
-/// later reads cannot overwrite them. Keep the earliest check of every byte;
-/// repeated parses of the same view need no additional native-plan comparison.
-/// This optimization is deliberately outside PreparedPlan's general API,
-/// whose callers may use overlapping writable destinations.
 fn compact_controls(
     requests: &[Request],
     observations: &Observations,
@@ -517,7 +509,6 @@ pub fn allocation_exercise() -> bool {
         mask: 1,
         bulk: false,
     };
-    // The ordinary fallback also copies through checked capacity.
     compact_controls(&[request], &observations, 4).is_ok()
 }
 

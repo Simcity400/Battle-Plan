@@ -1,22 +1,10 @@
-//! What the actors show a watcher, frame by frame.
-//!
-//! Smooth playback is not a microsecond figure: it is that every display frame is a new picture
-//! of the replay at the top speed. So
-//! this counts, for the figures whose groups the view reaches, how many changed their root or
-//! their play's samples since the frame before, by how many pixels on screen, and how many
-//! frames in a row showed them all standing. A reader that splits the frames by the publication
-//! they drew ([`viewer_foundation::map`]'s `layers.made`) then says which of them are placed
-//! from the publication's hour and which from the frame's own clock.
 
 use std::collections::BTreeMap;
 use viewer_foundation::map::camera::Camera;
 
-/// One actor as a frame showed it.
 pub(crate) struct Shown {
     pub key: (usize, u32, u32),
-    /// Its root in the world, on the map copy the view reaches.
     pub at: [f32; 3],
-    /// A number that changes when its play's samples do, `0` for an actor with no play.
     pub samples: u64,
 }
 
@@ -25,25 +13,17 @@ struct Seen {
     at: [f32; 3],
     samples: u64,
     screen: Option<[f32; 2]>,
-    /// The last frame its root moved: within [`MOVING`] frames of this one, its hours are moving
-    /// it, and a frame that leaves it standing is a frame the replay did not advance for it.
     moved: u64,
 }
 
-/// How many frames back a root must have moved for the count to call it a mover: one second at
-/// 240 frames a second, so a figure crossing a province is a mover throughout.
 const MOVING: u64 = 240;
 
 #[derive(Default)]
 pub(crate) struct Motion {
     seen: BTreeMap<(&'static str, (usize, u32, u32)), Seen>,
     frame: u64,
-    /// Frames in a row, up to and including this one, in which nothing of the actors in view
-    /// changed its root or its samples.
     still: u64,
-    /// This frame's actors that moved or posed, over every pass.
     changed: u64,
-    /// This frame's actors whose hours are moving them, and those of them it left standing.
     movers: u64,
     movers_still: u64,
 }
@@ -56,7 +36,6 @@ impl Motion {
         self.movers_still = 0;
     }
 
-    /// Counts one pass's shown actors against the frame before.
     pub(crate) fn count(
         &mut self,
         label: &'static str,
@@ -66,11 +45,7 @@ impl Motion {
     ) {
         use viewer_foundation::view_record::add;
         let (mut moved, mut posed, mut both_still) = (0u64, 0u64, 0u64);
-        // Of the actors whose hours are moving them, how many this frame moved and how many it
-        // left standing: none should stand.
         let (mut movers, mut movers_still) = (0u64, 0u64);
-        // Pixels a moved actor's root travelled on screen, in thousandths, and by band: under a
-        // quarter of a pixel, under one, under four, and more.
         let mut bands = [0u64; 4];
         let mut milli = 0u64;
         for actor in shown {
@@ -83,8 +58,6 @@ impl Motion {
                 continue;
             };
             let shifted = before.at != actor.at;
-            // When its root last moved, carried from the frame before, so a figure between two of
-            // its hours' own moves is still counted as one the hours are moving.
             let moved_at = if shifted { self.frame } else { before.moved };
             if let Some(held) = self.seen.get_mut(&(label, actor.key)) {
                 held.moved = moved_at;
@@ -99,7 +72,6 @@ impl Motion {
                     (Some(was), Some(now)) => {
                         ((now[0] - was[0]).powi(2) + (now[1] - was[1]).powi(2)).sqrt()
                     }
-                    // A root that moved while off the projection counts as moved, unmeasured.
                     _ => f32::NAN,
                 };
                 if pixels.is_finite() {
@@ -138,8 +110,6 @@ impl Motion {
         }
     }
 
-    /// Ends the frame's count: how many actors changed anything, and how many frames in a row
-    /// have now shown none changing.
     pub(crate) fn end(&mut self) {
         use viewer_foundation::view_record::add;
         self.still = if self.changed == 0 { self.still + 1 } else { 0 };
@@ -149,8 +119,6 @@ impl Motion {
         add("actors shown", "movers", self.movers);
         add("actors shown", "movers_still", self.movers_still);
         add("actors shown", "frame_holds_a_mover", u64::from(self.movers_still > 0));
-        // An actor no frame has shown for a while is forgotten, so the table does not grow with
-        // the hours played.
         let frame = self.frame;
         self.seen.retain(|_, seen| seen.frame + 240 > frame);
     }

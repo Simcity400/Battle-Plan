@@ -22,9 +22,6 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { DETAILS, OPTIONS } from './definition';
 import './marketLedger.css';
 
-/** Every market occurrence of the chosen countries' deals, newest first: contracts made and removed, requests posted,
- * deliveries and payments, as the countries sell or buy. Pages of the recorder's market log, cut at the head while
- * following (a render only when a row is crossed). A row opens its contract. */
 export default function MarketLedgerWidget({ widget, runtime, active, setOption }: WidgetProps) {
   const [drillShown, setDrillShown] = useState<number | undefined>();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -33,13 +30,11 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const log = logSettings(options);
   const follow = widget.time.mode === 'follow';
   const window = track && !follow ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
-  // A date range's start bounds the ledger as its end does; otherwise it starts with the branch.
   const firstHour = widget.time.mode === 'range' && window && track ? Math.max(Math.floor(window.firstHour), track.branch.firstHour) : track?.branch.firstHour ?? 0;
   const cut: LogCut = follow ? { follow: true, offset: track?.axisOffset ?? 0 }
     : { follow: false, hour: widget.time.mode === 'campaign' || !window ? null : Math.floor(window.lastHour) };
   const needsGroups = widget.countries.kind === 'group' || widget.countries.kind === 'factions';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  // A group lists every country it held over the branch, by the tags they held at their rows' hours.
   const tags = useMemo<string[] | null | undefined>(() => {
     if (widget.countries.kind === 'all') return null;
     if (!needsGroups) return [...selectedCountryKeys(widget.countries, track)].sort();
@@ -50,7 +45,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const enabled = (key: KindKey) => options[key] !== false;
   const kinds = shownKinds(enabled);
   const kindsKey = kinds.join(',');
-  const stableKinds = useMemo(() => kinds, [kindsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stableKinds = useMemo(() => kinds, [kindsKey]);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;

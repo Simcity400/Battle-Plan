@@ -12,14 +12,12 @@ test('at 15 hours a frame for 600 frames, special projects ask nothing, commit o
     const played = await act<{ head: number; asked: string[]; rendered: Record<string, number> }>('play(600, 15)');
     t.diagnostic(`600 frames to hour ${played.head}: renders ${JSON.stringify(played.rendered)}; asked ${played.asked.join(', ') || 'nothing'}`);
     assert.deepEqual(played.asked, [], 'no request while playing: the head is read from the reply already held');
-    // The late project starting at 34,000 is the one structural change on either view; daily progress steps are painted.
     assert.ok((played.rendered.current ?? 0) <= 2, `Current: ${played.rendered.current} commits for one project starting`);
     assert.ok((played.rendered.history ?? 0) <= 2, `History: ${played.rendered.history} commits for one project starting`);
     const cards = await act<{ id: string; progress: string | null }[]>('cards()');
     assert.deepEqual(cards.map(card => card.id), ['fast', 'slow', 'late']);
     for (const card of cards) assert.equal(card.progress, await act<string | null>(`progressAt(${JSON.stringify(card.id)}, ${played.head})`), `${card.id} painted at the head`);
     assert.deepEqual(await act('shown()'), { current: played.head, history: played.head }, 'each reports the hour it painted');
-    // The details' panel was pushed every day's read while playing: its values are painted, never a render.
     const read = played.head - (played.head - 4) % 24;
     const painted = await act<Record<string, string>>('painted()');
     assert.equal(painted['b:0'], `: ${Math.floor(read / 24) * 100 / 10000} breakthrough progress · read ${painted['s:7:injury']?.split(' · read ')[1]}`, 'the last pushed read is painted');

@@ -19,7 +19,6 @@ use viewer_foundation::{
     map::perspective::{Choice, Country, Vision},
 };
 
-/// Every province a sea with a stack anchor.
 struct Sea;
 
 impl Shore for Sea {
@@ -46,7 +45,6 @@ fn sides(attackers: &[u32], defenders: &[u32]) -> Vec<u8> {
     opaque(sides)
 }
 
-/// The string id of a vector's kinds `[NAVAL]`, named first in the recording.
 const KINDS: u32 = 0;
 
 const READ: [TableId; 17] = [
@@ -69,15 +67,12 @@ const READ: [TableId; 17] = [
     TableId::NavalCombatDetails,
 ];
 
-/// A combat at `slot`, keyed `id`, in province `province`, named by its vector.
 fn combat(store: &mut Store, slot: u32, id: u64, province: u32) {
     put(store, TableId::NavalCombats, slot, Some(u128::from(id)), &[("province", Cell::U32(province)), ("registry_ordinal", Cell::U32(slot))]);
     put(store, TableId::NavalCombatDetails, slot, Some(u128::from(id)), &[("sides", Cell::Opaque(&sides(&[10], &[11])))]);
     put(store, TableId::NavalProvinceCombats, slot, Some(u128::from(province)), &[("combats", Cell::U64List(&[id])), ("kinds", Cell::Bytes(KINDS))]);
 }
 
-/// Two linked countries; combat 500 in sea province 9; division 7 in province 3, which transfer 70
-/// of combat 500 carries.
 fn world(store: &mut Store) {
     for (slot, key) in [(0, 10u128), (1, 11)] {
         put(store, TableId::CountryLinks, slot, Some(key), &[("canonical_slot", Cell::U32(slot))]);
@@ -105,7 +100,6 @@ fn campaign(name: &str, status: impl Fn(u32, TableId) -> Status, mut hour: impl 
     )
 }
 
-/// The engaged index: combat 500 engaged for country 0 from hour 0, 501 not, through hour 399.
 fn history() -> Arc<History> {
     let history = Arc::new(History::default());
     let mut covered = Covered::new(0);
@@ -176,8 +170,6 @@ fn settled_equals_composed(side: &mut MapSide) {
     assert_eq!(layer(side).refused(), fresh.refused());
 }
 
-/// The icons in their combats' own provinces (transfer 70 also places a spill-over icon in
-/// division 7's province).
 fn icon_combats(values: &NavalMarkerValues) -> Vec<Result<u64, u64>> {
     values.combats.as_ref().map_or(Vec::new(), |combats| {
         combats.icons.iter().filter(|icon| icon.as_ref().map_or_else(|omitted| omitted.rotates, |icon| icon.rotates)).map(|icon| icon.as_ref().map(|icon| icon.combat).map_err(|omitted| omitted.combat)).collect()
@@ -236,7 +228,6 @@ fn a_part_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -318,7 +309,6 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert!(layer(&side).values().is_none(), "nothing is kept while hidden");
     settled_equals_composed(&mut side);
     side.set_view(View { fog: false, ..View::default() }).unwrap();
-    // Its tables left the mirrors while it was hidden: they come back as a reset, and it composes then.
     frames_until(&mut side, |side, frame| frame.steps > 0 && !side.composing() && side.parts().is_some_and(|(_, layers)| layers[1].any().downcast_ref::<NavalMarkers>().is_some_and(|layer| layer.refused().is_none())));
     settled_equals_composed(&mut side);
     let shown = values(&side);
@@ -336,9 +326,6 @@ fn the_layer_declares_against_this_schema() {
     assert_eq!(inputs.into_tables().len(), TABLES.len());
 }
 
-/// Hours alone move the layer's head: on the base every stepped hour read every live combat's
-/// kept frame from the index and compared the whole map with the one the last make used. A
-/// stretch of hours that changes no row and no kept frame reads no frame and makes nothing.
 #[test]
 fn hours_that_change_no_combat_read_no_frame_and_make_nothing() {
     let units = campaign("naval markers quiet hours", |_, _| Status::Complete, |_, _| {});

@@ -1,7 +1,3 @@
-//! The flying-aircraft map's mission and sortie tables. The text save holds
-//! the bases, mines and reassignment penalties they name, but not the
-//! registration order, the country vectors or the other sortie operands;
-//! those are checked against the same hour's censuses.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -319,7 +315,6 @@ fn transfers(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
                 );
             }
         }
-        // The eligibility limit gates only the progress and distance reads.
         if wing.eligibility_counter > wing.eligibility_limit {
             continue;
         }
@@ -397,7 +392,6 @@ fn ground_crews(
             Ok(at) => rows[at].enabled,
             Err(_) => Some(0),
         };
-        // Demanded flags are comparable: sparse absence is false, but unread is incomplete.
         let Some(actual) = actual else {
             report.incomplete(
                 "AirGroundCrews",
@@ -422,8 +416,6 @@ fn ground_crews(
     Ok(())
 }
 
-/// Naval-patrol rows name live countries; task-force ordinals are
-/// contiguous from zero, and history rows retain sparse values and refusals.
 fn naval_patrol(
     frame: &DecodedFrame,
     countries: &CountryContext<'_>,
@@ -459,8 +451,6 @@ fn naval_patrol(
     Ok((combats.len(), histories.len()))
 }
 
-/// Value and refused rows retain native window-zero positions. Availability witnesses
-/// also cover null/reserved native slots, which need not have a saved tag.
 fn histories_structure(
     rows: &[replay_data::rows::AirNavalPatrolHistoryRow],
     slots: &BTreeSet<u32>,
@@ -515,8 +505,6 @@ fn histories_structure(
     Ok(())
 }
 
-/// One row per registered mission; reached IDs only for membership masks.
-/// The reassignment penalty is the save's `region_change_penalty`.
 fn mission_inputs(
     frame: &DecodedFrame,
     save: &Save,
@@ -610,9 +598,6 @@ fn mission_inputs(
     Ok(rows.len())
 }
 
-/// The keys the collector must have read for the registered missions: their
-/// pool bases (with the witnessed kind and state), the effective countries
-/// and mission regions. Only nonzero operands are rows.
 struct SortieKeys {
     bases: BTreeMap<u64, (i32, Option<u32>)>,
     countries: BTreeSet<u32>,
@@ -1134,7 +1119,6 @@ fn sortie_operands(
                 keys.country_regions.contains(&(row.subject, row.region))
                     || (row.region != 0 && menu.get(&(row.subject, 0)) == Some(&1))
             }
-            // Every console override is a row, zero included.
             AirSortieModifierRow::EFFICIENCY_OVERRIDE
             | AirSortieModifierRow::DETECTION_OVERRIDE => row.region == 0,
             AirSortieModifierRow::DETECTION_OVERRIDE_STATUS => {
@@ -1258,19 +1242,6 @@ fn registrations(frame: &DecodedFrame, countries: &CountryContext<'_>) -> io::Re
     Ok(rows.len())
 }
 
-/// Structure, then each country's enemy set: as a set, wartime-ally rebuilding
-/// fills the enemy-country set with the other endpoint of each of the
-/// country's wars, which the save lists as `war_relations`.
-///
-/// That fails where the vector can lag its wars, the rows the same hour's
-/// CountryWars marks `enemies_read`: a civil-war revolter, whose transferred
-/// wars the game creates without rebuilding its vector and which
-/// civil-war creation leaves unrebuilt when the revolter's declaration
-/// fails the war-declaration eligibility test and returns before the
-/// declaration would rebuild it, and a country
-/// owning a retired war relation. CountryWars read the same stored vector,
-/// so there it must equal the recorded one exactly, order included, and the
-/// save comparison is a named limitation.
 fn relations(
     frame: &DecodedFrame,
     save: &Save,
@@ -1387,9 +1358,6 @@ fn contiguous<'a>(groups: impl Iterator<Item = &'a BTreeSet<u32>>, label: &str) 
     Ok(())
 }
 
-/// A resolved base must be a saved base with the recorded fields; a probed
-/// handle with no witness must be unsaved. Match capture_references: every
-/// wing's pool base, whatever its mission, and every transfer base.
 fn witnesses(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let saved: BTreeMap<_, _> = save.air.bases.iter().map(|base| (base.id, base)).collect();
     let manager: BTreeMap<_, _> = complete::<tables::AirBases>(frame)?
@@ -1454,7 +1422,6 @@ fn witnesses(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
     Ok(())
 }
 
-/// The shared certified full Navy vectors replace mission-targeted acquisition.
 fn mines(
     frame: &DecodedFrame,
     save: &Save,
@@ -1877,7 +1844,6 @@ mod tests {
             assert_eq!(transfers(&frame, &saved, &mut report).is_ok(), valid);
             assert_eq!(report.differences.len(), differences);
         }
-        // Past its eligibility limit a wing's progress is unread, but its destination is not.
         *frame.tables[TableId::AirWings.index()] =
             TableView::Complete(TableRows::AirWings(vec![AirWingRow {
                 id: 1,
@@ -2054,7 +2020,6 @@ mod tests {
             scenario_channels: Recorded::Value(Some([0, 0, 0, 0, 0, -2, 0])),
             ..Default::default()
         };
-        // Native null/reserved country-air slots have no save country.
         assert!(histories_structure(&[witness(0), witness(4)], &slots).is_ok());
         let marker = AirNavalPatrolHistoryRow::window_marker(
             4,
@@ -2142,7 +2107,6 @@ mod tests {
             TableView::Complete(TableRows::AirNavalPatrolHistories(rows));
         let context = super::super::country_context(&frame).unwrap();
         let mut report = Report::default();
-        // Three history rows, the availability witness and two ring markers.
         assert_eq!(naval_patrol(&frame, &context, &mut report).unwrap(), (0, 6));
         assert_eq!(
             report.limitations["AirNavalPatrolHistories.scenario_channels unavailable after a current read refusal; original naval-patrol history remains readable"],
@@ -2216,12 +2180,6 @@ mod tests {
         report
     }
 
-    /// A civil war: REB revolted from GER, which was at war with SOV.
-    /// The game created the transferred REB-SOV war and ended GER-SOV
-    /// (rebuilding GER's and SOV's vectors), but the declaration on REB
-    /// failed, so REB's vector was never rebuilt and stays empty while the
-    /// save lists REB at war with SOV. CountryWars read that vector; the
-    /// oracle holds REB's air enemies to it, not to the saved war.
     #[test]
     fn an_unrebuilt_revolter_vector_is_held_to_the_country_wars_read() {
         let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
@@ -2231,12 +2189,10 @@ mod tests {
                 raw: 1,
                 ..Default::default()
             }]));
-        // The sortie comparison needs its Static singleton.
         *frame.tables[TableId::AirSortieModifierMetadata.index()] =
             TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
                 Default::default(),
             ]));
-        // GER is 101 (alias 102) at slot 7.
         add_country(&mut frame, &mut saved, 201, 8, b"REB");
         add_country(&mut frame, &mut saved, 301, 9, b"SOV");
         *frame.tables[TableId::NavalRegionalMines.index()] =
@@ -2283,22 +2239,16 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        // Without the read, the unrebuilt vector is compared with the saved
-        // war and differs.
         wars(&mut frame, Vec::new());
         let report = run(&frame, &saved);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("REB air enemies"));
 
-        // With it, the save comparison is a named limitation and the vector
-        // equals the read.
         wars(&mut frame, vec![revolter(Vec::new())]);
         let report = run(&frame, &saved);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(limited(&report), ["REB"]);
 
-        // The read is the same stored vector: a different one, or the same
-        // countries in another order, is a difference.
         wars(&mut frame, vec![revolter(vec![301])]);
         let report = run(&frame, &saved);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -2311,8 +2261,6 @@ mod tests {
         let report = run(&frame, &saved);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
 
-        // Only read vectors are exempt: SOV's still meets the saved war, and
-        // a row with the vector not read exempts nothing.
         enemies(&mut frame, &[(8, &[301, 101])]);
         wars(
             &mut frame,

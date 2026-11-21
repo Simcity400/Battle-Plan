@@ -388,7 +388,6 @@ pub(crate) fn draw(
     }
 }
 
-/// The air view's graph channels, colours and scale from the executable.
 struct AirGraph {
     channels: &'static [u32; AIR_GRAPH_DISPLAYS],
     colors: &'static [[f32; 4]; AIR_GRAPH_DISPLAYS],

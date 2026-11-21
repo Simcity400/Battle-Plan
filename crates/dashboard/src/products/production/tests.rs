@@ -20,7 +20,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 const FIRST: i32 = 1_000;
 const LAST: i32 = 1_300;
-/// ProductionLines is not read through these hours.
 const UNREAD: (i32, i32) = (1_240, 1_250);
 
 fn line(handle: u64, country: u32, variant: u64, active: i32, priority: i32) -> ProductionLineRow {
@@ -31,10 +30,6 @@ fn output(line: u64, country: u32, variant: u64, units: i64, ended: bool) -> Pro
     ProductionLineOutputRow { line, ordinal: 0, country, variant, mio: 0, units, since_hour: FIRST, observed_since_creation: line != 1, ended, exact: true, spent_raw: Recorded::Value(None), purpose: Recorded::Value(1), ..Default::default() }
 }
 
-/// GER (9001, slot 7, alias 11) and ITA (9002, slot 8). Line 1 is GER's through its alias from the
-/// first hour: variant 100, then 101 from 1,100, three factories from 1,150. Line 2 is GER's from
-/// 1,050 through 1,199; its output row is published ended from 1,200 through 1,223 with 7 units.
-/// Line 3 is ITA's. The lines are not read through `UNREAD`.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
@@ -161,8 +156,6 @@ fn asked(source: &Source, entry: crate::products::at_hour::Entry, request: Value
     reply["data"].take()
 }
 
-/// A request's live cells by (row, column): the sum of each cell's sources times its scale, or
-/// the first reason one has no value.
 fn cells(reply: &Value) -> std::collections::BTreeMap<(String, String), Result<f64, String>> {
     let live = &reply["live"];
     let flat: Vec<usize> = live["cells"].as_array().unwrap().iter().map(|item| item.as_u64().unwrap() as usize).collect();
@@ -215,7 +208,6 @@ fn the_live_table_lists_the_countrys_lines_in_queue_order_and_says_when_they_are
     assert!(unread["missing"].as_str().is_some_and(|why| why.contains("not recorded")), "unread lines are missing, never none");
 }
 
-/// The panel's data at `hour` over the whole tables, as the head holds them.
 fn followed(source: &Source, entry: crate::products::at_hour::Entry, params: &Value, hour: i32) -> dashboard_follow::panel::PanelData {
     let mut panel = (entry.panel)(source, &load(), params).unwrap();
     let tables = panel.tables().to_vec();

@@ -1,20 +1,5 @@
 name: Release build
 
-# Builds the one per-user installer that carries Battle Plan and Battle Plan Recorder at one version,
-# signs it for Tauri's updater (and with Authenticode once Azure Artifact Signing is configured),
-# proves the signature verifies against the public key both apps carry, and uploads the installer,
-# its signature and checksums as the `installer` artifact. release.yml publishes it.
-#
-# Preview builds carry no update feed (battle-plan_RELEASES is unset), so they never update and are
-# never offered as an update.
-#
-# It runs on the maintainer's machine, on the self-hosted runner that tools/release-runner.ps1 sets
-# up: at below-normal CPU and I/O priority, after any game run, inside a slot of the shared prep
-# lock, in the runner's own build folder (its .env names CARGO_TARGET_DIR), pruned after each build.
-#
-# Nothing from that machine ships: Rust paths are remapped to neutral roots, binaries name their
-# debug database by file name only, no .pdb or source map ships, and tools/leak-gate.py must pass
-# the installer, opened down to every file it installs, and the frontend the apps embed.
 
 on:
   workflow_call:
@@ -61,12 +46,10 @@ jobs:
   windows:
     name: Windows x64 installer
     runs-on: [self-hosted, windows, release]
-    # Waiting for a game run or a lock slot counts too.
     timeout-minutes: 720
     env:
       CARGO_TERM_COLOR: always
       VERSION: ${{ inputs.version }}
-      # Only a stable release pays for fat LTO (Cargo.toml's release-lto): hours of link time.
       BUILD_PROFILE: ${{ inputs.channel == 'stable' && 'release-lto' || 'release' }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -78,7 +61,6 @@ jobs:
       run:
         shell: bash
     steps:
-      # The home folder never shows in this public log, whatever prints it.
       - name: Mask the machine's home folder
         shell: powershell
         run: |
@@ -118,12 +100,10 @@ jobs:
       - name: Install UI dependencies
         run: npm ci
 
-      # Builds made without it are development builds whose updates are off.
       - name: Name the update feed
         if: inputs.channel != 'preview'
         run: echo "battle-plan_RELEASES=${{ inputs.releases }}" >> "$GITHUB_ENV"
 
-      # Signing waits for an owner decision; with all six secrets set every build signs.
       - name: Prepare Authenticode signing
         id: authenticode
         shell: powershell
@@ -151,9 +131,6 @@ jobs:
           [IO.File]::AppendAllText($env:GITHUB_ENV, "BATTLE_PLAN_SIGN_DLIB=$dlib`nHOI4_SIGN_METADATA=$metadata`n")
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "flag=--authenticode`n")
 
-      # Cargo's trim-paths is not stable yet: every machine path rustc could embed maps to a neutral
-      # root, the most specific last because the last match wins. Set only in this step's process,
-      # so the log's environment listings never show them.
       - name: Build the installer
         shell: powershell
         env:
@@ -170,7 +147,6 @@ jobs:
             "$userHome=/home", "$runnerRoot=/runner", "$cargoHome=/cargo", "$rustupHome=/rustup",
             "$env:CARGO_TARGET_DIR=/target", "$env:GITHUB_WORKSPACE=/battle-plan")
           $flags = @($maps | ForEach-Object { "--remap-path-prefix=$_" }) + '-Clink-arg=/PDBALTPATH:%_PDB%'
-          # One argument per flag, separated by 0x1F, so no path is split at a space.
           $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1F
           $build = @('tools/with-machine-locks.sh', "release-${{ inputs.channel }}", 'npm', 'run', 'build:desktop', '--', '--updater-artifacts')
           if ($env:AUTHENTICODE) { $build += $env:AUTHENTICODE }
@@ -178,7 +154,6 @@ jobs:
           & bash @build
           if ($LASTEXITCODE -ne 0) { throw "The installer build failed (exit $LASTEXITCODE)." }
 
-      # GitHub renames spaces in asset names, so the installer is named without them.
       - name: Collect the installer
         run: |
           shopt -s nullglob
@@ -207,8 +182,6 @@ jobs:
           "$RUNNER_TEMP/verify/Scripts/python" -m pip install --disable-pip-version-check --quiet cryptography==50.0.2
           "$RUNNER_TEMP/verify/Scripts/python" tools/release.py verify --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --signature "dist/battle-plan-${VERSION}-x64-setup.exe.sig" --version "$VERSION"
 
-      # The installer's layout holds exactly the shipped files, and the app in it opens a recording
-      # and draws its map; nothing is installed on the machine and no user data is read or written.
       - name: Smoke the installed layout
         run: bash tools/with-machine-locks.sh "release-smoke-${{ inputs.channel }}" python tools/release_smoke.py --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --out "$RUNNER_TEMP/release-smoke"
 
@@ -228,7 +201,6 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.channel == 'preview' && 7 || 30 }}
 
-      # The build folder keeps what the next build reuses, within its cap.
       - name: Prune the build folder
         if: always()
         run: |

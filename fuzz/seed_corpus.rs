@@ -1,4 +1,3 @@
-//! Synthetic wire fixtures only; this program never reads a game installation.
 
 use std::{fs, io, path::Path};
 
@@ -29,7 +28,6 @@ fn main() -> io::Result<()> {
     wrong_crc[last] ^= 1;
     seeds.push(("wrong-crc", wrong_crc));
     let mut huge_raw = valid.bytes().to_vec();
-    // The last index entry ends at the trailer's end; retain its trailer CRC.
     let raw_at = huge_raw.len() - 24 - 8;
     huge_raw[raw_at..raw_at + 8]
         .copy_from_slice(&(replay::container::MAX_BLOCK_RAW_BYTES as u64).to_le_bytes());

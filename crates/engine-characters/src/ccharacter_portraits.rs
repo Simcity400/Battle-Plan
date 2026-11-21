@@ -1,8 +1,3 @@
-//! Portrait-holder writer boundaries observing normal execution; recording
-//! never invokes them for a value. Insertion and replacement include parsing
-//! and public setters. Whole-holder copies and bulk entry copies have separate
-//! boundaries. Construction and destruction invalidate lifetimes, including
-//! address reuse. Renderer-cache payloads are excluded from recorded descriptors.
 
 use engine_sites::Rva;
 pub struct MutationSite {

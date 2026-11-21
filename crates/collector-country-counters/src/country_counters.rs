@@ -1,7 +1,3 @@
-//! Hourly country counter scalars, stored ordered state/leader rosters and
-//! civil-war references. Arenas follow live header sums. Under
-//! `counter_changes` the counter rows of countries no hooked writer marked
-//! are carried from their last read ([`CounterStore`]).
 use super::{country_naval_movement_inputs as naval, reserved_visibility};
 use crate::{
     clock::qpc,
@@ -28,11 +24,6 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-/// The hour's physical navy pass on loan from CountryCounterInputs
-/// ([`Captured::take_navies`]): one holder authenticates every strategic
-/// navy manager slot once, the mission borrowers use it until
-/// [`Self::finish`], and slot zero's launch naval bases go to the reserved
-/// country's launch sources.
 pub struct Navies {
     holder: naval::Captured,
     ticks: Option<u64>,
@@ -43,8 +34,6 @@ impl Navies {
         self.holder.allocated_bytes()
     }
 
-    /// Begin the hour's pass; the mission borrowers use [`Self::holder`]
-    /// until [`Self::finish`].
     pub fn begin<'a, M: Memory>(
         &mut self,
         memory: &'a M,
@@ -60,7 +49,6 @@ impl Navies {
         reader
     }
 
-    /// The pass's wall, charged to CountryCounterInputs.
     pub fn ticks(&self) -> u64 {
         self.ticks.unwrap_or(0)
     }
@@ -69,7 +57,6 @@ impl Navies {
         &mut self.holder
     }
 
-    /// Retire the pass's borrowed controls once its borrowers returned.
     pub fn finish(&mut self) {
         self.holder.finish();
     }
@@ -126,14 +113,10 @@ impl Capacities {
         );
     }
 
-    /// One row per canonical country slot.
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
     }
 
-    /// CountryCivilWars from the live entry total
-    /// (`country_scale::observe_politics`), with the three-quarters growth
-    /// rule's headroom. Never lowers.
     pub fn raise_for_civil_wars(&mut self, entries: usize) {
         crate::country_scale::raise(&mut self.civil_wars, crate::country_scale::rows(entries, 1));
     }
@@ -176,7 +159,6 @@ struct RelationRow {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: 0,
@@ -250,8 +232,6 @@ impl Captured {
         self.pride_names.grow(&mut capacity.pride_names);
         self.naval.grow(&mut capacity.naval);
     }
-    /// Lend the physical navy pass to its own job: the counter pass reads
-    /// none of it, so the two run beside each other.
     pub fn take_navies(&mut self) -> Navies {
         Navies {
             holder: std::mem::replace(&mut self.naval, naval::Captured::new(Default::default())),
@@ -279,9 +259,6 @@ impl Captured {
         self.capture_carried(memory, base, state, reverse, None)
     }
 
-    /// The hour's counter pass with the reserved country's reverse
-    /// visibility, carrying the counter rows `store` certifies from its held
-    /// read ([`CounterStore`]); without a store every country is read.
     pub fn capture_carried(
         &mut self,
         memory: &impl Memory,
@@ -372,16 +349,11 @@ impl Captured {
         ticks
     }
 
-    /// Optional reads start after every established country prefix. A refused
-    /// owner consumes no target span, so later owners can use the same space.
     #[cfg(test)]
     fn capture_relations(&mut self, memory: &impl Memory, base: usize, state: usize) {
         self.capture_relations_with_reverse(memory, base, state, None, None, None);
     }
 
-    /// A row whose counter row `store` carried takes its held suffix and
-    /// co-belligerent targets instead of reading them; its pride ship name,
-    /// census resolution and reverse visibility cell are still read.
     fn capture_relations_with_reverse<M: Memory>(
         &mut self,
         memory: &M,
@@ -402,9 +374,6 @@ impl Captured {
             self.rows.outcome = Outcome::Unavailable { reason };
             return 0;
         }
-        // The established positive counter prefix is complete before the new
-        // source header. Source/cell zero are independent of positive census
-        // availability; no second positive walker or pointer arena exists.
         let source = reverse.as_mut().and_then(|request| {
             request.capture.prepare(
                 memory,
@@ -413,11 +382,6 @@ impl Captured {
                 request.prefix_ready,
             )
         });
-        // Reuse the original positive reader when it exists, without requiring
-        // it for the independently captured reserved slot zero.
-        // Nonempty positive suffixes retain their established construction and
-        // read trace. The new empty-prefix path borrows the original attempt,
-        // including Err, and never recaptures a failed or gated header.
         let positive_reader = (len != 0).then(|| ccountry::Reader::new(memory, base, state));
         let countries = positive_reader.as_ref().or(prefix_reader);
         if let (Some(request), Some(source)) = (reverse.as_mut(), source.as_ref()) {
@@ -442,8 +406,6 @@ impl Captured {
                 break;
             };
             *row = RelationRow::default();
-            // This suffix uses the admitted full reference, before any unrelated
-            // relation lookup can fail. A zero reference touches no registry.
             match capture_pride_name(
                 memory,
                 base,
@@ -488,8 +450,6 @@ impl Captured {
                     self.co_belligerents.len += targets.len();
                     self.co_belligerents.required =
                         self.co_belligerents.required.saturating_add(targets.len());
-                    // The reverse cell reads its own status: no forward
-                    // observation of this country exists to share.
                     if let (Some(request), Some(source)) = (reverse.as_mut(), source.as_ref()) {
                         request.capture.capture_cell(
                             source,
@@ -519,8 +479,6 @@ impl Captured {
                 targets,
                 &mut forward,
             );
-            // Independent new payload: consumes the exact original status0 attempts, retaining old
-            // outputs even when the relation's target word was an alias of country 0.
             let visibility = crelation_status::forward_zero_visibility_inputs(
                 memory,
                 base,
@@ -584,8 +542,6 @@ impl Captured {
             }
             self.relations.len = index + 1;
         }
-        // Source's Drop clears private matrix controls on this callback stack;
-        // the handoff was taken and the one forward observation dies per row.
         reverse
             .as_ref()
             .map_or(0, |request| request.capture.ticks())
@@ -639,8 +595,6 @@ impl Captured {
                     .get(index)
                     .filter(|_| index < self.relations.len);
                 CountryCounterInputRow {
-                    // Playback derives every direct-war cell from the hour's
-                    // WarRelations; no packet is captured.
                     directed_wars: Recorded::Value(None),
                     country: r.country,
                     recruitment_modifiers: Recorded::Value(r.recruitment_modifiers),
@@ -665,7 +619,6 @@ impl Captured {
                     .into(),
                     mines_effect_reduction: Recorded::Value(r.mines_effect_reduction),
                     naval_detection: Recorded::Value(r.naval_detection),
-                    // No country operand is witnessed; current writers leave it empty.
                     attack: Recorded::Value(Witnessed(None)),
                     attack_modifiers: Recorded::Value(r.attack_modifiers.map(|[night, bunker]| {
                         CountryAttackModifiers {
@@ -737,7 +690,6 @@ impl Captured {
                             .and_then(|span| self.effect_list(&self.co_belligerents, span)),
                     ),
                     zero_war: Recorded::Value(relation.and_then(|row| row.zero_war)),
-                    // The selected transport preview's owner speeds retired.
                     movement: Recorded::Value(Retired),
                     zero_subject: Recorded::Value(relation.and_then(|row| row.zero_subject)),
                     forward_visibility: Recorded::Value(
@@ -839,9 +791,6 @@ fn valid_span<T>(arena: &Arena<T>, start: usize, count: usize) -> bool {
         .is_some_and(|end| end <= arena.len && end <= arena.first.len())
 }
 
-/// Independent off-thread header hint. Rebuilt co-belligerent vectors'
-/// full counts and slot zero bound the target storage.
-/// Retain every known floor and count each failed owner independently.
 pub fn co_belligerent_demand(
     memory: &impl Memory,
     base: usize,
@@ -1113,7 +1062,6 @@ mod tests {
                 CO_DIPLOMACY[index] as u64,
             );
         }
-        // Raw reference 3 aliases canonical slot 2.
         co_header(&mut bytes, CO_STATE + cgame_state::COUNTRY_LINKS, 0x3100, 4);
         for (index, value) in [0, 1, 2, 2].into_iter().enumerate() {
             co_put32(&mut bytes, 0x3100 + index * 4, value);
@@ -1219,7 +1167,6 @@ mod tests {
         };
         assert_eq!(rows[0].co_belligerents, Recorded::Value(Some(vec![0, 2])));
         assert_eq!(rows[1].co_belligerents, Recorded::Value(Some(vec![0])));
-        // Projection owns its bytes, and the next empty sample retains no set.
         capture.co_belligerents.first.fill(99);
         assert_eq!(rows[0].co_belligerents, Recorded::Value(Some(vec![0, 2])));
         for (owner, target) in [(0, 0), (0, 2), (1, 0)] {
@@ -1401,7 +1348,7 @@ mod tests {
             bytes: &bytes,
         };
         let known = co_belligerent_demand(&memory, 0, CO_STATE);
-        assert_eq!(known, (4, None)); // candidate2 + explicitzero1, secondowner zero1.
+        assert_eq!(known, (4, None));
         co_put64(&mut bytes, CO_DIPLOMACY[1], 0);
         assert_eq!(
             co_belligerent_demand(
@@ -1460,7 +1407,7 @@ mod tests {
             0,
             CO_STATE,
         );
-        assert_eq!(floor, 1); // The independent second owner remains readable.
+        assert_eq!(floor, 1);
         assert!(refusal.is_some());
         let mut bytes = co_world();
         for diplomacy in CO_DIPLOMACY {
@@ -1898,7 +1845,6 @@ mod tests {
             [false, false, false, true]
         );
         capture.reset();
-        // The next authenticated prefix is admitted before its suffix pass.
         capture.rows.outcome = Outcome::Rows { len: 2 };
         capture.capture_relations(&memory, 0, CO_STATE);
         assert_eq!(

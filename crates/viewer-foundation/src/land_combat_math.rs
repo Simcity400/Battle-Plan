@@ -1,4 +1,3 @@
-//! Recorded land combat condition, modifier and survival-score arithmetic.
 use crate::map::tables::rows;
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandCombatMember,
@@ -9,14 +8,12 @@ use std::{collections::BTreeMap, io};
 
 pub type Divisions<'a> = BTreeMap<(u8, u64), LandCombatMember<'a>>;
 
-/// The rows of `combat`'s members, which sort together.
 pub fn combat_rows(rows: &[LandCombatDivisionRow], combat: u64) -> &[LandCombatDivisionRow] {
     let start = rows.partition_point(|row| row.combat < combat);
     let len = rows[start..].partition_point(|row| row.combat == combat);
     &rows[start..start + len]
 }
 
-/// Each of `members`' division values, in row order, from the frame's division rows.
 pub fn member_values(
     frame: &DecodedFrame,
     members: &[LandCombatDivisionRow],
@@ -29,8 +26,6 @@ pub fn member_values(
     ))
 }
 
-/// A division's current hit points and organisation from `Divisions`, with
-/// their maxima from `DivisionStatus` when it has a row this hour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Condition {
     pub strength: i64,
@@ -41,9 +36,6 @@ pub struct Condition {
 
 pub type Conditions = BTreeMap<u64, Condition>;
 
-/// Every division with a `Divisions` row this hour. A missing `DivisionPanelStats` row or
-/// refused word leaves only the maxima unknown: organisation sum reads current organisation
-/// alone.
 pub fn conditions(frame: &DecodedFrame) -> io::Result<Conditions> {
     let panels: BTreeMap<_, _> = rows::<tables::DivisionPanelStats>(frame)?
         .rows()
@@ -68,8 +60,6 @@ pub fn conditions(frame: &DecodedFrame) -> io::Result<Conditions> {
         .collect())
 }
 
-/// Why [`conditions`] holds no entry for a division: which of its two tables
-/// lacks the division's row, and whether that table is complete this hour.
 pub fn condition_gap(frame: &DecodedFrame) -> io::Result<impl Fn(u64) -> String + '_> {
     let divisions = rows::<tables::Divisions>(frame)?;
     let status = rows::<tables::DivisionStatus>(frame)?;
@@ -105,8 +95,6 @@ pub fn condition_gap(frame: &DecodedFrame) -> io::Result<impl Fn(u64) -> String 
     })
 }
 
-/// The `NMilitary` defines early survival estimate reads. The
-/// native estimate uses the named avoid chances directly, not their complements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScoreDefines {
     pub avoid_with_defence: i64,
@@ -123,7 +111,6 @@ impl ScoreDefines {
         })
     }
 
-    /// Values exercised by the tests.
     #[cfg(any(test, feature = "test-support"))]
     pub const VANILLA: Self = Self {
         avoid_with_defence: 9_000_000,
@@ -136,14 +123,10 @@ fn fixed_mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / 100_000
 }
 
-// The exceptional range excludes i64::MAX, MIN and MIN + 1.
 fn ranged(value: i64) -> bool {
     (value as u64).wrapping_add(0x7FFF_FFFF_FFFF_FFFE) < 0xFFFF_FFFF_FFFF_FFFD
 }
 
-// Current HP as a fraction of maximum HP, clamped
-// to [0, one]; a zero maximum or an out-of-range current HP gives one.
-// The game then truncates to tenths and keeps at least one tenth.
 fn coarse_strength(strength: i64, maximum: i64) -> i64 {
     let fraction = if maximum != 0 && ranged(strength) {
         strength
@@ -156,24 +139,15 @@ fn coarse_strength(strength: i64, maximum: i64) -> i64 {
     (fraction.wrapping_mul(1_000_000) / 10_000_000_000).max(1) * 10_000
 }
 
-/// Why the survival estimate has no value: an operand it reads is missing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreGap {
-    /// A division without its `Divisions` row: a participant's current
-    /// organisation or a firing committed division's current HP.
     Division(u64),
-    /// A firing committed division whose `DivisionPanelStats` row lacks its maximum HP, which
-    /// the early path reads.
     MaximumStrength(u64),
-    /// A committed division without its `LandCombatDivisions` row.
     Member { side: u8, division: u64 },
-    /// A committed division whose stats neither its `LandCombatDivisions` row nor its
-    /// division's rows of the hour hold.
     Numbers { side: u8, division: u64 },
 }
 
 impl ScoreGap {
-    /// What the estimate lacks, naming the division and the table.
     pub fn reason(self) -> String {
         match self {
             Self::Division(division) => format!(
@@ -192,10 +166,7 @@ impl ScoreGap {
     }
 }
 
-/// What the survival estimate reads of a combat's members and divisions.
 pub trait ScoreJoins {
-    /// A member's stat values (none when neither its row nor its division's rows hold them) and
-    /// scales; `None` without its `LandCombatDivisions` row.
     fn member(&self, side: u8, division: u64) -> Option<(Option<[i64; 5]>, [i64; 4])>;
     fn condition(&self, division: u64) -> Option<Condition>;
 }
@@ -215,7 +186,6 @@ impl ScoreJoins for RowJoins<'_, '_> {
     }
 }
 
-/// A combat's detail operands the estimate reads.
 #[derive(Clone, Copy)]
 pub struct ScoreDetail<'a> {
     pub attacker_bonus: i64,
@@ -255,7 +225,6 @@ fn early_damage(
         Ok(sum.wrapping_mul(100_000) / (targets.len() as i64 * 100_000))
     };
     let hardness = average(2)?;
-    // An attacker meets defence; a defender meets breakthrough.
     let defended = fixed_mul(average(usize::from(firing_side == 1))?, 10_000);
     let bonus = if firing_side == 0 {
         detail.attacker_bonus
@@ -298,9 +267,6 @@ fn early_damage(
         })
 }
 
-// absent/feature-ineligible modifiers return zero; metadata bit 4
-// clamps the getter to [0,1]. Country and contextual leader use the same rule.
-// `key` indexes the recorded modifiers: 0xFB, 0x10F (width), 0x250.
 pub fn modifier(context: &LandDivisionContext, key: usize, leader: bool) -> Option<i64> {
     let value = if leader {
         &context.leader_modifiers[key]
@@ -326,9 +292,6 @@ pub fn modifier(context: &LandDivisionContext, key: usize, leader: bool) -> Opti
     })
 }
 
-/// Survival estimates in fixed5 for the two complete sides.
-/// `participants` is the ordered full LandCombats census (not committed only).
-/// Early battles use damage estimates and the verified content definition context.
 pub fn side_scores<'a>(
     detail: &LandCombatDetailsRow,
     divisions: impl IntoIterator<Item = LandCombatMember<'a>>,
@@ -349,7 +312,6 @@ pub fn side_scores<'a>(
     )
 }
 
-/// [`side_scores`] from values: the detail's operands and the combat's members and divisions.
 pub fn side_scores_of(
     detail: ScoreDetail<'_>,
     joins: &impl ScoreJoins,
@@ -359,8 +321,6 @@ pub fn side_scores_of(
     let mut scores = [0; 2];
     for side in 0..2 {
         let state = &detail.sides[side];
-        // Use wrapping 64-bit sums and products over current organisation,
-        // never maximum organisation.
         let organisation = participants[side].iter().try_fold(0_i64, |sum, id| {
             Ok(sum.wrapping_add(
                 joins
@@ -374,12 +334,10 @@ pub fn side_scores_of(
             scores[side] = if damage > 99 {
                 comparison_ratio(organisation, damage)
             } else {
-                0x0017_4875_6160 // Native no-effective-loss sentinel, not zero.
+                0x0017_4875_6160
             };
             continue;
         }
-        // The 24 samples' signed 64-bit sum, with wrapping addition,
-        // recorded as such.
         let loss = state.organisation_loss_sum;
         let average = comparison_ratio(loss, 2_400_000);
         let average = if average < 1 { 100 } else { average };
@@ -388,10 +346,6 @@ pub fn side_scores_of(
     Ok(scores)
 }
 
-/// Sums and products wrap at 64 bits before signed division truncates.
-/// The three special fixed-point values bypass division and produce the
-/// positive 0xffffffff sentinel.
-/// Both callers supply a positive denominator, so the division cannot trap.
 fn comparison_ratio(value: i64, denominator: i64) -> i64 {
     if (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
         i64::from(u32::MAX)

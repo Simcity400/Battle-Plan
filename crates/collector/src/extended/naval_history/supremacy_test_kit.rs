@@ -102,7 +102,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             (2000 + index) as u64,
         );
     }
-    // Spare vector capacity holds poison and must not become live rows.
     put64(
         &mut bytes,
         ROWS + 2 * naval_dominance_entry::STRIDE,

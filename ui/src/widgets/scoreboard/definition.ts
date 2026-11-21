@@ -3,7 +3,6 @@ import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS, tableSortOf, tableSortOptions } from '../../charts/table/options.ts';
 import { TOP_COUNTRIES } from '../../charts/race/options.ts';
 
-/** The recorded registry supplies the default measure; no second measure catalogue. */
 export const DEFAULT_SORT = { column: '', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
   { key: 'columns', section: 'options', label: 'Columns', kind: 'content-set', default: '',

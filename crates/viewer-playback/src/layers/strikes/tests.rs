@@ -20,8 +20,6 @@ fn place() -> Place {
     })
 }
 
-/// Impact `key` appended to the NuclearStrikes log at `province` with `nuke_type`, its other
-/// columns not recorded.
 fn append(store: &mut Store, key: u128, province: u32, nuke_type: u32) {
     let table = TableId::NuclearStrikes;
     let mut cells: Vec<Option<Cell<'_>>> = vec![None; store.kinds(table.index()).len()];
@@ -30,8 +28,6 @@ fn append(store: &mut Store, key: u128, province: u32, nuke_type: u32) {
     store.table(table.index()).unwrap().append(key, &cells).unwrap();
 }
 
-/// Impact 1 at province 10 is listed hour 3 alone; impact 2 at province 999 (no place) from hour
-/// 9; impact 3, thermonuclear, at province 11 from hour 12; impact 2 forgotten at hour 13.
 fn strikes(at: u32, store: &mut Store) {
     complete(store, at, &[TableId::NuclearStrikes]);
     let table = TableId::NuclearStrikes;

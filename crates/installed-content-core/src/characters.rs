@@ -1,19 +1,3 @@
-//! Characters (`common/characters`): authored portraits, advisor roles,
-//! country leader roles and unit leader `visible` triggers.
-//!
-//! Conditional `instance` alternatives are retained without evaluation. An
-//! authored value is used only when every alternative agrees; disagreements
-//! become [`Authored::Ambiguous`], including repeated tokens across files.
-//! Disputed advisor roles use the template their recorded holder was built
-//! from ([`Characters::held_advisor`]). [`leader_templates`] lists every
-//! character template with its stored file and line for that join.
-//!
-//! Each file has one reader ([`native`]). A body beginning with `instance`
-//! reads as alternatives; other bodies read as one template. Fields apply
-//! in order within each body or instance; only alternatives are compared.
-//!
-//! An unread file suffix leaves every character it could define or redefine
-//! unknown ([`crate::coverage`]); lookups name the file and cause.
 
 use crate::{
     ResolvedLayers,
@@ -33,27 +17,19 @@ use std::{
     io,
 };
 
-/// Portrait roles in enum order. Unknown roles are refused, and a missing
-/// requested role falls back to the lowest role of the requested size.
-/// `airforce` identifies an intelligence lane rather than a portrait role.
 pub const PORTRAIT_ROLES: [&str; 6] = ["civilian", "army", "navy", "air", "operative", "scientist"];
 
-/// Portrait sizes in enum order: small, then large.
 pub const PORTRAIT_SIZES: [&str; 2] = ["small", "large"];
 
-/// One authored value (a portrait sprite name) as every alternative gives it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Authored {
     Missing,
     Asset(String),
-    /// Alternatives that do not agree, with every value any of them names.
     Ambiguous(BTreeSet<String>),
-    /// The character's reading cannot be followed, and why.
     Unknown(String),
 }
 
 impl Authored {
-    /// Every value this can name.
     pub fn names(&self) -> BTreeSet<String> {
         match self {
             Self::Missing | Self::Unknown(_) => BTreeSet::new(),
@@ -62,8 +38,6 @@ impl Authored {
         }
     }
 
-    /// Combines another alternative: equal stays, different becomes
-    /// ambiguous, and an unknown one leaves the whole unknown.
     pub fn agree(&mut self, other: Self) {
         match (&*self, other) {
             (Self::Unknown(_), _) => {}
@@ -78,26 +52,17 @@ impl Authored {
     }
 }
 
-/// The readers a role template's fields go to, which [`advisor_field`]'s
-/// callers embed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Role {
     Modifier(modifiers::Node),
-    /// The role weight.
     Mtth,
 }
 
-/// Advisor field dispatch by keyword identity.
 pub(crate) fn advisor_field(field: &Field<'_>) -> Shape<Role> {
     match field.keyword().as_deref() {
-        // `available`, `visible`, `allowed`, and `do_effect` read AND triggers.
         Some(b"available" | b"visible" | b"allowed" | b"do_effect") => Shape::Trigger,
-        // `on_add` and `on_remove` read effects by key in character scope.
         Some(b"on_add" | b"on_remove") => Shape::EffectIn(ScopeKind::Character.bit()),
-        // `name`, `slot`, and `idea_token` read the lexer's current token.
         Some(b"name" | b"slot" | b"idea_token") => Shape::Current,
-        // Description and picture fields read strings; cost fields use fixed5
-        // scans, and action-tooltip and firing flags use boolean scans.
         Some(
             b"desc"
             | b"picture"
@@ -107,69 +72,42 @@ pub(crate) fn advisor_field(field: &Field<'_>) -> Shape<Role> {
             | b"always_show_on_actions_tooltip"
             | b"can_be_fired",
         ) => Shape::One,
-        // Read the ledger value.
         Some(b"ledger") => crate::ideas::ledger_shape(field),
-        // `modifier` reads a modifier object; `ai_will_do` reads a weight.
         Some(b"modifier") => Shape::Object(Role::Modifier(modifiers::Node::Modifier)),
         Some(b"ai_will_do") => Shape::Object(Role::Mtth),
-        // `traits` and `research_bonus` read lists only on an opening brace;
-        // other values use error recovery. Bonus entries use fixed5 scans.
         Some(b"traits") => Shape::ListOrSkip,
         Some(b"research_bonus") => {
             Shape::ObjectOrSkip(Role::Modifier(modifiers::Node::ResearchBonus))
         }
-        // Report and skip an unexpected field.
         _ => Shape::Skip,
     }
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    /// The character database's file loop.
     Top,
-    /// The `characters` loop reads each key as a character body.
     Table,
-    /// A character body reads an instance loop when it starts with `instance`,
-    /// otherwise one template.
     Body,
-    /// An instance reads `allowed` first, then its template fields.
     Instance,
-    /// Portrait type dispatch.
     Portraits,
-    /// One portrait type reads its size fields.
     Sizes,
-    /// Country-leader role fields.
     Leader,
-    /// A role template's reader.
     Advisor,
     Role(Role),
-    /// Unit-leader role fields for `navy_leader`, `field_marshal`, and
-    /// `corps_commander`.
     Military,
-    /// Scientist role fields.
     Scientist,
-    /// Initial scientist skills.
     ScientistSkills,
 }
 
-/// What the dispatch learns while the reader reads.
 #[derive(Default)]
 struct Reading {
-    /// The character being read.
     owner: String,
-    /// Portrait keys the game reports as unexpected and skips.
     skipped_portraits: Vec<native::Misread>,
     undecided: Vec<modifiers::Undecided>,
-    /// The next field is a character body's, or an instance's, first.
     body_first: bool,
     instance_first: bool,
-    /// The body being read started with `instance`.
     instances: bool,
-    /// Characters dispatched so far.
     characters: usize,
-    /// The first place the reading cannot be followed, and the number of
-    /// characters read before the one holding it.
     stop: Option<(usize, String)>,
 }
 
@@ -201,7 +139,6 @@ impl Reading {
         let keyword = field.keyword();
         let keyword = keyword.as_deref();
         let shape = match node {
-            // `characters` opens its loop; other roots are reported and skipped.
             Node::Top if keyword == Some(b"characters") => Shape::Object(Node::Table),
             Node::Top => Shape::Skip,
             Node::Table => {
@@ -218,8 +155,6 @@ impl Reading {
                     self.instance_first = true;
                     Shape::Object(Node::Instance)
                 } else if self.instances {
-                    // A token other than `instance` ends the instance loop and is consumed
-                    // as the body's end.
                     self.stop(
                         field.key.line,
                         format!(
@@ -236,8 +171,6 @@ impl Reading {
                 if keyword == Some(b"allowed") {
                     Shape::Trigger
                 } else {
-                    // A missing initial `allowed` reports an error and skips the block;
-                    // that recovery remains unsettled here.
                     self.stop(
                         field.key.line,
                         "an instance that does not start with `allowed`, which the character-body reader skips through block skipping".to_owned(),
@@ -246,8 +179,6 @@ impl Reading {
                 }
             }
             Node::Instance => template_field(field),
-            // Each supported portrait role reads size fields on an opening brace;
-            // a scalar becomes its large portrait. Unknown roles are reported.
             Node::Portraits => match keyword {
                 Some(role) if PORTRAIT_ROLES.iter().any(|known| role == known.as_bytes()) => {
                     Shape::ObjectIfOpen(Node::Sizes)
@@ -257,7 +188,6 @@ impl Reading {
                     Shape::Skip
                 }
             },
-            // Recognized sizes read string values; unknown sizes are reported.
             Node::Sizes => match keyword {
                 Some(size) if PORTRAIT_SIZES.iter().any(|known| size == known.as_bytes()) => {
                     Shape::One
@@ -267,9 +197,6 @@ impl Reading {
                     Shape::Skip
                 }
             },
-            // Read `id` as signed integer; `desc`, `ideology`, and `expire` as
-            // strings, with `ideology` using the current token. `traits` reads
-            // only an opening list; unknown fields are reported.
             Node::Leader => match keyword {
                 Some(b"id" | b"desc" | b"expire") => Shape::One,
                 Some(b"ideology") => Shape::Current,
@@ -282,9 +209,6 @@ impl Reading {
                 modifiers::shape(modifier, field, modifiers::UNKNOWN, &mut self.undecided)
                     .map(|modifier| Node::Role(Role::Modifier(modifier)))
             }
-            // Skill and `legacy_id` fields read signed integers; `desc` reads
-            // a string, `visible` an AND trigger, and `traits` an opening list.
-            // Unknown fields are reported.
             Node::Military => match keyword {
                 Some(
                     b"skill"
@@ -301,9 +225,6 @@ impl Reading {
                 Some(b"traits") => Shape::ListOrSkip,
                 _ => Shape::Skip,
             },
-            // Read `desc` as a string, `visible` as an AND trigger, `traits` as
-            // a dynamic-token list, and `skills` as an initial-skill object.
-            // Unknown fields are reported.
             Node::Scientist => match keyword {
                 Some(b"desc") => Shape::One,
                 Some(b"visible") => Shape::Trigger,
@@ -311,7 +232,6 @@ impl Reading {
                 Some(b"skills") => Shape::Object(Node::ScientistSkills),
                 _ => Shape::Skip,
             },
-            // Each key names a specialization whose value reads as an integer.
             Node::ScientistSkills => Shape::One,
         };
         if self.stop.is_none()
@@ -323,39 +243,24 @@ impl Reading {
     }
 }
 
-/// Character-template field dispatch.
 fn template_field(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
-        // `available`, `allowed_civil_war`, and `remove` read AND triggers by key.
         Some(b"available" | b"allowed_civil_war" | b"remove") => Shape::Trigger,
-        // Read name text, nationality tag, and the capture and generic flags.
         Some(b"name" | b"nationality" | b"can_be_captured" | b"generic") => Shape::One,
-        // `gender` reads one value token; invalid values report an error
-        // and skip an opening block.
         Some(b"gender") => Shape::Skip,
-        // Portrait declarations read into one object.
         Some(b"portraits") => Shape::Object(Node::Portraits),
-        // Advisor and country-leader role objects.
         Some(b"advisor") => Shape::Object(Node::Advisor),
         Some(b"country_leader") => Shape::Object(Node::Leader),
-        // Unit-leader and scientist roles read objects regardless of
-        // whether the value opens a block.
         Some(b"navy_leader" | b"field_marshal" | b"corps_commander") => {
             Shape::Object(Node::Military)
         }
         Some(b"scientist") => Shape::Object(Node::Scientist),
-        // Report unexpected fields, including `instance` after the body's
-        // first field.
         _ => Shape::Skip,
     }
 }
 
-/// Read one character file after ideas, resolving triggers against `names`.
-/// Return the reader projection and any unsettled suffix, including which
-/// characters were read before it.
 pub fn read_file(input: &[u8], names: &KeyNames) -> (native::Read, Option<(usize, String)>) {
     let mut reading = Reading::default();
-    // Both character-file passes use lexer mode 1.
     let mut read = native::read(
         input,
         native::Mode::SkipMark,
@@ -376,7 +281,6 @@ pub fn read_file(input: &[u8], names: &KeyNames) -> (native::Read, Option<(usize
     (read, stop)
 }
 
-/// A character body's fields, or its instance fields after each `allowed`.
 struct Body<'a> {
     own: &'a [Item],
     instances: Vec<&'a [Item]>,
@@ -400,8 +304,6 @@ impl<'a> Body<'a> {
         }
     }
 
-    /// The template of each alternative: the body's own fields, or each
-    /// instance's.
     fn alternatives(&self) -> Vec<Template> {
         if self.instances.is_empty() {
             let mut template = Template::read(self.own);
@@ -423,9 +325,6 @@ impl<'a> Body<'a> {
     }
 }
 
-/// Apply advisor fields in order. Strings keep the last value, failed fixed5
-/// scans keep the earlier cost, and repeated trait, research-bonus, and modifier
-/// blocks accumulate.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AdvisorFields {
     pub slot: Option<String>,
@@ -433,7 +332,6 @@ pub(crate) struct AdvisorFields {
     pub name: Option<String>,
     pub traits: Vec<String>,
     pub cost: Option<i64>,
-    /// Defaults to zero, then follows `crate::ideas::ledger`.
     pub ledger: u32,
     pub modifiers: Modifiers,
     pub research_bonuses: Vec<Modifier>,
@@ -444,7 +342,6 @@ impl AdvisorFields {
     pub(crate) fn apply(&mut self, fields: &[Item]) {
         for field in fields {
             match field.keyword().map(|keyword| keyword.folded()).as_deref() {
-                // Current-token text ends at its first NUL.
                 Some(b"slot") => {
                     self.slot = self
                         .unheld
@@ -465,7 +362,6 @@ impl AdvisorFields {
                 }
                 Some(b"cost") => self.cost = modifiers::read_fixed5(field).or(self.cost),
                 Some(b"ledger") => self.ledger = crate::ideas::ledger(self.ledger, field),
-                // Trait string-list entries append to the existing role.
                 Some(b"traits") => self.traits.extend(strings(&field.value, &mut self.unheld)),
                 Some(b"modifier") => self
                     .modifiers
@@ -483,7 +379,6 @@ impl AdvisorFields {
     }
 }
 
-/// Read string-list entries; a value without an opening block adds nothing.
 fn strings(value: &Value, unheld: &mut Unheld) -> Vec<String> {
     value
         .items()
@@ -497,20 +392,13 @@ fn strings(value: &Value, unheld: &mut Unheld) -> Vec<String> {
         .collect()
 }
 
-/// One character template as its fields leave it, each applied in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Template {
-    /// Empty startup allowed conjunction.
     unconditional_startup: bool,
-    /// `name` through string read.
     name: Option<String>,
-    /// Portraits by type and size. Repeated blocks share this object; later
-    /// assignments replace earlier values.
     portraits: BTreeMap<(String, String), String>,
     advisors: Vec<AdvisorFields>,
-    /// Country leader roles: ideology and traits.
     leaders: Vec<(Option<String>, Vec<String>)>,
-    /// A stored text the port cannot hold, its own or a role's.
     unheld: Unheld,
 }
 
@@ -556,7 +444,6 @@ impl Template {
                         .keep("a leader's ideology", field.value.c_str())
                         .map(str::to_owned);
                 }
-                // Append each opening block's entries.
                 Some(b"traits") => traits.extend(strings(&field.value, &mut self.unheld)),
                 _ => {}
             }
@@ -564,9 +451,6 @@ impl Template {
         self.leaders.push((ideology, traits));
     }
 
-    /// One field of a `portraits` block: a type's `{` block
-    /// sets each size it names; any other value sets the type's large
-    /// portrait (size 1).
     fn portrait(&mut self, field: &Item) {
         let Some(kind) = field.keyword().map(|keyword| keyword.folded()) else {
             return;
@@ -602,7 +486,6 @@ impl Template {
     }
 }
 
-/// Every alternative's value, agreed.
 fn agreed(alternatives: &[Template], value: impl Fn(&Template) -> Authored) -> Authored {
     let mut values = alternatives.iter().map(value);
     let Some(mut result) = values.next() else {
@@ -614,10 +497,6 @@ fn agreed(alternatives: &[Template], value: impl Fn(&Template) -> Authored) -> A
     result
 }
 
-/// A file's characters in order, each with its token and alternatives,
-/// and the file's stop: the reading's, or the first character whose stored
-/// text (its token included) the port cannot hold, from which on the file
-/// is unknown.
 type Declared = (Vec<(String, Vec<Template>)>, Option<(usize, String)>);
 
 fn characters_of(items: &[Item], stop: Option<(usize, String)>) -> Declared {
@@ -657,10 +536,6 @@ fn characters_of(items: &[Item], stop: Option<(usize, String)>) -> Declared {
     (result, stop)
 }
 
-/// Every character's portrait of one category and size in one file, and
-/// the place its reading stops short, if it does: a character read from
-/// there on is [`Authored::Unknown`] with that cause, and a character the
-/// file does not list may be defined past it.
 pub fn portraits(
     input: &[u8],
     names: &KeyNames,
@@ -685,28 +560,20 @@ pub fn portraits(
     Ok((characters, stop.map(|(_, cause)| cause)))
 }
 
-/// An advisor role: the idea the game appoints and the character behind it.
 #[derive(Clone, Debug, Eq)]
 pub struct AdvisorRole {
     pub character: String,
     pub slot: String,
     pub idea_token: String,
     pub traits: Vec<String>,
-    /// Advisor cost in fixed5.
     pub cost: Option<i64>,
-    /// The intel ledgers it shows on (`crate::ideas::ledger`).
     pub ledger: u32,
-    /// The role modifier; repeated blocks read into the same object.
     pub modifiers: Modifiers,
-    /// Its `research_bonus` entries.
     pub research_bonuses: Vec<Modifier>,
 }
 
 impl PartialEq for AdvisorRole {
     fn eq(&self, other: &Self) -> bool {
-        // Role names compare with folded string identity, while character
-        // and trait references use lexer tokens. Keep authored spellings for
-        // names and artwork.
         self.character.eq_ignore_ascii_case(&other.character)
             && self.slot.eq_ignore_ascii_case(&other.slot)
             && self.idea_token.eq_ignore_ascii_case(&other.idea_token)
@@ -722,7 +589,6 @@ impl PartialEq for AdvisorRole {
     }
 }
 
-/// A country leader role for one ideology.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaderRole {
     pub character: String,
@@ -730,89 +596,50 @@ pub struct LeaderRole {
     pub traits: Vec<String>,
 }
 
-/// What the characters files say, as far as every alternative agrees.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Characters {
-    /// Advisor roles by the idea token the game appoints.
     advisors: BTreeMap<String, AdvisorRole>,
-    /// Folded identity to first authored spelling (keeps the
-    /// existing string on a case alias; uses the same lookup).
     advisor_spellings: BTreeMap<String, String>,
-    /// Idea tokens whose alternatives or definitions disagree; left out of `advisors`.
     ambiguous_advisors: BTreeSet<String>,
-    /// Country leader roles by (character, ideology).
     leaders: BTreeMap<(String, String), LeaderRole>,
     ambiguous_leaders: BTreeSet<(String, String)>,
-    /// Complete country-leader role sets, needed by the native singleton
-    /// selection. Differing alternatives use the held template.
     leader_sets: BTreeMap<String, Vec<LeaderRole>>,
     ambiguous_leader_sets: BTreeSet<String>,
-    /// The name localisation key of each character, when every alternative agrees.
     names: BTreeMap<String, Authored>,
-    /// At least one authored template always registers after the startup
-    /// tag-map clear; conditional agreement alone is insufficient.
     unconditional_startup: BTreeSet<String>,
-    /// Portraits by character, then (category, size): `civilian`/`army` and `large`/`small`.
     portraits: BTreeMap<String, BTreeMap<(String, String), Authored>>,
-    /// Each read template's roles by the file and line the game
-    /// stores on it (see [`LeaderTemplate`]), with its tag and byte-exact file path.
     built: BTreeMap<(Vec<u8>, u32), Vec<TaggedRoles>>,
-    /// Files whose templates cannot all be placed by line, and why, by their paths' bytes.
     unplaced: BTreeMap<Vec<u8>, String>,
-    /// Which file decides each advisor's idea token, and the files that
-    /// stop short.
     pub(crate) advisor_coverage: Coverage,
-    /// The same for character tokens (names, portraits, leader roles).
     pub(crate) character_coverage: Coverage,
-    /// The places the game's reading leaves the text's braces, each read as
-    /// the game reads it, and where a file's reading cannot be followed.
     pub notes: Vec<crate::Diagnostic>,
 }
 
-/// The template a recorded character holds, identified by its Characters-row
-/// template columns. Startup builds characters from nongenerated templates
-/// whose `allowed` holds, and builds their advisors from those same templates.
-/// When alternatives disagree, a held role therefore belongs to the recorded
-/// character's template.
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, replay_spool::Spooled,
 )]
 pub struct BuiltTemplate {
-    /// The template tag as lexer-token text.
     pub tag: String,
-    /// The starting file and line of the template read.
     pub file: Vec<u8>,
     pub line: i32,
-    /// Whether `generate_character` created this template.
     pub generated: bool,
 }
 
-/// A lookup's answer: found, proven absent (`Ok(None)`), or unknown because
-/// a file that could define it stops short.
 pub type Lookup<'a, T> = Result<Option<&'a T>, &'a Gap>;
 
 impl Characters {
-    /// Retained character tokens in lexical order. Reader notes name refused tails.
     pub fn declared_tokens(&self) -> impl Iterator<Item = &str> {
         self.names.keys().map(String::as_str)
     }
 
-    /// Every advisor idea token, including ambiguous roles, and any gap that
-    /// may hide further declarations.
     pub fn advisor_tokens(&self) -> (impl Iterator<Item = &str>, Option<&Gap>) {
         (
             self.advisor_spellings.values().map(String::as_str),
             self.advisor_coverage.any_gap(),
         )
     }
-    /// The advisor role appointed by an idea token. Alternatives that
-    /// disagree are `Ok(None)` here; [`Self::held_advisor`] takes the role
-    /// of the template a holder was built from.
     pub fn advisor(&self, idea_token: &str) -> Lookup<'_, AdvisorRole> {
         let identity = idea_token.to_ascii_lowercase();
-        // Every declaration participates in role agreement: an earlier
-        // unread suffix can disagree too, or supply the first spelling
-        // retained by the native hashed-string set.
         match self
             .advisor_coverage
             .unknown(&identity)
@@ -823,16 +650,11 @@ impl Characters {
         }
     }
 
-    /// Whether an idea token's alternatives or definitions disagree.
     pub fn ambiguous_advisor(&self, idea_token: &str) -> bool {
         self.ambiguous_advisors
             .contains(&idea_token.to_ascii_lowercase())
     }
 
-    /// An appointed advisor role: use agreement across alternatives, otherwise
-    /// the recorded holder's [`BuiltTemplate`], matched by file, line, and folded
-    /// tag. `built` supplies that identity or its unavailable-input reason;
-    /// `Err` names what cannot be decided.
     pub fn held_advisor(
         &self,
         idea_token: &str,
@@ -902,7 +724,6 @@ impl Characters {
         Ok(Some(first))
     }
 
-    /// A character's country leader role for one ideology.
     pub fn leader(&self, character: &str, ideology: &str) -> Lookup<'_, LeaderRole> {
         match self.character_coverage.unknown(character) {
             Some(gap) => Err(gap),
@@ -912,9 +733,6 @@ impl Characters {
         }
     }
 
-    /// The complete set of country-leader roles, only when alternatives
-    /// agree. The order is a projection; native selection is by ideology
-    /// token or exactly one role.
     pub fn leader_roles(&self, character: &str) -> Result<Option<&Vec<LeaderRole>>, String> {
         if let Some(gap) = self.character_coverage.unknown(character) {
             return Err(gap.to_string());
@@ -927,14 +745,10 @@ impl Characters {
         Ok(self.leader_sets.get(character))
     }
 
-    /// Proves tag presence without reevaluating startup conditions. Plain
-    /// templates and empty instance conjunctions always register; other
-    /// conditions require the stored map.
     pub fn template_has_unconditional_startup(&self, character: &str) -> bool {
         self.unconditional_startup.contains(character)
     }
 
-    /// A character's name key, as far as every alternative agrees.
     pub fn name(&self, character: &str) -> Lookup<'_, Authored> {
         match self.character_coverage.unknown(character) {
             Some(gap) => Err(gap),
@@ -942,7 +756,6 @@ impl Characters {
         }
     }
 
-    /// A character's portraits by (category, size).
     pub fn portraits(&self, character: &str) -> Lookup<'_, BTreeMap<(String, String), Authored>> {
         match self.character_coverage.unknown(character) {
             Some(gap) => Err(gap),
@@ -951,24 +764,18 @@ impl Characters {
     }
 }
 
-/// Parses one characters file, its triggers against `names`.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Characters> {
     parse_file(input, names).map(|(characters, _, _)| characters)
 }
 
-/// A template's tag and its complete native role projections.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TaggedRoles {
     tag: String,
     advisors: Vec<AdvisorRole>,
 }
 
-/// Each character the file reads before any stop, with each alternative's
-/// roles, in file order.
 type TemplateRoles = Vec<(String, Vec<TaggedRoles>)>;
 
-/// Project country-leader fields from an already-read effect body.
-/// Trait blocks append.
 pub fn country_leader_role(character: &str, fields: &[Item]) -> Result<LeaderRole, String> {
     let mut template = Template::default();
     template.leader(fields);
@@ -978,8 +785,6 @@ pub fn country_leader_role(character: &str, fields: &[Item]) -> Result<LeaderRol
     Ok(leader_roles(character, &template).remove(0))
 }
 
-/// Project advisor fields from an already-read effect body, sharing the
-/// character catalogue's field application.
 pub fn advisor_role(character: &str, fields: &[Item]) -> Result<AdvisorRole, String> {
     let mut advisor = AdvisorFields::default();
     advisor.apply(fields);
@@ -996,8 +801,6 @@ pub fn advisor_role(character: &str, fields: &[Item]) -> Result<AdvisorRole, Str
     .remove(0))
 }
 
-/// An ideology-keyed map: repeated ideologies replace earlier roles.
-/// Text keys project registered ideology identity.
 fn leader_roles(character: &str, template: &Template) -> Vec<LeaderRole> {
     let mut roles = BTreeMap::new();
     for (ideology, traits) in &template.leaders {
@@ -1014,8 +817,6 @@ fn leader_roles(character: &str, template: &Template) -> Vec<LeaderRole> {
     roles.into_values().collect()
 }
 
-/// One alternative's advisor templates, inserted by slot identity. Missing
-/// tokens default to invalid identities, projected here as empty strings.
 fn advisor_roles(token: &str, template: &Template) -> Vec<AdvisorRole> {
     template
         .advisors
@@ -1033,8 +834,6 @@ fn advisor_roles(token: &str, template: &Template) -> Vec<AdvisorRole> {
         .collect()
 }
 
-/// [`parse`], the place the file's reading stops short, if it does, and
-/// each character's alternatives' roles.
 fn parse_file(
     input: &[u8],
     names: &KeyNames,
@@ -1066,8 +865,6 @@ fn parse_file(
             ),
         ));
     }
-    // A character from the stop on is known by name only: the file's gap
-    // covers it.
     let known = stop.as_ref().map_or(characters.len(), |(at, _)| *at);
     let mut roles = TemplateRoles::new();
     let mut defaulted = BTreeSet::new();
@@ -1095,8 +892,6 @@ fn parse_file(
             }
             let template_roles = advisor_roles(token, template);
             for role in &template_roles {
-                // An absent identity remains on the native character
-                // template, but no named idea can appoint that role.
                 if role.idea_token.is_empty() || role.slot.is_empty() {
                     continue;
                 }
@@ -1120,8 +915,6 @@ fn parse_file(
             });
             for role in template_leaders {
                 if role.ideology.is_empty() {
-                    // An invalid ideology reports an error but still inserts the role
-                    // under the null ideology identity.
                     defaulted.insert(format!(
                         "{token}: country_leader ideology missing (native logs an invalid ideology)"
                     ));
@@ -1190,8 +983,6 @@ fn parse_file(
     Ok((result, stop.map(|(_, cause)| cause), roles))
 }
 
-/// One alternative's role: a key alternatives define differently is
-/// ambiguous.
 fn agree_role<K: Ord, R: PartialEq>(
     found: &mut BTreeMap<K, R>,
     ambiguous: &mut BTreeSet<K>,
@@ -1240,11 +1031,6 @@ fn merge<K: Ord + Clone, R: PartialEq>(
     }
 }
 
-/// Folded character tokens registered before resources. Bodies are read
-/// after ideas, so trigger readers see all registered character names.
-/// The mode-1 file loop interns each first-NUL key under `characters`
-/// and skips its template bodies, including instance blocks. Other roots
-/// report an error and skip their blocks.
 pub fn tokens(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tokens = BTreeSet::new();
     for path in paths(layers)? {
@@ -1272,15 +1058,11 @@ pub fn tokens(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     Ok(tokens)
 }
 
-/// Direct `.txt` files under `common/characters` in load order;
-/// see [`crate::script_files::paths`].
 pub fn paths(layers: &ResolvedLayers) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     crate::script_files::paths(layers, "common/characters/", Some(".txt"))
 }
 
 impl Characters {
-    /// The current file defines what `other` holds: its character tokens
-    /// (names, portraits, leader roles) and its advisors' idea tokens.
     pub(crate) fn register(&mut self, other: &Characters) {
         for token in other.names.keys() {
             self.character_coverage.add(token);
@@ -1290,20 +1072,16 @@ impl Characters {
         }
     }
 
-    /// The next file in load order, for both coverages.
     pub(crate) fn next_file(&mut self) {
         self.advisor_coverage.next_file();
         self.character_coverage.next_file();
     }
 
-    /// The current file stops short, for both coverages.
     pub(crate) fn gap(&mut self, path: &str, cause: &str) {
         self.advisor_coverage.gap(path, cause);
         self.character_coverage.gap(path, cause);
     }
 
-    /// Adds another source's characters; a token the two define differently
-    /// is ambiguous. Notes stay with their source; coverage is the caller's.
     pub fn merge(&mut self, other: Characters) {
         for (identity, spelling) in other.advisor_spellings {
             self.advisor_spellings.entry(identity).or_insert(spelling);
@@ -1349,11 +1127,6 @@ impl Characters {
         self.unplaced.extend(other.unplaced);
     }
 
-    /// Places each template of a file's characters (`roles`, in file order)
-    /// at the file and line the game stores on it: the templates the
-    /// database makes of the same file, in the same order, with their lines
-    /// ([`parse_leader_templates`]). A template whose tag differs from its
-    /// character's leaves that one and the rest unplaced, named.
     fn place(&mut self, path: &ScriptPath, input: &[u8], roles: TemplateRoles) {
         let templates = match parse_leader_templates(path, input) {
             Ok(templates) => templates,
@@ -1404,16 +1177,11 @@ impl Characters {
     }
 }
 
-/// A character template projected from an idea entry in a group named by
-/// NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU. Its token and name
-/// use the entry key; it has one advisor whose fields share
-/// [`AdvisorFields::apply`].
 pub(crate) fn officer_template(
     token: &str,
     group: &str,
     fields: &[Item],
 ) -> Result<Characters, String> {
-    // The slot starts as the group name; an authored `slot` replaces it.
     let mut advisor = AdvisorFields {
         slot: Some(group.to_owned()),
         ..AdvisorFields::default()
@@ -1422,16 +1190,13 @@ pub(crate) fn officer_template(
     if let Some(cause) = advisor.unheld.cause() {
         return Err(format!("advisor {token}: {cause}"));
     }
-    // An empty name defaults to the entry key; any other name names the template.
     let name = advisor
         .name
         .take()
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| token.to_owned());
-    // The small army portrait uses `GFX_idea_` followed by the name.
     let portrait = format!("GFX_idea_{name}");
     let mut template = Characters::default();
-    // After reading, the idea token is reset to the key regardless of `idea_token`.
     template.advisors.insert(
         token.to_ascii_lowercase(),
         AdvisorRole {
@@ -1461,11 +1226,6 @@ pub(crate) fn officer_template(
     Ok(template)
 }
 
-/// Reads every characters file, with the templates other content declares
-/// (officer-corps idea groups, [`crate::ideas::read`], whose coverage comes
-/// with them). A file that cannot be read is left out with a warning; a file
-/// whose reading stops short leaves what it could define unknown;
-/// definitions of one token in several files must agree.
 pub fn read(
     layers: &ResolvedLayers,
     templates: Characters,
@@ -1512,36 +1272,20 @@ pub fn read(
     Ok((result, warnings))
 }
 
-/// Unit-leader role keys: `corps_commander`, `field_marshal`, and `navy_leader`.
 const UNIT_LEADER_ROLES: [&str; 3] = ["corps_commander", "field_marshal", "navy_leader"];
 
-/// A script key as the lexer finds its token ([`Item::keyword_is`]): a bare
-/// key looked up folded; a quoted key is never a
-/// keyword.
 fn is_key(item: &Item, key: &str) -> bool {
     item.keyword_is(key)
 }
 
-/// One character template with the unit-leader visibility role. The first
-/// file pass registers templates under `characters`; the post-load pass
-/// reads each body. A body creates one template or one per leading `instance`.
-/// Each instance must begin with `allowed`; otherwise it reports an error
-/// and skips unread. Template reads store the starting file and line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LeaderTemplate {
-    /// Byte-exact file path, matching what the game stores on the template.
     pub path: ScriptPath,
-    /// The authored character token used as its template tag.
     pub tag: String,
-    /// The game's reading began at the first token after the character block's `{`,
-    /// or an instance's `}` closing `allowed`. `None` means the template was never read.
     pub line: Option<u32>,
-    /// `None` without a role, otherwise its `visible` conjunction;
-    /// `Err` for a form refused by name.
     pub role: Result<Option<Triggers>, String>,
 }
 
-/// The templates one character block makes, in database order.
 fn character_templates(
     path: &ScriptPath,
     tag: &str,
@@ -1563,9 +1307,6 @@ fn character_templates(
         .take_while(|item| is_key(item, "instance"))
         .count();
     if leading == 0 {
-        // An `instance` after another key goes to the template's
-        // unexpected-token report
-        // and is not read.
         let body: Vec<Item> = items
             .iter()
             .filter(|item| !is_key(item, "instance"))
@@ -1581,8 +1322,6 @@ fn character_templates(
         .iter()
         .map(|item| {
             if trailing {
-                // The loader reports the keys after the instances and the
-                // second pass then reads them as characters of their own.
                 return template(None, Err("keys follow its instance blocks".into()));
             }
             let Some(body) = item.value.items() else {
@@ -1598,17 +1337,12 @@ fn character_templates(
                         None => template(None, Err("its allowed is not a block".into())),
                     }
                 }
-                // "Expected allowed": the instance is skipped unread.
                 _ => template(None, Ok(None)),
             }
         })
         .collect()
 }
 
-/// One template's unit-leader role: `None` when absent, otherwise its
-/// `visible` conjunction. Each role field replaces the preceding role;
-/// repeated `visible` fields append to one AND trigger in order. An empty
-/// conjunction holds.
 fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>, String> {
     let Some(role) = items
         .iter()
@@ -1625,8 +1359,6 @@ fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>,
     })?;
     let mut visible = Vec::new();
     for item in role.iter().filter(|item| is_key(item, "visible")) {
-        // The tree reader cannot follow a trigger-body value that
-        // opens no block, so the template is refused by name.
         let block = triggers::body(&item.value).ok_or_else(|| {
             if roles == UNIT_LEADER_ROLES {
                 "its unit leader role's visible is not a block".to_owned()
@@ -1639,7 +1371,6 @@ fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>,
     Ok(Some(visible))
 }
 
-/// Every value's block lines, by address, in the parser's pre-order.
 fn index_lines(
     items: &[Item],
     spans: &[parser::BlockLines],
@@ -1657,8 +1388,6 @@ fn index_lines(
     }
 }
 
-/// The templates of one characters file, in database order. Only `characters`
-/// roots are read; others are reported.
 pub fn parse_leader_templates(path: &ScriptPath, input: &[u8]) -> io::Result<Vec<LeaderTemplate>> {
     parse_visibility_templates(path, input, &UNIT_LEADER_ROLES)
 }
@@ -1703,8 +1432,6 @@ fn parse_visibility_templates(
     Ok(templates)
 }
 
-/// A scientist role's retained visible conjunction, identified by the last
-/// visible block the native reader loaded. Role effects have their own origin.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScientistVisibilityTemplate {
     pub line: u32,
@@ -1751,9 +1478,6 @@ pub fn parse_scientist_visibility_templates(
     Ok(out)
 }
 
-/// Every character template of the recorded content, in database order. A
-/// file that cannot be read or parsed refuses the whole reader, since the
-/// templates it holds could be any character's.
 pub fn leader_templates(layers: &ResolvedLayers) -> Result<Vec<LeaderTemplate>, String> {
     visibility_templates(layers, &UNIT_LEADER_ROLES)
 }
@@ -1866,7 +1590,6 @@ add_scientist_role={scientist={
             characters.advisor_tokens().0.collect::<Vec<_>>(),
             ["Joseph_Votel"]
         );
-        // ASCII aliases do not fold non-ASCII bytes.
         let characters = parse("characters = { a = { advisor = { slot = seat idea_token = É_role } } b = { advisor = { slot = seat idea_token = é_role } } }".as_bytes(), &KeyNames::default()).unwrap();
         assert_eq!(
             characters.advisor("É_ROLE").unwrap().unwrap().idea_token,
@@ -1937,9 +1660,6 @@ add_scientist_role={scientist={
         assert!(characters.advisor("absent").is_err());
     }
 
-    /// Repeated ideologies replace earlier roles; singleton selection requires
-    /// one remaining role. Alternatives need a recorded template identity even
-    /// when their ideology names agree.
     #[test]
     fn country_leader_sets_keep_overrides_and_alternative_identity() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2152,9 +1872,6 @@ add_scientist_role={scientist={
         );
     }
 
-    /// Disputed advisor roles use the recorded holder's template, identified
-    /// by file, starting line, and folded tag. An instance starts at the `}`
-    /// closing `allowed`; a plain body starts at its `{`.
     #[test]
     fn a_disagreeing_advisor_role_is_its_built_templates() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2215,7 +1932,6 @@ add_scientist_role={scientist={
             (second.traits.as_slice(), second.cost),
             (["b_trait".to_owned()].as_slice(), Some(200_000))
         );
-        // Definitions in two files disagree too; each is its own template.
         assert_eq!(
             traits(characters.held_advisor(
                 "GER_plain_idea",
@@ -2227,7 +1943,6 @@ add_scientist_role={scientist={
             traits(characters.held_advisor("GER_plain_idea", Ok(&built(a, 14, "GER_plain")))),
             Ok(Some(Vec::new()))
         );
-        // A role every alternative agrees on needs no template.
         assert!(matches!(
             characters.held_advisor("GER_fixed_idea", Err("no holder")),
             Ok(Some(_))
@@ -2292,9 +2007,6 @@ add_scientist_role={scientist={
         assert_eq!(army["GER_schacht"], Authored::Missing);
     }
 
-    /// Portrait assignments apply in order: later sizes replace earlier ones,
-    /// scalar roles set their large portrait, and repeated blocks share one
-    /// object. Only conditional instances are compared.
     #[test]
     fn only_agreeing_army_large_alternatives_are_usable() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2347,10 +2059,6 @@ add_scientist_role={scientist={
         assert_eq!(characters["no_army"], Authored::Missing);
     }
 
-    /// Leading `instance` bodies read only instances, each beginning with
-    /// `allowed`. Later `instance` fields are reported. Missing `allowed` or
-    /// fields after instances leave recovery unsettled, refusing the current
-    /// and later characters by name; [`portraits`] names each cause.
     #[test]
     fn instances_require_leading_allowed_and_refuse_unsettled_suffixes() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2385,10 +2093,6 @@ add_scientist_role={scientist={
         }
     }
 
-    /// Advisor fields apply in order: traits accumulate, failed costs retain
-    /// the earlier value, repeated modifiers share one object, and research
-    /// bonuses retain entries. `slot`, `idea_token`, and `ideology` use current
-    /// lexer text, so `@name` keeps that text. Country-leader traits accumulate too.
     #[test]
     fn role_fields_apply_in_order() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2422,9 +2126,6 @@ add_scientist_role={scientist={
         );
     }
 
-    /// Unit-leader and scientist roles read object fields even from a scalar
-    /// value. In that case following fields belong to the role rather than
-    /// the character.
     #[test]
     fn military_roles_read_as_their_templates_read() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2449,16 +2150,11 @@ add_scientist_role={scientist={
             portrait(&characters, "a", "army", "large"),
             Authored::Missing
         );
-        // The role's loop took a's `}` too, so `d` was read as a field of
-        // `a` (reported and skipped): no character.
         assert_eq!(name(&characters, "d"), None);
         assert_eq!(name(&characters, "b"), Some(Authored::Asset("B2".into())));
         assert_eq!(name(&characters, "c"), Some(Authored::Asset("C".into())));
     }
 
-    /// Quoted keys are not keywords and bare keys fold; variables remain
-    /// in file scope. A block on a string field becomes template fields,
-    /// and end-of-text closes every loop.
     #[test]
     fn the_replay_classes_hold_for_characters() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -2478,8 +2174,6 @@ add_scientist_role={scientist={
             portrait(&characters, "quoted", "army", "large"),
             Authored::Asset("GFX_p".into())
         );
-        // `name` read `{`; the block's portraits are the template's and its
-        // `}` ended the character, so `nationality` is a character too.
         assert_eq!(
             name(&characters, "block"),
             Some(Authored::Asset("{".into()))
@@ -2494,7 +2188,6 @@ add_scientist_role={scientist={
             "{:?}",
             characters.notes
         );
-        // A last bare token at the end still reads as the value.
         assert_eq!(
             name(&characters, "open"),
             Some(Authored::Asset("open".into()))
@@ -2587,12 +2280,9 @@ other = { ignored = { navy_leader = { } } }
             found,
             [
                 ("plain", Some(2)),
-                // The game's reader has lexed the first body token when reading begins.
                 ("joined", Some(4)),
                 ("replaced", Some(6)),
                 ("advisor_only", Some(7)),
-                // Each instance's line is its allowed's closing brace; the
-                // one without `allowed` first is never read.
                 ("split", Some(12)),
                 ("split", Some(15)),
                 ("split", None),
@@ -2612,19 +2302,15 @@ other = { ignored = { navy_leader = { } } }
             role(0),
             Ok(Some(conjunction("has_government = neutrality")))
         );
-        // Every visible of the role joins the one conjunction, keys folded.
         assert_eq!(role(1), Ok(Some(conjunction("has_dlc = A tag = GER"))));
-        // A later role replaces the earlier one.
         assert_eq!(role(2), Ok(Some(Triggers::default())));
         assert_eq!(role(3), Ok(None));
         assert_eq!(role(4), Ok(Some(conjunction("tag = GER"))));
         assert_eq!(role(5), Ok(None));
         assert_eq!(role(6), Ok(None));
-        // An instance after other keys is not read; the block's own role is.
         assert_eq!(role(7), Ok(Some(conjunction("tag = ITA"))));
         assert!(role(8).is_err());
         assert!(role(9).is_err());
-        // A scalar visible is refused by name, never read as true.
         assert_eq!(
             role(10),
             Err("its unit leader role's visible is not a block".into())

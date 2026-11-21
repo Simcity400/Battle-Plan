@@ -5,9 +5,7 @@ use super::{PartialMapMembership, ProvinceMembership, Save, invalid};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvinceControl {
     pub id: u32,
-    /// False leaves state, owner and an omitted controller unknown.
     pub membership_known: bool,
-    /// None with known membership is an unassigned province.
     pub state: Option<u32>,
     pub owner: Option<Vec<u8>>,
     pub controller: Option<Vec<u8>>,
@@ -22,8 +20,6 @@ pub struct StateControl {
     pub controller_explicit: bool,
 }
 
-/// What the current native state writer emits, without reconstructing load-time
-/// ownership. The nonpositive arm omits both owner and controller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateControlEmission {
     Positive(StateControl),
@@ -31,12 +27,6 @@ pub enum StateControlEmission {
 }
 
 impl Save {
-    /// The state writer omits controllers equal to a positive owner by raw id
-    /// or canonical link slot; loading restores the owner as controller.
-    /// The writer emits zero controllers, unlike the province writer. A missing owner
-    /// is refused because that path omits both fields, losing controller data.
-    /// Membership supplies only the kept state-ID inventory; control comes
-    /// entirely from the save, including for states with excluded membership.
     pub fn known_state_control(
         &self,
         membership: &PartialMapMembership,
@@ -44,10 +34,6 @@ impl Save {
         self.state_control_for(&state_inventory(membership))
     }
 
-    /// The state writer saves owner, and only then controller, when the
-    /// stored signed owner is positive. Absence certifies only
-    /// the nonpositive class; it supplies no controller or exact raw owner.
-    /// The strict positive-only control reader remains separate.
     pub fn state_control_emissions(
         &self,
         membership: &PartialMapMembership,
@@ -118,11 +104,6 @@ impl Save {
         })
     }
 
-    /// The province writer emits only signed-positive controllers that differ
-    /// from the state's owner. The state writer omits nonpositive
-    /// owners: their provinces retain no positive owner or omitted controller.
-    /// Unknown provinces retain explicit saved controllers; their state/owner
-    /// and omitted controllers remain unknown. Other rows use native omissions.
     pub fn province_control(
         &self,
         membership: &PartialMapMembership,

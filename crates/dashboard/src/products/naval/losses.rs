@@ -1,10 +1,3 @@
-//! Naval losses: the ships and convoys each country lost or sank, as the recorder's NavalLosses
-//! writer counts them (NavalLossTotals, the declared `naval-losses` series: a holder's parts are
-//! its attribution above its kind). A window (a block of a run) answers the race and its lines as
-//! the force races do ([`ForceSizeReply`]): each run a total beside its parts, ships and convoys.
-//! A kind's totals are known where its run row says its table was read whole after its baseline;
-//! there a holder with no row has counted none. A month counts from its first hour, or from the
-//! baseline where that is later.
 
 use dashboard_base::products::Country;
 use super::super::{
@@ -79,7 +72,7 @@ pub struct NavalLossesParams {
     pub attribution: NavalAttribution,
     pub kind: NavalKind,
     pub period: NavalPeriod,
-    /// None is the window manifest; a window's runs name it by its index.
+    #[doc = " None is the window manifest; a window's runs name it by its index."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub window: Option<usize>,
@@ -95,7 +88,6 @@ impl NavalAttribution {
 }
 
 impl NavalKind {
-    /// The kinds counted, in the reply's part order.
     pub fn kinds(self) -> &'static [u8] {
         match self {
             Self::Ships => &[Row::SHIPS],
@@ -105,27 +97,22 @@ impl NavalKind {
     }
 }
 
-/// The row of a kind's run: its baseline, whether its table was read whole, and from when its
-/// totals are lower bounds.
 pub fn run_key(kind: u8) -> u128 {
     u128::from(Row::RUN) << 48 | u128::from(Row::RUN) << 16 | u128::from(Row::LOST) << 8 | u128::from(kind)
 }
 
-/// A holder's total of one attribution and kind; `owner` is its [`Key::Holder`] key.
 pub fn row_key(owner: u128, attribution: u8, kind: u8) -> u128 {
     owner << 16 | u128::from(attribution) << 8 | u128::from(kind)
 }
 
 type Runs = Vec<(i32, i32, Option<i64>)>;
 
-/// The value `runs` (ascending) holds at `hour`, none outside them.
 fn at(runs: Option<&Runs>, hour: i32) -> Option<i64> {
     let runs = runs?;
     let index = runs.partition_point(|run| run.1 < hour);
     runs.get(index).filter(|run| run.0 <= hour).and_then(|run| run.2)
 }
 
-/// The first hour of the calendar month holding `hour`.
 pub fn month_start(hour: i32) -> i32 {
     let elapsed = i64::from(hour) - i64::from(HOUR_EPOCH);
     let year = elapsed.div_euclid(365 * 24);
@@ -141,7 +128,6 @@ pub fn month_start(hour: i32) -> i32 {
     (i64::from(HOUR_EPOCH) + year * 365 * 24 + before * 24) as i32
 }
 
-/// The month starts after `first` through `last`.
 fn month_starts(first: i32, last: i32) -> Vec<i32> {
     let mut out = Vec::new();
     let mut start = month_start(first);
@@ -166,7 +152,6 @@ fn month_index(start: i32) -> usize {
     11
 }
 
-/// What one window's kinds read: each kind's run row's cells, and the totals of the keys asked.
 pub struct Counts {
     known: HashMap<u128, Runs>,
     counted_from: HashMap<u128, Runs>,
@@ -174,7 +159,6 @@ pub struct Counts {
 }
 
 impl Counts {
-    /// `keys`' totals and the run rows of `kinds`, from `from` through `to`.
     pub fn read(recording: &Recording, run: u32, kinds: &[u8], keys: &[u128], from: i32, to: i32) -> io::Result<Self> {
         let runs: Vec<u128> = kinds.iter().map(|&kind| run_key(kind)).collect();
         let column = |column: usize, keys: &[u128]| -> io::Result<HashMap<u128, Runs>> {
@@ -191,7 +175,6 @@ impl Counts {
         Self { known, counted_from, totals }
     }
 
-    /// The baseline `kind` counts from at `hour`; none where its table was not read whole then.
     pub fn baseline(&self, kind: u8, hour: i32) -> Option<i32> {
         let key = run_key(kind);
         (at(self.known.get(&key), hour)? != 0).then_some(())?;
@@ -199,14 +182,11 @@ impl Counts {
         (from <= hour).then_some(from)
     }
 
-    /// The count of `key` (of `kind`) at `hour`: its total since the baseline, zero without a row.
     pub fn running(&self, kind: u8, key: u128, hour: i32) -> Option<i64> {
         self.baseline(kind, hour)?;
         Some(at(self.totals.get(&key), hour).unwrap_or(0))
     }
 
-    /// The count of `key` at `hour` in `period`: within a month, its count less the count at the
-    /// month's first hour (or at the baseline, where that is later).
     pub fn count(&self, kind: u8, key: u128, hour: i32, period: NavalPeriod) -> Option<i64> {
         let now = self.running(kind, key, hour)?;
         match period {
@@ -221,7 +201,6 @@ impl Counts {
         }
     }
 
-    /// Every hour from which a value of these reads may change.
     fn edges(&self, out: &mut Vec<i32>) {
         for runs in self.known.values().chain(self.counted_from.values()).chain(self.totals.values()) {
             for &(first, last, _) in runs {
@@ -251,8 +230,6 @@ fn parts(kind: NavalKind) -> Vec<ForcePart> {
         .collect()
 }
 
-/// The `top` tags with the greatest count at `hour` among those held then, greatest first, ties by
-/// tag; none when a kind is not counted at the hour.
 fn ranked(query: &Query<'_>, run: u32, params: &NavalLossesParams, hour: i32, top: usize, warnings: &mut Vec<String>) -> io::Result<Vec<String>> {
     let recording = query.replay.recording();
     let kinds = params.kind.kinds();
@@ -290,8 +267,6 @@ fn ranked(query: &Query<'_>, run: u32, params: &NavalLossesParams, hour: i32, to
     Ok(scored.into_iter().take(top).map(|(_, tag)| tag).collect())
 }
 
-/// Each kind's hour a month's count of it is less (the hour before the month's first, or the kind's baseline where that is
-/// later); none for running counts.
 pub(super) fn month_bases(counts: &Counts, kinds: &[u8], hour: i32, period: NavalPeriod) -> Vec<Option<i32>> {
     match period {
         NavalPeriod::Running => vec![None; kinds.len()],
@@ -299,8 +274,6 @@ pub(super) fn month_bases(counts: &Counts, kinds: &[u8], hour: i32, period: Nava
     }
 }
 
-/// `owner`'s ranked count at `hour`, as [`Counts::count`] counts each kind: its total `now` less its total at its own
-/// base (`before`, by hour), none where the base is the hour itself, summed.
 pub(super) fn score(owner: u128, attribution: u8, kinds: &[u8], bases: &[Option<i32>], hour: i32, now: &HashMap<u128, i64>, before: &HashMap<i32, HashMap<u128, i64>>) -> i64 {
     kinds.iter().zip(bases).fold(0i64, |sum, (&kind, base)| {
         if base.is_some_and(|base| base >= hour) {
@@ -312,8 +285,6 @@ pub(super) fn score(owner: u128, attribution: u8, kinds: &[u8], bases: &[Option<
     })
 }
 
-/// One holder part's runs over `lo..=hi`: cut wherever a count it reads may change, and at each
-/// month's first hour for a month's counts.
 fn part_runs(part: &Part, lo: i32, hi: i32, counts: &Counts, params: &NavalLossesParams, out: &mut Vec<ForceRun>) {
     let mut edges = vec![lo];
     counts.edges(&mut edges);
@@ -361,8 +332,6 @@ impl Product for NavalLosses {
     }
 }
 
-/// The window manifest, or window `params.window`'s runs of the asked tags or of the top N at the
-/// window's last hour.
 pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBool) -> io::Result<ForceSizeReply> {
     let windows = army::windows(query)?;
     let interval = params.window.map(|index| windows.get(index).cloned().ok_or_else(|| invalid("Unknown history window"))).transpose()?;
@@ -398,7 +367,6 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
     let mut keys: Vec<u128> = held.values().flatten().flat_map(|part| kinds.iter().map(move |&kind| row_key(Key::Holder.of(part.slot, part.id), attribution, kind))).collect();
     keys.sort_unstable();
     keys.dedup();
-    // A month's count reads the hour before its first: from the stretch's first hour at the earliest.
     let from = match params.period {
         NavalPeriod::Running => first,
         NavalPeriod::Month => (month_start(first) - 1).clamp(stretch.first, first),
@@ -427,7 +395,6 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
     Ok(reply)
 }
 
-/// The window's lower bounds and uncounted sinkings, named.
 fn warn(recording: &Recording, run: u32, kinds: &[u8], keys: &[u128], first: i32, last: i32, warnings: &mut Vec<String>) -> io::Result<()> {
     let runs: Vec<u128> = kinds.iter().map(|&kind| run_key(kind)).collect();
     let lost = read::runs(recording, run, TABLE, summary::Source::Cell(LOST_FROM), Some(&runs), first, last)?;

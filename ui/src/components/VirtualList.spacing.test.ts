@@ -7,7 +7,6 @@ import { transformSync } from 'rolldown/utils';
 test('VirtualList consumes authored CSS row spacing for collapsed, expanded and changed styles', async () => {
   let cursor = 0, gap = 1, zoom = 1, viewportHeight = 400, padding = 0;
   const cells: { value?: any; deps?: readonly unknown[]; cleanup?: () => unknown }[] = [], effects: (() => unknown)[] = [], frames: (() => unknown)[] = [];
-  // As React: an effect runs after a render whose dependencies changed (every render without any), its cleanup first.
   const effect = (run: () => unknown, deps?: readonly unknown[]) => {
     const cell = cells[cursor++] ??= {};
     if (deps && cell.deps && deps.length === cell.deps.length && deps.every((value, index) => Object.is(value, cell.deps![index]))) return;
@@ -98,7 +97,6 @@ test('VirtualList consumes authored CSS row spacing for collapsed, expanded and 
     list = render();
     list.props.children[0].props.onKeyDown({ key: 'End', defaultPrevented: false, target: {}, preventDefault() {} });
     assert.equal(scroller.scrollTop, fractional + 3 * 52 + 4 * 2.5, 'zoomed keyboard seeking uses the unrounded scroller box as its coordinate scale');
-    // The scroller's observer reports each resize, as the browser does once it has laid the page out.
     const resized = () => sizes.find(size => size.observed.has(scroller))!.changed([{ target: scroller, borderBoxSize: [{ blockSize: viewportHeight, inlineSize: 400 }] }]);
     zoom = 1; padding = 3; props.flowWhenFits = true;
     viewportHeight = scroller.clientHeight = scroller.offsetHeight = 100; scroller.scrollTop = 0;

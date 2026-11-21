@@ -1,8 +1,3 @@
-//! The selected route's inputs at the exact compared hour.
-//!
-//! Only Army exile truth has an independent text-save counterpart. The
-//! controller and owner area labels and graph and the enemy occurrence order
-//! receive internal checks, never a saved-field acceptance count.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,11 +22,6 @@ pub fn compare(
     });
 }
 
-/// Labels are each area's smallest member, so a label is never larger than
-/// its province and names a province labelled by itself; a controller area's
-/// node lives on its label province alone, its representative is a member and
-/// its contacts are other areas' labels. The capture refusing an operand is a
-/// difference. None of it is saved.
 fn areas(
     frame: &DecodedFrame,
     geometry: ContentRead<'_, installed_content_core::province_geometry::ProvinceGeometry>,
@@ -125,8 +115,6 @@ fn areas(
                         "a member province of the area",
                     );
                 }
-                // the move-rejection search indexes its visited set by the representative's map's
-                // nonsea-index entry, which playback takes from the content.
                 if let Some(geometry) = content
                     && !geometry.nonsea_indices.contains_key(&first)
                 {
@@ -144,9 +132,6 @@ fn areas(
                 "capture refused",
                 "the ordered contacts",
             ),
-            // Occurrences in native order: never sorted or deduplicated, and
-            // not derived from adjacency, which the native contact counts
-            // follow only through each area's history.
             Some(neighbours) => {
                 for (ordinal, &target) in neighbours.iter().enumerate() {
                     let root = labels.get(&target).map(|labels| labels.0);
@@ -176,8 +161,6 @@ fn areas(
     Ok(())
 }
 
-/// The division writer calls the unit writer on its secondary receiver, which saves the unit's
-/// exile byte as `exile` only when it is nonzero; DivisionStatus records that byte's truth.
 fn exile(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::DivisionStatus>()?;
     let mut compared = 0;
@@ -228,7 +211,6 @@ fn current<'a, T>(
 fn enemies(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     let mut seen = BTreeSet::new();
     for row in frame.complete::<tables::CountryWars>()? {
-        // Reserved physical receiver zero is an authentic row, not absence.
         if !seen.insert(row.country) {
             return Err(invalid("duplicate selected-route diplomacy receiver"));
         }
@@ -243,8 +225,6 @@ fn enemies(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
         ) else {
             continue;
         };
-        // Exceptional legacy rows and this suffix share the exact original
-        // enemy-vector read. This only checks writer consistency, never save order.
         if row.enemies_read != 0 && row.enemies != packet.entries {
             report.difference(
                 format!("{label}.legacy shared vector"),

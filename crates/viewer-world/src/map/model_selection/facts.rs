@@ -1,4 +1,3 @@
-//! Successful static classification facts, never selected pairs or live answers.
 use super::{Content, invalid};
 use replay_data::rows::{TableId, VariantDefinitionRow};
 use replay_frame::frame::DecodedFrame;
@@ -12,8 +11,6 @@ use viewer_foundation::{map::memo::Keyed, table_access::TokenNames};
 
 const INPUTS: &[TableId] = &[TableId::VariantDefinitions, TableId::LexicalTokens];
 
-/// Belongs to one immutable authored Content. Its Clone has the same authored
-/// catalogue order, so successful index facts can be shared by that clone.
 #[derive(Clone)]
 pub(super) struct Retained(Arc<Keyed<Bank>>);
 impl Default for Retained {
@@ -49,8 +46,6 @@ struct Fact {
 }
 #[derive(Default)]
 struct Bank(Mutex<BTreeMap<u64, Fact>>);
-/// Fast within-hour hits take no shared lock. Reached successful variants alone
-/// populate either map; no eager census and no current-hour failures are kept.
 pub(crate) struct Hour {
     bank: Arc<Bank>,
     local: RefCell<BTreeMap<u64, Fact>>,
@@ -76,8 +71,6 @@ impl Hour {
             let fact = if let Some(fact) = held {
                 fact
             } else {
-                // Preserve the original type-token and archetype validation
-                // order. The remaining authored scalar is pure and infallible.
                 let key = content.equipment_key(tokens, variant).map_err(invalid)?;
                 content.archetype(key)?;
                 let equipment = content.equipment_content();
@@ -88,8 +81,6 @@ impl Hour {
                     archetype: row.archetype.expect("validated archetype"),
                     category: equipment.category(row),
                 };
-                // No lock is held over classification or any error. A concurrent
-                // successful first demand can produce the same pure fact.
                 self.bank
                     .0
                     .lock()

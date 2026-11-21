@@ -1,7 +1,3 @@
-//! Selected railway movement operands from the original authenticated info
-//! walk. Indexed levels use the first neighbour ordinal. The signed pair
-//! count is tested for nonzero without reading the sorted pair vector.
-//! Indexed arrays size from definition neighbours and serialize in full.
 
 use engine_sites::Rva;
 use crate::{
@@ -26,9 +22,6 @@ fn level_header(memory: &impl Memory, node: usize, definition: usize) -> Input<A
     Ok(header)
 }
 
-/// Off-hour hint for the complete neighbour-indexed saved array. Size from
-/// authenticated live headers without reading levels, pairs or buildings.
-/// It supplies no hourly value and certifies no later acquisition.
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Input<usize> {
     use super::{PROVINCE_INFO_TABLE, VTABLE_RVA};
     use crate::{cgame_state, cprovince};
@@ -111,8 +104,6 @@ pub struct LevelSpan {
 pub struct SelectionRow {
     pub levels: Input<LevelSpan>,
     pub pair_count: Input<i32>,
-    /// Ok(None) is outside both selected building gates; Ok(Some(None))
-    /// observes a native null building. Health/partial failures cannot deny it.
     pub building_level: Input<Option<Option<i16>>>,
 }
 
@@ -126,8 +117,6 @@ impl Default for SelectionRow {
     }
 }
 
-/// Worker indexed levels grow after the fixed reader's authenticated header
-/// read; serialization retains the full signed array.
 pub struct Levels<'a> {
     pub values: &'a mut Vec<i32>,
     pub len: usize,
@@ -185,9 +174,6 @@ impl LevelBuffer<'_> {
         Ok(span)
     }
 
-    /// A carried info's held levels, stored as [`Self::read`] stores the
-    /// same values: the same demand, growth and refusal, without reading the
-    /// header, the definition or the values.
     pub(super) fn append(&mut self, values: &[i32]) -> Input<LevelSpan> {
         let count = values.len();
         self.required = self

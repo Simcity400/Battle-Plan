@@ -1,4 +1,3 @@
-//! Derive research speed from recorded hourly operands, never staggered tables.
 use super::{ResearchModifier, ResearchModifierSource, ResearchModifiers};
 use replay_data::{rows::ResearchInputRow, rows::ResearchModifierRow as R};
 
@@ -16,15 +15,10 @@ pub(super) fn breakdown(input: &ResearchInputRow, rows: Option<&[R]>) -> Option<
     scoped(input, shared, slot)
 }
 
-/// [`breakdown`] of `input`, from its owner's rows of the country scope (index `u32::MAX`) and
-/// of its slot, each in key order.
 fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<ResearchModifiers> {
     if input.technology_present == 0 {
         return None;
     }
-    // No row-count cap: a sharing group writes one member row per country, so
-    // any fixed limit would drop the breakdown for large groups. Every check
-    // below is linear in these rows, or bounded by the 32 groups.
     if slot.is_empty()
         || shared.is_empty()
         || [shared, slot].iter().any(|rows| {
@@ -91,7 +85,6 @@ fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<Research
         .iter()
         .filter(|r| r.kind == R::SCIENTIST_CATEGORY)
         .collect();
-    // Any number of scientist categories: the rows name as many as were recorded.
     if scientist_rows.len() != scientist_count {
         return None;
     }
@@ -102,13 +95,11 @@ fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<Research
             .sum::<i128>(),
     )
     .ok()?;
-    // Native groups clamp separately, then their sum clamps a second time.
     if sharing_maximum < 0 {
         return None;
     }
     let mut sharing_sources = Vec::new();
     let mut sharing = 0_i128;
-    // Sharing groups are content (`common/technology_sharing`): a mod may add any number.
     let groups: Vec<_> = slot.iter().filter(|r| r.kind == R::SHARING).collect();
     let mut predecessor_rows = std::collections::BTreeMap::<u32, Vec<&R>>::new();
     for row in slot.iter().filter(|r| r.kind == R::SHARING_PREDECESSOR) {
@@ -217,8 +208,6 @@ fn scoped(input: &ResearchInputRow, shared: &[R], slot: &[R]) -> Option<Research
     })
 }
 
-/// Apply native definition metadata only after decoding. Metadata refers to the
-/// value row's ordinal within the same country/slot scope.
 fn modifier_value(rows: &[R], row: &R) -> Option<i64> {
     if !matches!(
         row.kind,
@@ -256,8 +245,6 @@ fn source(row: &R, raw: String) -> ResearchModifierSource {
     }
 }
 
-/// Integer days, half-away rounding of reduced years,
-/// then denominator penalty and minimum clamp. Positive fixed5 is faster.
 pub(super) fn rate(modifiers: &ResearchModifiers, reduction: i64, hour: i32) -> Option<i128> {
     let reduction = i128::from(reduction) * 365;
     let rounded = (reduction.abs() + 50_000) / 100_000 * reduction.signum();
@@ -356,7 +343,7 @@ mod tests {
         let mut m = breakdown(&input, Some(&rows)).unwrap();
         assert_eq!(m.total_bonus_raw, "20000");
         let hour = 43_800_000 + 1937 * 8760;
-        assert_eq!(rate(&m, 0, hour), Some(40_000)); // +20%, divided by 1+200%.
+        assert_eq!(rate(&m, 0, hour), Some(40_000));
         assert_eq!(rate(&m, 0, hour + 23), Some(40_000));
         assert!(rate(&m, 0, hour + 24).unwrap() > 40_000);
         assert_eq!(rate(&m, 100_000, hour), Some(120_000));
@@ -456,8 +443,6 @@ mod tests {
         rows.extend_from_slice(shared);
         let m = breakdown(&input, Some(&rows)).unwrap();
         let sharing = m.components.iter().find(|c| c.kind == "sharing").unwrap();
-        // One point per member, doubled by the fixture's +100% multiplier,
-        // within the fixture's 50,000 maximum.
         assert_eq!(sharing.raw, "10000");
         assert_eq!(sharing.sources[0].raw, "10000");
         assert_eq!(m.total_bonus_raw, "30000");
@@ -628,7 +613,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(sharing(&rows), "0"); // Matching hashes do not establish equal categories.
+        assert_eq!(sharing(&rows), "0");
         rows[category as usize].name = b"electronics".to_vec();
         assert_eq!(sharing(&rows), "40000");
         rows[doctrine as usize].raw = 1;

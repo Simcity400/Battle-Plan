@@ -1,5 +1,3 @@
-//! The map text line of `viewer --playhead-proof`: the interval the layer made at the head against
-//! today's map text of the same hour, and against the layer composed anew.
 
 use super::{MapText, Source, differ};
 use crate::{
@@ -19,7 +17,6 @@ pub fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(MapText::new(Arc::clone(&document.content) as Arc<dyn Source>, document.playback.branch()))
 }
 
-/// Today's interval for the default view, or why today's hour has none, in today's words.
 pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let choice = viewer_foundation::map::perspective::Choice::default();
     let today = document.vision(&choice).and_then(|vision| Ok(document.hour()?.map_text(&vision).display())).map_err(|error| format!("map text presented hour failed: {error}"));

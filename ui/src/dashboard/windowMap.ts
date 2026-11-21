@@ -1,4 +1,3 @@
-/** Immutable balanced window map: arrivals copy only the search path. */
 interface Node<V> { key: number; value: V; left: Node<V> | null; right: Node<V> | null; height: number; size: number }
 const height = <V>(node: Node<V> | null) => node?.height ?? 0;
 const node = <V>(key: number, value: V, left: Node<V> | null, right: Node<V> | null): Node<V> =>

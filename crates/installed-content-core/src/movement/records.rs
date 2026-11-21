@@ -1,11 +1,3 @@
-//! Native province records and the province raster.
-//!
-//! One record per `definition.csv` row in file order
-//! ([`crate::map::definition_rows`]), followed by raster colour resolution
-//! in file-row order. A colour no row claims (including row zero's) appends
-//! a new land record. Records are keyed by position, and the raster stores
-//! the row's ID narrowed to u16; this reader admits only definitions whose
-//! IDs equal their positions, so both agree.
 
 use std::{collections::HashMap, io};
 
@@ -23,16 +15,12 @@ pub(crate) struct Record {
 pub(crate) struct Provinces {
     pub width: usize,
     pub height: usize,
-    /// One record per pixel, in native file-row order: row 0 is the bottom.
     pub ids: Vec<u32>,
-    /// Authored records by position. Position zero is the native null record.
     pub rows: Vec<Option<Record>>,
-    /// Authored and invented records; province IDs are `1..count`.
     pub count: usize,
 }
 
 impl Provinces {
-    /// The loader initialises invented records as land.
     pub(super) fn kind(&self, id: u32) -> Kind {
         match self.rows.get(id as usize) {
             Some(Some(record)) => record.kind,
@@ -41,7 +29,6 @@ impl Provinces {
     }
 }
 
-/// Accepts a numeric prefix and saturates to i32.
 pub(crate) fn engine_number(field: &[u8]) -> i64 {
     let start = field
         .iter()
@@ -63,8 +50,6 @@ pub(crate) fn engine_number(field: &[u8]) -> i64 {
     signed.clamp(i64::from(i32::MIN), i64::from(i32::MAX))
 }
 
-/// A row's record; kind 1 (a kind word other than `land`, `sea` or `lake`)
-/// is refused because this reader does not support its movement flags.
 fn record(row: &DefinitionRow) -> io::Result<Record> {
     let kind = row.kind().ok_or_else(|| {
         invalid(format!(
@@ -91,7 +76,6 @@ pub(crate) fn read(definition_csv: &[u8], provinces_bmp: &[u8]) -> io::Result<Pr
     crate::map::require_positions(&definitions)?;
     for row in definitions {
         let id = usize::from(row.id);
-        // The colour lookup tests the stored ID, so record zero's is a miss.
         if id != 0 {
             colours.insert(colour_key(row.rgb), id as u32);
         }
@@ -102,7 +86,6 @@ pub(crate) fn read(definition_csv: &[u8], provinces_bmp: &[u8]) -> io::Result<Pr
     }
     let bitmap = NativeBitmap::decode(provinces_bmp)
         .map_err(|error| invalid(format!("province bitmap: {error}")))?;
-    // Native pixel runs keep x, y and length as u16.
     if bitmap.width > usize::from(u16::MAX) || bitmap.height > usize::from(u16::MAX) {
         return Err(invalid(format!(
             "a {}x{} province bitmap exceeds the native u16 run fields",
@@ -163,8 +146,6 @@ mod tests {
             2;0;255;0;sea;true;ocean;0\n\
             3;1;2;3;lake;false;lakes;0\n";
         let provinces = read(definitions, &rows([[RED, BLUE], [RED, GREEN]])).unwrap();
-        // The unknown blue in the bottom row becomes record four; record three
-        // is never painted.
         assert_eq!(provinces.ids, [1, 4, 1, 2]);
         assert_eq!(provinces.count, 5);
         assert_eq!(provinces.kind(2), Kind::Sea);
@@ -185,8 +166,6 @@ mod tests {
         ] {
             assert!(read(definitions, &bitmap).is_err());
         }
-        // An absent terrain column is the parser's `unknown`; a coastal word
-        // other than `true` is not coastal.
         let provinces = read(b"0;0;0;0;land\n1;255;0;0;sea;maybe\n", &bitmap).unwrap();
         let record = provinces.rows[1].as_ref().unwrap();
         assert_eq!(

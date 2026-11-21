@@ -12,8 +12,6 @@ fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRo
     RaidAirScoreRow { country, region, friendly, enemy, ..Default::default() }
 }
 
-/// The scores at `hour`: a row moving every seven hours, one present on even days only with a
-/// negative friendly score, one appearing at hour 30, and one gone after hour 60.
 fn world(hour: i32) -> Vec<RaidAirScoreRow> {
     let mut rows = vec![score(1, 5, i64::from((hour / 7) % 4) * 100, 10)];
     if hour.div_euclid(DAY) % 2 == 0 {
@@ -29,7 +27,6 @@ fn world(hour: i32) -> Vec<RaidAirScoreRow> {
     rows
 }
 
-/// Each region's sums at `hour`, as the game's rows give them: a negative score as zero.
 fn sums(hour: i32) -> HashMap<u32, (i128, i128)> {
     let mut sums: HashMap<u32, (i128, i128)> = HashMap::new();
     for row in world(hour) {
@@ -57,10 +54,6 @@ fn activity(store: &Store, region: u32) -> Option<Activity> {
     view.slot(u128::from(region)).and_then(|slot| Activity::read(&view, slot))
 }
 
-/// At every hour, a region's totals before its day are the sums at the last hour of each earlier
-/// day of the run, and through it add the hour's sums: what a reader at any two hours takes the
-/// sum of its days from. A negative score counts as zero; a region whose scores end keeps its
-/// totals.
 #[test]
 fn a_regions_totals_are_its_sums_at_each_earlier_days_end() {
     let mut store = store();
@@ -91,8 +84,6 @@ fn a_regions_totals_are_its_sums_at_each_earlier_days_end() {
     assert_eq!(activity(&store, 7), None, "a region no owner scored in has no row");
 }
 
-/// The sum of a region's days from one hour's day through another's is the difference of two
-/// reads, whichever hours of those days are read.
 #[test]
 fn a_spans_daily_sums_are_two_reads() {
     let mut store = store();
@@ -121,7 +112,6 @@ fn a_spans_daily_sums_are_two_reads() {
     }
 }
 
-/// A resume reads the scores whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<i32>| {

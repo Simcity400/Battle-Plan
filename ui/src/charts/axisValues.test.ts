@@ -10,12 +10,10 @@ test('axis labels keep the precision of their ticks, so neighbours never read th
   assert.deepEqual(axis([0, 250, 500, 750]), ['0', '250', '500', '750']);
   assert.deepEqual(axis([0, 1000, 2000, 3000]), ['0', '1k', '2k', '3k']);
   assert.deepEqual(axis([0, 500, 1000, 1500]), ['0', '500', '1.0k', '1.5k']);
-  // Tight ranges at large magnitudes fall back from k rather than collapse.
   assert.deepEqual(axis([10000, 10000.01, 10000.02]), ['10,000.00', '10,000.01', '10,000.02']);
   assert.deepEqual(axis([10000, 10010, 10020]), ['10,000', '10,010', '10,020']);
   assert.deepEqual(axis([1000000, 1000100, 1000200]), ['1,000.0k', '1,000.1k', '1,000.2k']);
   assert.deepEqual(axis([0.00001, 0.00002]), ['0.00001', '0.00002']);
-  // Float noise from tick arithmetic is not precision.
   assert.deepEqual(axis([0.1, 0.30000000000000004]), ['0.1', '0.3']);
   assert.equal(formatAxisValue(-0.5), '−0.5');
   assert.equal(formatAxisValue(-2000, [-2000, 0, 2000]), '−2k');
@@ -23,13 +21,10 @@ test('axis labels keep the precision of their ticks, so neighbours never read th
 });
 
 test('ticks apart only past twelve significant digits still read apart', () => {
-  // The review's case: 12 significant digits made these both "10,000,000".
   assert.deepEqual(axis([10000000.00002, 10000000.00004]), ['10,000,000.00002', '10,000,000.00004']);
   assert.deepEqual(axis([123456789.0001, 123456789.0002]), ['123,456,789.0001', '123,456,789.0002']);
-  // Past fifteen digits the doubles are read exactly.
   const close = [2 ** 40, 2 ** 40 + 0.001];
   assert.equal(new Set(axis(close)).size, 2);
-  // Whatever the range, the ticks the axis draws never share a label.
   for (const [min, max] of [[10000000, 10000000.0001], [1e9, 1e9 + 0.5], [0, 1e-6], [-3.2, 7.9], [99999.99, 100000.01], [1e12, 1e12 + 3]]) {
     for (const count of [2, 4, 8]) {
       const ticks = linearTicks(min, max, count);
@@ -58,13 +53,11 @@ test('amounts show at most two decimals; signs only where they mean something', 
 });
 
 test('amounts in binary fixed point are written exactly in decimals', () => {
-  // 1/32768 is 0.000030517578125: two decimals round it away, five keep 0.00003.
   assert.equal(rescale('1', 32768, 2), 0n);
   assert.equal(rescale('1', 32768, 5), 3n);
   assert.equal(rescale(String(1.5 * 32768), 32768, 0), 2n);
   assert.equal(rescale(String(-1.5 * 32768), 32768, 0), -2n);
   assert.equal(rescale(16384n, 32768n, 2), 50n);
-  // Any denominator, such as a net over two scales.
   assert.equal(rescale(2n, 3n, 3), 667n);
 });
 

@@ -23,8 +23,6 @@ pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
     let mut uncoloured = BTreeSet::new();
     let mut observed = BTreeSet::new();
     let inherited = inherited_colors(map, frame, &links, &mut result.warnings)?;
-    // Stored primary colour is already cosmetic-resolved and HSV-modified; pass it directly to the
-    // gradient builder.
     let appearance = rows::<tables::CountryAppearance>(frame)?;
     let gap = match &appearance {
         Available::Complete(_) => "CountryAppearance has no row for them".to_owned(),
@@ -50,9 +48,6 @@ pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
             ))
         })?;
         observed.insert(province.id);
-        // Owned/controller lakes belong to the country field. Province-region lookup has no terrain-
-        // kind exclusion. Treating these lakes as sea adds false shore borders; unassigned lakes
-        // remain outside the layer.
         if definition.kind == ProvinceKind::Sea
             || (definition.kind == ProvinceKind::Lake && province.controller == 0)
         {
@@ -84,7 +79,6 @@ pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
                 color
             }
         };
-        // An undecided source is unavailable, its warning named with the sources.
         let color = match color {
             None => UNAVAILABLE_COLOR,
             Some(color) => color.unwrap_or_else(|| {
@@ -92,15 +86,12 @@ pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
                 UNAVAILABLE_COLOR
             }),
         };
-        // `NO_REGION` is zero, so a region key is the slot plus one and slot zero stays addressable.
         let key = slot
             .checked_add(1)
             .ok_or_else(|| invalid("country slot exceeds the gradient border region key range"))?;
         result.country_colors = result.country_colors.inserted(key, color)?;
         result.country_of[index] = key;
     }
-    // A Provinces table that parses can still be short of the map; nothing downstream would notice,
-    // so a province the hour never mentions is refused here rather than drawn unfilled.
     for &id in map.definitions.keys() {
         if id != 0 && !observed.contains(&id) {
             return Err(invalid(format!(
@@ -140,7 +131,6 @@ fn examples(items: impl Iterator<Item = String>) -> String {
     text
 }
 
-/// The loader resolves every bitmap ID through definitions, so this never scans pixels per hour.
 fn province_table_len(map: &MapData, provinces: &[ProvinceRow]) -> io::Result<usize> {
     let largest = map
         .definitions

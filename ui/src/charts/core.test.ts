@@ -96,7 +96,6 @@ test('playback domains: draw-in grows, cursor holds, window slides; zoom wins ov
   assert.deepEqual(resolveX(EMPTY_VIEW, { xFrom: 10, xTo: null }, 1000, [1000, 1500]), [1010, 1500]);
   assert.deepEqual(resolveY(EMPTY_VIEW, { yMin: null, yMax: null, log: true }, [0, 100]).log, false);
   assert.deepEqual(resolveY(EMPTY_VIEW, { yMin: 5, yMax: 50, log: true }, [0, 100]), { range: [5, 50], log: true });
-  // Auto-fitting a log axis starts below the smallest value, not at zero.
   const logFit = resolveY(EMPTY_VIEW, { yMin: null, yMax: null, log: true }, [10, 2000]);
   assert.equal(logFit.log, true);
   assert.ok(logFit.range[0] > 0 && logFit.range[0] < 10);
@@ -123,7 +122,6 @@ test('end labels keep their order without overlapping and stay in bounds', () =>
   assert.ok(placed.get('c')! <= 193);
   assert.equal(fitLabelWidth(['ab', 'abcd'], text => text.length * 10, 20, 200, 6), 46);
   assert.equal(fitLabelWidth(['x'.repeat(100)], text => text.length * 10, 20, 200), 200);
-  // Past one text filling the widest column, the others are not measured.
   const measured: string[] = [];
   const width = fitLabelWidth(['ab', 'x'.repeat(30), 'abcd', 'y'.repeat(40)], text => { measured.push(text); return text.length * 10; }, 20, 200, 6);
   assert.equal(width, 200);
@@ -171,7 +169,6 @@ test('the scheduler draws only woken, visible tasks and stops when nothing moves
 test('whole-campaign playback stops at the playhead unless set to show past it', () => {
   assert.equal(shownUntil(500, 'cursor', false), 500);
   assert.equal(shownUntil(500, 'cursor', true), null);
-  // Only whole-campaign playback shows past the playhead.
   assert.equal(shownUntil(500, 'draw-in', true), 500);
   assert.equal(shownUntil(500, 'window', true), 500);
   assert.equal(shownUntil(null, 'cursor', false), null);

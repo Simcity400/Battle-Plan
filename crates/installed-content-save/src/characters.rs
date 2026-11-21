@@ -1,4 +1,3 @@
-//! Character-manager ownership, role state and persistent command abilities.
 
 use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, object_id,
@@ -9,44 +8,21 @@ use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Every serialized unit-leader object, including leaders outside characters.
     pub portraits: BTreeMap<u64, [Vec<u8>; 3]>,
-    /// Missing manager is not an empty native roster.
     pub manager: Option<Manager>,
-    /// Every saved country is present, including countries with no records.
     pub abilities: BTreeMap<Vec<u8>, Vec<Ability>>,
-    /// Every saved country's appointed advisors, in written array order.
-    /// The country writer includes `characters` only for a non-null manager;
-    /// the manager writes `appointed_advisors` only for a nonzero count, so
-    /// either omission is an empty list.
     pub appointed_advisors: BTreeMap<Vec<u8>, Vec<AppointedAdvisor>>,
-    /// Every saved country's `character_status` entries, in written order.
-    /// The manager writer emits one entry per distinct character in the
-    /// active-character records, ordered by the character's reference
-    /// through a map, not in array order; a missing `characters` block
-    /// (a null manager) is an empty list.
     pub character_status: BTreeMap<Vec<u8>, Vec<CharacterStatus>>,
-    /// Every saved country's `retired_character_status` entries, with the
-    /// same record shape as active statuses, in written order; a missing
-    /// `characters` block is an empty list.
     pub retired_character_status: BTreeMap<Vec<u8>, Vec<CharacterStatus>>,
 }
 
-/// One `character_status` entry: the writer saves the record's character
-/// reference and its four status bytes as booleans.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharacterStatus {
-    /// Typed handle of the record's character.
     pub character: u64,
-    /// The `advisor` status byte, set when the character's advisor roles
-    /// are registered; `None` when omitted.
     pub advisor: Option<bool>,
-    /// The writer saves the stored unit-leader status byte under `unit_leader`.
     pub unit_leader: Option<bool>,
 }
 
-/// The entries of one status list (`character_status` or
-/// `retired_character_status`) of a country's `characters` block.
 fn character_status(country: &[Item], key: &[u8]) -> io::Result<Vec<CharacterStatus>> {
     let Some(characters) = field(country, b"characters")? else {
         return Ok(Vec::new());
@@ -68,12 +44,9 @@ fn character_status(country: &[Item], key: &[u8]) -> io::Result<Vec<CharacterSta
         .collect()
 }
 
-/// One `appointed_advisors` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppointedAdvisor {
-    /// The advisor's slot string, written even when empty.
     pub slot: Vec<u8>,
-    /// Typed handle of the advisor's character.
     pub character: u64,
 }
 
@@ -116,10 +89,6 @@ pub struct Manager {
 }
 
 impl Manager {
-    /// The roster loading this save builds. The roster loader reads each
-    /// saved character and keeps it only when its name is nonempty, pushing
-    /// the kept ones in saved order; any other it destroys with its roles,
-    /// unit leader and variables.
     pub fn loaded(&self) -> Self {
         let mut order: Vec<&Character> = self.characters.values().collect();
         order.sort_unstable_by_key(|character| (character.roster, character.ordinal));
@@ -151,100 +120,55 @@ impl Manager {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Character {
-    /// The writer saves the stored gender enum as a token.
     pub gender: Option<Vec<u8>>,
     pub portraits: Option<Vec<Portrait>>,
     pub id: u64,
     pub roster: u8,
     pub ordinal: u32,
-    /// The character's lexer token, distinct from its name string.
     pub token: Vec<u8>,
-    /// The writer emits `template` only with a template, as the lexer literal
-    /// of the template's tag.
     pub template: Option<Vec<u8>>,
-    /// The writer saves the character's own flag manager as `flags` only
-    /// when its count is positive; omission is no flags.
     pub flags: Option<Vec<super::intel::Flag>>,
-    /// The writer saves the character's variables unless they hold no entry
-    /// and their random state is the initial value of one, so omission is
-    /// no variables.
     pub variables: Option<super::intel::Variables>,
-    /// The writer saves the name, omitting an empty string. The separate
-    /// stored string is not serialized by this writer.
     pub name: Option<Vec<u8>>,
-    /// Omission proves the raw country reference is signed-nonpositive.
     pub country: Option<Vec<u8>>,
     pub country_leaders: Vec<CountryLeader>,
     pub advisors: Vec<Advisor>,
-    /// Present exactly when the character owns a scientist role.
     pub scientist: Option<Scientist>,
-    /// The writer saves the unit-leader reference as `operative` (`id` then
-    /// `type`) only when either word is nonzero, so omission is none; the
-    /// handle is the stored eight bytes (type low, id high).
     pub operative: Option<u64>,
 }
 
 impl Character {
-    /// Whether loading the save keeps this character ([`Manager::loaded`]):
-    /// its name reads back nonempty. The writer omits an empty name.
     pub fn survives_load(&self) -> bool {
         self.name.as_deref().is_some_and(|name| !name.is_empty())
     }
 }
 
-/// A character's serialized scientist role.
-///
-/// The character writer emits `scientist` exactly when the role pointer is
-/// non-null. The role keeps separate trait and specialization vectors. Its
-/// initial skill state contains one zero-level record per specialization
-/// definition, which is why every saved scientist lists the same keys.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scientist {
-    /// The writer emits `is_assigned` only when the assigned byte is nonzero.
     pub active: bool,
     pub injury_days: Option<i32>,
-    /// The scientist writer emits `traits` only when the trait count is
-    /// nonzero, so omission proves an empty trait vector.
     pub traits: Option<Vec<Vec<u8>>>,
-    /// The scientist writer emits its embedded `skills` unconditionally.
     pub skills: Vec<ScientistSkill>,
 }
 
-/// One `specialization_*` block. The loader matches the saved key against
-/// each record's own token, so the key identifies the record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScientistSkill {
     pub name: Vec<u8>,
-    /// The skill writer emits `level` only while the stored signed
-    /// i32 is strictly positive, so omission proves a nonpositive level and
-    /// cannot distinguish zero from a negative raw value.
     pub level: Option<i32>,
-    /// The same writer emits the record's i64 experience under the same strictly
-    /// positive guard; omission likewise proves a nonpositive raw value.
     pub experience: Option<Decimal>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CountryLeader {
-    /// The writer saves the role's ideology definition token, not its map node.
     pub ideology: Vec<u8>,
-    /// The writer saves the role's id only when it is not -1,
-    /// so omission is -1.
     pub id: Option<i32>,
-    /// The writer saves each trait's token in array order as
-    /// `traits` only for a nonzero count, so omission is no traits.
     pub traits: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Advisor {
-    /// The advisor writer omits each of these strings exactly when its length is zero.
-    /// Presence remains explicit because a nonempty string beginning with NUL
-    /// serializes an empty literal, which differs from an omitted empty string.
     pub slot: Option<Vec<u8>>,
     pub idea: Option<Vec<u8>>,
-    /// The advisor writer saves each trait's name in order as `traits` only
-    /// for a nonzero count, so omission is no traits.
     pub traits: Vec<Vec<u8>>,
 }
 
@@ -252,29 +176,16 @@ pub struct Advisor {
 pub struct UnitLeader {
     pub id: u64,
     pub character: u64,
-    /// Role categories are field_marshal=0, corps_commander=1, navy_leader=2.
     pub category: i32,
-    /// The leader writer saves the name only when nonempty in text mode.
     pub name: Option<Vec<u8>>,
     pub skill: i32,
-    /// Native i64 fixed5, omitted precisely at zero by the leader writer.
     pub experience: Decimal,
-    /// Army attack/defense/planning/logistics; navy attack/defense/maneuvering/
-    /// coordination. The writers omit each signed integer precisely at zero.
     pub components: [i32; 4],
     pub traits: Vec<Vec<u8>>,
-    /// Independent native order. Missing progress entries never invent zero.
     pub trait_experience: Vec<TraitExperience>,
-    /// Ordered runtime trait-XP-factor overrides, including repeats.
     pub trait_factors: Vec<TraitExperience>,
-    /// `traits_to_remove`: the writer saves the timed-trait vector in native
-    /// order as each trait's token and signed remaining days,
-    /// and omits the block for an empty vector.
     pub timed_traits: Vec<TimedTrait>,
-    /// The writer emits `captured=yes`, with the captor and location, only
-    /// when the captured byte is set.
     pub captured: bool,
-    /// The writer emits the government-in-exile tag only when positive.
     pub government_in_exile_tag: Option<Vec<u8>>,
 }
 
@@ -296,12 +207,8 @@ pub struct Ability {
     pub start_date: GameDate,
     pub country: Option<Vec<u8>>,
     pub leader: Option<u64>,
-    /// The writer emits the signed value exactly when the caster is nonnull. Native
-    /// storage remains initialized and captured even when this field is omitted.
     pub num_units: Option<i32>,
-    /// The target's region id, not a typed formation identity.
     pub strategic_region: Option<i32>,
-    /// Omission proves raw allocated cost <= 0, not necessarily zero.
     pub cost: Option<Decimal>,
 }
 
@@ -335,8 +242,6 @@ fn portraits(items: &[Item]) -> io::Result<Option<Vec<Portrait>>> {
         })
         .transpose()
 }
-// The leader writer saves exactly these nonempty strings. Walk all role wrappers rather
-// than assuming every leader is owned by the character manager.
 fn leader_portraits(items: &[Item], out: &mut BTreeMap<u64, [Vec<u8>; 3]>) -> io::Result<()> {
     for item in items {
         if let installed_content_core::parser::Value::Block(children) = &item.value {
@@ -521,7 +426,6 @@ fn unit_leader(character: u64, category: i32, items: &[Item]) -> io::Result<Unit
 fn manager(items: &[Item]) -> io::Result<Manager> {
     let mut manager = Manager::default();
     for (roster, key) in [(0, b"historical".as_slice()), (1, b"dynamic".as_slice())] {
-        // The portrait writer omits only empty vectors; both vectors preserve order.
         let Some(value) = field(items, key)? else {
             continue;
         };
@@ -682,7 +586,6 @@ pub(super) fn parse_with_countries(
             .clone()
             .ok_or_else(|| invalid("ability country lacks a tag"))?;
         let mut rows = Vec::new();
-        // The country writer emits one direct block per value-array entry, in native order.
         for item in block(&country.value)?
             .iter()
             .filter(|item| item.key.as_deref() == Some(b"active_ability"))

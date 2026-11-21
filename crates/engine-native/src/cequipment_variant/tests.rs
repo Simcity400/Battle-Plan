@@ -383,7 +383,6 @@ fn fixture() -> Vec<u8> {
     bytes[DEFINITION..DEFINITION + 8].copy_from_slice(&0x1500_u64.to_le_bytes());
     bytes[0x500..0x508].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[0x508..0x50c].copy_from_slice(&0x8000_0042_u32.to_le_bytes());
-    // An archetype is its own archetype.
     let archetype = 0x500 + cequipment_type::ARCHETYPE;
     bytes[archetype..archetype + 8].copy_from_slice(&0x1500_u64.to_le_bytes());
     for offset in [
@@ -394,7 +393,6 @@ fn fixture() -> Vec<u8> {
     ] {
         bytes[offset + 24..offset + 32].copy_from_slice(&15_u64.to_le_bytes());
     }
-    // A new variant's entry: inactive, kind 1 (a path), empty.
     bytes[ICON_OVERRIDE_KIND..ICON_OVERRIDE_KIND + 4].copy_from_slice(&1_u32.to_le_bytes());
     bytes
 }
@@ -579,7 +577,6 @@ fn definition_preserves_native_handles_links_and_bytes() {
 
 #[test]
 fn version_bytes_keep_zero_and_high_bits_and_refuse_a_second_batch_fault() {
-    // Two batches; versions step by four through 252 and wrap to zero.
     const COUNT: usize = 65;
     let one = fixture();
     let mut bytes = vec![0; COUNT * one.len()];
@@ -640,8 +637,6 @@ fn icon_entry_keeps_its_raw_active_byte_kind_and_string() {
     assert_eq!((rows[0].icon_active, rows[0].icon_kind), (0x7f, u32::MAX));
     let icon = rows[0].icon;
     assert_eq!(&names[icon.start..icon.start + icon.len], b"GFX_x");
-    // The entry is the record's last field: a variant cut before it fails
-    // there, and a corrupt string header fails like the other strings.
     let short = SliceMemory {
         base: 0x1000,
         bytes: &bytes[..ICON_OVERRIDE_ACTIVE + 1],
@@ -830,7 +825,6 @@ fn copied_inline_names_and_registry_identity_need_only_three_definition_guards()
 
 #[test]
 fn variant_record_batches_preserve_order_and_do_not_hide_an_earlier_definition_error() {
-    // One more than a full batch, so the boundary is still exercised.
     const COUNT: usize = 65;
     let one = fixture();
     let mut bytes = vec![0; COUNT * one.len()];
@@ -880,8 +874,6 @@ fn variant_record_batches_preserve_order_and_do_not_hide_an_earlier_definition_e
         walk_stats(&memory, &variants, &mut stats),
         Outcome::Rows { len: COUNT }
     );
-    // An earlier readable row's authentication failure takes precedence
-    // over a later batch field fault; no failed destination is decoded.
     bytes[0x500] ^= 1;
     let memory = CountedFields {
         memory: SliceMemory {
@@ -993,7 +985,6 @@ fn design_organisation_preserves_frozen_author_marker_bonus_order_and_faults() {
             Ok(false)
         }
     }
-    // The certified payload remains held even if every bonus byte is now unreadable.
     bytes.truncate(bonuses_at);
     assert_eq!(
         walk_stats_carried(

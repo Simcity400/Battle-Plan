@@ -1,17 +1,3 @@
-//! Optional instruction-pointer sampler; no game state or replay tables change.
-//!
-//! `worker-samples.bin` is little endian. Header: `HOI4WSMP` (8), version,
-//! header length, record size, interval us (four u32), QPC Hz/TSC Hz/collector
-//! base (three u64), image size/timestamp (two u32), RSDS GUID (16 Windows-layout
-//! bytes), PDB age/path length (two u32), game base (u64), then UTF-8 PDB path.
-//! The fixed prefix is 88 bytes. Each 32-byte record is QPC/cycle weight/PC
-//! (three u64), thread slot/job role (two u16), thread role/worker index
-//! (two u8), and two zero bytes. Job 0 means none; otherwise role index + 1.
-//! Worker 255 means none. PCs identify self cost, with no copied stacks.
-//! Trailer: UTF-8 JSON with record_count, dropped_counts, threads (slot,
-//! thread_id, role, worker_index), job_roles and modules (base, size, path).
-//! Footer: `WSMPEND!` (8), trailer offset/length (u64 each). Complete records
-//! remain readable without a footer. This format is independent of replay.
 
 mod format;
 #[cfg(test)]
@@ -72,7 +58,6 @@ const ROLE_NAMES: [&str; 10] = [
     "sampler",
 ];
 const GAME_ROLE: u8 = 8;
-/// Every conversion helper samples as `spool_helper`, its index as the worker.
 const HELPER_ROLE: u8 = 4;
 static SAMPLER_ID: AtomicU32 = AtomicU32::new(0);
 static GAME_ID: AtomicU32 = AtomicU32::new(0);
@@ -85,8 +70,6 @@ static EMERGENCY_EXIT: AtomicBool = AtomicBool::new(false);
 static EARLY_EXIT: AtomicBool = AtomicBool::new(false);
 thread_local! { static JOB_SLOT: Cell<*const AtomicU16> = const { Cell::new(ptr::null()) }; }
 
-/// A per-worker slot is owned by its worker and by retained sampler targets.
-/// Registration and deregistration happen outside jobs and suspension windows.
 pub(crate) struct WorkerRegistration {
     id: u32,
     slot: Arc<AtomicU16>,
@@ -165,13 +148,10 @@ impl GameGate {
         mut now: impl FnMut() -> u64,
         mut yield_thread: impl FnMut(),
     ) {
-        // Dekker: either sampler sees false or this exit waits until it resumes.
         self.in_callback.store(false, Ordering::SeqCst);
         let mut spins = 0_u64;
         let mut yields = 0_u64;
         if self.touching.load(Ordering::SeqCst) {
-            // Cover a normal capture without a scheduler round trip. Once the
-            // QPC budget expires, yield without imposing a timer delay on the game.
             let begin = now();
             while self.touching.load(Ordering::SeqCst) && now().saturating_sub(begin) < spin_ticks {
                 std::hint::spin_loop();
@@ -197,10 +177,8 @@ impl GameGate {
 }
 pub(crate) struct CallbackGuard {
     entered: bool,
-    // A callback guard must drop on its entering thread.
     _thread: std::marker::PhantomData<*mut ()>,
 }
-/// Taken at the hourly callback's entry; drop BEFORE calling the native original.
 pub(crate) fn callback() -> CallbackGuard {
     let id = unsafe { GetCurrentThreadId() };
     if GAME_ID
@@ -358,8 +336,6 @@ fn reset(settings: &Settings) {
     };
 }
 pub(crate) struct Status;
-/// Construction and serialization allocate nothing; metadata locks occur only
-/// on the status thread, never while the sampler has a thread suspended.
 pub(crate) fn status() -> Status {
     Status
 }
@@ -405,8 +381,6 @@ impl Control {
         let thread = { self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() };
         if let Some(thread) = thread {
             let panicked = thread.join().is_err();
-            // Publish after the OS join and after its handles/storage dropped.
-            // Never hold the control mutex while waiting for the sampler.
             if panicked {
                 META.lock().unwrap_or_else(|e| e.into_inner()).stop_error =
                     Some("worker_sampler thread panicked".into());
@@ -422,25 +396,16 @@ impl Control {
 pub(crate) struct Sampler {
     control: Arc<Control>,
 }
-/// Arm lifecycle observation before the acquisition/decode/spool workers exist;
-/// the sampler thread itself is still started only after workers_started.
 pub(crate) fn prepare() {
     EARLY_EXIT.store(false, Ordering::Release);
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
 }
-/// Final status has been written, the sampler and all sampled collector workers
-/// joined, and release quiescence passed. Rust statics do not run destructors at
-/// DLL unload, so explicitly release their heap storage for repeated attaches.
 pub(crate) fn release() {
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Weak::new();
     let jobs = { std::mem::take(&mut *JOBS.lock().unwrap_or_else(|e| e.into_inner())) };
     drop(jobs);
     *META.lock().unwrap_or_else(|e| e.into_inner()) = Metadata::default();
 }
-/// Failure teardown can run on a spool/helper/decode thread before runtime
-/// notices it. Stop and genuinely join the sampler BEFORE that thread exits or
-/// joins its helpers. All callers share one join; no owner, pool or sampler
-/// control lock is held by this function across that join.
 pub(crate) fn stop_before_thread_exit() {
     EARLY_EXIT.store(true, Ordering::Release);
     let control = {
@@ -493,8 +458,6 @@ pub(crate) fn start(
     let writer = format::Writer::create(&settings.output, &header)
         .map_err(|e| format!("worker_sampler output: {e}"))?;
     let (thread_stop, thread_active) = (Arc::clone(&stop), Arc::clone(&active));
-    // Publish the control BEFORE spawn: an exiting collector owner can stop
-    // startup and waits for ready before claiming the single OS join handle.
     *SAMPLER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&control);
     let handle = thread::Builder::new()
         .name("worker-sampler".into())
@@ -612,7 +575,6 @@ impl Target {
         } else {
             crate::thread_cpu::registered_creation(ROLE_NAMES[role as usize], id).unwrap_or(0)
         };
-        // Tests open their explicitly owned targets before they can exit.
         #[cfg(not(test))]
         if expected == 0 || creation(handle.0) != Some(expected) {
             return None;
@@ -652,11 +614,6 @@ struct Scratch {
     suspended: bool,
 }
 
-/// Resolve handles and retained job references before suspension. While held,
-/// only statically imported context/resume calls and scalar/atomic operations
-/// run: no allocation, user-mode lock, formatting, TLS, panic or cleanup.
-/// The aligned context is initialized first; no live stack or metadata is read.
-/// Resume retries retain the hold until resume or proved thread exit.
 #[inline(never)]
 fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
     scratch.suspended = false;
@@ -667,7 +624,6 @@ fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
     } else {
         target.job.as_deref()
     };
-    // Only the instruction pointer is sampled.
     scratch.context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
     unsafe {
         QueryPerformanceCounter(&mut scratch.stamp);
@@ -691,8 +647,8 @@ fn capture_window(target: &Target, scratch: &mut Scratch) -> bool {
 }
 
 fn resume_held(handle: HANDLE, retries: &AtomicU64) -> bool {
-    let timeout = 0_i64; // Poll immediately, non-alertable.
-    let retry_delay = -10_000_i64; // One millisecond, relative Windows interval.
+    let timeout = 0_i64;
+    let retry_delay = -10_000_i64;
     resume_until_released(
         retries,
         || unsafe { ResumeThread(handle) },
@@ -710,10 +666,7 @@ fn resume_until_released(
     mut delay: impl FnMut(),
 ) -> bool {
     while resume() == u32::MAX {
-        // Publish while still held: a persistent failure must remain visible.
         retries.fetch_add(1, Ordering::Relaxed);
-        // A signalled thread handle proves termination. Timeouts, alerts and
-        // errors do not; retain the hold and retry even after a stop request.
         if wait() == STATUS_WAIT_0 {
             return false;
         }
@@ -765,14 +718,9 @@ impl Timer {
         }
         let hz = load(&COUNTERS.qpc_hz).max(1);
         if let Some(handle) = &self.handle {
-            // Schedule from round start rather than adding the configured
-            // interval on top of capture/write work. Late rounds simply
-            // start the next round; achieved intervals report that overload.
             let units = (u128::from(remaining) * 10_000_000).div_ceil(u128::from(hz));
             let due = -(units.clamp(1, i64::MAX as u128) as i64);
             if unsafe { SetWaitableTimer(handle.0, &due, 0, None, ptr::null(), 0) } != 0 {
-                // Poll only the stop flag on timeout; do not rearm or start a
-                // round before a configured interval longer than 50 ms ends.
                 loop {
                     let result = unsafe { WaitForSingleObject(handle.0, 50) };
                     if result == 0 || stop.load(Ordering::Acquire) {
@@ -786,7 +734,6 @@ impl Timer {
             self.handle = None;
             COUNTERS.timer.store(2, Ordering::Relaxed);
         }
-        // Sleep fallback keeps the configured period where it exceeds 1 ms.
         let mut remaining = (u128::from(remaining) * 1000)
             .div_ceil(u128::from(hz))
             .max(1) as u64;
@@ -862,8 +809,6 @@ fn sample(target: &mut Target, scratch: &mut Scratch) -> Option<format::Record> 
         COUNTERS.dropped.fetch_add(1, Ordering::Relaxed);
         return None;
     }
-    // IN_CALLBACK may clear while the callback waits at exit. Dekker
-    // still keeps it inside the callback; discard that boundary observation.
     if game && !scratch.in_callback {
         COUNTERS.game_exit_races.fetch_add(1, Ordering::Relaxed);
         COUNTERS.dropped.fetch_add(1, Ordering::Relaxed);
@@ -1001,5 +946,4 @@ fn run(
         error = Some("sampled collector thread stopped sampler before exit".into());
     }
     META.lock().unwrap_or_else(|e| e.into_inner()).stop_error = error;
-    // Handles and attribution Arcs drop only after the last resume.
 }

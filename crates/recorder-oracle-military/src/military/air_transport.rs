@@ -1,4 +1,3 @@
-//! Saved pool identity and independently captured wing raid links.
 use std::{collections::BTreeMap, io};
 
 use installed_content_core::{tokens::Token, unit_leader::SubUnits};
@@ -10,9 +9,6 @@ use super::super::{
     ContentRead, Report, Spellings, TokenNames, invalid, required_context, reverse_spellings,
 };
 
-/// Subunit initialization sets the name to
-/// static token 0x165. Registration
-/// sequence binds it to `none`; the wing-pool writer writes that token for a null subtype.
 const NULL_POOL_TYPE: &[u8] = b"none";
 
 pub fn compare(
@@ -34,21 +30,16 @@ pub fn compare(
             return Err(invalid("duplicate saved air wing in the air pack"));
         }
     }
-    // Build the native spelling join once, rather than scanning the complete
-    // dictionary again for every wing in the same pool.
     let spellings = tokens
         .as_ref()
         .map_err(ToString::to_string)
         .map(reverse_spellings);
     for (id, expected) in saved {
-        // The ordinary wing comparison owns missing/extra census differences.
         let Some(actual) = wings.get(&id) else {
             continue;
         };
         let label = format!("air wing type={} id={}", id as u32, id >> 32);
         let mut admitted = None;
-        // A content failure must not suppress a separately captured live-raid
-        // difference. Keep this field's refusal in its own comparison group.
         report.attempt(&format!("{label}.pool_subunit"), |report| {
             admitted = pool(actual, expected, sub_units, &spellings, &label, report)?;
             Ok(())
@@ -101,9 +92,6 @@ fn pool(
     let pool_type = match content {
         None => NULL_POOL_TYPE,
         Some((_, name)) => {
-            // Token insertion can reuse a token registered earlier
-            // under different case. The wing-pool writer writes its native reverse spelling,
-            // not this database's first authored key spelling.
             let identity = Token::c_str(name.as_bytes());
             if identity.is_rejected() {
                 return Err(invalid(format!(
@@ -146,8 +134,6 @@ fn pool(
     Ok(Some(mask & transport != 0))
 }
 
-/// The game always holds a raid reference, so a `None` the map flags do not certify is the
-/// collector's refusal: no registry certificate or quiet token, or no verified raid identity.
 const RAID_NOT_RECORDED: &str = "air wing raid reference not recorded at this hour: the wing writers were not observed or one ran across the read, or the reference failed its guarded read or raid identity check";
 
 fn raid(
@@ -167,8 +153,6 @@ fn raid(
         }
         Recorded::Value(None) => {
             if actual.air_base != 0 {
-                // Certified non-resolution needs no duplicate raw-null packet.
-                // The serializer omits both null and stale references.
                 match actual.assigned_to_raid() {
                     Some(false) => {
                         report.compared("AirWings.raid_reference", 1);
@@ -180,7 +164,6 @@ fn raid(
                             );
                         }
                     }
-                    // The walk exports the reference of every raid the flags certify.
                     Some(true) => {
                         report.compared("AirWings.raid_reference", 1);
                         report.difference(

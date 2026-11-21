@@ -50,7 +50,6 @@ impl PoliticsContent {
                 notes.extend(db.warnings.iter().cloned());
             })
             .map_err(|why| why.to_string());
-        // Relation titles need bindings stripped from the predicate copy.
         let triggers = installed_content_core::scripted_triggers::read_descriptions(layers)
             .inspect(|db| {
                 notes.extend(db.logged.iter().cloned());
@@ -64,7 +63,6 @@ impl PoliticsContent {
             tokens,
             sharing,
             triggers,
-            // Continents retain authored name spelling; Environment's map facts have no such catalogue.
             continents: installed_content_core::terrain::read_default_map(layers)
                 .and_then(|map| layers.read(&map.file("continent")?))
                 .and_then(|bytes| {
@@ -90,10 +88,6 @@ impl Renderer<'_, '_, '_> {
         Ok(&self.context.text.content().effects()?.politics)
     }
 
-    // resolve all selectors before evaluating
-    // values. Country party roster follows ideology creation order.
-    // First authored match wins; absent groups are zero. No divide-by-total.
-    // Percent formatting does not multiply by one hundred.
     pub(in crate::effect_description) fn politics_popularities(
         &self,
         item: &Item,
@@ -117,8 +111,6 @@ impl Renderer<'_, '_, '_> {
             .collect::<Result<Vec<_>, _>>()?;
         let mut text = self.line(b"EFFECT_SET_POPULARITIES", &[], scopes, true)?;
         for group in groups {
-            // A missing recorded ideology-party row is a gap,
-            // not permission to invent a party the runtime roster did not hold.
             if !tokens
                 .iter()
                 .any(|token| token.eq_ignore_ascii_case(group.token.as_bytes()))
@@ -140,7 +132,6 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // country or state-owner lookup, used by all three focus describers.
     fn politics_focus_country(&self, scopes: Scopes) -> Result<u32, String> {
         match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => Ok(country),
@@ -154,9 +145,6 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    // fresh country scope;
-    // scope seeding adds Clock seed to byte-exact FNV1a(id)
-    // while parsing the token. Reuse the shared hash lanes.
     fn politics_focus_name(
         &self,
         id: &str,
@@ -189,8 +177,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // No appended LF. Lookup
-    // compares exact ID bytes; continuous focuses cannot match.
 
     pub(in crate::effect_description) fn politics_focus(
         &self,
@@ -198,8 +184,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         action: u8,
     ) -> Result<String, String> {
-        // Completion accepts scalar or focus; unlock
-        // is scalar-only; uncomplete reads block focus.
         let focus = || field(children(item), "focus").and_then(|item| item.value.scalar());
         let id = match action {
             0 => item.value.scalar().or_else(focus),
@@ -223,8 +207,6 @@ impl Renderer<'_, '_, '_> {
         if action == 0
             && let Some(tooltip) = field(children(item), "originator_name")
         {
-            // The originator name is bound localisation, not a plain string.
-            // Scalar keys are supported; blocks need the core bound formatter.
             let tooltip = tooltip
                 .value
                 .scalar()
@@ -257,8 +239,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // template name is scoped;
-    // outer three-argument localisation is plain, then explicit LF.
 
     pub(in crate::effect_description) fn politics_sharing(
         &self,
@@ -296,10 +276,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Parse the template token and match it against
-    // the recorded group template token.
-    // TechSharingGroups members retain the
-    // recorded freshness. The group name expands in the caller.
 
     pub(in crate::effect_description) fn politics_sharing_bonus(
         &self,
@@ -324,7 +300,6 @@ impl Renderer<'_, '_, '_> {
             return empty::describe();
         };
         if token == 0x165 {
-            // Native unset token.
             return empty::describe();
         }
         let groups = self.complete::<tables::TechSharingGroups>(SHARING_COUNT)?;
@@ -356,7 +331,6 @@ impl Renderer<'_, '_, '_> {
             })?;
         let name = self.localised(group.name.as_bytes(), &[], scopes, true)?;
         let country = self.country_name(country, false)?;
-        // fixed-point parsing, not a scoped variable.
         let bonus = field(fields, "bonus")
             .and_then(|item| item.value.scalar())
             .and_then(installed_content_core::fixed5::script_fixed5)
@@ -369,12 +343,10 @@ impl Renderer<'_, '_, '_> {
                 ("BONUS", Argument::Fixed5(bonus)),
             ],
             scopes,
-            false, // plain outer localisation, then explicit LF.
+            false,
         )
     }
 
-    // A defined upgrade with a nonempty identifier supplies UPGRADE
-    // in EFFECT_UPGRADE_INTELLIGENCE_AGENCY, expansion and LF.
 
     pub(in crate::effect_description) fn politics_upgrade_agency(
         &self,
@@ -403,9 +375,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // name expands first, text_icon
-    // emits control 0x13. Marked-country helper is the shared
-    // scripted-text path for a capitalized definite name.
 
     pub(in crate::effect_description) fn politics_operation_token(
         &self,
@@ -468,8 +437,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // exact tactic bytes,
-    // plain localisation and no LF.
     pub(in crate::effect_description) fn politics_unlock_tactic(
         &self,
         item: &Item,

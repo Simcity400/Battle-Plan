@@ -1,5 +1,3 @@
-//! Publication measurements stay in caller-owned scratch until every hold
-//! resolves. Only then are they merged into status and attach progress.
 use crate::status::{map, status};
 use std::{
     cell::Cell,
@@ -18,9 +16,7 @@ pub struct Summary {
     pub longest_synchronization_ns: u64,
     pub slowest_context_ns: u64,
     pub slowest_context_thread_id: u32,
-    /// The slowest thread's own priority, before synchronization raised it.
     pub slowest_context_priority: i32,
-    /// Raised threads whose own priority could not be put back before they resumed.
     pub priority_restore_failures: u64,
 }
 impl Summary {
@@ -89,8 +85,6 @@ pub fn snapshot() -> (Vec<(&'static str, Summary)>, bool) {
     (snapshot, copied && AVAILABLE.load(Ordering::Relaxed))
 }
 
-/// Serializes the owned snapshot through a borrowing iterator: cloning an
-/// owning iterator would copy the snapshot again, unchecked, on every write.
 struct Families(Vec<(&'static str, Summary)>);
 impl serde::Serialize for Families {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -118,7 +112,6 @@ impl Clock {
     }
 }
 
-/// No heap use, formatting, logging or locks in any measurement operation.
 pub(super) struct Attempt {
     pub sample: Summary,
     pub clock: Clock,
@@ -152,7 +145,6 @@ impl Attempt {
         self.held += 1;
     }
     pub fn resolved(&mut self) {
-        // Synthetic controllers can start with holds already acquired.
         if self.held == 0 {
             return;
         }
@@ -175,7 +167,6 @@ impl Attempt {
     pub fn priority_restore_failed(&mut self) {
         self.sample.priority_restore_failures = self.sample.priority_restore_failures.saturating_add(1);
     }
-    /// Called by Threads::drop after its unconditional resume and handle cleanup.
     pub fn finish(&mut self) {
         debug_assert_eq!(self.held, 0);
         if let Some(family) = self.family.take() {

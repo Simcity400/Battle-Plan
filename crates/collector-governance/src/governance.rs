@@ -1,5 +1,3 @@
-//! Governance rows and arenas are allocated off the game thread.
-//! Shared-walk costs are charged once to the walk's leading table, in QPC ticks.
 
 use crate::{
     clock::qpc,
@@ -69,8 +67,6 @@ pub const TABLES: [TableId; N] = [
     TableId::DecisionRandomItems,
 ];
 
-/// Callback-local inputs for an exclusively owned governance acquisition.
-/// Native readers are constructed on the executing thread and never retained.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureContext {
     pub base: usize,
@@ -79,7 +75,6 @@ pub struct CaptureContext {
     pub force_full: bool,
 }
 
-/// Per-table costs from the current acquisition.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CaptureReport {
     pub ticks: [u64; N],
@@ -144,8 +139,6 @@ impl Capacities {
         capacity
     }
 
-    /// Off-thread hints from complete live party/modifier headers. Each
-    /// independent family raises storage even if a sibling hint fails.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -167,9 +160,6 @@ impl Capacities {
         raise(&mut self.random_item_text, rows(random.bytes, 1));
     }
 
-    /// One row per canonical country for Focus, Politics, DecisionCounts and
-    /// the preferred-tactic table. Variable rosters and arenas use their
-    /// own live demand, including each country's research slot header.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         for index in [0, 5, 8, 11] {
@@ -177,9 +167,6 @@ impl Capacities {
         }
     }
 
-    /// PartyLeaders from the live leader total
-    /// (`country_scale::observe_politics`), with the three-quarters growth
-    /// rule's headroom. Never lowers.
     pub fn raise_for_party_leaders(&mut self, leaders: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[21], rows(leaders, 1));
@@ -211,7 +198,6 @@ pub const ACQUISITION_PHASE_NAMES: [&str; 8] = [
 pub struct Captured {
     profile_acquisition: bool,
     acquisition_phases: [u64; 8],
-    /// The tables the capture mode leaves out ([`Self::leave_out`]).
     left_out: [bool; N],
     nested_bytes: OnceLock<usize>,
     breakdowns: Vec<rows::PowerBalanceModifierBreakdownRow>,
@@ -219,7 +205,6 @@ pub struct Captured {
     focus: CaptureRows<cnational_focus_progress::Row>,
     completed: CaptureRows<cnational_focus_progress::CompletedRow>,
     technologies: CaptureRows<ctechnology::Row>,
-    /// Acquisition-only native pointers, parallel to the current technology rows.
     technology_pointers: Vec<usize>,
     slots: CaptureRows<cresearch_slot::Row>,
     definitions: CaptureRows<ctechnology_template::Row>,
@@ -264,60 +249,35 @@ pub struct Captured {
     effect_names: Arena<engine_decisions::border_effect_demand::Name>,
     effect_bytes: Arena<u8>,
     effect_events: Arena<u32>,
-    /// The hourly research tables are loaned to their own job for this
-    /// callback; `capture` leaves them to it and `restore_research` returns them.
     research_loaned: bool,
-    /// Which countries the research rows cover (see `ResearchPart`).
     research_selection: SliceSelection,
-    /// Which countries the technology rows cover: the `technologies` sliced
-    /// family, read in this family's country walk.
     technology_selection: SliceSelection,
-    /// This hour's technology marks.
     technology_changed: crate::slicing::Changed,
-    /// Which countries the focus rows cover: the `focus` sliced family, every
-    /// country after the daily tick and the marked ones in between.
     focus_selection: SliceSelection,
-    /// This hour's focus marks.
     focus_changed: crate::slicing::Changed,
 }
 
-/// The governance family's sliced stores, lent for the hour, and the hooked
-/// writers' marks that select their countries.
 pub struct Slices<'a> {
     pub technologies: &'a mut SliceFingerprints,
     pub focus: &'a mut SliceFingerprints,
     pub changes: &'a dyn crate::country_input_changes::Changes,
 }
 
-/// Research inputs, applied bonuses and modifiers: the governance family's
-/// largest walk, acquired by its own job so it overlaps the rest of the
-/// family. The tables are [`replay_data::cadence::Cadence::Sliced`]: each hour reads
-/// one country slice, every country new to the census or whose last read was
-/// not published, and every country a hooked writer marked since the
-/// previous hour ([`crate::country_input_changes`]), and the recorder merges
-/// the result into the previous complete tables. Rows keep each read's own
-/// order and outcomes.
 pub struct ResearchPart {
     inputs: CaptureRows<engine_research::research_inputs::Row>,
     bonuses: CaptureRows<engine_research::research_inputs::BonusRow>,
     modifiers: CaptureRows<engine_research::research_modifiers::Row>,
     selection: SliceSelection,
-    /// This hour's marked countries.
     changed: crate::slicing::Changed,
 }
 
-/// Indices of the research tables in `TABLES`.
 pub const RESEARCH: [usize; 3] = [18, 19, 20];
 
-/// Indices of the technologies family's tables in `TABLES`.
 pub const TECHNOLOGIES: [usize; 2] = [2, 4];
 
-/// Indices of the focus family's tables in `TABLES`.
 pub const FOCUS: [usize; 2] = [0, 1];
 
 impl ResearchPart {
-    /// Read this hour's research rows as the hooks' marks select them
-    /// ([`Self::capture_changed`]).
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -332,12 +292,6 @@ impl ResearchPart {
         )
     }
 
-    /// Read this hour's research rows: every country on a full hour, else
-    /// the hour's country slice, every country new to the census or whose
-    /// last read was not published and every country `changes` marked, or
-    /// every country when its take certifies nothing. The census scan reads
-    /// no country's research. Returns ticks indexed like `RESEARCH`; the scan
-    /// and walk are charged to ResearchInputs.
     pub fn capture_changed(
         &mut self,
         memory: &impl Memory,
@@ -383,9 +337,6 @@ impl ResearchPart {
             match ccountry::Reader::new(memory, context.base, context.game_state) {
                 Err(reason) => fail(&mut outcomes, reason),
                 Ok(countries) => {
-                    // Scan first, so a new or unpublished country joins this
-                    // hour's read: a constant print reads no country's
-                    // research. The hooks' marks find changed countries.
                     let scan = qpc();
                     let mut census = true;
                     let mut bound = 0_usize;
@@ -393,9 +344,6 @@ impl ResearchPart {
                         match countries.at(slot) {
                             Ok(Some(country)) => {
                                 bound = bound.max(country.id as usize + 1);
-                                // Only a country that owns a state drifts
-                                // daily ([`changes_family::drifts`]),
-                                // checked at its slice.
                                 self.selection.scan_lazily(fingerprints, country.id, || {
                                     changes_family::drifts(memory, country.pointer)
                                 });
@@ -407,8 +355,6 @@ impl ResearchPart {
                     fingerprints.finish_scan();
                     if census {
                         self.selection.finish_census(fingerprints);
-                        // Every native id indexes the link table: its count
-                        // bounds the ids a writer can mark.
                         ids = Some(bound.max(countries.arrays()[1].count as usize));
                     }
                     let mut take_available = false;
@@ -439,9 +385,6 @@ impl ResearchPart {
                         let input_start = outcomes[0].len();
                         let bonus_start = outcomes[1].len();
                         let modifier_start = outcomes[2].len();
-                        // An unmarked country at its slice, under a
-                        // certified take, differs from its held read only by
-                        // the daily drift ([`drift`]).
                         let held = if enabled[2]
                             && !self.selection.force_full
                             && self.changed.carries(country.id)
@@ -469,8 +412,6 @@ impl ResearchPart {
                                 carried += 1;
                                 continue;
                             }
-                            // The failure the full walk would publish, its
-                            // read not repeated.
                             drift::Carried::Failed(reason) => {
                                 append(&mut outcomes[0], Outcome::Unavailable { reason });
                                 append(&mut outcomes[1], Outcome::Unavailable { reason });
@@ -539,7 +480,6 @@ impl ResearchPart {
                         append(&mut outcomes[0], inputs);
                         append(&mut outcomes[1], bonuses);
                         read += 1;
-                        // An incomplete read holds nothing.
                         if [inputs, bonuses, modifiers]
                             .iter()
                             .any(|outcome| !matches!(outcome, Outcome::Rows { .. }))
@@ -584,8 +524,6 @@ impl ResearchPart {
         ticks
     }
 
-    /// Terminal completion after an accepted worker failure. Partial rows
-    /// cannot become publishable, cadence skips stay skips, and nothing is read.
     pub fn fail(&mut self, context: CaptureContext, reason: &'static str) {
         let [inputs, bonuses, modifiers] = RESEARCH.map(|index| {
             let active =
@@ -609,9 +547,6 @@ impl ResearchPart {
 }
 
 impl Captured {
-    /// Leave out the tables `left_out` marks: their walks do not run and they
-    /// are reported skipped. Politics keeps ActiveIdeas and PartyLeaders,
-    /// whose walks certify its election cache.
     pub fn leave_out(&mut self, mut left_out: [bool; N]) {
         if !left_out[5] {
             left_out[7] = false;
@@ -620,8 +555,6 @@ impl Captured {
         self.left_out = left_out;
     }
 
-    /// Loan the research rows to their own job. Allocation-free: the
-    /// placeholders have no capacity, and `capture` leaves them untouched.
     pub fn take_research(&mut self) -> ResearchPart {
         debug_assert!(!self.research_loaned, "research part already loaned");
         self.research_loaned = true;
@@ -635,8 +568,6 @@ impl Captured {
         }
     }
 
-    /// Return the loaned research rows with their outcomes. Call after the
-    /// family is restored and before any view, growth or publication.
     pub fn restore_research(&mut self, part: ResearchPart) {
         debug_assert!(self.research_loaned, "research part was not loaned");
         self.research_loaned = false;
@@ -647,7 +578,6 @@ impl Captured {
         self.research_selection = part.selection;
     }
 
-    /// Start a frame's sliced selections at its hour; the jobs reset them again.
     pub fn reset_slice_selections(&mut self, hour: i32, force_full: bool) {
         if !self.research_loaned {
             self.research_selection.reset(hour, force_full);
@@ -656,26 +586,20 @@ impl Captured {
         self.focus_selection.reset_daily(hour, force_full);
     }
 
-    /// The countries whose technology rows this frame's read replaced.
     pub fn technology_selection(&self) -> &SliceSelection {
         &self.technology_selection
     }
 
-    /// The countries whose research rows this frame's read replaced.
     pub fn research_selection(&self) -> &SliceSelection {
         &self.research_selection
     }
 
-    /// The countries whose focus rows this frame's read replaced.
     pub fn focus_selection(&self) -> &SliceSelection {
         &self.focus_selection
     }
 }
 
 impl Captured {
-    /// Allocation-free replacement while this frame's buffers belong to an
-    /// acquisition worker. The caller restores the original before any view,
-    /// growth, delegated Focus installation, or publication.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -766,14 +690,6 @@ impl Captured {
         }
     }
 
-    /// Run the unchanged complete family capture on its owning thread. Focus
-    /// delegation must already describe this callback before dispatch.
-    /// `leaders` carries the PartyLeaders rows of countries whose parties
-    /// and leaders' characters no hooked writer touched ([`LeaderStore`]);
-    /// `parties` the PoliticalParties and ActiveIdeas rows of countries whose
-    /// party and idea lists and parties are unchanged ([`PartyStore`]), and,
-    /// with both, a quiet politics hour carries the four politics tables
-    /// whole ([`PoliticsWalk`]).
     pub fn capture_owned(
         &mut self,
         memory: &impl Memory,
@@ -795,8 +711,6 @@ impl Captured {
         )
     }
 
-    /// Keep definition acquisition and all selection/certificates here; the
-    /// FIFO worker assembles the dictionary's already copied output rows.
     pub fn acquire_owned(
         &mut self,
         memory: &impl Memory,
@@ -890,8 +804,6 @@ impl Captured {
         self.profile_acquisition.then_some(self.acquisition_phases)
     }
 
-    /// No Memory capability or native fallback. All retained dictionary
-    /// entries and text belong to this frame until publication completes.
     pub fn decode_owned(&mut self) {
         if std::mem::take(&mut self.definitions_pending) {
             let outcome = definition_rows(&mut self.definitions.rows, &self.dictionary);
@@ -905,10 +817,6 @@ impl Captured {
         }
     }
 
-    /// Terminal completion after an accepted worker failure. Partial rows and
-    /// arena lengths cannot become publishable, genuine cadence skips remain
-    /// skips, and an independently delegated Focus payload retains ownership.
-    /// No native reads or synchronous retry are performed here.
     pub fn fail_owned_capture(
         &mut self,
         context: CaptureContext,
@@ -1064,8 +972,6 @@ impl Captured {
             + self.decision_countries.allocated_bytes()
             + self.dictionary.capacity() * size_of::<ctechnology_template::Entry>()
     }
-    // Reset, capture and research loans invalidate child heaps. Buffer growth
-    // adds only default text without child heaps; outer capacities stay live.
     fn nested_allocated_bytes(&self) -> usize {
         self.breakdowns
             .iter()
@@ -1101,8 +1007,6 @@ impl Captured {
                 .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        // Worker-grown storage is demand for every recycled frame, including
-        // an empty or failed later capture. Pooled headroom never sizes hooks.
         capacity.rows[6] = capacity.rows[6].max(self.parties.rows.len());
         capacity.rows[10] = capacity.rows[10].max(self.modifiers.rows.len());
         capacity.party_text = capacity.party_text.max(self.party_text.first.len());
@@ -1245,7 +1149,6 @@ impl Captured {
         }
     }
 
-    /// A capture whose sliced stores are new: every country is first seen.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
         &mut self,
@@ -1270,14 +1173,6 @@ impl Captured {
         )
     }
 
-    /// Read the family. ResearchTechnologies reads this hour's country slice,
-    /// every country on a full hour, every country its store reports as new
-    /// or unpublished and every country a hooked technology writer marked, or
-    /// every country when its take certifies nothing; TechnologyDefinitions
-    /// holds the templates those rosters reach. Focus and CompletedFocuses
-    /// read every country at the daily boundary and on a full hour, and
-    /// otherwise the new, unpublished and marked countries ([`Slices`]).
-    /// `politics` carries the politics tables ([`PoliticsWalk`]).
     #[allow(clippy::too_many_arguments)]
     pub fn capture_sliced(
         &mut self,
@@ -1313,7 +1208,6 @@ impl Captured {
         self.focus_selection.reset_daily(hour, force_full);
         let mut walk: [bool; N] =
             std::array::from_fn(|i| replay_data::cadence::should_walk(TABLES[i], hour, force_full));
-        // The research tables belong to `ResearchPart`, walked by its own job.
         for index in RESEARCH {
             walk[index] = false;
         }
@@ -1426,11 +1320,6 @@ impl Captured {
         }
         ticks
     }
-    /// PowerBalanceModifierBreakdowns: each record's static-modifier sources,
-    /// from which playback derives the cached description trees
-    /// ([`replay_derive::power_balance_derive`]); no accumulator, child or getter
-    /// is read. A `breakdown_witness` build also reads the native trees of
-    /// the records in this hour's slice ([`BREAKDOWN_WITNESS`]).
     fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
         self.nested_bytes.take();
         let period = replay_data::cadence::STAGGER_PERIOD;
@@ -1492,11 +1381,6 @@ impl Captured {
     }
 }
 
-/// Diagnostic oracle (`breakdown_witness`, off by default): besides the
-/// sources, read the native cached power-balance trees of the records whose
-/// ordinal falls in the hour's slice (one in
-/// [`replay_data::cadence::STAGGER_PERIOD`]), for `recorder derived` to
-/// compare with playback's derivation.
 pub const BREAKDOWN_WITNESS: bool = cfg!(feature = "breakdown_witness");
 
 fn elapsed(start: i64) -> u64 {
@@ -1514,7 +1398,6 @@ fn grow_large<R: Default + Clone>(rows: &mut CaptureRows<R>, capacity: &mut usiz
     }
     grow_vec(&mut rows.rows, *capacity);
 }
-/// The rows one country's walk wrote from `start` with `outcome`.
 fn written<R>(rows: &[R], start: usize, outcome: Outcome) -> &[R] {
     start
         .checked_add(outcome.len())
@@ -1522,8 +1405,6 @@ fn written<R>(rows: &[R], start: usize, outcome: Outcome) -> &[R] {
         .unwrap_or(&[])
 }
 
-/// The globals every research row of a read carries, as one value: the
-/// cost defines and the modifier defines, or why each did not read.
 fn research_digest_context(
     inputs: &Result<engine_research::research_inputs::Context, &'static str>,
     modifiers: &Result<engine_research::research_modifiers::Context, &'static str>,
@@ -1650,8 +1531,6 @@ impl Observation {
     }
 }
 
-/// The politics buffers of a [`Buffers`], borrowed field by field so the
-/// technology dictionary's borrow of its own fields stays live.
 macro_rules! politics_tables {
     ($b:expr) => {
         politics_hour::Tables {
@@ -1713,14 +1592,11 @@ fn acquire_partitioned(
         changes,
     } = slices;
     let acquisition_started = b.profile.then(qpc);
-    // Taken before the walk's first read or registration.
     let mut hour = politics.map(|walk| politics_hour::Hour::start(walk, base, game_state, enabled));
     let mut o = Observation::new();
     if let Some(started) = acquisition_started {
         o.phases[6] = elapsed(started);
     }
-    // The Daily(6) slot's census, and between slots while an owner
-    // certificate waits for recovery: this walk visits every country hourly.
     let delayed_census =
         if enabled[8] || collector_observers::event_feed_observer::recovery_pending() {
             collector_observers::event_feed_observer::begin_delayed_census(
@@ -1813,8 +1689,6 @@ fn acquire_partitioned(
     let mut technology_reads = 0_u64;
     let mut technology_carried = 0_u64;
     if enabled[2] {
-        // The hooks' marks join the hour's read before any country is
-        // scanned; an uncertified take reads every country.
         crate::slicing::select_changed(
             &mut *b.technology_selection,
             technology_fingerprints,
@@ -1836,14 +1710,10 @@ fn acquire_partitioned(
         );
         o.ticks[0] += elapsed(started);
     }
-    // Every live country was visited without a census error.
     let mut census = true;
-    // Each country's DynamicModifiers rows, carried while its certificate
-    // holds ([`modifier_store`]).
     let mut modifiers = enabled[10]
         .then(|| modifier_store::Walk::begin(&crate::world_input_changes::Observer))
         .flatten();
-    // A census visits every country even when no table here reads one.
     let countries = (enabled[..12].iter().any(|&value| value)
         || enabled[21]
         || delayed_census.is_some())
@@ -1855,8 +1725,6 @@ fn acquire_partitioned(
         o.ticks[5] += elapsed(started);
         countries
     });
-    // A quiet hour publishes the latest complete walk's politics tables and
-    // reads no country's politics ([`politics_hour`]).
     let quiet = match (hour.as_mut(), countries.as_ref()) {
         (Some(hour), Some(Ok(countries))) => {
             let _reads = read_accounting::table(TABLES[5]);
@@ -1954,13 +1822,6 @@ fn acquire_partitioned(
                             break;
                         }
                     };
-                    // The print is whether the country drifts, checked at the
-                    // country's slice (technology) or the daily boundary
-                    // (focus): new owners, unpublished reads and a country
-                    // that started or stopped owning a state since its last
-                    // check join the hour's read and its marks; the slice
-                    // and the boundary read only the drifting countries.
-                    // Read once, when either family's check needs it.
                     let drift = std::cell::OnceCell::new();
                     let drifts = || {
                         *drift.get_or_init(|| {
@@ -2005,7 +1866,6 @@ fn acquire_partitioned(
                         o.arena(0, result.bytes_len, result.required_bytes);
                         o.ticks[0] += elapsed(started);
                     }
-                    // As for focus: the slice reads only drifting countries.
                     if enabled[2] {
                         b.technology_selection.scan_lazily(
                             technology_fingerprints,
@@ -2013,17 +1873,11 @@ fn acquire_partitioned(
                             drifts,
                         );
                     }
-                    // A complete roster read of a drifting country, held with
-                    // the same pass's ResearchSlots rows ([`drift`]).
                     let mut technology_hold = None;
                     if enabled[2] && b.technology_selection.contains(country.id) {
                         let _reads = read_accounting::table(TABLES[2]);
                         let started = qpc();
                         let first = o.outcomes[2].len();
-                        // An unmarked country at its slice, under a
-                        // certified take, differs from its held roster only
-                        // by progress ([`drift`]); it admits no definition,
-                        // which every roster reaches alike.
                         let carry_started = b.profile.then(qpc);
                         let held = if !b.technology_selection.force_full
                             && b.technology_changed.carries(country.id)
@@ -2048,8 +1902,6 @@ fn acquire_partitioned(
                                 technology_carried += 1;
                                 Outcome::Rows { len }
                             }
-                            // The failure the full walk would publish, its
-                            // read not repeated.
                             drift::Carried::Failed(reason) => {
                                 technology_reads += 1;
                                 technology_fingerprints.drift.forget(country.id);
@@ -2079,7 +1931,6 @@ fn acquire_partitioned(
                                     o.phases[0] += elapsed(started);
                                 }
                                 technology_reads += 1;
-                                // An incomplete read holds nothing.
                                 match result {
                                     Outcome::Rows { len } if drifts() => {
                                         technology_hold = Some((first, len));
@@ -2125,7 +1976,6 @@ fn acquire_partitioned(
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
                     }
-                    // Without this pass's slot rows nothing can be held.
                     if technology_hold.is_some() {
                         technology_fingerprints.drift.forget(country.id);
                     }
@@ -2144,7 +1994,6 @@ fn acquire_partitioned(
                                 }
                             }
                             Ok(reader) => {
-                                // Where this country's rows start in each table.
                                 let starts = [
                                     o.outcomes[5].len(),
                                     o.outcomes[6].len(),
@@ -2153,8 +2002,6 @@ fn acquire_partitioned(
                                     o.lens[3],
                                     o.outcomes[21].len(),
                                 ];
-                                // PartyLeaders shares Politics' hourly walk and
-                                // authenticated status, charged to its own table.
                                 if enabled[21] {
                                     let _reads = read_accounting::table(TABLES[21]);
                                     let leaders = qpc();
@@ -2272,7 +2119,6 @@ fn acquire_partitioned(
                         }
                         o.ticks[5] += elapsed(started);
                     }
-                    // Certified owners cost no native queue read.
                     if let Some(context) = delayed_census {
                         collector_observers::event_feed_observer::baseline_delayed_country(
                             memory, context, country,
@@ -2430,8 +2276,6 @@ fn acquire_partitioned(
             }
         }
     }
-    // A census exists only with the country reader, so `census` is false
-    // when the reader or any slot failed.
     if let Some(context) = delayed_census {
         collector_observers::event_feed_observer::finish_delayed_census(context, census);
     }
@@ -2553,7 +2397,6 @@ fn acquire_partitioned(
         reuse.finish(enabled[21] && matches!(o.outcomes[21], Outcome::Rows { .. }));
     }
     if let Some(reuse) = politics_reuse {
-        // Parties are read whenever the status is; ideas only when enabled.
         let walked = census && (enabled[5] || enabled[21]);
         reuse.finish(
             walked && matches!(o.outcomes[6], Outcome::Rows { .. }),
@@ -2647,7 +2490,6 @@ fn country_view<S: TableSchema, R>(
 }
 
 impl Captured {
-    /// Spool thread only: all variable-length copies and portable conversion.
     pub fn tables(&self) -> [TableView; N] {
         self.convert_tables(
             |view| view,
@@ -3154,7 +2996,6 @@ impl Captured {
     }
 }
 
-/// Build before arming the allocator; conversion follows the populated spool path.
 #[cfg(any(test, feature = "test-support"))]
 pub fn allocation_failure_fixture() -> impl FnOnce() -> bool {
     let mut captured = Captured::vacant();

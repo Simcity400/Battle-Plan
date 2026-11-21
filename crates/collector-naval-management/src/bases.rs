@@ -1,5 +1,3 @@
-//! Repair bases are admitted by the existing map-base census. Only a native writer mark rereads
-//! an admitted base's repair priority, allocation or ordered queue.
 use crate::{Snapshot, changes};
 use engine_native::{Memory, naval_management as native, read};
 use replay_data::rows::*;
@@ -27,7 +25,6 @@ struct Store {
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::default()));
 static RETURNED: Condvar = Condvar::new();
 
-/// An owned snapshot-publication loan, with no native-memory capability.
 pub struct Owned {
     store: Option<Store>,
     complete: bool,
@@ -106,7 +103,6 @@ impl<'a, M: Memory> Session<'a, M> {
         }
         store.dirty = dirty;
         if epoch.is_none() || shortage {
-            // Never reuse a hold after a take that could have lost a selected receiver.
             store.epoch = None;
         }
         let mut session = Self {
@@ -116,7 +112,6 @@ impl<'a, M: Memory> Session<'a, M> {
             store,
         };
         if session.observed {
-            // Lifetime marks take precedence over every value mark from this interval.
             for index in 0..session.store.dirty.len() {
                 let pointer = session.store.dirty[index];
                 if pointer & 1 != 0 {
@@ -134,7 +129,6 @@ impl<'a, M: Memory> Session<'a, M> {
         }
         session
     }
-    /// Called only after the existing map census authenticated this base and its province key.
     pub fn visit(&mut self, pointer: usize, row: &engine_native::cnaval_base::Row) {
         if !self.observed || self.store.entries.get(&pointer) == Some(&row.province) {
             return;
@@ -270,7 +264,6 @@ impl<'a, M: Memory> Session<'a, M> {
         if !self.observed {
             return Some(changes::UNAVAILABLE);
         }
-        // Every base seen, refused ones included: only this offer grows a table too small for them.
         changes::base_demand(self.store.entries.len());
         if !matches!(parent, engine_native::walk::Outcome::Rows { .. }) {
             self.store.epoch = None;

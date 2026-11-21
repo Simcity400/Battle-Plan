@@ -27,8 +27,6 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         modifiers: Recorded::Value(None),
         static_modifiers: Recorded::Value(None),
     };
-    // Independently authored published six-field snapshot: fixed-width little
-    // endian snow, permanent snow, two display bytes, temperature and raw mud.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&i64::MIN.to_le_bytes());
     prefix.extend_from_slice(&i64::MAX.to_le_bytes());
@@ -38,7 +36,6 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
     let mut current = Vec::new();
     row.encode_fields(&mut current).unwrap();
     assert!(current.starts_with(&prefix));
-    // The published temperature is the one the record held at the row's hour.
     let expected = WeatherProvinceRow {
         temperature: ProvinceTemperature::historical(-1),
         clock: DayNightClock::NOT_RECORDED,
@@ -90,8 +87,6 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
     );
 }
 
-/// A row's field bytes with the listed Opaque fields' payloads replaced, as
-/// an older writer stored them.
 fn with_payloads(row: &[u8], schema: &[Kind], payloads: &[(usize, &[u8])]) -> Vec<u8> {
     let mut input = Decoder::new(row);
     let mut out = Vec::new();
@@ -130,7 +125,6 @@ fn province_attack_operands_of_format_101_decode_and_current_rows_store_none() {
         owner_area: Default::default(),
         area_node: Default::default(),
     };
-    // Independently authored seven-field wire prefix from the published row.
     let mut prefix = Vec::new();
     for value in [9_u32, 2, 0] {
         prefix.extend_from_slice(&value.to_le_bytes());
@@ -159,7 +153,6 @@ fn province_attack_operands_of_format_101_decode_and_current_rows_store_none() {
     );
     assert_eq!(historical.not_recorded_fields(), 0b1_1111_1000_0000);
 
-    // The current row stores no witnessed attack operands: an empty payload.
     let mut current = Vec::new();
     row.encode_fields(&mut current).unwrap();
     assert!(current.starts_with(&prefix));
@@ -174,9 +167,6 @@ fn province_attack_operands_of_format_101_decode_and_current_rows_store_none() {
     );
     input.finish().unwrap();
 
-    // Format 101 stored the read hour, the fort sum and the state factor
-    // there; they decode as the witnessed operands that answer for it. It
-    // had no fort bunker or area fields: those decode as not recorded.
     let mut payload = 1000_i32.to_le_bytes().to_vec();
     payload.extend_from_slice(&[1, 3, 0, 0, 0, 1]);
     payload.extend_from_slice(&(-25_000_i64).to_le_bytes());
@@ -207,7 +197,6 @@ fn province_attack_operands_of_format_101_decode_and_current_rows_store_none() {
         }
     );
     input.finish().unwrap();
-    // The same bytes are not a current row.
     assert!(ProvinceRow::decode_fields(row.key(), &mut Decoder::new(&legacy)).is_err());
 }
 
@@ -227,9 +216,6 @@ fn retired_reserved_packets_are_discarded_and_later_fields_still_decode() {
         row
     );
     input.finish().unwrap();
-    // Movement, raw observations and the transport mission packet held whole
-    // packets at format 101, which are discarded; Country0's attack scalars
-    // decode as its witnessed operands.
     let mut attack = vec![1];
     attack.extend_from_slice(&1000_i32.to_le_bytes());
     attack.push(1);
@@ -271,9 +257,6 @@ fn retired_reserved_packets_are_discarded_and_later_fields_still_decode() {
     );
 }
 
-/// `row`'s current bytes as format 101 stored them, with the listed Opaque
-/// payloads restored, decoded at that format. Every listed field must be a
-/// catalogued retirement.
 fn decode_format_101_payloads<T: RowCodec + Fields + std::fmt::Debug>(
     table: TableId,
     row: &T,
@@ -290,7 +273,6 @@ fn decode_format_101_payloads<T: RowCodec + Fields + std::fmt::Debug>(
         );
     }
     let full = with_payloads(&current, T::SCHEMA, payloads);
-    // A current reader cannot take those bytes: the tombstones store none.
     assert!(T::decode_fields(row.key(), &mut Decoder::new(&full)).is_err());
     let format = FormatVersion::read(POLITICAL_FORMAT).unwrap();
     let fields = format.fields(table);
@@ -454,7 +436,6 @@ fn selected_routes_published_prefixes_never_invent_current_inputs_in_snapshots_o
         })
         .into(),
     };
-    // Independent published bytes: the two raw flags, then the native u32 list.
     let mut published = vec![0xfe, 1];
     for word in [3_u32, 29, 11, 29] {
         published.extend_from_slice(&word.to_le_bytes());

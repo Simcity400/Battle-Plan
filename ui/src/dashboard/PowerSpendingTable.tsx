@@ -36,18 +36,12 @@ import './powerSpending.css';
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly SpendingTableRow[] = [];
 const rowKey = (row: SpendingTableRow) => row.key;
-/** The chip that clears the category filter. */
 const ALL = '';
 const NOT_RECORDED = 'Not recorded';
-/** Names asked beyond twice the mounted rows' before the rows reported mounted are asked afresh. */
 const MOUNTED_SLACK = 64;
-/** The countries and dates a set of name requests asks, in any order. */
 const requestsKey = (requests: { wanted: readonly { hour: number; tag: string }[]; maxHours: number }) =>
   `${requests.maxHours}|${requests.wanted.map(item => `${item.hour}\u0000${item.tag}`).sort().join('\u0001')}`;
 
-/** Both spending widgets: a table of one country's (or several countries') payments, recurring daily costs folded into one
- * row a month, and a line of what was spent and gained in the shown period. Following playback, the payments of a block of
- * hours are drawn at once and appear as the head reads them (`Table`'s `reveal`), and every amount that moves is painted. */
 export default function PowerSpendingTable({ currency, widget, runtime, active, onDiagnostics, setOptions, setOption }: WidgetProps & { currency: PowerCurrency }) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
@@ -61,8 +55,6 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   const hourAt = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null,
     [widget, track, runtime.tracks]);
   const structure = useMemo(() => ledgers ? structureParts(ledgers, selection) : null, [ledgers, selection]);
-  // Following, the rows render once a block: the payments read inside it are drawn ahead and revealed by the clock
-  // (`reveal`); the block ends before the next change to a row already shown (a month's first day, a coverage change).
   const end = useCallback((clockHour: number) => {
     const at = hourAt(clockHour);
     if (at === null || !structure) return clockHour + 1;
@@ -87,8 +79,6 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
     }
   }, [widget.id, widget.options?.filterMode, widget.options?.categories, categories, normalized.migrated, repairSelection, setOptions]);
   const chosen = useMemo(() => contentSet(categories).filter(value => value !== NO_SPENDING_CATEGORIES), [categories]);
-  // Each block makes every row anew; a row that draws the same keeps the object the table drew, so only new and changed
-  // rows render in the slot.
   const heldRows = useRef<ReadonlyMap<string, SpendingTableRow>>(new Map());
   const rows = useMemo(() => {
     if (!ledgers || !drawn) return NO_ROWS;
@@ -100,17 +90,14 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   const reveal = useRevealClock(runtime.clock, following, trackHour);
   const tableReveal = useMemo(() => reveal ? { clock: reveal, at: (row: SpendingTableRow) => row.payment?.read ?? -Infinity } : undefined, [reveal]);
   const byKey = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
-  // Running sums of every payment and day and of the gains: the totals and notes at an hour are binary searches.
   const groups = useMemo(() => ledgers ? spendingGroups(ledgers, from, selection) : null, [ledgers, from, selection]);
   const gains = useMemo(() => ledgers ? powerGains(ledgers, from, selection) : null, [ledgers, from, selection]);
-  // The hour the painted values are of: the head while following, else the window's end.
   const shown = useShownHour();
   const paintedHour = useCallback(() => {
     const at = following ? hourAt(runtime.clock.getHour()) : hour;
     return at === null ? Number.NaN : at;
   }, [following, hourAt, runtime.clock, hour]);
   useEffect(() => { if (!following) shown(ledgers ? hour : null); }, [following, ledgers, hour, shown]);
-  // Amounts as the head paints them: a month's grows with each day it counts; a payment's is its own.
   const live = useMemo<Live<LiveValues<SortValue>>>(() => liveAt(runtime.clock, position => {
     const at = following ? hourAt(position) : hour;
     return at === null ? Number.NaN : at;
@@ -150,10 +137,6 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
     return new Map(chips.map(chip => [chip.value, chip.identified ? tokens.categories[index++ % tokens.categories.length] : tokens.muted]));
   }, [chips, tokens.categories, tokens.muted]);
   const compare = tags.length > 1;
-  // Names and flags for mounted rows, each at its own date, and for every row drawn since they were reported (the
-  // blocks drawn ahead), asked in the render that draws them: the rows the table then reports mounted render the widget
-  // only when they name a country at a date not asked yet, or when the rows drawn since outgrow those mounted (run 16: a
-  // second commit after every block, for the block's own names).
   const [mounted, setMounted] = useState(() => ({ ...spendingCountryRequests(NO_ROWS, compare), through: -Infinity }));
   const since = useMemo(() => following && drawnHour !== null ? spendingRowsAhead(rows, mounted.through + 1, drawnHour) : NO_ROWS,
     [following, drawnHour, rows, mounted.through]);
@@ -189,8 +172,6 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
     const key = row.icon;
     return key ? ledgers?.find(ledger => ledger.tag === row.tag)?.icons.get(key) ?? null : null;
   }, [ledgers]);
-  // Names reach the columns only through the Country column: one country's table keeps its columns, and every row its
-  // render, when a name lands.
   const countryColumn = useMemo<TableColumn<SpendingTableRow> | null>(() => compare ? { key: 'country', header: 'Country', label: 'Country',
     width: 'minmax(var(--table-name-min), 1fr)', value: row => countryName(row),
     render: row => <CountryCell {...labelAt(row.hour)(row.tag)} name={countryName(row)} /> } : null, [compare, countryName, labelAt]);
@@ -224,7 +205,6 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
       const named = items.some(([label]) => label !== row.categoryName);
       return fitTooltip([{ title: row.categoryName, subtitle: `${monthLabel(row.month)} · ${now.days === 1 ? '1 day' : `${now.days} days`}`, rows: [
         ...countryRow,
-        // What the cost was, when that says more than its category: a modifier, each organisation.
         ...(named ? items.map(([label, amount]) => ({ label, value: formatPower(amount, digits) })) : []),
         { label: 'Spent', value: now.amount === null ? NOT_RECORDED : `${formatPower(now.amount, digits)} ${unit}`, strong: true, divider: named || compare },
       ], note: now.partial ? 'Some costs weren’t recorded.' : undefined }], viewport, { keep: 1 });

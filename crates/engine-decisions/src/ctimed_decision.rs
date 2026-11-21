@@ -1,17 +1,11 @@
-//! Timed-decision lifecycle records.
 
 use engine_sites::Rva;
 use crate::Memory;
 
-/// CTimedDecision primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_8640);
-/// CTimedDecision CDecision definition pointer.
 pub const DEFINITION: usize = 0x10;
-/// CTimedDecision i32 remaining days.
 pub const DAYS: usize = 0x18;
-/// CTimedDecision i32 lifecycle code.
 pub const STATE: usize = 0x1c;
-/// Active lifecycle code; zero selects an active record.
 pub const STATE_ACTIVE: i32 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

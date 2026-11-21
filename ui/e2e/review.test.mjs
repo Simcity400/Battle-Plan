@@ -85,7 +85,6 @@ test('required exact model refuses absent provider and retains duplicate chart o
   const root = await mkdtemp(path.join(tmpdir(), 'parity-required-model-'));
   try {
     let lists = [];
-    // The mock returns the surface evidence; it never creates a browser or a DOM.
     let evaluations = 0;
     const locator = { evaluate: async () => ++evaluations % 2 ? { header: true, body: true, text: '' } : undefined,
       screenshot: async () => {}, locator: () => ({ count: async () => 0 }) };
@@ -105,7 +104,6 @@ test('required exact model refuses absent provider and retains duplicate chart o
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-// No real foreign PID is ever passed to a termination API.
 test('stale parents, reused PIDs and delayed observers cannot tree-kill', async () => {
   const scripts = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).scripts;
   assert.match(scripts['parity:compare'], /owned_job\.py/);
@@ -153,7 +151,6 @@ test('disposable adapter refuses debug input and its teardown removes it', async
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-// Retained raster and budget checks exercise the reduced capture path.
 test('fresh owned Edge contexts preserve exact pixels and 5,000 rows; a stall expires', () => {
   const baseURL = new URL('./', import.meta.url).href;
   const program = `import assert from 'node:assert/strict';

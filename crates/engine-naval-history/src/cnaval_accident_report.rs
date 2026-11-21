@@ -1,41 +1,22 @@
-//! Country-owned retained naval accidents, in their stored vector order.
-//! Reports preserve their raw references after the live ship disappears.
 use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, cstrategic_region, read, walk::Buffer};
 
-/// Primary report identity.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a718);
-/// Strategic navy's report-pointer vector.
 pub const REPORTS: usize = 0xe0;
-/// Strategic navy's mine-report pointer vector.
 pub const MINE_REPORTS: usize = 0xf8;
-/// Mine report primary identity.
 pub const MINE_VTABLE_RVA: Rva = Rva(0x029d_a768);
-/// Raw country reference responsible for the mine.
 pub const MINE_OWNER: usize = 0x48;
-/// Report's strategic-region pointer.
 pub const REGION: usize = 0x08;
-/// Stored dominant equipment-variant full reference.
 pub const EQUIPMENT: usize = 0x10;
-/// Accumulated raw signed fixed5 damage.
 pub const DAMAGE: usize = 0x18;
-/// Raw sunk byte, presented by its nonzero predicate.
 pub const SUNK: usize = 0x20;
-/// Stored full ship reference.
 pub const SHIP: usize = 0x24;
-/// Raw country reference at report creation.
 pub const OWNER: usize = 0x2c;
-/// Native expiry date's raw hour.
 pub const EXPIRE_HOUR: usize = 0x38;
-/// Report creation/update, regional clear and daily expiry writer sites.
 pub const RECORD_ACCIDENT_RVA: Rva = Rva(0x00f1_e5f0);
-/// Regional accident-clear writer.
 pub const CLEAR_ACCIDENTS_RVA: Rva = Rva(0x00f1_60a0);
-/// Daily expiry writer shared by both report families.
 pub const EXPIRE_REPORTS_RVA: Rva = Rva(0x00f1_7510);
-/// Mine incident creation and damage accumulation writer.
 pub const RECORD_MINE_INCIDENT_RVA: Rva = Rva(0x00f1_e6e0);
-/// The complete report writer family.
 pub const WRITERS: [Rva; 4] = [
     RECORD_ACCIDENT_RVA,
     CLEAR_ACCIDENTS_RVA,
@@ -57,9 +38,6 @@ pub struct Record {
     pub expire_hour: i32,
 }
 
-/// The caller already authenticated this navy during its physical manager pass.
-/// Invoke only first/on-change under the complete report writer certificate.
-/// Returns the native count; retained output storage may be larger.
 pub fn capture(
     memory: &impl Memory,
     base: usize,

@@ -1,11 +1,3 @@
-//! Every intelligence agency's active operatives as the Operatives map reads
-//! them: each leader's assignment and cooldown, its active mission and that
-//! mission's targets, the mission it carries while relocating, and its own
-//! portrait sprite. A root-out-resistance mission also carries the operands
-//! of its effectiveness: the `root_out_resistance_effectiveness_factor`
-//! values in the owner's and the operative's own modifier accumulators, and
-//! whether the operative's nationalities contain the mission's context
-//! country. The recruitment holding vectors are not walked.
 
 use crate::{
     Memory,
@@ -27,15 +19,8 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Script name of the modifier whose effective values scale a
-/// root-out-resistance mission. Its key is resolved by name when first asked
-/// and held while the definition table header holds ([`root_out_key`]).
 pub const ROOT_OUT_FACTOR: &[u8] = b"root_out_resistance_effectiveness_factor";
-/// The embedded state resistance's raw country link, relative to
-/// `cstate::RESISTANCE` (engine-occupation's `cresistance::COUNTRY`).
 pub const RESISTANCE_COUNTRY: usize = 0x50;
-/// The embedded state resistance's active byte, relative to
-/// `cstate::RESISTANCE` (engine-occupation's `cresistance::ACTIVE`).
 pub const RESISTANCE_ACTIVE: usize = 0x208;
 const MAP_SELECTED: usize = 0xf64;
 const OPERATIVE_CONTROLLER: usize = 0xa48;
@@ -82,39 +67,23 @@ pub struct Row {
     pub native_pointer: usize,
     pub map_selected: Option<u8>,
     pub map_warning: Option<u8>,
-    /// The agency's country id.
     pub roster_country: u32,
     pub id: u64,
-    /// Position in the agency's active roster.
     pub ordinal: u32,
     pub owner_country: u32,
     pub assignment: u32,
-    /// Cooldown operands, read only for the cooldown assignment.
     pub cooldown_kind: Option<u32>,
     pub cooldown_start_hour: Option<i32>,
     pub cooldown_end_hour: Option<i32>,
-    /// Nonzero active mission variant, whatever the assignment.
     pub variant: Option<u32>,
-    /// The active mission's raw stored country, present with the variant.
     pub target_country: Option<u32>,
-    /// The state-targeted variants' state id; `None` for a null state.
     pub target_state: Option<i32>,
-    /// The boost-ideology mission's ideology group name in the byte arena.
     pub ideology: Name,
-    /// The pending mission's variant; `None` when no mission is pending.
     pub pending_variant: Option<u32>,
     pub pending_country: Option<u32>,
     pub pending_state: Option<i32>,
-    /// The pending mission's ideology group name in the byte arena.
     pub pending_ideology: Name,
-    /// The leader's own portrait sprite name in the byte arena.
     pub portrait: Name,
-    /// Root-out-resistance operands, present only for that active variant:
-    /// the effective `root_out_resistance_effectiveness_factor` of the owner
-    /// country's and of the operative's own modifier accumulator, and 1 when
-    /// the operative's nationalities contain the mission's context country
-    /// (the target state's active resistance country when positive, else the
-    /// target country), else 0.
     pub root_out_country_factor: Option<i64>,
     pub root_out_operative_factor: Option<i64>,
     pub root_out_nationality: Option<u8>,
@@ -123,14 +92,10 @@ pub struct Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// All native portrait lengths, including rows omitted for either capacity.
     pub required_bytes: usize,
-    /// First authenticated operative, with its roster country, whose read
-    /// failed. The whole table is unavailable.
     pub failed_operative: Option<(u64, u32)>,
 }
 
-/// `root_out` is the caller's held key ([`root_out_key`]), kept across walks.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -162,7 +127,6 @@ pub fn walk_buffer(
     })
 }
 
-/// The root-out factor's key by its script name, unresolved until first asked.
 pub const fn root_out_key() -> NamedKey {
     NamedKey::new(ROOT_OUT_FACTOR)
 }
@@ -176,8 +140,6 @@ fn resolve_root_out(
         .ok_or("root out resistance factor modifier is not registered")
 }
 
-/// [`walk_buffer`] with the root-out factor's key supplied by `root_out`,
-/// asked only when a root-out-resistance mission is read.
 fn walk_keyed(
     memory: &impl Memory,
     base: usize,
@@ -225,8 +187,6 @@ fn walk_keyed(
                 }
                 failed_operative = Some((id, country.id));
                 let portrait = literal(memory, at(pointer, PORTRAIT_GFX)?, PORTRAIT_REFUSALS)?;
-                // Read even in sizing-only walks, so a refused field fails the
-                // census rather than passing as a capacity shortage.
                 let (mut row, ideologies) = read_row(
                     memory,
                     base,
@@ -310,8 +270,6 @@ fn walk_keyed(
     }
 }
 
-/// A string's refusals: header unreadable, length past the native maximum,
-/// header invalid, terminator unreadable or invalid.
 type Refusals = [&'static str; 4];
 const PORTRAIT_REFUSALS: Refusals = [
     "operative portrait header unreadable",
@@ -326,8 +284,6 @@ const IDEOLOGY_REFUSALS: Refusals = [
     "operative mission ideology terminator unreadable or invalid",
 ];
 
-/// A native string at `address`, through the same header limits, terminator
-/// validation and copy as the operative's saved name.
 fn literal(
     memory: &impl Memory,
     address: usize,
@@ -344,8 +300,6 @@ fn literal(
     Ok(string)
 }
 
-/// A mission's ideology group, authenticated, and its name as the save
-/// writes it; none for a null pointer.
 fn ideology(
     memory: &impl Memory,
     base: usize,
@@ -379,7 +333,6 @@ fn read_row<M: Memory>(
 ) -> Result<(Row, [Option<Literal>; 2]), &'static str> {
     let owner_country = field::<u32>(memory, pointer, OWNER_COUNTRY)?;
     let assignment = field::<u32>(memory, pointer, ASSIGNMENT)?;
-    // Cooldown status is reached only for the cooldown assignment.
     let (cooldown_kind, cooldown_start_hour, cooldown_end_hour) =
         if assignment == COOLDOWN_ASSIGNMENT {
             (
@@ -412,7 +365,6 @@ fn read_row<M: Memory>(
                     root_out()?,
                 )?);
             }
-            // Only the boost-ideology implementation holds an ideology group.
             let group = if variant == operative_action::BOOST_IDEOLOGY {
                 let implementation = usize::try_from(field::<u64>(
                     memory,
@@ -614,9 +566,6 @@ pub fn effect_roots<M: Memory>(
     }))
 }
 
-/// A root-out-resistance mission's operands: the factor's effective value
-/// in the owner's and in the operative's accumulator, and whether the
-/// operative's nationalities contain the mission's context country.
 fn root_out_operands_of<M: Memory>(
     memory: &M,
     base: usize,
@@ -633,8 +582,6 @@ fn root_out_operands_of<M: Memory>(
     };
     let country_factor = factor(at(owner.pointer, ccountry::MODIFIER_ACCUMULATOR)?)?;
     let operative_factor = factor(at(operative, MODIFIER_ACCUMULATOR)?)?;
-    // The target state's resistance names the context country while it is
-    // active with a positive country; otherwise the target country does.
     let mut context = targets.country;
     if let Some(state) = targets.state {
         let resistance = at(state, cstate::RESISTANCE)?;
@@ -648,10 +595,6 @@ fn root_out_operands_of<M: Memory>(
     Ok((country_factor, operative_factor, u8::from(nationality)))
 }
 
-/// Whether the operative's sorted nationalities contain `raw`, by the native
-/// lower bound over country-link equivalence: a raw match, or an entry that
-/// resolves to the same canonical country, with the null tag as itself. An
-/// empty vector compares nothing.
 fn has_nationality<M: Memory>(
     memory: &M,
     countries: &ccountry::Reader<'_, M>,
@@ -694,7 +637,6 @@ fn has_nationality<M: Memory>(
     Ok(id == raw || canonical(id)? <= target)
 }
 
-/// A mission's nonnull target state, authenticated, and its id.
 fn state_id(memory: &impl Memory, base: usize, state: usize) -> Result<i32, &'static str> {
     let expected = engine_sites::at(base, cstate::VTABLE_RVA)
         .ok_or("operative mission state vtable withheld")?;

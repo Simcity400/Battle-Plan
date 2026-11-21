@@ -1,4 +1,3 @@
-//! Build-specific value bounds and identities used by capture and recorded-data validation.
 
 pub mod equipment_variant {
     pub const REFERENCE_TYPE: u32 = 70;

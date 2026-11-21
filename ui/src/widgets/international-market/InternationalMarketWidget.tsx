@@ -42,9 +42,6 @@ const NO_OFFERS: readonly OfferRow[] = [];
 const UNNAMED = 'Country name unavailable';
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
 
-/** Who buys what from whom on the international market at the moment shown: contracts with their purchase progress,
- * open requests, or listed inventory, followed at the head as a pushed panel with the progress painted. A row opens
- * the market drill. */
 export default function InternationalMarketWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const [drillShown, setDrillShown] = useState<number | undefined>();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -57,7 +54,6 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
-  // Chosen tags are asked by name; all countries and groups ask every row and match here, as the rows' hour reads them.
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
   const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: view === 'inventory' ? 'offers' : 'contracts' } : null, [track, tags, view]);
   const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, params, { active, validate: validateMarketReply });
@@ -99,7 +95,6 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     country('seller', 'Seller'), country('buyer', 'Buyer'), equipmentColumn('Equipment'),
     { key: 'price', header: 'Price', label: 'Agreed price', numeric: true, width: 'max-content', priority: 1, renderMissing: true,
       value: row => row.prices[0]?.amount ?? null, text: row => row.prices.map(item => cic(item.amount)).join(', ') || '—', render: row => cicLabel(row.prices[0]?.amount ?? null) },
-    // Painted from the purchase contract's live cells: assigned of needed convoys, CIC collected, deliveries completed.
     { key: 'assigned', header: 'Convoys', label: 'Convoys assigned', numeric: true, width: 'max-content', priority: 3, value: () => null,
       paint: (value, key) => `${Number(value).toLocaleString()} / ${live.read().get(liveKey(rowOf(key), 'convoys'))?.toLocaleString() ?? '—'}` },
     { key: 'collected', header: 'Collected', label: 'Payment collected', numeric: true, width: 'max-content', value: () => null, paint: value => collectedText(Number(value)) },

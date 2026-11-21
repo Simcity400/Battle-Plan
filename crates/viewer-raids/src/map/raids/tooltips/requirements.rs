@@ -1,4 +1,3 @@
-//! Unit requirement text.
 use super::rules::{Lines, Text};
 use installed_content_core::{equipment::Database, equipment::Groups, parser};
 use installed_content_localisation::localisation::Argument as Arg;
@@ -7,17 +6,10 @@ use installed_content_raids::raids::RaidType;
 use viewer_foundation::tooltip_text::value_limit;
 use viewer_foundation::tooltip_text::{ensure_newlines, localise};
 
-/// A stored name as the port's text, or why it is not.
 fn stored<'a>(what: &str, bytes: &'a [u8]) -> Result<&'a str, String> {
     parser::text(bytes).map_err(|refused| format!("{what}: {refused}"))
 }
 
-/// Walk members in authored order. Match group tokens without case through
-/// [`Groups::group`]. Use localized group description (else name) when its
-/// key exists, marking terminal members seen without formatting them; otherwise
-/// expand members recursively. Localize other members only on their first
-/// case-insensitive occurrence. Join entries with a comma and space.
-/// Refuse a group containing itself by name rather than recursing indefinitely.
 fn group(
     loc: &Localisation,
     groups: &Groups,
@@ -58,9 +50,6 @@ fn group(
     Ok(out.join(", "))
 }
 
-/// An anonymous group starts with token `none` and empty description.
-/// If localization contains that token's spelling, localize only the wrapper;
-/// otherwise expand its members.
 fn anonymous_group(loc: &Localisation, groups: Result<&Groups, String>, names: &[Vec<u8>]) -> Text {
     const KEY: &str = "none";
     if loc.get(KEY).is_some() {
@@ -72,8 +61,6 @@ fn anonymous_group(loc: &Localisation, groups: Result<&Groups, String>, names: &
 
 pub fn build(
     loc: &Localisation,
-    // The equipment database and groups, or why they are unknown: only
-    // the equipment lines read them.
     equipment: Result<(&Database, &Groups), String>,
     kind: &RaidType,
     country_name: impl Fn(&str) -> Text,
@@ -84,7 +71,7 @@ pub fn build(
         for req in &requirement.equipment {
             if req.types.is_empty() {
                 continue;
-            } // Skip an empty requirement.
+            }
             let text = (|| {
                 let types: Vec<Vec<u8>> = req
                     .types
@@ -107,7 +94,6 @@ pub fn build(
                     for alternatives in &req.modules {
                         let mut modules = Vec::new();
                         for module in alternatives {
-                            // Skip a null module; localize the module's own name for the country.
                             if let Some(found) = equipment.module(module) {
                                 let found = stored("equipment module name", found)?;
                                 modules.push(localise(
@@ -208,8 +194,6 @@ mod tests {
                 |_| Ok(true),
             )
         };
-        // Missing `none` preserves member order, terminal deduplication and
-        // named inner localisation. A localised empty key is unrelated.
         assert_eq!(
             run(&loc, &["inner", "a", "b", "unlocalised"])[0]
                 .1
@@ -223,7 +207,6 @@ mod tests {
                 .collect()
         };
         let localised = with_none("Anonymous wrapper");
-        // A hit suppresses expansion even when the equipment database is unavailable.
         assert_eq!(
             build(
                 &localised,
@@ -236,13 +219,11 @@ mod tests {
             .as_deref(),
             Ok("at least 70 Anonymous wrapper\n\n")
         );
-        // An empty localised value is still a hit.
         let localised = with_none("");
         assert_eq!(
             run(&localised, &["cycle"])[0].1.as_deref(),
             Ok("at least 70 \n\n")
         );
-        // Skip an empty requirement before asking for its name.
         assert!(run(&localised, &[]).is_empty());
     }
 
@@ -316,9 +297,6 @@ mod tests {
             assert_eq!(value_limit(&loc, min, max).unwrap(), expected);
         }
     }
-    /// Loaded groups match by token without case, use description as key,
-    /// deduplicate terminal members without case, and refuse self-containment
-    /// by name. A module matched by token uses its own name.
     #[test]
     fn group_expansion_preserves_authored_order_deduplication_and_named_failures() {
         let loc: Localisation = [

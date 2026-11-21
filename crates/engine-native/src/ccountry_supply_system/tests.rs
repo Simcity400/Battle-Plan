@@ -225,7 +225,6 @@ fn settings_preserve_raw_actor_aliases_zero_and_exact_level_byte() {
     assert_eq!(rows[2].node_index, 1);
     assert_eq!(rows[2].actor, 7);
     assert_eq!(rows[2].map_entry_index, 0);
-    // The level is recorded losslessly even outside the normal UI choices.
     put(&mut bytes, 0x8004, &[255]);
     assert_eq!(
         walk(&NoEntryPadding(&bytes), 0, GAME, &mut rows),
@@ -526,10 +525,6 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
         rows.sort_unstable();
         (report, rows)
     };
-    // Province lookup returns null for zero and for ids outside the census, and
-    // the node creators store such a province unchecked. Native readers only
-    // key maps with it, so it is a root without a route, recorded as stored and
-    // observed.
     for province in [0_u32, 4, u32::MAX] {
         let mut bytes = train_fixture();
         put(
@@ -554,7 +549,6 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
         );
         assert_eq!(report.refusal, None);
     }
-    // An empty census slot is the same null province.
     let mut bytes = train_fixture();
     put(&mut bytes, 0x18000 + 3 * 8, &0_u64.to_le_bytes());
     let (report, rows) = walk(&bytes, 3);
@@ -569,7 +563,6 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
             ProvinceCheck::SlotEmpty
         ))
     );
-    // The fixture's parent map (keys 2 and 3), rewritten with new parents.
     let reparent = |bytes: &mut Vec<u8>, of_two: i32, of_three: i32| {
         bytes[0xb000 - GAME..0xb000 - GAME + 13 * 12].fill(0);
         let parents = map(
@@ -587,8 +580,6 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
             &of_three.to_le_bytes(),
         );
     };
-    // A null parent keys the parent map like any other and becomes a vertex row
-    // of its own, as the parent walk would visit it.
     let mut bytes = train_fixture();
     reparent(&mut bytes, 1, 4);
     let (report, rows) = walk(&bytes, 4);
@@ -612,8 +603,6 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
             ProvinceCheck::OutsideCensus
         ))
     );
-    // A province that resolves must be the CProvince with that id, and an
-    // unreadable slot is no native value; each refusal names its check.
     let mut bytes = train_fixture();
     put(
         &mut bytes,
@@ -704,8 +693,6 @@ fn node_routes_are_acquired_only_after_the_first_positive_parent() {
         let report = node::walk(&memory, 0, GAME, &mut rows, &mut paths);
         (report.outcome, memory.outer_reads.get(), rows, paths)
     };
-    // An unreadable route map is irrelevant to empty/root-only censuses.
-    // A positive-parent edge must fail it.
     for (count, expected, route_reads) in [
         (0, Outcome::Rows { len: 0 }, 0),
         (1, Outcome::Rows { len: 1 }, 0),
@@ -738,7 +725,6 @@ fn node_routes_are_acquired_only_after_the_first_positive_parent() {
     assert_eq!(reads, 1);
     assert_eq!(paths, [2, 2, 1]);
 
-    // The later route-map fault must not replace the first node failure.
     put(&mut bytes, 0xa000 + node::INDEX, &99_u32.to_le_bytes());
     let (outcome, reads, _, _) = capture(&bytes, true);
     assert_eq!(
@@ -805,8 +791,6 @@ fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() 
     assert_eq!((actual.1, actual.2), (6, 6));
     assert_eq!(actual.4, [2, 2, 1, 2, 2, 1]);
     assert_eq!((actual.3[1].route.start, actual.3[4].route.start), (0, 3));
-    // The two countries retain their separate rows and paths, while each
-    // successful global route identity, path header and path is acquired once.
     let route = 0xd000 + hash(2) * supply_route::INNER_STRIDE + supply_route::VALUE;
     for observation in [(route + supply_route::FROM, 8), (route, 16), (0xe000, 12)] {
         assert_eq!(cold.iter().filter(|&&read| read == observation).count(), 2);
@@ -826,9 +810,6 @@ fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() 
     }
     memory.reads.borrow_mut().clear();
 
-    // Every cold failure before the second country's first slot preserves
-    // the same independent failure and observed prefix. Failed edges never
-    // become a success in a subsequent capture using the same allocation.
     let first_country = cold.iter().position(|&(at, _)| at == 0x2710).unwrap();
     assert_eq!(cold[..first_country], reused[..first_country]);
     for failed in 2..first_country {
@@ -844,7 +825,6 @@ fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() 
         memory.reads.borrow_mut().clear();
     }
 
-    // Clearing is per walk, even without changing the root addresses.
     put(&mut bytes, 0xe000, &3_u32.to_le_bytes());
     let memory = Traced {
         source: TrainMemory::new(&bytes),
@@ -876,7 +856,6 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
         }
     }
     let mut bytes = train_fixture();
-    // Another root has the previously absent parent, with its own route.
     let other_root = 0x2200;
     let outer = map(
         &mut bytes,
@@ -939,8 +918,6 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
             1
         );
     }
-    // This test bypasses the complete-edge memo. Every route identity,
-    // header and path occurrence therefore still reads its native payload.
     let payload = 0xd000 + hash(2) * route::INNER_STRIDE + route::VALUE;
     for observation in [(payload + route::FROM, 8), (payload, 16), (0xe000, 12)] {
         assert_eq!(cold.iter().filter(|&&read| read == observation).count(), 2);
@@ -969,7 +946,6 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
         assert_eq!(memory.reads.take(), retry);
     }
 
-    // A new root walk must discard both the old present and absent results.
     retained.begin();
     assert_eq!(observe(&mut retained, 2, 3).0.unwrap().0.from, 0);
     retained.begin();
@@ -991,7 +967,6 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
 fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
     use crate::{supply_node as node, supply_parent_map};
     let mut bytes = train_fixture();
-    // Province 4 exists; node 0 moves there, outside the parent map.
     header(&mut bytes, GAME + cgame_state::PROVINCES, 0x18000, 5, 5);
     put(&mut bytes, 0x18000 + 4 * 8, &0x1a000_u64.to_le_bytes());
     put(
@@ -1010,8 +985,6 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
         &1_u32.to_le_bytes(),
     );
     put(&mut bytes, 0xa000 + node::PROVINCE, &4_u32.to_le_bytes());
-    // Both other nodes hang off vertex 1, which has no node row; its
-    // parent is node province 4.
     let companion = 0x6000 + supply_companion::STRIDE;
     let parents = map(
         &mut bytes,
@@ -1046,7 +1019,6 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
 fn parent_vertex_membership_keeps_sorted_rows_cycles_and_country_scope() {
     use crate::{supply_node as node, supply_parent_map};
     let mut memo = node::ProvinceMemo::with_scratch().unwrap();
-    // The large ID exercises the exact fallback outside the bounded bitset.
     for high in [6_u32, 65536] {
         for terminal in [4_i32, high as i32, -1] {
             let mut bytes = train_fixture();
@@ -1124,7 +1096,6 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_and_country_scope() {
                     ]
                 );
             }
-            // Clear membership even when the same memo and census are reused.
             let report =
                 node::walk_part(&memory, 0, GAME, 0, 1, &mut rows, &mut Vec::new(), &mut memo);
             assert_eq!(report.outcome, Outcome::Rows { len: 12 });
@@ -1176,7 +1147,6 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
         ]
     );
     assert_eq!(report.vehicle_failures, [0; 3]);
-    // The native array [0, 255, 1] keeps its count and its one nonzero run.
     assert_eq!((rows[0].access_count, rows[0].runs_len), (3, 1));
     assert_eq!((rows[1].access_count, rows[1].runs_len), (0, 0));
     assert_eq!(runs[0], [1, 2]);
@@ -1184,11 +1154,6 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
     assert_eq!((report.access, report.runs), (2, 1));
 }
 
-/// A synthetic census of `n` canonical slots (slot 0 is the sentinel). Every
-/// country has a supply system, a companion with no nodes or trains, and an
-/// `n`-byte controller-access array; all arrays share one access buffer
-/// whose byte at slot `s` is nonzero only for `s == 4` and for every 50th
-/// slot from 50, as a mostly-denied controller map is.
 fn census(n: u32) -> Vec<u8> {
     let n = n as usize;
     let countries = 0x3000;
@@ -1326,7 +1291,6 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
     let bytes = train_fixture();
     for (at, value) in [
         (0xa000, 99_u32),
-        // Province 1's object holds another id.
         (0x19000 + 0x400 + crate::cprovince::ID, 9),
         (0x6320 + 0x34, u32::MAX),
         (0xe000, 99),
@@ -1356,7 +1320,6 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
         &mut vec![[0; 2]; 2],
     );
     assert!(matches!(report.outcome, Outcome::Unavailable { .. }));
-    // An unreadable access array fails the table even with no room to store it.
     let bytes = train_fixture();
     let mut memory = TrainMemory::new(&bytes);
     memory.reject = Some(0xf101);
@@ -1512,7 +1475,6 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
 #[test]
 fn node_capacity_never_returns_a_complete_prefix() {
     let mut bytes = train_fixture();
-    // Remove destination from the endpoint controller's sorted node map.
     put(
         &mut bytes,
         0x6320 + supply_companion::ROUTES_SUBTYPE_ZERO + 12,
@@ -1525,13 +1487,9 @@ fn node_capacity_never_returns_a_complete_prefix() {
     assert_eq!(report.outcome, Outcome::Rows { len: 3 });
 }
 
-/// A walk of selected countries reads exactly their nodes and inventory, each
-/// equal to the whole walk's: 24 slices by native country id cover the
-/// census once (the daily `supply_trains` family).
 #[test]
 fn selected_supply_walks_partition_a_census_by_country() {
     const NODES: usize = 2;
-    // Twenty countries leave slices empty; thirty put two countries in a slice.
     for count in [20, 30] {
         let mut bytes = census(count as u32 + 1);
         let slots = count + 1;
@@ -1611,7 +1569,6 @@ fn selected_supply_walks_partition_a_census_by_country() {
         );
         assert_eq!(whole.outcome, Outcome::Rows { len: count * NODES });
         whole_nodes.truncate(count * NODES);
-        // A train row's arena offsets depend on the walk; its read values do not.
         let inventory = |row: &TrainRow, access: &[u8]| {
             (
                 row.country,
@@ -1699,7 +1656,6 @@ fn selected_supply_walks_partition_a_census_by_country() {
                 read[row.0 as usize] += 1;
             }
         }
-        // Every country is read in exactly one of the day's slices.
         assert!(read[1..].iter().all(|&count| count == 1));
     }
 }

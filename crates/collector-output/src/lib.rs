@@ -1,4 +1,3 @@
-//! Output totals capture: the production line and construction output observers with their shared hook sites, the line and construction table packs, rocket output and the output continuity both packs carry. The host installs the hooks, drains at the hourly boundary and assembles the tables.
 
 use collector_hooks::hook;
 use collector_lifetime::world_lifetime;

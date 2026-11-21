@@ -1,4 +1,3 @@
-//! Uncompressed, independently recoverable spool segments.
 
 use crate::identity::IdentityCodec;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -41,7 +40,6 @@ pub enum Record {
     Control(ControlRecord),
 }
 
-/// Per-hour trailer entries never reserve space for a frame or session identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlRecord {
     PlayerCommands {
@@ -58,28 +56,16 @@ pub enum ControlRecord {
         hour: i32,
         load_signal: Option<i64>,
     },
-    /// A bounded callback loss log overflowed; no hour range is invented.
     GapSummary {
         session: u64,
         dropped_frames: u64,
         reason: String,
     },
-    /// The verified capture prefix is readable, but the capture ended in failure.
     Partial {
         session: u64,
         reason: String,
         failed_hour: Option<i32>,
     },
-    /// The same process session reattached and continued `branch`: the
-    /// collector was detached for part of the interval between the read of
-    /// `after_hour`, the session's last recorded frame before it detached,
-    /// and the read of `hour`, the reattached session's first observation.
-    /// Every event family's record of that interval is incomplete; events it
-    /// did record there remain observed. The two hours are read anchors, not
-    /// the times the hooks were removed and installed. The frame at
-    /// `hour` may itself be lost, which a gap records separately. A writer
-    /// that retries the record after a failed write can repeat it; the
-    /// replay keeps one.
     EventLoss {
         session: u64,
         branch: BranchId,
@@ -121,7 +107,6 @@ impl ControlRecord {
         )
     }
 
-    /// The record kind whose layout it is written in.
     pub const fn kind(&self) -> RecordKind {
         match self {
             Self::PlayerCommands { .. } => RecordKind::PlayerCommands,
@@ -144,7 +129,6 @@ impl ControlRecord {
         }
     }
 
-    /// These tags are shared by spool payloads and the replay trailer.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         engine_allocation::reserve(out, self.encoded_bytes()?)?;
         match self {
@@ -318,7 +302,6 @@ impl ControlRecord {
 }
 
 impl Record {
-    /// Encode a payload; `encode_record` adds its length and checksum envelope.
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         engine_allocation::reserve(out, 1)?;
         match self {
@@ -352,8 +335,6 @@ impl Record {
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),
-            // Recovery checks the envelope's recording version before
-            // decoding this payload.
             2 => Self::Frame(Frame::decode_version(input, None, format)?),
             3 => Self::Gap(Gap::decode(input)?),
             tag @ 4..=9 => Self::Control(ControlRecord::decode_tag(tag, input, format)?),
@@ -393,7 +374,6 @@ pub fn decode_record(bytes: &[u8]) -> io::Result<Record> {
     Ok(record)
 }
 
-/// This checks segment context, not table baselines, which belong to FrameDecoder.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SegmentState {
     records: usize,
@@ -483,8 +463,6 @@ impl SegmentState {
                 if self.first_hour.is_some_and(|hour| gap.first_hour < hour) {
                     return Err(invalid_static("gap precedes declared first branch hour"));
                 }
-                // Disk recovery may preserve only gaps for a branch before a load.
-                // Its first hour may already have a frame in an earlier segment.
                 self.gap_before_keyframe |= self.needs_keyframe;
             }
             RecordRef::Control(ControlRecord::ClockWitness { session, .. })
@@ -571,14 +549,12 @@ impl SegmentState {
 
 #[derive(Debug)]
 pub struct Recovery<T = Record> {
-    /// Original envelope contract; never discarded by recovery/finalization.
     pub format: Option<FormatVersion>,
     pub records: Vec<T>,
     pub valid_bytes: usize,
     pub damage: Option<String>,
 }
 
-/// Where a record lies in its segment: its header's first byte, its payload's length and checksum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Placement {
     pub offset: usize,
@@ -586,7 +562,6 @@ pub struct Placement {
     pub crc: u32,
 }
 
-/// A recovered frame without the rows finalization's checks skip; it is read again by placement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameMetadata {
     pub branch: BranchId,
@@ -617,7 +592,6 @@ impl FrameMetadata {
         }
     }
 
-    /// Every table but the kept ones unavailable.
     pub fn frame(&self) -> io::Result<Frame> {
         let mut tables = engine_allocation::vec(TABLE_COUNT)?;
         for table in TableId::ALL {
@@ -639,7 +613,6 @@ impl FrameMetadata {
     }
 }
 
-/// A recovered record, its frame kept as metadata so a long spool fits in memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Recovered {
     SessionStart(SessionStart),
@@ -709,7 +682,6 @@ impl SpoolRecord for Recovered {
     }
 }
 
-/// Recover only this segment's valid prefix. Never scan past damage for another magic.
 #[cfg(any(test, feature = "test-support"))]
 pub fn recover_prefix(bytes: &[u8]) -> Recovery {
     recover_records(
@@ -723,7 +695,6 @@ pub fn recover_prefix(bytes: &[u8]) -> Recovery {
     .unwrap()
 }
 
-/// `keep` runs on the pack's threads; allocation and I/O failures abort rather than become damage.
 pub fn recover_reader<T: SpoolRecord + Send>(
     input: impl Read,
     length: usize,
@@ -740,7 +711,6 @@ pub fn recover_reader<T: SpoolRecord + Send>(
     )
 }
 
-/// The frame recovered at `placement`, refused unless its record still has that length and checksum.
 pub fn read_frame_at(
     input: &mut (impl Read + Seek),
     placement: Placement,
@@ -749,7 +719,6 @@ pub fn read_frame_at(
     read_frame_payload_at(input, placement, length)?.decode()
 }
 
-/// An immutable recovered envelope; checksum and frame decoding need no file lock.
 pub struct FramePayload(Envelope);
 
 impl FramePayload {
@@ -761,7 +730,6 @@ impl FramePayload {
     }
 }
 
-/// Copy just the held record's bytes while its seek cursor is locked.
 pub fn read_frame_payload_at(
     input: &mut (impl Read + Seek),
     placement: Placement,
@@ -842,12 +810,10 @@ fn recover_records<T: SpoolRecord + Send>(
     tail.recovery(length, failure, fail_resources)
 }
 
-/// A segment's records recovered so far, continued as the segment grows.
 #[derive(Clone)]
 pub struct Tail<T> {
     records: Vec<T>,
     accepted: Accepted,
-    /// Each record's placement and format, in order: finishing checks the file still holds them.
     placements: crc32fast::Hasher,
 }
 
@@ -877,7 +843,6 @@ impl<T: SpoolRecord + Send> Tail<T> {
         self.accepted.valid_bytes
     }
 
-    /// Reads, on this thread, the records now whole and valid in the first `length` bytes; a failing one waits.
     pub fn grow(
         &mut self,
         input: &mut (impl Read + Seek),
@@ -898,7 +863,6 @@ impl<T: SpoolRecord + Send> Tail<T> {
         }
     }
 
-    /// What [`recover_reader`] recovers from the first `length` bytes; none if this tail read past them.
     pub fn finish(
         mut self,
         input: &mut (impl Read + Seek),
@@ -923,7 +887,6 @@ impl<T: SpoolRecord + Send> Tail<T> {
         self.recovery(length, failure, true).map(Some)
     }
 
-    /// Whether each record keeps the offset, length and checksum its payload was verified against here.
     fn still_held(&self, input: &mut (impl Read + Seek)) -> io::Result<bool> {
         let mut placements = crc32fast::Hasher::new();
         let mut offset = 0;
@@ -950,7 +913,6 @@ impl<T: SpoolRecord + Send> Tail<T> {
             && placements.finalize() == self.placements.clone().finalize())
     }
 
-    /// Decodes on `threads` threads but accepts in order, finding damage where a sequential read does.
     fn extend(
         &mut self,
         input: impl Read,
@@ -1139,7 +1101,6 @@ impl Accepted {
     }
 
     fn finished(&self) -> io::Result<()> {
-        // A frameless checkpoint tail needs its own session context; bare branches still need frames or loss.
         if self.state.needs_keyframe
             && !self.state.partial
             && !self.state.gap_before_keyframe
@@ -1151,7 +1112,6 @@ impl Accepted {
     }
 }
 
-/// A reusable payload buffer and one decoded record, independent of segment size.
 pub struct RecordReader<R> {
     envelopes: Envelopes<R>,
     accepted: Accepted,

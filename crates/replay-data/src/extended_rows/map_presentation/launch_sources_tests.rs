@@ -157,7 +157,7 @@ fn reserved_launch_delta_clears_and_reintroduces_only_its_suffix_with_three_byte
             assert_eq!(delta.mask, 1 << 17);
             let mut bytes = Vec::new();
             encode_delta(TableId::ReservedCountryNaming, &delta, 0, &mut bytes).unwrap();
-            assert_eq!(&bytes[..4], &[0, 0, 0, 2]); // Singleton key, then current field mask.
+            assert_eq!(&bytes[..4], &[0, 0, 0, 2]);
             let mut input = Decoder::new(&bytes);
             let decoded = decode_delta(TableId::ReservedCountryNaming, 0, &mut input).unwrap();
             input.finish().unwrap();
@@ -276,9 +276,8 @@ fn reserved_launch_packet_option_tags_counts_and_framing_are_strict() {
         kind.decode(&mut input).unwrap();
     }
     let start = bytes.len() - input.remaining();
-    let body = start + 4; // Opaque byte length precedes packet's Option tag.
+    let body = start + 4;
     for (offset, tag) in [(body, 2), (body + 1, 3), (body + 6, 2)] {
-        // Packet, navy (2 is native null), then states.
         let mut malformed = bytes.clone();
         malformed[offset] = tag;
         assert!(ReservedCountryNamingRow::decode_fields(0, &mut Decoder::new(&malformed)).is_err());

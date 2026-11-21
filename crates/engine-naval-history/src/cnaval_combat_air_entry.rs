@@ -1,5 +1,3 @@
-//! Retained naval-air result snapshot, 0x88 bytes. It copies variant,
-//! counts, country and name with three transferred hit arrays.
 use engine_sites::Rva;
 use crate::capture_text::Value;
 use crate::{
@@ -8,14 +6,12 @@ use crate::{
     cnaval_combatant::field,
 };
 
-/// Naval-combat air-entry primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a5d0);
 pub const SIZE: usize = 0x88;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub variant: u64,
-    /// Variant-summary operands.
     pub variant_summary_inputs: [i64; 2],
     pub initial_planes: i32,
     pub current_planes: i32,

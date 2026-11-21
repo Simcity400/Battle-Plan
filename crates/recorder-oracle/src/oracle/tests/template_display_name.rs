@@ -1,4 +1,3 @@
-//! Private saved-operand fixtures; no native/save acceptance claim follows them.
 use super::*;
 use replay_data::{
     rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::TemplateDisplayName,
@@ -79,8 +78,6 @@ fn report_name(frame: &DecodedFrame, saved: &Save) -> Report {
 }
 
 fn saved_name_fields(saved: &mut Save, fields: &str) {
-    // Exercise the public installed-content reader, rather than manufacturing the new
-    // presence flags in the comparison fixtures.
     saved.division_templates = save::parse(format!(
         "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 \
          debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 \
@@ -316,8 +313,6 @@ fn daily_and_hourly_leading_nul_keys_compare_emitted_empty_presence() {
 
 #[test]
 fn parsed_template_name_presence_compares_daily_and_both_hourly_sources() {
-    // Matching native output and a save differing only in key presence. The
-    // hourly path must keep stored-length fallback demand, even for leading NUL.
     for (literal, key, matching, changed, field) in [
         (
             b"\0literal".as_slice(),
@@ -427,8 +422,6 @@ fn daily_key_presence_is_independent_of_inactive_hourly_fallback() {
     assert!(report_daily_name(&frame, &saved).outcome().is_ok());
     assert!(report_name(&frame, &saved).outcome().is_ok());
 
-    // The native writer still emits the key, but display-name lookup does not read
-    // it: the literal has nonzero stored length despite its empty text prefix.
     saved_name_fields(&mut saved, "name=\"\"");
     let daily = report_daily_name(&frame, &saved);
     assert!(
@@ -444,8 +437,6 @@ fn daily_key_presence_is_independent_of_inactive_hourly_fallback() {
     assert!(hourly.outcome().is_ok());
 }
 
-/// The movement speed keys hold only nonzero modifier keys, and their sub-unit
-/// selection is named as a derived engine cache the save omits.
 #[test]
 fn template_speed_keys_refuse_a_zero_key_and_name_their_selection() {
     let (mut frame, saved) = fixture_name(TemplateNameValue::Changed {

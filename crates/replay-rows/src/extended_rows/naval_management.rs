@@ -1,4 +1,3 @@
-//! Naval standing orders and native repair/refit work, carried between their writers.
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -32,9 +31,6 @@ pub struct NavalRepairTaskForceRow {
     pub refit_variant: u64,
     pub refit_after_repair: u64,
     pub composition_token: u32,
-    /// Raw full rejoin reference. Destination deletion can leave it unchanged, so derive
-    /// whether it resolves from this hour's complete TaskForces census when presenting
-    /// the order or projecting the save's optional merge_with_after_repair field.
     pub merge_after_repair: u64,
 }
 typed_codec!(NavalRepairTaskForceRow, 64, |row| row.task_force as u128, |key| Self { task_force: key as u64, ..Default::default() },
@@ -78,8 +74,6 @@ typed_codec!(NavalRepairQueueRow, 64, |row| (row.province as u128) << 32 | row.o
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRefitShipRow {
     pub ship: u64,
-    /// Stored full work-order identity; only the native empty sentinel becomes zero.
-    /// Destination retirement does not invalidate this carried source value.
     pub line: u64,
 }
 typed_codec!(NavalRefitShipRow, 64, |row| row.ship as u128, |key| Self { ship: key as u64, ..Default::default() },
@@ -95,9 +89,6 @@ typed_codec!(NavalRefitProgressRow, 64, |row| row.line as u128, |key| Self { lin
  { 0 => (progress_raw): I64 }, |_row| Ok(()));
 
 impl NavalRefitShipRow {
-    /// Resolve against the complete hourly refit-production rows. Their identity/lifetime
-    /// is current; daily ProductionLines target/cost/allocation cannot certify this gate.
-    /// Callers must preserve unavailable rows separately from a complete empty census.
     pub fn resolve_line<'a>(
         &self,
         lines: &'a [NavalRefitProgressRow],

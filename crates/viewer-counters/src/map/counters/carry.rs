@@ -1,12 +1,8 @@
-//! Whole-world parts of the hour's tables kept from hour to hour while every table view they read
-//! is the same allocation: the reads are recorded as the part is built
-//! ([`view_reads::record_walked`]), so no list of a part's tables can leave one out.
 
 use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, ViewIdentity, view_reads};
 use std::sync::{Arc, Mutex};
 
-/// One part's last build, held while its reads and `extra` stand.
 pub struct Carried<V, E> {
     held: Mutex<Option<Held<V, E>>>,
 }
@@ -24,11 +20,6 @@ impl<V, E> Default for Carried<V, E> {
 }
 
 impl<V, E: PartialEq> Carried<V, E> {
-    /// The part for `frame`: the held one when every view its build read, and every table of
-    /// `also` (those a derived input such as the country links was made from), is the same
-    /// allocation and `extra` is equal; otherwise `build`, held for the next hour unless it read
-    /// through a walk, whose views name no allocation. A failed build is not held. The build runs
-    /// with no lock held: a second caller meanwhile builds its own rather than waiting.
     pub fn get_or_build<Error>(
         &self,
         frame: &DecodedFrame,
@@ -42,7 +33,6 @@ impl<V, E: PartialEq> Carried<V, E> {
                 && last.extra == extra
                 && last.reads.iter().all(|(table, identity)| identity.is(&frame.tables[table.index()]))
             {
-                // An enclosing recording holds what the held part read.
                 for (table, _) in &last.reads {
                     let _ = &*frame.tables[table.index()];
                 }
@@ -105,8 +95,6 @@ mod tests {
         assert_eq!((*part(&frame, 2), builds.get()), (0, 4));
     }
 
-    /// A part is built with no lock held, so a second caller meanwhile builds its own rather than
-    /// waiting on the first; the build that finishes last is held.
     #[test]
     fn a_part_is_built_with_no_lock_held() {
         let frame = test_frame(3);

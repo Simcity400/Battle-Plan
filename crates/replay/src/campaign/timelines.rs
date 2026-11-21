@@ -1,17 +1,3 @@
-//! A campaign's histories: the recorded segments (branches, split at every load) joined into
-//! the timelines a viewer plays, each whole from the campaign's first recorded hour.
-//!
-//! A segment after the first was loaded from a save. Its parent is the segment that save came
-//! from, found from the save counters the game writes into every save and restores on load
-//! (the synchronized random-draw count and the object allocation counters, recorded hourly in
-//! the Clock table): they only rise along one history, so the segment's first hour continues
-//! its parent's recorded hour before it. A segment going on from where its parent's timeline
-//! ends extends that timeline (a new session, or play the recorder missed, shown as a gap);
-//! one loaded into its parent's past starts a timeline of its own, its parent's history up to
-//! there followed by its own. The main timeline holds the latest recorded play.
-//!
-//! A join no counter proves stays unconfirmed and follows the latest play; the viewer's
-//! choice of parent for it ([`read_choices`]) replaces it.
 
 use super::{BlockIndex, Replay, SeekResult};
 use crate::{
@@ -27,58 +13,40 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Why a segment joins its parent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Evidence {
-    /// Its save counters rose from the parent's at the hour the save was written, and fell back
-    /// from every other history's recorded there.
     Counters,
-    /// The parent is the only history recorded at the hour the save was written, and its
-    /// counters allow it.
     Only,
-    /// The same loaded game went on after hours the recorder lost.
     Process,
-    /// Play the recorder never saw lies between them; the parent is the latest history before.
     Unrecorded,
-    /// Nothing proves which history the save came from; the latest is followed.
     Unconfirmed,
-    /// The viewer chose it.
     Chosen,
 }
 
 impl Evidence {
-    /// Whether the viewer may be asked to choose another parent.
     pub fn open(self) -> bool {
         matches!(self, Self::Unconfirmed | Self::Unrecorded | Self::Chosen)
     }
 }
 
-/// The viewer's choices: each segment's chosen parent.
 pub type Choices = BTreeMap<BranchId, BranchId>;
 
-/// What a segment joins: its parent, the first hour of its own in its timeline, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
     pub segment: BranchId,
     pub parent: Option<BranchId>,
     pub evidence: Evidence,
-    /// Every segment the save could have come from, latest last, when that is open.
     pub candidates: Vec<BranchId>,
 }
 
-/// A stretch of one segment's hours in a timeline, inclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Piece {
     pub segment: BranchId,
     pub first_hour: Hour,
     pub last_hour: Hour,
-    /// The first hour its segment declares, which commands recorded before its first hourly
-    /// frame may hold.
     pub declared: Hour,
 }
 
-/// The hours of each of `pieces` its recorded commands count for: from its segment's declared
-/// first hour, up to the next piece's.
 pub fn command_hours(pieces: &[Piece]) -> Vec<(Hour, Hour)> {
     pieces
         .iter()
@@ -92,10 +60,8 @@ pub fn command_hours(pieces: &[Piece]) -> Vec<(Hour, Hour)> {
         .collect()
 }
 
-/// Where a timeline goes on with another segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Join {
-    /// The first hour of the segment's piece.
     pub hour: Hour,
     pub segment: BranchId,
     pub parent: BranchId,
@@ -105,20 +71,15 @@ pub struct Join {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timeline {
-    /// The id of the segment it starts with.
     pub id: BranchId,
     pub pieces: Vec<Piece>,
-    /// One for each piece after the first.
     pub joins: Vec<Join>,
 }
 
-/// How a history stands to the main one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Parting {
     Main,
-    /// It shares the main history's play before this hour, and its own from it was left behind.
     LeftBehind(Hour),
-    /// It shares none of the main history's play.
     Separate,
 }
 
@@ -131,7 +92,6 @@ impl Timeline {
         self.pieces[self.pieces.len() - 1].last_hour
     }
 
-    /// The piece holding `hour`, when one does.
     pub fn piece_at(&self, hour: Hour) -> Option<&Piece> {
         let at = self.pieces.partition_point(|piece| piece.last_hour < hour);
         self.pieces.get(at).filter(|piece| piece.first_hour <= hour)
@@ -140,12 +100,9 @@ impl Timeline {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timelines {
-    /// By id.
     pub list: Vec<Timeline>,
     pub main: BranchId,
-    /// Every segment's join, by segment id.
     pub links: Vec<Link>,
-    /// Each segment's home timeline ([`Self::home`]).
     homes: BTreeMap<BranchId, BranchId>,
 }
 
@@ -157,7 +114,6 @@ impl Timelines {
             .map(|at| &self.list[at])
     }
 
-    /// How history `id` stands to the main one.
     pub fn parting(&self, id: BranchId) -> Option<Parting> {
         let timeline = self.get(id)?;
         if id == self.main {
@@ -180,25 +136,21 @@ impl Timelines {
         Some(Parting::LeftBehind(timeline.pieces[shared - 1].last_hour + 1))
     }
 
-    /// The segment and timeline hour `hour` of timeline `id` reads: its piece's segment.
     pub fn segment_at(&self, id: BranchId, hour: Hour) -> Option<BranchId> {
         self.get(id)?.piece_at(hour).map(|piece| piece.segment)
     }
 
-    /// The timeline whose own hours `segment` begins or goes on: where its whole record is.
     pub fn home(&self, segment: BranchId) -> Option<BranchId> {
         self.homes.get(&segment).copied()
     }
 }
 
-/// Where the viewer's choices for campaign `campaign` are kept.
 pub fn choices_path(campaign: &[u8]) -> PathBuf {
     let digest = blake3::hash(campaign);
     crate::recorder_settings::histories_folder()
         .join(format!("{}.json", &digest.to_hex()[..32]))
 }
 
-/// The viewer's choices for campaign `campaign`; none when none were made or they can't be read.
 pub fn read_choices(campaign: &[u8]) -> Choices {
     read_choices_at(&choices_path(campaign))
 }
@@ -215,8 +167,6 @@ fn read_choices_at(path: &Path) -> Choices {
         .unwrap_or_default()
 }
 
-/// Keeps `parent` as the parent chosen for `segment` of campaign `campaign`; none forgets the
-/// choice.
 pub fn write_choice(campaign: &[u8], segment: BranchId, parent: Option<BranchId>) -> io::Result<()> {
     let path = choices_path(campaign);
     let mut choices = read_choices_at(&path);
@@ -236,8 +186,6 @@ pub fn write_choice(campaign: &[u8], segment: BranchId, parent: Option<BranchId>
     std::fs::rename(staged, path)
 }
 
-/// The save counters of one recorded hour, as the save header prints them: each one's bits,
-/// none where it was unreadable.
 type Counters = [Option<u32>; 13];
 
 fn counters(clock: &ClockRow) -> Counters {
@@ -259,20 +207,14 @@ fn counters(clock: &ClockRow) -> Counters {
     ]
 }
 
-/// How far a counter went from `from` to `to`; the random-draw count wraps.
 fn advance(from: u32, to: u32) -> i64 {
     i64::from(to.wrapping_sub(from) as i32)
 }
 
-/// What a candidate's counters at the hour the save was written say of a segment's first
-/// hour `seen`. The game bounds nothing but their direction: none falls back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Verdict {
-    /// None could be compared.
     Unknown,
-    /// One fell back: the save is not of this history at that hour.
     Contradicts,
-    /// Each rose.
     Allows,
 }
 
@@ -294,12 +236,10 @@ fn verdict(before: &Counters, seen: &Counters) -> Verdict {
     }
 }
 
-/// One segment's recorded extent: the hours its pages and gaps cover, and its pages' hours.
 struct Extent {
     start: BranchStart,
     first: Hour,
     last: Hour,
-    /// Its pages' hour ranges, in order.
     recorded: Vec<(Hour, Hour)>,
 }
 
@@ -309,7 +249,6 @@ impl Extent {
         self.recorded.get(at).is_some_and(|(first, _)| *first <= hour)
     }
 
-    /// Its last recorded hour before `hour`.
     fn recorded_before(&self, hour: Hour) -> Option<Hour> {
         let at = self.recorded.partition_point(|(first, _)| *first < hour);
         at.checked_sub(1)
@@ -321,7 +260,6 @@ impl Extent {
     }
 }
 
-/// Each segment's extent, and each segment recording nothing but gaps: its id and their hours.
 fn extents(replay: &Replay) -> io::Result<(Vec<Extent>, Vec<(BranchId, Hour, Hour)>)> {
     let mut held: BTreeMap<BranchId, Extent> = BTreeMap::new();
     for start in &replay.branches {
@@ -366,7 +304,6 @@ fn extents(replay: &Replay) -> io::Result<(Vec<Extent>, Vec<(BranchId, Hour, Hou
     Ok((out, unseen))
 }
 
-/// Reads the Clock rows linking asks for, each once.
 struct Clocks<'a> {
     replay: &'a Replay,
     read: HashMap<(BranchId, Hour), Option<Counters>>,
@@ -387,7 +324,6 @@ impl Clocks<'_> {
     }
 }
 
-/// Every segment's join: by the viewer's choice where one stands, else by its counters.
 fn link(
     replay: &Replay,
     extents: &[Extent],
@@ -433,8 +369,6 @@ fn found_link(
     let Some(seen_hour) = extent.first_recorded() else {
         return none;
     };
-    // The hour the save was written at: the loaded clock when it was read, else the hour
-    // before the first recorded one.
     let saved = extent
         .start
         .loaded_hour
@@ -442,13 +376,10 @@ fn found_link(
         .unwrap_or(seen_hour.saturating_sub(1));
     let seen = clocks.at(id, seen_hour);
 
-    // The same loaded game going on after lost hours.
     if extent.start.reason == BranchReason::HourDiscontinuity
         && let Some(before) = earlier.last()
         && before.start.session == extent.start.session
         && before.last < cut
-        // Only its actual predecessor: any segment recorded between them, of gaps or commands
-        // alone too, was a load.
         && !starts
             .iter()
             .any(|&held| before.start.id < held && held < id)
@@ -474,7 +405,6 @@ fn found_link(
         verdict(&from, &seen)
     };
 
-    // Histories that played through the hour the save was written at, recorded or in a gap.
     let played: Vec<(&Extent, Verdict)> = earlier
         .iter()
         .filter(|held| held.first <= saved && saved <= held.last)
@@ -491,8 +421,6 @@ fn found_link(
             .filter(|(_, verdict)| *verdict != Verdict::Contradicts)
             .map(|(held, _)| held.start.id)
             .collect();
-        // Proven only when the counters were read and rule out every other history.
-        // A segment recording only gaps at that hour may be the save's history too.
         let gapped = unseen
             .iter()
             .any(|&(held, first, last)| held < id && first <= saved && saved <= last);
@@ -521,8 +449,6 @@ fn found_link(
         };
     }
 
-    // No recorded history holds that hour: the save came after play the recorder missed, or
-    // from before anything recorded.
     let before: Vec<(&Extent, Verdict)> = earlier
         .iter()
         .filter_map(|held| {
@@ -551,7 +477,6 @@ fn found_link(
     }
 }
 
-/// The timelines `links` join `extents` into.
 fn join(extents: &[Extent], links: Vec<Link>) -> io::Result<Timelines> {
     let mut list: Vec<Timeline> = Vec::new();
     let mut home: HashMap<BranchId, usize> = HashMap::new();
@@ -562,7 +487,6 @@ fn join(extents: &[Extent], links: Vec<Link>) -> io::Result<Timelines> {
             last_hour: extent.last,
             declared: extent.start.first_hour.min(extent.first),
         };
-        // The parent's home, and its piece the save came from: the history goes on from there.
         let parent = link.parent.and_then(|parent| {
             let at = *home.get(&parent)?;
             let through = list[at]
@@ -588,7 +512,6 @@ fn join(extents: &[Extent], links: Vec<Link>) -> io::Result<Timelines> {
             evidence: link.evidence,
             candidates: link.candidates.clone(),
         };
-        // Play going on from where the history ends extends it; any other forks it.
         if through + 1 == list[at].pieces.len() && list[at].last_hour() < own.first_hour {
             list[at].pieces.push(own);
             list[at].joins.push(join);
@@ -633,8 +556,6 @@ fn join(extents: &[Extent], links: Vec<Link>) -> io::Result<Timelines> {
     })
 }
 
-/// What a replay read as timelines keeps of its segments: their pages, with each page's
-/// segment of the recording, and their joins.
 #[derive(Debug)]
 pub(crate) struct Physical {
     pub(crate) index: Vec<BlockIndex>,
@@ -643,7 +564,6 @@ pub(crate) struct Physical {
     pub(crate) timelines: Timelines,
 }
 
-/// The hours of `pieces` among `ranges` of segment hours, each clipped to its piece.
 fn clip<T>(
     pieces: &[Piece],
     items: &[T],
@@ -665,17 +585,12 @@ fn clip<T>(
 const UNRECORDED: &str = "Not recorded: this play happened while the recorder wasn't watching";
 
 impl Replay {
-    /// The recording at `path` read as its timelines under the viewer's choices for it.
     pub fn open_timelines(path: &Path) -> io::Result<Self> {
         let replay = Self::open_path(path)?;
         let choices = read_choices(&replay.campaign_id);
         replay.into_timelines(&choices)
     }
 
-    /// This recording read as its timelines ([`Timelines`]) under the viewer's `choices`: its
-    /// branches, pages, gaps, stops and event losses are each timeline's, pages clipped to its
-    /// pieces and every hour read named by its timeline. A recording of one segment reads the
-    /// same either way.
     pub fn into_timelines(mut self, choices: &Choices) -> io::Result<Self> {
         if self.physical.is_some() {
             return Err(invalid_static("the recording is already read as timelines"));
@@ -798,20 +713,16 @@ impl Replay {
         Ok(self)
     }
 
-    /// Its timelines, when it was read as them ([`Self::into_timelines`]).
     pub fn timelines(&self) -> Option<&Timelines> {
         self.physical.as_ref().map(|physical| &physical.timelines)
     }
 
-    /// The recorded segments (branches) a recording read as timelines is made of; its branches
-    /// otherwise.
     pub fn segments_recorded(&self) -> &[BranchStart] {
         self.physical
             .as_ref()
             .map_or(&self.branches, |physical| &physical.branches)
     }
 
-    /// The segment `hour` of `branch` is read from: itself, unless read as timelines.
     pub fn segment_at(&self, branch: BranchId, hour: Hour) -> Option<BranchId> {
         match &self.physical {
             Some(physical) => physical.timelines.segment_at(branch, hour),
@@ -819,7 +730,6 @@ impl Replay {
         }
     }
 
-    /// The pieces of `branch`: each segment and the hours of it the branch reads.
     pub fn pieces(&self, branch: BranchId) -> Vec<Piece> {
         match &self.physical {
             Some(physical) => physical
@@ -849,7 +759,6 @@ impl Replay {
         }
     }
 
-    /// The recording's own pages, whichever way it is read.
     pub fn pages(&self) -> &[BlockIndex] {
         self.physical
             .as_ref()
@@ -871,9 +780,7 @@ mod tests {
     fn counters_only_ever_rule_a_history_out() {
         let before = clock(100, -5);
         assert_eq!(verdict(&before, &clock(110, 61)), Verdict::Allows);
-        // Any counter falling back contradicts the history.
         assert_eq!(verdict(&before, &clock(99, 61)), Verdict::Contradicts);
-        // The random-draw count wraps.
         assert_eq!(
             verdict(&clock(100, i32::MAX - 3), &clock(101, i32::MIN + 4)),
             Verdict::Allows
@@ -911,8 +818,6 @@ mod tests {
 
     #[test]
     fn a_reload_into_the_past_forks_and_a_continuation_extends() {
-        // 1 plays 0..=100; 2 reloads at 50 and plays to 120; 3 is the next session from 121;
-        // 4 reloads 2's hour 80 and stops at 90.
         let extents = [
             extent(1, 1, BranchReason::SessionStart, (0, 100)),
             extent(2, 1, BranchReason::LoadSignal, (51, 120)),
@@ -953,7 +858,6 @@ mod tests {
 
     #[test]
     fn going_on_from_play_a_history_already_went_on_from_forks_it() {
-        // 2 extends 1; 3 is joined to 1 though 2 went on from it.
         let extents = [
             extent(1, 1, BranchReason::SessionStart, (0, 100)),
             extent(2, 2, BranchReason::SessionStart, (101, 200)),

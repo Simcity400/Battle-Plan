@@ -1,5 +1,3 @@
-//! Fixed chained indexes keyed by division. Only construction and the drain's
-//! growth allocate; removal recycles a node and load reset changes a generation.
 
 const NONE: usize = usize::MAX;
 
@@ -76,7 +74,6 @@ impl<K: Key, V: Copy> FixedIndex<K, V> {
         );
         Ok(index)
     }
-    /// A copy of the current entries in an index of `capacity` nodes.
     pub(super) fn grown(&self, capacity: usize) -> std::io::Result<Self> {
         let mut index = Self::try_new(capacity.max(self.len))?;
         for (&key, &value) in self.iter() {
@@ -114,7 +111,6 @@ impl<K: Key, V: Copy> FixedIndex<K, V> {
         Ok(())
     }
     fn bucket(&self, key: K) -> usize {
-        // Mix the complete handle, not its frequently identical type word.
         let mut word = key.word();
         word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -213,7 +209,6 @@ impl<K: Key, V: Copy> FixedIndex<K, V> {
         }
         None
     }
-    /// Owned provenance copying at growth installation (and fixture inspection).
     pub(super) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.nodes.iter().filter_map(|node| {
             (node.generation == self.generation)

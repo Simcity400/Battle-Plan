@@ -25,7 +25,6 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// The commands of a campaign's recording, or of one capture's file in a session spool.
     pub fn open_path(path: &Path) -> io::Result<Self> {
         let recording = crate::columnar_frames::Recording::open_path(path)?;
         let capture = recording.capture()?;
@@ -242,13 +241,11 @@ pub struct Batch {
 pub struct Phase {
     pub start: crate::branches::BranchStart,
     pub campaign: [u8; 36],
-    // An hourly context observation can follow this packet's command watermark.
     pub qpc: u64,
     pub hour: i32,
     pub load_signal: i64,
 }
 
-// The native load marker remains zero until the first simulation update.
 pub fn load_marker(raw: i64) -> Option<i64> {
     (raw != 0).then_some(raw)
 }
@@ -308,7 +305,6 @@ impl Packet {
         if raw.len() > crate::spool::MAX_RECORD_BYTES {
             return Err(invalid("command packet exceeds record bound"));
         }
-        // Small packets compress better together in the recording's records extent.
         let compressed = if raw.len() > 1024 {
             Some(zstd::bulk::compress(&raw, 3)?)
         } else {

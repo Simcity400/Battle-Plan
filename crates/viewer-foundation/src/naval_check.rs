@@ -1,31 +1,11 @@
-//! The recorded naval engaged byte as a check on its derivation.
-//!
-//! NavalCombatSideDetails.engaged holds each side's byte for the recording
-//! client's own player. The recording-wide engaged index folds a
-//! history for that player alongside the selected perspective. It serves this
-//! history when the selected country is that player, and compares it with the
-//! recorded byte ([`ByteCheck`]). It counts:
-//!
-//! - Agreements and mismatches per side and hour, naming the first mismatches
-//!   by branch, hour, combat and side while retaining complete counts.
-//! - Ambiguous or unknown side-hours: the recorded byte settles those flags
-//!   only for the recording player ([`settle_recorded`]).
-//! - Coverage: folded hours, hours with naval sides or incomplete censuses,
-//!   unnamed players, unreadable hours and blocks, and missing recorded bytes.
-//!
-//! LocalPlayer records the client's playing and observer-view references each
-//! hour. Resolve these through CountryLinks; multiplayer roster membership
-//! cannot identify this client's perspective.
 
 use super::engaged::{self, Engaged, Side};
 use replay_data::{BranchId, Hour, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
-/// How many mismatches the published summary keeps and a line names.
 const NAMED_MISMATCHES: usize = 5;
 
-/// The client's stored viewpoint, including the native observer fallback.
 pub fn recording_player(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -33,7 +13,6 @@ pub fn recording_player(
     crate::map::allegiance::perspective(frame, links)
 }
 
-/// Each recorded naval combat's two stored bytes.
 pub fn recorded_bytes<F: replay_frame::frame::Tables + ?Sized>(frame: &F) -> io::Result<BTreeMap<u64, [u8; 2]>> {
     Ok(crate::fold_tables::available::<tables::NavalCombatDetails, F>(frame)?
         .rows()
@@ -42,9 +21,6 @@ pub fn recorded_bytes<F: replay_frame::frame::Tables + ?Sized>(frame: &F) -> io:
         .collect())
 }
 
-/// For the recording's own player, an undecided naval flag takes the
-/// recorded bytes (either side's byte is tested for
-/// nonzero); a decided flag and every other viewer keep the derivation.
 pub fn settle_recorded(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -65,9 +41,6 @@ pub fn settle_recorded(
     Ok(())
 }
 
-/// An undecided flag of the recording's own player takes its combat's recorded
-/// bytes (either side's byte is tested for nonzero);
-/// a decided flag, or a combat without bytes, keeps the derivation.
 pub fn settle(flag: Engaged, bytes: Option<&[u8; 2]>) -> Engaged {
     match (flag, bytes) {
         (Engaged::Ambiguous(_) | Engaged::Unknown, Some(bytes)) => {
@@ -81,52 +54,32 @@ pub fn settle(flag: Engaged, bytes: Option<&[u8; 2]>) -> Engaged {
     }
 }
 
-/// One side-hour where the derivation decided against the recorded byte.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mismatch {
     pub branch: BranchId,
     pub hour: Hour,
     pub combat: u64,
     pub side: u8,
-    /// The derived flag; the byte is its opposite.
     pub derived: bool,
 }
 
-/// The counts the pass publishes: small and cheap to copy, whatever the
-/// recording's length.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
-    /// Side-hours whose derived Yes or No equals the recorded byte.
     pub agreements: u64,
-    /// Side-hours whose derived Yes or No differs from it.
     pub mismatches: u64,
-    /// The first [`NAMED_MISMATCHES`] of them.
     pub first: Vec<Mismatch>,
-    /// Side-hours the derivation leaves ambiguous or unknown.
     pub undecided: u64,
-    /// Side-hours whose combat has no recorded details row, so no byte.
     pub(crate) unrecorded: u64,
-    /// Hours folded, decoded or not.
     pub hours: u64,
-    /// Hours whose naval sides were read and held at least one.
     pub naval_hours: u64,
-    /// Hours whose naval combat census is incomplete: sides beyond it went
-    /// unseen.
     pub incomplete_hours: u64,
-    /// Hours holding naval combat sides whose player the recording does not
-    /// name: not compared.
     pub unidentified_hours: u64,
-    /// Hours that did not decode, or whose sides could not be read.
     pub unreadable_hours: u64,
-    /// Blocks that could not be read, whose hours were not folded.
     pub failed_blocks: u64,
-    /// Every recorded hour is folded.
     pub complete: bool,
 }
 
 impl Summary {
-    /// Every hour of the covered span was read, compared or proved free of
-    /// naval combat.
     fn whole(&self) -> bool {
         self.unreadable_hours == 0
             && self.failed_blocks == 0
@@ -134,8 +87,6 @@ impl Summary {
             && self.unidentified_hours == 0
     }
 
-    /// The diagnostics lines: a summary with its coverage, then the first
-    /// mismatches by id.
     pub fn lines(&self) -> Vec<String> {
         if self.hours == 0 && self.failed_blocks == 0 {
             return Vec::new();
@@ -181,17 +132,12 @@ impl Summary {
     }
 }
 
-/// The pass's private check. Its memory is the [`Summary`] alone: exact
-/// counts and at most [`NAMED_MISMATCHES`] named mismatches, whatever the
-/// number of side-hours folded.
 #[derive(Default)]
 pub struct ByteCheck {
     pub summary: Summary,
 }
 
 impl ByteCheck {
-    /// Compares one hour's naval sides, as the recording player's `history`
-    /// holds them after the hour, with the recorded bytes.
     pub fn compare<F: replay_frame::frame::Tables + ?Sized>(
         &mut self,
         branch: BranchId,
@@ -320,8 +266,6 @@ mod tests {
         assert_eq!(recording_player(&frame, &links).unwrap(), None);
     }
 
-    /// An undecided flag takes the bytes for the recording player only; a
-    /// decided one keeps the derivation even against them.
     #[test]
     fn the_byte_settles_only_the_recording_players_undecided_flags() {
         let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
@@ -340,8 +284,6 @@ mod tests {
         assert_eq!(settled(5, Engaged::Unknown), Engaged::Unknown);
     }
 
-    /// The published summary names the first mismatches and counts the rest;
-    /// a span with no naval side says so only when every hour was read.
     #[test]
     fn the_summary_names_the_first_mismatches_and_its_coverage() {
         let mut summary = Summary {

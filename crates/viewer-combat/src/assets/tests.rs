@@ -114,7 +114,6 @@ fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
             sprite(name)
         );
     }
-    // The find view writes the victory point strip into its results.
     assert!(assets.sprites.contains(b"GFX_onmap_victorypoints_strip".as_slice()));
 }
 
@@ -271,8 +270,6 @@ fn lazy_portraits_publish_loaded_and_missing_resources() {
         &assets.flags,
         &inventory,
     );
-    // Lazy publication replaces pending metadata with loaded dimensions or a
-    // missing resource, while static and absent lookups keep their answers.
     for name in [b"GFX_lazy".as_slice(), b"GFX_lazy_missing"] {
         assert!(
             assets
@@ -335,7 +332,6 @@ fn combat_resources_use_native_texture_resolution_and_shared_pages() {
         std::thread::current().id()
     ));
     std::fs::create_dir_all(root.join("gfx")).unwrap();
-    // The native resolver sniffs bytes and prefers the same stem's `.dds` file.
     std::fs::write(root.join("gfx/portrait.tga"), tga(8, 6)).unwrap();
     std::fs::write(root.join("gfx/portrait.dds"), tga(10, 4)).unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
@@ -390,7 +386,6 @@ fn combat_resources_name_undefined_texture_reads() {
         std::thread::current().id()
     ));
     std::fs::create_dir_all(root.join("gfx")).unwrap();
-    // FreeImage's ICO sniff reads six bytes from this three-byte file.
     std::fs::write(root.join("gfx/portrait.dds"), [0, 0, 1]).unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let read = Sprites {
@@ -457,7 +452,6 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
         ..native_gui::Assets::default()
     };
     gui.load(&layers, &assets, &mut Vec::new()).unwrap();
-    // Only the read outside coverage is named; the covered and the missing texture are not.
     assert_eq!(
         gui.uncovered_note("Combat UI").as_deref(),
         Some(
@@ -529,9 +523,7 @@ fn sprites_the_state_view_names_from_its_content_load_with_the_windows() {
     });
     assert!(assets.has_sprite("GFX_bound_law"));
     assert!(assets.has_sprite("GFX_bound_modifier"));
-    // A declared sprite nothing names stays unloaded.
     assert!(!assets.has_sprite("GFX_unbound"));
-    // The fixture declares no building, which is named.
     assert!(assets.warnings.iter().any(|warning| warning.contains("building special icons")), "{:?}", assets.warnings);
     std::fs::remove_dir_all(root).unwrap();
 }

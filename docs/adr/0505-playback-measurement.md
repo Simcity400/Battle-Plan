@@ -1,0 +1,9 @@
+# 0505. Attribute measured playback work to the frame that used it
+
+The acceptance suite observes the page's busy count until visible work settles. Outstanding reads, data awaiting a commit, chart paints, followed answers and deferred operations count until they complete. The prepare lane is separate so work on an unseen page does not hold up the current page. The measurement path records the hour actually painted, including a followed cell that advances without a React commit. Production hot paths leave attribution off unless the host enables it.
+
+The production React build reports commits through a DevTools hook. Measurement registers the hook before React DOM loads and walks rendered components under their nearest named part of the page. A reported cause records work initiated by that component rather than work inherited from a rendering parent. Frame metrics distinguish cache hits and joined requests, blocks wholly ahead of the head, and the map frame the native viewer actually presented. Transport and native events share epoch milliseconds. A posted task attributes browser rendering time to its own frame even after another began.
+
+The host output path has a bounded queue measured in UTF-16 units. Overflow is counted, and markers bypass the budget so a run remains diagnosable. On stop, the page sends completed frame data before the host waits for map metrics and summarizes the span. Widget chunks are named by kind so the playback benchmark can attribute their CPU time.
+
+[Busy counter](../../ui/src/shell/busy.ts), [Commit attribution](../../ui/src/shell/commitCount.ts), [Performance records](../../ui/src/shell/perf.ts), [Widget measurement](../../ui/src/dashboard/widgetPerf.ts), [Bundle naming](../../ui/vite.config.ts)

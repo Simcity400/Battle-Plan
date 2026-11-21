@@ -25,13 +25,11 @@ const MEASURES: readonly BattleMeasure<LandBattleRow>[] = [
   { label: 'Length', title: 'Length', value: row => row.length, format: value => `${battleValueText(value)} h` },
 ];
 
-/** What the ranked number in Biggest battles is. */
 const rankedBy = (measure: string) => `Ranked by ${measure === 'Peak size' ? 'most divisions at once' : measure === 'Length' ? 'length' : 'casualties, both sides'}.`;
 
 const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRanking> = {
   definition, product: 'land-battles', landPlaceNames: true, validateManifest: validateLandBattlesManifest, validateWindow: validateLandBattlesReply,
   validateRanking: validateLandBattlesRanking, rows: landBattleRows, row: landBattleRow, changes: landBattleChanges, windowPlaces: landWindowPlaces, rankedRows: rankedLandBattleRows,
-  // Divisions and manpower lost are painted between changes; only whether they are known is the row's.
   state: row => battleState(row, true),
   labels: LABELS, measures: MEASURES, compactSides: SIDES, formatLoss: landLossText, view: LandBattleList,
   summary: (rows, ranking, measure, view) => {

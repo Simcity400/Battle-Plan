@@ -21,8 +21,6 @@ fn shader(wgsl: &str, bindings: &[(u32, u32)]) -> Shader {
     }
 }
 
-/// A skinned program of two streams: a shared scene block, the node's own block in both stages,
-/// a palette, and the heights the draw reads one slab of per instance.
 fn skinned() -> Compiled {
     Compiled {
         vertex: shader(
@@ -76,7 +74,6 @@ fn pass(stream: Option<usize>) -> super::super::Pass {
     }
 }
 
-/// The node's own blocks and its palette, in both stages.
 const PER_INSTANCE: u32 = (1 << 2) | (1 << 3) | (1 << 4);
 
 #[test]

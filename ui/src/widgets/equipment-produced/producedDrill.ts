@@ -1,6 +1,3 @@
-/** A country's breakdown over time: the `equipment-produced-country` reply as the shared parts drill reads it. The
- * chart stacks one type's models, or (IC, no type chosen) every type, the largest `CHART_TYPES` in colour and the
- * rest together; values stay the product's exact integers, plotted in the count's own unit. */
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { variantNameAt } from '../../dashboard/equipment.ts';
@@ -15,7 +12,6 @@ import type { Count, SeriesModel } from './producedData';
 import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import type { ProducedCountryReply, ProducedModel, ProducedUnknown } from '../../generated/dashboard';
 
-/** Most types the IC chart colours; the rest share "Other types". */
 export const CHART_TYPES = 6;
 const OTHER_TYPES = { id: 'other types', label: 'Other types' };
 
@@ -31,7 +27,6 @@ export function validateCountryReply(data: unknown): ProducedCountryReply {
   return reply;
 }
 
-/** What the breakdown's chart stacks: one type's models, or with no type (IC) every type. */
 export interface ChartSpec { count: Count; type: string | null }
 
 interface ChartPart { id: string; models: readonly number[]; label: (hour: number) => string }
@@ -45,7 +40,6 @@ function chartParts(reply: ProducedCountryReply, spec: ChartSpec): ChartPart[] {
   }
   const byType = new Map<string, number[]>();
   reply.models.forEach((model, index) => byType.set(model.typeKey, [...(byType.get(model.typeKey) ?? []), index]));
-  // A type's colour goes by the largest its models reached.
   const peak = (indices: readonly number[]) => indices.reduce((total, index) =>
     total + reply.models[index].series.values.reduce<number>((most, value) => Math.max(most, Math.abs(value ?? 0)), 0), 0);
   const ranked = [...byType].map(([type, models]) => ({ type, models, peak: peak(models) })).sort((a, b) => b.peak - a.peak || a.type.localeCompare(b.type));
@@ -55,8 +49,6 @@ function chartParts(reply: ProducedCountryReply, spec: ChartSpec): ChartPart[] {
   return rest.length ? [...kept, { ...OTHER_TYPES, models: rest, label: () => OTHER_TYPES.label }] : kept;
 }
 
-/** Each part's value at an hour (null unknown), and the whole: the product's total of every type, or one type's
- * models added, unknown where one is or while a design whose type was not recorded holds anything. */
 interface PartsAt { values: (number | null)[]; total: number | null; reason: ProducedUnknown | null }
 
 function partsAt(reply: ProducedCountryReply, models: readonly SeriesModel[], parts: readonly ChartPart[], spec: ChartSpec,
@@ -76,7 +68,6 @@ function partsAt(reply: ProducedCountryReply, models: readonly SeriesModel[], pa
   return { values, total: sum, reason: sum === null ? 'notRecorded' : null };
 }
 
-/** Every hour any of `series` changes, in order, and the hour after the last. */
 function boundaries(series: readonly SeriesModel[]): number[] {
   const hours = new Set<number>();
   for (const model of series) {
@@ -94,7 +85,6 @@ export function producedDrillData(reply: ProducedCountryReply, spec: ChartSpec):
   const parts = chartParts(reply, spec);
   const models = reply.models.map(model => seriesModel(model.series));
   const total = seriesModel(reply.total);
-  // The drill names its country by the key it asked with (`asked`), never by the tag the reply names it by then.
   const asked = countryKey(reply.asked);
   const involved = spec.type == null ? [total, ...models] : models.filter((_, index) => reply.models[index].typeKey === spec.type || !reply.models[index].typeRecorded);
   const at = (tag: string, hour: number) => {
@@ -116,7 +106,6 @@ export function producedDrillData(reply: ProducedCountryReply, spec: ChartSpec):
       const totalAt = valueAt(total, first);
       if (!totalAt) continue;
       const held = partsAt(reply, models, parts, spec, model => { const found = valueAt(model, first); return found ? found.value : undefined; }, totalAt.value);
-      // A missing whole leaves the stack blank; what known parts leave of an exact whole is its own band.
       if (!held || held.total == null) continue;
       const known = held.values.map(value => value ?? 0);
       [...known, held.total - known.reduce((sum, value) => sum + value, 0)].forEach((raw, band) => {

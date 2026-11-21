@@ -12,8 +12,6 @@ const ZERO: usize = 0x4000;
 const MANAGER: usize = 0xa000;
 const NAVY: usize = 0xb000;
 const FOREIGN_NAVY: usize = 0xb800;
-/// Navy headers of the retired nearest-base, foreign-slot and supply-hub
-/// domains. The fixture keeps them populated; this pass must not read them.
 const NEAREST_BASES: usize = 0x30;
 const FOREIGN_NAVY_SLOTS: usize = 0x48;
 const SUPPLY_HUBS: usize = engine_native::naval_mission_inputs::HUBS;
@@ -43,7 +41,6 @@ impl Memory for TestMemory {
     }
 }
 impl TestMemory {
-    /// Reads starting exactly at `address`.
     fn count(&self, address: usize) -> usize {
         self.calls
             .borrow()
@@ -51,7 +48,6 @@ impl TestMemory {
             .filter(|&&(at, _)| at == address)
             .count()
     }
-    /// Whether any read overlaps `[start, end)`.
     fn touched(&self, start: usize, end: usize) -> bool {
         self.calls
             .borrow()
@@ -148,7 +144,6 @@ fn capacity() -> (Capacities, LaunchCapacities) {
         LaunchCapacities { launch_bases: 0 },
     )
 }
-/// One complete hourly pass with no mission borrower in between.
 fn pass<M: Memory>(captured: &mut Captured, launch: &mut Launch, memory: &M, hour: Option<i32>) {
     let mut reader = captured.begin(memory, 0, STATE, hour, launch);
     captured.finish();
@@ -177,8 +172,6 @@ fn physical_controls_borrow_without_reading_access_mode_headers() {
     let mut reader = captured.begin(&memory, 0, STATE, Some(7), &mut launch);
     assert_eq!(captured.physical_count(), Ok(4));
     assert!(captured.borrow_navy(1).is_ok());
-    // Neither the access-mode header nor its payload is read: only the
-    // retired transport preview consumed them.
     for navy in [NAVY, FOREIGN_NAVY] {
         let access = navy + cstrategic_navy::ACCESS_MODES;
         assert!(!memory.touched(access, access + 16), "{navy:#x}");
@@ -197,12 +190,9 @@ fn physical_pass_reads_no_retired_navy_headers_controllers_or_reserved_root() {
     let mut captured = Captured::new(capacity);
     let mut launch = Launch::new(launch_capacity);
     pass(&mut captured, &mut launch, &memory, Some(71));
-    // The pass itself ran: every physical slot.
     assert_eq!(captured.physical_count(), Ok(4));
     assert_eq!(memory.count(NAVY), 1);
     assert_eq!(memory.count(FOREIGN_NAVY), 1);
-    // The retired selected-route area domain is not acquired: neither the
-    // province roster nor any province object is read.
     let provinces = STATE + cgame_state::PROVINCES;
     assert!(!memory.touched(provinces, provinces + 16));
     assert!(!memory.touched(0x3200, 0x3200 + 4 * 8));
@@ -217,11 +207,8 @@ fn physical_pass_reads_no_retired_navy_headers_controllers_or_reserved_root() {
             );
         }
     }
-    // Neither their payloads nor the nearest naval-base objects.
     assert!(!memory.touched(0xc000, 0xc400));
     assert!(!memory.touched(0xd000, 0xd200));
-    // No reserved country root: neither the country table nor slot zero's
-    // object (nor any positive country object) is read.
     let countries = STATE + cgame_state::COUNTRIES;
     assert!(!memory.touched(countries, countries + 16));
     assert!(!memory.touched(0x3000, 0x3000 + 4 * 8));
@@ -279,7 +266,6 @@ fn original_full_physical_holder_is_borrowed_before_movement_and_retired_once() 
     let outer = original.take_ledger_regions().unwrap();
     assert_eq!(outer.count, 0);
     assert!(original.take_ledger_regions().is_err());
-    // A null physical slot is an observed absence, not a refusal.
     assert!(!captured.borrow_navy(2).unwrap().present);
     captured.finish();
     reader.clear();

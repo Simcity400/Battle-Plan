@@ -1,5 +1,3 @@
-//! Raw side operands for positioning, screening and carrier crowding.
-//! Ship and plane counts and sums remain viewer work.
 use crate::{
     Memory, ccountry, cnaval_combatant, cpdx_array::Array, modifier_accumulator as accumulator,
     modifier_definition as metadata,
@@ -7,25 +5,14 @@ use crate::{
 use cnaval_combatant::field;
 use engine_sites::Rva;
 
-/// Ordered country linked list, appending a node only when no equivalent tag
-/// is present. It has at most one entry per country object. The live country
-/// table bounds the walk, without a chosen size limit.
 pub const COUNTRIES: usize = 0x38;
-/// Signed i32 linked-list node count.
 pub const COUNTRY_COUNT: usize = 0x48;
-/// Second ordered list of canonically distinct roster owners of the side's
-/// units, used to admit viewers through shared vision.
 pub const SECONDARY_COUNTRIES: usize = 0x50;
-/// Each list's signed count follows its head and tail pointers.
 const LIST_COUNT: usize = COUNTRY_COUNT - COUNTRIES;
-/// Linked-list node: raw u32 tag followed by its next pointer.
 pub const NODE_TAG: usize = 0;
 pub const NODE_NEXT: usize = 0x10;
-/// Positioning subtracts recent joins and adds raw convoy-escort values.
 pub const RECENT_JOIN: usize = 0x160;
 pub const ESCORT: usize = 0x168;
-/// Sorted raw lookup keys:initial positioning, screening, positioning,
-/// convoy-only screening, opponent-admiral ship-ratio penalty.
 pub const MODIFIER_KEYS: [u32; 5] = [
     crate::modifier_keys::NAVAL_ENEMY_POSITIONING_IN_INITIAL_ATTACK,
     crate::modifier_keys::SCREENING_EFFICIENCY,
@@ -43,13 +30,9 @@ pub struct Modifier {
 pub struct Row {
     pub recent_join_penalty: i64,
     pub escort_bonus: i64,
-    /// Start and length in the caller-owned country arena, in native order.
     pub countries: [usize; 2],
-    /// The [`SECONDARY_COUNTRIES`] list, in the same arena.
     pub secondary_countries: [usize; 2],
-    /// Country, regional weather, sea terrain, own admiral, opposing admiral.
     pub modifiers: [[Modifier; 5]; 5],
-    /// Per key: raw flags and feature selector.
     pub modifier_metadata: [[u32; 2]; 5],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
@@ -96,12 +79,6 @@ fn values(memory: &impl Memory, address: usize) -> Result<[Modifier; 5], &'stati
     Ok(result)
 }
 
-/// Appends a side's native country list to the caller-owned arena from
-/// `*len`, returning its `[start, len]` span. The walk is bounded by the
-/// native signed count, which may not exceed `slots`, the live country-table
-/// header: the list holds one node per distinct country object. The arena
-/// grows at this admission point on the acquisition worker; a failed walk
-/// leaves `*len` unchanged.
 pub fn countries(
     memory: &impl Memory,
     side: usize,
@@ -112,7 +89,6 @@ pub fn countries(
     list(memory, side, COUNTRIES, slots, arena, len)
 }
 
-/// [`countries`] for the list whose head is at `offset`.
 fn list(
     memory: &impl Memory,
     side: usize,
@@ -158,10 +134,6 @@ fn list(
     Ok([start, end - start])
 }
 
-/// Caller has authenticated combat and both side back-links; `[side, opponent]` come from
-/// CNavalCombat's ordered attacker/defender roots. Retain source words without calling
-/// engine code. Country tags are appended to the caller-owned `arena` from `*len`. The
-/// authored defines the binders read come from matching game content, not from memory.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -173,8 +145,6 @@ pub fn read(
 ) -> Result<Row, &'static str> {
     let count = field::<i32>(memory, side, COUNTRY_COUNT)?;
     let secondary = field::<i32>(memory, side, SECONDARY_COUNTRIES + LIST_COUNT)?;
-    // Resolve countries only for nonempty membership; the country-table header
-    // then bounds the list walks.
     let reader = if count > 0 || secondary > 0 {
         Some(ccountry::Reader::new(memory, base, state)?)
     } else {
@@ -217,8 +187,6 @@ pub fn read(
             row.modifiers[scope] = values(memory, add(leader, 0x418)?)?;
         }
     }
-    // Country, region and terrain branches require nonempty side membership.
-    // The selected country comes from the first linked-list node.
     if let Some(reader) = reader.filter(|_| count > 0) {
         let country = reader.resolve(arena[row.countries[0]])?;
         row.modifiers[0] = values(
@@ -240,7 +208,6 @@ pub fn read(
 mod tests {
     use super::*;
 
-    /// A side at `BASE` with `count` 0x20-byte nodes after it, tag = 1000 + i.
     fn side_list(count: usize) -> Vec<u8> {
         const NODES: usize = 0x100;
         let mut data = vec![0u8; NODES + count * 0x20];
@@ -265,7 +232,6 @@ mod tests {
     #[test]
     fn the_secondary_list_follows_its_own_head_and_count() {
         let mut data = side_list(2);
-        // Move the list to the secondary head; the primary list is then empty.
         let (head, count) = (
             data[COUNTRIES..COUNTRIES + 8].to_vec(),
             data[COUNTRY_COUNT..COUNTRY_COUNT + 4].to_vec(),
@@ -298,7 +264,6 @@ mod tests {
             base: BASE,
             bytes: &data,
         };
-        // A previous side's countries stay in place before this span.
         let mut arena = vec![7, 8, 9];
         let mut len = 2;
         let span = countries(&memory, BASE, count as u32 + 1, &mut arena, &mut len).unwrap();
@@ -311,7 +276,6 @@ mod tests {
                 .enumerate()
                 .all(|(index, &tag)| tag == 1000 + index as u32)
         );
-        // The live country-table header, not a chosen constant, bounds the walk.
         let mut len = 0;
         assert_eq!(
             countries(&memory, BASE, count as u32 - 1, &mut arena, &mut len),
@@ -323,7 +287,6 @@ mod tests {
     #[test]
     fn country_list_count_mismatches_fail_without_publishing_a_span() {
         let mut data = side_list(3);
-        // Native count one below the linked nodes.
         data[COUNTRY_COUNT..COUNTRY_COUNT + 4].copy_from_slice(&2i32.to_le_bytes());
         let memory = crate::memory::SliceMemory {
             base: BASE,

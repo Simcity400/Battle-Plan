@@ -36,7 +36,7 @@ impl Memory for TraceMemory<'_> {
             return false;
         };
         if address < self.blocked.end && end > self.blocked.start {
-            destination.fill(0xa5); // A failed field may have copied bytes.
+            destination.fill(0xa5);
             return false;
         }
         let copied = super::air_bases_test_kit::memory(self.bytes).copy(address, destination);
@@ -66,8 +66,6 @@ fn assert_logs_and_growth<const M: usize>(mut actual: RawLog<M>, mut scalar: Raw
     assert_eq!(actual.grow_for_next(), scalar.grow_for_next());
     assert_eq!(actual.spans.capacity(), scalar.spans.capacity());
     assert_eq!(actual.bytes.capacity(), scalar.bytes.capacity());
-    // Exercise private growth requests through their existing public
-    // effect before clear discards them.
     actual.grow();
     scalar.grow();
     assert_eq!(actual.spans.capacity(), scalar.spans.capacity());
@@ -197,8 +195,6 @@ fn registration_mirror_copies_the_chunk_before_semantic_admission() {
             );
         }
     }
-    // The typed pointer-prefix check rejects a counted null before it
-    // gathers any object fields, including the preceding valid wing.
     let mut bytes = kit::fixture();
     let header = kit::POOL0 + cair_wing_pool::WINGS;
     let vector = u64::from_le_bytes(bytes[header..header + 8].try_into().unwrap()) as usize;
@@ -256,7 +252,6 @@ fn scalar_stats_channels(
     memory: &impl Memory,
     values: Array,
 ) -> bool {
-    // Independent scalar span check for the gather layout.
     for (len, index) in [
         (32, 0_usize),
         (8, 10),
@@ -312,8 +307,6 @@ fn stats_gather_matches_scalar_spans_reads_and_every_field_fault() {
         scalar_memory.changing_address = Some(values.data);
         let mut actual = RawLog::new(32, 512);
         let mut scalar = RawLog::new(32, 512);
-        // Repeating the same address must retain both observations, even
-        // after a source fault. No field or earlier fault is cached.
         for _ in 0..2 {
             assert_eq!(
                 copy_stats_channels(&mut actual, &actual_memory, values),

@@ -9,12 +9,10 @@ use std::cell::Cell;
 const MODULE: usize = 0x4000_0000;
 const START: usize = 0x10_0000;
 const COUNTRY_SIZE: usize = 0x1500;
-/// Country region modifier map.
 const COUNTRY_REGION_MAP: usize = 0x4d8;
 const REGION_COVERAGE: usize = 0x50;
 const REASSIGNMENT_PENALTY: usize = 0xc0;
 const REACHED: u32 = 16;
-/// `map_air_sortie_inputs`'s console override vector.
 const EFFICIENCY_OVERRIDES_RVA: usize = 0x033d_da48;
 
 #[test]
@@ -102,7 +100,6 @@ fn held_patrol_night_reads_each_demanded_region_once_and_reuses_manager() {
     assert_eq!(cached.weather_manager, Some(Ok(manager)));
 }
 
-/// A flat address space; every vtable is `MODULE + rva`.
 struct World {
     bytes: Vec<u8>,
 }
@@ -130,7 +127,6 @@ impl World {
         self.d(at + 8, count);
         self.d(at + 12, count);
     }
-    /// One sorted key-0x11 accumulator entry.
     fn accumulator(&mut self, at: usize, raw: i64) {
         let entries = self.alloc(16);
         self.d(entries, native::SORTIE_MODIFIER_KEY);
@@ -139,7 +135,6 @@ impl World {
     }
 }
 
-/// The world, and the module's empty console override vector.
 struct Route<'a> {
     world: SliceMemory<'a>,
 }
@@ -160,8 +155,6 @@ impl Memory for Route<'_> {
     }
 }
 
-/// Counts guarded calls as `LiveMemory` issues them: one per copy, per
-/// scattered batch and per record gather.
 struct Counting<'a> {
     inner: Route<'a>,
     reads: Cell<usize>,
@@ -221,9 +214,6 @@ struct Fixture {
     witnesses: Vec<BaseWitness>,
 }
 
-/// `missions` registered missions over `countries` countries, of which
-/// 300 fly with two volunteer hosts each, 170 regions, a base per four
-/// missions and a pool per eight, each mission reaching 16 provinces.
 fn fixture(missions: usize, countries: u32) -> Fixture {
     const FLYING: u32 = 300;
     const REGIONS: u32 = 170;
@@ -242,7 +232,6 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
         world.vtable(country, ccountry::VTABLE_RVA);
         world.d(country + ccountry::ID, slot);
         world.accumulator(country + ccountry::MODIFIER_ACCUMULATOR, 2_000);
-        // An empty country-region map: sentinel links to itself.
         let map = country + COUNTRY_REGION_MAP;
         let sentinel = world.alloc(16);
         let buckets = world.alloc(16);
@@ -335,7 +324,6 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
                 regions[region as usize] as u64,
             );
             let reached = world.alloc(REACHED as usize * 16);
-            // Descending, so a sorted capture would show.
             for entry in 0..REACHED {
                 world.d(reached + entry as usize * 16, 1_000 + (REACHED - entry) * 3);
             }
@@ -401,12 +389,9 @@ fn volunteer_hosts_past_capacity_grow() {
             &fixture.witnesses,
         )
     };
-    // Storage for one host grows to both.
     capture(&mut sorties);
     assert_eq!(sorties.outcome, Outcome::Rows { len: 0 });
-    // Two bases, each with four owners and their hosts: nine slots apiece.
     assert_eq!(sorties.containers.len, 18);
-    // Only the eight effective countries' rows carry fuel.
     let rows = &sorties.containers.rows[..18];
     assert_eq!(
         rows.iter()
@@ -495,8 +480,6 @@ fn cas_ratio_projection_preserves_zero_signed_values_and_field_local_faults() {
     }
 }
 
-/// Prints guarded calls per hour and the best of five capture times;
-/// run with `--release --nocapture` to measure.
 #[test]
 fn sortie_cost_scales_with_missions_not_countries() {
     let mut sorties = Sorties::with_capacities(&capacities());
@@ -529,8 +512,6 @@ fn sortie_cost_scales_with_missions_not_countries() {
             "{missions} missions, {countries} countries: {calls} guarded calls ({:.1}/mission), {best:?}",
             calls as f64 / missions as f64,
         );
-        // Every flying country's container and volunteer hosts are read once
-        // an hour: the fixture's 300 of them, whatever the country count.
         assert!(calls <= 30 * missions + 3_000, "{calls} guarded calls");
     }
 }

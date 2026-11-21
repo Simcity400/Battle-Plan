@@ -1,7 +1,3 @@
-//! `stability-reads`: the hours a span's stability inputs were read. Displayed stability and war
-//! support are derived every hour from the inputs as last read, so an hour between reads shows the
-//! read before it, which the chart's tooltip marks "as of". Read from the blocks' page entries of
-//! each stretch of the timeline the span meets: no row is decoded.
 
 use super::super::{LoadContext, Product};
 use crate::Source;
@@ -21,7 +17,6 @@ pub struct StabilityReadsParams {
     pub to: i32,
 }
 
-/// The hours the stability inputs were read in a span: an hour between reads shows the read before it.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +27,6 @@ pub struct StabilityReadsReply {
 
 dashboard_base::reply_warnings!(StabilityReadsReply);
 
-/// The read hours of `from..=to` over `query`'s stretches, ascending, adjacent hours joined.
 pub(crate) fn reads(query: &dashboard_query::Query<'_>, from: i32, to: i32) -> io::Result<Vec<HourSpan>> {
     let recording = query.replay.recording();
     let mut out: Vec<HourSpan> = Vec::new();
@@ -85,7 +79,6 @@ mod tests {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    /// The inputs are read at hours 100, 105 to 107 and 120; every hour holds the timeline.
     fn recording() -> Source {
         let frames = (100..=125)
             .map(|hour| {
@@ -106,8 +99,6 @@ mod tests {
         Source::from_replay(crate::SourceKey { source_id: "reads".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
     }
 
-    /// An hour between reads carries the read before it: the reply names exactly the hours read,
-    /// joined where adjacent, within the span asked.
     #[test]
     fn the_stability_inputs_read_hours_are_the_hours_a_read_was_taken() {
         let source = recording();

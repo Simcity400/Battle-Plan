@@ -1,62 +1,32 @@
-//! Referenced division-template identity and retained model preferences.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_c350);
-/// CReferencedDivisionTemplate reference type.
 pub const REFERENCE_TYPE: u32 = 52;
-/// CReferencedDivisionTemplate u32 type word.
 pub const TYPE: usize = 0x08;
-/// Division fog-reveal skip byte read from the selected template.
 pub const REVEAL_SKIP: usize = 0x234;
-/// CReferencedDivisionTemplate u32 id.
 pub const ID: usize = 0x0c;
-/// Contained composition storage, separate from a base subobject.
 pub const COMPOSITION: usize = 0x18;
-/// CReferencedDivisionTemplate name MSVC string.
 pub const NAME: usize = 0x20;
-/// Composition fallback localisation key.
 pub const NAME_KEY: usize = COMPOSITION + 0x28;
-/// CReferencedDivisionTemplate grid dimensions, columns low16/rows high16.
 pub const GRID_DIMENSIONS: usize = 0x60;
-/// CReferencedDivisionTemplate regiment CSubUnitDefinition pointer-vector data.
 pub const REGIMENT_DATA: usize = 0x68;
-/// CReferencedDivisionTemplate support CSubUnitDefinition pointer-vector data.
 pub const SUPPORT_DATA: usize = 0x88;
-/// CReferencedDivisionTemplate regimental-support definition pointer-vector data.
 pub const REGIMENTAL_SUPPORT_DATA: usize = 0xa8;
-/// The three composition grids' pointer-vector headers, in the order
-/// [`IconRow::grids`] keeps them: regiments, support, regimental support. A
-/// cell holds a definition pointer; a null pointer is an empty cell.
 pub const GRIDS: [usize; 3] = [REGIMENT_DATA, SUPPORT_DATA, REGIMENTAL_SUPPORT_DATA];
-/// Excluded equipment-variant pointer-array data.
 pub const EXCLUDED_VARIANT_DATA: usize = 0x140;
-/// CReferencedDivisionTemplate u32 priority.
 pub const PRIORITY: usize = 0x1a4;
-/// Raw headquarters-template byte retained without boolean collapse.
 pub const IS_ARMY_HQ: usize = 0x1cc;
-/// CReferencedDivisionTemplate token289A country operand i32.
 pub const COUNTRY_OPERAND_289A: usize = 0x1ec;
-/// CReferencedDivisionTemplate token3ABE country operand i32.
 pub const COUNTRY_OPERAND_3ABE: usize = 0x1f4;
-/// Raw model category, u64, meaningful only when its presence byte is set.
 pub const MODEL_CATEGORY: usize = 0x200;
-/// Model-category presence byte.
 pub const MODEL_CATEGORY_PRESENT: usize = 0x208;
-/// Model entity-name string; retain exact engine-owned bytes.
 pub const MODEL_ENTITY: usize = 0x210;
-/// Lock byte tested for nonzero.
 pub const LOCKED: usize = 0x235;
-/// Retained obsolete byte; serialization tests it for nonzero.
 pub const OBSOLETE_FLAGS: usize = 0x236;
-/// Template parent reference, kept independently of roster membership.
 pub const PARENT: usize = COMPOSITION + 0x170;
-/// Equipment eligibility switches, kept as native bytes.
 pub const ALLOW_NEW_EQUIPMENT: usize = COMPOSITION + 0x1ad;
 pub const ALLOW_FOREIGN_EQUIPMENT: usize = COMPOSITION + 0x1ae;
-/// Equipment types the template forbids, as definition pointers.
 pub const FORBIDDEN_EQUIPMENT: usize = COMPOSITION + 0x140;
-/// Original creator country, independent of the current composition owner.
 pub const CREATOR_COUNTRY: usize = COMPOSITION + 0x1d8;
 pub const ORIGIN_TYPE: usize = COMPOSITION + 0x1e0;
 pub const FAKE_INTEL: usize = COMPOSITION + 0x21c;
@@ -65,18 +35,15 @@ pub const FORCE_ALLOW_RECRUITING: usize = COMPOSITION + 0x238;
 pub const DIVISION_CAP: usize = COMPOSITION + 0x23c;
 pub const DIVISION_CAP_PRESENT: usize = COMPOSITION + 0x240;
 pub const EQUIPMENT_NICHE: usize = COMPOSITION + 0x244;
-/// Explicit template role and the AI's stored role selection.
 pub const ROLE: usize = COMPOSITION + 0x1c0;
 pub const ROLE_PRESENT: usize = COMPOSITION + 0x1c4;
 pub const AI_ROLE: usize = COMPOSITION + 0x1c8;
 pub const AI_ROLE_PRESENT: usize = COMPOSITION + 0x1cc;
 pub const AI_ROLE_FALLBACK: usize = COMPOSITION + 0x1d0;
-/// Cached composition operands rebuilt with its grouped definitions.
 pub const TOTAL_MANPOWER: usize = COMPOSITION + 0x178;
 pub const COMMAND_POWER_COST: usize = COMPOSITION + 0x180;
 pub const TRAINING_TIME: usize = COMPOSITION + 0x188;
 
-/// Authenticated stored template settings; inactive optional payloads are omitted.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub roster_ordinal: u32,
@@ -112,26 +79,14 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Stored composition priority subunit used by the counter sprite.
 pub const PRIORITY_UNIT: usize = COMPOSITION + 0x190;
-/// Stored composition preferred category subunit.
 pub const CATEGORY_UNIT: usize = COMPOSITION + 0x198;
-/// Stored representative model subunit selected before priority fallback.
 pub const VISUAL_REPRESENTATIVE: usize = COMPOSITION + 0x1a0;
-/// Contained composition equipment counts grouped from the three grids
-/// and used by model scoring.
 pub const SUBUNIT_COUNTS: usize = COMPOSITION + 0xa8;
-/// A grouped entry: definition pointer, then its signed count.
 pub const SUBUNIT_COUNT_STRIDE: usize = 0x10;
-/// Stored composition active-weight operand, serialized and used by counters.
 pub const CUSTOM_ICON: usize = COMPOSITION + 0x1a8;
-/// Contained composition flag, token3525; controls custom-icon use under NATO settings.
 pub const CUSTOM_ICON_NATO: usize = COMPOSITION + 0x1ac;
-/// Contained composition signed count added with i32 wrapping for formation
-/// division counts. The hourly fixed span already contains this word.
 pub const FORMATION_DIVISION_COUNT: usize = COMPOSITION + 0x1b0;
-/// Composition origin used by the ordinary manpower template predicate.
-/// First nonzero composition category override.
 pub const UNIT_TYPE_OVERRIDE: usize = COMPOSITION + 0x218;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -140,97 +95,57 @@ pub struct Span {
     pub len: usize,
 }
 
-/// One grouped template entry. `token` is zero for a null-object definition.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SubunitCount {
     pub width: Option<i64>,
     pub token: u32,
-    /// A country-local clone (in the deployment status's clone vector), not the global definition.
     pub local: bool,
     pub count: i32,
 }
 
-/// The dictionary row: a template's handle, roster owner, names and unit_type.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub template: u64,
     pub owner: u32,
     pub name: Span,
     pub name_key: Span,
-    /// Engine category, NOT a verified frame in the legacy twelve-frame strip.
     pub unit_type: i32,
 }
 
-/// What a unit counter and the 3D model draw from a template, which the player
-/// can change at any hour: [`walk_icons`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IconRow {
     pub manpower_exile: bool,
-    /// Selected historical naming-group key; None is a null group.
     pub names_group: Option<Span>,
     pub template: u64,
-    /// The template object, for the caller's per-template reads.
     pub pointer: usize,
-    /// The raw id of the country whose roster lists it.
     pub owner: u32,
-    /// The dictionary's unit_type ([`walk`]'s), from the same record;
-    /// `unit_type_failure` says why it is unknown.
     pub unit_type: i32,
     pub unit_type_failure: Option<&'static str>,
     pub priority_unit: u32,
     pub priority_unit_name: Span,
     pub custom_icon: i32,
     pub custom_icon_nato: u8,
-    /// Raw composition count for the ability's late-join denominator. It is
-    /// independent of the model fields and retains its signed native value.
     pub formation_division_count: Option<i32>,
-    /// Independently acquired display-name operands in the caller's name arena.
     pub display_name: Option<DisplayName>,
-    /// The fallback key in the name arena, read beside the literal for the
-    /// dictionary; None when the literal or the key was unreadable.
     pub name_key: Option<Span>,
-    /// Stored representative model or priority fallback. Token zero is the null
-    /// object and draws no model; its count is unused.
     pub representative: SubunitCount,
-    /// The stored grouped entries, in native order.
     pub counts: Span,
-    /// Each of [`GRIDS`]' entries in `counts`: the definitions its non-null
-    /// cells hold, grouped by token and clone flag in the order each first
-    /// occurs, each counted once per cell. A null-object cell is token zero.
     pub grids: [Span; 3],
-    /// Every grid cell in native column-major order. A count of zero denotes
-    /// an empty pointer; one denotes an authenticated definition, including
-    /// the null-object definition. Uses the same counts arena as `grids`.
     pub cells: [Span; 3],
-    /// Each grid's columns in the low word and rows in the high word.
     pub grid_dimensions: [u32; 3],
-    /// True only when the caller demanded fresh extension operands.
     pub details_fresh: bool,
-    /// Failed extension acquisition never withholds the original icon/model fields.
     pub details_failure: Option<&'static str>,
     pub settings: Settings,
-    /// Definition tokens in native order, in the variants arena.
     pub forbidden_equipment: Span,
     pub equipment_failure: Option<&'static str>,
-    /// The composition's `country`, the clone scope of local definitions and the model fallback
-    /// country; raw signed reference.
     pub country: i32,
-    /// The composition's `foreign_template_tag`; raw signed reference.
     pub foreign_country: i32,
-    /// Saved model category filter, absent when disengaged.
     pub model_category: Option<u64>,
-    /// Saved explicit model entity; empty when unset.
     pub model_entity: Span,
-    /// Saved excluded equipment variants, full handles in native order.
     pub excluded_variants: Span,
-    /// Why this template's model inputs could not be read this hour. The
-    /// representative, grouped entries, grids, model entity and excluded
-    /// variants are then empty; the counter's fields, the country operands and
-    /// the model category, all from the authenticated record, stand.
     pub model_failure: Option<&'static str>,
 }
 
-/// [`walk_icons`]'s arena use and demand.
 #[derive(Debug, Clone, Copy)]
 pub struct IconWalk {
     pub outcome: Outcome,
@@ -242,20 +157,15 @@ pub struct IconWalk {
     pub required_counts: usize,
     pub variants_len: usize,
     pub required_variants: usize,
-    /// The sub-unit database's length, for both database slot arrays.
     pub required_database: usize,
-    /// Slots that would hold any one country's definitions at half load.
     pub required_locals: usize,
 }
 
-/// [`walk`]'s arena use and demand.
 pub struct Walk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
-    /// The named icon walk's literal and fallback key bytes.
     pub required_name_bytes: usize,
-    /// Definition memo slots that would hold every definition at half load.
     pub required_memo: usize,
 }
 
@@ -272,14 +182,8 @@ fn definition(memory: &impl Memory, base: usize, at: usize) -> Result<Option<u32
     authenticate(base, &identity)
 }
 
-/// One memo slot: a definition pointer, zero when empty, and its token.
 pub type MemoSlot = (usize, u32);
 
-/// Definition pointer to identity for one walk. Templates share a few hundred
-/// definitions, so each is authenticated once. Open addressing over the
-/// caller's slots, filled to half; past that a definition is read again and
-/// its demand counted, so the caller grows the slots off-thread. Both walks
-/// share the caller's slots; each starts empty.
 struct Memo<'a> {
     slots: &'a mut [MemoSlot],
     used: usize,
@@ -296,7 +200,6 @@ impl<'a> Memo<'a> {
         }
     }
 
-    /// The authenticated token, zero for the null object.
     fn token(&mut self, memory: &impl Memory, base: usize, at: usize) -> Result<u32, &'static str> {
         if at == 0 {
             return Ok(0);
@@ -306,7 +209,6 @@ impl<'a> Memo<'a> {
             let len = self.slots.len();
             let hash = (at as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut slot = (hash >> 32) as usize % len;
-            // At most half the slots are used, so an empty one ends the probe.
             loop {
                 match self.slots[slot].0 {
                     0 => {
@@ -329,15 +231,11 @@ impl<'a> Memo<'a> {
         Ok(found)
     }
 
-    /// Slots that hold every definition read at half load. A full memo
-    /// counts a repeated definition again, which only overestimates.
     fn required(&self) -> usize {
         self.misses.saturating_mul(2)
     }
 }
 
-/// A definition's identity bytes (vtable, token, real flag) authenticated: its
-/// token, or `None` for the null object.
 fn authenticate(base: usize, identity: &[u8]) -> Result<Option<u32>, &'static str> {
     let real = identity[subunit::IS_REAL];
     let expected = if real == 0 {
@@ -358,15 +256,12 @@ fn authenticate(base: usize, identity: &[u8]) -> Result<Option<u32>, &'static st
             .try_into()
             .unwrap(),
     );
-    // Zero is the replay's null-object marker. A real zero-token definition
-    // is unsupported, not silently converted into a null one.
     if token == 0 {
         return Err("real template subunit has unsupported zero token");
     }
     Ok(Some(token))
 }
 
-/// Resolves a definition pointer to the token a counter draws.
 trait Tokens {
     fn token(&mut self, memory: &impl Memory, base: usize, at: usize) -> Result<u32, &'static str>;
 }
@@ -377,9 +272,6 @@ impl Tokens for Memo<'_> {
     }
 }
 
-/// What one gathered read established about a definition. Each part keeps its
-/// own failure, so a counter still has its token when the clone flag is
-/// unknown, and a failed read is never repeated within a walk.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
     width: Option<i64>,
@@ -387,13 +279,11 @@ pub struct Identity {
     token_failure: Option<&'static str>,
     local: bool,
     local_failure: Option<&'static str>,
-    /// [`subunit::template_category`]'s value, read with the identity.
     category: i32,
     category_failure: Option<&'static str>,
 }
 
 impl Identity {
-    /// The definition's template category, once its token authenticated.
     fn category(self) -> Result<i32, &'static str> {
         self.token()?;
         match self.category_failure {
@@ -423,7 +313,6 @@ impl Identity {
     }
 }
 
-/// A sub-unit database entry, sorted by pointer for [`walk_icons`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalSlot {
     pointer: usize,
@@ -431,8 +320,6 @@ pub struct GlobalSlot {
     known: bool,
 }
 
-/// A definition seen by [`walk_icons`], stamped with the country whose
-/// templates named it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LocalSlot {
     pointer: usize,
@@ -440,19 +327,12 @@ pub struct LocalSlot {
     identity: Identity,
 }
 
-/// Caller-owned storage for [`walk_icons`]'s definition lookups; each grows
-/// off-thread from the demand the walk reports.
 pub struct DefinitionSlots<'a> {
-    /// The sub-unit database's pointer vector, copied once per walk.
     pub database: &'a mut [usize],
-    /// The same pointers sorted, with each one's identity once read.
     pub globals: &'a mut [GlobalSlot],
-    /// Open-addressed per-country definition identities.
     pub locals: &'a mut [LocalSlot],
 }
 
-/// A definition's identity, database index and template category bytes, in
-/// the order a failed field stops the gather.
 const DEFINITION_FIELDS: [RecordField; 4] = [
     record_field(0, 0, 17),
     record_field(subunit::DATABASE_INDEX, 20, 4),
@@ -468,42 +348,25 @@ const DEFINITION_RECORD: usize = 48;
 const DEFINITION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DEFINITION_FIELDS, DEFINITION_RECORD).expect("valid definition layout");
 
-/// How a walk tells a clone from its global definition (`db[index] != pointer`).
 enum Database<'a> {
-    /// The database copied once, and its pointers sorted.
     Copied {
         database: &'a [usize],
         globals: &'a mut [GlobalSlot],
     },
-    /// Slots too small this hour, or the copy faulted: each lookup reads
-    /// `db[index]`. The slots still grow, so a later hour copies.
     Live(subunit::Database),
-    /// The database is unreadable: no clone flag, so no model inputs, but
-    /// tokens still resolve.
     Unavailable(&'static str),
 }
 
-/// Definition identities for one hourly walk, laid out for the cache. The
-/// database is copied once, so whether a definition is a clone needs no
-/// further read. A database entry is found by binary search over a few hundred
-/// sorted pointers and read once a walk. Every definition a country's templates
-/// name is kept in a small table that starts over for each country, because
-/// clones belong to one country's templates. A definition's identity and index
-/// come in one gathered read, and its outcome, failures included, is kept, so
-/// no pointer is read twice while the slots have room. A database that does not
-/// fit its slots, or cannot be read, degrades the walk rather than failing it.
 struct Definitions<'a> {
     database: Database<'a>,
     locals: &'a mut [LocalSlot],
     stamp: u32,
-    /// The table's power-of-two length less one; zero turns caching off.
     mask: usize,
     used: usize,
     misses: usize,
     required_locals: usize,
 }
 
-/// Copies the database's pointer vector into `database`.
 fn copy_database(
     memory: &impl Memory,
     vector: Array,
@@ -530,8 +393,6 @@ fn copy_database(
 }
 
 impl<'a> Definitions<'a> {
-    /// Copies the live database into the slots when it fits. `required`
-    /// receives its length whenever it is readable.
     fn load(
         memory: &impl Memory,
         base: usize,
@@ -549,7 +410,6 @@ impl<'a> Definitions<'a> {
                 } else {
                     let database = &mut slots.database[..count];
                     match copy_database(memory, vector, database) {
-                        // The header was read; each lookup reads its entry.
                         Err(_) => Database::Live(live),
                         Ok(()) => {
                             let globals = &mut slots.globals[..count];
@@ -566,7 +426,6 @@ impl<'a> Definitions<'a> {
                 }
             }
         };
-        // The largest power of two the slots hold, so a probe masks.
         let usable = match slots.locals.len() {
             0 | 1 => 0,
             len => 1 << (usize::BITS - 1 - len.leading_zeros()),
@@ -584,7 +443,6 @@ impl<'a> Definitions<'a> {
         }
     }
 
-    /// Starts a country's templates: earlier countries' clones no longer match.
     fn begin_country(&mut self) {
         self.required_locals = self.required_locals.max(self.misses.saturating_mul(2));
         self.stamp = self.stamp.wrapping_add(1).max(1);
@@ -592,8 +450,6 @@ impl<'a> Definitions<'a> {
         self.misses = 0;
     }
 
-    /// A power of two of slots that would hold any one country's
-    /// definitions at half load.
     fn required_locals(&self) -> usize {
         self.required_locals
             .max(self.misses.saturating_mul(2))
@@ -601,8 +457,6 @@ impl<'a> Definitions<'a> {
             .unwrap_or(usize::MAX)
     }
 
-    /// `db[index]`, the global definition an index names, as the engine's own
-    /// lookup validates it.
     fn entry(&self, memory: &impl Memory, index: i32) -> Result<usize, &'static str> {
         match &self.database {
             Database::Copied { database, .. } => u32::try_from(index)
@@ -617,9 +471,6 @@ impl<'a> Definitions<'a> {
         }
     }
 
-    /// One gathered read of a definition's identity, database index and
-    /// template category. The token does not depend on the others being
-    /// readable.
     fn fetch(&self, memory: &impl Memory, base: usize, at: usize) -> Identity {
         let mut record = [0_u8; DEFINITION_RECORD];
         let completed = memory.copy_records(
@@ -648,7 +499,6 @@ impl<'a> Definitions<'a> {
                     ..Identity::default()
                 };
             }
-            // The null object has no clone flag to read.
             Ok(None) => {
                 return Identity {
                     width: (completed == DEFINITION_FIELDS.len())
@@ -678,8 +528,6 @@ impl<'a> Definitions<'a> {
         }
     }
 
-    /// Keeps a definition for the rest of the country's templates when the
-    /// table has room; demand is counted either way.
     fn remember(&mut self, free: Option<usize>, at: usize, identity: Identity) {
         self.misses += 1;
         if let Some(slot) = free
@@ -694,8 +542,6 @@ impl<'a> Definitions<'a> {
         }
     }
 
-    /// A definition's identity: this country's table, then the sorted
-    /// database, then one read.
     fn lookup(&mut self, memory: &impl Memory, base: usize, at: usize) -> Identity {
         if at == 0 {
             return Identity::default();
@@ -704,8 +550,6 @@ impl<'a> Definitions<'a> {
         if self.mask != 0 {
             let hash = (at as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut slot = (hash >> 32) as usize & self.mask;
-            // At most half the slots hold this country's definitions, so a
-            // slot of an earlier country or an empty one ends the probe.
             loop {
                 let entry = self.locals[slot];
                 if entry.stamp != self.stamp {
@@ -746,7 +590,6 @@ impl<'a> Definitions<'a> {
         identity
     }
 
-    /// The token and clone flag, or why either is unknown.
     fn identify(
         &mut self,
         memory: &impl Memory,
@@ -764,8 +607,6 @@ impl Tokens for Definitions<'_> {
 }
 
 impl Definitions<'_> {
-    /// A definition's template category ([`subunit::template_category`]),
-    /// read with its identity once a walk.
     fn category(
         &mut self,
         memory: &impl Memory,
@@ -776,8 +617,6 @@ impl Definitions<'_> {
     }
 }
 
-/// The fallback when the priority unit is null: regiment cell (0,0) when the low-16-bit real-unit
-/// count is nonzero, else the null singleton. The native wrap is kept.
 fn fallback_priority_unit(
     memory: &impl Memory,
     base: usize,
@@ -826,14 +665,10 @@ const fn record_field(source_offset: usize, destination_offset: usize, len: usiz
     }
 }
 
-/// The composition's priority unit through the unit-type override: one span holding every fixed
-/// scalar and the model entity string's header.
 const TAIL: usize = PRIORITY_UNIT;
 const TAIL_END: usize = UNIT_TYPE_OVERRIDE + 4;
-/// Daily tail after the identity and the two MSVC string headers.
 const TAIL_AT: usize = 80;
 const RECORD: usize = TAIL_AT + TAIL_END - TAIL;
-/// The daily row's fixed fields: identity, name header and the tail.
 const DAILY_FIELDS: [RecordField; 3] = [
     record_field(0, 0, 16),
     record_field(NAME, 16, msvc_string::STRIDE * 2),
@@ -841,11 +676,6 @@ const DAILY_FIELDS: [RecordField; 3] = [
 ];
 const DAILY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DAILY_FIELDS, RECORD).expect("valid template layout");
-/// The hourly row's fixed fields: identity, then one contiguous span from the
-/// regiment grid's header through the unit-type override, which holds the
-/// three grids' and the grouped entries' headers, the representative, the
-/// icon fields, the country operands, the model category, the model entity
-/// string and the dictionary's unit-type operands.
 const ICON_SPAN: usize = GRID_DIMENSIONS;
 const ICON_SPAN_END: usize = EQUIPMENT_NICHE + 1;
 const _: () = assert!(MODEL_ENTITY + msvc_string::STRIDE == UNIT_TYPE_OVERRIDE);
@@ -858,8 +688,6 @@ const _: () = assert!(
 const ICON_RECORD: usize = 16 + ICON_SPAN_END - ICON_SPAN;
 const ICON_FIELDS: [RecordField; 2] = [
     record_field(0, 0, 16),
-    // Ordinary hourly acquisition retains its original fixed span. Extension
-    // prefix/tail bytes are read only for templates the caller marks dirty.
     record_field(
         REGIMENT_DATA,
         16 + REGIMENT_DATA - ICON_SPAN,
@@ -868,8 +696,6 @@ const ICON_FIELDS: [RecordField; 2] = [
 ];
 const ICON_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ICON_FIELDS, ICON_RECORD).expect("valid template icon layout");
-/// The named walk's record: the icon record, then the display literal's
-/// header, which lies between the identity and the icon span.
 const ICON_NAME: usize = ICON_RECORD;
 const ICON_NAMED_RECORD: usize = ICON_NAME + msvc_string::STRIDE;
 const ICON_NAMED_FIELDS: [RecordField; 3] = [
@@ -879,7 +705,6 @@ const ICON_NAMED_FIELDS: [RecordField; 3] = [
 ];
 const ICON_NAMED_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ICON_NAMED_FIELDS, ICON_NAMED_RECORD).expect("valid named icon layout");
-/// A policy walk gathers every identity first, then the rest of each read record.
 const IDENTITY: usize = 16;
 const IDENTITY_FIELDS: [RecordField; 1] = [ICON_FIELDS[0]];
 const IDENTITY_LAYOUT: RecordLayout<'static> =
@@ -891,44 +716,31 @@ const ICON_NAMED_REST_FIELDS: [RecordField; 2] = [ICON_NAMED_FIELDS[1], ICON_NAM
 const ICON_NAMED_REST_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ICON_NAMED_REST_FIELDS, ICON_NAMED_RECORD)
         .expect("valid named icon rest layout");
-/// The largest record, for the batch buffer.
 const MAX_RECORD: usize = if RECORD > ICON_NAMED_RECORD {
     RECORD
 } else {
     ICON_NAMED_RECORD
 };
 
-/// An icon-span field's place in the icon record.
 const fn icon(offset: usize) -> usize {
     16 + offset - ICON_SPAN
 }
-/// Fixed-record gather width, also used for caller-owned batch certificates.
 pub const READ_BATCH: usize = 32;
 const BATCH: usize = READ_BATCH;
 
-/// What a policy walk acquires for one authenticated roster occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acquire {
-    /// Publish [`DetailPolicy::held`]; nothing more of the template is read.
     Held,
-    /// Read the template, with its extension operands when `details`.
     Read { details: bool },
 }
 
-/// Selects each occurrence's reads. Country preparation precedes its roster
-/// header; batch preparation precedes every identity, and the demand sees the
-/// authenticated identity before anything else of the template is read.
 pub trait DetailPolicy {
-    /// `deployment` is the country's deployment status, whose clone vector holds
-    /// the local definitions its templates name; `None` when unreadable or null.
     fn before_country(&mut self, _country: u32, _deployment: Option<usize>) {}
     fn before_records(&mut self, _templates: &[usize]) {}
     fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> Acquire;
-    /// The row [`Acquire::Held`] named.
     fn held(&mut self, _template: u64) -> Option<IconCore<'_>> {
         None
     }
-    /// A read row, after every read of its template.
     fn remember(
         &mut self,
         _row: &IconRow,
@@ -938,20 +750,15 @@ pub trait DetailPolicy {
         _names: &[u8],
     ) {
     }
-    /// A row placed, held or read: the walk's `[bytes, counts, variants, names]` lengths after it.
     fn placed(&mut self, _ends: [usize; 4]) {}
 }
 
-/// The countries and roster occurrences a walk visits.
 enum Scope {
     All,
     Slots(std::ops::Range<u32>),
-    /// One roster occurrence: the template at `ordinal` of the country in `slot`.
     Occurrence { slot: u32, ordinal: u32 },
 }
 
-/// A held row. Its spans are relative to these slices, its display name and
-/// key to `names`; extensions are not held here.
 pub struct IconCore<'a> {
     pub row: IconRow,
     pub bytes: &'a [u8],
@@ -967,11 +774,8 @@ impl<F: FnMut(u32, usize, u64, u32) -> bool> DetailPolicy for F {
     }
 }
 
-/// How a walk reaches one authenticated occurrence.
 enum Visit<'a> {
-    /// The policy's held row, by handle.
     Held(u64),
-    /// The gathered record, and whether extension operands are demanded.
     Read(&'a [u8], bool),
 }
 
@@ -982,7 +786,6 @@ fn authentic(record: &[u8], vtable: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// A tail field's place in a record.
 const fn tail(offset: usize) -> usize {
     TAIL_AT + offset - TAIL
 }
@@ -993,7 +796,6 @@ fn dword(record: &[u8], at: usize) -> i32 {
     i32::from_le_bytes(record[at..at + 4].try_into().unwrap())
 }
 
-/// Copies a span of pointer-sized entries, `BATCH` at a time.
 fn pointers(
     memory: &impl Memory,
     array: Array,
@@ -1003,7 +805,6 @@ fn pointers(
     let source = array
         .slice(first, output.len() as u32, 8)
         .map_err(|_| "template pointer index invalid")?;
-    // Validate in element order: an earlier null wins over a later unreadable pointer.
     crate::cpdx_array::pointers(
         memory,
         source,
@@ -1018,14 +819,6 @@ fn pointers(
     )
 }
 
-/// Every country's templates in roster order. Each roster batch's fixed fields
-/// are hinted and then gathered with `layout`; `prepare` sees the batch's
-/// records first, to hint what the visits will read, and `visit` receives the
-/// owner's id, the template and its authenticated record, or the handle the
-/// policy holds. Hints read nothing, so a batch's cache misses overlap instead
-/// of following one another. With a policy, the batch's identities are gathered
-/// first and only the occurrences it does not hold gather `rest`, the rest of
-/// `layout`.
 #[allow(clippy::too_many_arguments)]
 fn visit_templates(
     memory: &impl Memory,
@@ -1167,7 +960,6 @@ fn visit_templates(
             }
         }
     }
-    // A range of slots may hold no country; only the whole census must.
     match scope {
         Scope::All if !found_country => return Err("template census contains no countries"),
         Scope::Occurrence { .. } if !found_country => {
@@ -1178,9 +970,6 @@ fn visit_templates(
     Ok(())
 }
 
-/// Each country slot's roster length, in slot order: `None` for a slot without a country. The
-/// census [`walk_icons_range`]'s caller balances its ranges by; it reads only the roster
-/// headers, and the first failure is the walk's own.
 pub fn roster_lengths(
     memory: &impl Memory,
     base: usize,
@@ -1208,7 +997,6 @@ pub fn roster_lengths(
     Ok(())
 }
 
-/// Priority subunit or its fallback.
 fn selected_unit(
     memory: &impl Memory,
     base: usize,
@@ -1233,12 +1021,6 @@ fn outcome(len: usize, missing: u32) -> Outcome {
     }
 }
 
-/// Complete country template rosters, including unused templates: exact names
-/// and the unit_type category. Capture derives these hourly from
-/// [`walk_icons`] and [`copy_names`]; this full walk sizes them.
-/// Capacity omits a WHOLE template and grows the caller's arena off-thread. No
-/// engine getters are invoked. Each roster batch is gathered in three spans a
-/// template; the sub-unit behind a zero category is authenticated once a walk.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -1370,9 +1152,6 @@ fn walk_inner(
     result
 }
 
-/// A template's literal name and fallback key, copied as [`walk`] copies them into `bytes` from
-/// `start`, for a caller holding the rest of its dictionary row from this hour's [`walk_icons`]
-/// ([`IconRow`]).
 pub fn copy_names(
     memory: &impl Memory,
     template: usize,
@@ -1398,7 +1177,6 @@ pub fn copy_names(
     Ok(spans)
 }
 
-/// Worker-only acquisition grows each arena from the already acquired record.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_icons_with_names(
     memory: &impl Memory,
@@ -1427,9 +1205,6 @@ pub fn walk_icons_with_names(
     )
 }
 
-/// The existing named/country census with its reads selected per template.
-/// A held occurrence reads nothing past its identity; a read without details
-/// performs no extension prefix/tail or forbidden-type payload read.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_icons_with_selected_details(
     memory: &impl Memory,
@@ -1460,9 +1235,6 @@ pub fn walk_icons_with_selected_details(
     )
 }
 
-/// [`walk_icons_with_selected_details`] over the countries of slots `range` only, into
-/// arenas of the range's own: each row's spans start from zero, and the caller joins the ranges
-/// in slot order, shifting them. A range with no country is no failure.
 #[allow(
     clippy::too_many_arguments,
     reason = "the selected walk's arenas, slots and callbacks, and its range"
@@ -1497,8 +1269,6 @@ pub fn walk_icons_range(
     )
 }
 
-/// Advisory capacity from the existing icon sources. Never reads extension
-/// prefix/tail bytes or forbidden-equipment payloads to size a future capture.
 pub fn icon_capacity(memory: &impl Memory, base: usize, state: usize) -> IconWalk {
     walk_icons_inner(
         memory,
@@ -1523,13 +1293,9 @@ pub fn icon_capacity(memory: &impl Memory, base: usize, state: usize) -> IconWal
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayName {
     pub literal: Span,
-    /// None when the nonempty literal makes the fallback not demanded.
     pub fallback_key: Option<Span>,
 }
 
-/// Called only after the exact wrapper authenticates in this world read.
-/// Display naming selects literal text and fallback key from that wrapper;
-/// the current icon country already carries its selector.
 #[cfg(test)]
 fn display_name(
     memory: &impl Memory,
@@ -1552,7 +1318,6 @@ fn display_name(
     )
 }
 
-/// `literal` is the `NAME` header the named walk gathered with the record.
 fn display_name_buffer(
     memory: &impl Memory,
     wrapper: usize,
@@ -1596,7 +1361,6 @@ fn display_name_buffer(
     if let Some(key) = &key {
         key.copy_buffer(memory, bytes, start + literal.len)?;
     }
-    // Neither partial copy nor invalid descriptor publishes any span or length.
     *used = end;
     Ok(DisplayName {
         literal: Span {
@@ -1610,8 +1374,6 @@ fn display_name_buffer(
     })
 }
 
-/// The fallback key behind a nonempty literal, for the dictionary; failure
-/// publishes no span or length.
 fn name_key_buffer(
     memory: &impl Memory,
     wrapper: usize,
@@ -1643,10 +1405,6 @@ fn name_key_buffer(
     })
 }
 
-/// The validated name descriptors of one walk's priority sub-units, keyed by
-/// definition: a few definitions are every template's priority unit, so each
-/// name's header and terminator are read once a walk and only its bytes per
-/// template. A slot another definition took only costs a fresh read.
 struct SubunitNames([(usize, Option<Descriptor>); SUBUNIT_NAMES]);
 const SUBUNIT_NAMES: usize = 64;
 
@@ -1673,11 +1431,9 @@ impl SubunitNames {
     }
 }
 
-/// A template's model-input headers, decoded from its gathered record.
 struct Headers {
     grouped: Array,
     grids: [Array; 3],
-    /// The grids' cells together, the most entries they can need.
     cells: usize,
     exclusions: Array,
     model_entity: Descriptor,
@@ -1714,9 +1470,6 @@ pub fn walk_icons_inner(
     )
 }
 
-/// One roster occurrence read as [`walk_icons_range`] reads it when its policy demands
-/// `details`: the template at `ordinal` of the country in `slot`, into arenas of its own from
-/// zero. Its one row is the walk's row for that occurrence with every span shifted to zero.
 #[allow(
     clippy::too_many_arguments,
     reason = "the selected walk's arenas and the occurrence it reads"
@@ -1742,7 +1495,6 @@ pub fn read_icon_occurrence(
         Buffer::Growing(bytes),
         Buffer::Growing(counts),
         Buffer::Growing(variants),
-        // Without slots every definition is looked up live, as in a walk whose slots are short.
         DefinitionSlots {
             database: &mut [],
             globals: &mut [],
@@ -1791,7 +1543,6 @@ fn walk_icons_scoped(
     let mut grouped_scratch = [0_u8; BATCH * SUBUNIT_COUNT_STRIDE];
     let mut cell_scratch = [0_u8; BATCH * 8];
     let mut excluded_scratch = [0_usize; BATCH];
-    // A fully carried walk needs no definition database or scratch reset.
     let mut slots = Some(slots);
     let mut memo: Option<Definitions<'_>> = None;
     let mut subunit_names = SubunitNames::new();
@@ -1964,11 +1715,9 @@ fn walk_icons_scoped(
                 owner = Some(country);
                 memo.begin_country();
             }
-            // Counter drawing operands; a failure here fails the hour's table.
             let selected =
                 selected_unit(memory, base, memo, at, word(record, icon(PRIORITY_UNIT)))?;
             let priority_unit = memo.token(memory, base, selected)?;
-            // The dictionary's unit_type, as `walk` derives it.
             let unit_type = match dword(record, icon(UNIT_TYPE_OVERRIDE)) {
                 0 => match word(record, icon(CATEGORY_UNIT)) as usize {
                     0 => memo.category(memory, base, selected),
@@ -1981,14 +1730,11 @@ fn walk_icons_scoped(
             } else {
                 None
             };
-            // The model inputs' headers, read with the record. Their demand is
-            // counted before any capacity check, so every arena grows at once.
             let headers = (|| -> Result<Headers, &'static str> {
                 let header = |at: usize| -> [u8; 16] { record[at..at + 16].try_into().unwrap() };
                 let grouped =
                     Array::from_header(header(icon(SUBUNIT_COUNTS)), SUBUNIT_COUNT_STRIDE)
                         .ok_or("template grouped subunits invalid")?;
-                // A grid's entries are at most its cells.
                 let mut grids = [Array::default(); 3];
                 let mut cells = 0_usize;
                 for (grid, offset) in grids.iter_mut().zip(GRIDS) {
@@ -2116,10 +1862,8 @@ fn walk_icons_scoped(
                     command_power_cost: word(record, icon(COMMAND_POWER_COST)) as i64,
                     training_time: dword(record, icon(TRAINING_TIME)),
                 },
-                // Read with the authenticated record, so they cannot fail.
                 country: dword(record, icon(COUNTRY_OPERAND_289A)),
                 foreign_country: dword(record, icon(COUNTRY_OPERAND_3ABE)),
-                // The optional's inactive payload is not an input.
                 model_category: (record[icon(MODEL_CATEGORY_PRESENT)] != 0)
                     .then(|| word(record, icon(MODEL_CATEGORY))),
                 ..IconRow::default()
@@ -2128,9 +1872,6 @@ fn walk_icons_scoped(
                 name.copy_buffer(memory, &mut bytes, result.bytes_len)?;
                 result.bytes_len += name.len;
             }
-            // The 3D model's inputs. A fault here fails only this row's model
-            // fields; the counter keeps its icon. `Ok(false)` is a row that does
-            // not fit, omitted whole.
             let model = (|| -> Result<bool, &'static str> {
                 let Headers {
                     grouped,
@@ -2160,7 +1901,6 @@ fn walk_icons_scoped(
                 {
                     return Ok(false);
                 }
-                // Stored representative model, then priority fallback.
                 row.representative = match word(record, icon(VISUAL_REPRESENTATIVE)) as usize {
                     0 => memo.identify(memory, base, selected)?,
                     representative => memo.identify(memory, base, representative)?,
@@ -2195,7 +1935,6 @@ fn walk_icons_scoped(
                         result.counts_len += 1;
                     }
                 }
-                // Each grid's definitions, counted once per occupied cell.
                 let cell_bytes = &mut cell_scratch;
                 for (grid_index, (span, grid)) in row.grids.iter_mut().zip(grids).enumerate() {
                     let start = result.counts_len;
@@ -2276,7 +2015,6 @@ fn walk_icons_scoped(
             match model {
                 Ok(true) => {}
                 Ok(false) => {
-                    // The whole row waits for room, name included.
                     (result.bytes_len, result.counts_len, result.variants_len) = row_start;
                     missing = missing
                         .checked_add(1)
@@ -2284,7 +2022,6 @@ fn walk_icons_scoped(
                     return Ok(());
                 }
                 Err(reason) => {
-                    // Keep the counter's fields and the name; drop the rest.
                     let name_end = row_start.0 + name_len;
                     (result.bytes_len, result.counts_len, result.variants_len) =
                         (name_end, row_start.1, row_start.2);
@@ -2409,7 +2146,6 @@ fn walk_icons_scoped(
                         result.bytes_len = start;
                         row.details_fresh = false;
                         row.details_failure = Some(reason);
-                        // Cells are a fresh extension's; a refused one keeps none.
                         row.cells = Default::default();
                     }
                 }
@@ -2472,9 +2208,6 @@ fn walk_icons_scoped(
     result
 }
 
-/// Authenticates a template pointer and returns its full native handle: the
-/// reference type in the low word and the id in the high word. Callers that
-/// accept a null pointer must test for it before calling.
 pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
     let expected =
         engine_sites::at(base, VTABLE_RVA).ok_or("division template module address overflow")?;

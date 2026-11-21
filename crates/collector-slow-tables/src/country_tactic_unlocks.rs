@@ -1,8 +1,3 @@
-//! Country tactic unlock state for every country, read whole every hour so
-//! the combat window's possible-tactics list never lags an unlock (the
-//! engine reader's module docs say why no list is reused between hours). The
-//! viewer joins these simulation operands to its chosen perspective; combats
-//! never duplicate a country's unlock list.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -65,7 +60,6 @@ impl Capacities {
         self.list = self.list.max(demand.required_list);
         Ok(())
     }
-    /// One row per country slot; unlock lists use their live demand.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows, rows(slots, 1));
@@ -75,8 +69,6 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<native::Row>,
     unlocks: Arena<u32>,
-    /// Per-capture scratch: the address-keyed tactic database table and one
-    /// country's staged pointer list. Neither is published.
     registry: Arena<native::RegistryEntry>,
     list: Arena<u8>,
     required_rows: usize,
@@ -84,7 +76,6 @@ pub struct Captured {
     doctrine_bytes: AtomicUsize,
 }
 impl Captured {
-    /// Allocation-free placeholder while the ordinary worker owns the buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: 0,
@@ -182,9 +173,6 @@ impl Captured {
         self.unlocks.required = result.required_unlocks;
         self.registry.required = result.required_registry;
         self.list.required = result.required_list;
-        // Only complete rows expose arena spans. Required capacity also
-        // includes countries that could not fit and remains growth pressure
-        // when the native reader or worker fails later in the capture.
         self.unlocks.len = self
             .rows
             .rows

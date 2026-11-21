@@ -13,13 +13,9 @@ doctest = false
 default = ["recording"]
 journal = ["replay-frame/capture"]
 recording = ["journal", "dep:recorder-derive"]
-# Count actual grouped-table decodes for consumer tests.
 test-support = ["recording", "replay-frame/test-support"]
-# Live smoke only: the recorder keeps every journal segment it wrote, to check its file against.
 keep-journal = []
-# Measurement builds: the allocator counts what each part of the writer holds.
 memory-labels = ["engine-allocation/memory-labels"]
-# Dev measurement: `journal-encode --times` multiplies the journal's world (`multiplied`).
 multiplied = ["recording", "replay-columnar/sparse-inserts"]
 
 [dependencies]
@@ -44,7 +40,6 @@ zstd = "0.13"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.dev-dependencies]
-# Process CPU time for the pack bench.
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]

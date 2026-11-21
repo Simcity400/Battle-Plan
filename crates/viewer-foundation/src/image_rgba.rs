@@ -1,10 +1,7 @@
-//! CPU RGBA8 decoding for division-template icon preparation.
 use crate::errors::invalid;
 use installed_content_image::{Rgba8Image, dds, rgba::bc_block};
 use std::io;
 
-/// Decodes a BC1/BC2/BC3 texture's base level to RGBA8 at its exact extent.
-/// Formats without a supported CPU expansion are refused by name.
 pub(crate) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
     let block_size = match texture.format {
         dds::TextureFormat::Bc1 => 8,

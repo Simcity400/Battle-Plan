@@ -1,4 +1,3 @@
-//! Frame availability and admission for the typed fuel-demand join.
 use crate::{
     codec::invalid_static as invalid,
     format::FormatVersion,
@@ -7,13 +6,6 @@ use crate::{
 };
 use std::io;
 
-/// One CountryFuel read's rows with each demand pack's lists in place.
-/// Recordings before [`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]
-/// hold them in the pack, as does any pack that still holds a list; a later
-/// pack's lists are FuelDemandParts rows (`parts`, the same hour's view),
-/// which must then be complete. A pack whose parts are missing or
-/// inconsistent keeps empty lists and names why in its `reason`, on which
-/// every consumer of the pack already refuses it.
 pub fn with_demand_parts(
     rows: &[CountryFuelRow],
     parts: &TableView,

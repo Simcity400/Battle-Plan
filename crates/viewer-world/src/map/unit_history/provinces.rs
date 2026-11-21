@@ -1,4 +1,3 @@
-//! Retained province records and their hourly operand joins.
 use super::{ModelInstance, MovementDelta, Province, ProvinceTargets, Slot, Targets, naval};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,14 +13,11 @@ pub(super) struct Record {
     pub id: u32,
     pub province: Province,
     pub targets: Option<Arc<ProvinceTargets>>,
-    /// The targets the province's last visit applied. Holding the table keeps its address its
-    /// own, so one pointer says whether the hour changed anything this province reads.
     pub applied: Option<Arc<ProvinceTargets>>,
     pub has_candidates: bool,
 }
 
 impl Record {
-    /// Whether the hour's targets are the ones this province's last visit applied.
     pub fn applied_hour(&self) -> bool {
         match (&self.targets, &self.applied) {
             (Some(hour), Some(applied)) => Arc::ptr_eq(hour, applied),
@@ -30,9 +26,6 @@ impl Record {
         }
     }
 
-    /// Takes `next` as the hour's targets, keeping the table already held when the hour built an
-    /// equal one: a province whose targets did not change is then one pointer from being left
-    /// alone ([`Self::applied_hour`]).
     fn install(&mut self, next: Option<&Arc<ProvinceTargets>>) {
         let kept = match (&self.targets, next) {
             (Some(held), Some(next)) => Arc::ptr_eq(held, next) || **held == **next,
@@ -53,7 +46,6 @@ impl Record {
     }
 }
 
-/// Record indices, one bit each, iterated in ascending order.
 #[derive(Default)]
 #[cfg_attr(test, derive(Debug))]
 pub(super) struct Indices(Vec<u64>);
@@ -97,18 +89,14 @@ pub(super) struct Provinces {
     pub records: Vec<Record>,
     pub indices: BTreeMap<u32, usize>,
     pub populated: Indices,
-    /// Select the original point-lookup join without changing process environment.
     #[cfg(test)]
     pub lookup_join: Option<bool>,
-    /// The targets and candidate provinces the last sparse join installed ([`Self::join_sparse`]).
     joined: Option<(Targets, Vec<u32>)>,
-    /// Select the original full-walk install without changing process environment.
     #[cfg(test)]
     pub sparse_install: Option<bool>,
 }
 
 impl Provinces {
-    /// Add only new keys, then restore native province order. Sparse IDs never size storage.
     pub fn ensure(&mut self, ids: impl IntoIterator<Item = u32>) -> bool {
         let before = self.records.len();
         let mut added: Vec<_> = ids
@@ -160,12 +148,10 @@ impl Provinces {
         changed
     }
 
-    /// The first record at or after `from` whose id is not below `id`.
     fn locate(&self, from: usize, id: u32) -> usize {
         from + self.records[from..].partition_point(|record| record.id < id)
     }
 
-    /// [`Self::ensure`], finding the missing ids of an ascending list by one forward walk.
     pub fn ensure_ascending(&mut self, ids: impl IntoIterator<Item = u32>) -> bool {
         let (mut at, mut last) = (0, None);
         let missing: Vec<_> = ids
@@ -182,7 +168,6 @@ impl Provinces {
         !missing.is_empty() && self.ensure(missing)
     }
 
-    /// Only the two hours' union can gain or lose a land list.
     pub fn install_lands(&mut self, from: &Targets, to: &Targets) {
         let mut old = from.0.provinces.keys().copied().peekable();
         let mut new = to.0.provinces.iter().peekable();
@@ -197,7 +182,6 @@ impl Provinces {
             let next = new.next_if(|&(&key, _)| key == id).map(|(_, prepared)| prepared);
             let lands = next.map(|prepared| Arc::clone(&prepared.lands));
             at = self.locate(at, id);
-            // The full walk's lookup refuses a province without a record the same way.
             let index = if self.records.get(at).is_some_and(|record| record.id == id) {
                 at
             } else {
@@ -227,7 +211,6 @@ impl Provinces {
         self.join_sparse(targets, naval);
     }
 
-    /// All inputs ascend by province ID, so each cursor only moves forward.
     fn join_by_merge(&mut self, targets: &Targets, naval: &naval::History) {
         let mut prepared = targets.0.provinces.iter().peekable();
         let mut candidates = naval.candidate_provinces().peekable();
@@ -240,7 +223,6 @@ impl Provinces {
         }
     }
 
-    /// Only the last and current joins' union can differ; missing records require a full walk.
     fn join_sparse(&mut self, targets: &Targets, naval: &naval::History) {
         let candidates: Vec<u32> = naval.candidate_provinces().collect();
         let Some((joined, joined_candidates)) = self.joined.take() else {
@@ -323,9 +305,6 @@ impl Provinces {
         }
     }
 
-    /// Every entity's parts where their hours placed them, appended to `into`, with the parts of
-    /// the slots `movement` (sorted by slot) moves named in `moving` by their ordinal in `into`
-    /// and the delta that carries them.
     pub(super) fn standing(
         &self,
         into: &mut Vec<(usize, ModelInstance)>,

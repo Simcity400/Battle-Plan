@@ -1,6 +1,4 @@
-//! Canonical owned-field Debug formatting shared by the corpus and feature content.
 
-// Owned content fields only; input handles and runtime caches are left out.
 #[macro_export]
 macro_rules! debug_fields {
     ($ty:ident($this:ident) { $($field:ident),* $(,)? } { $($name:ident => $value:expr),* $(,)? }) => {

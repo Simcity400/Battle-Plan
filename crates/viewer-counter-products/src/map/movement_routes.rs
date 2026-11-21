@@ -1,8 +1,3 @@
-//! Selected-own-unit arrow operands, without recorded UI state.
-//!
-//! Admission reads the roster owner; style reads the logical owner and the
-//! ordinary route's last province. Geometry independently prefers the alternate
-//! route. Missing fields refuse only a reached branch.
 
 use std::{
     cell::RefCell,
@@ -28,7 +23,6 @@ use {
     viewer_foundation::unit_handle::Unit,
 };
 
-/// Selected province force counters are viewer-owned too.
 pub fn selected_provinces(frame: &DecodedFrame, selected: &BTreeSet<Unit>) -> BTreeSet<u32> {
     selected
         .iter()
@@ -101,8 +95,6 @@ impl<'a> Context<'a> {
         frame: &'a DecodedFrame,
         ours: u32,
     ) -> Result<Self, String> {
-        // CountryAppearance is unrelated to admission: only these two complete
-        // censuses establish raw references and their canonical identities.
         let countries = frame
             .complete::<tables::Countries>()
             .map_err(|e| e.to_string())?;
@@ -110,7 +102,6 @@ impl<'a> Context<'a> {
             .complete::<tables::CountryLinks>()
             .map_err(|e| e.to_string())?;
         let viewer_raw = if ours == 0 {
-            // Native reserved slot zero is omitted from Countries.
             0
         } else {
             countries
@@ -276,7 +267,6 @@ impl<'a> Context<'a> {
         };
         let walked = counter_move::route_controls(input.province, path, &anchor, &world);
         if walked.controls.len() < 4 {
-            // The native resampler clears this animator and creates no strip.
             return Ok(None);
         }
         let total_arc = walked.total_arc;
@@ -293,7 +283,6 @@ impl<'a> Context<'a> {
                 controls: walked.controls,
                 total_arc,
                 fill_target,
-                // Counter/model positions use this same settled animator arc.
                 free_arc: counter_move::SETTLED_ARC,
             },
             walked.skipped,
@@ -357,8 +346,6 @@ impl<'a> Context<'a> {
     }
 }
 
-/// The logical owner targets the destination controller.
-/// This is the reverse of the action-tail relation direction, not symmetric.
 fn route_hostile<'a>(
     frame: &'a DecodedFrame,
     ordinary: &[u32],
@@ -415,7 +402,6 @@ fn choose_style(
     input: &StyleInputs,
     hostile: impl FnOnce() -> Result<bool, String>,
 ) -> Result<&'static [u8], String> {
-    // These names are the engine's selector strings, not vanilla asset paths.
     Ok(if input.retreat.clone()? != 0 {
         b"retreatArrow"
     } else if input.withdrawal.clone()? != 0 {

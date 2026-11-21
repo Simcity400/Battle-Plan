@@ -1,0 +1,13 @@
+# 0906. Preserve allocation identity across a preparation spool
+
+The preparation spool passes items from walks to their emit stage with exact values and shared allocation identity. A stream assigns an ID when it first meets an `Arc` or `Weak` and writes later references by ID. The reader reserves the ID before reading the contents, which can themselves introduce other allocations. Repeated references then point to one restored allocation, preserving address comparisons made by downstream code. The allocator keys are aligned, so the stream's hash mixes high bits into low bits. Resident allocations, such as the content already loaded for the run, move beside the byte stream and never enter the value codec.
+
+The writer retains weak references to prevent reuse of stream keys. It releases objects once no item owns them, and the reader follows the resulting release records. Their low bit distinguishes a dead allocation whose identity must remain available for a later `Weak` from one that can be dropped entirely. Each distinct dead weak address has a placeholder allocation on the reader side. Young objects are checked after each item and surviving objects are checked again when the live population reaches roughly double the last sweep, subject to a floor. This keeps the sweep cost proportional to the number of new allocations even when much of the stream remains live.
+
+Integers use LEB128, with zigzag for signed values and a 64-bit range for `usize`. Floats keep their exact bits. Fixed-width number slices use contiguous little-endian bytes. Collection lengths precede contents and enum tags follow declaration order. Error kinds have an explicit index and an unsupported kind fails encoding. The unnamed standard-library fallback kind is reconstructed from an unmapped native error value. The hash map codec keeps entries and rebuilds the map without preserving iteration order.
+
+`Spooled` derive follows declaration order and the source `cfg` on fields and variants. A `spool(skip)` field writes no bytes and reads back its default. Tuple fields use their positions. The derive omits type defaults from impl parameter declarations and carries a struct's bounds to the generated impl. Its token scan splits at top-level commas outside generic arguments and accepts a tuple body before its where clause.
+
+The round-trip helpers exercise exact byte rewrites where values lack equality. Stream tests also exercise the emit stage's lifetime by dropping each original item after it is written and reading the resulting values in stream order.
+
+[Spool codec](../../crates/replay-spool/src/lib.rs) · [Derive](../../crates/replay-spool-derive/src/lib.rs) · [Stream tests](../../crates/replay-spool/src/tests.rs)

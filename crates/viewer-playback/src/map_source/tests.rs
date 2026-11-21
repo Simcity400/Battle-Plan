@@ -13,8 +13,6 @@ fn read(source: &mut MapSource, hour: Hour) -> Current {
     source.read(1, hour, true, &|| false).unwrap()
 }
 
-/// Every hour a run holds, in order and backwards, is the reader's frame of the map's tables,
-/// never a gap; an hour no run holds is a gap with the replay's own reason.
 #[test]
 fn an_hour_a_run_holds_is_the_reader_s_frame_and_never_a_gap() {
     let (replay, mut source) = source(fixture());
@@ -39,8 +37,6 @@ fn an_hour_a_run_holds_is_the_reader_s_frame_and_never_a_gap() {
     }
 }
 
-/// An hour a run holds whose read fails is that hour's failure carrying the error's text, not
-/// a gap, and the source reads the next block on.
 #[test]
 fn a_cursor_error_is_the_hour_s_failure_by_name_not_a_gap() {
     let clean = fixture();
@@ -72,14 +68,11 @@ fn a_cursor_error_is_the_hour_s_failure_by_name_not_a_gap() {
     }
 }
 
-/// The recording at the path in `name`, with its map source.
 fn fixture_source(name: &str) -> (Arc<Replay>, MapSource) {
     let path = std::env::var_os(name).unwrap_or_else(|| panic!("{name} names no recording"));
     source(Replay::open_path(std::path::Path::new(&path)).unwrap())
 }
 
-/// The hour `BATTLE_PLAN_MAP_FIXTURE_HOUR` ("branch:hour") of the recording at `BATTLE_PLAN_MAP_FIXTURE`,
-/// read through the map source, is a frame equal to the row frames' own.
 #[test]
 #[ignore = "reads a recording named by BATTLE_PLAN_MAP_FIXTURE at the hour BATTLE_PLAN_MAP_FIXTURE_HOUR"]
 fn a_recorded_hour_through_the_map_source_is_the_row_frames() {
@@ -100,9 +93,6 @@ fn a_recorded_hour_through_the_map_source_is_the_row_frames() {
     println!("branch {branch} hour {hour}: a frame equal to the row frames' ({} of the map's tables, {tables_read} views not 'not recorded'), read in {:.1} ms", tables.len(), elapsed.as_secs_f64() * 1e3);
 }
 
-/// Every hour of each recording in `BATTLE_PLAN_MAP_FIXTURES` (paths split by ';') stepped through the
-/// map source, then 60 hours at random, each a frame equal to `HourCursor`'s over the map's
-/// tables; the time of each beside the other's.
 #[test]
 #[ignore = "reads the recordings named by BATTLE_PLAN_MAP_FIXTURES and prints timings"]
 fn map_source_steps_and_seeks_beside_the_hour_cursor() {

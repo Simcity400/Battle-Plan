@@ -1,7 +1,3 @@
-//! War names: the content's name types and overrides, the recorded default prefix and the
-//! instigator's first goal, as they stood at the hour a name is dated: the goals, the goals' type
-//! token texts and state names from the run's histories ([`RunWars`]), the countries' naming
-//! operands from the run's looks. No table is read at the hour.
 use super::{
     WarName,
     inputs::{Goal, Held, Hour, RunWars},
@@ -20,16 +16,13 @@ pub(super) fn unknown(reason: impl Into<String>) -> WarName {
     }
 }
 
-/// What a name reads beside the walk's hour, as it stood at `at`, the hour the name is dated.
 pub(super) struct Facts<'a> {
     pub cat: &'a Catalogue,
     pub inputs: &'a RunWars,
-    /// The naming rule's recorded default prefix; none where its row is absent.
     pub prefix: Option<&'a [u8]>,
     pub at: i32,
 }
 
-/// Relation `p`'s instigator, defender and the instigator's side (0 for its first country).
 fn sides(hour: &Hour, p: Pair) -> (u32, u32, u32) {
     let relation = &hour.world.relations[&p];
     if relation.first_was_instigator != 0 {
@@ -39,8 +32,6 @@ fn sides(hour: &Hour, p: Pair) -> (u32, u32, u32) {
     }
 }
 
-/// The instigator's first goal in relation `p`'s owned row at `at`, resolved or not; none where
-/// the instigator's side holds no goal.
 pub(super) fn first_goal(inputs: &RunWars, hour: &Hour, p: Pair, at: i32) -> Result<Option<Goal>, String> {
     let (_, _, side) = sides(hour, p);
     let owned = hour
@@ -63,12 +54,10 @@ pub(super) fn first_goal(inputs: &RunWars, hour: &Hour, p: Pair, at: i32) -> Res
     }
 }
 
-/// The canonical slot a resolved goal's first country names; none where it names no country.
 pub(super) fn goal_country(hour: &Hour, goal: &Goal) -> Result<Option<u32>, String> {
     if goal.resolved == 0 || goal.country_count == 0 {
         return Ok(None);
     }
-    // Reference zero selects the reserved country without a link.
     if goal.first_country == 0 {
         return Ok(Some(0));
     }
@@ -79,7 +68,6 @@ pub(super) fn goal_country(hour: &Hour, goal: &Goal) -> Result<Option<u32>, Stri
         .ok_or_else(|| "Not recorded: first goal's country naming link".into())
 }
 
-/// The plain name `names` gives the country in `slot`; none where it cannot.
 pub(super) fn country(names: &CountryNames<'_>, slot: u32) -> Option<String> {
     names
         .name(slot)
@@ -87,12 +75,9 @@ pub(super) fn country(names: &CountryNames<'_>, slot: u32) -> Option<String> {
         .ok()
 }
 
-/// What naming relation `p` reads alike for every viewpoint: its localisation keys and its
-/// arguments, each part's failure kept for the place it is reported in.
 struct Shared {
     instigator: u32,
     defender: u32,
-    /// The key with the defender's tag appended, read only where it exists.
     extra: String,
     extra_exists: bool,
     pair_key: String,
@@ -106,21 +91,16 @@ struct Arguments {
     second: String,
     first_country: String,
     second_country: String,
-    /// The first goal's state name: none without a resolved goal.
     state: Option<String>,
     country: Option<(String, String)>,
 }
 
-/// The name `hour`'s viewpoint gives the war of relation `p`, the countries it names named by
-/// `names`.
 pub(super) fn name(facts: &Facts<'_>, names: &CountryNames<'_>, hour: &Hour, p: Pair) -> WarName {
     let shared = match shared_part(facts, names, hour, p) {
         Ok(shared) => shared,
         Err(reason) => return unknown(reason),
     };
     let allied = |target: u32| -> Result<bool, String> {
-        // Check self, the war veto,
-        // nonnull faction equality, then either cached subject endpoint.
         if hour.view == target {
             return Ok(true);
         }
@@ -145,8 +125,6 @@ pub(super) fn name(facts: &Facts<'_>, names: &CountryNames<'_>, hour: &Hour, p: 
             .map(|s| s.view_subject != 0)
             .ok_or_else(|| "Not recorded: cached subject naming predicate".into())
     };
-    // Both alliance branches append the defender tag. Without that key the
-    // predicate cannot change the name, so it is read only when the key exists.
     let extra = if shared.extra_exists {
         let either = match allied(shared.instigator) {
             Ok(false) => allied(shared.defender),
@@ -189,7 +167,6 @@ fn text(cat: &Catalogue, key: &str, arguments: &Arguments) -> Result<String, Str
         ("SECOND_COUNTRY", Argument::Text(&arguments.second_country)),
         ("ORDER", Argument::Text("")),
     ];
-    // The recorded naming rule supplies no ordinal suffix.
     if let Some(state) = &arguments.state {
         held.push(("STATE", Argument::Text(state)));
     }
@@ -200,8 +177,6 @@ fn text(cat: &Catalogue, key: &str, arguments: &Arguments) -> Result<String, Str
     catalogue::localised_with(&cat.localisation, key, &held, catalogue::View::Plain)
 }
 
-/// The name of state `id` at `at` as war naming copies it: its recorded custom or owner name,
-/// else its template's.
 fn state_name(facts: &Facts<'_>, id: u32) -> Result<String, String> {
     let (custom, owner) = match facts.inputs.states.at(u128::from(id), facts.at) {
         Some(Held::Value(names)) => names,
@@ -211,8 +186,6 @@ fn state_name(facts: &Facts<'_>, id: u32) -> Result<String, String> {
     dashboard_text::scripted_text::plain_state_name_of(&facts.cat.localisation, facts.cat.scripted_content()?, id, custom, owner)
 }
 
-/// What naming relation `p` reads alike for every viewpoint of `hour`, or the first failure
-/// before the viewpoint's alliance is read.
 fn shared_part(facts: &Facts<'_>, names: &CountryNames<'_>, hour: &Hour, p: Pair) -> Result<Shared, String> {
     let cat = facts.cat;
     let localisation = &cat.localisation;

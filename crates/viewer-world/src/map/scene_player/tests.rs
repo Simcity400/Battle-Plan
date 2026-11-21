@@ -4,7 +4,6 @@ use viewer_foundation::map::province_admission::views;
 
 const VIEWPORT: [u32; 2] = [1600, 900];
 
-/// A free eye at world `(x, height, z)` looking east, `pitch` above the horizontal.
 fn eye(x: f32, height: f32, pitch: f32) -> Camera {
     Camera {
         center: [x, 1000.0],
@@ -26,16 +25,12 @@ fn eye(x: f32, height: f32, pitch: f32) -> Camera {
 #[test]
 fn a_player_high_across_the_seam_takes_its_own_copy() {
     let width = MapSize::TEST.x();
-    // Looking up and east from just west of the seam, at a plane flying just east of it.
     let camera = eye(width - 5.0, 200.0, 0.5);
     let plane = ([60.0, 260.0, 1000.0], 2.0);
-    // The views the map's objects are admitted in miss the copy: looking up, the view volume
-    // never meets their band, so only the main view stands.
     assert_eq!(views(camera, VIEWPORT).len(), 1);
     let mut offsets = Vec::new();
     copies(&camera, VIEWPORT, plane, &mut offsets);
     assert_eq!(offsets, [width]);
-    // On the map's own copy in front of the eye it takes that copy alone; behind it, none.
     copies(
         &eye(100.0, 200.0, 0.5),
         VIEWPORT,
@@ -54,8 +49,6 @@ fn a_player_high_across_the_seam_takes_its_own_copy() {
 
 #[test]
 fn an_oblique_view_finds_copies_farther_in_x_than_its_depth() {
-    // A 1,024-wide map, looking 60 degrees east of north: the view's right edge runs farther
-    // east than its far plane is deep.
     let map = MapSize {
         width: 1024,
         height: 4096,
@@ -75,7 +68,6 @@ fn an_oblique_view_finds_copies_farther_in_x_than_its_depth() {
             },
         )),
     };
-    // A point 18,050 deep near the right edge, on copy 21 of a figure at x = 945.
     let [right, _, forward] = camera.axes();
     let tangent_x = (FOV_Y * 0.5).tan() * VIEWPORT[0] as f32 / VIEWPORT[1] as f32;
     let depth = 18_050.0;
@@ -85,7 +77,6 @@ fn an_oblique_view_finds_copies_farther_in_x_than_its_depth() {
     let copy = (seen[0] / 1024.0).floor();
     assert_eq!(copy, 21.0);
     let figure = ([seen[0] - copy * 1024.0, seen[1], seen[2]], 5.0);
-    // Its copy lies farther east of the eye than the far plane is deep.
     assert!(seen[0] - camera.eye()[0] > camera.lens().far + figure.1);
     let mut offsets = Vec::new();
     copies(&camera, VIEWPORT, figure, &mut offsets);

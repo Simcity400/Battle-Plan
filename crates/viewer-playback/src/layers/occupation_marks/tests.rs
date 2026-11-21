@@ -1,7 +1,3 @@
-//! The occupation marks layer on rows written hour by hour: equal to today's hour's marks over the
-//! same rows and to itself composed, a resistance or controller change marking only its state, and
-//! nothing declared outside the Resistance and Compliance modes; the window's hand-over between the
-//! layer's marks and today's.
 
 use super::{OccupationMarks, Source, drawn};
 use crate::{
@@ -45,9 +41,6 @@ fn resistance(state: u32, level: i64) -> StateResistanceRow {
     StateResistanceRow { state, country: 30, level, speed: -5, compliance: 1_050_000, map: Recorded::NotRecorded, ..Default::default() }
 }
 
-/// States 1 and 2 held by country 20 (slot 1) and 30 (slot 2) at hour 0; state 1's resistance
-/// rises at hour 2, state 2 passes to country 20 at hour 4. Today's frame at each hour beside.
-/// `name` is the test's own: a name and span share one playhead across the test process.
 fn campaign(name: &str) -> (Units, Vec<DecodedFrame>) {
     let mut first = DecodedFrame { branch: 0, hour: 0, metrics: Default::default(), tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()) };
     put(&mut first, TableRows::States(vec![StateRow { id: 1, controller: 20, ..Default::default() }, StateRow { id: 2, controller: 30, ..Default::default() }]));
@@ -116,7 +109,6 @@ fn the_layer_equals_todays_marks_and_itself_composed_and_a_change_marks_only_its
     side.anchor(0, false, 0.0, true);
     side.catch_up(0).unwrap();
     let occupation = content.occupation().unwrap();
-    // The stepped head: each hour reached by one step, the clock held.
     let mut marked = layer(&side).marked();
     for hour in 1..26 {
         side.catch_up(hour).unwrap();

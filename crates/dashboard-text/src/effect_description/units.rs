@@ -2,7 +2,6 @@ use super::*;
 use installed_content_core::parser;
 use replay_data::{rows::VariantDefinitionRow, rows::tables};
 
-/// The fields of each table the unit descriptions read.
 const VARIANT: u64 = tables::VariantDefinitions::ID.full_mask();
 const ROSTER_VARIANT: u64 = mask::<replay_data::rows::AvailableEquipmentVariantRow>(&["variant"]);
 use std::cmp::Ordering;
@@ -33,7 +32,7 @@ fn integer_field(items: &[Item], name: &str, default: i32) -> i32 {
             },
         )
         .next_back()
-        .unwrap_or(default) // Read a signed integer, retaining the default after a failed scan.
+        .unwrap_or(default)
 }
 
 fn variant_version(variant: &VariantDefinitionRow) -> Result<u8, String> {
@@ -79,14 +78,13 @@ impl Renderer<'_, '_, '_> {
         if reference == 0 {
             return Ok(String::new());
         }
-        // Divisions supplies the Army existence witness.
         let world = self.context.world()?;
         let owner = world
             .unit(reference)
             .map_err(|why| format!("Divisions lacks UNIT {reference:#x}; {why}"))?
-            .logical_owner; // Use the unit's logical owner rather than its roster owner.
+            .logical_owner;
         let country = if owner == 0 {
-            0 // Only raw zero maps directly to reserved country zero.
+            0
         } else {
             world.slot(owner).ok_or_else(|| {
                 format!("country links lacks change-division-template logical owner {owner}")
@@ -95,15 +93,14 @@ impl Renderer<'_, '_, '_> {
         if country == 0 {
             return Err("reserved country-zero division-template roster is not recorded".into());
         }
-        let template = string_field(children(item), "division_template")?; // Read the authored template string.
+        let template = string_field(children(item), "division_template")?;
         if !world
             .has_template(country, template.as_bytes())
             .map_err(|why| why.to_string())?
         {
-            return Ok(String::new()); // An absent template precedes the unit-name read.
+            return Ok(String::new());
         }
         let name = self.unit_name(reference)?;
-        // The exact comparison already established the display-name bytes.
         self.localised(
             b"CHANGE_DIV_TEMPLATE_EFFECT",
             &[
@@ -112,7 +109,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             false,
-        ) // Plain localisation, without LF.
+        )
     }
 
     pub(super) fn units_destroy_unit(&self, scopes: Scopes) -> Result<String, String> {
@@ -122,14 +119,13 @@ impl Renderer<'_, '_, '_> {
         if reference == 0 {
             return Ok(String::new());
         }
-        // Resolve the unit; the effect operand is unused.
         let name = self.unit_name(reference)?;
         self.line(
             b"EFFECT_UNIT_DESTROY_UNIT",
             &[("NAME", Argument::Text(&name))],
             scopes,
             true,
-        ) // Expand in the caller scope, then append LF.
+        )
     }
 
     pub(super) fn units_set_organization(
@@ -146,9 +142,9 @@ impl Renderer<'_, '_, '_> {
         self.context
             .world()?
             .unit(reference)
-            .map_err(|why| format!("Divisions lacks UNIT {reference:#x}; {why}"))?; // Resolve the Army before evaluating the operand.
+            .map_err(|why| format!("Divisions lacks UNIT {reference:#x}; {why}"))?;
         let value = if scope_selector(item).is_some() {
-            0 // Read selectors before assigning the default-zero operand.
+            0
         } else {
             self.scoped_value(scalar_operand(item)?, scopes)?
         };
@@ -157,7 +153,7 @@ impl Renderer<'_, '_, '_> {
             &[("VAL", Argument::Fixed5(value))],
             scopes,
             false,
-        ) // Raw type-9 value, without clamping, expansion or LF.
+        )
     }
 
     fn units_equipment(&self) -> Result<&installed_content_core::equipment::Database, String> {
@@ -198,7 +194,7 @@ impl Renderer<'_, '_, '_> {
             }
         }
         if queued {
-            cached = database.get(input); // A later pending token replaces the earlier cache.
+            cached = database.get(input);
         }
         if cached.is_none() && queued {
             let token = (self.scoped_value(input, scopes)? / 100_000) as u32;
@@ -213,7 +209,7 @@ impl Renderer<'_, '_, '_> {
                 .ok_or_else(|| format!("lexical tokens lacks equipment variable token {token}"))?;
             return Ok(database.get(literal));
         }
-        Ok(cached) // Resolve the token using signed division.
+        Ok(cached)
     }
 
     fn units_country_equipment_name(
@@ -233,10 +229,9 @@ impl Renderer<'_, '_, '_> {
             &[],
             scopes,
             false,
-        ) // Localise for the selected country.
+        )
     }
 
-    /// Equipment-reference names shared by production and licences.
     pub(super) fn units_equipment_reference_name(
         &self,
         fields: &[Item],
@@ -244,8 +239,7 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let mut version = "";
         let mut kind = b"".as_slice();
-        let mut creator = b"---".as_slice(); // The reserved creator tag is the country-database default.
-        // Repeated equipment bodies mutate the same reference.
+        let mut creator = b"---".as_slice();
         for equipment in fields.iter().filter(|field| field.keyword_is("equipment")) {
             if let Some(name) = field(children(equipment), "version_name") {
                 version = parser::text(name.value.read_string().unwrap_or_default())
@@ -276,7 +270,7 @@ impl Renderer<'_, '_, '_> {
             let creator = if defined {
                 creator
             } else {
-                "---" // Use exact raw tag spelling, without ROOT/FROM selection.
+                "---"
             };
             self.units_country_equipment_name(name, creator, scopes)?
         } else {
@@ -296,7 +290,7 @@ impl Renderer<'_, '_, '_> {
             &[("EQUIPMENT", Argument::Text(&name))],
             scopes,
             true,
-        ) // Use the verbatim version name, without LF.
+        )
     }
 
     pub(super) fn units_destroy_ships(
@@ -337,7 +331,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // Parse an integer count without scope evaluation.
+        )
     }
 
     pub(super) fn units_send_equipment(
@@ -372,7 +366,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // Ignore old_prioritised; aliases share one operand.
+        )
     }
 
     fn units_variant_raw(
@@ -422,7 +416,6 @@ impl Renderer<'_, '_, '_> {
                 "Countries lacks equipment roster country slot {country}"
             ));
         }
-        // The key is the country, the roster kind's two bits, then the ordinal.
         let mut roster = Vec::new();
         for row in self
             .complete::<tables::AvailableEquipmentVariants>(ROSTER_VARIANT)?
@@ -438,7 +431,7 @@ impl Renderer<'_, '_, '_> {
         roster
             .into_iter()
             .map(|row| keyed(&definitions, u128::from(row.variant)))
-            .collect() // Preserve primary roster order.
+            .collect()
     }
 
     pub(super) fn units_stockpile(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -587,8 +580,6 @@ impl Renderer<'_, '_, '_> {
         if left.id == right.id {
             return Ok(Ordering::Equal);
         }
-        // Merge equal version/type/creator/origin tuples,
-        // even when their definition handles differ.
         let version = variant_version(left)?.cmp(&variant_version(right)?);
         if version != Ordering::Equal {
             return Ok(version);
@@ -623,7 +614,6 @@ impl Renderer<'_, '_, '_> {
         separator: &str,
         key: &[u8],
     ) -> Result<String, String> {
-        // Only resolved variants evaluate their amounts.
         let mut pool: Vec<(usize, usize, Cow<'_, VariantDefinitionRow>, i64)> = Vec::new();
         for entry in entries.iter().filter(|entry| entry.keyword_is("equipment")) {
             let fields = children(entry);
@@ -637,7 +627,7 @@ impl Renderer<'_, '_, '_> {
                 .map_err(|why| why.to_string())?;
             let Some(index) = index else { continue };
             if producer == Some(None) {
-                continue; // Invalid explicit producer.
+                continue;
             }
             let country = producer.flatten().unwrap_or(seller);
             let database = self.units_equipment()?;
@@ -649,7 +639,7 @@ impl Renderer<'_, '_, '_> {
                 .transpose()?
                 .unwrap_or_default();
             let raw_name = parser::c_string(raw_name);
-            let named = !raw_name.is_empty(); // Remember whether the parsed name is nonempty.
+            let named = !raw_name.is_empty();
             if !kind.is_archetype
                 && [
                     b"token:".as_slice(),
@@ -666,14 +656,12 @@ impl Renderer<'_, '_, '_> {
                     String::from_utf8_lossy(raw_name),
                 ));
             }
-            // Retain spelling after these two prefixes and before variable-name case
-            // folding; the name itself is not evaluated.
             let name = raw_name
                 .strip_prefix(b"var:")
                 .or_else(|| raw_name.strip_prefix(b"temp_var:"))
                 .unwrap_or(raw_name);
             let name = if kind.is_archetype {
-                "" // Archetypes ignore the variant-name operand.
+                ""
             } else {
                 parser::text(name).map_err(|why| why.to_string())?
             };
@@ -721,10 +709,10 @@ impl Renderer<'_, '_, '_> {
                             continue;
                         }
                         candidates.push((variant, at));
-                        break; // Stop at the first exact creator/display-name match.
+                        break;
                     }
                     candidates.push((variant, at));
-                    break; // Stop at the first match in reverse roster order.
+                    break;
                 }
             }
             let selected = if kind.is_archetype && candidates.len() > 1 {
@@ -741,7 +729,7 @@ impl Renderer<'_, '_, '_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 ranked.sort_by(|left, right| {
                     crate::variant_names::compare_variants(owner, country as i32, left.2, right.2)
-                }); // Use the shared stable country comparator.
+                });
                 ranked.first().map(|&(variant, at, _)| (variant, at))
             } else {
                 candidates.first().copied()
@@ -772,7 +760,7 @@ impl Renderer<'_, '_, '_> {
                         }
                         Ordering::Greater => break,
                     }
-                } // Stop at the first range boundary.
+                }
                 if equal {
                     pool[insert].3 = pool[insert]
                         .3
@@ -790,7 +778,6 @@ impl Renderer<'_, '_, '_> {
                     );
                 }
             } else {
-                // New archetypes append their first item.
                 pool.push((
                     archetype,
                     at,
@@ -803,7 +790,7 @@ impl Renderer<'_, '_, '_> {
         for (archetype, _, variant, quantity) in pool {
             let amount = quantity.div_euclid(100_000) as i32;
             if amount <= 0 {
-                continue; // Floor, narrow to i32 and retain only positive amounts.
+                continue;
             }
             let database = self.units_equipment()?;
             let kind = self.units_short_equipment_name(
@@ -828,7 +815,7 @@ impl Renderer<'_, '_, '_> {
                         scopes,
                     )?
                 }
-            }; // Use the short display name without a suffix.
+            };
             lines.push(self.localised(
                 key,
                 &[
@@ -956,7 +943,7 @@ impl Renderer<'_, '_, '_> {
                             == country);
                 if same_creator && (variant.origin_link as i32) < 1 {
                     found = true;
-                    break; // Stop at the first family/version-zero/creator/origin match.
+                    break;
                 }
             }
             !found
@@ -993,14 +980,14 @@ impl Renderer<'_, '_, '_> {
                             && let Some(mask) = database.module_category(name)
                         {
                             modules.insert(slot, mask);
-                        } // An unknown module keeps the preceding slot value.
+                        }
                     }
                 }
                 for mask in modules.values() {
                     category |= *mask;
                 }
                 category = installed_content_core::equipment::normalize_category(category);
-            } // Own vector only; do not merge/remove native default module categories.
+            }
             let archetype = family.archetype.map_or(b"".as_slice(), |index| {
                 database.equipment[index].name.as_slice()
             });
@@ -1015,7 +1002,7 @@ impl Renderer<'_, '_, '_> {
         if let Some(role) = &role {
             args.push(("ROLE", Argument::Text(role)));
         }
-        self.localised(key, &args, scopes, true) // No added LF.
+        self.localised(key, &args, scopes, true)
     }
 
     pub(super) fn units_subsidy(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -1075,7 +1062,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // Positive sellers retain order and duplicates.
+        )
     }
 
     pub(super) fn units_unit_bonus(
@@ -1088,7 +1075,6 @@ impl Renderer<'_, '_, '_> {
 
     fn units_current_name(&self, name: &[u8], scopes: Scopes) -> Result<String, String> {
         self.units_country_equipment_name(name, self.tag(self.context.perspective)?, scopes)
-        // Localise for the current country.
     }
 
     pub(super) fn units_manpower(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -1119,7 +1105,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // Round the value.
+        )
     }
 
     pub(super) fn units_template(
@@ -1144,7 +1130,7 @@ impl Renderer<'_, '_, '_> {
                 } else {
                     b"EFFECT_ENABLE_TEMPLATE_EDITTING".as_slice()
                 }
-            } // The authored key spells EDITTING.
+            }
             TemplateDescription::ClearCap => b"EFFECT_CLEAR_TEMPLATE_DIVISION_CAP".as_slice(),
             TemplateDescription::Cap => {
                 let cap = match field(fields, "division_cap") {
@@ -1159,7 +1145,7 @@ impl Renderer<'_, '_, '_> {
                     ],
                     scopes,
                     true,
-                ); // Truncate before narrowing rather than rounding.
+                );
             }
             TemplateDescription::Recruit => {
                 let allowed = self.localised(
@@ -1217,7 +1203,7 @@ impl Renderer<'_, '_, '_> {
         if navy {
             self.line(b"EFFECT_TRANSFER_NAVY", &args, scopes, true)
         } else {
-            self.localised(b"EFFECT_TRANSFER_UNITS", &args, scopes, true) // No LF.
+            self.localised(b"EFFECT_TRANSFER_UNITS", &args, scopes, true)
         }
     }
 
@@ -1275,7 +1261,7 @@ impl Renderer<'_, '_, '_> {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
-        Ok(text) // No scope expansion.
+        Ok(text)
     }
 
     pub(super) fn units_raid_damage(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -1332,7 +1318,7 @@ impl Renderer<'_, '_, '_> {
                 (None, None) => return Ok(String::new()),
             }
         };
-        self.localised(key, &args, scopes, true) // Priority is plane/damage/strength/organisation; no LF.
+        self.localised(key, &args, scopes, true)
     }
 
     pub(super) fn units_add_to_template(
@@ -1368,7 +1354,7 @@ impl Renderer<'_, '_, '_> {
                     Some(country)
                 }
                 _ => None,
-            }, // Use the carried scope country directly rather than the state owner.
+            },
         };
         let Some(country) = country else {
             return Ok(String::new());
@@ -1385,7 +1371,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // No LF.
+        )
     }
 
     pub(super) fn units_create(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -1405,7 +1391,7 @@ impl Renderer<'_, '_, '_> {
                     *link = Link::Scope(cursor);
                 }
             }
-            graph.scopes.push(copied); // Copy the scope and its members.
+            graph.scopes.push(copied);
             if let Some(targets) = graph.tooltip_targets.get(&cursor).cloned() {
                 graph.tooltip_targets.insert(at, targets);
             }
@@ -1446,11 +1432,11 @@ impl Renderer<'_, '_, '_> {
                     .scoped_country(scalar_operand(owner)?, scopes)
                     .map_err(|why| why.to_string())?
                     .unwrap_or(0)),
-                None => Ok(0), // The selector fallback defaults to zero.
+                None => Ok(0),
             }
         };
         let location = self.units_create_location(item, scopes, owner()?)?;
-        let country = owner()?; // Reevaluate the owner after the copied seed advances.
+        let country = owner()?;
         let owner = self.context.text.country_adjective(country).map_err(|why| {
             if country == 0 {
                 format!("owner selector is reserved country zero; its adjective/name input is unavailable: {why}")
@@ -1476,7 +1462,7 @@ impl Renderer<'_, '_, '_> {
             &args,
             expansion,
             true,
-        ) // Rounded count, without LF.
+        )
     }
 
     fn units_create_location(
@@ -1491,7 +1477,6 @@ impl Renderer<'_, '_, '_> {
         if self.valid_state(state)?.is_none() {
             return Ok(None);
         }
-        // War and subject pairs are their rows' keys.
         const ACCESS: u64 = mask::<replay_data::rows::RelationLinkRow>(&["links"]);
         const OCCUPANTS: u64 = mask::<replay_data::rows::ProvinceUnitOrderRow>(&["mixed", "naval"]);
         const LAND: u64 = mask::<replay_data::rows::DivisionRow>(&["province"]);
@@ -1532,7 +1517,6 @@ impl Renderer<'_, '_, '_> {
         let copied = self.graph.borrow().scopes[cursor];
         let start = copied.random_draw()? as usize % provinces.len();
         self.graph.borrow_mut().scopes[cursor].random_seed = copied.random_seed.wrapping_add(1);
-        // Change only the copied seed, preserving the caller's random counter.
         let impassable = parser::parse(b"impassable=yes")
             .map_err(|why| why.to_string())?
             .items;
@@ -1555,7 +1539,7 @@ impl Renderer<'_, '_, '_> {
                     return Ok(true);
                 }
             }
-            Ok(false) // Installed relation slots, without a date or cancellation filter.
+            Ok(false)
         };
         let visibility = |controller| -> Result<bool, String> {
             if controller == owner {
@@ -1594,7 +1578,7 @@ impl Renderer<'_, '_, '_> {
                     return Ok(true);
                 }
             }
-            Ok(false) // Direct installed subjects, without a date or cancellation filter.
+            Ok(false)
         };
         let mut admitted =
             |province: &replay_frame::frame::Province, ignore_occupants| -> Result<bool, String> {
@@ -1642,7 +1626,6 @@ impl Renderer<'_, '_, '_> {
                 let occupants = occupants
                     .ok_or_else(|| format!("province unit order lacks province {}", province.id))?;
                 Ok(occupants.mixed.len() == occupants.naval.len())
-                // Mixed unit counts include land, naval and railway units.
             };
         for ignore_occupants in [score.is_some(), true] {
             if let Some(province) = world.provinces().get(&priority)
@@ -1650,7 +1633,7 @@ impl Renderer<'_, '_, '_> {
             {
                 return Ok(Some(province.state));
             }
-            let mut best = -0x53E2_D620_FB40_i64; // Initial best score.
+            let mut best = -0x53E2_D620_FB40_i64;
             let mut found = false;
             for index in 0..provinces.len() {
                 let id = provinces[(start + index) % provinces.len()];
@@ -1678,7 +1661,7 @@ impl Renderer<'_, '_, '_> {
                                     ..crate::scripted_text::EventScope::of(EventObject::Country(
                                         controller,
                                     ))
-                                }); // Fresh ROOT/FROM with caller PREV.
+                                });
                             let result = (|| {
                                 let projected = crate::triggers::event_scopes::project(
                                     &self.graph.borrow(),
@@ -1726,8 +1709,6 @@ impl Renderer<'_, '_, '_> {
                     found = true;
                 }
             }
-            // Every score query runs. Only STATE reaches the unit description;
-            // ties in the no-score form cannot change the description.
             if found {
                 return Ok(Some(state));
             }
@@ -1735,7 +1716,7 @@ impl Renderer<'_, '_, '_> {
                 break;
             }
         }
-        Ok(None) // A missing location still describes the unit.
+        Ok(None)
     }
 
     pub(super) fn units_unlock(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -1768,7 +1749,6 @@ impl Renderer<'_, '_, '_> {
             scopes,
             false,
         )
-        // No expansion or LF.
     }
 
     pub(super) fn delete_template(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -1803,8 +1783,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let mut entries = Vec::new();
-        // Append every bonus body; name, project and prefix
-        // are unused by the description path.
         for bonus in children(item)
             .iter()
             .filter(|child| child.keyword_is("bonus"))
@@ -1822,7 +1800,7 @@ impl Renderer<'_, '_, '_> {
                         .keyword()
                         .and_then(|key| installed_content_core::equipment::stat_index(&key.folded()))
                     else {
-                        continue; // Native unexpected-token skip; no stored stat.
+                        continue;
                     };
                     let value = stat
                         .value
@@ -1832,7 +1810,7 @@ impl Renderer<'_, '_, '_> {
                     match stats.iter_mut().find(|(stored, _)| *stored == index) {
                         Some((_, previous)) => *previous = previous.wrapping_add(value),
                         None => stats.push((index, value)),
-                    } // Combine stat values; retain zero entries.
+                    }
                 }
                 let mut lines = Vec::new();
                 for (index, value) in stats {
@@ -1851,7 +1829,7 @@ impl Renderer<'_, '_, '_> {
                             b"STAT_MODIFIER_DIFF"
                         } else {
                             b"STAT_MODIFIER_DIFF_NEG"
-                        }; // Select the positive-good polarity for the stat.
+                        };
                     let value = self.localised(
                         difference_key,
                         &[("VALUE", Argument::Fixed5(value))],
@@ -1864,6 +1842,6 @@ impl Renderer<'_, '_, '_> {
                 entries.push(description);
             }
         }
-        Ok(entries.join("\n")) // No added terminal LF.
+        Ok(entries.join("\n"))
     }
 }

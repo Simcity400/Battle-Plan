@@ -1,11 +1,3 @@
-//! The runtime thread's attach and detach progress, appended to `progress`
-//! in the session directory as one line per step: milliseconds since the
-//! collector opened it, the step and an optional count. The recorder waits
-//! for readiness and for detach while this file grows, and names its last
-//! line when it stops growing; the lines also time each step for diagnosis.
-//! Writing formats into a stack buffer and appends it, with no allocation, so
-//! detach can record its steps after the allocation gate closes. A failed
-//! write loses only that line.
 use std::{fs::File, io::Write, path::Path, time::Instant};
 
 pub(crate) const FILE: &str = "progress";
@@ -21,9 +13,6 @@ pub(crate) struct Progress {
 }
 
 impl Progress {
-    /// Opens (truncating) the session's progress file; without one, every
-    /// step is dropped. Writes append, so lines other handles append (a
-    /// worker panic) are never overwritten.
     pub(crate) fn open(directory: &Path) -> Self {
         let path = directory.join(FILE);
         Self {
@@ -36,12 +25,10 @@ impl Progress {
         }
     }
 
-    /// When the file was opened, the zero of its step times.
     pub(crate) fn opened(&self) -> Instant {
         self.opened
     }
 
-    /// Appends `step`, with `count` when it has one.
     pub(crate) fn step(&self, step: impl std::fmt::Display, count: Option<u64>) {
         let mut buffer = [0_u8; 160];
         let length = line(&mut buffer, self.opened.elapsed().as_millis(), step, count);
@@ -81,9 +68,6 @@ impl Progress {
     }
 }
 
-/// The family attach is installing, as the `Cell` it replaces, appending a
-/// step whenever an attempt reaches a family no earlier attempt reached:
-/// retries of the same families add no lines.
 pub(crate) struct Stage<'a> {
     name: std::cell::Cell<&'static str>,
     first: &'static str,
@@ -136,9 +120,6 @@ impl<'a> Stage<'a> {
     }
 }
 
-/// `<ms> <step>[ <count>]` and a line feed in `buffer`, truncated to fit;
-/// the bytes written. Steps are the collector's own names, without line
-/// breaks.
 fn line(
     buffer: &mut [u8],
     millis: u128,
@@ -182,8 +163,6 @@ mod tests {
             })),
         };
         let stage = Stage::new(&progress, FAMILY);
-        // Same ready/expired ordering as the runtime; slow diagnostic writes
-        // would stop this not-ready/not-ready/ready sequence on its second result.
         let mut decision = false;
         for ready in [false, false, true] {
             stage.set(FAMILY);

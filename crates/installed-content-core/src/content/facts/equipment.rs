@@ -1,7 +1,3 @@
-//! The equipment fact a pack carries beside its files: each sub-unit's need per archetype,
-//! computed once when the pack is written, from the pack's own facts, so a reader never loads the
-//! equipment database. It is a file of the pack's stream, encoded in key order so the same content
-//! always packs the same bytes.
 
 use std::io;
 
@@ -12,12 +8,8 @@ use crate::{
     unit_leader::needs::SubUnitNeeds,
 };
 
-/// The rules the file is computed and encoded by; a pack of another version carries none this
-/// build reads.
 pub const VERSION: u32 = 1;
 
-/// The file of `layers`' content, the executable's tables in scope: its sub-unit needs; why not,
-/// when the content cannot give them.
 pub fn gather(layers: &ResolvedLayers) -> Result<Vec<u8>, String> {
     let database = Database::load_complete(layers).map_err(|error| format!("the equipment database cannot be read: {error}"))?;
     let needs = SubUnitNeeds::read(layers, &database).map_err(|error| format!("the sub-unit needs cannot be read: {error}"))?;
@@ -65,7 +57,6 @@ pub fn decode_needs(bytes: &[u8]) -> io::Result<SubUnitNeeds> {
     Ok(out)
 }
 
-/// A count that the bytes left could hold, each entry at least four bytes.
 fn counted(input: &mut Input<'_>) -> io::Result<usize> {
     let count = input.u32()? as usize;
     if count > input.0.len() / 4 + 1 {
@@ -93,8 +84,6 @@ mod tests {
         }
     }
 
-    /// What is encoded decodes to itself, encoding is the same bytes every time, and bytes cut
-    /// short or running on are refused, never read as fewer entries.
     #[test]
     fn sub_unit_needs_decode_to_what_was_encoded_and_encode_the_same_bytes() {
         let needs = needs();

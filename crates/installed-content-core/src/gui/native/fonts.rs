@@ -1,12 +1,3 @@
-//! The game's bitmap fonts as read and loaded: `bitmapfont` facts, overrides, the 511-bucket
-//! font registry and its fallback, language families and glyphs from each family's files.
-//!
-//! The file list keeps `path` and `fontfiles` in order: each `path` appends, while each `fontfiles`
-//! clears and replaces the list. At the font's `}`, the list becomes family 0 with no languages. A
-//! `bitmapfont_override` appends a family to the font found by lookup and fallback at the time of
-//! reading; repeated `fontfiles` and `languages` lists concatenate. At each `.gfx` file's end,
-//! every font selects the first family containing the game's language byte for byte, else family 0,
-//! and loads that family's files in order.
 
 use std::collections::BTreeMap;
 
@@ -18,38 +9,19 @@ use super::{
     spill::{self, Layout},
 };
 
-/// A text colour table, by the code's byte: straight RGBA.
 pub type TextColors = BTreeMap<u8, [f32; 4]>;
 
-/// The stored facts and constructor defaults of one `bitmapfont`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontFacts {
-    /// `name`: the last assignment.
     pub name: Vec<u8>,
-    /// `color` (0): `%x`, `0xAARRGGBB`, unpacked as the text object's color. A font without one
-    /// draws (0, 0, 0, 0).
     pub color: u32,
-    /// `border_color` (0): `%x`, written raw as each glyph vertex's second color.
     pub border_color: u32,
-    /// The file list: each `path` appended, each `fontfiles` replacing it.
     pub files: Vec<Vec<u8>>,
-    /// `icons_add_height`: raises a line to an inline icon's height.
     pub icons_add_height: bool,
-    /// `icon_scale` (`%f`, 1.0).
     pub icon_scale: f32,
-    /// The font's own `textcolors`: the first colour of each code (code 0 the last).
     pub text_colors: TextColors,
-    /// `cursor_offset` and `selection_offset`, integer component reader: the four `i32`s from the
-    /// cursor offset on.
     pub offsets: [i32; 4],
-    /// The viewport size the font draw divides by (`2 / w`, `2 / h`): the constructor copies the
-    /// graphics context's render size (as it is when the font is built) and nothing rewrites it;
-    /// `None` keeps that copy, `Some` is what an offset's component wrote.
     pub viewport: [Option<i32>; 2],
-    /// The auxiliary color uploaded as `ModColor`, initially (1, 1, 1, 1). An offset component can
-    /// write it. Text object rendering sets its own auxiliary color before drawing and restores
-    /// white afterwards, so a written color reaches only a text sprite bake occurring before any
-    /// text object has drawn with the font.
     pub aux_color: [f32; 4],
     pub refusals: Vec<Refusal>,
 }
@@ -64,32 +36,25 @@ impl FontFacts {
     }
 }
 
-/// A `bitmapfont_override` as read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FontOverride {
-    /// `name`.
     pub name: Vec<u8>,
-    /// `fontfiles` and `languages`: string list reader, each repeat appending.
     pub files: Vec<Vec<u8>>,
     pub languages: Vec<Vec<u8>>,
 }
 
-/// A `.gfx` file's font declarations, in reading order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FontEvent {
     Font(FontFacts),
     Override(FontOverride),
 }
 
-/// One font family: the files it loads and the languages that select it (none for the font's
-/// own family 0).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FontFamily {
     pub files: Vec<Vec<u8>>,
     pub languages: Vec<Vec<u8>>,
 }
 
-/// A registered font: its facts and its families in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Font {
     pub facts: FontFacts,
@@ -97,7 +62,6 @@ pub struct Font {
 }
 
 impl Font {
-    /// The first family containing `language` byte for byte, else family 0.
     pub fn family(&self, language: &[u8]) -> &FontFamily {
         self.families
             .iter()
@@ -106,8 +70,6 @@ impl Font {
     }
 }
 
-/// Font name hash: start at 0, add each byte up to the first NUL as a signed char, then
-/// multiply by 61, wrapping at 32 bits.
 fn hash61(name: &[u8]) -> u32 {
     crate::parser::c_string(name)
         .iter()
@@ -117,20 +79,15 @@ fn hash61(name: &[u8]) -> u32 {
         })
 }
 
-/// The font registry the graphics context keeps (511 buckets), each font pushed on its bucket's
-/// front once read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fonts {
     fonts: Vec<Font>,
-    /// Each bucket's fonts, most recently pushed last.
     buckets: BTreeMap<u32, Vec<usize>>,
 }
 
-/// The font registry's initial bucket count, never grown.
 const BUCKETS: u32 = 0x1FF;
 
 impl Fonts {
-    /// Registers the font events of `files` in the game's load order.
     pub fn new<'a>(events: impl IntoIterator<Item = &'a FontEvent>) -> Self {
         let mut fonts = Self::default();
         for event in events {
@@ -163,13 +120,10 @@ impl Fonts {
         fonts
     }
 
-    /// The latest font of `name`, compared byte for byte.
     pub fn get(&self, name: &[u8]) -> Option<&Font> {
         self.index(name).map(|index| &self.fonts[index])
     }
 
-    /// The latest font of `name`; if missing, the most recently pushed font in the lowest
-    /// nonempty bucket. `None` when no fonts are registered.
     pub fn get_or_fallback(&self, name: &[u8]) -> Option<&Font> {
         self.index_or_fallback(name).map(|index| &self.fonts[index])
     }
@@ -192,16 +146,13 @@ impl Fonts {
         })
     }
 
-    /// Every registered font, in reading order.
     pub fn fonts(&self) -> &[Font] {
         &self.fonts
     }
 }
 
-/// The stored facts of one glyph.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Glyph {
-    /// The index of the family file it came from: that file's page.
     pub page: u32,
     pub x: i32,
     pub y: i32,
@@ -210,29 +161,18 @@ pub struct Glyph {
     pub xoffset: i32,
     pub yoffset: i32,
     pub xadvance: i32,
-    /// `(second, amount)`, the first pair of each second kept.
     pub kernings: BTreeMap<u32, i32>,
 }
 
-/// A family's glyphs from each file in order, with the first file holding a codepoint and a
-/// kerning pair winning.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GlyphSet {
-    /// `lineHeight` and `base`, from the first file only.
     pub line_height: Option<i32>,
     pub base: Option<i32>,
-    /// Each file's page texture as registered: the entry and `.tga` (resolved through
-    /// [`texture_candidates`]); a page is appended even when its `.fnt` is missing.
     pub pages: Vec<Vec<u8>>,
     pub glyphs: BTreeMap<u32, Glyph>,
-    /// The missing `.fnt` paths, retained as text for messages.
     pub missing: Vec<String>,
 }
 
-/// The paths texture extension resolver tries for a texture name, as bytes: `\`
-/// made `/`, then, cut at its last `.`, the `.dds`, the `.tga`, then the name as it is; none for
-/// a name without a `.`. A caller opens each by its bytes
-/// ([`crate::ResolvedLayers::read_uncovered_path`]).
 pub fn texture_candidates(name: &[u8]) -> Vec<Vec<u8>> {
     let name: Vec<u8> = crate::parser::c_string(name)
         .iter()
@@ -249,7 +189,6 @@ pub fn texture_candidates(name: &[u8]) -> Vec<Vec<u8>> {
     ]
 }
 
-/// Loads `family`'s glyphs, reading each `.fnt` by its bytes through `read`.
 pub fn load_glyphs<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(family: &FontFamily, read: &dyn Fn(&[u8]) -> Option<B>) -> GlyphSet {
     let mut set = GlyphSet::default();
     for (page, entry) in family.files.iter().enumerate() {
@@ -268,14 +207,12 @@ pub fn load_glyphs<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<instal
     set
 }
 
-/// Read one `.fnt` token by token; line boundaries do not affect the lexer.
 fn read_fnt(bytes: &[u8], page: u32, set: &mut GlyphSet) {
     let mut reader = Reader::new(
         crate::parser::native::lex(bytes, crate::parser::native::Mode::KeepMark),
         0,
     );
     let number = |reader: &Reader| crate::fixed5::decimal_i32(&reader.value.text);
-    // The header compares each peeked token without ASCII case sensitivity.
     loop {
         let token = reader.peek();
         if token.is_end() {
@@ -304,7 +241,6 @@ fn read_fnt(bytes: &[u8], page: u32, set: &mut GlyphSet) {
                     *slot = Some(value);
                 }
                 if word == b"base" {
-                    // Falls through to one more key and value (normally `scaleW`).
                     reader.key_operator_value();
                 }
             }
@@ -317,7 +253,6 @@ fn read_fnt(bytes: &[u8], page: u32, set: &mut GlyphSet) {
             }
         }
     }
-    // The `char` records: the current token must be exactly `char`.
     while reader.current.c_str() == b"char" {
         if reader.peek().is_end() {
             return;
@@ -342,7 +277,6 @@ fn read_fnt(bytes: &[u8], page: u32, set: &mut GlyphSet) {
                 kernings: BTreeMap::new(),
             });
         }
-        // To the next `char` or `kerning`, or the end.
         loop {
             let token = reader.read_resolved();
             if token.c_str() == b"char" || token.c_str() == b"kerning" {
@@ -370,13 +304,11 @@ fn read_fnt(bytes: &[u8], page: u32, set: &mut GlyphSet) {
     }
 }
 
-/// The bitmap font's 0x3620 bytes as offset components write into them from the cursor offset on.
 struct FontBytes<'a> {
     font: &'a mut FontFacts,
     image: &'a mut FontImage,
 }
 
-/// The file list's vector, initially empty.
 const FILES: spill::VectorSite = spill::VectorSite {
     what: "the font's file list",
     append: "font reader (string vector append)",
@@ -384,15 +316,10 @@ const FILES: spill::VectorSite = spill::VectorSite {
     destructor: "font destructor",
 };
 
-/// A `bitmapfont`'s state beyond its named fields during reading: the file vector, text color
-/// entries (0x30 bytes each, after the active family: code, then color, then RGBA) and the key
-/// whose components wrote them.
 #[derive(Clone, Debug)]
 struct FontImage {
     files: spill::Vector<Vec<u8>>,
-    /// Each entry's code byte and RGBA.
     entries: Vec<(u8, [f32; 4])>,
-    /// Whether `textcolors` assigned code 0 (its code byte stays 0).
     zero: bool,
     writer: &'static str,
 }
@@ -409,8 +336,6 @@ impl Default for FontImage {
 }
 
 impl FontImage {
-    /// The table exposed by [`FontFacts::text_colors`]: entries with a set code byte, which
-    /// The text color lookup uses, and code 0 once assigned.
     fn table(&self) -> TextColors {
         self.entries
             .iter()
@@ -430,7 +355,6 @@ impl Layout for FontBytes<'_> {
         let font = &mut *self.font;
         let float = f32::from_bits(bits);
         match offset {
-            // `cursor_offset` and `selection_offset`.
             0x30..=0x3C => font.offsets[(offset - 0x30) / 4] = bits as i32,
             0x40 | 0x44 => {
                 return Err(
@@ -450,20 +374,12 @@ impl Layout for FontBytes<'_> {
             0x50 | 0x54 => font.viewport[(offset - 0x50) / 4] = Some(bits as i32),
             0x58 => font.color = bits,
             0x60 => font.border_color = bits,
-            // The saved text color and the current text colors, rewritten by color setting or
-            // restoration before draws read them. The words between the border color and the
-            // current colors have no constructor write or reader. The three color objects'
-            // virtual-function tables and padding are unused.
             0x5C..=0xBC => {}
             0xC0..=0xCC => font.aux_color[(offset - 0xC0) / 4] = float,
             0xD0..=0xE4 => self
                 .image
                 .files
                 .write(offset - 0xD0, bits, self.image.writer)?,
-            // The families' vector (data, capacity, count and allocator allocator) is empty while
-            // the font is read. At `}`, resource initialization appends family 0; changed bits can
-            // send that append through null, past capacity or through an unavailable allocator
-            // address.
             0xE8..=0xF4 if bits == 0 => {}
             0xE8..=0xFC => {
                 return Err(
@@ -473,7 +389,6 @@ impl Layout for FontBytes<'_> {
                         .into(),
                 );
             }
-            // The active family, selected and loaded before any draw; then padding.
             0x100..=0x10C => {}
             0x110..=0x310C => {
                 let (entry, at) = ((offset - 0x110) / 0x30, (offset - 0x110) % 0x30);
@@ -481,15 +396,12 @@ impl Layout for FontBytes<'_> {
                 match at {
                     0 => *code = bits.to_le_bytes()[0],
                     0x20..=0x2C => color[(at - 0x20) / 4] = float,
-                    // Padding and the color object's vtable and unwritten field, which nothing reads.
                     _ => {}
                 }
             }
             0x3110 => font.icons_add_height = bits.to_le_bytes()[0] != 0,
             0x3114 => font.icon_scale = float,
             0x3118..=0x3614 => {
-                // The forty glyph buffer cache records (0x20 bytes: text key, last use, texture,
-                // vertex count, vertex buffer), zero until the first draw.
                 match (offset - 0x3118) % 0x20 {
                     0 if bits != 0 => {
                         return Err("a glyph cache record's text key, which the font draw \
@@ -504,12 +416,9 @@ impl Layout for FontBytes<'_> {
                          bits that are no buffer"
                             .into());
                     }
-                    // The last use only picks the slot a miss reuses; the texture and count are
-                    // read only past a non-null buffer.
                     _ => {}
                 }
             }
-            // Padding to the object's end.
             _ => {}
         }
         Ok(())
@@ -517,7 +426,6 @@ impl Layout for FontBytes<'_> {
 }
 
 impl Reader<'_> {
-    /// Read one `bitmapfont`, falling back to common font fields.
     pub(super) fn font(&mut self) -> FontFacts {
         let mut font = FontFacts {
             name: Vec::new(),
@@ -538,17 +446,13 @@ impl Reader<'_> {
             let word = keyword_of(&self.key.clone()).unwrap_or_default();
             match word {
                 "name" => font.name = read_string(&text),
-                // `%x` into the field: a scan matching nothing reports an error and skips
-                // nothing.
                 "color" => font.color = crate::crt::scan_x32(&text).stored().unwrap_or(font.color),
                 "border_color" => {
                     font.border_color = crate::crt::scan_x32(&text)
                         .stored()
                         .unwrap_or(font.border_color);
                 }
-                // The deprecated `fontName` key skips a block with variable resolution.
                 "fontname" => self.skip_reported(),
-                // Deprecated: skip the raw block.
                 "colorcodes" | "color_override" => self.skip_current_block(),
                 "path" => {
                     if let Err(reason) = image.files.append(read_string(&text)) {
@@ -561,8 +465,6 @@ impl Reader<'_> {
                 "icon_scale" => {
                     font.icon_scale = crate::crt::scan_f32(&text).unwrap_or(font.icon_scale)
                 }
-                // Read text color entries: retain a set code byte, or store a new code byte and
-                // its color.
                 "textcolors" => {
                     let mut refusals = Vec::new();
                     let mut table = image.table();
@@ -576,7 +478,6 @@ impl Reader<'_> {
                     }
                     font.refusals.extend(refusals);
                 }
-                // Destroy the counted strings, then read the replacement list.
                 "fontfiles" => {
                     let names = self.string_list();
                     let result = image.files.clear("font reader").and_then(|()| {
@@ -588,8 +489,6 @@ impl Reader<'_> {
                         record(&mut font.refusals, FILE, word, reason, Cause::Unread);
                     }
                 }
-                // Read integer components into the cursor or selection offset, including spills
-                // beyond them ([`FontBytes`]).
                 "cursor_offset" | "selection_offset" => {
                     let start = if word == "cursor_offset" { 0x30 } else { 0x38 };
                     let mut written = Vec::new();
@@ -616,7 +515,6 @@ impl Reader<'_> {
                 _ => self.unexpected(),
             }
         }
-        // At `}`, copy the file list into family 0.
         match image.files.visible() {
             Ok(files) => font.files = files,
             Err(reason) => record(
@@ -635,8 +533,6 @@ impl Reader<'_> {
         font
     }
 
-    /// Read one `bitmapfont_override`: `name`, then append `fontfiles` and `languages`. Other
-    /// keys return without skipping anything.
     pub(super) fn font_override(&mut self) -> FontOverride {
         let mut replace = FontOverride::default();
         while self.next_key() {
@@ -651,8 +547,6 @@ impl Reader<'_> {
         replace
     }
 
-    /// Read a string list without checking its value. Consume and resolve every token as a
-    /// string, including `=` and `{`, until consuming a peeked `}` or EOF.
     pub(crate) fn string_list(&mut self) -> Vec<Vec<u8>> {
         let mut list = Vec::new();
         loop {
@@ -675,9 +569,6 @@ mod tests {
         read_sprites(bytes).fonts
     }
 
-    /// `fontName` skips a block with variable resolution. Scalars skip nothing, so later keys
-    /// are read; blocks skip through `}`, and a reference to a stored `{` starts nesting.
-    /// `colorCodes` skips the raw value block, using braces as written.
     #[test]
     fn a_font_skips_its_deprecated_keys_as_the_game_does() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -707,8 +598,6 @@ mod tests {
         assert_eq!(raw.files, [b"c.fnt".to_vec()]);
     }
 
-    /// `path` appends and `fontfiles` replaces, in order; scalars take their value only, and a
-    /// `{` under `path` is its text, the block read on as keys.
     #[test]
     fn a_font_keeps_its_ordered_file_operations() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -734,10 +623,6 @@ mod tests {
         assert!(font.refusals.is_empty(), "{:?}", font.refusals);
     }
 
-    /// The integer component reader writes the offsets from the cursor offset on: a
-    /// `cursor_offset`'s third and fourth components are the selection offset; after them come the
-    /// lost-device interface's vtable and the graphics pointer, which the game calls and reads
-    /// through.
     #[test]
     fn offset_components_land_on_the_font() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -773,9 +658,6 @@ mod tests {
         );
     }
 
-    /// Past the two pointers (skipped by components `%i` stores nothing for), the components
-    /// land on the font's own fields: the draw's viewport, the colours, the file list's count,
-    /// a text colour entry, the icon keys, the glyph cache, then the object's end.
     #[test]
     fn offset_components_reach_every_field_of_the_font() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -828,14 +710,12 @@ mod tests {
         assert_eq!(fields.text_colors[&b'G'], [0.0, 1.0, 0.0, 1.0]);
         assert!(fields.icons_add_height);
         assert_eq!(fields.icon_scale, 1.0);
-        // A written code byte keeps its entry from a later `textcolors`.
         let kept = font(
             "",
             &[(0x110 + 0x52 * 0x30, "82")],
             "textcolors = { R = { 255 0 0 } }",
         );
         assert_eq!(kept.text_colors[&b'R'], [1.0; 4]);
-        // A later `path` through a written capacity copies through the null block.
         let null = font("", &[(0xD8, "3")], "path = \"x\"");
         assert!(
             null.refusals[0].reason.contains("the font's file list"),
@@ -860,8 +740,6 @@ mod tests {
         assert!(past.refusals[0].reason.contains("heap overflow"));
     }
 
-    /// The registry: the latest font of a name, the fallback of the lowest non-empty bucket,
-    /// overrides appended to the font found when read, and the family a language selects.
     #[test]
     fn overrides_and_fallbacks_follow_the_registry() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -874,8 +752,6 @@ mod tests {
         ));
         let latest = fonts.get(b"f").unwrap();
         assert_eq!(latest.facts.files, [b"two".to_vec()]);
-        // The first override went to the first `f`; the second to the fallback, which is the
-        // latest `f` (the only bucket).
         assert_eq!(fonts.fonts()[0].families.len(), 2);
         assert_eq!(latest.families.len(), 2);
         assert_eq!(fonts.fonts()[0].family(b"l_korean").files, [b"kr".to_vec()]);
@@ -890,8 +766,6 @@ mod tests {
         assert_eq!(hash61(b"a"), 97 * 61);
     }
 
-    /// The glyph token walk: header keywords, `base` consuming the next pair, positional `char`
-    /// values, the first file winning per codepoint and pair, and `kerning` records.
     #[test]
     fn glyphs_load_in_token_order() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -925,7 +799,6 @@ mod tests {
             &|path| files.get(path).map(|bytes| bytes.to_vec()),
         );
         assert_eq!((set.line_height, set.base), (Some(18), Some(14)));
-        // A file whose path is not UTF-8 is read by its bytes, as every other.
         assert_eq!(set.pages.len(), 4);
         assert_eq!(set.missing, ["c.fnt"]);
         let a = &set.glyphs[&65];
@@ -939,9 +812,6 @@ mod tests {
         );
     }
 
-    /// Forms accepted by the token reader and refused by a line-based BMFont reader: a negative
-    /// `char id` is kept under its unsigned value, and trailing pairs such as `page=0` are
-    /// passed over while walking to the next `char` or `kerning`.
     #[test]
     fn glyphs_keep_negative_ids_and_skip_trailing_pairs() {
         engine_executable::executable_tables::initialize_for_tests()

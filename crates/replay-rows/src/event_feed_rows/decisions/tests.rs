@@ -208,7 +208,6 @@ fn quiet_pass_decrements_are_signed_gated_and_do_not_require_visit_rows() {
     let rows = state.members(REENABLE).unwrap();
     assert_eq!(rows[0].days, i32::MAX);
     assert_eq!(rows[1].days, i32::MIN);
-    // A distinct refresh admission repeats the same native conditional pass.
     marker(&mut state, Operation::PassBegin, REENABLE, 5000);
     marker(&mut state, Operation::PassEnd, REENABLE, 0);
     assert_eq!(state.members(REENABLE).unwrap()[0].days, i32::MAX - 1);
@@ -232,7 +231,6 @@ fn sparse_cut_precedes_effect_mutation_and_transfer_preserves_revisit_order() {
         0,
         0,
     );
-    // The selected timer's effect changes a future timer before its visit.
     apply(
         &mut state,
         Operation::Update,
@@ -670,7 +668,6 @@ fn owner_refusal_needs_its_reason_and_retires_a_certified_or_open_baseline() {
         0,
     );
     assert!(certified.members(TIMED).is_err());
-    // An open baseline is closed too: its Ready has nothing left to complete.
     let mut open = baseline();
     store(&mut open, TIMED, 1, b"x", 10, 0, 0);
     apply(
@@ -686,7 +683,6 @@ fn owner_refusal_needs_its_reason_and_retires_a_certified_or_open_baseline() {
     );
     assert!(reduce(&mut open, Operation::Ready, 0, None, b"", None, None, 0, 0).is_err());
     assert!(!open.complete());
-    // Only a new baseline restores the owner.
     marker(&mut open, Operation::Baseline, 0, 0);
     marker(&mut open, Operation::Ready, 0, 0);
     assert!(open.members(TIMED).unwrap().is_empty());

@@ -1,4 +1,3 @@
-//! MIO trait names and bonuses held by the template reader and include pass.
 
 use crate::{
     ResolvedLayers,
@@ -19,27 +18,20 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TraitName {
     pub token: String,
-    /// Optional replacement for `<organisation>_<trait>`.
     pub name: String,
     pub icon: String,
-    /// None is the native unpositioned pair (-1, -1).
     pub position: Option<[i32; 2]>,
     pub relative_position: Option<String>,
     pub parents: Vec<ParentGroup>,
     pub mutually_exclusive: Vec<String>,
     pub equipment_types: Vec<Vec<u8>>,
     pub special_background: bool,
-    /// The trait's own `available` and `visible` bodies, each block's children
-    /// in order, and the bodies an empty one falls back to: the included
-    /// trait's own (local) bodies, never their fallbacks ([`Self::available`]).
     available: Vec<Item>,
     visible: Vec<Item>,
     inherited_available: Vec<Item>,
     inherited_visible: Vec<Item>,
     deleted: Vec<Token>,
-    /// Equipment and production bonuses in stored order.
     pub bonuses: Vec<Bonus>,
-    /// Organisation modifiers read through the shared modifier reader.
     pub organisation_modifiers: modifiers::Modifiers,
     modifier_parent: Option<Box<ModifierSource>>,
 }
@@ -63,19 +55,16 @@ impl ModifierSource {
     }
 }
 
-/// One alternative parent group, in declaration order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ParentGroup {
     pub traits: Vec<String>,
     pub required: i32,
 }
 
-/// Resolved template tree. Initial traits are separate from ordinary lookup.
 pub struct Tree<'a> {
     pub available: &'a [Item],
     pub visible: &'a [Item],
     pub equipment_types: &'a [Vec<u8>],
-    /// The organisation's research categories, as authored.
     pub research_categories: &'a [Vec<u8>],
     pub initial: Option<&'a TraitName>,
     pub traits: &'a [TraitName],
@@ -87,7 +76,6 @@ pub struct Bonus {
     pub value: i64,
 }
 
-// Seven production tokens. Equipment uses its shared registry.
 pub fn is_production_stat(name: &str) -> bool {
     matches!(
         name,
@@ -106,7 +94,6 @@ fn equipment_bonus(bonus: &Bonus) -> bool {
 }
 
 fn combine(destination: &mut Vec<Bonus>, source: impl IntoIterator<Item = Bonus>) {
-    // Combine in first-insertion order with wrapping fixed5 addition.
     for bonus in source {
         if let Some(old) = destination.iter_mut().find(|old| old.name == bonus.name) {
             old.value = old.value.wrapping_add(bonus.value);
@@ -117,8 +104,6 @@ fn combine(destination: &mut Vec<Bonus>, source: impl IntoIterator<Item = Bonus>
 }
 
 impl TraitName {
-    /// Resolve only a reached conditional copy, using recorded modifier
-    /// eligibility. Missing metadata for an unvisited branch is not required.
     pub fn resolved_organisation_modifiers(
         &self,
         mut eligible: impl FnMut(&str) -> Result<bool, String>,
@@ -138,8 +123,6 @@ impl TraitName {
             parent: self.modifier_parent.clone(),
         }
     }
-    /// The `available` body evaluated: its own when not empty, else the one
-    /// it falls back to. An empty result holds.
     pub fn available(&self) -> &[Item] {
         if self.available.is_empty() {
             &self.inherited_available
@@ -148,7 +131,6 @@ impl TraitName {
         }
     }
 
-    /// The `visible` body evaluated, as [`Self::available`].
     pub fn visible(&self) -> &[Item] {
         if self.visible.is_empty() {
             &self.inherited_visible
@@ -161,8 +143,6 @@ impl TraitName {
         self.position.unwrap_or([-1, -1])
     }
 
-    // The caller supplies recorded lexer spellings and picks the first key
-    // that its localisation catalogue defines; this is not scope expansion.
     pub fn name_candidates(
         &self,
         organisation: &str,
@@ -182,8 +162,6 @@ impl TraitName {
         result
     }
 
-    // Nonempty local values win; deletion suppresses only copying an unset
-    // name. The inherited record's parent is the child.
     fn inherit(&mut self, parent: &Self) {
         if self.name.is_empty() && !self.deleted.contains(&Token::c_str(b"name")) {
             self.name.clone_from(&parent.name);
@@ -198,8 +176,6 @@ impl TraitName {
         if copy(self.equipment_types.is_empty(), b"limit_to_equipment_type") {
             self.equipment_types.clone_from(&parent.equipment_types);
         }
-        // Condition bodies fall back to the parent's local body, even an
-        // empty one, not to what that body itself falls back to.
         if copy(self.available.is_empty(), b"available") {
             self.inherited_available.clone_from(&parent.available);
         }
@@ -219,8 +195,6 @@ impl TraitName {
         if copy(self.relative_position.is_none(), b"relative_position_id") {
             self.relative_position.clone_from(&parent.relative_position);
         }
-        // A local bonus in a category replaces that whole inherited category;
-        // deletion removes it too. The remaining parent values add.
         let equipment = self.bonuses.iter().any(equipment_bonus)
             || self.deleted.contains(&Token::c_str(b"equipment_bonus"));
         let production = self.bonuses.iter().any(|bonus| !equipment_bonus(bonus))
@@ -274,7 +248,6 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// All resolved traits, retaining the native initial/ordinary separation.
     pub fn tree(&self, organisation: &str) -> Result<Option<Tree<'_>>, String> {
         if !self.refusals.is_empty() {
             return Err(self.refusals.join("; "));
@@ -302,8 +275,6 @@ impl Catalog {
             }))
     }
 
-    /// Native relative-anchor lookup searches ordinary traits by first match.
-    /// A missing anchor returns zero; an anchor cycle cannot return in game.
     pub fn position(&self, organisation: &str, token: &str) -> Result<Option<[i32; 2]>, String> {
         let Some(tree) = self.tree(organisation)? else {
             return Ok(None);
@@ -348,8 +319,6 @@ impl Catalog {
         Ok(Some(result))
     }
 
-    /// Scan the prepared ordinary-trait array from its first row.
-    /// The separately stored initial trait is not in that lookup.
     pub fn trait_definition(
         &self,
         organisation: &str,
@@ -374,7 +343,6 @@ impl Catalog {
             }))
     }
 
-    // A repeated template is a duplicate database id: the first definition stays.
     fn insert(&mut self, row: Organisation) {
         let token = Token::c_str(row.token.as_bytes());
         if !self
@@ -386,8 +354,6 @@ impl Catalog {
         }
     }
 
-    // Database finalization walks creation order once, without a recursive
-    // include walk, merging each parent's ordinary traits.
     fn finalize(&mut self) {
         for index in 0..self.organisations.len() {
             let Some(include) = self.organisations[index].include.as_deref() else {
@@ -417,8 +383,6 @@ impl Catalog {
             let equipment_types = self.organisations[parent].equipment_types.clone();
             let research_categories = self.organisations[parent].research_categories.clone();
             let child = &mut self.organisations[index];
-            // Inherited trigger pointers select the parent's local body,
-            // including an empty one; they do not follow its own fallback.
             if child.available.is_empty() && !child.deleted.contains(&Token::c_str(b"available")) {
                 child.inherited_available = available;
             }
@@ -461,8 +425,6 @@ impl Catalog {
                     .iter()
                     .position(|row| Token::c_str(row.token.as_bytes()) == token)
                 {
-                    // A matched override appends even when a local trait has
-                    // the same ID; the first-match lookup retains the local.
                     let mut row = child.overrides.remove(index);
                     row.inherit(&inherited);
                     child.traits.push(row);
@@ -474,11 +436,7 @@ impl Catalog {
                     row.inherit(&inherited);
                 } else {
                     let mut row = inherited;
-                    // Copying into a fresh child never copies the parent's
-                    // `delete_included_values` list.
                     row.deleted.clear();
-                    // The copy's own condition bodies are empty and fall back
-                    // to the parent's local ones.
                     row.inherited_available = std::mem::take(&mut row.available);
                     row.inherited_visible = std::mem::take(&mut row.visible);
                     let source = row.modifier_source();
@@ -514,7 +472,6 @@ fn string(item: &Item, read_string: bool) -> io::Result<String> {
         .map_err(|why| invalid(format!("MIO name or token: {why} (count: 1)")))
 }
 
-/// A raw list's tokens, each up to its first NUL.
 fn raw_tokens(field: &Item) -> Vec<Vec<u8>> {
     field
         .value
@@ -615,8 +572,6 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
                 .organisation_modifiers
                 .read_all(field.value.items().unwrap_or_default());
         } else if field.keyword_is("equipment_bonus") || field.keyword_is("production_bonus") {
-            // Reject a repeated stat in one block, then reject the entire
-            // block if any stored stat has the wrong category.
             let mut bonuses = Vec::new();
             for item in field.value.items().unwrap_or_default() {
                 let Some(name) = item.keyword().map(|name| name.folded()) else {
@@ -644,9 +599,6 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
                 combine(&mut result.bonuses, bonuses);
             }
         } else if field.keyword_is("position") {
-            // A position consumes seven raw tokens: x = n y = n }. As in
-            // focus::parse, the shared raw-list reader is exact only for that
-            // reached form; refuse malformed token recovery.
             let parts = field.value.items().unwrap_or_default();
             let valid =
                 parts.len() == 6
@@ -675,8 +627,6 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
     Ok(result)
 }
 
-/// One organisations file. `seen` holds every token defined by earlier files:
-/// startup keeps a token's first definition and error-skips later bodies.
 fn parse(
     input: &[u8],
     names: &KeyNames,
@@ -689,7 +639,6 @@ fn parse(
     let read = native::read(
         input,
         native::Mode::KeepMark,
-        // The file loop stops on either a closing brace or the end of text.
         native::Top::Persistent(Node::File),
         Some(names),
         &mut |node, field| match node {
@@ -705,8 +654,6 @@ fn parse(
                     Shape::Skip
                 }
             }
-            // Consumed organisation and trait fields that do not affect names
-            // still use their field readers, including variable references.
             Node::Organisation => match field.keyword().as_deref() {
                 Some(
                     b"name" | b"background" | b"icon" | b"include" | b"research_bonus"
@@ -761,11 +708,8 @@ fn parse(
                 Some(b"num_parents_needed") => Shape::One,
                 _ => Shape::Skip,
             },
-            // Tree flavour text ignores unknown keys without an error skip.
             Node::Flavor => Shape::One,
             Node::Mtth => native::mean_time_to_happen(field),
-            // Bonus fields consume known stats as fixed5;
-            // unexpected fields have their blocks skipped.
             Node::Bonus => {
                 if field.keyword().is_some_and(|name| {
                     crate::equipment::stat_index(&name).is_some()
@@ -813,7 +757,6 @@ fn parse(
             } else if field.keyword_is("equipment_type") {
                 row.equipment_types = raw_tokens(field);
             } else if field.keyword_is("research_categories") {
-                // Repeated lists append.
                 row.research_categories.extend(raw_tokens(field));
             } else if field.keyword_is("include") {
                 row.include = Some(string(field, false)?);
@@ -824,8 +767,6 @@ fn parse(
                 row.overrides
                     .push(trait_name(field.value.items().unwrap_or_default())?);
             } else if field.keyword_is("initial_trait") {
-                // Assign the fixed `initial_trait` token and store it separately.
-                // Validate its consumed fields too.
                 let mut initial = trait_name(field.value.items().unwrap_or_default())?;
                 initial.token = "initial_trait".into();
                 row.initial = Some(initial);
@@ -894,8 +835,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     Ok(result)
 }
 
-/// The stack's catalogue ([`read`]), read once per resolved stack and shared by
-/// every consumer of it.
 pub fn cached(layers: &ResolvedLayers) -> Result<std::sync::Arc<Catalog>, String> {
     #[derive(Default)]
     struct Cached(crate::content::diagnostics::Once<Result<std::sync::Arc<Catalog>, String>>);

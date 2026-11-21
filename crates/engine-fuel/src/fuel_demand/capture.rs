@@ -6,7 +6,6 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Fixed admitted arrays or worker storage grown from the original headers.
 pub struct Rows<'a, T> {
     pub rows: Buffer<'a, T>,
     pub len: usize,
@@ -52,7 +51,6 @@ pub struct Buffers<'a> {
     pub wings: Rows<'a, Wing>,
     pub weather: Rows<'a, Weather>,
     pub contexts: Rows<'a, Context>,
-    /// Pack-local open-addressed index; caller clears it before acquisition.
     pub context_slots: Buffer<'a, usize>,
     pub names: Buffer<'a, u8>,
     pub name_len: usize,
@@ -150,8 +148,6 @@ fn divisions(
     let array = Array::read(memory, at(country.pointer, ccountry::DIVISIONS)?, 8)
         .ok_or("fuel demand division roster unreadable or invalid")?;
     out.divisions.demand(array.count)?;
-    // This is the shared native CUnit identity primitive, not the health or
-    // movement census: unreadable unrelated stats cannot hide a known cache.
     let mut registry = creference_registry::HeaderResolver::default();
     cpdx_array::pointers(
         memory,
@@ -165,7 +161,7 @@ fn divisions(
             if class != 0 {
                 return Err("fuel demand division roster contains another unit class");
             }
-            let rate = field(memory, pointer, 0x628); // Stored division fuel rate, without refresh.
+            let rate = field(memory, pointer, 0x628);
             let group = (|| {
                 let group = field::<u64>(memory, pointer, carmy::ORDERS_GROUP)? as usize;
                 if group == 0 {
@@ -184,7 +180,6 @@ fn divisions(
                     identity(memory, base, group, expected, corders_group::HANDLE, 0)
                 }
             })();
-            // Read the stored division name cache without generation.
             let stored = field::<u64>(memory, pointer, 0x340).and_then(|member| {
                 if member == 0 {
                     Err("fuel demand division name member is null")
@@ -249,7 +244,6 @@ fn topology<M: Memory>(
         if let Err(reason) = owner {
             out.group_owner_reason.get_or_insert(reason);
         }
-        // Shared LAND stored-name accessor; no separate command-name capture.
         let copied = corders_group::copy_name_buffer(
             memory,
             root.pointer(),
@@ -277,7 +271,6 @@ pub fn capture(
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
-    // Fuel breakdown visits the original country contributors.
     out.countries.demand(countries.count().saturating_sub(1))?;
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
@@ -298,8 +291,6 @@ pub fn capture(
             air_reason,
         })?;
     }
-    // All missions, including reserve/hold/training. Shared traversal's native
-    // identity checks are retained; no NavalMissionInputs filter is applied.
     out.navy_reason = cfleet::visit_fuel_task_forces(memory, base, &countries, |visit| {
         match visit {
             cfleet::Visit::Fleet {
@@ -310,7 +301,7 @@ pub fn capture(
             } => {
                 out.fleets.demand(1)?;
                 out.tasks.demand(tasks.count)?;
-                let stored = name(memory, at(fleet, cfleet::NAME), out); // Stored task-force fuel status.
+                let stored = name(memory, at(fleet, cfleet::NAME), out);
                 out.fleets.push(Fleet {
                     country: country.id,
                     reference: handle,
@@ -318,8 +309,8 @@ pub fn capture(
                 })
             }
             cfleet::Visit::TaskForce(task, ordinal) => {
-                let rate = field(memory, task.task, 0x500); // Stored task-force current fuel usage.
-                let stored = name(memory, at(task.task, 0x258), out); // Stored task-force name cache.
+                let rate = field(memory, task.task, 0x500);
+                let stored = name(memory, at(task.task, 0x258), out);
                 out.tasks.push(CachedUnit {
                     country: task.country.id,
                     reference: task.id,

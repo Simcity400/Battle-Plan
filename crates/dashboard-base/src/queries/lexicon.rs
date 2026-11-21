@@ -1,12 +1,8 @@
-//! A run's lexicon: every literal LexicalTokens held, with the tokens that held it and the hours
-//! each did, read once per run ([`super::lexicon`]) so a reply mapping text to tokens looks
-//! a literal up instead of reading the table's whole history.
 
 use replay::{columnar_frames::Recording, lanes::Keys, points};
 use replay_data::rows::TableId;
 use std::{collections::HashMap, io};
 
-/// One token holding a literal from `first` through `last`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Held {
     pub token: u32,
@@ -20,7 +16,6 @@ pub struct RunLexicon {
 }
 
 impl RunLexicon {
-    /// Run `run`'s lexicon over its every hour: one pass over LexicalTokens' literal column.
     pub fn read(recording: &Recording, run: u32) -> io::Result<Self> {
         let held = recording.run(run)?;
         let (first, last) = (held.first_hour, held.first_hour + held.ordinals as i32 - 1);
@@ -51,7 +46,6 @@ impl RunLexicon {
         Ok(Self { by_literal })
     }
 
-    /// The tokens holding `literal` at some hour from `from` through `to`, ascending, once each.
     pub fn tokens(&self, literal: &[u8], from: i32, to: i32) -> impl Iterator<Item = u32> + '_ {
         let spans = self.by_literal.get(literal).map_or(&[][..], Vec::as_slice);
         let mut last = None;

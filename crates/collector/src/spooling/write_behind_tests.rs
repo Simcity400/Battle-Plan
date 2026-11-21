@@ -245,7 +245,6 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
         .collect::<Vec<_>>();
     replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
 }
-/// After its last job the writer's idle sync refuses an allocation, on the writer thread.
 pub(crate) fn idle_sync_refused() {
     let (mut processor, store) = processor();
     processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
@@ -464,7 +463,6 @@ fn campaign_and_live_branch_transitions_service_frames_without_draining() {
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
         let campaign = if campaign_switch { OTHER } else { ID };
-        // The unchanged load and discontinuous hour exercise a live branch switch.
         let load = if campaign_switch { 8 } else { 7 };
         admit(&mut processor, campaign, load, 20);
         admit(&mut processor, campaign, load, 21);
@@ -508,7 +506,6 @@ fn a_load_before_its_hours_write_settles_takes_ancestry_from_that_writes_outcome
         let release = block(&store, 11, fail);
         admit(&mut processor, ID, 7, 11);
         release.0.entered();
-        // The hour-11 save loads; its first callback precedes hour 11's receipt.
         admit(&mut processor, ID, 8, 11);
         let branches = branch_ids(&mut processor);
         let &[first, loaded] = branches.as_slice() else {
@@ -554,7 +551,6 @@ fn a_load_while_another_branch_queues_its_hour_stays_ambiguous_unless_that_write
         let release = block(&store, 11, fail);
         admit(&mut processor, ID, 8, 11);
         release.0.entered();
-        // Hour 11 is recorded on the first branch and queued on the second.
         admit(&mut processor, ID, 9, 11);
         let branches = branch_ids(&mut processor);
         let &[first, second, third] = branches.as_slice() else {
@@ -609,7 +605,6 @@ fn checkpoint_close_and_start_service_frames_and_acknowledge_only_real_handle_cl
     assert_eq!(receipt.result(), None);
     first.0.release();
     closing.0.entered();
-    // Both a real pending close and the following initial keyframe are queued.
     admit(&mut processor, ID, 7, 14);
     assert_eq!(receipt.result(), None);
     assert_eq!(store.lock().unwrap().closed, 0);
@@ -1218,7 +1213,6 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
     release.0.release();
     processor.drain_writer().unwrap();
     assert_eq!(parent(&mut processor, branch), Parentage::Unknown);
-    // Held at the standalone segment's creation, the command fails only after its close is queued.
     let starting = Release(Arc::new(Gate::default()));
     {
         let mut store = store.lock().unwrap();

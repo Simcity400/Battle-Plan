@@ -20,7 +20,6 @@ test('a page is at its default until its saved layouts differ from the designed 
   assert.equal(saveLayouts({ ...library, layouts: [{ ...first, template: { ...first.template, widgets } }] }, storage, 'overview'), null);
   assert.equal(layoutsAtDefault('overview', storage), false, 'a renamed widget');
   assert.equal(layoutsAtDefault('politics', storage), true, 'each page is judged on its own');
-  // Unreadable saved layouts open the default with a warning; a reset is what clears them.
   storage.values.set('hoi4-replay.workspace-layouts.v1.politics', '{not json');
   assert.notEqual(loadLayouts(storage, 'politics').warning, null);
   assert.equal(layoutsAtDefault('politics', storage), false, 'unreadable saved layouts');
@@ -231,7 +230,6 @@ test('modded, dynamic and unusual country tags survive saving and reloading', ()
   const storage = memoryStorage();
   const { library } = loadLayouts(storage);
   const template = library.layouts[0].template;
-  // Tags are opaque: spaces, lower case, dynamic countries, long mod tags and non-ASCII text.
   const tags = ['D01', 'ger', 'my tag', 'MOD_LONG_COUNTRY_TAG_FROM_A_TOTAL_CONVERSION_MOD', 'ÉTAT', 'x'.repeat(300), '長'.repeat(100)];
   template.widgets[0].countries = { kind: 'tags', tags };
   template.roles[0].selectedTag = 'x'.repeat(300);
@@ -239,7 +237,6 @@ test('modded, dynamic and unusual country tags survive saving and reloading', ()
   const restored = loadLayouts(storage).library.layouts[0].template;
   assert.deepEqual(restored.widgets[0].countries, { kind: 'tags', tags });
   assert.equal(restored.roles[0].selectedTag, 'x'.repeat(300));
-  // A tag the products would refuse costs only itself, never the widget or the library.
   const raw = structuredClone(library);
   raw.layouts[0].template.widgets[0].countries = { kind: 'tags', tags: ['GER', 'a\0b', 'x'.repeat(129), ''] };
   raw.layouts[0].template.roles[0].selectedTag = 'a\0b';

@@ -1,6 +1,3 @@
-//! The map's hours from a replay's recording: frames of the map tables moved to and built at
-//! any hour, read from the recording's runs in place.
-
 use crate::playback::Current;
 use replay::{
     campaign::{Parallel, Replay},
@@ -14,17 +11,12 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-/// The threads the map's background reads work on, below normal priority from their start, so
-/// none competes with a frame the user waits for.
 static BACKGROUND: OnceLock<Arc<Pool>> = OnceLock::new();
 
 fn background() -> io::Result<Arc<Pool>> {
     if let Some(pool) = BACKGROUND.get() {
         return Ok(Arc::clone(pool));
     }
-    // One hour is read at a time, so this pool is sized as the builders are: the hardware threads
-    // the process may use less eight, leaving the window's own frame, the GPU driver and the
-    // game's own threads theirs.
     let pool = Arc::new(Pool::new(
         viewer_foundation::retirement::builder_count(),
         "map background",
@@ -33,8 +25,6 @@ fn background() -> io::Result<Arc<Pool>> {
     Ok(Arc::clone(BACKGROUND.get_or_init(|| pool)))
 }
 
-/// A replay's recording, its runs placed for reading in place, shared by every playback serving
-/// the replay's map.
 pub struct Columnar {
     natives: Arc<Natives>,
 }
@@ -44,8 +34,6 @@ impl Columnar {
         Self { natives }
     }
 
-    /// A playback's source of `replay`'s map, its views carrying change facts, building views
-    /// on `workers` threads.
     pub fn open(&self, replay: Arc<Replay>, workers: usize) -> io::Result<MapSource> {
         let cursor = Cursor::new(
             Arc::clone(&self.natives),
@@ -62,7 +50,6 @@ impl Columnar {
     }
 }
 
-/// One playback's map hours from a [`Columnar`] source.
 pub struct MapSource {
     cursor: Cursor,
     replay: Arc<Replay>,
@@ -74,11 +61,6 @@ impl MapSource {
         Arc::clone(self.cursor.natives())
     }
 
-    /// `hour` of `branch`: with `materialize`, its frame; without, the move taken there and no
-    /// frame built. It builds no other hour: the hours before it that a window lacks are read
-    /// as hours of their own, after it, and the cursor walks on from whichever it read last.
-    /// An hour no run holds is the replay's gap there; any other failure is the hour's, refused
-    /// by name. Cancellation leaves the source where it stood, to be asked again.
     pub fn read(
         &mut self,
         branch: BranchId,
@@ -134,7 +116,6 @@ impl MapSource {
 #[cfg(test)]
 mod tests;
 
-/// Whether `frame`'s Campaign, when complete, is the replay's one campaign `campaign`.
 fn campaign_holds(frame: &DecodedFrame, campaign: &[u8]) -> bool {
     match &*frame.tables[TableId::Campaign.index()] {
         TableView::Complete(rows) => rows

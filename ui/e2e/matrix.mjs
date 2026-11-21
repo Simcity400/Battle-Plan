@@ -6,8 +6,6 @@ const fields = (value, allowed, label) => {
   if (!object(value) || Object.keys(value).some(key => !allowed.includes(key))) throw Error(`Invalid ${label} fields`);
 };
 
-/** A matrix supplies exact user choices. Widget-specific validity is checked
- * by the parity hook against the real definition before the widget mounts. */
 export function validateMatrix(value) {
   fields(value, ['version', 'cases'], 'capture matrix');
   if (value.version !== 1 || !Array.isArray(value.cases) || !value.cases.length) throw Error('Capture matrix requires version 1 and nonempty cases');

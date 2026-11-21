@@ -1,4 +1,3 @@
-//! Bounded FIFO workers used by hour building and borrowed raid batches.
 mod capacity;
 pub use capacity::CapacityListener;
 use job_priority::SpawnCarried as _;
@@ -14,21 +13,15 @@ use std::{
 };
 type Job = Box<dyn FnOnce() + Send>;
 
-/// `job`, run by whichever builder takes it with the submitting thread's recording context.
 fn carried(job: Job) -> Job {
     Box::new(job_priority::carry(job))
 }
 
-/// Nonblocking admission retains the rejected job and distinguishes a full queue.
 pub enum TrySubmitError {
     Full(Job),
     Disconnected(Job),
 }
 
-/// Worker threads taking jobs in the order they were given.
-///
-/// The order matters: a part waits only for the previous hour's part, which
-/// was submitted before it and so has already been taken by a thread.
 pub struct Pool {
     jobs: Option<mpsc::SyncSender<Job>>,
     threads: Vec<thread::JoinHandle<()>>,
@@ -56,9 +49,7 @@ impl Pool {
                             };
                             match job {
                                 Ok(job) => {
-                                    // Receiver lock is released before capacity callbacks or work.
                                     capacity.dequeued();
-                                    // A panicking job must not take its thread, and the pool's width, with it.
                                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                                 }
                                 Err(_) => return,
@@ -96,16 +87,12 @@ impl Pool {
         }
     }
 
-    /// Registers before trying admission. Callback only posts a nonblocking wake.
     pub fn listen_capacity(&self, wake: impl Fn() + Send + Sync + 'static) -> CapacityListener {
         self.capacity.listen(wake)
     }
 
 }
 
-/// The builders lend their turns to a batch split across threads
-/// ([`crate::parallel::Workers`]): a turn taken while the builders are busy
-/// waits in their queue, and the batch does not wait for it.
 impl Spawn for Pool {
     fn try_spawn(&self, job: Job) -> Result<(), Job> {
         self.try_submit(job)
@@ -125,7 +112,6 @@ impl Drop for Pool {
     }
 }
 
-/// A builder pool as the viewer starts one, lent as [`crate::parallel::Workers`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn builder_workers() -> io::Result<Workers> {
     Ok(Workers::new(Arc::new(Pool::new(builder_count())?)))

@@ -1,8 +1,3 @@
-//! Ogg Vorbis music tracks, decoded with Symphonia (MPL-2.0) to the same
-//! interleaved samples as [`crate::wav::Pcm`]. Mono and stereo tracks are
-//! accepted; other channel layouts and undecodable streams are refused by name.
-//! The same reader decodes the ADPCM WAVE files mods ship
-//! ([`crate::wav::decode`]).
 
 use crate::wav::Pcm;
 use symphonia::core::{
@@ -13,8 +8,6 @@ use symphonia::core::{
     meta::MetadataOptions,
 };
 
-/// The container a read accepts: a music track must be an Ogg stream even
-/// though the reader also knows WAVE.
 #[derive(Clone, Copy, Debug)]
 enum Container {
     Ogg,
@@ -41,24 +34,18 @@ pub fn decode(bytes: Vec<u8>) -> Result<Pcm, String> {
     read(bytes, Container::Ogg, false)
 }
 
-/// A WAVE file in an encoding Symphonia decodes (IMA and Microsoft ADPCM).
 pub(crate) fn decode_wave(bytes: Vec<u8>) -> Result<Pcm, String> {
     read(bytes, Container::Wave, false)
 }
 
-/// Decodes only the first audio packet: whether the track opens and decodes,
-/// without paying for the whole stream.
 pub fn probe<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: B) -> Result<(), String> {
     read(bytes, Container::Ogg, true).map(drop)
 }
 
-/// Opens an Ogg Vorbis track to decode packet by packet ([`Stream::decode_next`]),
-/// so a player holds only what it has not yet played.
 pub fn open<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: B) -> Result<Stream, String> {
     guarded(Container::Ogg, || Stream::open(bytes, Container::Ogg))
 }
 
-/// One decoded packet: interleaved samples at the stream's rate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Packet {
     pub rate: u32,
@@ -66,14 +53,11 @@ pub struct Packet {
     pub samples: Vec<f32>,
 }
 
-/// An opened stream, decoded one packet at a time.
 pub struct Stream {
     container: Container,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
-    /// The rate and channel count of the first decoded packet; every later
-    /// packet must keep them.
     spec: Option<(u32, usize)>,
 }
 
@@ -121,8 +105,6 @@ impl Stream {
         })
     }
 
-    /// The next decoded packet, or `None` at the end of the stream. A panic
-    /// inside the decoder refuses the stream by name.
     pub fn decode_next(&mut self) -> Result<Option<Packet>, String> {
         let container = self.container;
         guarded(
@@ -147,7 +129,6 @@ impl Stream {
             }
             let buffer = match self.decoder.decode(&packet) {
                 Ok(buffer) => buffer,
-                // A corrupt packet is skipped, as a player continues past it.
                 Err(Error::DecodeError(_)) => continue,
                 Err(error) => return Err(format!("undecodable {name} stream ({error})")),
             };
@@ -177,8 +158,6 @@ impl Stream {
     }
 }
 
-/// Runs `read` and turns a panic inside Symphonia into a refusal by name
-/// rather than an unwind into the caller.
 fn guarded<T>(
     container: Container,
     read: impl FnOnce() -> Result<T, String> + std::panic::UnwindSafe,
@@ -187,7 +166,6 @@ fn guarded<T>(
         .unwrap_or_else(|_| Err(format!("the {} decoder failed on it", container.name())))
 }
 
-/// Decodes a whole stream (or only its first packet).
 fn read<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: B, container: Container, first_only: bool) -> Result<Pcm, String> {
     let mut stream = guarded(container, || Stream::open(bytes, container))?;
     let mut samples = Vec::new();
@@ -201,8 +179,6 @@ fn read<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: 
     }
     let (rate, channels) =
         spec.ok_or_else(|| format!("{} stream without audio", container.name()))?;
-    // ADPCM decodes to 16-bit samples, which SDL's loader reports as such;
-    // Vorbis decodes to float.
     let format = match container {
         Container::Wave => crate::wav::Format::S16,
         Container::Ogg => crate::wav::Format::F32,
@@ -224,7 +200,6 @@ mod tests {
         assert!(super::decode(Vec::new()).is_err());
     }
 
-    /// Garbage behind an Ogg page marker is refused, never a panic.
     #[test]
     fn garbage_ogg_streams_are_refused_without_panicking() {
         let mut bytes = b"OggS".to_vec();

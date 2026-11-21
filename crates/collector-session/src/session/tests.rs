@@ -109,8 +109,6 @@ fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
     rows.rows::<S>().unwrap()
 }
 
-/// Every hour reads the manager: a declaration's tension reaches the next
-/// hour, where the daily slot 18 showed it up to a day late.
 #[test]
 fn session_is_read_every_hour() {
     let bytes = fixture();
@@ -137,8 +135,6 @@ fn session_is_read_every_hour() {
     }
 }
 
-/// A quiet hour copies nothing and publishes the held read; an hour after a
-/// source writer ended in `update_total` copies and decodes afresh.
 #[test]
 fn quiet_tension_hours_publish_the_held_read_without_copying() {
     use crate::world_input_changes::{Domain, Held, Isolated};
@@ -157,7 +153,6 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
         observed: Observed { changes, held },
         ..presized_job()
     };
-    /// One hour's copy and decode; whether it copied nothing.
     fn hour_at(
         memory: &impl Memory,
         hour: i32,
@@ -184,7 +179,6 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
     let expected = direct(&memory, &capacities);
     assert!(hour_at(&NoReads, 3, &mut job, &mut captured));
     assert_matches_direct(&captured, &expected);
-    // A source writer ran: the next hour copies the new total.
     put(
         &mut bytes,
         MANAGER + cworld_threat::TOTAL,
@@ -261,7 +255,6 @@ fn short_reason_storage_grows_and_a_broken_root_stays_distinct() {
         bytes: &bytes,
     };
     let _ticks = captured_small.capture(&memory, 0, BASE, 0, true);
-    // The five-byte reason grows its two-byte storage.
     assert_eq!(captured_small.outcomes()[1], Outcome::Rows { len: 2 });
     assert!(matches!(captured_small.tables()[1], TableView::Complete(_)));
     captured_small.grow(&mut capacities);
@@ -381,29 +374,17 @@ fn session_split_copy_matches_direct_walk() {
     assert_eq!(split.aggregates.outcome, Outcome::Rows { len: 2 });
     let anchor = TableId::WorldTension;
     let mut expected = read_accounting::ZERO;
-    // Manager word/header, two source pointers/52-byte heads/32-byte
-    // inline reasons, the two-slot aggregate cache in one span: nine
-    // requests, 272 bytes at one anchor.
     expected[anchor.index()] = ReadCounts {
         copy_calls: 9,
         spans: 9,
         bytes: 272,
         ..ReadCounts::ZERO
     };
-    // Every hour reads (session_is_read_every_hour) unless its tension is
-    // quiet (quiet_tension_hours_publish_the_held_read_without_copying).
     assert_eq!(counts, expected);
 }
 
 #[test]
 fn session_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 1 manager, 2 sources, 2 aggregates; exact-fit is
-    // rows [1,2,2] with 8 reason bytes. u32 unread saturation is not
-    // reachable with 2 rows and is covered by the walk's own saturating
-    // arithmetic.
     let bytes = fixture();
     let memory = SliceMemory {
         base: BASE,
@@ -437,7 +418,6 @@ fn session_truncation_matrix_matches_direct_with_same_caps() {
         split.decode_session_payload(0, &first, &mut ticks);
         assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows with all rows present.
     let capacities = Capacities {
         rows: [1, 2, 2],
         reason_bytes: 8,
@@ -451,13 +431,6 @@ fn session_truncation_matrix_matches_direct_with_same_caps() {
 
 #[test]
 fn session_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the session copy pass issues, recorded
-    // through the real pass. The pass bulk-copies (32 B string headers,
-    // 52/64 B manager/aggregate structs, 8 B words) wider than the
-    // walk's scattered reads (4 B keys, 8 B words, 1 B flags inside);
-    // sub-ranges serve from the enclosing bulk span at replay (proved
-    // by session_bulk_header_serves_enclosed_length_word). Alignment
-    // follows the engine layout (structs 8-aligned, headers 8-aligned).
     use engine_native::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
@@ -504,10 +477,6 @@ fn session_cold_job_is_provisioned_without_content_guesses() {
 
 #[test]
 fn session_bulk_header_serves_enclosed_length_word() {
-    // S3 containment: the 32 B reason-string header is a bulk span, so
-    // the walk's enclosed 8 B length/terminator reads inside it are
-    // served from the same recorded bytes (raw.rs bulk rule). Proves
-    // the sspan containment claim with overlapping/unaligned sub-reads.
     let bytes = fixture();
     let memory = SliceMemory {
         base: BASE,
@@ -517,8 +486,6 @@ fn session_bulk_header_serves_enclosed_length_word() {
     copy_pass(&memory, 0, BASE, &mut job.log);
     assert!(job.log.has_bulk);
     let recorded = crate::raw::Recorded::build(&job.log).unwrap();
-    // Find a 32 B bulk header span and read an enclosed 8 B word at an
-    // unaligned offset inside it.
     let header = job
         .log
         .spans

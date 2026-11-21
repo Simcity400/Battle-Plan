@@ -1,14 +1,3 @@
-//! Bilateral war relations; all field offsets use the primary object base.
-//!
-//! Saves contain bilateral fields and goal references. Recognized active and
-//! previous-war blocks are skipped on load and provide no separate war roster.
-//! Overview groups are temporary pairs of country arrays derived for one viewing
-//! country. They have no stored identity, name, start/end or participant join dates.
-//! Their sides are not intrinsically attacking and defending sides. A representative
-//! bilateral relation supplies an instigator and content-dependent naming operands.
-//!
-//! Recordings retain the operands in the overview reader. Group continuity and
-//! observation history belong to the app; this reader captures no persistent war object.
 
 use crate::{
     Memory, ccountry, cdiplomacy_status,
@@ -23,33 +12,21 @@ use engine_sites::Rva;
 pub mod overview;
 pub mod participation;
 
-/// Ordered goal handles for each stored endpoint.
 pub const GOALS: [usize; 2] = [0x168, 0x180];
-/// Installed default naming-prefix location.
 pub const NAME_PREFIX_RVA: Rva = Rva(0x029d_dc90);
-/// Installed naming-prefix byte count before its terminating NUL.
 pub const NAME_PREFIX_LEN: usize = 8;
 
-/// CWarRelation primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_cc08);
-/// CWarRelation native type word.
 pub const TYPE: u32 = 0x380a;
-/// CWarRelation first known casualties, signed i64 integer.
 pub const FIRST_CASUALTIES: usize = 0x50;
-/// CWarRelation second known casualties, signed i64 integer.
 pub const SECOND_CASUALTIES: usize = 0x58;
-/// CWarRelation first unknown casualties, signed i64 integer.
 pub const FIRST_UNKNOWN_CASUALTIES: usize = 0x60;
-/// CWarRelation second unknown casualties, signed i64 integer.
 pub const SECOND_UNKNOWN_CASUALTIES: usize = 0x68;
-/// Threat, signed i64 with denominator 100,000.
 pub const THREAT: usize = 0x150;
-/// CWarRelation first-was-instigator byte.
 pub const FIRST_WAS_INSTIGATOR: usize = 0x158;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Stored endpoint order is native; the pair is not a registered war handle.
     pub first_country: u32,
     pub second_country: u32,
     pub start_hour: i32,
@@ -62,10 +39,6 @@ pub struct Row {
     pub first_was_instigator: u8,
 }
 
-/// [`walk_owned`] into growing rows, with each row's war pointer, when `wars`
-/// is given, at the row's index, for [`read_casualties`] on a later hour. A
-/// pointer that cannot be stored leaves `wars` shorter than the rows; the
-/// rows are unaffected.
 pub fn walk_owned(
     memory: &impl Memory,
     country_memory: &impl Memory,
@@ -86,11 +59,6 @@ pub fn walk_owned(
     )
 }
 
-/// The casualty counters (`FIRST_CASUALTIES` through `SECOND_UNKNOWN_CASUALTIES`) of each war in
-/// `wars` into the row at the same index, one guarded copy per batch of wars. They are the only
-/// recorded fields the hourly combat settlement writes (known and unknown casualty additions);
-/// every other field and the war set itself change only through hooked writers. False when any
-/// war's counters are unreadable; the rows are then partly written.
 pub fn read_casualties(memory: &impl Memory, wars: &[usize], rows: &mut [Row]) -> bool {
     const SPAN: usize = SECOND_UNKNOWN_CASUALTIES + 8 - FIRST_CASUALTIES;
     const FIELDS: [RecordField; 1] = [RecordField {
@@ -120,7 +88,6 @@ pub fn read_casualties(memory: &impl Memory, wars: &[usize], rows: &mut [Row]) -
     true
 }
 
-/// Original owned-vector counts bound filtered war rows without reading values.
 pub fn row_demand(
     memory: &impl Memory,
     base: usize,
@@ -145,7 +112,6 @@ pub fn row_demand(
         if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)? != country.pointer as u64 {
             return Err("war demand diplomacy country mismatch");
         }
-        // Overview grouping consumes this owned vector.
         let relations = diplomacy
             .checked_add(cdiplomacy_status::OWNED_RELATIONS)
             .and_then(|address| Array::read(memory, address, 8))
@@ -167,8 +133,6 @@ fn walk_owned_buffer(
     wars: Option<&mut Vec<usize>>,
 ) -> Outcome {
     scratch.begin();
-    // Moving the vectors out and back keeps the scratch one borrow for the
-    // membership snapshot; no storage is allocated or freed.
     let mut resolver = std::mem::take(&mut scratch.resolver);
     let outcome = walk_from(
         memory,
@@ -190,10 +154,7 @@ pub struct OwnedSnapshotStats {
     pub hits: usize,
     pub installed: usize,
     pub fallbacks: usize,
-    /// Header attempts, including checked-address/validation failures.
     pub acquisition_headers: usize,
-    /// Completed nonnull values consumed by membership scans, not native read
-    /// attempts: a PointerBatch may already have read its unconsumed suffix.
     pub acquisition_words: usize,
     pub required_vectors: usize,
     pub required_words: usize,
@@ -228,8 +189,6 @@ struct PointerCount {
     count: u32,
 }
 
-/// Failure reasons of one owned-membership scan, so each relation walker keeps
-/// its own original messages while sharing the snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MembershipReasons {
     pub vector: &'static str,
@@ -255,16 +214,6 @@ struct StatusGraph {
     diplomacies: [usize; 2],
 }
 
-/// Pooled initialized heap storage, which also grows in the pass from the
-/// original membership headers. Keys and logical snapshots are discarded at
-/// every optimized pass.
-/// Default owns no heap storage, allowing allocation-free ownership transfers.
-///
-/// Every size is taken from what a walk observed: the live country census and
-/// link headers, the owned vectors' counts and the wars validated. There is no
-/// chosen country, word or war budget. Storage grows before the original
-/// complete scan; optional status-graph cache misses retain the complete
-/// native validation and never limit recorded rows.
 #[derive(Default)]
 pub struct OwnedSnapshotScratch {
     vectors: Vec<OwnedVector>,
@@ -274,19 +223,12 @@ pub struct OwnedSnapshotScratch {
     status_graphs: Vec<StatusGraph>,
     used_cells: usize,
     stats: OwnedSnapshotStats,
-    /// Status graphs freshly validated by the last pass; at most two per war.
     required_graphs: usize,
-    /// Words and count cells of every country's owned-relation header seen by
-    /// the walk's outer loop. Unlike `required_*`, which needs a vector slot
-    /// to deduplicate a root, this total needs no storage, so one pass is
-    /// enough to size every later snapshot, however small the storage was.
     observed_words: usize,
     observed_cells: usize,
-    /// Dense country authentication cells, sized from the observed headers.
     pub(crate) resolver: crelation_status::Resolver,
 }
 
-/// Power-of-two open-addressing table with a load factor of at most one half.
 fn open_table_slots(entries: usize) -> std::io::Result<usize> {
     if entries == 0 {
         return Ok(0);
@@ -297,7 +239,6 @@ fn open_table_slots(entries: usize) -> std::io::Result<usize> {
         .ok_or_else(crate::allocation::oom)
 }
 
-/// Grow initialized storage to `len`, reporting allocation failure.
 fn resize_to<T: Copy>(cells: &mut Vec<T>, len: usize, value: T) -> std::io::Result<()> {
     if cells.len() < len {
         crate::allocation::reserve_exact(cells, len - cells.len())?;
@@ -333,8 +274,6 @@ impl OwnedSnapshotScratch {
         self.stats
     }
 
-    /// Current physical capacities, not requested limits or multiplied pool
-    /// estimates. Only initialized root/count slots are used for admission.
     pub fn capacity(&self) -> OwnedSnapshotCapacity {
         OwnedSnapshotCapacity {
             vectors: self.vectors.capacity(),
@@ -347,7 +286,6 @@ impl OwnedSnapshotScratch {
         }
     }
 
-    /// Heap payload only; the caller accounts the inline scratch object.
     pub fn allocated_bytes(&self) -> usize {
         self.vectors.capacity() * std::mem::size_of::<OwnedVector>()
             + self.roots.capacity() * std::mem::size_of::<usize>()
@@ -357,13 +295,8 @@ impl OwnedSnapshotScratch {
             + self.resolver.allocated_bytes()
     }
 
-    /// Called only while the spool owns the containing frame. `countries` is
-    /// the owner's roster capacity; the census header, owned-vector counts and
-    /// validated wars observed by the last pass raise every size further.
-    /// Allocation failure is reported before admitting another pass.
     pub fn grow(&mut self, countries: usize) -> std::io::Result<()> {
         self.resolver.grow()?;
-        // Every owned-vector root is one country's diplomacy object.
         let vectors = countries
             .max(self.resolver.required()[1])
             .max(self.stats.required_vectors);
@@ -402,7 +335,6 @@ impl OwnedSnapshotScratch {
             resize_to(&mut self.roots, slots, usize::MAX)
                 .map_err(|_| "owned membership root allocation failed")?;
             self.roots.fill(usize::MAX);
-            // Resizing changes the probe mask: reindex the already acquired roots.
             for index in 0..self.vectors.len() {
                 let slot = self
                     .root_slot(self.vectors[index].root)
@@ -433,9 +365,6 @@ impl OwnedSnapshotScratch {
         self.observed_cells = 0;
     }
 
-    /// Records one country's owned-relation header count, as read by the
-    /// walk's outer loop, toward the next pass's storage. Only vectors the
-    /// snapshot would install (more than one entry) need count cells.
     pub(crate) fn observe_owned(&mut self, count: u32) {
         let words = count as usize;
         self.observed_words = self.observed_words.saturating_add(words);
@@ -510,11 +439,6 @@ impl OwnedSnapshotScratch {
         self.membership(memory, root, war, WAR_MEMBERSHIP)
     }
 
-    /// Checks that `root`'s owned-relation vector holds `war` exactly once.
-    /// The first query of a root performs the original complete scan and
-    /// installs a counted snapshot of a vector of more than one entry; later
-    /// queries compare the
-    /// fresh header with the snapshot and look the pointer up in O(1).
     pub(crate) fn membership(
         &mut self,
         memory: &impl Memory,
@@ -591,14 +515,11 @@ impl OwnedSnapshotScratch {
             && wanted_cells <= self.counts.len().saturating_sub(self.used_cells);
         if !can_capture {
             self.stats.fallbacks += 1;
-            // Zero- and one-entry vectors cost the same scanned or snapshotted.
             return scan_occurrence(memory, array, war, 1, reasons, |_| {
                 self.stats.acquisition_words += 1
             });
         }
         let start = self.words.len();
-        // Complete count/null/fault semantics are still performed at this first
-        // original observation. A failed scan never publishes partial storage.
         let result = scan_occurrence(memory, array, war, 1, reasons, |pointer| {
             self.stats.acquisition_words += 1;
             self.words.push(pointer);
@@ -632,7 +553,6 @@ impl OwnedSnapshotScratch {
     }
 }
 
-/// The relations without the owned-root snapshot: the reference the owned walk equals.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_from(memory, memory, base, game_state, crate::walk::Buffer::Growing(output), &mut crelation_status::Resolver::default(), None, None)
 }
@@ -683,8 +603,6 @@ fn walk_from(
                 cdiplomacy_status::OWNED_RELATIONS,
                 "owned relations unreadable or invalid",
             )?;
-            // Reserve the owned vector's full remaining population before filtering
-            // relation types, preserving overview occurrence demand.
             output.ensure(
                 len.checked_add(source.count as usize)
                     .ok_or("war row count overflow")?,
@@ -692,7 +610,6 @@ fn walk_from(
             if let Some(scratch) = reader.ownership.as_deref_mut() {
                 scratch.observe_owned(source.count);
             }
-            // Optional storage: a failed reservation stops recording wars only.
             if wars.as_deref_mut().is_some_and(|wars| {
                 crate::allocation::advisory(|| {
                     crate::allocation::reserve(wars, source.count as usize)
@@ -756,8 +673,6 @@ fn expected_occurrence(
     }
 }
 
-/// The original complete scan, also used after an optimization capacity miss.
-/// The observer receives completed nonnull values without changing source reads.
 pub(crate) fn scan_occurrence(
     memory: &impl Memory,
     array: Array,
@@ -795,7 +710,6 @@ pub(crate) fn scan_occurrence(
             return Err(reasons.null);
         }
         observed(pointer);
-        // Saturation cannot turn a duplicate into an exact expected count.
         found = found.saturating_add(u32::from(pointer == war));
     }
     expected_occurrence(found, expected, reasons)
@@ -805,12 +719,7 @@ struct Reader<'a, M: Memory, C: Memory = M> {
     memory: &'a M,
     base: usize,
     countries: ccountry::Reader<'a, C>,
-    /// Dense country and diplomacy authentication cells; an empty resolver
-    /// validates every occurrence with the original uncached readers.
     resolver: &'a mut crelation_status::Resolver,
-    // Only the outer country's successful header is reused, within its owned
-    // relation loop. The optimized walk also reuses successful status graphs;
-    // diplomacy-owned vector guards remain fresh on every occurrence.
     current_matrix: (usize, Option<Array>),
     ownership: Option<&'a mut OwnedSnapshotScratch>,
 }
@@ -855,8 +764,6 @@ impl PointerBatch {
         }];
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&FIELDS, 8).expect("valid record layout");
-        // Keep each exact pointer observation and its failure prefix without
-        // building padded address and destination-descriptor arrays.
         self.copied = memory
             .copy_records(
                 RecordSources::Strided {
@@ -878,7 +785,6 @@ impl PointerBatch {
     }
 }
 
-/// The native relation type that filters an owned-relation vector.
 const TYPE_FIELD: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
     source_offset: crelation::TYPE_ID,
     destination_offset: 0,
@@ -906,7 +812,6 @@ impl Default for RelationBatch {
 impl RelationBatch {
     fn read(&mut self, memory: &impl Memory, array: Array, first: u32) {
         self.pointers.read(memory, array, first);
-        // Only readable, nonnull pointers in this batch can supply a type field.
         let entries = (0..self.pointers.copied)
             .take_while(|&index| self.pointers.get(index, "").is_ok_and(|value| value != 0))
             .count();
@@ -931,8 +836,6 @@ impl RelationBatch {
     }
 }
 
-// Call only after pair_status authenticated this fresh status. These hints
-// cover two exact future headers, never the pointer values or array contents.
 #[inline]
 fn hint_owned_status_headers(status: usize) {
     for offset in [
@@ -947,7 +850,6 @@ fn hint_owned_status_headers(status: usize) {
     }
 }
 
-/// Guarded scalar reads shared by the reader and its cached validators.
 struct Fields<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -1041,8 +943,6 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
         let mut vtable = [0; 8];
         let mut relation_type = [0; 4];
         let mut retired = [0; 1];
-        // Installed inactive placeholders still require the vtable, native type
-        // and retired byte. No endpoints or intervening bytes are copied here.
         let copied = self.memory.copy_scattered_prefetched(
             [
                 pointer,
@@ -1119,9 +1019,6 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
         let copied =
             self.memory
                 .copy_records(RecordSources::Pointers(&[status]), &LAYOUT, &mut bytes);
-        // Keep the original validation order even when a later field failed.
-        // The war pointer remains a separate observation after target-country
-        // resolution, which can itself perform uncached authentication reads.
         if copied == 0 || u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected as u64 {
             return Err("relation status vtable mismatch");
         }
@@ -1218,11 +1115,6 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
             .and_then(|scratch| scratch.status_graph_slot(pointer));
         let reused = graph_slot
             .is_some_and(|slot| self.ownership.as_deref().unwrap().status_graphs[slot] == graph);
-        // The two owner visits authenticate the same ordered status graph.
-        // Reuse only a complete success in this quiescent walk; active fields,
-        // raw endpoints and owner inclusion above remain fresh observations.
-        // Like country/diplomacy authentication, this cannot detect a newly
-        // unreadable or mutated status graph between those visits.
         let statuses = if reused {
             None
         } else {
@@ -1232,8 +1124,6 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
             hint_owned_status_headers(second_status);
             Some([first_status, second_status])
         };
-        // Attachment places the pointer in both the status matrix and diplomacy-owned
-        // vectors; only the first endpoint receives serializable ownership.
         for diplomacy in [first_diplomacy, second_diplomacy] {
             self.occurrence(diplomacy, cdiplomacy_status::OWNED_RELATIONS, pointer, 1)?;
         }
@@ -1254,8 +1144,6 @@ impl<M: Memory, C: Memory> Reader<'_, M, C> {
                 0,
             )?;
             if let Some(scratch) = self.ownership.as_deref_mut() {
-                // Demand for the reuse table, counted per fresh validation;
-                // it sizes the next pass's table and never limits this one.
                 scratch.required_graphs = scratch.required_graphs.saturating_add(1);
                 if let Some(slot) = graph_slot {
                     scratch.status_graphs[slot] = graph;

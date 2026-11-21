@@ -1,10 +1,3 @@
-//! `common/strategic_locations/*.txt`: each strategic location's building
-//! entries, the extra maximum levels a location gives the buildings it names
-//! once an effect places it in a province or a state.
-//!
-//! Only which buildings each location names is kept, for consumers that refuse
-//! a building whose maximum a location can change. Direct files load in
-//! filename order with lexer mode 0; every top-level block is one location.
 
 use crate::{
     ResolvedLayers,
@@ -18,17 +11,13 @@ use crate::{
 };
 use std::io;
 
-/// Every declared strategic location, in load order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Locations {
-    /// Each location's name and the building names its entries list, as authored.
     pub locations: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
-    /// Why a file could not be read; the named buildings are then unknown.
     pub gap: Option<String>,
 }
 
 impl Locations {
-    /// The locations whose entries name `building` under the lexer's ASCII fold.
     pub fn naming(&self, building: &str) -> Result<Vec<&[u8]>, String> {
         if let Some(why) = &self.gap {
             return Err(format!("strategic location definitions uncertain: {why}"));
@@ -46,7 +35,6 @@ impl Locations {
     }
 }
 
-/// One file's locations.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Locations> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -60,7 +48,6 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Locations> {
         Some(names),
         &mut |node, _field| match node {
             Node::File => Shape::Object(Node::Location),
-            // Each building entry consumes one value.
             Node::Location => Shape::One,
         },
     );

@@ -1,6 +1,3 @@
-//! CCountryResources market and trade state.
-//! Resource pools use one-based CStrategicResource indices. Read each pool's
-//! data pointer independently; pool values are not inline arrays.
 
 use crate::{
     Memory,
@@ -14,51 +11,28 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Resource-state primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29d8f00);
-/// Owner raw country link, u32, used for exporter identity.
 pub const OWNER: usize = 0x20;
-/// Embedded produced CStrategicResourcePool requiring authentication.
 pub const PRODUCED_POOL: usize = 0x28;
-/// Adjustment-pool container header.
 pub const ADJUSTMENT_POOL: usize = 0xd8;
-/// Embedded imported CStrategicResourcePool requiring authentication.
 pub const IMPORTED_POOL: usize = 0x188;
-/// Embedded used CStrategicResourcePool requiring authentication.
 pub const USED_POOL: usize = 0x238;
-/// Special-used values pointer.
 pub const SPECIAL_USED_VALUES: usize = 0x240;
-/// Embedded exportable CStrategicResourcePool requiring authentication.
 pub const TO_EXPORT_POOL: usize = 0x450;
-/// Embedded base-export CStrategicResourcePool requiring authentication.
 pub const BASE_EXPORT_POOL: usize = 0x500;
-/// Embedded exported CStrategicResourcePool requiring authentication.
 pub const EXPORTED_POOL: usize = 0x5b0;
-/// Resource-origin array, separate from exchange buckets.
 pub const RESOURCE_ORIGINS: usize = 0x710;
-/// Building resource overrides used for the state controller.
 pub const BUILDING_RESOURCE_OVERRIDES: usize = 0x7a0;
-/// Override entry stride.
 pub const OVERRIDE_STRIDE: usize = 0x20;
-/// Override entry building type token, i32, compared with the building's type.
 pub const OVERRIDE_BUILDING: usize = 0x00;
-/// Override resource array; each entry holds i32 resource index and i64
-/// fixed5 quantity. A nonzero count establishes an override.
 pub const OVERRIDE_RESOURCES: usize = 0x08;
-/// Override resource-element stride.
 pub const OVERRIDE_RESOURCE_STRIDE: usize = 0x10;
-/// Per-resource exchange buckets.
 pub const EXPORT_BUCKETS: usize = 0x728;
-/// Exchange-bucket stride.
 pub const EXPORT_BUCKET_STRIDE: usize = 0x18;
-/// Import exchange pointer vector.
 pub const IMPORT_ROUTES: usize = 0x740;
-/// Delivery-route pointer array selected by exchange queries.
 pub const DELIVERY_ROUTES: usize = 0x788;
 
-/// Second specialized demand pool.
 pub const SPECIAL_TOTAL_POOL: usize = 0x2e8;
-/// Third specialized demand pool supplying production demand.
 pub const PRODUCTION_LINE_POOL: usize = 0x398;
 
 const POOLS: [usize; 9] = [
@@ -88,11 +62,6 @@ pub struct Row {
     pub exported: i64,
 }
 
-/// Read pools using this hour's complete authenticated descriptor census.
-/// The caller invokes cstrategic_resource::walk and requires Rows before this
-/// reader. Resource keys preserve database indices, independently of pointers
-/// or process token numbers. Advisory headers provide sizing only; captures
-/// authenticate original headers and grow again before publication.
 pub fn storage_demand(
     memory: &impl Memory,
     base: usize,
@@ -101,7 +70,6 @@ pub fn storage_demand(
     storage_demand_with_country(memory, base, state, |_, _| Ok(()))
 }
 
-/// Share this existing sizing census with dependent holder storage.
 pub fn storage_demand_with_country(
     memory: &impl Memory,
     base: usize,
@@ -160,8 +128,6 @@ pub fn walk_buffer(
     walk_buffer_with_country(memory, base, game_state, descriptors, output, |_, _| {})
 }
 
-/// Visit each authenticated country/resource holder inside this census. The
-/// caller demand-filters any extra operands; no independent roster is walked.
 pub fn walk_buffer_with_country(
     memory: &impl Memory,
     base: usize,
@@ -189,9 +155,6 @@ pub fn walk_buffer_with_country(
         let mut blocks = [[0_u8; VALUE_CHUNK * VALUE_STRIDE]; 9];
         let mut ahead = None;
         for slot in 1..countries.count() {
-            // The next slot's census entry and resources link are read while
-            // this country's values are, its resources object's identity and
-            // pool headers hinted; each is used at its own place.
             let (listed, link) = Ahead::take(&mut ahead, &countries, slot);
             let Some(country) = listed? else {
                 continue;
@@ -214,8 +177,6 @@ pub fn walk_buffer_with_country(
                     }
                 },
             );
-            // Descriptors that fit are read; the rest are counted unread
-            // without any access, exactly as the per-descriptor loop did.
             output.ensure(
                 len.checked_add(descriptors.len())
                     .ok_or("country resource row count overflow")?,
@@ -224,10 +185,6 @@ pub fn walk_buffer_with_country(
             let mut first = 0;
             while first < stored {
                 let chunk = (stored - first).min(VALUE_CHUNK);
-                // The census is consecutive from id 1, so the chunk's records
-                // are one block in each pool: nine spans for the chunk. A
-                // block that does not read whole is read again record by
-                // record, as the serial walk reads them.
                 let whole = value_blocks(memory, &pools, descriptors[first].id, chunk, &mut blocks);
                 let mut outside = None;
                 let mut completed = chunk * 9;
@@ -307,8 +264,6 @@ pub(crate) fn resources<M: Memory>(
     resources_linked(memory, base, countries, country, Link::Unread)
 }
 
-/// [`resources`] with the country's resources link (`CCountry+RESOURCES`)
-/// as the walk holds it ([`Link`]).
 fn resources_linked<M: Memory>(
     memory: &M,
     base: usize,
@@ -327,8 +282,6 @@ fn resources_linked<M: Memory>(
         .filter(|&p| p != 0)
         .ok_or("country resources pointer unreadable or null")?;
     let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
-    // The vtable and owner, read back to back: one guarded gather of the
-    // object, the first field it did not complete failing as its read did.
     const FIELDS: [RecordField; 2] = crate::memory::packed_fields([(0, 8), (OWNER, 4)]);
     const LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&FIELDS, 12).expect("valid record layout");
@@ -343,7 +296,6 @@ fn resources_linked<M: Memory>(
         }
         u32::from_le_bytes(bytes[8..12].try_into().unwrap())
     } else {
-        // Unreachable for a readable vtable; the reads it replaces.
         if read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("country resources vtable mismatch");
         }
@@ -367,10 +319,6 @@ fn pools(
             .checked_add(offset)
             .ok_or("resource pool address overflow")?;
     }
-    // Vtable, data pointer and two signed header words are exactly 24 bytes.
-    // A single guarded scatter reads the nine independent headers once per
-    // country, after hinting all their lines so the misses overlap; the hint
-    // observes nothing and the copies are the scatter's, in order.
     let mut headers = [[0_u8; 24]; 9];
     if memory
         .copy_scattered_prefetched(addresses, &mut headers.each_mut().map(|h| h.as_mut_slice()))
@@ -385,9 +333,6 @@ fn pools(
     Ok(pools)
 }
 
-/// Reads the records of `chunk` consecutive resources from `first` in each
-/// pool as one block per pool, into `blocks` at the pool stride; whether
-/// all nine read whole.
 fn value_blocks(
     memory: &impl Memory,
     pools: &[Array; 9],
@@ -413,9 +358,6 @@ fn value_blocks(
     ) == 9
 }
 
-/// The serial reads of `descriptors`' records, nine per descriptor in pool
-/// order, into `records`: the first descriptor outside a pool, and how many
-/// records read.
 fn value_records(
     memory: &impl Memory,
     pools: &[Array; 9],
@@ -444,11 +386,8 @@ fn value_records(
     (outside, completed)
 }
 
-/// Resource descriptors read per round: one block per pool, or nine records
-/// each when a block does not read whole.
 const VALUE_CHUNK: usize = 32;
 const VALUE_STRIDE: usize = cstrategic_resource_pool::VALUE_STRIDE;
-/// One pool value record. Nine of them, one per pool, describe one resource.
 const VALUE_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -461,9 +400,6 @@ const VALUE_LAYOUT: RecordLayout<'static> =
 #[path = "ccountry_resources_cost_baseline.rs"]
 mod baseline;
 
-/// Synthetic images of `countries` countries, each with a resources object
-/// whose nine pools hold `resources` values, for the gather test (offset
-/// image) and the cost bench (real addresses).
 #[cfg(test)]
 pub(crate) mod scale_support {
     use super::*;
@@ -514,7 +450,6 @@ pub(crate) mod scale_support {
         }
     }
 
-    /// The descriptors of `resources` resources, tokens 100 onwards.
     pub(crate) fn descriptors(resources: u32) -> Vec<cstrategic_resource::Row> {
         (1..=resources)
             .map(|id| cstrategic_resource::Row {
@@ -525,9 +460,6 @@ pub(crate) mod scale_support {
             .collect()
     }
 
-    /// Gives country `objects[slot]` (slots 1.., `objects[0]` unused) a
-    /// resources object owned by its id, with nine pools of `resources`
-    /// values each.
     pub(crate) fn populate(image: &mut impl Image, objects: &[usize], resources: u32) {
         for (slot, &country) in objects.iter().enumerate().skip(1) {
             let object = image.alloc(0x800);
@@ -550,7 +482,6 @@ pub(crate) mod scale_support {
         }
     }
 
-    /// An offset image read through `SliceMemory`, module base 0.
     pub(crate) fn resource_world(countries: u32, resources: u32) -> World {
         let mut w = World::new(0, countries, ccountry::RESOURCES + 8);
         let objects: Vec<usize> = (0..=countries).map(|slot| w.object(slot)).collect();
@@ -558,8 +489,6 @@ pub(crate) mod scale_support {
         w
     }
 
-    /// A real-address image for `LiveMemory`: the arena, whose base is the
-    /// module base, and the game state.
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     pub(crate) fn resource_arena(
         countries: usize,
@@ -695,8 +624,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::Fixture;
 
-    /// Country `slot`'s record of resource `id` in pool `pool` of
-    /// [`super::scale_support::resource_world`].
     fn record(w: &crate::ccountry::synthetic::World, slot: u32, pool: usize, id: u32) -> usize {
         let memory = w.memory();
         let object = crate::read::<u64>(&memory, w.object(slot) + crate::ccountry::RESOURCES)
@@ -705,9 +632,6 @@ mod tests {
         data + id as usize * VALUE_STRIDE
     }
 
-    /// The batched walk over `memory` and the serial walk over `serial`
-    /// (each its own source, so a one-shot fault meets each walk) into
-    /// `rows` rows: the batched walk's result, then the serial walk's.
     fn both(
         memory: &impl Memory,
         serial_memory: &impl Memory,
@@ -728,9 +652,6 @@ mod tests {
         [(new, batched), (old, serial)]
     }
 
-    /// On healthy memory the batched walk returns the serial walk's rows and
-    /// outcome, truncated or not, reading each pool's
-    /// values as one span: 9 value spans per country instead of 63.
     #[test]
     fn batched_values_match_the_serial_walk() {
         use super::scale_support::{descriptors, resource_world};
@@ -758,17 +679,12 @@ mod tests {
         assert_eq!(new, Outcome::Rows { len: rows });
         assert_eq!((new, &batched), (old, &serial));
         let n = u64::from(COUNT);
-        // The owner gather replaces two copies, the nine blocks replace the
-        // values' record gather and are one scatter.
         assert_eq!(new_reads.copy_calls + 2 * n, old_reads.copy_calls);
         assert_eq!(new_reads.record_calls, old_reads.record_calls);
         assert_eq!(new_reads.scattered_calls, old_reads.scattered_calls + n);
         assert_eq!(new_reads.spans + 54 * n, old_reads.spans);
     }
 
-    /// The faults the equality tests place: a value record's padding, which
-    /// the serial walk never reads, a value record, the resources link of a
-    /// country read ahead and one of its pool headers.
     fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
         let padding = record(w, 3, 4, 2) + 12;
         let value = record(w, 3, 4, 5);
@@ -783,14 +699,10 @@ mod tests {
         ]
     }
 
-    /// This thread's CountryResources fallbacks.
     fn fallbacks() -> u64 {
         crate::batch_fallback::count(crate::batch_fallback::Batch::CountryResources)
     }
 
-    /// A persistent fault gives the serial walk's result: a block it breaks
-    /// is read again record by record and a link whose read ahead failed is
-    /// read again at its turn, each once and counted once.
     #[test]
     fn a_persistent_fault_gives_the_serial_result() {
         use super::scale_support::{descriptors, resource_world};
@@ -813,9 +725,6 @@ mod tests {
         }
     }
 
-    /// A one-shot fault never refuses more than the serial walk: a block it
-    /// breaks reads again record by record, and a link read ahead that
-    /// faulted is read again at its turn, each counted once.
     #[test]
     fn a_one_shot_fault_refuses_no_more_than_the_serial_walk() {
         use super::scale_support::{descriptors, resource_world};
@@ -828,8 +737,6 @@ mod tests {
             let [batched, serial] = both(&once(), &once(), &w, &descriptors, 42);
             assert_eq!(fallbacks() - before, counted, "site {site}");
             if site < 3 {
-                // Read again after the fault: the healthy rows, where the
-                // serial walk refuses the value and the link.
                 assert_eq!(batched, healthy, "site {site}");
                 assert_eq!(
                     matches!(serial.0, Outcome::Unavailable { .. }),
@@ -842,10 +749,6 @@ mod tests {
         }
     }
 
-    /// With 33 resources a country's values are two blocks per pool: the
-    /// batched walk matches the serial walk at every capacity around the
-    /// block edge, a fault in the second block falls back for that block
-    /// only, and a value past the stored rows is never read.
     #[test]
     fn batched_values_cross_the_block_edge_as_the_serial_walk() {
         use super::scale_support::{descriptors, resource_world};
@@ -874,10 +777,6 @@ mod tests {
         assert_eq!(fallbacks() - before, 1);
     }
 
-    /// A null census slot and an alias slot are skipped as the serial walk
-    /// skips them, read ahead or not: a link read ahead past a null slot is
-    /// never read ahead, and a link read ahead that faulted once is read
-    /// again at its turn and counted.
     #[test]
     fn null_and_alias_slots_are_skipped_as_the_serial_walk_skips_them() {
         use super::scale_support::{descriptors, resource_world};
@@ -886,7 +785,6 @@ mod tests {
         let descriptors = descriptors(7);
         let table = crate::ccountry::synthetic::START + 0x1000;
         let links = table + 9 * 8;
-        // Slot 3 is null and slot 5 an alias of country 4.
         w.u64(table + 3 * 8, 0);
         w.u64(table + 5 * 8, w.object(4) as u64);
         w.u32(links + 5 * 4, 4);
@@ -898,8 +796,6 @@ mod tests {
             let at = w.object(slot) + crate::ccountry::RESOURCES;
             at..at + 8
         };
-        // Country 2's link is read ahead at country 1's turn; country 4's is
-        // not, since slot 3 is null.
         for (slot, counted) in [(2, 1), (4, 0)] {
             let before = fallbacks();
             let once = || Faulty::new(w.memory(), vec![link(slot)], true);
@@ -934,7 +830,6 @@ mod tests {
         let (arena, state) = resource_arena(countries, resources);
         let base = arena.base();
         let descriptors = descriptors(resources);
-        // SAFETY: the arena stays allocated and unchanged while read.
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let mut rows = vec![super::Row::default(); countries * resources as usize];
         for (label, gathered) in [("serial", false), ("batched", true)] {
@@ -989,14 +884,10 @@ mod tests {
         assert_eq!(rows[1].country, 2);
     }
 
-    /// Several descriptors share one gather, so a fault in a later descriptor
-    /// must report its own reason at its own position while the earlier ones
-    /// still decode, and a descriptor outside its pool keeps its own reason.
     #[test]
     fn a_mid_batch_descriptor_fault_keeps_its_reason_and_position() {
         let mut fixture = Fixture::new();
         let token = fixture.descriptors()[0].token;
-        // Give every pool a third slot so a second descriptor lands inside it.
         for (ordinal, resources) in [0x6000_usize, 0x7000].into_iter().enumerate() {
             for (pool, offset) in POOLS.into_iter().enumerate() {
                 let data = 0x10000 + ordinal * 0x2000 + pool * 0x80;
@@ -1026,8 +917,6 @@ mod tests {
             (7, 2, 1_000)
         );
         assert_eq!((rows[2].country, rows[3].resource), (2, 2));
-        // A descriptor beyond its pool cannot be reached through `walk`: the
-        // pool header check already rejects a census wider than the array.
         assert_eq!(
             walk(
                 &fixture,

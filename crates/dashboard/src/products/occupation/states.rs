@@ -1,9 +1,3 @@
-//! The occupied states at an hour, a rows-at-an-hour product: a row per state the game holds
-//! occupied, with its names, owner, occupier and occupied country, its garrison and its effective
-//! law (the structure); its resistance, compliance and their speeds (StateResistance by state),
-//! its garrison's required amount and manpower (StateGarrisons), its assigned manpower (the sum
-//! of its StateAssignedManpower rows) and its displayed strength (GarrisonStrengths, which the
-//! recorder derives from the equipment operands no cell can read) are live cells.
 
 use super::{
     Content, law::{self, GroupLaw, LawInputs, OccupationLawInfo}, occupied, slot,
@@ -32,7 +26,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// What a reply reads besides the trigger world: the occupation tables and the identity.
 pub const TABLES: [TableId; 10] = [
     TableId::StateResistance,
     TableId::States,
@@ -46,18 +39,12 @@ pub const TABLES: [TableId; 10] = [
     TableId::CountryLinks,
 ];
 
-/// The live cells of a row: its column and StateResistance's field.
 pub const LIVE: [(&str, &str); 4] = [("resistance", "level"), ("compliance", "compliance"), ("resistanceSpeed", "speed"), ("complianceSpeed", "compliance_speed")];
 
-/// A garrison's live cells: its column and StateGarrisons' field.
 pub const GARRISON: [(&str, &str); 2] = [("garrison", "garrison_required"), ("requiredManpower", "required_manpower")];
 
-/// The live cell of a state's assigned manpower: the sum of its StateAssignedManpower rows'
-/// amounts, named only where it has rows ([`OccupiedState::assigned_known`]).
 pub const ASSIGNED: &str = "assignedManpower";
 
-/// The live cell of a garrison's displayed strength: GarrisonStrengths' `strength`, named only
-/// where it is known and its equipment has recorded content.
 pub const STRENGTH: &str = "garrisonStrength";
 
 pub const STRENGTH_MISSING: &str = "Garrison strength needs complete equipment operands, assigned manpower and the recorded content strength factors. The row names any missing input.";
@@ -72,11 +59,6 @@ pub struct OccupiedStatesParams {
     pub branch_id: String,
 }
 
-/// A state occupied at the hour. Its moving numbers are live cells of row `state`: `resistance`,
-/// `compliance`, `resistanceSpeed`, `complianceSpeed` (fixed5 percentage units, speeds per day);
-/// with a garrison row, `garrison` (the required template amount, fixed5; not the
-/// strength) and `requiredManpower`; `assignedManpower` where the state has assignment rows; and
-/// `garrisonStrength` (a signed fixed5 fraction, 100000 full) where it is known.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -86,15 +68,15 @@ pub struct OccupiedState {
     pub name_missing: Option<String>,
     pub owner: Option<String>,
     pub occupier: Option<String>,
-    /// The original occupied country, which can differ from the legal owner.
+    #[doc = " The original occupied country, which can differ from the legal owner."]
     pub occupied: Option<String>,
-    /// The sign of the required amount (-1, 0, 1), with a garrison row: none required shows no
-    /// bar, below zero the game shows unmet. It flips far more rarely than the amount moves.
+    #[doc = " The sign of the required amount (-1, 0, 1), with a garrison row: none required shows no"]
+    #[doc = " bar, below zero the game shows unmet. It flips far more rarely than the amount moves."]
     pub garrison_required_sign: Option<i8>,
-    /// The requirement failed: the game shows no strength.
+    #[doc = " The requirement failed: the game shows no strength."]
     pub garrison_alert: bool,
-    /// The assigned manpower is known: its cell, or zero where the state has no assignment row
-    /// and so no cell.
+    #[doc = " The assigned manpower is known: its cell, or zero where the state has no assignment row"]
+    #[doc = " and so no cell."]
     pub assigned_known: bool,
     pub garrison_missing: Option<String>,
     pub law: Option<String>,
@@ -105,40 +87,35 @@ pub struct OccupiedState {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedStatesReply {
-    /// Ascending by state.
+    #[doc = " Ascending by state."]
     pub states: Vec<OccupiedState>,
-    /// Every row of StateResistance was read and every occupier and occupied country named.
+    #[doc = " Every row of StateResistance was read and every occupier and occupied country named."]
     pub complete: bool,
-    /// Why no state can be shown at the hour.
+    #[doc = " Why no state can be shown at the hour."]
     pub missing: Option<String>,
-    /// The laws the states hold.
+    #[doc = " The laws the states hold."]
     pub laws: Vec<OccupationLawInfo>,
     pub strength_missing: String,
-    /// The displayed strength below which a garrison shows red (fixed5); none where the content
-    /// does not say.
+    #[doc = " The displayed strength below which a garrison shows red (fixed5); none where the content"]
+    #[doc = " does not say."]
     pub garrison_red_raw: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(OccupiedStatesReply);
 
-/// (controller slot, occupied slot, state).
 type Key = (u32, u32, u32);
 
-/// The hour's occupation tables indexed by resolved country slots.
 pub(super) struct Joins<'f> {
     garrisons: HashMap<Key, &'f StateGarrisonRow>,
     overrides: HashMap<Key, &'f [u8]>,
     overrides_complete: bool,
     settings: HashMap<u32, &'f OccupationSettingsRow>,
-    /// (controller, occupied) to the law set for the occupied country and the scope it names.
     groups: HashMap<(u32, u32), (Option<&'f [u8]>, Option<u32>)>,
     group_failures: HashMap<u32, String>,
-    /// Each garrison key's assigned total and its rows' keys.
     assigned: HashMap<Key, (i32, Vec<u128>)>,
     unresolved_assigned: HashSet<u32>,
     assigned_complete: bool,
-    /// Each garrison's derived strength, by its StateGarrisons key, while the table is read.
     strengths: HashMap<u128, &'f GarrisonStrengthRow>,
     strengths_missing: Option<String>,
 }
@@ -238,8 +215,6 @@ impl<'f> Joins<'f> {
         })
     }
 
-    /// What `key`'s law is resolved from, and the raw occupied country its group scopes the
-    /// law's eligibility to.
     pub(super) fn law_inputs(&self, controller: Option<u32>, key: Option<Key>) -> (LawInputs<'f>, Option<u32>) {
         let settings = controller.and_then(|slot| self.settings.get(&slot).copied());
         let mut scope = None;
@@ -275,7 +250,6 @@ impl<'f> Joins<'f> {
     }
 }
 
-/// The occupied rows of StateResistance with their States row, and the key each joins by.
 fn occupied_states<'f>(resistance: &'f [StateResistanceRow], states: &'f [StateRow], links: &[CountryLinkRow]) -> Vec<(&'f StateResistanceRow, Option<&'f StateRow>, Option<Key>)> {
     let by_id: HashMap<u32, &StateRow> = states.iter().map(|state| (state.id, state)).collect();
     resistance
@@ -289,8 +263,6 @@ fn occupied_states<'f>(resistance: &'f [StateResistanceRow], states: &'f [StateR
         .collect()
 }
 
-/// Whether some occupied state's law falls to its occupier's default, whose eligibility reads the
-/// trigger world.
 fn needs_world(frame: &DecodedFrame) -> bool {
     (|| -> io::Result<bool> {
         let links = frame.complete::<tables::CountryLinks>()?;
@@ -303,20 +275,15 @@ fn needs_world(frame: &DecodedFrame) -> bool {
     .unwrap_or(false)
 }
 
-/// What a state's garrison shows: the structure, and the keys its live cells read.
 struct Garrison {
     required: Option<i64>,
     alert: bool,
-    /// Its StateGarrisons row's key.
     row: Option<u128>,
-    /// Its GarrisonStrengths row's key, where the strength is known.
     strength: Option<u128>,
-    /// Its StateAssignedManpower rows' keys, where the assigned manpower is known.
     assigned: Option<Vec<u128>>,
     missing: Option<String>,
 }
 
-/// Why a derived strength is not recorded, by its row's reason.
 fn not_recorded(row: &StateGarrisonRow, reason: u8) -> String {
     match reason {
         GarrisonStrengthRow::UNRESOLVED => "The controller or occupied-country link is unresolved; the garrison's assigned manpower cannot be joined".into(),
@@ -330,8 +297,6 @@ fn not_recorded(row: &StateGarrisonRow, reason: u8) -> String {
     }
 }
 
-/// `row`'s derived strength's key where it is known and, where the game read its equipment
-/// operands, each operand's equipment has a recorded-content definition; else why not.
 fn strength(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, row: &StateGarrisonRow, assigned: Option<i32>) -> Result<u128, String> {
     if let Some(why) = &joins.strengths_missing {
         return Err(format!("Garrison strength is not recorded at this read: {why}"));
@@ -352,7 +317,6 @@ fn strength(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, row: &St
     Ok(key)
 }
 
-/// Whether `entry`'s equipment and archetype tokens name recorded-content equipment.
 fn defined(frame: &DecodedFrame, content: &Content, entry: &GarrisonEquipment) -> Result<(), String> {
     let equipment = content.equipment()?;
     let tokens = frame.complete::<tables::LexicalTokens>().map_err(|why| format!("Garrison equipment dictionary unavailable: {why}"))?;
@@ -401,7 +365,6 @@ fn garrison(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, state: u
     }
 }
 
-/// `state`'s display name, kept while its custom and owner names stay.
 fn name(content: &Content, state: &StateRow) -> Result<String, String> {
     let cat = content.catalogue().map_err(|_| "State names need the recorded content stack and language".to_owned())?;
     let mut names = content.names.lock().unwrap_or_else(|error| error.into_inner());
@@ -416,7 +379,6 @@ fn name(content: &Content, state: &StateRow) -> Result<String, String> {
     made
 }
 
-/// The reply at `frame`'s hour, its rows' moving numbers named in `live`.
 pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io::Result<OccupiedStatesReply> {
     let mut reply = OccupiedStatesReply {
         states: Vec::new(),
@@ -555,7 +517,6 @@ impl AtHour for OccupiedStates {
         branch(&params.branch_id)
     }
 
-    /// The occupation tables and the trigger world a law's eligibility reads.
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         let mut tables = TABLES.to_vec();
         tables.extend_from_slice(dashboard_text::scripted_text::TABLES);
@@ -564,8 +525,6 @@ impl AtHour for OccupiedStates {
         tables
     }
 
-    /// The occupation tables, then the trigger world only where a state's law falls to its
-    /// occupier's default.
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match step {
             0 => TABLES.into_iter().map(Read::all).collect(),

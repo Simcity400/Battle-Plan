@@ -35,12 +35,11 @@ const FILL = { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHe
 export default function CampaignClockWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  // Following, the totals at the head are a followed value from the command index: painted, never asked by the clock.
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = useMemo(() => following && active && track ? clockHeadQuery(track.branch) : null,
-    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]); // eslint-disable-line react-hooks/exhaustive-deps
+    [following, active, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
   const woken = useMemo(() => new Set<() => void>(), []);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => {
@@ -50,7 +49,6 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
   const headEntry = followsHead(followed) ? followed.entry : null;
   const [headFollowed, setHeadFollowed] = useState(false);
   useLayoutEffect(() => setHeadFollowed(headEntry !== null), [headEntry]);
-  // Structure: a refusal, or which warnings hold (whole coverage, classified pauses).
   const structureOf = (entry: FollowEntry | null) => clockStructure(clockHead(entry?.answer));
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null, () => structureOf(entryRef.current), woken);
@@ -66,20 +64,18 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
     return valuesOf(values, totals && 'reason' in totals ? totals.reason : totals ? UNCLASSIFIED : 'Not read yet');
   }) : undefined, [store, headEntry]);
 
-  // Pinned, ranged or not followed: the totals asked for the hours shown.
   const hour = useFallbackHour(runtime.clock, active && following && !headFollowed);
   const window = track && resolveWindow(widget, track, runtime.tracks, hour);
   const request = headFollowed ? null : clockRequest(widget, track, window ?? null);
-  // While the newest hours are read, every row, coverage too, is the shown reply's own.
   const { data, error, retry, moment } = useFollowedProduct<CampaignClockReply>(runtime.client, request,
     ['firstHour', 'lastHour'], active, validateClock, track?.source);
   const showing = data && !error && moment ? (JSON.parse(moment) as [number, number])[1] : null;
   useEffect(() => { if (!headEntry) shown(showing); }, [shown, showing, headEntry]);
   const headStructure = structureOf(headEntry);
-  const headWarnings = useMemo(() => head && !('reason' in head) ? clockWarnings(head) : NO_WARNINGS, [headStructure]); // eslint-disable-line react-hooks/exhaustive-deps
+  const headWarnings = useMemo(() => head && !('reason' in head) ? clockWarnings(head) : NO_WARNINGS, [headStructure]);
   const rows = useMemo<ClockRow[]>(() => head && !('reason' in head) ? clockRows(head, headWarnings)
     : data ? clockRows({ recorded: data.recordedSeconds, playing: data.playingSeconds, paused: data.pausedSeconds, complete: data.complete }, data.warnings) : [],
-  [headStructure, data]); // eslint-disable-line react-hooks/exhaustive-deps
+  [headStructure, data]);
   useDiagnostics(onDiagnostics, headEntry ? headWarnings : data?.warnings ?? NO_WARNINGS);
 
   const body = (() => {

@@ -1,6 +1,3 @@
-//! Native retained-history event producer. Hooks never wait or follow
-//! unrelated histories; past the prepared lane they grow it fallibly. The
-//! single worker drains into reusable storage.
 use collector_hooks::hook::{Hook, Registers, Tap};
 use collector_primitives::shared_lane::SharedLane;
 use engine_land_inputs::{combat_log_events as native, combat_log_sites as sites};
@@ -150,7 +147,6 @@ impl WriterCall<'_> {
 impl Drop for WriterCall<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            // Keep hook code alive for unwind, but let an exact quiet read recover the rows.
             self.writers.escaped.store(true, SeqCst);
             self.writers.fail(Loss::Unwind);
         }
@@ -198,7 +194,6 @@ fn observing() -> bool {
     WRITERS.enabled.load(SeqCst) && !WRITERS.exhausted.load(SeqCst)
 }
 fn advance(counter: &AtomicU64) -> u64 {
-    // Stay below the publication lane's mark bits as well as integer wrap.
     match counter.fetch_update(SeqCst, SeqCst, |n| {
         n.checked_add(1).filter(|next| *next < (1 << 61))
     }) {
@@ -215,7 +210,6 @@ thread_local! { static SIGNAL: Cell<Option<i64>> = const { Cell::new(None) }; }
 struct Call {
     writer: WriterCall<'static>,
     previous_signal: Option<i64>,
-    // Last field: the writer's drop still runs inside the hook's phase.
     _hook: Option<collector_memory::terminal::Scope>,
 }
 impl Call {
@@ -260,7 +254,6 @@ fn emit(fact: native::Fact) {
         fail(Loss::Handoff);
         return;
     }
-    // WRITERS.active excludes reclamation; HANDOFF is tested after entering the call.
     let Some(lane) = (unsafe { LANE.load(SeqCst).as_ref() }) else {
         REQUIRED.fetch_add(1, SeqCst);
         fail(Loss::Storage);
@@ -282,7 +275,6 @@ fn emit(fact: native::Fact) {
             fact,
         },
     );
-    // A lane that spilled or refused asks the next prepare for its demand.
     let required = lane.required_entries();
     if required > lane.len() {
         REQUIRED.fetch_max(required, SeqCst);
@@ -332,7 +324,6 @@ fn demand(seed: usize, active: usize, noncombat: usize, attempted: usize) -> usi
         .saturating_add(noncombat)
         .max(attempted)
 }
-/// Worker/sizing thread only; install only at a drained, quiescent boundary.
 pub fn prepare(attempted: usize) {
     REQUIRED.fetch_max(
         demand(
@@ -372,7 +363,6 @@ pub fn prepare(attempted: usize) {
     HANDOFF.store(false, SeqCst);
 }
 
-/// Copies owned occurrences only; a failed drain requests retained-state recovery.
 pub(crate) fn drain(output: &mut Vec<Logged>) -> Result<Witness, &'static str> {
     output.clear();
     let storage = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
@@ -414,7 +404,6 @@ pub(crate) fn copy_published(
         Ok(())
     })
 }
-/// Occurrences lost since attach and why the first was, for the collector's live status.
 pub fn refusals() -> impl serde::Serialize {
     crate::status::status!({"lost": WRITERS.lost.load(SeqCst), "first_loss": WRITERS.first_loss()})
 }
@@ -430,8 +419,6 @@ pub fn status() -> impl serde::Serialize {
     })
 }
 
-// Only the group's creation append reaches this call site. Existing lookup
-// hits incur no callback, country read, count read or event reservation.
 unsafe extern "system-unwind" fn group_create(array: usize, element: usize) {
     let call = Call::enter();
     let original: unsafe extern "system-unwind" fn(usize, usize) =
@@ -533,8 +520,6 @@ unsafe extern "system-unwind" fn result(owner: usize, activity: usize, id: i32, 
         if activity != 0 && equipment_enabled() {
             observe(native::last_month(&m, base, owner, 5, &mut emit));
         }
-        // The normal result route writes its own combat month inline before
-        // this call; metadata is reached here without walking other months.
         if activity == 0 && equipment_enabled() {
             observe(native::last_month(&m, base, owner, 0, &mut emit));
         }
@@ -662,8 +647,8 @@ pub struct Hooks {
     tap: Option<Tap>,
 }
 impl Hooks {
-    /// # Safety
-    /// The caller owns hook publication and quiescence for the verified image.
+    #[doc = " # Safety"]
+    #[doc = " The caller owns hook publication and quiescence for the verified image."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, SeqCst);
         match unsafe { Self::install(base) } {
@@ -740,7 +725,6 @@ impl Hooks {
         if enabled && (WRITERS.unhooked.get().is_some() || retention_required()) {
             return Err("combat log writer family unavailable".into());
         }
-        // Publish as one family so a partial enable cannot certify history.
         let complete = Hook::set_enabled_iter(
             self.hooks
                 .iter_mut()

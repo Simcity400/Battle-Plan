@@ -8,8 +8,6 @@ import type { CountryGroupReply } from '../generated/dashboard';
 import type { WidgetSpec } from './model';
 import { useCountryGroups } from './useCountryGroups.ts';
 
-/** Comparisons retain the branch-wide group union; hourly membership clips each
- * country's values instead of changing the requested countries while playing. */
 export function useComparisonCountries(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const grouped = widget.countries.kind === 'group';

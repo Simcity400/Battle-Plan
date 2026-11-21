@@ -6,11 +6,8 @@ import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/d
 import type { Breakdown } from '../../charts/drill/drillState';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 
-/** The breakdown a click on the line opens, and that Pin as widget shows as the widget itself. */
 export const WEEKLY_BREAKDOWN: Breakdown = { id: 'weekly', label: 'Weekly change' };
 
-/** One country (the dashboard's, or one picked) shows its balance over time; any other
- * selection lists every active balance. */
 export const singleCountry = (countries: CountrySelection | undefined) =>
   !countries || countries.kind === 'selected' || countries.kind === 'tags' && countries.tags.length === 1;
 
@@ -18,7 +15,6 @@ export const COLUMNS = [
   { key: 'balance', label: 'Balance' }, { key: 'members', label: 'Members' }, { key: 'range', label: 'Range' },
   { key: 'value', label: 'Value' }, { key: 'trending', label: 'Leaning toward' },
 ] as const;
-/** Strongest lean first. */
 export const DEFAULT_SORT = { column: 'value', direction: 'descending' } as const;
 
 const oneCountry = (_options: Readonly<Record<string, OptionValue>>, countries?: CountrySelection) => singleCountry(countries);

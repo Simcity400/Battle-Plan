@@ -12,17 +12,13 @@ import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { CountryRef, DivisionLogManifestReply, LogCell, PlaceName } from '../../generated/dashboard';
 
-/** The division log's own kinds, as the recorder's log keys them. */
 export const KINDS = { created: 0, lost: 1, transfer: 2 } as const;
 export type DivisionKind = keyof typeof KINDS;
 const KIND_NAMES: readonly DivisionKind[] = ['created', 'lost', 'transfer'];
 
-/** A division event as a `division-log` page names it. */
 export interface DivisionLogEntry {
   division: string; kind: DivisionKind; status: string;
-  /** The read that recorded it: the row's place on the timeline. */
   readHour: number;
-  /** When it happened: exact for a dated death, else the read, an upper bound (`by`). */
   hour: number; by: boolean; afterHour: number | null;
   tag: string | null; name: string | null; nameMissing: string | null; icon: string | null; iconMissing: string | null;
   presentationHour: number | null; template: string | null; templateName: string | null; templateMissing: string | null;
@@ -33,7 +29,6 @@ export interface DivisionLogEntry {
 const number = (cell: LogCell | undefined) => cell?.kind === 'number' ? Number(cell.value) : null;
 const text = (cell: LogCell | undefined) => cell?.kind === 'text' ? cell.value : null;
 
-/** A page row of `division-log` as the list's row, placed at the hour it was read. */
 export function divisionEntry(row: LogReplyRow): LogRow<DivisionLogEntry> {
   const cells = row.cells;
   const readHour = number(cells.readHour) ?? row.hour;
@@ -62,7 +57,6 @@ export function validateDivisionManifest(v: unknown): DivisionLogManifestReply {
 }
 
 export const templateToken = (campaign: string, branch: string, template: string) => setToken(campaignToken(campaign, `${branch}:${template}`));
-/** Null selects every type. An unavailable saved choice selects none here. */
 export function selectedTemplates(value: string, campaign: string, branch: string): string[] | null {
   const chosen = contentSet(value);
   if (!chosen.length) return null;
@@ -70,14 +64,10 @@ export function selectedTemplates(value: string, campaign: string, branch: strin
   return chosen.map(contentKey).filter(token => token.startsWith(prefix)).map(token => token.slice(prefix.length));
 }
 
-/** The kinds the Divisions option shows. */
 export const shownKinds = (events: string): DivisionKind[] => events === 'created' ? ['created'] : events === 'lost' ? ['lost', 'transfer'] : ['created', 'lost', 'transfer'];
 
-/** A facet filter as the wire carries it: values are JSON numbers. */
 export interface DivisionFacet { name: string; values: number[]; countries: CountryRef[] }
 
-/** The log's facets for the kinds shown, the chosen templates (none chosen: every one) and the countries' tags (none:
- * every country). */
 export function divisionFacets(kinds: readonly DivisionKind[], templates: readonly string[] | null, tags: readonly string[] | null): DivisionFacet[] {
   const facets: DivisionFacet[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
   if (templates !== null) facets.push({ name: 'template', values: templates.map(Number), countries: [] });
@@ -85,9 +75,6 @@ export function divisionFacets(kinds: readonly DivisionKind[], templates: readon
   return facets;
 }
 
-/** Each shown kind's rows through `until` (every row for null): its own counts on the list's bin grid through the bins
- * before the one holding `until`, then the list's rows of that bin up to `until`, which the list's loaded pages hold.
- * Null while a page holding one of those rows is not loaded. */
 export function kindTotals(list: LogCounts, kinds: ReadonlyMap<DivisionKind, LogCounts>, pages: readonly LogPage<DivisionLogEntry>[],
   shown: number, until: number | null): Map<DivisionKind, number> | null {
   const out = new Map<DivisionKind, number>();
@@ -110,7 +97,6 @@ export function kindTotals(list: LogCounts, kinds: ReadonlyMap<DivisionKind, Log
   return out;
 }
 
-/** The hours the recording did not read divisions or their removals within `first..=last`, as warnings. */
 export function gapWarnings(manifest: DivisionLogManifestReply, first: number, last: number): string[] {
   return manifest.gaps.filter(gap => gap.lastHour >= first && gap.firstHour <= last)
     .map(gap => `${gap.reason}: ${formatDateTime(Math.max(first, gap.firstHour))} – ${formatDateTime(Math.min(last, gap.lastHour))}`);
@@ -140,29 +126,20 @@ export function divisionTooltip(row: DivisionLogEntry, country: ReturnType<Count
   ] };
 }
 
-/** How a row's place read stands while no name is held for it: still to come (`pending`), failed, or else answered
- * without it (a reply that left the place out). */
 export interface DivisionPlaceRead { pending: boolean; failed: boolean }
 
-/** The place-name text a row shows while its read is outstanding. */
 export const PLACE_LOADING = 'Loading place…';
 
-/** Where a row happened: the name read, the recording's reason it has none, while its read is in flight loading, and a
- * place the reply left out unnamed with that reason; never the unnamed label for a name not read yet, nor loading for
- * one that will not come. */
 export function divisionPlace(row: DivisionLogEntry, known: ReadonlyMap<string, PlaceName>, read: DivisionPlaceRead): string {
   if (row.province === null || row.placeHour === null) return 'Location not recorded';
   return divisionPlaceText(known.get(placeKey(row.province, row.placeHour)), read);
 }
 
-/** A read place's text (`divisionPlace`), by what is held for its key. */
 export function divisionPlaceText(place: PlaceName | undefined, read: DivisionPlaceRead): string {
   if (!place) return read.failed ? 'Place name couldn’t load' : read.pending ? PLACE_LOADING : 'Unnamed province (the names reply left it out)';
   return place.name ?? place.missing ?? 'Unnamed province';
 }
 
-/** The rows whose countries and places are asked. Following, the newest rows held (`newest` of them: the block drawn and
- * a view beneath it) with the block, before the list draws them, and any drawn beyond them; else the rows drawn. */
 export function divisionNamedRows(follow: boolean, pages: readonly LogPage<DivisionLogEntry>[], newest: number,
   drawn: readonly LogRow<DivisionLogEntry>[]): readonly LogRow<DivisionLogEntry>[] {
   if (!follow) return drawn;
@@ -171,8 +148,6 @@ export function divisionNamedRows(follow: boolean, pages: readonly LogPage<Divis
   return beyond.length ? [...held, ...beyond] : held;
 }
 
-/** The places of `rows`, each once. Following (`at`, the hour the list's block shows), the rows a list shows at its top
- * lead: those dated through `at`, newest first, then the rows held past it; else in the order given. */
 export function divisionPlaces(rows: readonly LogRow<DivisionLogEntry>[], at: number | null = null): { provinceId: number; hour: number }[] {
   const ordered = at === null ? rows : [...rows.filter(row => row.hour <= at).sort((a, b) => b.hour - a.hour), ...rows.filter(row => row.hour > at)];
   const wanted = new Map<string, { provinceId: number; hour: number }>();

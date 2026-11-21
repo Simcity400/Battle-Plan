@@ -1,15 +1,3 @@
-//! Province movement geometry and terrain operands from the recorded content.
-//!
-//! Each ordered province-neighbour entry stores a signed fixed5 movement
-//! distance: walk an integer line from the source centroid through the
-//! neighbour crossing to the target centroid, sum the terrain palette's
-//! authored `movement_cost` along it and scale the sum. The same line samples
-//! the river bitmap for small/large crossing kinds of land neighbours.
-//! Province terrain flags come from `definition.csv` and raster neighbours;
-//! the terrain ordinal is the row's one-based category position in the
-//! terrain database. These operands are independent of the campaign and
-//! recording client; an in-session map reload is outside the fixed-content
-//! replay contract.
 
 pub mod adjacency;
 pub(crate) mod bitmap;
@@ -30,9 +18,6 @@ use self::{
 };
 use crate::{ResolvedLayers, defines::Defines, fields::invalid};
 
-/// Every province's raster neighbours in scan order, indexed by id, from
-/// a province raster stored top row first ([`crate::map::MapData`]).
-/// Neighbour discovery walks file rows from the bottom.
 pub fn raster_neighbours(
     width: usize,
     height: usize,
@@ -51,55 +36,30 @@ pub fn raster_neighbours(
     adjacency::raster(width, height, &bottom_up, count)
 }
 
-/// Static terrain operands of one province.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceTerrain {
-    /// Province terrain flags after adjacency creation: 1 land, 2 lake,
-    /// 4 land without a land neighbour, 8 land next to sea or an
-    /// authored-coastal lake, 16 an authored-coastal sea.
     pub flags: u8,
-    /// One-based signed terrain category ordinal; zero is the null terrain.
     pub index: i32,
 }
 
-/// Movement defines of the ETA evaluator, as fixed5.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MovementDefines {
-    /// `NMilitary.AMPHIBIOUS_INVADE_MOVEMENT_COST`, used instead of neighbour
-    /// distance when an army embarks from non-land onto land.
     pub embark_distance: i64,
-    /// `NNavy.NAVAL_SPEED_MODIFIER`.
     pub transport_scale: i64,
-    /// `NNavy.AMPHIBIOUS_INVADE_SPEED_BASE`.
     pub invasion_speed: i64,
-    /// `NMilitary.LAND_SPEED_MODIFIER`, shared by normal and rail movement.
     pub outer_scale: i64,
-    /// `NMilitary.RIVER_CROSSING_SPEED_PENALTY`.
     pub river_crossing_two: i64,
-    /// `NMilitary.RIVER_CROSSING_SPEED_PENALTY_LARGE`.
     pub river_crossing_three: i64,
-    /// `NMilitary.LOW_ORG_FOR_ATTACK` and `NMilitary.ZERO_ORG_MOVEMENT_MODIFIER`: the
-    /// organisation share below which a hostile move slows and the speed term at zero
-    /// organisation. Refusing them leaves the other movement terms available.
     pub organisation: Result<(i64, i64), String>,
-    /// `NMilitary.NON_CORE_SUPPLY_SPEED` and `NMilitary.NON_CORE_SUPPLY_AIR_SPEED`: the
-    /// noncore-supply term of a ground-supplied and of an air-supplied division.
-    /// Each remains available independently of the other form.
     pub noncore_supply: [Result<i64, String>; 2],
-    /// `NMilitary.COMBAT_MOVEMENT_SPEED`: the land combat movement base's define.
-    /// Refusing it leaves the other movement terms available.
     pub combat_movement: Result<i64, String>,
-    /// Refusing railway content leaves unrelated movement timing available.
     pub rail: Result<RailMovementDefines, String>,
-    /// Task-force range policy is independent of army and railway defines.
     pub naval: Result<NavalMovementDefines, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavalMovementDefines {
-    /// Convert the current modified range before its guarded half.
     pub range_scale: i64,
-    /// Choose home/hubs instead of stored nearest bases at sea.
     pub use_home_base: Result<bool, String>,
 }
 
@@ -116,9 +76,7 @@ impl NavalMovementDefines {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RailMovementDefines {
-    /// Road base/scale and rail base/scale, signed fixed5.
     pub speed: [i64; 4],
-    /// Signed integer denominator; zero and negatives retain game semantics.
     pub maximum_level: i32,
 }
 
@@ -169,24 +127,17 @@ impl MovementDefines {
     }
 }
 
-/// One directed native neighbour entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Edge {
-    /// Unavailable when this pair's sampling failed; see `unavailable_edges`.
     distance: Option<i64>,
-    /// Crossing kind; unavailable river sampling stays unknown.
     kind: Option<u8>,
-    /// A sea crossing's authored Through province, independent of distance:
-    /// the signed integer read preserves its exact 32 bits.
     sea_through: Option<i32>,
     crossing: Crossing,
 }
 
-/// The static province map movement reads, indexed by native province record.
 #[derive(Clone, Debug, Default)]
 pub struct MovementMap {
     terrain: Vec<Option<ProvinceTerrain>>,
-    /// Native ordered neighbours; index 0 and absent records are unused.
     neighbours: Vec<Vec<u32>>,
     edges: Vec<Vec<Edge>>,
     unavailable: BTreeMap<(u32, u32), String>,
@@ -198,13 +149,10 @@ fn context(what: &str) -> impl FnOnce(io::Error) -> io::Error + '_ {
 }
 
 impl MovementMap {
-    /// Reads the map files `map/default.map` names, the terrain database and
-    /// the river defines. Unsupported content is refused with the reason.
     pub fn read(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         Self::read_map(layers, defines, None)
     }
 
-    /// The same native derivation, borrowing the stack's already-read terrain database.
     pub fn read_with_terrain(
         layers: &ResolvedLayers,
         defines: &Defines,
@@ -268,8 +216,6 @@ impl MovementMap {
         let anchors = geometry::anchors(&raster, provinces.count);
         let land = |id: u32| provinces.kind(id) == Kind::Land;
         let crossings = geometry::crossings(&raster, &lists, &anchors, land)?;
-        // Keep one geometry walk, but river acquisition does not demand terrain
-        // cost. Distance preserves its existing route/terrain/river refusal order.
         type PairInputs = (Result<i64, String>, Result<u8, String>);
         let mut pairs: HashMap<(u32, u32), PairInputs> = HashMap::new();
         for (source, targets) in lists.iter().enumerate() {
@@ -287,8 +233,6 @@ impl MovementMap {
                     height,
                 )
                 .map_err(|error| error.to_string());
-                // Sample rivers only on zero-kind land pairs. Authored or
-                // non-land kinds do not need the line.
                 let kind = if authored_kind == 0 && land(pair.0) && land(pair.1) {
                     points.as_ref().map_err(Clone::clone).and_then(|points| {
                         rivers.first_crossing(points).map(|kind| kind.unwrap_or(0))
@@ -344,8 +288,6 @@ impl MovementMap {
         self.neighbours(province).is_some()
     }
 
-    /// The directed neighbour entry `from -> to`; `None` for a pair that is
-    /// not a neighbour, including an out-of-range `from`.
     fn edge(&self, from: u32, to: u32) -> Option<&Edge> {
         let at = self
             .neighbours
@@ -355,15 +297,10 @@ impl MovementMap {
         self.edges.get(from as usize)?.get(at)
     }
 
-    /// Terrain operands of an authored province record. Records the province
-    /// loader invented for unclaimed colours have none.
     pub fn terrain(&self, province: u32) -> Option<ProvinceTerrain> {
         self.terrain.get(province as usize).copied().flatten()
     }
 
-    /// Native ordered neighbours of a known province: a stack-kind direction
-    /// index is a position in this list. An empty slice is a province without
-    /// neighbours; `None` is an unknown province.
     pub fn neighbours(&self, province: u32) -> Option<&[u32]> {
         self.neighbours
             .get(province as usize)
@@ -371,9 +308,6 @@ impl MovementMap {
             .map(Vec::as_slice)
     }
 
-    /// Non-embark distance. Known provinces that are not neighbours give
-    /// `100000`; `None` is an unknown province or a neighbour whose distance
-    /// is unavailable.
     pub fn distance(&self, from: u32, to: u32) -> Option<i64> {
         if !self.known(from) || !self.known(to) {
             return None;
@@ -382,17 +316,11 @@ impl MovementMap {
             .map_or(Some(100_000), |edge| edge.distance)
     }
 
-    /// Crossing kind: 1 sea, 2 river, 3 large river, 4 impassable, otherwise
-    /// 0. Known provinces that are not neighbours have kind 0; an unavailable
-    /// neighbour is not treated as clear.
     pub fn crossing_kind(&self, from: u32, to: u32) -> Option<u8> {
         self.distance(from, to)?;
         self.edge(from, to).map_or(Some(0), |edge| edge.kind)
     }
 
-    /// First directional crossing kind, including raster river kinds.
-    /// Selected attack reads no movement distance. A known absent edge is
-    /// None; an unknown province or failed kind acquisition is refused.
     pub fn neighbour_kind(&self, from: u32, to: u32) -> Result<Option<u8>, String> {
         for province in [from, to] {
             if !self.known(province) {
@@ -414,48 +342,32 @@ impl MovementMap {
         })
     }
 
-    /// Source border pixels towards this neighbour, redirecting a sea
-    /// crossing once through its authored Through province. A lookup miss
-    /// contributes none; this lookup does not demand movement distance.
     pub fn front_border_target(&self, from: u32, to: u32) -> Option<u32> {
         let edge = self.edge(from, to)?;
         let Some(through) = edge.sea_through else {
             return Some(to);
         };
-        // Compare raw 32-bit IDs. Negative authored values keep their bits
-        // and cannot match the admitted u16 province identities.
         let target = through as u32;
         self.edge(from, target).map(|_| target)
     }
 
-    /// The movement arrow's inserted midpoint for a neighbour. The outer
-    /// `None` is not a neighbour; the inner `None` means the midpoint flag
-    /// suppresses insertion or crossing X is `-1`. Available even when the
-    /// neighbour's distance is not.
     pub fn route_crossing(&self, from: u32, to: u32) -> Option<Option<[i32; 2]>> {
         let crossing = self.edge(from, to)?.crossing;
         Some((!crossing.no_midpoint && crossing.point[0] != -1).then_some(crossing.point))
     }
 
-    /// The raw crossing point regardless of its midpoint flag: battle-plan
-    /// builders read it unconditionally. `None` is not a neighbour.
     pub fn neighbour_crossing(&self, from: u32, to: u32) -> Option<[i32; 2]> {
         Some(self.edge(from, to)?.crossing.point)
     }
 
-    /// Why each unavailable neighbour pair, `(lower, higher)`, has no distance.
     pub fn unavailable_edges(&self) -> &BTreeMap<(u32, u32), String> {
         &self.unavailable
     }
 
-    /// The number of native province records, the null record zero included.
     pub fn records(&self) -> usize {
         self.neighbours.len()
     }
 
-    /// A known province's neighbour entries as the native definition stores
-    /// them, in order, for the recorder's load oracle. `None` is an unknown
-    /// province.
     pub fn neighbour_records(
         &self,
         province: u32,
@@ -475,12 +387,6 @@ impl MovementMap {
         })
     }
 
-    /// A hand-built map for consumers' unit tests: each province's terrain and
-    /// its ordered neighbours as `(target, distance, kind, midpoint)`. A `None`
-    /// terrain is a record the loader invented for an unclaimed colour. Only
-    /// the `test-support` feature, which consumers enable from their
-    /// dev-dependencies, builds it. These unauthored fixtures have Through 0;
-    /// tests needing a strait's authored Through use the content loader.
     #[cfg(feature = "test-support")]
     pub fn from_parts<T: Copy + Into<Option<ProvinceTerrain>>>(
         provinces: &[(u32, T, Vec<Neighbour>)],
@@ -518,23 +424,15 @@ impl MovementMap {
     }
 }
 
-/// One derived native neighbour entry, field for field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NeighbourRecord {
-    /// Target province ID.
     pub to: u32,
-    /// Fixed5 movement distance; `None` when this pair's sampling failed,
-    /// see [`MovementMap::unavailable_edges`].
     pub distance: Option<i64>,
-    /// Crossing kind; None is unavailable, never a clear edge.
     pub kind: Option<u8>,
-    /// The midpoint-suppression flag is set.
     pub no_midpoint: bool,
-    /// Raw crossing coordinates.
     pub crossing: [i32; 2],
 }
 
-/// One neighbour of [`MovementMap::from_parts`].
 #[cfg(feature = "test-support")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Neighbour {
@@ -544,11 +442,6 @@ pub struct Neighbour {
     pub midpoint: Option<[i32; 2]>,
 }
 
-/// Terrain operands from the CSV row and raster neighbours. An unknown
-/// terrain name silently selects the null terrain (ordinal 0). Land starts
-/// with bit 4, which a land neighbour clears; a sea neighbour sets bit 8.
-/// Four-province crossings include their repaired diagonal neighbour,
-/// which the raster lists already hold.
 fn province_terrain(
     provinces: &Provinces,
     raster_lists: &[Vec<u32>],
@@ -598,8 +491,6 @@ fn province_terrain(
     terrain
 }
 
-/// Exact signed fixed5 scaling, with the exceptional positive sentinel. The
-/// native routine uses wrapping arithmetic before signed division.
 fn native_distance_scale(sum: i64) -> i64 {
     if (sum as u64).wrapping_add(0x7fff_ffff_ffff_fffe) <= 0xffff_ffff_ffff_fffc {
         sum.wrapping_mul(100_000) / 300_000
@@ -621,7 +512,6 @@ fn native_distance(
         if x < 0 || y < 0 {
             return Err("terrain pixel is outside the written bitmap".into());
         }
-        // Past the terrain bitmap the palette index reads as zero.
         let index = if x as usize >= bitmap.width || y as usize >= bitmap.height {
             0
         } else {
@@ -634,7 +524,6 @@ fn native_distance(
     Ok(native_distance_scale(sum))
 }
 
-/// River palette bytes in native file rows, with the define index ranges.
 struct Rivers {
     bitmap: NativeBitmap,
     small_start: i32,
@@ -665,8 +554,6 @@ impl Rivers {
         })
     }
 
-    /// Each pixel writes only while the kind is zero, so the first
-    /// qualifying pixel wins.
     fn first_crossing(&self, points: &[[i32; 2]]) -> Result<Option<u8>, String> {
         let (width, height) = (self.bitmap.width as i32, self.bitmap.height as i32);
         for &[x, y] in points {
@@ -731,8 +618,6 @@ mod tests {
         );
     }
 
-    /// The noncore-supply and combat movement defines load by name as fixed5; refusing
-    /// them leaves the other movement defines available.
     #[test]
     fn noncore_supply_and_combat_movement_defines_load_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -905,7 +790,6 @@ mod tests {
 
     #[test]
     fn river_bytes_use_native_file_rows_and_the_first_qualifying_pixel_wins() {
-        // File row 0 is native y = 0, the bottom row.
         let rivers = rivers(4, &[&[3, 7, 11, 255], &[255; 4]]);
         assert_eq!(rivers.first_crossing(&[[0, 0], [1, 0]]), Ok(Some(2)));
         assert_eq!(rivers.first_crossing(&[[1, 0], [0, 0]]), Ok(Some(3)));
@@ -916,7 +800,6 @@ mod tests {
 
     #[test]
     fn padded_river_rows_keep_their_first_width_bytes() {
-        // A width of 3 pads each row with one byte, here a river index.
         let rivers = rivers(3, &[&[255, 255, 255, 3], &[255, 255, 9, 3]]);
         assert_eq!(rivers.first_crossing(&[[0, 1], [1, 1]]), Ok(None));
         assert_eq!(rivers.first_crossing(&[[0, 0], [1, 0], [2, 0]]), Ok(None));
@@ -927,8 +810,6 @@ mod tests {
         forest = { movement_cost = 1.5 } ocean = { } lakes = { } } \
         terrain = { p = { type = plains color = { 0 } } f = { type = forest color = { 1 } } }";
 
-    /// A synthetic map from `id;kind;coastal;terrain` rows and native raster
-    /// rows, bottom first; province `id` is painted red `id`.
     fn synthetic(
         records: &[&str],
         rows: &[&[u32]],
@@ -981,7 +862,6 @@ mod tests {
             b"",
         );
         assert_eq!(map.neighbours(1), Some(&[2][..]));
-        // Anchors (0,0) and (2,0) meet at crossing (1,0): plains, plains, forest.
         assert_eq!(
             map.distance(1, 2),
             Some(native_distance_scale(2 * 100_000 + 150_000))
@@ -989,7 +869,6 @@ mod tests {
         assert_eq!(map.crossing_kind(1, 2), Some(0));
         assert_eq!(map.route_crossing(1, 2), Some(None));
         assert!(map.unavailable_edges().is_empty());
-        // The oracle's raw view carries the same entry field for field.
         assert_eq!(map.records(), 3);
         assert_eq!(
             map.neighbour_records(1).unwrap().collect::<Vec<_>>(),
@@ -1016,7 +895,6 @@ mod tests {
         );
         assert_eq!(map.terrain(1).unwrap().index, 2);
         assert_eq!(map.terrain(2).unwrap().index, 0);
-        // Colour 3 is unclaimed, so the loader invents record 3 without a row.
         assert_eq!(map.neighbours(3), Some(&[1, 2][..]));
         assert_eq!(map.terrain(3), None);
         assert_eq!(map.terrain(0), None);
@@ -1038,16 +916,15 @@ mod tests {
             b"",
         );
         let flags = |id| map.terrain(id).unwrap().flags;
-        assert_eq!(flags(1), 9); // Land, a sea neighbour, land across the seam.
-        assert_eq!(flags(2), 16); // A sea's authored coast is its own bit.
-        assert_eq!(flags(3), 10); // A lake keeps its authored coast.
-        assert_eq!(flags(4), 1); // Adjacency replaces a land row's coast.
+        assert_eq!(flags(1), 9);
+        assert_eq!(flags(2), 16);
+        assert_eq!(flags(3), 10);
+        assert_eq!(flags(4), 1);
 
         let lake = synthetic(
             &["1;lake;false;lakes", "2;land;false;plains"],
             &[&[1, 1, 1], &[1, 2, 1], &[1, 1, 1]],
             &[&[0; 4]],
-            // An authored neighbour does not clear the hidden bit.
             b"h
 2;2;sea;-1;-1;-1;-1;-1;;
 ",
@@ -1070,7 +947,6 @@ mod tests {
             &[&[0; 4]],
             b"",
         );
-        // Land 2 touches sea 4 only across the repaired crossing.
         assert_eq!(map.terrain(2).unwrap().flags, 9);
         assert!(map.neighbours(2).unwrap().contains(&4));
     }
@@ -1100,7 +976,6 @@ mod tests {
         );
         assert_eq!(authored.neighbours(1), Some(&[2, 3, 4, 5][..]));
         assert_eq!(authored.crossing_kind(5, 1), Some(1));
-        // Record five is unpainted: an origin anchor and a midpoint crossing.
         assert!(authored.distance(1, 5).is_some());
     }
 
@@ -1227,12 +1102,10 @@ mod tests {
     fn selected_raster_kind_survives_unavailable_terrain_distance() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // The native bitmap loader admits this packed row but the byte-addressed
-        // movement read has no stored byte. It is a real distance refusal pathway.
         let terrain = NativeBitmap::decode(&test_bmp(4, &[&[]], 1)).unwrap();
         let map = crossing_fixture(&terrain, &rivers(4, &[&[255, 3, 255, 255]]), b"");
         assert_eq!(map.distance(1, 2), None);
-        assert_eq!(map.crossing_kind(1, 2), None); // Existing ETA contract unchanged.
+        assert_eq!(map.crossing_kind(1, 2), None);
         assert_eq!(map.neighbour_kind(1, 2), Ok(Some(2)));
         assert_eq!(
             map.neighbour_records(1).unwrap().next().unwrap().kind,
@@ -1245,8 +1118,6 @@ mod tests {
     fn selected_unknown_river_kind_is_not_clear_and_distance_error_priority_is_preserved() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // Inject a river-domain fault after decoding; the normal loader rejects
-        // mismatched dimensions. This verifies the per-pair refusal representation.
         let terrain = NativeBitmap::decode(&test_bmp(4, &[&[]], 1)).unwrap();
         let mut river = rivers(4, &[&[255; 4]]);
         river.bitmap.height = 0;
@@ -1259,7 +1130,6 @@ mod tests {
         assert_eq!(map.neighbour_records(1).unwrap().next().unwrap().kind, None);
         assert_eq!(map.distance(1, 2), None);
         assert!(map.unavailable_edges()[&(1, 2)].contains("pixel reads outside"));
-        // An authored kind does not require a river read even on that faulty bitmap.
         let authored = crossing_fixture(&terrain, &river, b"h\n1;2;sea;-1;-1;-1;-1;-1;;\n");
         assert_eq!(authored.neighbour_kind(1, 2), Ok(Some(1)));
     }

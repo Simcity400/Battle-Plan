@@ -1,7 +1,3 @@
-//! Whole-branch scans with their hours read ahead: while a scan works on one hour, a walk on a
-//! thread of its own builds the next ones, and every block still reaches the scan in the order
-//! it was given. Reads from every scan share one core budget, so scans running together never
-//! oversubscribe the machine.
 
 use job_priority::SpawnCarried as _;
 use replay::{campaign::BlockIndex, campaign::Replay};
@@ -27,8 +23,6 @@ thread_local! {
     };
 }
 
-/// One hour a scan receives: its recorded facts, as the row recording shaped them, and the
-/// frame built from them, `decoded`.
 pub struct ScanHour {
     pub recorded: RecordedFrame,
     pub decoded: DecodedFrame,
@@ -63,29 +57,19 @@ impl replay_frame::frame::FrameSource for ScanHour {
     }
 }
 
-/// One block as a scan receives it: its hours, read as the scan takes them, or why it cannot be
-/// read.
 pub type BlockRead<'a> = (&'a BlockIndex, io::Result<BlockHours>);
 
-/// What the walk sends a scan.
 enum Sent {
-    /// The block at this position of the scan's begins.
     Begin(usize),
     Hour(Box<ScanHour>),
-    /// The block at this position cannot be read, for this reason.
     Failed(usize, io::Error),
-    /// The block at this position, begun, cannot be read past the hours already sent.
     Broken(usize, io::Error),
 }
 
-/// What a scan's blocks share: the walk's messages and the block whose hours are handed now.
 struct Feed {
     received: mpsc::Receiver<Sent>,
-    /// A message received ahead of the block it belongs to.
     held: Option<Sent>,
-    /// The block whose hours are being handed.
     current: Option<usize>,
-    /// Why a block the scan was reading ended short; the scan fails with it.
     broken: Option<io::Error>,
 }
 
@@ -95,7 +79,6 @@ impl Feed {
     }
 }
 
-/// The hours of one block of a scan, in order, read as they are taken.
 pub struct BlockHours {
     feed: Rc<RefCell<Feed>>,
     position: usize,
@@ -125,11 +108,6 @@ impl Iterator for BlockHours {
     }
 }
 
-/// `blocks`, each read with only its `tables` (and Campaign), handed to `scan` in their given
-/// order: each block's hours walked on a thread of their own as the scan takes them, blocks of
-/// one segment in rising order sharing one walk. A block whose walk meets damage is handed as
-/// that error, and the walk goes on at the next segment. Reading stops once `scan` returns or
-/// `cancelled` is set.
 pub fn scan_blocks<'a, R>(
     replay: &'a Replay,
     blocks: impl IntoIterator<Item = &'a BlockIndex>,
@@ -167,7 +145,6 @@ pub fn scan_blocks<'a, R>(
             let position = next;
             next += 1;
             let mut held = feed.borrow_mut();
-            // Hours of the block before that the scan left are passed over.
             loop {
                 match held.next() {
                     Some(Sent::Hour(_)) => continue,
@@ -186,7 +163,6 @@ pub fn scan_blocks<'a, R>(
                         held.current = None;
                         return Some((blocks[position], Err(error)));
                     }
-                    // A block the scan left before its end is no part of its result.
                     Some(Sent::Begin(_) | Sent::Failed(..) | Sent::Broken(..)) => continue,
                     None => {
                         held.current = None;
@@ -203,7 +179,6 @@ pub fn scan_blocks<'a, R>(
         let result = scan(&mut iterate);
         drop(iterate);
         let broken = feed.borrow_mut().broken.take();
-        // The walk stops at its next send once nothing receives.
         drop(feed);
         match (result, broken) {
             (Ok(_), Some(error)) => Err(error),
@@ -212,10 +187,8 @@ pub fn scan_blocks<'a, R>(
     })
 }
 
-/// Hours a scan's walk runs ahead of the scan at most.
 const AHEAD_HOURS: usize = 64;
 
-/// Walks `blocks` of `replay`, sending each block's beginning, its hours and its failure.
 fn walk(
     replay: &Replay,
     blocks: &[&BlockIndex],
@@ -234,7 +207,6 @@ fn walk(
         }
         let group = &blocks[at..end];
         let mut begun = at;
-        // The block whose hours are being sent and not yet all sent.
         let mut open = None;
         let mut gone = false;
         let walked = replay.visit_blocks(
@@ -278,7 +250,6 @@ fn walk(
                     return;
                 }
             }
-            // The blocks not begun yet are lost with the segment.
             for position in begun..end {
                 let error = io::Error::new(error.kind(), error.to_string());
                 if sender.send(Sent::Failed(position, error)).is_err() {
@@ -290,11 +261,6 @@ fn walk(
     }
 }
 
-/// `blocks` (or any items read alike), each read by `read`, handed to `scan` in their
-/// given order, with at most `ahead` blocks read on spare cores ahead of the one `scan`
-/// works on (none: every block is read on the calling thread when `scan` asks for it).
-/// Reads share [`scan_blocks`]'s core budget. Reading ahead stops once `scan` returns
-/// or `cancelled` is set.
 pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
     blocks: Vec<&'a B>,
     ahead: usize,
@@ -319,10 +285,8 @@ pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
         catch_unwind(AssertUnwindSafe(|| read_block(blocks[position])))
             .unwrap_or_else(|_| Err(io::Error::other("block read failed")))
     };
-    // Measurement only: the readers' CPU is the scan's family's.
     let cpu_family = replay_frame::cpu::family();
     thread::scope(|scope| {
-        // Install before spawning: a refused worker must wake and join those already running.
         let _stop = Stop(ahead);
         for _ in 0..readers.min(blocks.len().saturating_sub(1)) {
             let priority = job_priority::JobPriority::current();
@@ -342,7 +306,6 @@ pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
             if position == blocks.len() {
                 return None;
             }
-            // A block no reader has taken (they stop when cancelled) is read here.
             let result = if position == state.taken {
                 state.taken += 1;
                 drop(state);
@@ -366,11 +329,9 @@ pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
 }
 
 struct State<T> {
-    /// The next block a reader takes, and the next one handed to the scan.
     taken: usize,
     handed: usize,
     stop: bool,
-    /// Blocks a reader may take beyond the one handed next.
     ahead: usize,
     reads: Vec<Option<io::Result<T>>>,
 }
@@ -385,8 +346,6 @@ impl<T> Ahead<T> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The next block to read once it is within reach of the scan, or none when
-    /// every block is taken or reading should stop.
     fn take(&self, cancelled: &AtomicBool) -> Option<usize> {
         let mut state = self.lock();
         loop {
@@ -414,7 +373,6 @@ impl<T> Drop for Stop<'_, T> {
     }
 }
 
-/// Block reads running at once across every scan: one per core.
 struct Cores {
     free: Mutex<usize>,
     freed: Condvar,
@@ -485,7 +443,6 @@ mod tests {
                         Ok(())
                     },
                     |reads| {
-                        // Wait before taking a block: this read must be a worker's.
                         let (worker, inherited) =
                             received.recv_timeout(Duration::from_secs(10)).unwrap();
                         assert_ne!(worker, caller);
@@ -503,7 +460,6 @@ mod tests {
 
     #[test]
     fn blocks_arrive_in_their_given_order_and_a_scan_may_stop_early() {
-        // Each appended segment starts a keyframe, so each hour is its own block.
         let initial = records(1, vec![source(1, 1, None)]);
         let context = initial[..2].to_vec();
         let mut replay = Replay::from_records(CAMPAIGN.into(), &[initial]).unwrap();

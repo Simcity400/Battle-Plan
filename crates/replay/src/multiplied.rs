@@ -1,19 +1,3 @@
-//! A world several times larger, made from a journal as it is read, so the recorder, its file and
-//! its readers are measured at that size. Dev measurement, deleted with the journal's section
-//! format or before the lane's pull request.
-//!
-//! Each table has a factor (`Table factor` lines in a text file; 1 when not named). Copy `j` of a
-//! table of factor `K` holds the source's rows at slots `s * K + j`, keys with `j` in their top
-//! byte, and the same cells: a cell naming another entity keeps the original's id. Copy `j` is
-//! the source delayed by `168 * j` hours, read by a journal reader of its own, so copies do not
-//! move in step; a table whose status is ever other than complete is copied in phase instead
-//! (its copies cannot hold other statuses), from the first copy's sections. A FILL becomes a SET
-//! of the copy's own rows. Hours, statuses, strings and records are the first copy's.
-//!
-//! A run may also start after one of the journal's blocks ([`Start`]): its first hour inserts every
-//! row the journal's hours before it leave, with the journal's next hour applied, and the
-//! journal's hours follow. That hour is made by [`preroll`], in a process of its own, into a file
-//! the run reads a table at a time.
 
 use crate::{
     columnar_frames::schema,
@@ -37,7 +21,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Hours between one copy and the next.
 pub const LAG: u64 = 168;
 
 fn label() -> engine_allocation::labels::Scope {
@@ -45,7 +28,6 @@ fn label() -> engine_allocation::labels::Scope {
     labels::enter(labels::owner("multiplier"), labels::Kind::Operator)
 }
 
-/// One column's values, owned. Optional values are held one per row.
 #[derive(Clone, Debug)]
 enum Col {
     U8(Vec<u8>),
@@ -67,7 +49,6 @@ enum Col {
     Opaque(Vec<u32>, Vec<u8>),
 }
 
-/// A [`Col`] as a section takes it.
 enum Wire<'a> {
     Borrowed(Values<'a>),
     OI32(Vec<u64>, Vec<i32>),
@@ -190,7 +171,6 @@ impl Col {
         })
     }
 
-    /// `table`'s cells of `column` at `slots`; an unrecorded cell reads as the column holds it.
     fn of_table(table: &Table, kind: Kind, column: usize, slots: &[u32]) -> Self {
         let held = table.column(column);
         let cell = |slot: u32| held.and_then(|column| column.cell(slot));
@@ -237,7 +217,6 @@ impl Col {
         }
     }
 
-    /// The values `picks` name, each a part and a place in it; every part holds one kind.
     fn gather(parts: &[&Col], picks: &[(usize, usize)]) -> Self {
         match parts[0] {
             Col::U8(_) => gather_plain!(parts, picks, U8),
@@ -295,7 +274,6 @@ impl Col {
     }
 }
 
-/// The integer kind an ADD to `kind` carries.
 fn base(kind: Kind) -> io::Result<Kind> {
     Ok(match kind {
         Kind::OptionalI32 => Kind::I32,
@@ -324,7 +302,6 @@ struct OwnedRun {
     patches: Option<(Vec<u32>, Vec<(u32, u32, u32)>, Items)>,
 }
 
-/// One table's section of one hour, owned.
 #[derive(Clone, Debug, Default)]
 struct Decoded {
     read: Option<Vec<u32>>,
@@ -464,7 +441,6 @@ impl Decoded {
         )
     }
 
-    /// Every live row of `table` inserted: a run's first hour from a restore.
     fn whole(table: &Table, kinds: &[Kind]) -> Self {
         let inserted: Vec<u32> = table.live().ones().collect();
         let keys = inserted.iter().map(|&slot| table.key(slot).expect("a live row")).collect();
@@ -481,14 +457,12 @@ impl Decoded {
     }
 }
 
-/// Each table's factor, and whether it is copied in phase.
 pub struct Factors {
     pub factor: Vec<u32>,
     pub in_phase: Vec<bool>,
 }
 
 impl Factors {
-    /// `Table factor` lines; a table not named has factor 1.
     pub fn read(path: &Path) -> io::Result<Self> {
         let mut factor = vec![1_u32; TableId::ALL.len()];
         for line in std::fs::read_to_string(path)?.lines() {
@@ -511,8 +485,6 @@ impl Factors {
     }
 }
 
-/// A run's start after the journal's block `block`: its tables at that block's end, as the
-/// journal's hours before it leave them, read from `file`, which [`preroll`] wrote.
 pub struct Start {
     pub block: u32,
     pub file: PathBuf,
@@ -520,19 +492,14 @@ pub struct Start {
 
 const START_MAGIC: &[u8; 8] = b"HOI4STA1";
 
-/// The first hour of a run started after a restore, in the file [`preroll`] wrote: its manifest
-/// and each table's section are read from it when an hour needs them, shared by every copy.
 struct Synthetic {
     witness: Option<crate::columnar_journal::Witness>,
-    /// Where the manifest lies in `file`.
     manifest: (u64, u64),
     file: PathBuf,
-    /// Per table, where its section of inserted rows lies in `file`; none for a table with none.
     sections: Vec<Option<(u64, u64)>>,
 }
 
 impl Synthetic {
-    /// The start [`preroll`] wrote for the journal's block `block` of capture `capture`.
     fn open(file: &Path, capture: u32, block: u32, tables: usize) -> io::Result<Self> {
         let mut held = File::open(file)?;
         let size = held.metadata()?.len();
@@ -585,7 +552,6 @@ impl Synthetic {
         Ok(Self { witness, manifest, file: file.to_owned(), sections })
     }
 
-    /// The start's hour's manifest.
     fn manifest(&self) -> io::Result<Vec<u8>> {
         let _label = label();
         let mut file = File::open(&self.file)?;
@@ -595,7 +561,6 @@ impl Synthetic {
         Ok(bytes)
     }
 
-    /// Table `table`'s section of the start's hour.
     fn section(&self, table: usize) -> io::Result<Option<Vec<u8>>> {
         let _label = label();
         let Some((at, length)) = self.sections.get(table).copied().flatten() else { return Ok(None) };
@@ -612,10 +577,6 @@ impl Synthetic {
     }
 }
 
-/// Writes to `out` the first hour of a run started after the journal's block `block` (the tables
-/// at that block's end, every row inserted, with the journal's next hour applied), for
-/// [`Multiplied::open`] to read. The journal's hours before it are walked here, so a process
-/// measuring the run does not hold them.
 pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path) -> io::Result<()> {
     let kinds = schema()?;
     let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
@@ -662,8 +623,6 @@ pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path) -> io::Re
     std::fs::rename(written, out)
 }
 
-/// Records a journal's segments hold, read without their sections: each record's kind and its
-/// payload, an hour's only through its manifest.
 fn scan(path: &Path, mut visit: impl FnMut(u8, &[u8]) -> io::Result<()>) -> io::Result<()> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();
@@ -687,7 +646,6 @@ fn scan(path: &Path, mut visit: impl FnMut(u8, &[u8]) -> io::Result<()>) -> io::
             if head[0] != 3 || want == length {
                 break;
             }
-            // An hour's witness, its manifest's length, then the manifest.
             let mut reader = Reader::new(&bytes);
             let flags = reader.u8()?;
             reader.raw(if flags & 1 == 0 { 0 } else if flags & 2 == 0 { 8 } else { 16 })?;
@@ -705,7 +663,6 @@ fn scan(path: &Path, mut visit: impl FnMut(u8, &[u8]) -> io::Result<()>) -> io::
     Ok(())
 }
 
-/// The manifest of a scanned hour's payload.
 fn scanned_manifest(bytes: &[u8]) -> io::Result<&[u8]> {
     let mut reader = Reader::new(bytes);
     let flags = reader.u8()?;
@@ -714,26 +671,18 @@ fn scanned_manifest(bytes: &[u8]) -> io::Result<&[u8]> {
     reader.raw(length)
 }
 
-/// A table removed from the recorded tables since kept journals were written: its place among the
-/// tables a journal of then held, its name, and its columns.
 pub type Removed = (usize, &'static str, &'static [Kind]);
 
-/// The tables removed since, in rising place: a kept journal written before them is read with them
-/// put back, and a section of one is refused by name. A journal of this schema holds none of them.
 pub const REMOVED: [Removed; 1] = [(422, "LogForgets", &[Kind::I32])];
 
-/// The tables a journal was written with: each one's columns, and its place in this schema, none
-/// for a table removed since.
 #[derive(Clone, Debug)]
 struct JournalTables {
     columns: Vec<usize>,
     places: Vec<Option<usize>>,
-    /// Each removed table's place in `columns` and its name.
     removed: Vec<(usize, &'static str)>,
 }
 
 impl JournalTables {
-    /// This schema's tables, `removed` put back at their places when it holds any.
     fn written(kinds: &[Vec<Kind>], removed: &[Removed]) -> Self {
         let mut columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
         let mut places: Vec<Option<usize>> = (0..kinds.len()).map(Some).collect();
@@ -744,14 +693,10 @@ impl JournalTables {
         Self { columns, places, removed: removed.iter().map(|&(at, name, _)| (at, name)).collect() }
     }
 
-    /// Its first `tables` tables.
     fn first(&self, tables: usize) -> Self {
         Self { columns: self.columns[..tables].to_vec(), places: self.places[..tables].to_vec(), removed: self.removed.iter().copied().filter(|&(at, _)| at < tables).collect() }
     }
 
-    /// A manifest of the journal's, read with its tables and set at their places among this
-    /// schema's `tables`: a removed table's status, read mark and sample go, and a section of one
-    /// is refused by name. Sections keep their order.
     fn read<'a>(&self, bytes: &'a [u8], tables: usize) -> io::Result<Manifest<'a>> {
         let mut manifest = Manifest::read(bytes, &self.columns)?;
         if self.removed.is_empty() {
@@ -780,12 +725,9 @@ impl JournalTables {
     }
 }
 
-/// `manifest`, of a journal written for this schema's first tables, for all `tables`: the others
-/// not recorded, read in no hour.
 fn widen(mut manifest: Manifest<'_>, tables: usize, recorded: usize) -> Manifest<'_> {
     manifest.statuses.resize(tables, Status::NotRecorded);
     manifest.read.resize(tables.div_ceil(64), 0);
-    // What a journal says of a derived table is the writers' now.
     for table in recorded..tables {
         manifest.statuses[table] = Status::NotRecorded;
         manifest.read[table / 64] &= !(1 << (table % 64));
@@ -795,12 +737,6 @@ fn widen(mut manifest: Manifest<'_>, tables: usize, recorded: usize) -> Manifest
     manifest
 }
 
-/// The tables a journal was written with, and how many when its capture's schema digest names
-/// them: the first tables of this schema, or of this schema with `removed` put back. A journal
-/// whose digest names neither (its builds held derived tables whose columns have changed since,
-/// all before the removals) holds the tables before the derived ones, `removed` put back; the
-/// derived ones form the schema's tail and a journal never holds them, and a manifest naming one is
-/// refused when read.
 fn journal_tables(segments: &[(u32, PathBuf)], kinds: &[Vec<Kind>], removed: &[Removed]) -> io::Result<(JournalTables, Option<usize>)> {
     let mut identity = None;
     for (_, path) in segments {
@@ -829,7 +765,6 @@ fn journal_tables(segments: &[(u32, PathBuf)], kinds: &[Vec<Kind>], removed: &[R
     Ok((JournalTables::written(kinds, removed), None))
 }
 
-/// This schema's tables before its derived ones, which must be its tail.
 fn recorded_tables(kinds: &[Vec<Kind>]) -> io::Result<usize> {
     let derived = recorder_derive::writers().tables();
     let recorded = kinds.len() - derived.len();
@@ -839,7 +774,6 @@ fn recorded_tables(kinds: &[Vec<Kind>]) -> io::Result<usize> {
     Ok(recorded)
 }
 
-/// Each segment's hours and the records before them.
 struct Scanned {
     hours: u64,
     appends: Vec<Vec<u8>>,
@@ -848,17 +782,14 @@ struct Scanned {
     run: Option<(u64, u8, i32)>,
 }
 
-/// A journal's records read without their sections, its segments in order.
 struct Scan {
     journal: JournalTables,
     exact: bool,
     scanned: Vec<Scanned>,
     segments: Vec<(u32, PathBuf)>,
-    /// Per table, whether its status is ever other than complete.
     partial: Vec<bool>,
 }
 
-/// Capture `capture`'s journal in `directory` scanned; with `appends`, every hour's strings kept.
 fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: usize, removed: &[Removed], appends: bool) -> io::Result<Scan> {
     let segments: Vec<(u32, PathBuf)> = crate::columnar_journal::segments(directory)?
         .into_iter()
@@ -923,7 +854,6 @@ fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: u
     Ok(Scan { journal: written.first(candidates[0]), exact: exact.is_some(), scanned, segments, partial })
 }
 
-/// The scanned segment whose first hour starts the block after the journal's block `block`.
 fn start_segment(scanned: &[Scanned], block: u32) -> io::Result<usize> {
     let wanted = u64::from(block + 1) * 720;
     let mut before = 0;
@@ -937,29 +867,24 @@ fn start_segment(scanned: &[Scanned], block: u32) -> io::Result<usize> {
         .ok_or_else(|| invalid("No journal segment starts the block after the restore"))
 }
 
-/// A capture start's identity with this schema's digest.
 fn current_identity(identity: &[u8], kinds: &[Vec<Kind>]) -> io::Result<Vec<u8>> {
     let mut held = replay_columnar::envelope::Identity::read_capture(identity)?;
     held.schema = replay_columnar::envelope::schema_digest(kinds);
     held.chain_bytes()
 }
 
-/// Owned records given before a started run's first hour.
 enum Prefix {
     Begin(Vec<u8>, Vec<u8>),
     Controls(Vec<Vec<u8>>),
     Run { branch: u64, epoch: u8, first_hour: i32 },
 }
 
-/// One copy's records: a journal, after any records and first hour a start gives.
 struct Upstream {
     journal: Journal,
     prefix: Vec<Prefix>,
     at: usize,
     synthetic: Option<Arc<Synthetic>>,
-    /// The journal's first hour is the synthetic one's.
     skip_hour: bool,
-    /// Runs it passed.
     runs: u32,
 }
 
@@ -1007,63 +932,45 @@ impl Upstream {
     }
 }
 
-/// A table's section of an hour: decoded, or the start's, read when the merge needs it.
 #[derive(Clone)]
 enum Piece {
     Decoded(Arc<Decoded>),
     Start,
 }
 
-/// One copy's hour, decoded where the merge needs it.
 #[derive(Default)]
 struct CopyHour {
-    /// Per table: its section, with its manifest entry's columns and ops.
     tables: Vec<Option<(Piece, Vec<u64>, u8)>>,
 }
 
-/// The first copy's section of a table this hour.
 enum First {
-    /// As the journal holds it: a table copied once.
     Raw(Vec<u8>),
     Decoded(Arc<Decoded>),
     Start,
 }
 
-/// The hour [`Multiplied`] gives, built once.
 struct Built {
     witness: Option<crate::columnar_journal::Witness>,
     manifest: Vec<u8>,
     sections: Vec<u8>,
 }
 
-/// The journal, its tables multiplied ([`Factors`]), as a [`Source`].
 pub struct Multiplied {
     kinds: Vec<Vec<Kind>>,
     columns: Vec<usize>,
-    /// The tables the journal was written with.
     journal: JournalTables,
-    /// The capture's start with this schema's digest.
     begin: Option<(Vec<u8>, Vec<u8>)>,
-    /// The start's first hour, when the run starts after a block.
     start: Option<Arc<Synthetic>>,
-    /// Whether the journal's schema digest named a prefix of this schema.
     pub exact_schema: bool,
-    /// This schema's tables before the derived ones.
     recorded: usize,
     factors: Factors,
     first: Upstream,
-    /// Copy `j`'s records at `j - 1`.
     copies: Vec<Upstream>,
-    /// Hours the first copy gave.
     hours: u64,
-    /// Per table and copy, its live rows by the source's slots.
     live: Vec<Vec<Bits>>,
     built: Option<Built>,
-    /// The hour passed on as the journal holds it, its manifest widened: its witness and the
-    /// widened manifest.
     passing: Option<(Option<crate::columnar_journal::Witness>, Vec<u8>)>,
     runs: u32,
-    /// Time spent making hours, for the measurement to take off.
     pub spent: std::time::Duration,
 }
 
@@ -1082,13 +989,10 @@ fn clear_bit(bits: &mut [u64], slot: u32) {
 }
 
 impl Multiplied {
-    /// Capture `capture`'s journal in `directory`, read only, multiplied by `factors`, from the
-    /// run's start or after `start`'s restore.
     pub fn open(directory: &Path, capture: u32, factors: Factors, start: Option<Start>) -> io::Result<Self> {
         Self::open_with(directory, capture, factors, start, &REMOVED)
     }
 
-    /// [`Self::open`] of a journal written before the tables `removed` left the schema.
     fn open_with(directory: &Path, capture: u32, mut factors: Factors, start: Option<Start>, removed: &[Removed]) -> io::Result<Self> {
         let _label = label();
         let kinds = schema()?;
@@ -1132,7 +1036,6 @@ impl Multiplied {
         Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, recorded, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, spent: std::time::Duration::ZERO })
     }
 
-    /// The tables copied in phase, by name, for the measurement's output.
     pub fn in_phase(&self) -> Vec<String> {
         (0..self.factors.factor.len())
             .filter(|&table| self.factors.factor[table] > 1 && self.factors.in_phase[table])
@@ -1140,7 +1043,6 @@ impl Multiplied {
             .collect()
     }
 
-    /// Copy `j`'s next hour, decoded for the tables it copies out of phase; none once it ends.
     fn copy_hour(&mut self, copy: usize) -> io::Result<Option<CopyHour>> {
         let factors = &self.factors;
         let wanted = |table: usize| !factors.in_phase[table] && factors.factor[table] as usize > copy;
@@ -1192,13 +1094,11 @@ impl Multiplied {
         }
     }
 
-    /// Table `table`'s parts merged into one section: copy `j`'s rows at `s * K + j`.
     fn merge(&mut self, table: usize, parts: &[(usize, &Decoded)]) -> io::Result<Vec<u8>> {
         let factor = self.factors.factor[table];
         let kinds = &self.kinds[table];
         let at = |slot: u32, copy: usize| slot * factor + copy as u32;
         let mut changed_all: Vec<u32> = Vec::new();
-        // Per part, each FILL's targets: the copy's live rows but the exceptions.
         let mut targets: Vec<Vec<Vec<u32>>> = Vec::with_capacity(parts.len());
         for &(copy, part) in parts {
             if factor > 1 && part.keys.iter().any(|key| key >> 120 != 0) {
@@ -1278,7 +1178,6 @@ impl Multiplied {
             let empty = Vec::new();
             merged.read = Some(union(&mut parts.iter().map(|&(copy, part)| (copy, part.read.as_ref().unwrap_or(&empty)))));
         }
-        // Inserts in slot order, each copy's keys moved to its own top byte.
         let mut rows: Vec<(u32, usize, usize)> = Vec::new();
         for (index, &(copy, part)) in parts.iter().enumerate() {
             rows.extend(part.inserted.iter().enumerate().map(|(row, &slot)| (at(slot, copy), index, row)));
@@ -1313,9 +1212,6 @@ impl Multiplied {
         merged.write(kinds)
     }
 
-    /// The journal's hour taken as it is, without a copy, its manifest widened to this schema:
-    /// when no table is multiplied, no start is given and the hour holds no derived table's
-    /// section. Whether it was.
     fn pass(&mut self) -> io::Result<bool> {
         if self.factors.factor.iter().any(|&factor| factor > 1) || self.first.synthetic.is_some() || self.first.at < self.first.prefix.len() {
             return Ok(false);
@@ -1337,12 +1233,10 @@ impl Multiplied {
         let started = std::time::Instant::now();
         let hour_index = self.hours;
         let tables = self.kinds.len();
-        // The copies' hours, each from its own reader, delayed.
         let mut copy_hours: Vec<Option<CopyHour>> = Vec::with_capacity(self.copies.len());
         for copy in 1..=self.copies.len() {
             copy_hours.push(if hour_index >= LAG * copy as u64 { self.copy_hour(copy)? } else { None });
         }
-        // The first copy's hour: its sections passed or decoded.
         let (witness, manifest_bytes, firsts) = match self.first.item()? {
             Some(Item::Synthetic(synthetic)) => {
                 let bytes = synthetic.manifest()?;
@@ -1457,8 +1351,6 @@ impl Source for Multiplied {
         if segment == 0 {
             return Ok(());
         }
-        // Only the journal as it is, every table once and no start's restore, holds nothing
-        // across hours to resume without.
         if self.factors.factor.iter().any(|&factor| factor > 1) || !self.first.prefix.is_empty() || self.first.synthetic.is_some() {
             return Err(invalid("A multiplied journal, or one given a start, is read from its start"));
         }
@@ -1529,9 +1421,6 @@ impl Source for Multiplied {
     }
 }
 
-/// The started run's first hour, its witness, manifest and per table its rows inserted: the
-/// journal's tables at the end of the block before segment `segment`, the journal's next hour
-/// applied, every row inserted; derived tables are left to their writers.
 #[allow(clippy::type_complexity, reason = "the hour's witness, manifest and sections, returned together")]
 fn restored(
     directory: &Path,
@@ -1543,7 +1432,6 @@ fn restored(
     mut appends: Vec<Vec<u8>>,
 ) -> io::Result<(Option<crate::columnar_journal::Witness>, Vec<u8>, Vec<Option<Decoded>>)> {
     let recorded = recorded_tables(kinds)?;
-    // The tables at the block's end, from the journal's own hours before it.
     let mut state = replay_columnar::walk::State::new(kinds.to_vec())?;
     let mut journal = Journal::open_read_only(directory, capture);
     journal.start(0)?;
@@ -1616,10 +1504,8 @@ mod tests {
     use crate::columnar_journal::{JournalWriter, Source};
     use replay_columnar::envelope::{Identity, schema_digest};
 
-    /// A table removed since from the middle of the recorded tables, before Countries.
     const MIDDLE: [Removed; 1] = [(2, "Removed", &[Kind::I32])];
 
-    /// A directory of its own, removed even when an assertion fails.
     struct Folder(PathBuf);
 
     impl Folder {
@@ -1637,17 +1523,12 @@ mod tests {
         }
     }
 
-    /// This schema's tables with [`MIDDLE`]'s put back: the tables a journal of then was written with.
     fn before() -> Vec<Vec<Kind>> {
         let mut kinds = schema().unwrap();
         kinds.insert(MIDDLE[0].0, MIDDLE[0].2.to_vec());
         kinds
     }
 
-    /// A journal of one hour written with [`before`]'s tables, its capture naming `digest` (the
-    /// tables' own when none): a row of Campaign (before the removed table), of CountryLinks
-    /// (after it, one place later than in this schema), and of the removed table when `removed`.
-    /// Each section's table in that list and its bytes.
     fn journal(folder: &Path, digest: Option<[u8; 32]>, removed: bool) -> Vec<(usize, Vec<u8>)> {
         let before = before();
         let identity = Identity { schema: digest.unwrap_or_else(|| schema_digest(&before)), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
@@ -1701,8 +1582,6 @@ mod tests {
         sections
     }
 
-    /// What the tool gives of the journal: whether its digest named its tables, and each hour's
-    /// sections (this schema's table, its rows as decoded) and statuses.
     #[allow(clippy::type_complexity, reason = "a test's view of the hours read")]
     fn read(folder: &Path) -> io::Result<(bool, Vec<(Vec<(usize, String)>, Vec<Status>)>)> {
         let kinds = schema()?;
@@ -1725,9 +1604,6 @@ mod tests {
         Ok((exact, hours))
     }
 
-    /// A kept journal written with one table more in the middle of the recorded tables than this
-    /// schema holds reads through the tool with every other table's rows as written, each at its
-    /// place in this schema, whether its digest names its tables or none.
     #[test]
     fn a_journal_written_with_a_table_removed_since_reads_with_every_other_table_where_this_schema_holds_it() {
         let before = before();
@@ -1752,7 +1628,6 @@ mod tests {
         }
     }
 
-    /// A section of a table removed since is refused by name, never read as another table's.
     #[test]
     fn a_section_of_a_table_removed_since_is_refused_by_name() {
         let folder = Folder::new("removed");

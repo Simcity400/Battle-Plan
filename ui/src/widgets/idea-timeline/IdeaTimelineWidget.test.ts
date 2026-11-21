@@ -42,7 +42,6 @@ test('Idea and spirit history growth uses each resolved track hour, preserving h
   const clock = new PlaybackController();
   clock.setBounds(clockBounds(tracks), true);
   host.__politicsHistory = { track: tracks[0], tag: data.tag, data };
-  // Exercise both actual renderers and the clock model; replace only data, artwork and canvas leaves.
   const replacements: Record<string, string> = {
     '/dashboard/ideaHistory.ts': `import { resolveWindow } from '/ui/src/dashboard/model.ts'; export const useIdeaHour = (widget, runtime, track) => { const hour = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour : undefined; return hour === undefined || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour); }; export const useIdeaHistory = () => globalThis.__politicsHistory;`,
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
@@ -102,7 +101,6 @@ test('Idea and spirit history growth uses each resolved track hour, preserving h
       assert.match(render(400), /outside the recording/);
       assert.equal(host.__politicsTimeline, undefined, 'another aligned track cannot extend this branch');
       if (kind === 'spirit-history') {
-        // A held idea the content cannot classify might be a spirit: no history is not proven.
         host.__politicsHistory = { track: tracks[0], tag: data.tag, data: { ...data, ideas: [data.ideas[0], { ...data.ideas[1], category: null }] } };
         const unknown = render(150);
         assert.match(unknown, /could not be classified/);

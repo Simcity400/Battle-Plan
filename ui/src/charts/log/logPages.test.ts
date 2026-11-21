@@ -25,7 +25,6 @@ test('window order and each loaded window are newest first while unloaded counts
   const items = logPageItems([page('old', 0, 1000), page('new', 20, 3, [row('early', 21), row('late', 28)]), page('middle', 10, 400)], false);
   assert.deepEqual(items.map(item => item.kind === 'row' ? item.row.key : item.kind === 'page' ? item.page.key : item.label), ['late', 'early', 'middle', 'old']);
   assert.deepEqual(logOffsets(items, 'comfortable'), [0, 38, 76, 15276, 53276]);
-  // The loaded page's actual filtered count replaces its unfiltered manifest count.
   assert.equal(logRowOrdinals(items).at(-1), 1402);
   assert.equal(logRowOrdinals(items).length, 5);
 });
@@ -74,7 +73,6 @@ test('keyboard targets reach pending windows and retain their offset when loaded
   assert.equal(target?.offset, 1);
   assert.equal(target?.ordinal, 101);
   assert.equal(logPageTarget(logPageItems([page('old', 0, 0)], false), [0], 'old', 999), null);
-  // Held ahead of a clock at hour 5, the loaded window's row of hour 9 waits: a pending target reaches only the row shown.
   const spans = logSpans(held), shown = (index: number) => logItemState(spans, index, 5) === 'shown';
   assert.deepEqual(logPageTarget(held, logShownOrdinals(held, spans, 5), 'old', 0, shown), { index: 2, offset: 0, ordinal: 100, pageKey: 'old', row: held[2].kind === 'row' ? held[2].row : undefined });
   assert.equal(logPageTarget(held, logShownOrdinals(held, spans, 1), 'old', 0, index => logItemState(spans, index, 1) === 'shown'), null, 'no row of the window shows yet');
@@ -150,8 +148,6 @@ test('pixel paging retains measured card destinations around month headings', ()
   const offsets = logOffsets(items, 'comfortable', at => heights.get(at.key)!);
   const ordinals = logRowOrdinals(items);
   assert.deepEqual(offsets, [0, 24, 124, 424, 448, 498, 578]);
-  // A downward goal at a month heading reaches the preceding card, not the
-  // next heading beyond the viewport; upwards reaches the following card.
   assert.equal(logPixelTarget(items, offsets, ordinals, 0, 400, 1)?.row?.key, 'b');
   assert.equal(logPixelTarget(items, offsets, ordinals, 3, 74, -1)?.row?.key, 'c');
   assert.equal(logPixelTarget(items, offsets, ordinals, 1, 10, 1)?.row?.key, 'c');
@@ -197,7 +193,6 @@ test('a page the last loaded page continues to is described at once, so an hour 
   assert.deepEqual(continued, [{ cursor: null, end: 100 }, { cursor: 'b', end: 0 }]);
   const items = logPageItems([{ key: '0', start: 90, end: 100, count: 0, rows: [] }, { key: '1', start: 0, end: 90, count: 256 }], false);
   assert.ok(logRowOrdinals(items).at(-1)! > 0, 'the described page is a placeholder, not an empty list');
-  // Nothing to continue, an unloaded last page, or a repeated cursor: the chain stays as it is.
   assert.equal(withContinuation(described, new Map([[0, { nextCursor: null }]]), next), described);
   assert.equal(withContinuation(described, new Map(), next), described);
   const looped = [{ cursor: null, end: 100 }, { cursor: 'b', end: 90 }];

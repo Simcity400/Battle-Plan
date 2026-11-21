@@ -31,8 +31,6 @@ import type { FactionRulesReply } from '../../generated/dashboard';
 const NO_WARNINGS: string[] = [];
 const NO_EVENTS: number[] = [];
 
-/** A faction's rules, programmes, upgrades and shared doctrines over the campaign: one request per faction; while
- * following, the playhead moves with the clock and the lanes render only when it passes a selection's start or end. */
 export default function FactionUpgradesWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -52,7 +50,6 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo(() => following && active ? { read: () => { const head = runtime.clock.getSnapshot().position + axisOffset; shown(Math.floor(head)); return head; },
     subscribe: runtime.clock.subscribeFrame } : undefined, [following, active, runtime.clock, axisOffset, shown]);
-  // Each member lane is named as its own holder was at its last selection.
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => (data?.members ?? []).flatMap(member => {
     const hour = memberNameHour(member); return hour === null || member.tag === null ? [] : [{ hour, tag: member.tag }]; }), [data]), active);
   const groupNames = useMemo(() => new Map(data?.groups.map(group => [group.group, group.name]) ?? []), [data]);

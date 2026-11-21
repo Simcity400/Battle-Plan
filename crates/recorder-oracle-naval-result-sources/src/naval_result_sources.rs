@@ -1,4 +1,3 @@
-//! Branch self-check: the save retains outcomes, never combat provenance.
 use super::{Report, complete};
 use replay::campaign::Replay;
 use replay_data::{Hour, rows::NavalResultSourceRow, rows::TableId, rows::tables};
@@ -67,8 +66,6 @@ struct SourceCheck {
     combats: Option<BTreeSet<u64>>,
     results: Option<BTreeMap<u64, Hour>>,
     declared_gaps: Vec<(Hour, Hour)>,
-    /// The branch's recorded event losses (`ControlRecord::EventLoss`), as
-    /// the reads each lies between.
     event_losses: Vec<(Hour, Hour)>,
     last_event: Option<(u64, Hour)>,
     sources: BTreeSet<u64>,
@@ -84,8 +81,6 @@ impl SourceCheck {
                 if reason == "naval result sources first/branch interval is partial"
         );
         let partial_first = self.previous_hour.is_none() && first_reason;
-        // A reattached collector's first interval, which the recording
-        // declares lost from the previous read to this one.
         let partial_reattach = first_reason
             && self
                 .previous_hour
@@ -142,8 +137,6 @@ impl SourceCheck {
                         count.0 += 1;
                     }
                 }
-                // Only result creation inserts results, and only
-                // fill/merge write result_hour.
                 if let (Some(previous), Ok(current)) = (&self.results, &results) {
                     for (&result, &hour) in current {
                         let (new, merged) = counts.get(&result).copied().unwrap_or_default();
@@ -198,8 +191,6 @@ impl SourceCheck {
                         );
                     }
                     self.last_event = Some((row.id, row.game_hour));
-                    // Merge requires both source flags; only the
-                    // stack-local strike creators set them on this executable.
                     if row.merged && !row.transient {
                         report.difference(
                             label("persistent_merge"),
@@ -208,8 +199,6 @@ impl SourceCheck {
                         );
                     }
                     if row.transient {
-                        // The three stack-strike callers construct, finalize and
-                        // destroy in one call.
                         if row.combat_created_hour != Some(row.game_hour)
                             || self
                                 .combats
@@ -228,8 +217,6 @@ impl SourceCheck {
                             .combats
                             .as_ref()
                             .is_some_and(|ids| ids.contains(&row.combat));
-                        // The constructor witness proves creation
-                        // after the previous read; the result tap proves resolution.
                         let within_hour = self
                             .previous_hour
                             .zip(row.combat_created_hour)
@@ -277,8 +264,6 @@ impl SourceCheck {
                     }
                     self.pending.insert(row.id, row.clone());
                 }
-                // Fill/merge write from the call's current native hour
-                // including same-hour merges.
                 if let Ok(current) = &results {
                     for (result, (event, hour)) in last_emissions {
                         if let Some(&recorded) = current.get(&result)
@@ -354,8 +339,6 @@ impl SourceCheck {
 
     fn finish(self, report: &mut Report) {
         for row in self.pending.values() {
-            // The daily sweep can retire a result before the next
-            // entry read; the game imposes no positive content TTL floor.
             report.limitation(
                 "an emitted result was never retained at a later branch read; native pre-read retirement and a missing result reference cannot be distinguished by this recording-only self-check",
                 format!(

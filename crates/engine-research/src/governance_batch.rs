@@ -1,16 +1,8 @@
-//! Pass-local exact-field governance batches. A failed optional gather is
-//! discarded; the original reader then makes its one serial pass, retaining
-//! its checks, independent table boundaries and persistent-fault reasons.
 use crate::batch_fallback::{self, Batch};
 use crate::memory::{Memory, RecordLayout, RecordSources};
 
-/// Advisory storage follows the observed native count, without a population
-/// cap. Allocation failure declines batching and leaves the serial reader.
-/// Each layout describes fields of one object, never a span across objects.
 pub struct Records<'a> {
     layout: &'a RecordLayout<'a>,
-    // Sorted address -> original record ordinal. Duplicate observations keep
-    // the same healthy bytes; healthy memory stands still within the acquisition lease.
     index: Vec<(usize, usize)>,
     bytes: Vec<u8>,
     complete: bool,
@@ -38,8 +30,6 @@ impl<'a> Records<'a> {
             crate::allocation::reserve_exact(&mut records.index, sources.len()).ok()?;
             crate::allocation::reserve_exact(&mut records.bytes, len).ok()?;
             for row in 0..sources.len() {
-                // Invalid geometry declines speculation; the original reader
-                // reports its own overflow at its original validation point.
                 records.index.push((sources.pointer(row)?, row));
             }
             records.bytes.resize(len, 0);
@@ -51,8 +41,6 @@ impl<'a> Records<'a> {
         records.complete = memory.copy_records(sources, layout, &mut records.bytes)
             == sources.len() * layout.field_count();
         if !records.complete {
-            // No batch retry, no partial bytes served, and no eager fallback.
-            // Only the serial reader's original calls are made from here.
             batch_fallback::record(batch);
         }
         records.index.sort_unstable();
@@ -67,8 +55,6 @@ impl<'a> Records<'a> {
         self.field(address, N)?.try_into().ok()
     }
 
-    /// Nonnull pointers obtained only from complete copied object fields.
-    /// A storage miss declines child speculation, preserving the serial pass.
     pub fn targets(&self, offset: usize) -> Vec<usize> {
         if !self.complete() {
             return Vec::new();
@@ -250,8 +236,6 @@ const ASSIGNED_FIELDS: [crate::memory::RecordField; 7] = [
 const ASSIGNED_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ASSIGNED_FIELDS, 80).unwrap();
 const TECHNOLOGY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&crate::ctechnology::FIELDS, 56).unwrap();
-// Research update and serialization establish the selected template identity;
-// cost calculation consumes its authored year, level and base cost.
 const TEMPLATE_FIELDS: [crate::memory::RecordField; 3] = crate::memory::packed_fields([
     (crate::ctechnology_template::ID, 32),
     (crate::ctechnology_template::DATABASE_INDEX, 8),

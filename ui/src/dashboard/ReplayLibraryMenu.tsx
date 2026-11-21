@@ -17,25 +17,20 @@ import CountryPicker from '../components/CountryPicker';
 import { saveCampaignFlag, useCampaignFlags } from './campaignFlags';
 
 const ARCHIVE_OPEN_KEY = 'hoi4-replay.sidebar.archive-open';
-// The archive shows recent rows first; the rest stay behind Show more, a page at a time.
 const ARCHIVE_FIRST_PAGE = 10;
 const ARCHIVE_PAGE = 25;
 
 export default function ReplayLibraryMenu({ library, client, campaigns, bindings, defaultId, countryTags, onLoad, onUnload, onDefault, onRenamed, relocations, onOpenReady, slots, errors }: {
   library: ReplayLibraryState; client: DashboardClient; campaigns: Campaign[]; bindings: Record<string, SourceBinding>; defaultId: string | null;
-  /** The country each campaign shows: the chosen one, else the recorded player. */
   countryTags: Record<string, string | null>;
   onLoad: (path: string, label: string, slotId: string) => void; onUnload: (id: string) => void; onDefault: (id: string) => void;
-  /** A recording's file was renamed: what is kept by its path follows it. */
   onRenamed: (from: string, to: string) => void;
-  /** Every rename of an open recording the dashboard followed, oldest first. */
   relocations: readonly Relocation[];
   slots: ReturnType<typeof campaignSlots>; errors: Record<string, Failure>;
   onOpenReady?: (open: (() => void) | null) => void;
 }) {
   const [query, setQuery] = useState('');
   const [pickedFiles, setPickedFiles] = useState<ReplayFile[]>([]);
-  // Each rename the dashboard followed, by either app or in Explorer: a picked file follows it too.
   const followed = useRef(0);
   useEffect(() => {
     const fresh = relocations.slice(followed.current);
@@ -56,14 +51,12 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const flags = useCampaignFlags();
   const displayName = recordingDisplayName;
   const flagSource = flagCampaign ? bindings[flagCampaign]?.source : null;
-  // A recording still opening keeps its name until it has opened.
   const opening = (path: string) => campaigns.some(campaign => campaign.loading && sameCampaignPath(campaign.path, path));
   const beginRename = (path: string) => {
     if (!client.renameRecording || opening(path)) return;
     setActionError(null); editingPath.current = path; setRenaming(path);
   };
   const cancelRename = () => { editingPath.current = null; setRenaming(null); };
-  // The name is the file's: renaming renames the file, and later saves keep the name.
   const commitRename = (path: string, draft: string) => {
     if (!editingPath.current || !sameCampaignPath(editingPath.current, path)) return;
     cancelRename();
@@ -106,10 +99,9 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const [archiveOpen, setArchiveOpen] = useState(() => { try { return localStorage.getItem(ARCHIVE_OPEN_KEY) === 'open'; } catch { return false; } });
   const [archiveShown, setArchiveShown] = useState(ARCHIVE_FIRST_PAGE);
   const toggleArchive = () => setArchiveOpen(open => {
-    try { localStorage.setItem(ARCHIVE_OPEN_KEY, open ? 'closed' : 'open'); } catch { /* the choice lasts this session */ }
+    try { localStorage.setItem(ARCHIVE_OPEN_KEY, open ? 'closed' : 'open'); } catch {   }
     return !open;
   });
-  // A new campaign fills the layout's first free slot; the sidebar then chooses which one is shown.
   const slotId = slots.empty[0]?.id ?? 'new';
   const pickRecording = async () => {
     if (!client.chooseRecording || picking) return;
@@ -180,11 +172,11 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       {found.map(loadRow)}
       {needle && !shown.length && !found.length && <p className="sidebar-search-empty">{library.loading ? 'Reading folder…' : 'No matching recordings.'}</p>}
     </div>
-    {/* Recordings that are not open stay out of the way until asked for. */}
+    { }
     {archived.length > 0 && <div className="sidebar-archive">
       <button type="button" className="sidebar-shelf-toggle" aria-expanded={archiveOpen} onClick={toggleArchive}>
         <span>{archiveOpen ? 'Archive' : `Archive (${archived.length})`}</span><span className="sidebar-shelf-line" aria-hidden="true" /><Icon name="chevron-down" /></button>
-      {/* Search results already contain archive rows; each recording has one editor. */}
+      { }
       {archiveOpen && !needle && <div className="sidebar-menu sidebar-archive-list" role="list" aria-label="Archived recordings">
         {archived.slice(0, archiveShown).map(loadRow)}
         {archived.length > archiveShown && <button type="button" className="sidebar-shelf-more" onClick={() => setArchiveShown(count => count + ARCHIVE_PAGE)}>

@@ -1,17 +1,3 @@
-//! The international market and lend-lease (family `market`), from the recording's market tables:
-//!
-//! - `market-lendlease`: at an hour, the chosen countries' listed inventory and asking price
-//!   levels, the requests and contracts they sell or buy in with each contract's purchase
-//!   progress, and the lend-lease agreements they give or receive: rows at an hour, asked for an
-//!   hour and followed as a panel at the head. Pools change at listings and deliveries and are
-//!   structure; a contract's purchase progress and an agreement's fuel sent and lost are live cells.
-//! - `lend-lease-history` ([`history`]): every agreement a branch saw end, with its terms at its
-//!   last read.
-//! - `market-ledger` ([`ledger`]): pages of the declared log `market-events`, each occurrence's
-//!   parties and equipment named at its hour.
-//!
-//! Amounts are the recorded raw values: equipment and CIC fixed5, fuel quantities /32768, shares
-//! /1000. A table not recorded at the hour is its section's named reason, never an empty market.
 
 pub mod history;
 pub mod ledger;
@@ -45,7 +31,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The sections of the market a reply holds.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -60,16 +45,15 @@ pub enum MarketSection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MarketLendLeaseParams {
     pub branch_id: String,
-    /// Rows these countries take part in (as seller or buyer, giver or receiver); every row when
-    /// empty.
+    #[doc = " Rows these countries take part in (as seller or buyer, giver or receiver); every row when"]
+    #[doc = " empty."]
     pub countries: Vec<Country>,
-    /// The one section read; every section when absent.
+    #[doc = " The one section read; every section when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub only: Option<MarketSection>,
 }
 
-/// One entry of an equipment pool: its variant (decimal, as `variants` names it) and amount.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +69,7 @@ pub struct MarketItem {
 pub struct MarketLevel {
     pub variant: String,
     pub name: Option<String>,
-    /// 0 low, 1 normal, 2 high.
+    #[doc = " 0 low, 1 normal, 2 high."]
     pub level: i32,
 }
 
@@ -99,12 +83,11 @@ pub struct MarketGrant {
     pub trigger: Option<String>,
 }
 
-/// A country's listing on the market.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketOffer {
-    /// The seller's raw country id.
+    #[doc = " The seller's raw country id."]
     pub country: u32,
     pub tag: Option<String>,
     pub inventory: Vec<MarketItem>,
@@ -114,37 +97,32 @@ pub struct MarketOffer {
     pub auto_send_market_access: bool,
 }
 
-/// A request (kind 0) or accepted contract (kind 1). Its purchase progress, where a purchase
-/// contract with its handle and parties stands, is the live cells of row `key`: `assigned` and
-/// `convoys` (convoys assigned and needed), `collected` (CIC, fixed5) and `deliveries`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketTerms {
     pub key: String,
-    /// The handle, hexadecimal.
+    #[doc = " The handle, hexadecimal."]
     pub id: String,
     pub seller: Option<String>,
     pub buyer: Option<String>,
     pub request: bool,
     pub speed: i32,
     pub equipment: Vec<MarketItem>,
-    /// Agreed prices, CIC.
+    #[doc = " Agreed prices, CIC."]
     pub prices: Vec<MarketItem>,
     pub levels: Vec<MarketLevel>,
     pub subsidies: Vec<MarketGrant>,
-    /// Whether a purchase contract stands for it: its progress is in the live cells.
+    #[doc = " Whether a purchase contract stands for it: its progress is in the live cells."]
     pub purchase: bool,
 }
 
-/// A lend-lease agreement. Its fuel sent and lost are the live cells `fuelSent` and `fuelLost` of
-/// row `key` (/32768).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaseTerms {
     pub key: String,
-    /// The handle, hexadecimal.
+    #[doc = " The handle, hexadecimal."]
     pub id: String,
     pub giver: Option<String>,
     pub receiver: Option<String>,
@@ -152,7 +130,7 @@ pub struct LeaseTerms {
     pub active_since: i32,
     pub last_delivery: i32,
     pub monthly: Vec<MarketItem>,
-    /// Production shares, /1000 percent.
+    #[doc = " Production shares, /1000 percent."]
     pub percentage: Vec<MarketItem>,
     pub once: Vec<MarketItem>,
     pub delivered: Vec<MarketItem>,
@@ -167,13 +145,13 @@ pub struct LeaseTerms {
 #[serde(rename_all = "camelCase")]
 pub struct MarketLendLeaseReply {
     pub branch_id: String,
-    /// Null where the section was not asked or not recorded at the hour (`warnings` says which).
+    #[doc = " Null where the section was not asked or not recorded at the hour (`warnings` says which)."]
     pub offers: Option<Vec<MarketOffer>>,
     pub contracts: Option<Vec<MarketTerms>>,
     pub agreements: Option<Vec<LeaseTerms>>,
-    /// Why purchase progress is not known at the hour, when contracts are shown and it is not.
+    #[doc = " Why purchase progress is not known at the hour, when contracts are shown and it is not."]
     pub purchases_missing: Option<String>,
-    /// Rows whose country in the chosen side has no tag at the hour: a chosen country may be theirs.
+    #[doc = " Rows whose country in the chosen side has no tag at the hour: a chosen country may be theirs."]
     pub unattributed: u32,
     pub variants: Vec<VariantName>,
     pub icons: Vec<EquipmentIcon>,
@@ -182,8 +160,6 @@ pub struct MarketLendLeaseReply {
 
 dashboard_base::reply_warnings!(MarketLendLeaseReply);
 
-/// Raw country ids named at an hour: an id's slot by the hour's links, the slot's tag by the one
-/// identity rule.
 pub(crate) struct Parties<'a> {
     links: &'a [CountryLinkRow],
     names: Names,
@@ -204,7 +180,6 @@ impl<'a> Parties<'a> {
     }
 }
 
-/// The variants a pool names.
 pub(crate) fn pool_variants(pool: &MarketPool) -> impl Iterator<Item = u64> + '_ {
     pool.items.iter().map(|item| item.variant).filter(|&variant| variant != 0)
 }
@@ -239,7 +214,6 @@ fn grants<'r>(rows: impl IntoIterator<Item = &'r MarketSubsidy>, parties: &Parti
         .collect()
 }
 
-/// An agreement's terms, its countries named by `tag`.
 pub(crate) fn lease_terms(row: &LendLeaseAgreementRow, tag: impl Fn(u32) -> Option<String>, named: &Named) -> LeaseTerms {
     LeaseTerms {
         key: lease_key(row).to_string(),
@@ -273,7 +247,6 @@ fn sections(params: &MarketLendLeaseParams) -> [bool; 3] {
     }
 }
 
-/// A section's rows when it is shown, else none; a table not recorded is a named warning.
 fn section<'f, R>(shown: bool, rows: io::Result<&'f [R]>, label: &str, warnings: &mut Vec<String>) -> Option<&'f [R]> {
     if !shown {
         return None;
@@ -281,7 +254,6 @@ fn section<'f, R>(shown: bool, rows: io::Result<&'f [R]>, label: &str, warnings:
     rows.map_err(|error| warnings.push(format!("{label} are not recorded at this hour: {error}"))).ok()
 }
 
-/// The canonical slots `tags` are held by at `hour`; none when every country is asked.
 fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Option<BTreeSet<u32>> {
     if tags.is_empty() {
         return None;
@@ -338,9 +310,6 @@ impl AtHour for MarketLendLease {
         out
     }
 
-    /// The naming tables and the asked sections whole; then the definitions of every variant
-    /// their rows name and the purchase contracts of every accepted contract; then the tokens
-    /// the definitions and subsidies spell and the states the icon rule asks of.
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let [offers, contracts, agreements] = sections(params);
         match step {
@@ -405,7 +374,6 @@ impl AtHour for MarketLendLease {
     }
 }
 
-/// [`MarketLendLease`]'s reply at `frame`'s hour.
 pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, holders: &Holders, context: &names::Context, live: &Cells) -> io::Result<MarketLendLeaseReply> {
     let [show_offers, show_contracts, show_agreements] = sections(params);
     let hour = frame.hour;

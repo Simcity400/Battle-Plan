@@ -1,19 +1,3 @@
-//! Trigger-key classification against the content names available at each load point.
-//!
-//! Every trigger body is read at load. Each key uses the current value slot, including
-//! the previous value when the key has no operator. Classification checks, in order:
-//! 1. `else` and `else_if`: read and attach to the last `if`;
-//! 2. the trigger registry ([`trigger_keys`]);
-//! 3. scope text when the value slot holds `{`;
-//! 4. a building, resource or ideology by token, or an equipment category;
-//! 5. a scripted trigger by text;
-//! 6. otherwise report an invalid trigger and skip the current block, adding no child.
-//!
-//! Country tags load first, followed by scripted-trigger names, tag-alias names,
-//! ideologies, character tokens with their bodies skipped, resources and buildings.
-//! Most trigger bodies use [`Point::Late`]; idea tags, static modifiers, equipment and
-//! buildings use their own load points ([`KeyNames::at`]). Character bodies load after
-//! ideas.
 
 use std::{
     cell::RefCell,
@@ -34,68 +18,40 @@ use crate::{
 
 mod effect_names;
 
-/// Content names available at one point in database loading.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyNames {
     pub buildings: Option<std::sync::Arc<buildings::Buildings>>,
-    /// Folded scripted-trigger names.
     pub scripted: BTreeSet<Vec<u8>>,
-    /// Scripted-effect names whose definition flag is set, loaded after idea tags.
     pub scripted_effects: BTreeSet<Vec<u8>>,
     pub counts: CountTriggerNames,
-    /// Country tags with their exact declared bytes.
     pub countries: BTreeSet<Vec<u8>>,
-    /// Tag-alias names with ASCII case folded for token lookup.
     pub aliases: BTreeSet<Vec<u8>>,
-    /// Character tokens with ASCII case folded.
     pub characters: BTreeSet<Vec<u8>>,
-    /// Provincial building flags for province-building-level triggers; `None` when
-    /// repeated declarations disagree.
     pub province_buildings: BTreeMap<Vec<u8>, Option<bool>>,
     pub effects: effect_names::EffectNames,
-    /// The sub-unit database after `common/units`, for effect division-template
-    /// placement. `None` at earlier load points whose final roster is unavailable.
     pub sub_units: Option<crate::unit_leader::SubUnits>,
-    /// Regiment, support and regimental-support column widths from the recorded
-    /// NMilitary defines.
     pub template_columns: Option<Result<[i32; 3], String>>,
 }
 
-/// The load point at which a trigger body is read, identifying the names available
-/// then.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Point {
-    /// `common/idea_tags`: after country tags and scripted-trigger names only.
     IdeaTags,
-    /// `common/modifiers`: before resources and buildings, after country tags, aliases,
-    /// character tokens, ideologies and scripted-trigger names.
     StaticModifiers,
-    /// `common/units/equipment` and `common/buildings`: after resources, while building
-    /// names are unavailable because their own triggers are read during loading.
     BeforeBuildings,
-    /// All required database names are available.
     Late,
 }
 
-/// Key classification and the corresponding value reader.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Load {
-    /// `else` or `else_if`: a conditional body that adds no child of its own.
     Conditional,
     Coded(u32, Reader),
-    /// A scope whose value is read as a trigger body.
     Scope,
-    /// A content count trigger or scripted trigger takes one value token and skips no
-    /// block.
     OneValue,
-    /// An invalid trigger adds no child and uses a reporting skip.
     Invalid,
-    /// Classification cannot be determined here, with its cause.
     Unknown(String),
 }
 
 impl Load {
-    /// Whether classification adds a child for the key.
     pub fn adds_child(&self) -> Option<bool> {
         match self {
             Self::Coded(..) | Self::Scope | Self::OneValue => Some(true),
@@ -105,14 +61,12 @@ impl Load {
     }
 }
 
-/// Scope lookups over the load's names, recording questions those names cannot answer.
 struct ScopeNames<'a> {
     names: &'a KeyNames,
     unknown: RefCell<Option<String>>,
 }
 
 impl Names for ScopeNames<'_> {
-    /// Find a country tag by exact bytes, then a tag alias by token.
     fn is_country(&self, tag: &str) -> bool {
         self.names.countries.contains(tag.as_bytes())
             || self
@@ -127,10 +81,7 @@ impl Names for ScopeNames<'_> {
             .contains(&token.as_bytes().to_ascii_lowercase())
     }
 
-    /// Prefix lookup includes every name interned so far. The fixed prefixes recognized
-    /// here are `mio`, `sp` and `scope`.
     fn is_keyword(&self, text: &str) -> bool {
-        // Other prefixes depend on dynamic tokens that this load-point roster does not hold.
         if ["mio", "sp", "scope"]
             .iter()
             .any(|prefix| text.eq_ignore_ascii_case(prefix))
@@ -150,8 +101,6 @@ impl KeyNames {
     }
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        // The readers before buildings read nothing of each other: they run at once, each as
-        // this thread runs, and the first in this order that fails fails the read, as in turn.
         use crate::parallel::{join, spawn};
         let (
             ideologies,
@@ -262,7 +211,6 @@ impl KeyNames {
         names
     }
 
-    /// The result of parsing a key's scope text against these names.
     pub(crate) fn scope(&self, text: &[u8], quoted: bool) -> ScopeStep {
         let Ok(text) = std::str::from_utf8(text) else {
             return ScopeStep::Unknown(format!(
@@ -286,8 +234,6 @@ impl KeyNames {
     }
 }
 
-/// Read the recorded integer defines used for unsigned column comparisons. Missing or
-/// nonnumeric leaves give zero; a missing table or failed script is refused.
 fn template_columns(layers: &ResolvedLayers) -> Result<[i32; 3], String> {
     let read = || -> io::Result<[i32; 3]> {
         let defines = crate::defines::read(layers)?;
@@ -300,13 +246,8 @@ fn template_columns(layers: &ResolvedLayers) -> Result<[i32; 3], String> {
     read().map_err(|why| format!("division-template column defines: {why}"))
 }
 
-/// Country-tag files are read in file order with lexer mode 0. The loop peeks and stops
-/// at `}` or the end. Each key whose C string is three bytes registers a tag; repeats
-/// are reported. `dynamic_tags` only marks the beginning of dynamic tags. Values are
-/// neither read nor skipped, so block contents become keys.
 pub fn country_tags(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tags = BTreeSet::new();
-    // The files the database loader lists, each by its bytes.
     for path in crate::script_files::paths(layers, "common/country_tags/", Some(".txt"))? {
         tags.extend(file_tags(&path.read(layers)?));
     }
@@ -323,7 +264,6 @@ pub fn file_tags(input: &[u8]) -> Vec<Vec<u8>> {
     );
     read.items
         .iter()
-        // Stop at an unquoted closing brace; values never hide nested three-byte keys.
         .take_while(|item| item.key.as_deref() != Some(b"}".as_slice()) || item.key_quoted)
         .filter_map(|item| {
             let key = c_string(item.key.as_deref().unwrap_or_default());
@@ -334,9 +274,6 @@ pub fn file_tags(input: &[u8]) -> Vec<Vec<u8>> {
 
 const UNNAMED: &str = "the reader was given no content names, so whether it names a scope, a content count or a scripted trigger is not known";
 
-/// Classify `field` in trigger dispatch order against the names loaded so far: `else`
-/// and `else_if`, then [`trigger_keys::dispatch`]. Without names, a key that could name
-/// content stays unknown.
 pub fn load_key(names: Option<&KeyNames>, field: &Field<'_>) -> Load {
     let keyword = field.keyword();
     if matches!(keyword.as_deref(), Some(b"else" | b"else_if")) {
@@ -431,8 +368,6 @@ mod tests {
         )
     }
 
-    /// The readers run at once give exactly what they give in turn, over the installation with
-    /// a mod layer that adds to several of them.
     #[test]
     fn names_read_at_once_equal_names_read_in_turn() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -496,8 +431,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&overlay);
     }
 
-    /// Traced readers of one stack share one read of the names, each tracing, under its own
-    /// purpose, exactly what reading them itself traces.
     #[test]
     fn traced_readers_of_a_stack_share_one_read_and_trace_what_it_read() {
         use std::sync::{Arc, Mutex};
@@ -530,7 +463,6 @@ mod tests {
         assert!(Arc::ptr_eq(&names, &a.key_names().unwrap()));
         let holder = a_log.lock().unwrap().len();
         assert_eq!(holder, traced_once, "a holder traces nothing again");
-        // Another stack reads the names itself.
         let (alone, alone_log) = traced(&open(), "alone");
         assert!(!Arc::ptr_eq(&names, &alone.key_names().unwrap()));
         let expected = reads(&alone_log, "alone");
@@ -539,8 +471,6 @@ mod tests {
         assert_eq!(reads(&b_log, "b"), expected);
     }
 
-    /// A traced read that met a failure is not shared: a later traced reader reads the names
-    /// itself, and gets them whole once the failure is gone.
     #[test]
     fn a_traced_read_that_met_a_failure_is_not_shared() {
         use std::sync::{Arc, Mutex};
@@ -566,7 +496,6 @@ mod tests {
                 .with_read_purpose(purpose);
             (layers, log)
         };
-        // The verified script is away while the first reader reads the names.
         let hidden = defines.with_extension("hidden");
         std::fs::rename(&defines, &hidden).unwrap();
         let failed = traced("a").0.key_names().unwrap();
@@ -580,14 +509,10 @@ mod tests {
             read.path == b"common/defines/zz_synthetic.lua"
                 && matches!(read.outcome, crate::content::ReadOutcome::Bytes { .. })
         }));
-        // The whole read is shared.
         assert!(Arc::ptr_eq(&whole, &traced("c").0.key_names().unwrap()));
         let _ = std::fs::remove_dir_all(&overlay);
     }
 
-    /// Dispatch checks `else`, the registry, scope text only with `{`, counts by token,
-    /// and scripted triggers by text before refusing. Tags compare exactly; aliases and
-    /// characters fold case.
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn keys_load_in_dispatch_order() {
@@ -675,8 +600,6 @@ mod tests {
         );
     }
 
-    /// Register every three-byte key, including block contents read as keys, until the
-    /// loop stops at `}`.
     #[test]
     fn country_tag_files_register_three_byte_keys() {
         assert_eq!(

@@ -1,7 +1,3 @@
-//! The active naval window's displayed positioning.
-//!
-//! Stored positioning is an hourly simulation input for other combat calculations.
-//! The window recomputes its display from current combatants and matching defines.
 use super::keyed::Keyed;
 use super::naval_air_groups::{
     self, CarrierJoins, DenseBases, PositioningAir, PositioningAirSources,
@@ -15,18 +11,12 @@ use replay_data::{
 
 const ONE: i64 = 100_000;
 
-/// the game returns the current weighted aircraft count and the opponent's
-/// average carrier-base fill as signed fixed5 values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Air {
     pub weighted_planes: i64,
     pub average_base_fill: i64,
 }
 
-/// All values are derived from complete same-hour simulation tables. Counts
-/// include unresolved forward member slots, while detection includes only
-/// qualifying resolved ships; the two native traversals are deliberately
-/// separate.
 pub(super) struct Inputs<'a> {
     pub side: &'a NavalCombatSideDetails,
     pub opponent: &'a NavalCombatSideDetails,
@@ -37,7 +27,6 @@ pub(super) struct Inputs<'a> {
     pub air: [Air; 2],
 }
 
-/// Fresh positioning terms in the order its optional tooltip describes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Terms {
     pub value: i64,
@@ -54,8 +43,6 @@ fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-// `modifier value lookup`: absence is zero; eligibility
-// gates the raw cell before the optional [0, 1] clamp.
 fn modifier(summary: &NavalCombatSummaryInputs, scope: usize, key: usize) -> Option<i64> {
     let cell = &summary.modifiers[scope][key];
     if cell.present == 0 {
@@ -77,9 +64,6 @@ fn modifier(summary: &NavalCombatSummaryInputs, scope: usize, key: usize) -> Opt
     })
 }
 
-/// Scopes 0-2 are the side's country, regional weather and sea terrain; 3 is
-/// its own admiral and 4 the opposing admiral (`naval_combat_summary_inputs`).
-/// the game sums the three location scopes with one leader's modifiers.
 fn summary_modifiers(
     summary: &NavalCombatSummaryInputs,
     leader_scope: usize,
@@ -92,8 +76,6 @@ fn summary_modifiers(
         })
 }
 
-// The native overflow predicate is shared by the detection and aircraft
-// ratio branches. The ordinary branch uses signed truncating division.
 fn ratio_numerator_valid(value: i64) -> bool {
     (value.wrapping_add(i64::MAX - 1) as u64) < u64::MAX - 2
 }
@@ -149,8 +131,6 @@ fn carrier_ratio_penalty(input: &Inputs<'_>, defines: &Defines) -> i64 {
     .max(0)
 }
 
-/// Positioning without optional localised tooltip construction.
-/// `None` denotes a modifier callback or operand that cannot be resolved.
 pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<Terms> {
     let mut value = defines.summary_fixed[0];
     let summary = &input.side.summary;
@@ -158,10 +138,8 @@ pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<T
         && input.defender
         && input.duration < defines.summary_integer[1];
     if !summary.countries.is_empty() {
-        // Key 0x1B2 uses the side's own commander.
         value = value.wrapping_add(summary_modifiers(summary, 3, 2)?);
         if early_defender {
-            // Key 0x5A uses the opposing commander.
             value = value.wrapping_add(summary_modifiers(summary, 4, 0)?);
         }
         value = value.wrapping_add(summary.escort_bonus);
@@ -195,8 +173,6 @@ pub(super) fn displayed_terms(input: &Inputs<'_>, defines: &Defines) -> Option<T
     })
 }
 
-/// the game counts each qualifying forward member slot, even when its ship
-/// or convoy handle no longer resolves. Caller supplies one combat's rows.
 pub(super) fn active_ship_slots(rows: &[&NavalCombatShipRow], side: u8) -> i32 {
     rows.iter()
         .filter(|row| {
@@ -208,13 +184,6 @@ pub(super) fn active_ship_slots(rows: &[&NavalCombatShipRow], side: u8) -> i32 {
         .fold(0_i32, |count, _| count.wrapping_add(1))
 }
 
-/// Compose each side once for the window's positioning and downstream AA
-/// binders. A complete combat-ship census and matching definitions are always
-/// required. Ship models and dense air-base counts are branch-dependent:
-/// noncarrier and zero-air paths can still resolve when those tables are
-/// incomplete, while a relevant missing join leaves only the affected side
-/// unavailable. `models` is the binding's shared ShipModels lookup; only the
-/// dense air-base rows this combat's planes and members reference are summed.
 #[expect(
     clippy::too_many_arguments,
     reason = "positioning joins independent simulation sources"
@@ -275,7 +244,6 @@ pub(super) fn positioning_terms_values(
             side,
         )
     });
-    // Both sides' carrier-air passes share one set of reference indexes.
     let joins = CarrierJoins::new(Some(&members), bases, live_ships, models);
     let air = [0, 1].map(|side| {
         naval_air_groups::positioning_air(
@@ -293,9 +261,6 @@ pub(super) fn positioning_terms_values(
     std::array::from_fn(|side| {
         let opposite = 1 - side;
         let opposing_air = air[opposite]?;
-        // the game calls the own-side air pass only after it sees a positive
-        // opposing weighted total. An unknown own pass is irrelevant when
-        // there are no opposing aircraft to impose a carrier-ratio penalty.
         let own_air = if opposing_air.weighted_planes > 0 {
             air[side]?
         } else {

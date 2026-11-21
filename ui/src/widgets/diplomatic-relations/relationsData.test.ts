@@ -12,7 +12,6 @@ const reply: DiplomaticRelationsReply = { warnings: [], owners: [
   { tag: 'C', countryId: 3, known: true, reason: null },
   { tag: 'D', countryId: null, known: false, reason: 'No country holds this tag at this hour' },
 ] };
-/** The known owners' live cells at an hour: a pair with no row says so, as the follow layer does. */
 const cells = (opinions: Record<string, number>, reasons: Record<string, string> = {}) => valuesOf(new Map(Object.entries({ ...opinions,
   [liveKey('A', 'readHour')]: 8, [liveKey('C', 'readHour')]: 10 })), key => reasons[key] ?? NO_ROW);
 const values = cells({ [liveKey('A', 'B')]: 40, [liveKey('A', 'A')]: 5, [liveKey('C', 'A')]: -120 });

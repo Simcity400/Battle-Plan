@@ -1,11 +1,3 @@
-//! One country's air statistics at an hour, ours against the enemy's per strategic region for one
-//! of the twelve channel pairs: the game's current year window as its last read before the hour
-//! holds it. A rows-at-an-hour product ([`AtHour`]): its structure is the regions with a row and
-//! their names; each region's two words are live cells (`ours`, `enemy`) read as recorded, a
-//! region without a row absent, never zero. The holder's rows are those of every raw country
-//! linked to its slot; a region two of them hold shows the lowest id's row (one unit a region).
-//! `air-statistics-regions` names every region the country held statistics in over the timeline,
-//! so a region not recorded at the hour shown can still be chosen.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Product};
@@ -33,11 +25,8 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-/// The recorded channels: twelve of ours, then the same twelve of the enemy's.
 pub const PAIRS: usize = air_stats::CHANNELS.len() / 2;
 
-/// Interface detail-channel ordinals for the schema's twelve pairs: disruption precedes ground
-/// equipment losses in the interface, but not in stored rows.
 const DETAIL_CHANNELS: [u8; PAIRS] = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 8, 12];
 
 pub struct AirStatisticsAt;
@@ -48,7 +37,7 @@ pub struct AirStatisticsAt;
 pub struct AirStatisticsParams {
     pub branch_id: String,
     pub country: Country,
-    /// Pair index in recorded schema order, not the interface's button order.
+    #[doc = " Pair index in recorded schema order, not the interface's button order."]
     pub channel: u8,
 }
 
@@ -62,15 +51,13 @@ pub struct AirStatisticsChannel {
     pub divisor: i32,
 }
 
-/// A region with statistics at the hour; its raw signed words are the live cells (`region`,
-/// `ours`) and (`region`, `enemy`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsRegion {
     pub region: String,
     pub name: Option<String>,
-    /// Why the name is not shown, without one.
+    #[doc = " Why the name is not shown, without one."]
     pub missing: Option<String>,
 }
 
@@ -78,23 +65,22 @@ pub struct AirStatisticsRegion {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsReply {
-    /// The hour of the read the rows hold; none when not known.
+    #[doc = " The hour of the read the rows hold; none when not known."]
     pub read_hour: Option<i32>,
     pub channels: Vec<AirStatisticsChannel>,
     pub regions: Vec<AirStatisticsRegion>,
-    /// Why the statistics are not shown at the hour, when they are not.
+    #[doc = " Why the statistics are not shown at the hour, when they are not."]
     pub missing: Option<String>,
-    /// The country's air theatres and their member wings' regions at the hour; none where
-    /// membership is not known.
+    #[doc = " The country's air theatres and their member wings' regions at the hour; none where"]
+    #[doc = " membership is not known."]
     pub theatres: Option<Vec<AirMissionTheatre>>,
-    /// Why the theatres are not known at the hour.
+    #[doc = " Why the theatres are not known at the hour."]
     pub theatres_missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(AirStatisticsReply);
 
-/// The recorded content a reply names with: every strategic region's name and the channels.
 pub struct Names {
     catalogue: Result<Arc<catalogue::Catalogue>, String>,
     regions: Result<BTreeMap<u32, Result<String, String>>, String>,
@@ -138,7 +124,6 @@ fn names(source: &Source, load: &LoadContext) -> Names {
     Names { catalogue: cat, regions, channels, warnings }
 }
 
-/// The table's column holding recorded channel `channel`.
 fn channel_column(channel: usize) -> io::Result<usize> {
     let table = TableId::AirStatistics;
     (0..table.field_count())
@@ -147,7 +132,6 @@ fn channel_column(channel: usize) -> io::Result<usize> {
         .ok_or_else(|| dashboard_core::refused(format!("Air statistics channel {channel} is not in this build's schema")))
 }
 
-/// Region `id` as the content names it, or why it has no name.
 fn region(names: &Names, id: u32) -> AirStatisticsRegion {
     let (name, missing) = match names.regions.as_ref().map(|regions| regions.get(&id)) {
         Ok(Some(Ok(name))) => (Some(name.clone()), None),
@@ -158,8 +142,6 @@ fn region(names: &Names, id: u32) -> AirStatisticsRegion {
     AirStatisticsRegion { region: id.to_string(), name, missing }
 }
 
-/// The raw countries whose rows are `owner`'s at `frame`'s hour, ascending: every id linked to its
-/// slot and its own; only its own where the links are not recorded, which `note` then names.
 fn owners(frame: &DecodedFrame, owner: Owner, note: &mut Option<String>) -> Vec<u32> {
     let mut ids: Vec<u32> = match frame.complete::<tables::CountryLinks>() {
         Ok(links) => links.iter().filter(|link| link.canonical_slot == owner.slot).map(|link| link.id).collect(),
@@ -174,9 +156,6 @@ fn owners(frame: &DecodedFrame, owner: Owner, note: &mut Option<String>) -> Vec<
     ids
 }
 
-/// The reply at `rows`' hour for pair `channel`: each region's row of the raw countries `owners`
-/// (ascending), the lowest id's where several hold it, in region order, its two words named in
-/// `live`.
 pub(crate) fn reply(rows: io::Result<&[AirStatisticsRow]>, owners: &[u32], read_hour: Option<i32>, channel: usize, names: &Names, live: &Cells) -> io::Result<AirStatisticsReply> {
     let mut warnings = names.warnings.clone();
     let (ours, enemy) = (channel_column(channel)?, channel_column(channel + PAIRS)?);
@@ -246,8 +225,6 @@ impl AtHour for AirStatisticsAt {
         tables
     }
 
-    /// The theatre tables (the links among them), then the holder's ids' rows alone (the table is
-    /// keyed by raw country above region) and the wings of its theatres' members.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match (owner, step) {
             (Some(_), 0) => THEATRE_TABLES.into_iter().map(Read::all).collect(),
@@ -294,14 +271,13 @@ pub struct AirStatisticsRegionsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsRegionsReply {
-    /// Every region the country held statistics in over the timeline, in region order.
+    #[doc = " Every region the country held statistics in over the timeline, in region order."]
     pub regions: Vec<AirStatisticsRegion>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(AirStatisticsRegionsReply);
 
-/// The regions of `keys` (raw country above region) whose country is one of `ids`.
 pub(crate) fn regions_of(keys: impl IntoIterator<Item = u128>, ids: &BTreeSet<u32>) -> BTreeSet<u32> {
     keys.into_iter().filter(|&key| ids.contains(&((key >> 32) as u32))).map(|key| key as u32).collect()
 }
@@ -322,8 +298,6 @@ impl Product for AirStatisticsRegions {
         vec![AirStatisticsRegionsParams::decl(), AirStatisticsRegionsReply::decl()]
     }
 
-    /// From each run's key lifetimes (summaries, no row decoded): the keys of the ids the tag's
-    /// holders had, and of the ids linked to their slots at the timeline's last hour.
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let query = crate::answer::query(source, branch)?;

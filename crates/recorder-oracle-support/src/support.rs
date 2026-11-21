@@ -1,4 +1,3 @@
-//! Shared save-comparison inputs and exact joins.
 use super::report::Report;
 use installed_content_save::{ActualCountry, CountryEmissionIdentity, Save, SaveDocument};
 use replay_data::{
@@ -17,10 +16,6 @@ pub type Spellings<'a> = BTreeMap<installed_content_core::tokens::Token, Option<
 
 pub type ContentRead<'a, T> = Result<&'a T, String>;
 
-/// Text writers scan the first-NUL prefix before escaping ordinary text.
-/// Stored length does not determine the emitted prefix.
-/// Raw strings use the same first-NUL prefix in archive
-/// and memory streams.
 pub fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) -> &'a [u8] {
     let text = installed_content_core::parser::c_string(bytes);
     if text.len() < bytes.len() {
@@ -29,9 +24,6 @@ pub fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) ->
     text
 }
 
-/// Token insertion and lookup reuse ASCII-case aliases
-/// without changing the first spelling. Token text lookup returns
-/// the recorded reverse bytes, which text writers emit.
 pub fn reverse_spellings<'a>(tokens: &TokenNames<'a>) -> Spellings<'a> {
     let mut spellings = BTreeMap::new();
     for literal in tokens.values() {
@@ -39,8 +31,6 @@ pub fn reverse_spellings<'a>(tokens: &TokenNames<'a>) -> Spellings<'a> {
         spellings
             .entry(installed_content_core::tokens::Token::c_str(literal))
             .and_modify(|spelling| {
-                // Reserved reverse names can alias a later dynamic token.
-                // Equal writer bytes are certain; a disagreement stays so.
                 if *spelling != Some(literal) {
                     *spelling = None;
                 }
@@ -90,9 +80,6 @@ pub fn complete<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
     frame.complete::<T>()
 }
 
-/// Whether a state's sliced raid-state rows were read at the frame's hour,
-/// from the family's hour source, StateResourceInputs (one row per state),
-/// in SliceReads.
 pub fn sampled_states(frame: &DecodedFrame) -> io::Result<impl Fn(u32) -> bool + '_> {
     let reads = complete::<tables::SliceReads>(frame)?;
     let hour = frame.hour;
@@ -101,11 +88,6 @@ pub fn sampled_states(frame: &DecodedFrame) -> io::Result<impl Fn(u32) -> bool +
     })
 }
 
-/// The raw owners whose rows of the owner-sliced `table` this frame holds as
-/// read at its own hour, or None when every owner's are: a full hour, or a
-/// recording from before the table was sliced, whose SliceReads dates none
-/// of its owners because every frame read it whole. A sliced read records
-/// every owner it covered, with rows or without (`Campaign::merge_sliced_inputs`).
 pub fn current_slice_owners(
     frame: &DecodedFrame,
     table: TableId,
@@ -129,8 +111,6 @@ pub fn current_slice_owners(
     Ok(dated.then_some(current))
 }
 
-/// States that an owner-sliced comparison covered only the owners read at
-/// the oracle hour, with the oldest earlier read among the others.
 pub fn slice_owner_limitation(
     frame: &DecodedFrame,
     table: TableId,
@@ -299,16 +279,6 @@ pub fn convoy_total(
     Ok(total)
 }
 
-/// Whether a variant of equipment type `definition` counts as a convoy:
-/// Stockpile classification tests the variant's classifier flags
-/// against the convoy bit (1). Category refresh
-/// sets them from the type's primary categories,
-/// restricted to its archetype's `allowed_types` when that is set,
-/// ORed with the categories of the modules the variant has installed,
-/// through category normalization. The save names a variant's type,
-/// not its modules: a type without module slots has none, and one with slots
-/// is decided only when no module of the content adds the convoy bit and
-/// its own categories lack it; otherwise it is refused by name.
 pub fn convoy_variant(
     equipment: &installed_content_core::equipment::Database,
     definition: &[u8],
@@ -353,9 +323,6 @@ pub fn equal<T: std::fmt::Debug + PartialEq>(
 }
 
 pub fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8]) {
-    // Resource names and foreign-source strings use
-    // an MSVC c_str, quoted even when empty,
-    // scanned only through the first NUL in text mode.
     let end = installed_content_core::parser::c_string(actual).len();
     equal(report, label, &actual[..end], saved);
     if end < actual.len() {
@@ -425,8 +392,6 @@ pub fn country_emission_layout(
     let mut result = Vec::with_capacity(array.len().saturating_sub(1));
     for (physical_slot, &own_id) in array.iter().enumerate().skip(1) {
         let (actual, tag) = if own_id == 0 {
-            // country_roster::capture records zero here only after exact
-            // pointer equality with the authenticated shared reserved root.
             (ActualCountry::Reserved, reserved.tag.as_slice())
         } else {
             let country = countries.links.get(&own_id).ok_or_else(|| {
@@ -460,9 +425,6 @@ pub fn parse_country_emissions(document: &SaveDocument, frame: &DecodedFrame) ->
         Err(reason) if document.has_repeated_country_tags()? => Err(invalid(format!(
             "full repeated-country save requires its physical census: {reason}"
         ))),
-        // Unique standalone/historical saves retain their ordinary full parse.
-        // Their unavailable census remains unavailable to the named comparisons;
-        // no occurrence ledger or duplicate admission is manufactured here.
         Err(_) => document.parse(),
     }
 }

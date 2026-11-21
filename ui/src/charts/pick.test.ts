@@ -20,7 +20,6 @@ test('a 500ms pending click uses the drawn callback through 10Hz playback and la
   const drawn = picks.drawn(context, drawnCallback);
   const pending = { at: 500, run: () => picks.pick(drawn, 50.9) };
   for (let now = 100; now < pending.at; now += 100) {
-    // Each render supplies another head/labels closure, but owns the same model.
     picks.update(scope(owner, () => delivered.push('latest callback must not replace drawn callback')));
     picks.drawn({ ...context, until: 50 + now / 100 }, () => delivered.push('later frame'));
   }
@@ -36,7 +35,6 @@ test('new ceiling data, membership or source refuses a pending click and A-B-A s
     picks.update(scope('clicked owner', callback));
     const clicked = picks.drawn(context, callback);
     const pending = { at: 500, run: () => picks.pick(clicked, 50) };
-    // A newly visible A ceiling at 80 must not join the old B-at-80 click.
     picks.update(scope(changed, callback));
     assert.equal(pending.run(), false);
     picks.update(scope('clicked owner', callback));

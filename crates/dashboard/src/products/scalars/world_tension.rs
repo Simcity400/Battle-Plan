@@ -1,16 +1,3 @@
-//! World tension at an hour, taken apart: the tension the game showed, every country's
-//! contribution (the game's own sum per canonical slot), the part from slots no tag ever held, and
-//! every threat source the game lists, named. A rows-at-an-hour product over a few tables of a few
-//! hundred rows, followed as a panel: its numbers move daily, so each is a live cell the head
-//! follows and the widget paints (the tension and the contributions' sum on row `world`, each
-//! contribution on its slot's row, each source's current amount on `source<ordinal>`), and the
-//! panel carries the rows, their order, names and texts. The tension and each contribution over
-//! time are the declared `world-tension`, `threat-contributions` and `threat-sum` series.
-//!
-//! Contributions are fixed point with 100,000 units a percentage point of tension; the game sums
-//! the sources' current contributions, clamps the sum to 100% and stores it divided by 100 as the
-//! tension, so tension has 1,000 units a percentage point. A slot no tag holds at the hour keeps
-//! the tag that last held it (its sources decay after its country is gone).
 
 use super::{Named, rows};
 use crate::{
@@ -43,34 +30,32 @@ pub struct WorldTensionParams {
     pub branch_id: String,
 }
 
-/// A country slot's contribution: its value, in contribution units, is the live cell (slot, `value`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TensionContribution {
     pub slot: u32,
-    /// The tag holding the slot, or the one that last held it; null when none ever did.
+    #[doc = " The tag holding the slot, or the one that last held it; null when none ever did."]
     pub tag: Option<String>,
-    /// The tag no longer holds the slot: it is the last that did.
+    #[doc = " The tag no longer holds the slot: it is the last that did."]
     pub remembered: bool,
 }
 
-/// A threat source the game lists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TensionSource {
     pub ordinal: u32,
-    /// The country that caused it, or the tag that last held its slot; null when none is known.
+    #[doc = " The country that caused it, or the tag that last held its slot; null when none is known."]
     pub tag: Option<String>,
     pub remembered: bool,
-    /// The game's own text for it, without formatting codes.
+    #[doc = " The game's own text for it, without formatting codes."]
     pub reason: String,
-    /// What it adds once its ramp ends and each day, in contribution units; what it adds now is the
-    /// live cell (`source<ordinal>`, `current`).
+    #[doc = " What it adds once its ramp ends and each day, in contribution units; what it adds now is the"]
+    #[doc = " live cell (`source<ordinal>`, `current`)."]
     pub final_raw: String,
     pub daily_raw: String,
-    /// The hour the game created it.
+    #[doc = " The hour the game created it."]
     pub date: i32,
 }
 
@@ -78,36 +63,33 @@ pub struct TensionSource {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTensionReply {
-    /// Tension units a percentage point.
+    #[doc = " Tension units a percentage point."]
     pub tension_scale: u32,
-    /// Contribution units a percentage point.
+    #[doc = " Contribution units a percentage point."]
     pub contribution_scale: u32,
-    /// The sum the tension is capped at, in contribution units.
+    #[doc = " The sum the tension is capped at, in contribution units."]
     pub ceiling_raw: String,
-    /// Live cells of row `world`: `tension` (the tension the game showed, tension units), `sum`
-    /// (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the
-    /// sum from slots no tag ever held), both in contribution units.
+    #[doc = " Live cells of row `world`: `tension` (the tension the game showed, tension units), `sum`"]
+    #[doc = " (every contribution summed before the cap) and, where `unnamed`, `unnamed` (the part of the"]
+    #[doc = " sum from slots no tag ever held), both in contribution units."]
     pub unnamed: bool,
-    /// Every nonzero contribution, greatest first, ties by slot.
+    #[doc = " Every nonzero contribution, greatest first, ties by slot."]
     pub contributions: Vec<TensionContribution>,
-    /// In the game's list order.
+    #[doc = " In the game's list order."]
     pub sources: Vec<TensionSource>,
-    /// Why the tension is not known at this hour.
+    #[doc = " Why the tension is not known at this hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(WorldTensionReply);
 
-/// The row of the world's live cells, and a source's.
 pub(super) const WORLD: &str = "world";
 
 pub(super) fn source_row(ordinal: u32) -> String {
     format!("source{ordinal}")
 }
 
-/// The columns the cells read: WorldTension's tension, ThreatTotals' sum, the aggregates' and the
-/// sources' current amounts.
 pub(super) struct Columns {
     pub tension: usize,
     pub sum: usize,
@@ -126,8 +108,6 @@ impl Columns {
     }
 }
 
-/// Names the reply's moving numbers as live cells, raw units: the world's tension and sum, the part
-/// of `unnamed` slots where there is one, each contribution of `slots` and each source of `ordinals`.
 pub(super) fn name_cells(live: &Cells, columns: &Columns, slots: &[u32], unnamed: &[u32], ordinals: &[u32]) {
     live.value(WORLD, "tension", Cell { table: TableId::WorldTension, column: columns.tension, key: 0 }, 1.0);
     live.value(WORLD, "sum", Cell { table: TableId::ThreatTotals, column: columns.sum, key: 0 }, 1.0);
@@ -143,7 +123,6 @@ pub(super) fn name_cells(live: &Cells, columns: &Columns, slots: &[u32], unnamed
     }
 }
 
-/// A source's reason as plain text, or its bytes as they are with why not.
 fn reason_text(bytes: &[u8], warnings: &mut Vec<String>) -> String {
     match dashboard_text::catalogue::display_text(bytes) {
         Ok(text) => text,
@@ -158,7 +137,6 @@ fn reason_text(bytes: &[u8], warnings: &mut Vec<String>) -> String {
 impl AtHour for WorldTension {
     const KEY: &'static str = "world-tension";
     const TITLE: &'static str = "World tension";
-    // Reasons are the recording's own text.
     const CONTENT_DEPENDENT: bool = false;
     type Params = WorldTensionParams;
     type Reply = WorldTensionReply;
@@ -242,7 +220,6 @@ impl AtHour for WorldTension {
     }
 }
 
-/// The family kind of the world's tension series, whose keyboard step is [`next_change`].
 pub const SERIES: &str = "world-tension";
 
 #[derive(Deserialize)]
@@ -254,10 +231,6 @@ struct Step {
     last_hour: Option<f64>,
 }
 
-/// The tension chart's keyboard step, as main's: the nearest hour strictly past the origin at which
-/// the tension tables were read (the tension, its sum and every contribution are read together), or
-/// at which the tension or the sum moved where the recording names no read; none where there is
-/// neither, never the origin itself.
 pub fn next_change(query: &Query<'_>, params: &serde_json::Value) -> io::Result<serde_json::Value> {
     let step: Step = serde_json::from_value(params.clone()).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid world tension step: {error}")))?;
     let bounds = (series::hour_of(step.first_hour, "firstHour")?, series::hour_of(step.last_hour, "lastHour")?);

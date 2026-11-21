@@ -460,7 +460,6 @@ impl AvailableRows {
             census.change(&count, true)?;
             counts = counts.inserted((provincial, key), count)?;
         }
-        // Membership of absent tokens changes with dictionary edits independently of building-row edits.
         for &token in names.edits.iter() {
             let token = token as u32;
             let was_absent =

@@ -155,7 +155,6 @@ fn doctrine_presentation_follows_layer_overrides_replacements_and_reused_objects
             .icon,
         b"GFX_Mod_Track"
     );
-    // Existing lookups, pointer occurrences, rewards and track appends are untouched.
     assert_eq!(database.name(0, b"second").unwrap().unwrap().value, b"LAST");
     assert_eq!(
         database.name(1, b"mixed_sub").unwrap().unwrap().value,

@@ -1,11 +1,3 @@
-//! The Construction log: every construction line of a branch, a window at a time. The manifest
-//! ([`ConstructionLogManifest`]) lists the windows (the branch's blocks), whether either queue was
-//! read and the building types its lines name; a window ([`ConstructionLog`]) lists every line
-//! whose row was shown in it, with its row's changes there: its runs of factories and levels left,
-//! its counts as they rose (each rise known at the read that counted it, dated by the building's
-//! rise where the row holds one), its ending and its output. A line's counts reached before the
-//! window come as one carried entry each, so no reply grows with the campaign and a window stands
-//! on its own; the widget joins the windows it holds.
 
 use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, ProjectKind, RunLines, SpendingGap, col, gap_of, hour, id32, missing, number};
 use crate::{
@@ -40,24 +32,19 @@ pub struct ConstructionLog;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionLogParams {
     pub branch_id: String,
-    /// Index into [`ConstructionLogManifestReply::windows`].
+    #[doc = " Index into [`ConstructionLogManifestReply::windows`]."]
     pub window: usize,
 }
 
-/// How a line left the queue.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum EndKind {
-    /// Native completion was observed.
     Finished,
-    /// Cancelled, or removed without an observed completion.
     Removed,
-    /// It left, but whether it was finished is not known (`unknown` says why).
     Unknown,
 }
 
-/// Why a line's ending is not known.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -73,30 +60,28 @@ pub enum UnknownEnd {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEnd {
     pub kind: EndKind,
-    /// The native outcome hour, when observed; otherwise only `known_at` bounds it.
+    #[doc = " The native outcome hour, when observed; otherwise only `known_at` bounds it."]
     pub hour: Option<i32>,
-    /// The read that showed the line gone, or that settled its ending.
+    #[doc = " The read that showed the line gone, or that settled its ending."]
     pub known_at: i32,
     pub unknown: Option<UnknownEnd>,
 }
 
-/// Levels (railway: segments) a count rose by.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LevelsBuilt {
-    /// The hour the building rose; null when only the read shows it.
+    #[doc = " The hour the building rose; null when only the read shows it."]
     pub hour: Option<i32>,
-    /// The read that established it.
+    #[doc = " The read that established it."]
     pub known_at: i32,
     pub count: u32,
-    /// Levels repaired (or repair work), not new levels.
+    #[doc = " Levels repaired (or repair work), not new levels."]
     pub repair: bool,
-    /// The count reached before the window: known by `known_at`, its own reads in earlier windows.
+    #[doc = " The count reached before the window: known by `known_at`, its own reads in earlier windows."]
     pub carried: bool,
 }
 
-/// One read's factories and levels left, held until the next read that differs or a gap.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -108,22 +93,20 @@ pub struct ProjectRun {
     pub repair_levels: i32,
 }
 
-/// Hours a line's output held alike.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionOutputRun {
     pub from: i32,
     pub to: i32,
-    /// Fixed5 factory output since observation began; null when not known (`reason`).
+    #[doc = " Fixed5 factory output since observation began; null when not known (`reason`)."]
     pub construction_raw: Option<String>,
     pub repair_raw: Option<String>,
     pub reason: Option<SpendingGap>,
-    /// Output before observation began is not recorded.
+    #[doc = " Output before observation began is not recorded."]
     pub before_observation: bool,
 }
 
-/// What an output-alone line was named as before a queue read listed it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -147,18 +130,18 @@ pub enum ProjectSource {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionProject {
-    /// The line's native handle, as a decimal string.
+    #[doc = " The line's native handle, as a decimal string."]
     pub id: String,
     pub kind: ProjectKind,
     pub source: ProjectSource,
     pub census_read: Option<i32>,
     pub output_origin: Option<OutputOrigin>,
     pub queue_ordinal: Option<u32>,
-    /// The queue owner's tag at the line's first read.
+    #[doc = " The queue owner's tag at the line's first read."]
     pub tag: String,
-    /// The building type's lexer id ([`ConstructionType::id`]).
+    #[doc = " The building type's lexer id ([`ConstructionType::id`])."]
     pub building: Option<u32>,
-    /// It had levels to repair at the first read the window shows of it.
+    #[doc = " It had levels to repair at the first read the window shows of it."]
     pub repair: Option<bool>,
     pub state: Option<u32>,
     pub to_state: Option<u32>,
@@ -166,24 +149,24 @@ pub struct ConstructionProject {
     pub route_provinces: Option<u32>,
     pub base_level: Option<i32>,
     pub target_level: Option<i32>,
-    /// Fixed5 cost per level (railway: the whole route).
+    #[doc = " Fixed5 cost per level (railway: the whole route)."]
     pub cost_raw: Option<String>,
     pub created_hour: Option<i32>,
     pub first_read: i32,
-    /// Work before its first read was not recorded; its counts are lower bounds.
+    #[doc = " Work before its first read was not recorded; its counts are lower bounds."]
     pub earlier_unknown: bool,
     pub runs: Vec<ProjectRun>,
-    /// New levels built and levels repaired (`repair`).
+    #[doc = " New levels built and levels repaired (`repair`)."]
     pub built: Vec<LevelsBuilt>,
-    /// Levels that cannot be told built or dropped.
+    #[doc = " Levels that cannot be told built or dropped."]
     pub unaccounted: Vec<LevelsBuilt>,
-    /// New levels it may have both built and had added.
+    #[doc = " New levels it may have both built and had added."]
     pub possible: Vec<LevelsBuilt>,
-    /// Levels added while under way (more queued, or new damage).
+    #[doc = " Levels added while under way (more queued, or new damage)."]
     pub added: Vec<LevelsBuilt>,
-    /// Null while it is in the queue at the window's last hour.
+    #[doc = " Null while it is in the queue at the window's last hour."]
     pub end: Option<ProjectEnd>,
-    /// The first output read counting a repair advance.
+    #[doc = " The first output read counting a repair advance."]
     pub first_repair_tick: Option<i32>,
     pub outputs: Vec<ConstructionOutputRun>,
 }
@@ -192,16 +175,16 @@ pub struct ConstructionProject {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionLogManifestReply {
-    /// Units per factory output point of `cost_raw`.
+    #[doc = " Units per factory output point of `cost_raw`."]
     pub cost_scale: u32,
-    /// The branch's blocks: the log's windows, in hour order.
+    #[doc = " The branch's blocks: the log's windows, in hour order."]
     pub windows: Vec<BattleWindow>,
-    /// Either construction queue was read in the branch.
+    #[doc = " Either construction queue was read in the branch."]
     pub recorded: bool,
     pub types: Vec<ConstructionType>,
-    /// The construction queue's repair marker.
+    #[doc = " The construction queue's repair marker."]
     pub repair_icon: Option<String>,
-    /// Hours of the branch the recording does not hold.
+    #[doc = " Hours of the branch the recording does not hold."]
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
@@ -212,9 +195,9 @@ pub struct ConstructionLogManifestReply {
 pub struct ConstructionLogReply {
     pub window: usize,
     pub interval: BattleWindow,
-    /// Every line whose row was shown in the window, by first read, then handle.
+    #[doc = " Every line whose row was shown in the window, by first read, then handle."]
     pub projects: Vec<ConstructionProject>,
-    /// The names of the states its lines name.
+    #[doc = " The names of the states its lines name."]
     pub states: Vec<ConstructionStateName>,
     pub warnings: Vec<String>,
 }
@@ -319,7 +302,6 @@ impl Product for ConstructionLog {
     }
 }
 
-/// The lines shown in `from..=to` of run `run`, each with its row's changes there.
 #[allow(clippy::too_many_arguments, reason = "one window's read and the identity it names lines by")]
 fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names: &Names, links: &RunLinks, warnings: &mut Vec<String>) -> io::Result<Vec<ConstructionProject>> {
     let recording = source.replay_ref().recording();
@@ -368,14 +350,12 @@ fn window(source: &Source, run: u32, from: i32, to: i32, lines: &RunLines, names
     Ok(out)
 }
 
-/// The rises a row's last queue read counted, as its opaque cells hold them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Rises {
     pub built: Vec<ConstructionRise>,
     pub repaired: Vec<ConstructionRise>,
 }
 
-/// The cells shown at each step, with the last hour each holds through.
 fn shown<'a>(steps: &'a [Step], to: i32) -> Vec<(i32, i32, &'a [Cell])> {
     steps
         .iter()
@@ -388,8 +368,6 @@ fn shown<'a>(steps: &'a [Step], to: i32) -> Vec<(i32, i32, &'a [Cell])> {
         .collect()
 }
 
-/// The hours a row's built or repaired count rose after its first shown step: where its rise lists
-/// are read.
 pub(crate) fn rise_hours(steps: &[Step]) -> Vec<i32> {
     let mut out = Vec::new();
     let mut held: Option<(i64, i64)> = None;
@@ -408,9 +386,7 @@ pub(crate) fn rise_hours(steps: &[Step]) -> Vec<i32> {
 
 pub(crate) enum Assembled {
     Project(Box<ConstructionProject>),
-    /// No owner the recording resolves.
     Unnamed,
-    /// Never shown in the window.
     Hidden,
 }
 
@@ -431,8 +407,6 @@ fn end_of(cells: &[Cell], at: i32) -> Option<ProjectEnd> {
     Some(ProjectEnd { kind, hour: hour(cells, col::END_HOUR), known_at: hour(cells, col::END_KNOWN_AT).unwrap_or(at), unknown })
 }
 
-/// One count's rises over the shown steps: its value at the first as one carried entry, then each
-/// rise at the step that shows it, dated by `dated` where the row gives the rise's hours.
 fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &dyn Fn(i32) -> Option<Vec<ConstructionRise>>) -> Vec<LevelsBuilt> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
@@ -462,8 +436,6 @@ fn merged(mut a: Vec<LevelsBuilt>, b: Vec<LevelsBuilt>) -> Vec<LevelsBuilt> {
     a
 }
 
-/// A line's reply from its steps in a window ending at `to`: none when no step shows it, or when no
-/// tag names its owner at its first read.
 pub(crate) fn assemble<'r>(
     id: u64,
     steps: &[Step],
@@ -501,7 +473,6 @@ pub(crate) fn assemble<'r>(
     for &(at, through, cells) in &shown {
         let since = hour(cells, col::OUTPUT_SINCE);
         let reason = number(cells, col::OUTPUT_REASON).and_then(|reason| u8::try_from(reason).ok()).and_then(gap_of);
-        // A line the output table has not yet listed has no output to show.
         if since.is_none() && reason.is_some_and(|reason| reason == SpendingGap::NotRecorded) {
             continue;
         }

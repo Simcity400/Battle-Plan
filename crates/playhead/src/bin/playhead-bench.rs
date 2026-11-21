@@ -1,41 +1,3 @@
-//! The lane's and the playhead's bench over a format-12 recording. Dev tool, deleted with the
-//! playback build's last step. Each command prints JSON lines. `<recording>` is read whole, one
-//! run of it (`--run=N`), or one span of game hours of a run (`--from=<game hour> --hours=N`),
-//! read from the block holding every table's last restore before it; the commands but `play`
-//! read the first run read. `open` prints what opening read and took.
-//!
-//! `check <recording>`: per table, every column, stepped over the span: (a) at
-//! every block end the lane equals `reader::rebuild`; (b) after every step a mirror kept only from
-//! the change sets equals the lane; (c) `seek` to sampled hours equals the stepped lane; (d) lanes
-//! of every third column and of none equal the full lane on theirs.
-//!
-//! `check --passing`: per table, every column, declared passing and stepped at `--step` hours:
-//! each step's passing rows against the same table stepped an hour at a time (every row inserted
-//! inside the step and deleted by its end, with its cells at its last live hour).
-//!
-//! `time <recording>`: every table's lane stepped alone, one after another each step, on one
-//! thread, the parts it needs fetched outside the timed step. `seek <recording>`: seeks timed,
-//! restore apart from replay.
-//!
-//! `play <recording> --select=<file>`: the playhead over every run read as a piece, a consumer thread
-//! playing the frame on a wall clock (`--flat`: the head is always the newest step built), its
-//! steps applied to a mirror kept from the steps alone; frame time, lag, step time, stalls, reads,
-//! seeks (`--seek=<every N frames>`) and what the playhead holds. The head is the playhead's
-//! clock. The mirror declares a rebuild, run on the fetchers at a reset, and the consumer swaps in
-//! each table's rebuilt mirror when it takes the reset (`--mirror=none`: the rebuild makes
-//! nothing). `--second=Table,...` adds a second reader of those tables, which changes its columns
-//! of them every `--second-every` frames. With `--check` every reader's mirror is compared with
-//! `reader::rebuild` at every block end and with the lanes at the end. `--churn=N` instead changes
-//! the second reader every N frames, in turn paused (until every table it changed arrived; every
-//! other paused change retires the reader and declares a new one), playing, and right after a
-//! seek: a third of the `--second` tables retired and the rest's columns changed, and every other
-//! table of `--churn-new` (tables the first reader lacks, every column) declared or retired. Each
-//! table that arrives while paused is compared with a lane sought to its hour.
-//!
-//! `join <recording> --select=<file> --join=Table,...`: the first reader plays, pauses, and a second
-//! reader declares the `--join` tables (every column) while paused: from the declare to its
-//! consumer taking the reset of every one, polled every quarter millisecond, then each mirror
-//! compared with a lane sought to its hour; `--trials` times, the head moved on between.
 
 #![recursion_limit = "256"]
 
@@ -94,7 +56,6 @@ struct Options {
     run: Option<usize>,
     from: Option<Hour>,
     hours: u32,
-    /// What was opened: the timeline's pieces, and the first one's run hours.
     pieces: Vec<Piece>,
     window: (u32, u32),
     churn: Option<u64>,
@@ -203,7 +164,6 @@ fn main() -> io::Result<()> {
         if options.tables.as_ref().is_some_and(|wanted| !wanted.contains(&name)) || selection.as_ref().is_some_and(|held| !held.iter().any(|declared| declared.table == table)) {
             continue;
         }
-        // A table the recording's format predates is in no page.
         if pages.runs().iter().any(|run| !run.pages.iter().any(|page| page.tables.get(table).is_some_and(|entry| entry.first.is_some() || entry.restore.is_some()))) {
             absent.push(name);
             continue;
@@ -243,8 +203,6 @@ fn list(kind: Kind) -> bool {
     matches!(kind, Kind::U32List | Kind::U64List | Kind::Opaque)
 }
 
-/// A selection file: a line a table, `Table` for every column, `Table:numeric`, or
-/// `Table:col,col` by field name or index.
 fn read_selection(pages: &WorldPages, path: &str, numeric: bool) -> io::Result<Vec<Declared>> {
     let text = std::fs::read_to_string(path)?;
     let mut declared = Vec::new();
@@ -275,7 +233,6 @@ fn game(run: &Run, hour: u32) -> Hour {
     run.first_hour + hour as Hour
 }
 
-/// The kinds of `table`'s columns its pages hold, which a restore decodes at.
 fn held_kinds(pages: &dyn Pages, table: usize) -> &[Kind] {
     let kinds = pages.kinds(table).expect("a schema table");
     &kinds[..pages.held(table).min(kinds.len())]
@@ -285,7 +242,6 @@ fn lane(pages: &Arc<dyn Pages>, table: usize, columns: &[usize]) -> io::Result<L
     Lane::new(Arc::clone(pages), 0, table, columns, true)
 }
 
-/// Steps `lane` to the end of run hour `to`, giving it its parts; each change set to `each`.
 fn step_to(lane: &mut Lane, run: &Run, to: u32, changes: &mut Changes, mut each: impl FnMut(&Lane, &Changes)) -> io::Result<()> {
     loop {
         lane.fetch_through(game(run, to))?;
@@ -301,8 +257,6 @@ fn step_to(lane: &mut Lane, run: &Run, to: u32, changes: &mut Changes, mut each:
     }
 }
 
-/// Hours to seek to inside run hours `start..=end`: after each restore, before the next, and
-/// spread at random; run hours.
 fn samples(run: &Run, table: usize, count: usize, (start, end): (u32, u32)) -> Vec<u32> {
     let hours = end + 1;
     let restored: Vec<u32> = run.pages.iter().enumerate().filter(|(_, page)| page.tables[table].restore.is_some()).map(|(index, _)| (index as u32 + 1) * BLOCK - 1).collect();
@@ -331,11 +285,8 @@ fn samples(run: &Run, table: usize, count: usize, (start, end): (u32, u32)) -> V
     chosen
 }
 
-/// Text cells whose text a mirror was never given, counted apart from cells that differ.
 static UNNAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Cells of two states that differ: live bits, keys, and `columns`' values (a list's bytes held
-/// while unrecorded too); the first difference described.
 fn differ(a: &TableState, b: &TableState, columns: &[usize], first: &mut Option<String>) -> u64 {
     let mut differing = 0;
     let slots = a.slots().max(b.slots());
@@ -360,7 +311,6 @@ fn differ(a: &TableState, b: &TableState, columns: &[usize], first: &mut Option<
     differing
 }
 
-/// One selected column of a reader's copy, by slot.
 enum Column {
     Numbers { text: bool, values: Vec<u64>, state: Vec<u8> },
     Lists { cells: Vec<Vec<u8>>, state: Vec<u8> },
@@ -451,19 +401,15 @@ impl Column {
     }
 }
 
-/// A reader's copy of one table, kept from change sets alone.
 struct Mirror {
     columns: Vec<usize>,
     live: Vec<bool>,
     keys: Vec<u128>,
     cells: Vec<Column>,
-    /// Per column, whether its lane reads it: a column the recording's format predates is in no
-    /// change set and stays unrecorded.
     read: Vec<bool>,
     texts: HashMap<u32, Vec<u8>>,
     status: Option<(Status, Option<Hour>)>,
     head: Option<Hour>,
-    /// Changes naming a row the mirror does not hold as they say.
     refused: u64,
 }
 
@@ -472,7 +418,6 @@ impl Mirror {
         Self { columns: columns.to_vec(), live: Vec::new(), keys: Vec::new(), cells: columns.iter().map(|&column| Column::new(kinds[column])).collect(), read: vec![true; columns.len()], texts: HashMap::new(), status: None, head: None, refused: 0 }
     }
 
-    /// The reader's rebuild: its arrays of `columns` made from a sought lane's cells.
     fn rebuild(lane: &Lane, kinds: &[Kind], columns: &[usize]) -> Self {
         let mut mirror = Self::new(kinds, columns);
         mirror.read = columns.iter().map(|column| lane.reads().contains(column)).collect();
@@ -486,7 +431,6 @@ impl Mirror {
             }
         }
         for (column, &index) in mirror.cells.iter_mut().zip(columns) {
-            // A column the recording's format predates holds no cell: its rows stay unrecorded.
             let Some(held) = cells.column(index) else { continue };
             match column {
                 Column::Numbers { values, state, .. } => {
@@ -523,7 +467,6 @@ impl Mirror {
         self.cells.iter_mut().for_each(|column| column.grow(slots));
     }
 
-    /// A step's change set of its table; at a reset, a mirror given no state keeps its own.
     fn apply(&mut self, changes: &Changes) {
         let deleted = changes.deleted();
         for (at, &slot) in deleted.slots().iter().enumerate() {
@@ -590,7 +533,6 @@ impl Mirror {
         self.head = changes.head();
     }
 
-    /// Cells that differ from `state`'s, and the first difference.
     fn differ(&self, state: &TableState, status: (Status, Option<Hour>), first: &mut Option<String>) -> u64 {
         let mut differing = 0;
         let slots = (state.slots() as usize).max(self.live.len());
@@ -630,7 +572,6 @@ impl Mirror {
     }
 }
 
-/// Runs `work` for each of `tables` on up to `threads` threads, printing its line as it ends.
 fn each_table(tables: &[usize], threads: usize, work: impl Fn(usize) -> io::Result<serde_json::Value> + Sync) -> io::Result<Vec<serde_json::Value>> {
     let next = AtomicUsize::new(0);
     let lines = Mutex::new(Vec::new());
@@ -750,7 +691,6 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
     }))
 }
 
-/// A table's cells of every column at `slot`, as compared.
 fn row_cells(cells: &TableState, columns: &[usize], slot: u32) -> Vec<String> {
     columns.iter().map(|&column| format!("{:?}", cells.value(column, slot))).collect()
 }
@@ -768,9 +708,6 @@ fn check_passing(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options) ->
     Ok(())
 }
 
-/// One table declared passing and stepped at `--step` hours against itself stepped an hour at a
-/// time: rows inserted in a step's hours and deleted by its end, with their cells at their last
-/// live hour, are its passing rows.
 fn check_passing_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::Result<serde_json::Value> {
     type Row = (Hour, Hour, u128, Vec<String>);
     let run = &pages.runs()[0];
@@ -876,12 +813,10 @@ struct Timed {
     tracks: u64,
     peak: Held,
     renumbers: u64,
-    /// The bytes the steps' change sets carry, and their passing rows.
     bytes: u64,
     passing: u64,
 }
 
-/// Fetches what `lane` needs through `through` on this thread: (ns, tracks) a read.
 fn feed(lane: &mut Lane, through: Hour, mut fetched: impl FnMut(u64, usize)) -> io::Result<()> {
     while let Some(fetch) = lane.want(through) {
         let read = fetch.run()?;
@@ -1108,18 +1043,14 @@ struct SeekRecord {
     freed_at: u64,
     taken: Option<(u64, f64)>,
     built: Option<playhead::Seeking>,
-    /// The frame that took the reset: states swapped in and the nanoseconds it took to.
     swapped: u32,
     swap_ns: u64,
     freed_ms: f64,
-    /// The first step after the reset: its hours, the stepper's time, whether it stalled.
     first_step: Option<(i32, f64, bool)>,
-    /// Steps taken since the reset, while the seek is watched.
     after: u32,
     worst_frame_ns: u64,
 }
 
-/// One reader of the bench: its consumer and its mirrors, swapped in from its rebuilt states.
 struct Side {
     consumer: Consumer,
     mirrors: HashMap<usize, Box<Mirror>>,
@@ -1127,7 +1058,6 @@ struct Side {
     behind: u64,
     differing: u64,
     unnamed: u64,
-    /// The tables whose states were swapped in, with the hour of the step that carried each.
     arrived: Vec<(usize, Hour)>,
 }
 
@@ -1136,8 +1066,6 @@ impl Side {
         Self { consumer, mirrors: HashMap::new(), compared: 0, behind: 0, differing: 0, unnamed: 0, arrived: Vec::new() }
     }
 
-    /// Swaps in the states the step carries for this reader, the old mirrors to `dropper`, then
-    /// applies the step: states swapped.
     fn take_step(&mut self, step: &Step, dropper: &mpsc::Sender<Box<Mirror>>) -> u32 {
         let mut swapped = 0;
         if step.reset() || step.tables().iter().any(Changes::reset) {
@@ -1174,7 +1102,6 @@ impl Side {
     }
 }
 
-/// The block end `hour` is, as (run, block), when it is one.
 fn block_end(pages: &dyn Pages, timeline: &Timeline, hour: Hour) -> Option<(usize, usize)> {
     let piece = timeline.pieces().iter().find(|piece| piece.first <= hour && hour <= piece.last)?;
     let run = &pages.runs()[piece.run];
@@ -1183,8 +1110,6 @@ fn block_end(pages: &dyn Pages, timeline: &Timeline, hour: Hour) -> Option<(usiz
     (at + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours)).then_some((piece.run, block))
 }
 
-/// The mirrors against `reader::rebuild` at a block end, on `threads` threads: tables compared,
-/// tables behind the hour, cells differing, the first difference.
 fn compare_rebuilt(pages: &dyn Pages, mirrors: &HashMap<usize, Box<Mirror>>, run: usize, block: usize, hour: Hour, threads: usize) -> io::Result<(u64, u64, u64, Option<String>)> {
     let tables: Vec<usize> = mirrors.iter().filter(|(_, mirror)| mirror.head == Some(hour)).map(|(&table, _)| table).collect();
     let behind = (mirrors.len() - tables.len()) as u64;
@@ -1227,7 +1152,6 @@ fn compare_rebuilt(pages: &dyn Pages, mirrors: &HashMap<usize, Box<Mirror>>, run
     Ok((tables.len() as u64, behind, differing, first))
 }
 
-/// The bench's rebuild: its mirror of the reader's columns made from the lane, or nothing.
 fn mirror_rebuild(pages: &Arc<dyn Pages>, mirror: bool) -> Rebuild {
     if !mirror {
         return Arc::new(|_: &Lane, _: &[usize]| Ok(State::new((), 0)));
@@ -1240,8 +1164,6 @@ fn mirror_rebuild(pages: &Arc<dyn Pages>, mirror: bool) -> Rebuild {
     })
 }
 
-/// The second reader's declaration of `tables` in phase `odd`: the first reader's columns of each
-/// at even places, or at odd ones.
 fn second_declared(selection: &[Declared], tables: &[usize], odd: bool, keyed: bool) -> Vec<Declared> {
     tables
         .iter()
@@ -1256,25 +1178,20 @@ fn second_declared(selection: &[Declared], tables: &[usize], odd: bool, keyed: b
         .collect()
 }
 
-/// The table named `wanted`.
 fn table_named(wanted: &str) -> io::Result<usize> {
     TableId::ALL.iter().position(|id| format!("{id:?}") == wanted).ok_or_else(|| invalid(format!("No table {wanted}")))
 }
 
-/// Table `wanted` and its kinds, refused by name when the recording withholds it.
 fn available<'p>(pages: &'p WorldPages, wanted: &str) -> io::Result<(usize, &'p [Kind])> {
     let table = table_named(wanted)?;
     let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("{wanted} is withheld: {}", pages.withheld(table).unwrap_or("the recording holds no such table"))))?;
     Ok((table, kinds))
 }
 
-/// Every column of `table`, keyed.
 fn every_column(pages: &dyn Pages, table: usize) -> Declared {
     Declared { table, columns: (0..pages.kinds(table).expect("a schema table").len()).collect(), keyed: true, passing: false, hourly: false }
 }
 
-/// The churning reader's declaration at change `change`: the `second` tables but a third of them,
-/// their columns halved one way or the other, and every other `new` table, every column.
 fn churn_declared(pages: &dyn Pages, selection: &[Declared], second: &[usize], new: &[usize], change: u64) -> Vec<Declared> {
     let left = (change % 3) as usize;
     let kept: Vec<usize> = second.iter().enumerate().filter(|(at, _)| at % 3 != left).map(|(_, &table)| table).collect();
@@ -1284,8 +1201,6 @@ fn churn_declared(pages: &dyn Pages, selection: &[Declared], second: &[usize], n
     declared
 }
 
-/// Cells of `mirror` differing from a lane of its columns sought to its hour, on the run of the
-/// piece holding it, and the first difference.
 fn against_sought(pages: &Arc<dyn Pages>, timeline: &Timeline, table: usize, mirror: &Mirror, first: &mut Option<String>) -> io::Result<u64> {
     let Some(hour) = mirror.head else { return Ok(0) };
     let piece = timeline.pieces().iter().find(|piece| piece.first <= hour && hour <= piece.last).ok_or_else(|| invalid(format!("Hour {hour} is in no piece")))?;
@@ -1299,9 +1214,6 @@ fn against_sought(pages: &Arc<dyn Pages>, timeline: &Timeline, table: usize, mir
     Ok(differing)
 }
 
-/// Frames on the clock for `seconds`, `consumer` taking and dropping the steps, and on until the
-/// head is not held at a seek; when `idle` (paused), also until the steps reach the head and none
-/// was built for five frames.
 fn run_frames(playhead: &Playhead, consumer: &mut Consumer, rate: f64, seconds: f64, idle: bool) -> io::Result<()> {
     let frame = Duration::from_secs_f64(1.0 / rate);
     let until = Instant::now() + Duration::from_secs_f64(seconds);

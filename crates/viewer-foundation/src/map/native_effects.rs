@@ -1,11 +1,7 @@
-//! GUI effects loaded from the resolved content stack and compiled when a technique is used.
-//! Missing techniques retain the preceding program and samplers, while their blend state
-//! defaults to off. Tests describe selection and scheduling with explicit fixture metadata.
 
 pub use shader_pipeline::clock::Settling;
 use std::sync::Arc;
 
-/// A sampler's addressing on one axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Address {
     Wrap,
@@ -15,30 +11,23 @@ pub enum Address {
     MirrorOnce,
 }
 
-/// A sampler's filter (`MagFilter`, `MinFilter`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Filter {
     Point,
     Linear,
 }
 
-/// A texture slot's addressing, filtering and mip bias. The border is transparent black and
-/// the third axis wraps; an absent mip filter selects the nearest level.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sampler {
     pub u: Address,
     pub v: Address,
     pub mag: Filter,
     pub min: Filter,
-    /// `MipFilter`: `Point` (or `None`) the nearest level, `Linear` the two nearest blended.
     pub mip: Filter,
-    /// `MipMapLodBias`, added to the level of detail before the filter is chosen.
     pub lod_bias: f32,
 }
 
 impl Sampler {
-    /// Ten bits: `u` and `v` (three each), the magnifying and minifying filters, and the mip
-    /// filter (1 point, 2 linear).
     pub fn packed(self) -> u32 {
         let address = |address: Address| match address {
             Address::Wrap => 0,
@@ -60,23 +49,18 @@ impl Sampler {
     }
 }
 
-/// How a technique's output meets what is under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Blend {
-    /// `BlendEnable = yes`, `src_alpha` over `inv_src_alpha`.
     Alpha,
-    /// Blending off, including the default state selected by an absent technique.
     Off,
 }
 
-/// Selection and clock metadata for a compiler-independent layout fixture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FixtureTechnique {
     pub id: u32,
     pub settles: Option<Settling>,
 }
 
-/// A selected fixture technique, or an absent technique that retains the previous program.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Technique {
     Run {
@@ -86,18 +70,15 @@ pub enum Technique {
     Keep,
 }
 
-/// A resolved effect and its executable source. Layout fixtures provide metadata instead.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Effect {
     pub file: String,
     pub compiled: Option<Arc<super::native_shader::library::Effect>>,
     pub techniques: Vec<(&'static str, FixtureTechnique, Blend)>,
-    /// An absent row retains the preceding draw's sampler in that slot.
     pub samplers: [Option<Sampler>; 6],
 }
 
 impl Effect {
-    /// Loads the effect named by the sprite through the content stack.
     pub fn load(
         library: &mut super::native_shader::library::Library,
         file: &[u8],
@@ -132,8 +113,6 @@ impl Effect {
             })
     }
 
-    /// Compiled programs derive their clock dependence from their instructions. Fixtures
-    /// supply it directly; an absent technique takes the preceding draw's answer.
     pub fn settles(&self, name: &str) -> Settles {
         if let Some(compiled) = &self.compiled {
             return compiled_settles(compiled, name);
@@ -145,18 +124,13 @@ impl Effect {
     }
 }
 
-/// Whether a draw still changes after its drawable's restart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Settles {
-    /// When it settles after its restart, or continuous activity when absent.
     Program(Option<Settling>),
-    /// The preceding program remains bound, with this draw's constants.
     Previous,
-    /// A declared program cannot compile; it and later inherited draws are refused.
     Refused,
 }
 
-/// Inspects the selected compiled program using the sprite clock fields.
 pub fn compiled_settles(
     effect: &Arc<super::native_shader::library::Effect>,
     name: &str,
@@ -172,7 +146,6 @@ pub fn compiled_settles(
     }
 }
 
-/// Compiler-independent technique, clock and sampler metadata for layout tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod synthetic {
     use super::*;

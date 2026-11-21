@@ -1,12 +1,3 @@
-//! One frame's borrowed directed-war owner admission for selected movement,
-//! attack and transport. Local selection does not select recording demand.
-//! Each Owner holds exactly this immutable frame/world/hour, admits once on
-//! first reached direct predicate, and cannot be reassigned to a later frame.
-//!
-//! A positive receiver's cells derive from the hour's WarRelations
-//! ([`crate::directed_war_derive`]). Recordings through format 101 stored a
-//! sparse packet per receiver; where one is present it answers instead, so
-//! those recordings keep their recorded cells and unknowns.
 
 use crate::directed_war_derive::ReceiverWars;
 use replay_data::{
@@ -32,9 +23,6 @@ impl Context<'_> {
             Self::ActualZero(packet) => {
                 let cell=packet.cells.get(target_slot as usize).and_then(Option::as_ref)
                     .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused or outside observed matrix")?;
-                // Native source authenticates ordinal + status owner. Active
-                // war intentionally returns before target/subject reads, so
-                // absent cell.target must not erase a known independent war.
                 match cell
                     .war
                     .ok_or("ReservedCountryNaming.reverse_visibility war capture refused")?
@@ -50,9 +38,6 @@ impl Context<'_> {
     }
 }
 
-/// A narrowly scoped borrowed admission, not a persistent world/query cache.
-/// First direct demand records admission failure as failure for later targets;
-/// no retry, hour reassignment or stale carried packet is possible.
 pub struct Owner<'a> {
     frame: &'a DecodedFrame,
     actual_raw_id: i32,
@@ -137,9 +122,6 @@ impl<'a> Owner<'a> {
         }
     }
 
-    /// The receiver's packet in a recording through format 101. Current
-    /// recordings store none, and neither does a capture an older recording
-    /// refused or never made; those cells derive like current ones.
     fn recorded_packet(&self) -> Option<&'a DirectedWars> {
         self.frame
             .complete::<tables::CountryCounterInputs>()
@@ -152,8 +134,6 @@ impl<'a> Owner<'a> {
             .as_ref()
     }
 
-    /// Direct relation-byte predicate without positive-receiver or self veto.
-    /// Callers with an already resolved exact target use pointer_active_slot.
     pub fn pointer_active(&self, target_raw: u32) -> Fact<bool> {
         self.pointer_active_slot(canonical(self.frame, target_raw)?)
     }
@@ -165,7 +145,6 @@ impl<'a> Owner<'a> {
         }
     }
 
-    /// Raw identity, then both-nonzero alias identity.
     pub fn same_country(&self, target_raw: u32) -> Fact<bool> {
         if target_raw as i32 == self.actual_raw_id {
             return Ok(true);
@@ -179,8 +158,6 @@ impl<'a> Owner<'a> {
         self.canonical_slot
     }
 
-    /// Raw-self, both-nonzero alias-self, then the signed-positive gate.
-    /// Those proved false arms cannot acquire unrelated packet admission.
     pub fn at_war(&self, target_raw: u32) -> Fact<bool> {
         if self.same_country(target_raw)? {
             return Ok(false);
@@ -372,7 +349,6 @@ mod owner_tests {
             .into();
         let owner = Owner::new(&frame, 12).unwrap();
         assert_eq!(owner.actual_raw_id, 0);
-        // The signed receiver gate returns false without resolving an unknown target.
         assert_eq!(owner.at_war(123_456), Ok(false));
         assert!(owner.context.get().is_none());
         assert_eq!(owner.pointer_active_slot(0), Ok(true));
@@ -396,7 +372,6 @@ mod owner_tests {
         assert_eq!(cached, later);
     }
 
-    /// The hour's WarRelations: raw 20 (slot 2) at war with alias raw 7 (slot 1).
     fn with_wars(mut frame: DecodedFrame) -> DecodedFrame {
         frame.tables[TableId::WarRelations.index()] =
             TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
@@ -410,7 +385,6 @@ mod owner_tests {
 
     #[test]
     fn owner_without_a_packet_derives_every_cell_from_war_relations() {
-        // Current recordings store None; older ones may lack the field.
         for packet in [Recorded::Value(None), Recorded::NotRecorded] {
             let frame = with_wars(frame(packet));
             let owner = Owner::new(&frame, 99).unwrap();
@@ -419,11 +393,8 @@ mod owner_tests {
             assert_eq!(owner.at_war(20), Ok(true));
             assert!(matches!(owner.context.get(), Some(Ok(Context::Derived(_)))));
             assert_eq!(owner.pointer_active_slot(2), Ok(true));
-            // The receiver's own cell and its cell toward slot zero, through
-            // the positive alias 12, hold no war.
             assert_eq!(owner.pointer_active_slot(1), Ok(false));
             assert_eq!(owner.pointer_active(12), Ok(false));
-            // The other endpoint derives the reverse cell.
             let enemy = Owner::new(&frame, 20).unwrap();
             assert_eq!(enemy.pointer_active_slot(1), Ok(true));
             assert_eq!(enemy.at_war(7), Ok(true));
@@ -444,8 +415,6 @@ mod owner_tests {
 
     #[test]
     fn an_older_recordings_packet_keeps_answering_over_the_derivation() {
-        // The packet records the cell toward slot 2 as clear and leaves slot
-        // zero unobserved; WarRelations would derive both differently.
         let frame = with_wars(frame(Recorded::Value(Some(packet(12, false)))));
         let owner = Owner::new(&frame, 7).unwrap();
         assert_eq!(owner.pointer_active_slot(2), Ok(false));

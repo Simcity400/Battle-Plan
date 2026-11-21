@@ -1,4 +1,3 @@
-//! History effects are read natively; comparisons use their saved results.
 
 use super::fixtures::{membership, read_membership, with_content, with_content_files};
 use super::*;
@@ -237,8 +236,6 @@ fn core_skips_only_membership_fields_and_keeps_saved_value_differences() {
     }
     assert!(report.coverage_line().contains("incomplete"));
 
-    // The exclusion itself makes coverage incomplete, even without differences
-    // or a dependent row present in the recording.
     let mut empty_report = Report::default();
     empty_report.membership_content(&membership);
     assert!(empty_report.coverage_line().contains("incomplete"));
@@ -259,7 +256,6 @@ fn core_skips_only_membership_fields_and_keeps_saved_value_differences() {
     );
     assert!(report.coverage_line().contains("incomplete"));
 
-    // An omitted controller still depends on the excluded state's owner.
     saved.provinces.get_mut(&2).unwrap().controller = None;
     if let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *frame.tables[TableId::Provinces.index()]

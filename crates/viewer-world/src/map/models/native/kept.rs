@@ -1,27 +1,11 @@
-//! A pass's retained draw lists: the shadow casters' list and one list for each lit walk of a
-//! frame. The draws of one part in one view stand as one instanced draw over a run of rows the
-//! instance index reaches, so each figure keeps a slot in every run of the groups its parts draw
-//! in, and its blocks are the rows of those slots. A frame made from the same inputs ([`Made`])
-//! walks nothing: it writes this frame's shared blocks (the scene blocks, and for a lit list the
-//! light grid and the incoming pixel snapshot), the rows of actors that have a player (whose
-//! poses move by nature) and of instances that changed, hands the GPU the bytes of those that
-//! differ from the ones it holds, and records the kept draws. A figure that
-//! joins, leaves, is given a player or no longer keeps its level of detail costs that figure: the
-//! others keep their slots and their groups keep their bindings. A lit list also keeps how its
-//! walk leaves the frame's constant state ([`Replay`]), which later passes read, and gives it
-//! again every frame it is kept.
 use super::*;
 use std::ops::Range;
 
-/// What a list's draws read besides each node's own blocks, in the order of the shared blocks:
-/// each view's scene block, then for a lit list the light grid, then the incoming pixel
-/// snapshot when the pass's nodes supply no userdata of their own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Reads {
     pub views: usize,
     pub grid: bool,
     pub pixel: bool,
-    /// Each node's pixel snapshot is its own vertex block: the pass's nodes supply userdata.
     pub own_pixel: bool,
 }
 
@@ -35,29 +19,19 @@ impl Reads {
     }
 }
 
-/// Everything a walk reads that is not an actor's pose, a figure placed, or the shared blocks'
-/// bytes. Any of it differing from the walk that made the list makes the list again, whole.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Made {
-    /// [`ModelPass::revision`]: hidden actors, redirects, the content stack, a library that did
-    /// more than grow.
     pub revision: u64,
-    /// The map the walk's renderer was made for.
     pub map: MapSize,
     pub offsets: Vec<u32>,
     pub visible: Option<[u32; 4]>,
     pub alpha: u32,
-    /// Each shared block's length; their bytes are written every frame.
     pub shared: Vec<usize>,
     pub reads: Reads,
     pub samples: u32,
-    /// [`ResourceIdentities::replaced`]: textures a kept draw may have bound.
     pub textures: u64,
-    /// The global textures a lit draw binds ([`ResourceStamp::globals`]).
     pub globals: u64,
-    /// The bytes of the incoming object block a lit walk carries into its nodes' blocks.
     pub chain: Vec<u8>,
-    /// The frame's game cull: the viewport's side planes move it with the camera still.
     pub cull: Option<GameCull>,
 }
 
@@ -90,7 +64,6 @@ impl Made {
         }
     }
 
-    /// The first input, in [`MADE_INPUTS`]' order, that differs from `other`'s.
     pub(super) fn first_difference(&self, other: &Made) -> Option<usize> {
         let Made { revision, map, offsets, visible, alpha, shared, reads, samples, textures, globals, chain, cull } =
             self;
@@ -113,17 +86,10 @@ impl Made {
     }
 }
 
-/// What decides which gathered figures a frame draws: its own camera's cull and ground, by bits.
 pub(super) type Drawn = (Option<GameCull>, Option<[u32; 4]>);
 
-/// The inputs of [`Made`], in [`Made::first_difference`]'s order.
 pub(super) const MADE_INPUTS: usize = 12;
 
-/// Why a list is walked whole, for the flight record: never made; dropped by an earlier frame (a
-/// refusal, a build waited on outside any figure); the field's change not followed; or this
-/// frame's change, which the list could not take: the field reshaped or an actor born while the
-/// camera moved, most figures to walk, no buffer, a walk not as planned, no room, a draw that
-/// cannot be bound in the list, an error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Whole {
     First,
@@ -140,20 +106,12 @@ pub(super) enum Whole {
 
 pub(super) const WHOLES: usize = 10;
 
-/// Why a list cannot be kept as it is ([`Kept::stale`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stale {
     Whole(Whole),
-    /// Made from another value of this input ([`Made::first_difference`]).
     Input(usize),
 }
 
-/// Why a figure was walked into a kept list, for the flight record: no figure of its actor was
-/// drawn in its view or any other; its actor was drawn there under another key (another mesh, or
-/// another epoch); it was drawn only in another view; its key is placed more than once; its actor
-/// was given a player; it waited on a build; it was demoted (its level of detail changed, or its
-/// nodes did not write in place); its group came into the view; or its nodes failed to write in
-/// place in this splice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Entered {
     New,
@@ -169,25 +127,18 @@ pub(super) enum Entered {
 
 pub(super) const ENTERED: usize = 9;
 
-/// A node's constant block, where the walk recorded it or the list keeps it: its draws' rows
-/// hold what their programs read of it, and the whole of it is what the frame's constant state
-/// carries into the next pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Block {
     pub at: usize,
     pub length: usize,
 }
 
-/// Which of a node's blocks a run of rows holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Supply {
     Vertex,
     Skin,
 }
 
-/// A node the walk reached in one view. A live one (its actor has a player) is written again
-/// every frame; another when its instance changes. Either way its row reaches the GPU only where
-/// its bytes changed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Unit {
     pub live: bool,
@@ -195,25 +146,17 @@ pub(super) struct Unit {
     pub group: usize,
     pub index: usize,
     pub row: Option<walk::Row>,
-    /// The node's position in its mesh's descriptors.
     pub descriptor: usize,
-    /// The level of detail it was drawn at; another one walks its figure again.
     pub lod: Option<usize>,
-    /// Where its level of detail was chosen: its world position in its view.
     pub at: [f32; 3],
     pub vertex: Option<Block>,
     pub skin: Option<Block>,
-    /// Palette entries its skinned parts read.
     pub bones: usize,
-    /// The supplies its accepted parts read, as [`plan_tail::Supplies::present`] gives them.
     pub mask: u32,
-    /// Its first draw's place among the list's instances.
     pub draws: usize,
-    /// Its draws, which follow its own in the list.
     pub parts: usize,
 }
 
-/// A draw found by the walk, bound with the group of its part once its rows have their place.
 pub(super) struct Pending {
     pub key: usize,
     pub view: usize,
@@ -229,8 +172,6 @@ pub(super) struct Pending {
     pub material: usize,
 }
 
-/// What a lit draw leaves in the frame's constant state: its part, the textures it bound and its
-/// material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Meta {
     pub key: usize,
@@ -238,7 +179,6 @@ pub(super) struct Meta {
     pub material: usize,
 }
 
-/// The actor a figure is: its mesh, seed, identity and epoch.
 pub(super) type FigureKey = (usize, u32, u32, u32);
 
 pub(super) fn figure_key(mesh: usize, instance: &ModelInstance) -> FigureKey {
@@ -250,49 +190,37 @@ pub(super) fn figure_key(mesh: usize, instance: &ModelInstance) -> FigureKey {
     )
 }
 
-/// Where the walk began a figure: its view and route, and the recording's lengths there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Mark {
     pub view: usize,
     pub position: usize,
     pub key: FigureKey,
     pub live: bool,
-    /// A part of it waited on its build: drawn without it, and walked again next frame.
     pub waiting: bool,
     units: usize,
     pending: usize,
 }
 
-/// A figure walked: its mark, and its units and draws in the recording.
 struct Walked {
     mark: Mark,
     units: Range<usize>,
     pending: Range<usize>,
 }
 
-/// One walk's blocks, draws and figures, in walk order.
 #[derive(Default)]
 pub(super) struct Recording {
-    /// The recorded blocks' bytes, back to back in walk order.
     bytes: Vec<u8>,
     pub units: Vec<Unit>,
     pub pending: Vec<Pending>,
-    /// Groups the walk passed the visibility test of, by view then group.
     pub visited: Vec<bool>,
-    /// A part waiting on its builds: the frame draws its figure without it ([`Self::wait`]).
     pub incomplete: bool,
     marks: Vec<Mark>,
-    /// For a walk of some figures: the routes it takes, by view and position in walk order,
-    /// and the next one.
     only: Option<(Vec<(usize, usize)>, usize)>,
-    /// The figures the game cull left out, by view and figure.
     pub culled: Vec<(usize, FigureKey)>,
-    /// A static list's walk: every level of detail of every node, the frame drawing the one chosen.
     pub every_lod: bool,
 }
 
 impl Recording {
-    /// A walk of the figures at these routes only, by view and position in walk order.
     pub(super) fn of(only: Vec<(usize, usize)>) -> Self {
         Self {
             only: Some((only, 0)),
@@ -300,13 +228,10 @@ impl Recording {
         }
     }
 
-    /// A walk of some figures: it leaves no constant state for the passes after it.
     pub(super) fn partial(&self) -> bool {
         self.only.is_some()
     }
 
-    /// Whether the walk takes the route at `position` in `view`; asked of every route, in walk
-    /// order.
     pub(super) fn takes(&mut self, view: usize, position: usize) -> bool {
         let Some((only, next)) = &mut self.only else {
             return true;
@@ -319,8 +244,6 @@ impl Recording {
         }
     }
 
-    /// A part of the figure being walked waits on its build: the figure is drawn without it and
-    /// walked again next frame, alone; a walk outside any figure keeps no list.
     pub(super) fn wait(&mut self) {
         match self.marks.last_mut() {
             Some(mark) => mark.waiting = true,
@@ -328,12 +251,10 @@ impl Recording {
         }
     }
 
-    /// Whether the walk left anything it can keep no list of.
     pub(super) fn incomplete(&self) -> bool {
         self.incomplete
     }
 
-    /// The walk begins a figure: what it records next is that figure's, until the next begins.
     pub(super) fn begin(&mut self, view: usize, position: usize, key: FigureKey, live: bool) {
         self.marks.push(Mark {
             view,
@@ -346,19 +267,16 @@ impl Recording {
         });
     }
 
-    /// Records `bytes` as one node's block; the list keeps it and writes the rows its draws read.
     pub(super) fn place(&mut self, bytes: &[u8]) -> Block {
         let at = self.bytes.len();
         self.bytes.extend_from_slice(bytes);
         Block { at, length: bytes.len() }
     }
 
-    /// A recorded block's bytes.
     fn recorded(&self, block: Block) -> &[u8] {
         &self.bytes[block.at..block.at + block.length]
     }
 
-    /// Each unit's first draw among the walk's.
     fn first_draws(&self) -> Vec<usize> {
         let mut at = 0;
         self.units
@@ -371,7 +289,6 @@ impl Recording {
             .collect()
     }
 
-    /// Each figure walked with its units and draws.
     fn walked(&self) -> Vec<Walked> {
         let mut walked: Vec<Walked> = Vec::with_capacity(self.marks.len());
         let (mut units, mut pending) = (self.units.len(), self.pending.len());
@@ -388,7 +305,6 @@ impl Recording {
     }
 }
 
-/// The places a walk's visited flags set, by `view * groups + group`.
 fn gathered(visited: &[bool]) -> Vec<usize> {
     visited.iter().enumerate().filter(|(_, visited)| **visited).map(|(at, _)| at).collect()
 }
@@ -405,30 +321,21 @@ fn place(region: &mut Vec<u8>, bytes: &[u8], reserved: usize, alignment: usize) 
     at
 }
 
-/// Room a laid-out area keeps for the figures that join it before the list is laid out again.
 fn capacity(used: usize, alignment: usize) -> usize {
     align(used + (used / 4).max(64 << 10), alignment)
 }
 
-/// What a node's block in the list's own store is aligned to, so a block taken from the span of
-/// one that left starts where a block of any stride may.
 const BLOCK_ALIGNMENT: usize = 16;
 
-/// Rows a laid-out group keeps for the instances that join it: its own quarter, and never fewer
-/// than four, so a group of one or two takes more figures without the list being laid out again.
 fn rows_capacity(instances: usize) -> usize {
     instances + (instances / 4).max(4)
 }
 
-/// The spans of one area of the buffer (the live or the still rows): the groups' runs are taken
-/// from its free runs or above its top, and given back as groups empty or grow.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Area {
     start: usize,
     end: usize,
-    /// Above it nothing is held.
     top: usize,
-    /// Free runs below the top, in order, none touching another.
     free: Vec<Range<usize>>,
 }
 
@@ -442,9 +349,6 @@ impl Area {
         }
     }
 
-    /// A span of `length` bytes starting at a multiple of `alignment`, so a run of rows of one
-    /// stride stands where the instance index reaches every row of it; none when the area has no
-    /// such span.
     pub(super) fn take(&mut self, length: usize, alignment: usize) -> Option<usize> {
         for at in 0..self.free.len() {
             let run = self.free[at].clone();
@@ -459,8 +363,6 @@ impl Area {
         }
         let start = align(self.top, alignment);
         (start + length <= self.end).then(|| {
-            // The bytes passed over to reach the alignment are free, so the run given back joins
-            // them and the top comes down past both.
             let passed = self.top..start;
             self.top = start + length;
             self.give(passed);
@@ -468,7 +370,6 @@ impl Area {
         })
     }
 
-    /// The area reaches to `end`, its store having grown that far.
     fn grow(&mut self, end: usize) {
         self.end = end;
     }
@@ -493,8 +394,6 @@ impl Area {
     }
 }
 
-/// One run of a group: the rows of one of its instances' blocks, every row of one stride from the
-/// run's start, which is a multiple of that stride so the instance index reaches each of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Run {
     supply: Supply,
@@ -508,25 +407,16 @@ impl Run {
     }
 }
 
-/// The draws of one part in one view that one instanced draw stands for: its instances' rows, the
-/// rows block the draw selects them from, and the draw's place in the list.
 struct Group {
     key: usize,
     view: usize,
     live: bool,
-    /// The band of the walk its instances stand in ([`Bands`]): its draw may hold only draws of
-    /// one band, because the draws of another may not be stepped over.
     band: u32,
-    /// Its draws keep the list's order: one instance, standing for one draw alone.
     alone: bool,
-    /// Where its rows block stands; none when its part reads nothing per instance and its one
-    /// instance's blocks are bound at their own offsets.
     rows: Option<usize>,
     runs: Vec<Run>,
     capacity: usize,
-    /// Each slot's instance ([`Kept::instances`]).
     slots: Vec<usize>,
-    /// Its draw's place in [`DrawList::draws`].
     at: usize,
 }
 
@@ -538,7 +428,6 @@ impl Group {
     }
 }
 
-/// What a draw of one part draws, beside the blocks its group binds for it.
 #[derive(Clone, Copy)]
 pub(super) struct DrawGeometry {
     pub view: usize,
@@ -564,43 +453,31 @@ impl From<&Pending> for DrawGeometry {
     }
 }
 
-/// The group a walked draw of one part, view, liveness and band joins, for the splice.
 type Standing = std::collections::HashMap<(usize, usize, bool, u32), usize>;
 
-/// One draw of the list: the group it joins and its slot in every run of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Instance {
     group: usize,
     slot: usize,
 }
 
-/// What a list needs of a part to lay its draws out and bind them.
 #[derive(Clone, Copy)]
 pub(super) struct PartProgram<'p> {
     pub program: &'p shader_pipeline::gpu::BindingProgram,
-    /// What its draws and the list's others must agree on for their order among the figures to
-    /// leave every pixel the same; none where no agreement makes it so
-    /// ([`mesh_shader::Pass::order`]).
     pub order: Option<mesh_shader::Order>,
 }
 
-/// One figure in one view as the list draws it.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Figure {
     pub view: usize,
-    /// Its route's position in walk order.
     pub position: usize,
     pub key: FigureKey,
     pub live: bool,
-    /// Drawn without a part that waited on its build: walked again next frame.
     pub waiting: bool,
     pub units: Range<usize>,
-    /// Its draws among the list's instances.
     pub draws: Range<usize>,
 }
 
-/// A figure of this frame's walk order, visible, not hidden and drawn in the list's queue, at
-/// its route.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Target {
     pub view: usize,
@@ -609,11 +486,9 @@ pub(super) struct Target {
     pub index: usize,
     pub row: Option<walk::Row>,
     pub key: FigureKey,
-    /// Its actor was given a player since the list read it.
     pub born: bool,
 }
 
-/// What instancing by part leaves of a list ([`Kept::part_counts`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct PartCounts {
     pub parts: usize,
@@ -621,7 +496,6 @@ pub(super) struct PartCounts {
     pub in_views: usize,
 }
 
-/// Which counts a list's walks and splices go to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Kind {
     #[default]
@@ -629,8 +503,6 @@ pub(super) enum Kind {
     Lit,
 }
 
-/// The shared blocks of a laid-out list: each one's place, the size its draws read, and how
-/// its draws read them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Shared {
     pub at: Vec<usize>,
@@ -638,10 +510,6 @@ pub(super) struct Shared {
     pub reads: Reads,
 }
 
-/// How a lit walk of the list leaves the frame's constant state: the binds it retains for later
-/// passes (origins are the list's units, [`SHARED_PIXEL`] the incoming pixel snapshot), the
-/// material whose textures those binds keep, the last node it wrote (whose block the next pass's
-/// walk starts from) and its draws.
 pub(super) struct Replay {
     pub sources: plans::PendingSources,
     pub material: Option<usize>,
@@ -649,101 +517,61 @@ pub(super) struct Replay {
     pub drawn: u32,
 }
 
-/// The origin [`Replay`] gives the incoming pixel snapshot.
 pub(super) const SHARED_PIXEL: usize = usize::MAX;
 
-/// The levels of detail the flight record tells apart; the last holds every deeper one.
 pub(super) const LODS: usize = 6;
 
-/// The retained list: its figures, the groups their draws stand in, their rows' bytes as the GPU
-/// holds them, and what the walk that made it read.
 #[derive(Default)]
 pub(super) struct Kept {
     kind: Kind,
     made: Option<Made>,
-    /// What dropped the list, while it is not made.
     dropped: Option<Whole>,
-    /// The frame whose change of the field the list last followed ([`ModelPass::frame_change`]).
     read: Option<u64>,
     pub draws: DrawList,
     metas: Vec<Meta>,
     figures: Vec<Figure>,
     units: Vec<Unit>,
     instances: Vec<Instance>,
-    /// The groups, by the place their instances name; emptied ones are taken again.
     groups: Vec<Option<Group>>,
-    /// The groups' draws in the order the list records them.
     order: Vec<usize>,
-    /// The bands its draws stand in ([`Bands`]): one where every part agrees on the order its
-    /// draws may stand in among the figures, more where they do not.
     bands: u32,
-    /// The live units.
     live: Vec<usize>,
-    /// Each unit by its instance, for the instances that change, made when first asked after the
-    /// units change.
     by_instance: std::cell::OnceCell<Vec<(usize, usize)>>,
-    /// The groups its walk gathered, as `view * groups + group`, sorted: what a frame that draws
-    /// by another rule tests again.
     gathered: Vec<usize>,
-    /// Rows and shared blocks whose bytes this frame changed, to reach the GPU with it.
     dirty: Vec<(usize, usize)>,
     shared: Shared,
     bytes: Vec<u8>,
-    /// Every node's block, whole: its rows hold what their programs read of it. A splice leaves
-    /// the blocks of the nodes it keeps where they stand and takes the spans of those that left.
     blocks: Vec<u8>,
     block_area: Area,
     live_area: Area,
     still_area: Area,
     buffer: Option<wgpu::Buffer>,
-    /// A lit list's [`Replay`], made again with its order.
     pub replay: Option<Replay>,
     counts: Counts,
-    /// The nodes drawn at each level of detail ([`LODS`]).
     lods: [u64; LODS],
-    /// Figures walked into the list and figures that left it since the last take.
     moved: [u64; 2],
-    /// The figures the game cull left out when the list was walked or spliced, by view and figure:
-    /// one that comes within the cull joins the list.
     culled: std::collections::HashSet<(usize, FigureKey)>,
-    /// Frames the list was prepared on, so its judge runs at its own rate.
     checks: u64,
-    /// The eye its figures' levels of detail stand for. A kept frame whose eye differs gives
-    /// every figure the level that eye chooses ([`ModelPass::relevelled`]).
     lods_for: Option<[f32; 3]>,
-    /// The drawn cull and ground its figures were chosen by ([`Drawn`]). A kept frame that
-    /// draws by others tests every figure it gathered again.
     drawn: Option<Drawn>,
-    /// The pose set its live rows were written for ([`ModelPass::posed`]). A kept frame whose
-    /// set is the same writes no standing figure's row again: its limbs stand where they stood.
     posed: u64,
-    /// What this frame wrote and staged, taken by the record each frame.
     wrote: Wrote,
-    /// The bytes the list has staged, held only while the judge of them runs
-    /// ([`Self::staged_difference`]).
     resident: Vec<u8>,
-    /// What its draws' programs read of each shared block, by block, sorted and merged.
     shared_reads: Vec<Vec<Range<usize>>>,
-    /// Its draws were walked or spliced since the last frame kept it.
     fresh: bool,
-    /// The last frame kept it with every byte its draws read as the frame before left them.
     repeated: bool,
 }
 
-/// What one frame of a list wrote in place and staged for the GPU ([`Kept::take_wrote`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Wrote {
-    /// Rows written in place, and those of them whose bytes differed from what the GPU holds.
     pub rows: u64,
     pub changed: u64,
     pub bytes: u64,
     pub changed_bytes: u64,
-    /// The writes and the bytes the frame staged.
     pub staged: u64,
     pub staged_bytes: u64,
 }
 
-/// Full walks laid out, frames kept, lists spliced by figure and the figures walked into them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Counts {
     pub walks: u64,
@@ -752,10 +580,8 @@ pub(super) struct Counts {
     pub figures: u64,
 }
 
-/// The bytes a kept frame changes, by node.
 pub(super) struct LiveBytes<'a> {
     pub world: &'a [[f32; 4]; 4],
-    /// A lit node's own userdata, after its world in its vertex block.
     pub userdata: Option<[f32; 8]>,
     pub bones: Option<&'a [u8]>,
 }
@@ -768,15 +594,11 @@ impl Kept {
         }
     }
 
-    /// Whether the list was made from these inputs and followed every change of the field read
-    /// before this frame's (`since`).
     #[cfg(test)]
     pub(super) fn fresh(&self, made: &Made, since: Option<u64>) -> bool {
         self.stale(made, since).is_none()
     }
 
-    /// Why the list cannot be kept from `made` after the field read before this frame's
-    /// (`since`), or none when it can ([`Self::fresh`]).
     pub(super) fn stale(&self, made: &Made, since: Option<u64>) -> Option<Stale> {
         match &self.made {
             None => Some(Stale::Whole(self.dropped.unwrap_or(Whole::First))),
@@ -786,25 +608,21 @@ impl Kept {
         }
     }
 
-    /// Dropped for `why`: walked whole next.
     pub(super) fn drop_for(&mut self, why: Whole) {
         self.made = None;
         self.dropped = Some(why);
     }
 
-    /// What dropped the list, while it is not made.
     pub(super) fn dropped(&self) -> Option<Whole> {
         self.dropped.filter(|_| self.made.is_none())
     }
 
-    /// A whole walk kept no inputs (it refused, or waited on a build outside any figure): `why`.
     pub(super) fn unmade_for(&mut self, why: Whole) {
         if self.made.is_none() {
             self.dropped = Some(why);
         }
     }
 
-    /// The list followed the field's change of `frame`.
     pub(super) fn read(&mut self, frame: u64) {
         self.read = Some(frame);
     }
@@ -814,12 +632,10 @@ impl Kept {
         self.drawn = None;
     }
 
-    /// The drawn cull and ground the list's figures were chosen by.
     pub(super) fn drawn_by(&self) -> Option<Drawn> {
         self.drawn
     }
 
-    /// The list's figures are the ones `drawn` chooses.
     pub(super) fn chosen_by(&mut self, drawn: Drawn) {
         self.drawn = Some(drawn);
     }
@@ -836,37 +652,30 @@ impl Kept {
         &self.units
     }
 
-    /// The eye the list's levels of detail stand for.
     pub(super) fn lods_for(&self) -> Option<[f32; 3]> {
         self.lods_for
     }
 
-    /// The list's levels of detail are the ones `eye` chooses.
     pub(super) fn levelled_at(&mut self, eye: [f32; 3]) {
         self.lods_for = Some(eye);
     }
 
-    /// The pose set this list's live rows hold.
     pub(super) fn posed(&self) -> u64 {
         self.posed
     }
 
-    /// The list's live rows hold the poses of set `epoch`.
     pub(super) fn posed_for(&mut self, epoch: u64) {
         self.posed = epoch;
     }
 
-    /// Whether the game cull left out the figure of `key` in `view` when the list was made.
     pub(super) fn was_culled(&self, view: usize, key: FigureKey) -> bool {
         self.culled.contains(&(view, key))
     }
 
-    /// The figures the game cull left out of this splice.
     pub(super) fn set_culled(&mut self, culled: Vec<(usize, FigureKey)>) {
         self.culled = culled.into_iter().collect();
     }
 
-    /// The units of `instance`.
     pub(super) fn units_of(&self, instance: usize) -> impl Iterator<Item = usize> + '_ {
         let by_instance = self.by_instance.get_or_init(|| {
             let mut by_instance: Vec<_> =
@@ -881,17 +690,14 @@ impl Kept {
             .map(|(_, unit)| *unit)
     }
 
-    /// The figures in the list.
     pub(super) fn figures(&self) -> usize {
         self.figures.len()
     }
 
-    /// The units of the figure at `at`.
     pub(super) fn units_of_figure(&self, at: usize) -> Range<usize> {
         self.figures[at].units.clone()
     }
 
-    /// The figure a unit is of.
     pub(super) fn figure_of(&self, unit: usize) -> usize {
         self.figures.partition_point(|figure| figure.units.end <= unit)
     }
@@ -900,7 +706,6 @@ impl Kept {
         self.figures[at].live
     }
 
-    /// The figures drawn without a part that waited on its build, by place; none when none did.
     pub(super) fn waiting(&self) -> Option<Vec<bool>> {
         self.figures
             .iter()
@@ -908,9 +713,6 @@ impl Kept {
             .then(|| self.figures.iter().map(|figure| figure.waiting).collect())
     }
 
-    /// Whether the list's parts all let their draws stand in any order among its figures.
-    /// Whether every part of the list agrees on the order its draws may stand in among the
-    /// figures, so the whole list is one band.
     pub(super) fn order_free(&self) -> bool {
         self.bands <= 1
     }
@@ -919,44 +721,34 @@ impl Kept {
         self.bands
     }
 
-    /// Whether the walk gathered `group` in `view`.
     pub(super) fn visited(&self, view: usize, group: usize, groups: usize) -> bool {
         self.gathered.binary_search(&(view * groups + group)).is_ok()
     }
 
-    /// The groups the walk gathered, as `view * groups + group`, sorted.
     pub(super) fn gathered(&self) -> &[usize] {
         &self.gathered
     }
 
-    /// Each figure's view and its route's position in walk order.
     pub(super) fn places(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.figures.iter().map(|figure| (figure.view, figure.position))
     }
 
-    /// Whether the list holds the figure at `position` in `view`, units or none: a caster
-    /// figure whose descriptors all draw in the alternate queue is held without any.
     pub(super) fn holds(&self, view: usize, position: usize) -> bool {
         self.figures.binary_search_by_key(&(view, position), |figure| (figure.view, figure.position)).is_ok()
     }
 
-    /// The bytes of a block the list holds, whole.
     fn block_bytes(&self, block: Block) -> &[u8] {
         &self.blocks[block.at..block.at + block.length]
     }
 
-    /// The bytes of a unit's vertex block, whole.
     pub(super) fn vertex_bytes(&self, unit: usize) -> Option<&[u8]> {
         Some(self.block_bytes(self.units.get(unit)?.vertex?))
     }
 
-    /// The bytes of a unit's palette.
     pub(super) fn skin_bytes(&self, unit: usize) -> Option<&[u8]> {
         Some(self.block_bytes(self.units.get(unit)?.skin?))
     }
 
-    /// Writes a node's world, userdata and palette into every row its draws read, in place;
-    /// false when its palette's length moved, which only a walk of its figure can place.
     pub(super) fn write_unit(&mut self, at: usize, bytes: LiveBytes<'_>) -> bool {
         let unit = self.units[at];
         match (unit.skin, bytes.bones) {
@@ -966,7 +758,6 @@ impl Kept {
         }
         let world: &[u8] = bytemuck::bytes_of(bytes.world);
         let userdata = bytes.userdata;
-        // The block the list keeps, whole: what the next pass's walk starts from.
         if let Some(block) = unit.vertex {
             let into = &mut self.blocks[block.at..block.at + block.length];
             let end = world.len().min(into.len());
@@ -1027,7 +818,6 @@ impl Kept {
         true
     }
 
-    /// Writes this frame's shared blocks, staging the ones whose bytes changed.
     pub(super) fn write_shared(&mut self, shared: &[&[u8]]) {
         for (&place, bytes) in self.shared.at.iter().zip(shared) {
             let into = place..place + bytes.len();
@@ -1039,13 +829,10 @@ impl Kept {
         self.counts.kept += 1;
     }
 
-    /// The ranges of the list's bytes its draws read: the shared blocks with the live rows, then
-    /// the still rows. A whole write stages these, and a kept frame the rows that changed.
     fn whole(&self) -> [Range<usize>; 2] {
         [0..self.live_area.top, self.still_area.start..self.still_area.top]
     }
 
-    /// Stages `range` of the list's bytes, which the GPU holds once the arena flushes.
     fn stage(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1060,9 +847,6 @@ impl Kept {
         self.wrote.staged_bytes += (range.end - range.start) as u64;
     }
 
-    /// Where what the list has staged differs from the bytes a whole write would have staged,
-    /// over the ranges its draws read; none while they are the same, and none at all while the
-    /// judge is off and the list holds no copy of them.
     pub(super) fn staged_difference(&self) -> Option<usize> {
         if self.resident.is_empty() {
             return None;
@@ -1076,8 +860,6 @@ impl Kept {
         })
     }
 
-    /// The judge of what the GPU holds ([`crate::map::actor_check`]): the bytes the list has
-    /// staged are the bytes a whole write would have staged. Names the first that differs.
     pub(super) fn judge_staged(&self, what: &'static str) {
         if self.resident.is_empty() {
             return;
@@ -1093,7 +875,6 @@ impl Kept {
         }
     }
 
-    /// The rows written this frame as ranges to stage, near ones joined.
     pub(super) fn dirty_ranges(&mut self) -> Vec<Range<usize>> {
         self.dirty.sort_unstable();
         let mut ranges: Vec<Range<usize>> = Vec::new();
@@ -1108,10 +889,7 @@ impl Kept {
         ranges
     }
 
-    /// Keeps the list for this frame: every row and shared block whose bytes it changed goes to
-    /// the arena's flush, and a frame that changed none of them stages nothing.
     pub(super) fn keep(&mut self, arena: &shader_pipeline::gpu::Arena, shared: &[&[u8]]) {
-        // The rows a kept frame changed are dirty already; the shared blocks are compared here.
         self.repeated = !std::mem::take(&mut self.fresh)
             && self.dirty.is_empty()
             && self.shared_reads_hold(shared);
@@ -1129,13 +907,10 @@ impl Kept {
         super::super::count(name, 1);
     }
 
-    /// Whether the last frame kept the list with its draws reading what they read the frame
-    /// before: the same draws over the same bytes draw the same picture.
     pub(super) fn repeated(&self) -> bool {
         self.repeated
     }
 
-    /// Whether `shared` holds, wherever the list's draws read it, the bytes the list holds.
     fn shared_reads_hold(&self, shared: &[&[u8]]) -> bool {
         self.shared.at.len() == shared.len()
             && self.shared.at.iter().zip(shared).zip(&self.shared_reads).all(
@@ -1148,7 +923,6 @@ impl Kept {
             )
     }
 
-    /// Notes what the list's draws read of each shared block, after a walk or splice made them.
     fn note_reads<'p>(&mut self, parts: impl Fn(usize) -> Option<PartProgram<'p>>) {
         let reads = self.shared.reads;
         let mut held = vec![Vec::new(); self.shared.at.len()];
@@ -1185,20 +959,15 @@ impl Kept {
         self.repeated = false;
     }
 
-    /// Drops the writes of a frame that walks after all.
     pub(super) fn forget_writes(&mut self) {
         self.dirty.clear();
     }
 
-    /// Each target's figure in the list, or none to walk it: a figure is kept in the view it
-    /// was drawn in when its actor is placed once there in both, was not `demoted`, and has
-    /// not been given a player since it was walked without one.
     #[cfg(test)]
     pub(super) fn plan(&self, targets: &[Target], demoted: &[bool]) -> Vec<Option<usize>> {
         self.plan_counting(targets, demoted, None)
     }
 
-    /// The plan above (`plan`), counting into `entered` why each target is walked ([`Entered`]).
     pub(super) fn plan_counting(
         &self,
         targets: &[Target],
@@ -1256,8 +1025,6 @@ impl Kept {
             }
         }
         if let Some(entered) = entered {
-            // Each other target by what the list drew of its actor: in its view under another key,
-            // only in another view, or nothing.
             let mut actors: Vec<((usize, u32, u32), (usize, u32))> = self
                 .figures
                 .iter()
@@ -1289,7 +1056,6 @@ impl Kept {
         next
     }
 
-    /// A kept figure follows its actor to its route in this frame's field.
     pub(super) fn follow(&mut self, figure: usize, target: &Target) {
         for unit in &mut self.units[self.figures[figure].units.clone()] {
             unit.group = target.group;
@@ -1300,10 +1066,6 @@ impl Kept {
         self.by_instance = std::cell::OnceCell::new();
     }
 
-    /// The groups the walk's draws stand in, in walk order, each with its instances' draws: the
-    /// draws of one part in one view and liveness stand as one inside a band of the walk
-    /// ([`Bands`]) where the part reads its blocks per instance, and one draw an instance where
-    /// it does not. The bands the walk left, beside them.
     fn found<'p>(
         recording: &Recording,
         parts: &impl Fn(usize) -> Option<PartProgram<'p>>,
@@ -1344,9 +1106,6 @@ impl Kept {
         Ok((found, bands.count()))
     }
 
-    /// The runs one group needs: for a part that reads its blocks per instance, one for each
-    /// distinct block and stride its program reads them at; for one that does not, one row of
-    /// each block its instance fills, at the alignment a block binds at.
     fn runs_of(
         part: PartProgram<'_>,
         reads: Reads,
@@ -1381,9 +1140,6 @@ impl Kept {
         Ok((rows, runs))
     }
 
-    /// What instancing by part leaves of the list's draws: the distinct parts drawn, the runs
-    /// of consecutive draws of one part in one view (walk order kept), and the distinct parts in
-    /// each view (one draw each, order across figures given up).
     pub(super) fn part_counts(&self) -> PartCounts {
         let mut parts = std::collections::HashSet::new();
         let mut in_views = std::collections::HashSet::new();
@@ -1403,13 +1159,10 @@ impl Kept {
         PartCounts { parts: parts.len(), runs, in_views: in_views.len() }
     }
 
-    /// The nodes drawn at each level of detail, the last holding every deeper one.
     pub(super) fn lods(&self) -> [u64; LODS] {
         self.lods
     }
 
-    /// The figures walked into the list and the figures that left it since the last call.
-    /// What this frame wrote in place and staged, cleared for the next.
     pub(super) fn take_wrote(&mut self) -> Wrote {
         std::mem::take(&mut self.wrote)
     }
@@ -1418,8 +1171,6 @@ impl Kept {
         std::mem::take(&mut self.moved)
     }
 
-    /// The live units, each unit by its instance and the nodes drawn at each level of detail,
-    /// from the units.
     fn index(&mut self) {
         self.lods = [0; LODS];
         for unit in &self.units {
@@ -1433,13 +1184,10 @@ impl Kept {
         self.by_instance = std::cell::OnceCell::new();
     }
 
-    /// The area a group of `live` instances takes its runs from.
     fn area(&mut self, live: bool) -> &mut Area {
         if live { &mut self.live_area } else { &mut self.still_area }
     }
 
-    /// A group of `specs`' runs taken from its area, with room for the instances that join it;
-    /// none when the area has no run that long.
     #[allow(clippy::too_many_arguments, reason = "the group's part, its place and its runs")]
     fn make_group(
         &mut self,
@@ -1492,7 +1240,6 @@ impl Kept {
         Some(at)
     }
 
-    /// Gives a group's runs and rows block back to its area.
     fn free_group(&mut self, group: usize) {
         let Some(held) = self.groups[group].take() else {
             return;
@@ -1506,8 +1253,6 @@ impl Kept {
         }
     }
 
-    /// Makes room in `group` for one more instance, moving its runs where they no longer hold
-    /// them all; whether they moved, or none when its area has no run that long.
     fn grow(&mut self, group: usize) -> Option<bool> {
         let held = self.groups[group].as_ref().expect("a group being filled");
         if held.slots.len() < held.capacity {
@@ -1545,9 +1290,6 @@ impl Kept {
         Some(true)
     }
 
-    /// Gives the slots of the instances that are leaving back: the instances above a hole in
-    /// each group move down into it, so a group's draw covers all of them from the first, and a
-    /// group left with none gives its runs back.
     fn release(&mut self, gone: &[usize]) {
         let mut freed: Vec<Vec<usize>> = self.groups.iter().map(|_| Vec::new()).collect();
         for &instance in gone {
@@ -1584,8 +1326,6 @@ impl Kept {
         }
     }
 
-    /// The slot one more instance of `group` takes and whether its runs moved to hold it, the
-    /// group grown where it was full; none when its area has no run long enough to grow into.
     fn take_slot(&mut self, group: usize) -> Option<(usize, bool)> {
         let moved = self.grow(group)?;
         let held = self.groups[group].as_mut().expect("a group being filled");
@@ -1593,7 +1333,6 @@ impl Kept {
         Some((held.slots.len() - 1, moved))
     }
 
-    /// Writes a group's rows block: the base row of each block its part reads per instance.
     fn write_rows_block(
         &mut self,
         group: usize,
@@ -1611,9 +1350,6 @@ impl Kept {
         Ok(())
     }
 
-    /// Lays out a full walk's rows, binds one draw for each group and writes the bytes.
-    /// `parts` gives a draw's resident program and whether its draws may be reordered; `shared`
-    /// are the shared blocks' bytes as `reads` orders them.
     #[allow(clippy::too_many_arguments, reason = "the walk, its inputs and what it was made from")]
     pub(super) fn finish<'p>(
         &mut self,
@@ -1635,8 +1371,6 @@ impl Kept {
         for (unit, first) in recording.units.iter_mut().zip(firsts) {
             unit.draws = first;
         }
-        // Each shared block's place is reserved for the largest read of it, as the arena
-        // reserves one; a block read per instance keeps a row of its own stride instead.
         let mut reserved: Vec<usize> = shared.iter().map(|bytes| bytes.len()).collect();
         for pending in &recording.pending {
             for spec in parts(pending.key).ok_or_else(missing)?.program.constant_reads() {
@@ -1659,8 +1393,6 @@ impl Kept {
             .zip(&reserved)
             .map(|(block, reserve)| place(&mut bytes, block, *reserve, alignment))
             .collect();
-        // Each group's rows block, then one run of its instances' rows for each block its part
-        // reads, the live groups before the still ones, each area with room for what joins it.
         let mut groups: Vec<Option<Group>> = found.iter().map(|_| None).collect();
         let mut cursor = align(bytes.len(), alignment);
         let mut areas = Vec::with_capacity(2);
@@ -1704,7 +1436,6 @@ impl Kept {
             cursor = end;
         }
         bytes.resize(cursor, 0);
-        // Every instance takes its slot, and its blocks are written to the rows of it.
         let mut instances: Vec<Instance> = recording
             .pending
             .iter()
@@ -1726,7 +1457,6 @@ impl Kept {
                 }
             }
         }
-        // Every node's block, whole, as the list keeps it.
         let mut blocks = std::mem::take(&mut self.blocks);
         blocks.clear();
         for unit in &mut recording.units {
@@ -1832,9 +1562,6 @@ impl Kept {
         Ok(())
     }
 
-    /// The band each draw will stand in once the splice has left the list in walk order
-    /// ([`Bands`]): by the instance a kept draw is today, by the draw the recording holds for a
-    /// walked one, and how many bands that leaves.
     fn plan_bands<'p>(
         &self,
         next: &[Option<usize>],
@@ -1866,8 +1593,6 @@ impl Kept {
         Ok((walks, kept, bands.count()))
     }
 
-    /// Copies one instance's rows from a slot of one group into a slot of another holding the
-    /// same runs.
     fn copy_rows(&mut self, from: usize, slot: usize, into: usize, into_slot: usize) {
         let source: Vec<Run> =
             self.groups[from].as_ref().expect("a group of the list").runs.clone();
@@ -1879,9 +1604,6 @@ impl Kept {
         }
     }
 
-    /// Cuts every group a band boundary now runs through: its instances of each band after the
-    /// first move into a group of that band, bound from the geometry their draw had. False when
-    /// the list has no room for the groups the cut needs.
     fn reband<'p>(
         &mut self,
         kept: &[u32],
@@ -1963,12 +1685,6 @@ impl Kept {
         Ok(true)
     }
 
-    /// Makes the list this frame's figures, in walk order (`next`: each target's kept figure, or
-    /// none for the next the walk recorded): the figures that left give their slots back and the
-    /// instances above them move down into the holes; the walked ones take slots in the groups
-    /// their parts draw in, have their blocks written there and their groups' draws bound. False,
-    /// the list to be laid out again, when a walked figure cannot be placed or bound, a part's
-    /// draws cannot stand in the list's order, or the walk is not the one planned.
     pub(super) fn splice<'p>(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,
@@ -2008,7 +1724,6 @@ impl Kept {
         let (walked_bands, kept_bands, bands) =
             self.plan_bands(next, recording, &walked, &parts)?;
         self.release(&gone);
-        // Each walked draw joins the group of its part in its band, made when the list holds none.
         let mut created = vec![false; self.groups.len()];
         let mut grown = vec![false; self.groups.len()];
         let mut geometry: Vec<Option<DrawGeometry>> = vec![None; self.groups.len()];
@@ -2083,7 +1798,6 @@ impl Kept {
                 }
             }
         }
-        // A group made or grown reads its rows from another base.
         for group in 0..self.groups.len() {
             if (created[group] || grown[group]) && self.groups[group].is_some() {
                 let key = self.groups[group].as_ref().expect("tested").key;
@@ -2124,7 +1838,6 @@ impl Kept {
                 .chain((0..self.groups.len()).filter(|group| created[*group]))
                 .collect()
         } else {
-            // Bands stand in walk order, so each group's draw stands where its first instance does.
             let mut seen = vec![false; self.groups.len()];
             let mut order = Vec::with_capacity(self.groups.len());
             for instance in &self.instances {
@@ -2175,8 +1888,6 @@ impl Kept {
         Ok(true)
     }
 
-    /// A block of the list's store holding `block` of `from`: the span of a node that left, or
-    /// room above everything held, the store grown when neither has it.
     fn hold_block(&mut self, from: &[u8], block: Block) -> Block {
         let at = loop {
             if let Some(at) = self.block_area.take(block.length, BLOCK_ALIGNMENT) {
@@ -2190,8 +1901,6 @@ impl Kept {
         Block { at, length: block.length }
     }
 
-    /// The units, instances, draws' metadata and figures of a splice, in this frame's walk order,
-    /// with each node reading its block from the widest row that holds it.
     fn rebuild(
         &mut self,
         next: &[Option<usize>],
@@ -2282,17 +1991,10 @@ impl Kept {
         }
     }
 
-    /// Calls of the judge of the list's draws, so it runs at its own rate.
     pub(super) fn checks(&mut self) -> &mut u64 {
         &mut self.checks
     }
 
-    /// The judge of the list's draws ([`crate::map::actor_check`]): what the list submits
-    /// against what a walk of the same figures would have, built here as the list's own walk
-    /// order. Every instance stands at its own slot of a group of its part, its view, its
-    /// liveness and its band; the groups stand in the order their bands were walked in and are
-    /// drawn once each; and every instance's rows are the bytes of its node's own block, which
-    /// is what a whole walk writes. Names what differs and the draw it differs at.
     pub(super) fn judge<'p>(
         &self,
         what: &'static str,
@@ -2364,8 +2066,6 @@ impl Kept {
         crate::map::actor_check::checked(what, self.instances.len() as u64);
     }
 
-    /// Takes a laid-out walk as the list. `made` is kept only when the walk refused nothing and
-    /// waited on no build.
     #[allow(clippy::too_many_arguments, reason = "the walk, its layout and what it was made from")]
     fn take(
         &mut self,
@@ -2429,10 +2129,6 @@ impl Kept {
         self.counts.walks += 1;
     }
 
-    /// How a lit walk of the list, in its order, leaves the frame's constant state: the same
-    /// fold over its nodes and draws as the walk makes ([`plans::PendingSources`]), with the
-    /// list's units as the origins of their blocks.
-    /// `binds` gives a part's sampler slots and whether it is skinned.
     pub(super) fn replay(&self, binds: impl Fn(usize) -> (u32, bool)) -> Replay {
         let mut sources = plans::PendingSources::default();
         let (mut material, mut last, mut drawn) = (None, None, 0);
@@ -2455,7 +2151,6 @@ impl Kept {
             }
             drawn += unit.parts;
         }
-        // Instances of a group whose draw is not encoded are not drawn.
         let unshown: usize = self
             .order
             .iter()
@@ -2472,46 +2167,34 @@ impl Kept {
         }
     }
 
-    /// Full walks, kept frames, splices and figures walked into them.
     #[cfg(test)]
     pub(super) fn counts(&self) -> Counts {
         self.counts
     }
 
-    /// The list's bytes, as its draws read them.
     #[cfg(test)]
     pub(super) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 
-    /// The walk's draws the draw at `at` stands for, by slot.
     #[cfg(test)]
     pub(super) fn slots_at(&self, at: usize) -> &[usize] {
         &self.groups[self.order[at]].as_ref().expect("a drawn group").slots
     }
 
-    /// The part the draw at `at` draws.
     #[cfg(test)]
     pub(super) fn key_at(&self, at: usize) -> usize {
         self.groups[self.order[at]].as_ref().expect("a drawn group").key
     }
 }
 
-/// A group the walk found, with its instances' draws in walk order.
-/// Cuts a walk's draws into bands: maximal runs whose parts agree on what their draws must agree
-/// on for their order among the list's figures to leave every pixel the same
-/// ([`mesh_shader::Order`]). Draws of one part may stand as one instanced draw only inside a band,
-/// because a draw that agrees with nothing - or with another order - may not be stepped over. A
-/// part that allows no order at all is a band of its own.
 #[derive(Default)]
 struct Bands {
-    /// The order of the draw before, once one has been given.
     held: Option<Option<mesh_shader::Order>>,
     band: u32,
 }
 
 impl Bands {
-    /// The band of the next draw in walk order.
     fn next(&mut self, order: Option<mesh_shader::Order>) -> u32 {
         let agrees = matches!((self.held, order), (Some(Some(held)), Some(order)) if held == order);
         if self.held.is_some() && !agrees {
@@ -2521,7 +2204,6 @@ impl Bands {
         self.band
     }
 
-    /// How many bands the walk left.
     fn count(&self) -> u32 {
         self.band + u32::from(self.held.is_some())
     }
@@ -2540,7 +2222,6 @@ fn missing() -> io::Error {
     invalid("native program missing after its walk")
 }
 
-/// Which of a node's blocks a binding reads; none for a block the whole list shares.
 pub(super) fn supply_of(binding: u32, reads: Reads) -> Option<Supply> {
     match plan_tail::selector(binding) {
         Some(plan_tail::VERTEX) => Some(Supply::Vertex),
@@ -2550,8 +2231,6 @@ pub(super) fn supply_of(binding: u32, reads: Reads) -> Option<Supply> {
     }
 }
 
-/// Writes what their programs read of one block into `slot`'s row of every run of `supply` in
-/// `group`.
 fn write_rows(
     bytes: &mut [u8],
     dirty: &mut Vec<(usize, usize)>,
@@ -2570,8 +2249,6 @@ fn write_rows(
     }
 }
 
-/// The base row of each block a group's part reads per instance, in the order
-/// [`shader_pipeline::gpu::BindingProgram::instanced_rows`] gives them.
 fn bases(
     group: &Group,
     program: &shader_pipeline::gpu::BindingProgram,
@@ -2592,11 +2269,6 @@ fn bases(
         .collect()
 }
 
-/// A group's draw bound through `buffer`: each of its program's reads at its place in `bytes` —
-/// a shared block at its own offset, as `shared` lays it out, and a block of the node's own as
-/// the run its instances' rows stand in, which the rows block the draw selects reaches from its
-/// base. None when it reads more of a shared block than was reserved for it (`shared.reserved`,
-/// when the list was laid out before the draw).
 #[allow(clippy::too_many_arguments, reason = "the draw, its group and the buffers they sit in")]
 fn bind_group(
     arena: &shader_pipeline::gpu::Arena,
@@ -2675,7 +2347,6 @@ fn alignment(device: &wgpu::Device) -> usize {
         .max(wgpu::COPY_BUFFER_ALIGNMENT as u32) as usize
 }
 
-/// The block alignment a walk places with.
 pub(super) fn block_alignment(arena: &shader_pipeline::gpu::Arena) -> usize {
     alignment(arena.device())
 }

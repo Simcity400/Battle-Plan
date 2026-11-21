@@ -1,8 +1,3 @@
-//! `power-day`: a holder's open day at an hour, as the balance widgets' breakdown shows it. Its
-//! daily figures (the day's CountryPowerDaily row), what it spent so far by item
-//! (`PowerDayParts`, shown while its currency was covered since midnight), and what the holder's
-//! command power allocations hold (`PowerHolds` against `CountryCommandPower`). Every amount is a
-//! live cell; the reply is which rows there are, their names and why one is missing.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{SpendCurrency, naming::undated};
@@ -39,27 +34,25 @@ pub struct PowerDayParams {
     pub currency: SpendCurrency,
 }
 
-/// One item the open day paid: its amount is the live cell (`item`, `spent`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerDayPart {
-    /// The item as `power-spending` names it.
+    #[doc = " The item as `power-spending` names it."]
     pub item: String,
     pub payments: u32,
-    /// Every payment read while the capture covered the currency.
+    #[doc = " Every payment read while the capture covered the currency."]
     pub covered: bool,
-    /// Its charge was not recorded: the cell is missing.
+    #[doc = " Its charge was not recorded: the cell is missing."]
     pub unknown: bool,
 }
 
-/// What one allocation holds: its amount is the live cell (`id`, `amount`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerDayHold {
     pub id: String,
-    /// The recorded cause of the allocation.
+    #[doc = " The recorded cause of the allocation."]
     pub kind: String,
     pub name: Option<String>,
     pub unknown: Option<String>,
@@ -70,18 +63,18 @@ pub struct PowerDayHold {
 #[serde(rename_all = "camelCase")]
 pub struct PowerDayReply {
     pub currency: SpendCurrency,
-    /// The open day's midnight.
+    #[doc = " The open day's midnight."]
     pub day: i32,
-    /// The day's daily row: its cells (`income`: `gross`, `costs`, `net`, `applied` for political
-    /// power, `gain`, `applied` for command power). Why it is missing, when it is.
+    #[doc = " The day's daily row: its cells (`income`: `gross`, `costs`, `net`, `applied` for political"]
+    #[doc = " power, `gain`, `applied` for command power). Why it is missing, when it is."]
     pub income_missing: Option<String>,
-    /// The day's daily row is the open day's (dated `day`).
+    #[doc = " The day's daily row is the open day's (dated `day`)."]
     pub income_day: Option<i32>,
     pub parts: Vec<PowerDayPart>,
-    /// Why the parts are not the day's whole spending: its currency was not covered since midnight.
+    #[doc = " Why the parts are not the day's whole spending: its currency was not covered since midnight."]
     pub parts_missing: Option<String>,
-    /// Command power: the allocations the holder's holds name, and the total its stored counter
-    /// holds (`holds`, `total`); what the holds do not name is that less their sum.
+    #[doc = " Command power: the allocations the holder's holds name, and the total its stored counter"]
+    #[doc = " holds (`holds`, `total`); what the holds do not name is that less their sum."]
     pub holds: Vec<PowerDayHold>,
     pub holds_missing: Option<String>,
     pub warnings: Vec<String>,
@@ -91,7 +84,6 @@ dashboard_base::reply_warnings!(PowerDayReply);
 
 pub struct PowerDay;
 
-/// The content holds are named with, or why there is none.
 pub type DayContext = Result<Arc<PoliticsContent>, String>;
 
 fn field(table: TableId, name: &str) -> io::Result<usize> {
@@ -178,7 +170,6 @@ impl AtHour for PowerDay {
     }
 }
 
-/// The reply at `frame`'s hour for `owner`.
 fn day(frame: &DecodedFrame, currency: SpendCurrency, owner: Owner, at: &At<'_, DayContext>) -> io::Result<PowerDayReply> {
     let hour = frame.hour;
     let midnight = hour.div_euclid(24) * 24;
@@ -193,7 +184,6 @@ fn day(frame: &DecodedFrame, currency: SpendCurrency, owner: Owner, at: &At<'_, 
         holds_missing: None,
         warnings: Vec::new(),
     };
-    // The day's daily row: its figures move with the head, so they are cells.
     match frame.complete::<tables::CountryPowerDaily>() {
         Err(error) => reply.income_missing = Some(format!("{DAILY} are not recorded at this hour: {}", undated(&error.to_string()))),
         Ok(rows) => match rows.iter().find(|row| row.country == owner.id) {
@@ -219,7 +209,6 @@ fn day(frame: &DecodedFrame, currency: SpendCurrency, owner: Owner, at: &At<'_, 
             }
         },
     }
-    // Spending so far today, shown while the currency was covered since midnight.
     let coverage = frame.complete::<tables::PowerSpendCoverage>().ok().and_then(|rows| rows.iter().find(|row| row.holder == owner.slot).cloned());
     reply.parts_missing = match &coverage {
         None => Some("Spending coverage is not recorded at this hour".into()),
@@ -263,7 +252,6 @@ fn day(frame: &DecodedFrame, currency: SpendCurrency, owner: Owner, at: &At<'_, 
     Ok(reply)
 }
 
-/// The holder's allocations at `frame`'s hour, named, and its stored total as cells.
 fn holds(frame: &DecodedFrame, owner: Owner, at: &At<'_, DayContext>, reply: &mut PowerDayReply) -> io::Result<()> {
     match frame.complete::<tables::CountryCommandPower>() {
         Ok(rows) if rows.iter().any(|row| row.canonical_slot == owner.slot) => {
@@ -313,8 +301,6 @@ fn holds(frame: &DecodedFrame, owner: Owner, at: &At<'_, DayContext>, reply: &mu
     Ok(())
 }
 
-/// The name of what an allocation holds command power for: an ability's localised name, or its
-/// character's.
 fn holder_name(ability: bool, token: Option<&str>, character: Option<(Option<&str>, &str)>, content: &PoliticsContent) -> Result<String, String> {
     if ability {
         let token = token.ok_or("ability holder identity is not recorded")?;

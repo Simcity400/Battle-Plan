@@ -56,13 +56,8 @@ import { motionOf } from '../../charts/easing.ts';
 import type { StockpileHolder } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
-/** Room for the names at the line ends, at the right of the plot. */
 const END_LABEL_ROOM = 136;
 
-/** One country's equipment stockpile: for a player-controlled country each equipment
- * type's surplus or shortage (the game's Logistics figure), as a table or over time; for
- * an AI-controlled one, for which the game computes none, what it holds. Rows name the
- * models held or being made and their output a day; the hover adds the models in stock. */
 export default function EquipmentStockpileWidget(props: WidgetProps) {
   return props.widget.options?.show === BREAKDOWN.id ? <EquipmentStockpileCountry {...props} />
     : <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
@@ -75,7 +70,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const saved = options.show === BREAKDOWN.id;
   const { track, tag, holders, catalogue, data: reply, hour: viewHour, at: stock, error, retry } = useEquipmentStockpile(widget, runtime, active && !saved, within);
   const data = useMemo(() => reply && clipped(reply, within), [reply, within]);
-  // The clock as rendered: what follows the head between renders reads it in the frame (`liveHead`, the painted cells).
   const axisOffset = track?.axisOffset ?? 0;
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const liveHead = useMemo<LiveHead | undefined>(() => widget.time.mode === 'follow'
@@ -85,11 +79,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = Math.floor(playhead ?? extent[1]);
   const menu = useContextMenu('Stockpile actions');
-  // Types, each listing its models (a model's own row is its type's breakdown).
   const grouping = pinnedGrouping(widget.options);
   const count: StockCount = options.count === 'ic' ? 'ic' : 'units';
   const includedText = typeof options.included === 'string' ? options.included : '';
-  // Stored as `setToken(key)`, so a key a setting cannot store can be included too.
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
   const anchor = useRef<HTMLDivElement | null>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
@@ -99,13 +91,10 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const [selection, setSelection] = useState<{ owner: object; key: string; mode: StockpileMode } | null>(null);
   const shownDrill = drillOwner === pickOwner ? drill : CLOSED;
   const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
-  // The breakdown shows a type's models; the mode a pin records follows the row opened.
   const mode: StockpileMode = selection?.mode ?? 'stock';
   const playbackHour = Math.floor(runtime.clock.getHour()) + axisOffset;
   const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? playbackHour : playhead ?? head;
   const at = saved && shownDrill.breakdown === null ? head : drillHour(shownDrill, playbackHour) ?? head;
-  // Automatic ("Selected country"), the widget's own country as it was when the breakdown was first shown, held while it
-  // follows the head so the reply is not asked again each hour.
   const [automaticOrigin, setAutomaticOrigin] = useState<{ owner: object; hour: number } | null>(null);
   if (saved && !options.stockpileCountry && automaticOrigin?.owner !== pickOwner) setAutomaticOrigin({ owner: pickOwner, hour: head });
   const origin = automaticOrigin?.owner === pickOwner ? automaticOrigin.hour : head;
@@ -137,7 +126,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const detailPickOwner = useMemo(() => ({ pickOwner, selectedCountry }), [pickOwner, selectedCountry]);
   const showingDetail = saved || shownDrill.breakdown !== null;
   const shown = useShownHour();
-  // A view not painted from the cells (the chart, the breakdown) reports the hour of the values it rendered.
   useEffect(() => { shown(showingDetail ? (detailData ? actor.hour : null) : (data ? viewHour : null)); });
   const headRoot = stock.root, actorRoot = actor.at.root;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); actorRoot(element); }, [headRoot, actorRoot]);
@@ -155,8 +143,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   if (shownDrill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
   if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" failure={error} onRetry={retry} /></>;
   if (!saved && shownDrill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading the stockpile…" /></>;
-  // Whatever was recorded shows (production without a stockpile read, say); each value
-  // not recorded says so.
   if (!saved && shownDrill.breakdown === null && data && !hasRecords(data)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Stockpile data unavailable for this country." /></>;
 
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
@@ -210,9 +196,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   </div>;
 }
 
-/** The chosen groups over time, each in its own palette colour, with the zero line
- * emphasised and names at the line ends: the surplus as a share
- * of need where the game computed it, else what was in stock. */
 function OverTime({ data, catalogue, holders, included, tokens, viewport, options, runtime, track, extent, playhead, liveHead, shownHour, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
   data: EquipmentStockpileReply; catalogue: StockpileCatalogueReply | undefined; holders: readonly StockpileHolder[]; included: readonly string[];
   tokens: ChartTokens; viewport: number; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
@@ -220,24 +203,15 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   onMenu: (hour: number, x: number, y: number) => void; setOption: WidgetProps['setOption'];
   pickOwner: object; onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
 }) {
-  // The share chart wherever the balance is recorded; variants have none of their own.
   const shareMode = shareModeOf(data, grouping);
   const head = Math.floor(playhead ?? extent[1]);
-  // The legend's figures are as of the hour the shown reply answers; the keyboard steps through every read.
   const shown = shownHour;
   const navigation = (data as PreparedStockpileReply).prepared;
   const drawable = useMemo(() => groups.filter(group => chartDrawable(data, group, grouping)), [data, groups, grouping]);
-  // Choices are stored as `setToken(choiceKey)` (the kit's `storedChoices`), so a key a
-  // setting cannot store can be chosen too, and a variant is stored with its design, so
-  // another design a later branch gives its handle is never drawn for it. Only what can
-  // be drawn counts; the chart works on the rows' keys.
   const source = useMemo(() => storedChoices(stockChoices(groups, GROUP_NOUNS[grouping], group => drawable.includes(group))), [groups, grouping, drawable]);
-  // Each grouping keeps its own chosen lines.
   const chosenKey = CHOSEN_KEYS[grouping];
   const storedText = typeof options[chosenKey] === 'string' ? options[chosenKey] as string : '';
   const stored = useMemo(() => contentSet(storedText), [storedText]);
-  // Filtered to what can be drawn before the top types are taken, so none is lost to a
-  // type with no share.
   const automatic = useMemo(() => automaticLines(data, groups, grouping, group => drawable.includes(group)), [data, groups, grouping, drawable]);
   const automaticTokens = useMemo(() => automatic.flatMap(key => {
     const group = groups.find(item => item.key === key);
@@ -252,19 +226,16 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const requests = useMemo(() => selectedGroups.map(group => ({ key: group.key, group: stockpileGroupKey(group), measure: shareMode ? 'share' as const : 'stock' as const })),
     [selectedGroups, shareMode]);
   const incoming = useStockpileChart(runtime.client, track, catalogue, holders, included, requests, head, active);
-  // Each line keeps its colour from the game's order where it is free.
   const styles = useMemo(() => lineStyles(chosen.map(key => ({ key, preferred: groups.findIndex(group => group.key === key) })), tokens.categories), [chosen, groups, tokens]);
-  // Only the hours shown (a date range, or the branch): an axis dragged past a range
-  // draws, fits and describes nothing beyond it.
   const lines = useMemo(() => chosen.flatMap(key => {
     const group = groups.find(item => item.key === key);
     const style = styles.get(key);
     const summary = incoming.summaries.get(key);
     return group && style ? [{ group, color: style.color, dash: style.primary, summary,
       runs: clipToSpans(summary?.runs ?? [], [{ firstHour: extent[0], lastHour: extent[1] }]) }] : [];
-  }), [chosen, groups, styles, incoming.summaries, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [chosen, groups, styles, incoming.summaries, extent[0], extent[1]]);
   const chosenScope = JSON.stringify(chosen);
-  const choiceOwner = useMemo(() => ({ pickOwner, chosenScope, extent }), [pickOwner, chosenScope, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const choiceOwner = useMemo(() => ({ pickOwner, chosenScope, extent }), [pickOwner, chosenScope, extent[0], extent[1]]);
   const [selection, setSelection] = useState<{ owner: object; hour: number; keys: readonly string[] } | null>(null);
   const pending = selection?.owner === choiceOwner ? selection : null;
   const layers = useMemo<ChartLayer[]>(() => [
@@ -277,7 +248,6 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const actions = new Map(groups.map(group => {
     const choice = choiceKey(group, head, chosenTokens.map(contentKey));
     if (choice == null) return [group.key, { reason: SAVED_DESIGN_UNAVAILABLE }];
-    // Deselecting a row drops every saved choice of it, not only the one shown.
     const token = setToken(choice);
     const kept = chosenTokens.includes(token) ? stored.filter(item => item === token || choiceRow(contentKey(item)) !== group.key) : stored;
     return [group.key, toggleChosen(source, kept, chosenTokens, token, Number.MAX_SAFE_INTEGER)];
@@ -316,13 +286,9 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
-        // The kit's axis rule: an auto-fitted axis holds zero, and log scale applies only
-        // where every share shown is positive, as in every time chart.
         formatValue={shareMode ? formatAxisPercent : undefined}
         padding={endLabels ? { right: END_LABEL_ROOM } : undefined} layers={layers} active={active}
         revision={`${data.branchId}:${chosen.join(' ')}:${grouping}:${viewport}:${endLabels}:${shareMode}`}
-        // The keyboard steps through the reads; the kit adds the start of a range or zoom
-        // that begins between two reads, so the value carried into it is reachable too.
         keyHours={shareMode ? navigation?.logisticsReads ?? data.logisticsReads : navigation?.reads ?? data.reads}
         pickOwner={choiceOwner} onPick={(hour, context) => {
           const reached = incoming.data?.prepared?.hour === hour ? incoming.data : undefined;
@@ -339,7 +305,6 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
           const reached = incoming.data?.prepared?.hour === hour ? incoming.data : undefined;
           if (!reached) return null;
           const ai = shareMode && balanceMode(reached, hour) === 'ai';
-          // A variant is named as recorded at the hovered hour.
           return overTimeTooltip(dayLabel(hour), lines.map(line => { const group = groupIn(reached, line.group); return ({ group: { ...group, label: labelAt(group, grouping, hour) }, color: line.color,
             stock: stockAt(reached, group, hour), daily: dailyAt(reached, group, hour),
             ...(shareMode ? { logistics: balanceAt(reached, group, hour) } : {}) }); }),
@@ -350,7 +315,6 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
           const ends = lines.flatMap(line => {
             if (!line.summary) return [];
             const end = summaryGeometry(frame, line.summary, false, until).end;
-            // At the end of the line drawn, never past the recorded hours.
             const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
               ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(until ?? extent[1], frame.x[1], extent[1]));
             return end && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: end.y, text: labelAt(line.group, grouping, last) }] : [];
@@ -363,7 +327,6 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   </>;
 }
 
-/** `reply` with its known hours within the comparison's membership, where it names hours. */
 function clipped(reply: EquipmentStockpileReply, within: ComparisonProps['within']): EquipmentStockpileReply {
   return within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
     balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply;

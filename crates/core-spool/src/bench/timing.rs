@@ -42,7 +42,6 @@ fn stamp() -> io::Result<u64> {
 }
 #[cfg(target_arch = "x86_64")]
 fn stamp_now() -> io::Result<u64> {
-    // The invariant counter calibrates thread cycles as in Gate 1.
     Ok(unsafe { std::arch::x86_64::_rdtsc() })
 }
 #[cfg(not(target_arch = "x86_64"))]
@@ -94,7 +93,6 @@ fn cycles() -> io::Result<u64> {
         fn QueryThreadCycleTime(thread: *mut std::ffi::c_void, cycles: *mut u64) -> i32;
     }
     let mut value = 0;
-    // The pseudo-handle and counter belong to this thread.
     if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut value) } == 0 {
         return Err(io::Error::last_os_error());
     }

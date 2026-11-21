@@ -1,4 +1,3 @@
-/** Synthetic Canvas pages for pixel assertions and standalone profiling. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -25,7 +24,6 @@ async function endpointAt(profile: string, signal: AbortSignal) {
   }
 }
 
-/** Each browser stage ends on a result, a browser failure or its deadline. */
 export async function browserStage<T>(child: ChildProcess, label: string, run: (signal: AbortSignal) => Promise<T>, timeout = 30_000): Promise<T> {
   const controller = new AbortController();
   const failed = new Promise<never>((_, reject) => {
@@ -96,8 +94,6 @@ async function stopOwnedTree(child: ChildProcess, signal?: AbortSignal) {
 type OwnedEdgeProcess = { pid: number; parentId: number };
 
 export async function ownedEdgeProcesses(profile: string, launcherPid: number | undefined, stop = false, browserPid: number | undefined = undefined, signal?: AbortSignal): Promise<OwnedEdgeProcess[]> {
-  // A vanished launcher PID is insufficient: compatibility relaunches and
-  // descendants can keep this exact profile alive. Match whole arguments.
   const script = `
 $ErrorActionPreference = 'Stop'
 $pattern = '(?:^|\\s)(?:"--user-data-dir={0}"|--user-data-dir="{0}"|--user-data-dir={0})(?:\\s|$)' -f [regex]::Escape($env:BATTLE_PLAN_CANVAS_PROFILE)
@@ -146,8 +142,6 @@ if ($env:BATTLE_PLAN_CANVAS_STOP -eq '1') {
       throw ('Stopping owned Edge tree ' + $root.pid + ' failed (' + $stopper.ExitCode + '), launcher ' + $env:BATTLE_PLAN_CANVAS_LAUNCHER + ', browser ' + $env:BATTLE_PLAN_CANVAS_BROWSER + ': ' + $message.Trim())
     }
   }
-  # A compatibility relaunch can leave a new exact-profile root outside the
-  # observed tree. Stop those roots too; never match another profile by prefix.
   foreach ($entry in @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'")) {
     if ($entry.CommandLine -notmatch $pattern) { continue }
     $nativeProcess = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
@@ -194,7 +188,6 @@ type CleanupOptions = { profile?: string; timeoutMs?: number; maxAttempts?: numb
 
 class CleanupLimitError extends Error {}
 
-/** Termination and verification spend one deadline and attempt allowance. */
 export class BrowserCleanupBudget {
   profile: string | undefined;
   final = false;
@@ -233,7 +226,6 @@ function cleanupFailure(profile: string | undefined, cause: unknown) {
   return new Error(`Headless Edge did not stop; its profile is retained${profile ? `: ${profile}` : ''}`, { cause });
 }
 
-/** Retry observation within the caller's budget and sweep exact-profile survivors. */
 export async function stopOwnedProfile(profile: string, launcherPid: number | undefined, browserPid: number | undefined,
   observe: typeof ownedEdgeProcesses = ownedEdgeProcesses, sharedBudget?: BrowserCleanupBudget) {
   const budget = sharedBudget ?? new BrowserCleanupBudget({ profile });
@@ -241,8 +233,6 @@ export async function stopOwnedProfile(profile: string, launcherPid: number | un
   assert.equal(budget.profile, profile, 'Browser cleanup must retain its exact owned profile');
   const sweep = async () => {
     await budget.run(signal => observe(profile, launcherPid, true, browserPid, signal));
-    // Retain the ownership check through a timed-out stop, but omit the old
-    // numeric launcher after a completed request can let its PID be reused.
     launcherPid = undefined;
     return (await budget.run(signal => observe(profile, undefined, false, undefined, signal))).length === 0;
   };
@@ -264,7 +254,6 @@ export async function stopOwnedProfile(profile: string, launcherPid: number | un
 
 type CleanupWork<T> = (budget: BrowserCleanupBudget, signal: AbortSignal) => Promise<T>;
 
-/** Confirm absence before deleting a profile; all shutdown work has one budget. */
 export async function stopBrowser(child: ChildProcess, requestClose: CleanupWork<unknown>, forceStop: CleanupWork<void> = (_budget, signal) => stopOwnedTree(child, signal), timeout = 5_000, verifyStopped: CleanupWork<boolean> = async () => exited(child), options: CleanupOptions = {}) {
   const budget = new BrowserCleanupBudget(options);
   let closed!: () => void;
@@ -291,8 +280,6 @@ export async function stopBrowser(child: ChildProcess, requestClose: CleanupWork
     while (!confirmed && budget.canRetry) {
       failure = undefined;
       try { await budget.run(signal => forceStop(budget, signal)); } catch (error) { failure = error; }
-      // A graceful exit can race the PID-scoped force request. Its observed
-      // exit settles shutdown even if the force utility found no live process.
       confirmed = await verify();
       if (!confirmed && !observationFailure) { await wait(); confirmed = await verify(); }
       if (confirmed) break;
@@ -301,20 +288,14 @@ export async function stopBrowser(child: ChildProcess, requestClose: CleanupWork
     }
     if (!confirmed) {
       budget.final = true;
-      // Keep Node's owned native process handle until absence is confirmed.
-      // It can terminate the launcher even when CIM cannot answer; never use
-      // a retained numeric PID to bypass the profile/native-handle checks.
       try { if (child.pid != null && !exited(child)) child.kill('SIGKILL'); } catch (error) { failure = error; }
       try { await budget.run(signal => forceStop(budget, signal)); } catch (error) { failure = error; }
       confirmed = await verify();
       if (!confirmed) throw cleanupFailure(budget.profile, observationFailure ?? failure);
     }
   } finally {
-    // The close promise can remain pending after a refused shutdown.
     child.removeListener('close', closed);
     if (confirmed && !exited(child)) {
-      // Native process-family absence is authoritative when Node's exit/pipe
-      // notification remains pending. Release only this stopped child's handles.
       child.unref(); child.stdout?.destroy(); child.stderr?.destroy();
     }
   }

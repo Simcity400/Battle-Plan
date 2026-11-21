@@ -1,6 +1,3 @@
-//! Stored faction goals, carried under complete native writer certificates.
-//! Every occurrence has its own key so a changed scalar does not re-encode a
-//! faction's whole goal list. Definitions resolve through the content stack.
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -13,11 +10,6 @@ typed_codec!(FactionGoalStatusRow, 64, |row| row.faction as u128,
     |key| Self { faction: key as u64, ..Default::default() },
     { 0 => (manifest): OptionalU32 }, |_row| Ok(()));
 
-/// Native ordered lists have independent ordinals. Empty lists have no entries;
-/// their owner's complete FactionGoalStatus row distinguishes this from an
-/// absent faction. Nullable historical definitions remain explicit occurrences.
-/// Kind 0 runtime goal, 1 completed history, 2 cancelled history, 3 extra slot,
-/// 4 term date. These are recording list kinds, not authored goal terms.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionGoalEntryRow {
@@ -25,13 +17,10 @@ pub struct FactionGoalEntryRow {
     pub kind: u8,
     pub ordinal: u32,
     pub token: Option<u32>,
-    /// Runtime goals retain all native states, including pending transitions.
     pub status: i32,
     pub progress_raw: i64,
     pub active_sections: Vec<u32>,
-    /// Stored raw game hour; a native null date remains a native null date.
     pub date: i32,
-    /// Signed extra slots, including zero and negative values.
     pub slots: i32,
 }
 typed_codec!(FactionGoalEntryRow, 104,

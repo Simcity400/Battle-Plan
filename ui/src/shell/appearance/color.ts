@@ -1,12 +1,9 @@
-// Colour math for themes. Everything is plain sRGB in, #rrggbb out; OKLCH is
-// only used to build perceptually even ramps and to solve text contrast.
 
 export interface Rgb { r: number; g: number; b: number }
 export interface Oklch { l: number; c: number; h: number }
 
 const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value));
 
-/** Parses #rgb, #rgba, #rrggbb, #rrggbbaa, rgb() and rgba(); alpha is returned separately. */
 export function parseColorAlpha(value: unknown): { rgb: Rgb; alpha: number } | null {
   if (typeof value !== 'string') return null;
   const text = value.trim().toLowerCase();
@@ -38,7 +35,6 @@ export function toHex({ r, g, b }: Rgb): string {
   return `#${[r, g, b].map(channel => Math.round(clamp(channel, 0, 255)).toString(16).padStart(2, '0')).join('')}`;
 }
 
-/** Normalises any accepted colour to #rrggbb, compositing translucency over `under`. */
 export function normalizeColor(value: unknown, under?: string): string | null {
   const parsed = parseColorAlpha(value);
   if (!parsed) return null;
@@ -68,7 +64,6 @@ export function contrast(first: Rgb, second: Rgb): number {
 }
 
 export function isDark(color: Rgb): boolean {
-  // Equal contrast headroom for white and black text.
   return luminance(color) < 0.179;
 }
 
@@ -97,7 +92,6 @@ function oklchToLinear({ l, c, h }: Oklch): [number, number, number] {
   ];
 }
 
-/** Maps into sRGB by reducing chroma, which keeps the requested lightness and hue. */
 export function oklchToRgb(color: Oklch): Rgb {
   const target = { ...color, l: clamp(color.l), c: Math.max(0, color.c) };
   let low = 0, high = target.c;
@@ -114,7 +108,6 @@ export function oklchToRgb(color: Oklch): Rgb {
   return { r, g, b };
 }
 
-/** Interpolates in OKLab, as CSS `color-mix(in oklab, …)` does. */
 export function mixOklab(from: Rgb, to: Rgb, amount: number): Rgb {
   const t = clamp(amount);
   const lab = (color: Rgb) => { const { l, c, h } = rgbToOklch(color); const angle = (h * Math.PI) / 180; return [l, c * Math.cos(angle), c * Math.sin(angle)]; };
@@ -124,7 +117,6 @@ export function mixOklab(from: Rgb, to: Rgb, amount: number): Rgb {
   return oklchToRgb({ l, c: Math.hypot(a, b), h: hue < 0 ? hue + 360 : hue });
 }
 
-/** #rrggbb when opaque, otherwise #rrggbbaa. */
 export function toHexAlpha(color: Rgb, alpha: number): string {
   const opacity = Math.round(clamp(alpha) * 255);
   return opacity === 255 ? toHex(color) : `${toHex(color)}${opacity.toString(16).padStart(2, '0')}`;
@@ -134,7 +126,6 @@ export function oklchHex(color: Oklch): string {
   return toHex(oklchToRgb(color));
 }
 
-/** Moves lightness until the colour reaches `ratio` against `against`, or the end of the range. */
 export function solveLightness(color: Oklch, against: Rgb, ratio: number, direction: 'lighter' | 'darker'): Oklch {
   const step = direction === 'lighter' ? 0.01 : -0.01;
   let current = { ...color };
@@ -146,7 +137,6 @@ export function solveLightness(color: Oklch, against: Rgb, ratio: number, direct
   return current;
 }
 
-/** Near-white or near-black text, whichever reads better on `background`. */
 export function readableText(background: Rgb, dark = '#0b0f14', light = '#ffffff'): string {
   const darkRgb = parseColor(dark)!, lightRgb = parseColor(light)!;
   return contrast(background, lightRgb) >= contrast(background, darkRgb) ? light : dark;
@@ -154,7 +144,6 @@ export function readableText(background: Rgb, dark = '#0b0f14', light = '#ffffff
 
 export interface Hsv { h: number; s: number; v: number }
 
-/** Hue in degrees, saturation and value in 0–1, for the colour picker. */
 export function rgbToHsv({ r, g, b }: Rgb): Hsv {
   const [red, green, blue] = [r / 255, g / 255, b / 255];
   const max = Math.max(red, green, blue), min = Math.min(red, green, blue), delta = max - min;

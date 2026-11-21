@@ -1,8 +1,3 @@
-//! Terrain costs use the game's variable binding, category lookup and recovery rules.
-//!
-//! This deliberately does not use the map renderer's indexed BMP image: native
-//! movement samples file rows and the first byte of each stored pixel. Even the
-//! 1-bit case uses byte indexing, rather than decoding packed palette pixels.
 
 use std::io;
 
@@ -85,7 +80,6 @@ impl TerrainCosts {
         if allocation > i64::from(i32::MAX) || allocation < written || advance < 1 {
             return Err(invalid("terrain BMP exceeds native storage limits"));
         }
-        // Native 24-bit loading ignores bfOffBits and starts at byte 54.
         let start = if bpp == 24 {
             54
         } else {
@@ -176,7 +170,6 @@ mod tests {
             (2, 125_000),
             (3, 98_000),
             (4, 1_000),
-            // A cost that does not convert keeps zero, which the clamp raises.
             (5, 1_000),
         ] {
             assert_eq!(terrain.cost(index), expected);
@@ -188,7 +181,6 @@ mod tests {
         );
     }
 
-    /// The game selects the first category with the ASCII-folded name.
     #[test]
     fn absent_cost_zero_cost_and_case_variants_follow_the_category_lookup() {
         let terrain = definitions(&[
@@ -211,7 +203,6 @@ mod tests {
         assert_eq!(terrain.cost(0), 0);
     }
 
-    /// The game binds variables in document order; later definitions do not reach earlier uses.
     #[test]
     fn costs_use_variables_as_they_stand_where_they_are_read() {
         let terrain = definitions(&[
@@ -250,7 +241,6 @@ mod tests {
         assert!(TerrainCosts::decode(&data).unwrap().index(7, 0).is_err());
     }
 
-    /// The default-map reader takes the last `terrain` value after resolving variables.
     #[test]
     fn default_map_terrain_bitmap_is_read_as_the_game_reads_it() {
         engine_executable::executable_tables::initialize_for_tests()

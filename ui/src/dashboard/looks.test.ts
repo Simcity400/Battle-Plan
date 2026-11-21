@@ -12,24 +12,16 @@ const style = { name: 'Germany', color: [1, 2, 3] as [number, number, number] };
 test('each part of a look still being read keeps the one shown; a completed read replaces it, with nothing known when it gave nothing', () => {
   const shown = new Map<string, Look>([['GER', germany]]);
   const read = (value: LookRead) => nextLooks(shown, ['GER'], () => value).get('GER');
-  // Loading the next month's look: the one shown stays, so nothing flashes.
   assert.equal(read({ style: undefined, flag: undefined }), germany);
-  // Read, and another country now holds the tag: its look replaces the old one.
   assert.deepEqual(read({ style: { name: 'German Reich', color: [9, 9, 9] }, flag: 'data:reich' }), { name: 'German Reich', color: [9, 9, 9], flag: 'data:reich' });
-  // Read with nothing: not known, never the older look.
   assert.deepEqual(read({ style: null, flag: null }), { name: null, color: null, flag: null });
-  // A country not asked about keeps its look.
   assert.equal(nextLooks(shown, ['ITA'], () => ({ style: null, flag: null })).get('GER'), germany);
 });
 
 test('a style applies on its own: flags that cannot be had (no game folders) leave the colours shown', () => {
-  // Styles read; flags completed with nothing (the product needs content): colours and
-  // names show, the flag is the placeholder.
   const looks = nextLooks(new Map(), ['GER'], () => ({ style, flag: null }));
   assert.deepEqual(looks.get('GER'), { name: 'Germany', color: [1, 2, 3], flag: null });
-  // Styles read while flags are still being read: the style is not held back.
   assert.deepEqual(nextLooks(new Map(), ['GER'], () => ({ style, flag: undefined })).get('GER'), { name: 'Germany', color: [1, 2, 3], flag: null });
-  // A flag read later joins the style already shown.
   const later = nextLooks(looks, ['GER'], () => ({ style: undefined, flag: 'data:ger' }));
   assert.deepEqual(later.get('GER'), germany);
 });
@@ -37,32 +29,24 @@ test('a style applies on its own: flags that cannot be had (no game folders) lea
 test('only refusals for want of room, cancellations and an unreachable service are tried again', () => {
   for (const refusal of TRANSIENT_ERRORS) {
     assert.equal(transientError(new Error(refusal)), true, refusal);
-    // A producer may add advice after the refusal.
     assert.equal(transientError(`${refusal}. Retry this view.`), true);
   }
-  // Each producer's refusal, as it words it: the service's, the desktop's admission and
-  // the browser bridge's (both past the service's budget), the desktop's pipe to the
-  // native service (full by count or bytes) and its map controls.
   for (const refusal of [CAPACITY_REACHED, `${CAPACITY_REACHED}. Retry this view.`, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, `${MAP_CONTROLS_BUSY}; try again`]) {
     assert.equal(transientError(new Error(refusal)), true, refusal);
   }
   assert.deepEqual([...TRANSIENT_ERRORS], [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY]);
   assert.equal(transientError(new DOMException('Request cancelled', 'AbortError')), true);
   assert.equal(transientError(new TypeError('Failed to fetch')), true);
-  // The product's own answers: asking again gives them again.
   assert.equal(transientError(new Error('Choose the game and user folders in Settings first')), false);
   assert.equal(transientError(new Error('Country styles unavailable at this hour: gap')), false);
 });
 
 test('looks are read at a recorded hour of the moment’s own stretch, never in a gap', () => {
   const branch = { firstHour: 100, lastHour: 3000, gaps: [{ firstHour: 820, lastHour: 820 }, { firstHour: 1600, lastHour: 1700 }] };
-  // Whole steps from the branch start while they are recorded.
   assert.deepEqual(lookHour(branch, 500), { hour: 100, stretch: 100 });
-  // The step (820) is the gap: the stretch after it starts at 821.
   assert.deepEqual(lookHour(branch, 821), { hour: 821, stretch: 821 });
   assert.deepEqual(lookHour(branch, 1500), { hour: 821, stretch: 821 });
   assert.deepEqual(lookHour(branch, 1550), { hour: 100 + 2 * LOOK_STEP, stretch: 821 });
-  // In a gap, nothing is read; after it, the stretch's own first hour.
   assert.equal(lookHour(branch, 1650), null);
   assert.deepEqual(lookHour(branch, 1701), { hour: 1701, stretch: 1701 });
   assert.equal(lookHour(branch, 50), null);
@@ -75,7 +59,6 @@ test('a country taking over a tag starts its own appearance sample, even without
   assert.deepEqual(lookHour(branch, 200, 200), { hour: 200, stretch: 200 });
   assert.deepEqual(lookHour(branch, 819, 200), { hour: 200, stretch: 200 });
   assert.deepEqual(lookHour(branch, 820, 200), { hour: 820, stretch: 200 });
-  // Seeking back resolves the previous country's segment; unknown identities have no look.
   assert.deepEqual(lookHour(branch, 199, 100), { hour: 100, stretch: 100 });
   assert.equal(lookHour(branch, 200, null), null);
 });
@@ -101,7 +84,6 @@ test('all look parts use one sample inside each identity segment', () => {
   assert.deepEqual(plan.samples, [{ tag: 'ABC', hour: 200, stretch: 200 }, { tag: 'other', hour: 100, stretch: 100 }]);
   assert.deepEqual(plan.wanted, [{ tag: 'ABC', hour: 200 }, { tag: 'other', hour: 100 }]);
   assert.deepEqual(lookPlan(branch, ['ABC'], 205).samples, [{ tag: 'ABC', hour: 100, stretch: 100 }]);
-  // A missing identity or a recording gap has no appearance request.
   assert.equal(lookPlan(branch, ['unknown'], 205, segment).wanted.length, 0);
   assert.equal(lookPlan({ ...branch, gaps: [{ firstHour: 205, lastHour: 206 }] }, ['ABC'], 205, segment).wanted.length, 0);
 });
@@ -114,28 +96,21 @@ test('without an identity lookup looks still follow the recorded sample grid', (
 
 test("a view following the head reads its rows' looks exactly where one of them last changed, never at a bound its windows do not hold", () => {
   const branch = { firstHour: 1000, lastHour: 100_000, gaps: [{ firstHour: 50_000, lastHour: 50_010 }] };
-  // The caller's identity bound comes from the windows it holds, here only near the campaign's end (a race whose
-  // head is followed asks for none): at the head after a seek it names nobody, which drew "Country name unavailable".
   const heldBound = (_tag: string, hour: number) => hour >= 90_000 ? 90_000 : null;
   assert.deepEqual(lookPlan(branch, ['GER', 'ITA'], 5_000, heldBound).wanted, []);
-  // Following, at the hour one of them last changed (each reads there as at the head), exactly, bound by the stretch alone.
   const read = looksRead(true, 4_321, 5_000, heldBound);
   assert.deepEqual(read, { hour: 4_321, segmentAt: undefined, hours: undefined, exact: true });
   assert.deepEqual(lookPlan(branch, ['GER', 'ITA'], read.hour, read.segmentAt, read.hours, read.exact).wanted,
     [{ tag: 'GER', hour: 4_321 }, { tag: 'ITA', hour: 4_321 }]);
-  // Not following, or before that hour is known: the caller's own plan at the moment shown.
   const hours = new Map([['GER', 7_000]]);
   assert.deepEqual(looksRead(false, 4_321, 5_000, heldBound, hours, true), { hour: 5_000, segmentAt: heldBound, hours, exact: true });
   assert.deepEqual(looksRead(true, null, 5_000, heldBound), { hour: 5_000, segmentAt: heldBound, hours: undefined, exact: false });
-  // The head as a hour of the branch: null outside it, never clamped to its end.
   assert.equal(branchHour(branch, 999), null);
   assert.equal(branchHour(branch, 100_001), null);
   assert.equal(branchHour(branch, 4_321.7), 4_321);
 });
 
 test("a coarse step of the head is a step from the branch's first hour, never one before it", () => {
-  // Production licences stepped the head as `floor(hour / LOOK_STEP) * LOOK_STEP`: before the branch for its first
-  // month, so nothing was read there and every party was "Country name unavailable".
   const branch = { firstHour: 1000, lastHour: 100_000, gaps: [] };
   assert.ok(Math.floor(1000 / LOOK_STEP) * LOOK_STEP < branch.firstHour);
   assert.equal(lookHour(branch, 1000)?.hour, 1000);
@@ -215,7 +190,6 @@ test('playback 100 to 101 to 102 starts no new look requests and holds every pen
     shown = sampledLooks(shown, plan.samples, item => ({ style: styleRead.get(nameKey(item.hour, item.tag)), flag: flagRead.get(nameKey(item.hour, item.tag)) }));
     assert.equal(shown.looks.get('ABC'), germany);
   }
-  // One style request supplies name and colour; one flag request. Neither is cancelled.
   assert.deepEqual([styleCalls, flagCalls, styleCancelled, flagCancelled], [1, 1, false, false]);
   finishStyle(); finishFlag();
   await Promise.resolve();
@@ -236,7 +210,6 @@ test('facts are asked for by the set of countries, so a re-ranking never cancels
   assert.equal(factsKey('track', reordered), factsKey('track', ranked));
   assert.notEqual(factsKey('track', ranked.slice(1)), factsKey('track', ranked));
   assert.notEqual(factsKey('other', ranked), factsKey('track', ranked));
-  // Another hour is another request, and a tag holding any character stays apart.
   assert.notEqual(factsKey('track', [{ hour: 11, tag: 'GER' }]), factsKey('track', [{ hour: 10, tag: 'GER' }]));
   assert.notEqual(factsKey('track', [{ hour: 10, tag: 'A","B' }]), factsKey('track', [{ hour: 10, tag: 'A' }, { hour: 10, tag: 'B' }]));
 });
@@ -249,7 +222,6 @@ test('the fact store tells a read without a value from one still going', () => {
   assert.equal(read.get(nameKey(10, 'GER')), 'Germany');
   assert.equal(read.get(nameKey(10, 'ITA')), null);
   assert.equal(read.has(nameKey(20, 'GER')), false);
-  // The plain pick leaves both out.
   assert.deepEqual([...store.pick(wanted).keys()], [nameKey(10, 'GER')]);
 });
 

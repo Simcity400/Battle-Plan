@@ -105,7 +105,6 @@ fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
                     expected
                 );
             }
-            // One result per pool, independent of unit count.
             assert_eq!(limits.values.0.borrow().len(), 2);
         });
     }
@@ -151,8 +150,6 @@ fn pool_check_starts_a_fresh_variable_context() {
             },
         ]));
     with_world(&frame, &[], |limits| {
-        // Evaluation clears prior temporary values, so this
-        // operand reaches the recorded global variable store.
         assert_eq!(
             pools
                 .lookup_with_limits(&context(None, &[]), &limits, |_| true)
@@ -220,7 +217,6 @@ fn filters_and_dlc_limits_decide_pools_and_unknown_predicates_fail() {
     .unwrap();
     let entities: BTreeSet<_> = found.iter().map(|c| c.entity.as_str()).collect();
     assert_eq!(entities, BTreeSet::from(["right", "dlc", "either"]));
-    // Scope-masked predicates are false before they read any input.
     let scoped =
         content(b"default = { tank = { pool = { limit = { tag = GER } models = { x } } } }")
             .unwrap();

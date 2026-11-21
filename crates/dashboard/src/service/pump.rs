@@ -24,8 +24,6 @@ impl Signal {
 }
 
 pub(super) fn run_pump(inner: Arc<Inner>, emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) {
-    // A rejected callback or an unwind must close admission and stop the
-    // loaders. Joining belongs to Service::shutdown.
     let _exit = ThreadExit(Arc::clone(&inner));
     let mut streams = VecDeque::<(Arc<Request>, ReplyChunks)>::new();
     while !inner.closed.load(Ordering::Acquire) {
@@ -98,7 +96,6 @@ pub(super) fn run_pump(inner: Arc<Inner>, emit: Arc<dyn Fn(DataEvent) -> bool + 
                     Delivery::Sent => streams.push_back((request, chunks)),
                 }
             } else {
-                // A stream must finish through its explicit last fragment.
                 inner.finish(&request, false);
             }
             progressed = true;
@@ -140,8 +137,6 @@ pub(super) fn deliver(
     if request.cancelled() || closed.load(Ordering::Acquire) {
         return Delivery::Cancelled;
     }
-    // No service lock crosses this interruptible, bounded handoff. A fragment
-    // already handed to the callback is discarded by the host on cancellation.
     if !emit(event) {
         Delivery::Closed
     } else if request.cancelled() || closed.load(Ordering::Acquire) {
@@ -157,8 +152,6 @@ pub(super) fn emit_error(
     error: crate::QueryError,
     emit: &(dyn Fn(DataEvent) -> bool + Send + Sync),
 ) -> bool {
-    // A source reply that cannot be delivered must not retain an unreachable
-    // lease, even while its error waits for output capacity.
     let lease = inner
         .pending
         .lock()

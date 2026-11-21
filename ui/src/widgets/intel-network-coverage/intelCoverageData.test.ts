@@ -18,7 +18,6 @@ test('directions are independent; a recorded zero is an empty network; no networ
   const present = cellState(at, values, 'GER', 'ENG');
   assert.equal(present.kind, 'present');
   assert.equal(present.kind === 'present' && present.values.get('coveredControlled'), 0);
-  // A value not read yet stays missing with why, never zero.
   assert.equal(present.kind === 'present' && present.values.get('maxStrength'), 'Not read yet');
   assert.equal(cellState(at, values, 'ENG', 'GER').kind, 'absent');
   assert.equal(cellState(pairsAt(reply([['GER', 'ENG']], 'IntelNetworkSummaries: not recorded')), values, 'ENG', 'GER').kind, 'unknown');
@@ -29,7 +28,6 @@ test('the most active countries are those with the most networks in or from them
   const data = reply([['GER', 'ENG'], ['GER', 'SOV'], ['SOV', 'GER'], ['ITA', 'FRA']]);
   assert.deepEqual(countriesAt(data, 3), ['GER', 'SOV', 'ENG']);
   assert.deepEqual(countriesAt(data, 10), ['GER', 'SOV', 'ENG', 'FRA', 'ITA']);
-  // Chosen countries in tag order; one alone comes with every country it has a network in or that has one in it.
   assert.deepEqual(countriesAt(data, 3, tag => tag === 'SOV' || tag === 'FRA'), ['FRA', 'SOV']);
   assert.deepEqual(countriesAt(data, 3, tag => tag === 'SOV', true), ['SOV', 'GER']);
   assert.deepEqual(countriesAt(data, 1, undefined, true), ['GER', 'ENG', 'SOV']);
@@ -56,7 +54,6 @@ test('the matrix colours each network against the largest shown, leaves the diag
   assert.deepEqual(seen, [[4, 8]]);
   assert.equal(matrix.get(liveKey('GER', 'GER')), null);
   assert.equal(matrix.get(liveKey('ENG', 'GER')), null);
-  // A network whose value is not read is unknown, not empty.
   assert.equal(matrixCells(at, cells({}), 'coveredControlled', () => 'x').get(liveKey('GER', 'ENG')), undefined);
   assert.equal(matrix.get(liveKey('GER', 'XXX')), undefined);
 });

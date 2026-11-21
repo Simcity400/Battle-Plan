@@ -1,5 +1,3 @@
-// Shared reading of the branch's political-state history (`politics-state-history`): its
-// envelope, holder tag runs and value runs.
 import type { HolderTag, HourSpan, PoliticsHistoryMode, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../generated/dashboard';
 import type { Span } from '../charts/series';
 import { isOrderedSpans, runAt } from '../charts/series.ts';
@@ -7,22 +5,16 @@ import { object, opaqueTag } from './validation.ts';
 
 export const POLITICS_HISTORY = 'politics-state-history';
 
-/** A `politics-state` reply with the hour it is of: the request's, or the push's that made its structure (its numbers are
- * live cells, `follow/liveCells.ts`). */
 export type PoliticsStateAt = PoliticsStateReply & { hour: number };
 
-/** A decimal integer that is exact as a number. */
 export const integerText = (value: string): boolean => /^-?\d{1,16}$/.test(value) && Number.isSafeInteger(Number(value));
-/** A native fixed5 value as its exact decimal string. */
 export const fixed5Text = (value: string): boolean => /^-?\d{1,19}$/.test(value)
   && BigInt(value) >= -(1n << 63n) && BigInt(value) < (1n << 63n);
 
-/** Ordered, disjoint runs whose values all pass `check`. */
 export function isPoliticsRuns(value: unknown, check: (value: string) => boolean): value is PoliticsRun[] {
   return isOrderedSpans(value) && value.every(run => typeof run.value === 'string' && check(run.value));
 }
 
-/** A holder's tags, each from its hour until the next entry's. */
 export function isHolderTags(value: unknown): value is HolderTag[] {
   if (!Array.isArray(value)) return false;
   let last: number | null = null;
@@ -34,7 +26,6 @@ export function isHolderTags(value: unknown): value is HolderTag[] {
   return true;
 }
 
-/** The holder's tag at `hour`; null before it was first read with one. */
 export function tagAt(tags: readonly HolderTag[], hour: number): string | null {
   let low = 0, high = tags.length - 1, found = -1;
   while (low <= high) {
@@ -44,14 +35,12 @@ export function tagAt(tags: readonly HolderTag[], hour: number): string | null {
   return found < 0 ? null : tags[found].tag;
 }
 
-/** The value a run holds at `hour`; null where no run covers it (not read). */
 export const valueAt = (runs: readonly PoliticsRun[], hour: number): string | null => runAt(runs, hour)?.value ?? null;
 export function integerAt(runs: readonly PoliticsRun[], hour: number): number | null {
   const value = valueAt(runs, hour);
   return value === null ? null : Number(value);
 }
 
-/** The reply's envelope for `mode`; `body` checks the mode's own fields. */
 export function validatePoliticsHistory(value: unknown, mode: PoliticsHistoryMode, body: (reply: Record<string, unknown>) => boolean): PoliticsHistoryReply {
   if (!object(value) || typeof value.branchId !== 'string' || value.mode !== mode
     || !(value.lastHour === null || typeof value.lastHour === 'number' && Number.isSafeInteger(value.lastHour))
@@ -61,11 +50,8 @@ export function validatePoliticsHistory(value: unknown, mode: PoliticsHistoryMod
   return value as unknown as PoliticsHistoryReply;
 }
 
-/** Whether the reply's part was read at `hour`. */
 export const readAt = (known: readonly HourSpan[], hour: number): boolean => runAt(known, hour) !== null;
 
-/** The hours `firstHour..=lastHour` the part was not read: a value cannot be said
- * to start or end there. */
 export function unreadSpans(known: readonly HourSpan[], firstHour: number, lastHour: number | null): Span[] {
   if (lastHour === null) return [];
   const spans: Span[] = [];
@@ -79,9 +65,6 @@ export function unreadSpans(known: readonly HourSpan[], firstHour: number, lastH
   return spans;
 }
 
-/** The hours a part's values cannot be said to start or end at: recorded gaps and the hours
- * `firstHour..=lastHour` the part was not read, in order and merged where they overlap or meet,
- * so a stretch inside another never reads as its end. */
 export function unknownHours(gaps: readonly HourSpan[], known: readonly HourSpan[], firstHour: number, lastHour: number | null): Span[] {
   const spans = [...gaps, ...unreadSpans(known, firstHour, lastHour)].sort((a, b) => a.firstHour - b.firstHour);
   const merged: Span[] = [];
@@ -93,5 +76,4 @@ export function unknownHours(gaps: readonly HourSpan[], known: readonly HourSpan
   return merged;
 }
 
-/** A stable key for a holder: its first recorded tag and hour. */
 export const holderKey = (tags: readonly HolderTag[]): string | null => tags.length ? JSON.stringify([tags[0].hour, tags[0].tag]) : null;

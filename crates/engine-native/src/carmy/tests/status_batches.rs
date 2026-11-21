@@ -31,7 +31,6 @@ fn packet(manpower: usize) -> carmy::StatusPacket {
         },
         manpower,
         thresholds: 3,
-        // A capture's growth floors modifier nodes at the unit count.
         modifiers: crate::modifier_accumulator::SnapshotCapacity {
             nodes: 2,
             entries: 1,
@@ -212,8 +211,6 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
         source
             .globals
             .insert(carmy::EXPERIENCE_THRESHOLDS_RVA.0, header);
-        // Stop at the first strict upper experience threshold. Keep an unread
-        // suffix to prove storage growth adds no payload reads.
         p64(&mut source.bytes, 0x40000 + (count - 1) * 8, 151);
         p64(&mut source.bytes, 0x40000 + count * 8, u64::MAX);
         let actual = ScalarBatchMemory::new(&source);
@@ -299,7 +296,6 @@ fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
         }];
         carmy::capture_division_seeds(&source, &mut seeds);
         let actual = ScalarBatchMemory::new(&source);
-        // The last entry weighs most and every entry is read.
         let last = carmy::Camouflage {
             category: Some(count as u32),
         };
@@ -328,7 +324,6 @@ fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
     }
 }
 
-// regression: 403464e3fe Keep engine preparation demand independent of allocator capacity
 #[test]
 fn acquired_status_demand_excludes_allocator_spare_capacity() {
     const COUNT: usize = 65;
@@ -350,8 +345,6 @@ fn acquired_status_demand_excludes_allocator_spare_capacity() {
     }
 }
 
-/// A seed's carried maxima stand in for a read of its stat block, as the
-/// read would; maxima of another block are not the seed's and are ignored.
 #[test]
 fn carried_maxima_replace_the_stat_block_read() {
     use crate::csub_unit_definition::DivisionMaxima;
@@ -383,7 +376,6 @@ fn carried_maxima_replace_the_stat_block_read() {
     assert_eq!(fresh.pointer, stats);
     assert!(reads.iter().any(|&(at, _)| at == stats));
     let held = DivisionMaxima {
-        // Any other value: the fixture's maximum sits at the top of the range.
         organisation: fresh.organisation.wrapping_sub(7),
         ..fresh
     };

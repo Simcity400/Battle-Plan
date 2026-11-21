@@ -1,16 +1,3 @@
-//! Exact projections from the current owned native sample into replay baselines.
-//!
-//! Only ordering scratch and each table's latest capture witness are retained.
-//! Every reuse but a witnessed one compares all current row payloads, after
-//! the caller's acquisition and arena checks, with the encoder's complete
-//! baseline. A stable permutation avoids repeatedly sorting the same census;
-//! every use verifies its order against the current native keys.
-//! Portrait acquisition may retain owned descriptors certified current by its
-//! native mutation observer; this is distinct from carrying an older sample.
-//! Each table's ordering scratch has its own lock, so clones of one
-//! projection can convert disjoint tables on the spool thread and its helper.
-//! A capture whose [`Witness`] equals the previous hour's compares equal
-//! without a projection ([`Projection::republish`]).
 
 use crate::table_conversion::{table, unavailable};
 use engine_native::walk::Outcome;
@@ -19,11 +6,8 @@ use replay_data::{BranchId, Hour, rows::RowCodec, rows::TableRows, rows::TableSc
 use replay_frame::{frame::FrameEncoder, frame::TableInput, frame::TableView};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-/// Words a [`Witness`] holds.
 pub const WITNESS_WORDS: usize = 9;
 
-/// Writer tokens or held-rows generation of a capture that read and refused
-/// nothing: consecutive captures with equal witnesses published equal rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Witness([u64; WITNESS_WORDS]);
 
@@ -35,19 +19,16 @@ impl Witness {
         Self(all)
     }
 
-    /// The witness of a capture that published exactly the held rows of `generation`.
     pub fn generation(generation: u64) -> Self {
         Self::new([generation])
     }
 }
 
-/// A held-rows generation no earlier hold in this process had.
 pub fn generation() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The capture of a table's latest complete conversion.
 struct Held {
     branch: BranchId,
     hour: Hour,
@@ -67,7 +48,6 @@ struct Ordering {
     held: Option<Held>,
     republished: u64,
     held_converted: u64,
-    /// A [`Ledgers`] of the table's comparison inputs.
     ledger: Option<Box<dyn std::any::Any + Send>>,
 }
 
@@ -90,21 +70,17 @@ impl ProjectionScratch {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// `table`'s republished and converted hours, cumulative.
     pub fn republish_counts(&self, table: TableId) -> [u64; 2] {
         let order = self.table(table);
         [order.republished, order.held_converted]
     }
 
-    /// Withdraw `table`'s recorded capture: the next hour converts it.
     pub fn forget(&self, table: TableId) {
         self.table(table).held = None;
     }
 
 }
 
-/// One hour's comparison context. Clones share the encoder borrow and the
-/// per-table scratch locks, so another thread can project other tables.
 #[derive(Clone, Copy)]
 pub struct Projection<'a> {
     encoder: &'a FrameEncoder,
@@ -115,16 +91,10 @@ pub struct Projection<'a> {
 }
 
 impl<'a> Projection<'a> {
-    /// A branch-local complete state to which an observed native change batch
-    /// applies. The caller must refuse missing or incomplete observation.
     pub fn observed_baseline<S: TableSchema>(&self) -> Option<&'a [S::Row]> {
         self.encoder.observed_baseline::<S>(self.branch, self.hour)
     }
 
-    /// The same continuous observed baseline with its shared ownership intact.
-    /// An unchanged daily projection can retain this snapshot for skipped-hour
-    /// recovery without cloning rows or replacing the spool's recovery cache
-    /// with a comparison token.
     pub fn observed_shared_baseline<S: TableSchema>(
         &self,
     ) -> Option<&'a std::sync::Arc<TableRows>> {
@@ -132,7 +102,6 @@ impl<'a> Projection<'a> {
         self.encoder.shared_baseline(S::ID)
     }
 
-    /// A complete writer certificate covers the rows the event batch omits.
     pub fn observed_comparison_baseline<S: TableSchema>(
         &self,
     ) -> Option<(replay_frame::frame::BaselineToken, &'a [S::Row])> {
@@ -156,7 +125,6 @@ impl<'a> Projection<'a> {
         }
     }
 
-    /// `S` compares equal, unprojected, when the previous hour had this witness.
     pub fn republish<S: TableSchema>(&self, witness: Option<Witness>) -> Option<TableInput> {
         let witness = witness?;
         let mut order = self.scratch.table(S::ID);
@@ -168,7 +136,6 @@ impl<'a> Projection<'a> {
         {
             return None;
         }
-        // The token's frame is the previous hour's; its baseline must be that frame's.
         let (token, _) =
             self.encoder
                 .comparison_baseline::<S>(self.branch, self.hour, self.force)?;
@@ -180,7 +147,6 @@ impl<'a> Projection<'a> {
         Some(TableInput::ComparedEqual(token))
     }
 
-    /// Records `table`'s capture for the next hour when `input` names complete rows.
     pub fn retain(&self, table: TableId, witness: Option<Witness>, input: &TableInput) {
         let complete = matches!(
             input,
@@ -199,8 +165,6 @@ impl<'a> Projection<'a> {
         });
     }
 
-    /// Publish only changed certified key ranges when the last capture was
-    /// committed at this projection's baseline; recovery materialises once.
     pub fn certified<S: TableSchema>(
         &self,
         snapshot: &crate::certified::Snapshot<S::Row>,
@@ -264,9 +228,6 @@ impl<'a> Projection<'a> {
         input
     }
 
-    /// Replace only owners selected by a complete writer certificate. A full
-    /// acquisition establishes the shared baseline; missing baselines refuse
-    /// carry rather than treating a partial owner set as a complete table.
     pub fn certified_owners(&self, rows: TableRows, owners: Vec<u32>, full: bool) -> TableInput {
         if full {
             return TableInput::SharedComplete(std::sync::Arc::new(rows));
@@ -280,8 +241,6 @@ impl<'a> Projection<'a> {
         self.certified_update(update)
     }
 
-    /// Complete writer coverage selects individual holder keys. Unchanged
-    /// holders stay in the shared baseline, including their immutable pools.
     pub fn certified_keys(&self, rows: TableRows, keys: Vec<u128>, full: bool) -> TableInput {
         if full {
             return TableInput::SharedComplete(std::sync::Arc::new(rows));
@@ -313,8 +272,6 @@ impl<'a> Projection<'a> {
         if update.owners.is_empty() && update.keys.is_empty() {
             return TableInput::SharedComplete(std::sync::Arc::clone(previous));
         }
-        // Keyframes serialize the complete certified state. Clone row handles,
-        // consume the selected updates, and keep carried pool payloads shared.
         let merged = previous.try_clone().and_then(|mut rows| {
             update.apply(&mut rows)?;
             Ok(rows)
@@ -373,8 +330,6 @@ impl<'a> Projection<'a> {
             }
         }
         let at = |index| &source[if natural { index } else { order.indices[index] }];
-        // Staggered tables also need a recovery cache for skipped hours. Their
-        // existing immutable-cache path owns that contract; this path is hourly.
         if matches!(outcome, Outcome::Rows { .. })
             && !replay_data::cadence::is_staggered(S::ID)
             && let Some((token, baseline)) =
@@ -391,8 +346,6 @@ impl<'a> Projection<'a> {
                         return false;
                     }
                     if !equal(current, previous) {
-                        // Equal baselines still allocate nothing. The first
-                        // changed row reserves the entire remaining batch.
                         if indices.is_empty()
                             && engine_allocation::reserve_exact(&mut indices, source.len()).is_err()
                         {
@@ -425,7 +378,6 @@ impl<'a> Projection<'a> {
                         rows,
                     };
                 }
-                // A key differs, so the rows cannot all be equal either.
             } else if source.len() == baseline.len()
                 && baseline.iter().enumerate().all(|(index, previous)| {
                     let current = at(index);
@@ -455,11 +407,6 @@ impl<'a> Projection<'a> {
 }
 
 impl Projection<'_> {
-    /// [`Self::table`] for a table the encoder holds as a shared baseline. The rows merge by
-    /// key with the hour's continuous baseline: only the changed, new and removed rows form a
-    /// keyed update, whatever the membership change, and an hour with none compares equal.
-    /// Without that baseline the complete rows are shared; an owned baseline keeps the
-    /// positional comparison.
     fn keyed_table<S: TableSchema, T>(
         &mut self,
         outcome: Outcome,
@@ -596,18 +543,11 @@ impl Projection<'_> {
                 missing: unread_rows,
             }
             .into(),
-            // A shared complete baseline is what the next hour's keyed merge updates.
             _ => TableInput::SharedComplete(std::sync::Arc::new(rows)),
         }
     }
 }
 
-/// `key` must be the replay key and `equal` must compare every replay field,
-/// a field with a display step ([`replay_data::display`]) at that step, since the
-/// baseline holds it rounded. All source and arena checks are performed before
-/// calling this function. Converted rows are rounded to their display steps. A table that
-/// takes keyed updates ([`replay_data::sliced::takes_keyed_updates`]) merges by key
-/// ([`Projection::keyed_table`]).
 pub fn project_table<S: TableSchema, T>(
     projection: Option<&mut Projection<'_>>,
     outcome: Outcome,
@@ -629,20 +569,17 @@ pub fn project_table<S: TableSchema, T>(
     })
 }
 
-/// The variable-length comparison inputs of one row, appended to its table's ledger.
 pub struct Record<'a> {
     bytes: &'a mut Vec<u8>,
     failed: bool,
 }
 
 impl Record<'_> {
-    /// Room for `len` more bytes; false once any reservation failed.
     fn room(&mut self, len: usize) -> bool {
         self.failed = self.failed || self.bytes.try_reserve(len).is_err();
         !self.failed
     }
 
-    /// A length-prefixed run of `len` values of `width` bytes each, written by `each`.
     fn run(&mut self, len: Option<usize>, width: usize, each: impl FnOnce(&mut Vec<u8>)) {
         let Some(len) = len else {
             if self.room(1) {
@@ -657,19 +594,16 @@ impl Record<'_> {
         }
     }
 
-    /// A run of bytes, length-prefixed; `None` differs from every run.
     pub fn bytes(&mut self, data: Option<&[u8]>) {
         self.run(data.map(<[u8]>::len), 1, |out| out.extend_from_slice(data.unwrap_or_default()));
     }
 
-    /// One word.
     pub fn word(&mut self, value: i64) {
         if self.room(8) {
             self.bytes.extend_from_slice(&value.to_le_bytes());
         }
     }
 
-    /// A run of ids, length-prefixed; `None` differs from every run.
     pub fn ids(&mut self, data: Option<&[u32]>) {
         self.run(data.map(<[u32]>::len), 4, |out| {
             for value in data.unwrap_or_default() {
@@ -678,7 +612,6 @@ impl Record<'_> {
         });
     }
 
-    /// A run of words, length-prefixed; `None` differs from every run.
     pub fn words(&mut self, data: Option<&[i64]>) {
         self.run(data.map(<[i64]>::len), 8, |out| {
             for value in data.unwrap_or_default() {
@@ -688,12 +621,9 @@ impl Record<'_> {
     }
 }
 
-/// A keyed table's comparison inputs, in the source order of the rows they produced.
 struct Ledger<C> {
-    /// Encoder, branch and hour of the committed rows these inputs produced.
     stamp: Option<(u64, BranchId, Hour)>,
     keys: Vec<u128>,
-    /// `None`: a row that never compares equal.
     fixed: Vec<Option<C>>,
     ends: Vec<usize>,
     bytes: Vec<u8>,
@@ -726,7 +656,6 @@ impl<C> Ledger<C> {
     }
 }
 
-/// The ledger of the committed rows and the one the hour fills.
 struct Ledgers<C> {
     held: Ledger<C>,
     next: Ledger<C>,
@@ -742,9 +671,6 @@ impl<C> Default for Ledgers<C> {
 }
 
 impl Projection<'_> {
-    /// [`Self::keyed_table`] comparing each row's inputs, in source order, with those that
-    /// produced the committed baseline. Rows whose inputs are unchanged are neither compared with
-    /// the baseline nor converted.
     fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
         &mut self,
         outcome: Outcome,
@@ -770,8 +696,6 @@ impl Projection<'_> {
                     .comparison_baseline::<S>(self.branch, self.hour, self.force)
                     .is_some())
         {
-            // Nothing to hold: a refusal, a truncation, or an owned baseline (fixtures seeding
-            // through a decoded frame) that keeps the positional comparison.
             return self.keyed_table::<S, _>(
                 outcome,
                 source,
@@ -823,7 +747,6 @@ impl Projection<'_> {
                     Err(reason) => return unavailable(reason).into(),
                 }
             }
-            // No ledger of this baseline: its rows merge with the converted rows.
             _ => self.keyed_table::<S, _>(
                 outcome,
                 source,
@@ -862,8 +785,6 @@ impl Projection<'_> {
     }
 }
 
-/// The keyed update from the rows `held` describes to those of `next`, `None` when no row
-/// changed. Row keys and their order follow `next`.
 fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     held: &Ledger<C>,
     next: &Ledger<C>,
@@ -877,7 +798,6 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     seen.resize(held.keys.len(), false);
     let mut index: Option<std::collections::HashMap<u128, usize>> = None;
     let mut added = std::collections::HashSet::new();
-    // (key, source position of its new row; None removes it)
     let mut edits: Vec<(u128, Option<usize>)> = Vec::new();
     let mut matched = 0;
     for (at, &key) in next.keys.iter().enumerate() {
@@ -942,10 +862,6 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     )))
 }
 
-/// [`project_table`] for a keyed table ([`replay_data::sliced::takes_keyed_updates`]) whose
-/// rows compare by their inputs: `record` returns and writes every value `convert` reads for the
-/// row at that source position (`None` when the row must always convert), the same inputs
-/// giving the same row.
 pub fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
     projection: Option<&mut Projection<'_>>,
     outcome: Outcome,
@@ -964,7 +880,6 @@ pub fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
     })
 }
 
-/// [`Projection::republish`], else `convert`, recorded by [`Projection::retain`].
 pub fn held_input<'p, S: TableSchema>(
     projection: Option<&mut Projection<'p>>,
     witness: Option<Witness>,
@@ -991,8 +906,6 @@ fn held<'p, S: TableSchema>(
     }
 }
 
-/// Scalar projections compare without allocating an intermediate replay row
-/// vector. Use `project_table` for rows owning strings or nested vectors.
 pub fn scalar_table<S: TableSchema, T>(
     projection: Option<&mut Projection<'_>>,
     outcome: Outcome,
@@ -1010,8 +923,6 @@ pub fn scalar_table<S: TableSchema, T>(
     )
 }
 
-/// `row` with its fields rounded to their display steps, as the baseline
-/// holds them.
 fn displayed<S: TableSchema>(mut row: S::Row) -> S::Row {
     row.round_to_display();
     row
@@ -1231,7 +1142,6 @@ mod tests {
         };
         let first = capture(&encoder, 0, &[state(1), state(2), state(3)]);
         encoder.encode_input(input(0, first), false).unwrap();
-        // The last key moved: the rows before it compare once, then all convert.
         let moved = capture(&encoder, 1, &[state(1), state(2), state(4)]);
         assert!(matches!(moved, TableInput::Sampled(TableView::Complete(_))));
         assert_eq!(compared.get(), 2);
@@ -1395,7 +1305,6 @@ mod tests {
             frame.tables[TableId::States.index()] = table;
             frame
         };
-        // The hour's input, and whether it ran the projection.
         let capture = |encoder: &FrameEncoder, branch, hour, witness| {
             let before = projections.get();
             let input = held_input::<tables::States>(
@@ -1416,29 +1325,19 @@ mod tests {
         };
         let quiet = Some(Witness::new([7, 11]));
         let moved = Some(Witness::new([7, 12]));
-        // Branch, hour, the capture's witness, whether its frame commits the
-        // table (None: the frame is dropped; false: the table is refused),
-        // and whether it compares equal unprojected.
         let hours = [
             (1, 0, quiet, Some(true), false),
             (1, 1, quiet, Some(true), true),
             (1, 2, quiet, Some(true), true),
-            // An hour that read an entry has no witness.
             (1, 3, None, Some(true), false),
-            // The previous capture had none.
             (1, 4, quiet, Some(true), false),
-            // A writer moved a token.
             (1, 5, moved, Some(true), false),
             (1, 6, moved, Some(true), true),
-            // A gap: hour 7's capture never converted.
             (1, 8, moved, Some(true), false),
-            // A load starts a branch.
             (2, 9, moved, Some(true), false),
             (2, 10, moved, Some(true), true),
-            // The next frame is dropped: the encoder never commits hour 11.
             (2, 11, moved, None, true),
             (2, 12, moved, Some(true), false),
-            // A refusal commits no baseline at hour 13.
             (2, 13, moved, Some(false), true),
             (2, 14, moved, Some(true), false),
             (2, 15, moved, Some(true), true),
@@ -1474,7 +1373,6 @@ mod tests {
             assert_eq!(actual, ordinary_decoder.apply(&expected).unwrap());
         }
         assert_eq!(scratch.republish_counts(TableId::States), [7, 8]);
-        // A refused or forgotten table converts again.
         scratch.forget(TableId::States);
         let (current, projected) = capture(&held_encoder, 2, 16, moved);
         assert!(projected && matches!(current, TableInput::ComparedEqual(_)));

@@ -1,4 +1,3 @@
-//! Native power balance readers and their operands, layouts and synthetic tests.
 
 use engine_executable::modifier_keys;
 use engine_native::{

@@ -1,7 +1,3 @@
-//! Who received a day's fuel: the recipients of a read's applied updates (`CountryFuel.award_day`),
-//! and one recipient's receipts at each read of a window. A recipient is named by every operand
-//! the read gives it (kind, native reference, owner, host, stored name and its refusal), never by
-//! a hash or a later name.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{Content, DAY_HOURS, reason};
@@ -14,8 +10,6 @@ use std::{io, sync::atomic::AtomicBool};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The applied day a read at `hour` holds, or why it is refused: recorded, complete, of this
-/// read, and observed since before its first update.
 pub(crate) fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, String> {
     let Recorded::Value(day) = &row.award_day else {
         return Err("The applied fuel sources and recipients were not recorded".into());
@@ -32,14 +26,11 @@ pub(crate) fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay
     Ok(day)
 }
 
-/// A recipient's key: every operand of it, so a changed name or owner is another recipient.
 pub(crate) fn recipient_key(part: &FuelAwardDayRecipient) -> String {
     serde_json::to_string(&(part.kind, part.reference, part.owner, part.host, part.name.as_deref(), part.name_reason.as_slice()))
         .unwrap_or_default()
 }
 
-/// The holder's raw id of `tag` at `hour`, and the run and read of CountryFuel there: its row and
-/// the hour that row was read.
 pub(crate) fn read_at(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result<(u32, Option<i32>, CountryFuelRow)> {
     use crate::products::at_hour::{Keys, Read};
     let id = super::demand::holder_id(query, tag, hour)?;
@@ -62,7 +53,7 @@ pub(crate) fn read_at(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result
 pub struct FuelAwardsParams {
     pub branch_id: String,
     pub country: Country,
-    /// Any hour the read holds: the reply names the read.
+    #[doc = " Any hour the read holds: the reply names the read."]
     pub hour: i32,
 }
 
@@ -75,10 +66,10 @@ pub struct FuelAwardPart {
     pub reference: String,
     pub owner: u32,
     pub host: String,
-    /// The first and last update hours that paid it.
+    #[doc = " The first and last update hours that paid it."]
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Fixed5 country fuel it received over the day.
+    #[doc = " Fixed5 country fuel it received over the day."]
     pub amount_raw: String,
     pub recorded_name: Option<String>,
     pub name_reason: Option<String>,
@@ -89,11 +80,11 @@ pub struct FuelAwardPart {
 #[serde(rename_all = "camelCase")]
 pub struct FuelAwardsReply {
     pub tag: String,
-    /// The read the day is of.
+    #[doc = " The read the day is of."]
     pub read_hour: i32,
     pub country: u32,
     pub country_instance: u32,
-    /// The consumers' receipts, fixed5: what each consumer's recipients sum to.
+    #[doc = " The consumers' receipts, fixed5: what each consumer's recipients sum to."]
     pub received_raw: [String; 3],
     pub recipients: Vec<FuelAwardPart>,
     pub warnings: Vec<String>,
@@ -134,7 +125,6 @@ fn branch(id: &str) -> io::Result<u64> {
     id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))
 }
 
-/// The recipients of the applied day of the read holding an hour.
 pub struct CountryFuelAwards;
 
 impl Product for CountryFuelAwards {
@@ -183,15 +173,13 @@ impl Product for CountryFuelAwards {
 pub struct FuelAwardHistoryParams {
     pub branch_id: String,
     pub country: Country,
-    /// The hour the recipient was picked at: the country is its holder then.
+    #[doc = " The hour the recipient was picked at: the country is its holder then."]
     pub hour: i32,
-    /// The window: hours `window * detailHours` through the next window's first less one.
+    #[doc = " The window: hours `window * detailHours` through the next window's first less one."]
     pub window: i32,
     pub recipient_key: String,
 }
 
-/// One read's receipt of the recipient over the hours the read holds; none with `reason` where
-/// the read's day is not known, or the read does not name it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -219,8 +207,6 @@ pub struct FuelAwardHistoryReply {
 
 dashboard_base::reply_warnings!(FuelAwardHistoryReply);
 
-/// One recipient's receipt in each read's applied day over the window `first..=last`, the hours no
-/// read holds saying so; a receipt after one not known starts a segment.
 pub fn award_runs(reads: &[super::demand::ReadRow], key: &str, first: i32, last: i32) -> Vec<FuelAwardRun> {
     use super::demand::{Span, spans};
     let mut known = false;
@@ -248,7 +234,6 @@ pub fn award_runs(reads: &[super::demand::ReadRow], key: &str, first: i32, last:
         .collect()
 }
 
-/// One recipient's receipts at each read of a window.
 pub struct CountryFuelAwardHistory;
 
 impl Product for CountryFuelAwardHistory {

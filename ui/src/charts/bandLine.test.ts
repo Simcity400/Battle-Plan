@@ -39,7 +39,6 @@ test('a band line joins precisely the band edge vertices, keeping 50% at hour 11
   assert.equal(line.paths.length, 2);
   segments.forEach((segment, index) => assert.deepEqual(line.paths[index], bands.paths[index].slice(0, segment.hours.length)));
   assert.deepEqual(line.paths[0].slice(0, 2), [['M', frame.toX(100), frame.toY(50)], ['L', frame.toX(123), frame.toY(50)]]);
-  // The entire edge between these vertices, including hour 118, stays at 50%.
   assert.equal(line.paths[0][0][2], line.paths[0][1][2]);
   assert.ok(line.paths[0].at(-1)![1] < frame.toX(200));
 });

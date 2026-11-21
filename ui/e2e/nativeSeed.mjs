@@ -1,9 +1,6 @@
 import { cp, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
-/** Copy explicitly supplied prepared pages into this adapter's private cache.
- * Source stamps describe the copy; the bridge still decides whether the actual
- * recording/content inputs and domain schemas permit reuse. */
 export async function copyPreparedSeed(directory, destination) {
   if (!directory) return null;
   const source = path.resolve(directory), target = path.resolve(destination);

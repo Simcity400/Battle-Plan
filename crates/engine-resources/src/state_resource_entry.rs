@@ -1,26 +1,18 @@
-//! State-template base-resource entry with a full signed i64 amount.
-//! Runtime CState resource effects are separate and are not represented here.
 
 use crate::{Memory, cgame_state, cpdx_array::Array, cstate, cstate_template, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// Resource-entry stride.
 pub const STRIDE: usize = 0x10;
-/// Signed i64 fixed5 amount, scaled from a signed source integer and stored first.
 pub const AMOUNT: usize = 0x00;
-/// Empty-key sentinel.
 #[cfg(test)]
 pub const NO_RESOURCE_ID: u32 = u32::MAX;
-/// Amount scale for signed source integers.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Entry constructor storing the full qword amount and definition u32 ID.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c2_0880);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub state: u32,
     pub resource: u32,
-    /// Position in the native vector, including any empty-key entries.
     pub ordinal: u32,
     pub amount: i64,
 }
@@ -29,9 +21,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads the live template-resource count, retaining signed fixed5 amounts.
-/// Empty-key entries are native state and are retained rather than invented as
-/// absence. Duplicate resource ids are rejected instead of silently aggregated.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -105,7 +94,6 @@ pub fn walk_buffer(
                 .checked_add(cstate_template::RESOURCES)
                 .and_then(|p| Array::read(memory, p, STRIDE))
                 .ok_or("state resource vector unreadable or invalid")?;
-            // Retain the complete template vector.
             output.ensure(
                 len.checked_add(resources.count as usize)
                     .ok_or("state resource row count overflow")?,
@@ -121,8 +109,6 @@ pub fn walk_buffer(
                 let entry = resources
                     .element(ordinal, STRIDE)
                     .ok_or("state resource address overflow")?;
-                // The amount and lexer id occupy exactly twelve bytes; no
-                // uninitialized trailing padding or spare capacity is read.
                 let bytes =
                     read::<[u8; 12]>(memory, entry).ok_or("state resource entry unreadable")?;
                 let amount = i64::from_le_bytes(bytes[..8].try_into().unwrap());
@@ -206,7 +192,6 @@ mod tests {
         put(&mut bytes, 0xa08, 55_u32.to_le_bytes());
         put(&mut bytes, 0xa10, (-5_000_000_001_i64).to_le_bytes());
         put(&mut bytes, 0xa18, NO_RESOURCE_ID.to_le_bytes());
-        // Spare capacity intentionally contains a duplicate key.
         put(&mut bytes, 0xa28, 55_u32.to_le_bytes());
         bytes
     }

@@ -129,7 +129,6 @@ impl Writer {
             &block_memory,
         )?;
         let codec_held = memory.owner(crate::Owner::Codec).reserve(
-            // An upper bound, not a measurement: LZ4 allocates an 8 KiB or 16 KiB hash table per compression call.
             if config.compression == Compression::Lz4 {
                 16384
             } else {
@@ -425,7 +424,6 @@ impl Writer {
         Ok(())
     }
 }
-// lz4_flex::block::compress_into refuses output smaller than its get_maximum_output_size, 20 + 110% of the input.
 pub(crate) fn compressed_bound(bytes: usize) -> io::Result<usize> {
     bytes
         .checked_mul(110)

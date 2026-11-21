@@ -1,15 +1,8 @@
-//! Fixed-index contract for one attachment. Built-in modifier registrations
-//! and static tokens are process-static. Dynamic definitions append beyond the
-//! gap. A consistent check is final for the attachment; an interrupted check
-//! is repeated on a later hour. Checking runs hourly because an attachment
-//! made during startup can precede completed registration.
 
 use crate::{
     Memory, cbuilding_database, cpdx_lexer, modifier_definition as definition, msvc_string, read,
 };
 
-/// Default row between built-ins and dynamic definitions; a layout sentinel
-/// rather than a content count.
 pub use crate::build::FIXED_MODIFIER_GAP as GAP;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,8 +11,6 @@ pub struct Token {
     pub name: &'static str,
 }
 
-/// Narrow static lexer-token identities compared by fixed-index readers.
-/// Dynamic IDs follow load order, so these dependencies must remain static.
 pub const TOKEN_IDS: &[u32] = &[
     cbuilding_database::INFRASTRUCTURE_TOKEN,
     crate::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
@@ -29,7 +20,6 @@ pub const TOKEN_IDS: &[u32] = &[
     cpdx_lexer::MAXIMUM_SPEED_TOKEN,
 ];
 
-/// The static tokens, when the keyword table matches the ids named above.
 pub fn tokens() -> std::io::Result<impl Iterator<Item = Token> + Clone> {
     let keywords = crate::executable_tables::keywords()?;
     for &id in TOKEN_IDS {
@@ -41,7 +31,6 @@ pub fn tokens() -> std::io::Result<impl Iterator<Item = Token> + Clone> {
     }))
 }
 
-/// Built-in modifier names, when their indices match the ones named in code.
 fn modifier_names() -> std::io::Result<&'static [&'static str]> {
     crate::executable_tables::keywords()?.fixed_modifiers()
 }
@@ -61,8 +50,6 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// Final, allocation-free result of a consistent check. The game thread
-/// publishes it; named failures are formatted during conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Report {
     pub static_token_maximum: u32,
@@ -76,7 +63,6 @@ impl Report {
         self.gap.is_ok() && self.modifiers.iter().chain(&self.tokens).all(Result::is_ok)
     }
 
-    /// Every mismatch: the gap and each built-in row, then the static tokens.
     pub fn failures(&self) -> impl Iterator<Item = Failure> + Clone + '_ {
         self.layout_failures().chain(self.token_failures())
     }
@@ -113,10 +99,6 @@ impl Report {
         })
     }
 
-    /// The failure that refuses a consumer of modifier `keys` and static
-    /// `tokens`. The built-in layout is one contract: a changed gap or any
-    /// mismatched built-in row, used or not, means the executable's index
-    /// assignment moved, so it fails every modifier key. Tokens fail alone.
     pub fn failure(&self, keys: &[u32], tokens: &[u32]) -> Option<Failure> {
         (!keys.is_empty())
             .then(|| self.layout_failures().next())
@@ -130,9 +112,6 @@ impl Report {
 
 const _: () = assert!(definition::TOKEN == definition::INDEX + 4);
 
-/// `Err` means the check could not complete consistently: the table or
-/// dictionary was unreadable, or a writer changed either meanwhile. All reads
-/// are guarded.
 pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Report, &'static str> {
     let (Ok(names), Ok(fixed_tokens)) = (modifier_names(), tokens()) else {
         return Err(NAMES_WITHHELD);
@@ -197,9 +176,6 @@ pub fn check(memory: &impl Memory, base: usize, buffer: &mut [u8]) -> Result<Rep
     })
 }
 
-/// Text storage required for a complete fixed-layout check. Prepare it before
-/// publishing capture hooks; the check never grows its caller-owned buffer.
-/// Zero when the names are withheld, since the check then refuses before reading.
 pub fn longest_name() -> usize {
     let (Ok(names), Ok(tokens)) = (modifier_names(), tokens()) else {
         return 0;
@@ -247,7 +223,6 @@ mod tests {
     const TABLE: usize = 0x10000;
     const NAMES: usize = 0x400000;
     const TEXT: usize = 0x600000;
-    /// Fixture modifier tokens sit between the two fixed token ids.
     const KEY_TOKENS: u32 = 0x1000;
 
     struct Fixture(BTreeMap<usize, u8>);
@@ -319,8 +294,6 @@ mod tests {
         }
     }
 
-    /// Any built-in row, including one no reader uses, fails every fixed key
-    /// by its own name, and only the static tokens' consumers survive it.
     #[test]
     fn every_builtin_is_verified_and_a_mismatch_fails_every_fixed_key_by_name() {
         let mut fixture = Fixture::new();
@@ -328,7 +301,6 @@ mod tests {
         assert!(valid.is_verified());
         assert_eq!(valid.static_token_maximum, 0x5000);
         let names = modifier_keys::names().unwrap();
-        // The first, a middle and the last built-in row stand for all of them.
         for index in [0, names.len() / 2, names.len() - 1] {
             let name = names[index];
             let index = index as u32;
@@ -417,8 +389,6 @@ mod tests {
         initialize_tables();
         for (position, token) in tokens().unwrap().enumerate() {
             let mut fixture = Fixture::new();
-            // A token exactly at the inclusive static maximum is accepted,
-            // even with later dynamic tokens in the reverse dictionary.
             fixture.put(cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA.0, &token.id.to_le_bytes());
             fixture.put(cpdx_lexer::MAX_TOKEN_ID_RVA.0, &0x5000_u32.to_le_bytes());
             fixture.put(
@@ -510,7 +480,6 @@ mod tests {
         let mut fixture = Fixture::new();
         fixture.put(definition::TABLE_RVA.0 + 8, &(GAP + 2).to_le_bytes());
         fixture.put(definition::TABLE_RVA.0 + 12, &(GAP + 2).to_le_bytes());
-        // An unreadable dynamic row is intentionally outside this check.
         assert!(check(&fixture, 0).unwrap().is_verified());
     }
 }

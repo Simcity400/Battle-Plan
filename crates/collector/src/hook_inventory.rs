@@ -1,4 +1,3 @@
-//! Complete runtime patch names and test verification inventory.
 use engine_air_history::{air_history_mutations, air_loss_sites, air_record_mutations};
 use engine_characters::ccharacter_portraits;
 use engine_events::{
@@ -25,20 +24,16 @@ use engine_peace::peace_finalizer_site;
 use engine_production::{construction_ic_sites, line_output_sites, market_mutations};
 use engine_sites::Rva;
 
-/// One patch: its family, site name, key and the bytes it writes.
 #[derive(Clone, Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Patch {
     pub(crate) family: &'static str,
     pub(crate) name: String,
     pub(crate) rva: Rva,
-    /// `None` for a tap: its span decodes from the located bytes, at least [`PATCH`].
     pub(crate) len: Option<usize>,
 }
 
-/// A detour or replaced CALL patches five bytes.
 pub(crate) const PATCH: usize = 5;
-/// A replaced `CALL [RAX+disp32]` patches six.
 const INDIRECT: usize = 6;
 const FIVE: Option<usize> = Some(PATCH);
 const TAP: Option<usize> = None;
@@ -192,8 +187,6 @@ pub(crate) fn patches() -> Vec<Patch> {
             TAP,
         );
     }
-    // The advisor pool family's last site, the unappointment helper, is
-    // country_input_changes' patch, which forwards it.
     let (unappoint, pool_sites) = advisor_pool_mutations::MUTATIONS.split_last().unwrap();
     assert_eq!(
         unappoint.0.rva,
@@ -215,14 +208,11 @@ pub(crate) fn patches() -> Vec<Patch> {
         add("wing_changes", site.name, site.rva, FIVE);
     }
     for site in air_wing_equipment_mutations::MAP_MUTATIONS {
-        // Includes direct incoming-wing append/erase. Their disjoint base
-        // receiver certifies transfer order without changing wing equipment.
         add("wing_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in character_roster_mutations::MUTATIONS {
         add("roster_changes", site.name, site.rva, FIVE);
     }
-    // Entry detours and replaced five-byte CALLs alike patch five bytes.
     for (site, _, _) in political_status_mutations::MUTATIONS {
         add("political_status_changes", site.name, site.rva, FIVE);
     }
@@ -273,10 +263,6 @@ pub(crate) fn patches() -> Vec<Patch> {
     for site in ship_model_mutations::MUTATIONS {
         add("ship_model_changes", site.name, site.rva, FIVE);
     }
-    // The whole descriptor list includes recruitment, exile resources, crew
-    // writers and sent-expeditionary references. Other families observe these
-    // sites through the country-input forwarder, without a second patch.
-    // Taps and five-byte method detours share the list: no static span.
     for (name, rva) in collector_naval_management::changes::patch_sites() {
         add("naval_management_changes", name, rva, TAP);
     }
@@ -288,8 +274,6 @@ pub(crate) fn patches() -> Vec<Patch> {
     }
     let daily = raid_mutations::DAILY_CAPACITIES;
     add("raid_changes", daily.name, daily.rva, FIVE);
-    // The naval tree family patches only its commander sites; its country
-    // sites are the patches of the families that forward them.
     let country = naval_tree_mutations::COUNTRY_SITES;
     assert_eq!(
         naval_tree_mutations::MUTATIONS[0].rva,
@@ -305,14 +289,10 @@ pub(crate) fn patches() -> Vec<Patch> {
     for site in engine_native::cwar_goal::mutations::SITES {
         add("wargoal_changes", site.name, site.rva, FIVE);
     }
-    // Daily diplomacy also expires goals; occupation owns that one patch and
-    // forwards a notification spanning the native call to wargoal_changes.
     for site in engine_occupation::cresistance::changes::SITES {
         add("occupation_changes", site.name, site.rva, FIVE);
     }
     for (site, _) in world_input_mutations::MUTATIONS {
-        // World inputs also owns every MIO roster/policy/design entry below;
-        // dependent design observers receive the shared entries by forwarding.
         add("world_input_changes", site.name, site.rva, FIVE);
     }
     for site in air_record_mutations::MUTATIONS {
@@ -321,8 +301,6 @@ pub(crate) fn patches() -> Vec<Patch> {
     for (site, _) in local_subunit_mutations::MUTATIONS {
         add("local_subunit_changes", site.name, site.rva, FIVE);
     }
-    // The complete manifest includes template data, country configuration,
-    // occupation lifecycle and HQ deployment detours; none are taps.
     for (site, _) in template_mutations::MUTATIONS {
         add("template_changes", site.name, site.rva, FIVE);
     }
@@ -523,8 +501,6 @@ pub(crate) fn patches() -> Vec<Patch> {
     for (name, rva) in engine_decisions::cdecision::EVENT_FEED_ENTRIES {
         add("event_feed_observer", name, rva, FIVE);
     }
-    // The duration taps and the candidate clear tap are descriptors only:
-    // their enclosing CALL and entry detours replace them.
     for site in script::LIFECYCLE_TAPS
         .into_iter()
         .chain(script::decisions::TAPS)

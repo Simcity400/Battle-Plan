@@ -85,7 +85,6 @@ fn format101_air_scenario_operands_keep_format99_absence_distinct_from_zero() {
                 ..Default::default()
             },
         );
-        // Patrol histories of these formats are refused by name, framed by their earlier layout.
         let table = TableId::AirNavalPatrolHistories;
         let history = table.last_change();
         assert!(
@@ -355,7 +354,6 @@ fn format99_new_tables_have_independent_lifetimes_and_native_cadences() {
     ] {
         assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
     }
-    // The breakdown table retired with the attrition operands.
     assert!(
         FormatVersion::CURRENT
             .table_refusal(TableId::AttritionModifierBreakdowns)

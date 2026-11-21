@@ -1,15 +1,3 @@
-//! Target-intel operands. The game computes national counterintelligence on
-//! demand, using the country modifier and its strategic-operative mission
-//! roster. The collector copies those stored operands, not the rating or the
-//! agency's differently transformed cache. Mission changes and modifier
-//! recalculation can occur between daily ticks. Each country's modifier
-//! accumulator is copied once, when its first key is needed, and both keys are
-//! searched in the copy ([`Accumulator`]). A copy that cannot be taken or
-//! validated refuses nothing: each key is then read as the game's getter reads
-//! it. A caller may carry both keys' raw answers between hours in place of that
-//! copy while it certifies the country's accumulator unchanged ([`Carry`]); the
-//! header read before it and the effective values (from the current modifier
-//! definitions) are read as without a carry.
 
 use crate::{
     Memory, ccountry, ccryptology, cgame_state, cintelligence_agency as agency,
@@ -19,14 +7,10 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Counterintelligence reference roster, distinct from the agency active roster.
 const MISSIONS: usize = 0x28;
-/// Counterintelligence modifier object, with its embedded accumulator.
 const OPERATIVE_MODIFIER: usize = 0x408;
-/// Bound static modifier selected when the subject occurs in sorted operative nationalities.
 const STATIC_DATABASE_RVA: Rva = Rva(0x033d_e590);
 const NATIONALITY_MODIFIER: usize = 0x130;
-/// Counterintelligence mission country-tag virtual dispatch.
 const MISSION_VTABLE_RVA: Rva = Rva(0x02a9_8f90);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,7 +73,6 @@ fn authenticate(
     }
     Ok(())
 }
-/// The getter's own reads: reached search keys, then eligibility before the selected value.
 fn modifier(
     memory: &impl Memory,
     base: usize,
@@ -99,7 +82,6 @@ fn modifier(
     modifier_accumulator::requested_effective_at(memory, base, accumulator, key)
 }
 
-/// The country keys a walk looks up, by [`Carry`] answer index.
 pub const CRYPTO: usize = 0;
 pub const DEFENSE: usize = 1;
 pub const KEYS: [u32; 2] = [
@@ -107,25 +89,13 @@ pub const KEYS: [u32; 2] = [
     modifier_keys::INTELLIGENCE_AGENCY_DEFENSE,
 ];
 
-/// A key's raw answer in a country's accumulator: `None` when the key is
-/// absent (effective zero), else its stored operand.
 pub type RawAnswer = Option<i64>;
 
-/// Raw accumulator answers a caller carries between walks, per country.
-/// Asked once per country, at its first key lookup, right after the
-/// accumulator header read the lookup begins with and in place of the
-/// entries copy that follows it: `held` returns both keys' answers when the
-/// caller certifies the country's accumulator unchanged since it saw this
-/// header. Otherwise the entries are copied and searched as without a carry,
-/// and `read` receives both keys' answers in that copy (when both searches
-/// succeed). Every effective value is derived from the current modifier
-/// definition either way.
 pub trait Carry {
     fn held(&mut self, country: &ccountry::Country, header: &[u8; 16]) -> Option<[RawAnswer; 2]>;
     fn read(&mut self, country: &ccountry::Country, header: &[u8; 16], answers: [RawAnswer; 2]);
 }
 
-/// Carries nothing: every accumulator is copied.
 pub struct NoCarry;
 impl Carry for NoCarry {
     fn held(&mut self, _: &ccountry::Country, _: &[u8; 16]) -> Option<[RawAnswer; 2]> {
@@ -134,27 +104,16 @@ impl Carry for NoCarry {
     fn read(&mut self, _: &ccountry::Country, _: &[u8; 16], _: [RawAnswer; 2]) {}
 }
 
-/// Country accumulator entries one guarded copy takes; a longer accumulator
-/// is searched by [`modifier`].
 const ACCUMULATOR_ENTRIES: usize = 1024;
 const STRIDE: usize = crate::modifier_entry::STRIDE;
 
-/// What a country's first lookup found; every later lookup reuses it.
 #[derive(Clone, Copy)]
 enum Loaded {
-    /// Longer than the buffer, or the copy refused: [`modifier`] searches each key in place.
     InPlace,
-    /// The [`Carry`] answers.
     Held([RawAnswer; 2]),
-    /// The entries' byte length, copied into the buffer, and both keys'
-    /// answers in them (`None` when a search refused; each lookup then
-    /// searches again and returns its refusal).
     Copied(usize, Option<[RawAnswer; 2]>),
 }
 
-/// One country's modifier accumulator (`CCountry+MODIFIER_ACCUMULATOR`), copied
-/// whole on its first lookup and searched locally after, with the getter's
-/// values; failures come only from the getter's own reads.
 struct Accumulator<'b> {
     country: ccountry::Country,
     entries: &'b mut [u8; ACCUMULATOR_ENTRIES * STRIDE],
@@ -177,13 +136,11 @@ impl<'b> Accumulator<'b> {
         at(self.country.pointer, ccountry::MODIFIER_ACCUMULATOR)
     }
 
-    /// The header read, then the carry's answers or the entries copy.
     fn load(
         &mut self,
         memory: &impl Memory,
         carry: &mut impl Carry,
     ) -> Result<Loaded, &'static str> {
-        // One refusal for an unreadable or invalid header, as `copy` had.
         const HEADER: &str = "modifier accumulator header unreadable or invalid";
         let header = read::<[u8; 16]>(memory, self.address()?).ok_or(HEADER)?;
         let array = Array::from_header(header, STRIDE).ok_or(HEADER)?;
@@ -214,7 +171,6 @@ impl<'b> Accumulator<'b> {
         Ok(Loaded::Copied(len, answers))
     }
 
-    /// The effective value of `KEYS[key]`.
     fn effective(
         &mut self,
         memory: &impl Memory,
@@ -245,8 +201,6 @@ impl<'b> Accumulator<'b> {
     }
 }
 
-/// Exact operative-roster lower-bound, including aliases and the native zero
-/// tag.
 fn has_nationality(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -355,8 +309,6 @@ fn contribution(
     }))
 }
 
-/// Off-thread sizing hint: all mission-roster occurrences, before the native
-/// counterintelligence filter. A later growth is reported by `walk`.
 pub fn required_operatives(
     memory: &impl Memory,
     base: usize,
@@ -629,7 +581,6 @@ mod tests {
                 f.u32(strategic + strategic::OWNER, slot as u32);
                 f.array(strategic + MISSIONS, 0, 0);
             }
-            // Raw alias for country 1; native nationalities and mission target may use it.
             f.u32(links + slots * 4, 1);
             let agency = f.country + 0x1100;
             let crypto = f.country + 0x1280;
@@ -646,7 +597,6 @@ mod tests {
             f.block(definition::TABLE_RVA.0, 8);
             f.u64(definition::TABLE_RVA.0, 0x0800_0000);
             f.block(0x0800_0000, (CRYPTO as usize + 1) * definition::STRIDE);
-            // Unclamped, ungated synthetic modifier definitions.
             f.block(registry::LOW_ROOTS_RVA.0 + 7 * 8, 8);
             f.u64(registry::LOW_ROOTS_RVA.0 + 7 * 8, (end + 0x100) as u64);
             f.u64(end + 0x100 + registry::ENTRIES, (end + 0x200) as u64);
@@ -734,9 +684,6 @@ mod tests {
         assert_eq!(rows[2].country, 3);
     }
 
-    /// Both country keys come from one copy of the country's accumulator,
-    /// with the getter's values; entries out of key order get the getter's
-    /// own lower-bound answer, where both probes miss.
     #[test]
     fn both_country_keys_share_one_accumulator_copy() {
         struct Counted<'a>(&'a Fixture, std::cell::Cell<usize>, usize);
@@ -773,7 +720,6 @@ mod tests {
         );
     }
 
-    /// Reads only the copy makes (capacity, an unprobed entry, an ineligible value) refuse nothing.
     #[test]
     fn country_keys_need_only_the_getters_own_reads() {
         struct Holes<'a>(&'a Fixture, Vec<std::ops::Range<usize>>);
@@ -799,14 +745,12 @@ mod tests {
         let rows = (Outcome::Rows { len: 1 }, -125000, Some(249999));
         assert_eq!(run(&f, vec![header + 8..header + 12]), rows);
         assert_eq!(run(&f, vec![data + 2 * 16..data + 3 * 16]), rows);
-        // The getter's selected value is still required.
         assert_eq!(
             run(&f, vec![data + 8..data + 16]).0,
             Outcome::Unavailable {
                 reason: "strategic action modifier value unreadable"
             }
         );
-        // An ineligible key is zero without its value being read.
         f.u32(
             0x0800_0000 + DEFENSE as usize * definition::STRIDE + definition::FEATURE_SELECTOR,
             1,
@@ -818,11 +762,6 @@ mod tests {
         );
     }
 
-    /// A carry holding a country's answers replaces only its entries copy:
-    /// the header is still read first, and the effective values still come
-    /// from the modifier definitions. A copy hands the carry both keys'
-    /// answers with the header it read; a header the carry does not hold is
-    /// copied again.
     #[test]
     fn a_held_country_skips_only_its_entries_copy() {
         struct Counted<'a> {
@@ -887,11 +826,9 @@ mod tests {
         assert_eq!(carry.read.len(), 1);
         let (seen, answers) = carry.read[0];
         assert_eq!(answers, [Some(249999), Some(-125000)]);
-        // Held answers stand in for the copy, through the definitions.
         carry.held = Some((seen, [Some(7), None]));
         assert_eq!(hour(&mut carry), (Some(7), 0, vec![header]));
         assert_eq!(carry.read.len(), 1, "nothing read, nothing handed back");
-        // A header it does not hold: copied and handed back again.
         carry.held = Some(([0; 16], [Some(7), None]));
         assert_eq!(
             hour(&mut carry),

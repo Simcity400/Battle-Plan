@@ -1,36 +1,23 @@
-//! Anonymous robin-hood bucket keyed by (province id, node type).
-//!
-//! Values retain full signed i64 fixed5 precision without a narrower wire range.
-//! This key-pair instantiation differs from the companion's single-key map.
 
 use crate::{
     Memory, ccountry_supply_system as country_supply, csupply_system, read, walk::Outcome,
 };
 
-/// Disrupted-supply bucket stride.
 pub const STRIDE: usize = 0x18;
-/// Disrupted-supply u8 DistancePlus1 marker.
 pub const DISTANCE_PLUS_ONE: usize = 0x04;
-/// Disrupted-supply empty bucket marker.
 pub const EMPTY: u8 = 0;
-/// Disrupted-supply end sentinel, never a live row.
 pub const END: u8 = 0xff;
-/// Disrupted-supply key u32 province id.
 pub const PROVINCE: usize = 0x08;
-/// Disrupted-supply key u32 node type.
 #[cfg(test)]
 pub const NODE_TYPE: usize = 0x0c;
-/// Disrupted-supply signed i64 fixed5 value.
 pub const VALUE: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Native bucket position, which can change when the table rehashes.
     pub bucket_index: u32,
     pub province: u32,
     pub node_type: u32,
-    /// Signed fixed5 value, preserving all i64 bits.
     pub value: i64,
 }
 
@@ -90,10 +77,6 @@ pub fn walk_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The caller authenticates the CCountrySupplySystem and its country backlink.
-/// Empty tables have no semantic buckets, even when their allocation is retained.
-/// Capacity limits storage; all live markers and keys remain validated so the
-/// omitted count is exact and a broken tail cannot masquerade as truncation.
 #[cfg(test)]
 pub(crate) fn read_country(
     memory: &impl Memory,
@@ -168,9 +151,6 @@ pub(crate) fn read_country_buffer(
             if province == 0 {
                 return Err("disrupted supply province is zero");
             }
-            // Use this stored hash geometry and a forward-only lookup.
-            // Reaching this bucket first proves that its key is not duplicated,
-            // including when the output buffer could not fit the preceding row.
             let home = province.wrapping_mul(13).wrapping_add(node_type) & mask;
             if bucket_index
                 .checked_sub(home)

@@ -22,93 +22,60 @@ import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
 import type { PlaybackController } from '../../dashboard/playback';
 import '../charts.css';
 
-/** A real loaded slice of one global ranking; missing rows stay pending. */
 export interface RemoteRaceRows {
   total: number; offset: number; min: number; max: number;
   onRange: (first: number, count: number) => void;
-  /** Source, selection and numeric snapshot; stable across page and label reads. */
   owner: unknown;
 }
 
-/** Entries read ahead of the playhead and asked for every frame: the chart follows playback
- * without rendering. Cheap to call, and the same array while the moment is unchanged. */
 export interface LiveRace {
   items: () => readonly RaceItem[];
-  /** The chart's accessible name and the corner date for the moment shown. */
   label: () => string;
   overlay: () => string | null;
-  /** Lets the source wake the chart when entries or labels land; returns how to stop. */
   bind: (wake: () => void) => () => void;
   clock: PlaybackController;
 }
 
-/** How often a live chart's accessible ranking follows playback. */
 const SPOKEN_MS = 1000;
 
 export interface RaceChartProps {
   present?: () => void;
-  /** Names the chart for screen readers. */
   label: string;
-  /** The entries at the moment shown, ranked highest first (`rankItems`). Pass the
-   * same array while the moment is unchanged: a new array is a new moment. */
   items: readonly RaceItem[];
-  /** Replaces `items` (and the label and date) with entries asked for every frame. */
   live?: LiveRace;
   remoteRows?: RemoteRaceRows;
-  /** How many rows to make room for (the top N), so rows keep their height as
-   * entries come and go. Rows that need more room than the chart has scroll. */
   slots: number;
   name: (key: string, item?: RaceItem) => string;
-  /** Names that must fit even when asynchronous labels are already available. */
   nameSamples?: readonly string[];
-  /** An entry's flag as an image URL; nothing is drawn without one. */
   flag?: (key: string, item?: RaceItem) => string | undefined;
-  /** Present only for genuine countries, even when their flag is unavailable. */
   countryFlag?: (key: string, item?: RaceItem) => CountryFlagLook | undefined;
-  /** A value-axis label; `ticks` is every tick drawn. */
   formatTick?: (value: number, ticks: readonly number[]) => string;
-  /** Tooltip content for an entry, hovered or reached with the keys. */
   tooltip?: (key: string, item?: RaceItem) => TooltipContent | null;
-  /** Click or Enter opens the widget's breakdown for this row. */
   onPick?: (key: string, item?: RaceItem) => void;
   pickOwner?: unknown;
-  /** Right-click on a row, or the context-menu key on the row the keys reached. */
   onContextMenu?: (key: string, clientX: number, clientY: number, item?: RaceItem) => void;
-  /** The moment shown as a large corner date; none when null. */
   dateOverlay?: string | null;
-  /** Said in the plot when there are no entries. */
   empty?: string | null;
   hoursPerSecond?: number;
-  /** Off-screen charts stop drawing. */
   active: boolean;
-  /** The columns only grow during playback; another context resets motion and measurements. */
   resetKey?: string;
 }
 
 
-/** The name column's largest share of the chart. */
 const MAX_LABEL_SHARE = 0.4;
 
 type Pointer = { x: number; y: number; clientX: number; clientY: number };
 
-/** A ranked bar race (style A · Clean): flag and name left of each bar, the exact
- * value at its tip, hairline gridlines. Rows re-rank at each new moment and glide to
- * their place; a bar glides only within one unbroken stretch of its values. Rows that
- * do not fit scroll under the fixed axis, and only those in view are drawn. Hover,
- * the arrow keys and right-click reach every row; the tooltip is read out. */
 export default function RaceChart(props: RaceChartProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  // Kept from scroll events, so a frame never reads the layout to find it.
   const scrollTop = useRef(0);
   const latest = useRef(props);
   latest.current = props;
   const motionNow = useMotionNow();
   const task = useRef<FrameTask | null>(null);
-  // Whether the next frame draws whatever it shows: anything but the live entries woke it.
   const forced = useRef(true);
-  // Who drives the hover: the pointer, or the keyboard's entry (read out).
   const hover = useRef<{ pointer: Pointer | null; keyed: string | null; menuKey: boolean }>({ pointer: null, keyed: null, menuKey: false });
   const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; height: number;
     owner: unknown; resetKey?: string } | null>(null);
@@ -134,22 +101,14 @@ export default function RaceChart(props: RaceChartProps) {
     let stateKey = props.resetKey;
     let remoteOffset = props.remoteRows?.offset, remoteOwner = props.remoteRows?.owner;
     const surface = watchCanvasSize(element, () => wake());
-    // The widest name and value seen, so the columns only grow.
     let columns = { key: '', label: MIN_LABEL, value: 0 };
-    // The moment the columns were measured at, and each name's width in the current
-    // font: a long list is measured once per moment, not in every frame.
     let measured: { items: readonly RaceItem[]; name: RaceChartProps['name']; nameSamples: RaceChartProps['nameSamples']; tokens: ChartTokens } | null = null;
     const nameWidths = new Map<string, number>();
-    // The rows of a live race whose names are measured, while its names and theme stay the same.
     const namedKeys = new Set<string>();
-    // Each value label's width in the value font, while the theme holds.
     const labelWidths = new Map<string, number>();
     let labelTokens: ChartTokens | null = null;
-    // Digits of one width make a label's width its shape's, each digit read as 0.
     let tabular: boolean | null = null;
-    // What the last frame drew: a live frame with the same picture draws nothing.
     let painted: unknown[] | null = null;
-    // Each name as it fits the name column, made once per name and column width.
     const fitted: { width: number; tokens: ChartTokens | null; names: Map<string, string> } = { width: -1, tokens: null, names: new Map() };
     let spokenItems: readonly RaceItem[] | null = null, spokenAt = -Infinity, extentRows = -1;
     let tooltipFor: { key: string; item: RaceItem; props: RaceChartProps; content: TooltipContent | null } | null = null;
@@ -169,14 +128,12 @@ export default function RaceChart(props: RaceChartProps) {
 
       const tau = easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
       const items = p.live ? p.live.items() : p.items;
-      // The scroll reaches only the entries there are.
       if (p.live && items.length !== extentRows && extent.current) { extentRows = items.length; extent.current.style.height = `calc(${raceHeight(items.length)}px - 100%)`; }
       if (p.live && items !== spokenItems && (info.now - spokenAt >= SPOKEN_MS || !p.live.clock.getSnapshot().playing)) {
         spokenItems = items; spokenAt = info.now;
         element.setAttribute('aria-label', p.live.label());
         if (ranked.current) ranked.current.textContent = raceText(items, p.name) || p.empty || '';
       }
-      // Columns fitted to the widest name and value seen.
       if (columns.key !== (p.resetKey ?? '')) { columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 }; measured = null; namedKeys.clear(); }
       if (!measured || measured.items !== items || measured.name !== p.name || measured.nameSamples !== p.nameSamples || measured.tokens !== tokens) {
         if (p.remoteRows || measured && measured.tokens !== tokens) { nameWidths.clear(); namedKeys.clear(); }
@@ -189,7 +146,6 @@ export default function RaceChart(props: RaceChartProps) {
           columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
         }
         for (const item of items) {
-          // A live race measures a row's name once: its values move every frame, its rows rarely.
           if (p.live) { if (namedKeys.has(item.key)) continue; namedKeys.add(item.key); }
           if (!fontSet) { context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT); fontSet = true; }
           const name = p.name(item.key, item);
@@ -197,14 +153,12 @@ export default function RaceChart(props: RaceChartProps) {
           if (width === undefined) nameWidths.set(name, width = context.measureText(name).width);
           columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
         }
-        // A live race's values move every frame: their labels are measured as they are drawn, below.
         if (!p.live) context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
         if (!p.live) for (const item of items) columns.value = Math.max(columns.value, context.measureText(item.label).width + VALUE_GAP + VALUE_PAD);
         measured = { items, name: p.name, nameSamples: p.nameSamples, tokens };
       }
       const labelWidth = Math.min(columns.label, Math.max(MIN_LABEL, layoutWidth * MAX_LABEL_SHARE));
       const remote = p.remoteRows;
-      // Rows are sized for the top N, so they keep their height while entries come and go.
       const layout = raceLayout(layoutWidth, layoutHeight, Math.max(1, p.slots, remote?.total ?? items.length), labelWidth, Math.max(columns.value, 24), scrollTop.current, remote?.total ?? items.length);
       state = stepRace(state, items, info.now, info.dt, tau, undefined,
         remote ? undefined : { from: (layout.view.top - layout.top) / layout.slot, to: (layout.view.bottom - layout.top) / layout.slot });
@@ -226,7 +180,6 @@ export default function RaceChart(props: RaceChartProps) {
         owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
 
       const overlay = p.live ? p.live.overlay() : p.dateOverlay;
-      // The live picture is its rows in view, as drawn, with everything around them.
       const inView = rows.filter(row => rowInView(layout, rowCentre(layout, row.y)));
       const pointed = hover.current.pointer ?? hover.current.keyed;
       const picture: unknown[] = [layoutWidth, layoutHeight, size.width, size.height, layout.top, layout.left, layout.right, min, max, tokens, overlay,
@@ -244,9 +197,6 @@ export default function RaceChart(props: RaceChartProps) {
       drawRaceGrid(context, layout, tokens, min, max, p.formatTick ?? formatAxisValue);
       if (!items.length && (!remote || remote.total === 0) && p.empty) drawRaceEmpty(context, layout, tokens, p.empty);
 
-      // The row the hover is about: under the pointer, else the one the keys reached.
-      // The keys let go of a row scrolled out of view, so its tooltip goes and the keys
-      // act only on rows that are seen.
       const reached = hover.current.pointer ? null : rows.find(row => row.key === hover.current.keyed && row.phase !== 'leaving');
       if (reached && !rowSeen(layout, reached)) { hover.current = { ...hover.current, keyed: null }; spokenText.current = ''; setSpoken(''); }
       const { pointer, keyed } = hover.current;
@@ -256,14 +206,8 @@ export default function RaceChart(props: RaceChartProps) {
       context.beginPath();
       context.rect(0, layout.view.top - 4, layoutWidth, layout.view.bottom - layout.view.top + 8);
       context.clip();
-      // Where each bar's value label ends, for the keyboard's tooltip, and the widest label drawn.
       const ends = new Map<string, number>();
       let widest = 0;
-      // Lower rows first, so a row moving up passes over the others; hovering reads
-      // the same order backwards (`rowAt`).
-      // Rows in view, lower rows first, so a row moving up passes over the others' bars; hovering reads the same
-      // order backwards (`rowAt`). Drawn in passes, flags, names, bars, then values, so the font is set twice a frame,
-      // not twice a row: names and bars hold their own columns, and a value is never hidden under a passing bar.
       const drawn = paintOrder(inView);
       const alpha = (row: RaceRow) => Math.max(0, Math.min(1, row.alpha));
       for (const row of drawn) {
@@ -318,7 +262,6 @@ export default function RaceChart(props: RaceChartProps) {
       });
       context.restore();
       context.globalAlpha = 1;
-      // A live label wider than its column widens it, and the frame is drawn again to fit.
       const grew = !!p.live && widest > columns.value;
       if (grew) columns.value = widest;
 
@@ -331,8 +274,6 @@ export default function RaceChart(props: RaceChartProps) {
         const raw = tooltipFor.content && flag ? { ...tooltipFor.content, countryFlag: flag } : tooltipFor.content;
         const decoded = raw ? countryFlagContent(fitTooltip([raw], globalThis.innerHeight), undefined, wake) : null;
         const content = decoded ? fitTooltip([decoded], globalThis.innerHeight) : null;
-        // The keyboard's tooltip sits at the row's tip; layout pixels become screen
-        // pixels through the widget's Size zoom.
         let at: { clientX: number; clientY: number } | null = pointer;
         if (!at) {
           const rect = element.getBoundingClientRect();
@@ -355,7 +296,6 @@ export default function RaceChart(props: RaceChartProps) {
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
     const local = (event: PointerEvent | MouseEvent): Pointer => ({
       ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY });
-    // The pointer takes the hover back from the keyboard.
     const move = (event: PointerEvent) => { pendingKey.current = null; hover.current = { ...hover.current, pointer: local(event), keyed: null }; wake(); };
     const leave = () => { pendingKey.current = null; hover.current = { ...hover.current, pointer: null }; hideTooltip(owner); wake(); };
     const down = () => { pendingKey.current = null; hover.current = { ...hover.current, menuKey: false }; };
@@ -366,8 +306,6 @@ export default function RaceChart(props: RaceChartProps) {
       selectRaceRow(row?.key ?? null, 'click', key => latest.current.onPick?.(key, row?.item));
     };
     const menu = (event: MouseEvent) => {
-      // The menu key already opened a menu for the row the keys reached; the
-      // browser's own event after it must not open a second.
       if (hover.current.menuKey) { hover.current = { ...hover.current, menuKey: false }; event.preventDefault(); return; }
       const handler = latest.current.onContextMenu;
       const at = shown.current;
@@ -395,18 +333,14 @@ export default function RaceChart(props: RaceChartProps) {
 
   useEffect(() => {
     if (task.current) scheduler.setVisible(task.current, props.active);
-    // An inactive chart no longer draws, so it must not leave its tooltip on screen.
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
   useEffect(() => { forced.current = true; if (task.current) scheduler.wake(task.current); });
-  // A live chart wakes when the clock's frame brings other entries, or entries or labels land.
   const live = props.live;
   useEffect(() => {
     if (!live) return;
     let drawn: readonly RaceItem[] | null = null;
     const check = () => { const items = live.items(); if (items !== drawn && task.current) { drawn = items; scheduler.wake(task.current); } };
-    // A source wake asks the store at once, not through drawing: a hidden chart (loading, failed) has no
-    // size to draw, and its store must still plan the retry.
     const stops = [live.clock.subscribeFrame(check), live.clock.subscribe(check), live.bind(() => { drawn = null; check(); })];
     check();
     return () => { for (const stop of stops) stop(); };
@@ -424,7 +358,6 @@ export default function RaceChart(props: RaceChartProps) {
     if (!props.active) return;
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
-      // The keyboard takes the hover from the pointer, stepping on from the row shown.
       const from = hover.current.keyed ?? (hover.current.pointer && shown.current ? rowAt(shown.current.rows, shown.current.layout, hover.current.pointer, shown.current.min, shown.current.max)?.key ?? null : null);
       const remote = props.remoteRows;
       if (remote) {
@@ -448,7 +381,6 @@ export default function RaceChart(props: RaceChartProps) {
       const items = shown.current?.items ?? props.items;
       const keyed = keyedEntry(event.key, from, items);
       hover.current = { ...hover.current, pointer: null, keyed };
-      // Scroll the row reached into view, at its place in the ranking.
       const box = scroller.current, layout = shown.current?.layout;
       const index = items.findIndex(item => item.key === keyed);
       if (box && layout && index >= 0) {
@@ -486,7 +418,7 @@ export default function RaceChart(props: RaceChartProps) {
     }}>
       <canvas ref={canvas} tabIndex={0} role="img" aria-label={live ? undefined : props.label} aria-describedby={`${owner}-ranking`}
         aria-keyshortcuts={`ArrowUp ArrowDown Home End${props.onPick ? ' Enter Space' : ''}`} onKeyDown={keyDown} onBlur={clearKeyed} />
-      {/* The entries' height past the chart's own: the canvas stays in view while this scrolls. */}
+      { }
       <div ref={extent} className="race-extent" style={live ? undefined : { height: `calc(${raceHeight(props.remoteRows?.total ?? props.items.length)}px - 100%)` }} />
     </div>
     <p ref={ranked} id={`${owner}-ranking`} className="sr-only">{live ? null : props.remoteRows ? `${props.remoteRows.total} ranked entries. ${ranking

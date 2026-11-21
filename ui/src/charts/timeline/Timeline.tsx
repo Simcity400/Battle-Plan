@@ -37,61 +37,34 @@ import { textWidth as measuredWidth } from '../textWidth.ts';
 export type { BandStep, LaneGeometry, TimelineLane, TimelineSpan } from './layout';
 
 export interface TimelineProps {
-  /** Names the chart for screen readers. */
   label: string;
-  /** The lost spans of the reply its lanes draw, in hour order: no span or step is drawn
-   * across them. */
   gaps?: readonly LostSpan[];
-  /** Every hour the timeline can show: the branch or the widget's range. */
   extent: readonly [number, number];
-  /** The playback hour: bars stop and the left column shows holders there. */
   playhead: number | null;
-  /** While following, the head now (a track hour) and the clock's frame signal: the playhead, the bars and the
-   * holders at it move with it every frame, between renders. Without it, `playhead` is drawn as given. */
   liveHead?: Live<number>;
   labelHour?: number;
-  /** Stable campaign labels, independent of the lanes now expanded or in view. */
   labelCatalogue?: readonly TimelineLabel[];
   preserveZoomOnExtentChange?: boolean;
   onLaneActivate?: (lane: TimelineLane) => void;
   lanes: readonly TimelineLane[];
-  /** Icons inside bars, and holder names in bars. */
   showIcons: boolean;
   showNames: boolean;
-  /** Text in the left column when a lane has no holder. */
   emptyLabel?: string;
-  /** Hours the data was not recorded: a lane there has an unknown holder, not an empty slot. */
   unobserved?: readonly { firstHour: number; lastHour: number }[];
-  /** Taller lanes for a painted plot; every layout and interaction uses this height. */
   rowHeight?: number;
-  /** Keep the dates in view while lanes scroll; false lets them scroll with the lanes. */
   stickyAxis?: boolean;
-  /** Fade name or picture changes under one holder id; painted lanes default to this. */
   fadePresentation?: boolean;
-  /** End long labels in an ellipsis; false keeps fillText's squeezing. */
   truncateLabels?: boolean;
-  /** Align holder art by its top edge or centre; pills default to top alignment. */
   holderIconAlign?: 'top' | 'center';
   hoursPerSecond?: number;
-  /** The value a band (`TimelineSpan.band`) is drawn full thickness at: the largest
-   * any band reaches, so every lane shares one scale. */
   bandMax?: number;
-  /** Bar thickness in layout pixels; bands retain their shared value scale. */
   barHeight?: number;
-  /** `full` asks for every row, for text read out rather than shown. */
   tooltip?: (lane: TimelineLane, span: TimelineSpan | null, hour: number, full?: boolean) => TooltipContent | null;
-  /** What the timeline shows at the moment shown, as text for keyboard and screen-reader users. */
   description?: string;
-  /** Resolved pointer or keyboard hour, outside the tooltip builder. */
   onHover?: (hour: number | null) => void;
-  /** Opt into dismissing a pointer tooltip with Escape. */
   dismissPointerTooltipOnEscape?: boolean;
   onContextMenu?: (hour: number, clientX: number, clientY: number, lane?: TimelineLane, span?: TimelineSpan | null) => void;
-  /** Opt into context menus in the label column; plot menus are unchanged. */
   labelMenu?: boolean;
-  /** The lanes in view changed (first and last index, inclusive; last below first
-   * when none), so a widget can ask for what only those lanes show, such as names
-   * and flags at the playhead. */
   onLanesInView?: (first: number, last: number) => void;
   onSummaryView?: (view: { from: number; to: number; width: number }, lanes: readonly TimelineLane[]) => void;
   onNavigateHour?: (lane: TimelineLane, from: number, forward: boolean) => Promise<number | null>;
@@ -99,19 +72,14 @@ export interface TimelineProps {
   revision: unknown;
 }
 
-/** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
-/** The least time between summary view reports while the view keeps moving. */
 const SUMMARY_INTERVAL_MS = 150;
 const ICON = 32;
 const BAR_ICON = 20;
 const PAD_RIGHT = 14;
-/** How long the left column cross-fades a new holder. */
 const FADE_MS = 350;
-/** How much the left column may squeeze a text before it ends it in an ellipsis. */
 const SQUEEZE = 1.12;
 
-/** Whether two lane lists give the left column the same texts to fit. */
 const sameLaneLabels = (a: readonly TimelineLane[], b: readonly TimelineLane[]) => a.length === b.length && a.every((lane, index) => {
   const other = b[index];
   return lane.compact === other.compact && lane.depth === other.depth && lane.heading === other.heading && !lane.pill === !other.pill
@@ -121,7 +89,6 @@ const sameLaneLabels = (a: readonly TimelineLane[], b: readonly TimelineLane[]) 
 const sameCatalogue = (a: readonly TimelineLabel[], b: readonly TimelineLabel[]) => a.length === b.length && a.every((label, index) =>
   label.text === b[index].text && label.space === b[index].space && label.weight === b[index].weight && label.size === b[index].size);
 
-/** `props` with the playhead its live head is at now, when it follows one. */
 function withLiveHead(props: TimelineProps): TimelineProps {
   const live = props.liveHead;
   if (!live || props.playhead == null) return props;
@@ -129,24 +96,17 @@ function withLiveHead(props: TimelineProps): TimelineProps {
   return head === props.playhead ? props : { ...props, playhead: head };
 }
 
-/** The nearest ancestor that scrolls vertically, if any. */
 function scrollParent(element: HTMLElement): HTMLElement | null {
   let parent = element.parentElement;
   while (parent && !/auto|scroll/.test(getComputedStyle(parent).overflowY)) parent = parent.parentElement;
   return parent;
 }
 
-/** The height a scrolling view shows inside its padding, in its own pixels. */
 function viewHeight(parent: HTMLElement, rowHeight: number): number {
   const style = getComputedStyle(parent);
   return Math.max(AXIS_HEIGHT + rowHeight, parent.clientHeight - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0));
 }
 
-/** A lane timeline: one lane per slot with bars for who held it and when, and a left
- * column naming each slot's holder at the playhead (the approved style-4 look). Time
- * zooms like the time chart: wheel, Shift/middle-drag pan, drag the dates to stretch,
- * double-click or Escape to reset. A full-height spacer keeps lane positions; the
- * canvas covers only visible lanes and overscan in their original coordinates. */
 export default function Timeline(props: TimelineProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -159,7 +119,6 @@ export default function Timeline(props: TimelineProps) {
   const region = useRef(laneWindow(props.lanes.length, 0, window.innerHeight, props.rowHeight ?? ROW_HEIGHT, rows));
   const latest = useRef(props);
   latest.current = props;
-  /** The props a frame draws: the playhead where the live head is now, while it follows one. */
   const headed = () => withLiveHead(latest.current);
   const motionNow = useMotionNow();
   const hoverHour = useRef<number | null>(null);
@@ -170,7 +129,6 @@ export default function Timeline(props: TimelineProps) {
   };
   const [zoomed, setZoomed] = useState(false);
   const [artFallbacks, setArtFallbacks] = useState<readonly { id: string; left: number; top: number; width: number; height: number; opacity: number; icon: 'flask' | 'sparkle'; clipPath: string }[]>([]);
-  // Set only when they differ: a state set to its own value just after a commit renders once more, an empty commit.
   const fallbacksShown = useRef(artFallbacks);
   const rowHeight = props.rowHeight ?? ROW_HEIGHT;
   const height = timelineHeight(props.lanes.length, rowHeight, rows);
@@ -189,16 +147,12 @@ export default function Timeline(props: TimelineProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    // Its own elements: unmounting detaches the refs before this effect's cleanup stops what it started.
     const spacerElement = spacer.current!;
     const scrolling = viewportElement.current!;
     const paper = drawingSurface(element), context = paper.context!;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
     let eased: [number, number] | null = null;
-    // The summary view last reported, when, and a newer one waiting for the interval.
-    // The lanes in view, by identity: a changed selection of the same size is a new view.
-    // Lanes rebuilt every hour of playback still wait for the interval.
     type SummaryView = { from: number; to: number; width: number; lanes: readonly TimelineLane[] };
     const sameLanes = (a: readonly TimelineLane[], b: readonly TimelineLane[]) => a.length === b.length && a.every((lane, index) => lane === b[index]);
     let summarySent: SummaryView | null = null, summaryLatest: SummaryView | null = null;
@@ -231,13 +185,7 @@ export default function Timeline(props: TimelineProps) {
     let zoomedFor = '';
     const holders = new Map<string, HolderState>();
     const images = new Map<string, HTMLImageElement>();
-    // Each lane's bands as last drawn: hover and Jump to describe what is drawn under the pointer.
-    // Rebuilt from the lanes shown at each draw (a lane gone is dropped), reusing a lane's
-    // layout while its lane and view are unchanged, so pointer movement lays nothing out.
     let layouts = new Map<string, CachedBands>();
-    // The span and hour under a pointer in the plot: a band's drawn column describes the span
-    // and step it draws (`bandHitAt`), even a short band moved off its own hours; elsewhere
-    // the span holding the pointer's hour.
     const pointed = (lane: TimelineLane, index: number, px: number, py: number, hour: number): { span: TimelineSpan | null; hour: number } => {
       const subrow = laneRowAt(py, index, geometry.current);
       if (subrow == null) return { span: null, hour: Math.floor(hour) };
@@ -247,7 +195,6 @@ export default function Timeline(props: TimelineProps) {
       const bands = layouts.get(lane.id)?.bands;
       const hit = bands && bandHitAt(bands, px, hour);
       if (hit && subrow === 0) return { span: lane.spans.find(span => span.id === hit.spanId) ?? null, hour: hit.hour };
-      // A plain bar by the rectangle drawn, which a short bar widens past its hours.
       const rows = geometry.current;
       const centre = laneTop(index, rows) + (rows.offsets[index + 1] - rows.offsets[index]) / 2;
       const offset = py - centre;
@@ -256,8 +203,6 @@ export default function Timeline(props: TimelineProps) {
       return { span: stackedSpanAt(lane.spans, Math.floor(hour), offset) ?? spanAtRow(lane.spans, Math.floor(hour), subrow), hour: Math.floor(hour) };
     };
 
-    // The canvas's layout width as its last frame measured it (only a scroll, a resize or new lanes measure it again):
-    // a frame placing its bars never reads layout back.
     let canvasWidth = 0;
     const plotWidth = () => Math.max(8, (canvasWidth || element.clientWidth) - left - PAD_RIGHT);
     const toX = (hour: number) => left + (hour - x[0]) / Math.max(1e-9, x[1] - x[0]) * plotWidth();
@@ -282,9 +227,6 @@ export default function Timeline(props: TimelineProps) {
       }
       return found.complete && found.naturalWidth ? found : null;
     };
-    // Left-column text that fits `width` in the current font: a little squeezing is left to
-    // fillText's maxWidth, past that the text ends in an ellipsis rather than being crushed.
-    // Remembered per font, width and text, so a frame measures only what changed.
     const fits = new Map<string, string>();
     const fitText = (text: string, width: number): string => {
       const key = `${context.font}|${Math.round(width)}|${text}`;
@@ -305,7 +247,6 @@ export default function Timeline(props: TimelineProps) {
       fits.set(key, result);
       return result;
     };
-    // An icon `size` wide, centred on `cy`, so a flag's shorter image sits level with a square icon's.
     const drawIcon = (source: string | undefined, px: number, cy: number, size: number, alignTop = false, flag?: CountryFlagLook) => {
       if (flag) {
         const decoded = flag.flag ? canvasImageRead(flag.flag, flagLoaded).image : null;
@@ -319,8 +260,6 @@ export default function Timeline(props: TimelineProps) {
       context.drawImage(loaded, px, alignTop ? cy - size / 2 : cy - height / 2, size, height);
     };
 
-    // Where the timeline shows and how big its canvas is change only on a scroll, a resize or new
-    // lanes: measured then, never in a frame, since each measure lays the page out.
     let viewMeasure: { key: unknown[]; view: ReturnType<typeof viewportState>; window?: { top: number; height: number }; size?: ReturnType<typeof sizeLaneWindow> } | null = null;
     const draw = (info: FrameInfo): boolean => {
       const p = headed();
@@ -347,7 +286,6 @@ export default function Timeline(props: TimelineProps) {
       context.translate(0, -viewport.top);
       if (pointer) pointer = local(pointer);
 
-      // Fit the campaign's names only when their text or presentation changes.
       const refit = !labelsFitted || p.emptyLabel !== labelEmpty || p.truncateLabels !== labelTruncate || (p.labelCatalogue
         ? p.labelCatalogue !== catalogue && !(catalogue && sameCatalogue(catalogue, p.labelCatalogue))
         : !!catalogue || p.lanes !== measured && !sameLaneLabels(measured, p.lanes));
@@ -357,7 +295,6 @@ export default function Timeline(props: TimelineProps) {
       labelTruncate = p.truncateLabels;
       if (refit) {
         labelsFitted = true;
-        // Setting a font parses it, so it is set only when the text to measure needs another.
         let measuring = '';
         const measureIn = (shown: string, text: string) => {
           if (shown !== measuring) { context.font = shown; measuring = shown; }
@@ -373,7 +310,6 @@ export default function Timeline(props: TimelineProps) {
         }
       }
       left = leftColumn(fitted, layoutWidth);
-      // Report clipped lanes, excluding the sticky axis and drawing's overscan.
       const plotTop = Math.max(visible.top, axisTop + AXIS_HEIGHT);
       const plotBottom = visible.top + visible.height;
       const visibleLanes: [number, number] = plotBottom > plotTop
@@ -396,8 +332,6 @@ export default function Timeline(props: TimelineProps) {
       if (keyed.current && (viewed.current?.[0] !== target[0] || viewed.current?.[1] !== target[1])) queueMicrotask(() => refreshKeyed.current());
       viewed.current = target;
       eased = x;
-      // Whole hours, at most once per interval while the view glides or plays, the
-      // newest sent when it settles: not once per animation frame.
       const summaryView = { from: Math.floor(x[0]), to: Math.floor(Math.min(x[1], p.playhead ?? x[1])), width: Math.ceil(plotWidth()),
         lanes: p.lanes.slice(Math.max(0, inView[0]), inView[1] + 1) };
       const same = (view: SummaryView | null) => !!view && view.from === summaryView.from && view.to === summaryView.to && view.width === summaryView.width
@@ -412,14 +346,12 @@ export default function Timeline(props: TimelineProps) {
       const bottom = AXIS_HEIGHT + geometry.current.height;
       const right = left + plotWidth();
       const fallback = (id: string, px: number, top: number, width: number, height: number, opacity: number, icon: 'flask' | 'sparkle', plot = false) => {
-        // DOM tiles use the sticky view's offset and the same clipping as the canvas.
         const clipTop = Math.max(viewport.top, axisTop + AXIS_HEIGHT);
         const clipBottom = Math.min(bottom, viewport.top + viewport.height);
         fallbacks.push({ id, left: px, top: top - scrolled, width, height, opacity, icon,
           clipPath: `inset(${Math.max(0, clipTop - top)}px ${Math.max(0, px + width - (plot ? right : layoutWidth))}px ${Math.max(0, top + height - clipBottom)}px ${Math.max(0, (plot ? left : 0) - px)}px)` });
       };
 
-      // Dates along the top, from the recording's own calendar.
       context.font = font(tokens, tokens.fontSize.small);
       const ticks = timeTicks(x[0], x[1], plotWidth(), text => measuredWidth(context, text));
       const grid = (from: number, to: number) => {
@@ -436,7 +368,6 @@ export default function Timeline(props: TimelineProps) {
       hatchColumns(context, tokens, axis, gaps, AXIS_HEIGHT, bottom - AXIS_HEIGHT);
 
       let animating = false;
-      // Each lane's bands, placed together so gaps between its spans stay visible too.
       layouts = laneBandLayouts(shown, `${x[0]}:${x[1]}:${left}:${right}:${p.playhead}:${p.bandMax}`, layouts,
         lane => laneBands(lane.spans, p.playhead, toX, value => bandHalf(value, p.bandMax ?? 1, 1, 12), left, right));
       const holderHour = labelMoment(p.playhead, p.extent[1], p.labelHour);
@@ -455,18 +386,14 @@ export default function Timeline(props: TimelineProps) {
         if (index && lane.separator !== false) { context.fillStyle = mix(tokens.surface, tokens.border, lane.heading ? 0.9 : 0.5); context.fillRect(8, y, layoutWidth - 16, 1); }
         if (lane.separatorAfter) { context.fillStyle = mix(tokens.surface, tokens.border, 0.6); context.fillRect(0, y + laneHeight - 1, layoutWidth, 1); }
         if (lane.expanded != null) drawDisclosure(context, indent + 12, centre, lane.expanded, tokens);
-        // The holder at the playhead (or the end, off Live), cross-fading when it changes.
-        // A lane about one thing names it whatever the hour holds.
         const current = lane.identity ? { id: lane.id, firstHour: 0, lastHour: 0, ...lane.identity }
           : unknown ? null : spanAt(lane.spans, holderHour);
         const state = nextHolder(holders.get(lane.id), current, p.fadePresentation ?? !!lane.paint);
         state.t = tokens.reducedMotion ? 1 : Math.min(1, state.t + info.dt / FADE_MS);
         if (state.t < 1) animating = true;
         holders.set(lane.id, state);
-        // An ended lane's name and icon are faded.
         const fade = lane.labelStyle === 'side' ? 1 : lane.muted ? 0.55 : 1;
         const blueprint = lane.identity?.tile === 'blueprint';
-        // A heading with no icon of its own starts its text where an icon would be.
         const textAt = indent + disclosure + (lane.compact ? 10 : blueprint ? 62 : lane.heading && !lane.identity?.icon && !lane.identity?.countryFlag ? 10 : iconSize + 18);
         const textWidth = Math.max(8, left - textAt - 10);
         const labelText = (text: string) => p.truncateLabels === false ? text : fitText(text, textWidth);
@@ -582,17 +509,12 @@ export default function Timeline(props: TimelineProps) {
             }
             continue;
           }
-          // A span's own colour (a faction, a subject level) comes first. A law keeps its
-          // escalation shade even while held; other held
-          // spans are accented.
           const fill = span.color ?? (span.positive ? mix(tokens.surface, tokens.positive, 0.7) : span.shade != null ? mix(tokens.surface, tokens.accent, 0.3 + 0.6 * span.shade)
             : span.emphasis ? mix(tokens.surface, tokens.accent, 0.55) : mix(tokens.surface, tokens.text, 0.1));
           const background = parseColor(fill);
           const onFill = (span.color == null && span.shade == null && !span.emphasis) || !background ? tokens.text : readableText(background);
           context.fillStyle = fill;
           if (span.band) {
-            // A band: its thickness follows the span's value, in whole pixel columns by the
-            // kit's rule (`bandOutlines`), with no padding, so no recorded band vanishes.
             for (const group of bands?.outlines.get(span.id) ?? []) {
               context.beginPath();
               for (const edge of group) { context.lineTo(edge.x0, centre - edge.half); context.lineTo(edge.x1, centre - edge.half); }
@@ -601,7 +523,6 @@ export default function Timeline(props: TimelineProps) {
             }
             continue;
           }
-          // Never narrower than a pixel column, however short the bar at this zoom.
           const extent = barExtent(toX(hours[0]), toX(hours[1]), left, right);
           if (!extent) { if (positioned) glyphs(); continue; }
           const [from, to] = extent;
@@ -657,9 +578,7 @@ export default function Timeline(props: TimelineProps) {
         context.beginPath(); context.moveTo(px - 4, axisTop + AXIS_HEIGHT - 8); context.lineTo(px + 4, axisTop + AXIS_HEIGHT - 8); context.lineTo(px, axisTop + AXIS_HEIGHT - 3); context.fill();
       }
 
-      // Hover: the left column describes the lane's holder at the playhead; the plot, the span under the pointer.
       const index = pointer && !drag ? laneUnder(pointer.y) : null;
-      // A tooltip opened from the keyboard wins over a pointer resting on the chart.
       if (pointer && index != null && p.tooltip && !keyed.current && !quiet.current) {
         const lane = p.lanes[index];
         const { span, hour } = pointer.x < left ? { span: spanAt(lane.spans, Math.floor(holderHour)), hour: Math.floor(holderHour) }
@@ -730,7 +649,6 @@ export default function Timeline(props: TimelineProps) {
       wake();
     };
     const move = (event: PointerEvent) => {
-      // Moving the pointer hands the tooltip back to it.
       keyed.current = null;
       quiet.current = false;
       pointer = local(event);
@@ -768,7 +686,6 @@ export default function Timeline(props: TimelineProps) {
       const index = laneUnder(point.y);
       if (!handler || !acceptsLaneMenu(point.x, left, headed().labelMenu) || index == null) return;
       event.preventDefault();
-      // Jump to what is drawn under the pointer: a band column's step, else the pointer's hour.
       const lane = headed().lanes[index];
       const target = point.x < left ? { hour: labelMoment(headed().playhead, headed().extent[1], headed().labelHour), span: null }
         : pointed(lane, index, point.x, point.y, Math.min(hourAt(point.x), headed().playhead ?? Infinity));
@@ -813,24 +730,16 @@ export default function Timeline(props: TimelineProps) {
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
   useEffect(() => props.liveHead?.subscribe(() => { if (task.current) scheduler.wake(task.current); }), [props.liveHead]);
 
-  // With the keyboard: Up and Down choose a lane, Left and Right step through its
-  // bars (up to the playhead); the bar's tooltip shows beside the lane and is read out.
-  // The lane is remembered by id, so lanes coming and going never move the selection.
   const keyed = useRef<{ lane: number; id: string; span: number; spanId?: string; hour?: number; navigation?: Promise<void> } | null>(null);
   const refreshKeyed = useRef<() => void>(() => {});
-  // After Escape, no tooltip until the pointer moves again.
   const quiet = useRef(false);
-  // The hours in view (zoom included), as last drawn.
   const viewed = useRef<readonly [number, number] | null>(null);
-  // Where the keyboard can stop in a lane: each bar shown, and each step of a band, inside
-  // the view and up to the playhead (`laneStops`, on the kit's `keyStops`).
   const barsOf = (lane: number) => {
     const p = headed();
     const [from, to] = viewed.current ?? p.extent;
     return laneStops(p.lanes[lane]?.spans ?? [], from, to, p.playhead);
   };
   const [spoken, setSpoken] = useState('');
-  // Scrolls the nearest scrolling container so a keyboard-selected lane is in view.
   const revealLane = (lane: number, span?: TimelineSpan) => {
     const element = spacer.current;
     if (!element) return;
@@ -850,7 +759,6 @@ export default function Timeline(props: TimelineProps) {
       return;
     }
     const box = parent.getBoundingClientRect();
-    // Screen pixels to the container's own scroll units (a Size zoom scales them).
     const units = parent.clientHeight ? box.height / parent.clientHeight : 1;
     if (top < box.top + axis) parent.scrollTop -= (box.top + axis - top) / units;
     else if (bottom > box.bottom) parent.scrollTop += (bottom - box.bottom) / units;
@@ -859,54 +767,40 @@ export default function Timeline(props: TimelineProps) {
     const p = headed();
     const at = keyed.current;
     if (!at || !p.tooltip || !canvas.current) return;
-    // A lane playback took away since is left: the tooltip closes.
     at.lane = p.lanes.findIndex(item => item.id === at.id);
     const lane = p.lanes[at.lane];
     if (!lane) { keyed.current = null; notifyHover(null); hideTooltip(owner); setSpoken(''); return; }
     const bars = barsOf(at.lane);
-    // The selected stop is followed by id; one zoomed out of view gives way to the nearest in view.
     const same = at.spanId == null ? -1 : bars.findIndex(bar => bar.id === at.spanId);
     at.span = same >= 0 ? same : Math.max(0, Math.min(at.span, bars.length - 1));
     at.spanId = bars[at.span]?.id;
     const stop = bars[at.span] ?? null;
     const span = stop?.span ?? null;
-    // With no bar in view, the lane is described at an hour in view, never one outside it.
     const [viewFrom, viewTo] = viewed.current ?? p.extent;
     if (at.hour != null && (at.hour < viewFrom || at.hour > Math.min(viewTo, p.playhead ?? viewTo))) {
       at.hour = undefined; at.navigation = undefined;
     }
-    // A view lying after the playback moment shows nothing yet: nothing is described.
     if (!span && p.playhead != null && viewFrom > p.playhead) { notifyHover(null); hideTooltip(owner); setSpoken(`${lane.label}: not reached yet`); return; }
-    // A stop is described at its whole hour, as hover floors the pointer's, so a band's
-    // stop gives the value of its step.
     const hour = at.hour ?? (stop ? Math.floor(stop.hour) : Math.floor(Math.max(viewFrom, Math.min(labelMoment(p.playhead, viewTo, p.labelHour), viewTo))));
-    // With no bar reachable, the lane's holder at that hour (as hover resolves it), not an empty slot.
     const holder = at.hour == null ? span ?? spanAt(lane.spans, hour) : spanAt(lane.spans, hour);
     const shown = holder && holder.firstHour <= (p.playhead ?? Infinity) ? holder : null;
     notifyHover(hour);
     const raw = p.tooltip(lane, shown, hour);
     if (!raw) { hideTooltip(owner); setSpoken(''); return; }
-    // Full metadata supplies speech without decoding flags outside the displayed rows.
     const full = p.tooltip(lane, shown, hour, true) ?? raw;
     const content = countryTooltipContent({ ...raw, spoken: tooltipText(full) }, undefined, flagLoaded, globalThis.innerHeight)!;
     const bounds = spacer.current!.getBoundingClientRect();
-    // Layout pixels to screen pixels: the widget's Size zoom scales the canvas.
     const scale = spacer.current!.offsetHeight ? bounds.height / spacer.current!.offsetHeight : 1;
     const rows = geometry.current;
     const tooltipY = span ? spanY(span, at.lane, rows, lane.spans) + (span.stack == null ? rows.rowHeights[at.lane] : 16) / 2
       : laneTop(at.lane, rows) + rows.rowHeights[at.lane];
     showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + tooltipY * scale, `key:${lane.id}:${stop?.id ?? shown?.id ?? ''}`);
-    // Read out in full: every row, not only those the window fits.
     setSpoken([tooltipText(content), lane.opens ? 'Enter or Space to open.'
       : lane.expanded == null ? null : `${lane.expanded ? 'Expanded' : 'Collapsed'}. Enter or Space to ${lane.expanded ? 'collapse' : 'expand'}.`]
       .filter(Boolean).join('; '));
   };
-  // Only while no other chart holds the shared tooltip: one hovered since keeps it. A hidden
-  // tooltip (such as one withheld until playback reaches the view) is free to take again.
   const ownsTooltip = () => { const current = tooltipStore.get(); return current == null || current.owner === owner; };
   refreshKeyed.current = () => { if (keyed.current && headed().active && ownsTooltip()) showKeyed(); };
-  // As playback moves, a keyboard tooltip follows what its lane shows now; an
-  // off-screen timeline drops it.
   useEffect(() => {
     if (!keyed.current) return;
     if (!props.active) { keyed.current = null; setSpoken(''); return; }
@@ -920,13 +814,11 @@ export default function Timeline(props: TimelineProps) {
     const bars = (lane: number) => barsOf(lane).length;
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key) && lanes.length) {
       event.preventDefault();
-      // The remembered lane is found by id; one that has gone starts over at the first lane.
       const remembered = keyed.current && lanes.findIndex(lane => lane.id === keyed.current!.id);
       if (keyed.current && remembered != null && remembered >= 0) keyed.current.lane = remembered;
       else keyed.current = null;
       const hadKey = keyed.current !== null;
       const at = keyed.current ?? { lane: 0, id: lanes[0].id, span: Math.max(0, bars(0) - 1) };
-      // Navigation searches from the stop shown before this key moved it.
       const shownHour = barsOf(at.lane)[at.span]?.hour;
       if (keyed.current) {
         if (event.key === 'ArrowDown') { at.lane = Math.min(lanes.length - 1, at.lane + 1); at.span = Math.max(0, bars(at.lane) - 1); }
@@ -958,7 +850,6 @@ export default function Timeline(props: TimelineProps) {
         return;
       }
       const next = { ...at, hour: undefined, navigation: undefined };
-      // A key press chooses the bar by position; the id then follows it through zoom.
       next.spanId = undefined;
       keyed.current = next;
       revealLane(next.lane, barsOf(next.lane)[next.span]?.span);
@@ -973,14 +864,11 @@ export default function Timeline(props: TimelineProps) {
       if (zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
       return;
     }
-    // The keyed index can be stale after lanes are inserted while another chart owns
-    // the tooltip; the keyed id decides.
     const activeIndex = keyed.current
       ? lanes[keyed.current.lane]?.id === keyed.current.id ? keyed.current.lane : lanes.findIndex(lane => lane.id === keyed.current!.id)
       : -1;
     const activeLane = lanes[activeIndex];
     if (activateLane(activeLane, event.key, headed().onLaneActivate)) { event.preventDefault(); return; }
-    // The keyboard's Jump to: the selected stop's hour, else the displayed read.
     const stops = activeLane ? barsOf(activeIndex) : [];
     const same = keyed.current?.spanId == null ? -1 : stops.findIndex(stop => stop.id === keyed.current!.spanId);
     const selected = keyed.current ? stops[same >= 0 ? same : Math.max(0, Math.min(keyed.current.span, stops.length - 1))] : undefined;

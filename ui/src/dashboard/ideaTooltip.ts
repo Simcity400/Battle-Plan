@@ -3,17 +3,10 @@ import { contentTitle } from './contentTitles.ts';
 import type { TooltipContent, TooltipRow } from '../charts/tooltip';
 import type { EffectGroup, EffectLine, IdeaHistoryReply, IdeaInfo, ModifierFormat, TraitEffects } from '../generated/dashboard';
 
-/** An idea's effects as the game's own tooltip shows them, formatted from the
- * recorded modifier definitions. Missing names retain exact values with
- * unavailable labels and lookup keys in hover hints. */
 
-/** The precision the idea tooltip asks for. */
 export const IDEA_PRECISION = 2;
 const FIXED = 100_000n;
 
-/** A fixed5 value as the game writes it: truncated, never rounded; with exactly
- * `precision` decimals when it is positive (trailing zeros kept), none when it
- * is zero, and trailing zeros dropped when it is negative. */
 export function fixed5Text(raw: bigint, precision: number): string {
   const negative = raw < 0n;
   const size = negative ? -raw : raw;
@@ -27,13 +20,8 @@ export function fixed5Text(raw: bigint, precision: number): string {
   return text;
 }
 
-/** A script value as the game's fixed point: the script conversion keeps only
- * the first five decimals of the authored text. The reader's number prints back
- * as its shortest decimal form, which is the authored text, so that text is
- * truncated here. */
 export function fixed5Of(value: number): bigint {
   const text = String(value);
-  // Exponent forms are far below or above anything a modifier holds.
   if (/e/i.test(text)) return BigInt(Math.trunc(value * 100_000));
   const negative = text.startsWith('-');
   const [whole, fraction = ''] = (negative ? text.slice(1) : text).split('.');
@@ -43,9 +31,6 @@ export function fixed5Of(value: number): bigint {
 
 export type EffectTone = 'positive' | 'negative' | 'neutral';
 
-/** One modifier value as the game formats it: yes/no, or a sign (unless the
- * definition drops it), the number at the lower of the two precisions as a
- * percentage when flagged, coloured good or bad (or neutral), then the postfix. */
 export function formatModifier(format: ModifierFormat, raw: bigint, words: { yes: string; no: string }, precision = IDEA_PRECISION): { text: string; tone: EffectTone } {
   const flags = format.flags;
   let text: string;
@@ -61,19 +46,15 @@ export function formatModifier(format: ModifierFormat, raw: bigint, words: { yes
   return { text, tone };
 }
 
-/** What the tooltip builder reads from an idea-history reply. */
 export interface IdeaTooltipSources {
   formats: ReadonlyMap<string, ModifierFormat>;
-  /** A localisation key's text in the viewer's language, or null. */
   text: (key: string) => string | null;
   countryName: (tag: string) => string;
-  /** A country's name as recorded at an hour, where the widget knows it. */
   nameAt?: (tag: string, hour: number) => string;
   countryFailure?: (tag: string) => Failure | undefined;
   failureAt?: (tag: string, hour: number) => Failure | undefined;
 }
 
-/** Country targets used by an idea or its traits, for dated names and flags. */
 export function ideaTargetTags(info: IdeaInfo | null | undefined): string[] {
   if (!info) return [];
   return [...new Set([...info.targeted, ...info.traits.flatMap(trait => trait.targeted)]
@@ -87,20 +68,13 @@ export function ideaTooltipSources(reply: Pick<IdeaHistoryReply, 'modifiers' | '
   return { formats, text: key => texts.get(key) ?? null, countryName, nameAt };
 }
 
-/** The sources naming countries as they were at `hour`. */
 export function sourcesAt(sources: IdeaTooltipSources, hour: number | undefined): IdeaTooltipSources {
   const nameAt = sources.nameAt;
   return hour == null || !nameAt ? sources : { ...sources, countryName: tag => nameAt(tag, hour), countryFailure: tag => sources.failureAt?.(tag, hour) };
 }
 
-/** Rows and whether any needs a game feature. */
 interface Section { rows: TooltipRow[]; featured?: boolean }
 
-/** Modifier lines as the game lists them: in
- * ascending key index (a scripted modifier after every built-in one), one line
- * per modifier as the game stores it (its last value), every modifier a
- * `hidden_modifier` names left out entirely, zero values only where the
- * definition shows them. */
 function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): Section {
   const words = { yes: sources.text('YES') ?? 'Yes', no: sources.text('NO') ?? 'No' };
   const order = (key: string) => sources.formats.get(key)?.index ?? Number.MAX_SAFE_INTEGER;
@@ -109,23 +83,15 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
   const listed = lines.filter(line => !line.hidden);
   for (const line of [...listed].sort((a, b) => order(a.key) - order(b.key) || a.key.localeCompare(b.key))) {
     const format = sources.formats.get(line.key);
-    // A flag-0x10 modifier clamps to [0, 1].
     const authoredRaw = BigInt(line.fixed5);
     const raw = format && format.flags & 0x10 ? (authoredRaw < 0n ? 0n : authoredRaw > 100_000n ? 100_000n : authoredRaw) : authoredRaw;
-    // Without a format the game's zero rule is not known: the authored value stays.
-    // No format: the engine's exact value, unformatted.
     if (!format) {
       rows.push({ label: 'Modifier name unavailable:', lookupKey: line.key, value: fixed5Text(raw, -1), tone: 'muted' });
       continue;
     }
     if (raw === 0n && !(format.flags & 0x100)) continue;
     const shown = formatModifier(format, raw, words);
-    // The game writes the name, then ": ", then the value.
-    // Missing labels and units retain the value with an explicit unavailable label.
-    // The script identity remains available on the row's hover hint.
     const unitMissing = format.postfix == null && format.postfixKey != null;
-    // A modifier that needs a game feature applies only while it is on, which the
-    // recording does not say: it is marked, not shown as certainly in effect.
     if (format.feature !== 0) featured = true;
     rows.push({ label: `${contentTitle(format.label, line.key, 'Modifier name unavailable')}:`, lookupKey: line.key, value: `${unitMissing ? `${shown.text} [unit unavailable]` : shown.text}${format.feature !== 0 ? ' *' : ''}`,
       tone: unitMissing || format.feature !== 0 ? 'muted' : shown.tone });
@@ -133,18 +99,14 @@ function modifierRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
   return { rows, featured };
 }
 
-/** A section: its heading (if any) above its rows, set apart from what came before. */
 function section(heading: string | null, rows: readonly TooltipRow[], detail?: string): TooltipRow[] {
   if (!rows.length && heading == null) return [];
   const all: TooltipRow[] = heading == null ? [...rows] : [{ label: heading, strong: true }, ...rows];
   return all.map((row, index) => index === 0 ? { ...row, divider: true, ...(detail ? { detail } : {}) } : row);
 }
 
-/** A trait: its name, its modifiers and custom tooltips, then its targeted
- * modifiers and equipment bonuses, each in its own group as the idea's are. */
 function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section {
   const name = contentTitle(found.name, found.token, 'Trait name unavailable');
-  // Effects the content does not define are left out, not described; the reason stays in the reply.
   if (!found.known) return { rows: section(name, []) };
   const own = modifierRows(found.lines, sources);
   const groups = [...found.targeted.map(group => targetedSection(group, sources)), ...found.equipment.map(group => equipmentSection(group, sources))];
@@ -152,15 +114,12 @@ function traitSection(found: TraitEffects, sources: IdeaTooltipSources): Section
     featured: own.featured || groups.some(group => group.featured) };
 }
 
-/** A targeted modifier: its modifier lines, then its custom tooltips. */
 function targetedSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const lines = modifierRows(group.lines, sources);
   const rows = [...lines.rows, ...group.tooltips.map(key => ({ label: contentTitle(sources.text(key), key, 'Tooltip text unavailable'), lookupKey: key }))];
   return { rows: section(group.target ? `Against ${sources.countryName(group.target)}:` : 'Against a country:', rows, group.target ? sources.countryFailure?.(group.target)?.message : undefined), featured: lines.featured };
 }
 
-/** An equipment bonus: its stats are named and formatted by an engine table the
- * recording does not hold, so they are shown as authored. */
 function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Section {
   const name = group.target ? contentTitle(sources.text(group.target), group.target, 'Equipment name unavailable') : 'Equipment';
   const rows = group.lines.filter(line => !line.hidden).map(line => ({ label: 'Equipment modifier name unavailable:', lookupKey: line.key, tone: 'muted' as const,
@@ -168,7 +127,6 @@ function equipmentSection(group: EffectGroup, sources: IdeaTooltipSources): Sect
   return { rows: section(`${name}${group.instant ? ' (at once)' : ''}:`, rows) };
 }
 
-/** A research bonus: category, then the factor as a signed whole percentage. */
 function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources): TooltipRow[] {
   return lines.filter(line => !line.hidden).map(line => {
     const label = `${contentTitle(sources.text(`${line.key}_research`), `${line.key}_research`, 'Research category name unavailable')}:`;
@@ -177,11 +135,7 @@ function researchRows(lines: readonly EffectLine[], sources: IdeaTooltipSources)
   });
 }
 
-/** Every effect of an idea, in the game's order: its traits, its modifiers and
- * custom tooltips, its targeted modifiers, research bonuses, then equipment
- * bonuses. `note` marks effects that need an enabled game feature. */
 export function ideaEffectRows(info: IdeaInfo, sources: IdeaTooltipSources): { rows: TooltipRow[]; note?: string } {
-  // Effects the content does not define are left out rather than described; the reason stays in the reply.
   if (!info.effectsKnown) return { rows: [] };
   const sections: Section[] = [
     ...info.traits.map(found => traitSection(found, sources)),
@@ -195,21 +149,12 @@ export function ideaEffectRows(info: IdeaInfo, sources: IdeaTooltipSources): { r
   return { rows, note: sections.some(item => item.featured) ? '* Depends on an enabled game feature.' : undefined };
 }
 
-/** Most effect rows a tooltip shows; the rest are counted, so it stays on screen. */
 export const MAX_TOOLTIP_ROWS = 40;
 
-/** An idea's game-style tooltip: its icon, name and a line
- * saying when it was held, any rows the widget adds, its effects, then its
- * description. Countries its targeted modifiers name are named as they were at
- * `hour` (when the idea was taken on). */
 export function ideaTooltip(head: { title: string; icon?: string | null; subtitle?: string }, info: IdeaInfo | undefined, sources: IdeaTooltipSources,
   description?: string | null, before: readonly TooltipRow[] = [], note?: string, hour?: number, maxRows = tooltipRowBudget()): TooltipContent {
   const effects = info ? ideaEffectRows(info, sourcesAt(sources, hour)) : { rows: [] as TooltipRow[], note: undefined };
   const rows = [...before, ...effects.rows];
-  // The budget is in lines: a long label wraps (about 34 characters to a line in
-  // the tooltip's width), so it takes more than one.
-  // When not all fit, the count of the rest takes two lines of the budget.
-  // A title or subtitle longer than the header's allowance (two lines) takes rows too.
   const header = Math.ceil(head.title.length / 26) + (head.subtitle ? Math.ceil(head.subtitle.length / 40) : 0);
   const room = maxRows - Math.max(0, header - 2);
   const total = rows.reduce((sum, row) => sum + rowLines(row), 0);
@@ -224,15 +169,10 @@ export function ideaTooltip(head: { title: string; icon?: string | null; subtitl
     description: description ?? undefined, note: notes || undefined };
 }
 
-/** Lines a row takes in the tooltip: its label and value share a line of about
- * 30 characters at the widest fonts, and a divider's spacing counts as one more. */
 export const rowLines = (row: TooltipRow) => (row.short ? 1 : Math.max(1, Math.ceil((row.label.length + (row.value?.length ?? 0) + 3) / 30))) + (row.divider ? 1 : 0);
 
-/** A tooltip as one line of text, every row included, for screen readers: the kit's. */
 export { tooltipText } from '../charts/tooltip.ts';
 
-/** How many effect rows fit the window under a tooltip's header, description
- * and note, so the tooltip never runs off screen. */
 export function tooltipRowBudget(height = typeof window === 'undefined' ? 800 : window.innerHeight): number {
   return Math.max(4, Math.min(MAX_TOOLTIP_ROWS, Math.floor((height - 260) / 18)));
 }

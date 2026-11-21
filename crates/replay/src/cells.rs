@@ -1,12 +1,3 @@
-//! A table's cells at an hour of a recording, read through the unit's reader primitives: from
-//! its last restore at or before the hour ([`unit::reader::restore`]), then its parts advanced to
-//! the hour in one call ([`Cursor::advance`]); later hours of the run stepped one at a time, each
-//! step saying what it changed, or advanced to from where the cells stand unless a restore of the
-//! table lies between. The cells are the reader's one copy of the table: a
-//! [`TableState`] of the selected columns, with the strings its cells and status name.
-//!
-//! A log table's cells at an hour are the rows it lists then, read by ordinal at a seek; a step
-//! hands its appends as inserted rows and its forgets as deleted ones.
 
 use crate::{columnar_frames::{Damage, DamageScope, Recording}, rows::TableId};
 use replay_columnar::{
@@ -29,23 +20,16 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// What the hour a reader stepped to last changed.
 #[derive(Debug, Default)]
 pub struct Changes {
-    /// The cells were read anew (a seek, a run's start or a pack): every row may have changed.
     pub anew: bool,
-    /// Slots of rows the hour inserted, ascending.
     pub inserted: Vec<u32>,
-    /// Each deleted row's slot and the key it held.
     pub deleted: Vec<(u32, u128)>,
-    /// By selected column, the slots of rows older than the hour whose cell an event named.
     pub written: Vec<Vec<u32>>,
-    /// The table's status, read flag or sample hour differs from the hour before.
     pub status_changed: bool,
 }
 
 impl Changes {
-    /// Whether the hour changed nothing a reader of the table's rows sees.
     pub fn quiet(&self) -> bool {
         !self.anew && !self.status_changed && self.inserted.is_empty() && self.deleted.is_empty() && self.written.iter().all(Vec::is_empty)
     }
@@ -59,21 +43,15 @@ impl Changes {
     }
 }
 
-/// One event of a selected column's track, as a stretch read whole gives it
-/// ([`TableReader::read_stretch`]). A text cell's track is a number track of its string id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
-    /// A change from the cell's value before; a missing or unrecorded cell counts as 0.
     Difference(i64),
     Value(u64),
     Missing,
     Unrecorded,
-    /// A list or opaque cell given a value, its bytes not carried.
     Written,
 }
 
-/// A track event: its selected column (by position among the selected), slot, the row's insert
-/// hour when the part inserted it, the event's block hour, and the event.
 #[derive(Clone, Copy, Debug)]
 pub struct TrackEvent {
     pub column: usize,
@@ -83,8 +61,6 @@ pub struct TrackEvent {
     pub change: Change,
 }
 
-/// A selected cell as a reader's cells hold it: a number's bits (sign-extended) or a text's
-/// string id, missing, unrecorded, or a list or opaque cell holding a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Held {
     Bits(u64),
@@ -94,7 +70,6 @@ pub enum Held {
 }
 
 impl Held {
-    /// Cell `column` of `slot` in `view`.
     pub fn of(view: &TableView<'_>, column: usize, slot: u32) -> Self {
         match view.value(column, slot) {
             Value::Number(bits) => Self::Bits(bits),
@@ -106,29 +81,20 @@ impl Held {
     }
 }
 
-/// Block hours `from..=to` of one block, read with one advance: the rows live before `from`
-/// with their selected cells, every track event of the selected columns in the stretch, each
-/// insert and delete with its hour, each hour's status, and the rows each hour read.
 #[derive(Debug, Default)]
 pub struct Stretch {
     pub block: u32,
-    /// The game hour of the block's first hour.
     pub block_first: i32,
     pub from: u16,
     pub to: u16,
-    /// Each live row before `from`: slot, key, and per selected column its cell.
     pub start: Vec<(u32, u128, Vec<Held>)>,
     pub events: Vec<TrackEvent>,
     pub inserted: Vec<(u16, u32, u128)>,
     pub deleted: Vec<(u16, u32, u128)>,
-    /// Each hour's status, `from` first.
     pub statuses: Vec<Status>,
-    /// (hour, slot) of every row an hour read, for the hours read in part.
     pub read: Vec<(u16, u32)>,
 }
 
-/// What a stretch gathers from each part as it is fetched, at the block hours asked: the
-/// selected columns' track events and the rows each hour read.
 #[derive(Debug, Default)]
 struct Tapped {
     events: Vec<TrackEvent>,
@@ -142,12 +108,9 @@ impl Tapped {
     }
 }
 
-/// One table of one run as it stood after an hour: its selected cells, strings and status.
 pub struct TableReader {
     table: usize,
     kinds: Vec<Kind>,
-    /// The table's first columns, those the recording holds: its cells hold these alone, and its
-    /// restores and parts decode as they were written; every later column reads not recorded.
     held: usize,
     columns: Vec<usize>,
     run: u32,
@@ -158,9 +121,7 @@ pub struct TableReader {
     status: Status,
     read: bool,
     sampled: Option<i32>,
-    /// A table read in part: the rows the hour read.
     view: Vec<u32>,
-    /// The ordinal the cells hold; none before the first seek.
     ordinal: Option<u32>,
     block: u32,
     entry: TableEntry,
@@ -169,32 +130,21 @@ pub struct TableReader {
     changes: Changes,
     lives: Lives,
     marks: (Vec<(u16, u32)>, Vec<(u16, u32)>),
-    /// Its cells keep a key index: a reader looking rows up by key.
     keyed: bool,
-    /// A seek keeps the track events and read rows after its hour for the stretch read next
-    /// ([`Self::keep_tracks`]): a part's tracks are read once, before the cursor consumes them.
     tracking: bool,
     pending: Tapped,
     restores: u32,
-    /// A log table's cursor and each listed row's slot by ordinal.
     log: Option<Box<LogRead>>,
-    /// The recording's format predates the table: it reads not recorded at every hour.
     absent: bool,
 }
 
 struct LogRead {
     cursor: LogCursor,
-    /// The block hour the cursor started at: a part hands its hours from its first, and those
-    /// before this one are already in the rows listed.
     from: u16,
     slots: BTreeMap<u64, u32>,
 }
 
 impl TableReader {
-    /// A reader of `table` of `recording`'s run `run`, of its columns `columns` (every column
-    /// the recording holds when none), not yet at any hour. A table the recording's format
-    /// predates reads not recorded at every hour; one it holds as this build reads otherwise is
-    /// refused by name.
     pub fn new(recording: &Recording, run: u32, table: TableId, columns: Option<&[usize]>) -> io::Result<Self> {
         let held = recording.run(run)?;
         let index = table.index();
@@ -245,29 +195,23 @@ impl TableReader {
         })
     }
 
-    /// Its cells keep a key index from now on, for [`Self::slot`] and [`TableView::slot`].
     pub fn index_keys(&mut self) {
         self.keyed = true;
         self.cells.index_keys();
     }
 
-    /// Its seeks keep the track events of the rest of their block, for [`Self::read_stretch`].
     pub fn keep_tracks(&mut self) {
         self.tracking = true;
     }
 
-    /// Whether the next step crosses into the next block after a block whose end packed the
-    /// table: its slots are renumbered then.
     pub fn packs_on_step(&self) -> bool {
         self.log.is_none() && self.entry.packed && self.ordinal.is_some_and(|ordinal| (ordinal + 1) % BLOCK == 0)
     }
 
-    /// The slot of the live row with `key`.
     pub fn slot(&self, key: u128) -> Option<u32> {
         self.cells.find(key)
     }
 
-    /// Its cells, strings and column kinds, taken.
     pub fn into_parts(self) -> (TableState, Strings, Vec<Kind>) {
         (self.cells, self.strings, self.kinds)
     }
@@ -280,7 +224,6 @@ impl TableReader {
         self.run
     }
 
-    /// The selected columns, ascending.
     pub fn columns(&self) -> &[usize] {
         &self.columns
     }
@@ -289,17 +232,14 @@ impl TableReader {
         &self.kinds
     }
 
-    /// The game hour its cells hold; none before the first seek.
     pub fn hour(&self) -> Option<i32> {
         self.ordinal.map(|ordinal| self.first_hour + ordinal as i32)
     }
 
-    /// Its cells: the selected columns' (the others hold no value).
     pub fn cells(&self) -> &TableState {
         &self.cells
     }
 
-    /// Its cells and strings as the store's readers read a table.
     pub fn view(&self) -> TableView<'_> {
         TableView::new(&self.cells, &self.kinds, &self.strings)
     }
@@ -312,7 +252,6 @@ impl TableReader {
         self.status
     }
 
-    /// Whether the hour read the table.
     pub fn was_read(&self) -> bool {
         self.read
     }
@@ -321,7 +260,6 @@ impl TableReader {
         self.sampled
     }
 
-    /// Last hour before selected cells, row identities or the requested sample date can change.
     pub fn unchanged_through(&self, sample: bool) -> Option<i32> {
         let at = self.hour()?;
         if self.log.is_some() || self.status != Status::Complete || sample && self.sampled == Some(at) { return Some(at); }
@@ -334,22 +272,18 @@ impl TableReader {
         Some(at.max(block_first + i32::from(next) - 1))
     }
 
-    /// For a table read in part, the rows the hour read, ascending; none otherwise.
     pub fn read_rows(&self) -> Option<&[u32]> {
         matches!(self.status, Status::Truncated { .. }).then_some(self.view.as_slice())
     }
 
-    /// Whether the hour's status lets a reader count its rows.
     pub fn available(&self) -> bool {
         matches!(self.status, Status::Complete | Status::Truncated { .. })
     }
 
-    /// What the hour it stepped to last changed.
     pub fn changes(&self) -> &Changes {
         &self.changes
     }
 
-    /// The unavailable status's reason, as text.
     pub fn reason(&self) -> Option<&str> {
         match self.status {
             Status::Unavailable { reason } => Some(self.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()).unwrap_or("A table's reason is not text")),
@@ -357,12 +291,10 @@ impl TableReader {
         }
     }
 
-    /// How many times its cells were read from a restore.
     pub fn restores(&self) -> u32 {
         self.restores
     }
 
-    /// The bytes it holds: its cells, strings and the cursor's open parts aside.
     pub fn held_bytes(&self) -> usize {
         self.cells.bytes().total()
     }
@@ -371,7 +303,6 @@ impl TableReader {
         Damage::wrap(DamageScope::Table { run: self.run, block, table: self.table as u32 }, error)
     }
 
-    /// Its cells after the hour of run ordinal `ordinal`.
     pub fn seek(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         if ordinal >= self.ordinals {
             return Err(invalid(format!("Run {} holds no ordinal {ordinal}", self.run)));
@@ -400,7 +331,6 @@ impl TableReader {
             self.strings.pin(id, &text)?;
         }
         drop(restoring);
-        // From the run's first restore, block 0 goes on from its second hour.
         let (mut at, start) = if first { (restored, 1) } else { (restored + 1, 0) };
         while at < block {
             self.open_block(recording, at, start_of(at, first, restored, start))?;
@@ -434,7 +364,6 @@ impl TableReader {
         Ok(())
     }
 
-    /// Its cells after the next hour of the run; false at the run's end.
     pub fn step(&mut self, recording: &Recording) -> io::Result<bool> {
         let Some(ordinal) = self.ordinal else { return Err(invalid("A table reader steps before its first seek")) };
         if ordinal + 1 >= self.ordinals {
@@ -485,8 +414,6 @@ impl TableReader {
         Ok(true)
     }
 
-    /// Its cells after the hour of ordinal `ordinal`: advanced there from where they stand when it
-    /// lies later in the run and no restore of the table lies between, else sought.
     pub fn go_to(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         match self.ordinal {
             Some(at) if at == ordinal => {
@@ -499,8 +426,6 @@ impl TableReader {
         }
     }
 
-    /// Whether a restore of the table holds a later hour than ordinal `at` and lies before block
-    /// `block`: a seek replays less from it than an advance from `at`.
     fn restored_between(&self, recording: &Recording, at: u32, block: u32) -> io::Result<bool> {
         for restored in (at / BLOCK..block).rev() {
             if recording.table_entry(self.run, restored, self.table)?.unit.restore.is_some() {
@@ -510,8 +435,6 @@ impl TableReader {
         Ok(false)
     }
 
-    /// Its cells after the later hour of ordinal `ordinal`: the hours from those it holds replayed
-    /// with one advance a block, each block end crossed as a step crosses it.
     fn advance(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         let (block, hour) = (ordinal / BLOCK, (ordinal % BLOCK) as u16);
         while self.block < block {
@@ -541,8 +464,6 @@ impl TableReader {
         Ok(())
     }
 
-    /// The hours after the one it holds through ordinal `to`, which lies in the block of the next
-    /// hour, read with one advance ([`Stretch`]); its cells then hold `to`.
     pub fn read_stretch(&mut self, recording: &Recording, to: u32) -> io::Result<Stretch> {
         if self.log.is_some() {
             return Err(invalid(format!("{:?} is a log: its rows never change, so it has no stretch of track events; read its rows at an hour", self.table())));
@@ -577,7 +498,6 @@ impl TableReader {
             .rows()
             .filter_map(|slot| Some((slot, view.key(slot)?, self.columns.iter().map(|&column| Held::of(&view, column, slot)).collect())))
             .collect();
-        // Parts the seek before fetched gave their events and marks then; open_block emptied them.
         let mut tapped = std::mem::take(&mut self.pending);
         tapped.events.retain(|event| from <= event.hour && event.hour <= last);
         tapped.read.retain(|&(hour, _)| from <= hour && hour <= last);
@@ -611,8 +531,6 @@ impl TableReader {
         Ok(stretch)
     }
 
-    /// The table's last restore at or before the end of block `block - 1` (the run's first
-    /// restore for block 0): its block, entry, and whether it is the run's first.
     fn restore_before(&self, recording: &Recording, block: u32) -> io::Result<(u32, RestoreEntry, bool)> {
         let mut at = block;
         while at > 0 {
@@ -631,7 +549,6 @@ impl TableReader {
         Ok((0, first, true))
     }
 
-    /// A table the recording's format predates at ordinal `ordinal`: not recorded, as at every hour.
     fn stand_absent(&mut self, ordinal: u32) {
         self.changes.clear();
         self.ordinal = Some(ordinal);
@@ -655,14 +572,10 @@ impl TableReader {
         Ok(())
     }
 
-    /// The cursor brought to block hour `hour` in steps of `step` hours, parts fetched as it
-    /// needs them; each step's written slots and lives gathered.
     fn advance_to(&mut self, recording: &Recording, hour: u16, step: u16) -> io::Result<()> {
         self.advance_by(recording, hour, step, None)
     }
 
-    /// [`Self::advance_to`], each part fetched first giving its tracks' events and read rows at
-    /// block hours `tapping.0..=tapping.1` to `tapping.2`, when given.
     fn advance_by(&mut self, recording: &Recording, hour: u16, step: u16, mut tapping: Option<(u16, u16, &mut Tapped)>) -> io::Result<()> {
         let hours = self.block_hours(self.block);
         let _cells = label("reader: cells");
@@ -673,7 +586,6 @@ impl TableReader {
             match advanced {
                 Advanced::Reached => return Ok(()),
                 Advanced::Missing { .. } => {
-                    // A table quiet for the rest of the block has no part for it.
                     let Some(part) = self.entry.parts.get(self.next_part) else { return Ok(()) };
                     let last = self.entry.parts.get(self.next_part + 1).map_or(hours - 1, |next| next.first - 1);
                     let _parts = label("reader: fetched parts");
@@ -691,7 +603,6 @@ impl TableReader {
         }
     }
 
-    /// Its status at block hour `hour`, and for a table read in part, the rows the hour read.
     fn settle(&mut self, hour: u16) -> io::Result<()> {
         let block_first = self.first_hour + (self.block * BLOCK) as i32;
         let (status, read, sampled, _) = unit::reader::status(&self.entry, hour, block_first).map_err(|error| self.damaged(self.block, error))?;
@@ -701,7 +612,6 @@ impl TableReader {
         self.view.clear();
         let truncated = matches!(status, Status::Truncated { .. });
         if self.log.is_some() {
-            // A log keeps no read marks and an hour read in part forgets nothing: it lists its rows.
             if truncated {
                 self.view.extend(self.cells.live().ones());
             }
@@ -723,8 +633,6 @@ impl TableReader {
 }
 
 impl TableReader {
-    /// A log's rows listed after the hour of run ordinal `ordinal`: those its restore before the
-    /// hour's block lists, read by ordinal, then the block's hours through it.
     fn seek_log(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         let (block, hour) = (ordinal / BLOCK, (ordinal % BLOCK) as u16);
         let (restored, entry, first) = self.restore_before(recording, block)?;
@@ -792,8 +700,6 @@ impl TableReader {
         Ok(())
     }
 
-    /// A log's rows listed after the later hour of ordinal `ordinal`, its blocks' hours read
-    /// from those it holds.
     fn advance_log_to(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         let (block, hour) = (ordinal / BLOCK, (ordinal % BLOCK) as u16);
         self.changes.clear();
@@ -809,9 +715,6 @@ impl TableReader {
         Ok(())
     }
 
-    /// The log's cursor brought to block hour `hour`, parts fetched as it needs them: each row
-    /// appended put at the lowest free slot, each forgotten taken out. A row appended and
-    /// forgotten since the changes were cleared is in neither.
     fn advance_log(&mut self, recording: &Recording, hour: u16) -> io::Result<()> {
         let hours = self.block_hours(self.block);
         let (run, block, table) = (self.run, self.block, self.table as u32);
@@ -837,7 +740,6 @@ impl TableReader {
             match advanced {
                 Advanced::Reached => break,
                 Advanced::Missing { .. } => {
-                    // A log quiet for the rest of the block has no part for it.
                     let Some(part) = self.entry.parts.get(self.next_part) else { break };
                     let last = self.entry.parts.get(self.next_part + 1).map_or(hours - 1, |next| next.first - 1);
                     let _parts = label("reader: fetched parts");
@@ -855,7 +757,6 @@ impl TableReader {
     }
 }
 
-/// One event of a log's cursor at or after block hour `from` applied to the rows it lists.
 fn listed(event: LogEvent<'_>, from: u16, cells: &mut TableState, columns: &[usize], slots: &mut BTreeMap<u64, u32>, changes: &mut Changes) -> io::Result<()> {
     match event {
         LogEvent::Appended { hour, .. } | LogEvent::Forgotten { hour, .. } if hour < from => {}
@@ -885,8 +786,6 @@ fn listed(event: LogEvent<'_>, from: u16, cells: &mut TableState, columns: &[usi
     Ok(())
 }
 
-/// `part`'s track events of the selected columns and the rows its hours read, at block hours
-/// `from..=to`.
 fn tap(part: &Part, kinds: &[Kind], columns: &[usize], from: u16, to: u16, tapped: &mut Tapped) -> io::Result<()> {
     if part.last < from || part.first > to {
         return Ok(());
@@ -911,18 +810,14 @@ fn tap(part: &Part, kinds: &[Kind], columns: &[usize], from: u16, to: u16, tappe
     part.reads(from, to, &mut tapped.read)
 }
 
-/// Whether a column of `kind` is a list or opaque column, whose track events are list events.
 pub fn list_column(kind: Kind) -> bool {
     matches!(kind, Kind::U32List | Kind::U64List | Kind::Opaque)
 }
 
-/// Whether a column of `kind` holds numbers a track's events change.
 pub fn numeric(kind: Kind) -> bool {
     !matches!(kind, Kind::Bytes | Kind::U32List | Kind::U64List | Kind::Opaque)
 }
 
-/// The hour a block's cursor starts at: block 0 read on from the run's first restore starts at
-/// its second hour.
 fn start_of(block: u32, first: bool, restored: u32, start: u16) -> u16 {
     if first && block == restored { start } else { 0 }
 }

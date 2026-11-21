@@ -1,6 +1,3 @@
-//! Ability descriptions, shared by active-map ability hovers
-//! and the ability controller. Its caller supplies the fresh country/commander
-//! carrier; the communications tail belongs to that caller.
 
 use super::*;
 use installed_content_abilities::abilities::Definition;
@@ -14,10 +11,6 @@ fn newline(text: &mut String) {
     }
 }
 
-/// Raw modifier/adjuster text followed by independent native effect-description
-/// sessions. Known fragments survive failures of other accumulators or effects.
-/// The nonempty result includes a leading LF, before the communications
-/// helper that the map-counter caller appends.
 pub fn ability_description(
     definition: &Definition,
     context: &Context<'_, '_>,
@@ -32,8 +25,6 @@ pub fn ability_description(
     };
     let selected = crate::triggers::event_scopes::project(scopes, 0);
     let mut text = String::new();
-    // Three direct calls: precision2, no outer colour, include -1,
-    // exclude0, scale100000, no prefix, force_plus0, invert0. No scope expansion.
     for (label, modifiers) in ["country", "leader", "unit"]
         .into_iter()
         .zip(&definition.modifiers)
@@ -53,8 +44,6 @@ pub fn ability_description(
         }
         newline(&mut text);
     }
-    // Roster order: highlighted token header,
-    // then movement/attack/defence lines with zero indentation.
     for adjuster in &definition.adjusters {
         let fragment = (|| {
             let selected = *selected
@@ -94,13 +83,11 @@ pub fn ability_description(
             match title {
                 Ok(title) => {
                     text.push_str(&title);
-                    text.push('\n'); // Native appends LF even if the key ends in LF.
+                    text.push('\n');
                 }
                 Err(why) => renderer.refuse("ability effect heading", why),
             }
         }
-        // Each description owns its variable session. In
-        // particular one-time writes do not seed the hourly/daily invocation.
         let description = describe(effects, context, scopes);
         text.push_str(&description.text);
         for (why, count) in description.refusals {

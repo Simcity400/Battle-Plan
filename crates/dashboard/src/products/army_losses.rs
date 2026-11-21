@@ -1,16 +1,3 @@
-//! One country's retained Combat Log months at an hour: the manpower each army was charged in each
-//! calendar month by the log's three source channels, and the equipment each month's ledgers hold.
-//!
-//! The game keeps one log per ordinary army and in it one entry per calendar month a loss was
-//! written in; a later write that month changes the entry, so the rows at an hour are each
-//! retained month's latest version. Losses are written only to the army a division belongs to,
-//! never again to its army group, so the logs are disjoint. Months the game pruned or never wrote
-//! are absent: unknown, never zero. An older month whose rows left the country's read (a read
-//! lists an array's last two entries) is read from `CombatLogDropped`, the equipment-loss
-//! writer's copy of the rows the game dropped ([`dropped`], the one place it is read).
-//!
-//! Every amount is a live cell of its row: the reply carries armies, months and designs; the
-//! numbers are painted from followed cells at the head.
 
 use dashboard_base::products::Country;
 use super::{
@@ -40,8 +27,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The Combat Log's equipment ledgers: losses in combat (0), the three attrition modes (1 to 3),
-/// recovered (4), and what the army dealt to its enemies.
 pub const ENEMY_LEDGER: u8 = 5;
 
 const TABLES: [TableId; 13] = [
@@ -75,19 +60,13 @@ pub struct ArmyLossesParams {
     pub view: LossView,
 }
 
-/// What a reply holds of the retained months: the one measure the chart draws, or every part of
-/// one month for its drill. The armies are in every reply.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum LossView {
-    /// Every retained month's manpower.
     #[default]
     Manpower,
-    /// Every retained month of these equipment ledgers.
     Equipment { ledgers: Vec<u8> },
-    /// The game's month `month` (twelve per year plus the zero-based month): its manpower and
-    /// every ledger.
     Month { month: i32 },
 }
 
@@ -109,12 +88,11 @@ impl LossView {
     }
 }
 
-/// An army whose Combat Log the country keeps.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossArmy {
-    /// The army's full reference, which identifies it in the reply.
+    #[doc = " The army's full reference, which identifies it in the reply."]
     pub reference: String,
     pub ordinal: u32,
     pub name: Option<String>,
@@ -124,22 +102,18 @@ pub struct LossArmy {
     pub parent_missing: Option<String>,
 }
 
-/// One retained month of one army's manpower; its ground, air and navy channels are the live
-/// cells `(key, "ground" | "air" | "navy")`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossManpower {
     pub army: String,
     pub ordinal: u32,
-    /// The game's month: twelve per year plus the zero-based month.
+    #[doc = " The game's month: twelve per year plus the zero-based month."]
     pub month: i32,
     pub date: i32,
     pub key: String,
 }
 
-/// One design in one retained ledger month; its signed fixed5 amount is the live cell
-/// `(key, "amount")`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -148,12 +122,11 @@ pub struct LossEquipment {
     pub ledger: u8,
     pub month: i32,
     pub date: i32,
-    /// Its design's place in the reply's `designs`.
+    #[doc = " Its design's place in the reply's `designs`."]
     pub design: u32,
     pub key: String,
 }
 
-/// A design the reply's equipment names, once however many rows name it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -164,8 +137,6 @@ pub struct ArmyLossDesign {
     pub archetype_name: Option<String>,
 }
 
-/// One retained ledger month: in `empty_months` one its latest read covered without amounts; in
-/// `unknown_months` one whose amounts are unknown, with why.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -177,7 +148,6 @@ pub struct LossMonth {
     pub reason: Option<String>,
 }
 
-/// Why each part could not be read at this hour; none when it was.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -194,7 +164,7 @@ pub struct ArmyLossesAvailability {
 #[serde(rename_all = "camelCase")]
 pub struct ArmyLossesReply {
     pub tag: String,
-    /// No country holds the tag at this hour.
+    #[doc = " No country holds the tag at this hour."]
     pub absent: bool,
     pub armies: Vec<LossArmy>,
     pub manpower: Vec<LossManpower>,
@@ -212,7 +182,6 @@ impl ReplyWarnings for ArmyLossesReply {
     }
 }
 
-/// What naming reads of the content.
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     units: Option<Arc<installed_content_core::equipment::Database>>,
@@ -239,14 +208,10 @@ fn refuse(refused: &mut BTreeMap<&'static str, usize>, reason: &'static str) {
     *refused.entry(reason).or_default() += 1;
 }
 
-/// The rows of the game's dropped Combat Log lines the hour holds for countries `ours` keeps: the
-/// one read of `CombatLogDropped`.
 pub fn dropped<'a>(frame: &'a DecodedFrame, ours: &dyn Fn(u32) -> bool) -> Vec<&'a CombatLogDroppedRow> {
     frame.complete::<tables::CombatLogDropped>().map(|rows| rows.iter().filter(|row| ours(row.country)).collect()).unwrap_or_default()
 }
 
-/// Each array's first-write hours of the entries any read lists (its last two), by
-/// (country, group, kind).
 fn recent_from(months: &[&CombatLogMonthRow]) -> BTreeMap<(u32, u32, u8), Vec<i32>> {
     let mut arrays = BTreeMap::<(u32, u32, u8), Vec<i32>>::new();
     for month in months {
@@ -258,20 +223,14 @@ fn recent_from(months: &[&CombatLogMonthRow]) -> BTreeMap<(u32, u32, u8), Vec<i3
     arrays
 }
 
-/// What is known of one retained own-ledger month at the hour.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Witness<'a> {
-    /// Rows the latest read listed.
     Listed(Vec<&'a CombatLogEquipmentRow>),
-    /// Rows the game dropped from the listing, as the recording kept them.
     Dropped(Vec<&'a CombatLogDroppedRow>),
     Empty,
     Unknown(&'static str),
 }
 
-/// One month's witness: its entry's rows (matched by first write) listed at the hour, else kept
-/// from the listing, else none where its country's latest read lists the entry (an array's last
-/// two), else unknown.
 pub fn witness<'a>(month: &CombatLogMonthRow, read: Option<i32>, listed: &'a [CombatLogEquipmentRow], dropped: &[&'a CombatLogDroppedRow], dates: &[i32]) -> Witness<'a> {
     let rows: Vec<&CombatLogEquipmentRow> = listed.iter().filter(|row| (row.country, row.group, row.kind, row.date) == (month.country, month.group, month.kind, month.date)).collect();
     if !rows.is_empty() {
@@ -293,8 +252,6 @@ pub fn witness<'a>(month: &CombatLogMonthRow, read: Option<i32>, listed: &'a [Co
     if newer <= 1 { Witness::Empty } else { Witness::Unknown(UNWITNESSED) }
 }
 
-/// Design names and archetypes from the hour's definitions: the country tags built once a reply
-/// and each variant named and listed once, however many rows name it.
 struct Designs<'f> {
     frame: &'f DecodedFrame,
     content: &'f Content,
@@ -313,7 +270,6 @@ impl<'f> Designs<'f> {
         Self { frame, content, tags, listed: Vec::new(), places: HashMap::new(), unnamed: BTreeSet::new() }
     }
 
-    /// `variant`'s place in the list, named the first time it is asked.
     fn design(&mut self, variant: u64) -> u32 {
         if let Some(&place) = self.places.get(&variant) {
             return place;
@@ -328,7 +284,6 @@ impl<'f> Designs<'f> {
         place
     }
 
-    /// A design's name, archetype and archetype name.
     fn read(&self, variant: u64) -> (Option<String>, Option<String>, Option<String>) {
         let (frame, content) = (self.frame, self.content);
         let (Some(tags), Ok(lexical), Ok(definitions)) = (&self.tags, frame.complete::<tables::LexicalTokens>(), frame.complete::<tables::VariantDefinitions>()) else {
@@ -349,7 +304,6 @@ impl<'f> Designs<'f> {
     }
 }
 
-/// The run of `rows` (in key order) of one Combat Log array: country, group and ledger.
 fn array_rows<'a>(rows: &'a [CombatLogEquipmentRow], array: (u32, u32, u8)) -> &'a [CombatLogEquipmentRow] {
     let start = rows.partition_point(|row| (row.country, row.group, row.kind) < array);
     let len = rows[start..].partition_point(|row| (row.country, row.group, row.kind) == array);

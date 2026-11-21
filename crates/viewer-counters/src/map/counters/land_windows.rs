@@ -1,4 +1,3 @@
-//! Land-combat windows and their retained control updates.
 
 use super::*;
 use std::collections::HashMap;
@@ -31,7 +30,6 @@ pub(super) struct Placed {
     pub(super) angle: f32,
     pub(super) terrain: Option<String>,
     pub(super) text: String,
-    /// Where the marker stands for a free eye.
     pub(super) anchor: Option<IconAnchor>,
 }
 
@@ -39,7 +37,6 @@ pub(super) struct Placed {
 pub struct View {
     pool: PoolView<u64>,
     terrain: BTreeMap<SlotId, Option<String>>,
-    /// What each window drew, handed again while it keeps its layout and anchor.
     painted: viewer_foundation::map::icon_windows::Painted<u64, Option<IconAnchor>>,
 }
 
@@ -71,7 +68,6 @@ struct Controls<'a> {
 }
 
 fn controls(root: &native::Element) -> Result<Controls<'_>, String> {
-    // Find buttons, icons and instant text within this window.
     let find = |kind, name: &str| {
         root.find(kind, name)
             .ok_or_else(|| format!("no control named {name}"))
@@ -101,7 +97,6 @@ fn update(
         Entry::Occupied(entry) => entry.get() != &placed.terrain,
     };
     if changed {
-        // Use the background's authored sprite name.
         let native::Fields::Button(button) = &c.background.fields else {
             return Err("bg_btn is not a standard button".into());
         };
@@ -118,14 +113,12 @@ fn update(
         instance.set_sprite(root, c.background, sprite, SpriteSetter::ButtonStandard)?;
         previous.insert_entry(placed.terrain.clone());
     }
-    // the political map always hides the air icon.
     instance.hide(root, c.air)?;
     instance.show(root, c.progress)?;
     instance.set_text(root, c.progress, &placed.text, resources)?;
     let frame = match marker.frame {
         Some(frame) => frame.wrapping_add(1) as i32,
         None => {
-            // Use the control's authored initial frame until an update writes it.
             let native::Fields::Icon(icon) = &c.frame.fields else {
                 return Err("mapicon_land_combat_frame is not a standard icon".into());
             };
@@ -147,7 +140,6 @@ fn update(
             instance.hide(root, c.direction)?;
         }
     } else {
-        // The marker's named score gap withholds only the two colours it cannot decide.
         instance.hide(root, c.background)?;
         instance.hide(root, c.direction)?;
     }
@@ -368,7 +360,6 @@ mod tests {
             placed.marker.tint = Some([1.0; 4]);
             placed.text = "?".into();
             let mut previous = BTreeMap::new();
-            // Returning to unknown history must reset a frame this viewer's slot held.
             for history in [None, Some(1), None, Some(0)] {
                 placed.marker.frame = history;
                 update(

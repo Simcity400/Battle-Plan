@@ -1,23 +1,3 @@
-//! The supply trains' plan, from the mirrors: the viewing country's routes (province paths on the
-//! railway's curves), their departure weights and the consists of its train variants, built by
-//! today's plan builder from values the layer's plan maker holds. The rail curves come from the
-//! rails layer's network and are kept per path, dropped where the rails layer redrew a strip.
-//!
-//! The fleet, timetable and random stream are presentation, advanced by the frame clock as today;
-//! a new plan takes them over while play goes forward, as today's next hour does. At a reset
-//! (`compose`: a seek, a gap, a piece's start) the plan starts with none, which is what today shows
-//! when no earlier hour was built: the fleet warmed from empty at the first frame. Hidden (above the
-//! railway cutoff, or trains switched off), the layer declares nothing.
-//!
-//! The layer's worker is fed the steps ahead of the head ([`Layer::ahead`]) and keeps its own
-//! copies of the tables the plan reads ([`super::owned`]), made from the mirrors at a compose. It
-//! folds every step it is handed into them as it comes, marking each row a step changed of what the
-//! plan reads once (a SupplyNodes row of another country than the plan's only where its census
-//! cells move or it comes or goes), and whenever it is free makes the plan from the newest step it
-//! holds: steps that arrived while it worked are folded, never planned one by one, so it is behind
-//! by one plan's time and never by a queue. The frame reads no row for it: it takes each plan once
-//! its hour is applied and shows the hour of the newest it has; the worker makes the curves from a
-//! network of its own.
 
 mod maker;
 mod store;
@@ -78,8 +58,6 @@ struct Columns {
     creator_link: Num<u32>,
     literal: Text,
     cooldown: Num<i32>,
-    /// What a train's curve reads of the rail network: each edge's level, each province's supply
-    /// source operands (today's `RailNetwork::read`).
     edge_level: Num<i32>,
     supply_capital: Num<u16>,
     supply_node: Num<u8>,
@@ -92,8 +70,6 @@ struct Columns {
 }
 
 impl Columns {
-    /// The columns of `table` whose change the plan reads. A RailEdges row is read for being
-    /// there, and a SupplyNodes row's census cells come first.
     fn read(&self, table: TableId) -> Vec<usize> {
         match table {
             TableId::Countries => vec![self.country_slot.column, self.tag.column],
@@ -122,7 +98,6 @@ impl Columns {
     }
 }
 
-/// The tables whose read cells make a plan be made again, for the proof's count of why.
 const STRUCTURAL: [TableId; 8] = [
     TableId::SupplyNodes,
     TableId::Provinces,
@@ -134,15 +109,12 @@ const STRUCTURAL: [TableId; 8] = [
     TableId::VariantDefinitions,
 ];
 
-/// The seven tables a plan needs wholly recorded.
 const WHOLE: [TableId; 7] = [TableId::SupplyNodes, TableId::TrainInventory, TableId::VariantDefinitions, TableId::RailEdges, TableId::RailCooldowns, TableId::ProvinceSupply, TableId::NavalBases];
 const READ: [TableId; 7] = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens, TableId::Provinces, TableId::ReservedCountryNaming, TableId::SupplyNodes];
 const CORE: &str = "Provinces, CountryLinks and Countries";
 
-/// What the static content gives the trains: assets, the rail geometry, the heights, the cutoff.
 pub trait Yard: Send + Sync {
     fn cutoff(&self) -> f32;
-    /// The plan of the viewing slot `ours` from `rows`.
     fn plan(&self, rows: &PlanRows<'_>, ours: u32, curve: &mut dyn FnMut(&[u32]) -> io::Result<Curve>, cache: &mut PlanCache) -> io::Result<TrainPlan>;
     fn curve(&self, path: &[u32], network: &RailNetwork) -> Curve;
 }
@@ -163,7 +135,6 @@ impl Yard for Content {
     }
 }
 
-/// What the worker's own tables keep of each table the plan reads: the cells it reads.
 fn shapes(columns: &Columns) -> Vec<Shape> {
     let numbers = |table: TableId| -> Vec<usize> {
         match table {
@@ -210,10 +181,8 @@ fn shapes(columns: &Columns) -> Vec<Shape> {
     ROWS.iter().map(|&table| Shape::new(table, &numbers(table), &lists(table)).with_texts(&texts(table))).collect()
 }
 
-/// The longest a whole settle waits for the plan of the hour applied before it fails by name.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The tables a train's curve reads the rail network from, which the worker keeps its own copy of.
 const NETWORK: [TableId; 3] = [TableId::RailEdges, TableId::ProvinceSupply, TableId::NavalBases];
 
 fn network_shapes(columns: &Columns) -> Vec<Shape> {
@@ -224,9 +193,6 @@ fn network_shapes(columns: &Columns) -> Vec<Shape> {
     ]
 }
 
-/// The rail network as today's reads it from the hour's rows (`RailNetwork::read`): edges of a
-/// level above zero, the provinces that are supply sources, the naval bases' provinces; none while
-/// NavalBases is not wholly recorded.
 fn network_of(tables: &Tables, columns: &Columns) -> RailNetwork {
     let (Some(edges), Some(supply), Some(naval)) = (tables.get(TableId::RailEdges), tables.get(TableId::ProvinceSupply), tables.get(TableId::NavalBases)) else {
         return RailNetwork::new(&[], &[], &[]);
@@ -253,8 +219,6 @@ fn network_of(tables: &Tables, columns: &Columns) -> RailNetwork {
     RailNetwork::from_display(map_display_data::landscape::RailGraph { graph, sources, ports })
 }
 
-/// The provinces whose part of the network differs between `old` and `new`: a curve through one
-/// is made again.
 fn network_moved(old: &RailNetwork, new: &RailNetwork) -> BTreeSet<u32> {
     let (old, new) = (old.display(), new.display());
     let mut moved: BTreeSet<u32> = old.graph.iter().filter(|(province, edges)| new.graph.get(province) != Some(edges)).map(|(&province, _)| province).collect();
@@ -264,12 +228,8 @@ fn network_moved(old: &RailNetwork, new: &RailNetwork) -> BTreeSet<u32> {
     moved
 }
 
-/// The tables the worker keeps the standing of alone: whether they are wholly recorded.
 const STANDING: [TableId; 2] = [TableId::ProvinceSupply, TableId::NavalBases];
 
-/// What the plan reads, as the worker keeps it from the steps: its own tables, the plan's country
-/// and that country's SupplyNodes rows, the rows the steps changed, the rails' redrawn provinces
-/// and the curves made since, and the plan maker.
 struct Work {
     columns: Columns,
     ours: Option<u32>,
@@ -278,19 +238,14 @@ struct Work {
     whole: Option<u32>,
     natives_moved: bool,
     statuses: HashMap<usize, Option<Status>>,
-    /// Per table of `ROWS` the slots the steps changed, each once: bounded by the table's rows.
     dirty: [BTreeSet<u32>; ROWS.len()],
     batch: Batch,
     maker: Box<Maker>,
-    /// Its own copy of the rail network's tables, the network made from them, and whether a step
-    /// changed them since: the curves are made here, so no plan waits on a frame.
     net: Tables,
     network: RailNetwork,
     net_stale: bool,
 }
 
-/// For the proof: a weighted node of the plan shown, its weight, the hour of the batch that last
-/// copied its row and the supply cells the worker holds of it now.
 #[derive(Clone, Copy, Debug)]
 pub struct ShownNode {
     pub key: u128,
@@ -300,7 +255,6 @@ pub struct ShownNode {
     pub consumed: Option<i64>,
 }
 
-/// The plan's country as the plan finds it: the first native, in key order, of the viewing slot.
 fn native_of(tables: &Tables, columns: &Columns, ours: Option<u32>) -> Option<u32> {
     let ours = ours?;
     let countries = tables.get(TableId::Countries)?;
@@ -308,7 +262,6 @@ fn native_of(tables: &Tables, columns: &Columns, ours: Option<u32>) -> Option<u3
 }
 
 impl Work {
-    /// Its tables from the mirrors and a maker made from them, the plan still to make.
     fn new(content: &Arc<dyn Yard>, mirrors: &Mirrors, columns: Columns, ours: Option<u32>) -> Self {
         let tables = Tables::from_mirrors(mirrors, &shapes(&columns));
         let net = Tables::from_mirrors(mirrors, &network_shapes(&columns));
@@ -334,9 +287,6 @@ impl Work {
         work
     }
 
-    /// Its tables and the maker's rows made again from the mirrors at the hour applied: nothing a
-    /// void step brought stays, neither a row in a slot the mirrors do not hold nor a copy queued
-    /// from it. The curves and the rails' redrawn provinces the batch holds stay theirs.
     fn restart(&mut self, mirrors: &Mirrors) {
         self.tables = Tables::from_mirrors(mirrors, &shapes(&self.columns));
         self.net = Tables::from_mirrors(mirrors, &network_shapes(&self.columns));
@@ -350,8 +300,6 @@ impl Work {
         self.maker.restart(mirrors, &self.columns, self.whole);
     }
 
-    /// The network made again from its tables when a step changed them; the curves through the
-    /// provinces whose part moved are made again with the next plan.
     fn refresh_network(&mut self) {
         if !std::mem::take(&mut self.net_stale) {
             return;
@@ -362,8 +310,6 @@ impl Work {
         self.batch.forget.provinces.extend(moved);
     }
 
-    /// Whether SupplyNodes row `slot` is of the plan's country: read from its key in the worker's
-    /// own table, after the step that wrote it.
     fn whole_row(&self, slot: u32) -> bool {
         let nodes = self.tables.get(TableId::SupplyNodes);
         nodes.is_some_and(|nodes| nodes.live(slot) && nodes.key(slot).is_some_and(|key| Some((key >> 32) as u32) == self.whole))
@@ -373,7 +319,6 @@ impl Work {
         native_of(&self.tables, &self.columns, self.ours)
     }
 
-    /// The plan's country read again; with `mark`, its SupplyNodes rows are copied whole.
     fn read_whole(&mut self, mark: bool) {
         self.whole = self.whole_native();
         if !mark {
@@ -385,7 +330,6 @@ impl Work {
         self.dirty[at].extend(rows);
     }
 
-    /// A step folded into its tables, the rows it changed of what the plan reads marked.
     fn fold(&mut self, step: &Step) {
         self.batch.seen[0] += 1;
         if step.gap() {
@@ -404,7 +348,6 @@ impl Work {
             if !WHOLE.contains(&table) && !READ.contains(&table) {
                 continue;
             }
-            // A status counts when its class changes, not when only its sample hour moves.
             if let Some((status, _)) = changes.status()
                 && self.statuses.insert(changes.table(), class(Some(status))) != Some(class(Some(status)))
             {
@@ -422,8 +365,6 @@ impl Work {
         }
     }
 
-    /// A step's changes of the rows the plan reads; a SupplyNodes row of another country than the
-    /// plan's only where its census cells move or it comes or goes.
     fn mark(&mut self, at: usize, table: TableId, delta: &Delta) {
         let read = self.columns.read(table);
         if table == TableId::SupplyNodes {
@@ -452,7 +393,6 @@ impl Work {
         }
     }
 
-    /// The marked rows' newest values out of its tables into the batch, with every table's state.
     fn copy(&mut self) {
         if std::mem::take(&mut self.natives_moved) && self.whole_native() != self.whole {
             self.read_whole(true);
@@ -474,45 +414,27 @@ impl Work {
 }
 
 enum Job {
-    /// The work made at a compose; its first product stands for `stamp` (none: the compose's).
     Reset { epoch: u64, work: Box<Work>, stamp: Option<Hour> },
-    /// The steps handed past the hour applied were void: its tables made again from the mirrors at
-    /// the hour applied, `stamp`, every row copied to the maker anew.
     Restart { epoch: u64, mirrors: Box<Mirrors>, stamp: Option<Hour> },
     Step { epoch: u64, step: Arc<Step> },
-    /// The rails' redrawn provinces since the frame last sent them.
     Rails { epoch: u64, forget: Forget },
-    /// Plans the frame let go of, dropped there.
     Trash(Vec<TrainPlan>),
 }
 
-/// What the worker made through the steps it folded through `stamp`: a plan (one copy for the layer,
-/// one for the scene), or none when nothing the plan draws changed; why the plan is refused; what
-/// making it took; the bytes it holds.
 struct Product {
     epoch: u64,
     stamp: Option<Hour>,
-    /// The hour the frame had applied when the worker began the batch it made this from: every
-    /// step through it is in the plan.
     begun: Option<Hour>,
     plans: Option<(TrainPlan, TrainPlan)>,
     refused: Option<String>,
     stats: Stats,
     held: usize,
-    /// The plan's weighted nodes as the worker holds them now, and how the plan was made.
     nodes: Vec<ShownNode>,
-    /// For the proof: this batch's steps folded, SupplyNodes writes of the plan-only cells and of
-    /// those to the plan country's rows, rows copied, and the plan country's nodes moved by supply
-    /// alone and otherwise.
     seen: [u64; 6],
     how: &'static str,
-    /// The plan country's native whose SupplyNodes rows the worker copies whole.
     whole: Option<u32>,
 }
 
-/// A job queued is a reset, or a step of `epoch` the frame has applied already: what was folded
-/// before it makes no plan (the plan after that step holds its rows, which the marks keep until
-/// then). Rails and trash between them do not count.
 fn superseded(queue: &VecDeque<Job>, epoch: u64, due: &Due) -> bool {
     queue.iter().any(|job| match job {
         Job::Reset { .. } | Job::Restart { .. } => true,
@@ -521,15 +443,10 @@ fn superseded(queue: &VecDeque<Job>, epoch: u64, due: &Due) -> bool {
     })
 }
 
-/// The worker: it takes every job that has arrived, folds the steps among them into its own tables,
-/// and makes a plan once none left of what it took is a step applied already: one plan for the
-/// newest hour the frame has applied, or for the step it applies next. What arrives meanwhile waits
-/// for that plan, so a frame that keeps applying never starves it.
 fn run(jobs: Receiver<Job>, out: Sender<Product>, due: Due) {
     let mut work: Option<Box<Work>> = None;
     let (mut epoch, mut stamp) = (0, None);
     while let Ok(job) = jobs.recv() {
-        // Read before the jobs are taken: the frame tells it an hour only once its steps are sent.
         let begun = due.hour();
         let mut queue: VecDeque<Job> = std::iter::once(job).chain(jobs.try_iter()).collect();
         while let Some(job) = queue.pop_front() {
@@ -595,45 +512,28 @@ fn run(jobs: Receiver<Job>, out: Sender<Product>, due: Due) {
 pub struct Trains {
     content: Arc<dyn Yard>,
     columns: Option<Columns>,
-    /// The viewing slot: the vision layer's when one is registered before this one, else the
-    /// one given.
     ours: Option<u32>,
-    /// Whether it declares the vision layer it reads (the window); the proof tool gives a slot.
     reads_vision: bool,
     shown: bool,
     plan: TrainPlan,
-    /// Why no plan is drawn: today's builder refused the hour, or not composed yet.
     refused: Option<String>,
-    /// The plan the scene takes next, and how it follows the one the scene holds.
     to_scene: Option<TrainPlan>,
     drawn_stale: Option<Continuity>,
-    /// The worker, the steps handed to it and the products it made, each taken once its hour is
-    /// applied; a product of an older compose (`epoch`) is dropped.
     epoch: u64,
     worker: Option<(Sender<Job>, Receiver<Product>)>,
     fed: Fed<Product>,
-    /// The provinces a curve the worker holds runs through.
     curved: HashSet<u32>,
     frame: u64,
-    /// Plans let go of, dropped on the worker.
     trash: Vec<TrainPlan>,
-    /// A whole settle's wait for the plan of the hour applied ran past [`WAIT`]: what the worker
-    /// owed then, to fail by.
     stalled: Option<String>,
     stats: Stats,
     worker_held: usize,
-    /// For the proof: the shown plan's weighted nodes as its worker holds them now, how it was made
-    /// with the hours it stands for and was begun at, the newest product since that changed nothing
-    /// drawn, and the batches' counts summed since that plan (see [`Product`]'s `seen`).
     nodes: Vec<ShownNode>,
     since_plan: [u64; 6],
-    /// For the proof: per step the frame applied after the shown plan's hour, its last hour and its
-    /// SupplyNodes writes of the plan-only cells, as the mirrors took them.
     applied_writes: VecDeque<(Hour, u64)>,
     made: (&'static str, Option<Hour>, Option<Hour>),
     quiet: Option<Hour>,
     whole: Option<u32>,
-    /// Mirror rows `apply` read.
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
@@ -674,12 +574,10 @@ impl Trains {
         Self { columns: self.columns, shown: self.shown, reads_vision: self.reads_vision, ..Self::new(Arc::clone(&self.content), self.ours) }
     }
 
-    /// The window's: it reads the viewing slot of the vision layer registered before it.
     pub fn reading_vision(self) -> Self {
         Self { reads_vision: true, ..self }
     }
 
-    /// The vision layer's viewing slot, when one is registered before this one; whether it changed.
     fn take_ours(&mut self, upstream: &Upstream<'_>) -> bool {
         let Some(vision) = upstream.get::<crate::layers::vision::Vision>() else { return false };
         let ours = vision.ours();
@@ -688,7 +586,6 @@ impl Trains {
         changed
     }
 
-    /// The newest hour its worker has made a product of, as received on the frame.
     #[cfg(any(test, feature = "test-support"))]
     pub fn made_through(&self) -> Option<Hour> {
         self.fed.made_through()
@@ -706,8 +603,6 @@ impl Trains {
         self.shown
     }
 
-    /// The trains' limitation notes in today's words, from the tables' `statuses` at the head;
-    /// none while hidden.
     pub fn notes(&self, statuses: &dyn viewer_foundation::map::tables::Statuses) -> Vec<String> {
         if !self.shown {
             return Vec::new();
@@ -721,18 +616,14 @@ impl Trains {
         self.ours
     }
 
-    /// Plans made, batches that changed nothing drawn, curves made, plans whose weights alone moved.
     pub fn marked(&self) -> [usize; 4] {
         self.stats.marked
     }
 
-    /// Plans made again by a change to a table the plan read, by `STRUCTURAL`, and by rails redrawn.
     pub fn why(&self) -> [u64; 9] {
         self.stats.why
     }
 
-    /// Microseconds in the census, the plan, its nodes' reading, curves and the carried
-    /// presentation; then the tables whose status moved.
     pub fn timed(&self) -> [u64; 6] {
         self.stats.timed
     }
@@ -742,9 +633,6 @@ impl Trains {
         self.applied_reads
     }
 
-    /// For the proof: how the plan shown was made (composed, built or its weights alone), the hour
-    /// its rows were folded through and the hour applied when its work began, and the newest
-    /// product since that changed nothing drawn.
     pub fn made(&self) -> String {
         let (how, stamp, begun) = self.made;
         let [steps, writes, marked, copies, supply, other] = self.since_plan;
@@ -755,12 +643,10 @@ impl Trains {
         )
     }
 
-    /// The shown plan's weighted nodes as its worker holds them now.
     pub fn shown_nodes(&self) -> &[ShownNode] {
         &self.nodes
     }
 
-    /// A SupplyNodes row of `mirrors` in the cells a weight and a walk read, for the proof's notes.
     pub fn node_cells(&self, mirrors: &Mirrors, key: u128) -> String {
         let (Some(columns), Some(mirror)) = (self.columns, mirrors.get(TableId::SupplyNodes)) else { return "SupplyNodes not held".into() };
         let Some(slot) = mirror.slot(key) else { return "no row".into() };
@@ -781,8 +667,6 @@ impl Trains {
         )
     }
 
-    /// What a wait for the trains' plan waits on: the hour applied, the newest plan made and the
-    /// one shown.
     pub fn owed(&self) -> String {
         format!("the trains' worker owes the plan of hour {:?}: newest made {:?}, shown {:?}", self.fed.through(), self.fed.made_through(), self.fed.shown())
     }
@@ -799,7 +683,6 @@ impl Trains {
         }
     }
 
-    /// The rails layer's redrawn strips: the worker's curves through them go.
     fn forward_redraws(&mut self, upstream: &Upstream<'_>) {
         let forget = match upstream.changed::<Rails>() {
             Change::Whole => {
@@ -820,8 +703,6 @@ impl Trains {
         self.send(Job::Rails { epoch: self.epoch, forget });
     }
 
-    /// What the worker made received, and every product due taken: those of the hours applied. With
-    /// `wait`, until the product of the last hour applied has arrived.
     fn exchange(&mut self, wait: bool) {
         let deadline = Instant::now() + WAIT;
         loop {
@@ -841,7 +722,6 @@ impl Trains {
             };
             let Some(out) = out else {
                 if waiting {
-                    // The worker went: the next settle composes again.
                     self.worker = None;
                 }
                 break;
@@ -857,7 +737,6 @@ impl Trains {
         }
     }
 
-    /// A product of an hour applied, shown.
     fn home(&mut self, product: Product) {
         if let (Some(begun), Some(stamp)) = (product.begun, product.stamp) {
             self.stats.plan_short = self.stats.plan_short.max(begun - stamp);
@@ -883,7 +762,6 @@ impl Trains {
         }
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         if self.refused != other.refused {
             return (1, Some(format!("refused: {:?} against {:?}", self.refused, other.refused)));
@@ -962,8 +840,6 @@ impl Layer for Trains {
         Ok(())
     }
 
-    /// The plan made here from the mirrors, whole; the worker started over with its own tables made
-    /// from them and that maker, and its first product, of the compose's hour, waited for.
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         self.take_ours(upstream);
         self.epoch += 1;
@@ -978,7 +854,6 @@ impl Layer for Trains {
         }
         let mut work = Work::new(&self.content, mirrors, self.columns(), self.ours);
         work.maker.make_now(&work.network, false);
-        // A compose is not a step: its making is not counted with the steps'.
         work.maker.take_stats();
         self.curved = work.maker.curved().collect();
         self.plan = work.maker.plan.clone();
@@ -1005,7 +880,6 @@ impl Layer for Trains {
         Ok(())
     }
 
-    /// Nothing but the hour applied: the worker folds the steps it was handed.
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         let Some(columns) = self.columns.filter(|_| self.shown) else { return };
         self.fed.applied_unpublished(step);
@@ -1030,8 +904,6 @@ impl Layer for Trains {
         }
     }
 
-    /// The worker starts over from the mirrors at the hour applied, its maker kept: its first plan
-    /// there stands for that hour, and the steps from there are handed again.
     fn void_ahead(&mut self, mirrors: &Mirrors, _kept: Option<Hour>) {
         if self.worker.is_none() || self.columns.is_none() || !self.shown {
             return;
@@ -1050,35 +922,28 @@ impl Layer for Trains {
 
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         self.frame += 1;
-        // Every step applied was handed before this settle (the host hands them first).
         self.fed.publish();
         if !self.shown {
-            // Hidden it holds nothing; shown again, its tables return as a reset and it composes.
             if self.worker.is_some() || self.plan.counts() != [0; 3] {
                 let (stats, frame, refused) = (self.stats, self.frame, self.refused.take());
                 *self = Self { stats, frame, refused, ..self.fresh() };
             }
             return Ok(());
         }
-        // Another viewing slot is another plan: made from the head as a reader opened on it makes it.
         if self.take_ours(upstream) {
             return self.compose_with(mirrors, upstream);
         }
-        // Read before anything returns: the host clears these once this layer has settled.
         self.forward_redraws(upstream);
         self.exchange(true);
         if let Some(owed) = self.stalled.take() {
             return Err(io::Error::other(format!("The trains' plan of the hour applied did not come within {} s: {owed}", WAIT.as_secs())));
         }
         if self.worker.is_none() {
-            // Its worker went: made again from the mirrors.
             return self.compose_with(mirrors, upstream);
         }
         Ok(())
     }
 
-    /// The plan into the scene's train pass, which carries the fleet it runs into it as today's
-    /// install does (anew after a compose); hidden or refused, an empty plan.
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         let Some(continuity) = self.drawn_stale else { return Ok(()) };
         let drawn = self.shown && self.refused.is_none();
@@ -1098,13 +963,10 @@ impl Layer for Trains {
         self.drawn_stale.is_none()
     }
 
-    /// Nothing: the worker makes the plan and its curves, and what it holds is published.
     fn carried(&self) -> Carried {
         Carried::default()
     }
 
-    /// The hour the plan shown stands for: current with every step applied, or the hour of the
-    /// newest plan the worker made.
     fn published(&self) -> Published {
         if !self.shown || self.columns.is_none() {
             return Published::Current;
@@ -1123,8 +985,6 @@ impl Layer for Trains {
     }
 }
 
-/// The trains' figures for the paced report: makings on the worker by what they came to, the
-/// worker's milliseconds a making, and the microseconds of a making's parts, summed.
 pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Trains>())) else { return serde_json::Value::Null };
     let stats = layer.stats;

@@ -1,15 +1,9 @@
-//! The recorded operands the game uses to pick a country's flag file: its own
-//! tag, cosmetic tag, original-or-own tag and ruling ideology group. Readers
-//! (the replay app, Battle Plan Recorder) turn them into flag keys through the
-//! content stack; the collector reads them from rows it has already committed.
 
 use crate::rows::{
     CountryAppearanceRow, CountryLinkRow, CountryRow, LocalPlayerRow, PoliticalPartyRow,
     PoliticsRow, Recorded,
 };
 
-/// Read the original-or-own tag bytes. An unread or historically absent
-/// exact suffix cannot be inferred from `name_tag`.
 pub fn original_tag<'a>(
     country: &'a CountryRow,
     appearance: &'a CountryAppearanceRow,
@@ -21,8 +15,6 @@ pub fn original_tag<'a>(
     )
 }
 
-/// The original-or-own tag from its operands: CountryAppearance's reference word and original
-/// tag, and the country's own tag.
 pub fn original_tag_of<'a>(
     reference: &Recorded<Option<i32>>,
     original: &'a Recorded<Option<Vec<u8>>>,
@@ -42,25 +34,14 @@ pub fn original_tag_of<'a>(
     std::str::from_utf8(bytes).map_err(|_| "country original-or-own tag is not UTF-8".into())
 }
 
-/// One country's flag operands, borrowed from one hour's complete rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlagOperands<'a> {
-    /// The country's own tag.
     pub tag: &'a str,
-    /// Empty without a cosmetic tag.
     pub cosmetic: &'a str,
-    /// The original-or-own tag; `None` when it cannot be read, which withholds
-    /// only the tag tail of the flag search.
     pub original: Option<&'a str>,
-    /// The ruling party's ideology group token; an empty token is still a group.
     pub group: &'a str,
 }
 
-/// The flag operands of the country the recording client views: its playing
-/// country, else the one it observes. The raw reference resolves through
-/// `CountryLinks` to a canonical slot, and the last `Countries` row of a slot
-/// wins, as for every recorded reference. The appearance and ruling party
-/// belong to the resolved country object, so an alias link shares them.
 pub fn viewed_country<'a>(
     local: &[LocalPlayerRow],
     links: &[CountryLinkRow],
@@ -86,7 +67,6 @@ pub fn viewed_country<'a>(
         .rev()
         .find(|country| country.canonical_slot == slot)
         .ok_or("the viewed country has no Countries row")?;
-    // Flags belong to a country object; a non-positive reference names none.
     if (country.id as i32) <= 0 {
         return Err("the viewed country has no country object".into());
     }
@@ -138,7 +118,6 @@ mod tests {
     }
 
     impl Rows {
-        /// A playing country under raw link 9, an alias of slot 3 whose object is 7.
         fn new() -> Self {
             Self {
                 local: vec![LocalPlayerRow {
@@ -214,19 +193,16 @@ mod tests {
                 group: "synthetic_group",
             }
         );
-        // An observer views its observed country.
         let mut rows = Rows::new();
         rows.local[0] = LocalPlayerRow {
             country: 0,
             observer_country: 7,
         };
         assert_eq!(rows.viewed().unwrap().tag, "mod-country-long-tag");
-        // A dynamic country's original tag stands in for its own.
         let mut rows = Rows::new();
         rows.appearances[0].original_tag_reference = Recorded::Value(Some(4));
         rows.appearances[0].original_tag = Recorded::Value(Some(b"ORIGINAL".to_vec()));
         assert_eq!(rows.viewed().unwrap().original, Some("ORIGINAL"));
-        // An unread original withholds only that operand.
         rows.appearances[0].original_tag = Recorded::NotRecorded;
         let viewed = rows.viewed().unwrap();
         assert_eq!((viewed.original, viewed.cosmetic), (None, "variants/red"));

@@ -7,9 +7,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { SeriesRankedLine, SeriesState, SeriesStateReply } from '../../generated/dashboard';
 
-/** A declared series' measure a race ranks: its family kind and measure name. */
 export interface RankedMeasure { kind: string; measure: string }
-/** A ranked chart's line, its summary decoded. */
 export type RankedLine = Decoded<SeriesRankedLine>;
 
 
@@ -24,7 +22,6 @@ function validState(value: unknown): value is SeriesState {
     && (run === null || (!!run && typeof run === 'object' && isRaw(run.valueRaw) && isInteger(run.firstHour) && isInteger(run.lastHour)));
 }
 
-/** A ranked `series-state` (`top` at an `hour`): the countries greatest there, greatest first, each with its state. */
 export function validateRankReply(value: unknown): SeriesStateReply {
   const reply = value as Partial<SeriesStateReply> | null;
   if (!reply || typeof reply !== 'object' || !isInteger(reply.decimals) || !Array.isArray(reply.states) || !reply.states.every(validState)) {
@@ -45,11 +42,8 @@ export function validateRankedLines(value: unknown): { decimals: number; lines: 
   return { decimals: reply.decimals, lines };
 }
 
-/** A raw fixed-point value as a number of its units. */
 export const rawNumber = (raw: string | bigint | number, decimals: number) => Number(raw) / 10 ** decimals;
 
-/** Race entries from states at `hour`: only states holding a value (a missing one is never a zero), greatest raw
- * value first, ties by tag, the first `slots`. */
 export function stateEntries(states: readonly SeriesState[], decimals: number, format: (raw: string, decimals: number) => string,
   hour: number, slots: number): CountryRaceEntry[] {
   const held = states.flatMap(state => state.run ? [{ tag: countryKey(state.country), raw: BigInt(state.run.valueRaw), text: state.run.valueRaw }] : []);
@@ -57,8 +51,6 @@ export function stateEntries(states: readonly SeriesState[], decimals: number, f
   return held.slice(0, Math.max(0, slots)).map(({ tag, text }) => ({ tag, value: rawNumber(text, decimals), label: format(text, decimals), stretch: null, hour }));
 }
 
-/** Race entries from a followed answer (a top N's named rows, or the tags asked in order): only rows holding a value,
- * a group's members at `hour` only, greatest first, ties by tag, the first `slots`. */
 export function followedEntries(answer: FollowedAnswer | undefined, asked: readonly string[] | null, member: ((tag: string, hour: number) => boolean) | null,
   hour: number, slots: number, decimals: number, format: (raw: string, decimals: number) => string): CountryRaceEntry[] {
   if (!answer || answer.kind === 'notRecorded') return [];
@@ -74,7 +66,6 @@ export function followedEntries(answer: FollowedAnswer | undefined, asked: reado
   return rows.slice(0, Math.max(0, slots)).map(({ tag, raw }) => ({ tag, value: rawNumber(raw, decimals), label: format(String(raw), decimals), stretch: null, hour }));
 }
 
-/** The countries a followed answer's rows are: a top N's named rows, or the tags asked in order. */
 export function followedRowTags(answer: FollowedAnswer | undefined, asked: readonly string[] | null): string[] {
   if (!answer || answer.kind === 'notRecorded') return [];
   const out: string[] = [];
@@ -82,17 +73,12 @@ export function followedRowTags(answer: FollowedAnswer | undefined, asked: reado
   return out;
 }
 
-/** The countries a race's view names and flags: a followed race's rows (its asked entries are then empty), else the
- * asked race's entries (undefined), and the lines' countries outside the race. */
 export function raceLookTags(race: boolean, followed: readonly string[] | null, lineTags: readonly string[]): readonly string[] | undefined {
   return race ? followed ?? undefined : lineTags;
 }
 
-/** Which rows `entries` are, whatever their order: what renders a followed race. */
 export const rowsOf = (entries: readonly CountryRaceEntry[]) => entries.map(entry => entry.tag).sort().join(',');
 
-/** The race at the clock's hour (`axisOffset` on), read as the chart draws: made again only when the hour (where
- * `byHour`) or the answer's version moves, the same array while its rows and values hold. */
 export function liveRace(clock: { getSnapshot(): { position: number } }, axisOffset: number, read: (hour: number) => readonly CountryRaceEntry[],
   version: () => number, byHour: boolean): LiveRaceEntries & { wake(): void } {
   const wakes = new Set<() => void>();
@@ -115,7 +101,6 @@ export function liveRace(clock: { getSnapshot(): { position: number } }, axisOff
   };
 }
 
-/** A fixed-point raw value written exactly, grouped, `digits` decimals at most (trailing zeros dropped). */
 export function formatRaw(raw: string, decimals: number, digits = 0): string {
   const negative = raw.startsWith('-'), body = (negative ? raw.slice(1) : raw).padStart(decimals + 1, '0');
   const whole = body.slice(0, body.length - decimals), fraction = body.slice(body.length - decimals, body.length - decimals + Math.min(digits, decimals)).replace(/0+$/, '');

@@ -1,4 +1,3 @@
-//! A failed middle record must leave its entire suffix to per-field decoding.
 use super::*;
 use crate::batch_fallback::{self, Batch};
 use std::{cell::RefCell, collections::BTreeMap};
@@ -121,8 +120,6 @@ impl Memory for Source<'_> {
                 .map(|row| sources.pointer(row).unwrap())
                 .collect(),
         ));
-        // An empty completion mask forces the same decoder to take only its
-        // original per-field path; it never consumes a synthetic gather fault.
         if self.serial && matches!(layout.stride(), PLAN_STRIDE | NAME_STRIDE) {
             return 0;
         }
@@ -198,9 +195,6 @@ fn check_suffix(names: bool, once: bool) {
     assert!(actual.demand > 0 && !actual.assigned.is_empty());
     let reference = capture(&source(true), &groups, &visits);
     if once {
-        // OWNER DECISION 2026-10-12 permits read-ahead to consume the first
-        // middle-row fault and recover by scalar reads. The untouched later
-        // fault may still refuse that row, but no extra row may be withheld.
         assert!(
             actual
                 .rows
@@ -250,7 +244,6 @@ fn check_suffix(names: bool, once: bool) {
         matching[0].1,
         (0..4).map(|index| FIRST + index * STEP).collect::<Vec<_>>()
     );
-    // A healthy row before the failed row retains its complete gathered data.
     let prefix_read = if names {
         (FIRST + NAMES.0, NAME_STRIDE)
     } else {

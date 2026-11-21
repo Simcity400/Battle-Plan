@@ -1,19 +1,9 @@
-//! A kept list's draws in runs recorded once into render bundles. A run keeps its bundle while
-//! the same draws (by the ids [`kept::bind`] gives them) stand in the same order: a splice
-//! records again only the runs its figures changed. A bundle cannot set the stencil reference,
-//! so a run never crosses a change of it; the pass sets it before executing the run.
 use std::collections::HashMap;
 
-/// Most draws in one run: small enough that a figure joining records little again, large
-/// enough that a run's execution costs little against its draws.
 pub(super) const RUN: usize = 64;
 
-/// Frames a run's draws must stand unchanged before it is recorded into a bundle: a run that a
-/// splice changes nearly every frame is drawn directly rather than recorded again each time.
 pub(super) const STILL: u32 = 8;
 
-/// A run of draws from `start`, by id, with its stencil reference, the frames its draws have
-/// stood unchanged, and its bundle once recorded.
 pub(super) struct Run<B> {
     pub start: usize,
     pub ids: Vec<u64>,
@@ -28,8 +18,6 @@ impl<B> Run<B> {
     }
 }
 
-/// The runs of `draws` (each draw's id and stencil reference, in order), keeping each of `old`
-/// whose draws stand together again, with its bundle.
 pub(super) fn plan<B>(old: Vec<Run<B>>, draws: &[(u64, u32)]) -> Vec<Run<B>> {
     let mut old: HashMap<u64, Run<B>> = old
         .into_iter()
@@ -99,7 +87,6 @@ mod tests {
     fn a_splice_records_again_only_the_runs_its_figures_changed() {
         let mut runs = plan::<u64>(Vec::new(), &draws(1..=192));
         recorded(&mut runs);
-        // Draws 70 to 72 leave and 500 joins in their place; everything else keeps its order.
         let spliced: Vec<u64> = (1..=69).chain([500]).chain(73..=192).collect();
         let runs = plan(runs, &draws(spliced.iter().copied()));
         let kept: Vec<_> = runs.iter().map(|run| (run.start, run.ids.len(), run.bundle)).collect();
@@ -108,7 +95,6 @@ mod tests {
             [(0, 64, Some(1)), (64, 62, None), (126, 64, Some(129))],
             "the first and last runs keep their bundles; the changed one is recorded again"
         );
-        // The same list again keeps every run.
         let mut again = runs;
         recorded(&mut again);
         let again = plan(again, &draws(spliced.iter().copied()));

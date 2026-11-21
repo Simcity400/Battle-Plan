@@ -5,15 +5,11 @@ import { movingRowClass, useRowMotion } from './useRowMotion';
 import type { MovingRow } from './rowMotion';
 import { untakenRows } from './rowMotion.ts';
 
-/** An unchanged viewport keeps its state, so measuring and scrolling never re-render for nothing. */
 const viewAt = (top: number, height: number) => (before: { top: number; height: number }) =>
   before.top === top && before.height === height ? before : { top, height };
 
-/** Moving rows with bounded DOM and keyboard access to every row. Motion retains
- * the full order; only the viewport and overscan render or request artwork. */
 export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit = false, minRowHeight = 20, padding = 0, label, className, onVisibleRows, empty, children }: {
   items: readonly { key: string; item: T }[]; rowHeight: number; fit?: boolean; minRowHeight?: number; padding?: number; label: string; className?: string;
-  /** Reports mounted rows, including their old content while they fade out. */
   onVisibleRows?: (rows: readonly MovingRow<T>[]) => void; empty?: ReactNode;
   children: (row: MovingRow<T>) => ReactNode;
 }) {
@@ -54,7 +50,6 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     const target = focus.backwards ? targets.at(-1) : targets[0];
     if (target) { target.focus(); setFocus(null); }
   }, [focus, range.start, range.end]);
-  // Native Tab enters mounted edge rows, not necessarily the list's logical first or last row.
   const tabbing = useRef<boolean | null>(null);
   useLayoutEffect(() => {
     const document = root.current?.ownerDocument;
@@ -74,11 +69,10 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     setView(viewAt(root.current.scrollTop, root.current.clientHeight));
     setFocus({ at, backwards });
   };
-  // A focused row that leaves hands focus to the row now in its place.
   const leftSlot = moving.find(row => row.key === focusedKey && row.phase === 'leaving')?.slot;
   useLayoutEffect(() => {
     if (leftSlot != null && items.length) seek(Math.min(leftSlot, items.length - 1), false);
-  }, [leftSlot]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [leftSlot]);
   return <div ref={root} className={`windowed-rows ${className ?? ''}`} role="list" aria-label={label}
     onFocus={event => {
       const backwards = tabbing.current;

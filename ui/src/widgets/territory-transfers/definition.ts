@@ -5,11 +5,9 @@ import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
 import type { Sort } from '../../charts/table/logic';
 import { choiceVariants } from '../../dashboard/options.ts';
 
-/** A pinned breakdown: one country's transfers, or links an earlier version pinned. */
 export const TRANSFER_BREAKDOWN = { id: 'parts', label: 'Country transfers' };
 export type TransferView = 'main' | 'transfers' | 'parts';
 
-/** Column keys and labels for the saved sorts; the widget renders the cells. */
 export const COUNTRY_COLUMNS = [
   { key: 'country', label: 'Country' }, { key: 'gained', label: 'Gained' }, { key: 'lost', label: 'Lost' },
   { key: 'net', label: 'Net' }, { key: 'netVictoryPoints', label: 'Net VP' },
@@ -20,7 +18,6 @@ export const TRANSFER_COLUMNS = [
 ] as const;
 export const COUNTRY_SORT: Sort = { column: 'net', direction: 'descending' };
 export const TRANSFER_SORT: Sort = { column: 'date', direction: 'descending' };
-/** The Transfers view keeps its own sort beside the Countries table's. */
 export const TRANSFER_SORT_KEY = 'transferSort';
 
 export const OPTIONS: readonly OptionField[] = [
@@ -44,7 +41,6 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   defaultCountries: { kind: 'all' }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 }, options: OPTIONS,
-  // Version 1 drew a flow diagram; its size and ribbon-colour settings stay stored, unused.
   migrate: (_from, widget) => widget,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'show'), () => 'Territory transfer log', ['transfers']),
 } as const satisfies WidgetMeta;

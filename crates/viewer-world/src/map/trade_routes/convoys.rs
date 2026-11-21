@@ -1,19 +1,3 @@
-//! Convoy models along the viewed country's production, supply-transfer, export, import and
-//! lend-lease lines.
-//!
-//! A line with assigned convoys carries `round(assigned × TRADE_ROUTE_NUM_CONVOYS_SCALE_FACTOR)`
-//! of them, at least one and at most `TRADE_ROUTE_MAX_NUM_CONVOYS`; a line without assigned
-//! convoys carries none. They show while the view draws units and the camera is strictly below
-//! `UNITS_DISTANCE_CUTOFF`.
-//!
-//! The entity is the viewed country's graphical culture followed by `_traderoute_convoy`, or the
-//! engine's fallback `westerngfx_traderoute_convoy` when the content declares no such entity.
-//! It is created in its default state.
-//!
-//! Each route owns a counter-seeded stream. Initial launch tries five random segment/position
-//! pairs, testing all active convoys across layers. On completion or a blocked relaunch it
-//! sleeps for a random fraction of the authored interval. Interior path controls receive the
-//! authored offset times the outgoing segment delta; endpoints stay fixed.
 
 use std::{collections::BTreeMap, io};
 
@@ -25,28 +9,18 @@ use viewer_foundation::map::ribbon_mesh::span;
 use super::{Countries, finite};
 use crate::map::{models::ModelInstance, unit_models::UnitModelAssets};
 
-/// What follows a graphical culture in a convoy entity's name.
 pub const CONVOY_ENTITY_SUFFIX: &str = "_traderoute_convoy";
-/// The engine's convoy entity when the culture's is not declared.
 pub const FALLBACK_CONVOY_ENTITY: &str = "westerngfx_traderoute_convoy";
 
-/// Distinguishes convoy animation seeds from other entities'.
 const CONVOY_SEED: u32 = 0x7472_6164;
 
-/// The `NDefines.NGraphics` values the convoys read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConvoyDefines {
-    /// `TRADE_ROUTE_NUM_CONVOYS_SCALE_FACTOR`.
     pub scale_factor: f32,
-    /// `TRADE_ROUTE_MAX_NUM_CONVOYS`.
     pub max: i32,
-    /// `TRADE_ROUTE_CONVOY_SPEED`, world units a second.
     pub speed: f32,
-    /// `TRADE_ROUTE_CONVOY_SLEEP_TIME`, seconds.
     pub sleep: f32,
-    /// `TRADE_ROUTE_CONVOY_ROUTE_OFFSET`, world units.
     pub route_offset: f32,
-    /// `UNITS_DISTANCE_CUTOFF`.
     pub cutoff: f32,
 }
 
@@ -63,18 +37,15 @@ impl ConvoyDefines {
     }
 }
 
-/// The convoys a line with `assigned` convoys carries.
 pub fn convoy_count(assigned: i32, defines: &ConvoyDefines) -> u32 {
     if assigned == 0 {
         return 0;
     }
     let scaled = (assigned as f32 * defines.scale_factor).round() as i64;
-    // At least one, then at most the maximum.
     let at_least_one = if scaled < 1 { 1 } else { scaled };
     u32::try_from(at_least_one.min(i64::from(defines.max))).unwrap_or(0)
 }
 
-/// The convoy entity of a graphical culture.
 pub fn convoy_entity(culture: &str, declared: &dyn Fn(&str) -> bool) -> Result<String, String> {
     let own = format!("{culture}{CONVOY_ENTITY_SUFFIX}");
     if declared(&own) {
@@ -88,7 +59,6 @@ pub fn convoy_entity(culture: &str, declared: &dyn Fn(&str) -> bool) -> Result<S
     ))
 }
 
-/// The viewed country's graphical culture.
 pub(super) fn viewed_culture(
     frame: &DecodedFrame,
     countries: &Countries<'_>,
@@ -104,7 +74,6 @@ pub(super) fn viewed_culture(
         .map_err(|_| "the viewed country's graphical culture is not text".to_owned())
 }
 
-/// Whether convoys show: units drawn, a mode with trade routes, the camera below the cutoff.
 pub fn convoys_shown(
     camera_height: f32,
     defines: &ConvoyDefines,
@@ -114,30 +83,23 @@ pub fn convoys_shown(
     draw_units && trade_routes && camera_height < defines.cutoff
 }
 
-/// One line's convoys: its entity, stored controls before renderer smoothing, and count.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConvoyLine {
     pub entity: String,
     pub points: Vec<[f32; 2]>,
     pub map_width: f32,
     pub count: u32,
-    /// The line's ordinal among the hour's convoy lines.
     pub seed: u32,
 }
 
-/// Where one convoy sails at a moment.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConvoyPose {
-    /// Its line's index and its own among the line's convoys.
     pub line: usize,
     pub convoy: u32,
     pub position: [f32; 3],
-    /// Unit heading in the map plane.
     pub facing: [f32; 3],
 }
 
-/// Convoy controls precede the renderer's final ribbon smoothing. The outgoing delta is not
-/// normalized, and neither endpoint is displaced.
 pub fn convoy_path(points: &[[f32; 2]], offset: f32) -> Vec<[f32; 2]> {
     let mut out = points.to_vec();
     for i in 1..points.len().saturating_sub(1) {
@@ -164,8 +126,6 @@ struct SailingConvoy {
     pose: ConvoyPose,
 }
 
-/// Per-view presentation state. The native seed/history is unsaved; this follows the same
-/// launch and motion law from a fresh presentation seed, without claiming native positions.
 #[derive(Default)]
 pub struct ConvoyFleet {
     lines: Vec<SailingLine>,
@@ -222,8 +182,6 @@ fn pose(
     }
 }
 
-/// Raw three-dimensional collision test; touching spheres do not collide. Deliberately no
-/// horizontal wrap correction: the native test compares the stored positions directly.
 fn collides(convoys: &[SailingConvoy], index: usize) -> bool {
     let a = &convoys[index];
     convoys.iter().enumerate().any(|(i, b)| {
@@ -295,8 +253,6 @@ impl ConvoyFleet {
         out
     }
 
-    /// Advance once per presentation frame. A timer reaching exactly zero remains asleep;
-    /// reaching exactly a segment's length remains on that segment until the next update.
     pub fn advance(
         &mut self,
         defines: &ConvoyDefines,
@@ -349,8 +305,6 @@ impl ConvoyFleet {
     }
 }
 
-/// The poses as unit-model instances, each entity baked by name; entities that do not bake are
-/// counted in `refused`.
 pub fn convoy_instances(
     assets: &UnitModelAssets,
     lines: &[ConvoyLine],
@@ -388,7 +342,6 @@ pub fn convoy_instances(
     out
 }
 
-/// The high-resolution presentation counter, converted to nanoseconds before narrowing.
 pub(crate) fn presentation_counter() -> u32 {
     #[cfg(windows)]
     {
@@ -398,7 +351,6 @@ pub(crate) fn presentation_counter() -> u32 {
             fn QueryPerformanceFrequency(value: *mut i64) -> i32;
         }
         let (mut count, mut frequency) = (0_i64, 0_i64);
-        // Both functions write their scalar outputs and do not retain the pointers.
         unsafe {
             QueryPerformanceCounter(&mut count);
             QueryPerformanceFrequency(&mut frequency);
@@ -446,7 +398,7 @@ mod tests {
             &height,
         );
         assert!(fleet.convoys[0].active);
-        assert!(!fleet.convoys[1].active); // All five attempts collide across distinct lines.
+        assert!(!fleet.convoys[1].active);
         assert!(fleet.convoys[0].distance > 0.);
         let initial = fleet.advance(&defines, 0., &height);
         assert_eq!(initial.len(), 1);
@@ -459,7 +411,7 @@ mod tests {
         assert!(fleet.convoys[0].sleep >= 0. && fleet.convoys[0].sleep < defines.sleep);
         fleet.convoys[0].sleep = 0.;
         fleet.advance(&defines, 0.25, &height);
-        assert!(!fleet.convoys[0].active); // Exactly zero is still sleeping.
+        assert!(!fleet.convoys[0].active);
         fleet.advance(&defines, 0.5, &height);
         assert!(fleet.convoys[0].active);
         assert_eq!(fleet.convoys[0].distance, 0.);

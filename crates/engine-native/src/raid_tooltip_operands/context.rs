@@ -1,4 +1,3 @@
-//! Stored contextual sources for raid and wing tooltips.
 use super::*;
 use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::modifier_keys as keys;
@@ -46,7 +45,6 @@ fn region_id(m: &impl Memory, base: usize, p: usize) -> Result<Option<u32>, &'st
     cstrategic_region::id(m, base, p)
 }
 
-/// Capture the kind of the exact selected base.
 pub(super) fn source(
     m: &impl Memory,
     base: usize,
@@ -74,7 +72,6 @@ pub(super) fn source(
             authenticate(m, base, province, cprovince::VTABLE_RVA)?;
             let state = pointer(m, province, cprovince::STATE)?;
             authenticate(m, base, state, cstate::VTABLE_RVA)?;
-            // Source-country access table, indexed by state ID.
             let access = pointer(m, air, 0x88)?;
             item(m, array(m, access, 0x90, 8)?, field(m, state, cstate::ID)?)?
         }
@@ -139,7 +136,6 @@ pub(super) fn target(
         return Ok(());
     }
     let provinces = array(m, state, cstate::PROVINCES, 8)?;
-    // The strategic region is selected from the first stored province.
     let first = if provinces.count == 0 {
         0
     } else {
@@ -209,8 +205,6 @@ fn target_country(
     Ok(0)
 }
 
-/// Count only the target country's wings whose mission region is the target's; retain rows for
-/// those wings alone.
 fn interception(
     m: &impl Memory,
     base: usize,
@@ -235,7 +229,6 @@ fn interception(
     if countries.link(field(m, owner, cstrategic_air::COUNTRY)?)? != Some(slot) {
         return Err("raid tooltip air owner mismatch");
     }
-    // Append every occurrence, retaining duplicate pools and wings.
     interceptors(
         m,
         base,
@@ -245,8 +238,6 @@ fn interception(
     )
 }
 
-/// Screens each pool's wings in batches: one copy of their pointers, one of
-/// their vtables and region pointers. Only wings in the target region are read.
 fn interceptors(
     m: &impl Memory,
     base: usize,
@@ -350,8 +341,6 @@ fn anti_air(
     state: usize,
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
-    // The building database's air-defence list holds templates with nonzero air defence. Index
-    // lookup precedes the healthy-level read.
     let db = engine_sites::at(base, cbuilding_database::SINGLETON_RVA)
         .ok_or("raid tooltip building database withheld")?;
     let db = pointer(m, db, 0)?;
@@ -437,8 +426,6 @@ pub(super) fn wing(
         ],
         sink,
     )?;
-    // The day/night array (`cweather_manager::PROVINCE_CLOCKS`) is bounded by its count, with
-    // stride 0x330.
     let environment = array(m, manager, 0x370, 0x330)?
         .element(id, 0x330)
         .ok_or("raid tooltip weather province outside array")?;
@@ -467,7 +454,6 @@ pub(super) fn wing(
             sink.push(CONTEXT, BASE_REGION, i64::from(id))?;
         }
         if let Some(ship) = creference_registry::resolve(m, base, host)? {
-            // Use the resolved ship directly, reading its task force (`cship::TASK_FORCE`).
             authenticate(m, base, ship, crate::cship::VTABLE_RVA)?;
             let task = pointer(m, ship, 0x728)?;
             authenticate(m, base, task, crate::ctask_force::VTABLE_RVA)?;
@@ -479,7 +465,6 @@ pub(super) fn wing(
             if state == 0 {
                 let mut location = pointer(m, task, 0x1f0)?;
                 let definition = pointer(m, location, cprovince::DEFINITION)?;
-                // Redirect a coastal land province to its sea edge.
                 if field::<u8>(m, definition, 0xd2)? & 1 != 0 {
                     location = object(m, base, game, field(m, definition, 0xc8)?, true)?;
                 }
@@ -503,7 +488,6 @@ fn land_base_province(
     if cached != 0 {
         return Ok(cached);
     }
-    // Use the first ID in the kind's state-indexed roster.
     authenticate(m, base, state, cstate::VTABLE_RVA)?;
     let kind = field::<i32>(m, airbase, cair_base::KIND)?;
     let offset = match kind {
@@ -537,8 +521,6 @@ mod tests {
 
     const REGION: usize = 0x9000;
 
-    /// One pool of 70 wing slots, two batches. The wing in slot `i` is in the
-    /// target region when `i % 3 == 0`; slot 69 repeats wing 5, outside it.
     fn world() -> Vec<u8> {
         let mut bytes = vec![0u8; 0x40_000];
         let mut put =
@@ -583,7 +565,6 @@ mod tests {
         let mut rows = vec![Row::default(); 200];
         let (result, required) = run(&bytes, &mut rows);
         assert_eq!(result, Ok(()));
-        // Slots 0, 3, .., 66: 23 wings, four rows each.
         assert_eq!(required, 23 * 4);
         let planes: Vec<_> = rows[..required]
             .iter()
@@ -602,7 +583,6 @@ mod tests {
     #[test]
     fn a_repeated_wing_counts_twice_and_a_bad_wing_fails_the_raid() {
         let mut bytes = world();
-        // The repeated slot now points at wing 3, which is in the region.
         bytes[0x400 + 69 * 8..0x400 + 70 * 8]
             .copy_from_slice(&(0x1000u64 + 3 * 0x800).to_le_bytes());
         let mut rows = vec![Row::default(); 200];

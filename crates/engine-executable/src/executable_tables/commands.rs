@@ -9,13 +9,9 @@ use std::{
 mod owners;
 pub use owners::{Object, Source};
 
-/// FNV-1a of the decorated type every command derives from.
 const COMMAND_TYPE: u64 = 0xfa4c_d01a_a014_fc8b;
-/// Length and FNV-1a of the text only the shared country access check reports.
 const ACCESS_CHECK_TEXT: (usize, u64) = (12, 0x2483_988f_1cc5_66b3);
-/// Instructions one owner confirmation may decode, across the check and the calls it follows.
 const CONFIRMATION_BUDGET: usize = 4096;
-/// Bytes read from a leaf function without an exception-directory extent.
 const LEAF_BYTES: u32 = 128;
 
 #[derive(Clone, Copy, Debug)]
@@ -50,12 +46,10 @@ pub struct CommandTables {
 }
 
 impl CommandTables {
-    /// The table a recording carries ([`super::recorded`]).
     pub(super) fn recorded(kinds: Vec<Kind>, objects: Vec<(u32, u32)>) -> Self {
         Self { kinds, objects }
     }
 
-    /// SHA-256 of this table's build-independent content, comparable across builds.
     pub fn content_digest(&self) -> [u8; 32] {
         let mut kinds: Vec<_> = self.kinds.iter().collect();
         kinds.sort_unstable_by(|left, right| left.name.cmp(&right.name));
@@ -85,7 +79,6 @@ impl CommandTables {
         let mut commands = Vec::new();
         let mut families = Vec::new();
         let mut names = HashMap::new();
-        // Only primary vtables identify a command or an operand object.
         let mut primaries: Vec<_> = image
             .classes()
             .iter()
@@ -164,7 +157,6 @@ impl CommandTables {
             }
             Ok(issued)
         })?;
-        // A kind still abstract at the type slot is never issued.
         concrete.retain(|&vtable| {
             slot(image, vtable, type_slot).is_ok_and(|reader| reader != base[type_slot])
         });
@@ -245,12 +237,10 @@ impl CommandTables {
     }
 }
 
-/// FNV-1a of a class name, which identifies supported classes without spelling them.
 pub fn class_hash(name: &str) -> u64 {
     hash(name.as_bytes())
 }
 
-/// FNV-1a of a type descriptor's decorated name, hashed once per descriptor.
 pub(super) fn type_hash(
     image: &PeImage,
     names: &mut HashMap<u32, u64>,
@@ -319,7 +309,6 @@ fn target_content(target: Target, digest: &mut Sha256) {
     digest.update(field.to_le_bytes());
 }
 
-/// The index of the one base slot `matches` accepts.
 fn unique_slot(
     base: &[u32],
     role: &str,
@@ -334,7 +323,6 @@ fn unique_slot(
     found.ok_or_else(|| invalid(format!("command {role} slot missing")))
 }
 
-/// The code slots of a vtable, up to the first entry that is not code.
 fn slots(image: &PeImage, vtable: u32) -> io::Result<Vec<u32>> {
     let mut slots = Vec::new();
     loop {
@@ -355,7 +343,6 @@ fn slot(image: &PeImage, vtable: u32, index: usize) -> io::Result<u32> {
     image.va_to_rva(entry)
 }
 
-/// The type token a command's type reader stores, if `function` has that exact shape.
 fn token(image: &PeImage, function: u32) -> Option<Token> {
     let mut decoder = Decoder::with_ip(
         64,
@@ -396,7 +383,6 @@ fn token(image: &PeImage, function: u32) -> Option<Token> {
         .then_some(token)
 }
 
-/// The start of the one function that reports the access check's text.
 fn access_check(image: &PeImage) -> io::Result<u32> {
     match text_users(image, ACCESS_CHECK_TEXT)?[..] {
         [(start, _)] => Ok(start),
@@ -405,7 +391,6 @@ fn access_check(image: &PeImage) -> io::Result<u32> {
     }
 }
 
-/// The functions that address a NUL-terminated text of this length and FNV-1a.
 fn text_users(image: &PeImage, anchor: (usize, u64)) -> io::Result<Vec<(u32, u32)>> {
     image.referencing_functions(
         image
@@ -416,15 +401,12 @@ fn text_users(image: &PeImage, anchor: (usize, u64)) -> io::Result<Vec<(u32, u32
     )
 }
 
-/// Whether `rva` is a whole read-only text of this length and FNV-1a.
 pub(super) fn is_text(image: &PeImage, rva: u32, (length, text): (usize, u64)) -> bool {
     image
         .text_at(rva, length)
         .is_some_and(|bytes| hash(bytes) == text)
 }
 
-/// Whether a function calls or jumps straight to `target`, reading its exception-directory
-/// extent when it has one, otherwise the leaf up to its first exit, and stopping at data.
 fn reaches(image: &PeImage, function: u32, target: u32) -> bool {
     let (end, leaf) = match image.function(function) {
         Ok((start, end)) if start == function => (end, false),
@@ -489,8 +471,6 @@ fn decode(image: &PeImage, rva: u32) -> io::Result<Instruction> {
     Ok(instruction)
 }
 
-/// Sorted offsets from the command that a permission check reads or addresses, following its
-/// branches and, one level deep, the calls it makes on the command or a field of it.
 fn operand_offsets(image: &PeImage, function: u32) -> Vec<i64> {
     let mut found = Vec::new();
     let mut budget = CONFIRMATION_BUDGET;
@@ -500,8 +480,6 @@ fn operand_offsets(image: &PeImage, function: u32) -> Vec<i64> {
     found
 }
 
-// A path into bytes that do not decode, or out of the image, ends there; that only narrows
-// what is confirmed.
 fn trace(
     image: &PeImage,
     start: u32,
@@ -510,7 +488,6 @@ fn trace(
     budget: &mut usize,
     found: &mut Vec<i64>,
 ) {
-    // Each general register's offset from the command, while it holds one.
     let mut initial = [None; 16];
     initial[Register::RCX.number()] = Some(receiver);
     let mut work = vec![(start, initial)];

@@ -1,5 +1,3 @@
-//! A held state's carried hour equals a fresh read of the same memory, without reading what only
-//! hooked building writers change; the plan and per-hour operands are read once.
 use super::*;
 use crate::walk::Outcome;
 use std::cell::RefCell;
@@ -19,7 +17,6 @@ const GAME: usize = 0x2600_0000;
 const STATES: usize = 0x2600_2000;
 const TOKEN: u32 = 0x2fab;
 
-/// Zeroed regions; a read outside them fails.
 struct World {
     regions: Vec<(usize, Vec<u8>)>,
     reads: RefCell<Vec<usize>>,
@@ -54,8 +51,6 @@ impl World {
         self.reads.borrow_mut().clear();
     }
 
-    /// One ungrouped state-capped infrastructure definition (level cap 5) and one state holding
-    /// level 2 with one queued construction of 3.
     fn new() -> Self {
         let mut world = Self {
             regions: Vec::new(),
@@ -130,14 +125,12 @@ fn fresh(world: &World) -> (Infrastructure, Held, Proof) {
     (proof.value(), held, proof)
 }
 
-/// The fixture with no queued construction.
 fn idle() -> World {
     let mut world = World::new();
     world.array(BUILDING + PRIMARY_CONSTRUCTION, 0, 0);
     world
 }
 
-/// This hour's gathered queue of the one instance.
 fn gathered(world: &World) -> Option<Queue> {
     let mut bytes = [0; QUEUE_BYTES];
     let mut complete = [false];
@@ -160,7 +153,6 @@ fn a_fresh_read_matches_the_snapshot() {
 fn a_carried_state_reads_construction_bonus_and_category_but_not_its_status() {
     let world = World::new();
     let (_, held, _) = fresh(&world);
-    // Construction and the level bonus have no hooked writer: a carried hour reads them.
     let mut changed = World::new();
     changed.put(ENTRY + CONSTRUCTION_LEVEL, 1_i16.to_le_bytes());
     changed.put(BUILDING + MAXIMUM_BONUS, (-2_i16).to_le_bytes());
@@ -198,7 +190,6 @@ fn an_hour_authenticates_each_category_once() {
     assert_eq!(hour.carried(STATE, held), first);
     assert_eq!(world.reads(CATEGORY), 1);
     drop(hour);
-    // A new hour reads it again.
     let mut hour = Hour::new(&world, BASE, GAME, &mut cache, true).unwrap();
     assert_eq!(hour.carried(STATE, held), first);
     assert_eq!(world.reads(CATEGORY), 2);
@@ -212,13 +203,11 @@ fn a_reused_plan_reads_only_its_pointers_until_they_move() {
     assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 1);
     drop(Hour::new(&world, BASE, GAME, &mut cache, true).unwrap());
     assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 1);
-    // Without reuse, or once forgotten, the plan is read again.
     drop(Hour::new(&world, BASE, GAME, &mut cache, false).unwrap());
     assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 2);
     cache.forget();
     drop(Hour::new(&world, BASE, GAME, &mut cache, true).unwrap());
     assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 3);
-    // A moved definition is read even when reuse is allowed.
     let mut moved = World::new();
     moved.region(DEFINITION + 0x1000, template::SIZE);
     moved.put(DEFINITIONS, ((DEFINITION + 0x1000) as u64).to_le_bytes());
@@ -251,11 +240,9 @@ fn a_quiet_hour_is_proven_by_the_gathered_queue_and_category_alone() {
     let mut hour = Hour::new(&world, BASE, GAME, &mut cache, true).unwrap();
     assert!(hour.proves());
     assert!(hour.quiet(&held, &proof, Some(&queue), CATEGORY as u64));
-    // Only the plan's pointers: nothing of the state, its status, building or category.
     for address in [STATE, STATE + cstate::CATEGORY, BUILDING, BUILDING + MAXIMUM_BONUS, CATEGORY] {
         assert_eq!(world.reads(address), 0, "{address:#x}");
     }
-    // Another category, a missing record, or one never held is not proven.
     assert!(!hour.quiet(&held, &proof, Some(&queue), CATEGORY as u64 + 8));
     assert!(!hour.quiet(&held, &proof, None, CATEGORY as u64));
 }
@@ -265,7 +252,6 @@ fn a_changed_or_queued_record_is_not_proven() {
     let world = idle();
     let (_, held, proof) = fresh(&world);
     let mut cache = Cache::default();
-    // A new level bonus changes the gathered record.
     let mut bonus = idle();
     bonus.put(BUILDING + MAXIMUM_BONUS, (-1_i16).to_le_bytes());
     let mut hour = Hour::new(&bonus, BASE, GAME, &mut cache, false).unwrap();
@@ -275,7 +261,6 @@ fn a_changed_or_queued_record_is_not_proven() {
         Ok(4)
     );
     drop(hour);
-    // Queued construction is read every hour, even with an unchanged record.
     let queued = World::new();
     let (_, held, proof) = fresh(&queued);
     let mut hour = Hour::new(&queued, BASE, GAME, &mut cache, false).unwrap();

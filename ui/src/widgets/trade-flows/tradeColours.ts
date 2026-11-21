@@ -9,8 +9,6 @@ import type { TradeData } from './tradeData';
 
 type ColourSample = NameAt & { stretch: number };
 
-/** Full native census identities reserve stable slots, independent of diagram
- * ranks, filters and the same holder appearing on both sides. Styles only. */
 export function tradeColourPlan(data: TradeData | null, branch: RecordedBranch | undefined, hour: number, fixed: boolean) {
   const selection = new Map<string, ColourSample | null>();
   if (data && fixed) for (const identity of [...data.countryFacts.keys()].sort()) {
@@ -23,8 +21,6 @@ export function tradeColourPlan(data: TradeData | null, branch: RecordedBranch |
   return { selection, wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(sample => sample.hour)).size) };
 }
 
-/** Correction runs only after all bounded style chunks answer, and only when
- * recorded colours change. Dates and arriving names never change palette slots. */
 export function tradeFixedColourKey(plan: ReturnType<typeof tradeColourPlan>, styles: ReadonlyMap<string, CountryStyle | null | Error>): string | null {
   if (plan.wanted.some(sample => !styles.has(nameKey(sample.hour, sample.tag)))) return null;
   return JSON.stringify([...plan.selection].map(([identity, sample]) => {
@@ -33,8 +29,6 @@ export function tradeFixedColourKey(plan: ReturnType<typeof tradeColourPlan>, st
   }));
 }
 
-/** The shared appearance adjustment runs once over the complete identity set.
- * Missing native colours reserve a slot but display the widget's neutral colour. */
 export function tradeCountryColours(key: string, surface: string, fixed: boolean): Map<string, string> {
   const inputs = JSON.parse(key) as [string, CountryStyle['color']][];
   if (!inputs.some(([, color]) => color != null)) return new Map();
@@ -43,8 +37,6 @@ export function tradeCountryColours(key: string, surface: string, fixed: boolean
   return new Map([...colours].filter(([identity]) => styles.get(identity)?.color != null));
 }
 
-/** Pending samples can retain a correction only within the same holder/alias and
- * recorded stretch; a reused tag cannot borrow a previous holder's colour. */
 export function heldTradeColours(colours: ReadonlyMap<string, string>, previous: ReturnType<typeof tradeColourPlan>['selection'],
   next: ReturnType<typeof tradeColourPlan>['selection']): Map<string, string> {
   return new Map([...colours].filter(([identity]) => {

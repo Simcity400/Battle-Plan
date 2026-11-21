@@ -1,36 +1,9 @@
-//! A drifting country's research and technology rows at its slice, copied
-//! from its last complete read with only the daily drift read afresh.
-//!
-//! Between two reads of a country no hooked writer marked, in hours whose Take certified every
-//! write  ([`crate::slicing::Changed`]), its research and technology rows change only by daily
-//! drift. For a country owning a state, the daily technology update progresses each slot, banking
-//! idle Days  or adding assigned technology progress. The progress adder's other callers run inside
-//! hooked writes (assignment, console), reach hooked writes later in the same call (the technology
-//! tree sets the level and completes), or are effects its own detour marks
-//! (`engine_mutations::country_input_mutations::EFFECT_PROGRESS_SOURCE`), so a carried roster reads the
-//! progress of the technologies assigned to its slots, and nothing else. A slot's assignment is
-//! itself certified (`technology assignment` and `research slot synchronization` mark their
-//! country), so the assigned rows are held with the roster, taken from the same pass's
-//! ResearchSlots rows. Every other recorded field is the one its last read held.
-//!
-//! A carry gathers only operands the full walk reads. A failed gather
-//! permits one counted serial pass to locate a persistent failure: the
-//! country's status through `ctechnology_status::copy_status`/`decode_status`,
-//! the roster or slot roster header, then the drift fields. A successful
-//! serial fallback publishes its rows under the relaxed read-order rule;
-//! a status or roster differing from the held read makes the country read
-//! whole. Rows are held only
-//! for a country owning a state (the only ones whose slice reads them), and
-//! only from a complete read. Storage is advisory and completely fallible:
-//! an entry that cannot be held whole is dropped, and the country is read
-//! whole at its next slice.
 use engine_native::{Memory, cpdx_array::Array, read};
 use engine_research::{
     cresearch_slot, ctechnology, ctechnology_status, research_inputs, research_modifiers,
 };
 use std::collections::HashMap;
 
-/// One country's last complete technology roster read.
 #[derive(Default)]
 struct Technologies {
     country: usize,
@@ -38,19 +11,15 @@ struct Technologies {
     roster: Array,
     rows: Vec<ctechnology::Row>,
     pointers: Vec<usize>,
-    /// The rows of the technologies assigned to research slots, ascending.
     assigned: Vec<usize>,
     assigned_pointers: Vec<usize>,
 }
 
-/// One country's last complete research read.
 #[derive(Default)]
 struct Research {
     country: usize,
     status: usize,
     slots: Array,
-    /// Each slot in roster order, with the input row (sorted by slot index)
-    /// that it fills.
     slots_to_rows: Vec<(usize, usize)>,
     slot_pointers: Vec<usize>,
     assigned_pointers: Vec<usize>,
@@ -59,18 +28,12 @@ struct Research {
     modifiers: Vec<research_modifiers::Row>,
 }
 
-/// What a carry made of a country's slice.
 pub enum Carried<T> {
-    /// Its rows from the held read, with the drift read afresh.
     Rows(T),
-    /// Nothing usable is held: read it whole.
     Miss,
-    /// A live read failed: the country's rows are unavailable this hour,
-    /// with the full walk's reason, and nothing is read again.
     Failed(&'static str),
 }
 
-/// The held reads of one sliced family, keyed by native country id.
 #[derive(Default)]
 pub struct Store {
     technologies: HashMap<u32, Technologies>,
@@ -83,7 +46,6 @@ impl Store {
         self.research.clear();
     }
 
-    /// Keep only the owners a complete census saw (ascending).
     pub fn retain(&mut self, seen: &[u32]) {
         self.technologies
             .retain(|owner, _| seen.binary_search(owner).is_ok());
@@ -91,17 +53,11 @@ impl Store {
             .retain(|owner, _| seen.binary_search(owner).is_ok());
     }
 
-    /// Hold nothing for `owner`: its next slice reads it whole.
     pub fn forget(&mut self, owner: u32) {
         self.technologies.remove(&owner);
         self.research.remove(&owner);
     }
 
-    /// Hold a complete technology roster read of `owner` (`country`, the
-    /// census object) with its complete ResearchSlots rows of the same pass
-    /// (`slots`, `None` when they did not read), or nothing when it cannot
-    /// be held whole. It re-reads only the status and roster header the
-    /// walk read first.
     #[allow(clippy::too_many_arguments)]
     pub fn hold_technologies(
         &mut self,
@@ -113,7 +69,6 @@ impl Store {
         pointers: &[usize],
         slots: Option<&[cresearch_slot::Row]>,
     ) {
-        // A full read re-holds every drifting country: refill its last hold.
         let mut held = self.technologies.remove(&owner).unwrap_or_default();
         let technologies = &mut self.technologies;
         let kept = engine_allocation::advisory(|| {
@@ -127,8 +82,6 @@ impl Store {
                         .position(|row| row.database_index == slot.database_index)?,
                 );
             }
-            // Two slots can research one technology (the loader
-            // admits it); the full walk reads each roster row's progress once.
             held.assigned.sort_unstable();
             held.assigned.dedup();
             held.assigned_pointers.clear();
@@ -148,9 +101,6 @@ impl Store {
         }
     }
 
-    /// `owner`'s held roster into `rows` and `pointers` from `start`, with
-    /// the progress of each technology assigned to a research slot read
-    /// afresh, in roster order as the full walk reads it.
     #[allow(clippy::too_many_arguments)]
     pub fn carry_technologies(
         &self,
@@ -223,10 +173,6 @@ impl Store {
         Carried::Rows(len)
     }
 
-    /// Hold a complete research read of `owner` (`country`, the census
-    /// object), or nothing when it cannot be held whole. It re-reads only
-    /// operands the walk read first: the status, the slot roster and each
-    /// slot's index.
     pub fn hold_research(
         &mut self,
         memory: &impl Memory,
@@ -240,14 +186,11 @@ impl Store {
         ),
     ) {
         let (inputs, bonuses, modifiers) = rows;
-        // A full read re-holds every drifting country: refill its last hold.
         let mut held = self.research.remove(&owner).unwrap_or_default();
         let research = &mut self.research;
         let kept = engine_allocation::advisory(|| {
             let status = status(memory, base, country).ok()?;
             let slots = slots(memory, status)?;
-            // `research_inputs::walk_country_buffer` visits the slots in roster order and sorts its
-            // rows by each slot's own index; each slot keeps the row it fills.
             if inputs.len() != slots.count as usize {
                 return None;
             }
@@ -286,9 +229,6 @@ impl Store {
         }
     }
 
-    /// `owner`'s held research rows into the three buffers, with each slot's
-    /// banked days and its technology's progress read afresh, slot by slot
-    /// in roster order as the full walk reads them.
     #[allow(clippy::too_many_arguments)]
     pub fn carry_research(
         &self,
@@ -356,10 +296,6 @@ impl Store {
                 engine_native::batch_fallback::Batch::GovernanceResearchDrift,
             );
         }
-        // One original serial pass locates persistent failures in slot order.
-        // Under the owner's relaxed read-order rule, publish a successful
-        // fallback: a fault met only by the gather must not withhold more
-        // than the original serial walk. Failed gather bytes are never used.
         for &(slot, row) in &held.slots_to_rows {
             let Some(banked) = slot
                 .checked_add(cresearch_slot::BANKED_DAYS)
@@ -385,14 +321,11 @@ impl Store {
     }
 }
 
-/// The country's authenticated `CTechnologyStatus*`, with the full walks'
-/// reasons ([`ctechnology_status::copy_status`], `decode_status`).
 fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'static str> {
     let raw = ctechnology_status::copy_status(memory, country)?;
     ctechnology_status::decode_status(base, country, &raw)
 }
 
-/// The status's all-technology roster header.
 fn roster(memory: &impl Memory, status: usize) -> Option<Array> {
     Array::read(
         memory,
@@ -401,7 +334,6 @@ fn roster(memory: &impl Memory, status: usize) -> Option<Array> {
     )
 }
 
-/// The status's research slot roster header.
 fn slots(memory: &impl Memory, status: usize) -> Option<Array> {
     Array::read(
         memory,
@@ -410,10 +342,6 @@ fn slots(memory: &impl Memory, status: usize) -> Option<Array> {
     )
 }
 
-/// `rows` copied into `held`'s storage, or `None` when it cannot be had.
-/// Called inside [`engine_allocation::advisory`], where a failed text clone
-/// yields an empty payload instead of stopping the capture: a copy that does
-/// not equal its source is dropped.
 fn copy_into<T: Clone + PartialEq>(held: &mut Vec<T>, rows: &[T]) -> Option<()> {
     held.clear();
     engine_allocation::reserve(held, rows.len()).ok()?;
@@ -421,8 +349,6 @@ fn copy_into<T: Clone + PartialEq>(held: &mut Vec<T>, rows: &[T]) -> Option<()> 
     (held.as_slice() == rows).then_some(())
 }
 
-/// A failed gather supplies no values. Advisory storage failure leaves the
-/// original serial read; a live fault permits one counted serial fallback.
 enum Drift {
     Copied(Vec<i64>),
     Failed,
@@ -444,9 +370,6 @@ fn drift(memory: &impl Memory, pointers: &[usize], offset: usize) -> Drift {
     let Some((mut bytes, mut values)) = storage else {
         return Drift::Serial;
     };
-    // Daily research slot progress banks into the slot; the technology progress adder technology
-    // research progress adder writes the technology's progress. One record contains just that
-    // object's qword. Certificates prove these pointers' lifetimes, not readability.
     let fields = [engine_native::memory::RecordField {
         source_offset: offset,
         destination_offset: 0,

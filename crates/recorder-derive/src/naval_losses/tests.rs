@@ -8,7 +8,6 @@ use replay_data::rows::{CountryLinkRow, RowCodec, SunkShipsRow};
 
 const TEXTS: &[&[u8]] = &[b"not read"];
 
-/// The first hour: three game years after the calendar's epoch, so months are counted.
 const BASE: i32 = game_model::calendar::HOUR_EPOCH + 3 * 365 * 24;
 const MONTH: i32 = 36;
 
@@ -25,16 +24,13 @@ fn store() -> Store {
     store
 }
 
-/// A sinking of `victim`'s ship by `attacker` at `sink_hour`.
 fn sunk(name: &[u8], victim: u32, attacker: u32, sink_hour: i32, cause_record: u8) -> SunkShipEntry {
     SunkShipEntry { ship_name: name.to_vec(), victim_country: victim, attacker_country: attacker, sink_hour, cause_record, province: 5, province_present: 1, ..Default::default() }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Read {
-    /// Read at the hour.
     At,
-    /// Carried from an earlier read.
     Carried,
     Unread,
 }
@@ -42,7 +38,6 @@ enum Read {
 struct Input {
     countries: bool,
     ships: (Read, Vec<SunkShipEntry>),
-    /// Killer, owner and count of each bucket of month [`MONTH`].
     convoys: (Read, Vec<(u32, u32, i32)>),
 }
 
@@ -81,7 +76,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, input: &Input) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// The script's hours, from [`BASE`].
 const HOURS: [i32; 7] = [0, 1, 2, 3, 4, 5, 8766];
 
 fn script(offset: i32) -> Input {
@@ -102,8 +96,6 @@ fn script(offset: i32) -> Input {
     }
 }
 
-/// (slot, country, attribution, kind) and total and unknown, or for a run row its counted-from,
-/// known and lost-from.
 fn totals(store: &Store) -> Vec<((u32, u32, u8, u8), [Option<i64>; 5])> {
     let view = store.view(TableId::NavalLossTotals.index());
     let mut rows: Vec<_> = view

@@ -1,5 +1,3 @@
-//! The weather save fields the oracle compares, with serializer omission rules.
-//! Source order and absence stay explicit.
 
 use super::{Decimal, Item, Value, block, boolean, decimal, field, integer, invalid, scalar};
 use std::io;
@@ -7,23 +5,17 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub present: bool,
-    /// Entry order and repeated numeric keys are retained, including slot zero.
     pub provinces: Option<Vec<Province>>,
     pub regions: Option<Vec<Region>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Province {
-    /// Numeric key enclosing this entry, independently of its province field.
     pub slot: u32,
     pub province: Option<u32>,
     pub snow: Option<Decimal>,
-    /// Temperature is written unconditionally, including zero.
     pub temperature: Option<Decimal>,
-    /// The Boolean serializer retains zero/nonzero truth only.
     pub mud: Option<bool>,
-    /// The province's own static modifiers, `name = days` in source order,
-    /// repeats retained; days -1 is permanent. None when the block is absent.
     pub custom_modifiers: Option<Vec<(String, i64)>>,
 }
 
@@ -37,8 +29,6 @@ pub struct Region {
     pub blizzard: Option<bool>,
     pub sandstorm: Option<bool>,
     pub arctic_water: Option<bool>,
-    /// The stored value of each template custom entry, in order; the writer omits an empty
-    /// array, which is `None`.
     pub active_modifiers: Option<Vec<i64>>,
 }
 

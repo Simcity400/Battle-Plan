@@ -1,18 +1,12 @@
-//! Fresh template display-name operands.
-//! An equality certificate refers only to DivisionTemplates in the SAME frame,
-//! never to a guessed daily read hour. The writer compared exact demanded bytes.
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum TemplateNameValue {
-    /// Fresh guarded bytes equal this frame's complete dictionary row.
     #[default]
     SameAsDivisionTemplates,
     Changed {
         literal: Vec<u8>,
-        /// None is not demanded because literal is nonempty. Some(empty)
-        /// records the exact empty fallback and requires no country lookup.
         fallback_key: Option<Vec<u8>>,
     },
 }
@@ -120,8 +114,6 @@ pub struct TemplateDisplayNameParts<'a> {
 }
 
 impl DivisionTemplateIconRow {
-    /// Strict hourly path. Historical absence and current failure never use
-    /// a carried daily name to claim a fresh selected-attack heading.
     pub fn display_name_inputs<'a>(
         &'a self,
         hour: i32,

@@ -1,8 +1,3 @@
-//! The reads replies are made of, over one run of the recording: a walk of some tables through
-//! some hours, a table at an hour ([`replay::lanes::at`]), hourly runs of a column for some keys,
-//! and the nearest hour a column changes for any of some keys, found from the summary pieces and
-//! read exactly from the one block that holds it. Timelines join these per stretch
-//! ([`crate::timeline`]).
 
 use replay::{cells::TableReader, columnar_frames::Recording, lanes::Snapshot};
 pub use replay::at::{Keys, Read};
@@ -18,12 +13,10 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Run `run`'s ordinal of game hour `hour`.
 pub fn ordinal(recording: &Recording, run: u32, hour: i32) -> io::Result<u32> {
     recording.run(run)?.ordinal(hour).ok_or_else(|| invalid("The run holds no such hour"))
 }
 
-/// Readers of `tables` of run `run`, each projected to its columns when given.
 fn readers(recording: &Recording, run: u32, tables: &[(TableId, Option<&[usize]>)]) -> io::Result<Vec<TableReader>> {
     tables
         .iter()
@@ -35,9 +28,6 @@ fn readers(recording: &Recording, run: u32, tables: &[(TableId, Option<&[usize]>
         .collect()
 }
 
-/// Reads `tables` (each projected to its columns when given) through hours `from..=to` of run
-/// `run`: restored before `from`, then stepped; `visit` is told each hour with every table's
-/// reader, in the order asked.
 pub fn walk(recording: &Recording, run: u32, tables: &[(TableId, Option<&[usize]>)], from: i32, to: i32, mut visit: impl FnMut(i32, &[TableReader]) -> io::Result<()>) -> io::Result<()> {
     crate::cost::storage(|| {
         let first = ordinal(recording, run, from)?;
@@ -60,23 +50,16 @@ pub fn walk(recording: &Recording, run: u32, tables: &[(TableId, Option<&[usize]
     })
 }
 
-/// `reads`' tables (each projected to its columns when given, the rows its keys ask for listed)
-/// of run `run` after hour `hour`, in the order asked, each read on its own thread.
 pub fn at(recording: &Recording, run: u32, reads: &[Read<'_>], hour: i32) -> io::Result<Vec<Snapshot>> {
     crate::cost::storage(|| replay::at::snapshots(recording, run, hour, reads))
 }
 
-/// A text cell's bytes, when it holds one.
 pub fn text<'a>(view: &TableView<'a>, column: usize, slot: u32) -> Option<&'a [u8]> {
     view.text(column, slot).and_then(|id| view.string(id))
 }
 
-/// One key's runs over a span: each run's first and last hour and its value, none where the row
-/// was not live, the cell not recorded or the table not available.
 pub type Runs = replay::lanes::Runs;
 
-/// `source` of `table` of run `run` hour by hour through `from..=to` for `keys` (every key when
-/// none), by key.
 pub fn runs(
     recording: &Recording,
     run: u32,
@@ -90,13 +73,10 @@ pub fn runs(
     Ok(held.into_iter().collect())
 }
 
-/// `table`'s status of run `run` through `from..=to`, as runs of hours, from the blocks' page
-/// entries.
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<replay::lanes::StatusRun>> {
     crate::cost::storage(|| replay::lanes::statuses(recording, run, table, from, to))
 }
 
-/// The columns `source` reads.
 pub fn columns_of(source: &summary::Source) -> Vec<usize> {
     match *source {
         summary::Source::Cell(column) => vec![column],
@@ -104,8 +84,6 @@ pub fn columns_of(source: &summary::Source) -> Vec<usize> {
     }
 }
 
-/// A key's value over one bucket, as far as its summary tells: none, one value held throughout,
-/// or more than that.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Held {
     Nothing,
@@ -113,8 +91,6 @@ enum Held {
     Varies,
 }
 
-/// What each of `keys` held over each level-0 bucket of block `block` of run `run`; none when
-/// the table has no piece there (it held no key).
 fn block_buckets(recording: &Recording, run: u32, table: TableId, column: u32, keys: &[u128], block: u32) -> io::Result<Option<Vec<Vec<Held>>>> {
     let Some(extent) = recording.block_of(run, block as usize, table.index())? else {
         return Ok(None);
@@ -153,8 +129,6 @@ fn block_buckets(recording: &Recording, run: u32, table: TableId, column: u32, k
     Ok(Some(out))
 }
 
-/// Whether any of the keys may change within the buckets, or between `before` (the last held
-/// value of each key in the block before, when known) and the first bucket.
 fn may_change(buckets: &[Vec<Held>], before: Option<&[Held]>) -> bool {
     buckets.iter().enumerate().any(|(at, held)| {
         let mut previous = before.map(|before| before[at]);
@@ -168,10 +142,6 @@ fn may_change(buckets: &[Vec<Held>], before: Option<&[Held]>) -> bool {
     })
 }
 
-/// The nearest hour of run `run` within `bounds` strictly after (`forward`) or before `origin`
-/// at which `source` of any of `keys` holds another value than the hour before it (a row coming
-/// or going counts). `column` is the summary id of `source`; a table it does not summarize is
-/// walked hour by hour.
 #[allow(clippy::too_many_arguments, reason = "a change search names its run, table, column, keys and bounds")]
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn nearest_change(
@@ -203,7 +173,6 @@ fn nearest_change_counted(
     let held = recording.run(run)?;
     let run_first = held.first_hour;
     let run_last = held.first_hour + held.ordinals as i32 - 1;
-    // A change at an hour needs the hour before it in the run.
     let low = bounds.0.max(run_first + 1);
     let high = bounds.1.min(run_last);
     let (low, high) = if forward {
@@ -249,7 +218,6 @@ fn nearest_change_counted(
         let changes = match &buckets {
             None => true,
             Some(buckets) => {
-                // The block before's last bucket of each key: read it, or the neighbour's.
                 let before_block = block.checked_sub(1);
                 let before = match (&neighbour, before_block) {
                     (Some((held, Some(other))), Some(previous)) if *held == previous => {

@@ -11,13 +11,11 @@ import type { SupplyCounts } from './supplyHealthData';
 
 const NO_VALUES: LiveValues<number> = { get: () => undefined, missing: () => 'Not read yet' };
 
-/** `tag`'s counts at the head while `following`, painted by the breakdown each frame they move: the three counts'
- * followed states, never a request because the hour moved. Undefined until all three are followed. */
 export function useSupplyHead(store: FollowStore | null, following: boolean, branchId: string | undefined, tag: string | null,
   root: RefObject<Element | null>, colors: readonly string[]): LiveDrillParts | undefined {
   const query = (measure: string) => following && branchId && tag ? { product: 'series-state', params: { branchId,
     family: { kind: SUPPLY_FAMILY, measure }, reads: [{ country: countryFromKey(tag), hour: 0 }] } } : null;
-  const queries = useMemo(() => STATES.map(query), [following, branchId, tag]); // eslint-disable-line react-hooks/exhaustive-deps
+  const queries = useMemo(() => STATES.map(query), [following, branchId, tag]);
   const keys = useMemo(() => tag ? [tag] : [], [tag]);
   const read = (entry: FollowEntry) => answerValues(entry.answer, keys);
   const none = useLiveFollow(store, queries[0], root, read).live;

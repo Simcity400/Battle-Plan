@@ -1,7 +1,3 @@
-//! One coalescing hover worker. It retains only the latest request/result;
-//! content and frame Arc identity bind results to their complete inputs. A build that read a
-//! table its frame of rows at the playback head did not declare keeps no text and names the
-//! table ([`Lane::take_missed`]).
 use super::{Content, Key, Tooltip};
 use eframe::egui;
 use replay_data::rows::TableId;
@@ -20,8 +16,6 @@ impl<C> Request<Arc<C>> {
     fn same(&self, other: &Self) -> bool {
         self.same_icon(other) && Arc::ptr_eq(&self.frame, &other.frame)
     }
-    /// The same icon in another hour keeps its last text until the new one
-    /// is built, so playback does not blank the popup every hour.
     fn same_icon(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.content, &other.content)
             && self.ours == other.ours
@@ -34,7 +28,6 @@ struct State {
     wanted: Option<Request>,
     pending: bool,
     result: Option<Arc<Tooltip>>,
-    /// Tables a build read that its frame did not declare, until taken.
     missed: Vec<TableId>,
     stop: bool,
 }
@@ -78,8 +71,6 @@ impl Lane {
         if !same_icon {
             state.result = None;
         }
-        // One active and one queued request. The worker retains the active
-        // request while waiting, so the UI never destroys the last frame Arc.
         if !state.wanted.as_ref().is_some_and(|old| old.same(&request)) && !state.pending {
             state.wanted = Some(request);
             state.pending = true;
@@ -88,8 +79,6 @@ impl Lane {
         state.result.clone()
     }
 
-    /// The tables builds read that their frames of rows at the head did not declare, since the
-    /// last call.
     pub fn take_missed(&mut self) -> Vec<TableId> {
         self.shared.as_ref().map_or_else(Vec::new, |shared| {
             std::mem::take(&mut shared.0.lock().unwrap_or_else(|e| e.into_inner()).missed)
@@ -140,7 +129,6 @@ fn run(shared: Shared, ctx: egui::Context) {
     }
 }
 
-/// A build's text, or the tables it read undeclared, which void it.
 fn publish(state: &mut State, (text, missed): (Tooltip, Vec<TableId>)) {
     if missed.is_empty() {
         state.result = Some(Arc::new(text));

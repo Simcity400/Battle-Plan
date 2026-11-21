@@ -1,13 +1,3 @@
-//! One-shot load oracle for the content-derived movement map.
-//!
-//! Format 42 stopped recording province neighbour entries, terrain flags and
-//! terrain ordinals: the replay derives them from the content stack with
-//! `installed_content_core::movement::MovementMap`. This command reads the running game's
-//! own province definitions once, read-only, and compares every stored field
-//! with that derivation on the same content stack. The comparison runs only
-//! after the game's own successful mounts prove that stack's load order. It
-//! controls nothing, is not part of recording and must not run inside a timed
-//! capture window.
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -55,14 +45,12 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
             _ => return Err(USAGE.into()),
         }
     }
-    // Read-only rights: the oracle never writes to or injects into the game.
     let process = loop {
         let game = match choose_game(&windows::game_processes()?) {
             Discovery::One(game) => game,
             Discovery::None => return Err("no hoi4.exe is running; load a save first".into()),
             Discovery::Several(several) => return Err(several.to_string()),
         };
-        // `None`: its PID names another process now, so discovery looks again.
         if let Some(process) = Process::open_selected(&game, false)? {
             break process;
         }
@@ -81,7 +69,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         .find(|module| module.path.file_name() == Some(name))
         .ok_or("game module not found")?
         .base;
-    // Game sites resolve only through the executable located for this process.
     engine_sites::install_file(&file, &exe.sha256, base)
         .map_err(|w| w.to_string())?
         .layouts()
@@ -93,7 +80,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .ok_or("LOCALAPPDATA is unset")?;
-    // The same content stack a recording of this process would carry.
     let content = gather(&GatherOptions {
         game_dir: process
             .path
@@ -158,11 +144,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     report.outcome()
 }
 
-/// A derivation from an unproved stack proves nothing, so the oracle refuses
-/// to compare unless the gather has no ordering limitation and the game's
-/// successful search path (`PHYSFS_getSearchPath` cache, highest priority
-/// first) equals the stack's expected mounts, as the collector's roster check
-/// requires of a recording.
 fn verify_content_order(
     order_note: Option<&str>,
     outcome: Outcome,
@@ -189,7 +170,6 @@ fn verify_content_order(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Difference {
     province: u32,
-    /// Position in the province's neighbour list, for entry fields.
     entry: Option<usize>,
     field: &'static str,
     game: String,
@@ -273,7 +253,6 @@ impl Report {
         })
     }
 
-    /// Any difference or unreadable province fails; nothing is waived.
     fn outcome(&self) -> Result<(), String> {
         if self.total() == 0 && self.unreadable.is_empty() {
             Ok(())
@@ -287,11 +266,6 @@ impl Report {
     }
 }
 
-/// Every stored field of every definition against the derivation, in native
-/// order. Entry fields are compared only where both lists name the same
-/// neighbour at that position. `MovementMap` derives the neighbour entries of
-/// a record the loader invented for a colour no definition row claims, but
-/// not its terrain operands, so such a record's terrain is a difference.
 fn compare(census: &MovementCensus, map: &MovementMap) -> Report {
     let mut report = Report {
         census_records: census.records,
@@ -436,8 +410,6 @@ mod tests {
         }
     }
 
-    /// Province 1: land (flags 9, terrain 2) with a river neighbour 2 and a
-    /// midpoint neighbour 3. Province 2: land. Record 3 is not derived.
     fn map() -> MovementMap {
         let land = ProvinceTerrain { flags: 9, index: 2 };
         MovementMap::from_parts(&[
@@ -556,11 +528,9 @@ mod tests {
         let report = compare(&changed, &map);
         assert_eq!(report.unreadable, [(2, "definition identity mismatch")]);
         assert_eq!(report.counts["record_count"], 1);
-        // The game has a record 3 the content does not derive.
         assert_eq!(report.counts["province"], 1);
         assert!(report.outcome().is_err());
 
-        // A derived distance that is unavailable is a difference, never a match.
         map = MovementMap::from_parts(&[(
             1,
             ProvinceTerrain { flags: 9, index: 2 },
@@ -588,7 +558,6 @@ mod tests {
 
     #[test]
     fn an_unclaimed_record_fails_on_terrain_and_still_compares_its_entries() {
-        // Record 2 is invented for an unclaimed colour: neighbours, no terrain.
         let land = ProvinceTerrain { flags: 9, index: 2 };
         let edge = |to| Neighbour {
             to,
@@ -629,7 +598,6 @@ mod tests {
         );
         assert!(report.outcome().is_err());
 
-        // Its entries are still compared field for field.
         let mut changed = census;
         changed.provinces[1].as_mut().unwrap().neighbours[0].distance = 100_001;
         assert_eq!(compare(&changed, &map).counts["distance"], 1);
@@ -667,14 +635,12 @@ mod tests {
             verify_content_order(Some("mods not measured"), rows, &observed, &expected),
             "mods not measured",
         );
-        // Same membership in another priority order.
         let mut swapped = expected.clone();
         swapped.swap(0, 1);
         refused(
             verify_content_order(None, rows, &observed, &swapped),
             "priority order",
         );
-        // A mount the content stack does not expect, or one it misses.
         refused(
             verify_content_order(None, Outcome::Rows { len: 2 }, &observed, &expected),
             "membership",
@@ -702,16 +668,12 @@ mod tests {
             ),
             "not constructed",
         );
-        // An empty list cannot establish even the vanilla root.
         refused(
             verify_content_order(None, Outcome::Rows { len: 0 }, &[], &[]),
             "membership",
         );
     }
 
-    /// The whole live path on synthetic memory: the out-of-process reader reads
-    /// this test process's own image through ReadProcessMemory, the engine
-    /// reader authenticates it, and the comparison matches the derivation.
     #[test]
     fn process_memory_reads_a_synthetic_census_end_to_end() {
         let mut image = vec![0_u8; 0x20_000];
@@ -809,7 +771,6 @@ mod tests {
         let read = read_movement_census(&ProcessMemory(&process.handle), base).unwrap();
         assert_eq!(read, expected);
         assert_eq!(compare(&read, &map()).total(), 0);
-        // An unmapped address is a failed read, not zeroes.
         let mut byte = [0];
         assert!(!engine_native::Memory::copy(
             &ProcessMemory(&process.handle),

@@ -1,4 +1,3 @@
-//! Allocation-free, first-failure terminal witness and fault injection.
 
 use replay_data::{witness::TerminalWitness, witness::WITNESS_BYTES};
 use std::{
@@ -164,7 +163,6 @@ fn newer_prefix(left: (Option<u32>, u64), right: (Option<u32>, u64)) -> (Option<
     left.max(right)
 }
 
-/// Serialized by the queue mutex; allocation happens before any slot publication.
 pub fn prepare_uncommitted_context(context: Context) -> io::Result<()> {
     if failed() {
         return Err(io::ErrorKind::OutOfMemory.into());
@@ -197,7 +195,6 @@ pub fn prepare_uncommitted_context(context: Context) -> io::Result<()> {
     Ok(())
 }
 
-/// Serialized by the queue mutex; persistent contexts keep their original slots.
 pub fn publish_uncommitted(ranges: impl Iterator<Item = Outstanding>) {
     if failed() {
         return;
@@ -322,7 +319,6 @@ fn freeze_outstanding(head: *mut OutstandingSlot) {
 }
 
 thread_local! {
-    // None until the thread enters a phase: it reports Unphased, and no injection counts it.
     static PHASE: Cell<Option<Phase>> = const { Cell::new(None) };
     static CONTEXT: Cell<Context> = const { Cell::new(Context {
         campaign_id: None, branch: None, load_signal: None, failed_hour: None,
@@ -342,15 +338,12 @@ impl Drop for Details {
     }
 }
 
-/// Best-effort diagnostic storage prepared before worker admission.
 pub fn prepare_details(directory: &std::path::Path) -> Option<Details> {
     let file = File::create(directory.join("collector-failure-detail.json")).ok()?;
     DETAIL_HANDLE.store(file.as_raw_handle() as usize, Ordering::Release);
     Some(Details { _file: file })
 }
 
-/// The request is scoped to the allocation, so another thread's terminal
-/// failure cannot inherit this worker's family or requested byte count.
 pub fn reserve_raw<T>(values: &mut Vec<T>, target: usize, family: &'static str) -> io::Result<()> {
     struct Restore(Option<(&'static str, usize)>);
     impl Drop for Restore {
@@ -455,10 +448,10 @@ impl Drop for BorrowedScope {
         BORROWED_CONTEXT.set(self.0);
     }
 }
-/// The caller keeps this immutable context live until the returned guard drops.
-/// # Safety
-/// The pointer must refer to an initialized context that stays alive and is not
-/// mutated while this thread holds the returned scope.
+#[doc = " The caller keeps this immutable context live until the returned guard drops."]
+#[doc = " # Safety"]
+#[doc = " The pointer must refer to an initialized context that stays alive and is not"]
+#[doc = " mutated while this thread holds the returned scope."]
 pub unsafe fn borrow_context(pointer: *const Context) -> BorrowedScope {
     BorrowedScope(BORROWED_CONTEXT.replace(pointer))
 }
@@ -470,7 +463,6 @@ pub fn attempted_hour(hour: Option<i32>) {
     });
 }
 
-// Bit 3 identifies a committed frame hour in the exact campaign, branch and load.
 const FRAME_HOUR: u32 = 8;
 
 fn campaign_word(id: &[u8; 36], index: usize) -> u64 {
@@ -489,8 +481,6 @@ fn load_campaign(slots: &[AtomicU64; 5]) -> [u8; 36] {
     campaign[..36].try_into().unwrap()
 }
 
-// 0 healthy, 1 claimed, 2 fully published. The witness writer is the only
-// writer of Terminal::record, and publication follows the complete write.
 struct Terminal {
     state: AtomicU32,
     record: UnsafeCell<Option<TerminalWitness>>,
@@ -545,7 +535,6 @@ static TERMINAL: Terminal = Terminal {
     range_flags: AtomicU32::new(0),
 };
 
-/// Called while bootstrap owns the file, before hooks or workers exist.
 pub fn prepare(file: &File, session: u64, process_start_time: u64) {
     unsafe {
         (*TERMINAL.buffer.get()).fill(0);
@@ -569,7 +558,6 @@ pub fn committed(segment: u32, bytes: u64) {
     committed_record(segment, bytes, false);
 }
 
-/// Sole-writer publication; retain the attempted hour until this call returns.
 pub fn committed_record(segment: u32, bytes: u64, complete_hour: bool) {
     if failed() {
         return;
@@ -620,7 +608,6 @@ pub fn committed_record(segment: u32, bytes: u64, complete_hour: bool) {
                 .store(u64::from(hour as u32), Ordering::Relaxed);
             flags |= FRAME_HOUR;
         } else if same_branch && same_signal {
-            // A later non-frame record keeps the context's committed frame hour.
             flags |= previous & FRAME_HOUR;
         }
         TERMINAL.committed_flags.store(flags, Ordering::Relaxed);
@@ -636,7 +623,6 @@ pub fn committed_record(segment: u32, bytes: u64, complete_hour: bool) {
         .store(sequence.wrapping_add(2), Ordering::Release);
 }
 
-/// The sole spool writer advertises its old prefix before an append can write.
 pub fn record_start(previous: Option<(u32, u64)>) {
     if failed() {
         return;
@@ -672,7 +658,6 @@ pub fn record_start(previous: Option<(u32, u64)>) {
         .store(sequence.wrapping_add(2), Ordering::Release);
 }
 
-/// Serialized by the queue mutex; shrink only after publishing the commit.
 pub fn set_uncommitted_range(range: Option<UncommittedRange>) {
     if failed() {
         return;
@@ -733,12 +718,10 @@ pub fn failure() -> Option<TerminalWitness> {
     if TERMINAL.state.load(Ordering::Acquire) != 2 {
         return None;
     }
-    // The first-failure record is immutable after release publication.
     unsafe { *TERMINAL.record.get() }
 }
 
 pub fn record_failure(phase: Phase, code: Code) -> bool {
-    // Bootstrap through teardown shares the installed capture's terminal state.
     if !engine_allocation::capture_active() {
         return false;
     }
@@ -756,7 +739,6 @@ pub fn record_failure(phase: Phase, code: Code) -> bool {
     {
         context.campaign_id = None;
     }
-    // Freeze ranges before reading the watermark so completed frames cannot become gaps.
     let head = OUTSTANDING.load(Ordering::Acquire);
     freeze_outstanding(head);
     let uncommitted = uncommitted_range();
@@ -803,7 +785,6 @@ pub fn record_failure(phase: Phase, code: Code) -> bool {
             );
         }
     };
-    // Only a committed frame in the same context can trim the pending range.
     let committed_through = |campaign_id: [u8; 36], branch: u64, load_signal: Option<i64>| {
         let mut through = committed_frame_hour.filter(|_| {
             committed_context.campaign_id == Some(campaign_id)
@@ -1048,7 +1029,6 @@ mod injection {
         {
             let observer = OBSERVER.load(Ordering::Acquire);
             if !observer.is_null() {
-                // Only observe_counted stores this function pointer.
                 unsafe { std::mem::transmute::<*mut (), fn()>(observer)() };
             }
         }
@@ -1084,7 +1064,6 @@ pub fn should_fail() -> bool {
 pub fn inject(phase: Phase, ordinal: u64) {
     injection::configure(&[phase], ordinal, 0);
 }
-/// Counts and refuses the allocations of every phase in `phases` as one sequence.
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
 pub fn inject_any(phases: &[Phase], ordinal: u64) {
     injection::configure(phases, ordinal, 0);
@@ -1101,7 +1080,6 @@ pub fn committed_hour() {
 pub fn allocation_count() -> u64 {
     injection::count()
 }
-/// Calls `observer` on the counting thread at every attempt the injected phases count.
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
 pub fn observe_counted(observer: Option<fn()>) {
     injection::observe(observer);
@@ -1162,7 +1140,6 @@ mod tests {
         }
     }
 
-    /// Publish `range`, run `writer` in a fresh terminal, then fail under `failing`.
     fn fail_after(
         range: Option<UncommittedRange>,
         writer: impl FnOnce(),
@@ -1177,7 +1154,6 @@ mod tests {
         failure().unwrap()
     }
 
-    // One test owns the process-wide terminal, so no other test can race it.
     #[test]
     fn terminal_clips_uncommitted_range_and_attempt_by_committed_frame_hour_only() {
         fn failure_hook() {}
@@ -1189,7 +1165,6 @@ mod tests {
             }
         };
 
-        // Synchronous OOM after the frame's commit, before the queue or TLS moved on.
         let witness = fail_after(
             Some(range(9, Some(19), (5, 7))),
             frame(5),
@@ -1208,7 +1183,6 @@ mod tests {
         assert_eq!(witness.uncommitted, None);
         assert_eq!(witness.failed_hour, None);
 
-        // A later unadmitted attempt keeps its own hour beside the range.
         let witness = fail_after(
             Some(range(9, Some(19), (5, 7))),
             frame(5),
@@ -1217,7 +1191,6 @@ mod tests {
         assert_eq!(witness.failed_hour, Some(8));
         assert_eq!(witness.uncommitted, Some(range(9, Some(19), (6, 7))));
 
-        // Failure before the commit hook: the written frame is not proven committed.
         let witness = fail_after(
             Some(range(9, Some(19), (5, 7))),
             || {
@@ -1231,7 +1204,6 @@ mod tests {
         assert_eq!(witness.uncommitted, Some(range(9, Some(19), (5, 7))));
         assert_eq!(witness.committed_bytes, 104);
 
-        // Another branch, load or campaign is never clipped by this frame.
         for (other, attempt) in [
             (range(10, Some(19), (5, 7)), writing(10, Some(19), Some(5))),
             (range(9, Some(20), (5, 7)), writing(9, Some(20), Some(5))),
@@ -1252,7 +1224,6 @@ mod tests {
             assert_eq!(witness.failed_hour, Some(5));
         }
 
-        // A later non-frame record keeps the frame hour only in the same context.
         let witness = fail_after(
             Some(range(9, Some(19), (5, 7))),
             || {
@@ -1275,7 +1246,6 @@ mod tests {
         );
         assert_eq!(witness.uncommitted, Some(range(9, Some(19), (5, 7))));
 
-        // A frame commit without a known hour proves nothing new.
         let witness = fail_after(
             Some(range(9, Some(19), (5, 7))),
             || {
@@ -1286,7 +1256,6 @@ mod tests {
         );
         assert_eq!(witness.uncommitted, Some(range(9, Some(19), (5, 7))));
 
-        // No range, an invalid range, and a range published after the failure.
         let witness = fail_after(None, frame(5), writing(9, Some(19), Some(6)));
         assert_eq!(witness.uncommitted, None);
         assert_eq!(witness.failed_hour, Some(6));
@@ -1431,7 +1400,6 @@ mod tests {
             );
         }
 
-        // A snapshot taken before the commit is clipped by the later global watermark.
         reset();
         admit(&[a]);
         let head = OUTSTANDING.load(Ordering::Acquire);
@@ -1462,7 +1430,6 @@ mod tests {
         assert!(record_failure(Phase::Spool, Code::Reserve));
         assert_eq!(failure().unwrap().failed_hour, None);
 
-        // Replacing retired contexts reuses the concurrent-context high-water allocation.
         reset();
         admit(&[a]);
         admit(&[a, b]);
@@ -1486,7 +1453,6 @@ mod tests {
             pointer = slot.next;
         }
 
-        // Reentrant failure from iterator evaluation never waits for a publication seqlock.
         admit(&[a]);
         admit(&[a, b]);
         let mut emitted = false;
@@ -1530,8 +1496,6 @@ mod tests {
         engine_allocation::set_hooks(None, None);
     }
 
-    /// A thread that never entered a phase reports Unphased, never Bootstrap, and a Bootstrap
-    /// sweep counts, observes and refuses only the allocations of threads inside Bootstrap.
     #[cfg(feature = "alloc-fault-injection")]
     #[test]
     fn an_injected_phase_counts_only_threads_that_entered_it() {

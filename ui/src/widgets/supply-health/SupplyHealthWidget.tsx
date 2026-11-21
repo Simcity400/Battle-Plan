@@ -43,8 +43,6 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 
 const NO_WARNINGS: string[] = [];
 
-/** Each chosen country's divisions by supply state as stacked shares over time, from the recording's own supply
- * table: one chart per country, its breakdown at a day a click away. */
 export default function SupplyHealthWidget({ widget, runtime, active, headerSlot, countrySlot = null, onDiagnostics }: WidgetProps) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -64,8 +62,6 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const pinned = options.show === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
   const following = widget.time.mode === 'follow';
-  // The charts move with the clock each frame (their live head) and a breakdown following playback paints its day
-  // and counts from the clock and followed values: nothing renders because the hour moved.
   const playbackHour = useFallbackHour(runtime.clock, false);
   const drillFollows = drill.breakdown !== null && drill.follow;
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
@@ -121,7 +117,6 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     dispatchDrill({ type: 'open', breakdown: tag, hour, playing: runtime.clock.getSnapshot().playing,
       playhead: following ? playhead : null });
   };
-  // A standalone multi-country breakdown asks for an actor instead of inventing one.
   useEffect(() => {
     if (!pinned || invalidSavedSelection || !window || drill.breakdown !== null || drill.choices !== null || !groups.data) return;
     if (savedSelection) {
@@ -138,7 +133,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       setDrillOrigin({ tag, hour: head });
       dispatchDrill({ type: 'open', breakdown: tag, hour: head, playing: false, playhead: following ? playhead : null });
     } else if (actors.length > 1) dispatchDrill({ type: 'actors', key: resetKey, tags: actors, hour: head });
-  }, [pinned, invalidSavedSelection, !!window, drill, groups.data, head, playhead, countries.tags, countries.membership, savedSelection?.tag, savedSelection?.hour, following, resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pinned, invalidSavedSelection, !!window, drill, groups.data, head, playhead, countries.tags, countries.membership, savedSelection?.tag, savedSelection?.hour, following, resetKey]);
   const drillOpen = drill.breakdown !== null || choices !== null;
   const membershipKey = useMemo(() => JSON.stringify([...(countries.membership ?? [])]), [countries.membership]);
   const countryScope = JSON.stringify(widget.countries);
@@ -146,17 +141,16 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     const membership = countries.membership?.get(tag);
     const inRange = clipToSpans(supply.sharesOf(tag), [{ firstHour: extent[0], lastHour: extent[1] }]);
     const drawing = membership ? clipToSpans(inRange, membership) : inRange;
-    // Following, the chart draws the newest lines with the head's bin at the followed shares, clipped as `drawing` is.
     const live = following ? supply.liveShares(tag, runs => {
       const shown = clipToSpans(runs, [{ firstHour: extent[0], lastHour: extent[1] }]);
       return membership ? clipToSpans(shown, membership) : shown;
     }) : undefined;
     return { tag, membership, drawing, live, missing: supply.missing.get(tag) ?? [], hours: drawing.map(run => run.firstHour),
       pickOwner: { client: runtime.client, source: sourceScope, selection: countryScope, first: extent[0], last: extent[1], tag, drawing } };
-  }), [countries.tags, supply.shares, supply.missing, supply.liveShares, following, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [countries.tags, supply.shares, supply.missing, supply.liveShares, following, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]);
   const badgesByTag = useMemo(() => countryCapitulationBadges(groups.data, series.map(country => ({ tag: country.tag, membership: country.membership,
     identities: identities.get(country.tag), segments: country.drawing })), extent, groups.data?.countryIdentities),
-  [groups.data, series, identities, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  [groups.data, series, identities, extent[0], extent[1]]);
   const wanted = useMemo(() => [...visibleTags.map(tag => ({ tag, hour: head })), ...(tip && visibleTags.includes(tip.tag) ? [tip] : [])]
     .filter(({ tag, hour }) => hasActor(tag, hour)), [visibleTags, head, tip, hasActor]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active);
@@ -232,13 +226,11 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       </WindowedRows>}
       {menu.menu}
     </> : null);
-  // Unpinned (a catalogue card), the header names the country the body opened or was given, once it has one.
   const hasOrigin = Object.hasOwn(widget.options ?? {}, 'drillOriginHour');
   const unchosen = !hasOrigin && drillTag === null;
   const neutralHeader = pinned && countrySlot && (problem !== undefined || choices !== null || unchosen)
     ? createPortal(unchosen ? <ChooseCountryChip /> : <DatedCountryChip label={null} hour={window ? drillAt : null}
       reason="Selected country unavailable." />, countrySlot) : null;
-  // The breakdown, its header and a pin take the tag the drilled country went by at its origin; its spans follow it on.
   const drillCountry = drillTag !== null && isSlotKey(drillTag) ? historyAt(groups.data?.countryIdentities ?? [], drillTag, originHour)?.tag ?? null : drillTag;
   const breakdown = <SupplyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && problem === undefined && choices === null && !unchosen ? countrySlot : null}

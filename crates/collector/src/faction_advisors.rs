@@ -1,4 +1,3 @@
-//! Changed demanded advisor slots, acquired in the existing faction visitor.
 use crate::faction_companion_changes::Changes;
 use engine_allocation as allocation;
 use engine_native::{Memory, cpdx_array::Array};
@@ -28,7 +27,6 @@ pub(crate) struct Store {
     owners: Vec<Owner>,
     before: Option<Certificate>,
     quiet: Option<Certificate>,
-    /// An owner was carried on the family token alone, which must then hold to the walk's end.
     quiet_carried: bool,
     generation: u64,
     force: bool,
@@ -509,9 +507,6 @@ mod tests {
             self.changes.sequence(family, address)
         }
     }
-    /// A forced hour reads each owner and slot under its own certificate; another advisor
-    /// writer during the walk left those exact rows refused. An owner carried on the family
-    /// token still refuses.
     #[test]
     fn advisor_owners_read_under_their_own_certificates_survive_other_writers_during_the_walk() {
         let (mut memory, changes) = fixture(2);
@@ -552,8 +547,6 @@ mod tests {
             Some("faction advisor observation changed during acquisition")
         );
     }
-    /// The owner's structure certifies the slot array its slots are read through, so a
-    /// structure writer before those reads refuses even an hour that carried nothing.
     #[test]
     fn advisor_structure_writer_before_slot_reads_refuses_a_forced_hour() {
         let (memory, changes) = fixture(2);

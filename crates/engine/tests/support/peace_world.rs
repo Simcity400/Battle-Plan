@@ -49,8 +49,6 @@ impl Fixture {
         );
         (base, pointer)
     }
-    /// Rebase synthetic links onto this stable allocation for the guarded
-    /// LiveMemory executor; vtables remain authenticated against module base zero.
     pub(crate) fn rebase(&mut self) -> usize {
         let base = self.bytes.as_ptr() as usize;
         let mut offsets = vec![
@@ -99,7 +97,6 @@ impl Fixture {
         }
         f.u64(0x100 + c::HISTORY, 0x500);
         f.u64(0x108 + c::HISTORY, 1);
-        // Head's left/root/right are the only node; node links return to head.
         for at in [0x500, 0x508, 0x510] {
             f.u64(at, 0x600);
         }

@@ -1,0 +1,23 @@
+# Resolve audio from ordered content
+
+## Decision
+
+Resolve audio definitions and references through the content stack. The recursive loader visits files before subdirectories, sorts siblings by bytes, and reads a repeated path from its winning layer. Asset references join to the declaring file's folder. The path needs the folder to be UTF-8 and the descriptor filename may use another encoding. Samples are outside the recording's hash coverage, so playback reads and identifies them as uncovered.
+
+The first declaration of a sound, effect, falloff or music track wins. Sound and track names are registered using their first 63 bytes, with references looking up the full spelling. Resolve effects only after reading the files, so forward references work. A missing reference leaves its slot empty and gives a named, counted diagnostic. A missing falloff leaves the effect without attenuation. A missing category leaves the effect outside every category. Repeat category declarations extend the same list, and a later compressor replaces the earlier one if present. Apply each category's combined list in category order so reopening an earlier category cannot take an effect away from one registered later.
+
+Battle ambience keeps one slot per first-seen unit type and plays eligible effects while a listed type's count is in the authored range. A zero count is silent and an authored maximum of -1 is unbounded. The distant effect takes the configured default distance if it has no falloff. A normal sound choice has weight 1 and a weighted choice uses its authored weight. Clip counts below zero are unbounded. At a fixed voice limit, the `fail` policy declines a new instance and the default `silent` policy starts it without sound. The mixer uses priority times gain to rank voices. Position pans by emitter direction and attenuation uses minimum-to-maximum distance, with vertical offset scaled when the configured height scale is positive. Linear falloff uses `1 - t` and logarithmic falloff uses `-log10(0.9 t + 0.1)`.
+
+Fade and delay values and compressor times are seconds. Playback-rate values and offsets are authored in percent. Ranges retain authored endpoint order. Compressor gains are converted from decibels to linear values, threshold remains in decibels, and a zero ratio is held as one. Altitude volume clamps camera altitude and maps it linearly between the configured volumes.
+
+Music entries keep the station in effect when their song is read, with a missing station settings file distinct from an empty enabled list. Song choice uses the enabled stations and the authored mean-time body. The base factor defaults to one, and the reader uses the names at the load point to keep modifier triggers for evaluation against the recording. Unknown or structurally mismatched fields in the sound and music readers name their refusals. Only registered lexer keywords dispatch audio properties, which excludes quoted, anonymous and numeric keys.
+
+## Sample decoding
+
+Match the SDL sample formats and conversion rules. WAVE accepts mono or stereo PCM, 32-bit float, G.711 and ADPCM. Unsigned 8-bit input scales by `1 / 128`, 16-bit input by `1 / 32768`, and widened 24- and 32-bit input drops the low byte and uses `1 / 8388607`. A mono frame feeds both sides. G.711 and ADPCM produce 16-bit samples. Symphonia reads IMA and Microsoft ADPCM and also decodes Ogg Vorbis music as floats.
+
+RIFF scanning keeps the first format and data chunks and stops once it has both. A first format after data is refused. A data chunk that claims more than is present keeps the available bytes. An all-ones size denotes unknown length. Extensible WAVE must contain its full extension and a known subtype GUID. PCM and float blocks must divide a frame and G.711 blocks have one byte per channel. Before invoking the ADPCM reader, remove subsequent format chunks and adjust the RIFF length when known so the reader sees the format SDL keeps.
+
+Music admits Vorbis in Ogg only. A probe decodes one packet and playback consumes the stream one packet at a time. Every packet must keep the first packet's channel count and rate. A corrupt packet can be skipped. Other decoding failures and panics become named stream refusals. Installation tests read the path in `BATTLE_PLAN_GAME_DIR` and their fixture checks omit DLC layers.
+
+[Audio definitions](../../crates/installed-content-sound/src/sound.rs) · [Music](../../crates/installed-content-sound/src/music.rs) · [Battle ambience](../../crates/installed-content-sound/src/combat_sounds.rs) · [WAVE](../../crates/installed-content-sound/src/wav.rs) · [Vorbis](../../crates/installed-content-sound/src/ogg.rs)

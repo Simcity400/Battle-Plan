@@ -33,8 +33,6 @@ export function bridgeCommand(command: Record<string, unknown>): string {
   return line;
 }
 
-/** The native map-settings command for a browser request: every field the service reads, a save's settings or a
- * flip's setting included. */
 export function mapSettingsCommand(input: Record<string, any>): Record<string, unknown> {
   return {
     type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null,
@@ -42,19 +40,14 @@ export function mapSettingsCommand(input: Record<string, any>): Record<string, u
   };
 }
 
-/** The native prepared-query command for a browser request, keeping a refresh's lower priority. */
 export function preparedQueryCommand(input: Record<string, any>): Record<string, unknown> {
   if (!(input.refresh == null || typeof input.refresh === 'boolean')) throw new Error('Invalid prepared query request');
   return { type: 'preparedQuery', request: input.request, refresh: input.refresh ?? false };
 }
 
-/** What each page load holds through this server: the sources it opened, and the recordings it imported, which it
- * offers to open again until it goes away. A page that has gone has its sources released, and an import is removed
- * once its page has gone and every source opened from it has been released. */
 export function pageRecordings(release: (sourceId: string) => void, remove: (target: string) => void) {
   const imports = new Map<string, { page: string; opening: number; sources: Set<string> }>();
   const sources = new Map<string, { page: string; target: string | null }>();
-  // Kept for the server's life, so an open its page left during is released as it finishes.
   const gone = new Set<string>();
   const settle = (target: string) => {
     const entry = imports.get(target);
@@ -71,8 +64,6 @@ export function pageRecordings(release: (sourceId: string) => void, remove: (tar
   return {
     isImport: (target: string) => imports.has(target),
     imported: (target: string, page: string) => { imports.set(target, { page, opening: 0, sources: new Set() }); settle(target); },
-    /** Reserves `page`'s open of `path` before anything about it is checked. The call it returns ends the open, with
-     * the source it opened if any. */
     open: (path: string, page: string) => {
       const entry = imports.get(path);
       if (entry) entry.opening++;
@@ -85,9 +76,7 @@ export function pageRecordings(release: (sourceId: string) => void, remove: (tar
         if (entry) { entry.opening--; settle(path); }
       };
     },
-    /** The page released `sourceId` itself. */
     released: (sourceId: string) => drop(sourceId),
-    /** `page` has gone: each source it still holds is released, then its imports go once nothing else holds them. */
     left: (page: string) => {
       gone.add(page);
       for (const [sourceId, source] of [...sources]) if (source.page === page) { release(sourceId); drop(sourceId); }
@@ -96,7 +85,6 @@ export function pageRecordings(release: (sourceId: string) => void, remove: (tar
   };
 }
 
-/** The page load a browser request names, which owns what it opens and imports. */
 function pageId(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 64) throw new Error('Invalid recording request');
   return value;
@@ -105,7 +93,6 @@ function pageId(value: unknown): string {
 export function browserBridge(root: string, recordingsRoot: string, gameDir: string, userDir: string): Plugin {
   const libraryRoot = savedReplayFolder(recordingsRoot).then(folder => { recordingsRoot = folder; });
   let contentConfig: Promise<void> | null = null;
-  // The desktop host's saved folders, which the bridge's own Apply updates too.
   const loadContentConfig = () => contentConfig ??= (async () => {
     if (!process.env.APPDATA) return;
     const bytes = await readFile(path.join(process.env.APPDATA, 'battle-plan', 'content.json'), 'utf8')
@@ -115,7 +102,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     gameDir = saved.game_dir || gameDir;
     userDir = saved.user_dir || userDir;
   })().catch(error => { contentConfig = null; throw error; });
-  // Each server keeps its imports under its process id; a later server removes those whose server has gone.
   const importsRoot = path.join(tmpdir(), 'battle-plan-imports');
   const importsOwned = path.join(importsRoot, `${process.pid}-${randomUUID()}`);
   const running = (pid: number) => {
@@ -138,7 +124,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(message)); }
     pending.clear();
     const owned = child; child = null;
-    // ChildProcess.kill uses the retained native handle on Windows.
     if (owned) { owned.stdin.end(); if (owned.exitCode === null && owned.signalCode === null) owned.kill(); }
   };
   const start = () => {
@@ -172,12 +157,9 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     });
     return process;
   };
-  // The child takes its folders as arguments, so it starts only once the saved folders are known.
   const send = async (command: Record<string, unknown>, signal: AbortSignal) => { await loadContentConfig(); return sendLoaded(command, signal); };
   const sendLoaded = (command: Record<string, unknown>, signal: AbortSignal) => new Promise<unknown>((resolve, reject) => {
     if (signal.aborted) { reject(new Error('Request cancelled')); return; }
-    // Match the desktop service and native loader admission budget. A saved
-    // dashboard can have more concurrent consumers than the old browser limit.
     if (pending.size >= 64) { reject(new Error(BROWSER_BRIDGE_BUSY)); return; }
     const id = typeof command.id === 'string' ? command.id : `browser-${++next}`;
     if (pending.has(id)) { reject(new Error('Duplicate recording request')); return; }
@@ -197,13 +179,10 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     signal.addEventListener('abort', cancel, { once: true });
     process.stdin.write(line);
   });
-  // The bridge answers summaries from its read loop, so this answer follows every release written before it.
   const bridgeLetGo = async () => { if (child) await send({ type: 'recordingSummaries', paths: [] }, new AbortController().signal).catch(() => {}); };
   const pages = pageRecordings(sourceId => { child?.stdin.write(bridgeCommand({ type: 'release', sourceId })); }, target => {
-    // Work the bridge is still finishing may hold the file a moment longer, which rm's retries wait out.
     void bridgeLetGo().then(() => rm(path.dirname(target), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })).catch(() => {});
   });
-  /** A bridge built before `source` last changed may exit on the command it adds. */
   const requireBridge = async (source: string, message: string) => {
     const binary = await stat(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'));
     if (binary.mtimeMs < (await stat(path.join(root, source))).mtimeMs) throw new Error(message);
@@ -217,7 +196,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     if (childPath.startsWith('..') || path.isAbsolute(childPath)) throw new Error('Choose a recording inside the configured recordings folder.');
     return { target, relative: childPath.replaceAll('\\', '/') };
   };
-  /** Stops the bridge and, once it has let go of them, removes this server's imported recordings. */
   const stop = () => {
     picker?.abort(); fail('Development server stopped');
     return stopped ??= Promise.all(exits).then(() => rm(importsOwned, { recursive: true, force: true })).catch(() => {});
@@ -245,7 +223,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     configureServer(server) {
       void sweepImports();
       server.httpServer?.once('close', () => { void stop(); });
-      // The images the bridge's replies name, from the bridge that keeps them.
       server.middlewares.use(BROWSER_ARTWORK_BASE.slice(0, -1), async (request, response) => {
         const name = new URL(request.url ?? '/', 'http://localhost').pathname.slice(1);
         const controller = new AbortController();
@@ -291,7 +268,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           }
           if (request.method !== 'POST' || !request.headers['content-type']?.startsWith('application/json')) throw new Error('Expected a JSON recording request');
           const input = await recordingRequestBody(request) as Record<string, any>;
-          // Letting go is never refused, or a busy bridge would keep what a page has left.
           if (input.type === 'release' || input.type === 'pageGone') {
             if (input.type === 'pageGone') pages.left(pageId(input.page));
             else {
@@ -302,7 +278,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           }
           if (pending.size >= 64) throw new Error(BROWSER_BRIDGE_BUSY);
           if (input.type === 'open') {
-            // Reserved before anything awaits, so an import its page lets go of meanwhile stays until the open ends.
             const ended = pages.open(String(input.path), pageId(input.page));
             let sourceId: string | undefined;
             try {

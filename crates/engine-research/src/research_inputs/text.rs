@@ -1,4 +1,3 @@
-//! Research text: short text inline, longer text owned at its whole length.
 use crate::{Memory, allocation, msvc_string, read_slice};
 
 const INLINE: usize = 512;
@@ -56,8 +55,6 @@ impl Text {
     ) -> Result<Self, &'static str> {
         if descriptor.len > INLINE {
             let mut bytes = Vec::new();
-            // Payload chunks are acquired before growth so an invalid source
-            // keeps its read failure ahead of any allocation failure.
             descriptor.copy_buffer(memory, &mut crate::walk::Buffer::Growing(&mut bytes), 0)?;
             return Ok(Self::Owned(bytes));
         }

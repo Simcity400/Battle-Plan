@@ -4,7 +4,6 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { OPTIONS } from './definition';
 import { formatNavalCount, navalMeasure, navalOwnership, navalPeriod, navalRequest } from './navalLossesData';
 
-// No declared totals: lines are drawn from the windows the view covers.
 const config: PartsRaceViewConfig = {
   product: 'naval-losses', title: 'Naval losses', subject: 'naval losses', icon: 'shield',
   options: OPTIONS, request: navalRequest,

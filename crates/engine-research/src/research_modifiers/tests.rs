@@ -533,7 +533,7 @@ fn active_operands_are_exact_and_idle_avoids_country_dependencies() {
     idle.slot.technology_present = 0;
     f.reads.borrow_mut().clear();
     assert_eq!(f.capture(&[idle], &mut rows), Outcome::Rows { len: 0 });
-    assert_eq!(f.reads.borrow().len(), 2); // Shared country census headers only.
+    assert_eq!(f.reads.borrow().len(), 2);
 }
 
 #[test]
@@ -548,7 +548,6 @@ fn scripted_sharing_roster_keeps_idle_countries_duplicates_and_native_extent() {
     for index in 0..5_000 {
         f.put(POINTERS + index * 8, (GROUP as u64).to_le_bytes());
     }
-    // Unneeded group operands are unreadable and must remain unread.
     f.fault = Some(GROUP + 12);
     let countries = ccountry::Reader::new(&f, 0, GAME).unwrap();
     let mut input = f.input();
@@ -598,7 +597,7 @@ fn unbonused_slots_share_one_guard_for_all_technology_operands() {
         f.capture(&[f.input()], &mut rows),
         Outcome::Rows { .. }
     ));
-    assert_eq!(f.calls.get(), 6); // Includes two shared country-census headers.
+    assert_eq!(f.calls.get(), 6);
     f.calls.set(0);
     let mut second = f.input();
     second.slot.index = 1;
@@ -1005,9 +1004,6 @@ fn scientist_hash_collisions_keep_each_raw_category_without_summing() {
     ));
 }
 
-/// Sharing members well beyond any reader-chosen count. Raw ids 2..=`OTHERS`+1
-/// resolve to a second country without the technology; raw 1 (the walking
-/// country, which has it) is the last member.
 const OTHERS: u32 = 4_999;
 const LINKS: usize = 0x30000;
 const COUNTRY2: usize = 0x46000;
@@ -1036,7 +1032,6 @@ fn many_member_fixture() -> Fixture {
         STATUS2 + crate::ctechnology_status::COUNTRY,
         (COUNTRY2 as u64).to_le_bytes(),
     );
-    // The walking country's own technology instance, as in the alias test.
     f.array(
         STATUS + crate::ctechnology_status::TECHNOLOGIES_DATA,
         0x8400,
@@ -1090,7 +1085,6 @@ fn sharing_member_rosters_are_bounded_only_by_their_native_headers() {
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let rows = &rows[..result.len()];
     let group = rows.iter().find(|r| r.kind == Kind::Sharing).unwrap();
-    // The walking country's own bonus is the parallel entry of its last slot.
     assert_eq!(
         (group.raw, group.auxiliary, group.count),
         (10_000, i64::from(OTHERS) + 100, count)
@@ -1154,8 +1148,6 @@ fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
     assert_eq!(member_rows(rows), expected_members());
 }
 
-/// The witness memo keeps every distinct (member, template) key of a pass;
-/// repeated early and late members cost no witness read and keep every row.
 #[test]
 fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
     const MEMBERS: usize = 0x36000;
@@ -1181,9 +1173,6 @@ fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
         f.reads.take().len()
     };
     let distinct: Vec<u32> = (2..602).collect();
-    // After the walking country (raw 1) the own-membership scan has stopped,
-    // so an extra member costs only its witness reads (both rosters take ten
-    // member pages).
     let with = |extra: u32| {
         let mut roster = distinct.clone();
         roster.extend([1, extra]);
@@ -1228,7 +1217,7 @@ fn batch_capture(
         canonical_slot: id,
     };
     let context = Context::read(memory.source, 0);
-    memory.clear(); // The shared country/global context is charged once per job.
+    memory.clear();
     let mut rows = vec![Row::default(); 64];
     let outcome = if serial {
         super::serial::walk_country_buffer(
@@ -1285,9 +1274,6 @@ fn governance_batch_modifier_sources_and_faults_keep_serial_rows_and_reasons() {
         before.count(),
         after.count()
     );
-    // Technology category lookup reads the category sum; research modifier calculation reads idea
-    // contributions and scripted contributions. Fault pointers and contributions separately: both
-    // gathers must increment their shared key.
     let country = World::country(1);
     for (offset, reader) in [
         (TECH + 0x190, "modifier_technologies"),

@@ -1,81 +1,44 @@
-//! Naval counters: task forces as map sources beside the land units, and the naval base's port
-//! items.
 
 use super::*;
 use viewer_foundation::map::gui_resources::viewport;
 
-/// Naval and land counters share member bar and hidden-state accumulation.
-/// Their kind then selects separate children. Port mission items use their own
-/// update and draw paths; supply, capital count, carrier and pride decisions
-/// retain their distinct visibility and member-order rules.
 #[derive(Clone)]
 pub(super) struct Flotilla {
     pub(super) members: Arc<[u64]>,
-    /// The item's first admitted task force, which identifies the
-    /// counter the viewer, as the game's client, keeps between updates.
     pub(super) source: u64,
     pub(super) owner: u32,
-    /// The first task force's logical owner, whose colour a plate takes in
-    /// country-colour mode; `None` when the reference is not a linked country.
     pub(super) logical: Option<u32>,
     pub(super) type_tint: Option<type_tint::Side>,
-    /// Naval counter window kind. Port mission items use a distinct retained
-    /// window and update path.
     pub(super) side: Result<Allegiance, String>,
-    /// `None` only for a mixed-owner port item whose Ships census is incomplete.
     pub(super) flag_owner: Option<u32>,
-    /// A mission-list unit item in a naval base's `box_ships`.
     pub(super) port: bool,
-    /// Coarse grouping at the current camera. Port items never use coarse windows.
     pub(super) coarse: bool,
-    /// Ships of the fully seen members; `None` while the hour's Ships census is incomplete.
     pub(super) ships: Option<usize>,
-    /// Whether any task force here is below the engine's 250 visibility.
     pub(super) hidden: bool,
-    /// The detailed selected outline requires at least one fully visible member.
     pub(super) visible_member: bool,
-    /// `None` when the hour lacks the ship operands.
     pub(super) cells: Option<NavalCells>,
     pub(super) bars: NavalBars,
     pub(super) supply: counter_inputs::NavalSupply,
     pub(super) status: counter_inputs::NavalStatus,
-    /// The port item's `mission_type` frame.
     pub(super) mission: Option<u32>,
-    /// `group_marker`'s colour when it shows, or why the hour cannot decide it (the fleet's row
-    /// or its reserve test).
     pub(super) marker: Result<Option<[f32; 4]>, String>,
-    /// The representative glides along its route this hour.
     pub(super) moving: bool,
-    /// A mission-list unit item's count operands; `None` for an at-sea counter.
     pub(super) item: Option<ItemIntel>,
-    /// The port callback's retained independent metadata bytes.
     pub(super) port_tooltip:
         Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
-    /// `counter_ideology`'s frame at sea: `Some` when the game shows it, `None` when it stays
-    /// hidden ([`ideology_frame`], of the first task force's logical owner); `Err` names the
-    /// operand the hour lacks. A port item's window never shows it : `Ok(None)`.
     pub(super) ideology: Result<Option<i32>, String>,
 }
 
-/// The count operands: the first task force's visibility and handle seed the
-/// count ranges, while ship counts sum over every member regardless of visibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ItemIntel {
     pub(super) byte: u16,
     pub(super) first: u64,
-    /// `None` while the hour's Ships census is incomplete.
     pub(super) ships: Option<usize>,
 }
 
-/// Below this first-member visibility (0x96), the `type` child uses the no-intel
-/// sprite and `pride_of_the_fleet_icon` stays hidden. A port item's members all
-/// reach this test; a combat tile's need not.
 pub(super) const MISSION_ITEM_DETAIL: u16 = 150;
 
 impl Flotilla {
-    /// Whether the `type` child shows the no-intel sprite: a mission item's first member below
-    /// [`MISSION_ITEM_DETAIL`], or an at-sea counter with any hidden member
-    ///
     pub(super) fn no_intel_type(&self) -> bool {
         match self.item {
             Some(item) => item.byte < MISSION_ITEM_DETAIL,
@@ -83,8 +46,6 @@ impl Flotilla {
         }
     }
 
-    /// Show pride when a qualifying member supplies it; port items also require
-    /// full representative visibility.
     pub(super) fn shows_pride(&self) -> Option<bool> {
         if self
             .item
@@ -96,29 +57,20 @@ impl Flotilla {
     }
 }
 
-/// What a naval counter's two bars draw.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum NavalBars {
     Hidden,
-    /// `(organisation, strength)` fills.
     Fill(f32, f32),
-    /// The code shows them, but a member's ratios are not recorded, by why.
     Unknown(String),
 }
 
-/// What the ship operands put on one naval counter.
 #[derive(Clone)]
 pub(super) struct NavalCells {
-    /// Capital ships summed over every member regardless of visibility; `None`
-    /// when a member's ship lacks the operands.
     pub(super) capitals: Option<usize>,
-    /// The `type` child's hull.
     pub(super) hull: counter_order::HullIcon,
-    /// Every `air_base_icon` state the unrecorded operands leave possible.
     pub(super) carrier: BTreeSet<Option<(&'static str, u32)>>,
 }
 
-/// Ship-model joins and fixed-point bar operands, built once per hour.
 #[derive(Clone)]
 pub(super) struct ShipTables {
     models: replay_frame::frame::SharedView,
@@ -128,7 +80,6 @@ pub(super) struct ShipTables {
     viewer_wings: Option<BTreeMap<u64, bool>>,
 }
 
-/// A camera's borrowed content paired with the shared ship operands.
 pub(super) struct ShipInputs<'a> {
     pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
     pub(super) tables: Arc<ShipTables>,
@@ -265,14 +216,11 @@ impl ShipInputs<'_> {
             })
     }
 
-    /// Whether a task force's first carrier, in roster order, has a carrier air base: the air
-    /// map mode's test for drawing its counter. `None` when a ship before it lacks model operands.
     pub(super) fn carries_air_wings(&self, force: u64) -> Option<bool> {
         let ships: Vec<_> = self.hulls(force).map(|hull| hull.model).collect();
         counter_order::first_carrier_has_air_base(&ships)
     }
 
-    /// A task force's strength and organisation ratios; an empty roster returns zero for each.
     pub(super) fn ratio(&self, force: u64) -> (i64, i64) {
         self.tables.ratios.get(&force).copied().unwrap_or((0, 0))
     }
@@ -285,8 +233,6 @@ impl ShipInputs<'_> {
             .map(|hull| counter_order::is_capital(hull.model))
             .try_fold(0usize, |sum, capital| Some(sum + usize::from(capital?)));
         let hull = counter_order::hull_icon(members.iter().flat_map(roster), self.equipment);
-        // The viewer's slot is what the game test, with fog on or off; an
-        // incomplete census cannot test it, so every carrier state stays open.
         let base = |air: u64| -> Option<counter_order::CarrierBase> {
             let wings = self.tables.viewer_wings.as_ref()?;
             let kind = *self.tables.base_kinds.get(&air)?;
@@ -320,54 +266,36 @@ impl ShipInputs<'_> {
     }
 }
 
-/// One admitted task force.
 pub(super) struct NavalUnit<'a> {
     pub(super) force: &'a replay_data::rows::TaskForceRow,
-    /// The ordinal in its province's occupant array; zero without a recorded order.
     pub(super) ordinal: u32,
     pub(super) slot: u32,
-    /// The logical owner, when it is a linked country.
     pub(super) logical: Option<u32>,
-    /// The detailed [`unit_flag_owner`]: port items are never coarse, and a coarse sea plate
-    /// draws `slot`.
     pub(super) flag_owner: u32,
     pub(super) sight: Sight,
-    /// Visibility for this perspective.
     pub(super) byte: u16,
-    /// Its ships; `None` while the hour's Ships census is incomplete, which may lack some.
     pub(super) ships: Option<usize>,
-    /// Where it stands at sea; `None` in port.
     pub(super) position: Option<counter_move::Position>,
-    /// Summed `Ships.strength`; partial when the census is.
     pub(super) strength: i64,
 }
 
-/// Everything a naval counter item reads besides its own task forces, for one hour.
 pub(super) struct NavalContext<'a> {
     pub(super) type_tints: &'a type_tint::Index,
     pub(super) vision: &'a Vision,
     pub(super) native: &'a NativeInputs,
     pub(super) ship_inputs: Option<ShipInputs<'a>>,
     pub(super) aggression: &'a [i64],
-    /// Ship handle to `Ships.task_force`, and whether that census is complete.
     pub(super) ship_task_forces: Arc<BTreeMap<u64, u64>>,
     pub(super) ships_complete: bool,
-    /// Per task force, its ship count and summed `Ships.strength`, with wrapping addition.
     pub(super) ships: Arc<BTreeMap<u64, (usize, i64)>>,
-    /// Canonical slot to `Countries.id`, the key of `CountryCounterInputs`.
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
-    /// A logical owner's `counter_ideology` frame at sea ([`ideology_frame`]).
     pub(super) ideology: &'a Ideology<'a>,
-    /// `TaskForces.mission` by task force.
     pub(super) missions: Arc<BTreeMap<u64, u32>>,
-    /// The recorded task forces, and whether that census is complete.
     pub(super) forces: &'a [replay_data::rows::TaskForceRow],
-    /// The mission skip operands, shared with the ship models.
     pub(super) mission_skips: Arc<viewer_foundation::map::task_force_visual::MissionSkips>,
     pub(super) forces_complete: bool,
 }
 
-/// The hour's inputs a [`NavalContext`] takes besides the frame.
 #[derive(Clone, Copy)]
 pub(super) struct NavalSources<'a> {
     pub(super) type_tints: &'a type_tint::Index,
@@ -379,17 +307,12 @@ pub(super) struct NavalSources<'a> {
     pub(super) ideology: &'a Ideology<'a>,
 }
 
-/// A country slot's `counter_ideology` frame at sea, as [`ideology_frame`] decides it.
 pub(super) type Ideology<'a> = dyn Fn(u32) -> Result<Option<i32>, String> + Sync + 'a;
 
-/// Interpret the ideology group's raw frame bits as a signed integer.
 fn set_frame_argument(number: u32) -> i32 {
     i32::from_ne_bytes(number.to_ne_bytes())
 }
 
-/// Ideology overlay follows the logical owner's ruling party when its civil-war
-/// status permits it. The ideology group's recorded frame bits are used as a
-/// signed frame argument. Missing reached politics or ideology data stays unknown.
 pub(super) fn ideology_frame(
     frame: &DecodedFrame,
     ideologies: &installed_content_core::ideologies::Ideologies,
@@ -529,7 +452,6 @@ impl<'a> NavalContext<'a> {
         })
     }
 
-    /// A task force the perspective is shown at all, as one counter member.
     pub(super) fn unit(
         &self,
         force: &'a replay_data::rows::TaskForceRow,
@@ -558,8 +480,6 @@ impl<'a> NavalContext<'a> {
         })
     }
 
-    /// the recorded roster's first task force is in reserve.
-    /// A missing roster or mission leaves the result unknown.
     pub(super) fn reserve(&self, fleet: u64) -> Option<bool> {
         if fleet == 0 {
             return Some(false);
@@ -599,8 +519,6 @@ impl<'a> NavalContext<'a> {
         }
     }
 
-    /// Builds one counter item from its task forces in admission order.
-    /// One plate of `units`; `coarse` is whether its column draws coarse (port items never do).
     pub(super) fn flotilla(&self, units: &[&NavalUnit<'_>], port: bool, coarse: bool) -> Flotilla {
         let first = units[0];
         let last = units[units.len() - 1];
@@ -617,9 +535,6 @@ impl<'a> NavalContext<'a> {
             .type_tints
             .of(first.force.roster_owner, first.force.logical_owner);
         let bars = if port {
-            // Port bars draw for an own item whatever the visibility,
-            // and otherwise only at the first member's visibility 250; the means are over every
-            // member.
             if first.sight != Sight::Full && !own {
                 NavalBars::Hidden
             } else {
@@ -635,11 +550,8 @@ impl<'a> NavalContext<'a> {
         };
         let fleet = first.force.fleet;
         let shown = if port {
-            // An own item whose first and last members share a fleet.
             Some(own && fleet == last.force.fleet && fleet != 0)
         } else if own && fleet != 0 {
-            // an own representative's fleet that the game does not call
-            // reserve, with its recorded colour.
             self.reserve(fleet).map(|reserve| !reserve)
         } else {
             Some(false)
@@ -719,7 +631,6 @@ impl<'a> NavalContext<'a> {
             } else {
                 counter_inputs::at_sea_status(&native_members, self.aggression)
             },
-            // Test only the first and last missions of an own item.
             mission: (port && own && first.force.mission == last.force.mission)
                 .then_some(first.force.mission),
             marker,
@@ -744,12 +655,6 @@ impl<'a> NavalContext<'a> {
     }
 }
 
-/// Seed both flag choices with the first force's detailed flag owner. With multiple
-/// roster owners, sum each owner's ship strengths and select the lowest signed total,
-/// breaking ties by ascending raw country reference. Draw this mixed-owner choice
-/// only for the mixed case; otherwise draw the first force's flag. Owners compare
-/// by canonical slot and keep their first raw reference as the tie key. An incomplete
-/// `Ships` census withholds the mixed flag because its totals are unknown.
 fn port_flag_owner(units: &[&NavalUnit<'_>], ships_complete: bool) -> Option<u32> {
     let first = units[0];
     if units.iter().all(|unit| unit.slot == first.slot) {
@@ -771,8 +676,6 @@ fn port_flag_owner(units: &[&NavalUnit<'_>], ships_complete: bool) -> Option<u32
         .map(|(slot, _)| slot)
 }
 
-/// [`counter_inputs::member_mean`] of each member's pair; a member whose pair is not recorded
-/// leaves the fills unknown.
 pub(super) fn mean_bars(ratios: impl Iterator<Item = Option<(i64, i64)>>) -> NavalBars {
     let Some(ratios) = ratios.collect::<Option<Vec<_>>>() else {
         return NavalBars::Unknown(BARS_UNRECORDED.to_owned());
@@ -788,14 +691,9 @@ pub(super) fn mean_bars(ratios: impl Iterator<Item = Option<(i64, i64)>>) -> Nav
     }
 }
 
-/// Why a naval counter's bar fills are undecided.
 pub(super) const BARS_UNRECORDED: &str = "the strength and organisation bars are undecided: a \
      member's ratios (the ship counter operands) are not recorded";
 
-/// Two task forces first pass the common owner test ([`JoinRules::owners_join`]:
-/// roster owners in country mode, allegiance categories otherwise). Then any
-/// two coarse or foreign members may join. An own representative accepts its
-/// own fleet or another fleet when both fleets are reserve fleets.
 pub(super) fn naval_can_join(
     rep: &NavalUnit<'_>,
     candidate: &NavalUnit<'_>,
@@ -816,13 +714,8 @@ pub(super) fn naval_can_join(
     a != 0 && b != 0 && context.reserve(a) == Some(true) && context.reserve(b) == Some(true)
 }
 
-/// Why the air map mode cannot test a task force for carriers: its ships' model operands are not
-/// all recorded this hour.
 pub(super) const CARRIER_TEST_UNRECORDED: &str = "the air map mode keeps only fleets carrying air wings, and this hour's ship models cannot tell";
 
-/// Whether a map mode keeps an at-sea task force's counter: every one, none in the operatives
-/// mode, and in the air mode those whose first carrier has an air base (`carries`), `None` when
-/// that cannot be told.
 pub(super) fn mode_keeps_task_force(
     kinds: UnitKinds,
     carries: impl FnOnce() -> Option<bool>,
@@ -834,11 +727,6 @@ pub(super) fn mode_keeps_task_force(
     }
 }
 
-/// Offers every task force at sea to its province's source for its visual bucket.
-///
-/// Walk each province's mixed occupant array, whose task forces share the land
-/// units' buckets. the game then excludes task forces in combat; a docked one (bucket 19)
-/// is also left out of the ordinary pass and belongs to the naval base.
 pub(super) fn add_task_forces<'a>(
     inputs: &CounterInputs<'_>,
     owner: &impl Fn(u32) -> Option<u32>,
@@ -856,8 +744,6 @@ pub(super) fn add_task_forces<'a>(
     };
     let bases = BTreeSet::new();
     for force in context.forces {
-        // At sea a task force is a unit source like a land stack, so the same camera admission
-        // decides whether its province activates one.
         if !admission.admits_province(&inputs.content.bounds, force.province) {
             continue;
         }
@@ -898,7 +784,6 @@ pub(super) fn add_task_forces<'a>(
     }
 }
 
-/// Whether a province is land: the content movement map's terrain flag, else the map's own kind.
 pub(super) fn is_land(inputs: &CounterInputs<'_>, province: u32) -> bool {
     province_is_land(inputs.map, inputs.movement, province)
 }
@@ -916,9 +801,6 @@ pub(super) fn province_is_land(map: &MapData, movement: Option<&MovementContent>
         )
 }
 
-/// Port frames use coarse sorting in the political mode or beyond its mode's coarse
-/// distance. Only political mode and strategic-level grouping replace that comparator
-/// with allegiance boundaries; closer strategic views keep fleet/mission/selection splits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PortGrouping {
     cleared: bool,
@@ -989,21 +871,16 @@ fn sort_port_units(
         .map_err(|_| "port sort inputs unavailable")
 }
 
-/// Camera-independent port membership and anchor decisions. Comparator keys and
-/// runs still read the camera height, map mode and local task-force selection.
 #[derive(Clone, Default)]
 pub(super) struct PortTables {
     anchors: Vec<(u32, [f32; 3])>,
     unanchored: usize,
-    /// Each base province's port roster: the task forces by handle, in ordinal order. Handles,
-    /// never row positions: the hour drawn is not always the hour these were read from.
     rosters: BTreeMap<u32, Vec<(u64, u32)>>,
     undecided: BTreeMap<u32, Cow<'static, str>>,
     refused: BTreeMap<&'static str, BTreeSet<u64>>,
 }
 
 impl PortTables {
-    /// The bases' anchors' bits in base order, the unanchored count and each undecided base.
     pub(super) fn summary(&self) -> naval_members::PortSummary {
         naval_members::PortSummary {
             anchors: self.anchors.iter().map(|&(province, anchor)| (province, anchor.map(f32::to_bits))).collect(),
@@ -1078,15 +955,6 @@ impl PortTables {
     }
 }
 
-/// The naval base icons whose windows hold the port items, and the items: the game walks each
-/// land province's naval occupant array, independently of the ordinary
-/// sources, admits task forces with a fleet, ships and an empty ordinary route, sorts them and
-/// appends each comparator-defined run to the base's `box_ships`.
-///
-/// The base icons are planned below `NAVAL_BASE_DISTANCE_CUTOFF`, whatever their items. The items
-/// are cleared and nothing is filled when the camera is coarse in the default map
-/// mode, and while the viewing country takes part in a peace conference (`context` is `None` then,
-/// [`super::units_shown`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn port_counters(
     inputs: &CounterInputs<'_>,
@@ -1103,8 +971,6 @@ pub(super) fn port_counters(
     )
 }
 
-/// Retains only pure, ordered port flotillas; resource requests and native call generation
-/// remain on the original path, in the original order, on every preparation.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn port_counters_with(
     inputs: &CounterInputs<'_>,
@@ -1117,7 +983,6 @@ pub(super) fn port_counters_with(
     retained: Option<&mut PortPlans>,
     out: &mut CounterFrame,
 ) -> io::Result<()> {
-    // The raids map mode clears naval base icons, and their port counters with them.
     if !inputs.visibility.province_icons || !inputs.shows(inputs.content.defines.naval_base_cutoff)
     {
         return Ok(());
@@ -1154,9 +1019,6 @@ pub(super) fn port_counters_with(
     let anchors = &cached.anchors;
     let unanchored = cached.unanchored;
     out.report.unanchored += unanchored;
-    // A coarse camera, or a peace conference (no context), empties every box; a recorded order
-    // the hour does not hold whole leaves every base's items undecided. A free eye empties the
-    // boxes of the bases beyond the coarse grouping distance.
     let ports = match (context, tables.order) {
         (None, _) => Ok(None),
         (Some(_), _)
@@ -1216,36 +1078,21 @@ pub(super) fn port_counters_with(
     Ok(())
 }
 
-/// Every base's port items are undecided when the recorded occupant arrays
-/// (`ProvinceUnitOrder`) the pass walks are incomplete for this hour.
 pub(super) const PORT_ORDER_UNRECORDED: &str = "port items are not reproduced: the recorded \
      naval occupant arrays (ProvinceUnitOrder) are not whole this hour";
 
-/// Why a task force at a naval base, and so the base's port roster, is undecided: its ships are
-/// not in the incomplete Ships census.
 pub(super) const PORT_SHIPS_UNRECORDED: &str = "task-force ship census incomplete";
 
-/// Why a task force at a naval base, and so the base's port roster, is undecided: its roster
-/// owner is not a linked country.
 pub(super) const PORT_OWNER_UNLINKED: &str = "task-force roster owner not a linked country";
 
-/// A naval base's port roster is undecided when its recorded occupant array names
-/// a task force whose row is absent from the incomplete `TaskForces` census.
 pub(super) const PORT_FORCE_UNRECORDED: &str = "task-force row absent from an incomplete census";
 
-/// A task force a port roster admitted for its hour whose row the hour drawn no longer holds: its
-/// base's port items are not reproduced.
 pub(super) const PORT_FORCE_GONE: &str = "a task force the port roster admitted has no row at the hour drawn";
 
-/// Why a base's port roster is undecided, for a task force's `reason`.
 pub(super) fn port_undecided(reason: &str) -> Cow<'static, str> {
     format!("port items are not reproduced: {reason}").into()
 }
 
-/// Each naval base province whose recorded occupant array names task forces absent
-/// from the incomplete `TaskForces` census, with those task forces. Whether they join
-/// its port roster is undecided ([`PORT_FORCE_UNRECORDED`]); none are reported while
-/// the census is complete.
 fn unrecorded_port_forces(
     bases: &BTreeSet<u32>,
     order: &counter_order::RecordedOrder,
@@ -1269,7 +1116,6 @@ fn unrecorded_port_forces(
         .collect()
 }
 
-/// A semantic memo contains neither native windows nor resolved atlas resources.
 #[derive(Default)]
 pub(super) struct PortPlans(BTreeMap<u32, PortPlan>);
 
@@ -1285,9 +1131,6 @@ impl PortPlans {
     }
 }
 
-/// Each naval base province's port items this hour: their calls, in the order the code appends
-/// them, or why the province's roster is undecided (a task force dropped for an operand the hour
-/// lacks, or a roster the native sort refuses), each such task force listed by why.
 #[allow(clippy::too_many_arguments)]
 fn port_items(
     inputs: &CounterInputs<'_>,
@@ -1318,8 +1161,6 @@ fn port_items(
     };
     let air_census = (inputs.visibility.priorities == PriorityTable::StrategicAir)
         .then(|| air_grid::Census::new(frame));
-    // The task-force rows of the hour drawn, by handle: a port roster read at another hour names
-    // its task forces, and a row of this hour is never found by that hour's position.
     let by_handle: BTreeMap<u64, &replay_data::rows::TaskForceRow> =
         context.forces.iter().map(|force| (force.id, force)).collect();
     let mut ports: naval_windows::PortItems = cached
@@ -1448,7 +1289,6 @@ fn port_items(
     Ok(ports)
 }
 
-/// Count each port item beyond `box_ships`'s slot limits, which the game does not add.
 pub(super) const PORT_GRID_FULL: &str =
     "a port item is past box_ships's slot limits, which do not add it; not drawn";
 

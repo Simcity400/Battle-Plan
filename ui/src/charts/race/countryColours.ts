@@ -1,7 +1,3 @@
-/** The colour each country draws in a race widget's views: its recorded map
- * colour (from `useCountryLooks`), else the categorical palette, nudged apart in a
- * fixed order (by tag) when the app asks for fixed colours, so a country keeps its
- * colour as ranks change. */
 import { useMemo, useRef } from 'react';
 import { categoricalPalette, nudgeApart } from '../palette.ts';
 import type { ChartTokens } from '../tokens';
@@ -11,21 +7,18 @@ import { parseColor, toHex } from '../../shell/appearance/color.ts';
 export function useCountryColours(tags: readonly string[], color: (tag: string) => readonly number[] | null | undefined,
   tokens: Pick<ChartTokens, 'surface' | 'muted' | 'countryColours'>,
   revision: { matches?: (tag: string, hour: number) => boolean }): (tag: string, hour?: number) => string {
-  // Callers rebuild the list each render; the same tags in the same order keep the colours.
   const kept = useRef(tags);
   if (kept.current !== tags && (kept.current.length !== tags.length || kept.current.some((tag, index) => tag !== tags[index]))) kept.current = tags;
   const listed = kept.current;
-  // The colours themselves, not the looks object rebuilt as names and flags arrive, keep the function.
   const colorKey = listed.map(tag => color(tag)?.join(',') ?? '').join(';');
   const matches = revision.matches;
   return useMemo(() => {
     const { colors, fallbackColors } = countryColourMaps(listed, color, tokens);
     return (tag: string, hour?: number) => hour !== undefined && matches?.(tag, hour) === false
       ? fallbackColors.get(tag) ?? tokens.muted : colors.get(tag) ?? tokens.muted;
-  }, [listed, colorKey, matches, tokens]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [listed, colorKey, matches, tokens]);
 }
 
-/** Each country's colour (`colors`), and the palette's for an hour it has no recorded identity. */
 export function countryColourMaps(tags: readonly string[], color: (tag: string) => readonly number[] | null | undefined,
   tokens: Pick<ChartTokens, 'surface' | 'countryColours'>): { colors: Map<string, string>; fallbackColors: Map<string, string> } {
   const palette = categoricalPalette(tokens.surface);

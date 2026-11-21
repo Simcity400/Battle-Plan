@@ -1,13 +1,3 @@
-//! Repeated reads of one accumulator's tree. [`capture`](super::capture)
-//! walks the same accumulator once per requested key: every key reads the
-//! same node headers, child pointers, display strings and accumulator entry
-//! arrays again. Within the quiescent hourly callback a read that succeeded
-//! returns the same bytes when repeated, so a repeat is served from the
-//! bytes the first read returned. Nothing is read earlier or in another
-//! order: a read the walk makes for the first time goes to the source as it
-//! did, and a read that failed is not kept, so its repeat meets the source
-//! again, as it did. Storage is advisory: a read it cannot keep is simply
-//! made again.
 
 use crate::{
     Memory,
@@ -16,8 +6,6 @@ use crate::{
 };
 use std::cell::RefCell;
 
-/// A kept read: `len` bytes from `address` at `bytes[start..]`, or, with
-/// [`ARRAY`], an accumulator's entry array of `len` bytes. Tag zero: free.
 #[derive(Clone, Copy, Default)]
 struct Slot {
     address: usize,
@@ -26,18 +14,13 @@ struct Slot {
     len: usize,
 }
 
-/// The tag of a kept accumulator entry array.
 const ARRAY: u32 = u32::MAX;
 
-/// The reads one accumulator's walks repeat, kept between hours so their
-/// storage is reused. [`Self::clear`] it between accumulators.
 #[derive(Default)]
 pub struct RepeatCache {
-    /// Open addressing by address and tag, a power of two in length.
     slots: Vec<Slot>,
     used: usize,
     bytes: Vec<u8>,
-    /// An entry array being read.
     scratch: Vec<u8>,
 }
 
@@ -46,7 +29,6 @@ impl RepeatCache {
         self.slots.capacity() * size_of::<Slot>() + self.bytes.capacity() + self.scratch.capacity()
     }
 
-    /// Forgets every kept read; the storage stays.
     pub fn clear(&mut self) {
         if self.used != 0 {
             self.slots.fill(Slot::default());
@@ -75,8 +57,6 @@ impl RepeatCache {
         (slot.tag != 0).then(|| &self.bytes[slot.start..slot.start + slot.len])
     }
 
-    /// Keeps `bytes` for `(address, tag)`, which holds nothing; nothing when
-    /// the storage cannot grow.
     fn keep(&mut self, address: usize, tag: u32, bytes: &[u8]) {
         if (self.used + 1) * 2 > self.slots.len() && !self.grow() {
             return;
@@ -97,7 +77,6 @@ impl RepeatCache {
         self.used += 1;
     }
 
-    /// Doubles the slots, keeping every kept read.
     fn grow(&mut self) -> bool {
         let len = (self.slots.len() * 2).max(64);
         let Ok(slots) =
@@ -114,7 +93,6 @@ impl RepeatCache {
     }
 }
 
-/// `inner` with the reads [`RepeatCache`] keeps served again.
 pub(super) struct Repeats<'a, M> {
     pub inner: &'a M,
     pub cache: RefCell<&'a mut RepeatCache>,
@@ -153,9 +131,6 @@ impl<M: Memory> Memory for Repeats<'_, M> {
         self.inner.modifier_definitions()
     }
 
-    /// An accumulator's entry array, read whole by the first lookup there
-    /// (`modifier_accumulator::lookup_many_at`, the reads `lookup_at`
-    /// makes) and searched for later keys as that lookup would find them.
     fn modifier_accumulator_value(
         &self,
         address: usize,

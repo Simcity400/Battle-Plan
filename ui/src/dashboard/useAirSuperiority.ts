@@ -22,7 +22,6 @@ import type { AirChoicesReply, AirSide, AirSuperiorityReply, FactionGroup } from
 const NO_WARNINGS: string[] = [];
 const NO_SIDES: AirSide[] = [];
 
-/** The settings as the products ask them: the comparison, its viewpoint, and the sides, regions and theatres chosen. */
 export function airMode(options: Readonly<Record<string, OptionValue>>, campaign: string, currentCountry: string | null) {
   const mode = options.mode === 'viewpoint' ? 'viewpoint' as const : 'sides' as const;
   const chosen = options.viewpoint ? String(options.viewpoint) : '';
@@ -34,7 +33,6 @@ export function airMode(options: Readonly<Record<string, OptionValue>>, campaign
 }
 export type AirModeSettings = ReturnType<typeof airMode>;
 
-/** The params of `air-superiority` for `mode`; regions are chosen by the widget, not the product, unless asked. */
 export function airParams(mode: AirModeSettings) {
   return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? countryFromKey(mode.viewpoint.slice(8)) : mode.viewpoint,
     ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
@@ -42,14 +40,12 @@ export function airParams(mode: AirModeSettings) {
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
 }
 
-/** The timeline's choices: one request a recording, never at the playhead. */
 export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority-choices', params: { branchId: track.branch.id } } : null;
   return useProduct<AirChoicesReply>(runtime.client, request, active, validateAirChoices, track?.source);
 }
 
-/** A faction's name as the groups name it at `hour` (its latest otherwise), the reader's own name first. */
 export function factionNamer(factions: readonly FactionGroup[], own: ReadonlyMap<string, string>, hour: number | null) {
   const byId = new Map(factions.map(faction => [faction.id, faction]));
   return (id: string) => {
@@ -86,16 +82,13 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime, fields
   }, [choices.data, looks, hour, factions.factions, factions.displayNames, options.regions, track?.source.metadata.campaignKey]);
 }
 
-/** The moment at the widget's hour (followed at the head as a panel, asked for a pinned or hovered hour), with the
- * sides' names and colours. Every score is a live cell: nothing here moves with the playhead. A push renders only when
- * its rows change (`momentRows`); `current` is the newest reply, read where it is painted (`live` tells when one lands). */
 export function useAirMoment(props: WidgetProps, options: Readonly<Record<string, OptionValue>>, hoverHour: number | null = null) {
   const { widget, runtime, active, onDiagnostics } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const campaign = track?.source.metadata.campaignKey ?? '';
   const currentCountry = selectedCountryKeys(widget.countries, track)[0] ?? defaultCountryKey(track);
   const mode = useMemo(() => airMode(options, campaign, currentCountry),
-    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]); // eslint-disable-line react-hooks/exhaustive-deps
+    [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]);
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
   const params = useMemo(() => track && !needsViewpoint ? airParams(mode) : null, [track, needsViewpoint, mode]);
   const product = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', params, { active, validate: validateAirSuperiority, structure: momentRows, hoverHour });
@@ -108,8 +101,6 @@ export function useAirMoment(props: WidgetProps, options: Readonly<Record<string
   return { ...product, track, mode, needsViewpoint, ...looks };
 }
 
-/** Names and colours of a reply's sides at the hour its structure is of, and its viewpoint's. `pushed` (a panel at the
- * head): at the last hour at or before the head at which one of them changed, so a push alone asks and renders nothing. */
 export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'active'>, data: { sides: readonly AirSide[]; viewpoint: number | null } | undefined, at: number | null,
   mode: AirModeSettings, pushed = false) {
   const { runtime, widget, active } = props;
@@ -117,7 +108,6 @@ export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'act
   const tokens = useChartTokens();
   const sides = data?.sides ?? NO_SIDES;
   const viewpointKey = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : null;
-  // A slot viewpoint is named, flagged and coloured as the tag it goes by at the hour shown.
   const [viewpointTag = null] = useKeyTagsAt(runtime, track, viewpointKey ? [viewpointKey] : [],
     clockHour => pushed && track ? trackHourOf(widget, track, runtime.tracks, clockHour) ?? Number.NaN : Math.floor(at ?? track?.branch.lastHour ?? 0), pushed, active);
   const tags = useMemo(() => [...new Set([...sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])), ...(viewpointTag ? [viewpointTag] : [])])], [sides, viewpointTag]);
@@ -158,7 +148,7 @@ export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'act
     { id: 'enemy', label: `Enemies of ${looks.viewpoint.name}`, color: tokens.error },
   ] : [...sides].sort((a, b) => (a.faction == null) === (b.faction == null) ? 0 : a.faction == null ? 1 : -1).map(side => ({ id: side.key, label: sideName(side), color: color(side),
     onColor: side.colourFaction ? (hex: string) => factions.setColour(side.colourFaction!, hex, 'campaign') : undefined })),
-  [mode.mode, looks.viewpoint, tokens.error, sides, sideName, color, factions.setColour]); // eslint-disable-line react-hooks/exhaustive-deps
+  [mode.mode, looks.viewpoint, tokens.error, sides, sideName, color, factions.setColour]);
   const warnings = useMemo(() => [...factions.warnings, ...(factions.error ? [String(factions.error)] : []), ...(names.warnings ?? [])], [factions.warnings, factions.error, names.warnings]);
   return { tokens, looks, legend, country, faction, warnings };
 }

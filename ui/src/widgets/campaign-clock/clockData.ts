@@ -26,11 +26,9 @@ export interface ClockRow { id: string; name: string; seconds: number | null; te
 export const UNCLASSIFIED = 'Some recorded intervals have unknown pause state; playing and paused totals are unavailable.';
 const GAPS = 'Only recorded intervals are included. Recording gaps are not counted as paused or playing time.';
 
-/** The warnings the request path gives for these totals. */
 export const clockWarnings = (totals: Pick<ClockTotals, 'playing' | 'complete'>): string[] =>
   [...(totals.complete ? [] : [GAPS]), ...(totals.playing === null ? [UNCLASSIFIED] : [])];
 
-/** The four rows, their totals and the warnings, from the clock's totals. */
 export function clockRows(totals: ClockTotals, warnings: readonly string[]): ClockRow[] {
   const note = warnings.length ? `${CLOCK_NOTE} ${warnings.join(' ')}` : CLOCK_NOTE;
   return [
@@ -41,8 +39,6 @@ export function clockRows(totals: ClockTotals, warnings: readonly string[]): Clo
   ];
 }
 
-/** What a followed head renders from: none yet, a refusal, or totals with the warnings that hold. Each is its own
- * key, so the rows are made again when totals arrive whatever warnings they carry. */
 export function clockStructure(head: ClockTotals | { reason: string } | null): string {
   return !head ? 'none' : 'reason' in head ? `reason:${head.reason}` : `totals:${clockWarnings(head).join('|')}`;
 }

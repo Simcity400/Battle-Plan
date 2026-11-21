@@ -38,10 +38,6 @@ pub fn compare_reserved_country_intel(
     reserved_intel::compare(frame, save, report)
 }
 
-/// The canonical slot of a saved country tag, through the context's tag map.
-/// `country_context` proves every tagged country links to itself and every
-/// link target is a tagged country, so this is the link-table search it
-/// replaces, without a scan of every link per lookup.
 pub fn saved_country_slot(
     tag: &[u8],
     save: &Save,
@@ -167,21 +163,6 @@ pub fn compare_war_relations(
     Ok(())
 }
 
-/// One row per pair whose cached opinion dword is nonzero, which is exactly the
-/// native emission rule, so an absent saved `cached_sum` is an exact zero and an
-/// unexpected recorded row is a difference rather than a silent extra. A country
-/// holds a relation with itself: the 2026-09-11 live save serializes a self
-/// `active_relations` entry with its own `cached_sum` for 93 of its 439
-/// countries, and the collector reads the matching self rows, so a self pair is
-/// ordinary state here and only a repeated resolved pair is uncomparable.
-/// The owners (by tag) whose relation rows this frame holds as read at its
-/// own hour. Relations are read once a day, one owner slice per hour
-/// (`Cadence::Sliced`), and a full hour reads every owner (`None`). Otherwise
-/// the owners SliceReads places at this hour are current, and so is a country
-/// without rows whose own slice is this hour: its read found none. The walk
-/// selects countries by their own ID (`CountryRow.id`), never by an alias
-/// link. Every other owner holds an earlier read, and neither its rows nor
-/// its saved relations are comparable at this hour.
 pub fn current_relation_owners<'a>(
     frame: &DecodedFrame,
     table: TableId,
@@ -218,7 +199,6 @@ pub fn current_relation_owners<'a>(
     Ok(Some(current))
 }
 
-/// States which owners a sliced relations comparison covered.
 pub fn slice_limitation(
     frame: &DecodedFrame,
     report: &mut Report,
@@ -237,8 +217,6 @@ pub fn slice_limitation(
                     .map(|row| row.sample_hour)
                     .min()
             });
-        // Listed only when owners read earlier exist; rowless owners have no
-        // read record, so no read hour is claimed for them.
         if oldest.is_some() {
             report.carried_owners(table, oldest);
         }
@@ -330,8 +308,6 @@ pub fn compare_relation_opinions(
     Ok(())
 }
 
-/// Typed relation tuples join the save on the native serializable-vector ordinal
-/// and on the class's own token spelling from the recorded lexical dictionary.
 pub fn compare_relation_tuples(
     frame: &DecodedFrame,
     save: &Save,
@@ -465,7 +441,6 @@ pub fn compare_relation_tuples(
     Ok(())
 }
 
-/// A relation's raw cancel byte and hours against its saved flag and dates.
 fn compare_relation_hours(
     report: &mut Report,
     label: &str,
@@ -512,18 +487,6 @@ fn compare_relation_hours(
     Ok(())
 }
 
-/// The four raw lanes compare exactly: record writer prints each lane
-/// through the fixed5 path and omits it only when the raw qword is zero, so an
-/// omitted lane is an exact zero rather than an unknown. The save writes the
-/// list positionally and the recorded key is the same native index, so the join
-/// is index to index and needs no country resolution on the target side.
-///
-/// The recorded table is sparse (see `CountryIntelRow`): an owner's native
-/// count is its greatest recorded index plus one, an index below it without a
-/// row has four zero lanes and compares as such, and an index at or past it is
-/// absent. Every saved index still compares all four lanes. Actual owner0 is
-/// compared independently against its paired admission certificate and the
-/// validated original country-emission projection.
 pub fn compare_country_intel(
     frame: &DecodedFrame,
     save: &Save,
@@ -565,7 +528,6 @@ pub fn compare_country_intel(
                 report.difference(&label, "absent", "present");
                 continue;
             }
-            // In range without a row: the recorder omitted four zero lanes.
             let actual = captured.get(&index).copied().unwrap_or(&zero);
             report.compared("CountryIntel", 1);
             for (field, captured, saved) in [
@@ -608,11 +570,6 @@ pub fn compare_factions(
     report: &mut Report,
 ) -> io::Result<()> {
     let links = &countries.links;
-    // The faction save writer spells every stored member through
-    // tag_string, including the reserved country. Its country block
-    // is omitted unless the physical census contains a positive reserved alias.
-    // Its faction membership is saved normally in either case. Demand this exact
-    // tag only for a reached zero join.
     let zero_tag = LazyCell::new(|| -> io::Result<&[u8]> {
         let [reserved] = frame.complete::<tables::ReservedCountryNaming>()? else {
             return Err(invalid(
@@ -672,7 +629,6 @@ pub fn compare_factions(
             ));
         }
     }
-    // Template tokens are named by the recorded lexer dictionary; without it they are a limitation.
     let tokens: Option<BTreeMap<u32, &[u8]>> =
         frame.complete::<tables::LexicalTokens>().ok().map(|rows| {
             rows.iter()
@@ -711,7 +667,6 @@ pub fn compare_factions(
             continue;
         };
         report.factions += 1;
-        // The faction save writer gates on stored length.
         let name_label = format!("{label}.literal_name");
         let name = (!actual.name.is_empty())
             .then(|| super::serialized_text(report, &name_label, &actual.name));
@@ -756,11 +711,6 @@ pub fn compare_factions(
     Ok(())
 }
 
-/// A faction's template, colour and colour override against the save.
-/// The faction save writer writes `template` (the template token's spelling)
-/// only when the faction has one, `color` through the colour writer (each of r,
-/// g, b as `(int)(c * 255.0f)`, and alpha only when it is not 1.0) and
-/// `is_color_overridden` from the raw byte.
 fn compare_faction_presentation(
     label: &str,
     actual: &FactionRow,
@@ -768,9 +718,6 @@ fn compare_faction_presentation(
     tokens: Option<&BTreeMap<u32, &[u8]>>,
     report: &mut Report,
 ) {
-    // Presence is compared whatever the dictionary: the serializer writes `template`
-    // exactly when the template pointer is non-null, so a template on one side only is
-    // a difference. Only the spelling of two present templates needs LexicalTokens.
     match (actual.template_token, expected.template.as_deref()) {
         (None, None) => {}
         (Some(token), None) => report.difference(
@@ -824,10 +771,6 @@ fn compare_faction_presentation(
     }
 }
 
-/// The integers the colour writer writes for four f32 components (raw bits):
-/// each of r, g, b as `(int)(c * 255.0f)`, the product in f32 and the conversion a
-/// truncating `cvttss2si` (NaN or out of range gives `i32::MIN`), then alpha the same
-/// way only when it is not 1.0 (compared as f32).
 pub fn saved_colour(components: [u32; 4]) -> Vec<i64> {
     let scale = |bits: u32| {
         let product = f32::from_bits(bits) * 255.0_f32;

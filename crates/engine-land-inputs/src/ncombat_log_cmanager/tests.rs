@@ -6,18 +6,13 @@ const BASE: usize = 0x0001_4000_0000;
 const GAME: usize = 0x10000;
 const MANAGERS: usize = 0x11000;
 const VARIANTS: usize = 0x80_0000;
-/// 1943.10.27.13 and 1943.11.1.4 (raw game hours).
 const OCTOBER: i32 = 60_827_868;
 const NOVEMBER: i32 = 60_827_979;
 
-/// Addresses at or above this (the module's) live in the sparse overlay.
 const HIGH: usize = 1 << 32;
-/// The orders-group reference table and its buckets.
 const REGISTRY: usize = 0x20000;
 const BUCKETS: usize = 0x21000;
 
-/// Flat synthetic memory from address zero, and a sparse overlay for module
-/// globals; only written bytes are readable.
 #[derive(Default)]
 struct Fixture {
     bytes: Vec<u8>,
@@ -48,7 +43,6 @@ impl Memory for Fixture {
     }
 }
 
-/// One month entry: reason, date and (variant id, amount) pairs.
 struct Entry<'a> {
     reason: i32,
     date: i32,
@@ -84,16 +78,12 @@ impl Fixture {
     fn forget(&mut self, address: usize, len: usize) {
         self.present[address..address + len].fill(false);
     }
-    /// A fresh zeroed region for one object: like a real allocation, every
-    /// byte of it is readable, including fields the fixture does not set.
     fn alloc(&mut self, len: usize) -> usize {
         let address = 0x100_0000 + self.next;
         self.next += (len + 0xff) & !0xff;
         self.put(address, &vec![0; len]);
         address
     }
-    /// The orders-group reference table (type 53) resolving exactly `groups`,
-    /// with Robin Hood placement as the engine's lookup expects.
     fn registry(&mut self, groups: &[u32]) {
         let capacity = (groups.len() * 2).next_power_of_two().max(8) as u32;
         let exponent = capacity.trailing_zeros();
@@ -152,8 +142,6 @@ impl Fixture {
         variant
     }
 
-    /// Slots: 0 null (sentinel), 1 a manager with `groups`, 2 null, 3 an
-    /// empty manager.
     fn new(groups: &[(u32, [&[Entry]; 5])]) -> (Self, usize) {
         let mut f = Self::default();
         f.array(GAME + cgame_state::COMBAT_LOGS, MANAGERS, 4);
@@ -169,7 +157,6 @@ impl Fixture {
         (f, manager)
     }
 
-    /// A manager of country `country` holding `groups`.
     fn manager(&mut self, country: u32, groups: &[(u32, [&[Entry]; 5])]) -> usize {
         let manager = self.alloc(SIZE);
         self.pointer(manager, BASE + VTABLE_RVA.0);
@@ -215,10 +202,6 @@ impl Fixture {
         manager
     }
 
-    /// `slots` country slots (slot 0 the null sentinel); every `every`-th
-    /// slot's manager holds `groups` group logs, each with `months` month
-    /// entries of `variants` variants in reasons 0, 1 and 3 and the
-    /// recovered array; the rest are empty managers.
     fn scale(slots: usize, every: usize, groups: u32, months: i32, variants: u32) -> Self {
         let mut f = Self::default();
         let array = f.alloc(slots * 8);
@@ -409,7 +392,6 @@ fn empty_logs_are_a_complete_empty_table() {
 #[test]
 fn a_country_whose_rows_start_short_grows_whole() {
     let (mut f, _) = standard();
-    // A second country (slot 2) whose one row still fits after country 7's six.
     let other = f.manager(
         8,
         &[(
@@ -440,7 +422,6 @@ fn a_country_whose_rows_start_short_grows_whole() {
         ),
         Outcome::Rows { len: 7 }
     );
-    // Storage that starts short grows to every country's rows.
     let mut rows = vec![Row::default(); 3];
     assert_eq!(
         walk(
@@ -453,7 +434,6 @@ fn a_country_whose_rows_start_short_grows_whole() {
         ),
         Outcome::Rows { len: 7 }
     );
-    // Selecting only the second country reads it whole.
     let mut rows = vec![Row::default(); 1];
     assert_eq!(
         walk(
@@ -496,7 +476,6 @@ fn unavailable(f: &Fixture) -> &'static str {
     }
 }
 
-/// The address of the first group's log and of its first reason-0 entry.
 fn first_group(f: &Fixture, manager: usize) -> (usize, usize) {
     let list = read::<u64>(f, manager + GROUPS).unwrap() as usize;
     let group = read::<u64>(f, list).unwrap() as usize;
@@ -668,17 +647,6 @@ fn viewing_country_is_the_raw_signed_reference() {
     assert_eq!(viewing_country(&Fixture::default(), GAME), None);
 }
 
-/// Release timing at 5,000 country slots, over a flat `SliceMemory` copy of
-/// the fixture (guarded-read work, not gameplay slowdown). `human` (default)
-/// logs one country with 60 orders groups; `observer` logs every third slot
-/// (1,666 countries, the case in which the game logs every country) with 5
-/// groups. Every group holds 12 months of 20 (human) or 10 (observer)
-/// variants in reasons 0, 1 and 3 and the recovered array, and resolves in
-/// the registry. It times a full read (every month of every country, a full
-/// hour), one hour's slice with window reads (the ordinary hour), the window
-/// read of every country (what one daily read would cost) and the hour-23
-/// deleted-group scan. Run
-/// `cargo test -p engine --release --lib combat_log_scale -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn combat_log_scale() {
@@ -698,7 +666,6 @@ fn combat_log_scale() {
         base: 0,
         bytes: &f.bytes,
     };
-    // The registry overlay is read from the fixture itself.
     let time = |label: &str, run: &mut dyn FnMut() -> usize, expected: usize| {
         let mut best = std::time::Duration::MAX;
         for _ in 0..20 {
@@ -760,7 +727,6 @@ fn combat_log_scale() {
     );
 }
 
-/// The recorder's slice of an owner (`replay_data::cadence::slice_of`: owner % 24).
 fn replay_slice(owner: u32) -> u32 {
     owner % 24
 }
@@ -839,7 +805,6 @@ fn each_country_is_read_with_the_months_its_selector_chooses() {
         &mut VariantMemo::default(),
     );
     assert_eq!(outcome, Outcome::Rows { len: 5 });
-    // Country 3's manager holds no group log and is not asked.
     assert_eq!(
         asked,
         [7, 8],
@@ -863,7 +828,6 @@ fn each_country_is_read_with_the_months_its_selector_chooses() {
 #[test]
 fn only_selected_countries_are_followed_past_their_header() {
     let (mut f, manager) = standard();
-    // An unselected country's broken log is never read.
     let (group, _) = first_group(&f, manager);
     f.pointer(group, BASE + 8);
     let mut rows = vec![Row::default(); 8];
@@ -878,7 +842,6 @@ fn only_selected_countries_are_followed_past_their_header() {
         ),
         Outcome::Rows { len: 0 }
     );
-    // Every manager's header is still authenticated.
     f.pointer(manager, BASE + 8);
     assert!(matches!(
         walk(
@@ -900,7 +863,6 @@ fn deleted_groups_are_the_logs_whose_orders_group_no_longer_resolves() {
         countries_with_deleted_groups(f, BASE, GAME, |country| countries.push(country))
             .map(|()| countries)
     };
-    // A null reference table for the type: nothing resolves.
     let (mut f, _) = standard();
     let root = BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8;
     f.pointer(root, 0);
@@ -909,19 +871,15 @@ fn deleted_groups_are_the_logs_whose_orders_group_no_longer_resolves() {
     assert_eq!(scan(&f), Ok(vec![]));
     f.registry(&[12793]);
     assert_eq!(scan(&f), Ok(vec![7]));
-    // An unreadable registry is an error, not a deleted group.
     for byte in 0..8 {
         f.high.remove(&(root + byte));
     }
     assert!(scan(&f).is_err());
 }
 
-/// The prune detour counts a manager's deleted rows with no room, reserves
-/// that many, and reads them; less room keeps a prefix of whole pools.
 #[test]
 fn a_deleted_log_count_without_room_is_what_a_read_with_room_returns() {
     let (mut f, manager) = standard();
-    // A null reference table for the type: both groups' logs are deleted.
     let root = BASE + registry::LOW_ROOTS_RVA.0 + corders_group::REFERENCE_TYPE as usize * 8;
     f.pointer(root, 0);
     assert_eq!(
@@ -952,7 +910,6 @@ fn a_deleted_log_count_without_room_is_what_a_read_with_room_returns() {
         ))
     );
     assert_eq!(short, rows[..2]);
-    // Every group resolves: nothing is deleted, and the count is empty.
     f.registry(&[12793, 12794]);
     assert_eq!(
         deleted_logs(&f, BASE, manager, &mut []),
@@ -966,7 +923,6 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
     let mut remembered = vec![Row::default(); 16];
     let mut unremembered = vec![Row::default(); 16];
     let mut memo = VariantMemo::default();
-    // Twice with the same memo: it is cleared at the start of each walk.
     for _ in 0..2 {
         assert_eq!(
             walk(
@@ -995,7 +951,6 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
         Outcome::Rows { len: 6 }
     );
     assert_eq!(remembered, unremembered);
-    // A variant broken after an earlier walk remembered it is still refused.
     let (mut f, _) = standard();
     walk(
         &f,
@@ -1019,7 +974,6 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
             reason: "variant vtable or reference type mismatch"
         }
     );
-    // Later unique identities grow the original memo and retain earlier entries.
     let mut full = VariantMemo::default();
     for pointer in 1..=10_000 {
         full.reserve(1).unwrap();

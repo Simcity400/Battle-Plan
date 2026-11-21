@@ -1,13 +1,9 @@
-/* Design system. Theme roles (--canvas, --surface, --accent, …), --glass,
-   --radius and the font stacks are written by shell/appearance; everything
-   below derives from them so custom themes restyle the whole interface. */
 :root {
   --canvas: #0a0f16; --chrome: #0f151d; --surface: #111822; --raised: #1c2532; --overlay: #161e29; --border: #2a3646;
   --text: #eef3f9; --muted: #9fb0c3; --accent: #5cb2ff; --accent-text: #0a0f16; --selection: #5cb2ff; --glow: #2fc6c0;
   --positive: #5fd49b; --warning: #f0c060; --error: #f07178;
   --blueprint: #1b3a5c; --blueprint-border: #2f5c8a; --blueprint-text: #eef3f9;
   --glass: 78%; --glass-blur: 16px; --radius: 10px;
-  /* A row that cannot be acted on: grey and faded (tables, game windows). */
   --muted-row-opacity: .55;
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-display: var(--font-ui);
@@ -36,7 +32,6 @@
   --meter-sweep: color-mix(in srgb, var(--text) 28%, transparent);
   --error-soft: color-mix(in srgb, var(--error) 14%, transparent);
   --edge: 0 0 #0000;
-  /* Outlined controls, as T3 Code draws them: a hairline, a faint fill, a top highlight and a tiny drop. */
   --control-border: color-mix(in srgb, var(--text) 11%, transparent);
   --control-border-hover: color-mix(in srgb, var(--text) 17%, transparent);
   --control-fill: color-mix(in srgb, var(--text) 3%, transparent);
@@ -51,7 +46,6 @@
   --ease: cubic-bezier(.2, .8, .2, 1); --ease-spring: cubic-bezier(.3, 1.4, .5, 1);
   --t-fast: 120ms; --t: 180ms; --t-slow: 300ms;
   --meter-sweep-duration: 1.6s;
-  /* Shared widget scales and chart ink: widgets and charts use these, never raw values. */
   --space-1: 2px; --space-2: 4px; --space-3: 8px; --space-4: 12px; --space-5: 16px; --space-6: 24px;
   --type-xs: 11px; --type-sm: 12px; --type-md: 13px; --type-lg: 14px;
   --chart-grid: color-mix(in srgb, var(--border) 55%, var(--surface));
@@ -93,7 +87,6 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing:
 h1 { font-size: calc(var(--font-size-display) * 1.57143); letter-spacing: -.02em; } h2 { font-size: calc(var(--font-size-display) * 1.14286); } h3 { font-size: calc(var(--font-size-display) * 1); }
 ::selection { background: var(--accent-soft); color: var(--text); }
 * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 18%, transparent) transparent; }
-/* Chromium's native thin scrollbar keeps buttons; opt in to the same themed ink without them. */
 @supports selector(::-webkit-scrollbar) {
   .themed-scrollbar { scrollbar-width: auto; scrollbar-color: auto; }
   .themed-scrollbar::-webkit-scrollbar { width: var(--space-2); height: var(--space-2); }
@@ -104,7 +97,6 @@ h1 { font-size: calc(var(--font-size-display) * 1.57143); letter-spacing: -.02em
 .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .eyebrow { display: block; color: var(--muted); text-transform: uppercase; letter-spacing: .09em; font-size: 0.65625rem; font-weight: 600; }
 
-/* Buttons */
 .button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: var(--control-h); min-height: var(--control-h); padding: 0 12px;
   border: 1px solid var(--control-border); border-radius: var(--r-sm); background: var(--control-fill); color: var(--text); box-shadow: var(--control-shadow);
@@ -132,7 +124,6 @@ h1 { font-size: calc(var(--font-size-display) * 1.57143); letter-spacing: -.02em
 .text-button { background: transparent; border: 0; padding: 0; color: var(--accent); font-size: 0.75rem; font-weight: 500; }
 .text-button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
 
-/* Fields */
 input:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']), textarea {
   width: 100%; min-width: 0; height: var(--control-h); padding: 0 10px; border: 1px solid var(--control-border); border-radius: var(--r-sm);
   background-color: var(--control-fill); box-shadow: var(--control-shadow); color: var(--text); font-size: 0.8125rem; font-variant-numeric: tabular-nums;
@@ -170,7 +161,6 @@ input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0
 .field > span, .field > label { font-size: 0.75rem; color: var(--muted); font-weight: 500; }
 .field-hint { margin: 0; font-size: 0.75rem; color: var(--quiet); line-height: 1.5; }
 
-/* Segmented control */
 .segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: calc(var(--r-sm) + 3px); background: color-mix(in srgb, var(--text) 6%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft); }
 .segmented > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 26px; padding: 0 11px; border: 0; border-radius: var(--r-sm);
   background: transparent; color: var(--muted); font-size: 0.75rem; font-weight: 500; white-space: nowrap; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
@@ -178,14 +168,11 @@ input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0
 .segmented > button[aria-pressed='true'], .segmented > button[aria-checked='true'] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line-soft); }
 .segmented > button svg { width: 14px; height: 14px; }
 
-/* Pills, notices, status */
 .pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; background: var(--hover); color: var(--muted);
   font-size: 0.6875rem; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pill.accent { background: var(--accent-soft); color: var(--accent); }
 .pill.positive { background: var(--positive-soft); color: var(--positive); }
 .pill.warning { background: var(--warning-soft); color: var(--warning); }
-/* The pulse is a disc 6px wider than the dot that grows from the dot's size and fades: transform and
-   opacity, which the compositor runs, so a live dot never repaints the page. */
 .live-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: currentColor; --live-dot-from: calc(7 / 19); }
 .live-dot::after { content: ''; position: absolute; inset: -6px; z-index: -1; border-radius: 50%; background: currentColor; opacity: 0; animation: live-pulse 1.8s var(--ease) infinite; }
 @keyframes live-pulse { 0% { opacity: .5; transform: scale(var(--live-dot-from)); } 70%, 100% { opacity: 0; transform: none; } }
@@ -211,7 +198,6 @@ input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0
 .list-skeleton-text .skeleton { height: 10px; border-radius: 999px; }
 .panel-loading { height: 100%; display: flex; gap: 12px; align-items: center; justify-content: center; color: var(--muted); font-size: 0.875rem; }
 
-/* Empty and status states inside panels */
 .dash-empty { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 8px; height: 100%; min-height: 100px;
   padding: 24px; text-align: center; color: var(--muted); font-size: 0.8125rem; line-height: 1.55; }
 .dash-empty > .empty-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 4px; border-radius: var(--r-md); background: var(--hover); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line-soft); }
@@ -220,7 +206,6 @@ input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0
 .dash-empty p { margin: 0; max-width: 340px; }
 .dash-inline-warning { margin: 0; padding: 8px 12px; color: var(--warning); font-size: 0.75rem; overflow-wrap: anywhere; }
 
-/* One tooltip for the whole interface */
 .app-tooltip {
   position: fixed; inset: auto; margin: 0; padding: 6px 9px; width: max-content; max-width: min(340px, calc(100vw - 16px)); max-height: calc(100vh - 16px);
   overflow: auto; white-space: normal; overflow-wrap: anywhere; border: 0; border-radius: var(--r-sm);

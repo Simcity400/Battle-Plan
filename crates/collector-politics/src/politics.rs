@@ -1,5 +1,3 @@
-//! Hourly writer handoff and same-identity endpoint conservation. Native
-//! observers never call a game function to obtain a rate. Assembly is off-thread.
 use crate::{
     politics_changes::{self as hooks, Drained, Event, Kind},
     table_capture::grow_capacity,
@@ -23,7 +21,6 @@ pub const TABLES: [TableId; N] = [
     TableId::PoliticsCaptureCoverage,
 ];
 const ASSEMBLED: &str = "politics observations assembled by spool";
-// A native row plus at most four signed chunks of its i128 clamp correction.
 const EVENT_SEQUENCE_STRIDE: u64 = 5;
 fn event_sequence(sequence: u64) -> u64 {
     let first = sequence
@@ -121,8 +118,6 @@ impl Captured {
         hooks::invalidate();
         self.handoff = Some(Err(reason));
     }
-    /// Worker lane-index handoff. The existing
-    /// Countries acquisition owns the endpoint reads; spool owns the census.
     pub fn capture(&mut self) -> u64 {
         let started = crate::clock::qpc();
         self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
@@ -167,8 +162,6 @@ pub struct Ledger {
     scratch: Option<Box<Captured>>,
 }
 impl Ledger {
-    /// Spool worker: copy the sealed interval, resolve owned native words and
-    /// build coverage from the already-acquired all-country rows.
     pub fn assemble_owned(
         &mut self,
         branch: BranchId,
@@ -342,8 +335,6 @@ impl Ledger {
                             site: event.site,
                             identity,
                         });
-                        // Explicit native clamp accounting, separate from the native
-                        // effective delta. Never fill a conservation discrepancy.
                         if let Some(requested) = event.requested
                             && matches!(
                                 event.site,
@@ -529,13 +520,9 @@ impl Ledger {
             self.cursor = drain.cursor;
             self.next = drain.first + drain.copied as u64;
         }
-        // Events arrive in global sequence order across countries; the tables
-        // are keyed by (country, sequence) and must be strictly ascending.
         changes.sort_unstable_by_key(|row| (row.country, row.sequence));
         governments.sort_unstable_by_key(|row| (row.country, row.sequence));
-        // The census follows canonical slots; raw country aliases need not.
         coverage.sort_unstable_by_key(RowCodec::key);
-        // A disabled or failed handoff leaves every hook stream unobserved.
         let failed = captured.drained.and_then(Result::err);
         let publish = |rows: TableRows| {
             failed.map_or_else(
@@ -553,8 +540,6 @@ impl Ledger {
             } else {
                 TableInput::Sampled(unavailable("politics balance census incomplete"))
             };
-        // Daily snapshots carry their native day, never manufacture the rate
-        // of the attach day. Publish every hour so a missed midnight recovers.
         tables[TableId::CountryPowerDaily.index()] = publish(TableRows::CountryPowerDaily(daily));
         tables[TableId::CountryPowerDailyCosts.index()] =
             publish(TableRows::CountryPowerDailyCosts(costs));
@@ -856,7 +841,6 @@ mod tests {
             bytes: &native_bytes,
         };
         let (_, compact_events, compact_keys) = hooks::stage_fixture(&stream, &memory);
-        // Original representation: own each literal at observation time.
         let mut original_keys = Vec::new();
         for event in &mut stream {
             for key in &mut event.identity.keys {
@@ -868,7 +852,7 @@ mod tests {
                 key.address = start;
             }
         }
-        native_bytes.fill(0); // Deferred assembly cannot follow native pointers.
+        native_bytes.fill(0);
         let now = BalanceSnapshot {
             pp: Some(72),
             party: Some(7),
@@ -963,7 +947,6 @@ mod tests {
         };
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].cause, PowerCause::Decision);
-        // An unhooked change cannot pollute the next interval's baseline.
         ledger.assemble(1, 12, &captured(1, 1, &[], &now), &mut tables);
         let Some(TableRows::PoliticsCaptureCoverage(coverage)) =
             rows(&tables[TableId::PoliticsCaptureCoverage.index()])
@@ -1000,7 +983,6 @@ mod tests {
             site: PowerSite::ResetCountry,
             ..Default::default()
         };
-        // Even historical requested-zero assumptions cannot invent clamp rows.
         ledger.assemble(
             1,
             11,
@@ -1160,7 +1142,6 @@ mod tests {
             parties: [None, None],
             ..Default::default()
         };
-        // Global sequence order interleaves countries, as the live log does.
         let events = [
             power(5002, 1, 100, 90),
             power(5001, 2, 100, 80),

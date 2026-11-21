@@ -11,13 +11,10 @@ import { Segmented } from './Segmented';
 import { VirtualList } from './VirtualList';
 import './aircraftPicker.css';
 
-/** References shown on a row before the rest go to its tooltip. */
 const SHOWN_REFERENCES = 2;
 
-/** What the panel says while no aircraft is chosen: there is no default. */
 export const NO_AIRCRAFT = 'No aircraft is chosen: Fly mode is a free camera until you choose one.';
 
-/** What the chosen aircraft's status line says: that none is chosen, or what the map last answered for the one chosen; nothing while the map has not answered for it yet. */
 export function statusText(chosen: string | null, status: FlyAircraftStatus | null): { text: string; alert: boolean } | null {
   if (!chosen) return { text: NO_AIRCRAFT, alert: false };
   if (!status || status.aircraft !== chosen) return null;
@@ -36,7 +33,6 @@ function kindBadge(entry: AircraftEntry): string | null {
   }
 }
 
-/** One catalogue row: an entry once its page arrives, a placeholder asking for its page until then. */
 function Row({ index, pages, chosen, onChoose, request, retry }: {
   index: number; pages: AircraftPages; chosen: string | null; onChoose: (name: string) => void;
   request: (first: number, last: number) => void; retry: (index: number) => void;
@@ -65,7 +61,6 @@ function Row({ index, pages, chosen, onChoose, request, retry }: {
   </button>;
 }
 
-/** The catalogue a picker shows: search, scope, the chosen aircraft's status, every matching entry a page at a time, the counted refusals and the content's notes. */
 export function AircraftCatalogueView({ pages, version, scope, onScope, query, onQuery, chosen, status, onChoose, request, retry }: {
   pages: AircraftPages | null; version: number; scope: AircraftScope; onScope: (scope: AircraftScope) => void; query: string; onQuery: (query: string) => void;
   chosen: string | null; status: FlyAircraftStatus | null; onChoose: (aircraft: string | null) => void;
@@ -74,9 +69,7 @@ export function AircraftCatalogueView({ pages, version, scope, onScope, query, o
   const scroll = useRef<HTMLDivElement>(null);
   const matching = pages?.matching ?? 0;
   const rows = useMemo(() => Array.from({ length: matching }, (_, index) => index), [matching]);
-  // Refused rows keep their places but are no keyboard destinations; a new predicate each time
-  // pages arrive, as eligibility changes with them.
-  const interactive = useCallback((index: number) => !!pages && aircraftRowInteractive(pages, index), [pages, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const interactive = useCallback((index: number) => !!pages && aircraftRowInteractive(pages, index), [pages, version]);
   const line = statusText(chosen, status);
   const refusals = refusalLine(pages?.refusals ?? []);
   const failed = pages?.firstError();
@@ -107,10 +100,6 @@ export function AircraftCatalogueView({ pages, version, scope, onScope, query, o
   </>;
 }
 
-/** The docked aircraft list. It is a page region, not a popover, so the map-overlay guard (which
- * hides the native map behind any open popover) leaves the map shown; the shell gives it its own
- * column beside the map, which narrows to make room, so the chosen plane is seen while trying
- * others. Escape or its close button closes it. */
 export function AircraftPanel({ id, onClose, children }: { id?: string; onClose: () => void; children: ReactNode }) {
   return <section id={id} className="aircraft-picker" aria-label="Aircraft" onKeyDown={event => {
     if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
@@ -122,7 +111,6 @@ export function AircraftPanel({ id, onClose, children }: { id?: string; onClose:
   </section>;
 }
 
-/** Fly mode's aircraft: any aircraft model or entity of the recording's content stack, or none. There is no default. The list docks in `host`, beside the map; choosing an aircraft shows it on the map, which is its preview, and keeps the list open to try another. With `prompt`, the list opens by itself while nothing is chosen, as Fly mode starts. */
 export default function AircraftPicker({ client, source, chosen, status, onChoose, host, prompt = false }: {
   client: DashboardClient; source: DashboardSource | null; chosen: string | null; status: FlyAircraftStatus | null;
   onChoose: (aircraft: string | null) => void; host: HTMLElement | null; prompt?: boolean;
@@ -134,8 +122,7 @@ export default function AircraftPicker({ client, source, chosen, status, onChoos
   const [query, setQuery] = useState('');
   const shown = open && !!host && !!source;
   const { pages, version, request, retry } = useAircraftCatalogue(client, source, scope, query, shown);
-  // Opened once for each campaign Fly mode starts on with nothing chosen; closing it keeps it closed.
-  useEffect(() => { if (prompt && chosen === null && source) setOpen(true); }, [prompt, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (prompt && chosen === null && source) setOpen(true); }, [prompt, source?.id]);
   const close = useCallback(() => { setOpen(false); trigger.current?.focus({ preventScroll: true }); }, []);
   const line = statusText(chosen, status);
   if (!source) return <button type="button" className="icon-button aircraft-picker-trigger" disabled data-tooltip="Open a campaign to choose an aircraft"><Icon name="plane" /><span>No aircraft chosen</span></button>;

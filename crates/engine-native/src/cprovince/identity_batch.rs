@@ -1,4 +1,3 @@
-//! Province identity and registry-slot lookahead, with serial memo admission.
 use crate::{
     Memory,
     cpdx_array::Array,
@@ -27,10 +26,6 @@ const SLOT_FIELDS: [RecordField; 1] = [RecordField {
 const SLOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SLOT_FIELDS, 8).expect("valid province slot layout");
 
-/// The hourly movement step consumes the province id; the current CGameState province roster
-/// authenticates its backlink. Sources come only from validated seed pointers and an authenticated
-/// id within that checked array. No observation enters either caller's memo until its original
-/// serial gates run.
 pub struct IdentityBatch {
     pointers: [usize; 64],
     identities: [u8; 64 * 12],

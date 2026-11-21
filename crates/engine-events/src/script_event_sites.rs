@@ -1,5 +1,3 @@
-//! Script event observations after native admission, with stack-independent
-//! tap instructions. These sites do not reevaluate fire-once or option gates.
 
 use engine_sites::Rva;
 #[derive(Debug, Clone, Copy)]
@@ -8,9 +6,6 @@ pub struct Site {
     pub rva: Rva,
 }
 
-/// Common dispatch has passed world and fire-once gates. The definition is
-/// RSI, recipient tag pointer R13, actor tag pointer in the frame's home slot,
-/// and the bound scope pointer in its fifth-argument slot.
 pub const ACCEPTED: Site = Site {
     name: "ScriptEventAccepted",
     rva: Rva(0x00a5_b163),
@@ -18,20 +13,15 @@ pub const ACCEPTED: Site = Site {
 pub const DISPATCH_ACTOR_HOME: usize = 0x1a0;
 pub const DISPATCH_SCOPE_HOME: usize = 0x1b0;
 
-/// Existing pending instance, or no pending instance for an optionless event.
-/// EDI holds the native instance word; the definition and frame remain live.
 pub const EXISTING_INSTANCE: Site = Site {
     name: "ScriptEventExistingInstance",
     rva: Rva(0x00a5_b389),
 };
 
-/// Selected nonnegative option after both native ordinal gates. RBX is the
-/// event, RSI its command-owned scope, EDI the admitted option ordinal.
 pub const OPTION: Site = Site {
     name: "ScriptEventOption",
     rva: Rva(0x0120_c6c2),
 };
-/// A negative native option ordinal executes the event's immediate option.
 pub const IMMEDIATE_OPTION: Site = Site {
     name: "ScriptEventImmediateOption",
     rva: Rva(0x0120_c67d),
@@ -41,8 +31,6 @@ pub const OPTION_COMMAND_SCOPE: usize = 0x38;
 pub const OPTION_COMMAND_INSTANCE: usize = 0x28;
 pub const OPTION_COMMAND_ACTOR: usize = 0x34;
 
-/// Registry insertion's original ABI has six integer/pointer arguments and
-/// returns the actual native instance in the low word of RAX.
 pub const REGISTER: Site = Site {
     name: "ScriptEventRegistered",
     rva: Rva(0x001e_1650),
@@ -70,18 +58,14 @@ pub const DELAYED_DESTROY: Site = Site {
     name: "DestroyDelayedEvent",
     rva: Rva(0x0071_6ae0),
 };
-/// Delayed pass entry: anchor once, then observe only sparse cursor boundaries.
 pub const DELAYED_PASS: Site = Site {
     name: "DelayedEventPass",
     rva: Rva(0x0074_4760),
 };
-/// A timer reached its fire evaluation after decrement. RSI is its native
-/// ordinal, RBX the timer and RDI the owner; quiet timers never reach this site.
 pub const DELAYED_FIRE_BOUNDARY: Site = Site {
     name: "DelayedEventFireBoundary",
     rva: Rva(0x0074_4856),
 };
-/// Native expiry/invalid-entry removal, before its swap-removal stores.
 pub const DELAYED_RETIRE: Site = Site {
     name: "RetireDelayedEvent",
     rva: Rva(0x0074_4912),
@@ -89,36 +73,23 @@ pub const DELAYED_RETIRE: Site = Site {
 pub const DELAYED_TAPS: [Site; 2] = [DELAYED_FIRE_BOUNDARY, DELAYED_RETIRE];
 pub const DELAYED_ENTRIES: [Site; 3] = [DELAYED_SCHEDULE, DELAYED_DESTROY, DELAYED_PASS];
 
-/// Replacement unlinked one fired-set node; RSI is the world and RDI the
-/// still-live old definition. No-match replacement bypasses this count store.
-/// A witness only: the fired-match branch staged for
-/// [`decisions::REPLACE_EVENT_RETIREMENT_CALL`].
 pub const ERASE_FIRED: Site = Site {
     name: "EraseFiredEvent",
     rva: Rva(0x001f_061f),
 };
 
-/// Automatic mission activation after its native append has returned. RBP
-/// owns the decision status, RSI the definition and R12D the admitted days.
 pub const MISSION_APPENDED: Site = Site {
     name: "MissionAppended",
     rva: Rva(0x0077_fa2b),
 };
-/// The automatic writer found a retained mission and selected reactivation.
-/// Its next member stores set the days and native active lifecycle code. A
-/// witness only, staged for [`decisions::AUTO_MISSION_ACTIVATION`].
 pub const MISSION_REACTIVATED: Site = Site {
     name: "MissionReactivated",
     rva: Rva(0x0077_fa7d),
 };
-/// Scripted mission activation handles both insertion and reactivation;
-/// returning normally proves its native member stores/append completed.
 pub const ACTIVATE_MISSION: Site = Site {
     name: "ActivateMission",
     rva: Rva(0x0076_dfd0),
 };
-/// Targeted activation's helper returns after the new instance was appended
-/// to the native ordinary or timed targeted container.
 pub const ACTIVATE_TARGETED: Site = Site {
     name: "ActivateTargetedDecision",
     rva: Rva(0x0076_de20),
@@ -128,8 +99,6 @@ pub const SCRIPTED_MISSION_APPENDED: Site = Site {
     name: "ScriptedMissionAppended",
     rva: Rva(0x0076_e082),
 };
-/// Scripted reactivation of an existing mission: a witness only, staged for
-/// [`ACTIVATE_MISSION`], which publishes the stored days and state.
 pub const SCRIPTED_MISSION_REACTIVATED: Site = Site {
     name: "ScriptedMissionReactivated",
     rva: Rva(0x0076_e0b0),
@@ -146,14 +115,10 @@ pub const TAPS: [Site; 9] = [
     ERASE_FIRED,
 ];
 
-/// Ordinary expiry after native taken-membership removal, including empty
-/// remove effects. RBX is the definition and RDI the owning status.
 pub const DECISION_EXPIRED: Site = Site {
     name: "DecisionExpired",
     rva: Rva(0x0077_f79a),
 };
-/// Timed targeted cooldown has expired; the next native store reenables the
-/// selected instance. RBX is the instance and RBP owns the status.
 pub const TARGETED_MISSION_REENABLED: Site = Site {
     name: "TargetedMissionReenabled",
     rva: Rva(0x0077_ef1a),
@@ -166,8 +131,6 @@ pub const REMOVE_MISSION: Site = Site {
     name: "RemoveSelectedMission",
     rva: Rva(0x0077_d840),
 };
-/// Timed mission result is stored before execution. RSI owns the status and
-/// RBX the selected timed instance; effects may subsequently reactivate it.
 pub const MISSION_COMPLETED: Site = Site {
     name: "MissionCompleted",
     rva: Rva(0x0077_f3e9),
@@ -176,68 +139,50 @@ pub const MISSION_TIMED_OUT: Site = Site {
     name: "MissionTimedOut",
     rva: Rva(0x0077_f4b8),
 };
-/// Ordinary targeted cooldown has finished. R12D is the native zero result;
-/// RSI owns the status and RBX the selected instance. The complete store and
-/// its terminal jump are one admitted relocation.
 pub const TARGETED_DECISION_REENABLED: Site = Site {
     name: "TargetedDecisionReenabled",
     rva: Rva(0x0077_ed46),
 };
-/// Ordinary cooldown membership was removed. R8 is the selected, still-live
-/// cooldown and RBP its status owner, immediately before native destruction.
 pub const DECISION_COOLDOWN_FINISHED: Site = Site {
     name: "DecisionCooldownFinished",
     rva: Rva(0x0077_7f51),
 };
-/// Taken membership is gone, before optional effects; RDI definition, RSI status.
 pub const TAKEN_DECISION_REMOVED: Site = Site {
     name: "TakenDecisionRemoved",
     rva: Rva(0x007802c5),
 };
-/// Refresh removed its selected cooldown; R8 instance and R14 status.
 pub const REFRESH_COOLDOWN_FINISHED: Site = Site {
     name: "RefreshCooldownFinished",
     rva: Rva(0x0077f59d),
 };
-/// The reached terminal store follows the post-effect reactivation check. RBX instance, RSI status.
 pub const MISSION_REMOVED: Site = Site {
     name: "MissionRemoved",
     rva: Rva(0x0077f23a),
 };
-/// Cancellation stores its terminal lifecycle; days were stored immediately before. RBX instance, RSI status.
 pub const MISSION_CANCELLED: Site = Site {
     name: "MissionCancelled",
     rva: Rva(0x0077f371),
 };
-/// After actual state and duration stores; RBX instance, RSI status.
 pub const TARGETED_DECISION_REMOVED: Site = Site {
     name: "TargetedDecisionRemoved",
     rva: Rva(0x0077edca),
 };
-/// After actual state and duration stores; RBX instance, RBP status.
 pub const TARGETED_MISSION_REMOVED: Site = Site {
     name: "TargetedMissionRemoved",
     rva: Rva(0x0077eebf),
 };
-/// Actual cancellation duration store and terminal jump; state is already stored. RBX instance, RBP status.
 pub const TARGETED_MISSION_CANCELLED: Site = Site {
     name: "TargetedMissionCancelled",
     rva: Rva(0x0077efe9),
 };
-/// Actual admitted completion lifecycle in ECX; RBX instance, RBP status. Effects have not run.
 pub const TARGETED_MISSION_COMPLETED: Site = Site {
     name: "TargetedMissionCompleted",
     rva: Rva(0x0077f03f),
 };
-/// Actual timeout lifecycle in ECX; RBX instance, RBP status. Effects have not run.
 pub const TARGETED_MISSION_TIMED_OUT: Site = Site {
     name: "TargetedMissionTimedOut",
     rva: Rva(0x0077f079),
 };
-/// Common boundary after a final duration store or the reactivation bypass.
-/// RBX is the instance and RBP the status. State zero proves the bypass and
-/// emits no duration result. All incoming branches target this boundary,
-/// never the interior of its relocated register-only instruction.
 pub const TARGETED_DURATION_CHANGED: Site = Site {
     name: "TargetedDurationChanged",
     rva: Rva(0x0077_f0ed),
@@ -260,12 +205,10 @@ pub const LIFECYCLE_TAPS: [Site; 16] = [
     TARGETED_MISSION_TIMED_OUT,
     TARGETED_DURATION_CHANGED,
 ];
-/// Explicit clear of matching re-enable/removal timers and taken membership; status, definition ABI.
 pub const CLEAR_COOLDOWN_DECISION: Site = Site {
     name: "ClearCooldownDecision",
     rva: Rva(0x0077d5f0),
 };
-/// Final ordinary mission display-duration helper; selected instance and owner country-tag pointer ABI.
 pub const MISSION_DISPLAY_DURATION: Site = Site {
     name: "MissionDisplayDuration",
     rva: Rva(0x0077e200),
@@ -277,19 +220,14 @@ pub const LIFECYCLE_ENTRIES: [Site; 4] = [
     MISSION_DISPLAY_DURATION,
 ];
 
-/// Unconditional timeout add follows these five bytes; RDI selected mission, R15 scope, EAX signed days.
 pub const EXTEND_MISSION_TIMEOUT: Site = Site {
     name: "ExtendMissionTimeout",
     rva: Rva(0x003623dc),
 };
-/// Unconditional removal-timer add follows these six bytes; RAX selected timer, RSI scope, RBX effect.
 pub const EXTEND_DECISION_REMOVAL: Site = Site {
     name: "ExtendDecisionRemoval",
     rva: Rva(0x00362456),
 };
-/// Descriptors only, no longer installed: these taps ran before the scalar
-/// add. [`decisions::EXTEND_MISSION_TIMEOUT_CALL`] and
-/// [`decisions::EXTEND_DECISION_REMOVAL_CALL`] enclose it instead.
 pub const DURATION_TAPS: [Site; 2] = [EXTEND_MISSION_TIMEOUT, EXTEND_DECISION_REMOVAL];
 
 #[cfg(test)]
@@ -629,7 +567,6 @@ impl Site {
 }
 
 impl Site {
-    /// Static family/site label; the observer supplies the failing stage and cause.
     pub fn label(self) -> &'static str {
         let failure = self.failure();
         failure

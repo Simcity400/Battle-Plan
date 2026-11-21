@@ -136,7 +136,6 @@ fn production_rest_terminal_failure_preserves_variant_and_division_tables() {
 
 #[test]
 fn production_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
-    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
     let _hint = crate::country_scale::hint_guard();
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
@@ -318,9 +317,6 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
     );
     assert_eq!(produced.amount_raw, i64::MIN);
 
-    // Daily detail projections materialize their complete recovery rows,
-    // preserving the same full-width keys, including all three produced
-    // key components, even when a complete encoder baseline exists.
     let mut baseline = std::array::from_fn(|_| unavailable("not part of this fixture"));
     for (id, view) in TABLES.into_iter().zip(views) {
         baseline[id.index()] = view;
@@ -917,8 +913,6 @@ fn production_rest_split_copy_matches_direct_walk() {
     assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
 }
 
-/// Positive slots holding the reserved slot-zero object are skipped as the
-/// reader skips them, and the kit's alias of its country is copied only once.
 #[test]
 fn production_rest_split_copy_skips_reserved_aliases_and_copies_each_country_once() {
     use super::production_rest_test_kit as kit;
@@ -927,7 +921,6 @@ fn production_rest_split_copy_skips_reserved_aliases_and_copies_each_country_onc
     let mut put = |address: usize, value: &[u8]| {
         bytes[address - kit::BASE..address - kit::BASE + value.len()].copy_from_slice(value);
     };
-    // Slots zero and three the reserved object, one and its alias two the country.
     for header in [cgame_state::COUNTRIES, cgame_state::COUNTRY_LINKS] {
         put(kit::BASE + header + 8, &4_u32.to_le_bytes());
         put(kit::BASE + header + 12, &4_u32.to_le_bytes());
@@ -950,8 +943,6 @@ fn production_rest_split_copy_skips_reserved_aliases_and_copies_each_country_onc
     assert_eq!(job.census.len(), 1);
 }
 
-/// The kit's memory plus the six maximum-factory defines at their module
-/// addresses (module base zero).
 struct DefinedMemory<'a>(&'a [u8]);
 
 impl Memory for DefinedMemory<'_> {
@@ -984,20 +975,17 @@ fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
         assert_eq!(split.lines.outcome, direct.lines.outcome);
         (split.lines.outcome, split.lines.rows[0])
     };
-    // 12 active of the type's 150: the average of 40..=51 percent.
     let (outcome, line) = row(&bytes);
     assert_eq!(outcome, Outcome::Rows { len: 1 });
     assert_eq!(
         (line.max_factories, line.efficiency_raw),
         (150, (40..52).sum::<i64>() * 32_768 / 12)
     );
-    // Without the type's optional the military define (index 0) applies.
     let flag = at(kit::EQUIPMENT_TYPE + engine_native::cequipment_type::MAX_MIL_FACTORIES + 4);
     bytes[flag] = 0;
     let (_, line) = row(&bytes);
     assert_eq!(line.max_factories, 3);
     assert_eq!(line.efficiency_raw, (40 + 41 + 42) * 32_768 / 3);
-    // A naval line with the capital-ship bit takes that define (index 4).
     let vtable = at(kit::PLINE);
     bytes[vtable..vtable + 8].copy_from_slice(
         &(engine_native::cnaval_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
@@ -1007,7 +995,6 @@ fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
         .copy_from_slice(&cequipment_variant::CAPITAL_SHIP_CLASSIFIER_MASK.to_le_bytes());
     let (_, line) = row(&bytes);
     assert_eq!(line.max_factories, 7);
-    // An efficiency array shorter than the clamped factories fails alike.
     let count = at(kit::PLINE + cequipment_production_line::FACTORY_EFFICIENCIES + 12);
     bytes[count..count + 4].copy_from_slice(&6_u32.to_le_bytes());
     let (outcome, _) = row(&bytes);
@@ -1128,7 +1115,6 @@ fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
     assert!(copy_production_rest_refresh(&initial, fixture_plan_context(), &mut job).raw_ok);
     job.log.prepare_read_plan();
     let next_variant = kit::BASE + bytes.len();
-    // The identity through the type link and classifier the line reads.
     let variant = kit::VARIANT - kit::BASE;
     let identity = bytes[variant..variant + cequipment_variant::CLASSIFIER_FLAGS + 8].to_vec();
     bytes.extend_from_slice(&identity);
@@ -1166,13 +1152,6 @@ fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
 
 #[test]
 fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 1 row per rest table, so cap 1 is both the one-row
-    // and exact-fit arm, cap 0 the zero/overflow-by-one/massive arm.
-    // u32 unread saturation is not reachable and is covered by the
-    // walk's own saturating arithmetic.
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
     let memory = engine_native::memory::SliceMemory {

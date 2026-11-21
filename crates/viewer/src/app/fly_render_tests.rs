@@ -1,6 +1,3 @@
-//! The flying mode's chosen aircraft through the production frame path: a frame takes the map's
-//! document out of the viewer while it draws (`map_ui` -> `map` -> `fly`), so the aircraft must
-//! come from the document being drawn.
 use super::render_failure_tests::{target, until};
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
@@ -23,7 +20,6 @@ fn the_chosen_aircraft_is_drawn_while_the_frame_holds_the_document() -> std::io:
         },
     )?;
     let assets = Arc::clone(&document.aircraft);
-    // There is no default aircraft: fly the first registered entity that bakes, as a user may.
     let name = assets
         .roster()
         .descriptors
@@ -60,10 +56,8 @@ fn the_chosen_aircraft_is_drawn_while_the_frame_holds_the_document() -> std::io:
         v.rendered.is_some() || failed(v)
     });
     assert!(!failed(&viewer), "{:?}", viewer.map_state(&target));
-    // Nothing chosen: the flight flies a free eye and the scene draws no aircraft.
     assert_eq!(viewer.scene.as_ref().unwrap().player_drawn(), 0);
 
-    // The host's choice, baked off the frame as the embedded viewer's poll bakes it.
     viewer.fly_aircraft.choose(Some(name.clone()));
     let deadline = std::time::Instant::now() + TEST_HANG_GUARD;
     loop {

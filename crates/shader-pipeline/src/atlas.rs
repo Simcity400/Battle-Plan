@@ -1,22 +1,3 @@
-//! Whether a masked flag program reads its flag's atlas rectangle only to map its texture
-//! coordinate into the flag's cell: the one use under which the flag drawn from a page of its
-//! own at the rectangle `[0, 0, 1, 1]` draws what the game's atlas cell draws.
-//!
-//! The proof runs over the compiled stages (the naga modules of the WGSL a technique compiles
-//! to) and accepts a deliberately small language, refusing everything else: straight-line code,
-//! run in statement order. A stage may be its entry point alone or, as the SPIR-V front gives
-//! DXC's output, an entry point that stores its inputs in variables, calls one body function
-//! without arguments or result, and returns what the body stored. A branch, loop, switch,
-//! `select`, discard, a call with arguments or a result, any dynamic index, and any form not
-//! named here refuse. Variables start at their initializer, or zero, and each store replaces
-//! what it covers.
-//!
-//! Per scalar component a value is free of the rectangle, a component of the vertex input's
-//! texture coordinate, a component of the rectangle, the product of a coordinate and its axis's
-//! size, or the mapped coordinate `offset + coordinate · size` of one axis. The vertex stage may
-//! reach its outputs with the rectangle only as mapped coordinates. The pixel stage may use the
-//! mapped coordinates only as the `x, y` coordinate of an ordinary sample of the flag's texture,
-//! which no other coordinate samples.
 
 use naga::{
     AddressSpace, BinaryOperator, Block, Expression, Function, Handle, MathFunction, Module,
@@ -24,18 +5,12 @@ use naga::{
 };
 use std::collections::HashMap;
 
-/// One scalar component's relation to the flag's rectangle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Val {
-    /// Independent of the rectangle.
     Free,
-    /// The vertex input's texture coordinate on an axis, unchanged.
     Uv(u8),
-    /// A component of the rectangle: offset `x, y`, then size `z, w`.
     Rect(u8),
-    /// The coordinate on an axis times that axis's size.
     Product(u8),
-    /// The coordinate on an axis mapped into the rectangle.
     Mapped(u8),
 }
 
@@ -45,24 +20,19 @@ impl Val {
     }
 }
 
-/// The rectangle's place: the vertex buffer binding and the byte offset of its four scalars.
 #[derive(Clone, Copy, Debug)]
 pub struct Rectangle {
     pub binding: u32,
     pub offset: u32,
 }
 
-/// What the stages are read with.
 #[derive(Clone, Copy, Debug)]
 pub struct Contract {
     pub rectangle: Rectangle,
-    /// The vertex input location of the texture coordinate.
     pub uv: Option<u32>,
-    /// The pixel stage's binding of the flag's texture.
     pub flag: u32,
 }
 
-/// Refuses, naming why, unless the rectangle only maps the flag's texture coordinate.
 pub fn check(vertex: &Module, pixel: &Module, contract: Contract) -> Result<(), String> {
     let validate = |module: &Module| {
         naga::valid::Validator::new(
@@ -94,18 +64,15 @@ enum Var {
 #[derive(Clone, Debug)]
 enum Abs {
     Value(Vec<Val>),
-    /// A pointer to `len` components of a variable from `at`.
     Var {
         var: Var,
         at: usize,
         len: usize,
     },
-    /// A pointer into a uniform buffer: its binding and byte offset.
     Uniform {
         binding: u32,
         offset: u32,
     },
-    /// An image, a sampler or another resource, by its binding.
     Resource(Option<naga::ResourceBinding>),
 }
 
@@ -114,10 +81,8 @@ struct Stage<'a> {
     info: &'a ModuleInfo,
     contract: Contract,
     vertex: bool,
-    /// The vertex outputs the pixel stage reads, by location, per component.
     inputs: &'a HashMap<u32, Vec<Val>>,
     vars: HashMap<Var, Vec<Val>>,
-    /// Whether the body function has been called: once at most.
     called: bool,
 }
 
@@ -140,7 +105,6 @@ impl<'a> Stage<'a> {
             vars: HashMap::new(),
             called: false,
         };
-        // Private variables start at their initializer, or zero.
         for (global, variable) in module.global_variables.iter() {
             if variable.space == AddressSpace::Private {
                 let width = stage.width(&module.types[variable.ty].inner);
@@ -186,7 +150,6 @@ impl<'a> Stage<'a> {
         }
     }
 
-    /// The flattened offset and type of `ty`'s child `index`.
     fn child(&self, ty: &TypeInner, index: u32) -> Option<(usize, TypeInner)> {
         let types = &self.module.types;
         Some(match ty {
@@ -214,7 +177,6 @@ impl<'a> Stage<'a> {
         })
     }
 
-    /// The byte offset and type of a uniform value's child `index`.
     fn uniform_child(&self, ty: &TypeInner, index: u32) -> Option<(u32, TypeInner)> {
         let types = &self.module.types;
         Some(match ty {
@@ -244,7 +206,6 @@ impl<'a> Stage<'a> {
         })
     }
 
-    /// The byte offsets of the scalars of a uniform value of `ty` at `offset`.
     fn uniform_scalars(&self, ty: &TypeInner, offset: u32, out: &mut Vec<u32>) {
         if let TypeInner::Scalar(_) = ty {
             out.push(offset);
@@ -293,8 +254,6 @@ impl<'a> Stage<'a> {
         }
     }
 
-    /// Runs a function's body in order, returning what it returns. The entry point may call
-    /// one body function, once, without arguments or result.
     fn call(&mut self, handle: Option<Handle<Function>>) -> Result<Vec<Val>, String> {
         let function = match handle {
             Some(handle) => &self.module.functions[handle],
@@ -302,8 +261,6 @@ impl<'a> Stage<'a> {
         };
         let info = self.function_info(handle);
         for (local, variable) in function.local_variables.iter() {
-            // An initializer is evaluated where the variable is declared; only a constant one
-            // is followed.
             let value = match variable.init {
                 None => vec![Val::Free; self.width(&self.module.types[variable.ty].inner)],
                 Some(init) => match function.expressions[init] {
@@ -335,7 +292,6 @@ impl<'a> Stage<'a> {
         }
     }
 
-    /// Evaluates `expression` and what it reads, where not yet evaluated.
     fn evaluate(
         &self,
         handle: Option<Handle<Function>>,
@@ -645,7 +601,6 @@ impl<'a> Stage<'a> {
         }
     }
 
-    /// An entry point argument's components, from its binding.
     fn argument(&self, index: u32) -> Result<Vec<Val>, String> {
         let argument = self
             .entry()?
@@ -671,7 +626,6 @@ impl<'a> Stage<'a> {
         }
     }
 
-    /// An entry point input's components.
     fn bound(&self, binding: &naga::Binding, ty: &TypeInner) -> Vec<Val> {
         let width = self.width(ty);
         match binding {
@@ -695,8 +649,6 @@ impl<'a> Stage<'a> {
         }
     }
 
-    /// The stage's outputs: for a vertex stage, its located outputs per component, which may
-    /// carry the rectangle only as mapped coordinates; a pixel stage's output must be free.
     fn outputs(&self, output: &[Val]) -> Result<HashMap<u32, Vec<Val>>, String> {
         let entry = self.entry()?;
         let mut outputs = HashMap::new();
@@ -744,8 +696,6 @@ impl<'a> Stage<'a> {
     }
 }
 
-/// `left op right`, component by component, broadcasting a scalar operand: a coordinate times
-/// its axis's size, and that product plus the axis's offset, are the only rectangle forms.
 fn binary(op: BinaryOperator, left: &[Val], right: &[Val], width: usize) -> Result<Abs, String> {
     if left.iter().chain(right).all(|value| value.free()) {
         return Ok(Abs::Value(vec![Val::Free; width]));
@@ -788,9 +738,6 @@ fn binary(op: BinaryOperator, left: &[Val], right: &[Val], width: usize) -> Resu
 mod tests {
     use super::*;
 
-    /// A vertex stage in the shape the SPIR-V front gives DXC's output: an entry wrapper over
-    /// private variables, calling the program's body, whose `body` statements set `coords`
-    /// from `uv`, `flag` and the uniform `c`; `declarations` adds to the module.
     fn vertex_with(declarations: &str, body: &str, entry: &str) -> Module {
         let source = format!(
             r#"
@@ -825,8 +772,6 @@ fn main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> Out {{
         vertex_with("", &format!("coords_out = vec4<f32>({mapping}, uv);"), CALL)
     }
 
-    /// A pixel stage sampling the flag (binding 1) and the mask (binding 3) at `flag` and
-    /// `mask`, returning `colour` of the flag's sample `sampled`.
     fn pixel(flag: &str, mask: &str, colour: &str) -> Module {
         let source = format!(
             r#"
@@ -880,8 +825,6 @@ fn main(@location(0) coords: vec4<f32>) -> @location(0) vec4<f32> {{
         ] {
             checked(mapping, "coords.xy", "coords.zw", COLOUR).unwrap();
         }
-        // One that samples the flag other than through the rectangle reads another part of
-        // the game's atlas page, though it never reads the rectangle.
         checked("uv", "vec2<f32>(0.5)", "coords.zw", COLOUR).unwrap_err();
         checked("uv", "coords.xy", "coords.zw", COLOUR).unwrap_err();
     }
@@ -889,7 +832,6 @@ fn main(@location(0) coords: vec4<f32>) -> @location(0) vec4<f32> {{
     #[test]
     fn any_other_use_of_the_rectangle_is_refused() {
         for mapping in [
-            // The round-2 counterexample: agrees on [0, 0, 1, 1] and [0.5, 0.5, 0.5, 0.5].
             "flag.xy + uv * flag.zw * (flag.x + flag.z)",
             "flag.zw * 0.75",
             "uv * flag.zw",
@@ -908,7 +850,6 @@ fn main(@location(0) coords: vec4<f32>) -> @location(0) vec4<f32> {{
 
     #[test]
     fn dynamic_indexing_anywhere_in_a_uniform_is_refused() {
-        // The round-3 counterexample: rows[i][j] reaches the rectangle at row 4.
         let rows = naga::front::wgsl::parse_str(
             r#"
 struct C { rows: array<vec4<f32>, 6> }
@@ -926,7 +867,6 @@ fn main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> Out {
         )
         .unwrap();
         assert!(checked_vertex(rows).is_err());
-        // A dynamic index into bytes other than the rectangle's is refused all the same.
         let tail = vertex_with(
             "",
             "let i = u32(uv.x);\n    coords_out = vec4<f32>(flag.xy + uv * flag.zw, c.tail[i].xy);",
@@ -937,22 +877,18 @@ fn main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> Out {
 
     #[test]
     fn branches_and_stores_out_of_order_are_refused() {
-        // The round-3 counterexample: a private coordinate initialised to absolute atlas
-        // coordinates and mapped only under a condition independent of the rectangle.
         let branched = vertex_with(
             "var<private> coordinate: vec2<f32> = vec2<f32>(0.25);",
             "if uv.x > 0.5 { coordinate = flag.xy + uv * flag.zw; }\n    coords_out = vec4<f32>(coordinate, uv);",
             CALL,
         );
         assert!(checked_vertex(branched).is_err());
-        // Read before the body stores it, the output holds the zero it starts at.
         let early = vertex_with(
             "",
             &format!("coords_out = vec4<f32>({MAPPED}, uv);"),
             "let early = coords_out;\n    body();\n    return Out(position_out, early);",
         );
         assert!(checked_vertex(early).is_err());
-        // Stored in order, the same program is accepted.
         let stored = vertex_with("", &format!("coords_out = vec4<f32>({MAPPED}, uv);"), CALL);
         checked_vertex(stored).unwrap();
     }
@@ -960,14 +896,10 @@ fn main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> Out {
     #[test]
     fn the_mapped_coordinate_may_only_sample_the_flag() {
         for (flag, mask, colour) in [
-            // As a colour.
             ("coords.xy", "coords.zw", "vec4<f32>(coords.xy, sampled.zw)"),
-            // Sampling the mask.
             ("coords.xy", "coords.xy", COLOUR),
-            // Out of order, or offset.
             ("coords.yx", "coords.zw", COLOUR),
             ("coords.xy + vec2<f32>(0.1)", "coords.zw", COLOUR),
-            // The flag sampled at another coordinate.
             ("coords.zw", "coords.zw", COLOUR),
         ] {
             assert!(

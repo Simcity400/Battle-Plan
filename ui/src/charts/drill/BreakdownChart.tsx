@@ -15,13 +15,9 @@ import { fitTooltip } from '../tooltip';
 export interface BreakdownSeries { id: string; label: string; color: string; runs: readonly Run[];
   amount: (hour: number) => string; labelAt?: (hour: number) => string; missingAt?: (hour: number) => string }
 
-/** Parts share the same signed stack and exact hover amounts. Picking a day
- * changes the drill state, never the dashboard clock. */
 export default function BreakdownChart({ series, within, selectedHour, tooltipHeight, summaries, overlayExtent, ...props }: Omit<TimeChartProps, 'layers' | 'tooltip' | 'revision'> & {
   series: readonly BreakdownSeries[]; within?: readonly Span[] | null; selectedHour?: number | null;
-  /** The values the overlay draws over `x`, so the value axis keeps them in view. */
   overlayExtent?: (x: readonly [number, number]) => [number, number] | null;
-  /** Fit long cohorts to the viewport, retaining all exact amounts in spoken text. */
   tooltipHeight?: number; summaries?: { parts: readonly ChartSummary[]; total?: ChartSummary };
 }) {
   const parts = useMemo(() => series.map(part => {
@@ -33,7 +29,6 @@ export default function BreakdownChart({ series, within, selectedHour, tooltipHe
     && summaries.parts.some(part => exactRuns(part) === null)
     ? summaryStack(summaries.total ? summaries.parts.slice(0, -1) : summaries.parts, summaries.total) : null, [parts, summaries]);
   const until = shownUntil(props.playhead, props.playback, props.afterPlayhead === true);
-  // The value axis fits what is drawn up to the live head while one moves it, as the layers draw.
   const live = props.liveHead;
   const reach = useRef(() => until);
   reach.current = () => live && props.playhead != null

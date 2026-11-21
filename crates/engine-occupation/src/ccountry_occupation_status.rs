@@ -1,22 +1,11 @@
-//! Country occupation status with distributable garrison base and a secondary
-//! persistent subobject. These fields alone do not establish hourly consistency
-//! or writer ownership.
 
 use engine_sites::Rva;
-/// Occupation-status primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_0e18);
-/// Persistent subobject vtable.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x02a0_0e50);
-/// Persistent subobject displacement.
 pub const SECONDARY_BASE: usize = 0x18;
-/// Embedded occupation-data robin-hood table; enumerate only live buckets.
 pub const OCCUPATION_DATA_TABLE: usize = 0x48;
-/// Effect and serialization pointer vector; both preserve its occurrence
-/// order and use each group's country scope.
 pub const OCCUPATION_DATA_ROWS: usize = 0x60;
-/// CReferencedDivisionTemplate pointer requiring reference-type and vtable authentication.
 pub const GARRISON_TEMPLATE: usize = 0x78;
-/// Retained distributable garrison reinforcement priority.
 pub const GARRISON_PRIORITY: usize = 8;
 
 pub fn template_priority(
@@ -30,15 +19,10 @@ pub fn template_priority(
         .and_then(|at| read::<i32>(memory, at))
         .ok_or("garrison reinforcement priority unreadable")
 }
-/// Occupied-country template override; null inherits the country's default.
 pub const GROUP_TEMPLATE: usize = 0xc8;
-/// State-id to template-pointer override table in an occupied-country holder.
 pub const STATE_TEMPLATES: usize = 0xf8;
-/// Embedded assigned-manpower container with signed i32 entry amounts.
 pub const ASSIGNED_MANPOWER: usize = 0x90;
-/// Default COccupationLaw pointer.
 pub const DEFAULT_LAW: usize = 0x118;
-/// Reset leaving the occupation table empty.
 pub const RESET_RVA: Rva = Rva(0x0107_beb0);
 
 use crate::{
@@ -54,7 +38,6 @@ use crate::{
 pub struct Row {
     pub country: u32,
     pub garrison_template: Option<u64>,
-    /// Zero means the native default-law pointer is null; an empty token is distinct.
     pub default_law_present: u8,
     pub law_start: usize,
     pub law_len: usize,
@@ -70,8 +53,6 @@ pub struct ReserveManpowerRow {
     pub amount: i32,
 }
 
-/// One stored template selection, including unset defaults and group overrides.
-/// Absent occupied/state values denote the country default and group scope.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TemplateSelection {
     pub country: u32,
@@ -80,8 +61,6 @@ pub struct TemplateSelection {
     pub template: Option<u64>,
 }
 
-/// Visit the default and every live group/state override without following stale
-/// empty buckets. This reads selection holders, independently of garrison allocation.
 pub fn visit_template_selections(
     memory: &impl Memory,
     base: usize,
@@ -269,7 +248,6 @@ impl Occupied<'_> {
     }
 }
 
-/// Sorted roster order is independent of occupation hash slots.
 pub fn occupied_demand(
     memory: &impl Memory,
     base: usize,
@@ -293,8 +271,6 @@ pub fn occupied_demand(
     Ok(required)
 }
 
-/// Independent table accounting; one table's capacity/fault never fabricates a
-/// complete result for that table or prevents a sibling table's valid read.
 pub(crate) struct Rows<'a, T> {
     pub data: crate::walk::Buffer<'a, T>,
     pub len: usize,
@@ -447,9 +423,6 @@ fn settings(
     }
 }
 
-/// Visits the country/occupation graph once into independent preallocated table
-/// buffers. Law bytes are copied exactly into one arena; no hashing or engine
-/// invocation occurs. Reserve manpower is distinct from state assignments.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
     walk_inner(memory, base, game_state, buffers.into(), None)
 }
@@ -764,7 +737,6 @@ mod tests {
             0xa200 + creferenced_division_template::TYPE,
             (9_u64 << 32) | 52,
         );
-        // A stale pointer in an empty bucket must never become an override.
         u64_at(&mut bytes, 0x8800 + 24 + 16, u64::MAX);
         let memory = SliceMemory {
             base: BASE,

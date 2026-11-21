@@ -1,8 +1,3 @@
-//! Owned States census and its callback-scoped StateFlags visitor.
-//! Flags and active border trees use this worker's authenticated census;
-//! assembly later consumes their already acquired timing and owned rows.
-//! A [`StateStore`] carries the rows no hooked writer marked
-//! ([`crate::territory_changes`]).
 
 use crate::{acquisition_gather, extended::state_flags, sampling};
 use engine_native::{Memory, cstate, walk::Outcome};
@@ -18,14 +13,11 @@ pub(crate) struct Request {
     pub names: Names,
     pub visitor: state_flags::Captured,
     pub inputs: Inputs,
-    /// The held rows, lent by the callback; absent reads every state.
     pub store: Option<Box<StateStore>>,
     pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     pub occupation_store: Option<Box<OccupationStore>>,
 }
 
-/// State supplements acquired from the existing visitor; occupation receiver identities
-/// survive only under their writer certificates.
 pub(crate) struct Inputs {
     rows: Vec<fresh_inputs::StateFractionRow>,
     outcome: Outcome,
@@ -93,8 +85,6 @@ impl Inputs {
         self.acquire_carried(memory, base, visitor, |_| None);
     }
 
-    /// [`Self::acquire`] where `carried` supplies, by source index, the
-    /// fraction of a state the caller proves current.
     fn acquire_carried(
         &mut self,
         memory: &impl Memory,
@@ -139,7 +129,6 @@ impl Inputs {
     }
 }
 
-/// The frame's state display-name arena, owned by the request while it runs.
 #[derive(Default)]
 pub(crate) struct Names {
     bytes: Vec<u8>,
@@ -156,7 +145,6 @@ impl Names {
         }
     }
 
-    /// Returns the bytes copied and the bytes every row needs.
     pub(crate) fn restore(self, bytes: &mut Vec<u8>) -> (usize, usize) {
         *bytes = self.bytes;
         (self.len, self.required)
@@ -321,7 +309,6 @@ pub(crate) mod tests {
         put(&mut bytes, root, (ROOT as u64).to_le_bytes());
         put(&mut bytes, root + 8, 5_u32.to_le_bytes());
         put(&mut bytes, root + 12, 4_u32.to_le_bytes());
-        // Reserved slot zero, a null hole, and poisoned spare capacity.
         for (slot, pointer) in [
             (0, u64::MAX),
             (1, FIRST as u64),
@@ -376,18 +363,12 @@ pub(crate) mod tests {
         bytes
     }
 
-    // Synthetic building database and infrastructure definition, beside the
-    // module globals rather than inside the dense fixture's address range.
     const DATABASE: usize = 0x0331_0000;
     const DEFINITION: usize = 0x0331_1000;
     const MAXIMUM: i32 = 5;
-    // The per-level define, fixed5.
     const PER_LEVEL: i64 = -10_000;
-    // A disabled template lookup keeps every healthy level at zero, so the term
-    // is maximum * per level. Nonzero, so a denied pass cannot be mistaken for it.
     const MOVEMENT_INFRASTRUCTURE: i64 = MAXIMUM as i64 * PER_LEVEL;
 
-    /// The movement globals as (address, eight little-endian bytes).
     fn movement_globals() -> [(usize, [u8; 8]); 5] {
         [
             (
@@ -407,10 +388,6 @@ pub(crate) mod tests {
         ]
     }
 
-    /// The rest of the shared infrastructure operands a held capture
-    /// compares every hour ([`cstate::globals`]): the definition's type,
-    /// fallback maximum and ordinal, the template array and the fallback
-    /// define. None changes a fresh read of the fixture.
     fn carry_globals() -> [(usize, [u8; 16]); 5] {
         [
             (DEFINITION + 0x8, [0x2f; 16]),
@@ -421,9 +398,6 @@ pub(crate) mod tests {
         ]
     }
 
-    /// The movement pass chases module globals at RVAs far above any dense
-    /// census fixture, so this overlays them on the fixture memory a test
-    /// already uses. Wrapped by tracing memories, so its reads are observed.
     pub(crate) struct Movement<M>(pub(crate) M);
 
     fn overlay(at: usize, bytes: &[u8], address: usize, destination: &mut [u8]) -> bool {
@@ -527,15 +501,12 @@ pub(crate) mod tests {
             &mut request.census.payload,
             &mut request.names.bytes,
         );
-        // Run reads the state fractions into storage that grows after the names.
         request.inputs.acquire(memory, 0, &request.visitor);
-        // Run acquires the flags and active border trees after its census.
         cstate::infrastructure_map::snapshot(memory, 0, STATE, names.outcome, &mut request.census.payload);
         request.visitor.acquire_owned(memory, 0, STATE);
         names.outcome
     }
 
-    /// Where `trace`, a healthy run's reads, holds the infrastructure snapshot's.
     fn infrastructure_snapshot(bytes: &[u8], trace: &[(usize, usize)]) -> std::ops::Range<usize> {
         let alone = Traced::new(bytes);
         let mut rows = vec![cstate::Row::default(); 2];
@@ -561,7 +532,6 @@ pub(crate) mod tests {
             assert_eq!(report.census.result, outcome);
             assert_eq!(actual.census.payload, reference.census.payload);
             assert_eq!(*memory.calls.borrow(), *expected.calls.borrow());
-            // The visitor's capture consumes the rows run already acquired.
             let acquired = memory.calls.borrow().len();
             actual.visitor.capture(&memory, 0, STATE);
             assert_eq!(memory.calls.borrow().len(), acquired);
@@ -608,8 +578,6 @@ pub(crate) mod tests {
         assert_eq!(report.census.result, Outcome::Rows { len: 2 });
         assert_eq!(request.census.payload[1].id, 3);
         assert_eq!(request.inputs.outcome, Outcome::Rows { len: 2 });
-        // Census, continent supplement, movement and names each own their
-        // original roster observation; growth adds no second census attempt.
         assert_eq!(
             memory
                 .calls
@@ -642,25 +610,18 @@ pub(crate) mod tests {
             let outcome = serial(&mut reference, &expected);
             assert_eq!(report.census.result, outcome, "fault {fault}");
             let (at, len) = healthy.calls.borrow()[fault];
-            // A state's category is an independent capture: its fault refuses
-            // only that state's category.
             if len == 8 && [FIRST, LAST].contains(&at.wrapping_sub(cstate::CATEGORY)) {
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert!(actual.census.payload[..2].iter().any(|row| row.category.is_none()));
             } else if healthy.calls.borrow()[fault] == (0x033d_d4b8, 8) {
-                // The continents database singleton is optional.
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
                 assert!(actual.census.payload[..2].iter().all(|row| row.continent.is_none()));
             } else if snapshot.contains(&fault) {
-                // The infrastructure snapshot withholds only infrastructure, which the fixture's
-                // states have none of.
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
                 assert!(actual.census.payload[..2].iter().all(|row| row.infrastructure.is_none()));
             } else {
-                // A census fault fails the census, a flag fault only flags, and a fraction
-                // fault only the fractions.
                 assert!(
                     matches!(report.census.result, Outcome::Unavailable { .. })
                         || matches!(actual.visitor.outcomes(), [Outcome::Unavailable { .. }])
@@ -691,12 +652,10 @@ pub(crate) mod tests {
                 }))
             })
             .unwrap();
-            // Room for the fixture's three state slots: the census does not grow.
             let owned = request(3);
             let pointer = owned.census.payload.as_ptr();
             let visitor_bytes = owned.visitor.allocated_bytes();
             let mut pending = Some(owned);
-            // SAFETY: all sources and outputs are owned until collection.
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
             let completed = pool.finish(ticket).unwrap();
             assert_eq!(
@@ -717,7 +676,6 @@ pub(crate) mod tests {
         let observed = Traced::new(&bytes);
         healthy.run(&observed);
         let trace = observed.calls.into_inner();
-        // The fraction control reads the database singleton last before the snapshot does.
         let fault = trace[..infrastructure_snapshot(&bytes, &trace).start]
             .iter()
             .rposition(|(address, _)| *address == cbuilding_database::SINGLETON_RVA.0)

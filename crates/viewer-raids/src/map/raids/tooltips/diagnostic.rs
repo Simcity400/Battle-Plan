@@ -1,5 +1,3 @@
-//! Diagnostic launch text for offers, assembling and prepared raids.
-//! Run every diagnostic step even after a failure.
 use super::super::rules::Lines;
 use super::*;
 use engine_native::{
@@ -44,7 +42,6 @@ impl Context<'_, '_> {
                     })
                     .collect::<Vec<_>>();
                 active.sort_unstable_by_key(|r| r.ordinal);
-                // Use the first token match, then slot-zero fallback.
                 active
                     .iter()
                     .find(|r| r.key == token)
@@ -84,8 +81,6 @@ impl Context<'_, '_> {
                     .state,
             )?
         };
-        // Localize source descriptions by source kind and its own air-base kind.
-        // A ship source may have no air base, leaving WHAT empty while LOCATION remains.
         let what = if source.kind_present == 0 {
             String::new()
         } else {
@@ -150,7 +145,6 @@ impl Context<'_, '_> {
         }
         result
     }
-    /// Ordered diagnostic launch requirements and optional execution checks.
     pub(super) fn conditions(
         &self,
         kind: &RaidType,
@@ -170,7 +164,6 @@ impl Context<'_, '_> {
             Scopes::of(Scope::Country(owner)),
             "raid visible",
         );
-        // Category failure appends empty text without a trigger description.
         combine(
             &mut result,
             offers::category_admits_unlock(self.assets, self.world, owner, kind),
@@ -265,7 +258,6 @@ impl Context<'_, '_> {
         else {
             return Ok(None);
         };
-        // Use the first matching occurrence, rather than minimum days.
         Ok(rows
             .iter()
             .find(|row| {
@@ -589,7 +581,6 @@ impl Context<'_, '_> {
             (raid.phase == 3).then_some(source),
         );
         lines.extend(triggers);
-        // Diagnostic return ignores earlier unit and equipment failures.
         (known(allowed), lines)
     }
 }
@@ -719,7 +710,6 @@ mod tests {
                 context.shortages(&kind, false, false, true, Ok(2), |_| Ok(4)),
                 (true, vec![])
             );
-            // Additional requirements omit their header after an essential failure.
             let additional = RaidType {
                 additional_nukes: 3,
                 ..Default::default()

@@ -93,8 +93,6 @@ fn paired_rig(kind: u8) -> Rig {
                 ..Transform::IDENTITY
             };
             let mut last = first;
-            // Give each side's tracks different travel times, so synchronization
-            // must use the surviving tracks rather than a missing-side maximum.
             last.translation[2] += (track + 1) as f32;
             vec![first, last]
         })
@@ -204,8 +202,6 @@ fn paired_placement_keeps_each_surviving_side_and_its_native_callbacks() {
                 let requests = flight_requests(flight, &rig, &actor, defines.clock_speed);
                 let count = rig.sides.iter().filter(|&&member| member == side).count();
                 let expected = match (count, side, ordinal) {
-                    // Out-of-range numeric prefixes broadcast in the native
-                    // callback, so member 2 also addresses a single actor.
                     (1, 0, 0) => vec![("success", 2.0), ("fail", 3.0)],
                     (1, 1, 0) => vec![("fail", 4.0), ("success", 5.0)],
                     (_, 0, 0) => vec![("success", 2.0)],
@@ -283,15 +279,10 @@ fn a_rootless_rocket_flies_to_the_rig_origin_at_rocket_speed_and_ends_there() {
     let [flight] = out.flights.as_slice() else {
         panic!("one rocket");
     };
-    // Its take-off ends at the rig origin and its landing would leave it.
     assert_eq!(*flight.outgoing.points.last().unwrap(), flight.origin);
     assert_eq!(flight.incoming.points[0], flight.origin);
-    // The anchor takes the game's clamped terrain sample: the sea floor here.
     assert_eq!(flight.origin[1], crate::map::models::WATER_HEIGHT);
-    // It travels at ROCKET_SPEED.
     assert_eq!(flight.travel, flight.outgoing.length() / 15.0);
-    // It stands on the terrain on the rig's first frame, which ends the
-    // scenario and plays its explosion.
     let rigs = BTreeMap::from([(key.clone(), rig)]);
     let total = out.flights[0].cycle(2.0);
     let started = (out.flights[0].group_travel - out.flights[0].phase * total).rem_euclid(total)

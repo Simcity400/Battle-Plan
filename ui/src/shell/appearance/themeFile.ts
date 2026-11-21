@@ -1,5 +1,3 @@
-// Theme import and export. Files are plain JSON; VS Code colour themes are
-// converted on a best-effort basis so existing themes can be reused.
 import { normalizeColor } from './color.ts';
 import { colorsMode, completeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
@@ -28,10 +26,8 @@ export function serializeTheme(theme: Pick<ThemeDefinition, 'name' | 'variants'>
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
-/** JSON with comments and trailing commas, as VS Code theme files often are. */
 export function parseJsonc(text: string): unknown {
   const output: string[] = [];
-  // The chunk holding the latest comma, while only whitespace and comments follow it.
   let comma = -1;
   for (let index = 0; index < text.length; index++) {
     const char = text[index];
@@ -48,7 +44,6 @@ export function parseJsonc(text: string): unknown {
       while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) index++;
       index++;
     } else {
-      // A comma directly before a closing bracket is trailing; strings never reach here.
       if ((char === '}' || char === ']') && comma >= 0) output[comma] = '';
       if (char === ',') comma = output.length;
       else if (!/\s/.test(char)) comma = -1;
@@ -82,7 +77,6 @@ function parseOwnTheme(input: Record<string, unknown>): ImportedTheme {
       if (colors) variants[mode] = colors;
     }
   } else {
-    // A single palette: { name, canvas, accent, ... } or { name, colors: {...} }.
     const colors = object(input.colors) ? input.colors : input;
     const hinted = input.appearance === 'light' || input.mode === 'light' ? 'light' : input.appearance === 'dark' || input.mode === 'dark' ? 'dark' : null;
     const canvas = normalizeColor(colors.canvas);
@@ -94,7 +88,6 @@ function parseOwnTheme(input: Record<string, unknown>): ImportedTheme {
   return { name: cleanName(input.name, 'Imported theme'), variants, source: 'theme', notes };
 }
 
-/** Maps a VS Code workbench palette onto our roles; unset roles are derived. */
 function parseVsCodeTheme(input: Record<string, unknown>): ImportedTheme {
   const colors = input.colors as Record<string, unknown>;
   const pick = (...keys: string[]) => keys.map(key => colors[key]).find(value => normalizeColor(value));
@@ -137,9 +130,6 @@ export function parseThemeText(text: string): ImportedTheme {
   return parseOwnTheme(input);
 }
 
-/** A unique, readable name among existing themes, as saved and read back: trimmed, at most
- * MAX_THEME_NAME characters, "Name", "Name 2", …; `suffix` (" copy") is kept whole, the name
- * shortened for it and the number. */
 export function uniqueThemeName(name: string, taken: readonly string[], suffix = ''): string {
   const lower = new Set(taken.map(item => item.trim().toLowerCase()));
   const base = name.trim();

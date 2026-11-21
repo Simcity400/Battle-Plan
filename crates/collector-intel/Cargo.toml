@@ -15,8 +15,6 @@ default = ["opinion_changes", "flag_changes", "variable_changes"]
 flag_changes = []
 opinion_changes = []
 variable_changes = []
-# Verification only, off in the product: convert ScriptVariables both ways every hour and
-# count and name their differences in status.json's `conversion_check`.
 conversion_check = []
 
 [dependencies]

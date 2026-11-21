@@ -500,7 +500,6 @@ test('wars the game names alike are told apart by their start; a unique name sta
   assert.match(names.get(first)!, /^Recorded name \(by .+\)$/);
   assert.match(names.get(second)!, /^Recorded name \(from .+\)$/);
   assert.equal(names.get(other), 'Other name');
-  // Before the second war starts, the first's name is its own.
   assert.equal(warNamesAt([first, second], 20).get(first), 'Recorded name');
 });
 
@@ -511,7 +510,6 @@ test('the lanes change only at structure hours, so a widget following the head r
   const prepared = prepareWars(reply([item]));
   const hours = structureHours(prepared);
   assert.deepEqual(hours, [10, 20, 25, 31, 40]);
-  // Every hour between two structure hours shows the same lanes as the first of them.
   for (let at = 0; at < 45; at++) {
     const from = hours[structureAt(hours, at) - 1] ?? at;
     const lanes = (hour: number) => JSON.stringify(warsLanes(prepared, hour, { ...options, expanded: new Set(['1']) }).lanes.map(lane => [lane.id, lane.identity?.label, lane.spans.length]));

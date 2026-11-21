@@ -1,15 +1,3 @@
-//! `country-groups`: who belonged to each country group over one timeline (human players, every
-//! recorded faction including ones founded or dissolved partway, and the countries at war with
-//! each other), with war starts, capitulations, changes of an id's tag and every tag's holders.
-//! Read from the recorder's group tables ([`replay_data::rows::GroupSpanRow`]): their lifetimes
-//! are the history, so a reply reads each run's few pieces and two small tables at its end, its
-//! cost following the number of changes, not the campaign's hours.
-//!
-//! Membership is kept as runs of consecutive recorded hours. A gap, or hours a history was not
-//! observed, ends its runs, and those hours are listed as unobserved for it, so a break there is
-//! not taken for a join or a leave. A faction's leader is its member at order zero. Faction names
-//! use the literal bytes when nonempty, else the template through the content's templates and
-//! localisation. Members are canonical slots, named by the tag holding the slot then.
 
 use super::{BranchParams, LoadContext, Product, identities::CountryIdentityRun};
 use crate::{Source, catalogue, content, span::HourSpan};
@@ -28,7 +16,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// A country's unbroken membership of a group.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +25,6 @@ pub struct MembershipRun {
     pub last_hour: i32,
 }
 
-/// A faction's display name at consecutive recorded hours.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -53,28 +39,27 @@ pub struct FactionNameRun {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionGroup {
-    /// The recorded faction id, as a decimal string.
+    #[doc = " The recorded faction id, as a decimal string."]
     pub id: String,
-    /// The faction's latest name as the game showed it; null when it cannot be resolved.
+    #[doc = " The faction's latest name as the game showed it; null when it cannot be resolved."]
     pub name: Option<String>,
-    /// Why the latest name cannot be resolved.
+    #[doc = " Why the latest name cannot be resolved."]
     pub name_reason: Option<String>,
-    /// Display names dated by the Factions row that supplied their operands.
+    #[doc = " Display names dated by the Factions row that supplied their operands."]
     pub names: Vec<FactionNameRun>,
-    /// The latest engine literal, copied unchanged; empty when there is none. Stable across
-    /// languages and content, so settings can key a faction by it.
+    #[doc = " The latest engine literal, copied unchanged; empty when there is none. Stable across"]
+    #[doc = " languages and content, so settings can key a faction by it."]
     pub recorded_name: String,
     pub first_hour: i32,
     pub last_hour: i32,
     pub members: Vec<MembershipRun>,
-    /// Who led the faction (its member at order zero), as runs of consecutive recorded hours.
+    #[doc = " Who led the faction (its member at order zero), as runs of consecutive recorded hours."]
     pub leaders: Vec<MembershipRun>,
-    /// Hours this faction's roster named a country the links cannot resolve: its roster is not
-    /// known then (other factions' rosters are).
+    #[doc = " Hours this faction's roster named a country the links cannot resolve: its roster is not"]
+    #[doc = " known then (other factions' rosters are)."]
     pub incomplete: Vec<HourSpan>,
 }
 
-/// Two countries at war with each other over consecutive recorded hours.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +70,6 @@ pub struct WarPairRun {
     pub last_hour: i32,
 }
 
-/// Hours of the timeline whose memberships were not observed, per group history.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -95,9 +79,6 @@ pub struct UnobservedHours {
     pub wars: Vec<HourSpan>,
 }
 
-/// The start of a war between two countries as the engine dates it (the war relation's start
-/// hour). `attacking` is the instigating side's country (`first_was_instigator`); it may be an
-/// ally that joined rather than the country that declared, which the relation does not record.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -107,7 +88,6 @@ pub struct WarStart {
     pub defending: String,
 }
 
-/// A capitulation as the engine dates it (Capitulation's capitulated hour).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -116,9 +96,6 @@ pub struct Capitulation {
     pub tag: String,
 }
 
-/// A recorded country id naming another tag from one recorded hour to the next (a tag switch,
-/// or an id the game gives another country): runs kept by tag end and start there without the
-/// country joining or leaving anything.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -128,7 +105,6 @@ pub struct IdentityChange {
     pub to: String,
 }
 
-/// The holders of one tag ([`dashboard_query::identity`]).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -145,23 +121,22 @@ pub struct CountryGroupReply {
     pub humans: Vec<MembershipRun>,
     pub factions: Vec<FactionGroup>,
     pub wars: Vec<WarPairRun>,
-    /// Every war start the recorded war relations name, in hour order.
+    #[doc = " Every war start the recorded war relations name, in hour order."]
     pub war_starts: Vec<WarStart>,
-    /// Every capitulation the recording saw, in hour order.
+    #[doc = " Every capitulation the recording saw, in hour order."]
     pub capitulations: Vec<Capitulation>,
-    /// Every change of an id's tag between two consecutive recorded hours, in hour order.
+    #[doc = " Every change of an id's tag between two consecutive recorded hours, in hour order."]
     pub identity_changes: Vec<IdentityChange>,
-    /// Every tag's holders.
+    #[doc = " Every tag's holders."]
     pub country_identities: Vec<CountryIdentityHistory>,
-    /// Hours inside the timeline where each history was not observed: a run that ends or starts
-    /// next to one of these is a gap, not a join or a leave.
+    #[doc = " Hours inside the timeline where each history was not observed: a run that ends or starts"]
+    #[doc = " next to one of these is a gap, not a join or a leave."]
     pub unobserved: UnobservedHours,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(CountryGroupReply);
 
-/// Adds hours to `spans`, kept in hour order and merged where they meet.
 fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     spans.push(HourSpan { first_hour, last_hour });
 }
@@ -178,7 +153,6 @@ fn settle(spans: &mut Vec<HourSpan>) {
     *spans = out;
 }
 
-/// Runs of one key in hour order, adjacent ones joined.
 fn joined<R: Clone>(mut runs: Vec<R>, hours: impl Fn(&R) -> (i32, i32), extend: impl Fn(&mut R, i32), same: impl Fn(&R, &R) -> bool) -> Vec<R> {
     runs.sort_by_key(|run| hours(run));
     let mut out: Vec<R> = Vec::with_capacity(runs.len());
@@ -209,7 +183,6 @@ fn cell_u64(table: &TableView<'_>, column: usize, slot: u32) -> Option<u64> {
     }
 }
 
-/// A faction name's operands, as the recorder numbered them.
 #[derive(Clone)]
 struct NameOperands {
     literal: Vec<u8>,
@@ -217,8 +190,6 @@ struct NameOperands {
     spelling: Vec<u8>,
 }
 
-/// What one run's group tables hold: the spans and events with their hours, each faction's id and
-/// each name's operands.
 pub struct RunGroups {
     spans: Vec<(u8, u32, u32, i32, i32)>,
     events: Vec<(u8, i32, u32, u32, i32)>,
@@ -254,8 +225,6 @@ pub fn run_groups(recording: &Recording, run: u32) -> io::Result<RunGroups> {
     Ok(RunGroups { spans, events, factions, names })
 }
 
-/// Each faction's members on `query`'s timeline, by faction id: (tag, first, last), from the index's group
-/// histories; and the hours memberships were not read or a faction's roster was incomplete.
 pub fn faction_members(source: &Source, query: &Query<'_>) -> io::Result<(BTreeMap<u64, Vec<(String, i32, i32)>>, Vec<HourSpan>)> {
     let holders = slot_holders(query);
     let (mut members, mut unknown): (BTreeMap<u64, Vec<(String, i32, i32)>>, Vec<HourSpan>) = (BTreeMap::new(), Vec::new());
@@ -285,7 +254,6 @@ pub fn faction_members(source: &Source, query: &Query<'_>) -> io::Result<(BTreeM
     Ok((members, unknown))
 }
 
-/// Each slot's holder runs on the timeline: (tag, first, last), in hour order.
 fn slot_holders(query: &Query<'_>) -> HashMap<u32, Vec<(String, i32, i32)>> {
     let mut out: HashMap<u32, Vec<(String, i32, i32)>> = HashMap::new();
     for (tag, runs) in &query.holders.tags {
@@ -301,7 +269,6 @@ fn slot_holders(query: &Query<'_>) -> HashMap<u32, Vec<(String, i32, i32)>> {
     out
 }
 
-/// The tags holding `slot` over `first..=last`, each with its part of the hours.
 fn named<'h>(holders: &'h HashMap<u32, Vec<(String, i32, i32)>>, slot: u32, first: i32, last: i32) -> impl Iterator<Item = (&'h str, i32, i32)> + 'h {
     holders.get(&slot).into_iter().flatten().filter_map(move |(tag, held_first, held_last)| {
         let (a, b) = (first.max(*held_first), last.min(*held_last));
@@ -313,7 +280,6 @@ fn tag_at<'h>(holders: &'h HashMap<u32, Vec<(String, i32, i32)>>, slot: u32, hou
     named(holders, slot, hour, hour).next().map(|(tag, ..)| tag)
 }
 
-/// What faction names are built with.
 struct Naming {
     templates: Result<Arc<Catalog>, String>,
     localisation: Arc<Localisation>,
@@ -346,7 +312,6 @@ fn naming(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) ->
     Naming { templates, localisation, recorded_language }
 }
 
-/// A faction's display name: its literal when nonempty, else its template's name.
 fn faction_name(naming: &Naming, name: &NameOperands, lexical: &mut dyn FnMut(&[u8]) -> Result<Option<u32>, String>) -> Result<String, String> {
     let template = match name.token {
         None => Ok(None),
@@ -368,7 +333,6 @@ fn faction_name(naming: &Naming, name: &NameOperands, lexical: &mut dyn FnMut(&[
     Ok(plain)
 }
 
-/// Each lexer literal's token at run `run`'s end, read only when a bound template asks.
 fn lexicon(recording: &Recording, run: u32) -> io::Result<HashMap<Vec<u8>, u32>> {
     let held = recording.run(run)?;
     let end = held.first_hour + held.ordinals as i32 - 1;
@@ -383,7 +347,6 @@ fn lexicon(recording: &Recording, run: u32) -> io::Result<HashMap<Vec<u8>, u32>>
     Ok(out)
 }
 
-/// The groups of `query`'s timeline.
 pub(crate) fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<CountryGroupReply> {
     let mut warnings = Vec::new();
     let naming = naming(source, context, &mut warnings);
@@ -488,11 +451,9 @@ pub(crate) fn groups(source: &Source, query: &Query<'_>, branch_id: &str, contex
             }
         }
         for &(kind, hour, first, second, read_at) in &run.events {
-            // An event the engine dates before the timeline is not this timeline's.
             if read_at < stretch.first || read_at > stretch.last || hour < timeline.first {
                 continue;
             }
-            // A country is named by the tag holding it when the engine dates the event, else when read.
             let tag = |slot: u32| (slot != TagHolderRow::NONE).then(|| tag_at(&holders, slot, hour).or_else(|| tag_at(&holders, slot, read_at))).flatten();
             match kind {
                 WarEventRow::START => match (tag(first), tag(second)) {
@@ -511,7 +472,6 @@ pub(crate) fn groups(source: &Source, query: &Query<'_>, branch_id: &str, contex
             }
         }
     }
-    // Hours no holder is known, and hours the timeline holds no run, are unobserved for every history.
     for (first, last, _) in &query.holders.unknown {
         for spans in [&mut unobserved.humans, &mut unobserved.factions, &mut unobserved.wars] {
             mark(spans, *first, *last);
@@ -570,7 +530,6 @@ pub(crate) fn groups(source: &Source, query: &Query<'_>, branch_id: &str, contex
             }
         })
         .collect();
-    // An id naming another tag than the hour before, with no hour between.
     let mut by_id: HashMap<u32, Vec<(i32, i32, &str)>> = HashMap::new();
     for (tag, runs) in &query.holders.tags {
         for run in runs {

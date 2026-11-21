@@ -1,6 +1,3 @@
-//! Which answers read what, indexed by what they read: an hour's change facts reach only the
-//! answers whose reads they touch, so its cost follows the rows it changed, never the answers
-//! kept or the reads they made.
 
 use super::{Change, Changes, Read};
 use crate::rows::TableId;
@@ -10,24 +7,17 @@ use std::{
     sync::Arc,
 };
 
-/// A product's derived read grouped by what may change it: the table whose changes may, or
-/// none for one asked about every hour.
 pub trait Grouped {
     fn table(&self) -> Option<TableId>;
 }
 
-/// One table's readers.
 #[derive(Clone)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 struct Readers<K> {
-    /// By row key, each with the fields it reads.
     rows: HashMap<u128, Vec<(K, u64)>>,
-    /// Ranges `from..to` with their fields, by `from`, and the widest.
     ranges: Vec<(u128, u128, u64, K)>,
     widest: u128,
-    /// Readers of the whole table, with their fields.
     whole: Vec<(u64, K)>,
-    /// Every field any reader has read since the table had none.
     fields: u64,
 }
 
@@ -48,7 +38,6 @@ impl<K: Clone> Readers<K> {
         self.rows.is_empty() && self.ranges.is_empty() && self.whole.is_empty()
     }
 
-    /// Every reader whose fields `fields` meets, of every row.
     fn reading(&self, fields: u64, out: &mut Vec<K>) {
         for readers in self.rows.values() {
             out.extend(readers.iter().filter(|(_, read)| read & fields != 0).map(|(k, _)| k.clone()));
@@ -57,7 +46,6 @@ impl<K: Clone> Readers<K> {
         out.extend(self.whole.iter().filter(|(read, _)| read & fields != 0).map(|(_, k)| k.clone()));
     }
 
-    /// The readers `changed` rows and `deleted` keys reach.
     fn changed(&self, changed: &[(u128, u64)], deleted: &[u128], out: &mut Vec<K>) {
         let mut wrote = 0;
         for &(key, fields) in changed {
@@ -67,12 +55,10 @@ impl<K: Clone> Readers<K> {
         for &key in deleted {
             self.at(key, u64::MAX, out);
         }
-        // Which rows there are is read by every whole-table read.
         let rows = if deleted.is_empty() { wrote } else { u64::MAX };
         out.extend(self.whole.iter().filter(|(read, _)| read & rows != 0).map(|(_, k)| k.clone()));
     }
 
-    /// The readers of row `key` whose fields `fields` meets.
     fn at(&self, key: u128, fields: u64, out: &mut Vec<K>) {
         if let Some(readers) = self.rows.get(&key) {
             out.extend(readers.iter().filter(|(_, read)| read & fields != 0).map(|(k, _)| k.clone()));
@@ -90,13 +76,11 @@ impl<K: Clone> Readers<K> {
     }
 }
 
-/// Which answers, by key, read what.
 #[derive(Clone)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Dependents<K, D> {
     of: HashMap<K, Arc<[Read<D>]>>,
     tables: HashMap<TableId, Readers<K>>,
-    /// Derived reads by the table whose changes may change them, and those of none.
     derived: HashMap<Option<TableId>, HashMap<D, Vec<K>>>,
 }
 
@@ -111,7 +95,6 @@ impl<K, D> Default for Dependents<K, D> {
 }
 
 impl<K: Clone + Eq + Hash, D: Clone + Eq + Hash + Grouped> Dependents<K, D> {
-    /// What `key` read when its answer was last kept.
     pub fn reads(&self, key: &K) -> Option<&Arc<[Read<D>]>> {
         self.of.get(key)
     }
@@ -128,7 +111,6 @@ impl<K: Clone + Eq + Hash, D: Clone + Eq + Hash + Grouped> Dependents<K, D> {
         self.of.keys()
     }
 
-    /// `key`'s answer read `reads`: unchanged reads cost one comparison.
     pub fn set(&mut self, key: K, reads: Arc<[Read<D>]>) {
         if let Some(held) = self.of.get(&key)
             && (Arc::ptr_eq(held, &reads) || **held == *reads)
@@ -167,7 +149,6 @@ impl<K: Clone + Eq + Hash, D: Clone + Eq + Hash + Grouped> Dependents<K, D> {
         self.of.insert(key, reads);
     }
 
-    /// Forgets `key`'s reads.
     pub fn remove(&mut self, key: &K) {
         let Some(reads) = self.of.remove(key) else {
             return;
@@ -220,9 +201,6 @@ impl<K: Clone + Eq + Hash, D: Clone + Eq + Hash + Grouped> Dependents<K, D> {
         }
     }
 
-    /// The answers whose reads `changes` reach, each once: `derived` says whether a derived
-    /// read of a table that changed, or of none, reads otherwise now. A table whose changed
-    /// fields meet a reader's is asked which rows changed.
     pub fn reached(
         &self,
         changes: &(impl Changes + ?Sized),

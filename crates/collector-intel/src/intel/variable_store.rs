@@ -1,41 +1,3 @@
-//! ScriptVariables rows held between hours ([`crate::variable_changes`]).
-//!
-//! The store holds the latest complete capture as it was published: its
-//! scope rows, entries and key bytes in walk order, and per scope its store,
-//! the registration its rows were read or carried under and its hash header.
-//!
-//! A quiet hour walks no scope. Before any read the capture takes the domain's marks
-//! ([`Changes::take`]: every store a hooked writer touched since the previous take, the marks'
-//! epoch and the structure token, which every release and every first-chance C++ exception moves)
-//! and the character roster's token, then reads the scope list's witnesses: the global root, the
-//! country census (the callback's, which costs no read) and the state array header and slot
-//! pointers. When the take, the tokens and the witnesses all equal those taken before the held
-//! walk, its scope list is this hour's. A recorded scope's store is created only with its owner
-//! (variable store construction runs only in the owners' constructors and the character loader), so
-//! a new global, country, state or roster character moves a witness or the roster token; it is
-//! destroyed only through the release, which moves the structure token; and the owners' roots
-//! (`ccountry::VARIABLES`, `cstate::VARIABLES`) are written only by Their constructors  (country
-//! construction, state construction), a character's store being embedded. Every writer of a store's
-//! nodes, header and seed is a hooked site ([`engine_mutations::script_variable_mutations`]), except a seed
-//! change in an exception's unwinding, which the exception's token move covers; so an unmarked
-//! store's held rows, header and seed are a fresh read's, slot for slot. The hour publishes the
-//! held rows and reads afresh only the marked stores and the stores the held walk could not
-//! certify (unobserved, freshly registered, or one store held by two scopes), each exactly as the
-//! walk reads a scope ([`cvariables::read_store_carried`]).
-//!
-//! Any other hour walks every scope ([`cvariables::walk_scopes_carried`]):
-//! it reads every scope's identity and every store's vtable, header and
-//! seed, and carries a store's entries and key bytes, without reading its
-//! nodes or keys, only while the held read of the same scope, store and
-//! header is proved current (same watch epoch and sequence; a load, gap,
-//! recovery, table change, poison or running writer revokes it). When the
-//! hour's take is the held walk's (no release or exception since), a store
-//! that the take did not mark but whose seed differs from the held read is
-//! read afresh too. An hour after an exception reads every seed afresh.
-//!
-//! The store follows the IntelResidual job's loan and holds only the latest
-//! complete capture, so its size follows live demand. Allocation is
-//! advisory: a capture whose rows cannot be held holds nothing.
 use crate::variable_changes::{Changes, Counts, Taken};
 use engine_allocation as allocation;
 use engine_native::{
@@ -47,7 +9,6 @@ use engine_scripts::{
 };
 use std::ops::Range;
 
-/// What a quiet hour must find unchanged since the held walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct QuietKey {
     taken: Taken,
@@ -55,22 +16,15 @@ struct QuietKey {
     scope: (usize, usize),
 }
 
-/// The scope list's witnesses, read before any store.
 #[derive(Default)]
 struct Witness {
-    /// The global store (`cgame_state::GLOBAL_VARIABLES`).
     global: usize,
-    /// The countries in walk order: pointer and id.
     countries: Vec<(usize, u32)>,
-    /// The state array header and the pointer of every slot after slot
-    /// zero.
     state_header: [u8; 16],
     states: Vec<usize>,
 }
 
 impl Witness {
-    /// Reads every witness; `false` when one does not read or its storage
-    /// cannot grow.
     fn read(&mut self, memory: &impl Memory, base: usize, state: usize) -> bool {
         self.countries.clear();
         self.states.clear();
@@ -82,7 +36,6 @@ impl Witness {
             return false;
         };
         self.global = global;
-        // The walk's own census: the callback's authenticated countries.
         let Ok(countries) = ccountry::Reader::new(memory, base, state) else {
             return false;
         };
@@ -120,9 +73,6 @@ impl Witness {
             && self.states == other.states
     }
 
-    /// Whether a complete walk's scopes are the ones these witnesses list,
-    /// in walk order: the global store at `global`, the countries, the
-    /// occupied state slots, then characters.
     fn agrees(&self, rows: &[ScopeRow], global: Option<usize>) -> bool {
         let mut scopes = rows.iter().map(|row| row.scope);
         if scopes.next() != Some(Scope::Global) || global != Some(self.global) {
@@ -147,42 +97,26 @@ impl Witness {
     }
 }
 
-/// One held scope's store and what certifies its rows.
 #[derive(Clone, Copy, Debug, Default)]
 struct Meta {
     container: usize,
-    /// The registration `(epoch, sequence)` its rows were read or carried
-    /// under; `None` when it was not observed.
     certificate: Option<(u64, u64)>,
-    /// The capture registered the store after reading its header and seed,
-    /// so a writer between the two went unobserved.
     fresh: bool,
     header: [u8; HEADER],
 }
 
-/// One store's plan in this hour's capture.
 #[derive(Clone, Copy, Debug)]
 struct Plan {
-    /// The held scope this read continues, whose rows it carries.
     held: Option<u32>,
-    /// Its rows were written from the held scope's.
     carried: bool,
     meta: Meta,
 }
 
-/// What a capture kept of the held capture it continued: every scope not in
-/// `changed` is, in seed, entries and key bytes, the scope of the same
-/// identity in the capture held as `since`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VariableDelta {
-    /// This capture's generation, once it is held.
     pub generation: Option<u64>,
-    /// The held capture's generation it continued; `None` when it continued
-    /// none or `changed` could not be listed.
     pub since: Option<u64>,
-    /// Its scopes are the held capture's, position for position.
     pub same_scopes: bool,
-    /// This capture's ordinals of the scopes that may differ, ascending.
     pub changed: Vec<u32>,
 }
 
@@ -199,32 +133,19 @@ impl VariableDelta {
     }
 }
 
-/// The latest complete capture.
 #[derive(Default)]
 struct Held {
-    /// As published, in walk order: rows, their entries (name starts into
-    /// `names`) and key bytes.
     rows: Vec<ScopeRow>,
     entries: Vec<Row>,
     names: Vec<u8>,
-    /// Per row.
     meta: Vec<Meta>,
-    /// Certified scopes by store, sorted; a store two scopes hold is in
-    /// neither.
     index: Vec<(usize, u32)>,
-    /// The scopes no certificate covers, which a quiet hour always reads.
     always: Vec<u32>,
-    /// Certified scopes the walk registered after reading their header and
-    /// seed, which the next quiet hour reads afresh once.
     fresh: Vec<u32>,
-    /// The take before the walk.
     taken: Option<Taken>,
-    /// Names these rows ([`collector_projection::projection::generation`]).
     generation: Option<u64>,
-    /// What lets a quiet hour publish these rows, and its witnesses.
     quiet: Option<QuietKey>,
     witness: Witness,
-    /// Captures held by copying every row, entry and key byte.
     #[cfg(any(test, feature = "test-support"))]
     full_copies: usize,
 }
@@ -243,7 +164,6 @@ impl Held {
         self.quiet = None;
     }
 
-    /// The scope holding certified store `container`.
     fn find(&self, container: usize) -> Option<usize> {
         let at = self
             .index
@@ -252,7 +172,6 @@ impl Held {
         Some(self.index[at].1 as usize)
     }
 
-    /// Scope `index`'s entries (name starts into `names`) and its key bytes.
     fn rows_of(&self, index: usize) -> (&[Row], Range<usize>) {
         let row = &self.rows[index];
         let entries = &self.entries[row.entries_start..row.entries_start + row.entries_len];
@@ -263,8 +182,6 @@ impl Held {
         (entries, names)
     }
 
-    /// Holds a complete capture's published rows; `false` when the storage
-    /// could not grow.
     fn publish(&mut self, rows: &[ScopeRow], entries: &[Row], names: &[u8]) -> bool {
         let stored = allocation::advisory(|| {
             self.rows.clear();
@@ -288,13 +205,6 @@ impl Held {
         true
     }
 
-    /// A quiet hour's published capture into the held one by writing only
-    /// its `visits`' scopes: when each visited scope kept its entry range
-    /// and each entry its key byte span, every other scope's rows, entries
-    /// and key bytes were copied from the held capture unmoved, so the held
-    /// capture becomes the published one, position for position. `false`,
-    /// changing nothing, when a visited scope moved anything; the caller
-    /// then copies the whole capture ([`Self::publish`]).
     fn patch(
         &mut self,
         visits: &[(u32, bool)],
@@ -342,9 +252,6 @@ impl Held {
         true
     }
 
-    /// A walk's per-scope stores and certificates (`plans`, one per row),
-    /// with the index and the scopes no certificate covers; `false` when the
-    /// storage could not grow.
     fn certify(&mut self, plans: &[Plan]) -> bool {
         let len = self.rows.len();
         let stored = allocation::advisory(|| {
@@ -369,7 +276,6 @@ impl Held {
             }
         }
         self.index.sort_unstable();
-        // A store two scopes hold names no single held read.
         let mut kept = 0;
         let mut at = 0;
         while at < self.index.len() {
@@ -412,15 +318,12 @@ impl Held {
     }
 }
 
-/// The hour's view before any store is read.
 #[derive(Clone, Copy, Debug, Default)]
 struct Hour {
     taken: Option<Taken>,
     roster: Option<(u64, u64)>,
     scope: (usize, usize),
-    /// Every marked store was recorded.
     marks: bool,
-    /// The witnesses read.
     witness: bool,
 }
 
@@ -435,40 +338,23 @@ impl Hour {
     }
 }
 
-/// The latest complete capture and the capture being made.
 #[derive(Default)]
 pub struct VariableStore {
     held: Held,
     hour: Hour,
-    /// The stores this hour's take visited, sorted.
     marked: Vec<usize>,
-    /// This hour's witnesses.
     witness: Witness,
-    /// One per store the capture planned, in its order.
     plans: Vec<Plan>,
-    /// A quiet hour's visits: the held scope and whether a writer marked
-    /// its store.
     visits: Vec<(u32, bool)>,
-    /// The visit being read.
     visiting: Option<(u32, bool)>,
-    /// The held capture's generation as the hour began.
     since: Option<u64>,
-    /// The ordinals of the scopes that may differ from the held capture's.
     changed: Vec<u32>,
-    /// One could not be listed.
     unlisted: bool,
-    /// The capture published a quiet hour.
     quiet: bool,
-    /// A quiet hour's visit published entries, key bytes or a seed other
-    /// than the held capture's, so the held capture is renewed from the
-    /// published rows; otherwise they equal it and nothing is copied.
     renewed: bool,
-    /// Storage could not grow or a plan went missing: hold nothing.
     broken: bool,
     counts: Counts,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next capture drops every held row.
     forgotten: bool,
 }
 
@@ -477,18 +363,14 @@ impl VariableStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next capture reads afresh.
-    /// Allocation-free for the game thread.
     pub fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub fn allocated_bytes(&self) -> usize {
         self.bytes
     }
 
-    /// Captures held by copying every row, entry and key byte.
     #[cfg(any(test, feature = "test-support"))]
     pub fn full_copies(&self) -> usize {
         self.held.full_copies
@@ -499,7 +381,6 @@ impl VariableStore {
         self.counts
     }
 
-    /// Before any read of the hour: takes the marks and the roster token.
     fn begin(&mut self, changes: &dyn Changes) {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
@@ -534,9 +415,6 @@ impl VariableStore {
         };
     }
 
-    /// Whether no hooked writer touched `container` between the take before
-    /// the held walk and this hour's, and no release or exception ran: this
-    /// hour's take is the held walk's.
     fn unmarked(&self, container: usize) -> bool {
         self.hour.marks
             && self.hour.taken.is_some()
@@ -544,9 +422,6 @@ impl VariableStore {
             && self.marked.binary_search(&container).is_err()
     }
 
-    /// The quiet hour's visits: every marked held store, every scope no
-    /// certificate covers and every freshly registered one, once each in
-    /// walk order. `false` when the list cannot grow.
     fn plan_visits(&mut self) -> bool {
         let Self {
             held,
@@ -567,7 +442,6 @@ impl VariableStore {
         visits.extend(held.always.iter().map(|&index| (index, false)));
         visits.extend(held.fresh.iter().map(|&index| (index, true)));
         visits.sort_unstable();
-        // One visit per scope; a marked one stays marked.
         visits.dedup_by(|later, kept| {
             let same = later.0 == kept.0;
             if same {
@@ -583,7 +457,6 @@ impl VariableStore {
         self.unlisted = false;
     }
 
-    /// Lists `index` as changed; once the list cannot grow it lists nothing.
     fn change(&mut self, index: u32) {
         if self.unlisted
             || allocation::advisory(|| allocation::reserve(&mut self.changed, 1)).is_err()
@@ -594,9 +467,6 @@ impl VariableStore {
         }
     }
 
-    /// The capture's [`VariableDelta`], before the held capture moves on. A
-    /// walk's changed scopes are those not carried whole from the held scope
-    /// of their identity, seed included, which every walk reads afresh.
     fn delta(&mut self, rows: &[ScopeRow], delta: &mut VariableDelta) {
         if !self.quiet {
             self.clear_changed();
@@ -631,7 +501,6 @@ impl VariableStore {
         }
     }
 
-    /// A quiet hour that cannot publish: the hour walks afresh.
     fn restart(&mut self) {
         self.plans.clear();
         self.visits.clear();
@@ -653,8 +522,6 @@ impl VariableStore {
     }
 }
 
-/// Whether two stores' entries hold the same values and keys, in order;
-/// each entry's name start indexes its own arena.
 fn same_entries(left: &[Row], left_names: &[u8], right: &[Row], right_names: &[u8]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -665,7 +532,6 @@ fn same_entries(left: &[Row], left_names: &[u8], right: &[Row], right_names: &[u
         })
 }
 
-/// Grows `values` to hold `len`, as a growing walk buffer does.
 fn grow<T: Default>(values: &mut Vec<T>, len: usize) -> Option<()> {
     Buffer::Growing(values)
         .ensure(len)
@@ -674,7 +540,6 @@ fn grow<T: Default>(values: &mut Vec<T>, len: usize) -> Option<()> {
         .map(|_| ())
 }
 
-/// A quiet hour's output, written in walk order.
 struct Out<'o> {
     rows: &'o mut Vec<ScopeRow>,
     entries: &'o mut Vec<Row>,
@@ -685,8 +550,6 @@ struct Out<'o> {
 }
 
 impl Out<'_> {
-    /// Appends held scopes `range` as published, their entries and key bytes
-    /// moved to this hour's positions.
     fn copy(&mut self, held: &Held, range: Range<usize>) -> Option<()> {
         let rows = held.rows.get(range)?;
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
@@ -733,9 +596,6 @@ impl Out<'_> {
         Some(())
     }
 
-    /// Appends a visited scope whose `count` entries (name starts relative
-    /// to its own bytes) and `bytes` key bytes a read wrote at this hour's
-    /// positions.
     fn push(&mut self, scope: Scope, count: usize, bytes: usize, seed: Option<u32>) -> Option<()> {
         let row_end = self.len.checked_add(1)?;
         let entry_end = self.entries_len.checked_add(count)?;
@@ -756,25 +616,17 @@ impl Out<'_> {
     }
 }
 
-/// One capture's view of the store and the observation that certifies
-/// reuse.
 pub struct VariableReuse<'a> {
     store: &'a mut VariableStore,
     changes: &'a dyn Changes,
 }
 
 impl<'a> VariableReuse<'a> {
-    /// Before any read of the hour; takes its marks and tokens.
     pub fn begin(store: &'a mut VariableStore, changes: &'a dyn Changes) -> Self {
         store.begin(changes);
         Self { store, changes }
     }
 
-    /// Before the walk: reads the scope list's witnesses and, when the hour
-    /// is quiet, publishes the held capture into `rows`, `entries` and
-    /// `names`, reading only its visits, and returns the walk. `None` when
-    /// the hour walks every scope ([`cvariables::walk_scopes_carried`] with
-    /// this reuse).
     pub fn quiet_hour(
         &mut self,
         memory: &impl Memory,
@@ -802,8 +654,6 @@ impl<'a> VariableReuse<'a> {
         walk
     }
 
-    /// The quiet hour's output: the held capture, with each visit read as
-    /// the walk reads its scope. `None` at a failed read.
     fn publish(
         &mut self,
         memory: &impl Memory,
@@ -824,8 +674,6 @@ impl<'a> VariableReuse<'a> {
         for visit in 0..self.store.visits.len() {
             let (index, marked) = self.store.visits[visit];
             let at = index as usize;
-            // A hint for the next visit's store head while this one is read:
-            // it fetches no value and faults nothing.
             if let Some(&(next, _)) = self.store.visits.get(visit + 1)
                 && let Some(meta) = self.store.held.meta.get(next as usize)
             {
@@ -888,11 +736,6 @@ impl<'a> VariableReuse<'a> {
         })
     }
 
-    /// Ends the capture: `complete` when every scope was read or carried
-    /// whole, with the rows it published. A complete capture is held for the
-    /// next hour, a quiet one as the held capture with its visits' stores
-    /// renewed; anything else holds nothing. `delta` gets what a complete
-    /// capture kept of the held one.
     pub fn finish(
         self,
         complete: bool,
@@ -908,8 +751,6 @@ impl<'a> VariableReuse<'a> {
         }
         let holds = complete && !store.broken;
         if store.quiet {
-            // Unless a visit renewed it, the published rows are the held
-            // capture's, position for position.
             let held = holds
                 && store.plans.len() == store.visits.len()
                 && rows.len() == store.held.rows.len()
@@ -920,7 +761,6 @@ impl<'a> VariableReuse<'a> {
                 for (plan, &(index, _)) in store.plans.iter().zip(&store.visits) {
                     store.held.meta[index as usize] = plan.meta;
                 }
-                // Each was read after its registration.
                 store.held.fresh.clear();
                 store.held.generation = Some(collector_projection::projection::generation());
                 delta.generation = store.held.generation;
@@ -958,17 +798,11 @@ impl<'a> VariableReuse<'a> {
 }
 
 impl VariableCarry for VariableReuse<'_> {
-    /// Registers one store and plans its rows: carried without a read when
-    /// the held read of the same scope, store and header is proved current.
-    /// Registration precedes every read it certifies; the header and seed
-    /// were read before it.
     fn plan(&mut self, store: &Store) -> (usize, Option<(usize, usize)>) {
         let changes = self.changes;
         let state = &mut *self.store;
         let registration = changes.register(store.container);
         let certificate = registration.map(|(certificate, _)| certificate);
-        // The held read this one continues: a quiet visit's own scope, or
-        // the held scope of the same store.
         let (candidate, unmarked) = match state.visiting {
             Some((index, marked)) => (Some(index as usize), !marked),
             None => (
@@ -984,7 +818,6 @@ impl VariableCarry for VariableReuse<'_> {
                 && meta.container == store.container
                 && meta.header == store.header
                 && held.rows[index].scope == store.scope
-                // An unmarked store whose seed moved was written where no hook saw.
                 && (!unmarked || meta.fresh || held.rows[index].seed == store.seed)
         });
         let carry = current.map(|index| {
@@ -994,7 +827,6 @@ impl VariableCarry for VariableReuse<'_> {
         let plans = &mut state.plans;
         let token = plans.len();
         if allocation::advisory(|| allocation::reserve(plans, 1)).is_err() {
-            // Without a plan the store is read afresh and nothing is held.
             state.broken = true;
             return (usize::MAX, None);
         }
@@ -1011,7 +843,6 @@ impl VariableCarry for VariableReuse<'_> {
         (token, carry)
     }
 
-    /// The held rows of a carryable plan, at this hour's positions.
     fn carry(&mut self, token: usize, entries: &mut [Row], names: &mut [u8]) {
         let state = &mut *self.store;
         let Some(plan) = state.plans.get_mut(token) else {
@@ -1034,14 +865,11 @@ impl VariableCarry for VariableReuse<'_> {
         state.counts.reused_rows += entries.len() as u64;
     }
 
-    /// A fresh read of a planned store: `entries` in native slot order when
-    /// `outcome` is complete.
     fn read(&mut self, token: usize, _: Outcome, entries: &[Row], _: &[u8]) {
         let state = &mut *self.store;
         state.counts.read += 1;
         state.counts.read_rows += entries.len() as u64;
         if token >= state.plans.len() {
-            // Without its plan nothing is held.
             state.broken = true;
         }
     }

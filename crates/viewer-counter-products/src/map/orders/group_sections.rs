@@ -1,5 +1,3 @@
-//! Stored army-group child sections. Child slots preserve duplicate groups;
-//! their spans use the first matching stored entry.
 
 use super::{
     chain::{self, Pair},
@@ -13,7 +11,6 @@ use std::{cell::OnceCell, collections::BTreeMap};
 
 use viewer_foundation::map::ribbon_content::GROUP_SECTION_TYPE_NAME as TYPE_NAME;
 
-/// Small areas suppress the extra offset without reading the header.
 pub fn extra_units(plan: &ArmyOrderPlanRow) -> Result<u8, &'static str> {
     let inputs = match &plan.child_fronts {
         Recorded::NotRecorded => return Err("front controller-area and child inputs not recorded"),
@@ -50,7 +47,6 @@ pub struct Prepared {
     pub side: i32,
 }
 
-/// Build the complete assignment index only when a child callback filters units.
 pub struct DivisionGroups<'a> {
     rows: Option<&'a [DivisionRow]>,
     index: OnceCell<BTreeMap<u64, u64>>,
@@ -78,12 +74,10 @@ pub struct Display<'a> {
     pub groups: &'a BTreeMap<u64, &'a OrdersGroupRow>,
     pub division_groups: &'a DivisionGroups<'a>,
     pub owner_is_ours: Option<bool>,
-    /// The parent order's family, which its child sections share.
     pub kind: dashboard_core::protocol::PlanKind,
 }
 
 fn assigned_count(child: u64, display: &Display<'_>) -> Result<usize, &'static str> {
-    // The virtual callback bypasses assignment/HQ counting and label updates.
     if display.plan.virtual_order != 0 || display.plan.assigned_divisions.is_empty() {
         return Ok(0);
     }
@@ -116,7 +110,6 @@ fn assigned_count(child: u64, display: &Display<'_>) -> Result<usize, &'static s
     Ok(count)
 }
 
-/// Children share the root's already-reserved pairs and add no offset unit.
 pub fn prepare(
     plan: &ArmyOrderPlanRow,
     pairs: &[Pair],
@@ -167,9 +160,6 @@ pub fn prepare(
     Ok((prepared, refused))
 }
 
-/// Update each child with its group parameter: group-filtered assignments,
-/// that group's HQ/name, and ordinary label variants. Execution state is the
-/// parent's callback, not the child display group's.
 #[allow(clippy::too_many_arguments)]
 pub fn emit(
     field: &mut super::OrderField,
@@ -292,7 +282,6 @@ pub fn emit(
 #[cfg(test)]
 mod tests;
 
-/// Roots have already reserved these exact directed pair units. Children reserve none.
 pub fn children<'a>(
     plan: &ArmyOrderPlanRow,
     pairs: &'a [Pair],
@@ -328,16 +317,9 @@ pub fn children<'a>(
         first.entry(section.group).or_insert(section);
     }
     let mut output = Children::default();
-    // Past the stored group array, use group zero and endpoints (-1,-1),
-    // destroying those ribbons. When slots<=count, each indexed group first-matches
-    // at or before its index. Capture only that demanded prefix; an unused tail
-    // cannot change these matches. When slots>count, the complete stored array
-    // above is authenticated nonnull, so group zero matches nothing. Omit that
-    // suffix without iterating an untrusted signed count.
     for slot in (0..sections.len()).rev() {
         let indexed = &sections[slot];
         let section = first[&indexed.group];
-        // Endpoints are signed; a negative start destroys this ribbon.
         if section.segment_start < 0 {
             continue;
         }
@@ -349,8 +331,6 @@ pub fn children<'a>(
             });
             continue;
         }
-        // Add the parent section offset. Checked addition refuses unsupported
-        // overflow; front_pairs independently checks physical section bounds.
         if plan
             .segment_start
             .checked_add(section.segment_start)

@@ -54,8 +54,6 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
         assert.equal(changed.totalHeight, 99 * 56 + first.height + 99 * 2.5, 'changed CSS gaps preserve retained expansion measurements');
       });
       await context.test('fractional row and scroller boxes retain layout pixels under native content zoom', async () => {
-        // CSS style strings shorten numeric values; native boxes retain more
-        // digits. Stay below half a layout unit so integer rounding still fails.
         const sameLayout = (actual: number, expected: number, message: string) =>
           assert.ok(Math.abs(actual - expected) < 1 / 128, `${message}: ${actual} versus ${expected}`);
         await act('mount()'); await act('rowGap(1)');
@@ -246,8 +244,6 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
         assert.deepEqual(await act('unmountRebinding()'), [0, 0], 'unmount releases every scroller listener');
       });
     }, 60_000);
-    // Reuse the single owned browser. A persistent CDP connection avoids socket
-    // setup for each native key in the generated differential matrix.
     const socket = new WebSocket(page);
     const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
     let sequence = 0;
@@ -507,18 +503,13 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
                 cases.push({ count, shape, controls, viewport });
               }
           const generatedCases = cases.length, seen = new Set<string>();
-          // Empty/single lists have no scroll positions, and static rows ignore
-          // control variants. Execute each distinct DOM scenario once.
           const distinct = cases.filter(spec => {
             const shape = spec.count === 0 ? 'static' : spec.count === 1 && spec.shape !== 'static' ? 'all' : spec.shape;
             const identity = JSON.stringify([spec.count, shape, shape === 'static' ? 'summary' : spec.controls, spec.count <= 1 ? 'start' : spec.viewport]);
             if (seen.has(identity)) return false; seen.add(identity); return true;
           });
-          // Fixed xorshift seed; case ordering changes no content or oracle rules.
           let seed = 0x71ab;
           for (let at = distinct.length - 1; at > 0; at--) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; const next = (seed >>> 0) % (at + 1); [distinct[at], distinct[next]] = [distinct[next], distinct[at]]; }
-          // Keep the seeded content/viewport ordering, grouping equal content
-          // so another viewport reuses both keyed trees instead of remounting.
           const content = (spec: TabCase) => JSON.stringify([spec.count, spec.shape, spec.controls]);
           const grouped = new Map<string, TabCase[]>();
           for (const spec of distinct) {
@@ -553,8 +544,6 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
                 for (const backwards of [false, true]) {
                 if (!fullSweep && !['toggle-focus', 'predicate-focus'].includes(mutation)) continue;
                 const id = String(Math.floor(count / 2)), traces: string[][] = [];
-                // Rebuild only when the shape changes; individual traces reuse
-                // both keyed trees and restore their immutable fixture content.
                 if (shape === 'all') await mountCase({ count, shape, controls, viewport: 'middle' });
                 for (const side of ['reference', 'virtual'] as const) {
                   traces.push(await mutationTrace(side, id, mutation, backwards, 'start'));

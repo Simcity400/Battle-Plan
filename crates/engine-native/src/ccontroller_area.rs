@@ -1,31 +1,17 @@
-//! CControllerArea geographic membership used by CTheatre.
 
 use engine_sites::Rva;
-/// Controller-area vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_b198);
-/// Representative province pointer.
 pub const REPRESENTATIVE_PROVINCE: usize = 0x28;
-/// Member-province pointer array.
 pub const PROVINCE_DATA: usize = 0x30;
-/// Member count, i32.
 pub const PROVINCE_COUNT: usize = 0x3c;
-/// Allocation size.
 pub const SIZE: usize = 0x118;
-/// Constructor installing the vtable.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d5_1d20);
-/// World clear walking members and clearing province backlinks.
 pub const CLEAR_RVA: Rva = Rva(0x00d5_4570);
 
-/// One controller area listed by one stationed theatre in native order.
-/// Theatre insertion deduplicates pointers, but rebuilding replaces the whole
-/// vector, so ordinal is only a position. The process-local area counter is
-/// unserialized and supplies no persistent key.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CTheatre handle of the theatre that lists this area.
     pub theatre: u64,
     pub ordinal: u32,
-    /// Province id behind `REPRESENTATIVE_PROVINCE`; a null representative pointer is absent, not zero.
     pub representative: Option<u32>,
     pub provinces_start: usize,
     pub provinces_len: usize,

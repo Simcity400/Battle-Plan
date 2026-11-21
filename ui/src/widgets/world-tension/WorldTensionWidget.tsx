@@ -43,18 +43,13 @@ import './worldTension.css';
 const NO_WARNINGS: string[] = [];
 const PARAMS = {};
 const CONTRIBUTIONS = { kind: 'threat-contributions', measure: 'contribution' };
-/** Events a compact grouped-marker tooltip names before counting the rest. */
 const COMPACT_EVENTS = 5;
 const formatContribution = (raw: string, decimals: number) => `${formatRaw(raw, decimals, 2)}%`;
 const formatPercent = (value: number) => `${Math.round(value * 10) / 10}%`;
 
-/** World tension: the tension over time stacked by the countries whose actions generated it (its declared series'
- * tiles, the head's values the followed `world-tension` panel's cells), the events that did as markers, the values at
- * the moment shown beside the chart, and the tension at an hour taken apart; each country's contribution as a race or
- * lines (the ranked `threat-contributions` series); and every threat source's life (`threat-events`). */
 export default function WorldTensionWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, props.widget.options);
-  const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]); // eslint-disable-line react-hooks/exhaustive-deps
+  const onWarnings = useCallback((warnings: readonly string[]) => props.onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [props.onDiagnostics]);
   if (options.view === 'race' || options.view === 'lines') return <MeasureRace widget={props.widget} runtime={props.runtime} active={props.active}
     measure={CONTRIBUTIONS} decimals={5} view={options.view} options={options} label="Contribution to world tension" icon="alert"
     format={formatContribution} formatValue={formatPercent} onWarnings={onWarnings} />;
@@ -62,7 +57,6 @@ export default function WorldTensionWidget(props: WidgetProps) {
   return <TensionView {...props} />;
 }
 
-/** The pinned breakdown of `source` at `hour`, following the head when `follow`. */
 export function pinTensionDrill(source: WidgetSpec, trackId: string, firstHour: number, hour: number, follow: boolean): WidgetSpec {
   const pinned = pinnedBreakdown(source, TENSION_BREAKDOWN, trackId);
   const offset = Math.floor(hour) - firstHour;
@@ -79,7 +73,6 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
   const pinnedDrill = options.show === 'breakdown';
-  // Off, the fallback's hour is the clock's as rendered: the chart's live head moves it between renders.
   const playbackHour = useFallbackHour(runtime.clock, false);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -90,15 +83,12 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const act = useCallback((action: Parameters<typeof reduceDrill>[1]) => dispatch(before => reduceDrill(before, action)), []);
   const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
   useEffect(() => { act({ type: 'close' }); }, [resetKey, act]);
-  // What renders: the layers drawn, in order, and how many countries Other holds; every contribution in the service's
-  // order (greatest first, so countries below the layers trade places at nearly every push) only while the breakdown shows.
   const drawn = useRef<{ count: number; keep: (tag: string) => boolean; all: boolean }>({ count, keep: () => true, all: true });
   const head = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track ? PARAMS : null, {
     active, validate: validateWorldTension,
     structure: reply => JSON.stringify([drawn.current.all ? reply.contributions : layerContributions(reply.contributions, drawn.current.count, drawn.current.keep),
       reply.contributions.length, reply.unnamed, reply.missing, reply.warnings]),
   });
-  // The drill paused at an hour reads the panel asked for that hour; following, the head's.
   const drillFollows = following && (drill.breakdown == null ? pinnedDrill : drill.follow);
   const pickedHour = drill.breakdown != null && !drill.follow ? drillHour(drill, null) : null;
   const picked = useHeadProduct<WorldTensionReply>(runtime, widget, 'world-tension', track && pickedHour !== null ? PARAMS : null, {
@@ -110,7 +100,6 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   });
   const listHour = head.at ?? Math.floor(playhead ?? extent[1]);
 
-  // Chosen countries or a group narrow the layers; every country by default.
   const narrowed = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const resolved = useMemo(() => narrowed ? resolveCountries(widget.countries, [], groups.data, lastHour, Number.MAX_SAFE_INTEGER) : null,
@@ -124,25 +113,21 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const top = resolved?.top ?? count;
   const breakdownShown = drill.breakdown != null || pinnedDrill;
   drawn.current = { count: Math.min(top, count), keep, all: breakdownShown };
-  // The newest push where every contribution is read (the breakdown, its names): it renders on each of their changes.
   const everyContribution = breakdownShown && head.read === 'followed' ? head.current() : head.data;
   const layers = useMemo(() => head.data ? layerContributions(head.data.contributions, Math.min(top, count), keep) : [], [head.data, top, count, keep]);
   const layersKey = JSON.stringify(layers);
-  const stableLayers = useMemo(() => layers, [layersKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stableLayers = useMemo(() => layers, [layersKey]);
 
   const events = useProduct<ThreatEventsReply>(runtime.client, track && options.markers !== false ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'threat-events', params: { branchId: track.branch.id } } : null, active, validateThreatEvents, track?.source);
   const lookTagsNow = useMemo(() => [...new Set([...stableLayers.flatMap(layer => layer.tag ? [layer.tag] : []),
     ...(breakdownShown ? (everyContribution?.contributions ?? []).flatMap(item => item.tag ? [item.tag] : []) : [])])].sort(), [stableLayers, breakdownShown, everyContribution]);
-  // A drill reads every push's contributions: the countries it names are the same list while the set holds.
-  const lookTags = useMemo(() => lookTagsNow, [lookTagsNow.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Pushed, the layers' countries are named where one of them last changed, never at each push's hour.
+  const lookTags = useMemo(() => lookTagsNow, [lookTagsNow.join(',')]);
   const named = usePushedLooksHour(runtime, widget, track, lookTags, active && head.read === 'followed', listHour);
   const looks = useCountryLooks(runtime.client, track, lookTags, named.hour, active, undefined, undefined, named.exact);
   useWhyCommit('TensionView', { reply: head.data, at: head.at, read: head.read, picked: picked.data, hovered: hovered.data, hoverHour, drill, layers: stableLayers,
     events: events.data, named: named.hour, looks });
   const colourOf = useMemo(() => {
-    // Nudged apart in a fixed order (by tag) when the app asks for fixed colours, so a country keeps its colour as ranks change.
     const known = lookTags.filter(tag => looks.color(tag) != null);
     const raw = known.map(tag => { const [r, g, b] = looks.color(tag)!; return { r, g, b }; });
     const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
@@ -150,7 +135,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     return (tag: string | null) => (tag != null ? colours.get(tag) : undefined) ?? tokens.muted;
   }, [lookTags, looks, tokens]);
   const otherColour = mix(tokens.surface, tokens.text, 0.3);
-  const badges = useMemo(() => eventBadges(events.data?.events ?? [], extent[0], extent[1], colourOf), [events.data, extent[0], extent[1], colourOf]); // eslint-disable-line react-hooks/exhaustive-deps
+  const badges = useMemo(() => eventBadges(events.data?.events ?? [], extent[0], extent[1], colourOf), [events.data, extent[0], extent[1], colourOf]);
   const badgeList = useMemo(() => [...badges.keys()], [badges]);
   const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => (hovered.data?.contributions ?? []).slice(0, 12)
     .flatMap(item => item.tag && hoverHour !== null ? [{ tag: item.tag, hour: hoverHour }] : []), [hovered.data, hoverHour]), active);
@@ -162,8 +147,7 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     return () => onDiagnostics(NO_WARNINGS);
   }, [head.data, events.error, groups.error, onDiagnostics]);
 
-  // The values beside the chart, painted from the cells at each frame they move; the hour they are of is reported.
-  const report = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const report = useCallback(() => shown(head.shownAt()), [shown, head.shownAt]);
   const texts = useMemo<LiveTexts>(() => ({
     text: key => {
       const reply = head.data;
@@ -230,7 +214,6 @@ function TensionView({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const open = (hour: number) => act({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: following ? followHour() : playhead });
   const anchor = useRef<HTMLDivElement>(null);
   const followRoot = head.root;
-  // One ref for every render: a new one each render lets go of the element and takes it again, a second commit.
   const rootRef = useCallback((element: HTMLDivElement | null) => { anchor.current = element; followRoot(element); }, [followRoot]);
 
   if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
@@ -289,7 +272,6 @@ function ThreatEventsView({ widget, runtime, active, onDiagnostics, setOption }:
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'threat-events', params: { branchId: track.branch.id } } : null;
   const reply = useProduct<ThreatEventsReply>(runtime.client, request, active, validateThreatEvents, track?.source);
   const trackHour = (clockHour: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour) ?? track?.branch.lastHour ?? 0);
-  // Following, the list renders only when an event is listed, changes or ends at the head.
   useAtHead(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
     const at = trackHour(clockHour);
     let count = 0;

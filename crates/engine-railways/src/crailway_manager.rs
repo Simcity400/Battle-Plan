@@ -1,4 +1,3 @@
-//! CRailwayManager's persistent rail province and directed edge state.
 
 use engine_sites::Rva;
 use crate::{
@@ -13,37 +12,20 @@ use crate::{
 pub mod fresh_inputs;
 pub mod selected_inputs;
 
-/// CRailwayManager primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_f450);
 
-/// CRailwayManager province-indexed CProvinceRailwayInfo pointer table.
 pub const PROVINCE_INFO_TABLE: usize = 0x08;
-/// Province-info table signed i32 count.
 #[cfg(test)]
 pub const PROVINCE_INFO_COUNT: usize = 0x14;
-/// Cooldown province list data pointer.
 pub const COOLDOWN_PROVINCES: usize = 0x20;
-/// Cooldown province-list signed count, traversed backwards from count-1.
 pub const COOLDOWN_PROVINCE_COUNT: usize = 0x2c;
-/// CRailwayManager table pointer stride.
 pub const PROVINCE_INFO_STRIDE: usize = 8;
-/// Manager constructor sizing and zero-filling the province table.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f0_51e0);
-/// Railway manager scalar deleting destructor (vtable slot 0); destruction
-/// stores the vtable and frees every info object.
 pub const DESTRUCTOR_RVA: Rva = Rva(0x00f0_54c0);
-/// Railway token loader can allocate and replace info slots.
 pub const LOAD_TOKEN_RVA: Rva = Rva(0x00f0_8180);
-/// Province-cooldown setter writes stored cooldown and notifies supply.
 pub const SET_PROVINCE_ON_COOLDOWN_RVA: Rva = Rva(0x00f0_7810);
-/// Cooldown updater decrements values and removes expired IDs.
 pub const UPDATE_COOLDOWNS_RVA: Rva = Rva(0x00f0_6fc0);
 
-/// Passive railway speed computation, before CArmy's outer movement-speed
-/// scale. Road infrastructure and the directed rail edge compete by signed
-/// maximum; rail damage and cooldown are read from the departure province, not
-/// the arrival. No engine calls, retained pointers, allocation, or replacement
-/// census.
 pub fn movement_speed(
     memory: &impl Memory,
     base: usize,
@@ -55,7 +37,6 @@ pub fn movement_speed(
     let from_id = eta_province(memory, base, provinces, from)?;
     let to_id = eta_province(memory, base, provinces, to)?;
     let infrastructure = eta_infrastructure(memory, base, state, to)?;
-    // Railway speed computation: all four defines are signed fixed5 qwords.
     let road_base = eta_global::<i64>(memory, base, Rva(0x033e_0928))?;
     let road_scale = eta_global::<i64>(memory, base, Rva(0x033e_09b8))?;
     let road = road_base.wrapping_add(infrastructure.wrapping_mul(road_scale) / 100_000);
@@ -67,8 +48,6 @@ pub fn movement_speed(
     Ok(road.max(rail))
 }
 
-/// Passive railway percentage used by railway-gun speed. Only directed rail
-/// connection and departure health participate; army road speed is unreached.
 pub fn railway_percentage(
     memory: &impl Memory,
     base: usize,
@@ -109,7 +88,6 @@ fn railway_percentage_from_ids(
         {
             return Err("ETA railway province backlink mismatch");
         }
-        // Railway percentage accepts zero and negative cooldowns.
         if eta_read::<i32>(memory, node, info::COOLDOWN_TICKS)? <= 0 {
             let pairs = eta_array(memory, node, info::NEIGHBOR_PAIRS, edge::STRIDE)?;
             for index in 0..pairs.count {
@@ -145,8 +123,6 @@ fn railway_percentage_from_ids(
             }
         }
     }
-    // Sign-extended denominator: this denominator define is an i32, unlike the
-    // speed defines. Zero returns zero, not the fixed-point sentinel.
     let denominator = i64::from(eta_global::<i32>(memory, base, Rva(0x033d_fbe8))?) * 100_000;
     if denominator == 0 {
         Ok(0)
@@ -246,8 +222,6 @@ fn eta_ratio(numerator: i64, denominator: i64) -> Result<i64, &'static str> {
         .ok_or("ETA railway native division overflow")
 }
 
-/// Signed shorts and wrapping fixed5 operations. Partial health divides
-/// by 10,000,000 rather than the healthy-level scale.
 fn eta_building_efficiency(level: i16, healthy: i16, partial: i64) -> Result<i64, &'static str> {
     if level == 0 {
         return Ok(0);
@@ -301,7 +275,6 @@ fn eta_state_infrastructure(
         return Err("ETA infrastructure state identity mismatch");
     }
     let database = eta_global_pointer(memory, base, database::SINGLETON_RVA)?;
-    // Select the infrastructure template from its database field.
     let definition = eta_pointer(memory, database, 0x3b0)?;
     if eta_read::<u8>(memory, definition, template::LOOKUP_ENABLED_CANDIDATE)? == 0 {
         return Ok(0);
@@ -348,8 +321,6 @@ fn eta_state_infrastructure(
         return Err("ETA infrastructure building identity mismatch");
     }
     let healthy = eta_read::<i16>(memory, instance, building::HEALTHY_LEVEL)?;
-    // Prefer the first positive local value, then the second, then the signed
-    // global define, without a lower clamp.
     let mut maximum = eta_read::<i32>(memory, definition, 0x2bc)?;
     if maximum < 1 {
         maximum = eta_read::<i32>(memory, definition, 0x2b8)?;
@@ -360,9 +331,6 @@ fn eta_state_infrastructure(
     eta_ratio(i64::from(healthy) * 100_000, i64::from(maximum) * 100_000)
 }
 
-/// The manager's cooldown province list in list order, duplicates kept: the occurrences the daily
-/// countdown pass decrements, each naming the province whose info it writes. Stored as the native
-/// signed ids' bits.
 pub fn cooldown_list(
     memory: &impl Memory,
     base: usize,
@@ -396,7 +364,6 @@ pub struct Outcomes {
     pub edges: Outcome,
 }
 
-/// Optional building operands have their own status and retained demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuildingOutcomes {
     pub rows: Outcomes,
@@ -413,30 +380,17 @@ impl Outcomes {
     }
 }
 
-/// One authenticated rail info as the walk gathered it this hour, before
-/// any of its edges, levels or building are read: the bytes every hour
-/// still gathers for every slot. A held read of the same info and bytes,
-/// which no hooked writer touched since (`railway_mutations`), has
-/// the same edges, building row and levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailLocation {
     pub province: u32,
     pub info: usize,
-    /// The info's building status, authenticated as its province's (`cprovince::BUILDING_STATUS`).
     pub building_status: usize,
-    /// The info's vtable, definition, status and building pointer.
     pub identity: [u8; INFO_BYTES],
-    /// The province table this walk authenticates far endpoints against.
     pub provinces: Array,
-    /// The cooldown, when it copied.
     pub cooldown: Option<i32>,
-    /// The pair header with its count, when both copied.
     pub pairs: Option<[u8; 16]>,
 }
 
-/// What every walk reads before any slot: the manager and its slot table The definition,
-/// authenticated against the game state's province table. A held batch is published only under the
-/// header it was read with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailHeader {
     pub manager: usize,
@@ -444,8 +398,6 @@ pub struct RailHeader {
     pub provinces: Array,
 }
 
-/// One info's outputs: its cooldown, its directed edges in pair order, its building row and its
-/// indexed levels. The row's selected level span starts at zero and indexes `levels`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InfoOutputs<'a> {
     pub cooldown: i32,
@@ -454,10 +406,6 @@ pub struct InfoOutputs<'a> {
     pub levels: &'a [i32],
 }
 
-/// The outputs of every info of one slot batch, in slot order, as its last
-/// complete read published them: one cooldown row and one building row per
-/// info, the infos' edges concatenated, and their levels concatenated with
-/// each building row's selected span starting within `levels`.
 #[derive(Debug, Clone, Copy)]
 pub struct HeldBatch<'a> {
     pub cooldowns: &'a [info::Row],
@@ -466,38 +414,19 @@ pub struct HeldBatch<'a> {
     pub levels: &'a [i32],
 }
 
-/// A caller's held outputs per rail info and per slot batch of
-/// [`PROVINCE_BATCH`] slots ([`walk_with_selection_carried`]).
 pub trait RailCarry {
-    /// The authenticated header, once per walk before any batch.
     fn tables(&mut self, _header: &RailHeader) {}
-    /// Before slot batch `first..first + count` is read: its held outputs
-    /// when the carry proves that no native writer touched any slot or info
-    /// of the batch since its last complete read under this header. The
-    /// walk then publishes them without reading anything of the batch, or,
-    /// when its outputs cannot take the whole batch, reads it.
     fn quiet_batch(&mut self, _first: u32, _count: u32) -> Option<HeldBatch<'_>> {
         None
     }
-    /// The batch [`Self::quiet_batch`] returned was published.
     fn carried_batch(&mut self) {}
-    /// Registers an authenticated info before any of its edges, levels or
-    /// building are read, returning a plan token and whether its held
-    /// outputs may be carried.
     fn plan(&mut self, location: &RailLocation) -> (usize, bool);
-    /// A carryable plan's held outputs; `None` reads the info afresh.
     fn held(&self, token: usize) -> Option<InfoOutputs<'_>>;
-    /// A carryable plan was published from its held outputs.
     fn carried(&mut self, token: usize);
-    /// A planned info read afresh: its outputs when its cooldown, edges,
-    /// building row and levels were each acquired whole, otherwise `None`.
     fn read(&mut self, token: usize, outputs: Option<InfoOutputs<'_>>);
-    /// A batch [`Self::quiet_batch`] did not publish was read: each of its
-    /// planned infos was carried or read.
     fn read_batch(&mut self) {}
 }
 
-/// No held outputs: every info is read.
 pub struct Fresh;
 impl RailCarry for Fresh {
     fn plan(&mut self, _: &RailLocation) -> (usize, bool) {
@@ -510,7 +439,6 @@ impl RailCarry for Fresh {
     fn read(&mut self, _: usize, _: Option<InfoOutputs<'_>>) {}
 }
 
-/// Whether a fresh building row acquired every field it reports.
 fn whole(row: &fresh_inputs::RailwayBuildingRow) -> bool {
     row.building.is_ok()
         && row.selection.is_some_and(|selection| {
@@ -520,7 +448,6 @@ fn whole(row: &fresh_inputs::RailwayBuildingRow) -> bool {
         })
 }
 
-/// `row` with its selected level span starting at `first`.
 fn rebased(
     mut row: fresh_inputs::RailwayBuildingRow,
     first: usize,
@@ -533,8 +460,6 @@ fn rebased(
     row
 }
 
-/// Held edges appended exactly as [`read_edges`] would store the same
-/// pairs: grown first, then truncated with every omitted row counted.
 fn append_edges(
     output: &mut Buffer<'_, edge::Row>,
     progress: &mut Progress,
@@ -552,17 +477,11 @@ fn append_edges(
     Ok(())
 }
 
-/// Whether `ensure` gives room for `more` rows after `len`.
 fn fits(len: usize, more: usize, ensure: impl FnOnce(usize) -> Result<bool, &'static str>) -> bool {
     len.checked_add(more)
         .is_some_and(|required| ensure(required) == Ok(true))
 }
 
-/// Publishes a quiet batch's held outputs where reading the batch would
-/// store the same infos' rows: each cooldown row, the edges, the levels
-/// with each building row's span rebased onto them, the same demand and
-/// the same refusal of an earlier failed table. Returns `false`, having
-/// stored nothing, when the outputs cannot take the whole batch.
 #[allow(clippy::too_many_arguments)]
 fn publish_held(
     held: HeldBatch<'_>,
@@ -656,10 +575,6 @@ impl Progress {
     }
 }
 
-/// One shared census, with independent cooldown and edge outcomes. Null info
-/// slots are absent; an allocated info with zero cooldown remains a row.
-/// Directed pairs are retained independently, without reciprocal-edge guesses.
-/// Fixed-size stack windows amortize guarded copies; no allocation or retry.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -680,7 +595,6 @@ pub fn walk(
     .rows
 }
 
-/// Reuse the authenticated info windows; no second province census.
 #[cfg(test)]
 pub fn walk_with_buildings(
     memory: &impl Memory,
@@ -703,8 +617,6 @@ pub fn walk_with_buildings(
     )
 }
 
-/// Worker province rows follow live province extent. Edges and indexed
-/// levels grow from original headers before dependent rows are published.
 pub fn walk_with_selection(
     memory: &impl Memory,
     base: usize,
@@ -726,15 +638,6 @@ pub fn walk_with_selection(
     )
 }
 
-/// [`walk_with_selection`] with `carry` supplying held outputs. A
-/// batch of [`PROVINCE_BATCH`] slots the carry proves untouched
-/// ([`RailCarry::quiet_batch`]) is published from its held outputs without
-/// reading any of its slots. In every other batch each slot's info
-/// identity, backlinks, cooldown and pair header are gathered and
-/// authenticated in slot order with unchanged reasons, and every info's
-/// cooldown row comes from this hour's gather; there a carried info's
-/// edges, indexed levels and building are not read. Held outputs take the
-/// places a fresh read would give them.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_with_selection_carried(
     memory: &impl Memory,
@@ -813,13 +716,6 @@ fn walk_inner(
             .ok_or("module address overflow")?;
         let province_vtable = engine_sites::at(base, cprovince::VTABLE_RVA)
             .ok_or("module address overflow")?;
-        // A rail slot's own province, its definition, the info identity and
-        // backlinks, the cooldown and the neighbor header are all gathered for
-        // the whole batch. Every check below still runs in slot order against
-        // that entry's copied prefix, so each reason keeps its position. The
-        // fatal identity, the cooldown and the neighbor header take three
-        // separate gathers, because a fault scoped to one table must not stop
-        // another table's independently readable field for any later record.
         let mut slots = [0_u8; PROVINCE_BATCH * PROVINCE_INFO_STRIDE];
         let mut ids = [0_u32; PROVINCE_BATCH];
         let mut infos = [0_usize; PROVINCE_BATCH];
@@ -833,7 +729,6 @@ fn walk_inner(
         let mut neighbor_batch = ProvinceBatch::new();
         let mut edge_scratch = EdgeScratch::new();
         let mut building_sources = [fresh_inputs::RailwaySource::default(); PROVINCE_BATCH];
-        // A carry needs the building rows and levels it holds.
         let carrying = building_output.is_some() && levels.is_some();
         if carrying {
             carry.tables(&RailHeader {
@@ -896,8 +791,6 @@ fn walk_inner(
             for (entry, definition) in definition_pointers[..live].iter_mut().enumerate() {
                 *definition = usize::try_from(batch.definition_word(entry)).unwrap_or(0);
             }
-            // Saved province key comes from the definition. Authenticate it against
-            // the already checked live slot rather than a proxy.
             let id_copied = memory.copy_records(
                 RecordSources::Pointers(&definition_pointers[..live]),
                 &DEFINITION_ID_LAYOUT,
@@ -908,8 +801,6 @@ fn walk_inner(
                 &INFO_LAYOUT,
                 &mut identity[..live * INFO_BYTES],
             );
-            // The signed pair count is consumed independently of pointer/capacity.
-            // Read it once and reuse its raw bytes in the edge-array header.
             let counts_copied = memory.copy_records(
                 RecordSources::Pointers(&infos[..live]),
                 &PAIR_COUNT_LAYOUT,
@@ -960,8 +851,6 @@ fn walk_inner(
                 {
                     return Err("rail info province backlink mismatch");
                 }
-                // Registration precedes every read it certifies: the edges,
-                // the indexed levels and the building below.
                 plans[entry] = Plan::Unplanned;
                 let held = if carrying {
                     let (token, carried) = carry.plan(&RailLocation {
@@ -1037,8 +926,6 @@ fn walk_inner(
                         }),
                         carried: false,
                     };
-                    // Held levels that did not fit leave the building to the
-                    // fresh read: their failure decides its selected demand.
                     let source = &mut building_sources[entry];
                     source.carried = held.is_some()
                         && source
@@ -1153,8 +1040,6 @@ fn walk_inner(
         },
     }
 }
-/// One batch entry's part in a carry: read afresh, with its edge span when
-/// its edges were read whole, or published from its held outputs.
 #[derive(Clone, Copy)]
 enum Plan {
     Unplanned,
@@ -1167,9 +1052,6 @@ enum Plan {
     },
 }
 
-/// After a batch's building rows: each carried info's held row takes its
-/// fresh row's place with this hour's level span, and each info read afresh
-/// reports its whole outputs to the carry.
 fn settle(
     carry: &mut impl RailCarry,
     plans: &[Plan],
@@ -1213,9 +1095,6 @@ fn settle(
     }
 }
 
-/// Provinces authenticated per guarded round, and the exact record each
-/// needs. A carry holds and publishes whole batches of these slots
-/// ([`RailCarry::quiet_batch`]), batch `n` being slots `n * 64..`.
 pub const PROVINCE_BATCH: usize = 64;
 const PROVINCE_RECORD_BYTES: usize = 20;
 const SLOT_FIELD: [RecordField; 1] = [RecordField {
@@ -1223,7 +1102,6 @@ const SLOT_FIELD: [RecordField; 1] = [RecordField {
     destination_offset: 0,
     len: 8,
 }];
-/// A rail slot's province: identity, then the definition its key comes from.
 const PROVINCE_FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: 0,
@@ -1241,20 +1119,13 @@ const PROVINCE_FIELDS: [RecordField; 3] = [
         len: 8,
     },
 ];
-/// A directed edge's far endpoint is only authenticated, never read further.
 const NEIGHBOR_FIELDS: [RecordField; 2] = [PROVINCE_FIELDS[0], PROVINCE_FIELDS[1]];
-/// The info identity, both backlinks and the building pointer, one span.
 pub const INFO_BYTES: usize = info::BUILDING + 8;
-/// An unreadable identity is fatal to both tables, so this span must not share a
-/// gather with a field whose fault is scoped to one table: `copy_records` stops
-/// at the first faulting field, which would turn a later record's readable
-/// identity into a fatal one.
 const INFO_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
     len: INFO_BYTES,
 }];
-/// The neighbor vector header. Its fault is scoped to the edge table only.
 const PAIRS_FIELD: [RecordField; 1] = [RecordField {
     source_offset: info::NEIGHBOR_PAIRS,
     destination_offset: 0,
@@ -1265,7 +1136,6 @@ const PAIR_COUNT_FIELD: [RecordField; 1] = [RecordField {
     destination_offset: 0,
     len: 4,
 }];
-/// The cooldown. Its fault is scoped to the cooldown table only.
 const COOLDOWN_FIELD: [RecordField; 1] = [RecordField {
     source_offset: info::COOLDOWN_TICKS,
     destination_offset: 0,
@@ -1294,9 +1164,6 @@ const COOLDOWN_LAYOUT: RecordLayout<'static> =
 const DEFINITION_ID_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DEFINITION_ID_FIELD, 4).expect("valid record layout");
 
-/// One batch of province-table authentications. Two guarded rounds replace the
-/// two round trips each province used to make: the table slots, then each
-/// object's identity. Reasons and their order per province are unchanged.
 struct ProvinceBatch {
     slots: [usize; PROVINCE_BATCH],
     slot_bytes: [u8; PROVINCE_BATCH * 8],
@@ -1335,8 +1202,6 @@ impl ProvinceBatch {
             &SLOT_LAYOUT,
             &mut self.slot_bytes[..len * 8],
         );
-        // A null or unreadable slot fails at its own province, so no later
-        // object is gathered; that province reports the original reason.
         let mut objects = 0;
         for index in 0..self.slot_copied.min(len) {
             let word = u64::from_le_bytes(
@@ -1394,7 +1259,6 @@ impl ProvinceBatch {
         Ok(pointer)
     }
 
-    /// The raw definition word, or zero when its exact field did not copy.
     fn definition_word(&self, index: usize) -> u64 {
         if self.copied(index) < 3 {
             return 0;
@@ -1411,8 +1275,6 @@ impl ProvinceBatch {
     }
 }
 
-// Only freshly filled prefixes are consumed. Reuse these initialized buffers
-// across infos without clearing bytes or ids outside the current prefix.
 struct EdgeScratch {
     bytes: [u8; PROVINCE_BATCH * edge::STRIDE],
     neighbors: [u32; PROVINCE_BATCH],
@@ -1459,9 +1321,6 @@ fn read_edges(
         if !read_slice(memory, address, &mut buffer[..count * edge::STRIDE]) {
             return Err("rail neighbor rows unreadable");
         }
-        // The sorted, non-self neighbor rule is a pure decode, so it selects
-        // the prefix whose far endpoints are authenticated in one batch. The
-        // first invalid pair still fails before any later pair is stored.
         let mut staged = 0;
         let mut invalid = false;
         let mut ordered = previous;

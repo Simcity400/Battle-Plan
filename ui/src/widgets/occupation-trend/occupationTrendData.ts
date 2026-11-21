@@ -15,7 +15,6 @@ export const SERIES = 'occupier-totals';
 export const measureName = (measure: OccupationMeasure) => measure === 'resistance' ? 'Resistance' : 'Compliance';
 export const otherMeasure = (measure: OccupationMeasure): OccupationMeasure => measure === 'resistance' ? 'compliance' : 'resistance';
 export const rankingMeasure = (shown: ShownMeasure, ranking: OccupationMeasure): OccupationMeasure => shown === 'both' ? ranking : shown;
-/** Means are exact fixed5 percentage units. */
 export const occupationPercent = (raw: string, digits = 5) => `${formatAmount(raw, 5, digits)}%`;
 
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -31,10 +30,8 @@ export function validateOccupationDetail(data: unknown): OccupationDetailReply {
   return data as unknown as OccupationDetailReply;
 }
 
-/** An occupier's totals at the hour read, from its live cells: none where its row holds none. */
 export interface OccupierTotals { resistanceRaw: string; complianceRaw: string; states: number; heldStates: number | null; heldComplete: boolean }
 
-/** The game's fixed5 mean of a sum over a count of states, truncated; none without states. */
 export function occupationMean(sum: number, count: number): string | null {
   if (!Number.isFinite(sum) || !Number.isInteger(count) || count <= 0) return null;
   return (BigInt.asIntN(64, BigInt(Math.trunc(sum)) * 100000n) / (BigInt(count) * 100000n)).toString();
@@ -50,7 +47,6 @@ export function totalsOf(values: LiveValues<number>, tag: string): OccupierTotal
   return { resistanceRaw, complianceRaw, states, heldStates: held ?? null, heldComplete: cell('heldComplete') === 1 };
 }
 
-/** What a tooltip says of an occupier's totals at an hour: why it says nothing, when it does. */
 export function totalsMissing(values: LiveValues<number>, tag: string): string {
   return values.missing(liveKey(tag, 'states'));
 }
@@ -69,7 +65,6 @@ function collaborationRows(row: OccupationDetailRow | undefined, reply: Occupati
 
 export interface DetailAt { hour: number; reply: OccupationDetailReply; values: LiveValues<number> }
 
-/** One occupier's tooltip at `hour`, from the detail read at that hour; a note while it is read. */
 export function occupationTooltip(tag: string, hour: number, detail: DetailAt | null, labelAt: LabelAt, shown: ShownMeasure, collaboration: boolean): TooltipContent {
   const label = labelAt(hour)(tag);
   const base = { ...countryNameDetails(label), title: label.name, subtitle: formatDateTime(hour) };
@@ -85,7 +80,6 @@ export function occupationTooltip(tag: string, hour: number, detail: DetailAt | 
   ], note: `Average across ${totals.states} states.` };
 }
 
-/** Every shown occupier at `hour`, greatest by the ranked measure first (ties by tag). */
 export function occupationLineTooltip(hour: number, tags: readonly string[], detail: DetailAt | null, labelAt: LabelAt, colour: (tag: string) => string,
   shown: ShownMeasure, rank: OccupationMeasure, collaboration: boolean): TooltipContent {
   const title = { title: formatDateTime(hour), subtitle: shown === 'both' ? `Occupation averages; ${measureName(rank).toLowerCase()} first` : `Average ${measureName(rank).toLowerCase()}` };

@@ -18,8 +18,6 @@ export { FACTION_OPTION } from './factionOption.ts';
 
 const covers = (run: { firstHour: number; lastHour: number }, hour: number) => run.firstHour <= hour && hour <= run.lastHour;
 
-/** The faction a country (a [`countryKey`]) is a member of at `hour`: the recorded roster, never a guess. A country
- * chosen by its slot is a member under whichever tag it goes by then. */
 export function factionOfCountry(groups: CountryGroupReply, key: string, hour: number): FactionGroup | null {
   const index = countryIdentityIndex(groups.countryIdentities);
   const tags = new Set(typeof countryFromKey(key) === 'number' ? index.aliasesAt(index.selected([key]), hour) : [key]);
@@ -29,8 +27,6 @@ export function factionOfCountry(groups: CountryGroupReply, key: string, hour: n
 export type NoFaction = 'none' | 'unobserved' | 'unknown' | 'absent';
 export type FactionPick = { faction: FactionGroup; reason: null } | { faction: null; reason: NoFaction };
 
-/** The saved faction while it exists (before it was founded or after it ended, it is absent), else the country's faction
- * at the hour; a gap in the faction rosters is not "in no faction". */
 export function chosenFaction(groups: CountryGroupReply, saved: string | null, tag: string | null, hour: number): FactionPick {
   if (saved) {
     const faction = groups.factions.find(item => item.id === saved);
@@ -43,19 +39,14 @@ export function chosenFaction(groups: CountryGroupReply, saved: string | null, t
   return { faction: null, reason: groups.factions.some(item => item.incomplete.some(span => covers(span, hour))) ? 'unknown' : 'none' };
 }
 
-/** What a pick renders on: the faction, or why there is none. */
 export const pickKey = (pick: FactionPick | null) => pick === null ? '' : pick.faction ? `faction:${pick.faction.id}` : `none:${pick.reason}`;
 
-/** The faction's name as the game showed it at `hour`, never another hour's; without an
- * hour, its latest. The user's display name (`override`) applies throughout the campaign. */
 export function factionNameAt(faction: FactionGroup, hour?: number, override?: string): string {
   return recordedNameAt(faction, hour, override).name ?? 'Faction name unavailable';
 }
 
 const NO_NAMES: Readonly<Record<string, string>> = Object.freeze({});
 
-/** The display names the user gave this recording's campaign's factions, by faction id: every widget naming a faction
- * applies them, as the faction settings promise. */
 export function useFactionDisplayNames(source: { metadata: { campaignKey: string } } | undefined): Readonly<Record<string, string>> {
   const styles = useCampaignSettings().campaigns[source?.metadata.campaignKey ?? '']?.factions;
   return useMemo(() => {
@@ -65,12 +56,8 @@ export function useFactionDisplayNames(source: { metadata: { campaignKey: string
   }, [styles]);
 }
 
-/** Whether the faction's roster lists the country at `hour`. */
 export const memberAt = (faction: FactionGroup, tag: string, hour: number) => faction.members.some(run => run.tag === tag && covers(run, hour));
 
-/** The faction a widget shows, from its Faction setting and its country, and the track hour it was chosen at. While
- * following, the widget renders only when the faction (or why none is shown) changes, never because the head moved
- * inside it; pinned or on a range, at the chosen hour. Null hour outside the recorded branch. */
 export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {
   const groups = useCountryGroups(runtime, track, active);
   const saved = typeof widget.options?.faction === 'string' && widget.options.faction ? contentKey(widget.options.faction) : null;
@@ -88,8 +75,6 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
   return { groups, pick, tag, hour };
 }
 
-/** One faction's state at the head (a pushed panel while following; asked for the pinned hour otherwise). Its
- * scripted texts expand in the widget's country, the viewpoint the game's faction view expands them in. */
 export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, faction: string | null, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
@@ -98,7 +83,6 @@ export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, fa
     { active, validate: validateFactionDetails, structure: detailsStructure });
 }
 
-/** Every recorded faction, by its latest name, for the Faction setting. */
 export function useFactionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, true);
@@ -107,7 +91,6 @@ export function useFactionChoices(widget: WidgetSpec, runtime: WidgetRuntime): O
     label: factionNameAt(faction, undefined, names[faction.id]) })) }), [groups.data, names]);
 }
 
-/** The state words every faction widget uses when no faction is shown. */
 export function noFactionMessage(reason: NoFaction, live: boolean): string {
   return reason === 'absent' ? 'This faction did not exist at this time.'
     : reason === 'unobserved' ? 'Faction rosters were not recorded at this time.'

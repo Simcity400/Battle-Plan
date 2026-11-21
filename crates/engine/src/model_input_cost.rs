@@ -1,12 +1,3 @@
-//! Synthetic capture cost of the template and clone walks that scale with the
-//! country count: the full template dictionary walk, the hourly template
-//! counter and 3D-model inputs, and the local sub-unit clones. Each country owns `TEMPLATES` templates over `CLONES` clones of a
-//! shared global database, and one country in eight has a clone whose
-//! requirements differ. The budget test runs in every build; the timings are
-//! `#[ignore]`d benches:
-//! `cargo test -p engine --release model_input_capture_cost -- --ignored --nocapture`.
-//! `unit_scale_templates` instead spreads 50,000 and 100,000 templates over
-//! 1,500 countries.
 
 use std::cell::Cell;
 use std::time::Instant;
@@ -26,7 +17,6 @@ const GLOBALS: usize = 64;
 const CLONES: usize = 4;
 const TEMPLATES: usize = 6;
 const GROUPED: usize = 3;
-/// Every field the walks read lies below this.
 const DEFINITION: usize = 0x5c0;
 const TEMPLATE: usize = (template::EQUIPMENT_NICHE + 1).next_multiple_of(8);
 
@@ -46,8 +36,6 @@ impl Memory for Bench {
         self.world.memory().copy(address, output)
     }
 
-    /// Hints the host bytes behind a synthetic address, as the game's memory
-    /// adapter hints the game's own.
     fn prefetch(&self, address: usize, len: usize) {
         if let Some(offset) = address.checked_sub(crate::ccountry::synthetic::START)
             && offset < self.world.bytes.len()
@@ -178,10 +166,8 @@ fn build(countries: u32, templates: usize) -> Bench {
 
 struct Cost {
     templates: usize,
-    /// The full dictionary walk: names and categories.
     daily_copies: usize,
     daily_seconds: f64,
-    /// The hourly walk: counter and 3D-model inputs.
     hourly_copies: usize,
     hourly_seconds: f64,
     clones: usize,
@@ -189,8 +175,6 @@ struct Cost {
     clone_seconds: f64,
 }
 
-/// The fastest of `RUNS` steady-state runs, and its copy count: the machine is
-/// shared, so a single run can include another process's work.
 const RUNS: usize = 5;
 
 fn fastest<T>(bench: &Bench, mut run: impl FnMut() -> T) -> (T, f64, usize) {
@@ -228,8 +212,6 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
 
     let mut icons = vec![IconRow::default(); templates];
     let mut counts = vec![SubunitCount::default(); templates * GROUPED];
-    // The first walk sizes the definition slots off-thread; the runs are the
-    // steady state.
     let mut database = vec![0_usize; 16];
     let mut globals = vec![template::GlobalSlot::default(); 16];
     let mut locals = vec![template::LocalSlot::default(); 16];
@@ -260,7 +242,6 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
         assert!(row.details_fresh);
         assert_eq!(row.details_failure, None);
         assert_eq!(row.equipment_failure, None);
-        // The zeroed settings must not overlap the appended grouped entries.
         assert_eq!(row.settings.division_cap, None);
     }
 
@@ -308,13 +289,6 @@ fn unit_scale_templates() {
     }
 }
 
-/// Reads per template and per clone stay flat as countries grow. The daily
-/// walk gathers three spans a template. The hourly walk gathers each template
-/// in one batch gather (identity and one contiguous span), plus the priority
-/// unit's name and the grouped entries in one read each; a definition costs one
-/// gathered read (identity and index) once per country, or once per walk for a
-/// database entry, however many templates name it. This walk also demands both
-/// fresh extension spans per template, counted separately from its fixed record.
 #[test]
 fn model_input_capture_reads_stay_flat_per_template_and_clone() {
     for countries in [16, 128] {

@@ -1,4 +1,3 @@
-//! The game facts a session's recordings carry, gathered beside the capture.
 
 use installed_content_core::{
     LayerRole,
@@ -15,18 +14,12 @@ use std::{
     thread::JoinHandle,
 };
 
-/// Packs the gathered content's facts into the session folder's facts file on a background
-/// thread at the lowest priority, on half the cores, so the game keeps the rest. Stopped and
-/// waited for when dropped, so no packing outlives its capture.
 pub(super) struct GameFacts {
     cancelled: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<String, String>>>,
 }
 
 impl GameFacts {
-    /// The facts of `content` as `identity`'s, the session's: a layer whose files differ from
-    /// those the session recorded is withheld by name, and facts the session already packed are
-    /// kept. Compressed chunks are kept in `cache` for later packs.
     pub(super) fn start(
         content: &GatheredContent,
         identity: &Identity,
@@ -56,7 +49,6 @@ impl GameFacts {
         Self { cancelled, thread }
     }
 
-    /// Waits for the facts to be packed and says what they hold, or why there are none.
     pub(super) fn finish(mut self) -> Result<String, String> {
         match self.thread.take() {
             Some(thread) => thread
@@ -76,7 +68,6 @@ impl Drop for GameFacts {
     }
 }
 
-/// Whether the facts file `file` already holds `identity`'s facts.
 fn packed(file: &Path, identity: &Identity) -> bool {
     std::fs::File::open(file)
         .ok()
@@ -85,8 +76,6 @@ fn packed(file: &Path, identity: &Identity) -> bool {
         .is_some()
 }
 
-/// The layers of `content`, gathered now, whose files differ from those `identity` recorded, by
-/// index with why; or why none of `content`'s facts can be `identity`'s.
 fn changed_layers(
     content: &GatheredContent,
     identity: &Identity,
@@ -180,9 +169,6 @@ mod tests {
     use installed_content_core::{GatherOptions, gather};
     use std::{fs, sync::Arc};
 
-    /// A recorder taking a session over gathers the content installed now, where one mod's file
-    /// changed since the session began: that mod's facts are withheld by name, never carried
-    /// under the session's identity, and facts the session already packed are kept as they are.
     #[test]
     fn a_take_over_withholds_a_changed_mod_and_keeps_facts_already_packed() {
         let root = crate::test_support::allocation_test_directory("take-over-changed-mod-facts");
@@ -235,7 +221,6 @@ mod tests {
             .withheld()
             .expect("the changed mod's facts were carried");
         assert!(reason.contains("changed since"), "{reason}");
-        // Facts the session already packed for its identity are kept, not packed again.
         GameFacts::start(&began, &identity, &session, &options.cache_dir)
             .finish()
             .unwrap();

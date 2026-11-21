@@ -1,21 +1,12 @@
-//! Request-vector entry in army upgrade requests; its concrete type is unknown.
 
-/// Request-row stride.
 pub const STRIDE: usize = 0x18;
-/// Equipment-variant pointer, authenticated by its vtable.
 pub const EQUIPMENT_VARIANT: usize = 0x00;
-/// Request amount, signed i64 fixed point.
 pub const REQUEST: usize = 0x08;
-/// Total amount, signed i64 fixed point.
 pub const TOTAL: usize = 0x10;
-/// Fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 use crate::{Memory, cequipment_variant, read};
 
-/// One ordered request in its army's current upgrade group. The engine does
-/// not assign a persistent identity to a request entry; ordinal is local to
-/// the group and is retained rather than inferred from equipment identity.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,

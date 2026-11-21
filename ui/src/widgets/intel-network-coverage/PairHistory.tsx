@@ -15,9 +15,6 @@ import { OPTIONS } from './definition';
 import { fieldText, LABELS, measureField, pairOf } from './intelCoverageData';
 import type { Basis, ChosenPair, Measure } from './intelCoverageData';
 
-/** One directed pair's chosen measure over the branch: the owner's line of the target (its raw id the part) of the
- * declared `intel-networks` series, drawn from its keyed runs, held between daily reads; unread hours are gaps. A
- * pinned pair history reads its pair from the widget's options. */
 export default function PairHistory({ widget, runtime, active, pair, hour }: WidgetProps & { pair: ChosenPair | null; hour: number }) {
   const tokens = useChartTokens();
   const root = useRef<HTMLDivElement>(null);
@@ -26,7 +23,7 @@ export default function PairHistory({ widget, runtime, active, pair, hour }: Wid
   const chosen = pair ?? pairOf(options.owner ? contentKey(String(options.owner)) : null, options.target ? contentKey(String(options.target)) : null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const field = measureField((options.measure as Measure) ?? 'covered', (options.basis as Basis) ?? 'controlled');
-  const keys = useMemo(() => chosen ? [{ tag: chosen.owner, part: String(chosen.targetId) }] : [], [chosen?.owner, chosen?.targetId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const keys = useMemo(() => chosen ? [{ tag: chosen.owner, part: String(chosen.targetId) }] : [], [chosen?.owner, chosen?.targetId]);
   const family = useMemo(() => ({ kind: 'intel-networks', measure: field }), [field]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const series = useKeyedSeries(runtime.client, runtime.clock, track && keys.length ? { source: track.source, branchId: track.branch.id, family, keys, partBits: 32,

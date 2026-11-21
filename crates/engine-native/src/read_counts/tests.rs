@@ -539,8 +539,6 @@ fn record_source_arithmetic_failure_counts_the_rejected_field_after_empty_fields
 fn native_batches_plans_faults_and_controls_match_scalar_accounting() {
     ReadCounts::take_current();
     let source = [7_u8; 64];
-    // SAFETY: the owned source remains alive through every guarded read;
-    // the unreadable null-page address is accessed only by the native guard.
     let memory = CountedMemory::new(unsafe { crate::memory::LiveMemory::new() });
     let base = source.as_ptr() as usize;
     healthy_fixture(&memory, base);
@@ -868,8 +866,6 @@ fn draining_and_restoring_nested_work_preserves_counts_after_unwind() {
     let nested = ReadCounts::take_current();
     assert_eq!(nested, HEALTHY_COUNTS);
     suspended.add_current();
-    // The earlier wrapper must still address the Cell drained by the
-    // nested wrapper and restored after its unwind.
     assert!(memory.copy(0x1000, &mut [0; 4]));
     let mut expected = suspended;
     expected += suspended;

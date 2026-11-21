@@ -1,24 +1,3 @@
-//! Nuclear strikes as an hourly event ledger ([`engine_events::nuclear_strike_sites`]).
-//!
-//! The impact's entry opens a strike on its thread and records its launcher,
-//! type and target; the notification's entry closes it, before the authored
-//! `on_nuke_drop` effects run. While it is open, its outcome is recorded as
-//! the native writers apply it:
-//!
-//! - the unit damage entry (this family's own site) reads each unit it
-//!   reaches before and after the call, both under the call's number, so a
-//!   failed read leaves only its own call's units unpaired;
-//! - the families owning the other writers forward them on the open strike's
-//!   thread: war support from [`crate::country_input_changes`] (add war
-//!   support), building damage from [`crate::building_changes`] (destroy
-//!   healthy levels, measured as [`engine_events::building_damage_sites`] measures
-//!   bombing) and pool differences from [`crate::equipment_destruction`]
-//!   (the land damage and aircraft loss writers).
-//!
-//! A part whose owner does not forward, whose read fails or whose call goes
-//! unobserved is recorded as a refusal of that part. A strike whose own
-//! operands cannot be read, a ledger whose storage could not grow or
-//! overlapping calls make the interval unavailable ([`EventLedger`]).
 use crate::{
     event_ledger::{Event, EventLedger},
     hook::Hook,
@@ -37,14 +16,12 @@ use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 type Clock = engine_native::cgame_state::Clock<u64>;
 
-/// When a unit was read: before or after the damage call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Before,
     After,
 }
 
-/// One ledger entry: a strike, then what happened to it until the next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     Strike {
@@ -65,7 +42,6 @@ pub enum Item {
     },
     Unit {
         phase: Phase,
-        /// The open strike's unit damage call, counted from zero.
         call: u32,
         unit: native::Unit,
     },
@@ -115,25 +91,18 @@ static ORIGINAL: [AtomicUsize; native::SITES.len()] =
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
-/// Whether the owner of each part's writer forwards it (indexed by part).
 static FORWARDING: [AtomicBool; 4] = [const { AtomicBool::new(false) }; 4];
-/// The thread whose strike is open; 0 when none is.
 static OPEN: AtomicU32 = AtomicU32::new(0);
-/// The open strike's game state, clock read and claim key.
 static GAME: AtomicUsize = AtomicUsize::new(0);
 static HOUR: AtomicI32 = AtomicI32::new(0);
 static KEY: AtomicUsize = AtomicUsize::new(0);
-/// The open strike's unit damage calls so far.
 static CALLS: AtomicU32 = AtomicU32::new(0);
-/// The forwarded equipment call: idle, running or observed.
 static EQUIPMENT: AtomicU8 = AtomicU8::new(IDLE);
 const IDLE: u8 = 0;
 const RUNNING: u8 = 1;
 const OBSERVED: u8 = 2;
 static STRIKES: AtomicU64 = AtomicU64::new(0);
 static REFUSED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-/// Detour calls whose native original has not returned normally; one that a
-/// foreign exception unwound stays counted, so detach keeps the collector.
 static FLIGHTS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn active() -> usize {
@@ -145,8 +114,6 @@ pub fn restore_sequence(previous: Option<u64>) -> Result<(), &'static str> {
     }
     LEDGER.restore_sequence(previous)
 }
-/// Unit tests share these statics with every other collector test: only the
-/// test that owns the observation drives the ledger.
 fn foreign_test() -> bool {
     #[cfg(test)]
     if !tests::owns_observation() {
@@ -162,7 +129,6 @@ pub fn mark_stranded() {
 pub fn capacity() -> usize {
     LEDGER.demand()
 }
-/// Off-thread: size the ledger for `demand` entries.
 pub fn presize(demand: usize) {
     if !foreign_test() {
         LEDGER.prepare(demand);
@@ -190,7 +156,6 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     LEDGER.drain(output)
 }
 
-/// An owning family says whether it forwards `part`'s writer.
 pub fn forwarder(part: Part, forwarding: bool) {
     FORWARDING[part as usize].store(forwarding, Ordering::SeqCst);
 }
@@ -232,7 +197,6 @@ fn game_operands(memory: &impl Memory, base: usize) -> Result<(usize, i32), &'st
     Ok((game, hour))
 }
 
-/// The impact's entry: record the strike and open it on this thread.
 fn open(nuke: usize, province: usize) {
     if !ENABLED.load(Ordering::SeqCst) {
         return;
@@ -291,8 +255,6 @@ fn close() {
     }
 }
 
-/// A forwarded `add_war_support` call on the open strike: the country's war
-/// support before, recorded with its value after when dropped.
 #[must_use]
 pub struct WarSupportWatch {
     country: usize,
@@ -305,8 +267,6 @@ fn war_support_field(memory: &impl Memory, country: usize) -> Result<i64, &'stat
         .and_then(|at| engine_native::read(memory, at))
         .ok_or("nuclear strike war support unreadable")
 }
-/// Hook path, allocation-free: add war support is about
-/// to run on `country`.
 pub fn war_support(country: usize) -> Option<WarSupportWatch> {
     if !current() {
         return None;
@@ -353,13 +313,10 @@ impl Drop for WarSupportWatch {
     }
 }
 
-/// A forwarded `DestroyHealthyLevels` call on the open strike.
 #[must_use]
 pub struct BuildingWatch {
     before: building_damage_sites::Snapshot,
 }
-/// Hook path, allocation-free: destroy healthy levels
-/// is about to run on `building` with damage `source`.
 pub fn building(building: usize, source: usize) -> Option<BuildingWatch> {
     if !current() {
         return None;
@@ -407,9 +364,6 @@ impl Drop for BuildingWatch {
     }
 }
 
-/// A forwarded pool writer call on the open strike; dropped unobserved, it
-/// refuses the strike's equipment. A wing's call also records the crews it
-/// took.
 #[must_use]
 pub struct EquipmentCall {
     crew: Option<Crew>,
@@ -436,13 +390,10 @@ fn crew(wing: usize) -> Result<Crew, &'static str> {
     }
     Ok(Crew {
         wing,
-        // Aircraft loss writer credits the casualties to this country.
         country: engine_events::equipment_destruction::air_owner(&memory, wing)?,
         before: crew_manpower(&memory, wing)?,
     })
 }
-/// Hook path: a pool writer that changes equipment is about to run: a
-/// division's `active_damage`, or `aircraft loss writer` on `wing`.
 pub fn equipment_call(wing: Option<usize>) -> Option<EquipmentCall> {
     if !current() {
         return None;
@@ -476,7 +427,6 @@ impl Drop for EquipmentCall {
         }
     }
 }
-/// Hook path: one variant's signed pool difference of the running call.
 pub fn equipment(wing: bool, country: u32, variant: u64, amount_raw: i64) {
     if current() && EQUIPMENT.load(Ordering::Relaxed) == RUNNING {
         record(Item::Equipment {
@@ -487,7 +437,6 @@ pub fn equipment(wing: bool, country: u32, variant: u64, amount_raw: i64) {
         });
     }
 }
-/// Hook path: the running call's pool differences were all forwarded.
 pub fn equipment_observed() {
     if current() {
         let _ = EQUIPMENT.compare_exchange(RUNNING, OBSERVED, Ordering::Relaxed, Ordering::Relaxed);
@@ -502,7 +451,6 @@ fn units(province: usize, phase: Phase, call: u32) {
         province,
         |unit| match unit {
             Ok(unit) => record(Item::Unit { phase, call, unit }),
-            // The after read meets the same unit again; count it once.
             Err(reason) if phase == Phase::Before => refuse(Part::Units, reason),
             Err(_) => {}
         },
@@ -514,12 +462,12 @@ fn units(province: usize, phase: Phase, call: u32) {
 
 type NativeFunction = unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize;
 
-/// Runs a site's original. The detours and originals use the unwinding ABI,
-/// as operation_outcomes' do: a native exception crosses the Rust frame,
-/// whose drops run, back into the native caller. The relocated prologue
-/// executes no call, so no exception is raised while the trampoline is the
-/// current frame; the original's own body unwinds by its function table.
-/// The flight count retires only on a normal return.
+#[doc = " Runs a site's original. The detours and originals use the unwinding ABI,"]
+#[doc = " as operation_outcomes' do: a native exception crosses the Rust frame,"]
+#[doc = " whose drops run, back into the native caller. The relocated prologue"]
+#[doc = " executes no call, so no exception is raised while the trampoline is the"]
+#[doc = " current frame; the original's own body unwinds by its function table."]
+#[doc = " The flight count retires only on a normal return."]
 fn run(site: usize, nuke: usize, province: usize, r8: usize, r9: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::NuclearStrikes);
     FLIGHTS.fetch_add(1, Ordering::SeqCst);
@@ -530,8 +478,6 @@ fn run(site: usize, nuke: usize, province: usize, r8: usize, r9: usize) -> usize
     result
 }
 
-/// Closes the strike when the impact returns, normally or unwinding, so no
-/// later writer on its thread is taken for its outcome.
 struct Opened;
 impl Drop for Opened {
     fn drop(&mut self) {
@@ -539,8 +485,6 @@ impl Drop for Opened {
     }
 }
 
-// Each site takes the nuke object and province in RCX and RDX and reads no
-// other argument (`asm` at each entry); R8 and R9 are forwarded unchanged.
 unsafe extern "system-unwind" fn impact(
     nuke: usize,
     province: usize,
@@ -552,8 +496,6 @@ unsafe extern "system-unwind" fn impact(
     open(nuke, province);
     let _opened = Opened;
     let result = run(0, nuke, province, r8, r9);
-    // The notification closed it already; an unwound call leaves the ledger
-    // active, which strands its interval.
     LEDGER.leave();
     result
 }
@@ -589,14 +531,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction. A
-    /// differing sentinel leaves the family uninstalled and its table
-    /// unavailable.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction. A"]
+    #[doc = " differing sentinel leaves the family uninstalled and its table"]
+    #[doc = " unavailable."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let callbacks = [
@@ -639,10 +581,6 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "nuclear strike hook state change failed")?
         {

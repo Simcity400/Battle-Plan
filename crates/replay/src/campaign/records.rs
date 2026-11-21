@@ -1,7 +1,3 @@
-//! A campaign's records, as its file's [`envelope::Kind::Controls`] extents hold them: each
-//! revision's extent holds the records it added, in recording order within each kind.
-//!
-//! [`envelope::Kind::Controls`]: replay_columnar::envelope::Kind::Controls
 
 use crate::{
     branches::{BranchStart, Gap},
@@ -12,11 +8,8 @@ use crate::{
 };
 use std::io;
 
-/// Starts every campaign records extent; a capture's own record ([`crate::columnar_file::Capture`])
-/// starts with its version instead.
 pub(crate) const MAGIC: &[u8; 4] = b"H4CR";
 
-/// Damage may have no trustworthy hour; keep its segment and byte position instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryNote {
     pub session: Option<u64>,
@@ -58,22 +51,15 @@ impl RecoveryNote {
     }
 }
 
-/// How much of one capture's record stream the recording holds: the first `segments` segments
-/// of capture `capture` made in the session folder `source`, and all it keeps of the capture
-/// once `finished`. A revision that adds a segment's hours and records adds its cursor too, so
-/// a writer taking the recording up reads on from there: no hour is left out or written twice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cursor {
     pub source: String,
     pub capture: u32,
-    /// The session whose capture it is.
     pub session: u64,
     pub segments: u32,
     pub finished: bool,
 }
 
-/// A capture whose columnar writer stopped while its session went on: the hours after
-/// `last_hour` of `branch` it would have held are not in the file, for `reason`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureStop {
     pub spool: String,
@@ -83,7 +69,6 @@ pub struct CaptureStop {
     pub reason: String,
 }
 
-/// Records of each kind, in recording order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Records {
     pub sessions: Vec<SessionStart>,
@@ -154,9 +139,6 @@ impl Records {
             && self.stops.is_empty()
     }
 
-    /// The extent bytes holding these records, recorded in `format`: this build's, or an earlier
-    /// one whose layout of every record written is this build's (as [`Self::decode_into`] reads
-    /// it); a record whose layout changed since `format` is refused by name.
     pub fn encode(&self, format: FormatVersion) -> io::Result<Vec<u8>> {
         for control in &self.controls {
             format.require(control.kind())?;
@@ -187,15 +169,11 @@ impl Records {
         Ok(out)
     }
 
-    /// The format an extent's records are recorded in, when it is a campaign records extent.
     pub fn format_of(bytes: &[u8]) -> Option<u16> {
         let rest = bytes.strip_prefix(MAGIC)?;
         Some(u16::from_le_bytes(rest.get(..2)?.try_into().ok()?))
     }
 
-    /// Adds the records an extent holds to these, each as its row format wrote it: this build's,
-    /// or an earlier one of the proven history whose record layouts are unchanged since. Any
-    /// other format is refused by name.
     pub fn decode_into(&mut self, bytes: &[u8]) -> io::Result<()> {
         let format = Self::format_of(bytes)
             .ok_or_else(|| invalid("A campaign records extent holds no campaign records"))?;
@@ -230,7 +208,6 @@ impl Records {
         input.finish()
     }
 
-    /// Moves `other`'s records after these.
     pub fn append(&mut self, other: &mut Self) -> io::Result<()> {
         fn move_all<T>(into: &mut Vec<T>, from: &mut Vec<T>) -> io::Result<()> {
             engine_allocation::reserve(into, from.len())?;

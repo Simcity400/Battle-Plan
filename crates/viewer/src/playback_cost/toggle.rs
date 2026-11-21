@@ -1,9 +1,3 @@
-//! `viewer --visual-toggle <replay> --hour H --out <dir> [--mod-a NAME]... [--mod-b NAME]...
-//! [--toggles N] [--refresh-hz HZ] [--settle-frames N] [--timeout S] [--no-fresh]`: opens the
-//! recording with visual-mod set A, toggles to set B and back N times through the app's own path
-//! ([`crate::app::playback_cost::toggle`]), and writes each toggle's stages, counts and pictures
-//! to `<dir>/report.json` and `<dir>/*.png`. A mod is named by its descriptor name as the
-//! settings list it, or by its id (`workshop/<item>`, `mod/<file>`); no mod is a set of none.
 use super::{CAPTURES, SEED_CACHE, copy_tree, hash, invalid, lock};
 use crate::Options;
 use installed_content_core::content::visual::{Choice, InstalledMod};
@@ -24,7 +18,6 @@ fn number<T: std::str::FromStr>(value: Option<&OsString>, flag: &str) -> io::Res
         .ok_or_else(|| invalid(format!("{flag} needs a number")))
 }
 
-/// The installed mod `wanted` names, by id or by its name without regard to case.
 fn choose(installed: &[InstalledMod], wanted: &str) -> io::Result<Choice> {
     let matches: Vec<_> = installed
         .iter()
@@ -138,13 +131,10 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     let roaming = output.join("cache/roaming");
     fs::create_dir_all(&local)?;
     fs::create_dir_all(&roaming)?;
-    // A finished run's caches (compiled shaders, content hashes), so a run starts from them.
     let seeded = match std::env::var_os(SEED_CACHE) {
         Some(seed) => Some(copy_tree(Path::new(&seed), &output.join("cache"))?),
         None => None,
     };
-    // Isolation is set before any viewer worker exists: the map settings, the content caches and
-    // the shader cache all live under `--out`.
     unsafe {
         std::env::set_var("LOCALAPPDATA", local);
         std::env::set_var("APPDATA", roaming);
@@ -159,7 +149,6 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         fresh,
     };
     let recording_meta = fs::metadata(&recording)?;
-    // The run holds several maps' frames at once, on the map thread's stack.
     let mut report =
         crate::app::playback_cost::toggle::measure(config, options.clone(), recording.clone(), run, &output)?;
     let after = fs::metadata(&recording)?;

@@ -1,17 +1,3 @@
-//! Country display names in the reader's language, rebuilt from recorded
-//! operands. Key selection tries cosmetic keys before tag keys; the chosen key
-//! goes through the game's localiser, with the subject arguments only for a
-//! positive overlord. The game stores the result in its client language,
-//! so the recording keeps the operands needed to localise it independently.
-//!
-//! Operands, per canonical country slot:
-//! - name tag: the original tag of a dynamic country, else its own tag;
-//! - cosmetic tag, first leader ideology and raw overlord: `CountryAppearance`;
-//! - ruling ideology group: `Politics.ruling_party` -> `PoliticalParties.token`;
-//! - current autonomy definition: `Autonomy.state`;
-//! - overlord tag: the overlord's `Countries.tag`.
-//!
-//! Scripted localisation (`[...]`) is refused, never drawn as text.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,7 +18,6 @@ use crate::localisation::{Argument, Localisation};
 mod table_reads;
 pub use table_reads::original_or_own_tag as original_or_own_tag_tables;
 
-/// Every table the resolver reads, for a reader that reconstructs only those.
 pub const TABLES: [TableId; 7] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -43,13 +28,11 @@ pub const TABLES: [TableId; 7] = [
     TableId::ReservedCountryNaming,
 ];
 
-/// One country's naming operands. Suffixes carry their leading underscore.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct Operands {
     pub tag: String,
     pub cosmetic: String,
-    /// The overlord's canonical slot when the raw overlord link is positive.
     pub overlord: Option<u32>,
     overlord_suffix: String,
     subtype_suffix: String,
@@ -58,7 +41,6 @@ pub struct Operands {
 }
 
 impl Operands {
-    /// Bytes the operands' strings hold, at their capacity.
     pub fn heap_bytes(&self) -> usize {
         [
             &self.tag,
@@ -73,7 +55,6 @@ impl Operands {
         .sum()
     }
 
-    /// The overlord and the six texts, which [`Self::from_parts`] takes back.
     pub fn parts(&self) -> (Option<u32>, [&str; 6]) {
         (
             self.overlord,
@@ -88,7 +69,6 @@ impl Operands {
         )
     }
 
-    /// Operands from their [`Self::parts`].
     pub fn from_parts(
         overlord: Option<u32>,
         [
@@ -111,7 +91,6 @@ impl Operands {
         }
     }
 
-    /// Static naming operands, without a leader, cosmetic tag or subject.
     pub fn for_tag(tag: &str, group: Option<&str>) -> Self {
         Self {
             tag: tag.to_owned(),
@@ -120,7 +99,6 @@ impl Operands {
         }
     }
 
-    /// The same key chooser the recorded country name uses.
     pub fn name_key(&self, suffix: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
         (!self.cosmetic.is_empty())
             .then(|| self.choose(&self.cosmetic, suffix, &exists))
@@ -128,7 +106,6 @@ impl Operands {
             .or_else(|| self.choose(&self.tag, suffix, exists))
     }
 
-    /// Candidate key for an authored cosmetic base.
     pub fn candidate(
         &self,
         base: &str,
@@ -138,8 +115,6 @@ impl Operands {
         self.choose(base, suffix, |key| localisation.get(key).is_some())
     }
 
-    /// Ordered candidate keys for `base`: subject rungs require an overlord
-    /// or autonomy, and subtype rungs require a leader.
     fn keys(&self, base: &str, suffix: &str) -> Vec<String> {
         let (o, t, g, a) = (
             &self.overlord_suffix,
@@ -179,8 +154,6 @@ impl Operands {
         keys
     }
 
-    /// The first existing key; the native retry changes the suffix case once,
-    /// lower before upper.
     fn choose(&self, base: &str, suffix: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
         let search = |suffix: &str| self.keys(base, suffix).into_iter().find(|k| exists(k));
         search(suffix).or_else(|| {
@@ -195,7 +168,6 @@ impl Operands {
     }
 }
 
-/// The arguments the game binds for a positive overlord.
 const SUBJECT_ARGUMENTS: [&str; 5] = [
     "OVERLORDADJ",
     "OVERLORDNAMEDEF",
@@ -204,14 +176,12 @@ const SUBJECT_ARGUMENTS: [&str; 5] = [
     "NONIDEOLOGYADJ",
 ];
 
-/// One displayed name's build: the names being built under it, and those built.
 #[derive(Default)]
 struct Walk {
     active: BTreeSet<(u32, String)>,
     built: BTreeMap<(u32, String), Result<String, String>>,
 }
 
-/// A subject's name being built: its key, and the arguments its text has reached.
 struct Frame {
     identity: (u32, String),
     key: String,
@@ -219,17 +189,14 @@ struct Frame {
     overlord: u32,
     values: Vec<(&'static str, String)>,
     deferred: Vec<&'static str>,
-    /// The overlord argument whose name is being built above this frame.
     asked: Option<&'static str>,
 }
 
-/// A name finished at once, or a subject's frame to build.
 enum Step {
     Done(Result<String, String>),
     Subject(Frame),
 }
 
-/// Country operands at one hour, resolved against one localisation.
 pub struct CountryNames<'a> {
     localisation: &'a Localisation,
     operands: BTreeMap<u32, Result<Operands, String>>,
@@ -237,8 +204,6 @@ pub struct CountryNames<'a> {
 }
 
 impl<'a> CountryNames<'a> {
-    /// Content-only names from explicit static operands, through the recorded
-    /// name resolver; no recording-dependent operands are supplied.
     pub fn of_operands(
         localisation: &'a Localisation,
         operands: BTreeMap<u32, Result<Operands, String>>,
@@ -249,16 +214,11 @@ impl<'a> CountryNames<'a> {
             reserved_built: None,
         }
     }
-    /// Reads the operands of every country in `frame`. A country whose inputs
-    /// are missing this hour keeps the reason instead of a name.
     pub fn read<F: Tables + ?Sized>(frame: &F, localisation: &'a Localisation) -> Self {
         let (operands, reserved_built) = Self::recorded_operands(frame);
         Self::recorded(localisation, operands, reserved_built)
     }
 
-    /// Every country's operands at `frame`'s hour, slot zero's among them, and which of slot
-    /// zero's names its reserved row has built, as [`Self::read`] reads them: kept, they name
-    /// later through [`Self::recorded`].
     pub fn recorded_operands<F: Tables + ?Sized>(
         frame: &F,
     ) -> (BTreeMap<u32, Result<Operands, String>>, Option<u8>) {
@@ -267,9 +227,6 @@ impl<'a> CountryNames<'a> {
         (operands, reserved_zero_row(frame).ok().map(|row| row.built))
     }
 
-    /// Names from operands [`Self::recorded_operands`] read: all of them, or at least those of
-    /// each slot a name is asked for and of every overlord its name reaches, which name it
-    /// exactly as [`Self::read`] does.
     pub fn recorded(
         localisation: &'a Localisation,
         operands: BTreeMap<u32, Result<Operands, String>>,
@@ -282,9 +239,6 @@ impl<'a> CountryNames<'a> {
         }
     }
 
-    /// Reads only the requested canonical slots and their overlords. Raw table
-    /// keys are sorted; canonical aliases retain the last Countries row, as
-    /// [`Self::read`] does. Names are built the same way.
     pub fn read_selected<F: Tables + ?Sized>(
         frame: &F,
         localisation: &'a Localisation,
@@ -329,38 +283,26 @@ impl<'a> CountryNames<'a> {
         }
     }
 
-    /// The operands it names from, given back: a reader that keeps them between names.
     pub fn into_operands(self) -> BTreeMap<u32, Result<Operands, String>> {
         self.operands
     }
 
-    /// The operands of a canonical slot, for callers that cache names.
     pub fn operands(&self, slot: u32) -> Option<&Result<Operands, String>> {
         self.operands.get(&slot)
     }
 
-    /// Which of slot zero's names its reserved row has built, when slot zero was read: what
-    /// [`Self::recorded`] takes back with the operands.
     pub fn reserved_built(&self) -> Option<u8> {
         self.reserved_built
     }
 
-    /// The display name of a canonical slot, or why it cannot be resolved.
-    /// Callers show the tag with that reason. The bare tag is the ladder's
-    /// last localisation candidate; when even that key is absent, `name_key`
-    /// returns None and this documented display ends in the tag.
     pub fn name(&self, slot: u32) -> Result<String, String> {
         self.resolve(slot, "", &mut Walk::default())
     }
 
-    /// [`Self::name`] with a key suffix: `_DEF` for the definite name or
-    /// `_ADJ` for the adjective, both built by the same key chooser.
     pub fn name_with(&self, slot: u32, suffix: &str) -> Result<String, String> {
         self.resolve(slot, suffix, &mut Walk::default())
     }
 
-    /// The ruling party's ideology group token (`Politics.ruling_party` ->
-    /// `PoliticalParties.token`): `None` without a ruling party.
     pub fn ruling_group(&self, slot: u32) -> Result<Option<&str>, String> {
         match self.operands.get(&slot) {
             Some(Ok(input)) => Ok(input
@@ -372,8 +314,6 @@ impl<'a> CountryNames<'a> {
         }
     }
 
-    /// A name and every overlord name its text reaches, each subject's on a stack of
-    /// its own rather than the thread's: a chain is as deep as its overlords go.
     fn resolve(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Result<String, String> {
         let mut stack = Vec::new();
         let mut answer = match self.begin(slot, suffix, walk) {
@@ -385,7 +325,6 @@ impl<'a> CountryNames<'a> {
             }
         };
         while let Some(top) = stack.len().checked_sub(1) {
-            // The overlord's name the top frame asked for.
             if let Some(result) = answer.take() {
                 match result {
                     Ok(value) => {
@@ -418,8 +357,6 @@ impl<'a> CountryNames<'a> {
             };
             let frame = &mut stack[top];
             let name = frame.deferred.remove(index);
-            // The overlord's stored names, and the tag's own texts localised
-            // without arguments.
             let value = match name {
                 "OVERLORDADJ" | "OVERLORDNAMEDEF" => {
                     frame.asked = Some(name);
@@ -445,10 +382,7 @@ impl<'a> CountryNames<'a> {
         answer.expect("the first frame's name")
     }
 
-    /// A name that needs no overlord argument, built now; or a subject's frame.
     fn begin(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Step {
-        // Slot zero may still hold constructor strings because name rebuilding
-        // skips it. Witness each cache separately instead of rebuilding it early.
         if slot == 0
             && let Some(built) = self.reserved_built
         {
@@ -522,8 +456,6 @@ fn unscripted(key: &str, text: String) -> Result<String, String> {
     Ok(text)
 }
 
-/// The rows a table holds this hour, each of the fields `mask` names, and whether that is all
-/// of them.
 fn partial<F: Tables + ?Sized, T: TableSchema>(frame: &F, mask: u64) -> (Rowset<'_, T::Row>, bool) {
     match frame.rows::<T>(mask) {
         Some(rows) => (rows, frame.table_status(T::ID).is_table_complete()),
@@ -531,18 +463,10 @@ fn partial<F: Tables + ?Sized, T: TableSchema>(frame: &F, mask: u64) -> (Rowset<
     }
 }
 
-/// The row keyed `key`, or why it cannot be built.
 fn keyed<'f, R: RowCodec>(rows: &Rowset<'f, R>, key: u128) -> Result<Option<Cow<'f, R>>, String> {
     rows.get(key).map_err(|why| why.to_string())
 }
 
-/// Flag file keys in lookup order: `<cosmetic>_<group>`, `<cosmetic>`, then
-/// `<tag>_<group>`, `<tag>`, where the tag is the positive original reference,
-/// else its own. A cosmetic tag without a flag file falls back to the tag's
-/// group flag, and a country with a positive original never tries its own tag.
-/// `selected` is the already resolved original-or-own tag; None withholds
-/// only that unknown tail. A known empty selected tag is still a candidate.
-/// An authenticated active group with an empty token still adds '_'.
 pub fn flag_keys(selected: Option<&str>, cosmetic: &str, group: Option<&str>) -> Vec<String> {
     let mut keys = Vec::new();
     for base in (!cosmetic.is_empty())
@@ -575,7 +499,6 @@ fn reserved_zero_row<F: Tables + ?Sized>(
     }
 }
 
-/// `bytes` as text: borrowed where the row is the frame's, else owned.
 fn row_text<'f, R: Clone>(
     row: Cow<'f, R>,
     bytes: impl Fn(&R) -> &[u8],
@@ -592,7 +515,6 @@ fn row_text<'f, R: Clone>(
     }
 }
 
-/// A decoded frame's text, which it lends.
 fn lent(text: Result<Cow<'_, str>, String>) -> Result<&str, String> {
     match text? {
         Cow::Borrowed(text) => Ok(text),
@@ -600,19 +522,16 @@ fn lent(text: Result<Cow<'_, str>, String>) -> Result<&str, String> {
     }
 }
 
-/// [`reserved_zero_tag_in`] of a decoded frame, borrowed from its row.
 pub fn reserved_zero_tag(frame: &dyn replay_frame::frame::DecodedSource) -> Result<&str, String> {
     lent(reserved_zero_tag_in(frame))
 }
 
-/// [`reserved_zero_original_tag_in`] of a decoded frame, borrowed from its row.
 pub fn reserved_zero_original_tag(
     frame: &dyn replay_frame::frame::DecodedSource,
 ) -> Result<&str, String> {
     lent(reserved_zero_original_tag_in(frame))
 }
 
-/// [`original_or_own_tag_in`] of a decoded frame, borrowed from its rows.
 pub fn original_or_own_tag(
     frame: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
@@ -620,13 +539,10 @@ pub fn original_or_own_tag(
     lent(original_or_own_tag_in(frame, slot))
 }
 
-/// Raw zero's tag comes from the reserved country database row.
 pub fn reserved_zero_tag_in<F: Tables + ?Sized>(frame: &F) -> Result<Cow<'_, str>, String> {
     row_text(reserved_zero_row(frame)?, |row| &row.tag, "reserved country tag")
 }
 
-/// Resolve the reserved row's original-or-own tag from its recorded bytes.
-/// The name generator's dynamic-only `name_tag` is a separate witness.
 pub fn reserved_zero_original_tag_in<F: Tables + ?Sized>(
     frame: &F,
 ) -> Result<Cow<'_, str>, String> {
@@ -651,8 +567,6 @@ pub fn reserved_zero_original_tag_in<F: Tables + ?Sized>(
     )
 }
 
-/// Exact original-or-own tag bytes for a canonical country slot.
-/// Zero has its own authenticated singleton, outside the positive census.
 pub fn original_or_own_tag_in<F: Tables + ?Sized>(
     frame: &F,
     slot: u32,
@@ -668,8 +582,6 @@ pub fn original_or_own_tag_in<F: Tables + ?Sized>(
     }
 }
 
-/// Selected signed original-or-own tag word. This numeric getter does not
-/// require the separately optional tag-string payload.
 pub fn original_or_own_reference<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<i32, String> {
     if slot == 0 {
         return reserved_reference_of(&reserved_zero_row(frame)?.original_tag_reference);
@@ -678,8 +590,6 @@ pub fn original_or_own_reference<F: Tables + ?Sized>(frame: &F, slot: u32) -> Re
     original_or_own_reference_of(&row.original_tag_reference, country.id)
 }
 
-/// A positive slot's selected reference from its operands: CountryAppearance's reference word, else
-/// the country's own native id.
 pub fn original_or_own_reference_of(reference: &Recorded<Option<i32>>, own: u32) -> Result<i32, String> {
     let raw = reference
         .require("original tag reference of country appearance")?
@@ -687,7 +597,6 @@ pub fn original_or_own_reference_of(reference: &Recorded<Option<i32>>, own: u32)
     Ok(if raw > 0 { raw } else { own as i32 })
 }
 
-/// Slot zero's selected reference from ReservedCountryNaming's reference word.
 pub fn reserved_reference_of(reference: &Recorded<Option<i32>>) -> Result<i32, String> {
     let raw = reference
         .require("original tag reference of reserved country naming")?
@@ -695,7 +604,6 @@ pub fn reserved_reference_of(reference: &Recorded<Option<i32>>) -> Result<i32, S
     Ok(if raw > 0 { raw } else { 0 })
 }
 
-/// The last Countries row of `slot`, and its CountryAppearance row.
 #[allow(clippy::type_complexity)]
 fn original_rows<F: Tables + ?Sized>(
     frame: &F,
@@ -732,8 +640,6 @@ fn original_rows<F: Tables + ?Sized>(
     Ok((country, row))
 }
 
-/// Slot zero's naming operands from its dedicated singleton. These operands
-/// never admit zero into Countries, CountryLinks or CountryAppearance.
 pub fn reserved_zero<F: Tables + ?Sized>(frame: &F) -> Result<Operands, String> {
     let row = reserved_zero_row(frame)?;
     let tag = if row.name_tag.is_empty() {
@@ -802,10 +708,8 @@ fn underscore(token: String) -> String {
     }
 }
 
-/// The original-or-own tag, shared with the collector's status summary.
 pub use replay_data::country_flags::original_tag;
 
-/// The fields the resolver reads of each table.
 const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
 const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
 const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
@@ -833,13 +737,9 @@ const RESERVED: u64 = mask::<ReservedCountryNamingRow>(&[
     "original_tag_reference",
 ]);
 
-/// What a positive country's operands are read from at one hour: the complete Countries table
-/// with each canonical slot's last row, and the tables each country's operands read.
 struct Inputs<'f> {
     countries: Rowset<'f, CountryRow>,
-    /// Each canonical slot's last Countries row's key.
     slots: BTreeMap<u32, u128>,
-    /// CountryLinks, or why it is unavailable; only a positive overlord reads it.
     links: Result<Rowset<'f, CountryLinkRow>, String>,
     appearance: (Rowset<'f, CountryAppearanceRow>, bool),
     politics: (Rowset<'f, PoliticsRow>, bool),
@@ -848,11 +748,9 @@ struct Inputs<'f> {
 }
 
 impl<'f> Inputs<'f> {
-    /// None without a complete Countries table.
     fn read<F: Tables + ?Sized>(frame: &'f F) -> Option<Self> {
         let countries = frame.complete_rows::<tables::Countries>(COUNTRY).ok()?;
         let mut slots = BTreeMap::new();
-        // The last row of a slot wins, as a reverse search would find it.
         for row in countries.with_mask(SLOT).iter() {
             let row = row.ok()?;
             slots.insert(row.canonical_slot, row.key());
@@ -870,7 +768,6 @@ impl<'f> Inputs<'f> {
         })
     }
 
-    /// The last Countries row of `slot`.
     fn country(&self, slot: u32) -> Result<Option<Cow<'f, CountryRow>>, String> {
         match self.slots.get(&slot) {
             Some(&key) => keyed(&self.countries, key),
@@ -878,7 +775,6 @@ impl<'f> Inputs<'f> {
         }
     }
 
-    /// `country`'s operands, or why they are unavailable this hour.
     fn operands(&self, country: &CountryRow) -> Result<Operands, String> {
         naming_operands(self, country.id, &country.tag)
     }
@@ -921,13 +817,11 @@ impl NamingRows for Inputs<'_> {
     }
 }
 
-/// CountryAppearance's naming fields of one country.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NamingAppearance {
     pub name_tag: Vec<u8>,
     pub cosmetic_tag: Vec<u8>,
     pub leader_ideology: Vec<u8>,
-    /// The raw overlord link; positive names an overlord.
     pub overlord: i32,
 }
 
@@ -942,24 +836,16 @@ impl NamingAppearance {
     }
 }
 
-/// Where a positive country's naming operands are read from: a frame's rows, or a reader's own
-/// cells. Each lookup is `Ok(None)` when its table holds no row for the key.
 pub trait NamingRows {
     fn appearance(&self, id: u32) -> Result<Option<NamingAppearance>, String>;
-    /// Politics' ruling party of `id`, itself none without one.
     fn ruling_party(&self, id: u32) -> Result<Option<Option<u32>>, String>;
     fn party_token(&self, id: u32, party: u32) -> Result<Option<Vec<u8>>, String>;
-    /// The canonical slot of the raw link `raw`; an error when CountryLinks cannot be read.
     fn link(&self, raw: u32) -> Result<Option<u32>, String>;
     fn autonomy(&self, id: u32) -> Result<Option<Vec<u8>>, String>;
-    /// The tag of `slot`'s last Countries row.
     fn slot_tag(&self, slot: u32) -> Result<Option<Vec<u8>>, String>;
-    /// Whether `table` (CountryAppearance, Politics, PoliticalParties, Autonomy) is wholly recorded.
     fn complete(&self, table: TableId) -> bool;
 }
 
-/// The naming operands of native country `id` whose own tag is `own_tag`, or why they are
-/// unavailable this hour.
 pub fn naming_operands(rows: &impl NamingRows, id: u32, own_tag: &[u8]) -> Result<Operands, String> {
     let table = |table: TableId| (!rows.complete(table)).then(|| format!("{} is incomplete this hour", table.words()));
     let row = rows.appearance(id)?.ok_or_else(|| {
@@ -996,8 +882,6 @@ pub fn naming_operands(rows: &impl NamingRows, id: u32, own_tag: &[u8]) -> Resul
     } else {
         None
     };
-    // Subject rungs require both a current autonomy status and a positive
-    // overlord.
     let state = match overlord {
         Some(_) => rows.autonomy(id)?,
         None => None,
@@ -1031,12 +915,10 @@ pub fn naming_operands(rows: &impl NamingRows, id: u32, own_tag: &[u8]) -> Resul
     })
 }
 
-/// Per canonical slot: the operands, or why they are unavailable this hour.
 fn operands<F: Tables + ?Sized>(frame: &F) -> BTreeMap<u32, Result<Operands, String>> {
     let Some(inputs) = Inputs::read(frame) else {
         return BTreeMap::new();
     };
-    // A slot's operands are its last row's, as a later row of the slot replaces an earlier.
     inputs
         .slots
         .iter()
@@ -1076,8 +958,6 @@ mod tests {
 
     #[test]
     fn flag_keys_take_the_cosmetic_then_the_original_or_own_tag_each_under_its_group() {
-        // A cosmetic tag with no flag of its own falls back to the tag's group
-        // flag before its plain flag.
         assert_eq!(
             flag_keys(Some("Z01"), "MOD_REPUBLIC", Some("custom_ideology")),
             [
@@ -1092,7 +972,6 @@ mod tests {
             ["Z01_custom_ideology", "Z01"]
         );
         assert_eq!(flag_keys(Some("Z01"), "", None), ["Z01"]);
-        // A selected positive original never tries the own tag.
         assert_eq!(
             flag_keys(Some("GER"), "", Some("fascism")),
             ["GER_fascism", "GER"]
@@ -1225,13 +1104,11 @@ mod tests {
                 .unwrap_err()
                 .contains("scripted")
         );
-        // The localiser's depth limit omits the cycle's text.
         let cyclic = localisation(&[("TAG", "Name $ALIAS$"), ("ALIAS", "$TAG$")]);
         assert_eq!(
             names(&cyclic, vec![(1, input("TAG"))]).name(1),
             Ok("Name ".repeat(16))
         );
-        // Doubling text stops at the localiser's 0x1800-byte output buffer.
         let doubling = |leaf: &str| -> Localisation {
             (0..12)
                 .map(|i| (format!("A{i}"), format!("$A{}$$A{}$", i + 1, i + 1)))
@@ -1274,13 +1151,9 @@ mod tests {
         .into();
         operands.insert(9, Err("overlord operands are unavailable".into()));
         let names = CountryNames::of_operands(&localisation, operands);
-        // A missing nested reference is omitted rather than refused.
         assert_eq!(names.name(1).as_deref(), Ok("Federation "));
-        // Without a positive overlord no subject argument is bound.
         assert_eq!(names.name(2).as_deref(), Ok("Republic"));
-        // The argument keeps its format; the tag's own text has no arguments.
         assert_eq!(names.name(4).as_deref(), Ok("British Sub"));
-        // An unavailable overlord refuses only text that reaches it.
         assert_eq!(names.name(5).as_deref(), Ok("the only"));
         assert_eq!(
             names.name(6),
@@ -1588,7 +1461,6 @@ mod tests {
 
     #[test]
     fn selected_names_read_only_the_subject_and_overlord() {
-        // regression: a39bd906e4 Fix counter hover review gaps and country lookups
         let mut frame = frame();
         let countries: Vec<_> = (1..=5)
             .map(|id| CountryRow {

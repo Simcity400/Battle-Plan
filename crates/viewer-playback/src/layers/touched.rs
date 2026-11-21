@@ -1,26 +1,18 @@
-//! What a layer's `apply` keeps of a step: the rows each change set touched, as the step names
-//! them (rows gone and come by key, cells written by slot), read against the mirrors only when the
-//! budgeted settle takes them. A written slot is read then, not at its step: a slot a later step
-//! reuses names the later row, and that step's gone and come rows are marks of their own.
 
 use crate::playhead_host::mirror::Mirrors;
 use playhead::changes::Changes;
 use replay_data::rows::TableId;
 
-/// Every column group: what a row gone or come touches.
 pub const EVERY: u8 = u8::MAX;
 
-/// How a mark touched its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Touch {
     Gone,
     Came,
-    /// Its cells of these column groups were written, at this slot.
     Written(u8, u32),
 }
 
 impl Touch {
-    /// The column groups it touched.
     pub fn groups(self) -> u8 {
         match self {
             Self::Gone | Self::Came => EVERY,
@@ -33,11 +25,9 @@ impl Touch {
 struct Mark {
     table: u16,
     touch: Touch,
-    /// The row's key; a written cell's is read at the take.
     key: u128,
 }
 
-/// The marks of the steps applied and not yet taken, in step order.
 #[derive(Default)]
 pub struct Touched {
     marks: Vec<Mark>,
@@ -46,8 +36,6 @@ pub struct Touched {
 }
 
 impl Touched {
-    /// Notes `changes`' rows gone and come (when its readers asked for keys), then each slot written
-    /// in a column `groups` places in a group (0: none), once, with every group it was written in.
     pub fn note(&mut self, changes: &Changes, frame: u64, groups: impl Fn(usize) -> u8) {
         let table = changes.table() as u16;
         let before = self.marks.len();
@@ -77,8 +65,6 @@ impl Touched {
         }
     }
 
-    /// Takes every mark in order, each with its row's key (a written slot's as its table's mirror
-    /// holds it now; one the mirror names no key for is dropped).
     pub fn take(&mut self, mirrors: &Mirrors, mut each: impl FnMut(TableId, Touch, u128)) {
         let mut done = 0;
         while done < self.marks.len() {

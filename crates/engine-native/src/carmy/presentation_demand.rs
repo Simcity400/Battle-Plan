@@ -1,22 +1,13 @@
-//! Off-hour sizing for the division presentation pass from the existing
-//! authenticated army census: status rows, cached division names and supply
-//! origins. Headers are read, never payloads. A changed selecting header
-//! discards this hint.
 
 use super::{DivisionSeed, Row, capture_division_seeds, walk, walk_with};
 use crate::{Memory, msvc_string, read, walk::Outcome};
 use std::cell::RefCell;
 
-/// Minimum capacities from the known independent sections of one authenticated
-/// census. A local native fault leaves only that section's remaining demand
-/// unknown; these bounds never certify capture availability or a zero value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PresentationDemand {
     pub rows: usize,
     pub cached_name_text: usize,
-    /// Successful origin-header demand only; a failed hint never records zero.
     pub supply_origins: usize,
-    /// An optional off-thread hint failed; readable capacity floors survive.
     pub failure: Option<&'static str>,
 }
 
@@ -31,8 +22,6 @@ impl PresentationDemand {
     }
 }
 
-/// Records every 16-byte array header and string header the census reads so
-/// the hint can prove none of them changed before it is trusted.
 struct Headers<'a, M> {
     memory: &'a M,
     observed: RefCell<Vec<(usize, [u8; 16])>>,
@@ -79,8 +68,6 @@ impl<M: Memory> Headers<'_, M> {
 
 fn storage<T: Default + Clone>(count: usize) -> Result<Vec<T>, &'static str> {
     let mut storage = Vec::new();
-    // A sizing hint may be dropped without terminally failing a recording.
-    // Actual packet allocation uses the collector's checked allocation path.
     storage
         .try_reserve_exact(count)
         .map_err(|_| "division presentation sizing allocation skipped")?;

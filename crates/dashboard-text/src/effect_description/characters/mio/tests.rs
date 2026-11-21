@@ -113,7 +113,6 @@ fn scopes() -> EventScopes {
     EventScopes::new(vec![scope, EventScope::of(EventObject::Country(1))])
 }
 
-// A block operand explicitly enables modifier text.
 #[test]
 fn unlock_mio_trait_tooltip() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -131,7 +130,6 @@ fn unlock_mio_trait_tooltip() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// A scalar selects a trait without modifiers.
 #[test]
 fn complete_mio_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -376,7 +374,6 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
     for (trait_key, why) in [
-        // The cached tooltip keeps the block nonempty before modifier formatting fails.
         (
             "synthetic_convoy_production",
             "idea modifier political_power_gain has no recorded definition",
@@ -428,7 +425,6 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
             dlc_mask: 0,
             ..Default::default()
         }]));
-    // A tooltip still forces nonempty. The disabled numeric entry is omitted.
     let out = fixture.render(
         "unlock_mio_trait_tooltip={trait=synthetic_convoy_production}",
         &mut scopes(),
@@ -457,7 +453,6 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
         &mut scopes(),
         Content::default(),
     );
-    // Eligible zero entries force a separator even when the formatted line is empty.
     assert_eq!(out.text, "Unlock Owner trait AAA (Soft+0.14,)\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }

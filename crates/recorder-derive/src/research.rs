@@ -1,26 +1,3 @@
-//! `ResearchAssignments` and `ResearchCoverage`: each holder's research assignments with their
-//! outcomes, and the hours its research is covered by a supplying read.
-//!
-//! A holder is a country whose link resolves to its own canonical slot; its owners are the raw
-//! countries linked to that slot. Research is read one country slice an hour, so a holder's
-//! rows (ResearchInputs, one per slot) are read about once a day; SliceReads dates each owner's
-//! read. A read is the holder's at an hour when an owner was read then and every owner holding
-//! rows was too. A read covers the hours from it until the next is due (a read period less one)
-//! while the hours run on, the holder holds and its owners' read hours still prove it; an hour a
-//! table is not complete, a break in the hours, or a read that cannot be observed ends the cover.
-//! Two observed reads are continuous when the second follows the cover of the first, or no
-//! unobservable hour lies between them and they are at most a read period apart.
-//!
-//! At a continuous read an assignment ends completed (the technology's level rose, it became
-//! researched, or it is completed and did not move to another slot), switched (its slot holds
-//! another known technology) or unknown; one that ended neither completed nor moved awaits
-//! completion evidence for a read period, in a lane of its own when its slot starts another. A
-//! slot holding an active technology with its recorded occurrence and no assignment starts one.
-//! At a read that is not continuous every active assignment ends unknown and nothing awaits.
-//!
-//! State: each holder's identity, read hours and cover, in the resume blob (bounded by live
-//! holders); its open assignments and available slots, read again from the tables at a resume;
-//! the owners' row counts and the identity indexes, read again from their tables.
 
 #[cfg(test)]
 mod tests;
@@ -43,7 +20,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The research classifier of a completed technology (`engine_research::ctechnology`).
 const CLASSIFIER_COMPLETED: u32 = 4;
 
 const COUNTRY: [usize; 2] = columns::<CountryRow, 2>(["canonical_slot", "tag"]);
@@ -79,13 +55,10 @@ const READS: &[Read] = &[
     read(TableId::CountryLinks, &LINK),
 ];
 
-/// SliceReads' `table` of ResearchInputs' read hours.
 const INPUTS: u32 = TableId::ResearchInputs.index() as u32;
 
-/// A holder: its canonical slot and raw id.
 type HolderKey = (u32, u32);
 
-/// One assignment's cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Assignment {
     handle: u32,
@@ -125,8 +98,6 @@ impl Assignment {
     }
 }
 
-/// An open assignment: active, or awaiting completion evidence; its lane, and whether this read
-/// changed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Open {
     lane: u16,
@@ -137,30 +108,22 @@ struct Open {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Holder {
     tag: Box<[u8]>,
-    /// Its last read, observed or not.
     last_read: Option<i32>,
-    /// Its last observed read.
     observed: Option<i32>,
-    /// The first hour of its open cover; none while not covered.
     since: Option<i32>,
-    /// The last hour its cover reached, while not covered.
     reached: Option<i32>,
     continuity_start: i32,
-    /// The slots its cover holds available.
     available: BTreeSet<u32>,
-    /// Each slot's open assignments.
     slots: BTreeMap<u32, Vec<Open>>,
 }
 
 impl Holder {
-    /// The hour its cover is due to end after.
     fn until(&self) -> Option<i32> {
         self.since?;
         self.last_read?.checked_add(STAGGER_PERIOD - 1)
     }
 }
 
-/// One slot row of a read.
 #[derive(Clone, Copy, Debug)]
 struct Input {
     country: u32,
@@ -174,13 +137,11 @@ struct Input {
 }
 
 impl Input {
-    /// Its technology's recorded occurrence, when it holds one.
     fn holds(&self) -> Option<i32> {
         self.occurrence.filter(|_| self.present != 0)
     }
 }
 
-/// A technology's completion evidence.
 #[derive(Clone, Copy, Debug)]
 struct Technology {
     classifier: u32,
@@ -188,14 +149,10 @@ struct Technology {
     researched: bool,
 }
 
-/// The identity indexes as their tables stand.
 #[derive(Default)]
 struct Indexes {
-    /// Each link's canonical slot, by raw id.
     links: HashMap<u32, u32>,
-    /// Each canonical slot's raw ids, ascending.
     owners: HashMap<u32, Vec<u32>>,
-    /// Each canonical slot's holders and their tags.
     holders: BTreeMap<HolderKey, Box<[u8]>>,
 }
 
@@ -203,15 +160,10 @@ struct Indexes {
 pub struct Research {
     holders: BTreeMap<HolderKey, Holder>,
     indexes: Option<Indexes>,
-    /// Each owner's ResearchInputs rows.
     rows: Option<HashMap<u32, u32>>,
-    /// The last hour that could not be observed.
     last_bad: Option<i32>,
-    /// Holders whose owners' read hours must prove their cover again at the next hour.
     recheck: BTreeSet<HolderKey>,
-    /// Waits ended last hour in lanes past the first, deleted this hour.
     closing: Vec<u128>,
-    /// The hour's assignments of holders it closed, written once its holders have stepped.
     ended: Vec<(HolderKey, u32, Open)>,
     last: Option<i32>,
 }
@@ -254,7 +206,6 @@ impl Indexes {
     }
 }
 
-/// Each owner's count of ResearchInputs rows.
 fn row_counts(hour: &Hour<'_>) -> HashMap<u32, u32> {
     let table = hour.table(TableId::ResearchInputs);
     let mut counts: HashMap<u32, u32> = HashMap::new();
@@ -266,15 +217,12 @@ fn row_counts(hour: &Hour<'_>) -> HashMap<u32, u32> {
     counts
 }
 
-/// `owner`'s ResearchInputs read hour.
 fn sample(hour: &Hour<'_>, owner: u32) -> Option<i32> {
     let table = hour.table(TableId::SliceReads);
     let slot = table.slot(u128::from(INPUTS) << 32 | u128::from(owner))?;
     optional(&table, SAMPLE[0], slot)
 }
 
-/// Whether a read's slots can be observed: each at its position, and a technology held with a
-/// valid occurrence (when recorded) and token.
 fn valid(hour: &Hour<'_>, inputs: &[Input]) -> bool {
     inputs.iter().enumerate().all(|(at, input)| {
         input.index as usize == at
@@ -286,8 +234,6 @@ fn valid(hour: &Hour<'_>, inputs: &[Input]) -> bool {
 }
 
 impl Research {
-    /// `owners`' ResearchInputs rows, each owner's by index: none when an owner's rows are not
-    /// its first ones in order.
     fn inputs(&self, hour: &Hour<'_>, owners: &[u32]) -> Option<Vec<Input>> {
         let table = hour.table(TableId::ResearchInputs);
         let counts = self.rows.as_ref()?;
@@ -311,7 +257,6 @@ impl Research {
         Some(inputs)
     }
 
-    /// Ends `key`'s cover at the hour `at`: its rows go.
     fn uncover(key: HolderKey, holder: &mut Holder, at: i32, out: &mut Rows) {
         let Some(until) = holder.until() else { return };
         out.delete(TableId::ResearchCoverage, coverage_key(key, ResearchCoverageRow::HOLDER));
@@ -322,8 +267,6 @@ impl Research {
         holder.reached = Some(until.min(at - 1));
     }
 
-    /// Stops `open`'s wait: in the first lane it stays with its outcome; in another it goes at
-    /// the next hour.
     fn stop_waiting(&mut self, key: HolderKey, index: u32, mut open: Open, out: &mut Rows) {
         open.cells.awaiting = false;
         let row = assignment_key(key, index, open.lane);
@@ -333,8 +276,6 @@ impl Research {
         }
     }
 
-    /// Ends every assignment of `key` at `at`: active ones unknown, waits stopped; written at the
-    /// hour's end ([`Self::write_ended`]).
     fn discontinue(&mut self, key: HolderKey, holder: &mut Holder, at: i32) {
         let observed = holder.observed;
         for (index, opens) in std::mem::take(&mut holder.slots) {
@@ -349,9 +290,6 @@ impl Research {
         }
     }
 
-    /// The assignments the hour closed with their holder: each in its lane, or, when a holder of
-    /// the same key started one there this hour, in a free lane, as a slot starting an assignment
-    /// moves what held it.
     fn write_ended(&mut self, out: &mut Rows<'_>) {
         let mut taken: BTreeSet<(HolderKey, u32, u16)> = BTreeSet::new();
         for (key, index, open) in &self.ended {
@@ -374,8 +312,6 @@ impl Research {
         }
     }
 
-    /// The holders and identity indexes brought to the hour: a holder no longer holding, or now
-    /// under another tag, is closed.
     fn reindex(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         let indexes = Indexes::read(hour)?;
         let gone: Vec<HolderKey> = self.holders.iter().filter(|(key, holder)| indexes.holders.get(key) != Some(&holder.tag)).map(|(&key, _)| key).collect();
@@ -388,8 +324,6 @@ impl Research {
         Ok(())
     }
 
-    /// The holders an hour's read hours may have moved: of each owner whose SliceReads row of
-    /// ResearchInputs the hour wrote or deleted.
     fn touched(&self, hour: &Hour<'_>) -> BTreeSet<HolderKey> {
         let Some(indexes) = &self.indexes else { return BTreeSet::new() };
         let table = hour.table(TableId::SliceReads);
@@ -404,8 +338,6 @@ impl Research {
         touched
     }
 
-    /// The technology evidence for `occurrence`: a slot of the read holding it, else the inventory
-    /// row of `owner`.
     fn technology(hour: &Hour<'_>, inputs: &[Input], owner: Option<u32>, occurrence: i32) -> Option<Technology> {
         if let Some(input) = inputs.iter().rev().find(|input| input.holds() == Some(occurrence)) {
             return Some(Technology { classifier: input.classifier, level: input.level, researched: false });
@@ -417,14 +349,10 @@ impl Research {
         Some(Technology { classifier: classifier? as u32, level: level? as i32, researched: researched? != 0 })
     }
 
-    /// One holder's observed read at the hour `at`: its assignments. Every entry the read
-    /// changes is written once, in its lane: a slot starting an assignment takes the first lane,
-    /// and what held it moves to a free lane, there for the hour when it no longer awaits.
     fn observe(&mut self, hour: &Hour<'_>, key: HolderKey, holder: &mut Holder, inputs: &[Input], inventory: Option<u32>, continuous: bool, out: &mut Rows) {
         let at = hour.hour;
         let previous = holder.observed.replace(at);
         let technology = |occurrence: i32| Self::technology(hour, inputs, inventory, occurrence);
-        // Entries the read takes out of the open ones, by slot: written, then forgotten.
         let mut finished: Vec<(u32, Open)> = Vec::new();
         if !continuous {
             holder.continuity_start = at;
@@ -443,8 +371,6 @@ impl Research {
         for (&index, opens) in holder.slots.iter_mut() {
             let mut kept = Vec::with_capacity(opens.len());
             for mut open in std::mem::take(opens) {
-                // Waits end: past a read period, the same technology at its level assigned again,
-                // or completion proven.
                 if open.cells.awaiting {
                     let (occurrence, level) = (open.cells.occurrence, open.cells.level);
                     let ended = open.cells.ended_by.unwrap_or(at);
@@ -462,7 +388,6 @@ impl Research {
                     }
                     continue;
                 }
-                // An active assignment ends completed, switched or unknown.
                 let occurrence = open.cells.occurrence;
                 let current = inputs.iter().find(|input| input.index == index);
                 let known = technology(occurrence);
@@ -491,7 +416,6 @@ impl Research {
             }
             *opens = kept;
         }
-        // A slot holding an active technology with no assignment starts one.
         let mut started: BTreeMap<u32, Open> = BTreeMap::new();
         for input in inputs {
             let (Some(occurrence), Some(token)) = (input.holds(), input.token) else { continue };
@@ -550,7 +474,6 @@ impl Research {
         holder.slots.retain(|_, opens| !opens.is_empty());
     }
 
-    /// A touched holder at the hour `at`: a fresh read observed, or its cover proven again.
     fn step(&mut self, hour: &Hour<'_>, key: HolderKey, out: &mut Rows) -> io::Result<()> {
         let at = hour.hour;
         let Some(tag) = self.indexes.as_ref().and_then(|indexes| indexes.holders.get(&key)).cloned() else { return Ok(()) };
@@ -639,7 +562,6 @@ impl Writer for Research {
         READS
     }
 
-    // Hourly: a break in the hours ends every cover, and ended waits are deleted the next hour.
     fn hourly(&self) -> bool {
         true
     }
@@ -712,8 +634,6 @@ impl Writer for Research {
         Ok(())
     }
 
-    /// Its open assignments, available slots and waits ended in other lanes, as the commit's hour
-    /// left them; the identity indexes and row counts read again.
     fn prime(&mut self, hour: &Hour<'_>) {
         self.closing.clear();
         let assignments = hour.table(TableId::ResearchAssignments);
@@ -771,8 +691,6 @@ impl Writer for Research {
         self.last = Some(hour.hour);
     }
 
-    /// Each holder's identity, read hours and cover's reach, and the last hour that could not be
-    /// observed; the rest is read again from the tables ([`Self::prime`]).
     fn save(&self, blob: &mut Bytes) -> io::Result<()> {
         let optional = |blob: &mut Bytes, value: Option<i32>| -> io::Result<()> {
             match value {

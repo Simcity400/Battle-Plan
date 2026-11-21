@@ -1,11 +1,7 @@
-//! Cached modifier trees used for breakdown display.
-//! Labels are stored display strings, distinct from original source keys.
 use crate::{Memory, cpdx_array::Array, modifier_accumulator, msvc_string, read};
 
 pub use game_model::modifier_breakdown::{Node, SourceValue, SourceNode};
 
-/// Visit distinct demanded roots only after their writer certificate moved.
-/// Ancestor cycles refuse; repeated child occurrences retain their order.
 pub fn source_nodes(
     memory: &impl Memory,
     root: usize,
@@ -81,7 +77,6 @@ pub fn source_nodes(
     }
 }
 
-/// Accumulator children header and stored display string.
 const CHILDREN: usize = 0x18;
 const DISPLAY: usize = 0x48;
 
@@ -93,8 +88,6 @@ fn text(memory: &impl Memory, address: usize) -> Result<Vec<u8>, &'static str> {
     Ok(bytes)
 }
 
-/// No depth or node limit. Only ancestor cycles are invalid; repeated
-/// siblings are separate occurrences. Values use passive effective lookup.
 pub fn tree(
     memory: &impl Memory,
     base: usize,
@@ -104,9 +97,6 @@ pub fn tree(
     walk(memory, base, root, key, Names::Every)
 }
 
-/// [`tree`]'s nodes, values and order for one key, reading only what a depth -1
-/// breakdown prints: a node's display bytes are read only for a leaf whose
-/// value is nonzero. Every other node keeps an empty name.
 pub fn printed_nodes(
     memory: &impl Memory,
     base: usize,
@@ -116,14 +106,8 @@ pub fn printed_nodes(
     walk(memory, base, root, key, Names::NonzeroLeaves)
 }
 
-/// A single requested key's preorder or its local refusal.
 pub type PrintedTree = Result<Vec<Node>, &'static str>;
 
-/// Printed preorders for several requested keys, in the supplied key order. A single
-/// traversal shares child headers and nonzero-leaf display reads. Numeric probes follow
-/// the native requested-key getter; unrelated accumulator entries are never enumerated.
-/// Key-specific value or leaf-label failures refuse only that key. Invalid shared structure
-/// refuses the walk, since no requested preorder can authenticate it.
 pub fn printed_keys(
     memory: &impl Memory,
     base: usize,
@@ -225,19 +209,14 @@ pub fn printed_keys(
     }
 }
 
-/// Which nodes' display bytes a walk reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Names {
     Every,
     NonzeroLeaves,
 }
 
-/// A child entry points at its modifier object; the accumulator the tree
-/// walks lies this far inside it.
 const CHILD_ACCUMULATOR: usize = 0x10;
 
-/// The preorder walk both readers share, the key's definition metadata read
-/// once for the walk (a failed read is read again, as a fresh lookup would).
 fn walk(
     memory: &impl Memory,
     base: usize,
@@ -247,7 +226,6 @@ fn walk(
 ) -> Result<Vec<Node>, &'static str> {
     let definitions = crate::modifier_definition::DefinitionMemo::default();
     let mut nodes = Vec::new();
-    // The current path: each node with its children and the next child.
     let mut stack: Vec<(usize, Array, u32)> = Vec::new();
     let mut address = root;
     loop {
@@ -309,18 +287,11 @@ fn walk(
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Balance {
-    /// Complete static-modifier roster, including empty sources.
     pub sources: Vec<Vec<u8>>,
     pub daily: Vec<Node>,
     pub weekly: Vec<Node>,
 }
 
-/// The inputs of a record's cached description tree: its complete static-modifier roster, every
-/// occurrence in array order, by `CStaticModifier` script name, empty sources included. Rebuilding
-/// clears the tree and passes each to filtered modifier addition in this order, and source addition
-/// pushes a new source to the end and adds it the same way, so playback derives both cached trees
-/// from these names and the content (`replay_derive::power_balance_derive`). No accumulator, child or
-/// getter is read.
 pub fn balance_sources(memory: &impl Memory, record: usize) -> Result<Vec<Vec<u8>>, &'static str> {
     let sources = record
         .checked_add(0x50)
@@ -346,8 +317,6 @@ pub fn balance_sources(memory: &impl Memory, record: usize) -> Result<Vec<Vec<u8
     Ok(names)
 }
 
-/// Rebuilding appends one clone per nonempty static modifier, in roster order. CStaticModifier's
-/// script identity is its name.
 pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balance, &'static str> {
     let sources = record
         .checked_add(0x50)
@@ -371,7 +340,6 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
                 .checked_add(0x1a8)
                 .ok_or("power balance modifier name address overflow")?,
         )?;
-        // Children, custom tooltips or any eligible entry keep a clone.
         let accumulator = source
             .checked_add(0x10)
             .ok_or("power balance source accumulator address overflow")?;
@@ -414,7 +382,6 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
         root,
         crate::modifier_keys::POWER_BALANCE_WEEKLY,
     )?;
-    // Constructed nodes have depth one; cloned nodes have depth zero.
     for nodes in [&mut output.daily, &mut output.weekly] {
         if nodes[0].children as usize != names.len()
             || nodes.len() != names.len() + 1
@@ -686,8 +653,6 @@ mod tests {
                 (b"commander".as_slice(), 250, -700)
             );
         }
-        // The printed walk keeps the same nodes, values and order and reads
-        // display bytes only for nonzero leaves.
         let root = country + crate::ccountry::MODIFIER_ACCUMULATOR;
         let full = tree(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
         let printed = printed_nodes(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
@@ -774,8 +739,6 @@ mod tests {
             ]
         );
         assert_eq!(captured.weekly[3].value, 22);
-        // The source roster alone reads no accumulator: an unreadable tree
-        // leaves it intact.
         assert_eq!(balance_sources(&f, record).unwrap(), captured.sources);
         f.array(record + 0xc8 + CHILDREN, &[0]);
         assert!(balance(&f, 0, record).is_err());

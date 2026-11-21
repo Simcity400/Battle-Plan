@@ -7,7 +7,6 @@ use replay_columnar::{manifest::Status, store::Store};
 
 const FIRST: i32 = 20;
 const LAST: i32 = 90;
-/// Faction 7's group number.
 const GROUP: u32 = 5;
 const TAGS: [(&str, u32); 4] = [("ENG", 1), ("FRA", 2), ("GER", 3), ("USA", 4)];
 
@@ -19,8 +18,6 @@ fn span(kind: u8, group: u32, value: u32, ordinal: u32) -> GroupSpanRow {
     GroupSpanRow { kind, group, value, epoch: 0, ordinal }
 }
 
-/// Faction 7 (ENG, FRA) fights GER; USA is at peace. ENG leads until hour 52, FRA after. The
-/// faction's membership is not known at hours 64 and 65.
 fn groups(hour: i32) -> Vec<GroupSpanRow> {
     let mut spans = vec![span(GroupSpanRow::MEMBER, GROUP, 1, 0), span(GroupSpanRow::MEMBER, GROUP, 2, 1), span(GroupSpanRow::WAR, 1, 3, 0), span(GroupSpanRow::WAR, 2, 3, 0)];
     spans.push(span(GroupSpanRow::LEADER, GROUP, if hour < 52 { 1 } else { 2 }, 0));
@@ -30,8 +27,6 @@ fn groups(hour: i32) -> Vec<GroupSpanRow> {
     spans
 }
 
-/// Region 3: FRA scores 5,000 throughout, ENG 10 from hour 30 through 50. Region 2: GER 150
-/// throughout, USA 40 from hour 60.
 fn scores(hour: i32) -> Vec<RaidAirScoreRow> {
     let mut rows = vec![score(2, 3, 5000, 7), score(3, 2, 150, 20)];
     if (30..=50).contains(&hour) {
@@ -44,9 +39,6 @@ fn scores(hour: i32) -> Vec<RaidAirScoreRow> {
     rows
 }
 
-/// The sides comparison's activity at `hour`, by the game's rules as the moment shows them: a
-/// faction side reads its leader's score, a lone country its own, a member's own score no part;
-/// none while the groups are not known.
 fn expected(hour: i32, region: u32) -> i64 {
     if (64..=65).contains(&hour) {
         return 0;
@@ -82,10 +74,6 @@ fn activity(store: &Store, region: u32) -> Option<Activity> {
     view.slot(u128::from(region)).and_then(|slot| Activity::read(&view, slot))
 }
 
-/// At every hour, a region's activity before its day is the composed activity at the last hour of
-/// each earlier day of the run, and through it adds the hour's: a leader's score is its side's, a
-/// member's is not, a leader change moves the side to its new leader's read, and an hour whose
-/// groups are not known composes nothing.
 #[test]
 fn a_regions_days_sum_the_sides_comparison_at_each_days_end() {
     let mut store = store();
@@ -111,7 +99,6 @@ fn a_regions_days_sum_the_sides_comparison_at_each_days_end() {
     }
 }
 
-/// A resume reads the inputs whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<i32>| {

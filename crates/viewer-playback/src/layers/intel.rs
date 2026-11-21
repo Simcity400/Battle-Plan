@@ -1,9 +1,3 @@
-//! The fog of war's intel texture: per grid cell the byte today's intel map averages from the
-//! viewer's province bytes, and whether a fog is drawn at all. It reads the vision layer (named
-//! in `inputs` with `after`), keeps its own copy of the province bytes it drew, and remakes the
-//! cells of the provinces whose byte the vision changed.
-//!
-//! No province fog (fog off, or a visibility gap) draws the all-clear grid, as today.
 
 use super::{
     Carried, Change, Settling, Dirty, Gpu, Inputs, Layer, Upstream, View,
@@ -14,8 +8,6 @@ use playhead::Step;
 use std::{io, sync::Arc};
 use viewer_foundation::map::textures::IntelCells;
 
-/// What the layer reads of the content: the grid's province multiplicities and the map's largest
-/// province id.
 pub struct Content {
     cells: IntelCells,
     provinces: usize,
@@ -29,7 +21,6 @@ impl Content {
 
 pub struct Intel {
     content: Result<Arc<Content>, String>,
-    /// The province bytes the texels are made from, and whether a fog is drawn.
     bytes: Vec<u8>,
     drawn: bool,
     texels: Vec<u8>,
@@ -37,7 +28,6 @@ pub struct Intel {
     cells: Dirty,
     frame: u64,
     marked: u64,
-    /// What the scene holds: the texture as last uploaded, and the cells changed since.
     shown: Option<map_display_data::Paged<u8>>,
     shown_drawn: bool,
     upload_cells: Vec<u32>,
@@ -48,12 +38,10 @@ impl Intel {
         Self { content, bytes: Vec::new(), drawn: false, texels: Vec::new(), fogged: 0, cells: Dirty::default(), frame: 0, marked: 0, shown: None, shown_drawn: false, upload_cells: Vec::new() }
     }
 
-    /// The texels, whether a fog is drawn, and the cells carrying fog.
     pub fn map(&self) -> (&[u8], bool, usize) {
         (&self.texels, self.drawn, self.fogged)
     }
 
-    /// The province bytes it holds, none while no fog is drawn.
     pub fn province_bytes(&self) -> Option<&[u8]> {
         self.drawn.then_some(&self.bytes[..])
     }
@@ -66,8 +54,6 @@ impl Intel {
         self.content.as_ref().err().cloned()
     }
 
-    /// A layer of the same content made whole from the bytes this one holds: what stepping must
-    /// equal.
     pub fn composed(&self) -> Self {
         let mut fresh = Self::new(self.content.clone());
         if let Ok(content) = &self.content {
@@ -76,7 +62,6 @@ impl Intel {
         fresh
     }
 
-    /// Everything made from `byte`, inline.
     fn whole(&mut self, content: &Content, drawn: bool, byte: impl Fn(u32) -> u8) {
         self.shown = None;
         self.upload_cells.clear();
@@ -91,8 +76,6 @@ impl Intel {
         self.settle_cells(content);
     }
 
-    /// Marks the cells of a province whose byte changed; none while no fog is drawn (the clear
-    /// grid does not read bytes, and drawing again marks every cell).
     fn mark_province(&mut self, content: &Content, province: u32) {
         if !self.drawn {
             return;
@@ -104,7 +87,6 @@ impl Intel {
         }
     }
 
-    /// The vision's changes since it was last taken in, as marked cells.
     fn take_vision(&mut self, upstream: &Upstream<'_>) {
         let (Ok(content), Some(vision)) = (&self.content, upstream.get::<Vision>()) else { return };
         let content = Arc::clone(content);
@@ -155,7 +137,6 @@ impl Intel {
     }
 }
 
-/// The intel layer of a loaded recording's content: the grid of its province image.
 pub fn for_document(document: &crate::document::Document) -> Box<dyn Layer> {
     let map = &document.content.map;
     let largest = map.definitions.last_key_value().map_or(0, |(&id, _)| id).max(map.province_ids.iter().copied().max().unwrap_or(0));

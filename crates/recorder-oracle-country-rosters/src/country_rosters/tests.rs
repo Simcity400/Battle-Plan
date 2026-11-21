@@ -23,8 +23,6 @@ fn saved_roles() -> characters::Pack {
 #[test]
 fn directed_cache_and_zero_war_limits_distinguish_history_refusal_and_runtime_values() {
     let (_, mut save, _, _) = super::super::fixtures::fixture();
-    // New runtime inputs must be reported before a missing saved-country join
-    // skips the ordinary roster comparisons.
     save.countries.remove(b"GER".as_slice());
     let tags = [(101, b"GER".as_slice())].into();
     for (co_belligerents, zero_war, expected) in [
@@ -61,7 +59,6 @@ fn directed_cache_and_zero_war_limits_distinguish_history_refusal_and_runtime_va
         .unwrap();
         for field in ["co_belligerents", "zero_war"] {
             if expected == "not recorded" {
-                // Historical field identity is in the reason; the subject names the row.
                 assert_eq!(
                     report.limitations[&format!("CountryCounterInputs.{field} not recorded")],
                     vec!["CountryCounterInputs GER".to_string()],

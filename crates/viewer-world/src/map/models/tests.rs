@@ -50,8 +50,6 @@ fn library_growth_mid_intro_keeps_the_raid_units_history() {
         players[&(0, 7, 0)].root_playing(&rigs[0]),
         Some("dive_intro")
     );
-    // A newly seen entity loads mid-intro: its mesh, rig and joints are
-    // appended, and the raid unit's history stays.
     let mut grown = palette.clone();
     grown.push(joint(1.0));
     let mut appended = stage_rig(false);
@@ -72,15 +70,12 @@ fn library_growth_mid_intro_keeps_the_raid_units_history() {
     );
     step(&mut players, &rigs, &palette, dive, 13.1);
     assert_eq!(players[&(0, 7, 0)].root_playing(&rigs[0]), Some("dive"));
-    // A library that is not an extension starts every history again:
-    // a shorter palette, a changed prefix, fewer meshes.
     let changed = [joint(2.0), joint(1.0)];
     for after in [(&palette[..1], 2), (&changed[..], 2), (&palette[..], 1)] {
         let mut kept = BTreeMap::from([((0, 7, 0), entity_animation::Player::new(&rigs[0]))]);
         retain_players(&mut kept, (&palette, 2), after);
         assert!(kept.is_empty());
     }
-    // Nothing changed: every history stays.
     retain_players(&mut players, (&palette, 2), (&palette, 2));
     assert!(players.contains_key(&(0, 7, 0)));
 }
@@ -114,7 +109,6 @@ fn a_placed_raid_unit_continues_its_intro_and_retires_only_when_unplaced() {
         )
         .len()
     };
-    // The unit pass shows every group it places, wherever the camera is.
     assert_eq!(step(&mut players, cruise, 10.0, true), 2);
     step(&mut players, dive, 11.0, true);
     assert_eq!(players[&(0, 7, 0)].root_playing(rig), Some("dive_intro"));
@@ -122,11 +116,9 @@ fn a_placed_raid_unit_continues_its_intro_and_retires_only_when_unplaced() {
     assert_eq!(players[&(0, 7, 0)].root_playing(rig), Some("dive_intro"));
     step(&mut players, dive, 13.1, true);
     assert_eq!(players[&(0, 7, 0)].root_playing(rig), Some("dive"));
-    // A pass that culls (buildings, trains) retires what it does not show.
     assert_eq!(step(&mut players, dive, 13.5, false), 1);
     assert!(players.is_empty());
     step(&mut players, dive, 14.0, true);
-    // An unplaced entity is retired.
     let mut gone = ModelField::default();
     animate_players(
         &mut players,
@@ -140,8 +132,6 @@ fn a_placed_raid_unit_continues_its_intro_and_retires_only_when_unplaced() {
     assert!(players.is_empty());
 }
 
-/// An empty roster still keeps the content stack and the client's texture decode, which
-/// the pass's compiled mesh effects take their global defines from.
 #[test]
 fn an_empty_authored_actor_roster_keeps_the_content_stack() {
     let layers = ResolvedLayers::default();
@@ -161,8 +151,6 @@ fn an_empty_authored_actor_roster_keeps_the_content_stack() {
     assert_eq!(empty.decode(), decode);
 }
 
-/// A pass made over a library that has baked nothing yet takes the content stack the library
-/// takes with its first bake, so the entities baked later draw rather than refuse every frame.
 #[test]
 fn a_pass_over_an_empty_library_takes_the_stack_of_its_later_bakes() {
     let decode = Decode::default();
@@ -184,9 +172,6 @@ fn a_pass_over_an_empty_library_takes_the_stack_of_its_later_bakes() {
     assert!(pass.layers.is_some());
 }
 
-/// Every palette index a shard carries is rebased onto the merged palette:
-/// the rig's range and each node's skin and rigid slots. A slot left behind indexes another entity's
-/// joints, and `entity_animation` subtracts `rig.start` from the node's.
 #[test]
 fn merging_a_shard_rebases_every_palette_slot() {
     let joint = PaletteJoint::from_transform(&mesh::Transform::IDENTITY);
@@ -238,15 +223,11 @@ fn merging_a_shard_rebases_every_palette_slot() {
     assert_eq!((rig.start, rig.end), (5, 8));
     assert_eq!(rig.nodes[0].rigid, 6);
     assert_eq!(rig.nodes[0].skin_base, Some(5));
-    // The node's own slot is inside the rig's range, which is what
-    // `Player::evaluate` indexes.
     assert!((rig.start..rig.end).contains(&(rig.nodes[0].rigid as usize)));
 }
 
 #[test]
 fn a_mesh_setting_overrides_one_shape_and_one_material_index() {
-    // This synthetic facility model uses three texture sets,
-    // one per material index; applying them all would repaint the model.
     let setting = |name: &str, index: i32| mesh::MeshSetting {
         name: name.to_owned(),
         index,
@@ -268,10 +249,8 @@ fn the_sprawl_gate_is_water_relative_and_independent_of_transient_map_objects() 
         }
         .on(MapSize::TEST, MapDefines::test())
     };
-    // The reference pairs at 302.96 draw no sprawl; 50.178 does.
     assert!(!draws_city_sprawl(&at(302.960)));
     assert!(draws_city_sprawl(&at(50.178)));
-    // 229.4 - 9.5 = 219.9, just inside; 229.6 - 9.5 = 220.1, just outside.
     assert!(draws_city_sprawl(&at(229.4)));
     assert!(!draws_city_sprawl(&at(229.6)));
     let mut camera = at(50.178);
@@ -304,8 +283,6 @@ fn an_entity_locator_ignores_the_baked_pdxmesh_scale() {
 
 #[test]
 fn a_palette_joint_is_the_transform_transposed_into_rows() {
-    // A quarter turn about +Y at scale 2, then a shift: the rows are what
-    // a `dot` with `(position, 1)` needs.
     let half = std::f32::consts::FRAC_PI_4;
     let transform =
         mesh::Transform::from_trs([1.0, 2.0, 3.0], [0.0, half.sin(), 0.0, half.cos()], 2.0);
@@ -350,8 +327,6 @@ fn weights_blend_the_joints_they_name() {
     assert_eq!(at([1.0, 0.0, 0.0, 0.0]), [-10.0, 1.0, 0.0]);
     assert_eq!(at([0.0, 1.0, 0.0, 0.0]), [10.0, 1.0, 0.0]);
     assert_eq!(at([0.5, 0.5, 0.0, 0.0]), [0.0, 1.0, 0.0]);
-    // A slot naming a joint outside the palette contributes nothing rather
-    // than reading past its end.
     assert_eq!(
         skinned(&[left], [0.0, 1.0, 0.0], &[(0, 1.0), (99, 1.0)], 0),
         [-10.0, 1.0, 0.0]
@@ -360,8 +335,6 @@ fn weights_blend_the_joints_they_name() {
 
 #[test]
 fn a_posed_vertex_widens_the_reach_where_the_bind_box_would_not() {
-    // `cavalry_horse.mesh` is 6.6 wide bound and 16.0 posed, so a cull on
-    // the `[aabb]` would clip it.
     let mut reach = Reach::default();
     reach.widen(
         &mesh::Transform::IDENTITY,
@@ -395,7 +368,6 @@ fn culling_reaches_around_every_lod_a_model_may_draw() {
         out.extend(values.iter().flat_map(|value| value.to_le_bytes()));
         out
     };
-    // The near LOD spans one unit either way, the far one ten.
     let mut bytes = b"@@b@[object\0".to_vec();
     for (lod, extent) in [(0_i32, 1.0_f32), (1, 10.0)] {
         bytes.extend(format!("[[shape{lod}\0").as_bytes());
@@ -432,7 +404,6 @@ fn culling_reaches_around_every_lod_a_model_may_draw() {
     std::fs::remove_dir_all(&root).unwrap();
     let tower = &library.meshes[library.slot("tower").unwrap()];
     assert_eq!(tower.native[0].lods.len(), 2);
-    // The far LOD's corner bounds the cull, not the first LOD's.
     assert!((tower.radius - 200f32.sqrt()).abs() < 1e-3, "{}", tower.radius);
     assert!((tower.own_radius - 200f32.sqrt()).abs() < 1e-3);
 }
@@ -534,8 +505,6 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     }
     bytes.extend(b"!\x03trii\x03\0\0\0\0\0\0\0\x01\0\0\0\x02\0\0\0");
     bytes.extend(b"[[[[material\0!\x06shaders\x01\0\0\0\x0e\0\0\0AuthoredShader");
-    // A meshed parent's attachment names an actual mesh joint. The
-    // meshless actor instead uses the authored entity locator below.
     bytes.extend(b"[[[skeleton\0[[[[mount\0!\x02ixi\x01\0\0\0\0\0\0\0!\x02txf\x0c\0\0\0");
     bytes.extend(
         [1_f32, 0., 0., 0., 1., 0., 0., 0., 1., -1., 0., 0.]
@@ -595,8 +564,6 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
         2,
         0,
     );
-    // Two scenario seconds of outgoing travel and global speed two;
-    // the aircraft's state clocks still advance in entity seconds.
     for request in &mut requests {
         request.time = (2. + request.time) / 2.;
     }
@@ -634,10 +601,6 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
         assert_eq!(drops.len(), 2);
         assert_eq!(drops[0].definition.particle.as_deref(), Some("drop"));
         assert_eq!(drops[0].definition.light.as_deref(), Some("lamp"));
-        // The game asks the mesh before entity locators. The meshed
-        // actor's matching joint has no played palette, so lookup
-        // leaves this event at the root; the dummy child still attaches
-        // through the authored entity locator.
         let drop_position = if meshed {
             [10., 20., 30.]
         } else {
@@ -650,10 +613,10 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     };
     pass.field.clocks.get_mut(&key).unwrap().time = 1.65;
     pass.animate(900., None, &[0.]);
-    check_supply(&pass); // Duplicate supply callback must not restart its clock.
+    check_supply(&pass);
     pass.reset_animation();
     pass.animate(900., None, &[0.]);
-    check_supply(&pass); // A fresh player crossing the callbacks gives the same state.
+    check_supply(&pass);
     pass.field.clocks.get_mut(&key).unwrap().time = 1.8;
     pass.animate(901., None, &[0.]);
     assert_eq!(pass.events.len(), 1);
@@ -676,7 +639,6 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
             .count(),
         1
     );
-    // Out-of-range number broadcasts to the whole group, with a new event identity.
     let seeds: BTreeSet<_> = pass
         .events
         .iter()
@@ -686,7 +648,7 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     assert_eq!(seeds.len(), 2);
     pass.field.clocks.get_mut(&key).unwrap().time = 0.4;
     pass.animate(903., None, &[0.]);
-    assert!(pass.events.is_empty()); // New cycle resets state and callback cursor.
+    assert!(pass.events.is_empty());
 }
 
 #[test]
@@ -743,7 +705,6 @@ fn meshless_buildings_use_shared_states_events_and_attachments() {
             .1
             .contains("entity emitter references pdxmesh lost")
     );
-    // Sound events are presented for audio, not refused.
     assert!(
         warnings.iter().all(|(_, line)| !line.contains("sound")),
         "{warnings:?}"
@@ -907,7 +868,6 @@ fn two_entities_share_a_partial_stream_mesh_and_keep_placed_vertices() {
             .into_iter()
             .enumerate()
         {
-            // The pre-sharing bake used Transform::transform_point at this scale.
             let old = mesh::Transform {
                 basis: [[scale, 0., 0.], [0., scale, 0.], [0., 0., scale]],
                 translation: [0.; 3],
@@ -1028,7 +988,6 @@ fn a_group_outside_the_visible_rectangle_is_culled() {
     assert!(visible(group, 0.0, None));
     assert!(visible(group, 0.0, Some([0.0, 0.0, 20.0, 20.0])));
     assert!(!visible(group, 0.0, Some([100.0, 0.0, 200.0, 20.0])));
-    // The wrap copy moves the group, not the rectangle.
     assert!(visible(group, 100.0, Some([100.0, 0.0, 200.0, 20.0])));
 }
 
@@ -1041,11 +1000,7 @@ fn a_figure_flying_above_the_rectangle_is_not_culled_by_its_ground_position() {
     };
     let field = ModelField::build(&library, vec![(0, flying)], 256.0);
     let group = &field.groups[0];
-    // Its ground position is 20 units past the rectangle's edge, and a figure 60 units up leans
-    // 29 units past the margin the rectangle already carries, so the camera shows it and the
-    // game's own cull is what decides.
     assert!(visible(group, 0.0, Some([-50.0, -50.0, -10.0, 50.0])));
-    // No lean reaches 400 units: the pre-filter still drops it.
     assert!(!visible(group, 0.0, Some([-500.0, -50.0, -400.0, 50.0])));
 }
 
@@ -1091,14 +1046,12 @@ fn unit_lifetime_and_hidden_animation_clock() {
     }));
     let mut pass = ModelPass::new(&library, "synthetic unit lifetime");
     let mut target = target(40, Kind::Land);
-    target.instance.animation = entity_animation::MOVE; // no reconstructed idle phase
+    target.instance.animation = entity_animation::MOVE;
     let mut history = History::default();
     history.set(vec![target], Arc::default(), false);
     {
         let mut frame = |time, shown, in_view| {
             if time == 10.75 {
-                // Discovering another mesh in a later hour grows the
-                // palette without replacing this live entity.
                 library.palette.push(PaletteJoint::IDENTITY);
                 pass.sync(&library);
             }
@@ -1138,8 +1091,6 @@ fn unit_lifetime_and_hidden_animation_clock() {
 
 #[test]
 fn an_entity_s_bound_encloses_every_point_around_its_origin() {
-    // A corner up and out reaches farther than the horizontal radius or the height alone, and a
-    // point below the origin counts too.
     let mut reach = Reach::default();
     reach.widen_point([100.0, 100.0, 0.0], true);
     reach.widen_point([0.0, -120.0, 30.0], true);
@@ -1153,8 +1104,6 @@ fn an_entity_s_bound_encloses_every_point_around_its_origin() {
     assert_eq!(reach.bound, 150.0);
 }
 
-/// A state with several variants is found on any node, and through
-/// `next_state`, not only on the root's default state.
 #[test]
 fn drawn_variants_are_found_on_attached_entities_and_later_states() {
     let clip = |name: &str, next: Option<&str>| entity_animation::Clip {
@@ -1202,7 +1151,6 @@ fn drawn_variants_are_found_on_attached_entities_and_later_states() {
     assert_eq!(super::drawn_variants(&later), Some((0, "burn".into(), 2)));
 }
 
-/// A one-triangle mesh reaching `reach` along z, so two stacks' meshes differ in extent.
 pub(crate) fn triangle_mesh(reach: f32) -> Vec<u8> {
     let mut bytes = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
     for (name, values) in [
@@ -1220,8 +1168,6 @@ pub(crate) fn triangle_mesh(reach: f32) -> Vec<u8> {
     bytes
 }
 
-/// A recorded folder `base` and a visual mod `art`, each with `files`, the mod mounted over
-/// the recording.
 pub(crate) fn visual_stack(
     name: &str,
     files: &[(&str, &[u8])],
@@ -1268,7 +1214,6 @@ pub(crate) const MESHES_GFX: &[u8] = br#"objectTypes = {
 pub(crate) const PLANE_ASSET: &[u8] =
     br#"entity = { name = plane pdxmesh = body scale = 1 state = { name = idle } }"#;
 
-/// The library `name` bakes to from `layers`, by their own descriptors.
 fn baked(layers: &ResolvedLayers, name: &str) -> ModelLibrary {
     let roster = layers.descriptor_roster().unwrap();
     let mut warnings = Vec::new();
@@ -1289,8 +1234,6 @@ fn baked(layers: &ResolvedLayers, name: &str) -> ModelLibrary {
     library
 }
 
-/// An entity drawn from a mesh or descriptor a visual mod supplies is the mod's, so its draw
-/// refusals count against the mods; the same entity baked from the recording is not.
 #[test]
 fn an_entity_drawn_from_a_visual_mods_files_is_the_mods() {
     let tank = br#"entity = { name = tank pdxmesh = hull scale = 2 state = { name = idle } }"#;
@@ -1301,7 +1244,6 @@ fn an_entity_drawn_from_a_visual_mods_files_is_the_mods() {
             ("base/gfx/entities/plane.asset", PLANE_ASSET),
             ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
             ("art/gfx/models/plane.mesh", &triangle_mesh(1.)),
-            // The mod changes only the tank's descriptor.
             ("base/gfx/entities/tank.asset", tank),
             ("art/gfx/entities/tank.asset", tank),
             ("base/gfx/models/tank.mesh", &triangle_mesh(1.)),
@@ -1320,8 +1262,6 @@ fn an_entity_drawn_from_a_visual_mods_files_is_the_mods() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Each visual mod entity keeps its recorded counterpart, baked from the recording's own files
-/// apart from the mod's of the same path; the name keeps the mod's entity.
 #[test]
 fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
     let (root, layers) = visual_stack(
@@ -1342,8 +1282,6 @@ fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
     assert!(!Arc::ptr_eq(&geometry(shown), &geometry(counterpart)));
 }
 
-/// A traced presentation stack's recorded counterpart reads the recording's mesh through the
-/// same trace and purpose, at the recorded layer's index.
 #[test]
 fn a_recorded_counterparts_mesh_read_reaches_the_presentation_trace() {
     use installed_content_core::content::{ContentRead, ReadOutcome};
@@ -1372,7 +1310,6 @@ fn a_recorded_counterparts_mesh_read_reaches_the_presentation_trace() {
             .map(|read| read.outcome.clone())
             .collect()
     };
-    // The recording's mesh as its own stack reads it.
     let (recorded, recorded_reads) = traced(&layers);
     recorded.read_uncovered("gfx/models/plane.mesh").unwrap();
     let recorded_mesh = mesh(&recorded_reads.lock().unwrap()[..], 0);
@@ -1396,10 +1333,6 @@ fn a_recorded_counterparts_mesh_read_reaches_the_presentation_trace() {
     assert!(!shown.is_empty() && !shown.contains(&recorded_mesh[0]));
 }
 
-/// A refused draw of a visual mod entity draws its recorded counterpart from the next frame,
-/// named, with the recording's own shaders, and is not recorded as a refusal; one without a
-/// counterpart is. Placements, hidden actors and play positions keyed by the entity's own slot
-/// follow it to the counterpart.
 #[test]
 fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
     let (root, layers) = visual_stack(
@@ -1415,8 +1348,6 @@ fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
     let _ = std::fs::remove_dir_all(&root);
     let shown = library.slot("plane").unwrap();
     let counterpart = library.alternatives[&shown];
-    // The recorded entity reaches further than the mod's (the fixture meshes declare no
-    // bounds of their own).
     library.meshes[shown].radius = 1.0;
     library.meshes[counterpart].radius = 5.0;
     let instance = shader_pipeline::gpu::instance();
@@ -1440,7 +1371,6 @@ fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
     assert!(arena.refusals().is_empty());
     pass.animate(0.0, None, &[0.0]);
     assert_eq!(pass.field.groups[0].mesh, counterpart);
-    // Culled by the counterpart's own reach, not the refused entity's.
     let reach = library.meshes[counterpart].radius;
     assert!(reach > library.meshes[shown].radius);
     assert_eq!(pass.field.groups[0].bounds, [-reach, -reach, reach, reach]);
@@ -1454,8 +1384,6 @@ fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
         (pass.shader_library(shown), pass.shader_library(counterpart)),
         (0, 1)
     );
-    // Later placements, hidden actors and play positions keyed by the entity's own slot follow
-    // it to the counterpart.
     pass.update_placed(vec![(shown, ModelInstance::default())], 256.0);
     assert_eq!(pass.field.groups[0].mesh, counterpart);
     let (seed, identity) = ModelInstance::default().animation_key();
@@ -1484,8 +1412,6 @@ fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
     );
 }
 
-/// An entity whose visual mod mesh does not bake is baked from the recording, by the
-/// recording's own files, named; it never vanishes when the recording draws it.
 #[test]
 fn an_entity_a_visual_mod_breaks_is_baked_from_the_recording() {
     let (root, layers) = visual_stack(
@@ -1507,12 +1433,9 @@ fn an_entity_a_visual_mod_breaks_is_baked_from_the_recording() {
     assert!(refusals.contains("model plane ("), "{refusals}");
 }
 
-/// An animation a visual mod breaks is read from the recording, named; one neither stack reads
-/// is refused by name and reported, never taken for an entity without an animation.
 #[test]
 fn an_animation_a_mod_breaks_is_read_from_the_recording() {
     let clip: &[u8] = b"@@b@[info\0[samples\0";
-    // No PDX header: it does not parse.
     let broken: &[u8] = b"not an animation";
     let (root, layers) = visual_stack(
         "animation",
@@ -1561,7 +1484,7 @@ fn convoy_collision_radius_is_the_runtime_bounds_three_dimensional_half_diagonal
     reach.collision_point([7., 10., 3.]);
     assert_eq!(reach.collision_radius(), Some(5.));
     reach.attachments = 1;
-    assert_eq!(reach.collision_radius(), None); // Attached entity sphere unions need their own proof.
+    assert_eq!(reach.collision_radius(), None);
 }
 
 #[test]
@@ -1573,8 +1496,6 @@ fn a_moved_part_is_written_where_it_stands_and_leaves_the_rest_of_the_field_alon
         (0, at(310.0, 10.0)),
         (0, at(10.0, 10.0)),
     ];
-    // A move inside the cull tile and one across it: the field a patch leaves must place and
-    // bound every part as a whole placement of the same parts does.
     for shift in [30.0, 400.0] {
         let mut pass = ModelPass::new(&library, "moved parts");
         pass.update_placed(standing.clone(), 256.0);
@@ -1634,8 +1555,6 @@ fn a_moved_part_is_written_where_it_stands_and_leaves_the_rest_of_the_field_alon
                 pass.field.instances[index].position, afresh.instances[built].position,
                 "ordinal {ordinal} is placed where a whole placement places it"
             );
-            // A part carried across the cull tile stays in the group its placement gave it, so
-            // that group reaches at least as far as the one a whole placement would build.
             let (held, built) = (
                 pass.field.groups[group].bounds,
                 afresh.groups[built_group].bounds,
@@ -1787,9 +1706,6 @@ fn visual_fallback_and_refusal_identities_survive_opposite_demand_orders() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// The game's cull: a sphere's centre at the mesh's cull distance or farther from the eye is
-/// culled, a mesh's own distance replaces the engine's, and a sphere wholly outside a side plane
-/// is culled while one crossing it is not.
 #[test]
 fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_side_planes() {
     let wide = 1.0e4;
@@ -1807,10 +1723,6 @@ fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_s
     assert_eq!(cull.test([-wide - 0.5, 0., 0.], 1., 1.0e12), None, "a sphere crossing a side plane is inside");
 }
 
-/// A free eye west of the seam (x -10): the lit figures are walked on the eye moved onto the first
-/// map copy (x W - 10), while the frame's cull was made for the eye where it stands. A figure at
-/// W - 20, beside the moved eye, is tested where it stands for that eye, 10 east of it: drawn. On
-/// the base it was tested at W - 20 against the eye at -10, a map width off, and culled.
 #[test]
 fn a_figure_walked_on_a_camera_moved_onto_another_map_copy_is_culled_where_it_stands_for_the_cull() {
     let wide = 1.0e9;
@@ -1825,10 +1737,6 @@ fn a_figure_walked_on_a_camera_moved_onto_another_map_copy_is_culled_where_it_st
     assert_eq!(pass.game_culled(0, &instance, 0., &eye), Some(Culled::Distance), "walked on the eye where it stands, the figure is a map width away");
 }
 
-/// A pan draws what the game draws: a level eye looking east held at x 1000 with the pad and
-/// panned to 1006, a figure on the centre ray moved from 1437 to 1440. The game culls it, 434 from
-/// the eye past the mesh's 430. The held cull a pan keeps its lists against, as main drew by it,
-/// still admits it, 434 inside its padded 438: it only gathers, and the frame's own cull decides.
 #[test]
 fn a_pan_draws_a_moved_figure_by_its_own_camera_s_cull_and_its_held_one_only_gathers() {
     let wide = 1.0e9;
@@ -1848,11 +1756,6 @@ fn a_pan_draws_a_moved_figure_by_its_own_camera_s_cull_and_its_held_one_only_gat
     assert_eq!(pass.game_culled(0, &at(1440.), 0., &camera(1006.)), Some(Culled::Distance), "434 from it: culled, as the game does");
 }
 
-/// A pose batch in flight when an animation history starts again (a seek, a branch change) was
-/// made from the samples of the history that ended: its limbs are never installed over the new
-/// history's figures, however stable a figure's identity is across the seek. And a stopped
-/// picture, which is exact, asks the worker for nothing: every figure is posed on the frame that
-/// draws it, from the samples it draws.
 #[test]
 fn a_pose_batch_of_a_history_that_ended_never_replaces_the_new_historys_poses() {
     use crate::map::poses;
@@ -1863,13 +1766,11 @@ fn a_pose_batch_of_a_history_that_ended_never_replaces_the_new_historys_poses() 
     let mut worker = poses::Worker::new();
     assert!(worker.refusal().is_none(), "the pose worker must run: {:?}", worker.refusal());
     let mut jobs = poses::Jobs::default();
-    // One figure, placed and played: the worker makes its limbs and the pass installs them.
     let place = |pass: &mut ModelPass, time: f32| {
         pass.update_placed(vec![(0, at(10.0, 10.0))], 128.0);
         pass.animate(time, None, &[0.0]);
     };
     let made = |worker: &mut poses::Worker, jobs: &mut poses::Jobs| loop {
-        // Waited for by the hand-over itself: the worker always answers a batch it took.
         if let Some(made) = worker.take(jobs) {
             return made;
         }
@@ -1889,8 +1790,6 @@ fn a_pose_batch_of_a_history_that_ended_never_replaces_the_new_historys_poses() 
         pass.posed.get((key, 0)).is_some_and(|posed| Arc::ptr_eq(&posed, &worked)),
         "a figure the set holds is drawn with the worker's limbs"
     );
-    // A seek: the same figure keeps its identity, and the batch in flight is of the history that
-    // ended.
     pass.pose_jobs(&mut jobs, None, &[0.0]);
     worker.give(2.0, &mut jobs);
     let stale = made(&mut worker, &mut jobs);
@@ -1904,7 +1803,6 @@ fn a_pose_batch_of_a_history_that_ended_never_replaces_the_new_historys_poses() 
         !Arc::ptr_eq(&posed, &stale.set_for(ended).get((key, 0)).expect("the stale batch posed it")),
         "the new history's figure is posed where it is read, not with the pre-seek limbs"
     );
-    // A stopped picture: nothing is asked of the worker and nothing it finished is installed.
     pass.pose_jobs(&mut jobs, None, &[0.0]);
     worker.give(4.0, &mut jobs);
     let own = made(&mut worker, &mut jobs);

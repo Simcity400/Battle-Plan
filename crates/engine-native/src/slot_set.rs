@@ -1,27 +1,17 @@
-//! Allocation-free duplicate detection over canonical country slots.
-//!
-//! Per-owner duplicate checks used to compare each entry with every earlier
-//! one. This set answers membership in O(1) for slots below `DIRECT` and
-//! clears only what it marked, so a walk over many owners never pays for the
-//! whole bitmap. Slots at or above `DIRECT` are not assumed impossible: the
-//! caller supplies its own exact check for them.
 
-/// Slots with a direct bit. The bitmap is 8 KiB, small enough for the stack.
 pub(crate) const DIRECT: u32 = 1 << 16;
 const WORDS: usize = DIRECT as usize / 64;
-/// Marked slots remembered for a targeted clear; beyond this, clear it all.
 const REMEMBERED: usize = 128;
 
 pub struct SlotSet {
     bits: [u64; WORDS],
     marked: [u32; REMEMBERED],
     marked_len: usize,
-    /// More slots were marked than remembered: clearing wipes the bitmap.
     spilled: bool,
 }
 
 impl SlotSet {
-    #[allow(clippy::new_without_default)] // Preserve the shared helper's existing constructor.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             bits: [0; WORDS],
@@ -31,8 +21,6 @@ impl SlotSet {
         }
     }
 
-    /// Adds `slot`, returning whether it was already present. A slot at or
-    /// above `DIRECT` asks `seen_before` whether an earlier entry holds it.
     pub fn insert<E>(
         &mut self,
         slot: u32,
@@ -55,7 +43,6 @@ impl SlotSet {
         Ok(false)
     }
 
-    /// Empties the set in O(marked) or one 8 KiB clear, whichever is smaller.
     pub fn clear(&mut self) {
         if self.spilled {
             self.bits = [0; WORDS];
@@ -80,7 +67,6 @@ mod tests {
     #[test]
     fn detects_repeats_among_many_slots_and_clears_between_owners() {
         let mut set = Box::new(SlotSet::new());
-        // 20,000 distinct slots, then every one of them again.
         for slot in (1..=20_000).rev() {
             assert_eq!(set.insert(slot, never), Ok(false));
         }
@@ -89,7 +75,6 @@ mod tests {
         }
         set.clear();
         assert!(set.bits.iter().all(|word| *word == 0));
-        // A small owner clears only its own marks.
         for slot in [7, 64, 65_535] {
             assert_eq!(set.insert(slot, never), Ok(false));
         }

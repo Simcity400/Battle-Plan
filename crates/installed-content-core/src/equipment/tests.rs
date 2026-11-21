@@ -103,8 +103,6 @@ fn module_country_conditions_keep_final_limit_and_reset_on_redefinition() {
     assert!(retained.allowed.is_empty());
 }
 
-/// `(path, text)` files read in order through the file loop, then
-/// finalized.
 fn read(files: &[(&str, &str)]) -> Database {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment reader checks require BATTLE_PLAN_GAME_DIR");
@@ -177,9 +175,6 @@ fn stat(name: &str) -> usize {
     stat_index(name.as_bytes()).unwrap()
 }
 
-/// Nested readers retain their own consumption and variable definitions.
-/// An upgrade variable remains visible to later equipment, while reported
-/// keys skip their blocks and register nothing at any depth.
 #[test]
 fn every_top_level_reader_consumes_its_own_block() {
     let database = read(&[(
@@ -194,20 +189,13 @@ fn every_top_level_reader_consumes_its_own_block() {
     assert!(database.lost.is_none(), "{:?}", database.lost);
     let c = named(&database, "c");
     assert_eq!(c.stats[stat("lg_attack")], 50_000);
-    // Skipped blocks define nothing: the references stay text, which
-    // does not scan.
     for skipped in ["hg_attack", "torpedo_attack", "sub_attack"] {
         assert_eq!(c.stats[stat(skipped)], 0, "{skipped}");
     }
-    // Finalization includes the module's added equipment categories, so
-    // armor equipment with that default module is convoy too.
     assert_eq!(c.module_category, 1);
     assert_eq!(database.category(c), 5);
 }
 
-/// Direct files load from `upgrades`, then `modules`, then root.
-/// Upgrade-file archetypes register before root files; deeper directories
-/// are not read.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_its_three_directories_in_order() {
@@ -258,11 +246,6 @@ fn the_loader_reads_its_three_directories_in_order() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// Duplicate every type in the archetype's group under the definition name
-/// plus its suffix after the common prefix. Clone the archetype first and
-/// remap links to clones. `type` replaces categories; `for_each` applies
-/// to all copies with wrapping, truncating multiplication. Optional
-/// archetype-only copies, duplicate-name skips, and later references remain.
 #[test]
 fn duplicated_archetypes_generate_their_clones() {
     let database = read(&[
@@ -300,9 +283,7 @@ fn duplicated_archetypes_generate_their_clones() {
         Some(database.by_name[b"raider".as_slice()])
     );
     assert_eq!(raider_1.parent, database.by_name[b"raider".as_slice()]);
-    // hull_1 copied hull's 2 through `archetype`, times 1.5.
     assert_eq!(raider_1.stats[stat("lg_attack")], 300_000);
-    // `raider_2` was defined already: skipped and logged.
     assert!(!named(&database, "raider_2").duplicate);
     assert!(
         database.misreads.iter().any(|note| note
@@ -328,8 +309,6 @@ fn duplicated_archetypes_generate_their_clones() {
     assert_eq!(database.category(later) & 1, 1);
 }
 
-/// Read one statement, report and skip any second statement and its block,
-/// then resume after the entry's closing brace.
 #[test]
 fn a_for_each_entry_reads_one_statement_and_skips_the_rest() {
     let database = read(&[(
@@ -349,12 +328,9 @@ fn a_for_each_entry_reads_one_statement_and_skips_the_rest() {
     );
     let raider = named(&database, "raider");
     assert_eq!(raider.stats[stat("lg_attack")], 100_000);
-    // Keys and keywords fold: the later entry is read.
     assert_eq!(raider.stats[stat("hardness")], 60_000);
 }
 
-/// Unknown category tokens use unsigned decimal conversion. Repeated
-/// modules reset and read from their defaults.
 #[test]
 fn category_masks_fall_back_to_the_unsigned_decimal() {
     assert_eq!(unsigned_decimal(b"12x"), 12);
@@ -368,7 +344,6 @@ fn category_masks_fall_back_to_the_unsigned_decimal() {
     )]);
     let x = named(&database, "x");
     assert_eq!(x.module_category, 1 | 4);
-    // Unsigned decimal conversion skips whitespace before digits.
     let database = read(&[(
         "m.txt",
         "equipment_modules = { m = { add_equipment_type = \" 1\" } }
@@ -378,8 +353,6 @@ fn category_masks_fall_back_to_the_unsigned_decimal() {
     assert_eq!(named(&database, "y").module_category, 1);
 }
 
-/// Compare common prefixes byte by byte and retain the remaining name
-/// bytes, including a cut inside a UTF-8 character.
 #[test]
 fn duplication_cuts_names_as_bytes() {
     let database = read(&[(
@@ -388,17 +361,12 @@ fn duplication_cuts_names_as_bytes() {
          duplicate_archetypes = { d = { archetype = é } }",
     )]);
     assert!(database.lost.is_none(), "{:?}", database.lost);
-    // é is C3 A9 and ê C3 AA: one common byte with the archetype.
     assert!(named(&database, "d").duplicate);
     let cut = database.by_name[&[b'd', 0xAA][..]];
     assert_eq!(database.equipment[cut].name, [b'd', 0xAA]);
     assert!(database.equipment[cut].duplicate);
 }
 
-/// Slots and modules use token identity. Rejected slot names share token 0
-/// and retain the last default module; rejected module names select the
-/// first registered token-0 module. Repeated slot tokens skip their block
-/// and register nothing.
 #[test]
 fn slots_and_modules_are_tokens() {
     let database = read(&[(
@@ -414,7 +382,6 @@ fn slots_and_modules_are_tokens() {
     let x = named(&database, "x");
     assert_eq!(x.default_modules.len(), 1);
     assert_eq!(x.module_category, 1 << 14);
-    // `99`, `1st` and `2nd` are all token 0; the first is `1st`.
     assert_eq!(named(&database, "y").module_category, 1 << 2);
     assert_eq!(named(&database, "z").stats[stat("lg_attack")], 0);
     assert_eq!(database.module_category("99"), Some(1 << 2));
@@ -422,8 +389,6 @@ fn slots_and_modules_are_tokens() {
     assert_eq!(database.module_category("missing"), None);
 }
 
-/// Duplicate definitions group keys by token and resolve archetypes by
-/// token text. Token-0 text is unavailable from content and stays refused.
 #[test]
 fn a_duplicate_of_token_zero_is_refused_by_name() {
     let base = "equipments = { hull = { is_archetype = yes } }";
@@ -445,9 +410,6 @@ fn a_duplicate_of_token_zero_is_refused_by_name() {
     }
 }
 
-/// Pairs require two strings. Extra strings are reported and skipped
-/// through the pair's closing brace; missing strings are reported.
-/// Both recover in step so the following stat applies.
 #[test]
 fn find_and_replace_pairs_read_two_strings_and_recover_in_step() {
     let pair = |pair: &str| {
@@ -478,8 +440,6 @@ fn find_and_replace_pairs_read_two_strings_and_recover_in_step() {
     }
 }
 
-/// Parent and archetype string reads end at NUL. Line-feed text uses
-/// the shared unreadable-string name before equipment lookup.
 #[test]
 fn links_read_their_names_as_read_string_stores_them() {
     let database = read(&[(
@@ -494,7 +454,6 @@ fn links_read_their_names_as_read_string_stores_them() {
     assert_eq!(named(&database, "lined").stats[stat("lg_attack")], 700_000);
 }
 
-/// One equipment file loaded through the real load path.
 #[cfg(feature = "test-support")]
 fn load_one(text: &str) -> Database {
     let (database, _) = fixture::load(&[("common/units/equipment/a.txt", text)]);
@@ -502,11 +461,6 @@ fn load_one(text: &str) -> Database {
     database
 }
 
-/// Copies from later files retain every source-group level, remapping
-/// parent and archetype links. Family points to the copied source,
-/// `type` replaces categories, and `module_slots = none` drops defaults.
-/// Variant-name pairs are consumed; archetype-only copies omit levels,
-/// and generated copies are not duplicated again.
 #[cfg(feature = "test-support")]
 #[test]
 fn duplicate_archetypes_copy_every_level_of_their_source() {
@@ -539,8 +493,6 @@ fn duplicate_archetypes_copy_every_level_of_their_source() {
         ),
     ]);
     assert!(database.lost.is_none(), "{:?}", database.lost);
-    // Every copy, in the order they are made, by definition: `patrol`
-    // copies `kite`'s group only, not `spotter`'s copies of it.
     let copies: [(&str, &[&str]); 4] = [
         ("spotter", &["spotter_mk1", "spotter_mk2", "spotter_mk3"]),
         ("patrol", &["patrol_mk1", "patrol_mk2", "patrol_mk3"]),
@@ -588,16 +540,11 @@ fn duplicate_archetypes_copy_every_level_of_their_source() {
             .map(|name| category_mask(name).unwrap())
             .fold(0, |mask, bit| mask | bit)
     };
-    // The duplicate's type replaces the source's for every copy.
     assert_eq!(category("spotter_mk2"), mask(&["scout_plane"]));
-    // module_slots = none drops the source's default modules.
     assert_eq!(category("cart"), mask(&["motorized", "rocket"]));
     assert_eq!(category("flamecart"), mask(&["motorized", "flame"]));
 }
 
-/// Inherited slots report and skip repeated block values; absent slots
-/// read as new. The loaded source determines this choice, preserving
-/// variable-definition consumption when the two paths differ.
 #[test]
 fn a_slot_block_after_inherit_is_skipped_when_the_source_has_it() {
     let database = read(&[(
@@ -613,7 +560,6 @@ fn a_slot_block_after_inherit_is_skipped_when_the_source_has_it() {
     let plane = named(&database, "planes_0");
     let slots: Vec<_> = plane.module_slots.iter().map(Vec::as_slice).collect();
     assert_eq!(slots, [b"gun".as_slice(), b"bomb"]);
-    // The skipped block defined no `@v`; the read one defined `@w`.
     assert_eq!(plane.stats[stat("lg_attack")], 0);
     assert_eq!(plane.stats[stat("air_attack")], 400_000);
     assert!(
@@ -626,12 +572,6 @@ fn a_slot_block_after_inherit_is_skipped_when_the_source_has_it() {
     );
 }
 
-/// Model inputs read in order; tech-level addition defaults to one.
-/// Default-module blocks accumulate with repeated slots replacing.
-/// Slot blocks create slots, aliases copy existing ones, and `inherit`
-/// copies a source slot; other values are reported. Whole-slot inheritance
-/// uses parent, then archetype, with no slots on the null object. Copies
-/// retain all model inputs and use a nonempty duplicate-definition sprite.
 #[cfg(feature = "test-support")]
 #[test]
 fn model_inputs_are_read_in_order_and_copied_by_duplicates() {
@@ -677,9 +617,7 @@ fn model_inputs_are_read_in_order_and_copied_by_duplicates() {
     );
     assert_eq!(slots("tanks"), ["main", "secondary"]);
     assert_eq!(slots("tanks_0"), ["main", "secondary"]);
-    // Per slot: `main` is the parent's, `extra` is not.
     assert_eq!(slots("tanks_1"), ["main"]);
-    // Before its archetype, `inherit` copies the null object's none.
     assert!(slots("early").is_empty());
     assert_eq!(slots("alias"), ["main"]);
     for reported in [
@@ -692,8 +630,6 @@ fn model_inputs_are_read_in_order_and_copied_by_duplicates() {
             database.misreads
         );
     }
-    // The archetype's sprite reached tanks_0 when its `archetype` was
-    // read.
     assert_eq!(kind("tanks_0").sprite, b"tank");
     let copy = kind("flame_0");
     assert_eq!(
@@ -706,16 +642,11 @@ fn model_inputs_are_read_in_order_and_copied_by_duplicates() {
         database.get("flame").unwrap() + 1,
         database.get("flame_0").unwrap()
     );
-    // module_slots = none clears slots and default modules; an empty
-    // sprite keeps the source's.
     assert!(slots("amphibious_0").is_empty());
     assert!(kind("amphibious_0").default_modules.is_empty());
     assert_eq!(kind("amphibious").sprite, b"tank");
 }
 
-/// Redefinition resets links, family, sprite, slots, modules, and tech-level
-/// addition while retaining model, visual level, and stats. Finalization
-/// sums parent additions with a minimum of one and counts parents.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_redefinition_is_reset_and_read_again() {
@@ -735,14 +666,12 @@ fn a_redefinition_is_reset_and_read_again() {
     assert_eq!(a.family, database.get("a").unwrap());
     assert!(a.sprite.is_empty() && a.module_slots.is_empty());
     assert_eq!((a.model.as_slice(), a.visual_level), (b"m".as_slice(), 3));
-    // The option-list name keys are retained like the model.
     assert_eq!(
         (a.variant_name.as_slice(), a.derived_variant_name.as_slice()),
         (b"named".as_slice(), b"derived".as_slice())
     );
     assert_eq!(a.stats[stat("lg_attack")], 200_000);
     assert_eq!(a.visual_tech_level_addition, 1);
-    // b: 2 + 1 (a) - 5 (base) is below 1; two parents above it.
     let b = database.named("b").unwrap();
     assert_eq!((b.model_priority, b.depth), (1, 2));
     assert_eq!(database.named("a").unwrap().model_priority, 1);
@@ -769,8 +698,6 @@ fn air_map_frames_keep_signed_scans_and_reset_instead_of_inheriting() {
     assert!(!named(&database, "reset").carrier_capable);
 }
 
-/// Rereading a generated type clears its generated flag, allowing it to
-/// participate in a later duplication pass.
 #[test]
 fn redefined_generated_equipment_can_be_duplicated_again() {
     let database = read(&[(
@@ -788,8 +715,6 @@ fn redefined_generated_equipment_can_be_duplicated_again() {
     assert_eq!(generated.stats[stat("lg_attack")], 300_000);
 }
 
-/// Aliases append tokens and register names after the body, so only
-/// later bodies resolve new aliases.
 #[test]
 fn equipment_aliases_resolve_links_and_duplicate_sources() {
     let database = read(&[(
@@ -815,11 +740,9 @@ fn equipment_aliases_resolve_links_and_duplicate_sources() {
     );
     assert!(named(&database, "copy").duplicate);
     assert!(named(&database, "copy_1").duplicate);
-    // Clone aliases are cleared and still name the original hull.
     assert!(named(&database, "copy").aliases.is_empty());
 }
 
-/// Redefinitions use the ordinary name index and remove old aliases first.
 #[test]
 fn redefining_by_alias_keeps_the_object_and_replaces_its_aliases() {
     let database = read(&[(
@@ -840,8 +763,6 @@ fn redefining_by_alias_keeps_the_object_and_replaces_its_aliases() {
     assert_eq!(named(&database, "hull_1").archetype, Some(hull));
 }
 
-/// Type registration overwrites existing name-index entries. Reload cleanup
-/// erases aliases without testing which type the index currently names.
 #[test]
 fn equipment_alias_collisions_follow_index_mutations() {
     let database = read(&[(
@@ -871,10 +792,6 @@ fn an_equipment_alias_with_token_zero_refuses_the_database_by_name() {
     assert!(database.get("later").is_none());
 }
 
-/// Authored categories accumulate. Own categories replace archetype
-/// categories, and default modules add their categories. Copies retain
-/// own categories and source defaults. Capital ships clear convoy,
-/// submarine, and screen bits.
 #[cfg(feature = "test-support")]
 #[test]
 fn category_masks_or_types_and_default_modules_then_normalize() {
@@ -906,11 +823,6 @@ fn category_masks_or_types_and_default_modules_then_normalize() {
     assert_eq!(category_mask("Air_Transport"), Some(0x10_0000));
 }
 
-/// Group declarations keep the first token, report repeats, read icon and
-/// description, and accumulate equipment members. Unknown fields skip.
-/// Expansion uses folded tokens and retains nongroup names once. Admission
-/// checks type, archetype, and archetype family by folded name, otherwise
-/// category keywords without decimal conversion. Cycles remain refused.
 #[cfg(feature = "test-support")]
 #[test]
 fn groups_expand_and_admit_by_name_family_or_category() {
@@ -962,30 +874,22 @@ fn groups_expand_and_admit_by_name_family_or_category() {
         database.group_admits(&members, at(name))
     };
     assert!(admits(&["CAS"], "large_plane_cas_airframe"));
-    // Its archetype is itself, whose family is the type it copies.
     assert!(admits(
         &["Large_Plane_Airframe"],
         "large_plane_cas_airframe"
     ));
     assert!(!admits(&["fighter"], "large_plane_airframe"));
-    // The decimal fighter bit is not a category keyword.
     assert!(!admits(&["1024"], "large_plane_airframe"));
     assert!(admits(&["convoy"], "hull"));
     let cycle = groups.expand(&["loop_a"]).unwrap_err();
     assert!(cycle.contains("loop_a -> loop_b -> loop_a"), "{cycle}");
-    // Group display uses description, otherwise its name.
     assert_eq!(groups.group(b"BOMBERS").unwrap().unwrap().key(), b"Bombers");
     assert_eq!(groups.group(b"plain").unwrap().unwrap().key(), b"plain");
     assert!(groups.group(b"strategic_bomber").unwrap().is_none());
-    // Module lookup returns the registered name by token.
     assert_eq!(database.module("GUN_1"), Some(b"Gun_1".as_slice()));
     assert_eq!(database.module("missing"), None);
 }
 
-/// Keywords fold: field keys, `inherit`, `none` and category
-/// names match whatever their case; names keep theirs (the
-/// first spelling, found without case by type-name lookup), and
-/// so do the sprite and model texts.
 #[cfg(feature = "test-support")]
 #[test]
 fn keywords_fold_and_names_keep_their_case() {
@@ -1117,8 +1021,6 @@ fn saved_validation_requires_explicit_dependency_but_allows_required_default_mod
     );
 }
 
-/// An alias that takes over its parent's name does not redirect the default
-/// walk: it follows the stored links and ends at the original type.
 #[test]
 fn default_modules_follow_stored_links_when_an_alias_takes_over_the_parent_name() {
     let database = read(&[(
@@ -1132,7 +1034,6 @@ fn default_modules_follow_stored_links_when_an_alias_takes_over_the_parent_name(
         database.validate_modules(child, &[]).unwrap().failures,
         ["required slot main is empty"]
     );
-    // Registration order: root 0, child 1. A database built with a loop is refused.
     let mut looped = database.clone();
     looped.equipment[0].parent = 1;
     assert!(

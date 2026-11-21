@@ -1,4 +1,3 @@
-//! Reached uncertain registration must never bake an earlier definition.
 
 use super::*;
 

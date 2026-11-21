@@ -1,7 +1,6 @@
 use super::*;
 use viewer_foundation::map::province_map::ProvinceMap;
 
-/// Every slot admitted, for tests about the templates rather than the loader.
 fn admitted(_: &SpawnPoint, _: &positions::BuildingPosition, _: Option<u32>) -> SlotAdmission {
     SlotAdmission::Admitted
 }
@@ -18,7 +17,6 @@ fn slot(kind: &str, state: u32, x: f32) -> positions::BuildingPosition {
     }
 }
 
-/// A frame whose only table is `LexicalTokens`, holding these tokens in order.
 fn token_frame(literals: &[(u32, &str)]) -> DecodedFrame {
     use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::TableView};
@@ -45,9 +43,6 @@ fn token_frame(literals: &[(u32, &str)]) -> DecodedFrame {
     frame
 }
 
-/// The tokens carried across copies of LexicalTokens equal the full pass over each copy: an equal
-/// new copy, a grown table (a name resolved anew, a second token for a resolved name), a rewritten
-/// text, a fallen count and a branch change.
 #[test]
 fn building_tokens_carried_across_copies_equal_the_full_pass() {
     let registry = ["naval_hq", "facility", "dock", "absent"].map(String::from);
@@ -87,9 +82,6 @@ fn building_tokens_fold_like_the_lexer_and_refuse_ambiguity() {
     assert!(refused.iter().next().unwrap().contains("facility"));
 }
 
-/// Lexer-fold uniqueness is checked across the whole building registry: an ordinary type
-/// equal to a naval-HQ or facility type under the fold shares its rows' token, so a row
-/// carrying that token is refused by name instead of read as the icon's building.
 #[test]
 fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -118,7 +110,6 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
     assert_eq!(icons.facilities.keys().collect::<Vec<_>>(), ["fac"]);
     assert_eq!(icons.names(), BTreeSet::from(["Dock", "Yard", "hq", "fac"]));
 
-    // The ordinary types' tokens: the lexer gives `Dock` and `dock` one token.
     let frame = token_frame(&[(1, "dock"), (2, "YARD"), (3, "hq"), (4, "fac")]);
     let (tokens, refused) = building_tokens(&frame, &icons.keys, &icons.names()).unwrap();
     assert_eq!(
@@ -136,7 +127,6 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
         ])
     );
 
-    // An ordinary `dock` row is not read as the HQ; the province refuses by name.
     let (dock, hq) = (building(7, 1, 0, 1), building(7, 3, 1, 1));
     assert_eq!(
         icons.headquarter(&[&dock], &tokens).unwrap_err(),
@@ -149,7 +139,6 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
     let found = icons.headquarter(&[&hq], &tokens).unwrap().unwrap();
     assert_eq!(found.0.name, "hq");
 
-    // The same for the facility: an ordinary `yard` row reached first refuses.
     let names: BTreeMap<u32, &str> = icons
         .facility_names()
         .filter_map(|name| Some((*tokens.get(name)?, name)))
@@ -165,7 +154,6 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
         (4, "specialization_naval")
     );
 
-    // Without the shared token, an unnamed row could be either refused type.
     let unnamed: BTreeMap<String, u32> = [("hq".to_owned(), 3), ("fac".to_owned(), 4)].into();
     assert_eq!(
         icons.headquarter(&[&hq], &unnamed).unwrap_err(),
@@ -174,10 +162,6 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
     assert_eq!(icons.unnamed_facility(&unnamed), Some("Yard"));
 }
 
-/// Build the port buckets from every record, so a bucket only an earlier
-/// declaration of a repeated port redirects into is still a port bucket, and ambiguous:
-/// the HQ anchored there is refused before it can fall back to slot 0. The earlier
-/// redirects are spelled in another case and still bind by token.
 #[test]
 fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -196,7 +180,6 @@ fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
         &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
-    // The last `port` declaration neither is a port nor redirects.
     assert!(!buildings.types["port"].is_port);
     assert_eq!(buildings.types["port"].spawn_point, None);
     let provinces = ProvinceMap {
@@ -221,8 +204,6 @@ fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
         "spawn bucket shared of hq is reached by a building or bucket declared more than \
          once, differently"
     );
-    // The same through the specialization buckets: `yard` is refused by name and its
-    // earlier redirect makes the facility's shared bucket ambiguous.
     assert!(icons.refused_facilities.contains_key("yard"));
     let (_, fac) = &icons.facilities["fac"];
     assert_eq!(
@@ -230,7 +211,6 @@ fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
         "spawn bucket facility_spawn of fac is reached by a building or bucket declared \
          more than once, differently"
     );
-    // No port declaration reaches `lone`: that HQ takes slot 0, as native does.
     let elsewhere = icons
         .headquarters
         .iter()
@@ -251,11 +231,8 @@ fn ships_need_a_seen_occupant_or_port_detail() {
     );
     assert_eq!(naval_base_ships(&[1], || Some(1), |_| None), None);
     assert_eq!(naval_base_ships(&[1], || None, |_| Some(0)), None);
-    // A truncated `UnitIntel` omitting a spotted foreign occupant (unit 2): its byte is
-    // unknown, so a recorded unseen occupant and port detail below 2 decide nothing...
     let truncated = |unit| (unit == 1).then_some(0x95);
     assert_eq!(naval_base_ships(&[1, 2], || Some(1), truncated), None);
-    // ...while a seen occupant or port detail 2 still proves the ships glyph.
     let spotted = |unit| (unit == 1).then_some(0x96);
     assert_eq!(naval_base_ships(&[1, 2], || Some(0), spotted), Some(true));
     assert_eq!(naval_base_ships(&[1, 2], || Some(2), truncated), Some(true));
@@ -271,9 +248,6 @@ fn building(location: u32, building_type: u32, ordinal: u32, level: i16) -> Buil
     }
 }
 
-/// A naval-HQ or facility type declared twice differently, without a `spawn_point`, is
-/// refused by name wherever it may decide the icon, even when its last declaration drops
-/// the classification; provinces it cannot reach keep their decision.
 #[test]
 fn repeated_icon_templates_are_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -294,7 +268,6 @@ fn repeated_icon_templates_are_refused_by_name() {
         ids: &[7],
     };
     let icons = BuildingIconContent::load(&buildings, &[], &provinces, admitted, [[0.0; 3]; 2]);
-    // The repeats are out of both lists but still looked up by token.
     assert_eq!(
         icons
             .headquarters
@@ -311,7 +284,6 @@ fn repeated_icon_templates_are_refused_by_name() {
     let tokens: BTreeMap<String, u32> = [("hq", 1), ("later_hq", 2), ("dock", 3), ("yard", 4)]
         .map(|(name, token)| (name.to_owned(), token))
         .into();
-    // `hq`'s last declaration is no HQ, but its first was: a province holding it refuses.
     let (hq, later) = (building(7, 1, 0, 1), building(7, 2, 1, 1));
     assert_eq!(
         icons.headquarter(&[&hq, &later], &tokens).unwrap_err(),
@@ -319,7 +291,6 @@ fn repeated_icon_templates_are_refused_by_name() {
     );
     let found = icons.headquarter(&[&later], &tokens).unwrap().unwrap();
     assert_eq!(found.0.name, "later_hq");
-    // An inactive repeat decides nothing.
     let razed = building(7, 1, 0, 0);
     assert!(
         icons
@@ -327,13 +298,11 @@ fn repeated_icon_templates_are_refused_by_name() {
             .unwrap()
             .is_some()
     );
-    // Without a token for the repeat, an unnamed row could be it.
     let unnamed: BTreeMap<String, u32> = [("later_hq".to_owned(), 2)].into();
     assert_eq!(
         icons.headquarter(&[&later], &unnamed).unwrap_err(),
         "naval HQ building hq has no single token this hour"
     );
-    // The facility is the first active specialized building in recorded building order.
     let names: BTreeMap<u32, &str> = tokens
         .iter()
         .map(|(name, token)| (*token, name.as_str()))
@@ -352,8 +321,6 @@ fn repeated_icon_templates_are_refused_by_name() {
     assert_eq!(icons.unnamed_facility(&unnamed), Some("dock"));
 }
 
-/// Bucket names are lexer tokens: a redirect and a slot name spelled in another case
-/// reach the declared bucket, for the HQ and the facility.
 #[test]
 fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -394,7 +361,6 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
         .collect();
     assert_eq!(names, ["hq_at_port", "hq"]);
     let slot0 = Some([9.0; 3]);
-    // The first record of the redirected bucket, with the coastal offset.
     assert_eq!(
         icons.anchor(7, &icons.headquarters[0], slot0),
         Ok([1.5, 2.0, 1.5])
@@ -404,13 +370,9 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
     assert!(icons.anchor(7, &icons.headquarters[1], None).is_err());
     let (first, facility) = &icons.facilities["facility"];
     assert_eq!(first, "specialization_air");
-    // Not coastal: no offset.
     assert_eq!(icons.anchor(8, facility, slot0), Ok([1.5, 2.0, 0.5]));
 }
 
-/// The anchors search only the records the game admits, by
-/// the building layer's own rules: a rejected first record gives way to the next
-/// admitted one, and a bucket with none left falls back to slot 0.
 #[test]
 fn icons_anchor_only_at_records_the_loader_admits() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -472,14 +434,10 @@ fn icons_anchor_only_at_records_the_loader_admits() {
         ids: &map.province_ids,
     };
     let slots = [
-        // Rejected: state 99 does not exist.
         slot("port_spawn", 99, 0.1),
         slot("PORT_SPAWN", 3, 0.2),
-        // Rejected: province 7 is not in state 4, which does not exist either.
         slot("facility_spawn", 4, 0.3),
         slot("facility_spawn", 3, 0.4),
-        // Every `lone_spawn` record is rejected: the first names no state, the second
-        // stands on the sea province 8.
         slot("lone_spawn", 99, 0.5),
         slot("lone_spawn", 3, 1.5),
     ];
@@ -507,7 +465,6 @@ fn icons_anchor_only_at_records_the_loader_admits() {
     assert_eq!(icons.anchor(7, facility, slot0), Ok([0.4, 2.0, 0.5]));
     assert_eq!(icons.anchor(7, template("lone_hq"), slot0), Ok([9.0; 3]));
     assert_eq!(icons.anchor(8, template("lone_hq"), slot0), Ok([9.0; 3]));
-    // A slot the position test rejects is rejected, its bucket registered or not.
     let spawn = &buildings.spawn_points["port_spawn"];
     let admit = |slot| {
         viewer_foundation::map::building_facts::admit_slot(
@@ -738,7 +695,6 @@ fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_no
             let rules = [true; 3];
             let (layout, counts) = plan_probe::collect(|| BaseLayout::new(rules, &inputs, &frame, &tables, Some(Arc::clone(&old))).unwrap());
             assert_eq!(counts.site_icons, 2 * u64::from(STATES), "a first layout lays out every air base and radar icon");
-            // A kept layout holds offers alone; each frame places them for its camera.
             assert_eq!(layout.offers.placements(), 0);
             assert!(layout.offers.for_camera(&inputs).placements() > 0, "the camera sees the icons");
             let mut layout = layout;
@@ -754,7 +710,6 @@ fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_no
             }
             assert_eq!(layout.offers.offers().count(), STATES as usize, "the uncontrolled province's icon is gone, one radar icon came");
 
-            // The hand-over: above every base cutoff, a new product changes nothing drawn and is held back.
             let mut view = Preparation::default();
             let published = |values: &Arc<BaseValues>| Layered { bases: Some(Arc::clone(values)), ..Layered::default() };
             inputs.camera.height = 5000.;

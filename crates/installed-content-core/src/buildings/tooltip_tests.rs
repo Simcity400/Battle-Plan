@@ -21,7 +21,6 @@ fn tooltip_operands_follow_authored_lists_and_last_valid_lane() {
     assert_eq!(lab.detecting_intel_type, 2);
     assert_eq!(lab.tooltip_refused, None);
     assert_eq!(data.types["ordinary"].detecting_intel_type, 0);
-    // An unknown lane is reported and retains the constructor default.
     let broken = &data.types["broken"];
     assert_eq!(broken.detecting_intel_type, 0);
     assert_eq!(broken.tooltip_refused, None);

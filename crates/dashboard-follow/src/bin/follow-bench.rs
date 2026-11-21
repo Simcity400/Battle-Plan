@@ -1,26 +1,3 @@
-//! Followed queries over the playhead, timed and checked. Dev tool, deleted with the playback
-//! build's last step. Prints one JSON summary on stdout.
-//!
-//! `follow-bench <recording> [--run=N | --from=<game hour> --hours=N] --page=0|7|50|500
-//! --select=<file>`: a format-12 recording, whole, one run or one span of game hours, a plain
-//! reader declaring `--select` standing for the map, a page of followed queries on the hook
-//! (`--hook=off`: the same columns declared by a plain reader, no follow). The page's queries are
-//! of cells of Countries (keys, all, top N): a series reads its tags through the query layer's
-//! identity, which reads no format-12 recording yet. Paced at `--speed` and `--hz`, or `--flat`;
-//! `--seek=<frames> --seeks=<n>` seeks while playing. With `--check`, sampled pushed answers and
-//! every query's last are compared with the same query answered from a lane of its own sought to
-//! the answer's hour. `--log=<Table>`
-//! follows one log of that table instead of a page; with `--check` every row it pushed is compared
-//! with every row the table inserted in the hours it played, read by a lane stepped an hour at a
-//! time: each pushed once, in hour order.
-//!
-//! `--service`: the whole service path. The page is the requests the widgets send (the stability
-//! and army requests; the registry answers each "not available" by name on this recording, whose
-//! identity the query layer does not read yet) and the page's logs, followed as queries; messages
-//! go through the push queue, a writer thread frames them into an OS pipe, and a reader thread at
-//! its far end is where they are checked and timed (hand-off to read).
-//!
-//! `--table` adds a table of every country by one column (`Cells` with every row) to the page.
 
 use dashboard_follow::{Answer, Follow, Message, Query, Rows, StepStats, answer_at, decode};
 use playhead::{
@@ -148,7 +125,6 @@ fn table_of(name: &str) -> io::Result<usize> {
     TableId::ALL.iter().position(|id| format!("{id:?}") == name).ok_or_else(|| invalid(format!("No table {name}")))
 }
 
-/// A selection file: a line a table, `Table` for every column, `Table:numeric`, or `Table:col,col`.
 fn read_selection(pages: &WorldPages, path: &str) -> io::Result<Vec<Declared>> {
     let text = std::fs::read_to_string(path)?;
     let mut declared = Vec::new();
@@ -173,9 +149,6 @@ fn numeric(kind: Kind) -> bool {
     !matches!(kind, Kind::Bytes | Kind::U32List | Kind::U64List | Kind::Opaque)
 }
 
-/// A page of followed queries of Countries' cells: 7 (today's widgets: the measures of eight
-/// countries and of 64, a top 10), 50, or 500 with a rank over every country; the countries are
-/// the rows live at `hour`, by key.
 fn page(size: usize, pages: &Arc<dyn Pages>, hour: Hour) -> io::Result<Vec<Query>> {
     if size == 0 {
         return Ok(Vec::new());
@@ -265,7 +238,6 @@ struct StepRecord {
     built_ns: u64,
     stalled: u32,
     reset: bool,
-    /// The followed log's table's head after the step.
     log_head: Option<Hour>,
 }
 
@@ -280,8 +252,6 @@ fn report(held: &Report) -> serde_json::Value {
     json!({ "total": held.total, "cells": held.held.cells, "parts": held.held.part_bytes, "tracks": held.held.track_bytes, "lanes": held.lanes, "ring": held.ring_bytes, "states": held.state_bytes })
 }
 
-/// The requests the widgets send (the stability and army requests), and the page's logs, which no
-/// widget sends yet, as queries: each request, and the query it is followed as when it is one.
 fn service_page(page: &[Query], table: bool) -> (Vec<serde_json::Value>, Vec<Option<Query>>) {
     let majors: Vec<serde_json::Value> = ["GER", "SOV", "USA", "ENG", "FRA", "ITA", "JAP", "CHI"].iter().map(|tag| json!({ "country": tag, "hour": 0 })).collect();
     let mut requests = vec![
@@ -289,7 +259,6 @@ fn service_page(page: &[Query], table: bool) -> (Vec<serde_json::Value>, Vec<Opt
         json!({ "product": "army-size", "params": { "branchId": "1", "tags": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false } }),
     ];
     let mut parsed: Vec<Option<Query>> = vec![None; requests.len()];
-    // No widget sends a log or a table yet: they are followed as queries, their messages on the same pipe.
     let direct = page.iter().filter(|query| matches!(query, Query::Cells { rows: Rows::Appended, .. })).chain(page.last().filter(|_| table));
     for query in direct {
         requests.push(serde_json::Value::Null);
@@ -323,7 +292,6 @@ impl dashboard_follow::registry::Playheads for BenchPlayheads {
     }
 }
 
-/// A frame read at the pipe's far end: its sequence, when it was read, its payload.
 type Piped = (u32, Instant, Vec<u8>);
 
 fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], options: &Options) -> io::Result<serde_json::Value> {
@@ -451,7 +419,6 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         let head = if options.flat {
             match playhead.newest() {
                 Some(newest) if Some(newest) != applied => newest,
-                // At the end with seeks left: seek now.
                 Some(newest) if applied == Some(timeline.last()) && options.seek_every.is_some() && seeks.len() < options.seeks && seeks.last().is_none_or(|seek| seek.taken_ms.is_some()) => {
                     at_end = true;
                     newest
@@ -667,10 +634,6 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
     }))
 }
 
-/// A log's pushed rows against every row its table inserted in the hours the table played, one
-/// stretch at a time: a seek's reset starts a stretch at the hour sought (the rows of the hours it
-/// jumped over are not pushed), and every other step plays its table's hours after the head
-/// before it. A seek back plays hours again in a new stretch, which pushes their rows again.
 fn check_log(pages: &Arc<dyn Pages>, table: usize, piece: playhead::Piece, logged: &[(u64, Vec<u8>)], steps: &[StepRecord]) -> io::Result<serde_json::Value> {
     let (mut pushed, mut out_of_order, mut previous) = (Vec::new(), 0_u64, None::<(u64, Hour)>);
     for (stretch, body) in logged {
@@ -725,8 +688,6 @@ fn check_log(pages: &Arc<dyn Pages>, table: usize, piece: playhead::Piece, logge
         "passed": missing == 0 && extra == 0 && duplicates == 0 && out_of_order == 0 }))
 }
 
-/// Sampled answers and every query's last, each against its query answered from a lane sought to
-/// its hour.
 fn check(pages: &Arc<dyn Pages>, page: &[Query], answers: &[(u32, Hour, Vec<u8>)], last: &HashMap<u32, (Hour, Vec<u8>)>) -> io::Result<serde_json::Value> {
     let every = (answers.len() / 400).max(1);
     let mut wanted: Vec<(Hour, u32, &[u8])> = answers.iter().step_by(every).map(|(id, hour, body)| (*hour, *id, body.as_slice())).collect();

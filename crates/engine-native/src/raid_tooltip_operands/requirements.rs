@@ -1,6 +1,3 @@
-//! Equipment maps are sorted by definition pointer, which content order
-//! cannot reconstruct. Record their ordered tokens. Definitions are
-//! reloadable; tooltips read the map live.
 use super::*;
 use crate::{cequipment_type as eq, raid_database as db};
 
@@ -20,7 +17,6 @@ fn map(
         m,
         at,
         "raid tooltip operand unreadable",
-        // A count witness distinguishes empty maps from missing order data.
         |count| {
             sink.borrow_mut().push(
                 kind,

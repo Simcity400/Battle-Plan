@@ -6,7 +6,6 @@ fn append_rig(library: &mut ModelLibrary, slot: usize) {
     let mut rig =
         crate::map::entity_animation::pose_tests::rig(0.6 + slot as f32 * 0.1, true, true);
     if slot == 2 {
-        // Default-state admission must still refuse a reachable random variant.
         for node in &mut rig.nodes {
             node.clips.push(node.clips[0].clone());
         }
@@ -15,7 +14,6 @@ fn append_rig(library: &mut ModelLibrary, slot: usize) {
         rig.nodes[0].default = "unregistered_default".into();
     }
     if slot == 4 {
-        // One non-native child needs real palettes: the ENTIRE pass must fall back.
         rig.nodes[1].native = None;
     }
     if slot == 5 {
@@ -50,8 +48,6 @@ fn append_rig(library: &mut ModelLibrary, slot: usize) {
     });
 }
 
-// Check the observable boundary from the fixture's source rows, without evaluating
-// any second player manager or retaining an old animation-dispatch implementation.
 fn assert_frame(
     pass: &ModelPass,
     before: &ModelField,
@@ -96,7 +92,6 @@ fn assert_frame(
                     refused += 1;
                     continue;
                 }
-                // Mesh 3 has an undeclared default; mesh 5 has no clips.
                 if matches!(group.mesh, 3 | 5) {
                     continue;
                 }
@@ -505,15 +500,12 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
     let mut warm = 0;
     for frame in 0..900u32 {
         let roll = next();
-        // The retained layout serves every model pass: the same 900 frames run under a label
-        // that is neither of the two it was once restricted to.
         pass.label = match frame {
             ..300 => "unit models",
             300..600 => "map buildings",
             _ => "city sprawl",
         };
         if frame == 180 {
-            // A formerly missing rig joins a live field; palette length also changes.
             append_rig(&mut library, 6);
             pass.sync(&library);
             counts[0] += 1;
@@ -584,7 +576,6 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
             }
         }
         for (at, group) in field.groups.iter_mut().enumerate() {
-            // Bounds change WITHOUT any structural layout change.
             group.bounds = if (frame / 7 + at as u32).is_multiple_of(4) {
                 [20., 20., 21., 21.]
             } else {
@@ -594,7 +585,7 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
         }
         if frame % 37 == 13 && field.groups.len() > 2 {
             let duplicate = field.groups[0].clone();
-            field.groups.insert(2, duplicate); // Overlapping ranges, not just duplicate keys.
+            field.groups.insert(2, duplicate);
             let shift = roll as usize % field.groups.len();
             field.groups.rotate_left(shift);
             field.native_order = field
@@ -687,8 +678,6 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
         } else {
             &[0., -32., 32.]
         };
-        // Resolve the fixture's explicit redirect before recording the expected
-        // input boundary; animation itself is still the sole production entry.
         pass.fall_back();
         let input = pass.field.clone();
         let appeared = pass.default_appeared.clone();

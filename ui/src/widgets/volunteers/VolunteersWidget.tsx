@@ -47,7 +47,6 @@ const unit = (kind: VolunteerKind, count: number) => kind === 'land' ? `${usNumb
 type Partner = LinkAt & { partner: string; partnerKey: string; direction: 'sent' | 'received' };
 
 export default function VolunteersWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
-  // The hour renders the widget only when which links show changes; their counts are painted by the diagram each frame.
   const linksKey = useRef<(hour: number) => string>(() => '');
   const playbackHour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', hour => linksKey.current(hour));
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -57,9 +56,6 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  // The country choice is the shared one (`countryMatch`): countries by their native holders
-  // and recorded identity history, so a tag a later country takes, or a rename, never changes
-  // whose forces count; a group by hour counts a member only while it belongs.
   const all = widget.countries.kind === 'all';
   const groups = useCountryGroups(runtime, track, active && !all);
   const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
@@ -68,7 +64,6 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const chosen = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, lastHour, undefined, track?.branch.firstHour),
     [widget.countries, fallback, groups.data, lastHour, track?.branch.firstHour]);
-  // The request names every tag the chosen holders carry in the branch; only All asks for every link.
   const tags = useMemo(() => requestTags(all, chosen.membership), [all, chosen.membership]);
   const requestable = all || (match.ready && !match.reason && !!tags?.length);
   const reply = useProduct<VolunteersExpeditionariesReply>(runtime.client, track && requestable ? { sourceId: track.source.id, revision: track.source.revision, product: 'volunteers-expeditionaries',
@@ -82,28 +77,20 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     return JSON.stringify([held.unknown, held.links.map(link => link.key)]);
   };
   const [capacity, setCapacity] = useState(12);
-  // The combined Other node takes one of the rows the diagram has room for.
   const perSide = Math.max(1, Math.min(Number(options.perSide) || 12, capacity - 1));
   const summed = useMemo(() => sumFlowParts(flowParts(current.links), perSide), [current.links, perSide]);
-  // Totals also change where a chosen holder starts carrying a tag or joins the group.
   const boundaries = useMemo(() => (chosen.membership ?? []).map(run => run.firstHour), [chosen.membership]);
   const scale = useMemo(() => options.scale === 'moment' || !reply.data ? null : campaignScale(reply.data, keep, boundaries) || null, [options.scale, reply.data, keep, boundaries]);
-  // Nodes are native holders (`holderKey`); each holder is named by its tag at the hour shown,
-  // when its link is in place, and coloured as recorded at its links' first hour, a stable hour
-  // it held the tag, so a later holder of the tag never lends its look.
   const holders = useMemo(() => linkHolders(current.links), [current.links]);
   const tagOf = useMemo(() => new Map(holders.map(holder => [holder.key, holder.tag])), [holders]);
   const looks = useHolderLooks(runtime.client, track, holders, active, tokens);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // The drill holds the holder clicked, named as it was at the hour clicked.
   const picked = drill.breakdown;
   const pickedTag = useMemo(() => { if (!picked) return null; const parsed: unknown = JSON.parse(picked); return Array.isArray(parsed) && typeof parsed[0] === 'string' ? parsed[0] : null; }, [picked]);
   const [drillRows, setDrillRows] = useChangedState<readonly string[]>([]);
-  // Flags for drawn nodes, and for the drill's rows while its list is mounted.
   const drillListed = picked !== null && current.links.some(item => item.senderKey === picked || item.hostKey === picked);
   const nodeTags = useMemo(() => [...new Set([...summed.nodes.flatMap(node => node.tag ? [tagOf.get(node.tag)!] : []), ...(drillListed ? drillRows : [])])],
     [summed.nodes, tagOf, drillListed, drillRows]);
-  // Names for every partner (tooltips list Other's members); flags only for drawn nodes.
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => [...holders.map(holder => ({ hour: at, tag: holder.tag })),
     ...(pickedTag && drill.hour !== null ? [{ hour: drill.hour, tag: pickedTag }] : [])], [holders, at, pickedTag, drill.hour]), active);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, useMemo(() => nodeTags.map(tag => ({ hour: at, tag })), [nodeTags, at]), active);
@@ -115,7 +102,6 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
     [summed.nodes, label, tagOf, tokens, nodeName, colours]);
   const links = useMemo(() => summed.links.map(link => ({ id: link.id, source: link.source, target: link.target, value: link.value,
     color: nodeColours.get(link.source) ?? tokens.muted, order: link.id })), [summed.links, nodeColours, tokens.muted]);
-  // Following, the diagram reads the head's ribbons as it paints: the counts move with no render.
   const valuesAt = useCallback((hour: number): FlowValues => {
     const held = reply.data ? linksAt(reply.data, hour, keep) : { links: [], unknown: 0 };
     const sum = sumFlowParts(flowParts(held.links), perSide);
@@ -175,8 +161,6 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const covers = (span: { firstHour: number; lastHour: number }) => span.firstHour <= at && at <= span.lastHour;
   const message = current.links.length ? null : emptyMessage(kind, { aidUnobserved: reply.data.unobserved.some(covers),
     membershipUnobserved: chosen.unobserved.some(covers), unknown: current.unknown });
-  // A new kind, or a stretch of the recording after a gap, jumps rather than glides; a tag
-  // passing to another country is another node, so it never glides either.
   const main = <FlowDiagram live={reported} label={`${kind === 'land' ? 'Volunteers' : 'Expeditionary forces'}: senders to hosts`} nodes={nodes} links={links}
     stretch={`${kind}:${lookHour(track.branch, at)?.stretch ?? 'unrecorded'}`} scale={scale} slots={perSide + 1} hour={at} hoursPerSecond={hoursPerSecond} message={message} tooltip={tooltip}
     onCapacity={setCapacity} onLabelPick={node => { const found = summed.nodes.find(item => item.id === node.id); if (found?.tag) dispatch({ type: 'open', breakdown: found.tag, hour: at, playing: false, playhead: null }); }}

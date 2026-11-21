@@ -1,8 +1,3 @@
-//! The native data service: one owner of opened recordings, loader pools
-//! (lanes) that answer product requests, and a bounded response pump.
-//!
-//! Opening files and answering products never depends on a visible window.
-//! Only compact JSON replies cross the desktop control pipe.
 
 use job_priority::SpawnCarried as _;
 use crate::{
@@ -36,27 +31,16 @@ const MAX_PENDING: usize = crate::transport::MAX_PENDING_REQUESTS;
 
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
-/// The fewest whole-recording loaders on any machine.
 const MIN_LOADER_THREADS: usize = 2;
-/// Threads for `Product::INTERACTIVE` reads, apart from the scans.
 const INTERACTIVE_THREADS: usize = 2;
-/// The fewest threads answering through the query layer.
 const MIN_REPLY_THREADS: usize = 2;
-/// The fewest threads for `Product::REPLAYS` pages.
 const MIN_REPLAY_THREADS: usize = 2;
 
-/// Where a job waits. Each lane has its own threads and its own bound of
-/// [`MAX_PENDING`] queued jobs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Lane {
-    /// Opening, map settings, and products that read a whole branch of recorded frames.
     History,
-    /// Hover and label reads at one hour, and history choices.
     Interactive,
-    /// Replies read through the query layer: bounded by what they ask.
     Replies,
-    /// Pages that replay recorded tables to their rows' hours (`Product::REPLAYS`): seconds a
-    /// page at mid-war, so they never take a thread a reply waits for.
     Replays,
 }
 
@@ -72,24 +56,20 @@ impl Lane {
         }
     }
 
-    /// Threads serving this lane on a machine with `parallelism` hardware threads.
     pub(super) fn threads(self, parallelism: usize) -> usize {
         match self {
             Self::History => (parallelism / 4).max(MIN_LOADER_THREADS),
             Self::Interactive => INTERACTIVE_THREADS,
             Self::Replies => (parallelism / 2).max(MIN_REPLY_THREADS),
-            // Each page reads its tables on rayon's shared pool too: few pages at once leave it to the replies.
             Self::Replays => (parallelism / 8).max(MIN_REPLAY_THREADS),
         }
     }
 }
 
-/// The machine's hardware threads, as the lanes are sized from them.
 fn parallelism() -> usize {
     thread::available_parallelism().map_or(1, |threads| threads.get())
 }
 
-/// Where jobs wait, one queue per [`Lane`].
 struct Lanes {
     history: SyncSender<LoadJob>,
     interactive: SyncSender<LoadJob>,
@@ -120,19 +100,14 @@ type RefreshHook = Box<dyn FnOnce(&Inner) + Send>;
 struct Inner {
     lease_namespace: uuid::Uuid,
     map_settings: Mutex<map_settings::Store>,
-    /// The configured content, with the generation every change of it, or of the saved map
-    /// settings, bumps; bindings are derived from it ([`Inner::rebind`]).
     content: crate::presentation::Config<Option<ContentOptions>>,
     visual_catalogue: Mutex<Option<VisualCatalogue>>,
-    /// Advances whenever an open source's presentation changes ([`Inner::present`]), so a
-    /// client fetches its content-dependent replies again.
     presentation_generation: std::sync::atomic::AtomicU64,
     sources: Mutex<Sources>,
     pending: Mutex<Pending>,
     loader: Mutex<Option<Lanes>>,
     signal: Arc<Signal>,
     closed: Arc<AtomicBool>,
-    /// Run once by a rebind between deriving a binding and installing it.
     #[cfg(test)]
     test_rebind_derived: Mutex<Option<RefreshHook>>,
 }
@@ -213,9 +188,7 @@ impl Service {
         }))
     }
 
-    /// Game and user folders for products that read artwork or localisation.
     pub fn configure_content(&self, config: &Config, allow_unverified: bool) -> io::Result<()> {
-        // A recording plays back from its own facts; without folders its art shows placeholders.
         let options = match config.resolve_options() {
             Ok(options) => options,
             Err(_) => match Config::content_cache_dir() {
@@ -235,20 +208,16 @@ impl Service {
             allow_unverified,
             presentation: Default::default(),
         }));
-        // After the folders are committed: work admitted under earlier ones cannot install theirs.
         self.inner.configure_game();
         Ok(())
     }
 
-    /// Gives the recording at `path` the facts it lacks before a user opens it, so the revision
-    /// the open names is the upgraded one.
     pub fn upgrade_recording(&self, path: &std::path::Path) {
         if let Ok(path) = path.canonicalize() {
             self.inner.upgrade(&path);
         }
     }
 
-    /// Whether products that read artwork have the game's folders bound.
     pub fn content_bound(&self) -> bool {
         self.inner
             .content()
@@ -272,13 +241,9 @@ impl Service {
         if !changed {
             return;
         }
-        // The new folders and the mods they install are each source's new binding, swapped in
-        // whole; without folders the sources are unbound. Only the service closing stops the
-        // catch-up: its rebinds retry only while the configuration keeps changing.
         let _ = self.inner.catch_up();
     }
 
-    /// Read the map preferences the desktop host saved since this process last read them.
     pub fn reload_map_settings(&self) {
         self.inner
             .map_settings
@@ -306,8 +271,6 @@ impl Service {
         ))
     }
 
-    /// The resolved settings of a scope key ([`map_settings::campaign_key`],
-    /// [`map_settings::widget_key`]).
     pub fn scoped_map_settings(&self, scope: &str) -> ResolvedMapSettings {
         self.inner
             .map_settings
@@ -316,7 +279,6 @@ impl Service {
             .get(scope)
     }
 
-    /// Changes whenever a scope's resolved settings may have.
     pub fn map_settings_generation(&self) -> u64 {
         self.inner
             .map_settings
@@ -336,7 +298,6 @@ impl Service {
             .ok_or_else(|| "The map's recording binding has been released".into())
     }
 
-    /// A native map opens or shares a source directly, without a lease.
     pub fn open_map(&self, path: &Path, revision: Option<&str>) -> Result<Arc<Source>, String> {
         self.inner.open(path, revision, &self.inner.closed)
     }
@@ -536,9 +497,6 @@ impl Service {
 
     pub fn shutdown(&self) {
         self.inner.stop();
-        // A service thread only requests stop. Keep its handle for the owner's
-        // subsequent retirement. Check before locking: another caller may hold
-        // the join lock while it waits for this very callback to return.
         if self.thread_ids.contains(&thread::current().id()) {
             return;
         }

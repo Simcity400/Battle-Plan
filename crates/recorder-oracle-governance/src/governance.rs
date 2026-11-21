@@ -1,4 +1,3 @@
-//! Governance comparisons follow native serializer predicates and full keys.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -212,9 +211,6 @@ fn compare_parties(
                     row.is_ruling,
                     u8::from(politics.ruling_party.as_deref() == Some(token)),
                 );
-                // A loaded save rebuilds each party with its owner's tag, whose index in
-                // the tag array is the owner's link id (not its canonical slot: dynamic
-                // countries' differ).
                 let owner = links
                     .get(&row.country)
                     .map(|country| country.id)
@@ -315,8 +311,6 @@ fn compare_politics(
                 saved.election_frequency,
             );
         }
-        // The country writer writes both elections operands unconditionally;
-        // an older recording holds no value.
         if let Recorded::Value(has_elections) = row.has_elections {
             equal(
                 report,
@@ -382,10 +376,6 @@ fn compare_ruling_party(
     Ok(())
 }
 
-/// The game writes the idea name token through token text lookup, not its
-/// definition string. Initialization registers that
-/// string through token insertion; the recorded dictionary supplies its
-/// canonical writer spelling even when another file registered it first.
 fn compare_ideas(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -443,7 +433,6 @@ fn check_ordinals(values: impl IntoIterator<Item = u32>) -> io::Result<()> {
     Ok(())
 }
 
-/// The game preserves timed-roster order; the game saves stored days.
 fn compare_timed_ideas(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -487,7 +476,6 @@ fn compare_timed_ideas(
     Ok(())
 }
 
-/// The game saves every random-item entry, including inactive ones.
 fn compare_decision_random_items(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -575,11 +563,6 @@ fn compare_focus(
             row.progress,
             saved.progress.as_ref().map_or(0, |v| v.raw),
         );
-        // The focus writer emits `paused` after the selected-focus fields,
-        // guarded only by a zero pause byte. The `current` and
-        // `current_continuous` fields have independent pointer-presence gates. The
-        // comparison therefore applies to every country with a focus-progress
-        // object, including the ones that have selected no focus at all.
         equal(
             report,
             format!("{subject}.paused"),
@@ -613,9 +596,6 @@ fn compare_focus(
             report.difference(label(tag, "focus"), "missing captured country", "present");
         }
     }
-    // The applicability of the paused comparison is a printed result, not an
-    // assumption: the focus writer guards that write on the native byte alone, so the
-    // focus-less countries below are genuinely compared rather than skipped.
     report.limitation(
         "the focus writer writes paused only while the native byte is zero, and that write is not nested inside the selected-focus branches; an omitted paused therefore proves a nonzero byte for every country with a focus-progress object, without proving its exact bits",
         format!(
@@ -820,8 +800,6 @@ fn compare_decisions(
             if row.container < 3 {
                 return Err(invalid("untargeted decision has a description seed"));
             }
-            // The game passes the canonical country slot or signed numeric target
-            // to the first-match lookup. The game saves its raw count.
             let target = if (row.country_target as i32) > 0 {
                 links
                     .get(&row.country_target)
@@ -1000,16 +978,6 @@ fn compare_tactics(
     Ok(())
 }
 
-/// Each country's recorded doctrine unlocks against its saved doctrine
-/// status. The doctrine save writer writes one status per slot of
-/// the doctrine array in slot order, and the game indexes that array by
-/// canonical country slot, so saved status N is slot N's. The game writes
-/// the tactic vector as `enable_tactic`, each tactic by its database ID in
-/// vector order, omitting an empty vector. The collector records every
-/// country of the canonical census (every non-null country slot, the
-/// Countries table) with an explicit row, empty included, so every census
-/// country needs its row; a saved status may be absent from the recording
-/// only when its slot is outside that census.
 fn compare_tactic_unlocks(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -1021,8 +989,6 @@ fn compare_tactic_unlocks(
         .doctrine
         .as_ref()
         .ok_or_else(|| invalid("tactic unlock comparison requires the saved doctrine block"))?;
-    // The canonical census: every tagged country links to itself
-    // (country_context), so the links reach each Countries row.
     let census: BTreeMap<u32, &CountryRow> = links
         .values()
         .map(|country| (country.canonical_slot, *country))

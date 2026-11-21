@@ -5,7 +5,6 @@ use installed_content_core::test_support::Stack;
 fn asset_files_load_recursively_and_resolve_after_every_file() {
     let stack = Stack::new("sound_catalog_order");
     let base = stack.base();
-    // `category.asset` sorts before the effects it names; references wait for every file.
     stack.write(
         &base,
         "sound/category.asset",
@@ -64,7 +63,6 @@ fn asset_files_load_recursively_and_resolve_after_every_file() {
         .map(|choice| (catalog.sounds[choice.sound].name.as_str(), choice.weight))
         .collect();
     assert_eq!(sounds, [("boom_01", 1), ("boom_02", 3)]);
-    // Files are relative to their own asset's folder.
     assert_eq!(catalog.sounds[0].path, "sound/units/boom1.wav");
     assert_eq!(catalog.sounds[0].volume, 0.25);
     assert_eq!(catalog.sounds[1].path, "sound/units/deep/boom2.wav");
@@ -211,16 +209,12 @@ fn a_repeated_category_takes_the_later_compressor_and_sounds_read_their_priority
     );
     let catalog = Catalog::read(&stack.layers(&[])).unwrap();
     assert_eq!(catalog.categories.len(), 1);
-    // A repeat without a compressor keeps the earlier one; a later compressor
-    // replaces it.
     assert_eq!(catalog.categories[0].compressor.unwrap().ratio, 8.0);
     assert_eq!(catalog.sounds[0].priority, 3.0);
     assert_eq!(catalog.sounds[1].priority, 1.0);
     assert!(catalog.notes.is_empty(), "{:?}", catalog.notes.lines());
 }
 
-/// A category declared again adds its effects to its one list, and the lists resolve in
-/// category order: reopening an earlier category does not take an effect back from a later one.
 #[test]
 fn reopening_a_category_keeps_the_category_order_resolution() {
     let stack = Stack::new("sound_catalog_category_reopen");
@@ -247,7 +241,6 @@ fn reopening_a_category_keeps_the_category_order_resolution() {
     );
 }
 
-/// A quoted key has no keyword identity: it names no property and is refused by name.
 #[test]
 fn quoted_property_keys_are_no_keywords() {
     let stack = Stack::new("sound_catalog_quoted_keys");
@@ -322,8 +315,6 @@ fn escaped_quotes_stay_part_of_sound_names_and_references() {
     );
 }
 
-/// The game keeps a sound's name in 64 bytes: a longer one is added and found by its first 63
-/// bytes, so a reference naming it whole misses and a second name sharing them repeats.
 #[test]
 fn a_sound_name_is_added_and_found_by_its_first_63_bytes() {
     let stack = Stack::new("sound_catalog_long_names");
@@ -405,8 +396,6 @@ fn height_volume_clamps_altitude_and_interpolates() {
     assert!((defines.height_volume(1050.0) - 0.6).abs() < 1e-6);
 }
 
-/// Reads the installation's own sound definitions and decodes every sample an
-/// effect can choose. Set `BATTLE_PLAN_GAME_DIR`; DLC folders are not mounted here.
 #[test]
 #[ignore = "reads the installation named by BATTLE_PLAN_GAME_DIR"]
 fn installed_sounds_resolve_and_decode() {

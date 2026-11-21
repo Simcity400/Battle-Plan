@@ -23,7 +23,6 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, programs: [{ ...reply.programs[0], facility: { ...reply.programs[0].facility, speedRaw: '9223372036854775808' } }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], choices: [{ ...reply.projects[0].choices[0], characterReference: '18446744073709551616' }] }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, breakthroughs: [{ ...reply.breakthroughs[0], readHour: 25 }] }), /Invalid/, 'a read after the hour shown');
-  // An unavailable roster is null, distinct from a read empty one.
   const unread = { ...reply, scientists: null, programs: null, projects: null, breakthroughs: null };
   assert.equal(validateProjectDetails(unread), unread);
   for (const roster of ['scientists', 'programs', 'projects', 'breakthroughs']) assert.throws(() => validateProjectDetails({ ...reply, [roster]: undefined }), /Invalid/);
@@ -55,7 +54,6 @@ test('a daily read moves only painted texts: its read date, counts and values ne
   assert.equal(after.get('s:7:injury'), `6 injury recovery days · read ${after.get('j:5:1:read')!.slice(' · read '.length)}`);
   assert.equal(after.get('p:3:assignment:0'), ' · Delayed unassignment: 2 days remaining (3 / 5)');
   assert.equal(after.get('p:3:assignment:1'), '', 'an untimed assignment shows no countdown');
-  // A scientist leaving, a reward offered or a name read renders.
   assert.notEqual(detailsStructure({ ...next, scientists: [] }), detailsStructure(next));
   assert.notEqual(detailsStructure({ ...next, projects: [{ ...next.projects[0], pending: null }] }), detailsStructure(next));
   assert.notEqual(detailsStructure({ ...next, programs: [{ ...next.programs[0], assignments: [{ ...next.programs[0].assignments[0], person: { ...person, name: 'Other' } }, next.programs[0].assignments[1]] }] }), detailsStructure(next));

@@ -1,42 +1,7 @@
 use super::*;
 use crate::raw::CountrySlots;
 
-// ===========================================================================
-// Scheduled production-rest raw-copy split (ProductionLines, Stockpiles,
-// ProductionLicenses, DeploymentConveyors, DeploymentLines,
-// DeploymentManpower, DeploymentEquipment, ProductionLicenseRecords).
-//
-// The acquisition worker copies the country census and per-country raw bytes, and
-// the single FIFO decode worker replays the existing typed walks against the
-// recorded spans (`crate::raw::Recorded`), so rows, ordinals, arenas,
-// truncation and failure reasons are identical by construction (see
-// `crate::raw` for the mirror rules).
-//
-// One shared country census feeds all eight tables (no duplicated censuses);
-// the production manager is shared by lines/stockpiles/licences/records and
-// the deployment manager by the four deployment tables. Empty
-// ProductionLicenseRecords shares the licence walk and moves with it (never
-// observed nonempty on the test campaign, but the walk is shared so it is
-// recorded, not proven trivial). Licence arenas (produced handles, conveyor
-// names, line custom names) are staged decode-side: the log holds the
-// underlying string/array bytes and the worker fills the pooled arenas by
-// replaying the identical walks.
-//
-// Fault attribution is conservative: shared census spans carry
-// all eight bits, production-manager spans the four production bits, and
-// deployment spans all four deployment bits, so any live failure blocks its
-// whole shared domain. Per-table leaves use
-// single-bit masks. The mirror traverses structurally and records every
-// discoverable span, never aborting except on overflow: the replay derives
-// every outcome, precedence and error scope from the same recorded spans, so
-// later extras are harmless.
-// ===========================================================================
 
-/// Fault-attribution bits in family order: [lines, stockpiles, licences,
-/// conveyors, lines, manpower, equipment, records]. Shared census spans
-/// carry all eight bits; production-manager spans the four production bits;
-/// deployment spans all four deployment bits (the walk's shared failure
-/// domain).
 const M_P_LINES: u32 = 0x01;
 const M_P_STOCK: u32 = 0x02;
 const M_P_LIC: u32 = 0x04;
@@ -45,8 +10,6 @@ const M_P_PROD_MGR: u32 = 0x87;
 const M_P_DEPLOY: u32 = 0x78;
 const M_P_CENSUS: u32 = 0xFF;
 
-/// One scheduled refresh of raw production-rest payload. Worker pools grow
-/// from original request/header demand before publication and recycle storage.
 #[derive(Debug, Default)]
 pub struct ProductionRestJob {
     pub log: RawLog<8>,
@@ -63,12 +26,8 @@ pub(super) struct ProductionRestCountry {
 impl ProductionRestJob {
     pub fn new() -> Self {
         let mut log = RawLog::new(0, 0);
-        // Optional discovery tracing has its own bounded storage. Exhaustion
-        // disables only plan compilation; the ordinary capture still completes.
         log.initialize_read_plan(0, 0, 0);
         let mut job = Self {
-            // Reusable storage is advisory; worker copies grow from each
-            // original span and the original country header.
             log,
             game_state: 0,
             census: Vec::new(),
@@ -78,7 +37,6 @@ impl ProductionRestJob {
         job
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -89,7 +47,6 @@ impl ProductionRestJob {
         self.log.grow_for_next()
     }
 
-    /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
         engine_allocation::advisory(|| {
             self.log.grow();
@@ -103,8 +60,6 @@ impl ProductionRestJob {
         self.update_capacity_charge();
     }
 
-    /// Off the game thread: hold one census row per observed country slot so
-    /// the first hour after a large save loads does not overflow.
     pub fn presize_countries(&mut self) {
         if crate::country_scale::reserve_census(&mut self.census) {
             self.update_capacity_charge();
@@ -122,17 +77,12 @@ impl ProductionRestJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProductionRestCopyReport {
-    /// False when staging overflowed or a prepared capture failed. The caller
-    /// may use the typed walk only when plan_failed is also false.
     pub raw_ok: bool,
-    /// Transcript disagreement or capacity exhaustion after prepared source
-    /// observations. This capture must not trigger another live acquisition.
     pub plan_failed: bool,
     pub copy_ticks: [u64; 8],
     pub raw_bytes: [u64; 8],
 }
 
-/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct ProductionRestCopyContext {
     pub base: usize,
@@ -143,8 +93,6 @@ fn p_pool_u64(log: &RawLog<8>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 fn pspan(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -155,16 +103,10 @@ fn pspan(
     log.take(memory, addr?, len, mask)
 }
 
-/// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
-/// terminator. Inline strings ride in the header span; the replay requests
-/// exact ranges, so record the payload exactly like a heap one.
 fn copy_production_string(log: &mut RawLog<8>, memory: &impl Memory, string: usize, mask: u32) {
     let Some(header_start) = pspan(log, memory, Some(string), 32, mask) else {
         return;
     };
-    // The walk reads length/capacity/pointer as separate 8-byte spans, not
-    // just the 32-byte header above; record those exact spans too so
-    // exact-match service hits. Extras are harmless.
     let _ = pspan(
         log,
         memory,
@@ -208,8 +150,6 @@ fn copy_production_string(log: &mut RawLog<8>, memory: &impl Memory, string: usi
     let _ = pspan(log, memory, source.checked_add(len), 1, mask);
 }
 
-/// Authenticated country census shared by all eight tables. Records the exact
-/// read set of `ccountry::Reader::new` plus one full `read_at` per slot.
 fn copy_production_census(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -256,7 +196,6 @@ fn copy_production_census(
         log.overflowed = true;
         return false;
     }
-    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
     for slot in 1..slots.count() {
         match slots.take(log, memory, slot, M_P_CENSUS) {
             Some(Some(pointer)) => {
@@ -273,8 +212,6 @@ fn copy_production_census(
     true
 }
 
-/// Production manager for one country (shared by lines/stockpiles/licences/
-/// records). Returns the manager pointer on success.
 fn copy_production_manager(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -309,7 +246,6 @@ fn copy_production_manager(
     Some(pointer)
 }
 
-/// Deployment manager for one country (shared by the four deployment tables).
 fn copy_deployment_manager(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -348,11 +284,6 @@ fn copy_variant_identity(log: &mut RawLog<8>, memory: &impl Memory, pointer: usi
     let _ = pspan(log, memory, Some(pointer), 16, mask);
 }
 
-/// Mirror of `walk_lines`' read set: array header, per-line pointers, the
-/// eight scattered field spans per line plus variant identities, then each
-/// line's maximum-factory and efficiency reads. `defines` holds the six
-/// maximum-factory defines once a line of this pass has staged them; the walk
-/// reads them once, at the first line that needs one.
 fn copy_production_lines(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -387,7 +318,6 @@ fn copy_production_lines(
             Some(p) => p,
             None => continue,
         };
-        // Eight scattered spans exactly like `read_row`'s `copy_scattered`.
         let takes = [
             (pointer, 16),
             (
@@ -454,7 +384,6 @@ fn copy_production_lines(
     }
 }
 
-/// `read_row`'s line kind by exact primary vtable.
 fn line_kind(base: usize, vtable: usize) -> Option<u8> {
     let kinds = [
         engine_native::cmilitary_production_line::VTABLE_RVA,
@@ -477,8 +406,6 @@ fn line_kind(base: usize, vtable: usize) -> Option<u8> {
     })
 }
 
-/// Mirror of `read_row`'s maximum factories and the efficiency entries they
-/// select. A failed or unparsable span stops here; the replay fails the same.
 #[allow(clippy::too_many_arguments)]
 fn copy_line_efficiency(
     log: &mut RawLog<8>,
@@ -509,9 +436,6 @@ fn copy_line_efficiency(
     }
 }
 
-/// Mirror of `cequipment_production_line::max_factories`: the variant's type
-/// link and classifier, then the type's and its archetype's optionals, then
-/// the defines the kind selects.
 fn copy_max_factories(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -595,8 +519,6 @@ fn copy_max_factories(
     copy_factory_define(log, memory, base, defines, index)
 }
 
-/// Stages the six maximum-factory defines at the first line that needs one;
-/// the walk reads them together once.
 fn copy_factory_define(
     log: &mut RawLog<8>,
     memory: &impl Memory,
@@ -618,8 +540,6 @@ fn copy_factory_define(
     defines.map(|values| values[index])
 }
 
-/// Mirror of `walk_stockpiles`' read set: pool vtable, array header,
-/// per-entry words plus variant identities.
 fn copy_production_stockpiles(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let pool = match manager.checked_add(cproduction_status::STOCKPILE_POOL) {
         Some(p) => p,
@@ -658,8 +578,6 @@ fn copy_production_stockpiles(log: &mut RawLog<8>, memory: &impl Memory, manager
     }
 }
 
-/// Mirror of `walk_licenses`' read set: array header, per-licence pointers
-/// plus variant identities.
 fn copy_production_licenses(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let Some(header_start) = pspan(
         log,
@@ -684,7 +602,6 @@ fn copy_production_licenses(log: &mut RawLog<8>, memory: &impl Memory, manager: 
         let variant = usize::try_from(p_pool_u64(log, ptr_start))
             .ok()
             .filter(|&p| p != 0);
-        // Licence entries hold variant pointers directly; authenticate via identity.
         if let Some(v) = variant {
             copy_variant_identity(log, memory, v, M_P_LIC);
         }
@@ -694,9 +611,6 @@ fn copy_production_licenses(log: &mut RawLog<8>, memory: &impl Memory, manager: 
     }
 }
 
-/// Mirror of `walk_license_records`' read set: array header, record heads,
-/// parent identities, equipment headers plus per-handle pointers
-/// and identities.
 fn copy_production_records(log: &mut RawLog<8>, memory: &impl Memory, manager: usize) {
     let Some(header_start) = pspan(
         log,
@@ -766,11 +680,6 @@ fn copy_production_records(log: &mut RawLog<8>, memory: &impl Memory, manager: u
     }
 }
 
-/// Mirror of the shared deployment walk's read set: conveyor array, per
-/// conveyor heads plus templates, line arrays and names, per-line heads plus
-/// name objects, custom strings, deployment objects with pools and manpower,
-/// plus per-entry words and variant identities. All spans carry the combined
-/// deployment mask, matching the walk's shared failure domain.
 fn copy_deployment_queue(log: &mut RawLog<8>, memory: &impl Memory, base: usize, manager: usize) {
     let Some(header_start) = pspan(
         log,
@@ -809,16 +718,11 @@ fn copy_deployment_queue(log: &mut RawLog<8>, memory: &impl Memory, base: usize,
         .ok()
         .filter(|&p| p != 0);
         if let Some(t) = template {
-            // Template vtable plus reference words.
             let _ = pspan(log, memory, Some(t), 16, M_P_DEPLOY);
         }
-        // Conveyor name string.
         if let Some(name) = conveyor.checked_add(cmilitary_deployment_conveyor::NAME) {
             copy_production_string(log, memory, name, M_P_DEPLOY);
         }
-        // Line array header as its own exact span: the walk reads it via
-        // `Array::read`, which exact-match service does not derive from
-        // the head span above.
         let _ = pspan(
             log,
             memory,
@@ -885,7 +789,6 @@ fn copy_deployment_line(
     let (Some(name), Some(deployment)) = (name, deployment) else {
         return;
     };
-    // Name object: vtable, order, override header, flags; then custom bytes.
     let _ = pspan(log, memory, Some(name), 8, M_P_DEPLOY);
     let _ = pspan(
         log,
@@ -954,7 +857,6 @@ fn copy_deployment_line(
         1,
         M_P_DEPLOY,
     );
-    // Parent backlink is inside the head span already; deployment object next.
     let _ = conveyor;
     copy_deployment_object(log, memory, base, deployment, line);
 }
@@ -988,7 +890,6 @@ fn copy_deployment_object(
         1,
         M_P_DEPLOY,
     );
-    // Equipment pool arrays.
     if let Some(h) = pspan(
         log,
         memory,
@@ -1023,15 +924,12 @@ fn copy_deployment_object(
         let mut raw = [0u8; 16];
         raw.copy_from_slice(&log.bytes[h..h + 16]);
         if let Some(array) = Array::from_header(raw, 24) {
-            // Allocation entries are counted, not decoded per row here; record
-            // the contiguous block as individual entry spans via takes below.
             for ordinal in 0..array.count {
                 let addr = array.element(ordinal, 24);
                 let _ = pspan(log, memory, addr, 24, M_P_DEPLOY);
             }
         }
     }
-    // Scalars.
     let _ = pspan(
         log,
         memory,
@@ -1081,7 +979,6 @@ fn copy_deployment_object(
         1,
         M_P_DEPLOY,
     );
-    // Manpower containers.
     for offset in [
         cmilitary_deployment::MANPOWER_HAVE,
         cmilitary_deployment::MANPOWER_NEED,
@@ -1111,7 +1008,6 @@ fn copy_deployment_object(
     }
 }
 
-/// Acquire one owned payload and report its per-table costs.
 pub fn copy_production_rest_refresh(
     memory: &impl Memory,
     ctx: ProductionRestCopyContext,
@@ -1141,7 +1037,6 @@ fn copy_production_rest(
 }
 
 impl Captured {
-    /// Finish an accepted acquisition failure without retrying live memory.
     pub fn fail_production_rest_capture(&mut self, reason: &'static str) {
         self.lines.outcome = Outcome::Unavailable { reason };
         self.stockpiles.outcome = Outcome::Unavailable { reason };
@@ -1155,10 +1050,6 @@ impl Captured {
     }
 }
 
-/// Reuse only the discovery program. Every successful replay acquires fresh
-/// payload bytes, and its controls must match before a dependent address is
-/// read. A changed control resumes the producer with the already-observed
-/// ordinal prefix; it never rereads that prefix or a failed source.
 fn acquire_production_rest_pass(
     memory: &impl Memory,
     base: usize,
@@ -1166,9 +1057,6 @@ fn acquire_production_rest_pass(
     job: &mut ProductionRestJob,
 ) {
     let _reads = read_accounting::table(TABLES[0]);
-    // These are the producer's external inputs. Output-table capacities
-    // do not select its reads; the raw producer captures a superset.
-    // Census capacity does affect admission, so it belongs to the plan key.
     let key = [base, game_state, job.census.capacity(), 1];
     if !job.log.begin_planned_capture(memory, key) {
         copy_production_rest_pass(memory, base, game_state, job);
@@ -1176,9 +1064,6 @@ fn acquire_production_rest_pass(
     job.log.finish_planned_capture();
 }
 
-/// One structural copy pass: shared census plus every country's production
-/// and deployment takes. The job is cleared on entry so pooled refreshes
-/// never accumulate spans across hours.
 fn copy_production_rest_pass(
     memory: &impl Memory,
     base: usize,

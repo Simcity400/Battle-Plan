@@ -1,10 +1,3 @@
-//! Every threat source of a timeline as one event: when the game created it, who caused it, its
-//! reason, what it added from each read on and the first and last read listing it. Joined from the
-//! recorder's `threat-events` log (a row the hour a source was listed, changed or dropped:
-//! `recorder_derive::threats`) and, at each stretch's first hour, where the log writes no rows,
-//! the sources the game listed then. A source is its country and second country references, date
-//! and reason, and its place among sources equal in all four. Cost: the log's rows (a few hundred
-//! a campaign) and one read of two small tables a stretch, never a walk of hours.
 
 use super::Named;
 use crate::{
@@ -35,13 +28,12 @@ pub struct ThreatEventsParams {
     pub branch_id: String,
 }
 
-/// What a source adds once its ramp ends, from a read on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ThreatAdded {
     pub hour: i32,
-    /// In contribution units (100,000 a percentage point of tension).
+    #[doc = " In contribution units (100,000 a percentage point of tension)."]
     pub added_raw: String,
 }
 
@@ -49,16 +41,16 @@ pub struct ThreatAdded {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ThreatEvent {
-    /// The hour the game created it.
+    #[doc = " The hour the game created it."]
     pub hour: i32,
-    /// The country that caused it, or the tag that last held its slot; null when none is known.
+    #[doc = " The country that caused it, or the tag that last held its slot; null when none is known."]
     pub tag: Option<String>,
     pub remembered: bool,
     pub reason: String,
     pub added: Vec<ThreatAdded>,
     pub first_read: i32,
     pub last_read: i32,
-    /// It is still listed at the timeline's end.
+    #[doc = " It is still listed at the timeline's end."]
     pub open: bool,
 }
 
@@ -67,16 +59,15 @@ pub struct ThreatEvent {
 #[serde(rename_all = "camelCase")]
 pub struct ThreatEventsReply {
     pub branch_id: String,
-    /// By creation hour, then first read.
+    #[doc = " By creation hour, then first read."]
     pub events: Vec<ThreatEvent>,
-    /// Hours of the timeline it does not hold, with why.
+    #[doc = " Hours of the timeline it does not hold, with why."]
     pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(ThreatEventsReply);
 
-/// A threat source's identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Identity {
     pub country: u32,
@@ -86,28 +77,20 @@ pub(super) struct Identity {
     pub place: u32,
 }
 
-/// What the join is told, in hour order.
 pub(super) enum Step {
-    /// A stretch of hours `first..=last` begins with these sources listed: identity, what each
-    /// adds and its slot.
     Stretch { first: i32, last: i32, listed: Vec<(Identity, i64, Option<u32>)> },
-    /// A logged row.
     Row { hour: i32, kind: u8, identity: Identity, final_raw: i64, slot: Option<u32> },
 }
 
-/// One source's life.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Joined {
     pub identity: Identity,
     pub slot: Option<u32>,
     pub added: Vec<(i32, i64)>,
     pub first_read: i32,
-    /// None while still listed.
     pub last_read: Option<i32>,
 }
 
-/// The sources' lives from `steps`, and how many rows named a source the join did not hold (a
-/// change or drop of one never listed).
 pub(super) fn join(steps: impl IntoIterator<Item = Step>) -> (Vec<Joined>, usize) {
     let mut events: Vec<Joined> = Vec::new();
     let mut open: HashMap<Identity, usize> = HashMap::new();
@@ -160,7 +143,6 @@ pub(super) fn join(steps: impl IntoIterator<Item = Step>) -> (Vec<Joined>, usize
     (events, unmatched)
 }
 
-/// Each listed source's identity, what it adds and its slot, in list order.
 fn listed(sources: &[ThreatSourceRow], slot_of: impl Fn(u32) -> Option<u32>) -> Vec<(Identity, i64, Option<u32>)> {
     let mut out: Vec<(Identity, i64, Option<u32>)> = Vec::with_capacity(sources.len());
     for source in sources {
@@ -192,7 +174,6 @@ fn bytes(cells: &[Cell], column: usize) -> Option<Vec<u8>> {
     }
 }
 
-/// A logged row as a join step; none when a cell is not recorded.
 fn row_step(row: &log::Row) -> Option<Step> {
     let slot = (row.key >> 64) as u32;
     let field = |name: &str| dashboard_declare::field(TableId::ThreatEvents, name).ok();
@@ -214,7 +195,6 @@ fn row_step(row: &log::Row) -> Option<Step> {
 
 impl Product for ThreatEvents {
     const KEY: &'static str = "threat-events";
-    // Reasons are the recording's own text.
     const CONTENT_DEPENDENT: bool = false;
     type Params = ThreatEventsParams;
     type Reply = ThreatEventsReply;
@@ -262,7 +242,6 @@ impl Product for ThreatEvents {
                     Vec::new()
                 }
             };
-            // Rows logged before this stretch belong to the one before it.
             while let Some(row) = rows.next_if(|row| row.hour < stretch.first) {
                 steps.extend(row_step(&row).or_else(|| {
                     unreadable += 1;

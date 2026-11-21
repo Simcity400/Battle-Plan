@@ -1,4 +1,3 @@
-//! The name a recording's file gets, for both recorders.
 
 use installed_content_country_names::country_names::{self, CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
@@ -9,17 +8,13 @@ use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingName {
-    /// The country's name, else its recorded tag; `None` when neither is known.
     pub country: Option<String>,
-    /// The first and last in-game years recorded.
     pub years: Option<(i32, i32)>,
     pub multiplayer: bool,
-    /// Why the country uses its recorded tag instead of a localised name.
     pub by_tag: Option<String>,
 }
 
 impl RecordingName {
-    /// `Germany 1936–1941 (Multiplayer)` and the like, safe as a Windows file name.
     pub fn stem(&self) -> String {
         let mut tail = String::new();
         match self.years {
@@ -42,7 +37,6 @@ impl RecordingName {
     }
 }
 
-/// The in-game year of an hour; none before the calendar's epoch.
 pub fn year(hour: Hour) -> Option<i32> {
     (hour >= weather_period::EPOCH)
         .then(|| (hour - weather_period::EPOCH) / weather_period::HOURS_PER_YEAR)
@@ -52,8 +46,6 @@ fn years((first, last): (Hour, Hour)) -> Option<(i32, i32)> {
     Some((year(first)?, year(last)?))
 }
 
-/// The tables the recording player's country is named from.
-/// The tables a recording's name reads of an hour.
 pub fn name_tables() -> Vec<TableId> {
     country_tables()
 }
@@ -64,17 +56,14 @@ fn country_tables() -> Vec<TableId> {
     tables
 }
 
-/// The recording player's country at one hour, ready to be named.
 #[derive(Clone, Debug)]
 struct Country {
     slot: u32,
     tag: Option<String>,
-    /// Its naming operands and those of its overlords.
     operands: BTreeMap<u32, Result<Operands, String>>,
 }
 
 impl Country {
-    /// The recording client's playing country; none for an observer or rows that cannot tell.
     fn of(frame: &DecodedFrame) -> Option<Self> {
         let [player] = frame.complete::<tables::LocalPlayer>().ok()? else {
             return None;
@@ -174,7 +163,6 @@ impl Country {
         true
     }
 
-    /// As the game names it in the recording's language, else its tag with the named refusal.
     fn name(&self, localisation: Option<&Localisation>) -> (Option<String>, Option<String>) {
         let refusal = if let Some(localisation) = localisation {
             match CountryNames::of_operands(localisation, self.operands.clone()).name(self.slot) {
@@ -204,7 +192,6 @@ fn more_than_one_player(frame: &DecodedFrame) -> bool {
     roster(frame) == Some(true)
 }
 
-/// Whether saved hours prove multiplayer or single-player; neither when a roster is missing.
 pub fn known_multiplayer(replay: &Replay, blocks: usize) -> io::Result<Option<bool>> {
     let mut known = true;
     let mut multiplayer = false;
@@ -228,12 +215,10 @@ pub fn known_multiplayer(replay: &Replay, blocks: usize) -> io::Result<Option<bo
     Ok(known.then_some(false))
 }
 
-/// Whether an hour of the first `blocks` held more than one human; stops at the first.
 pub fn multiplayer(replay: &Replay, blocks: usize) -> io::Result<bool> {
     multiplayer_among(replay, replay.index.iter().take(blocks).collect())
 }
 
-/// Whether an hour after the first `read` blocks held more than one human; stops at the first.
 pub fn multiplayer_after(replay: &Replay, read: usize) -> io::Result<bool> {
     multiplayer_among(replay, replay.index.iter().skip(read).collect())
 }
@@ -252,25 +237,21 @@ fn multiplayer_among(replay: &Replay, chosen: Vec<&replay::campaign::BlockIndex>
     Ok(multiplayer)
 }
 
-/// What a recording's name is made of, its country not yet put in words.
 #[derive(Clone, Debug, Default)]
 pub struct Contents {
     span: Option<(Hour, Hour)>,
     multiplayer: Option<bool>,
     country_known: bool,
-    /// The recording player's country at the latest hour; `None` when it plays none.
     country: Option<Country>,
 }
 
 impl Contents {
-    /// A finished recording's; `multiplayer` comes from its hours as they were saved.
     pub fn of(replay: &Replay, multiplayer: bool) -> io::Result<Self> {
         let span = replay
             .index
             .iter()
             .map(|block| (block.first_hour, block.last_hour))
             .reduce(|(first, last), (low, high)| (first.min(low), last.max(high)));
-        // Of several branches reaching the latest hour, the last written.
         let mut country_known = false;
         let country = match replay.index.iter().max_by_key(|block| block.last_hour) {
             Some(block) => {
@@ -297,8 +278,6 @@ impl Contents {
         })
     }
 
-    /// These hours with `added` appended after them, as a save appends a spool: written last, its
-    /// country names the recording when it reaches the latest hour.
     pub fn then(self, added: Self) -> Self {
         let last = |contents: &Self| contents.span.map(|(_, last)| last);
         Self {
@@ -324,8 +303,6 @@ impl Contents {
         }
     }
 
-    /// Hours a recorder applied and has not read back: their span, whether one held more than
-    /// one human, and the latest of them as `frame`.
     pub fn recording(span: (Hour, Hour), multiplayer: bool, frame: &DecodedFrame) -> Self {
         let country = Country::of(frame);
         Self {
@@ -363,7 +340,6 @@ impl Contents {
     }
 }
 
-/// A finished recording's name; `multiplayer` comes from its hours as they were saved.
 pub fn recording_name(
     replay: &Replay,
     localisation: Option<&Localisation>,

@@ -1,0 +1,7 @@
+# Run map callbacks from recorded selectors
+
+Map callbacks use the same recorded trigger world and resolver as replayed text and tactics. Map target blocks use the tree reader. Global state arrays preserve the recorded extent and known null holes. Country selection can execute filters on duplicate visits before deduplicating results. State selection shares accepted membership across arrays and its explicit tail, allowing a rejected state to be revisited but skipping an accepted state before its writes can repeat. The country path refuses a state-target marker by name. Temporary values written by a rejected candidate stay visible for the next candidate in that selection, and a fresh selection starts a new context even after an error.
+
+A roster predicate can prove nonmembership only after certifying the roster. The raid census supplies AI control for its covered arrays. Outside those arrays use the recorded live-player fallback. Both stability callbacks read the same effective total with the same physical field identity so a shared missing input stays one refusal. War-state mode zero checks the cached enemy count before scanning active owned relations. Callbacks that choose visible colours withhold a target if setup or evaluation reached an unavailable operand, even if a later result would otherwise permit a colour.
+
+[Map script callbacks](../../crates/dashboard-text/src/triggers/map_scripts.rs) · [Selection and carrier tests](../../crates/dashboard-text/src/triggers/map_script_tests.rs)

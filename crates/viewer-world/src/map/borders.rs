@@ -1,13 +1,3 @@
-//! Border meshes traced along province boundaries.
-//!
-//! The province-id image is traced once into triangle strips. Each rail vertex
-//! samples terrain height; compiled content supplies the border artwork.
-//! Four-connected components preserve disconnected province pieces and UV
-//! direction. Contours emit only edges against earlier labels, with ordered
-//! junction corners, closure, smoothing and widening.
-//!
-//! [`build`] returns CPU vertex/index buffers for later upload. [`class_alpha`]
-//! supplies the per-frame fade used by the draw pass.
 use std::{collections::HashMap, io};
 
 use super::line_lod;
@@ -20,17 +10,9 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Maximum smoothing radius for a water-to-water chain.
 pub const WIDE_SMOOTHING_RADIUS: usize = 6;
-/// Vertices per vertex buffer chunk, the `0x10000` the engine passes its mesh builder
-/// Indices stay relative to a draw's base vertex, so they fit in `u16`.
 pub const MAX_CHUNK_VERTICES: usize = 65536;
 
-/// The six border classes, in the engine's own bucket order.
-///
-/// Material order shared by texture lookup, renderer buckets and the custom highlight palette.
-/// Highlighted edges use buckets 6 through 11. DMZ state comes from replay; faction hover and its
-/// clock belong to presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BorderClass {
     Province,
@@ -42,7 +24,6 @@ pub enum BorderClass {
 }
 
 impl BorderClass {
-    /// Every class, in bucket order.
     pub const ALL: [BorderClass; 6] = [
         BorderClass::Province,
         BorderClass::State,
@@ -52,7 +33,6 @@ impl BorderClass {
         BorderClass::SeaRegion,
     ];
 
-    /// The class's bucket index, 0 to 5.
     pub fn bucket(self) -> usize {
         match self {
             BorderClass::Province => 0,
@@ -64,7 +44,6 @@ impl BorderClass {
         }
     }
 
-    /// The infix of the class's texture, `map/terrain/border_<name>_<quality>.dds`.
     pub fn texture_name(self) -> &'static str {
         match self {
             BorderClass::Province => "province",
@@ -77,16 +56,6 @@ impl BorderClass {
     }
 }
 
-/// The per-frame alpha for a class at a camera height, the value that becomes
-/// `vTime_Transparency.y`.
-///
-/// Province and state borders fade out between the `PROVINCE_BORDER_FADE_*` and
-/// `STATE_BORDER_FADE_*` heights in `fades`; every other class draws at full alpha. The engine additionally drops a province edge
-/// entirely once its alpha reaches zero, which is the drawing pass's decision, not this function's.
-/// A camera height that is not a number is treated as fully near.
-///
-/// `province_borders` is the map mode's choice ([`crate::map::map_mode::visibility`]): the
-/// resources, infrastructure and manpower modes give province borders no alpha at any height.
 pub fn class_alpha(
     class: BorderClass,
     camera_height: f32,
@@ -111,45 +80,23 @@ fn fade(height: f32, near: f32, far: f32) -> f32 {
     1.0 - (height - near) / (far - near)
 }
 
-/// One traced province boundary, before smoothing and widening.
-///
-/// `points` are in world XZ. Most sit on pixel crack midpoints, so consecutive points are one map
-/// pixel apart along an axis and `sqrt(0.5)` apart around a corner; the rest are **junction
-/// corners**, the lattice corners where three or more provinces meet, which
-/// [`BoundaryComponents::is_junction`] finds and [`trace`] inserts. A closed polyline repeats its first point
-/// as its last, the way the engine's seam splice closes a single-pair contour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Polyline {
-    /// The lower of the two province ids the boundary separates.
     pub province_a: u32,
-    /// The higher of the two.
     pub province_b: u32,
     pub class: BorderClass,
     pub points: Vec<[f32; 2]>,
     pub closed: bool,
-    /// Both sides are water, which selects the engine's wide two-pass smoothing; see [`smooth`].
     pub wide: bool,
 }
 
-/// What [`trace`] found: ordinary classified boundaries, dormant material-0xff
-/// boundaries and the degenerate provinces it diagnoses.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trace {
     pub polylines: Vec<Polyline>,
-    /// Native material 0xff: ordinary buckets omit these, but a custom highlight
-    /// remaps them to the Province secondary bank.
     pub hidden: Vec<Polyline>,
-    /// Provinces covering exactly one pixel, sorted. The native "One-pixel province color found"
-    /// message diagnoses these without excluding their geometry.
     pub one_pixel_provinces: Vec<u32>,
 }
 
-/// A border strip vertex: `float3 position` then `6G16_SINT uv`, the engine's 16 byte layout.
-///
-/// `uv.x` is 0 on one rail and 1 on the other and becomes the shader's V coordinate across the
-/// strip; `uv.y` counts points along the polyline and becomes the U coordinate, which with
-/// `BORDER_TILE` (the content `border.shader`) and an `AddressU = Wrap` sampler tiles the diffuse every 2.5 points. It is a
-/// 16 bit counter in the engine too, so a polyline longer than 32 767 points wraps it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
@@ -157,38 +104,22 @@ pub struct Vertex {
     pub uv: [i16; 2],
 }
 
-/// One drawable run of a border strip: `BorderDesc` in the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BorderDraw {
-    /// The lower of the two province ids this boundary separates.
     pub province_a: u32,
-    /// The higher of the two.
     pub province_b: u32,
-    /// Index into the owning mesh's `chunks`.
     pub chunk: u32,
-    /// First vertex of the run within that chunk; the shared index buffer is relative to it.
     pub base_vertex: u32,
-    /// `2 * points`.
     pub vertex_count: u32,
-    /// `(points - 1) * 6`, taken from the start of [`BorderMeshes::indices`].
     pub index_count: u32,
-    /// The same run at the coarse level ([`super::line_lod`]): its first vertex in
-    /// [`BorderMesh::coarse_chunks`]`[chunk]`, and `2 * points`.
     pub coarse_base_vertex: u32,
     pub coarse_vertex_count: u32,
 }
 
-/// Every strip of one class.
-///
-/// The engine keeps one vertex buffer list for the whole map and sorts edges into class buckets
-/// afterwards; this splits the chunks per class instead, because a class is what a draw call binds.
-/// The chunking rule is the engine's either way.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BorderMesh {
     pub class: BorderClass,
-    /// Vertex buffers of at most [`MAX_CHUNK_VERTICES`] vertices each.
     pub chunks: Vec<Vec<Vertex>>,
-    /// The coarse level of each chunk's runs, chunk for chunk.
     pub coarse_chunks: Vec<Vec<Vertex>>,
     pub draws: Vec<BorderDraw>,
 }
@@ -203,46 +134,25 @@ impl BorderMesh {
         }
     }
 
-    /// Total vertices over every chunk.
     pub fn vertex_count(&self) -> usize {
         self.chunks.iter().map(Vec::len).sum()
     }
 }
 
-/// The finished border geometry: one mesh per class and the single index buffer they share.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BorderMeshes {
-    /// Six meshes in [`BorderClass::ALL`] order.
     pub meshes: Vec<BorderMesh>,
-    /// Unclassified strips, retained by the same trace for custom highlights only.
     pub hidden: BorderMesh,
-    /// The shared quad pattern `(i, i + 2, i + 1), (i + 2, i + 3, i + 1)` repeated, long enough for
-    /// the longest draw. A draw reads `index_count` of it from index zero and offsets by its own
-    /// `base_vertex`.
     pub indices: Vec<u16>,
-    /// Provinces of exactly one pixel, reported by the native diagnostic.
     pub one_pixel_provinces: Vec<u32>,
 }
 
 impl BorderMeshes {
-    /// The mesh of one class.
     pub fn mesh(&self, class: BorderClass) -> &BorderMesh {
         &self.meshes[class.bucket()]
     }
 }
 
-/// Traces the native component contours.
-///
-/// A contour keeps its component on the left. At a diagonal contact, the next pixel is tried
-/// diagonally to the right, then straight ahead, then the walk turns left in place. Only an edge
-/// facing an earlier component is emitted, once for the pair. Runs split when the neighbouring
-/// province changes or an edge is not emitted; disconnected pieces of the same neighbouring
-/// province can belong to one run. A three-component corner contributes a point on both touching
-/// edges. The first/last runs splice only when the start is not itself such a corner.
-///
-/// The scan begins at the bottom-left boundary pixel, preferring south/east/north/west edges.
-/// This fixes the direction, UV origin and the unsmoothed endpoint of a closed contour. Geometry
-/// is traced at load; the hour-dependent classifier and GPU pass choose its material later.
 pub fn trace(
     map: &ProvinceMap,
     classify: &dyn Fn(u32, u32) -> Option<BorderClass>,
@@ -350,8 +260,6 @@ pub fn trace(
                         points.push(points[0]);
                     }
                 } else {
-                    // Keep the first descriptor, prepend the last run's points and remove the last
-                    // descriptor from the pair's linked list.
                     let mut last = runs.pop().unwrap();
                     last.1.extend(std::mem::take(&mut runs[0].1));
                     runs[0] = last;
@@ -378,8 +286,6 @@ pub fn trace(
             }
         }
     }
-    // Directed province pairs hold newest-first descriptor lists. Preserve this order at joins where
-    // translucent strips overlap.
     polylines.reverse();
     polylines.sort_by_key(|(key, _, _)| *key);
     let mut hidden = Vec::new();
@@ -401,17 +307,6 @@ pub fn trace(
     })
 }
 
-/// Polyline smoothing with fixed endpoints.
-///
-/// Land and mixed chains receive one three-point mean pass. Water pairs receive two passes, with up
-/// to six neighbours per side limited by distance to endpoints. First and last points remain fixed.
-/// Each pass reads the previous pass's complete output.
-///
-/// Leaving the endpoints alone is what makes [`trace`]'s junction corners work: both chains that
-/// meet at a corner keep that corner bit-identical, so their strips meet exactly.
-///
-/// Four pixel centres are averaged only for junction corners in trace; polyline smoothing is a
-/// separate step.
 pub fn smooth(points: &[[f32; 2]], wide: bool) -> Vec<[f32; 2]> {
     let count = points.len();
     if count < 3 {
@@ -443,7 +338,6 @@ pub fn smooth(points: &[[f32; 2]], wide: bool) -> Vec<[f32; 2]> {
     source
 }
 
-/// A point of the polyline, wrapped for a closed loop and mirror extrapolated past an open end.
 fn extend(points: &[[f32; 2]], index: isize, closed: bool) -> [f32; 2] {
     let count = points.len() as isize;
     if closed {
@@ -469,15 +363,6 @@ fn extend(points: &[[f32; 2]], index: isize, closed: bool) -> [f32; 2] {
     points[index as usize]
 }
 
-/// Builds the border meshes for one map.
-///
-/// Traces with [`trace`], smooths each polyline once with [`smooth`], widens it to `width`
-/// (`BORDER_WIDTH`) map units with a terrain height per rail vertex, and packs the result into one
-/// mesh per class with chunks of at most [`MAX_CHUNK_VERTICES`] vertices.
-///
-/// Errors are named `InvalidData`: a province map whose id count does not match its dimensions, a
-/// height field of a different size than the province map, or a height field whose sample count
-/// does not match its own dimensions.
 pub fn build(
     map: &ProvinceMap,
     classify: &dyn Fn(u32, u32) -> Option<BorderClass>,
@@ -510,8 +395,6 @@ fn build_with_limit(
     let mut meshes: Vec<BorderMesh> = BorderClass::ALL.iter().map(|&class| BorderMesh::new(class)).collect();
     let mut longest_run = 0_usize;
     for polyline in &traced.polylines {
-        // A closed polyline already repeats its first point as its last; `trace` closes it before
-        // smoothing, the way the engine's seam splice does.
         let strip = smooth(&polyline.points, polyline.wide);
         if strip.len() < 2 {
             continue;
@@ -555,15 +438,6 @@ fn build_with_limit(
     })
 }
 
-/// Widens one smoothed polyline into rail vertices and appends the draws it needs, at both levels.
-///
-/// A polyline longer than a chunk is split into runs that share their last and first point, so the
-/// strip stays continuous across the seam; `uv.y` keeps counting from the polyline's own start so
-/// the diffuse keeps tiling across the split.
-///
-/// The coarse level keeps the points [`coarse_points`] picks and is widened from its own
-/// neighbours, so its strip is as wide as the fine one; each kept point keeps its own `uv.y`. A
-/// run's coarse vertices go to the coarse chunk of the run's chunk.
 fn emit(
     polyline: &Polyline,
     strip: &[[f32; 2]],
@@ -624,7 +498,6 @@ fn emit(
     }
 }
 
-/// The two rail vertices of `points[index]`, with `uv.y` `counter`.
 fn rails(
     points: &[[f32; 2]],
     index: usize,
@@ -639,8 +512,6 @@ fn rails(
     let next = neighbour(points, index as isize + 1, closed);
     let direction = [next[0] - previous[0], next[1] - previous[1]];
     let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
-    // A zero length direction can only come from a degenerate polyline; the quad then
-    // collapses rather than producing a not-a-number position.
     let rail_offset = if length > 0.0 {
         [
             (width * 0.5 * direction[1]) / length,
@@ -660,10 +531,6 @@ fn rails(
     }
 }
 
-/// The points of a smoothed strip the coarse level keeps ([`line_lod::simplify`]): the ends of its
-/// runs, every point off the line by more than [`line_lod::TOLERANCE`] or above or below it by more
-/// than [`line_lod::HEIGHT_TOLERANCE`], and on a closed loop two more a third of the way round
-/// each, so it stays a loop.
 fn coarse_points(
     strip: &[[f32; 2]],
     closed: bool,
@@ -686,12 +553,9 @@ fn coarse_points(
     })
 }
 
-/// The neighbouring point used for the widening normal: wrapped on a closed strip whose last point
-/// repeats its first, mirror extrapolated at an open end.
 fn neighbour(strip: &[[f32; 2]], index: isize, closed: bool) -> [f32; 2] {
     let count = strip.len() as isize;
     if closed && count >= 3 {
-        // The strip repeats its first point at the end, so stepping off either end skips the copy.
         if index < 0 {
             return strip[(count - 2) as usize];
         }
@@ -703,7 +567,6 @@ fn neighbour(strip: &[[f32; 2]], index: isize, closed: bool) -> [f32; 2] {
     extend(strip, index, false)
 }
 
-/// Provinces covering exactly one pixel, sorted, for the native diagnostic (not an exclusion).
 fn one_pixel_provinces(map: &ProvinceMap) -> Vec<u32> {
     let mut counts: HashMap<u32, u32> = HashMap::new();
     for &id in map.ids {
@@ -718,16 +581,6 @@ fn one_pixel_provinces(map: &ProvinceMap) -> Vec<u32> {
     degenerate
 }
 
-/// The pixel-edge cracks of a province map, addressed by index.
-///
-/// Vertical cracks come first, `width * height` of them: crack `y * width + column` separates pixel
-/// `(column, y)` from pixel `(column + 1, y)`, wrapping so the crack at `column = width - 1` sits on
-/// the map's x seam. Horizontal cracks follow, `(height - 1) * width` of them: crack `row * width +
-/// x` separates pixel `(x, row)` from pixel `(x, row + 1)`. Pixel corners run `0..=width` by
-/// `0..=height`; the seam's corners at `x = width` are deliberately not the same nodes as those at
-/// `x = 0`, which is what cuts a chain at the seam instead of letting it jump the map.
-/// The engine labels four-connected province components in bottom-up raster order before tracing.
-/// Labels do not wrap at the map seam; corner lookup does.
 struct BoundaryComponents {
     components: Vec<u32>,
     width: usize,
@@ -777,7 +630,6 @@ impl BoundaryComponents {
         }
     }
 
-    /// Three or four distinct component labels insert a shared lattice corner.
     fn is_junction(&self, corner: [u32; 2]) -> bool {
         let [x, y] = [corner[0] as usize, corner[1] as usize];
         let left = (x + self.width - 1) % self.width;

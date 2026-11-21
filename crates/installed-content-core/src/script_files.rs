@@ -1,15 +1,9 @@
-//! The script files of one content folder in load order, as the database
-//! loaders list them ([`paths`]). Each reader moved to the reader replay
-//! ([`crate::parser::native`]) reads its files itself; [`documents`] is the
-//! tree read kept for main's readers that have not moved yet (a follow-up
-//! after the political layers, recorded in the plan).
 
 use crate::{
     DiagnosticKind, DiagnosticMessage, ResolvedLayers, content::LayerPath, parser::Document,
 };
 use std::{borrow::Cow, fmt, io};
 
-/// Archive paths need not be UTF-8; use raw bytes for lookup and lossy text only for messages.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScriptPath(std::sync::Arc<LayerPath>);
 
@@ -22,7 +16,6 @@ impl ScriptPath {
         &self.0
     }
 
-    /// Lossy text is for messages only, never lookup or keys.
     pub fn text(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.0)
     }
@@ -31,7 +24,6 @@ impl ScriptPath {
         std::str::from_utf8(&self.0).ok()
     }
 
-    /// Folder encoding is independent of the filename; only a non-UTF-8 folder returns `None`.
     pub fn folder_text(&self) -> Option<&str> {
         let end = self.0.iter().rposition(|&byte| byte == b'/').unwrap_or(0);
         std::str::from_utf8(&self.0[..end]).ok()
@@ -41,7 +33,6 @@ impl ScriptPath {
         layers.read_path(&self.0)
     }
 
-    /// The file's bytes, covered or not ([`ResolvedLayers::read_uncovered_path`]).
     pub fn read_uncovered(&self, layers: &ResolvedLayers) -> io::Result<crate::content::Bytes> {
         layers.read_uncovered_path(&self.0)
     }
@@ -53,7 +44,6 @@ impl fmt::Display for ScriptPath {
     }
 }
 
-/// Keep UTF-8 debug output stable for digests; escape bytes only for non-UTF-8 paths.
 impl fmt::Debug for ScriptPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.to_str() {
@@ -81,10 +71,6 @@ impl AsRef<[u8]> for ScriptPath {
     }
 }
 
-/// List regular files directly in `folder` (lowercase and ending in `/`) without
-/// recursion. Merge every layer's filenames in byte order, listing repeated names once
-/// and reading them from the winning layer. Match `filter` by an exact suffix; `None`
-/// lists every file.
 pub fn paths(
     layers: &ResolvedLayers,
     folder: &str,
@@ -105,17 +91,12 @@ pub fn paths(
     Ok(files.into_iter().map(|(_, path)| ScriptPath::new(path)).collect())
 }
 
-/// Whether `path` is a database file directly in `folder` (lowercase and ending in `/`), its
-/// folder and `.txt` suffix compared without ASCII case.
 pub fn is_database_file(path: &[u8], folder: &str) -> bool {
     path.to_ascii_lowercase()
         .strip_prefix(folder.as_bytes())
         .is_some_and(|name| !name.contains(&b'/') && name.ends_with(b".txt"))
 }
 
-/// Every effective database file directly in `folder` ([`is_database_file`]) in the order the
-/// database's folder scan lists them: by name, byte for byte. The scan spells the folder
-/// itself, so the case a layer gives the folder does not move a file.
 pub fn database_paths(layers: &ResolvedLayers, folder: &str) -> io::Result<Vec<ScriptPath>> {
     let mut paths: Vec<ScriptPath> = layers
         .paths()?
@@ -126,8 +107,6 @@ pub fn database_paths(layers: &ResolvedLayers, folder: &str) -> io::Result<Vec<S
     Ok(paths)
 }
 
-/// Each parsed file under `folder` in load order, as trees, for the content
-/// readers not yet on the reader replay.
 pub fn documents<D: DiagnosticMessage>(
     layers: &ResolvedLayers,
     folder: &str,
@@ -161,8 +140,6 @@ pub fn documents<D: DiagnosticMessage>(
 mod tests {
     use super::*;
 
-    /// List regular files directly in the folder, merging all layer names in byte order
-    /// and listing repeated names once. The suffix filter compares exact bytes.
     #[cfg(feature = "test-support")]
     #[test]
     fn a_folder_lists_as_the_database_loaders_list_it() {
@@ -200,8 +177,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A database folder lists its files by name: a mod that spells the folder in upper case
-    /// does not move its files ahead of the base game's.
     #[test]
     fn a_database_folder_orders_its_files_by_name_whatever_the_folder_case() {
         let root = std::env::temp_dir().join(format!(

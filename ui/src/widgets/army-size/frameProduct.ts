@@ -6,7 +6,6 @@ import type { ProductState } from '../../dashboard/products';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import type { HeadClock } from './headHour.ts';
 
-/** A product at the clock's hour, asked from the frame when `ask` names a new key; only a different reply renders. */
 export function useFrameProduct<T>(client: DashboardClient, clock: HeadClock, enabled: boolean,
   ask: (hour: number) => { key: string; request: ProductRequest } | null, validate: (data: unknown) => T,
   source: DashboardSource | undefined, same: (a: T, b: T) => boolean): ProductState<T> {
@@ -39,7 +38,6 @@ export function useFrameProduct<T>(client: DashboardClient, clock: HeadClock, en
     const stops = [clock.subscribeFrame(run), clock.subscribe(run)];
     return () => { controller.abort(); check.current = null; for (const stop of stops) stop(); };
   }, [enabled, client, clock, attempt]);
-  // A render that moves what is asked (another country) asks without waiting for a frame.
   useEffect(() => { check.current?.(); });
   return { data: enabled ? shown?.data : undefined, error: enabled ? shown?.error : undefined, retry: () => { setShown(null); setAttempt(value => value + 1); } };
 }

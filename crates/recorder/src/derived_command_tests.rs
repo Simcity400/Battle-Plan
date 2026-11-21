@@ -18,8 +18,6 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
         fs::create_dir_all(game.join(directory)).unwrap();
     }
     fs::create_dir_all(&user).unwrap();
-    // The command authenticates executable metadata before reading the
-    // synthetic content and recording used for its derivation verdicts.
     let installation = std::path::PathBuf::from(
         std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for executable metadata"),
@@ -83,7 +81,6 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
     bitmap[56] = 1;
     fs::write(game.join("map/provinces.bmp"), &bitmap).unwrap();
     fs::write(game.join("map/terrain.bmp"), &bitmap).unwrap();
-    // Movement content is loaded even when the fixture records no movers.
     bitmap[28..30].copy_from_slice(&8_u16.to_le_bytes());
     bitmap[54..].fill(0);
     fs::write(game.join("map/rivers.bmp"), &bitmap).unwrap();

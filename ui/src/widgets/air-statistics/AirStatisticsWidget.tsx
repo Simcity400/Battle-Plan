@@ -25,9 +25,6 @@ import './airStatistics.css';
 
 type PairItem = ButterflyItem & { data: RegionPair };
 
-/** Ours against the enemy's per region for one recorded air statistic, in the game's current year window at the read
- * behind the hour shown. Following the playhead it is a pushed panel: it renders when the regions, channels or the read
- * change, and the pairs' words and their order are painted from the live cells each frame. */
 export default function AirStatisticsWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -35,7 +32,6 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
   const shown = useShownHour();
   const shownNow = useRef(shownAt);
   shownNow.current = shownAt;
-  // Every frame the butterfly paints its words reports the hour they are of.
   const painted = useMemo(() => reporting(live, () => shown(shownNow.current())), [live, shown]);
   const channel = data?.channels.find(item => item.id === channelId);
   const chosen = contentSet(options.regions).map(contentKey);
@@ -48,7 +44,6 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
   const shownHour = data?.readHour ?? hour ?? track?.branch.lastHour ?? 0;
   const looks = useCountryLooks(runtime.client, track, tag ? [tag] : [], shownHour, active);
   const colour = useCountryColours(tag ? [tag] : [], looks.color, tokens, looks);
-  // The rows of the reply's regions with the live words: what a render shows, and what each frame paints.
   const itemsOf = (reply: AirStatisticsReply | undefined, values: LiveValues<number>): PairItem[] => !channel || !reply ? []
     : rankedPairs(pairsOf(reply, values), regionSet, top).map(row => ({
       id: row.region, label: row.name, color: colour(tag ?? '', shownHour),
@@ -58,11 +53,8 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
     }));
   const build = useRef(itemsOf);
   build.current = itemsOf;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const items = useMemo(() => itemsOf(data, live.read()), [data, live, channel, chosenKey, top, colour, tag, shownHour]);
   const liveItems = useMemo(() => mapLive(painted, values => build.current(data, values)),
-    // Made again whenever what a row is made from changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [painted, data, channel, chosenKey, top, colour, tag, shownHour]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const readHourNow = () => data?.readHour ?? undefined;

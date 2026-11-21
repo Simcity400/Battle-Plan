@@ -1,21 +1,3 @@
-//! The naval hovers' source trees as text ([`replay_data::naval_trees`]).
-//!
-//! Append each side source's modifier breakdown
-//! text into the caller's string (scale ONE, precision 2, depth -1, the
-//! caller's prefix): the country's first, then, when the caller passes a
-//! province, the region weather (only when the game finds the region) and
-//! the terrain, and the commander when it passes one; after each of the last
-//! three it ensures the whole string ends with a newline
-//! (nonempty strings only). Its value is the sum of those sources' roots.
-//!
-//! Format each ship source in recorded order with
-//! the source's own display scale (a doctrine's weight, a critical's count),
-//! only the winning HQ influence's support lines and those without labels
-//! ([`super::naval_environment::breakdown_scale`],
-//! [`super::naval_environment::breakdown_visible`]).
-//!
-//! Labels are stored native text: they show as stored in the recording's language and
-//! through their recovered keys in another ([`super::naval_labels`]).
 use super::naval_labels::RecordedLabels;
 use installed_content_localisation::localisation::Localisation;
 use replay_data::{
@@ -33,8 +15,6 @@ use viewer_foundation::tooltip_text::validate;
 
 const ONE: i64 = 100_000;
 
-/// The hour's source trees and modifier definitions, or why the hovers
-/// cannot read them.
 pub(super) struct Sources<'a> {
     trees: Result<Trees<'a>, String>,
     definitions: Result<BTreeMap<u32, &'a ModifierDefinitionRow>, String>,
@@ -72,7 +52,6 @@ impl<'a> Sources<'a> {
         })
     }
 
-    /// Test seam: sources from rows already in hand.
     #[cfg(test)]
     pub(super) fn from_parts(
         trees: Result<&'a [replay_data::rows::NavalModifierTreeRow], String>,
@@ -99,14 +78,10 @@ impl<'a> Sources<'a> {
             .ok_or_else(|| format!("modifier {key:#x} has no recorded definition"))
     }
 
-    /// The definitions by key, for the escape screening values.
     pub(super) fn definitions(&self) -> Result<&BTreeMap<u32, &'a ModifierDefinitionRow>, String> {
         self.definitions.as_ref().map_err(Clone::clone)
     }
 
-    /// Append the side's sources for `key` to `out`; return
-    /// their summed root values. `None` sources (an empty side, a missing
-    /// commander) are skipped as the native call skips them.
     #[allow(
         clippy::too_many_arguments,
         reason = "the native call's side, key, prefix and output are separate operands"
@@ -129,7 +104,6 @@ impl<'a> Sources<'a> {
             let Some(owner) = naval_trees::side_source(combat, side, opposing, source) else {
                 continue;
             };
-            // The capture files a row for every live region it visited.
             if source == SideSource::Weather && trees.row(owner).is_none() {
                 continue;
             }
@@ -152,8 +126,6 @@ impl<'a> Sources<'a> {
         Ok(total)
     }
 
-    /// A live ship's sources for `key`, in recorded
-    /// order, appended to `out`.
     pub(super) fn ship(
         &self,
         row: &NavalCombatShipRow,
@@ -207,16 +179,12 @@ impl<'a> Sources<'a> {
     }
 }
 
-/// Ensure nonempty appended text ends with a newline.
 fn ensure_newline(text: &mut String) {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
 }
 
-/// Format one pruned tree at depth -1; print each
-/// nonzero leaf as its stored label, `": "` and the value scaled by `scale`.
-/// Ship-source formatting prints support definitions without their labels.
 #[allow(
     clippy::too_many_arguments,
     reason = "Render recorded modifier trees with explicit scaling, label policy and text resources"
@@ -316,8 +284,6 @@ mod tests {
         }
     }
 
-    /// Labels of an English recording whose localisation has the keys "DOCTRINE" and
-    /// "TRAIT".
     static ENGLISH: std::sync::LazyLock<RecordedLabels> = std::sync::LazyLock::new(|| {
         let mut english: Localisation = [("DOCTRINE", "Doctrine"), ("TRAIT", "Trait")]
             .into_iter()
@@ -344,9 +310,6 @@ mod tests {
         loc
     }
 
-    /// The country's lines come first without a newline of their own; the
-    /// weather is visited only when its row exists; each later source ends
-    /// the string with one newline; the roots sum.
     #[test]
     fn side_sources_follow_the_native_order_newlines_and_sum() {
         use naval_trees::{Kind, Owner};
@@ -392,7 +355,6 @@ mod tests {
         assert!(out.contains("\nFjords: "), "{out}");
         assert!(out.ends_with('\n'), "{out}");
         assert_eq!(out.matches("Trait").count(), 1);
-        // Without the commander only the location sources remain.
         let mut out = String::new();
         let total = sources
             .side(
@@ -410,8 +372,6 @@ mod tests {
         assert!(!out.contains("Trait"));
     }
 
-    /// A ship's sources print in recorded order; scopes without a tree and
-    /// sources without a row print nothing.
     #[test]
     fn ship_sources_print_in_recorded_order() {
         use naval_trees::{Kind, Owner};
@@ -461,7 +421,6 @@ mod tests {
         let doctrine_at = out.find("Doctrine").unwrap();
         assert!(trait_at < doctrine_at, "{out}");
         assert!(out.starts_with("  Trait: "), "{out}");
-        // In another language each label shows through the key that renders to it.
         let mut german: Localisation = [("DOCTRINE", "Doktrin"), ("TRAIT", "Eigenschaft")]
             .into_iter()
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -475,7 +434,6 @@ mod tests {
         assert!(out.contains("Doktrin: "), "{out}");
     }
 
-    /// Older recordings refuse the trees by name.
     #[test]
     fn an_unrecorded_table_refuses_by_name() {
         let sources = Sources {

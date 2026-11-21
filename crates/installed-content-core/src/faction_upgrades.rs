@@ -1,4 +1,3 @@
-//! Native member-upgrade fields and their owning groups, resolved in stack order.
 use crate::content::diagnostics::Once as OnceLock;
 use crate::{
     ResolvedLayers,
@@ -17,14 +16,12 @@ use std::{
 };
 #[derive(Default, Debug, Clone)]
 pub struct Upgrade {
-    /// The authored localisation operand, independently of this definition's identity.
     pub name: Option<Vec<u8>>,
     pub bonus_raw: i64,
     pub cost_raw: i64,
 }
 #[derive(Default, Debug, Clone)]
 pub struct Group {
-    /// The authored localisation operand, independently of this definition's identity.
     pub name: Option<Vec<u8>>,
     pub upgrade_type: Option<Vec<u8>>,
     pub upgrades: Vec<Vec<u8>>,

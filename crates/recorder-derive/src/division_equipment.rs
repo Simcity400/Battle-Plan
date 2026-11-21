@@ -1,27 +1,3 @@
-//! The four division equipment tables: each canonical slot's divisions, by attribution (owner:
-//! a division's positive expeditionary owner, else its roster owner; host: its roster owner),
-//! compared with their templates' needs. Each division's pool (the daily DivisionEquipment read,
-//! or the hourly NewDivisionEquipment for one minted since) is grouped by archetype, its designs
-//! classified by their recorded definitions' archetype tokens, and compared with its template's
-//! need per archetype, each type capped at the division's own need before anything is summed, so
-//! one division's surplus never fills another's shortfall; then summed per slot, per archetype,
-//! per design and per template.
-//!
-//! What is not known is not recorded, never zero: a division's comparison while its pool is not
-//! read within a day, a design it holds has no definition, or its template's need is not known
-//! (the sub-unit needs definition not held, its composition unreadable, a sub-unit or archetype
-//! unknown to the recording), counted in `unknown` and named per template; every cell of an
-//! attribution while some division of it has an owner no link resolves; a type's stock while the
-//! slot's stock is not known whole. A daily pool read stands for a day; a division without daily
-//! rows holds an empty pool when the minted pools are read complete, else it is not known.
-//!
-//! State: per live division what it adds and where, per template a counted division names its
-//! need, the pool tables' ordinals by division, per slot its stock by archetype, and the sums;
-//! inputs' rows are read from the store by key, never copied. The hour's changed divisions,
-//! pools, numbers, templates and stock rows are applied; a token, clone or design definition
-//! the hour changed moves the templates and divisions that read it. A fresh hour, a resume, a
-//! definition or link change, or an input becoming or ceasing to be complete, rebuilds every sum,
-//! and the hour sets only the rows that differ from those held.
 
 mod inputs;
 mod need;
@@ -71,13 +47,10 @@ const READS: &[Read] = &[
 
 const DEFINITIONS: &[Uses] = &[Uses { definition: Definition::SubUnitNeeds, required: false }];
 
-/// Owner, then host.
 const SIDES: usize = 2;
 
-/// What the hour's inputs stand on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Reads {
-    /// The daily pool read's hour, while it is complete and less than a day old.
     pool: Option<i32>,
     new: bool,
     land: bool,
@@ -86,7 +59,6 @@ struct Reads {
     local: bool,
     variants: bool,
     tokens: bool,
-    /// The stockpile read's hour, while StockByVariant is complete and the read less than a day old.
     stock: Option<i32>,
 }
 
@@ -109,14 +81,11 @@ impl Reads {
         }
     }
 
-    /// What, if it differs, every division's part must be made again for.
     fn structure(&self) -> (bool, bool, bool, bool, bool, bool, bool, bool) {
         (self.pool.is_some(), self.new, self.land, self.panel, self.icons, self.local, self.variants, self.tokens)
     }
 }
 
-/// A template's need by archetype token, ascending, or why it is not known; its required
-/// manpower; and the country-local clones its need looked up, (slot, token).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Template {
     need: Result<Vec<(u32, i64)>, String>,
@@ -124,13 +93,11 @@ struct Template {
     clones: Vec<(u32, u32)>,
 }
 
-/// A template and how many counted divisions name it.
 struct Named {
     template: Template,
     users: u32,
 }
 
-/// One type of a division: its holding, and its need where the comparison is known (else zero).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TypeShare {
     archetype: Option<u32>,
@@ -148,24 +115,16 @@ impl TypeShare {
     }
 }
 
-/// What a counted division adds, but its numbers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Core {
-    /// Its slot under each attribution; none where no link resolves the owner.
     sides: [Option<u32>; SIDES],
     template: u64,
-    /// Each type it holds or needs, by archetype.
     types: Vec<TypeShare>,
-    /// Each design it holds: archetype, variant reference id, amount.
     designs: Vec<(Option<u32>, Option<u32>, i128)>,
-    /// Its need and capped holding, where pool, need and every design's archetype are known.
     compared: Option<(i128, i128)>,
-    /// The archetypes it falls short of, where compared.
     short: Vec<u32>,
     required: Option<i64>,
-    /// Its pool is read.
     pooled: bool,
-    /// It holds a design no recorded definition classifies.
     unclassified: bool,
 }
 
@@ -178,17 +137,14 @@ struct Numbers {
 
 struct Entry {
     division: Division,
-    /// None for a reveal copy, which counts nowhere.
     core: Option<Core>,
     numbers: Numbers,
 }
 
 #[derive(Default)]
 struct TypeSum {
-    /// Divisions listing it.
     refs: i64,
     held: i128,
-    /// Known divisions comparing it, and their sums.
     known: i64,
     needed: i128,
     filled: i128,
@@ -209,9 +165,7 @@ struct TemplateSum {
     known: i64,
     needed: i128,
     held: i128,
-    /// Known divisions short of each archetype.
     short: HashMap<u32, i64>,
-    /// Divisions lacking each, and the sum of the others'.
     manpower: (i64, i128),
     required: (i64, i128),
     maximum: (i64, i128),
@@ -230,7 +184,6 @@ struct Side {
     templates: HashMap<u64, TemplateSum>,
 }
 
-/// A slot's national stock by archetype, and how many of its rows are not known or classified.
 #[derive(Default, PartialEq, Eq)]
 struct Stock {
     by: HashMap<u32, i128>,
@@ -247,28 +200,22 @@ struct Dirty {
 
 #[derive(Default)]
 pub struct DivisionEquipment {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     reads: Reads,
     owners: Owners,
     rules: need::Rules,
     divisions: HashMap<u64, Entry>,
     templates: HashMap<u64, Named>,
-    /// How many counted divisions hold each design, by variant reference id.
     designs: HashMap<Option<u32>, u32>,
-    /// Each division's pool ordinals, daily and minted.
     daily: HashMap<u64, Vec<u32>>,
     minted: HashMap<u64, Vec<u32>>,
     stock: HashMap<u32, Stock>,
     sides: HashMap<(u32, u8), Side>,
-    /// Counted divisions of each attribution whose owner no link resolves.
     unresolved: [i64; SIDES],
     dirty: Dirty,
-    /// Every sum is being made again and every row will be compared: nothing is marked dirty.
     rebuilding: bool,
 }
 
-/// Why a division's numbers are read again: its hit points, panel or land row moved.
 const HIT_POINTS: u8 = 1;
 const PANEL: u8 = 2;
 const LAND: u8 = 4;
@@ -297,8 +244,6 @@ fn template_key(slot: u32, side: u8, template: u64) -> u128 {
     u128::from(slot) << 72 | u128::from(side) << 64 | u128::from(template)
 }
 
-/// Sets the writer's own `table`'s rows at `keys` as `row` gives them, deleting those it gives
-/// none of that the table holds; with `all`, every row the table holds is among them.
 fn emit(out: &mut Rows<'_>, table: TableId, keys: impl IntoIterator<Item = u128>, all: bool, mut row: impl FnMut(&mut Rows<'_>, u128) -> Option<Vec<Value>>) {
     let mut keys: Vec<u128> = keys.into_iter().collect();
     if all {
@@ -340,7 +285,6 @@ fn kept_amount(cell: &Kept) -> Option<i64> {
 }
 
 impl DivisionEquipment {
-    /// Template `handle` as the tables give it.
     fn evaluate(&self, hour: &Hour<'_>, handle: u64) -> io::Result<Template> {
         if !self.reads.icons {
             return Ok(Template { need: Err(format!("template {handle} equipment composition is not known: DivisionTemplateIcons is not complete")), required: None, clones: Vec::new() });
@@ -351,7 +295,6 @@ impl DivisionEquipment {
         Ok(Template { need, required: facts.and_then(|facts| facts.required), clones })
     }
 
-    /// Templates `handles` read again where a counted division names them; those that moved.
     fn reread(&mut self, hour: &Hour<'_>, handles: &[u64]) -> io::Result<HashSet<u64>> {
         let mut moved = HashSet::new();
         for &handle in handles {
@@ -369,7 +312,6 @@ impl DivisionEquipment {
         Ok(moved)
     }
 
-    /// A counted division no longer names template `handle`.
     fn release(&mut self, handle: u64) {
         if let Some(named) = self.templates.get_mut(&handle) {
             named.users -= 1;
@@ -379,7 +321,6 @@ impl DivisionEquipment {
         }
     }
 
-    /// Division `id`'s pool as its replies read it, design and amount by entry; none when not read.
     fn pool(&self, hour: &Hour<'_>, id: u64) -> io::Result<Option<Vec<(u64, i64)>>> {
         let entries = |table: TableId, index: &HashMap<u64, Vec<u32>>| -> io::Result<Vec<(u64, i64)>> {
             let mut out = Vec::new();
@@ -405,7 +346,6 @@ impl DivisionEquipment {
         Ok(None)
     }
 
-    /// What division `id` adds, but its numbers; none for a reveal copy.
     fn core(&mut self, hour: &Hour<'_>, id: u64, division: &Division) -> io::Result<Option<Core>> {
         if !division.counted {
             return Ok(None);
@@ -462,7 +402,6 @@ impl DivisionEquipment {
         })
     }
 
-    /// Adds (`sign` 1) or takes (-1) `core`'s part of every sum, and its numbers'.
     fn shift(&mut self, core: &Core, numbers: &Numbers, sign: i64) {
         let wide = i128::from(sign);
         let known = core.compared.is_some();
@@ -542,7 +481,6 @@ impl DivisionEquipment {
         }
     }
 
-    /// The numbers of a division at `sides` of `template` moved from `was` to `now`.
     fn renumber(&mut self, sides: [Option<u32>; SIDES], template: u64, was: &Numbers, now: &Numbers) {
         for (at, slot) in sides.iter().enumerate() {
             let Some(slot) = *slot else { continue };
@@ -554,8 +492,6 @@ impl DivisionEquipment {
         }
     }
 
-    /// Division `id` made again from the tables, its part moved in every sum; gone when the
-    /// tables no longer hold it.
     fn place(&mut self, hour: &Hour<'_>, id: u64, division: Option<Division>) -> io::Result<()> {
         let was = self.divisions.remove(&id);
         if let Some(division) = division {
@@ -575,8 +511,6 @@ impl DivisionEquipment {
         Ok(())
     }
 
-    /// Division `id`'s numbers whose rows moved (`why`) read again, its template's sums moved;
-    /// `division` its row when the hour wrote it.
     fn renumbered(&mut self, hour: &Hour<'_>, id: u64, division: Option<Division>, why: u8) -> io::Result<()> {
         let Some(entry) = self.divisions.get(&id) else { return Ok(()) };
         let mut now = entry.numbers;
@@ -607,7 +541,6 @@ impl DivisionEquipment {
         self.stock_moved(slot);
     }
 
-    /// Slot `slot`'s stock moved: its types' rows are dirty.
     fn stock_moved(&mut self, slot: u32) {
         if self.rebuilding {
             return;
@@ -619,7 +552,6 @@ impl DivisionEquipment {
         }
     }
 
-    /// The stock read again from every StockByVariant row; the slots whose stock moved dirty.
     fn restock(&mut self, hour: &Hour<'_>) {
         let mut now = HashMap::new();
         for (key, amount) in inputs::stocks(hour) {
@@ -634,7 +566,6 @@ impl DivisionEquipment {
         }
     }
 
-    /// Every sum again from the tables as they stand.
     fn rebuild(&mut self, hour: &Hour<'_>, spell: bool) -> io::Result<()> {
         self.rebuilding = true;
         self.owners.read_links(hour);
@@ -667,7 +598,6 @@ impl DivisionEquipment {
         Ok(())
     }
 
-    /// Applies the hour's changes; false when it must rebuild instead.
     fn apply(&mut self, hour: &Hour<'_>, reads: Reads) -> io::Result<bool> {
         let whole = |table: TableId| hour.changes(table).whole;
         if reads.structure() != self.reads.structure()
@@ -703,8 +633,6 @@ impl DivisionEquipment {
                 self.dirty.types.extend(held.types.keys().map(|&archetype| (slot, side, archetype)));
             }
         }
-        // Templates whose need or required manpower may have moved: their rows, the tokens and
-        // the clones their needs read.
         let mut replace: HashSet<u64> = HashSet::new();
         let icons = hour.changes(TableId::DivisionTemplateIcons);
         let mut handles: Vec<u64> = hour.deleted_keys(TableId::DivisionTemplateIcons).map(|key| key as u64).collect();
@@ -730,7 +658,6 @@ impl DivisionEquipment {
         if !moved_templates.is_empty() {
             replace.extend(self.divisions.iter().filter(|(_, entry)| moved_templates.contains(&entry.division.template)).map(|(&id, _)| id));
         }
-        // Divisions holding a design whose definition moved.
         let defined = inputs::defined(hour);
         let variants: HashSet<Option<u32>> = defined.iter().map(|&design| EquipmentLossTotalRow::variant_id(design)).filter(|variant| self.designs.contains_key(variant)).collect();
         if !variants.is_empty() {
@@ -741,7 +668,6 @@ impl DivisionEquipment {
                     .map(|(&id, _)| id),
             );
         }
-        // Pools whose entries moved.
         for (table, minted) in [(TableId::DivisionEquipment, false), (TableId::NewDivisionEquipment, true)] {
             let changes = hour.changes(table);
             let view = hour.table(table);
@@ -770,7 +696,6 @@ impl DivisionEquipment {
                 }
             }
         }
-        // Divisions that came, went or moved; numbers whose rows moved, and why.
         let mut renumber: HashMap<u64, (Option<Division>, u8)> = HashMap::new();
         for key in hour.deleted_keys(TableId::Divisions).collect::<Vec<_>>() {
             replace.remove(&(key as u64));
@@ -817,8 +742,6 @@ impl DivisionEquipment {
         for (id, (division, why)) in renumber {
             self.renumbered(hour, id, division, why)?;
         }
-        // Stock rows that moved; all of them read again when a design's definition moved, as a
-        // row's archetype is its design's.
         if !defined.is_empty() {
             self.restock(hour);
             return Ok(true);
@@ -889,7 +812,6 @@ impl DivisionEquipment {
         Some(vec![if self.unresolved[usize::from(side)] != 0 { Value::Unrecorded } else { forces::exact(sum.held) }])
     }
 
-    /// The ByTemplate row of `template` at (`slot`, `side`).
     fn template_row(&self, out: &mut Rows<'_>, slot: u32, side: u8, template: u64) -> Option<Vec<Value>> {
         let sum = self.sides.get(&(slot, side))?.templates.get(&template)?;
         let why: &[u8] = match self.templates.get(&template).map(|named| &named.template.need) {
@@ -920,7 +842,6 @@ impl DivisionEquipment {
         ])
     }
 
-    /// Writes the dirty rows; with `all`, every row the sums hold and every held row besides.
     fn write(&mut self, out: &mut Rows<'_>, all: bool) {
         let dirty = std::mem::take(&mut self.dirty);
         let mut counts: Vec<(u32, u8)> = dirty.counts.into_iter().collect();
@@ -981,7 +902,6 @@ impl Writer for DivisionEquipment {
         READS
     }
 
-    // Hourly: a daily pool or stock read stops standing a day after it, with no input change.
     fn hourly(&self) -> bool {
         true
     }
@@ -1010,7 +930,6 @@ impl Writer for DivisionEquipment {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every sum from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

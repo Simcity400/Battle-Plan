@@ -1,8 +1,3 @@
-//! Slot-indexed storage in pages shared copy-on-write: a table cloned from another shares
-//! every page until it writes one, and then copies that page alone. A page held weakly
-//! elsewhere ([`Weak`]) is copied on its first write too, so a restart's decoded tables can be
-//! found again by later walks without holding pages the walks have since replaced. Every
-//! page's items are allocated fallibly: only its small fixed header is not.
 
 use std::{
     fmt, io,
@@ -11,14 +6,11 @@ use std::{
 };
 
 pub(crate) const SHIFT: u32 = 10;
-/// Slots per page.
 pub const PAGE: usize = 1 << SHIFT;
 const MASK: usize = PAGE - 1;
 
-/// A page: its items in a box allocated fallibly, behind a fixed-size shared header.
 type Page<T> = Arc<Box<[T]>>;
 
-/// A page of `len` items: those of `from`, then `fill`.
 fn page<T: Copy>(from: &[T], len: usize, fill: T) -> io::Result<Page<T>> {
     let mut items = engine_allocation::vec(len)?;
     items.extend_from_slice(from);
@@ -26,13 +18,10 @@ fn page<T: Copy>(from: &[T], len: usize, fill: T) -> io::Result<Page<T>> {
     Ok(Arc::new(engine_allocation::boxed_slice(items)?))
 }
 
-/// The items the page holding slots `start..` takes for a column of `len` slots: a whole page,
-/// or the last one at the next power of two its slots reach, so growing it is copied rarely.
 fn page_len(start: usize, len: usize) -> usize {
     (len - start).min(PAGE).next_power_of_two().min(PAGE)
 }
 
-/// `page` held by nothing else, copied first when it is shared.
 fn unique<T: Copy>(page: &mut Page<T>) -> io::Result<&mut [T]> {
     if Arc::get_mut(page).is_none() {
         let copied = engine_allocation::copy_vec(&page[..])?;
@@ -41,12 +30,10 @@ fn unique<T: Copy>(page: &mut Page<T>) -> io::Result<&mut [T]> {
     Ok(&mut Arc::get_mut(page).expect("a page just copied is held once")[..])
 }
 
-/// The bytes `page`'s allocations take, its shared header included.
 fn page_bytes<T>(page: &Page<T>) -> usize {
     2 * size_of::<usize>() + size_of::<Box<[T]>>() + size_of_val(&***page)
 }
 
-/// One value per slot, `len` slots, in pages of [`PAGE`].
 #[derive(Clone, Debug)]
 pub struct Paged<T> {
     pages: Vec<Page<T>>,
@@ -83,7 +70,6 @@ impl<T: Copy> Index<usize> for Paged<T> {
 }
 
 impl<T: Copy> Paged<T> {
-    /// `len` slots of `fill`, which slots it grows to hold too.
     pub(crate) fn filled(len: usize, fill: T) -> io::Result<Self> {
         let mut paged = Self {
             pages: Vec::new(),
@@ -94,7 +80,6 @@ impl<T: Copy> Paged<T> {
         Ok(paged)
     }
 
-    /// `values`, one per slot, its growth `fill`.
     pub(crate) fn from_slice(values: &[T], fill: T) -> io::Result<Self> {
         let mut pages = engine_allocation::vec(values.len().div_ceil(PAGE))?;
         for (index, chunk) in values.chunks(PAGE).enumerate() {
@@ -120,12 +105,10 @@ impl<T: Copy> Paged<T> {
         (at < self.len).then(|| &self.pages[at >> SHIFT][at & MASK])
     }
 
-    /// Every slot's value, in slot order.
     pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
         self.chunks().flatten()
     }
 
-    /// Each page's slots, in order: slot `PAGE * index + offset` is the chunk's `offset`th.
     pub fn chunks(&self) -> impl Iterator<Item = &[T]> + '_ {
         self.pages.iter().enumerate().map(|(index, page)| {
             let start = index << SHIFT;
@@ -133,7 +116,6 @@ impl<T: Copy> Paged<T> {
         })
     }
 
-    /// Holds `len` slots, the new ones `fill`; never fewer.
     pub(crate) fn resize(&mut self, len: usize) -> io::Result<()> {
         if len <= self.len {
             return Ok(());
@@ -156,7 +138,6 @@ impl<T: Copy> Paged<T> {
         Ok(())
     }
 
-    /// Slot `at`, its page copied first when it is shared; None past the slots.
     pub(crate) fn get_mut(&mut self, at: usize) -> io::Result<Option<&mut T>> {
         if at >= self.len {
             return Ok(None);
@@ -164,8 +145,6 @@ impl<T: Copy> Paged<T> {
         Ok(Some(&mut unique(&mut self.pages[at >> SHIFT])?[at & MASK]))
     }
 
-    /// Calls `write` with each of `slots` (ascending) and its value, each page copied once
-    /// when it is shared; `past` refuses a slot past the slots.
     pub(crate) fn each_mut(
         &mut self,
         slots: &[u32],
@@ -195,7 +174,6 @@ impl<T: Copy> Paged<T> {
         Ok(())
     }
 
-    /// A copy sharing every page.
     pub(crate) fn share(&self) -> io::Result<Self> {
         Ok(Self {
             pages: engine_allocation::collect_vec(self.pages.iter().cloned())?,
@@ -204,13 +182,11 @@ impl<T: Copy> Paged<T> {
         })
     }
 
-    /// The bytes its pages and their list take.
     pub fn held_bytes(&self) -> usize {
         self.pages.capacity() * size_of::<Page<T>>()
             + self.pages.iter().map(page_bytes).sum::<usize>()
     }
 
-    /// [`Self::held_bytes`], but of the pages nothing else holds.
     pub fn owned_bytes(&self) -> usize {
         self.pages.capacity() * size_of::<Page<T>>()
             + self
@@ -221,7 +197,6 @@ impl<T: Copy> Paged<T> {
                 .sum::<usize>()
     }
 
-    /// The bytes of the pages only it and `other` hold, each at the same place in both.
     pub fn shared_bytes(&self, other: &Self) -> usize {
         self.pages
             .iter()
@@ -231,7 +206,6 @@ impl<T: Copy> Paged<T> {
             .sum()
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     pub fn common_bytes(&self, other: &Self) -> usize {
         self.pages
             .iter()
@@ -250,7 +224,6 @@ impl<T: Copy> Paged<T> {
     }
 }
 
-/// A [`Paged`] whose pages are held weakly.
 #[derive(Debug)]
 pub(crate) struct WeakPaged<T> {
     pages: Vec<Weak<Box<[T]>>>,
@@ -259,7 +232,6 @@ pub(crate) struct WeakPaged<T> {
 }
 
 impl<T: Copy> WeakPaged<T> {
-    /// Its column again, when every page is still held somewhere.
     pub(crate) fn upgrade(&self) -> io::Result<Option<Paged<T>>> {
         let mut pages = engine_allocation::vec(self.pages.len())?;
         for page in &self.pages {
@@ -275,8 +247,6 @@ impl<T: Copy> WeakPaged<T> {
         }))
     }
 
-    /// Whether its first page is still held: a cheap guess at whether any is. An empty
-    /// column holds nothing to share.
     pub(crate) fn alive(&self) -> bool {
         self.pages
             .first()
@@ -284,7 +254,6 @@ impl<T: Copy> WeakPaged<T> {
     }
 }
 
-/// One bit per slot, in [`Paged`] words: bits past its words are clear.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PagedBits {
     words: Paged<u64>,
@@ -300,7 +269,6 @@ impl PagedBits {
             .is_some_and(|word| word >> (bit % 64) & 1 == 1)
     }
 
-    /// The set bits, ascending.
     pub fn ones(&self) -> impl Iterator<Item = u32> + '_ {
         self.words.iter().enumerate().flat_map(|(index, &word)| {
             let mut rest = word;
@@ -321,7 +289,6 @@ impl PagedBits {
             .sum()
     }
 
-    /// Holds bits `..bits` without growing.
     pub(crate) fn resize(&mut self, bits: usize) -> io::Result<()> {
         self.words.resize(bits.div_ceil(64))
     }
@@ -338,7 +305,6 @@ impl PagedBits {
         Ok(())
     }
 
-    /// Sets each of `bits` (ascending) to `value(index)`, each page copied once.
     pub(crate) fn put_each(
         &mut self,
         bits: &[u32],
@@ -347,7 +313,6 @@ impl PagedBits {
         if let Some(&last) = bits.last() {
             self.words.resize(last as usize / 64 + 1)?;
         }
-        // Slots are ascending, so their words are too, each repeated per bit.
         let mut index = 0;
         while index < bits.len() {
             let word = bits[index] as usize / 64;
@@ -389,7 +354,6 @@ impl PagedBits {
         self.words.shared_bytes(&other.words)
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     pub fn common_bytes(&self, other: &Self) -> usize {
         self.words.common_bytes(&other.words)
     }
@@ -403,7 +367,6 @@ impl PagedBits {
     }
 }
 
-/// A bool per slot, `len` slots, packed as [`PagedBits`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bools {
     bits: PagedBits,
@@ -428,7 +391,6 @@ impl Bools {
         self.len == 0
     }
 
-    /// Slot `at`'s value, None past the slots.
     #[inline]
     pub fn get(&self, at: usize) -> Option<&'static bool> {
         (at < self.len).then(|| &BITS[usize::from(self.bits.get(at as u32))])
@@ -481,7 +443,6 @@ impl Bools {
         self.bits.shared_bytes(&other.bits)
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     pub fn common_bytes(&self, other: &Self) -> usize {
         self.bits.common_bytes(&other.bits)
     }
@@ -495,8 +456,6 @@ impl Bools {
     }
 }
 
-/// One page of a list column: each slot's cell end in the page's items, which the last
-/// slot's end ends.
 #[derive(Debug)]
 struct ListPage<T> {
     ends: Vec<u32>,
@@ -513,25 +472,19 @@ fn put<T: Copy>(items: &mut Vec<T>, kept: &[T]) -> io::Result<()> {
     Ok(())
 }
 
-/// Item position `at` moved by `shift` items.
 #[inline]
 fn moved(at: u32, shift: isize) -> usize {
     (at as isize + shift) as usize
 }
 
-/// What a rewrite's `cell` is: given a slot's index among the rewritten slots and its held
-/// items, it puts the slot's new items at the end of the vector it is given.
 trait Rewrite<T>: FnMut(usize, &[T], &mut Vec<T>) -> io::Result<()> {}
 
 impl<T, F: FnMut(usize, &[T], &mut Vec<T>) -> io::Result<()>> Rewrite<T> for F {}
 
-/// A rewrite emptying its cells.
 fn nothing<T>(_: usize, _: &[T], _: &mut Vec<T>) -> io::Result<()> {
     Ok(())
 }
 
-/// One cell a rewrite puts in a page held once: its slot's offset in the page, where its
-/// held items start and end there, and where its new ones end in [`Edits::items`].
 #[derive(Clone, Copy, Debug)]
 struct Edit {
     offset: u32,
@@ -540,13 +493,11 @@ struct Edit {
     new: u32,
 }
 
-/// The new cells of a page edited in place, kept from one rewrite to the next.
 struct Edits<T> {
     cells: Vec<Edit>,
     items: Vec<T>,
 }
 
-/// The most bytes of new items [`Edits`] keeps once a rewrite is done.
 const KEPT_EDIT_BYTES: usize = 64 << 10;
 
 impl<T> Default for Edits<T> {
@@ -569,8 +520,6 @@ impl<T: Copy> Edits<T> {
         self.cells.capacity() * size_of::<Edit>() + self.items.capacity() * size_of::<T>()
     }
 
-    /// The new cells of `slots`, slots of `page` from slot `base`, the first `first` among
-    /// the rewritten slots.
     fn gather(
         &mut self,
         page: &ListPage<T>,
@@ -599,7 +548,6 @@ impl<T: Copy> Edits<T> {
         Ok(())
     }
 
-    /// Lets go of a large rewrite's items.
     fn done(&mut self) {
         if self.items.capacity() * size_of::<T>() > KEPT_EDIT_BYTES {
             self.items = Vec::new();
@@ -615,7 +563,6 @@ impl<T: Copy> ListPage<T> {
         })
     }
 
-    /// Where slot `at`'s items start: where the slot before's end.
     #[inline]
     fn start(&self, at: usize) -> u32 {
         at.checked_sub(1).map_or(0, |before| self.ends[before])
@@ -633,7 +580,6 @@ impl<T: Copy> ListPage<T> {
             + self.items.capacity() * size_of::<T>()
     }
 
-    /// A copy holding `slots` slots, the new ones empty.
     fn grown(&self, slots: usize) -> io::Result<Self> {
         let mut ends = engine_allocation::vec(slots)?;
         ends.extend_from_slice(&self.ends);
@@ -644,7 +590,6 @@ impl<T: Copy> ListPage<T> {
         })
     }
 
-    /// Holds `slots` slots, the new ones empty.
     fn grow(&mut self, slots: usize) -> io::Result<()> {
         let end = self.start(self.ends.len());
         let missing = slots - self.ends.len();
@@ -653,7 +598,6 @@ impl<T: Copy> ListPage<T> {
         Ok(())
     }
 
-    /// A copy with the cells of `slots` (its slots from slot `base`) rewritten.
     fn rebuilt(
         &self,
         (base, first): (usize, usize),
@@ -682,8 +626,6 @@ impl<T: Copy> ListPage<T> {
         Ok(Self { ends, items })
     }
 
-    /// Rewrites the cells of `slots` where every cell from the first of them on is empty:
-    /// their new items follow the page's.
     fn append(
         &mut self,
         (base, first): (usize, usize),
@@ -714,8 +656,6 @@ impl<T: Copy> ListPage<T> {
         Ok(())
     }
 
-    /// Puts the cells `edits` gathered from it in place of the cells they replace, moving the
-    /// items between them only by what the cells before them grew or shrank.
     fn splice(&mut self, edits: &Edits<T>) -> io::Result<()>
     where
         T: Default,
@@ -736,8 +676,6 @@ impl<T: Copy> ListPage<T> {
         if len > held {
             engine_allocation::resize(&mut self.items, len, T::default())?;
         }
-        // Items moving back go first, front to back, then those moving on, back to front:
-        // neither overwrites items yet to move.
         let mut shift = 0;
         for at in 0..cells.len() {
             shift += delta(at);
@@ -780,9 +718,6 @@ impl<T: Copy> ListPage<T> {
     }
 }
 
-/// Rewrites the cells of `slots`, ascending slots of `page` from slot `at.0`, the first
-/// `at.1` among the rewritten slots: in place when nothing else holds the page, else in a
-/// copy of it.
 fn edit_page<T: Copy + Default>(
     page: &mut Arc<ListPage<T>>,
     edits: &mut Edits<T>,
@@ -804,8 +739,6 @@ fn edit_page<T: Copy + Default>(
     Ok(())
 }
 
-/// A list of items per slot, `len` slots: each page one buffer of items and each slot's end
-/// in it, shared copy-on-write and edited in place once held alone.
 #[derive(Debug)]
 pub struct Lists<T> {
     pages: Vec<Arc<ListPage<T>>>,
@@ -868,7 +801,6 @@ impl<T: Copy> Lists<T> {
         (0..self.len).map(|at| self.pages[at >> SHIFT].cell(at & MASK))
     }
 
-    /// Holds `len` slots, the new ones empty.
     pub(crate) fn resize(&mut self, len: usize) -> io::Result<()> {
         if len <= self.len {
             return Ok(());
@@ -920,7 +852,6 @@ impl<T: Copy> Lists<T> {
                 .sum::<usize>()
     }
 
-    /// The bytes of the pages only it and `other` hold, each at the same place in both.
     pub fn shared_bytes(&self, other: &Self) -> usize {
         self.pages
             .iter()
@@ -930,7 +861,6 @@ impl<T: Copy> Lists<T> {
             .sum()
     }
 
-    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
     pub fn common_bytes(&self, other: &Self) -> usize {
         self.pages
             .iter()
@@ -949,8 +879,6 @@ impl<T: Copy> Lists<T> {
 }
 
 impl<T: Copy + Default> Lists<T> {
-    /// Writes the cells of `slots` (strictly ascending): `cell` puts slot `slots[index]`'s
-    /// new items, given its held ones, at the end of the vector it is given.
     pub(crate) fn rewrite(
         &mut self,
         slots: &[u32],
@@ -960,8 +888,6 @@ impl<T: Copy + Default> Lists<T> {
         self.each_page(slots, past, |_, _| true, &mut cell)
     }
 
-    /// Empties the cells of `slots` (strictly ascending); a page whose cells there are empty
-    /// already stays as it is.
     pub(crate) fn clear(
         &mut self,
         slots: &[u32],
@@ -978,7 +904,6 @@ impl<T: Copy + Default> Lists<T> {
         )
     }
 
-    /// Rewrites the cells of `slots` a page at a time, each page `wanted` takes.
     fn each_page(
         &mut self,
         slots: &[u32],
@@ -1018,7 +943,6 @@ impl<T: Copy + Default> Lists<T> {
     }
 }
 
-/// A [`Lists`] whose pages are held weakly.
 #[derive(Debug)]
 pub(crate) struct WeakLists<T> {
     pages: Vec<Weak<ListPage<T>>>,

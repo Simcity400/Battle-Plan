@@ -1,23 +1,3 @@
-//! No-selected-pair land model selection from the six native template queues.
-//!
-//! The game reads the viewing country's two production rosters and the
-//! template's stored grouped entries; each candidate
-//! country's stored best-variant list comes from the recorded third roster.
-//!
-//! The game builds the labelled option list the division designer shows: a
-//! first row labelled `USE_DEFAULT_MODEL`, then the drained queue rows, each
-//! labelled in the display language ([`super::model_labels`]). Each variant's
-//! candidate list numbers its repeated labels before its rows queue. The
-//! drained list is then stably grouped by the byte rank of each label's first
-//! appearance, and the figure is the list's second row
-//! ([`model_labels::second_row`]). A stack whose rows all name one entity
-//! needs no label; otherwise a label the recording or content cannot build
-//! refuses the stack by name, which the model report counts under
-//! [`LABEL_ORDERING`].
-//!
-//! The viewing country uses a signed-positive player-country reference, else
-//! the observer-country reference. `Vision` settles both to the unique
-//! `Countries` row for that canonical slot.
 
 use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,11 +14,8 @@ use {
     installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
 };
 
-/// The prefix of the reason a stack whose drained rows name more than one
-/// entity has no figure: one of their labels cannot be built.
 pub const LABEL_ORDERING: &str = "equipment model option labels unavailable";
 
-/// One resolvable entity and the producer used for the model report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub entity: String,
@@ -56,17 +33,13 @@ pub struct Inputs<'a, 'b> {
     pub countries: &'a BTreeMap<u32, ModelCountry>,
     pub links: &'a BTreeMap<u32, u32>,
     pub definitions: model_selection::Variants<'b>,
-    /// Spells the definitions' equipment type tokens.
     pub tokens: &'a TokenNames<'b>,
     pub viewing_country_ref: u32,
     pub limits: &'a equipment_graphics::Limits<'a>,
     pub registered: &'a HashSet<String>,
-    /// The option list's labels in the display language.
     pub labels: &'a model_labels::Labels<'a>,
 }
 
-/// A zero category traversal or no positive matching need cannot produce a
-/// nondefault queue row, so it needs no production or graphics operands.
 pub fn has_qualifying_requirements(
     template: &DivisionTemplateIconRow,
     composition: &Template<'_>,
@@ -88,12 +61,9 @@ pub fn has_qualifying_requirements(
 struct Row {
     resolved: Resolved,
     score: i64,
-    /// The row's option-list label.
     label: Label,
 }
 
-/// The native default row is always present. A zero production match leaves
-/// only that row, and the caller must take the ordinary numbered fallback.
 pub fn resolve(inputs: &Inputs<'_, '_>) -> Result<Option<Resolved>, String> {
     let selected_mask = inputs.template.model_category.unwrap_or_else(|| {
         inputs
@@ -129,8 +99,6 @@ pub fn resolve(inputs: &Inputs<'_, '_>) -> Result<Option<Resolved>, String> {
     if roster.is_empty() {
         return Ok(None);
     }
-    // The game reads only reference identity. Defer naming/culture until a
-    // real candidate reaches graphics selection; an empty queue needs neither.
     let viewing = legacy::Country {
         tag: "",
         cosmetic: "",
@@ -166,8 +134,6 @@ pub fn resolve(inputs: &Inputs<'_, '_>) -> Result<Option<Resolved>, String> {
 }
 
 fn template_countries(template: &DivisionTemplateIconRow) -> Result<(u32, u32), String> {
-    // Composition supplies the template's country.
-    // A signed-positive preferred country supplies the suffix country.
     let initial = template.country;
     if initial <= 0 {
         return Err(format!(
@@ -259,8 +225,6 @@ fn evaluate<'a>(
             }
         }
     }
-    // Drain queues 0..5, then group by the byte rank of each label's first
-    // appearance and take the second row.
     second_row(&inputs.labels.default_label()?, variant_bins, suffix_bins)
 }
 
@@ -289,8 +253,6 @@ fn admit_variant_rows(
         };
         let Some(bin) = bin else { continue };
         for row in rows.iter().rev() {
-            // The first admission owns a token across q0..q2, even if a
-            // later category bit would have placed it in a stronger bin.
             if !seen.insert(row.resolved.entity.clone()) {
                 continue;
             }
@@ -319,7 +281,6 @@ fn second_row(
     suffix: [Vec<Row>; 3],
 ) -> Result<Option<Resolved>, String> {
     let rows = drain_rows(variants, suffix);
-    // One entity is the figure whatever the order.
     if rows.iter().all(|row| {
         rows.first()
             .is_some_and(|first| first.resolved.entity == row.resolved.entity)
@@ -333,8 +294,6 @@ fn second_row(
 }
 
 fn drain_rows(variants: [Vec<Row>; 3], suffix: [Vec<Row>; 3]) -> Vec<Row> {
-    // The game pre-seeds the outer output with an empty entity token.
-    // Each graphics-selection input has its own empty sentinel; the final drain drops it.
     let mut seen = BTreeSet::from([String::new()]);
     variants
         .into_iter()
@@ -374,8 +333,6 @@ fn model_country(
     model_selection::variant_country(variant, subunit, initial)
 }
 
-/// The variant creator's ruling ideology group and culture, or
-/// neither for a nonpositive creator. A positive creator must resolve.
 pub fn creator_operands<'a>(
     definition: &VariantDefinitionRow,
     links: &BTreeMap<u32, u32>,
@@ -410,8 +367,6 @@ pub fn creator_operands<'a>(
     ))
 }
 
-/// The raw reference of the viewing country, whose canonical slot is `slot`, for the roster the
-/// fallback reads.
 pub fn view_country_ref(frame: &DecodedFrame, slot: u32) -> Result<u32, String> {
     let countries = frame
         .complete::<tables::Countries>()
@@ -427,7 +382,6 @@ pub fn view_country_ref(frame: &DecodedFrame, slot: u32) -> Result<u32, String> 
             "viewing country slot {slot} has several Countries rows"
         ));
     }
-    // Native positive-reference checks are signed.
     if (country.id as i32) <= 0 {
         return Err(format!(
             "viewing country slot {slot} has nonpositive native reference {}",
@@ -468,7 +422,6 @@ fn pair_candidates<'a>(
         .content
         .equipment_model(equipment_key)
         .map_err(|error| error.to_string())?;
-    // The equipment family is the type itself unless another is named.
     let family = Some((
         equipment.family,
         Some(
@@ -522,10 +475,7 @@ fn pair_candidates<'a>(
     )?
     .into_iter()
     .collect();
-    // The pair's own variant carries its display label.
     let own = inputs.labels.display(definition, equipment_key);
-    // The variant's list: the default row, then its candidates, with repeats
-    // numbered before the rows queue.
     let mut labels: Vec<Label> = vec![inputs.labels.default_label()];
     labels.extend(candidates.iter().map(|candidate| {
         if graphical_names.contains(&candidate.entity) {
@@ -560,8 +510,6 @@ fn pair_candidates<'a>(
         .collect())
 }
 
-/// A conventional candidate's label for a variant other than the pair's own,
-/// or for the sub-unit itself.
 fn source_label(inputs: &Inputs<'_, '_>, group: &Group<'_>, source: legacy::Source) -> Label {
     let handle = match source {
         legacy::Source::Subunit => {
@@ -628,8 +576,6 @@ fn append_suffix<'a>(
     )?
     .into_iter()
     .collect();
-    // The helper's native ranked list is persistent. Existing rows retain
-    // their first producer while new rows carry this grouped subunit.
     let old: BTreeMap<_, _> = std::mem::take(bin)
         .into_iter()
         .map(|row| (row.resolved.entity.clone(), row))
@@ -638,7 +584,6 @@ fn append_suffix<'a>(
         .into_iter()
         .map(|candidate| {
             old.get(&candidate.entity).cloned().unwrap_or_else(|| Row {
-                // Suffix rows are not renumbered.
                 label: sources.get(&candidate.entity).map_or_else(
                     || {
                         Err(format!(
@@ -770,7 +715,6 @@ mod tests {
             second_row(b"Use default model", variants, suffix)
                 .map(|resolved| resolved.map(|resolved| resolved.entity))
         };
-        // Rows naming one entity need no label.
         assert_eq!(
             figure(
                 [vec![row("A", 0)], vec![], vec![]],
@@ -778,12 +722,10 @@ mod tests {
             ),
             Ok(Some("A".into()))
         );
-        // Different entities: the first drained row is the second option row.
         assert_eq!(
             figure([vec![row("A", 0), row("B", 0)], vec![], vec![]], empty()),
             Ok(Some("A".into()))
         );
-        // A suffix row labelled like the default row groups beside it.
         assert_eq!(
             figure(
                 [vec![row("A", 0)], vec![], vec![]],
@@ -791,7 +733,6 @@ mod tests {
             ),
             Ok(Some("B".into()))
         );
-        // An unbuildable label before the decision refuses by name.
         let mut unknown = row("B", 0);
         unknown.label = Err("country 9 has no Countries row".into());
         let refused = figure([vec![row("A", 0), unknown], vec![], vec![]], empty()).unwrap_err();

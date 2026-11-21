@@ -1,23 +1,5 @@
-//! An exact, compact codec for what a preparation's walks hand its emits through the spool
-//! (`replay::segments`): integers as LEB128 (signed ones zigzagged), floats as their bits,
-//! lengths before contents, an enum's variant as its index.
-//!
-//! A slice of plain numbers is written as their little-endian bytes, end to end.
-//!
-//! A stream keeps the allocations it shares: an `Arc` (or `Weak`) met again in the stream is
-//! written as the one met before, and read back as one allocation again, so what compared by
-//! address before it was written compares alike after it is read. The writer forgets an
-//! allocation once nothing else holds it, and tells the reader to ([`Shared::released`]):
-//! those an item alone held as it is written, and the rest once as many again are held as
-//! after the last look at them ([`Shared::sweep_recent`]).
-//!
-//! An allocation of a resident type ([`Spooled::RESIDENT`]), such as the game content a run
-//! loads once, is handed to the reader as it is, beside the bytes ([`Shared::take_resident`],
-//! [`Restored::give_resident`]): never copied, held no longer than its stream.
-
 pub use replay_spool_derive::Spooled;
 
-// The derive names this crate by its path, its own tests' types included.
 extern crate self as replay_spool;
 
 use std::{
@@ -34,8 +16,6 @@ use std::{
     time::Duration,
 };
 
-/// Hashes the addresses and ids a stream keys its allocations by: one multiply, its high bits
-/// folded down, as aligned addresses leave the low bits empty.
 #[derive(Clone, Copy, Default)]
 struct Mix;
 
@@ -73,14 +53,9 @@ impl Hasher for Mixed {
 #[cfg(test)]
 mod tests;
 
-/// A value written to a stream and read back exactly.
 pub trait Spooled: Sized {
-    /// A `Weak` may name its allocations: one dead is kept from reuse until its stream ends,
-    /// so a `Weak` written later names it as before.
     const WEAKLY: bool = false;
 
-    /// Its allocations are handed on as they are, never written: content a run holds whole
-    /// whichever way, whose `spool` and `unspool` are never called.
     const RESIDENT: bool = false;
 
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()>;
@@ -100,8 +75,6 @@ pub trait Spooled: Sized {
     }
 }
 
-/// A value a dead `Weak` may name in its place: a reader needs an allocation of its own for
-/// each. Its type sets [`Spooled::WEAKLY`].
 pub trait Placeholder: Sized {
     fn placeholder() -> Self;
 }
@@ -118,7 +91,6 @@ fn reserve<T>(values: &mut Vec<T>, more: usize) -> io::Result<()> {
     values.try_reserve(more).map_err(|_| oom())
 }
 
-/// What a writer holds of an allocation, to see whether anything else still does.
 trait Held: Send {
     fn alive(&self) -> bool;
 }
@@ -133,44 +105,31 @@ struct Entry {
     address: usize,
     id: u64,
     held: Box<dyn Held>,
-    /// A `Weak` of its type may name it once dead: kept, as dead, until the stream ends.
     weakly: bool,
 }
 
-/// Live allocations past which [`Shared::sweep_recent`] looks at every one again.
 const SWEEP_FLOOR: usize = 32;
 
-/// The allocations a stream wrote, by address, each kept from reuse by a `Weak` while known.
 #[derive(Default)]
 pub struct Shared {
-    /// Resident allocations met, by address, each held for the stream, and those not handed
-    /// on yet.
     resident_ids: HashMap<usize, u64, Mix>,
     resident_held: Vec<Arc<dyn Any + Send + Sync>>,
     resident_new: Vec<Arc<dyn Any + Send + Sync>>,
     ids: HashMap<usize, u64, Mix>,
-    /// Allocations alive at the last look, and those met since.
     live: Vec<Entry>,
     young: Vec<Entry>,
-    /// The live allocations at which every one is looked at again.
     full_at: usize,
-    /// Dead allocations a `Weak` may yet name, kept from reuse.
     dead: Vec<Box<dyn Held>>,
     next: u64,
     released: Vec<u64>,
 }
 
 impl Shared {
-    /// Forgets what nothing else holds any more, for the reader to: a dead allocation a
-    /// `Weak` may yet name it keeps, as dead, and the reader drops its contents.
     pub fn sweep(&mut self) -> io::Result<()> {
         self.sweep_young()?;
         self.sweep_live()
     }
 
-    /// [`Self::sweep`] of the allocations met since the last look, which an item alone held as
-    /// a rule, and of every other once twice as many are alive as after the last look at them:
-    /// a constant cost an allocation met, however many stay alive.
     pub fn sweep_recent(&mut self) -> io::Result<()> {
         self.sweep_young()?;
         if self.live.len() >= self.full_at {
@@ -190,7 +149,6 @@ impl Shared {
                 self.release(entry)
             }
         });
-        // Its allocation is kept for the next item's.
         self.young = young;
         swept
     }
@@ -211,7 +169,6 @@ impl Shared {
 
     fn release(&mut self, entry: Entry) -> io::Result<()> {
         reserve(&mut self.released, 1)?;
-        // The low bit says dead rather than gone.
         self.released.push(entry.id << 1 | u64::from(entry.weakly));
         if entry.weakly {
             reserve(&mut self.dead, 1)?;
@@ -222,17 +179,14 @@ impl Shared {
         Ok(())
     }
 
-    /// What [`Self::sweep`] released since last asked, for [`Restored::release`].
     pub fn released(&mut self) -> &mut Vec<u64> {
         &mut self.released
     }
 
-    /// The resident allocations met since last asked, for [`Restored::give_resident`].
     pub fn take_resident(&mut self) -> Vec<Arc<dyn Any + Send + Sync>> {
         std::mem::take(&mut self.resident_new)
     }
 
-    /// Allocations it holds from reuse.
     pub fn len(&self) -> usize {
         self.ids.len()
     }
@@ -275,10 +229,8 @@ impl Shared {
     }
 }
 
-/// An allocation a reader holds for the stream: alive while the writer's was, else dead.
 trait Slot: Send {
     fn as_any(&self) -> &dyn Any;
-    /// Its contents dropped, the allocation kept for a `Weak` to name.
     fn kill(self: Box<Self>) -> Box<dyn Slot>;
 }
 
@@ -305,7 +257,6 @@ impl<T: ?Sized + Send + Sync + 'static> Slot for Dead<T> {
     }
 }
 
-/// The allocations a stream read, by the order it met them.
 #[derive(Default)]
 pub struct Restored {
     slots: HashMap<u64, Box<dyn Slot>, Mix>,
@@ -314,12 +265,10 @@ pub struct Restored {
 }
 
 impl Restored {
-    /// Takes what a writer handed on ([`Shared::take_resident`]).
     pub fn give_resident(&mut self, resident: Vec<Arc<dyn Any + Send + Sync>>) {
         self.resident.extend(resident);
     }
 
-    /// Takes what a writer released ([`Shared::released`]).
     pub fn release(&mut self, released: &[u64]) -> io::Result<()> {
         for &code in released {
             let id = code >> 1;
@@ -363,7 +312,6 @@ const NEW: u8 = 1;
 const NONE: u8 = 2;
 const DEAD: u8 = 3;
 
-/// Writes values to a stream's bytes.
 pub struct Writer<'a> {
     bytes: &'a mut Vec<u8>,
     shared: &'a mut Shared,
@@ -400,7 +348,6 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// [`Self::varint`] of a value of 64 bits at most: the same bytes.
     #[inline]
     pub fn varint64(&mut self, mut value: u64) -> io::Result<()> {
         reserve(self.bytes, 10)?;
@@ -412,7 +359,6 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// Plain values of `WIDTH` bytes each, end to end, as `bytes` gives them.
     #[inline]
     pub fn plain<const WIDTH: usize>(
         &mut self,
@@ -433,13 +379,10 @@ impl<'a> Writer<'a> {
         self.varint64(length as u64)
     }
 
-    /// An enum's variant, by its index.
     pub fn tag(&mut self, index: usize) -> io::Result<()> {
         self.length(index)
     }
 
-    /// `arc`, its contents written by `contents` the first time the stream meets it. A
-    /// `weakly` held type's allocation is kept from reuse once dead, for a `Weak` to name.
     pub fn shared<T: ?Sized + Send + Sync + 'static>(
         &mut self,
         arc: &Arc<T>,
@@ -457,7 +400,6 @@ impl<'a> Writer<'a> {
         contents(self, arc)
     }
 
-    /// `arc`, of a resident type, by the order the stream met it: handed on as it is.
     pub fn resident<T: Send + Sync + 'static>(&mut self, arc: &Arc<T>) -> io::Result<()> {
         let address = Arc::as_ptr(arc).cast::<()>() as usize;
         if let Some(&id) = self.shared.resident_ids.get(&address) {
@@ -474,8 +416,6 @@ impl<'a> Writer<'a> {
         self.varint(u128::from(id))
     }
 
-    /// `weak`, as [`Self::shared`] writes its allocation: one the stream has not met is
-    /// written whole while alive, and as an allocation of its own once dead.
     pub fn weak<T: Spooled + Send + Sync + 'static>(&mut self, weak: &Weak<T>) -> io::Result<()> {
         if weak.ptr_eq(&Weak::new()) {
             return self.byte(NONE);
@@ -495,7 +435,6 @@ impl<'a> Writer<'a> {
     }
 }
 
-/// Reads values back from a stream's bytes.
 pub struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -515,7 +454,6 @@ impl<'a> Reader<'a> {
         self.bytes.len() - self.at
     }
 
-    /// Fails unless every byte was read.
     pub fn finish(&self) -> io::Result<()> {
         if self.remaining() == 0 {
             Ok(())
@@ -552,7 +490,6 @@ impl<'a> Reader<'a> {
         Err(invalid("A spooled integer runs too long"))
     }
 
-    /// [`Self::varint`] of a value of 64 bits at most.
     #[inline]
     pub fn varint64(&mut self) -> io::Result<u64> {
         let mut value = 0_u64;
@@ -577,7 +514,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `count` plain values of `WIDTH` bytes each, as [`Writer::plain`] wrote them.
     #[inline]
     pub fn plain<const WIDTH: usize, T>(
         &mut self,
@@ -606,7 +542,6 @@ impl<'a> Reader<'a> {
         self.length()
     }
 
-    /// An allocation [`Writer::shared`] wrote, its contents read by `contents` when new.
     pub fn shared<T: ?Sized + Send + Sync + 'static>(
         &mut self,
         contents: impl FnOnce(&mut Self) -> io::Result<Arc<T>>,
@@ -623,7 +558,6 @@ impl<'a> Reader<'a> {
             }
             NEW => {
                 let id = self.shared.next;
-                // Its id is taken before its contents: those may share allocations of their own.
                 self.shared.next += 1;
                 let arc = contents(self)?;
                 self.shared.slots.try_reserve(1).map_err(|_| oom())?;
@@ -636,7 +570,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// A resident allocation [`Writer::resident`] wrote.
     pub fn resident<T: Send + Sync + 'static>(&mut self) -> io::Result<Arc<T>> {
         let id = usize::try_from(self.varint64()?).map_err(|_| invalid("A spooled id overflows"))?;
         let held =
@@ -648,7 +581,6 @@ impl<'a> Reader<'a> {
             .map_err(|_| invalid("The spool names another type's resident allocation"))
     }
 
-    /// A `Weak` [`Writer::weak`] wrote.
     pub fn weak<T: Spooled + Placeholder + Send + Sync + 'static>(
         &mut self,
     ) -> io::Result<Weak<T>> {
@@ -721,7 +653,6 @@ impl Spooled for bool {
     }
 }
 
-// A slice of plain numbers goes as their little-endian bytes: copied, never varint-coded.
 macro_rules! plain_slices {
     ($ty:ty) => {
         fn spool_slice(values: &[Self], out: &mut Writer<'_>) -> io::Result<()> {
@@ -758,7 +689,6 @@ impl Spooled for u128 {
     plain_slices!(u128);
 }
 
-// A usize goes as 64 bits, whatever the platform.
 impl Spooled for usize {
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
         out.varint64(*self as u64)
@@ -925,7 +855,6 @@ impl Spooled for std::cmp::Ordering {
     }
 }
 
-/// The kinds an error's kind is written as, by index: one past these fails to write.
 const ERROR_KINDS: [io::ErrorKind; 39] = [
     io::ErrorKind::NotFound,
     io::ErrorKind::PermissionDenied,
@@ -968,8 +897,6 @@ const ERROR_KINDS: [io::ErrorKind; 39] = [
     io::ErrorKind::Other,
 ];
 
-/// The kind std gives an OS error it does not map, which code cannot name: rebuilt from an OS
-/// code no platform maps.
 fn uncategorized() -> io::ErrorKind {
     io::Error::from_raw_os_error(i32::MAX).kind()
 }
@@ -1169,8 +1096,6 @@ impl<T: Spooled + Ord> Spooled for BTreeSet<T> {
     }
 }
 
-// A hash map's order is not kept: it is read back in the order it was written, into a map
-// of the same length.
 impl<K: Spooled + Eq + Hash, V: Spooled, S: BuildHasher + Default> Spooled for HashMap<K, V, S> {
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
         out.length(self.len())?;
@@ -1229,7 +1154,6 @@ impl<T: Spooled> Spooled for Range<T> {
 
 impl<T: Spooled> Spooled for RangeInclusive<T> {
     fn spool(&self, out: &mut Writer<'_>) -> io::Result<()> {
-        // An exhausted range's flag is not kept: one is never spooled.
         self.start().spool(out)?;
         self.end().spool(out)
     }
@@ -1315,7 +1239,6 @@ tuples!(
     (A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8, J 9, K 10, L 11),
 );
 
-/// `value` written and read back alone, with the bytes it wrote: for round-trip tests.
 pub fn round_trip<T: Spooled>(value: &T) -> io::Result<(T, Vec<u8>)> {
     let (mut shared, mut restored) = (Shared::default(), Restored::default());
     let mut bytes = Vec::new();
@@ -1327,9 +1250,6 @@ pub fn round_trip<T: Spooled>(value: &T) -> io::Result<(T, Vec<u8>)> {
     Ok((read, bytes))
 }
 
-/// `values` written one after another to a stream, each dropped once written as an operator's
-/// sink drops it, then read back in order as an emit reads them: what a family's emit is
-/// handed of them, for tests of what reads them.
 pub fn respool<T: Spooled>(values: Vec<T>) -> io::Result<Vec<T>> {
     let mut shared = Shared::default();
     let mut written = Vec::new();
@@ -1355,8 +1275,6 @@ pub fn respool<T: Spooled>(values: Vec<T>) -> io::Result<Vec<T>> {
     Ok(read)
 }
 
-/// Whether `value` reads back as what writes the same bytes again: for types with no
-/// equality of their own.
 pub fn rewrites<T: Spooled>(value: &T) -> io::Result<bool> {
     let (read, bytes) = round_trip(value)?;
     let mut again = Vec::new();

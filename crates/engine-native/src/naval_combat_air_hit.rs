@@ -1,8 +1,6 @@
-//! Retained naval aircraft-loss entry with a complete 0x18-byte layout.
 use crate::{Memory, cequipment_variant, cnaval_combatant::field};
 use engine_sites::Rva;
 
-/// Aircraft-loss entry primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_6fd8);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -12,8 +10,6 @@ pub struct Row {
     pub country: u32,
 }
 
-/// The hit's fields [`read`] reads (vtable, variant, count, country), one
-/// record per hit for a run of hits (`cfex_member::append_entries`).
 pub const RECORD: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
     source_offset: 0,
     destination_offset: 0,

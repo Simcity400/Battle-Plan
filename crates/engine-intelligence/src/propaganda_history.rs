@@ -1,6 +1,3 @@
-//! The strategic operative's saved propaganda history. Only the logical ring
-//! and its two saved Q15 channels are exposed; unused capacity and the other
-//! native effort channels are not recording inputs.
 
 use engine_sites::Rva;
 use crate::{Memory, memory::Raw, read};
@@ -26,8 +23,6 @@ impl Effort {
     }
 }
 
-/// One empty slot separates begin and end. Capacity comes from the native
-/// header, including for a modded session; it is never the constructor's size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ring {
     pub data: usize,
@@ -86,8 +81,6 @@ impl Ring {
         read_effort(memory, address)
     }
 
-    /// After the daily writer returns, only the new logical last element is
-    /// needed. The consumer carries the earlier elements and derives the sum.
     pub fn newest(self, memory: &impl Memory) -> Result<Effort, &'static str> {
         self.effort(
             memory,
@@ -136,7 +129,6 @@ mod tests {
         world.u32(object + HISTORY + 8, 4);
         world.u32(object + HISTORY + 12, 3);
         world.u32(object + HISTORY + 16, 2);
-        // Slot 2 is stale capacity; no bytes exist for it or for unsaved channels.
         for (slot, stability, war_support) in [(3, -7_i64, 13_i64), (0, 17, -19), (1, 23, 29)] {
             world.u64(data + slot * EFFORT_STRIDE, stability as u64);
             world.u64(data + slot * EFFORT_STRIDE + 8, war_support as u64);

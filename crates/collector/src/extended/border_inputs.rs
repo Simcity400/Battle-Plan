@@ -1,4 +1,3 @@
-//! Minimal border-conflict operands. All joins borrow owned captures.
 use engine_native::{Memory, ccountry, cprovince, cstate, walk::Outcome};
 use engine_research::ctechnology_status;
 
@@ -85,8 +84,6 @@ pub(super) fn doctrine(
         return Err("border demand country census unordered or duplicate");
     }
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    // Border conflicts also visit controllers of empty provinces. All active
-    // states form a safe superset, independent of any one hover perspective.
     for province in provinces {
         if !flags
             .binary_search_by_key(&province.state, |flag| flag.state)

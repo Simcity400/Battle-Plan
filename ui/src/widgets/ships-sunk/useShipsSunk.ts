@@ -8,10 +8,8 @@ import { isOrderedSpans } from '../../charts/series.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import type { ShipsSunkManifestReply, ShipsSunkReply } from '../../generated/dashboard';
 
-/** A window's sinkings, each row keyed by its window and its place in it. */
 export interface ShipsSunkWindowReply { window: number; indices: number[]; reply: ShipsSunkReply }
 
-/** Room for every row of a window below the next window's keys. */
 const WINDOW_KEYS = 2 ** 32;
 
 export function validateSinkingWindow(value: unknown): ShipsSunkWindowReply {

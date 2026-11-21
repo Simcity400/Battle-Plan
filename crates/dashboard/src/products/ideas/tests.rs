@@ -14,10 +14,6 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.metrics.table_ns[table.index()] = 1;
 }
 
-/// GER holds `civilian_economy` throughout and `export_focus` until 109, then `free_trade` in the
-/// same place. From 105 it has a political advisor (character 501, script token `CHAR_A`); from
-/// 120 another character (502, no script token) holds the same idea and seat. No country holds
-/// GER at hour 115.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     if hour == 115 {

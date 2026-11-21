@@ -20,7 +20,6 @@ const KIND_ARMY = 1;
 const KIND_NAVY = 2;
 const DATES = ['Held before', 'Gained', 'Held by'] as const;
 
-/** Throws where a reply is not the shape its product exports. */
 function shaped(input: unknown, keys: readonly string[], what: string): void {
   if (typeof input !== 'object' || input === null || !keys.every(key => key in input)) throw new Error(`The ${what} reply is malformed.`);
 }
@@ -37,13 +36,11 @@ export function validateLeaderHour(input: unknown): LeaderHourReply {
   return input as LeaderHourReply;
 }
 
-/** A leaderboard row as the table shows it: the wire row, its counts and its win rate among decided battles. */
 export interface LeaderRow {
   key: string; hour: number; row: WireRow; name: string; role: LeaderRole; traits: readonly LeaderTrait[];
   fought: number; won: number | null; lost: number | null; unresolved: number; winRate: number | null; foughtPartial: boolean;
 }
 
-/** The counts a leader's battles give: won and lost not recorded where the battle log was not, unresolved the rest. */
 export function battleTotals(fought: number, won: number, lost: number, partial: boolean) {
   const decided = won + lost;
   return { fought, won, lost, unresolved: Math.max(0, fought - decided), winRate: decided ? won * 100 / decided : null, foughtPartial: partial };
@@ -52,7 +49,6 @@ export function battleTotals(fought: number, won: number, lost: number, partial:
 export const leaderName = (row: { name: string | null }) => row.name ?? 'Character name unavailable';
 export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
 
-/** The leaderboard's rows at `hour`, of the kinds asked and the countries shown (`null` every country). */
 export function leaderRows(reply: UnitLeadersReply, hour: number, countries: ReadonlySet<string> | null, kind: LeaderKinds): LeaderRow[] {
   const partial = reply.battlesPartialFrom !== null && reply.battlesPartialFrom <= hour;
   return reply.leaders.flatMap(row => {
@@ -80,7 +76,6 @@ export function withheldLeaderState(leaders: readonly LeaderWithheld[], country?
 export const leaderKey = (row: LeaderRow) => row.key;
 export const leaderSkill = (row: LeaderRow) => row.row.skill;
 const defaultSortValue = { skill: leaderSkill }[DEFAULT_SORT.column];
-/** The leaderboard's first row at its default sort, when that row's sort value is recorded. */
 export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
   const first = sortRows(rows, defaultSortValue, DEFAULT_SORT.direction, leaderKey)[0];
   return first && defaultSortValue(first) != null ? first : null;
@@ -88,7 +83,6 @@ export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
 
 export const recordedSince = (firstSeen: number | null, recordingStart: number) => `Battles since ${formatDateTime(firstSeen ?? recordingStart)}`;
 
-/** A count from an incomplete battle history is a lower bound. */
 const atLeast = (partial: boolean, count: number | null) => count == null ? '—' : partial ? `at least ${count}` : String(count);
 
 export function traitDateText(date: TraitDate | null): string {
@@ -113,7 +107,6 @@ export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: st
   };
 }
 
-/** A career's counts at `hour`: each participation shown from its read, a result from its own read. */
 export function careerTotals(career: LeaderCareerReply, hour: number) {
   let fought = 0; let won = 0; let lost = 0;
   for (const battle of career.battles) {
@@ -126,7 +119,6 @@ export function careerTotals(career: LeaderCareerReply, hour: number) {
   return battleTotals(fought, won, lost, career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
 }
 
-/** The run of `career` holding `hour`. */
 export function runAt(career: LeaderCareerReply, hour: number) {
   return career.runs.find(run => run.firstHour <= hour && hour <= run.lastHour);
 }
@@ -145,7 +137,6 @@ function battleMonths(battles: readonly CareerBattle[], firstHour: number, lastH
     if (battle.start > lastHour || battle.read > readHour) continue;
     const date = gameDate(battle.start); const index = date ? monthIndex(date) : battle.start;
     const start = date ? firstHourOfMonth(index) : battle.start; const end = date ? firstHourOfMonth(index + 1) - 1 : battle.start;
-    // A combat already under way when recording began keeps its month, drawn from the first hour.
     if (end < firstHour) continue;
     const month = months.get(index) ?? { first: Math.max(firstHour, start), last: Math.min(lastHour, end), count: 0, unknown: 0, won: 0, lost: 0 };
     if (battle.unknown) month.unknown++;
@@ -157,7 +148,6 @@ function battleMonths(battles: readonly CareerBattle[], firstHour: number, lastH
   return months;
 }
 
-/** The career's lanes from `firstHour` through `lastHour`, as read by `readHour`: skill runs, trait dates, commands, battles a month. */
 export function careerLanes(career: LeaderCareerReply, firstHour: number, lastHour: number, readHour = lastHour): TimelineLane[] {
   const runs = career.runs;
   const skill: TimelineSpan[] = runs.flatMap((run, i) => {
@@ -213,12 +203,10 @@ export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<
     contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference), growWithPlayback: options.growWithPlayback } };
 }
 
-/** The request's selection: every country, or the tags shown; group memberships filter the rows at their hour. */
 export function leaderRequestSelection(tags: readonly string[] | null): LeaderSelection {
   return tags === null ? { kind: 'all' } : { kind: 'countries', countries: tags.map(countryFromKey) };
 }
 
-/** What a leaderboard renders: which rows and every number they show, so a push that changes none renders nothing. */
 export function leadersStructure(reply: UnitLeadersReply): string {
   return JSON.stringify([reply.leaders, reply.withheld, reply.missing, reply.battlesPartialFrom, reply.traits.length]);
 }

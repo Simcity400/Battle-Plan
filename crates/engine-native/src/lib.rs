@@ -1,8 +1,6 @@
-//! Native layouts, guarded memory operations, shared containers, authentication and coupled native readers.
 
 use engine_executable::modifier_keys;
 
-// Every test runs under the allocator that lets a test deny its own allocations.
 #[cfg(test)]
 #[global_allocator]
 static ALLOCATOR: allocation::test_support::DeniedAllocator =

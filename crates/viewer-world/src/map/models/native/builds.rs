@@ -1,19 +1,12 @@
-//! Shader compiles and pipeline builds a model part needs, made off the window thread.
-//!
-//! A frame that finds a part unbuilt queues its build and draws without the actor; a later frame
-//! installs the finished pass. A settled scene (a capture) builds in place instead.
 use super::*;
 use job_priority::SpawnCarried as _;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
-/// Mesh, node, LOD, part and caster/forced variant.
 pub(super) type PartKey = (usize, usize, usize, usize, usize);
 type NodeKey = (usize, usize);
 type Failure = (io::ErrorKind, String);
 
-/// What a part's resident is made from: the lit and shadow selections that decide its material
-/// flags, and the pass built for its draw selection.
 pub(super) struct Built {
     pub lit: Selection,
     pub shadow: Selection,
@@ -33,22 +26,17 @@ enum Request {
         caster: bool,
         forced: bool,
         samples: u32,
-        /// The constant bindings its draws read one block of per instance.
         instanced: u32,
     },
 }
 
 #[derive(Default)]
 struct State {
-    /// `None` while a build holds the request.
     flags: HashMap<NodeKey, Option<Result<[bool; 2], Failure>>>,
     parts: HashMap<PartKey, Option<Result<Built, Failure>>>,
-    /// Geometry a warm-up packed, until its first draw places it.
     packed: HashMap<GeometryKey, Arc<Vec<f32>>>,
 }
 
-/// The variants of a node's parts a warm-up makes: each part's lit (alpha when `forced`) and
-/// caster builds.
 fn part_keys(
     (mesh, node): NodeKey,
     lods: &[Vec<Part>],
@@ -64,21 +52,18 @@ fn part_keys(
     })
 }
 
-/// Fills a slot a warm-up marked under way, unless a capture made it in place meanwhile.
 fn fill<K: std::hash::Hash + Eq, T>(slots: &mut HashMap<K, Option<T>>, key: K, value: T) {
     if let Some(slot @ None) = slots.get_mut(&key) {
         *slot = Some(value);
     }
 }
 
-/// The renderer's effect libraries and pipeline cache, shared with its background builds.
 pub(super) struct Builds {
     libraries: Arc<Mutex<[Library; 2]>>,
     cache: Arc<Mutex<shader_pipeline::gpu::Cache>>,
     state: Arc<Mutex<State>>,
 }
 
-/// One prepare's queued builds, started together when it ends, whichever way it ends.
 pub(super) struct Queued {
     requests: Vec<Request>,
     libraries: Arc<Mutex<[Library; 2]>>,
@@ -118,8 +103,6 @@ impl Builds {
         }
     }
 
-    /// A node's queue flags: built, or `None` while a build is under way (started here unless
-    /// `settled`, which builds them in place).
     pub fn flags(
         &self,
         queued: &mut Queued,
@@ -130,7 +113,6 @@ impl Builds {
     ) -> Option<io::Result<[bool; 2]>> {
         let mut state = lock(&self.state);
         match state.flags.get(&key) {
-            // A refusal stays, so every later draw meets it rather than building it again.
             Some(Some(Err(failure))) => return Some(Err(restore(failure.clone()))),
             Some(Some(Ok(_))) => {
                 return state
@@ -139,7 +121,6 @@ impl Builds {
                     .flatten()
                     .map(|r| r.map_err(restore));
             }
-            // A capture builds what a worker still holds, rather than draw without it.
             Some(None) if !settled => return None,
             _ => {}
         }
@@ -156,7 +137,6 @@ impl Builds {
         None
     }
 
-    /// Whether `key`'s part is built (or failed), queueing its build when it is not.
     #[allow(clippy::too_many_arguments)]
     pub fn ready(
         &self,
@@ -171,7 +151,6 @@ impl Builds {
         let mut state = lock(&self.state);
         match state.parts.get(&key) {
             Some(Some(_)) => return true,
-            // A capture builds what a worker still holds, rather than draw without it.
             Some(None) if !settled => return false,
             _ => {}
         }
@@ -202,9 +181,6 @@ impl Builds {
         false
     }
 
-    /// Makes a node's queue flags and each of its parts' lit (alpha when `forced`) and caster
-    /// builds, under the keys a frame looks up, so a frame first drawing it finds them made. A
-    /// refusal is kept for the frame that draws it to report.
     pub fn warm(
         &self,
         device: &wgpu::Device,
@@ -250,10 +226,6 @@ impl Builds {
         }
     }
 
-    /// [`Self::warm`] of each node on a thread of its own, never waited for, with its geometry
-    /// packed there too. Every key it makes is marked under way first, so a frame drawing the
-    /// node before it is made draws without it, as it does while any build is under way, and a
-    /// capture builds it in place. With no thread to warm on, each is refused by name.
     pub fn warm_behind(
         &self,
         device: &wgpu::Device,
@@ -316,7 +288,6 @@ impl Builds {
                     if lock(&state).packed.contains_key(&source.geometry_key) {
                         continue;
                     }
-                    // A geometry that does not pack is left to its first draw to refuse.
                     let packed = caught(|| {
                         source.geometry.packed(source.geometry.uv1).map_err(failure)
                     });
@@ -347,13 +318,10 @@ impl Builds {
         }
     }
 
-    /// A part's geometry a warm-up packed ([`Self::warm_behind`]), taken by its first draw.
     pub fn packed(&self, key: &GeometryKey) -> Option<Arc<Vec<f32>>> {
         lock(&self.state).packed.remove(key)
     }
 
-    /// The finished build of a part [`Self::ready`] reported built. A refusal stays, so every
-    /// later draw of the part meets it rather than building it again.
     pub fn take(&self, key: &PartKey) -> io::Result<Built> {
         let mut state = lock(&self.state);
         if let Some(Some(Err(failure))) = state.parts.get(key) {
@@ -405,7 +373,6 @@ impl Drop for Queued {
         if started > 0 {
             return;
         }
-        // With no thread to build on, its parts are refused by name, never built here.
         let reason = format!(
             "model builds could not start a thread: {}",
             refused.map_or_else(String::new, |error| error.to_string())
@@ -431,7 +398,6 @@ type Shared<'a> = (
     &'a wgpu::Device,
 );
 
-/// A build that panicked is refused by name, so its part never waits for it.
 fn caught<T>(build: impl FnOnce() -> Result<T, Failure>) -> Result<T, Failure> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
         .unwrap_or_else(|_| Err((io::ErrorKind::Other, "a model build panicked".to_string())))
@@ -469,8 +435,6 @@ fn run(request: Request, shared: Shared<'_>, state: &Mutex<State>) {
     }
 }
 
-/// The part's technique for the lit or shadow pass, its material's when the effect declares it,
-/// else the plain colour fallback. The library is locked only to load effects, never to compile.
 fn select_shared(
     libraries: &Mutex<[Library; 2]>,
     library: usize,
@@ -494,8 +458,6 @@ fn select_shared(
         .ok_or_else(|| invalid("native PdxMeshColor fallback is unavailable"))
 }
 
-/// The game appends Alpha to the skin suffix; absent Alpha keeps the base variant (not
-/// PdxMeshColor). Draws use this handle as the alpha variant.
 fn select_alpha_shared(
     libraries: &Mutex<[Library; 2]>,
     library: usize,

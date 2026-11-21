@@ -1,29 +1,10 @@
-//! Coarse terrain along coasts.
-//!
-//! Zoomed out, a coarse terrain block samples the heightmap only at every `step`-th pixel, so a
-//! coastal or island vertex lifts whole cells of sea above the water plane: the water fails its
-//! depth test there and the terrain's grey sea floor shows as specks and squares along coasts and
-//! around islands. The game draws them too; by the owner's sign-off the viewer does not, for every
-//! camera. On blocks coarser than the heightmap, a vertex next to a cell holding any pixel below
-//! the water stands no higher than the heightmap's shallowest water, so the water covers every such
-//! cell and its own per-pixel shore decides what shows. Vertices touching no such cell keep their
-//! heights exactly.
-//!
-//! Blocks of different steps meet at their rims, where each must give a shared vertex the same
-//! height or the seam opens. A vertex on a rim is therefore capped by the cells of the coarsest
-//! block it touches ([`Steps::rule`]), which every block around it reads alike; a vertex touching a
-//! block of the finest step keeps its sampled height, so the finest blocks are never changed.
 
 use super::terrain_shader::{Patch, SIDE, heights_into};
 
-/// The engine stream stores a height byte times this.
 const STORED_PER_BYTE: i16 = 10;
 
-/// Which `step`-sized cells hold a pixel below the water, for each step from 2 up.
 pub struct Coast {
-    /// The stored height a capped vertex takes: the highest height byte below the water.
     cap: i16,
-    /// Level `k` holds the cells of step `2^(k+1)`, rows counted up from the map's bottom.
     levels: Vec<Level>,
 }
 
@@ -38,7 +19,6 @@ impl Level {
         self.wet[(row * self.columns + column) as usize]
     }
 
-    /// Whether the vertex at map pixel `(x, z)` touches a wet cell of this level's `step`.
     fn near(&self, step: u32, x: u32, z: u32) -> bool {
         let [column, row] = [x / step, z / step];
         [column + self.columns - 1, column].into_iter().any(|column| {
@@ -53,8 +33,6 @@ impl Level {
 }
 
 impl Coast {
-    /// `bytes` is the heightmap, rows top-down, of a `map`-sized map; `water` the water plane's
-    /// height in world units and `scale` world units per height byte. Steps reach `widest`.
     pub fn new(bytes: &[u8], map: [u32; 2], water: f32, scale: f32, widest: u32) -> Self {
         let below = |byte: u8| f32::from(byte) * scale < water;
         let cap = (0..=u8::MAX).rev().find(|&byte| below(byte)).unwrap_or(0);
@@ -66,7 +44,6 @@ impl Coast {
             for row in 0..rows {
                 for column in 0..columns {
                     wet[(row * columns + column) as usize] = match levels.last() {
-                        // The finest cells read the heightmap's pixels.
                         None => (0..2).any(|dz| {
                             (0..2).any(|dx| {
                                 let [x, z] = [column * 2 + dx, row * 2 + dz];
@@ -75,7 +52,6 @@ impl Coast {
                                     && below(bytes[((map[1] - 1 - z) * map[0] + x) as usize])
                             })
                         }),
-                        // Coarser cells are wet where any of their four finer cells is.
                         Some(finer) => (0..2).any(|dz| {
                             (0..2).any(|dx| {
                                 let [x, z] = [column * 2 + dx, row * 2 + dz];
@@ -100,8 +76,6 @@ impl Coast {
             .flatten()
     }
 
-    /// `height` as a vertex at map pixel `(x, z)` capped by the cells of `step` draws it; no step
-    /// keeps it.
     fn capped(&self, height: i16, step: Option<u32>, x: u32, z: u32) -> i16 {
         match step.and_then(|step| Some((step, self.level(step)?))) {
             Some((step, level)) if height > self.cap && level.near(step, x, z) => self.cap,
@@ -109,9 +83,6 @@ impl Coast {
         }
     }
 
-    /// Caps `heights`, a `step`-spaced patch's pairs from `origin` for `positions`, where a vertex
-    /// touches a wet cell of its own step. The finest step and steps past the widest are left as
-    /// sampled. Returns whether any height changed.
     pub fn cap(
         &self,
         positions: &[[i16; 4]],
@@ -135,9 +106,6 @@ impl Coast {
         changed
     }
 
-    /// The heights `patch` draws on world map copy `copy` among the blocks `steps` holds, when
-    /// they differ from its own capped heights: each sample on its drawn rim (`cells` across and
-    /// up) capped as [`Steps::rule`] says, the rest by its own step.
     #[allow(
         clippy::too_many_arguments,
         reason = "the block, where it stands, and the map it samples"
@@ -167,8 +135,6 @@ impl Coast {
     }
 }
 
-/// Where a vertex's two samples stand, in vertex units of its patch: its own place, and for an
-/// odd vertex on the patch's edge the next vertex along it, where a snapped edge moves it.
 fn samples([x, z, edge, direction]: [i16; 4]) -> [[u32; 2]; 2] {
     let at = [x as u32, z as u32];
     let alternate = if edge == 0 {
@@ -182,7 +148,6 @@ fn samples([x, z, edge, direction]: [i16; 4]) -> [[u32; 2]; 2] {
     [at, alternate]
 }
 
-/// Map pixel `(x, z)` of a patch's vertex `at`.
 fn world(patch: Patch, [x, z]: [u32; 2]) -> [u32; 2] {
     [
         patch.origin[0] + x * patch.step,
@@ -190,13 +155,10 @@ fn world(patch: Patch, [x, z]: [u32; 2]) -> [u32; 2] {
     ]
 }
 
-/// Whether vertex `at` stands on the rim of a patch drawing `cells` across and up.
 fn on_rim(cells: [u32; 2], [x, z]: [u32; 2]) -> bool {
     x <= cells[0] && z <= cells[1] && (x == 0 || z == 0 || x == cells[0] || z == cells[1])
 }
 
-/// The vertices [`on_rim`] holds for a patch drawing `cells` across and up, in the order the
-/// patch's positions list them (row by row, west to east), without walking its inside.
 fn rim_vertices([wide, tall]: [u32; 2]) -> impl Iterator<Item = [u32; 2]> {
     (0..=tall).flat_map(move |z| {
         let whole = z == 0 || z == tall || wide == 0;
@@ -206,22 +168,14 @@ fn rim_vertices([wide, tall]: [u32; 2]) -> impl Iterator<Item = [u32; 2]> {
     })
 }
 
-/// The step of the block a cover draws over each 64-pixel cell, across the map copies it stands
-/// on.
 pub(super) struct Steps {
-    /// The world column, counted across the copies from the first copy's first, of the first
-    /// cell held, and the columns held.
     first: i64,
     columns: i64,
-    /// The map's columns and rows of cells.
     map: [u32; 2],
-    /// Each cell's step, 0 where no block is drawn.
     steps: Vec<u32>,
 }
 
 impl Steps {
-    /// `blocks` gives each drawn block's first cell, as a world column and a row, and its step;
-    /// `map` is the map's columns and rows of cells.
     pub(super) fn new(blocks: &[(i64, u32, u32)], map: [u32; 2]) -> Self {
         let first = blocks.iter().map(|block| block.0).min().unwrap_or(0);
         let end = blocks
@@ -248,8 +202,6 @@ impl Steps {
         held
     }
 
-    /// The cells a block starting at world column `column` and row `row` covers across and up:
-    /// a block the map's edge cuts covers only those inside the map.
     fn span(&self, column: i64, row: u32, step: u32) -> [u32; 2] {
         let local = column.rem_euclid(i64::from(self.map[0])) as u32;
         [
@@ -267,8 +219,6 @@ impl Steps {
         }
     }
 
-    /// Whether every drawn cell around the block starting at world column `column` and row
-    /// `row` draws its `step`, so its whole rim takes its own step's cells.
     pub(super) fn alone(&self, column: i64, row: u32, step: u32) -> bool {
         let [wide, tall] = self.span(column, row, step).map(i64::from);
         let row = i64::from(row);
@@ -277,9 +227,6 @@ impl Steps {
             && !(row..row + tall).any(|z| other(column - 1, z) || other(column + wide, z))
     }
 
-    /// Whether `other` holds the same steps as this in every cell around the block starting at
-    /// world column `column` and row `row`, the cells [`Self::alone`] and [`Self::rim`] read
-    /// besides its own: the block drawn in both has the same rim in both.
     pub(super) fn same_around(&self, other: &Self, column: i64, row: u32, step: u32) -> bool {
         let [wide, tall] = self.span(column, row, step).map(i64::from);
         let row = i64::from(row);
@@ -288,8 +235,6 @@ impl Steps {
             && (row..row + tall).all(|z| same(column - 1, z) && same(column + wide, z))
     }
 
-    /// The cells vertex `at` of `patch` (`cells` of them across and up) on world map copy `copy`
-    /// is capped by: [`Self::rule`] on its drawn rim, its own step within.
     fn at_vertex(&self, patch: Patch, cells: [u32; 2], copy: i64, at: [u32; 2]) -> Option<u32> {
         if !on_rim(cells, at) {
             return Some(patch.step);
@@ -301,10 +246,6 @@ impl Steps {
         )
     }
 
-    /// The rules of the drawn rim's vertices of `patch` on world map copy `copy`, in the order
-    /// of the patch's positions: 0 keeps the sampled height, else the power of two of the capping
-    /// cells. With the patch they decide what [`Coast::rim`] makes. Returns whether any differs
-    /// from the patch's own step.
     pub(super) fn rim(&self, patch: Patch, cells: [u32; 2], copy: i64, out: &mut Vec<u8>) -> bool {
         let code = |rule: Option<u32>| rule.map_or(0, |step| step.trailing_zeros() as u8);
         out.clear();
@@ -312,10 +253,6 @@ impl Steps {
         out.iter().any(|&rule| rule != code(Some(patch.step)))
     }
 
-    /// The cells a vertex at world pixel `(x, z)` is capped by: those of the coarsest drawn block
-    /// it touches, or none where it touches a block of the finest step, which keeps its height.
-    /// A vertex on the east-west wrap keeps its height too: the game never snaps across the wrap,
-    /// so blocks of different steps leave the gap there that they always did.
     pub(super) fn rule(&self, x: i64, z: i64) -> Option<u32> {
         let side = i64::from(SIDE);
         if x.rem_euclid(i64::from(self.map[0]) * side) == 0 {
@@ -351,8 +288,6 @@ mod tests {
     const WATER: f32 = 9.5;
     const SCALE: f32 = 0.1;
 
-    /// A sea of byte 40 with a land rectangle of byte 200 and a one-pixel island of byte 150, rows
-    /// top-down as the heightmap stores them.
     fn heightmap() -> Vec<u8> {
         let mut bytes = vec![40u8; (MAP[0] * MAP[1]) as usize];
         let mut put = |x: u32, z: u32, byte: u8| {
@@ -379,8 +314,6 @@ mod tests {
         out
     }
 
-    /// The stored heights of the four corners of the cell at world `(x, z)`, which bound the
-    /// surface over it.
     fn cell_corners(heights: &[[i16; 2]], origin: [u32; 2], step: u32, x: u32, z: u32) -> [i16; 4] {
         let side = (super::super::terrain_shader::SIDE + 1) as usize;
         let [cx, cz] = [((x - origin[0]) / step) as usize, ((z - origin[1]) / step) as usize];
@@ -411,7 +344,6 @@ mod tests {
                     if wet(x, z) {
                         assert!(corners.iter().all(|&h| h <= 940), "step {step} cell {x},{z}");
                     }
-                    // A cell whose neighbourhood holds no water keeps its sampled corners.
                     let around = [x.wrapping_sub(step), x, x + step]
                         .into_iter()
                         .map(|x| x.min(MAP[0] - step))
@@ -441,7 +373,6 @@ mod tests {
         let mut capped = raw.clone();
         assert!(!coast.cap(&positions, [0, 0], 1, &mut capped));
         assert_eq!(capped, raw);
-        // Capping only lowers land: the sea floor's byte 40 stays wherever it was sampled.
         let raw = sampled(&bytes, [0, 0], 4);
         let mut capped = raw.clone();
         coast.cap(&positions, [0, 0], 4, &mut capped);
@@ -457,7 +388,6 @@ mod tests {
         let bytes = heightmap();
         let coast = Coast::new(&bytes, MAP, WATER, SCALE, 256);
         let positions = super::super::terrain_shader::positions();
-        // At step 2 the island's pixel (100, 50) is a vertex, raising the four cells around it.
         let raw = sampled(&bytes, [64, 0], 2);
         let side = (super::super::terrain_shader::SIDE + 1) as usize;
         let island = 25 * side + 18;
@@ -484,14 +414,11 @@ mod tests {
         }
     }
 
-    /// Two covers that differ only away from a block give it the same rim; one that changes a
-    /// cell beside it, its corner's included, is seen.
     #[test]
     fn a_block_with_the_same_steps_around_it_has_the_same_rim_in_another_cover() {
         let map = [16, 8];
         let first: [(i64, u32, u32); 7] =
             [(0, 0, 4), (4, 0, 2), (6, 0, 2), (4, 2, 2), (6, 2, 1), (7, 2, 1), (8, 0, 8)];
-        // The step-8 block splits in two step-4 blocks, far from the blocks at the west.
         let mut moved: Vec<_> = first[..6].to_vec();
         moved.extend([(8, 0, 4), (12, 0, 4), (8, 4, 4), (12, 4, 4)]);
         let (was, now) = (Steps::new(&first, map), Steps::new(&moved, map));
@@ -516,8 +443,6 @@ mod tests {
         assert!(!now.same_around(&was, 7, 2, 1), "a corner cell beside the split is read too");
     }
 
-    /// Blocks of different steps give every rim sample they share one height, whatever step
-    /// each draws, and blocks of the finest step keep their sampled heights.
     #[test]
     fn blocks_of_different_steps_meet_at_their_rims_and_the_finest_keep_their_heights() {
         const WIDE: [u32; 2] = [512, 256];
@@ -525,8 +450,6 @@ mod tests {
         let mut put = |x: u32, z: u32, byte: u8| {
             bytes[((WIDE[1] - 1 - z) * WIDE[0] + x) as usize] = byte;
         };
-        // Land across the step-4 block's rim with the step-2 blocks, its shore a pixel short of a
-        // step-4 vertex row, and land reaching into the finest blocks.
         for z in 30..99 {
             for x in 200..420 {
                 put(x, z, 200);
@@ -600,14 +523,10 @@ mod tests {
         assert!(rims > 0, "a rim was matched to the coarser block beside it");
     }
 
-    /// The game never snaps across the east-west wrap, so blocks of different steps meeting
-    /// there leave the gap they always did: their vertices on the wrap keep their sampled
-    /// heights, while those inside the blocks are still capped.
     #[test]
     fn blocks_meeting_across_the_wrap_keep_their_sampled_heights_on_it() {
         const WIDE: [u32; 2] = [512, 256];
         let mut bytes = vec![40u8; (WIDE[0] * WIDE[1]) as usize];
-        // Land across the wrap with sea beside it, which the cells of either step hold.
         for z in 0..WIDE[1] {
             for x in (0..6).chain(506..512) {
                 if z % 32 >= 8 {
@@ -616,7 +535,6 @@ mod tests {
             }
         }
         let coast = Coast::new(&bytes, WIDE, WATER, SCALE, 256);
-        // The last two columns at step 2 on the eye's copy, the first four at step 4 on the next.
         let blocks = [(([384, 0], 2), 0), (([0, 0], 4), 1)];
         let held: Vec<_> = blocks
             .iter()

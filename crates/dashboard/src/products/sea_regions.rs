@@ -1,6 +1,3 @@
-//! What the naval region products read of the recorded content: which strategic regions hold
-//! sea provinces, each region's minimum supremacy from its naval terrain, and the controlled
-//! ratio define. Read once per resolved content.
 
 use super::LoadContext;
 use crate::Source;
@@ -26,7 +23,6 @@ struct Cached {
     held: Option<(Arc<ResolvedContent>, Arc<SeaContent>)>,
 }
 
-/// A sea region as a setting offers it: its id and name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[cfg_attr(any(test, feature = "export-types"), ts(rename = "SeaRegionChoice"))]
@@ -85,14 +81,11 @@ impl SeaContent {
         Ok(content)
     }
 
-    /// Region `id`'s minimum supremacy, or why it is unknown.
     pub fn minimum(&self, id: u32) -> Result<i64, String> {
         self.minima.get(&id).cloned().unwrap_or_else(|| Err(format!("Naval terrain minimum for region {id} is unavailable")))
     }
 }
 
-/// `ids` (with every sea region of the content) named, in id order; a region the content cannot
-/// name is listed by its id and its reason noted.
 pub fn choices(places: &super::place_names::Content, sea: &SeaContent, ids: impl IntoIterator<Item = u32>, notes: &mut crate::catalogue::Refusals) -> Vec<Choice> {
     let mut all: BTreeSet<u32> = ids.into_iter().collect();
     if let Ok(sea) = &sea.sea {

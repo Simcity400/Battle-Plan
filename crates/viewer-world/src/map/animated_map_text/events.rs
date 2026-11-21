@@ -1,11 +1,3 @@
-//! The recorded map events, interpreted for this viewer at the presented hour.
-//!
-//! Each event's actors, intel, anchors and fog switch are recorded at the edge
-//! where the game decides it, before the game's local filter. That filter is
-//! applied here for the viewing country: country links, relations, modifiers
-//! and province fog are the presented hour's reconstruction. Camera, selection,
-//! animation clocks and queues are viewer state, never recording operands.
-//! Unknown coverage never hides an event that was recorded.
 use std::{cell::OnceCell, collections::BTreeMap};
 
 use installed_content_core::buildings::Buildings;
@@ -28,19 +20,15 @@ use viewer_foundation::{
 use super::{Popup, Style};
 use crate::map::strike_effects::{Effect, Impact};
 
-/// The localisation keys the game's producers show.
 pub const FAKE_DIVISION_REVEALED: &[u8] = b"INTEL_DIVISION_REVEALED";
 pub const RAILWAY_GUN_OVERRUN: &[u8] = b"OVERRUN_POPUP";
 pub const CRITICAL_BOMBARDMENT: &[u8] = b"CRITICAL_BOMBARDMENT_DAMAGE";
 pub const GENERAL_CAPTURED: &[u8] = b"CAPTURED_GENERAL_MAP_TEXT";
 pub const PARADROP_LANDED: &[u8] = b"PROV_TEXT_UNITS_PARACHUTED";
 pub const PARADROP_LANDED_WITH_LOSSES: &[u8] = b"PROV_TEXT_UNITS_PARACHUTED_WITH_LOSSES";
-/// The building damage text's substitution for the building's name.
 pub const BUILDING_ARGUMENT: &str = "BUILDING";
-/// The intel level a revealed unit's text needs.
 const SHOWN_LEVEL: u16 = 150;
 
-/// Each building damage reason's localisation key.
 pub fn building_key(reason: MapEventBuildingReason) -> &'static [u8] {
     match reason {
         MapEventBuildingReason::Bombed => b"BUILDING_BOMBED",
@@ -51,7 +39,6 @@ pub fn building_key(reason: MapEventBuildingReason) -> &'static [u8] {
     }
 }
 
-/// The building types the recorded content stack declares, for their name keys.
 pub struct Content {
     buildings: TokenKeys,
 }
@@ -64,8 +51,6 @@ impl Content {
     }
 }
 
-/// One presented hour's inputs. Relation and identity reads are shared by
-/// the hour's events and made only by the families that need them.
 pub struct Context<'a> {
     frame: &'a DecodedFrame,
     vision: &'a Vision,
@@ -115,8 +100,6 @@ impl<'a> Context<'a> {
             .map_err(Clone::clone)
     }
 
-    /// The viewing country's raw reference: the recorded client's own word
-    /// when the view is the recorded one, otherwise its country's id.
     fn viewer(&self) -> Result<u32, String> {
         self.viewer
             .get_or_init(|| {
@@ -145,8 +128,6 @@ impl<'a> Context<'a> {
             .clone()
     }
 
-    /// The game's country equality: equal raw words, or two nonzero words of
-    /// one canonical country.
     fn same(&self, a: u32, b: u32) -> Result<bool, String> {
         if a == b {
             return Ok(true);
@@ -169,7 +150,6 @@ impl<'a> Context<'a> {
             .map_err(str::to_owned)
     }
 
-    /// The viewing country's unit-intel modifier.
     fn modifier(&self) -> Result<i64, String> {
         self.modifier
             .get_or_init(|| {
@@ -197,8 +177,6 @@ impl<'a> Context<'a> {
                 if let Some(modifier) = modifier {
                     return Ok(modifier);
                 }
-                // The table omits zero modifiers, so a complete table proves
-                // zero for a country it lists no row for.
                 let countries = self
                     .frame
                     .complete::<tables::Countries>()
@@ -223,11 +201,6 @@ impl<'a> Context<'a> {
             .map_err(Clone::clone)
     }
 
-    /// Whether the viewing country's intel level of the unit reaches the
-    /// text's threshold, as the game computes it: its own or a sharing
-    /// country's unit is fully known; otherwise the intel array's level for
-    /// the viewer gives a ladder value, the province's visibility byte raises
-    /// it, and the viewer's modifier scales the result.
     fn unit_visible(&self, unit: &MapEventUnitIntel) -> Result<bool, String> {
         if !unit.fog || !self.vision.fog() {
             return Ok(true);
@@ -251,13 +224,9 @@ impl<'a> Context<'a> {
             _ => 0,
         };
         let province = self.vision.province_byte(unit.visibility_province);
-        // A zero level and an unseen province decide before the modifier.
         if ladder == 0 && province == Some(0) && shared.is_ok() {
             return Ok(false);
         }
-        // An unknown relation can only raise the level to the top of the
-        // ladder, and a failed fog rebuild leaves the province byte unknown:
-        // only an answer every such value agrees on decides.
         unit_admission(ladder, province, self.modifier()?, shared.is_ok()).ok_or_else(|| {
             shared
                 .err()
@@ -265,8 +234,6 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// A landing shows to the dropping country's friends and wherever the
-    /// viewer sees the province.
     fn paradrop_visible(&self, fog: bool, actor: u32, province: u32) -> Result<bool, String> {
         if !fog || !self.vision.fog() {
             return Ok(true);
@@ -292,8 +259,6 @@ impl<'a> Context<'a> {
             .map_err(|error| error.to_string())
     }
 
-    /// The event's text for this viewer, or `None` when the game would not
-    /// show it to this country.
     pub fn popup(&self, event: &MapEvent) -> Result<Option<Popup>, String> {
         let (province, style, text) = match &event.payload {
             MapEventPayload::FakeDivisionRevealed(unit) => {
@@ -356,7 +321,6 @@ impl<'a> Context<'a> {
                 {
                     return Ok(None);
                 }
-                // The game shows nothing for an activity whose text is empty.
                 let text = self.text(&activity.key, &[])?;
                 if text.is_empty() {
                     return Ok(None);
@@ -404,8 +368,6 @@ impl<'a> Context<'a> {
     }
 }
 
-/// The native OR of two predicates either of which may be unknown: a proven
-/// positive settles it.
 fn either(a: Result<bool, String>, b: Result<bool, String>) -> Result<bool, String> {
     if a == Ok(true) || b == Ok(true) {
         Ok(true)
@@ -423,13 +385,10 @@ fn unit_admission(
     let base = ladder.max(province.map_or(0, u16::from));
     if province.is_some() {
         let answer = visibility::unit_byte(base, modifier) >= SHOWN_LEVEL;
-        // An unknown sharing predicate leaves the ladder or raises it to 250.
         return (sharing_known
             || (visibility::unit_byte(base.max(250), modifier) >= SHOWN_LEVEL) == answer)
             .then_some(answer);
     }
-    // An unknown province byte ranges over every byte. The game's arithmetic
-    // wraps, so every reachable base is checked rather than assuming order.
     let mut answers =
         (base..=255).map(|value| visibility::unit_byte(value, modifier) >= SHOWN_LEVEL);
     let answer = answers.next()?;
@@ -446,9 +405,6 @@ struct Boundary {
     next: u64,
 }
 
-/// One event of a prepared interval: its sequence, its popup for the
-/// viewing country (or why it cannot be decided) and, for a critical shore
-/// bombardment, its located explosion.
 #[derive(Clone, Debug)]
 pub struct PreparedEvent {
     pub sequence: u64,
@@ -460,28 +416,19 @@ pub struct PreparedEvent {
 #[derive(Clone, Debug)]
 struct PreparedInterval {
     boundary: Boundary,
-    /// A number taken before a seal may be published in a later interval.
     in_flight: bool,
     coverage: [bool; MapEventFamily::COUNT],
     coverage_refusals: Vec<String>,
     events: Vec<PreparedEvent>,
 }
 
-/// One hour's map events interpreted for one viewing country on an hour
-/// builder: localisation, country joins and visibility are decided there, so
-/// presenting it only admits and queues.
 #[derive(Clone, Debug)]
 pub struct Prepared {
-    /// The viewing country; its fog switch only changes admission.
     view: u32,
     interval: Result<PreparedInterval, String>,
 }
 
 impl Prepared {
-    /// The hour's interval for `context`'s viewer. `intervals` are the
-    /// hour's `MapEvents` rows and `table_complete` whether the table was
-    /// read whole. `locate` gives a province's standstill unit-stack anchor
-    /// and admission box for an explosion.
     pub fn new(
         context: &Context<'_>,
         intervals: &[MapEventsRow],
@@ -506,7 +453,6 @@ impl Prepared {
             for family in MapEventFamily::ALL {
                 let health = row.health(family);
                 coverage[family.index()] = table_complete && health.complete;
-                // Scripted refresh coverage belongs to the colour-layer consumer.
                 if family == MapEventFamily::ScriptedMapRefresh {
                     continue;
                 }
@@ -568,8 +514,6 @@ impl Prepared {
         Self { view, interval }
     }
 
-    /// The hour's interval for `vision`'s viewer, read from `frame`'s MapEvents and the tables
-    /// [`Context`] reads: a frame of the whole hour, or one holding only those tables.
     pub fn read(
         frame: &DecodedFrame,
         vision: &Vision,
@@ -591,7 +535,6 @@ impl Prepared {
         }
     }
 
-    /// The hour's table could not be read at all.
     pub fn unavailable(view: u32, reason: String) -> Self {
         Self {
             view,
@@ -600,21 +543,14 @@ impl Prepared {
     }
 }
 
-/// One presented interval's popups and explosions, and whether the queues
-/// start again.
 pub struct Batch {
     pub reset: bool,
     pub popups: Vec<Popup>,
-    /// Critical shore bombardments presented for the first time.
     pub explosions: Vec<Impact>,
     pub coverage: [bool; MapEventFamily::COUNT],
     pub refusals: Refusals,
 }
 
-/// The events of one branch and epoch already presented: every sequence
-/// below `fence`, and the ones in `above`. An interval sealed while a number
-/// was in flight leaves the numbers it listed above the fence, so a later
-/// interval that lists the late one still presents it.
 #[derive(Default)]
 struct Consumed {
     key: Option<(BranchId, u64)>,
@@ -628,11 +564,9 @@ impl Consumed {
     }
 }
 
-/// Consumes each presented interval's events once, in order.
 #[derive(Default)]
 pub struct Consumer {
     boundary: Option<Boundary>,
-    /// Gaps break queue continuity but never make a consumed event new again.
     consumed: Consumed,
     view: Option<u32>,
 }
@@ -642,14 +576,10 @@ impl Consumer {
         *self = Self::default();
     }
 
-    /// A presented hour that failed breaks continuity without forgetting
-    /// consumed events.
     pub fn interrupt(&mut self) {
         self.boundary = None;
     }
 
-    /// Every presented hour, including an unavailable or empty interval. A
-    /// repeated interval is consumed once.
     pub fn present(&mut self, prepared: &Prepared, continuity: Continuity) -> Batch {
         let mut out = Batch {
             reset: continuity == Continuity::Reset || self.view != Some(prepared.view),
@@ -720,7 +650,6 @@ impl Consumer {
                 None => {}
             }
         }
-        // Every number below a seal that found nothing in flight was listed.
         if !interval.in_flight {
             self.consumed.fence = self.consumed.fence.max(next.next);
             let fence = self.consumed.fence;
@@ -730,9 +659,6 @@ impl Consumer {
     }
 }
 
-/// The scene's map event presentation: the hour last presented, built or
-/// failed, decides whether consumption starts again, so a failed build
-/// retried at the same hour presents nothing twice.
 #[derive(Default)]
 pub struct Presenter {
     consumer: Consumer,
@@ -744,7 +670,6 @@ impl Presenter {
         *self = Self::default();
     }
 
-    /// Before presenting hours ending at `at`: the first one's continuity.
     pub fn begin(&mut self, at: (BranchId, i32), seek: bool) -> Continuity {
         let reset = presentation_reset(self.at, at, seek);
         self.at = Some(at);
@@ -759,8 +684,6 @@ impl Presenter {
         self.consumer.present(prepared, continuity)
     }
 
-    /// A presented hour that failed: consumption starts again only where a
-    /// built hour's would. Returns whether it did.
     pub fn fail(&mut self, at: (BranchId, i32), seek: bool) -> bool {
         let reset = presentation_reset(self.at, at, seek);
         self.at = Some(at);
@@ -773,8 +696,6 @@ impl Presenter {
     }
 }
 
-/// Whether presenting `next` after `previous` starts the queues again: a
-/// seek, a branch change or a step back.
 pub fn presentation_reset(
     previous: Option<(BranchId, i32)>,
     next: (BranchId, i32),

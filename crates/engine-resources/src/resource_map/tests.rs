@@ -3,7 +3,6 @@ use crate::{ccountry_resources::test_support::Fixture, cresource_exchange as exc
 
 const GAME_STATE: usize = 0x1000;
 const THRESHOLD: i64 = 80_000;
-/// One run's dynamic type word; any other admits the same clients.
 const TYPE_WORD: u32 = 4713;
 
 struct PathMemory<'a> {
@@ -156,7 +155,6 @@ fn route_walk_keeps_earlier_id_faults_and_partial_paths() {
 
 fn state(f: &mut Fixture, address: usize, id: u32) {
     f.u32(address + cstate::ID, id);
-    // An empty country-modifier hash: the base accumulator, with no entries.
     f.u64(address + cstate::COUNTRY_MODIFIERS, 0x90000);
     f.u32(address + cstate::COUNTRY_MODIFIERS + 8, 0);
     f.u32(address + cstate::COUNTRY_MODIFIERS + 12, 0);
@@ -198,9 +196,6 @@ fn route(f: &mut Fixture, address: usize, kind: u8, ends: [usize; 2], path: &[us
     }
 }
 
-/// Two countries (raw 7 at slot 1, raw 2 at slot 2): country 7 owns a state's origin, gives
-/// one resource right to country 2 and sells to it on the market; country 2 imports from
-/// country 7 and has one naval supply transfer.
 fn world() -> Fixture {
     let mut f = Fixture::new();
     f.u64(BAD_EFFICIENCY_THRESHOLD_RVA.0, THRESHOLD as u64);
@@ -217,7 +212,6 @@ fn world() -> Fixture {
     }
     state(&mut f, 0x30000, 101);
     state(&mut f, 0x31000, 102);
-    // Country 7's origin of state 101: a bad production line on a naval route.
     f.array(0x6000 + ccountry_resources::RESOURCE_ORIGINS, 0x20800, 1);
     f.u64(0x20800, 0x20000);
     client(&mut f, 0x20000, ORIGIN_VTABLE_RVA.0, 41, [100_000, 70_000]);
@@ -238,18 +232,15 @@ fn world() -> Fixture {
         [0x32000, 0x33000],
         &[0x34000, 0x35000],
     );
-    // Country 7's delivery route for country 2 (slot 2): a land route.
     f.array(0x6000 + DELIVERY_ROUTES, 0x40800, 3);
     f.put(0x40800, &[0; 24]);
     f.u64(0x40810, 0x40000);
     route(&mut f, 0x40000, 1, [0x30000, 0x31000], &[0x30000, 0x31000]);
-    // Country 2's import from country 7 (the fixture's exchange).
     f.u32(0xa000 + exchange::REFERENCE, TYPE_WORD);
     f.u32(0xa000 + exchange::REFERENCE + 4, 0x33);
     f.u32(0xa000 + exchange::CONVOYS_ASSIGNED, 0);
     f.u32(0xa000 + exchange::CONVOYS_REQUIRED, 1);
     f.u32(0xa000 + CLIENT_CONVOYS_BASE, 2);
-    // Country 2's supply transfer: its embedded route draws nothing.
     f.u64(GAME_STATE + cgame_state::SUPPLY_SYSTEM, 0x50000);
     f.u64(0x50000 + SUPPLY_COUNTRY_SYSTEMS, 0x50800);
     f.put(0x50800, &[0; 24]);
@@ -259,7 +250,6 @@ fn world() -> Fixture {
     f.u64(0x51800 + SUPPLY_TRANSFER_CLIENT, 0x52000);
     client(&mut f, 0x52000, SUPPLY_VTABLE_RVA.0, 77, [100_000, 100_000]);
     route(&mut f, 0x52000 + SUPPLY_ROUTE, 0, [0, 0], &[]);
-    // A market contract from country 7 to country 2 on the same delivery route.
     f.u64(GAME_STATE + cgame_state::MARKET_MANAGER, 0x60000);
     f.array(0x60000 + MARKET_OWNED_CONTRACTS, 0x60800, 1);
     f.u64(0x60800, 0x61000);
@@ -372,8 +362,6 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
             *serial.spans.borrow(),
             "first demand {failed:?}"
         );
-        // Failed metadata is retried at the next original demand, not held as
-        // either a refusal or a successful clamp observation.
         if failed.is_some() {
             assert!(metadata.get().is_none());
             assert_eq!(
@@ -392,7 +380,6 @@ fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults(
                 .iter()
                 .any(|&(address, _)| address == modifier_definition::TABLE_RVA.0)
         );
-        // A new pass cannot retain the preceding pass's metadata.
         cached.image.u32(definition + modifier_definition::FLAGS, 0);
         assert_eq!(
             effective(&cached, 0, ACCUMULATOR, key, &Default::default()),
@@ -687,8 +674,6 @@ fn convoy_clients_admit_whatever_dynamic_type_word_their_handles_carry() {
         }
         assert_eq!(walk(&f), baseline, "type word {word}");
     }
-    // Two clients whose references differ only by type word share the id the
-    // table is keyed by: the census refuses by name rather than merge them.
     let mut f = world();
     f.u32(
         0x61000 + CONTRACT_CLIENT + CLIENT_HANDLE_TYPE,
@@ -746,7 +731,6 @@ fn every_client_names_its_route_and_whether_its_line_is_bad() {
             clients: Outcome::Rows { len: 3 },
         }
     );
-    // The icon's stored product, not A × B; the line reads A × B against the threshold.
     assert_eq!(
         rows.origins[..1],
         [OriginRow {
@@ -853,7 +837,6 @@ fn routes_draw_ports_and_regions_by_sea_and_states_by_land() {
         (1, 101, 102, 2)
     );
     assert_eq!(path, [501, 502, 101, 102]);
-    // A route with no ends or no path draws nothing.
     let none = read_route(&f, 0, key, 0x52000 + SUPPLY_ROUTE, None, &mut path).unwrap();
     assert_eq!((none.kind, none.from, none.to, none.path_len), (0, 0, 0, 0));
     assert_eq!(path.len(), 4);
@@ -870,7 +853,6 @@ fn a_client_of_an_unexpected_type_refuses_the_tables_by_name() {
             reason: "convoy client of an unexpected type"
         }
     );
-    // The origins, rights and oil factors do not read the clients.
     assert_eq!(outcomes.origins, Outcome::Rows { len: 1 });
     assert_eq!(outcomes.rights, Outcome::Rows { len: 1 });
     assert_eq!(outcomes.oil, Outcome::Rows { len: 0 });
@@ -909,8 +891,6 @@ fn an_unreadable_oil_factor_refuses_the_oil_factors_alone() {
 #[test]
 fn an_import_whose_exporter_resources_are_not_the_exporters_own_is_refused() {
     let mut f = world();
-    // A copy of country 7's resources that names country 7 as its owner, but that country 7
-    // does not hold: its owner word alone used to be enough.
     f.u64(0x6800, ccountry_resources::VTABLE_RVA.0 as u64);
     f.u32(0x6800 + ccountry_resources::OWNER, 7);
     f.array(0x6800 + DELIVERY_ROUTES, 0x40800, 3);
@@ -922,7 +902,6 @@ fn an_import_whose_exporter_resources_are_not_the_exporters_own_is_refused() {
             reason: "trade exporter resources backlink mismatch"
         }
     );
-    // An exchange in country 2's list whose importer is another country is refused too.
     let mut f = world();
     f.u32(0xa000 + exchange::IMPORTER, 7);
     let (outcomes, _) = walk(&f);
@@ -932,7 +911,6 @@ fn an_import_whose_exporter_resources_are_not_the_exporters_own_is_refused() {
 #[test]
 fn a_rights_holder_origin_reads_its_own_route_and_line() {
     let mut f = world();
-    // Country 2 holds state 102's origin by rights, on a land route.
     f.array(0x7000 + RIGHTS_ORIGINS, 0x21800, 1);
     f.put(0x21800, &[0; RIGHTS_ORIGIN_STRIDE]);
     f.u64(0x21800, 0x21000);
@@ -1042,20 +1020,16 @@ fn only_a_gated_state_is_read_for_temporary_resources() {
         let outcome = walk_temporary(f, 0, GAME_STATE, &descriptors, Buffer::Growing(&mut rows));
         (outcome, rows.len())
     };
-    // An ungated state's modifiers are not read, readable or not.
     f.bytes.retain(|&address, _| {
         !(0x31000 + cstate::BASE_MODIFIERS..0x31010 + cstate::BASE_MODIFIERS).contains(&address)
     });
     assert_eq!(read(&f), (Outcome::Rows { len: 0 }, 0));
-    // A gated state is read: its unreadable modifiers refuse the table.
     f.put(0x31000 + STATE_TEMPORARY_FLAG, &[1]);
     assert!(matches!(read(&f).0, Outcome::Unavailable { .. }));
-    // Readable and without the key: no row.
     f.array(0x31000 + cstate::BASE_MODIFIERS, 0, 0);
     assert_eq!(read(&f), (Outcome::Rows { len: 0 }, 0));
 }
 
-/// The state-by-state temporary walk the batched one replaced.
 fn serial_temporary(
     memory: &impl Memory,
     base: usize,
@@ -1111,7 +1085,6 @@ fn temporary_state(slot: usize) -> usize {
     0x10_0000 + slot * 0x1000
 }
 
-/// 130 states across three pointer batches, some null and some gated by list or flag.
 fn temporary_states() -> (Fixture, Vec<cstrategic_resource::Row>) {
     let mut f = world();
     let descriptors = f.descriptors();
@@ -1138,8 +1111,6 @@ fn temporary_states() -> (Fixture, Vec<cstrategic_resource::Row>) {
     (f, descriptors)
 }
 
-/// Pointer words in batches of 64 and both gate fields gathered: the same rows and, for a
-/// fault anywhere, the same refusal as the state-by-state walk.
 #[test]
 fn the_batched_temporary_walk_keeps_every_serial_row_and_refusal() {
     let (f, descriptors) = temporary_states();
@@ -1181,7 +1152,6 @@ fn the_batched_temporary_walk_keeps_every_serial_row_and_refusal() {
     }
 }
 
-/// Faults the first read touching `denied`, as a guard page does once, then reads it.
 struct GuardOnce<'a> {
     source: &'a Fixture,
     denied: usize,
@@ -1197,8 +1167,6 @@ impl Memory for GuardOnce<'_> {
     }
 }
 
-/// A fault that clears after its first read refuses where the state-by-state walk refuses:
-/// the batched walk never reads a faulted source again.
 #[test]
 fn the_batched_temporary_walk_never_retries_a_one_shot_fault() {
     let (f, descriptors) = temporary_states();
@@ -1243,7 +1211,6 @@ fn the_temporary_walk_holds_every_resource_the_database_has() {
     let mut f = world();
     let one = f.descriptors()[0];
     f.u32(0xd000 + cstrategic_resource::TEMPORARY_KEY, 0);
-    // More resources than any fixed table would hold: every key is read.
     let descriptors: Vec<_> = (0..70).map(|_| one).collect();
     f.array(GAME_STATE + cgame_state::STATES, 0x70000, 2);
     f.put(0x70000, &[0; 16]);
@@ -1268,7 +1235,6 @@ fn a_region_outside_the_records_is_full_and_one_inside_reads_its_efficiency() {
     let read = |region| crate::cstrategic_navy::regional_convoy_efficiency(&f, records, region);
     assert_eq!(read(2), Ok(45_000));
     assert_eq!(read(3), Ok(100_000));
-    // A record inside the array that does not read is refused, not taken as full.
     assert!(read(1).is_err());
 }
 
@@ -1289,9 +1255,7 @@ fn only_a_bad_naval_line_reads_regional_efficiency_and_an_unread_navy_refuses() 
         );
         (outcome, rows.len())
     };
-    // The bad land contract and the good import read no navy.
     assert_eq!(regional(&[], &rows.clients), (Outcome::Rows { len: 0 }, 0));
-    // The bad naval production line needs country 7's navy, which this world lacks.
     assert!(matches!(
         regional(&rows.origins, &rows.clients).0,
         Outcome::Unavailable { .. }

@@ -1,13 +1,3 @@
-//! A persistent conversion helper for the spool thread; the spool thread
-//! starts a pool of them ([`pool_size`], [`Helpers`]).
-//!
-//! [`SpoolHelper::join`] runs a borrowed job on the helper while the calling
-//! spool thread runs its own share, and returns only after both finished. The
-//! helpers are started once, before hooks are published, and park between
-//! hours: an hour allocates nothing and spawns nothing. Frame conversion is
-//! adaptively promoted by the frame pipeline, without EcoQoS or CPU-set confinement.
-//! Output placement is fixed by the caller, so the result is identical to
-//! running both shares on one thread.
 
 use std::{
     io,
@@ -16,45 +6,31 @@ use std::{
     thread::JoinHandle,
 };
 
-/// A job borrowed for one [`SpoolHelper::join`] call.
 pub(crate) type Job<'a> = dyn Fn() + Sync + 'a;
 
-/// The helpers to start: one per CPU the game process may run on beyond the
-/// spool thread's own, and no more than an hour has movable packs for.
 pub(crate) fn pool_size() -> usize {
     crate::acquisition::usable_cpus()
         .saturating_sub(1)
         .min(crate::pack_conversion::MAX_HELPERS)
 }
 
-/// The helpers the comparison and the encoders share their work with.
 const ENCODING_HELPERS: usize = 2;
 
-/// The conversion helpers a spool frame may use and the spool thread's
-/// backlog verdict, which they follow.
 #[derive(Clone, Copy)]
 pub(crate) struct Helpers<'a> {
-    /// Never empty.
     pub(crate) pool: &'a [SpoolHelper],
     pub(crate) backlogged: bool,
 }
 
 impl<'a> Helpers<'a> {
-    /// The threads the comparison and the encoders use: this one and its helpers.
     pub(crate) fn encoding_lanes(self) -> usize {
         1 + self.pool.len().min(ENCODING_HELPERS)
     }
 
-    /// Run `job` on the comparison's and encoders' helpers and `own` on this
-    /// thread; return after all finished. A panic on any side is resumed
-    /// after every job finished.
     pub(crate) fn join_each<R>(self, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
         self.join_some(ENCODING_HELPERS, &|_: usize| job(), own)
     }
 
-    /// Run `job(n)` on each of the first `count` helpers, `n` from 0, and
-    /// `own` on this thread; return after all finished. A panic on any side
-    /// is resumed after every job finished.
     pub(crate) fn join_some<R>(
         self,
         count: usize,
@@ -71,8 +47,6 @@ impl<'a> Helpers<'a> {
     }
 }
 
-/// Run `job(at)` on `helpers[at]` and on every later helper, nested, and `own`
-/// innermost on this thread.
 fn join_from(
     helpers: &[SpoolHelper],
     at: usize,
@@ -91,12 +65,8 @@ fn join_from(
     }
 }
 
-/// The job pointer with its borrow erased. Only `join` publishes it, and
-/// `join` neither returns nor unwinds before the helper reports the job
-/// finished, so the pointee outlives every use.
 #[derive(Clone, Copy)]
 struct Erased(*const Job<'static>);
-// SAFETY: the pointee is `Sync` and outlives its use (see `Erased`).
 unsafe impl Send for Erased {}
 
 #[derive(Default)]
@@ -126,7 +96,6 @@ pub(crate) struct SpoolHelper {
 }
 
 impl SpoolHelper {
-    /// Start the helper thread and wait for its id.
     pub(crate) fn start(
         priority: Option<(
             engine_allocation::SharedBox<crate::frame_priority::Pipeline>,
@@ -143,7 +112,6 @@ impl SpoolHelper {
                 crate::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
-                // SAFETY: GetCurrentThreadId has no preconditions.
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 let _ = id_sender.send(id);
                 serve(&worker, priority);
@@ -162,17 +130,12 @@ impl SpoolHelper {
         self.thread_id
     }
 
-    /// Run `job` on the helper and `own` on this thread; return `own`'s
-    /// result after both finished. A panic on either side is resumed here
-    /// after the helper finished with the job.
     pub(crate) fn join<'a, R>(
         &self,
         _backlogged: bool,
         job: &'a Job<'a>,
         own: impl FnOnce() -> R,
     ) -> R {
-        // SAFETY: erases the borrow of `job`; `Finish` below waits for the
-        // helper before this frame can return or unwind.
         let erased =
             Erased(unsafe { std::mem::transmute::<&'a Job<'a>, &'static Job<'static>>(job) });
         {
@@ -181,7 +144,6 @@ impl SpoolHelper {
             state.panicked = false;
             self.shared.changed.notify_all();
         }
-        /// Waits for the job while `own` unwinds.
         struct Finish<'a>(&'a SpoolHelper);
         impl Drop for Finish<'_> {
             fn drop(&mut self) {
@@ -197,8 +159,6 @@ impl SpoolHelper {
         result
     }
 
-    /// Wait until the published job is no longer referenced. A helper thread
-    /// that ended cannot hold it. Returns whether the job panicked.
     fn wait(&self) -> bool {
         let mut state = self.shared.lock();
         loop {
@@ -260,7 +220,6 @@ fn serve(
             state.running = true;
             drop(state);
             refresh();
-            // SAFETY: `join` keeps the job alive until `running` clears.
             let job = unsafe { &*job.0 };
             let panicked = catch_unwind(AssertUnwindSafe(job)).is_err();
             state = shared.lock();
@@ -337,7 +296,6 @@ mod tests {
         let failing = || panic!("synthetic helper failure");
         let resumed = catch_unwind(AssertUnwindSafe(|| helper.join(false, &failing, || 1)));
         assert!(resumed.is_err());
-        // The helper survives a job panic.
         assert_eq!(helper.join(false, &|| {}, || 2), 2);
         let finished = AtomicUsize::new(0);
         let slow = || {
@@ -348,7 +306,6 @@ mod tests {
             helper.join(false, &slow, || panic!("synthetic own failure"))
         }));
         assert!(own_panic.is_err());
-        // Unwinding past join waited for the borrowed job to finish.
         assert_eq!(finished.load(Ordering::Relaxed), 1);
     }
 

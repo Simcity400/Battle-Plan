@@ -1,19 +1,14 @@
-//! Bounded loader queues that share their lane's threads between kinds of work: the next job is
-//! the oldest of the kind running on fewest threads, and no kind holds more than its share, so a
-//! burst of one product's slow replies never makes another product's quick ones wait behind it.
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Condvar, Mutex, mpsc::TrySendError},
 };
 
-/// The kind of work a job is, whose jobs share the lane's threads as one.
 pub(super) trait Classed {
     fn class(&self) -> &str;
 }
 
 struct State<T> {
     queued: VecDeque<(String, T)>,
-    /// Jobs of each kind taken and not yet finished ([`Turn`]).
     running: HashMap<String, usize>,
     closed: bool,
 }
@@ -21,21 +16,16 @@ struct Queue<T> {
     state: Mutex<State<T>>,
     changed: Condvar,
     capacity: usize,
-    /// The most jobs of one kind running at once.
     share: usize,
 }
-/// One non-cloneable sender, owned by `Lanes`; producers borrow it.
 pub(super) struct Sender<T>(Arc<Queue<T>>);
 pub(super) struct Receiver<T>(Arc<Queue<T>>);
 
-/// A job's hold on its kind's share of the lane, let go when it is dropped, as the job ends.
 pub(super) struct Turn<T> {
     queue: Arc<Queue<T>>,
     class: String,
 }
 
-/// The most jobs of one kind a lane of `threads` runs at once: all but one of its threads, so
-/// another kind's job always finds one free, except in a lane too small to spare one.
 pub(super) fn share(threads: usize) -> usize {
     if threads > 2 { threads - 1 } else { threads.max(1) }
 }
@@ -50,9 +40,6 @@ pub(super) fn channel<T>(capacity: usize, share: usize) -> (Sender<T>, Receiver<
     (Sender(Arc::clone(&queue)), Receiver(queue))
 }
 impl<T: Classed> Sender<T> {
-    /// Queues `value`; a full queue first lets go of the values `stale` names (work no one waits
-    /// for any more), so a lane whose threads are held long never refuses for want of room
-    /// that cancelled work holds.
     pub(super) fn try_send(&self, value: T, mut stale: impl FnMut(&T) -> bool) -> Result<(), TrySendError<T>> {
         let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed {
@@ -69,7 +56,6 @@ impl<T: Classed> Sender<T> {
         }
         state.queued.push_back((value.class().to_owned(), value));
         self.0.changed.notify_one();
-        // What was let go drops after the lock, as `Receiver`'s drop does.
         drop(state);
         drop(gone);
         Ok(())
@@ -106,8 +92,6 @@ impl<T> Drop for Turn<T> {
     }
 }
 impl<T> Queue<T> {
-    /// The queued job to run next: of the kinds under their share, the oldest job of the one
-    /// running on fewest threads.
     fn next(&self, state: &State<T>) -> Option<usize> {
         let mut best: Option<(usize, usize)> = None;
         for (at, (class, _)) in state.queued.iter().enumerate() {
@@ -125,7 +109,6 @@ impl<T> Receiver<T> {
         self.recv_idle(|| {})
     }
 
-    /// The next job and its turn, calling `idle` once, without the lock, before it first waits.
     pub(super) fn recv_idle(&self, idle: impl FnOnce()) -> Result<(T, Turn<T>), ()> {
         let queue = &self.0;
         let lock = || queue.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -179,8 +162,6 @@ mod tests {
         assert!(receiver.recv().is_err());
     }
 
-    /// A full queue lets go of stale values to take a new one, the rest kept in order; with
-    /// room, nothing is let go.
     #[test]
     fn a_full_queue_lets_go_of_stale_values_for_a_new_one() {
         let (sender, receiver) = channel(3, 8);
@@ -195,9 +176,6 @@ mod tests {
         assert_eq!(taken, [2, 4, 5]);
     }
 
-    /// Run 14: fourteen slow chunks of one product held every reply thread, and quick replies
-    /// asked after them waited seconds. A kind asked later goes before a kind already running,
-    /// and no kind takes the lane's last free thread.
     #[test]
     fn a_burst_of_one_kind_never_holds_the_lane_from_another() {
         let (sender, receiver) = channel(64, share(4));

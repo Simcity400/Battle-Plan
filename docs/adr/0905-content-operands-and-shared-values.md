@@ -1,0 +1,9 @@
+# Keep content operands and shared row fields independent
+
+Name rows keep the operands the game uses to produce a name. Capture preserves an override's exact bytes, including the recorded null-group fallback, while playback uses the recorded content key for a generated name. Extended rows give independent mask bits to fixed arrays and composed fields so one changing value need not invalidate unrelated data. This also keeps daily organisation funds independent of trait trees, tasks, variables and policies.
+
+Intelligence rows preserve native operand precision and optionality. Trade influence uses fixed5 and diplomatic pressure retains the original Q15 acceptance and tension. Equipment requirements name their archetype token and record the pool's full variant reference in native order. Totals retain each archetype and its fixed5 amount. Civilian-factory requirements use a null type and retain the raw preparation flag and days. The save projection truncates the required factory count and includes days only in the factory case. A resolved buffered operation with no state has zero; a stale or null buffered reference lacks a result. Keep the origin of a scientist role's visible conjunction so replay can supply the original context.
+
+Market values are shared between held rows, sparse updates and encoder baselines. Cloning a row need not clone its large collections. A write copies only a value that still has another owner. A shared empty allocation supplies new codec keys, avoiding a per-key allocation for a value the decoder will immediately replace. Variable values borrow storage while encoding and allocate on decode.
+
+[Extended rows](../../crates/replay-rows/src/extended_rows.rs) · [Intelligence operands](../../crates/replay-rows/src/extended_rows/characters_intelligence.rs) · [Shared market values](../../crates/replay-rows/src/extended_rows/market.rs)

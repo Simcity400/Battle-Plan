@@ -1,4 +1,3 @@
-//! Range-local observations; ordered certificate/store admission stays in the parent.
 use super::*;
 use collector_observers::unit_history_changes as history_changes;
 use std::{ops::Range, sync::Arc};
@@ -29,13 +28,11 @@ impl PreparedDivision {
 pub struct PreparationPart {
     pub range: Range<usize>,
     rows: Vec<PreparedDivision>,
-    /// Experience, progression, officer, career and history baselines.
     orders: [ScalarOrder; 5],
     supply: Vec<Option<Arc<crate::supply_inputs::Sample>>>,
     supply_order: ScalarOrder,
     sources: crate::panel_sources::Preparation,
     source_ready: bool,
-    /// Per seed: the stat-block maxima this range read for a seed the held capture cannot carry.
     maxima: Vec<Option<Result<DivisionMaxima, &'static str>>>,
     maxima_pointers: Vec<usize>,
     maxima_reads: Vec<Result<DivisionMaxima, &'static str>>,
@@ -77,7 +74,6 @@ impl PreparationPart {
     pub fn get(&self, index: usize) -> Option<&PreparedDivision> {
         self.rows.get(index.checked_sub(self.range.start)?)
     }
-    /// An absent entry selects ordered lookup; a present `None` is a sampled miss.
     pub fn daily_supply(&self, index: usize) -> Option<&Option<Arc<crate::supply_inputs::Sample>>> {
         self.supply.get(index.checked_sub(self.range.start)?)
     }
@@ -87,15 +83,12 @@ impl PreparationPart {
     pub fn source_reads(&self) -> Option<&crate::panel_sources::Preparation> {
         self.source_ready.then_some(&self.sources)
     }
-    /// Seed `index`'s maxima as this range read them; `None` when it did not read its block.
     pub fn maxima(&self, index: usize) -> Option<Result<DivisionMaxima, &'static str>> {
         self.maxima
             .get(index.checked_sub(self.range.start)?)
             .copied()
             .flatten()
     }
-    /// Reads the maxima of every authenticated seed's block the held capture cannot carry, so
-    /// the ordered admission reads none of them. Optional: a refused scratch stages nothing.
     fn stage_maxima(
         &mut self,
         memory: &impl Memory,
@@ -167,15 +160,11 @@ impl PreparationPart {
         let Some(seeds) = seeds.get(self.range.clone()) else {
             return;
         };
-        // A failed optional staging allocation performs no native read. The
-        // ordered consumer uses its original acquisition for this range alone.
         if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.rows, seeds.len()))
             .is_err()
         {
             return;
         }
-        // This immutable daily baseline cannot change until the range leases
-        // return. Optional scratch failure keeps the original ordered lookup.
         let supply_ready = store.holds_daily_progress()
             && engine_allocation::advisory(|| {
                 engine_allocation::reserve(&mut self.supply, seeds.len())
@@ -185,8 +174,6 @@ impl PreparationPart {
         let countries = source_reads
             .then(|| engine_native::ccountry::Reader::new(memory, base, state).ok())
             .flatten();
-        // The ordered source pass authenticates these headers even if no
-        // division resolves an owner. Decode must not bypass that failure gate.
         self.source_ready = source_reads && countries.is_some();
         for (index, seed) in seeds.iter().enumerate() {
             let index = self.range.start + index;
@@ -204,11 +191,6 @@ impl PreparationPart {
                     seed,
                 )
             });
-            // A receiver the hour's take saw untouched is carried by the ordered observation
-            // without a query; the range neither queries nor prefetches it. Other receivers
-            // are already registered: the passive query performs the same epoch/quiet checks
-            // without a second, no-op registration. Cold receivers still reach the original
-            // ordered admission.
             let observations = store.observations.is_taken().then_some(&store.observations);
             let officer_receiver = seed
                 .pointer
@@ -240,7 +222,6 @@ impl PreparationPart {
                     &mut self.orders[2],
                 )
             });
-            // Stored XP, previous template and officer XP, in the counters' order.
             for (kind, quiet) in [
                 experience_quiet.is_some(),
                 progression_quiet.is_some(),
@@ -288,7 +269,6 @@ impl PreparationPart {
                     .and_then(|_| history_changes::range_sequence(seed.pointer)),
             };
             let career_acquired = career_certificate.is_some();
-            // A quiet value is the held one a query would have found; only its query is skipped.
             let experience = match experience_quiet {
                 Some((_, value)) => Some(Ok(value)),
                 None => store.experience.prefetch_value(
@@ -424,10 +404,6 @@ mod tests {
             .collect()
     }
 
-    /// A fresh attach: no receiver is watched yet. The ranges register their divisions' stored
-    /// XP and previous-template receivers as they read them, in parallel, so the ordered pass
-    /// finds every one staged under the certificate its own lookup now gives, and the table
-    /// offered for the census refuses none.
     #[test]
     fn a_fresh_attach_registers_cold_receivers_across_the_ranges() {
         const COUNT: usize = 5_000;
@@ -522,8 +498,6 @@ mod tests {
     }
 }
 
-/// Fresh attack reads planned after ordered certification. Each entry retains
-/// its terrain buffers; neither a carried block nor an invalid seed is read.
 #[derive(Default)]
 pub struct AttackPart {
     pub range: Range<usize>,
@@ -558,7 +532,6 @@ impl AttackPart {
                 })
                 .sum::<usize>()
     }
-    /// `held_index` is [`Captured::held_index`] of the hour's certification.
     pub fn prepare(
         &mut self,
         seeds: &[DivisionSeed],
@@ -618,7 +591,6 @@ impl AttackPart {
     pub fn is_prepared(&self) -> bool {
         self.len == self.range.len()
     }
-    /// Stages nothing this hour: the ordered pass reads every row of the range.
     pub fn clear(&mut self) {
         self.len = 0;
     }

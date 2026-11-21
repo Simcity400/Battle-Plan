@@ -1,12 +1,3 @@
-//! Where a task force stands on the map this hour, from its recorded unit
-//! motion (`TaskForceMapMotion`) and the content movement map.
-//!
-//! A task force is class 1 of the movement layer's [`UnitRoute`]: its stack kind
-//! Its route slots and
-//! its settled route point are the division's. The native ordinary source pass
-//! advances a task force in combat without moving it and buckets it at its stand-off kind, 9
-//! attacking and 10 defending; the independent naval-base pass admits only a task
-//! force whose ordinary route is empty.
 
 #[cfg(test)]
 use crate::map::province_map::HeightField;
@@ -26,25 +17,16 @@ use {
     crate::movement_timing::MovementContent, crate::unit_class::CounterClass,
 };
 
-/// This hour's task-force motion rows.
 #[derive(Clone, Debug, Default)]
 pub struct TaskForceMotions {
-    /// `None` while the motion census is incomplete: no task force can then be placed.
     rows: Option<BTreeMap<u64, TaskForceMapMotionRow>>,
 }
 
-/// One task force's place among this hour's map sources.
 #[derive(Clone, Debug)]
 pub struct Placement {
-    /// The visual stack kind. Kind 19 is docked: the ordinary pass skips it and the naval base
-    /// shows it.
     pub kind: u32,
     pub position: Position,
-    /// One route sample shared by admission, placement and scale. Animator and selection state belong
-    /// to viewer presentation rather than the recording.
     pub animator: Option<RouteSample>,
-    /// Why the content could not place the task force's route, so that it stands on its
-    /// province; `None` when there is no route or it was placed.
     pub unplaced_route: Option<&'static str>,
 }
 
@@ -65,7 +47,6 @@ impl TaskForceMotions {
         })
     }
 
-    /// The task force's motion row; the reason when the hour cannot place it.
     pub fn row(&self, force: u64) -> Result<&TaskForceMapMotionRow, &'static str> {
         self.rows
             .as_ref()
@@ -74,9 +55,6 @@ impl TaskForceMotions {
             .ok_or("task-force motion row absent")
     }
 
-    /// Where `force` stands this hour. `anchor` is a province's unit-stack slot, `land`
-    /// whether a province is land and `scale` a slot's stack scale. A route the content cannot
-    /// place stands on its province.
     pub fn visual(
         &self,
         force: &TaskForceRow,
@@ -90,9 +68,6 @@ impl TaskForceMotions {
         visual_of(force.province, &UnitRoute::task_force(row), movement, world, anchor, land, scale)
     }
 
-    /// The settled task-force point shared with carrier take-off. An
-    /// unplaceable route is unknown here, never a province-centroid origin.
-    /// Uses the same rules as visual.
     pub fn settled_origin(
         &self,
         force: &TaskForceRow,
@@ -108,13 +83,11 @@ impl TaskForceMotions {
         Ok(placed.position.at())
     }
 
-    /// Whether the task force's ordinary route is empty, which the naval-base pass requires.
     pub fn docked(&self, force: u64) -> Result<bool, &'static str> {
         self.row(force).map(|row| row.path.is_empty())
     }
 }
 
-/// Where a task force on `province` with `route` stands: [`TaskForceMotions::visual`] from values.
 pub fn visual_of(
     province: u32,
     route: &UnitRoute<'_>,
@@ -143,8 +116,6 @@ pub fn visual_of(
         })
     });
     let here = land(province);
-    // An unplaceable route stands on its province, as a division's does; the combat
-    // stand-off kinds need no geometry.
     let kind = placed.unwrap_or_else(|| {
         counter_move::stack_kind(StackKindInputs {
             class,
@@ -184,16 +155,9 @@ pub fn visual_of(
     })
 }
 
-/// This hour's operands of 's mission skip, which the counter pass and the ship
-/// models share: the skipped task force never reaches the representative array
-/// that hands to the model update , and
-/// removes a formation without a representative, so neither its counter nor its hulls draw.
 #[derive(Clone, Debug, Default)]
 pub struct MissionSkips {
-    /// Each task force's recorded `TaskForceCounterInputs`, where available.
     inputs: BTreeMap<u64, (u8, u32)>,
-    /// Each task force's current patrol region, zero for none; `None` while the mission census is
-    /// incomplete.
     current_regions: Option<BTreeMap<u64, u32>>,
 }
 
@@ -218,15 +182,11 @@ impl MissionSkips {
         })
     }
 
-    /// Whether to skip a task force at this visual stack kind and region. Require no combat, the
-    /// recorded skip flag, an active mission, the invasion-support region when applicable, and
-    /// matching patrol region. Missing counter inputs or current region leave the result unavailable.
     pub fn skip(&self, force: &TaskForceRow, kind: u32, region: Option<u32>) -> Option<bool> {
         let current = self.current_regions.as_ref().map(|regions| regions.get(&force.id).copied().unwrap_or(0));
         skip_of(kind, self.inputs.get(&force.id).copied(), force.mission, current, region)
     }
 
-    /// The skip operands of a fixture: `inputs` by task force and complete current regions.
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(
         inputs: impl IntoIterator<Item = (u64, (u8, u32))>,
@@ -243,8 +203,6 @@ impl MissionSkips {
 mod tests {
     use super::*;
 
-    /// A task force on its active mission here is skipped outside combat, a patrol only where
-    /// it patrols now; unrecorded operands leave it undecided.
     #[test]
     fn the_mission_skip_follows_the_native_predicate() {
         let force = |id, mission| TaskForceRow {
@@ -262,21 +220,17 @@ mod tests {
             ],
             [(1, 5)],
         );
-        // A strike force (2) is never active; convoy escort (4) always is once in regions.
         assert_eq!(skips.skip(&force(1, 2), 0, None), Some(false));
         assert_eq!(skips.skip(&force(1, 4), 0, None), Some(true));
         assert_eq!(skips.skip(&force(2, 4), 0, None), Some(false));
-        // Invasion support needs its bombardment region.
         assert_eq!(skips.skip(&force(4, 9), 0, None), Some(false));
         assert_eq!(skips.skip(&force(3, 9), 0, None), Some(true));
-        // A patrol only where it patrols now, and never in combat.
         assert_eq!(skips.skip(&force(1, PATROL), 0, Some(5)), Some(true));
         assert_eq!(skips.skip(&force(1, PATROL), 0, Some(6)), Some(false));
         assert_eq!(skips.skip(&force(5, PATROL), 0, None), Some(false));
         for kind in [ATTACKING, DEFENDING] {
             assert_eq!(skips.skip(&force(1, PATROL), kind, Some(5)), Some(false));
         }
-        // Unrecorded counter inputs or current regions leave it undecided.
         assert_eq!(skips.skip(&force(9, 4), 0, None), None);
         let incomplete = MissionSkips {
             current_regions: None,
@@ -345,8 +299,6 @@ mod tests {
             ..Default::default()
         };
         let anchor = |id: u32, _: u32| Some([id as f32 * 10.0, 0.0, 0.0]);
-        // Valid first hop, invalid last hop: only two controls. Native clears
-        // its sample array but keeps the ordinary route and the set target.
         let partial = motions(TaskForceMapMotionRow {
             task_force: 7,
             target: 9,
@@ -403,14 +355,12 @@ mod tests {
             task_force: 7,
             ..Default::default()
         });
-        // Without movement content a standing task force takes its slot's anchor: 0 at sea.
         let at_sea = standing.visual(&force, None, None, &anchor, &sea, &|_, _| 1.0).unwrap();
         assert_eq!(
             (at_sea.kind, at_sea.position.standing),
             (0, [5.0, 0.0, 0.0])
         );
         assert!(at_sea.position.motion.is_none() && at_sea.unplaced_route.is_none());
-        // In a land province it is docked: kind 19, the naval base's port item.
         assert_eq!(
             standing
                 .visual(&force, None, None, &anchor, &land, &|_, _| 1.0)
@@ -419,7 +369,6 @@ mod tests {
             19
         );
         assert_eq!(standing.docked(7), Ok(true));
-        // Combat task forces use stack kind 9 when attacking and 10 when defending, each at its own anchor.
         for (role, kind) in [(1, 9), (2, 10)] {
             let fighting = motions(TaskForceMapMotionRow {
                 task_force: 7,
@@ -432,14 +381,12 @@ mod tests {
                 (placed.kind, placed.position.standing),
                 (kind, [5.0, 0.0, kind as f32])
             );
-            // Its route stands unplaced without the movement map, and says why.
             assert_eq!(
                 placed.unplaced_route,
                 Some("the content movement map is not loaded")
             );
             assert_eq!(fighting.docked(7), Ok(false));
         }
-        // A missing row or an incomplete census is refused.
         let other = TaskForceRow {
             id: 8,
             ..force.clone()
@@ -454,9 +401,6 @@ mod tests {
     }
 }
 
-/// [`MissionSkips::skip`] from values: the task force's counter inputs (is in regions, bombardment
-/// region), its mission, and its current patrol region (zero for none; `None` while the mission
-/// census is incomplete).
 pub fn skip_of(kind: u32, inputs: Option<(u8, u32)>, mission: u32, current: Option<u32>, region: Option<u32>) -> Option<bool> {
     if kind == ATTACKING || kind == DEFENDING {
         return Some(false);

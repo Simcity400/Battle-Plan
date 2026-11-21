@@ -12,7 +12,6 @@ import { netVictoryPoints, transferDate } from './territoryData';
 import type { CountryBalance, TransferOccurrence, TransferSide } from './territoryData';
 import type { TransferLabels } from './territoryTooltip';
 
-/** A signed whole number in the positive or error colour, as balances are drawn elsewhere. */
 function signedCell(value: bigint) {
   return <span className={value > 0n ? 'transfer-gain' : value < 0n ? 'transfer-loss' : undefined}>{formatSigned(value, 0, 0)}</span>;
 }
@@ -50,7 +49,6 @@ export function CountryTable({ rows, labels, sort, setOption, cellBars, density,
 
 export function TransferTable({ rows, labels, sort, setOption, cellBars, density, narrow, hoursPerSecond, focus, tooltip, menu, onVisibleRows, label }: Shared & {
   rows: readonly TransferOccurrence[];
-  /** The drill's country: dimmed where it appears, and VP signed from its side. */
   focus?: string | null;
   tooltip: (row: TransferOccurrence) => TooltipContent; menu: (row: TransferOccurrence) => MenuItem[];
   onVisibleRows: (rows: readonly TransferOccurrence[]) => void; label: string;

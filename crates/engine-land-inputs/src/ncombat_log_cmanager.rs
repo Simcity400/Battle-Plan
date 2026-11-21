@@ -1,32 +1,3 @@
-//! Each country's Combat Log and ordered equipment-loss month acquisition.
-//!
-//! Game state owns one manager per country slot, with slot zero null. Creation
-//! sets its country link; loading may replace the manager. Writers choose the
-//! positive expeditionary owner or roster owner and require an orders group.
-//!
-//! Land-loss recording also requires the country-gate operand to be below one
-//! or the country to match a live player-roster country through canonical links.
-//! This predicate tests countries, not player flags or AI control. The equipment
-//! loss feature must also be enabled. Country admission alone does not establish
-//! coverage when the division has no orders group. `CombatLogState` records
-//! gate and prune observations; acquisition reads every country's held logs
-//! irrespective of players, AI control or viewpoint.
-//!
-//! Only land equipment is logged by exact variant, orders group, reason and
-//! calendar month. Managers serialize when they hold a group log. Air and naval
-//! losses do not reach this history.
-//!
-//! Writers change only the last month entry, appending when its month differs.
-//! An entry stops changing once a later entry exists. After a complete read in
-//! the current or previous calendar month, [`Months::Window`] therefore needs
-//! the last two entries. [`Months::All`] covers retained history for branch starts
-//! or countries whose prior complete read is older or unknown.
-//!
-//! Daily pruning follows the hour-23 sample. It removes entries aged by the
-//! loaded maximum-month define and group logs whose reference no longer resolves
-//! or whose arrays are empty. A retired group cannot receive later writes, so
-//! its held values remain final until pruning. [`countries_with_deleted_groups`]
-//! selects countries holding those logs.
 
 use crate::{
     Memory, cequipment_variant, cequipment_variant_pool as pool, cgame_state, corders_group,
@@ -38,54 +9,31 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Combat-log manager primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a260);
-/// CPdxArray of group-log pointers, appended by writers and serialized in order.
 pub const GROUPS: usize = 0x08;
-/// Manager raw country link, serialized as a tag.
 pub const COUNTRY: usize = 0x20;
-/// Manager allocation size.
 pub const SIZE: usize = 0x28;
 
-/// Per-country prune entry; RCX is the manager. It prunes old month entries,
-/// then swap-removes and destroys group logs that are empty or no longer resolve.
 pub const PRUNE_RVA: Rva = Rva(0x00d3_a9f0);
 
-/// Row kind of the recovered array; kinds 0 to 3 are the stored loss reasons.
 pub const RECOVERED_KIND: u8 = 4;
 
-/// Which month entries of each array a walk reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Months {
-    /// Every retained entry.
     All,
-    /// The last two entries: every entry that can have changed since a
-    /// complete read in the same or the previous calendar month (see the
-    /// module notes). A country last read earlier, or never, needs [`All`].
-    ///
-    /// [`All`]: Months::All
     Window,
 }
 
-/// Entries of each array a [`Months::Window`] read covers.
 pub const WINDOW_ENTRIES: u32 = 2;
 
-/// One variant's amount in one month entry of one orders group's log.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The manager's raw country link (held by the manager).
     pub country: u32,
-    /// The orders group reference's id (its type is 53).
     pub group: u32,
-    /// 0 to 3: the loss reason array; [`RECOVERED_KIND`]: the recovered array.
     pub kind: u8,
-    /// Entry month bucket; see [`loss::month_bucket`].
     pub month: u16,
-    /// The variant reference's id (its type is 70).
     pub variant: u32,
-    /// The entry's stored date: the raw game hour of its first write.
     pub date: i32,
-    /// The pool amount, fixed5.
     pub amount_raw: i64,
 }
 
@@ -101,12 +49,8 @@ impl Row {
     }
 }
 
-/// Pointers, headers and entries read per guarded batch.
 const BATCH: usize = 64;
 
-/// Each manager, group log and month entry is copied whole in one span: the
-/// fields read lie within the object's own allocation (0x28, 0xe8 and 0x68
-/// bytes), so one guarded copy replaces one per field.
 const MANAGER_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -122,10 +66,8 @@ const GROUP_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const GROUP_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&GROUP_FIELDS, logs::SIZE).expect("valid record layout");
-/// Kinds in read order: the four reasons, then the recovered array.
 const KINDS: usize = logs::REASON_COUNT + 1;
 
-/// A month entry through its pool's entry header.
 const ENTRY_BYTES: usize = loss::POOL + pool::ITEMS + 16;
 const _: () = assert!(ENTRY_BYTES <= loss::SIZE);
 const ENTRY_FIELDS: [RecordField; 1] = [RecordField {
@@ -136,7 +78,6 @@ const ENTRY_FIELDS: [RecordField; 1] = [RecordField {
 const ENTRY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ENTRY_FIELDS, ENTRY_BYTES).expect("valid record layout");
 
-/// A variant's vtable and reference, as `cequipment_variant::identity` reads them.
 const VARIANT_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -145,7 +86,6 @@ const VARIANT_FIELDS: [RecordField; 1] = [RecordField {
 const VARIANT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&VARIANT_FIELDS, 16).expect("valid record layout");
 
-/// Relocated vtables the walk authenticates against.
 struct Vtables {
     manager: u64,
     group: u64,
@@ -154,21 +94,13 @@ struct Vtables {
     variant: usize,
 }
 
-/// Where the next row goes and how many did not fit.
 struct Output<'a> {
     rows: Buffer<'a, Row>,
     len: usize,
     unread_rows: u32,
-    /// `None` reads every variant's identity: a detour on the game's workers
-    /// must not allocate.
     memo: Option<&'a mut VariantMemo>,
 }
 
-/// Authenticated variant ids by pointer, for one walk only. Within a walk the
-/// game is held at the sampling boundary, so a variant pointer read and
-/// authenticated once names the same variant for the rest of that walk; the
-/// memo is cleared at the start of every walk and never carried across hours.
-/// It grows from the walk's pool headers; the default allocates nothing.
 #[derive(Default)]
 pub struct VariantMemo {
     pointers: Vec<usize>,
@@ -182,8 +114,6 @@ impl VariantMemo {
     }
 
     fn reserve(&mut self, additional: usize) -> std::io::Result<()> {
-        // One empty cell terminates probing; rounding is index geometry, not
-        // an identity admission limit or per-country storage estimate.
         let required = crate::allocation::add(crate::allocation::add(self.len, additional)?, 1)?;
         let slots = required
             .checked_next_power_of_two()
@@ -251,27 +181,6 @@ impl VariantMemo {
     }
 }
 
-/// Reads every country's Combat Log equipment months: for each manager in
-/// slot order, each group log in array order, the four reason arrays then the
-/// recovered array, each month entry in array order and each pool's entries in
-/// variant order, one row per variant. Only the country's own losses and
-/// recoveries are read; enemy losses, manpower, template statistics and
-/// combat references are not.
-///
-/// Every object is authenticated (manager, group log, entry and pool vtables,
-/// the group reference type 53, the variant vtable and reference type 70); a
-/// loss entry must carry its array's reason, a month may appear once per
-/// array and within the u16 key range, and a pool may name a variant once.
-/// Any other form, and any failed read, makes the table unavailable. A
-/// country is stored whole or not at all: from the first pool that does not
-/// fit, that country's rows and every later pool's entries are counted
-/// unread (the rows stay a prefix of whole countries), and no further amounts
-/// are read.
-/// Only the managers whose country `select` admits (`Some`) are followed
-/// past their header, and `select` chooses which entries of that country's
-/// arrays are read; it is called once per manager holding a group log, in
-/// slot order. `memo` holds the variants this walk has authenticated; it is
-/// cleared first.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -292,7 +201,6 @@ pub fn walk(
     )
 }
 
-/// Stored group/month pool headers only, for attach and cadence sizing.
 pub fn row_demand(
     memory: &impl Memory,
     base: usize,
@@ -317,8 +225,6 @@ pub fn row_demand(
     }
 }
 
-/// Prepares selection state from the live manager census; a failed
-/// preparation or selection stops the walk immediately.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_prepared<T>(
     memory: &impl Memory,
@@ -343,8 +249,6 @@ pub fn walk_prepared<T>(
     )
 }
 
-/// Shares already authenticated group objects with an initial-history consumer.
-/// The callback adds no registry walk and must gate supplemental reads itself.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_prepared_observed<T>(
     memory: &impl Memory,
@@ -405,9 +309,6 @@ fn walk_prepared_buffer<T>(
             &mut output,
             visit_group,
         )?;
-        // A country is stored whole or not at all: rows of a country that
-        // did not fit are withdrawn and counted unread, so a merge by
-        // country never takes a partial read for a complete one.
         if output.unread_rows != unread {
             let partial = u32::try_from(output.len - start)
                 .map_err(|_| "combat log unread row count exceeds u32")?;
@@ -430,7 +331,6 @@ fn walk_prepared_buffer<T>(
     }
 }
 
-/// Visits the complete retained group state independently of equipment sampling.
 pub fn visit_retained_groups(
     memory: &impl Memory,
     base: usize,
@@ -451,8 +351,6 @@ pub fn visit_retained_groups(
     )
 }
 
-/// Authenticates every manager in slot order and passes each one holding a
-/// group log to `visit` with its country and group array.
 fn for_each_manager<M: Memory, T>(
     memory: &M,
     base: usize,
@@ -481,7 +379,6 @@ fn for_each_manager<M: Memory, T>(
     let mut pointer_bytes = [0_u8; BATCH * 8];
     let mut pointers = [0_usize; BATCH];
     let mut headers = [0_u8; BATCH * SIZE];
-    // Slot zero is the null sentinel; serialization and writers start at slot one.
     let mut first = 1;
     while first < managers.count {
         let count = ((managers.count - first) as usize).min(BATCH);
@@ -545,7 +442,6 @@ fn read_groups_observed(
     )
 }
 
-/// Reads one authenticated group log's arrays (`bytes` is its whole copy).
 fn read_group(
     memory: &impl Memory,
     vtables: &Vtables,
@@ -585,8 +481,6 @@ fn read_group(
     }
 }
 
-/// Authenticates each group log of a manager in array order and passes its
-/// whole copied object and its orders-group reference to `visit`.
 fn for_each_group(
     memory: &impl Memory,
     vtables: &Vtables,
@@ -681,8 +575,6 @@ fn read_entries(
             if u64_at(bytes, 0) != vtables.entry {
                 return Err("combat log month vtable mismatch");
             }
-            // The loader files an entry by its reason; the recovered array's
-            // entries are built with reason 0 and it is not their key.
             if key.kind != RECOVERED_KIND && i32_at(bytes, loss::REASON) != i32::from(key.kind) {
                 return Err("combat log month reason differs from its array");
             }
@@ -692,7 +584,6 @@ fn read_entries(
             let date = i32_at(bytes, loss::DATE);
             let month = u16::try_from(loss::month_bucket(date))
                 .map_err(|_| "combat log month outside the recorded range")?;
-            // Only the last entry of a matching month is merged, so months are unique and date ordered.
             if previous_month.is_some_and(|previous| previous >= month) {
                 return Err("combat log months repeat or are out of order");
             }
@@ -719,8 +610,6 @@ fn read_pool(
     items: Array,
     output: &mut Output<'_>,
 ) -> Result<(), &'static str> {
-    // Month pools have no content limit. Worker storage grows from the original
-    // pool header; callback storage retains its prefix and counting outcome.
     let required = output
         .len
         .checked_add(items.count as usize)
@@ -733,7 +622,6 @@ fn read_pool(
             .ok_or("combat log unread row count exceeds u32")?;
         return Ok(());
     }
-    // Native pool headers supply the full original attempted variant demand.
     if let Some(memo) = output.memo.as_deref_mut() {
         memo.reserve(items.count as usize)
             .map_err(|_| "combat log variant memo allocation failed")?;
@@ -741,7 +629,6 @@ fn read_pool(
     let start = output.len;
     let mut entries = [0_u8; BATCH * equipment_entry::STRIDE];
     let mut ids = [0_u32; BATCH];
-    // Positions of this batch whose variant the memo does not hold yet.
     let mut misses = [0_usize; BATCH];
     let mut unknown = [0_usize; BATCH];
     let mut identities = [0_u8; BATCH * 16];
@@ -803,9 +690,6 @@ fn read_pool(
         }
         first += count as u32;
     }
-    // Pool addition merges by variant, so each variant occurs once per pool
-    // and the pool's array order means nothing: sorting finds a repeat
-    // without scratch storage, which the prune detour may not allocate.
     let written = &mut output.rows[start..output.len];
     written.sort_unstable_by_key(|row| row.variant);
     if written
@@ -817,10 +701,6 @@ fn read_pool(
     Ok(())
 }
 
-/// Visit each country holding a group log whose orders-group reference no
-/// longer resolves. The next daily prune deletes these logs; their values cannot
-/// change. Managers and group logs retain the walk's authentication. Failed reads
-/// or invalid registry headers remain errors.
 pub fn countries_with_deleted_groups(
     memory: &impl Memory,
     base: usize,
@@ -850,9 +730,6 @@ pub fn countries_with_deleted_groups(
     )
 }
 
-/// Read every month of retired-group logs from the manager at prune entry
-/// before destruction. Their values are final. Return country and rows written;
-/// omitted rows remain the error-free `Truncated` count. Resolving is passive.
 pub fn deleted_logs(
     memory: &impl Memory,
     base: usize,
@@ -910,8 +787,6 @@ pub fn deleted_logs(
     Ok((country, outcome))
 }
 
-/// The writer's country-gate operand (`cgame_state::LOCAL_PLAYER_COUNTRY`), which every Combat Log
-/// writer tests with `< 1` before its CHuman country-match predicate.
 pub fn viewing_country(memory: &impl Memory, game_state: usize) -> Option<i32> {
     game_state
         .checked_add(cgame_state::LOCAL_PLAYER_COUNTRY)

@@ -1,4 +1,3 @@
-// Frozen main scalar snow projection, independent of the product producer and cell cache.
 use installed_content_core::map::MapData;
 use map_display_data::{Refresh, SnowMud, Summary};
 use replay_data::rows::{Recorded, TableId, TableRows, WeatherProvinceRow};
@@ -66,7 +65,6 @@ fn grid_with(
         .checked_add(1)
         .ok_or_else(|| invalid("province count overflow"))?;
     let mut bytes = vec![[0_u8; 2]; provinces];
-    // A whole table observes the provinces it holds no row for; a partial one does not.
     let mut known = vec![complete; provinces];
     let mut province_snow = vec![None; provinces];
     let mut summary = Summary {
@@ -119,7 +117,6 @@ fn grid_with(
         summary.missing_edges = edge_cells;
         None
     };
-    // Unrecorded boundary history must not be reconstructed from province simulation.
     let boundary = (0..height - 1)
         .map(|z| z * width + width - 1)
         .chain((0..width).map(|x| (height - 1) * width + x));

@@ -120,7 +120,6 @@ fn repeated_reserved_pointer_is_zero_but_null_or_unproved_zero_is_refused() {
     let mut output = vec![123; 4];
     assert_eq!(capture(&memory, 0, STATE, &mut output).len, Ok(4));
     assert_eq!(output, [0, 7, 0, 9]);
-    // A zero canonical mapping is not by itself proof of Country0's pointer.
     put(&mut bytes, POINTERS + 16, &(SECOND as u64).to_le_bytes());
     put(&mut bytes, LINKS + 2 * 4, &0_u32.to_le_bytes());
     assert!(

@@ -43,7 +43,6 @@ test('each open slot says what it researches, whether it is ahead of time, and i
   assert.deepEqual(slotNumbers(radar, day(100)), { fraction: 0.62, percent: '62%', left: 36, days: '36 days left', saved: '' }, 'the estimate counts down from its read');
   assert.equal(slotNumbers(idle, day(100)).saved, '12 days saved');
   assert.equal(slotNumbers(sonar, day(100)).fraction, null, 'no progress is guessed for it');
-  // A later read with new numbers renders nothing: only what the slots hold is structure.
   const later = reply(day(101), [{ ...radar, state: { ...radar.state, firstHour: day(101) }, progress: { ...radar.progress!, progressRaw: '6400000' } }, sonar, idle]);
   assert.equal(slotsStructure(later), slotsStructure(now));
   assert.notEqual(slotsStructure(reply(day(101), [radar, sonar])), slotsStructure(now));

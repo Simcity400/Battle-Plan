@@ -99,16 +99,13 @@ fn scientist_roles_keep_trait_lists_ordered_specializations_and_omissions() {
     assert_eq!(first.skills[0].name, b"specialization_nuclear");
     assert_eq!(first.skills[0].level, Some(2));
     assert_eq!(first.skills[0].experience, None);
-    // Experience is an independent field with the same positive-only guard.
     assert_eq!(
         first.skills[1].experience.as_ref().map(|value| value.raw),
         Some(21_918_000)
     );
     assert_eq!(first.skills[1].level, None);
-    // The skill writer omits every nonpositive level, so absence is not zero.
     assert_eq!(first.skills[3].name, b"specialization_land");
     assert_eq!(first.skills[3].level, None);
-    // The scientist writer omits traits only for an empty vector.
     let second = manager.characters[&((266 << 32) | 73)]
         .scientist
         .as_ref()
@@ -334,8 +331,6 @@ fn appointed_advisors_keep_written_order_and_omissions_mean_empty() {
     );
     assert!(pack.appointed_advisors[b"ENG".as_slice()].is_empty());
     assert!(pack.appointed_advisors[b"ITA".as_slice()].is_empty());
-    // Status entries keep their characters in written order; the retired
-    // list is kept apart from the active records.
     assert_eq!(
         pack.character_status[b"GER".as_slice()],
         [CharacterStatus {
@@ -368,7 +363,6 @@ fn appointed_advisors_keep_written_order_and_omissions_mean_empty() {
             .is_err()
     );
     for broken in [
-            // The writer omits an empty list and never names its entries.
             br#"countries={ GER={ characters={ appointed_advisors={ } } } }"#.as_slice(),
             br#"countries={ GER={ characters={ appointed_advisors={ advisor={ slot=x character={ id=1 type=73 } } } } } }"#,
             br#"countries={ GER={ characters={ appointed_advisors={ { character={ id=1 type=73 } } } } } }"#,

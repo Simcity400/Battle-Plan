@@ -1,4 +1,3 @@
-//! Comparisons for the native extended air tables.
 use std::{collections::BTreeMap, fmt::Debug, io};
 
 use installed_content_save::air::{self, Pack};
@@ -288,12 +287,10 @@ fn compare_aces(
             ("name", &actual.name, &expected.name),
             ("surname", &actual.surname, &expected.surname),
         ] {
-            // The ace save writer always emits name and surname.
             let label = format!("{label}.{name}");
             let text = super::serialized_text(report, &label, actual);
             check(report, &label, text, expected.as_slice());
         }
-        // The game gates the callsign on stored length.
         let callsign_label = format!("{label}.callsign");
         let callsign = (!actual.callsign.is_empty())
             .then(|| super::serialized_text(report, &callsign_label, &actual.callsign));
@@ -422,11 +419,6 @@ fn ace_names_use_first_nul_and_callsign_stored_length() {
     }
 }
 
-/// AirRegionCombat at the frame's hour against the saved `combat_history`
-/// holders: each row derived by the daily prune
-/// ([`replay_derive::air_region_derive::retained`]) with the content's
-/// `NGame.AIR_LOG_TIMEOUT_HOURS`, then every record in native order, own
-/// vector first, with both damage vectors.
 pub fn compare_region_combat(
     frame: &DecodedFrame,
     save: &Pack,
@@ -437,8 +429,6 @@ pub fn compare_region_combat(
     use replay_data::rows::AirCombatRecord;
     use replay_derive::air_region_derive;
     let rows = complete::<tables::AirRegionCombat>(frame)?;
-    // The daily pass prunes only the countries the game simulates, those
-    // owning a state; another container keeps its last read records.
     let mut alive = std::collections::BTreeSet::new();
     for state in complete::<tables::States>(frame)? {
         if let Some(country) = links.get(&state.owner) {
@@ -563,7 +553,6 @@ pub fn compare_region_combat(
             }
         }
     }
-    // A holder the prune emptied is an empty saved holder, if the save has it.
     actual.retain(|_, row| {
         let pruned = links
             .get(&row.country)
@@ -720,9 +709,6 @@ mod tests {
         assert!(compare_equipment(&frame, &save, &mut Report::default()).is_err());
     }
 
-    /// The recorded holder is pruned at the save's hour as the daily pass
-    /// did, then every record and both damage channels compare in order; a
-    /// container without an owned state is compared as last read.
     #[test]
     fn region_combat_compares_the_pruned_records_and_both_damage_channels() {
         use replay_data::{
@@ -783,18 +769,15 @@ mod tests {
             TableRows::AirRegionCombat(vec![row.clone()]),
             TableRows::States(vec![state]),
         ]);
-        // The pass at hour 43800048 cut records dated before 43800024.
         frame.hour = 43_800_000 + 24 * 2 + 5;
         let mut report = Report::default();
         compare_region_combat(&frame, &save, &links, 24, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
-        // A container owning no state was not pruned: the stale record stays.
         let mut dead = crate::test_support::frame([TableRows::AirRegionCombat(vec![row])]);
         dead.hour = frame.hour;
         let mut report = Report::default();
         compare_region_combat(&dead, &save, &links, 24, &mut report).unwrap();
         assert!(!report.differences.is_empty());
-        // A damage amount the save does not hold is a difference.
         let TableView::Complete(TableRows::AirRegionCombat(rows)) =
             &mut *frame.tables[TableId::AirRegionCombat.index()]
         else {
@@ -879,8 +862,6 @@ mod tests {
         *frame.tables[TableId::WingCumulative.index()] = TableView::Unavailable {
             reason: "guarded copy failed".into(),
         };
-        // A current recording refuses the retired regional tables by name;
-        // the pack attempts neither, so their refusal fails no group.
         for table in [TableId::AirRegionHistory, TableId::AirRegionDamage] {
             *frame.tables[table.index()] = TableView::Unavailable {
                 reason: format!(

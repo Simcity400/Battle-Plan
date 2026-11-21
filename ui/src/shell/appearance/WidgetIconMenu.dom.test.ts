@@ -30,7 +30,6 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
   });
 }
 
-/** The desktop app's own image policy (both builds), so uploads are tested where they run. */
 async function desktopImagePolicies() {
   const config = JSON.parse(await readFile(resolve('crates/desktop/tauri.conf.json'), 'utf8'));
   const security = config.app?.security ?? config.tauri?.security;

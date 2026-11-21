@@ -6,8 +6,6 @@ use replay::{
 
 const HOURS: i32 = 400;
 
-/// A recording of `HOURS` hours, an unpaused span an hour (every tenth paused), and `per_hour(h)`
-/// orders in hour `h`, by GER's and ITA's players in turn.
 fn recording(per_hour: impl Fn(i32) -> u64) -> Arc<Index> {
     let mut session = crate::test_fixtures::session(7);
     session.qpc_frequency = 1;
@@ -66,8 +64,6 @@ fn a_followed_eapm_is_the_request_paths_summary_of_the_trailing_window_at_every_
 
 #[test]
 fn a_step_of_fifteen_hours_reads_the_parts_at_the_windows_edges_never_the_commands_inside_it() {
-    // An order an hour by each player, and thirty each (an hour holds sixty ticks): a step looks
-    // up the same prefixes in both.
     let sparse = recording(|_| 2);
     let dense = recording(|_| 60);
     let step = |index: &Arc<Index>, from: i32| {
@@ -82,7 +78,5 @@ fn a_step_of_fifteen_hours_reads_the_parts_at_the_windows_edges_never_the_comman
     let at_200 = step(&sparse, 200);
     assert_eq!(step(&dense, 200), at_200, "thirty times the commands in the window, the same lookups");
     assert_eq!(step(&dense, 300), at_200, "another hour, the same lookups");
-    // One timeline, two series of one version and one range each: the timeline's bounds, each version's
-    // presence, its time measured and its pause checked, its counts, and the coverage.
     assert_eq!(at_200, 1 + 2 * (1 + 2 + 1) + 1, "what one step reads");
 }

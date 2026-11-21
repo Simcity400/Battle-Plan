@@ -80,7 +80,6 @@ fn equipment_rosters_keep_saved_order_repeats_and_absence() {
     let absent = production(b"countries={GER={production={}}}");
     assert_eq!(absent.available_variants, None);
     assert!(absent.foreign_lease_variants.is_empty());
-    // The recalculation flag keeps its absence apart from `no`.
     assert_eq!(absent.dirty, None);
     assert_eq!(
         production(b"countries={GER={production={dirty=yes}}}").dirty,
@@ -468,8 +467,6 @@ fn licences_and_the_deployment_queue_keep_order_duplicates_and_signed_words() {
         queue[1].government_in_exile_tag.as_deref(),
         Some(b"ETH".as_slice())
     );
-    // A custom-named line omits name_order and carries an override name;
-    // an untrained deployment omits training, max_training and equipment.
     let custom = &queue[0].lines[0];
     assert_eq!(custom.name_order, None);
     assert_eq!(
@@ -695,8 +692,6 @@ fn unit_modifiers_keep_entry_and_target_order_and_omitted_source_fields() {
             Some(b"named".as_slice())
         )
     );
-    // Repeated targets are retained; requirements, adjusters, terrain and
-    // presentation members are not.
     assert_eq!(first.targets.len(), 2);
     let target = &first.targets[0];
     assert_eq!(target.token, b"synthetic_unit");
@@ -738,14 +733,12 @@ fn unit_modifiers_keep_entry_and_target_order_and_omitted_source_fields() {
         )
     );
     assert!(list[1].targets.is_empty());
-    // An omitted list and an omitted deployment are both empty.
     assert_eq!(pack.unit_bonuses[b"BBB".as_slice()], Ok(Vec::new()));
     assert_eq!(pack.unit_bonuses[b"CCC".as_slice()], Ok(Vec::new()));
     let named = installed_content_core::parser::parse(
         br#"countries={AAA={deployment={unit_modifiers={ named={ type=effect number=0 } }}}}"#,
     )
     .unwrap();
-    // A list that does not parse is that country's error; the pack still reads.
     let pack = parse(&named.items).unwrap();
     assert!(pack.unit_bonuses[b"AAA".as_slice()].is_err());
 }

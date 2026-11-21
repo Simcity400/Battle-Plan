@@ -1,10 +1,3 @@
-//! Ignored bench: one hour's AirBaseRegistrations acquisition and decode at
-//! late-war and mod scale, read afresh, carried from held segments, and
-//! decoded with and without the rows kept from an earlier walk of the same
-//! segments. The world is one host buffer, so a read costs a bounds check
-//! and a copy.
-//!
-//! `cargo test -p collector --release --lib registration_bench -- --ignored --nocapture`
 
 use super::*;
 use crate::{air_base_carry_changes::Watches, extended::fog};
@@ -231,7 +224,6 @@ fn registration_bench() {
             changes: watches,
             ..CarryRun::default()
         };
-        // Production takes each base's slots from its dense list.
         job.slot_run = crate::air_base_changes::SlotRun { dense: true };
         let mut captured = fog::Captured::with_capacities(&fog::Capacities {
             rows: [16; 7],
@@ -241,8 +233,6 @@ fn registration_bench() {
         });
         captured.registrations_raw_mode = true;
         let mut reuse = DecodedRegistrations::default();
-        // Warm: grow the log to the world, then hold every base and keep
-        // every walk.
         let store = job.registration_store.take();
         copy(&bytes, &mut job);
         job.grow();
@@ -255,7 +245,6 @@ fn registration_bench() {
         let mut walked = Vec::new();
         let mut reused = Vec::new();
         for _ in 0..HOURS {
-            // Read afresh: no store.
             let store = job.registration_store.take();
             fresh_copy.push(copy(&bytes, &mut job));
             job.registration_store = store;

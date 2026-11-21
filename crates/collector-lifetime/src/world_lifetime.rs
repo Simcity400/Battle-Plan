@@ -1,5 +1,3 @@
-//! Native invalidation, not a load-success detector. A new occurrence starts
-//! at the next existing hourly boundary; its first observer interval is partial.
 use crate::hook::{Hook, Registers, Tap, TapSafety};
 use engine_mutations::world_lifetime_sites as native;
 use engine_native::Memory;
@@ -21,7 +19,6 @@ impl Signal {
     }
     fn invalidate(&self) {
         self.admitted.store(0, Ordering::SeqCst);
-        // Exhaustion stays closed rather than wrapping into an old occurrence.
         let generation = self.generation.load(Ordering::SeqCst);
         if self
             .generation
@@ -33,12 +30,9 @@ impl Signal {
             )
             .is_err()
         {
-            // Never retry on a native writer. A racing invalidation closes the
-            // attachment rather than waiting to order competing world changes.
             self.generation.store(u64::MAX, Ordering::SeqCst);
         }
     }
-    // The hourly update entry admits the occurrence read with its clock.
     fn boundary(&self, generation: u64, valid_clock: bool) {
         if !valid_clock {
             self.admitted.store(0, Ordering::SeqCst);
@@ -80,7 +74,6 @@ pub fn token() -> Option<u64> {
 }
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static TEST_TOKEN: std::cell::Cell<Option<Option<u64>>> = const { std::cell::Cell::new(None) }; }
-/// A world reset or load, as the native invalidation observes it.
 #[cfg(any(test, feature = "test-support"))]
 pub fn invalidate_for_test() {
     SIGNAL.invalidate();
@@ -123,14 +116,9 @@ extern "system" fn deleting() {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     SIGNAL.invalidate();
 }
-/// The state nudger's reload (`native::STATE_RELOAD`) rebuilds every live
-/// state and its template: the world is invalid from its entry, and again at
-/// its return, so a boundary while it runs admits nothing it wrote.
 unsafe extern "system" fn state_reload(editor: usize, b: usize, c: usize, d: usize) -> usize {
     unsafe { reload(&STATE_RELOAD_ORIGINAL, editor, b, c, d) }
 }
-/// The authored adjacency loader (`native::STRAITS_RELOAD`) rewrites the
-/// provinces' neighbour records, which per-world stores hold, in the same way.
 unsafe extern "system" fn straits_reload(map: usize, b: usize, c: usize, d: usize) -> usize {
     unsafe { reload(&STRAITS_RELOAD_ORIGINAL, map, b, c, d) }
 }
@@ -146,9 +134,6 @@ unsafe fn reload(original: &AtomicUsize, a: usize, b: usize, c: usize, d: usize)
     result
 }
 
-// Tail transfer leaves no DLL return PC in the native destructor. Only the
-// short pre-observer and its entry/exit need a flight; native exceptions then
-// unwind the authenticated original prologue with the original caller stack.
 core::arch::global_asm!(
     ".text", ".globl world_delete_entry", ".seh_proc world_delete_entry", "world_delete_entry:",
     "sub rsp, 0xc8", ".seh_stackalloc 0xc8", ".seh_endprologue",
@@ -183,10 +168,10 @@ pub struct Hooks {
     straits_reload: Hook,
 }
 impl Hooks {
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,
@@ -319,8 +304,6 @@ mod tests {
             if reenter == 0 {
                 return probe;
             }
-            // Like the native deleting destructor, return the
-            // receiver; its tail-entered body owns no DLL return address.
             unsafe { invoke(probe, 0) }
         }
         unsafe fn invoke(probe: *mut Probe, reenter: usize) -> *mut Probe {
@@ -411,7 +394,7 @@ mod tests {
         assert_eq!(signal.token(), None);
         signal.boundary(2, true);
         assert_ne!(signal.token(), Some(before));
-        signal.invalidate(); // deletion followed by construction can invalidate twice
+        signal.invalidate();
         signal.invalidate();
         assert_eq!(signal.token(), None);
         signal.boundary(4, true);

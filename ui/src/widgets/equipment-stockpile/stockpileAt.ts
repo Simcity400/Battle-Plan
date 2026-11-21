@@ -1,7 +1,3 @@
-/** The stockpile at an hour (`equipment-stockpile-at`) as the widget's data functions read it: the reply's structure
- * with the live cells it names (`v<design>` stock; `l<line>` speed and cost; `t<archetype>` balance, stock and
- * available), each a value at `hour` or missing, never zero. A design's output a day sums its lines' own
- * `speed × 100000 ÷ cost`, each truncated as the game's production view truncates it. */
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { DOMAINS, UNRESOLVED_MARK } from '../../dashboard/equipment.ts';
@@ -11,7 +7,6 @@ import type { StockpileAtReply } from '../../generated/dashboard';
 const RAW = /^-?\d{1,20}$/;
 const text = (value: unknown) => value === null || typeof value === 'string';
 
-/** Checks an hour's structure: designs once each, types with a known arm, the balance's state. */
 export function validateStockpileAt(data: unknown): StockpileAtReply {
   const reply = data as StockpileAtReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.tag === 'string' && typeof reply.campaignKey === 'string'
@@ -30,14 +25,11 @@ export function validateStockpileAt(data: unknown): StockpileAtReply {
   return reply;
 }
 
-/** A live cell's raw value, or null where it is missing. */
 function cell(values: LiveValues<number>, row: string, column: string): bigint | null {
   const value = values.get(liveKey(row, column));
   return value === undefined || !Number.isFinite(value) ? null : BigInt(Math.round(value));
 }
 
-/** One design's output a day, the IC its lines put in and their lowest and highest cost, from its lines' cells:
- * each unknown where a line's speed or cost is, the output also where a cost is not positive. */
 export function lineFigures(lines: readonly string[], values: LiveValues<number>): { daily: bigint | null; ic: bigint | null; low: bigint | null; high: bigint | null } {
   let daily: bigint | null = 0n, ic: bigint | null = 0n, low: bigint | null = null, high: bigint | null = null, known = true;
   for (const line of lines) {
@@ -54,8 +46,6 @@ export function lineFigures(lines: readonly string[], values: LiveValues<number>
   return known ? { daily, ic, low, high } : { daily, ic, low: null, high: null };
 }
 
-/** `reply`'s structure and `values` as the view of `hour`: each value a run of that one hour; a table not known then
- * has no span there, so every value of it reads as not recorded. */
 export function atReply(reply: StockpileAtReply, values: LiveValues<number>, hour: number, branchId: string): EquipmentStockpileReply {
   const span = [{ firstHour: hour, lastHour: hour }];
   const run = (raw: bigint | null): AmountRun[] => [{ firstHour: hour, lastHour: hour, amountRaw: raw == null ? null : String(raw) }];

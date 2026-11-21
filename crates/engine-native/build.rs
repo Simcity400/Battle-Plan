@@ -5,7 +5,6 @@ fn main() {
     {
         let mut build = cc::Build::new();
         let compiler = build.get_compiler();
-        // Clang drops a __try around plain loads unless asynchronous exceptions are on; a guarded read would then crash the game.
         if compiler.is_like_clang_cl() {
             build.flag("/EHa");
         } else if compiler.is_like_clang() {

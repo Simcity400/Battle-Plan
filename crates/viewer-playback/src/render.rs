@@ -1,8 +1,3 @@
-//! Device setup and the outputs of the map pipeline.
-//!
-//! The window and the headless `--dump` drive the same [`Scene`]; this module
-//! only owns the device requirements, the PNG readback, the unverified-content
-//! banner and the headless entry point.
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use crate::map_icons::MapIcons;
@@ -42,45 +37,27 @@ use {
     viewer_world::map::unit_models::UnitModelAssets, viewer_world::map::weather::SnowMud,
 };
 
-// political fill + borders
-/// Everything a headless render needs beyond the terrain and water assets.
 pub struct MapLayers<'a> {
     pub content: &'a crate::document::Content,
     pub graphics: dashboard_core::protocol::MapGraphics,
-    /// The hour drawn, and its map events for the viewing country.
     pub at: (replay_data::BranchId, i32),
     pub map_text: &'a viewer_world::map::animated_map_text::events::Prepared,
     pub omitted: Omissions,
-    /// The hour's compact political region inputs.
     pub political: &'a PoliticalLayers,
     pub border_assets: &'a BorderAssets,
     pub border_meshes: &'a BorderMeshes,
     pub straits: &'a [StraitVertex],
-    /// This hour's demilitarised zone; `viewer_world::map::demilitarized`. Empty unless `--demilitarized` is
-    /// given, because no recorded table carries the flag.
     pub demilitarized: &'a Zone,
-    // rivers
     pub river_assets: &'a RiverAssets,
     pub river_mesh: &'a RiverMesh,
-    // weather
-    /// The hour's `SnowMudData` grid.
     pub snow_mud: &'a Arc<SnowMud>,
-    // fog of war
-    /// The hour's `IntelMap` for the perspective the frame is drawn for.
     pub intel_map: &'a IntelMap,
-    /// What the map mode shows of the layers: the fog of war, province borders, land models and
-    /// unit arrows ([`viewer_world::map::map_mode::visibility`]).
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
-    // the map's table frame
     pub frame_assets: &'a FrameAssets,
-    /// This hour's nuclear impacts, whose province effects start at presentation time zero.
     pub nuclear_impacts: &'a viewer_world::map::strike_effects::Impacts,
-    // close zoom
     pub sprawl: &'a Sprawl,
     pub map_buildings: &'a MapBuildingAssets,
-    /// This hour's placed buildings, from [`MapBuildingAssets::field`].
     pub map_building_field: &'a PreparedBuildings,
-    /// Cameras visited before this frame; see [`Scene::visit_map_buildings`].
     pub building_cameras: &'a [Camera],
     pub rail_assets: &'a RailAssets,
     pub rail_mesh: &'a RailMesh,
@@ -90,15 +67,11 @@ pub struct MapLayers<'a> {
     pub train_plan: &'a viewer_world::map::trains::TrainPlan,
     pub bridges: &'a Bridges,
     pub unit_models: &'a UnitModelAssets,
-    /// This hour's placed figures, from [`super::map::unit_models::PreparedModels::field`].
     pub unit_model_field: &'a viewer_world::map::unit_history::Field,
-    // orders: the recorded player's battle plan
     pub order_assets: &'a OrderAssets,
-    /// This hour's ribbons, from [`crate::document::Document::order_field`].
     pub order_field: &'a OrderField,
     pub weather_assets: Arc<viewer_world::map::weather_effects::Assets>,
     pub weather_field: viewer_world::map::weather_effects::Field,
-    // trees
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
     pub tree_field: &'a TreeField,
@@ -106,16 +79,12 @@ pub struct MapLayers<'a> {
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut configuration = eframe::egui_wgpu::WgpuConfiguration::default();
-    // The map draws its own frame and presents it: one frame of latency, so what is on screen is
-    // the frame the clock was last sampled for, not the one before it.
     configuration.surface = eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY;
-    // Profiling only: frame pacing without the display's vsync.
     if std::env::var_os("BATTLE_PLAN_VIEWER_NO_VSYNC").or_else(|| std::env::var_os("HOI4_VIEWER_NO_VSYNC")).is_some() {
         configuration.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
     }
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut configuration.wgpu_setup {
         setup.device_descriptor = Arc::new(map_device_descriptor);
-        // The window and the dashboard maps it hosts choose like `--dump`.
         setup.native_adapter_selector = Some(Arc::new(|adapters, surface| {
             select_adapter(adapters, surface).map_err(|error| error.to_string())
         }));
@@ -123,9 +92,6 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     configuration
 }
 
-/// Asks, before a headless dump loads its document, for the device descriptor of the adapter
-/// the dump will render on ([`dump_png`] selects it the same way), checking adapter support
-/// before loading the document.
 pub fn probe_dump_device() -> io::Result<()> {
     pollster::block_on(async {
         let instance = shader_pipeline::gpu::instance();
@@ -136,7 +102,6 @@ pub fn probe_dump_device() -> io::Result<()> {
     })
 }
 
-/// Draws the orange banner over a rendered frame when content is unverified.
 pub fn render_banner(
     scene: &Scene,
     device: &wgpu::Device,
@@ -227,7 +192,6 @@ pub fn render_banner(
     Ok(())
 }
 
-/// Reads the rendered frame back and writes it as an 8-bit RGBA PNG.
 pub fn write_png(
     scene: &Scene,
     device: &wgpu::Device,
@@ -240,8 +204,6 @@ pub fn write_png(
     write_texture_png(targets.output(), device, queue, path)
 }
 
-/// Reads `texture` back and writes it as an 8-bit RGBA PNG: a copy of a frame's output taken
-/// while the run played, written once the run is over.
 pub fn write_texture_png(
     texture: &wgpu::Texture,
     device: &wgpu::Device,
@@ -259,57 +221,32 @@ pub fn write_texture_png(
     writer.finish().map_err(io::Error::other)
 }
 
-/// What one headless render reports back.
 pub struct DumpReport {
     pub pass_warnings: Vec<String>,
     pub shader_refusals: BTreeMap<String, u64>,
-    /// Adapter name and backend, so a dump identifies the GPU it used.
     pub adapter: String,
-    /// The device's missing feature requirements ([`device_requirements`]).
     pub device_requirements: Vec<String>,
-    /// Wall time of the render call alone, excluding device and texture setup.
     pub render_seconds: f64,
-    /// CPU seconds of the render call before the GPU drain wait.
     pub cpu_seconds: f64,
-    /// Terrain blocks the frame drew, and the quads they hold.
     pub blocks: usize,
     pub quads: u64,
-    // names
-    /// Name-layer vertices and icon quads the frame drew.
     pub overlay: (u32, u32),
-    /// Font and sprite pages uploaded for the icon layer.
     pub icon_pages: usize,
-    // trees
-    /// Canopy instances the frame drew, over every wrap copy.
     pub tree_instances: u32,
-    /// Canopy draw calls, one per visible tile.
     pub tree_draw_calls: u32,
-    // close zoom
-    /// City-sprawl houses the frame drew, over every wrap copy.
     pub sprawl_drawn: u32,
-    /// Map buildings the frame drew, over every wrap copy.
     pub map_buildings_drawn: u32,
-    /// Unit models the frame drew, over every wrap copy.
     pub unit_models_drawn: u32,
     pub aircraft_drawn: u32,
-    // borders
-    /// Province boundaries the demilitarised-zone pass drew.
     pub demilitarized_edges: usize,
-    // shadows
-    /// Whether the frame ran the cast-shadow chain, which it does below
-    /// `DRAW_SHADOWS_CUTOFF` and not above it (`viewer_world::map::shadow`).
     pub shadows: bool,
-    /// The post grade, when the frame was graded.
     pub grading: Option<String>,
 }
 
-/// Renders one frame headlessly through the same [`Scene`] the window uses.
 #[allow(clippy::too_many_arguments, reason = "The window's scene inputs plus the dump's request and output.")]
 pub fn dump_png(
     assets: &MapAssets,
-    // political fill + borders
     layers: MapLayers<'_>,
-    // names
     icons: &MapIcons,
     settle: f32,
     overlay: &mut crate::document::DumpOverlay<'_>,
@@ -337,13 +274,9 @@ pub fn dump_png(
             &icons.lazy,
             layers.graphics,
         )?;
-        // A dump is a capture: its models draw complete, built in place, and every figure is
-        // posed on the frame that draws it.
         scene.settle_builds(true);
         scene.settle_poses(true);
-        // A dump installs no hours: its names build where they draw.
         scene.build_names_in_upload(true);
-        // political fill + borders
         if !layers.omitted.gradient {
             scene.warm_political(
                 &device,
@@ -370,13 +303,10 @@ pub fn dump_png(
                 layers.demilitarized,
             )?;
         }
-        // rivers
         if !layers.omitted.rivers {
             scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
         }
-        // the map's table frame
         scene.set_map_frame(&device, &queue, layers.frame_assets)?;
-        // trees
         if !layers.omitted.trees {
             scene.set_trees(
                 &device,
@@ -386,7 +316,6 @@ pub fn dump_png(
                 layers.tree_field,
             )?;
         }
-        // close zoom
         if !layers.omitted.sprawl {
             scene.set_sprawl(&device, &queue, layers.sprawl)?;
             scene.set_city_damage(layers.map_building_field, true);
@@ -403,7 +332,6 @@ pub fn dump_png(
         }
         if !layers.omitted.rails {
             scene.set_railways(&device, &queue, layers.rail_assets, layers.rail_mesh)?;
-            // A dump builds the pass, so it replaces no earlier plan.
             let _ = scene.set_trains(
                 layers.trains.clone(),
                 layers.train_plan.clone(),
@@ -430,7 +358,6 @@ pub fn dump_png(
                 true,
             )?;
         }
-        // orders: the recorded player's battle plan
         if !layers.omitted.orders {
             scene.set_orders(
                 &device,
@@ -447,10 +374,8 @@ pub fn dump_png(
                 layers.weather_field,
             )?;
         }
-        // weather
         let snow_mud = layers.snow_mud;
         scene.set_snow_mud(&device, &queue, snow_mud, Continuity::Reset)?;
-        // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;
         scene.set_visibility(layers.visibility);
         scene.settle_models();
@@ -472,8 +397,6 @@ pub fn dump_png(
             },
             &layers.content.icons.counters.gui,
         );
-        // `--settle`: play the preceding seconds, one frame a second, so entity
-        // events and particles are under way when the frame renders.
         let steps = settle.ceil() as u32;
         for step in 0..steps {
             let at = request.animation_time + step as f32 * settle / steps as f32;
@@ -492,8 +415,6 @@ pub fn dump_png(
             animation_time: request.animation_time + settle,
             ..request
         };
-        // A first frame warms the pipeline caches so the timing below measures
-        // the steady-state cost the window pays.
         dump_frame(&mut scene, &device, &queue, overlay, request)?;
         let mut frames = DumpFrames::default();
         while frames.next(&overlay.retries()) {
@@ -506,15 +427,9 @@ pub fn dump_png(
             })
             .map_err(io::Error::other)?;
         let start = Instant::now();
-        // Allocation retry frames have zero elapsed time. Scene and GUI clocks
-        // stay together at the requested timestamp; the recorded hour stays fixed.
         dump_frame(&mut scene, &device, &queue, overlay, request)?;
         let cpu_seconds = start.elapsed().as_secs_f64();
         overlay.refuse_settlement(overlay.retries());
-        // `Wait` blocks until the GPU drains the submission, so this is the
-        // frame's GPU execution time plus driver sync, the part no CPU lap
-        // sees. There is no swap chain headlessly, so present/vsync needs the
-        // interactive window.
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: None,
@@ -526,7 +441,6 @@ pub fn dump_png(
             render_banner(&scene, &device, &queue, text)?;
         }
         write_png(&scene, &device, &queue, path)?;
-        // Offline shader parity evidence before grading/8-bit quantization.
         if let Some(path) = std::env::var_os("BATTLE_PLAN_MAP_SCENE_RGBA16F").or_else(|| std::env::var_os("HOI4_MAP_SCENE_RGBA16F")) {
             use std::io::Write;
             let targets = scene
@@ -545,25 +459,18 @@ pub fn dump_png(
             cpu_seconds,
             blocks: terrain.0,
             quads: terrain.1,
-            // names
             overlay: scene.overlay_counts(),
             icon_pages: scene.icon_page_count(),
-            // trees
             tree_instances: scene.tree_instances(),
             tree_draw_calls: scene.tree_draw_calls(),
-            // close zoom
             sprawl_drawn: scene.sprawl_drawn(),
             map_buildings_drawn: scene.map_buildings_drawn(),
             unit_models_drawn: scene.unit_models_drawn(),
             aircraft_drawn: scene.aircraft_drawn(),
-            // borders
             demilitarized_edges: scene.demilitarized_edges(),
-            // shadows
             shadows: scene.shadows(),
             grading: scene.grading(),
         };
-        // After the PNG and its report: diagnostics advance clocks a re-render
-        // cannot rewind, such as the weather particles'.
         let request = Request {
             overlay: viewer_world::map::scene::Overlay {
                 sprites: request.overlay.interface.then_some(overlay.shown()),
@@ -584,7 +491,6 @@ fn dump_frame(
     overlay: &mut crate::document::DumpOverlay<'_>,
     request: Request<'_>,
 ) -> io::Result<()> {
-    // Province owners, icon manager, then draw; a hidden interface still steps.
     overlay.present(request.animation_time)?;
     scene.set_air_assignment(queue, overlay.prepared().province_stripes())?;
     let sprites = overlay.shown();
@@ -601,9 +507,6 @@ fn dump_frame(
     )
 }
 
-/// Diagnostic only: after the settled PNG, restart the model histories and
-/// export viewer frames at 120 Hz, each with the dump's banner. No game
-/// process or replay clock is advanced.
 fn model_frames(
     scene: &mut Scene,
     device: &wgpu::Device,
@@ -646,11 +549,6 @@ fn model_frames(
     Ok(())
 }
 
-/// Profiling only: `BATTLE_PLAN_VIEWER_BENCH_FRAMES=<n>` renders `n` more frames of
-/// the dumped hour, after its PNG is written, with both clocks advancing at
-/// 120 Hz. Each prints `cpu`, the milliseconds `Scene::render` took to encode
-/// and submit, and `drained`, the milliseconds from that call until the GPU
-/// finished the frame. With `BATTLE_PLAN_VIEWER_PROFILE` it adds the render laps.
 fn bench_frames(
     scene: &mut Scene,
     device: &wgpu::Device,

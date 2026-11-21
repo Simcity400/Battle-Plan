@@ -1,21 +1,3 @@
-//! `TerritoryTotals`: each canonical slot's states, provinces, victory points and land area by three rules,
-//! owned (credited to the owner), controlled (to the controller) and occupied (to the controller,
-//! where a known country other than the owner controls). Raw owner and controller ids resolve
-//! through CountryLinks; zero names no country and counts for no one.
-//!
-//! What is not known is not recorded, never zero: while some state's (province's) owner no link
-//! resolves, every slot's owned and occupied state (province and victory point) cells; likewise
-//! the controller for controlled and occupied; the world's owned and controlled counts need no
-//! link. A slot has a row while it owns or controls any state or province, or while it is a live
-//! country's (zeros are recorded zeros). The world row ([`TerritoryTotalRow::WORLD`]) counts every
-//! state and province as owned and controlled, and as occupied those a known country controls that
-//! another known country owns.
-//! Area is each province's land area from the recorded map (the province areas definition): not
-//! recorded while it is not held, nor for a rule of a slot credited a province it gives no area.
-//!
-//! State is the tables: each hour applies the rows the hour changed; a fresh hour (new
-//! definitions among them), a resume, or a change of links or of the countries reads every row
-//! again.
 
 use crate::framework::{Columns, Definition, Hour, Output, Read, Rows, Uses, Value, Watch, Writer};
 use replay_columnar::{
@@ -48,19 +30,14 @@ const READS: &[Read] = &[
     Read { table: TableId::Countries, columns: Columns::These(&[COUNTRY_SLOT]), watch: Watch::Changed, required: true },
 ];
 
-/// Countries' canonical slot.
 const COUNTRY_SLOT: usize = 0;
 const WORLD: u32 = TerritoryTotalRow::WORLD;
 
-/// States, then provinces.
 const KINDS: usize = 2;
-/// Owned, controlled, occupied.
 const RULES: usize = 3;
 
 const USES: &[Uses] = &[Uses { definition: Definition::ProvinceAreas, required: false }];
 
-/// One state or province as the totals count it: raw owner and controller, its points, and a
-/// province's area (none where the recorded map gives it none).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Place {
     owner: u32,
@@ -69,8 +46,6 @@ struct Place {
     area: Option<i64>,
 }
 
-/// One slot's totals: by kind and rule, places and points; by rule, the area of the provinces
-/// credited and how many of them have none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Totals {
     places: [[i64; RULES]; KINDS],
@@ -89,18 +64,12 @@ impl Totals {
 pub struct Territory {
     rebuild: bool,
     links: HashMap<u32, u32>,
-    /// Each state and province by raw id.
     places: [HashMap<u32, Place>; KINDS],
     totals: HashMap<u32, Totals>,
-    /// Every place counted as owned and controlled; occupied where both countries are known and differ.
     world: Totals,
-    /// Every live country's canonical slot.
     countries: HashSet<u32>,
-    /// Places of each kind whose owner (0) or controller (1) no link resolves.
     unresolved: [[i64; 2]; KINDS],
-    /// The slots the table holds.
     held: HashSet<u32>,
-    /// Why no province area is held, as the last rebuild found.
     unmapped: Option<String>,
 }
 
@@ -113,7 +82,6 @@ fn cell(table: &TableView<'_>, column: usize, slot: u32) -> Option<i64> {
 
 const TABLES: [TableId; KINDS] = [TableId::States, TableId::Provinces];
 
-/// The place in `slot` of kind `kind`'s table, keyed `id`; a province's area from `areas`.
 fn place(table: &TableView<'_>, kind: usize, slot: u32, id: u32, areas: &[i64]) -> Place {
     let (owner, controller) = if kind == 0 { (STATE_OWNER, STATE_CONTROLLER) } else { (PROVINCE_OWNER, PROVINCE_CONTROLLER) };
     Place {
@@ -125,7 +93,6 @@ fn place(table: &TableView<'_>, kind: usize, slot: u32, id: u32, areas: &[i64]) 
 }
 
 impl Territory {
-    /// The slot raw id `raw` names: none for zero; unresolved (`Err`) for one no link resolves.
     fn slot(&self, raw: u32) -> Result<Option<u32>, ()> {
         match raw {
             0 => Ok(None),
@@ -133,7 +100,6 @@ impl Territory {
         }
     }
 
-    /// Adds (`sign` 1) or removes (-1) `place` of kind `kind`, marking the slots it moves.
     fn count(&mut self, kind: usize, place: Place, sign: i64, dirty: &mut HashSet<u32>) {
         let owner = self.slot(place.owner);
         let controller = self.slot(place.controller);
@@ -216,7 +182,6 @@ impl Territory {
         Ok(())
     }
 
-    /// Applies the places the hour changed.
     fn apply(&mut self, hour: &Hour<'_>, dirty: &mut HashSet<u32>) -> io::Result<()> {
         let areas = hour.definitions().areas().unwrap_or_default();
         for kind in 0..KINDS {
@@ -253,12 +218,9 @@ impl Territory {
         Ok(())
     }
 
-    /// The cells of `slot`'s row.
     fn cells(&self, slot: u32) -> Vec<Value> {
         let world = slot == WORLD;
         let totals = if world { self.world } else { self.totals.get(&slot).copied().unwrap_or_default() };
-        // A rule reads the owner (0), the controller (1), or both (occupied); the world's owned and
-        // controlled count every place, whoever holds it.
         let known = |kind: usize, rule: usize| match rule {
             0 => world || self.unresolved[kind][0] == 0,
             1 => world || self.unresolved[kind][1] == 0,
@@ -280,7 +242,6 @@ impl Territory {
         cells
     }
 
-    /// Whether `slot` has a row: the world while any place is counted, a live country's slot, a slot holding any.
     fn kept(&self, slot: u32) -> bool {
         match slot {
             WORLD => self.world.holds(),
@@ -349,7 +310,6 @@ impl Writer for Territory {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads every row again.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }
@@ -408,15 +368,11 @@ mod tests {
         assert_eq!(cells[3], Value::I64(0), "provinces read no unresolved owner");
     }
 
-    /// Area totals on a small map are its provinces' areas counted by hand; a province the map
-    /// gives no area makes its rules' area unknown for the slots it is credited to, never
-    /// smaller; areas not held make every area unknown.
     #[test]
     fn area_totals_are_the_hand_count_and_a_province_without_area_makes_them_unknown() {
         let mut territory = territory();
         let mut dirty = HashSet::new();
         let areas = [0, 40, 25, 10];
-        // Provinces 1 and 2 are slot 1's; 3 is slot 1's, controlled by slot 2.
         for (id, owner, controller) in [(1, 10, 10), (2, 10, 10), (3, 10, 20)] {
             let place = Place { owner, controller, points: 0, area: areas.get(id).copied() };
             territory.count(1, place, 1, &mut dirty);
@@ -424,8 +380,6 @@ mod tests {
         let i = |value: i64| Value::I64(value);
         assert_eq!(territory.cells(1)[9..], [i(75), i(65), i(0)], "owned 40 + 25 + 10; controlled 40 + 25");
         assert_eq!(territory.cells(2)[9..], [i(0), i(10), i(10)], "slot 2 controls and occupies province 3");
-        // Province 4 lies past the map's areas: slot 3's owned and controlled area are unknown,
-        // slot 1's stay known.
         let place = Place { owner: 30, controller: 30, points: 0, area: areas.get(4).copied() };
         territory.count(1, place, 1, &mut dirty);
         assert_eq!(territory.cells(3)[9..], [Value::Unrecorded, Value::Unrecorded, i(0)]);
@@ -436,9 +390,6 @@ mod tests {
         assert_eq!(territory.cells(1)[3], i(3), "the other columns stay known");
     }
 
-    /// The world counts every state and province as owned and controlled, whoever holds it, and as
-    /// occupied only those two known countries split; a live country holding nothing keeps a row of
-    /// recorded zeros, a slot neither live nor holding has none.
     #[test]
     fn the_world_counts_every_place_and_a_live_country_keeps_a_row_of_zeros() {
         let mut territory = territory();

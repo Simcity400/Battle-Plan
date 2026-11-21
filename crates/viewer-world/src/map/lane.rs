@@ -1,6 +1,3 @@
-//! A thread of its own that runs one frame's job while the frame thread draws, and gives the
-//! result back when the frame asks for it. The job's code is the code the frame would have run,
-//! so what it computes does not depend on the thread that ran it.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -17,11 +14,9 @@ struct Worker<T> {
     done: mpsc::Receiver<thread::Result<T>>,
 }
 
-/// At most one job under way. A lane whose thread could not start runs its jobs in place.
 pub(crate) struct Lane<T> {
     name: &'static str,
     worker: Option<Worker<T>>,
-    /// The thread was refused once; later jobs run in place.
     refused: bool,
     started: Started<T>,
 }
@@ -42,7 +37,6 @@ impl<T: Send + 'static> Lane<T> {
         }
     }
 
-    /// Starts `job`. The job started before must have been taken, as a [`Frame`] does.
     pub(crate) fn start(&mut self, job: impl FnOnce() -> T + Send + 'static) {
         debug_assert!(
             matches!(self.started, Started::None),
@@ -67,8 +61,6 @@ impl<T: Send + 'static> Lane<T> {
         self.started = Started::Here(catch_unwind(AssertUnwindSafe(job)));
     }
 
-    /// The started job's result, waiting for it; `None` when no job was started since the last
-    /// take. A job's panic is resumed here, or dropped when this thread is already unwinding.
     pub(crate) fn take(&mut self) -> Option<T> {
         let result = match std::mem::replace(&mut self.started, Started::None) {
             Started::None => return None,
@@ -98,7 +90,6 @@ impl<T: Send + 'static> Lane<T> {
                 .name(self.name.to_owned())
                 .spawn_carried(move || {
                     let _cost = replay_frame::cpu::scope(name, Some("lane"));
-                    // The frame waits for what it started here.
                     viewer_foundation::worker_priority::frame_priority();
                     while let Ok(job) = inbox.recv() {
                         if finished.send(catch_unwind(AssertUnwindSafe(job))).is_err() {
@@ -115,9 +106,6 @@ impl<T: Send + 'static> Lane<T> {
     }
 }
 
-/// Lends `owner` to one frame, and on every way out of it (a return, an error or an unwind) takes
-/// back with `join` each job the frame started, so none outlives the frame and a job's panic is
-/// the frame's own.
 pub(crate) struct Frame<'a, O> {
     owner: &'a mut O,
     join: fn(&mut O),

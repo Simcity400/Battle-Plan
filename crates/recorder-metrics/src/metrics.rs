@@ -1,4 +1,3 @@
-//! Exact recorded hook-acquisition metrics for a requested inclusive interval.
 
 use engine_allocation as allocation;
 use replay::{campaign::Replay, spool::ControlRecord};
@@ -24,7 +23,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     let branch = number::<BranchId>(branch)?;
     let first = number::<Hour>(first)?;
     let last = number::<Hour>(last)?;
-    // Blocks are read as the interval needs them, never the whole recording at once.
     let replay = Replay::open_path(Path::new(path)).map_err(|error| error.to_string())?;
     let report = report(&replay, branch, first, last).map_err(|error| error.to_string())?;
     println!("{report}");
@@ -53,7 +51,6 @@ pub fn percentiles_ns(values: &mut [u64]) -> Option<[u64; 3]> {
     ])
 }
 
-/// The collector's capture: a table the recorder derives is not the collector's to fail.
 fn capture_counted(table: TableId) -> bool {
     !table.is_derived()
         && replay_data::format::FormatVersion::CURRENT
@@ -140,7 +137,6 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
                     continue;
                 }
                 let reason = match &*frame.tables[table.index()] {
-                    // The capture mode leaves it out: expected, not a failure.
                     TableView::Complete(_) | TableView::NotRecorded { .. } => continue,
                     TableView::Truncated { missing, .. } => {
                         format!("truncated: {missing} rows missing")
@@ -223,7 +219,6 @@ mod tests {
         assert_eq!(output["failures"], json!({}));
     }
 
-    /// A recording read through its file reports as one held whole does.
     #[test]
     fn a_recording_read_through_its_file_reports_as_one_held_whole() {
         let held = replay(records());
@@ -300,8 +295,6 @@ mod tests {
         let mut bytes = good.bytes().to_vec();
         bytes[4..6].copy_from_slice(&(replay_data::FORMAT_VERSION + 1).to_le_bytes());
         assert!(Replay::open(bytes).is_err());
-        // A block page is always stored and checked against its digest when a walk reads it;
-        // opening the recording reads no page.
         let mut bytes = good.bytes().to_vec();
         let run = good.recording().run(good.index[0].run).unwrap();
         let page = run.directory().open[good.index[0].page as usize];

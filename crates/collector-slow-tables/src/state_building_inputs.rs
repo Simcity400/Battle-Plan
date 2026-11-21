@@ -1,5 +1,3 @@
-//! Each state's shared building slot and factory energy operands, read for every state in the
-//! table's daily slot in the Slow job.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_native::{Memory, cstate::building_inputs as native, walk::Outcome};
 use replay_data::{
@@ -20,7 +18,6 @@ collector_primitives::capacity_max!(Capacities { rows });
 
 pub struct Captured {
     rows: CaptureRows<native::Row>,
-    /// The resolved modifier keys and per-country scratch, held across walks.
     keys: native::Keys,
 }
 
@@ -29,7 +26,6 @@ impl Captured {
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0 })
     }
@@ -113,8 +109,6 @@ mod tests {
     use engine_native::memory::SliceMemory;
     use replay_data::rows::TableRows;
 
-    /// Off its daily slot the table reads nothing and carries; on it an unreadable roster is
-    /// refused by name; a read row keeps each group's refusal apart.
     #[test]
     fn a_daily_walk_keeps_each_groups_refusal_apart() {
         let memory = SliceMemory {

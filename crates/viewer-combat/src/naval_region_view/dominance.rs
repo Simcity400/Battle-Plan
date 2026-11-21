@@ -1,5 +1,3 @@
-//! The dominance bar and flag: the observed side's share against its enemies, or against the
-//! region's minimum supremacy when it has none, and the leading country's flag.
 use super::{Content, Element, links};
 use crate::binding::{self, Bindings};
 use crate::state_view::{paths_named, withhold_named};
@@ -17,7 +15,6 @@ struct Bar {
     percent: i32,
 }
 
-/// The bar the game draws from the observed side's sum, its enemies' sum and the minimum.
 fn bar(friendly: i64, enemy: i64, minimum: i64) -> Bar {
     let present = enemy > 0;
     let floored = enemy.max(minimum);
@@ -41,7 +38,6 @@ fn bar(friendly: i64, enemy: i64, minimum: i64) -> Bar {
     }
 }
 
-/// Whether the game draws the flag: with enemies present, or the region friendly controlled.
 fn flag_shown(bar: &Bar, enemy_present: bool, control: u8) -> bool {
     !bar.disabled && (enemy_present || control == 1)
 }

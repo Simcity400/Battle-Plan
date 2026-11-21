@@ -8,7 +8,6 @@ import { BALANCE_UNAVAILABLE, balanceName, validateCountryBalances } from './bal
 import { singleCountry } from './definition';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
 
-/** The gear's Balance choices: every balance a holder of the country's tag had, by in-game name. */
 export function useBalanceChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = singleCountry(widget.countries) ? selectedCountryKeys(widget.countries, track)[0] ?? null : null;

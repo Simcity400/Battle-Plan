@@ -1,9 +1,3 @@
-//! Equipment pictures (`stockpile-artwork`), a rows-at-an-hour product: an archetype's picture is
-//! the one the Logistics screen draws, its country's best design among the recorded candidates
-//! (`AvailableEquipmentVariants` roster kind 2) by the game's order, drawn with that design's icon;
-//! a design asked by handle is drawn with its own. A candidate whose definition or ranking operand
-//! is not recorded refuses the selection by name instead of drawing a guessed design. Pictures are
-//! drawn once per source and catalogue. Other widgets show a design's art through this product.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{Content, archetype_of};
@@ -34,7 +28,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Every table a reply reads whole.
 const TABLES: [TableId; 13] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -57,7 +50,7 @@ const TABLES: [TableId; 13] = [
 pub struct StockpileArtworkParams {
     pub branch_id: String,
     pub country: Country,
-    /// Designs that need their own pictures, instead of a type's best.
+    #[doc = " Designs that need their own pictures, instead of a type's best."]
     #[serde(default)]
     pub variants: Vec<String>,
 }
@@ -66,11 +59,11 @@ pub struct StockpileArtworkParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileArt {
-    /// `type:<archetype>` or `variant:<handle>`.
+    #[doc = " `type:<archetype>` or `variant:<handle>`."]
     pub key: String,
     pub variant: String,
     pub name: Option<String>,
-    /// The picture; null with `reason` where none is drawn.
+    #[doc = " The picture; null with `reason` where none is drawn."]
     pub icon: Option<String>,
     pub reason: Option<String>,
 }
@@ -86,7 +79,6 @@ pub struct StockpileArtworkReply {
 
 dashboard_base::reply_warnings!(StockpileArtworkReply);
 
-/// What a source keeps of drawing through one catalogue: its icon content and every picture.
 #[derive(Default)]
 struct Held {
     catalogue: Option<Arc<Catalogue>>,
@@ -94,7 +86,6 @@ struct Held {
     drawn: BTreeMap<IconChoice, Result<Option<String>, String>>,
 }
 
-/// The content and the source's drawings, or why there are none.
 pub struct ArtContext {
     content: Content,
     held: Option<Arc<Mutex<Held>>>,
@@ -111,8 +102,6 @@ fn held(source: &Source, catalogue: &Arc<Catalogue>) -> Arc<Mutex<Held>> {
     state
 }
 
-/// The best design of each archetype among the owner's candidates; refused by name where a
-/// candidate's operands are not recorded, since an unknown candidate could beat any known one.
 fn best_variants(frame: &DecodedFrame, units: &installed_content_core::equipment::Database, owner: Owner) -> Result<BTreeMap<String, u64>, String> {
     if let Some(why) = &units.lost {
         return Err(format!("equipment database is refused: {why}"));
@@ -166,7 +155,6 @@ fn best_variants(frame: &DecodedFrame, units: &installed_content_core::equipment
     Ok(best.into_iter().map(|(key, (variant, _))| (key, variant)).collect())
 }
 
-/// The picture `choice` shows through the catalogue, drawn once per source and kept.
 fn picture(catalogue: &Arc<Catalogue>, state: &Mutex<Held>, choice: IconChoice, id: u64) -> Result<Option<String>, String> {
     if let Some(drawn) = state.lock().unwrap_or_else(PoisonError::into_inner).drawn.get(&choice) {
         return drawn.clone();
@@ -264,7 +252,6 @@ fn reply(frame: &DecodedFrame, params: &StockpileArtworkParams, tag: String, own
     Ok(reply)
 }
 
-/// Equipment pictures for one holder at an hour.
 pub struct StockpileArtwork;
 
 impl AtHour for StockpileArtwork {

@@ -1,20 +1,3 @@
-//! Victory-point and capital labels from resolved map-icon templates.
-//!
-//! Each template retains its hierarchy, resources and lifecycle. Labels use interface
-//! pixels ([`super::ui_scale`]) and content-defined priorities; counters draw later.
-//! Dot distance interpolates between the content's minimum and maximum and clamps
-//! at the maximum. Text distance uses the same victory-point fraction without the
-//! upper clamp. Both hide at equality. Capitals use their separate content cutoffs.
-//!
-//! Allegiance uses the province controller and the war-only relation table, leaving
-//! faction partners grey. Localisation keys use the state owner's original tag or tag
-//! ([`LabelTables::victory_point_tag`]).
-//!
-//! A recorded rename replaces the whole static name ladder. Its bytes are looked up
-//! as a localisation key and, if absent, displayed as literal text. Without a rename,
-//! [`victory_point_keys`] tries the owner-qualified key, then the unqualified key.
-//! If neither exists, no name is drawn. Names end at the first NUL byte. Invalid
-//! UTF-8 after that cut retains the static name and reports `ProvinceNames.name`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,21 +37,13 @@ use viewer_foundation::map::{
     tables::{Available, core, rows},
 };
 
-/// The `NDefines` operands of the victory-point and capital labels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelDefines {
-    /// `NGraphics.VICTORY_POINT_MAP_ICON_AFTER`, one entry per `VICTORY_POINT_LEVELS`: the value
-    /// each icon size starts at.
     pub after: Vec<f32>,
-    /// `VICTORY_POINT_MAP_ICON_DOT_CUTOFF_MIN` and `_MAX`.
     pub dot_cutoff: [f32; 2],
-    /// `VICTORY_POINT_MAP_ICON_TEXT_CUTOFF_MIN` and `_MAX`.
     pub text_cutoff: [f32; 2],
-    /// `VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT`.
     pub max_points_for_percent: f32,
-    /// `CAPITAL_ICON_CUTOFF` and `VICTORY_POINT_MAP_ICON_CAPITAL_CUTOFF_MAX`.
     pub capital_cutoff: [f32; 2],
-    /// Every map mode's `NMapIcons.<table>_PRIORITY_VICTORY_POINTS` and `_CAPITAL`.
     pub priorities: Priorities,
 }
 
@@ -111,7 +86,6 @@ impl LabelDefines {
         })
     }
 
-    /// Thresholds for synthetic layout fixtures.
     #[cfg(test)]
     pub fn test() -> Self {
         Self {
@@ -127,11 +101,8 @@ impl LabelDefines {
     }
 }
 
-/// Colour frames per icon shape; the game steps sizes by `* 5`.
 const FRAMES_PER_SHAPE: u32 = 5;
 
-/// Unit-stack type 38 `Victory point`, the label anchor,
-/// read from the finalised unit-stack table ([`LabelContent::set_anchors`]).
 pub const ANCHOR_STACK: u32 = viewer_foundation::map::label_reads::VICTORY_POINT;
 
 use viewer_foundation::map::native_windows::CAPITAL_WINDOW;
@@ -139,12 +110,8 @@ use viewer_foundation::map::native_windows::VICTORY_POINT_WINDOW;
 
 const ICON: &str = "icon";
 const TEXT: &str = "text";
-/// The batch part of [`TEXT`], which anchors the name apart from the dot.
 const TEXT_PART: &str = ".text";
 
-/// A label's shape group: 0 for the capital star, then one per size from largest
-/// to smallest. The last reached `VICTORY_POINT_MAP_ICON_AFTER` threshold
-/// selects the level, starting at level 0 when none is reached.
 pub fn shape_group(capital: bool, victory_points: i32, defines: &LabelDefines) -> u32 {
     if capital {
         return 0;
@@ -158,8 +125,6 @@ pub fn shape_group(capital: bool, victory_points: i32, defines: &LabelDefines) -
     (defines.after.len() - level) as u32
 }
 
-/// The strip frame is five times the shape group plus the allegiance colour index.
-/// The dot's allegiance follows the province controller; see the module docs.
 pub fn dot_allegiance(
     controller: u32,
     links: &BTreeMap<u32, u32>,
@@ -175,7 +140,6 @@ pub fn frame_index(shape: u32, allegiance: Allegiance) -> u32 {
     shape * FRAMES_PER_SHAPE + allegiance.index()
 }
 
-/// The camera height at which the icon is hidden.
 pub fn dot_cutoff(capital: bool, victory_points: i32, defines: &LabelDefines) -> f32 {
     let [low, high] = defines.dot_cutoff;
     if capital {
@@ -186,7 +150,6 @@ pub fn dot_cutoff(capital: bool, victory_points: i32, defines: &LabelDefines) ->
     }
 }
 
-/// The camera height at which the name text is hidden, unclamped.
 pub fn text_cutoff(capital: bool, victory_points: i32, defines: &LabelDefines) -> f32 {
     let [low, high] = defines.text_cutoff;
     if capital {
@@ -197,20 +160,13 @@ pub fn text_cutoff(capital: bool, victory_points: i32, defines: &LabelDefines) -
     }
 }
 
-/// Static content the label pass reads once per document.
 pub struct LabelContent {
     pub defines: LabelDefines,
-    /// World anchor per province: its finalised unit-stack slot 38
-    /// ([`LabelContent::set_anchors`]).
     pub anchors: BTreeMap<u32, [f32; 3]>,
-    /// Provinces whose slot 38 is the engine's seeded centroid default,
-    /// stated once.
     pub centroid_fallbacks: Vec<u32>,
 }
 
 impl LabelContent {
-    /// Reads the defines; the anchors come from the finalised unit-stack
-    /// table once it is seeded ([`LabelContent::set_anchors`]).
     pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             defines: LabelDefines::load(defines)?,
@@ -219,11 +175,6 @@ impl LabelContent {
         })
     }
 
-    /// Anchors each province's label at its finalised unit-stack slot 38,
-    /// the one table every consumer reads (`CounterContent::anchor`): the
-    /// authored slot, else slot 10's, else the seeded centroid default
-    /// (`seeded`), as the game
-    /// finalises it.
     pub fn set_anchors(
         &mut self,
         provinces: impl Iterator<Item = u32>,
@@ -234,40 +185,27 @@ impl LabelContent {
     }
 }
 
-/// Everything the labels' layout needs besides the decoded hour. Nothing here moves with the
-/// camera: [`PreparedLabels::project`] applies that.
 pub struct LabelInputs<'a> {
     pub content: &'a LabelContent,
     pub localisation: &'a Localisation,
     pub map: &'a MapData,
-    /// What the view's map mode shows: the raids mode keeps only the capitals, and the
-    /// resources mode draws no names.
     pub visibility: Visibility,
 }
 
-/// Where the labels laid out for an hour and view stand this frame.
 #[derive(Clone, Copy)]
 pub struct LabelProjection {
     pub camera: Camera,
-    /// The frame in device pixels, which the projection uses.
     pub viewport: [u32; 2],
-    /// Device pixels per interface pixel; the labels are laid out in interface
-    /// pixels. See [`super::ui_scale`].
     pub ui_scale: f32,
 }
 
-/// What one frame of labels drew, for reporting.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LabelReport {
     pub icons: usize,
     pub texts: usize,
     pub refused_gui: BTreeMap<String, usize>,
-    /// Names left undrawn because the game's localiser cannot produce them
-    /// ([`label_name`]): their number, and each reason by province (with the
-    /// times it was met).
     pub refused_names: usize,
     pub refused_localisation: BTreeMap<String, BTreeMap<u32, usize>>,
-    /// The viewing country's tag, which the allegiance colours are measured against.
     pub perspective: Option<String>,
 }
 
@@ -279,7 +217,6 @@ use projection::{capital_provinces, withheld_capitals};
 mod projection_oracle;
 
 impl LabelReport {
-    /// What the labels left undrawn, for the warning area.
     pub fn warnings(&self) -> Vec<String> {
         let provinces = |provinces: &BTreeMap<u32, usize>| {
             provinces
@@ -305,17 +242,10 @@ impl LabelReport {
     }
 }
 
-/// Whether a map mode draws a victory-point or capital label, and if so whether with its name:
-/// the raids mode clears the victory points with the other province icons but keeps the
-/// capitals, which are state icons; the resources mode empties every name and keeps the dots
-/// and stars.
 fn mode_label(capital: bool, visibility: &Visibility) -> Option<bool> {
     (capital || visibility.province_icons).then_some(visibility.label_text)
 }
 
-/// Lays out one hour's victory-point and capital labels, for every camera: the candidate's
-/// content, its world anchor and the distances its dot and its name are cut off at.
-/// [`PreparedLabels::project`] then places them for the camera of a frame.
 pub fn prepare(
     inputs: &LabelInputs<'_>,
     tables: &map_display_data::landscape::Labels,
@@ -379,18 +309,14 @@ pub fn prepare(
     })
 }
 
-/// One label the hour and view call for, at every camera.
 struct Candidate {
     province: u32,
     world: [f32; 3],
     capital: bool,
     frame: i32,
     priority: i8,
-    /// The distances the dot and the name are gone by.
     dot: f32,
     text: f32,
-    /// The name the mode draws, `None` where it draws none; `Err` where the game's localiser
-    /// cannot produce it, which is reported for the frames that would have shown it.
     name: Result<Option<Arc<str>>, String>,
 }
 
@@ -403,12 +329,9 @@ struct Label {
     frame: i32,
     priority: i8,
     text: Option<Arc<str>>,
-    /// Where the label stands for a free eye: its dot, and its name, which fades by its own
-    /// cutoff.
     anchors: [IconAnchor; 2],
 }
 
-/// A prepared hour's label values. Preparing never changes a presented window.
 #[derive(Default)]
 pub struct PreparedLabels {
     candidates: Vec<Candidate>,
@@ -418,8 +341,6 @@ pub struct PreparedLabels {
 }
 
 impl PreparedLabels {
-    /// Places the laid-out labels for one camera: each candidate nearer than its dot's distance,
-    /// projected, with its name while it stands nearer than the name's distance.
     pub fn project(&mut self, at: &LabelProjection) {
         let extent = gui_resources_viewport(at.viewport, at.ui_scale);
         self.report = LabelReport {
@@ -430,7 +351,6 @@ impl PreparedLabels {
         self.placed.reserve(self.candidates.len());
         for candidate in &self.candidates {
             let world = candidate.world;
-            // The camera's height, or a free eye's distance to this label.
             let height = at.camera.icon_distance(world);
             if height >= candidate.dot {
                 continue;
@@ -475,31 +395,21 @@ impl PreparedLabels {
     }
 }
 
-/// Native window histories and cached text; the name cache belongs to each reused slot.
 #[derive(Debug, Default)]
 pub struct LabelView {
     pools: [PoolView; 2],
-    /// The labels the kept draw drew and the projection it read: a draw of the same labels from
-    /// the same projection draws and reports the same again.
     shown: Vec<Label>,
-    /// The dirty bits the kept draw read, one per kept label.
     shown_dirty: Vec<bool>,
     projected: LabelReport,
-    /// What the kept draw drew and reported. A draw that finds nothing changed leaves them
-    /// standing.
     drawn: Batch,
     report: LabelReport,
     texts: [BTreeMap<SlotId, String>; 2],
-    /// What each pool's update last wrote to each live owner's window: the same again is no
-    /// change ([`PoolView::present_kept`]).
     written: [HashMap<u32, Written>; 2],
-    /// What each pool's windows drew, handed again while a window keeps its layout and anchors.
     painted: [viewer_foundation::map::icon_windows::Painted<u32, [IconAnchor; 2]>; 2],
     labels: HashMap<u32, usize>,
     owners: Vec<viewer_foundation::map::icon_windows::Owner>,
 }
 
-/// One label window's update as last written: its slot, its dot's frame and its name.
 #[derive(Debug)]
 struct Written {
     slot: SlotId,
@@ -508,25 +418,20 @@ struct Written {
 }
 
 impl LabelView {
-    /// What the last draw drew, which a draw that found nothing changed left standing.
     pub fn drawn(&self) -> &Batch {
         &self.drawn
     }
 
-    /// What the last draw reported.
     pub fn report(&self) -> &LabelReport {
         &self.report
     }
 
-    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
     pub fn set_quiet(&mut self, quiet: bool) {
         for pool in &mut self.pools {
             pool.set_quiet(quiet);
         }
     }
 
-    /// Whether a label the next present names stands in a province a coming phase cleans
-    /// ([`PoolView::set_cleaning`], [`PreparedLabels::cleaning`]).
     pub fn set_cleaning(&mut self, cleaning: bool) {
         for pool in &mut self.pools {
             pool.set_cleaning(cleaning);
@@ -558,9 +463,6 @@ impl PreparedLabels {
         self.draw_scheduled(context, &self.dirty(schedule), view);
     }
 
-    /// Snapshot just this layer's dirty bits before borrowed workers read the schedule.
-    /// No worker keeps the shared schedule locked through GUI layout or resource requests.
-    /// Whether a placed label stands in a province dirty out of view ([`Schedule::cleans`]).
     pub fn cleaning(&self, schedule: &Schedule) -> bool {
         self.placed.iter().any(|label| schedule.cleans(label.province))
     }
@@ -636,7 +538,6 @@ impl PreparedLabels {
                     owners: &view.owners,
                 },
                 Box::new(|instance, root| {
-                    // The game initially hides the bound text.
                     let text = root
                         .find(native::Kind::TextBox, TEXT.as_bytes())
                         .ok_or_else(|| format!("no text box named {TEXT}"))?;
@@ -654,7 +555,6 @@ impl PreparedLabels {
                     instance.set_frame(root, icon, label.frame)?;
                     let text = label.text.as_deref().unwrap_or_default();
                     if view.texts[index].get(&slot).map_or("", String::as_str) != text {
-                        // Write label text only when it changes.
                         if text.is_empty() {
                             instance.hide(root, control)?;
                             instance.set_hide_flag(root, control, true)?;
@@ -693,7 +593,6 @@ impl PreparedLabels {
                 written.retain(|owner, _| live.contains(owner));
             }
         }
-        // A quiet frame ran the passes; what the labels drew before stands.
         if view.pools[0].quiet() {
             view.report = report;
             return;
@@ -707,14 +606,12 @@ impl PreparedLabels {
             .flat_map(|(pool, view)| view.drawn_generations().map(move |drawn| (pool, drawn)))
             .map(|(pool, (drawn, generation))| (&self.placed[labels[&drawn.owner]], drawn, pool, generation))
             .collect();
-        // Sort both label families by depth.
         drawn.sort_by(|a, b| b.0.depth.total_cmp(&a.0.depth));
         let painted = &mut view.painted;
         for (ordinal, (label, drawn, pool, generation)) in drawn.into_iter().enumerate() {
             let layer = sprites::layer(label.priority, ordinal as u32, 0);
             batch.at_layer(layer);
             batch.at_anchor(Some(label.anchors[0]));
-            // The name stands with the dot and fades by the name's cutoff.
             batch.at_part_anchor(TEXT_PART, label.anchors[1]);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
             match painted[pool]
@@ -749,12 +646,6 @@ impl PreparedLabels {
         view.report = report;
     }
 
-    /// Whether this draw would draw and report what the kept draw drew and reported, so the frame
-    /// draws nothing: the same labels placed from the same projection with the same dirty bits,
-    /// both pools standing still with every window they showed kept ([`PoolView::stands_still`]),
-    /// and every one of those windows showing what its label offers. The owners of both passes
-    /// are then the kept draw's owners, each at the same screen point with the same dirty bit, so
-    /// neither pass has anything to do and every window draws what it drew.
     fn nothing_due(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -797,7 +688,6 @@ pub(crate) mod tests {
     use super::*;
     use viewer_foundation::map::free_icons::{IconAnchor, IconFamily};
 
-    /// A label standing nowhere in particular, for draws that do not test placement.
     const UNANCHORED: IconAnchor = IconAnchor {
         world: [0.0; 3],
         cutoff: f32::INFINITY,
@@ -808,8 +698,6 @@ pub(crate) mod tests {
 
     use viewer_foundation::map::test_support::localisation::loaded;
 
-    /// The labels laid out once stand where each camera puts them, with the dot and the name cut
-    /// off at their own distances and the refusals counted for that camera alone.
     #[test]
     fn one_hour_s_labels_are_placed_for_each_camera_and_report_only_that_camera_s_refusals() {
         use viewer_foundation::map::camera::{MapDefines, MapSize, Placement, WATER_HEIGHT};
@@ -836,26 +724,21 @@ pub(crate) mod tests {
             viewport: [2560, 1440],
             ui_scale: 1.0,
         };
-        // Near: every dot, every name, and the one refused name counted once.
         labels.project(&at(60.0));
         assert_eq!(labels.placed.len(), 3);
         assert_eq!(labels.placed.iter().filter(|label| label.text.is_some()).count(), 2);
         assert_eq!(labels.report.refused_names, 1);
         assert_eq!(labels.report.refused_localisation["no name"][&3], 1);
-        // Projected again at the same height: the report stands for this projection, not both.
         let screens: Vec<[f32; 2]> = labels.placed.iter().map(|label| label.screen).collect();
         labels.project(&at(60.0));
         assert_eq!(labels.report.refused_names, 1, "the report is this camera's, never a sum");
         assert_eq!(labels.placed.iter().map(|label| label.screen).collect::<Vec<_>>(), screens);
-        // Higher: Milan's dot and every name are gone, so nothing is refused.
         labels.project(&at(300.0));
         assert_eq!(labels.placed.iter().map(|label| label.province).collect::<Vec<_>>(), vec![1, 3]);
         assert!(labels.placed.iter().all(|label| label.text.is_none()));
         assert_eq!(labels.report.refused_names, 0);
-        // Higher still: no label stands at all.
         labels.project(&at(500.0));
         assert!(labels.placed.is_empty());
-        // Moving the camera moves every label and keeps what each shows.
         labels.project(&at(60.0));
         let near = labels.placed.iter().map(|label| (label.province, label.text.clone())).collect::<Vec<_>>();
         let mut moved = at(60.0);
@@ -906,7 +789,6 @@ pub(crate) mod tests {
                 ..Default::default()
             }]),
         );
-        // The capital state 10 holds province 12 (2 points) and province 13 (`tied`).
         let provinces = |capital_points: i32, tied: i32| {
             TableRows::Provinces(
                 (0..5000)
@@ -962,7 +844,6 @@ pub(crate) mod tests {
             tables.names[&8].as_ref().unwrap().as_ref().unwrap(),
             cloned.names[&8].as_ref().unwrap().as_ref().unwrap()
         ));
-        // A tie needs the unrecorded state order, and no points the unrecorded anchor.
         let links = BTreeMap::from([(1, 1)]);
         for (capital_points, tied, why) in [(2, 2, "tie"), (0, 0, "none of its provinces")] {
             test_put(&mut frame, provinces(capital_points, tied));
@@ -1110,9 +991,6 @@ pub(crate) mod tests {
         );
         assert!(view.drawn().quads[0].layer < view.drawn().quads[1].layer);
 
-        // The borrowed-worker path snapshots dirty bits before any GUI/resource work.
-        // Compare complete batches/reports from independent retained pools, not a redraw
-        // of one already-mutated view.
         let workers = viewer_foundation::parallel::Workers::new(Arc::new(
             viewer_foundation::builder_pool::Pool::new(1).unwrap(),
         ));
@@ -1175,12 +1053,10 @@ pub(crate) mod tests {
                 label(1, [100., 100.], false, 1, Some(berlin)),
                 label(2, [200., 200.], false, 1, None),
                 label(3, [300., 150.], true, 1, Some("Paris")),
-                // Off screen: requested and erased on every frame, kept off screen while dirty.
                 label(4, [-5000., 150.], true, 1, None),
             ],
             ..Default::default()
         };
-        // (Berlin's name, the off-screen capital's province dirty, why each pool laid out)
         let frames = [
             ("Berlin", false, [Some("no frame presented yet"), Some("no frame presented yet")]),
             ("Berlin", false, [None, None]),
@@ -1196,7 +1072,6 @@ pub(crate) mod tests {
             let dirty = [false, false, false, dirty];
             labels.draw_scheduled(&context, &dirty, &mut view);
             assert_eq!(view.pools.each_ref().map(PoolView::unkept), unkept, "frame {at}");
-            // The same hour drawn by a view with no history.
             let mut fresh = LabelView::default();
             labels.draw_scheduled(&context, &dirty, &mut fresh);
             assert_eq!(view.report(), fresh.report(), "frame {at}");
@@ -1206,8 +1081,6 @@ pub(crate) mod tests {
                 "frame {at}"
             );
         }
-        // The same hour and camera again: nothing is due, so nothing is drawn and what stands is
-        // what a view with no history draws.
         let labels = hour("Potsdam");
         let dirty = [false; 4];
         labels.draw_scheduled(&context, &dirty, &mut view);
@@ -1277,13 +1150,11 @@ pub(crate) mod tests {
                     .cutoff
             })
             .collect();
-        // The dot first, then the name's glyphs.
         assert_eq!(cutoffs[0], 400.0);
         assert!(
             cutoffs.len() > 1 && cutoffs[1..].iter().all(|cutoff| *cutoff == 250.0),
             "{cutoffs:?}"
         );
-        // Later pushes are screen interface again.
         let mut batch = view.drawn().clone();
         batch.push(batch.quads[0].clone());
         assert_eq!(batch.quads.last().unwrap().anchor, None);
@@ -1386,7 +1257,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_shape_group_follows_the_victory_point_levels() {
-        // A capital is a star whatever it is worth.
         assert_eq!(shape_group(true, 0, &LabelDefines::test()), 0);
         assert_eq!(shape_group(true, 50, &LabelDefines::test()), 0);
         assert_eq!(shape_group(false, 50, &LabelDefines::test()), 1);
@@ -1397,8 +1267,6 @@ pub(crate) mod tests {
         assert_eq!(shape_group(false, 1, &LabelDefines::test()), 3);
     }
 
-    /// Small synthetic localisation dictionary for key, literal, owner override,
-    /// nested expansion and byte-limit cases.
     fn synthetic_labels() -> Localisation {
         loaded(
             &(String::from(concat!(
@@ -1463,8 +1331,6 @@ pub(crate) mod tests {
 
     #[test]
     fn an_occupied_dot_takes_its_controllers_colour() {
-        // Warsaw for the Soviet player: owner Poland (101, slot 1, an enemy),
-        // controller the Soviet Union (201, slot 2, ours).
         let links = BTreeMap::from([(101, 1), (201, 2)]);
         let allegiances = BTreeMap::from([(1, Allegiance::Enemy), (2, Allegiance::Ours)]);
         assert_eq!(dot_allegiance(201, &links, &allegiances), Allegiance::Ours);
@@ -1477,7 +1343,6 @@ pub(crate) mod tests {
         assert_eq!(frame_index(0, Allegiance::Enemy), 0);
         assert_eq!(frame_index(0, Allegiance::Other), 4);
         assert_eq!(frame_index(1, Allegiance::Enemy), 5);
-        // Budapest: 20 points, Hungarian, a faction partner of ours and grey.
         assert_eq!(
             frame_index(
                 shape_group(false, 20, &LabelDefines::test()),
@@ -1485,7 +1350,6 @@ pub(crate) mod tests {
             ),
             9
         );
-        // Berlin: a German capital with Germany the player, green star.
         assert_eq!(
             frame_index(
                 shape_group(true, 50, &LabelDefines::test()),
@@ -1493,7 +1357,6 @@ pub(crate) mod tests {
             ),
             2
         );
-        // København: a capital of a country that is not ours.
         assert_eq!(
             frame_index(
                 shape_group(true, 20, &LabelDefines::test()),
@@ -1501,7 +1364,6 @@ pub(crate) mod tests {
             ),
             4
         );
-        // Praha: 30 points, owner not ours, grey large dot.
         assert_eq!(
             frame_index(
                 shape_group(false, 30, &LabelDefines::test()),
@@ -1509,7 +1371,6 @@ pub(crate) mod tests {
             ),
             9
         );
-        // The last frame of the strip is the small grey square.
         assert_eq!(
             frame_index(
                 shape_group(false, 1, &LabelDefines::test()),
@@ -1522,30 +1383,22 @@ pub(crate) mod tests {
     #[test]
     fn text_and_dot_cutoffs_keep_their_distinct_ranges() {
         let reference = 310.178;
-        // Malmö, 5 points: neither the dot nor the text survives.
         assert!(dot_cutoff(false, 5, &LabelDefines::test()) < reference);
         assert!(text_cutoff(false, 5, &LabelDefines::test()) < reference);
-        // Kiel and Hannover, 10 points: both do.
         assert!(dot_cutoff(false, 10, &LabelDefines::test()) > reference);
         assert!(text_cutoff(false, 10, &LabelDefines::test()) > reference);
-        // Frankfurt, 20 points.
         assert!(text_cutoff(false, 20, &LabelDefines::test()) > reference);
-        // Luxembourg, 5 points but a capital.
         assert!(dot_cutoff(true, 5, &LabelDefines::test()) > reference);
         assert!(text_cutoff(true, 5, &LabelDefines::test()) > reference);
-        // The ranges end where the defines put them.
         assert_eq!(dot_cutoff(false, 0, &LabelDefines::test()), 100.0);
         assert_eq!(dot_cutoff(false, 22, &LabelDefines::test()), 1000.0);
         assert_eq!(dot_cutoff(false, 99, &LabelDefines::test()), 1000.0);
         assert_eq!(text_cutoff(false, 22, &LabelDefines::test()), 800.0);
-        // The engine does not clamp the text range: 50 points reach past its top.
         assert!((text_cutoff(false, 50, &LabelDefines::test()) - 1690.909).abs() < 0.01);
         assert_eq!(dot_cutoff(true, 0, &LabelDefines::test()), 1100.0);
         assert_eq!(text_cutoff(true, 0, &LabelDefines::test()), 1000.0);
     }
 
-    /// Victory-point localisation uses the state owner's original tag or tag,
-    /// independently of dynamic naming gates and province controller.
     #[test]
     fn the_victory_point_tag_is_the_state_owners_original_tag() {
         use replay_data::{
@@ -1607,7 +1460,6 @@ pub(crate) mod tests {
         let tables = LabelTables::read(&frame, 0, &synthetic_labels()).unwrap();
         assert!(tables.candidates.is_empty());
         assert_eq!(tables.victory_point_tag(10), Ok("GER"));
-        // A dynamic country takes its original tag.
         assert_eq!(tables.victory_point_tag(20), Ok("SOV"));
         assert!(
             tables
@@ -1625,8 +1477,6 @@ pub(crate) mod tests {
                 },
             ]));
         let tables = LabelTables::read(&frame, 0, &synthetic_labels()).unwrap();
-        // Both a null state and a known-zero state owner select the reserved
-        // object's exact getter, without admitting it to the positive roster.
         assert_eq!(tables.victory_point_tag(0), Ok("ZERO_ORIGINAL"));
         assert_eq!(tables.victory_point_tag(31), Ok("ZERO_ORIGINAL"));
         let error = tables.victory_point_tag(30).unwrap_err();
@@ -1645,7 +1495,6 @@ pub(crate) mod tests {
             Err("CountryAppearance.original_tag of slot 1 is not recorded: the table is unavailable: not sampled".into())
         );
         assert_eq!(tables.victory_point_tag(0), Ok("ZERO_ORIGINAL"));
-        // The tag feeds the ladder only without a usable override.
         let loc = synthetic_labels();
         let tag = tables.victory_point_tag(10);
         assert!(tag.is_err());
@@ -1669,8 +1518,6 @@ pub(crate) mod tests {
     fn a_recorded_override_is_a_key_when_the_localisation_has_one_and_text_when_it_does_not() {
         let loc = synthetic_labels();
         let name = |recorded: &[u8], tag| label_name(&loc, Some(recorded), tag, 678);
-        // A key: the entry wins, exactly as the game resolves it, and
-        // the owner-qualified `GER_VICTORY_POINTS_678` rung is never reached.
         assert_eq!(
             name(b"VICTORY_POINTS_678", Some("GER")),
             Ok(Some("Port Haven".into()))
@@ -1679,13 +1526,10 @@ pub(crate) mod tests {
             name(b"synthetic_waterwork", None),
             Ok(Some("Sample Waterwork".into()))
         );
-        // Not a key: the bytes are the text, the way the lookup copies its own
-        // input back out when the dictionary probe misses at depth 0.
         assert_eq!(
             name("Port \u{144} Name".as_bytes(), None),
             Ok(Some("Port \u{144} Name".into()))
         );
-        // No override: the owner's key first, then the bare one.
         assert_eq!(
             label_name(&loc, None, Some("GER"), 678),
             Ok(Some("Owner Haven".into()))
@@ -1697,10 +1541,6 @@ pub(crate) mod tests {
         assert_eq!(label_name(&loc, None, Some("GER"), 5), Ok(None));
     }
 
-    /// The label text is the game's localiser's: `$$` is one `$`, brackets
-    /// are glyphs (the text box runs no scripted-text pass), a nested key the
-    /// content lacks writes nothing, and the 0x1800-byte buffer refuses a
-    /// cut inside a two-byte character by name.
     #[test]
     fn a_label_name_is_what_the_games_localiser_makes_of_it() {
         let loc = synthetic_labels();
@@ -1723,18 +1563,13 @@ pub(crate) mod tests {
     fn an_override_is_measured_as_a_c_string_and_never_guessed_at() {
         let loc = synthetic_labels();
         let name = |recorded: &[u8]| label_name(&loc, Some(recorded), None, 9503);
-        // The lookup measures to the first NUL, so the tail is not part of it.
         assert_eq!(
             name(b"VICTORY_POINTS_678\0ignored"),
             Ok(Some("Port Haven".into()))
         );
-        // One that begins with a NUL is an override with no name at all:
-        // A first NUL byte produces empty output.
         assert_eq!(name(b"\0ignored"), Ok(Some(String::new())));
         assert!(!unreadable(b""));
         assert!(!unreadable(b"\0ignored"));
-        // Bytes that are not text: the static name is kept and the province is
-        // named in the limitation instead of being drawn as replacement marks.
         assert_eq!(name(&[0xff, 0xfe, b'a']), Ok(Some("River Gate".into())));
         assert!(unreadable(&[0xff, 0xfe, b'a']));
         assert!(!unreadable("Port \u{144} Name".as_bytes()));

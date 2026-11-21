@@ -1,4 +1,3 @@
-//! Economy acquisition buffers. Growth and replay conversion run off-thread.
 
 use crate::{
     clock::qpc,
@@ -36,8 +35,6 @@ pub const TABLES: [TableId; N] = [
     TableId::ResourceExchanges,
     TableId::PurchaseContracts,
     TableId::CountryFuelConsumers,
-    // The demand packs' parts, split from the fuel walk's packs at conversion
-    // (`fuel_demand::attach`); no capture or read of their own.
     TableId::FuelDemandParts,
 ];
 
@@ -54,7 +51,6 @@ collector_primitives::capacity_max!(Capacities {
     demand
 });
 
-/// Consumer rows per country, fixed by the engine's fuel status.
 const FUEL_CONSUMERS: usize = ccountry_fuel_status::MAX_CONSUMERS as usize;
 
 impl Capacities {
@@ -118,9 +114,6 @@ impl Capacities {
         Ok(())
     }
 
-    /// CountryFuel and CountryExperience hold one row per canonical country,
-    /// and CountryFuelConsumers the engine's fixed number per country. Resource
-    /// pools follow the live definition census and original pool headers.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(slots, 1));
@@ -146,14 +139,7 @@ pub struct Captured {
     sources: Arena<u8>,
     exchange_scratch: Vec<cresource_exchange::Membership>,
     purchase_scratch: Vec<cpurchase_contract::Membership>,
-    /// Raw-copy split gate for economy's hourly and scheduled tables.
-    /// Set when an acquisition job returns a valid raw payload; `capture`
-    /// then skips the typed walks and the decode worker fills the rows before
-    /// the ready handoff. Preserved across `reset` (set per hour, cleared by
-    /// the worker after decode).
     pub rest_raw_mode: bool,
-    /// CountryResources, ResourceExchanges and the resource census they need
-    /// are walked.
     resources_active: bool,
     other_active: bool,
 }
@@ -248,7 +234,6 @@ impl Captured {
         grow_vec(&mut self.purchase_scratch, capacity.rows[9]);
     }
 
-    /// Bounded acquisition without allocation, encoding or I/O; returns QPC ticks.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -286,7 +271,6 @@ impl Captured {
             
             ticks[0] = elapsed(begin);
         }
-        // A staged payload is installed by the decode worker.
         if self.rest_raw_mode {
             return ticks;
         }
@@ -423,7 +407,6 @@ impl Captured {
         ticks
     }
 
-    /// One fuel walk fills CountryFuel and CountryFuelConsumers independently.
     fn capture_fuel_buffers(
         &mut self,
         memory: &impl Memory,
@@ -444,7 +427,6 @@ impl Captured {
     fn set_schedule(&mut self, hour: i32, force_full: bool) {
         self.resources_active =
             replay_data::cadence::should_walk(TableId::CountryResources, hour, force_full);
-        // The exchanges are walked with the pools; both are hourly.
         debug_assert_eq!(
             self.resources_active,
             replay_data::cadence::should_walk(TableId::ResourceExchanges, hour, force_full)
@@ -490,7 +472,6 @@ impl Captured {
             self.exchanges.outcome,
             self.purchases.outcome,
             self.fuel_consumers.outcome,
-            // FuelDemandParts follows CountryFuel's read, a part list a row.
             self.fuel.outcome,
         ]
     }
@@ -499,8 +480,6 @@ impl Captured {
         let outcomes = self.outcomes();
         let mut tables = [
             scalar_table::<tables::CountryFuel, _>(
-                // Demand and award windows append owned values after scalar
-                // conversion; compare only the final row in the encoder.
                 None,
                 outcomes[0],
                 &self.fuel.rows,
@@ -675,14 +654,11 @@ impl Captured {
                     received_raw: r.received_raw,
                 },
             ),
-            // Replaced by the parts `fuel_demand::attach` splits off below.
             unavailable("fuel demand parts were not split").into(),
         ];
         match super::fuel_demand::attach(&mut tables[0], &self.demand) {
             Ok(parts) => tables[11] = parts.into(),
             Err(error) => {
-                // OOM follows the existing terminal ownership policy. A named
-                // demand refusal must never discard the independently known prefix.
                 let _ = engine_allocation::owned_vec::<()>(Err(error));
             }
         }

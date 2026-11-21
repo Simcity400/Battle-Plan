@@ -68,7 +68,6 @@ test('the strip has a bar a read, gained up and burned down in fuel', () => {
 });
 
 test('a bin of many reads is a span bar over its hours with each half\'s greatest read, never a bar at a bucket\'s hour', () => {
-  // The summary dates its greatest read only to a bucket (here its first hour): the bar spans the bin instead.
   const bin = (first: number, last: number, most: number) => ({ firstHour: first, lastHour: last, firstValue: 0, lastValue: 0, lastValueHour: first,
     minHour: first, minValue: 0, maxHour: first, maxValue: most, firstBreak: false, hasBreak: false });
   const summary = (buckets: ReturnType<typeof bin>[]) => ({ from: 0, to: 191, width: 2, buckets });

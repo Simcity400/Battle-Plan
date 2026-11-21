@@ -16,9 +16,6 @@ import type { RecordingBreak } from './scriptOccurrences';
 
 const NO_NOTES: string[] = [];
 
-/** How a card list reads its cards: the product paging them, the kinds that open and continue a card, the countries its
- * cards must name (kept by the server; every country when absent), a page row's card, each card's edges, whether an
- * open card names its days, and a card as the hour shown shows it (null hides it). */
 export interface CardList<C, A> {
   product: 'event-choices' | 'decisions';
   scope?: readonly MembershipRun[];
@@ -30,9 +27,6 @@ export interface CardList<C, A> {
   at: (row: LogRow<C | null>, hour: number, breaks: readonly RecordingBreak[]) => LogRow<A> | null;
 }
 
-/** A card list's pages over the branch: counted by `log-counts` and paged by its product over the declared `feed-events`
- * log, cut at the head (one page ahead while playing), each loaded card shown as the hour shown shows it. While following,
- * that hour moves only where a held card changes (an edge read, a break, a day of an open card). */
 export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track: BoundTrack | undefined, active: boolean, list: CardList<C, A>) {
   const follow = widget.time.mode === 'follow';
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
@@ -41,14 +35,12 @@ export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track
   const cut: LogCut = follow ? { follow: true, offset } : { follow: false, hour: widget.time.mode === 'campaign' ? null : window?.lastHour ?? null };
   const span = useProduct<EventFeedSpanReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
     params: { branchId: track.branch.id, categories: [] } } : null, active, validateSpan, track?.source);
-  // The pages need only the kinds' codes, asked alone so they wait for no read of the span; its notes come with `span`.
   const coded = useProduct<EventFeedSpanReply>(runtime.client, track ? kindsRequest(track) : null, active, validateSpan, track?.source);
   const kinds = coded.data?.kinds;
   const openersKey = list.openers.join(',');
   const spec = useMemo<LogSpec | null>(() => track && kinds && list.openers.length ? { source: track.source, branchId: track.branch.id, log: 'feed-events',
     product: list.product, facets: cardFacets(kinds, list.openers, list.continuing), ...(list.scope ? { scope: list.scope } : {}),
     firstHour: Math.max(from ?? track.branch.firstHour, track.branch.firstHour), lastHour: track.branch.lastHour } : null,
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   [track, kinds, openersKey, list.product, list.scope, from]);
   const feed = useLogPages<C | null, EventFeedUnavailable>(runtime.client, runtime.clock, spec, cut, active, list.row, FEED_PAGE_SIZE, pageNotes);
   const breaksKey = track ? JSON.stringify(recordingBreaks(track.branch)) : '[]';
@@ -67,7 +59,6 @@ export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track
   const shown = useRef<readonly LogPage<A>[]>([]);
   const pages = useMemo(() => shown.current = stableLogPages(shown.current, hour === null ? [] : cutPages(feed.pages, row => row.hour > hour ? null : list.at(row, hour, breaks))),
     [feed.pages, list, hour, breaks]);
-  // The span's notes, and what each page held could not show of its own cards.
   const notes = useMemo(() => span.data ? [...new Set([...spanNotes(span.data), ...pagesNoted(feed.notes)])] : NO_NOTES, [span.data, feed.notes]);
   return { span, feed, pages, hour, follow, from, notes, error: span.error ?? coded.error ?? feed.error, retry: () => { span.retry(); coded.retry(); feed.retry(); },
     loading: !kinds || (!!spec && !feed.counts) };

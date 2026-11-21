@@ -1,8 +1,3 @@
-//! Actual reserved-country raid source lists. Walk every stored faction member,
-//! owned state and naval base in native order with repeats. Private pointer
-//! scratch acquires each distinct body once; any fault refuses its whole domain.
-//! Storage is caller-owned and pointer controls retire within the frozen pass.
-//! Synthetic coverage does not establish live capture, save agreement or cost.
 
 use crate::{
     Memory, cgame_state, cnaval_base,
@@ -14,18 +9,12 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DomainCapture {
-    /// Ok admits the complete keyed domain, including entry-local None values.
-    /// Err exposes no usable prefix (invalid domain, owner or arena shortage).
     pub len: Result<usize, &'static str>,
-    /// The source header's conservative slot bound survives all refusals,
-    /// including nullable entries and repeated controller observations.
     pub required: usize,
-    /// First native query refusal in domain order, independent of admission.
     pub first_failure: Option<&'static str>,
 }
 
 const BATCH: usize = 64;
-/// Physical naval-base pointer array visited for launch sources.
 const NAVAL_BASES: usize = 0x18;
 const STATE_FIELDS: [RecordField; 2] = [
     RecordField {
@@ -61,14 +50,12 @@ const BASE_FIELDS: [RecordField; 3] = [
 const BASE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&BASE_FIELDS, 20).expect("valid launch base layout");
 
-/// Only raw native source words are public. No pointer or selected province.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LaunchNavalBase {
     pub base_province: u32,
     pub country: u32,
 }
 
-/// Successful provider observation, distinct from an unreadable selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavalProvider {
     NativeNull,
@@ -81,15 +68,12 @@ pub struct NavalCapture {
     pub provider: Result<NavalProvider, &'static str>,
 }
 
-/// Acquisition-only arena. Its order may change; payload occurrence order may not.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Occurrence {
     pointer: usize,
     ordinal: usize,
 }
 
-/// An attempted root/count, including failure, before any naming work.
-/// Taking the control consumes its native pointer even if the vector refuses.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReservedOwnedStates {
     root: Option<Result<super::Country, &'static str>>,
@@ -163,7 +147,6 @@ impl ReservedOwnedStates {
                 return Err("reserved launch state count is negative");
             }
             required = count as usize;
-            // Reuse the `ccountry::OWNED_STATE_COUNT` read exactly. This 12-byte observation excludes the count.
             let descriptor = country
                 .pointer
                 .checked_add(super::OWNED_STATES)
@@ -174,7 +157,6 @@ impl ReservedOwnedStates {
             header[12..].copy_from_slice(&count.to_le_bytes());
             let source =
                 Array::from_header(header, 8).ok_or("reserved launch state descriptor invalid")?;
-            // State source selection visits the original owned-state roster.
             scratch.ensure(required)?;
             output.ensure(required)?;
             if output.len() < required || scratch.len() < required {
@@ -251,7 +233,6 @@ fn copy_roster(
     Ok(())
 }
 
-// Return up to BATCH distinct pointer groups without allocating or dropping repeats.
 fn groups(
     scratch: &[Occurrence],
     next: &mut usize,
@@ -331,8 +312,6 @@ fn capture_state_bodies(
     Ok(())
 }
 
-/// Called with an authenticated single-use navy selection. Read its header
-/// before owner; an empty list requires no owner operand.
 #[cfg(test)]
 pub(crate) fn capture_naval(
     memory: &impl Memory,
@@ -358,9 +337,6 @@ pub fn capture_naval_buffer(
     mut output: crate::walk::Buffer<'_, LaunchNavalBase>,
 ) -> NavalCapture {
     if navy == 0 {
-        // The reserved strategic-navy slot can be null after construction, yet
-        // launch selection still reaches its base-list header. Record the observed
-        // null without claiming a known empty list.
         return NavalCapture {
             required: 0,
             provider: Ok(NavalProvider::NativeNull),
@@ -376,7 +352,6 @@ pub fn capture_naval_buffer(
         if required == 0 {
             return Ok(0);
         }
-        // Visit all original naval-base entries.
         scratch.ensure(required)?;
         output.ensure(required)?;
         if output.len() < required || scratch.len() < required {

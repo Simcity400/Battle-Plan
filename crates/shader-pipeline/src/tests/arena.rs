@@ -39,9 +39,6 @@ fn texel(device: &wgpu::Device, queue: &wgpu::Queue, rgba: [u8; 4]) -> wgpu::Tex
     texture.create_view(&Default::default())
 }
 
-/// Draws in one pass rebind only the groups that changed, and the arena's reused buffers and
-/// cached bind groups must still deliver each draw's own constants and textures, in the same
-/// frame and after a reset.
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn cached_groups_and_arena_offsets_follow_each_draw_across_frames() {
@@ -81,7 +78,6 @@ Effect Test { VertexShader = V PixelShader = P }
     .unwrap();
     let red = texel(&device, &queue, [255, 0, 0, 255]);
     let green = texel(&device, &queue, [0, 255, 0, 255]);
-    // Three rectangles: left half, top right and bottom right quarters.
     let rectangle = |x0: f32, y0: f32, x1: f32, y1: f32| {
         [(x0, y1), (x1, y1), (x1, y0), (x0, y1), (x1, y0), (x0, y0)].map(|(x, y)| [x, y, 0_f32])
     };
@@ -159,7 +155,6 @@ Effect Test { VertexShader = V PixelShader = P }
             );
         }
     };
-    // The first two draws share a constant block, the last two a texture group.
     let inputs = [(&red, opaque), (&green, opaque), (&green, black)];
     let first = frame(inputs, None, false);
     assert_eq!(frame(inputs, Some(false), false), first);
@@ -168,7 +163,6 @@ Effect Test { VertexShader = V PixelShader = P }
     let repeated = frame(inputs, Some(false), true);
     assert_eq!(frame(inputs, Some(true), true), repeated);
     assert_eq!(pixel(&repeated, 2, 8), [0, 0, 0, 255]);
-    // After a reset the same arena buffer and cached groups carry other bytes and views.
     let inputs = [(&green, opaque), (&red, black), (&red, opaque)];
     let second = frame(inputs, None, false);
     assert_eq!(frame(inputs, Some(false), false), second);
@@ -179,8 +173,6 @@ Effect Test { VertexShader = V PixelShader = P }
     );
 }
 
-/// Every constant buffer is bound at a dynamic offset, so a program that uses more than the
-/// device allows is refused by name rather than failing validation.
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn programs_past_the_dynamic_offset_limit_are_refused_by_name() {
@@ -234,7 +226,6 @@ Effect Test {{ VertexShader = V PixelShader = P }}
     );
 }
 
-/// A pipeline-resolution hit must not reuse a preceding draw's resource validity.
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn resolved_stream_pass_still_checks_changed_constant_ranges_and_missing_views() {

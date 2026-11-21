@@ -1,5 +1,3 @@
-//! The shared evaluator: the children it loads, the
-//! scopes it enters, and tag aliases.
 
 use super::*;
 use installed_content_core::{
@@ -47,9 +45,6 @@ mod dynamic_modifiers;
 #[path = "faction_zero_tests.rs"]
 mod faction_zero;
 
-/// Countries by (raw link, slot, tag, owned states, original tag,
-/// cosmetic tag), every other table complete and empty; flag `x` (token
-/// 900) set on the countries `flagged`.
 fn frame(countries: &[(u32, u32, &str, i32, &str, &str)], flagged: &[u32]) -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
@@ -128,8 +123,6 @@ fn frame(countries: &[(u32, u32, &str, i32, &str, &str)], flagged: &[u32]) -> De
                 .collect(),
         ),
     );
-    // Explicit synthetic original-tag cache and physical array, independently
-    // recorded from final country original fields.
     let mut buckets =
         vec![Vec::new(); countries.iter().map(|row| row.1).max().unwrap_or(0) as usize + 1];
     for &(raw, _, _, _, original, _) in countries {
@@ -190,8 +183,6 @@ fn frame(countries: &[(u32, u32, &str, i32, &str, &str)], flagged: &[u32]) -> De
     frame
 }
 
-/// Evaluates `trigger` in the scope of country `slot` over `frame`, with
-/// the aliases `aliases` declares.
 fn check(frame: &DecodedFrame, aliases: &str, slot: u32, trigger: &str) -> Eval {
     with_world(frame, aliases, Err("none"), |world| {
         let items = items(trigger);
@@ -199,8 +190,6 @@ fn check(frame: &DecodedFrame, aliases: &str, slot: u32, trigger: &str) -> Eval 
     })
 }
 
-/// Runs `run` on the world of `frame` with the aliases `aliases` declares
-/// and the character templates `roles`.
 fn with_world<T>(
     frame: &DecodedFrame,
     aliases: &str,
@@ -232,7 +221,6 @@ fn with_world_traits<T>(
     let impassable = BTreeSet::new();
     let names = TriggerNames::default();
     let buildings = Buildings::default();
-    // Lenient, so a test can hold an incomplete table.
     let world = World::read(
         frame,
         ContentFacts {
@@ -257,8 +245,6 @@ fn with_world_traits<T>(
     run(&world)
 }
 
-/// The content names the tests' triggers are read against:
-/// the country tags, alias names and character tokens they declare.
 #[allow(clippy::field_reassign_with_default)]
 fn names() -> KeyNames {
     let folded = |names: &[&str]| {
@@ -360,7 +346,6 @@ fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() 
         assert_eq!(check(&frame, "", slot, "has_elections = yes"), yes);
         assert_eq!(check(&frame, "", slot, "has_elections = no"), no);
     }
-    // A recording older than the value holds none for the trigger to test.
     *frame.tables[TableId::Politics.index()] = politics(Recorded::NotRecorded);
     assert!(
         check(&frame, "", 1, "has_elections = yes")
@@ -436,7 +421,6 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
             role: Some(-7),
             ..Default::default()
         }]));
-    // Rows in key order, as a recording holds them: role -7 keys as its unsigned bits, after 3.
     *frame.tables[TableId::CountryLeaderRoles.index()] =
         TableView::Complete(TableRows::CountryLeaderRoles(vec![
             CountryLeaderRoleRow {
@@ -452,7 +436,6 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
                 current_ideology: replay_data::rows::Recorded::Value(Some(Some(99))),
             },
         ]));
-    // Current ideology changed; neither it nor the party is the map key.
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
             country: 100,
@@ -475,8 +458,6 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
             )
         })
     };
-    // A later same-token definition is false, even with the first definition
-    // on another role. The old token-only projection answered true.
     *frame.tables[TableId::CharacterRoleTraits.index()] =
         TableView::Complete(TableRows::CharacterRoleTraits(vec![
             row(3, 1),
@@ -508,8 +489,6 @@ fn default_event_scope_and_country_targets_follow_scope_masks() {
         assert_eq!(check("has_government = democracy"), Eval::False);
         assert_eq!(check("AAA = { has_cosmetic_tag = costume }"), Eval::True);
         assert_eq!(check("AAA = { has_cosmetic_tag = other }"), Eval::False);
-        // Loading adds no context trigger for an undeclared
-        // tag: the game reports an invalid trigger and keeps the empty AND.
         assert_eq!(check("ZZZ = { always = no }"), Eval::True);
         for scope in ["root", "this", "from", "prev"] {
             assert_eq!(check(&format!("{scope} = {{}}")), Eval::False);
@@ -567,8 +546,6 @@ fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
             Eval::Unknown(_)
         ));
     });
-    // An unavailable country catalogue cannot make a tag look undeclared
-    // and silently remove its context trigger from the conjunction.
     *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
         reason: "test missing country catalogue".into(),
     };
@@ -581,10 +558,6 @@ fn unknown_pool_inputs_keep_dashboard_boolean_rules() {
     });
 }
 
-/// A key that names nothing adds no child: a body of only such
-/// keys has none, which the adjacency rules and the raid state selector
-/// test, and an `else` attaches to the
-/// last `if` added across it.
 #[test]
 fn only_loaded_children_count() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -610,7 +583,6 @@ fn only_loaded_children_count() {
             ),
             Eval::False
         );
-        // An `else` after no `if` is logged and adds nothing.
         assert_eq!(
             world.evaluate(
                 &items("unregistered_key = yes else = { always = no }"),
@@ -618,8 +590,6 @@ fn only_loaded_children_count() {
             ),
             Eval::True
         );
-        // Whether a block key names a character template is unknown
-        // without the templates, and so is whether it adds a child.
         assert!(
             world
                 .has_children(&items("GER_rommel = { always = no }"))
@@ -628,9 +598,6 @@ fn only_loaded_children_count() {
     });
 }
 
-/// An alias checking every country scans the whole country array
-/// and without the complete roster a country it
-/// would meet may be missing, so it is refused by name.
 #[test]
 fn a_check_all_alias_needs_the_whole_roster() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -654,10 +621,6 @@ fn a_check_all_alias_needs_the_whole_roster() {
     );
 }
 
-/// A country target is set with clearing, so from a unit leader's
-/// scope it carries no character and a character trigger fails its mask
-/// while THIS and ROOT copy their scope, so a character they may
-/// carry leaves such a trigger unknown.
 #[test]
 fn a_set_target_carries_nothing_it_was_entered_from() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -680,8 +643,6 @@ fn a_set_target_carries_nothing_it_was_entered_from() {
     });
 }
 
-/// A character target reads only THIS's country:
-/// a unit leader as ROOT or PREV does not stop it.
 #[test]
 fn a_character_target_reads_only_this_country() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -700,8 +661,6 @@ fn a_character_target_reads_only_this_country() {
             prev: Some(leader),
             ..Scopes::of(Scope::Country(0))
         };
-        // No live character of GER: the empty target fails the context
-        // trigger's own mask, before `always`.
         assert_eq!(
             world.evaluate(&items("GER_rommel = { always = yes }"), scopes),
             Eval::False
@@ -709,9 +668,6 @@ fn a_character_target_reads_only_this_country() {
     });
 }
 
-/// A fallback naming its own alias, or a pair naming each other, is a
-/// cycle the game follows without a guard: it is
-/// refused by name, never followed until the stack overflows.
 #[test]
 fn a_fallback_cycle_is_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -728,8 +684,6 @@ fn a_fallback_cycle_is_refused_by_name() {
     }
 }
 
-/// A variable naming its own alias recurses as a fallback cycle does; a cycle
-/// the game never returns from is not masked by Boolean logic around it.
 #[test]
 fn an_endless_alias_cycle_refuses_every_enclosing_evaluation() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -753,10 +707,6 @@ fn an_endless_alias_cycle_refuses_every_enclosing_evaluation() {
     }
 }
 
-/// Alias resolution returns as soon as an unscored candidate
-/// passes: the targets after the original-tag candidates are
-/// read only if it reaches them, so a target it never reaches cannot make
-/// the answer unknown.
 #[test]
 fn later_candidates_are_read_only_when_reached() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -764,7 +714,6 @@ fn later_candidates_are_read_only_when_reached() {
     let frame = frame(&original_countries(), &[]);
     let aliases = "ALI = { original_tag = GER country = SB1 } SB1 = { variable = global.foo }";
     assert_eq!(check(&frame, aliases, 1, "tag = ALI"), Eval::True);
-    // A target member the selector does not follow matters only there too.
     let aliases = "ALI = { original_tag = GER targets_dynamic = yes }";
     assert_eq!(check(&frame, aliases, 1, "tag = ALI"), Eval::True);
     let aliases = "ALI = { original_tag = GER targets_dynamic = yes always = no }";
@@ -772,7 +721,6 @@ fn later_candidates_are_read_only_when_reached() {
         .decided()
         .unwrap_err();
     assert!(why.contains("targets_dynamic"), "{why}");
-    // Repeated original_tag assignments are refused as a counted form.
     let aliases = "ALI = { original_tag = GER original_tag = SOV }";
     let why = check(&frame, aliases, 1, "tag = ALI")
         .decided()
@@ -781,15 +729,11 @@ fn later_candidates_are_read_only_when_reached() {
         why.contains(REFUSED) && why.contains("original_tag 2 times"),
         "{why}"
     );
-    // Reached when the original-tag candidates fail.
     let aliases =
         "ALI = { original_tag = GER country = SB1 always = no } SB1 = { variable = global.foo }";
     assert!(check(&frame, aliases, 1, "tag = ALI").decided().is_err());
 }
 
-/// Each candidate is a fresh scope: PREV is the caller, known
-/// even where the caller's own PREV is not, and the candidate is set with
-/// clearing, so it carries no character.
 #[test]
 fn a_candidate_scope_is_fresh() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -815,10 +759,6 @@ fn a_candidate_scope_is_fresh() {
     );
 }
 
-/// Conditional loading and checking: a limit loads only into an
-/// empty limit; every conditional checks its own limit, an `else` included;
-/// an alternative attaches to the last nested `if`, else to its enclosing
-/// conditional; loading refuses an alternative after an `else` it attached.
 #[test]
 fn conditionals_load_limits_and_alternative_chains() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -827,39 +767,30 @@ fn conditionals_load_limits_and_alternative_chains() {
     with_world(&frame, "", Err("none"), |world| {
         let scopes = Scopes::of(Scope::Country(0));
         for (body, expected) in [
-            // The second limit is skipped: the first holds a child.
             (
                 "if = { limit = { always = yes } limit = { always = no } always = no } else = { always = yes }",
                 Eval::False,
             ),
-            // A first limit that added nothing leaves the second loaded.
             (
                 "if = { limit = { unregistered_key = yes } limit = { always = no } always = no } else = { always = yes }",
                 Eval::True,
             ),
-            // An `else` checks its own limit.
             (
                 "if = { limit = { always = no } } else = { limit = { always = no } always = no }",
                 Eval::True,
             ),
-            // An inner `else` with no nested `if` joins the enclosing chain.
             (
                 "if = { limit = { always = no } else = { always = no } }",
                 Eval::False,
             ),
-            // After a nested `if`, it joins the nested chain.
             (
                 "if = { limit = { always = yes } if = { limit = { always = no } } else = { always = no } }",
                 Eval::False,
             ),
-            // Inside a conditional, alternatives after an `else` still join
-            // (their key is the conjunction key, never the else key).
             (
                 "if = { limit = { always = yes } if = { limit = { always = no } } else = { limit = { always = no } } else = { always = no } }",
                 Eval::False,
             ),
-            // In a conjunction, an alternative after an attached `else` is
-            // refused and adds nothing.
             (
                 "if = { limit = { always = no } } else = { limit = { always = no } } else = { always = no }",
                 Eval::True,
@@ -870,9 +801,6 @@ fn conditionals_load_limits_and_alternative_chains() {
     });
 }
 
-/// Colour callbacks retain raw input refusals even when their final Boolean
-/// result is known. Each missing input appears once, independently of outputs.
-/// `inputs` spell each input's identity ([`super::refusal::Failure::names`]).
 fn colour_refusals(eval: &Evaluator, scopes: Scopes, body: &str, inputs: &[&str]) {
     let Eval::Unknown(reasons) = eval.evaluate_colour(&items(body), scopes, &[]) else {
         panic!("colour should refuse {inputs:?}: {body}");
@@ -902,9 +830,7 @@ fn colour_callbacks_refuse_unknown_conditions_even_without_temp_writes() {
         ] {
             colour_refusals(&eval, scopes, body, &["CountryStabilityInputs"]);
         }
-        // Native short circuiting still prevents an unreached input from being read.
         assert_eq!(eval.evaluate_colour(&items("if = { limit = { always = no } has_stability > 0.5 } set_temp_variable = { alpha = 1 }"), scopes, &[]), Eval::True);
-        // Ordinary three-valued trigger evaluation keeps its existing rules.
         assert_eq!(
             eval.evaluate(&items("OR = { has_stability > 0.5 always = yes }"), scopes),
             Eval::True
@@ -936,7 +862,6 @@ fn colour_callbacks_refuse_uncertain_scratch_even_after_known_overwrites() {
         "#,
             &["ResearchModifiers"],
         );
-        // A separate callback starts a fresh refusal set.
         assert_eq!(
             eval.evaluate_colour(
                 &items("set_temp_variable = { alpha = 1 } set_temp_variable = { red = 1 }"),
@@ -1176,8 +1101,6 @@ fn colour_callbacks_identify_roster_failures_across_iterators_and_builtin_arrays
     with_world(&f, "", Err("none"), |world| {
         let eval = Evaluator::new(world, None);
         let scopes = Scopes::of(Scope::Country(2));
-        // The iterator adds a refused-token prefix; the array does not. Neither
-        // the presentation nor the order of reads changes the input's identity.
         let mut previous = None;
         for body in [
             "OR = { any_owned_state = { always = yes } always = yes } set_temp_variable = { red = owned_states^num }",
@@ -1199,7 +1122,6 @@ fn colour_callbacks_identify_roster_failures_across_iterators_and_builtin_arrays
                 "CountryCounterInputs.controlled_states",
             ],
         );
-        // Two countries' equal errors are two distinct inputs, not equal text.
         let Eval::Unknown(reasons) = eval.evaluate_colour(&items(
             "OR = { any_owned_state = { always = yes } always = yes } GER = { OR = { any_owned_state = { always = yes } always = yes } }"
         ), scopes, &[]) else { panic!("both country rosters must refuse") };
@@ -1323,10 +1245,6 @@ fn colour_callbacks_refuse_uncertain_iterator_stop_and_scope_rosters() {
     });
 }
 
-/// A key names a character by the content's character templates
-/// (by token, so without case), not by the live characters:
-/// a template the scope country has no character of leaves the empty scope
-/// rejected by the context trigger's mask.
 #[test]
 fn a_character_scope_is_named_by_the_templates() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1346,7 +1264,6 @@ fn a_character_scope_is_named_by_the_templates() {
             let body = items(&format!("{key} = {{ always = yes }}"));
             assert_eq!(world.evaluate(&body, scopes), Eval::False, "{key}");
         }
-        // No template: the key adds no child.
         assert_eq!(
             world.evaluate(&items("GER_other = { always = no }"), scopes),
             Eval::True
@@ -1354,9 +1271,6 @@ fn a_character_scope_is_named_by_the_templates() {
     });
 }
 
-/// ROOT, FROM and PREV copy their scope's links, so FROM
-/// through FROM is the FROM scope's own FROM, which the recording does not
-/// hold; the combat scope's links are itself.
 #[test]
 fn a_link_through_a_link_is_its_scope_s_own() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1395,7 +1309,6 @@ fn a_link_through_a_link_is_its_scope_s_own() {
     });
 }
 
-/// Combat resets the country carrier, while tag has an explicit combat getter.
 #[test]
 fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1428,7 +1341,6 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
             ),
             Eval::True
         );
-        // Scope mask4 tests country, cleared by setting combat with clearing.
         for trigger in ["has_country_flag = x", "has_tactic = absent"] {
             assert_eq!(
                 evaluator.evaluate(&items(trigger), Scopes::combat()),
@@ -1436,7 +1348,6 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
                 "{trigger}"
             );
         }
-        // Tag admits Combat and explicitly reads the combat country's carrier.
         assert_eq!(
             evaluator.evaluate(&items("tag = FRA"), Scopes::combat()),
             Eval::True
@@ -1444,8 +1355,6 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
     });
 }
 
-/// GER (slot 0) owns states; D01 and D02 are dynamic countries with GER
-/// as their original tag, appended in one recorded frame; SOV and SOT.
 fn countries() -> Vec<(u32, u32, &'static str, i32, &'static str, &'static str)> {
     vec![
         (100, 0, "GER", 2, "", ""),
@@ -1456,7 +1365,6 @@ fn countries() -> Vec<(u32, u32, &'static str, i32, &'static str, &'static str)>
     ]
 }
 
-/// Positive country roster for exact original-tag getter and membership tests.
 fn original_countries() -> Vec<(u32, u32, &'static str, i32, &'static str, &'static str)> {
     countries()
         .into_iter()
@@ -1487,8 +1395,8 @@ fn original_predicate_selects_both_countries_and_compares_raw_aliases() {
         &mut *f.tables[TableId::CountryAppearance.index()]
     {
         rows[0].original_tag_reference = Recorded::Value(Some(300));
-        rows[0].original_tag = Recorded::Value(None); // Numeric equality needs no text.
-        rows[1].original_tag = Recorded::NotRecorded; // Nonpositive raw selects own.
+        rows[0].original_tag = Recorded::Value(None);
+        rows[1].original_tag = Recorded::NotRecorded;
     }
     assert_eq!(check(&f, "", 1, "original_tag = SOV"), Eval::True);
     with_world(&f, "", Err("none"), |world| {
@@ -1526,8 +1434,6 @@ fn original_predicate_uses_static_substitution_and_alias_dispatch() {
         ],
         &[],
     );
-    // Operand GER first substitutes the owning D01 from GER's stored bucket;
-    // both sides then select GER as their original. Direct GER would select SOV.
     assert_eq!(check(&f, "", 2, "original_tag = GER"), Eval::True);
     assert_eq!(
         check(&f, "ALI = { variable = THIS }", 2, "original_tag = ALI"),
@@ -1544,10 +1450,8 @@ fn original_predicate_resolves_a_known_null_operand_through_reserved_original() 
         &mut *f.tables[TableId::ReservedCountryNaming.index()]
     {
         rows[0].original_tag_reference = Recorded::Value(Some(100));
-        rows[0].original_tag = Recorded::Value(None); // Numeric getter needs no bytes.
+        rows[0].original_tag = Recorded::Value(None);
     }
-    // ALI has no passing candidate or fallback; raw zero still resolves
-    // the reserved country's original, matching GER's selected raw100.
     assert_eq!(
         check(&f, "ALI = { always = no }", 1, "original_tag = ALI"),
         Eval::True
@@ -1585,7 +1489,7 @@ fn reserved_world_owned_count_preserves_signed_values_and_independent_refusals()
             rows[0].country_array = Recorded::NotRecorded;
         }
         with_world(&f, "", Err("none"), |world| {
-            assert_eq!(world.owned_state_count(1), Ok(2)); // Zero suffix is lazy.
+            assert_eq!(world.owned_state_count(1), Ok(2));
             match count {
                 Recorded::Value(Some(raw)) => {
                     assert_eq!(world.owned_state_count(0), Ok(raw));
@@ -1717,10 +1621,6 @@ fn original_aliases_and_null_iterators_read_later_membership_only_when_reached()
     );
 }
 
-/// The first candidate whose triggers pass: the original-tag country, then
-/// its dynamic countries from the original-tag bucket; the alias is used as
-/// a scope and as a country operand, THIS the candidate and PREV the scope
-/// that used it.
 #[test]
 fn an_alias_is_the_first_candidate_whose_triggers_pass() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1734,13 +1634,10 @@ fn an_alias_is_the_first_candidate_whose_triggers_pass() {
     );
     assert_eq!(check(&flagged, aliases, 2, "tag = ALI"), Eval::True);
     assert_eq!(check(&flagged, aliases, 1, "tag = ALI"), Eval::False);
-    // The original-tag country itself comes first.
     let both = frame(&original_countries(), &[100, 101]);
     assert_eq!(check(&both, aliases, 1, "tag = ALI"), Eval::True);
-    // PREV is the scope that used the alias.
     assert_eq!(check(&both, aliases, 4, "PRV = { tag = GER }"), Eval::True);
     assert_eq!(check(&both, aliases, 5, "PRV = { tag = GER }"), Eval::False);
-    // No candidate and no fallback: no country, so the scope names nothing.
     let none = frame(&original_countries(), &[]);
     assert_eq!(
         check(&none, aliases, 1, "ALI = { always = yes }"),
@@ -1796,10 +1693,6 @@ fn aliases_use_exact_bucket_and_physical_array_order_with_first_tie() {
     );
 }
 
-/// `country_score` with a modifier: the highest score above 0 wins
-/// with a tie keeping the earlier; the
-/// fallback only when nothing wins; a check of every country without an
-/// original tag or targets; `has_focus_tree` and `has_cosmetic_tag`.
 #[test]
 fn scores_fallbacks_and_every_country() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1814,14 +1707,10 @@ fn scores_fallbacks_and_every_country() {
     assert_eq!(check(&frame, aliases, 4, "tag = SOU"), Eval::True);
     assert_eq!(check(&frame, aliases, 5, "tag = VIC"), Eval::True);
     assert_eq!(check(&frame, aliases, 1, "tag = NON"), Eval::True);
-    // Every country in slot order: D02 (slot 3) before FRA (slot 5).
     assert_eq!(check(&frame, aliases, 3, "tag = ANY"), Eval::True);
-    // Targets sorted by canonical slot: GER (1), D02 (3), SOV (4).
     assert_eq!(check(&frame, aliases, 3, "tag = TGT"), Eval::True);
 }
 
-/// An alias mapped to a saved event target needs the recorded registry:
-/// an unavailable table is refused by name.
 #[test]
 fn an_event_target_alias_is_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1842,11 +1731,8 @@ fn an_event_target_alias_is_refused_by_name() {
     }
 }
 
-/// A store's scope kind, id and (key, fixed5) entries.
 type Store<'a> = (u8, u32, &'a [(&'a str, i64)]);
 
-/// `frame` with `ScriptVariables` rows of `stores`, and state 64, owned by
-/// GER, in `States`.
 fn with_variables(mut frame: DecodedFrame, stores: &[Store<'_>]) -> DecodedFrame {
     use replay_data::{rows::ScriptVariableEntry, rows::ScriptVariablesRow, rows::StateRow};
     let mut rows: Vec<ScriptVariablesRow> = stores
@@ -1882,14 +1768,12 @@ fn with_variables(mut frame: DecodedFrame, stores: &[Store<'_>]) -> DecodedFrame
 }
 
 const ONE: i64 = 100_000;
-/// GER's encoded scope value: its tag bytes with the country discriminator.
 const GER: i64 = 0x4052_4547;
 
 fn variables_frame() -> DecodedFrame {
     variables_for(frame(&countries(), &[]))
 }
 
-/// The same raw stores with ordinary positive canonical country slots.
 fn positive_variables_frame() -> DecodedFrame {
     variables_for(frame(&original_countries(), &[]))
 }
@@ -1921,10 +1805,6 @@ fn variables_for(frame: DecodedFrame) -> DecodedFrame {
     )
 }
 
-/// Variable evaluation reads the store its operand resolves at its
-/// constructed key; a missing key is its `?default` or 0.
-/// `check_variable` compares the two sides
-/// as signed fixed5, `has_variable` tests the key.
 #[test]
 fn variables_read_the_recorded_stores_as_the_game_reads_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1967,8 +1847,6 @@ fn variables_read_the_recorded_stores_as_the_game_reads_them() {
                 .decided(),
             Ok(true)
         );
-        // The null state holds no object: its variables are the global
-        // store's.
         let null = Scopes::of(Scope::State(NULL_STATE));
         assert_eq!(
             world
@@ -1979,9 +1857,6 @@ fn variables_read_the_recorded_stores_as_the_game_reads_them() {
     });
 }
 
-/// A stored scope value decodes where a scope or a country is
-/// read: a `var:` scope key, a country operand,
-/// a tag alias's variable and an array of states.
 #[test]
 fn stored_scopes_decode_where_a_scope_is_read() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2002,8 +1877,6 @@ fn stored_scopes_decode_where_a_scope_is_read() {
             "{trigger}"
         );
     }
-    // Entry 1 is state 65, which no state holds: the null state, where the
-    // mask-2 check fails.
     assert_eq!(
         check(
             &frame,
@@ -2198,7 +2071,6 @@ fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete
         })
         .collect(),
     ));
-    // Ownership assignment excludes an empty state from the country's owned vector.
     *f.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
         (1..=6)
             .map(|id| ProvinceRow {
@@ -2244,9 +2116,6 @@ fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete
     assert!(why.names("States"), "{why}");
 }
 
-/// Built-in game variables shadow the stored keys and are
-/// resolved from recorded operands or refused by input name; `has_variable` does not consult them. Saved event
-/// targets without a registry, draws and unsupported temp writers are refused.
 #[test]
 fn runtime_only_operands_are_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2271,7 +2140,6 @@ fn runtime_only_operands_are_refused_by_name() {
     assert!(why("check_variable = { random < 1 }").contains("random"));
     let written = why("set_temp_variable_to_random = { var = t } check_variable = { x = 5 }");
     assert!(written.contains("set_temp_variable_to_random"), "{written}");
-    // A chain skips the thread-local store: decided after a setter.
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         let scopes = Scopes::of(Scope::Country(0));
@@ -2282,16 +2150,12 @@ fn runtime_only_operands_are_refused_by_name() {
                 .decided(),
             Ok(true)
         );
-        // Outside a script context every thread-local read is refused.
         let stale = Evaluator::new(world, None).with_temps(Temps::Stale);
         assert!(stale.scoped_value(b"x", scopes).is_err());
         assert_eq!(stale.scoped_value(b"ROOT.x", scopes), Ok(5 * ONE));
     });
 }
 
-/// A mean time's repeated `factor` or `add` parses into one operand
-/// which keeps fields an earlier parse set: only a
-/// last literal is exact, any other repeat is refused by name.
 #[test]
 fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2301,7 +2165,6 @@ fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
         let evaluator = Evaluator::new(world, None);
         let scopes = Scopes::of(Scope::Country(0));
         let weight = |fields: &str| {
-            // Mean-time modifiers own their operands before trigger loading.
             let text = format!("test = {{ base = {{ {fields} }} }}");
             let database = installed_content_core::combat_tactics::parse(text.as_bytes(), &names());
             assert!(
@@ -2328,8 +2191,6 @@ fn repeated_mean_time_operands_are_exact_only_for_a_last_literal() {
     });
 }
 
-/// An unsupported writer may overwrite an injected raid temp,
-/// which evaluation then reads: after one, the temp is refused.
 #[test]
 fn an_injected_temp_after_an_unported_writer_is_refused() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2390,8 +2251,6 @@ fn saved_entries_keep_empty_scope_masks_and_caller_clearing() {
         ],
     );
     with_world(&f, "", Err("none"), |world| {
-        // Context resolution keeps THIS for a faction target; its scope mask
-        // still reject that entered scope when it carries no objects.
         for name in ["kept", "empty"] {
             for body in ["", "always = yes"] {
                 assert_eq!(
@@ -2414,8 +2273,6 @@ fn saved_entries_keep_empty_scope_masks_and_caller_clearing() {
             ),
             Eval::True
         );
-        // Caller copies retain character-carrying uncertainty; a country
-        // setter clears it, also through a trailing THIS.
         for bare in [false, true] {
             let scopes = Scopes {
                 root: Scope::Leader((9u64 << 32) | 1),
@@ -2567,9 +2424,6 @@ fn saved_target_aliases_append_id_before_parsing_dotted_values() {
             },
         ],
     );
-    // Alias constructors parse chosen.foo.id.
-    // Parsing logs the three-part syntax and keeps the event name cut
-    // from the start for the second part's length: "cho", with no variable.
     for key in ["event_target", "global_event_target"] {
         let alias = format!("SEL = {{ {key} = chosen.foo }}");
         assert_eq!(check(&f, &alias, 0, "tag = SEL"), Eval::True);
@@ -2638,8 +2492,6 @@ fn global_event_target_prefix_is_a_variable_operand_and_invalid_as_a_context_key
         literal: b"global_event_target".to_vec(),
     }]));
     assert_eq!(check(&f, "", 0, "tag = global_event_target:x"), Eval::True);
-    // Parsing retains the generic prefix token; context resolution has no case for
-    // global_event_target, so its context scope remains invalid.
     assert_eq!(
         check(&f, "", 0, "GLOBAL_EVENT_TARGET:x = { always = yes }"),
         Eval::False
@@ -2904,9 +2756,6 @@ fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
     }
 }
 
-/// A state trigger needs only the core tables it reads: identity, owner, controller and
-/// flags are answered whatever the provinces, while a trigger that reads them, or a gap in a
-/// table it does read, still refuses.
 #[test]
 fn a_state_trigger_reading_no_provinces_is_answered_without_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3322,7 +3171,6 @@ fn country_government_and_numeric_original_keep_local_table_admission() {
             .unwrap_err()
             .contains("ideolog")
     );
-    // The numeric getter admits a known row without unrelated roster completeness.
     let TableView::Complete(rows) = &*healthy.tables[TableId::Countries.index()] else {
         unreachable!()
     };
@@ -3554,9 +3402,6 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
     });
 }
 
-/// Leader visibility in two steps decides as the roster check: what decides
-/// it, read from the character's recorded template and the content alone
-/// (binary searched or indexed), then that in the owner's scope.
 #[test]
 fn leader_visibility_steps_decide_as_the_roster_check() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3605,8 +3450,6 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
         line: Some(line),
         role: Ok(role),
     };
-    // A role with `visible`, one without (its tag under the lexer fold) and
-    // a template without a role.
     let roles = LeaderRoles::new(vec![
         template("mod_commander", 4, Some(items("has_country_flag = x"))),
         template("MOD_PLAIN", 8, Some(Vec::new())),
@@ -3699,15 +3542,11 @@ fn hours_reading_one_lexer_table_share_its_folds() {
     let (earlier, later) = (read(&first), read(&next));
     assert_eq!(folds(&earlier), folds(&later));
     assert_eq!(later.token_of(b"X"), Ok(Some(900)));
-    // A table read again is folded again.
     let mut reread = first.clone();
     let _ = &mut *reread.tables[TableId::LexicalTokens.index()];
     assert_ne!(folds(&read(&reread)), folds(&earlier));
 }
 
-/// A claimant evaluation on a world whose claims are already built records
-/// the claims it read, as the core-owner trigger records cores, so a later
-/// hour whose claims changed does not confirm a reused result.
 #[test]
 fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3732,7 +3571,6 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
     let world = World::read(&before, ContentFacts::content_only(&dlcs, &names, &aliases));
     let body = items("is_claimed_by = FRA");
     let scopes = || Scopes::of(Scope::State(64));
-    // The first evaluation builds the world's claims; the second reuses them.
     assert_eq!(world.evaluate(&body, scopes()), Eval::True);
     let (eval, mut inputs) = capture(&before, || world.evaluate(&body, scopes()));
     assert_eq!(eval, Eval::True);
@@ -3746,9 +3584,6 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
     assert!(!inputs.confirm(&after, |key| reread(&later, key)));
 }
 
-/// An invasion-preparation read on a world whose index is already built still
-/// records the table, so a later hour whose preparation progressed does not
-/// confirm a reused result.
 #[test]
 fn invasion_preparation_on_a_warmed_world_records_its_table() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3773,17 +3608,12 @@ fn invasion_preparation_on_a_warmed_world_records_its_table() {
     let names = TriggerNames::default();
     let aliases = Arc::new(TagAliases::default());
     let world = World::read(&before, ContentFacts::content_only(&dlcs, &names, &aliases));
-    // The first read builds the index; the second reuses it.
     let _ = world.invasion_preparation((7, 1));
     let (_, mut inputs) = capture(&before, || world.invasion_preparation((7, 1)));
     assert!(inputs.confirm(&before, |_| None));
     assert!(!inputs.confirm(&after, |_| None));
 }
 
-/// The claimant trigger tests the state's recorded claims by canonical slot,
-/// an alias included, as the core-owner trigger tests cores; a recording
-/// without claims leaves it unknown. Before claims were recorded the name
-/// evaluated nothing.
 #[test]
 fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3795,7 +3625,6 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
     else {
         panic!("complete links");
     };
-    // Raw 110 is an alias of GER's slot.
     links.push(CountryLinkRow {
         id: 110,
         canonical_slot: 1,
@@ -3819,7 +3648,6 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
     };
     assert_eq!(state(&f, "is_claimed_by = GER"), Eval::True);
     assert_eq!(state(&f, "is_claimed_by = FRA"), Eval::False);
-    // Cores are not claims.
     assert_eq!(state(&f, "is_core_of = FRA"), Eval::True);
     claims(&mut f, Recorded::NotRecorded);
     assert!(

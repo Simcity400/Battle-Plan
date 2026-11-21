@@ -1,21 +1,14 @@
-// The suite's measuring session over one app run: steps from trusted input to finished, their
-// verdicts, failure screenshots and the helpers control cases use.
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log, sleep } from './cdp.mjs';
 import { everFailed } from './coverage.mjs';
 import { DRAWN_GRACE_MS, mapDrew, noVisibleChange, pageShown, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
-/** The owner's rule: nothing a user waits on takes longer. */
 export const BUDGET_MS = 100;
-/** The app's tooltips wait this long on purpose before showing (components/Tooltip.tsx). */
 export const TOOLTIP_DELAY_MS = 500;
 
-/** The page expression that waits for a step to settle (`__e2e.settle`), over at `stepOver`; `only` names the one widget
- * it waits on, null for every visible one. */
 export const settleCall = (timeout, quiet, only = null) => `__e2e.settle(${timeout}, ${quiet}, ${JSON.stringify(only)}, ${stepOver.toString()})`;
 
-/** Whether a recorded result saves a screenshot: one asked for (`screenshot: true`), or a failure not told otherwise. */
 export const takesShot = entry => entry.screenshot === true || (!entry.pass && entry.screenshot !== false);
 
 export class Session {
@@ -23,20 +16,14 @@ export class Session {
     this.app = app;
     this.out = out;
     this.session = session;
-    /** Every measured step and every check: { area, item, label, ms, pass, reasons, ... }. */
     this.results = [];
     this.shots = 0;
     this.epoch = null;
-    /** Every step that failed in an earlier run (`coverage.mjs`): such a case is never left out as a repeat. */
     this.history = null;
-    /** 'full', or 'quick': one setting per widget kind. */
     this.tier = 'full';
-    /** Which earlier failures keep a case from being left out as a repeat: 'all', or only the product's. */
     this.pin = 'all';
   }
 
-  /** Whether any step of a case ever failed in an earlier run, among the failures `pin` counts. With no history every case
-   * may have: none is left out. */
   everFailed(area, item, prefix) { return this.history === null || everFailed(this.history, area, item, prefix, this.pin); }
 
   async init() {
@@ -44,7 +31,6 @@ export class Session {
     await mkdir(path.join(this.out, 'screenshots'), { recursive: true });
   }
 
-  /** Records a check or a step's result; a failure, or a step asking for one (`screenshot: true`), gets a screenshot. */
   async record(result) {
     const entry = { at: Date.now(), during: this.app.case, ...result, pass: result.pass && !(result.reasons?.length) };
     this.results.push(entry);
@@ -61,54 +47,35 @@ export class Session {
     } catch (error) { return `screenshot failed: ${error.message}`; }
   }
 
-  /** A case that could not run: a failure with its reason, never a skip. */
   fail(area, item, label, reason) { return this.record({ area, item, label, ms: null, pass: false, reasons: [reason] }); }
 
-  /**
-   * Measures one user action from its trusted input to finished: its handlers painted, every
-   * visible widget it touched shown content again, and `done` (a page expression) held.
-   * `widget` names the one widget it touches, when it touches one; `budget` overrides the 100 ms rule where the app waits
-   * on purpose (and says why in the report). `changes` names the widget, by its layout id, a setting must visibly
-   * change ({ key }), or the map view whose new request its viewer must draw ({ key, view, since? }). `drew` names a map view
-   * and the settings its menu saved ({ view, expected }: `MAP_EXPECTED` rows), which that view must report drawing with. `unobservable` is the
-   * reason a step's effect cannot be seen, which fails it by name. `from: 'last'` times from the gesture's last
-   * input (a drag's release, a typed field's Enter), not its first. `check: false` reports a revisit beside the cold
-   * step without judging its time; `control` names what cold and warm steps of one control share.
-   * `shot` saves the step's screenshot whatever its verdict, for a pass whose pictures are audited.
-   * Returns the result, with the probe's report as `probe`.
-   */
   async step(area, item, label, action, { done = null, changes = null, drew = null, from = 'first', timeout = 6000, quiet = 200, widget = null, awaits = true, budget = BUDGET_MS, check = true, control = label, unobservable = null, shot = false, extra = {} } = {}) {
     this.app.setCase(`${area}/${item}/${label}`);
     let changed = null, sentBefore = null, settingsBefore = null, drawnSame = null;
     const article = key => `document.querySelector(${JSON.stringify(`article.dash-widget[data-widget="${key}"]`)})`;
     const settingsOf = key => `${article(key)}?.dataset.settings ?? null`;
-    // `since`: what the app had sent before an earlier step made the change this one shows.
     if (changes?.view) sentBefore = changes.since !== undefined ? changes.since : this.app.lastSent('set_dashboard_maps');
     else if (changes) {
       const before = await this.app.evaluate(`__e2e.signature(${JSON.stringify(changes.key)})`);
       if (before === null) return this.fail(area, item, label, 'its widget is not on the page');
       changed = `(now => now !== null && now !== ${JSON.stringify(before)})(__e2e.signature(${JSON.stringify(changes.key)}))`;
       settingsBefore = await this.app.evaluate(settingsOf(changes.key));
-      // The widget's own word that it painted the new setting: a setting that changed nothing is then known at once.
       drawnSame = `(a => !!a && (${settingDrawn.toString()})({ settings: a.dataset.settings ?? null, drawn: a.dataset.drawn ?? null, state: __e2e.stateOf(a).state }, ${JSON.stringify(settingsBefore)}))(${article(changes.key)})`;
     }
     const until = changed === null ? done : done === null ? changed : `(${done}) && ${changed}`;
     const alt = drawnSame === null ? null : done === null ? drawnSame : `(${done}) && ${drawnSame}`;
-    // A widget the step hides on purpose (a map behind its own open menu) is not judged on its placeholder.
     await this.app.evaluate(`__e2e.mark(${until === null ? 'null' : JSON.stringify(until)}, ${JSON.stringify(awaits ? null : widget)}, ${alt === null ? 'null' : JSON.stringify(alt)}, ${DRAWN_GRACE_MS})`);
     let acted;
     try { acted = await action(); } catch (error) {
       await this.app.evaluate('__e2e.tracking = false');
       return this.fail(area, item, label, `could not act: ${error.message}`);
     }
-    // `awaits: false` waits on no widget: the step finishes on `done` and its paint alone.
     const probe = await this.app.evaluate(settleCall(timeout, quiet, awaits ? widget : '\u0000'), timeout + 30_000);
     const reasons = [];
     const touched = awaits ? probe.widgets.filter(w => w.visible && (widget === null || w.title === widget || w.key === widget)) : [];
     if (awaits && widget !== null && !touched.length) reasons.push('its widget is not in view');
     if (unobservable) reasons.push(unobservable);
     const start = from === 'last' ? probe.last : probe.input;
-    // A map setting has finished once the map's viewer has drawn the options the app sent it for that view.
     let drawnAt = null, drawnEpoch = null;
     if (changes?.view && start !== null) {
       const drawn = await this.mapChange(changes.view, sentBefore, this.epoch + start, timeout);
@@ -123,7 +90,6 @@ export class Session {
     let ms = null;
     if (start === null) reasons.push('no trusted input reached the page');
     else {
-      // Every completion the step waits on must have a paint time; a missing one fails by name, never as fast.
       if (probe.paint === null) reasons.push('when its input painted is unavailable');
       for (const w of touched) if (w.end !== 'loading' && (w.ready ?? w.first) === null && w.seen) reasons.push(`${w.title}: when its content painted is unavailable`);
       if (until !== null && probe.doneAtSeen && probe.doneAt === null) reasons.push('when it finished painting is unavailable');
@@ -132,7 +98,6 @@ export class Session {
     }
     if (probe.placeholderMs > 0) reasons.push(`showed a loading placeholder for ${Math.round(probe.placeholderMs)} ms (${probe.placeholderAt.join(', ')})`);
     if (until !== null && probe.doneAt === null) {
-      // Whether the widget was given the setting at all: its article carries a signature of the settings it renders with.
       if (changed !== null && !await this.holds(changed)) reasons.push(noVisibleChange(settingsBefore, await this.app.evaluate(settingsOf(changes.key))));
       else reasons.push(`never finished: ${until}`);
     }
@@ -145,7 +110,6 @@ export class Session {
     if (probe.inFlight) reasons.push(stillInFlight(probe.inFlight, timeout));
     if (probe.timedOut && !reasons.length) reasons.push(`not settled within ${timeout} ms`);
     if (check && ms !== null && ms > budget) reasons.push(`${Math.round(ms)} ms, over ${budget} ms`);
-    // Timing alone: the screenshot would show nothing wrong.
     const screenshot = shot ? true : reasons.every(reason => /ms, over/.test(reason)) ? false : undefined;
     const result = await this.record({ area, item, label, control, check, ms, budget, pass: true, reasons, screenshot, input: start === null ? null : this.epoch + start,
       gestureMs: from === 'last' && probe.input !== null && probe.last !== null ? probe.last - probe.input : null, drawnAt: drawnEpoch,
@@ -157,9 +121,6 @@ export class Session {
     return result;
   }
 
-  /** Waits for the app to send map view `view` a new request after `before` (what it last sent): its options, hour or
-   * place, whichever the setting moves, never its visibility alone. Then waits for its viewer to draw it, with those
-   * options: the frame's epoch time, or the reason it cannot be timed. */
   async mapChange(view, before, after, timeout) {
     const end = Date.now() + timeout;
     const setting = entry => entry && JSON.stringify({ ...entry, visible: undefined, clip: undefined });
@@ -172,7 +133,6 @@ export class Session {
       else await sleep(16);
     }
     if (!sent) return { reason: 'no visible change after the setting (completion unobservable): the app sent its map no new request' };
-    // Each option sent must be what the frame drew with.
     const options = JSON.stringify(sent.options ?? {});
     const drew = `(x => { const sent = ${options}; return Object.entries(sent).every(([key, value]) => JSON.stringify(x.options?.[key] ?? null) === JSON.stringify(value ?? null)); })`;
     while (Date.now() < end) {
@@ -183,8 +143,6 @@ export class Session {
     return { reason: `the map never drew its new options within ${Math.round(timeout / 1000)} s` };
   }
 
-  /** Waits for map view `view` to report a frame drawn after `after` with every setting of `expected` (`mapDrew`). With no
-   * frame after it, one drawn before that already shows them all passes unchanged: the setting left what it draws as it was. */
   async mapApplied(view, expected, after, timeout) {
     const end = Date.now() + timeout;
     const states = since => this.app.evaluate(`__e2e.mapStates.filter(x => x.id === ${JSON.stringify(view)} && (x.drawnAt ?? 0) > ${since} && !x.loading && !x.error)`);
@@ -200,9 +158,7 @@ export class Session {
       : 'the map reported no frame it drew' };
   }
 
-  // Helpers for cases: every one acts through trusted input at an element's centre.
 
-  /** The centre of the `index`th visible element matching `selector` (and `text`, by content or label), scrolled into view. */
   async locate(selector, { text = null, index = 0, within = null, partial = false } = {}) {
     return this.app.evaluate(`(() => {
       const root = ${within === null ? 'document' : `document.querySelector(${JSON.stringify(within)})`};
@@ -228,24 +184,19 @@ export class Session {
   key(name, modifiers) { return this.app.key(name, modifiers); }
   type(text) { return this.app.type(text); }
   async escape() { await this.app.key('Escape'); await this.frames(2); }
-  /** Resolves once the page has rendered `count` more frames: what the last input changed is on screen. */
   frames(count = 2) { return this.app.evaluate(`new Promise(resolve => { let left = ${count}; const next = () => (--left < 0 ? resolve(true) : requestAnimationFrame(next)); next(); })`); }
-  /** Resolves, checked each frame in the page, once `expression` holds (true), or after `timeout` ms (false). */
   until(expression, timeout = 2000) {
     return this.app.evaluate(`new Promise(resolve => { const end = performance.now() + ${timeout};
-      const test = () => { let ok = false; try { ok = !!(${expression}); } catch { /* not yet */ } if (ok || performance.now() > end) resolve(ok); else requestAnimationFrame(test); }; test(); })`, timeout + 30_000);
+      const test = () => { let ok = false; try { ok = !!(${expression}); } catch {} if (ok || performance.now() > end) resolve(ok); else requestAnimationFrame(test); }; test(); })`, timeout + 30_000);
   }
-  /** Watches for loading placeholders over a window; `unwatch` gives the reason to fail it with, if any showed. */
   watch() { return this.app.evaluate('__e2e.watch()'); }
   async unwatch() {
     const shown = await this.app.evaluate('__e2e.unwatch()');
     return shown.ms > 0 ? [`showed a loading placeholder for ${Math.round(shown.ms)} ms (${shown.where.join(', ')})`] : [];
   }
 
-  /** Whether a page expression holds. */
   holds(expression) { return this.app.evaluate(`!!(${expression})`); }
 
-  /** Drags with the button held, one move per frame; the page's frame intervals while it moved. Time it from its release. */
   async drag(from, to, moves = 24) {
     const start = await this.app.evaluate('performance.now()');
     await this.app.mouse('mouseMoved', from.x, from.y);
@@ -260,7 +211,6 @@ export class Session {
     return { frameGapMax: gaps.length ? gaps.at(-1) : null, frameGapP95: gaps.length ? gaps[Math.min(gaps.length - 1, Math.ceil(gaps.length * 0.95) - 1)] : null };
   }
 
-  /** A wheel turn over the dashboard grid's own scrollbar, so no widget's scrolling list takes it. */
   async wheel(deltaY) {
     const at = await this.need('.dash-grid-scroll');
     const x = at.left + at.w - 4;
@@ -271,8 +221,6 @@ export class Session {
   pages() { return this.app.evaluate(`[...document.querySelectorAll('.sidebar-page-list button.sidebar-subrow')].map(b => b.textContent.trim())`); }
   currentPage() { return this.app.evaluate(`document.querySelector('.sidebar-page-list button[aria-current=page]')?.textContent.trim() ?? null`); }
 
-  /** Switches to a page without measuring it, waiting until it is the page shown and its visible widgets settle; `force`
-   * clicks it even when its row is current already. */
   async openPage(label, { force = false } = {}) {
     if (!force && await this.holds(pageShown(label))) return;
     await this.click('.sidebar-page-list button.sidebar-subrow', { text: label });
@@ -280,12 +228,10 @@ export class Session {
     await this.app.evaluate(`document.querySelector('.dash-grid-scroll')?.scrollTo({ top: 0 })`);
   }
 
-  /** The playback timeline's geometry and value. */
   timeline() {
     return this.app.evaluate(`(() => { const r = document.querySelector('input.header-timeline'); if (!r) return null; const b = r.getBoundingClientRect();
       return { left: b.left, top: b.top, width: b.width, y: b.top + b.height / 2, min: Number(r.min), max: Number(r.max), value: Number(r.value) }; })()`);
   }
 
-  /** The timeline's x for `fraction` of the recording: the range maps values across the track minus its 14 px thumb. */
   static timelineX(line, fraction) { return line.left + 7 + fraction * (line.width - 14); }
 }

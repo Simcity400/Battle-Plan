@@ -17,21 +17,14 @@ import type { CountryStyle, FactionGroup } from '../generated/dashboard';
 import { factionNameAt, latestFactionSummaries } from './factionNames';
 import './factionColours.css';
 
-/** How long the founders' map colours may take to read before a faction still unread
- * keeps its palette colour (reads retry with backoff while they run). */
 const FOUNDER_WAIT_MS = 10_000;
 
 interface CampaignFactions {
   key: string; factions?: FactionGroup[]; leaderColours?: ReadonlyMap<string, Rgb | null>;
-  /** Each faction's first recorded leader's tag, for its identity across campaigns. */
   founders?: ReadonlyMap<string, string>;
   warnings: string[]; error?: Failure;
 }
 
-/** Every faction recorded on any branch of the campaign (colours are campaign-wide),
- * the map colour of the leader each had when first recorded (`factionFounders`), and
- * the recording's warnings about group history it could not read. A leader colour
- * that cannot be read leaves that faction on the palette, with a warning. */
 function useCampaignFactions(client: DashboardClient, source: DashboardSource | undefined): CampaignFactions {
   const content = useContentRevision(client);
   const key = source ? `${source.id}:${source.revision}:${content}` : '';
@@ -40,17 +33,12 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
     if (!source) return;
     const controller = new AbortController();
     const ids = { sourceId: source.id, revision: source.revision };
-    // Campaign colours and founders follow each branch's complete history.
     Promise.all(source.metadata.branches.map(branch => loadCountryGroups(client, source, branch.id, controller.signal, false, () => {})))
       .then(async replies => {
         if (controller.signal.aborted) return;
         const factions = latestFactionSummaries(replies);
         const warnings = [...new Set(replies.flatMap(reply => reply.warnings))];
         const founders = factionFounders(replies);
-        // Read through the shared bounded store (#146's FactRequests): at most two reads at
-        // once per branch, and a failed read (such as one the desktop rejected) backs off and
-        // is tried again. A founder still unread after FOUNDER_WAIT_MS keeps the palette, with
-        // a warning, rather than leaving the colours loading.
         const read = await Promise.all([...founderReads(founders)].map(([branchId, wanted]) => new Promise<ReadonlyMap<string, CountryStyle | null>>(resolve => {
           const store = new HourStore<CountryStyle>(0);
           const hours = new Set(wanted.map(item => item.hour)).size;
@@ -83,14 +71,6 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
   return state.key === key ? state : { key, warnings: [] };
 }
 
-/** Each faction's colour for charts: the user's choice (this campaign's own, else the
- * one set for every campaign, found by the faction's identity), else the default from
- * `factionColours`: the map colour of the leader the faction had when first recorded,
- * exactly, grey included, nudged slightly only where it clashes with another faction's;
- * a faction whose leader colour is not known takes the categorical palette. `identity`
- * gives a faction's identity across campaigns (`factionIdentity`), and `setColour`
- * saves a colour for every campaign or this one only, returning an error message if the
- * device refused. */
 export function useFactionColours(client: DashboardClient, source: DashboardSource | undefined) {
   const settings = useCampaignSettings();
   const campaign = useCampaignFactions(client, source);
@@ -108,19 +88,16 @@ export function useFactionColours(client: DashboardClient, source: DashboardSour
   const names = useCallback((faction: FactionGroup, hour?: number) => factionNameAt(faction, hour, own[faction.id]?.name), [own]);
   const displayNames = useMemo(() => new Map(Object.entries(own).flatMap(([id, style]) => style.name ? [[id, style.name] as const] : [])), [own]);
   const identity = (id: string) => identities.get(id) ?? null;
-  /** The tag of the leader a faction had when first recorded, if known. */
   const founder = (id: string) => founders?.get(id) ?? null;
   const setColour = (id: string, hex: string | null, scope: ColourScope) =>
     saveCampaignSettings(setFactionColour(settings, scope, campaignKey, id, identity(id), hex));
   return { factions, colours, names, displayNames, identity, founder, setColour, loading: !campaign.factions && !campaign.error, warnings: campaign.warnings, error: campaign.error };
 }
 
-/** Campaign-wide faction colours and display names, edited from a chart's settings. */
 export function FactionColoursEditor({ client, source }: { client: DashboardClient; source: DashboardSource }) {
   const settings = useCampaignSettings();
   const campaign = source.metadata.campaignKey;
   const { factions, colours, identity, founder, setColour, loading, warnings, error } = useFactionColours(client, source);
-  // An unnamed faction is told apart by its first recorded leader, named as the recording's catalogue names it.
   const unnamed = (id: string) => {
     const tag = founder(id);
     const name = tag ? source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable' : null;
@@ -129,7 +106,6 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
   const chosen = settings.campaigns[campaign]?.factions ?? {};
   const [scope, setScope] = useState<ColourScope>('campaign');
   const [message, setMessage] = useState<string | null>(null);
-  /** Saves and returns whether it worked; a failure leaves its message showing. */
   const save = (next: typeof settings) => {
     const failure = saveCampaignSettings(next);
     setMessage(failure);
@@ -137,7 +113,6 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
   };
   if (error) return <p className="field-hint" role="alert" data-detail={error.message}>{failureText(error, 'Couldn’t load factions.')}</p>;
   if (loading) return <p className="field-hint" role="status"><span className="spinner" /> Loading factions…</p>;
-  // With warnings, an empty list may be history the recording could not read, not no factions.
   if (!factions.length) return <p className="field-hint">{warnings.length ? 'Factions unavailable.' : 'No factions were recorded in this campaign.'}</p>;
   return <div className="faction-colours-body">
     <p className="field-hint">Names apply to this campaign; colours can apply to all campaigns.</p>
@@ -145,7 +120,6 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
     <ul className="faction-colours-list">{factions.map(faction => {
       const style = chosen[faction.id];
       const named = factionNameAt(faction, undefined, style?.name);
-      // Named as recorded, so the row keeps its name while the user renames it.
       const recorded = factionNameAt(faction).name ?? unnamed(faction.id);
       const shared = identity(faction.id) != null ? settings.shared[identity(faction.id)!] : undefined;
       const set = scope === 'campaign' ? style?.colour : shared?.colour;
@@ -153,7 +127,7 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
         <label className="faction-swatch" data-tooltip="Change colour" style={{ background: colours.get(faction.id) }}>
           <input type="color" value={colours.get(faction.id) ?? '#888888'} aria-label={`Colour for ${recorded}`}
             onChange={event => setMessage(setColour(faction.id, event.currentTarget.value, scope))} /></label>
-        {/* Keyed on the stored name, so a reset replaces any old text. */}
+        { }
         <input key={style?.name ?? ''} className="faction-name" defaultValue={style?.name ?? ''} placeholder={named.name ?? unnamed(faction.id)} maxLength={160} aria-label={`Display name of ${recorded}`}
           onBlur={event => {
             const name = event.currentTarget.value.trim();

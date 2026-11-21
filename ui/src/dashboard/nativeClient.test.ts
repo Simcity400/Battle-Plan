@@ -30,8 +30,6 @@ test('native query rejections use typed failures and cancellation keeps AbortErr
     const read = client.product(query, cancelled.signal);
     cancelled.abort();
     await assert.rejects(read, { name: 'AbortError' });
-    // Run 17: 107 replies landing after their requests were cancelled were parsed anyway inside playing windows (289 ms of
-    // the main thread): a reply nobody waits on any more is dropped as it lands.
     let land!: () => void;
     host.__lateReply = new Promise<void>(resolve => { land = resolve; });
     const late = new AbortController();

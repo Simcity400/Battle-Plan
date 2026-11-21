@@ -20,17 +20,14 @@ use std::{ops::RangeInclusive, sync::Arc, time::Duration};
 
 const LIMIT: Duration = Duration::from_secs(120);
 
-/// The political power segment `segment` records for its one country at `hour`.
 pub fn power(segment: BranchId, hour: Hour) -> i64 {
     segment as i64 * 1_000_000 + i64::from(hour)
 }
 
-/// The tag segment `segment` records for its one country.
 pub fn tag(segment: BranchId) -> Vec<u8> {
     format!("T{segment:02}").into_bytes()
 }
 
-/// A session of its own playing `hours` as segment `id`, its country naming the segment.
 fn segment(id: BranchId, hours: RangeInclusive<Hour>) -> Vec<Record> {
     let first = *hours.start();
     let mut records = vec![
@@ -49,16 +46,11 @@ fn segment(id: BranchId, hours: RangeInclusive<Hour>) -> Vec<Record> {
     records
 }
 
-/// A campaign whose player loaded an earlier save, read as timelines: segment 1 plays hours
-/// `base` to `base + 5`; segment 2 loads its hour `base + 2` and plays `base + 3` to `base + 6`;
-/// segment 3, the next session, goes on from `base + 7` to `base + 8`. Timeline 1 is segment 1
-/// whole; timeline 2 is segment 1 to the fork, then 2, then 3. Each segment is a run.
 pub fn reloaded(base: Hour) -> Replay {
     let segments = [segment(1, base..=base + 5), segment(2, base + 3..=base + 6), segment(3, base + 7..=base + 8)];
     Replay::from_records(b"campaign".to_vec(), &segments).unwrap().into_timelines(&Default::default()).unwrap()
 }
 
-/// The segment hour `hour` of timeline `branch` of [`reloaded`] reads.
 pub fn segment_of(base: Hour, branch: BranchId, hour: Hour) -> BranchId {
     match (branch, hour - base) {
         (1, _) | (2, ..=2) => 1,
@@ -71,8 +63,6 @@ fn political_power(frame: &DecodedFrame) -> Option<i64> {
     frame.complete::<tables::Countries>().ok()?.first()?.political_power_raw
 }
 
-/// Fails on a playhead over every run as one timeline: runs whose hours overlap are refused
-/// ("Piece 1 starts at hour 1003, not after the piece before it").
 #[test]
 fn a_recording_loaded_back_in_time_has_a_playhead_on_each_timeline_and_none_on_a_branch_it_does_not_hold() {
     let replay = reloaded(1_000);
@@ -85,10 +75,6 @@ fn a_recording_loaded_back_in_time_has_a_playhead_on_each_timeline_and_none_on_a
     assert!(refused.to_string().contains("holds no branch 9"), "refused as {refused}");
 }
 
-/// On the timeline that forked, the hours before the fork are the parent's rows and the hours
-/// after are its own and its continuation's; the parent's hours past the fork are never read. On
-/// the parent's timeline every hour is its own. The rows are stamped with the branch asked, and
-/// equal today's read of that branch.
 #[test]
 fn rows_at_the_head_of_a_timeline_are_its_own_pieces_and_never_another_timelines_hours() {
     let base = 2_000;
@@ -114,8 +100,6 @@ fn rows_at_the_head_of_a_timeline_are_its_own_pieces_and_never_another_timelines
     }
 }
 
-/// One timeline is one playhead whoever opens it: its three segments are three pieces of it, and
-/// a second opening shares it; the other timeline of the recording holds a playhead of its own.
 #[test]
 fn the_segments_of_one_timeline_share_one_playhead_and_another_timeline_has_its_own() {
     let replay = reloaded(3_000);

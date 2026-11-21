@@ -1,17 +1,3 @@
-//! Owned war census within the callback's current country lease.
-//!
-//! The rows are held between hours in a [`WarStore`] that travels with the
-//! job ([`crate::war_changes`]). An hour is quiet when the war domain's
-//! token, the scope and the callback's authenticated country census (which
-//! costs no read) equal those taken before the latest complete walk: no
-//! forwarded writer of the war set, its vectors or its fixed fields ran
-//! since, so that walk's rows and war pointers still stand, and the hour
-//! publishes them with each war's casualty counters read afresh
-//! ([`cwar_relation::read_casualties`]), one guarded copy per batch of wars,
-//! without validating any war. A walk is held only when it completed,
-//! recorded every row's war and the token stood still across it; a failed
-//! job forgets the store, and a casualty read that fails walks. Allocation is
-//! advisory: a store that cannot grow holds nothing.
 
 use crate::{
     acquisition_gather, sampling,
@@ -25,34 +11,26 @@ pub(crate) struct Request {
     pub table: acquisition_gather::Request<Vec<cwar_relation::Row>>,
     pub snapshot: cwar_relation::OwnedSnapshotScratch,
     pub snapshot_sampled: bool,
-    /// Held rows ([`WarStore`]); absent walks every hour and holds nothing.
     pub store: Option<Box<WarStore>>,
 }
 
-/// What a quiet hour must find unchanged since the held walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
     token: (u64, u64),
     scope: (usize, usize),
 }
 
-/// The latest complete walk ([`crate::war_changes`]).
 #[derive(Default)]
 pub(crate) struct WarStore {
-    /// Its rows and each row's war, in walk order.
     rows: Vec<cwar_relation::Row>,
     wars: Vec<usize>,
-    /// Its countries in census order: pointer, canonical slot and id.
     countries: Vec<(usize, u32, u32)>,
-    /// The key taken before it; `None` holds nothing.
     key: Option<Key>,
-    /// The hour's census and walked wars.
     census: Vec<(usize, u32, u32)>,
     walked: Vec<usize>,
 }
 
 impl WarStore {
-    /// A failed job's store certifies nothing.
     pub(crate) fn forget(&mut self) {
         self.key = None;
     }
@@ -63,8 +41,6 @@ impl WarStore {
             + (self.countries.capacity() + self.census.capacity()) * size_of::<(usize, u32, u32)>()
     }
 
-    /// The hour's countries in census order into `census`; false when the
-    /// census does not read or cannot be stored.
     fn take_census(&mut self, countries: &impl Memory, base: usize, game_state: usize) -> bool {
         self.census.clear();
         let Ok(reader) = ccountry::Reader::new(countries, base, game_state) else {
@@ -88,8 +64,6 @@ impl WarStore {
         true
     }
 
-    /// The held rows with each war's casualties read afresh into `output`;
-    /// false when they cannot be stored or a war does not read.
     fn carry(&self, memory: &impl Memory, output: &mut Vec<cwar_relation::Row>) -> bool {
         output.clear();
         if allocation::advisory(|| allocation::reserve(output, self.rows.len())).is_err() {
@@ -99,8 +73,6 @@ impl WarStore {
         cwar_relation::read_casualties(memory, &self.wars, output)
     }
 
-    /// Holds `rows`, whose wars the walk left in `walked`, with the hour's
-    /// census under `key`.
     fn hold(&mut self, rows: &[cwar_relation::Row], key: Key) {
         self.key = None;
         self.rows.clear();
@@ -113,8 +85,6 @@ impl WarStore {
         self.key = Some(key);
     }
 
-    /// One hour's WarRelations into `rows`: the held rows with fresh
-    /// casualties on a quiet hour, a walk otherwise.
     #[allow(clippy::too_many_arguments)]
     fn capture(
         &mut self,
@@ -216,7 +186,6 @@ impl Request {
                 memory, &cached, base, game_state, rows, snapshot, None,
             ),
         });
-        // One conference can end every live war relation in an hour.
         match table.result {
             Outcome::Rows { len } => crate::event_feed_observer::note_wars(len),
             Outcome::Truncated { len, unread_rows } => {
@@ -365,7 +334,6 @@ mod tests {
             })
             .unwrap();
             let mut pending = Some(owned);
-            // SAFETY: synthetic source and owned outputs survive until collection.
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
             let completion = pool.finish(ticket).unwrap();
             assert_eq!(
@@ -379,7 +347,6 @@ mod tests {
         }
     }
 
-    /// The war domain for a store test: a token the test moves.
     #[derive(Default)]
     struct Domain {
         revision: std::sync::atomic::AtomicU64,
@@ -416,9 +383,6 @@ mod tests {
         (outcome, counts, rows)
     }
 
-    /// A quiet hour publishes the held walk with each war's casualties read
-    /// afresh, reading nothing else of any war; the walk's rows are those a
-    /// fresh walk of the same memory gives.
     #[test]
     fn a_quiet_hour_reads_only_casualties_and_equals_a_fresh_walk() {
         let mut bytes = kit::fixture();
@@ -460,8 +424,6 @@ mod tests {
         );
     }
 
-    /// A forwarded writer or an unreadable war walks; a complete walk is held
-    /// again for the next hour.
     #[test]
     fn a_writer_or_a_failed_read_walks() {
         let mut bytes = kit::fixture();
@@ -475,7 +437,6 @@ mod tests {
         };
         assert!(!hour(&bytes).1);
         assert!(hour(&bytes).1);
-        // Relation replacement retires WAR2 and unlinks it from its owner.
         domain.write();
         bytes[kit::WAR2 + engine_native::crelation::RETIRED] = 1;
         let (outcome, quiet, rows) = hour(&bytes);
@@ -483,7 +444,6 @@ mod tests {
         assert_eq!(outcome, Outcome::Rows { len: 1 });
         assert_eq!(rows[0].first_country, 1);
         assert!(hour(&bytes).1);
-        // An unreadable war's casualties walk, and the walk refuses it.
         let memory = Traced {
             bytes: &bytes,
             calls: RefCell::default(),
@@ -492,7 +452,6 @@ mod tests {
         let (outcome, counts, _) = capture(&mut store, &mut request, &memory, &domain);
         assert!(counts.read && !counts.quiet);
         assert!(matches!(outcome, Outcome::Unavailable { .. }));
-        // A failed walk holds nothing.
         let (_, counts, _) = capture(&mut store, &mut request, &kit::memory(&bytes), &domain);
         assert!(counts.read);
     }

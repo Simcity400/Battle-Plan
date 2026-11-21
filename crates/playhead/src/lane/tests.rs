@@ -62,21 +62,15 @@ impl Pages for Recording {
     }
 }
 
-/// A run of `blocks` blocks of one table, each hour's changes made by `hour` (hour `n` may name
-/// string `n`, added that hour); the store's state after every hour.
 pub(crate) fn record(settings: Settings, blocks: u32, hour: impl FnMut(u32, &mut TableChanges<'_>)) -> (Arc<Recording>, Vec<TableState>) {
     record_hours(settings, blocks * BLOCK, hour)
 }
 
-/// [`record`] of `hours` hours, a short last block closed by the run's end.
 pub(crate) fn record_hours(settings: Settings, hours: u32, mut hour: impl FnMut(u32, &mut TableChanges<'_>)) -> (Arc<Recording>, Vec<TableState>) {
     let (bytes, run, mut states) = record_run(settings, 1, 0, hours, |at, _, changes| hour(at, changes));
     (Arc::new(Recording { bytes, runs: vec![run], kinds: vec![KINDS.to_vec()] }), states.remove(0))
 }
 
-/// A run of `hours` hours of `tables` tables from game hour `first`, each table's changes each
-/// hour made by `hour` (hour `n` of the run may name string `n`); its frames, its pages, and every
-/// table's state after every hour.
 pub(crate) fn record_run(settings: Settings, tables: usize, first: i32, hours: u32, mut hour: impl FnMut(u32, usize, &mut TableChanges<'_>)) -> (Vec<u8>, Run, Vec<Vec<TableState>>) {
     let kinds = vec![KINDS.to_vec(); tables];
     let mut store = Store::new(kinds.clone(), vec![false; tables]);
@@ -85,7 +79,6 @@ pub(crate) fn record_run(settings: Settings, tables: usize, first: i32, hours: u
     let mut states = vec![Vec::new(); tables];
     store.begin_run(first);
     for at in 0..hours {
-        // A run past the first spells its strings its own way, as every run numbers them anew.
         let text = if first == 0 { format!("text {at}") } else { format!("text {first}/{at}") };
         store.begin_hour(first + at as i32, &[text.as_bytes()]).unwrap();
         for table in 0..tables {
@@ -106,7 +99,6 @@ pub(crate) fn record_run(settings: Settings, tables: usize, first: i32, hours: u
     (memory.bytes, Run::new(first, memory.pages).unwrap(), states)
 }
 
-/// A state's live rows by key, each with its cells.
 pub(crate) fn rows(table: &TableState) -> BTreeMap<u128, Vec<String>> {
     table.rows().map(|slot| (table.key(slot).unwrap(), (0..KINDS.len()).map(|column| format!("{:?}", table.value(column, slot))).collect())).collect()
 }
@@ -123,8 +115,6 @@ pub(crate) fn all() -> Vec<usize> {
     (0..KINDS.len()).collect()
 }
 
-/// Steps of `step` hours from the run's start to its end, every part given first; each step's
-/// change set to `each` with the store's state at the step's end.
 fn step_through(recording: &Arc<Recording>, states: &[TableState], step: u32, mut each: impl FnMut(&Lane, &Changes, &TableState)) {
     let mut lane = lane(recording);
     lane.seek(0).unwrap();
@@ -171,7 +161,6 @@ pub(crate) fn owned(value: Value<'_>) -> Owned {
     }
 }
 
-/// Rows by slot, kept only from change sets.
 #[derive(Default)]
 pub(crate) struct Mirror {
     pub(crate) rows: BTreeMap<u32, (u128, Vec<Owned>)>,
@@ -180,8 +169,6 @@ pub(crate) struct Mirror {
 }
 
 impl Mirror {
-    /// A reader's rebuild: every live row of the lane with the cells it reads, as its change sets
-    /// name them, the strings the lane knows and its status.
     pub(crate) fn rebuilt(lane: &Lane) -> Self {
         let cells = lane.cells();
         let rows = cells.rows().map(|slot| (slot, (cells.key(slot).expect("keyed"), lane.reads().iter().map(|&column| owned(cells.value(column, slot))).collect()))).collect();
@@ -189,7 +176,6 @@ impl Mirror {
         Self { rows, texts, status: Some(lane.status()) }
     }
 
-    /// A change set; a reset names no row, so the mirror keeps what it holds.
     pub(crate) fn apply(&mut self, changes: &Changes) {
         let width = changes.columns().len();
         let deleted = changes.deleted();
@@ -244,7 +230,6 @@ fn assert_each_once(changes: &Changes) {
     }
 }
 
-/// Rows 0 to 7 with their first cell written every hour.
 pub(crate) fn busy(at: u32, changes: &mut TableChanges<'_>) {
     if at == 0 {
         for slot in 0..8 {
@@ -257,7 +242,6 @@ pub(crate) fn busy(at: u32, changes: &mut TableChanges<'_>) {
     }
 }
 
-/// Parts closed every few hours: a step over several of them names each slot once.
 #[test]
 fn a_step_crossing_a_part_boundary_names_each_slot_once() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 1, busy);
@@ -272,8 +256,6 @@ fn a_step_crossing_a_part_boundary_names_each_slot_once() {
     assert_eq!(steps, 30);
 }
 
-/// A row inserted and deleted within one step is in no list of its change set; a slot freed and
-/// taken by another row within a step reports the delete, the insert and the new row's cells.
 #[test]
 fn short_lives_leave_no_trace_and_a_reused_slot_reports_its_new_row() {
     let (recording, states) = record(Settings::at(3), 1, |at, changes| match at {
@@ -312,8 +294,6 @@ fn short_lives_leave_no_trace_and_a_reused_slot_reports_its_new_row() {
     assert_eq!(rows(lane.cells()), rows(&states[23]));
 }
 
-/// A table packed at a block's end: the step stops there and names each new slot's old one; the
-/// cells are what the store holds, renumbered, and later steps go on from them.
 #[test]
 fn a_packed_block_end_renumbers_from_the_live_bits() {
     let settings = Settings { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..Settings::at(3) };
@@ -357,9 +337,6 @@ fn a_packed_block_end_renumbers_from_the_live_bits() {
     assert_eq!(renumbered, 1);
 }
 
-/// Numbers, missing and unrecorded cells, a list cell and text, over two blocks a day at a time
-/// and an hour at a time: a mirror kept from the change sets alone equals the lane after every
-/// step, and the lane equals the store.
 #[test]
 fn a_mirror_kept_from_change_sets_equals_the_cells() {
     let (recording, states) = record(Settings { cap: 256, ..Settings::at(3) }, 2, |at, changes| {
@@ -410,8 +387,6 @@ fn a_mirror_kept_from_change_sets_equals_the_cells() {
     }
 }
 
-/// With only the parts its seek read given, a step stops at the last one's end and says it
-/// stalled; given the rest it goes on to the hour asked.
 #[test]
 fn a_step_waits_at_a_missing_part_and_goes_on_when_given_it() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 1, busy);
@@ -432,8 +407,6 @@ fn a_step_waits_at_a_missing_part_and_goes_on_when_given_it() {
     assert_eq!(rows(lane.cells()), rows(&states[719]));
 }
 
-/// A lane asks for the parts covering the hours asked and at least one more, and holds no part it
-/// has passed: the one under the head and those ahead.
 #[test]
 fn a_lane_reads_ahead_by_hours_and_lets_passed_parts_go() {
     let (recording, _) = record(Settings { cap: 64, ..Settings::at(3) }, 1, busy);
@@ -454,9 +427,6 @@ fn a_lane_reads_ahead_by_hours_and_lets_passed_parts_go() {
     assert!(lane.want(through).is_some(), "at least the part after the last given");
 }
 
-/// A status and sample hour that hold for days are reported on the step they change and on no
-/// other; a sample hour that moves every hour is reported every step. A status that leaves and
-/// comes back inside one step is reported at the hour it left, though the step ends where it began.
 #[test]
 fn status_is_reported_only_when_it_changes() {
     let mut store = Store::new(vec![KINDS.to_vec()], vec![false]);
@@ -501,8 +471,6 @@ fn status_is_reported_only_when_it_changes() {
     assert!(reported > 20);
 }
 
-/// Seeks to hours after a restore, inside blocks and at the last hour of a short last block hold
-/// what stepping holds there.
 #[test]
 fn a_seek_equals_stepping_to_the_same_hour() {
     let settings = Settings { restore_blocks: 1, ..Settings::at(3) };
@@ -521,10 +489,6 @@ fn a_seek_equals_stepping_to_the_same_hour() {
     }
 }
 
-/// Older rows 0 to 3 (one deleted at hour 30), and every third hour a row born (key 1000 + the
-/// hour) that lives one to five hours: a number, an optional number missing every other birth, a
-/// list cell and a text written at its birth, its number written again every even hour, its
-/// optional unrecorded at hours of seven. Slots are taken lowest free, so lives reuse them.
 fn events(at: u32, changes: &mut TableChanges<'_>) {
     if at == 0 {
         for slot in 0..4 {
@@ -555,12 +519,8 @@ fn events(at: u32, changes: &mut TableChanges<'_>) {
     }
 }
 
-/// A passing row as compared: birth hour, last live hour, key, cells.
 type Passed = (i32, i32, u128, Vec<String>);
 
-/// The rows born and gone inside hours `from..=to` from the store's states after every hour: not
-/// live at the hour before `from`, live at one of them, gone by `to`; each with its cells at its
-/// last live hour. By birth hour, then key.
 fn passed(states: &[TableState], from: usize, to: usize) -> Vec<Passed> {
     let before: std::collections::BTreeSet<u128> = if from == 0 { Default::default() } else { rows(&states[from - 1]).into_keys().collect() };
     let after = rows(&states[to]);
@@ -579,15 +539,11 @@ fn passed(states: &[TableState], from: usize, to: usize) -> Vec<Passed> {
     out
 }
 
-/// A change set's passing rows as compared, in their own order.
 fn passing_of(changes: &Changes) -> Vec<Passed> {
     let passing = changes.passing();
     (0..passing.len()).map(|row| (passing.born()[row], passing.last()[row], passing.keys().expect("keyed")[row], passing.columns().iter().map(|column| format!("{:?}", column.value(row))).collect())).collect()
 }
 
-/// Steps of 24, 7 and 100 hours over the events on parts of a few hours across a block's end:
-/// each step's passing rows are the rows born and gone in its hours with their last cells, in
-/// birth order, in neither its inserts nor its deletes; older rows deleted in it are deletes.
 #[test]
 fn a_passing_lane_gives_every_row_born_and_gone_in_a_step_with_its_last_cells() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 2, events);
@@ -617,9 +573,6 @@ fn a_passing_lane_gives_every_row_born_and_gone_in_a_step_with_its_last_cells() 
     }
 }
 
-/// One slot lived in three times inside a step: the two lives gone are two passing rows with
-/// their own cells (the second written after its birth), and the third, alive at the step's end,
-/// is the step's insert.
 #[test]
 fn a_slot_reused_inside_a_step_gives_one_passing_row_per_life_and_the_survivor_in_inserted() {
     let born = |changes: &mut TableChanges<'_>, key: u128, value: i32| {
@@ -658,8 +611,6 @@ fn a_slot_reused_inside_a_step_gives_one_passing_row_per_life_and_the_survivor_i
     assert_eq!(passed(&states, 1, 23), sorted);
 }
 
-/// A change set as a reader sees it: every value of every column, the lives, the status and the
-/// texts; widths left out, since a passing lane's cells see the values a row passed through.
 fn seen(changes: &Changes) -> String {
     let columns: Vec<(usize, Vec<(u32, String)>)> = changes.columns().iter().map(|column| (column.column(), column.values().map(|(slot, value)| (slot, format!("{value:?}"))).collect())).collect();
     let lives = |lives: &crate::changes::Lives| (lives.hours().to_vec(), lives.slots().to_vec(), lives.keys().map(<[u128]>::to_vec));
@@ -667,8 +618,6 @@ fn seen(changes: &Changes) -> String {
     format!("{:?}", (changes.reset(), changes.head(), changes.short(), changes.stalled(), columns, lives(changes.deleted()), lives(changes.inserted()), changes.status(), changes.renumber(), texts))
 }
 
-/// A lane not declared passing gives the change sets a passing lane gives apart from the passing
-/// rows, and none of those.
 #[test]
 fn a_non_passing_lanes_change_sets_are_what_they_were() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 2, events);
@@ -690,8 +639,6 @@ fn a_non_passing_lanes_change_sets_are_what_they_were() {
     }
 }
 
-/// A seek's replay keeps no passing row and its reset names none; the first step after it passes
-/// only the rows born after the hour sought.
 #[test]
 fn a_reset_and_a_seeks_replay_carry_no_passing_rows() {
     let (recording, states) = record(Settings { cap: 64, ..Settings::at(3) }, 2, events);
@@ -710,7 +657,6 @@ fn a_reset_and_a_seeks_replay_carry_no_passing_rows() {
     }
 }
 
-/// Number `at` of cells `width` bytes wide, sign-extended when `signed`.
 fn stored(bytes: &[u8], at: usize, width: u8, signed: bool) -> u64 {
     let width = width as usize;
     if width == 0 {
@@ -727,7 +673,6 @@ fn stored(bytes: &[u8], at: usize, width: u8, signed: bool) -> u64 {
     }
 }
 
-/// A column's cells read from its raw view alone.
 fn from_raw(written: &crate::changes::Written) -> Vec<(u32, Owned)> {
     let (missing, unrecorded) = (written.missing(), written.unrecorded());
     written
@@ -752,9 +697,6 @@ fn from_raw(written: &crate::changes::Written) -> Vec<(u32, Owned)> {
         .collect()
 }
 
-/// A column's raw view gives the cells `each` gives: numbers at every width a step holds them at
-/// (one, two, four and eight bytes, signed), missing and unrecorded cells, text ids and list
-/// cells, in the columns and in the passing rows.
 #[test]
 fn a_columns_raw_view_gives_the_cells_each_gives() {
     let (recording, _) = record(Settings { cap: 64, ..Settings::at(3) }, 2, |at, changes| {
@@ -829,11 +771,6 @@ fn a_columns_raw_view_gives_the_cells_each_gives() {
     assert!(missing > 0 && unrecorded > 0 && texts > 0 && lists > 0 && passing > 0);
 }
 
-/// The hours of a step and the step itself are one walk of the rows: a mirror kept from the hours
-/// alone — with the strings, the status and the renumber an hour's set does not carry taken from
-/// the step's own — equals the lane after every step, at every step size, over births, deaths,
-/// slot reuse, part boundaries and a packed block's renumber; and so across a seek, whose reset
-/// carries no hour and whose steps after it do.
 #[test]
 fn an_hours_change_sets_fold_to_the_steps_own() {
     let (recording, states) = record(Settings { cap: 256, ..Settings::at(3) }, 2, events);
@@ -862,7 +799,6 @@ fn an_hours_change_sets_fold_to_the_steps_own() {
                     mirror.apply(set);
                     dated += 1;
                 }
-                // What the step's own change set says and an hour's does not.
                 mirror.texts.extend(changes.texts().iter().map(|(id, text)| (id, text.to_vec())));
                 if let Some(status) = changes.status() {
                     mirror.status = Some(status);

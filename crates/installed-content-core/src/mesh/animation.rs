@@ -2,26 +2,17 @@ use std::io;
 
 use super::{Transform, Value, invalid, parse, triple};
 
-/// A decoded `.anim` file: the `[info]` rest pose and the `[samples]` frames.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Animation {
-    /// `fps`, the sample rate.
     pub fps: f32,
-    /// `sa`, the number of frames.
     pub samples: u32,
-    /// One entry per joint, in skeleton index order.
     pub joints: Vec<AnimationJoint>,
-    /// `[samples]` `t`: three floats per frame per joint that declares `t`,
-    /// **frame-major** and in joint order.
     pub(super) translations: Vec<f32>,
-    /// `[samples]` `q`: four floats, the same way.
     pub(super) rotations: Vec<f32>,
-    /// `[samples]` `s`: one float, the same way.
     pub(super) scales: Vec<f32>,
 }
 
 impl Animation {
-    /// Retained sample slices and capacities, in translation, rotation and scale order.
     pub fn sample_storage(&self) -> [(&[f32], usize); 3] {
         [
             (&self.translations, self.translations.capacity()),
@@ -30,14 +21,6 @@ impl Animation {
         ]
     }
 
-    /// The rest pose of one joint, as a transform in its parent's space.
-    ///
-    /// This is the `[info]` block's own `t`, `q` and `s`, read verbatim. It is
-    /// separate from [`FIRST_FRAME`], which reads the first sample of each
-    /// animated channel. A file can repeat its rest values at frame zero,
-    /// but each channel retains its authored samples independently. Keeping
-    /// the two readings apart also allows [`Animation::local`] to select
-    /// later frames while static channels keep their rest values.
     #[cfg(test)]
     pub(super) fn rest(&self, name: &str) -> Option<Transform> {
         let joint = self.joints.iter().find(|joint| joint.name == name)?;
@@ -48,10 +31,6 @@ impl Animation {
         ))
     }
 
-    /// How many joints declare each of the three channels, in `tqs` order.
-    ///
-    /// The `[samples]` streams carry only the joints that declare the channel,
-    /// so these are the strides one frame advances by.
     pub fn channel_joints(&self) -> [usize; 3] {
         let count = |channel: char| {
             self.joints
@@ -62,12 +41,6 @@ impl Animation {
         [count('t'), count('q'), count('s')]
     }
 
-    /// Every joint's transform in its parent's space at one frame, in file
-    /// order.
-    ///
-    /// A channel the joint does not animate contributes its `[info]` value, and
-    /// so does any channel whose stream is short of this frame, which is what
-    /// makes a file with no `[samples]` block at all evaluate to its rest pose.
     pub fn frame(&self, frame: u32) -> Vec<Transform> {
         self.frame_trs(frame)
             .iter()
@@ -75,12 +48,10 @@ impl Animation {
             .collect()
     }
 
-    /// Authored channel values before quaternion-to-matrix conversion.
     pub fn frame_trs(&self, frame: u32) -> Vec<JointPose> {
         self.frame_trs_iter(frame).collect()
     }
 
-    /// Streams one frame in joint order without allocating an intermediate pose.
     pub fn frame_trs_iter(&self, frame: u32) -> impl Iterator<Item = JointPose> + '_ {
         let [strides_t, strides_q, strides_s] = self.channel_joints();
         let frame = frame as usize;
@@ -118,8 +89,6 @@ impl Animation {
         })
     }
 
-    /// The loop period is the last sample's time, (samples - 1) / fps;
-    /// a single-sample clip lasts one frame interval.
     pub fn duration(&self) -> f32 {
         if self.fps > 0.0 {
             self.samples.saturating_sub(1).max(1) as f32 / self.fps
@@ -134,7 +103,6 @@ impl Animation {
         out
     }
 
-    /// Samples into retained storage; the two source frames are streamed in joint order.
     pub fn sample_into(&self, seconds: f32, looping: bool, out: &mut Vec<JointPose>) {
         let duration = self.duration();
         let time = if looping && duration > 0.0 {
@@ -154,7 +122,6 @@ impl Animation {
         );
     }
 
-    /// One joint's transform in its parent's space at one frame.
     #[cfg(test)]
     pub(super) fn local(&self, name: &str, frame: u32) -> Option<Transform> {
         let index = self.joints.iter().position(|joint| joint.name == name)?;
@@ -162,7 +129,6 @@ impl Animation {
     }
 }
 
-/// Local translation, quaternion and uniform scale. Blend before composing parents.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JointPose {
     pub translation: [f32; 3],
@@ -214,37 +180,17 @@ impl JointPose {
     }
 }
 
-/// The frame of a state animation a still hour shows.
-///
-/// A recording holds one sample an hour and no animation clock, so an entity
-/// has no elapsed time in its default state: what the engine draws at time 0 is
-/// sample 0. Nothing here advances it.
 pub const FIRST_FRAME: u32 = 0;
 
-/// One joint's rest pose inside an `.anim`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AnimationJoint {
     pub name: String,
-    /// `sa`, the animated channels: a subset of `"tqs"` in that order. Empty
-    /// means the joint is static and keeps its rest transform at every
-    /// sampled frame.
     pub channels: String,
-    /// `t`, the rest translation.
     pub translation: [f32; 3],
-    /// `q`, the rest rotation quaternion `(x, y, z, w)`.
     pub rotation: [f32; 4],
-    /// `s`, the rest uniform scale. **Zero hides the joint's attachment**:
-    /// an animation can select between attached objects by giving the
-    /// visible joint a nonzero scale and the other joints a zero scale.
-    /// Their authored transforms remain available even while hidden.
     pub scale: f32,
 }
 
-/// Decodes the `[info]` and `[samples]` blocks of a `.anim` file.
-///
-/// Errors are named `InvalidData` for anything [`parse`] refuses, for a file
-/// with no `[info]` node, and for a `[samples]` stream whose length is not the
-/// frame count times the number of joints declaring that channel.
 pub fn read_animation(bytes: &[u8]) -> io::Result<Animation> {
     let root = parse(bytes)?;
     let info = root

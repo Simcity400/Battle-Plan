@@ -1,11 +1,3 @@
-//! The hourly original pass over the strategic navy manager's physical slots,
-//! held by country counters for the Ordinary job. The naval mission ledgers
-//! borrow each slot's authenticated navy between [`Captured::begin`] and
-//! [`Captured::finish`]; slot zero supplies the reserved country's launch
-//! naval bases ([`Launch`], held by country appearance). The controller-area
-//! province domain of the retired selected-route preview is not read.
-//! Attach/live hints prepare the physical slot count; worker storage grows
-//! from the original header before the same sample is published.
 use crate::table_capture::Arena;
 use engine_native::{Memory, ccountry};
 use engine_naval_history::country_naval_movement_inputs as native;
@@ -26,7 +18,6 @@ pub struct LaunchCapacities {
 collector_primitives::capacity_max!(LaunchCapacities { launch_bases });
 
 impl Capacities {
-    /// Hint floors are observed from the live manager.
     pub fn raise(&mut self, required: Self) {
         crate::country_scale::raise(&mut self.navies, required.navies);
     }
@@ -42,13 +33,10 @@ impl LaunchCapacities {
 struct NavyRow {
     slot: u32,
     present: bool,
-    // Consume all controls and clear before the callback loan is returned.
     inputs: Option<native::NavyInputs>,
     identity_reason: Option<&'static str>,
 }
 
-/// The reserved country's launch naval bases from physical slot zero of the
-/// same pass. Country appearance holds it with the reserved singleton.
 pub struct Launch {
     sample_hour: Option<i32>,
     launch_bases: Arena<ccountry::launch_sources::LaunchNavalBase>,
@@ -204,9 +192,6 @@ impl Captured {
     }
 
 
-    /// One original holder acquires all physical manager slots before the
-    /// mission pass, including aliases and native nulls. Controls survive
-    /// until [`Self::finish`]; no borrower may reacquire a failed slot.
     pub fn begin<'a, M: Memory>(
         &mut self,
         memory: &'a M,
@@ -253,7 +238,6 @@ impl Captured {
                     self.navies.len += 1;
                 }
             }
-            // Empty/null manager returns native null for any requested slot.
             if count == 0 {
                 let mut zero = reader.observe_navy(0);
                 launch.capture_launch(memory, base, &mut zero);
@@ -262,7 +246,6 @@ impl Captured {
         reader
     }
 
-    /// Retire every borrowed control once the mission borrowers returned.
     pub fn finish(&mut self) {
         self.clear_controls();
     }

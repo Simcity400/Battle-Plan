@@ -49,7 +49,6 @@ use {
         frame::{DayNight, GameSpeeds},
     },
 };
-// names
 use eframe::{egui, wgpu};
 use std::{
     collections::BTreeMap,
@@ -104,7 +103,6 @@ mod selection_input;
 mod unit_pick;
 mod walk;
 
-/// Guard the README's frame-budget boundary at both production entry points.
 #[cfg(test)]
 #[test]
 fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
@@ -147,8 +145,6 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
     }
 }
 
-/// Escape, as the map-mode keys, reaches one dashboard map: the one owning keyboard input, or the
-/// hovered one while none owns it. A lone map always takes it.
 #[cfg(test)]
 #[test]
 fn escape_reaches_only_the_map_owning_its_keys() {
@@ -183,20 +179,12 @@ mod render_failure_tests;
 #[cfg(test)]
 mod spine_tests;
 
-/// The egui memory key of the dashboard map that owns keyboard input: the one last pressed.
 const MAP_INPUT_OWNER: &str = "map camera input owner";
 
-/// The most times a stopped picture lays its hour out again over art that decoded while it drew
-/// ([`Viewer::draw_map`]'s settle): art arrives because a layout asked for it, so each round asks
-/// for less, and art still arriving past this is refused by name rather than drawn incomplete.
 const SETTLES: u32 = 8;
 
-/// How long a saved frame is held for the rest of its picture before it is refused by name: the
-/// bound the map's side keeps on a stepped frame's own wait.
 const HELD_GIVEN_UP: Duration = Duration::from_secs(300);
 
-/// Whether this map takes the map-mode keys: a lone map always; on a dashboard, the map that
-/// owns keyboard input, or the hovered one while no map owns it.
 fn takes_map_keys(
     dashboard_map: bool,
     owner: Option<egui::Id>,
@@ -206,7 +194,6 @@ fn takes_map_keys(
     !dashboard_map || owner.map_or(hovered, |owner| owner == me)
 }
 
-/// The window texture showing the scene's target, and the scene generation it shows.
 #[derive(Debug, Default)]
 struct Presented {
     texture: Option<egui::TextureId>,
@@ -214,20 +201,14 @@ struct Presented {
 }
 
 impl Presented {
-    /// Whether the scene's target must be registered or re-pointed: the scene made a new
-    /// target, or the texture was freed with a retired map. A replacement scene counts its
-    /// generations from the start again, so the generation alone cannot tell.
     fn stale(&self, generation: u64) -> bool {
         self.texture.is_none() || self.generation != generation
     }
 
-    /// The texture showing the picture last drawn, while it is still the target of the scene at
-    /// `generation`: what a frame with nothing of its own to draw keeps on screen.
     fn kept(&self, generation: Option<u64>) -> Option<egui::TextureId> {
         generation.filter(|&generation| !self.stale(generation)).and(self.texture)
     }
 
-    /// Gives up the texture for freeing, so the next frame registers the target afresh.
     fn take(&mut self) -> Option<egui::TextureId> {
         self.generation = 0;
         self.texture.take()
@@ -247,14 +228,10 @@ fn a_map_retired_and_shown_again_registers_its_new_target() {
     assert_eq!(presented.kept(Some(2)), None, "a new target holds no picture yet");
     assert_eq!(presented.kept(None), None, "nor does a map without a scene");
     assert!(presented.stale(2));
-    // A resize past the map resource budget retires the map and frees its texture.
     assert_eq!(presented.take(), Some(egui::TextureId::User(7)));
-    // Resizing back builds a new scene, whose first target is generation 1 again.
     assert!(presented.stale(1));
 }
 
-/// Profile captures replace only the map's hover point, in framebuffer
-/// pixels. This supplies no OS pointer movement, button or camera input.
 fn profile_hover_point(
     real: Option<[f32; 2]>,
     synthetic: Option<[f32; 2]>,
@@ -273,22 +250,17 @@ fn profile_hover_point(
     point.map(|point| to_interface(point, ui_scale))
 }
 
-/// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
 struct Laps {
     enabled: bool,
     frame_cpu: Option<viewer_foundation::profiling::ThreadSpan>,
     start: Instant,
     last: Instant,
-    /// Milliseconds between the previous frame's laps ending and these
-    /// starting, less the profiled pacing sleep.
     outside: f64,
     laps: Vec<(&'static str, f64)>,
 }
 
-/// When the previous frame's laps stopped, for [`Laps::outside`].
 static FRAME_END: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// Marks the end of a frame's own path, so the next frame reports the gap.
 fn mark_frame_end() {
     if let Ok(mut end) = FRAME_END.lock() {
         *end = Some(Instant::now());
@@ -296,9 +268,6 @@ fn mark_frame_end() {
 }
 
 impl Laps {
-    /// `waited` is the profiled pacing sleep, which is not a frame's cost; the
-    /// rest of the gap since the previous frame ended is egui's own tessellation
-    /// and paint and the present, which these laps do not cover.
     fn new(waited: Duration) -> Self {
         let enabled = profiling();
         viewer_foundation::profiling::begin_thread_frame();
@@ -321,7 +290,6 @@ impl Laps {
         }
     }
 
-    /// Records the time since the previous lap under `name`.
     fn lap(&mut self, name: &'static str) {
         if self.enabled {
             let now = Instant::now();
@@ -340,12 +308,6 @@ impl Laps {
     }
 }
 
-/// Milliseconds the frame's submission takes on the GPU, under
-/// `BATTLE_PLAN_VIEWER_GPU_WAIT`.
-///
-/// Waiting out the submission is the only way to see the GPU's own time without
-/// timestamp queries, and it costs the frame that wait, so an ordinary run and
-/// a profiled run without the variable never call it and report 0.
 fn gpu_wait(device: &wgpu::Device) -> f64 {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     if !ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
@@ -359,13 +321,6 @@ fn gpu_wait(device: &wgpu::Device) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Holds a profiled capture's frames to a display's pace,
-/// `BATTLE_PLAN_VIEWER_PROFILE_HZ` (60 unless set).
-///
-/// A `--window-dump` frame does not wait for a display, so unpaced it runs at
-/// hundreds of frames a second and a sweep that advances the playhead by
-/// `speed / hz` hours a frame outruns the builders, which work in wall time.
-/// The wait falls before the frame's laps start, so it is not a frame's cost.
 fn pace_profiled_frame() -> Duration {
     let period = Duration::from_secs_f64(1.0 / hz());
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
@@ -387,19 +342,13 @@ fn pace_profiled_frame() -> Duration {
     started.elapsed()
 }
 
-/// The camera, viewport and interface scale a frame drew at.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct View {
     pub camera: Camera,
     pub viewport: [u32; 2],
-    /// Device pixels per interface pixel; see [`crate::map::ui_scale`].
     pub ui_scale: f32,
 }
 
-/// Where the host's clock is: the recorded hour it is in and how far past it.
-///
-/// The map's layers draw the newest hour they have composed, this one unless a seek or fast
-/// playback outran them; the playhead never waits for the map.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Playhead {
     branch: replay_data::BranchId,
@@ -407,7 +356,6 @@ struct Playhead {
     fraction: f64,
 }
 
-/// The running clock as a rebuild of the same map left it ([`Viewer::reload_campaign_map`]).
 #[derive(Clone, Copy, Debug)]
 struct HeldClock {
     playhead: Option<Playhead>,
@@ -416,22 +364,13 @@ struct HeldClock {
     at: Instant,
 }
 
-/// What the window last presented of the playhead's map: its histories (day and night, the
-/// counters' movement, the audio) follow today's continuity rule over these.
 #[derive(Debug, Default)]
 struct MapPresented {
-    /// Branch, drawn hour and viewing country of the last picture presented.
     last: Option<(replay_data::BranchId, i32, Option<String>)>,
-    /// The host's reset count when the window asked for a seek, until a picture composed after it
-    /// is shown.
     seek: Option<u64>,
-    /// A reader opened since: its first picture is a seek's.
     reopened: bool,
 }
 
-/// Where [`map_overlay`] puts its box inside the map's `clip` rectangle, with
-/// `points` egui points per interface pixel: an 8-pixel inset and at most 40%
-/// of the map's height.
 fn overlay_rect(clip: egui::Rect, points: f32) -> egui::Rect {
     let inset = 8.0 * points;
     egui::Rect::from_min_size(
@@ -443,8 +382,6 @@ fn overlay_rect(clip: egui::Rect, points: f32) -> egui::Rect {
     )
 }
 
-/// Scales `style`'s text and spacing by `points` egui points per interface
-/// pixel, so egui lays the text out at its final size rather than stretching it.
 fn scale_style(style: &mut egui::Style, points: f32) {
     for font in style.text_styles.values_mut() {
         font.size *= points;
@@ -466,12 +403,6 @@ fn scale_style(style: &mut egui::Style, points: f32) {
     scroll.handle_min_length *= points;
 }
 
-/// Draws a translucent box over the top of a native map's `clip` rectangle for
-/// its loading status and diagnostics. `add` gets the height its lists may use.
-///
-/// The box is part of the map's screen-space interface, so like the map's
-/// tooltip (`viewer_foundation::map::ui_scale`) it is laid out in interface pixels: `points` is
-/// egui points per interface pixel, the UI scale over the pixels per point.
 pub(crate) fn map_overlay(
     ui: &mut egui::Ui,
     clip: egui::Rect,
@@ -496,7 +427,6 @@ pub(crate) fn map_overlay(
         });
 }
 
-/// How to choose where a fly or walk mode chosen from the map starts.
 fn start_prompt(mode: CameraMode) -> &'static str {
     match mode {
         CameraMode::Walk => {
@@ -508,7 +438,6 @@ fn start_prompt(mode: CameraMode) -> &'static str {
     }
 }
 
-/// The capture mode of a recording that leaves tables out, and what it leaves out.
 pub(crate) fn capture_mode_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
     let mode = replay.capture_mode;
     if let Some(omits) = replay_data::scope::omits(mode) {
@@ -538,17 +467,12 @@ pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::campaign::Repla
     }
 }
 
-/// What the scene's order parts were last given from, and the air orders as last highlighted, so
-/// a frame hands it the parts only when one of them changed.
 #[derive(Clone, Default)]
 struct Uploaded {
     order_key: Option<OrderKey>,
     air_field: Option<((usize, Vec<u64>), Arc<viewer_foundation::map::ribbon_content::OrderField>)>,
 }
 
-/// What the scene's order parts are given from: the plan, the raid arrows and the trade routes by
-/// their producers' allocation and product, and the air orders by theirs and the bases they
-/// highlight. A new one hands the scene the parts, which writes only what changed in them.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct OrderKey {
     pub plan: usize,
@@ -557,30 +481,20 @@ pub(crate) struct OrderKey {
     pub air: Option<(usize, Vec<u64>)>,
 }
 
-/// An order part's allocation, none as zero.
 pub(crate) fn order_at<T>(held: Option<&Arc<T>>) -> usize {
     held.map_or(0, |held| Arc::as_ptr(held) as usize)
 }
 
-/// The order parts the map's layers give: the orders layer's plan, the hour's raid arrows (made
-/// with the overlay's tables at the head) and, while the convoys and units draw, the trade routes'
-/// product.
 struct LayeredOrders {
     plan: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
     raids: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
     routes: Option<u64>,
 }
 
-/// Asks the desktop host to show or hide diagnostics with Ctrl, since F3 alone selects the air
-/// map mode as in the game; the desktop's web interface uses the same keys.
 const DIAGNOSTICS_KEY: egui::Key = egui::Key::F3;
 
-/// Cycles the full map's camera modes, as the controller's view button does. No interface
-/// shortcut in the game's content binds it.
 const CAMERA_MODE_KEY: egui::Key = egui::Key::F12;
 
-/// Whether `event` is the diagnostics shortcut: a first press of the key with
-/// Ctrl alone, as the web interface's handler takes it.
 fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
     matches!(
         event,
@@ -594,49 +508,22 @@ fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
     )
 }
 
-// capture
-/// A readback of the window's map target, pending until a frame has been drawn.
-///
-/// The window does not draw the map into the swap chain: it renders it through
-/// [`Scene`] into the same offscreen `OUTPUT_FORMAT` texture a `--dump` renders
-/// into, and only hands egui the finished texture. That is the 8-bit graded
-/// output and never the float scene behind it (`viewer_foundation::map::gpu_contract::Targets`), so egui
-/// is handed exactly the bytes the readback writes. The surface format, the
-/// MSAA resolve and egui's own colour handling sit downstream of every map pixel
-/// and cannot change one, and reading that texture back with
-/// [`render::write_png`] — the dump's own readback — is what makes the two paths
-/// comparable without a screenshot tool.
-///
-/// What the two paths do not share is the animation clock, so a capture renders
-/// its frame at `animation_time` 0 by default, or an explicit sequence clock.
 struct Capture {
     path: PathBuf,
-    /// Frames to draw before the readback. `--window-dump` draws the pair a
-    /// headless dump draws, so the luminance adaptation has the same history.
     remaining: u32,
-    /// `--window-dump`: the pixel size and camera the frame is pinned to, so
-    /// neither the panel layout nor the display's scale factor decides them. A
-    /// `None` camera is the fit to that size, which is the dump's default too.
     pinned: Option<([u32; 2], Option<Placement>)>,
-    /// `--window-dump` closes the window once it has written its frame.
     exit: bool,
     time: Option<f32>,
     step: f32,
     frames: u32,
     index: u32,
-    /// The harness's paced frames follow a wall clock, as a window's do: none waits for its hour,
-    /// its icons or its raid cycle.
     paced: bool,
-    /// The host's number for a desktop export, which the capture's end answers once.
     request: Option<u64>,
 }
 
-/// The open maps whose visual mods changed since they loaded, each with the revision it loaded
-/// with: the campaign map, and dashboard maps by their source key.
 pub(crate) struct VisualStale {
     campaign: Option<String>,
     maps: Vec<(crate::dashboard_maps::MapSourceKey, String)>,
-    /// How many open maps showing visual mods were checked, and what could not be read.
     checked: usize,
     failures: Vec<String>,
 }
@@ -654,16 +541,12 @@ fn seek_open_target(
     accepted: Option<(&Path, Option<&str>)>,
     pending_load: Option<(&Path, Option<&str>)>,
 ) -> Option<crate::embedded::OpenRequest> {
-    // An in-flight load or folder retry takes precedence over the old map.
-    // An unknown native-picker revision cannot satisfy a host's exact target.
     let matches = pending_load
         .or(accepted)
         .is_some_and(|(path, revision)| seek.matches(path, revision));
     (!matches).then(|| seek.open_request())
 }
 
-/// The Match game scale and its note, keyed by the monitors' generation and
-/// the document's content.
 type MatchGame = ((u64, usize), (Raster, Option<String>));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -672,9 +555,7 @@ pub(crate) enum MapHit {
     NavalMission(usize),
     NavalRegionHover(usize),
     Raid,
-    /// An intel entry of the Operatives map mode: its tooltip replaces the province's.
     Intel,
-    /// An occupation percentage or one definition badge, with its own control geometry.
     Occupation(usize),
     Adjacency(usize),
     Combat(usize),
@@ -686,8 +567,6 @@ pub(crate) enum MapHit {
     Blocked,
 }
 
-/// Prepared controls retain their own text and footprint, including controls
-/// with no click action. An absent text still leaves their hit blocking the map.
 fn prepared_naval_tooltip(
     report: &CounterReport,
     target: Option<MapHit>,
@@ -706,7 +585,6 @@ fn prepared_naval_tooltip(
     Some((Arc::clone(text), rect))
 }
 
-/// Only the actual topmost base may activate a radar range.
 fn radar_province(
     target: Option<MapHit>,
     report: &viewer_counters::map::counters::CounterReport,
@@ -729,12 +607,6 @@ fn land_hover_matches_unit(
     unit.kind == kind && unit.members == hover.members
 }
 
-/// The map icon under `point`: the top of the drawn hit shapes, by layer and pass. `raids` are
-/// the drawn raid icons' hit shapes. `looks` are the icons a free eye shows: the nearest shown
-/// icon whose own layout holds the pointer wins, and icons it does not show take no hits.
-///
-/// One point against one frame's shapes; a frame resolves each point it asks about once against
-/// the index it keeps ([`map_hits::Resolved`]), which is what this takes for a single point.
 #[cfg(test)]
 fn top_map_hit(
     point: [f32; 2],
@@ -748,8 +620,6 @@ fn top_map_hit(
     map_hits::Index::of(&shapes).top(point, &shapes, intel)
 }
 
-/// The icons a unit hit shape belongs to: a port's ships number with its base, other plates with
-/// their column.
 fn unit_family(
     report: &CounterReport,
     index: usize,
@@ -768,61 +638,32 @@ pub struct Viewer {
     dashboard: Option<Box<crate::dashboard_maps::DashboardMaps>>,
     dashboard_active: bool,
     dashboard_map: bool,
-    /// Whether a host has applied the map's graphics settings ([`Self::set_embedded_graphics`]),
-    /// as the desktop app does for its Campaign map: the picker's day/night and allied plans then
-    /// ask it to flip them, as on a dashboard map. A viewer without a host has neither control.
     host_graphics: bool,
-    /// The worker threads a hosted map shares with the rest of the app.
     shared_pool: Option<Arc<crate::worker_pool::WorkerPool>>,
     source: Option<Arc<dashboard::Source>>,
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
     rendered_sequence: u64,
-    /// When the latest frame was drawn, in milliseconds since the Unix epoch.
     drawn_at: Option<f64>,
-    /// The dashboard view's options the frame being drawn applies, and those the latest frame drew with.
     applying_options: Option<dashboard::protocol::MapOptions>,
     drawn_options: Option<dashboard::protocol::MapOptions>,
-    /// What the pointer highlights in the latest frame ([`hover_report::describe`]).
     hover: Option<String>,
-    /// The map tooltip the latest frame drew, and the game's delay before one shows.
     tooltip: Option<String>,
     tooltip_delay_ms: Option<f32>,
-    /// The dashboard view this map draws, named in the perf log.
     perf_view: Option<String>,
-    /// The last frame's data limitations, built only while they are shown or
-    /// a capture will print them.
     map_warnings: Vec<String>,
-    /// Whether technical stats and data limitations are shown with the map.
-    /// Off by default: the desktop host sends its choice, and `--diagnostics`
-    /// turns it on for one run.
     pub(crate) diagnostics: bool,
-    /// Whether an embedded map's diagnostics box lists its data limitations.
     diagnostics_open: bool,
-    /// This view's handle on the process's map audio, made by its first
-    /// interactive frame; captures and dumps never make one.
     audio: Option<viewer_audio::Owner>,
-    /// Whether this view may sound: the window's own map always, a dashboard
-    /// map while it is the focused one.
     pub(crate) audio_focus: bool,
-    /// The harness measuring the frames the app's map tab runs (`--campaign-tab`): its frames go
-    /// through the window's own path and present their audio to a silent system.
     pub(crate) campaign_tab: bool,
-    /// The host's mute choice.
     pub(crate) muted: bool,
-    /// A presentation discontinuity the next audio frame reports.
     pub(crate) audio_reset: bool,
-    /// The presented hour's song chances for the viewing country.
     pub(crate) music: Option<Arc<viewer_audio::Chances>>,
-    /// The presented hour's battles, for the battle ambience.
     pub(crate) battles: Option<Arc<viewer_audio::Battles>>,
-    /// The map body took a press, drag or scroll this frame.
     pub(crate) interacted: bool,
-    /// egui points per interface pixel at the last map frame, which lays out
-    /// the diagnostics box over an embedded map ([`map_overlay`]).
     pub(crate) interface_points: f32,
     embedded: Option<crate::embedded::Controller>,
-    /// The toggle harness's map service, standing in for the desktop host's ([`Self::service`]).
     harness_service: Option<Arc<dashboard::Service>>,
     embedded_open: Option<crate::embedded::OpenRequest>,
     embedded_seek: Option<crate::embedded::Seek>,
@@ -832,8 +673,6 @@ pub struct Viewer {
     combat: combat::Window,
     config: Config,
     options: Options,
-    /// Whether the map waits for usable folders from the host before it can
-    /// load; an embedded viewer keeps its requested recording meanwhile.
     awaiting_folders: bool,
     document: Option<Document>,
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
@@ -844,115 +683,55 @@ pub struct Viewer {
     map_error: Option<String>,
     camera: Option<Placement>,
     camera_manual: bool,
-    /// Whether every figure is posed on the frame that draws it ([`Scene::settle_poses`]), as
-    /// this window last told the scene: a tool that saves every frame it draws sets it for the
-    /// whole run, so the window leaves it alone while the hours run.
     settled_poses: bool,
-    /// The scene builds in place for the frame a capture saves ([`Scene::settle_builds`]).
     settled_capture: bool,
-    /// The recording a rebuild in place opens again: its next open keeps the camera, orbit,
-    /// walk, flight and chosen start instead of starting over.
     held_view: Option<(PathBuf, HeldClock)>,
-    /// The host clock a rebuild in place resumes once its load is installed: the host sends no
-    /// anchor for it, so without this the map would stay paused while the host plays.
     held_clock: Option<HeldClock>,
-    /// The game's zoom: its target camera and the wheel's part notch.
     zoom: Motion,
-    /// How the full map's camera moves, as the host's control sets it.
     camera_mode: CameraMode,
-    /// Whether the fly and walk modes draw the map's interface standing in the world, as the
-    /// host's control sets it.
     free_overlays: bool,
-    /// Where a fly or walk mode chosen from the map starts ([`drop`]).
     start_pick: drop::Pick,
-    /// The overlay as a free eye shows it this frame ([`free_icons::present`]).
     free_overlay: Batch,
-    /// Raised each time the overlay's batch may have been written: what [`Self::free_overlay`]
-    /// was placed from.
     overlay_written: u64,
-    /// What the free eye's placing last read (its camera, viewport, scale and the batch it
-    /// placed): the same again places the same quads, so they stand.
     free_presented: Option<(viewer_foundation::map::camera::Camera, [u32; 2], u32, u64, viewer_foundation::map::anchored::Head)>,
-    /// The icons a free eye shows this frame, which the pointer's hits follow; `None` when the
-    /// overlay draws as laid out.
     looks: Option<free_icons::Looks>,
-    /// Keyboard, mouse and controller input for the camera controllers.
     input: crate::controls::Input,
-    /// The controller's heading and tilt around the map camera.
     orbit: crate::controls::orbit::Orbit,
-    /// The walking mode's figure, walker and scale.
     walk: walk::Walk,
-    /// The flying mode's flight, started when the mode starts.
     flight: Option<crate::controls::flight::Flight>,
-    /// The aircraft this frame's flight placed, as its library slot and instance.
     flying: Option<(usize, viewer_world::map::models::ModelInstance)>,
-    /// The capture clock a window dump's flight last stepped to.
     fly_clock: Option<f32>,
-    /// What a respawn under a low ceiling built for this map, kept for its next one.
     fly_footprints: crate::controls::flight::Footprints,
-    /// Whether the window hides and confines the cursor for looking around.
     pointer_grabbed: bool,
     playing: bool,
     speed: f64,
-    /// The host's last target, play state and rate: a repeat leaves the running clock alone.
     clock_anchor: Option<(Playhead, bool, f64)>,
-    /// The page's clock as this map sees it, which places each anchor by the time it was composed.
     page_clock: crate::page_clock::PageClock,
-    /// The drawn lighting, eased toward each presented hour as the game eases it.
     day_night: viewer_foundation::map::frame::DayNightPlayback,
     last_step: Instant,
     profile_playback: profile_playback::Clock,
     started: Instant,
-    /// When the replay was opened, so a profiled run reports the cold open:
-    /// the loading thread's document and scene, then the first hour built.
     opened: Option<Instant>,
-    // colour
-    /// Whether the map is graded through the engine's post chain.
     postfx: bool,
     pub(crate) graphics: dashboard::protocol::MapGraphics,
-    /// Whose counters this view draws.
     pub(crate) counter_filter: dashboard::protocol::CounterFilter,
-    /// The picker's player-only counters toggle: only the viewing country's own counters draw.
     pub(crate) player_counters: bool,
-    /// This view's sound volumes. Only the focused map plays sound.
     pub(crate) volumes: dashboard::protocol::MapAudio,
-    /// The overlay parts the last overlay draw used, with the counter filter resolved.
     overlay_layers: crate::document::OverlayLayers,
-    /// The counter filter's countries at the shown hour.
     counter_owners: crate::map_views::CounterOwners,
-    /// The host's settings for this view's scope.
     resolved_settings: crate::map_views::ResolvedSettings,
-    /// The screen-space map interface's scale setting; see [`viewer_foundation::map::ui_scale`].
-    /// The desktop host sets it with `MapAction::UiScale`.
     pub(crate) ui_scale: Setting,
-    /// The aircraft the host chose for Fly mode and its bake.
     fly_aircraft: fly_aircraft::FlyAircraft,
-    /// The Match game scale and its note, keyed by the monitors' generation
-    /// and the document's content, so a frame only re-resolves on a change.
     match_game: Option<MatchGame>,
-    /// The monitor size and display scale the window last saw; a change asks
-    /// for the monitors to be read again.
     monitor_seen: Option<(Option<egui::Vec2>, Option<f32>)>,
-    /// A running check of the visual mods the open maps show (`check_visual_mods`).
     visual_check: Option<std::sync::mpsc::Receiver<VisualStale>>,
-    /// The last check's outcome, reported with the map details.
     visual_check_note: Option<String>,
-    /// A check asked for while a map loaded, run again once every load is installed.
     visual_check_after_load: embedded::DeferredCheck,
-    /// The visual mod revision the next open must not reuse loaded content of.
     stale_visual_revision: Option<String>,
-    /// The owner of the Campaign map's visual mod fallback, shared with the dashboard's maps
-    /// ([`crate::visual_fallback`]).
     pub(crate) visual_fallbacks: crate::visual_fallback::Shared,
-    /// The last frame's report for the host's fallback owner ([`Self::take_visual_report`]).
     visual_report: Option<crate::visual_fallback::Report>,
-    /// Whether the last `map` call drew the map ([`crate::visual_fallback::settled`]).
     drew_frame: bool,
-    /// The harness's warm-up: the map's first picture is composed and uploaded, the scene not
-    /// rendered, so a run's first frame is the scene's first render, as without the warm-up.
     pub(crate) warming: bool,
-    /// The revision a check found the Campaign map's visual mods changed from, reloaded once no
-    /// load runs.
     visual_stale_campaign: Option<String>,
     map_preferences_seen: Option<(
         String,
@@ -960,68 +739,29 @@ pub struct Viewer {
         u32,
         u8,
     )>,
-    // hours
-    /// The host clock's position; the map follows it as hours are built.
     playhead: Option<Playhead>,
-    /// Where the display frames of this map stand in the replay: the one head everything a frame
-    /// draws is placed at, steered to stay inside the hours published as real data
-    /// ([`viewer_foundation::map::frame_head`]).
     frame_head: viewer_foundation::map::frame_head::FrameHead,
-    /// A seek waiting for the next built hour to start a fresh animation
-    /// history (`viewer_foundation::map::presentation`).
     animation_seek: bool,
-    /// The last host clock target, to tell its seeks from playback.
     map_animation_target: Option<Target>,
-    /// The map's reader of the playhead of the recording on screen; none until it is made, or
-    /// once it was refused ([`Viewer::playhead_refused`]).
     playhead_map: Option<crate::playhead_host::side::SideThread>,
-    /// Why the map's reader was refused, by name: the map draws nothing without it.
     playhead_refused: Option<String>,
-    /// A dashboard map opened its playhead reader since it was installed or last not drawn.
     playhead_opened: bool,
-    /// A seek the page asked for that no reader has taken: an anchor reaches none while the map's
-    /// reader is closed or still being made, and the playhead outlives the reader, so its clock
-    /// stands where it stood. It stays owed until a reader takes it, at the hour the page's clock
-    /// stands at then.
     seek_owed: bool,
-    /// The rows at the head (hour, frame) the overlay on screen was laid out from; none before
-    /// its first layout over them.
-    /// The hour of the rows the overlay on screen was made from, as the side made it.
     overlay_hour: Option<replay_data::Hour>,
-    /// The head tables (their rows' hour and frame) last given to the counter layers, and those
-    /// they held when the reader last drew: what its settled picture shows of them.
 
-    /// The document on screen has shown a whole picture since it was installed; until then the
-    /// spinner covers what is drawn beneath it.
     shown_whole: bool,
     switch_trace: switch_trace::SwitchTrace,
-    /// Ctrl+click switches shown here before the host's options follow them.
     observing: observe::Observing,
-    /// The map's reader being made on a worker; today's picture is drawn until then.
     playhead_opening: Option<crate::playhead_host::Opening>,
-    /// What the window last presented of the playhead's map, for its own histories.
     presented: MapPresented,
-    /// The camera, viewport and interface scale the last frame drew at.
     last_view: Option<View>,
-    /// What the scene's order parts hold.
     uploaded: Uploaded,
-    /// Frees the hours the window let go of off the frame path.
     dropper: Option<Arc<Dropper>>,
-    /// The app's worker threads: the host's shared ones, else this window's own once first asked.
     worker_pool: Option<Arc<crate::worker_pool::WorkerPool>>,
-    // close zoom
-    /// The playback fraction the scene's raid units were last placed at.
     raid_tick: Option<f32>,
-    /// Whether the scene's raid units last included sailing trade-route convoys, which move
-    /// every frame by the presentation clock while they show.
     convoys_sailing: bool,
-    /// The convoy entities that did not bake, as of the last frame that sailed them.
     convoy_refused: BTreeMap<String, usize>,
-    // names
-    /// The names layer's placements, which the frame draws and the warnings read.
     placements: Option<Arc<Placements>>,
-    /// `None` until the first frame seeds it settled at that frame's own camera
-    /// height; see [`Viewer::map`].
     fade: Option<LayerFade>,
     hovered_name_region: Option<u32>,
     last_frame: Instant,
@@ -1029,191 +769,80 @@ pub struct Viewer {
     label_report: LabelReport,
     faction_highlight: faction_highlight::Lane<faction_highlight::Prepared>,
     hover_rows: hover_rows::HoverRows,
-    /// The selection observers, the overlay's camera-bound inputs, the walk camera, the clock's
-    /// speed and the picker, over rows at the head while the map's playhead is on.
     head_rows: head_rows::HeadRows,
-    /// A faction highlight was shown or asked for at the last frame: the side's window copies the
-    /// picture it is built over only then.
     highlight_wanted: bool,
-    /// With the playhead's map open: the rows at the head the overlay was last made from, kept
-    /// while its reader loads, and the build of its tables from them.
     overlay_frame: Option<Arc<replay_frame::frame::DecodedFrame>>,
-    /// The hours of the publication the overlay the frame holds was made for at which the
-    /// recording moved a mover: the frame places that layout, so it is where every mover's places
-    /// are read ([`viewer_foundation::map::counter_move::MovedHours`]).
     overlay_moved: Arc<viewer_foundation::map::counter_move::MovedHours>,
-    /// The tables the overlay on screen was made from, as the side made them.
     overlay_tables: Option<Arc<crate::document::OverlayTables>>,
-    /// The tables' route cache is filled ahead on a worker once, for each tables made by key.
     overlay_routes_pending: bool,
-    /// What the overlay on screen leaves to the map's layers, as it was laid out.
     overlay_left: crate::document::LeftToLayers,
-    /// The map's layers' products the overlay the frame holds laid in, as it was made with them:
-    /// the gate lays these into the layout it compares that one with.
     overlay_lay_ins: Option<std::sync::Arc<crate::playhead_host::side::LayIns>>,
-    /// The counters' memory the tables' worker lays the overlay out on, over the view's schedule and
-    /// movement ([`crate::map_views::Presentation::sharing`]), for the view it was made from.
-    /// The counter layers' products and drawn kinds the overlay shown was laid out from
-    /// ([`Self::install_overlay`]); none before the first layout.
     overlay_layered: Option<(viewer_counters::map::counters::Layered, viewer_counters::map::counters::Kinds)>,
-    /// What the overlay laid out last for the open map was laid out for ([`Self::install_overlay`]).
-    /// The branch and hour of the overlay on screen, and the view it was laid out for.
     overlay_shown: Option<(replay_data::BranchId, replay_data::Hour)>,
     overlay_view: Option<CounterView>,
-    /// Where the camera stood when the overlay on screen was last placed;
-    /// a frame whose camera stands elsewhere places it again and lays nothing out.
     overlay_placed: Option<Camera>,
-    /// The icon families the overlay last asked for can draw, which a click can reach.
     overlay_asked: Option<viewer_counters::map::counters::Shown>,
-    /// The frame size and interface scale the overlay was placed for: a window's layout is made
-    /// for them, so only a camera moving over that same view may be answered by a move.
     overlay_placed_view: Option<([u32; 2], u32)>,
-    /// While the camera moves over the map, how far each of the overlay's anchors stands from
-    /// where [`Self::overlay_placed`] put it: the frame offsets the windows instead of placing
-    /// and drawing them again ([`viewer_foundation::map::anchored`]). Empty while the overlay
-    /// stands at the camera it was placed at.
     overlay_shifts: viewer_foundation::map::anchored::Shifts,
-    /// The camera the frame before drew at: a camera that has come to rest places the overlay
-    /// again, so a still picture is the layout's own and never a moved one.
     overlay_camera_before: Option<Camera>,
-    /// The head the frame before moved the overlay's windows to: a head that advanced places every
-    /// mover the batch carries at its own hour.
     overlay_head_before: Option<viewer_foundation::map::anchored::Head>,
-    /// The painting before, when the count of what each publication changes was asked for
-    /// (`BATTLE_PLAN_VIEWER_COUNT_OVERLAY`).
     overlay_counted: viewer_foundation::map::overlay_count::Watch,
-    /// A publication's overlay is installed but its batch has not been painted yet: the batch the
-    /// frame holds is the painting before it, standing at the camera *it* was placed at, so it is
-    /// not moved to this frame's camera. The frame places and paints the new overlay instead, and
-    /// every later move is measured from that painting.
     overlay_unpainted: bool,
-    /// The hour fraction the overlay was last drawn at.
     overlay_drawn_fraction: Option<f32>,
-    /// The head tables' lookups by key counted so far: (tables, made, kept).
     overlay_lookups: Option<(usize, u64, u64)>,
-    /// Overlays installed from the map's side, and the one the overlay's gate last looked at: the
-    /// gate lays each hour out afresh once, so a still camera is covered too.
     overlay_installed: u64,
     overlay_checked: u64,
-    /// Looks the overlay's gate has taken, for the one in ten that compares a frame's kept windows
-    /// with a whole repaint's.
     overlay_looks: u64,
-    /// The overlay's reads that its rows at the head do not hold yet, by name.
     overlay_loading: Vec<String>,
-    /// Clicks waiting, in order, for the rows of the hour each was made at.
     held_clicks: std::collections::VecDeque<held_clicks::Held>,
-    /// The tables the overlay's last layout read that its rows did not hold, until one is made.
     overlay_missed: Vec<replay_data::rows::TableId>,
     combat_rows: combat_rows::CombatRows,
     tooltip_refused: BTreeMap<String, usize>,
-    // counters
     counter_report: CounterReport,
-    /// Where the combat window took the pointer in the picture last painted: what a press lands on.
     combat_painted: combat::Footprint,
-    /// The overlay's own icons' hit shapes as the last draw laid them out, beside its counters'.
     overlay_hits: crate::document::OverlayHits,
-    /// The pointer resolved against the frame's hit shapes, once for each point a frame asks
-    /// about ([`map_hits`]); `hits_stamp` names the shapes it was resolved against.
     map_hits: std::cell::RefCell<map_hits::Resolved>,
-    /// Bumped whenever the hit shapes change: once a frame, after the overlay's draw and the free
-    /// eye's placing, and whenever the map's counters are let go.
     hits_stamp: u64,
-    /// What the map's last hover with a tooltip was ([`highlight::TooltipTarget`]).
     map_tooltip_target: Option<highlight::TooltipTarget>,
-    /// The map tooltip the last drawn frame showed.
     shown_tooltip: Option<highlight::TooltipTarget>,
-    /// Interface sounds since the last audio frame, and the next key one takes.
     interface_sounds: Vec<InterfaceSound>,
     interface_key: u64,
-    /// The counter the last pointer step held in Over (`false`) or Down (`true`).
     counter_held: Option<(Unit, bool)>,
-    /// What the held primary press went down on (its owner, or the bare map as `None`), where,
-    /// when, and whether the pointer has since strayed too far for a click.
     pressed_on: Option<(Option<Holder>, egui::Pos2, f64, bool)>,
-    /// The counter the held press went down on, whose release over it selects it.
     counter_selecting: Option<Unit>,
-    /// The picker control the held secondary press went down on.
     secondary_on: Option<viewer_combat::picker::Control>,
     air_orders: air_orders::AirOrders,
-    /// The box a bare-map drag draws, the unit models' pick shapes, the selection sounds' queue.
     selection_input: selection_input::SelectionInput,
-    /// The last icon layer built, and the frame, camera and viewport it was
-    /// built for; the two reports beside it come from the same build.
-    ///
-    /// The prepared layer reads the decoded frame, camera, viewport and
-    /// perspective. The window repaints continuously for the
-    /// water animation, so without this it rebuilt every counter, base, label
-    /// and combat icon about forty times a second for a result that had not
-    /// changed: 22 of a still frame's 27 ms. Keyed like `PoliticalCache` and
-    /// the name placements beside it. Fraction-only changes reuse that preparation
-    /// and advance the moving group anchors and sprite rectangles.
     overlay: Option<Batch>,
     prepared_overlay: Option<crate::document::PreparedOverlay>,
     overlay_fraction: Option<f32>,
-    /// A saved frame's overlay is older than art that decoded after it was painted: the next
-    /// painting lays the hour out again ([`Viewer::hold_saved_frame`]).
     overlay_art_moved: bool,
-    /// How many frames running a saved frame due for readback found its overlay older than its art.
     overlay_art_retries: u32,
-    /// Since when a saved frame due for readback has been held for its picture.
     held_since: Option<Instant>,
-    /// Desktop exports that ended and are not yet answered: each request, and why it was refused.
     export_results: Vec<(u64, Result<String, String>)>,
-    /// The loaded content the combat window was given its reads' inputs for.
     combat_inputs: Option<usize>,
-    /// The families of map-icon windows that asked this frame for a pass of their own
-    /// ([`crate::map_views::Running::windows`]): a frame that presents the pools for their passes
-    /// alone presents these and no others.
     overlay_pools: viewer_foundation::map::icon_windows::Pools,
 
-    /// This view's counter options (the user's `settings.txt`, with the host's graphics
-    /// overrides) and its counters' memory from one update to the next; a new document
-    /// starts it afresh.
     counter_view: CounterView,
     unit_selection: viewer_counters::map::unit_selection::Selection,
     air_selection: viewer_counters::map::air_selection::Selection,
     fleet_selection: viewer_counters::map::naval_selection::Selection,
-    /// Which country the counters are drawn for; the host's map options set
-    /// it and `Document::perspective` is kept in step with it.
     perspective: Choice,
-    /// The view's map mode; the picker, its shortcuts and the host set it.
     map_mode: viewer_world::map::map_mode::MapMode,
     diplomatic_selected: Option<u32>,
-    /// What the last ground click left selected, whose outline the borders draw until the next
-    /// deselection.
     ground_selection: Option<ground_click::Outline>,
-    /// The map mode picker drawn over the map, its slots and what it tells the host.
     picker: picker::PickerState,
     picker_error: Option<String>,
     picker_refused: std::collections::BTreeMap<String, usize>,
-    /// The controls the picker last drew and the extent it drew them at, which the next
-    /// frame's input hits, as the user saw them.
     picker_controls: Option<([f32; 2], Vec<viewer_combat::picker::Placed>)>,
-    // capture
-    /// The readback to run once the next frame is drawn; a host export and
-    /// `--window-dump` both arm it.
     capture: Option<Capture>,
-    /// What the last capture wrote, or why it failed, for the map details.
     capture_note: Option<String>,
-    /// How a `--window-dump` failure leaves the process; see `main::run`.
     failure: Arc<Mutex<Option<String>>>,
-    /// Device and queue clones for the loading thread's GPU init. The loader
-    /// builds the whole scene (static passes, textures and per-hour pass
-    /// creation) while the builders build the first hour, so no frame ever
-    /// pays first-time GPU creation. App-lifetime handles; eframe owns them.
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
     profile_frame: u32,
-    /// This frame's laps, started when the frame begins.
     laps: Option<Laps>,
 }
 
-/// Builds the whole hour-independent scene on the loading thread: the static
-/// passes and textures plus every per-hour pass's creation. The builders need
-/// seconds for the first hour and the UI thread idles on the spinner
-/// meanwhile; paying the ~500 ms of pipeline and static-texture creation here
-/// leaves the frames data uploads only. Hour data still uploads per hour
-/// through the matching `set_*` as before, so pixels cannot change. Scenes of one content on
-/// one device draw one upload of its game textures.
 pub(crate) fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1292,8 +921,6 @@ fn load_scene_scoped(
         },
     )?;
     apply("scene.sprawl", SceneInput::SetSprawl(&document.sprawl))?;
-    // The map's ambient objects and the nuclear impact entities share this pass,
-    // as in a dump: their sounds and impacts need it in every window.
     apply("scene.map_frame", SceneInput::SetMapFrame(&document.frame_assets))?;
     apply("scene.trains", SceneInput::WarmTrains(&document.trains))?;
     apply("scene.aircraft", SceneInput::WarmAircraft(&document.aircraft))?;
@@ -1334,21 +961,6 @@ fn load_scene_scoped(
 }
 
 impl Viewer {
-    /// Lays the overlay out afresh from the current tables and draws it at
-    /// this frame's fraction, on the view's own counter memory at the frame's
-    /// presentation clock (the same hour and time again, so its map-icon windows
-    /// advance nothing); an error unless its quads, raid report, label report and
-    /// counter report equal those of the overlay with its raid icons installed in
-    /// place.
-    /// The overlay the frame shows against the same hour, view and camera laid out whole
-    /// (`BATTLE_PLAN_VIEWER_CHECK_OVERLAY`), quad for quad with the clock set aside and with both
-    /// reports: the gate on an overlay placed at this camera rather than laid out at it, and on
-    /// raid icons put in place. `what` names the case in the refusal.
-    ///
-    /// Each is drawn on a presentation of its own, with no window history and no unit animation,
-    /// so a difference is a difference of the layouts and neither draw moves what the frame
-    /// shows. The gate does overwrite the shown overlay's own hit shapes, so a run with it on is
-    /// a run for the gate alone.
     #[allow(clippy::too_many_arguments, reason = "the frame's inputs the gate lays an hour out and draws with")]
     fn check_overlay(
         &mut self,
@@ -1363,16 +975,11 @@ impl Viewer {
             overlay_checks::note(&overlay_checks::NO_OVERLAY);
             return Ok(());
         };
-        // Art that decoded since the overlay was laid out moves where a sprite sits in its sheet:
-        // the two layouts would then draw one sprite at two versions, which is not a difference of
-        // layouts. The side lays such a layout out again; this one is not compared.
         if self.prepared_overlay.as_ref().is_some_and(|prepared| prepared.is_stale(now)) {
             overlay_checks::note(&overlay_checks::ART_MOVED);
             profile_print(format!("CHECK overlay {what} not compared: the art moved since it was laid out"));
             return Ok(());
         }
-        // With the map open, the rows at the head the overlay was laid out from, and what that
-        // layout left to the map's layers: a later step's answer belongs to a later layout.
         let side = live_of(&self.playhead_map);
         let left = self.overlay_left;
         let rows = crate::document::OverlayRows::at_head(self.overlay_frame.clone().filter(|_| side.is_some())).leaving(left);
@@ -1394,9 +1001,6 @@ impl Viewer {
             return Ok(());
         }
         let mut full = full.map_err(|error| format!("the overlay laid out afresh for the gate: {error}"))?;
-        // A map layer publishing its own product of the hour between the painting and this layout
-        // makes two layouts of two pictures: that product's combats, stacks and gaps are its own.
-        // The side lays such a layout out again; this one is not compared.
         if let Some(moved) = laid_proof::layers_moved(
             self.prepared_overlay.as_ref().expect("held above").layers(),
             full.layers(),
@@ -1405,8 +1009,6 @@ impl Viewer {
             profile_print(format!("CHECK overlay {what} not compared: the layers' product moved since it was laid out ({moved})"));
             return Ok(());
         }
-        // The products the painted layout laid in, not the side's newest: a layout made with
-        // another layer's product is another layout, and the gate is about the layouts.
         if let Some(lay_ins) = self.overlay_lay_ins.clone() {
             lay_ins.lay(&mut full, now, camera, pixels, ui_scale, tables.ours());
         }
@@ -1416,11 +1018,6 @@ impl Viewer {
                 .draw_into(now, camera, pixels, ui_scale, &layers, time, &mut batch, &mut report, &mut Default::default())
                 .map(|()| (batch, report, prepared.label_report().clone(), prepared.raid_report().clone()))
         };
-        // Each side is drawn on a presentation whose map-icon pools start empty, and the pools
-        // make the windows a draw asks for over the draws after it: a layout drawn once and the
-        // same layout drawn until its windows are made are two pictures, and the gate is about
-        // the layouts. So each side is drawn until its own pools have made its windows, within
-        // their growth rounds, as a stopped picture's settle draws ([`Viewer::draw_map`]).
         let settle = |prepared: &mut crate::document::PreparedOverlay| {
             let mut rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
             let mut drawn = draw(prepared);
@@ -1437,8 +1034,6 @@ impl Viewer {
             drawn
         };
         let fresh = settle(&mut full);
-        // Art the gate's own layout queued may decode while it draws: its version moved during the
-        // comparison, which is again not a difference of layouts.
         if self.prepared_overlay.as_ref().is_some_and(|prepared| prepared.is_stale(now)) {
             overlay_checks::note(&overlay_checks::ART_MOVED);
             profile_print(format!("CHECK overlay {what} not compared: the art moved while it was compared"));
@@ -1467,8 +1062,6 @@ impl Viewer {
                 }
             }
         }
-        // Which publication each side read: a difference between a layout and the tables the
-        // frame holds is a pairing broken, not two layouts of one publication differing.
         let pairing = format!(
             "laid out over the tables of build {} and placed at {:?}, the frame holds build {} and draws at {:?}",
             self.prepared_overlay.as_ref().map_or(0, crate::document::PreparedOverlay::tables),
@@ -1487,8 +1080,6 @@ impl Viewer {
         }
     }
 
-    /// The map service a load reads sources and preferences from: the desktop host's, else the
-    /// toggle harness's.
     pub(crate) fn service(&self) -> Option<Arc<dashboard::Service>> {
         self.embedded
             .as_ref()
@@ -1502,7 +1093,6 @@ impl Viewer {
         config: Config,
         options: Options,
         error: Option<String>,
-        // capture
         failure: Arc<Mutex<Option<String>>>,
         embedded: Option<crate::embedded::Controller>,
     ) -> Self {
@@ -1528,8 +1118,6 @@ impl Viewer {
                 }
             }
         }
-        // Without usable folders the load fails at once and says so; an
-        // embedded viewer keeps the path until the host sends its folders.
         if let Some(path) = viewer.options.replay.clone() {
             viewer.open(path, ctx, None);
         }
@@ -1554,14 +1142,9 @@ impl Viewer {
         {
             error = Some(format!("Game tables: {tables_error}"));
         }
-        // capture: `--window-dump` arms the readback before the first frame, so
-        // every frame it draws is a capture frame and the animation clock never
-        // starts.
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
             remaining: if profiling() {
-                // A cold seek is followed for thirty seconds past it: a seek
-                // across a 1,400-hour branch walks its snow history for ~10 s.
                 if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
                     1921
                 } else {
@@ -1579,15 +1162,12 @@ impl Viewer {
             paced: false,
             request: None,
         });
-        // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
-        // Replaced with the document's `settings.txt` options when one loads.
         let counter_view = CounterView::new(
             options.counter_settings(&installed_content_settings::settings::MapOptions::DEFAULT),
         );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
-        // The monitors are read off the UI thread; start before the first map.
         if options.playback_cost_end.is_none() {
             refresh_monitors(|| ());
         }
@@ -1636,7 +1216,6 @@ impl Viewer {
             held_view: None,
             held_clock: None,
             zoom: Motion::default(),
-            // A window dump's placed walk starts walking, and its `--fly` flies.
             camera_mode: if options.walk.is_some() {
                 CameraMode::Walk
             } else if options.fly.is_some() {
@@ -1658,11 +1237,7 @@ impl Viewer {
             fly_clock: None,
             fly_footprints: Default::default(),
             pointer_grabbed: false,
-            // colour: `--postfx off` reaches the window too, so a window and a
-            // dump of the same state can be the same frame.
             postfx: options.postfx,
-            // A host's maps take its graphics preferences; a window without one takes
-            // `settings.txt`'s choices when its recording opens (`install_map`).
             graphics: dashboard::protocol::MapGraphics {
                 day_night: options.day_night.unwrap_or(option_defaults::DAY_NIGHT),
                 show_allied_plans: options.allied_plans.unwrap_or(option_defaults::ALLIED_PLANS),
@@ -1674,7 +1249,6 @@ impl Viewer {
             overlay_layers: Default::default(),
             counter_owners: Default::default(),
             resolved_settings: Default::default(),
-            // The host sends its setting before the map; a capture pins its own.
             ui_scale: Setting::MatchGame,
             fly_aircraft: Default::default(),
             match_game: None,
@@ -1725,11 +1299,9 @@ impl Viewer {
             uploaded: Uploaded::default(),
             dropper: None,
             worker_pool: None,
-            // close zoom
             raid_tick: None,
             convoys_sailing: false,
             convoy_refused: BTreeMap::new(),
-            // names
             placements: None,
             fade: None,
             hovered_name_region: None,
@@ -1770,7 +1342,6 @@ impl Viewer {
             overlay_missed: Vec::new(),
             combat_rows: Default::default(),
             tooltip_refused: Default::default(),
-            // counters
             counter_report: CounterReport::default(),
             combat_painted: Default::default(),
             overlay_hits: Default::default(),
@@ -1808,7 +1379,6 @@ impl Viewer {
             picker_error: None,
             picker_refused: Default::default(),
             picker_controls: None,
-            // capture
             capture,
             capture_note: None,
             failure,
@@ -1830,9 +1400,7 @@ impl Viewer {
         options.combat = None;
         let mut viewer = Self::create(config, options, None, Arc::new(Mutex::new(None)), None, gpu);
         viewer.dashboard_map = true;
-        // The dashboard passes on the host's choice.
         viewer.diagnostics = false;
-        // The dashboard gives one map at a time the audio.
         viewer.audio_focus = false;
         viewer.dropper = Some(Arc::clone(pool.dropper()));
         viewer.worker_pool = Some(Arc::clone(&pool));
@@ -1840,8 +1408,6 @@ impl Viewer {
         viewer
     }
 
-    /// The app's worker threads: the host's shared ones, else this window's own, made on first
-    /// use. Its dropper frees what the window retires.
     pub(super) fn worker_pool(&mut self) -> std::io::Result<Arc<crate::worker_pool::WorkerPool>> {
         if let Some(pool) = &self.worker_pool {
             return Ok(Arc::clone(pool));
@@ -1852,8 +1418,6 @@ impl Viewer {
         Ok(pool)
     }
 
-    /// The recording's `settings.txt` map options, the command line's first; a host's settings
-    /// replace day/night and allied plans whenever they arrive.
     fn take_game_options(&mut self, game: &installed_content_settings::settings::MapOptions) {
         self.counter_view = CounterView::new(self.options.counter_settings(game));
         if !self.host_graphics {
@@ -1877,7 +1441,6 @@ impl Viewer {
         if let Some(side) = self.playhead_map.take() {
             self.drop_later(side);
         }
-        // The reader opens at the map's first frame, at its clock.
         self.playhead_opening = None;
         self.playhead_refused = None;
         self.playhead_opened = false;
@@ -1897,10 +1460,6 @@ impl Viewer {
         self.uploaded = Uploaded::default();
     }
 
-    /// After each frame of a map whose content falls back from visual mods, its report for the
-    /// host's fallback owner ([`crate::visual_fallback::Fallbacks::reduce`]): every refusal the
-    /// scene made, by stable name, the frame's own failure, and whether it drew settled, by the
-    /// viewer's render result. The owner decides; nothing is decided here.
     fn after_frame_with_visual_mods(&mut self, document: &Document, error: Option<&String>) {
         let Some(built) = document.content.fallback.clone() else {
             return;
@@ -1913,14 +1472,11 @@ impl Viewer {
         if let Some(error) = error {
             refusals.insert(format!("frame: {error}"));
         }
-        // What the content's loaders refused to draw (a model entity no descriptor decides).
         refusals.extend(document.content.uncovered_reads.refused());
         let requested = self.playhead.map_or(
             (document.playback.branch(), document.playback.hour()),
             |head| (head.branch, head.hour),
         );
-        // With the playhead's map open, the hour on screen is its drawn hour once every drawn
-        // layer is settled and uploaded.
         let shown = self.playhead_map.as_ref().and_then(|side| {
             side.on_screen()
                 .filter(|on| on.settled)
@@ -1940,7 +1496,6 @@ impl Viewer {
         });
     }
 
-    /// The last frame's report ([`Self::after_frame_with_visual_mods`]).
     pub(crate) fn take_visual_report(&mut self) -> Option<crate::visual_fallback::Report> {
         self.visual_report.take()
     }
@@ -1949,30 +1504,23 @@ impl Viewer {
         self.document.is_some() && self.scene.is_some()
     }
 
-    /// Gives up the process audio if this view holds it; everything it
-    /// played, music included, stops.
     pub(crate) fn release_audio(&mut self) {
         if let Some(audio) = &mut self.audio {
             audio.release();
         }
     }
 
-    /// Stops what the map sounded while it shows no picture: an error view or a spinner. The
-    /// next presented frame claims the audio again and starts its sounds afresh.
     fn silence_unshown(&mut self) {
         self.release_audio();
         self.audio_reset = true;
     }
 
-    /// Sends this view's volumes and mute to the audio now, so a change
-    /// applies even while the map does not draw.
     pub(crate) fn apply_audio_mix(&self) {
         if let (Some(audio), Some(document)) = (&self.audio, &self.document) {
             audio.set_mix(audio_mix(document, self.volumes, self.muted));
         }
     }
 
-    /// Follow the host's settings for `scope`, resolving them only when they may have changed.
     pub(crate) fn follow_map_settings(
         &mut self,
         service: &dashboard::Service,
@@ -1987,11 +1535,6 @@ impl Viewer {
         settings
     }
 
-    /// Lighting for the frame being drawn, including a setting changed at the same replay hour.
-    /// The cycle shows while it is on and the game would draw it at this playback; without the
-    /// recorded speeds it shows only while paused, and the warnings name why.
-    /// Today's ribbons with the orders layer's plan and the convoys layer's trade routes appended
-    /// while they draw them; none while neither does.
     fn layered_orders(&self) -> Option<LayeredOrders> {
         let side = live_of(&self.playhead_map)?;
         let plan = side.products().plan.as_ref().map(|(_, plan)| Arc::clone(plan));
@@ -2007,7 +1550,6 @@ impl Viewer {
         DayNight::at_hour(hour).with_cycle(self.graphics.day_night && shown)
     }
 
-    /// The host's campaign or widget settings, including the counter setting.
     pub(crate) fn set_embedded_graphics(
         &mut self,
         settings: &dashboard::protocol::ResolvedMapSettings,
@@ -2029,7 +1571,6 @@ impl Viewer {
         }
     }
 
-    /// Frees the registration of the scene's output, so the next frame registers it afresh.
     fn free_scene_target(&mut self, frame: &eframe::Frame) {
         if let Some(texture) = self.scene_target.take()
             && let Some(state) = frame.wgpu_render_state()
@@ -2041,8 +1582,6 @@ impl Viewer {
         }
     }
 
-    /// Lets go of what is sized to this hidden view; its scene stays, and the next frame shown
-    /// makes its targets again.
     pub(crate) fn release_viewport(&mut self, frame: &eframe::Frame) {
         let Some(scene) = &mut self.scene else {
             return;
@@ -2078,7 +1617,6 @@ impl Viewer {
         self.rendered = None;
     }
 
-    /// Nothing of this window is drawn: its maps stop sounding and let their playheads go.
     fn not_drawn(&mut self) {
         self.export_closed("its map was hidden before its picture was saved");
         self.release_audio();
@@ -2089,8 +1627,6 @@ impl Viewer {
         }
     }
 
-    /// A map not drawn holds no reader of its playhead: a reader that takes no steps would hold
-    /// the playhead's ring for every other map of the recording. It opens again when drawn.
     pub(crate) fn close_playhead(&mut self) {
         if let Some(side) = self.playhead_map.take() {
             self.drop_later(side);
@@ -2242,8 +1778,6 @@ impl Viewer {
         self.drew_frame
     }
 
-    /// Advances independently of the builders, for both the live host clock
-    /// and the deterministic playback sweep. The branch end is always exact.
     fn tick_playhead(&mut self, seconds: f64, last: i32) {
         if let Some(side) = &self.playhead_map {
             side.entry().follow_rate();
@@ -2268,12 +1802,8 @@ impl Viewer {
         let anchor = (target, playing, speed);
         self.seek_owed |= sought;
         if sought {
-            // A seek is answered on the next display frame: the head stands at the hour sought,
-            // exactly, rather than being steered from an hour of the history it left.
             self.frame_head.forget();
         }
-        // An anchor the clock already holds changes nothing, unless a seek is still owed: the
-        // reader that takes it is the one this anchor reaches.
         if !sought && !self.seek_owed && self.playhead.is_some() && self.clock_anchor == Some(anchor) {
             return;
         }
@@ -2281,8 +1811,6 @@ impl Viewer {
             self.tick_playhead(now.duration_since(self.last_step).as_secs_f64(), last);
         }
         self.last_step = now;
-        // A seek and a pause stand where the page composed them; a playing anchor has moved on
-        // since, and never takes the map to an hour before the one it shows.
         let moving = playing && !sought;
         let age = self.page_clock.age(composed_at, now);
         self.playhead = Some(forward_only(
@@ -2297,10 +1825,6 @@ impl Viewer {
         self.give_anchor(target.hour, playing, speed);
     }
 
-    /// Hands the page's newest anchor to the map's reader, seeking to `hour` while a seek no
-    /// reader has taken is owed. A closed or opening reader takes nothing: the seek stays owed and
-    /// is taken, exact at the hour the page's clock stands at then, by the reader that opens
-    /// ([`Self::side_opened`]) or by the page's next anchor.
     fn give_anchor(&mut self, hour: i32, playing: bool, speed: f64) {
         let Some(side) = &self.playhead_map else { return };
         let sought = std::mem::take(&mut self.seek_owed);
@@ -2310,8 +1834,6 @@ impl Viewer {
         side.anchor(hour, playing, speed, sought);
     }
 
-    /// The map's reader is open: it takes the page's newest anchor at once, so a seek the page
-    /// asked for while no reader was there is never lost.
     fn side_opened(&mut self, side: crate::playhead_host::side::SideThread) {
         self.playhead_map = Some(side);
         if let Some(clock) = self.playhead {
@@ -2319,29 +1841,14 @@ impl Viewer {
         }
     }
 
-    /// Whether this frame is saved — a stepped capture's frame or a window dump's — and so is
-    /// whole at its own hour or refused by name, however long it takes to make.
     fn saves_a_frame(&self) -> bool {
         self.capture.as_ref().is_some_and(|capture| !capture.paced) || self.options.window_dump
     }
 
-    /// Whether the frames saved are no one's view (a window dump, a stepped capture): their windows
-    /// stand where their openings settle. A desktop export shows what is on screen.
     fn settles_windows(&self) -> bool {
         self.saves_a_frame() && self.embedded.is_none() && !self.dashboard_map
     }
 
-    /// Whether a saved frame's combat window is there: none asked for, or the read of its hour
-    /// shown. While the combat named at load resolves or the window loads, the frame waits for the
-    /// side's stepped picture to say; a combat named at load that matched nothing, a read the side
-    /// could not make, or one it made that is not of the hour on screen is refused by name.
-    ///
-    /// A combat named at load must be drawn: one its read closed or does not show is refused, and
-    /// one still looked up after [`SETTLES`] frames of a standing picture (`picture`) is refused
-    /// naming the rows it waited for.
-    ///
-    /// `left_out` says why the window's quads did not reach this frame, if they did not: a named
-    /// combat shown but left out of the picture is refused too.
     fn saved_combat(&mut self, picture: bool, left_out: Option<&str>) -> Result<bool, String> {
         if let Some(why) = &self.combat_rows.selector_refused {
             return Err(why.clone());
@@ -2368,18 +1875,10 @@ impl Viewer {
         }
     }
 
-    /// A saved frame draws again until its overlay is laid out over the art it draws (`stale`,
-    /// none without an overlay) and the rest of its picture is there (`waiting` names what is not).
-    /// Art that decoded after the overlay was painted, such as the combat window's flags and
-    /// portraits, leaves the layout older than the art: once readback is due this frame or the
-    /// next, the next frame paints it, which lays `hour` out again. Art still moving it after
-    /// [`SETTLES`] frames, or a frame due for readback held past [`HELD_GIVEN_UP`], refuses the
-    /// capture by name: a window dump's as the frame's error, an export's to its requester.
     fn hold_saved_frame(&mut self, hour: replay_data::Hour, stale: Option<bool>, waiting: Option<String>, ctx: &egui::Context) -> Result<(), String> {
         self.hold_saved_frame_within(hour, stale, waiting, HELD_GIVEN_UP, ctx)
     }
 
-    /// [`Self::hold_saved_frame`] held at most `given_up`.
     fn hold_saved_frame_within(&mut self, hour: replay_data::Hour, stale: Option<bool>, waiting: Option<String>, given_up: Duration, ctx: &egui::Context) -> Result<(), String> {
         let Some(capture) = self.capture.as_mut().filter(|capture| !capture.paced) else { return Ok(()) };
         let due = capture.remaining <= 1;
@@ -2417,8 +1916,6 @@ impl Viewer {
         Ok(())
     }
 
-    /// Whether a saved frame held for `hour` waits on: once held past `given_up` it is refused,
-    /// naming `what` it waited for, and false is returned to the export the frame draws on after.
     fn held_within(&mut self, hour: replay_data::Hour, given_up: Duration, what: impl FnOnce() -> String, ctx: &egui::Context) -> Result<bool, String> {
         if self.held_since.get_or_insert_with(Instant::now).elapsed() < given_up {
             return Ok(true);
@@ -2427,14 +1924,10 @@ impl Viewer {
         self.refused_frame(why, ctx).map(|()| false)
     }
 
-    /// A saved frame of a loaded map that cannot draw `hour` yet (`what` it waits for: its first
-    /// picture, a size to draw at) waits within [`HELD_GIVEN_UP`], the hold it then goes on to;
-    /// loading the recording is not counted.
     fn wait_to_draw(&mut self, hour: replay_data::Hour, what: impl FnOnce() -> String, ctx: &egui::Context) -> Result<(), String> {
         self.wait_to_draw_within(hour, what, HELD_GIVEN_UP, ctx)
     }
 
-    /// [`Self::wait_to_draw`] waiting at most `given_up`.
     fn wait_to_draw_within(&mut self, hour: replay_data::Hour, what: impl FnOnce() -> String, given_up: Duration, ctx: &egui::Context) -> Result<(), String> {
         if !self.capture.as_ref().is_some_and(|capture| !capture.paced) {
             return Ok(());
@@ -2442,10 +1935,6 @@ impl Viewer {
         self.held_within(hour, given_up, what, ctx).map(drop)
     }
 
-    /// Installs the overlay the map's side made for its step, with the drawn plates of the one it
-    /// replaces when that was laid out for the same view and their stacks are the same by value.
-    /// Its counters' memory is already the view's: the frame took it in the window, where the side
-    /// writes nothing.
     fn install_overlay(&mut self, made: crate::playhead_host::overlay::Made) {
         let crate::playhead_host::overlay::Made { hour, branch, mut prepared, tables, rows, placed_at, on: _, published, draws, view, left, lay_ins, moved } = made;
         self.overlay_moved = moved;
@@ -2470,8 +1959,6 @@ impl Viewer {
         viewer_foundation::map::redraws::note("made.laid", 1);
     }
 
-    /// The overlay the frame holds placed at `camera`: a layout stands for an hour and a view and
-    /// is placed at any camera ([`crate::document::PreparedOverlay::project`]). Whether it moved.
     #[allow(clippy::too_many_arguments, reason = "the frame's camera and what the placing reads")]
     fn place_overlay(
         &mut self,
@@ -2507,14 +1994,6 @@ impl Viewer {
         placed
     }
 
-    /// The painting this frame just made, placed at this frame's camera and head before it is
-    /// drawn. A painting draws the layout it was made from where that layout was placed
-    /// ([`Self::overlay_placed`]) and at the hour the publication was laid out for, and neither is
-    /// this frame's: a frame that answered its camera by moving the windows lays nothing out, and
-    /// the pools can still ask it to paint; and a publication is prepared ahead of the head. So
-    /// the fresh painting is offset to this frame's own camera and head, by the mechanism every
-    /// other frame uses. Refused, the painting stands where its layout was placed and the frame
-    /// after this one places it.
     fn place_painting(
         &mut self,
         camera: Camera,
@@ -2551,15 +2030,6 @@ impl Viewer {
         Ok(())
     }
 
-    /// Answers a camera that is only looking at another point of the map by moving the overlay's
-    /// windows, which are anchored in the world: each anchor is projected at this frame's camera
-    /// and the windows standing on it are offset by whole interface pixels. Nothing is laid out,
-    /// painted, sorted or composed again. Whether the camera was answered.
-    ///
-    /// Refused, so that [`Self::place_overlay`] answers the frame instead, when the camera did
-    /// more than look elsewhere (a zoom, a free eye), when it has come to rest (a still picture
-    /// stands at its own layout), when it has moved past the placed view's pad (a window outside
-    /// that view could have reached the frame), or before the overlay is drawn.
     fn move_overlay(
         &mut self,
         camera: Camera,
@@ -2569,8 +2039,6 @@ impl Viewer {
     ) -> Result<bool, String> {
         let moved = self.overlay_camera_before.is_some_and(|before| before != camera);
         self.overlay_camera_before = Some(camera);
-        // The head advanced over a batch that carries movers: every one of them is placed at this
-        // frame's own hour, which is what a watcher sees as the replay advancing evenly.
         let advanced = self.overlay_head_before.is_some_and(|before| before != at)
             && self.overlay.as_ref().is_some_and(Batch::moves);
         self.overlay_head_before = Some(at);
@@ -2631,17 +2099,11 @@ impl Viewer {
         }
     }
 
-    /// Frees `value` on the dropper's thread, here when there is none.
-    /// Installs `document` in place of the one open, or clears it, and lets go of what was taken
-    /// from the one before: every document installed or cleared goes through here. The document
-    /// replaced, for the caller to drop or retire.
     fn replace_document(&mut self, document: Option<Document>) -> Option<Document> {
         self.retire_combat_inputs();
         std::mem::replace(&mut self.document, document)
     }
 
-    /// What the combat window's reads took from the content open (its naval sources provider and
-    /// rule relations, which hold the content): retired with it, off the frame.
     fn retire_combat_inputs(&mut self) {
         self.combat_inputs = None;
         let inputs = self.combat.take_inputs();
@@ -2655,15 +2117,11 @@ impl Viewer {
         }
     }
 
-    /// The overlay's builds and what they were made from belong to the content open: a build in
-    /// flight for the content before gives nothing to the content after.
     fn forget_overlay_builds(&mut self) {
         self.forget_overlay();
         self.frame_head.forget();
     }
 
-    /// The overlay held and what it was made from let go: the frame draws none until the next is
-    /// installed.
     fn forget_overlay(&mut self) {
         let retired = (self.overlay_tables.take(), self.overlay_frame.take(), self.prepared_overlay.take());
         self.retire(retired);
@@ -2676,8 +2134,6 @@ impl Viewer {
         self.overlay_missed.clear();
     }
 
-    /// The layout drawn last let go of on screen too, for a frame with no overlay coming: none of
-    /// its sprites is drawn and none of its icons is hit. Whether there was one to let go.
     fn drop_overlay_drawn(&mut self) -> bool {
         if self.overlay.take().is_none() && self.free_overlay.quads.is_empty() {
             return false;
@@ -2691,23 +2147,13 @@ impl Viewer {
         true
     }
 
-    /// The map mode of the picture on screen: the mode its layers were composed and settled
-    /// for, the chosen one ([`Self::map_mode`]) before any picture.
     fn shown_mode(&self) -> &viewer_world::map::map_mode::MapMode {
         self.live_map().and_then(|side| side.mode_on_screen()).unwrap_or(&self.map_mode)
     }
 
-    /// This frame's own place in the replay: the one hour everything it draws stands at
-    /// ([`viewer_foundation::map::frame_head`]). It follows the playback clock, so the hours
-    /// advance as evenly as playback does, and is steered to keep inside the hours the newest
-    /// publication has given as real data; stopped (a pause, a seek, the recording's end) and on a
-    /// saved frame it is the clock's own hour exactly. None before the clock is anchored.
     fn take_frame_head(&mut self) -> Option<viewer_foundation::map::anchored::Head> {
         let clock = self.playhead?;
-        // A saved frame and a stepped capture stand at the hour they were asked for, whole.
         let saved = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
-        // The hours real data covers end at the newest publication the frame holds, which is the
-        // hour its movers' newest places and its timed layers' newest change sets stand at.
         let published = self.overlay_shown.map(|(_, hour)| hour);
         let clock = f64::from(clock.hour) + clock.fraction;
         let head = self.frame_head.take(viewer_foundation::map::frame_head::Frame {
@@ -2730,24 +2176,18 @@ impl Viewer {
         Some(head)
     }
 
-    /// Whether the map's reader has composed and uploaded a first picture: until then the spinner
-    /// covers the map.
     fn picture_ready(&self) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn.is_some()))
     }
 
-    /// Whether the frame drawn answers `target` with everything on screen: exactly, or, playing,
-    /// with the newest hour before it.
     fn presentation_ready(&self, target: Playhead, playing: bool) -> bool {
         self.rendered.is_some_and(|rendered| rendered.branch == target.branch)
             && self.picture_whole(target, playing)
     }
 
-    /// Whether every part of the picture drawn shows `target`'s hour ([`whole_picture`]).
     fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| {
             side.on_screen().is_some_and(|on| {
-                // With no overlay coming for the view (its vision refused), the layers are all of it.
                 if !side.products().overlay_coming() {
                     return layers_show(&on, target.hour, playing);
                 }
@@ -2756,43 +2196,29 @@ impl Viewer {
         })
     }
 
-    /// Whether the document's load is over: no lazy art decodes, the overlay was laid out since
-    /// the last did, and the picture asked for is whole ([`Self::picture_whole`]). Until then the
-    /// content made for it is kept.
     fn load_complete(&self, art_busy: bool, overlay_fresh: bool) -> bool {
         !art_busy && overlay_fresh && self.playhead.is_some_and(|head| self.picture_whole(head, self.playing))
     }
 
-    /// The hour of the rows at the head the overlay on screen was made from: its tables, its
-    /// layout and the counter layers' products all stand at it, because the side's step made them
-    /// together. None before its first, and while a read it missed is being learned.
     pub(crate) fn overlay_hour(&self) -> Option<replay_data::Hour> {
         self.overlay_hour.filter(|_| self.overlay_missed.is_empty())
     }
 
-    /// The playhead's map while it draws: open, its reader not stopped.
     fn live_map(&self) -> Option<&crate::playhead_host::side::SideThread> {
         self.playhead_map.as_ref().filter(|side| side.failure().is_none())
     }
 
-    /// The branch and hour on screen: the reader's branch and drawn hour, the clock's before its
-    /// first picture.
     fn hour_on_screen(&self, document: &Document) -> (replay_data::BranchId, i32) {
         self.layers_on_screen().unwrap_or_else(|| {
             self.playhead.map_or_else(|| (document.playback.branch(), document.playback.hour()), |clock| (clock.branch, clock.hour))
         })
     }
 
-    /// While the playhead's map is open, its reader's branch (the clock's for a reader opened
-    /// without one) and drawn hour; none before its first picture or once its reader stopped.
     fn layers_on_screen(&self) -> Option<(replay_data::BranchId, i32)> {
         let side = self.playhead_map.as_ref()?;
         Some((side.branch().or(self.playhead.map(|clock| clock.branch))?, side.on_screen()?.drawn?))
     }
 
-    /// The reader reads the clock's branch: one open on another is let go, and the next frame
-    /// opens one at the clock. A playhead plays one branch's timeline, and the readers' rows carry
-    /// the branch they were opened with.
     fn follow_branch(&mut self) {
         let Some(clock) = self.playhead else {
             return;
@@ -2802,16 +2228,12 @@ impl Viewer {
         }
     }
 
-    /// A reader made over other content than the map draws (the map reopened with other visual
-    /// mods) draws that content's art: it is let go, and the next frame opens one over `content`.
     fn follow_content(&mut self, content: *const crate::document::Content) {
         if self.playhead_map.as_ref().is_some_and(|side| !side.made_over(content)) {
             self.close_playhead();
         }
     }
 
-    /// The map's error view: the reader's refusal by name while there is none, its own failure by
-    /// name once it stopped, else the recorded gap the clock stands in.
     fn map_error_of(&mut self, document: &Document) -> Option<String> {
         let Some(side) = &self.playhead_map else {
             return self.playhead_refused.clone();
@@ -2824,11 +2246,6 @@ impl Viewer {
         replay.block_at(clock.branch, clock.hour).is_none().then(|| crate::playback::gap_reason(replay, clock.branch, clock.hour))
     }
 
-    /// The window's own histories follow today's continuity rule over what the playhead's map
-    /// presents: day and night and the counters' movement start again on a reset, and the audio on
-    /// a reset or recreated units. Previous and next are the branch, drawn hour and viewing country
-    /// of the last picture presented and of this one; a picture composed for the window's seek,
-    /// or a reopened reader's first, is sought. The layers reset themselves on their compose.
     fn follow_continuity(&mut self, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_foundation::map::presentation::UnitRestart)> {
         let side = self.live_map()?;
         let on = side.on_screen()?;
@@ -2843,8 +2260,6 @@ impl Viewer {
         self.present_continuity((branch, hour, viewing), sought, gaps)
     }
 
-    /// [`Self::follow_continuity`] for the picture `next`: none when it is the picture last
-    /// presented and not sought.
     fn present_continuity(&mut self, next: (replay_data::BranchId, i32, Option<String>), sought: bool, gaps: &[replay_frame::branches::Gap]) -> Option<(Continuity, viewer_foundation::map::presentation::UnitRestart)> {
         use viewer_foundation::map::presentation::{UnitRestart, continuity, unit_restart};
         if !sought && self.presented.last.as_ref() == Some(&next) {
@@ -2884,9 +2299,6 @@ impl Viewer {
         let ready = clock.is_some_and(|clock| self.presentation_ready(clock, target.playing))
             && self.rendered_sequence == target.sequence;
         let layers = self.playhead_map.as_ref().and_then(|side| side.on_screen());
-        // Playing, a frame of the same branch stands in for the clock's hour; say how far back. A
-        // frame of an hour the clock has not reached stands in for nothing, and trails it by no
-        // hours at all: it says none, never a lag of zero.
         let lag = |hour: i32| {
             clock
                 .zip(self.rendered)
@@ -2895,7 +2307,6 @@ impl Viewer {
         };
         let behind = layers.and_then(|on| on.drawn).and_then(lag);
         let behind_reason = behind.filter(|behind| *behind > 0).and(layers.as_ref().map(layers_behind_reason));
-        // The hour on screen is the layers' drawn hour; none before their first picture.
         let (hour, fraction) = match (self.rendered, layers.and_then(|on| on.drawn)) {
             (Some(_), Some(drawn)) => (Some(drawn), Some(0.0)),
             _ => (None, None),
@@ -2925,8 +2336,6 @@ impl Viewer {
         }
     }
 
-    /// The settings the frame on screen drew with: the scene's anti-aliasing, the document's
-    /// texture quality and visual mods, and the graphics, volumes and counters it follows.
     fn applied_settings(&self) -> Option<dashboard::protocol::AppliedMapSettings> {
         let document = self.document.as_ref()?;
         let mut graphics = self.graphics;
@@ -2943,19 +2352,12 @@ impl Viewer {
     }
 
 
-    /// Everything the hour on screen could not draw exactly, collected after its overlay and
-    /// hover. Current tooltip and combat gaps lead; persistent content notes follow. Each
-    /// frame replaces the per-hour report, so recovered refusals go away with the next draw.
-    /// The picture on screen's limitation lines and its layers' reports; none before its first
-    /// picture.
     fn hour_lines(&self) -> Option<[Vec<String>; 2]> {
         let side = self.playhead_map.as_ref().filter(|side| side.on_screen().is_some())?;
         let lines = side.products().lines.as_ref()?;
         Some([lines.limitations.clone(), lines.political.iter().chain(&lines.reports).cloned().collect()])
     }
 
-    /// The viewing country's vision refused, by name: every part that needs it is withheld, the
-    /// overlay with them, so the map says so with or without its diagnostics.
     pub(crate) fn vision_refusal_line(&self) -> Option<String> {
         self.live_map().filter(|side| side.on_screen().is_some()).and_then(|side| side.products().vision_refused.clone()).map(|why| format!("{}Viewing country: the vision layer refuses the hour: {why}", crate::playhead_host::limitations::NOT_GIVEN))
     }
@@ -2965,7 +2367,6 @@ impl Viewer {
         let Some([limitations, reports]) = self.hour_lines() else {
             return refused.into_iter().collect();
         };
-        // Current hover and combat gaps lead so they stay visible above persistent content notes.
         let mut warnings: Vec<_> = refused.into_iter().chain(tooltip_warning_lines(&self.tooltip_refused)).collect();
         warnings.extend(self.counter_report.combat_gap_lines());
         warnings.extend(self.combat.warnings(&document.icons.combat.warnings));
@@ -2982,7 +2383,6 @@ impl Viewer {
         warnings.extend(self.air_orders.warnings());
         warnings.extend(self.map_window_warnings());
         warnings.extend(limitations);
-        // The viewer's device, when it lacks a feature some content needs to draw exactly.
         if let Some((device, _)) = &self.gpu {
             warnings.extend(device_requirements(device.features()));
         }
@@ -3016,8 +2416,6 @@ impl Viewer {
             warnings.extend(placements.warnings.iter().cloned());
         }
         warnings.extend(self.label_report.warnings());
-        // The overlay's refused tokens: the raid icons' as laid out for this
-        // camera, the counters' (with the naval mission icons' gaps) as last drawn.
         if let Some(overlay) = &self.prepared_overlay {
             warnings.extend(overlay.raid_report().warnings());
             warnings.extend(overlay.intel_report().warnings());
@@ -3045,12 +2443,9 @@ impl Viewer {
                     .map(|(reason, count)| format!("GUI shader: {count} refused draws: {reason}")),
             );
         }
-        // The recorded naval engaged bytes against the flag derived for the recording's
-        // player, over the hours the engaged index has folded so far.
         if let Some(history) = self.layer_history() {
             warnings.extend(history.byte_check().lines());
         }
-        // A capture renders at the dump's scale, not Match game's.
         let pinned = self
             .capture
             .as_ref()
@@ -3068,8 +2463,6 @@ impl Viewer {
         warnings
     }
 
-    /// The diagnostics an embedded map shows over itself: the hour's stats and
-    /// its data limitations, collapsed behind their count.
     pub(crate) fn diagnostics_ui(&mut self, ui: &mut egui::Ui, max_height: f32) {
         let side = self.playhead_map.as_ref().filter(|side| side.on_screen().is_some());
         let stats = side.map(|side| {
@@ -3106,8 +2499,6 @@ impl Viewer {
         }
     }
 
-    /// The diagnostics shortcut asks the desktop host, which owns the choice
-    /// and sends it back.
     fn toggle_diagnostics(&self) {
         if let Some(embedded) = &self.embedded {
             embedded.toggle_diagnostics();
@@ -3141,7 +2532,6 @@ impl Viewer {
             {
                 self.embedded_seek = None;
             }
-            // Retain this selection if folders must be configured first.
             self.options.replay = Some(path.clone());
             self.expected_revision = expected_revision.clone();
         }
@@ -3181,11 +2571,9 @@ impl Viewer {
         {
             content.push((source.key().clone(), Arc::clone(&document.content)));
         }
-        // Content loaded before its visual mods changed on disk is never reused.
         if let Some(stale) = self.stale_visual_revision.take() {
             content.retain(|(_, content)| content.visual_revision != stale);
         }
-        // Each load reads the fallback its recording's keys hold when its source is open.
         let fallbacks = Arc::clone(&self.visual_fallbacks);
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
@@ -3202,7 +2590,6 @@ impl Viewer {
                 hour: options.hour,
                 hour_fraction: options.hour_fraction,
             };
-            // A withheld game table stops its reader with the reason, which the map then names.
             let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
                 let revision = if verify_revision {
                     let _stage = viewer_foundation::load_record::stage("load.replay_revision");
@@ -3239,8 +2626,6 @@ impl Viewer {
                         &source.key().revision,
                     )
                 });
-                // A scene that cannot be built with the visual mods is built again without them,
-                // named, so a broken mod never leaves the recording unviewable.
                 let (document, scene) = loop {
                     let decisions = recording.as_ref().map(|recording| {
                         crate::visual_fallback::lock(&fallbacks).decisions(recording)
@@ -3248,7 +2633,6 @@ impl Viewer {
                     let mut document = match &source {
                         Some(source) => match content.iter().find(|(key, content)| {
                             key == source.key()
-                                // Only content its fallback key holds now.
                                 && content.fallback.as_ref().is_none_or(|built| {
                                     crate::visual_fallback::lock(&fallbacks).current(built)
                                 })
@@ -3291,9 +2675,6 @@ impl Viewer {
                     if let Some(source) = &source {
                         document.bind_source(source);
                     }
-                    // The map's layers need seconds for their first picture and the UI thread
-                    // idles on the spinner meanwhile; the whole hour-independent scene is cheaper
-                    // here than on any frame.
                     let workers = shared_pool
                         .as_ref()
                         .map_or_else(Default::default, |pool| pool.workers());
@@ -3302,9 +2683,6 @@ impl Viewer {
                     drop(scene_stage);
                     match scene {
                         Ok(scene) => break (document, scene),
-                        // Whatever failed, content with the visual mods probes without them, as its
-                        // frames then decide; only a scene that cannot be built without them
-                        // either is an error.
                         Err(error) => match &document.content.fallback {
                             Some(crate::visual_fallback::Built {
                                 key,
@@ -3371,7 +2749,6 @@ impl Viewer {
         self.playing = false;
         self.held_clock = held_clock;
         if held {
-            // The same map rebuilt: only the walk's figure comes from the content again.
             self.walk.forget_figure();
         } else {
             self.camera = self.options.camera;
@@ -3380,8 +2757,6 @@ impl Viewer {
             self.orbit.reset();
             self.walk.reset();
             self.flight = None;
-            // A start chosen on the last map is chosen again on this one, with the pointer given
-            // back: the new map's first frame shows the cursor again.
             if self.start_pick.at().is_some() {
                 self.start_pick = drop::Pick::Choosing;
                 self.input.release();
@@ -3389,10 +2764,8 @@ impl Viewer {
             self.fly_clock = None;
             self.fly_footprints = Default::default();
         }
-        // names
         self.placements = None;
         self.fade = None;
-        // counters
         self.overlay = None;
         self.overlay_shifts.clear();
         self.overlay_written += 1;
@@ -3412,23 +2785,17 @@ impl Viewer {
         }
     }
 
-    /// Records a lap of the frame that is being timed, if one is.
     fn lap(&mut self, name: &'static str) {
         if let Some(laps) = &mut self.laps {
             laps.lap(name);
         }
     }
 
-    /// A load that failed has no map to capture: a `--window-dump`, which waits for it, ends with
-    /// the process (the map's thread hands the message to main, which exits 1), and an export is
-    /// refused to its requester.
     fn failed_load(&mut self, error: String, ctx: &egui::Context) {
         self.refuse_capture(&format!("replay could not be loaded: {error}"), ctx);
         self.error = Some(error);
     }
 
-    /// The hour on screen cannot be drawn (a recorded gap, a refused or stopped reader), so no
-    /// capture can save it.
     fn hour_error(&mut self, error: Option<String>, ctx: &egui::Context) {
         if let Some(error) = &error {
             self.refuse_capture(error, ctx);
@@ -3436,9 +2803,6 @@ impl Viewer {
         self.map_error = error;
     }
 
-    /// Ends the capture with a refusal, whoever asked for it: a window dump reports it and closes,
-    /// and an export answers its requester by name, never as the map's error, so the next export
-    /// starts. Whether it was a window dump's.
     fn refuse_capture(&mut self, error: &str, ctx: &egui::Context) -> bool {
         let dump = self.refused(error).unwrap_or(false);
         if dump {
@@ -3447,22 +2811,16 @@ impl Viewer {
         dump
     }
 
-    /// A saved frame refused for `why`: the frame's error for a window dump, which ends with it;
-    /// an export is answered and the frame draws on.
     fn refused_frame(&mut self, why: String, ctx: &egui::Context) -> Result<(), String> {
         if self.refuse_capture(&why, ctx) { Err(why) } else { Ok(()) }
     }
 
-    /// An export still armed when what it draws goes (`why`) is refused to its requester. A window
-    /// dump ends on its own frame's errors.
     pub(crate) fn export_closed(&mut self, why: &str) {
         if self.capture.as_ref().is_some_and(|capture| !capture.exit) {
             self.refused(why);
         }
     }
 
-    /// Ends the capture refused for `error`, said by name; whether it was a window dump's, which
-    /// fails its process. None when no capture was armed.
     fn refused(&mut self, error: &str) -> Option<bool> {
         let capture = self.end_capture()?;
         let message = format!("Capture {} failed: {error}", capture.path.display());
@@ -3477,25 +2835,21 @@ impl Viewer {
         Some(capture.exit)
     }
 
-    /// A desktop export's end, for its requester: what it saved, or why it was refused.
     fn answer_export(&mut self, capture: &Capture, answer: Result<String, String>) {
         if let Some(request) = capture.request {
             self.export_results.push((request, answer));
         }
     }
 
-    /// Arms an export as the host's would, for a map that has no picture to save in a test.
     #[cfg(test)]
     pub(crate) fn arm_export(&mut self, path: &str, id: u64) {
         self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(id) });
     }
 
-    /// The exports that ended since the last call: each request, and why it was refused.
     pub(crate) fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
         std::mem::take(&mut self.export_results)
     }
 
-    /// Takes the capture, saved or refused, with the retries and the hold its frame made.
     fn end_capture(&mut self) -> Option<Capture> {
         (self.overlay_art_retries, self.overlay_art_moved, self.held_since) = (0, false, None);
         self.capture.take()
@@ -3503,8 +2857,6 @@ impl Viewer {
 
     fn poll(&mut self, ctx: &egui::Context) {
         let result = self.loading.as_ref().map(|receiver| receiver.try_recv());
-        // An older loader may finish between logic and UI. Do not briefly
-        // display or announce its replay after the host selected another.
         if (self.embedded_open.is_some() || self.options.replay.is_none())
             && result
                 .as_ref()
@@ -3537,7 +2889,6 @@ impl Viewer {
                     fraction: f64::from(document.hour_fraction),
                 });
                 self.clock_anchor = None;
-                // A rebuild in place carries on with the host's clock as it ran meanwhile.
                 if let Some(held) = self.held_clock.take()
                     && let Some(head) = held.playhead
                     && let Some((_, last)) = document.playback.range(head.branch)
@@ -3562,8 +2913,6 @@ impl Viewer {
                 }
                 self.shown_whole = false;
                 drop(self.replace_document(Some(document)));
-                // The loader built the whole hour-independent scene; the
-                // frames only upload hour data into it from here.
                 self.scene = Some(scene);
                 self.uploaded = Uploaded::default();
                 self.loading = None;
@@ -3595,8 +2944,6 @@ impl Viewer {
         }
     }
 
-    /// Asks for the monitors to be read again when this window's monitor or
-    /// display scale changes; a no-op otherwise.
     fn watch_monitors(
         monitor_seen: &mut Option<(Option<egui::Vec2>, Option<f32>)>,
         ctx: &egui::Context,
@@ -3612,8 +2959,6 @@ impl Viewer {
         }
     }
 
-    /// The Match game scale for `document` and its note, resolved again only
-    /// when the monitors have been re-read or the content changed.
     fn match_game<'a>(
         match_game: &'a mut Option<MatchGame>,
         document: &Document,
@@ -3637,13 +2982,6 @@ impl Viewer {
         &match_game.as_ref().expect("resolved above").1
     }
 
-    // capture
-    /// Reads the map target back into a PNG once a frame has been drawn into it.
-    ///
-    /// Called at the end of [`Viewer::map`], where the scene holds exactly the
-    /// frame the window just produced. The readback and the unverified-content
-    /// banner are [`render`]'s, the ones `--dump` uses, so what lands on disk
-    /// differs from a dump of the same state only where the two paths differ.
     fn save_capture(
         &mut self,
         state: &eframe::egui_wgpu::RenderState,
@@ -3691,10 +3029,6 @@ impl Viewer {
             render::write_png(scene, &state.device, &state.queue, &output)
         })();
         if written.is_ok() {
-            // The warning area is the window's own report of what this hour
-            // could not draw, and a capture is read beside a `--dump`, which
-            // prints the same list; printing it here is what lets the two be
-            // compared without a human reading the window.
             for warning in warnings {
                 eprintln!("Warning: {warning}");
             }
@@ -3702,8 +3036,6 @@ impl Viewer {
                 "Captured branch {}, hour {}{} to {} at {}x{}",
                 shown.0,
                 shown.1,
-                // counters: which frame between two recorded hours this is,
-                // in the words `--dump` uses, so the two can be compared.
                 if document.hour_fraction > 0.0 {
                     format!(" + {:.3} h", document.hour_fraction)
                 } else {
@@ -3733,8 +3065,6 @@ impl Viewer {
         self.capture_written(capture, &output, shown, written.map_err(|error| error.to_string()), ctx);
     }
 
-    /// A capture's frame was written to `output`, or failed to be: the export is answered with
-    /// the branch and hour the frame drew (`shown`), or why it failed, and a sequence goes on.
     fn capture_written(&mut self, mut capture: Capture, output: &Path, shown: (replay_data::BranchId, replay_data::Hour), written: Result<(), String>, ctx: &egui::Context) {
         let answer = match written {
             Ok(()) => Ok(format!("Saved {}: branch {}, hour {}", output.display(), shown.0, shown.1)),
@@ -3765,13 +3095,10 @@ impl Viewer {
         }
     }
 
-    /// How far each of the frame's icons stands from where the overlay was laid out; none while
-    /// the overlay stands where it was placed ([`viewer_foundation::map::anchored::Shifts`]).
     fn hit_shifts(&self) -> Option<&viewer_foundation::map::anchored::Shifts> {
         (!self.overlay_shifts.is_empty()).then_some(&self.overlay_shifts)
     }
 
-    /// The frame's hit shapes, as the pointer is resolved against them.
     fn hit_shapes(&self) -> map_hits::Shapes<'_> {
         map_hits::Shapes {
             report: &self.counter_report,
@@ -3783,8 +3110,6 @@ impl Viewer {
         }
     }
 
-    /// The map icon under `point`, resolved once a frame for each point asked about: every
-    /// consumer reads the one value the frame's index gave.
     fn map_hit(&self, point: [f32; 2]) -> Option<MapHit> {
         let shapes = self.hit_shapes();
         self.map_hits.borrow_mut().at(self.hits_stamp, point, &shapes, |point| {
@@ -3792,24 +3117,18 @@ impl Viewer {
         })
     }
 
-    /// `point` in the layout of the icon of `family` keyed `layer`, with its draw rank: the one
-    /// rule every consumer of a hit works by ([`map_hits::local`]).
     fn icon_point(&self, family: free_icons::IconFamily, layer: u64, point: [f32; 2]) -> Option<([f32; 2], u32)> {
         map_hits::local(self.hit_shifts(), self.looks.as_ref(), family, layer, point)
     }
 
-    /// The layer key of `target`'s hit shape; `None` for targets that are not one map icon.
     fn hit_layer(&self, target: MapHit) -> Option<(free_icons::IconFamily, u64)> {
         map_hits::hit_layer(&self.hit_shapes(), target)
     }
 
-    /// The drawn raid icon under `point`, as [`Viewer::map_hit`] ranks them.
     fn raid_hit(&self, point: [f32; 2]) -> Option<&viewer_raids::map::raids::tooltips::Hit> {
         map_hits::raid_at(&self.hit_shapes(), point)
     }
 
-    /// `point` in the layout of the icon whose hit shape is keyed `layer` in its family, as a free
-    /// eye shows it; `point` itself when the overlay draws as laid out.
     fn local_point(
         &self,
         layer: Option<(free_icons::IconFamily, u64)>,
@@ -3820,15 +3139,12 @@ impl Viewer {
             .map_or(point, |(local, _)| local)
     }
 
-    /// A laid-out rectangle `[x, y, width, height]` of the icon keyed `layer` where a free eye
-    /// draws it.
     fn shown_rect(&self, layer: Option<(free_icons::IconFamily, u64)>, rect: [f32; 4]) -> [f32; 4] {
         layer
             .and_then(|(family, layer)| map_hits::shown(self.hit_shifts(), self.looks.as_ref(), family, layer, rect))
             .unwrap_or(rect)
     }
 
-    /// A pin owns hover only when its presented GUI object is the top hit.
     fn faction_pin_at(
         &self,
         point: [f32; 2],
@@ -3849,7 +3165,6 @@ impl Viewer {
         let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
         let adjacency = self.map_mode == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::StrategicNavy);
         let color = if adjacency { &document.border_assets.adjacency_highlight_color } else { &document.border_assets.faction_highlight_color };
-        // A refused colour withholds that highlight alone; the selection outline keeps its own.
         let color = color.as_ref().ok().copied();
         let outline = self.ground_selection.clone().filter(|_| document.border_assets.selection_colors.is_ok());
         if color.is_none() && outline.is_none() {
@@ -3866,17 +3181,10 @@ impl Viewer {
             point.and_then(|point| self.faction_pin_at(point))
                 .map(|hit| Arc::clone(&hit.regions)).unwrap_or_default()
         };
-        // While the political layer draws, the highlight is built over its picture, keyed by the
-        // picture's change stamp, or at another mode over the mode fills layer's, keyed by its
-        // product's hour.
         self.highlight_wanted = faction_highlight::wanted(&selected, outline.as_ref(), self.scene.as_ref().is_some_and(|scene| !scene.faction_highlight_regions().is_empty()));
         let Some(side) = self.playhead_map.as_ref() else { return Ok(()) };
-        // A picture copied before the borders this frame wrote stands on older borders: no
-        // highlight is built over it, and one shown is taken off.
         let stale = side.products().highlight_hour.zip(side.plans_shown()).is_some_and(|(picture, plans)| picture < plans);
         let Some((picture, over)) = side.products().highlight.clone().filter(|_| !stale) else {
-            // No picture stands on the borders on screen: a highlight shown is taken off, and the
-            // political layer writes its own borders again over the restore, in this frame.
             if let Some(scene) = self.scene.as_mut()
                 && !scene.faction_highlight_regions().is_empty()
                 && let Some(restore) = self.faction_highlight.take_restore()
@@ -3912,7 +3220,6 @@ impl Viewer {
         }
         let content = Arc::clone(&document.content);
         let dropper = pool.dropper();
-        // Palette entry 1 outlines selected provinces, entry 2 a selected state.
         let outline = outline.zip(document.border_assets.selection_colors.as_ref().ok().copied()).map(|(outline, [province, state])| {
             (outline.provinces.iter().copied().collect::<std::collections::BTreeSet<u32>>(), if outline.state { state } else { province })
         });
@@ -3972,8 +3279,6 @@ impl Viewer {
         Ok(())
     }
 
-    /// How this view's hovers read: its counter naming, and the recorded sections only its
-    /// diagnostics show.
     fn hover_style(&self) -> viewer_counter_products::map::counter_tooltips::Style {
         viewer_counter_products::map::counter_tooltips::Style {
             nato: self.counter_view.settings.nato,
@@ -3988,12 +3293,9 @@ impl Viewer {
         extent: [f32; 2],
         ctx: &egui::Context,
     ) -> Option<(Arc<Tooltip>, [f32; 4], Option<u32>)> {
-        // Every hover text shown was made at the branch and hour the map presents.
         self.hover_rows.present(self.layers_on_screen());
         let point = point?;
         let target = self.map_hit(point);
-        // An intel entry takes the hover even when its text is empty: the province's is not
-        // asked for.
         if matches!(target, Some(MapHit::Intel)) {
             let hit = self.overlay_hits.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point))?;
             let layer = Some((free_icons::IconFamily::Intel, hit.layer));
@@ -4004,10 +3306,7 @@ impl Viewer {
             return (!empty).then(|| (Arc::clone(&hit.tooltip), rect, None));
         }
         let layer = target.and_then(|target| self.hit_layer(target));
-        // The pointer in the hit icon's own layout, as its hover shapes are laid out.
         let local = self.local_point(layer, point);
-        // Every text below is made from rows at the head of the open map, with the vision and the
-        // engagements its layers show.
         let views = self.rows_head()?;
         let head = &views;
         let repaint = || {
@@ -4028,7 +3327,6 @@ impl Viewer {
                             .find(token)?
                             .ok_or_else(|| format!("active definition {token} is absent"))
                     })();
-                    // The same catalogue chose and drew the badge; keep its exact definition.
                     match result {
                         Ok(definition) => {
                             let vision = self.shown_vision().ok()?;
@@ -4250,8 +3548,6 @@ impl Viewer {
         if target.is_some() {
             return None;
         }
-        // A unit model owns the hover before the routes and the ground: the viewing country's
-        // anywhere, any country's in the province under the pointer. The game describes its location.
         match self.model_at(document, point, false).map(|picked| picked.map(|picked| unit_pick::location(&picked.candidates, &picked.divisions, picked.unordered))) {
             Ok(None) => {}
             Ok(Some(Ok(province))) => {
@@ -4268,9 +3564,7 @@ impl Viewer {
             }
         }
         let view = self.last_view.as_ref()?;
-        // The trade routes the convoys layer draws: none drawn, none hovered.
         let routes = self.open_map().and_then(|side| side.products().routes.as_ref()).map(|(_, routes)| Arc::clone(routes));
-        // The lines under the pointer join the province's or region's text, as the game composes them.
         let route_lines: Vec<_> = routes
             .as_ref()
             .filter(|_| self.counter_view.visibility.trade_routes)
@@ -4320,7 +3614,6 @@ impl Viewer {
         {
             *selected = Arc::clone(self.air_selection.wings());
         }
-        // The overlay's tables made from rows at the head make them; loading by name before.
         let dominance_sources = || match &self.overlay_tables {
             Some(tables) => tables.naval_dominance_sources(),
             None => Arc::new(Err("naval dominance sources: the overlay's tables at the head are loading".into())),
@@ -4349,9 +3642,6 @@ impl Viewer {
         self.map_with_state(ui, state, document)
     }
 
-    /// One frame of the Campaign map as a window draws it: the window's central panel, the map and
-    /// its interface in it, and the frame's own end. The harness's `--campaign-tab` draws through
-    /// this too, so a measured frame is the frame the app's map tab runs. Whether the map drew.
     pub(crate) fn window_frame(
         &mut self,
         ui: &mut egui::Ui,
@@ -4384,7 +3674,6 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
     ) -> Result<(), String> {
-        // The frame's scope was taken before a document loaded this frame could be installed.
         let tables = document.content.tables;
         let result = engine_executable::executable_tables::scope(tables, || {
             self.draw_map(ui, state, document)
@@ -4402,9 +3691,6 @@ impl Viewer {
         document: &mut Document,
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
-        // The map frame's work begins here, and what an hour brings takes the room it leaves. A
-        // frame whose picture must be whole - a stepped capture, a window dump - keeps no budget,
-        // so everything an hour brings lands on it.
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
         let _budget = viewer_foundation::map::frame_budget::begin(!whole);
         let map_timer = Instant::now();
@@ -4423,7 +3709,6 @@ impl Viewer {
                 profile_print(format!("PROFILE adapter {} {:?}", info.name, info.backend));
             });
         }
-        // Wall-clock captures use the interactive tick; nominal captures keep their fixed sweep step.
         let wall_clock = self
             .profile_playback
             .sample(Instant::now)
@@ -4442,14 +3727,10 @@ impl Viewer {
             {
                 self.tick_playhead(elapsed, last);
             }
-            // The host sends only clock anchors; a playing clock draws every frame on its own.
             if self.playing {
                 ui.ctx().request_repaint();
             }
         }
-        // A map's reader opens on the first frame it is drawn after it was not, or after the clock
-        // left its branch, on the clock's branch and hour when no other map of the recording
-        // anchors the playhead already.
         self.follow_content(Arc::as_ptr(&document.content));
         self.follow_branch();
         if !self.playhead_opened
@@ -4465,15 +3746,12 @@ impl Viewer {
         if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
             self.playhead_opening = None;
             match made.and_then(crate::playhead_host::side::SideThread::new) {
-                // Opened for a branch the clock has left meanwhile: opened again at the clock.
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
                 }
                 Ok(side) => {
                     document.playback.read_rosters_of(side.entry());
-                    // With a reader open nothing walks the recording: the load's cursor and map
-                    // walk go, off the frame path. The presented frame keeps its identity.
                     let released = document.playback.release_source();
                     self.retire(released);
                     self.presented.reopened = true;
@@ -4483,29 +3761,13 @@ impl Viewer {
                 Err(error) => self.playhead_refused = Some(refusal(&error)),
             }
         }
-        // Where this frame stands in the replay: one head for everything it draws — the movers'
-        // places, the timed layers' installs, the overlay it holds, the figures and the hour it
-        // reports on screen — kept inside the hours the publications have given as real data.
-        // Taken once, before the side's window, and used by every part of the frame after it.
         let mut shown_head = self.take_frame_head();
-        // The window's readers of the side's rows read none past the hour this frame shows, paused
-        // or playing: the side prepares its rows ahead of it. After a seek that is the hour sought.
-        // A saved frame's head is the side's own hour.
         let taken = shown_head.map(|head| head.hour).filter(|_| !self.saves_a_frame());
         if let Some(side) = self.playhead_map.as_ref() {
             side.views().show_through(taken);
         }
-        // A playing hover makes each hour's text ahead, from the rows prepared past the hour shown.
         self.hover_rows.playing = self.playing && !self.saves_a_frame();
-        // The map's side prepares its steps on a thread of its own: this frame asks for the view
-        // and head it draws at, then takes the side in a window that never waits (a stepped frame
-        // waits for the picture of exactly its hour), uploads what it settled into the scene and
-        // takes the products the rest of the frame draws from.
         if self.playhead_map.is_some() {
-            // This frame draws the map when a first picture stands and it has placed the camera
-            // and size the overlay is made for. One that draws none (the first pictures, a
-            // harness's warm-up) asks for no overlay and waits for no whole picture: the side
-            // composes, and the first frame that draws is the first the overlay is made for.
             let drawing = self.last_view.is_some() && self.picture_ready();
             let at = head_wanted(
                 self.capture.as_ref().map(|capture| capture.paced),
@@ -4529,12 +3791,6 @@ impl Viewer {
                 player_counters: self.player_counters,
                 selected: self.diplomatic_selected,
             };
-            // What only the frame knows of the overlay, for the step prepared next: where the
-            // frame last drew, its counter options, selection and hover. The side makes the
-            // overlay of its step from them and from its own layers' products.
-            // The view the step is prepared for shows the map mode of the picture on screen, as
-            // this frame's draw will: the mode is resolved for the frame below, after the window.
-            // A stepped frame's picture is the one asked for, mode and all.
             let shown_mode = match at {
                 crate::playhead_host::Head::Stepped(_) => self.map_mode.clone(),
                 _ => self.shown_mode().clone(),
@@ -4552,10 +3808,8 @@ impl Viewer {
                 view: overlay_view.clone(),
                 rosters: document.playback.air_rosters(),
             });
-            // What the open combat window reads, which the side reads for each publication's hour.
             self.combat.set_playing(self.playing);
             self.combat.set_settled(self.settles_windows());
-            // What the window's reads take from the content, given once per loaded content.
             let content_at = Arc::as_ptr(&document.content) as usize;
             if self.combat_inputs != Some(content_at) {
                 self.combat_inputs = Some(content_at);
@@ -4570,9 +3824,6 @@ impl Viewer {
             self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
             let wanted = builds_warnings(self.diagnostics, self.capture.as_ref());
             let saved = self.saves_a_frame();
-            // The hours this frame's own place in the replay reaches: none for a picture that must
-            // be whole at the hour it stands at (a saved frame, a pause, a first picture), which
-            // takes every change set handed over and waits for every product of its hour.
             let through = shown_head.map(|head| head.hour).filter(|_| !saved && self.playing);
             let mut installed = None;
             let mut withdrawn = false;
@@ -4586,8 +3837,6 @@ impl Viewer {
                     _ => side.window(),
                 };
                 if let Some(mut window) = { window } {
-                    // A saved frame (stepped, or a window dump) draws the plan and the combat
-                    // markers of its hour.
                     if saved && window.side().failure().is_none() {
                         let hour = window.side().last_frame().head;
                         unsettled = settle_models(window.side_mut(), hour, Duration::from_secs(120))
@@ -4600,85 +3849,54 @@ impl Viewer {
                         window.upload(&mut gpu);
                     }
                     window.take(crate::playhead_host::side::Wants { warnings: wanted, highlight: self.highlight_wanted });
-                    // The overlay of the step, taken while the side is held: its counters' memory
-                    // becomes the view's here, the one place the side writes nothing.
                     withdrawn = window.take_overlay_withdrawal();
                     if let Some(made) = window.take_overlay() {
-                        // A saved frame's was laid out on the view's own memory: there is nothing
-                        // to take. Any other is installed with the memory it was laid out on, which
-                        // the maker lays nothing else out on until this frame hands the other back.
                         if !Arc::ptr_eq(&presentation, &made.on) {
                             presentation.take_memory(&made.on);
                         }
                         installed = Some(made);
                     }
-                    // The combat window's read of the publication's hour, shown once the map is there.
                     if let Some(made) = window.take_combat() {
                         self.combat.offer(made);
                     }
                 }
-                // The side could not make the stepped hour whole in time: the capture is refused,
-                // and the side goes on for the frames after it.
                 if let Some(why) = side.take_refusal() {
                     unsettled = Some(format!("A saved frame draws its own hour whole: {why}"));
                 }
             }
-            // The side counts the overlay handed over as the viewer's, refused frame or not: a
-            // paused side lays out nothing new for inputs it already answered.
             if withdrawn {
                 self.forget_overlay();
             }
             if let Some(made) = installed {
                 self.install_overlay(made);
             }
-            // The hour the overlay the frame draws stands at is the side's own: the layout taken
-            // above, or, for an hour the overlay read nothing new in, the layout the frame already
-            // holds, which the maker laid out again for nobody and said stands at this hour too.
             if let Some(side) = live_of(&self.playhead_map) {
                 self.overlay_hour = side.products().overlay_hour;
             }
-            // A capture's own wait or settle failing ends the capture by name, never the map. The
-            // frame it was drawn for never draws: it may hold no window of the side, and its layers
-            // stand where the saved frame left them. The next frame is a live one.
             if let Some(why) = unsettled {
                 self.refused_frame(why, ui.ctx())?;
                 self.rendered = None;
                 ui.ctx().request_repaint();
                 return Ok(());
             }
-            // Playing past the newest hour the overlay's layout stands at, every mover holds its
-            // last place: the frame draws, writes and says that hour, and the head it steers by
-            // goes on ([`viewer_foundation::map::frame_head::shown`]).
             if self.playing
                 && !saved
                 && let Some(covered) = live_of(&self.playhead_map).and_then(|side| side.products().overlay_hour)
             {
                 shown_head = shown_head.map(|head| viewer_foundation::map::frame_head::shown(head, Some(covered)));
             }
-            // This frame's own place in the replay: the timed layers' change sets of the hours
-            // its head has reached, written whether or not the side's thread held the window, so
-            // no display frame repeats an hour because the side was busy. A saved frame takes
-            // every set handed over; a pause takes those of its own hour, and the side's exact
-            // reset replaces any dated past it.
             if let Some(scene) = self.scene.as_mut() {
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
                 let written = shown_head.map(|head| head.hour).filter(|_| !saved);
                 let mut gpu = crate::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
                 side.install(&mut gpu, written);
-                // What the timed layers wrote is what the frame shows: the movers are placed and the
-                // hour said at that hour, behind the head until the rest is written, or past it
-                // after a seek back until the hour sought replaces it.
                 if let Some(installed) = side.installed_through()
                     && shown_head.is_some_and(|head| head.hour != installed)
                 {
                     shown_head = Some(viewer_foundation::map::anchored::Head { hour: installed, fraction: 0.0 });
                 }
-                // Behind the head, the readers stand where the timed layers wrote; past it after a
-                // seek back, at the hour sought, never at the history the seek left.
                 side.views().show_through(taken.zip(shown_head).map(|(taken, head)| taken.min(head.hour)));
             }
-            // Frames that draw no map never prepare the combat window, so the reads it let go of
-            // are freed here too.
             if let Some(retired) = self.combat.take_retired() {
                 self.retire(retired);
             }
@@ -4686,11 +3904,6 @@ impl Viewer {
                 self.battles = battles;
             }
         }
-        // The scene arrives with the document from the loading thread
-        // (`load_scene`); only hour data uploads per frame from here.
-        // The screen-space interface's scale. A capture keeps the dump's, 1.0
-        // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
-        // the same state stay the same frame.
         let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
         if self.last_view.is_none() && let Some(embedded) = &self.embedded {
             let frame = ui.ctx().input(|input| input.viewport().inner_rect).map(|rect| [
@@ -4727,11 +3940,6 @@ impl Viewer {
             self.wait_to_draw(document.playback.hour(), || format!("its map had no area to draw in ({} by {} points)", size.x, size.y), ui.ctx())?;
             return Ok(());
         }
-        // capture: `--window-dump` renders at the size it was asked for rather
-        // than at the size the panels left over, so the frame it writes does not
-        // depend on this display's scale factor or on where the warning area
-        // wrapped. Match game renders into the game's framebuffer pixel space
-        // before presenting its completed image at the desktop stretch.
         let pixels = match pinned {
             Some((size, _)) => size,
             None => raster.target([
@@ -4739,14 +3947,9 @@ impl Viewer {
                 (size.y * ui.ctx().pixels_per_point()).round() as u32,
             ]),
         };
-        // The counter kinds the layers draw take the products this frame's window took; a kind
-        // whose layer stops keeps its last until tables holding today's are on screen.
         {
             let _lap = replay_frame::cpu::scope("frame.refresh.counters", Some("other"));
             let left_out = self.overlay_tables.as_ref().map(|tables| tables.counters().left_out()).unwrap_or_default();
-            // The products the overlay shown was laid out from, so the counters drawn are the ones
-            // its layout placed and the kinds it left out are the ones the layers drew for it; a
-            // later step's products belong to the layout the frame has not installed yet.
             let (published, draws) = match &self.overlay_layered {
                 Some((published, draws)) => (published.clone(), *draws),
                 None => self.playhead_map.as_ref().map(|side| (side.products().counters.clone(), side.products().counter_kinds)).unwrap_or_default(),
@@ -4756,8 +3959,6 @@ impl Viewer {
         let map_error = self.map_error_of(document);
         self.hour_error(map_error, ui.ctx());
         self.follow_continuity(&document.playback.replay().gaps);
-        // An error view otherwise stops repainting; a paused seek away from it still needs to
-        // draw until the layers have composed its hour.
         if self.playhead.is_some_and(|head| {
             self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn != Some(head.hour) || !on.settled))
         }) {
@@ -4771,7 +3972,6 @@ impl Viewer {
             return Ok(());
         }
         if !self.picture_ready() {
-            // No picture is composed yet; keep drawing until one is.
             if profiling() {
                 profile_print(format!("PROFILE no_map frame {}", self.profile_frame));
             }
@@ -4783,14 +3983,10 @@ impl Viewer {
             });
             return Ok(());
         }
-        // The scene's presentation histories count rendered frames (the meshes created per frame,
-        // the shadows the next frame's water refracts): a warm-up render would put them a frame on.
         if self.warming {
             self.rendered = None;
             return Ok(());
         }
-        // What the frame draws of its own is at the perspective of the picture on screen: the one
-        // before a reset composing, or before a new viewing country's picture is handed over.
         let (stale_hour, perspective) = match self.live_map() {
             Some(side) => (side.composing(), side.on_screen().map_or_else(|| self.perspective.clone(), |_| side.view().perspective.clone())),
             None => (false, self.perspective.clone()),
@@ -4798,15 +3994,11 @@ impl Viewer {
         if stale_hour && profiling() {
             profile_print(format!("PROFILE stale_hour frame {}", self.profile_frame));
         }
-        // What the frame shows of the map mode's layers (counters, convoys, fog, models) is the
-        // mode the picture on screen was composed for, until one composed for a newly chosen mode
-        // replaces it.
         let mode = self.shown_mode().clone();
         self.counter_view.set_mode(&mode);
         laps.lap("hour_misc");
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.camera", Some("other"));
-        // Only diagnostics and a capture's saving frame need warning text.
         let build_warnings = builds_warnings(self.diagnostics, self.capture.as_ref());
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let map_size = MapSize::of(&document.map);
@@ -4819,10 +4011,7 @@ impl Viewer {
             |placement| placement.on(map_size, defines),
         );
         let camera = &mut camera;
-        // Whether the map held the pointer for looking around before this frame's input.
         let held_pointer = self.input.captured();
-        // One frame of keyboard, mouse and controller input for the camera controllers. A
-        // capture's pinned camera takes none; a placed walk holds its keys on the capture clock.
         let placed_walk = pinned.is_some() && self.walk.placed();
         let controls = if pinned.is_some() {
             let time = self.capture.as_ref().and_then(|capture| capture.time);
@@ -4839,8 +4028,6 @@ impl Viewer {
                 now: Instant::now(),
             })
         };
-        // The map's own shortcut and the controller's view button cycle the camera modes, so a
-        // window without the host's controls can change them too.
         if pinned.is_none()
             && !self.dashboard_map
             && (controls.pressed.contains(&CAMERA_MODE_KEY)
@@ -4850,13 +4037,9 @@ impl Viewer {
         {
             self.set_camera_mode(self.camera_mode.next(), self.free_overlays, ui.ctx());
         }
-        // A window dump's placed walk walks, and its `--fly` flies, its pinned frame. A mode still
-        // choosing its start shows the map camera.
         let free_mode = self.camera_mode != CameraMode::Map
             && !self.start_pick.choosing()
             && (pinned.is_none() || placed_walk || self.options.fly.is_some());
-        // Whether the map's interface draws: always for the game's camera and its orbit; in fly
-        // and walk, a capture's placed walk, flight or free camera, only when asked for.
         let interface = match pinned {
             Some(_) if free_mode => self.options.free_overlays.unwrap_or(false),
             Some((_, Some(placement))) if placement.pose != Pose::Map => {
@@ -4865,10 +4048,7 @@ impl Viewer {
             Some(_) => true,
             None => !free_mode || self.free_overlays,
         };
-        // The fly mode shows the country names even with the rest of the interface hidden; they
-        // fade by its eye's height as the game camera's do.
         let flying_names = free_mode && self.camera_mode == CameraMode::Fly;
-        // Pointer and drag deltas reach the camera in framebuffer pixels.
         let scale = ui.ctx().pixels_per_point() / raster.stretch;
         let frame_point = |position: egui::Pos2| {
             [
@@ -4876,19 +4056,13 @@ impl Viewer {
                 (position.y - rect.top()) * scale,
             ]
         };
-        // The interface is laid out in interface pixels, so its hit tests are
-        // too: counters, combat bubbles, the combat window and its lists.
         let extent = ui_scale_extent(pixels, ui_scale);
-        // Map keys go to one map: the one that owns keyboard input, as the camera keys do.
         let owner = ui
             .ctx()
             .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));
         let takes_keys = takes_map_keys(self.dashboard_map, owner, response.id, response.hovered());
-        // Escape first gives back a pointer held for looking around (the input layer does that);
-        // only a later one reaches the map's interface. A mode choosing its start takes it.
         let escape = takes_keys && ui.input(|input| input.key_pressed(egui::Key::Escape));
         if escape && !held_pointer && !self.start_pick.choosing() && !self.picker.find.open {
-            // Escape closes the tactics popup before the battle window.
             if self.combat.tactics_open {
                 self.combat.tactics_open = false;
             } else {
@@ -4904,14 +4078,11 @@ impl Viewer {
             .as_ref()
             .and_then(|capture| capture.time)
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
-        // Hit tests and drawing use the same GUI clock.
         let prepared = self.combat_prepared().map_err(|error| error.to_string())?;
         let combat_geometry = self
             .combat
             .draw(&document.combat, prepared, extent, false, animation_time, false, None)
             .map_err(|error| error.to_string())?;
-        // The window takes the pointer where this frame lays it out and where the picture on
-        // screen shows it, so a press is the window's though it moved or closed since.
         let painted = self.combat_painted.clone();
         let over_window = |at: [f32; 2]| combat_geometry.as_ref().is_some_and(|window| window.contains(at)) || painted.contains(at);
         let point = profile_hover_point(
@@ -4920,17 +4091,11 @@ impl Viewer {
                 .or_else(|| response.interact_pointer_pos())
                 .map(frame_point),
             self.options.profile_pointer,
-            // The playback-cost harness hovers its point too, to time hover.
             profiling() || self.options.playback_cost_end.is_some(),
             pixels,
             ui_scale,
         );
-        // The interface's pointer, with the primary button's changes in order: a press counts
-        // only where it lands on this map; a release, wherever it happens. Held for looking
-        // around, the pointer is away from the interface.
         let reaches = !free_mode || (interface && !self.input.captured());
-        // The pointer's moves (`None`) and its primary and secondary changes, in order, each with
-        // the modifiers it came with: what a click acts with, by its change's order.
         let ((changes, change_modifiers), held, input_time) =
             ui.input(|input| (pointer_changes::changes(input), input.pointer.primary_down(), input.time));
         let frame_modifiers = ui.input(|input| input.modifiers);
@@ -4939,7 +4104,6 @@ impl Viewer {
             response.interact_rect.contains(pos)
                 && ui.ctx().layer_id_at(pos) == Some(response.layer_id)
         };
-        // A button's changes with their order, the index among the frame's pointer events.
         let admitted = |button: egui::PointerButton| -> Vec<(usize, egui::Pos2, bool)> {
             changes
                 .iter()
@@ -4980,9 +4144,6 @@ impl Viewer {
             self.confirmation_keys(ui, document, extent);
             self.picker_keys(ui, document, extent);
         }
-        // The picker's lists take no scrollbar, so the wheel over them does nothing of theirs.
-        // Primary clicks are the windows' own: a release over the button its press went down on,
-        // acted on after the windows drew it.
         let picker_controls = match &self.picker_controls {
             Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => {
                 controls.clone()
@@ -5026,9 +4187,6 @@ impl Viewer {
                     .as_ref()
                     .map(|input| input.shared(holder, &owner, me))
             });
-        // Each release ends the press it follows, which went down on its owner or the bare map,
-        // and is a click within egui's distance and time of it: where the last bare-map click
-        // ended, and the first click off the picker, by order.
         let (click_dist, click_time) = ui
             .ctx()
             .options(|options| {
@@ -5037,7 +4195,6 @@ impl Viewer {
         let mut pressed_on = self.pressed_on;
         let mut bare_clicks = Vec::new();
         let mut off_picker_clicks = Vec::new();
-        // A press on the bare map, on no icon and in no free mode, may become the game's box.
         let mut box_press = self.selection_input.press;
         let mut box_releases = Vec::new();
         let boxes_from = |at: [f32; 2]| {
@@ -5045,7 +4202,6 @@ impl Viewer {
         };
         for (this, &(pos, change)) in changes.iter().enumerate().filter(|_| reaches) {
             let Some((egui::PointerButton::Primary, pressed)) = change else {
-                // A press the pointer strays too far from is a drag.
                 if change.is_none()
                     && let Some((_, from, _, far)) = &mut pressed_on
                 {
@@ -5067,8 +4223,6 @@ impl Viewer {
                 box_press = boxes_from(at).then(|| selection_input::BoxPress::new(pos, frame_point(pos)));
                 continue;
             }
-            // The game's release makes a box past its extent; short of it, however far or long
-            // the press was held, a click.
             let boxed = box_press.take();
             if let Some(press) = boxed
                 && viewer_counters::map::box_selection::boxes(press.from_frame, frame_point(pos))
@@ -5095,7 +4249,6 @@ impl Viewer {
         }
         self.pressed_on = pressed_on;
         self.selection_input.press = box_press;
-        // A right press on a picker slot configures it on its release over that slot, in order.
         let mut secondary_clicks = Vec::new();
         let mut air_order_releases = Vec::new();
         for &(order, pos, pressed) in &secondary {
@@ -5162,16 +4315,10 @@ impl Viewer {
                 }
             }
         }
-        // The frame time the camera law and the name fade integrate.
         let frame_delta = self
             .camera_step
             .unwrap_or_else(|| self.last_frame.elapsed().as_secs_f32());
         self.last_frame = Instant::now();
-        // The game's keys and edge scrolling go to the map that owns camera input: the window must
-        // have the system's focus, and a dashboard map must also be the one last pressed with a
-        // mouse button. Ownership is kept in the window's own record, apart from egui's keyboard
-        // focus, so Escape or Tab never moves or drops it. The wheel goes to the map under the
-        // pointer.
         let owner = egui::Id::new(MAP_INPUT_OWNER);
         if response.is_pointer_button_down_on() {
             ui.ctx()
@@ -5181,8 +4328,6 @@ impl Viewer {
         let window_focused = ui.input(|input| input.focused);
         let focused = window_focused && (!self.dashboard_map || owns) && !self.picker.find.typing();
         let pointed = response.hovered() && !over_combat;
-        // A mode chosen from the map starts over the ground clicked next, or under the view's
-        // middle at the controller's South button; Escape goes back to the map.
         let mut started = false;
         if self.start_pick.choosing() {
             let shown = self.orbit.view(*camera);
@@ -5191,8 +4336,6 @@ impl Viewer {
                 height: document.map.height,
                 values: document.assets.heightmap_texels(),
             };
-            // The drawn ground the ray meets first, across the east-west wrap too; a click on no
-            // ground, as above the horizon or past the map's top or bottom, chooses nothing.
             let ground = |screen: [f32; 2]| drop::ground_at(&shown, screen, pixels, &field);
             let clicked = response
                 .interact_pointer_pos()
@@ -5211,15 +4354,12 @@ impl Viewer {
                 }
                 drop::Choice::Start(at) => {
                     self.start_pick = drop::Pick::At(at);
-                    // The press that chose the start is no half of a double tap in the mode.
                     self.input.forget_pad_taps();
                     started = true;
                     ui.ctx().request_repaint();
                 }
             }
         }
-        // A free mode takes the pointer for looking around when the map is clicked, unless the
-        // click lands on a map icon it shows or on the combat window.
         let icon_click = free_mode
             && interface
             && response.clicked()
@@ -5237,9 +4377,6 @@ impl Viewer {
         {
             self.input.capture();
         }
-        // Drag panning is the viewer's own addition (the game has none): the middle button moves
-        // the shown camera directly, and the target with it. Through an orbiting view it keeps
-        // the ground point under the pointer.
         if !free_mode
             && response.dragged_by(egui::PointerButton::Middle)
             && !over_combat
@@ -5274,8 +4411,6 @@ impl Viewer {
             .collect();
         let map_pinged = self.map_windows_pointer(ui, document, camera, &floor, &picker_controls, point, &presses, held, extent, &over_window);
         let law = &document.camera_law;
-        // Wheel reports (in lines, as the window system gives them) and zoom-key presses, repeats
-        // included, in order; the held arrow keys.
         let (lines, zoom_keys, keys) = ui.input(|input| {
             let mut lines = Vec::new();
             let mut zoom_keys = Vec::new();
@@ -5302,9 +4437,6 @@ impl Viewer {
             };
             (lines, zoom_keys, keys)
         });
-        // The game's law takes the keyboard and the wheel while the view is the game's own. An
-        // orbiting view takes the arrow keys, edge scrolling and the wheel through the orbit, and
-        // a free mode leaves the map camera where it was; the zoom keys always set the height.
         let native = !free_mode && self.orbit.is_native();
         if focused && !free_mode {
             for zoom_in in zoom_keys {
@@ -5317,7 +4449,6 @@ impl Viewer {
         } else {
             Vec::new()
         };
-        // The map pressed, dragged or wheeled is the one that sounds.
         self.interacted = response.clicked() || response.dragged() || !notches.is_empty();
         let pointer = response.hover_pos().map(frame_point);
         let ground = match pointer {
@@ -5344,12 +4475,10 @@ impl Viewer {
             .zoom
             .step(camera, law, frame_delta, pixels, &input, &floor);
         let moved = self.zoom.ease(camera, law, frame_delta, pixels, &floor);
-        // Only a real camera move leaves the fitted camera; hovering or pressing does not.
         if stepped || moved {
             self.camera_manual = true;
             ui.ctx().request_repaint();
         }
-        // The controller orbits the map camera; in the free modes it moves the free eye.
         if !free_mode {
             let mut orbited = false;
             let mut push = [0.0f32; 2];
@@ -5379,23 +4508,17 @@ impl Viewer {
             }
             orbited |= self.orbit.update(&controls, camera, push);
             if orbited {
-                // The controller takes over from the game's target, as a camera placed afresh.
                 self.zoom.reset();
                 self.camera_manual = true;
                 ui.ctx().request_repaint();
             }
         }
-        // As the game does each frame, a view wholly past a seam moves back a map width with its
-        // target, so panning round the world never outruns the map copies the passes draw.
         let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
         if shift != 0.0 {
             camera.center[0] += shift;
             self.zoom.shift([shift, 0.0]);
         }
         self.camera = Some(camera.placement());
-        // The camera the map draws with, and the one its interface is laid out for: the free
-        // modes draw from the free eye, and keep the map's interface laid out for the map camera
-        // it left, without drawing it.
         let (camera, overlay_camera) = match pinned.filter(|_| !placed_walk) {
             Some((size, camera)) => {
                 let camera = camera.map_or_else(
@@ -5403,7 +4526,6 @@ impl Viewer {
                     |placement| placement.on(map_size, defines),
                 );
                 match self.options.fly {
-                    // A window dump's flight steps by the capture clock, holding its controls.
                     Some(scripted) if free_mode => {
                         let time = self.capture.as_ref().and_then(|capture| capture.time);
                         let dt = match (time, self.fly_clock) {
@@ -5428,9 +4550,6 @@ impl Viewer {
                     };
                     let floor = |x: f32, z: f32| field.surface_height(x, z);
                     let eye = if self.camera_mode == CameraMode::Walk {
-                        // The viewing country's infantry, chosen again for each hour and view,
-                        // from rows at the head and the vision layer's viewing country; the
-                        // figure is kept while either loads.
                         let vision = self.shown_vision().ok();
                         let head = head_rows::head(live_of(&self.playhead_map));
                         let branch = head_rows::branch(live_of(&self.playhead_map), document);
@@ -5440,24 +4559,17 @@ impl Viewer {
                         {
                             self.walk.set_figure(key, figure);
                         }
-                        // The wheel moves the view nearer or farther over the map.
                         let wheel = if response.hovered() {
                             ui.input(|input| input.smooth_scroll_delta.y)
                         } else {
                             0.0
                         };
-                        // Walking starts on the ground chosen for it, or the ground the view looks
-                        // at, facing the way the view faces.
                         let world = crate::controls::walker::World::of(&map, &floor);
                         let start = self.start_pick.at().unwrap_or(camera.center);
                         self.walk.camera(&controls, wheel, map, start, &world)
                     } else {
-                        // The input layer keeps the keyboard and mouse to a focused map, and the
-                        // controller to wherever the host routes it.
                         self.fly(document, map, self.start_pick.at(), &controls)
                     };
-                    // Shown, the interface stands in the free eye's world; hidden, it stays laid
-                    // out for the map camera the mode left, undrawn.
                     (eye, if interface { eye } else { map })
                 } else {
                     (map, map)
@@ -5467,8 +4579,6 @@ impl Viewer {
         crate::perf_log::frame_view(camera.free().is_some(), camera.height);
         self.grab_pointer(ui.ctx());
         let mut box_stroke: Option<(egui::Rect, egui::Stroke)> = None;
-        // The game's cursor chain picks the map's cursor, its arrow where no other is asked for;
-        // looking around hides it, which a cursor image would show again.
         if response.hovered() && !self.pointer_grabbed {
             use viewer_playback::cursors::MapCursor;
             let shift = ui.ctx().input(|input| input.modifiers.shift);
@@ -5482,7 +4592,6 @@ impl Viewer {
         if self.selection_input.dragging()
             && let Some(press) = self.selection_input.press
         {
-            // The game's box: a closed white line from the press to the pointer, two pixels wide.
             let stroke = egui::Stroke::new(2.0 / ui.ctx().pixels_per_point(), egui::Color32::WHITE);
             box_stroke = Some((egui::Rect::from_two_pos(press.from, press.at), stroke));
         }
@@ -5490,7 +4599,6 @@ impl Viewer {
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.movers", Some("other"));
         let scene = self.scene.as_mut().expect("created above");
-        // The frame a capture saves draws complete, built in place; live frames build elsewhere.
         let saving = self.options.window_dump
             || self
                 .capture
@@ -5500,20 +4608,12 @@ impl Viewer {
             scene.settle_builds(saving);
             self.settled_capture = saving;
         }
-        // A stopped picture is exact: a saved frame, and a picture the hours have stopped on,
-        // pose every figure on the frame that draws it, from exactly the samples it draws. Told
-        // only when it changes, as the builds are, so a tool that set it for its whole run keeps
-        // it ([`crate::app::playback_cost`]).
         let stopped = saving || !self.playing;
         if stopped != self.settled_poses {
             scene.settle_poses(stopped);
             self.settled_poses = stopped;
         }
-        // The units layer installs the model field; the raid units and convoys are placed in it
-        // on the hour, and move by the presentation clock.
         let tick = 0.0;
-        // The trade-route convoys sail by the presentation clock, so while they show they are
-        // placed again every frame, with the raid units.
         let convoys_shown = |defines: &viewer_world::map::trade_routes::ConvoyDefines| {
             viewer_world::map::trade_routes::convoys_shown(
                 camera.height,
@@ -5522,7 +4622,6 @@ impl Viewer {
                 self.counter_view.visibility.trade_routes,
             )
         };
-        // The units layer's models carry the raid units and the convoys.
         let posed = live_of(&self.playhead_map).and_then(|side| side.products().units.clone());
         let sailing = posed.as_ref().is_some_and(|prepared| {
             prepared.has_convoys()
@@ -5558,20 +4657,12 @@ impl Viewer {
         laps.lap("movers_place");
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.selection", Some("other"));
-        // names: the engine integrates the layer cross-fade by the frame delta
-        // and clamps to [0, 1], so it takes one second whatever the zoom speed.
-        // It has to start from a settled value, and only this frame knows which:
-        // a window given no `--camera` fits the map to a viewport that does not
-        // exist until there is one, and a replay opened after a zoom starts at a
-        // camera the last one left behind.
         let fade = self
             .fade
             .get_or_insert_with(|| LayerFade::instant(camera))
             .step(camera, frame_delta);
         self.fade = Some(fade);
         laps.lap("names_fade");
-        // The viewing country the map's vision layer shows; while it shows none the selections
-        // keep what they hold.
         let seen = self.shown_vision().ok();
         let head = head_rows::head(live_of(&self.playhead_map));
         let branch = head_rows::branch(live_of(&self.playhead_map), document);
@@ -5602,8 +4693,6 @@ impl Viewer {
         laps.lap("fleet_selection");
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.name-hover", Some("other"));
-        // A free mode's pointer reaches the map's interface while it is shown and the pointer is
-        // not held for looking around.
         let point = point.filter(|_| !free_mode || (interface && !self.input.captured()));
         let counters_point = point.filter(|_| {
             counters_input
@@ -5621,8 +4710,6 @@ impl Viewer {
             self.raid_hit(point).map(|hit| hit.province)
         });
         let frame_sounds = self.interface_sounds.len();
-        // The counter the primary button went down on, where it went down, stays pressed until
-        // the release. Each step changes its plate's state as a button's, with its sounds.
         let was = (self.counter_view.pressed, self.counter_view.plate_hovered);
         let mut held = self.counter_held;
         let mut counter_sounds = Vec::new();
@@ -5648,8 +4735,6 @@ impl Viewer {
                 }
                 held = next;
             };
-        // The counter under a place, and whether its `count_bg` itself is: a counter's other
-        // parts forward its selection but leave its button's state.
         let counter_at = |at: [f32; 2]| {
             if picker_at(at).is_some() || over_window(at) {
                 return None;
@@ -5716,13 +4801,10 @@ impl Viewer {
                     .push(InterfaceSound::new("counter", &played));
             }
         }
-        // A plate's state draws the laid-out counters again; it changes nothing they were
-        // prepared with.
         if (self.counter_view.pressed, self.counter_view.plate_hovered) != was {
             viewer_foundation::map::redraws::note("asked.pointer", 1);
             self.overlay_fraction = None;
         }
-        // A raid bubble's details window and hover frame draw on the overlay on screen at once.
         if let Some(prepared) = self.prepared_overlay.as_mut() {
             let now = (self.counter_view.raid_details.clone(), self.counter_view.raid_hovered);
             if raid_details::redraws(&prepared.raid_view(), &now) {
@@ -5774,17 +4856,7 @@ impl Viewer {
         laps.lap("names_pick");
         drop(_other_cost);
         let overlay_prepare_cpu = viewer_foundation::profiling::thread_span("overlay_prepare");
-        // counters: one batch carries the bases, the labels, the counters and
-        // the combat icons in the map mode's `<table>_PRIORITY_*` order.
-        // The overlay is made whole on the map's side, inside the step that prepares the picture:
-        // its tables from the rows at the step's hour, the counter layers given those tables
-        // before they settle, and the layout at the latest view's height band, viewport and
-        // interface scale. This frame places it at its camera and draws it; it lays nothing out.
         let left = self.overlay_left;
-        // Before the first overlay the side hands over: nothing is laid out yet. Once another
-        // viewing country's has gone, the picture drawn before stays on screen whole until this
-        // one's is laid out: never a blank map. When none is coming for the view (its vision
-        // refused), the scene draws without one and its warnings name why.
         let held = self.overlay_frame.clone().zip(self.overlay_tables.clone());
         if held.is_none() {
             self.rendered = None;
@@ -5795,7 +4867,6 @@ impl Viewer {
                 ui.ctx().request_repaint();
                 return Ok(());
             }
-            // What the layout gave the scene goes with it.
             if self.drop_overlay_drawn()
                 && let Some(scene) = self.scene.as_mut()
             {
@@ -5805,7 +4876,6 @@ impl Viewer {
                 }
             }
         }
-        // The frame's interface quads, and whether the combat window's batch is among them.
         let (overlay_ms, additions, combat_out, combat_art) = 'overlay: {
             let Some((rows, tables)) = held.clone() else {
                 break 'overlay (0.0, Batch::default(), Some("the frame drew no overlay to draw it in".to_owned()), None);
@@ -5813,26 +4883,15 @@ impl Viewer {
             let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
             let _other_cost = replay_frame::cpu::scope("frame.overlay.prepare", Some("other"));
             let overlay_timer = Instant::now();
-            // capture: the animation clock is the one input a live window cannot
-            // share with a headless frame, so a capture frame renders at 0, the
-            // still frame `--dump` renders, or at its explicit sequence clock. The
-            // window runs one presentation clock: the map scene and the map-icon
-            // windows' GUI clock (`Time`) share it.
-            // A background flag or portrait load repaints the window; the side lays the overlay
-            // out again for the art that arrived.
             if !document.icons.lazy.has_wake() {
                 let ctx = ui.ctx().clone();
                 document.icons.lazy.set_wake(viewer_foundation::worker_priority::waking(move || ctx.request_repaint()));
             }
-            // Routes made by key: a worker fills every route of the tables the side made, so a
-            // free frame before them finds what it admits made.
             if std::mem::take(&mut self.overlay_routes_pending) && tables.counters().routes_by_key() {
                 let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
                 let (fill, counters, movement) = (Arc::clone(&tables), Arc::clone(&document.content.counters), document.content.movement.clone());
                 pool.try_submit(Box::new(move || viewer_foundation::map::redraws::apart(|| fill.counters().fill_routes(&counters, movement.as_deref()))));
             }
-            // What the overlay reads that its rows do not hold, and what its reader waits for: the
-            // side names both.
             let overlay_state = live_of(&self.playhead_map).map(|side| {
                 let products = side.products();
                 (products.overlay_missed.clone(), products.overlay_loading.clone())
@@ -5841,16 +4900,10 @@ impl Viewer {
                 self.overlay_missed = missed;
                 self.overlay_loading.extend(loading);
             }
-            // The overlay of the step at this frame's camera: a camera moving over the map takes
-            // the windows it already drew, anchored in the world, and offsets them; anything else
-            // places the layout afresh, which draws it again too.
-            // Every mover of the overlay is placed at this frame's one head, the hour the rest of
-            // the picture it draws stands at too ([`Self::take_frame_head`]).
             let at = shown_head.unwrap_or_default();
             let moved_now = self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
             let placed_now = !moved_now
                 && self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left);
-            // The country names the map's layer placed at the head replace the hour's.
             if let Some(side) = live_of(&self.playhead_map)
                 && let Some(names) = side.products().placements.clone()
                 && !self.placements.as_ref().is_some_and(|held| Arc::ptr_eq(held, &names))
@@ -5870,7 +4923,6 @@ impl Viewer {
             let _other_cost = replay_frame::cpu::scope("frame.overlay.draw", Some("other"));
             let overlay_draw_cpu = viewer_foundation::profiling::thread_span("overlay_draw");
             let owners_span = viewer_foundation::profiling::span("overlay_owners");
-            // Display choices only change what the next overlay draw keeps.
             let ours = Some(tables.ours());
             let head = head_rows::head(live_of(&self.playhead_map));
             let filtered = self.counter_owners.get(frame, head, &self.counter_filter);
@@ -5888,9 +4940,6 @@ impl Viewer {
             drop(owners_span);
             let scene_span = viewer_foundation::profiling::span("overlay_scene_inputs");
             let (_, movement_hour) = self.hour_on_screen(document);
-            // The frame's province schedule, advanced before its map icons read the dirty bits
-            // (province updates precede map-icon updates); the scene's
-            // render takes it.
             if let Some(scene) = self.scene.as_mut() {
                 scene
                     .apply(
@@ -5907,7 +4956,6 @@ impl Viewer {
                     let mut arrows = |frame: &replay_frame::frame::DecodedFrame| {
                         crate::document::select_movement(scene, &state.device, &state.queue, &document.content, frame, ours, selected)
                     };
-                    // No selection reads no row; a selection's arrows are kept while its rows load.
                     let moved = if selected.is_empty() { Some(arrows(now.frame)) } else { self.head_rows.arrows(head, frame, arrows) };
                     if let Some(Err(error)) = moved {
                         self.overlay_loading.push(format!("the selection's movement arrows: {error}"));
@@ -5924,8 +4972,6 @@ impl Viewer {
                         },
                     )
                     .map_err(|error| error.to_string())?;
-                // The unit animators advance with this frame's province updates, before the
-                // figures and map icons read them.
                 let presentation = &self.counter_view.presentation;
                 {
                     let schedule = presentation
@@ -5941,9 +4987,6 @@ impl Viewer {
                                 time: animation_time,
                                 hour: movement_hour,
                                 head: at,
-                                // The publication this frame draws, and the map it wraps on: the
-                                // cut and the width its counters' own tracks were made with, so a
-                                // figure placed on those places stands where its counter stands.
                                 overlay_hour: now.frame.hour,
                                 clock_speed,
                                 speeds: document.content.counters.defines.movement_speeds,
@@ -5955,8 +4998,6 @@ impl Viewer {
                             }),
                         );
                 }
-                // The land figures move from the units layer's own placings at the applied hour,
-                // the formations from its models.
                 let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> =
                     live_of(&self.playhead_map).map(|side| Box::new(side.products().movement.iter().map(|(unit, place, scale, fade)| (*unit, place, *scale, *fade))) as _);
                 if let Some(positions) = positions {
@@ -5973,13 +5014,10 @@ impl Viewer {
                 }
             }
             drop(scene_span);
-            // Whether this frame painted the overlay's batch: the gate compares what a painting
-            // draws, whether or not its windows were then moved to this frame's camera and head.
             let mut painted_now = false;
             if self.overlay_fraction != Some(document.hour_fraction)
                 && let Some(prepared) = self.prepared_overlay.as_mut()
             {
-                // Asked for by running pools alone: only their passes run.
                 let quiet = self.overlay_fraction.is_some_and(f32::is_nan)
                     && self.overlay_drawn_fraction == Some(document.hour_fraction);
                 if quiet {
@@ -5992,18 +5030,7 @@ impl Viewer {
                     painted_now = true;
                     self.overlay_written += 1;
                     prepared.set_pressed(self.counter_view.pressed, self.counter_view.plate_hovered);
-                    // The first frame drawn shows the art the drawing itself asks for: the batch
-                    // is drawn, the art it asked for settled and the hour laid out over it again
-                    // (the side lays it out, as for any other frame) until none is left. A frame
-                    // after one rendered draws once and the art arrives in a later frame, unless a
-                    // saved frame found its layout older than the art.
-                    // The icon windows a draw asks the view's native pools for are made over the
-                    // frames after it, so a saved frame draws again until none is pending, within
-                    // the pools' own growth rounds: its icons are never missing for want of one.
                     let mut rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
-                    // A round that takes a newer publication draws that publication whole: each
-                    // reads the overlay the frame holds with the tables and the rows it was laid
-                    // out over, so nothing is placed, drawn or judged over another's.
                     let mut installed = false;
                     let mut settles = 0;
                     let art_moved = std::mem::take(&mut self.overlay_art_moved);
@@ -6013,8 +5040,6 @@ impl Viewer {
                         };
                         let held = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
                         if std::mem::take(&mut installed) {
-                            // Laid out again at the view the side was asked with: placed at this
-                            // frame's camera, as every other layout the side hands over is.
                             self.place_overlay(&held, overlay_camera, pixels, ui_scale, &tables, &rows, self.overlay_left);
                         }
                         let prepared = self.prepared_overlay.as_mut().expect("held above");
@@ -6048,10 +5073,6 @@ impl Viewer {
                         if !prepared.is_stale(&held) && !document.icons.lazy.has_pending() {
                             break;
                         }
-                        // The art of this hour arrived while the frame drew it, so the layout it
-                        // drew is older than the art: the side lays the hour out again over the
-                        // art, and a settle that cannot have that layout refuses the picture by
-                        // name rather than saving one the art moved under.
                         settles += 1;
                         let laid = match self.playhead_map.as_mut() {
                             Some(_) if settles > SETTLES => Err(format!("the art of hour {} was still arriving after {SETTLES} layouts", rows.hour)),
@@ -6060,9 +5081,6 @@ impl Viewer {
                         };
                         let made = match laid {
                             Ok(made) => made,
-                            // A saved frame is whole or it is refused by name. A frame of a run
-                            // that is playing draws what it has: the art reaches the frames after
-                            // it, and no stopped picture is made of this one.
                             Err(why) if self.saves_a_frame() => {
                                 let why = format!("A saved frame draws the art of its own hour: the overlay of hour {} was not laid out again over the art that arrived while the frame drew it: {why}", rows.hour);
                                 if self.refuse_capture(&why, ui.ctx()) {
@@ -6074,8 +5092,6 @@ impl Viewer {
                         };
                         self.install_overlay(made);
                         installed = true;
-                        // A layout of its own asks the view's pools for its own windows, which have
-                        // the pools' growth rounds the first layout's had.
                         rounds = viewer_foundation::map::icon_windows::DumpFrames::default();
                     }
                     if viewer_foundation::map::overlay_count::counting()
@@ -6083,10 +5099,6 @@ impl Viewer {
                     {
                         self.overlay_counted.painted(batch).record();
                     }
-                    // The batch painted carries no offset: it stands where the layout it drew was
-                    // placed ([`Self::overlay_placed`], which the placing and the install keep),
-                    // and the moves after it are measured from there. This frame's camera and head
-                    // are not that placing's, so the painting is placed at them before it is drawn.
                     self.overlay_placed_view = Some((pixels, ui_scale.to_bits()));
                     self.overlay_shifts.clear();
                     self.overlay_unpainted = false;
@@ -6095,13 +5107,9 @@ impl Viewer {
                 self.overlay_fraction = Some(document.hour_fraction);
                 self.overlay_drawn_fraction = Some(document.hour_fraction);
             }
-            // A round of the painting took a newer publication: what follows reads the overlay the
-            // frame holds, with the tables and the rows it was laid out over.
             let rows = self.overlay_frame.clone().unwrap_or_else(|| Arc::clone(&rows));
             let tables = self.overlay_tables.clone().unwrap_or_else(|| Arc::clone(&tables));
             let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
-            // Native windows keep ticking and drawing while active. Their clocks do not
-            // change the hour/camera preparation, including the settled counter positions.
             {
                 let (identity, (made, kept)) = (tables.identity(), tables.counters().lookups());
                 let (before_made, before_kept) = match self.overlay_lookups {
@@ -6114,8 +5122,6 @@ impl Viewer {
                 viewer_foundation::view_record::add("overlay", "lookups_kept", kept.saturating_sub(before_kept));
                 self.overlay_lookups = Some((identity, made, kept));
             }
-            // The overlay installed against the map's drawn picture: the hours it stands apart (after
-            // a seek, the frames past the map's own compose show here).
             if let (Some((shown_branch, shown_hour)), Some((branch, drawn))) = (self.overlay_shown, self.layers_on_screen())
                 && (shown_branch != branch || shown_hour != drawn)
             {
@@ -6126,10 +5132,6 @@ impl Viewer {
             let running = self.counter_view.presentation.take_running();
             if running.any {
                 viewer_foundation::map::redraws::note("asked.running", 1);
-                // A window changed on its own: the next frame paints the batch. Nothing shown
-                // changes but a pool has a pass to run: it runs the pools' passes alone. A mover
-                // alone asks for the frame and nothing of the overlay: the frame answers it by
-                // placing the windows at its own head, and the pools are left as they stand.
                 if running.visible {
                     self.overlay_fraction = None;
                 } else if running.windows.any() {
@@ -6140,8 +5142,6 @@ impl Viewer {
                 }
                 ui.ctx().request_repaint();
             }
-            // A free eye shows the laid-out icons standing in the world; this frame's hits and
-            // drawing follow what it shows. Placed again only when what the placing reads changed.
             let presented = (overlay_camera, pixels, ui_scale.to_bits(), self.overlay_written, at);
             self.looks = if interface
                 && overlay_camera.free().is_some()
@@ -6172,12 +5172,8 @@ impl Viewer {
                 self.free_presented = None;
                 None
             };
-            // The frame's hit shapes stand from here: the pointer is resolved against them, once
-            // for each point the rest of the frame asks about.
             self.hits_stamp += 1;
             if check_overlay() {
-                // What the sprite pass's own check found while this frame uploaded: the bytes it
-                // holds resident against a whole rebuild's, and a quiet frame's silence.
                 let found = viewer_foundation::map::sprites::overlay_check_failures();
                 if !found.is_empty() {
                     return Err(format!(
@@ -6185,18 +5181,8 @@ impl Viewer {
                         found.join("; ")
                     ));
                 }
-                // The overlay's gate: the one the frame holds against the same hour, view and camera
-                // laid out afresh. A still camera places nothing, so each overlay the side's maker
-                // laid out is looked at once as well, which covers a run that never moves the camera.
-                // And a frame that kept windows rather than painting them is looked at every tenth
-                // frame: what the kept windows draw and report against a whole repaint's.
                 self.overlay_looks = self.overlay_looks.wrapping_add(1);
                 overlay_checks::note(&overlay_checks::LOOKED);
-                // Only while the batch stands where it was painted: a batch whose windows have
-                // been moved to this frame's camera and head draws the same content somewhere
-                // else, so comparing it with a layout made at the placing would report the move
-                // itself. The places of a moved batch are the anchor judge's
-                // (`BATTLE_PLAN_VIEWER_CHECK_ANCHOR`), which checks every quad against its own anchor.
                 let kept = (self.overlay_looks % 10 == 0 && self.overlay_shifts.is_empty())
                     .then_some("with its windows kept");
                 if let Some(what) = painted_now
@@ -6206,19 +5192,14 @@ impl Viewer {
                     .or(kept)
                 {
                     self.overlay_checked = self.overlay_installed;
-                    // The held overlay stands for the camera it was placed at: a frame that moved
-                    // its windows is judged against that layout, and its places by `check_anchor`.
                     let placed = self.overlay_placed.unwrap_or(overlay_camera);
                     self.check_overlay(what, &now, placed, pixels, ui_scale, animation_time)?;
                 } else {
                     overlay_checks::note(&overlay_checks::NOTHING_NEW);
                 }
             }
-            // Every click this frame reads the rows of the hour of the overlay it was made on.
             self.head_rows.click_at(self.click_hour());
             self.head_rows.clickable(self.clickable(document));
-            // An explicit fleet choice remains separate from a task-force plate
-            // click. Its roster also reaches empty fleets with no map plate.
             if *self.shown_mode()
                 == viewer_world::map::map_mode::MapMode::Stock(
                     viewer_world::map::map_mode::Stock::StrategicNavy,
@@ -6276,7 +5257,6 @@ impl Viewer {
             let _combat_cost = replay_frame::cpu::scope("frame.interface.combat", Some("other"));
             self.combat.set_playing(self.playing);
             let prepared = self.combat_prepared().map_err(|error| error.to_string())?;
-            // The art the window's draw began with: art that arrives after it drew can change it.
             let combat_art = document.icons.lazy.version();
             let drawn = self
                 .combat
@@ -6356,8 +5336,6 @@ impl Viewer {
                     .as_ref()
                     .is_some_and(|drawn| drawn.control_at(point).is_some())
             });
-            // Clicks act in the order their button changes came, across both windows; a click
-            // off the picker closes its open list there, and later list clicks find it closed.
             let mut clicks: Vec<(usize, Act)> = picker_drawn
                 .iter()
                 .flat_map(|drawn| drawn.clicked.iter())
@@ -6391,9 +5369,6 @@ impl Viewer {
             );
             clicks.extend(confirmation_drawn.iter().flat_map(|drawn| drawn.clicked.iter()).map(|&(control, order)| (order, Act::Confirmation(control))));
             clicks.extend(air_order_releases.iter().map(|&(order, point, under)| (order, Act::AirOrder(point, under))));
-            // Resolve map clicks against this hour and camera's newly rebuilt hit regions, in order
-            // with the windows'; the click that chose a free mode's start selects nothing. A counter
-            // takes its button's clicks on the counters their presses went down on.
             if !started && !map_pinged {
                 clicks.extend(
                     counter_clicks
@@ -6438,8 +5413,6 @@ impl Viewer {
                     }
                     Act::Box(from, to) => self.select_box(document, from, to, ours, frame, modifiers, ui.ctx(), order),
                     Act::Map(point) => {
-                        // The viewing country's unit models are the game's next target after the
-                        // interface; another country's leave the click to the ground beneath.
                         if self.map_hit(point).is_none() {
                             match self.model_at(document, point, true) {
                                 Ok(Some(picked)) => {
@@ -6453,7 +5426,6 @@ impl Viewer {
                                 Ok(None) => {}
                             }
                         }
-                        // Ctrl on a province switches the viewing country, after the model pick as the game orders it.
                         if modifiers.ctrl
                             && self.map_hit(point).is_none()
                             && let Some(province) = pick(&camera, point.map(|value| value * ui_scale), pixels, &document.map, document.assets.heightmap_texels()).map_err(|error| error.to_string())?
@@ -6462,7 +5434,6 @@ impl Viewer {
                             ui.ctx().request_repaint();
                             continue;
                         }
-                        // Shift beside a selection: the game's selection test refuses the ground, so nothing changes.
                         let ground_blocked = modifiers.shift
                             && !(self.unit_selection.units().is_empty() && self.fleet_selection.fleets().is_empty() && self.air_selection.wings().is_empty());
                         if matches!(self.shown_mode(), viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Diplomacy))
@@ -6511,7 +5482,6 @@ impl Viewer {
                             Some(MapHit::Base(index))
                                 if self.counter_report.naval_base_hits.contains_key(&index) =>
                             {
-                                // Shift opens the game's repair queue and Ctrl posts a repair order: neither is the replay's.
                                 if modifiers.shift || modifiers.ctrl {
                                     continue;
                                 }
@@ -6597,7 +5567,6 @@ impl Viewer {
                     }
                 }
             }
-            // The frame's interface sounds play as their changes came.
             self.interface_sounds[frame_sounds..].sort_by_key(|sound| sound.order);
             let mut drawn = drawn;
             if let Some(picker_drawn) = &picker_drawn {
@@ -6615,7 +5584,6 @@ impl Viewer {
             let map_hit = self.map_tooltip(document, tooltip_point, extent, ui.ctx());
             self.combat_rows.end_frame();
             self.head_rows.end_frame(head_rows::head(live_of(&self.playhead_map)));
-            // The counter whose tooltip that is: the same rebuilt hit test, at the same point.
             let tooltip_counter = tooltip_point.and_then(|point| match self.map_hit(point)? {
                 MapHit::Unit(index) => self.counter_report.unit_hits[index].units().next(),
                 _ => None,
@@ -6637,7 +5605,6 @@ impl Viewer {
                 .as_ref()
                 .map(|(text, _, _)| text.refused.clone())
                 .unwrap_or_default();
-            // The target changes with the text shown: an empty tooltip leaves the last one up.
             if let Some((text, _, province)) = &map_hit
                 && (!text.title.is_empty() || !text.body.is_empty())
             {
@@ -6648,7 +5615,6 @@ impl Viewer {
             self.shown_tooltip = None;
             let mut additions = Batch::default();
             let tooltip_time = Instant::now();
-            // Hidden tooltips still follow the pointer; only their painting stops.
             if let Some((text, anchor)) = self.combat.tooltip(
                 drawn.as_ref(),
                 document.icons.combat.tooltip_defines.as_ref().ok(),
@@ -6664,8 +5630,6 @@ impl Viewer {
                 tooltip_time,
             ) && self.graphics.tooltips
             {
-                // The map's own tooltip, with or without its delayed body, names its province; any
-                // other drawn tooltip, such as one fading after the pointer left, is only `shown`.
                 self.tooltip = Some(
                     map_hit
                         .as_ref()
@@ -6680,7 +5644,6 @@ impl Viewer {
                     Some(prepared) => prepared.draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time).map_err(|error| error.to_string())?,
                     None => [("the overlay is not laid out yet".to_owned(), 1)].into_iter().collect(),
                 };
-                // A refused painting, or a hidden interface, shows no tooltip.
                 self.shown_tooltip = (refused.is_empty()
                     && interface
                     && self.combat.tooltip_from_map())
@@ -6690,8 +5653,6 @@ impl Viewer {
                     *tooltip_refused.entry(reason).or_default() += count;
                 }
             }
-            // Captures inventory reachable counter hovers even when the pointer left the plate,
-            // on the frames they write; a profiled sweep's other frames are the window's own.
             if self
                 .capture
                 .as_ref()
@@ -6704,7 +5665,6 @@ impl Viewer {
                     let (inputs, land) = (inputs.clone(), report.land_hovers.clone());
                     (key, move |_: &hover_rows::Caches| inputs.capture(land.clone(), task_forces.clone(), ports.clone()))
                 };
-                // Rows at the head of the open map with the vision its vision layer shows.
                 let made = match (self.rows_head(), self.shown_vision()) {
                     (Some(views), Ok(vision)) => {
                         let (key, job) = inventory(&self.hover_inputs(document, &vision, ui.ctx()), &self.counter_report);
@@ -6718,11 +5678,9 @@ impl Viewer {
                 }
             }
             self.hover_rows.end_frame(self.capture.is_some());
-            // A reader whose rows at the head do not hold what it reads yet says so, by name.
             for (reason, count) in self.hover_rows.loading().into_iter().chain(self.combat_rows.loading()) {
                 *tooltip_refused.entry(reason).or_default() += count;
             }
-            // The overlay's reads that its rows at the head do not hold yet, by name.
             if !self.overlay_missed.is_empty() {
                 self.overlay_loading.push(format!("the overlay: loading: {:?}", self.overlay_missed));
             }
@@ -6736,7 +5694,6 @@ impl Viewer {
             ) {
                 ui.ctx().request_repaint_after(delay);
             }
-            // Why the combat window put nothing into the frame's quads, if it did not.
             let combat_out = match &drawn {
                 None => Some("its quads were not drawn into this frame".to_owned()),
                 Some(drawn) => drawn.missing(),
@@ -6756,7 +5713,6 @@ impl Viewer {
         let held = self.overlay_frame.clone().zip(self.overlay_tables.clone()).or(held);
         let now = held.as_ref().map(|(rows, _)| crate::document::Hour::new(&document.content, rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved)));
         let _other_cost = replay_frame::cpu::scope("frame.scene-inputs", Some("other"));
-        // Overlay and hover diagnostics belong to this frame.
         let warnings = if build_warnings {
             self.collect_warnings(document)
         } else {
@@ -6770,9 +5726,6 @@ impl Viewer {
             &state.queue,
             point.filter(|_| !over_combat),
         )?;
-        // capture: at a fixed clock `Scene::render` takes the luminance
-        // adaptation instantaneously, because the clock did not advance, which
-        // is what a dump's own pair of frames does.
         let radar_at = point
             .filter(|_| !over_combat)
             .and_then(|point| radar_province(self.map_hit(point), &self.counter_report))
@@ -6783,8 +5736,6 @@ impl Viewer {
             };
             self.counter_report.air_base_hits.get(&index).copied()
         });
-        // A hovered province's state, from the rows the overlay was made from; the provinces are
-        // among the tables the overlay's reader declares, so they are there with it.
         let state_of = |province: u32| {
             let provinces = now.as_ref()?.frame.complete::<replay_data::rows::tables::Provinces>().ok()?;
             provinces.binary_search_by_key(&province, |row| row.id).ok().map(|at| provinces[at].state)
@@ -6808,19 +5759,15 @@ impl Viewer {
             f64::from(animation_time),
             1.0 / self.speed,
         );
-        // With the playhead on, the radar symbols come from the radar layer.
         let layered_radar = self.playhead_map.as_ref().and_then(|side| side.products().radar.clone());
         let layered = self.layered_orders();
         let scene = self.scene.as_mut().unwrap();
         let (device, queue) = (&state.device, &state.queue);
-        // The radar symbols are the radar layer's with the map open, laid out or not.
         if let Some(field) = layered_radar.as_deref().or(self.prepared_overlay.as_ref().map(|prepared| &*prepared.radar)) {
             scene
                 .apply(device, queue, SceneInput::SetRadar { field, shown: self.picker.radar, hovered: hovered_radar })
                 .map_err(|e| e.to_string())?;
         }
-        // The order parts: the layers' plan, the hour's raid arrows and the trade routes; the
-        // overlay's air orders join them once laid out.
         let (plan, raids, routes) = layered.as_ref().map_or((None, None, None), |layered| (layered.plan.clone(), layered.raids.clone(), layered.routes));
         let mut air = None;
         if let Some(prepared) = &self.prepared_overlay {
@@ -6882,8 +5829,6 @@ impl Viewer {
                 SceneInput::SetGraphics(self.graphics),
             )
             .map_err(|error| error.to_string())?;
-        // The walking mode's figure stands in the scene while it walks, and the flying mode's
-        // aircraft where this frame's flight placed it.
         let library = document.unit_models.library();
         let aircraft = document.aircraft.library();
         let flying = self.flying.take();
@@ -6909,7 +5854,6 @@ impl Viewer {
             let mut arrows = |frame: &replay_frame::frame::DecodedFrame| {
                 crate::document::select_movement(scene, &state.device, &state.queue, &document.content, frame, ours, selected)
             };
-            // No selection reads no row; a selection's arrows are kept while its rows load.
             let moved = if selected.is_empty() { Some(arrows(now.frame)) } else { self.head_rows.arrows(head, frame, arrows) };
             if let Some(Err(error)) = moved {
                 self.overlay_loading.push(format!("the selection's movement arrows: {error}"));
@@ -6929,8 +5873,6 @@ impl Viewer {
                 SceneInput::CutProvinceFrame(animation_time),
             )
             .map_err(|error| error.to_string())?;
-        // The frame's tooltip, combat and picker quads draw after the overlay's own, which keeps
-        // them only for this render.
         let overlay = if self.looks.is_some() {
             &mut self.free_overlay
         } else {
@@ -6938,7 +5880,6 @@ impl Viewer {
         };
         let laid_out = overlay.quads.len();
         overlay.quads.extend(additions.quads);
-        // Only the window's own map is timed; a dashboard widget's shares the window's frames.
         let timed = !self.dashboard_map;
         if timed && let Some(frame) = crate::perf_log::frame_id() {
             scene.time_frame(frame);
@@ -6952,16 +5893,10 @@ impl Viewer {
                     camera,
                     day_night,
                     animation_time,
-                    // The window runs one clock, so the map scene shares it.
                     map_time: animation_time,
-                    // colour
                     postfx: self.postfx,
-                    // The window has no verification aids; `--dump` owns them.
                     no_water: false,
-                    // shadows: the window always draws them, as the game does.
                     no_shadows: false,
-                    // names
-                    // Hidden, the interface still steps; only its drawing stops.
                     overlay: Overlay {
                         names: self.placements.as_deref(),
                         layer_alpha: name_fade.0,
@@ -6975,7 +5910,6 @@ impl Viewer {
                             sight: document.assets.terrain_sight(),
                         }),
                     },
-                    // trees
                     no_trees: false,
                 },
             );
@@ -6986,15 +5920,11 @@ impl Viewer {
         rendered.map_err(|e| e.to_string())?;
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
-        // Both coordinator paths stamp the same submitted scene, before audio,
-        // capture/readback and asynchronous PROFILE output can delay observation.
         let shown_stamp = presentation::shown_stamp(profiling(), || {
             (document.playback.branch(), document.playback.hour())
         });
         let playback_stamp =
             profiling().then(|| self.profile_playback.stamp(self.playhead, self.playing));
-        // A window capture stays silent; measuring the map tab's own frames, and with
-        // `BATTLE_PLAN_VIEWER_AUDIO_LOG`, it presents the voices it would start without opening a device.
         let silent = self.capture.is_some()
             && (self.campaign_tab || std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some());
         if silent {
@@ -7021,11 +5951,8 @@ impl Viewer {
             && let Some(audio) = &mut self.audio
         {
             self.interface_sounds.clear();
-            // Another map sounds now: what this one played stops.
             audio.release();
         }
-        // Measurement only (`BATTLE_PLAN_VIEWER_SHOW_PICTURES`): how many of the frames this map
-        // presents are a new picture, for the readout in its diagnostics strip.
         if timed {
             crate::screen_count::readout::count(&state.device, &state.queue, scene);
         }
@@ -7061,8 +5988,6 @@ impl Viewer {
             }
             self.scene_target.generation = scene.generation();
         }
-        // capture: the frame is drawn and the scene still holds it, so the
-        // readback is the dump's own.
         render_cpu.finish();
         laps.lap("render");
         if profiling() {
@@ -7101,21 +6026,12 @@ impl Viewer {
             crate::perf_log::profile_frame(&profile);
             profile_print(profile);
         }
-        // A capture waits until every flag and portrait its frame asked for
-        // has decoded and been laid out, as a headless dump does. The overlay's own layout version
-        // is the reference, not a version read here: a background load that landed after the
-        // layout but before this check would otherwise let the frame save without it.
         let (shown_branch, shown_at) = self.hour_on_screen(document);
         if self.capture.as_ref().is_some_and(|capture| !capture.paced) {
-            // Anything the settle decodes moves the version, which makes the overlay stale.
             document.icons.lazy.settle();
             let (stale, waiting) = match (&held, &now) {
                 (Some((rows, tables)), Some(now)) => {
                     let stale = self.prepared_overlay.as_ref().map(|prepared| prepared.is_stale(now));
-                    // Laid out over the newest rows at the head with tables made from them, nothing
-                    // loading, and the raid offer cycle complete at the shown hour: every target
-                    // evaluated, as a paused frame ends. That is the scripts reader's batch the
-                    // tables hold.
                     let raids = &tables.raids().report;
                     let waiting = if let Some(missed) = missed_tables(&self.overlay_missed) {
                         Some(format!("its overlay was laid out without {missed}"))
@@ -7130,16 +6046,13 @@ impl Viewer {
                     };
                     (stale, waiting)
                 }
-                // No overlay is coming for the view: the picture is whole without one, its refusal named.
                 _ => (Some(false), None),
             };
             let hour = held.as_ref().map_or(shown_at, |(rows, _)| rows.hour);
             let picture = self.picture_ready();
             let art_moved = combat_art.is_some_and(|art| art != document.icons.lazy.version()) || document.icons.lazy.has_pending();
             let (left_out, art_retry) = combat_left_out(interface, combat_out, art_moved);
-            // A window drawn again for art that arrived goes through the art retries and their bound.
             let stale = if art_retry { Some(true) } else { stale };
-            // An export refused here ends, and the frame is presented as any other.
             let combat = match self.saved_combat(picture, left_out.as_deref()) {
                 Ok(there) => there,
                 Err(why) => {
@@ -7178,7 +6091,6 @@ impl Viewer {
                     }),
                 );
             }
-            // The shown document: its owner holds it apart from `self` while it draws.
             if let Some(source) = &document.audio
                 && let Some(why) = viewer_audio::battle::silence(&source.content)
             {
@@ -7220,17 +6132,12 @@ impl Viewer {
         if let Some((drag, stroke)) = box_stroke {
             ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
         }
-        // The desktop's campaign map has no panels, so its diagnostics sit
-        // over the map; dashboard maps draw theirs beside their loading status.
-        // Every map on the software adapter, windowed or on a dashboard, says so.
         let software = is_software(&state.adapter);
         let diagnostics = self.diagnostics && self.embedded.is_some() && !self.dashboard_map;
         let partial = document.playback.replay().is_partial()
             && self.embedded.is_some()
             && !self.dashboard_map;
-        // Every map of a recording that leaves tables out says so.
         let scoped = replay_data::scope::omits(document.capture_mode()).is_some();
-        // A fly or walk mode chosen from the map says how to choose where it starts.
         let start_prompt = self
             .start_pick
             .choosing()
@@ -7264,15 +6171,12 @@ impl Viewer {
                 },
             );
         }
-        // A document's first picture is shown whole or not at all: until its overlay and counter
-        // layers show the hour with its layers, the spinner covers what is drawn beneath.
         self.shown_whole = self.shown_whole || self.playhead.is_some_and(|head| self.picture_whole(head, self.playing));
         if !self.shown_whole {
             let cover = rect.intersect(ui.clip_rect());
             ui.painter().rect_filled(cover, 0.0, ui.visuals().panel_fill);
             ui.put(egui::Rect::from_center_size(cover.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new());
         }
-        // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         self.drew_frame = true;
         let overlay_fresh = match &now {
@@ -7291,8 +6195,6 @@ impl Viewer {
         self.drawn_at = Some(crate::perf_log::epoch_ms());
         self.drawn_options.clone_from(&self.applying_options);
         self.map_hits.borrow_mut().end_frame();
-        // The hour this frame put on screen is the head it drew everything at; without a head of
-        // its own (no reader, a document's own frame) it is the hour the layers show.
         let (branch, layers_hour) = self.hour_on_screen(document);
         let (hour, fraction) = match shown_head {
             Some(head) => (head.hour, f64::from(head.fraction)),
@@ -7304,9 +6206,6 @@ impl Viewer {
 }
 
 impl Viewer {
-    /// Where the free mode now running stands on the map, on the map's first copy: the figure's
-    /// feet, or the aircraft's place. `None` under the map camera, and while a free mode still
-    /// waits for the ground it starts over.
     fn free_mode_ground(&self) -> Option<[f32; 2]> {
         match self.camera_mode {
             CameraMode::Map => None,
@@ -7318,18 +6217,12 @@ impl Viewer {
         }
     }
 
-    /// Switches how the full map's camera moves and whether the free modes draw the map's
-    /// interface, and reports a change to the host, whose controls follow it. Leaving a free mode
-    /// gives the pointer back and returns to the map camera it left; one chosen from the map
-    /// waits for the ground it starts over, and one chosen while another free mode runs takes
-    /// over the ground that one stands on, so every choice is taken at once.
     pub(crate) fn set_camera_mode(
         &mut self,
         mode: CameraMode,
         overlays: bool,
         ctx: &egui::Context,
     ) {
-        // A free mode without its interface keeps no window of it open to take clicks.
         if mode != CameraMode::Map && !overlays {
             self.combat.close();
         }
@@ -7355,8 +6248,6 @@ impl Viewer {
         self.grab_pointer(ctx);
     }
 
-    /// A click on the counter `hit` (of [`CounterReport::unit_hits`]) or on no icon: selects its
-    /// units, adding to the selection with shift.
     fn click_units(&mut self, hit: Option<usize>, shift: bool, ctx: &egui::Context) {
         let hit = hit.map(|index| &self.counter_report.unit_hits[index]);
         let units_changed = self.unit_selection.click(hit, shift);
@@ -7379,7 +6270,6 @@ impl Viewer {
         }
     }
 
-    /// Hides and confines the cursor while the map holds the pointer, and gives it back after.
     fn grab_pointer(&mut self, ctx: &egui::Context) {
         let captured = self.input.captured() && self.camera_mode != CameraMode::Map;
         if captured == self.pointer_grabbed {
@@ -7395,23 +6285,16 @@ impl Viewer {
     }
 }
 
-/// A view's audio choices and state for one presented frame.
 struct AudioInputs<'a> {
     volumes: dashboard::protocol::MapAudio,
     muted: bool,
-    /// A presentation discontinuity since the last audio frame.
     reset: bool,
     music: Option<Arc<viewer_audio::Chances>>,
     battles: Option<Arc<viewer_audio::Battles>>,
-    /// The interface's button sounds since the last audio frame, each started once.
     interface: Vec<InterfaceSound>,
     interface_key: &'a mut u64,
 }
 
-/// Sends the rendered frame's sound events to the process audio. Callers
-/// skip window captures and maps that may not sound.
-/// The volumes and mute the audio mixes with: the map's inherited volumes
-/// and the game's own `dev_master_volume`.
 fn audio_mix(
     document: &Document,
     volumes: dashboard::protocol::MapAudio,
@@ -7431,27 +6314,17 @@ fn audio_mix(
     }
 }
 
-/// One of a frame's interface actions, dispatched in its changes' order.
 enum Act {
-    /// A picker control clicked, by the secondary button when `true`.
     Picker(viewer_combat::picker::Control, bool),
-    /// The combat window's click of that index.
     Combat(usize),
-    /// A click off the picker, which closes its open list.
     Dismiss,
-    /// A confirmation pop-up's button clicked.
     Confirmation(viewer_combat::confirmation::Control),
-    /// A right release on the map, with what its press went down on.
     AirOrder([f32; 2], Option<air_orders::Under>),
-    /// A counter's click, which selects it.
     Counter(Unit),
-    /// A click on the bare map there.
     Map([f32; 2]),
-    /// A primary drag released as a box, between these interface points.
     Box([f32; 2], [f32; 2]),
 }
 
-/// What takes the primary button's press on the map's interface.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Holder {
     Picker,
@@ -7460,20 +6333,16 @@ enum Holder {
     Confirmation,
 }
 
-/// The emitter keys of interface sounds, apart from the map's events; clicks take the upper half.
 const INTERFACE_SOUND_KEYS: u64 = 1 << 63;
 const INTERFACE_CLICK_KEYS: u64 = 3 << 62;
 
-/// An interface sound to start, and for a click the key its control's clicks share.
 struct InterfaceSound {
     effect: Arc<str>,
     click: Option<u64>,
-    /// Its change's order in the frame ([`viewer_foundation::map::native_gui::pointer::Step`]).
     order: usize,
 }
 
 impl InterfaceSound {
-    /// `played` by one of `producer`'s controls.
     fn new(producer: &str, played: &viewer_foundation::map::native_gui::pointer::Played) -> Self {
         use std::hash::{Hash, Hasher};
         Self {
@@ -7505,8 +6374,6 @@ fn present_audio(
         interface_key,
     } = inputs;
     let Some(source) = &document.audio else {
-        // A document without audio definitions plays nothing: what a
-        // previous document played stops.
         if let Some(owner) = audio {
             owner.release();
         }
@@ -7530,8 +6397,6 @@ fn present_audio(
             restart: false,
         })
         .collect::<Vec<_>>();
-    // Interface sounds are present for one frame; their one-shot voices play out. A control's
-    // click replaces its earlier one, so a later click this frame leaves the earlier unstarted.
     for (at, sound) in interface.iter().enumerate() {
         if sound.click.is_some()
             && interface[at + 1..]
@@ -7553,12 +6418,10 @@ fn present_audio(
             restart: false,
         });
     }
-    // The hour's battles within hearing of the camera play their ambience.
     if let Some(battles) = &battles {
         viewer_audio::battle::emitters(battles, &source.content, camera.eye(), &mut emitters);
     }
     let forward = camera.look_direction();
-    // The camera's right axis: up crossed with forward, normalised.
     let right = [forward[2], 0.0, -forward[0]];
     let length = (right[0] * right[0] + right[2] * right[2]).sqrt();
     let right = if length > 0.0 {
@@ -7584,10 +6447,6 @@ fn present_audio(
     );
 }
 
-/// A window dump whose window closes before it wrote its last frame (closed while loading, or
-/// mid-sequence) fails by name: its process never ends as though it saved. An embedded map hands
-/// its host every export that ended, its widgets' too, even when a panic skipped the pass's own
-/// drain: it drops before the host hears the map ended and refuses what is left.
 impl Drop for Viewer {
     fn drop(&mut self) {
         if self.capture.as_ref().is_some_and(|capture| capture.exit) {
@@ -7602,7 +6461,6 @@ impl Drop for Viewer {
 impl eframe::App for Viewer {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         if self.options.window_dump {
-            // Dumps keep window geometry, but never consume live input.
             input.events.clear();
             input.events.push(egui::Event::PointerGone);
             input.hovered_files.clear();
@@ -7616,8 +6474,6 @@ impl eframe::App for Viewer {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::perf_log::frame_start();
         let _other_cost = replay_frame::cpu::scope("frame.logic", Some("other"));
-        // A window not shown (minimised, covered, hidden by its host) runs no UI pass, so its maps
-        // draw no frame: they let their playheads go, or the rows would wait on them.
         if ctx.input(|input| input.viewport().visible()) == Some(false) || self.embedded.as_ref().is_some_and(|embedded| !embedded.visible()) {
             self.not_drawn();
         }
@@ -7640,8 +6496,6 @@ impl eframe::App for Viewer {
 }
 
 impl Viewer {
-    /// Hands the host every export that ended since the last pass, the dashboard maps' too: a
-    /// pass that returned early, or that hid the map, still answers them.
     fn answer_exports(&mut self) {
         let mut ended = self.take_export_results();
         if let Some(dashboard) = self.dashboard.as_mut() {
@@ -7654,7 +6508,6 @@ impl Viewer {
         }
     }
 
-    /// The executable tables of the recording this viewer shows, which its work reads.
     pub(crate) fn tables(&self) -> Option<engine_executable::executable_tables::Tables> {
         self.document
             .as_ref()
@@ -7687,8 +6540,6 @@ impl Viewer {
         frame: &mut eframe::Frame,
         recording: &mut Option<viewer_foundation::frame_writer::Pass<'_>>,
     ) -> bool {
-        // The hide command may arrive in logic after eframe chose to draw
-        // this pass. Skip it as well as all later hidden passes.
         if self
             .embedded
             .as_ref()
@@ -7706,13 +6557,10 @@ impl Viewer {
             self.toggle_diagnostics();
         }
         if self.dashboard_active {
-            // The Campaign map is not drawn while dashboard maps show, even
-            // while they load or failed to: it stops sounding.
             self.export_closed("its map was hidden before its picture was saved");
             self.release_audio();
             self.close_playhead();
         } else if let Some(dashboard) = &mut self.dashboard {
-            // Nor are dashboard maps while the Campaign map shows, loaded or not.
             dashboard.release_audio();
             dashboard.not_drawn();
         }
@@ -7738,8 +6586,6 @@ impl Viewer {
             }
             return false;
         }
-        // The campaign map's picker changes go to the host as a widget's do, under its own view
-        // id, and come back in its Configure options.
         let events = self.take_view_events();
         if let Some(embedded) = &self.embedded {
             for event in events {
@@ -7775,11 +6621,8 @@ impl Viewer {
         }
         let drawn = if let Some(mut document) = self.document.take() {
             if profiling() && self.capture.is_some() {
-                // Deterministic diagnostic sweep, including at a replay's final
-                // hour. Ordinary playback follows the host's clock.
                 let mode = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
                 let sweep_frames = profiling_sweep();
-                // `hours`: one hour forward at the sweep's start, back at its middle.
                 let middle = sweep_frames.start + sweep_frames.len() as u32 / 2;
                 let mut sought = false;
                 if let Some(playhead) = &mut self.playhead {
@@ -7795,9 +6638,6 @@ impl Viewer {
                         };
                         playhead.fraction = 0.0;
                     }
-                    // A cold seek: jump to the branch's last hour, whose
-                    // per-branch caches (the snow and mud display cache) start
-                    // empty.
                     if self.profile_frame == sweep_frames.start
                         && mode == "seek_end"
                         && let Some((_, last)) = document.playback.range(playhead.branch)
@@ -7810,7 +6650,6 @@ impl Viewer {
                 if sought {
                     self.animation_seek = true;
                 }
-                // `play:` keeps nominal frame steps; `playwall:` measures elapsed window time.
                 let playing = profile_playback::Mode::parse(&mode);
                 self.playing = playing.is_some() && profiling_sweep().contains(&self.profile_frame);
                 if let Some(mode) = playing {
@@ -7838,12 +6677,6 @@ impl Viewer {
                         f64::from((self.profile_frame - sweep_frames.start) % 120) / 120.0
                     };
                 }
-                // A camera sweep: `pan:<world units per second>` drifts the
-                // pinned camera east, `zoom:<height factor per second>`
-                // compounds its height, over the sweep's frames with the hour
-                // held. Every frame rebuilds the overlay synchronously for
-                // its camera, which is the interactive-pan cost being
-                // measured. Needs the pinned `--camera` the harness passes.
                 let sweep = mode
                     .strip_prefix("pan:")
                     .and_then(|rate| {
@@ -7869,8 +6702,6 @@ impl Viewer {
                     camera.center[0] += dx;
                     camera.height = (camera.height * zoom).clamp(40.0, 900.0);
                 }
-                // `mode:<token>`: the picker's choice of that map mode at the
-                // sweep's start, the switch being measured.
                 if self.profile_frame == sweep_frames.start
                     && let Some(next) = mode
                         .strip_prefix("mode:")
@@ -7878,8 +6709,6 @@ impl Viewer {
                 {
                     self.choose_map_mode(next);
                 }
-                // `fly`: a `--fly` dump's flight steps by the profiled pace over the
-                // sweep's frames, as a window's clock would run.
                 if mode == "fly"
                     && profiling_sweep().contains(&self.profile_frame)
                     && let Some(capture) = self.capture.as_mut()
@@ -7892,10 +6721,7 @@ impl Viewer {
             self.document = Some(document);
             drawn
         } else {
-            // No map is shown, while a replacement loads or after it failed:
-            // what the previous one played stops.
             self.release_audio();
-            // The host shows its own status and errors; the map only says it is loading.
             central_panel.show(ui, |ui| {
                 if self.loading.is_some() {
                     ui.vertical_centered(|ui| {
@@ -7941,32 +6767,19 @@ pub(crate) fn date(hour: i32) -> String {
     )
 }
 
-/// `BATTLE_PLAN_VIEWER_CHECK_OVERLAY`: the overlay the frame holds is laid out again against the same
-/// hour, view and camera, and must draw the same quads and report the same
-/// ([`Viewer::check_overlay`]). Sampled on a frame that painted the overlay, placed it at this
-/// camera, took one the step's maker laid out, or, every tenth look, kept its windows.
 fn check_overlay() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
 }
 
-/// What the overlay's content gate did over a run ([`Viewer::check_overlay`]): how often it looked
-/// at a frame, how often it compared, and why it did not. A run's report carries it, so a gate that
-/// judged almost nothing cannot pass for a clean run.
 pub(crate) mod overlay_checks {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
     pub(crate) static LOOKED: AtomicU64 = AtomicU64::new(0);
     pub(crate) static COMPARED: AtomicU64 = AtomicU64::new(0);
-    /// Nothing was laid out, placed or kept long enough to compare on this frame.
     pub(crate) static NOTHING_NEW: AtomicU64 = AtomicU64::new(0);
-    /// A flag or portrait decoded between the layout and the comparison, so the two layouts would
-    /// draw one sprite at two versions.
     pub(crate) static ART_MOVED: AtomicU64 = AtomicU64::new(0);
-    /// The fresh layout read a table the rows the overlay was made from do not hold.
     pub(crate) static ROWS_MISSED: AtomicU64 = AtomicU64::new(0);
-    /// A map layer published its own product of the hour between the painting and the gate's own
-    /// layout, so the two layouts are of two pictures.
     pub(crate) static LAYERS_MOVED: AtomicU64 = AtomicU64::new(0);
     pub(crate) static NO_OVERLAY: AtomicU64 = AtomicU64::new(0);
 
@@ -7974,22 +6787,16 @@ pub(crate) mod overlay_checks {
         counter.fetch_add(1, Relaxed);
     }
 
-    /// Looked, compared, nothing new, the art moved, the rows were short of a table, a layer's
-    /// product moved, no overlay.
     pub(crate) fn counted() -> [u64; 7] {
         [&LOOKED, &COMPARED, &NOTHING_NEW, &ART_MOVED, &ROWS_MISSED, &LAYERS_MOVED, &NO_OVERLAY].map(|counter| counter.load(Relaxed))
     }
 }
 
-/// Whether the anchored overlay's judge runs ([`Viewer::check_anchor`]).
 fn check_anchor() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ANCHOR").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ANCHOR")).is_some())
 }
 
-/// Where an anchor stands now: the page composed it `age` ago on its own clock, and a `moving`
-/// clock has played on since, so delivery delay adds no error. A seek and a pause stand exactly
-/// where the page composed them. Never past the branch's last hour.
 fn placed_anchor(target: Playhead, moving: bool, speed: f64, age: Duration, last: i32) -> Playhead {
     let mut placed = target;
     if moving && speed > 0.0 {
@@ -7999,9 +6806,6 @@ fn placed_anchor(target: Playhead, moving: bool, speed: f64, age: Duration, last
     placed
 }
 
-/// A playing clock never goes back, whatever a late anchor says and whether the speed or playing
-/// changed with it: it stands at the later of where it is and where the anchor places it. A seek,
-/// a pause and a branch change take the anchor exactly.
 fn forward_only(current: Option<Playhead>, placed: Playhead, moving: bool) -> Playhead {
     match current {
         Some(current) if moving && current.branch == placed.branch => {
@@ -8018,9 +6822,6 @@ fn tick_clock(head: &mut Playhead, speed: f64, seconds: f64, last: i32) -> bool 
     advance_clock(head, head.fraction + step, last)
 }
 
-/// Moves a playing playhead `fraction` hours past its hour, whether or not the map's layers have
-/// reached it: the map shows the newest hour they have composed at or before it. Returns false at
-/// the branch's last hour.
 fn advance_clock(playhead: &mut Playhead, fraction: f64, last: i32) -> bool {
     if fraction >= f64::from(last) - f64::from(playhead.hour) {
         playhead.hour = last;
@@ -8032,19 +6833,6 @@ fn advance_clock(playhead: &mut Playhead, fraction: f64, last: i32) -> bool {
     true
 }
 
-/// Whether the picture the map draws answers `hour` whole.
-///
-/// Playing, the layers decide it: they are the hour, and the frame draws over them the newest
-/// finished overlay at or before the hour they show, with the memory it was laid out on. An overlay
-/// a step behind is a step of its own hours behind on the counters and never holds the picture,
-/// because a step that waited for it would hold every frame of the picture instead
-/// ([`crate::playhead_host::overlay`]).
-///
-/// Where the hour shown must be exact, the overlay is part of it again: the hours have stopped (a
-/// pause, a speed of zero, the end of the recording), so the overlay reaches the layers' hour
-/// within one of its maker's cycles and the picture waits that long for it; or the frame is saved,
-/// or it is a seek's first picture, both of which ask the maker for exactly their hour
-/// ([`crate::layers::Settling::Whole`]).
 fn whole_picture(
     on: &crate::playhead_host::OnScreen,
     overlay: Option<replay_data::Hour>,
@@ -8055,30 +6843,22 @@ fn whole_picture(
         return false;
     }
     match playing {
-        // Stopped: the hour shown is exact, the overlay's hour included.
         false => overlay == Some(hour),
-        // Playing: never an overlay of a later hour than the layers show, and never one from
-        // before the seek the picture is of; an earlier hour of this history holds nothing.
         true => overlay.is_none_or(|shown| on.drawn.is_none_or(|drawn| shown <= drawn) && on.sought.is_none_or(|sought| sought <= shown)),
     }
 }
 
 fn layers_show(on: &crate::playhead_host::OnScreen, hour: i32, playing: bool) -> bool {
     on.drawn.is_some_and(|drawn| match playing {
-        // The seek the picture is of must be one the clock has reached: a picture of a seek beyond
-        // the hour asked for answers another history, however whole it is of its own. A picture
-        // past the hour asked for, or one a reset is replacing, is of the history before a seek.
         true => on.sought.is_none_or(|sought| sought <= drawn && sought <= hour) && drawn <= on.head && drawn <= hour && !on.composing,
         false => drawn == hour && on.settled,
     })
 }
 
-/// A refused map reader, by name, as the map's error view shows it.
 fn refusal(error: &std::io::Error) -> String {
     format!("The map's playhead is refused: {error}")
 }
 
-/// Why the playhead's layers are behind, by the layer furthest behind.
 fn layers_behind_reason(on: &crate::playhead_host::OnScreen) -> String {
     let holding = match on.furthest {
         Some(layer) => layer,
@@ -8088,7 +6868,6 @@ fn layers_behind_reason(on: &crate::playhead_host::OnScreen) -> String {
     format!("the playhead's layers: {holding}")
 }
 
-/// A click's read: none while its rows load; a failed read is a named line and selects nothing.
 pub(super) fn read_click<T>(lines: &mut Vec<String>, what: &str, read: Option<std::io::Result<T>>) -> Option<T> {
     match read.transpose() {
         Ok(value) => value,
@@ -8099,10 +6878,6 @@ pub(super) fn read_click<T>(lines: &mut Vec<String>, what: &str, read: Option<st
     }
 }
 
-/// A saved frame's unit figures are the figures of its hour: their models and meshes are made on
-/// a worker at a cadence of its own, so the frame's own settling does not gate on them and two
-/// runs of one binary drew a different number of them. The frame settles the map's layers again
-/// until they stand at `hour`, within `limit`; refused by name.
 fn settle_models(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour, limit: Duration) -> Result<(), String> {
     let until = Instant::now() + limit;
     loop {
@@ -8113,22 +6888,14 @@ fn settle_models(side: &mut crate::playhead_host::MapSide, hour: replay_data::Ho
         if Instant::now() >= until {
             return Err(format!("The unit figures at hour {hour}: {} after {limit:?}", units.figures_state()));
         }
-        // A whole settle waits on the workers themselves: for the rows of every stack handed and
-        // for the product of the build it starts, so this loop never spins.
         side.settle_all().map_err(|error| format!("The unit figures at hour {hour}: {error}"))?;
     }
 }
 
-/// The order field the map's layers give the scene, made as today's hour field is: the battle plan
-/// (its labels and report kept), the hour's raid arrows, then the trade-route lines.
-/// A saved frame's battle plan is the plan of its hour: the map's layers settled again until the
-/// orders layer's plan (or refusal) stands for the rows at `hour`, the tables a build learned
-/// joining those rows (the stepped run's clock is held), within `limit`; refused by name.
 fn settle_plan(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour, limit: Duration) -> Result<(), String> {
     let until = Instant::now() + limit;
     loop {
         let orders = side.draws("orders").then(|| side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::orders::Orders>()))).flatten();
-        // Not drawn, or refused for want of a viewing country: nothing to wait for.
         let Some(orders) = orders.filter(|orders| orders.perspective().is_some()) else { return Ok(()) };
         let made = orders.made_for();
         if made == Some(hour) {
@@ -8138,15 +6905,10 @@ fn settle_plan(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour
             return Err(format!("The battle plan at hour {hour}: the orders layer's plan stands for the rows at {made:?} after {limit:?} (none: a build or a table it learned is still coming)"));
         }
         side.settle_all().map_err(|error| format!("The battle plan at hour {hour}: {error}"))?;
-        // A table it learned joins its rows on the playhead's threads.
         std::thread::sleep(Duration::from_micros(200));
     }
 }
 
-/// The playhead's map while its reader has not failed: the one the window takes everything from.
-/// Why a named combat window's quads are not in a saved frame, and whether to draw it again first:
-/// one that drew nothing while art was still arriving for it (`art_moved`) is drawn again, within the
-/// art retries' bound, before an empty window is refused.
 fn combat_left_out(interface: bool, out: Option<String>, art_moved: bool) -> (Option<String>, bool) {
     match (interface, out) {
         (false, _) => (Some("the map's interface is hidden in this camera mode, so the window's quads are not drawn".to_owned()), false),
@@ -8155,7 +6917,6 @@ fn combat_left_out(interface: bool, out: Option<String>, art_moved: bool) -> (Op
     }
 }
 
-/// The tables an overlay was laid out without, by name; none when it had them all.
 fn missed_tables(missed: &[replay_data::rows::TableId]) -> Option<String> {
     (!missed.is_empty()).then(|| missed.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>().join(", "))
 }
@@ -8164,11 +6925,6 @@ fn live_of(map: &Option<crate::playhead_host::side::SideThread>) -> Option<&crat
     map.as_ref().filter(|side| side.failure().is_none())
 }
 
-/// The head the side prepares its next step for: a paced capture's clock hour, the whole picture
-/// of a saved frame's hour (a stepped capture, a window dump), or the playhead's own clock.
-/// `capture` is whether a capture is open and paced; `drawing` is whether this frame draws the
-/// map, which a frame before the first picture, or before it has placed the camera and size the
-/// overlay is made for, does not: it asks for no overlay, so it waits for no whole picture.
 fn head_wanted(capture: Option<bool>, hour: Option<replay_data::Hour>, window_dump: bool, drawing: bool) -> crate::playhead_host::Head {
     use crate::playhead_host::Head;
     match (capture, hour) {
@@ -8179,11 +6935,6 @@ fn head_wanted(capture: Option<bool>, hour: Option<replay_data::Hour>, window_du
     }
 }
 
-/// A frame that draws no map waits for no whole picture: before the first picture is composed, or
-/// before a frame has placed the camera and size the overlay is made for, there is no overlay to
-/// wait for, so the side composes and the first frame that draws is the first one an overlay is
-/// made for. A stepped capture's frame and a window dump that draw wait for the whole picture of
-/// their hour.
 #[cfg(test)]
 #[test]
 fn a_frame_that_draws_no_map_waits_for_no_whole_picture() {
@@ -8197,18 +6948,12 @@ fn a_frame_that_draws_no_map_waits_for_no_whole_picture() {
     assert_eq!(head_wanted(None, None, true, true), Head::Clock);
 }
 
-/// A deferred save may build unused warnings, but an unsavable frame never needs them.
 fn builds_warnings(diagnostics: bool, capture: Option<&Capture>) -> bool {
     diagnostics || capture.is_some_and(|capture| capture.remaining == 0)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    /// Playing, the layers are the picture's hour and the overlay is not: a layout a step behind is
-    /// drawn over them and holds nothing, because a step that waited for it would hold every frame
-    /// instead. An overlay of a later hour than the layers show, or of a seek before this picture's,
-    /// is not this picture's and does hold it. Stopped, the hour is exact again: the overlay reaches
-    /// the layers' hour within one of its maker's cycles and the picture waits that long for it.
     #[test]
     fn playing_the_layers_are_the_pictures_hour_and_stopped_the_overlay_is_too() {
         let on = |drawn: Option<i32>, sought: Option<i32>| crate::playhead_host::OnScreen {
@@ -8225,15 +6970,11 @@ pub(crate) mod tests {
         assert!(whole(Some(5), 8, true), "a layout a step behind: drawn over the layers, holding nothing");
         assert!(whole(None, 8, true), "before the first layout, the layers are the picture");
         assert!(!whole(Some(9), 8, true), "never an overlay of an hour the layers have not reached");
-        // A seek's picture is its own history's: an overlay from before it is not this picture's.
         assert!(!super::whole_picture(&on(Some(8), Some(7)), Some(6), 8, true));
         assert!(super::whole_picture(&on(Some(8), Some(7)), Some(7), 8, true));
-        // Sought back from 8 to 6, before the reset is drawn: the picture of 8 is the history
-        // before the seek, whether or not the reset has begun composing.
         assert!(!super::whole_picture(&on(Some(8), Some(6)), None, 6, true), "a picture past the hour asked for");
         let composing = crate::playhead_host::OnScreen { composing: true, ..on(Some(6), Some(6)) };
         assert!(!super::whole_picture(&composing, None, 6, true), "a picture a reset is replacing");
-        // Stopped (a pause, a speed of zero, the end of the recording): exactly the hour shown.
         assert!(whole(Some(8), 8, false));
         assert!(!whole(Some(7), 8, false), "a paused picture is never left with an earlier overlay");
         assert!(!whole(None, 8, false));
@@ -8359,13 +7100,11 @@ pub(crate) mod tests {
             paced: false,
             request: None,
         };
-        // Ordinary viewing builds none; diagnostics mode builds them on every frame.
         assert!(!builds_warnings(false, None));
         for remaining in [0, 1, 3_321] {
             assert!(builds_warnings(true, Some(&capture(remaining, 1))));
         }
         assert!(builds_warnings(true, None));
-        // Mirror save_capture's countdown and sequence steps without rendering.
         for (remaining, frames) in [(3_321, 1), (1, 1), (0, 1), (2, 3)] {
             let mut capture = capture(remaining, frames);
             let mut built = Vec::new();
@@ -8427,7 +7166,6 @@ pub(crate) mod tests {
             top_map_hit([15., 17.], &report, &[], &hits, None, None),
             Some(MapHit::Occupation(1))
         );
-        // The gap between the text and badge belongs to the map.
         assert_eq!(
             top_map_hit([5., 17.], &report, &[], &hits, None, None),
             None
@@ -8472,7 +7210,6 @@ pub(crate) mod tests {
                 rank: 3,
             },
         );
-        // Nearer presented occupation geometry wins over a higher-priority distant base.
         assert_eq!(
             top_map_hit([20., 24.], &report, &[], &hits, Some(&looks), None),
             Some(MapHit::Occupation(1))
@@ -8556,7 +7293,6 @@ pub(crate) mod tests {
             refused: BTreeMap::from([("missing source".into(), 2)]),
         });
         let rect = [10., 10., 20., 20.];
-        // A status child has a hover and blocks the province without selecting a mission.
         report.naval_mission_hits.push(NavalMissionHit {
             region: 7,
             mission: 0,
@@ -8654,7 +7390,6 @@ pub(crate) mod tests {
             top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
             Some(MapHit::Unit(0))
         );
-        // An ordinary port item still belongs to the base anchor.
         report.regional_naval_unit_hits.clear();
         assert_eq!(
             top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
@@ -8721,7 +7456,6 @@ pub(crate) mod tests {
             layer: layer(10, 0, 0),
             plate: None,
         });
-        // Native carrier/order children can begin left of an unclipped root.
         report.task_force_hovers.push(Hover {
             control: Control::Carrier,
             unit_hit: 0,
@@ -8753,12 +7487,9 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Blocked)
         );
-        // A stale/mismatched ordinal cannot dispatch to another class's plate.
         report.unit_hits[0].kind = Kind::Division;
         assert_eq!(top_map_hit(point, &report, &[], &[], None, None), None);
 
-        // An opaque unbound port child stops the native walk; its authored
-        // tooltip can still be shown without selecting the plate underneath.
         use viewer_foundation::map::counter_hovers::task_force_port as port;
         report.unit_hits[0].kind = Kind::TaskForce;
         report.unit_hits[0].port = true;
@@ -8976,8 +7707,6 @@ pub(crate) mod tests {
             ),
             None
         );
-        // An intel entry takes the point at its higher layer. A missing CPU mask
-        // accepts the child's rectangular hit, including its tooltip.
         let viewport = [2048, 1152];
         let mut intel = viewer_raids::map::intel_icons::IntelHit {
             shapes: vec![
@@ -9013,7 +7742,6 @@ pub(crate) mod tests {
             viewer_foundation::map::sprites::layer,
         };
         let mut report = viewer_counters::map::counters::CounterReport::default();
-        // A unit counter laid out over [0, 20) and a base over [10, 30), both at y [0, 20).
         report.unit_hits.push(Hit {
             ours: true,
             port: false,
@@ -9028,12 +7756,10 @@ pub(crate) mod tests {
             layer: layer(3, 0, 0),
         });
         let point = [15.0, 5.0];
-        // As laid out, the counter's higher priority wins.
         assert_eq!(
             top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Unit(0))
         );
-        // A free eye with the base nearer: the base wins whatever its priority.
         let at = |rank, scale, alpha| Present {
             pivot: [10.0, 10.0],
             scale,
@@ -9047,7 +7773,6 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], &[], Some(&looks), None),
             Some(MapHit::Base(0))
         );
-        // Shrunk to half about its anchor, the base no longer reaches the pointer; the counter does.
         let mut looks = Looks::default();
         looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 0.5, 1.0));
@@ -9055,14 +7780,12 @@ pub(crate) mod tests {
             top_map_hit([18.0, 3.0], &report, &[], &[], Some(&looks), None),
             Some(MapHit::Unit(0))
         );
-        // A faint base and an undrawn counter take no hits.
         let mut looks = Looks::default();
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 0.2));
         assert_eq!(
             top_map_hit(point, &report, &[], &[], Some(&looks), None),
             None
         );
-        // The counter's layer key shown for another family leaves the counter itself unshown.
         let mut looks = Looks::default();
         looks.show(IconFamily::Combats, layer(10, 0, 0), at(0, 1.0, 1.0));
         assert_eq!(
@@ -9163,11 +7886,8 @@ pub(crate) mod tests {
         assert!(land_hover_matches_unit(&gun_hover, &unit));
     }
 
-    /// A map that shows no picture, here for an hour its recording lacks, stops what it sounded,
-    /// and its next presented frame starts its sounds afresh.
     #[test]
     fn a_map_without_a_picture_stops_sounding() {
-        // No device opens; the owner still claims the audio.
         viewer_audio::System::silent();
         let mut viewer = Viewer::create(
             Config::default(),
@@ -9256,9 +7976,6 @@ pub(crate) mod tests {
         assert_eq!(forward_only(None, current, true), current);
     }
 
-    /// An anchor the page composed while playing stands where the page's clock is now, not where
-    /// it was when it composed it: a quarter of a second of delivery at 1,440 hours a second is
-    /// 360 game hours. A seek and a pause stand exactly where they were composed, however late.
     #[test]
     fn a_playing_anchor_is_placed_by_the_time_the_page_composed_it() {
         let target = Playhead {
@@ -9375,10 +8092,6 @@ pub(crate) mod tests {
         assert!(!viewer.playing);
     }
 
-    /// Every transport action, each anchor reaching the map late: a speed change and a resume
-    /// never take the map to an hour before the one it shows, delivery delay adds no error, and a
-    /// pause and a seek stand exactly where the page composed them. The page's clock reads 5,000
-    /// more than this process's, which the map learns from the anchors themselves.
     #[test]
     fn every_transport_action_places_its_late_anchor_without_moving_the_map_backwards() {
         const LAST: i32 = 100_000;
@@ -9406,7 +8119,6 @@ pub(crate) mod tests {
             viewer.tick_playhead(at.duration_since(viewer.last_step).as_secs_f64(), LAST);
             viewer.last_step = at;
         };
-        // Each anchor is stamped on the page's clock when the page composed it, and arrives later.
         let send = |viewer: &mut Viewer, at: f64, playing, speed, sought, composed: u64, arrived: u64| {
             viewer.anchor_playback(
                 head(at),
@@ -9418,31 +8130,23 @@ pub(crate) mod tests {
                 LAST,
             );
         };
-        // The first anchor sets the page clock's offset, so its own delivery is not corrected for.
         send(&mut viewer, 1_000.0, true, 1_440.0, true, 0, 0);
         assert_eq!(position(&viewer), 1_000.0);
         assert!(viewer.playing);
-        // A speed change the page composed at its hour 1,144, arriving 20 ms later: the map has
-        // played to 1,172.8 meanwhile and stays there instead of jumping 28.8 hours back.
         tick_to(&mut viewer, 120);
         assert!((position(&viewer) - 1_172.8).abs() < 1e-6, "{}", position(&viewer));
         send(&mut viewer, 1_144.0, true, 24.0, false, 100, 120);
         assert!((position(&viewer) - 1_172.8).abs() < 1e-6, "a speed change never steps back: {}", position(&viewer));
         assert_eq!(viewer.speed, 24.0);
-        // A pause is exact, even where the map had played past the page's own clock.
         tick_to(&mut viewer, 1_120);
         send(&mut viewer, 1_168.48, false, 24.0, false, 1_120, 1_140);
         assert_eq!(viewer.playhead, Some(head(1_168.48)), "a pause stands where it was composed");
         assert!(!viewer.playing);
-        // Resuming at 1,440 hours a second, the anchor 40 ms old: the map starts where the page's
-        // clock stands now, 57.6 hours on, not where the page was when it composed the anchor.
         send(&mut viewer, 1_168.48, true, 1_440.0, false, 1_200, 1_240);
         assert!((position(&viewer) - 1_226.08).abs() < 1e-4, "{}", position(&viewer));
         assert!(viewer.playing);
-        // A seek is exact however late, and backwards.
         send(&mut viewer, 500.0, true, 1_440.0, true, 1_300, 1_400);
         assert_eq!(viewer.playhead, Some(head(500.0)), "a seek stands where it was composed");
-        // A step while paused is a seek of one hour, exact.
         send(&mut viewer, 501.0, false, 1_440.0, true, 1_500, 1_560);
         assert_eq!(viewer.playhead, Some(head(501.0)));
         assert!(!viewer.playing);
@@ -9563,7 +8267,6 @@ pub(crate) mod tests {
         assert!(viewer.options.replay.is_none());
     }
 
-    /// A desktop export as the host asks for one, numbered `request`.
     fn export(path: &str, request: u64) -> Capture {
         Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(request) }
     }
@@ -9572,8 +8275,6 @@ pub(crate) mod tests {
         output.viewport_output.values().any(|viewport| viewport.commands.iter().any(|command| matches!(command, egui::ViewportCommand::Close)))
     }
 
-    /// A load that failed ends every capture by name: a window dump with its process, and an
-    /// export to its requester, never left armed for a map that did not come.
     #[test]
     fn failed_replay_load_ends_every_capture_by_name() {
         for disconnected in [false, true] {
@@ -9620,9 +8321,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A capture asked of a map standing in a recorded gap is refused by name, a window dump's and
-    /// an export's alike. An export left armed there returned before every save, turned the next
-    /// export away as active, and wrote whatever hour a later seek reached to its path.
     #[test]
     fn a_capture_in_a_recorded_gap_is_refused_by_name() {
         for window_dump in [false, true] {
@@ -9659,7 +8357,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Closing the recording an export draws ends the export, which its requester hears by name.
     #[test]
     fn an_export_whose_recording_closes_answers_its_requester() {
         let mut viewer = Viewer::create(Config::default(), Options { replay: Some("campaign.battleplan".into()), ..Default::default() }, None, Arc::default(), None, None);
@@ -9669,7 +8366,6 @@ pub(crate) mod tests {
         assert_eq!(viewer.take_export_results(), [(6, Err("Capture map.png failed: its recording closed".to_owned()))]);
     }
 
-    /// An export the map cannot start answers its requester at once, never as the map's error.
     #[test]
     fn an_export_the_map_cannot_start_answers_its_requester() {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
@@ -9695,9 +8391,6 @@ pub(crate) mod tests {
         viewer.capture.as_ref().map(|capture| capture.remaining)
     }
 
-    /// A window dump of an open air region: the window's flags and portraits decode after the
-    /// overlay was painted, which leaves its layout older than the art. Unless the next frame
-    /// paints it and lays it out again, every frame waits on it and the dump never saves.
     #[test]
     fn a_saved_frame_whose_overlay_the_art_moved_under_paints_it_again() {
         let mut viewer = window_dump_viewer();
@@ -9720,8 +8413,6 @@ pub(crate) mod tests {
         assert_eq!(remaining(&viewer), Some(1), "no overlay yet: it waits for one");
     }
 
-    /// Art that moves the overlay again after every painting refuses the saved frame by name within
-    /// a bounded number of frames, however briefly each painting's own settle takes.
     #[test]
     fn a_saved_frame_whose_art_never_stops_moving_is_refused_by_name() {
         let mut viewer = window_dump_viewer();
@@ -9740,9 +8431,6 @@ pub(crate) mod tests {
         assert_eq!(viewer.overlay_art_retries, 0, "a layout that caught up ends the run of retries");
     }
 
-    /// A desktop export refused for art that never stopped moving is ended, not left armed: its
-    /// requester hears why by name, the map's own error stays as it was, the window stays open,
-    /// and the next export starts.
     #[test]
     fn a_refused_export_answers_its_requester_and_the_next_one_starts() {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
@@ -9770,9 +8458,6 @@ pub(crate) mod tests {
         assert_eq!(viewer.overlay_art_retries, 1, "with retries of its own");
     }
 
-    /// A saved frame due for readback and held past its bound is refused by name with what it
-    /// waited for: a window dump fails its process, an export is answered, and neither waits on.
-    /// A capture far from its readback is not held to it.
     #[test]
     fn a_saved_frame_held_past_its_bound_is_refused_naming_what_it_waited_for() {
         let waiting = || Some("its raid offers had evaluated 100 of 616 targets".to_owned());
@@ -9798,8 +8483,6 @@ pub(crate) mod tests {
         assert!(viewer.capture.is_some());
     }
 
-    /// A loaded map that never composes the picture a saved frame waits for, or never gets a size
-    /// to draw at, is refused by name within its bound: a window dump fails, an export is answered.
     #[test]
     fn a_saved_frame_that_cannot_draw_its_hour_is_refused_by_name() {
         let ctx = egui::Context::default();
@@ -9819,9 +8502,6 @@ pub(crate) mod tests {
         assert!(matches!(viewer.take_export_results().as_slice(), [(3, Err(why))] if why.contains("no area to draw in")));
     }
 
-    /// An export saves the frame it reads back and answers with the branch and hour that frame
-    /// drew, whatever the clock did after it was asked for: a seek or playing on refuses nothing,
-    /// and the answer never names an hour the picture does not show.
     #[test]
     fn an_export_answers_with_the_hour_its_frame_drew() {
         let ctx = egui::Context::default();
@@ -9842,7 +8522,6 @@ pub(crate) mod tests {
         assert_eq!(viewer.take_export_results(), [(8, Err("full.png: disk full".to_owned()))]);
     }
 
-    /// A window dump whose window closes before it wrote its frame fails its process by name.
     #[test]
     fn a_window_dump_closed_before_it_saved_fails_by_name() {
         let viewer = window_dump_viewer();
@@ -9855,8 +8534,6 @@ pub(crate) mod tests {
         assert!(failure.lock().unwrap().is_none(), "no capture, no failure");
     }
 
-    /// A saved frame waits for the combat named at load to open and refuses one that matched
-    /// nothing, never saving a picture without the window it was asked for.
     #[test]
     fn a_saved_frame_waits_for_its_combat_window_and_refuses_one_that_cannot_open() {
         let mut viewer = window_dump_viewer();
@@ -9868,8 +8545,6 @@ pub(crate) mod tests {
         assert!(viewer.saved_combat(true, None).is_err_and(|why| why.contains("Id(5)")), "it matched nothing: refused by name");
     }
 
-    /// A window named at load that is no combat (an air region, a state, a naval region) reads no
-    /// rows to open: it opens on the first frame, with no rows at the head at all.
     #[test]
     fn a_window_named_at_load_that_reads_no_rows_opens_without_them() {
         use viewer_combat::Selector;
@@ -9882,9 +8557,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A combat named at load whose rows never come is refused by name within a bounded number of
-    /// frames of a standing picture, never waited for forever; frames before the picture stands do
-    /// not count.
     #[test]
     fn a_combat_named_at_load_that_cannot_be_looked_up_is_refused_within_a_bound() {
         let mut viewer = window_dump_viewer();
@@ -9896,9 +8568,6 @@ pub(crate) mod tests {
         assert!(refused.is_some_and(|why| why.contains("Province(362)") && why.contains("LandCombats")), "refused by name within its frames");
     }
 
-    /// A named window that drew nothing while its art was still arriving (a portrait queued as its
-    /// only drawable) is drawn again, not refused; once its art stands still an empty window is
-    /// refused, and a hidden interface always is.
     #[test]
     fn a_named_window_drawn_empty_while_its_art_arrives_is_drawn_again() {
         let empty = || Some("the window drew no quads".to_owned());
@@ -9908,8 +8577,6 @@ pub(crate) mod tests {
         assert!(combat_left_out(false, None, true).0.is_some(), "a hidden interface is refused whatever the art");
     }
 
-    /// Unloading a recording lets go of what the combat window took from its content (the naval
-    /// sources provider holds the whole content), whether or not a window was ever opened.
     #[test]
     fn unloading_a_recording_retires_what_the_combat_window_took_from_its_content() {
         let mut viewer = Viewer::create(Config::default(), Options { replay: Some("campaign.battleplan".into()), ..Default::default() }, None, Arc::default(), None, None);
@@ -9918,8 +8585,6 @@ pub(crate) mod tests {
         assert!(viewer.unload_recording(Path::new("campaign.battleplan")));
         assert!(!viewer.combat.holds_inputs(), "the provider went with the recording");
         assert_eq!(viewer.combat_inputs, None, "and is given again for the next content");
-        // A reload clears the document as its load starts, whether or not that load then fails;
-        // every document cleared or installed goes through the one place that lets go of it.
         viewer.combat.set_navy_sources_of(Arc::new(|_: &replay_frame::frame::DecodedFrame, _, _| Ok(std::collections::BTreeMap::new())));
         viewer.combat_inputs = Some(2);
         drop(viewer.replace_document(None));
@@ -9927,9 +8592,6 @@ pub(crate) mod tests {
         assert_eq!(viewer.combat_inputs, None);
     }
 
-    /// A combat named at load must be drawn: a window its read closed, or one open that shows
-    /// nothing (a battle the viewing country is not in), refuses the saved frame by name. A
-    /// window nobody named that closes is no window.
     #[test]
     fn a_combat_named_at_load_that_is_not_drawn_is_refused() {
         let mut viewer = window_dump_viewer();
@@ -9940,8 +8602,6 @@ pub(crate) mod tests {
         assert!(viewer.saved_combat(true, None).is_err(), "named at load and closed: refused");
     }
 
-    /// A capture far from its readback, such as a profiling sweep, draws its frames as they come:
-    /// new art lays nothing out again until the frame it saves is near.
     #[test]
     fn a_capture_far_from_its_readback_lays_nothing_out_again() {
         let mut viewer = window_dump_viewer();
@@ -9967,19 +8627,14 @@ pub(crate) mod tests {
         let a = Path::new("A.battleplan");
         let b = Path::new("B.battleplan");
 
-        // Both recordings may contain branch 1/hour 12. A throttled host
-        // state for A must not route its seek to a newly accepted native B.
         assert_eq!(
             seek_open_target(&seek, Some((b, Some("100:20:0"))), None),
             Some(target.clone())
         );
-        // B may instead still be loading from the native picker, with its
-        // actual revision only established when that load completes.
         assert_eq!(
             seek_open_target(&seek, None, Some((b, None))),
             Some(target.clone())
         );
-        // A folder retry for B also supersedes a previously accepted A.
         assert_eq!(
             seek_open_target(
                 &seek,
@@ -10018,7 +8673,6 @@ pub(crate) mod tests {
                 ),
                 Some(seek.open_request())
             );
-            // The same strict predicate gates applying the seek after load.
             assert!(!seek.matches(path, revision));
         }
         assert_eq!(
@@ -10140,7 +8794,6 @@ pub(crate) mod tests {
             false,
             egui::Modifiers::CTRL
         )));
-        // F3 alone selects the air map mode, as in the game.
         assert!(!super::is_diagnostics_shortcut(&press(
             true,
             false,

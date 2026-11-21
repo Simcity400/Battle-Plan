@@ -1,24 +1,3 @@
-//! Per-pass sharing of the land combat division walk's per-source reads.
-//!
-//! The hourly capture holds the simulation thread for its whole pass, so a
-//! source read earlier in the pass holds the value a later division would read
-//! again. The division walk (`carmy_combat_inputs`, `land_reinforcement_inputs`)
-//! shares whole per-source results by the source's address: a country's
-//! diplomacy walks, a state's modifier source, a province's weather, a
-//! template's terms, the module's defines. Each is computed at its first use,
-//! in the walk's own order, and kept with its failure. A result read in stages
-//! keeps each stage's failure apart, so every division meets the value or the
-//! reason main's reader meets, at the point where main meets it.
-//!
-//! A combat's divisions' own army and stat block fields are gathered in two
-//! guarded calls ([`Images`]) and served to each division's readers through
-//! its [`DivisionImage`].
-//!
-//! [`Sources::clear`] starts each pass; nothing crosses hours. Storage is kept
-//! between passes: the maps and the flat arenas below grow on the acquisition
-//! worker to the pass's exact demand and are reused. The equivalence tests run
-//! a test-only copy of main's readers (`main_reinforcement`, `main_combat`) as
-//! the baseline and compare every output and every failure.
 
 use crate::{
     Memory,
@@ -36,8 +15,6 @@ mod main_combat;
 #[cfg(test)]
 mod main_reinforcement;
 
-/// Multiplicative hashing of the few integer keys used here; the keys are
-/// addresses and ids, not attacker-chosen input.
 #[derive(Default)]
 pub struct KeyHasher(u64);
 
@@ -65,7 +42,6 @@ pub type Map<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
 pub(crate) type Shared<K, V> = Map<K, Result<V, &'static str>>;
 type LeaderChain = Result<Option<usize>, &'static str>;
 
-/// A run of one of the pass's flat arenas.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Run {
     pub start: usize,
@@ -78,13 +54,8 @@ impl Run {
     }
 }
 
-/// One pass's shared sources. Construct with [`Sources::new`], call
-/// [`Sources::clear`] before each pass, and keep the value between passes so
-/// its storage is reused.
 #[derive(Default)]
 pub struct Sources {
-    /// Scalars of shared objects (module defines, provinces, states), by
-    /// address and width.
     fields: Map<(usize, usize), Option<[u8; 8]>>,
     pub(crate) definitions: Shared<usize, usize>,
     pub(crate) weather: Shared<usize, (usize, usize)>,
@@ -99,8 +70,6 @@ pub struct Sources {
     pub(crate) priorities: Shared<usize, crate::land_reinforcement_inputs::Priority>,
     pub(crate) category_tokens: Vec<u32>,
     pub(crate) metadata: Shared<u32, (u32, u32)>,
-    /// Reinforcement accumulator censuses, read as main's direct reader reads
-    /// them, and their sorted entries.
     pub(crate) censuses: Shared<usize, Run>,
     pub(crate) census_entries: Vec<(u32, i64)>,
     pub(crate) transport_owners: Shared<usize, crate::land_reinforcement_inputs::TransportOwner>,
@@ -111,12 +80,7 @@ pub struct Sources {
     pub(crate) context_metadata:
         Option<Result<crate::carmy_combat_inputs::ContextMetadata, &'static str>>,
     pub(crate) context_modifiers: Shared<usize, [crate::carmy_combat_inputs::ContextModifier; 3]>,
-    /// The division `capture_stats` authenticated last: its pointer, handle
-    /// and stat block. The same division's later readers skip those reads.
     pub(crate) verified: Option<(usize, u64, usize)>,
-    /// The last division's leader chain (`carmy_leader::movement_accumulator`)
-    /// by pointer and handle: the context reader reads it, and the same
-    /// division's reinforcement reader reuses it.
     leader: Option<(usize, u64, LeaderChain)>,
 }
 
@@ -125,7 +89,6 @@ impl Sources {
         Self::default()
     }
 
-    /// Starts a pass: forgets every value, keeps the storage.
     pub fn clear(&mut self) {
         self.fields.clear();
         self.definitions.clear();
@@ -154,7 +117,6 @@ impl Sources {
         self.leader = None;
     }
 
-    /// A shared object's scalar; `reason` is the unshared read's failure.
     pub(crate) fn field<T: Raw>(
         &mut self,
         memory: &impl Memory,
@@ -183,9 +145,6 @@ impl Sources {
         .ok_or(reason)
     }
 
-    /// `carmy_leader::movement_accumulator` for this division, read once: the
-    /// pass holds the simulation thread, so the same division's second call
-    /// would read the same chain.
     pub(crate) fn leader_chain(
         &mut self,
         memory: &impl Memory,
@@ -205,7 +164,6 @@ impl Sources {
     }
 }
 
-/// The value `compute` gives for `key`, computed once per pass.
 pub(crate) fn share<K: Hash + Eq, V>(
     map: &mut Shared<K, V>,
     key: K,
@@ -228,13 +186,6 @@ const fn span(start: usize, end: usize, destination: usize) -> RecordField {
     }
 }
 
-/// The CArmy spans one division's readers read (stats, context,
-/// reinforcement, the modifier member and the leader chain), packed in order:
-/// identity/class/handle; formation and supply bytes; the orders group; the
-/// stat block; modifier data and attack accumulator; owners, location and
-/// route; retreat flags; the transfer membership; the name member; the
-/// template; the strength factor; the direction groups; supply days;
-/// acclimatization; supply and fuel. Small gaps inside a span are the same object's bytes.
 const ARMY_FIELDS: [RecordField; 16] = [
     span(0x000, 0x020, 0x000),
     span(0x028, 0x060, 0x020),
@@ -249,41 +200,28 @@ const ARMY_FIELDS: [RecordField; 16] = [
     span(0x3b8, 0x3c0, 0x0f0),
     span(0x468, 0x470, 0x0f8),
     span(0x498, 0x49c, 0x100),
-    // The direction group (`carmy_combat_inputs::DIRECTION_GROUP`), which the
-    // stat reader's naming scatter reads.
     span(0x4a8, 0x4ac, 0x104),
     span(0x4c0, 0x4f8, 0x108),
     span(0x600, 0x628, 0x140),
 ];
 const ARMY_STRIDE: usize = 0x168;
-/// The stat block spans the readers read: identity; defence to initiative;
-/// fuel capacity; anti-air; base speed, armour and piercing.
 const STAT_FIELDS: [RecordField; 6] = [
     span(0x000, 0x008, 0x000),
     span(0x0a8, 0x0e8, 0x008),
     span(0x120, 0x128, 0x048),
     span(0x220, 0x228, 0x050),
     span(0x290, 0x2a8, 0x058),
-    // The equipment category mask (`csub_unit_definition::AIR_FLAGS`).
     span(0x5a8, 0x5b0, 0x070),
 ];
 const STAT_STRIDE: usize = 0x78;
 const ARMY_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ARMY_FIELDS, ARMY_STRIDE).unwrap();
 const STAT_LAYOUT: RecordLayout<'static> = RecordLayout::new(&STAT_FIELDS, STAT_STRIDE).unwrap();
-/// Where the army record keeps the stat block pointer (`cunit::STAT_BLOCK`).
 const STAT_POINTER: usize = 0x060;
 const _: () = assert!(
     ARMY_FIELDS[3].source_offset == crate::cunit::STAT_BLOCK
         && ARMY_FIELDS[3].destination_offset == STAT_POINTER
 );
 
-/// Many divisions' army and stat block fields, gathered with one guarded call
-/// for the armies and one for their stat blocks (a failing record costs one
-/// more call, which resumes after it). The pass holds the simulation thread,
-/// so each field is the value its reader would read; a division whose record
-/// did not copy completely is served nothing, and its reads go to the source
-/// one by one, failing where they fail. Storage grows on the acquisition
-/// worker and is reused.
 #[derive(Default)]
 pub struct Images {
     armies: Vec<usize>,
@@ -295,12 +233,10 @@ pub struct Images {
 }
 
 impl Images {
-    /// Holds no division: every read goes to the source.
     pub fn clear(&mut self) {
         self.armies.clear();
     }
 
-    /// Gathers the images of `armies` (the census's authenticated pointers).
     pub fn capture(&mut self, memory: &impl Memory, armies: &[usize]) -> io::Result<()> {
         let count = armies.len();
         self.armies.clear();
@@ -349,8 +285,6 @@ impl Images {
         Ok(())
     }
 
-    /// The memory `army`'s readers read through: its image when `row` holds
-    /// that division, else the source alone.
     pub fn division<'a, M: Memory>(
         &'a self,
         inner: &'a M,
@@ -369,9 +303,6 @@ impl Images {
     }
 }
 
-/// Copies every row of `pointers` it can, marking each complete one. A null
-/// pointer is skipped; a failing record ends its call and the next resumes
-/// after it, so nothing is read twice.
 fn gather(
     memory: &impl Memory,
     pointers: &[usize],
@@ -397,14 +328,10 @@ fn gather(
             &mut bytes[row * stride..end * stride],
         ) / fields;
         complete[row..row + copied].fill(true);
-        // The failed record, if any, is skipped.
         row += copied + usize::from(row + copied < end);
     }
 }
 
-/// One division's army and stat block fields from [`Images`], serving every
-/// read that falls inside one of their spans; everything else goes to the
-/// source.
 pub struct DivisionImage<'a, M> {
     inner: &'a M,
     army: usize,
@@ -414,8 +341,6 @@ pub struct DivisionImage<'a, M> {
 }
 
 impl<'a, M: Memory> DivisionImage<'a, M> {
-    /// The image bytes for `[address, address + len)`, when one span holds
-    /// them all.
     fn served(&self, address: usize, len: usize) -> Option<&'a [u8]> {
         let within = |base: usize, row: Option<&'a [u8]>, fields: &[RecordField]| {
             let row = row?;
@@ -438,9 +363,6 @@ impl<'a, M: Memory> DivisionImage<'a, M> {
             .or_else(|| within(self.stat, self.stat_row, &STAT_FIELDS))
     }
 
-    /// Test the all-image gate once, retaining its lookups for the copy.
-    /// A mixed scatter still goes wholly to the source, without modifying
-    /// any destination first.
     fn copy_served<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -523,8 +445,6 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
     ) -> Option<Result<usize, &'static str>> {
         self.inner.movement_primary_root(base, member)
     }
-    /// All lanes from the image, or the whole scatter from the source: one
-    /// guarded call either way, and the same bytes.
     fn copy_scattered<const N: usize>(
         &self,
         addresses: [usize; N],
@@ -546,7 +466,6 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         self.inner
             .copy_scattered_prefetched(addresses, destinations)
     }
-    /// One guarded gather at the source; a gather never touches the image.
     fn copy_records(
         &self,
         sources: RecordSources<'_>,

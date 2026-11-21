@@ -10,7 +10,6 @@ async function isolateImages(locator) {
       const source = image.currentSrc || image.src;
       let url;
       if (source.startsWith('data:')) {
-        // An unused media-type parameter changes only the resource identity.
         const comma = source.indexOf(','), header = source.slice(0, comma);
         const at = /;base64$/i.test(header) ? header.lastIndexOf(';') : header.length;
         const identity = [...crypto.getRandomValues(new Uint32Array(4))].map(value => value.toString(16)).join('-');
@@ -26,7 +25,6 @@ async function isolateImages(locator) {
   });
 }
 
-/** A widget's visible surface, evaluated in its page: whether it has a header and body, and its shown text. */
 export function surfaceModel(root) {
   function shown(node) {
     if (getComputedStyle(node).visibility === 'hidden' || getComputedStyle(node).display === 'none') return false;
@@ -80,8 +78,6 @@ export async function captureWidget({ page, app, kind, directory, scenario, file
     const model = await surfaceData(locator);
     if (!model.header || !model.body) throw Error('Widget header or body missing');
     const screenshotFile = `${fileStem}.png`;
-    // The fresh context owns these decode resources until its close. Playwright's
-    // persistent screenshot session preserves its viewport and composed layers.
     await isolateImages(locator); check();
     await page.bringToFront(); await paint(page); check();
     await locator.screenshot({ path: path.join(directory, screenshotFile), scale: 'css', caret: 'initial' }); check();

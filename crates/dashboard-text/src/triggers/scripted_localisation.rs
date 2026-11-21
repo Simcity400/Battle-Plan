@@ -1,4 +1,3 @@
-//! The scriptable weights used by random localisation lists.
 use crate::triggers::Failure;
 
 use installed_content_scripted_localisation::{
@@ -8,15 +7,11 @@ use installed_content_scripted_localisation::{
 use super::{Scopes, eval::Evaluator, world::fixed_round};
 use crate::state_resources::ONE;
 
-/// Final fixed5 multiplication and whole-unit rounding.
 pub(crate) fn constant_weight(member: &RandomMember) -> i32 {
     fixed_round(ONE.wrapping_mul(member.weight) / ONE) as i32
 }
 
 impl Evaluator<'_, '_> {
-    /// Random localisation modifier conditions are never checked.
-    /// Additions accumulate into the base, factors into
-    /// a separate product; a zero factor stops before later operands.
     pub fn localisation_weight(
         &self,
         member: &RandomMember,
@@ -43,8 +38,6 @@ impl Evaluator<'_, '_> {
         Ok(fixed_round(product.wrapping_mul(base) / ONE) as i32)
     }
 
-    /// An explicit list seed is the low u32 of the raw fixed5 operand
-    /// with the scope object's identity added.
     pub fn localisation_seed(
         &self,
         list: &RandomList,
@@ -78,9 +71,6 @@ impl Evaluator<'_, '_> {
             },
             super::Scope::Character(id) => {
                 if self.world().character_exists(id)? {
-                    // The pinned character reference kind is shared with
-                    // the authenticated engine reader; only the instance id
-                    // is content/runtime.
                     reference_hash(
                         (u64::from(id) << 32)
                             | u64::from(engine_native::ccharacter::REFERENCE_TYPE),
@@ -91,17 +81,16 @@ impl Evaluator<'_, '_> {
             }
             super::Scope::IndustrialOrganisation(reference) => {
                 self.world().industrial_organisation(reference)?;
-                ((reference >> 32) as u32).wrapping_mul(82) // Organisation instance id.
+                ((reference >> 32) as u32).wrapping_mul(82)
             }
             super::Scope::Unit(reference) => {
                 self.world().unit(reference)?;
-                ((reference >> 32) as u32).wrapping_mul(3) // Unit instance id.
+                ((reference >> 32) as u32).wrapping_mul(3)
             }
             super::Scope::Raid(reference) => {
                 self.world().raid(reference)?;
-                ((reference >> 32) as u32).wrapping_mul(0x79d) // Raid instance id.
+                ((reference >> 32) as u32).wrapping_mul(0x79d)
             }
-            // Projects have no seed identity: validity false, no identity add.
             super::Scope::Project { .. } => 0,
             super::Scope::Combat => {
                 return Err(
@@ -113,8 +102,6 @@ impl Evaluator<'_, '_> {
     }
 }
 
-/// Reference hashing: word swap, wrapping u64 multiplication,
-/// then high XOR low. UnitLeaders records the character's complete handle.
 pub(super) fn reference_hash(reference: u64) -> u32 {
     let product = reference.rotate_left(32).wrapping_mul(0x4963_1a45);
     (product >> 32) as u32 ^ product as u32

@@ -1,13 +1,3 @@
-//! The aircraft the Campaign map's Fly mode can fly: every aircraft model and
-//! entity of the recording's content stack, and every other entity and mesh
-//! it registers, searchable and answered a page at a time.
-//!
-//! The listing is [`aircraft::Catalogue`] over the stack's registered
-//! descriptor roster, its equipment database and graphics pools, and every
-//! model a recorded design saved, on any branch. It is built once per source
-//! and content binding; each request filters and pages it. A name with a
-//! refusal cannot be flown and says why; the files a name loads are read only
-//! when the map flies it.
 
 use replay_frame::frame::DecodedFrame;
 use crate::{
@@ -29,14 +19,11 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Which names a page lists.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AircraftScope {
-    /// Names something makes an aircraft's.
     Aircraft,
-    /// Every registered entity and bare mesh, and every name a reference makes.
     All,
 }
 
@@ -45,12 +32,12 @@ pub enum AircraftScope {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AircraftCatalogueParams {
     pub scope: AircraftScope,
-    /// Matched without case against names, titles and what references them;
-    /// empty matches every name.
+    #[doc = " Matched without case against names, titles and what references them;"]
+    #[doc = " empty matches every name."]
     pub query: String,
-    /// The first matching entry to answer.
+    #[doc = " The first matching entry to answer."]
     pub first: u32,
-    /// How many matching entries to answer from `first`.
+    #[doc = " How many matching entries to answer from `first`."]
     pub count: u32,
 }
 
@@ -59,9 +46,7 @@ pub struct AircraftCatalogueParams {
 #[serde(rename_all = "camelCase")]
 pub enum AircraftKind {
     Entity,
-    /// A bare `pdxmesh`: no states, animation or attachments.
     Mesh,
-    /// Named by a reference; no descriptor registers it.
     Unregistered,
 }
 
@@ -110,15 +95,15 @@ pub struct AircraftRefusal {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftEntry {
-    /// The entity or mesh name the map flies, exactly as registered.
+    #[doc = " The entity or mesh name the map flies, exactly as registered."]
     pub name: String,
     pub kind: AircraftKind,
-    /// The localised names of the equipment that references it, in reference
-    /// order without repeats; empty when none has one.
+    #[doc = " The localised names of the equipment that references it, in reference"]
+    #[doc = " order without repeats; empty when none has one."]
     pub titles: Vec<String>,
-    /// Why it is an aircraft's; empty for a name only the complete listing has.
+    #[doc = " Why it is an aircraft's; empty for a name only the complete listing has."]
     pub references: Vec<AircraftReference>,
-    /// Why it cannot be flown.
+    #[doc = " Why it cannot be flown."]
     pub refusal: Option<AircraftRefusal>,
 }
 
@@ -135,16 +120,16 @@ pub struct AircraftRefusalCount {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftCatalogueReply {
-    /// How many of the scope's entries match the query.
+    #[doc = " How many of the scope's entries match the query."]
     pub matching: u32,
-    /// How many names are an aircraft's, and how many the complete listing has.
+    #[doc = " How many names are an aircraft's, and how many the complete listing has."]
     pub aircraft: u32,
     pub all: u32,
     pub first: u32,
-    /// Matching entries from `first`: flyable ones first, then refused ones,
-    /// each by name bytes.
+    #[doc = " Matching entries from `first`: flyable ones first, then refused ones,"]
+    #[doc = " each by name bytes."]
     pub entries: Vec<AircraftEntry>,
-    /// The scope's refused entries, whatever the query, by kind of reason.
+    #[doc = " The scope's refused entries, whatever the query, by kind of reason."]
     pub refusals: Vec<AircraftRefusalCount>,
     pub warnings: Vec<String>,
 }
@@ -195,13 +180,11 @@ impl Product for AircraftCatalogue {
     }
 }
 
-/// One listed name and the text its query matches, folded.
 struct Listed {
     entry: AircraftEntry,
     search: String,
 }
 
-/// A source's catalogue: its entries, and each scope's order over them.
 pub struct Built {
     entries: Vec<Listed>,
     aircraft: Vec<usize>,
@@ -236,7 +219,6 @@ fn built(
     })
 }
 
-/// The content inputs of an aircraft catalogue, and what reading them refused.
 pub struct Content {
     pub roster: Arc<installed_content_core::mesh::Roster>,
     pub equipment: Arc<installed_content_core::equipment::Database>,
@@ -245,8 +227,6 @@ pub struct Content {
 }
 
 impl Content {
-    /// The catalogue's content stack's roster, equipment and pools. Equipment or
-    /// pools that do not read leave every name listed with that reason named.
     pub fn read(catalogue: &Arc<Catalogue>) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let roster = layers.descriptor_roster()?;
@@ -286,10 +266,6 @@ impl Content {
     }
 }
 
-/// Every distinct (equipment type, saved model) a recorded design holds, on
-/// every branch: each daily read of the variant table, its types spelled by
-/// that hour's lexical tokens, distinct by spelling, not by the session's own
-/// variant ids or token numbers. A design without a saved model is skipped.
 fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(String, String)>> {
     let replay = source.replay();
     let selected = [TableId::VariantDefinitions, TableId::LexicalTokens];
@@ -326,8 +302,6 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                     ) else {
                         continue;
                     };
-                    // A variant id or token means only what its own session's tables say, so
-                    // each read is spelled by its own hour and only the spelled pairs repeat.
                     for variant in variants
                         .iter()
                         .filter(|row| !row.explicit_entity.is_empty())
@@ -367,7 +341,6 @@ impl Built {
     ) -> Self {
         let listing = content.catalogue(designs);
         let equipment = &content.equipment;
-        // Localisation keys are authored spellings; pools fold their keys.
         let spelled = |folded: &str| {
             equipment
                 .named(folded)
@@ -496,7 +469,6 @@ impl Built {
     }
 }
 
-/// A count the reply carries as a JavaScript number.
 fn count(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -536,7 +508,6 @@ fn refusal_label(kind: AircraftRefusalKind) -> &'static str {
     kind.label()
 }
 
-/// The folded text a query matches: the name, titles and each reference's keys.
 fn search_text(entry: &AircraftEntry) -> String {
     let mut text = entry.name.clone();
     for title in &entry.titles {
@@ -566,7 +537,6 @@ fn search_text(entry: &AircraftEntry) -> String {
 #[cfg(test)]
 mod tests;
 
-/// The equipment type token a variant definition names, spelled; empty where not recorded.
 fn variant_token(definition: &replay_data::rows::VariantDefinitionRow, lexical: &[replay_data::rows::LexicalTokenRow]) -> String {
     lexical
         .binary_search_by_key(&definition.equipment_token, |row| row.token)

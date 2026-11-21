@@ -1,4 +1,3 @@
-// The market's occurrences as a paged log: the market ledger's list, and the deliveries a market drill shows.
 import { useCallback, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
@@ -29,7 +28,6 @@ const NO_ROWS: readonly LogRow<LedgerItem>[] = [];
 export interface MarketOccurrencesProps {
   runtime: WidgetRuntime;
   track: BoundTrack;
-  /** The kinds listed, and the countries either side of which a row is listed for; every country with null. */
   kinds: readonly number[];
   tags: readonly string[] | null;
   firstHour: number;
@@ -39,13 +37,10 @@ export interface MarketOccurrencesProps {
   density: LogDensity;
   months: boolean;
   animate: boolean;
-  /** A row's contract or agreement opened. */
   onOpen?: (item: LedgerItem, hour: number) => void;
   empty?: ReactNode;
 }
 
-/** Every occurrence of `kinds` that `tags` sell or buy in from `firstHour`, newest first, cut at the head while
- * following (a render once a block of rows, which the list reveals as the clock reaches them). */
 export default function MarketOccurrences({ runtime, track, kinds, tags, firstHour, cut, active, label, density, months, animate, onOpen, empty }: MarketOccurrencesProps) {
   const tokens = useChartTokens();
   const facets = useMemo(() => ledgerFacets(kinds, tags), [kinds, tags]);

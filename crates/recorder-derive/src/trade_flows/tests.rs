@@ -23,8 +23,6 @@ fn known(cell: &Recorded<i64>) -> Option<i64> {
     }
 }
 
-/// Every flow as ((seller slot, seller, buyer slot, buyer, resource), [delivered, factories,
-/// convoys assigned, convoys required], deals).
 fn flows(run: &Run) -> Vec<((u32, u32, u32, u32, u32), [Option<i64>; 4], i64)> {
     run.rows::<TradeFlowRow>(TableId::TradeFlows)
         .iter()
@@ -38,8 +36,6 @@ fn flows(run: &Run) -> Vec<((u32, u32, u32, u32, u32), [Option<i64>; 4], i64)> {
         .collect()
 }
 
-/// GER sells oil to ITA twice (once through its alias), ROM sells steel to a country no link
-/// names.
 fn traded() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits)
@@ -49,9 +45,6 @@ fn traded() -> Edits {
     edits
 }
 
-/// Deals of one seller, buyer and resource sum into one flow under the holders' identities; a
-/// side nobody resolves is none; a flow lives while a deal counts toward it; a holder change
-/// re-keys its flows; an input not complete makes the table unavailable, its rows as they were.
 #[test]
 fn trade_flows_sum_deals_by_holder_identity_and_resource() {
     let mut run = Run::new(writers, INPUTS);
@@ -89,7 +82,6 @@ fn trade_flows_sum_deals_by_holder_identity_and_resource() {
     assert_eq!(flows(&run).iter().map(|flow| flow.0).collect::<Vec<_>>(), [(3, 30, 1, 12, 2)]);
 }
 
-/// A sum past i64 is not recorded, never wrapped; the flow's other sums stay known.
 #[test]
 fn a_trade_flow_sum_past_i64_is_not_recorded() {
     let mut run = Run::new(writers, INPUTS);
@@ -99,7 +91,6 @@ fn a_trade_flow_sum_past_i64_is_not_recorded() {
     assert_eq!(flows(&run), [((1, 10, 2, 20, 1), [None, Some(2), Some(2), Some(4)], 2)]);
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes.
 #[test]
 fn a_resumed_trade_flows_writer_writes_the_table_of_one_never_stopped() {
     let mut unbroken = Run::new(writers, INPUTS);

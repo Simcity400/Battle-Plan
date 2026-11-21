@@ -2,11 +2,6 @@ use super::*;
 use crate::raw::CountrySlots;
 
 impl Captured {
-    /// Decode-worker interpretation of a scheduled raw construction-rest
-    /// payload. Replays the existing resource, queue, occupation
-    /// and collaboration walks against the recorded spans. Worker buffers grow
-    /// from these original headers before publication. Fixed fixtures retain
-    /// their grants and copied occupation demand. Clears `rest_raw_mode`.
     pub fn decode_construction_rest_payload(
         &mut self,
         base: usize,
@@ -131,8 +126,6 @@ impl Captured {
         if law_error.is_none() {
             self.law_bytes.required = self.law_bytes.required.max(job.law_bytes_required);
         }
-        // Keep an original native failure ahead of allocation/demand failures.
-        // Other occupation tables still receive their one independent walk.
         if let Some(reason) = settings_error.or(law_error)
             && !matches!(self.settings.outcome, Outcome::Unavailable { .. })
         {
@@ -163,38 +156,7 @@ impl Captured {
     }
 }
 
-// ===========================================================================
-// Scheduled construction-rest raw-copy split (StateBaseResources,
-// BuildingConstruction, RailwayConstruction, OccupationSettings,
-// StateOccupationLaws, StateGarrisons, StateAssignedManpower,
-// CountryOccupationReserveManpower, StateResistance, CountryCollaboration).
-//
-// The acquisition worker copies raw bytes and the single FIFO decode worker replays
-// the existing typed walks against the recorded spans
-// (`crate::raw::Recorded`), so rows, ordinals, arenas, truncation and failure
-// reasons are identical by construction (see `crate::raw`).
-//
-// One shared states-array traversal feeds resources and building
-// targets (no duplicated censuses); one shared country census feeds the
-// queue, occupation and collaboration walks. The occupation shared walk (five
-// tables plus route/law arenas) moves together; empty
-// CountryOccupationReserveManpower and CountryCollaboration share their
-// walks and move with them (never observed nonempty on the test campaign,
-// but recorded, not proven trivial). Route/law arenas are staged
-// decode-side: the log holds the underlying bytes and the worker fills the
-// pooled arenas by replaying the identical walks.
-//
-// Fault attribution is conservative: shared roots carry the
-// combined bits of their domain, so any live failure blocks its whole shared
-// domain. The mirror traverses structurally and
-// records every discoverable span, never aborting except on overflow.
-// ===========================================================================
 
-/// Fault-attribution bits in family order: [resources, building, railway,
-/// settings, laws, garrisons, assigned, reserve, resistance, collaboration].
-/// Shared roots carry all ten bits; the queue carries building+railway; the
-/// occupation walk carries its five bits (shared root failure domain,
-/// conservative for leaf-scoped faults).
 const M_C_RES: u32 = 0x001;
 const M_C_BLD: u32 = 0x002;
 const M_C_RAIL: u32 = 0x004;
@@ -203,9 +165,6 @@ const M_C_ALL: u32 = 0x2FF;
 const M_C_QUEUE: u32 = 0x006;
 pub(super) const M_C_OCC: u32 = 0x0F8;
 
-/// One scheduled refresh of raw construction-rest payload. Flat pools recycle capacities
-/// and the steady state allocates on neither thread; growth happens on the
-/// decode side only (see `crate::decode::recycle_construction_rest_job`).
 #[derive(Debug, Default)]
 pub struct ConstructionRestJob {
     pub log: RawLog<10>,
@@ -241,7 +200,6 @@ impl ConstructionRestJob {
         job
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -257,7 +215,6 @@ impl ConstructionRestJob {
         self.log.grow_for_next()
     }
 
-    /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
         engine_allocation::advisory(|| {
             self.log.grow();
@@ -271,8 +228,6 @@ impl ConstructionRestJob {
         self.update_capacity_charge();
     }
 
-    /// Off the game thread: hold one census row per observed country slot so
-    /// the first hour after a large save loads does not overflow.
     pub fn presize_countries(&mut self) {
         if crate::country_scale::reserve_census(&mut self.census) {
             self.update_capacity_charge();
@@ -290,14 +245,11 @@ impl ConstructionRestJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConstructionRestCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 10],
     pub raw_bytes: [u64; 10],
 }
 
-/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct ConstructionRestCopyContext {
     pub base: usize,
@@ -312,8 +264,6 @@ fn c_pool_u32(log: &RawLog<10>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 fn cspan(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -324,8 +274,6 @@ fn cspan(
     log.take(memory, addr?, len, mask)
 }
 
-/// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
-/// terminator.
 pub(super) fn copy_construction_string(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -337,8 +285,6 @@ pub(super) fn copy_construction_string(
     let Some(header_start) = cspan(log, memory, Some(string), 32, mask) else {
         return;
     };
-    // The walk reads length/capacity/pointer as separate 8-byte spans, not
-    // just the 32-byte header above; record those exact spans too.
     let _ = cspan(
         log,
         memory,
@@ -382,8 +328,6 @@ pub(super) fn copy_construction_string(
     if source.checked_add(len).is_none() {
         return;
     }
-    // Count every occurrence before the original payload attempt, including
-    // failed copies and names shared by default and state-override laws.
     if let Some(total) = required.checked_add(len) {
         *required = total;
     } else {
@@ -406,10 +350,6 @@ fn copy_header(
     Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), stride)
 }
 
-/// The country census as `ccountry::Reader::at` admits it, each country once
-/// at its canonical slot, and the slots references resolve through. A census
-/// the reader fails keeps the countries before the failing slot, where the
-/// walks fail too.
 fn copy_country_roots(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -440,10 +380,6 @@ fn copy_country_roots(
     Some(slots)
 }
 
-/// Mirror of `state_resource_entry::walk` over one
-/// shared states traversal: state pointers, vtables, ids, templates,
-/// resource vectors. Takes are unconditional over
-/// discoverable addresses (a superset); the replay derives every outcome.
 fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, states: &Array) {
     let state_vtable = match engine_sites::at(base, cstate::VTABLE_RVA) {
         Some(v) => v as u64,
@@ -466,10 +402,8 @@ fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, sta
             Some(p) => p,
             None => continue,
         };
-        // State identity for the resource template.
         let _ = cspan(log, memory, Some(pointer), 8, M_C_ALL);
         let _ = cspan(log, memory, pointer.checked_add(cstate::ID), 4, M_C_ALL);
-        // Template chain for resources.
         if let Some(tptr_start) = cspan(
             log,
             memory,
@@ -511,9 +445,6 @@ fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, sta
     }
 }
 
-/// Mirror of the mixed construction queue's read set: per-country manager,
-/// queue headers, per-line vtables, common fields, building targets with map
-/// authentication plus railway routes and fields.
 fn copy_construction_queue(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -521,7 +452,6 @@ fn copy_construction_queue(
     game_state: usize,
     census: &[ConstructionRestCountry],
 ) {
-    // Map roots for building targets (states plus provinces arrays).
     let states = cspan(
         log,
         memory,
@@ -598,8 +528,6 @@ fn copy_construction_queue(
                 engine_sites::at(base, cbuilding_production_line::VTABLE_RVA).map(|v| v as u64);
             let railway_vtable =
                 engine_sites::at(base, crailway_production_line::VTABLE_RVA).map(|v| v as u64);
-            // Common fields (reference, factories, cost/speed/produced,
-            // priority/amount, created date, owner).
             let _ = cspan(
                 log,
                 memory,
@@ -643,10 +571,6 @@ fn copy_construction_queue(
                 M_C_QUEUE,
             );
             if Some(vtable) == building_vtable {
-                // Building target chain plus type and repair levels. The
-                // status pointer is an exact 8-byte span (the walk reads it
-                // as one word); the status identity is two exact spans
-                // (vtable plus flags) mirroring `cbuilding_status::identity`.
                 if let Some(bptr_start) = cspan(
                     log,
                     memory,
@@ -687,7 +611,6 @@ fn copy_construction_queue(
                     M_C_BLD,
                 );
             } else if Some(vtable) == railway_vtable {
-                // Railway levels, route header plus provinces, segment/cost.
                 let _ = cspan(
                     log,
                     memory,
@@ -733,8 +656,6 @@ fn copy_construction_queue(
     }
 }
 
-/// Mirror Locations::resolve, including the map-slot round trip. Authenticate
-/// each object before following its state pointer; raw addresses are not types.
 fn copy_construction_target(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -830,11 +751,6 @@ fn copy_construction_target(
     }
 }
 
-/// Mirror of the shared occupation walk's read set: per-country status with
-/// vtables, garrison templates, default laws plus reserve manpower, the
-/// robin-hood occupation table with law/state entries plus garrison and
-/// manpower rows. All spans carry the combined occupation mask, matching the
-/// walk's shared root failure domain (conservative for leaf-scoped faults).
 #[allow(clippy::too_many_arguments)]
 fn copy_occupation_walk(
     log: &mut RawLog<10>,
@@ -847,7 +763,6 @@ fn copy_occupation_walk(
     demand_overflowed: &mut bool,
     equipment_required: &mut usize,
 ) {
-    // Keep the actual database fallback instead of guessing a vanilla law.
     if let Some(at) = cspan(
         log,
         memory,
@@ -896,7 +811,6 @@ fn copy_occupation_walk(
             8,
             M_C_OCC,
         );
-        // Garrison template plus default law.
         if let Some(tptr_start) = cspan(
             log,
             memory,
@@ -931,7 +845,6 @@ fn copy_occupation_walk(
                 copy_construction_string(log, memory, name, M_C_OCC, required, demand_overflowed);
             }
         }
-        // Reserve manpower container.
         if let Some(container) = status.checked_add(ccountry_occupation_status::ASSIGNED_MANPOWER) {
             let _ = cspan(log, memory, Some(container), 8, M_C_OCC);
             if let Some(data_start) = cspan(
@@ -951,11 +864,6 @@ fn copy_occupation_walk(
                 }
             }
         }
-        // Occupation robin-hood table plus nested law/garrison walks. The
-        // outer table is visited via `pdx_robin_hood_table::visit` (exact
-        // 17-byte header plus per-bucket 24-byte spans); each live entry's
-        // identity, law table and garrison table are mirrored below so the
-        // replay derives identical rows and reasons.
         copy_occupation_entries(
             log,
             memory,
@@ -967,8 +875,6 @@ fn copy_occupation_walk(
             demand_overflowed,
             equipment_required,
         );
-        // Appended-field faults belong to its optional value, not the existing
-        // occupation tables. These spans therefore carry no table failure bit.
         if let Some(header) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_ROWS)
             && let Some(start) = cspan(log, memory, Some(header), 16, 0)
         {
@@ -999,9 +905,6 @@ fn copy_occupation_walk(
     let _ = base;
 }
 
-/// Mirror of one robin-hood table's visit: exact 17-byte header plus one
-/// 24-byte span per bucket in the computed span. Returns live (key, value)
-/// pairs parsed from the pooled bytes for the caller to traverse.
 fn copy_pdx_visit(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -1048,7 +951,6 @@ fn copy_pdx_visit(
         ))
         .ok()
         .filter(|&v| v != 0)?;
-        // A corrupt header cannot admit more entries than the checked batch.
         if live.len() == size as usize {
             return None;
         }
@@ -1060,7 +962,6 @@ fn copy_pdx_visit(
     Some(live)
 }
 
-/// Outer occupation-data entries with nested law and garrison walks.
 #[allow(clippy::too_many_arguments)]
 fn copy_occupation_entries(
     log: &mut RawLog<10>,
@@ -1112,9 +1013,6 @@ fn copy_occupation_entries(
                 copy_construction_string(log, memory, name, M_C_OCC, required, demand_overflowed);
             }
         }
-        // Identity: exact 20-byte span (vtable, parent, occupied), then what
-        // resolving the occupied country reads once both match. That id can be
-        // a raw alias the census never read.
         let Some(id_start) = cspan(log, memory, Some(value), 20, M_C_OCC) else {
             continue;
         };
@@ -1133,7 +1031,6 @@ fn copy_occupation_entries(
             );
             let _ = slots.resolve(log, memory, occupied, M_C_OCC);
         }
-        // Law table nested visit plus per-law literals.
         if let Some(law_table) = value.checked_add(ccountry_occupation_data::LAW_TABLE)
             && let Some(laws) = copy_pdx_visit(log, memory, law_table, M_C_OCC)
         {
@@ -1154,7 +1051,6 @@ fn copy_occupation_entries(
                 }
             }
         }
-        // Garrison table nested visit plus per-garrison rows and manpower.
         if let Some(gar_table) = value.checked_add(ccountry_occupation_data::GARRISON_TABLE)
             && let Some(garrisons) = copy_pdx_visit(log, memory, gar_table, M_C_OCC)
         {
@@ -1171,8 +1067,6 @@ fn copy_occupation_entries(
     }
 }
 
-/// Mirror of one garrison object's read set: vtable, state/parent
-/// references, state-slot authentication, scalars plus assigned manpower.
 fn copy_garrison_object(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -1194,7 +1088,6 @@ fn copy_garrison_object(
         M_C_OCC,
     );
     copy_garrison_equipment(log, memory, garrison, equipment_required);
-    // Scalars: exact 1+4+16 spans mirroring `copy_scattered`.
     let _ = cspan(
         log,
         memory,
@@ -1216,7 +1109,6 @@ fn copy_garrison_object(
         16,
         M_C_OCC,
     );
-    // Assigned-manpower container.
     if let Some(container) = garrison.checked_add(cstate_garrison_data::ASSIGNED_MANPOWER) {
         let _ = cspan(log, memory, Some(container), 8, M_C_OCC);
         if let Some(data_start) = cspan(
@@ -1238,8 +1130,6 @@ fn copy_garrison_object(
     }
 }
 
-/// Copy the two live-sized containers and exact garrison equipment fields.
-/// Decode owns all arithmetic.
 fn copy_garrison_equipment(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -1359,9 +1249,6 @@ fn copy_collaboration_link(
     }
 }
 
-/// Mirror of `ccountry_collaboration_status::walk`'s read set: per-country
-/// status with owner, outgoing/incoming arrays, per-relation objects plus
-/// reciprocal validation reads.
 fn copy_collaboration_walk(
     log: &mut RawLog<10>,
     memory: &impl Memory,
@@ -1428,7 +1315,6 @@ fn copy_collaboration_walk(
                                 rel.checked_add(ccountry_collaboration_data::TARGET_COUNTRY),
                                 rel.checked_add(ccountry_collaboration_data::PROGRESS),
                             ) {
-                                // Owned replay needs the decoder's exact field spans, not an object-sized take.
                                 if let Some(([identity, target, _], 3)) = log.take_scattered(
                                     memory,
                                     [rel, target, progress],
@@ -1457,7 +1343,6 @@ fn copy_collaboration_walk(
     }
 }
 
-/// Acquire one owned payload and report its per-table costs.
 pub fn copy_construction_rest_refresh(
     memory: &impl Memory,
     ctx: ConstructionRestCopyContext,
@@ -1485,7 +1370,6 @@ fn copy_construction_rest(
 }
 
 impl Captured {
-    /// Finish an accepted acquisition failure without retrying live memory.
     pub fn fail_construction_rest_capture(&mut self, reason: &'static str) {
         self.base_resources.fail(Outcome::Unavailable { reason });
         self.building_construction
@@ -1505,9 +1389,6 @@ impl Captured {
     }
 }
 
-/// One structural copy pass: shared roots plus states, queue, occupation and
-/// collaboration takes. The job is cleared on entry so pooled refreshes never
-/// accumulate spans across hours.
 fn copy_construction_rest_pass(
     memory: &impl Memory,
     base: usize,
@@ -1515,12 +1396,8 @@ fn copy_construction_rest_pass(
     job: &mut ConstructionRestJob,
 ) {
     let _reads = read_accounting::table(TABLES[2]);
-    // Independent roots: the walks fail only the families that read the one
-    // that failed, as the live walks do.
     let states = copy_header(&mut job.log, memory, game_state, cgame_state::STATES, 8);
     let slots = copy_country_roots(&mut job.log, memory, base, game_state, &mut job.census);
-    // Vec length is already representable and bounded by the owned census.
-    // Retain its prefix even if a later country authentication fails.
     job.settings_required = job.census.len();
     if job.log.overflowed {
         return;

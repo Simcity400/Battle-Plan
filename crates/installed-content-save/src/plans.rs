@@ -1,11 +1,9 @@
-//! Battle-plan save fields and their serializer rules.
 use super::{
     BTreeMap, BTreeSet, Decimal, Item, block, boolean, bytes, field, integer, integer_list,
     invalid, object_id, required_block, required_bytes, scalar, typed_handle,
 };
 use std::io;
 
-/// Orders-group typed-handle discriminator, also used by child fronts.
 const ORDERS_GROUP_REFERENCE_TYPE: u32 = 53;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -18,26 +16,15 @@ pub struct Order {
     pub withdraw: bool,
     pub fallback: bool,
     pub virtual_order: bool,
-    /// `route_is_ok`, the stored route-validity byte's truth.
-    /// The writer omits false; this is distinct from `can_execute` and
-    /// cannot establish the exact value of a nonboolean stored byte.
     pub route_is_ok: bool,
     pub has_child: Option<bool>,
-    /// Stored child_front_ratios, serialized in array order, duplicates kept.
     pub child_fronts: Vec<ChildFront>,
     pub owner_override: u64,
     pub assigned: Vec<u64>,
-    /// `type`: the order kind.
     pub order_type: i32,
-    /// Ordinary successors in stored order, as repeated `order_children` scalars.
     pub successors: Vec<u32>,
-    /// The order-name strings in `ArmyOrderPlanRow` order: prefix, name,
-    /// first, second, unique, postfix. An absent key is an empty string.
     pub names: [Vec<u8>; 6],
-    /// `time`: accumulated preparation, written as fixed5 only when nonzero.
     pub preparation: Option<Decimal>,
-    /// Type 3's allocated convoy count. The nested `convoys` object and its
-    /// signed `convoys` key are unconditional, including zero.
     pub invasion_transports: Option<i32>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,11 +44,7 @@ pub struct Tables {
     pub orders: BTreeMap<(u64, u32), Order>,
     pub fronts: BTreeMap<u64, Front>,
     pub colors: BTreeMap<u64, Option<Vec<u32>>>,
-    /// Each plan group's saved `name`, retaining omission separately from
-    /// emitted empty text. Emission is gated on stored string length.
     pub group_names: BTreeMap<u64, Option<Vec<u8>>>,
-    /// Each group's saved `order_instance` then `fallback` instance ids, in
-    /// serializer order.
     pub group_orders: BTreeMap<u64, [Vec<u32>; 2]>,
 }
 fn flag(items: &[Item], key: &[u8]) -> io::Result<bool> {
@@ -81,7 +64,6 @@ fn repeated_ids(items: &[Item], key: &[u8]) -> io::Result<Vec<u32>> {
         .collect()
 }
 
-/// Each child-front record is enclosed in an anonymous block, in array order.
 fn child_fronts(items: &[Item]) -> io::Result<Vec<ChildFront>> {
     let Some(value) = field(items, b"child_front_ratios")? else {
         return Ok(Vec::new());
@@ -115,8 +97,6 @@ fn invasion_transports(items: &[Item], order_type: i32) -> io::Result<Option<i32
     let subscriber = required_block(items, b"convoys")?;
     integer(&required_bytes(subscriber, b"convoys")?).map(Some)
 }
-/// The saved order-name keys, in `Order::names` order. Each is written only
-/// when its string is nonempty; `unique` is also omitted in checksum mode.
 const NAME_KEYS: [&[u8]; 6] = [
     b"prefix",
     b"operation",
@@ -310,7 +290,6 @@ mod tests {
     }
     #[test]
     fn order_names_read_the_tokens_the_serializer_writes() {
-        // The operation name is saved as `operation`, not `name`.
         let tables = parse("theatres={theatre={orders_group={id={id=8 type=53} order_instance={instance_id=3 operation=\"o_phalanx\" prefix=\"o_operation\"} order_instance={instance_id=4 first=\"o_red\" second=\"o_go\" unique=\"Riga\" postfix=\"o_offensive\"}}}}").unwrap();
         let named = &tables.orders[&((8 << 32) | 53, 3)];
         assert_eq!(named.preparation, None);

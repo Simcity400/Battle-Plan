@@ -13,14 +13,12 @@ fn selected_parsing_still_rejects_malformed_omitted_updates() {
         projected.tables[TableId::Clock.index()],
         TableUpdate::Unavailable { .. }
     ));
-    // Walk the shared frame header to corrupt the first (omitted) update.
     let mut header = Decoder::new(&bytes);
     header.u64().unwrap();
     header.i32().unwrap();
     header.bool().unwrap();
     header.u8().unwrap();
     header.u64().unwrap();
-    // Timing entries exist only for the tables the format records.
     for _ in TableId::ALL
         .into_iter()
         .filter(|&table| crate::frame::current_absence(table).is_none())
@@ -59,7 +57,6 @@ fn selected_reconstruction_matches_full_decoder_through_baseline_loss() {
         }
         let clock = &actual.tables[crate::rows::TableId::Clock.index()];
         assert!(matches!(**clock, super::TableView::Unavailable { .. }));
-        // Every hour shares one view for an omitted table.
         assert!(omitted.is_none_or(|previous| super::SharedView::ptr_eq(&previous, clock)));
         omitted = Some(clock.clone());
     }
@@ -93,7 +90,6 @@ fn selected_delta_test_wire(
         bytes.push(crate::scope::CaptureMode::Full.byte());
     }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
-    // A Full frame stores only what its format and Full record.
     let stored =
         |recorded| super::wire::table_stored(recorded, format, crate::scope::CaptureMode::Full);
     for recorded in TableId::ALL {
@@ -258,7 +254,6 @@ fn unselected_delta_validation_preserves_field_errors_and_first_error_precedence
             selected_delta_test_error(country, &payload, format, keyframe, error);
         }
     }
-    // A later field error must still win over an earlier duplicate key.
     let payload = selected_delta_test_payload(
         &[
             row(1, &[0]),
@@ -490,7 +485,6 @@ fn unselected_deltas_keep_historical_masks_and_wire_only_opaque_validation() {
         "typed nested validation still occurs during reconstruction"
     );
 
-    // Snapshots still validate typed nested bytes even when omitted.
     let mut snapshot = 1_u32.to_le_bytes().to_vec();
     crate::codec::put_varint(&mut snapshot, 1);
     snapshot.extend_from_slice(&0_u32.to_le_bytes());
@@ -577,9 +571,6 @@ fn unselected_country_deltas_never_own_discarded_values() {
 
 const FACTION_ID: u64 = 0xfedc_ba98_0000_004d;
 
-/// An hour that leaves a table unchanged hands on the same allocation; a
-/// delta copies the baseline first while an earlier hour still holds it,
-/// so that hour keeps its own rows.
 #[test]
 fn unchanged_tables_are_shared_and_a_delta_copies_on_write() {
     let mut encoder = FrameEncoder::new();
@@ -611,7 +602,6 @@ fn unchanged_tables_are_shared_and_a_delta_copies_on_write() {
     assert_eq!(second.tables[countries], next.tables[countries]);
 }
 
-/// Hours whose Countries row changes by `step` an hour, the first a keyframe.
 fn moving_countries(hours: Hour, step: i64) -> Vec<Frame> {
     let mut encoder = FrameEncoder::new();
     (0..hours)
@@ -623,7 +613,6 @@ fn moving_countries(hours: Hour, step: i64) -> Vec<Frame> {
         .collect()
 }
 
-/// Every table's rows and sample hour, as a decoder nobody shares hands them.
 fn assert_same_frame(actual: &DecodedFrame, expected: &DecodedFrame) {
     assert_eq!(actual, expected);
     for (actual, expected) in actual.tables.iter().zip(&expected.tables) {
@@ -631,10 +620,6 @@ fn assert_same_frame(actual: &DecodedFrame, expected: &DecodedFrame) {
     }
 }
 
-/// A caller keeping each hour's frame until the next makes the decoder copy
-/// the table it shares once; every later delta catches up the view the hour
-/// before replaced, which nothing holds any more, in place. A caught-up view
-/// is a new allocation: no earlier hour's identity names it.
 #[test]
 fn a_view_kept_until_the_next_hour_is_copied_once_then_reused() {
     let countries = TableId::Countries.index();
@@ -659,8 +644,6 @@ fn a_view_kept_until_the_next_hour_is_copied_once_then_reused() {
     assert_eq!(crate::cpu::delta_reuses()[countries][0] - reuses[0], 4);
 }
 
-/// A caller keeping every hour's frame holds every replaced view, so each
-/// delta copies and none is reused; each kept frame keeps its own rows.
 #[test]
 fn views_kept_every_hour_are_copied_every_hour() {
     let countries = TableId::Countries.index();
@@ -681,8 +664,6 @@ fn views_kept_every_hour_are_copied_every_hour() {
     }
 }
 
-/// The view a delta replaced is kept only until its table's next update: an
-/// hour leaving the table unchanged releases it, and the next delta copies.
 #[test]
 fn an_unchanged_hour_releases_the_replaced_view() {
     let countries = TableId::Countries.index();
@@ -717,9 +698,6 @@ fn an_unchanged_hour_releases_the_replaced_view() {
     assert_eq!(crate::cpu::delta_reuses()[countries], reuses);
 }
 
-/// A frame log refuses a frame whose views carry change facts, by name: the
-/// views it gives back are new allocations, which those facts would not name
-/// as their predecessors. A frame without them it keeps.
 #[test]
 fn a_frame_log_refuses_change_facts() {
     let countries = TableId::Countries.index();
@@ -740,8 +718,6 @@ fn a_frame_log_refuses_change_facts() {
     assert_eq!(log.len(), 1);
 }
 
-/// Each thread fills unselected tables with a view of its own, told apart by what it holds: a
-/// view another thread made, or its identity once the view is gone, is not selected as well.
 #[test]
 fn unselected_views_are_told_apart_by_what_they_hold_on_every_thread() {
     let here = not_selected();
@@ -759,11 +735,6 @@ fn unselected_views_are_told_apart_by_what_they_hold_on_every_thread() {
     assert!(!rows.is_not_selected() && !rows.identity().not_selected());
 }
 
-/// A selected decoder reconstructs its tables as the whole decoder does,
-/// hour by hour through deltas, a keyframe and a branch change: rows, sample
-/// hours and which hours share an allocation. Every other table is the one
-/// unselected view, moved on from the hour before: it is shared anew only at
-/// the decoder's first hour, not once a table an hour.
 #[test]
 fn a_selected_decoder_moves_the_unselected_view_from_hour_to_hour() {
     let mut encoder = FrameEncoder::new();
@@ -945,8 +916,6 @@ fn shared_input(source: DecodedFrame) -> FrameInput {
     input
 }
 
-// Exercise both newly converted allocations and the exact allocation held
-// by the encoder. Fixture equality stands in for producer conversion proof.
 fn reuse_committed_rows(input: &mut FrameInput, encoder: &FrameEncoder) {
     for (index, input) in input.tables.iter_mut().enumerate() {
         if let TableInput::SharedComplete(current) = input
@@ -965,8 +934,6 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
         let mut owned = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
         let mut previous_rows = None;
-        // Includes equal/changed refreshes, a gap, scheduled and forced
-        // keyframes, and a branch round trip with reused hour values.
         for (branch, hour, value, force) in [
             (1, 100, 1, false),
             (1, 101, 1, false),
@@ -983,7 +950,6 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
             if reuse_allocation {
                 reuse_committed_rows(&mut input, &shared);
             }
-            // Retired tables are absent from the source and the encoding.
             let allocations: [_; TABLE_COUNT] =
                 std::array::from_fn(|index| match &input.tables[index] {
                     TableInput::SharedComplete(rows) => Some(Arc::clone(rows)),
@@ -1030,7 +996,6 @@ fn shared_complete_rows_match_owned_wire_and_adopt_each_validated_refresh() {
 fn shared_baselines_survive_cadence_and_owned_equal_inputs_without_reallocation() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    // A daily table, carried between its slot reads.
     let table = TableId::AirAces;
     let first = shared_input(source(1, 0));
     let TableInput::SharedComplete(rows) = &first.tables[table.index()] else {
@@ -1110,7 +1075,6 @@ fn committed_rows_follow_the_last_complete_sample_and_clear_with_its_loss() {
         encoder.committed::<tables::Countries>(),
         Some((0, rows.as_slice()))
     );
-    // A failed read leaves no committed rows to stand for the current hour.
     let mut failed = shared_input(source(1, 1));
     failed.tables[table.index()] = TableInput::Sampled(TableView::Unavailable {
         reason: "synthetic read failure".into(),
@@ -1256,8 +1220,6 @@ fn shared_committed_identity_checks_clock_mutation_table_and_encoder_reset() {
         };
         assert!(Arc::ptr_eq(previous, &countries));
     }
-    // A producer may retain this allocation through a failed spool write,
-    // but a replacement encoder has no proof and must emit a full snapshot.
     encoder = FrameEncoder::new();
     let mut recovered = shared_input(source(1, 1));
     recovered.tables[TableId::Countries.index()] =
@@ -1489,7 +1451,7 @@ fn row_replacements_match_full_frames_and_keep_untouched_allocations() {
                 rows[1].path.push(99);
                 vec![1]
             }
-            2 => vec![1], // An equal replacement still emits Unchanged.
+            2 => vec![1],
             3 => {
                 rows[0].consumed = i64::MAX;
                 rows[2].path.reverse();
@@ -1526,8 +1488,6 @@ fn row_replacements_match_full_frames_and_keep_untouched_allocations() {
 
 #[test]
 fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
-    // Construct and consume each clone here so the caller does not reserve
-    // stack storage for every case's complete FrameInput and its temporaries.
     fn encode_edited(
         encoder: &mut FrameEncoder,
         valid: &FrameInput,
@@ -1560,7 +1520,6 @@ fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
         indices: vec![0],
         rows: TableRows::Provinces(vec![changed.clone()]),
     };
-    // An omitted table is never encoded, so it cannot fail the frame.
     let mode = valid.capture_mode().unwrap();
     let later = TableId::ALL
         .into_iter()
@@ -1663,7 +1622,6 @@ fn row_replacements_cannot_edit_shared_or_cross_row_validated_baselines() {
             };
             assert!(encoder.encode_input(input, false).is_err());
         }
-        // A staggered table's baseline takes no row replacements.
         let (token, _) = encoder
             .comparison_baseline::<tables::AirAces>(1, 1, false)
             .unwrap();
@@ -1699,7 +1657,6 @@ fn cadence_marker_carries_identical_validated_rows_without_input_clones() {
 #[test]
 fn cadence_carry_requires_complete_same_branch_non_keyframe_baseline() {
     let mut encoder = FrameEncoder::new();
-    // A daily table, carried between its slot reads.
     let table = TableId::AirAces;
     assert!(!encoder.can_carry(table, 1, 1, false));
     encoder.encode(source(1, 0), false).unwrap();
@@ -1963,7 +1920,6 @@ fn padded_snapshot_counts_are_rejected_before_allocating_or_reading_rows() {
         let padding = claimed as usize * table.minimum_row_bytes() - 1;
         let mut bytes = claimed.to_le_bytes().to_vec();
         bytes.resize(bytes.len() + padding, 0);
-        // A key-only bound accepts this count before reserving all rows.
         assert_eq!(Decoder::new(&bytes).count(1).unwrap(), claimed as usize);
         let mut input = Decoder::new(&bytes);
         let error = decode_rows(table, &mut input).unwrap_err();
@@ -2002,7 +1958,6 @@ fn changed_row_counts_include_a_selected_value_and_singletons_never_reserve_many
     assert_eq!(input.remaining(), padding);
 
     for table in [TableId::Clock, TableId::Campaign] {
-        // Enough payload for two rows, so the singleton rule is what refuses it.
         let payload = 2 * table.minimum_row_bytes();
         let mut bytes = 2_u32.to_le_bytes().to_vec();
         bytes.resize(4 + payload, 0);
@@ -2288,7 +2243,6 @@ fn state_control_deltas_and_failures_keep_separate_baselines_from_provinces() {
 
 #[test]
 fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_hours() {
-    // Equal instance halves with different type halves must remain distinct keys.
     let first_id = 0xfedc_ba98_0000_0035;
     let second_id = 0xfedc_ba98_0000_0036;
     let inserted_id = 0xffff_ffff_0000_0035;
@@ -2342,8 +2296,6 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
     assert_eq!(frame.tables[index], TableUpdate::Unchanged { baseline: 11 });
     assert_eq!(decoder.apply(&wire(&frame)).unwrap(), resting);
 
-    // The spool's gap control record explains the missing hours; surviving
-    // table deltas still refer to the last successfully recorded baseline.
     let mut after_gap = source(1, 19);
     *after_gap.tables[index] = TableView::Complete(TableRows::Divisions(vec![
         division(second_id, i64::MAX, i64::MIN + 1),
@@ -2365,16 +2317,12 @@ fn division_handles_and_native_health_survive_insert_update_delete_and_dropped_h
         (changed[0].key, changed[0].mask),
         (u128::from(second_id), 0b100_0000)
     );
-    // Zigzag(+1): sentinel words keep their exact value in display steps.
     assert_eq!(changed[0].values, [2]);
     assert_eq!(decoder.apply(&wire(&frame)).unwrap(), after_gap);
 }
 
 #[test]
 fn division_health_is_stored_at_display_precision() {
-    // Hit points and organisation keep the tenth the game shows
-    // (crate::display): the encoder rounds owned rows toward zero, writes
-    // whole steps, and a drift below a step leaves the table unchanged.
     let id = 0xfedc_ba98_0000_0035;
     let index = TableId::Divisions.index();
     let mut encoder = FrameEncoder::new();
@@ -2401,7 +2349,6 @@ fn division_health_is_stored_at_display_precision() {
     let TableUpdate::Delta { changed, .. } = &frame.tables[index] else {
         panic!("health changes did not produce a delta")
     };
-    // Three tenths up and three down: zigzag 6 and 5, a byte each.
     assert_eq!(
         (changed[0].mask, changed[0].values.as_slice()),
         (0b110_0000, &[6, 5][..])
@@ -2514,8 +2461,6 @@ fn war_faction_and_membership_failures_recover_independently() {
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), expected);
     }
 
-    // A segment's first frame cannot use partial rows from any of these
-    // related tables as a baseline, even when all three walks failed.
     let mut partial = source(1, 5);
     for table in tables {
         let TableView::Complete(rows) = &*partial.tables[table.index()] else {
@@ -2587,12 +2532,10 @@ fn faction_leader_reordering_changes_only_member_ordinals_before_insert_and_dele
             .collect::<Vec<_>>(),
         [(2, 2), (7, 2)]
     );
-    assert_eq!(changed[0].values, [1]); // Zigzag(-1): country 2 becomes first.
-    assert_eq!(changed[1].values, [2]); // Zigzag(+1): country 7 becomes second.
+    assert_eq!(changed[0].values, [1]);
+    assert_eq!(changed[1].values, [2]);
     assert_eq!(decoder.apply(&wire(&frame)).unwrap(), reordered);
 
-    // Dissolve the old faction and form one with a different full-width
-    // identity. An empty engine name remains a valid faction row.
     let new_faction = u64::MAX;
     let mut replaced = source(1, 2);
     *replaced.tables[factions] =
@@ -2734,7 +2677,6 @@ fn key_difference_contexts_restart_for_changed_deleted_and_each_frame() {
         );
     }
     assert_eq!(input.count(1).unwrap(), 2);
-    // Deletions start again at zero, after the changed list reached u64::MAX.
     assert_eq!(input.varint().unwrap(), 1);
     assert_eq!(input.varint().unwrap(), u128::from(u64::MAX - 2));
     input.finish().unwrap();
@@ -2757,7 +2699,6 @@ fn malformed_key_differences_cannot_wrap_snapshot_or_deleted_keys() {
     let mut bytes = Vec::new();
     put_count(&mut bytes, 2).unwrap();
     rows::encode_row(&division(u64::MAX, 1, 2), 0, &mut bytes).unwrap();
-    // This independently encoded +1 follows u64::MAX in the snapshot list.
     rows::encode_row(&division(1, 3, 4), 0, &mut bytes).unwrap();
     assert!(decode_rows(table, &mut Decoder::new(&bytes)).is_err());
 
@@ -2769,7 +2710,7 @@ fn malformed_key_differences_cannot_wrap_snapshot_or_deleted_keys() {
     let table_start =
         bytes.len() - sizes.iter().sum::<usize>() + sizes[..table.index()].iter().sum::<usize>();
     bytes.truncate(table_start);
-    bytes.push(1); // Delta.
+    bytes.push(1);
     bytes.extend_from_slice(&0_i32.to_le_bytes());
     put_count(&mut bytes, 0).unwrap();
     put_count(&mut bytes, 2).unwrap();
@@ -3018,7 +2959,7 @@ fn invalid_delta_operations_do_not_damage_other_tables_or_retain_partial_rows() 
                 recorded_fields: TableId::Provinces.field_count(),
                 key: 3,
                 mask: 4,
-                values: vec![198, 1], // Zigzag(+99).
+                values: vec![198, 1],
             }],
             vec![1],
             "requires every field",
@@ -3114,7 +3055,7 @@ fn invalid_input_and_keyframes_are_rejected_without_advancing_state() {
     assert!(decoder.apply(&invalid_last_table).is_err());
     let mut bytes = Vec::new();
     valid.encode(&mut bytes).unwrap();
-    bytes[12] = 1; // The keyframe byte follows the u64 branch and i32 hour.
+    bytes[12] = 1;
     assert!(Frame::decode(&mut Decoder::new(&bytes)).is_err());
     assert_eq!(decoder.apply(&wire(&valid)).unwrap(), expected);
 }
@@ -3179,7 +3120,7 @@ fn singleton_invariants_apply_after_deltas_and_unchanged_updates() {
                     recorded_fields: TableId::Clock.field_count(),
                     key: 0,
                     mask: 1,
-                    values: vec![198, 1], // Zigzag(+99) from the hour-zero baseline.
+                    values: vec![198, 1],
                 }],
                 deleted: vec![],
             },
@@ -3270,7 +3211,6 @@ fn prepared_record_keeps_baselines_until_complete_spool_write() {
     assert!(encoder.state.tables.iter().all(Option::is_none));
     let encoded = pending.take_frame();
     assert_eq!(encoded.decode().unwrap().hour, 100);
-    // An abandoned record cannot become a baseline for the next record.
     drop(pending);
     let mut retry = encoder.prepare_bytes(source(1, 101).into(), false).unwrap();
     assert!(retry.frame().decode().unwrap().keyframe);
@@ -3307,8 +3247,6 @@ fn checked_table_clones_preserve_recorded_fields() {
     }
 }
 
-/// Tables encoded beside the frame, here and on other threads, give the
-/// bytes the frame encodes itself; a segment of another frame is refused.
 #[test]
 fn table_segments_encoded_beside_the_frame_write_its_bytes() {
     for mode in [CaptureMode::Full, CaptureMode::Map] {
@@ -3401,8 +3339,6 @@ fn table_segments_encoded_beside_the_frame_write_its_bytes() {
     }
 }
 
-/// A commit hands back the baselines it replaced instead of freeing them,
-/// and its baselines and later bytes are those of a plain commit.
 #[test]
 fn commit_hands_back_replaced_baselines_and_unkept_inputs() {
     let mut retiring = FrameEncoder::new();
@@ -3426,8 +3362,6 @@ fn commit_hands_back_replaced_baselines_and_unkept_inputs() {
         held.push(retiring.commit_retiring(prepared).unwrap());
         assert_eq!(bytes, plain.encode_bytes(input, false).unwrap().bytes);
     }
-    // Hour 1 replaced the first rows and kept none of its equal inputs; only
-    // the handed-back list still holds the first rows.
     let retired = held.pop().unwrap();
     assert!(retired.len() > 1);
     assert!(replaced.upgrade().is_some());
@@ -3562,8 +3496,6 @@ fn containment_cannot_hide_clock_or_encoder_context_failures() {
     );
 }
 
-/// `source` as a Map recording holds it: what Map leaves out marked, and synthetic rows for
-/// the model witness, which only Map records.
 fn map_input(source: DecodedFrame) -> FrameInput {
     let mut map = FrameInput::from(source);
     map.scope_to(crate::scope::CaptureMode::Map);
@@ -3610,7 +3542,6 @@ fn raw_frame_table_sizes_match_storage_for_unmarked_full_and_map() {
                 0,
                 "{mode} {table:?}"
             );
-            // A retired table decodes as its catalogued refusal, not as an omission of the mode.
             let format = crate::format::FormatVersion::CURRENT.version();
             if table.last_change().present(format) {
                 assert_eq!(
@@ -3732,11 +3663,9 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables_its_mode_leaves_out() {
     use crate::scope::CaptureMode;
     let map = map_input(source(1, 0));
     assert_eq!(map.capture_mode().unwrap(), CaptureMode::Map);
-    // A table Map leaves out, sampled anyway.
     let mut extra = map.clone();
     extra.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::empty(TableId::DivisionStatus)).into();
-    // A table marked in another mode.
     let mut mixed = map.clone();
     mixed.tables[TableId::Divisions.index()] = TableView::NotRecorded {
         mode: CaptureMode::Full,
@@ -3746,7 +3675,6 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables_its_mode_leaves_out() {
         assert!(input.capture_mode().is_err());
         assert!(FrameEncoder::new().prepare_bytes(input, true).is_err());
     }
-    // A table its mode records, left to the native capture.
     let mut missing = map.clone();
     missing.tables[TableId::Divisions.index()] = TableView::NotRecorded {
         mode: CaptureMode::Map,
@@ -3765,7 +3693,6 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables_its_mode_leaves_out() {
         let encoded = FrameEncoder::new().encode_input(input, true).unwrap();
         assert_eq!(encoded.tables[table.index()], TableUpdate::NotRecorded { mode });
     }
-    // A frame naming no mode is Full and need not mark what Full leaves out.
     let mut unnamed = FrameInput::from(source(1, 0));
     unnamed.tables[TableId::DivisionModelInputs.index()] =
         TableView::Complete(TableRows::empty(TableId::DivisionModelInputs)).into();
@@ -3779,9 +3706,6 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables_its_mode_leaves_out() {
     );
 }
 
-/// A frame keeping some tables holds their updates as the whole frame encoded them and leaves
-/// every other table its mode records to the native capture; its hours chain as the whole
-/// frames' do.
 #[test]
 fn a_frame_keeping_some_tables_leaves_the_rest_to_the_native_capture() {
     use crate::scope::{self, CaptureMode};
@@ -4167,9 +4091,6 @@ fn historical_delta_facts_keep_recorded_field_masks_and_missing_suffixes() {
     assert!(!original.fields_unchanged(view, 1 << 3));
 }
 
-/// A table's view of the store's cells holds an unrecorded cell where its row can say so, and
-/// otherwise is refused by the table's and the field's names; the row of its slot built alone
-/// ([`cells_rows`]) is the view's row, or the same refusal.
 #[test]
 fn a_cells_view_names_the_table_and_field_its_row_cannot_leave_unrecorded() {
     use crate::rows::{ArmyTotalRow, Recorded, TABLE_COUNT};
@@ -4241,9 +4162,6 @@ fn a_cells_view_names_the_table_and_field_its_row_cannot_leave_unrecorded() {
     assert_eq!(error.to_string(), refused);
 }
 
-/// A row of the store's cells built alone at its slot ([`cells_rows`]) is the row the table's
-/// view builds there, for tables holding between them every column kind, three rows each whose
-/// text differs; the rows of every slot built together are the view's rows.
 #[test]
 fn rows_built_at_their_slots_are_the_view_s_rows_for_every_column_kind() {
     use crate::rows::{Field, Kind as Wire, List, Opaque, TABLE_COUNT};
@@ -4342,7 +4260,6 @@ fn rows_built_at_their_slots_are_the_view_s_rows_for_every_column_kind() {
         })
     }
     let format = crate::format::FormatVersion::CURRENT.version();
-    // Each table's keys and the default row's cells; each row's first text cell its own.
     let mut tables = Vec::new();
     for table in TableId::ALL {
         let template = TableRows::one_default(table);

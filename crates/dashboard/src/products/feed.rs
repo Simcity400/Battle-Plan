@@ -1,10 +1,3 @@
-//! The event feed (family 30), read from the declared `feed-events` log (the recorder's typed
-//! occurrences and the feed writer's derived rows), every title, body, option, effect and cause
-//! word built at the reply from the recording's facts. `event-feed` pages its rows;
-//! `event-choices` and `decisions` page cards, an opener with the rows continuing it;
-//! `event-feed-span` gives what the feed shows over a span besides its pages: each kind's code,
-//! the reads that were not complete, and the rows other families date. Pages have `log-page`'s
-//! shape, counted by `log-counts` over the same facets.
 
 mod cards;
 mod cause;
@@ -38,7 +31,6 @@ pub(crate) use text::warm_naming;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The declared log the feed reads.
 pub(crate) const LOG: &str = "feed-events";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -95,8 +87,6 @@ pub enum EventFeedKind {
     DecisionDurationChanged,
 }
 
-/// Each kind the log holds, by its row's kind code: the recorder's occurrence source codes, then
-/// the feed writer's derived kinds.
 const CODES: [(u8, EventFeedKind); 25] = {
     use EventFeedKind::*;
     [
@@ -140,8 +130,6 @@ impl EventFeedKind {
         }
     }
 
-    /// The kind a feed row's code holds; none for a code no row of the feed shows (an incomplete
-    /// read, the registry's retained state).
     pub fn of_code(code: u8) -> Option<Self> {
         CODES.iter().find(|(held, _)| *held == code).map(|(_, kind)| *kind)
     }
@@ -150,55 +138,51 @@ impl EventFeedKind {
         CODES.iter().find(|(_, kind)| *kind == self).map(|(code, _)| *code)
     }
 
-    /// A script occurrence: an event dispatch, a choice, a decision's step.
     pub fn scripted(self) -> bool {
         self >= EventFeedKind::ScriptEventFired
     }
 }
 
-/// One row of the feed.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedRow {
     pub id: String,
     pub hour: i32,
-    /// The read supplying this fact; the head never shows it before this hour.
+    #[doc = " The read supplying this fact; the head never shows it before this hour."]
     pub read_hour: i32,
-    /// Country naming and flags use this hour: the event's, or a vanished country's last seen.
+    #[doc = " Country naming and flags use this hour: the event's, or a vanished country's last seen."]
     pub name_hour: i32,
     pub exact: bool,
     pub category: EventFeedCategory,
     pub kind: EventFeedKind,
     pub tags: Vec<String>,
-    /// Native action roles, actor then target. Null keeps a role that names no country or that
-    /// no link and holder witnessed.
+    #[doc = " Native action roles, actor then target. Null keeps a role that names no country or that"]
+    #[doc = " no link and holder witnessed."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub participants: Option<[Option<String>; 2]>,
     pub item: Option<EventFeedItem>,
     pub amount: Option<u32>,
-    /// A native event's recorded cause; absent when the recording holds none.
+    #[doc = " A native event's recorded cause; absent when the recording holds none."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub cause: Option<EventFeedCause>,
-    /// A nuclear strike's target and outcome; absent for every other kind.
+    #[doc = " A nuclear strike's target and outcome; absent for every other kind."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub strike: Option<EventFeedStrike>,
 }
 
-/// A nuclear strike's target and what the impact did before its authored `on_nuke_drop` effects;
-/// a part with a refusal has no total, and the refusal is named.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedStrike {
     pub province: u32,
-    /// None for a province without a state.
+    #[doc = " None for a province without a state."]
     pub state: Option<u32>,
     pub building_levels: Option<f64>,
-    /// The owner's war support change, in percent.
+    #[doc = " The owner's war support change, in percent."]
     pub war_support: Option<f64>,
     pub units: Option<u32>,
     pub manpower_lost: Option<f64>,
@@ -206,25 +190,23 @@ pub struct EventFeedStrike {
     pub not_recorded: Vec<String>,
 }
 
-/// What caused a native event, in words, from the operations the collector observed running when
-/// it happened. Each absent fact was not observed.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedCause {
-    /// The native operation the event happened in.
+    #[doc = " The native operation the event happened in."]
     pub how: Option<String>,
-    /// The operation that one ran inside.
+    #[doc = " The operation that one ran inside."]
     pub within: Option<String>,
-    /// The peace conference starting or applying, as its reference in decimal.
+    #[doc = " The peace conference starting or applying, as its reference in decimal."]
     pub conference: Option<String>,
-    /// A state whose owner changed.
+    #[doc = " A state whose owner changed."]
     pub state: Option<u32>,
-    /// A join's ally.
+    #[doc = " A join's ally."]
     pub ally: Option<String>,
-    /// A join's hostility reason.
+    #[doc = " A join's hostility reason."]
     pub reason: Option<String>,
-    /// The native operands that change what the event means.
+    #[doc = " The native operands that change what the event means."]
     pub notes: Vec<String>,
 }
 
@@ -236,24 +218,22 @@ pub struct EventFeedItem {
     pub name: Option<String>,
     pub icon: Option<String>,
     pub description: Option<String>,
-    /// A scripted event's authored options in the game's order; absent for other kinds and when
-    /// the event's content does not resolve.
+    #[doc = " A scripted event's authored options in the game's order; absent for other kinds and when"]
+    #[doc = " the event's content does not resolve."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub options: Option<Vec<EventFeedOption>>,
-    /// Why `name` is null, where a script item's is.
+    #[doc = " Why `name` is null, where a script item's is."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub name_missing: Option<String>,
-    /// Why the name, description or options hold U+FFFC where scripted text could not be
-    /// expanded: the UI shows each as a "not recorded" token.
+    #[doc = " Why the name, description or options hold U+FFFC where scripted text could not be"]
+    #[doc = r#" expanded: the UI shows each as a "not recorded" token."#]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub gaps: Option<String>,
 }
 
-/// One authored event option: its native ordinal and in-game name, null when the name does not
-/// resolve.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -272,7 +252,6 @@ pub struct EventFeedUnavailable {
     pub count: Option<u32>,
 }
 
-/// A page of a declared log of the feed: `log-page`'s parameters with the log fixed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -280,20 +259,18 @@ pub struct FeedPageParams {
     pub branch_id: String,
     #[serde(default)]
     pub facets: Vec<FacetFilter>,
-    /// The timeline's first hour when none.
+    #[doc = " The timeline's first hour when none."]
     pub from: Option<f64>,
     pub to: f64,
-    /// The ordinal the page starts at, counted from the timeline's first hour.
+    #[doc = " The ordinal the page starts at, counted from the timeline's first hour."]
     pub cursor: Option<String>,
     pub page_size: u32,
-    /// The countries a row must name (actor, target or an ally joining with it), each tag over the
-    /// hours it counts; every row when none. Ordinals and totals count the rows it keeps.
+    #[doc = " The countries a row must name (actor, target or an ally joining with it), each tag over the"]
+    #[doc = " hours it counts; every row when none. Ordinals and totals count the rows it keeps."]
     #[serde(default)]
     pub scope: Option<Vec<super::groups::MembershipRun>>,
 }
 
-/// A row of a feed page: `log-page`'s row (no cells) with the feed's row; null for a row the feed
-/// does not show (an incomplete read's).
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -323,7 +300,7 @@ pub struct EventFeedPage {
     pub cursor: Option<String>,
     pub rows: Vec<EventFeedPageRow>,
     pub missing: Vec<MissingSpan>,
-    /// What the page's rows could not show, each reason once with its count.
+    #[doc = " What the page's rows could not show, each reason once with its count."]
     pub unavailable: Vec<EventFeedUnavailable>,
     pub warnings: Vec<String>,
 }
@@ -338,7 +315,6 @@ pub(crate) fn branch(text: &str) -> Result<(), &'static str> {
     text.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
 }
 
-/// The recorded content stack, or a notice naming why it is not there.
 fn content(source: &Source, context: &LoadContext, notices: &mut Notices) -> Option<Arc<Catalogue>> {
     match context.content().and_then(|options| catalogue::catalogue(source, options)) {
         Ok(catalogue) => Some(catalogue),
@@ -349,7 +325,6 @@ fn content(source: &Source, context: &LoadContext, notices: &mut Notices) -> Opt
     }
 }
 
-/// The refusals the content stack noted while the reply was built.
 fn content_refusals(presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<()> {
     if let Some(catalogue) = presenter.catalogue() {
         for (reason, count) in catalogue.refusal_entries() {
@@ -360,8 +335,6 @@ fn content_refusals(presenter: &Presenter<'_>, notices: &mut Notices) -> io::Res
     Ok(())
 }
 
-/// A page of the feed's rows, each with its row from the log, its ordinal, its own ordinal and its
-/// tag group.
 pub(crate) struct Paged {
     pub event: FeedEvent,
     pub hour: i32,
@@ -394,7 +367,6 @@ pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams) 
     Ok((page, rows, missing))
 }
 
-/// A role's tag at `hour`; none for no country or one no link and holder witnessed.
 fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
     match slot {
         Slot::Of(slot) => names.slot_tag(slot, hour).map(str::to_owned),
@@ -402,8 +374,6 @@ fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
     }
 }
 
-/// Each of `events` presented ([`present`]), in the order given; worded in hour order, so the
-/// presenter's naming frames move forward through the reply's hours.
 pub(crate) fn present_all(events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&at| events[at].hour);
@@ -415,7 +385,6 @@ pub(crate) fn present_all(events: &[&FeedEvent], names: &Names, presenter: &Pres
     Ok(out)
 }
 
-/// The feed's row of a log row, named and worded; none for a row the feed does not show.
 pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<Option<EventFeedRow>> {
     let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(None) };
     let id = event.id();
@@ -480,9 +449,6 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
     }))
 }
 
-/// A row the feed writer derived by comparing reads: a country that ceased to exist (named at the
-/// last read it owned states), a guarantee granted (dated at its start where both countries hold
-/// their tags from then to the read).
 fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, notices: &mut Notices) -> Option<EventFeedRow> {
     let row = |hour: i32, name_hour: i32, exact: bool, tags: Vec<String>| EventFeedRow {
         id: id.clone(),
@@ -524,8 +490,6 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
     }
 }
 
-/// The feed's rows: a page of `feed-events` (its facets as the request filters them), each row
-/// named and worded.
 pub struct EventFeed;
 
 impl Product for EventFeed {
@@ -599,8 +563,6 @@ impl Product for EventFeed {
 
 pub use families::{EventFeedSpan, EventFeedSpanParams, EventFeedSpanReply, FeedKindCode};
 
-/// Every annexation the feed recorded on `query`'s timeline, its countries named at its hour, and
-/// whether it ran within a civil war's resolution: the civil-war list's outcome evidence.
 pub(crate) fn annexations(query: &Query<'_>) -> io::Result<Vec<super::politics::civil_wars::Annexation>> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = log::Reader::new(query, declared)?;

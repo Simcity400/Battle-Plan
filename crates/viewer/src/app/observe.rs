@@ -1,6 +1,3 @@
-//! Ctrl+click switches the viewing country, as the game's observer switches the observed country:
-//! to the owner of the clicked province's state. A click that picks a region, a province without
-//! a state, or the country already viewed does not switch, and acts as a plain click.
 use dashboard::protocol::{MapOptions, ObservedCountry};
 use installed_content_core::map::ProvinceKind;
 use replay_data::rows::tables;
@@ -8,8 +5,6 @@ use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::perspective::Country;
 use viewer_world::map::map_mode::{MapMode, Stock};
 
-/// The country a Ctrl+click on `province` switches to from `ours`, or `None` when it acts as a
-/// plain click. `Err` names what the recording or content leaves undecided.
 pub(crate) fn ctrl_click_target(
     frame: &DecodedFrame,
     mode: &MapMode,
@@ -17,7 +12,6 @@ pub(crate) fn ctrl_click_target(
     kind: Option<ProvinceKind>,
     ours: u32,
 ) -> Result<Option<ObservedCountry>, String> {
-    // The strategic modes pick the strategic region, and every mode a sea province's region.
     if matches!(mode, MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy)) {
         return Ok(None);
     }
@@ -47,7 +41,6 @@ pub(crate) fn ctrl_click_target(
         .binary_search_by_key(&owner, |link| link.id)
         .map(|at| links[at].canonical_slot)
         .map_err(|_| format!("CountryLinks holds no link {owner}, state {state}'s owner"))?;
-    // Two links of one country are one country, as the game's alias test finds.
     if slot == ours {
         return Ok(None);
     }
@@ -60,7 +53,6 @@ pub(crate) fn ctrl_click_target(
     Ok(Some(ObservedCountry { slot, tag: String::from_utf8_lossy(&tag.tag).into_owned(), sequence: 0 }))
 }
 
-/// The viewing country a host's options choose.
 pub(crate) fn host_country(options: &MapOptions) -> Country {
     match (options.country_slot, &options.country) {
         (Some(slot), tag) => Country::Slot { slot, tag: tag.clone().unwrap_or_default() },
@@ -70,10 +62,6 @@ pub(crate) fn host_country(options: &MapOptions) -> Country {
 }
 
 impl super::Viewer {
-    /// A Ctrl+click on `province` while `ours` is viewed: true when it switched the viewing
-    /// country, its target is undecided (named in the overlay) or it is held for its hour's rows,
-    /// so the plain click must not run here.
-    /// A host owns the viewing country and is asked to switch it; without one the view switches.
     pub(crate) fn ctrl_click(
         &mut self,
         document: &crate::document::Document,
@@ -102,14 +90,11 @@ impl super::Viewer {
             }
             return true;
         }
-        // Held for its hour's rows, it is answered whole then: the switch, or the ground's click.
         let ground = !(shift && !(self.unit_selection.units().is_empty() && self.fleet_selection.fleets().is_empty() && self.air_selection.wings().is_empty()));
         self.click(document, super::held_clicks::Click::Observe { viewer: ours, province, mode, ground, shift }, frame, ctx);
         true
     }
 
-    /// The view switched to `target` at once. A host that owns the viewing country is told, and
-    /// its options are not let undo the switch until they echo it.
     pub(super) fn observe(&mut self, mut target: ObservedCountry) {
         self.trace_switch(target.slot, &target.tag, "switch_click");
         let to = Country::Slot { slot: target.slot, tag: target.tag.clone() };
@@ -120,7 +105,6 @@ impl super::Viewer {
         self.perspective.country = to;
     }
 
-    /// The viewing country and fog the host's options choose, a switch made here ahead of them kept.
     pub(crate) fn host_perspective(&mut self, options: &MapOptions) {
         let country = self.observing.shown(host_country(options), options.observed);
         if country != self.perspective.country
@@ -133,8 +117,6 @@ impl super::Viewer {
     }
 }
 
-/// The latest Ctrl+click switch made here ahead of the host that owns the viewing country, by
-/// its sequence: the host's options lead again once they echo it.
 #[derive(Default)]
 pub(crate) struct Observing {
     sequence: u64,
@@ -142,16 +124,12 @@ pub(crate) struct Observing {
 }
 
 impl Observing {
-    /// A switch to `to` made here, `now` in microseconds: its sequence, past every one before and
-    /// at least `now`, so another viewer of the same view (a pop-out) counts on past this one's.
     fn ask(&mut self, to: Country, now: u64) -> u64 {
         self.sequence = (self.sequence + 1).max(now);
         self.asked = Some((self.sequence, to));
         self.sequence
     }
 
-    /// The country shown while the host names `host` having applied switch `echoed`: the host's
-    /// once it has applied the latest switch made here, that switch until then.
     fn shown(&mut self, host: Country, echoed: Option<u64>) -> Country {
         match &self.asked {
             Some((sequence, latest)) if echoed.is_none_or(|echoed| echoed < *sequence) => latest.clone(),
@@ -173,8 +151,6 @@ mod tests {
     use replay_data::rows::{CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows};
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
-    /// Provinces 1 (GER's state 10, occupied by SOV), 2 (sea), 3 (stateless land), 4 (a state
-    /// whose owner is link zero) and 5 (owned through 202, SOV's second link).
     fn frame() -> DecodedFrame {
         let mut frame = test_frame(7);
         let province = |id, state, controller| ProvinceRow { id, state, owner: 0, controller, ..Default::default() };
@@ -252,8 +228,6 @@ mod tests {
         assert_eq!(observing.shown(nzl.clone(), Some(first)), nzl, "the host's echo is the same country, so nothing restarts");
         assert_eq!(observing.shown(ger.clone(), Some(first)), ger, "once echoed, the host's next choice is its own");
 
-        // A, B, A: the host re-applying its cached A, then a delayed echo of B, never switch the
-        // view back to B; only the echo of the latest switch hands the view back to the host.
         let mut observing = Observing::default();
         let to_nzl = observing.ask(nzl.clone(), 0);
         let to_ita = observing.ask(ita.clone(), 0);
@@ -269,8 +243,6 @@ mod tests {
         assert_eq!(observing.ask(nzl, 5), 1_001, "and never back");
     }
 
-    /// The campaign map's host, as the desktop applies a Configure: a Ctrl+click switches the view
-    /// at once and asks the host, whose options from before it never bounce it back.
     #[test]
     fn a_ctrl_click_switches_at_once_and_the_host_follows() {
         use crate::app::picker::ViewEvent;

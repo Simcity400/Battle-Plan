@@ -27,7 +27,6 @@ const PART_FAMILIES = RESOURCE_PARTS.map(part => family(part.measure));
 const GROUPS = ['Supply', 'Demand'] as const;
 const GROUP_PARTS: readonly (readonly string[])[] = [['produced', 'subjects', 'imported'], ['projects', 'production', 'overlord', 'exported']];
 
-/** The pools' parts at an hour, as each group's drill parts and the closing texts. */
 function partsAt(values: LiveValues<number>, id: number, decimals: number, colours: ReadonlyMap<string, string>) {
   const pools = poolsAt(values, id);
   if (!pools) return null;
@@ -38,8 +37,6 @@ function partsAt(values: LiveValues<number>, id: number, decimals: number, colou
   return { balance, groups, other };
 }
 
-/** One resource of one country: its supply and demand parts and net at the drill's hour (painted from `live`, the
- * drill's own product, while it follows), its deals each way, and its parts over time from the declared series' tiles. */
 export default function ResourceBreakdown({ runtime, track, active, tag, resource, data, live, hour, following, tokens, extent, playhead,
   liveHead, playback, afterPlayhead, windowHours, hoursPerSecond, onPick, onContextMenu }: {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; resource: ResourceInfo; data: ResourceBalanceReply;
@@ -49,7 +46,7 @@ export default function ResourceBreakdown({ runtime, track, active, tag, resourc
 }) {
   const decimals = data.decimals;
   const colours = useMemo(() => new Map(RESOURCE_PARTS.map((part, index) => [part.id as string, tokens.categories[index % tokens.categories.length]])), [tokens.categories]);
-  const at = useMemo(() => partsAt(live.read(), resource.id, decimals, colours), [live, resource.id, decimals, colours, data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const at = useMemo(() => partsAt(live.read(), resource.id, decimals, colours), [live, resource.id, decimals, colours, data]);
   const liveGroups = useMemo(() => GROUPS.map((_, index): LiveDrillParts => mapLive(live, values => {
     const now = partsAt(values, resource.id, decimals, colours)?.groups[index];
     return now ? { parts: now.parts, total: fixedNumber(now.total, decimals), totalText: formatAmount(now.total, decimals, decimals) }
@@ -63,7 +60,6 @@ export default function ResourceBreakdown({ runtime, track, active, tag, resourc
     };
     return { text: key => read().get(key) ?? '', subscribe: changed => live.subscribe(changed) };
   }, [live, resource.id, decimals, colours]);
-  // Which deals each way, in the reply's order: their amounts are painted from the cells.
   const deals = useMemo(() => data.dealsMissing !== null ? null : {
     import: data.deals.filter(deal => deal.resource === resource.id && deal.direction === 'import'),
     export: data.deals.filter(deal => deal.resource === resource.id && deal.direction === 'export'),
@@ -94,7 +90,7 @@ export default function ResourceBreakdown({ runtime, track, active, tag, resourc
       const run = lines[index]?.runs.find(item => item.firstHour <= at && at <= item.lastHour);
       return run ? formatSigned(run.valueRaw, decimals, decimals) : lines[index]?.missing.get(at) ?? 'Not recorded';
     },
-  })), [...summaries, ...lines, colours, decimals]); // eslint-disable-line react-hooks/exhaustive-deps
+  })), [...summaries, ...lines, colours, decimals]);
   const drawn = summaries.every(Boolean) ? { parts: summaries as ChartSummary[] } : undefined;
 
   return <div ref={setRoot}>

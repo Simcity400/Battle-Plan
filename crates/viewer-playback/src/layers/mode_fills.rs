@@ -1,13 +1,3 @@
-//! A map mode's fill, its colours and its region and zone borders: today's political part at that
-//! mode ([`crate::document::Hour::political_product`]: the territory, the mode's projection, the
-//! sea regions' naval attributes and the demilitarised zone) and the border plans over it, made
-//! whole from rows at the head on the layer's worker ([`super::rebuilt`]).
-//!
-//! It draws every stock mode but the default. At the default the political, naval and names layers
-//! draw; a scripted mode keeps its borders from one refresh to the next, which a build on a
-//! cadence cannot follow, so the political layer refuses it by name. At those it declares and
-//! holds nothing and leaves the scene to them. A mode change takes the picture made for the mode
-//! before down at once: until the new mode's first product the layer has published nothing.
 
 use super::rebuilt::{Build, Seen, Whole};
 use engine_executable::executable_tables::Tables;
@@ -29,8 +19,6 @@ use viewer_world::map::{
     map_mode::{MapMode, Stock},
 };
 
-/// The territory's tables, which every mode's build reads; each mode's own are learned as it reads
-/// them.
 pub const TABLES: &[TableId] = &[
     TableId::Provinces,
     TableId::Countries,
@@ -42,7 +30,6 @@ pub const TABLES: &[TableId] = &[
     TableId::States,
 ];
 
-/// One mode's picture at one hour: what today's part installs for it.
 pub struct Fill {
     pub mode: MapMode,
     pub regions: Arc<Regions>,
@@ -58,12 +45,8 @@ impl Fill {
     }
 }
 
-/// Today's political part at a map mode over a frame of rows.
 pub trait Paint: Send + Sync + 'static {
-    /// The recording's executable tables, in scope for every build: a mode's triggers read them.
     fn tables(&self) -> Option<Tables>;
-    /// The picture of `mode` for the viewer `choice` (and the country `selected` on the map, which
-    /// the diplomacy mode colours relations from).
     fn paint(&self, frame: &DecodedFrame, choice: &Choice, mode: &MapMode, selected: Option<u32>) -> io::Result<Fill>;
 }
 
@@ -73,7 +56,6 @@ impl Paint for crate::document::Content {
     }
 
     fn paint(&self, frame: &DecodedFrame, choice: &Choice, mode: &MapMode, selected: Option<u32>) -> io::Result<Fill> {
-        // A stock mode carries no colour from the hour before.
         let product = crate::document::Hour::new(self, frame, 0.0).political_product(mode, choice, selected, None)?;
         let regions = product.layers.regions;
         let classes = ClassPlan::new(&self.border_meshes, &regions, &product.zone);
@@ -82,25 +64,21 @@ impl Paint for crate::document::Content {
     }
 }
 
-/// Whether this layer draws `mode`.
 fn draws(mode: &MapMode) -> bool {
     matches!(mode, MapMode::Stock(stock) if *stock != Stock::Default)
 }
 
-/// What the view asks the fill of: its mode, and in the diplomacy mode the country selected.
 fn asked(view: &super::View) -> (MapMode, Option<u32>) {
     let selected = view.selected.filter(|_| view.map_mode == MapMode::Stock(Stock::Diplomacy));
     (view.map_mode.clone(), selected)
 }
 
-/// Today's political part at the view's mode, over the recording's content.
 pub struct Fills {
     source: Arc<dyn Paint>,
     asked: Mutex<(MapMode, Option<u32>)>,
 }
 
 impl Fills {
-    /// The mode and selection it builds for.
     pub fn asked(&self) -> (MapMode, Option<u32>) {
         self.asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
@@ -131,9 +109,6 @@ impl Build for Fills {
         true
     }
 
-    /// The fill and its border plans; with none, at a mode it draws, the empty fill the political
-    /// layer shows while it refuses an hour. At a mode it does not draw the scene is the political
-    /// layer's (or today's), and it hands it nothing.
     fn install(&self, gpu: &mut super::Gpu<'_>, fill: Option<&Fill>, _continuity: Continuity) -> io::Result<Option<Fill>> {
         match fill {
             Some(fill) => {
@@ -167,8 +142,6 @@ impl Build for Fills {
 pub type ModeFills = Whole<Fills>;
 
 impl ModeFills {
-    /// The fill's limitation lines in today's words while it draws: its product's, its refusal by
-    /// name, or that it is loading.
     pub fn lines(&self) -> Vec<String> {
         if !self.drawn() {
             return Vec::new();
@@ -180,7 +153,6 @@ impl ModeFills {
         }
     }
 
-    /// The picture the faction highlight is drawn over while it draws: its fill and zone.
     pub fn picture(&self) -> Option<(Arc<Regions>, Retained<Zone>, replay_data::Hour)> {
         let built = self.product().filter(|_| self.drawn())?;
         let fill = built.product.as_ref().ok()?;
@@ -192,7 +164,6 @@ fn drawn(_: &Fills, view: &super::View) -> bool {
     draws(&view.map_mode)
 }
 
-/// The mode fills layer over `source`; `timed` as [`Whole::new`].
 pub fn new(source: Arc<dyn Paint>, timed: bool) -> io::Result<ModeFills> {
     let fills = Fills { source, asked: Mutex::new((MapMode::default(), None)) };
     Ok(Whole::new("mode_fills", fills, drawn, Fill::bytes, TABLES, timed)?.exact())

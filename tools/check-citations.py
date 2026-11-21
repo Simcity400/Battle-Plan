@@ -66,49 +66,29 @@ SLOT = re.compile(r'\b(?:v|vtable |virtual |virtual-function )?slots? `?0x' + HE
 REGISTER_OPERAND = re.compile(r'\[ ?r[a-z0-9]{1,3} ?[+-] ?(?:0x[0-9A-Fa-f_]+|[0-9A-Fa-f_]*[0-9]'
                               r'[0-9A-Fa-f_]*)(?![\w])', re.IGNORECASE)
 OFFSETS = [
-    # `+0x2A8`, `record + 0x30`, `+0x10..0x20`.
     PLUS_HEX,
-    # `this - 0xB8`: a short negative displacement.
     re.compile(r'(?<=[\w)`] )- ?0x' + HEX + r'{1,4}(?![0-9A-Za-z_])'),
-    # `+D0`, `+2A0`, `+AC8`: hexadecimal without its prefix.
     re.compile(r'(?<![\w)\]+])\+(?=' + HEX + r'{0,4}[A-Fa-f])(?=' + HEX + r'{0,4}[0-9])'
                + HEX + r'{2,5}(?![\w])'),
-    # `+8/+C`: a one-letter offset in a list of offsets.
     re.compile(r'(?<=/)\+[A-F]{1,3}(?![\w])|(?<![\w)\]+])\+[A-F]{1,3}(?=/\+)'),
-    # `[0x30]`.
     re.compile(r'\[ ?0x' + HEX + r'+ ?\]'),
-    # `offset 0x30`, `displacement of 0x30`.
     OFFSET_WORD,
-    # `slot 0x2E`, `vslot 0xD8`, `vtable slot 0x20`.
     SLOT,
-    # `[rax + 0x28]`, `[RBP-0x29]`: a register operand in prose.
     REGISTER_OPERAND,
-    # `F3A90`, `f3a90`: a bare code address, a letter after its first digit.
     re.compile(r'(?<![\w#&+-])(?=' + HEX + r'*[0-9])(?=' + HEX + r'+[A-Fa-f])(?!D3D11\b)'
                r'(?![0Ff]+\b)' + HEX + r'{5,7}(?![\w])'),
 ]
-# `header +8`, `contribution +38`, `(+12)`, `+20/+24`, `+C`: a decimal or one-letter displacement
-# standing alone. Arithmetic is told apart by value (`+1` to `+3`), units (`+5%`, `+2 days`) and
-# call arguments (`zigzag(+99)`); other arithmetic in prose is written without a sign.
 DECIMAL_OFFSET = re.compile(
     r'(?<![\w)\]+\-])(?<!\w\()\+(?:([0-9]+)(?![\w]|[.,][0-9])'
     r'(?!\s*(?:%|percent|days?|hours?|weeks?|months?|years?)\b|\s*%)|([A-F])(?![\w]))')
 ARITHMETIC_VALUES = {'1', '2', '3'}
-# `x + 0x4000` is arithmetic when its left operand is a number, a constant or a parenthesis, or
-# when another operator follows it: `UINT_MAX + 0x4A2 - 1`, `(raw + 0x4000) >> 15`.
 ARITHMETIC_LEFT = re.compile(r'(?:\b[0-9A-Z_]+|\))\s$')
 ARITHMETIC_RIGHT = re.compile(r'^\)?\s*(?:>>|<<|[-*/%&|^])\s')
-# String literals outside assembly blocks: only the prefixed forms; decimal and bare numbers there
-# are displayed values and test data.
 STRING_OFFSETS = [PLUS_HEX, OFFSET_WORD, SLOT, REGISTER_OPERAND]
 REGISTER_BEFORE = re.compile(r'\[ ?r[a-z0-9]{1,3} ?$', re.IGNORECASE)
-# `order+8`, `following+818`: a displacement attached to the name of what it is inside, decimal
-# or bare hexadecimal (`+0x` is matched above).
 ATTACHED = re.compile(r'\b(?!(?:Shift|Ctrl|Alt|Cmd|Meta|U)\+)[A-Za-z_][A-Za-z0-9_]*\+('
                       + HEX + r'*[0-9]' + HEX + r'*)(?!\w|\.[0-9])')
-# The macros whose string arguments are assembly templates.
 ASSEMBLY_MACRO = re.compile(r'\b(?:asm|global_asm|naked_asm)!\s*[(\[{]')
-# A table header cell that names an offset column.
 OFFSET_HEADER = re.compile(r'^\s*`?offsets?`?\s*$', re.IGNORECASE)
 TABLE_HEX = re.compile(r'0x' + HEX + r'+|(?=' + HEX + r'*[A-Fa-f])' + HEX + r'*[0-9]' + HEX + r'*')
 
@@ -134,7 +114,6 @@ def candidate_files(revision, paths):
     top_level = [':(glob)*.md'] if paths == DEFAULT_PATHS else []
     command += ['--', *paths, *top_level, f':!{SELF}']
     result = subprocess.run(command, capture_output=True)
-    # git grep exits 1 when nothing matches; anything else is a failed scan.
     if result.returncode not in (0, 1):
         raise SystemExit(f'git grep failed ({result.returncode}): '
                          + result.stderr.decode('utf-8', 'replace').strip())
@@ -186,7 +165,7 @@ def text_spans(lines, extension):
     quotes = '"' if extension in ('.rs', '.wgsl', '.hlsl') else '"\'`'
     result = []
     state, depth, closing, string_kind = 'code', 0, '', 'string'
-    assembly = 0  # bracket depth inside an assembly macro invocation, zero outside one
+    assembly = 0
     for line in lines:
         spans, index, start = [], 0, 0
         while index < len(line):
@@ -272,7 +251,7 @@ def offsets(text, kind='comment'):
         for match in pattern.finditer(text):
             before = text[:match.start()]
             if pattern is PLUS_HEX and REGISTER_BEFORE.search(before):
-                continue  # reported once, as the register operand
+                continue
             if pattern is PLUS_HEX and match.group(0).startswith('+ ') and (
                     ARITHMETIC_LEFT.search(before)
                     or ARITHMETIC_RIGHT.match(text[match.end():])):
@@ -286,7 +265,7 @@ def offsets(text, kind='comment'):
             name = match.group(0)[:-len(match.group(1)) - 1]
             if (match.group(1) in ARITHMETIC_VALUES or re.fullmatch(r'[0-9A-Z_]+', name)
                     or ARITHMETIC_RIGHT.match(text[match.end():])):
-                continue  # arithmetic, as for a spaced `+`
+                continue
             found.append(match.group(0))
     return found
 
@@ -323,7 +302,6 @@ def scan_line(line, spans, table):
             found += [('decompiler', m.group(0)) for m in VIRTUAL_SLOT.finditer(text)]
             cells = cells or table_cells(text)
         found += [('offset', m) for m in offsets(text, kind)]
-    # A table whose header names an offset column reports every hexadecimal cell under it.
     if cells is None:
         table.clear()
     elif all(re.fullmatch(r':?-+:?', cell) for cell in cells if cell):

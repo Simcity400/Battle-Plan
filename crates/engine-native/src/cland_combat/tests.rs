@@ -3,7 +3,6 @@ use super::*;
 use crate::memory::SliceMemory;
 use std::cell::RefCell;
 
-/// Detail arenas; `new` is larger than any fixture combat needs.
 struct Arenas {
     participants: Vec<u64>,
     air: Vec<i32>,
@@ -117,8 +116,6 @@ impl<M: Memory> Memory for Observed<'_, M> {
     }
 }
 
-// Scalar read_details before leaf batching. The unchanged authentication,
-// commander and text helpers retain their original interleaving here.
 fn scalar_details(
     memory: &impl Memory,
     base: usize,
@@ -383,7 +380,6 @@ fn details_leaf_batches_match_scalar_values_every_fault_and_changed_read() {
                 (side + cland_combatant::ORGANISATION_LOSS_COUNT, 4),
             ];
             assert!(actual.scatters.borrow().contains(&tail));
-            // Border factors belong to the modifier context, not the details.
             assert!(
                 !actual
                     .reads
@@ -531,8 +527,6 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
         let demand = core_demand(&fixture.memory(), BASE, STATE).unwrap();
         assert_eq!(demand.rows, count);
         assert_eq!(demand.participants, count * count);
-        // One combat with mod-sized membership exercises the participant arena
-        // separately from a mod-sized registry with empty side vectors.
         fixture.array(STATE + cgame_state::COMBATS + 8, registry, 1);
         let mut visited = 0;
         let capture = walk_with(
@@ -748,9 +742,6 @@ fn mixed_registry_preserves_full_native_handles_and_participant_order() {
     assert_eq!(&participants[..3], &[u64::MAX - 4, 1, 62]);
 }
 
-/// The game's save loader appends a combatant's saved unit references with no
-/// class check, so a side can hold a railway gun or a task force. Each is kept
-/// with its class; the division-only detail census still refuses them.
 #[test]
 fn a_non_division_participant_is_kept_with_its_class() {
     let mut fixture = Fixture::new();
@@ -790,7 +781,6 @@ fn a_non_division_participant_is_kept_with_its_class() {
         }
     );
 
-    // A class keeps its own vtables, and an unknown class is refused by name.
     fixture.u32(UNIT_A + cunit::CLASS, DIVISION_CLASS);
     assert_eq!(
         fixture.capture().0.outcome,
@@ -970,8 +960,6 @@ fn details_preserve_native_order_bytes_damage_and_loss_history() {
     );
 }
 
-/// Copy committed and reserve entries in their vector index order from
-/// zero, independently of roster, pointer or handle ordering.
 #[test]
 fn details_copy_committed_and_reserve_arrays_in_native_index_order() {
     const ORDERED: usize = 0x8c00;
@@ -1007,7 +995,6 @@ fn details_copy_committed_and_reserve_arrays_in_native_index_order() {
                 .to_vec(),
         )
     };
-    // Committed against the roster order, reserve empty.
     fixture.u64(ORDERED, UNIT_A as u64);
     fixture.u64(ORDERED + 8, UNIT_B as u64);
     fixture.array(ATTACK + cland_combatant::COMMITTED, ORDERED, 2);
@@ -1016,7 +1003,6 @@ fn details_copy_committed_and_reserve_arrays_in_native_index_order() {
         read(&fixture),
         (3, vec![[vec![1, u64::MAX - 4], vec![]], [vec![62], vec![]]])
     );
-    // Reserves against pointer and handle order, after an empty committed array.
     fixture.u64(ORDERED, UNIT_B as u64);
     fixture.u64(ORDERED + 8, UNIT_A as u64);
     fixture.array(ATTACK + cland_combatant::COMMITTED, ORDERED, 0);
@@ -1084,8 +1070,6 @@ fn detail_source() -> Source {
     }
 }
 
-/// Selected attacker commander (category 1) with one assigned and one
-/// learning trait and a formation reference.
 const COMMANDER: usize = 0xb200;
 
 fn commander_fixture() -> Fixture {
@@ -1142,8 +1126,6 @@ fn commander_fixture() -> Fixture {
     fixture.array(LEADER + cunit_leader::TRAIT_EXPERIENCE_DATA, 0xf000, 1);
     fixture.u64(0xf000, TRAIT as u64);
     fixture.u64(0xf008, 321000);
-    // The ordinary leader block (with its accumulator) the skill hover describes: keys 0x5F and
-    // 0x60 among others, sorted.
     fixture.array(
         LEADER + carmy_leader::MOVEMENT_MODIFIER + carmy_leader::MODIFIER_ACCUMULATOR,
         0x11400,
@@ -1159,9 +1141,6 @@ fn commander_fixture() -> Fixture {
     fixture
 }
 
-/// Trait vectors are bounded by their live counts alone. A list larger
-/// than the arenas is still authenticated, reports its exact demand and
-/// leaves the arenas incomplete, so the caller publishes nothing partial.
 #[test]
 fn commander_trait_lists_grow_every_short_arena_to_the_exact_demand() {
     const TIMED: usize = 0xf100;
@@ -1182,7 +1161,6 @@ fn commander_trait_lists_grow_every_short_arena_to_the_exact_demand() {
         copies: 0.into(),
         bytes: 0.into(),
     };
-    // The exact demand, then arenas of exactly that size.
     let mut probe = Arenas::sized(DetailCounts::default());
     let mut view = probe.view();
     read_details(
@@ -1213,7 +1191,6 @@ fn commander_trait_lists_grow_every_short_arena_to_the_exact_demand() {
     assert_eq!(timed[0].remaining_days, -1);
     assert_eq!(timed[COUNT - 1].remaining_days, COUNT as i32 - 2);
     assert_eq!(timed[0].definition_ordinal, 7);
-    // One entry short in any arena leaves the detail incomplete.
     let shrink = |field: usize| {
         let mut counts = demand;
         let value = [
@@ -1349,11 +1326,10 @@ fn detail_demand_uses_capture_census_and_rejects_unreadable_payloads() {
     )
     .unwrap();
     let demand = detail_demand(&memory, BASE, STATE).unwrap();
-    assert_eq!(demand.rows, 1); // the mixed registry also contains a naval combat
+    assert_eq!(demand.rows, 1);
     assert_eq!(demand.census_participants, 3);
     assert_eq!(demand.arenas, view.required);
 
-    // A header alone cannot certify off-thread demand from an unreadable list.
     let unreadable = 0x7fff_0000;
     for (header, count) in [
         (ATTACK + cland_combatant::AIR_SUPPORT, 5000),
@@ -1488,9 +1464,6 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     assert_eq!(side.learning_traits.len, 1);
     assert_eq!(learning.required_experience, 3);
     assert_eq!(learning.experience, 321000);
-    // The skill and portrait hovers' operands: the next level (index 0, the
-    // null object, past the one-level vector), the live learning floor, and
-    // the ordinary block's keys, since the deployed-HQ feature is off.
     assert_eq!(
         side.next_skill.map(|next| (next.present, next.valid)),
         Some((1, 0))
@@ -1498,7 +1471,6 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     assert_eq!(side.learning_threshold, Some(5_000));
     assert_eq!(side.skill_modifiers, Some([-12_345, 67_891]));
     assert_eq!(side.side_input_refusals, [None; 3]);
-    // The defender has no commander and reads none of them.
     let defender = &row.sides[1];
     assert_eq!(
         (
@@ -1511,9 +1483,6 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     assert_eq!(defender.side_input_refusals, [None; 3]);
 }
 
-/// One pass's combats share a selected leader's leader-only reads (here its
-/// next skill and presentation): a second combat under the same leader reads
-/// fewer words and records the same row, and a new pass reads them again.
 #[test]
 fn a_pass_reads_a_shared_leaders_own_inputs_once() {
     let fixture = commander_fixture();
@@ -1546,10 +1515,6 @@ fn a_pass_reads_a_shared_leaders_own_inputs_once() {
     assert_eq!(read(&mut leaders), (first, fresh));
 }
 
-/// The skill hover's next level, the learning floor and the leader block are
-/// optional hover inputs: when they cannot be read (here the module's skill
-/// database, floor and feature flags are not mapped) each refuses by name,
-/// and the row, the commander and the reads after them stand.
 #[test]
 fn unreadable_optional_side_inputs_refuse_only_themselves() {
     let fixture = commander_fixture();
@@ -1579,17 +1544,12 @@ fn unreadable_optional_side_inputs_refuse_only_themselves() {
     assert_eq!(side.learning_traits.len, 1);
 }
 
-/// The selected commander's saved name is stored as an ordinary MSVC string and text rendering
-/// takes any length, empty included; the description token is the same kind of string. Both keep
-/// the game's length in the text arena, count into its demand when they do not fit, and name their
-/// field when invalid.
 #[test]
 fn selected_commander_texts_keep_native_length_and_name_their_field() {
     use crate::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
     const HEAP: usize = 0x12400;
     let mut fixture = commander_fixture();
     fixture.0.resize(0x13000, 0);
-    // A 300-byte heap name and an empty heap description.
     fixture.u64(COMMANDER + TOKEN, HEAP as u64);
     fixture.u64(COMMANDER + TOKEN + 16, 300);
     fixture.u64(COMMANDER + TOKEN + 24, 300);
@@ -1623,9 +1583,6 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
         let (used, required) = (view.used.text, view.required.text);
         (details, used, required, arenas.text)
     };
-    // The fixture's other texts: the stored terrain "plain" before the
-    // commander, the trait token "trait" twice (assigned, learning) and
-    // both sides' two-byte tactic token.
     const TERRAIN: usize = 5;
     const OTHER: usize = TERRAIN + 10 + 4;
 
@@ -1648,7 +1605,6 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
     );
     assert_eq!((used, required), (300 + OTHER, 300 + OTHER));
 
-    // An empty inline name is valid.
     let mut empty = fixture.0.clone();
     let at = COMMANDER + TOKEN - STATE;
     empty[at..at + 32].fill(0);
@@ -1664,7 +1620,6 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
         }
     );
 
-    // Invalid strings name their field.
     for (at, value, reason) in [
         (
             DESCRIPTION_TOKEN + 24,
@@ -1694,9 +1649,6 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
     );
 }
 
-/// A combat whose participant list becomes empty can remain present.
-/// Its tactic detail must use the fallback country scope rather than
-/// withholding the detail row.
 #[test]
 fn tactic_context_records_a_side_whose_country_set_emptied() {
     use crate::{ccountry, land_tactic_inputs as tactic};
@@ -1739,12 +1691,10 @@ fn tactic_context_records_a_side_whose_country_set_emptied() {
             &mut Commanders::default(),
         )
     };
-    // Both sides' country sets are empty: no country scope exists for either.
     let empty = capture(&fixture);
     assert_eq!(empty.outcome, Outcome::Rows { len: 1 });
     assert_eq!(empty.row.preferred_tactic_ids, [[0; 3]; 2]);
     assert_eq!(empty.row.country_weight_present, [0; 2]);
-    // A present node naming the null tag is not an empty set.
     fixture.u64(ATTACK + cland_combatant::COUNTRIES, NODE as u64);
     assert_eq!(
         capture(&fixture).outcome,
@@ -1754,7 +1704,6 @@ fn tactic_context_records_a_side_whose_country_set_emptied() {
     );
 }
 
-/// Links `tags` as a native set at `side + offset`, nodes from `nodes`.
 fn country_set(fixture: &mut Fixture, side: usize, offset: usize, nodes: usize, tags: &[u32]) {
     let node = |index: usize| nodes + index * 0x18;
     for (index, &tag) in tags.iter().enumerate() {
@@ -1827,7 +1776,6 @@ fn country_sets_keep_native_order_raw_tags_and_empty_sets() {
         0x8600,
         &[4, 2],
     );
-    // The marker operands come from the same reads.
     fixture.u32(COMBAT + INDICATOR_FRAME_HIGH, 0x0102_0304);
     fixture.u32(ATTACK + cland_combatant::FLAGS, 0x4000);
     fixture.u32(DEFEND + cland_combatant::FLAGS, 0x800);
@@ -1837,7 +1785,6 @@ fn country_sets_keep_native_order_raw_tags_and_empty_sets() {
     assert_eq!(row.lens, [3, 1, 2, 0]);
     assert_eq!(used, 6);
     assert_eq!(&tags[..6], &[7, 0, 3, 9, 4, 2]);
-    // A set longer than the country table allows is refused.
     assert!(matches!(
         country_sets(&fixture, 2, &mut tags),
         Err(CountrySetError::Unavailable(_))
@@ -1869,17 +1816,13 @@ fn country_sets_refuse_broken_links_and_keep_what_the_game_stored() {
         )
     };
     assert!(!refused(&|_| {}));
-    // A tail that is not the last node, a cycle back to the head, a repeat.
     assert!(refused(
         &|f| f.u64(ATTACK + cland_combatant::COUNTRIES + 8, 0x8400)
     ));
     assert!(refused(&|f| f.u64(0x8418 + 0x10, 0x8400)));
-    // Insertion keeps sets distinct and secondary tags positive. Reads
-    // check only links and retain repeated or nonpositive tags as stored.
     assert!(!refused(&|f| f.u32(0x8418, 7)));
     assert!(!refused(&|f| f.u32(0x8418, 0)));
     assert!(!refused(&|f| f.u32(0x8500, 0x8000_0000)));
-    // A count with no nodes.
     assert!(refused(
         &|f| f.u32(DEFEND + cland_combatant::COUNTRIES + 0x10, 1)
     ));
@@ -1995,7 +1938,6 @@ fn border_width_fault_stops_before_side_payloads() {
 #[test]
 fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip() {
     let mut fixture = commander_fixture();
-    // Subclass strings occupy the ordinary fixture's list storage.
     let mut source = detail_source();
     source.attackers.data = 0x10100;
     source.defenders.data = 0x10120;
@@ -2029,7 +1971,7 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
         &mut arenas.view(),
     )
     .unwrap();
-    assert!(row.border_war.is_none()); // ordinary side extensions are all invalid here.
+    assert!(row.border_war.is_none());
     fixture.u64(COMBAT, (BASE + cland_border_war_combat::VTABLE_RVA.0) as u64);
     fixture.u64(
         COMBAT + BODY,
@@ -2127,10 +2069,6 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
     );
 }
 
-/// The movement speed reads a land or border-war combat's movement word and a
-/// naval combat's none, each with its attacking side's units in native order;
-/// an unknown combat or a side that does not point back refuses, appending
-/// nothing.
 #[test]
 fn movement_combat_reads_the_movement_word_and_attacking_units_by_combat_kind() {
     const BASE: usize = 0x1000;

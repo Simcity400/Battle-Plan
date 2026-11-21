@@ -1,4 +1,3 @@
-//! Dated follow payloads framed for the dashboard data worker.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::{
@@ -6,15 +5,11 @@ use tauri::{
     http::{HeaderValue, Request, Response, StatusCode, header},
 };
 
-/// What a stream holds for the page between its asks.
 pub trait Outbox: Default {
-    /// Everything waiting, as payloads; none when nothing waits.
     fn take(&mut self) -> Vec<Vec<u8>>;
-    /// A new page reads: what is held for the one before is dropped or kept, as the stream rules.
     fn restart(&mut self);
 }
 
-/// A stream's asks: one page at a time (its session), its ask held while nothing waits.
 pub struct Asks<O, R> {
     session: Option<String>,
     parked: Option<R>,
@@ -27,7 +22,6 @@ impl<O: Default, R> Default for Asks<O, R> {
     }
 }
 
-/// An ask answered: who asked, and the answer's body (empty: replaced).
 pub type Answer<R> = (R, Vec<u8>);
 
 fn frame(payloads: Vec<Vec<u8>>) -> Vec<u8> {
@@ -40,7 +34,6 @@ fn frame(payloads: Vec<Vec<u8>>) -> Vec<u8> {
 }
 
 impl<O: Outbox, R> Asks<O, R> {
-    /// The outbox changed: the ask held, if one is, is answered with what waits.
     pub fn offered(&mut self) -> Option<Answer<R>> {
         self.parked.as_ref()?;
         let payloads = self.outbox.take();
@@ -50,8 +43,6 @@ impl<O: Outbox, R> Asks<O, R> {
         Some((self.parked.take().expect("held"), frame(payloads)))
     }
 
-    /// An ask of `session`, the answer before it handled. A new session's first restarts the stream and is
-    /// answered empty at once; a later one now with what waits, or held. An ask held before it is answered empty.
     pub fn ask(&mut self, session: String, asker: R) -> Vec<Answer<R>> {
         let mut answers: Vec<Answer<R>> = self.parked.take().map(|replaced| (replaced, Vec::new())).into_iter().collect();
         if self.session.as_deref() != Some(session.as_str()) {
@@ -70,7 +61,6 @@ impl<O: Outbox, R> Asks<O, R> {
     }
 }
 
-/// A stream of the `push` protocol: its asks, behind a lock.
 pub struct Pull<O> {
     asks: Mutex<Asks<O, UriSchemeResponder>>,
 }
@@ -86,12 +76,10 @@ fn respond((responder, body): Answer<UriSchemeResponder>) {
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    // The page is served from another origin than this protocol's.
     headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     responder.respond(response);
 }
 
-/// `responder` refused with `status` and why.
 pub fn refuse(responder: UriSchemeResponder, status: StatusCode, why: &str) {
     let mut response = Response::new(why.as_bytes().to_vec());
     *response.status_mut() = status;
@@ -99,12 +87,10 @@ pub fn refuse(responder: UriSchemeResponder, status: StatusCode, why: &str) {
     responder.respond(response);
 }
 
-/// The value an ask names for `name` (`?name=value`), if it is not empty.
 pub fn param<'a>(request: &'a Request<Vec<u8>>, name: &str) -> Option<&'a str> {
     request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=')).filter(|value| !value.is_empty())
 }
 
-/// The session an ask names (`?session=`).
 fn session(request: &Request<Vec<u8>>) -> Option<String> {
     param(request, "session").map(str::to_owned)
 }
@@ -114,7 +100,6 @@ impl<O: Outbox> Pull<O> {
         self.asks.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// `put` into the outbox, and the held ask answered with it.
     pub fn offer(&self, put: impl FnOnce(&mut O)) {
         let answer = {
             let mut asks = self.asks();
@@ -126,7 +111,6 @@ impl<O: Outbox> Pull<O> {
         }
     }
 
-    /// An ask of the page's reader.
     pub fn ask(&self, request: &Request<Vec<u8>>, responder: UriSchemeResponder) {
         let Some(session) = session(request) else {
             return refuse(responder, StatusCode::BAD_REQUEST, "An ask names its session");
@@ -142,7 +126,6 @@ impl<O: Outbox> Pull<O> {
 mod tests {
     use super::{Asks, Outbox};
 
-    /// Payloads in order, each kept as it came; dropped for a new page.
     #[derive(Default)]
     struct Queue {
         held: Vec<Vec<u8>>,

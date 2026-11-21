@@ -3,10 +3,8 @@ import type { SunburstItem } from '../../charts/sunburst/layout';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import type { ConstructionSpendingReply, SpendingLeaf, SpendingUnknown, SpentStep } from '../../generated/dashboard';
 
-/** The hierarchy's levels, innermost first, and the option that switches each off. */
 export const LEVELS = ['splitLevel', 'typeLevel', 'stateLevel'] as const;
 
-// A total adds i64 amounts in i128 (up to 39 digits).
 const RAW = /^-?\d{1,39}$/;
 const int = (value: unknown) => Number.isSafeInteger(value);
 const optionalInt = (value: unknown) => value == null || int(value);
@@ -21,7 +19,6 @@ const isLeaf = (leaf: SpendingLeaf) => typeof leaf === 'object' && leaf != null 
     && typeof project.project === 'string' && int(project.firstRead) && (project.until == null || (int(project.until) && project.until > project.firstRead))
     && (index === 0 || leaf.projects[index - 1].firstRead <= project.firstRead));
 
-/** Checks the reply's shape: its totals exact integers in hour order, each gap a reason the recording gives. */
 export function validateSpendingReply(data: unknown): ConstructionSpendingReply {
   const reply = data as ConstructionSpendingReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
@@ -36,7 +33,6 @@ export function validateSpendingReply(data: unknown): ConstructionSpendingReply 
   return reply;
 }
 
-/** The last step at or before `hour`, by binary search; null before the first. */
 function stepAt(steps: readonly SpentStep[], hour: number): SpentStep | null {
   let low = 0;
   let high = steps.length - 1;
@@ -48,30 +44,18 @@ function stepAt(steps: readonly SpentStep[], hour: number): SpentStep | null {
   return found;
 }
 
-/** A leaf's running total established by `hour` (fixed5), exact: zero before its first output, null where the
- * recording does not hold the total. */
 export function totalAt(leaf: SpendingLeaf, hour: number): bigint | null {
   const step = stepAt(leaf.spent, hour);
   if (!step) return 0n;
   return step.totalRaw === null ? null : BigInt(step.totalRaw);
 }
 
-/** Lines whose recorded life overlaps the requested window. */
 function projectsIn(leaf: SpendingLeaf, from: number | null, to: number): string[] {
   return [...new Set(leaf.projects.filter(span => span.firstRead <= to && (from == null || span.until == null || span.until > from)).map(span => span.project))];
 }
 
-/** The hours a sunburst adds up: from `from` (null: from the branch's start) to `hour`, with `end` the last hour of
- * what is shown (Fill growth sweeps toward it). */
 export interface SpendingWindow { from: number | null; hour: number; end: number }
 
-/** The sunburst's items, one per leaf: its path new or repair → building type (from content) → state; its amount by
- * the hour shown, exactly (`exact`, fixed5) and as a number for geometry; its whole amount at the end of what is
- * shown; and what is not counted by reason. Output not counted leaves the counted amount shown and partial, never
- * hidden; a total the recording does not hold is not measured, never zero. A leaf none of whose lines was in the
- * queue during what is shown is not present: it adds only its whole amount, so Fill's whole, the order and the
- * colours are those of the end from the start. Output no country can be given makes only the whole partial: it is
- * an item without a path, so it has no slice or legend row. */
 export function spendingItems(reply: ConstructionSpendingReply, window: SpendingWindow): SunburstItem[] {
   const items: SunburstItem[] = [];
   const before = window.from == null ? null : window.from - 1;
@@ -90,7 +74,6 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
     const path = [
       leaf.repair ? { id: 'repair', label: 'Repairs' } : { id: 'new', label: 'New buildings' },
       { id: `type:${type?.id ?? leaf.building ?? 'none'}`, label: typeName(type), icon: type?.icon ?? null },
-      // A railway within one state is that state's, as a building there is.
       { id: `place:${leaf.state ?? ''}>${railway && leaf.toState !== leaf.state ? leaf.toState ?? '' : ''}`, label: place.label },
     ];
     const since = (hour: number) => {
@@ -110,7 +93,6 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
       unknownValue: exact == null,
       final: final == null ? null : Number(final),
       finalUnknown,
-      // Present when a line worked in what is shown, or the reads in it established an amount or a stretch not counted.
       present: projects.length > 0 || (exact != null && exact !== 0n) || Object.keys(unknown).length > 0,
       unknown,
       counted: projects,
@@ -131,23 +113,17 @@ export function spendingItems(reply: ConstructionSpendingReply, window: Spending
   return items;
 }
 
-/** Whether a country's own construction shows: a leaf present in what is shown. */
 export const hasConstruction = (items: readonly SunburstItem[]) => items.some(item => item.path.length > 0 && item.present !== false);
 
-/** Which leaves are present: what a render shows, as opposed to the amounts painted at each frame. */
 export const presentKey = (items: readonly SunburstItem[]) => items.map(item => item.present === false ? '0' : '1').join('');
 
-/** Decimal places of a cost scale (fixed5: 5). */
 export const scaleDigits = (scale: number) => Math.round(Math.log10(scale));
 
-/** An amount of output (fixed5 at `scale`) written to `digits` places. */
 export const formatSpent = (value: number, exact: bigint | null, scale: number, digits: number) =>
   formatIc(value, exact, scaleDigits(scale), digits);
 
 const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '' : 's'}`;
 
-/** The note under the legend, saying plainly what the amounts leave out: earlier spending, output not recorded
- * exactly (partial amounts), output no country can be given, and hours the recording does not hold. */
 export function footnote(reply: ConstructionSpendingReply, items: readonly SunburstItem[], window: SpendingWindow): string | undefined {
   const notes: string[] = [];
   if (reply.beforeFirstRead) notes.push(`Earlier spending on ${plural(reply.beforeFirstRead, 'project')} isn’t counted.`);

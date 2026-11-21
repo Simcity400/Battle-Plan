@@ -14,13 +14,10 @@ const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({
   createdHour: 100, firstRead: 100, runs: [{ ...interval, factories: 5, remaining: 1, repairLevels: 0 }],
   earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null, outputs: [], ...patch });
 const PROJECTS = [
-  // Still building: five factories and four levels with one built; from the read at 112 eight factories and three levels.
   project({ runs: [{ firstHour: 100, lastHour: 111, factories: 5, remaining: 3, repairLevels: 0 }, { firstHour: 112, lastHour: 120, factories: 8, remaining: 2, repairLevels: 0 }],
     built: [{ hour: 106, knownAt: 106, count: 1, repair: false, carried: false }] }),
-  // Finished at 104 with fifteen factories at its last read.
   project({ id: '2', tag: 'other country', firstRead: 101, runs: [{ firstHour: 101, lastHour: 103, factories: 15, remaining: 1, repairLevels: 0 }],
     built: [{ hour: 104, knownAt: 104, count: 1, repair: false, carried: false }], end: { kind: 'finished', hour: 104, knownAt: 104, unknown: null } }),
-  // Repairing, its country's name still being read.
   project({ id: '3', tag: 'pending country', repair: true, firstRead: 102, runs: [{ firstHour: 102, lastHour: 120, factories: 0, remaining: 0, repairLevels: 1 }] }),
 ];
 const STATES = [{ id: 1, name: 'Synthetic location' }];
@@ -39,7 +36,6 @@ async function renderer(groupsStub = false) {
     '/widgets/construction-log/useConstructionLog.ts': `export const useConstructionLog = () => ({...globalThis.__constructionArt, hour: 110,
       error: null, retry() {}, onDrawn() {}});`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
-    // A name not read yet has no \`known\`; the others were read.
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: () => tag => tag === 'pending country'
       ? {name: 'Country name unavailable'} : {name: 'Named ' + tag, known: true}})`,
     '/charts/log/LogList.tsx': `import {createElement} from 'react'; export default props => createElement('div', {},
@@ -79,11 +75,9 @@ test('construction rows align the building and place, the country, a status pill
     assert.match(building, /class="pill accent"><span>Building</);
     assert.match(building, /class="construction-levels"><span>1 of 4<\/span>/);
     assert.match(building, /data-tooltip="Factories on it"><svg[^]*<\/svg><span>5<\/span>/);
-    // Ended: a finished pill and no factories, however many its last read had.
     const finished = rowOf(markup, '2');
     assert.match(finished, /class="pill positive"><span>Built</);
     assert.doesNotMatch(finished, /Factories on it|>15</);
-    // The game's repair frame stays over the art; a name still being read is a placeholder; none on it is muted.
     const repair = rowOf(markup, '3');
     assert.match(repair, /class="log-art-overlay" src="data:repair"/);
     assert.match(repair, /class="pill accent"><span>Repairing</);
@@ -92,11 +86,9 @@ test('construction rows align the building and place, the country, a status pill
     assert.doesNotMatch(markup, /Country name unavailable/);
     assert.match(markup, /class="log-art"[^>]*><span class="art-fallback"/);
     assert.doesNotMatch(markup, /live-dot/);
-    // Live: in-queue pills pulse, finished ones do not.
     const live = render({ time: { mode: 'follow' } });
     assert.match(rowOf(live, '1'), /class="pill accent"><i class="live-dot"/);
     assert.doesNotMatch(rowOf(live, '2'), /live-dot/);
-    // Only projects still in the queue.
     assert.deepEqual([...render({ options: { queue: true } }).matchAll(/data-row="([^"]+)"/g)].map(match => match[1]).sort(), ['1', '3']);
     manifest.types[0].icon = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
     const art = render({});
@@ -108,11 +100,9 @@ test('construction rows align the building and place, the country, a status pill
 test('following, factories and levels are painted at the clock’s hour, not the hour the rows were made at', async () => {
   const { render, close } = await renderer();
   try {
-    // The rows are the log's at 110; the clock is at 115, past the read at 112 that put eight factories on it.
     const building = rowOf(render({ time: { mode: 'follow' } }, 115), '1');
     assert.match(building, /<span>8<\/span>/);
     assert.match(building, /class="construction-levels"><span>1 of 3<\/span>/);
-    // Not following, the hour shown is the rows'.
     assert.match(rowOf(render({}, 115), '1'), /<span>5<\/span>/);
   } finally { await close(); }
 });
@@ -128,13 +118,10 @@ test('one country is named by the header, so its rows leave the country out', as
   } finally { await close(); }
 });
 
-// Groups replies are whole (no preparation stage): membership is matched at each project's first read, and a group
-// with no member building anything says so for the group.
 test('a group\'s log lists a project only where its country is a member at the first read, else says the group built nothing', async () => {
   const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
   const manifest: ConstructionLogManifestReply = { costScale: 100000, windows: [span], recorded: true, repairIcon: null, warnings: [], missing: [],
     types: [{ id: 1, token: 'mod building', name: 'Synthetic building', icon: null }] };
-  // A project first read at 170, by a country that is not a human player then.
   const reply: ConstructionLogReply = { window: 0, interval: span, warnings: [], states: STATES,
     projects: [project({ tag: 'ENG', createdHour: PENDING_HOUR, firstRead: PENDING_HOUR, runs: [{ firstHour: PENDING_HOUR, lastHour: BRANCH.lastHour, factories: 5, remaining: 1, repairLevels: 0 }] })] };
   const state = { manifest, log: mergeWindows(manifest, new Map([[0, reply]]), 0), groups: pendingGroups({ final: true }) };
@@ -153,16 +140,13 @@ test('a group\'s log lists a project only where its country is a member at the f
       runtime: { client: {}, clock: clockAt(BRANCH.lastHour), tracks: [{ id: 'main', source: { id: 'source', revision: '1' }, branch: BRANCH, axisOffset: 0 }] },
     } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(module.default, props));
-    // GER is the only human player: no human player built anything.
     const none = render();
     assert.match(none, /No construction by these countries yet\./);
     assert.doesNotMatch(none, /data-row/);
-    // ENG a human player from before its project's first read: its project is listed.
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour }, { tag: 'ENG', firstHour: PENDING_HOUR - 10, lastHour: BRANCH.lastHour }] });
     const listed = render();
     assert.match(listed, /data-row="1"/);
     assert.doesNotMatch(listed, /No construction/);
-    // A member only after the first read leaves it out: membership is matched where the project was first read.
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'ENG', firstHour: PENDING_HOUR + 1, lastHour: BRANCH.lastHour }] });
     assert.match(render(), /No construction by these countries yet\./);
   } finally { delete host.__constructionPending; await close(); }

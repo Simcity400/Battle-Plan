@@ -1,6 +1,3 @@
-//! The window's marker hovers and engaged byte check take the engaged index from the
-//! engagements layer while the playhead's map is open, with today's pipeline never started; today's
-//! pipeline's only with no playhead map. The combat window stands at the hour the map shows.
 
 use crate::{
     Config, Options,
@@ -38,9 +35,6 @@ fn the_marker_hovers_and_the_byte_check_take_the_engaged_index_from_the_engageme
     assert!(today.is_none(), "no playhead map: today's pipeline's index, none without the pipeline");
 }
 
-/// The combat window stands at the hour the map shows, the one the frame's window readers are
-/// bounded by: behind the hour the side applied while the timed layers' installs are, and the
-/// side's own hour for a saved frame. With it, the seek the side last posted its rows at.
 #[test]
 fn the_combat_window_stands_at_the_hour_the_map_shows_not_the_hour_the_side_applied() {
     let recording = record(8, |at, store| complete(store, at, &[TableId::LandCombats, TableId::NavalCombats, TableId::NavalCombatDetails]));

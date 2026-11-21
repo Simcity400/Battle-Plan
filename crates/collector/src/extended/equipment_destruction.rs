@@ -1,5 +1,3 @@
-//! The admitted acquisition worker drains the bounded native hook log.
-//! Conversion and aggregation use only frame-owned rows on the spool thread.
 use crate::{
     equipment_destruction as producer,
     sampling::qpc,
@@ -156,7 +154,6 @@ fn aggregate(events: &[producer::Entry]) -> Result<Vec<EquipmentDestructionRow>,
         }
     }
     rows.truncate(write);
-    // Exact native removals and gains can cancel for one owner/cause/design.
     rows.retain(|row| row.amount_raw != 0);
     Ok(rows)
 }
@@ -205,8 +202,6 @@ fn deletion_rows(
             },
         ));
     }
-    // Retain native event order within each full handle. A transfer can be
-    // followed by another transfer or an actual disposal in the same hour.
     rows.sort_unstable_by_key(|(index, row)| (row.division_handle, *index));
     let mut write = 0;
     for read in 0..rows.len() {

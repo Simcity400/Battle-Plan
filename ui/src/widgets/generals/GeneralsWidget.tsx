@@ -37,12 +37,9 @@ const lostValue = (row: LeaderRow) => row.lost;
 const unresolvedValue = (row: LeaderRow) => row.unresolved;
 const winRateValue = (row: LeaderRow) => row.winRate;
 
-/** A battle count from an incomplete history: what was recorded, a lower bound. */
 const partialCount = (row: LeaderRow, count: number) => row.foughtPartial
   ? <span data-tooltip="Battle counts are incomplete: some battles were not recorded.">≥{count}</span> : count;
 
-/** The leaderboard at the hour: a pushed panel at the head (rendered only when a row or a count changes), one request
- * for a pinned or hovered hour. */
 export default function GeneralsWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
@@ -56,8 +53,6 @@ export default function GeneralsWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const kind = String(options.leaders) as LeaderKinds;
   const lastHour = track?.branch.lastHour ?? 0;
-  // What is asked names no hour; the countries shown are filtered at the panel's own hour in the same render, never one
-  // render after it (an effect setting that hour was a second commit after every push).
   const asked = useCountriesSelectionAt(widget, runtime, lastHour, active);
   const params = useMemo(() => asked.requestTags === undefined ? null : { selection: leaderRequestSelection(asked.requestTags), leaders: kind },
     [asked.requestTags, kind]);
@@ -86,7 +81,6 @@ export default function GeneralsWidget(props: WidgetProps) {
   }, [owner, runtime.clock, hour, widget.time.mode]);
   useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); }, [owner]);
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? []), ...portraits.warnings])], [data, portraits.warnings]);
-  // An open career reports its own warnings; closing it sends the leaderboard's again.
   useDiagnostics(onDiagnostics, drill.breakdown == null ? diagnostics : null);
   const attributeLabels = useMemo(() => attributeMaxima.map((_, i) =>
     [...new Set(rows.map(row => attributeNames(row.role)[i]))].join(' / ') || 'Name not recorded'), [rows, attributeMaxima]);
@@ -116,7 +110,6 @@ export default function GeneralsWidget(props: WidgetProps) {
     { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: winRateValue, renderMissing: true,
       render: r => r.winRate == null ? <span className="leader-missing" data-tooltip="No battles with known results.">—</span>
         : <span data-tooltip={r.foughtPartial ? 'Win rate among the decided battles recorded; some battles were not recorded.' : 'Win rate among decided battles'}>{Math.round(r.winRate)}%</span> },
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [country, portraits, attributeMaxima, attributeLabels, options.cellBars, track?.branch.firstHour]);
   const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, country(row))], viewportHeight), [country, viewportHeight]);
   const body = () => {

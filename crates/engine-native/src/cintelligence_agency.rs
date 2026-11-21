@@ -1,10 +1,3 @@
-//! CIntelligenceAgency, reached through CCountry's agency unique pointer.
-//!
-//! Native scalar state; roster, cryptology and operative rows are separate walks.
-//! Scripted localisation uses the stored name and created byte. The reader
-//! preserves the save gates. Names use validated stored string
-//! lengths and a caller-sized arena. Capacity shortages omit whole rows with
-//! exact demand; a bad header or terminator refuses the table.
 
 use engine_sites::Rva;
 use crate::{
@@ -17,41 +10,22 @@ use crate::{
     walk::Outcome,
 };
 
-/// CIntelligenceAgency primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_e450);
-/// CIntelligenceAgency inline COperativeRecruitment.
 pub const RECRUITMENT: usize = 0x08;
-/// CIntelligenceAgency owning CCountry pointer.
 pub const OWNER_COUNTRY: usize = 0x78;
-/// CIntelligenceAgency name std::string.
 pub const NAME: usize = 0x80;
-/// CIntelligenceAgency icon std::string.
 pub const ICON: usize = 0xa0;
-/// Agency-created byte. Every country has an agency object independently
-/// of this flag. Nonzero selects its stored name; zero selects the display
-/// fallback. Serialization writes the created flag only when nonzero.
 pub const CREATED: usize = 0xc0;
-/// CIntelligenceAgency signed i64 progress /100000.
 pub const UPGRADE_PROGRESS: usize = 0xc8;
-/// CIntelligenceAgency COperativeLeader pointer-vector data.
 pub const OPERATIVES: usize = 0xf0;
-/// CIntelligenceAgency active-vector i32 size.
 #[cfg(test)]
 pub const OPERATIVE_COUNT: usize = 0xfc;
-/// Unidentified agency dword initialized with `OPERATIVE_ADMISSION_CEILING`, read as u32. It does
-/// not establish available operative slots.
 pub const UNKNOWN_F0: usize = 0x108;
-/// Signed operative-admission ceiling; ordinary admission requires count below it.
 pub const OPERATIVE_ADMISSION_CEILING: usize = 0x10c;
-/// CIntelligenceAgency CCapturedOperativeReference inline-array data.
 pub const CAPTURED_OPERATIVE_REFERENCES: usize = 0x120;
-/// CIntelligenceAgency CCryptology pointer.
 pub const CRYPTOLOGY: usize = 0x138;
-/// CIntelligenceAgency signed i64 defense /100000.
 pub const DEFENSE: usize = 0x140;
-/// CIntelligenceAgency constructor RVA.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x0105_bdb0);
-/// Operative-admission override byte; nonzero permits count above ceiling.
 pub const ADMISSION_OVERRIDE_RVA: Rva = Rva(0x033d_da9e);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -61,9 +35,7 @@ pub struct Row {
     pub defense_raw: i64,
     pub active_count: i32,
     pub admission_ceiling: i32,
-    /// The serializer preserves this dword; its gameplay meaning is unresolved.
     pub unknown_f0: u32,
-    /// [`CREATED`], the raw byte.
     pub created: u8,
     pub name: crate::csubject_relation::Name,
 }
@@ -77,8 +49,6 @@ pub struct UpgradeWalk {
     pub upgrades: crate::agency_upgrade_levels::Walk,
 }
 
-/// Entries and scalar rows share one country census and authenticated
-/// agency root. The created byte filters neither table.
 pub fn walk_with_upgrades(
     memory: &impl Memory,
     base: usize,
@@ -147,9 +117,6 @@ fn walk_shared(
         let mut ahead = None;
         let mut block = [0_u8; BLOCK];
         for slot in 1..countries.count() {
-            // The next slot's census entry and agency link are read while
-            // this country is, the agency's block hinted; each is used at
-            // its own place.
             let (listed, link) = Ahead::take(&mut ahead, &countries, slot);
             let Some(country) = listed? else {
                 continue;
@@ -166,8 +133,6 @@ fn walk_shared(
                 continue;
             };
             each(country.id, pointer);
-            // The agency-name tooltip copies the agency name verbatim for a created agency, even an
-            // empty name; name assignment writes the same bytes. Never localise it again.
             let name = if whole {
                 Literal::from_header(
                     at(pointer, NAME)?,
@@ -234,11 +199,9 @@ pub struct CapturedOperativeRow {
     pub country: u32,
     pub ordinal: u32,
     pub operative: u64,
-    /// None only when operative resolution returns null.
     pub owner: Option<u32>,
 }
 
-/// Live roster count only, summed through the same guarded header walk.
 pub fn captured_operative_demand(
     memory: &impl Memory,
     base: usize,
@@ -257,9 +220,6 @@ pub fn count_captured_operatives(memory: &impl Memory, base: usize, game_state: 
     walk_captured_operatives_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Walk the captured-operative array (`CAPTURED_OPERATIVE_REFERENCES`, with its count), stride
-/// 0x38, resolve each entry's handle and read the operative's raw owner
-/// (`coperative_leader::OWNER_COUNTRY`). Never call the game.
 pub fn walk_captured_operatives(
     memory: &impl Memory,
     base: usize,
@@ -359,14 +319,8 @@ pub fn walk_captured_operatives_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The agency's bytes a row reads, from its vtable to its defense: its
-/// identity, name header, active roster header and scalars.
 const BLOCK: usize = DEFENSE + 8;
 
-/// [`root`] reading the agency's [`BLOCK`] whole into `block` after its link
-/// (as the walk holds it, [`Link`]), and whether it did. A block that does not
-/// read whole is read field by field as [`root`] and the row's reads do,
-/// once, and counted.
 fn root_block(
     memory: &impl Memory,
     base: usize,
@@ -422,7 +376,6 @@ pub fn root(
     authenticate(memory, base, country, pointer)
 }
 
-/// The agency's vtable and owner checks.
 fn authenticate(
     memory: &impl Memory,
     base: usize,
@@ -431,12 +384,9 @@ fn authenticate(
 ) -> Result<Option<usize>, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("agency vtable address overflow")?;
-    // The vtable and owner, read back to back, in one guarded gather of the
-    // agency; the first field it did not complete fails as its read would.
     const FIELDS: [RecordField; 2] = packed_fields([(0, 8), (OWNER_COUNTRY, 8)]);
     const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 16).unwrap();
     if pointer.checked_add(OWNER_COUNTRY + 8).is_none() {
-        // Unreachable for a readable vtable; the reads it replaces.
         if read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("agency vtable mismatch");
         }
@@ -462,7 +412,6 @@ fn authenticate(
     Ok(Some(pointer))
 }
 
-/// The scalar fields a row records.
 struct Scalars {
     upgrade_progress_raw: i64,
     defense_raw: i64,
@@ -485,9 +434,6 @@ impl Scalars {
     }
 }
 
-/// The row's five scalars, which the walk reads back to back: one guarded
-/// gather of the agency, in ascending field order. Every one of those reads
-/// fails with the same reason, so any incomplete field gives it.
 fn scalars(memory: &impl Memory, pointer: usize) -> Result<Scalars, &'static str> {
     const FIELDS: [RecordField; 5] = packed_fields([
         (CREATED, 1),
@@ -498,7 +444,6 @@ fn scalars(memory: &impl Memory, pointer: usize) -> Result<Scalars, &'static str
     ]);
     const LAYOUT: RecordLayout<'static> = RecordLayout::new(&FIELDS, 25).unwrap();
     if pointer.checked_add(DEFENSE + 8).is_none() {
-        // Unreachable for an authenticated agency; the reads it replaces.
         return Ok(Scalars {
             upgrade_progress_raw: field(memory, pointer, UPGRADE_PROGRESS)?,
             defense_raw: field(memory, pointer, DEFENSE)?,
@@ -532,9 +477,6 @@ fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<
 #[path = "cintelligence_agency_cost_baseline.rs"]
 mod baseline;
 
-/// Synthetic images of countries that each have an agency (inline name and
-/// scalars) whose cryptology holds decryption states, for the gather tests
-/// (offset image) and the cost benches (real addresses).
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -542,13 +484,11 @@ pub(crate) mod test_support {
         ccountry::synthetic::World, ccountry_decryption_state as state, ccryptology, msvc_string,
     };
 
-    /// What [`populate`] writes through.
     pub(crate) trait Image {
         fn alloc(&mut self, len: usize) -> usize;
         fn u64(&mut self, address: usize, value: u64);
         fn u32(&mut self, address: usize, value: u32);
         fn array(&mut self, header: usize, data: usize, count: u32);
-        /// The value a native vtable holds for `rva`.
         fn vtable(&self, key: Rva) -> u64;
     }
 
@@ -589,8 +529,6 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Gives country `objects[slot]` (slots 1.., `objects[0]` unused) an
-    /// agency and a cryptology of `states` states.
     pub(crate) fn populate(image: &mut impl Image, objects: &[usize], states: u32) {
         let countries = objects.len() as u32 - 1;
         for (slot, &country) in objects.iter().enumerate().skip(1) {
@@ -625,7 +563,6 @@ pub(crate) mod test_support {
         }
     }
 
-    /// An offset image read through `SliceMemory`, module base 0.
     pub(crate) fn intel_world(countries: u32, states: u32) -> World {
         let mut w = World::new(0, countries, ccountry::INTELLIGENCE_AGENCY + 8);
         let objects: Vec<usize> = (0..=countries).map(|slot| w.object(slot)).collect();
@@ -633,8 +570,6 @@ pub(crate) mod test_support {
         w
     }
 
-    /// A real-address image for `LiveMemory`: the arena (its base is the
-    /// module base) and the game state.
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     pub(crate) fn intel_arena(
         countries: usize,
@@ -655,15 +590,10 @@ mod tests {
     use super::*;
     use crate::{cgame_state, memory::SliceMemory};
 
-    /// Country `slot`'s agency in [`test_support::intel_world`].
     fn agency(w: &crate::ccountry::synthetic::World, slot: u32) -> usize {
         read::<u64>(&w.memory(), w.object(slot) + ccountry::INTELLIGENCE_AGENCY).unwrap() as usize
     }
 
-    /// The batched walk over `memory` and the serial walk over
-    /// `serial_memory` (each its own source, so a one-shot fault meets each
-    /// walk) into `rows` rows and `names` name bytes: the batched walk's
-    /// rows, names and outcome, then the serial walk's.
     fn both(
         memory: &impl Memory,
         serial_memory: &impl Memory,
@@ -679,10 +609,6 @@ mod tests {
         [(new, new_rows, new_names), (old, old_rows, old_names)]
     }
 
-    /// On healthy memory the batched walk returns the serial walk's rows,
-    /// names and outcome at 5,000 countries, truncated or not, reading each
-    /// agency's row as one block after its link: 2 spans per agency
-    /// instead of 10.
     #[test]
     fn batched_agencies_match_the_serial_walk() {
         use crate::memory::{CountedMemory, ReadCounts};
@@ -712,9 +638,6 @@ mod tests {
         assert_eq!(new_reads.spans + 8 * n, old_reads.spans);
     }
 
-    /// The faults the equality tests place: agency bytes the serial walk
-    /// never reads (its recruitment), its name header, the agency link of a
-    /// country read ahead and its defense.
     fn fault_sites(w: &crate::ccountry::synthetic::World) -> [std::ops::Range<usize>; 4] {
         let agency = agency(w, 3);
         let link = w.object(4) + ccountry::INTELLIGENCE_AGENCY;
@@ -726,14 +649,10 @@ mod tests {
         ]
     }
 
-    /// This thread's IntelligenceAgencies fallbacks.
     fn fallbacks() -> u64 {
         crate::batch_fallback::count(crate::batch_fallback::Batch::IntelligenceAgencies)
     }
 
-    /// A persistent fault gives the serial walk's result: a block it breaks
-    /// is read again field by field and a link whose read ahead failed is
-    /// read again at its turn, each once and counted once.
     #[test]
     fn a_persistent_agency_fault_gives_the_serial_result() {
         use crate::batch_fallback::Faulty;
@@ -755,9 +674,6 @@ mod tests {
         }
     }
 
-    /// A one-shot fault never refuses more than the serial walk: a block it
-    /// breaks reads again field by field, and a link read ahead that faulted
-    /// is read again at its turn, each counted once.
     #[test]
     fn a_one_shot_agency_fault_refuses_no_more_than_the_serial_walk() {
         use crate::batch_fallback::Faulty;
@@ -777,10 +693,6 @@ mod tests {
         }
     }
 
-    /// [`test_support::intel_world`] of eight countries whose slot 3 is null
-    /// and slot 5 an alias of country 4, with a 40-byte heap name for
-    /// country 1, an empty name for country 2 and a 20-byte heap name for
-    /// country 6.
     fn edge_world() -> crate::ccountry::synthetic::World {
         use crate::msvc_string;
         let mut w = test_support::intel_world(8, 2);
@@ -803,9 +715,6 @@ mod tests {
         w
     }
 
-    /// The batched walk matches the serial walk around null and alias
-    /// census slots and under every split of row and name capacity, with
-    /// heap and empty names, a long name omitted before shorter ones fit.
     #[test]
     fn batched_agencies_match_the_serial_walk_at_name_and_slot_edges() {
         let w = edge_world();
@@ -818,9 +727,6 @@ mod tests {
         assert_eq!(full.0.required_bytes, 78);
     }
 
-    /// The agencies the walk hands its visitor (the upgrade capture's) are
-    /// the serial walk's, in its order, healthy or under a persistent fault
-    /// that ends the walk at a later country.
     #[test]
     fn upgrade_visits_match_the_serial_walk_under_persistent_faults() {
         use crate::batch_fallback::Faulty;
@@ -878,7 +784,6 @@ mod tests {
             .unwrap_or(5_000_u32);
         let (arena, state) = test_support::intel_arena(countries as usize, 3);
         let offset = arena.base();
-        // SAFETY: the arena stays allocated and unchanged while read.
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let mut rows = vec![Row::default(); countries as usize];
         let mut names = vec![0; countries as usize * 6];
@@ -1119,7 +1024,6 @@ mod tests {
             (-3_i32).to_le_bytes(),
         );
         put(&mut bytes, 0x5000 + UNKNOWN_F0, u32::MAX.to_le_bytes());
-        // The raw byte, not a normalised boolean.
         put(&mut bytes, 0x5000 + CREATED, [0x7f]);
         let memory = SliceMemory {
             base: 0,

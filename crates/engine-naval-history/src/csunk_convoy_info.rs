@@ -1,20 +1,10 @@
-//! Persistent sunk-convoy aggregate records. The first month/killer/owner
-//! observation creates a bucket and later observations increment it. Vector
-//! order is first-seen order. Transient route/combat attribution requires a
-//! separate event observation and cannot be recovered from aggregates.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_0218);
-/// CSunkConvoyInfo complete read extent.
 pub const READ_EXTENT: usize = 0x18;
-/// CSunkConvoyInfo native i32 month bucket.
 pub const MONTH: usize = 0x08;
-/// CSunkConvoyInfo native i32 sunk-convoy count.
 pub const CONVOYS: usize = 0x0c;
-/// CSunkConvoyInfo native u32 killer country link.
 pub const KILLER_COUNTRY: usize = 0x10;
-/// CSunkConvoyInfo native u32 owner country link.
 pub const OWNER_COUNTRY: usize = 0x14;
 
 use crate::{
@@ -24,9 +14,6 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// One native aggregate bucket. The ordinal preserves first-seen order but is
-/// not row identity: the engine searches by month and country equivalence.
-/// Raw country references remain unchanged, including an unknown killer zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub month: i32,
@@ -37,7 +24,6 @@ pub struct Row {
 }
 
 impl Row {
-    /// Exact native bucket fields; no pointer or collector sequence is stored.
     pub fn key(self) -> u128 {
         (u128::from(self.month as u32) << 64)
             | (u128::from(self.killer_country) << 32)
@@ -49,8 +35,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Worker rows grow from the original aggregate header, including appended
-/// buckets without country-roster changes.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

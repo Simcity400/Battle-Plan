@@ -1,4 +1,3 @@
-//! Shared deployed modifier roots carried by the existing tree writers.
 use crate::clock::qpc;
 use collector_observers::division_panel_changes as operands;
 
@@ -20,11 +19,7 @@ use engine_native::{
 use replay_data::rows::{DivisionPanelSourceRow, SharedDivisionPanelSourceRow};
 use std::sync::{Arc, OnceLock};
 type RowSnapshot = Snapshot<SharedDivisionPanelSourceRow>;
-/// Keys include full handles, whose low 32 bits are the shared kind, so the
-/// hasher must mix high bits down. Where order shows, keys are sorted first.
 type Map<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
-/// Bytes of a std hash table at full `capacity`: entries, then a control byte
-/// per bucket and one trailing SSE2 group.
 fn table_bytes<K, V>(capacity: usize) -> usize {
     const GROUP: usize = 16;
     if capacity == 0 {
@@ -38,8 +33,6 @@ fn table_bytes<K, V>(capacity: usize) -> usize {
     let align = std::mem::align_of::<(K, V)>().max(GROUP);
     (std::mem::size_of::<(K, V)>() * buckets).next_multiple_of(align) + buckets + GROUP
 }
-/// A held map and its table's bytes. Removals keep a table's storage while
-/// lowering `capacity`, so the size is taken when a new key may grow it.
 struct Table<K, V> {
     map: Map<K, V>,
     bytes: usize,
@@ -53,7 +46,6 @@ impl<K, V> Default for Table<K, V> {
     }
 }
 impl<K: Eq + std::hash::Hash, V> Table<K, V> {
-    /// `insert` reserves before it looks, so a held key could grow a full table.
     fn put(&mut self, key: K, value: V) {
         match self.map.entry(key) {
             std::collections::hash_map::Entry::Occupied(mut held) => {
@@ -144,8 +136,6 @@ impl SourceSnapshot {
             .map(Arc::as_ref)
             .map_err(|&reason| reason)
     }
-    /// Validate on either side of projection, including unchanged-row carries.
-    /// A reset never erases independent source roots, membership or state terms.
     pub fn publish<T>(&self, project: impl Fn(&RowSnapshot) -> T) -> Result<T, &'static str> {
         if !self.current() {
             return Ok(project(self.withdrawn()?));
@@ -158,8 +148,6 @@ impl SourceSnapshot {
         }
     }
 }
-/// Independent per-division observations. Only the ordered consumer inserts
-/// shared country/commander/province results or changes certified source rows.
 #[derive(Clone, Copy)]
 pub struct Selection {
     country: Option<(u32, Result<ccountry::Country, &'static str>)>,
@@ -167,11 +155,9 @@ pub struct Selection {
     commander: Option<(usize, Result<u64, &'static str>)>,
     province: Result<usize, &'static str>,
     context: Option<Result<Option<(u32, usize)>, &'static str>>,
-    // Frozen with this census ordinal rather than hashed again per division.
     membership: Option<((u64, u64), usize)>,
 }
 
-/// Reused range-local read memos; ranges register cold writer certificates.
 pub struct Preparation {
     memo: carmy_leader::LeaderMemo,
     countries: Map<u32, Result<ccountry::Country, &'static str>>,
@@ -204,7 +190,6 @@ impl Preparation {
     pub fn has_variant(&self, handle: u64, pointer: usize) -> bool {
         self.reads.has_variant(handle, pointer)
     }
-    /// The trees, memberships, variants and states this range read for the ordered admission.
     #[cfg(test)]
     fn staged_reads(&self) -> usize {
         self.reads.staged()
@@ -216,7 +201,6 @@ impl Preparation {
             + table_bytes::<usize, u64>(self.commanders.capacity())
             + table_bytes::<usize, Option<(u32, usize)>>(self.provinces.capacity())
     }
-    /// Optional staging shortage keeps the original ordered reader.
     pub fn begin(&mut self, divisions: usize) -> bool {
         self.local_province_refusal = false;
         self.countries.clear();
@@ -258,7 +242,6 @@ impl Preparation {
             })
         });
         let led = country.is_some_and(|(_, country)| country.is_ok());
-        // The census selected the commander once for every consumer.
         let movement = (led && seed.selected.is_none()).then(|| {
             carmy_leader::MovementPreparation::capture(memory, base, seed, &mut self.memo)
         });
@@ -305,8 +288,6 @@ impl Preparation {
                 .get(&seed.division)
                 .is_some_and(|held| held.context_refusal == Some(reason))
             {
-                // A new refusal can fail allocation before certification.
-                // Only an already published refusal may bypass that barrier.
                 self.reads.incomplete();
             }
         }
@@ -352,10 +333,6 @@ impl Preparation {
                 None
             }
         });
-        // Failed shared selections can make an earlier range's admitted memo
-        // choose a branch this range never read. A selected-province refusal
-        // is local to this division: it cannot insert a shared context or
-        // demand state operands. Its retained refusal needs no new admission.
         if country.is_some_and(|(_, value)| value.is_err())
             || commander.is_some_and(|(_, value)| value.is_err())
             || context.is_some_and(|value| value.is_err())
@@ -477,12 +454,8 @@ fn owner_range(kind: u8, owner: u64) -> std::ops::Range<u128> {
     let start = key(kind, owner, 0);
     start..start + (1u128 << 32)
 }
-/// What a store of an earlier world holds for this hour's admission: nothing.
 static FORGOTTEN: std::sync::LazyLock<Store> = std::sync::LazyLock::new(Store::default);
 impl Store {
-    /// The store this hour's ordered admission begins from, for range reads: a store of an
-    /// earlier world is forgotten before anything is admitted, so ranges read as for an empty
-    /// one. `None` when the world moved after the boundary was captured.
     fn admitted(&self) -> Option<&Store> {
         let world = operands::world_epoch();
         if self.world_epoch == world {
@@ -540,8 +513,6 @@ impl Store {
         accumulator: usize,
         reads: Option<&NativeReads>,
     ) -> Result<(), &'static str> {
-        // Repeated roots retain the first admission, including a refusal.
-        // Their lookup cost belongs to selection, with no per-hit timer read.
         if self
             .roots
             .get(&(kind, owner))
@@ -777,8 +748,6 @@ impl Store {
             .map_err(|_| "attrition dirty ranges allocation failed")?;
         self.dirty.extend_from_slice(&boundary.dirty);
         let operand_epoch = boundary.variant_epoch;
-        // A domain epoch change revokes all its held operands; this is a
-        // recovery acquisition, never a quiet-hour membership scan.
         let variant_recovery = self.variant_epoch != operand_epoch;
         self.variant_epoch = operand_epoch;
         let countries = if self.settling_owned {
@@ -936,8 +905,6 @@ impl Store {
                 self.context_refusal(seed.division, selection_failure.or(context_result.err()));
             result?;
         }
-        // Variant pointers touched by a rebuild refresh only that shared
-        // operand. New memberships seed their variants in membership().
         let begin = qpc();
         let result = if self.membership_changed || self.context_changed {
             self.prune()
@@ -950,7 +917,6 @@ impl Store {
             self.dirty.clear();
             engine_allocation::reserve(&mut self.dirty, self.variants.len())
                 .map_err(|_| "variant certificate recovery allocation failed")?;
-            // In handle order, as an ordered variant map refreshed them.
             let mut handles = Vec::new();
             engine_allocation::reserve(&mut handles, self.variants.len())
                 .map_err(|_| "variant certificate recovery allocation failed")?;
@@ -976,7 +942,6 @@ impl Store {
         let begin = qpc();
         operands::demand(self.pools.len(), self.variants.len(), self.states.len());
         changes::division_trees(self.roots.len());
-        // Roots no longer demanded publish only their removed ranges.
         let mut gone = Vec::new();
         for (&identity, held) in &self.roots {
             if held.seen != self.turn {
@@ -1012,8 +977,6 @@ impl Store {
         })();
         let finished = qpc();
         self.phase_ticks[3] += finished.saturating_sub(begin).max(0) as u64;
-        // Selection/setup is the residual of this pass, including repeated
-        // memo hits; it needs no pair of timer reads on every division.
         self.phase_ticks[0] = (finished.saturating_sub(setup).max(0) as u64)
             .saturating_sub(self.phase_ticks[1..].iter().sum());
         if result.is_ok() {
@@ -1053,10 +1016,6 @@ impl Store {
                         .iter()
                         .any(|&(_, _, pointer)| retired.binary_search(&pointer).is_ok())
                 {
-                    // The cached address no longer proves a live binding.
-                    // membership() authenticates the current pool before any
-                    // dirty variant address can be followed, and prune drops
-                    // removed bindings before the dirty-operand pass.
                     held.certificate = None;
                 }
             }
@@ -1137,7 +1096,6 @@ impl Store {
             reason: Vec::new(),
         }))
     }
-    /// A re-read equal to its certified row inserts nothing, so it needs no row allocation.
     fn terrain_operand(&mut self, owner: u64, ordinal: u32, raw: i64) -> Result<(), &'static str> {
         let value = game_model::modifier_breakdown::SourceValue { key: 0, raw };
         if self.rows.get(key(3, owner, ordinal)).is_some_and(|row| {
@@ -1249,8 +1207,6 @@ impl Store {
             }
             Err(reason) => {
                 operands::refused();
-                // The failed attempt may have emitted more rows than the
-                // previous baseline. Withdraw its complete ordinal range.
                 self.rows
                     .remove_range(key(3, handle, 1)..owner_range(3, handle).end)?;
                 self.refusal_row(3, handle, reason, "attrition refusal allocation failed")?;
@@ -1290,8 +1246,6 @@ impl Store {
     ) -> Result<(), &'static str> {
         self.membership_prepared(memory, base, seed, None, None, None)
     }
-    /// `quiet`, the hour's take of pool writer marks, carries a held pool no writer touched
-    /// without querying its certificate.
     fn membership_prepared(
         &mut self,
         memory: &impl Memory,
@@ -1364,9 +1318,6 @@ impl Store {
                 .is_some_and(|summary| summary.node.is_some())
             && held.variants.as_ref() == &self.membership_scratch
         {
-            // Only a successful summary can carry equal membership. A refusal's
-            // empty list must be replaced by a newly observed successful empty list.
-            // Quantity-only changes have no membership delta or allocation.
             held.certificate = certificate;
             held.count = count;
             held.seen = self.turn;
@@ -1743,8 +1694,6 @@ mod tests {
                 .capture(&world, 0, STATE, seeds, &mut selection)
                 .unwrap();
             assert_eq!(complete(snapshot), complete(&expected));
-            // Completion order differs from settlement order, including the
-            // full-roster pass and its refused/recovered context hours.
             for parts in [1, 2, 7, 31] {
                 let mut contexts = vec![None; seeds.len()];
                 let mut staged = Store::default();
@@ -1825,8 +1774,6 @@ mod tests {
                     let actual = if pass == 0 {
                         capture()
                     } else {
-                        // Both paths preserve a quiet certified snapshot without
-                        // allocation; Owned panics on any accidental native read.
                         collector_test_support::with_allocations_denied(capture)
                     };
                     assert_eq!(complete(&actual), complete(&expected));
@@ -1854,8 +1801,6 @@ mod tests {
         });
         assert!(Arc::ptr_eq(&first, &quiet));
 
-        // A first local refusal may allocate its reason before certification.
-        // Even with warm membership, keep that failure on the ordered path.
         let mut serial_refusal = Store::default();
         let mut staged_refusal = Store::default();
         let mut serial_selected = Vec::new();
@@ -1909,9 +1854,6 @@ mod tests {
         assert_eq!(staged_selected, serial_selected);
         assert_eq!(staged_refusal.turn, serial_refusal.turn);
 
-        // No country selection reaches the independent tree domain: these
-        // refused contexts still exercise owned membership settlement,
-        // exact refusal publication and quiet persistent-root reuse.
         let mut ownerless = seeds.clone();
         for seed in &mut ownerless {
             seed.roster_owner = None;
@@ -1922,11 +1864,6 @@ mod tests {
             .unwrap();
         assert_eq!(selected, assert_fresh(&ownerless_rows, &ownerless));
 
-        // A local province refusal cannot make another division reach a new
-        // branch. With its effective refusal already retained, even across
-        // range boundaries it need not pull the warm source pass into the
-        // pause. Cold admission and denied quiet-hour allocations still
-        // follow the same differential above.
         for index in [0, DIVISIONS / 2, DIVISIONS - 1] {
             ownerless[index].ordinary_route = None;
         }
@@ -1935,8 +1872,6 @@ mod tests {
             .unwrap();
         assert_eq!(selected, assert_fresh(&ownerless_refused, &ownerless));
 
-        // Context is still evaluated hourly: a new refusal changes exactly its
-        // own row, repeated refusals carry, and recovery removes that row.
         seeds[0].ordinary_route = None;
         let refused = store
             .capture(&world, 0, STATE, &seeds, &mut selected)
@@ -1962,7 +1897,6 @@ mod tests {
         assert_eq!(recovered.rows.ranges.len(), 1);
         assert!(recovered.rows.changed.is_empty());
 
-        // A replacement has the retired division's address, not its identity.
         let mut new = seeds.remove(1);
         new.division = DIVISIONS as u64 + 1;
         new.ordinary_route = None;
@@ -1996,8 +1930,6 @@ mod tests {
         assert!(store.rows.get(key(6, new.division, 0)).is_none());
         assert_eq!(complete(&first), complete(&recovered));
 
-        // Faulted country, commander and province/state reads must settle the
-        // same rows, refusals and held certificates at the same census positions.
         const GROUP: usize = 0x2000;
         const LEADER: usize = 0x2800;
         const PROVINCE: usize = 0x3000;
@@ -2116,8 +2048,6 @@ mod tests {
         }
     }
 
-    /// A forced hour's store belongs to an earlier world: the ranges read every membership as
-    /// for an empty store, and the ordered admission, which forgets that store, reads none.
     #[test]
     fn a_store_of_an_earlier_world_is_staged_as_empty_and_admitted_without_pool_reads() {
         use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
@@ -2339,8 +2269,6 @@ mod tests {
         assert!(!store.rows.get(summary).unwrap().reason.is_empty());
         assert!(store.pools[&seed.division].variants.is_empty());
 
-        // The real pool writer notification changes the held certificate.
-        // Reading the now accessible empty pool must replace its refusal summary.
         drop(operands::notify(pool));
         store.turn += 1;
         world.deny.set(false);
@@ -2361,8 +2289,6 @@ mod tests {
             std::slice::from_ref(&(summary..summary + 1))
         );
 
-        // A subsequent successful empty read still takes the allocation-free
-        // equality path, and quiet hours retain the recovered snapshot without reads.
         let membership = Arc::clone(&store.pools[&seed.division].variants);
         drop(operands::notify(pool));
         store.turn += 1;
@@ -2495,8 +2421,6 @@ mod tests {
                     .is_none()
             );
 
-            // Exercise the publication guard independently of acquisition bookkeeping:
-            // a higher terrain row with no admitted baseline must never be exposed.
             store
                 .operand(
                     3,
@@ -2619,8 +2543,6 @@ mod tests {
         assert_eq!(world.reads.get(), 0);
         assert!(Arc::ptr_eq(&changed, &store.rows.finish().unwrap()));
 
-        // Reset after acquisition, without delivering an enabled notification.
-        // A suspended publisher may still hand us the old stamp afterward.
         store.operand(0, 7, 0, Vec::new()).unwrap();
         let acquired = SourceSnapshot {
             rows: store.rows.finish().unwrap(),
@@ -2699,7 +2621,6 @@ mod tests {
     #[test]
     fn memo_hashing_spreads_handles_that_share_their_kind() {
         use std::hash::BuildHasher;
-        // Same-kind handles differ only above bit 32; their bucket bits must still vary.
         let hasher = Map::<u64, ()>::default().hasher().clone();
         let buckets: std::collections::BTreeSet<u64> = (1..=1024u64)
             .map(|id| hasher.hash_one((id << 32) | 0x27) & 1023)
@@ -2746,7 +2667,6 @@ mod tests {
         for ordinal in 0..3 {
             put(&mut world.bytes, values + ordinal * 8, ordinal as u64 + 5);
         }
-        // Every hour must publish what a store without history publishes.
         let fresh = |world: &World| {
             let mut fresh = Store::default();
             fresh.variant(world, 0, handle, pointer).unwrap();
@@ -2771,8 +2691,6 @@ mod tests {
             fresh(&world)
         );
 
-        // A writer moved the certificate but left every value: the reread
-        // reaches native memory, yet inserts and allocates nothing.
         moved();
         world.reads.set(0);
         collector_test_support::with_allocations_denied(|| {
@@ -2781,7 +2699,6 @@ mod tests {
         });
         assert!(world.reads.get() > 0, "a moved certificate must reread");
 
-        // One changed ordinal publishes exactly that ordinal.
         put(&mut world.bytes, values + 8, (-3i64) as u64);
         moved();
         store.variant(&world, 0, handle, pointer).unwrap();
@@ -2798,7 +2715,6 @@ mod tests {
             fresh(&world)
         );
 
-        // Growth adds only the new ordinal; shrinking removes only the old one.
         resize(&mut world.bytes, 4);
         put(&mut world.bytes, values + 24, 11);
         moved();
@@ -2824,8 +2740,6 @@ mod tests {
             fresh(&world)
         );
 
-        // A held refusal is never equal to a value: recovering with the
-        // values it replaced republishes ordinal zero and the later rows.
         world.deny.set(true);
         moved();
         store.variant(&world, 0, handle, pointer).unwrap();
@@ -2908,8 +2822,6 @@ mod tests {
         let unrelated = store.pools[&8].certificate;
         let membership = Arc::clone(&store.pools[&8].variants);
 
-        // A consuming native writer leaves a zero occurrence. The cached
-        // pointer remains deliberately unreadable after its Before phase.
         operands::variant_before(pointer);
         operands::variant_retiring(pointer);
         put(&mut world.bytes, entries + 8, 0);

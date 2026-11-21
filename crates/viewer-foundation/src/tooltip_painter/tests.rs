@@ -83,7 +83,7 @@ fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types(
     ));
     assert_eq!(authored_wrap_width(&preferred).unwrap(), 500.);
     let zero = fixture_with(read(br#"guiTypes={textBoxType={name=ToolTip maxWidth=0}}"#));
-    assert_eq!(authored_wrap_width(&zero).unwrap(), 0.); // An authored zero is native data.
+    assert_eq!(authored_wrap_width(&zero).unwrap(), 0.);
 
     let wrong = fixture_with(read(
         br#"guiTypes={containerWindowType={name=ToolTip size={width=500 height=20}}
@@ -126,9 +126,7 @@ fn naval_ship_tooltip_anchors_to_the_free_window_side_at_y_plus_250() {
     let window = [600., 100., 900., 650.];
     assert_eq!(naval_ship_anchor(window, 700., 500., 2400.), [100., 350.]);
     assert_eq!(naval_ship_anchor(window, 1200., 500., 2400.), [1500., 350.]);
-    // A right-side hover moves left when the authored tooltip width cannot fit.
     assert_eq!(naval_ship_anchor(window, 1200., 500., 1800.), [100., 350.]);
-    // When left touches zero it instead chooses right, even for a left-row hover.
     assert_eq!(
         naval_ship_anchor([500., -300., 900., 600.], 600., 500., 2400.),
         [1400., 0.]
@@ -157,19 +155,14 @@ fn naval_ship_tooltip_anchors_to_the_free_window_side_at_y_plus_250() {
 
 #[test]
 fn authored_anchor_takes_no_pointer_offset_and_flips_by_size_plus_twenty() {
-    // A relative anchor x = -158 from a control at [1700, 1000], resolved by its window.
     let at = |below| TooltipPosition {
         point: [1750., 1010.],
         anchor: Some(Explicit::At { at: [1542., 1000.], below }),
     };
     assert_eq!(placed(at(true), [300., 60.], [2400., 1100.], [0; 4], 500.), [1542., 1000.]);
-    // Past the bottom edge it flips up by its height and the twenty-pixel gap.
     assert_eq!(placed(at(true), [300., 200.], [2400., 1100.], [0; 4], 500.), [1542., 780.]);
-    // Past the right edge the flip is from the anchor, not the pointer.
     assert_eq!(placed(at(true), [900., 60.], [2400., 1100.], [0; 4], 500.), [622., 1000.]);
-    // `below = no` lifts it by its height before the edge test.
     assert_eq!(placed(at(false), [300., 60.], [2400., 1100.], [0; 4], 500.), [1542., 940.]);
-    // The screen offsets clamp it first.
     assert_eq!(placed(at(false), [300., 60.], [2400., 1100.], [1600, 0, 0, 0], 500.), [1600., 940.]);
 }
 
@@ -208,7 +201,6 @@ fn shortcut_only_hover_waits_for_show_delay_and_tail_follows_delayed_body() {
     let shortcut = "Shortcut: \u{13}ESCAPE";
     let mut hover = HoverState::default();
     let hit = Some(("", None, Some(shortcut), RECT));
-    // the game appends the shortcut before applying the ordinary show deadline.
     assert_eq!(hover.shown(hit, POINT, start, TIMING), None);
     assert_eq!(
         hover.shown(hit, POINT, start + Duration::from_millis(50), TIMING),
@@ -233,7 +225,6 @@ fn shortcut_only_hover_waits_for_show_delay_and_tail_follows_delayed_body() {
             POINT.unwrap()
         ))
     );
-    // A new hit owns every part; a shortcut never leaks to the next widget.
     assert_eq!(
         hover.shown(
             Some(("Next", None, None, RECT)),
@@ -247,8 +238,6 @@ fn shortcut_only_hover_waits_for_show_delay_and_tail_follows_delayed_body() {
 
 #[test]
 fn hover_preserves_authored_whitespace_in_tooltip_parts() {
-    // The clock runs a second before the hover, so a zero delay's
-    // deadline is set (above 0).
     let clock = Instant::now();
     let start = clock + Duration::from_secs(1);
     let mut hover = HoverState::default();
@@ -328,10 +317,6 @@ fn hide_delay_retains_last_text_and_reentry_cancels_hiding() {
     );
 }
 
-/// The delays are the game's floats, only compared: a
-/// negative `TOOLTIP_DELAYED_DELAY` passes `delay < elapsed` at once, so
-/// the body joins on the first frame, and a negative show delay shows at
-/// once; neither disables the tooltip.
 #[test]
 fn negative_delays_follow_the_native_comparisons() {
     let defines = Defines::new().unwrap();
@@ -346,8 +331,6 @@ fn negative_delays_follow_the_native_comparisons() {
         .unwrap();
     let timing = TooltipDefines::read(&defines).unwrap().timing;
     assert_eq!(timing, [-1.0, -0.5, 0.05]);
-    // Two seconds into the presentation clock the show deadline, one
-    // second, is set and already passed.
     let clock = Instant::now();
     let start = clock + Duration::from_secs(2);
     let mut hover = HoverState::default();
@@ -358,8 +341,6 @@ fn negative_delays_follow_the_native_comparisons() {
         Some(("Header\n--------------\nBody", POINT.unwrap()))
     );
     assert_eq!(hover.next_change(start, timing), None);
-    // A NaN never passes `delay < elapsed`, so the body never joins, and
-    // nothing is scheduled for it.
     let mut hover = HoverState::default();
     let nan = [0.0, f32::NAN, 0.05];
     hover.shown(None, None, clock, nan);
@@ -374,11 +355,6 @@ fn negative_delays_follow_the_native_comparisons() {
     );
 }
 
-/// the game keeps the show deadline on the presentation clock
-/// and reads one at or below 0 as unset, setting it again on
-/// each frame: with a show delay of -1, a hover in the clock's first
-/// second waits until the deadline `now - 1` rises above 0, then shows at
-/// once. The hide deadline follows the same rule.
 #[test]
 fn a_deadline_at_or_below_zero_on_the_presentation_clock_is_unset() {
     let clock = Instant::now();
@@ -388,7 +364,6 @@ fn a_deadline_at_or_below_zero_on_the_presentation_clock_is_unset() {
     let hit = Some(("Header", None, None, RECT));
     assert_eq!(hover.shown(hit, POINT, clock, timing), None);
     assert_eq!(hover.shown(hit, POINT, at(500), timing), None);
-    // The deadline holds once the clock passes one second.
     let next = hover.next_change(at(500), timing).unwrap();
     assert!(
         next > Duration::from_millis(499) && next < Duration::from_millis(501),
@@ -398,9 +373,7 @@ fn a_deadline_at_or_below_zero_on_the_presentation_clock_is_unset() {
         hover.shown(hit, POINT, at(1100), timing),
         Some(("Header", POINT.unwrap()))
     );
-    // The hide deadline, `now - 1`, is above 0 by now: it hides at once.
     assert_eq!(hover.shown(None, None, at(1200), timing), None);
-    // In the clock's first second the hide waits instead.
     let timing = [0.05, 1.0, -1.0];
     let mut hover = HoverState::default();
     hover.shown(None, None, clock, timing);

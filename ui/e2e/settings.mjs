@@ -28,8 +28,6 @@ export const edgeLaunchOptions = {
     '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
 };
 
-/** The retained Job owns shutdown. Playwright's newly installed exit listener
- * would instead terminate a PID tree and remove a profile before Edge is reaped. */
 export async function launchOwnedBrowser(chromium) {
   if (!(process.env.BATTLE_PLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Owned Job required for Edge');
   const prior = new Set(process.listeners('exit'));
@@ -50,8 +48,6 @@ export async function deterministicPage(page) {
     throw new Error('The parity fixture requires DPR 1; use the installed Edge fixture');
   }
   await page.addInitScript(() => {
-    // Only the appearance preference is seeded. Campaign selection still uses
-    // the recorded LocalPlayer and widget defaults from the tested registry.
     localStorage.setItem('hoi4-replay.appearance.v2', JSON.stringify({
       version: 2, scheme: 'dark', themes: { dark: 'carbon', light: 'carbon' }, custom: [],
       contrast: 100, glass: 100, radius: 8, motion: 'reduced', headerFlag: 'native',

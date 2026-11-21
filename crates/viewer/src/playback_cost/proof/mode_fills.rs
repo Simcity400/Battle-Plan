@@ -1,6 +1,3 @@
-//! The mode fills line: the layer's picture of the view's map mode, built on its worker from rows
-//! at the head, against today's political part at that mode from the recording's frame of the same
-//! hour, and against itself built again from the same rows. At the default mode it draws nothing.
 
 use super::{Compared, Document, Layer, Mirrors};
 use crate::layers::mode_fills::{Fill, ModeFills, Paint};
@@ -8,8 +5,6 @@ use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Duration};
 use viewer_foundation::map::perspective::Choice;
 
-/// How long a comparison waits for the worker's product at the hour; one not built by then is
-/// counted as loading, by name, never as equal.
 const WAIT: Duration = Duration::from_secs(30);
 
 fn fills(layer: &dyn Layer) -> &ModeFills {
@@ -20,7 +15,6 @@ pub(super) fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(crate::layers::mode_fills::new(Arc::clone(&document.content) as Arc<dyn Paint>, true).expect("the mode fills layer's worker starts"))
 }
 
-/// Gives the layer the playhead whose rows it reads and the perspective it builds for.
 pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, document: &Document, choice: &Choice) -> io::Result<()> {
     if let Some(fills) = layer.any().downcast_ref::<ModeFills>() {
         let recording = crate::playhead_host::views::Recording { branch: document.playback.branch() };
@@ -29,8 +23,6 @@ pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, docu
     Ok(())
 }
 
-/// Provinces whose fill key, owner key or state differ, the colours, the mode's draw, the sea
-/// regions' attributes, the warnings, the zone and the two border plans: each one entry.
 fn differ(ours: &Fill, theirs: &Fill) -> (u64, u64, Option<String>) {
     let (mut entries, mut differing, mut first) = (0, 0, None);
     let mut note = |same: bool, what: String| {
@@ -68,7 +60,6 @@ fn note(compared: &mut Compared, what: String) {
     compared.first.get_or_insert(what);
 }
 
-/// The picture against today's political part at the view's mode and the document's hour.
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = fills(layer);
     let mut compared = Compared { entries: 1, ..Compared::default() };
@@ -107,7 +98,6 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-/// The picture held against itself built again from the same rows.
 pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = fills(layer);
     let mut compared = Compared { entries: 1, ..Compared::default() };

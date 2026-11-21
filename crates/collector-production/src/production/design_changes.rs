@@ -1,6 +1,3 @@
-//! Owned snapshots taken at native design mutation boundaries. Native callbacks
-//! fill storage prepared on a worker and grow it when it is full; typed
-//! decoding runs on a worker.
 use super::*;
 #[macro_use]
 mod diagnostics;
@@ -14,7 +11,6 @@ mod storage;
 pub use snapshots::speculative::Part as SnapshotPart;
 pub use storage::SetupPart as ColdSetupPart;
 pub use storage::presize;
-/// The Variants lanes that run a burst's speculative full-decode walks.
 pub struct Speculation<'a> {
     pub lanes: usize,
     pub run: &'a mut dyn FnMut(Vec<SnapshotPart>) -> Result<Vec<SnapshotPart>, &'static str>,
@@ -33,11 +29,6 @@ use std::sync::{
 const ROOT_BYTES: usize = native::DESIGN_TEAM_TRAITS + 4;
 const STORAGE_FAILED: &str = "variant change storage allocation failed";
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
-// STORE never spans an original, forwarded notification or native call. Hooks
-// only copy guarded memory into prepared buffers. Workers may prepare/copy owned
-// state under it, but never wait for ACTIVE or a game thread. The only nested
-// callback lock is STORE -> WRITERS; WRITERS never takes STORE. Same-thread
-// nesting happens inside originals, after releasing both mutexes.
 fn callback_store(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
     let guard = match store.try_lock() {
         Ok(store) => store,
@@ -91,8 +82,6 @@ fn missed_at() {
     );
     MISSED.store(true, Ordering::Release);
 }
-// A refused occurrence log does not by itself revoke unchanged saved objects.
-// Lost receiver/dependency evidence does: only a complete census can restore it.
 static CENSUS_REVISION: AtomicU64 = AtomicU64::new(1);
 static CENSUS_BASELINE: AtomicU64 = AtomicU64::new(0);
 static REFUSED_INTERVALS: AtomicU64 = AtomicU64::new(0);
@@ -105,8 +94,6 @@ static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static REVISION: AtomicU64 = AtomicU64::new(1);
 static SEED_REVISION: AtomicU64 = AtomicU64::new(0);
 static SEED_EPOCH: AtomicU64 = AtomicU64::new(0);
-// An ancestry walk needs the observed saved population, not STORE ownership.
-// Keep its live high-water count between censuses, including new publications.
 static SAVED_POPULATION: AtomicUsize = AtomicUsize::new(0);
 pub(super) fn begin_read() {
     SEED_REVISION.store(REVISION.load(Ordering::Acquire), Ordering::Release);
@@ -123,8 +110,6 @@ static SOURCE_BASELINE: AtomicBool = AtomicBool::new(false);
 static LIVENESS_BASELINE: AtomicBool = AtomicBool::new(false);
 fn observe_world_forwarder(enabled: bool) {
     if !enabled {
-        // Shared writers bypass our dirty marks while forwarding is closed,
-        // including writers that finish before the next recovery read.
         refuse_census();
     }
     collector_observers::world_input_changes::observe_forwarder(enabled);
@@ -134,8 +119,6 @@ fn publish_availability() {
     let token = forward::token();
     let observing = ENABLED.load(Ordering::Acquire);
     let saved = observing && SAVED_BASELINE.load(Ordering::Acquire);
-    // Shared move forwarding must be live before a dependent capability can
-    // become current. Reset wins any raced world-input publication below.
     observe_world_forwarder(observing);
     forward::available_at(
         token,
@@ -145,8 +128,6 @@ fn publish_availability() {
             && !RECOVER.load(Ordering::Acquire)
             && !MISSED.load(Ordering::Acquire),
     );
-    // A reset can run while this worker publishes either forwarding gate.
-    // Its epoch wins even when the old publisher resumes after the reset.
     if EPOCH.load(Ordering::Acquire) != epoch || !ENABLED.load(Ordering::Acquire) {
         observe_world_forwarder(false);
     }
@@ -157,12 +138,8 @@ fn withdraw_baselines() {
     SOURCE_BASELINE.store(false, Ordering::Release);
     LIVENESS_BASELINE.store(false, Ordering::Release);
     forward::invalidate();
-    // A local log refusal withdraws dependent availability, not shared writer
-    // observation. Its dirty/revision evidence must survive until recovery.
 }
 
-// Descriptor order stays shared with the receiver decoder. These sites are
-// patched exclusively by world-input, and never enter this family's hook list.
 fn update_enabled() {
     let enabled = OWN_ENABLED.load(Ordering::Acquire)
         && WORLD_ENABLED.load(Ordering::Acquire)
@@ -172,8 +149,6 @@ fn update_enabled() {
     let previous = ENABLED.swap(enabled, Ordering::AcqRel);
     if !enabled {
         if previous {
-            // A dependency gap invalidates address bindings even when it is
-            // closed again before the next worker drain.
             boundary(true);
         }
         withdraw_baselines();
@@ -267,7 +242,6 @@ impl Batch {
             let _ = engine_allocation::reserve(&mut self.events, additional);
         }
     }
-    /// Callback path: room for one more event, grown where it is written.
     fn room(&mut self) -> Result<(), &'static str> {
         self.required_events = self.required_events.saturating_add(1);
         if self.events.len() == self.events.capacity() {
@@ -284,8 +258,6 @@ struct Watch {
     flags: [u8; 3],
     dirty: bool,
 }
-/// Designs published into `watched` since the boundary last registered them; a list
-/// that could not grow leaves the boundary to scan every watched design.
 #[derive(Default)]
 struct Published {
     pointers: Vec<usize>,
@@ -304,29 +276,19 @@ static RECOVERY_READ: AtomicBool = AtomicBool::new(true);
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
-/// The last drain's size and walls, for naming a slow hour.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DrainProfile {
-    /// Noted occurrences: organisation liveness, source notes and removals.
     pub events: u32,
-    /// Marked designs the boundary read.
     pub designs: u32,
-    /// Source writes, and those of a watched source.
     pub source_writes: u32,
     pub source_notes: u32,
     pub events_ns: u64,
-    /// The boundary reads of the marked designs, with their completion and shared effects.
     pub reads_ns: u64,
-    /// Marked designs whose witness read back the same, and walks the lanes delivered; then
-    /// completion in design order: decodes the lanes did not run, and the shared effects.
     pub unchanged: u32,
     pub lane_walks: u32,
     pub complete_ns: [u64; 2],
-    /// The reads by stage: the lanes' reads, the ordered loop, then the held state's update.
     pub stages_ns: [u64; 3],
-    /// Before the reads (marks, bindings, lifetimes), then the design-context capture.
     pub boundary_ns: [u64; 2],
-    /// Parts the reads ran in, and their summed and slowest walls.
     pub lanes: u32,
     pub lane_ns: [u64; 2],
 }
@@ -350,7 +312,6 @@ fn drain_profile_mut() -> std::sync::MutexGuard<'static, DrainProfile> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-/// Takes the last drain's profile; the next hour starts from zero.
 pub fn drain_profile() -> DrainProfile {
     std::mem::take(&mut *drain_profile_mut())
 }
@@ -369,8 +330,6 @@ pub(super) fn needs_baseline() -> bool {
 pub(super) fn begin_full() {
     RECOVERY_READ.store(false, Ordering::Release);
 }
-/// The fresh census completed all dependencies at this parked boundary.
-/// It establishes a new interval; no events from an earlier gap are invented.
 pub(super) fn baseline_admitted() -> bool {
     enabled()
         && !needs_baseline()
@@ -389,8 +348,6 @@ pub fn boundary(invalidate: bool) {
         RECOVERY_READ.store(true, Ordering::Release);
         unobserved!();
         if let Some(store) = STORE.get() {
-            // A worker may be preparing its next buffers. The missed verdict
-            // already invalidates this batch; never wait for that worker here.
             if let Ok(mut store) = store.try_lock() {
                 store.batch.clear();
             }
@@ -449,8 +406,6 @@ fn array(
     Ok((start, source.count))
 }
 
-/// Called after a complete census on its acquisition worker. Capacity derives
-/// from that census's owned values, including every nested native occurrence.
 #[cfg(test)]
 pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
     prepare_with(registry, variants, presize);
@@ -464,7 +419,6 @@ pub(super) fn prepare_partitioned(
         storage::presize_partitioned(acquire)
     });
 }
-/// Hook events the census sizes for: a hook cannot allocate, the boundary's source log can.
 struct ColdDemand {
     events: usize,
 }
@@ -553,7 +507,6 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
     }
     let prepared = (|| {
         if RECOVER.load(Ordering::Acquire) {
-            // A recovery reseeds held state that no walk recorded a witness for.
             witness::release();
         }
         writers::prepare(registry.len().saturating_mul(2).max(1))?;
@@ -683,16 +636,12 @@ impl Drop for BaselineAttempt {
     fn drop(&mut self) {
         if !self.accepted {
             withdraw_baselines();
-            // A consumed recovery read is not retried every hour. The existing
-            // daily census can admit a later stable baseline.
             RECOVER.store(true, Ordering::Release);
             unobserved!();
         }
     }
 }
 
-/// A design write marks its receiver; the boundary reads every marked design once, live. A
-/// published design joins the watched set with its identity, the only read in the callback.
 fn mark_design(memory: &impl Memory, base: usize, pointer: usize, published: bool) {
     let Some(mutex) = STORE.get() else {
         unobserved!();
@@ -745,8 +694,6 @@ fn mark_design(memory: &impl Memory, base: usize, pointer: usize, published: boo
     repair::mark(pointer);
 }
 
-/// Genuine overlapping native edits retain receiver marks. Membership/lifetime
-/// changes still need their observed binding log before consuming the receiver.
 fn unrecorded_writer(receiver: Receiver, pointer: usize, moved_source: Option<usize>) {
     if pointer == 0 || matches!(receiver, Receiver::Roster | Receiver::CreateCommand) {
         unknown_receiver!();
@@ -755,8 +702,6 @@ fn unrecorded_writer(receiver: Receiver, pointer: usize, moved_source: Option<us
     if matches!(receiver, Receiver::Published) {
         unknown_receiver!();
     } else if moved_source.is_some() || matches!(receiver, Receiver::Removed) {
-        // Consuming lifetimes may leave neither operand readable. Preserve the
-        // draft exemption, but do not reconstruct a saved binding from a read.
         let Some(store) = STORE.get() else {
             unknown_receiver!();
             return;
@@ -777,8 +722,6 @@ fn dirty_receiver(pointer: usize) {
     repair::mark(pointer);
 }
 
-/// Destruction retires the prepared binding before any native fields die.
-/// Drafts need one map lookup and no native reads or event payload.
 fn retire(memory: &impl Memory, base: usize, pointer: usize) -> bool {
     let Some(store) = STORE.get() else {
         return false;
@@ -821,8 +764,6 @@ fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: us
     });
 }
 
-/// A complete interval is meaningful only with every mutation site installed
-/// and no conflicting or lost callback. A full refresh cannot invent its past.
 pub fn pending() -> bool {
     needs_full()
         || !enabled()
@@ -851,8 +792,6 @@ thread_local! {
     static CREATED: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Restore observation ownership even when the original unwinds through us.
-/// An unwound writer has no completed snapshot and cannot certify carry.
 struct CallbackScope {
     claims: Option<writers::Flight>,
     previous_target: usize,
@@ -908,9 +847,9 @@ pub struct Hooks {
     liveness: liveness::Hooks,
 }
 impl Hooks {
-    /// # Safety
-    /// The caller verified this process's executable identity and exclusively
-    /// owns these sites, and must quiesce every callback before unloading.
+    #[doc = " # Safety"]
+    #[doc = " The caller verified this process's executable identity and exclusively"]
+    #[doc = " owns these sites, and must quiesce every callback before unloading."]
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
@@ -1000,8 +939,6 @@ unsafe fn forwarded(
         Forward::DesignMove => unsafe {
             around_with_identities::<9>(args, original, Some(call.before))
         },
-        // Clone destinations are unpublished temporary storage. The wrapper
-        // keeps both original operands intact; publication supplies its state.
         Forward::DesignClone => unsafe { original(args[0], args[1], args[2], args[3]) },
     }
 }
@@ -1036,8 +973,6 @@ fn target(
     }
 }
 
-/// Derived refresh updates one ancestry owner's version ceiling. Intermediate
-/// ancestors are only traversed by the game; they need no design snapshots.
 fn version_owner(
     memory: &impl Memory,
     mut pointer: usize,
@@ -1133,8 +1068,6 @@ unsafe fn around_with_identities<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    // Pair with CallbackScope's exit revision before its ACTIVE decrement.
-    // A boundary cannot include an entry revision but miss that running writer.
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     REVISION.fetch_add(1, Ordering::AcqRel);
     let base = BASE.load(Ordering::Acquire);
@@ -1157,9 +1090,6 @@ unsafe fn around_with_identities<const SITE: usize>(
         writers::Footprint::Design
     };
     let mut claims = writers::enter(pointer, moving.then_some(second), footprint);
-    // Claim ancestry before following it. A concurrent consuming move or
-    // destruction anywhere can change that path, so it conflicts with this
-    // footprint even if its direct receiver is different.
     let version = if SITE == 1 && pointer != 0 {
         match version_owner(&memory, pointer, SAVED_POPULATION.load(Ordering::Acquire)) {
             Ok(owner) => {
@@ -1226,8 +1156,6 @@ unsafe fn around_with_identities<const SITE: usize>(
             }
         }
     }
-    // Both old identities are retained before the consuming original runs.
-    // The source is never read after that call, even if it is moved-from.
     if let Some(bindings) = move_bindings {
         for binding in bindings.into_iter().flatten() {
             retire(&memory, base, binding.pointer);
@@ -1248,8 +1176,6 @@ unsafe fn around_with_identities<const SITE: usize>(
     };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
     if !admitted {
-        // A retired move receiver or excluded draft can become saved while the
-        // original runs. Its entry-time absence cannot certify this edit.
         unrecorded_writer(MUTATIONS[SITE].receiver, pointer, moving.then_some(second));
     }
     if let Some(moved_source) = moved_source {
@@ -1275,9 +1201,6 @@ unsafe fn around_with_identities<const SITE: usize>(
     } else if selected && changed {
         returned(&memory, base, SITE, pointer, first);
     }
-    // This writer can change a different saved design even when an enclosing
-    // edit owns the current design's final snapshot, or the current object is
-    // an excluded draft. Never suppress that shared ancestry write.
     if SITE == 1 && pointer != 0 {
         match version_owner(&memory, pointer, SAVED_POPULATION.load(Ordering::Acquire)) {
             Ok(owner) => {
@@ -1300,9 +1223,6 @@ unsafe fn around_with_identities<const SITE: usize>(
             mark_design(&memory, base, created, true);
         }
     }
-    // A conflict stays latched until every participant exits, including a
-    // rejected draft that finished before this writer published its receiver.
-    // Check after registration/snapshotting so a consuming move cannot hide it.
     let (conflicted, dependency) = scope
         .claims
         .take()
@@ -1311,13 +1231,10 @@ unsafe fn around_with_identities<const SITE: usize>(
         && (!admitted || conflicted)
         && (dependency || version.is_none_or(|owner| owner != pointer))
     {
-        // Self-owned version writes can repair this receiver. An uncertain
-        // ancestry path or a shared owner still needs a complete census.
         unobserved!();
     }
     if admitted && conflicted {
         if retired {
-            // The saved binding is already gone, but this was not a draft.
             missed!();
         }
         unrecorded_writer(MUTATIONS[SITE].receiver, pointer, moving.then_some(second));
@@ -1329,8 +1246,6 @@ unsafe fn around_with_identities<const SITE: usize>(
     result
 }
 
-/// Only changed rows own storage. Membership changes and keyframes use the
-/// complete path below; ordinary edits never clone unrelated design payloads.
 fn replace<S: rows::TableSchema>(
     projection: Option<&Projection<'_>>,
     edits: Vec<(usize, S::Row)>,
@@ -1489,8 +1404,6 @@ fn apply<S: rows::TableSchema>(
                 }
             }
         }
-        // Every snapshot is converted in occurrence order. Only its terminal
-        // rows replace the preceding baseline; VariantChanges keeps all edits.
         let mut result = engine_allocation::vec(baseline.len())
             .map_err(|_| "variant change projection allocation failed")?;
         for row in baseline {
@@ -1680,8 +1593,6 @@ fn drain_speculating(
         }
         source_hooks::materialize(&mut batch, memory, base)?;
         let repairs = repair::take(&mut batch)?;
-        // Reject consumed parent identities against the preceding held state,
-        // before a terminal read can follow dead storage or replace that proof.
         held::check_lifetimes(&batch.events)?;
         let tail = std::time::Instant::now();
         let mut removed = engine_allocation::vec(batch.events.len())
@@ -1699,8 +1610,6 @@ fn drain_speculating(
             profile.source_notes = source_hooks::NOTES.swap(0, Ordering::Relaxed) as u32;
             profile.source_writes = source_hooks::WRITES.swap(0, Ordering::Relaxed) as u32;
         }
-        // The lanes read every marked design; completion and its shared effects stay in design
-        // order, for the next tick's hooks and this boundary's context and census reads.
         let stage = std::time::Instant::now();
         drain_profile_mut().boundary_ns[0] = elapsed_ns(start);
         let witnesses = witness::take(&repairs.watches, &removed);
@@ -1712,8 +1621,6 @@ fn drain_speculating(
             witnesses,
             &removed,
         )?;
-        // One design-MIO watch boundary for every design this boundary walks, as each walk's
-        // stats read every MIO afresh.
         let walked = repairs.watches.len()
             - reads
                 .values()
@@ -1723,9 +1630,6 @@ fn drain_speculating(
             collector_observers::world_input_changes::prepare_design_mios(walked, true);
         }
         drain_profile_mut().stages_ns[0] = elapsed_ns(stage);
-        // A marked design's bindings may have changed during the hour: shared-source
-        // occurrences must not act on them. A walk installs its current ones; an unchanged
-        // witness proves its own the same, so it gets them back after the occurrences.
         for watch in &repairs.watches {
             sources::suspend(watch.id)?;
         }
@@ -1747,7 +1651,6 @@ fn drain_speculating(
         snapshots.reserve(walked)?;
         engine_allocation::reserve(&mut batch.events, repairs.watches.len())
             .map_err(|_| "variant repair allocation failed")?;
-        // Optional: a refused allocation keeps no witness, so every next touch walks.
         let mut kept =
             engine_allocation::advisory(|| engine_allocation::vec(repairs.watches.len())).ok();
         let (mut unchanged, mut lane_walks) = (0, 0);
@@ -1755,8 +1658,6 @@ fn drain_speculating(
             use snapshots::speculative::Read;
             let (walk, recorded) = match reads.remove(&watch.pointer) {
                 Some(Read::Unchanged(witness)) => {
-                    // Byte-identical: no decode and no effect but its own liveness, as it reads.
-                    // The touch still enters the hour's ledger, with its current upgrade flags.
                     liveness::change(witness.team.0, witness.team.1)?;
                     if let Some(kept) = kept.as_mut() {
                         kept.push((watch.pointer, witness));
@@ -1812,7 +1713,6 @@ fn drain_speculating(
                 start: 0,
                 end: 0,
             });
-            // Shared, so the held state takes the interned design rather than a deep copy.
             snapshots.push(
                 output.len() + snapshots.len(),
                 OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -1843,7 +1743,6 @@ fn drain_speculating(
             unobserved!();
             return Err("variant change proof changed during boundary acquisition");
         }
-        // Only a boundary that stands keeps its witnesses and settles its designs' census carry.
         if let Some(kept) = kept {
             witness::keep_all(kept);
         }
@@ -1855,8 +1754,6 @@ fn drain_speculating(
         Ok(repairs.lost)
     })();
     if let Err(reason) = result {
-        // A refused boundary walked none of its changed designs; their old witnesses must not
-        // outlive the held state a recovery may now replace.
         witness::release();
         sources::drop_suspended();
         diagnostics::refused();
@@ -1893,7 +1790,6 @@ fn replace_sources(
     Ok(())
 }
 
-// Membership edits keep stable slots; only the terminal census is sorted.
 struct DefinitionState {
     rows: Vec<Option<rows::VariantDefinitionRow>>,
     positions: HashMap<u64, usize>,
@@ -2192,9 +2088,6 @@ unsafe extern "system-unwind" fn entry<const SITE: usize>(
     unsafe { callback::<SITE>(a, b, c, d) }
 }
 
-/// Owned hourly worker output, loaned with the variant census. The host runs
-/// `boundary` before dispatch, then `capture` before deciding `needs_full` and
-/// acquiring the registry. Restore both outputs before their consumers publish.
 pub struct Captured {
     rows: Vec<rows::VariantChangeRow>,
     snapshots: snapshots::Shared,
@@ -2224,9 +2117,6 @@ impl Captured {
             context_acquired: false,
         }
     }
-    /// Withdraw this frame's verdict without revoking the native certificate.
-    /// Keep owned payloads until worker acquisition replaces them, so a reset
-    /// never destroys a preceding hour's nested allocations on the game thread.
     pub(super) fn reset(&mut self) {
         self.context_acquired = false;
         self.outcome = Outcome::Unavailable {
@@ -2262,9 +2152,6 @@ impl Captured {
             + self.snapshots.allocated_bytes()
             + self.heap_bytes
     }
-    /// Runs only while the hourly original is parked. Pending repair evidence
-    /// keeps held-design reuse closed until the drain's final proof succeeds;
-    /// settle this verdict before the same worker decides its census read.
     pub fn capture(&mut self, base: usize, hour: i32) {
         self.capture_with(
             base,
@@ -2273,12 +2160,12 @@ impl Captured {
             None,
         );
     }
-    /// `capture`, with the dirty country context parts acquired by `acquire`.
-    ///
-    /// # Safety
-    /// Snapshot parts borrow this drain's batch and retained cache. `speculate` must return,
-    /// on success, failure or unwind, only once it has dropped or returned every part it was
-    /// given and no other thread still uses one.
+    #[doc = " `capture`, with the dirty country context parts acquired by `acquire`."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " Snapshot parts borrow this drain's batch and retained cache. `speculate` must return,"]
+    #[doc = " on success, failure or unwind, only once it has dropped or returned every part it was"]
+    #[doc = " given and no other thread still uses one."]
     pub unsafe fn capture_partitioned(
         &mut self,
         base: usize,
@@ -2316,8 +2203,6 @@ impl Captured {
         >,
         speculation: Option<&mut Speculation<'_>>,
     ) {
-        // Country accumulator admission is independent of the saved-design
-        // observer. Its worker consumes only demanded, dirtied numeric owners.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         self.fog = super::design_fog::capture(&memory, base);
         self.liveness = liveness::Observation::refused();
@@ -2352,8 +2237,6 @@ impl Captured {
         publish_availability();
     }
     pub fn fail(&mut self, reason: &'static str) {
-        // Failure can be posted by the callback when a worker loan is absent.
-        // Retain nested payloads; only the worker replaces/drops their storage.
         self.outcome = Outcome::Unavailable { reason };
         self.liveness.refuse();
         self.context_acquired = false;
@@ -2410,7 +2293,6 @@ fn append_history<'a>(
     Ok(())
 }
 
-/// Whether a flags row names the upgrade flags its design already holds.
 fn holds_flags(
     variant: u64,
     flags: [u8; 3],
@@ -2530,8 +2412,6 @@ impl Drop for Hooks {
         OWN_ENABLED.store(false, Ordering::Release);
         collector_observers::world_input_changes::forwarder(None);
         update_enabled();
-        // Runtime retains this owner whenever restoration or callback quiescence
-        // is unproved. Otherwise no native entry can still name the buffers.
         if let Some(store) = STORE.get() {
             let mut store = store
                 .lock()
@@ -2566,8 +2446,6 @@ fn decode_batch(
 ) -> Result<(), &'static str> {
     decode_events(batch, base, output)
 }
-/// The hour's noted occurrences in observation order: organisation liveness, sources and
-/// removals. A design's state is the boundary's read of it, never an occurrence.
 fn decode_events(
     batch: &Batch,
     base: usize,
@@ -2627,8 +2505,6 @@ fn decode_events(
     Ok(())
 }
 
-/// The boundary repair uses the same reader, conversion and dependency demand
-/// as an observed full snapshot, but never presents it as a native occurrence.
 #[cfg(test)]
 fn snapshot(
     memory: &impl Memory,
@@ -2641,22 +2517,17 @@ fn snapshot(
     Ok(decoded.value)
 }
 thread_local! {
-    /// One thread's single-variant capture pack for the ordered completion step: only its
-    /// capacity carries between decodes, every reported row and text span is rewritten.
     static DECODE_SCRATCH: std::cell::RefCell<Option<Box<Variants>>> =
         const { std::cell::RefCell::new(None) };
-    /// One thread's walk storage for inline full decodes.
     static WALK_SCRATCH: std::cell::RefCell<Option<Box<RawWalk>>> =
         const { std::cell::RefCell::new(None) };
 }
-/// Lends [`DECODE_SCRATCH`] for one decode and returns it however the decode ends.
 struct DecodeScratch(Option<Box<Variants>>);
 impl DecodeScratch {
     fn take() -> Self {
         let mut scratch = DECODE_SCRATCH
             .with(|scratch| scratch.borrow_mut().take())
             .unwrap_or_else(|| Box::new(Variants::vacant()));
-        // A vacant pack's state: no reported rows, text or baseline.
         scratch.reset();
         Self(Some(scratch))
     }
@@ -2679,7 +2550,6 @@ impl Drop for DecodeScratch {
         }
     }
 }
-/// Lends [`WALK_SCRATCH`] for one inline decode.
 struct WalkScratch(Option<Box<RawWalk>>);
 impl WalkScratch {
     fn take() -> Self {
@@ -2709,12 +2579,8 @@ impl Drop for WalkScratch {
     }
 }
 type RawDefinition = native::DefinitionRow<Option<native::VariantDesignState>>;
-/// The pure part of one full decode: the registry row and the capture walks over its memory,
-/// with each design kept raw. It interns nothing and touches no shared state, so any thread
-/// may run it; [`complete_snapshot`] performs the effects in the decode's place in order.
 struct RawWalk {
     sources: usize,
-    /// The child walks ran (the modules table was due), as did the MIO watch boundary.
     details: bool,
     definitions: CaptureRows<RawDefinition>,
     definition_bytes: Arena<u8>,
@@ -2743,7 +2609,6 @@ impl RawWalk {
         self.stats.reset();
         self.upgrades.reset();
     }
-    /// Every walk read its rows: nothing in it can stem from an optional allocation refusal.
     fn complete(&self) -> bool {
         self.sources == 1
             && self.details
@@ -2757,7 +2622,6 @@ impl RawWalk {
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
     }
 }
-/// The capture an inline decode ran, as `Variants::capture_state` with a forced read.
 fn walk_snapshot(
     memory: &impl Memory,
     base: usize,
@@ -2799,7 +2663,6 @@ fn walk_snapshot(
     super::capture_source(&mut walk.modules, Ok(&source[..]), |source, rows| {
         engine_equipment::equipment_module_container::walk(memory, base, source, rows)
     });
-    // A forced read takes every MIO afresh; the certificate carry only records the reads.
     super::capture_source(&mut walk.stats, Ok(&source[..]), |source, rows| {
         native::walk_stats_carried(memory, source, rows, &mut ())
     });
@@ -2808,7 +2671,6 @@ fn walk_snapshot(
     });
     Ok(())
 }
-/// Interns each walked design in row order, as the definitions walk's mapping did.
 fn intern_definitions(
     target: &mut CaptureRows<native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>>,
     raw: &mut CaptureRows<RawDefinition>,
@@ -2847,14 +2709,11 @@ fn intern_definitions(
     }
     result
 }
-/// A walk's completion with no shared effect: interning (keyed by content, so in any order),
-/// the definition's decode and the snapshot's assembly. The lanes run it beside the drain.
 fn decode_walk(walk: &mut RawWalk) -> Result<snapshots::Decoded, &'static str> {
     let mut captured = DecodeScratch::take();
     let interned = intern_definitions(&mut captured.definitions, &mut walk.definitions);
     std::mem::swap(&mut captured.definition_bytes, &mut walk.definition_bytes);
     if interned.is_err() {
-        // A failed mapping fails the definitions walk with no text.
         captured.definition_bytes.len = 0;
         captured.definition_bytes.required = 0;
     }
@@ -2905,11 +2764,9 @@ fn assemble_snapshot(captured: &mut Variants) -> Result<snapshots::Decoded, &'st
     };
     Ok(snapshots::Decoded {
         value: snapshot,
-        // The next decode's mapping overwrites this slot whole.
         definition: std::mem::take(&mut captured.definitions.rows[0]),
     })
 }
-/// A walk decoded in design order, then its shared effects.
 fn complete_snapshot(
     memory: &impl Memory,
     base: usize,
@@ -2921,8 +2778,6 @@ fn complete_snapshot(
     drain_profile_mut().complete_ns[0] += elapsed_ns(begin);
     complete_decoded(memory, base, fresh, walk, decoded?)
 }
-/// A decoded walk's shared effects, in design order: the design-MIO record, its source
-/// bindings, author liveness and design-context demand.
 fn complete_decoded(
     memory: &impl Memory,
     base: usize,
@@ -2983,9 +2838,6 @@ fn observe_walk(
     )
 }
 
-/// True in a child process that runs only the calling test. The parent runs
-/// that child and returns false: STORE, the receiver claims and the census
-/// state are set once per process, as in the game, so no two tests share them.
 #[cfg(test)]
 fn isolated() -> bool {
     const CHILD: &str = "BATTLE_PLAN_DESIGN_CHANGES_ISOLATED_TEST";

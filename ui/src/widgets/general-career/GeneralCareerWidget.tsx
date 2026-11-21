@@ -23,8 +23,6 @@ export default function GeneralCareerWidget(props: WidgetProps) {
   return <CareerView {...props} reference={reference} />;
 }
 
-/** The first army leader of the widget's countries on the Generals leaderboard at its default sort, read as the
- * leaderboard is: a pushed panel at the head. */
 function TopGeneralCareer(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);

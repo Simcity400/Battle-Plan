@@ -1,4 +1,3 @@
-//! The state view's stakeholder flags: cores and claims beside the owner, and the controller.
 use super::{loc, paths_named, province::Facts, withhold_named};
 use crate::binding::{self, Bindings};
 use crate::content::Content;
@@ -10,19 +9,13 @@ use replay_frame::frame::DecodedFrame;
 
 const FLAG: &str = "stakeholder_country_flag";
 
-/// A stakeholder entry's kind, which picks its borders and mark.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// A core or a claim: the thin border.
     Stake,
-    /// The owner: the thick border.
     Owner,
-    /// A contested owner: the thin border and the exclamation mark.
     Contested,
 }
 
-/// One stakeholder flag entry of `kind`, each border and the mark shown or hidden as the game sets
-/// them.
 fn entry(flag: String, kind: Kind) -> crate::Values {
     let mut values = crate::Values::new();
     values.entry(FLAG.into()).or_default().flag = Some(flag);
@@ -40,7 +33,6 @@ fn entry(flag: String, kind: Kind) -> crate::Values {
     values
 }
 
-/// Sets an entry flag's hover, or refuses it by name.
 fn entry_hover(values: &mut crate::Values, text: Result<String, String>, refused: &mut Vec<String>) {
     match text {
         Ok(text) => set_hover(values, FLAG, hover_text(&text), None),
@@ -51,9 +43,6 @@ fn entry_hover(values: &mut crate::Values, text: Result<String, String>, refused
     }
 }
 
-/// A core's or claim's flag hover: whose core or claim on the state it is, and under a core its
-/// description. The game's delayed line that opens diplomacy is left out, as the viewer has no
-/// diplomacy window to open.
 fn hover(loc: impl Fn(&str, &[(&str, Argument<'_>)]) -> Result<String, String>, core: bool, country: &str, state: &str) -> Result<(String, String), String> {
     let arguments = [("COUNTRY", Argument::Text(country)), ("STATE", Argument::Text(state))];
     if core {

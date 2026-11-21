@@ -1,76 +1,3 @@
-//! The unit-model layer: one division figure at each land stack's own anchor,
-//! drawn through `crate::map::models`.
-//!
-//! # Admission and model selection
-//!
-//! Content defines supply `NGraphics.UNITS_DISTANCE_CUTOFF` and
-//! `SHIPS_DISTANCE_CUTOFF`, compared against raw camera height. Standing models
-//! share the counter's `Standstill` anchor; moving models share its spline point
-//! ([`viewer_foundation::map::counter_move`]). [`crate::map::unit_history`] owns popup scale, camera
-//! admission and entity lifetime.
-//!
-//! A land division uses its preferred template and tries these candidates:
-//! 1. The template's saved explicit model, when registered.
-//! 2. The equipment/sub-unit pair ([`crate::map::model_selection`]): its saved model,
-//!    authored graphic pools and conventional candidates
-//!    ([`crate::map::equipment_graphics`]). Without a pair, the six fallback queues
-//!    ([`crate::map::model_multi_fallback`]) use the viewing country's rosters.
-//! 3. The numbered ladder, with `<key>_<n>_entity`, `<key>_entity`, then
-//!    `<sprite>_entity`. The key is the pair's sub-unit or stored representative;
-//!    the model number is the sign-extended low byte of the recorded value.
-//!    Each key tries cosmetic tag, country tag, runtime graphical culture and
-//!    bare name in that order, retaining an empty cosmetic tag. A complete miss
-//!    selects [`PLACEHOLDER_ENTITY`].
-//! 4. An available camouflage suffix whose condition wins
-//!    ([`crate::map::camouflage`]).
-//!
-//! The ordinary land country is the roster owner. A selected pair can instead
-//! use the variant's signed-positive origin or creator.
-//!
-//! # Naval transfer and facing
-//!
-//! A recorded naval-transfer link replaces the land entity with [`TRANSPORT_KEY`].
-//! Lookup tries the current cosmetic, original-country tag, graphical culture
-//! and bare name. Current country means a signed-positive expeditionary owner,
-//! otherwise the roster owner. The replacement is omitted when the land entity
-//! declares a `naval_move` animation and the unit is over water. Transfer visual
-//! states `0x13` and `0x14` use `NGraphics.SHIP_IN_PORT_SCALE`.
-//! Railway guns use their own sub-unit key through the same prefix ladder.
-//!
-//! Moving models face the spline tangent. The game's frame updates damp toward
-//! that tangent with `UNIT_TURN_SPEED`, snapping for an initial heading or a
-//! changed route. Hourly recordings contain no frame interval, so [`heading`]
-//! uses the tangent at the drawn point. Standing headings are unrecorded and
-//! use the same deterministic hash as sprawl and building placement.
-//!
-//! # Recorded inputs and presentation
-//!
-//! `DivisionTemplateIcons` records template inputs hourly. Unreadable model
-//! inputs withhold and count the division's figure while preserving counters.
-//! `DivisionEquipment` and country best-variant candidates refresh daily;
-//! `NewDivisionEquipment` adds newly deployed divisions hourly. Mid-day changes
-//! to existing equipment become visible at the next daily refresh.
-//! Without a pair, the fallback's labelled option list decides between rows
-//! naming different entities ([`super::model_labels`]); a label the recording
-//! or content cannot build refuses the stack by name.
-//!
-//! Authored states and attachments use `entity_animation`, with seed 0x414e494d
-//! XOR the representative handle. Time zero retains the default first pose;
-//! original entry times and RNG ordering are unrecorded.
-//! Ships at sea use [`ships`] and stand with their counters
-//! ([`viewer_foundation::map::task_force_visual`]). Docked formations in visual slot 19 hide
-//! their root and all four hull attachments. Static naval-base geometry belongs
-//! to `map_buildings`; division transports still draw as described above.
-//!
-//! # The walker's figure
-//!
-//! The walking camera mode draws the viewing country's infantry
-//! ([`UnitModelAssets::infantry_figure`]): the land ladder's step 3 for the
-//! [`INFANTRY_KEY`] sub-unit and its sprite, with the viewing country's
-//! cosmetic tag, tag, graphical culture and bare name, falling back to
-//! [`PLACEHOLDER_ENTITY`] as a division's complete miss does. A walker is no
-//! division: it has no template, equipment, stored model number or
-//! acclimatization, so steps 1, 2 and 4 have no operands.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
@@ -127,11 +54,8 @@ use {
     viewer_foundation::unit_handle::Unit,
 };
 
-/// The suffix every unit entity's name ends with (seven bytes).
 pub const ENTITY_SUFFIX: &str = "_entity";
 
-/// What a land figure reads of a division: its DivisionStatus row, or in a
-/// recording that leaves DivisionStatus out, its DivisionModelInputs witness.
 #[derive(Clone, Copy, Debug)]
 pub enum ModelStatus<'a> {
     Status(&'a DivisionStatusRow),
@@ -152,7 +76,6 @@ impl<'a> ModelStatus<'a> {
         }
     }
 
-    /// None is this hour's read refusal.
     pub fn model_number(self) -> Option<i32> {
         match self {
             Self::Status(row) => Some(row.model_number),
@@ -160,7 +83,6 @@ impl<'a> ModelStatus<'a> {
         }
     }
 
-    /// None is this hour's read refusal.
     pub fn exercising(self) -> Option<bool> {
         match self {
             Self::Status(row) => Some(row.exercising != 0),
@@ -170,7 +92,6 @@ impl<'a> ModelStatus<'a> {
 
 }
 
-/// The provinces whose owner links to the viewer's canonical slot `ours`.
 fn owned(hour: &Hour<'_>, frame: &DecodedFrame, ours: u32) -> io::Result<BTreeSet<u32>> {
     Ok(core::<tables::Provinces>(frame)?
         .iter()
@@ -179,8 +100,6 @@ fn owned(hour: &Hour<'_>, frame: &DecodedFrame, ours: u32) -> io::Result<BTreeSe
         .collect())
 }
 
-/// The hour's statuses by division: DivisionStatus's rows, or the witness's where the recording
-/// leaves DivisionStatus out, each looked up alone in the frame's rows (ascending by division).
 #[derive(Clone, Copy)]
 enum Statuses<'a> {
     Status(&'a [DivisionStatusRow]),
@@ -218,39 +137,20 @@ impl<'a> Statuses<'a> {
     }
 }
 
-/// The key a division in naval transfer takes instead of its own.
 pub const TRANSPORT_KEY: &str = "transport";
 
-/// The engine's infantry unit type, and the key of the sub-unit and figure
-/// entities the walking camera mode's figure takes.
 pub const INFANTRY_KEY: &str = "infantry";
 
-/// What the game draws when every candidate misses.
 pub const PLACEHOLDER_ENTITY: &str = "test_object_entity";
 
-/// Below this horizontal radius, in world units, an entity's own mesh is an
-/// attachment rig rather than a figure.
-///
-/// `gfx/models/units/vehicles/motorized_frame.mesh` is a 0.102 x 0.001 x 0.102
-/// plane sitting 21.5 units below its own origin: the picture the game draws
-/// for a motorized, mechanized or cavalry division is entirely in the `attach`
-/// blocks of the entity. `crate::map::models` composes those attachments at the joints
-/// the entity's default state poses; [`ModelReport::rigs`] counts the stacks
-/// whose figure is entirely its attachments, because a rig that failed to
-/// compose would otherwise draw nothing at all and say nothing.
 pub const RIG_RADIUS: f32 = 0.5;
 
-/// Side of the unit-model cull grid, in world units. A stack is one anchor, so
-/// this only decides how many draws a frame issues; 128 keeps a few provinces
-/// per group.
 pub const UNIT_TILE: f32 = 128.0;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// An uncertain later declaration must also refuse a known entity that uses
-/// it as an attachment; baking the earlier definition would guess its content.
 fn entity_refusal(roster: &mesh::Roster, name: &str) -> Option<String> {
     if roster.unreadable_names.is_empty() {
         return None;
@@ -278,11 +178,7 @@ fn entity_refusal(roster: &mesh::Roster, name: &str) -> Option<String> {
     None
 }
 
-// ------------------------------------------------------------------ the rule
 
-/// The entity name one prefix and one key make.
-///
-/// An empty prefix is the engine's fourth and last level, the bare name.
 pub fn entity_name(prefix: &str, key: &str) -> String {
     if prefix.is_empty() {
         format!("{key}{ENTITY_SUFFIX}")
@@ -291,9 +187,6 @@ pub fn entity_name(prefix: &str, key: &str) -> String {
     }
 }
 
-/// The unnumbered keys the game tries, in order, for a sub-unit `key`
-/// whose `sprite` field is `sprite`. A sub-unit whose sprite is its own name
-/// contributes one key, not two.
 pub fn entity_keys<'a>(key: &'a str, sprite: Option<&'a str>) -> Vec<&'a str> {
     let mut keys = vec![key];
     if let Some(sprite) = sprite
@@ -304,8 +197,6 @@ pub fn entity_keys<'a>(key: &'a str, sprite: Option<&'a str>) -> Vec<&'a str> {
     keys
 }
 
-/// Nonempty prefixes the game tries, followed by the bare level.
-/// [`candidates`] keeps its unusual `_key_entity` empty-cosmetic lookup apart.
 pub fn entity_prefixes<'a>(
     cosmetic: Option<&'a str>,
     tag: Option<&'a str>,
@@ -321,9 +212,6 @@ pub fn entity_prefixes<'a>(
     prefixes
 }
 
-/// Every candidate name and the level it stands for, in the engine's own order:
-/// key outermost, prefix innermost
-/// once per key.
 pub fn candidates(
     cosmetic: Option<&str>,
     tag: Option<&str>,
@@ -334,8 +222,6 @@ pub fn candidates(
     let prefixes = entity_prefixes(cosmetic, tag, culture);
     let mut out = Vec::new();
     for key in entity_keys(key, sprite) {
-        // Append an underscore to the cosmetic tag unconditionally,
-        // even when that string is empty.
         if cosmetic == Some("") {
             out.push((Level::Cosmetic, format!("_{key}{ENTITY_SUFFIX}")));
         }
@@ -358,9 +244,6 @@ pub fn candidates(
     out
 }
 
-/// Ordinary land fallback uses the roster owner. Transports prefer a
-/// signed-positive expeditionary owner, otherwise the roster owner. The
-/// logical owner remains the counter's grouping and visibility key.
 fn model_owner(roster: u32, expeditionary: u32, transport: bool) -> u32 {
     if transport && (expeditionary as i32) > 0 {
         expeditionary
@@ -369,8 +252,6 @@ fn model_owner(roster: u32, expeditionary: u32, transport: bool) -> u32 {
     }
 }
 
-/// Prefix traversal uses operands lazily: a valid early hit does not depend on
-/// missing later operands, but missing data never becomes a lookup miss.
 fn resolve_prefixes(
     cosmetic: &str,
     tag: Option<&str>,
@@ -389,9 +270,6 @@ fn resolve_prefixes(
         return (placeholder && lookup(PLACEHOLDER_ENTITY))
             .then(|| (Level::Placeholder, PLACEHOLDER_ENTITY.to_owned()));
     }
-    // The first key's cosmetic and tag are all that can be tried before an
-    // unknown tag or culture. Its bare candidate and later keys depend on
-    // proving that the unavailable prefix did not resolve.
     let name = format!("{cosmetic}_{key}{ENTITY_SUFFIX}");
     if lookup(&name) {
         return Some((Level::Cosmetic, name));
@@ -401,9 +279,6 @@ fn resolve_prefixes(
     lookup(&name).then_some((Level::Tag, name))
 }
 
-/// The signed-byte model number before the ordinary sub-unit and
-/// sprite names. A numbered miss continues through the ordinary ladder; only
-/// its last step may choose the placeholder entity.
 fn resolve_model_numbered(
     country: &ModelCountry,
     key: &str,
@@ -434,8 +309,6 @@ fn resolve_model_numbered(
     })
 }
 
-/// The game uses the current cosmetic followed by the original country's tag
-/// and graphical culture. It has only one key.
 fn resolve_transport(
     country: &ModelCountry,
     lookup: impl FnMut(&str) -> bool,
@@ -451,11 +324,6 @@ fn resolve_transport(
     )
 }
 
-/// The entity the land ladder gives `country`'s [`INFANTRY_KEY`] sub-unit,
-/// whose authored sprite is `sprite`: no model number, then the placeholder
-/// as a division's complete miss takes it. `None` when a prefix the ladder
-/// still has to try is unknown, or nothing, the placeholder included, is
-/// registered.
 fn resolve_infantry(
     country: &ModelCountry,
     sprite: Option<&str>,
@@ -472,87 +340,48 @@ fn resolve_infantry(
     )
 }
 
-/// The walking camera mode's figure ([`UnitModelAssets::infantry_figure`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Figure {
     pub entity: String,
     pub level: Level,
-    /// The entity's slot in [`UnitModelAssets::library`].
     pub mesh: usize,
-    /// How far the figure reaches above its own origin at the size the game
-    /// draws its units, in world units.
     pub height: f32,
 }
 
-/// Which level of the ladder a stack's model came from, for the report.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
-    /// Saved explicit division-template model choice.
     Template,
-    /// Saved explicit equipment-variant model choice.
     Variant,
-    /// Authored graphical equipment pool.
     Graphics,
-    /// Native conventional equipment candidate ranking.
     Conventional,
-    /// `<cosmetic_tag>_<key>_entity`.
     Cosmetic,
-    /// `<TAG>_<key>_entity`.
     Tag,
-    /// `<culture>_<key>_entity`.
     Culture,
-    /// `<key>_entity`.
     #[default]
     Bare,
-    /// Nothing resolved; [`PLACEHOLDER_ENTITY`].
     Placeholder,
 }
 
-// -------------------------------------------------------------- this hour
 
-/// What the layer drew, for the viewer to state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelReport {
-    /// Stacks of this hour, whatever the camera.
     pub stacks: usize,
     pub ship_hulls: usize,
-    /// How many resolved at each level of the ladder.
     pub by_level: BTreeMap<Level, usize>,
-    /// Entity name to the number of stacks that took it, in ascending order.
     pub by_entity: BTreeMap<String, usize>,
-    /// Stacks that took `<sprite>_entity` because the sub-unit has no entity
-    /// of its own.
     pub sprite_key: usize,
-    /// Stacks in naval transfer, drawn as [`TRANSPORT_KEY`].
     pub transports: usize,
-    /// Stacks standing at a point along their route rather than on a province.
     pub moving: usize,
-    /// Stacks omitted because this hour does not record their template.
     pub untemplated: usize,
-    /// Stacks omitted because their country's model operands are unavailable.
     pub unknown_identity: usize,
-    /// Stacks omitted for a missing input, by reason.
     pub selection_errors: BTreeMap<String, usize>,
-    /// Why the whole 3D-model layer is off; `None` while it draws.
     pub disabled: Option<String>,
-    /// Stacks whose province has no anchor at all.
     pub unanchored: usize,
-    /// Stacks no division of which this perspective can see; the engine draws
-    /// no model for them.
     pub unseen: usize,
-    /// Stacks whose figure is composed of `attach` blocks as well as its own
-    /// mesh.
     pub attached: usize,
-    /// Stacks whose entity's **own** mesh is an attachment rig narrower than
-    /// [`RIG_RADIUS`], so the whole figure is its attachments.
     pub rigs: usize,
-    /// Ship formations not drawn because the hour does not record the operands of the mission
-    /// skip ([`viewer_foundation::map::task_force_visual::MissionSkips`]) that would decide them.
     pub undecided_mission_formations: usize,
-    /// Client RNG chooses support locators; hull identities and counts are derived.
     pub support_locator_rng: usize,
-    /// What the entity bakes so far reported ([`UnitModelAssets::bake_warnings`]): a figure
-    /// drawn without a refused attachment is named here.
     pub bake_warnings: Vec<String>,
 }
 
@@ -561,7 +390,6 @@ impl ModelReport {
         *self.selection_errors.entry(reason.into()).or_default() += 1;
     }
 
-    /// Adds another part's counts to these.
     pub fn absorb(&mut self, other: &Self) {
         let counts = [(&mut self.stacks, other.stacks), (&mut self.ship_hulls, other.ship_hulls), (&mut self.sprite_key, other.sprite_key), (&mut self.transports, other.transports), (&mut self.moving, other.moving), (&mut self.untemplated, other.untemplated), (&mut self.unknown_identity, other.unknown_identity), (&mut self.unanchored, other.unanchored), (&mut self.unseen, other.unseen), (&mut self.attached, other.attached), (&mut self.rigs, other.rigs), (&mut self.undecided_mission_formations, other.undecided_mission_formations), (&mut self.support_locator_rng, other.support_locator_rng)];
         for (mine, theirs) in counts {
@@ -578,8 +406,6 @@ impl ModelReport {
         }
     }
 
-    /// The stacks omitted for a missing or refused input, one diagnostics
-    /// line per reason.
     pub fn warnings(&self) -> Vec<String> {
         self.selection_errors
             .iter()
@@ -603,27 +429,14 @@ impl ModelReport {
     }
 }
 
-/// Static model definitions and content rules. Mutable country identity and
-/// explicit model choices are joined from the current replay frame.
-///
-/// The entity library bakes an entity the first time an hour places it, so
-/// only entities the recording actually draws are held: baking every entity
-/// any country could reach held gigabytes of geometry and textures.
 pub struct UnitModelAssets {
     library: RwLock<ModelLibrary>,
-    /// A staged field belongs to this library, whose mesh slots are append-only.
     field_identity: Arc<()>,
-    /// Each name owns its bake, including an unsuccessful attempt. The map
-    /// lock only locates these slots; cold loads never hold it.
     bakes: Mutex<BTreeMap<String, Arc<Mutex<bool>>>>,
-    /// What the lazy bakes reported, such as refused attachments, each line once.
     bake_warnings: Mutex<BTreeSet<String>>,
     conventional: retained_bridge::RetainedBridge,
-    /// The last built hour's stack selections, kept while what they read is unchanged. Hours
-    /// built side by side each start from them.
     selections: KeptChoices,
     roster: Arc<mesh::Roster>,
-    /// The content the library bakes from.
     layers: ResolvedLayers,
     pub sub_units: model_selection::Content,
     pub gates: Gates,
@@ -632,13 +445,8 @@ pub struct UnitModelAssets {
     geography: context::Content,
     camouflage: camouflage::Content,
     registered: HashSet<String>,
-    /// The naval formation template and its scale.
     ships: ships::ShipAssets,
-    /// Tags content declares after its dynamic-tag marker, which the fallback
-    /// option labels read; why they did not read.
     dynamic_tags: Result<BTreeSet<String>, String>,
-    /// Why the layer is off: a content form it refuses, or content it needs
-    /// and lacks. Only this layer is off; the rest of the map draws.
     disabled: Option<String>,
 }
 debug_fields!(UnitModelAssets(this) {
@@ -648,50 +456,28 @@ debug_fields!(UnitModelAssets(this) {
     registered => viewer_foundation::debug_fields::sorted_set(&this.registered)
 });
 
-/// The hour's replay and matching content the layer reads.
 pub struct PrepareInputs<'a> {
     pub frame: &'a DecodedFrame,
     pub limits: equipment_graphics::Limits<'a>,
     pub vision: &'a Vision,
     pub etas: &'a Etas,
     pub anchor: &'a dyn Fn(u32, u32) -> Option<[f32; 3]>,
-    /// The route geometry the counter layer shares; `None` without one.
     pub world: Option<&'a counter_move::RouteWorld<'a>>,
-    /// Each province's authored terrain, for camouflage conditions.
     pub terrain: &'a BTreeMap<u32, String>,
-    /// The content's division routes, which the counter tables share.
     pub routes: Option<&'a counter_move::RouteMemo>,
-    /// Where each task force's counter stands, for its formation.
     pub ships: &'a ShipPlaces<'a>,
-    /// The display language the fallback option labels read.
     pub localisation: &'a Localisation,
 }
 
-/// The stack an attempt to load the unit model layer reads ([`UnitModelAssets::load_with`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LoadStack {
-    /// The stack the layer was handed: the presentation stack while visual mods show.
     Shown,
-    /// The recorded layers below its visual mods.
     Recorded,
 }
 
-/// The stable name the map's fallback compares when the unit model layer is off
-/// ([`ResolvedLayers::note_refused`]).
 pub const LAYER_OFF: &str = "model layer: unit models";
 
 impl UnitModelAssets {
-    /// Loads every entity any recorded country, template or variant could
-    /// reach. A failure turns off this layer alone, with a warning; the map
-    /// never refuses to open for it.
-    ///
-    /// `defines` are the graphics defines merged with the visual mods' scripts when `recorded`
-    /// holds the recorded ones: a layer those cannot load (a unit distance cutoff a mod sets to
-    /// a string) loads with the recorded defines instead, `refused` told why, as every graphics
-    /// define falls back. A layer the visual mods' content breaks (their naval combat
-    /// formations, a formation mesh) loads from the recorded layers below them, named the same
-    /// way. A layer that still cannot load is off, and reported by [`LAYER_OFF`] for the map's
-    /// fallback.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         layers: &ResolvedLayers,
@@ -721,9 +507,6 @@ impl UnitModelAssets {
         )
     }
 
-    /// [`Self::load`] with its content read by `try_load` from the stack it names; `below`
-    /// whether recorded layers lie below visual mods on the shown stack. `layers` hears the
-    /// layer's refusal when it is off.
     #[allow(clippy::too_many_arguments)]
     fn load_with(
         layers: &ResolvedLayers,
@@ -749,7 +532,6 @@ impl UnitModelAssets {
                 notes = recorded_notes;
             }
         }
-        // Content the visual mods supply that the layer cannot load: the recording's own.
         if let (Err(error), true) = (&loaded, below) {
             let why = format!("unit models ({error})");
             let mut recorded_notes = Vec::new();
@@ -770,7 +552,6 @@ impl UnitModelAssets {
         Self::scoped(loaded, warnings)
     }
 
-    /// The loaded layer, or the layer turned off with the reason.
     fn scoped(loaded: io::Result<Self>, warnings: &mut Vec<String>) -> Self {
         loaded.unwrap_or_else(|error| {
             warnings.push(format!(
@@ -803,7 +584,6 @@ impl UnitModelAssets {
         }
     }
 
-    /// [`Self::load`]'s content read, or why the layer is off.
     pub fn try_load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -871,8 +651,6 @@ impl UnitModelAssets {
             graphics,
             geography,
             camouflage,
-            // An unreadable declaration is a candidate with an unknown native
-            // definition. Select it and refuse it; do not guess a later model.
             registered: roster
                 .descriptors
                 .entities
@@ -895,9 +673,6 @@ impl UnitModelAssets {
         })
     }
 
-    /// What the prepared content refuses when a lookup meets it, each with
-    /// the file it comes from when one does: acclimatization categories that are one
-    /// token under the lexer's fold.
     pub fn refusals(&self) -> Vec<(Option<String>, String)> {
         let mut refusals = Vec::new();
         refusals.extend(
@@ -914,7 +689,6 @@ impl UnitModelAssets {
         refusals
     }
 
-    /// What the lazy entity bakes so far reported, each line once.
     pub fn bake_warnings(&self) -> Vec<String> {
         self.bake_warnings
             .lock()
@@ -924,13 +698,10 @@ impl UnitModelAssets {
             .collect()
     }
 
-    /// Whether any `gfx` descriptor declares the entity.
     pub fn declares(&self, name: &str) -> bool {
         self.registered(name)
     }
 
-    /// The entity the walking camera mode draws this hour for the viewing
-    /// country, whose canonical slot is `ours` ([`resolve_infantry`]).
     pub fn infantry_entity(
         &self,
         frame: &DecodedFrame,
@@ -962,7 +733,6 @@ impl UnitModelAssets {
         })
     }
 
-    /// [`Self::infantry_entity`], baked into [`Self::library`].
     pub fn infantry_figure(&self, frame: &DecodedFrame, ours: u32) -> Result<Figure, String> {
         let (level, entity) = self.infantry_entity(frame, ours)?;
         if let Some(reason) = self.refusal(&entity) {
@@ -984,12 +754,6 @@ impl UnitModelAssets {
         })
     }
 
-    /// Variant model selection for the aircraft-designer feature `0x26`.
-    /// A saved model wins before graphics selection. When the equipment type
-    /// carries an archetype sub-unit list, use its first sub-unit and `country`
-    /// for the graphics branch; otherwise use only the saved model.
-    /// `Ok(None)` lets the caller continue through its own ladder.
-    /// `country` is a raw country reference.
     pub fn aircraft_variant_model(
         &self,
         frame: &DecodedFrame,
@@ -1009,7 +773,6 @@ impl UnitModelAssets {
             .ok_or_else(|| format!("equipment variant {variant} has no definition"))?;
         let saved = std::str::from_utf8(&row.explicit_entity)
             .map_err(|_| format!("equipment variant {variant} saved model is not text"))?;
-        // Both model-selection paths return the saved name before graphics selection.
         if !saved.is_empty() {
             return Ok(Some(saved.to_owned()));
         }
@@ -1023,7 +786,6 @@ impl UnitModelAssets {
             return Ok(None);
         };
         let terrain = BTreeMap::new();
-        // A selected pair never reaches the labelled fallback list.
         static NO_LABELS: std::sync::LazyLock<Localisation> =
             std::sync::LazyLock::new(Localisation::default);
         let hour = Hour::read(self, frame, &terrain, limits, &NO_LABELS)
@@ -1036,8 +798,6 @@ impl UnitModelAssets {
         Ok(graphics_model(self, &hour, pair, None, country)?.map(|(_, name)| name))
     }
 
-    /// The countries' geography joined at `frame`, as an aircraft's model reads it unnoted: a keeper
-    /// of the models compares it whole.
     pub(crate) fn aircraft_geography(
         &self,
         frame: &DecodedFrame,
@@ -1047,17 +807,10 @@ impl UnitModelAssets {
         })
     }
 
-    /// The equipment census at `frame`, which a model's census reads ([`CensusRead`]) are judged by.
     pub(crate) fn census(&self, frame: &DecodedFrame) -> Result<Arc<bridge::Retained>, String> {
         self.conventional.read(frame, &self.sub_units)
     }
 
-    /// The complete airborne ladder, shared by conventional wings and raids.
-    /// All pool context is the supplied country, rather than
-    /// the variant creator used by the earlier designer branch.
-    /// Inside a [`kept::record`] it notes the variant's row and the fields of Countries and
-    /// PoliticalParties it reads; the joined geography ([`Self::aircraft_geography`]) and the
-    /// pools its limits decide it reads unnoted.
     pub fn aircraft_entity(
         &self,
         frame: &DecodedFrame,
@@ -1076,7 +829,6 @@ impl UnitModelAssets {
             .iter()
             .find(|row| row.id == variant)
             .ok_or_else(|| format!("equipment variant {variant} has no definition"))?;
-        // All the choice reads of these three below: a change elsewhere in them keeps the model.
         kept::note_row(
             TableId::LexicalTokens,
             u128::from(row.equipment_token),
@@ -1132,7 +884,6 @@ impl UnitModelAssets {
                 })
                 .ok_or_else(|| "aircraft country has no CountryAppearance row".to_owned())
         };
-        // Recorded apart: its reads reach a recording around this one whole, not under the notes below.
         let designer = || {
             kept::record::<CensusRead, _>(frame, || {
                 self.aircraft_variant_model(frame, limits, variant, raw_country)
@@ -1261,16 +1012,12 @@ impl UnitModelAssets {
         self.registered.contains(name)
     }
 
-    /// The entities baked so far.
     pub fn library(&self) -> std::sync::RwLockReadGuard<'_, ModelLibrary> {
         self.library
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Bakes missing registered names in sorted batches. Warm names only read
-    /// the library; cold batches wait only for names they share. A failed
-    /// attempt is remembered just like a successful one.
     #[cfg(test)]
     fn ensure(&self, names: &[String]) {
         self.ensure_with_spans(names, &mut BuilderSpans::new(false));
@@ -1309,8 +1056,6 @@ impl UnitModelAssets {
                     .collect()
             })
         };
-        // Always claim names in the same order: overlapping batches can wait
-        // for one another without a cycle, while disjoint batches load freely.
         let mut completed: Vec<_> = spans.measure("units.ensure.name_wait", |_| {
             slots
                 .iter()
@@ -1336,8 +1081,6 @@ impl UnitModelAssets {
         let decode = spans
             .measure("units.ensure.decode_read_wait", |_| self.library())
             .decode();
-        // An entity the visual mods' descriptors leave undecided, though the recording's own do
-        // not, is baked from the recording ([`Self::refusal`]).
         let (recorded, own): (Vec<String>, Vec<String>) =
             spans.measure("units.ensure.partition", |_| {
                 missing
@@ -1399,8 +1142,6 @@ impl UnitModelAssets {
                     .map(|(_, line)| line)
                     .chain(failed),
             );
-        // An entity a visual mod supplies that does not bake was baked from the recording
-        // instead, named, by the library load itself (`ModelLibrary::load`).
         spans.measure("units.ensure.complete", |_| {
             for complete in &mut completed {
                 **complete = true;
@@ -1408,10 +1149,6 @@ impl UnitModelAssets {
         });
     }
 
-    /// Why `name` is refused ([`entity_refusal`]), `None` when it is drawn: an entity the
-    /// visual mods' descriptors leave undecided, though the recording's own declare it
-    /// readably, is drawn from the recording ([`ModelLibrary::load_recorded`]). A refusal is
-    /// recorded by name for the map's fallback ([`ResolvedLayers::note_refused`]).
     fn refusal(&self, name: &str) -> Option<String> {
         let reason = entity_refusal(&self.roster, name)?;
         let recorded = self.layers.recorded_descriptor_roster().ok().flatten();
@@ -1425,7 +1162,6 @@ impl UnitModelAssets {
         Some(reason)
     }
 
-    /// A registered entity's slot, baking it first.
     pub(crate) fn bake_slot(&self, name: &str) -> Option<usize> {
         self.bake_slot_with_spans(name, &mut BuilderSpans::new(false))
     }
@@ -1441,8 +1177,6 @@ impl UnitModelAssets {
         self.library().slot(name)
     }
 
-    /// Naval helpers share the current hour's recorder without changing their
-    /// lazy model-selection demand or the ordinary non-builder entry point.
     fn bake_slot_for_hour(&self, name: &str, hour: Option<&Hour<'_>>) -> Option<usize> {
         match hour {
             Some(hour) => self.bake_slot_with_spans(name, &mut hour.spans.borrow_mut()),
@@ -1450,20 +1184,10 @@ impl UnitModelAssets {
         }
     }
 
-    /// Places one figure per land stack of this hour.
-    ///
-    /// A stack is a (province, owner, route) triple, which is exactly how
-    /// Counters group divisions into a counter, and the template is the
-    /// oldest visible member's for the same reason, so a figure and its counter
-    /// always stand together and show the same unit. Selection runs here, once
-    /// an hour on the hour builder; `PreparedModels::field` only advances each
-    /// figure's position and heading.
     pub fn prepare(&self, inputs: PrepareInputs<'_>) -> io::Result<PreparedModels> {
         self.prepare_profiled(inputs, &mut |_| {})
     }
 
-    /// Builds the same hour, reporting coarse sequential parts to its builder.
-    /// The caller owns clocks and reporting; ordinary preparation samples none.
     pub fn prepare_profiled(
         &self,
         inputs: PrepareInputs<'_>,
@@ -1472,7 +1196,6 @@ impl UnitModelAssets {
         self.prepare_with_spans(inputs, lap, &mut BuilderSpans::new(false))
     }
 
-    /// The same preparation with job-local nested scopes on the built line.
     pub fn prepare_with_spans(
         &self,
         inputs: PrepareInputs<'_>,
@@ -1482,8 +1205,6 @@ impl UnitModelAssets {
         self.prepare_naval_or_not(inputs, true, lap, spans)
     }
 
-    /// The same preparation; without `naval` the hour's ships are not made (the map's ships layer
-    /// draws them) and the result says so ([`PreparedModels::naval`]).
     pub fn prepare_naval_or_not(
         &self,
         inputs: PrepareInputs<'_>,
@@ -1518,8 +1239,6 @@ impl UnitModelAssets {
         )?;
         hour.spans = RefCell::new(spans.fork());
         hour.selection = Stages::new(spans.enabled());
-        // The game reads the ordinary route count and movement-target pointer,
-        //independently of the displayed route or selected animation state.
         let uv_moving: BTreeSet<_> = rows::<tables::DivisionMovement>(frame)?
             .rows()
             .iter()
@@ -1564,9 +1283,6 @@ impl UnitModelAssets {
             let stack = stacks
                 .entry((division.province, slot, signature))
                 .or_insert_with(|| Stack {
-                    // The oldest **visible** member supplies the template, for
-                    // the reason counter grouping gives: a member the
-                    // perspective never saw cannot be the one the map shows.
                     oldest: u64::MAX,
                     template: 0,
                     roster_owner: 0,
@@ -1574,9 +1290,6 @@ impl UnitModelAssets {
                     visible: 0,
                     route: route.cloned(),
                 });
-            // The game compares the unit's visibility byte against 150,
-            // which is [`Sight::None`]'s own threshold, so a division this
-            // perspective cannot see has no model.
             if vision.sees_land(division.id, slot, division.province) == Sight::None {
                 continue;
             }
@@ -1598,7 +1311,6 @@ impl UnitModelAssets {
             stacks: stacks.len(),
             ..ModelReport::default()
         };
-        // Selection first; the chosen entities are then baked in one batch.
         let mut chosen = Vec::new();
         self.with_land_models(&hour, vision.ours(), &self.selections, None, &mut |_| {}, |models| {
             for ((province, owner, _), stack) in &stacks {
@@ -1751,9 +1463,6 @@ impl UnitModelAssets {
         })
     }
 
-    /// The hour's models without its land stacks, whose models the map's units layer chooses a
-    /// stack at a time ([`Self::land_models`]): the ships with `naval` (otherwise the map's ships
-    /// layer draws them) and the provinces the viewer owns, over the joins the ships read alone.
     pub fn prepare_without_land(
         &self,
         inputs: PrepareInputs<'_>,
@@ -1804,9 +1513,6 @@ impl UnitModelAssets {
         })
     }
 
-    /// [`Self::prepare_without_land`] without the ships (the map's ships layer draws them): the
-    /// provinces the viewer whose canonical slot is `ours` owns. It reads of the viewer only whose
-    /// country it is, so it is given that and no vision.
     pub fn prepare_shipless(
         &self,
         frame: &DecodedFrame,
@@ -1834,11 +1540,6 @@ impl UnitModelAssets {
         })
     }
 
-    /// Chooses land stacks' models one at a time over `inputs`' hour: `choose` is handed the
-    /// session ([`LandModels::choose`]), which starts from the answers `kept` holds and leaves
-    /// there what it made or kept, for the caller's next session. `told` names the rows made anew
-    /// since the frame the answers were kept at, so the answers they reach are found without
-    /// comparing tables; a table it does not name is compared.
     pub fn land_models<R>(
         &self,
         inputs: SelectInputs<'_>,
@@ -1881,7 +1582,6 @@ impl UnitModelAssets {
         Ok(self.with_land_models(&hour, ours, kept, Some(told), lap, choose))
     }
 
-    /// The library slots of chosen `entities`, baked in one batch first ([`Self::chosen_slot`]).
     pub fn chosen_meshes(&self, entities: &[String]) -> Vec<Result<usize, String>> {
         self.ensure_with_spans(entities, &mut BuilderSpans::new(false));
         let library = self.library();
@@ -1891,10 +1591,6 @@ impl UnitModelAssets {
             .collect()
     }
 
-    /// One session of land selections over `hour` for the viewer whose canonical slot is `ours`:
-    /// the answers `kept` holds stand while the hour's country context is the same, less those
-    /// the changes since they were kept reach (every store is indexed by the rows, ranges and
-    /// census entries its answers read, [`kept`]); what `choose` made or kept is kept for the next.
     fn with_land_models<'a, R>(
         &'a self,
         hour: &Hour<'a>,
@@ -1999,7 +1695,6 @@ impl UnitModelAssets {
         );
         let (members, camouflage) = (members.finish(), camouflages.finish());
         drop(between);
-        // The context the answers stand under, its countries those this hour read or kept.
         let context = match context {
             Some(context) if Arc::ptr_eq(&context.country, &hour.country) => context,
             Some(context) => Arc::new(SelectionContext {
@@ -2027,8 +1722,6 @@ impl UnitModelAssets {
         chose
     }
 
-    /// The library slot of a chosen `entity`, or why it has none: a refused entity
-    /// ([`Self::refusal`]), or one that did not bake.
     pub fn chosen_slot(&self, library: &ModelLibrary, entity: &str) -> Result<usize, String> {
         if let Some(reason) = self.refusal(entity) {
             return Err(reason);
@@ -2039,14 +1732,10 @@ impl UnitModelAssets {
     }
 }
 
-/// The answers a caller's land selections keep from one session to its next
-/// ([`UnitModelAssets::land_models`]): each caller holds its own, so two that read different frames
-/// never check their answers against each other's.
 #[derive(Default)]
 pub struct KeptChoices(Mutex<Option<Arc<Selections>>>);
 
 impl KeptChoices {
-    /// The country context its answers were kept under.
     fn country(&self) -> Option<Arc<CountryContext>> {
         self.0
             .lock()
@@ -2056,10 +1745,6 @@ impl KeptChoices {
     }
 }
 
-/// The rows of some tables made anew since a frame, as the maker of the rows told them: per table
-/// the view they changed from, and the rows, ascending by key, each with the fields written
-/// (every field, [`u64::MAX`], for a row inserted or deleted). A session whose kept frame holds
-/// that view takes the rows as the table's changes and compares nothing; otherwise it compares.
 #[derive(Clone, Default)]
 pub struct Told(Vec<(TableId, SharedView, Vec<(u128, u64)>)>);
 
@@ -2069,7 +1754,6 @@ impl Told {
         Self(tables)
     }
 
-    /// The rows told of `table` since `then`'s view of it.
     fn rows(&self, table: TableId, then: &DecodedFrame) -> Option<&[(u128, u64)]> {
         let at = self
             .0
@@ -2080,8 +1764,6 @@ impl Told {
     }
 }
 
-/// The changes since the kept frame: the rows told where they were told from it, the two frames
-/// compared otherwise.
 struct ToldChanges<'a> {
     between: kept::Between<'a>,
     then: &'a DecodedFrame,
@@ -2118,57 +1800,38 @@ impl kept::Changes for ToldChanges<'_> {
     }
 }
 
-/// The hour a land stack's model is chosen over ([`UnitModelAssets::land_models`]).
 pub struct SelectInputs<'a> {
     pub frame: &'a DecodedFrame,
     pub limits: equipment_graphics::Limits<'a>,
-    /// The viewing country's canonical slot, whose rosters the fallback reads.
     pub ours: u32,
-    /// Each province's authored terrain, for camouflage conditions.
     pub terrain: &'a BTreeMap<u32, String>,
-    /// The display language the fallback option labels read.
     pub localisation: &'a Localisation,
-    /// The divisions whose equipment the frame holds, when it holds the equipment tables' rows of
-    /// those alone (rows at the head by key): any other is refused by name, never read as having
-    /// none. None: the frame holds the tables whole.
     pub divisions: Option<&'a BTreeSet<u64>>,
-    /// Called with each part's name as it ends, for the caller's timings ([`UnitModelAssets::land_models`]).
     pub lap: Option<&'a mut dyn FnMut(&'static str)>,
 }
 
-/// One hour's land selections, a stack at a time ([`UnitModelAssets::land_models`]).
 pub struct LandModels<'a, 'h, 'k> {
     selector: Selector<'a, 'h, 'k>,
     chosen: CensusChecked<'k, SelectionKey, Chosen>,
-    /// Each template resolved against content once a session.
     templates: Templates<'a>,
-    /// The states' provinces, kept while no province changes state, and taken this session.
     members: CensusChecked<'k, (), camouflage::StateMembers>,
     state_members: Option<Arc<camouflage::StateMembers>>,
-    /// Each division's camouflage where it stands, kept until a row it read changes.
     camouflages: CensusChecked<'k, u64, Camouflaged>,
     made: Made,
 }
 
-/// What a session made rather than kept.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Made {
-    /// Stack selections.
     pub selections: usize,
-    /// Camouflages, each one division's at one province.
     pub camouflages: usize,
-    /// Country contexts read: none when the one kept stood.
     pub contexts: usize,
 }
 
 impl LandModels<'_, '_, '_> {
-    /// What the session made so far rather than kept.
     pub fn made(&self) -> Made {
         self.made
     }
 
-    /// Whether the land stack `key` standing in `province` keeps the model it was last chosen,
-    /// asking nothing: its kept selection, and its camouflage there, both still stand.
     pub fn stands(&mut self, province: u32, key: SelectionKey) -> bool {
         self.chosen.get(&key).is_some()
             && (key.transport
@@ -2178,9 +1841,6 @@ impl LandModels<'_, '_, '_> {
                     .is_some_and(|answer| answer.value.0 == province))
     }
 
-    /// The model of the land stack `key` standing in `province`: its kept answer while what it
-    /// read reads the same, or the selection's, then the camouflage at `province` for one not in
-    /// naval transfer: the oldest member's kept while what it read reads the same.
     pub fn choose(&mut self, province: u32, key: SelectionKey) -> StackModel {
         let Self {
             selector,
@@ -2271,24 +1931,18 @@ impl LandModels<'_, '_, '_> {
     }
 }
 
-/// A land stack's model, or why it has none.
 #[derive(Clone, Debug)]
 pub enum StackModel {
     Chosen(ChosenModel),
-    /// Its model country's operands are unavailable.
     UnknownIdentity,
-    /// The hour does not record its template.
     Untemplated,
-    /// A recorded or authored input is missing or refused, by name.
     Withheld(String),
 }
 
-/// A land stack's chosen entity, camouflaged, and the level of the ladder it came from.
 #[derive(Clone)]
 pub struct ChosenModel {
     pub level: Level,
     pub entity: String,
-    /// The entity before its camouflage.
     base: String,
     answer: Arc<Chosen>,
 }
@@ -2304,7 +1958,6 @@ impl std::fmt::Debug for ChosenModel {
 }
 
 impl ChosenModel {
-    /// Whether it took `<sprite>_entity` because its sub-unit has no entity of its own.
     fn sprite_keyed(&self, assets: &UnitModelAssets) -> bool {
         let subunit = match &*self.answer {
             Ok(Some((_, _, key))) => key.as_deref(),
@@ -2318,17 +1971,12 @@ impl ChosenModel {
     }
 }
 
-// ------------------------------------------------------------ the selection
 
-/// One hour's joined tables. The tables a selection step needs but this hour
-/// lacks are kept as their reason, so only the stacks that reach them fail.
 struct Hour<'a> {
     country: Arc<CountryContext>,
-    /// The templates' rows, ascending by template ([`Self::template`]).
     templates: &'a [DivisionTemplateIconRow],
     sources: model_selection::Sources<'a>,
     variants: model_selection::Variants<'a>,
-    /// Spells the variants' equipment type tokens.
     tokens: TokenNames<'a>,
     equipment: Result<Equipment<'a>, String>,
     statuses: Statuses<'a>,
@@ -2336,12 +1984,10 @@ struct Hour<'a> {
     spans: RefCell<BuilderSpans>,
     selection: Stages,
     classification: OnceCell<Option<model_selection::facts::Hour>>,
-    /// Joined on first use: most hours need neither.
     conventional: OnceCell<Result<(Arc<bridge::Retained>, bridge::Prepared<'a>), String>>,
     assets: &'a UnitModelAssets,
     frame: &'a DecodedFrame,
     limits: equipment_graphics::Limits<'a>,
-    /// The fallback option list's labels.
     labels: model_labels::Labels<'a>,
 }
 
@@ -2356,8 +2002,6 @@ impl<'a> Hour<'a> {
         Self::read_profiled(assets, frame, terrain, limits, localisation, None, &mut |_| {})
     }
 
-    /// The hour's joins, its country context `kept` while every view that was read from is
-    /// `frame`'s.
     fn read_profiled(
         assets: &'a UnitModelAssets,
         frame: &'a DecodedFrame,
@@ -2404,8 +2048,6 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// The joins the ships read; the land selection's (templates, equipment, statuses,
-    /// camouflage) are left empty, which no ship reads.
     fn read_naval(
         assets: &'a UnitModelAssets,
         frame: &'a DecodedFrame,
@@ -2446,9 +2088,6 @@ impl<'a> Hour<'a> {
                 self.spans
                     .borrow_mut()
                     .measure("units.selection.geography_read", |_| {
-                        // Kept selections keep or compare the joined context whole
-                        // ([`SelectionContext::same`]) rather than note what joining read: its
-                        // views are recorded for itself alone.
                         view_reads::unrecorded(|| {
                             view_reads::record(|| {
                                 context::Prepared::read(self.frame, &self.assets.geography)
@@ -2470,7 +2109,6 @@ impl<'a> Hour<'a> {
     fn retained_conventional(
         &self,
     ) -> Result<&(Arc<bridge::Retained>, bridge::Prepared<'a>), &String> {
-        // A refusal read the census too: it stands only while the census still fails the same way.
         kept::note(|| CensusRead::Census);
         self.conventional
             .get_or_init(|| {
@@ -2495,7 +2133,6 @@ impl<'a> Hour<'a> {
             .as_ref()
     }
 
-    /// The template's row this hour.
     fn template(&self, template: u64) -> Option<&'a DivisionTemplateIconRow> {
         self.templates
             .binary_search_by_key(&template, |row| row.template)
@@ -2511,16 +2148,10 @@ impl<'a> Hour<'a> {
     }
 }
 
-/// The countries a selection reads beyond the rows it notes: each country link's slot, each slot's
-/// model country and, joined on first use, their geography. Kept from session to session while
-/// every view each part was read from is the frame's, so an hour whose country tables stand reads
-/// none of it again.
 struct CountryContext {
     links: BTreeMap<u32, u32>,
     countries: BTreeMap<u32, ModelCountry>,
-    /// The views the links and countries were read from.
     views: Vec<ViewIdentity>,
-    /// The geography and the views it was read from.
     geography: OnceLock<(Result<context::Prepared, String>, Vec<ViewIdentity>)>,
 }
 
@@ -2542,14 +2173,12 @@ impl CountryContext {
         })
     }
 
-    /// The geography, once joined.
     fn joined(&self) -> Option<Result<&context::Prepared, &str>> {
         self.geography
             .get()
             .map(|(geography, _)| geography.as_ref().map_err(String::as_str))
     }
 
-    /// Whether every view it was read from is `frame`'s.
     fn stands(&self, frame: &DecodedFrame) -> bool {
         let held = |view: &ViewIdentity| frame.tables.iter().any(|table| view.is(table));
         self.views.iter().all(held)
@@ -2560,9 +2189,6 @@ impl CountryContext {
     }
 }
 
-/// The variant-model graphics branch
-/// for a (variant, sub-unit) pair: the authored graphic pools,
-/// then the conventional candidates, for the country the game picks.
 fn graphics_model(
     assets: &UnitModelAssets,
     hour: &Hour<'_>,
@@ -2590,7 +2216,6 @@ fn graphics_model_for_country(
         let equipment = content
             .equipment_model(equipment_key)
             .map_err(|error| error.to_string())?;
-        // The equipment family is the type itself unless another is named.
         let family = Some((
             equipment.family,
             Some(
@@ -2651,16 +2276,10 @@ fn graphics_model_for_country(
     })
 }
 
-/// A division's equipment rows: the daily census, or the hourly rows of divisions minted since
-/// it, each looked up alone in the frame's rows (ascending by division, then ordinal). With both
-/// complete, a division in neither holds no equipment; without the hourly table, a division absent
-/// from the daily one is unknown. A division in both takes the hourly rows alone: they are the
-/// newer capture, and its rows are never doubled.
 struct Equipment<'a> {
     daily: &'a [replay_data::rows::DivisionEquipmentRow],
     new: &'a [replay_data::rows::DivisionEquipmentRow],
     new_complete: bool,
-    /// The divisions the rows were made for, when they are not the whole tables.
     asked: Option<&'a BTreeSet<u64>>,
 }
 
@@ -2711,34 +2330,23 @@ impl<'a> Equipment<'a> {
     }
 }
 
-/// A stack's selection, owned so a later hour can keep it.
 type Chosen = Result<Option<(Level, String, Option<String>)>, Missing>;
 type GraphicalAnswer = Result<Option<(Level, String)>, String>;
 type FallbackAnswer = Result<Option<model_multi_fallback::Resolved>, String>;
-/// A division's camouflage suffix at the province it was made for, or why it has none.
 type Camouflaged = (u32, Result<Option<String>, String>);
 
-/// The selections and answers an hour made, kept while what each read reads the same.
 struct Selections {
     context: Arc<SelectionContext>,
-    /// The hour the answers were kept at.
     frame: Arc<DecodedFrame>,
-    /// Every limit pool the hour decided, the selections' among them.
     decided: equipment_graphics::Decided,
-    /// The census the answers' census reads were read in.
     census: Result<Arc<bridge::Retained>, String>,
     chosen: kept::Kept<SelectionKey, Chosen, CensusRead>,
     graphical: kept::Kept<GraphicalAnswerKey, GraphicalAnswer, CensusRead>,
-    /// Fallback answers by template.
     fallbacks: kept::Kept<u64, FallbackAnswer, CensusRead>,
-    /// The states' provinces the camouflages test.
     members: kept::Kept<(), camouflage::StateMembers, CensusRead>,
-    /// Each division's camouflage by its oldest-member key, indexed by the rows it read: a
-    /// change of one of them drops it and no other.
     camouflage: kept::Kept<u64, Camouflaged, CensusRead>,
 }
 
-/// What a stack selection reads of the hour beyond the rows and census entries it notes.
 #[derive(Clone)]
 struct SelectionContext {
     view: Result<u32, String>,
@@ -2751,7 +2359,6 @@ struct SelectionContext {
 impl SelectionContext {
     fn capture(hour: &Hour<'_>, view: Result<u32, String>) -> Self {
         let (labels, unavailable) = hour.labels.operands();
-        // The geography is part of the context: joined now, as the comparison needs it.
         let _ = hour.geography();
         Self {
             view,
@@ -2762,7 +2369,6 @@ impl SelectionContext {
         }
     }
 
-    /// The countries kept stand for the hour's (the same context), or read the same.
     fn same_countries(&self, hour: &Hour<'_>) -> bool {
         if Arc::ptr_eq(&self.country, &hour.country) {
             return true;
@@ -2789,8 +2395,6 @@ impl SelectionContext {
     }
 }
 
-/// A land stack selection's identity: what it is selected for. Its oldest seen member, that
-/// member's preferred template and owners, and whether it is in naval transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionKey {
     pub transport: bool,
@@ -2800,12 +2404,9 @@ pub struct SelectionKey {
     pub expeditionary_owner: u32,
 }
 
-/// Why a stack has no figure.
 #[derive(Clone)]
 enum Missing {
-    /// This hour does not record the stack's template.
     Template,
-    /// A recorded or authored input is missing.
     Input(String),
 }
 
@@ -2821,35 +2422,25 @@ impl From<String> for Missing {
     }
 }
 
-/// The resolved entity, its level and the sub-unit whose key it came from.
-/// `Ok(None)` is a country whose model operands are unavailable.
 type Selected<'a> = Result<Option<(Level, String, Option<&'a str>)>, Missing>;
 
 type GraphicalKey = (u64, String, Definition, u32);
 
-/// A graphics answer's pair and the first archetype it was resolved with.
 type GraphicalAnswerKey = (GraphicalKey, Option<String>);
 
-/// Each template resolved against content once an hour.
 type Templates<'a> = BTreeMap<u64, Result<Template<'a>, String>>;
 
-/// Memoised selection over one hour: stacks sharing a pair or a fallback
-/// share the answer.
 struct Selector<'a, 'h, 'k> {
     assets: &'a UnitModelAssets,
     hour: &'h Hour<'a>,
     frame: &'a DecodedFrame,
-    /// This hour's answers by pair, and what each read, for every stack the pair serves.
     graphical: BTreeMap<GraphicalKey, kept::Answer<GraphicalAnswer, CensusRead>>,
     fallbacks: BTreeMap<u64, kept::Answer<FallbackAnswer, CensusRead>>,
-    /// The viewing country's raw reference, or why it has none.
     view: Result<u32, String>,
-    /// The graphics and fallback answers kept from earlier hours, and this hour's.
     graphical_answers: &'h RefCell<CensusChecked<'k, GraphicalAnswerKey, GraphicalAnswer>>,
     fallback_answers: &'h RefCell<CensusChecked<'k, u64, FallbackAnswer>>,
 }
 
-/// One hour's check of kept answers whose own reads are census entries.
 type CensusChecked<'h, K, V> =
     kept::Checked<'h, K, V, CensusRead, ToldChanges<'h>, &'h dyn Fn(&CensusRead) -> bool>;
 
@@ -2901,7 +2492,6 @@ impl<'a> Selector<'a, '_, '_> {
             if !explicit.is_empty() && self.exists(explicit) {
                 return Ok(Some((Level::Template, explicit.to_owned(), None)));
             }
-            // The game ranks the whole native equipment list.
             let division = u128::from(stack.oldest) << 32;
             for table in [
                 TableId::NewDivisionEquipment,
@@ -2959,8 +2549,6 @@ impl<'a> Selector<'a, '_, '_> {
                 };
                 return Ok(Some((level, resolved.entity, key)));
             }
-            // The representative's numbered ladder; the null object
-            // draws the placeholder.
             let Some(representative) = &composition.representative else {
                 return self.placeholder();
             };
@@ -3013,7 +2601,6 @@ impl<'a> Selector<'a, '_, '_> {
                 };
                 self.graphical.insert(memo.clone(), answer);
             } else {
-                // Every stack the answer serves read what the answer read.
                 kept::note_all(&self.graphical[&memo].reads);
             }
             if let Some((level, name)) = (*self.graphical[&memo].value).clone()? {
@@ -3024,7 +2611,6 @@ impl<'a> Selector<'a, '_, '_> {
         })
     }
 
-    /// Variant-model selection for a selected pair.
     fn graphical_model(
         &self,
         pair: SelectedPair<'_>,
@@ -3034,7 +2620,6 @@ impl<'a> Selector<'a, '_, '_> {
         graphics_model(self.assets, self.hour, pair, first_archetype, roster_owner)
     }
 
-    /// Fallback queues over the viewing country's rosters, once per template.
     fn fallback(
         &mut self,
         template: &DivisionTemplateIconRow,
@@ -3084,7 +2669,6 @@ impl<'a> Selector<'a, '_, '_> {
         })
     }
 
-    /// The numbered model ladder with the stored number, for `country`.
     fn numbered(&self, stack: &SelectionKey, country: u32, subunit: &'a SubUnit) -> Selected<'a> {
         let hour = self.hour;
         hour.selection.measure(Stage::Numbered, || {
@@ -3103,7 +2687,6 @@ impl<'a> Selector<'a, '_, '_> {
             let number = status.model_number().ok_or_else(|| {
                 Missing::Input("division model number is unavailable this hour".into())
             })?;
-            // The game sign-extends the stored number's low byte.
             let number = number as i8;
             match resolve_model_numbered(
                 model_country,
@@ -3134,30 +2717,18 @@ impl<'a> Selector<'a, '_, '_> {
     }
 }
 
-/// Selector results and spline geometry for one recorded hour and perspective.
 pub struct PreparedModels {
-    /// One builder-materialized field, moved into the first view without a clone.
     staged_field: Mutex<Option<StagedField>>,
-    /// Keep the immutable target index shared with installs and repeated fields.
     targets: Option<Targets>,
     ships: NavalSources,
-    /// The raid arrows' units ([`Self::add_raid_units`]). They are no unit
-    /// slot's: each arrow creates its entity directly, so
-    /// they bypass the unit history, its camera gates and popup scale.
     raid: Vec<RaidModel>,
-    /// The viewed country's trade-route convoys ([`Self::add_convoys`]), posed each frame by
-    /// the presentation clock ([`Self::convoy_units`]).
     convoys: Option<(
         Vec<crate::map::trade_routes::ConvoyLine>,
         crate::map::trade_routes::ConvoyDefines,
         std::sync::Mutex<Option<crate::map::trade_routes::ConvoyFleet>>,
     )>,
     placed: Vec<(Target, counter_move::Position)>,
-    /// Whether `ships` are this hour's own: false when made without them for the map's ships
-    /// layer, which then hands its own over ([`Self::with_ships`]).
     naval: bool,
-    /// The viewing country's provinces, whose unit slots a switch to it
-    /// clears ([`viewer_foundation::map::presentation::UnitRestart::ViewingCountry`]).
     owned: BTreeSet<u32>,
     pub report: ModelReport,
 }
@@ -3167,7 +2738,6 @@ struct StagedField {
 }
 
 impl PreparedModels {
-    /// No models: the layer is turned off for `reason`.
     fn disabled(reason: &str) -> Self {
         Self {
             staged_field: Mutex::new(None),
@@ -3185,23 +2755,18 @@ impl PreparedModels {
         }
     }
 
-    /// No models, withheld for `reason`: none are drawn, and the reason is reported.
     pub fn withheld(reason: &str) -> Self {
         Self::disabled(reason)
     }
 
-    /// The hour's ships: candidates, formations, their placements and naval combats.
     pub fn ships(&self) -> &NavalSources {
         &self.ships
     }
 
-    /// Whether its ships are the hour's own (or handed over): false when it was made without them.
     pub fn naval(&self) -> bool {
         self.naval
     }
 
-    /// The same figures, raid units and convoys with `ships` in place of its own, their counts in
-    /// its report. The convoys' sailing state starts anew: carry it with [`Self::inherit_convoys`].
     pub fn with_ships(&self, ships: NavalSources, report: &ModelReport) -> Self {
         let mut joined = self.report.clone();
         joined.absorb(report);
@@ -3218,8 +2783,6 @@ impl PreparedModels {
         }
     }
 
-    /// Each figure and formation's hour placement, root rotation and settled stack scale, for
-    /// its animator.
     pub fn movement_positions(
         &self,
     ) -> impl Iterator<Item = (Unit, &counter_move::Position, f32, f32)> {
@@ -3230,7 +2793,6 @@ impl PreparedModels {
         land.chain(self.ship_movement_positions())
     }
 
-    /// The formations' part of [`Self::movement_positions`].
     pub fn ship_movement_positions(
         &self,
     ) -> impl Iterator<Item = (Unit, &counter_move::Position, f32, f32)> {
@@ -3244,8 +2806,6 @@ impl PreparedModels {
         })
     }
 
-    /// Materializes the upload field on the hour builder, after raids and convoys
-    /// have joined it. Later views or scene recreations rebuild the same field.
     pub fn stage_field(&mut self, assets: &UnitModelAssets) {
         let field = self.build_field(assets);
         self.targets = Some(field.targets.clone());
@@ -3269,8 +2829,6 @@ impl PreparedModels {
         &self.owned
     }
 
-    /// Adds the raid arrows' units, each entity baked by name, posed where
-    /// the hour placed them ([`RaidModel::posed`]).
     pub fn add_raid_units(
         &mut self,
         assets: &UnitModelAssets,
@@ -3308,10 +2866,6 @@ impl PreparedModels {
         }
     }
 
-    /// Raid units draw at every camera height. `playback` is the heightfield and the playback
-    /// fraction a playing window places them at every rendered frame, the
-    /// tick's progress read by movement updates each frame;
-    /// `None` keeps them where the hour placed them.
     pub fn raid_units(
         &self,
         assets: &UnitModelAssets,
@@ -3327,8 +2881,6 @@ impl PreparedModels {
             .collect()
     }
 
-    /// Adds the viewed country's trade-route convoys ([`crate::map::trade_routes`]). Like the
-    /// raid units they are no unit slot's and bypass the unit history.
     pub fn add_convoys(
         &mut self,
         lines: Vec<crate::map::trade_routes::ConvoyLine>,
@@ -3338,8 +2890,6 @@ impl PreparedModels {
         self.convoys = (!lines.is_empty()).then_some((lines, defines, std::sync::Mutex::new(None)));
     }
 
-    /// Preserve this view's sailing stream across unchanged forward-hour route refreshes.
-    /// Seeks and viewing-country changes recreate presentation through the host's restart rule.
     pub fn inherit_convoys(&self, previous: &Self) {
         let (Some((lines, defines, fleet)), Some((old_lines, old_defines, old_fleet))) =
             (&self.convoys, &previous.convoys)
@@ -3356,7 +2906,6 @@ impl PreparedModels {
         }
     }
 
-    /// A seek starts a fresh convoy presentation even when it reuses selector results.
     pub fn reset_convoys(&self) {
         if let Some((_, _, fleet)) = &self.convoys {
             *fleet
@@ -3365,14 +2914,10 @@ impl PreparedModels {
         }
     }
 
-    /// Whether the hour has convoys to sail.
     pub fn has_convoys(&self) -> bool {
         self.convoys.is_some()
     }
 
-    /// The convoys sailing at `time` seconds of presentation time, when they show
-    /// ([`crate::map::trade_routes::convoys_shown`]); `height` is the drawn surface at a world
-    /// `(x, z)`. Entities that do not bake are counted in `refused`.
     pub fn convoy_units(
         &self,
         assets: &UnitModelAssets,
@@ -3422,9 +2967,6 @@ impl PreparedModels {
         crate::map::trade_routes::convoy_instances(assets, lines, &poses, refused)
     }
 
-    /// Every figure and ship of the hour, whatever the camera: the unit
-    /// history admits them ([`crate::map::unit_history`]); and the raid units
-    /// where the hour placed them, which bypass it.
     pub fn field(&self, assets: &UnitModelAssets) -> Field {
         if let Some(staged) = self
             .staged_field
@@ -3449,7 +2991,6 @@ impl PreparedModels {
         self.field_of(assets, targets)
     }
 
-    /// None of the hour's: the map's layers draw the unit models.
     pub fn drawn_by_layers() -> Self {
         Self {
             staged_field: Mutex::new(None),
@@ -3464,15 +3005,12 @@ impl PreparedModels {
         }
     }
 
-    /// The field with `land` in place of the hour's own land figures, beside its ships, raid
-    /// units and convoys.
     pub fn field_with_land(&self, assets: &UnitModelAssets, land: Vec<Target>) -> Field {
         self.field_of(assets, land.into())
     }
 
     fn field_of(&self, assets: &UnitModelAssets, targets: Targets) -> Field {
         let raids = self.raid_units(assets, None);
-        // The raid meshes are uploaded with the hour's, so they are resident.
         let mut models: Vec<_> = targets.iter().map(|t| (t.mesh, t.instance)).collect();
         models.extend(
             self.ships
@@ -3490,9 +3028,6 @@ impl PreparedModels {
                 .map(|target| (target.mesh, target.instance)),
         );
         models.extend_from_slice(&raids);
-        // Upload each convoy mesh without creating or stepping its sailing fleet.
-        // These zero-scale residency instances never enter the unit history or draw
-        // a convoy; the presentation frame supplies the sailing instances.
         if let Some((lines, _, _)) = &self.convoys {
             let slots: BTreeSet<_> = lines
                 .iter()
@@ -3517,8 +3052,6 @@ impl PreparedModels {
     }
 }
 
-/// A raid arrow's unit: its entity, the instance the hour placed and what
-/// places it again.
 #[derive(Clone)]
 struct RaidModel {
     slot: usize,
@@ -3528,15 +3061,6 @@ struct RaidModel {
 }
 
 impl RaidModel {
-    /// The instance at `pose`. The transform follows the actor basis: the facing
-    /// is the entity's local +Z (the basis rows are right,
-    /// up, facing with world up), which [`crate::map::entity_animation::world_transform`] places at
-    /// `atan2(-f.x, f.z)` about Y and `asin(-f.y)` about X, as `aircraft.rs`
-    /// reads an aircraft's basis; the scale is uniform.
-    ///
-    /// The game requests `idle`; a reached stage the
-    /// entity has replaces it, through its intro when the stage changes under
-    /// a shown entity ([`crate::map::entity_animation::named_stage`]).
     fn posed(
         &self,
         assets: &UnitModelAssets,
@@ -3562,9 +3086,6 @@ impl RaidModel {
     }
 }
 
-/// What places a land stack's figure: its province and owner slot, its oldest visible member,
-/// that member's route, combat side and exercise, whether the game lets its texture move, and
-/// its instance scale (the transport one in naval transfer).
 pub struct LandStack<'a> {
     pub province: u32,
     pub owner: u32,
@@ -3576,17 +3097,12 @@ pub struct LandStack<'a> {
     pub scale: f32,
 }
 
-/// Why a land stack whose model is chosen has no figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unplaced {
-    /// Its province has no anchor.
     Unanchored,
-    /// Its state rests on an exercise the hour does not hold.
     Exercise,
 }
 
-/// A land stack's figure as the hour places it, its mesh left 0 for the selection to fill, and
-/// the position its animator starts from.
 pub fn land_figure(
     stack: &LandStack<'_>,
     world: Option<&counter_move::RouteWorld<'_>>,
@@ -3600,9 +3116,6 @@ pub fn land_figure(
     .ok_or(Unplaced::Unanchored)?;
     let animation =
         animation_state(stack.route, stack.combat, stack.training).ok_or(Unplaced::Exercise)?;
-    // `mesh::Descriptors::resolve` applies the whole `clone` chain's
-    // scale and `crate::map::models` bakes it into the vertices, so the only
-    // instance scale left is the transport one.
     let target = Target {
         province,
         identity: stack.oldest,
@@ -3627,8 +3140,6 @@ pub fn land_figure(
     Ok((target, position))
 }
 
-/// A placed land figure as its animator reads it: its unit, its hour placement, its root rotation
-/// (along its motion while it moves) and its scale.
 pub fn land_movement<'p>(
     target: &Target,
     position: &'p counter_move::Position,
@@ -3639,7 +3150,6 @@ pub fn land_movement<'p>(
     (Unit::Division(target.identity), position, rotation, 1.0)
 }
 
-/// `target` as the field draws it: a moving figure at its settled point, facing its route.
 pub fn drawn(mut target: Target, position: &counter_move::Position) -> Target {
     if let Some((at, heading)) = position.motion.as_ref().map(|m| m.position_heading()) {
         target.instance.position = at;
@@ -3648,17 +3158,10 @@ pub fn drawn(mut target: Target, position: &counter_move::Position) -> Target {
     target
 }
 
-/// One division's route this hour, shared with the counter layer.
 type Route = counter_move::DivisionRoute;
 
-/// What one stack is keyed by: its province, its owner and the route it is on,
-/// the same triple used to group a counter.
 type StackKey = (u32, u32, Option<[u32; 2]>);
 
-/// Slot 0 is idle/training, 19 idle, movement slots select
-/// attack/support_attack before retreat/move. Slots 9/10 fall through to defend.
-/// LandCombats supplies the side when format14 has no DivisionMovement row.
-/// None when the state rests on an exercise predicate the hour does not hold.
 fn animation_state(
     route: Option<&Route>,
     combat: Option<u32>,
@@ -3693,41 +3196,17 @@ fn animation_state(
     combat.or_else(standing)
 }
 
-/// One stack's representative division: the oldest, whose template names the
-/// figure, exactly as the counter picks the one whose glyph the counter
-/// draws.
 struct Stack {
-    /// Members this perspective is shown at all.
     visible: usize,
     oldest: u64,
-    /// The oldest member's preferred template.
     template: u64,
     roster_owner: u32,
     expeditionary_owner: u32,
     route: Option<Route>,
 }
 
-// ------------------------------------------------------------------ geometry
 
-// The heading is [`counter_move::Motion::position_heading`]'s: the game's
-// `atan2f(tangent.z, tangent.x)` of the drawn segment. The world rotation that
-// carries a mesh's local +X to that direction is the same angle, which is what
-// `models::ModelInstance::rotation` is (`entity_animation::world_transform`: local +X goes to
-// `(cos, 0, sin)`).
 
-/// The turn from the engine's heading to [`ModelInstance::rotation`].
-///
-/// The engine's heading is `atan2f(tangent.z, tangent.x)`, so heading zero
-/// points along world **+X**. `entity_animation::world_transform` turns a mesh's local +X to
-/// `(cos r, 0, sin r)`, so a rotation of `r` points local +X along the same
-/// direction a heading of `r` does --- but a unit mesh is not authored facing
-/// local +X. `gfx/models/units/GER_infantry.mesh` is 5.46 wide in x and 1.74
-/// deep in z, which is a figure with its arms out across x and its body across
-/// z, and a render of the layer with every rotation forced to zero shows the
-/// rifleman's front --- collar, buttons, belt --- toward the bottom of the
-/// screen, which at these cameras is world **-Z**. Turning local -Z onto the
-/// route's direction takes `atan2(dx, -dz)`, a quarter turn on from the
-/// heading.
 pub const MESH_FORWARD_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
 
 #[cfg(test)]
@@ -3875,7 +3354,6 @@ mod aircraft_ladder_tests {
                 literal: b"frame".to_vec(),
             }]))
             .into();
-        // Another variant defined and a table it never reads recorded: no row it read changed.
         let mut second = first.clone();
         second.tables[TableId::VariantDefinitions.index()] =
             TableView::Complete(TableRows::VariantDefinitions(vec![
@@ -3885,7 +3363,6 @@ mod aircraft_ladder_tests {
             .into();
         second.tables[TableId::Factions.index()] =
             TableView::Complete(TableRows::empty(TableId::Factions)).into();
-        // The country's appearance changed: a row it read.
         let mut third = second.clone();
         third.tables[TableId::CountryAppearance.index()] = appearance(b"NEW");
         let mut kept = KeptModels::default();

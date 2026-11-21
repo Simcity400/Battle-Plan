@@ -1,8 +1,3 @@
-//! Faction sums of a country measure (territory, or factories counted the game's way): the rosters at an hour
-//! (`faction-rosters`, rows at an hour, followed as a panel; the UI adds the members' followed values), and each
-//! faction's line over a view (`faction-lines`), summed from its members' chart bins over their membership. Members are the canonical slots of
-//! the recorded faction rosters, named and keyed by the tag holding each then. A member whose value is not known
-//! makes its faction's total not known, never smaller.
 
 use super::{LoadContext, Product};
 use crate::{
@@ -26,7 +21,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The series a faction sum reads.
 const KINDS: [&str; 2] = ["territory", "country-factories"];
 
 fn measure_of(kind: &str, measure: &str) -> Result<(&'static Series, &'static Measure), &'static str> {
@@ -37,9 +31,6 @@ fn measure_of(kind: &str, measure: &str) -> Result<(&'static Series, &'static Me
     Ok((series, series.measure(measure).ok_or("Unknown faction measure")?))
 }
 
-/// The faction rosters at an hour: each faction's members, by tag. A rows-at-an-hour product followed as a panel:
-/// it carries structure alone, so it is pushed when a membership changes; each faction's total is the members'
-/// followed values added where they are painted.
 pub struct FactionRosters;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -53,11 +44,11 @@ pub struct FactionRostersParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRoster {
-    /// The faction's recorded id.
+    #[doc = " The faction's recorded id."]
     pub id: String,
-    /// Its members at the hour, by tag, ascending.
+    #[doc = " Its members at the hour, by tag, ascending."]
     pub members: Vec<String>,
-    /// Why its roster is not known whole at the hour: its total is not known then.
+    #[doc = " Why its roster is not known whole at the hour: its total is not known then."]
     pub missing: Option<String>,
 }
 
@@ -66,7 +57,7 @@ pub struct FactionRoster {
 #[serde(rename_all = "camelCase")]
 pub struct FactionRostersReply {
     pub factions: Vec<FactionRoster>,
-    /// Why no roster is known at this hour.
+    #[doc = " Why no roster is known at this hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -76,8 +67,8 @@ pub struct FactionRostersReply {
 #[serde(rename_all = "camelCase")]
 pub struct FactionLine {
     pub id: String,
-    /// Its bins: first and last the sums of its members' first and last values; least and greatest the sums of
-    /// theirs, so bounds of the faction's own wherever `bounds` says so.
+    #[doc = " Its bins: first and last the sums of its members' first and last values; least and greatest the sums of"]
+    #[doc = " theirs, so bounds of the faction's own wherever `bounds` says so."]
     pub summary: ChartSummary,
     pub missing: Vec<MissingSpan>,
 }
@@ -89,7 +80,7 @@ pub struct FactionLinesReply {
     pub branch_id: String,
     pub measure: String,
     pub decimals: u8,
-    /// A bin holds more than one hour: its least and greatest are bounds, not the sum's own extremes.
+    #[doc = " A bin holds more than one hour: its least and greatest are bounds, not the sum's own extremes."]
     pub bounds: bool,
     pub lines: Vec<FactionLine>,
     pub warnings: Vec<String>,
@@ -97,8 +88,6 @@ pub struct FactionLinesReply {
 
 dashboard_base::reply_warnings!(FactionRostersReply, FactionLinesReply);
 
-/// Memberships at an hour from GroupSpans' live rows: faction id -> member slots; factions whose roster is
-/// incomplete; whether memberships were read at all.
 struct Rosters {
     members: BTreeMap<u64, BTreeSet<u32>>,
     incomplete: BTreeSet<u64>,
@@ -133,7 +122,6 @@ fn rosters(frame: &DecodedFrame) -> Result<Rosters, String> {
     Ok(out)
 }
 
-/// Each faction's roster at the frame's hour, members named through `tags`.
 pub fn rosters_at(frame: &DecodedFrame, tags: &HashMap<u32, (&str, u32)>) -> FactionRostersReply {
     let empty = |missing: String| FactionRostersReply { factions: Vec::new(), missing: Some(missing), warnings: Vec::new() };
     let rosters = match rosters(frame) {
@@ -203,20 +191,19 @@ pub struct FactionLinesParams {
     pub from: i32,
     pub to: i32,
     pub width: u32,
-    /// Whose membership a faction sums: `hour` (each member over its own membership; the default), `end` (the
-    /// members at the view's last hour, over the whole view) or `ever` (anyone a member within the view, over the
-    /// whole view).
+    #[doc = " Whose membership a faction sums: `hour` (each member over its own membership; the default), `end` (the"]
+    #[doc = " members at the view's last hour, over the whole view) or `ever` (anyone a member within the view, over the"]
+    #[doc = " whole view)."]
     #[serde(default)]
     pub membership: Option<String>,
-    /// A group's members summed as one line, `group`, instead of the factions: each by tag over its spans (the
-    /// whole view where none), the hours their membership was not read in `unread`.
+    #[doc = " A group's members summed as one line, `group`, instead of the factions: each by tag over its spans (the"]
+    #[doc = " whole view where none), the hours their membership was not read in `unread`."]
     #[serde(default)]
     pub members: Option<Vec<GroupMember>>,
     #[serde(default)]
     pub unread: Option<Vec<(i32, i32)>>,
 }
 
-/// A member of a group summed as one line, and the hours it is a member; the whole view where none are named.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -226,10 +213,8 @@ pub struct GroupMember {
     pub spans: Option<Vec<(i32, i32)>>,
 }
 
-/// The line id of a group's members summed.
 pub const GROUP_LINE: &str = "group";
 
-/// Whose membership counts in a faction's line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Membership {
     Hour,
@@ -248,8 +233,6 @@ impl Membership {
     }
 }
 
-/// A faction's members and the hours each is summed over `from..=to` under `membership`, from each tag's
-/// membership runs; a member summed over no hour is left out.
 fn roster_spans(runs: Vec<(String, i32, i32)>, membership: Membership, from: i32, to: i32) -> Vec<(String, Vec<(i32, i32)>)> {
     let mut by_tag: BTreeMap<String, Vec<(i32, i32)>> = BTreeMap::new();
     for (tag, first, last) in runs {
@@ -268,7 +251,6 @@ fn roster_spans(runs: Vec<(String, i32, i32)>, membership: Membership, from: i32
         .collect()
 }
 
-/// `spans` cut to `from..=to`, ascending and merged where they meet.
 fn merged(mut spans: Vec<(i32, i32)>, from: i32, to: i32) -> Vec<(i32, i32)> {
     spans.retain_mut(|span| {
         *span = (span.0.max(from), span.1.min(to));
@@ -285,7 +267,6 @@ fn merged(mut spans: Vec<(i32, i32)>, from: i32, to: i32) -> Vec<(i32, i32)> {
     out
 }
 
-/// The hours of `missing` within `spans`.
 fn within(missing: &[MissingSpan], spans: &[(i32, i32)]) -> Vec<MissingSpan> {
     let mut out = Vec::new();
     for gap in missing {
@@ -299,7 +280,6 @@ fn within(missing: &[MissingSpan], spans: &[(i32, i32)]) -> Vec<MissingSpan> {
     out
 }
 
-/// One faction's bins: its members' bins summed, a bin meeting any of `missing` not known.
 pub fn summed(charts: &[ChartSummary], missing: &[MissingSpan], from: i32, to: i32, width: u32) -> ChartSummary {
     let hours = i64::from(to) - i64::from(from) + 1;
     let (first_bin, bin_hours) = if hours > i64::from(width) {
@@ -348,13 +328,10 @@ pub fn summed(charts: &[ChartSummary], missing: &[MissingSpan], from: i32, to: i
     ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None }
 }
 
-/// The factions with a member within `from..=to`, by id.
 fn ids_of(members: &BTreeMap<u64, Vec<(String, i32, i32)>>, from: i32, to: i32) -> Vec<String> {
     members.iter().filter(|(_, runs)| runs.iter().any(|&(_, first, last)| first <= to && from <= last)).map(|(id, _)| id.to_string()).collect()
 }
 
-/// One line of `drawn`'s members summed over their spans, its bins not known where `unread` or a member's own gaps
-/// meet them; none where no member is drawn.
 fn summed_line(line: &Line<'_, '_>, id: String, drawn: &[(Ask, Vec<(i32, i32)>)], unread: &[MissingSpan], from: i32, to: i32, width: u32) -> io::Result<Option<FactionLine>> {
     if drawn.is_empty() {
         return Ok(None);
@@ -369,7 +346,6 @@ fn summed_line(line: &Line<'_, '_>, id: String, drawn: &[(Ask, Vec<(i32, i32)>)]
     Ok(Some(FactionLine { id, summary: summed(&summaries, &missing, from, to, width), missing }))
 }
 
-/// A group's members as drawn: each over its spans cut to the view (all of it where none), a member over no hour left out.
 fn group_drawn(members: &[GroupMember], from: i32, to: i32) -> Vec<(String, Vec<(i32, i32)>)> {
     members
         .iter()
@@ -380,7 +356,6 @@ fn group_drawn(members: &[GroupMember], from: i32, to: i32) -> Vec<(String, Vec<
         .collect()
 }
 
-/// Each faction's line over `from..=to`, `width` bins: one chart read of every member of every faction drawn.
 fn lines(source: &Source, params: &FactionLinesParams, cancelled: &AtomicBool) -> io::Result<FactionLinesReply> {
     let (series, measure) = measure_of(&params.kind, &params.measure).map_err(dashboard_core::invalid)?;
     if params.from > params.to || !(1..=8192).contains(&params.width) {
@@ -392,8 +367,6 @@ fn lines(source: &Source, params: &FactionLinesParams, cancelled: &AtomicBool) -
     let (from, to, width) = (params.from, params.to, params.width);
     let mut out = Vec::new();
     let membership = Membership::of(params.membership.as_deref()).map_err(dashboard_core::invalid)?;
-    // Each faction counted at each hour is its own row of the recorder's faction totals: its bins' least and greatest
-    // are the faction's own, exact.
     let exact = (params.members.is_none() && membership == Membership::Hour).then(|| dashboard_declare::faction_measure(&params.kind, &params.measure)).flatten();
     if let Some(name) = exact {
         let totals = dashboard_declare::series("faction-totals").ok_or_else(|| dashboard_core::invalid("Faction totals are not declared"))?;
@@ -415,7 +388,6 @@ fn lines(source: &Source, params: &FactionLinesParams, cancelled: &AtomicBool) -
     } else {
         let (members, unknown) = super::groups::faction_members(source, &query)?;
         let unread_spans = merged(unknown.iter().map(|span| (span.first_hour, span.last_hour)).collect(), from, to);
-        // A roster fixed at the view's end, or of anyone ever a member, is not known whole where any hour it reads was not.
         let unread_spans = match membership {
             Membership::Hour => unread_spans,
             Membership::End if unread_spans.iter().any(|&(first, last)| first <= to && to <= last) => vec![(from, to)],

@@ -9,8 +9,6 @@ use replay_data::{
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
-/// Synthetic scripted modes have a complete, empty character catalogue.
-/// Keyword classification must not inherit an unrelated unavailable input.
 fn with_empty_character_templates(
     mut facts: dashboard_text::triggers::ContentFacts<'_>,
 ) -> dashboard_text::triggers::ContentFacts<'_> {
@@ -21,7 +19,6 @@ fn with_empty_character_templates(
     facts
 }
 
-/// The shipped defines' values.
 fn defines() -> ModeDefines {
     ModeDefines {
         factions_not_member: [0.7, 0.7, 0.7, 0.7],
@@ -41,10 +38,10 @@ fn defines() -> ModeDefines {
         very_good_opinion: 50,
         very_bad_opinion: -50,
         resistance_colors: ColorList(vec![
-            0.0, 0.0, 1.0, 0.0, 0.0, //
-            0.0, 1.0, 1.0, 0.0, 0.0, //
-            1.0, 1.0, 1.0, 0.0, 0.1, //
-            30.0, 1.0, 1.0, 0.0, 0.3, //
+            0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 1.0, 1.0, 0.0, 0.0,
+            1.0, 1.0, 1.0, 0.0, 0.1,
+            30.0, 1.0, 1.0, 0.0, 0.3,
             100.0, 1.0, 0.0, 0.0, 0.3,
         ]),
         compliance_colors: ColorList(vec![0.0, 0.3, 0.6, 0.6, 0.05, 100.0, 0.3, 0.9, 1.0, 0.5]),
@@ -125,9 +122,6 @@ fn appearance(country: u32, rgba: [f32; 4]) -> CountryAppearanceRow {
     }
 }
 
-/// GER (raw 100, slot 0) controls provinces 1-2 in state 1, SOV (raw 200, slot 1) province 3 in
-/// state 2 and ITA (raw 300, slot 2) province 4 in state 3; GER and ITA share a faction and a
-/// human plays SOV.
 pub(super) fn frame() -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed".into(),
@@ -153,8 +147,6 @@ pub(super) fn frame() -> DecodedFrame {
             })
             .collect(),
     ));
-    // A tag operand resolves the country's recorded owned-state count before considering
-    // original-tag substitution; controlling provinces alone does not supply that count.
     tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(
             countries
@@ -186,7 +178,6 @@ pub(super) fn frame() -> DecodedFrame {
             appearance(200, [0.5, 0.0, 0.25, 1.0]),
             appearance(300, [0.0, 0.5, 0.0, 1.0]),
         ]));
-    // No subject and no autonomy status: every country takes its own colour.
     tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
     tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(Vec::new()));
     tables[TableId::Factions.index()] =
@@ -210,7 +201,6 @@ pub(super) fn frame() -> DecodedFrame {
             ordinal: 1,
         },
     ]));
-    // Every state is a town.
     tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         (1..=3)
             .map(|id| StateRow {
@@ -230,8 +220,6 @@ pub(super) fn frame() -> DecodedFrame {
         country: 200,
         ..Default::default()
     }]));
-    // Standalone colour callbacks need proof that no effect refresh inherited
-    // a caller's temporary store in this hour.
     tables[TableId::MapEvents.index()] = {
         use replay_data::{rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventsRow};
         TableView::Complete(TableRows::MapEvents(vec![MapEventsRow {
@@ -291,11 +279,9 @@ fn colours_pack_by_truncating_each_component() {
 #[test]
 fn colour_lists_interpolate_between_the_rows_around_the_value() {
     let list = &defines().resistance_colors;
-    // The first two rows share a threshold: a zero-width interval takes its first row.
     assert_eq!(list.color(0.0), [0.0, 1.0, 0.0, 0.0]);
     assert_eq!(list.color(0.5), [1.0, 1.0, 0.0, 0.05]);
     assert_eq!(list.color(65.0), [1.0, 0.5, 0.0, 0.3]);
-    // Past the last threshold the last interval clamps; below the first one it starts there.
     assert_eq!(list.color(200.0), [1.0, 0.0, 0.0, 0.3]);
     assert_eq!(list.color(-5.0), [0.0, 1.0, 0.0, 0.0]);
     assert_eq!(ColorList(vec![0.0; 7]).color(1.0), [1.0; 4]);
@@ -309,7 +295,6 @@ fn factions_colour_members_by_their_faction_and_others_by_the_define() {
         Some(0),
     );
     let draw = fill.draw.unwrap();
-    // The variant replaces the country layer in channel 1; channel 2 shows nothing.
     assert_eq!(draw.channels, [Source::Country, Source::Empty]);
     let layer = draw.country.unwrap();
     assert_eq!(layer.region_of, [0, 1, 1, 2, 3, 0]);
@@ -327,9 +312,7 @@ fn players_fade_unplayed_countries_and_pulse_the_selected_one() {
         Some(0),
     );
     let layer = fill.draw.unwrap().country.unwrap();
-    // SOV is played: its own colour and alpha.
     assert_eq!(layer.styles[&2].color, [127, 0, 63, 255]);
-    // GER is not played but selected: faded, pulsing and widened.
     let ger = layer.styles[&1];
     assert_eq!(ger.color, [191, 127, 63, 38]);
     assert!(ger.pulse);
@@ -339,8 +322,6 @@ fn players_fade_unplayed_countries_and_pulse_the_selected_one() {
 
 #[test]
 fn states_take_their_category_colour_and_name_what_they_cannot_draw() {
-    // State 1 is a town, state 2 a colourless rural state, state 3's category has no colour
-    // the content reads; the category tokens fold to the declared names.
     let with = |categories: [Recorded<Option<u32>>; 3]| {
         let mut frame = frame();
         frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
@@ -381,10 +362,8 @@ fn states_take_their_category_colour_and_name_what_they_cannot_draw() {
     };
     let fill = with([Some(11).into(), Some(12).into(), Some(13).into()]);
     let draw = fill.draw.unwrap();
-    // The states draw over the political countries.
     assert_eq!(draw.channels, [Source::Country, Source::Mode]);
     assert_eq!(draw.country, None);
-    // The countries take their own defines into channel 1.
     assert_eq!(
         draw.channel_constants(),
         [Some([0.0, 0.973]), Some([0.4, 0.973])]
@@ -392,7 +371,6 @@ fn states_take_their_category_colour_and_name_what_they_cannot_draw() {
     let layer = draw.layer.unwrap();
     assert_eq!(layer.region_of, [0, 2, 2, 3, 0, 0]);
     assert_eq!(layer.styles[&2].color, [0, 200, 0, 255]);
-    // A category without a colour takes the fixed blue; one whose colour is unknown is refused.
     assert_eq!(layer.styles[&3].color, [0, 0, 255, 63]);
     assert!(!layer.styles.contains_key(&4));
     assert_eq!(layer.thickness, Some(5.0));
@@ -403,7 +381,6 @@ fn states_take_their_category_colour_and_name_what_they_cannot_draw() {
             "The states map mode leaves 1 states unfilled whose category the content does not declare or colour"
         ]
     );
-    // The live category decides: state 1 recategorised as rural turns blue.
     let moved = with([Some(12).into(), Some(12).into(), None.into()]);
     let layer = moved.draw.unwrap().layer.unwrap();
     assert_eq!(layer.styles[&2].color, [0, 0, 255, 63]);
@@ -444,7 +421,6 @@ fn diplomacy_takes_the_first_relation_that_holds() {
         ..goal
     };
     assert_eq!(good.color(&defines), Ok(Some(DIPLOMACY_GOOD)));
-    // The thresholds are exclusive.
     assert_eq!(
         Relation {
             opinion: 50,
@@ -461,7 +437,6 @@ fn diplomacy_takes_the_first_relation_that_holds() {
         .color(&defines),
         Ok(Some(DIPLOMACY_BAD))
     );
-    // Without the war goals, a country past war and faction cannot be coloured.
     assert_eq!(
         Relation {
             war_goal: None,
@@ -525,14 +500,12 @@ fn manpower_blends_each_states_population_over_the_range_and_clamps_it() {
     let draw = fill.draw.unwrap();
     assert_eq!(draw.channels, [Source::Mode, Source::Country]);
     let layer = draw.layer.unwrap();
-    // A quarter of the range; past its end; below its start.
     assert_eq!(layer.styles[&2].color, pack([0.4, 0.18125, 0.525, 0.285]));
     assert_eq!(layer.styles[&3].color, pack([1.0, 0.125, 0.0, 0.6]));
     assert_eq!(layer.styles[&4].color, pack([0.2, 0.2, 0.7, 0.18]));
     assert_eq!(layer.gradient, Some(LEVEL_GRADIENT));
     assert_eq!(layer.thickness, Some(5.0));
     assert_eq!(layer.channel, [0.0, 0.973]);
-    // Provinces join their state's region; a province outside every state joins none.
     assert_eq!(&layer.region_of[1..6], &[2, 2, 3, 4, 0]);
     let unrecorded = with([
         Recorded::Value(1),
@@ -557,7 +530,6 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
         ..Default::default()
     };
     let mut frame = frame();
-    // GER (raw 100) controls state 1, SOV (200) state 2 and ITA (300) state 3.
     frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         [(1, 100), (2, 200), (3, 300)]
             .into_iter()
@@ -571,14 +543,10 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
     .into();
     frame.tables[TableId::IntelNetworks.index()] =
         TableView::Complete(TableRows::IntelNetworks(vec![
-            // SOV's network in GER: 72.5% in state 1, and state 2, which GER does not
-            // control.
             network(200, 100, 1, 7_250_000, 0),
             network(200, 100, 2, 10_000_000, 0),
-            // SOV's quiet network in ITA at 30%, and a state the recording does not hold.
             network(200, 300, 3, 3_000_000, 1),
             network(200, 300, 99, 3_000_000, 0),
-            // GER's own network, which SOV's view does not show.
             network(100, 200, 2, 10_000_000, 0),
         ]))
         .into();
@@ -601,19 +569,16 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
     let draw = fill.draw.unwrap();
     assert_eq!(draw.channels, [Source::Country, Source::Mode]);
     let layer = draw.layer.unwrap();
-    // 72.5% blends by 0.725 * 0.725 between the low and high colours.
     assert_eq!(
         layer.styles[&2].color,
         pack([0.2576875, 0.205125, 0.71025, 0.6205])
     );
-    // 30% blends by 0.3 * 0.5 between the quiet pair.
     assert_eq!(layer.styles[&4].color, pack([0.145, 0.56, 0.13, 0.32]));
     assert_eq!(layer.styles.len(), 2);
     assert_eq!(&layer.region_of[1..6], &[2, 2, 0, 4, 0]);
     assert_eq!(layer.gradient, Some(LEVEL_GRADIENT));
     assert_eq!(layer.thickness, Some(5.0));
     assert_eq!(layer.channel, [0.0, 0.973]);
-    // The unrecorded state is named; the icons are drawn by their own layer.
     assert_eq!(fill.warnings.len(), 1, "{:?}", fill.warnings);
     assert!(
         !fill
@@ -621,8 +586,6 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
             .iter()
             .any(|why| why.contains("icons are not drawn"))
     );
-    // A network at or past 100% takes the high colour; a share below one half blends by
-    // half of itself.
     let defines = defines();
     assert_eq!(
         network_color(&defines, 15_000_000, false),
@@ -633,10 +596,8 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
         [0.4, 0.9, 0.3, 1.0]
     );
     assert_eq!(network_color(&defines, 0, false), [0.1, 0.1, 0.5, 0.2]);
-    // GER's view shows its own network in SOV.
     let german = run(&frame, Some(0)).draw.unwrap().layer.unwrap();
     assert_eq!(german.styles.keys().copied().collect::<Vec<_>>(), [3]);
-    // Without a viewing country, or without the networks, the layer is refused by name.
     let refused = run(&frame, None);
     assert_eq!(
         refused.draw.unwrap().channels,
@@ -672,7 +633,6 @@ fn a_war_goal_marks_its_recipient_and_the_recipients_overlord() {
                 ..Default::default()
             }]))
             .into();
-        // SOV is ITA's subject.
         frame.tables[TableId::Subjects.index()] =
             TableView::Complete(TableRows::Subjects(vec![SubjectRow {
                 overlord: 300,
@@ -718,7 +678,6 @@ fn each_mode_chooses_whose_names_the_map_writes_far_and_near() {
     assert_eq!(far(MapMode::Stock(Stock::Resistance)), NameLayer::Countries);
     assert_eq!(far(MapMode::Stock(Stock::Players)), NameLayer::Players);
     assert_eq!(far(MapMode::Scripted("players".into())), NameLayer::Players);
-    // The navy mode shows the political channels but names the strategic regions.
     for stock in [Stock::StrategicAir, Stock::StrategicNavy] {
         assert_eq!(far(MapMode::Stock(stock)), NameLayer::StrategicRegions);
     }
@@ -752,7 +711,6 @@ fn each_mode_chooses_whose_names_the_map_writes_far_and_near() {
         let names = layers(MapMode::Stock(stock));
         assert_eq!(names.near, names.far);
     }
-    // A scripted mode names what its far_text and near_text say; undeclared, nothing.
     assert_eq!(
         layers(MapMode::Scripted("spheres".into())),
         NameLayers {
@@ -804,8 +762,6 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
             usize::from(stock != Stock::StrategicAir)
         );
     }
-    // The raid and resources modes are the countries alone, with nothing left to refuse: the
-    // resources mode's state icons draw.
     for stock in [Stock::Raids, Stock::Resources] {
         let fill = run(
             MapMode::Stock(stock),
@@ -815,7 +771,6 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
         assert_eq!(fill.draw.unwrap().channels, [Country, Empty], "{stock:?}");
         assert!(fill.warnings.is_empty(), "{stock:?}");
     }
-    // The navy mode keeps the political channels.
     let navy = run(
         MapMode::Stock(Stock::StrategicNavy),
         &content(MapModes::default()),
@@ -865,7 +820,6 @@ fn a_scripted_mode_shows_two_game_layers_or_one_in_both_channels() {
         .draw
         .unwrap()
     };
-    // States below diplomacy: each channel has its own layer.
     let both = run("both");
     assert_eq!(both.channels, [Source::Mode, Source::Second]);
     assert!(both.layer.is_some() && both.second.is_some());
@@ -876,7 +830,6 @@ fn a_scripted_mode_shows_two_game_layers_or_one_in_both_channels() {
         constants[1],
         both.second.as_ref().map(|layer| layer.channel)
     );
-    // The same layer below and above is one layer shown in both.
     let twice = run("twice");
     assert_eq!(twice.channels, [Source::Mode, Source::Mode]);
     assert!(twice.second.is_none());
@@ -897,7 +850,6 @@ fn scripted_modes_delegate_game_layers_and_refuse_colour_scripts() {
     )
     .unwrap();
     let content = content(modes);
-    // The top layer is channel 2, the bottom one channel 1.
     let delegated = run(MapMode::Scripted("delegated".into()), &content, Some(0))
         .draw
         .unwrap();
@@ -911,7 +863,6 @@ fn scripted_modes_delegate_game_layers_and_refuse_colour_scripts() {
     );
     let scripted = run(MapMode::Scripted("scripted".into()), &content, Some(0));
     assert_eq!(scripted.draw.unwrap().channels, [Source::Empty; 2]);
-    // Selecting a mode rebuilds both layers without a historical refresh interval.
     assert_eq!(scripted.warnings.len(), 2, "{:?}", scripted.warnings);
     let blank = run(MapMode::Scripted("blank".into()), &content, Some(0));
     assert_eq!(blank.draw.unwrap().channels, [Source::Empty; 2]);
@@ -981,15 +932,12 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     };
     let painted = run("painted");
     let draw = painted.draw.unwrap();
-    // The bottom layer is channel 1, the top channel 2.
     assert_eq!(
         draw.channels,
         [Source::Mode, Source::Second],
         "{:?}",
         painted.warnings
     );
-    // Only SOV's callback holds: its controlled province is its own region, red clamped to 1,
-    // pulsing, its thickness temp the fill, at the scripted width.
     let top = draw.second.unwrap();
     let painted_provinces: Vec<u32> = (0..top.region_of.len() as u32)
         .filter(|&province| top.region_of[province as usize] != 0)
@@ -1004,11 +952,9 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
         }]
     );
     assert_eq!((top.thickness, top.gradient), (Some(25.0), None));
-    // A callback that leaves alpha at 0 paints nothing; without thickness the fill is flat.
     let bottom = draw.layer.unwrap();
     assert!(bottom.styles.is_empty());
     assert_eq!(bottom.gradient, Some(colour_script::FLAT_GRADIENT));
-    // A trigger the evaluator cannot decide is refused by name, per target.
     let refused = run("refused");
     assert!(
         refused
@@ -1114,8 +1060,6 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
         )
         .unwrap()
     };
-    // A poisoned certificate can leave the table unavailable, or complete with
-    // unrelated metadata but no acquired country-local roster witnesses.
     for known_name in [false, true] {
         set::<tables::LexicalTokens>(
             &mut f,
@@ -1144,8 +1088,6 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
                 .filter(|why| why.contains("research modifiers"))
                 .collect();
             if missing_witness {
-                // Three countries have three distinct missing local inputs;
-                // each target is counted once against its own roster.
                 assert_eq!(roster_refusals.len(), 3, "{:?}", refused.warnings);
                 for country in 0..3 {
                     assert_eq!(
@@ -1160,7 +1102,6 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
                     );
                 }
             } else {
-                // Whole-table unavailability is one input used by all targets.
                 assert_eq!(roster_refusals.len(), 1, "{:?}", refused.warnings);
                 assert!(
                     roster_refusals[0].contains("3 targets"),
@@ -1328,7 +1269,6 @@ fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scope
         .items,
         ..Default::default()
     };
-    // Reuse the same World's failed lexical cache on the second presentation.
     for _ in 0..2 {
         let refused =
             colour_script::borders("test", "top", &layer, &inputs, None, true, &mut Vec::new());
@@ -1507,7 +1447,6 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
                 refused.refusals
             );
         }
-        // Refusing a refresh also withholds a previously painted border.
         assert!(
             refused
                 .borders
@@ -1543,7 +1482,6 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
     let content = content(MapModes::default());
     let map = map();
     let mut f = frame();
-    // Keep the filter initiator/candidate separate from the reserved country.
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *f.tables[TableId::Countries.index()]
     {
@@ -1637,8 +1575,6 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
                     ),
                     ..baseline.clone()
                 };
-                // Reuse the parsed layer and World's lazy indexes, with painted
-                // previous borders proving an uncertain selection clears them.
                 for _ in 0..2 {
                     let mut warnings = Vec::new();
                     let selected = colour_script::borders(
@@ -1810,7 +1746,6 @@ fn scripted_split_states_use_the_cached_single_branch_and_positive_province_grou
             controller: 1,
         };
         if single {
-            // State 1's own controller is GER even though one province is SOV.
             assert_eq!(kept.borders.len(), 1);
             assert_eq!(
                 kept.borders[&TargetId::Portion {
@@ -2002,8 +1937,6 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
                 }],
                 ..Default::default()
             }]));
-        // First presentation, retained-border refresh, and an event coinciding
-        // with a scheduled refresh must all honour inherited TLS availability.
         for previous in [None, Some(prior.as_ref())] {
             let actual = run(name, &frame, previous);
             if name == "transparent" {
@@ -2100,8 +2033,6 @@ fn scripted_scheduled_refresh_preserves_unknown_event_context() {
         let update_daily = content.scripted.get(name).unwrap().update_daily;
         assert!(update_daily, "{name} must repaint daily");
         let prior = run(name, &frame, None).colour.unwrap();
-        // Exercise the actual first/daily dispatch, then the stricter retained
-        // path between scheduled refreshes with the same uncertain evidence.
         for (hour, previous, scheduled) in [
             (43, None, true),
             (48, Some(prior.as_ref()), true),
@@ -2185,8 +2116,6 @@ fn scripted_scheduled_refresh_preserves_unknown_event_context() {
                 let actual = run(name, &current, previous);
                 let kept = &actual.colour.as_ref().unwrap().layers[1];
                 if !scheduled {
-                    // Unknown event coverage cannot certify retained borders,
-                    // even for a callback whose outputs would be independent.
                     assert_eq!(actual.warnings.len(), 1, "{:?}", actual.warnings);
                     assert!(actual.warnings[0].contains(why), "{:?}", actual.warnings);
                     assert!(kept.refused && kept.borders.is_empty());
@@ -2252,8 +2181,6 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
         pulse: false,
         fill: 1.0,
     });
-    // SOV still controls province 3; GER's provinces changed since its border was kept; a
-    // country that has since lost its last province (slot 7) is no target any more.
     let previous = LayerState {
         borders: BTreeMap::from([
             (
@@ -2293,14 +2220,11 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     );
     assert!(warnings.is_empty(), "{warnings:?}");
     let kept = kept.borders;
-    // A failing callback keeps an unchanged border's colour, and a changed list clears it.
     assert_eq!(kept[&TargetId::Country(1)].style, red);
     assert_eq!(kept[&TargetId::Country(0)].style, None);
     assert_eq!(kept[&TargetId::Country(0)].provinces, [1, 2]);
     assert_eq!(kept[&TargetId::Country(2)].style, None);
-    // A target gone since keeps no border to draw over its province's new controller.
     assert!(!kept.contains_key(&TargetId::Country(7)));
-    // Between refreshes the kept borders show as they are, their refusals reported again.
     let held = borders(
         "held",
         "top",
@@ -2312,7 +2236,6 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     );
     assert_eq!(held, previous);
     assert_eq!(warnings, ["kept refusal"]);
-    // A first hour refreshes, as does each day's first hour of a daily mode.
     let state = ColourState {
         mode: "held".into(),
         layers: Default::default(),
@@ -2671,13 +2594,9 @@ fn a_map_recording_offers_only_the_modes_whose_tables_it_records() {
         Stock::Terrain,
         Stock::Players,
         Stock::Ideology,
-        // Its limits are read from the States rows Map records.
         Stock::Infrastructure,
-        // Map records Factions for the land figures' graphics pools.
         Stock::Factions,
-        // Its wing grids and mission regions are Map's air view.
         Stock::StrategicAir,
-        // Its trade-route convoys are among Map's animations.
         Stock::StrategicNavy,
     ];
     assert_eq!(offered, expected.into_iter().collect());
@@ -2720,7 +2639,6 @@ fn every_mode_a_map_recording_offers_fills_from_recorded_tables() {
                 },
             )
         });
-        // The synthetic content may refuse a mode, but never for a table Map leaves out.
         if let Err(error) = filled {
             assert!(
                 !error.to_string().contains("not recorded"),
@@ -2983,7 +2901,6 @@ fn selected_state_folds_match_independent_network_and_occupation_outputs_after_d
     content.bind_membership_map(&map);
     let mut input = frame();
     input.tables[TableId::Campaign.index()] = crate::map::test_campaign();
-    // GER (raw 100) controls state 1, SOV (200) state 2 and ITA (300) state 3.
     let TableView::Complete(TableRows::States(states)) =
         &mut *input.tables[TableId::States.index()]
     else {
@@ -3002,10 +2919,8 @@ fn selected_state_folds_match_independent_network_and_occupation_outputs_after_d
     };
     input.tables[TableId::IntelNetworks.index()] =
         TableView::Complete(TableRows::IntelNetworks(vec![
-            // GER's networks in SOV's state 2 and, quiet, in ITA's state 3.
             network(100, 200, 2, 7_250_000, 0),
             network(100, 300, 3, 3_000_000, 1),
-            // SOV's network in GER, which only SOV's view shows.
             network(200, 100, 1, 10_000_000, 0),
         ]))
         .into();

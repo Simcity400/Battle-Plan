@@ -1,5 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{
     Hour, columns,
@@ -36,7 +34,6 @@ pub(super) const GATE: [usize; 2] = columns::<CombatLogStateRow, 2>(["viewing_co
 pub(super) const PLAYER_COUNTRY: [usize; 1] = columns::<PlayerRow, 1>(["country"]);
 pub(super) const FEATURES: [usize; 1] = columns::<SimulationFeatureRow, 1>(["dlc_mask"]);
 
-/// `table`'s row in `slot`, its fields `mask` names, as the row decoder reads them.
 fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io::Result<R> {
     let held = hour.table(table);
     let key = held.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
@@ -48,17 +45,14 @@ fn unsigned(view: &TableView<'_>, column: usize, slot: u32) -> Option<u32> {
     view.number(column, slot).map(|value| value as u32)
 }
 
-/// A Countries row: its raw id and canonical slot.
 pub(super) fn country(view: &TableView<'_>, slot: u32) -> Option<(u32, u32)> {
     Some((view.key(slot)? as u32, unsigned(view, COUNTRY_SLOT[0], slot)?))
 }
 
-/// A CountryLinks row: its raw id and canonical slot.
 pub(super) fn link(view: &TableView<'_>, slot: u32) -> Option<(u32, u32)> {
     Some((view.key(slot)? as u32, unsigned(view, LINK_SLOT[0], slot)?))
 }
 
-/// Every EquipmentDestruction row the table holds, in key order.
 pub(super) fn destruction(hour: &Hour<'_>) -> io::Result<Vec<EquipmentDestructionRow>> {
     let view = hour.table(TableId::EquipmentDestruction);
     let mut rows = Vec::with_capacity(view.live().count());
@@ -69,7 +63,6 @@ pub(super) fn destruction(hour: &Hour<'_>) -> io::Result<Vec<EquipmentDestructio
     Ok(rows)
 }
 
-/// A Combat Log key's parts: raw country, then the rest of the key (group, kind, month, variant).
 pub(super) fn combat_country(key: u128) -> u32 {
     (key >> 88) as u32
 }
@@ -82,20 +75,16 @@ pub(super) fn combat_key(country: u32, suffix: u128) -> u128 {
     (country as u128) << 88 | suffix
 }
 
-/// The kind and variant of a Combat Log key.
 pub(super) fn combat_leaf(key: u128) -> (u8, u32) {
     ((key >> 48) as u8, key as u32)
 }
 
-/// A live CombatLogEquipment row's amount; none when not recorded.
 pub(super) fn combat_amount(view: &TableView<'_>, slot: u32) -> Option<i64> {
     view.number(COMBAT_AMOUNT[0], slot)
 }
 
 pub(super) const COMBAT_DATE: [usize; 1] = columns::<CombatLogEquipmentRow, 1>(["date"]);
 
-/// A deleted CombatLogEquipment row's last first-write date and amount; each none when not
-/// recorded.
 pub(super) fn combat_dropped(cells: &[Kept]) -> (Option<i32>, Option<i64>) {
     let number = |column: usize| match cells.get(column).map(Kept::value) {
         Some(Held::Number(bits)) => Some(bits as i64),
@@ -104,7 +93,6 @@ pub(super) fn combat_dropped(cells: &[Kept]) -> (Option<i32>, Option<i64>) {
     (number(COMBAT_DATE[0]).map(|date| date as i32), number(COMBAT_AMOUNT[0]))
 }
 
-/// Each written CombatLogEquipment row's amount before the hour, by slot.
 pub(super) fn combat_before(hour: &Hour<'_>) -> HashMap<u32, Option<i64>> {
     let mut before = HashMap::new();
     for (slot, column, value) in hour.previous(TableId::CombatLogEquipment) {
@@ -118,17 +106,14 @@ pub(super) fn combat_before(hour: &Hour<'_>) -> HashMap<u32, Option<i64>> {
     before
 }
 
-/// A CombatLogDropped row's amount; none when not recorded.
 pub(super) fn dropped_amount(view: &TableView<'_>, slot: u32) -> Option<i64> {
     view.number(1, slot)
 }
 
-/// The months the game keeps a Combat Log entry for.
 pub(super) const RETENTION: Define = Define { section: "NGame", name: "COMBAT_LOG_MAX_MONTHS", form: Form::Int32 };
 
 pub(super) const MONTH_DATE: [usize; 1] = columns::<CombatLogMonthRow, 1>(["date"]);
 
-/// A Combat Log line's or month entry's array: its country, group and kind.
 fn array_of_line(key: u128) -> u128 {
     (key >> 88) << 40 | (key >> 56 & 0xFFFF_FFFF) << 8 | (key >> 48 & 0xFF)
 }
@@ -137,27 +122,11 @@ fn array_of_month(key: u128) -> u128 {
     key >> 32
 }
 
-/// The lines the game has freed by the hour, ascending, none live: among the CombatLogDropped
-/// rows as the hour began and the CombatLogEquipment rows the hour deleted (`gone`), which are
-/// freed this hour and never held. After every hour no held row is one the game freed, so a
-/// `whole` hour (a resume) frees nothing a run never stopped did not.
-///
-/// Observed: CombatLogMonths lists every month entry the game retains, and its prune removes an
-/// array's oldest entries, so while it is complete a line older than its array's oldest listed
-/// entry, or of an array listing none, is freed. A held row is looked at when the hour deleted or
-/// dated anew one of its array's entries (every row on a `whole` hour or a status change); a line
-/// the hour deleted, always.
-///
-/// Else, where CombatLogMonths is not complete: the prune frees an entry once its first write
-/// plus [`RETENTION`] months has passed, so a month past that month is certain. Held rows are
-/// looked at at a month's turn (`turned`), a line the hour deleted always; nothing is freed while
-/// the retention is not known or below one.
 pub(super) fn freed_lines(hour: &Hour<'_>, live: &TableView<'_>, dropped: &TableView<'_>, gone: &[u128], whole: bool, turned: bool) -> Vec<u128> {
     let months = hour.table(TableId::CombatLogMonths);
     let observed = months.status() == Status::Complete;
     let changes = hour.changes(TableId::CombatLogMonths);
     let every = whole || changes.status_changed;
-    // The arrays whose oldest listed month may have risen: an entry deleted or dated anew.
     let touched: HashSet<u128> = if every {
         HashSet::new()
     } else {
@@ -175,7 +144,6 @@ pub(super) fn freed_lines(hour: &Hour<'_>, live: &TableView<'_>, dropped: &Table
         return Vec::new();
     }
     let looked = |array: u128| every || touched.contains(&array);
-    // Each looked-at array's oldest listed month: bounded by the arrays the game retains.
     let mut oldest: HashMap<u128, u16> = HashMap::new();
     if observed {
         let arrays: HashSet<u128> = gone.iter().map(|&key| array_of_line(key)).collect();
@@ -204,20 +172,17 @@ pub(super) fn freed_lines(hour: &Hour<'_>, live: &TableView<'_>, dropped: &Table
     out
 }
 
-/// The SunkShips read's entries; none without its row.
 pub(super) fn sunk_ships(hour: &Hour<'_>) -> io::Result<Option<Vec<SunkShipEntry>>> {
     let view = hour.table(TableId::SunkShips);
     let Some(slot) = view.rows().next() else { return Ok(None) };
     Ok(Some(row::<SunkShipsRow>(hour, TableId::SunkShips, slot, u64::MAX)?.entries))
 }
 
-/// A SunkConvoys row: its key, owner and count.
 pub(super) fn convoy(hour: &Hour<'_>, slot: u32) -> io::Result<(u128, u32, i32)> {
     let row: SunkConvoyRow = row(hour, TableId::SunkConvoys, slot, 1 << CONVOY_COUNT[0])?;
     Ok((row.key(), row.owner_country, row.convoys))
 }
 
-/// A LendLeaseEquipment pool: its key, giver, kind, variant and amount.
 pub(super) struct Pool {
     pub key: u128,
     pub giver: u32,
@@ -231,23 +196,19 @@ pub(super) fn pool(hour: &Hour<'_>, slot: u32) -> io::Result<Pool> {
     Ok(Pool { key: row.key(), giver: row.giver, kind: row.kind, variant: row.variant, amount: row.amount_raw })
 }
 
-/// The parts of a LendLeaseEquipment key: giver, kind, variant.
 pub(super) fn pool_key(key: u128) -> (u32, u8, u32) {
     ((key >> 72) as u32, (key >> 32) as u8, key as u32)
 }
 
-/// A raw country's DivisionCensus counts (grouped, ungrouped); none without its row.
 pub(super) fn census(view: &TableView<'_>, raw: u32) -> Option<(u32, u32)> {
     let slot = view.slot(u128::from(raw))?;
     Some((unsigned(view, CENSUS[0], slot)?, unsigned(view, CENSUS[1], slot)?))
 }
 
-/// The Combat Log's country gate operand and whether its prune was observed; none unless read.
 pub(super) fn combat_state(hour: &Hour<'_>) -> Option<(i32, bool)> {
     single(hour, TableId::CombatLogState).and_then(|(view, slot)| Some((view.number(GATE[0], slot)? as i32, view.number(GATE[1], slot)? != 0)))
 }
 
-/// Each live human roster record's raw country; none unless read.
 pub(super) fn players(hour: &Hour<'_>) -> Option<Vec<u32>> {
     if !hour.complete(TableId::Players) {
         return None;
@@ -256,12 +217,10 @@ pub(super) fn players(hour: &Hour<'_>) -> Option<Vec<u32>> {
     view.rows().map(|slot| unsigned(&view, PLAYER_COUNTRY[0], slot)).collect()
 }
 
-/// The runtime DLC feature mask; none unless read.
 pub(super) fn feature_mask(hour: &Hour<'_>) -> Option<u32> {
     single(hour, TableId::SimulationFeatures).and_then(|(view, slot)| unsigned(&view, FEATURES[0], slot))
 }
 
-/// A complete singleton table's view and its row.
 fn single<'a>(hour: &Hour<'a>, table: TableId) -> Option<(TableView<'a>, u32)> {
     if !hour.complete(table) {
         return None;

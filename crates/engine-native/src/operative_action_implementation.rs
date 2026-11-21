@@ -1,14 +1,9 @@
-//! Polymorphic operative-action implementations selected by a mission.
 
 use engine_sites::Rva;
-/// Stored raw country tag shared by all eight action implementations.
 pub const TARGET_COUNTRY: usize = 0x10;
-/// State-based action state pointer; country-based forms have no state here.
 pub const TARGET_POINTER: usize = 0x18;
-/// Boost-ideology action ideology pointer; class-specific validity is not established here.
 pub const BOOST_IDEOLOGY: usize = 0x40;
 
-/// Concrete action vtables in dispatch order, independent of authored mission definitions.
 pub const VTABLE_RVAS: [Rva; 8] = [
     Rva(0x02a9_8bd8),
     Rva(0x02a9_92b8),
@@ -20,17 +15,12 @@ pub const VTABLE_RVAS: [Rva; 8] = [
     Rva(0x02aa_22e0),
 ];
 
-/// Country-tag virtual dispatch shared by concrete action implementations.
-/// Authenticate each executable vtable once per walk, retaining failures, while
-/// checking every object's own vtable.
 pub(crate) const COUNTRY_GETTER_SLOT: usize = 0x50;
 pub(crate) const COUNTRY_GETTER_RVA: Rva = Rva(0x01ac_42f0);
 
-/// A mission implementation's stored targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Targets {
     pub(crate) country: u32,
-    /// Nonnull state pointer of a state-targeted variant.
     pub(crate) state: Option<usize>,
 }
 
@@ -60,9 +50,6 @@ impl Vtables {
         target_country(memory, pointer)
     }
 
-    /// The stored raw country and, for the state-targeted variants, the
-    /// stored state pointer, null as `None`; the implementation pointer and
-    /// its vtable are authenticated once for both.
     pub(crate) fn targets(
         &mut self,
         memory: &impl crate::Memory,
@@ -84,7 +71,6 @@ impl Vtables {
         Ok(Targets { country, state })
     }
 
-    /// The authenticated implementation of the mission's variant.
     fn implementation(
         &mut self,
         memory: &impl crate::Memory,

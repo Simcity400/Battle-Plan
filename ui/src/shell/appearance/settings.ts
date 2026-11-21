@@ -1,6 +1,3 @@
-// Appearance preferences: theme choice per mode, the custom theme library,
-// interface feel, typography and backdrop. Background images live in
-// IndexedDB (backdrops.ts); only their IDs are stored here.
 import { normalizeColor } from './color.ts';
 import { isWidgetKind, parseIconStyles } from './iconStyle.ts';
 import type { WidgetIconStyles } from './iconStyle.ts';
@@ -20,12 +17,9 @@ export type ColorScheme = 'system' | ThemeMode;
 export type MotionPreference = 'system' | 'full' | 'reduced';
 export type BackdropKind = 'ambient' | 'solid' | 'image';
 export interface Backdrop<Kind = BackdropKind> { kind: Kind; imageId: string | null; dim: number; blur: number }
-/** How chart shapes glide between recorded samples. */
 export type PlaybackFrameRate = '30' | '60' | '120' | 'uncapped';
 export type ChartMotion = 'snappy' | 'smooth' | 'cinematic';
-/** Raw recorded map colours, or colours lightened or darkened to read on the theme and kept apart. */
 export type CountryColours = 'raw' | 'fixed';
-/** The top-bar flag at the content's large flag size, or enlarged to fill the bar with smoothing. */
 export type HeaderFlag = 'native' | 'large';
 
 export interface AppearanceSettings {
@@ -33,27 +27,18 @@ export interface AppearanceSettings {
   scheme: ColorScheme;
   themes: Record<ThemeMode, string>;
   custom: ThemeDefinition[];
-  /** Text and border contrast, 50–100 % in steps of 5; 100 shows the theme as defined. */
   contrast: number;
-  /** Opacity of the main view's panels, 40–100 %. 100 turns the frosted blur off. */
   glass: number;
-  /** Opacity of the sidebar and top bar, 40–100 %, set apart from the main view's. */
   chromeGlass: number;
-  /** Base corner radius in CSS pixels, 0–18. */
   radius: number;
   motion: MotionPreference;
   headerFlag: HeaderFlag;
-  /** Font family names; empty uses the role's default stack. */
   fonts: FontFamilies;
   typography: TypographySettings;
-  /** Behind the sidebar and top bar, and behind the main view while that uses the same. */
   backdrop: Backdrop;
-  /** The main view's own backdrop; 'same' shows the sidebar and top bar's through it. */
   workspaceBackdrop: Backdrop<BackdropKind | 'same'>;
   charts: { frameRate: PlaybackFrameRate; motion: ChartMotion; countryColours: CountryColours };
-  /** Own icons and colours for sidebar items. */
   sidebarIcons: SidebarIconStyles;
-  /** Own header icons and colours for widget kinds, shared by every copy of a kind. */
   widgetIcons: WidgetIconStyles;
 }
 
@@ -76,7 +61,6 @@ const object = (value: unknown): value is Record<string, unknown> => typeof valu
 const id = (value: unknown): value is string => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 const number = (value: unknown, [min, max]: readonly [number, number], fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.min(max, Math.max(min, value))) : fallback;
-/** As `number`, to a tenth: the sidebar and top bar glass a single glass setting gave is kept exactly. */
 const tenth = (value: unknown, [min, max]: readonly [number, number], fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.min(max, Math.max(min, value)) * 10) / 10 : fallback;
 const fontName = (value: unknown) => typeof value === 'string' ? value.replace(/["'`;{}<>\\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 200) : '';
@@ -104,7 +88,6 @@ function parseBackdrop<Kind extends string>(input: unknown, kinds: readonly Kind
   };
 }
 
-/** Allowlist parse; anything unreadable falls back to its default. */
 export function parseAppearance(input: unknown): AppearanceSettings {
   if (!object(input)) return structuredClone(DEFAULT_APPEARANCE);
   const custom: ThemeDefinition[] = [];
@@ -127,7 +110,6 @@ export function parseAppearance(input: unknown): AppearanceSettings {
     custom,
     contrast: Math.round(number(input.contrast, LIMITS.contrast, defaults.contrast) / CONTRAST_STEP) * CONTRAST_STEP,
     glass,
-    // Saved before the sidebar and top bar had their own setting, they keep the opacity they had.
     chromeGlass: tenth(input.chromeGlass, LIMITS.chromeGlass, input.glass === undefined ? defaults.chromeGlass : tenth(glass * 0.8 + 20, LIMITS.chromeGlass, defaults.chromeGlass)),
     radius: number(input.radius, LIMITS.radius, defaults.radius),
     motion: input.motion === 'full' || input.motion === 'reduced' || input.motion === 'system' ? input.motion : defaults.motion,
@@ -146,8 +128,6 @@ export function parseAppearance(input: unknown): AppearanceSettings {
 
 const legacyPresets = new Set(['atlas', 'graphite', 'field', 'paper']);
 
-/** The first appearance format stored one flat palette. Built-in palettes map to
- * the new default; a customised palette becomes a custom theme. */
 export function migrateLegacy(input: unknown): AppearanceSettings | null {
   if (!object(input) || !object(input.colors) || (input.mode !== 'dark' && input.mode !== 'light')) return null;
   const mode = input.mode;

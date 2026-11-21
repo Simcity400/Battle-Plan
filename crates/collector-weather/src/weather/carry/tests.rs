@@ -2,13 +2,10 @@ use super::*;
 use engine_native::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
-// Offsets from the world's base.
 const STATE: usize = 0;
 const MANAGER: usize = 0x1000;
 const REGIONS: usize = 0x2000;
 
-/// A live weather manager with `provinces` and `regions` records, each
-/// region with its own combat modifier entries, at their native offsets.
 struct World {
     base: usize,
     bytes: Vec<u8>,
@@ -16,7 +13,6 @@ struct World {
     regions: u32,
     accumulators: usize,
     province_data: usize,
-    /// Each region's custom sea values, two words apart.
     custom: usize,
 }
 
@@ -25,8 +21,6 @@ impl World {
         Self::build(provinces, regions, budgets, false)
     }
 
-    /// At its own address, for [`engine_native::memory::LiveMemory`]; otherwise at
-    /// a fixed base for [`SliceMemory`].
     fn build(provinces: u32, regions: u32, budgets: (i32, i32), live: bool) -> Self {
         let accumulators = REGIONS + regions as usize * sweather_per_region::STRIDE;
         let province_data = (accumulators
@@ -150,7 +144,6 @@ impl World {
         self.province_data + slot as usize * sweather_per_province::STRIDE
     }
 
-    /// Region `slot`'s custom entry count: every third region has none.
     fn custom_count(&self, slot: u32) -> u32 {
         if slot % 3 == 2 { 0 } else { 2 }
     }
@@ -187,8 +180,6 @@ impl World {
         );
     }
 
-    /// Gives province `slot` one weather modifier entry `key` = `value`, stored after
-    /// the world's arrays; returns the value's address.
     fn province_entry(&mut self, slot: u32, key: u32, value: i64) -> usize {
         let entry = (self.bytes.len() + 0xf) & !0xf;
         self.bytes
@@ -202,8 +193,6 @@ impl World {
         entry + 8
     }
 
-    /// Gives province `slot` a static modifier list of `(name, days)`, each entry naming
-    /// its own definition, stored after the world's arrays; returns the list's address.
     fn province_statics(&mut self, slot: u32, entries: &[(&str, i32)]) -> usize {
         let name = engine_native::cstatic_modifier::NAME;
         let definition_bytes = name + engine_native::msvc_string::STRIDE;
@@ -242,7 +231,6 @@ impl World {
         list
     }
 
-    /// A province write (as a console command or an unhooked writer would).
     fn write_province(&mut self, slot: u32, temperature: i64) {
         self.put(
             self.province(slot) + sweather_per_province::TEMPERATURE,
@@ -250,8 +238,6 @@ impl World {
         );
     }
 
-    /// One ordinary pass of weather window pass: every visited
-    /// province and region record changes, and both cursors advance and wrap.
     fn pass(&mut self, tick: i64) {
         for (cursor, count, budget, regions) in [
             (
@@ -302,7 +288,6 @@ impl World {
     }
 }
 
-/// Memory that notes every address a read starts at.
 struct Census<'a> {
     inner: SliceMemory<'a>,
     touched: RefCell<Vec<usize>>,
@@ -316,13 +301,10 @@ impl<'a> Census<'a> {
         }
     }
 
-    /// The slots of the `count` records of `stride` at `data` any read
-    /// touched.
     fn slots(&self, data: usize, stride: usize, count: u32) -> Vec<u32> {
         self.slots_where(data, stride, count, |_| true)
     }
 
-    /// [`Census::slots`] of the reads that started at an offset in the record `keep` accepts.
     fn slots_where(
         &self,
         data: usize,
@@ -387,7 +369,6 @@ fn carry() -> Box<WeatherCarry> {
     Box::default()
 }
 
-/// What one hour's job captured.
 #[derive(Debug, PartialEq)]
 struct Capture {
     regions: Vec<u8>,
@@ -431,8 +412,6 @@ fn run(
     (captured, job)
 }
 
-/// One hour through `carry`: what it captured (asserted equal to a full read
-/// of the same memory), the carry back, and the census of its reads.
 fn hour<'a>(
     world: &'a World,
     mut carry: Box<WeatherCarry>,
@@ -448,8 +427,6 @@ fn hour<'a>(
     (job.carry.take().unwrap(), census)
 }
 
-/// The slots one hour read of each array, static modifier list headers aside: (regions,
-/// provinces).
 fn read(world: &World, census: &Census<'_>) -> (Vec<u32>, Vec<u32>) {
     (
         census.slots(
@@ -466,7 +443,6 @@ fn read(world: &World, census: &Census<'_>) -> (Vec<u32>, Vec<u32>) {
     )
 }
 
-/// The provinces whose static modifier list header one hour read.
 fn headers(world: &World, census: &Census<'_>) -> Vec<u32> {
     census.slots_where(
         world.base + world.province_data,
@@ -476,12 +452,10 @@ fn headers(world: &World, census: &Census<'_>) -> Vec<u32> {
     )
 }
 
-/// The regions whose custom sea values one hour read.
 fn custom_read(world: &World, census: &Census<'_>) -> Vec<u32> {
     census.slots(world.base + world.custom, 4, world.regions)
 }
 
-/// Of `slots`, the regions with custom sea values to read.
 fn with_custom(world: &World, slots: Vec<u32>) -> Vec<u32> {
     slots
         .into_iter()
@@ -489,7 +463,6 @@ fn with_custom(world: &World, slots: Vec<u32>) -> Vec<u32> {
         .collect()
 }
 
-/// The window's slots.
 fn expected(window: (u32, u32), count: u32) -> Vec<u32> {
     (0..count).filter(|&slot| in_window(slot, window, count)).collect()
 }
@@ -498,7 +471,6 @@ fn every(count: u32) -> Vec<u32> {
     (0..count).collect()
 }
 
-/// The windows the next pass visits.
 fn next_windows(world: &World) -> ((u32, u32), (u32, u32)) {
     let word = |offset| world.word(MANAGER + offset);
     (
@@ -517,7 +489,6 @@ fn next_windows(world: &World) -> ((u32, u32), (u32, u32)) {
     )
 }
 
-/// A world read once in full, its carry holding hour 1.
 fn held(provinces: u32, regions: u32, budgets: (i32, i32)) -> (World, Box<WeatherCarry>) {
     let world = World::new(provinces, regions, budgets);
     let (carry, census) = hour(&world, carry(), 1, false, Some(0));
@@ -528,27 +499,18 @@ fn held(provinces: u32, regions: u32, budgets: (i32, i32)) -> (World, Box<Weathe
 
 #[test]
 fn window_ports_the_update_passes_loop() {
-    // Ordinary: the budget from the cursor.
     assert_eq!(window(5, 10, 3), Some((5, 3)));
-    // Wrapping at the count.
     assert_eq!(window(8, 10, 3), Some((8, 3)));
     assert_eq!(advanced(8, 3, 10), 1);
-    // A budget of zero or below still visits once (do/while).
     assert_eq!(window(2, 10, 0), Some((2, 1)));
     assert_eq!(window(2, 10, -7), Some((2, 1)));
-    // A budget past the count stops when the cursor returns to its start.
     assert_eq!(window(4, 10, 584), Some((4, 10)));
     assert_eq!(advanced(4, 10, 10), 4);
-    // A cursor at or past the count visits nothing.
     assert_eq!(window(10, 10, 3), Some((10, 0)));
-    // A negative cursor or an empty array is refused.
     assert_eq!(window(-1, 10, 3), None);
     assert_eq!(window(0, 0, 3), None);
 }
 
-/// The old read took every record every hour; a held hour now reads only
-/// the slots the pass visited, sized from the live budgets a mod sets, and
-/// captures exactly what a full read does.
 #[test]
 fn window_hours_read_only_the_visited_slots() {
     for (provinces, regions, budgets) in [
@@ -562,7 +524,6 @@ fn window_hours_read_only_the_visited_slots() {
     ] {
         let (mut world, mut carry) = held(provinces, regions, budgets);
         world.cursors((57, 12));
-        // Moving a cursor while held is a jump: the next hour reads all.
         let (next, census) = hour(&world, carry, 2, false, Some(0));
         assert_eq!(read(&world, &census), (every(regions), every(provinces)));
         carry = next;
@@ -589,41 +550,32 @@ fn window_hours_read_only_the_visited_slots() {
     }
 }
 
-/// A reseed, reset, load or console command moves the write count: the hour
-/// reads every record, including the ones it wrote outside the window.
 #[test]
 fn a_counted_write_forces_a_full_read() {
     let (mut world, carry) = held(40, 9, (5, 2));
     world.pass(1);
-    // The console snow/mud command or a reseed writes outside the window.
     world.write_province(30, -123_456);
     let (carry, census) = hour(&world, carry, 2, false, Some(2));
     assert_eq!(read(&world, &census), (every(9), every(40)));
     assert_eq!(carry.followed, 0);
-    // Held again under the new count: the next pass is a window hour.
     world.pass(2);
     let (carry, _) = hour(&world, carry, 3, false, Some(2));
     assert_eq!(carry.followed, 3);
-    // An unobserved count (hooks off) never follows the window.
     world.pass(3);
     let (carry, census) = hour(&world, carry, 4, false, None);
     assert_eq!(read(&world, &census), (every(9), every(40)));
     assert!(carry.held.is_none());
 }
 
-/// A cursor that moved by anything but one ordinary pass reads all.
 #[test]
 fn a_cursor_jump_falls_back() {
     let (mut world, carry) = held(40, 9, (5, 2));
-    // Two passes in one hour (the console command that runs hourly state).
     world.pass(1);
     world.pass(2);
     let (carry, census) = hour(&world, carry, 2, false, Some(0));
     assert_eq!(read(&world, &census), (every(9), every(40)));
-    // No pass (the suspension gates held it).
     let (carry, census) = hour(&world, carry, 3, false, Some(0));
     assert_eq!(read(&world, &census), (every(9), every(40)));
-    // A region cursor that moved alone.
     world.pass(3);
     let (carry, _) = hour(&world, carry, 4, false, Some(0));
     assert_eq!(carry.followed, 3);
@@ -633,12 +585,8 @@ fn a_cursor_jump_falls_back() {
     assert_eq!(read(&world, &census), (every(9), every(40)));
 }
 
-/// One fallback case: what it does to the world, the hour and the forced
-/// flag.
 type Case = dyn Fn(&mut World, &mut i32, &mut bool);
 
-/// A gap, a forced full hour, the initial-mode or suspension bytes, or a
-/// budget a content reload changed each read every record.
 #[test]
 fn every_other_hour_falls_back() {
     let (mut world, mut carry) = held(40, 9, (5, 2));
@@ -658,23 +606,18 @@ fn every_other_hour_falls_back() {
         let (next, census) = hour(&world, carry, at, force, Some(0));
         assert_eq!(read(&world, &census), (every(9), every(40)), "hour {at}");
         world.put(MANAGER + cweather_manager::INITIAL_MODE, &[0, 0, 0]);
-        // Held again: the next ordinary pass follows the window.
         world.pass(at.into());
         at += 1;
         let (next, _) = hour(&world, next, at, false, Some(0));
         assert_eq!(next.followed, 3, "hour {at}");
         carry = next;
     }
-    // A job that did not complete forgets what it held.
     carry.forget();
     world.pass(99);
     let (_, census) = hour(&world, carry, at + 1, false, Some(0));
     assert_eq!(read(&world, &census), (every(9), every(40)));
 }
 
-/// An hour whose province records did not follow their window reads every province's
-/// weather modifier entries with them: an entry a counted writer changed outside the
-/// window is read afresh, not carried.
 #[test]
 fn an_unfollowed_province_hour_reads_every_province_modifier_entry() {
     let provinces = 80;
@@ -689,13 +632,11 @@ fn an_unfollowed_province_hour_reads_every_province_modifier_entry() {
     world.pass(1);
     let entry = (0..provinces).find(|&slot| !in_window(slot, window, provinces)).unwrap();
     world.put(entries[entry as usize], &(-7_i64).to_le_bytes());
-    // `hour` asserts the carried capture equals a full read of the same memory.
     let (carry, census) = hour(&world, carry, 2, false, Some(1));
     assert!(!carry.provinces_followed);
     assert_eq!(read(&world, &census).1, every(provinces));
 }
 
-/// The hourly province gather copies no static modifier list header: the lists are read apart.
 #[test]
 fn the_dense_province_gather_leaves_the_static_modifier_header_out() {
     let header = sweather_per_province::STATIC_MODIFIERS..sweather_per_province::STATIC_MODIFIERS + 16;
@@ -705,18 +646,12 @@ fn the_dense_province_gather_leaves_the_static_modifier_header_out() {
     }
 }
 
-/// Every writer of a province's static modifier list is a counted weather writer except the
-/// daily expiry's countdown, which runs in the hourly update that starts a day. So an hour
-/// with neither reads no list and no list header and shares the held lists; an addition, a
-/// removal, a load or the daily update reads every list afresh; and every hour captures what a
-/// full read does.
 #[test]
 fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update() {
     let provinces = 80;
     let mut world = World::new(provinces, 9, (5, 2));
     let stride = sweather_per_province::STATIC_MODIFIER_STRIDE;
     let days = sweather_per_province::STATIC_MODIFIER_DAYS;
-    // Each province's list address and length; every fourth province has no list.
     let mut lists: Vec<Option<(usize, usize)>> = (0..provinces)
         .map(|slot| {
             (slot % 4 != 3).then(|| {
@@ -742,11 +677,9 @@ fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update
         .map(|(name, days)| (name.to_vec(), days))
         .collect()
     };
-    // `hour` asserts each hour's capture equals a full read of the same memory.
     let (carry, census) = hour(&world, carry(), 20, false, Some(0));
     assert_eq!(headers(&world, &census), every(provinces));
     assert_eq!(listed(&lists, &census), with_lists);
-    // No writer: the lists are carried, shared and unread.
     world.pass(1);
     let held = carry.province_statics.clone().unwrap();
     let (carry, census) = hour(&world, carry, 21, false, Some(0));
@@ -755,7 +688,6 @@ fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update
     assert_eq!(listed(&lists, &census), 0);
     assert!(SharedBox::ptr_eq(&held, carry.province_statics.as_ref().unwrap()));
     drop(held);
-    // An addition, counted on entry and return.
     world.pass(2);
     lists[3] = Some((world.province_statics(3, &[("dam_broken", 5)]), 1));
     let (carry, census) = hour(&world, carry, 22, false, Some(2));
@@ -764,7 +696,6 @@ fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update
     world.pass(3);
     let (carry, census) = hour(&world, carry, 23, false, Some(2));
     assert!(headers(&world, &census).is_empty());
-    // The update that starts the day runs the expiry: every positive day counts down, unhooked.
     for &(list, entries) in lists.iter().flatten() {
         for entry in 0..entries {
             let at = list + entry * stride + days;
@@ -783,7 +714,6 @@ fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update
     );
     assert_eq!(statics(&carry, 0), [(b"the_great_wall".to_vec(), 0)]);
     assert_eq!(statics(&carry, 3), [(b"dam_broken".to_vec(), 4)]);
-    // A removal.
     world.pass(5);
     lists[1] = Some((world.province_statics(1, &[("the_great_wall", -1)]), 1));
     let (carry, census) = hour(&world, carry, 25, false, Some(4));
@@ -792,7 +722,6 @@ fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update
     world.pass(6);
     let (carry, census) = hour(&world, carry, 26, false, Some(4));
     assert!(headers(&world, &census).is_empty());
-    // A load reads every list anew.
     world.pass(7);
     lists[2] = Some((world.province_statics(2, &[("flooded", 9)]), 1));
     lists[7] = Some((world.province_statics(7, &[("flooded", 1)]), 1));
@@ -805,7 +734,6 @@ fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update
     assert_eq!(listed(&lists, &census), 0);
 }
 
-/// Memory whose first read covering `fault` fails; later reads of it succeed.
 struct FailsOnce<'a> {
     inner: SliceMemory<'a>,
     fault: usize,
@@ -824,9 +752,6 @@ impl Memory for FailsOnce<'_> {
     }
 }
 
-/// A window record field whose first read fails is not read again, though a
-/// second read would succeed: its part is unavailable for the hour, nothing is
-/// held, and the next hour reads every record.
 #[test]
 fn a_failed_window_record_is_not_read_again() {
     for regions in [true, false] {
@@ -862,9 +787,6 @@ fn a_failed_window_record_is_not_read_again() {
     }
 }
 
-/// A window region whose combat entries fail their first read is refused, not
-/// read again; every other region keeps its value, and the next hour reads all.
-/// The second attempt is the air efficiency breakdown's own probe, after it.
 #[test]
 fn a_failed_window_combat_lookup_is_not_read_again() {
     let (mut world, carry) = held(40, 9, (5, 2));
@@ -896,9 +818,6 @@ fn a_failed_window_combat_lookup_is_not_read_again() {
     assert_eq!(read(&world, &census), (every(9), every(40)));
 }
 
-/// A window region whose custom sea values fail their first read is refused for the hour and
-/// counted, not read again; every other region keeps its values, the records stay held, and the
-/// next hour reads every region's values.
 #[test]
 fn a_failed_window_custom_sea_read_is_refused_and_read_in_full_next_hour() {
     let (mut world, carry) = held(40, 9, (5, 2));
@@ -939,11 +858,6 @@ fn a_failed_window_custom_sea_read_is_refused_and_read_in_full_next_hour() {
     assert_eq!(custom_read(&world, &census), with_custom(&world, every(9)));
 }
 
-/// A weather hour's guarded read at the vanilla census (13,414 provinces,
-/// 305 region slots, `provinces_per_update` 584 and `regions_per_update` 7
-/// from vanilla `common/weather.txt`): every record, and the windows. Cold:
-/// the world is evicted from cache before each hour, as a game hour finds it.
-/// `cargo test --release -p collector weather_window_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "synthetic guarded weather window timing"]
 fn weather_window_bench() {

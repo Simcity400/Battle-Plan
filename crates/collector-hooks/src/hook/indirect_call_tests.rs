@@ -6,8 +6,6 @@ static ENTERED: AtomicBool = AtomicBool::new(false);
 static RELEASE: AtomicBool = AtomicBool::new(false);
 static CALLER: AtomicUsize = AtomicUsize::new(0);
 
-// Authored caller/stub fixtures: the callback forwards a live target, keeps the real five-byte
-// return point, and supplies the original six-byte call's own.
 core::arch::global_asm!(
     ".text", ".globl hook_indirect_caller", ".seh_proc hook_indirect_caller",
     "hook_indirect_caller:", "sub rsp, 0x28", ".seh_stackalloc 0x28", ".seh_endprologue",
@@ -37,7 +35,6 @@ unsafe extern "system-unwind" {
     fn hook_indirect_ip_stub_end();
 }
 unsafe extern "system-unwind" fn forwarded(value: usize, caller: usize, target: usize) -> usize {
-    // Normal return releases in assembly; escaped unwind retains ownership.
     CALLER.store(caller, Ordering::SeqCst);
     let target: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(target) };

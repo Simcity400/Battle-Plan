@@ -7,7 +7,6 @@ import type { Country, IntelCoverageReply } from '../../generated/dashboard';
 
 export type Measure = 'covered' | 'strength' | 'strongest';
 export type Basis = 'controlled' | 'core';
-/** The recorded summary fields the widget draws, by the names the product and the `intel-networks` series give them. */
 export const FIELDS = ['coveredControlled', 'coveredCore', 'controlledStrength', 'coreStrength', 'maxStrength'] as const;
 export type Field = typeof FIELDS[number];
 
@@ -24,11 +23,8 @@ export function validateIntelCoverage(value: unknown): IntelCoverageReply {
   return value as unknown as IntelCoverageReply;
 }
 
-/** What renders: the countries and which pairs hold a network, not their values nor the daily read hour. */
 export const coverageStructure = (reply: IntelCoverageReply) => JSON.stringify([reply.missing, reply.countries, reply.networks, reply.warnings]);
 
-/** The hour's networks by their countries' tags (`OWNER|TARGET`), each its live cells' row; a side no tag names is not
- * on the matrix. */
 export interface PairsAt { rows: ReadonlyMap<string, string>; present: ReadonlySet<string>; ids: ReadonlyMap<string, number>; known: boolean }
 
 export function pairsAt(reply: IntelCoverageReply): PairsAt {
@@ -40,9 +36,6 @@ export function pairsAt(reply: IntelCoverageReply): PairsAt {
   return { rows, present: new Set(tags), ids: new Map(reply.countries.map(item => [item.tag!, item.id])), known: reply.missing === null };
 }
 
-/** The countries on the matrix: those `matches` keeps (in tag order), else the `shown` most active by their count of
- * networks in or from them, ties by tag; with `touching`, after them every country with a network in or from one of
- * them, in tag order. */
 export function countriesAt(reply: IntelCoverageReply, shown: number, matches?: (tag: string) => boolean, touching = false): string[] {
   const tags = reply.countries.map(item => item.tag!);
   const counts = new Map<string, number>(tags.map(tag => [tag, 0]));
@@ -62,7 +55,6 @@ export function countriesAt(reply: IntelCoverageReply, shown: number, matches?: 
   return [...own, ...tags.filter(tag => !kept.has(tag) && linked.has(tag))];
 }
 
-/** The field a measure shows on a basis. */
 export function measureField(measure: Measure, basis: Basis): Field {
   if (measure === 'strongest') return 'maxStrength';
   if (measure === 'strength') return basis === 'core' ? 'coreStrength' : 'controlledStrength';
@@ -71,7 +63,6 @@ export function measureField(measure: Measure, basis: Basis): Field {
 
 export const isStrength = (field: Field) => field.endsWith('Strength');
 
-/** A field's value for display: strengths are the game's fixed-point values. */
 export function fieldText(field: Field, value: number): string {
   if (!isStrength(field)) return value.toLocaleString('en-US');
   const raw = BigInt(value);
@@ -80,11 +71,8 @@ export function fieldText(field: Field, value: number): string {
   return `${negative ? '−' : ''}${(magnitude / FIXED).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
 }
 
-/** The chart operand of a value: its display magnitude, for colour only. */
 export const fieldNumber = (field: Field, value: number) => isStrength(field) ? value / Number(FIXED) : value;
 
-/** One cell: a network and its values as read (each undefined where not read, with why), no network (proven only where
- * the hour is known and both countries present), or unknown. */
 export type CellState = { kind: 'present'; values: ReadonlyMap<Field, number | string> } | { kind: 'absent' } | { kind: 'unknown' };
 
 export function cellState(at: PairsAt, values: LiveValues<number>, owner: string, target: string): CellState {
@@ -98,8 +86,6 @@ export function cellState(at: PairsAt, values: LiveValues<number>, owner: string
   return at.known && at.present.has(owner) && at.present.has(target) ? { kind: 'absent' } : { kind: 'unknown' };
 }
 
-/** The matrix's cells at the values read now, keyed `liveKey(owner, target)`: each network coloured by the chosen
- * field against the largest shown, none on the diagonal or where no network is proven, the unknown hatch otherwise. */
 export function matrixCells(at: PairsAt, values: LiveValues<number>, field: Field, colour: (value: number, highest: number) => string): LiveValues<MatrixCell> {
   let highest = 0;
   for (const row of at.rows.values()) {
@@ -137,7 +123,6 @@ export function pairTooltip(owner: string, target: string, cell: CellState, read
   };
 }
 
-/** A pinned pair's saved owner and target: `TAG|id` each, the target's raw id being its line's part. */
 export interface ChosenPair { owner: string; target: string; targetId: number; hour: number }
 export const pairToken = (pair: ChosenPair) => `${pair.owner}|${pair.target}|${pair.targetId}|${pair.hour}`;
 export function pairOf(owner: unknown, target: unknown): ChosenPair | null {
@@ -147,5 +132,4 @@ export function pairOf(owner: unknown, target: unknown): ChosenPair | null {
   const targetId = Number(id), at = Number(hour);
   return ownerTag && targetTag && Number.isSafeInteger(targetId) && Number.isSafeInteger(at) ? { owner: ownerTag, target: targetTag, targetId, hour: at } : null;
 }
-/** The pinned options of `pair`: the owner with the hour it was chosen at, the target with its raw id. */
 export const pairOptions = (pair: ChosenPair) => ({ owner: `${pair.owner}|${pair.hour}`, target: `${pair.target}|${pair.targetId}` });

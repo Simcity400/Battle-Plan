@@ -1,6 +1,3 @@
-/** The settings every log offers: density, month
- * dividers, the new-row animation and the filter chips above it. A log widget
- * lists `LOG_OPTIONS` among its own and reads them with `logSettings`. */
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import type { LogDensity } from './logData';
 
@@ -14,7 +11,6 @@ export const LOG_OPTIONS: readonly OptionField[] = [
 
 export interface LogSettings { density: LogDensity; months: boolean; animate: boolean; chips: boolean }
 
-/** The log settings from resolved options (`resolveOptions`). */
 export function logSettings(options: Readonly<Record<string, OptionValue>>): LogSettings {
   return {
     density: options.density === 'compact' ? 'compact' : 'comfortable',

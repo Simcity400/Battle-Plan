@@ -14,9 +14,6 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.metrics.table_ns[table.index()] = 1;
 }
 
-/// GER's democrats rule until 109, then its fascists (popularity 60/40 then 30/70 from 110). Its
-/// leader has no character until 104, then character 701. The last election date changes at 105
-/// and at 120. No country holds GER at hour 115.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     if hour == 115 {
@@ -52,7 +49,6 @@ fn recording() -> Source {
     Source::from_replay(crate::SourceKey { source_id: "parties".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
-/// A party names the `party-popularity` parts it was read under; its popularity is that series'.
 #[test]
 fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_bridge_a_gap() {
     let source = recording();

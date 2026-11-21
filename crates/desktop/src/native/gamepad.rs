@@ -1,20 +1,3 @@
-//! Controllers, read in the host and handed to the map in front.
-//!
-//! Windows.Gaming.Input reports controllers (Xbox, PlayStation and other gamepads) only to the
-//! process that owns the foreground window. The maps' windows are children of the host's, so the
-//! host reads them and hands the controller the user last touched to the map whose window is in
-//! front: the pop-out's while its window is, the campaign map while the main window is and the
-//! map shows, and none while any other window is. The maps apply their own dead zones; resting
-//! jitter stays here.
-//!
-//! One owner decides which viewer holds the controller: this thread's [`Router`]. Each handoff is
-//! numbered, and every message names the viewer and handoff it is for ([`GamepadMessage`]). A
-//! viewer taking the controller gets what is held with no presses; the one it leaves is released,
-//! letting go of everything with no presses, and drops any state still on its way. What was last
-//! sent belongs to one viewer under one handoff: a change of window, a map that cannot take the
-//! controller (hidden, or the dashboard in front), a failed send and a restarted viewer all end
-//! it, and the next viewer able to take the controller takes it with what is held then. A map's
-//! own focus never ends a handoff; only the host's release does.
 
 use super::NativeHost;
 use crate::popout::PopOuts;
@@ -24,15 +7,10 @@ use std::{collections::HashMap, thread, time::Duration};
 use tauri::{AppHandle, Manager};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-/// How often the host reads controllers.
 const POLL: Duration = Duration::from_millis(8);
-/// Stick deflections and trigger pulls below this stay at rest, so a resting controller's jitter
-/// is never sent and never makes it the last touched.
 const RESTING: f32 = 0.02;
-/// Values are sent in steps of this, so noise below it never produces a message.
 const STEP: f32 = 1.0 / 512.0;
 
-/// Each standard button and the bit the map reads it as.
 const BUTTONS: [(Button, GamepadButton); 14] = [
     (Button::South, GamepadButton::South),
     (Button::East, GamepadButton::East),
@@ -50,8 +28,6 @@ const BUTTONS: [(Button, GamepadButton); 14] = [
     (Button::DPadRight, GamepadButton::DpadRight),
 ];
 
-/// Starts reading controllers for the maps. Without a controller interface the thread ends
-/// quietly; the maps keep their keyboard and mouse.
 pub fn start_gamepad(app: AppHandle) {
     let started = thread::Builder::new()
         .name("gamepad".into())
@@ -61,15 +37,12 @@ pub fn start_gamepad(app: AppHandle) {
     }
 }
 
-/// The map a controller drives: the campaign map, or pop-out window `generation`'s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Campaign,
     PopOut(u64),
 }
 
-/// The map whose window is `foreground`: pop-out window `popout`'s when it is that window, the
-/// campaign map's when it is the main window, `main`, and none for any other window.
 fn front(foreground: usize, main: Option<usize>, popout: Option<u64>) -> Option<Target> {
     match popout {
         Some(generation) => Some(Target::PopOut(generation)),
@@ -77,17 +50,11 @@ fn front(foreground: usize, main: Option<usize>, popout: Option<u64>) -> Option<
     }
 }
 
-/// The maps the router hands the controller between.
 trait Maps {
-    /// The number of `target`'s viewer while it can take the controller: running, ready and
-    /// showing its map.
     fn ready(&self, target: Target) -> Option<u64>;
-    /// Queues `message` for `target`'s viewer `viewer`; `false` when another viewer runs there
-    /// now, or none.
     fn send(&self, target: Target, viewer: u64, message: GamepadMessage) -> bool;
 }
 
-/// The viewer holding the controller: its map, its viewer and handoff, and what it was last sent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Holder {
     target: Target,
@@ -95,7 +62,6 @@ struct Holder {
     sent: GamepadState,
 }
 
-/// The one owner of the controller's handoffs.
 #[derive(Debug, Default)]
 struct Router {
     holder: Option<Holder>,
@@ -103,8 +69,6 @@ struct Router {
 }
 
 impl Router {
-    /// One reading: `state`, for the map in front, `target`, or none, and the buttons `pressed`
-    /// since the last reading, released again or not.
     fn route(
         &mut self,
         maps: &impl Maps,
@@ -130,7 +94,6 @@ impl Router {
                 }
                 return;
             }
-            // Another map, viewer or window is in front, or the holder can no longer take it.
             maps.send(holder.target, holder.owner.viewer, GamepadMessage::Release);
             self.holder = None;
         }
@@ -152,8 +115,6 @@ impl Router {
 }
 
 impl NativeHost {
-    /// The number of the viewer running now while it can take the controller: ready and showing
-    /// the full map, with no dashboard in front.
     fn pad_viewer(&self) -> Option<u64> {
         let inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         (inner.map.is_some()
@@ -164,8 +125,6 @@ impl NativeHost {
             .then_some(inner.generation)
     }
 
-    /// Queues `message` for viewer `viewer`, merged with any still waiting; `false` when another
-    /// viewer runs now, or none.
     fn send_gamepad(&self, viewer: u64, message: GamepadMessage) -> bool {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if inner.map.is_none() || inner.shutting_down || inner.generation != viewer {
@@ -185,7 +144,6 @@ impl NativeHost {
     }
 }
 
-/// The campaign map's host and the pop-out's.
 struct LiveMaps<'a> {
     campaign: &'a NativeHost,
     popouts: &'a PopOuts,
@@ -226,9 +184,7 @@ fn run(app: &AppHandle) {
         popouts: popouts.inner(),
     };
     let mut active: Option<GamepadId> = None;
-    // Each controller's buttons at its last reading, which its presses count against.
     let mut buttons: HashMap<GamepadId, u32> = HashMap::new();
-    // Each controller's presses since the last poll, released again or not.
     let mut presses: HashMap<GamepadId, u32> = HashMap::new();
     let mut router = Router::default();
     while !campaign.stopping() {
@@ -243,7 +199,6 @@ fn run(app: &AppHandle) {
                 }
                 EventType::Connected | EventType::Dropped => {}
                 _ => {
-                    // Each event's state is read, so a press released again before this poll counts.
                     let state = read(&gilrs, event.id);
                     active = last_touched(active, event.id, &state);
                     let held = buttons.entry(event.id).or_default();
@@ -257,7 +212,6 @@ fn run(app: &AppHandle) {
         if let Some(id) = active {
             buttons.insert(id, state.buttons);
         }
-        // SAFETY: GetForegroundWindow takes no arguments and only reads the window in front.
         let foreground = unsafe { GetForegroundWindow() } as usize;
         let main = app
             .get_webview_window("main")
@@ -269,9 +223,6 @@ fn run(app: &AppHandle) {
     }
 }
 
-/// The controller to forward after an event from `pad`, whose state is now `state`: a controller
-/// takes over only once it is really used, so an idle one's resting jitter never takes the
-/// selection from the one in hand.
 fn last_touched<T: PartialEq>(active: Option<T>, pad: T, state: &GamepadState) -> Option<T> {
     let used = state.sticks.iter().any(|stick| *stick != [0.0; 2])
         || state.triggers.iter().any(|pull| *pull != 0.0)
@@ -279,7 +230,6 @@ fn last_touched<T: PartialEq>(active: Option<T>, pad: T, state: &GamepadState) -
     if used { Some(pad) } else { active }
 }
 
-/// The controller's state in the map's terms.
 fn read(gilrs: &Gilrs, id: GamepadId) -> GamepadState {
     let Some(pad) = gilrs.connected_gamepad(id) else {
         return GamepadState::default();
@@ -311,7 +261,6 @@ fn read(gilrs: &Gilrs, id: GamepadId) -> GamepadState {
     }
 }
 
-/// With gilrs filters disabled, hat axes are not converted to directional-pad buttons.
 fn hat_bits(x: f32, y: f32) -> u32 {
     [
         (x >= 1.0, GamepadButton::DpadRight),
@@ -324,7 +273,6 @@ fn hat_bits(x: f32, y: f32) -> u32 {
     .fold(0, |bits, (_, bit)| bits | bit.bit())
 }
 
-/// A stick at rest reads as centred; otherwise its value in steps, within the unit square.
 fn settle([x, y]: [f32; 2]) -> [f32; 2] {
     if !x.is_finite() || !y.is_finite() || x.hypot(y) < RESTING {
         return [0.0; 2];
@@ -364,12 +312,10 @@ mod tests {
             buttons,
         };
         let held = Some('a');
-        // Pad b only jitters at rest: pad a, held steady, stays forwarded.
         assert_eq!(
             last_touched(held, 'b', &state([0.015, -0.01], 0.0, 0)),
             held
         );
-        // Really used, by a stick, a trigger or a button, it takes over.
         assert_eq!(
             last_touched(held, 'b', &state([0.3, 0.0], 0.0, 0)),
             Some('b')
@@ -380,13 +326,10 @@ mod tests {
             last_touched(held, 'b', &state([0.0; 2], 0.0, south)),
             Some('b')
         );
-        // With none forwarded yet, jitter selects nothing.
         assert_eq!(last_touched(None, 'b', &state([0.01, 0.0], 0.0, 0)), None);
-        // The forwarded pad coming to rest stays forwarded, so its rest reaches the map.
         assert_eq!(last_touched(held, 'a', &state([0.0; 2], 0.0, 0)), held);
     }
 
-    /// Maps whose readiness and viewers a test sets, recording every message sent.
     #[derive(Default)]
     struct Fake {
         ready: std::cell::RefCell<Vec<(Target, u64)>>,
@@ -445,17 +388,13 @@ mod tests {
         maps.set(popout, Some(1));
         maps.set(Target::Campaign, Some(7));
         let mut router = Router::default();
-        // The stick held in the pop-out.
         router.route(&maps, Some(popout), held(0.8), 0);
         assert_eq!(taken(&maps.take()), [(popout, held(0.8))]);
         router.route(&maps, Some(popout), held(0.8), 0);
         assert!(maps.take().is_empty());
-        // The main window in front shows the dashboard: the campaign map cannot take the
-        // controller, and the pop-out lets go of it.
         maps.set(Target::Campaign, None);
         router.route(&maps, Some(Target::Campaign), held(0.8), 0);
         assert_eq!(maps.take(), [(popout, 1, GamepadMessage::Release)]);
-        // Back to the pop-out without moving the stick: it takes what is held again.
         router.route(&maps, Some(popout), held(0.8), 0);
         assert_eq!(taken(&maps.take()), [(popout, held(0.8))]);
     }
@@ -491,8 +430,6 @@ mod tests {
             ]
         );
         assert_eq!(sent[1], (Target::Campaign, 7, GamepadMessage::Release));
-        // A restarted pop-out viewer in the same window is another viewer: the old one is
-        // released and the new one takes the controller under a new handoff.
         maps.set(popout, Some(2));
         router.route(&maps, Some(popout), held(0.5), 0);
         let sent = maps.take();
@@ -519,7 +456,6 @@ mod tests {
         let popout = Target::PopOut(2);
         maps.set(popout, Some(1));
         maps.set(Target::Campaign, Some(7));
-        // The main window and the pop-out are the maps' windows; any other is none.
         assert_eq!(front(10, Some(10), None), Some(Target::Campaign));
         assert_eq!(front(20, Some(10), Some(2)), Some(popout));
         assert_eq!(front(30, Some(10), None), None);
@@ -527,8 +463,6 @@ mod tests {
         let mut router = Router::default();
         router.route(&maps, Some(Target::Campaign), held(0.8), 0);
         maps.take();
-        // Another program comes to the front with the stick held: the map lets go, as Windows
-        // stops reporting the controller to the host.
         router.route(&maps, None, held(0.8), 0);
         assert_eq!(
             maps.take(),
@@ -536,14 +470,12 @@ mod tests {
         );
         router.route(&maps, None, held(0.8), 0);
         assert!(maps.take().is_empty());
-        // Back in front, it takes what is held then.
         router.route(&maps, Some(Target::Campaign), held(0.3), 0);
         assert_eq!(taken(&maps.take()), [(Target::Campaign, held(0.3))]);
     }
 
     #[test]
     fn a_failed_state_ends_the_handoff() {
-        /// Ready, but every send fails: the viewer went away between the two reads.
         struct Gone;
         impl Maps for Gone {
             fn ready(&self, _: Target) -> Option<u64> {
@@ -567,7 +499,6 @@ mod tests {
         let mut router = Router::default();
         router.route(&maps, Some(Target::Campaign), held(0.0), 0);
         maps.take();
-        // South pressed and released again between two readings: nothing held changed.
         let south = GamepadButton::South.bit();
         router.route(&maps, Some(Target::Campaign), held(0.0), south);
         let sent = maps.take();
@@ -580,7 +511,6 @@ mod tests {
         );
         router.route(&maps, Some(Target::Campaign), held(0.0), 0);
         assert!(maps.take().is_empty());
-        // A handoff presses nothing, whatever was pressed as it happened.
         maps.set(Target::Campaign, Some(8));
         router.route(&maps, Some(Target::Campaign), held(0.0), south);
         assert!(

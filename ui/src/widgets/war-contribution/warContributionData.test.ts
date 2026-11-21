@@ -54,7 +54,6 @@ test('the saved war wins while it exists, else the war with most participants go
   assert.equal(warContributions([{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], reason: null },
     { viewpointSide: ['A', 'C'], opposingSide: ['B', 'D', 'E'], participants: [], reason: null }], sides)?.viewpointSide.length, 2);
   assert.equal(warContributions([], sides), null);
-  // One war over several native groups: the largest within it, never their sum.
   const joined = observation(0, 100, ['A'], ['B', 'C']);
   const groups = [{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], reason: null },
     { viewpointSide: ['A'], opposingSide: ['C', 'D'], participants: [], reason: null },

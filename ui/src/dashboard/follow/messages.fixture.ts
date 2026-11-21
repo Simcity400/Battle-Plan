@@ -1,7 +1,6 @@
 import { encode } from '@msgpack/msgpack';
 import { parseFollowed } from './message.ts';
 import type { PageReading } from '../../draw/followed';
-/** Followed messages written as the service writes them (`crates/dashboard-follow/src/answer.rs`), for tests. */
 
 export type Spec =
   | { notRecorded: string }
@@ -52,7 +51,6 @@ function body(spec: Spec): number[] {
   return out.bytes;
 }
 
-/** A message of `answers` at `hour`, of the follow `route`. */
 export function message(hour: number, answers: { id: number; hour?: number; answer: Spec }[], reset = false, route = 0, seek = 0): Uint8Array {
   const out = new Bytes();
   out.u32(0x324c4f46); out.u32(route * 2 + (reset ? 1 : 0)); out.u32(hour); out.u32(answers.length); out.u32(seek); out.u32(0);
@@ -72,7 +70,6 @@ export function datedPanel(id: number, hour: number, data?: unknown, seek = 1) {
   return out;
 }
 
-/** A transport that records what it is sent and delivers what a test hands it. */
 export function fakeTransport() {
   const sent: string[] = [];
   let receive: ((reading: PageReading) => void) | null = null;
@@ -88,7 +85,6 @@ export function fakeTransport() {
   };
 }
 
-/** A frame scheduler whose frames the test runs. */
 export function manualFrames() {
   const queued: (() => void)[] = [];
   return { schedule: (run: () => void) => { queued.push(run); }, run: () => { const due = queued.splice(0); due.forEach(run => run()); return due.length; }, get pending() { return queued.length; } };

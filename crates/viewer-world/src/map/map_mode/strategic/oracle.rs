@@ -21,8 +21,6 @@ impl Content {
             naval_fx: !air,
             ..Default::default()
         };
-        // Hold/active highlights are supplied by each view's separate local
-        // task-force and fleet selection product, independently of supremacy.
         let colors = if air {
             self.oracle_air_colors(inputs)
         } else {
@@ -126,8 +124,6 @@ impl Content {
             });
             out.insert(row.region, color);
         }
-        // A complete sparse table witnesses each air object's final region.
-        // With no object the game's null lookup supplies all zero operands.
         Ok(out)
     }
 }

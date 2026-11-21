@@ -1,18 +1,3 @@
-//! Stored scenario inputs for naval-patrol fighters (mission bit seven).
-//!
-//! The walk follows the effective country's fleets and task forces in order. It
-//! selects the first task force whose first combat is naval and whose province
-//! belongs to the mission region. The viewing country's first air-history window
-//! supplies enemy ships sunk and own fighters lost. The same window also supplies
-//! bomber damage, opposing fighter losses and transport losses.
-//!
-//! Writers in [`crate::air_history_mutations`] add to the current record. Advances
-//! move the current slot and zero its new record; closed records do not change.
-//!
-//! Reads gather countries and histories in batches: table headers, region slots,
-//! history identities, window headers, record pointers, value pointers and raw
-//! channels. Every record is copied, so a held copy can apply a later advance
-//! without rereading by moving the current slot and zeroing its new record.
 
 use crate::{
     Memory, cfleet, cloop_history, cnaval_combat,
@@ -24,10 +9,8 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Enemy-ships-sunk and own-fighters-lost channels.
 pub const ENEMY_SHIPS_SUNK: usize = 43;
 pub const OUR_FIGHTERS_LOST: usize = 3;
-/// Shared first-window channels, in acquisition order.
 pub const CHANNELS: [usize; 9] = [
     ENEMY_SHIPS_SUNK,
     OUR_FIGHTERS_LOST,
@@ -39,21 +22,13 @@ pub const CHANNELS: [usize; 9] = [
     24,
     65,
 ];
-/// First history window.
 const FIRST_WINDOW: usize = 0x10;
-/// Running-sum magnitude limit, applied after every record.
 pub const SUM_LIMIT: i64 = 0x53e2_d620_fb40;
-/// Rows per gather; larger inputs are read in chunks.
 const BATCH: usize = 64;
 
-/// One task force in a naval combat, in the country's fleet and task-force
-/// order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaskForceCombat {
-    /// The combat's province (the combat's province, then its id).
     pub province: u32,
-    /// That province's stored strategic region (the province's region, then its id), zero when
-    /// null.
     pub region: u32,
 }
 
@@ -67,11 +42,9 @@ const fn field(source_offset: usize, destination_offset: usize, len: usize) -> R
 
 const QWORD: [RecordField; 1] = [field(0, 0, 8)];
 const QWORD_LAYOUT: RecordLayout<'static> = RecordLayout::new(&QWORD, 8).expect("valid layout");
-/// Fleet vtable and task-force vector header.
 const FLEET_FIELDS: [RecordField; 2] = [field(0, 0, 8), field(cfleet::TASK_FORCES, 8, 16)];
 const FLEET_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&FLEET_FIELDS, 24).expect("valid layout");
-/// Task-force vtables and its combat vector header.
 const TASK_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(ctask_force::SECONDARY_BASE, 8, 8),
@@ -79,11 +52,9 @@ const TASK_FIELDS: [RecordField; 3] = [
 ];
 const TASK_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&TASK_FIELDS, 32).expect("valid layout");
-/// Combat vtable and province.
 const COMBAT_FIELDS: [RecordField; 2] = [field(0, 0, 8), field(cnaval_combat::PROVINCE, 8, 8)];
 const COMBAT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COMBAT_FIELDS, 16).expect("valid layout");
-/// Province vtable, ID and strategic region.
 const PROVINCE_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(cprovince::ID, 8, 4),
@@ -91,11 +62,9 @@ const PROVINCE_FIELDS: [RecordField; 3] = [
 ];
 const PROVINCE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PROVINCE_FIELDS, 20).expect("valid layout");
-/// Region vtable and ID.
 const REGION_FIELDS: [RecordField; 2] = [field(0, 0, 8), field(cstrategic_region::ID, 8, 4)];
 const REGION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&REGION_FIELDS, 12).expect("valid layout");
-/// History vtable, field count and first window.
 const HISTORY_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(cloop_history::FIELD_COUNT, 8, 4),
@@ -103,7 +72,6 @@ const HISTORY_FIELDS: [RecordField; 3] = [
 ];
 const HISTORY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&HISTORY_FIELDS, 20).expect("valid layout");
-/// Window vtable, record vector header, capacity, current slot and wrap flag.
 const WINDOW_FIELDS: [RecordField; 3] = [
     field(0, 0, 8),
     field(loop_history_window::RECORDS, 8, 16),
@@ -160,7 +128,6 @@ const SCENARIO_FIELDS: [RecordField; 7] = [
     CHANNEL_FIELDS[7],
     CHANNEL_FIELDS[8],
 ];
-/// Named refusals for additional scenario channels.
 pub const SCENARIO_REFUSALS: [&str; 7] = [
     "air history scenario channel 10 unreadable",
     "air history scenario channel 17 unreadable",
@@ -194,7 +161,6 @@ fn rva(base: usize, key: Rva) -> Result<u64, &'static str> {
         .ok_or("module address overflow")
 }
 
-/// Gather `layout` from each of `pointers` into `output`, all or nothing.
 fn gather(
     memory: &impl Memory,
     pointers: &[usize],
@@ -211,7 +177,6 @@ fn gather(
     Ok(())
 }
 
-/// Up to [`BATCH`] nonnull pointers of a vector from `first`, in one copy.
 fn pointers(
     memory: &impl Memory,
     vector: Array,
@@ -235,9 +200,6 @@ fn pointers(
     Ok(count)
 }
 
-/// The country's task forces whose first combat is naval, in native order.
-/// Land combats yield no naval result and are skipped. Fleets and task forces
-/// are authenticated before their vectors are followed.
 pub fn task_force_combats(
     memory: &impl Memory,
     base: usize,
@@ -309,7 +271,6 @@ pub fn task_force_combats(
     Ok(())
 }
 
-/// The first combat when it is naval: its province and stored region.
 fn first_naval_combat(
     memory: &impl Memory,
     combats: Array,
@@ -323,7 +284,6 @@ fn first_naval_combat(
         .filter(|&pointer| pointer != 0)
         .ok_or(unreadable)?;
     let mut bytes = [0_u8; 20];
-    // A land combat is skipped on its vtable; only a naval one needs its province.
     let fields = memory.copy_records(
         RecordSources::Pointers(&[combat]),
         &COMBAT_LAYOUT,
@@ -374,7 +334,6 @@ fn first_naval_combat(
     }))
 }
 
-/// Stored history-window state selecting records for summation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowState {
     pub history: usize,
@@ -384,8 +343,6 @@ pub struct WindowState {
 }
 
 impl WindowState {
-    /// Summation index and record slot: every record from the current one once
-    /// wrapped, otherwise only records before it.
     pub fn order(self) -> impl Iterator<Item = (u32, usize)> {
         let filled = if self.wrapped {
             self.capacity
@@ -397,14 +354,8 @@ impl WindowState {
     }
 }
 
-/// Region slots copied per contiguous read of one history table.
 const SLOT_CHUNK: usize = 512;
 
-/// The history in every region slot of each root in `roots`: one gather of
-/// table headers per `BATCH` roots, then each table's slots in contiguous
-/// reads of up to [`SLOT_CHUNK`]. A null slot, the game's own absence test,
-/// is skipped. `each` gets the root's index in `roots`, in root then region
-/// order.
 pub fn region_slots(
     memory: &impl Memory,
     roots: &[usize],
@@ -444,10 +395,7 @@ pub fn region_slots(
     Ok(())
 }
 
-/// Histories read per chunk by [`history_windows`].
 const WINDOW_BATCH: usize = 16;
-/// Reusable heap buffers for [`history_windows`], sized from its original
-/// acquired window capacities before any record gather.
 #[derive(Default)]
 pub struct WindowScratch {
     record_bytes: Vec<u8>,
@@ -472,7 +420,6 @@ impl WindowScratch {
         }
     }
 
-    /// Reserve every arena for the original batch's complete record demand.
     pub fn size(&mut self, records: usize) -> std::io::Result<()> {
         let pointers = crate::allocation::mul(records, 8)?;
         let channels = crate::allocation::mul(records, 72)?;
@@ -496,12 +443,6 @@ impl WindowScratch {
     }
 }
 
-/// Each history's window state and every record's [`CHANNELS`] by record
-/// slot, `WINDOW_BATCH` histories per five gathers when capacities agree.
-/// Each history is authenticated by vtable and field count and its window
-/// checked before following records. All capacity records are allocated and
-/// initially zeroed. `each` receives the history index and a named suffix
-/// refusal for each record whose original naval-patrol pair stays available.
 pub fn history_windows(
     memory: &impl Memory,
     base: usize,
@@ -546,8 +487,6 @@ fn read_windows(
     {
         let len = chunk.len();
         window_states(memory, base, chunk, &mut states, &mut vectors)?;
-        // Follow the original signed capacity; the usual thirty-record construction
-        // supplies no different getter ceiling.
         let total = states[..len]
             .iter()
             .try_fold(0usize, |count, state| {
@@ -605,10 +544,6 @@ fn read_windows(
             &mut scratch.channel_bytes[..total * 72],
             "air history channel unreadable",
         )?;
-        // Additional scenario channels cannot refuse the original naval-patrol pair.
-        // A failed suffix belongs to one record; do not recopy its completed fields
-        // or retry the fault. Skip its dependent remainder and acquire the next
-        // untouched record.
         scratch.scenario_failures[..total].fill(None);
         let mut first_record = 0;
         while first_record < total {
@@ -647,9 +582,6 @@ fn read_windows(
     Ok(())
 }
 
-/// The window state and record-vector data of up to [`BATCH`] histories,
-/// each authenticated (vtable and field count, then window vtable, a
-/// capacity within its record vector and a current slot within capacity).
 fn window_states(
     memory: &impl Memory,
     base: usize,
@@ -723,9 +655,6 @@ fn window_states(
 #[path = "air_kamikaze/sizing_tests.rs"]
 mod sizing_tests;
 
-/// The manager's country air objects (the strategic air manager's country table) of the canonical
-/// slots `first`, `first + step`, ... into `output`, replacing its contents, in one strided gather
-/// per 512. Returns the manager's slot count.
 pub fn country_air_roots(
     memory: &impl Memory,
     base: usize,
@@ -785,11 +714,6 @@ pub fn country_air_roots(
     Ok(slots.count as usize)
 }
 
-/// Each country air object's identity: its vtable, and a country reference
-/// that resolves to its own slot (`slot(index)` for `roots[index]`), as
-/// [`cstrategic_air::visit`] checks. One gather per `BATCH` objects; the
-/// objects read before a fault are checked first, so the first failure in
-/// `roots` order is the one reported.
 pub fn authenticate_roots(
     memory: &impl Memory,
     base: usize,
@@ -822,7 +746,6 @@ pub fn authenticate_roots(
     Ok(())
 }
 
-/// Clamped running sum.
 pub fn window_sum(values: &[i64]) -> i64 {
     values.iter().fold(0_i64, |sum, &value| {
         sum.wrapping_add(value).clamp(-SUM_LIMIT, SUM_LIMIT)
@@ -847,7 +770,6 @@ mod tests {
     const FLEET_SIZE: usize = 0x100;
     const TASK_SIZE: usize = 0x200;
 
-    /// A little-endian test image.
     struct Image(Vec<u8>);
 
     impl Image {
@@ -864,7 +786,6 @@ mod tests {
         }
     }
 
-    /// Counts guarded calls: one per copy or gather.
     struct Counting<'a>(SliceMemory<'a>, Cell<usize>);
 
     impl Memory for Counting<'_> {
@@ -883,8 +804,6 @@ mod tests {
         }
     }
 
-    /// `fleets` fleets of `tasks` task forces; `combat(fleet, task)` gives
-    /// the first combat as (naval, province, region).
     fn fleets(
         fleets: usize,
         tasks: usize,
@@ -958,8 +877,6 @@ mod tests {
 
     #[test]
     fn task_forces_in_naval_combat_follow_fleet_order_and_skip_land_combats() {
-        // Fleet 0: a land combat, then a naval one; fleet 1: none, then naval
-        // in a province with no region.
         let image = fleets(2, 2, |f, t| match (f, t) {
             (0, 0) => Some((false, 5, 7)),
             (0, 1) => Some((true, 11, 7)),
@@ -986,7 +903,6 @@ mod tests {
     #[test]
     fn a_land_combat_is_skipped_where_a_naval_combats_province_would_be_unreadable() {
         let mut image = fleets(1, 2, |_, t| Some((t == 1, 11, 7)));
-        // The first combat ends the image: nothing past its vtable is readable.
         let land = image.0.len() - 8;
         image.q(land, (BASE + crate::cland_combat::VTABLE_RVA.0) as u64);
         image.q(TASK + 0x1c0, land as u64);
@@ -997,7 +913,6 @@ mod tests {
                 region: 7
             }])
         );
-        // A naval combat there still needs its province.
         image.q(land, (BASE + cnaval_combat::VTABLE_RVA.0) as u64);
         assert_eq!(walk(&image).0, Err("naval-patrol combat unreadable"));
     }
@@ -1021,8 +936,6 @@ mod tests {
         );
     }
 
-    /// Guarded calls and time of the combat walk for one patrol country with
-    /// 30 fleets of 4 task forces, one per fleet in a naval combat.
     #[test]
     fn the_combat_walk_costs_a_few_calls_per_fleet() {
         let image = fleets(30, 4, |f, t| {
@@ -1038,8 +951,6 @@ mod tests {
         assert!(calls <= 3 + 30 * 2 + 30 * 4);
     }
 
-    /// Country air objects of `countries` countries, each naming its own
-    /// slot, and their addresses by slot.
     fn air_objects(countries: u32) -> (crate::ccountry::synthetic::World, Vec<usize>) {
         let mut world = crate::ccountry::synthetic::World::new(BASE, countries, 0x10);
         let roots = (0..=countries)
@@ -1058,8 +969,6 @@ mod tests {
         let (mut world, roots) = air_objects(200);
         let slots: Vec<u32> = (1..=200).collect();
         let targets: Vec<usize> = slots.iter().map(|&slot| roots[slot as usize]).collect();
-        // Guarded calls on the objects; the Reader's own reads are the
-        // roster cache's in production.
         let check = |world: &crate::ccountry::synthetic::World, targets: &[usize]| {
             let countries = world.memory();
             let readers =
@@ -1071,20 +980,17 @@ mod tests {
         let (result, calls) = check(&world, &targets);
         assert_eq!(result, Ok(()));
         assert_eq!(calls, 200_usize.div_ceil(64));
-        // An object naming another slot is refused.
         world.u32(roots[70] + cstrategic_air::COUNTRY, 71);
         assert_eq!(
             check(&world, &targets).0,
             Err("strategic air country vtable or owner mismatch")
         );
-        // The first failure in slot order wins over a later unreadable one,
         let mut faulty = targets.clone();
         faulty[75] = 0;
         assert_eq!(
             check(&world, &faulty).0,
             Err("strategic air country vtable or owner mismatch")
         );
-        // and an unreadable object over a later mismatch.
         faulty[65] = 0;
         assert_eq!(
             check(&world, &faulty).0,
@@ -1101,7 +1007,6 @@ mod tests {
             wrapped,
         };
         let order = |state: WindowState| state.order().collect::<Vec<_>>();
-        // Before wrapping only the records before the current one count.
         assert_eq!(order(state(2, false)), [(0, 0), (1, 1)]);
         assert_eq!(order(state(2, true)), [(0, 2), (1, 3), (2, 0), (3, 1)]);
     }

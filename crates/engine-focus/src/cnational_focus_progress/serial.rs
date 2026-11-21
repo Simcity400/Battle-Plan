@@ -1,4 +1,3 @@
-// Frozen serial reader from eafc953b4f. Test reference only.
 use super::*;
 
 pub fn walk_buffer(

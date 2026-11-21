@@ -1,12 +1,6 @@
-//! Advance-warning arithmetic and text. Thresholds come from recorded
-//! raw operands. The formatter callback uses the recorded content and shared
-//! numeric formatter; percent signs come from that content.
 
 use super::Fact;
 
-/// Wrapped multiplication, signed fixed5 division, an unsigned sentinel
-/// guard, then a second wrapped multiplication and signed division.
-/// The 32-bit all-ones sentinel is zero-extended to i64.
 pub fn organisation_warning_value(threshold: i64, maximum_organisation: i64) -> Fact<i64> {
     let adjusted = threshold.wrapping_mul(10_000_000) / 100_000;
     if maximum_organisation == 0
@@ -20,8 +14,6 @@ pub fn organisation_warning_value(threshold: i64, maximum_organisation: i64) -> 
         .ok_or_else(|| "low-organisation division would overflow".into())
 }
 
-/// Strength precedes organisation. Warning text REPLACES the prior buffer,
-/// unlike common movement rejections. Max-org is demanded only for low-org.
 pub fn can_advance(
     text: &mut String,
     strength: Fact<i64>,

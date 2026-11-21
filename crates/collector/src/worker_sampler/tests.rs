@@ -5,8 +5,6 @@ use windows_sys::Win32::Foundation::{
     STATUS_ACCESS_DENIED, STATUS_ALERTED, STATUS_INVALID_HANDLE, STATUS_TIMEOUT,
 };
 
-/// Every target remains alive until sampling stops, including an early failure.
-/// In particular, no assertion runs while a target is suspended or holds a gate.
 struct TestThreads {
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
@@ -59,9 +57,6 @@ fn worker_sampler_settings_defaults_options_and_refusals() {
         let error = Settings::parse(Some(option), directory).unwrap_err();
         assert!(error.contains("worker_sampler"), "{option}: {error}");
     }
-    // Disabled configuration is parsed without opening an output, allocating
-    // sampler buffers, or starting a thread. Do not call start/reset here:
-    // those use attach-wide globals that other tests may be observing.
     let disabled = Settings::parse(Some("off,interval_us=50"), directory).unwrap();
     assert!(!disabled.enabled);
     assert_eq!(disabled.interval_us, 50);
@@ -83,8 +78,6 @@ fn worker_sampler_callback_exit_bounds_spins_and_yields_until_release() {
     let (done_tx, done_rx) = mpsc::channel();
     let watchdog_gate = Arc::clone(&gate);
     let watchdog = thread::spawn(move || {
-        // Release even an unbounded spin or a timed-sleep regression before
-        // any assertions run. Only the supplied untimed yield ends a good wait.
         if done_rx.recv_timeout(Duration::from_secs(2)).is_err() {
             watchdog_gate.touching.store(false, Ordering::SeqCst);
         }
@@ -217,7 +210,6 @@ fn worker_sampler_concurrent_join_waits_for_panic_status_publication() {
         second.stop_join();
         returned.store(true, Ordering::Release);
     });
-    // The OS thread is already dead; the remaining join work is publication.
     thread::sleep(Duration::from_millis(50));
     let premature =
         control.join_complete.load(Ordering::Acquire) || second_returned.load(Ordering::Acquire);
@@ -242,9 +234,6 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let release_barrier = Arc::clone(&barrier);
-    // A watchdog releases the real Barrier even if discovery times out or
-    // sampling unexpectedly panics. Waiting for job entry also handles a job
-    // that is cancelled before running: dropping the pool disconnects it.
     let releaser = thread::spawn(move || {
         if entered_rx.recv().is_ok() {
             let _ = release_rx.recv_timeout(Duration::from_secs(5));
@@ -260,16 +249,12 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         7_u8
     })
     .unwrap();
-    // Open before admission so the CPU gate measures actual dispatch/job work
-    // rather than an idle worker already parked at the job's barrier.
     let mut target = pool
         .thread_ids()
         .first()
         .copied()
         .and_then(|id| Target::open(id, 7, 0, 19));
     let mut request = Some(());
-    // SAFETY: this job owns no foreign pointers and is collected before the
-    // pool/its captured barrier are dropped. There is only one collector.
     let submitted = unsafe { pool.submit(&mut request) };
     let Ok(ticket) = submitted else {
         let shutdown = pool.shutdown();
@@ -281,8 +266,6 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         panic!("synthetic worker job admission failed");
     };
     let id = ready_rx.recv_timeout(Duration::from_secs(5));
-    // The production path CPU-gates, suspends/reads attribution, resumes,
-    // constructs the fixed-size instruction-pointer record.
     let record = target
         .as_mut()
         .and_then(|target| sample(target, &mut scratch));
@@ -295,8 +278,6 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
             target.info.thread_id,
         )
     });
-    // Always release the real worker before assertions, even after capture or
-    // discovery failure. Its job guard clears the retained attribution slot.
     let _ = release_tx.send(());
     let completion = pool.finish(ticket);
     let cleared_job = target
@@ -344,8 +325,6 @@ fn worker_sampler_no_deadlock_allocating_mutex_threads_make_progress() {
             let _ = ids_tx.send((index, unsafe { GetCurrentThreadId() }));
             let mut iteration = 0_usize;
             while !stop.load(Ordering::Acquire) {
-                // Exercise allocation both outside and inside the SAME lock
-                // which the sampler takes only after capture_window resumes.
                 let mut bytes = vec![index as u8; 64 + iteration % 128];
                 let mut value = Box::new([0_u64; 16]);
                 {
@@ -385,7 +364,6 @@ fn worker_sampler_no_deadlock_allocating_mutex_threads_make_progress() {
             if with_allocations_denied(|| capture_window(target, &mut scratch)) {
                 captures += 1;
             }
-            // This deliberately allocates and locks after EACH target resumes.
             let allocation = vec![black_box(rounds); 128];
             {
                 let mut lock = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -512,8 +490,6 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
     }));
     let id = id_rx.recv_timeout(Duration::from_secs(5));
     let mut target = id.ok().and_then(|id| Target::open(id, 7, 0, 0));
-    // capture_window reads this local region atomically WHILE suspended, using
-    // the ordinary job-slot path. Do not read or mutate attach-wide game state.
     if let Some(target) = &mut target {
         target.job = Some(Arc::clone(&region));
     }
@@ -552,9 +528,6 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
                     captures += 1;
                     outside += u64::from(scratch.job == 0);
                     invalid_region += u64::from(scratch.job > 2);
-                    // A cleared flag is possible in the specified Dekker
-                    // clear-before-wait ordering. It is safe inside the exit
-                    // region and the production sampler discards that record.
                     discarded += u64::from(!gate.in_callback.load(Ordering::SeqCst));
                 }
                 drop(claim);
@@ -562,8 +535,6 @@ fn worker_sampler_game_handshake_stays_in_callback_or_exit_and_discards_exit_rac
             thread::yield_now();
         }
     }
-    // Release every claim before stopping/joining the game; its scope guard
-    // must complete the exit wait even when the loop is cancelled.
     gate.touching.store(false, Ordering::SeqCst);
     let joined = running.finish();
     assert!(joined);

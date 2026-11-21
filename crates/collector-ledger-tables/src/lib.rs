@@ -1,4 +1,3 @@
-//! Event store tables: the hourly packs that drain the event feed history and the air loss, building bombing and nuclear strike event ledgers (collector-observers) into owned rows. The host owns dispatch and table assembly.
 
 use collector_lifetime::world_lifetime;
 use collector_primitives::clock;

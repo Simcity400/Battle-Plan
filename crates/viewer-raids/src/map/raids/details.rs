@@ -1,5 +1,3 @@
-//! The raid target details window an offer bubble's click opens beside the bubble: the content
-//! window under the bubble's own anchor, its panel sized to its entries as the game sizes it.
 use super::tooltips::Details;
 use installed_content_core::gui::native;
 use std::collections::BTreeMap;
@@ -50,10 +48,8 @@ fn controls<'a>(context: &Context<'a, impl native_gui::Resources + native_gui::S
     })
 }
 
-/// A laid-out entry and each type button's parts placed in it, with the button's catalog type.
 type Entry = (native_gui::Layout, Vec<(usize, Vec<native_gui::Part>)>);
 
-/// A drawn type button: its rectangle, whether its hit shape dispatches, its entry and its type.
 pub(super) struct TypeHit {
     pub rect: [f32; 4],
     pub supported: bool,
@@ -62,15 +58,12 @@ pub(super) struct TypeHit {
 }
 
 impl TypeHit {
-    /// What the button's hover describes: its type over the target its row was built for at the
-    /// click, whatever the bubble offers since.
     pub(super) fn target(&self, details: &Details) -> Option<super::offers::TooltipTarget> {
         let row = details.entries.get(self.entry)?;
         Some(super::offers::TooltipTarget { scope: row.scope.clone(), types: vec![self.kind] })
     }
 }
 
-/// One entry laid out with its type buttons composed into its grid.
 fn entry(
     controls: &Controls<'_>,
     entry: &super::tooltips::DetailEntry,
@@ -135,9 +128,6 @@ fn entry(
     Ok(Some((layout, buttons)))
 }
 
-/// Draws `details` with the window's origin at `origin`, the bubble window's own; the panel's
-/// rectangle in interface pixels when it blocks what lies under it, and each type button's. The
-/// game's panel draws only always-transparent parts, so its type buttons alone take the pointer.
 pub(super) fn draw(
     context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
     details: &Details,
@@ -165,7 +155,6 @@ fn draw_inner(
     let controls = controls(context)?;
     let resources = context.resources;
     let viewport = context.viewport;
-    // Constructed windows start hidden; the game shows each as it opens it.
     let mut window = Instance::construct(controls.root, viewport, resources)?;
     window.gui_show(controls.root, controls.root)?;
     match &details.header {
@@ -183,8 +172,6 @@ fn draw_inner(
             buttons.push((index, placed));
         }
     }
-    // The game sizes the panel to its list's rows: the first row's width, the rows' summed
-    // height, plus the list's own position.
     let native::Fields::ListBox(list) = &controls.list.fields else {
         return Err(format!("{} is not a list box", controls.list.path));
     };
@@ -275,14 +262,10 @@ mod tests {
             Some(super::super::offers::TooltipTarget { scope: details.entries[0].scope.clone(), types: vec![3] }),
             "a type button describes the target its row was built for"
         );
-        // The row stands at the list's place in the panel; its type grid at the grid's authored
-        // place in the row, below the 16-pixel name, not over it.
         let row = [panel[0], panel[1] + 25.0];
         let button = buttons[0].rect;
         assert_eq!([button[0] - row[0], button[1] - row[1]], [10.0, 20.0]);
         assert!(button[1] >= row[1] + 16.0, "the type button overlaps the name: {button:?} in a row at {row:?}");
-        // The game's panel background is always transparent: the panel takes no pointer, and its
-        // type buttons still take theirs. Before, the window drew and every hit in it was dropped.
         resources.sprites.get_mut("GFX_even").expect("the fixture's background sprite").hit = native_gui::Hit::Through;
         let context = Context { resources: &resources, windows: &windows, viewport: [2048, 1152], time: Some(0.0) };
         let mut batch = Batch::default();

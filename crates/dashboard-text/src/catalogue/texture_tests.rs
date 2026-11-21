@@ -1,9 +1,7 @@
-//! Dashboard images through a synthetic base/mod stack and the native loaders.
 
 use super::tests::{Folder, folder_catalogue};
 use super::*;
 
-/// Default sprite program and map globals for content fixtures.
 pub fn write_sprite_program(root: &std::path::Path) {
     for (path, bytes) in [
         ("gfx/FX/buttonstate.shader", ARTWORK_SHADER.as_bytes()),
@@ -52,7 +50,6 @@ pub fn png_bytes(image: &Rgba8Image) -> Vec<u8> {
         .to_vec()
 }
 
-/// The image an artwork URL names.
 pub fn from_url(url: &str) -> Rgba8Image {
     let bytes = crate::artwork::url_bytes(url).unwrap();
     let mut reader = png::Decoder::new(io::Cursor::new(&*bytes))
@@ -221,9 +218,6 @@ fn batched_icons_replay_only_their_own_reads_and_shader_notes_in_either_order() 
     }
 }
 
-/// A batch skips the draws the presentation's images already hold under the current artwork
-/// mode, and repeats: what is left is drawn only when at least two draws are. A cornered tile
-/// cannot be batched, so a batch that tries to draw one is refused.
 #[test]
 fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -253,20 +247,16 @@ fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
             .unwrap()
     };
     hold(sprites[0]);
-    // One draw is left, however often it is asked for.
     let repeated = [requests[0], requests[1], requests[1]];
     sprite_frames_png(layers, &repeated, decode, 96).unwrap();
     hold(sprites[1]);
     sprite_frames_png(layers, &requests, decode, 96).unwrap();
-    // A strict draw's images are kept apart, so the ordinary ones do not hold it.
     assert!(
         installed_content_core::content::strict(|| sprite_frames_png(layers, &requests, decode, 96))
             .is_err()
     );
 }
 
-/// Only the frames a strip declares are kept: a frame past it is drawn again each time it is
-/// asked, refusal included, and never batched.
 #[test]
 fn sprite_images_keep_only_the_strips_frames() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -297,8 +287,6 @@ fn sprite_images_keep_only_the_strips_frames() {
     }
 }
 
-/// A mod replaces a base sprite with a PNG strip. Padding is part of the native
-/// frame pitch, including when the resulting width does not divide by the frame count.
 #[test]
 fn a_mod_png_uses_native_frames_with_and_without_padding() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -366,7 +354,6 @@ fn a_mod_png_uses_native_frames_with_and_without_padding() {
     }
 }
 
-/// Small, valid uncompressed DDS and Targa inputs, both holding top-first BGRA.
 fn bgra(image: &Rgba8Image) -> Vec<u8> {
     image
         .pixels
@@ -412,7 +399,6 @@ fn tga(image: &Rgba8Image) -> Vec<u8> {
     bytes
 }
 
-/// Inputs whose distinct refusals every artwork consumer must preserve.
 pub fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
     let mut device = dds(&strip());
     device[16..20].copy_from_slice(&16385_u32.to_le_bytes());
@@ -421,7 +407,6 @@ pub fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         height: 1,
         pixels: vec![255; 4],
     };
-    // Native dimensions, but the DDS payload has no complete first level.
     let mut claim = dds(&strip());
     claim[12..20].copy_from_slice(&[9000_u32.to_le_bytes(), 9000_u32.to_le_bytes()].concat());
     let mut cube = dds(&face);
@@ -504,7 +489,6 @@ fn padding_and_edges_above_2048_decode() {
     };
     let image = read_texture(layers, "gfx/mod/icon.png", padded).unwrap();
     assert_eq!([image.width, image.height], [8, 4]);
-    // Only the native decoder's device limit bounds an edge.
     let image = read_texture(layers, "gfx/mod/wide.png", Decode::default()).unwrap();
     assert_eq!([image.width, image.height], [4097, 1]);
 }
@@ -590,7 +574,6 @@ fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
             across,
             texture_frame_png(layers, "gfx/mod/sheet.png", decode, 3, frame, 96).unwrap()
         );
-        // A vertical strip steps down by the same native pitch.
         let down = native_frame(
             &read_texture(layers, "gfx/mod/down.png", decode).unwrap(),
             sprite("GFX_mod_down").facts.kind.plain().unwrap(),
@@ -697,8 +680,6 @@ fn frame_animated_sprites_render_native_strip_frames() {
                 96,
             )
             .unwrap();
-            // Geometry clips the fractional right edge, rather than scaling
-            // its pitch into the truncated query extent.
             let columns = if decode.force_pow2_textures {
                 [[0, 1], [3, 4], [5, 6]][frame as usize]
             } else {
@@ -716,8 +697,6 @@ fn frame_animated_sprites_render_native_strip_frames() {
                 )
                 .unwrap(),
             );
-            // Vertical fractional geometry is bottom-anchored,
-            // clipping its top instead; this is not a transposed right clip.
             let rows = if decode.force_pow2_textures {
                 [[1, 2], [3, 4], [6, 7]][frame as usize]
             } else {
@@ -729,7 +708,6 @@ fn frame_animated_sprites_render_native_strip_frames() {
     }
 }
 
-/// Sampling, masking and overlay program for the artwork fixtures.
 pub(crate) const ARTWORK_SHADER: &str = r#"
 VertexStruct Input { float3 position : POSITION;
 float2 uv : TEXCOORD0;
@@ -776,9 +754,6 @@ float4 main(Output i) : SV_TARGET {
 Effect Up { VertexShader = V PixelShader = P }
 "#;
 
-/// The programs of a mod that replaces an icon's sprite with one reaching another
-/// part of the native draw: (path, text) for a content folder. The default program
-/// is replaced, so a sprite without its own effect clears blue.
 pub fn replacement_programs() -> Vec<(&'static str, String)> {
     vec![
         (
@@ -789,7 +764,6 @@ pub fn replacement_programs() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// A PNG strip of 2 × 2 frames, one solid colour each, across the texture or down it.
 pub fn strip_png(colours: &[[u8; 4]], down: bool) -> Vec<u8> {
     let long = colours.len() as u32 * 2;
     let (width, height) = if down { (2, long) } else { (long, 2) };
@@ -804,7 +778,6 @@ pub fn strip_png(colours: &[[u8; 4]], down: bool) -> Vec<u8> {
     })
 }
 
-/// The textures [`replacement_sprites`] sample, written into the content folder `root`.
 pub fn write_replacement_textures(root: &std::path::Path) {
     let solid = |rgba: [u8; 4]| {
         png_bytes(&Rgba8Image {
@@ -824,10 +797,6 @@ pub fn write_replacement_textures(root: &std::path::Path) {
     }
 }
 
-/// Declarations of sprite `name` a mod may replace an icon with, over
-/// [`replacement_programs`], and the pixel each draws at rest: the replaced
-/// default program, the sprite's own effect, a masking texture, overlay
-/// animations and a frame-animated sprite with its own effect.
 pub fn replacement_sprites(name: &str) -> Vec<(String, [u8; 4])> {
     let texture = "textureFile = gfx/replacement/base.png";
     [
@@ -853,8 +822,6 @@ pub fn replacement_sprites(name: &str) -> Vec<(String, [u8; 4])> {
     .into()
 }
 
-/// A synthetic masked-shield flag program: the flag at its atlas rectangle,
-/// with the mask's alpha, blended `blend`.
 pub fn shield_flag_program(blend: &str) -> String {
     format!(
         r#"VertexStruct Input {{ float3 position : POSITION;
@@ -885,8 +852,6 @@ Effect Up {{ VertexShader = V PixelShader = P }}
     )
 }
 
-/// A masked shield's programs, blended source over: the flag program at
-/// `gfx/FX/shield_flag.lua` and the overlay's default button program.
 pub fn shield_programs() -> Vec<(&'static str, String)> {
     let over = "SourceBlend = \"SRC_ALPHA\" DestBlend = \"INV_SRC_ALPHA\"";
     vec![
@@ -957,8 +922,6 @@ fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
         ("GFX_custom", [40, 80, 120, 200]),
         ("GFX_masked", [40, 80, 120, 100]),
         ("GFX_animated", [90, 80, 120, 200]),
-        // Lazy animation records are ignored; drawing still executes
-        // the stack's default Up program, including its overrides.
         ("GFX_lazy", [40, 80, 0, 200]),
         ("GFX_plain", [40, 80, 0, 200]),
         ("GFX_custom_frames", [40, 80, 120, 200]),
@@ -1014,7 +977,6 @@ fn artwork_shader_source_warnings_survive_lazy_reads() {
     );
     let layers = &catalogue.content.layers;
     let reads = layers.report_uncovered_reads();
-    // A reply's reads are reported from its own diagnostics scope.
     let ((program, warnings), _) = installed_content_core::content::diagnostics::capture(|| {
         let program =
             installed_content_core::pdxshader::program::read_reported(layers, b"outside/test.lua")

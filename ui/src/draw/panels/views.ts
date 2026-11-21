@@ -48,7 +48,6 @@ export function panelValues(product: string, raw: unknown, live: LiveValues<numb
   return view.values(raw, live, hour, view.structure?.(raw, hour) ?? structure);
 }
 
-/** Row identities for the commit audit, independent of scalar values in a product's shape. */
 export function recordedPanelRows(product: string, raw: unknown): string[] {
   if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
   if (product === 'research-slots') {

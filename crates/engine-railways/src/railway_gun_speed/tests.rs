@@ -38,7 +38,6 @@ impl Fixture {
             VARIANT + cequipment_variant::UPGRADES,
             cequipment_upgrades_instance::VTABLE_RVA,
         );
-        // These plausible caches and references are deliberately unrelated.
         result.put(VARIANT + 0x2f0, (-999_i64).to_le_bytes());
         result.put(VARIANT + 0x488, u64::MAX.to_le_bytes());
         result
@@ -289,7 +288,6 @@ fn railway_speed_resolves_creator_before_origin_and_rejects_torn_country_links()
     let links =
         usize::try_from(read::<u64>(&fixture.memory(), GAME + cgame_state::COUNTRY_LINKS).unwrap())
             .unwrap();
-    // A valid origin does not permit skipping a failed creator reference.
     fixture.put(links + 3 * 4, 0_u32.to_le_bytes());
     assert!(speed(&fixture.memory(), crate::walk::Buffer::Growing(&mut vec![0; 1])).is_err());
     fixture.put(links + 3 * 4, 1_u32.to_le_bytes());
@@ -321,7 +319,6 @@ fn railway_speed_named_scratch_grows_to_the_raw_count_and_gathers_before_stats()
     );
     assert_eq!(scratch.required, 3);
 
-    // A later handle failure wins before any selected bonus stat is read.
     fixture.put(bonus, 0_u64.to_le_bytes());
     let mut memory = fixture.memory();
     memory.failures.push(handles + 4..handles + 8);

@@ -4,8 +4,6 @@ fn parse_text(bytes: &[u8]) -> io::Result<Pack> {
     parse(&installed_content_core::parser::parse(bytes)?.items)
 }
 
-/// One theatre with an army group, its child army, the army's ordered
-/// members and the theatre group that lists both.
 const ORDER_OF_BATTLE: &[u8] = br#"countries={GER={theatres={theatre={
         id={ id=2 type=67 }
         orders_group={
@@ -46,18 +44,15 @@ fn orders_group_definitions_keep_saved_order_kind_and_conditional_pointers() {
     assert_eq!(army.motorization_level, 0);
     assert_eq!(army.leader, Some((279 << 32) | 4713));
     assert_eq!(army.leader_unit, Some((12456 << 32) | 4713));
-    // Both unit id spaces occur and their order is preserved.
     assert_eq!(army.members, [(12456 << 32) | 4713, (111 << 32) | 51]);
     assert!(army.children.is_empty());
     let group = &theatre.definitions[1];
     assert_eq!(group.id, (431 << 32) | 53);
     assert!(group.is_army_group);
     assert_eq!(group.motorization_level, -1);
-    // An army group has no leader, no HQ provider and no direct units.
     assert_eq!((group.leader, group.leader_unit), (None, None));
     assert!(group.members.is_empty());
     assert_eq!(group.children, [(57 << 32) | 53]);
-    // The theatre-group listing still parses as references, not definitions.
     assert_eq!(
         theatre.groups[0].members,
         [(57 << 32) | 53, (431 << 32) | 53]
@@ -96,7 +91,6 @@ fn an_orders_group_without_its_unconditional_fields_is_refused() {
             .replace(removed, "");
         assert!(parse_text(text.as_bytes()).is_err(), "{removed}");
     }
-    // A member block without its unit reference is malformed, not empty.
     let text = String::from_utf8(ORDER_OF_BATTLE.to_vec())
         .unwrap()
         .replace("member={ unit={ id=111 type=51 } }", "member={ }");
@@ -156,7 +150,6 @@ fn adjacency_content() -> (Vec<u8>, Vec<u8>) {
     let definitions =
         b"0;0;0;0;land\n1;1;0;0;land\n2;2;0;0;sea\n3;3;0;0;lake\n4;4;0;0;land\n5;5;0;0;land\n"
             .to_vec();
-    // File rows are [1,2] then [3,4], each padded to eight bytes.
     let pixels = [0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 3, 0, 0, 4, 0, 0];
     let mut bitmap = vec![0; 54];
     bitmap[..2].copy_from_slice(b"BM");
@@ -198,8 +191,6 @@ fn railway_adjacency_refuses_content_whose_game_identity_or_storage_differs() {
     let reordered =
         b"0;0;0;0;land\n2;2;0;0;sea\n1;1;0;0;land\n3;3;0;0;lake\n4;4;0;0;land\n5;5;0;0;land\n";
     assert!(RailwayAdjacency::parse(reordered, &bitmap, None).is_err());
-    // The game loader reads a 24-bit file's pixels from byte 54 whatever
-    // its header sizes say, and does not settle a top-down file.
     let expected = RailwayAdjacency::parse(&definitions, &bitmap, None).unwrap();
     for (offset, value) in [(10, 70_i32), (14, 56)] {
         let mut altered = bitmap.clone();
@@ -227,8 +218,6 @@ fn railway_adjacency_refuses_content_whose_game_identity_or_storage_differs() {
 
 #[test]
 fn stationed_units_and_area_representatives_keep_save_order() {
-    // Representatives are written as one unkeyed array;
-    // an empty array is a theatre without areas.
     let pack = parse_text(
         br#"countries={GER={theatres={
                 theatre={id={id=5 type=67} volunteers_theatre=SOV
@@ -244,7 +233,6 @@ fn stationed_units_and_area_representatives_keep_save_order() {
         land[0].volunteers_country.as_deref(),
         Some(b"SOV".as_slice())
     );
-    // A theatre outside the volunteer scope still parses with empty lists.
     assert!(land[1].units.is_empty() && land[1].area_representatives.is_empty());
 }
 

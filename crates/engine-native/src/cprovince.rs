@@ -10,7 +10,6 @@ use crate::{
 mod identity_batch;
 pub use identity_batch::IdentityBatch;
 
-/// Per-province native arrays in original order; ranges address caller-owned handles.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct UnitOrderRow {
     pub province: u32,
@@ -24,9 +23,6 @@ pub struct UnitOrderWalk {
     pub required: usize,
 }
 
-/// Mixed and naval unit vectors retain their original occurrences. Authenticate
-/// province slot identity and each unit's registry/backlink at a quiescent
-/// boundary, without allocation or game calls.
 #[cfg(test)]
 pub fn walk_unit_order(
     memory: &impl Memory,
@@ -42,8 +38,6 @@ pub fn count_unit_order_with_land(memory: &impl Memory, base: usize, state: usiz
     unit_order(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_| None, land, None)
 }
 
-/// Worker storage grows from acquired province and occupant headers; mixed
-/// and naval vectors preserve original order.
 pub fn walk_unit_order_with_land(
     memory: &impl Memory,
     base: usize,
@@ -55,22 +49,12 @@ pub fn walk_unit_order_with_land(
     walk_unit_order_with_known(memory, base, state, output, handles, |_| None, land)
 }
 
-/// A division the caller's census authenticated at this same boundary: a CArmy (both vtables) of
-/// class zero listed in a country's division roster, with its full handle and its location
-/// (`cunit::LOCATION`), read in the census's batched gather. The walk takes such an occupant's
-/// class-zero identity and backlink from here instead of reading the unit and its registry entry:
-/// the roster that lists the division proves it is live, as the registry join does.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct KnownUnit {
     pub handle: u64,
     pub location: usize,
 }
 
-/// [`walk_unit_order_with_land`], taking each occupant `known`
-/// returns from the caller's census. The other occupants (task forces,
-/// railway guns, a division the census did not hold) are authenticated as
-/// before; every row, handle, demand and refusal is the plain walk's over the
-/// same memory.
 pub fn walk_unit_order_with_known(
     memory: &impl Memory,
     base: usize,
@@ -92,11 +76,6 @@ pub fn walk_unit_order_with_known(
     )
 }
 
-/// The rows of the `listed` provinces only, in list order: the plain walk's
-/// row, handles, demand and `land` visits for each, with every other
-/// province neither read nor rowed. `listed` holds ascending province ids
-/// inside the array's census; the array header is read as always and only
-/// the listed slots after it.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_unit_order_listed(
     memory: &impl Memory,
@@ -120,14 +99,10 @@ pub fn walk_unit_order_listed(
     )
 }
 
-/// The province array header [`walk_unit_order`] reads first: its data
-/// pointer, capacity and count.
 pub fn unit_order_header(memory: &impl Memory, state: usize) -> Option<[u8; 16]> {
     crate::read::<[u8; 16]>(memory, state.checked_add(cgame_state::PROVINCES)?)
 }
 
-/// Every slot pointer of the province array `header` describes, ids 1 and
-/// up, into `slots`, in guarded copies of up to 512 slots.
 pub fn unit_order_slots(
     memory: &impl Memory,
     header: [u8; 16],
@@ -196,8 +171,6 @@ fn unit_order(
         let mut done = 0;
         while done < total {
             let n = (total - done).min(BATCH_ROWS);
-            // Every slot is its own ordered observation; consecutive slots
-            // need no scattered addresses.
             let sources = match listed {
                 None => {
                     for (slot, id) in ids[..n].iter_mut().enumerate() {
@@ -239,7 +212,6 @@ fn unit_order(
                 &mut fields[..n * UNIT_ORDER_ROW_BYTES],
             );
             if completed != n * UNIT_ORDER_FIELDS.len() {
-                // Fields complete in order; the first failed one names the fault.
                 return Err(if completed % UNIT_ORDER_FIELDS.len() < 2 {
                     "province order identity mismatch"
                 } else {
@@ -256,9 +228,6 @@ fn unit_order(
                 {
                     return Err("province order identity mismatch");
                 }
-                // A zero count and a valid capacity fit in this header's low
-                // 31 bits. On 64-bit targets every zero-length data pointer is
-                // valid, including null; no array or lane processing is needed.
                 if usize::BITS == 64
                     && u64::from_le_bytes(row[20..28].try_into().unwrap()) <= i32::MAX as u64
                     && u64::from_le_bytes(row[36..44].try_into().unwrap()) <= i32::MAX as u64
@@ -306,10 +275,6 @@ fn unit_order(
                         ) {
                             return Err("province order pointers unreadable");
                         }
-                        // Hint each admitted occurrence once, in groups of four
-                        // within this already-copied chunk. Later unit-object misses
-                        // can overlap the preceding serial registry lookup. A
-                        // census division needs neither its object nor a hint.
                         for pending in unit_pointers[..n * 8].chunks(4 * 8) {
                             let mut census = [None; 4];
                             for (slot, bytes) in pending.chunks_exact(8).enumerate() {
@@ -386,31 +351,22 @@ fn unit_order(
     }
 }
 
-/// One province whose combat vector (`COMBATS`) is nonempty; `combats` addresses every entry's
-/// handle, in vector order, in the caller's handle arena, and the same range of the kind arena
-/// holds each entry's class ([`COMBAT_LAND`], [`COMBAT_BORDER_WAR`], [`COMBAT_NAVAL`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DirectCombatsRow {
     pub province: u32,
     pub combats: [usize; 2],
 }
 
-/// A `CLandCombat` entry (vtable [`crate::cland_combat::VTABLE_RVA`]).
 pub const COMBAT_LAND: u8 = 0;
-/// A `CLandBorderWarCombat` entry (vtable [`crate::cland_border_war_combat::VTABLE_RVA`]).
 pub const COMBAT_BORDER_WAR: u8 = 1;
-/// Naval combat has type discriminator 2; land and border-war combats use 1.
 pub const COMBAT_NAVAL: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectCombatsWalk {
     pub outcome: Outcome,
-    /// Entries every row needed, for off-thread growth of both arenas.
     pub required: usize,
 }
 
-/// `listed`, ascending, visits only those provinces; every other province is
-/// the caller's to vouch for.
 pub fn walk_direct_combats(
     memory: &impl Memory,
     base: usize,
@@ -461,7 +417,6 @@ fn walk_direct_combats_listed(
             .ok_or("province combat census invalid")?;
         let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        // In the order of `KINDS`.
         let classes = [
             crate::cland_combat::VTABLE_RVA,
             crate::cland_border_war_combat::VTABLE_RVA,
@@ -535,7 +490,6 @@ fn walk_direct_combats_listed(
                 }
                 let start = used;
                 let count = combats.count as usize;
-                // Province combat presentation reaches the full original combat vector.
                 let needed = start
                     .checked_add(count)
                     .ok_or("province combat demand overflow")?;
@@ -553,7 +507,6 @@ fn walk_direct_combats_listed(
                         .and_then(|pointer| usize::try_from(pointer).ok())
                         .filter(|&pointer| pointer != 0)
                         .ok_or("province combat pointer unreadable or null")?;
-                    // The vtable and the CCombat handle (which every class shares).
                     let header = crate::read::<[u8; 0x20]>(memory, combat)
                         .ok_or("province combat header unreadable")?;
                     let class = u64::from_le_bytes(header[..8].try_into().expect("eight bytes"));
@@ -604,11 +557,8 @@ fn walk_direct_combats_listed(
     }
 }
 
-/// CProvince combat pointer vector (`CPdxArray`).
 pub const COMBATS: usize = 0x170;
-/// The kind each class of `walk_direct_combats`' `classes` records.
 const KINDS: [u8; 3] = [COMBAT_LAND, COMBAT_BORDER_WAR, COMBAT_NAVAL];
-/// walk_direct_combats' per-province record: vtable, id and the combat vector header.
 const DIRECT_FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: 0,
@@ -630,48 +580,24 @@ const DIRECT_ROW_BYTES: usize = 28;
 const DIRECT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DIRECT_FIELDS, DIRECT_ROW_BYTES).expect("valid record layout");
 
-/// Province primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_e358);
-/// Province ID authenticated against its roster slot.
 pub const ID: usize = 0xa4;
-/// Owning-state pointer.
 pub const STATE: usize = 0xc0;
-/// CProvince strategic-location CPdxArray of u32 location tokens in
-/// insertion order. The state-scoped province effect appends one and refuses
-/// a token already listed; loading reads the list.
 pub const STRATEGIC_LOCATIONS: usize = 0x140;
-/// Raw controller reference, u32, preserving zero.
 pub const CONTROLLER: usize = 0x188;
-/// Unscaled victory points, i32, serialized whenever nonzero.
 pub const VICTORY_POINTS: usize = 0x38;
-/// Override string serialized only when nonempty and resolved before fallback naming.
 pub const NAME_OVERRIDE: usize = 0x40;
-/// Province-definition pointer.
 pub const DEFINITION: usize = 0xb8;
-/// Strategic-region pointer.
 pub const STRATEGIC_REGION: usize = 0xc8;
-/// Controller-area pointer deduplicated into country stationed-area groups.
 pub const CONTROLLER_AREA: usize = 0xd0;
-/// Mixed occupant unit-pointer array.
 pub const OCCUPANTS: usize = 0xe0;
-/// Class-1 naval occupant array requiring task-force vtable identity.
 pub const NAVAL_OCCUPANTS: usize = 0xf8;
-/// Embedded building status containing the active building vector.
 pub const BUILDING_STATUS: usize = 0x190;
-/// Sorted conflict-tree head: a set of border-war combat pointers with node values in its nodes.
-/// Intersection uses those values.
 pub const BORDER_CONFLICT_TREE: usize = 0xa8;
-/// Border-conflict set size. Movement is refused while nonzero unless the
-/// army stands in a conflict or is admitted by a combat in the set.
 pub const BORDER_CONFLICT_NONZERO_QWORD: usize = 0xb0;
-/// Owner-area pointer grouping provinces with the same state owner.
-/// Land-province movement refuses a null pointer.
 pub const OWNER_AREA: usize = 0xd8;
-/// Full orders-group handle for a border-war side, resolved and compared
-/// with the army's owning group.
 pub const BORDER_WAR_SIDE_GROUP: usize = 0x4e8;
 
-/// Active building vector summed for movement fort penalty.
 pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -681,40 +607,20 @@ pub struct Row {
     pub owner: u32,
     pub controller: u32,
     pub victory_points: i32,
-    /// Nonzero when the province building fort sum is positive; this is the
-    /// movement graph's complete demand.
     pub fort_positive: u8,
-    /// Province movement-access gates, the `MOVE_*` bits.
     pub move_gate: u8,
-    /// Raw province_definition [`crate::province_definition::PORT_SEA`]; static.
     pub port_sea: i32,
-    /// For a province whose fort sum is positive and whose controller is
-    /// positive: its state's effective `land_bunker_effectiveness_factor` for
-    /// the controller (the state country modifier added to the controller's own
-    /// for the selected army's attack list), zero for a null state. `None`
-    /// elsewhere and for a fortified province's own read refusal.
     pub fort_bunker: Option<i64>,
-    /// The label of [`CONTROLLER_AREA`]'s area (its smallest member province),
-    /// zero for null; set by the collector's area step
-    /// ([`crate::controller_areas::Store`]), None when it refused.
     pub controller_area: Option<u32>,
-    /// The label of [`OWNER_AREA`]'s area, likewise.
     pub owner_area: Option<u32>,
-    /// On the province whose id labels its controller area: the area's index
-    /// in [`Capture::area_nodes`].
     pub area_node: Option<u32>,
 }
 
 impl Row {
-    /// A land, non-lake province (definition flags bit 0 set, bit 1 clear) whose
-    /// [`OWNER_AREA`] is null.
     pub const MOVE_NULL_OWNER_AREA: u8 = 1;
-    /// [`BORDER_CONFLICT_NONZERO_QWORD`] is nonzero.
     pub const MOVE_BORDER_CONFLICT: u8 = 2;
 }
 
-/// One province whose border-conflict set is nonempty, with the handles of the
-/// orders groups its combats admit.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ConflictRow {
     pub province: u32,
@@ -722,8 +628,6 @@ pub struct ConflictRow {
     pub groups_len: usize,
 }
 
-/// Outcome of the border-conflict rows one province walk produces. They fail
-/// alone: a conflict read failure never withholds the Provinces rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConflictWalk {
     pub outcome: Outcome,
@@ -743,21 +647,15 @@ impl Default for ConflictWalk {
     }
 }
 
-/// The owned output of the Provinces job: its rows and the border-conflict rows.
 #[derive(Debug, Default)]
 pub struct Capture {
     pub rows: Vec<Row>,
     pub conflicts: Vec<ConflictRow>,
     pub groups: Vec<u64>,
     pub conflict_walk: ConflictWalk,
-    /// Each row's area pointers, in row order; they never leave the collector.
     pub areas: Vec<crate::controller_areas::Pointers>,
-    /// The hour's controller-area nodes ([`Row::area_node`]).
     pub area_nodes: crate::controller_areas::Output,
-    /// The area family's held capture while the callback lends it to the job.
     pub area_store: Option<Box<crate::controller_areas::Store>>,
-    /// The held Provinces rows ([`carry`]) while the callback lends them to
-    /// the job.
     pub province_store: Option<Box<carry::RowStore>>,
 }
 
@@ -793,7 +691,6 @@ impl Capture {
             + self.area_nodes.allocated_bytes()
     }
 
-    /// One province walk filling both outputs.
     pub fn walk(
         &mut self,
         memory: &impl Memory,
@@ -816,9 +713,6 @@ impl Capture {
         outcome
     }
 
-    /// [`Self::walk`] carrying the rows of [`Self::province_store`]
-    /// ([`carry`]) the hour's territory `take` certifies. Without a store it
-    /// is [`Self::walk`].
     pub fn walk_carrying(
         &mut self,
         memory: &impl Memory,
@@ -854,9 +748,6 @@ impl Capture {
         outcome
     }
 
-    /// Reads again the area pointers the latest [`Self::walk_carrying`] took
-    /// from its store for the carried rows `keep` selects (by province id):
-    /// the area step compares fresh pointers.
     pub fn refresh_carried_areas(
         &mut self,
         memory: &impl Memory,
@@ -868,7 +759,6 @@ impl Capture {
         }
     }
 
-    /// The rows of the latest walk whose area pointers came from the store.
     pub fn carried_rows(&self) -> usize {
         self.province_store
             .as_deref()
@@ -881,8 +771,6 @@ struct ConflictBuffers<'a> {
     groups: crate::walk::Buffer<'a, u64>,
 }
 
-/// A nonempty override, not a localized display string. Empty native strings
-/// have no row; removal is represented by deletion from a complete snapshot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NameRow {
     pub province: u32,
@@ -901,10 +789,6 @@ pub fn count_names(memory: &impl Memory, base: usize, game_state: usize) -> Name
     walk_names_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// A bounded, allocation-free census of CProvince name overrides. Reads only
-/// the live object's native string, never a localization fallback or GUI cache.
-/// The pointer census and its root are authenticated once per acquisition at
-/// the quiescent boundary. A later callback acquires current names again.
 pub fn walk_names(
     memory: &impl Memory,
     base: usize,
@@ -1001,7 +885,6 @@ pub fn walk_names_buffer(
             required = required
                 .checked_add(length)
                 .ok_or("province name arena size overflow")?;
-            // Province serialization retains the override string's stored length.
             output.ensure(
                 len.checked_add(1)
                     .ok_or("province name row count overflow")?,
@@ -1045,11 +928,7 @@ pub fn walk_names_buffer(
     }
 }
 
-// Exact field batches bound stack storage and guard calls without reading struct
-// gaps. State observations live for this walk only; every acquisition
-// authenticates again. Cache collisions compare the complete pointer.
 const BATCH_ROWS: usize = 64;
-/// walk_unit_order's per-province record: vtable, id, mixed and naval occupant headers.
 const UNIT_ORDER_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
@@ -1131,7 +1010,6 @@ impl StateCache {
     }
 
     fn slot(&self, pointer: usize) -> usize {
-        // Avalanche aligned pointers; alignment bits alone would waste the cache.
         let mixed = (pointer as u64 ^ (pointer as u64 >> 32)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         (mixed >> 32) as usize & (self.0.len() - 1)
     }
@@ -1142,9 +1020,6 @@ impl StateCache {
         base: usize,
         pointer: usize,
     ) -> Result<(u32, u32), &'static str> {
-        // Keep colliding successful observations instead of repeatedly evicting
-        // each other. A full probe window falls back to the original live read;
-        // it never limits the number of states the walk can acquire.
         let first = if self.0.is_empty() {
             0
         } else {
@@ -1217,8 +1092,6 @@ impl ProvinceBatch {
 
     fn read(&mut self, memory: &impl Memory, array: Array, first: u32, capacity: usize) {
         self.read_pointers(memory, array, first);
-        // Only rows that fit may have their bodies read. Null holes use no row
-        // capacity; roots beyond capacity remain checked for honest truncation.
         let mut remaining = capacity;
         let enabled: [bool; BATCH_ROWS] = std::array::from_fn(|slot| {
             if slot >= self.pointer_count || self.pointer(slot) == 0 || remaining == 0 {
@@ -1232,8 +1105,6 @@ impl ProvinceBatch {
             self.field_count = BATCH_ROWS * FIELDS_PER_ROW;
             return;
         }
-        // Choose the dense layout before observing any body field. Holes,
-        // truncated capacity and partial roots retain their sparse read plan.
         if self.pointer_count == self.len && enabled[..self.len].iter().all(|&value| value) {
             let pointers: [usize; BATCH_ROWS] = std::array::from_fn(|slot| {
                 if slot < self.len {
@@ -1247,8 +1118,6 @@ impl ProvinceBatch {
                 &DENSE_LAYOUT,
                 &mut self.fields.as_flattened_mut()[..self.len * FIELD_RECORD_BYTES],
             );
-            // The old scatter counts its trailing empty destinations as
-            // completed. A failed exact field keeps its original flat index.
             self.field_count = if copied == self.len * FIELDS_PER_ROW {
                 BATCH_ROWS * FIELDS_PER_ROW
             } else {
@@ -1284,7 +1153,6 @@ impl ProvinceBatch {
         );
     }
 
-    /// The batch's slot pointers from `first`.
     fn read_pointers(&mut self, memory: &impl Memory, array: Array, first: u32) {
         self.len = ((array.count - first) as usize).min(BATCH_ROWS);
         self.pointer_count = memory
@@ -1300,8 +1168,6 @@ impl ProvinceBatch {
             .min(self.len);
     }
 
-    /// The dense fields of the provinces at `bodies`, in order: body `n`'s
-    /// at field `n * FIELDS_PER_ROW`, as [`Self::row_body`] reads them.
     fn read_bodies(&mut self, memory: &impl Memory, bodies: &[usize]) {
         if bodies.is_empty() {
             self.field_count = BATCH_ROWS * FIELDS_PER_ROW;
@@ -1320,7 +1186,6 @@ impl ProvinceBatch {
     }
 
     fn pointer(&self, slot: usize) -> usize {
-        // The pinned target is x64; the full native pointer width is retained.
         u64::from_le_bytes(self.pointers[slot]) as usize
     }
 
@@ -1335,8 +1200,6 @@ impl ProvinceBatch {
         self.row_body(memory, base, index, self.pointer(slot), slot, states)
     }
 
-    /// The row of the province at `pointer` in slot `index`, from its fields
-    /// at body `body`.
     fn row_body(
         &self,
         memory: &impl Memory,
@@ -1391,9 +1254,6 @@ impl ProvinceBatch {
     }
 }
 
-/// Fort, access-gate and port operands for one batch of admitted provinces.
-/// The terrain ordinal is static map content the replay derives itself; the
-/// terrain flags are read only for the move gate.
 #[derive(Clone, Copy, Default)]
 struct MovementFields {
     fort_sum: i32,
@@ -1404,8 +1264,6 @@ struct MovementFields {
     owner_area: usize,
 }
 
-/// Distinct building templates are a handful map-wide, so a
-/// short linear cache removes nearly every repeat read. Overflow reads again.
 struct PointerCache<T: Copy> {
     entries: [(usize, T); 64],
     len: usize,
@@ -1450,7 +1308,6 @@ const MOVEMENT_FIELDS: [RecordField; 4] = [
         destination_offset: 24,
         len: 8,
     },
-    // CONTROLLER_AREA and OWNER_AREA are adjacent pointers: one exact span.
     RecordField {
         source_offset: CONTROLLER_AREA,
         destination_offset: 32,
@@ -1501,7 +1358,6 @@ const POINTER_FIELDS: [RecordField; 1] = [RecordField {
 const POINTER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POINTER_FIELDS, 8).expect("valid record layout");
 
-/// Reads each destination province's positive-fort predicate in one batch.
 struct MovementBatch {
     weights: PointerCache<i32>,
     building_pointers: [usize; BATCH_ROWS],
@@ -1539,8 +1395,6 @@ impl MovementBatch {
             let address = buildings
                 .element(first, 8)
                 .ok_or("province building index invalid")?;
-            // The old pointer list checked every element address before its
-            // first read. The last address proves that same contiguous window.
             buildings
                 .element(first + take as u32 - 1, 8)
                 .ok_or("province building index invalid")?;
@@ -1574,8 +1428,6 @@ impl MovementBatch {
             {
                 return Err("province building fields unreadable");
             }
-            // Successful copies initialize every consumed field; failed copies
-            // return above. Neither old padding nor a prior longer batch is read.
             for index in 0..take {
                 let record = &self.building_fields[index * 16..index * 16 + 16];
                 let healthy = i16::from_le_bytes(record[..2].try_into().unwrap());
@@ -1660,10 +1512,6 @@ impl MovementBatch {
     }
 }
 
-/// Copies exact province fields in bounded batches and reuses authenticated
-/// state identity/ownership within this walk at the quiescent boundary. Each
-/// acquisition starts with an empty state cache. The collector uses
-/// [`walk_with_conflicts`]; this is the tests' conflict-free form.
 #[cfg(test)]
 pub(crate) fn walk(
     memory: &impl Memory,
@@ -1678,8 +1526,6 @@ pub(crate) fn walk(
     .0
 }
 
-/// `areas` receives each row's [`crate::controller_areas::Pointers`] when it
-/// can hold them; a shorter buffer leaves the rows' areas unrecorded.
 fn walk_with_conflicts_buffer(
     memory: &impl Memory,
     base: usize,
@@ -1731,7 +1577,6 @@ struct ConflictState {
     failure: Option<&'static str>,
 }
 
-/// Header-only upper bound: movement access reaches both combat sides.
 pub fn conflict_group_demand(
     memory: &impl Memory,
     base: usize,
@@ -1779,7 +1624,6 @@ pub fn conflict_group_demand(
 }
 
 impl ConflictState {
-    /// Records one conflict province; after a failure no further live reads.
     fn record(
         &mut self,
         memory: &impl Memory,
@@ -1815,10 +1659,6 @@ impl ConflictState {
     }
 }
 
-/// Groups admitted by one province's border-conflict combats. Visit defending
-/// then attacking side references for each set entry in source order, resolve
-/// them and keep groups with a nonzero border-war operand. Unresolved handles
-/// or targets without an orders group admit no army.
 fn border_conflict_groups(
     memory: &impl Memory,
     base: usize,
@@ -1840,7 +1680,6 @@ fn border_conflict_groups(
     let size = read::<u64>(memory, at(province, BORDER_CONFLICT_NONZERO_QWORD)?)
         .ok_or("border conflict size unreadable")?;
     let head = pointer(at(province, BORDER_CONFLICT_TREE)?)?;
-    // Province movement access visits both sides of every conflict-set member.
     if output.is_growing() {
         let required = usize::try_from(size)
             .ok()
@@ -1922,9 +1761,6 @@ fn border_conflict_groups(
     Ok(admitted)
 }
 
-/// [`Row::fort_bunker`]: the state bunker term for the province's state
-/// and the controller the raw reference resolves to, queried with
-/// that country's own id as state country modifier lookup takes it.
 fn fort_bunker<'a, M: Memory>(
     memory: &'a M,
     base: usize,
@@ -1978,20 +1814,16 @@ fn walk_rows(
         if array.count < 2 {
             return Err("province table has no province slots");
         }
-        // Province initialization sizes the live ID-indexed roster.
         let required = array.count.saturating_sub(1) as usize;
         output
             .ensure(required)
             .and_then(|_| conflicts.rows.ensure(required))
             .and_then(|_| areas.ensure(required))?;
-        // Each admitted province can select at most one state dependency. Keep
-        // original successful state observations for the whole quiescent walk.
         Ok((array, StateCache::new(required.min(output.len()))?))
     })();
     let (array, mut states) = match prepared {
         Ok(prepared) => prepared,
         Err(reason) => {
-            // The hour's marks are already drained: an incomplete walk holds nothing.
             if let Some(hour) = carry {
                 hour.store.forget();
             }
@@ -2025,7 +1857,6 @@ fn walk_rows(
     }
 }
 
-/// Every province of `array` read afresh, in bounded batches.
 #[allow(clippy::too_many_arguments)]
 fn read_rows(
     memory: &impl Memory,
@@ -2040,7 +1871,6 @@ fn read_rows(
 ) -> Outcome {
     let mut batch = ProvinceBatch::new();
     let mut movement = MovementBatch::new();
-    // The country census, read once for the walk's first fortified province.
     let mut countries = None;
     let mut pointers = [0_usize; BATCH_ROWS];
     let mut ids = [0_u32; BATCH_ROWS];
@@ -2071,8 +1901,6 @@ fn read_rows(
                 Err(reason) => return Outcome::Unavailable { reason },
             }
         }
-        // The movement operands chase the definition and the building vector,
-        // so they read after the batch's own fields rather than inside it.
         if staged != 0
             && let Err(reason) = movement.read(
                 memory,
@@ -2141,7 +1969,6 @@ fn read_rows(
     }
 }
 
-/// Current-pass identity and independently demanded geometry for one province.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct GeometryProvince {
     pointer: usize,
@@ -2153,31 +1980,24 @@ struct GeometryProvince {
     fields: crate::province_definition::GeometryFields,
 }
 
-/// Bounded storage allocated outside acquisition. A native adjacency consumes
-/// one arena entry only when a query reaches its ID in native order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GeometryCapacities {
     pub provinces: usize,
     pub neighbour_entries: usize,
 }
 
-/// Frame-local memo attribution for the current acquisition. Diagnostics only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GeometryCounters {
-    /// Lookups answered from an observation this pass already holds.
     pub hits: u64,
-    /// Lookups that read native memory.
     pub misses: u64,
 }
 
-/// Province ids by object from earlier passes of `world`; a province and its id live as long as it.
 #[derive(Default)]
 struct HeldIdentities {
     world: u64,
     ids: std::collections::HashMap<usize, u32, std::hash::BuildHasherDefault<ProvincePairHasher>>,
 }
 
-/// Read a lazily acquired observation once, counting the hit or the miss.
 fn geometry_memo<T: Copy>(
     counters: &mut GeometryCounters,
     slot: &mut Option<Result<T, &'static str>>,
@@ -2191,13 +2011,6 @@ fn geometry_memo<T: Copy>(
     *slot.insert(read())
 }
 
-/// Owned typed province geometry, with directly indexed native adjacency
-/// prefixes. Movement and ETA consume returned operands; this is not a Memory
-/// implementation and no native walker is replayed over recorded reads.
-///
-/// The packet grows from its original province and adjacency controls before
-/// publication. `begin` retains allocations and clears previous inputs; failed observations
-/// never fall back to another native read.
 pub struct GeometryPacket {
     base: usize,
     root: Result<Array, &'static str>,
@@ -2215,7 +2028,6 @@ pub struct GeometryPacket {
     counters: GeometryCounters,
     held: HeldIdentities,
     holding: bool,
-    /// This pass's ids answered from the held ones and authenticated afresh.
     held_counts: [u64; 2],
 }
 
@@ -2260,7 +2072,6 @@ impl GeometryPacket {
         }
     }
 
-    /// For this pass, answer ids held for `world` without a read and hold the ones it reads.
     pub fn hold_identities(&mut self, world: u64) {
         if self.held.world != world {
             self.held.ids.clear();
@@ -2273,7 +2084,6 @@ impl GeometryPacket {
         self.held_counts
     }
 
-    /// Allocation is permitted off the capturing thread.
     pub fn grow(&mut self, requested: GeometryCapacities) -> std::io::Result<()> {
         let capacities = GeometryCapacities {
             provinces: self.capacities.provinces.max(requested.provinces),
@@ -2304,13 +2114,10 @@ impl GeometryPacket {
         self.counters
     }
 
-    /// Preserve the unconditional native province-root gate even when a table
-    /// has no admitted units or all of its province fields are null.
     pub fn ready(&self) -> Result<(), &'static str> {
         self.root.map(|_| ())
     }
 
-    /// Count from this pass's already observed root, including its null slot.
     pub fn province_count(&self) -> Result<usize, &'static str> {
         self.root.map(|root| root.count as usize)
     }
@@ -2330,7 +2137,6 @@ impl GeometryPacket {
             + self.held.ids.capacity() * (std::mem::size_of::<(usize, u32)>() + 1)
     }
 
-    /// Held identities stay for a later pass that holds them.
     pub fn clear(&mut self) {
         self.base = 0;
         self.root = Err("unit geometry is not initialized");
@@ -2450,8 +2256,6 @@ impl GeometryPacket {
     ) -> Result<(u32, usize), &'static str> {
         self.root?;
         let index = self.index(pointer)?;
-        // These checks already succeeded against owned observations this pass.
-        // Keep the caller's zero-ID rule; no native observation outlives begin.
         if let Some(id) = self.provinces[index].authenticated_id {
             self.counters.hits = self.counters.hits.saturating_add(2);
             if id == 0 && !allow_zero {
@@ -2471,8 +2275,6 @@ impl GeometryPacket {
         }
         let province = &mut self.provinces[index];
         let (vtable, gathered) = if province.vtable.is_none() && province.id.is_none() {
-            // A new province's vtable and id are one guarded call. The id is
-            // consulted only after the vtable passes, as a single read would be.
             let (mut vtable, mut id) = ([0_u8; 8], [0_u8; 4]);
             let read = match batch.and_then(|batch| batch.identity(pointer)) {
                 Some((table, value)) => {
@@ -2524,14 +2326,10 @@ impl GeometryPacket {
         if id == 0 && !allow_zero {
             return Err("unit geometry province identity mismatch");
         }
-        // A matching ID authenticates the successful slot observation already
-        // held by the caller. A different ID must still read its own backlink
-        // before the caller can report the requested-ID mismatch.
         if known_slot != Some(id) && self.slot_from_batch(memory, id, batch)? != pointer {
             return Err("unit geometry province differs from census");
         }
         self.provinces[index].authenticated_id = Some(id);
-        // Only nonzero ids are held: a held id then passes every caller's zero rule.
         if self.holding && id != 0 {
             self.held_counts[1] = self.held_counts[1].saturating_add(1);
             let ids = &mut self.held.ids;
@@ -2543,8 +2341,6 @@ impl GeometryPacket {
         Ok((id, index))
     }
 
-    /// Null is the native absent-province value; every nonnull pointer retains
-    /// its identity and current census backlink.
     pub fn acquire_province_id(
         &mut self,
         memory: &impl Memory,
@@ -2557,8 +2353,6 @@ impl GeometryPacket {
             .map(|(id, _)| id)
     }
 
-    /// Stage only previously unobserved pointer identities and uncached slots.
-    /// The batch never inserts into the exact pass-local memos itself.
     pub fn stage_province_ids(
         &self,
         memory: &impl Memory,
@@ -2615,8 +2409,6 @@ impl GeometryPacket {
         Ok(pointer)
     }
 
-    /// The movement speed route branch permits a null roster slot and an
-    /// authenticated slot zero. ETA's admitted path endpoints remain strict.
     #[cfg(test)]
     pub fn acquire_route_pointer(
         &mut self,
@@ -2716,8 +2508,6 @@ impl GeometryPacket {
         if negative_absent && (target as i32) < 0 {
             return Ok(None);
         }
-        // Speed selection searches the original adjacency. Retain its acquired
-        // prefix and reserve remaining header demand without retry.
         let additional =
             (neighbours.count as usize).saturating_sub(self.provinces[province].fields.prefix_len);
         let required = self
@@ -2792,8 +2582,6 @@ pub use static_geometry::{
     static_geometry_demand_key,
 };
 
-/// Internal province IDs, pointers and ID pairs. Exact equality resolves collisions; this
-/// mixer changes lookup cost only, never native identity or cached values.
 #[derive(Default)]
 struct ProvincePairHasher(u64);
 
@@ -2820,15 +2608,8 @@ impl std::hash::Hasher for ProvincePairHasher {
     }
 }
 
-/// What the land movement speed reads of one province: its state (null for
-/// none), raw controller, controller area and strategic region (null for none)
-/// pointers, and its definition's terrain flags. Each field belongs to a distinct
-/// speed branch and retains independent availability after common authentication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MovementProvince {
-    // Each field belongs to a different reached branch: location state, river
-    // destination, noncore access, transport source, or terrain classification.
-    // Identity is the only shared refusal; a failed sibling field is independent.
     pub state: Result<usize, &'static str>,
     pub controller: Result<u32, &'static str>,
     pub controller_area: Result<usize, &'static str>,
@@ -2853,8 +2634,6 @@ impl MovementProvince {
     }
 }
 
-/// Authenticate the province once, then retain independently available inputs.
-/// Each field has a distinct native consumer; no field failure erases siblings.
 pub fn movement_province(
     memory: &impl Memory,
     base: usize,
@@ -2908,7 +2687,6 @@ const MOVEMENT_PROVINCE_ID_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const MOVEMENT_PROVINCE_ID_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_PROVINCE_ID_FIELDS, 4).expect("valid record layout");
-/// What [`movement_province`] reads of an authenticated province.
 const MOVEMENT_PROVINCE_FIELDS: [RecordField; 5] = [
     RecordField {
         source_offset: DEFINITION,
@@ -2948,8 +2726,6 @@ const TERRAIN_FLAG_FIELDS: [RecordField; 1] = [RecordField {
 const TERRAIN_FLAG_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&TERRAIN_FLAG_FIELDS, 1).expect("valid record layout");
 
-/// Gathers one record from each of `sources` into `out`. A row the gather
-/// could not complete goes to `failed`; the rows after it are gathered again.
 fn gather_rows(
     memory: &impl Memory,
     sources: &[usize],
@@ -2976,8 +2752,6 @@ fn gather_rows(
 
 type MovementResults = [Option<Result<MovementProvince, &'static str>>; BATCH_ROWS];
 
-/// The provinces a stage of [`movement_provinces`] passed on, in id order:
-/// each one's row and the address its next stage gathers from.
 struct MovementRows {
     rows: [usize; BATCH_ROWS],
     sources: [usize; BATCH_ROWS],
@@ -2996,8 +2770,6 @@ impl MovementRows {
         self.len += 1;
     }
 
-    /// Gathers a word of `layout` from each source. A row the gather could not
-    /// complete is read `alone`; the rest stay only if `next` passes them on.
     fn gather(
         &mut self,
         memory: &impl Memory,
@@ -3032,11 +2804,6 @@ impl MovementRows {
     }
 }
 
-/// [`movement_province`] for every id, in order. Entries, vtables, ids,
-/// payloads and definition flags each come from one record gather per batch,
-/// and each stage reads only what the one before authenticated. A province a
-/// gather could not complete is read alone by `movement_province`, as its
-/// per-object path would read it, so a gather refuses nothing that path does not.
 pub fn movement_provinces(
     memory: &impl Memory,
     base: usize,
@@ -3101,7 +2868,6 @@ pub fn movement_provinces(
                 defined.push(row, word(0) as usize);
             }
         }
-        // The flag byte is the walk's own read of it, so its fault is the walk's.
         let (mut flags, mut unreadable) = ([0u8; BATCH_ROWS], [false; BATCH_ROWS]);
         gather_rows(
             memory,

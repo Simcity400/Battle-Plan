@@ -1,0 +1,9 @@
+# Carry the boundary of incomplete content reads into every lookup
+
+Retain complete definitions before a hard content-reading stop. The unread remainder could redefine an existing token, supply an earlier declaration, or turn an apparent absence into a hit. Track the last definition when later definitions replace earlier ones, the first when registrations accumulate, and the ordered file gaps. A lookup refuses with the file and cause whenever that gap could change its answer. A search across the whole catalogue uses the global gap, so it cannot mistake a partial list for a complete one.
+
+Country tags are three-byte declarations in direct database files, with the first registration retained. The keyword `dynamic_tags` records the registration count at its last occurrence and creates no tag. Positional or longer identities used elsewhere do not widen the train and unit-model reader. Count skipped keys and name the unsupported block shapes rather than widening the token reader speculatively. Country scorer targets keep arrays and explicit targets apart, with common parsing for other callers that use the same targeting rules. Retain the first named scorer and skip later definitions.
+
+Use Lua 5.1 for the game's defines, raw deflate for archive members and zstd for stored recording-fact chunks. Expose synthetic fixture layers as a narrower test feature than the full catalogue fixtures, so consumers can select the least test-only surface they need. Retain native Windows opens, monitor IDs and file-change records where those platform-specific facts are needed.
+
+[Coverage](../../crates/installed-content-core/src/coverage.rs) · [Country tags](../../crates/installed-content-core/src/country_tags.rs) · [Country scorers](../../crates/installed-content-core/src/country_scorers.rs) · [Reader dependencies and fixtures](../../crates/installed-content-core/Cargo.toml)

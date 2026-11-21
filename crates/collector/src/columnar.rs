@@ -1,13 +1,3 @@
-//! A campaign's columnar recording, handed to the recorder live beside its row spool from the
-//! frames the row encoder takes: each hour's manifest and sections appended to the capture's
-//! journal ([`replay::columnar_journal`]), uncompressed, for the recorder to write as final
-//! blocks. It holds every table the rows leave to it, so an hour it cannot prepare or commit
-//! fails, rows and all, and the next hour starts a run; a failure of its journal stops it with
-//! the reason, and every later hour fails. Its allocations are advisory, so a failed one fails
-//! only its hour, and an hour reaches the journal only once its rows' write completed. The
-//! journal is written on its own thread ([`journal_thread`]): the spool thread queues, and an
-//! hour the journal could not take is a gap of the next capture. Each hour's journal record
-//! carries the clock witness the rows were given with it: the recorder reads the journal alone.
 
 use replay::{
     columnar_file::Capture,
@@ -36,11 +26,8 @@ pub(crate) use journal_thread::JournalThread;
 #[cfg(test)]
 mod tests;
 
-/// Each finished campaign's counters, which the spool status keeps reporting after detach.
-/// Finishing only moves them here; the status thread formats them.
 static FINISHED_COUNTERS: Mutex<Vec<Counters>> = Mutex::new(Vec::new());
 
-/// The statuses of the campaigns whose recordings finished.
 pub(crate) fn finished_status() -> Vec<Value> {
     FINISHED_COUNTERS
         .lock()
@@ -50,26 +37,19 @@ pub(crate) fn finished_status() -> Vec<Value> {
         .collect()
 }
 
-/// A campaign's columnar recording.
 pub(crate) enum Columnar {
     Live(Box<Live>),
-    /// It could not be opened, so no hour can be recorded.
     Unopened,
-    /// Spool tests' campaigns, whose rows are recorded alone.
     #[cfg(test)]
     Off,
 }
 
-/// The spool thread and its conversion helpers, which prepare and commit a columnar hour's
-/// tables. A helper takes tables only between the game's ticks, and the spool thread
-/// finishes the hour, so it never waits out a tick for a helper.
 pub(crate) struct Lanes<'a> {
     helpers: Option<crate::spool_helper::Helpers<'a>>,
     spool: std::thread::ThreadId,
 }
 
 impl<'a> Lanes<'a> {
-    /// The calling spool thread's lanes.
     pub(crate) fn new(helpers: Option<crate::spool_helper::Helpers<'a>>) -> Self {
         Self {
             helpers,
@@ -108,98 +88,58 @@ impl native_frame::Lanes for Lanes<'_> {
 
 pub(crate) struct Live {
     directory: PathBuf,
-    /// The file's identity until the first hour or command opens the journal.
     identity: Option<envelope::Identity>,
-    /// The capture the journal begins with: this session alone, every run its own.
     capture: Option<Capture>,
-    /// What every capture of the session begins with, for one opened after a failure.
     template: (envelope::Identity, Capture),
-    /// The branch starts, gaps and event losses the session's captures hold, which a capture
-    /// opened after a failure holds again.
     facts: Vec<Vec<u8>>,
-    /// After a failure: the hours to wait before a new capture opens, and the failures in a
-    /// row.
     reopen: Option<Reopen>,
-    /// The digests of the branch starts, gaps and event losses the capture holds.
     noted: HashSet<[u8; 16]>,
-    /// The records the rows were given and the capture does not hold yet, in order: a queued
-    /// frame's wait for its write.
     notes: VecDeque<Note>,
-    /// The frame being given to the rows: its records, until it is written or queued.
     staged: Vec<Noted>,
-    /// That frame's hour and clock witness, until its hour commits.
     witness: Option<(i32, Witness)>,
-    /// Control records released and not yet in the journal, which opens at the first hour or
-    /// command.
     controls: Vec<Vec<u8>>,
-    /// The capture's journal was queued to open on the journal thread.
     opened: bool,
-    /// The session's journal thread, shared by its recordings.
     thread: Arc<JournalThread>,
-    /// This recording's journal on that thread.
     lane: Arc<Lane>,
     run: Option<Run>,
-    /// Committed hours whose rows' write has not completed, in order.
     pending: VecDeque<Pending>,
-    /// Why the next run starts, when the rows said.
     next_epoch: Option<u8>,
     finished: bool,
     command_branch: Option<u64>,
-    /// Runs started, which a run's first hour carries to the journal.
     started: u64,
     counters: Counters,
 }
 
-/// A failed capture's wait for the next: hours left, and failures in a row, each doubling the
-/// wait to at most a block.
 struct Reopen {
     wait: u32,
     failures: u32,
 }
 
-/// Records the rows were given, which the capture takes once `awaits`, the branch and hour of
-/// the queued frame they came with, is written; none once it was, or when they came alone.
 struct Note {
     awaits: Option<(u64, i32)>,
     records: Vec<Noted>,
 }
 
-/// One record as the rows encode it.
 struct Noted {
     bytes: Vec<u8>,
-    /// A branch start, gap or event loss: one fact, which a context given again repeats.
     fact: bool,
 }
 
-/// What a recording measured, and why it last failed.
 struct Counters {
-    /// The last failure, where it happened and why.
     stopped: Option<Reason>,
-    /// Captures that failed, each followed by a new one.
     failures: u64,
-    /// Hours the rows wrote that a failed capture lost, each a gap of the next capture.
     lost: u64,
     hours: u64,
-    /// Hours it could not take, which the rows record as gaps.
     failed: u64,
-    /// Runs the journal holds.
     runs: u64,
-    /// Bytes of manifests and sections given to the journal.
     journaled: u64,
-    /// Spool-thread wall in preparing and committing hours.
     hour_ns: u64,
-    /// The journal thread's operations queued and not yet done, the most ever queued, and its
-    /// appends' total and longest wall, kept once the recording finished.
     journal: [u64; 4],
-    /// Each table's frame-writer wall in runs that ended.
     ended_ns: [u64; TABLE_COUNT],
-    /// Each table's hours prepared again in table order after a lane, in runs that ended.
     ended_retried: [u64; TABLE_COUNT],
-    /// The journal's segment syncs, kept once the recording finished.
     durability: Option<journal_thread::Timing>,
 }
 
-/// A run's start as the journal records it.
 #[derive(Clone, Copy)]
 struct RunStart {
     branch: u64,
@@ -207,33 +147,25 @@ struct RunStart {
     first_hour: i32,
 }
 
-/// The run under way: one branch's continuous hours.
 struct Run {
     frames: FrameWriter,
     branch: u64,
     next_hour: i32,
-    /// Hours committed in the run.
     ordinal: u32,
-    /// The run's start, until its first hour carries it to the journal.
     start: Option<RunStart>,
 }
 
-/// A committed hour as the journal takes it once its rows' write completed: the run it starts,
-/// when it starts one, and its ordinal in its run.
 struct Pending {
     starts: Option<RunStart>,
     branch: u64,
     hour: i32,
     ordinal: u32,
-    /// The clock witness the rows were given with the hour.
     witness: Option<Witness>,
     manifest: Vec<u8>,
     sections: Vec<Vec<u8>>,
 }
 
 impl Columnar {
-    /// The campaign's columnar recording in `directory`, opened at its first hour; off when
-    /// it cannot be held.
     pub(crate) fn open(
         directory: &Path,
         campaign: &str,
@@ -272,14 +204,11 @@ impl Columnar {
         }
     }
 
-    /// A campaign that writes no columnar recording, as spool tests' campaigns.
     #[cfg(test)]
     pub(crate) const fn off() -> Self {
         Self::Off
     }
 
-    /// Prepares `input`'s hour on `lanes`, starting a run at a branch change, a gap or a write
-    /// failure, beside what the row encoder makes of it. An error fails the hour, rows and all.
     pub(crate) fn prepare(
         &mut self,
         input: &FrameInput,
@@ -296,8 +225,6 @@ impl Columnar {
         }
     }
 
-    /// Why this hour cannot be recorded, when it cannot: a failed capture's wait for the next,
-    /// which this hour counts down, or a recording that could not be opened.
     pub(crate) fn halted(&mut self) -> Option<&str> {
         match self {
             Self::Live(live) => {
@@ -310,9 +237,6 @@ impl Columnar {
         }
     }
 
-    /// Commits a prepared hour on `lanes` once its rows' baseline committed. The file takes it
-    /// now when the rows are written as they are encoded; a queued hour waits for
-    /// [`Self::complete`]. An error fails the hour, rows and all.
     pub(crate) fn commit(
         &mut self,
         hour: FrameHour,
@@ -327,60 +251,48 @@ impl Columnar {
         }
     }
 
-    /// The rows' write of `hour` of `branch` completed: the file takes the hours through it.
     pub(crate) fn complete(&mut self, branch: u64, hour: i32) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.complete(branch, hour));
         }
     }
 
-    /// The rows' spool takes `records`: the file's capture keeps each branch start, gap and
-    /// control record but clock witnesses, in the order the rows were given them.
     pub(crate) fn note(&mut self, records: &[replay::spool::Record]) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.note(records));
         }
     }
 
-    /// [`Self::note`] of a frame's records, which the capture takes once the frame is written
-    /// ([`Self::written`]) or its queued write completes ([`Self::queued`]).
     pub(crate) fn stage(&mut self, records: &[replay::spool::Record]) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.stage(records));
         }
     }
 
-    /// The frame staged was written.
     pub(crate) fn written(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.written());
         }
     }
 
-    /// The frame staged, of `hour` of `branch`, was queued for the rows' writer.
     pub(crate) fn queued(&mut self, branch: u64, hour: i32) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.queued(branch, hour));
         }
     }
 
-    /// The rows' write failed: hours not yet written are dropped, and the next starts a run.
     pub(crate) fn interrupt(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.interrupt());
         }
     }
 
-    /// Ends the recording on its healthy path: the journal's last record, naming where writing
-    /// stopped when it did, durable. Records no journal took open one for them; a capture that
-    /// holds no hour, command or other record has no journal.
     pub(crate) fn finish(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.finish());
         }
     }
 
-    /// Waits until the journal thread wrote or refused everything queued for this recording.
     #[cfg(test)]
     pub(crate) fn settle(&self) {
         if let Self::Live(live) = self {
@@ -388,7 +300,6 @@ impl Columnar {
         }
     }
 
-    /// None while columnar recording is off.
     pub(crate) fn status(&self) -> Option<Value> {
         match self {
             Self::Live(live) => Some(live.status()),
@@ -470,9 +381,6 @@ impl Live {
         }
     }
 
-    /// The records of `records` the capture keeps, as the rows encode them: all but frames,
-    /// session starts, which it holds already, and clock witnesses, which each hour's own
-    /// record carries.
     fn encoded(records: &[replay::spool::Record]) -> io::Result<Vec<Noted>> {
         use replay::spool::{ControlRecord, Record};
         let mut kept = Vec::new();
@@ -498,9 +406,6 @@ impl Live {
         Ok(kept)
     }
 
-    /// The capture takes the notes no queued write holds back, in order, into its journal once
-    /// it is open. A fact it holds already is the same fact given again with a refused or
-    /// failed write's context.
     fn release(&mut self) -> io::Result<()> {
         if self.finished {
             self.notes.clear();
@@ -528,9 +433,6 @@ impl Live {
         Ok(())
     }
 
-    /// Takes in what the journal thread could not write: a failure stops the capture, its lost
-    /// hours become the next capture's gap, and its control records go to the next capture
-    /// ahead of those held now.
     fn poll(&mut self) {
         if let Some(failure) = self.lane.take_failure() {
             self.absorb(failure);
@@ -568,8 +470,6 @@ impl Live {
         self.reopen.is_none() && !self.finished
     }
 
-    /// Why hours are not recorded now: a failed capture waits for the next, or the recording
-    /// finished.
     fn halt_reason(&self) -> Option<&str> {
         if self.finished {
             return Some("the columnar recording finished");
@@ -579,8 +479,6 @@ impl Live {
             .map(|_| self.counters.stopped.as_ref().map_or("the columnar recording failed", Reason::text))
     }
 
-    /// Counts down a failed capture's wait; once it ends, this hour opens a new capture,
-    /// holding the session's facts again, and starts a run.
     fn tick_reopen(&mut self) {
         let Some(reopen) = self.reopen.as_mut() else {
             return;
@@ -609,7 +507,6 @@ impl Live {
         Ok(())
     }
 
-    /// Ends the run under way, keeping its tables' wall.
     fn end_run(&mut self) {
         if let Some(run) = self.run.take() {
             for (total, ns) in self.counters.ended_ns.iter_mut().zip(run.frames.table_ns()) {
@@ -638,7 +535,6 @@ impl Live {
         prepared
     }
 
-    /// Ok while the file takes hours.
     fn writable(&self) -> io::Result<()> {
         if self.writing() {
             Ok(())
@@ -647,7 +543,6 @@ impl Live {
         }
     }
 
-    /// An hour it could not take: the rows record a gap, and the next hour starts a run.
     fn fail_hour(&mut self) {
         self.counters.failed += 1;
         self.end_run();
@@ -771,7 +666,6 @@ impl Live {
         if let Err(error) = self.release() {
             self.stop("releasing control records", &error);
         }
-        // The rows complete queued hours in order; an hour the writer never queued is none.
         while self
             .pending
             .front()
@@ -782,7 +676,6 @@ impl Live {
                 continue;
             }
             if self.reopen.is_some() {
-                // Its capture failed: the rows hold the hour, the next capture its gap.
                 self.lose(pending.branch, pending.hour, pending.hour);
                 continue;
             }
@@ -794,8 +687,6 @@ impl Live {
         }
     }
 
-    /// Queues a committed hour for the journal, after the run it starts; a block's last hour
-    /// ends its segment. What the journal thread cannot write comes back through [`Self::poll`].
     fn write(&mut self, pending: Pending) -> Result<(), (&'static str, io::Error)> {
         if pending.starts.is_some() {
             self.open_journal()
@@ -826,8 +717,6 @@ impl Live {
         Ok(())
     }
 
-    /// Drops the records of frames the rows never wrote: a failed write's context is given
-    /// again with a later frame.
     fn drop_unwritten(&mut self) {
         self.staged.clear();
         self.witness = None;
@@ -848,15 +737,12 @@ impl Live {
         if self.finished {
             return;
         }
-        // Detach drains the rows' writes first; an hour still waiting was never written.
         self.pending.clear();
         self.drop_unwritten();
         self.end_run();
         self.thread.settle(&self.lane);
         self.poll();
         self.finished = true;
-        // Records no journal took, as a failed capture's lost hours or a capture of gaps alone,
-        // end in a journal of their own: the recorder reads nothing else.
         if !self.opened && !self.controls.is_empty() {
             let reopened = if self.reopen.is_some() {
                 self.reopened()
@@ -879,8 +765,6 @@ impl Live {
             };
             self.thread.queue(&self.lane, Op::End(ending));
             self.thread.settle(&self.lane);
-            // A journal that could not finish is finished by the recorder as its collector
-            // left it.
             if let Some(Failure {
                 failed: Some((site, error)),
                 ..
@@ -889,7 +773,6 @@ impl Live {
                 self.stop(site, &error);
             }
         }
-        // Diagnostics only: kept when a slot can be reserved, without formatting here.
         let mut kept = FINISHED_COUNTERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -916,8 +799,6 @@ impl Live {
         )
     }
 
-    /// Queues the capture's journal to open, holding the control records released so far; the
-    /// journal thread numbers it after every capture the directory holds.
     fn open_journal(&mut self) -> io::Result<()> {
         if self.opened {
             return Ok(());
@@ -941,8 +822,6 @@ impl Live {
         Ok(())
     }
 
-    /// A failure at `site`: the capture ends where its journal stands, its reason kept for the
-    /// status, its journal's stop and the rows' gaps, and a new capture opens after a wait.
     fn stop(&mut self, site: &'static str, error: &io::Error) {
         self.end_run();
         self.counters.stopped = Some(Reason::of(site, error));
@@ -958,8 +837,6 @@ impl Live {
         if self.opened {
             self.opened = false;
             let reason = self.counters.stopped.as_ref().map_or("", Reason::text);
-            // A journal that cannot take its stop is finished by the recorder, which then names
-            // no reason of its own over the one the next capture's gap holds.
             let ending = engine_allocation::string(reason).map_or(Ending::Abandoned, |reason| {
                 Ending::Stopped {
                     reason,
@@ -968,8 +845,6 @@ impl Live {
             });
             self.thread.queue(&self.lane, Op::End(ending));
         }
-        // The stopped capture ends here: what its journal refused since is lost with it, so the
-        // next capture starts with nothing of it outstanding.
         self.thread.settle(&self.lane);
         if let Some(Failure { lost, controls, .. }) = self.lane.take_failure() {
             self.absorb(Failure {
@@ -980,8 +855,6 @@ impl Live {
         }
     }
 
-    /// Hours `first..=last` of `branch` the rows wrote and a failed capture lost: a gap the next
-    /// capture holds, with why.
     fn lose(&mut self, branch: u64, first: i32, last: i32) {
         self.counters.lost += (i64::from(last) - i64::from(first) + 1) as u64;
         let reason = self.counters.stopped.as_ref().map_or("", Reason::text);
@@ -998,20 +871,14 @@ impl Live {
             self.controls.push(gap);
             Ok(())
         });
-        // A gap that cannot be held leaves the hours to the rows alone; the status counts them.
         let _ = kept;
     }
 }
 
-/// An hour the recording could not take. Its own allocations are advisory, so its failure is
-/// never the collector's allocation failure.
 fn hour_failed(_: io::Error) -> io::Error {
     invalid("The columnar recording could not take the hour")
 }
 
-/// The file's identity (this build's schema, the campaign, its content identity and the
-/// session's capture mode) and the capture its root names: this session, as the row
-/// recording encodes it.
 fn identity(campaign: &str, session: &SessionStart) -> io::Result<(envelope::Identity, Capture)> {
     let mut content = Vec::new();
     session.identity.encode(&mut content)?;
@@ -1057,8 +924,6 @@ impl Counters {
         }
     }
 
-    /// The status, with the run under way's tables' wall added; formatted on the status
-    /// thread.
     fn status(
         &self,
         current: &[u64],
@@ -1117,8 +982,6 @@ impl Counters {
     }
 }
 
-/// Why writing stopped: the error's text within a fixed reservation, or a fixed reason when
-/// even that cannot be held.
 enum Reason {
     Text(String),
     Unrecorded,
@@ -1132,8 +995,6 @@ impl Reason {
         if text.try_reserve_exact(Self::BYTES).is_err() {
             return Self::Unrecorded;
         }
-        // An OS error's own text is built by allocating; its code is not. The writer's own
-        // errors carry a message that formats in place.
         let mut out = Bounded(&mut text);
         let kind = error.kind();
         let _ = match (error.raw_os_error(), error.get_ref()) {
@@ -1152,8 +1013,6 @@ impl Reason {
     }
 }
 
-/// Writes into a string's reserved capacity and drops what would not fit, at a character
-/// boundary, so formatting never allocates.
 struct Bounded<'a>(&'a mut String);
 
 impl std::fmt::Write for Bounded<'_> {
@@ -1168,9 +1027,6 @@ impl std::fmt::Write for Bounded<'_> {
     }
 }
 
-/// `directory`, or `name` in it, owned through a fallible reservation. The separator and
-/// name are appended to the reserved string itself: `PathBuf::push` allocates for verbatim
-/// paths, which canonical recorder output is.
 fn owned_path(directory: &Path, name: Option<&str>) -> io::Result<PathBuf> {
     let base = directory.as_os_str();
     let separated = base
@@ -1192,8 +1048,6 @@ fn owned_path(directory: &Path, name: Option<&str>) -> io::Result<PathBuf> {
     Ok(PathBuf::from(owned))
 }
 
-/// Kind-only while a capture runs, whatever diagnostic scope encloses it: the live writer
-/// must not allocate to fail.
 fn invalid(message: &'static str) -> io::Error {
     if engine_allocation::capture_active() {
         io::Error::from(io::ErrorKind::InvalidData)

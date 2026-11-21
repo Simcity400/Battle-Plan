@@ -1,11 +1,3 @@
-//! CWorldThreat: the world-tension manager, its ordered contribution vector and
-//! its per-country aggregate cache.
-//!
-//! Rebuilding sizes and clears the aggregate array from the live country census,
-//! then sums every current contribution into the total and its canonical-country
-//! slot. Exhausted sources are removed before the total is rebuilt, clamped and
-//! divided for storage as the world-tension scalar. The recorded source sum and
-//! resident scalar are independent operands; this reader neither scales nor clamps them.
 
 use crate::{
     Memory, cgame_state,
@@ -16,48 +8,33 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CWorldThreat primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_3048);
-/// Stored signed i64 total, after clamping and scalar conversion.
 pub const TOTAL: usize = 0x08;
-/// CWorldThreat CThreatSource pointer array.
 pub const SOURCES: usize = 0x10;
-/// CWorldThreat signed i64 country aggregate array.
 pub const COUNTRY_AGGREGATES: usize = 0x28;
-/// CWorldThreat aggregate element stride.
 pub const AGGREGATE_STRIDE: usize = 0x08;
-/// CWorldThreat source-pointer stride.
 pub const SOURCE_STRIDE: usize = 0x08;
-/// CWorldThreat total update.
 pub const UPDATE_TOTAL_RVA: Rva = Rva(0x00f8_3ad0);
-/// World-tension clamp ceiling.
 pub const CLAMP_CEILING: i64 = 10_000_000;
-/// World-tension scalar divisor.
 pub const SCALAR_DIVISOR: i64 = 100;
 
-/// The manager's own stored words. Counts are the engine's, not the walker's.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerRow {
-    /// Resident world-tension scalar after total update.
     pub total_raw: i64,
     pub source_count: i32,
     pub country_aggregate_count: i32,
 }
 
-/// One entry of the rebuilt per-country cache, keyed by canonical country slot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AggregateRow {
     pub country_slot: u32,
-    /// Signed sum of every source contribution attributed to this slot.
     pub total_raw: i64,
 }
 
-/// One contribution walk: its outcome and the arena bytes it used and needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceOutcome {
     pub outcome: Outcome,
     pub bytes_len: usize,
-    /// Full reason-byte need of the rows this pass actually reached.
     pub required_bytes: usize,
 }
 
@@ -71,7 +48,6 @@ impl SourceOutcome {
     }
 }
 
-/// Authenticated manager header words and array descriptors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reader {
     row: ManagerRow,
@@ -80,7 +56,6 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// Authenticate `cgame_state::WORLD_THREAT` and read both array headers once.
     pub fn new(memory: &impl Memory, base: usize, game_state: usize) -> Result<Self, &'static str> {
         let pointer = game_state
             .checked_add(cgame_state::WORLD_THREAT)
@@ -110,7 +85,6 @@ impl Reader {
         })
     }
 
-    /// One manager row, or `Unavailable` when the caller supplied no slot.
     pub fn manager(&self, output: &mut [ManagerRow]) -> Outcome {
         let Some(slot) = output.first_mut() else {
             return Outcome::Truncated {
@@ -122,12 +96,10 @@ impl Reader {
         Outcome::Rows { len: 1 }
     }
 
-    /// Authenticated native extents; sizing hints never supply recorded values.
     pub fn counts(&self) -> [usize; 2] {
         [self.sources.count as usize, self.aggregates.count as usize]
     }
 
-    /// Serialization visits every stored contribution and preserves each complete reason string.
     pub fn reason_demand(&self, memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
         let mut bytes = 0_usize;
         for ordinal in 0..self.sources.count {
@@ -147,10 +119,6 @@ impl Reader {
         Ok(bytes)
     }
 
-    /// Every contribution in stored order, with its literal reason bytes copied
-    /// into `reasons`. A null slot inside the counted span is a fault, not a hole.
-    /// A row whose reason does not fit the arena is omitted and counted, like a
-    /// row that does not fit `output`; `required` always reports the full need.
     pub fn sources(
         &self,
         memory: &impl Memory,
@@ -173,8 +141,6 @@ impl Reader {
         mut output: Buffer<'_, SourceRow>,
         mut reasons: Buffer<'_, u8>,
     ) -> SourceOutcome {
-        // Serialization retains every stored contribution occurrence.
-        // Continue from this reader's original header, without another read.
         if let Err(reason) = output.ensure(self.sources.count as usize) {
             return SourceOutcome::unavailable(reason);
         }
@@ -193,9 +159,6 @@ impl Reader {
                 return SourceOutcome::unavailable("threat source pointer unreadable or null");
             };
             if len == output.len() {
-                // No further row can be published, and an unread source's reason
-                // length is unknown without reading it, so stop counting bytes.
-                // Rows already omitted for a full arena stay counted.
                 unread_rows += self.sources.count - ordinal;
                 break;
             }
@@ -232,7 +195,6 @@ impl Reader {
         }
     }
 
-    /// The dense aggregate cache, including slot zero and zero-valued slots.
     pub fn aggregates(&self, memory: &impl Memory, output: &mut [AggregateRow]) -> Outcome {
         let len = output.len().min(self.aggregates.count as usize);
         for (slot, destination) in output[..len].iter_mut().enumerate() {
@@ -451,7 +413,6 @@ mod tests {
             let mut bytes = fixture();
             put(&mut bytes, address, &value.to_le_bytes());
             if address == MANAGER + SOURCES {
-                // A null pointer with a nonzero count is a corrupt header.
                 put(&mut bytes, MANAGER + SOURCES + 12, &2_u32.to_le_bytes());
             }
             let outcome = Reader::new(

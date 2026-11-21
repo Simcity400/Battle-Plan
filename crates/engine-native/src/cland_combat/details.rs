@@ -6,11 +6,6 @@ use crate::naval_commander_inputs::SkillDefinition;
 use crate::{Memory, carmy, cland_combatant, cpdx_array::Array, read, walk::Buffer};
 use std::collections::HashMap;
 
-/// A selected commander is shared by a combat side's window, detail and
-/// tactic readers. Selection uses only that side's unit list and is keyed by
-/// its data and count. The pass holds the simulation thread, so the same
-/// list would supply the same words. Each reader receives the original
-/// selection or failure where it would select; other lists select afresh.
 #[derive(Default, Clone, Copy)]
 pub struct Commanders {
     sides: [Option<(Array, Selection)>; 2],
@@ -18,26 +13,15 @@ pub struct Commanders {
 
 type Selection = Result<CommanderSource, &'static str>;
 
-/// Reads of a selected commander that depend on that leader alone (or, for
-/// a next skill, on its level and category alone), shared by the combats of
-/// one pass: the pass holds the simulation thread, so a second read of the
-/// same leader would read the same words and fail the same way. Selection,
-/// the HQ modifier block and the country fallback depend on the combat and
-/// stay per combat. A presentation is held only once complete; a failed one
-/// is read again where it fails. Holding is advisory: a result that cannot be
-/// held is read again next time.
 #[derive(Default)]
 pub struct Leaders {
     presentations: HashMap<usize, crate::naval_commander_inputs::Presentation>,
     next_skills: HashMap<(i32, i32), Result<SkillDefinition, &'static str>>,
-    /// Parent commander search by general.
     pub(crate) parents: HashMap<usize, Result<usize, &'static str>>,
-    /// Each general's preferred tactic identity.
     pub(crate) preferred: HashMap<usize, Result<i32, &'static str>>,
 }
 
 impl Leaders {
-    /// `read`'s result for `key`, held for the pass.
     pub(crate) fn shared<K: Eq + std::hash::Hash, V: Copy>(
         held: &mut HashMap<K, V>,
         key: K,
@@ -86,7 +70,6 @@ impl Leaders {
             + self.preferred.capacity() * size_of::<(usize, Result<i32, &'static str>)>()
     }
 
-    /// Forget every held read: a new pass reads afresh.
     pub fn clear(&mut self) {
         self.presentations.clear();
         self.next_skills.clear();
@@ -95,7 +78,6 @@ impl Leaders {
     }
 }
 
-/// A span of one of the caller's [`DetailArenas`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
@@ -113,7 +95,6 @@ pub struct CommanderTrait {
     pub token_id: i32,
     pub definition_ordinal: i32,
     pub kind: u32,
-    /// Combat-relevant trait byte used by the trait filter.
     pub relevant: u8,
     pub token_start: usize,
     pub token_len: usize,
@@ -121,7 +102,6 @@ pub struct CommanderTrait {
 
 pub use crate::cunit_leader::TimedTrait as CommanderTimedTrait;
 
-/// Entries of each detail arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DetailCounts {
     pub participants: usize,
@@ -132,13 +112,6 @@ pub struct DetailCounts {
     pub learning: usize,
 }
 
-/// Caller-owned storage for every variable-length detail list: committed and
-/// reserve handles, air-support plane counts, all token bytes, and both side
-/// commanders' assigned, timed and learning traits. Nothing bounds a list but
-/// its live vector: `required` counts every entry read, `used` those stored.
-/// An entry that does not fit is still authenticated and counted but not
-/// stored, so `used` falls short of `required` and the caller publishes no
-/// partial detail; it grows the arenas off the game thread from `required`.
 pub struct DetailArenas<'a> {
     pub participants: Buffer<'a, u64>,
     pub air: Buffer<'a, i32>,
@@ -181,7 +154,6 @@ impl<'a> DetailArenas<'a> {
         )
     }
 
-    /// Continue these same native detail observations in worker-owned arenas.
     pub fn with_buffers(
         participants: Buffer<'a, u64>,
         air: Buffer<'a, i32>,
@@ -203,13 +175,11 @@ impl<'a> DetailArenas<'a> {
         }
     }
 
-    /// Every entry read was stored.
     pub fn complete(&self) -> bool {
         self.used == self.required
     }
 }
 
-/// Count one entry and store it when the arena still has room.
 pub(super) fn push<T>(arena: &mut [T], used: &mut usize, required: &mut usize, value: T) {
     *required += 1;
     if let Some(slot) = arena.get_mut(*used) {
@@ -228,8 +198,6 @@ pub struct CommanderLearningTrait {
     pub token_len: usize,
 }
 
-/// Authenticated pointers for related readers in the same stopped callback.
-/// These are never replay identities and must never be serialized.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommanderSource {
     pub pointer: usize,
@@ -263,8 +231,6 @@ pub fn commander_sources(
     ])
 }
 
-/// The leader modifier keys copied and described after the commander's skill
-/// line, in order: 0x5F, then 0x60.
 pub const SKILL_HOVER_KEYS: [u32; 2] = [0x5f, 0x60];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -274,16 +240,12 @@ pub struct SideDetails {
     pub reserve_start: usize,
     pub reserve_len: usize,
     pub tactic_id: i32,
-    /// Tactic kind: 0 null pointer, 1 null tactic, 2 ordinary tactic.
     pub tactic_kind: u8,
     pub tactic_counter_id: u32,
-    /// Spans of the text and air arenas.
     pub tactic_token: Span,
     pub air_counts: Span,
-    /// Side anti-air attack used as the CAS tooltip's effectiveness input.
     pub anti_air_attack: i64,
     pub air_kills: u32,
-    /// Air strength/org, ground strength/org, prevented strength/org damage.
     pub damage: [i64; 6],
     pub organisation_loss: [i64; 24],
     pub organisation_loss_count: u32,
@@ -291,41 +253,19 @@ pub struct SideDetails {
     pub commander_skill: i32,
     pub commander_category: i32,
     pub commander_country: u32,
-    /// Raw CUnitLeader experience, which the skill hover divides.
     pub commander_experience: i64,
-    /// The selected commander's next skill level, which the experience ratio
-    /// looks up at level + 1. This and the next two are optional hover inputs:
-    /// `None` without a selected commander, or when their read failed, which
-    /// [`Self::side_input_refusals`] names; a failure never drops the row.
     pub next_skill: Option<crate::naval_commander_inputs::SkillDefinition>,
-    /// The live `LEADER_TRAITS_XP_SHOW`, which the portrait's learning-trait
-    /// rows must exceed.
     pub learning_threshold: Option<i64>,
-    /// Raw keys 0x5F and 0x60 of the leader modifier block described after the
-    /// skill line; zero when absent.
     pub skill_modifiers: Option<[i64; 2]>,
-    /// Why the next level, the floor and the leader block, in that order,
-    /// could not be read.
     pub side_input_refusals: [Option<&'static str>; 3],
-    /// The raw saved name of the unit leader (a localisation key or literal); its localised copy is
-    /// the recording client's cache.
     pub commander_name_token: Span,
-    /// Raw saved commander-description token. The game caches localised text beside it; the viewer
-    /// localises the retained token.
     pub commander_description_token: Span,
-    /// Commander formation reference (`carmy_leader::FORMATION_REFERENCE`) used by the HQ badge;
-    /// zero for absence or an ineligible category.
     pub commander_formation: u64,
     pub presentation: crate::naval_commander_inputs::Presentation,
-    /// The assigned-trait vector in native order, as a span of the caller's [`DetailArenas`]; each
-    /// trait's token is a span of its text.
     pub traits_start: usize,
     pub traits_len: usize,
-    /// Ordered timed traits in the caller arena. Expiry display uses the first entry matching a
-    /// trait.
     pub timed_traits_start: usize,
     pub timed_traits_len: usize,
-    /// The trait-experience vector in native order.
     pub learning_traits: Span,
 }
 
@@ -353,7 +293,6 @@ pub struct DetailsRow {
     pub defender_bonus: i64,
     pub stored_terrain_valid: u8,
     pub stored_terrain_name: Span,
-    /// Attacker then defender, regardless of local viewing country.
     pub sides: [SideDetails; 2],
     pub border_war: Option<BorderWarInputs>,
 }
@@ -378,7 +317,6 @@ pub(super) fn read_border_war(
         if state <= 0 {
             return Err("border-war state id invalid");
         }
-        // Either border-war event identifier may be empty.
         let events = reader.field::<[u8; 64]>(pointer, side::WIN_EVENT)?;
         let lose_offset = side::LOSE_EVENT - side::WIN_EVENT;
         row.sides[index] = BorderWarSide {
@@ -403,8 +341,6 @@ pub(super) fn read_border_war(
     Ok(row)
 }
 
-/// Copy only already-reached leaf spans. A checked-address failure stops at its
-/// original ordinal after the readable prefix; no failed field is retried.
 pub(super) fn copy_detail_spans<const N: usize>(
     memory: &impl Memory,
     sources: [(usize, usize); N],
@@ -446,10 +382,6 @@ const SELECTED_DESCRIPTION: crate::cname_group_member::StringErrors = [
     "land combat commander description token terminator unreadable or invalid",
 ];
 
-/// Capture window operands from the authenticated census. Committed and
-/// reserve references keep stored order in the caller arena. No game calls,
-/// UI totals or process pointers are recorded. Loss history is reached only
-/// when its count admits all 24 entries.
 pub fn read_details(
     memory: &impl Memory,
     base: usize,
@@ -469,8 +401,6 @@ pub fn read_details(
     )
 }
 
-/// [`read_details`] sharing each selected leader's leader-only reads with
-/// the pass's other combats through `leaders`.
 pub fn read_details_sharing(
     memory: &impl Memory,
     base: usize,
@@ -519,9 +449,6 @@ pub fn read_details_sharing(
         defender_bonus: i64::from_le_bytes(defender_bonus),
         ..DetailsRow::default()
     };
-    // Border tooltip consumes only both sides and the transfer byte.
-    // Header authentication already proved side identity and backlinks;
-    // event identifiers use the unbounded arena.
     if border {
         row.border_war = Some(read_border_war(&reader, source, arenas)?);
     }
@@ -658,7 +585,6 @@ pub fn read_details_sharing(
 }
 
 impl<M: Memory> Reader<'_, M> {
-    /// `side`'s commander selection over `units`, made once (`Commanders`).
     fn selected(
         &self,
         commanders: &mut Commanders,
@@ -719,13 +645,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok(selected)
     }
 
-    /// Keys 0x5F and 0x60 of the selected leader's block described after the skill line. The skill
-    /// hover picks the first of the side's units that fails separate-HQ eligibility, else the
-    /// first, and passes no unit when the side has none or the deployed-HQ feature is off. Unit
-    /// modifier selection takes the separate-HQ block only for an eligible unit, so that block is
-    /// taken exactly when every unit is eligible (eligibility itself requires the feature). The
-    /// values are the raw words, zero for an absent key, as the accumulator copy receives them
-    /// through effective modifier lookup, whose metadata branch the description applies again.
     fn skill_modifiers(
         &self,
         members: &Members<'_>,
@@ -775,16 +694,12 @@ impl<M: Memory> Reader<'_, M> {
         arenas: &mut DetailArenas<'_>,
     ) -> Result<(), &'static str> {
         use crate::{carmy_leader, cunit_leader, cunit_leader_trait};
-        // Select the first highest-skill leader, except equal category 1
-        // replaces category 0. Keep the reference as identity and bonuses as raw fields.
         let commander = self.selected(commanders, members, index, units)?;
         let selected = commander.pointer;
         row.commander = commander.handle;
         row.commander_skill = commander.skill;
         row.commander_category = commander.category;
         if selected == 0 {
-            // Fall back to the first side-country entry, then the attacked-province
-            // controller when its country-set count is zero.
             row.commander_country = if self.field::<i32>(side, 0x48)? == 0 {
                 let combat = self.pointer(side, cland_combatant::COMBAT)?;
                 self.field(self.pointer(combat, PROVINCE)?, 0x188)?
@@ -793,14 +708,8 @@ impl<M: Memory> Reader<'_, M> {
             };
             return Ok(());
         }
-        // Portrait and trait display use the commander's exact country tag. Preserve it without
-        // canonical-slot substitution.
         row.commander_country = self.field(selected, 0x120)?;
         row.commander_experience = self.field(selected, cunit_leader::EXPERIENCE)?;
-        // The skill hover's ratio divides by the next level's requirement, and
-        // the portrait's learning rows compare with the live display floor.
-        // These hover inputs are optional: a failed read refuses only its part,
-        // by name, and the row and the later reads stand.
         let refused = &mut row.side_input_refusals;
         row.next_skill = Leaders::shared(
             &mut leaders.next_skills,
@@ -826,9 +735,6 @@ impl<M: Memory> Reader<'_, M> {
             .skill_modifiers(members, index, units, selected)
             .inspect_err(|reason| refused[2] = Some(*reason))
             .ok();
-        // The selected commander's saved name is stored as an ordinary MSVC string and passed to
-        // text rendering, which takes any length, empty included; the description token is the same
-        // kind of string. Both keep the game's own length.
         for (offset, unreadable, errors, span) in [
             (
                 cunit_leader::TOKEN,
@@ -855,8 +761,6 @@ impl<M: Memory> Reader<'_, M> {
         row.presentation = leaders.presentation(selected, || {
             crate::naval_commander_inputs::capture_presentation(self.memory, self.base, selected)
         })?;
-        // Every vector is sized by its live count alone; entries that do not
-        // fit the caller's arenas are still authenticated and counted.
         let traits = self.array(selected, cunit_leader::TRAIT_DATA, 8)?;
         arenas.traits.ensure(
             arenas
@@ -957,8 +861,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok(())
     }
 
-    /// A nonempty string's bytes into the text arena. The native length is
-    /// the only bound; bytes that do not fit are counted, not stored.
     pub(super) fn text(
         &self,
         pointer: usize,
@@ -1000,9 +902,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok(Span { start, len })
     }
 
-    /// An MSVC string of any length, empty included, into the text arena
-    /// (cname_group_member::copy_string, which names each invalid part).
-    /// Bytes that do not fit are counted, not stored.
     fn string(
         &self,
         pointer: usize,

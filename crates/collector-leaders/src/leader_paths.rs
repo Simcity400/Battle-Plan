@@ -1,4 +1,3 @@
-//! Hourly picture-directory inputs for the current land HQ leaders.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_native::{Memory, cunit_leader, walk::Outcome};
@@ -26,7 +25,6 @@ impl Capacities {
 
 pub struct Captured {
     rows: CaptureRows<cunit_leader::PortraitPathRow<engine_native::capture_text::Owned>>,
-    /// One tag cell per country slot, sized from the observed table off-thread.
     tag_memo: cunit_leader::PortraitTagMemo<engine_native::capture_text::Owned>,
 }
 impl Captured {
@@ -35,7 +33,6 @@ impl Captured {
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0 })
     }

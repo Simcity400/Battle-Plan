@@ -1,41 +1,13 @@
-//! The arrival line a moving unit shows on its map counter.
-//!
-//! The game words it from one ceiling at two sites. The division-view tooltip
-//! integrates remaining time over the stored route and writes
-//! `UNIT_VIEW_MOVE_HOURS` or `UNIT_VIEW_MOVE_DAYS_HOURS`.
-//! The counter tooltip builder writes the same sentence on the **map
-//! counter** as `UNIT_MOVING_HOURS` / `UNIT_MOVING_DAYS_HOURS`, and switches to the
-//! `_NONPLAYER` pair over the **next** province for a unit the viewing player does not own
-//! (`ccountry_tag::same_country` against the idler's country). The viewer has no division view,
-//! so its counter hover carries the line, in the counter tooltip's own wording.
-//!
-//! On a counter cache miss the game searches a new route, then integrates its
-//! duration. The viewer words a division's
-//! arrival estimate instead ([`super::division_eta`]): the walk over its stored route with
-//! each edge at its recorded base speed and the recorded infrastructure and organisation
-//! terms, which drifts from the game wherever the unrecorded speed terms apply. A railway gun keeps the fresh native query with its current-hour operands, and
-//! a task force walks its stored route at its native per-region speeds. The native interface's
-//! retained duration cache and route option are local presentation state the viewer does not
-//! read or capture.
-//!
-//! Both sites use [`game_model::movement::unit::eta_hours`], narrowed to i32. The map
-//! counter's [`map_arrival`] formats every reached duration: signed days<1
-//! uses total hours, otherwise days and the hours remainder.
 
 use game_model::movement::unit::eta_hours;
 use viewer_foundation::tooltip_text::tooltip_keys;
 
-/// One counter's arrival, in the parts the game's sentence names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arrival {
-    /// The `hours / 24`.
     pub days: i32,
-    /// The `hours % 24`.
     pub hours: i32,
 }
 
-/// Format every reached query result. When the whole-day count is below one,
-/// pass the total signed hours, including zero and negative values.
 pub(crate) fn map_arrival(remaining: i64) -> Arrival {
     let total = eta_hours(remaining) as i32;
     let days = total / 24;
@@ -52,10 +24,6 @@ pub(crate) fn map_arrival(remaining: i64) -> Arrival {
     }
 }
 
-/// Format counter arrival with the content's moving-hours or moving-days-and-hours
-/// keys and their nonplayer variants. Integer arguments are `HOURS` and, where
-/// needed, `DAYS`. Missing keys retain their bytes. The shared text reader validates
-/// colour controls and inline artwork.
 pub fn sentence(
     localisation: &installed_content_localisation::localisation::Localisation,
     arrival: &Arrival,
@@ -93,8 +61,6 @@ mod tests {
 
     #[test]
     fn map_counter_formats_zero_negative_and_narrowed_total_hours() {
-        // 4.43806 h, the RENDERING.md 7.3 worked example, ceilings to 5; exact hours do
-        // not ceiling past themselves.
         assert_eq!(map_arrival(443_806), Arrival { days: 0, hours: 5 });
         assert_eq!(map_arrival(100_000).hours, 1);
         assert_eq!(map_arrival(100_001).hours, 2);
@@ -137,12 +103,10 @@ mod tests {
             Ok("Arrives at its destination in \u{11}Y5\u{11}! \u{11}Yhour(s)\u{11}!.")
         );
         let two = Arrival { days: 1, hours: 5 };
-        // `$OTHER$` is no argument and no key: the localiser writes nothing.
         assert_eq!(
             sentence(&localisation, &two, false).as_deref(),
             Ok("Next province in \u{11}Y1\u{11}! \u{11}Yday(s)\u{11}! and 5 h, .")
         );
-        // A key the content lacks is drawn as its bytes.
         assert_eq!(
             sentence(&localisation, &one, false).as_deref(),
             Ok("UNIT_MOVING_HOURS_NONPLAYER")

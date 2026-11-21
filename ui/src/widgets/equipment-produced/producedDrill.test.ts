@@ -33,7 +33,6 @@ test('one type stacks its models and their sum; a design whose type was not reco
 });
 
 test('a breakdown asked by slot answers that slot whatever tag it goes by, and never another country', () => {
-  // The service names the country by its tag at the hour; the drill names it by the key it asked with.
   const bySlot = producedDrillData(reply('units', [model('1', 'infantry', [[0, 100, 2]])], [[0, 100, 2]], 1), { count: 'units', type: 'infantry' });
   assert.equal(bySlot.at(countryKey(1), 10)!.total, 2);
   assert.deepEqual(bySlot.bands(countryKey(1), { firstHour: 0, lastHour: 100 })[0].map(run => run.value), [2]);

@@ -1,0 +1,9 @@
+# Share capture sizing and timing contracts between workers
+
+The host owns composition. Extended capture families share the outcome, sizing, hourly-boundary and timing primitives without importing host jobs. The frame pool's steady count applies after the spool catches up. Backlog can take more frames and returns storage as it drains. The thread-local marker covers the native hourly tick after capture. A terminal capture failure invalidates scheduled reads and leaves already carried samples intact. Raid status distinguishes a path read that overlapped a writer from a row refused for an unproven leader owner.
+
+Sizing an absent or empty world leaves its hint pending. The air family also waits for a manager whose country slots can cover the country census, since manager construction and slot population happen after the country roots. Timing distributions retain every sample for exact nearest-rank percentiles, with several small-sample percentiles allowed to share a rank. The result stays cached until another sample arrives.
+
+Capture-cost fixtures use a synthetic busy-world shape and build a correctly sized buffer before placing pointers into it. The same immutable bytes support an owned slice path for request accounting and the production guarded-copy path for timings. The fixture keeps its bytes owned and alive for each read through the `LiveMemory` handle created by `World::live`. Separate counted reads keep per-table source demand independent of timing and load. The world is shaped with both unnamed orders and optional named orders and theatre links to cover the corresponding reads without a game process.
+
+[Demand hints](../../crates/collector-extended-support/src/demand.rs) · [Timing distributions](../../crates/collector-extended-support/src/distribution.rs) · [Benchmark world](../../crates/collector-extended-support/src/bench_world.rs) · [Capture outcomes](../../crates/collector-extended-support/src/outcomes.rs)

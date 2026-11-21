@@ -1,7 +1,6 @@
 #[path = "../fixtures.rs"]
 pub mod fixtures;
 
-/// Give raw block/frame mutations valid outer framing and a recomputed trailer CRC.
 pub fn raw_recording(raw: &[u8]) -> std::io::Result<replay::container::Replay> {
     use replay::container::Replay;
     use std::sync::OnceLock;
@@ -20,9 +19,6 @@ pub fn raw_recording(raw: &[u8]) -> std::io::Result<replay::container::Replay> {
     bytes[footer - 16..footer - 8].copy_from_slice(&(compressed.len() as u64).to_le_bytes());
     bytes[footer - 8..footer].copy_from_slice(&(raw.len() as u64).to_le_bytes());
     bytes[footer + 4..footer + 12].copy_from_slice(&(new_trailer_start as u64).to_le_bytes());
-    // Derive the index's hour span from complete decoded payloads. Arbitrary
-    // malformed payloads retain the single-hour seed; valid mutated sequences
-    // can now reach snapshot/delta baselines at every recorded hour.
     let mut input = replay_data::codec::Decoder::new(raw);
     if let Ok(count) = input.count(4) {
         let mut first = None;
@@ -42,7 +38,6 @@ pub fn raw_recording(raw: &[u8]) -> std::io::Result<replay::container::Replay> {
             last = Some(frame.hour);
         }
         if let (Some(first), Some(last)) = (first, last) {
-            // The one index entry's last 32 bytes contain its hour span/extents.
             bytes[footer - 32..footer - 28].copy_from_slice(&first.to_le_bytes());
             bytes[footer - 28..footer - 24].copy_from_slice(&last.to_le_bytes());
         }

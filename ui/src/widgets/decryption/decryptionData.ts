@@ -15,7 +15,6 @@ const byte = (value: unknown) => Number.isInteger(value) && (value as number) >=
 const text = (value: unknown) => typeof value === 'string' && value.length > 0;
 const observation = (value: unknown) => value === null || object(value) && Number.isSafeInteger(value.hour) && typeof value.upperBound === 'boolean';
 
-/** Checks a decryption reply whole: a threshold is known or named unknown, never both or neither. */
 export function validateDecryption(value: unknown): DecryptionReply {
   const ok = object(value) && Array.isArray(value.pairs) && (value.missing === null || text(value.missing))
     && (value.attemptsUnknown === null || text(value.attemptsUnknown)) && Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string')
@@ -27,11 +26,8 @@ export function validateDecryption(value: unknown): DecryptionReply {
   return value as unknown as DecryptionReply;
 }
 
-/** A pair's row id: its live cells' row. */
 export const pairKey = (pair: CipherPair) => `${pair.owner.id}:${pair.target.id}`;
 
-/** The game's meter percent: the fixed5 division (its invalid sentinel included) with wrapping i64 arithmetic, the
- * active bonus as whole, rounded half away from zero, clamped to the meter's 1 to 100 frames. */
 export function progressPercent(amount: bigint, active: number, threshold: bigint): number | null {
   let ratio: bigint;
   if (threshold === 0n || BigInt.asUintN(64, BigInt.asUintN(64, amount) + 0x7fff_ffff_ffff_fffen) > 0xffff_ffff_ffff_fffcn) {
@@ -47,9 +43,7 @@ export function progressPercent(amount: bigint, active: number, threshold: bigin
   return Math.max(1, Math.min(100, Number(BigInt.asIntN(32, rounded))));
 }
 
-/** A pair's moving numbers, read from the live cells when they are painted. */
 export interface CipherNumbers {
-  /** Fixed5 amount; undefined where not read, with why. */
   amount: number | undefined;
   bonusDays: number | undefined;
   missing: string;
@@ -61,7 +55,6 @@ export function cipherNumbers(values: LiveValues<number>, pair: CipherPair): Cip
   return { amount, bonusDays: values.get(liveKey(key, 'bonusDays')), missing: amount === undefined ? values.missing(liveKey(key, 'amount')) : '' };
 }
 
-/** The meter's percent at those numbers; null where the threshold or the amount is not known. */
 export function percentOf(pair: CipherPair, numbers: CipherNumbers): number | null {
   if (pair.thresholdRaw === null || numbers.amount === undefined || !Number.isInteger(numbers.amount)) return null;
   return progressPercent(BigInt(numbers.amount), pair.bonusActive, BigInt(pair.thresholdRaw));
@@ -72,7 +65,6 @@ export const progressLabel = (percent: number | null) => percent === null ? 'Pro
 export const amountText = (numbers: CipherNumbers) => numbers.amount === undefined || !Number.isInteger(numbers.amount) ? `Amount not read (${numbers.missing})`
   : formatAmount(BigInt(numbers.amount), 5, 5);
 export const progressText = (percent: number | null, numbers: CipherNumbers) => percent === null ? `${progressLabel(percent)} · ${amountText(numbers)}` : progressLabel(percent);
-/** Bonus days show only while the bonus is active; the countdown keeps its sign. */
 export const activeBonusDays = (pair: CipherPair, numbers: CipherNumbers): number | null =>
   pair.broken === true && pair.bonusActive !== 0 && numbers.bonusDays !== undefined ? numbers.bonusDays : null;
 export const bonusText = (days: number | null) => days === null ? '' : `${days >= 0 ? '+' : ''}${days} bonus days`;
@@ -82,14 +74,12 @@ export const workingStatus = (pair: CipherPair, capitalized = false) => {
   return capitalized ? status[0].toUpperCase() + status.slice(1) : status;
 };
 
-/** An observation's date, "by" one already so when first read. */
 export function observationDate(observation: Observation | null, unknown = 'Not recorded'): string {
   if (!observation) return unknown;
   const date = gameDate(observation.hour);
   return `${observation.upperBound ? 'by ' : ''}${date ? formatDate(date) : `hour ${observation.hour}`}`;
 }
 
-/** Why an attempt's date is not shown: not known for the reply, else not recorded. */
 const attemptUnknown = (reply: Pick<DecryptionReply, 'attemptsUnknown'>) => reply.attemptsUnknown === null ? 'Not recorded' : 'Not known';
 
 export const cipherStatus = (pair: CipherPair, reply: Pick<DecryptionReply, 'attemptsUnknown'>) => pair.broken === true
@@ -101,8 +91,6 @@ export type CountrySide = 'decryptor' | 'target';
 
 const countryName = (value: Country) => value.tag ?? `Country ${value.id}`;
 
-/** The pairs shown, in race order (the reply's) or grouped by decryptor first; with `matches`, only those whose
- * chosen side's country it matches at `hour` (a side no tag names never matches). */
 export function raceRows(reply: Pick<DecryptionReply, 'pairs'>, order: RaceOrder, side: CountrySide, hour: number,
   matches?: (tag: string, hour: number) => boolean): CipherPair[] {
   const shown = matches ? reply.pairs.filter(pair => {
@@ -130,5 +118,4 @@ export function decryptionTooltip(pair: CipherPair, reply: Pick<DecryptionReply,
   return fitTooltip([content], height, { keep: 1 });
 }
 
-/** What renders a pair's row: everything but its moving numbers. */
 export const raceStructure = (reply: DecryptionReply) => JSON.stringify([reply.missing, reply.attemptsUnknown, reply.pairs, reply.warnings]);

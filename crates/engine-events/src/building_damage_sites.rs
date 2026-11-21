@@ -1,39 +1,3 @@
-//! Applied building damage for the supported executable, acquired without
-//! calling the game. Direct-call coverage in [`CALLERS`] includes air missions,
-//! naval air and port damage, land collateral, weekly sabotage, script damage
-//! and facility dismantling. Unknown callers remain Unknown; direct-call
-//! coverage alone cannot establish the absence of indirect calls.
-//!
-//! Both status and template mappings authenticate the building token without
-//! assuming names, ordinals or country/state/province counts. Only an air source
-//! kind permits following its wing payload. Other or unknown kinds and null
-//! wings retain null attackers. Attribution faults also retain null attackers;
-//! location and health faults refuse the event. Air credit selects the location
-//! controller after applying damage, independently of repair/notification routing.
-//! A zero controller remains known absence, with no phantom country join or
-//! omission of the event. Positive wing country overrides win; otherwise the
-//! pool owner supplies the effective country. References remain raw words.
-//!
-//! Applied damage is the signed before/after healthy-level and partial-health
-//! difference. Modified requests can be rounded before reducing health, so
-//! returned budget consumption is retained separately. Raw health has a full
-//! level scale of 10,000,000 and fixed5 scale of 100,000. Damage does not write
-//! total level; saves retain total, healthy and partial health without attribution.
-//!
-//! Normal hourly damage follows completion of air workers. Tick and scorch
-//! commands execute serially and recursive drains are refused. Daily repair
-//! follows hourly work; nuclear refresh is serial. Nuclear and scorch bypass
-//! this damage writer, so the ledger cannot represent every health reduction.
-//! Damage queues repair without instant level assignment. Notifications dispatch
-//! building, aircraft and ship listeners without direct health or controller
-//! writes. Naval notification uses the province controller without a separate
-//! building victim-credit output.
-//!
-//! Console repair, arbitrary script/setter mutations and transitive ship callbacks
-//! are not completely excluded. Same-building damage claims cannot detect
-//! unobserved setters; attribution and level checks alone do not prove health
-//! isolation. Debug/init paths and exceptions lack live validation. Synthetic
-//! tests cover layouts and refusals; live cost remains unverified.
 
 use crate::{
     Memory, cair_wing, cair_wing_pool, cbuilding, cbuilding_status, cbuilding_template,
@@ -41,15 +5,10 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Damage entry. Its relocated five-byte instruction stores RBX in caller
-/// home space without changing RSP or nonvolatile registers.
 pub const APPLY_DAMAGE_RVA: Rva = Rva(0x0116_3cd0);
 
 pub use game_model::building_damage::Cause;
 
-/// Exact return RVAs after every indexed direct CALL to ApplyDamage. The
-/// original wrapper must retain its incoming return address before calling
-/// the trampoline; the trampoline's own return address is not a caller.
 pub const CALLERS: [(Rva, Cause); 10] = [
     (Rva(0x0100_02cb), Cause::AirMission),
     (Rva(0x01a0_f0db), Cause::AirNaval),
@@ -73,20 +32,15 @@ pub const CALLER_KEYS: [Rva; CALLERS.len()] = {
     keys
 };
 
-/// Source kind selecting an air-wing payload.
 pub const AIR_SOURCE_KIND: u32 = 1;
-/// Air-source wing payload offset.
 pub const SOURCE_WING: usize = 8;
 
-/// Callback-local owned values. Internal pointers authenticate the post-read;
-/// they must never leave the native call's lifetime or become replay fields.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Snapshot {
     pub building: usize,
     pub health_raw: i64,
     pub attacker: Option<u32>,
-    /// A failed wing read is distinct from native no-wing/source-kind absence.
     pub attribution_failed: bool,
     pub victim: u32,
     pub state: u32,
@@ -151,7 +105,6 @@ fn array(
 }
 
 fn health(memory: &impl Memory, building: usize) -> Result<(i16, i64), &'static str> {
-    // The native signed-short levels and partial-health qword span exactly.
     let bytes = field::<[u8; 16]>(
         memory,
         building,
@@ -165,19 +118,12 @@ fn health(memory: &impl Memory, building: usize) -> Result<(i16, i64), &'static 
     if total < 0 || healthy < 0 || healthy > total || partial < 0 {
         return Err("building damage health form unsupported");
     }
-    // A negative modified request is not clamped: partial health can exceed a
-    // full level, including the total level health.
     let value = (i64::from(healthy) * scale)
         .checked_add(partial)
         .ok_or("building damage health overflow")?;
     Ok((total, value))
 }
 
-/// Cold capacity census over the current state's and province's live building
-/// headers, without following each instance or allocating. The locations,
-/// embedded statuses and scope/id backlinks must all authenticate. A missing
-/// root or failed read is None, never zero. This measures current population,
-/// not a bound on event writes; a collector still counts queue overflow.
 pub fn building_count(memory: &impl Memory, base: usize) -> Option<usize> {
     let game_state = pointer(
         memory,
@@ -466,8 +412,6 @@ fn attacker(
     Ok((country != 0).then_some(country))
 }
 
-/// Pre reads only building identity, health, and source kind. Location,
-/// content-index authentication and country attribution run only after damage.
 pub fn snapshot(
     memory: &impl Memory,
     base: usize,
@@ -503,7 +447,6 @@ pub fn snapshot(
         "building damage template unreadable",
     )?;
     let (total_level, health_raw) = health(memory, building)?;
-    // The exhausted-health gate precedes source reads.
     let native_cause = if source == 0 || health_raw == 0 {
         0
     } else {
@@ -528,8 +471,6 @@ pub fn snapshot(
     })
 }
 
-/// Air credit reads the controller after damage. Attribution failures retain
-/// a null attacker; identity and location failures refuse the event.
 pub fn attribution(
     memory: &impl Memory,
     base: usize,
@@ -620,8 +561,6 @@ pub fn attribution(
     })
 }
 
-/// Health and identity are always checked; callers defer attribution until
-/// this returns a nonzero amount. A no-op follows no location/wing pointers.
 pub fn applied_damage(
     memory: &impl Memory,
     base: usize,

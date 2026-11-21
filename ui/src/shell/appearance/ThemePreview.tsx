@@ -6,7 +6,6 @@ const palette = (colors: ThemeColors) => ({
   '--w-border': colors.border, '--w-text': colors.text, '--w-muted': colors.muted, '--w-accent': colors.accent, '--w-glow': colors.glow,
 }) as CSSProperties;
 
-/** A miniature of the app shell painted in a palette. */
 export function ThemeWireframe({ colors }: { colors: ThemeColors }) {
   return <span className="wireframe" style={palette(colors)} aria-hidden="true">
     <span className="wf-rail"><i className="wf-logo" /><i /><i className="is-active" /><i /></span>
@@ -18,7 +17,6 @@ export function ThemeWireframe({ colors }: { colors: ThemeColors }) {
   </span>;
 }
 
-/** A small disc summarising a palette: canvas, panels, accent and glow. */
 export function ThemeSwatch({ colors }: { colors: ThemeColors }) {
   return <span className="theme-swatch" style={palette(colors)} aria-hidden="true" />;
 }

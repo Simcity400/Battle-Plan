@@ -14,7 +14,6 @@ test('a followed answer is ranked as today ranks a reply: greatest first, ties b
   const members = new Map([['GER', [{ firstHour: 0, lastHour: 20 }]], ['SOV', [{ firstHour: 30, lastHour: 40 }]], ['FRA', [{ firstHour: 0, lastHour: 99 }]],
     ['ENG', [{ firstHour: 50, lastHour: 60 }]]]);
   assert.deepEqual(followedEntries(rows, null, { membership: members as never }, 10, 5, 'divisions', 0).map(entry => entry.tag), ['GER', 'FRA']);
-  // Strength is fixed-point of five places, its label exact.
   assert.deepEqual(followedEntries(answer([['GER', 123_456_789n]]), null, { membership: null }, 10, 1, 'strength', 5).map(entry => [entry.value, entry.label]),
     [[1234.56789, '1,234.56789']]);
   assert.deepEqual(followedEntries({ kind: 'notRecorded', reason: 'not here' }, null, { membership: null }, 10, 3, 'divisions', 0), []);

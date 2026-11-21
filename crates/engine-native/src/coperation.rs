@@ -1,17 +1,11 @@
-//! COperation, the authored espionage-operation definition.
 
 use engine_sites::Rva;
 use crate::{Memory, read};
 
-/// Primary vtable at subobject offset zero.
 pub const VTABLE_RVA: Rva = Rva(0x029b_cc48);
-/// Embedded preparation mean-time-to-happen object.
 pub const PREPARATION_TIME: usize = 0x10;
-/// Lexer token resolved before constructing an operation instance.
 pub const TOKEN_ID: usize = 0x08;
 
-/// Reads the exact definition token. `PREPARATION_TIME` is an embedded timing object, not a string;
-/// authored names are resolved separately through the token dictionary.
 pub fn definition(memory: &impl Memory, base: usize, pointer: usize) -> Result<u32, &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("operation module address overflow")?;

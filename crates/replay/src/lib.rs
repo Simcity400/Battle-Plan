@@ -1,6 +1,4 @@
-//! Campaign recordings, spool I/O and durable publication.
 
-/// The features this build of the crate has, for a binary to state.
 pub const FEATURES: &[&str] = &[
     #[cfg(feature = "keep-journal")]
     "keep-journal",

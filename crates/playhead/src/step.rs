@@ -1,11 +1,8 @@
-//! What readers get: one step of the playhead, its hours and every stepped table's change set as
-//! owned data, the states rebuilt for its resets, and what building it took.
 
 use crate::{changes::Changes, playhead::Reader, state::State};
 use replay_data::Hour;
 use std::sync::Mutex;
 
-/// One step: game hours `first` to `last`, every stepped table's change set in table order.
 #[derive(Debug, Default)]
 pub struct Step {
     pub(crate) charge: Mutex<Option<crate::Charge>>,
@@ -17,10 +14,7 @@ pub struct Step {
     pub(crate) piece: Option<usize>,
     pub(crate) reset: bool,
     pub(crate) tables: Vec<Changes>,
-    /// The hours of the step that wrote a table read hour by hour ([`crate::Declared::hourly`]),
-    /// in table order and rising hours.
     pub(crate) hours: Vec<Changes>,
-    /// The states rebuilt for the tables it resets, each until its reader takes it.
     pub(crate) states: Mutex<Vec<Rebuilt>>,
     pub(crate) built: Built,
 }
@@ -41,8 +35,6 @@ impl Step {
         self.last
     }
 
-    /// The timeline's piece it is in; none for hours in no piece (a gap: nothing is recorded
-    /// there, and the tables keep the rows of the piece before).
     pub fn piece(&self) -> Option<usize> {
         self.piece
     }
@@ -51,12 +43,10 @@ impl Step {
         self.piece.is_none()
     }
 
-    /// Every table's change set is a reset (a seek, or a piece's first hour).
     pub fn reset(&self) -> bool {
         self.reset
     }
 
-    /// The order steps are built in, from the playhead's start.
     pub fn seq(&self) -> u64 {
         self.seq
     }
@@ -65,9 +55,6 @@ impl Step {
         self.epoch
     }
 
-    /// How many times, when it was built, the steps past the frames had been rebuilt for a new
-    /// pace: a step lent ahead ([`crate::Consumer::ahead`]) and not taken, older than a step taken
-    /// or lent since, was rebuilt and will never be taken: what was made from it is void.
     pub fn restep(&self) -> u64 {
         self.restep
     }
@@ -80,26 +67,12 @@ impl Step {
         self.tables.binary_search_by_key(&table, Changes::table).ok().map(|at| &self.tables[at])
     }
 
-    /// Each hour of the step that wrote `table`, oldest first, for a table its readers declared
-    /// hourly ([`crate::Declared::hourly`]): one change set an hour, of the same columns as the
-    /// step's own, holding the cells written at that hour with the values it left them and the
-    /// rows born and gone in it; [`Changes::head`] is the hour. An hour that wrote nothing is not
-    /// there, and a step whose hours are nobody's picture — a seek's reset, a piece's crossing, or
-    /// a lane covering more hours than the pace's own step (a catch-up, or a table taking up the
-    /// hours a stall left) — carries none, its one change set standing for its whole span as
-    /// before. A table that was short reaches back before [`Step::first`], as its own change set
-    /// does.
-    ///
-    /// An hour's set names no string and carries no status, no renumber and no passing rows: those
-    /// are the step's own change set's, over the same hours.
     pub fn hours_of(&self, table: usize) -> &[Changes] {
         let from = self.hours.partition_point(|changes| changes.table() < table);
         let to = from + self.hours[from..].partition_point(|changes| changes.table() == table);
         &self.hours[from..to]
     }
 
-    /// A copy the ring changes in its place while a consumer that looked ahead holds this one; the
-    /// states rebuilt for it move to the copy.
     pub(crate) fn copied(&self) -> Self {
         let states = std::mem::take(&mut *self.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         Self { charge: Mutex::default(), epoch: self.epoch, seq: self.seq, restep: self.restep, first: self.first, last: self.last, piece: self.piece, reset: self.reset, tables: self.tables.clone(), hours: self.hours.clone(), states: Mutex::new(states), built: self.built }
@@ -109,42 +82,30 @@ impl Step {
         &self.built
     }
 
-    /// The bytes its change sets carry.
     pub fn payload(&self) -> usize {
         self.tables.iter().chain(&self.hours).map(Changes::payload).sum()
     }
 
-    /// The bytes it holds, buffers included.
     pub fn bytes_held(&self) -> usize {
         self.tables.iter().chain(&self.hours).map(Changes::bytes_held).sum::<usize>() + (self.tables.capacity() + self.hours.capacity()) * size_of::<Changes>()
     }
 }
 
-/// What building a step took.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Built {
-    /// The stepper's wall time: lanes stepped and change sets filled.
     pub ns: u64,
-    /// The stepper thread's own CPU in that wall time (none while it is off a core, and none of a
-    /// helper thread's own work on a split step), zero unless accounting is on.
     pub cycles: u64,
-    /// Threads that stepped lanes.
     pub threads: u32,
     pub cells: u64,
     pub rows: u64,
     pub bytes: u64,
-    /// Tables that stopped at a part not fetched yet.
     pub stalled: u32,
-    /// Tables behind the step's last hour, and the most hours one is behind.
     pub short: u32,
     pub most_short: u32,
-    /// Reads that arrived since the step before.
     pub fetched: Fetching,
-    /// For the reset step of a seek: what the seek took.
     pub sought: Option<Seeking>,
 }
 
-/// Reads done on the fetchers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Fetching {
     pub jobs: u64,
@@ -166,30 +127,21 @@ impl Fetching {
     }
 }
 
-/// A seek: its tables restored and replayed in parallel, each table's readers' states rebuilt
-/// where it was sought.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Seeking {
-    /// From the seek reaching the stepper to its reset step built.
     pub ns: u64,
     pub tables: u32,
-    /// Summed over tables, and the most one table took.
     pub restore_ns: u64,
     pub restore_most_ns: u64,
     pub replay_ns: u64,
     pub replay_most_ns: u64,
     pub fetch_ns: u64,
-    /// The readers' rebuilds, and the most one table's took.
     pub rebuild_ns: u64,
     pub rebuild_most_ns: u64,
     pub states: u32,
     pub state_bytes: u64,
-    /// One table's whole preparation, the most it took.
     pub table_most_ns: u64,
-    /// From the seek asked to the stepper beginning it: the step it was building finished first.
     pub waited_ns: u64,
-    /// Of `fetch_ns`, the reads past the hour sought (the read-ahead).
     pub ahead_ns: u64,
-    /// Threads that prepared its tables.
     pub threads: u32,
 }

@@ -1,25 +1,3 @@
-//! Stored raid speed inputs. Each phase-4 hour adds speed to travelled distance
-//! (`craid_instance::DISTANCE`); the raid arrow also uses speed as its denominator.
-//!
-//! - Transport planes: the largest stat 0x3e over nonzero raid-pool entries
-//!   whose variant has the air-transport category bit. If none qualify,
-//!   use the owner's stockpile; if neither pool qualifies, use 100000.
-//! - Convoys: the navy speed defines.
-//! - Otherwise: the wing's ace-modified maximum speed when its reference
-//!   resolves, else the army stat block's maximum speed.
-//!
-//! The remaining operands come from content: land and naval speed modifiers,
-//! naval transfer base speed, raid speed multiplier, ace wing-size limits
-//! and the raid type's speed multiplier. Scaling divides by 100000.
-//!
-//! Transport stats are read each phase-4 hour. The daily VariantStats table
-//! does not establish that those stats stay unchanged within a day.
-//!
-//! The ace owner's effectiveness factor and the wing country's ace-bonus
-//! factor are country modifier totals recorded hourly by the launch walk.
-//! Rows identify both countries by canonical slot instead of rereading totals.
-//!
-//! No engine function is called.
 
 use crate::{
     Memory, cace, cair_wing, ccountry, ccountry_raid_status, cequipment_variant,
@@ -32,27 +10,17 @@ use crate::{
     walk::Outcome,
 };
 
-/// Wing maximum speed, before ace scaling.
 pub const WING_MAX_SPEED: usize = 0x580;
-/// The army stat block's maximum speed (through `cunit::STAT_BLOCK`).
 pub const ARMY_MAX_SPEED: usize = 0x290;
-/// Stored raid end hour, valid while `END_PRESENT` is set.
 pub const END_HOUR: usize = 0x1a0;
 pub const END_PRESENT: usize = 0x1b0;
-/// The raid unit's army then air wing references.
 pub const ARMY_REFERENCE: usize = craid_instance::UNIT;
 pub const WING_REFERENCE: usize = craid_instance::UNIT + 8;
-/// The air transport category bit of `cequipment_variant::CLASSIFIER_FLAGS`.
 pub const AIR_TRANSPORT: u64 = 0x10_0000;
-/// Variant stat 0x3e in the variant's stat cache.
 pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE;
-/// The accumulator of the ace type's CModifier, reached through the ace's type.
 pub const ACE_TYPE_ACCUMULATOR: usize = 0x38 + 0x10;
-/// Through the wing's pool (`cair_wing::POOL`) to its owner, then the owner's country
-/// (`POOL_OWNER_COUNTRY`): the pool's country when `cair_wing::COUNTRY_OVERRIDE` is not positive.
 pub const WING_POOL_OWNER: usize = 0x40;
 pub const POOL_OWNER_COUNTRY: usize = 0x90;
-/// The resolved reference of a CUnit or CAirWing points at the object's secondary reference base.
 const REFERENCE_OFFSET: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -61,31 +29,18 @@ pub struct Row {
     pub id: u32,
     pub phase: i32,
     pub outcome: i32,
-    /// [`END_HOUR`] when [`END_PRESENT`] is set.
     pub end_hour: Option<i32>,
-    /// [`WING_MAX_SPEED`] when the wing reference resolves.
     pub wing_max_speed: Option<i64>,
-    /// [`ARMY_MAX_SPEED`] when the army reference resolves.
     pub army_max_speed: Option<i64>,
-    /// Stat 0x3e of each qualifying pool entry, in pool order, in the
-    /// caller's arena.
     pub transport_start: usize,
     pub transport_len: usize,
-    /// The raid pool had no qualifying entry: the list is the owner's stockpile's.
     pub transport_from_country: u8,
-    /// Neither pool had one: the game asserts and uses 100000.
     pub transport_fallback: u8,
-    /// The wing's ace reference resolves, and the ace's alive flag.
     pub ace_present: u8,
     pub ace_alive: u8,
-    /// Only for a living ace: key 2 on its modifiers and on its type's; its assigned wing's plane
-    /// count (resolved from the ace's wing reference, `None` when it does not resolve).
     pub ace_speed: i64,
     pub ace_type_speed: i64,
     pub ace_wing_planes: Option<i32>,
-    /// Only for a living ace: the canonical slot of its owner, whose key 0x25a scales the ace's
-    /// speed, and of the wing's country (`cair_wing::COUNTRY_OVERRIDE` when positive, else through
-    /// the wing's pool), whose key 0x72 is added.
     pub ace_owner: Option<u32>,
     pub wing_country: Option<u32>,
 }
@@ -99,14 +54,9 @@ impl Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub transport_len: usize,
-    /// Transport speeds every live raid needs, fitted or not.
     pub required_transport: usize,
 }
 
-/// Whether a raid's speed inputs are recorded: phase 4, or ended (not
-/// cancelled) at most an hour before `hour`, while its arrow's unit may still
-/// be flying. The arrow remains visible until displayed progress reaches
-/// 0.999; that render state is not stored.
 pub fn live(phase: i32, outcome: i32, end_hour: Option<i32>, hour: i32) -> bool {
     phase == craid_instance::PHASE_IN_PROGRESS
         || (phase == craid_instance::PHASE_ENDED
@@ -139,8 +89,6 @@ fn effective(
     effective_memo(memory, base, key, value.raw, memo)
 }
 
-/// A pool's qualifying transport speeds (the pool's items with their count, `{variant*, i64
-/// amount}`), appended to `arena` from `len`.
 fn transports(
     memory: &impl Memory,
     pool: usize,
@@ -182,7 +130,6 @@ fn transports(
     Ok(found)
 }
 
-/// A raw country reference's CCountry, `None` for zero or an unlinked id.
 fn country(
     countries: &ccountry::Reader<'_, impl Memory>,
     raw: u32,
@@ -226,7 +173,6 @@ fn read_row(
         let stats: u64 = field(memory, army, cunit::STAT_BLOCK)?;
         row.army_max_speed = Some(field(memory, stats as usize, ARMY_MAX_SPEED)?);
     }
-    // The transport lists: the raid's pool, else the owner's stockpile.
     row.transport_start = walk.transport_len;
     let pool = raid
         .checked_add(craid_instance::EQUIPMENT)
@@ -313,7 +259,6 @@ fn read_row(
     Ok(row)
 }
 
-/// One raid instance the raid system holds, identified and authenticated.
 #[derive(Debug, Clone, Copy)]
 pub struct Raid {
     pub pointer: usize,
@@ -324,9 +269,6 @@ pub struct Raid {
     pub end_hour: Option<i32>,
 }
 
-/// Every raid instance of the raid system's country statuses, in their order, with the current hour
-/// (`cgame_state::CURRENT_HOUR`). Parents are copied 64 per guarded call; each instance is
-/// authenticated by its vtable.
 pub fn each_raid(
     memory: &impl Memory,
     base: usize,
@@ -392,8 +334,6 @@ pub fn each_raid(
     Ok(())
 }
 
-/// Every live raid's speed inputs ([`live`]), in raid-system order. A raid
-/// whose transport speeds do not fit in `arena` has no row and is counted.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -516,7 +456,6 @@ mod tests {
             self.u32(at + 8, count);
             self.u32(at + 12, count);
         }
-        /// A sorted accumulator of `(key, raw)` entries.
         fn accumulator(&mut self, at: usize, data: usize, entries: &[(u32, i64)]) {
             self.array(at, data, entries.len() as u32);
             for (index, &(key, raw)) in entries.iter().enumerate() {
@@ -524,7 +463,6 @@ mod tests {
                 self.u64(data + index * 16 + 8, raw as u64);
             }
         }
-        /// One registry table per reference type, each holding `handle`.
         fn register(&mut self, table: usize, handle: u64, object: usize) {
             let kind = handle as u32;
             let root = if kind < registry::LOW_ROOT_COUNT {
@@ -574,9 +512,6 @@ mod tests {
     const WING_HANDLE: u64 = (2 << 32) | 69;
     const ACE_HANDLE: u64 = (3 << 32) | 70;
 
-    /// Hour 100; one phase-4 raid of country 2 (slot 1) flown by a wing of
-    /// that country with a living ace owned by country 3 (slot 3), its army
-    /// resolved too, and a pool of one transport and one rifle entry.
     fn fixture() -> Image {
         let mut m = Image::default();
         m.u32(GS + cgame_state::CURRENT_HOUR, 100);
@@ -608,8 +543,6 @@ mod tests {
         m.u64(TRANSPORT + TRANSPORT_SPEED_STAT, 300_000);
         m.u64(RIFLE + cequipment_variant::CLASSIFIER_FLAGS, 0x20);
         m.u64(RIFLE + TRANSPORT_SPEED_STAT, 1);
-        // Countries: slot 1 is country id 2, slot 3 country id 3, slot 2 is
-        // null. Their modifier totals are not read here.
         m.array(GS + cgame_state::COUNTRIES, COUNTRIES, 4);
         m.array(GS + cgame_state::COUNTRY_LINKS, LINKS, 4);
         m.u64(COUNTRIES + 8, COUNTRY as u64);
@@ -622,12 +555,10 @@ mod tests {
         m.u32(COUNTRY + ccountry::ID, 2);
         m.u64(OWNER, ccountry::VTABLE_RVA.0 as u64);
         m.u32(OWNER + ccountry::ID, 3);
-        // Modifier metadata: the speed key enabled, unclamped.
         m.u64(modifier_definition::TABLE_RVA.0, DEFINITIONS as u64);
         let row = DEFINITIONS + 2 * modifier_definition::STRIDE;
         m.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
         m.u32(row + modifier_definition::FLAGS, 0);
-        // The wing, its ace and the army; references point at their secondary bases.
         m.register(0x6_0000, WING_HANDLE, WING + 0x10);
         m.register(0x6_1000, ARMY_HANDLE, ARMY + 0x10);
         m.register(0x6_2000, ACE_HANDLE, ACE);
@@ -673,7 +604,6 @@ mod tests {
             (row.wing_max_speed, row.army_max_speed),
             (Some(1_200_000), Some(400_000))
         );
-        // Only the transport entry qualifies, from the raid's own pool.
         assert_eq!(
             &arena[row.transport_start..][..row.transport_len],
             &[300_000]
@@ -691,7 +621,6 @@ mod tests {
             ),
             (1, 1, 20_000, 10_000, Some(50), Some(3), Some(1))
         );
-        // Without the override the wing's country is its pool holder's.
         let mut memory = fixture();
         memory.u32(WING + cair_wing::COUNTRY_OVERRIDE, 0);
         memory.u64(WING + cair_wing::POOL, 0xb000);
@@ -702,7 +631,6 @@ mod tests {
             (rows[0].ace_owner, rows[0].wing_country),
             (Some(3), Some(3))
         );
-        // An ace owner that is not a canonical country object fails the table.
         memory.u64(ACE + cace::OWNER_COUNTRY, COUNTRY as u64 + 8);
         assert!(matches!(
             run(&memory).0.outcome,
@@ -713,7 +641,6 @@ mod tests {
     #[test]
     fn transports_fall_back_to_the_owner_stockpile_then_to_none() {
         let mut memory = fixture();
-        // No qualifying raid entry: the owner's stockpile is read.
         memory.u64(0x6108, 0);
         let production = 0xa000;
         memory.u64(COUNTRY + ccountry::PRODUCTION_STATUS, production as u64);
@@ -757,16 +684,11 @@ mod tests {
         );
     }
 
-    /// RaidEquipment: the raid's pool entries by variant reference in pool
-    /// order, its archetype totals by token in native order (read as stored,
-    /// not rebuilt from the entries) and its nuke count, before launch and
-    /// while flying only.
     #[test]
     fn a_raid_pool_is_recorded_before_launch_and_while_flying() {
         use crate::{allocation_equipment_row as allocation, cequipment_type, raid_equipment};
         const ALLOCATIONS: usize = 0x6200;
         const ARCHETYPES: [usize; 2] = [0x7_0000, 0x7_1000];
-        /// A saturated stored variant-quantity total.
         const SATURATED: i64 = 0x53e2_d620_fb40;
         let mut memory = fixture();
         for (variant, id) in [(TRANSPORT, 41_u64), (RIFLE, 42)] {
@@ -843,11 +765,8 @@ mod tests {
         );
         assert_eq!(full.variants, [reference(41), reference(42)]);
         assert_eq!(full.amounts, [5, 7]);
-        // The totals are the stored ones: the saturated second is not the
-        // rifle entry's 7.
         assert_eq!(full.tokens, [0x3309, 0x330a]);
         assert_eq!(full.totals, [5, SATURATED]);
-        // A pool whose entries or totals start short grows to its demand.
         for (capacity, archetype_capacity) in [(1, 2), (2, 1)] {
             let short = run(&memory, capacity, archetype_capacity);
             assert_eq!(
@@ -855,14 +774,12 @@ mod tests {
                 (Outcome::Rows { len: 1 }, (2, 2))
             );
         }
-        // A total whose archetype is not a CEquipmentType fails the table.
         memory.u64(ARCHETYPES[1], 0);
         assert!(matches!(
             run(&memory, 2, 2).outcome,
             Outcome::Unavailable { .. }
         ));
         memory.u64(ARCHETYPES[1], cequipment_type::VTABLE_RVA.0 as u64);
-        // Prepared raids are recorded; cancelled ended ones are not.
         memory.u32(RAID + craid_instance::PHASE, 3);
         assert_eq!(run(&memory, 2, 2).outcome, Outcome::Rows { len: 1 });
         memory.u32(RAID + craid_instance::PHASE, 5);

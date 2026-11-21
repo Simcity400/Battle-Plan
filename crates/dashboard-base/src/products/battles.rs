@@ -1,4 +1,3 @@
-//! Wire values shared by land and naval battle products.
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

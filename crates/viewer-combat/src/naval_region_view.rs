@@ -1,5 +1,3 @@
-//! The naval region view (`navalregionview`) a sea click opens, bound read-only to the hour's
-//! rows for the observed country. Controls whose source is not established are withheld by name.
 use super::{binding::Bindings, content::Content, state_view};
 use installed_content_core::gui::native::Element;
 use replay_data::rows::{AirCountryRelationRow, tables};
@@ -15,18 +13,15 @@ mod hovers;
 mod picture;
 
 pub(super) const WINDOW: &[u8] = b"navalregionview";
-/// The window and the entry template its modifier grid lists rows in.
 pub(super) const TEMPLATES: &[&[u8]] = &[WINDOW, crate::naval_environment::MODIFIER_ENTRY.as_bytes()];
 
 const MINES: [&str; 4] = ["mine_text", "enemy_mine_text", "mine_icon", "enemy_mine_icon"];
 const ACCESS_RULES: [&str; 3] = ["naval_access_rule_allowed", "naval_access_rule_avoid", "naval_access_rule_blocked"];
 
-/// A share as the game prints it: whole percent of a fixed5 fraction.
 fn percent(share: i64) -> String {
     installed_content_core::fixed5::fixed5_percent(share, 0, true)
 }
 
-/// A mine amount as a share of the content's regional maximum.
 fn mine_share(amount: i64, maximum: i64) -> i64 {
     if maximum == 0 || amount.wrapping_add(0x7fff_ffff_ffff_fffe) as u64 > 0xffff_ffff_ffff_fffc {
         return 0xffff_ffff;
@@ -34,7 +29,6 @@ fn mine_share(amount: i64, maximum: i64) -> i64 {
     amount.wrapping_mul(100_000) / maximum
 }
 
-/// The frame's canonical slot of every country reference.
 fn links(frame: &DecodedFrame) -> Result<BTreeMap<u32, u32>, String> {
     Ok(frame
         .complete::<tables::CountryLinks>()
@@ -44,7 +38,6 @@ fn links(frame: &DecodedFrame) -> Result<BTreeMap<u32, u32>, String> {
         .collect())
 }
 
-/// The observed country's own reference.
 fn own_raw(frame: &DecodedFrame, vision: &Vision) -> Result<u32, String> {
     frame
         .complete::<tables::Countries>()
@@ -93,7 +86,6 @@ fn mines(content: &Content, frame: &DecodedFrame, vision: &Vision, root: &Elemen
     text(out, root, "enemy_mine_text", enemy.map_err(|why| format!("naval region view enemy mines: {why}")));
 }
 
-/// The observed navy's access mode for the region: 0 allowed, 1 avoid, 2 blocked.
 fn access_mode(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, viewer: u32, region: u32) -> Result<u8, String> {
     Ok(frame
         .complete::<tables::NavalRegionAccess>()
@@ -103,7 +95,6 @@ fn access_mode(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, viewer: u32, re
         .map_or(0, |row| row.mode))
 }
 
-/// The highlight moves onto the selected rule's button: the game copies that button's position.
 fn access(frame: &DecodedFrame, vision: &Vision, root: &Element, out: &mut Bindings, region: u32) {
     let moved = (|| -> Result<Vec<(String, [f32; 2])>, String> {
         let mode = access_mode(frame, &links(frame)?, vision.ours(), region)?;
@@ -173,7 +164,6 @@ pub(super) fn bind(
     Ok(out)
 }
 
-/// The observed country's enemy roster in its stored order, repeats kept.
 fn enemies(frame: &DecodedFrame, vision: &Vision) -> Result<Vec<u32>, String> {
     replay_derive::naval_region_control::raw_roster(frame, vision.ours(), AirCountryRelationRow::ENEMY)
 }

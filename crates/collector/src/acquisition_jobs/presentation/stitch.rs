@@ -92,8 +92,6 @@ impl PresentationFanIn {
     ) {
         lock_unpoisoned(&self.state).parts[index] = part.map(|part| (part, report));
     }
-    /// All parent/range tickets have been collected here, so a delayed publisher
-    /// can no longer race the callback's original ordered fallback.
     pub(crate) fn take(
         &self,
     ) -> (
@@ -161,8 +159,6 @@ impl acquisition::Publication for PresentationFanIn {
         if state.remaining != 0 {
             return;
         }
-        // Cancellation does not notify a worker continuation; the callback
-        // retains its original failure/rejection settlement for those slots.
         if state.parent.is_none() || state.parts[..state.count].iter().any(Option::is_none) {
             return;
         }

@@ -4,7 +4,6 @@ import { visibleRange } from './countryList.ts';
 export interface ContentChoice { value: string; label: string; icon?: string | null; hint?: string }
 export interface ContentRow extends ContentChoice { search: string; unavailable?: string }
 
-/** Keep the complete inventory and saved choices absent from this campaign. */
 export function contentChoices(choices: readonly ContentChoice[], chosen: readonly string[]): ContentRow[] {
   const rows = new Map<string, ContentChoice>();
   for (const choice of choices) if (!rows.has(choice.value)) rows.set(choice.value, choice);
@@ -18,7 +17,6 @@ export function filterContent(choices: ContentRow[], query: string): ContentRow[
   return needle ? choices.filter(choice => choice.search.includes(needle)) : choices;
 }
 
-/** Shared with the catalogue renderer: opening it never mounts its whole inventory. */
 export function contentWindow(choices: ContentRow[], scrollTop: number, height: number) {
   const range = visibleRange(choices.length, scrollTop, height);
   return { ...range, rows: choices.slice(range.start, range.end) };

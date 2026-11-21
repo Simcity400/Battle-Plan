@@ -22,7 +22,6 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.tables[table.index()] = TableView::Complete(rows).into();
 }
 
-/// GER's decision of power sequence `sequence`, dated `hour`, charging `charge`.
 fn decision(sequence: u64, hour: i32, charge: i64) -> CountryPowerChangeRow {
     CountryPowerChangeRow {
         country: GER,
@@ -40,7 +39,6 @@ fn decision(sequence: u64, hour: i32, charge: i64) -> CountryPowerChangeRow {
     }
 }
 
-/// GER's daily row of the day from `day_hour`: its gain, its cost, and what the balance took.
 fn daily(day_hour: i32, gross: i64, cost: i64, realized: i64, sequence: u64) -> CountryPowerDailyRow {
     CountryPowerDailyRow {
         country: GER,
@@ -55,7 +53,6 @@ fn daily(day_hour: i32, gross: i64, cost: i64, realized: i64, sequence: u64) -> 
     }
 }
 
-/// The day from `day_hour`'s one cost: the political power cost modifier.
 fn cost(day_hour: i32, amount: i64, sequence: u64) -> CountryPowerDailyCostRow {
     CountryPowerDailyCostRow {
         country: GER,
@@ -70,10 +67,6 @@ fn cost(day_hour: i32, amount: i64, sequence: u64) -> CountryPowerDailyCostRow {
     }
 }
 
-/// What the collector reads of GER (slot 7), from which the recorder's PowerLedger writer derives
-/// the ledger: a decision paid at hour 103 (read 104) and again at 120; the days from 120 and 144
-/// with one daily cost each, which end (and are counted) at 144 and 168; a politics capture of
-/// every stream since the run's first hour. The run's first hour is a backlog: not covered.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: SLOT, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
@@ -155,8 +148,6 @@ fn a_tag_no_holder_held_lists_nothing_and_no_hour_as_covered() {
     assert!(reply.coverage.is_empty(), "hours no holding names are not recorded, never covered");
 }
 
-/// An item whose key is empty and whose lexical token's literal is empty names no token: an idea
-/// tooltip keyed by an empty token is refused whole by the widget.
 #[test]
 fn an_empty_lexical_literal_names_no_item_token() {
     use replay_data::rows::LexicalTokenRow;

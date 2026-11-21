@@ -1,22 +1,14 @@
-//! Hourly game-thread sampling with an independent recoverable spool writer.
 
-// Borrowed status objects expand one field per captured family.
 #![recursion_limit = "512"]
 
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("collector requires Windows x64 MSVC");
 
-/// The test profile builds collector unoptimised, where frames are large: `sampling::acquire`
-/// alone needs 8 MiB and the spool's status writer almost 3 MiB, beyond the 2 MiB that test and
-/// spawned threads get by default. Before `main`, this test binary gives threads without an
-/// explicit size 32 MiB of reserved stack unless `RUST_MIN_STACK` is already set. Child processes
-/// inherit the variable; the DLL and its explicit worker stacks are unaffected.
 #[cfg(test)]
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
 static TEST_THREAD_STACK: unsafe extern "C" fn() = crate::test_support::reserve_test_stack;
 
-// Tests retain the allocation-denial allocator and exercise PrivateHeap directly.
 #[cfg_attr(not(test), global_allocator)]
 static ALLOCATOR: private_heap::PrivateHeap = private_heap::PrivateHeap::new();
 
@@ -195,25 +187,16 @@ mod worker_sampler;
 pub(crate) use collector_lifetime::world_lifetime;
 pub(crate) use collector_observers::world_input_changes;
 
-/// How long a test waits on another thread before failing instead of hanging.
-/// Only a hang guard, never a timing check: a full build saturates every core
-/// and can starve a test thread for many seconds.
 #[cfg(test)]
 const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The machine's performance-counter frequency, so a test's walls read in real ns.
 #[cfg(test)]
 fn test_qpc_frequency() -> u64 {
     let mut frequency = 0;
-    // SAFETY: a valid local output.
     unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
     frequency.max(1) as u64
 }
 
-/// Runs a threaded test's `scenario` on a thread of its own while the test thread watches it.
-/// Every step it reports restarts [`TEST_HANG_GUARD`]; a scenario silent that long fails the
-/// test with its last step and `state()`, wherever it is blocked, and is left behind. Its own
-/// panic fails the test as itself.
 #[cfg(test)]
 fn watched(state: impl Fn() -> String, scenario: impl FnOnce(&Steps) + Send + 'static) {
     use std::sync::mpsc::RecvTimeoutError;
@@ -229,14 +212,11 @@ fn watched(state: impl Fn() -> String, scenario: impl FnOnce(&Steps) + Send + 's
             }
         }
     }
-    // Its steps are dropped only once the scenario returned or unwound: this join waits for
-    // nothing but the thread's exit.
     if let Err(panic) = scenario.join() {
         std::panic::resume_unwind(panic);
     }
 }
 
-/// A test's thread that says when it is done, so the test joins it only once it has finished.
 #[cfg(test)]
 struct Ending<T> {
     thread: std::thread::JoinHandle<()>,
@@ -262,12 +242,9 @@ impl<T> Ending<T> {
         self.thread.is_finished()
     }
 
-    /// What it returned once it finishes. A thread still running at [`TEST_HANG_GUARD`] fails
-    /// the test, named by `what`, and is left behind; its own panic fails the test as itself.
     fn end(self, what: impl FnOnce() -> String) -> T {
         use std::sync::mpsc::RecvTimeoutError;
         match self.done.recv_timeout(TEST_HANG_GUARD) {
-            // Its result is its last act: this join waits only for the thread's exit.
             Ok(result) => {
                 let _ = self.thread.join();
                 result
@@ -283,7 +260,6 @@ impl<T> Ending<T> {
     }
 }
 
-/// Where a [`watched`] scenario is.
 #[cfg(test)]
 struct Steps(std::sync::mpsc::Sender<String>);
 
@@ -305,12 +281,9 @@ const DLL_THREAD_DETACH: u32 = 3;
 #[unsafe(no_mangle)]
 unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, reserved: *mut c_void) -> i32 {
     if reason == 1 {
-        // Every Rust allocation, including the bootstrap's infallible ones, uses
-        // the private heap: refuse the load, allocation-free, if it cannot exist.
         if !ALLOCATOR.ready() {
             return 0;
         }
-        // Loader work is deferred until this thread runs outside the loader lock.
         let thread = unsafe {
             CreateThread(
                 std::ptr::null(),
@@ -331,10 +304,6 @@ unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, reserved: *mut
     if reason == DLL_THREAD_DETACH {
         ALLOCATOR.thread_exit();
     }
-    // FreeLibrary is reached only after runtime's joined/quiescent teardown.
-    // Windows has already run this thread's Rust TLS callbacks. Rust statics
-    // have no automatic destructors; the remaining CRT cleanup owns no Rust
-    // blocks. Process termination deliberately leaves reclamation to Windows.
     unsafe { ALLOCATOR.detach(reason, reserved) };
     1
 }
@@ -347,8 +316,6 @@ pub(crate) use collector_intel::{
 };
 pub(crate) use collector_naval_management::changes as naval_management_changes;
 
-/// A hook site's live address and the 16 bytes its hook replaces. A withheld site is refused
-/// the way a differing sentinel was, by the withheld text that names it.
 pub(crate) fn located_hook(
     base: usize,
     key: engine_sites::Rva,

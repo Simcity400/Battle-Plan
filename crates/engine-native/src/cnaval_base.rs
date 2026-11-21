@@ -1,25 +1,14 @@
-//! CNavalBase layout.
 
 use engine_sites::Rva;
-/// CNavalBase constructor.
 pub const CONSTRUCT_RVA: Rva = Rva(0x00f1_2e40);
-/// Native object allocation size.
 pub const SIZE: usize = 0x58;
-/// Owning country-holder pointer.
 pub const HOLDER: usize = 0x08;
-/// Native 32-bit province id.
 pub const PROVINCE_ID: usize = 0x10;
-/// Native signed i32 healthy port level sum.
 pub const HEALTHY_LEVEL: usize = 0x14;
-/// Native signed i32 total port level sum.
 pub const LEVEL: usize = 0x18;
 
-/// CNavalBase vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_f8b0);
-/// Per-base country list: pointer, count and one u32 tag per entry. Membership supplies the
-/// prohibition overlay for the viewer.
 pub const COUNTRY_LIST: usize = 0x40;
-/// Holder's country tag used by known, foreign and enabled branches.
 pub const HOLDER_COUNTRY: usize = 0x10;
 
 use crate::{
@@ -29,8 +18,6 @@ use crate::{
     walk::Outcome,
 };
 
-/// Spell every raw country-list word directly: nonzero indexes live
-/// tag strings without link translation; zero uses the database sentinel string.
 pub fn country_text(
     memory: &impl Memory,
     base: usize,
@@ -63,32 +50,21 @@ pub fn country_text(
     Ok(bytes)
 }
 
-/// Hash entry stride.
 const ENTRY_STRIDE: usize = 0x18;
-/// Entry occupied marker, its probe distance; the terminal cell holds 0xff.
 const ENTRY_DISTANCE: usize = 0x04;
-/// Entry key, the province id.
 const ENTRY_KEY: usize = 0x08;
-/// Entry value, the CNavalBase pointer.
 const ENTRY_VALUE: usize = 0x10;
-/// The probe-distance sentinel that ends a bucket chain.
 const TERMINAL_DISTANCE: u8 = 0xff;
-/// Buckets read per bulk copy.
 const CHUNK: usize = 512;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub province: u32,
-    /// The holder's raw country reference; join it through the country links.
     pub country: u32,
     pub level: i32,
     pub healthy_level: i32,
-    /// [`COUNTRY_LIST`] as raw country references, in native order: this many
-    /// entries of the walk's country arena from `countries_start`.
     pub countries_start: usize,
     pub countries_len: u32,
-    /// The list header held a positive count with a null data pointer, which
-    /// the game never writes: this base's list is unknown, not empty.
     pub countries_unreadable: bool,
 }
 
@@ -98,7 +74,6 @@ impl Row {
     }
 }
 
-/// Rows written, and the country arena's use and complete demand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
@@ -110,15 +85,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Walk the province-to-naval-base hash held by the strategic navy manager
-/// (`cgame_state::STRATEGIC_NAVY_MANAGER`). The hash holds its buckets, mask and maximum probe
-/// distance, with 0x18-byte entries selected by set probe bytes. Authenticate each base vtable and
-/// require its province id to match the key.
-///
-/// Keep each complete [`COUNTRY_LIST`] in `countries`, bounded by live count.
-/// Short row/list storage omits the base whole and counts full list demand.
-/// Read its final entry before requesting growth, so an unreadable list fails
-/// the table instead of supplying demand.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -145,7 +111,6 @@ pub fn walk_buffer(
     walk_buffer_observed(memory, base, game_state, rows, countries, |_, _| {})
 }
 
-/// Shares each already-authenticated base with an independent worker observer.
 pub fn walk_observed(
     memory: &impl Memory,
     base: usize,
@@ -199,7 +164,6 @@ fn walk_buffer_observed(
         if !capacity.is_power_of_two() || probe == TERMINAL_DISTANCE {
             return Err("naval base map header invalid");
         }
-        // The chain ends at one terminal cell past the probe window.
         let cells = capacity as usize + usize::from(probe) + 1;
         let expected = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
@@ -225,10 +189,6 @@ fn walk_buffer_observed(
                 let province =
                     u32::from_le_bytes(entry[ENTRY_KEY..ENTRY_KEY + 4].try_into().unwrap());
                 if province == 0 {
-                    // The probe byte marks a chain, not only a resident, so a
-                    // cell can carry a distance with no key of its own. Province
-                    // zero is not a province, and the payload check below
-                    // catches the rest.
                     continue;
                 }
                 let pointer = usize::try_from(u64::from_le_bytes(
@@ -236,7 +196,6 @@ fn walk_buffer_observed(
                 ))
                 .map_err(|_| "naval base address overflow")?;
                 if pointer == 0 {
-                    // A key with no payload is the map's own; it draws nothing.
                     continue;
                 }
                 if read::<u64>(memory, pointer) != Some(expected) {
@@ -308,9 +267,6 @@ fn walk_buffer_observed(
     }
 }
 
-/// The base's row and its country list; an empty list for a count that is not
-/// positive, which the game's country-list membership check never walks. A null list with a
-/// positive count marks only this base's list unreadable.
 fn read_row(
     memory: &impl Memory,
     pointer: usize,
@@ -342,10 +298,6 @@ fn read_row(
         healthy_level: value(HEALTHY_LEVEL)? as i32,
         ..Row::default()
     };
-    // The list is a CPdxArray: data pointer, signed capacity and count. A count
-    // that is not positive is empty, as the game's membership check reads it;
-    // any other count must pass the shared header check (within its capacity
-    // and the address space), so a torn header can never size the arena.
     let header = read::<[u8; 16]>(memory, field(COUNTRY_LIST)?)
         .ok_or("naval base country list unreadable")?;
     let empty = Array { data: 0, count: 0 };
@@ -447,7 +399,6 @@ mod naval_base_tests {
         );
         put(&mut bytes, MAP + map::MASK, &3_u32.to_le_bytes());
         put(&mut bytes, MAP + map::MAX_PROBE, &[2]);
-        // One live entry in bucket 1.
         let entry = BUCKETS + ENTRY_STRIDE;
         put(&mut bytes, entry + ENTRY_DISTANCE, &[1]);
         put(&mut bytes, entry + ENTRY_KEY, &158_u32.to_le_bytes());
@@ -509,7 +460,6 @@ mod naval_base_tests {
     #[test]
     fn a_list_count_above_its_capacity_is_refused_not_sized() {
         let mut bytes = fixture();
-        // A torn header: two entries claimed in a one-entry allocation.
         put(&mut bytes, BASE + COUNTRY_LIST + 0x08, &1_u32.to_le_bytes());
         assert_eq!(
             run(&bytes, &mut vec![Row::default(); 2]),
@@ -533,7 +483,6 @@ mod naval_base_tests {
     #[test]
     fn empty_cells_and_the_terminal_are_skipped_and_a_full_buffer_truncates() {
         let mut bytes = fixture();
-        // Clearing the probe byte makes the cell empty, as the native lookup reads it.
         put(&mut bytes, BUCKETS + ENTRY_STRIDE + ENTRY_DISTANCE, &[0]);
         assert_eq!(
             run(&bytes, &mut vec![Row::default(); 2]),
@@ -572,9 +521,6 @@ mod naval_base_tests {
         );
     }
 
-    /// The whole live list is read, however long; a list the arena cannot hold
-    /// omits its base and keeps the exact demand, and a list whose entries
-    /// cannot be read fails the table instead of demanding growth.
     #[test]
     fn a_long_country_list_is_read_whole_and_arena_pressure_keeps_its_demand() {
         const LONG: usize = 20_000;
@@ -635,7 +581,6 @@ mod naval_base_tests {
                 }
             );
         }
-        // A count that is not positive is an empty list, as the native test reads it.
         put(
             &mut bytes,
             BASE + COUNTRY_LIST + 0x0c,

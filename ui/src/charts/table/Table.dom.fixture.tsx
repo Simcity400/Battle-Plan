@@ -1,4 +1,3 @@
-/** A synthetic table in the production kit and styles, at a chosen width. */
 import { createRoot } from 'react-dom/client';
 import Table from './Table';
 import TooltipLayer from '../TooltipLayer';
@@ -80,7 +79,6 @@ export const fixture = {
       cells: [...host.querySelector('tbody tr')!.querySelectorAll('td')].length,
       clientWidth: scroller.clientWidth, scrollWidth: scroller.scrollWidth,
       description: host.querySelector('.sr-only')?.textContent ?? null,
-      // Each shown header's left edge beside the first row's cell under it.
       alignment: [...host.querySelectorAll('thead th')].map((cell, index) => [cell.getBoundingClientRect().left,
         host.querySelectorAll('tbody tr')[0]?.querySelectorAll('td')[index]?.getBoundingClientRect().left ?? null]),
       scrollable: tooltipStore.get()?.content.scrollable ?? false };

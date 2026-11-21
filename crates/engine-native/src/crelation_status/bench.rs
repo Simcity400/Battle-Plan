@@ -4,7 +4,6 @@ use crate::{
 };
 use std::{cell::Cell, time::Instant};
 
-/// Covers the highest RVA the benched walkers read (the reference roots).
 pub const IMAGE: usize = 0x0351_0000;
 pub const RUNS: usize = 20;
 
@@ -23,7 +22,6 @@ impl Arena {
     pub fn base(&self) -> usize {
         self.bytes.as_ptr() as usize
     }
-    /// A 16-byte aligned, zeroed span; returns its address.
     pub fn alloc(&mut self, len: usize) -> usize {
         let at = (self.next + 15) & !15;
         self.next = at + len;
@@ -43,11 +41,9 @@ impl Arena {
     pub fn u64(&mut self, address: usize, value: u64) {
         self.put(address, &value.to_le_bytes());
     }
-    /// `base + rva`, the value a native vtable or global slot holds.
     pub fn rva(&self, rva: engine_sites::Rva) -> u64 {
         (self.base() + rva.0) as u64
     }
-    /// A CPdxArray header with equal capacity and count.
     pub fn vector(&mut self, header: usize, data: usize, count: u32) {
         self.u64(header, data as u64);
         self.u32(header + 8, count);
@@ -55,8 +51,6 @@ impl Arena {
     }
 }
 
-/// Countries in slots 1..=n with identity links; returns the game state
-/// and each slot's object (index 0 unused).
 pub fn countries(arena: &mut Arena, n: usize, size: usize) -> (usize, Vec<usize>) {
     let game_state = arena.alloc(0x1000);
     let table = arena.alloc((n + 1) * 8);
@@ -79,14 +73,10 @@ pub fn countries(arena: &mut Arena, n: usize, size: usize) -> (usize, Vec<usize>
     (game_state, objects)
 }
 
-/// Counts every guarded call and the bytes it copied, forwarding to the
-/// real SEH-guarded reader.
 pub struct Counting {
     live: LiveMemory,
     pub calls: Cell<u64>,
     pub bytes: Cell<u64>,
-    /// The collector's authenticated country census, when the bench
-    /// models a job that receives it (every slot, both table headers).
     census: Option<(
         Vec<Option<ccountry::Country>>,
         [crate::cpdx_array::Array; 2],
@@ -94,10 +84,9 @@ pub struct Counting {
 }
 
 impl Counting {
-    #[allow(clippy::new_without_default)] // Existing constructor shared by synthetic benchmarks.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            // SAFETY: only the immutable bench arena is read.
             live: unsafe { LiveMemory::new() },
             calls: Cell::new(0),
             bytes: Cell::new(0),
@@ -105,8 +94,6 @@ impl Counting {
         }
     }
 
-    /// Serves the country census the collector's jobs are given for
-    /// countries in slots 1..=n with identity links, as `countries` builds.
     #[cfg(test)]
     pub fn with_census(mut self, game_state: usize, objects: &[usize]) -> Self {
         let n = objects.len() as u32;
@@ -195,8 +182,6 @@ impl Memory for Counting {
     }
 }
 
-/// Runs `walk` [`RUNS`] times and prints the median wall time with the last
-/// run's guarded calls, bytes and the walk's own summary.
 pub fn report(table: &str, countries: usize, memory: &Counting, mut walk: impl FnMut() -> String) {
     let mut times = Vec::with_capacity(RUNS);
     let mut summary = String::new();
@@ -216,15 +201,11 @@ pub fn report(table: &str, countries: usize, memory: &Counting, mut walk: impl F
     );
 }
 
-/// World war of two sides of n/2 (every country at war with the whole
-/// other side, allied to its own), one military access relation from each
-/// country to the next.
 fn relation_world(n: usize) -> (Arena, usize) {
     use super::*;
     let mut arena = Arena::new(n * 0x1c00 + (4 * n + 64) * 8 + 0x10_0000);
     let (game_state, countries) = countries(&mut arena, n, 0x1000);
     let half = n / 2;
-    // Each side's member links, shared by every member as enemies/allies.
     let sides = [arena.alloc(half * 4), arena.alloc((n - half) * 4)];
     for slot in 1..=n {
         let (side, index) = if slot <= half {
@@ -234,8 +215,6 @@ fn relation_world(n: usize) -> (Arena, usize) {
         };
         arena.u32(sides[side] + index * 4, slot as u32);
     }
-    // Matrix rows overlap: row i starts two entries after row i-1, and the
-    // only entries read, toward i-1 and i+1, land on distinct cells 3i-1 and 3i+1.
     let matrix = arena.alloc((3 * n + 8) * 8);
     let relations: Vec<usize> = (0..n)
         .map(|slot| {
@@ -291,7 +270,6 @@ fn relation_world(n: usize) -> (Arena, usize) {
             arena.u64(status, arena.rva(VTABLE_RVA));
             arena.u64(status + DIPLOMACY_STATUS, diplomacy as u64);
             arena.u32(status + TARGET_COUNTRY, partner as u32);
-            // The first country's status toward the second holds the access.
             if partner == slot + 1 {
                 arena.u64(status + MILITARY_ACCESS, relation as u64);
             }

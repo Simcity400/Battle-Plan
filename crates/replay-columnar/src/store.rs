@@ -1,14 +1,3 @@
-//! The recorder's live state: one copy of each table's current rows, as plain arrays by slot at
-//! the narrowest width each column's values need. Every change goes in through one entry point
-//! ([`TableChanges`]), which reads the held cell, writes the new one and notes it in the hour's
-//! log ([`HourLog`]); nothing else holds the run's values.
-//!
-//! A row keeps its slot from insert to delete. A number column starts at width 0 (every cell
-//! zero) and widens in place the first time a value does not fit. Optional columns keep a
-//! presence bit per slot; a column's unrecorded bits are made the first time one of its cells is
-//! unrecorded. List and opaque cells are bytes, a page of [`PAGE`] slots in one buffer. Keys are
-//! two narrow arrays (their high and low 64 bits); the key index is built the first time a table
-//! is looked up by key.
 
 use crate::{
     invalid,
@@ -25,26 +14,20 @@ pub mod lent;
 #[cfg(test)]
 mod tests;
 
-/// Slots a list page holds.
 pub const PAGE: usize = 1024;
 
-/// A table's rows at most: its slot count is recorded in 32 bits, so its highest slot is one less.
 pub const SLOTS: u32 = u32::MAX;
 
-/// A run's strings at most: their count is recorded in 32 bits, as a table's slots are.
 pub const STRINGS: u32 = u32::MAX;
 
-/// The refusal of a row past [`SLOTS`] in `table`.
 pub fn past_slots(table: impl std::fmt::Display) -> io::Error {
     invalid(format!("{table}: more than 4,294,967,295 rows, the format's slot width"))
 }
 
-/// The slot of bit `bit` of live word `word`; none past [`SLOTS`].
 fn slot_at(word: usize, bit: u32) -> Option<u32> {
     word.checked_mul(64).and_then(|first| first.checked_add(bit as usize)).and_then(|slot| u32::try_from(slot).ok()).filter(|&slot| slot < SLOTS)
 }
 
-/// Bits by slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Flags(Vec<u64>);
 
@@ -80,7 +63,6 @@ impl Flags {
         &self.0
     }
 
-    /// Whether every slot of `from..to` is set.
     fn all(&self, from: u32, to: u32) -> bool {
         (from..to).step_by(64).all(|start| {
             let index = start as usize / 64;
@@ -93,7 +75,6 @@ impl Flags {
         })
     }
 
-    /// Clears slots `from..to`.
     fn clear_range(&mut self, from: u32, to: u32) {
         let last = (to as usize).div_ceil(64).min(self.0.len());
         for index in from as usize / 64..last {
@@ -109,7 +90,6 @@ impl Flags {
         }
     }
 
-    /// Sets every bit `other` sets in slots `from..to`.
     pub(crate) fn include(&mut self, other: &Self, from: u32, to: u32) {
         let last = (to as usize).div_ceil(64).min(other.0.len());
         if last > self.0.len() {
@@ -150,8 +130,6 @@ impl Flags {
         self.0.capacity() * 8
     }
 
-    /// Lets go of bits from slot `slots` on. Bits are held only through the highest one set, so
-    /// the boundary word is masked only when it is held.
     fn truncate(&mut self, slots: usize) {
         let words = slots.div_ceil(64);
         if self.0.len() >= words {
@@ -165,7 +143,6 @@ impl Flags {
         }
     }
 
-    /// Held only through the highest bit set, as bits set one at a time are.
     fn trim_zeros(&mut self) {
         let words = self.0.iter().rposition(|&word| word != 0).map_or(0, |last| last + 1);
         self.0.truncate(words);
@@ -173,9 +150,6 @@ impl Flags {
     }
 }
 
-/// A log's rows the game still lists: a bit per ordinal from `base` (a multiple of 64) on, the
-/// words before the lowest one set and after the highest let go of, `base` 0 when none is listed.
-/// So two hold the same ordinals exactly when they are equal, however each got there.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Listed {
     base: u64,
@@ -188,7 +162,6 @@ impl Listed {
         ordinal >= self.base && usize::try_from((ordinal - self.base) / 64).ok().and_then(|word| self.words.get(word)).is_some_and(|word| word >> (ordinal % 64) & 1 == 1)
     }
 
-    /// Listed from `ordinal` on, which is past every one held.
     pub fn append(&mut self, ordinal: u64) {
         if self.words.is_empty() {
             self.base = ordinal / 64 * 64;
@@ -201,7 +174,6 @@ impl Listed {
         self.words[word] |= 1 << (ordinal % 64);
     }
 
-    /// One past the last ordinal its words hold: `u64::MAX` past it, which no ordinal reaches.
     fn end(&self) -> u64 {
         self.base.saturating_add(self.words.len() as u64 * 64)
     }
@@ -210,7 +182,6 @@ impl Listed {
         self.clear_range(ordinal, ordinal.saturating_add(1));
     }
 
-    /// Ordinals `from..to` no longer listed.
     pub fn clear_range(&mut self, from: u64, to: u64) {
         let (from, to) = (from.max(self.base), to.min(self.end()));
         let mut at = from;
@@ -237,7 +208,6 @@ impl Listed {
         }
     }
 
-    /// Whether every ordinal of `from..to` is listed: an empty range is, wherever it lies.
     pub fn all(&self, from: u64, to: u64) -> bool {
         from >= to || from >= self.base && to <= self.end() && {
             let mut at = from;
@@ -254,7 +224,6 @@ impl Listed {
         }
     }
 
-    /// The lowest ordinal listed.
     pub fn lowest(&self) -> Option<u64> {
         self.words.front().map(|word| self.base + u64::from(word.trailing_zeros()))
     }
@@ -286,9 +255,6 @@ impl Listed {
     }
 }
 
-/// The keys a log was given in its run, or in an hour, as ranges `start..=end`: a log's keys are
-/// mostly sequences, which a few ranges hold. A key given again is a row changed after it was
-/// written, which a log's producer refuses by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Given(BTreeMap<u128, u128>);
 
@@ -297,7 +263,6 @@ impl Given {
         self.0.range(..=key).next_back().is_some_and(|(_, &end)| key <= end)
     }
 
-    /// `key`, which it does not hold.
     pub fn add(&mut self, key: u128) {
         let before = self.0.range(..=key).next_back().map(|(&start, &end)| (start, end)).filter(|&(_, end)| end.checked_add(1) == Some(key));
         let after = key.checked_add(1).and_then(|next| self.0.get(&next).map(|&end| (next, end)));
@@ -319,7 +284,6 @@ impl Given {
         }
     }
 
-    /// The ranges held, `(start, end)` inclusive, ascending.
     pub fn ranges(&self) -> impl ExactSizeIterator<Item = (u128, u128)> + '_ {
         self.0.iter().map(|(&start, &end)| (start, end))
     }
@@ -332,25 +296,18 @@ impl Given {
         self.0.is_empty()
     }
 
-    /// Range `start..=end` as [`Self::ranges`] listed it, apart from every range held: a resume
-    /// state read back.
     pub fn hold_range(&mut self, start: u128, end: u128) {
         self.0.insert(start, end);
     }
 }
 
-/// Labels this thread's allocations as the store's part `name` until the scope drops, for a build
-/// counting memory; nothing otherwise.
 pub(crate) fn label(name: &str) -> engine_allocation::labels::Scope {
     use engine_allocation::labels;
     labels::enter(labels::owner(name), labels::Kind::Operator)
 }
 
-/// The memory label of the cells a kept table's hour log keeps ([`Store::keep_previous`]), apart
-/// from the hour log's own.
 pub const KEPT_LABEL: &str = "store: kept cells";
 
-/// `value` pushed onto the hour log's `held`, labelled when it grows.
 #[inline]
 fn log_push<T>(held: &mut Vec<T>, value: T) {
     if held.len() == held.capacity() {
@@ -361,8 +318,6 @@ fn log_push<T>(held: &mut Vec<T>, value: T) {
     }
 }
 
-/// Room for `wanted` items with a sixteenth more, at least 4 KiB: arrays grown a slot at a time
-/// hold that much slack, not the doubling `Vec` would.
 fn reserve_tight<T>(held: &mut Vec<T>, wanted: usize, what: &str) {
     if held.capacity() < wanted {
         let _label = label(what);
@@ -371,7 +326,6 @@ fn reserve_tight<T>(held: &mut Vec<T>, wanted: usize, what: &str) {
     }
 }
 
-/// Gives back what passes a sixteenth more than `held` holds.
 fn shrink_loose<T>(held: &mut Vec<T>) {
     let keep = held.len() + held.len() / 16;
     if held.capacity() > keep + 4096 / size_of::<T>().max(1) {
@@ -379,8 +333,6 @@ fn shrink_loose<T>(held: &mut Vec<T>) {
     }
 }
 
-/// A number per slot at 0, 1, 2, 4 or 8 bytes: the narrowest every value held fits. Values are
-/// their bits, sign-extended when the column is signed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Narrow {
     width: u8,
@@ -388,7 +340,6 @@ pub struct Narrow {
     bytes: Vec<u8>,
 }
 
-/// The narrowest width holding `bits`.
 #[inline]
 fn width_of(bits: u64, signed: bool) -> u8 {
     if signed {
@@ -453,7 +404,6 @@ impl Narrow {
         }
     }
 
-    /// Holds `slots` slots: new ones zero.
     pub fn grow(&mut self, slots: usize) {
         let wanted = slots * self.width as usize;
         if self.bytes.len() < wanted {
@@ -486,7 +436,6 @@ impl Narrow {
         }
     }
 
-    /// Sets slot `slot` (below `slots`) to `bits`, widening the column when they do not fit.
     #[inline]
     pub fn set(&mut self, slot: u32, bits: u64, slots: usize) {
         let needed = width_of(bits, self.signed);
@@ -498,7 +447,6 @@ impl Narrow {
         self.store(slot, bits);
     }
 
-    /// The narrowest width its first `slots` values need, when it is narrower than it is.
     pub fn narrow(&mut self, slots: usize) {
         let needed = (0..slots as u32).map(|slot| width_of(self.get(slot), self.signed)).max().unwrap_or(0);
         if needed < self.width {
@@ -514,7 +462,6 @@ impl Narrow {
         self.signed
     }
 
-    /// Slots `from..to` zero, as far as it holds them.
     fn zero_range(&mut self, from: u32, to: u32) {
         let width = self.width as usize;
         let end = (to as usize * width).min(self.bytes.len());
@@ -522,14 +469,11 @@ impl Narrow {
         self.bytes[start..end].fill(0);
     }
 
-    /// Its first `slots` cells as bytes at its width, for a reader's loop to read and write in
-    /// place; [`Self::hold`] widens it when a value does not fit.
     pub(crate) fn cells_mut(&mut self, slots: usize) -> &mut [u8] {
         self.grow(slots);
         &mut self.bytes[..slots * self.width as usize]
     }
 
-    /// Widened, when it must be, so that `bits` fits at any of its first `slots` slots.
     pub(crate) fn hold(&mut self, bits: u64, slots: usize) {
         let needed = width_of(bits, self.signed);
         if needed > self.width {
@@ -541,7 +485,6 @@ impl Narrow {
         self.bytes.capacity()
     }
 
-    /// The bytes its slots use, slack apart.
     pub fn used(&self) -> usize {
         self.bytes.len()
     }
@@ -552,29 +495,17 @@ impl Narrow {
     }
 }
 
-/// How a table's list pages hold their cells: the room a cell rewritten longer takes, and the
-/// slack a compaction keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListPolicy {
-    /// A cell rewritten longer takes this many eighths of its length more as room.
     pub room_eighths: u32,
-    /// A compaction keeps this many sixteenths of the cells' bytes as slack.
     pub slack_sixteenths: u32,
 }
 
 impl ListPolicy {
-    /// A reader's cells: events applied in place, so a cell rewritten longer keeps room to grow.
     pub const ROOMY: Self = Self { room_eighths: 1, slack_sixteenths: 4 };
-    /// The recorder's store: one copy of the world, held at its length.
     pub const TIGHT: Self = Self { room_eighths: 0, slack_sixteenths: 1 };
 }
 
-/// A list column's cells of [`PAGE`] slots: each slot's cell is `length` bytes at `start` of
-/// one of the page's segments, in `room` bytes held for it. A cell rewritten within its room
-/// stays where it is; a longer one goes to the end of the last segment, or a new one past
-/// [`SEGMENT`] bytes, with the room its table's [`ListPolicy`] gives when it was rewritten
-/// before. A segment grows and is compacted on its own, so the page never holds two copies of
-/// more than a segment: compacted in place, once the page's abandoned bytes pass a quarter of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListPage {
     spans: Vec<Span>,
@@ -583,7 +514,6 @@ pub struct ListPage {
     held: usize,
 }
 
-/// The bytes a page's segment fills before cells go to a new one; a cell longer has one alone.
 const SEGMENT: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -603,7 +533,6 @@ impl ListPage {
         }
     }
 
-    /// The cell at `offset` to change in place: its length stays.
     #[inline]
     fn get_mut(&mut self, offset: usize) -> &mut [u8] {
         match self.spans.get(offset) {
@@ -645,8 +574,6 @@ impl ListPage {
         Ok(())
     }
 
-    /// Cells of slots that hold none yet, in slot order, each `(offset, start, length)` of `bytes`:
-    /// laid one after another in segments sized to them, each cell's room its length.
     fn fill(&mut self, cells: &[(u16, u32, u32)], bytes: &[u8]) -> io::Result<()> {
         let Some(&(last, ..)) = cells.last() else { return Ok(()) };
         if self.spans.len() <= usize::from(last) {
@@ -684,9 +611,6 @@ impl ListPage {
         Ok(())
     }
 
-    /// Moves every cell down over the bytes abandoned before it in its own segment, each
-    /// keeping its room (only its length under a policy giving none); gives back what passes the
-    /// policy's slack in each segment, and the segments left empty.
     fn compact(&mut self, policy: ListPolicy) {
         if policy.room_eighths == 0 {
             for span in &mut self.spans {
@@ -704,7 +628,6 @@ impl ListPage {
             self.spans[at as usize].start = place;
             kept[segment] = place + span.room;
         }
-        // Segments left empty go, the rest are renumbered in order.
         let mut renumbered = vec![u32::MAX; self.segments.len()];
         let mut next = 0_u32;
         for (segment, &used) in kept.iter().enumerate() {
@@ -738,7 +661,6 @@ impl ListPage {
         self.abandoned = 0;
     }
 
-    /// Lets go of the slots from `offset` on.
     fn truncate(&mut self, offset: usize, policy: ListPolicy) {
         self.spans.truncate(offset);
         self.compact(policy);
@@ -760,7 +682,6 @@ impl ListPage {
     }
 }
 
-/// One column's cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ColumnState {
     Number { kind: Kind, cells: Narrow, present: Option<Flags>, unrecorded: Option<Flags> },
@@ -769,21 +690,16 @@ pub enum ColumnState {
     List { kind: Kind, pages: Vec<ListPage>, unrecorded: Option<Flags> },
 }
 
-/// A cell as the store holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value<'a> {
     Unrecorded,
-    /// An optional number without a value.
     Missing,
-    /// A number's bits, sign-extended when it is signed; a bool as 0 or 1.
     Number(u64),
     Text(u32),
-    /// A list's items as their little-endian bytes, or an opaque cell's bytes.
     List(&'a [u8]),
 }
 
 impl Value<'_> {
-    /// A value that is no list, free of the cell it was read from.
     fn owned_scalar(self) -> Value<'static> {
         match self {
             Value::Unrecorded => Value::Unrecorded,
@@ -803,7 +719,6 @@ fn optional(kind: Kind) -> bool {
     matches!(kind, Kind::OptionalI32 | Kind::OptionalU32 | Kind::OptionalI64 | Kind::OptionalU64)
 }
 
-/// The bytes of an item of a list kind.
 pub fn item_width(kind: Kind) -> usize {
     match kind {
         Kind::U32List => 4,
@@ -812,7 +727,6 @@ pub fn item_width(kind: Kind) -> usize {
     }
 }
 
-/// `value` cut to `kind`'s width and extended back: what the column holds after an ADD.
 #[inline]
 fn at_width(kind: Kind, bits: u64) -> u64 {
     match kind {
@@ -826,7 +740,6 @@ fn at_width(kind: Kind, bits: u64) -> u64 {
     }
 }
 
-/// A [`Cell`]'s value as the store holds it, refused unless it is `kind`'s.
 fn value_of<'a>(kind: Kind, cell: Cell<'a>, scratch: &'a mut Vec<u8>) -> io::Result<Value<'a>> {
     let number = |bits: u64| Ok(Value::Number(bits));
     match (kind, cell) {
@@ -897,7 +810,6 @@ impl ColumnState {
         self.unrecorded().is_none_or(|bits| !bits.get(slot))
     }
 
-    /// The cell at `slot` as held, recorded or not.
     #[inline]
     pub fn held(&self, slot: u32) -> Value<'_> {
         match self {
@@ -911,13 +823,11 @@ impl ColumnState {
         }
     }
 
-    /// The cell at `slot`, or [`Value::Unrecorded`].
     #[inline]
     pub fn value(&self, slot: u32) -> Value<'_> {
         if self.recorded(slot) { self.held(slot) } else { Value::Unrecorded }
     }
 
-    /// Puts `value` (of this column's kind, never unrecorded) at `slot`, recorded.
     fn put(&mut self, slot: u32, value: Value<'_>, slots: usize, policy: ListPolicy) -> io::Result<()> {
         match (&mut *self, value) {
             (Self::Number { cells, present, .. }, Value::Number(bits)) => {
@@ -947,7 +857,6 @@ impl ColumnState {
         Ok(())
     }
 
-    /// The cell at a slot a row left: zero, missing or empty, recorded.
     fn release(&mut self, slot: u32, policy: ListPolicy) -> io::Result<()> {
         match self {
             Self::Number { cells, present, .. } => {
@@ -978,7 +887,6 @@ impl ColumnState {
         Ok(())
     }
 
-    /// The cells at slots `from..to`, rows left: zero, missing or empty, recorded.
     fn release_range(&mut self, from: u32, to: u32, policy: ListPolicy) -> io::Result<()> {
         match self {
             Self::Number { cells, present, .. } => {
@@ -1005,8 +913,6 @@ impl ColumnState {
         self.unrecorded_mut().get_or_insert_with(Flags::default).set(slot);
     }
 
-    /// Moves the cell at `old` to `new`, a lower slot holding no row: recorded or not, and
-    /// `old` left released. A list cell is copied through `scratch`, one cell at a time.
     fn move_cell(&mut self, old: u32, new: u32, slots: usize, policy: ListPolicy, scratch: &mut Vec<u8>) -> io::Result<()> {
         let recorded = self.recorded(old);
         match self {
@@ -1067,8 +973,6 @@ impl ColumnState {
     }
 }
 
-/// A number, bool or text column's cells borrowed whole, for a reader's loop to read and write
-/// in place, with the table's live bits beside them.
 pub(crate) struct Numbers<'a> {
     pub(crate) live: &'a Flags,
     pub(crate) slots: usize,
@@ -1078,12 +982,10 @@ pub(crate) struct Numbers<'a> {
 }
 
 pub(crate) enum NumberCells<'a> {
-    /// A number column's cells, or a text column's ids (`text`), which hold 32 bits.
     Narrow { cells: &'a mut Narrow, text: bool },
     Bool(&'a mut Flags),
 }
 
-/// A list column's cells borrowed whole, for a reader's loop to change in place.
 pub(crate) struct Lists<'a> {
     pub(crate) live: &'a Flags,
     pages: &'a mut Vec<ListPage>,
@@ -1097,7 +999,6 @@ impl Lists<'_> {
         self.pages.get(slot as usize / PAGE).map_or(&[][..], |page| page.get(slot as usize % PAGE))
     }
 
-    /// The cell at `slot` to change in place, at its length.
     #[inline]
     pub(crate) fn get_mut(&mut self, slot: u32) -> &mut [u8] {
         match self.pages.get_mut(slot as usize / PAGE) {
@@ -1106,7 +1007,6 @@ impl Lists<'_> {
         }
     }
 
-    /// The cell at `slot` rewritten: in place at its length, appended to its page at another.
     pub(crate) fn set(&mut self, slot: u32, cell: &[u8]) -> io::Result<()> {
         let page = slot as usize / PAGE;
         if self.pages.len() <= page {
@@ -1115,8 +1015,6 @@ impl Lists<'_> {
         self.pages[page].set(slot as usize % PAGE, cell, self.policy)
     }
 
-    /// Cells of page `page`'s slots that hold none yet, in slot order, each `(offset in the page,
-    /// start, length)` of `bytes`, laid in at once.
     pub(crate) fn fill(&mut self, page: usize, cells: &[(u16, u32, u32)], bytes: &[u8]) -> io::Result<()> {
         if self.pages.len() <= page {
             self.pages.resize_with(page + 1, ListPage::default);
@@ -1129,7 +1027,6 @@ impl Lists<'_> {
         self.unrecorded.as_ref().is_some_and(|bits| bits.get(slot))
     }
 
-    /// The cell at `slot` recorded or not; its bytes stay.
     pub(crate) fn record(&mut self, slot: u32, recorded: bool) {
         if recorded {
             if let Some(bits) = self.unrecorded.as_mut() {
@@ -1141,16 +1038,13 @@ impl Lists<'_> {
     }
 }
 
-/// What a store's parts hold, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ColumnBytes {
     pub numbers: usize,
     pub bits: usize,
     pub list_spans: usize,
     pub list_items: usize,
-    /// Of `list_items`, bytes of cells rewritten since and not yet compacted away.
     pub list_abandoned: usize,
-    /// Of `numbers` and `list_items`, the bytes the cells use: the rest is slack.
     pub numbers_used: usize,
     pub list_items_used: usize,
 }
@@ -1161,7 +1055,6 @@ pub struct StoreBytes {
     pub live_rows: usize,
     pub slots: usize,
     pub keys: usize,
-    /// Of `keys`, the bytes the live and free slots use.
     pub keys_used: usize,
     pub index: usize,
     pub live: usize,
@@ -1197,15 +1090,10 @@ impl StoreBytes {
     }
 }
 
-/// Live slots by key: open addressing over slots, at most three quarters full, the key read
-/// from the table's keys.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct KeyIndex {
-    /// Each bucket's slot plus one, which fits as slots stay below [`SLOTS`]; zero for none.
     buckets: Vec<u32>,
     held: usize,
-    /// Lookups since the last block's end: an index looked up fewer times than its table has
-    /// rows is let go of there.
     lookups: u64,
 }
 
@@ -1254,7 +1142,6 @@ impl KeyIndex {
         self.held += 1;
     }
 
-    /// Removes `slot`, which holds `key`, shifting later buckets of its run back.
     fn remove(&mut self, key: u128, slot: u32, keys: &Keys) {
         if self.buckets.is_empty() {
             return;
@@ -1274,7 +1161,6 @@ impl KeyIndex {
         while self.buckets[next] != 0 {
             let held = self.buckets[next];
             let home = bucket_of(keys.get(held - 1), mask);
-            // A bucket moves back when the gap lies between its home and where it is.
             let between = if at <= next { home <= at || home > next } else { home <= at && home > next };
             if between {
                 self.buckets[at] = held;
@@ -1290,7 +1176,6 @@ impl KeyIndex {
     }
 }
 
-/// Keys by slot: their high and low 64 bits, each narrow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keys {
     high: Narrow,
@@ -1317,33 +1202,25 @@ impl Keys {
     }
 }
 
-/// A table's last complete read while partial reads since changed its rows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Last {
-    /// The rows are the read, made at the hour when known.
     Held(Option<i32>),
-    /// A partial read since changed the rows: the read's table apart, and its hour.
     Apart(Box<TableState>, Option<i32>),
 }
 
-/// One table's rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableState {
     slots: u32,
     live: Flags,
-    /// No free slot lies below this one.
     free_from: u32,
     keys: Keys,
     index: Option<KeyIndex>,
     columns: Vec<ColumnState>,
     status: Status,
     sampled: Option<i32>,
-    /// A table read in part: the slots its last hour read.
     view: Vec<u32>,
     last: Option<Last>,
     lists: ListPolicy,
-    /// A log: `count` the rows appended, `listed` those the game still lists, and nothing else
-    /// is held per row.
     log: bool,
     count: u64,
     listed: Listed,
@@ -1369,34 +1246,27 @@ impl TableState {
         }
     }
 
-    /// A log table of `kinds` that has appended `count` rows, `listed` of them still listed: its
-    /// count, live set and status, no row.
     pub fn log(kinds: &[Kind], count: u64, listed: Listed) -> Self {
         Self { log: true, count, listed, ..Self::new(kinds) }
     }
 
-    /// A log's rows the game still lists.
     pub fn listed(&self) -> Option<&Listed> {
         self.log.then_some(&self.listed)
     }
 
-    /// A log restore's count and live set.
     pub(crate) fn set_log_rows(&mut self, count: u64, listed: Listed) {
         self.count = count;
         self.listed = listed;
     }
 
-    /// Its rows are appended and never change: it holds a count, not rows.
     pub fn is_log(&self) -> bool {
         self.log
     }
 
-    /// A log's rows appended so far; none for a table holding state.
     pub fn count(&self) -> Option<u64> {
         self.log.then_some(self.count)
     }
 
-    /// Its list pages held by `policy`.
     pub fn holding_lists(mut self, policy: ListPolicy) -> Self {
         self.lists = policy;
         self
@@ -1406,7 +1276,6 @@ impl TableState {
         self.lists = policy;
     }
 
-    /// One past the highest slot in use.
     pub fn slots(&self) -> u32 {
         self.slots
     }
@@ -1443,7 +1312,6 @@ impl TableState {
         self.sampled
     }
 
-    /// For a table read in part, the slots its last hour read; none otherwise.
     pub fn view(&self) -> Option<&[u32]> {
         matches!(self.status, Status::Truncated { .. }).then_some(self.view.as_slice())
     }
@@ -1452,7 +1320,6 @@ impl TableState {
         self.last.as_ref()
     }
 
-    /// The slot of the live row with `key`; builds the key index the first time.
     pub fn slot(&mut self, key: u128) -> Option<u32> {
         if self.index.is_none() {
             let mut index = KeyIndex::default();
@@ -1466,8 +1333,6 @@ impl TableState {
         index.find(key, &self.keys)
     }
 
-    /// The slot of the live row with `key`: `hint` when that slot holds it, read without the key
-    /// index; else through it ([`Self::slot`]).
     pub fn slot_of(&mut self, key: u128, hint: Option<u32>) -> Option<u32> {
         if let Some(hint) = hint
             && self.live.get(hint)
@@ -1478,8 +1343,6 @@ impl TableState {
         self.slot(key)
     }
 
-    /// At a block's end: the key index let go of when the block looked it up fewer times than
-    /// the table has rows (the next miss builds it again, one pass over the keys).
     fn let_go_index(&mut self) {
         let rows = self.live.count() as u64;
         if let Some(index) = &mut self.index {
@@ -1491,8 +1354,6 @@ impl TableState {
         }
     }
 
-    /// The slot of the live row with `key`: through the key index when one is built, else by a
-    /// pass over the live rows.
     pub fn find(&self, key: u128) -> Option<u32> {
         match &self.index {
             Some(index) => index.find(key, &self.keys),
@@ -1500,14 +1361,12 @@ impl TableState {
         }
     }
 
-    /// Builds the key index when it is not built: a table its readers look up by key.
     pub fn index_keys(&mut self) {
         if self.index.is_none() {
             self.slot(0);
         }
     }
 
-    /// The lowest slot holding no row; none when every slot below [`SLOTS`] holds one.
     fn lowest_free(&mut self) -> Option<u32> {
         let mut word = self.free_from as usize / 64;
         while self.live.0.get(word) == Some(&u64::MAX) {
@@ -1565,7 +1424,6 @@ impl TableState {
         Ok(key)
     }
 
-    /// A restore's slot count: its arrays reach it.
     pub(crate) fn set_slots(&mut self, slots: u32) {
         if slots > self.slots {
             self.slots = slots;
@@ -1576,8 +1434,6 @@ impl TableState {
         }
     }
 
-    /// A table's status and sample hour as the status runs give them at a block's end; a complete
-    /// table keeping its last complete read holds it at that sample hour.
     pub(crate) fn set_status(&mut self, status: Status, sampled: Option<i32>) {
         self.status = status;
         self.sampled = sampled;
@@ -1586,7 +1442,6 @@ impl TableState {
         }
     }
 
-    /// A restore's status, sample hour, rows read and last complete read.
     pub(crate) fn set_meta(&mut self, status: Status, sampled: Option<i32>, view: Option<Vec<u32>>, last: Option<Last>) {
         self.status = status;
         self.sampled = sampled;
@@ -1594,9 +1449,6 @@ impl TableState {
         self.last = last;
     }
 
-    /// A restore's rows of slots `from..to`, below its slot count and holding none yet: `bits` their
-    /// live bits from slot `from`, `keys` the live ones' keys in slot order. Keys are held at the
-    /// width the widest needs, widened once.
     pub(crate) fn put_rows(&mut self, from: u32, to: u32, bits: &[u8], keys: &[u128]) -> io::Result<()> {
         let Some(bits) = to.checked_sub(from).filter(|_| to <= self.slots).and_then(|rows| bits.get(..rows.div_ceil(8) as usize)) else {
             return Err(invalid("A restore's rows pass its slots"));
@@ -1661,8 +1513,6 @@ impl TableState {
         Ok(())
     }
 
-    /// Every live row's cell of `column` not recorded. A column past the table's, which a recording
-    /// of an earlier format never held, already reads not recorded.
     pub(crate) fn unrecord_rows(&mut self, column: usize) -> io::Result<()> {
         let Some(held) = self.columns.get_mut(column) else { return Ok(()) };
         let held = held.unrecorded_mut();
@@ -1673,18 +1523,14 @@ impl TableState {
         Ok(())
     }
 
-    /// A reader's new row at `slot`: its cells empty until put.
     pub(crate) fn insert_row(&mut self, slot: u32, key: u128) -> io::Result<()> {
         self.insert_at(slot, key)
     }
 
-    /// A reader's row gone from `slot`.
     pub(crate) fn delete_row(&mut self, slot: u32) -> io::Result<()> {
         self.delete(slot).map(drop)
     }
 
-    /// Row `at` of `rows` put at the lowest free slot, its key and its cells of `columns` (the
-    /// others not recorded): a reader holding a log's listed rows as a table's cells. Its slot.
     pub fn put_row_from(&mut self, key: u128, rows: &TableState, at: u32, columns: &[usize]) -> io::Result<u32> {
         let slot = self.lowest_free().ok_or_else(|| past_slots("A table"))?;
         self.insert_at(slot, key)?;
@@ -1697,13 +1543,10 @@ impl TableState {
         Ok(slot)
     }
 
-    /// The row at `slot` taken out: its key.
     pub fn remove_row(&mut self, slot: u32) -> io::Result<u128> {
         self.delete(slot)
     }
 
-    /// A reader's rows gone from slots `from..to`, every one holding a row: each one's slot and
-    /// key given to `each`, then all cleared at once.
     pub(crate) fn delete_rows(&mut self, from: u32, to: u32, mut each: impl FnMut(u32, u128)) -> io::Result<()> {
         if !self.live.all(from, to) {
             return Err(invalid(format!("Delete names a slot of {from}..{to}, which holds no row")));
@@ -1725,7 +1568,6 @@ impl TableState {
         Ok(())
     }
 
-    /// Column `column`'s cells for a reader's loop, when it is a number, bool or text column.
     pub(crate) fn numbers(&mut self, column: usize) -> Option<Numbers<'_>> {
         let slots = self.slots as usize;
         let live = &self.live;
@@ -1739,7 +1581,6 @@ impl TableState {
         })
     }
 
-    /// Column `column`'s cells for a reader's loop, when it is a list or opaque column.
     pub(crate) fn lists(&mut self, column: usize) -> Option<Lists<'_>> {
         let live = &self.live;
         match self.columns.get_mut(column)? {
@@ -1748,14 +1589,12 @@ impl TableState {
         }
     }
 
-    /// A reader's cell put at `slot`, recorded.
     pub(crate) fn put_cell(&mut self, column: usize, slot: u32, value: Value<'_>) -> io::Result<()> {
         let slots = self.slots as usize;
         let policy = self.lists;
         self.columns.get_mut(column).ok_or_else(|| invalid(format!("No column {column}")))?.put(slot, value, slots, policy)
     }
 
-    /// A reader's cell at `slot` unrecorded; a column past the table's already reads so.
     pub(crate) fn unrecord_cell(&mut self, column: usize, slot: u32) -> io::Result<()> {
         if let Some(held) = self.columns.get_mut(column) {
             held.unrecord(slot);
@@ -1763,16 +1602,12 @@ impl TableState {
         Ok(())
     }
 
-    /// Moves the live rows to slots `0..live` in slot order; each old slot's new one, or none for a
-    /// slot holding no row.
     pub fn pack(&mut self) -> io::Result<Vec<Option<u32>>> {
         if self.log {
             return Err(invalid("A log holds no slots to pack"));
         }
         let _label = label("store: packed");
         let mut moved = vec![None; self.slots as usize];
-        // In place: each live row moves down to the next packed slot, in slot order, so a row
-        // never lands on one not yet moved.
         let mut new = 0_u32;
         let live: Vec<u32> = self.live.ones().collect();
         let policy = self.lists;
@@ -1796,13 +1631,11 @@ impl TableState {
             *slot = moved.get(*slot as usize).copied().flatten().unwrap_or(u32::MAX);
         }
         self.view.retain(|&slot| slot != u32::MAX);
-        // The next lookup that misses its hint builds the index again over the packed slots.
         self.index = None;
         self.trim();
         Ok(moved)
     }
 
-    /// Each number and text column at the narrowest width its live cells need.
     pub fn narrow(&mut self) {
         let slots = self.slots as usize;
         for column in &mut self.columns {
@@ -1816,7 +1649,6 @@ impl TableState {
         self.keys.low.narrow(slots);
     }
 
-    /// Lets go of slots past the last live row.
     fn trim(&mut self) {
         if self.log {
             return;
@@ -1825,7 +1657,6 @@ impl TableState {
         self.cut(end);
     }
 
-    /// Lets go of slots from `end` on, none of them live.
     fn cut(&mut self, end: u32) {
         if end >= self.slots {
             return;
@@ -1861,8 +1692,6 @@ impl TableState {
                     }
                 }
                 ColumnState::List { pages, unrecorded, .. } => {
-                    // A page no cell was ever written to was never made: the last one held may
-                    // end before the slot trimmed to.
                     pages.truncate(slots.div_ceil(PAGE));
                     if let Some(page) = pages.get_mut(slots / PAGE)
                         && slots % PAGE != 0
@@ -1906,28 +1735,19 @@ impl TableState {
     }
 }
 
-/// Where a string the store let go of is read again: the file it wrote it to.
 pub trait StringSource {
     fn text(&mut self, id: u32) -> io::Result<Option<Vec<u8>>>;
 
-    /// Lets go of what it read for the hour that ended.
     fn release(&mut self) {}
 }
 
-/// The text of every string a live cell or refusal names, by id, and of those added since the
-/// last block's end; the ids follow the run's appends. A string let go of is read again from the
-/// file when a cell names it again. Strings the recorder's own writers name have ids past every
-/// append and are held for the run ([`Self::pin`]).
 #[derive(Default)]
 pub struct Strings {
     held: HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>,
     pinned: HashMap<u32, Box<[u8]>, foldhash::fast::FixedState>,
     next: u32,
-    /// The lowest writer's string: appends stop below it.
     pinned_from: Option<u32>,
     bytes: usize,
-    /// The held strings by the digest of their text, made the first time a text is interned and
-    /// kept in step with what is held; for texts of one digest, the lowest id.
     by_text: Option<HashMap<u64, u32, foldhash::fast::FixedState>>,
 }
 
@@ -1940,7 +1760,6 @@ impl Strings {
         self.held.get(&id).or_else(|| self.pinned.get(&id)).map(|text| &**text)
     }
 
-    /// Holds `text` as `id` for the rest of the run: a string a writer names, past every append.
     pub fn pin(&mut self, id: u32, text: &[u8]) -> io::Result<()> {
         if id < self.next {
             return Err(invalid(format!("A writer's string {id} is among the appends")));
@@ -1957,12 +1776,10 @@ impl Strings {
         }
     }
 
-    /// Ids appends may still take: up to the lowest writer's string, or [`STRINGS`].
     fn room(&self) -> u32 {
         self.pinned_from.unwrap_or(STRINGS).saturating_sub(self.next)
     }
 
-    /// The refusal of an append past [`Self::room`].
     fn full(&self) -> io::Error {
         match self.pinned_from {
             Some(id) if id < STRINGS => invalid(format!("The run's strings reach {id}, a writer's string")),
@@ -1970,7 +1787,6 @@ impl Strings {
         }
     }
 
-    /// The next id's text, within [`Self::room`].
     fn append(&mut self, text: &[u8]) {
         self.bytes += text.len();
         self.held.insert(self.next, text.into());
@@ -1980,7 +1796,6 @@ impl Strings {
         self.next += 1;
     }
 
-    /// The id of `text` among the held strings, appended when none holds it.
     fn intern(&mut self, text: &[u8]) -> io::Result<u32> {
         if self.by_text.is_none() {
             self.index_texts();
@@ -1997,12 +1812,10 @@ impl Strings {
         }
         let id = self.next;
         let _label = label("strings");
-        // Another text of the same digest keeps the map's entry; this one is appended unmapped.
         self.append(text);
         Ok(id)
     }
 
-    /// The map of texts made again from the held strings.
     fn index_texts(&mut self) {
         let _label = label("strings: by text");
         let mut by_text: HashMap<u64, u32, foldhash::fast::FixedState> = HashMap::default();
@@ -2018,7 +1831,6 @@ impl Strings {
         self.next
     }
 
-    /// Holds `id`'s text again when it was let go of.
     fn named(&mut self, id: u32, source: &mut dyn StringSource) -> io::Result<()> {
         if id >= self.next || self.held.contains_key(&id) {
             return Ok(());
@@ -2058,14 +1870,11 @@ impl Strings {
     }
 }
 
-/// One table of the store as the recorder's readers of an hour see it (the derived tables'
-/// writers, the summaries): its rows, cells and strings, read only.
 #[derive(Clone, Copy)]
 pub struct TableView<'a> {
     table: &'a TableState,
     kinds: &'a [Kind],
     strings: &'a Strings,
-    /// A log: its own state (count and status), `table` holding the hour's appended rows.
     log: Option<&'a TableState>,
 }
 
@@ -2074,12 +1883,10 @@ impl<'a> TableView<'a> {
         Self { table, kinds, strings, log: None }
     }
 
-    /// A log table: its rows are the hour's appended rows, at slots from 0 in append order.
     pub fn is_log(&self) -> bool {
         self.log.is_some()
     }
 
-    /// A log's ordinal of the row at slot 0: the rows it appended before the hour's first.
     pub fn appended_from(&self) -> Option<u64> {
         self.log.map(|log| log.count - u64::from(self.table.slots))
     }
@@ -2100,7 +1907,6 @@ impl<'a> TableView<'a> {
         self.log.unwrap_or(self.table).sampled
     }
 
-    /// For a table read in part, the slots its last hour read.
     pub fn view(&self) -> Option<&'a [u32]> {
         if self.log.is_some() { None } else { self.table.view() }
     }
@@ -2109,7 +1915,6 @@ impl<'a> TableView<'a> {
         &self.table.live
     }
 
-    /// Live slots, ascending.
     pub fn rows(&self) -> impl Iterator<Item = u32> + 'a {
         self.table.live.ones()
     }
@@ -2130,7 +1935,6 @@ impl<'a> TableView<'a> {
         self.table.value(column, slot)
     }
 
-    /// A numeric or bool cell as a signed value; none when missing, unrecorded or not a number.
     pub fn number(&self, column: usize, slot: u32) -> Option<i64> {
         match self.table.columns.get(column)? {
             ColumnState::Number { .. } | ColumnState::Bool { .. } => match self.table.value(column, slot) {
@@ -2148,7 +1952,6 @@ impl<'a> TableView<'a> {
         }
     }
 
-    /// A text cell's string id.
     pub fn text(&self, column: usize, slot: u32) -> Option<u32> {
         match self.table.value(column, slot) {
             Value::Text(id) => Some(id),
@@ -2156,7 +1959,6 @@ impl<'a> TableView<'a> {
         }
     }
 
-    /// A list or opaque cell's bytes.
     pub fn list(&self, column: usize, slot: u32) -> Option<&'a [u8]> {
         match self.table.value(column, slot) {
             Value::List(bytes) => Some(bytes),
@@ -2164,47 +1966,28 @@ impl<'a> TableView<'a> {
         }
     }
 
-    /// String `id`'s text, when the store holds it.
     pub fn string(&self, id: u32) -> Option<&'a [u8]> {
         self.strings.get(id)
     }
 }
 
-/// What one table's hour changed: for the derived tables' writers, the summaries and the digest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TableHour {
     pub inserted: Vec<u32>,
-    /// Each deleted row's slot and the key it held.
     pub deleted: Vec<(u32, u128)>,
-    /// Cells an event named on rows older than the hour, (slot, column); in slot order once
-    /// the hour ends.
     pub written: Vec<(u32, u16)>,
     pub touched: Vec<u32>,
     pub status_changed: bool,
-    /// The table had a section this hour.
     pub present: bool,
-    /// A run's first hour: every live row was born in it and the log holds none of them; readers
-    /// take the hour from the table's rows.
     pub whole: bool,
-    /// A log: the rows the hour appended, and the ordinal of its first. Their cells are the
-    /// table's view ([`Store::view`]) while the hour lasts.
     pub appended: u32,
     pub appended_from: u64,
-    /// A log: the runs of ordinals the hour forgot, in the order forgotten.
     pub forgotten: Vec<std::ops::Range<u64>>,
-    /// Columns written of rows inserted this hour, (slot, column).
     born_written: Vec<(u32, u16)>,
-    /// A table kept with [`Store::keep_previous`]: each cell of a row older than the hour as it
-    /// was before a write, (slot, column, value), in the order written; a cell's first entry is
-    /// its value before the hour.
     pub previous: Vec<(u32, u16, Kept)>,
-    /// Such a table, or one kept with [`Store::keep_dropped`]: each row the hour deleted, its key
-    /// and its cells as the deletion found them.
     pub dropped: Dropped,
 }
 
-/// The rows an hour deleted of a kept table: their keys beside their cells, one row after another
-/// (16 bytes a cell and the key a row).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dropped {
     width: usize,
@@ -2232,17 +2015,14 @@ impl Dropped {
         self.keys.is_empty()
     }
 
-    /// Row `at`'s cells, rows numbered in the order deleted.
     pub fn row(&self, at: usize) -> &[Kept] {
         self.cells.get(at * self.width..(at + 1) * self.width).unwrap_or(&[])
     }
 
-    /// Each row's key and cells, in the order deleted.
     pub fn iter(&self) -> impl Iterator<Item = (&u128, &[Kept])> + '_ {
         self.keys.iter().zip(self.cells.chunks(self.width.max(1)).chain(std::iter::repeat(&[][..])))
     }
 
-    /// The bytes held.
     pub fn bytes(&self) -> usize {
         self.keys.capacity() * 16 + self.cells.capacity() * size_of::<Kept>()
     }
@@ -2257,8 +2037,6 @@ impl<'a> IntoIterator for &'a Dropped {
     }
 }
 
-/// A cell as it was, free of its table: what [`Store::keep_previous`] keeps (16 bytes: a list's
-/// bytes behind one pointer).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kept {
     Unrecorded,
@@ -2291,50 +2069,33 @@ impl Kept {
     }
 }
 
-/// What one hour changed, by table; cleared at the next hour's start.
 #[derive(Default)]
 pub struct HourLog {
     pub tables: Vec<TableHour>,
     present: Vec<usize>,
 }
 
-/// The run's state: every table, its strings, and the hour's log.
 pub struct Store {
     tables: Vec<TableState>,
     kinds: Vec<Vec<Kind>>,
-    /// The tables that keep their last complete read.
     keeps: Vec<bool>,
-    /// The tables whose hour log keeps what it replaced ([`Self::keep_previous`]).
     previous: Vec<bool>,
-    /// The tables whose hour log keeps each deleted row's cells alone ([`Self::keep_dropped`]).
     dropped: Vec<bool>,
     strings: Strings,
     log: HourLog,
     hour: i32,
-    /// Rows inserted this hour, by table.
     born: Vec<Flags>,
-    /// Of those, rows their producer gives every column of: no cell of theirs is logged.
     given: Vec<Flags>,
     scratch: Vec<u8>,
     list: Vec<u8>,
-    /// Where strings let go of are read again.
     source: Option<Box<dyn StringSource + Send>>,
-    /// The unit's encoder, when one is written.
     encoder: Option<crate::unit::Encoder>,
-    /// Tables the encoder packed at a block's end, each old slot's new one.
     moves: Vec<(usize, Vec<Option<u32>>)>,
-    /// Per table, cells of rows inserted over the run that their hour did not give.
     unwritten: Vec<u64>,
-    /// The hour the run under way began at.
     run_first: Option<i32>,
-    /// The hour applied is the run's first ([`TableHour::whole`]).
     whole: bool,
-    /// In a run's first hour, the cells unrecorded on purpose, (table, column, slot): not counted
-    /// as cells the hour did not give.
     unrecorded_given: Vec<(usize, u16, u32)>,
-    /// The log tables, by table.
     logs: Vec<bool>,
-    /// Each log table's rows appended this hour, at slots from 0.
     appended: Vec<Option<Box<TableState>>>,
 }
 
@@ -2367,8 +2128,6 @@ impl Store {
         }
     }
 
-    /// Declares which tables are logs (by table), before any row is in: a log holds a count and
-    /// its status, and its rows go to the unit as they are appended.
     pub fn declare_logs(&mut self, logs: &[bool]) -> io::Result<()> {
         if logs.len() != self.tables.len() {
             return Err(invalid(format!("Logs declared for {} tables of a store of {}", logs.len(), self.tables.len())));
@@ -2391,23 +2150,18 @@ impl Store {
         self.logs = logs;
     }
 
-    /// The log tables, by table.
     pub fn logs(&self) -> &[bool] {
         &self.logs
     }
 
-    /// Per table, the cells of rows inserted that their hour did not give, over the store's life.
     pub fn unwritten(&self) -> &[u64] {
         &self.unwritten
     }
 
-    /// The tables packed since last asked, each with every old slot's new one: a producer naming
-    /// slots of its own renumbers them.
     pub fn take_moves(&mut self) -> Vec<(usize, Vec<Option<u32>>)> {
         std::mem::take(&mut self.moves)
     }
 
-    /// Writes the unit as changes are applied.
     pub fn attach(&mut self, mut encoder: crate::unit::Encoder) {
         encoder.declare_logs(&self.logs);
         self.encoder = Some(encoder);
@@ -2421,14 +2175,10 @@ impl Store {
         self.encoder.as_mut()
     }
 
-    /// Where strings let go of are read again: the file the run's strings were written to.
     pub fn read_strings_from(&mut self, source: Box<dyn StringSource + Send>) {
         self.source = Some(source);
     }
 
-    /// Table `table`'s status, whether the hour read it, and its sample hour; `sectioned` when the hour holds its
-    /// section. A partial read about to change a table keeping its last complete read keeps that
-    /// read apart first.
     pub fn status(&mut self, table: usize, status: Status, read: bool, sampled: Option<i32>, sectioned: bool) -> io::Result<()> {
         if let Status::Unavailable { reason } = status {
             self.hold_again(reason)?;
@@ -2462,8 +2212,6 @@ impl Store {
         Ok(())
     }
 
-    /// After the hour, for a table keeping its last complete read: a complete view is that read,
-    /// at its sample hour or, when the hour changed no row, at the hour of the read it holds.
     pub fn after(&mut self, table: usize, sectioned: bool) {
         if !self.keeps.get(table).copied().unwrap_or(false) {
             return;
@@ -2483,8 +2231,6 @@ impl Store {
         &self.tables
     }
 
-    /// Table `table` as the recorder's readers of an hour see it.
-    /// A log's view is the hour's appended rows, with the log's own status.
     pub fn view(&self, table: usize) -> TableView<'_> {
         match &self.appended[table] {
             Some(rows) => TableView { table: rows, kinds: &self.kinds[table], strings: &self.strings, log: Some(&self.tables[table]) },
@@ -2492,36 +2238,28 @@ impl Store {
         }
     }
 
-    /// From the next change on, `table`'s hour log keeps each older cell before a write and each
-    /// deleted row's cells ([`TableHour::previous`], [`TableHour::dropped`]); kept across runs.
     pub fn keep_previous(&mut self, table: usize) {
         if let Some(held) = self.previous.get_mut(table) {
             *held = true;
         }
     }
 
-    /// From the next change on, `table`'s hour log keeps each deleted row's cells
-    /// ([`TableHour::dropped`]) and no older cell of a write; kept across runs.
     pub fn keep_dropped(&mut self, table: usize) {
         if let Some(held) = self.dropped.get_mut(table) {
             *held = true;
         }
     }
 
-    /// Builds `table`'s key index: a table its readers look up by key.
     pub fn index(&mut self, table: usize) {
         if let Some(held) = self.tables.get_mut(table) {
             held.index_keys();
         }
     }
 
-    /// The id of `text` among the strings held now, appended when none holds it: a string let
-    /// go of at a block's end and met again is appended again, with a new id.
     pub fn intern(&mut self, text: &[u8]) -> io::Result<u32> {
         self.strings.intern(text)
     }
 
-    /// Holds `text` as string `id` for the run: one the recorder's writers name.
     pub fn pin_string(&mut self, id: u32, text: &[u8]) -> io::Result<()> {
         self.strings.pin(id, text)
     }
@@ -2546,12 +2284,10 @@ impl Store {
         self.hour
     }
 
-    /// Whether the hour begun is its run's first.
     pub fn first_of_run(&self) -> bool {
         self.whole
     }
 
-    /// A new run whose first hour is `first_hour`: every table empty, the strings started again.
     pub fn begin_run(&mut self, first_hour: i32) {
         self.restart();
         self.run_first = Some(first_hour);
@@ -2560,7 +2296,6 @@ impl Store {
         }
     }
 
-    /// Every table empty, the strings started again; what lasts across runs kept.
     fn restart(&mut self) {
         let kinds = std::mem::take(&mut self.kinds);
         let keeps = std::mem::take(&mut self.keeps);
@@ -2579,9 +2314,6 @@ impl Store {
         self.unwritten = unwritten;
     }
 
-    /// The hour's start: the last hour's log cleared, `appends` added to the strings. A run's
-    /// first hour keeps no log ([`TableHour::whole`]). Appends past the strings' room are refused
-    /// by name before anything changes.
     pub fn begin_hour(&mut self, hour: i32, appends: &[&[u8]]) -> io::Result<()> {
         if u32::try_from(appends.len()).ok().is_none_or(|count| count > self.strings.room()) {
             return Err(self.strings.full());
@@ -2637,8 +2369,6 @@ impl Store {
         self.log.present.clear();
     }
 
-    /// String `id` held, read again from the file when it was let go of: a cell or a refusal
-    /// names it.
     fn hold_again(&mut self, id: u32) -> io::Result<()> {
         if self.strings.get(id).is_some() {
             return Ok(());
@@ -2651,9 +2381,6 @@ impl Store {
         }
     }
 
-    /// Lets go of the room the hour log and the store's scratch kept for the largest hour so
-    /// far: after a run's first hour, which reads every row, and at each block's end. The hour
-    /// it is called after is over; its log is gone.
     pub fn shed(&mut self) {
         self.clear_log();
         for held in &mut self.log.tables {
@@ -2667,7 +2394,6 @@ impl Store {
         self.list = Vec::new();
     }
 
-    /// One table's changes this hour.
     pub fn table(&mut self, table: usize) -> io::Result<TableChanges<'_>> {
         if table >= self.tables.len() {
             return Err(invalid(format!("No table {table}")));
@@ -2679,9 +2405,6 @@ impl Store {
         Ok(TableChanges { store: self, table, _label: label("store") })
     }
 
-    /// The changes so far settled: each table's log in slot order, and a row inserted this hour
-    /// holding no cell of a column it was not given. Readers of the hour (writers, summaries) read
-    /// it settled; settling again changes nothing.
     pub fn settle(&mut self) {
         if self.whole {
             return;
@@ -2704,7 +2427,6 @@ impl Store {
             let given = &given[table];
             let tracked = held.inserted.iter().filter(|&&slot| !given.get(slot)).count();
             if held.born_written.len() != tracked * columns {
-                // The cells found unwritten join the written ones only once every search is done.
                 let mut unwritten = Vec::new();
                 for &slot in held.inserted.iter().filter(|&&slot| !given.get(slot)) {
                     for column in 0..columns {
@@ -2724,8 +2446,6 @@ impl Store {
         }
     }
 
-    /// The hour's end, the changes settled ([`Self::settle`]): the unit given the hour's
-    /// lifetimes and the inserted rows' cells, and its parts that are due closed into `sink`.
     pub fn end_hour(&mut self, sink: &mut dyn crate::unit::PartSink) -> io::Result<()> {
         self.settle();
         if self.whole {
@@ -2749,7 +2469,6 @@ impl Store {
         }
         let ends_block = encoder.as_ref().is_some_and(crate::unit::Encoder::ends_block);
         if ends_block {
-            // Closing the block's parts reads nothing of the hour's log: its room goes first.
             self.shed();
         }
         let Self { tables, encoder, strings, moves, .. } = self;
@@ -2759,9 +2478,6 @@ impl Store {
         Ok(())
     }
 
-    /// A run's first hour ends: its rows were born with every cell not recorded, so a cell still
-    /// not recorded and not unrecorded on purpose is one the hour did not give. Columns left with
-    /// no such cell hold no bits.
     fn count_whole_unwritten(&mut self) {
         let mut given = std::mem::take(&mut self.unrecorded_given);
         given.sort_unstable();
@@ -2785,7 +2501,6 @@ impl Store {
         }
     }
 
-    /// The run ends after the hour applied last: its short last block closes into `sink`.
     pub fn end_run(&mut self, sink: &mut dyn crate::unit::PartSink) -> io::Result<()> {
         match &mut self.encoder {
             Some(encoder) => encoder.end_run(&mut self.tables, &self.strings, sink),
@@ -2793,8 +2508,6 @@ impl Store {
         }
     }
 
-    /// At a block's end: strings no live cell or refusal names are let go of. Pinned strings,
-    /// past every append, are kept.
     pub fn end_block(&mut self) {
         let next = self.strings.next;
         let mut named = Flags::default();
@@ -2836,7 +2549,6 @@ impl Store {
         }
     }
 
-    /// What the store holds, by part, with every table's.
     pub fn bytes(&self) -> (StoreBytes, Vec<StoreBytes>) {
         let mut total = StoreBytes::default();
         let tables: Vec<StoreBytes> = self.tables.iter().map(TableState::bytes).collect();
@@ -2847,9 +2559,6 @@ impl Store {
         (total, tables)
     }
 
-    /// Takes a run up at a block's end: every table as read from the file and trimmed as the
-    /// block's end trimmed it, the run's string ids counted to `next`, the strings live cells name
-    /// held again.
     pub fn resume(&mut self, tables: Vec<TableState>, next: u32) -> io::Result<()> {
         if tables.len() != self.tables.len() {
             return Err(invalid("Resumed tables of another schema"));
@@ -2872,8 +2581,6 @@ impl Store {
         Ok(())
     }
 
-    /// Makes every string a live text cell or the table's refusal names held: after its table
-    /// came from a restore.
     pub fn hold_named(&mut self, table: usize, source: &mut dyn StringSource) -> io::Result<()> {
         let held = &self.tables[table];
         let mut ids = Vec::new();
@@ -2896,19 +2603,15 @@ impl Store {
     }
 }
 
-/// The edits of a PATCH to one cell: per hunk the held items it keeps, removes and inserts; the
-/// inserted items as bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct Edits<'a> {
     pub hunks: &'a [(u32, u32, u32)],
     pub items: &'a [u8],
 }
 
-/// One table's changes of the hour ([`Store::table`]).
 pub struct TableChanges<'s> {
     store: &'s mut Store,
     table: usize,
-    /// What the changes allocate is the store's, whoever asks for them.
     _label: engine_allocation::labels::Scope,
 }
 
@@ -2925,7 +2628,6 @@ impl TableChanges<'_> {
         &self.store.tables[self.table]
     }
 
-    /// Refuses a change by row on a log, whose rows are appended and forgotten, never held.
     fn holds_state(&self, what: &str) -> io::Result<()> {
         if self.store.tables[self.table].log {
             return Err(invalid(format!("Table {} is a log: its rows are appended and forgotten, never {what}", self.table)));
@@ -2933,8 +2635,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// A log's row, every column given (`None` is a column not given: not recorded); its ordinal,
-    /// the rows appended before it. Its cells go to the unit and the hour's log, never held.
     pub fn append(&mut self, key: u128, cells: &[Option<Cell<'_>>]) -> io::Result<u64> {
         let table = self.table;
         if !self.store.tables[table].log {
@@ -3002,16 +2702,10 @@ impl TableChanges<'_> {
         Ok(ordinal)
     }
 
-    /// The game no longer lists log row `ordinal`, appended this hour or before: its delete is
-    /// written at this hour. Its cells stay where it was appended. An hour's forgets may come in any
-    /// order, before or after its appends: they are written at the hour's end in ascending order,
-    /// after its appends.
     pub fn forget(&mut self, ordinal: u64) -> io::Result<()> {
         self.forget_run(ordinal, 1)
     }
 
-    /// [`Self::forget`] of rows `first..first + count`; a run refused by name for any of its rows
-    /// changes nothing.
     pub fn forget_run(&mut self, first: u64, count: u64) -> io::Result<()> {
         let table = self.table;
         let state = &mut self.store.tables[table];
@@ -3033,7 +2727,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// Log rows `run` forgotten: no longer listed, their delete written at this hour.
     fn forgotten(&mut self, run: std::ops::Range<u64>) {
         if run.is_empty() {
             return;
@@ -3050,7 +2743,6 @@ impl TableChanges<'_> {
         }
     }
 
-    /// A table read in part: the rows this hour read, of those live when it began.
     pub fn read_rows(&mut self, slots: &[u32]) -> io::Result<()> {
         self.holds_state("read in part")?;
         let state = self.state();
@@ -3065,8 +2757,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// The view of a table read in part once its section applied: the rows read still live, and
-    /// those inserted.
     pub fn read_done(&mut self) {
         let table = self.table;
         if self.store.tables[table].log {
@@ -3088,13 +2778,10 @@ impl TableChanges<'_> {
         self.store.log.tables[table].inserted = inserted;
     }
 
-    /// The live row with `key`; none on a log, which holds no row and keeps no key index.
     pub fn slot(&mut self, key: u128) -> Option<u32> {
         self.slot_of(key, None)
     }
 
-    /// The live row with `key`, `hint` the slot its producer last held for it: read from the
-    /// hint when that slot holds the key, without the key index; none on a log.
     pub fn slot_of(&mut self, key: u128, hint: Option<u32>) -> Option<u32> {
         if self.store.tables[self.table].log {
             return None;
@@ -3102,7 +2789,6 @@ impl TableChanges<'_> {
         self.state().slot_of(key, hint)
     }
 
-    /// A new row at the lowest free slot.
     pub fn insert(&mut self, key: u128) -> io::Result<u32> {
         self.holds_state("inserted")?;
         let slot = self.lowest_free()?;
@@ -3115,19 +2801,14 @@ impl TableChanges<'_> {
         self.state().lowest_free().ok_or_else(|| past_slots(format_args!("Table {table}")))
     }
 
-    /// A new row at `slot`, which holds none. Its cells come through [`Self::write`]; a column
-    /// not given is unrecorded.
     pub fn insert_at(&mut self, slot: u32, key: u128) -> io::Result<()> {
         self.inserting(slot, key, false)
     }
 
-    /// [`Self::insert_at`] of a row whose producer gives every column this hour: none of its
-    /// cells is logged.
     pub fn insert_given_at(&mut self, slot: u32, key: u128) -> io::Result<()> {
         self.inserting(slot, key, true)
     }
 
-    /// [`Self::insert`] of a row whose producer gives every column this hour.
     pub fn insert_given(&mut self, key: u128) -> io::Result<u32> {
         self.holds_state("inserted")?;
         let slot = self.lowest_free()?;
@@ -3145,7 +2826,6 @@ impl TableChanges<'_> {
             return Ok(());
         }
         if self.store.whole {
-            // A cell the hour does not give stays not recorded: nothing is logged to find it.
             for column in &mut self.store.tables[self.table].columns {
                 column.unrecord(slot);
             }
@@ -3191,7 +2871,6 @@ impl TableChanges<'_> {
         }
     }
 
-    /// The unit's event of an older row's cell about to become `new`.
     fn event(&mut self, slot: u32, column: usize, new: Value<'_>) {
         let table = self.table;
         let Store { tables, encoder, born, previous, log, whole, .. } = &mut *self.store;
@@ -3227,7 +2906,6 @@ impl TableChanges<'_> {
         held.put(slot, value, slots, state.lists)
     }
 
-    /// An event whatever the held cell is: the journal's SET, and its NOOP with the held value.
     pub fn write(&mut self, slot: u32, column: usize, cell: Cell<'_>) -> io::Result<()> {
         self.holds_state("written")?;
         self.live(slot)?;
@@ -3238,7 +2916,6 @@ impl TableChanges<'_> {
         result
     }
 
-    /// [`Self::write`] of a value as the store holds it.
     pub fn put_value(&mut self, slot: u32, column: usize, value: Value<'_>) -> io::Result<()> {
         self.holds_state("written")?;
         if let Value::Text(id) = value {
@@ -3256,7 +2933,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// The held cell written again: an event of no difference (the journal's NOOP).
     pub fn rewrite(&mut self, slot: u32, column: usize) -> io::Result<()> {
         self.holds_state("written")?;
         self.live(slot)?;
@@ -3282,7 +2958,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// An event only when `cell` differs from the held one.
     pub fn offer(&mut self, slot: u32, column: usize, cell: Cell<'_>) -> io::Result<bool> {
         self.holds_state("offered")?;
         self.live(slot)?;
@@ -3298,7 +2973,6 @@ impl TableChanges<'_> {
         result
     }
 
-    /// The journal's ADD: the held number plus `difference`, at the column's width.
     pub fn add(&mut self, slot: u32, column: usize, difference: u64) -> io::Result<()> {
         self.holds_state("added to")?;
         self.live(slot)?;
@@ -3314,7 +2988,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// The journal's PATCH: `edits` applied to the held list cell.
     pub fn edit(&mut self, slot: u32, column: usize, edits: Edits<'_>) -> io::Result<()> {
         self.holds_state("edited")?;
         self.live(slot)?;
@@ -3354,7 +3027,6 @@ impl TableChanges<'_> {
         Ok(())
     }
 
-    /// The journal's FILL: one value for every live row but `except` (ascending).
     pub fn fill(&mut self, column: usize, cell: Cell<'_>, except: &[u32]) -> io::Result<Vec<u32>> {
         self.holds_state("filled")?;
         let slots: Vec<u32> = {

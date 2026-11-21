@@ -10,22 +10,15 @@ import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generate
 export const TITLE_UNAVAILABLE = 'Title not recorded';
 export const OPTION_UNAVAILABLE = 'Option text not recorded';
 
-/** One recorded delivery of an event to one country, with the option it chose. */
 export interface ChoiceCard {
   occurrence: ScriptOccurrence;
   item: EventFeedItem | null;
-  /** The edge the card is dated and named by: its firing, else its first choice. */
   first: ScriptEdge;
-  /** The delivery, when its firing was recorded. */
   fired: ScriptEdge | null;
-  /** The receiving country (or, without a recorded firing, the chooser). */
   country: string | null;
-  /** The sending country, when recorded and not the receiver. */
   sender: string | null;
 }
 
-/** A card as the reads by the hour shown show it. `pause` is a break in the recording after the firing, while no choice
- * is recorded: a choice then is unknown. */
 export interface ChoiceAt {
   card: ChoiceCard;
   hour: number;
@@ -35,12 +28,9 @@ export interface ChoiceAt {
 
 const isChoice = (edge: ScriptEdge) => edge.row.kind === 'eventOptionSelected' && (edge.option === null || edge.option >= 0);
 
-/** The edge a card is dated by: its firing where recorded, else its first choice. Immediate effects with neither are no
- * card: they are part of a dispatch, never a choice. */
 const cardEdge = (occurrence: ScriptOccurrence): ScriptEdge | null =>
   occurrence.opened ? occurrence.edges[0] : occurrence.edges.find(isChoice) ?? null;
 
-/** A page row's card; null for a row that is no card. */
 export function choiceCard(occurrence: ScriptOccurrence | null): ChoiceCard | null {
   if (!occurrence) return null;
   const first = cardEdge(occurrence);
@@ -52,15 +42,12 @@ export function choiceCard(occurrence: ScriptOccurrence | null): ChoiceCard | nu
   return { occurrence, item: occurrenceItem(occurrence), first, fired, country, sender };
 }
 
-/** A row of an `event-choices` page, dated by its card's firing (or first choice). */
 export function choiceRow(reply: LogReplyRow): LogRow<ChoiceCard | null> {
   const card = choiceCard(occurrenceOf(reply));
   return { key: reply.key, id: card?.occurrence.id ?? reply.key, hour: card?.first.row.hour ?? reply.hour, revealedHour: card?.first.row.readHour ?? reply.hour,
     by: false, item: card };
 }
 
-/** A card at `hour`: shown from its first read, chosen from the read that shows the choice; matched to the chosen countries.
- * `awaiting` keeps only cards still awaiting a choice. */
 export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: readonly RecordingBreak[], awaiting: boolean,
   country: ((tag: string, hour: number) => boolean) | null): LogRow<ChoiceAt> | null {
   const card = row.item;
@@ -73,10 +60,8 @@ export function choiceAt(row: LogRow<ChoiceCard | null>, hour: number, breaks: r
 
 export const isOpen = (at: ChoiceAt) => !at.choice && !at.pause;
 export const choiceTitle = (card: ChoiceCard) => card.item?.name ?? TITLE_UNAVAILABLE;
-/** The title as plain words, every gap written out. */
 export const choiceText = (card: ChoiceCard) => plainScripted(choiceTitle(card));
 
-/** "A", "B", … "Z", "AA": an option's place in the game's order. */
 export function optionLetter(index: number): string {
   let letters = '';
   for (let at = index + 1; at > 0; at = Math.floor((at - 1) / 26)) letters = String.fromCharCode(65 + (at - 1) % 26) + letters;
@@ -85,7 +70,6 @@ export function optionLetter(index: number): string {
 
 export interface OptionLine { key: string; letter: string | null; text: string; missing: boolean; chosen: boolean }
 
-/** Every authored option in the game's order, the chosen one marked. A chosen option the content does not list is its own line. */
 export function optionLines(at: ChoiceAt): OptionLine[] {
   const authored = at.card.item?.options ?? [];
   const chosen = at.choice?.option ?? null;
@@ -96,7 +80,6 @@ export function optionLines(at: ChoiceAt): OptionLine[] {
   return lines;
 }
 
-/** The card's date line: when it fired and was chosen, or how long it has been open. */
 export function choiceDates(at: ChoiceAt): string {
   const fired = at.card.fired;
   if (at.choice) {
@@ -109,12 +92,10 @@ export function choiceDates(at: ChoiceAt): string {
   return dayOf(start);
 }
 
-/** The open card's pill: "Awaiting choice · N days open" up to the date shown. */
 export function awaitingText(at: ChoiceAt): string {
   return `Awaiting choice · ${daysText(Math.max(0, daysBetween(at.card.first.row.hour, at.hour)))} open`;
 }
 
-/** What the options say when none is chosen. */
 export const noChoiceText = (at: ChoiceAt) => at.pause ? 'No choice recorded' : 'No option chosen yet';
 
 export function choiceDescription(at: ChoiceAt, name: (tag: string, hour: number) => string): string {
@@ -124,8 +105,6 @@ export function choiceDescription(at: ChoiceAt, name: (tag: string, hour: number
     : isOpen(at) ? `, ${awaitingText(at)}` : `, ${noChoiceText(at)}`}`;
 }
 
-/** Title, dates, the option taken, countries and Content identity. Each country is named at the row naming it: the chooser at
- * its choice. */
 export function choiceTooltip(at: ChoiceAt, name: (tag: string, hour: number) => string): TooltipContent[] {
   const { card, choice } = at;
   const fired = card.first.row.nameHour;
@@ -149,11 +128,9 @@ export function choiceTooltip(at: ChoiceAt, name: (tag: string, hour: number) =>
   return [{ title: choiceText(card), icon: card.item?.icon ?? undefined, rows }];
 }
 
-/** The menu's dates: when it fired and when it was chosen. */
 export const choiceJumps = (at: ChoiceAt): number[] => [...new Set([at.card.fired?.row.hour, at.choice?.row.hour]
   .filter((hour): hour is number => hour !== undefined))];
 
-/** Titles and option texts the content could not resolve, named by the event's Content identity and counted once per card. */
 export function choiceDiagnostics(cards: readonly ChoiceCard[]): string[] {
   const titles = new Map<string, number>(), options = new Map<string, number>();
   const count = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);

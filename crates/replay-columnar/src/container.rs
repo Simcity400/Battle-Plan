@@ -1,22 +1,3 @@
-//! A recording file of versioned sections (`H4COLUMN` version [`envelope::VERSION`]).
-//!
-//! The file is append-only: extents in any order, then a [`Root`] extent, then a fixed
-//! [`FOOTER_BYTES`] footer naming it. A revision appends its extents and syncs, writes its
-//! resume state to a slot of its state file ([`state_file`]) and syncs that, appends the root
-//! and syncs, then the footer, and syncs. A writer taking the file up after a crash takes the
-//! newest root whose resume state verifies ([`recover`]) and cuts what follows it.
-//!
-//! Each root says whether its revision is saved ([`Saved`]), and when it is not, which
-//! revision before it is the newest saved one. A reader opens the newest saved revision
-//! ([`locate`]): the last footer whose root verifies ([`Footers`]), or the one that root names.
-//! So hours are appended to a recording while they are recorded without reading as saved, a
-//! save is one more root, and a discard cuts the file back to the saved revision's length.
-//!
-//! The root names every [`Section`]: its kind, its id, its schema version and its extents.
-//! Readers dispatch on kind and version and keep only this build's decoders: a section of
-//! another version is refused by name ([`Section::expect`]), and an unknown kind refuses the
-//! root. A section's extents are its frozen ones, appended once and paged by an index tree of
-//! [`FANOUT`] extents a page ([`Frozen`]), then its open ones, which every revision may replace.
 
 use crate::{
     envelope::{self, Extent, FOOTER_BYTES, FOOTER_MAGIC, HEADER_BYTES, Identity, Kind},
@@ -37,31 +18,20 @@ mod tests;
 
 pub use state_file::StateFile;
 
-/// The schema versions of the sections this build reads and writes itself.
 pub mod schema {
-    /// H4COLUMN version 11's runs: lanes, span pages and summaries.
     pub const WORLD_LOG: u32 = 11;
-    /// 2: each capture's cursor in place of each run's source.
     pub const RECORDS: u32 = 2;
     pub const FACTS: u32 = 1;
 }
 
-/// What a section holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SectionKind {
-    /// Every run's hours: one [`Kind::RunDirectory`] extent per run, in run order.
     WorldLog,
-    /// The campaign's records ([`Kind::Controls`]), opaque here.
     Records,
-    /// The game facts packs ([`Kind::Facts`]), oldest first.
     Facts,
-    /// Map restore points, each the owner's payload, opaque here ([`restore_points`]).
     MapRestore,
-    /// A family's answers, opaque here: its id is the family's.
     FamilyAnswers,
-    /// An id map ([`catalogue`]).
     Catalogue,
-    /// A family's state once the recording finished, opaque here: its id is the family's.
     FinalState,
 }
 
@@ -95,7 +65,6 @@ impl SectionKind {
         })
     }
 
-    /// Whether its sections' own extents may be of `kind`.
     pub fn holds(self, kind: Kind) -> bool {
         match self {
             Self::WorldLog => kind == Kind::RunDirectory,
@@ -107,17 +76,14 @@ impl SectionKind {
         }
     }
 
-    /// Whether it is one per file, of id 0.
     const fn single(self) -> bool {
         matches!(self, Self::WorldLog | Self::Records | Self::Facts)
     }
 }
 
-/// A section's name in its file: what holds it and whose it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SectionKey {
     pub kind: SectionKind,
-    /// A family's or catalogue's id; 0 for the sections a file holds one of.
     pub id: u32,
 }
 
@@ -156,32 +122,20 @@ impl fmt::Display for SectionKey {
     }
 }
 
-/// Extents an index page holds, and how many a root holds of each level.
 pub const FANOUT: usize = 32;
-/// The most levels a section's index tree takes: 32^12 extents is 2^60.
 const LEVELS: usize = 12;
-/// The most raw bytes an index page takes: its level and count, then [`FANOUT`] envelopes of
-/// their kind, four u32 and three u64 varints and a digest each.
 pub const PAGE_RAW_BYTES: u64 = 2 + FANOUT as u64 * (1 + 4 * 5 + 3 * 10 + 16);
 
-/// A section's frozen extents: level 0 holds extents of the section, each level `k` above it
-/// [`Kind::Index`] pages each holding [`FANOUT`] of level `k - 1`, every level fewer than
-/// [`FANOUT`]. In order, the highest level's first; in that order the section's extents lie in
-/// the file one after another ([`check_follows`]), so reading them all is bounded by the file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Frozen {
     levels: Vec<Vec<Extent>>,
 }
 
-/// Where a frozen position lies.
 pub enum Place<'a> {
-    /// In the root: the extent at it.
     Extent(&'a Extent),
-    /// In a page of `level`, at `at` of the positions it covers.
     Page { page: &'a Extent, level: u32, at: u64 },
 }
 
-/// The positions one entry of `level` covers.
 pub const fn span(level: u32) -> u64 {
     (FANOUT as u64).pow(level)
 }
@@ -198,12 +152,10 @@ impl Frozen {
         self.levels.iter().all(Vec::is_empty)
     }
 
-    /// Each level's extents, from level 0.
     pub fn levels(&self) -> &[Vec<Extent>] {
         &self.levels
     }
 
-    /// Where position `at` lies.
     pub fn locate(&self, at: u64) -> Option<Place<'_>> {
         let mut start = 0_u64;
         for (level, held) in self.levels.iter().enumerate().rev() {
@@ -226,7 +178,6 @@ impl Frozen {
         None
     }
 
-    /// Whether `extent`, appended next, lies past every extent it holds, pages included.
     fn follows(&self, extent: &Extent) -> bool {
         self.levels
             .iter()
@@ -234,7 +185,6 @@ impl Frozen {
             .all(|held| extent.offset > held.offset && extent.offset >= held.offset + held.stored)
     }
 
-    /// Appends `extent`; each level it fills goes into a page `page` writes, of the level above.
     fn push(&mut self, extent: Extent, page: &mut dyn FnMut(u32, &[Extent]) -> io::Result<Extent>) -> io::Result<()> {
         let mut carry = extent;
         for level in 0..LEVELS {
@@ -269,10 +219,6 @@ impl Frozen {
     }
 }
 
-/// Refuses `next`, a frozen extent of `key` read after `previous`, unless it starts past the
-/// start and end of `previous`, and ends within `length`, the file's committed bytes: frozen
-/// extents are appended in the order they are written, so a section names no more of them than
-/// its file holds bytes.
 pub fn check_follows(key: SectionKey, previous: Option<&Extent>, next: &Extent, length: u64) -> io::Result<()> {
     let after = previous.is_none_or(|previous| {
         next.offset > previous.offset && next.offset >= previous.offset.saturating_add(previous.stored)
@@ -284,7 +230,6 @@ pub fn check_follows(key: SectionKey, previous: Option<&Extent>, next: &Extent, 
     Ok(())
 }
 
-/// Refuses `extent` unless it may be an entry of `key`'s level `level`.
 fn check_entry(key: SectionKey, level: u32, extent: &Extent) -> io::Result<()> {
     let fits = match level {
         0 => key.kind.holds(extent.kind),
@@ -296,8 +241,6 @@ fn check_entry(key: SectionKey, level: u32, extent: &Extent) -> io::Result<()> {
     Ok(())
 }
 
-/// The entries of `page`, an index page of `key` of the level its envelope names, from its raw
-/// bytes: every one checked to be of the level below.
 pub fn read_page(raw: &[u8], page: &Extent, key: SectionKey) -> io::Result<Vec<Extent>> {
     if page.kind != Kind::Index || page.stream == 0 || page.stream as usize > LEVELS {
         return Err(page.damaged(&format!("is no index page of {key}")));
@@ -326,13 +269,11 @@ fn write_page(level: u32, entries: &[Extent]) -> io::Result<Vec<u8>> {
     Ok(writer.into_bytes())
 }
 
-/// One section: its name, schema version and extents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub key: SectionKey,
     pub version: u32,
     pub frozen: Frozen,
-    /// Its last extents, which the next revision may replace.
     pub open: Vec<Extent>,
 }
 
@@ -345,8 +286,6 @@ impl Section {
         self.frozen.is_empty() && self.open.is_empty()
     }
 
-    /// Refuses a section of another schema version than `version`, naming both: a build keeps
-    /// only its own version's decoder and has no upgrader for another's.
     pub fn expect(&self, version: u32) -> io::Result<()> {
         let held = self.version;
         match held.cmp(&version) {
@@ -374,7 +313,6 @@ impl Section {
     }
 }
 
-/// Refuses `extent` at position `at` of `key` unless its envelope names that place.
 pub fn check_owner(key: SectionKey, at: u64, extent: &Extent) -> io::Result<()> {
     let placed = match key.kind {
         SectionKind::WorldLog => u64::from(extent.run) == at,
@@ -387,36 +325,25 @@ pub fn check_owner(key: SectionKey, at: u64, extent: &Extent) -> io::Result<()> 
     Ok(())
 }
 
-/// The resume state slot a root was written with ([`state_file`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotRef {
     pub sequence: u64,
-    /// Of the slot's stored payload.
     pub digest: [u8; 16],
 }
 
-/// Whether a revision is saved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Saved {
-    /// It is: readers open it.
     Yes,
-    /// It is not: readers open the newest saved revision before it, when the file holds one.
     No(Option<Revision>),
 }
 
-/// What the footer names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Root {
     pub identity: Identity,
-    /// Increases with every published revision of the file; chains never include it.
     pub revision: u64,
-    /// The resume state slot written with it; none once the file is finished.
     pub state: Option<SlotRef>,
     pub saved: Saved,
-    /// Every section, ascending by key.
     pub sections: Vec<Section>,
-    /// The zstd level every compressed extent and frame it names was written at; none when the
-    /// file does not record one, or its revisions were written at more than one.
     pub level: Option<i32>,
 }
 
@@ -478,7 +405,6 @@ impl Root {
                 open,
             });
         }
-        // Written after the sections, so a root written before it was recorded reads as none.
         let level = match reader.left() {
             0 => None,
             _ => {
@@ -504,7 +430,6 @@ impl Root {
         find(&self.sections, key).ok().map(|at| &self.sections[at])
     }
 
-    /// `key`'s section, refused by name when it is not of `version`; none when it holds none.
     pub fn open(&self, key: SectionKey, version: u32) -> io::Result<Option<&Section>> {
         let section = self.section(key);
         if let Some(section) = section {
@@ -514,7 +439,6 @@ impl Root {
     }
 }
 
-/// The fewest bytes an [`Extent`] envelope encodes in.
 const EXTENT_BYTES: usize = 1 + 7 + 16;
 
 fn bounded(count: usize, bytes: &[u8], entry_bytes: usize) -> io::Result<usize> {
@@ -602,8 +526,6 @@ fn find(sections: &[Section], key: SectionKey) -> Result<usize, usize> {
     sections.binary_search_by_key(&key, |section| section.key)
 }
 
-/// One published revision: its number, the file's length through its footer and its root's
-/// digest. A file grows only by later revisions, so one holding this length and root holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Revision {
     pub number: u64,
@@ -612,24 +534,19 @@ pub struct Revision {
 }
 
 impl Revision {
-    /// A digest naming the revision, for records kept beside a recording.
     pub fn digest(self) -> u64 {
         u64::from_le_bytes(self.root[..8].try_into().expect("eight bytes"))
     }
 }
 
-/// One owner's resume state: what it needs to go on after the revision it was written with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateEntry {
-    /// The section whose writer it is.
     pub owner: SectionKey,
-    /// The owner's schema version of these bytes.
     pub version: u32,
     pub bytes: Vec<u8>,
 }
 
 impl StateEntry {
-    /// Refuses an entry of another schema version than `version`, naming both.
     pub fn expect(&self, version: u32) -> io::Result<()> {
         if self.version != version {
             return Err(invalid(format!(
@@ -641,7 +558,6 @@ impl StateEntry {
     }
 }
 
-/// `entries` as a state slot's payload holds them, each owner once.
 pub fn write_entries(entries: &[StateEntry]) -> io::Result<Vec<u8>> {
     let mut writer = Writer::new();
     writer.varint(entries.len() as u64)?;
@@ -676,8 +592,6 @@ pub fn read_entries(bytes: &[u8]) -> io::Result<Vec<StateEntry>> {
     Ok(entries)
 }
 
-/// The tags the owner of a [`Kind::Data`] or [`Kind::Stored`] extent gives it, which the
-/// container never reads; the world log's extents keep their envelopes' meaning.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tags {
     pub run: u32,
@@ -688,13 +602,11 @@ pub struct Tags {
 
 static CONTAINER: Holder = Holder::new("zstd: container");
 
-/// The window `raw` bytes are compressed with: what they need, within what every decoder takes.
 fn window(raw: usize) -> u32 {
     let needed = raw.max(2);
     (usize::BITS - (needed - 1).leading_zeros()).clamp(10, 27)
 }
 
-/// `raw` as one zstd frame at `level`, by `compressor`.
 pub fn compress(compressor: &mut Compressor, level: i32, raw: &[u8]) -> io::Result<Vec<u8>> {
     compressor.level(level)?;
     compressor.window_log(window(raw.len()))?;
@@ -705,12 +617,8 @@ pub fn compress(compressor: &mut Compressor, level: i32, raw: &[u8]) -> io::Resu
     Ok(stored)
 }
 
-/// The most bytes [`decompress`] grows its output by ahead of what it decoded: a zstd block.
 const DECODE_STEP: usize = 128 << 10;
 
-/// `stored`, one zstd frame, decoded, its declared length `raw` when given. The output grows
-/// only as the frame fills it, never past its declared length: a small frame declaring more
-/// than it holds costs no more than it decodes to.
 pub fn decompress(stored: &[u8], raw: Option<u64>) -> io::Result<Vec<u8>> {
     let declared = zstd::content_size(stored).ok_or_else(|| invalid("A frame declares no length"))?;
     if raw.is_some_and(|raw| raw != declared) {
@@ -742,10 +650,8 @@ pub fn decompress(stored: &[u8], raw: Option<u64>) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Bytes read at an offset: a file's, or memory's.
 pub trait ReadAt {
     fn len(&self) -> io::Result<u64>;
-    /// Fills `out` from `at`.
     fn read_at(&self, at: u64, out: &mut [u8]) -> io::Result<()>;
 }
 
@@ -776,7 +682,6 @@ impl ReadAt for std::fs::File {
             #[cfg(unix)]
             let count = std::os::unix::fs::FileExt::read_at(self, out, at)?;
             if count == 0 {
-                // The file changed under the reader: no damage of the recording it opened.
                 return Err(io::Error::other("The recording's file ends before its committed length"));
             }
             at += count as u64;
@@ -786,11 +691,8 @@ impl ReadAt for std::fs::File {
     }
 }
 
-/// The blocks a footer is searched for and a root hashed in.
 const SCAN: usize = 64 << 10;
 
-/// The digest of `length` bytes of `file` from `at`, as [`envelope::digest`] makes it, read
-/// through `block`.
 fn digest_at<F: ReadAt + ?Sized>(file: &F, at: u64, length: u64, block: &mut [u8]) -> io::Result<[u8; 16]> {
     let mut hasher = blake3::Hasher::new();
     let mut done = 0;
@@ -803,11 +705,8 @@ fn digest_at<F: ReadAt + ?Sized>(file: &F, at: u64, length: u64, block: &mut [u8
     Ok(hasher.finalize().as_bytes()[..16].try_into().expect("sixteen bytes"))
 }
 
-/// A file's footers whose roots verify, from its end back ([`Self::next`]).
 pub struct Footers<'f, F: ReadAt + ?Sized> {
     file: &'f F,
-    /// The block being searched holds the bytes from `first` to `stop`, its candidates below
-    /// `cursor`.
     first: u64,
     stop: u64,
     cursor: usize,
@@ -820,7 +719,6 @@ pub struct Footers<'f, F: ReadAt + ?Sized> {
 }
 
 impl<'f, F: ReadAt + ?Sized> Footers<'f, F> {
-    /// The footers of `file`, a recording of this build's version.
     pub fn new(file: &'f F) -> io::Result<Self> {
         let length = file.len()?;
         let mut start = [0; HEADER_BYTES];
@@ -838,16 +736,12 @@ impl<'f, F: ReadAt + ?Sized> Footers<'f, F> {
             loaded: false,
             done: false,
             work: 0,
-            // All candidates' roots together are hashed at most twice the file's length: a tail
-            // of footer-shaped bytes cannot cost more.
             budget: 2 * length,
             block: engine_allocation::filled(SCAN, 0)?,
             hashed: engine_allocation::filled(SCAN, 0)?,
         })
     }
 
-    /// The next footer back whose root verifies: its root's envelope, and the file's length
-    /// through the footer. None once no earlier one does.
     pub fn next(&mut self) -> io::Result<Option<(Extent, u64)>> {
         let header = HEADER_BYTES as u64;
         let footer = FOOTER_BYTES as u64;
@@ -902,13 +796,11 @@ impl<'f, F: ReadAt + ?Sized> Footers<'f, F> {
                 self.done = true;
                 return Ok(None);
             }
-            // Blocks overlap by a magic less one byte, so one across their boundary is seen.
             self.stop = self.first + magic as u64 - 1;
         }
     }
 }
 
-/// The root `extent` names in `file`, read and decoded.
 pub fn read_root<F: ReadAt + ?Sized>(file: &F, extent: &Extent) -> io::Result<Root> {
     let mut stored = engine_allocation::filled(usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?, 0)?;
     file.read_at(extent.offset, &mut stored)?;
@@ -918,18 +810,12 @@ pub fn read_root<F: ReadAt + ?Sized>(file: &F, extent: &Extent) -> io::Result<Ro
     Root::read(&decompress(&stored, None)?)
 }
 
-/// Which of a file's revisions is opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Open {
-    /// The newest saved one: what a reader of the recording opens.
     Saved,
-    /// The newest one, saved or not: what its writer, and whoever goes on from its last hour,
-    /// opens.
     Newest,
 }
 
-/// The revision of `file` that `open` names: its root's envelope and the file's length through
-/// its footer. None when no revision of it is saved yet and a saved one is asked for.
 pub fn locate<F: ReadAt + ?Sized>(file: &F, open: Open) -> io::Result<Option<(Extent, u64)>> {
     let (newest, length) = Footers::new(file)?
         .next()?
@@ -944,7 +830,6 @@ pub fn locate<F: ReadAt + ?Sized>(file: &F, open: Open) -> io::Result<Option<(Ex
     }
 }
 
-/// The envelope of `revision`'s root, which the footer ending at its length must name.
 pub fn root_at<F: ReadAt + ?Sized>(file: &F, revision: Revision) -> io::Result<Extent> {
     let header = HEADER_BYTES as u64;
     let footer = FOOTER_BYTES as u64;
@@ -975,21 +860,14 @@ pub fn root_at<F: ReadAt + ?Sized>(file: &F, revision: Revision) -> io::Result<E
     Ok(root)
 }
 
-/// Where a writer takes a file up after a crash ([`recover`]).
 pub struct Recovered {
     pub root: Root,
     pub root_extent: Extent,
-    /// The file's length through the root's footer: what follows it is cut.
     pub length: u64,
-    /// The resume state the root was written with; empty when it names none.
     pub state: Vec<StateEntry>,
-    /// The later roots that verify but whose resume state does not.
     pub skipped: u32,
 }
 
-/// The newest root of `file` whose resume state slot in `state` verifies, or which names none:
-/// a crash before a revision's root leaves the slot it wrote unnamed, and the root before it
-/// names the other slot, which that write never touches.
 pub fn recover<F: ReadAt + ?Sized>(file: &F, state: Option<&StateFile>) -> io::Result<Recovered> {
     let mut footers = Footers::new(file)?;
     let mut skipped = 0;
@@ -1018,23 +896,18 @@ pub fn recover<F: ReadAt + ?Sized>(file: &F, state: Option<&StateFile>) -> io::R
     ))
 }
 
-/// Stored bytes a container wrote of its own, apart from its sections' extents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Framing {
     pub roots: u64,
     pub pages: u64,
-    /// The resume state's slots, beside the file.
     pub slots: u64,
     pub footers: u64,
 }
 
-/// The level resume state slots are compressed at: written every revision, read only after a crash.
 const STATE_LEVEL: i32 = 1;
 
-/// The resume state a revision's root names.
 enum Slot<'a> {
     None,
-    /// The slot the root before it names.
     Carried,
     Written(&'a [StateEntry]),
 }
@@ -1045,48 +918,33 @@ impl<'a> From<Option<&'a [StateEntry]>> for Slot<'a> {
     }
 }
 
-/// Writes a recording file of sections, a revision at a time.
 pub struct ContainerWriter<W: Write + Seek> {
     file: W,
     identity: Identity,
-    /// The last revision published; zero before the first.
     revision: u64,
     sections: Vec<Section>,
     state: Option<StateFile>,
-    /// The slot the last root names.
     slot: Option<SlotRef>,
-    /// The newest saved revision.
     saved: Option<Revision>,
-    /// The last slot sequence written.
     sequence: u64,
-    /// The level roots and index pages are compressed at.
     level: i32,
-    /// The level its roots record every extent named was written at: its own, or none once the
-    /// file holds revisions of another level or of none recorded.
     recorded: Option<i32>,
     compressor: Compressor,
-    /// A write failed partway: what the file holds past its last revision is not to be named.
     poisoned: bool,
     framing: Framing,
 }
 
 impl<W: Write + Seek> ContainerWriter<W> {
-    /// A new file at `file`'s start, of `identity`, its roots and index pages compressed at
-    /// `level`, its resume state kept in `state`.
     pub fn create(file: W, identity: Identity, level: i32, state: Option<StateFile>) -> io::Result<Self> {
         Self::create_after(file, identity, level, 0, state)
     }
 
-    /// [`Self::create`] of a file replacing one whose last revision was `revision`: its first
-    /// revision is numbered after it.
     pub fn create_after(mut file: W, identity: Identity, level: i32, revision: u64, state: Option<StateFile>) -> io::Result<Self> {
         file.write_all(envelope::MAGIC)?;
         file.write_all(&envelope::VERSION.to_le_bytes())?;
         Self::with(file, identity, revision, Vec::new(), (level, Some(level)), state, None, None)
     }
 
-    /// Takes up a file after `root`, its last revision, which is `at`: what follows it must be
-    /// cut already.
     pub fn resume(mut file: W, root: Root, at: Revision, level: i32, state: Option<StateFile>) -> io::Result<Self> {
         if root.revision != at.number {
             return Err(invalid("A file is taken up at its root's own revision"));
@@ -1111,9 +969,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         slot: Option<SlotRef>,
         saved: Option<Revision>,
     ) -> io::Result<Self> {
-        // Numbered on from the slot its root names: a slot written after it, by a revision whose
-        // root was lost, is the one the next write takes, and the file goes on as an unbroken
-        // writer's would.
         let sequence = slot.map_or(0, |slot| slot.sequence);
         Ok(Self {
             file,
@@ -1136,12 +991,10 @@ impl<W: Write + Seek> ContainerWriter<W> {
         &self.identity
     }
 
-    /// The last revision published; zero before the first.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// The newest saved revision; none while the file holds none.
     pub fn saved(&self) -> Option<Revision> {
         self.saved
     }
@@ -1154,12 +1007,10 @@ impl<W: Write + Seek> ContainerWriter<W> {
         find(&self.sections, key).ok().map(|at| &self.sections[at])
     }
 
-    /// The stored bytes it wrote of its own.
     pub fn framing(&self) -> Framing {
         self.framing
     }
 
-    /// The file's length so far.
     pub fn position(&mut self) -> io::Result<u64> {
         self.file.stream_position()
     }
@@ -1168,7 +1019,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         &mut self.file
     }
 
-    /// The file it writes.
     pub fn into_inner(self) -> W {
         self.file
     }
@@ -1187,8 +1037,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         result
     }
 
-    /// Declares section `key` of schema `version`, which a file holding it must hold at that
-    /// version.
     pub fn section(&mut self, key: SectionKey, version: u32) -> io::Result<()> {
         key.check()?;
         match find(&self.sections, key) {
@@ -1213,15 +1061,12 @@ impl<W: Write + Seek> ContainerWriter<W> {
         find(&self.sections, key).map_err(|_| invalid(format!("{key} is not declared")))
     }
 
-    /// `stored`, of `raw` bytes, appended as an extent of `kind`, named by nothing yet.
     pub fn put(&mut self, kind: Kind, tags: Tags, raw: u64, stored: &[u8]) -> io::Result<Extent> {
         self.usable()?;
         let result = self.write(kind, tags, raw, stored);
         self.poison(result)
     }
 
-    /// [`Self::put`] of the `length` stored bytes `source` reads, copied a buffer at a time and
-    /// never held whole.
     pub fn put_from(&mut self, kind: Kind, tags: Tags, raw: u64, source: &mut dyn io::Read, length: u64) -> io::Result<Extent> {
         self.usable()?;
         let result = self.copy(kind, tags, raw, source, length);
@@ -1269,14 +1114,12 @@ impl<W: Write + Seek> ContainerWriter<W> {
         })
     }
 
-    /// `raw` compressed at `level` as one zstd frame, appended as an extent of `kind`.
     pub fn put_zstd(&mut self, kind: Kind, tags: Tags, raw: &[u8], level: i32) -> io::Result<Extent> {
         self.usable()?;
         let result = compress(&mut self.compressor, level, raw).and_then(|stored| self.write(kind, tags, raw.len() as u64, &stored));
         self.poison(result)
     }
 
-    /// Names `extent` the next of `key`'s frozen extents: before its open ones, never replaced.
     pub fn append(&mut self, key: SectionKey, extent: Extent) -> io::Result<()> {
         self.usable()?;
         let at = self.held(key)?;
@@ -1304,7 +1147,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         self.poison(result)
     }
 
-    /// Replaces `key`'s open extents, its last, with `extents`.
     pub fn set_open(&mut self, key: SectionKey, extents: &[Extent]) -> io::Result<()> {
         self.usable()?;
         let at = self.held(key)?;
@@ -1318,9 +1160,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         Ok(())
     }
 
-    /// Publishes everything named so far as the next revision, saved or not, written with
-    /// resume state `state` when given. `sync` makes what is written durable before what names
-    /// it. A failure leaves the file at its last revision.
     pub fn commit(
         &mut self,
         state: Option<&[StateEntry]>,
@@ -1330,8 +1169,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         self.commit_with(state, saved, sync, |_| Ok(()))
     }
 
-    /// [`Self::commit`], `prepare` told the revision once everything but its footer is
-    /// durable, before the footer names it: a crash after `prepare` leaves either revision.
     pub fn commit_with(
         &mut self,
         state: Option<&[StateEntry]>,
@@ -1344,9 +1181,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         self.poison(result)
     }
 
-    /// [`Self::commit`] of a revision that leaves the resume state as the root before it names
-    /// it: one that adds nothing its owners' state covers, so a writer taking the file up goes
-    /// on from that state as before.
     pub fn commit_carrying(&mut self, saved: bool, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Revision> {
         self.usable()?;
         let result = self.publish(Slot::Carried, saved, &mut sync, |_| Ok(()));
@@ -1407,9 +1241,6 @@ impl<W: Write + Seek> ContainerWriter<W> {
         Ok(revision)
     }
 
-    /// Publishes the last revision, saved or not: each family's state of `final_state` written
-    /// into the file once, as its final state section, and a root naming no resume state, after
-    /// which the state file goes: the file, its last revision and what it wrote of its own.
     pub fn finish(
         mut self,
         final_state: &[StateEntry],

@@ -1,19 +1,3 @@
-//! The air superiority timeline (`air-superiority-timeline`): over a view's game days, the most
-//! active regions' cells, each composed as the moment composes an hour ([`hour_scores`],
-//! [`Compose`]) at the day's last recorded hour.
-//!
-//! A day's scores are read from the `air-scores` summaries in day bins: one chart of each score
-//! column for every stretch of the view, never an hour walked; a day ending at a stretch's last
-//! hour off a bucket's end (the view's last day among them) is read at its hour from the table, as
-//! the moment reads it. Owners resolve through the links of the day
-//! (`CountryLinks`' history over the view). With theatres chosen, each day's theatres are read at
-//! the day's hour.
-//!
-//! The regions shown are main's: the sum over the view's completed days of each day's composed
-//! activity, greatest first, ties by region. `AirRegionActivity` bounds every region's sum from
-//! above in two reads of its row (every owner's scores summed, which no composition exceeds), so
-//! regions are composed in descending bound, and once the N-th exact sum is above the next bound
-//! no region left can enter.
 
 use super::{
     AirMode, AirSide, AirSuperiorityAt, AirSuperiorityParams, BAD_BELOW, GOOD_ABOVE, HourScores, SCALE,
@@ -47,15 +31,10 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-/// Hours of a game day.
 pub const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
-/// Hours of a summary bucket of level 0, the grain of a day bin's last value.
 const BUCKET: i32 = replay_columnar::summary::BASE_HOURS as i32;
-/// The declared series the timeline reads its scores from.
 const SERIES: &str = "air-scores";
-/// How many of the most active regions are shown without `regions` or `top`.
 const TOP: usize = 10;
-/// Game days of a tile of cells.
 pub const TILE_DAYS: i32 = 256;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -67,25 +46,25 @@ pub struct AirTimelineParams {
     pub last_hour: i32,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mode: Option<AirMode>,
-    /// A side's key, or a country (its slot or tag) with `viewpointCountry`.
+    #[doc = " A side's key, or a country (its slot or tag) with `viewpointCountry`."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint: Option<dashboard_base::products::Country>,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country: Option<bool>,
-    /// The side keys compared; all when none.
+    #[doc = " The side keys compared; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sides: Option<Vec<String>>,
-    /// The regions shown, ranked; the most active when none.
+    #[doc = " The regions shown, ranked; the most active when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub regions: Option<Vec<u32>>,
-    /// The air theatres whose regions are shown; all when none.
+    #[doc = " The air theatres whose regions are shown; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
-    /// How many of the most active regions are shown, without `regions`.
+    #[doc = " How many of the most active regions are shown, without `regions`."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
-    /// The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of
-    /// the regions `regions` names, in their order; the whole view ranked when none.
+    #[doc = " The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of"]
+    #[doc = " the regions `regions` names, in their order; the whole view ranked when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number"))]
     pub tile: Option<i64>,
 }
@@ -115,7 +94,6 @@ impl AirTimelineParams {
     }
 }
 
-/// A side's part of a day's comparison: the country whose read it shows and its friendly score.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -130,24 +108,20 @@ pub struct AirDayPart {
 #[serde(rename_all = "camelCase")]
 pub struct AirDaySides {
     pub parts: Vec<AirDayPart>,
-    /// A leaderless side and the country whose read it shows.
+    #[doc = " A leaderless side and the country whose read it shows."]
     pub viewpoints: Vec<(u32, String)>,
     pub unknown: Vec<u32>,
     pub no_air_object: Vec<u32>,
-    /// Only the chosen sides are compared.
+    #[doc = " Only the chosen sides are compared."]
     pub filtered: bool,
 }
 
-/// A region's comparison at a day's end, with its scores.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AirDayCell {
-    /// Why it has none: identity-not-recorded, sides-not-recorded, side-not-present,
-    /// score-not-recorded, no-air-object, outside-theatres, theatres-not-recorded.
     Reason { reason: String },
     Sides(AirDaySides),
-    /// One viewpoint's friendly and enemy scores; zero where its country has no row there.
     View { side: Option<u32>, leader: Option<String>, friendly: String, enemy: String },
 }
 
@@ -157,9 +131,9 @@ pub enum AirDayCell {
 pub struct AirTimelineRow {
     pub region: u32,
     pub name: Option<String>,
-    /// Why the name is not shown.
+    #[doc = " Why the name is not shown."]
     pub name_missing: Option<String>,
-    /// Runs of days: how many, and their cell; none for days the recording holds no hour of.
+    #[doc = " Runs of days: how many, and their cell; none for days the recording holds no hour of."]
     pub cells: Vec<(u32, Option<AirDayCell>)>,
 }
 
@@ -167,17 +141,17 @@ pub struct AirTimelineRow {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirTimelineReply {
-    /// The first hour of the view's first day.
+    #[doc = " The first hour of the view's first day."]
     pub first_hour: i32,
     pub last_hour: i32,
     pub day_hours: i32,
-    /// Each day's read hour: its last recorded hour in the view; none where none is recorded.
+    #[doc = " Each day's read hour: its last recorded hour in the view; none where none is recorded."]
     pub days: Vec<Option<i32>>,
-    /// Each day's sides of the comparison left out, without an air object.
+    #[doc = " Each day's sides of the comparison left out, without an air object."]
     pub excluded: Vec<u32>,
-    /// The sides the cells name, by index.
+    #[doc = " The sides the cells name, by index."]
     pub sides: Vec<AirSide>,
-    /// The viewpoint side's index, at the last day it is present.
+    #[doc = " The viewpoint side's index, at the last day it is present."]
     pub viewpoint: Option<u32>,
     pub rows: Vec<AirTimelineRow>,
     pub scale: i32,
@@ -188,9 +162,6 @@ pub struct AirTimelineReply {
 
 dashboard_base::reply_warnings!(AirTimelineReply);
 
-/// What a day's composition reads beyond its regions' rows: its hour, one row of every owner
-/// with a row at its end (a negative one where it has one), whether every owner's rows were read,
-/// and the links of its owners.
 pub(crate) struct DayRead {
     pub hour: i32,
     pub witnesses: Vec<(u32, u32, i64, i64)>,
@@ -198,7 +169,6 @@ pub(crate) struct DayRead {
     pub links: Option<Arc<Vec<CountryLinkRow>>>,
 }
 
-/// The rows of one region at a day's end.
 pub(crate) trait RegionRows {
     fn rows(&self, day: usize, region: u32, out: &mut Vec<RaidAirScoreRow>);
 }
@@ -207,7 +177,6 @@ fn score((country, region, friendly, enemy): (u32, u32, i64, i64)) -> RaidAirSco
     RaidAirScoreRow { country, region, friendly, enemy, ..Default::default() }
 }
 
-/// A day composed.
 pub(crate) struct Composed<'c> {
     pub epoch: usize,
     pub hour: i32,
@@ -222,15 +191,12 @@ impl Composed<'_> {
     }
 }
 
-/// The days of a view and how they are composed.
 pub(crate) struct Days<'a> {
     pub index: &'a AirIndex,
     pub holders: &'a Holders,
     pub days: &'a [Option<DayRead>],
     pub rows: &'a dyn RegionRows,
     pub params: &'a AirTimelineParams,
-    /// Each day's chosen theatres' regions, an error where they are not known; none when no
-    /// theatre is chosen.
     pub theatres: Option<&'a [Option<Result<HashSet<u32>, ()>>]>,
 }
 
@@ -248,7 +214,6 @@ impl<'a> Days<'a> {
         }
     }
 
-    /// Why `region` has no comparison on `day` with theatres chosen; none where it has one.
     fn theatre_reason(&self, day: usize, region: u32) -> Option<&'static str> {
         match self.theatres?.get(day)? {
             None | Some(Err(())) => Some("theatres-not-recorded"),
@@ -257,7 +222,6 @@ impl<'a> Days<'a> {
         }
     }
 
-    /// Each of the first `through` days composed with `regions`' rows (none for a day not read).
     fn each(&self, regions: &[u32], through: usize, cancelled: &AtomicBool, mut each: impl FnMut(usize, Option<&Composed<'_>>)) -> io::Result<()> {
         let empty = Arc::default();
         let mut rows = Vec::new();
@@ -286,8 +250,6 @@ impl<'a> Days<'a> {
         Ok(())
     }
 
-    /// `region`'s activity on a day composed: the sides view's shown sides' friendly scores (the
-    /// chosen sides' alone), or the viewpoint's friendly and enemy scores.
     fn activity(&self, day: usize, composed: &Composed<'_>, region: u32, keep: Option<&HashSet<&str>>) -> u128 {
         if self.theatre_reason(day, region).is_some() {
             return 0;
@@ -308,7 +270,6 @@ impl<'a> Days<'a> {
         }
     }
 
-    /// `regions`' sums of activity over the first `counted` days.
     pub fn totals(&self, regions: &[u32], counted: usize, cancelled: &AtomicBool) -> io::Result<Vec<u128>> {
         let keep = self.keep();
         let mut totals = vec![0u128; regions.len()];
@@ -321,10 +282,6 @@ impl<'a> Days<'a> {
         Ok(totals)
     }
 
-    /// The regions shown: `candidates` by their sums of activity over the first `counted` days,
-    /// greatest first, ties by region, the first `top` (all with none). `bounds` holds each
-    /// candidate's upper bound, where every one is known: they are then composed in descending
-    /// bound until no bound left reaches the `top`-th sum.
     pub fn rank(&self, candidates: &[u32], bounds: Option<&HashMap<u32, u128>>, counted: usize, top: Option<usize>, cancelled: &AtomicBool) -> io::Result<Vec<u32>> {
         if top == Some(0) {
             return Ok(Vec::new());
@@ -364,7 +321,6 @@ impl<'a> Days<'a> {
         Ok(exact.into_iter().map(|(region, _)| region).collect())
     }
 
-    /// `regions`' cells over every day, each run of equal days one, and the sides they name.
     pub fn shown(&self, regions: &[u32], index: &AirIndex, cancelled: &AtomicBool) -> io::Result<Shown> {
         let keep = self.keep();
         let mut dictionary = Dictionary::default();
@@ -402,7 +358,6 @@ pub(crate) struct Shown {
     pub viewpoint: Option<u32>,
 }
 
-/// The sides a reply names, each once: by a day's epoch and its place there.
 #[derive(Default)]
 struct Dictionary {
     sides: Vec<AirSide>,
@@ -427,13 +382,10 @@ impl Dictionary {
     }
 }
 
-/// `tag`'s pair among `pairs`, which are by tag.
 fn find<'p>(pairs: &'p [Pair], tag: &str) -> Option<&'p Pair> {
     pairs.binary_search_by(|held| held.tag.as_str().cmp(tag)).ok().map(|at| &pairs[at])
 }
 
-/// `cell` of `region` as the timeline shows it: the chosen sides alone, each named by `place`,
-/// its scores from the day's pairs.
 fn day_cell(cell: Cell, composed: &Composed<'_>, region: u32, keep: Option<&HashSet<&str>>, place: &mut dyn FnMut(u32) -> u32) -> AirDayCell {
     let pairs = composed.pairs(region);
     let kept = |position: u32| keep.is_none_or(|keys| keys.contains(composed.sides[position as usize].key.as_str()));
@@ -463,35 +415,27 @@ fn day_cell(cell: Cell, composed: &Composed<'_>, region: u32, keep: Option<&Hash
     }
 }
 
-/// One stretch of the view and its scores' day bins.
 struct Part {
     friendly: Chart,
-    /// Each friendly key's place in `enemy`.
     enemy_of: Vec<Option<usize>>,
     enemy: Chart,
-    /// Each region's keys, by their place in `friendly`.
     regions: HashMap<u32, Vec<usize>>,
 }
 
-/// The day's-end value of the `at`th key of `chart`: the day's bin's last value where it was read
-/// in the bucket of the day's read hour.
 fn at_end(chart: &Chart, at: usize, day: i32, hour: i32) -> Option<i64> {
     let bin = (i64::from(day) * i64::from(DAY) - chart.first_bin_hour).div_euclid(i64::from(DAY));
     let bin = chart.values(at).get(usize::try_from(bin).ok()?)?;
     (bin.hours > 0 && bin.last_bucket == hour.div_euclid(BUCKET)).then_some(bin.last)
 }
 
-/// A day's place: its read hour and the part holding it.
 #[derive(Clone, Copy)]
 struct DayAt {
     hour: i32,
     part: usize,
 }
 
-/// A day's rows read from its frame at its hour, whether the table was complete there, and its links.
 type DayRows = (Vec<RaidAirScoreRow>, bool, Option<Arc<Vec<CountryLinkRow>>>);
 
-/// The rows of the view's days: from the parts' day bins, and those of a day read at its hour from its frame.
 struct Charted<'p> {
     parts: &'p [Part],
     days: &'p [Option<DayAt>],
@@ -500,7 +444,6 @@ struct Charted<'p> {
 }
 
 impl Charted<'_> {
-    /// The `at`th key's row of `part` at `day`'s end, when it has one.
     fn row(part: &Part, at: usize, day: i32, hour: i32) -> Option<(u32, u32, i64, i64)> {
         let key = part.friendly.keys[at];
         let friendly = at_end(&part.friendly, at, day, hour)?;
@@ -508,7 +451,6 @@ impl Charted<'_> {
         Some(((key >> 32) as u32, key as u32, friendly, enemy))
     }
 
-    /// One row of each owner with a row at `day`'s end, a negative one where it has one.
     fn witnesses(&self, day: usize) -> Vec<(u32, u32, i64, i64)> {
         if let Some((rows, ..)) = self.at_hour.get(&day) {
             return rows.iter().map(|row| (row.country, row.region, row.friendly, row.enemy)).collect();
@@ -547,7 +489,6 @@ impl RegionRows for Charted<'_> {
     }
 }
 
-/// `measure` of the air scores of `stretch` in day bins, from the summaries.
 fn chart(query: &Query<'_>, stretch: &Stretch, measure: &str) -> io::Result<Chart> {
     let series = dashboard_declare::series(SERIES).ok_or_else(|| crate::invalid("The air scores series is not declared"))?;
     let measure = series.measure(measure).ok_or_else(|| crate::invalid("The air scores series has no such measure"))?;
@@ -567,11 +508,8 @@ fn part(query: &Query<'_>, stretch: &Stretch) -> io::Result<Part> {
     Ok(Part { friendly, enemy_of, enemy, regions })
 }
 
-/// The links of `stretch`, as their canonical slots ran over it: each link's runs.
 struct Links {
     runs: Vec<(u32, i32, i32, u32)>,
-    /// The hours a link starts or ends at, ascending: the links are those of the hour before
-    /// between two.
     cuts: Vec<i32>,
 }
 
@@ -600,9 +538,6 @@ impl Links {
     }
 }
 
-/// Each day's chosen theatres' regions, from `AirTheatreRegions`' runs over each stretch: the
-/// regions a chosen theatre's wings fly in at the day's read hour; an error where the table was not
-/// read then.
 fn theatre_days(query: &Query<'_>, stretches: &[Stretch], days: &[Option<DayRead>], at: &[Option<DayAt>], ids: &[String]) -> Vec<Option<Result<HashSet<u32>, ()>>> {
     let theatres: Vec<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect::<BTreeSet<u64>>().into_iter().collect();
     let ledger = Recorded { query };
@@ -621,7 +556,6 @@ fn theatre_days(query: &Query<'_>, stretches: &[Stretch], days: &[Option<DayRead
         .collect()
 }
 
-/// An `AirRegionActivity` row: the day its sums were read in, the sums, the totals before.
 struct Activity {
     day: i32,
     sums: [i64; 2],
@@ -634,8 +568,6 @@ impl Activity {
     }
 }
 
-/// Every region's `AirRegionActivity` row at `hour` of `run`; none where the table is not
-/// complete there.
 fn activity_at(query: &Query<'_>, run: u32, hour: i32) -> Option<HashMap<u32, Activity>> {
     let table = TableId::AirRegionActivity;
     let snapshot = dashboard_query::cost::storage(|| lanes::at(query.replay.recording(), run, table, hour, None)).ok()?;
@@ -654,10 +586,6 @@ fn activity_at(query: &Query<'_>, run: u32, hour: i32) -> Option<HashMap<u32, Ac
     Some(out)
 }
 
-/// Each region's upper bound on its sum of activity over the view's days: the sums of every
-/// owner's friendly scores (with the enemy's for a viewpoint) at the end of each day of every
-/// stretch, two reads of `AirRegionActivity` a stretch. None where the table was not read through
-/// every hour of a stretch: the bound is then not known.
 fn bounds(query: &Query<'_>, stretches: &[Stretch], viewpoint: bool) -> Option<HashMap<u32, u128>> {
     let mut out: HashMap<u32, i128> = HashMap::new();
     for stretch in stretches {
@@ -677,7 +605,6 @@ fn bounds(query: &Query<'_>, stretches: &[Stretch], viewpoint: bool) -> Option<H
     Some(out.into_iter().map(|(region, bound)| (region, u128::try_from(bound).unwrap_or(0))).collect())
 }
 
-/// An `AirRegionDays` row: the day its activity was read in, the activity, the days' before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DayActivity {
     pub day: i32,
@@ -691,9 +618,6 @@ impl DayActivity {
     }
 }
 
-/// One stretch of a view as `AirRegionDays` gives its days: its first and last day, whether its
-/// last day is counted there (not when the view's last day is not over, nor when a later stretch
-/// holds that day's end), and every region's row at its first and last hour.
 pub(crate) struct StretchDays {
     pub first_day: i32,
     pub last_day: i32,
@@ -702,8 +626,6 @@ pub(crate) struct StretchDays {
     pub end: HashMap<u32, DayActivity>,
 }
 
-/// Each region's sum of the sides comparison's activity over the counted days of `stretches`:
-/// main's ranking value of the sides view, each day at its last recorded hour, once.
 pub(crate) fn day_sums(stretches: &[StretchDays]) -> HashMap<u32, u128> {
     let mut out: HashMap<u32, i128> = HashMap::new();
     for stretch in stretches {
@@ -716,14 +638,11 @@ pub(crate) fn day_sums(stretches: &[StretchDays]) -> HashMap<u32, u128> {
     out.into_iter().map(|(region, sum)| (region, u128::try_from(sum).unwrap_or(0))).collect()
 }
 
-/// The recording's derived tables, as the ranking reads them.
 struct Recorded<'q, 'a> {
     query: &'q Query<'a>,
 }
 
 impl Recorded<'_, '_> {
-    /// Every row of `table` at `hour` of `run` in `keys`, its key and the numbers of `fields`; none
-    /// where the table is not complete.
     fn rows(&self, table: TableId, run: u32, hour: i32, keys: lanes::Keys<'_>, fields: &[&str]) -> Option<Vec<(u128, Vec<i64>)>> {
         let snapshot = dashboard_query::cost::storage(|| lanes::at_keys(self.query.replay.recording(), run, table, hour, None, keys)).ok()?;
         if !matches!(snapshot.status, Status::Complete) {
@@ -765,18 +684,13 @@ impl ranking::Ledger for Recorded<'_, '_> {
     }
 }
 
-/// What a request wants of the view.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Want {
-    /// The ranked rows and their cells.
     Whole,
-    /// The ranked rows alone.
     Ranking,
-    /// The cells of the asked regions over one tile of days.
     Tile(i64),
 }
 
-/// The timeline of `params`.
 fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool, want: Want) -> io::Result<AirTimelineReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| crate::invalid("Invalid air branch"))?;
     let query = crate::answer::query(source, branch)?;
@@ -829,7 +743,6 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     let top = params.regions.is_none().then(|| params.top.unwrap_or(TOP));
 
     let stretches: Vec<Stretch> = query.timeline.within(first_hour, view_last).collect();
-    // Every mode ranks from the derived tables where they give it: two reads a piece of the view.
     if want == Want::Ranking
         && let Some(top) = top
         && let Some(sums) = ranking::sums(&Recorded { query: &query }, params, &index, &query.holders, &stretches, view_last)
@@ -858,9 +771,6 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     crate::metadata::check_cancel(cancelled)?;
     let links: Vec<Option<Links>> = stretches.par_iter().map(|stretch| links(&query, stretch)).collect();
 
-    // A day read at a stretch's last hour (the view's last, or one before another history's hours) is read at that
-    // hour, as the moment reads it, where it does not end a summary bucket: a day bin's last value is of its six-hour
-    // bucket, which would run past it.
     let mut at_hours: HashMap<usize, DayRows> = HashMap::new();
     let mut unread: HashSet<usize> = HashSet::new();
     for (at, read) in days.iter().enumerate() {
@@ -955,7 +865,6 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     })
 }
 
-/// The timeline of a view: the most active regions' cells each day.
 pub struct AirSuperiorityTimeline;
 
 impl Product for AirSuperiorityTimeline {
@@ -978,7 +887,6 @@ impl Product for AirSuperiorityTimeline {
     }
 }
 
-/// The regions a view shows, in main's order, without their cells: the timeline's rows.
 pub struct AirSuperiorityRanking;
 
 #[derive(Clone, Debug, Serialize)]

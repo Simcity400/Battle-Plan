@@ -1,8 +1,4 @@
-//! Independent ordered faction rules, programme references and manpower entries.
-//! A complete table and the hour's Factions roster certify empty owner lists.
 use super::*;
-/// Ordinal zero carries the embedded store seed, followed by its literal keys
-/// in native hash order. A complete owner always has the seed occurrence.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionVariableRow {
@@ -87,7 +83,6 @@ mod tests {
     }
 }
 
-/// The two independently scripted access bytes, retained without boolean coercion.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionUnlockRow {
@@ -99,8 +94,6 @@ typed_codec!(FactionUnlockRow, 64, |row| row.faction as u128,
 |key| Self { faction: key as u64, ..Default::default() },
 { 0 => (research): U8, 1 => (manpower): U8 }, |_row| Ok(()));
 
-/// Autonomous faction-system account, keyed by native array index rather than
-/// current membership. Departed members retain independent goals and upgrades.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionAccountRow {
@@ -138,7 +131,6 @@ pub struct FactionAccountRow {
     pub previous_war_score_raw: i64,
     pub upgrade_groups: Vec<u32>,
     pub upgrade_tokens: Vec<u32>,
-    /// Nullable goal definitions: token words or the null sentinel.
     pub completed_goals: Vec<u64>,
 }
 typed_codec!(FactionAccountRow, 96, |row| ((row.account as u128)<<64)|((row.kind as u128)<<32)|row.ordinal as u128,
@@ -152,8 +144,6 @@ typed_codec!(FactionAccountRow, 96, |row| ((row.account as u128)<<64)|((row.kind
     Ok(())
 });
 impl FactionAccountRow {
-    /// Passive refreshes between sparse set/spend/reset anchors. Products are
-    /// the supplying fixed-point multiplication, before native truncation.
     pub fn initiative(&self) -> i64 {
         let increment = self.initiative_product_raw / 100_000;
         if self.initiative_steps == 0 {
@@ -199,8 +189,6 @@ impl FactionAccountRow {
             )
         }
     }
-    /// Projection results use supplying pre-division products, the exact factory
-    /// component, and native unit counts, preserving wrapping and truncation.
     pub fn projection(&self, rows: &[Self]) -> io::Result<Vec<i64>> {
         let mut result = Self::statistics(rows, self.account, 2).collect::<Vec<_>>();
         if self.projection_derived == 0 {
@@ -251,7 +239,6 @@ impl FactionAccountRow {
         }
         Ok(rank)
     }
-    /// Dynamic statistic occurrences, retaining zeroes and their native order.
     pub fn statistics(rows: &[Self], account: u32, kind: u32) -> impl Iterator<Item = i64> + '_ {
         let first = rows.partition_point(|row| (row.account, row.kind) < (account, kind));
         rows[first..]
@@ -265,7 +252,6 @@ impl FactionAccountRow {
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionResearchRow {
     pub faction: u64,
-    /// Zero is the sharing header; remaining occurrences are independent bonus terms.
     pub ordinal: u32,
     pub scientist_base_raw: i64,
     pub countries: Vec<u32>,
@@ -340,7 +326,6 @@ impl FactionProjectionRow {
         Ok(total.wrapping_add(self.influence_awards_raw))
     }
 }
-/// Owner zero is explicitly the faction-system pool, not a faction handle.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionResourceRow {
@@ -574,7 +559,6 @@ mod statistic_tests {
     }
 }
 
-/// Header/name/modifier occurrences for demanded advisor and spymaster slots.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionAdvisorModifierRow {

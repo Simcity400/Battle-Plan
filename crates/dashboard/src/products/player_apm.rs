@@ -68,7 +68,7 @@ pub struct ApmValue {
     pub paused_orders: Option<String>,
     pub unpaused_minutes: Option<f64>,
     pub complete: bool,
-    /// Part of the period no capture observed; orders and minutes both leave it out.
+    #[doc = " Part of the period no capture observed; orders and minutes both leave it out."]
     pub gaps: bool,
 }
 
@@ -133,7 +133,6 @@ pub(super) fn index(
     }
     crate::metadata::check_cancel(cancelled)?;
     let replay = source.replay_ref();
-    // Commands are recorded by segment; a timeline counts each segment's only over its piece.
     let mut index: Option<Index> = None;
     let pieces = replay.pieces(branch);
     let hours = replay::campaign::timelines::command_hours(&pieces);
@@ -146,7 +145,6 @@ pub(super) fn index(
         )?;
         for timeline in &mut held.timelines {
             timeline.hours = (first, last);
-            // Who played, and as whom, only as far as the piece keeps of the capture.
             let kept = timeline.bounds(first, last);
             timeline.actors.retain(|_, history| {
                 history.retain(|observation| kept.is_some_and(|(_, to)| observation.at_qpc <= to));
@@ -179,7 +177,6 @@ pub(super) fn index(
     Ok(index)
 }
 
-// The game saves a human's user string unchanged, so it joins reconnects and reattachments.
 fn player_id(timeline: &Timeline, actor: u64, history: &[commands::Actor]) -> String {
     use std::fmt::Write;
     let user = &history[0].user;
@@ -276,11 +273,8 @@ fn merge_intervals<T: Ord + Copy>(intervals: &mut Vec<(T, T)>) {
     intervals.truncate(count);
 }
 
-/// Where the captures' command coverage leaves `first..=last` unobserved.
 struct Coverage {
-    /// Hours some capture observed, as sorted disjoint runs.
     covered: Vec<(i32, i32)>,
-    /// Hours a capture began or ended in after or before another, so partly unobserved.
     seams: Vec<i32>,
 }
 
@@ -319,7 +313,6 @@ impl Coverage {
                 }
             }
         }
-        // The branch's first start and last end bound the recording rather than split it.
         edges.sort_unstable();
         let seams = if edges.len() > 2 {
             edges.drain(1..edges.len() - 1).collect()

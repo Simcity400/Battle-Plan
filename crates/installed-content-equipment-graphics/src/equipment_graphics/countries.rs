@@ -1,17 +1,9 @@
-//! The country operands the land-model selectors prefix entity names with.
-//!
-//! Try the cosmetic tag, the tag and the runtime graphical culture from
-//! `CountryAppearance`. Transport lookup uses a dynamic country's original
-//! country instead, whose tag `CountryAppearance.name_tag` names. The ruling
-//! party's ideology group filters the authored graphic pools.
 
 use std::{collections::BTreeMap, io};
 
 use replay_data::{rows::TableSchema, rows::tables};
 use replay_frame::{frame::DecodedSource, frame::TableView};
 
-/// The rows of `T` this hour holds, complete or truncated, and whether the table
-/// is complete; an unavailable table holds none.
 fn rows<T: TableSchema>(frame: &dyn DecodedSource) -> io::Result<(&[T::Row], bool)> {
     fn typed<T: TableSchema>(
         rows: &replay_data::rows::TableRows,
@@ -37,19 +29,12 @@ fn rows<T: TableSchema>(frame: &dyn DecodedSource) -> io::Result<(&[T::Row], boo
 pub struct ModelCountry {
     pub tag: String,
     pub cosmetic: String,
-    /// Invalid bytes are unknown; they do not invalidate earlier prefixes.
     pub graphical_culture: Option<String>,
-    /// The transport ladder's country: the original of a dynamic country.
     pub original_tag: Option<String>,
     pub original_graphical_culture: Option<String>,
-    /// The ruling party's ideology group, `Some(None)` without a ruling
-    /// party; `None` when this hour's party table is incomplete or the ruling
-    /// token is not UTF-8, which no pool filter can name.
     pub ruling_ideology: Option<Option<String>>,
 }
 
-/// Canonical country slots with readable model operands. A country without an
-/// appearance row is absent: a missing row does not prove it has no cosmetic tag.
 pub fn read(frame: &dyn DecodedSource) -> io::Result<BTreeMap<u32, ModelCountry>> {
     let links: BTreeMap<u32, u32> = frame
         .complete::<tables::CountryLinks>()?

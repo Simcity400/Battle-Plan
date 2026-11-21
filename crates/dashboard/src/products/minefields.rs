@@ -1,14 +1,3 @@
-//! Who has mined which seas. `minefields`: every owner's mines per sea region at an hour, a
-//! rows-at-an-hour panel; `minefield-history`: one region's mines by the owners asked over a
-//! window; `minefield-reports`: a region's standing mine reports at an hour.
-//!
-//! A region's owners and their order are the panel's structure; the amounts, which move hourly,
-//! are live cells: each owner's (row the region, column its tag) and the region's `total`.
-//!
-//! `NavalRegionalMines` is sparse: a nonzero amount is a row, and an owner's witness row (kind 0,
-//! its vector's length) proves every region below that length without a row holds none. A region
-//! at or past an owner's witnessed length, or of an owner without one, is unknown for that owner,
-//! never zero.
 
 use dashboard_base::products::Country;
 use super::{
@@ -41,10 +30,8 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-/// Raw mine amounts are fixed5.
 const SCALE: i32 = 100_000;
 
-/// One owner of mines in a region: its amount (raw fixed5) is the live cell (region, tag).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -52,8 +39,6 @@ pub struct MineOwner {
     pub tag: String,
 }
 
-/// A region holding mines: its owners largest first at the hour, and how many owners' amounts
-/// there are not known (vectors that do not reach it, owners no tag names, rows the hour lost).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +48,6 @@ pub struct MinedRegion {
     pub unknown_owners: u32,
 }
 
-/// A sea region with no mine known in it where some owners' amounts are not known.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -74,10 +58,8 @@ pub struct UnknownRegion {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Fold {
-    /// Largest total first, then by region.
     mined: Vec<MinedRegion>,
     unknown: Vec<UnknownRegion>,
-    /// Each shown amount's region, owner tag and row key.
     cells: Vec<(u32, String, u128)>,
 }
 
@@ -87,9 +69,6 @@ struct Vector<'a> {
     amounts: BTreeMap<u32, i64>,
 }
 
-/// The mines of `rows` (an hour's rows, key order), each owner named by `name` of its raw id and
-/// kept where `wanted`; `lost` rows of the hour not read; `sea` the regions a region with no
-/// mines is listed among when an owner's amount there is unknown.
 fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>, wanted: impl Fn(&str) -> bool, lost: bool, sea: &BTreeSet<u32>) -> Fold {
     let mut vectors: BTreeMap<u32, Vector<'a>> = BTreeMap::new();
     for row in rows {
@@ -101,7 +80,6 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
             }
         }
     }
-    // Owners no tag names, and rows the hour lost, may be anyone's: unknown everywhere.
     let unnamed = vectors.values().filter(|vector| vector.tag.is_none()).count() as u32 + u32::from(lost);
     let shown: Vec<(u32, &Vector)> = vectors.iter().filter(|(_, vector)| vector.tag.is_some_and(&wanted)).map(|(&raw, vector)| (raw, vector)).collect();
     let unknown_at = |region: u32| -> u32 {
@@ -143,7 +121,7 @@ pub struct Minefields;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldsParams {
     pub branch_id: String,
-    /// The owners shown; every owner when none.
+    #[doc = " The owners shown; every owner when none."]
     #[serde(default)]
     pub countries: Option<Vec<Country>>,
 }
@@ -154,7 +132,7 @@ pub struct MinefieldsParams {
 pub struct MinefieldsReply {
     pub regions: Vec<MinedRegion>,
     pub unknown: Vec<UnknownRegion>,
-    /// Every sea region the content names and every region mined, for the region setting.
+    #[doc = " Every sea region the content names and every region mined, for the region setting."]
     pub choices: Vec<Choice>,
     pub scale: i32,
     pub warnings: Vec<String>,
@@ -171,12 +149,10 @@ fn context(source: &Source, load: &LoadContext) -> io::Result<Context> {
     Ok(Context { places: place_names::Content::read(source, load)?, sea: SeaContent::read(source, load)? })
 }
 
-/// Why `table` is not known at the frame's hour, as a refusal naming `title`.
 fn unrecorded(frame: &DecodedFrame, table: TableId, title: &str) -> io::Error {
     dashboard_core::refused(format!("{title} are not recorded at this hour: {}", dashboard_text::scope::missing(table, &frame.tables[table.index()])))
 }
 
-/// Raw country id `raw`'s tag at the frame's hour: through its link's canonical slot.
 fn tag_of<'n>(links: &HashMap<u32, u32>, names: &'n Names, raw: u32, hour: i32) -> Option<&'n str> {
     names.slot_tag(*links.get(&raw)?, hour)
 }
@@ -249,8 +225,6 @@ impl AtHour for Minefields {
     }
 }
 
-/// One owner's runs of a region's mines over a window: each run's first and last hour and its raw
-/// amount, none where not known.
 pub type MineRuns = Vec<(i32, i32, Option<String>)>;
 
 #[derive(Clone, Debug, Serialize)]
@@ -286,8 +260,6 @@ pub struct MinefieldHistoryParams {
 
 pub struct MinefieldHistory;
 
-/// A region's amount from its amount row's runs, and zero where a witness row covering the region
-/// is live without one; none elsewhere. Runs of equal value merged.
 fn combine(amount: &lanes::Runs, witnesses: &[(u32, &lanes::Runs)], region: u32, from: i32, to: i32) -> Vec<(i32, i32, Option<i64>)> {
     let mut edges: BTreeSet<i32> = BTreeSet::from([from]);
     for runs in std::iter::once(amount).chain(witnesses.iter().map(|(_, runs)| *runs)) {
@@ -348,7 +320,6 @@ impl Product for MinefieldHistory {
                     crate::metadata::check_cancel(cancelled)?;
                     let owner = u128::from(id) << 33;
                     let key = owner | 1 << 32 | u128::from(params.region);
-                    // The witness rows standing at the stretch's start name the vector's length.
                     let first = dashboard_query::cost::storage(|| lanes::at_keys(recording, stretch.run, TableId::NavalRegionalMines, stretch.first, Some(&[amount][..]), lanes::Keys::Range(owner, owner | u128::from(u32::MAX))))?;
                     let mut keys: Vec<u128> = first.rows.iter().map(|&(key, _)| key).collect();
                     keys.push(key);
@@ -383,7 +354,7 @@ pub struct MineReport {
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldReportsReply {
     pub region: u32,
-    /// The hour the reports were read, where recorded.
+    #[doc = " The hour the reports were read, where recorded."]
     pub read_hour: Option<i32>,
     pub reports: Vec<MineReport>,
     pub warnings: Vec<String>,
@@ -411,7 +382,6 @@ const REPORT_TABLES: [TableId; 7] = [
     TableId::CountryCounterInputs,
 ];
 
-/// Standing reports (kind 1) in `region`.
 fn standing(rows: &[replay_data::rows::NavalAccidentReportRow], region: u32) -> impl Iterator<Item = &replay_data::rows::NavalAccidentReportRow> {
     rows.iter().filter(move |row| row.kind == 1 && row.region == region)
 }
@@ -464,8 +434,6 @@ impl AtHour for MinefieldReports {
         REPORT_TABLES.to_vec()
     }
 
-    /// The reports; then the region's reports' variants and the countries that name them; then
-    /// the variants' tokens.
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let reports = || held.complete::<tables::NavalAccidentReports>().map(|rows| standing(rows, params.region).cloned().collect::<Vec<_>>()).unwrap_or_default();
         match step {

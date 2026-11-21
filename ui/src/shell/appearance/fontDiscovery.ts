@@ -10,7 +10,6 @@ const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 export const readFontDiscovery = () => state;
 
-/** One session-wide request, including denied access, shared across every picker and settings visit. */
 export function discoverInstalledFonts(): Promise<void> {
   if (pending) return pending;
   if (state.status !== 'unknown') return Promise.resolve();

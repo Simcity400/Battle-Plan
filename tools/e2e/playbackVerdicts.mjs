@@ -1,13 +1,8 @@
-// The playback phase's verdicts: the bars of "completely smooth at 1,440 game hours a second", judged from what a run
-// left behind (the viewer's paced harness and proof tool, the desktop app's perf log). Pure functions, as verdicts.mjs.
 
-/** A row's verdict. A run that is not whole judges nothing: its rows are `partial`. */
 export const PASS = 'pass', FAIL = 'fail', PARTIAL = 'partial', UNMEASURABLE = 'not measurable yet', REPORTED = 'reported';
 
-/** The map's bars, in frames of the refresh interval and steps of the head. */
 export const MAP = { threadP99Ms: 6, threadWorstMs: 10, intervalP99: 1.1, intervalWorst: 1.5, lagP99Steps: 1, lagWorstSteps: 2,
   seekWorstMs: 150, seekMedianMs: 100, heldPeakBytes: 220e6 };
-/** Each layer's own bar, apply + settle + upload of the frame thread's own CPU, from its builder's brief. */
 export const LAYER_BARS = {
   political: { p99: 0.3, worst: 1, from: 'P5d' },
   sounds: { p99: 0.5, worst: 1.5, from: 'P9' }, strikes: { p99: 0.5, worst: 1.5, from: 'P9' }, engagements: { p99: 0.5, worst: 1.5, from: 'P9' },
@@ -18,24 +13,17 @@ export const LAYER_BARS = {
   naval_counters: { p99: 0.8, worst: 3, from: 'P8d' },
 };
 const SCOPES = ['apply', 'settle', 'upload'];
-/** Under this much physical memory free during a run the machine was paging, and its times are not a result. */
 export const PAGING_FREE_MB = 2048;
 
-/** Why the runner's record says a run's machine was not fit: it ran short of memory. */
 function machineReasons(run) {
   const least = run.memory?.least_free_mb;
   return Number.isFinite(least) && least < PAGING_FREE_MB ? [`the machine was paging: ${least} MB of memory free at the least, under ${PAGING_FREE_MB}`] : [];
 }
-/** The dashboard's bars. */
 export const DASHBOARD = { intervalP99: 1.1, intervalWorst: 2, tileBins: 256 };
-/** Requests within this long after play, pause, a speed change or a seek are the anchor's, not a value's. */
 export const ANCHOR_SETTLE_MS = 300;
-/** Perf-log records that happen at a time, as against those that state something for the session. */
 const TIMED = new Set(['tick', 'frame', 'q', 'loaf', 'longtask', 'shown', 'picture']);
-/** Products of the follow protocol itself: sent on anchors, never for a value. */
 export const FOLLOW_PRODUCTS = new Set(['follow', 'unfollow', 'follow-clock', 'follow-close']);
 
-/** Today's figure beside each bar (P0, quiet machine, the game open and paused). */
 export const TODAY = {
   thread: '9.0 median, 14.6 worst when an hour installs',
   interval: 'not measured',
@@ -48,13 +36,11 @@ export const TODAY = {
   requests: '26 a second for seven widgets',
 };
 
-/** The value at nearest rank p of `values` (finite numbers), as the harness and verdicts.mjs compute it. */
 export function rank(values, p) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   return sorted.length ? sorted[Math.min(sorted.length, Math.max(1, Math.ceil(p * sorted.length))) - 1] : null;
 }
 
-/** The value after `flag` in a command's arguments. */
 export function arg(args, flag) {
   const at = (args ?? []).indexOf(flag);
   return at < 0 ? null : args[at + 1];
@@ -64,20 +50,15 @@ const num = (args, flag) => { const value = arg(args, flag); return value === nu
 const ms = us => us / 1000;
 const fixed = (value, digits = 1) => (Number.isFinite(value) ? value.toFixed(digits) : '–');
 
-/** Index of the largest of `values` (by `of`), or null. */
 function worstOf(items, of) {
   let best = null;
   for (const item of items) if (Number.isFinite(of(item)) && (best === null || of(item) > of(best))) best = item;
   return best;
 }
 
-/** Whether a paced or step-mode harness run covered what it was asked: exit 0 and not stopped, a report and an uncut frame
- * log, consecutive frames, the span asked, the head at the end (paced), every frame asked (step), every seek made; with
- * `--seek-back`, the seek back made after the span (paced: shown, the head past it; step: one more frame). */
 export function wholeHarness(run, report, frames, { acceptReconciliation = false } = {}) {
   const reasons = machineReasons(run);
   if (run.stopped) reasons.push(`stopped by the runner: ${run.stopped}`);
-  // The harness exits 1 when its exclusive CPU scopes and the process's CPU differ by over 5%, with the run complete.
   const check = report?.cpu_reconciliation;
   const reconciliation = run.exit === 1 && check?.passed === false;
   const off = reconciliation ? `${(100 * check.process_minus_scopes_ns / check.process_cpu_ns).toFixed(1)}% on ${(check.process_cpu_ns / 1e9).toFixed(1)} s of CPU` : '';
@@ -87,7 +68,6 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
   if (!report) reasons.push('no report.json');
   if (!frames) reasons.push('no frames.jsonl');
   else if (frames.cut) reasons.push('frames.jsonl ends in a cut line');
-  // A run cut short leaves the frames it covered: say how far it came.
   if (!report && frames?.frames.length) {
     const last = frames.frames.at(-1);
     reasons.push(held ? `covered ${frames.frames.length} of ${hours} frames` : `covered ${frames.frames.length} frames, the head to ${Math.floor(last.head_hour)} of ${from + hours}`);
@@ -106,9 +86,7 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
     } else {
       if (paced.frames !== list.length) reasons.push(`${list.length} frames logged of ${paced.frames} reported`);
       const last = list.at(-1);
-      // The harness stops before the frame whose head reaches the end: the last head plus its travel to the stop.
       const reached = last ? last.head_hour + paced.speed_hours_per_second * (paced.seconds - last.start_us / 1e6) : null;
-      // Sought back, a drawn frame reached the end before the seek, and the run ends past the hour sought.
       const spanned = back === null ? reached : Math.max(...list.map(frame => frame.head_hour));
       if (spanned === null || spanned < from + hours) reasons.push(`the head reached ${spanned === null ? 'nothing' : Math.floor(spanned)}, asked ${from + hours}`);
       if (back !== null) {
@@ -125,8 +103,6 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
   return { whole: reasons.length === 0, reasons, accepted: reasons.length === 0 && acceptReconciliation && reconciliation ? `judged with exit 1 from the harness's CPU reconciliation only (${off}): not a result under the rule` : null };
 }
 
-/** Whether a proof-tool run covered what it was asked: exit 0, flat play to the last hour, every seek, frames, and
- * (unless timing) samples compared with none skipped. */
 export function wholeProof(run, summary, frames) {
   const reasons = machineReasons(run);
   if (run.stopped) reasons.push(`stopped by the runner: ${run.stopped}`);
@@ -151,7 +127,6 @@ export function wholeProof(run, summary, frames) {
 
 const row = (fields) => ({ worst: null, today: '', note: '', values: {}, ...fields });
 
-/** Every row of a run that is not whole: named, with no figure. */
 function partialRows(page, label, bars, reasons) {
   return bars.map(bar => row({ page, run: label, bar, measured: '–', limit: '', verdict: PARTIAL, note: reasons.join('; ') }));
 }
@@ -159,10 +134,8 @@ function partialRows(page, label, bars, reasons) {
 const PACED_BARS = ['window-thread CPU a frame', 'presented frame interval', 'late frames against the floor', 'content lag', 'new pictures a second',
   'each layer: apply, settle and upload', 'playhead step time', 'playhead stalls', 'playhead held()', 'process peak memory'];
 
-/** The presented time of each frame: its start, its work and its wait for the GPU. */
 const presented = frame => frame.start_us + frame.wall_us;
 
-/** The frames of seek windows: from the seek's frame until it is back within a step (or shown, when it never is). */
 function seekWindows(report) {
   const inside = new Set();
   for (const seek of report.layers?.seeks ?? []) {
@@ -172,7 +145,6 @@ function seekWindows(report) {
   return inside;
 }
 
-/** The rows of one paced harness run against the map's bars. `floor` is the floor run's late-frame rate, if one ran. */
 export function pacedRows({ page = 'map', label, run, report, frames, floor = null, acceptReconciliation = false }) {
   const whole = wholeHarness(run, report, frames, { acceptReconciliation });
   const bars = [...PACED_BARS, ...(num(run.args, '--seeks') ? ['seek: sought hour on screen'] : [])];
@@ -260,7 +232,6 @@ export function pacedRows({ page = 'map', label, run, report, frames, floor = nu
   const stepper = report.stepper;
   const stepMs = report.layers?.step_ms;
   if (stepper && stepMs) {
-    // A frame's step_ms is the build time of every step it took; a step's time is its share.
     const perStep = measured.filter(frame => frame.layers?.steps > 0).map(frame => ({ frame, ms: frame.layers.step_ms / frame.layers.steps }));
     const p99 = rank(perStep.map(entry => entry.ms), 0.99), most = worstOf(perStep, entry => entry.ms);
     rows.push(row({ page, run: label, bar: 'playhead step time', measured: `p50 ${fixed(rank(perStep.map(entry => entry.ms), 0.5), 2)} / p99 ${fixed(p99, 2)} / worst ${fixed(most?.ms, 2)} ms a step over ${perStep.length} frames that stepped`,
@@ -300,8 +271,6 @@ export function pacedRows({ page = 'map', label, run, report, frames, floor = nu
   return rows;
 }
 
-/** The floor of a machine: paced frames of the same view at a held hour, the camera panning. A frame is late as in play:
- * presented over `intervalWorst` refresh intervals after the frame before. */
 export function floorOf({ run, report, frames, acceptReconciliation = false }) {
   const whole = wholeHarness(run, report, frames, { acceptReconciliation });
   if (!whole.whole) return { whole: false, reasons: whole.reasons };
@@ -319,7 +288,6 @@ export function floorRows({ page = 'map', label, floor, run }) {
     note: `${floor.accepted ? `${floor.accepted}; ` : ''}paced at the held hour, ${arg(run.args, '--pan')} map units a frame`, values: { per1000: floor.rate * 1000 } })];
 }
 
-/** The rows of one proof-tool run (`--timing`, with seeks): stalls, the playhead's held bytes, and seeks composed. */
 export function proofRows({ page = 'map', label, run, summary, frames }) {
   const whole = wholeProof(run, summary, frames);
   const bars = ['playhead stalls', 'playhead held()', 'seek: sought hour composed (proof, flat play)'];
@@ -342,7 +310,6 @@ export function proofRows({ page = 'map', label, run, summary, frames }) {
   return rows;
 }
 
-/** The figure spread of repeated runs: per run (its role) and bar, each value's least and greatest over the whole repeats. */
 export function spread(rows) {
   const groups = new Map();
   for (const entry of rows.filter(entry => entry.verdict !== PARTIAL && entry.repeat != null)) {
@@ -361,9 +328,7 @@ export function spread(rows) {
   });
 }
 
-// ---- The dashboard: a perf log of the desktop app.
 
-/** The anchors of a log: ticks where the clock started or stopped playing, changed speed, or sought. */
 export function anchors(ticks) {
   const found = [];
   for (let index = 0; index < ticks.length; index++) {
@@ -373,7 +338,6 @@ export function anchors(ticks) {
   return found;
 }
 
-/** The latest of `sorted` (by `at`) at or before `time`. */
 function latest(sorted, time) {
   let low = 0, high = sorted.length - 1, found = null;
   while (low <= high) {
@@ -383,7 +347,6 @@ function latest(sorted, time) {
   return found;
 }
 
-/** Whether a perf log is whole: its last line parsed, nothing lost, playing frames, and what the run was asked to do. */
 export function wholeLog(log, records, { playingSeconds = null, seeks = null } = {}) {
   const reasons = [];
   if (log.cut) reasons.push('the log ends in a cut line');
@@ -402,7 +365,6 @@ export function wholeLog(log, records, { playingSeconds = null, seeks = null } =
   return { whole: reasons.length === 0, reasons, played };
 }
 
-/** The clock's playing stretches, [from, to] in epoch ms, with the speed it played at. */
 export function stretches(ticks) {
   const found = [];
   let open = null;
@@ -415,10 +377,7 @@ export function stretches(ticks) {
   return found;
 }
 
-/** Per page and widget, the dashboard's bars over the playing stretches of a perf log. `refreshHz` sets the interval; when
- * it is not given the median playing frame interval stands in, and the note says so. */
 export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {}, window = null } = {}) {
-  // A window (epoch ms) keeps the timed records inside it; what a record states for the session (widgets, follows, losses) stays.
   const records = window ? log.records.filter(record => !TIMED.has(record.t) || (record.at >= window.from && record.at <= window.to)) : log.records;
   const whole = wholeLog(log, records, expect);
   const bars = ['webview frame interval', 'long animation frames', 'requests for values at the head',
@@ -474,11 +433,8 @@ export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {
   return { whole, rows, follow };
 }
 
-/** A request for a block wholly ahead of the head: the first hour it asks from is past the head it was sent at. */
 export const aheadOfHead = record => typeof record.from === 'number' && typeof record.head === 'number' && record.from > record.head;
 
-/** A list's requests for blocks ahead of the head while playing: per list (`lane`), each block (the hour it asks from)
- * once, and no more than the blocks the head crossed and the two ahead of it, as chart tiles are judged. */
 function aheadRow(page, ahead, playing, ticks, hourAt) {
   const base = { page, run: 'perf log', bar: 'list requests ahead of the head', limit: 'each block once, at most the blocks the head crossed and two ahead', today: TODAY.requests };
   const reasons = [];
@@ -505,8 +461,6 @@ function aheadRow(page, ahead, playing, ticks, hourAt) {
     note: reasons.slice(0, 4).join('; '), values: { count: ahead.length } });
 }
 
-/** Chart tiles asked while playing: per chart (its branch, family and tag group) and bin size, at most the tiles the head
- * crossed and the one ahead; a tile asked twice always fails. */
 function tileRow(page, tiles, playing, ticks, hourAt) {
   const base = { page, run: 'perf log', bar: 'chart tile requests', limit: `one per chart per ${DASHBOARD.tileBins} bins of the head's travel`, today: TODAY.requests };
   if (tiles.some(record => !record.tile)) return row({ ...base, measured: `${tiles.length} asked`, verdict: UNMEASURABLE, note: 'the perf log names no tile (bins, index, chart) on its requests' });
@@ -532,7 +486,6 @@ function tileRow(page, tiles, playing, ticks, hourAt) {
     note: reasons.slice(0, 4).join('; '), values: { count: tiles.length } });
 }
 
-/** Which followed queries each widget holds, which fell back and why, from the store's follow records. */
 export function followAccount(records, titles) {
   const queries = new Map();
   for (const record of records.filter(record => record.t === 'follow')) {
@@ -556,11 +509,9 @@ export function followAccount(records, titles) {
   return { queries: [...queries.values()], widgets: [...widgets.values()] };
 }
 
-// ---- The table.
 
 const cell = value => String(value ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
-/** One verdict table: page, run, bar, measured, the bar, the verdict, the worst frame and hour, today. */
 export function table(rows) {
   const lines = ['| Page | Run | Bar | Measured | The bar | Verdict | Worst frame (hour) | Today (P0) | Note |', '|---|---|---|---|---|---|---|---|---|'];
   for (const entry of rows) {
@@ -571,5 +522,4 @@ export function table(rows) {
   return lines.join('\n');
 }
 
-/** Whether a set of rows passes: no fail and no partial. Not measurable and reported rows do not decide it. */
 export const passed = rows => !rows.some(entry => entry.verdict === FAIL || entry.verdict === PARTIAL);

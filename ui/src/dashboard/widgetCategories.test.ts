@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories.ts';
 import type { Page } from './pages.ts';
 
-// The test's own page table, so grouping is checked whatever the built-in pages hold.
 const page = (id: string, label: string, icon: Page['icon'], ...kinds: string[]): Page => ({ id, label, icon, panels: kinds.map((kind, row) => [kind, 0, row, 12, 1]) });
 const pages = [
   page('overview', 'Overview', 'grid', 'map', 'territory', 'wars'), page('politics', 'Politics', 'parliament', 'political-power', 'idea-timeline'),
@@ -64,7 +63,6 @@ test('a widget keeps its own card and lists each of its views right after it', (
     choices: [{ value: 'main', label: 'Country totals' }, { value: 'breakdown', label: 'Ship classes' }] } as const;
   const navy = { ...widget('navy-size', 'Navy size', 'Navy'), options: [view, show], variants: [
     { key: 'view=lines', initial: { title: 'Navy size over time', options: { view: 'lines' } } },
-    // A view may spell out a value that equals its field's default; stored widgets never hold one.
     { key: 'show=breakdown', initial: { title: 'Navy size: Ship classes', options: { show: 'breakdown', view: 'race' } } }] };
   const [navyGroup] = catalogueEntries(widgetGroups([navy, widget('ships-sunk', 'Ships sunk', 'Navy')]), new Map());
   assert.deepEqual(navyGroup.map(entry => [entry.key, entry.title, entry.variant]), [
@@ -73,7 +71,7 @@ test('a widget keeps its own card and lists each of its views right after it', (
   assert.equal(navyGroup[0].initial, undefined, 'the own card adds the widget as it always did');
   assert.deepEqual(navyGroup[1].initial, { title: 'Navy size over time', options: { view: 'lines' } }, 'a view card adds its title and options');
   const placed = [
-    { kind: 'navy-size' }, { kind: 'navy-size', options: { view: 'race', show: 'main' } }, // the default view, stored or not
+    { kind: 'navy-size' }, { kind: 'navy-size', options: { view: 'race', show: 'main' } },
     { kind: 'navy-size', options: { view: 'lines' } }, { kind: 'navy-size', options: { view: 'lines', show: 'breakdown' } },
     { kind: 'navy-size', options: { show: 'breakdown' } }, { kind: 'navy-size', options: { view: 'unknown' } }, { kind: 'ships-sunk' }];
   assert.deepEqual(navyGroup.map(entry => placedCount(entry, placed)), [3, 2, 1, 1],

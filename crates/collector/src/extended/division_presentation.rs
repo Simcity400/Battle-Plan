@@ -1,11 +1,3 @@
-//! Hourly division companions. Reuses the existing authenticated source census;
-//! movement and counter reads retain separate costs and outcomes. The
-//! commanders' retreat bans (DivisionRetreatBans) are read for every division
-//! each hour, carrying each commander's bans while no forwarded writer
-//! touched it ([`crate::retreat_ban_changes`]). The land movement speed's
-//! shared operands (MovementStateTerms, CoreSupplyAccess,
-//! CountryUnitSpeedEntries, RiverRelations, DivisionTransportSpeeds and
-//! DivisionStatus.combat_movement) run beside the status pass ([`speed_terms`]).
 use super::production::Sources;
 use crate::{
     projection::{Projection, ledger_table, scalar_table},
@@ -35,7 +27,6 @@ mod status_work;
 pub(crate) use naming::{NamingCarry, NamingPart};
 pub(crate) use status_work::StatusWork;
 
-/// One final-status range per available worker, sized from the live census.
 pub(crate) const MAX_STATUS_PARTS: usize = crate::acquisition::MAX_WORKERS;
 const STATUS_PART_ENTRIES: usize = 512;
 
@@ -46,7 +37,6 @@ pub(crate) fn status_parts_for(divisions: usize, workers: usize) -> usize {
 }
 
 pub const N: usize = 7 + speed_terms::N;
-/// The passes inside the DivisionStatus acquisition span.
 pub(crate) const PHASES: usize = 23;
 #[cfg(feature = "acquisition_profile")]
 const PHASE_NAMES: [&str; PHASES] = [
@@ -81,8 +71,6 @@ pub const TABLES: [TableId; N] = [
     speed_terms::TABLES[3],
     speed_terms::TABLES[4],
 ];
-/// Every table but DivisionMovement: the status side, the speed terms and the
-/// movement pass's land and dig-in inputs, which run only if one is recorded.
 pub const STATUS_TABLES: [TableId; N - 1] = [
     TableId::DivisionStatus,
     TableId::DivisionLandInputs,
@@ -96,10 +84,7 @@ pub const STATUS_TABLES: [TableId; N - 1] = [
     speed_terms::TABLES[3],
     speed_terms::TABLES[4],
 ];
-// Both depend on the shared division census, which measures their costs individually.
 
-// The status row's scalar fields. Stepped fields are rounded to their display steps (replay_data::display), as the
-// baseline holds them.
 macro_rules! status_fields {
     ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
         $apply!([$($args),*], {
@@ -108,7 +93,6 @@ macro_rules! status_fields {
             maximum_organisation_exact: Recorded::Value($row.movement_organisation.flatten().map(|pair| pair[1])),
             entrenchment: $row.entrenchment,
             entrenchment_cap: $row.entrenchment_cap,
-            // The exact pair, when kept, carries the shown values: their steps.
             supply_ratio: (!DivisionStatusRow::keeps_exact_supply($row.out_of_supply_days)).then(|| DivisionStatusRow::SUPPLY_RATIO_STEP.round($row.supply_ratio)),
             attrition_value: $row.attrition_value,
             attrition_threshold: $row.attrition_threshold,
@@ -175,11 +159,8 @@ macro_rules! project_status_fields {
     }};
 }
 
-/// The fixed inputs of a DivisionStatus row besides its name, supply origin and attack words.
 #[derive(Clone, Copy, PartialEq)]
 struct StatusInputs {
-    /// As the row publishes it: arena positions cleared, stepped words rounded, unpublished
-    /// fields cleared.
     row: carmy::StatusRow,
     exact_supply: Option<[i64; 2]>,
     supply_grace: Option<i32>,
@@ -194,8 +175,6 @@ struct StatusInputs {
     combat_movement: Option<Option<i64>>,
 }
 
-/// Where `row`, an element of `rows`, sits in it.
-/// Whether no division appears twice among `divisions`, sorted into `keys`.
 fn unique(keys: &mut Vec<u64>, divisions: impl ExactSizeIterator<Item = u64>) -> bool {
     keys.clear();
     if engine_allocation::reserve(keys, divisions.len()).is_err() {
@@ -210,15 +189,12 @@ fn position<T>(rows: &[T], row: &T) -> usize {
     (row as *const T as usize - rows.as_ptr() as usize) / std::mem::size_of::<T>().max(1)
 }
 
-/// The recorded form of what the camouflage category selector takes from the division; a refused
-/// read stays None.
 fn camouflage(camouflage: Option<carmy::Camouflage>) -> Option<DivisionCamouflage> {
     camouflage.map(|camouflage| DivisionCamouflage {
         category: camouflage.category,
     })
 }
 
-/// The recorded name member template reference: empty where the naming operands were not read.
 fn name_template(naming: Option<cname_group_member::Inputs>) -> Witnessed<u64> {
     Witnessed(naming.map(|naming| naming.template))
 }
@@ -231,7 +207,6 @@ struct NamingRead {
     failure: Option<&'static str>,
     cached_name: Option<cname_group_member::Span>,
     cached_failure: Option<&'static str>,
-    /// Carried from the held read, not read this hour.
     held: bool,
 }
 
@@ -263,17 +238,13 @@ impl CaptureReport {
 pub struct Capacities {
     movement: usize,
     status: usize,
-    /// DivisionRetreatBans rows: divisions whose commander bans retreat.
     bans: usize,
     paths: usize,
     name_bytes: usize,
     name_groups: usize,
     cached_name_bytes: usize,
     geometry: cprovince::GeometryCapacities,
-    /// Shared DivisionStatus membership storage prepared for pooled packets.
-    /// Worker acquisition retains larger original demand in the same pass.
     membership: MembershipCapacity,
-    /// Ordered supply-footer origin rows across the census (DivisionStatus).
     supply_origins: usize,
     combat_references: usize,
 }
@@ -324,9 +295,6 @@ impl Capacities {
         }
     }
 
-    /// Each army's name member supplies the override or resolved template
-    /// name-group key.
-    /// This off-hour hint supplies storage only, never recorded naming values.
     pub(crate) fn presize_names(
         &mut self,
         memory: &impl Memory,
@@ -385,7 +353,6 @@ impl Capacities {
         failure.map_or(Ok(()), Err)
     }
 
-    /// Every province definition bounds the movement route geometry.
     pub(super) fn raise_for_provinces(&mut self, provinces: usize) {
         self.geometry.provinces = self.geometry.provinces.max(provinces);
     }
@@ -412,7 +379,6 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
     .unwrap_or_else(|_| carmy::StatusPacket::vacant())
 }
 
-/// The census rows a pass may read: a count past the rows refuses them all.
 fn source_outcome(sources: &Sources<'_, DivisionSeed>) -> Outcome {
     if sources.outcome.len() <= sources.rows.len() {
         sources.outcome
@@ -423,7 +389,6 @@ fn source_outcome(sources: &Sources<'_, DivisionSeed>) -> Outcome {
     }
 }
 
-/// Shared speed terms: storage lent to their independent whole-census job.
 pub(crate) struct SpeedTermsPass {
     terms: speed_terms::SpeedTerms,
 }
@@ -450,11 +415,6 @@ impl SpeedTermsPass {
     }
 }
 
-/// DivisionMovement, DivisionLandInputs and DivisionStatus's dig-in factors:
-/// storage lent to their job ([`Captured::take_movement`]) beside the status
-/// and speed-term passes. They share only the census with them and read the
-/// same parked state; the dig-in pass reads every census division and is cut
-/// to the status pass's rows when the storage returns.
 pub(crate) struct MovementPass {
     land: super::division_land::Captured,
     land_ticks: u64,
@@ -467,13 +427,10 @@ pub(crate) struct MovementPass {
     dig_in: super::dig_in::Captured,
     dig_in_ticks: u64,
     owned_pending: bool,
-    /// False when the capture mode leaves out [`STATUS_TABLES`]: the land and
-    /// dig-in walks, which only they read, do not run.
     status: bool,
 }
 
 impl MovementPass {
-    /// Leave out the land and dig-in walks with the status side.
     pub(crate) fn omit_status(&mut self) {
         self.status = false;
     }
@@ -490,8 +447,6 @@ impl MovementPass {
             + self.dig_in.allocated_bytes()
     }
 
-    /// The movement, land and dig-in terms of the same census.
-    /// Only the test fixture omits the sample hour and uses fixed storage.
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -536,7 +491,6 @@ impl MovementPass {
         }
         let _movement_reads = crate::read_accounting::table(TableId::DivisionMovement);
         let start = qpc();
-        // A failed geometry root stays the movement rows' own refusal.
         let _ = self.geometry.begin(memory, base, state);
         if hour.is_some() {
             self.geometry.hold_identities(world);
@@ -595,21 +549,14 @@ pub struct Captured {
     naming: Arena<NamingRead>,
     names: Arena<u8>,
     cached_names: Arena<u8>,
-    /// The naming of the unsplit pass, whose name-group memo sets every range's table size.
     serial_naming: NamingPart,
-    /// The final status ranges' naming, stitched by the Presentation job.
     naming_parts: Vec<NamingPart>,
     naming_carry: Option<engine_allocation::SharedBox<NamingCarry>>,
     movement_packet: carmy::MovementPacket,
     transport: movement_carry::Transport,
     transport_inputs: Vec<(usize, Option<TransportInputs>)>,
-    /// Sparse execution output from the same held pass, installed only after
-    /// both Presentation and Late have joined. Never reads native memory.
     order_transport: engine_native::order_execution::UnitPacket,
-    /// The combat members' divisions, sorted, with their status and movement rows
-    /// ([`Self::join_combat_members`]).
     member_index: Vec<(u64, u32, u32)>,
-    /// Scratch for [`unique`].
     member_keys: Vec<u64>,
     geometry: cprovince::GeometryPacket,
     status_packet: carmy::StatusPacket,
@@ -634,32 +581,20 @@ pub struct Captured {
     pub(crate) status_workers: usize,
     status_prepared: bool,
     dig_in: super::dig_in::Captured,
-    /// DivisionStatus.attack_stats and the attack witness
-    /// ([`super::attack_stats`]), captured after the status pass.
     attack: super::attack_stats::Captured,
-    /// The DivisionStatus span by pass, including nested ordered
-    /// preparation sub-phases. Diagnostics only.
     phase_ticks: [u64; PHASES],
     membership: MembershipCapacity,
     source_capacity: usize,
     source_required: usize,
     decode_pending: bool,
-    /// The status side was left out ([`Self::omit_status`]): the decode
-    /// projects only the movement pass's rows.
     status_omitted: bool,
     movement_owned_pending: bool,
-    /// The live `NMilitary.SUPPLY_GRACE` hours this pass read, which
-    /// DivisionStatus.supply_grace_remaining is stored against
-    /// ([`DivisionStatusRow::displayed_grace`]); None when unreadable.
     supply_grace: Option<i32>,
-    /// The land movement speed's shared operands and each division's combat
-    /// movement operand, lent to the independent speed-term pass.
     speed_terms: speed_terms::SpeedTerms,
 }
 
 impl Captured {
     #[cfg(test)]
-    /// The source census admits the first `admitted` seeds and leaves the rest unread.
     pub(super) fn capture_status_fixture(
         &mut self,
         memory: &impl Memory,
@@ -680,7 +615,6 @@ impl Captured {
         self.decode_pending = true;
     }
 
-    /// Empty ownership placeholder; constructing it never provisions packets.
     pub(crate) fn vacant() -> Self {
         Self {
             land: super::division_land::Captured::new(0),
@@ -740,8 +674,6 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         let mut movement_packet = carmy::MovementPacket::try_new(c.movement, c.paths)
             .unwrap_or_else(|_| carmy::MovementPacket::vacant());
-        // The checked allocator still signals terminal failure. Keep the
-        // already-prepared legacy packet if only this optional arena fails.
         let _ = movement_packet.reserve_combat_references(c.combat_references);
         Self {
             land: super::division_land::Captured::new(c.movement.max(c.status)),
@@ -814,8 +746,6 @@ impl Captured {
         self.reset_status();
     }
 
-    /// Everything but the movement and speed-term storage, which their jobs
-    /// reset ([`MovementPass::capture`], [`SpeedTermsPass::capture`]).
     fn reset_status(&mut self) {
         self.sources_deferred = false;
         self.stitch_deferred = false;
@@ -841,7 +771,6 @@ impl Captured {
         self.attack.clear_selected_sources();
         self.phase_ticks = [0; PHASES];
         self.order_transport.reset();
-        // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
         self.status_omitted = false;
     }
@@ -954,7 +883,6 @@ impl Captured {
         );
     }
 
-    /// Prepare primary packet storage for the complete shared source census.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {
         self.land.reserve(capacity);
         self.source_capacity = self.source_capacity.max(capacity);
@@ -968,8 +896,6 @@ impl Captured {
         self.dig_in.reserve_rows(self.source_capacity);
     }
 
-    /// Lend the movement pass's storage to its own job; the status pass
-    /// runs beside it on this capture. Allocation-free placeholders stand in.
     pub(crate) fn take_movement(&mut self) -> MovementPass {
         MovementPass {
             land: std::mem::replace(&mut self.land, super::division_land::Captured::new(0)),
@@ -990,8 +916,6 @@ impl Captured {
         }
     }
 
-    /// Return the lent storage once both passes have run: the dig-in rows
-    /// are cut to the status pass's.
     pub(crate) fn restore_movement(&mut self, pass: MovementPass) {
         let MovementPass {
             land,
@@ -1020,7 +944,6 @@ impl Captured {
         self.phase_ticks[1] = dig_in_ticks;
     }
 
-    /// Lend the unchanged whole-census speed pass beside status and movement.
     pub(crate) fn take_speed_terms(&mut self) -> SpeedTermsPass {
         SpeedTermsPass {
             terms: std::mem::take(&mut self.speed_terms),
@@ -1031,8 +954,6 @@ impl Captured {
         self.speed_terms = pass.terms;
     }
 
-    /// The previous sparse output becomes the execution owner's reusable spare.
-    /// Its reset makes a failed/cancelled hour incapable of carrying old values.
     pub(crate) fn install_order_transport(
         &mut self,
         execution: &mut engine_native::order_execution::Prepared,
@@ -1049,16 +970,12 @@ impl Captured {
         )
     }
 
-    /// The words the hour's DivisionPanelStats row of `division` holds, found through the status
-    /// index; None where it is not found there.
     fn published_panel(&self, division: u64) -> Option<[Option<i64>; 23]> {
         let at = self.status_packet.status_index(division)?;
         (self.status.rows.get(at)?.division == division)
             .then(|| self.attack.view_at(at, division).panel())
     }
 
-    /// Whether the first `len` status rows' naming spans lie in the name arena; DivisionStatus
-    /// is refused otherwise.
     fn names_valid(&self, len: usize) -> bool {
         let Some(names) = self.names.first.get(..self.names.len) else {
             return false;
@@ -1074,8 +991,6 @@ impl Captured {
         })
     }
 
-    /// Whether the first `len` movement rows' paths lie in the path arena; DivisionMovement is
-    /// refused otherwise.
     fn paths_valid(&self, len: usize) -> bool {
         let Some(paths) = self.paths.first.get(..self.paths.len) else {
             return false;
@@ -1090,9 +1005,6 @@ impl Captured {
         })
     }
 
-    /// Marks each combat member whose division values this hour's DivisionStatus,
-    /// DivisionPanelStats and DivisionMovement rows publish exactly as the member read them, so
-    /// its row stores no copy. Any doubt, a refused table or a failed allocation keeps the copy.
     pub(crate) fn join_combat_members(
         &mut self,
         combat: &mut super::combat_details::Captured,
@@ -1110,8 +1022,6 @@ impl Captured {
         self.member_index = index;
     }
 
-    /// The members' divisions, each with its status and movement row positions (`u32::MAX` for
-    /// none). False when the tables may be refused: a division listed twice anywhere refuses them.
     fn index_members(
         &self,
         index: &mut Vec<(u64, u32, u32)>,
@@ -1152,8 +1062,6 @@ impl Captured {
         true
     }
 
-    /// Whether the status row at `status` and the movement row at `movement` publish the values
-    /// a combat member read, as [`replay_data::rows::LandCombatMemberValues::joined`] reads them.
     fn publishes(
         &self,
         status: u32,
@@ -1226,8 +1134,6 @@ impl Captured {
         })
     }
 
-    /// Reuse the hourly template icon walk's census; no extra native walk.
-    /// A full memo costs fresh reads, so an unreadable census cannot drop names.
     pub(crate) fn grow_name_groups(&mut self, c: &mut Capacities, templates: usize) {
         grow_capacity(&mut c.name_groups, templates);
         let current = self.serial_naming.groups().capacities();
@@ -1243,8 +1149,6 @@ impl Captured {
         }
     }
 
-    /// [`Self::capture_naming_holding`] without the `army_stat` store: every
-    /// member is read.
     #[cfg(test)]
     fn capture_naming(&mut self, memory: &impl Memory, base: usize, seeds: &[DivisionSeed]) {
         self.capture_naming_holding(
@@ -1256,7 +1160,6 @@ impl Captured {
         );
     }
 
-    /// [`Self::capture_owned_observed`] without an `army_stat` store.
     #[cfg(test)]
     pub(crate) fn capture_owned(
         &mut self,
@@ -1273,8 +1176,6 @@ impl Captured {
         )
     }
 
-    /// All three passes on this thread, with the same loans as Presentation,
-    /// PresentationMovement and PresentationSpeedTerms.
     #[cfg(test)]
     pub(super) fn capture_owned_observed(
         &mut self,
@@ -1309,9 +1210,6 @@ impl Captured {
         report
     }
 
-    /// Stage independent leaves, then settle certificates and shared maxima
-    /// before lending final-status ranges. Naming and attack keep the same
-    /// held store and their original ordered publication.
     pub(crate) fn prepare_status_holding(
         &mut self,
         memory: &impl Memory,
@@ -1358,11 +1256,9 @@ impl Captured {
         );
         self.probes_ready = false;
         self.prefetching = false;
-        // A preparation refusal was already attempted; the final job must not retry.
         self.status_prepared = true;
     }
 
-    /// False selects the original ordered preparation without optional staging.
     fn begin_preparation(
         &mut self,
         sources: &Sources<'_, DivisionSeed>,
@@ -1405,7 +1301,6 @@ impl Captured {
         true
     }
 
-    /// All range leases must be dropped before the ordered pass, including failures.
     pub(crate) fn restore_preparation_store(
         &mut self,
         store: Option<&mut super::attack_stats::ArmyStatStore>,
@@ -1474,14 +1369,6 @@ impl Captured {
         self.phase_ticks[0] += ticks;
     }
 
-    /// The status side on the reserved worker, using the immutable source
-    /// lease: DivisionStatus and DivisionRetreatBans. The movement pass runs
-    /// in its own job beside it ([`MovementPass`]). Membership storage may
-    /// grow at the original demanded root or chunk. `army_stats` is the
-    /// store the attack pass will take: it certifies every division before
-    /// the status pass reads a stat block, and carries the maxima and name
-    /// member of each division it holds ([`super::attack_stats`],
-    /// [`Self::capture_naming`]).
     pub(crate) fn capture_status_holding(
         &mut self,
         memory: &impl Memory,
@@ -1498,8 +1385,6 @@ impl Captured {
         )
     }
 
-    /// [`Self::capture_status_holding`] observed through `changes`. The
-    /// movement, land, dig-in and speed ticks are the movement pass's.
     pub(super) fn capture_status_observed(
         &mut self,
         memory: &impl Memory,
@@ -1516,7 +1401,6 @@ impl Captured {
         } else if self.status_prepared {
             let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
             let started = qpc();
-            // The final ranges named under the store's loan; it returns before the stitch.
             self.restore_preparation_store(army_stats.as_deref_mut());
             let prepared = self.prepared_status.as_mut().expect("status prepared");
             std::mem::swap(
@@ -1581,11 +1465,6 @@ impl Captured {
         CaptureReport { ticks }
     }
 
-    /// DivisionStatus.attack_stats after [`Self::capture_status_holding`]
-    /// with the same store: every division of the same census, carried
-    /// through `store` where certified ([`super::attack_stats`]), each held
-    /// with the status pass's maxima. It reads only stat blocks and, in a
-    /// witnessing hour, the terrain database.
     pub(crate) fn capture_attack(
         &mut self,
         memory: &impl Memory,
@@ -1652,10 +1531,6 @@ impl Captured {
         self.attack_ready = false;
     }
 
-    /// DivisionRetreatBans for every division of the census: each group's
-    /// commander is read unless the store carries its bans
-    /// ([`crate::retreat_ban_changes`]). The store is held only after a
-    /// complete read.
     fn capture_bans(
         &mut self,
         memory: &impl Memory,
@@ -1678,8 +1553,6 @@ impl Captured {
         self.bans.outcome = match ccountry::Reader::new(memory, context.base, context.game_state) {
             Err(reason) => Outcome::Unavailable { reason },
             Ok(countries) => {
-                // An unlinked id has no owner; a link fault is unresolved,
-                // which withholds the read's rows (`retreat_bans`).
                 let owner = |raw: u32| countries.link(raw);
                 let outcome = if sources.outcome.len() <= sources.rows.len() {
                     sources.outcome
@@ -1709,7 +1582,6 @@ impl Captured {
         qpc().saturating_sub(start).max(0) as u64
     }
 
-    /// Finish an accepted worker failure without retrying the live acquisition.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
         if self.status_prepared && self.status_part_count != 0 {
             let prepared = self.prepared_status.as_mut().expect("status prepared");
@@ -1740,10 +1612,6 @@ impl Captured {
         CaptureReport::default()
     }
 
-    /// Leave out the status side (status, retreat bans, naming, attack and
-    /// panels) and the speed terms, reading nothing: their jobs do not run.
-    /// The movement pass's rows, returned by [`Self::restore_movement`], are
-    /// projected as they are when the status side is read.
     pub(crate) fn omit_status(&mut self, reason: &'static str) -> CaptureReport {
         self.reset_status();
         self.attack.history = Some(Err(reason));
@@ -1784,9 +1652,7 @@ impl Captured {
         [movement.ticks[0], status + movement.ticks[1]]
     }
 
-    /// The status and naming passes: the DivisionStatus span but the dig-in
-    /// pass, which runs in the movement pass's job.
-    #[allow(clippy::too_many_arguments)] // The pass's sources, store and observer.
+    #[allow(clippy::too_many_arguments)]
     fn capture_status_at(
         &mut self,
         memory: &impl Memory,
@@ -1960,8 +1826,6 @@ impl Captured {
                 self.attack_parts
                     .resize_with(self.attack_parts.len().max(count), Default::default);
             }
-            // Optional attack staging, in each final range, never changes the original
-            // ordered acquisition's admission or failure result.
             for (index, part) in self.attack_parts.iter_mut().take(count).enumerate() {
                 part.range = rows.len() * index / count..rows.len() * (index + 1) / count;
             }
@@ -1970,8 +1834,6 @@ impl Captured {
             for (part, work) in self.status_parts[..count].iter_mut().enumerate() {
                 work.range = admitted * part / count..admitted * (part + 1) / count;
             }
-            // Naming and attack staging run in the same ranges, reading the held store through
-            // a shared loan, which returns before the Presentation job stitches them.
             if let Err(reason) =
                 self.arm_naming(admitted, count, hour.expect("status preparation hour"))
             {
@@ -2041,7 +1903,6 @@ impl Captured {
             );
         }
         let finished = qpc();
-        // The dig-in phase is the movement pass job's ([`Self::restore_movement`]).
         self.phase_ticks[0] += named.saturating_sub(start).max(0) as u64;
         self.phase_ticks[1] = 0;
         self.phase_ticks[2] = finished.saturating_sub(named).max(0) as u64;
@@ -2050,7 +1911,6 @@ impl Captured {
         finished.saturating_sub(start).max(0) as u64
     }
 
-    /// This hour's DivisionStatus span by pass.
     #[cfg(test)]
     pub(crate) fn phase_ticks(&self) -> [u64; PHASES] {
         self.phase_ticks
@@ -2137,10 +1997,7 @@ impl Captured {
         }
     }
 
-    /// Pure decode-worker projection from the current owned packets.
     pub(crate) fn decode_inputs(&mut self) -> [u64; 2] {
-        // Independent companions still settle if status itself refused. In
-        // particular, return the unit-speed loan before another hour takes marks.
         self.phase_ticks[18] += self.speed_terms.decode();
         if std::mem::take(&mut self.movement_owned_pending) {
             let started = qpc();
@@ -2258,11 +2115,8 @@ impl Captured {
         [movement_ticks, qpc().saturating_sub(started).max(0) as u64]
     }
 
-    /// The movement pass's rows, projected from its packet; returns the ticks.
     fn project_owned_movement(&mut self) -> u64 {
         let started = qpc();
-        // Projection is still worker-owned. Its destination follows the full
-        // original route demand, including a failed payload's retained prefix.
         let movement = if grow_vec(
             &mut self.paths.first,
             self.movement_packet.outcome().required_paths,
@@ -2349,8 +2203,6 @@ impl Captured {
         ]
     }
 
-    /// `frame_hour` is the frame's hour; packets read for another hour are
-    /// refused. Tests without a frame pass None.
     pub(crate) fn table_inputs(
         &self,
         mut projection: Option<&mut Projection<'_>>,
@@ -2376,8 +2228,6 @@ impl Captured {
                 bans: r.bans,
             },
         );
-        // Packets store no hour: only those read for this frame's hour are
-        // published; a packet from another request is its refusal.
         let request = self
             .movement_packet
             .combat_references_hour()
@@ -2427,7 +2277,6 @@ impl Captured {
                     None => record.word(-1),
                 }
                 attack.record(record);
-                // A witnessed row publishes the hour's operands.
                 if self.attack.has_witness(r.division) {
                     return None;
                 }
@@ -2438,7 +2287,6 @@ impl Captured {
                     ..naming
                 });
                 row.supply_origins_start = 0;
-                // The maxima are DivisionPanelStats' words; this row does not publish them.
                 row.maximum_hit_points = 0;
                 row.maximum_organisation = 0;
                 row.supply_ratio = DivisionStatusRow::SUPPLY_RATIO_STEP.round(r.supply_ratio);
@@ -2504,7 +2352,6 @@ impl Captured {
                 )
             },
         );
-        // The status pass's maxima, kept where the panel's words do not give them.
         let status_maxima = |r: &carmy::StatusRow, words: &[Option<i64>; 23]| {
             let raw = [r.maximum_hit_points, r.maximum_organisation];
             std::array::from_fn::<_, 2, _>(|at| {
@@ -2532,14 +2379,11 @@ impl Captured {
                 }
             },
         );
-        // Whether the hour publishes DivisionPanelStats, whose words a movement row's base speed
-        // is read from; a division listed twice refuses it.
         let panels = matches!(status_outcome, Outcome::Rows { .. })
             && self.status.rows.get(..status_outcome.len()).is_some_and(|rows| {
                 let mut keys = Vec::new();
                 unique(&mut keys, rows.iter().map(|row| row.division))
             });
-        // The native read, refusal included, unless the published panel gives the same.
         let own_base_speed = |r: &carmy::MovementRow| {
             let words = panels
                 .then(|| self.published_panel(r.division))
@@ -2690,9 +2534,6 @@ impl Captured {
             None => unavailable("division history not captured").into(),
         }
     }
-    /// The division's selected commander block's movement entries: the block from the
-    /// dig-in factor's selection, its entries from the hour's retreat-ban read of the
-    /// same commander ([`carmy::StatusPacket::commander_movement`]).
     fn commander_modifiers(&self, division: u64, index: usize) -> Option<[Option<i64>; 6]> {
         let block = self.dig_in.commander_block(division, index)?;
         self.status_packet.commander_movement_at(index, division, block)
@@ -2866,9 +2707,6 @@ mod tests {
             ships: 0,
         });
         let mut registry = template_registry(&mut world);
-        // An unresolved reference (including the invalid sentinel) is native
-        // known absence. Refuse an actually malformed template registry while
-        // leaving the independent retained name member/cache readable.
         registry.0[engine_native::creference_registry::COUNT
             ..engine_native::creference_registry::COUNT + 4]
             .copy_from_slice(&u32::MAX.to_le_bytes());
@@ -2922,7 +2760,6 @@ mod tests {
         );
         assert_eq!(captured.naming.first[0].cached_failure, None);
         assert_eq!(captured.cached_names.len, 3);
-        // Deferred projection uses only the captured bytes, even if live memory changes.
         members[0][0x60] = b'R';
         captured.decode_inputs();
         let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
@@ -2951,7 +2788,6 @@ mod tests {
                 false,
             )
             .unwrap();
-        // Hold the sample hour constant so only the retained cache changes.
         captured.capture_owned(
             &memory,
             CaptureContext {
@@ -2976,9 +2812,6 @@ mod tests {
         assert_eq!(rows[0].name, Recorded::Value(Some(vec![b'R', 0, b'C'])));
     }
 
-    /// One copy of each member span serves the generator operands and the
-    /// cached-name lookup cache, and a heap cache that fits is one copy of its bytes and
-    /// terminator.
     #[test]
     fn naming_copies_each_member_span_once_for_both_passes() {
         struct Reads<'a, M>(&'a M, std::cell::RefCell<Vec<(usize, usize)>>);
@@ -3048,8 +2881,6 @@ mod tests {
         );
     }
 
-    /// A held name member no hooked writer touched stands in for its reads,
-    /// giving the rows a read gives. A member a writer touched is read again.
     #[test]
     fn naming_carries_an_untouched_member_and_rereads_a_touched_one() {
         use crate::army_stat_changes::Watches;
@@ -3141,8 +2972,6 @@ mod tests {
         assert!(!watches.poisoned());
     }
 
-    /// A naming range whose staging for the store cannot grow refuses the hour's naming by
-    /// name instead of aborting the game. On the base, its unchecked growth aborted the process.
     #[test]
     fn naming_staging_that_cannot_grow_refuses_the_range_instead_of_aborting() {
         use crate::army_stat_changes::Watches;
@@ -3409,8 +3238,6 @@ mod tests {
             .find(|&template| template != ordinary)
             .unwrap();
         let handle = word(fake - world.base + 8);
-        // Naming follows the member's own template reference;
-        // it does not consult DivisionRow.template.
         members[0]
             [cname_group_member::TEMPLATE_REFERENCE..cname_group_member::TEMPLATE_REFERENCE + 8]
             .copy_from_slice(&handle.to_le_bytes());
@@ -3516,8 +3343,6 @@ mod tests {
             member[custom + 16..custom + 24].copy_from_slice(&8_u64.to_le_bytes());
             member[cname_group_member::FLAG_B] = 1;
         }
-        // Naming follows the member's nonnull template reference,
-        // then reads that template's name-group pointer.
         let template =
             engine_native::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE)
                 .unwrap() as usize;
@@ -3674,7 +3499,6 @@ mod tests {
         );
     }
 
-    // regression: da93900628 Size live collector storage and preserve native observation intervals
     #[test]
     fn division_naming_first_capture_grows_and_refusals_preserve_status_rows() {
         const COUNTRIES: usize = 6;
@@ -3844,7 +3668,6 @@ mod tests {
             assert_eq!(indices, [0]);
             assert_eq!(TableView::Complete(rows), captured.tables()[1]);
         }
-        // The member's template reference is recorded, so a changed one defeats reuse.
         let moved = 3005 << 32 | 52;
         captured.status.rows[0].naming = Some(cname_group_member::Inputs {
             template: moved,
@@ -3953,8 +3776,6 @@ mod tests {
         captured.status.rows[0].invalid_orders_reason = None;
     }
 
-    /// The row records what the camouflage category selector takes from the division, never the
-    /// weights, and only a different decision or refusal changes it.
     #[test]
     fn camouflage_projects_the_decision_and_changes_only_with_it() {
         let mut captured = Captured::with_capacities(&Capacities {
@@ -4028,9 +3849,6 @@ mod tests {
         }
     }
 
-    /// The Presentation job's DivisionStatus passes (status, dig-in,
-    /// naming) and the attack pass, for a quiet hour carried through the
-    /// army_stat store and for an hour that reads every division.
     #[test]
     #[ignore = "release benchmark: DivisionStatus with and without the army_stat carry"]
     fn presentation_carry_scale_bench() {
@@ -4078,8 +3896,6 @@ mod tests {
                 rows: inputs.seeds(),
                 outcome: inputs.outcome(),
             };
-            // Per hour: [status, dig-in, naming, attack] in milliseconds, and
-            // the published tables.
             let mut hour = |store: Option<&mut ArmyStatStore>| {
                 let mut store = store;
                 capture.capture_owned_observed(
@@ -4095,7 +3911,6 @@ mod tests {
                 capture.capture_attack(&memory, context, sources(), store);
                 let attack = begin.elapsed().as_secs_f64() * 1e3;
                 let mut frequency = 0;
-                // SAFETY: writes the frequency into a local.
                 unsafe {
                     windows_sys::Win32::System::Performance::QueryPerformanceFrequency(
                         &mut frequency,
@@ -4116,9 +3931,7 @@ mod tests {
                     samples.push(sample);
                     published = Some(hour_tables);
                 }
-                // A carried hour publishes what a read hour does.
                 tables.push(published.unwrap());
-                // The first hours fill the store.
                 samples.drain(..3);
                 let median = |part: usize| {
                     let mut values: Vec<f64> = samples.iter().map(|hour| hour[part]).collect();
@@ -4187,8 +4000,6 @@ mod tests {
             };
             let mut capture = Captured::with_capacities(&capacity);
             capture.reserve_sources(shape.divisions);
-            // Both timers run the same production status callback. Only the
-            // second includes the actual hourly naming reader and arena writes.
             for form in ["generated_shared_group", "inline_player_renames"] {
                 if form == "inline_player_renames" {
                     for (index, bytes) in members.iter_mut().enumerate() {
@@ -4256,8 +4067,6 @@ mod tests {
             ..DivisionSeed::default()
         };
         let mut bytes = vec![0; 0x400];
-        // Status authenticates the country/link roots before its first unit.
-        // Supply the required null/sentinel slots.
         for (offset, data, count) in [
             (engine_native::cgame_state::COUNTRIES, 0x1380_u64, 2_u32),
             (engine_native::cgame_state::COUNTRY_LINKS, 0x1390_u64, 1_u32),
@@ -4384,9 +4193,6 @@ mod tests {
 
     const PRESENTED: usize = 48;
 
-    /// The scale fixture's world with template names and name members and
-    /// its census of [`PRESENTED`] divisions, whose status and naming rows
-    /// are all read.
     struct Populated {
         world: scale_fixture::World,
         _registry: (Box<[u8; 32]>, Vec<u8>, Box<[u8; 40]>),
@@ -4485,8 +4291,6 @@ mod tests {
             let mut split_store = held_store::Loan::fixture(Box::new(ArmyStatStore::new()));
             let mut warmed = None;
             for hour in [1, 2, 3, 4, 5] {
-                // An earlier scalar fault outranks a later preparation fault.
-                // The following hour must recover its rows without losing holds.
                 let rows = if hour == 2 {
                     &faulted[..]
                 } else {
@@ -4533,8 +4337,6 @@ mod tests {
                         split.restore_status_part(index, part, 0);
                     }
                     if stage == 0 {
-                        // The preparation ranges read every block the held capture cannot
-                        // carry, so the ordered settle reads none of them.
                         let ranges = &split.preparation_parts[..split.status_part_count()];
                         let staged = (0..rows.len())
                             .filter(|&index| ranges.iter().any(|part| part.maxima(index).is_some()))
@@ -4561,14 +4363,12 @@ mod tests {
                         }
                     }
                     if stage == 1 {
-                        // Attack staging ran in the final ranges, every range its share.
                         assert!(
                             split.attack_parts[..split.status_part_count()]
                                 .iter()
                                 .all(|part| part.is_prepared()),
                             "workers={workers}, hour={hour}"
                         );
-                        // Naming ran in the final ranges, every admitted division once.
                         let named: usize = split.naming_parts[..split.status_part_count()]
                             .iter()
                             .map(|part| part.named().expect("each final range names its divisions"))
@@ -4737,10 +4537,6 @@ mod tests {
         }
     }
 
-    /// The movement pass and the status side read nothing of each other:
-    /// run side by side on two threads, each through its own memory handle
-    /// as their two jobs run, then the attack pass as the Presentation job
-    /// runs it, they publish what the single pass publishes.
     #[test]
     fn cold_attach_and_post_gap_keyframes_admit_every_experience_column() {
         use replay::{spool::Record, spool::encode_record};
@@ -4791,8 +4587,6 @@ mod tests {
                 }
                 tables[table.index()] = view;
             }
-            // Commander progression rows have no historically-absent current
-            // columns; empty acquisition is distinct from a refused table.
             let leader = replay_data::rows::UnitLeaderRow {
                 id: 7,
                 experience: -11,
@@ -4911,8 +4705,6 @@ mod tests {
         assert_eq!(report.ticks[7..], speed_terms.ticks[7..]);
     }
 
-    /// The census's source packet stands in for each pass's own reads of the
-    /// same fields, reading no more and publishing every row unchanged.
     #[test]
     fn census_source_packet_publishes_what_each_pass_reads_for_itself() {
         let populated = Populated::new();
@@ -4958,9 +4750,6 @@ mod tests {
         }
     }
 
-    /// Map leaves out the status side, the speed terms and the movement
-    /// pass's land and dig-in walks: it reads nothing for them and refuses
-    /// them, while its DivisionMovement and the reads behind it equal Full's.
     #[test]
     fn map_presentation_reads_only_the_movement_full_reads() {
         let populated = Populated::new();
@@ -5049,10 +4838,6 @@ mod tests {
         }
     }
 
-    /// A rejected or failed presentation pass publishes no presentation
-    /// table, though the other passes read every division: the merged report
-    /// fails, and restoring the request refuses them all once every loan is
-    /// home. A rejected job completes Stopped, as a stopped pool's does.
     #[test]
     fn a_failed_presentation_job_publishes_no_presentation_table() {
         use crate::acquisition::Failure;
@@ -5142,9 +4927,6 @@ mod tests {
         }
     }
 
-    /// Every loan returns before failure settlement. Speed failure precedes
-    /// movement failure, which precedes status failure; completed passes merge
-    /// only their own table ticks.
     #[test]
     fn failed_presentation_passes_keep_the_merged_failure_order() {
         use crate::acquisition::Failure;
@@ -5229,7 +5011,6 @@ mod tests {
                 report,
             );
             assert_eq!(request.captured.speed_terms.allocated_bytes(), speed_bytes);
-            // All loans are home before the outcome is settled.
             assert_eq!(request.captured.outcomes()[0], Outcome::Rows { len: 1 });
             match speed_failure.or(movement_failure).or(status_failure) {
                 None => {
@@ -5296,7 +5077,6 @@ mod tests {
             },
         );
         assert_eq!(capture.outcomes()[0], Outcome::Rows { len: 1 });
-        // Status grows from no room to the seed, whose census left its stat block unread.
         assert_eq!(seeds[0].stat_block, None);
         assert_eq!(capture.status_packet.required_capacities().units, 1);
         assert_eq!(
@@ -5451,7 +5231,6 @@ mod tests {
         );
         assert_eq!(s[0].supply_grace_maximum, Recorded::Value(i64::MAX));
         assert_eq!(s[0].supply_grace_remaining, Recorded::Value(i64::MIN));
-        // Every division records its supply footer at display precision.
         assert_eq!(
             s[0].supply,
             Recorded::Value(Some(replay_data::rows::DivisionSupplyFooter {
@@ -5481,7 +5260,6 @@ mod tests {
             .unwrap();
         let scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
-        // The fixture has no country census, so the bans table is unavailable.
         let [movement, status, bans, _, _, _, panel, ..] =
             capture.table_inputs(Some(&mut projection), None);
         assert!(
@@ -5493,8 +5271,6 @@ mod tests {
             bans,
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
-        // A footer that drifted inside every printed hundredth reuses the
-        // baseline; a printed change publishes the row.
         for (asked, equal) in [(123_499, true), (123_500, false), (123_456, true)] {
             capture.status.rows[0].supply.as_mut().unwrap().asked = asked;
             let [_, status, ..] = capture.table_inputs(Some(&mut projection), None);
@@ -5539,8 +5315,6 @@ mod tests {
                 country_modifier: i64::MIN,
                 ..Default::default()
             });
-        // A path-only mutation and an independently changing status must both
-        // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;
         let [movement, status, ..] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
@@ -5568,8 +5342,6 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
         assert!(matches!(capture.tables()[1], TableView::Complete(_)));
-        // Remaining grace is stored at the whole percent of the live
-        // define's share, or at 0.01 hour when the define was unreadable.
         capture.status.rows[0].supply_grace_remaining = 3_659_999;
         for (grace, stored) in [(Some(72), 3_600_000), (None, 3_659_000)] {
             capture.supply_grace = grace;
@@ -5722,10 +5494,6 @@ mod combat_reference_capacity_tests {
 
     #[test]
     fn optional_reference_allocation_failure_retains_prepared_legacy_packet() {
-        // This target exceeds the allocation layout for the reference element.
-        // It deterministically fails before allocating, without fault injection.
-        // The checked allocator's terminal signal remains authoritative; this
-        // fixture proves retained buffer ownership, not continued recording.
         let legacy = carmy::MovementPacket::try_new(1, 2).unwrap();
         let capture = Captured::with_capacities(&Capacities {
             movement: 1,

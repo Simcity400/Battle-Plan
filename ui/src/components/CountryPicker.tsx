@@ -15,37 +15,23 @@ import type { CountryFlagImage, CountryFlagSize, LandOwners } from '../generated
 import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, nameAskHour, revealRow, visibleRange } from './countryList';
 import type { CountryOption } from './countryList';
 
-/** `.country-picker-list` max-height, used until the list is measured. */
 const LIST_HEIGHT = 340;
 const NO_NAMES: ReadonlyMap<string, NameRead> = new Map();
 const NO_NAME_READS: readonly { tag: string; hour: number }[] = [];
-/** An unchanged list viewport keeps its state, so measuring and scrolling never re-render for nothing. */
 const listView = (scrollTop: number, height: number) => (before: { scrollTop: number; height: number }) =>
   before.scrollTop === scrollTop && before.height === height ? before : { scrollTop, height };
 
 export interface CountryPickerRead { tag: string; branchId: string; hour: number }
 
-/** Flags are always the game's own files from the recording's content stack, as preparation
- * chose them. The header shows the country as the game's top bar does (`shield`) at `flagAt`,
- * the playback day; lists use the same styled flags at each country's observed hour. The list
- * renders only the rows in view and reads only their flags, so it costs the same at any
- * country count. */
 export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
-  /** `slot` is the picked row's canonical slot, where the row names one. */
   onChange: (tag: string | null, slot: number | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
   onReconnect?: () => void; field?: boolean;
   disabled?: boolean;
-  /** The search and list alone, shown in place (inside another popover). */
   inline?: boolean; flagAt?: { branchId: string; hour: number } | null;
-  /** A multi-country field: the trigger reads this label and every `chosen` tag is ticked. */
   addLabel?: string; chosen?: readonly string[];
-  /** A drill chooser can restrict its list to the countries being compared. */
   allowedTags?: readonly string[];
-  /** Immutable, authoritative supplying reads, keyed by the pickable tag. A
-   * missing/null read refuses looks; read branches must match flagAt.branchId.
-   * Clicks still return the pickable tag, never the supplying read's alias. */
   choiceReads?: ReadonlyMap<string, CountryPickerRead | null>;
 }) {
   const id = useId();
@@ -84,24 +70,20 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       const name = nameReadMetadata(heldNames.get(country.tag)).name;
       return { country: { ...country, name }, search: `${name} ${country.tag}`.toLowerCase() };
     });
-  }, [countries, roster, sourceKey, allowedTags, flagAt?.branchId, flagAt?.hour, heldNames, choiceReads, choiceTrack]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [countries, roster, sourceKey, allowedTags, flagAt?.branchId, flagAt?.hour, heldNames, choiceReads, choiceTrack]);
   const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
   const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
     : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);
   const filtered = useMemo(() => filterChoices(choices, query), [choices, query]);
   const range = visibleRange(filtered.length, view.scrollTop, view.height);
   const visible = open ? filtered.slice(range.start, range.end) : [];
-  // Search needs offscreen dated names; flags still load only for visible rows.
   const named = open && query.trim() ? choices : visible;
-  // The top bar's list names each country present at its hour as then; one absent then keeps its catalogue entry.
   const datedRoster = !allowedTags && choiceReads === undefined && !!flagAt;
   const wantedChoices = allowedTags || choiceReads !== undefined || datedRoster ? [...new Set([...named.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
     .flatMap(displayTag => { const read = choiceRead(displayTag); return read ? [{ displayTag, ...read }] : []; }) : [];
   const wantedNames = wantedChoices.map(({ tag, hour }) => ({ tag, hour }));
   const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined || datedRoster) && (!!flagAt || choiceReads !== undefined),
     new Set(wantedNames.map(read => read.hour)).size);
-  // Keep names already seen at this held hour searchable after filtering or
-  // scrolling releases their visible-row requests. Another context starts empty.
   useEffect(() => {
     if ((!allowedTags || !flagAt) && choiceReads === undefined && !datedRoster) return;
     setCapturedNames(previous => {
@@ -112,8 +94,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       });
       return previous.context === nameContext && !added.length ? previous : { context: nameContext, names: new Map([...held, ...added]) };
     });
-    // `names` changes for the exact visible target set returned by the hook.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [names, nameContext, allowedTags]);
   const datedName = (country: CountryOption): NameRead | undefined => {
     const read = choiceRead(country.tag);
@@ -132,13 +112,11 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
   const headerRead = displayHeaderTag ? choiceRead(displayHeaderTag) : null;
   const headerTag = choiceReads === undefined ? displayHeaderTag : headerRead?.tag ?? null;
-  // Only the top bar's own country button keeps the game's shading; flags in panels use it evened out.
   const headerSize: CountryFlagSize = field ? 'panel' : 'shield';
   const countryAt = (country: CountryOption) => choiceReads !== undefined ? choiceRead(country.tag)
     : allowedTags && flagAt ? choiceRead(country.tag)
     : datedRoster && datedName(country) ? choiceRead(country.tag)
     : country.observedBranchId != null && country.observedHour != null ? { tag: country.tag, branchId: country.observedBranchId, hour: country.observedHour } : null;
-  // Only the rows in view read flags; each distinct flag is drawn once.
   const listReads = source ? visible.flatMap(({ country }) => { const at = countryAt(country); return at ? [at] : []; }) : [];
   const listFlags = useFlagReads(client, source ?? undefined, listReads, true, 'panel');
   const flagOf = (country: CountryOption) => {
@@ -152,18 +130,15 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     const branch = source.metadata.branches.find((branch) => branch.id === witness?.observedBranchId) ?? source.metadata.branches[0];
     return { sourceId: source.id, revision: source.revision, branchId: branch.id,
       hour: witness?.observedBranchId === branch.id ? witness.observedHour ?? branch.firstHour : branch.firstHour };
-  }, [source?.id, source?.revision, source?.metadata.branches, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [source?.id, source?.revision, source?.metadata.branches, selected]);
   const live = (choiceReads !== undefined || (!field || !!allowedTags) && !!flagAt) && !!source;
   const headerContext = useMemo(() => choiceReads !== undefined ? source && headerRead
     ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null
     : live ? source && headerRead ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null : flagContext,
-    [choiceReads !== undefined, source?.id, source?.revision, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]); // eslint-disable-line react-hooks/exhaustive-deps
+    [choiceReads !== undefined, source?.id, source?.revision, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]);
   const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
     : JSON.stringify([sourceKey, headerTag, headerSize, choiceTrack?.branch.id]);
-  // Whose flag the header shows: another branch is another country history.
   const flagOwner = `${headerIdentity}:${headerContext?.branchId}`;
-  // The top bar names its country at the playback day its flag shows; the shown name
-  // stays until the new day's arrives, as the flag does.
   const wantedNameHour = live && choiceReads === undefined && !allowedTags && headerTag ? flagAt!.hour : null;
   const [askedName, setAskedName] = useState<{ identity: string; hour: number } | null>(null);
   const askedHour = wantedNameHour === null ? null : askedName?.identity === headerIdentity ? askedName.hour : wantedNameHour;
@@ -181,7 +156,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const headerFlagAt = headerContext && headerTag ? { tag: headerTag, branchId: headerContext.branchId, hour: headerContext.hour } : null;
   const headerFlags = useFlagReads(client, source ?? undefined, headerFlagAt ? [headerFlagAt] : [], !!headerFlagAt, headerSize);
   const headerFlag = headerFlagAt ? headerFlags.get(flagReadKey(headerFlagAt)) : undefined;
-  // A new playback day keeps the current flag on screen until its own flag is read; another client, country, branch or size does not.
   const shownHeader = useRef<{ owner: string; client: DashboardClient | null; image?: CountryFlagImage }>({ owner: '', client: null });
   if (headerFlag !== undefined || shownHeader.current.owner !== flagOwner || shownHeader.current.client !== client)
     shownHeader.current = { owner: flagOwner, client, image: headerFlag && !isFailedFact(headerFlag) ? headerFlag.image : undefined };
@@ -235,8 +209,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
           <div ref={listbox} id={listId} role="listbox" aria-label="Countries" aria-multiselectable={chosen !== undefined} tabIndex={filtered.length ? 0 : -1} className="country-picker-options"
             aria-activedescendant={active >= range.start && active < range.end ? optionId(active) : undefined}
             style={{ height: filtered.length * COUNTRY_ROW_HEIGHT }}
-            // Mark the first row in view without scrolling: a click focuses the
-            // list before its own row receives the click.
             onFocus={(event) => { if (event.target === event.currentTarget && active < 0 && filtered.length) setActive(Math.min(filtered.length - 1, Math.ceil(view.scrollTop / COUNTRY_ROW_HEIGHT))); }}
             onKeyDown={(event) => {
               if ((event.key === 'Enter' || event.key === ' ') && active >= 0 && active < filtered.length) {

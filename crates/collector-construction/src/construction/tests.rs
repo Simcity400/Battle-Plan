@@ -123,7 +123,6 @@ fn building_handoff_consumes_its_report_without_live_retry_and_retains_growth() 
 
 #[test]
 fn construction_rest_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
-    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
     let _hint = crate::country_scale::hint_guard();
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
@@ -537,8 +536,6 @@ fn occupied_roster_split_copy_preserves_settings_from_empty_storage_and_on_nativ
 
 #[test]
 fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
-    // The settings grant grows from the census; every other row grant
-    // retains the direct walk's truncation behavior.
     use super::construction_rest_test_kit as kit;
     let bytes = kit::fixture();
     let memory = engine_native::memory::SliceMemory {
@@ -644,8 +641,6 @@ fn construction_rest_first_decode_grows_settings_and_shared_law_bytes() {
             &captured.law_bytes.first[..captured.law_bytes.len],
             b"civiliancivilian"
         );
-        // The raw census holds the country once, not again for its alias.
-        // Its default and override occurrences both contribute.
         assert_eq!(job.census.len(), 1);
         assert_eq!(job.settings_required, 1);
         assert_eq!(job.law_bytes_required, 16);
@@ -816,8 +811,6 @@ fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_dem
     }
     let mut bytes = kit::fixture();
     let name = kit::LAW_OBJ + coccupation_law::NAME;
-    // A seven-byte payload is distinct from the producer's existing
-    // eight-byte pointer read, so faults target the payload occurrence.
     bytes[name - kit::BASE + 7] = 0;
     let length = name - kit::BASE + msvc_string::LENGTH;
     bytes[length..length + 8].copy_from_slice(&7_u64.to_le_bytes());
@@ -848,8 +841,6 @@ fn construction_rest_law_growth_preserves_original_faults_and_failed_payload_dem
         assert_eq!(job.law_bytes_required, required);
         assert_eq!(captured.law_bytes.first.len(), required);
         assert_eq!(captured.law_bytes.required, required);
-        // The grant remains adopted even when a genuine source failure
-        // makes one of the affected tables unavailable.
         captured.grow(&mut capacity);
         assert!(capacity.rows[5] >= job.settings_required);
         assert!(capacity.law_bytes >= required);
@@ -999,8 +990,6 @@ fn put_u32(bytes: &mut [u8], address: usize, value: u32) {
 #[test]
 fn an_occupied_raw_alias_the_census_never_reads_resolves_as_the_live_walk_resolves_it() {
     use construction_rest_test_kit as kit;
-    // Raw three names the country at slot one, past the country table or at
-    // a null slot of it; only the links reach it.
     for countries in [3, 4] {
         let mut bytes = kit::fixture();
         for (offset, count) in [
@@ -1047,10 +1036,8 @@ fn a_failed_state_or_country_root_refuses_only_the_families_that_read_it() {
     for failure in [STATE_ROOT, COUNTRY_ROOT, COUNTRY_SLOT] {
         let mut bytes = kit::fixture();
         match failure {
-            // A capacity below the count is an invalid header.
             STATE_ROOT => put_u32(&mut bytes, kit::BASE + cgame_state::STATES + 8, 1),
             COUNTRY_ROOT => put_u32(&mut bytes, kit::BASE + cgame_state::COUNTRIES + 8, 1),
-            // A slot holding no country object ends the reader's census there.
             _ => {
                 let at = 0x2000 + 2 * 8 - kit::BASE;
                 bytes[at..at + 8].copy_from_slice(&0x11000_u64.to_le_bytes());

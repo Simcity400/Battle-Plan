@@ -1,19 +1,3 @@
-//! `LandBattles` and `LandBattleEnds`: each live land battle, and each battle's end with its
-//! finalizer's result. A battle is one combat handle read at every hour at one province with a
-//! duration counter that never falls; a handle read at another province or with a counter that
-//! fell is a new battle, the old one ending there. A battle ends when its row is gone at the read
-//! after its last, when a finalizer ends it, or, when its census is not read, at an hour not known.
-//!
-//! A finalizer of the hour's land event drain, read whole, ends a battle of its combat when the
-//! province is equal and its end hour falls from the hour before the battle's last read to the
-//! hour after, inside the drain, and not before the read that preceded its first: the battle the
-//! hour's census closed is tried before the one that replaced it. One that ends none is a result
-//! of its own. The collector drains land events
-//! at every hourly boundary and a drain after a lost one is itself incomplete, so a finalizer
-//! arrives in the hour its battle ends or not at all: no battle is held once its end is written.
-//!
-//! State is each live battle as its last read left it, read again from the tables at a resume; a
-//! run's first hour is a baseline, its finalizers no events.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{leaf::Writer as Bytes, manifest::Status};
@@ -52,7 +36,6 @@ struct Peak {
     hour: i32,
 }
 
-/// Each side's countries as canonical slots, and which sides are not known whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Countries {
     slots: [Vec<u32>; 2],
@@ -65,8 +48,6 @@ impl Countries {
     }
 }
 
-/// `raw`'s references resolved through CountryLinks: a side is not known whole without its row,
-/// with no country, or with a reference no link resolves.
 fn resolve(hour: &Hour<'_>, raw: Option<&[Vec<u32>; 2]>) -> Countries {
     let Some(raw) = raw else { return Countries::unknown() };
     let mut out = Countries { slots: [Vec::new(), Vec::new()], unknown: 0 };
@@ -86,19 +67,15 @@ fn resolve(hour: &Hour<'_>, raw: Option<&[Vec<u32>; 2]>) -> Countries {
     out
 }
 
-/// A live battle as its last read left it.
 #[derive(Clone, Debug)]
 struct Battle {
     start: i32,
     exact: bool,
     counter_base: i32,
-    /// Its province and counter at its last read; none for a battle known only by its row.
     province: Option<u32>,
     duration: Option<i32>,
-    /// Total, attackers, defenders.
     peaks: [Option<Peak>; 3],
     manpower: [Option<i32>; 2],
-    /// Its side references as LandCombatSides last read them; none without its row.
     raw: Option<[Vec<u32>; 2]>,
     countries: Countries,
 }
@@ -120,7 +97,6 @@ impl Battle {
         battle
     }
 
-    /// A battle known only by its LandBattles row.
     fn of(row: &inputs::Held) -> Self {
         Self {
             start: row.start,
@@ -135,12 +111,10 @@ impl Battle {
         }
     }
 
-    /// Whether `combat` goes on with this battle.
     fn goes_on(&self, combat: &Combat) -> bool {
         self.province == Some(combat.province) && self.duration.is_some_and(|duration| combat.duration >= duration)
     }
 
-    /// Raises its peaks to `counts` read at `hour`; whether any rose.
     fn raise(&mut self, counts: Option<[u32; 2]>, hour: i32) -> bool {
         let Some([attackers, defenders]) = counts else { return false };
         let mut raised = false;
@@ -174,7 +148,6 @@ fn optional(value: Option<i32>) -> Value {
     value.map_or(Value::Unrecorded, Value::I32)
 }
 
-/// A finalizer as an end row holds it.
 struct Outcome {
     id: u64,
     combat: u64,
@@ -202,8 +175,6 @@ impl Outcome {
         }
     }
 
-    /// The result cells of `outcomes`, one row's (results of one combat ending at one hour share
-    /// a result-only row): each cell they all give alike, not recorded where they differ.
     fn cells(outcomes: &[Self], out: &mut Rows<'_>) -> [Value; 9] {
         let first = &outcomes[0];
         let alike = |same: fn(&Self, &Self) -> bool| outcomes.iter().all(|other| same(first, other));
@@ -223,7 +194,6 @@ impl Outcome {
         ]
     }
 
-    /// Each side's final equipment pool of `outcomes`, where they all give it alike.
     fn equipment(outcomes: &[Self], out: &mut Rows<'_>) -> io::Result<[Value; 2]> {
         let mut cells = [Value::Unrecorded, Value::Unrecorded];
         for (side, cell) in cells.iter_mut().enumerate() {
@@ -238,19 +208,15 @@ impl Outcome {
     }
 }
 
-/// A battle whose end the hour settles.
 struct Ended {
     combat: u64,
     battle: Battle,
     kind: u8,
-    /// The hour it was found ended.
     found: i32,
     last_read: Option<i32>,
     outcome: Option<Outcome>,
 }
 
-/// Whether `finalizer`, of the drain since the read at `from`, ends `battle`, last read at `read`.
-/// A read at an hour holds what the game did from the read before, still stamped with its hour.
 fn ends(battle: &Battle, read: Option<i32>, finalizer: &Finalizer, from: i32) -> bool {
     let Some(read) = read else { return false };
     battle.province == Some(finalizer.province)
@@ -267,15 +233,12 @@ fn end_key(combat: u64, result_only: bool, start: i32) -> u128 {
 #[derive(Default)]
 pub struct LandBattles {
     live: HashMap<u64, Battle>,
-    /// Combats a finalizer ended while their rows were read: such a row read again is a new battle.
     finalized: Vec<u64>,
-    /// The end rows living this hour, deleted the next.
     living: Vec<u128>,
     last: Option<i32>,
 }
 
 impl LandBattles {
-    /// The battle `combat` starts at the hour, its sides and counters read.
     fn begin(&mut self, hour: &Hour<'_>, combat: u64, exact: bool, read: &Combat) -> io::Result<()> {
         let mut battle = Battle::new(hour.hour, exact, read);
         battle.raw = sides(hour, combat)?;
@@ -285,8 +248,6 @@ impl LandBattles {
         Ok(())
     }
 
-    /// Every battle held ends at an hour not known (in a run's first hour there is none); every
-    /// combat read starts a battle bounded by this hour.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &Rows<'_>, ended: &mut Vec<Ended>) -> io::Result<()> {
         let at = hour.hour;
         let held = out.table(TableId::LandBattles);
@@ -316,8 +277,6 @@ impl LandBattles {
         Ok(())
     }
 
-    /// The hour's combats against the battles of the hour before: which end, which go on, which
-    /// begin. Returns the battles whose LandBattles row the hour writes, and those it began.
     fn census(&mut self, hour: &Hour<'_>, ended: &mut Vec<Ended>) -> io::Result<(HashSet<u64>, HashSet<u64>)> {
         let at = hour.hour;
         let previous = Some(at - 1);
@@ -332,7 +291,6 @@ impl LandBattles {
             }
         }
         let changes = hour.changes(TableId::LandCombats);
-        // Counters move every hour; a roster is counted only in an hour that wrote it.
         let rosters: HashSet<u32> = changes.written.iter().filter(|(_, column)| COMBAT[2..].contains(&usize::from(*column))).map(|&(slot, _)| slot).chain(changes.inserted.iter().copied()).collect();
         let mut visit = hour.written_rows(TableId::LandCombats, Columns::These(&COMBAT));
         visit.extend(self.finalized.drain(..).filter_map(|combat| combats.slot(u128::from(combat))));
@@ -362,7 +320,6 @@ impl LandBattles {
         Ok((written, begun))
     }
 
-    /// The side countries and loss counters of the battles the hour moved, but those it began.
     fn counters(&mut self, hour: &Hour<'_>, begun: &HashSet<u64>) -> io::Result<()> {
         let links = hour.changes(TableId::CountryLinks).status_changed || hour.wrote(TableId::CountryLinks, Columns::These(&LINK_SLOT));
         let tables: [(TableId, &'static [usize]); 2] = [(TableId::LandCombatSides, &SIDES), (TableId::LandCombatProgress, &PROGRESS)];
@@ -392,9 +349,6 @@ impl LandBattles {
         Ok(())
     }
 
-    /// The finalizers of the hour's drain since the read at `from`, stamped from `from` on: each
-    /// ends a battle of its combat the hour closed without a result, else its live battle, or is a
-    /// result of its own. Returns those of their own.
     fn finalize(&mut self, hour: &Hour<'_>, from: i32, ended: &mut Vec<Ended>) -> io::Result<Vec<Outcome>> {
         let at = hour.hour;
         let mut own = Vec::new();
@@ -463,13 +417,11 @@ impl LandBattles {
         Ok(())
     }
 
-    /// The result-only row of `outcomes`, results of one combat ending at one hour.
     fn own_row(&mut self, outcomes: &[Outcome], out: &mut Rows<'_>) -> io::Result<()> {
         let outcome = &outcomes[0];
         let key = end_key(outcome.combat, true, outcome.end_hour);
         let province = if outcomes.iter().all(|other| other.province == outcome.province) { Value::U32(outcome.province) } else { Value::Unrecorded };
         let mut cells = vec![Value::U8(End::RESULT_ONLY), Value::I32(outcome.end_hour), Value::Bool(false), Value::I32(0), province, Value::OptionalI32(None)];
-        // Its counter, peaks and hourly counters, then its run's countries: no run was read.
         cells.extend([Value::Unrecorded; 9]);
         cells.extend([Value::Unrecorded, Value::Unrecorded, Value::U8(BOTH_UNKNOWN)]);
         cells.extend(Outcome::cells(outcomes, out));
@@ -497,7 +449,6 @@ impl Writer for LandBattles {
         READS
     }
 
-    // Hourly: its end rows live one hour, and a battle is a combat read at consecutive hours.
     fn hourly(&self) -> bool {
         true
     }
@@ -507,7 +458,6 @@ impl Writer for LandBattles {
     }
 
     fn hour(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
-        // Its tables keep their own status: a result not logged is a battle without its result.
         for &table in TABLES {
             out.status(table, Status::Complete);
         }
@@ -561,8 +511,6 @@ impl Writer for LandBattles {
         Ok(())
     }
 
-    /// The battles live at the commit's hour as the tables hold them, and its end rows: what a
-    /// writer never stopped holds there.
     fn prime(&mut self, hour: &Hour<'_>) {
         *self = Self::default();
         let ends = hour.table(TableId::LandBattleEnds);
@@ -591,7 +539,6 @@ impl Writer for LandBattles {
         self.last = Some(hour.hour);
     }
 
-    /// Takes nothing: a resume primes it from the store ([`Self::prime`]).
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

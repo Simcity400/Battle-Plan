@@ -1,5 +1,3 @@
-//! Native input declarations, independent of the vertex buffer currently bound. The null
-//! program transition keeps its input layout, even when the next draw changes buffer stride.
 
 use super::{ScalarKind, VertexInput};
 mod native;
@@ -7,11 +5,8 @@ pub use native::{NativeBuffer, PackedBuffers, pack_native};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Declaration {
-    /// Sprite and progress draws share float3 POSITION and float2 TEXCOORD0.
     Sprite,
-    /// float3 POSITION at 0, float2 TEXCOORD0 at 12, B8G8R8A8_UNORM COLOR0 at 20/COLOR1 at 24.
     Text,
-    /// float2 POSITION at 0, TEXCOORD0 at 8, TEXCOORD1 at 16.
     Circular,
     LineChart,
 }
@@ -20,7 +15,6 @@ impl Declaration {
     pub(super) const ALL: [Self; 4] = [Self::Sprite, Self::Text, Self::Circular, Self::LineChart];
 }
 
-/// The declaration belongs to the retained program; bytes/stride/count belong to this draw.
 pub struct Vertices<'a> {
     pub declaration: Declaration,
     pub bytes: &'a [u8],
@@ -28,8 +22,6 @@ pub struct Vertices<'a> {
     pub count: usize,
 }
 
-/// A pipeline's native fetch conversion for one retained declaration. Errors are kept at
-/// their input position, so a short buffer still refuses at the first read it cannot supply.
 pub(super) struct Packing {
     inputs: Vec<Result<Input, String>>,
     components: usize,
@@ -84,8 +76,6 @@ impl Packing {
         packed: &mut Vec<f32>,
     ) -> Result<(), String> {
         packed.clear();
-        // A short supplied buffer must refuse at its first missing fetch, not reserve for
-        // vertices it cannot supply. Zero-stride fetches still repeat their current bytes.
         let reserve = vertices
             .count
             .min(vertices.bytes.len() / vertices.stride.max(1));
@@ -112,7 +102,6 @@ impl Packing {
                 };
                 let end = from.checked_add(size).ok_or("vertex offset overflow")?;
                 let bytes = vertices.bytes.get(from..end).ok_or_else(|| format!("native {:?} input {:?} at vertex {vertex} reads beyond supplied buffer ({} bytes)", vertices.declaration, input.semantic, vertices.bytes.len()))?;
-                // D3D's input conversion fills missing x/y/z with zero and w with one.
                 let mut value = [0.0, 0.0, 0.0, 1.0];
                 if input.short {
                     for (dst, bytes) in bytes.chunks_exact(2).enumerate() {
@@ -266,7 +255,6 @@ mod tests {
                 0., 1., 0., 1.
             ]
         );
-        // A previous sprite program still fetches the second vertex at byte 28.
         let vertices = Vertices {
             declaration: Declaration::Sprite,
             ..vertices

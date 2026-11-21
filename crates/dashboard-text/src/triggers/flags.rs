@@ -1,6 +1,3 @@
-//! The shared flag test of the flag triggers (`has_country_flag`,
-//! `has_mio_flag` and the others on the same reader): its operand as the
-//! shared flag reader loads it, and its comparison with a flag record.
 use crate::triggers::{Failure, refusal::refused};
 
 use installed_content_core::parser::{Item, Operator};
@@ -10,20 +7,14 @@ use super::{Evaluator, Scope, Scopes, world::NULL_STATE};
 use crate::scripted_text::EventObject;
 use installed_content_core::scope::Keyword;
 
-/// A flag trigger's operand: a scalar flag name, or a block of `flag`
-/// (lexical `none` when absent), `value`, `date` and `days`.
 pub(super) struct FlagTest<'i> {
-    /// The flag's name, quoted or bare, which the lexical registry interns
-    /// without case either way.
     pub name: &'i [u8],
     value: Option<(Operator, i32)>,
-    /// The hour of the date's day start.
     date: Option<(Operator, i32)>,
     days: Option<(Operator, i32)>,
 }
 
 impl<'i> FlagTest<'i> {
-    /// Read the operand, refusing repeated and unknown fields.
     pub fn read(item: &'i Item, trigger: &str) -> Result<Self, Failure> {
         let mut test = Self {
             name: b"none",
@@ -65,13 +56,6 @@ impl<'i> FlagTest<'i> {
         Ok(test)
     }
 
-    /// Whether the scope's first record of the flag, of this signed value
-    /// and setting hour, passes: every given test must hold, and without
-    /// `value` the value must be above zero. `value` compares by its
-    /// operator; `date` compares the setting hour strictly; `days` compares
-    /// the start of today's day (`now`, read only for it) with the start of
-    /// the setting day plus that many days, strictly. `date =` and `days =`
-    /// add no test. Expiry takes no part.
     pub fn holds(&self, value: i16, set_hour: i32, now: impl FnOnce() -> i32) -> bool {
         let value = i32::from(value);
         let mut holds = match self.value {
@@ -181,7 +165,6 @@ impl Evaluator<'_, '_> {
                 .world()
                 .slot(raw)
                 .ok_or("dynamic flag country has no country links row")?;
-            // Canonical aliases do not carry the raw registry's tag spelling.
             if self.world().raw_country(slot) != Some(raw) {
                 return Err(refused(format!(
                     "dynamic flag raw country {raw} has no recorded tag spelling"
@@ -245,7 +228,6 @@ fn flag_members(object: Option<EventObject>) -> (Option<u32>, u32) {
     }
 }
 
-/// A flag's name: its text to the first NUL.
 fn name<'i>(item: &'i Item, trigger: &str) -> Result<&'i [u8], Failure> {
     item.value
         .scalar()
@@ -253,9 +235,6 @@ fn name<'i>(item: &'i Item, trigger: &str) -> Result<&'i [u8], Failure> {
         .ok_or_else(|| format!("{trigger} needs a scalar flag name").into())
 }
 
-/// Signed decimal conversion of a flag's `value` or `days`: decimal digits
-/// after white space and a sign, any other text zero. Past the `i32` range
-/// the conversion is not reproduced.
 fn integer(field: &Item, trigger: &str) -> Result<i32, Failure> {
     let text = field.value.scalar().unwrap_or_default();
     let value = installed_content_core::fixed5::decimal_i32(text);
@@ -269,9 +248,6 @@ fn integer(field: &Item, trigger: &str) -> Result<i32, Failure> {
     Ok(value)
 }
 
-/// A flag's `date`: year, month and day as decimal numbers, as the hour of
-/// that day's start in the game's 365-day calendar. Any other form's
-/// recovery is not reproduced.
 fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
     let text = field.value.scalar().unwrap_or_default();
     let unported = || -> Failure {
@@ -320,7 +296,6 @@ fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
     i32::try_from(hour).map_err(|_| unported())
 }
 
-/// The start of an hour's day in the game's signed calendar arithmetic.
 fn day_start(hour: i32) -> i32 {
     hour.wrapping_sub(hour.wrapping_sub(game_model::calendar::HOUR_EPOCH) % 24)
 }

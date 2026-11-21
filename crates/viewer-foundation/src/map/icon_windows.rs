@@ -1,4 +1,3 @@
-//! Persistent map-icon pools, advanced once per presented frame.
 
 use crate::map::gui_resources::count_noted;
 use crate::map::gui_resources::count_refused;
@@ -19,17 +18,14 @@ use super::{
     native_resources::Context,
 };
 
-/// the most one frame advances the GUI's clocks.
 pub const GUI_DELTA_CLAMP: f32 = 0.1;
 
-/// Cap one presented GUI step.
 pub fn frame(last: &mut Option<f32>, time: f32) -> Tick {
     let dt = last.map_or(0.0, |last| (time - last).clamp(0.0, GUI_DELTA_CLAMP));
     *last = Some(time);
     Tick { time, dt }
 }
 
-/// Anchor and rounds the projected window.
 pub fn point(screen: [f32; 2], size: [i32; 2], alignment: u8) -> [i32; 2] {
     std::array::from_fn(|axis| {
         let (centre, far) = if axis == 0 { (0x10, 0x20) } else { (2, 4) };
@@ -49,7 +45,6 @@ pub fn point(screen: [f32; 2], size: [i32; 2], alignment: u8) -> [i32; 2] {
     })
 }
 
-/// Include the viewport edges.
 pub fn rectangle_inside(point: [i32; 2], size: [i32; 2], viewport: [i32; 2]) -> bool {
     on_screen(
         point.map(|v| v as f32),
@@ -58,10 +53,6 @@ pub fn rectangle_inside(point: [i32; 2], size: [i32; 2], viewport: [i32; 2]) -> 
     )
 }
 
-/// Whether a window is laid out for a view: on screen, or within the pad a moved camera may
-/// reach before the overlay is placed again ([`crate::map::anchored::PAD`]). A window the pad
-/// admits draws nothing a watcher sees and is already there when the camera brings it in, which
-/// is what lets a frame answer a moved camera by offsetting the windows it has.
 pub fn admitted(origin: [f32; 2], size: [f32; 2], extent: [f32; 2]) -> bool {
     let pad = crate::map::anchored::PAD;
     on_screen(
@@ -71,7 +62,6 @@ pub fn admitted(origin: [f32; 2], size: [f32; 2], extent: [f32; 2]) -> bool {
     )
 }
 
-/// [`admitted`] for a window placed at whole pixels.
 pub fn rectangle_admitted(point: [i32; 2], size: [i32; 2], viewport: [i32; 2]) -> bool {
     admitted(
         point.map(|v| v as f32),
@@ -80,8 +70,6 @@ pub fn rectangle_admitted(point: [i32; 2], size: [i32; 2], viewport: [i32; 2]) -
     )
 }
 
-/// Convert to a signed integer toward zero, returning `0x80000000` for a value
-/// out of range or not a number.
 fn truncate_int(value: f32) -> i32 {
     if value.is_finite() && (-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         value as i32
@@ -90,8 +78,6 @@ fn truncate_int(value: f32) -> i32 {
     }
 }
 
-/// Viewport admission uses the owning province and icon anchor with the
-/// shared camera schedule. Each icon family retains its own admission gate.
 pub fn admission(
     dirty: bool,
     point: [i32; 2],
@@ -109,9 +95,6 @@ pub fn admission(
 pub const POOL_EXHAUSTED: &str =
     "a map icon's pool was exhausted; its owner asks again the next frame";
 
-/// Whether a screen rectangle can contribute anything to the frame.
-///
-/// `extent` is the frame's size in interface pixels.
 pub fn on_screen(origin: [f32; 2], size: [f32; 2], extent: [f32; 2]) -> bool {
     origin[0] + size[0] >= 0.0
         && origin[1] + size[1] >= 0.0
@@ -135,8 +118,6 @@ impl Retry {
     }
 }
 
-/// The allocator's remaining growth rounds, summed because shares
-/// one worker handle across types. A frozen dump cannot introduce new demand.
 #[derive(Default)]
 pub struct DumpFrames {
     remaining: Option<usize>,
@@ -158,7 +139,6 @@ impl DumpFrames {
     }
 }
 
-/// One owner request and its projected position, with the province's dirty-bit bypass.
 #[derive(Debug)]
 pub struct Owner<K = u32> {
     pub id: K,
@@ -166,7 +146,6 @@ pub struct Owner<K = u32> {
     pub dirty: bool,
 }
 
-/// The native template, type pool and alignment of one consumer family.
 pub struct Plan<'a, K = u32> {
     pub name: &'a str,
     pub kind: MapIconPool,
@@ -174,14 +153,12 @@ pub struct Plan<'a, K = u32> {
     pub owners: &'a [Owner<K>],
 }
 
-/// One visible owner's layout, before the consumer assigns its draw layer.
 pub struct Drawn<K = u32> {
     pub owner: K,
     pub origin: [i32; 2],
     pub layout: native_gui::Layout,
 }
 
-/// Layout and count diagnostics for one visible window, shared with naval grid holders.
 pub fn visible_layout<K: Copy>(
     icon: &Visible<'_, K>,
     root: &native::Element,
@@ -192,8 +169,6 @@ pub fn visible_layout<K: Copy>(
     visible_layout_regions(icon, root, name, resources, notes, false)
 }
 
-/// [`visible_layout`] through the window's kept layout ([`Instance::layout_kept`]), for a caller
-/// that names its resources by `stamp`.
 pub fn visible_layout_kept<K: Copy>(
     icon: &Visible<'_, K>,
     root: &native::Element,
@@ -245,13 +220,10 @@ fn visible_layout_with<K: Copy>(
     }
 }
 
-/// One pool's count since the last [`take_counts`]: `[presented, stood still, kept, windows laid
-/// out, windows kept]`, and why the frames that laid a window out again did so, by reason.
 pub type PoolCount = (String, [u64; 5], Vec<(&'static str, u64)>);
 
 static COUNTS: std::sync::Mutex<Vec<PoolCount>> = std::sync::Mutex::new(Vec::new());
 
-/// One presented frame of one pool, as [`take_counts`] adds it up.
 #[derive(Default)]
 struct Tally {
     still: bool,
@@ -259,12 +231,10 @@ struct Tally {
     why: Option<&'static str>,
     laid: u64,
     held: u64,
-    /// Windows kept at a new origin: their owner moved and their layout did not.
     moved: u64,
 }
 
 impl Tally {
-    /// The first reason the frame laid a window out again.
     fn because(&mut self, why: &'static str) {
         self.why.get_or_insert(why);
     }
@@ -303,11 +273,6 @@ fn count(name: &str, tally: &Tally) {
     }
 }
 
-/// Per pool window name, since the last call. A pool stood still when no window on screen was
-/// laid out again; it kept its windows when it laid none out again ([`PoolView::present_kept`]);
-/// a pool whose caller keeps nothing stands still when it was settled at the frame before with
-/// the same windows, viewport and owners (ids, screen points, dirty bits). The reasons name the
-/// first change a frame met.
 pub fn take_counts() -> Vec<PoolCount> {
     let mut counts = COUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let taken = counts.iter().filter(|(_, counted, _)| counted[0] > 0).cloned().collect();
@@ -318,64 +283,38 @@ pub fn take_counts() -> Vec<PoolCount> {
     taken
 }
 
-/// Pool membership, window history and presentation clock for one native icon type.
 #[derive(Debug)]
 pub struct PoolView<K = u32> {
     built: Option<(NativeWindows, [i32; 2])>,
     pool: Option<Pool<K>>,
     last: Option<f32>,
     active: bool,
-    /// Current request geometry; the map retains its allocation across camera frames.
     owners: HashMap<K, ([f32; 2], bool)>,
-    /// At the last presented frame no window changed on its own, no dirty province admitted one
-    /// and the pool noted nothing of its own.
     settled: bool,
-    /// Why it was not settled at the last presented frame.
     unsettled: &'static str,
-    /// The windows the last frame showed, for a caller that keeps them ([`Self::present_kept`]).
     kept: Option<Kept<K>>,
-    /// Why the last presented frame laid its windows out rather than keeping them.
     unkept: Option<&'static str>,
-    /// What [`Self::present_recorded`]'s update last wrote to each live owner's window: its slot
-    /// and the owner's values the update read.
     records: HashMap<K, (SlotId, Box<dyn std::any::Any + Send + Sync>)>,
-    /// The layouts made so far, which numbers each ([`Self::drawn_generations`]).
     generations: u64,
-    /// What the windows drew, for a caller that paints them ([`Self::painted`]).
     painted: Painted<K, Option<super::free_icons::IconAnchor>>,
-    /// A dirty province admitted an icon off screen at the last presented frame: the next frame
-    /// presents the pool again, though nothing it shows changed.
     bypassed: bool,
-    /// The frame presents the pool for its manager's pass alone ([`Self::set_quiet`]).
     quiet: bool,
-    /// An owner the next present names stands in a province a coming phase cleans
-    /// ([`Self::set_cleaning`]).
     cleaning: bool,
-    /// Each window drawn on screen at the last frame, by owner: its position and its owner's
-    /// screen point, while the flight record is kept ([`Self::note_continuity`]).
     last_drawn: HashMap<K, ([i32; 2], [f32; 2])>,
 }
 
 struct Kept<K> {
-    /// Every window shown, in the manager's visible order.
     windows: Vec<Shown<K>>,
-    /// Whether the next frame may keep them: the frame ticked the windows it wrote.
     keep: bool,
-    /// Whether every window the pass showed is here: a quiet frame lays none out, so one the
-    /// pass changed is not, and the next frame walks the pool to lay it out.
     whole: bool,
 }
 
-/// One window a frame showed, with what laying it out made.
 struct Shown<K> {
     slot: SlotId,
     owner: K,
-    /// Where the manager's pass placed it.
     position: [i32; 2],
     drawn: Option<Drawn<K>>,
-    /// What laying it out noted, counted again on every frame that shows it.
     notes: BTreeMap<String, usize>,
-    /// Which layout of the pool it is: another layout of any window has another.
     generation: u64,
 }
 
@@ -412,7 +351,6 @@ impl<K> Default for PoolView<K> {
 }
 
 impl<K: Clone + Eq + std::hash::Hash> PoolView<K> {
-    /// Every live window's owner and slot.
     pub fn live(&self) -> Vec<(K, SlotId)> {
         self.pool.as_ref().map_or_else(Vec::new, |pool| {
             pool.live()
@@ -433,22 +371,14 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         std::mem::take(&mut self.active) | std::mem::take(&mut self.bypassed)
     }
 
-    /// Owner requests may change next frame even while the window itself is settled.
     pub fn keep_running(&mut self) {
         self.bypassed = true;
     }
 
-    /// Whether a window it shows changes on its own, or a request waits for a window the next pass
-    /// may show: what makes the next frame draw again, beside what only asks for its manager's
-    /// pass ([`Self::take_running`]).
     pub fn running_visibly(&self) -> bool {
         self.active || self.pool.as_ref().is_some_and(Pool::requests_pending)
     }
 
-    /// Presents the next frames for the manager's pass alone (`true`): requests, admission,
-    /// erasures, the writes and ticks of the windows the pass changed, exactly as a drawn frame
-    /// runs them, and no layout; a window the pass changed is laid out on the next drawn frame.
-    /// The caller keeps what it drew before.
     pub fn set_quiet(&mut self, quiet: bool) {
         self.quiet = quiet;
     }
@@ -457,10 +387,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.quiet
     }
 
-    /// Whether an owner the next present names stands in a province dirty out of view
-    /// ([`super::province_schedule::Schedule::cleans`]): its window kept off screen is erased when
-    /// the phase cleans it, so the pool asks for frames until then. Without it, a pass that changed
-    /// nothing is the pass every later frame would make, and the pool asks for none.
     pub fn set_cleaning(&mut self, cleaning: bool) {
         self.cleaning = cleaning;
     }
@@ -493,20 +419,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.present_regions(context, plan, initialize, update, notes, true)
     }
 
-    /// [`Self::present`] for a caller that keeps what the pool laid out ([`Self::drawn`]), window
-    /// by window. The manager's pass runs on every frame, so requests, erasures and slots move as
-    /// they do today, off screen too. A window is written, ticked and laid out again only when it
-    /// changed since the frame that laid it out:
-    /// - the pass showed it, gave its slot to another owner or placed it elsewhere;
-    /// - it changes on its own ([`Instance::active`]): a clock, pulse, animation record, fade,
-    ///   move, smooth scroll, pending sprite, unsettled state effect, or no tick yet;
-    /// - `unchanged` says its owner's update would write something else.
-    ///
-    /// A window the pass erased, and any window that changes on its own, is ticked too. Every
-    /// window is written and laid out on the frame after one with no clock, a failed frame, a
-    /// growth, and when the windows or the viewport change. A kept window's clocked parts keep the
-    /// `Time` of the frame that laid them out; a settled draw does not change on the clock
-    /// ([`native_gui::Shading::changing`]). Whether it laid out no window again.
     pub fn present_kept(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -519,10 +431,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.present_kept_regions(context, plan, initialize, update, unchanged, false, notes)
     }
 
-    /// [`Self::present_kept`] for a caller whose update reads nothing of an owner but `value`:
-    /// the pool records what each window's update was given ([`Self::forget_writes`] drops every
-    /// record, for a caller whose update reads something else that changed). `regions` lays the
-    /// windows out with their regions ([`Self::present_with_regions`]).
     #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, with what the update reads")]
     pub fn present_recorded<V: PartialEq + Send + Sync + 'static>(
         &mut self,
@@ -570,7 +478,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         kept
     }
 
-    /// Drops what [`Self::present_recorded`] recorded: every window is written again.
     pub fn forget_writes(&mut self) {
         self.records.clear();
     }
@@ -600,8 +507,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             count(plan.name, &tally);
             self.unkept = None;
             self.active = false;
-            // The pass it stands in for granted, wrote and erased nothing with no owner in a
-            // province a phase will clean (the gate's own conditions): it asks for no frame.
             self.bypassed = false;
             crate::map::redraws::note("pool.nothing_due", 1);
             return true;
@@ -647,14 +552,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         tally.kept
     }
 
-    /// Whether this frame's pass would find nothing to do, so the frame does not walk the pool:
-    /// the windows are this viewport's, every window the last pass showed is kept, the owners
-    /// stand as they stood (the same ids at the same screen points, none dirty, none in a
-    /// province a phase will clean), no request waits for a window, no window changes on its own,
-    /// and no owner's update would write anything else. The pass would then admit, erase and
-    /// place exactly the windows the pass before it did, leaving every window where it stands,
-    /// writing none and ticking none. What it would not leave as it was is which free window the
-    /// next new owner is given, which is no part of what any window draws.
     fn nothing_due(
         &mut self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -680,12 +577,10 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         due
     }
 
-    /// Why the last presented frame laid its windows out rather than keeping them; none when kept.
     pub fn unkept(&self) -> Option<&'static str> {
         self.unkept
     }
 
-    /// The owner and window of each window the last pass showed ([`Self::present_kept`]).
     pub fn kept_windows(&self) -> impl Iterator<Item = (K, SlotId)> + '_ {
         self.kept
             .iter()
@@ -693,11 +588,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             .map(|window| (window.owner, window.slot))
     }
 
-    /// Whether a pass over the owners of the last one would find nothing to do: the windows are
-    /// this viewport's, every window that pass showed is kept and whole, no owner of it stood in
-    /// a dirty province or in one a phase will clean, no request waits for a window and no window
-    /// changes on its own. A caller that keeps its own drawing tests its owners itself (they are
-    /// the same ids at the same screen points) and then draws nothing.
     pub fn stands_still(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -705,7 +595,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.why_still(context).is_none()
     }
 
-    /// What [`Self::stands_still`] found standing in the way, named for the frame's record.
     fn why_still(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
@@ -746,9 +635,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         None
     }
 
-    /// Whether `owners` are the owners of the last pass, each at the same screen point with the
-    /// same dirty bit: the pass then snaps each to the same whole pixel, admits, erases and
-    /// places exactly what it placed, and asks for the frames it asked for.
     pub fn owners_stand(&self, owners: &[Owner<K>]) -> bool {
         self.owners.len() == owners.len()
             && owners.iter().all(|owner| {
@@ -758,9 +644,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             })
     }
 
-    /// The caller's own frame found nothing due of its whole family and did not present the pool
-    /// ([`Self::stands_still`]): the pool stood still and kept every window it shows, which its
-    /// count and its frames asked for say, as a presented pass that found nothing would.
     pub fn stood_still(&mut self, name: &str) {
         let tally = Tally {
             still: true,
@@ -774,7 +657,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.bypassed = false;
     }
 
-    /// The windows [`Self::present_kept`] shows this frame, in the manager's visible order.
     pub fn drawn(&self) -> impl Iterator<Item = &Drawn<K>> + '_ {
         self.kept
             .iter()
@@ -782,8 +664,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             .filter_map(|window| window.drawn.as_ref())
     }
 
-    /// [`Self::drawn`] with which layout each is: a window shown with the generation it had is the
-    /// layout it had, at the same origin ([`Painted`]).
     pub fn drawn_generations(&self) -> impl Iterator<Item = (&Drawn<K>, u64)> + '_ {
         self.kept
             .iter()
@@ -791,8 +671,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             .filter_map(|window| window.drawn.as_ref().map(|drawn| (drawn, window.generation)))
     }
 
-    /// [`Self::drawn_generations`], and what the windows drew under their anchor: a caller paints
-    /// each window through [`Painted::paint`] and calls [`Painted::finish`] after the last.
     #[allow(clippy::type_complexity, reason = "the windows shown and the store their quads are painted from")]
     pub fn painted(
         &mut self,
@@ -806,8 +684,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         (drawn, &mut self.painted)
     }
 
-    /// [`Self::present_kept`]'s frame: the windows it shows, in `shown`; whether the next frame
-    /// may keep them.
     #[allow(clippy::too_many_arguments, reason = "one presented frame's inputs, the windows kept and what it shows")]
     fn present_windows(
         &mut self,
@@ -833,14 +709,10 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             } else {
                 "other windows or viewport"
             });
-            // A replacement before a presented frame has no window history to redraw.
             if context.time.is_none() {
                 return Ok(false);
             }
-            // Layouts keep their numbers across the rebuild: a number is never a second layout. What
-            // the caller set for this present (its owners' provinces) stands.
             let (generations, cleaning) = (self.generations, self.cleaning);
-            // The painting stays: a window painted under the old pool and not again is gone.
             let painted = std::mem::take(&mut self.painted);
             *self = Self::default();
             (self.generations, self.cleaning) = (generations, cleaning);
@@ -865,7 +737,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                 .map(|owner| (owner.id, (owner.screen, owner.dirty))),
         );
         let Some(time) = context.time else {
-            // New offer values on the existing windows, without another manager pass or tick.
             tally.because("no presentation clock");
             drop(manager_profile);
             let updated: Vec<_> = pool
@@ -912,7 +783,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         let held = match held {
             Some(held) => held,
             None => {
-                // Every window written, ticked and laid out, as today.
                 tally.because("its last frame is not kept");
                 drop(manager_profile);
                 for (owner, slot) in pass.updated {
@@ -989,8 +859,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                 Err(_) => held.remove(&icon.slot),
             };
             match window {
-                // A window whose owner only moved is its own layout at a new origin: the frame
-                // keeps the layout and moves it, and the painting follows the origin.
                 Some(mut window) => {
                     let position = icon.instance.position();
                     if window.position != position {
@@ -1003,8 +871,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                     shown.push(window);
                     tally.held += 1;
                 }
-                // A quiet frame lays nothing out: the next drawn frame finds it not held. One on
-                // screen would show a frame late, so the next frame draws.
                 None if self.quiet => {
                     if on_screen(icon.instance.position()) {
                         crate::map::redraws::note("quiet.shown_late", 1);
@@ -1032,8 +898,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                 }
                 let screen = owners[icon.owner].0;
                 match self.last_drawn.get(icon.owner) {
-                    // Its move less its owner's projected move: the camera's motion and the
-                    // owner's own cancel, leaving what the window did itself.
                     Some(&(was, was_screen)) => {
                         let own = [
                             (position[0] - was[0]) as f32 - (screen[0] - was_screen[0]),
@@ -1042,8 +906,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                         let distance = own[0].hypot(own[1]);
                         moved += u64::from(position != was);
                         largest = largest.max(distance);
-                        // A window easing on its own (`active`) may move; one at rest moves only
-                        // by the rounding of its anchored point.
                         jumps += u64::from(!icon.instance.active() && distance > 1.5);
                     }
                     None => popped += u64::from(shows_animation && !icon.instance.active()),
@@ -1057,13 +919,10 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             crate::view_record::add("overlay", "popped", popped);
             crate::view_record::add("overlay", "largest_window_move_px", largest.round() as u64);
         }
-        // A pass that granted, wrote, erased and animated nothing, with no owner in a province a
-        // phase will clean, is the pass every later frame would make: the pool asks for none.
         if touched.is_empty() && !pool.requests_pending() && !self.cleaning {
             self.bypassed = false;
         }
         if self.quiet {
-            // A window animating after a quiet frame's pass makes the next frame draw (`active`).
             let moving = touched.iter().filter(|&&slot| pool.instance(slot).is_some_and(Instance::active)).count();
             crate::map::redraws::note("quiet.moving", moving as u64);
         }
@@ -1072,7 +931,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         Ok(true)
     }
 
-    /// Whether `owners` are the last frame's, each at the same screen point and none dirty.
     fn stands(&self, owners: &[Owner<K>]) -> bool {
         self.owners.len() == owners.len()
             && owners.iter().all(|owner| {
@@ -1116,7 +974,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             self.settled = false;
             self.unsettled = "its frame failed";
             if !self.same(context) {
-                // A replacement before a presented frame has no window history to redraw.
                 if context.time.is_none() {
                     return Ok(());
                 }
@@ -1165,7 +1022,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                 let tick = frame(&mut self.last, time);
                 (pass.updated, Some(tick))
             } else {
-                // Apply new offer values to existing windows without another manager pass or tick.
                 (
                     pool.visible()
                         .filter(|icon| owners.contains_key(icon.owner))
@@ -1231,7 +1087,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
     }
 }
 
-/// A visible window laid out, with what laying it out noted.
 fn lay_out<K: Copy + PartialEq>(
     icon: &Visible<'_, K>,
     root: &native::Element,
@@ -1253,10 +1108,6 @@ fn lay_out<K: Copy + PartialEq>(
     }
 }
 
-/// Which families of map-icon windows have a pass to run on the next frame. A frame that presents
-/// the pools for their passes alone presents these and no others: a family with nothing running
-/// has nothing for a pass to do, and its manager's pass over its windows is work the screen does
-/// not show.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pools {
     pub naval: bool,
@@ -1272,7 +1123,6 @@ pub struct Pools {
 }
 
 impl Pools {
-    /// Every family, for a pass that presents them all.
     pub fn every() -> Self {
         Self {
             naval: true,
@@ -1288,12 +1138,10 @@ impl Pools {
         }
     }
 
-    /// Whether any family has a pass to run.
     pub fn any(&self) -> bool {
         self.named().iter().any(|(running, _)| *running)
     }
 
-    /// Each family's own, under the name the frame's record carries it by.
     pub fn named(&self) -> [(bool, &'static str); 10] {
         [
             (self.naval, "running.naval"),
@@ -1310,32 +1158,18 @@ impl Pools {
     }
 }
 
-/// The quads each window a caller keeps drew ([`PoolView::drawn_generations`]), handed again
-/// while it shows the same layout under the same anchors: the compiled draws handed again are the
-/// same allocations ([`super::sprites::Exact::native`]), which is how the sprite pass knows a quad
-/// it prepared before. Only the layer, which follows the window's place among the others, is
-/// written again. A window standing somewhere else is handed again too, offset by the whole
-/// interface pixels between the two origins ([`crate::map::anchored::shift`]), which is what a
-/// draw at the new origin would put there.
 pub struct Painted<K, S> {
     held: HashMap<K, Paint<S>>,
     next: HashMap<K, Paint<S>>,
-    /// This pass's windows drawn, handed again, and of those handed again the ones standing
-    /// somewhere else, counted at [`Self::finish`].
     counted: [u64; 3],
-    /// This pass's windows painted into the batch, added to the view record once at
-    /// [`Self::finish`] (one lock a painting, not a window).
     passed: u64,
 }
 
 #[derive(Debug)]
 struct Paint<S> {
     generation: u64,
-    /// The origin these quads were drawn at, which a later painting offsets them from.
     origin: [i32; 2],
     stamp: S,
-    /// The painting these quads came from, which a batch records so the sprite pass knows the
-    /// window draws what it drew ([`super::sprites::next_painting`]).
     painting: u64,
     quads: Vec<super::sprites::Quad>,
 }
@@ -1353,10 +1187,6 @@ impl<K, S> Default for Painted<K, S> {
 }
 
 impl<K: Copy + Eq + std::hash::Hash, S: PartialEq> Painted<K, S> {
-    /// `owner`'s window of layout `generation`, standing at `origin`, onto `batch` at `layer`,
-    /// its quads tagged as `stamp` says (the anchors `draw` sets): what it drew before when the
-    /// layout, the origin and the stamp are the same, else `draw` (which pushes every quad at the
-    /// batch's current layer, `layer`). A window whose draw fails holds nothing.
     #[allow(
         clippy::too_many_arguments,
         reason = "one window's painting: what it is, where it stands and how it is drawn"
@@ -1412,7 +1242,6 @@ impl<K: Copy + Eq + std::hash::Hash, S: PartialEq> Painted<K, S> {
         Ok(())
     }
 
-    /// Once a frame, after the last [`Self::paint`]: a window not painted this frame holds nothing.
     pub fn finish(&mut self) {
         std::mem::swap(&mut self.held, &mut self.next);
         self.next.clear();
@@ -1426,7 +1255,6 @@ impl<K: Copy + Eq + std::hash::Hash, S: PartialEq> Painted<K, S> {
         }
     }
 
-    /// Forgets every window's quads (the windows or the resources they draw with changed).
     pub fn clear(&mut self) {
         self.held.clear();
         self.next.clear();
@@ -1695,8 +1523,6 @@ mod tests {
             }
         }
     }
-    /// Presentation-dirty state can retain an off-screen icon until the rotating
-    /// province update phase reaches and clears it.
     #[test]
     fn a_dirty_province_keeps_its_icon_off_screen() {
         let inside = |point: [i32; 2]| point[0] >= 0;
@@ -1716,14 +1542,11 @@ mod tests {
             admission(true, [-50, 5], inside),
             (Admission::Inside([-50, 5]), true)
         );
-        // Truncate toward zero; use 0x80000000 out of range or for a NaN.
         assert_eq!(truncate_int(-2.7), -2);
         assert_eq!(truncate_int(f32::NAN), i32::MIN);
         assert_eq!(truncate_int(3.0e9), i32::MIN);
     }
 
-    /// A layout's parts with the clock constants a kept window leaves at the frame that laid it
-    /// out (`Time`, the state effect's `since` and `AnimationTime`) set to zero.
     fn clockless<'a>(
         drawn: impl IntoIterator<Item = &'a Drawn>,
     ) -> Vec<(u32, [i32; 2], native_gui::Layout)> {
@@ -1733,7 +1556,6 @@ mod tests {
             .collect()
     }
 
-    /// `layout` with its clock constants (`Time`, `since`, `AnimationTime`) set to zero.
     fn clock_aside(mut layout: native_gui::Layout) -> native_gui::Layout {
         for part in &mut layout.parts {
             part.shading.time = 0.;
@@ -1761,25 +1583,17 @@ mod tests {
         let still = vec![
             owner(1, [100., 200.], false),
             owner(2, [400., 300.], false),
-            // Off screen: requested and erased on every frame, as the game does.
             owner(3, off, false),
         ];
         let moved = vec![owner(1, [100., 200.], false), owner(2, [410., 300.], false), owner(3, off, false)];
-        // An owner on screen whose province is dirty is admitted as it would be anyway.
         let dirty_on = vec![owner(1, [100., 200.], true), owner(2, [410., 300.], false), owner(3, off, false)];
-        // The province schedule's rotation dirties the off-screen owner's province: the pass keeps
-        // its window off screen, which the windows on screen do not see.
         let dirty_off = vec![owner(1, [100., 200.], false), owner(2, [410., 300.], false), owner(3, off, true)];
-        // (owners, the updates would write the same, the viewport, windows written, kept, the
-        // frame found nothing due and did not walk the pool)
         let frames: Vec<(&[Owner], bool, [i32; 2], usize, bool, bool)> = vec![
             (still.as_slice(), true, [2048, 1152], 2, false, false),
             (still.as_slice(), true, [2048, 1152], 0, true, true),
             (still.as_slice(), true, [2048, 1152], 0, true, true),
             (still.as_slice(), false, [2048, 1152], 2, false, false),
             (still.as_slice(), true, [2048, 1152], 0, true, true),
-            // An owner that moved is the same window at a new origin: nothing written, nothing
-            // laid out again.
             (moved.as_slice(), true, [2048, 1152], 0, true, false),
             (moved.as_slice(), true, [2048, 1152], 0, true, true),
             (dirty_on.as_slice(), true, [2048, 1152], 0, true, false),
@@ -1837,7 +1651,6 @@ mod tests {
             if written == shown {
                 assert_eq!(exact(kept_view.drawn()), exact(&laid), "frame {at}");
             }
-            // Every window kept stands where this frame's owner does, laid out again or not.
             let origins = |drawn: &[Drawn]| {
                 let mut found: Vec<_> = drawn.iter().map(|drawn| (drawn.owner, drawn.origin)).collect();
                 found.sort_unstable();
@@ -1849,13 +1662,9 @@ mod tests {
                 found
             };
             assert_eq!(kept_origins, origins(&laid), "frame {at}: the origins");
-            // A settled pass asks for no frame where today's would ([`PoolView::set_cleaning`]).
             let (kept_running, today_running) = (kept_view.take_running(), today.take_running());
             assert!(!kept_running || today_running, "frame {at}");
         }
-        // A new owner takes a free window; which one it is given is no part of what the window
-        // draws, so the pool whose settled frames were not walked draws it where the pool
-        // presented every frame draws it.
         let newcomer = [owner(1, [100., 200.], false), owner(4, [700., 200.], false)];
         let context = Context {
             resources: &resources,
@@ -1888,12 +1697,9 @@ mod tests {
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
         let off = [-5000., 200.];
-        // The province schedule's rotation dirties off-screen owners' provinces in turn: each pass
-        // admits one off screen and erases the one before, which only the pass sees.
         let dirty = |id: Option<u32>| {
             [(1, [100., 200.]), (2, [400., 300.]), (3, off), (5, off)].map(|(at, screen)| owner(at, screen, Some(at) == id))
         };
-        // (owners, whether the frame is quiet for the second view)
         let frames = [
             (dirty(None), false),
             (dirty(Some(3)), true),
@@ -1922,8 +1728,6 @@ mod tests {
                 assert_eq!(clockless(quiet.drawn()), clockless(drawn.drawn()), "frame {at}: the windows shown, in order");
             }
         }
-        // A window the quiet frames skipped is laid out on the next drawn frame, and a newcomer
-        // takes the same slot in each.
         let newcomer = [owner(1, [100., 200.], false), owner(4, [700., 200.], false), owner(2, [400., 300.], false), owner(5, off, true)];
         let context = Context { resources: &resources, windows: &windows, viewport: [2048, 1152], time: Some(2.) };
         present(&mut drawn, &context, &newcomer);
@@ -1934,10 +1738,6 @@ mod tests {
         assert_eq!(quiet.drawn().map(|drawn| drawn.owner).collect::<Vec<_>>(), drawn.drawn().map(|drawn| drawn.owner).collect::<Vec<_>>());
     }
 
-    /// A pool at a held hour under a still camera, one owner kept off screen by a province dirty
-    /// in view: once a pass changes nothing it asks for no frame, and each change that writes a
-    /// window asks again at the frame it comes: an owner in a province a phase will clean, a
-    /// changed offer. A camera move writes none.
     #[test]
     fn a_settled_pool_asks_for_no_frame_until_something_it_shows_or_holds_changes() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1968,16 +1768,11 @@ mod tests {
         at += 1;
         assert!(!present(&mut view, at, &still, true));
         at += 1;
-        // A window whose owner only moved keeps its layout at the new origin and writes nothing:
-        // the frame that moved the camera draws it, and no later frame is asked for.
         assert!(!present(&mut view, at, &moved, true), "a camera move asks for no frame");
         at += 1;
         assert!(present(&mut view, at, &moved, false), "a changed offer asks");
     }
 
-    /// A pool window's layout reads no screen point: the owner's point is only the origin it is
-    /// drawn at. So a window the camera moved is its layout at another origin: over points a pan,
-    /// a zoom and a tilt move it to, on and off the screen, its layout is the first point's.
     #[test]
     fn a_pool_window_s_layout_reads_no_screen_point() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1993,11 +1788,9 @@ mod tests {
             let plan = Plan { name: "test_icon", kind: MapIconPool::Ping, alignment: 0x0A, owners: &owners };
             view.present_kept(&context, &plan, Box::new(|_, _| Ok(())), |_, _, _, _| Ok(()), |_, _| true, &mut BTreeMap::new());
             let pool = view.pool.as_ref().expect("built");
-            // A point the pool gives no window has nothing to lay out.
             let Some(instance) = pool.slot_of(&1).and_then(|slot| pool.instance(slot)) else {
                 continue;
             };
-            // The layout carries its tick's clock: each point here is another frame's.
             let layout = clock_aside(instance.layout(root, &resources, None).unwrap().expect("drawn"));
             compared += 1;
             let first = first.get_or_insert_with(|| layout.clone());
@@ -2022,7 +1815,6 @@ mod tests {
             alignment: 0x0A,
             owners: &owners,
         };
-        // (each owner's value, forget what was written, the owners written)
         let frames: [([u8; 2], bool, &[u32]); 5] = [
             ([5, 7], false, &[1, 2]),
             ([5, 7], false, &[]),
@@ -2075,7 +1867,6 @@ mod tests {
             dirty: false,
         };
         let few: Vec<_> = (1..=2).map(owner).collect();
-        // More owners than the pool's windows: requests go ungranted and the pool grows.
         let many: Vec<_> = (1..=MapIconPool::Ping.initial() as u32 + 20).map(owner).collect();
         let frames = [&few, &few, &many, &many, &many, &many];
         let mut view = PoolView::default();
@@ -2128,7 +1919,6 @@ mod tests {
         let key = WindowKey::new(WindowPool::Base, 0, 1_u32);
         let mut painted: Painted<u32, u8> = Painted::default();
         let mut draws = 0;
-        // A window's parts stand at its origin, which is all a draw at another origin moves.
         fn draw(draws: &mut u32, origin: [i32; 2]) -> impl FnOnce(&mut Batch) -> Result<(), ()> {
             move |batch: &mut Batch| {
                 *draws += 1;
@@ -2154,19 +1944,16 @@ mod tests {
                 Ok::<_, ()>(())
             }
         }
-        // (layout generation, origin, layer, anchor stamp, drawn anew)
         let frames = [
             (1, [0, 0], 10, 0, true),
             (1, [0, 0], 10, 0, false),
             (1, [0, 0], 30, 0, false),
-            // The same layout standing somewhere else is handed again, offset to the new origin.
             (1, [4, -9], 30, 0, false),
             (1, [4, -9], 30, 0, false),
             (2, [4, -9], 30, 0, true),
             (2, [4, -9], 30, 7, true),
             (2, [4, -9], 30, 7, false),
         ];
-        // The painting the window last drew, and the origin it drew at.
         let mut drew = (0, [0, 0]);
         for (at, (generation, origin, layer, stamp, anew)) in frames.into_iter().enumerate() {
             let mut batch = Batch::default();
@@ -2179,8 +1966,6 @@ mod tests {
             assert_eq!(draws > before, anew, "frame {at}");
             assert_eq!(batch.quads.len(), 2, "frame {at}");
             assert!(batch.quads.iter().all(|quad| quad.layer == layer), "frame {at}: the layer is the frame's");
-            // Whether it was drawn or handed again at a new origin, the window draws what a draw
-            // of its layout at this origin draws.
             let mut fresh = Batch::default();
             fresh.at_layer(layer);
             draw(&mut 0, origin)(&mut fresh).unwrap();
@@ -2190,8 +1975,6 @@ mod tests {
             if anew {
                 drew = (window.stamp.painting, origin);
             } else {
-                // The window names the painting it drew and how far it stands from where that
-                // painting drew it, which is what the quads it hands are.
                 assert_eq!(window.stamp.painting, drew.0, "frame {at}: the painting it drew");
                 assert_eq!(
                     window.shift,
@@ -2200,7 +1983,6 @@ mod tests {
                 );
             }
         }
-        // A window not painted in a frame holds nothing after it.
         painted.finish();
         let mut batch = Batch::default();
         let mut drew = false;

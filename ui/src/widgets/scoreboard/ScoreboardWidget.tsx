@@ -48,9 +48,6 @@ const tagOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
 const silent = (reason: string): Live<LiveValues<SortValue>> => { const values = noValues(reason); return { read: () => values, subscribe: () => () => {} }; };
 const NOT_READ_YET = noValues('Not read yet');
 
-/** Countries side by side across the measures chosen, at the playhead or a pinned hour. At the head the rows (a top N
- * followed by rank, or the chosen countries) are structure and every value is painted from followed series; at a pinned
- * hour, or where the service does not follow them, one `scoreboard` reply answers the hour. */
 export default function ScoreboardWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const viewport = useViewportHeight();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -75,12 +72,12 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const branchId = track?.branch.id;
   const rankFamily = rank?.family ?? null;
   const rankQuery = useMemo<FollowQuery | null>(() => following && branchId && top != null && rankFamily
     ? { product: 'series-state', params: { branchId, family: rankFamily, top, least: descending ? undefined : true } } : null,
-  [following, branchId, top, rankFamily?.kind, rankFamily?.measure, descending]); // eslint-disable-line react-hooks/exhaustive-deps
+  [following, branchId, top, rankFamily?.kind, rankFamily?.measure, descending]);
   const ranking = useFollowedAll(store, useMemo(() => [rankQuery], [rankQuery]), root);
   const rankEntry = ranking.entries[0] ?? null;
   const woken = useMemo(() => new Set<() => void>(), []);
@@ -88,7 +85,6 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (!store || !rankEntry) return undefined;
     return store.watch(rankEntry, () => { for (const wake of [...woken]) wake(); });
   }, [store, rankEntry, woken]);
-  // A top's members as a set: the table orders them by the painted values, so a change of rank alone renders nothing.
   const membersAt = (hour: number) => top != null ? rankedTags(rankEntry?.answer).sort() : rankedCandidates(resolved, Math.floor(headAt(hour) ?? lastHour), resolved.tags);
   const structureHour = useHeadHour(runtime.clock, following, hour => membersAt(hour).join('\u0000'), woken);
   const membersText = following ? membersAt(structureHour).join('\u0000') : '';
@@ -99,19 +95,14 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     return [...out.values()];
   }, [shown]);
   const familiesText = JSON.stringify(families);
-  // The columns follow every country the rows have named since the top or the choice was asked, so a country entering
-  // the top it held before, or one leaving it, asks no column again and its values are already held.
   const named = useStickyMembers(JSON.stringify([branchId, top, rankFamily, descending, following]), members,
     stickyLimit(top ?? members.length));
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && named.length
     ? { product: 'series-state', params: { branchId, family, reads: named.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null),
-  [familiesText, following, branchId, named]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A new set of members is asked under new queries without a render of its own: each column is painted from its last
-  // answered entry until the new one answers, so its values never blank as the rows change.
+  [familiesText, following, branchId, named]);
   const columnsFollowed = useFollowedAll(store, columnQueries, root, undefined, 'availability');
   const columnsNow = useRef(columnsFollowed);
   columnsNow.current = columnsFollowed;
-  // Followed unless the service refuses a query: one still pending shows its cells as not read yet, never asks.
   const followedHead = following && !!store && !ranking.reason && !columnsFollowed.reason && (top == null || rankQuery !== null);
   const handed = useMemo<HandedSources<LiveValues<bigint>>>(() => new Map(), [store, branchId]);
   const sources = useMemo(() => {
@@ -119,12 +110,10 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (store) families.forEach((family, at) => out.set(familyKey(family), handedLive(store, () => columnsNow.current, at, handed, familyKey(family),
       entry => liveFollowed(store, entry, (held: FollowEntry) => followedValues(held.answer)), () => NOT_READ_YET)));
     return out;
-  }, [store, familiesText, handed]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A new source for each set of members: the table sorts the rows it is given by the values now, in the commit that
-  // shows them, never by the last order it took (which lacks a new member) and again a slot later.
+  }, [store, familiesText, handed]);
   const live = useMemo(() => followedHead ? liveByColumn<SortValue>(Object.fromEntries(shown.map(column => [column.key,
     (column.family && sources.get(familyKey(column.family))) || silent(column.family ? 'Not read yet' : column.reason ?? 'Unavailable')]))) : undefined,
-  [followedHead, shown, sources, members]); // eslint-disable-line react-hooks/exhaustive-deps
+  [followedHead, shown, sources, members]);
   const partialAt = useCallback((family: ScoreboardFamily | null, tag: string) => !!family && followedHead
     && isPartial(sources.get(familyKey(family))?.read().get(tag)), [followedHead, sources]);
 
@@ -139,13 +128,11 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const result = useFollowedProduct<ScoreboardReply>(runtime.client, request, ['hour', 'tags'], active, validate, track?.source);
   const reply = followedHead ? undefined : result.data;
 
-  // At the head the rows are named as they are at the hour shown: read where one of them last changed.
   const identityHour = useIdentityHour(runtime.client, track, named, runtime.clock, followedHead,
     hour => track ? trackHourOf(widget, track, runtime.tracks, hour) : null);
   const looksHour = looksRead(followedHead, identityHour, reply?.hour ?? moment).hour;
   const rows = useMemo(() => followedHead ? members.map(tag => followedRow(tag, looksHour)) : reply ? replyRows(reply, asked) : NO_ROWS,
     [followedHead, members, looksHour, reply, asked]);
-  // The hour shown: the newest every followed answer holds through, told as answers land and at each frame.
   const reportShown = useShownHour();
   const shownAt = useRef<() => number | null>(() => null);
   shownAt.current = () => {
@@ -166,8 +153,6 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock, store, rankEntry, sources, reportShown, followedHead, reply]);
   const [visible, setVisible] = useState<readonly BoardRow[]>(NO_ROWS);
-  // At the head every country the rows have named is labelled (a few hundred at most), so rows scrolling into view, or a
-  // country coming back into the top, ask nothing more.
   const wanted = useMemo(() => (followedHead ? named : (sort.column === 'country' ? rows : visible).map(row => row.tag)).map(tag => ({ tag, hour: looksHour })),
     [named, rows, visible, sort.column, looksHour, followedHead]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
@@ -197,7 +182,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     const hour = followedHead ? headAt(runtime.clock.getHour()) ?? row.hour : row.hour;
     const look = label(row.tag);
     return fitTooltip([{ ...scoreboardTooltip(cell, shown, look.name, Math.floor(hour)), ...countryNameDetails(look) }], viewport);
-  }, [live, shown, followedHead, label, partialAt, viewport, runtime.clock]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [live, shown, followedHead, label, partialAt, viewport, runtime.clock]);
   const setTableOption = useCallback<NonNullable<WidgetProps['setOption']>>((key, value) => {
     if (key === 'tableSort') {
       const next = tableSortOf(value, DEFAULT_SORT);
@@ -229,11 +214,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
     if (registryData && !shown.length) return <WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." />;
     if (!registryData || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading scoreboard…" />;
-    // A group with no member asks for nothing: why, at the hour.
     const none = noMembersAt(widget.countries, resolved, groups.data, hour, lastHour);
     if (none) return <NoMembersState reason={none.reason} />;
     if (top == null && !(followedHead ? members : askedTags).length) {
-      // A group whose members are all outside it at this hour says so, as an empty group.
       const why = grouped && groups.data ? worldFilter(widget.countries, [], groups.data, hour, lastHour).reason : null;
       return <WidgetState kind="unavailable" message={why ?? 'No countries available for this selection.'} />;
     }

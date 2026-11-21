@@ -26,7 +26,6 @@ const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
 const ROOT = { id: 'all', label: 'Spent' };
 
-/** What was gained beside what was spent, in one plain line. */
 export function gainNote(gain: PowerGain | null, digits: number): string {
   if (!gain) return '';
   const gained = `Gained ${formatPower(gain.gained, digits)} PP over the same period`;
@@ -34,8 +33,6 @@ export function gainNote(gain: PowerGain | null, digits: number): string {
   return gain.lost === gain.gained ? `${gained}; all of it was lost at the cap.` : `${gained}; ${formatPower(gain.lost, digits)} PP of it was lost at the cap.`;
 }
 
-/** Political power spending by category and the item it shows as. Following playback, slices grow, the gain and the
- * notes move as each frame paints; the widget renders only where it goes from nothing spent to slices. */
 export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
@@ -45,31 +42,26 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const { track, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings, span } = usePowerSpending(widget, runtime, active, 'Political');
   const following = widget.time.mode === 'follow';
   const from = widget.time.mode === 'range' ? span?.firstHour ?? null : null;
-  // The whole the slices grow toward: the end of what is read.
   const end = span?.lastHour ?? null;
   const hourAt = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null,
     [widget, track, runtime.tracks]);
   const groups = useMemo(() => ledgers ? spendingGroups(ledgers, from, selection) : null, [ledgers, from, selection]);
   const paidFrom = useMemo(() => groups ? firstPaid(groups) : null, [groups]);
   const gains = useMemo(() => ledgers ? powerGains(ledgers, from, selection) : null, [ledgers, from, selection]);
-  // Following, the widget renders only where what it shows changes kind: outside the recording, nothing paid yet, slices.
   const branch = track ? [track.branch.firstHour, track.branch.lastHour] as const : null;
   const headHour = useHeadHour(runtime.clock, active && following && !!ledgers, useCallback(clock => {
     const at = hourAt(clock);
     return at === null || !branch || at < branch[0] || at > branch[1] ? 'out' : paidFrom !== null && at >= paidFrom ? 'paid' : 'none';
-  }, [hourAt, paidFrom, branch?.[0], branch?.[1]])); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hourAt, paidFrom, branch?.[0], branch?.[1]]));
   const hour = following ? hourAt(headHour) : hourAt(runtime.clock.getHour());
-  // The slices a render names; their amounts at the head come from `live`.
   const items = useMemo(() => groups && hour !== null && end !== null ? spendingItems(groups, hour, end) : [], [groups, hour, end]);
   const shown = useShownHour();
   useEffect(() => { if (!following) shown(ledgers ? hour : null); }, [following, ledgers, hour, shown]);
   const paintedHour = useCallback((position: number) => (following ? hourAt(position) : hour) ?? Number.NaN, [following, hourAt, hour]);
-  // The slices as the head paints them.
   const live = useMemo(() => groups && end !== null ? liveAt<SunburstValues>(runtime.clock, paintedHour, at => {
     if (following) shown(Number.isNaN(at) ? null : at);
     return { items: Number.isNaN(at) ? [] : spendingItems(groups, at, end) };
   }, (a, b) => sameSpendingItems(a.items, b.items)) : undefined, [groups, end, runtime.clock, paintedHour, following, shown]);
-  // The gain beside the slices and the notes under them, painted at the hour shown.
   const texts = useMemo(() => liveTexts(runtime.clock, () => paintedHour(runtime.clock.getSnapshot().position), at => {
     const values = new Map<string, string>();
     if (!ledgers || !groups || !gains || Number.isNaN(at)) return values;
@@ -98,7 +90,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
       note: group.latest.unknown ?? form.note }));
   }, [groups, hour, paintedHour, runtime.clock, ideas]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
-  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
   const warnings = useMemo(() => [...(ledgers?.flatMap(ledger => ledger.warnings) ?? []), ...groupWarnings], [ledgers, groupWarnings]);
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its political power spending." />;

@@ -1,7 +1,3 @@
-//! The records a save of spool segments adds to a campaign's recording: their sessions,
-//! branches, gaps and control records, each checked against its context and the recording's,
-//! and a recovery note for each damaged segment. Their hours are the captures' to add.
-
 use super::{Replay, records::Records, records::RecoveryNote};
 use crate::{
     BranchId,
@@ -12,8 +8,6 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
-/// The records `segments` add to `existing`, of `identity`'s content and campaign `campaign_id`,
-/// taken in segment order.
 pub fn records_of<R: SpoolRecord>(
     segments: &[(u32, Recovery<R>)],
     identity: &Identity,
@@ -36,7 +30,6 @@ pub fn records_of<R: SpoolRecord>(
         .flat_map(|replay| &replay.branches)
         .map(|branch| (branch.id, branch.clone()))
         .collect();
-    // A save going again after one that was interrupted adds no record twice.
     let mut held_controls = std::collections::HashSet::new();
     for control in existing.into_iter().flat_map(|replay| &replay.controls) {
         let mut encoded = Vec::new();
@@ -150,8 +143,6 @@ pub fn records_of<R: SpoolRecord>(
                     declare_command_branch(control, campaign_id, &mut branches, &mut records)?;
                     let mut encoded = Vec::new();
                     control.encode(&mut encoded)?;
-                    // A writer retries an event loss whose segment failed after writing it; the
-                    // same loss is kept once.
                     let repeated_loss = matches!(control, ControlRecord::EventLoss { .. })
                         && records.controls.contains(control);
                     if !repeated_loss && !held_controls.contains(&encoded) {
@@ -165,7 +156,6 @@ pub fn records_of<R: SpoolRecord>(
     Ok(records)
 }
 
-/// A command phase names its branch's start: one the recording does not hold yet is added.
 fn declare_command_branch(
     control: &ControlRecord,
     campaign_id: &[u8],

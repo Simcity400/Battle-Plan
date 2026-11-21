@@ -1,4 +1,3 @@
-//! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
 mod history_requests;
 use history_requests::{HistoryWorker, SpoolHistory};
@@ -56,7 +55,6 @@ use windows_sys::Win32::{
     },
 };
 
-// Both production refusal paths and the regression enter this boundary.
 macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
         let reason = $reason;
@@ -77,7 +75,6 @@ pub(crate) fn refuse_land_detach_for_test(retain: impl FnOnce()) -> Result<(), &
 struct Config {
     #[serde(default)]
     scripted_maps: crate::scripted_maps::Demand,
-    /// Campaigns whose loads the recorder leaves out: recorded without their history.
     #[serde(default)]
     without_history: Vec<String>,
     #[serde(default = "observer_default")]
@@ -105,7 +102,6 @@ struct Config {
     worker_sampler: Option<String>,
     #[serde(default = "game_score_enabled")]
     game_score: bool,
-    /// The map event families to install; all of them when absent.
     #[serde(default)]
     map_events: Option<Vec<String>>,
 }
@@ -158,9 +154,7 @@ fn refuse_worker_sampler(config: Option<&str>) -> Result<(), &'static str> {
 }
 
 pub(crate) struct Event(HANDLE);
-// SAFETY: an event handle may be signalled, reset and waited on from any thread.
 unsafe impl Send for Event {}
-// SAFETY: as above; the handle is only closed on drop.
 unsafe impl Sync for Event {}
 impl Event {
     fn create(name: &str) -> Result<Self, &'static str> {
@@ -198,15 +192,11 @@ impl Drop for Event {
     }
 }
 
-/// This game's one collector: a named mutex that exists while it is held, and stays held
-/// while `shared` is published, as a run that retains its hooks for live relays leaves it.
 struct Owner<'a> {
     handle: HANDLE,
     shared: &'a AtomicPtr<Shared>,
 }
 impl<'a> Owner<'a> {
-    /// Refused while another collector, however it was loaded, runs in the game started at
-    /// `process_start`.
     fn claim(process_start: u64, shared: &'a AtomicPtr<Shared>) -> Result<Self, &'static str> {
         let name = format!("Local\\HOI4Replay.Collector.{}.{process_start}", unsafe {
             GetCurrentProcessId()
@@ -242,7 +232,6 @@ mod owner_tests {
 
     #[test]
     fn a_second_collector_in_one_game_is_refused_until_the_first_ends() {
-        // A synthetic process start, so no other test or process shares the name.
         let process_start = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -268,7 +257,6 @@ mod owner_tests {
             .unwrap()
             .as_nanos() as u64
             ^ 1;
-        // Shared is still published, as a teardown that could not restore its hooks leaves it.
         let retained = AtomicPtr::new(std::ptr::NonNull::<Shared>::dangling().as_ptr());
         drop(Owner::claim(process_start, &retained).unwrap());
         assert_eq!(
@@ -287,9 +275,6 @@ fn module_path(module: HMODULE) -> Result<PathBuf, &'static str> {
     }
     Ok(PathBuf::from(OsString::from_wide(&buffer[..len])))
 }
-/// A failed installation's message, naming the family, kept for the
-/// attachment: status and the terminal error borrow it until unload. Built
-/// once, on the runtime thread, only when installation fails.
 fn installation_deadline_message(family: &str, busy_sites: &[&str]) -> String {
     let detail = if busy_sites.is_empty() {
         String::new()
@@ -337,7 +322,6 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
         engine_allocation::set_hooks(None, None);
         engine_allocation::set_stop_hook(None);
         drop(witness);
-        // A resident image is a small leak; an unload under its own live threads is a crash.
         if resident.is_none() {
             unsafe {
                 FreeLibraryAndExitThread(module, 0);
@@ -347,12 +331,8 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     })
 }
 
-/// Beside the collector, why it stayed loaded at its end; the recorder names it in the session's
-/// completion.
 const RESIDENT_FILE: &str = "collector.resident.txt";
 
-/// Why the collector cannot unload, given the live threads that started in it besides the
-/// unloading one: none when there are none.
 fn resident_reason(threads: Result<Vec<u32>, String>) -> Option<String> {
     match threads {
         Ok(threads) if threads.is_empty() => None,
@@ -507,10 +487,6 @@ fn status_rename_retry_delay(error: &io::Error, elapsed: Duration) -> Option<Dur
         .map(|remaining| remaining.min(Duration::from_millis(1)))
 }
 
-/// Atomically replace `target` with `source` using POSIX rename semantics:
-/// the new name takes effect even while a reader holds the old file open with
-/// delete sharing, which a classic `MoveFileExW` replace refuses with
-/// ERROR_ACCESS_DENIED. `Ok(false)`: the volume does not support it.
 fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
     let handle = unsafe {
         CreateFileW(
@@ -530,13 +506,9 @@ fn posix_replace(source: &[u16], target: &[u16]) -> io::Result<bool> {
     replay::publication::posix_replace(&file, target)
 }
 
-/// Set once a status directory reports that POSIX rename is unsupported
-/// (network shares, FAT): later writes go straight to the classic replace.
 static POSIX_RENAME_UNSUPPORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// One replace attempt: POSIX rename while supported, else the classic
-/// `MoveFileExW` replace, which any open reader blocks.
 fn replace_once(source: &[u16], target: &[u16]) -> io::Result<()> {
     if !POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed) {
         match posix_replace(source, target) {
@@ -590,13 +562,9 @@ fn run(
     prepared_process_start: u64,
     spool_final: &mut bool,
 ) -> Result<(), &'static str> {
-    // Game sites resolve only through the located image from here on.
     engine_sites::production();
-    // Calibrate hook timing over the whole attachment, before any hook exists.
     crate::hook_timing::start();
     crate::thread_cpu::register(crate::thread_cpu::Role::Runtime);
-    // Arm early-exit tracking before creating any acquisition, decode, spool,
-    // status, helper or sizing worker; sampler startup itself comes later.
     #[cfg(feature = "worker_sampler")]
     crate::worker_sampler::prepare();
     let dll_path = module_path(module)?;
@@ -605,8 +573,6 @@ fn run(
             .map_err(|e| error_reason(e, "collector config read failed"))?,
     )
     .map_err(|_| "collector JSON config invalid")?;
-    // A diagnostic request must not silently become an ordinary capture. Refuse
-    // before starting any acquisition, decode, spool or helper worker.
     #[cfg(not(feature = "worker_sampler"))]
     refuse_worker_sampler(config.worker_sampler.as_deref())?;
     let mut input = Decoder::new(&config.session_start);
@@ -645,7 +611,6 @@ fn run(
     if session.process_start_time != process_start || prepared_process_start != process_start {
         return Err("collector config process creation time differs");
     }
-    // Before any game read or hook; held until this collector's run ends.
     let _owner = Owner::claim(process_start, &SHARED)?;
     let mut frequency = 0;
     if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
@@ -666,7 +631,6 @@ fn run(
     if session.identity.exe_hash != exe.sha256 || session.identity.exe_size != exe.size {
         return Err("collector config executable identity differs from running build");
     }
-    // Prepare immutable metadata on this loader worker before publishing hooks.
     crate::territory_changes::scripted_capture(
         config.scripted_maps.victory_point,
         config.scripted_maps.all_controllers || !config.scripted_maps.controller_states.is_empty(),
@@ -677,7 +641,6 @@ fn run(
     );
     let tables = engine_executable::executable_tables::initialize_executable(&executable_path)
         .map_err(|error| error_reason(error, "collector executable tables preparation failed"))?;
-    // An unrecognised build is a warning; each piece is then verified or withheld by name.
     collector_primitives::build_gate::record(tables.recognised(), tables.build_warning());
     let dll = hash_executable(
         File::open(&dll_path).map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?,
@@ -686,7 +649,6 @@ fn run(
     if session.identity.collector_hash != dll.sha256 {
         return Err("collector DLL hash differs from session identity");
     }
-    // The recorder creates the session directory before attachment.
     let ready = Event::create(&config.ready_event)?;
     let detach = Event::create(&config.detach_event)?;
     let done = Event::create(&config.done_event)?;
@@ -702,8 +664,6 @@ fn run(
     )
     .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let progress = crate::progress::Progress::open(&config.output_dir);
-    // Before any worker starts; released after the decode hook it chains under, or retained
-    // with workers that outlive a refused detach.
     let worker_panic = crate::worker_panic::Guard::install(
         &config.output_dir.join(crate::progress::FILE),
         progress.opened(),
@@ -711,7 +671,6 @@ fn run(
     progress.step("attach_started", None);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
-    // SAFETY: the game executable stays loaded for the life of the process.
     let image = unsafe { engine_sites::Image::module(base) }
         .map_err(|_| "game executable headers unreadable")?;
     let located = engine_sites::install(engine_sites::Located::locate(
@@ -742,7 +701,6 @@ fn run(
         format_args!("sites_moved {}", located.moved().count()),
         None,
     );
-    // On the reference build every key must be where the reference build has it.
     if engine_sites::layout_checked(&exe.sha256) {
         for (key, live) in located.moved() {
             progress.step(
@@ -755,7 +713,6 @@ fn run(
             );
         }
     }
-    // Nothing else reads or patches the game unless every essential family verifies on this build.
     crate::hook_failures::admit_essential()?;
     let hourly = engine_sites::hook(base, cgame_state::HOURLY_UPDATE_RVA)
         .and_then(|code| Ok((code.address, code.sentinel::<16>()?)));
@@ -766,8 +723,6 @@ fn run(
             return Err(cause);
         }
     };
-    // The recorder uses this same exclusive handle before every finalization.
-    // It protects both existing histories and campaigns with no replay yet.
     let output_lock = reserve_output(&config, &detach)?;
     progress.step("output_reserved", None);
     let mut history = PreparedCampaigns::load(&config.replay_dir, &session, |campaign| {
@@ -968,7 +923,6 @@ fn run(
         crate::faction_companion_changes::Hooks::new(&memory, base)
     })?;
     let _division_panel_forwarder = crate::division_panel_forwarder::attach();
-    // A family whose sentinels differ is left uninstalled; it reads as before.
     let mut opinion_hooks = FamilyHooks::construct(base, || unsafe {
         crate::opinion_changes::Hooks::new(&memory, base)
     })?;
@@ -1030,7 +984,6 @@ fn run(
     let mut fuel_hooks = FamilyHooks::construct(base, || {
         Ok(unsafe { crate::fuel_awards::Hooks::new(&memory, base) })
     })?;
-    // A capture mode that records no operation completion installs none of their hooks.
     let operation_outcomes = config.operation_outcomes
         && crate::extended::records_any(
             session.capture_mode,
@@ -1043,15 +996,10 @@ fn run(
         Ok(unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) })
     })?;
     progress.step("hooks_prepared", None);
-    // Size every country-proportional buffer from the live registry before
-    // the hook exists. At the main menu the registry may still be empty; the
-    // spool thread then raises capacities as soon as a save fills it.
     let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
     crate::country_scale::note_slots(slots);
     collector_observers::wargoal_changes::note_countries(slots);
     collector_observers::wargoal_changes::presize();
-    // Size the live weather boundary before installing the hourly hook;
-    // attachment after a native rebuild still captures its retained edges.
     let _ = crate::extended::weather::observe_display_capacity(&memory, base);
     let mut event_feed_hooks = FamilyHooks::construct(base, || unsafe {
         crate::event_feed_observer::Hooks::new(
@@ -1085,8 +1033,6 @@ fn run(
         Ok(None) => {}
         Err(reason) => processor.observe_input_demand_error(reason),
     }
-    // Reuse the state demand already observed above. Prepare watches off-thread so the
-    // first callback can certify its initial hover rows without an unobserved fallback.
     collector_observers::occupation_changes::demand(sizing.core[3].saturating_mul(9));
     collector_observers::occupation_changes::prepare();
     if let Err(reason) = crate::country_scale::presize_table_inputs(
@@ -1387,9 +1333,6 @@ fn run(
     )
     .map_err(|e| error_reason(e, "history worker could not start"))?;
     owned_workers.push(history_worker.thread_id());
-    // The conversion helpers are collector workers for every quiescence check
-    // and join with the processor when the spool thread returns. Without them
-    // the spool thread converts every table itself, with identical output.
     for index in 0..crate::spool_helper::pool_size() {
         let Ok(helper) = crate::spool_helper::SpoolHelper::start(Some((
             shared.frame_priority.clone(),
@@ -1404,9 +1347,6 @@ fn run(
         owned_workers.push(id);
         crate::thread_cpu::register_helper(index, id);
     }
-    // The sizing thread and the frame builder are collector workers too; the spool thread owns
-    // them and joins them before returning. Without the sizing thread the spool thread sizes;
-    // without the builder each hour that finds no frame free builds its own.
     let sizing = SizingThread::start(shared.clone(), spool_state);
     if let Some(id) = sizing.thread_id() {
         owned_workers.push(id);
@@ -1420,8 +1360,6 @@ fn run(
     let spool_thread_id = Arc::clone(&spool_id);
     let spool_shared = shared.clone();
     let spool_status = status_path.clone();
-    // Owned here and finished only after the spool thread has returned and
-    // callbacks are quiescent; the spool thread gets a hand-over handle.
     let mut status_writer = crate::status_writer::StatusWriter::start(write_status_bytes)
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let spool_writer = status_writer.handle();
@@ -1458,14 +1396,10 @@ fn run(
         std::thread::yield_now();
     }
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
-    // Without its thread every capture holds the game.
     let mut capture_thread = crate::capture_point::Thread::start(BACKGROUND_STACK_BYTES).ok();
     owned_workers.extend(capture_thread.as_ref().map(|thread| thread.id()));
     crate::hook_failures::workers_started();
     progress.step("workers_started", None);
-    // The sampler starts paused: hook publication below suspends the process,
-    // so no sampler suspension may overlap it. Activate only once every hook
-    // is installed. Startup errors use the same drain as hook-install errors.
     #[cfg(feature = "worker_sampler")]
     let mut sampler = match crate::worker_sampler::start(
         sampler_config.as_deref(),
@@ -1499,12 +1433,9 @@ fn run(
         Ordering::Release,
     );
     let mut deadline = Instant::now() + Duration::from_secs(15);
-    // The family each attempt reached: the one that failed, or that was
-    // still not ready when the deadline expired.
     let stage = crate::progress::Stage::new(&progress, "world_lifetime");
     while installation_error.is_none() && !crate::allocation::failed() {
         stage.set("world_lifetime");
-        // Every family publishes under one suspension of the game's threads.
         match (|| {
             install_attach_batch(
                 &stage,
@@ -1635,7 +1566,6 @@ fn run(
                     ("market_changes", &mut || market_hooks.set_enabled(true)),
                     ("map_events", &mut || map_event_hooks.set_enabled(true)),
                     ("command_batch", &mut || batch_hooks.set_enabled(true)),
-                    // Last: no hour is admitted before every family has reported.
                     ("hourly", &mut || {
                         hook.set_enabled(true).map_err(installation_message)
                     }),
@@ -1644,8 +1574,6 @@ fn run(
         })() {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
-            // Recorded in status and, as the terminal error, in
-            // collector.error.txt, which the recorder prints to stderr.
             Ok(false) => {
                 let busy_sites = match stage.get() {
                     "faction_goals" => faction_goal_hooks.busy_sites(),
@@ -1689,7 +1617,6 @@ fn run(
             }
         }
     }
-    // Publication detail cannot affect the installation deadline decision.
     stage.finish();
     #[cfg(feature = "worker_sampler")]
     if installation_error.is_none()
@@ -1700,7 +1627,6 @@ fn run(
         installation_error = Some(error);
     }
     if installation_error.is_none() && !crate::allocation::failed() {
-        // Admitted first: a capture a batch starts beside the game is never refused for want of it.
         HOURLY_ADMISSION.open();
         crate::capture_point::set_beside(
             capture_thread.is_some() && crate::command_batch::enabled(),
@@ -1720,30 +1646,21 @@ fn run(
     {
         std::thread::sleep(Duration::from_millis(20));
     }
-    // No callback waits on a frame, so ordinary restore keeps recording until every
-    // callback already in the relay has returned.
     let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
     let _restoration = restoration.map(crate::hook::restoration::Scratch::enter);
     crate::allocation::attempted_hour(None);
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     let detach_started = Instant::now();
     progress.step("detach_requested", None);
-    // Join before any hook-restoration suspension or sampled worker join. This
-    // also covers every attach failure after the sampler was started; no fallible
-    // operation returns early between startup and this common teardown path.
     #[cfg(feature = "worker_sampler")]
     if let Some(sampler) = sampler.as_mut() {
         let id = crate::worker_sampler::thread_id();
         let samples = sampler.stop();
-        // An exited sampler no longer qualifies for worker exclusions: Windows
-        // may reuse its id before the observer quiescence census below.
         if id != 0 {
             owned_workers.retain(|worker| *worker != id);
         }
         progress.step("sampler_stopped", Some(samples));
     }
-    // Retain every callback, worker and frame owner on refusal. Keep an earlier
-    // terminal fault separate from the new stop diagnostic.
     macro_rules! retain_detach {
         ($reason:expr, $fault:expr, $workers:expr) => {{
             let reason: &'static str = $reason;
@@ -1780,8 +1697,6 @@ fn run(
         }};
     }
 
-    // Keep observing until the hourly entry is restored. A hard refusal must
-    // not prevent restoration of the independent writer families below.
     let mut restored = [false; RestoreFamily::ALL.len()];
     let mut previous_errors = [false; RestoreFamily::ALL.len()];
     restore_hourly(
@@ -1801,12 +1716,8 @@ fn run(
     if !restored[RestoreFamily::Hourly as usize] {
         shared.recording.store(false, Ordering::Release);
     }
-    // No hour ends any more: the one still unread is read at the next command batch's return,
-    // which a paused game still runs every frame.
     let drained = crate::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT);
     progress.step("final_hour_read", Some(u64::from(drained)));
-    // Closing admission, rather than waiting for native originals or mutation
-    // observers, proves that no callback can submit another acquisition job.
     HOURLY_ADMISSION.close();
     if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
         progress.step("acquisitions_refused", None);
@@ -1816,29 +1727,20 @@ fn run(
             (spool, status_writer)
         );
     }
-    // No capture runs or can start: the capture thread ends, and no writer waits for it.
     if let Some(thread) = capture_thread.as_mut() {
         thread.stop();
-        // As for the sampler: Windows may reuse an exited thread's id.
         let id = thread.id();
         owned_workers.retain(|worker| *worker != id);
     }
-    // Hours that ended and were never read are recorded as lost, never dropped unseen.
     let unread = crate::capture_point::take_unread();
     if unread != 0 {
-        // SAFETY: no capture runs or can start.
         unsafe { sampling::record_lost(&shared, unread) };
         progress.step("unread_hours_lost", Some(u64::from(unread)));
     }
     progress.step("acquisitions_quiet", None);
-    // Keep mutation observation intact until the last acquisition has finished.
-    // Every round visits all unfinished families even if an earlier one refuses.
-    // A damaged enabled patch still prevents unloading its relay and this DLL.
     let mut first_restore_error = None;
     let mut restore_wait = RestoreWait::new(Instant::now());
     let restore_result = loop {
-        // Keep invalidation published while any older native invocation can
-        // still reach an observer post reader, even after its site was restored.
         let mut toggle = |family| match family {
             RestoreFamily::Hourly => hook
                 .set_enabled(false)
@@ -1920,9 +1822,6 @@ fn run(
             RestoreFamily::MapEvents => map_event_hooks.set_enabled(false),
             RestoreFamily::WorldLifetime => world_hooks.set_enabled(false),
         };
-        // Every unrestored family that takes part publishes under one census
-        // and suspension (`hook::shared`); `restore_round` then applies and
-        // logs each family's outcome, and publishes the others on their own.
         let mut restore_round_shared = (!crate::hook::restoration::active())
             .then(crate::hook::shared::Round::collect)
             .flatten();
@@ -1938,9 +1837,6 @@ fn run(
                 Some(ticks_to_micros(published.ticks, frequency)),
             );
         }
-        // Prepared restoration restores each family's next publication, every
-        // family at once, under one suspension. World lifetime joins only once
-        // every other family is restored, so it always takes a later one.
         let mut batch = crate::hook::restoration::Batch::collect();
         let mut batch_restored = 0;
         if let Some(batch) = batch.as_mut() {
@@ -1961,9 +1857,6 @@ fn run(
         }
         let restore = |family| {
             let (result, refusal) = crate::hook::restoration::attempt(|| toggle(family));
-            // Its count: the microseconds of its own checks and writes in the
-            // shared suspension, when it took part (taken, so no other family
-            // reads it).
             progress.step(
                 format_args!(
                     "restore {family:?} {}",
@@ -1996,7 +1889,6 @@ fn run(
         drop(batch);
         match result {
             Ok(RestoreRound::Complete) => break Ok(()),
-            // A batch that restored publications leaves only the families' next ones.
             Ok(RestoreRound::Retry(_)) if batch_restored != 0 => {}
             Ok(RestoreRound::Retry(delay)) => std::thread::sleep(delay),
             Ok(RestoreRound::Stalled) => {
@@ -2022,8 +1914,6 @@ fn run(
         installation_error,
     });
     if restore_result.is_err() {
-        // An enabled patch can no longer be safely restored. Stop acquisition,
-        // finish the owned spool, and retain everything a relay can still use.
         shared.recording.store(false, Ordering::Release);
     }
     let hooks = HookLifetime {
@@ -2055,15 +1945,8 @@ fn run(
         },
         None,
     );
-    // Normal restoration also waits for callbacks and originals before release;
-    // the pinned path retains their state after acquisition admission closes.
     shared.recording.store(false, Ordering::Release);
-    // Closed admission proves every acquisition lease is complete; successful
-    // restoration additionally proves callback and relay quiescence for unload.
-    // Join the precreated readers before releasing any shared/frame storage.
     if let Err(reason) = acquisition.shutdown() {
-        // Pool::shutdown reports an acquisition that escaped its runner guard.
-        // A caller-owned Running marker can remain after the workers joined.
         progress.step("acquisition_refused", None);
         retain_detach!(
             reason,
@@ -2072,11 +1955,6 @@ fn run(
         );
     }
     progress.step("acquisition_joined", None);
-    // Decode drain first: pending refreshes decode in FIFO hour order into
-    // their pooled frames and hand off to the spool ready queue; the existing
-    // spool drain below then consumes them in order. Undrainable items use the
-    // existing LossBatch gap path with no new reason strings.
-    // One step a second while queued refreshes decode.
     let mut logged = Instant::now();
     let decode_outcome = decode::detach_drain(|count| {
         if logged.elapsed() >= Duration::from_secs(1) {
@@ -2085,10 +1963,8 @@ fn run(
         }
     });
     progress.step("decode_drained", None);
-    // Acquisition producers have stopped; the spool can take their final loss batch.
     shared.stop_spool.store(true, Ordering::Release);
     shared.wake_spool();
-    // Each change of the ready queue's length is progress for the recorder.
     let mut pending = usize::MAX;
     while !spool.is_finished() {
         let ready = shared.frames.ready_len();
@@ -2148,7 +2024,6 @@ fn run(
         None,
     );
     if hooks.restored {
-        // Spool/status readers joined and every family passed the final quiet check.
         if let Some(hooks) = experience_hooks.inner.as_mut() {
             hooks.release_after_quiet();
         }
@@ -2576,11 +2451,6 @@ impl RestoreFamily {
         }
     }
 
-    /// The families whose hooks publish through `hook::shared` rounds
-    /// (`Hook::set_family_enabled_shared`): every plain family publication.
-    /// The others (taps with unwind retention, split and multi-step
-    /// publications, the hourly hook and the world lifetime family) publish
-    /// on their own.
     const fn shared(self) -> bool {
         matches!(
             self,
@@ -2632,8 +2502,6 @@ impl RestoreFamily {
     }
 }
 
-/// Patch owners from the same inventory used for restoration and quiescence.
-/// The exhaustive mapping makes a new restoration family require a guard name.
 #[cfg(test)]
 pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
     RestoreFamily::ALL.into_iter().map(|family| match family {
@@ -2708,9 +2576,6 @@ type AttachFamily<'a> = (
     &'a mut dyn FnMut() -> Result<bool, &'static str>,
 );
 
-/// Collect one-publication families, then report their outcomes in the
-/// original chain order. A collect error ends the candidate prefix; report
-/// keeps each family's original refusal mapping and post-write bookkeeping.
 pub(crate) fn install_attach_batch(
     stage: &crate::progress::Stage<'_>,
     families: &mut [AttachFamily<'_>],
@@ -2735,8 +2600,6 @@ pub(crate) fn install_attach_batch(
         round.publish();
         let mut rollback_error = None;
         round.for_each_attach_rollback_failure(|family, failure| {
-            // Visit every group even after one error; ordered reporting must
-            // never discard a later family's first failed rollback.
             if let Err(error) = crate::hook_failures::shared_rollback_failed(family, failure)
                 && rollback_error.is_none()
             {
@@ -2794,8 +2657,6 @@ fn restore_hourly(
                 wait();
             }
             Err(_) => {
-                // This attempt precedes restore_round; its next Err is the
-                // second consecutive failure, not a new first failure.
                 previous_errors[index] = true;
                 return;
             }
@@ -2821,8 +2682,6 @@ impl HookLifetime<'_> {
             self.shared.store(ptr::null_mut(), Ordering::Release);
             drop(hooks);
         } else {
-            // A live relay still needs its hooks and Shared; the nonnull
-            // pointer also prevents finish_worker from unloading this DLL.
             std::mem::forget(hooks);
         }
     }
@@ -2838,9 +2697,6 @@ fn restore_round(
     for family in RestoreFamily::ALL {
         let index = family as usize;
         if !restored[index] {
-            // World invalidation stays published
-            // through other native returns. Recheck after this round's restores:
-            // they can finish the last flight and consume the retry budget.
             if family == RestoreFamily::WorldLifetime && !world_restore_ready(restored, active()) {
                 continue;
             }
@@ -2865,14 +2721,12 @@ fn restore_round(
     }
 }
 
-/// QPC ticks as microseconds, for progress steps.
 fn ticks_to_micros(ticks: i64, frequency: i64) -> u64 {
     u64::try_from(i128::from(ticks.max(0)) * 1_000_000 / i128::from(frequency.max(1)))
         .unwrap_or(u64::MAX)
 }
 
 fn signal_done(output_lock: File, done: &Event) {
-    // The recorder may begin replay finalization as soon as it observes done.
     drop(output_lock);
     done.set();
 }
@@ -2903,8 +2757,6 @@ impl CaptureAdmission {
     }
 
     fn enter(&self) -> Option<CaptureLease<'_>> {
-        // SeqCst puts admission before or after close: an earlier admitted read
-        // stays counted until its lease drops; a later entry cannot acquire.
         self.active.fetch_add(1, Ordering::SeqCst);
         if self.closed.load(Ordering::SeqCst) {
             self.active.fetch_sub(1, Ordering::SeqCst);
@@ -2930,8 +2782,6 @@ impl Drop for CaptureLease<'_> {
     }
 }
 
-/// Opened once every family has reported: the hourly hook goes live in the same suspension as
-/// the families, whose observers are only settled by their reports after it.
 static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::closed();
 
 pub(crate) fn admit_hourly_capture() -> Option<CaptureLease<'static>> {
@@ -2996,7 +2846,6 @@ fn set_drain_status(status: &mut Value, result: &Result<(), &'static str>) {
     }
 }
 
-/// The collector's own part of the status: what the recorder and the bench read.
 struct DecodeStatus<T, U> {
     base: crate::status::Object<T>,
     shared: Option<crate::status::Object<U>>,
@@ -3024,7 +2873,6 @@ fn decode_status() -> impl serde::Serialize {
     let shared = if shared_ptr.is_null() {
         None
     } else {
-        // Status is produced while runtime retains Shared and joins its spool.
         Some(unsafe { &*shared_ptr })
     };
     decode_status_from(shared)
@@ -3129,14 +2977,12 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     let mut bytes = Vec::new();
     engine_allocation::reserve_exact(&mut bytes, count.0)?;
-    // Mutating the source between passes must not change the owned snapshot.
     shared.native_tick_calls.store(30, Ordering::Relaxed);
     with_allocations_denied(|| serde_json::to_writer(&mut bytes, &value))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     assert_eq!(bytes.len(), count.0);
     let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(status["decode"]["native_tick_work"]["calls"], 3);
-    // Every hook family is published; thread CPU includes the started worker.
     let families = status["decode"]["hook_timing"]["families"].as_object();
     assert_eq!(
         families.map(serde_json::Map::len),
@@ -3154,7 +3000,6 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     assert!(absent.get("native_tick_work").is_none());
     assert!(absent.get("collector_thread_cpu").is_none());
     assert!(absent["hook_timing"]["families"]["hourly"].is_object());
-    // Each family that names its refusals reports them in the live status.
     for (family, reason) in [
         ("intel_sources", "first_loss"),
         ("politics_changes", "staging_error"),
@@ -3170,8 +3015,6 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
         .map_err(|_| io::Error::from(io::ErrorKind::Other))
 }
 
-// Both quiescence checks use the same predicate, including while the threads
-// are suspended: a writer may be in its native original outside DLL code.
 pub(crate) fn observers_active() -> bool {
     RestoreFamily::ALL
         .into_iter()
@@ -3179,7 +3022,6 @@ pub(crate) fn observers_active() -> bool {
 }
 
 const DETACH_BUDGET: Duration = Duration::from_secs(5);
-/// Detach waits this long for the last ended hour to be read; it is recorded as lost after.
 const FINAL_HOUR_WAIT: Duration = Duration::from_secs(1);
 
 fn observer_detach_refusal(
@@ -3199,7 +3041,6 @@ fn mutation_detach_refusal(
     elapsed: Duration,
     active: impl FnMut(RestoreFamily) -> bool,
 ) -> &'static str {
-    // A busy patch or a deferred world entry need not have a native flight.
     observer_detach_refusal(elapsed, active)
         .unwrap_or("collector mutation entry restoration refused; collector retained")
 }
@@ -3311,8 +3152,6 @@ fn wait_quiet(
                     return Ok(());
                 }
             } else if let Ok(mut threads) = Threads::open_excluding(excluded_threads) {
-                // Snapshot/open may allocate. Only scalar counts and current IPs
-                // are consulted after suspension; no owner drops in this window.
                 let result = threads.suspend().and_then(|()| {
                     if observers_active() {
                         Ok(false)
@@ -3321,10 +3160,6 @@ fn wait_quiet(
                     }
                 });
                 if threads.resume().is_err() {
-                    // Shared Threads::resume returns a failure only after every
-                    // owned suspension is actually resumed or proved exited.
-                    // Error history still refuses release; diagnostics now run
-                    // outside the suspended interval and all roots are retained.
                     return Err("collector quiet thread resume refused; collector retained");
                 }
                 if result == Ok(true) {
@@ -3519,7 +3354,7 @@ mod detach_policy_tests {
                     visited.push(family);
                     match family {
                         RestoreFamily::Hourly => Err("bytes differ"),
-                        RestoreFamily::Portrait => Ok(false), // pending cache flush
+                        RestoreFamily::Portrait => Ok(false),
                         _ => Ok(true),
                     }
                 }
@@ -3633,8 +3468,6 @@ mod detach_tests {
         let mut restored = [false; RestoreFamily::ALL.len()];
         let mut errors = [false; RestoreFamily::ALL.len()];
         let mut world_restores = 0;
-        // The preceding restoration/return consumes the shared wait budget.
-        // A quiet world must still get its first restoration attempt now.
         let elapsed = std::cell::Cell::new(Duration::ZERO);
         let result = restore_round(
             &mut restored,
@@ -3758,8 +3591,6 @@ mod detach_tests {
     }
 }
 
-/// Throttled observation of the live country registry for buffer sizing.
-/// Header words only; nothing observed here is recorded.
 #[derive(Default)]
 struct RegistryWatch {
     last: Option<Instant>,
@@ -3794,8 +3625,6 @@ struct RegistryWatch {
 
 impl RegistryWatch {
     const INTERVAL: Duration = Duration::from_millis(50);
-    /// The intel total walks every country's table header, so it is sampled
-    /// less often than the three registry headers.
     const INTEL_INTERVAL: Duration = Duration::from_secs(1);
 
     fn poll_reserved_visibility(
@@ -3838,8 +3667,6 @@ impl RegistryWatch {
         }
     }
 
-    /// Both combat families can grow without a country registry change.
-    /// Failed hints are offered again; only actual capture latches capacities.
     fn poll_combat_hints(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -3855,8 +3682,6 @@ impl RegistryWatch {
         Some(CombatHints::observe(memory, base))
     }
 
-    /// Full logistics owner acquisition is bounded like the other country
-    /// roster polls. Load/failure checks in the callbacks remain immediate.
     fn poll_logistics(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -3872,8 +3697,6 @@ impl RegistryWatch {
         crate::logistics_balance::prepare(memory, base).map(Some)
     }
 
-    /// Line rosters can grow without the country registry changing. Repeat
-    /// the offer even without growth so a failed allocation can be retried.
     fn poll_lines(&mut self, memory: &impl engine_native::Memory, base: usize) -> Option<usize> {
         if self
             .last_lines
@@ -3885,8 +3708,6 @@ impl RegistryWatch {
         crate::country_scale::observe_production_output(memory, base)
     }
 
-    /// The country slots and strategic regions when either is larger than
-    /// any seen before, at most every `INTERVAL`.
     fn poll(&mut self, memory: &impl engine_native::Memory, base: usize) -> Option<(usize, usize)> {
         if self
             .last
@@ -3904,8 +3725,6 @@ impl RegistryWatch {
         })
     }
 
-    /// A larger dense CountryIntel total than any seen, at most every
-    /// `INTEL_INTERVAL`. Intel vectors fill after a save's registry does.
     fn poll_intel(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -4003,10 +3822,6 @@ impl RegistryWatch {
             }))
     }
 
-    /// Moving-owner counts, map headers and the physical navy pass can change
-    /// independently of the country census. Failed hint components are retried
-    /// independently; the applied capture capacities retain every earlier
-    /// readable floor.
     fn poll_map(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -4045,9 +3860,6 @@ impl RegistryWatch {
         Ok(Some(raised))
     }
 
-    /// Larger raid arena demand than any seen, at most every
-    /// `INTEL_INTERVAL`: the path memo, raid parents' type lists and convoy
-    /// reservations fill after a save's registry does; a full hour reads all.
     fn poll_raids(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -4079,9 +3891,6 @@ impl RegistryWatch {
         )
     }
 
-    /// Larger character or script flag demand than any seen, at most every
-    /// `INTEL_INTERVAL`: a save's roster, template files and flags fill after
-    /// its registry does, and a full hour must read them all.
     fn poll_characters(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -4114,8 +3923,6 @@ impl RegistryWatch {
         }))
     }
 
-    /// Largest live saved-target row/name demand, at most once per second.
-    /// Load and script growth are presized off-thread before a full capture.
     fn poll_saved_targets(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -4139,10 +3946,6 @@ impl RegistryWatch {
         Ok(Some(raised))
     }
 
-    /// Larger political table demand than any seen, at most every
-    /// `INTEL_INTERVAL`: a save's character records, parties, civil wars and
-    /// advisor lists fill after its registry does, and a full hour must read
-    /// them all.
     fn poll_politics(
         &mut self,
         memory: &impl engine_native::Memory,
@@ -4164,9 +3967,6 @@ impl RegistryWatch {
     }
 }
 
-/// The loaded content's live strategic-region count, zero when unreadable:
-/// the naval-patrol history watches are sized from it, never from a vanilla
-/// count.
 fn strategic_regions(memory: &impl engine_native::Memory, base: usize) -> usize {
     engine_native::cgame_state::read_strategic_region_count(memory, base)
         .map_or(0, |count| count as usize)
@@ -4184,8 +3984,6 @@ struct CombatHintState {
     naval: Option<crate::extended::naval_details::Capacities>,
 }
 
-/// The combat hints each frame slot's frame holds, with the slot's generation when they
-/// were applied: a frame allocated since holds none.
 #[derive(Clone, Default, PartialEq)]
 struct AppliedHints(Vec<(u64, CombatHintState)>);
 
@@ -4259,8 +4057,6 @@ impl CombatHints {
     }
 }
 
-/// Hint reserves are nonterminal and never raise the ordinary capture-driven
-/// capacities. A failed attempt retains existing storage and is retried later.
 fn grow_combat_hints(
     shared: &Shared,
     capacities: &crate::extended::Capacities,
@@ -4310,7 +4106,6 @@ fn grow_combat_hints(
     refused
 }
 
-/// Only the sizing side leases idle frames; the spool returns only its own frame.
 fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut BufferCapacities) {
     let live = unsafe { LiveMemory::new() };
     let _ = capacities
@@ -4332,8 +4127,6 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
     }
 }
 
-/// The game thread's waits outside the collector's own reading, by cause, and the frames.
-/// `buffer_wait_*` stay zero by construction: no frame or held store is ever waited on.
 fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
     let [heap_hours, heap_hours_ns, heap_hour_max_ns] = shared.heap_waits.read();
     let calls = |calls: crate::private_heap::Calls| {
@@ -4486,7 +4279,6 @@ fn verify_content_roster(
         shared
             .pool_bytes
             .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
-        // Preserve the local diagnostic even when verification refuses capture.
         let verification = roster.verify(
             &mut session.identity,
             &config.expected_mounts,
@@ -4518,15 +4310,10 @@ fn spool_loop(
     mut processor: Processor,
     status_path: &Path,
     sizing: SizingThread,
-    // Status and content files are written on the loader's writer thread:
-    // this thread only hands snapshots over and never waits on status I/O,
-    // nor joins that thread (#94).
     writer: crate::status_writer::StatusHandle,
     teardown_status: &OnceLock<TeardownStatus>,
     history_requests: SpoolHistory,
 ) -> Result<SpoolOutcome, &'static str> {
-    // This local drops before the owned processor/sizing parameters, so an
-    // early return or unwind joins the sampler before either owner joins helpers.
     #[cfg(feature = "worker_sampler")]
     let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
     let stop_recording = StopRecordingOnSpoolExit {
@@ -4540,8 +4327,6 @@ fn spool_loop(
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
-    // Wake-ups replace polling: decode publication, the roster and the stop request unpark
-    // this thread.
     let _ = shared.spool_waker.set(std::thread::current());
     let phases = &crate::spool_phases::SPOOL;
     loop {
@@ -4549,7 +4334,6 @@ fn spool_loop(
             return Err("collector allocation failed");
         }
         let span = phases.span(Phase::Observers);
-        // A live read: between ticks only.
         if !crate::tick_gate::game_ticking() {
             shared.prepare_frame_clocks(&live);
         }
@@ -4590,9 +4374,6 @@ fn spool_loop(
                 failed_hour: frame.clock.as_ref().map(|clock| clock.hour),
             });
             if !shared.roster_ready.load(Ordering::Acquire) {
-                // A readable entry clock publishes the roster before its
-                // buffer. These early callbacks have no attributable
-                // hour; retain their count until a session identity can be written.
                 startup_unknown = startup_unknown
                     .saturating_add(1)
                     .saturating_add(frame.dropped_before.unknown_count)
@@ -4607,8 +4388,6 @@ fn spool_loop(
                 continue;
             }
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
-            // Campaign directories can still fail to open. Keep the buffer and
-            // preceding witnesses until those operations succeed. History is ready.
             let mut stalled = false;
             while let Err(error) = processor.prepare(frame) {
                 if !stalled {
@@ -4620,10 +4399,6 @@ fn spool_loop(
                     return Err("collector allocation failed");
                 }
                 if error.kind() == io::ErrorKind::InvalidData {
-                    // An immutable history or identity refusal cannot recover by
-                    // retaining this buffer. Ending the worker requests restore
-                    // through the loader's JoinHandle check and preserves the
-                    // precise error in its terminal status.
                     stop_recording.stop();
                     let _ = processor.detach();
                     return Err("campaign recording refused; observations remain unwritten");
@@ -4641,8 +4416,6 @@ fn spool_loop(
                     )
                     .map_err(|e| error_reason(e, "spool status allocation failed"))?;
                 if shared.stop_spool.load(Ordering::Acquire) {
-                    // The hours behind this one stay in their frames while it retries;
-                    // the status names the warning and the frames in flight.
                     stop_recording.stop();
                     let _ = processor.detach();
                     return Err("cannot open campaign spool; observations remain unwritten");
@@ -4664,9 +4437,6 @@ fn spool_loop(
                 }
             }
             span.finish();
-            // Conversion owns every value needed by encoding and diagnostics.
-            // Return the capture storage before potentially slow output, except
-            // when a retry must be published before that storage can be reused.
             processor.set_backlogged(shared.buffers_backlogged());
             let pending_write = match processor.prepare_frame(frame) {
                 Ok(prepared) if prepared.allows_early_recycle() => Some(prepared),
@@ -4689,8 +4459,6 @@ fn spool_loop(
                     None
                 }
                 Err(error) => {
-                    // Conversion failed before any write; its exact batch is
-                    // known unpublished, rather than an uncertain spool write.
                     frame.extended.discard_event_feed();
                     crate::equipment_destruction::lost_drain();
                     crate::naval_result_sources::lost_drain();
@@ -4726,9 +4494,6 @@ fn spool_loop(
             }
             sizing.sizing.recycle_frame(shared, index);
             span.finish();
-            // No reference to the recycled frame survives this point. Complete
-            // this write before preparing another frame or flushing: comparison
-            // tokens belong to the current encoder baseline.
             if let Some(prepared) = pending_write
                 && let Err(error) = processor.write_prepared(prepared)
             {
@@ -4758,7 +4523,6 @@ fn spool_loop(
             processor
                 .end_spool_frame(watch.finish(watched_hour, |ticks| shared.ns(ticks)))
                 .map_err(|_| "spool slow-frame allocation failed")?;
-            // A sustained backlog must not starve sizing, the flush or the status.
             if reported.elapsed() >= Duration::from_secs(1) {
                 break;
             }
@@ -4912,8 +4676,6 @@ fn spool_loop(
     }
 }
 
-/// Shared monotonic demand; snapshots grow only exclusively owned frames outside the mutex.
-/// The game thread allocates a new frame from it.
 type BufferCapacities = sampling::FrameCapacities;
 
 impl CapacityMax for BufferCapacities {
@@ -4939,13 +4701,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Back off capacity hints only when current-boundary acquisition can grow
-/// without them. Loading, world invalidation and a refused hint keep the
-/// original fast cadence. Capacity raises and failed observations do not:
-/// raises creep every second in a growing world, and a skipped hint supplies
-/// no recorded value or failure. Once a recycled frame has published this
-/// world's captured sizes, every frame grows to them, so the census only
-/// anticipates growth and backs off further.
 struct SizingBackoff {
     last: Option<Instant>,
     interval: Duration,
@@ -4988,19 +4743,15 @@ impl SizingBackoff {
     }
 }
 
-/// What one sizing pass keeps between passes.
 struct SizingState {
     registry: RegistryWatch,
     applied_combat_hints: AppliedHints,
     fuel_demand_at: Instant,
-    /// The last pass that ran the prompt once-a-second sizing reads.
     second: Instant,
     capacity_census: SizingBackoff,
-    /// The frames the politics staging was last sized for.
     politics_frames: usize,
 }
 
-/// Sizing observations the spool thread records in its status.
 #[derive(Default)]
 struct PendingSizing {
     errors: u64,
@@ -5010,37 +4761,24 @@ struct PendingSizing {
 #[cfg(test)]
 type SizingCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 
-/// State the spool thread shares with its sizing thread.
 struct SizingShared {
-    /// The pool's own ([`Shared::frame_capacities`]), which a new frame is allocated from.
     capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
     idle_growth_requested: AtomicBool,
     country_intel_accounted: AtomicUsize,
     template_home_accounted: AtomicUsize,
     naval_combat_home_accounted: AtomicUsize,
-    /// An explicit spool pass requests live preparation. Retiring encoded
-    /// rows wakes the worker to free them, not to repeat that preparation.
     pass_requested: AtomicBool,
-    /// A refused hint (source demand or combat hint growth) since the sizing
-    /// thread last checked; it restores the one-second census.
     hint_demand: AtomicBool,
-    /// The admitted world generation whose captured sizes a recycled frame has published.
     settled_world: AtomicU64,
     #[cfg(test)]
     before_recycle_publish: Mutex<Option<SizingCheck>>,
     #[cfg(test)]
     before_idle_frame_growth: Mutex<Option<SizingCheck>>,
     stop: AtomicBool,
-    /// A terminal sizing failure, which ends the spool thread.
     failure: OnceLock<&'static str>,
     pending: Mutex<PendingSizing>,
-    /// The spool thread's allocation context between hours, which a terminal
-    /// allocation failure on the sizing thread records.
     context: Mutex<crate::allocation::Context>,
-    /// Held by the sizing thread, or by the spool thread when the sizing
-    /// thread could not start.
     state: Mutex<Option<SizingState>>,
-    /// What encoder commits handed back, freed by the sizing thread.
     retired: Mutex<Vec<replay_frame::frame::Retired>>,
 }
 
@@ -5087,7 +4825,6 @@ impl SizingShared {
         }
     }
 
-    /// Capacity observation may allocate or read live memory; only its max-merge holds the mutex.
     fn raise<R>(&self, shared: &Shared, step: impl FnOnce(&mut BufferCapacities) -> R) -> R {
         let mut proposal = self.with_capacities(shared, |capacities| *capacities);
         let result = step(&mut proposal);
@@ -5118,11 +4855,7 @@ impl SizingShared {
         });
     }
 
-    /// Frames are measured whenever their holder prepares them for reuse
-    /// ([`Shared::prepare_frame_for_reuse`]); this charges only the shared homes.
     fn account_homes(&self, shared: &Shared) {
-        // Homes are charged at their high-water marks; a stale or empty observation
-        // never lowers one.
         for (bytes, accounted) in [
             (
                 shared.country_intel.allocated_bytes(),
@@ -5146,12 +4879,9 @@ impl SizingShared {
         }
     }
 
-    /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.
     fn recycle_frame(&self, shared: &Shared, index: usize) {
         shared.frame_stage(index, sampling::FrameStage::Recycle);
         let mut proposal = *self.capacities.lock();
-        // A live read: between ticks only. The sizing thread presizes combats every pass, so
-        // a frame returned during a tick still grows to the latest live demand.
         if !crate::tick_gate::game_ticking() {
             let live = unsafe { LiveMemory::new() };
             let _ = proposal
@@ -5159,7 +4889,6 @@ impl SizingShared {
                 .combat_progress
                 .presize(&live, shared.base);
         }
-        // The world this frame sampled, read before the reset below clears its clock.
         let admitted = {
             let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
             frame.clock.is_some().then_some(frame.world_generation)
@@ -5172,7 +4901,6 @@ impl SizingShared {
                     shared.offer_country_cache(required_cells);
                 }
             }
-            // Measures the whole frame after growth, reset and clock preparation.
             shared.prepare_frame_for_reuse(index);
             self.account_homes(shared);
             #[cfg(test)]
@@ -5206,10 +4934,6 @@ impl SizingShared {
     }
 }
 
-/// The spool's sizing thread: live sizing reads, the capture-buffer growth
-/// they request and between-tick observer preparation, in passes beside the
-/// spool thread. Beside it the frame builder builds frames ahead and nothing
-/// else, so a wake never waits for a pass. Dropping it stops and joins both.
 struct SizingThread {
     sizing: Arc<SizingShared>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -5217,8 +4941,6 @@ struct SizingThread {
 }
 
 impl SizingThread {
-    /// Start the thread with the attach-time capacities and sizing caches.
-    /// Without a thread the spool thread runs each pass itself.
     fn start(shared: engine_allocation::SharedBox<Shared>, state: SpoolState) -> Self {
         let sizing = Arc::new(SizingShared::new(
             &shared,
@@ -5274,10 +4996,6 @@ impl SizingThread {
         handle_id(self.builder.as_ref()?)
     }
 
-    /// Called by the spool thread once per pass: record what the sizing
-    /// thread observed, hand it the current allocation context and, after a
-    /// pass that `received` an hour or while a world loads, ask the sizing
-    /// thread for a pass; without the thread, run every pass here.
     fn spool_pass(
         &self,
         shared: &Shared,
@@ -5295,7 +5013,6 @@ impl SizingThread {
         *lock(&self.sizing.context) = crate::allocation::context();
         span.finish();
         match &self.thread {
-            // An idle spool wakes every SPOOL_IDLE_WAIT; the sizing thread's own timer covers it.
             Some(thread) if received || crate::world_lifetime::invalidating() => {
                 self.sizing.pass_requested.store(true, Ordering::Release);
                 thread.thread().unpark();
@@ -5303,7 +5020,6 @@ impl SizingThread {
             Some(_) => {}
             None => {
                 if let Some(state) = lock(&self.sizing.state).as_mut() {
-                    // Sizing reads live memory: inline on the spool thread it waits ticks out too.
                     let _gated = crate::tick_gate::gated();
                     sizing_pass(
                         shared,
@@ -5320,8 +5036,6 @@ impl SizingThread {
 }
 
 impl SizingThread {
-    /// Free what a commit handed back on the sizing thread, or here without
-    /// one, so the spool thread goes on to its next hour.
     fn retire(&self, retired: Vec<replay_frame::frame::Retired>) {
         if retired.is_empty() {
             return;
@@ -5363,14 +5077,11 @@ impl Drop for SizingThread {
 
 fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
-    // SAFETY: the handle stays open while the JoinHandle lives.
     let id =
         unsafe { windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _) };
     (id != 0).then_some(id)
 }
 
-/// The frame builder thread ([`Shared::build_ahead_until`]). A refused frame is the terminal
-/// sizing failure, which ends the spool thread.
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
     let mut priority = OwnPriority::frame_pipeline();
@@ -5413,8 +5124,6 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
                 return;
             }
         }
-        // Only the periodic pass moves its deadline, so an hour's pass cannot postpone the
-        // registry poll. A loading world rebuilds its registries before the first hour.
         if due {
             next_pass = Instant::now()
                 + if crate::world_lifetime::invalidating() {
@@ -5428,7 +5137,6 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     }
 }
 
-/// Without a sizing thread, only the spool's returning frames grow.
 fn sizing_pass(
     shared: &Shared,
     sizing: &SizingShared,
@@ -5522,7 +5230,6 @@ fn sizing_pass(
     crate::building_bombing::presize(0);
     crate::nuclear_strikes::presize(0);
     crate::market_changes::presize(0, collector_primitives::country_slots::census_rows(0));
-    // Growth from refused demand and the live country population.
     if let Err(reason) =
         crate::map_events::presize(collector_primitives::country_slots::census_rows(0))
     {
@@ -5561,8 +5268,6 @@ fn sizing_pass(
         }
         crate::fuel_awards::presize(&live, base);
     }
-    // The staging holds every hour the spool has not drained: when a backlog grows the frames,
-    // it grows with them at once, not at the next census.
     let frames = shared.frames.live().max(sampling::BUFFERS);
     if frames > state.politics_frames
         && let Some(entries) =
@@ -5571,8 +5276,6 @@ fn sizing_pass(
         crate::politics_changes::resize(entries, 0);
         state.politics_frames = frames;
     }
-    // This advisory worker arena has no observer-preparation dependency; do
-    // not nest its admission under the independent event-preparation timer.
     if capacity_census {
         match crate::country_scale::observe_fuel_unit_demand(&live, base) {
             Ok(Some(demand)) => sizing.raise(shared, |capacities| {
@@ -5624,9 +5327,6 @@ fn sizing_pass(
             *entries = (*entries).max(lines);
         });
     }
-    // A save load rebuilds the country registry before its first hourly
-    // tick; presize every buffer while the game is still loading. Sizing
-    // only grows, so a larger region roster alone repeats it harmlessly.
     if let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, base) {
         let changed = sizing.raise(shared, |capacities| {
             let display = &mut capacities.extended.weather.display_bytes;
@@ -5644,7 +5344,6 @@ fn sizing_pass(
     if let Some((slots, regions)) = registry.poll(&live, base) {
         crate::country_scale::note_slots(slots);
         crate::operation_outcomes::resize(slots.max(1));
-        // This census is RegistryWatch-throttled, including while idle.
         crate::politics_changes::resize(
             crate::country_scale::observe_politics_demand(&live, base, slots, shared.frames.live())
                 .unwrap_or(slots),
@@ -5727,7 +5426,6 @@ fn sizing_pass(
                     .err(),
             ]
         });
-        // A census during loading undercounts, and its table could not grow before the next load.
         if crate::world_lifetime::token().is_some() {
             collector_naval_management::changes::presize(&live, base);
         }
@@ -5773,7 +5471,6 @@ fn sizing_pass(
             capacities.extended.railway_guns.raise_for_names(demand)
         });
     }
-    // Mixed with fixed province/geometry floors; keep the whole map group fast.
     if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
         if let Ok(carrier) = demand.carrier
             && crate::country_scale::note_carrier_demand(carrier)
@@ -5809,7 +5506,6 @@ fn sizing_pass(
                 .naval_counters
                 .raise_for_port(demand.navies.port)
                 .err();
-            // The map hint raises the core and extended capacities.
             capacities.core = raised.core;
             capacities.extended = raised.extended;
             failure
@@ -5860,8 +5556,6 @@ fn sizing_pass(
             capacities.extended.raise_for_raid_arenas(demand)
         });
     }
-    // Script-variable demand also offers scope-watch storage before native
-    // writers run. Keep this mixed character/flag/variable census prompt.
     if let Some(demand) = sizing
         .demand(registry.poll_characters(&live, base))
         .flatten()
@@ -5879,7 +5573,6 @@ fn sizing_pass(
             capacities.extended.saved_event_targets.raise(demand)
         });
     }
-    // This mixed group also prepares operation-completion observer arenas.
     if let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten() {
         for reason in demand.failures() {
             sizing.error(reason);
@@ -5938,32 +5631,17 @@ fn sizing_pass(
     Ok(())
 }
 
-// Ready buffers, clock preparation and stop requests interrupt this idle wait.
 const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
-/// Between the passes the spool requests after each hour: the registry's growth cadence.
 const SIZING_IDLE_WAIT: Duration = RegistryWatch::INTERVAL;
 
-/// `recorder refresh` asks for one full-refresh hour: the first hour whose update
-/// returns after the request is accepted is read, every scheduled table including
-/// daily, static and sliced ones, when the following hourly update is entered
-/// ([`crate::capture_point::settle_next`]). Each request is a `<token>.request`
-/// file of its own in the session's [`REFRESH_REQUESTS`] folder, answered by
-/// `<token>.ack` once accepted, so requests made at once never replace or remove
-/// one another. The history worker accepts and acknowledges it, so a stalled file
-/// system never holds the spool thread that returns capture buffers. Observation
-/// remains continuous; `force_next` is reserved for capture recovery. Nothing is
-/// sent to the game. Oracles use this to compare every table at a chosen hour.
 #[derive(Default)]
 struct RefreshRequests {
-    /// Accepted requests still on disk, and whether each was acknowledged. One whose
-    /// acknowledgement or removal failed must not force every later hour full.
     accepted: Vec<(String, bool)>,
 }
 
 pub(crate) const REFRESH_REQUESTS: &str = "refresh-requests";
 
 impl RefreshRequests {
-    /// `accept` runs once for each new request, before it is acknowledged.
     fn poll(&mut self, session: &Path, mut accept: impl FnMut()) -> io::Result<()> {
         let directory = session.join(REFRESH_REQUESTS);
         let entries = match fs::read_dir(&directory) {
@@ -6001,7 +5679,6 @@ impl RefreshRequests {
             }
             fs::write(directory.join(format!("{token}.ack")), token.as_bytes())?;
             self.accepted[at].1 = true;
-            // Its requester withdraws it once answered, perhaps before this removal.
             match fs::remove_file(directory.join(format!("{token}.request"))) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}
@@ -6031,7 +5708,6 @@ impl HistoryReplies {
         if let Some(text) = text {
             let token = text.split_whitespace().next().unwrap_or_default();
             if !token.is_empty() && self.last.as_deref() != Some(token) {
-                // A newer request supersedes even a completed close awaiting acknowledgement.
                 self.pending = Some(begin(text));
                 self.last = Some(token.to_owned());
                 if matches!(self.pending.as_ref(), Some(HistoryReply::Closing { .. })) {
@@ -6089,15 +5765,8 @@ fn confinement_availability() -> &'static str {
     }
 }
 
-/// CPU set ids of the two least preferred physical cores (lowest scheduling
-/// class, then lowest efficiency class, then highest core index) with all their
-/// logical processors. Empty on small-core or multi-group machines, or when
-/// the query or its advisory allocation fails. The selection and availability
-/// reason are cached until the collector reloads.
 fn background_cpu_sets() -> &'static [u32] {
     background_cpu_sets_with(|buffer, length, required| {
-        // SAFETY: the caller supplies either a null sizing buffer or aligned
-        // storage of at least `length` bytes, and a live returned-length slot.
         unsafe {
             windows_sys::Win32::System::SystemInformation::GetSystemCpuSetInformation(
                 buffer.cast(),
@@ -6138,15 +5807,12 @@ fn background_cpu_sets_with(
             let bytes = buffer.as_ptr().cast::<u8>();
             let mut offset = 0usize;
             while offset + entry_size <= length as usize && sets.len() < sets.capacity() {
-                // SAFETY: entries are packed back to back, each starting with its own size.
                 let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
                 if (entry.Size as usize) < entry_size {
                     break;
                 }
                 if entry.Type == CpuSetInformation {
-                    // SAFETY: the CpuSet arm is the active one for CpuSetInformation entries.
                     let set = unsafe { entry.Anonymous.CpuSet };
-                    // SAFETY: SchedulingClass is the defined reading of this union.
                     let class = unsafe { set.Anonymous2.SchedulingClass };
                     sets.push(CpuSet {
                         group: set.Group,
@@ -6168,9 +5834,6 @@ fn background_cpu_sets_with(
     })
 }
 
-/// One logical processor's CPU set. `rank` orders its physical core from least
-/// preferred: lowest scheduling class, then lowest efficiency class (the more
-/// efficient cores of a hybrid CPU), then highest group-relative core index.
 #[derive(Clone, Copy)]
 struct CpuSet {
     group: u16,
@@ -6178,12 +5841,6 @@ struct CpuSet {
     id: u32,
 }
 
-/// The CPU set ids of the two least preferred physical cores, with all their
-/// logical processors. None are selected with fewer than four physical cores,
-/// or on a machine with several processor groups: core indices are
-/// group-relative and Windows ignores selected sets outside a thread's group,
-/// so those machines stay unconfined. An unavailable selection retains its
-/// reason, including advisory allocation failure.
 fn least_preferred_cores(sets: &[CpuSet]) -> Result<Vec<u32>, ConfinementAvailability> {
     if sets.iter().any(|set| set.group != sets[0].group) {
         return Err(ConfinementAvailability::SeveralProcessorGroups);
@@ -6207,15 +5864,8 @@ fn least_preferred_cores(sets: &[CpuSet]) -> Result<Vec<u32>, ConfinementAvailab
     Ok(ids)
 }
 
-/// Reserved stack of each collector thread that decodes, converts, compares or
-/// encodes whole frames and tables: decode, spool, its conversion helpers and
-/// its sizing thread. std's 2 MiB default leaves little room beside the
-/// several-hundred-KiB frames optimised builds give whole-frame code on these
-/// threads, and an overflow ends the game process. Windows commits only the
-/// pages a thread touches, so the reservation costs address space, not memory.
 pub(crate) const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
 
-// Frame service must never wait for a buffer backlog before becoming runnable.
 pub(crate) struct OwnPriority {
     boosts_disabled: bool,
     frame_pipeline: bool,
@@ -6260,7 +5910,6 @@ impl OwnPriority {
         }
         pipeline.register(role);
         pipeline.refresh();
-        // Only a thread its controller keeps at idle priority during ticks works through them.
         crate::tick_gate::copy_only(
             !matches!(role, crate::frame_priority::Role::Sizing)
                 && pipeline.registered(role)
@@ -6277,7 +5926,6 @@ impl OwnPriority {
         {
             return false;
         }
-        // SAFETY: the pseudo-handle names only this collector-owned controller.
         if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) } == 0 {
             PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             false
@@ -6290,7 +5938,6 @@ impl OwnPriority {
         !self.frame_pipeline && !backlogged
     }
 
-    /// Retry failed policy calls between work items; frame service never lowers.
     pub(crate) fn follow(&mut self, backlogged: bool) {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, SetThreadInformation, SetThreadPriority, SetThreadPriorityBoost,
@@ -6300,8 +5947,6 @@ impl OwnPriority {
         };
         let lowest = self.should_lower(backlogged);
         if !self.boosts_disabled {
-            // Adaptive priority changes only our base priority, never dynamic wake boosts.
-            // SAFETY: the pseudo-handle names only the calling thread.
             if unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
                 PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -6314,7 +5959,6 @@ impl OwnPriority {
             } else {
                 THREAD_PRIORITY_NORMAL
             };
-            // SAFETY: the pseudo-handle names only the calling thread and needs no close.
             if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
                 PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -6331,8 +5975,6 @@ impl OwnPriority {
                     0
                 },
             };
-            // SAFETY: GetCurrentThread names only this collector thread; throttling
-            // has the required version and remains live for the synchronous call.
             if unsafe {
                 SetThreadInformation(
                     GetCurrentThread(),
@@ -6359,8 +6001,6 @@ impl OwnPriority {
             } else {
                 (std::ptr::null(), 0)
             };
-            // SAFETY: the pseudo-handle names only this collector thread; a
-            // null, empty list clears its selection.
             if unsafe { SetThreadSelectedCpuSets(GetCurrentThread(), list, count) } == 0 {
                 CONFINEMENT_FAILURES.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -6386,8 +6026,6 @@ pub(crate) fn background_cpu_sets_failure_exercise(
         SYSTEM_CPU_SET_INFORMATION_0_0,
     };
     assert_eq!(confinement_availability(), "not queried");
-    // Four eligible physical cores, each with two logical processors. These
-    // synthetic ids never reach the OS setter: only failed selections follow policy.
     let entries: [_; 8] = std::array::from_fn(|index| SYSTEM_CPU_SET_INFORMATION {
         Size: size_of::<SYSTEM_CPU_SET_INFORMATION>() as u32,
         Type: CpuSetInformation,
@@ -6412,11 +6050,9 @@ pub(crate) fn background_cpu_sets_failure_exercise(
         *required = size_of_val(&entries) as u32;
         if buffer.is_null() {
             assert_eq!(length, 0);
-            return false; // The sizing call reports insufficient buffer.
+            return false;
         }
         assert!(length >= *required);
-        // SAFETY: the query buffer holds the full stack fixture, and the two
-        // disjoint regions stay live for this synchronous byte copy.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 entries.as_ptr().cast::<u8>(),
@@ -6496,8 +6132,6 @@ mod tests {
         assert!(!recording.load(Ordering::Acquire));
     }
 
-    /// A spool slower than the game: the hours it has not taken stay in frames the game
-    /// allocated for them, and the status carries how many and their bytes until it catches up.
     #[test]
     fn a_slow_spool_s_backlog_is_in_the_status_and_clears_when_it_catches_up() {
         let shared = Shared::new(0, 0, 1);
@@ -6531,7 +6165,6 @@ mod tests {
         assert_eq!(behind["frames"]["in_flight_bytes"], bytes);
         assert_eq!(behind["frames"]["live_bytes"], bytes);
         assert_eq!(behind["frames"]["built_ahead"], 0);
-        // The frame builder's look: none is free, so the next hour's frame and a spare are built.
         for _ in 0..crate::frame_pool::AHEAD {
             shared.build_frame_ahead().unwrap();
         }
@@ -6549,8 +6182,6 @@ mod tests {
         while let Some(index) = shared.frames.pop_decode() {
             shared.recycle_frame(index);
         }
-        // The returns free every frame past the steady ones once more than the frames kept ahead
-        // are free; the spare never taken is one of the steady frames left.
         let caught_up = status(&shared);
         assert_eq!(caught_up["frames"]["in_flight"], 0);
         assert_eq!(caught_up["frames"]["in_flight_bytes"], 0);
@@ -6560,9 +6191,6 @@ mod tests {
         assert_eq!(caught_up["frames"]["ahead_ready"], built - 1);
     }
 
-    /// A spool stalled on an hour it cannot take returns no frame, so the hours past the frames
-    /// there are dropped and named in the status instead of each growing a frame until the
-    /// machine runs out of commit. On the base every one of them grew a frame.
     #[test]
     fn a_stalled_spool_drops_hours_instead_of_growing_frames() {
         let shared = Shared::new(0, 0, 1);
@@ -6581,7 +6209,6 @@ mod tests {
         assert_eq!(stalled["grown"], 0);
         assert_eq!(stalled["built_ahead"], 0);
         assert_eq!(stalled["dropped_spool_stalled"], steady as u64 + 1);
-        // Once the spool takes hours again, an hour with none free grows one as before.
         shared.spool_stalled(false);
         assert!(shared.take_frame(&mut 0).is_some());
         let resumed = frames(&shared);
@@ -6589,9 +6216,6 @@ mod tests {
         assert_eq!(resumed["dropped_spool_stalled"], steady as u64 + 1);
     }
 
-    /// An hour building its own frame while the spool or the sizing thread holds the frame
-    /// capacities never waits for them: it builds from the capacities last published, and a
-    /// change is published once its holder lets go. On the base the hour waited for the holder.
     #[test]
     fn an_hour_building_its_own_frame_never_waits_on_the_held_frame_capacities() {
         let shared = Arc::new(Shared::new(0, 0, crate::test_qpc_frequency()));
@@ -6852,8 +6476,6 @@ mod tests {
         assert!(requests.pending.is_none());
     }
 
-    /// Two logical processors per `(group, scheduling class, efficiency class,
-    /// core index)`, with ids from `first`.
     fn cpu_sets(cores: &[(u16, u8, u8, u8)], first: u32) -> Vec<CpuSet> {
         let mut id = first;
         let mut sets = Vec::new();
@@ -6897,8 +6519,6 @@ mod tests {
 
     #[test]
     fn background_threads_take_the_two_least_preferred_physical_cores() {
-        // Classes ranked as a preferred-core machine reports them; three cores
-        // tie at class 0, so the two highest core indices are taken.
         let sets = cpu_sets(
             &[
                 (0, 6, 0, 0),
@@ -6916,8 +6536,6 @@ mod tests {
             least_preferred_cores(&shuffled).unwrap(),
             [265, 264, 263, 262]
         );
-        // A hybrid CPU with tied scheduling classes: the efficient cores (lower
-        // efficiency class) go first, whatever their indices.
         let hybrid = cpu_sets(
             &[
                 (0, 0, 1, 0),
@@ -6940,7 +6558,6 @@ mod tests {
             0,
         );
         assert_eq!(least_preferred_cores(&reversed).unwrap(), [0, 1, 2, 3]);
-        // Several processor groups repeat group-relative core indices: unconfined.
         let groups = cpu_sets(
             &[
                 (0, 0, 0, 60),
@@ -6955,7 +6572,6 @@ mod tests {
             least_preferred_cores(&groups),
             Err(ConfinementAvailability::SeveralProcessorGroups)
         );
-        // Fewer than four physical cores: unconfined.
         assert_eq!(
             least_preferred_cores(&sets[..6]),
             Err(ConfinementAvailability::TooFewCores)
@@ -7015,8 +6631,6 @@ mod tests {
     }
 
     fn attach_test_progress() -> crate::progress::Progress {
-        // An absent directory gives this stage no file, without creating
-        // capture or progress files in the worktree.
         let absent = std::env::temp_dir().join(format!(
             "hoi4-attach-stage-{}-{:?}/absent",
             std::process::id(),
@@ -7037,8 +6651,6 @@ mod tests {
         {
             let _round = crate::hook::shared::Round::collect_attach().unwrap();
             crate::hook::publication::select_family(Some("runtime_classified_overflow"));
-            // Capacity overflow exercises classification without changing
-            // allocator hooks or attempting a large allocation.
             let error = crate::hook::shared::publication_storage_attach::<u8>(usize::MAX, true)
                 .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
@@ -7162,7 +6774,6 @@ mod tests {
             "the refusal cannot be retried in report"
         );
         assert_eq!(later_calls.get(), 0);
-        // Once ahead in collect, once in report with the real outcome.
         assert_eq!(first_posts.get(), 2);
         assert_eq!(second_posts.get(), 2);
         assert_eq!(ATTACH_PREPARATIONS[0].load(Ordering::SeqCst), 1);
@@ -7437,7 +7048,6 @@ mod tests {
             assert!(cadence.due(now, 1, false));
         }
         cadence.observed(now, false, false);
-        // A load with unchanged capacities still resets the slow census.
         now += Duration::from_secs(1);
         assert!(cadence.due(now, 2, false));
         cadence.observed(now, true, false);
@@ -7448,11 +7058,8 @@ mod tests {
             cadence.observed(now, demand, false);
         }
         assert_eq!(cadence.interval, Duration::from_secs(2));
-        // Raises and refusals wake a quiet census at the original cadence,
-        // never turn repeated observer wakeups into repeated live censuses.
         assert!(!cadence.due(now + Duration::from_millis(10), 2, true));
         assert!(cadence.due(now + Duration::from_secs(1), 2, true));
-        // Captured sizes lead a settled world; refusals still restore the fast census.
         for seconds in [2, 4, 8, 16, 32, 60, 60] {
             cadence.observed(now, false, true);
             assert_eq!(cadence.interval, Duration::from_secs(seconds));
@@ -7471,7 +7078,6 @@ mod tests {
             map: sizing.map,
             extended: sizing.extended,
         };
-        // No thread and no pass state: the spool's share of each pass only.
         let thread = SizingThread {
             sizing: Arc::new(SizingShared::new(&shared, capacities, None)),
             thread: None,
@@ -7493,7 +7099,6 @@ mod tests {
         });
         sizing.error("synthetic failed observation");
         assert!(!take_demand());
-        // The raises still apply and the failure is still counted.
         let after = sizing.with_capacities(&shared, |capacities| *capacities);
         assert_eq!(after.core[5], before.core[5] + 1);
         assert_eq!(after.core[6], before.core[6] + 1);
@@ -7516,8 +7121,6 @@ mod tests {
         sizing
             .spool_pass(&shared, &mut processor, true)
             .unwrap();
-        // A terminal allocation failure on the sizing thread names the
-        // spool thread's latest campaign context.
         assert_eq!(lock(&sizing.sizing.context).failed_hour, Some(7));
         crate::allocation::set_context(Default::default());
         sizing.spool_pass(&shared, &mut processor, true).unwrap();
@@ -7531,7 +7134,6 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
     }
 
-    /// An idle spool pass asks the sizing thread for nothing; a pass that received an hour does.
     #[test]
     fn only_a_spool_pass_that_received_an_hour_requests_sizing() {
         let directory =
@@ -7574,7 +7176,6 @@ mod tests {
         let capacities = *sizing.capacities.lock();
         assert!(capacities.extended.naval_result_sources >= 64);
         assert!(capacities.extended.equipment_destruction >= 64);
-        // Capacity publication never leases frames.
         assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
 
@@ -7764,10 +7365,6 @@ mod tests {
         assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
 
-    /// The sizing thread held inside a pass, in its idle growth with a frame leased, does not hold
-    /// up building ahead: the hour that leaves fewer than the next hour's frame and its spare free
-    /// wakes the frame builder, and the spare is built while the pass is still held. On the base
-    /// the sizing thread built ahead only between passes, so the spare waited for the pass to end.
     #[test]
     fn a_wake_during_a_sizing_pass_builds_the_spare_without_waiting_for_the_pass() {
         use std::sync::mpsc;
@@ -7800,7 +7397,6 @@ mod tests {
                     let fixture = Arc::clone(&fixture);
                     crate::spawn_ending(move || frame_builder(&fixture.0, &fixture.1.sizing))
                 };
-                // Ends the pass and the builder however this is left, so neither stays held.
                 struct End<'a>(Option<mpsc::Sender<()>>, &'a AtomicBool, std::thread::Thread);
                 impl Drop for End<'_> {
                     fn drop(&mut self) {
@@ -7819,7 +7415,6 @@ mod tests {
                     .recv_timeout(crate::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| panic!("the pass never leased an idle frame"));
                 assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
-                // The second hour leaves one frame free: the builder is woken for the spare.
                 let held: Vec<_> = (0..sampling::BUFFERS - 2)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
@@ -7876,7 +7471,6 @@ mod tests {
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let sizing = &thread.sizing;
-                // Dropped on every way out, so the held growth always finishes.
                 let release = release;
                 let worker = {
                     let fixture = Arc::clone(&fixture);
@@ -7913,10 +7507,6 @@ mod tests {
         );
     }
 
-    /// The spool freeing a frame past what the pool keeps, held in the free, never holds up an
-    /// hour that finds no frame free and builds its own: the spool frees it only after letting go
-    /// of the capacities that hour's build reads. On the base it freed the frame while holding
-    /// them, so the hour's build waited for the free to end.
     #[test]
     fn an_hour_building_its_own_frame_never_waits_for_the_spool_freeing_a_surplus_one() {
         use crate::frame_pool::AHEAD;
@@ -7939,9 +7529,7 @@ mod tests {
             move || format!("{:?}", watching.0.frames.gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
-                // Dropped on every way out, so the held free always finishes.
                 let release = release;
-                // One hour past the steady frames builds its own: one frame past what is kept.
                 let mut taken: Vec<_> = (0..=BUFFERS)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
@@ -7950,7 +7538,6 @@ mod tests {
                             .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames.gauge()))
                     })
                     .collect();
-                // Returned until more than the frames kept ahead are free: the next is surplus.
                 for _ in 0..=AHEAD {
                     let index = taken.pop().unwrap();
                     steps.at(format_args!("the spool returning frame {index}"));
@@ -7971,7 +7558,6 @@ mod tests {
                 free_held.recv_timeout(crate::TEST_HANG_GUARD).unwrap_or_else(|_| {
                     panic!("the spool never freed a surplus frame: {:?}", shared.frames.gauge())
                 });
-                // Every free frame is taken, and the hour after builds its own.
                 let hours = AHEAD + 2;
                 let game = {
                     let fixture = Arc::clone(&fixture);
@@ -8017,8 +7603,6 @@ mod tests {
     fn recycle_counts_country_intel_growth_during_conversion_once() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
-        // This fixture has no workers. Include every frame's actual allocation
-        // and the one shared Home, independently of the charged pool total.
         let allocated_bytes = || {
             shared
                 .frames
@@ -8032,13 +7616,11 @@ mod tests {
         let shared_before = shared.country_intel.allocated_bytes();
         let returning = shared.take_frame(&mut 0).unwrap();
         let frame = unsafe { &*shared.frames[returning].load(Ordering::Acquire) };
-        // A fresh frame has no CountryIntel loan: Home is free for idle growth.
         let before_frame_bytes = frame.allocated_bytes();
         let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let intel_rows = initial.extended.intel.rows[15] + 8;
 
-        // Model a sizing raise during A's conversion with the real growth path.
         sizing.raise(&shared, |capacities| {
             capacities.core[5] = wars;
             capacities.extended.raise_for_country_intel(intel_rows);
@@ -8200,7 +7782,6 @@ mod tests {
         let accept = || accepted.set(accepted.get() + 1);
         let taken = || accepted.replace(0);
         let mut requests = RefreshRequests::default();
-        // No request: nothing asked for.
         requests.poll(&session, accept).unwrap();
         assert_eq!(taken(), 0);
         fs::write(request("token-7"), "token-7").unwrap();
@@ -8208,10 +7789,8 @@ mod tests {
         assert_eq!(taken(), 1);
         assert_eq!(ack("token-7"), "token-7");
         assert!(!request("token-7").exists());
-        // Consumed: a later poll forces nothing more.
         requests.poll(&session, accept).unwrap();
         assert_eq!(taken(), 0);
-        // A request that could not be removed is accepted once, not every hour.
         fs::write(request("token-8"), "token-8").unwrap();
         let held = OpenOptions::new()
             .read(true)
@@ -8224,11 +7803,9 @@ mod tests {
         requests.poll(&session, accept).unwrap();
         assert_eq!(taken(), 0);
         drop(held);
-        // Its requester withdraws it once answered.
         fs::remove_file(request("token-8")).unwrap();
         requests.poll(&session, accept).unwrap();
         assert!(requests.accepted.is_empty());
-        // Requests made at once are each acknowledged; none replaces or removes another.
         fs::write(request("token-9"), "token-9").unwrap();
         fs::write(request("token-10"), "token-10").unwrap();
         fs::write(folder.join("token-11.tmp"), "token-11").unwrap();
@@ -8238,7 +7815,6 @@ mod tests {
             assert_eq!(ack(token), token);
             assert!(!request(token).exists());
         }
-        // A file still being written is not a request.
         assert!(!folder.join("token-11.ack").exists());
         let _ = fs::remove_dir_all(&session);
     }
@@ -8253,14 +7829,12 @@ mod tests {
         let accept = || accepted.set(accepted.get() + 1);
         let taken = || accepted.replace(0);
         let mut requests = RefreshRequests::default();
-        // A folder in the acknowledgement's place: writing it fails.
         fs::create_dir(folder.join("token-9.ack")).unwrap();
         fs::write(folder.join("token-9.request"), "token-9").unwrap();
         assert!(requests.poll(&session, accept).is_err());
         assert_eq!(taken(), 1);
         assert!(requests.poll(&session, accept).is_err());
         assert_eq!(taken(), 0);
-        // Once the obstacle clears, the same request is acknowledged and not armed again.
         fs::remove_dir(folder.join("token-9.ack")).unwrap();
         requests.poll(&session, accept).unwrap();
         assert_eq!(taken(), 0);
@@ -8272,8 +7846,6 @@ mod tests {
         let _ = fs::remove_dir_all(&session);
     }
 
-    /// A registry whose three country headers report the first count, and
-    /// whose strategic-region roster the second.
     #[derive(Default)]
     struct Registry(std::cell::Cell<u32>, std::cell::Cell<u32>);
 
@@ -8332,26 +7904,20 @@ mod tests {
     fn registry_watch_reports_growth_once_and_ignores_torn_or_smaller_counts() {
         let memory = Registry::default();
         let mut watch = RegistryWatch::default();
-        // The main menu has an empty registry: nothing to presize.
         assert_eq!(watch.poll(&memory, 0), None);
-        // A save loads 5,001 slots; the next poll after the interval sees it.
         memory.0.set(5_001);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), Some((5_001, 0)));
-        // Throttled, then unchanged.
         assert_eq!(watch.poll(&memory, 0), None);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
-        // The region roster fills later: the slots are reported with it.
         memory.1.set(2_500);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), Some((5_001, 2_500)));
-        // A smaller registry or roster never shrinks capacities.
         memory.0.set(400);
         memory.1.set(100);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
-        // A count past the engine's u16 slot ceiling is a torn read, not a size.
         memory.0.set(1 << 20);
         watch.last = None;
         assert_eq!(watch.poll(&memory, 0), None);
@@ -8372,7 +7938,6 @@ mod tests {
         memory.1.set(2_500);
         watch.last_game_score = None;
         assert!(watch.poll_game_score(&memory, 0).is_some());
-        // No character, production or raid system exists in this fixture.
         assert!(capacities.presize_live_inputs(&memory, 0).is_err());
         assert_eq!(capacities.air.scores.regions, 2_500);
     }
@@ -8444,9 +8009,8 @@ mod tests {
             .unwrap();
         assert_eq!(initial.rows, 66);
         memory.array(roster, 0x6000, 71);
-        // Pin an active throttle independently of observation/scheduling time.
         watch.last_combat_hints = Some(Instant::now() + Duration::from_secs(3600));
-        assert!(watch.poll_combat_hints(&memory, 0).is_none()); // throttled
+        assert!(watch.poll_combat_hints(&memory, 0).is_none());
         watch.last_combat_hints = None;
         assert_eq!(
             watch
@@ -8457,7 +8021,6 @@ mod tests {
                 .rows,
             71
         );
-        // An unreadable air payload contributes no hint; a valid one grows it.
         memory.array(0x3000 + side::AIR_SUPPORT, 0x7fff_0000, 300);
         watch.last_combat_hints = None;
         assert!(watch.poll_combat_hints(&memory, 0).unwrap().land.is_none());
@@ -8482,7 +8045,7 @@ mod tests {
                 .rows,
             1
         );
-        memory.put(roster + 12, &72u32.to_le_bytes()); // invalid count/capacity
+        memory.put(roster + 12, &72u32.to_le_bytes());
         watch.last_combat_hints = None;
         assert!(watch.poll_combat_hints(&memory, 0).unwrap().land.is_none());
     }
@@ -8502,7 +8065,6 @@ mod tests {
         assert_eq!(initial.rows, 1);
         assert!(initial.ships > 0);
         memory.array(roster, 0x4000, 2);
-        // Pin an active throttle independently of observation/scheduling time.
         watch.last_combat_hints = Some(Instant::now() + Duration::from_secs(3600));
         assert!(watch.poll_combat_hints(&memory, IMAGE).is_none());
         watch.last_combat_hints = None;
@@ -8523,7 +8085,7 @@ mod tests {
                 .rows,
             1
         );
-        memory.u32(roster + 12, 2); // count exceeds capacity
+        memory.u32(roster + 12, 2);
         watch.last_combat_hints = None;
         assert!(
             watch
@@ -8566,7 +8128,6 @@ mod tests {
         assert!(applied.iter().all(|state| *state == CombatHintState::default()));
         assert_eq!(crate::allocation::failed(), stopped);
         assert!(capacities == crate::extended::Capacities::default());
-        // A later valid observation is retried, without the failed huge peak.
         let before = shared.pool_owned();
         let valid = CombatHints {
             land: Some(engine_native::cland_combat::DetailDemand {
@@ -8635,7 +8196,6 @@ mod tests {
         assert!(applied.iter().all(|state| *state == CombatHintState::default()));
         assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(bytes(), before);
-        // With a third frame free, every free frame is leased in turn.
         shared.recycle_frame_prepared(held[0]);
         assert!(!grow_combat_hints(
             &shared,
@@ -8700,7 +8260,6 @@ mod tests {
         check_accounting();
         assert!(applied == grown);
 
-        // A leased frame must still receive a later hint when it returns.
         let held = shared.frames.pop().unwrap();
         let previous = applied[held];
         hints.land.as_mut().unwrap().rows = 1200;
@@ -8712,7 +8271,6 @@ mod tests {
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        // A dropped frame returns directly to free, without a ready pop.
         shared.recycle_frame(held);
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
@@ -8747,7 +8305,6 @@ mod tests {
             watch.characters,
             crate::country_scale::CharacterDemand::default()
         );
-        // The interval limits observations, without turning a failure into zero.
         assert_eq!(watch.poll_politics(&memory, 0), Ok(None));
         assert_eq!(watch.poll_characters(&memory, 0), Ok(None));
     }
@@ -8757,8 +8314,6 @@ mod tests {
         use engine_native::{Memory, craid_system};
         use engine_raid_inputs::raid_path_memo;
         use std::cell::Cell;
-        // Five thousand null country slots, with no raid-parent payloads.
-        // The memo buckets are deliberately unreadable: sizing needs headers.
         struct Memo {
             registry: Registry,
             mask: Cell<u32>,
@@ -8809,11 +8364,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(watch.poll_raids(&memory, 0).unwrap(), Some(initial));
-        // Optional unreadable hints remain reportable on each unthrottled poll.
         assert!(initial.failures.into_iter().any(|reason| reason.is_some()));
-        // Rehash alone grows: tokens and reservations remain unchanged.
         memory.mask.set(8_191);
-        assert_eq!(watch.poll_raids(&memory, 0).unwrap(), None); // throttled
+        assert_eq!(watch.poll_raids(&memory, 0).unwrap(), None);
         watch.last_raids = None;
         let demand = watch.poll_raids(&memory, 0).unwrap().unwrap();
         assert_eq!(demand.path_rows, 8_192 + 15);
@@ -8832,7 +8385,6 @@ mod tests {
     #[test]
     fn status_replaces_while_a_delete_sharing_reader_holds_it_open() {
         use std::os::windows::fs::OpenOptionsExt;
-        /// Removes the directory even when an assertion fails.
         struct TempDir(PathBuf);
         impl Drop for TempDir {
             fn drop(&mut self) {
@@ -8842,12 +8394,10 @@ mod tests {
         let raw = std::env::temp_dir().join(format!("hoi4-status-{}", std::process::id()));
         let _ = fs::remove_dir_all(&raw);
         fs::create_dir_all(&raw).unwrap();
-        // Production writes through canonical \\?\ paths.
         let dir = TempDir(fs::canonicalize(&raw).unwrap());
         assert!(dir.0.as_os_str().to_string_lossy().starts_with(r"\\?\"));
         let path = dir.0.join("status.json");
         write_status(&path, &json!({"hours": 1})).unwrap();
-        // A reader that shares delete, as the recorder, bench and smoke do.
         let shared = fs::OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
@@ -8857,7 +8407,6 @@ mod tests {
         let current: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(current["hours"], 2);
         drop(shared);
-        // A reader without delete sharing still blocks it, within the bounded retry.
         let exclusive = fs::OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ)
@@ -8867,7 +8416,6 @@ mod tests {
         assert!(matches!(error.raw_os_error(), Some(5 | 32)));
         drop(exclusive);
         write_status(&path, &json!({"hours": 4})).unwrap();
-        // This local NTFS directory supports POSIX rename.
         assert!(!POSIX_RENAME_UNSUPPORTED.load(Ordering::Relaxed));
     }
 
@@ -8932,8 +8480,6 @@ mod tests {
                 if address == 0x4000 + ccountry::DIVISIONS && output.len() == 16 {
                     let reads = self.roster_reads.get() + 1;
                     self.roster_reads.set(reads);
-                    // The count and seed passes see the same empty roster;
-                    // native growth races its final selecting-header check.
                     if reads >= 3 {
                         output[8..12].copy_from_slice(&1_u32.to_le_bytes());
                     }
@@ -9007,7 +8553,6 @@ mod tests {
             watch.presentation_census,
             engine_native::carmy::PresentationDemand::default(),
         );
-        // Throttling is not another failure observation.
         assert!(
             processor
                 .observe_input_demand(watch.poll_presentation_census(&memory, 0))

@@ -1,5 +1,3 @@
-//! Exact-hour playback through the shared replay decoder, with one cached block.
-
 use std::{io, sync::Arc};
 
 use crate::map_binding::MapBinding;
@@ -8,9 +6,6 @@ use replay_data::{BranchId, Hour, SessionId, rows::TableId};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use viewer_counter_products::map::province_tooltips::air_region::{RosterHistory, Sampler};
 
-/// What a playback holds for its hour: the decoded frame, shared so the
-/// window can hand it between threads without a copy, the gap it falls in, or
-/// why its map cannot be shown.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Current {
     Frame(Arc<DecodedFrame>),
@@ -19,8 +14,6 @@ pub enum Current {
         hour: Hour,
         reason: String,
     },
-    /// The hour's map cannot be shown: the recording's map cannot be read, or none is bound to
-    /// read it. Refused by name, never the recording's gap.
     Refused {
         branch: BranchId,
         hour: Hour,
@@ -28,7 +21,6 @@ pub enum Current {
     },
 }
 
-/// The recording's daily air rosters as the map counters ask them.
 pub struct AirRosters(RosterHistory);
 
 impl viewer_counters::map::counters::AirPasses for AirRosters {
@@ -38,26 +30,16 @@ impl viewer_counters::map::counters::AirPasses for AirRosters {
 }
 
 pub struct Playback {
-    /// Shared so a worker thread can walk the same file without a copy.
     replay: Arc<Replay>,
-    /// The sampler of `replay`'s daily air rosters handed out: the playhead entry's, over lanes,
-    /// once a reader opened on it ([`Self::read_rosters_of`]), else today's reader through the
-    /// map's source; and whether it is the entry's.
     rosters: std::sync::Mutex<Option<(Arc<Sampler>, bool)>>,
     branch: BranchId,
     hour: Hour,
     current: Current,
     materialized: bool,
-    /// Walks the recording's hours on a thread of its own, from the hour it read last.
     cursor: Option<HourCursor>,
     map_binding: Option<Arc<MapBinding>>,
-    /// The map's hours read from the recording's runs in place, which replace the replay's
-    /// hour reads once open; `map_failure`, why they could not be read, refuses the map until
-    /// it is bound again.
     map: Option<crate::map_source::MapSource>,
     map_failure: Option<String>,
-    /// The replay's row frames leave the map tables to its native capture, as a decoded
-    /// frame showed: only the bound map reads it, so no hour is read for it without one.
     native_map: bool,
     source_path: Option<bool>,
 }
@@ -68,17 +50,13 @@ impl Playback {
         Self::shared(Arc::new(replay))
     }
 
-    /// A playback of its own over a replay another playback already holds.
     pub fn shared(replay: Arc<Replay>) -> io::Result<Self> {
         let mut playback = Self::unloaded(replay)?;
         playback.select_branch(playback.branch)?;
         Ok(playback)
     }
 
-    /// Presentation state without synchronous decoding: exact frames arrive through `present`
-    /// before this state is rendered.
     pub fn unloaded(replay: Arc<Replay>) -> io::Result<Self> {
-        // A recording read as timelines opens on its main history.
         let main = replay.timelines().map(|timelines| timelines.main);
         let first = replay
             .branches
@@ -113,11 +91,9 @@ impl Playback {
     pub fn bind_map(&mut self, binding: Arc<MapBinding>) {
         debug_assert!(Arc::ptr_eq(&binding.replay_handle(), &self.replay));
         self.map_binding = Some(binding);
-        // The binding's map opens on the next read.
         self.map = None;
         self.map_failure = None;
         self.native_map = false;
-        // A frame read before the binding may hold no map: the hour is read again through it.
         let held = match &self.current {
             Current::Frame(frame) if leaves_map_to_native(frame, self.replay.capture_mode) => {
                 Some((frame.branch, frame.hour))
@@ -130,7 +106,6 @@ impl Playback {
         }
     }
 
-    /// The hour of a replay whose map only its native capture holds, with no map bound: why.
     fn unindexed(&self, branch: BranchId, hour: Hour) -> Current {
         Current::Refused {
             branch,
@@ -140,7 +115,6 @@ impl Playback {
         }
     }
 
-    /// Opens the binding's map; cancellation leaves it to be opened again.
     fn refresh_map(&mut self) -> io::Result<()> {
         if self.map.is_some() || self.map_failure.is_some() {
             return Ok(());
@@ -163,7 +137,6 @@ impl Playback {
 
     fn note_source(&mut self, branch: BranchId, hour: Hour, indexed: bool) {
         let profiling = viewer_foundation::profile_writer::profiling();
-        // Tests follow the source without printing it.
         #[cfg(not(any(test, feature = "test-support")))]
         if !profiling {
             return;
@@ -183,7 +156,6 @@ impl Playback {
         }
     }
 
-    /// A handle to the same replay for a worker thread.
     pub fn replay_handle(&self) -> Arc<Replay> {
         Arc::clone(&self.replay)
     }
@@ -192,13 +164,10 @@ impl Playback {
         self.map.as_ref().map(|map| map.roster_source())
     }
 
-    /// The daily air rosters as the map counters ask them, from the shared sampler.
     pub fn air_rosters(&self) -> Arc<AirRosters> {
         Arc::new(AirRosters(RosterHistory::of(self.roster_sampler())))
     }
 
-    /// The sampler of the air roster history: the playhead entry's once a reader opened on it,
-    /// else today's reader through the map's source once it is open.
     pub fn roster_sampler(&self) -> Arc<Sampler> {
         let source = self.air_roster_source();
         let mut held = self
@@ -215,8 +184,6 @@ impl Playback {
         sampler
     }
 
-    /// The air roster history is read by `entry`'s one sampler from now on, as every map and tool
-    /// on that playhead reads it; today's stays when the entry has none.
     pub fn read_rosters_of(&self, entry: &crate::playhead_host::Entry) {
         if let Some(sampler) = entry.rosters(&self.replay) {
             *self
@@ -255,8 +222,6 @@ impl Playback {
         }
     }
 
-    /// Shows an hour read elsewhere, without decoding anything: it moves the position the rest
-    /// of the window reads. Returns the hour it replaces, for the caller to free where it likes.
     pub fn present(&mut self, branch: BranchId, hour: Hour, current: Current) -> Current {
         self.branch = branch;
         self.hour = hour;
@@ -264,7 +229,6 @@ impl Playback {
         std::mem::replace(&mut self.current, current)
     }
 
-    // Presented frames retain their identity while the load-time decoder, block and map walk go.
     pub fn release_source(&mut self) -> Option<impl Send + 'static + use<>> {
         let released = (self.cursor.take(), self.map.take());
         (released.0.is_some() || released.1.is_some()).then_some(released)
@@ -275,7 +239,6 @@ impl Playback {
         self.cursor.is_some()
     }
 
-    /// The timeline includes explicitly lost hours at either end of a branch.
     pub fn range(&self, branch: BranchId) -> Option<(Hour, Hour)> {
         let start = self
             .replay
@@ -306,17 +269,11 @@ impl Playback {
         self.seek(branch, first)
     }
 
-    /// Seek to exactly this hour. A hole never borrows the last displayed rows.
-    /// Only the target block may be decompressed; backward seeks reuse its frames.
-    /// Intermediate hours advance the baseline without copying their decoded rows.
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         let _cost = replay_frame::cpu::scope("viewer", Some("decode/hour-build"));
         self.seek_with(branch, hour, |_| {})
     }
 
-    /// [`Playback::seek`], handing `passed` every earlier hour of the block it
-    /// decodes on the way, so a caller that also wants those hours need not
-    /// seek back and decode the block again.
     pub fn seek_with(
         &mut self,
         branch: BranchId,
@@ -328,9 +285,6 @@ impl Playback {
         Ok(())
     }
 
-    /// Reads `hour` of `branch`, handing `passed` earlier hours on the way: every one a
-    /// block decodes. A native map builds the hour alone, so the hours before it a caller lacks
-    /// are asked for after it; a map that cannot be read refuses it by name.
     fn seek_to(
         &mut self,
         branch: BranchId,
@@ -375,9 +329,6 @@ impl Playback {
         let cached_output =
             self.branch == branch && self.hour == hour && self.cursor.is_some() && self.materialized;
         if !cached_output {
-            // This decode lane's old output is no longer needed. Displayed
-            // hours retained by other owners stay immutable; without one the
-            // decoder can apply deltas in its existing row storage.
             self.current = gap(branch, hour, "hour has not been decoded".into());
             self.materialized = false;
         }
@@ -421,8 +372,6 @@ impl Playback {
         let cursor = self
             .cursor
             .get_or_insert_with(|| HourCursor::new(Arc::clone(replay), &TableId::ALL, false));
-        // Hours just before the one asked, which a cursor going on builds on its way, are handed
-        // on; a jump builds the hour alone.
         if let Some((_, last)) = cursor.last().filter(|_| cursor.continues(branch, hour))
             && hour - last <= PASSED_HOURS
         {
@@ -459,8 +408,6 @@ impl Playback {
     }
 }
 
-/// Whether `frame`, a row frame of a recording in `mode`, leaves a map table its mode records
-/// to the native capture: it holds no map of its hour, though the recording does.
 fn leaves_map_to_native(frame: &DecodedFrame, mode: replay_data::scope::CaptureMode) -> bool {
     dashboard_base::map_tables::selected_tables().iter().any(|table| {
         replay_data::scope::records(mode, *table)
@@ -468,8 +415,6 @@ fn leaves_map_to_native(frame: &DecodedFrame, mode: replay_data::scope::CaptureM
     })
 }
 
-/// Why `replay` holds no frame of `hour` of `branch`: every gap holding it, in the replay's
-/// order, else that it was not recorded.
 pub fn gap_reason(replay: &Replay, branch: BranchId, hour: Hour) -> String {
     let reason = replay
         .gaps
@@ -485,7 +430,6 @@ pub fn gap_reason(replay: &Replay, branch: BranchId, hour: Hour) -> String {
     }
 }
 
-/// Hours a cursor going on to an hour builds on its way, handing them on, at most.
 const PASSED_HOURS: Hour = 48;
 
 fn gap(branch: BranchId, hour: Hour, reason: String) -> Current {
@@ -620,7 +564,6 @@ pub mod tests {
                         expeditionary_owner: 0,
                         province: 1,
                         template: (2_u64 << 32) | 52,
-                        // Whole display steps (replay_data::display), as recorded.
                         hit_points: 26_420_000,
                         organisation: 6_000_000,
                         orders_group: (57_u64 << 32) | 53,
@@ -730,9 +673,6 @@ pub mod tests {
                         paradrop_target: 7,
                     }])),
                 ];
-                // This fixture exercises the twenty map tables. Other domains,
-                // including singleton tables, are explicitly unavailable, and a
-                // retired table reads as the decoder refuses it by name.
                 let mut tables = std::array::from_fn(|index| {
                     let table = TableId::ALL[index];
                     TableView::Unavailable {
@@ -748,7 +688,6 @@ pub mod tests {
                 for (table, rows) in tables.iter_mut().zip(map_tables) {
                     *table = rows;
                 }
-                // Hourly nuclear impacts: one strike at hour 105, none otherwise.
                 tables[TableId::NuclearStrikes.index()] =
                     TableView::Complete(TableRows::NuclearStrikes(if hour == 105 {
                         vec![replay_data::rows::NuclearStrikeRow {
@@ -761,7 +700,6 @@ pub mod tests {
                     } else {
                         Vec::new()
                     }));
-                // The resources map mode's and the trade routes' tables.
                 for rows in resource_map_rows(hour) {
                     let table = rows.table();
                     tables[table.index()] = TableView::Complete(rows);
@@ -771,8 +709,6 @@ pub mod tests {
         })
     }
 
-    /// The resources map mode's and the trade routes' hourly tables, one row each and
-    /// changing every hour.
     pub fn resource_map_rows(hour: Hour) -> [TableRows; 8] {
         let efficiency = i64::from(hour) * 1_000;
         [
@@ -874,7 +810,6 @@ pub mod tests {
         written_fixture().0
     }
 
-    /// The fixture, and each hour's derived tables as its writer held them.
     fn written_fixture() -> (Replay, Vec<DecodedFrame>) {
         let mut records = records(1, &[100, 101, 104, 105, 820]);
         records.push(Record::Gap(Gap {
@@ -886,8 +821,6 @@ pub mod tests {
         Replay::from_records_derived(b"campaign".to_vec(), &[records]).unwrap()
     }
 
-    /// The frame read back at `(branch, hour)`: `source`'s, each derived table and its read
-    /// time as the writer held them then (`derived`).
     fn read_back(derived: &[DecodedFrame], branch: BranchId, hour: Hour) -> DecodedFrame {
         let held = derived
             .iter()
@@ -903,8 +836,6 @@ pub mod tests {
         frame
     }
 
-    /// The fixture with its first block damaged: the block is unreadable, while the
-    /// next blocks stay readable.
     fn corrupt_first_block(replay: &Replay) -> Replay {
         Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap()
     }
@@ -976,8 +907,6 @@ pub mod tests {
         assert_eq!(playback.frame(), Some(&read_back(&derived, 1, 104)));
     }
 
-    /// Every hour of the corrupt first block is that hour's failure, carrying the shared
-    /// reader's error, never a gap.
     fn assert_unreadable(playback: &mut Playback, hour: Hour) {
         playback.seek(1, hour).unwrap();
         let error = playback.replay().seek(1, hour).unwrap_err().to_string();
@@ -1036,8 +965,6 @@ pub mod tests {
 
     #[test]
     fn read_as_timelines_the_main_history_plays_through_each_reload_and_keeps_what_it_left() {
-        // 1 plays 100..=103; 2 loads 1's hour 101 and plays on; 3 is the next session, from
-        // 2's last hour.
         let segments = [
             records(1, &[100, 101, 102, 103]),
             records(2, &[102, 103, 104]),
@@ -1070,7 +997,6 @@ pub mod tests {
             };
             assert_eq!((frame.branch, frame.hour), (2, hour));
         }
-        // The play 2 left behind stays whole on its own history.
         assert_seek_matches_shared(&mut playback, 1, 103);
         assert!(playback.frame().is_some());
         assert_eq!(playback.range(1), Some((100, 103)));
@@ -1142,8 +1068,6 @@ pub mod tests {
         }
     }
 
-    /// The campaign map's document and a dashboard map's each read today's sampler until a reader
-    /// opens on them; then, and again for a reader opened anew, the playhead's one lanes sampler.
     #[test]
     fn every_reader_opened_hands_out_its_playheads_one_lanes_roster_sampler() {
         use crate::layers::sounds::tests::{quick, record_runs, units};

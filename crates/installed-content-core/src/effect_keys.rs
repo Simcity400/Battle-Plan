@@ -1,6 +1,3 @@
-//! Effect parsing dispatches registered classes, scopes and scripted effects in
-//! their accepted order. Reader and class identities come from the verified
-//! executable; parsing retains effects as data.
 
 use engine_executable::executable_tables::{RuntimeTable, view};
 

@@ -1,4 +1,3 @@
-//! Starting the verified installer, and opening a release's page.
 use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::Path};
 use windows_sys::Win32::UI::{
     Shell::ShellExecuteW,
@@ -25,7 +24,6 @@ fn open(file: &OsStr, parameters: Option<&str>, show: i32) -> Result<(), String>
             show,
         )
     };
-    // ShellExecute reports success as a value above 32.
     if result as isize > 32 {
         Ok(())
     } else {
@@ -36,7 +34,6 @@ fn open(file: &OsStr, parameters: Option<&str>, show: i32) -> Result<(), String>
     }
 }
 
-/// Write the installer `package` (already verified) to the temporary folder and start it.
 pub fn launch(version: &str, package: &[u8], arguments: &str) -> Result<(), String> {
     let path = std::env::temp_dir().join(format!("battle-plan-{version}-setup.exe"));
     std::fs::write(&path, package).map_err(|error| {
@@ -53,7 +50,6 @@ fn start(path: &Path, arguments: &str) -> Result<(), String> {
         .map_err(|error| format!("The installer could not be started: {error}."))
 }
 
-/// Open `url` in the default browser.
 pub fn browse(url: &str) -> Result<(), String> {
     open(OsStr::new(url), None, SW_SHOWNORMAL)
         .map_err(|error| format!("The release page could not be opened: {error}."))

@@ -1,10 +1,3 @@
-//! Trade flows (family `trade`): who sells what to whom over the hours asked, from the derived
-//! `TradeFlows` table (deals summed by seller holder, buyer holder and resource). Each flow's
-//! cells come as runs over the span, read as the table's history (the cost of its changes, never
-//! a walk of hours), each run cut where a side's tag changes; the widget sizes its ribbons at any
-//! hour, totals and averages from those runs. Deals the recording could not attribute (a side no
-//! country holds, a resource no definition names, a sum not recorded) are counted per hour as
-//! left out, never drawn as trade and never as none.
 
 use dashboard_base::products::Country;
 use super::{LoadContext, Product, identities::CountryIdentityRun};
@@ -25,7 +18,6 @@ use std::{
 use ts_rs::TS;
 
 pub const KEY: &str = "trade-flows";
-/// The columns of a flow: delivered, factories, convoys assigned and required, deals.
 const COLUMNS: [usize; 5] = [0, 1, 2, 3, 4];
 const DEALS: usize = 4;
 
@@ -36,35 +28,34 @@ pub struct TradeFlows;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TradeFlowParams {
     pub branch_id: String,
-    /// Every country's trade when none; else the flows any holder of these tags sold or bought.
+    #[doc = " Every country's trade when none; else the flows any holder of these tags sold or bought."]
     pub countries: Option<Vec<Country>>,
-    /// The window of hours read ([`super::windows`]): never the whole timeline in one reply.
+    #[doc = " The window of hours read ([`super::windows`]): never the whole timeline in one reply."]
     pub window: u32,
-    /// The hours of the window read; all of it when not given.
+    #[doc = " The hours of the window read; all of it when not given."]
     #[serde(default)]
     pub from: Option<i32>,
     #[serde(default)]
     pub to: Option<i32>,
 }
 
-/// One seller's deals of one resource with one buyer, as runs of equal terms.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TradeFlow {
-    /// Indexes into the reply's countries: the sides' tags at the flow's first run.
+    #[doc = " Indexes into the reply's countries: the sides' tags at the flow's first run."]
     pub seller: u32,
     pub buyer: u32,
-    /// The sides' holders, `[slot,id]`.
+    #[doc = " The sides' holders, `[slot,id]`."]
     pub seller_identity: String,
     pub buyer_identity: String,
-    /// Each run's sides' tags.
+    #[doc = " Each run's sides' tags."]
     pub seller_tags: Vec<u32>,
     pub buyer_tags: Vec<u32>,
     pub resource: u32,
     pub first_hours: Vec<i32>,
     pub last_hours: Vec<i32>,
-    /// Fixed-point daily amount delivered, exact.
+    #[doc = " Fixed-point daily amount delivered, exact."]
     pub delivered_raw: Vec<String>,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number>"))]
     pub factories: Vec<i64>,
@@ -84,7 +75,6 @@ pub struct TradeCountryIdentity {
     pub runs: Vec<CountryIdentityRun>,
 }
 
-/// Hours some deals were left out, and how many.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -102,17 +92,17 @@ pub struct TradeFlowsReply {
     pub branch_id: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Fixed-point decimals of every amount.
+    #[doc = " Fixed-point decimals of every amount."]
     pub decimals: u8,
-    /// Every recorded resource, by native index.
+    #[doc = " Every recorded resource, by native index."]
     pub resources: Vec<ResourceInfo>,
-    /// Every tag a flow names, in byte order.
+    #[doc = " Every tag a flow names, in byte order."]
     pub countries: Vec<String>,
-    /// Each listed tag's holders over the span.
+    #[doc = " Each listed tag's holders over the span."]
     pub country_identities: Vec<TradeCountryIdentity>,
-    /// Hours the deals were read: outside them nothing is known, not no trade.
+    #[doc = " Hours the deals were read: outside them nothing is known, not no trade."]
     pub known: Vec<HourSpan>,
-    /// Hours some deals were left out of the flows.
+    #[doc = " Hours some deals were left out of the flows."]
     pub partial: Vec<PartialSpan>,
     pub flows: Vec<TradeFlow>,
     pub warnings: Vec<String>,
@@ -120,13 +110,10 @@ pub struct TradeFlowsReply {
 
 dashboard_base::reply_warnings!(TradeFlowsReply);
 
-/// A flow's key: seller holder, buyer holder, resource.
 type FlowKey = ((u32, u32), (u32, u32), u32);
 
-/// One run of a flow's terms: hours, then delivered, factories, assigned, required, deals.
 type Terms = [i64; 5];
 
-/// The terms a step holds; none where its row is not shown or a cell is not recorded.
 fn terms(cells: Option<&[Cell]>) -> Option<Terms> {
     let cells = cells?;
     let mut out = [0; 5];
@@ -137,7 +124,6 @@ fn terms(cells: Option<&[Cell]>) -> Option<Terms> {
     Some(out)
 }
 
-/// The deals a step counts, recorded or not: what is left out where its terms are not.
 fn deals(cells: Option<&[Cell]>) -> i64 {
     match cells.and_then(|cells| cells.get(DEALS)) {
         Some(Cell::Number(deals)) => (*deals).max(0),
@@ -145,7 +131,6 @@ fn deals(cells: Option<&[Cell]>) -> i64 {
     }
 }
 
-/// A key's steps as runs: each run's hours with its terms, or with the deals it leaves out.
 pub(crate) fn step_runs(steps: &[Step], to: i32) -> Vec<(i32, i32, Result<Terms, i64>)> {
     let mut out: Vec<(i32, i32, Result<Terms, i64>)> = Vec::new();
     for (index, step) in steps.iter().enumerate() {
@@ -165,7 +150,6 @@ pub(crate) fn step_runs(steps: &[Step], to: i32) -> Vec<(i32, i32, Result<Terms,
     out
 }
 
-/// Each holder's tags over the timeline: `[slot,id]` to its tag runs, in hour order.
 pub(crate) fn identity_tags(query: &Query<'_>) -> HashMap<(u32, u32), Vec<(String, i32, i32)>> {
     let mut out: HashMap<(u32, u32), Vec<(String, i32, i32)>> = HashMap::new();
     for (tag, runs) in &query.holders.tags {
@@ -181,8 +165,6 @@ pub(crate) fn identity_tags(query: &Query<'_>) -> HashMap<(u32, u32), Vec<(Strin
     out
 }
 
-/// `first..=last` cut where either side's tag changes: each piece with both tags, or none where a
-/// side has no tag then.
 pub(crate) fn tagged<'a>(seller: &'a [(String, i32, i32)], buyer: &'a [(String, i32, i32)], first: i32, last: i32) -> Vec<(i32, i32, Option<(&'a str, &'a str)>)> {
     let mut edges: Vec<i32> = vec![first];
     for &(_, a, b) in seller.iter().chain(buyer) {
@@ -207,7 +189,6 @@ pub(crate) fn tagged<'a>(seller: &'a [(String, i32, i32)], buyer: &'a [(String, 
     out
 }
 
-/// Hours with deals left out, from each run that left some out: summed per hour.
 pub(crate) fn partial(left: &[(i32, i32, i64)]) -> Vec<PartialSpan> {
     let mut edges: Vec<(i64, i64)> = left.iter().flat_map(|&(a, b, deals)| [(i64::from(a), deals), (i64::from(b) + 1, -deals)]).collect();
     edges.sort_unstable();
@@ -228,7 +209,6 @@ pub(crate) fn partial(left: &[(i32, i32, i64)]) -> Vec<PartialSpan> {
     out
 }
 
-/// What a reply gathers over the stretches.
 #[derive(Default)]
 struct Gathered {
     flows: BTreeMap<FlowKey, Vec<(i32, i32, String, String, Terms)>>,
@@ -236,8 +216,6 @@ struct Gathered {
     known: Vec<HourSpan>,
 }
 
-/// The hours in both `a` and `b` (each ascending and apart): deals read while the derived table
-/// that sums them was available. An hour read but withheld by the writer is not known.
 pub(crate) fn both(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
@@ -256,7 +234,6 @@ fn holder(key: u128, shift: u32) -> Option<(u32, u32)> {
     (slot != TagHolderRow::NONE && id != TagHolderRow::NONE).then_some((slot, id))
 }
 
-/// Adds run `run`'s flows over `first..=last` that `chosen` keeps (every flow when none).
 fn gather(
     query: &Query<'_>,
     run: u32,
@@ -312,7 +289,6 @@ fn gather(
     Ok(())
 }
 
-/// The reply's flows and countries from what was gathered.
 fn flows(gathered: BTreeMap<FlowKey, Vec<(i32, i32, String, String, Terms)>>) -> (Vec<String>, Vec<TradeFlow>) {
     let countries: Vec<String> = gathered.values().flatten().flat_map(|run| [run.2.clone(), run.3.clone()]).collect::<BTreeSet<_>>().into_iter().collect();
     let index = |tag: &str| countries.binary_search_by(|held| held.as_str().cmp(tag)).map_or(0, |at| at as u32);

@@ -28,7 +28,6 @@ test('storage that cannot be used keeps no choice and throws nothing', () => {
   assert.doesNotThrow(() => saveAircraftChoice('C:/a.battleplan', null, broken));
 });
 
-/** A header's campaign id as its campaign key: the id's bytes in hex. */
 const campaignKey = (id: string) => [...id].map(character => character.charCodeAt(0).toString(16).padStart(2, '0')).join('');
 const GERMANY = campaignKey('00000000-0000-4000-8000-000000000001');
 const ITALY = campaignKey('00000000-0000-4000-8000-000000000002');

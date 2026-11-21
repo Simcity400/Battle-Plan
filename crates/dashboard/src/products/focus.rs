@@ -1,13 +1,3 @@
-//! National focus (family 31): a country's focus order over a branch, folded from the
-//! recording's own `Focus` and `CompletedFocuses` rows as the history of each holder of its tag
-//! per stretch ([`read`]), so no hour is walked. Every focus reply reads the fold: the whole
-//! history (`national-focus`), the order at an hour (`focus-hour`, `focus-order-page`) and the
-//! dated completions (`focus-completions`). `focus-unavailable` reads the four tables' status at
-//! an hour.
-//!
-//! A completion is dated where the game's list grew at its end under the same holder and tree
-//! while the country was read the hour before; any other change of the list, behind which a reset
-//! can hide, and a list first read after an hour not read, leave its focuses undated.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -28,9 +18,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Completed focuses a page holds.
 pub const PAGE_ROWS: u64 = 128;
-/// The longest focus token the game's lists hold.
 const TOKEN_BYTES: usize = 512;
 
 pub(crate) const NOT_HELD: &str = "No country held this tag";
@@ -39,7 +27,6 @@ pub(crate) const NO_ROW: &str = "No focus row was recorded for this country";
 pub(crate) const UNRECORDED: &str = "The country's focus row was not recorded";
 pub(crate) const INCOMPLETE: &str = "The country's completed focus list was not recorded whole";
 
-/// Hours a country's focus was not known, and why.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -49,7 +36,6 @@ pub struct FocusMissing {
     pub reason: String,
 }
 
-/// One stretch of hours a focus order held, read under one holder (canonical slot, raw id).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Segment {
     pub first: i32,
@@ -59,7 +45,6 @@ pub(crate) struct Segment {
     pub order: FocusOrder,
 }
 
-/// Consecutive hours of one raw progress, read under one holder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Progress {
     pub first: i32,
@@ -67,7 +52,6 @@ pub(crate) struct Progress {
     pub raw: i64,
 }
 
-/// What the game's focus row and completed list say at an hour, compared as the game's order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Order {
     tree: Option<Vec<u8>>,
@@ -77,22 +61,16 @@ struct Order {
     paused: bool,
 }
 
-/// One tag's focus over a branch.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Fold {
     pub segments: Vec<Segment>,
     pub progress: Vec<Progress>,
-    /// In hour order, never overlapping.
     pub missing: Vec<FocusMissing>,
-    /// Every dated completion, by hour and ordinal.
     pub completions: Vec<FocusEntry>,
-    /// The last hour read and its holder: the next hour continues it.
     last: Option<(i32, (u32, u32))>,
-    /// The order last read and its holder; another holder forgets it.
     held: Option<((u32, u32), Order)>,
 }
 
-/// The fields a fold reads, by index.
 struct Columns {
     tree: usize,
     current: usize,
@@ -126,13 +104,10 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// A cell's place among a history's columns.
 fn place(history: &History, column: usize) -> io::Result<usize> {
     history.columns.binary_search(&column).map_err(|_| crate::invalid("A focus history omitted a column"))
 }
 
-/// `tag`'s focus over `query`'s timeline: per stretch, each holder's `Focus` row and completed
-/// rows read as their history (the hours they change), folded in hour order.
 pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Fold> {
     let columns = Columns::new()?;
     let mut fold = Fold::default();
@@ -179,7 +154,6 @@ impl Fold {
         self.missing.push(FocusMissing { first_hour: first, last_hour: last, reason: reason.to_owned() });
     }
 
-    /// Hours no holder of the tag covers: unknown where the identity table was not read.
     fn unheld(&mut self, query: &Query<'_>, first: i32, last: i32) {
         self.last = None;
         let mut from = first;
@@ -196,7 +170,6 @@ impl Fold {
         }
     }
 
-    /// One holder's rows over `first..=last` of run `run`, folded.
     fn country(&mut self, query: &Query<'_>, columns: &Columns, run: u32, who: (u32, u32), first: i32, last: i32, cancelled: &AtomicBool) -> io::Result<()> {
         let recording = query.replay.recording();
         let key = u128::from(who.1);
@@ -263,7 +236,6 @@ impl Fold {
         Ok(())
     }
 
-    /// The country read as `who` from `hour` through `end` with `order` and progress `raw`.
     fn observe(&mut self, hour: i32, end: i32, who: (u32, u32), order: Order, raw: i64) {
         let continuing = self.last.is_some_and(|(end, held)| i64::from(end) + 1 == i64::from(hour) && held == who);
         let unchanged = continuing && self.held.as_ref().is_some_and(|(held, before)| *held == who && *before == order);
@@ -312,7 +284,6 @@ impl Fold {
         self.last = Some((end, who));
     }
 
-    /// The history as the widget reads it.
     pub fn history(&self) -> FocusHistory {
         FocusHistory {
             segments: self.segments.iter().map(|segment| FocusSegment { first_hour: segment.first, last_hour: segment.last, order: segment.order.clone() }).collect(),
@@ -320,7 +291,6 @@ impl Fold {
         }
     }
 
-    /// The segment holding `hour`, with its place.
     pub fn segment_at(&self, hour: i32) -> Option<(usize, &Segment)> {
         let at = self.segments.partition_point(|segment| segment.last < hour);
         self.segments.get(at).filter(|segment| segment.first <= hour).map(|segment| (at, segment))
@@ -331,8 +301,6 @@ impl Fold {
         self.progress.get(at).filter(|run| run.first <= hour).map(|_| at)
     }
 
-    /// The raw progress at `hour`, and the last day's rise when the hour before the run was read
-    /// under the same holder with the same national focus active.
     pub fn progress(&self, hour: i32) -> Option<(i64, Option<i64>)> {
         let at = self.progress_at(hour)?;
         let run = self.progress[at];
@@ -347,9 +315,6 @@ impl Fold {
     }
 }
 
-/// The `Focus` rows of `key` at each hour its opaque cells (`places`: tree, current, continuous)
-/// were written in `steps`: a history gives such a cell as the hour its value was written, and
-/// the row is read then, one forward pass for all of them.
 fn written_rows(recording: &replay::columnar_frames::Recording, run: u32, key: u128, steps: &[lanes::Step], places: [usize; 3]) -> io::Result<BTreeMap<i32, FocusRow>> {
     let stored = recording.run(run)?;
     let mut asks: Vec<(i32, u128)> = steps
@@ -381,8 +346,6 @@ fn written_rows(recording: &replay::columnar_frames::Recording, run: u32, key: u
     Ok(rows)
 }
 
-/// The order `cells` and `listed` give, or why they give none; an opaque cell's bytes are its
-/// row's where it was `written`.
 fn order_of(done: &History, written: &BTreeMap<i32, FocusRow>, cells: Option<&[Cell]>, listed: &BTreeMap<u32, Cell>, places: [usize; 5]) -> Result<Order, &'static str> {
     let [tree, current, continuous, paused, count] = places;
     let cells = cells.ok_or(NO_ROW)?;
@@ -418,11 +381,9 @@ fn order_of(done: &History, written: &BTreeMap<i32, FocusRow>, cells: Option<&[C
     })
 }
 
-/// The last fold read, kept for the next request of the same country.
 #[derive(Default)]
 struct Kept(Option<(u64, Country, Arc<Fold>)>);
 
-/// `tag`'s fold on `branch` of `source`: the one kept when it is that country's.
 pub(crate) fn fold(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<Fold>> {
     let state = source.state::<Kept>();
     let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, fold)| Arc::clone(fold));
@@ -439,12 +400,11 @@ fn branch_of(id: &str) -> io::Result<u64> {
     id.parse().map_err(|_| crate::invalid("Invalid branch"))
 }
 
-/// Page counts as decimal strings.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusPages {
-    /// The order's place among the country's orders.
+    #[doc = " The order's place among the country's orders."]
     #[serde(with = "decimal")]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
     pub first: u64,
@@ -479,8 +439,6 @@ pub struct FocusHourParams {
     pub hour: i32,
 }
 
-/// A country's focus at `at`: its order holds from `hour` through `lastHour`; progress and the
-/// last day's rise are those at `at`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -499,7 +457,6 @@ pub struct FocusHour {
     pub daily_gain_raw: Option<String>,
 }
 
-/// `focus-hour`: none where the country's focus was not read at the hour, with why.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -516,14 +473,13 @@ pub struct FocusOrderPageParams {
     pub branch_id: String,
     pub country: Country,
     pub hour: i32,
-    /// The pages `focus-hour` gave for the hour.
+    #[doc = " The pages `focus-hour` gave for the hour."]
     pub pages: FocusPages,
     #[serde(with = "decimal")]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
     pub page: u64,
 }
 
-/// `focus-order-page`: one page of the completed focuses at an hour; none past the last page.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -532,7 +488,6 @@ pub struct FocusOrderPage {
     pub warnings: Vec<String>,
 }
 
-/// `focus-completions`: every dated completion of a country, by hour and ordinal.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -543,7 +498,6 @@ pub struct FocusCompletions {
 
 dashboard_base::reply_warnings!(FocusHourReply, FocusOrderPage, FocusCompletions, FocusUnavailable);
 
-/// The fold's answer at `hour`.
 pub(crate) fn hour_reply(fold: &Fold, hour: i32) -> FocusHourReply {
     let focus = fold.segment_at(hour).and_then(|(index, segment)| {
         let (raw, gain) = fold.progress(hour)?;
@@ -571,7 +525,6 @@ pub(crate) fn hour_reply(fold: &Fold, hour: i32) -> FocusHourReply {
     FocusHourReply { focus, missing, warnings: Vec::new() }
 }
 
-/// The fold's page `page` of the order at `hour`; `asked` must be the pages that hour gives.
 pub(crate) fn order_page(fold: &Fold, hour: i32, asked: &FocusPages, page: u64) -> io::Result<FocusOrderPage> {
     let (index, segment) = fold.segment_at(hour).ok_or_else(|| dashboard_core::refused("The country's focus was not recorded at this hour"))?;
     let completed = &segment.order.completed;
@@ -656,7 +609,6 @@ impl Product for FocusCompletionsProduct {
     }
 }
 
-/// The tables a country's focus is read from, in the order a refusal names them.
 const FOCUS_TABLES: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::Focus, TableId::CompletedFocuses];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -666,7 +618,6 @@ pub struct FocusUnavailableParams {
     pub branch_id: String,
 }
 
-/// One focus table's refusal at an hour: its reason, or the rows a partial read missed.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -676,7 +627,6 @@ pub struct FocusTableRefusal {
     pub missing_rows: Option<String>,
 }
 
-/// `focus-unavailable`: the focus tables refused at the hour; none where none was.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -686,7 +636,6 @@ pub struct FocusUnavailable {
     pub warnings: Vec<String>,
 }
 
-/// The focus tables' refusals in `frame`.
 pub(crate) fn refusals(frame: &DecodedFrame) -> Vec<FocusTableRefusal> {
     FOCUS_TABLES
         .iter()

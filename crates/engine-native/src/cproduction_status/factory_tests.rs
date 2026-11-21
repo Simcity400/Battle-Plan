@@ -3,7 +3,6 @@ use crate::{cgame_state, memory::SliceMemory};
 
 const MEMORY_BASE: usize = 0x1000;
 const MEMORY_END: usize = 0xa000;
-/// Production statuses of the two fixture countries.
 const STATUSES: [usize; 2] = [0x6000, 0x7800];
 const GROUPS: [usize; 3] = [MILITARY_FACTORIES, NAVAL_FACTORIES, CIVILIAN_FACTORIES];
 const UNMAPPED: u64 = 0x2_0000;
@@ -12,8 +11,6 @@ fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
     bytes[address - MEMORY_BASE..address - MEMORY_BASE + value.len()].copy_from_slice(value);
 }
 
-/// Distinct values per status and group, with signed and extreme values so a
-/// swapped or narrowed field shows.
 fn expected_group(status: usize, group: usize) -> FactoryGroup {
     let tag = (status * 3 + group) as i32 + 1;
     let wide = |field: i64| ((tag as i64) << 36) + field;
@@ -94,8 +91,6 @@ fn write_group(bytes: &mut [u8], at: usize, group: FactoryGroup) {
 }
 
 fn write_status(bytes: &mut [u8], status: usize, country: usize, row: FactoryRow) {
-    // Every byte of the span starts as junk, so an unread field cannot pass
-    // as a zero.
     bytes[status + MILITARY_FACTORIES - MEMORY_BASE
         ..status + MILITARY_FACTORIES + FACTORY_SPAN - MEMORY_BASE]
         .fill(0xa5);
@@ -131,7 +126,6 @@ fn write_status(bytes: &mut [u8], status: usize, country: usize, row: FactoryRow
             status + offset + civ_factory_consumer::ALLOCATED,
             &allocated.to_le_bytes(),
         );
-        // The pre-allocation count is not recorded.
         put(
             bytes,
             status + offset + civ_factory_consumer::AVAILABLE,
@@ -140,7 +134,6 @@ fn write_status(bytes: &mut [u8], status: usize, country: usize, row: FactoryRow
     }
 }
 
-/// Canonical slots 1 and 2, and slot 3 aliasing slot 1's object.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; MEMORY_END - MEMORY_BASE];
     for (header, data) in [
@@ -207,7 +200,6 @@ fn full_read_preserves_every_stored_count_once_per_canonical_country() {
 #[test]
 fn the_count_probe_counts_whole_countries_without_reading_their_statuses() {
     let mut bytes = fixture();
-    // No country's status is read by the count probe.
     put(
         &mut bytes,
         0x5000 + ccountry::PRODUCTION_STATUS,
@@ -235,7 +227,6 @@ fn the_count_probe_counts_whole_countries_without_reading_their_statuses() {
 fn a_status_that_cannot_be_read_or_authenticated_withholds_the_table() {
     let second = STATUSES[1];
     let pointer = 0x5000 + ccountry::PRODUCTION_STATUS;
-    // Each case overwrites one qword of the second country.
     for (name, address, value, reason) in [
         (
             "null status",
@@ -277,7 +268,6 @@ fn a_status_that_cannot_be_read_or_authenticated_withholds_the_table() {
 #[test]
 fn a_short_factory_span_is_a_failure_not_zero_counts() {
     let mut bytes = fixture();
-    // The vtable and owner are mapped, the factory span runs past the end.
     let status = MEMORY_END - MILITARY_FACTORIES - FACTORY_SPAN + 8;
     put(&mut bytes, status, &(VTABLE_RVA.0 as u64).to_le_bytes());
     put(&mut bytes, status + COUNTRY, &0x5000_u64.to_le_bytes());
@@ -391,8 +381,6 @@ fn growing_factory_storage_does_not_hide_an_original_status_fault() {
     );
 }
 
-/// The serial walk: each canonical country's row read on its own
-/// ([`read_factories`]), in slot order, stopping at the first failure.
 fn serial(memory: &impl Memory, count: usize) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, 0, MEMORY_BASE)?;
@@ -416,8 +404,6 @@ fn serial(memory: &impl Memory, count: usize) -> Outcome {
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The population over [`crate::batch_fallback::Faulty`]: `at` faults on
-/// every touch, or only on its first when `once`.
 fn faulty<'a>(bytes: &'a [u8], at: &[usize], once: bool) -> crate::batch_fallback::Faulty<'a> {
     crate::batch_fallback::Faulty::new(
         SliceMemory {
@@ -429,7 +415,6 @@ fn faulty<'a>(bytes: &'a [u8], at: &[usize], once: bool) -> crate::batch_fallbac
     )
 }
 
-/// The address of `index`'s country, its status pointer and its status.
 fn addresses(bytes: &[u8], index: usize) -> (usize, usize, usize) {
     let memory = SliceMemory {
         base: MEMORY_BASE,
@@ -442,7 +427,6 @@ fn addresses(bytes: &[u8], index: usize) -> (usize, usize, usize) {
     (country, pointer, status as usize)
 }
 
-/// The fixture memory with its guarded calls counted.
 struct Counted<'a> {
     memory: SliceMemory<'a>,
     calls: std::cell::Cell<usize>,
@@ -463,9 +447,6 @@ impl Memory for Counted<'_> {
     }
 }
 
-/// The batched walk gives the serial walk's rows on healthy memory, over the
-/// callback's country census and without it, with two guarded calls per
-/// batch of countries instead of two per country.
 #[test]
 fn batched_factories_equal_the_serial_walk() {
     let count = 130;
@@ -499,8 +480,6 @@ fn batched_factories_equal_the_serial_walk() {
         assert_eq!(*row, expected_row(index, index as u32 + 1));
     }
     assert_eq!(plain[..count], rows[..count]);
-    // The census reads stay; the statuses take two calls per batch instead
-    // of a pointer read and three span copies per country.
     let serial_calls = Counted {
         memory: SliceMemory {
             base: MEMORY_BASE,
@@ -515,9 +494,6 @@ fn batched_factories_equal_the_serial_walk() {
     );
 }
 
-/// A fault that persists gives the serial walk's outcome and reason: a
-/// status span, a status pointer, a null status pointer, and a status fault
-/// in a batch before a country the census cannot read.
 #[test]
 fn a_persistent_fault_gives_the_serial_result() {
     let count = 100;
@@ -535,7 +511,6 @@ fn a_persistent_fault_gives_the_serial_result() {
         let before = crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories);
         let mut rows = Vec::new();
         let outcome = walk_factories(&memory, 0, MEMORY_BASE, &mut rows);
-        // The batch met the fault and was read again country by country.
         assert!(
             crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before,
             "{persistent:x?}"
@@ -556,8 +531,6 @@ fn a_persistent_fault_gives_the_serial_result() {
     assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::CountryFactories) > before);
 }
 
-/// A one-shot fault refuses no more than the serial walk: the failed batch
-/// is read again country by country, once, and every row is published.
 #[test]
 fn a_one_shot_fault_refuses_no_more_than_the_serial_walk() {
     let count = 100;

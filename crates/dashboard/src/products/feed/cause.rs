@@ -1,5 +1,3 @@
-//! A native occurrence's recorded cause and script operands in words. Routes name the native call
-//! site ([`EventFeedRoute`]); the words say what reaches it.
 
 use super::{EventFeedCause, row::FeedEvent};
 use replay_data::event_feed_rows::EventFeedRoute;
@@ -8,8 +6,6 @@ fn route(code: u8) -> EventFeedRoute {
     EventFeedRoute::ALL.into_iter().find(|route| *route as u8 == code).unwrap_or_default()
 }
 
-/// The cause's words, the ally named by `ally`; with the script operands' notes after them. None
-/// when the occurrence recorded neither.
 pub(super) fn words(event: &FeedEvent, ally: Option<String>) -> Option<EventFeedCause> {
     let mut words = event.cause.map(|cause| {
         let (how, within) = (route(cause.route), route(cause.within));
@@ -39,7 +35,6 @@ pub(super) fn words(event: &FeedEvent, ally: Option<String>) -> Option<EventFeed
     words
 }
 
-/// The script operands that change what an occurrence means, in the order the game holds them.
 pub(super) fn script_notes(event: &FeedEvent) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some((kind, id)) = event.native_event {
@@ -77,7 +72,6 @@ pub(super) fn script_notes(event: &FeedEvent) -> Vec<String> {
     notes
 }
 
-/// Whether an annexation ran within a civil war's resolution.
 pub(crate) fn civil_war(event: &FeedEvent) -> bool {
     let civil = EventFeedRoute::CivilWarAnnex as u8;
     event.cause.is_some_and(|cause| cause.route == civil || cause.within == civil)
@@ -91,7 +85,6 @@ fn is_war_end(route: EventFeedRoute) -> bool {
     (30..40).contains(&(route as u8))
 }
 
-/// Annexation routes, whose first byte identifies troop transfer.
 fn is_annexation(route: EventFeedRoute) -> bool {
     (50..60).contains(&(route as u8))
 }

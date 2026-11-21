@@ -9,55 +9,33 @@ import { UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryGroupReply, FactionGroup, HourSpan, MembershipRun } from '../../generated/dashboard';
 
-/** The Factions widget's data: every recorded faction (any number, including ones
- * founded or dissolved partway through) from the `country-groups` history, as a
- * band per faction whose thickness is its member count, and a lane per member from
- * join to leave, its leader marked. Nothing here knows a vanilla faction: names,
- * members and leaders all come from the recording. */
 
 export type FactionOrder = 'founded' | 'members' | 'name';
 export type MemberOrder = 'joined' | 'name';
 
-/** The mark on a leader's stretch of a member bar. */
 export const LEADER_GLYPH = '★';
 
-/** One member country of a faction: its runs across any change of tag, in hour order. */
 export interface MemberView {
-  /** Unique within its faction: its recorded native slot/country-id holder. */
   key: string;
   runs: MembershipRun[];
-  /** Its membership where nothing recorded says it stopped (`bridgeGaps`): runs joined
-   * across unrecorded hours and changes of tag. What its state is said of. */
   stretches: HourRange[];
 }
 
 export interface FactionView {
   id: string;
-  /** Native holders proved during this faction's membership runs, with the first hour
-   * each was. */
   countryIds: ReadonlyMap<string, number>;
-  /** Latest summary, used only when no hour is requested. */
   name: string | null;
-  /** Dated name lookups, sharing the prepared history and campaign override. */
   nameAt: (hour: number) => FactionName;
   color: string;
-  /** Recorded hours the faction existed (its first to last hour, less unrecorded ones). */
   existence: HourRange[];
-  /** Its existence joined across unrecorded hours: what its state is said of. */
   lifetime: HourRange[];
-  /** Each member country, joined across its changes of tag, by first membership. */
   members: MemberView[];
-  /** The recorded native holders and their dated aliases. */
   identities: CountryIdentityIndex;
-  /** Who led it (the member at order zero), in hour order. */
   leaders: MembershipRun[];
-  /** How many members it had over its known hours: its band's steps. */
   counts: BandStep[];
-  /** Hours its roster is not known: none recorded, or one naming an unknown country. */
   unknown: HourSpan[];
 }
 
-/** Sorted, merged spans. */
 function merged(spans: readonly HourRange[]): HourSpan[] {
   const sorted = [...spans].sort((a, b) => a.firstHour - b.firstHour);
   const result: HourSpan[] = [];
@@ -69,14 +47,10 @@ function merged(spans: readonly HourRange[]): HourSpan[] {
   return result;
 }
 
-/** Edges beside unrecorded hours are gaps, never faction or membership events. */
 export function factionGaps(reply: CountryGroupReply): HourSpan[] {
   return reply.unobserved.factions;
 }
 
-/** Every hour at which the lanes, their labels or a drill's roster may differ from the hour before: each edge of a
- * faction's existence, name, members, leaders, counts and unknown hours, and of the gaps. Sorted, each once. Between
- * two of them the widget shows the same structure, so playback renders only when the head passes one. */
 export function factionChangeHours(reply: CountryGroupReply, views: readonly FactionView[]): number[] {
   const hours = new Set<number>();
   const edges = (spans: readonly { firstHour: number; lastHour: number }[]) => {
@@ -91,9 +65,6 @@ export function factionChangeHours(reply: CountryGroupReply, views: readonly Fac
   return [...hours].sort((a, b) => a - b);
 }
 
-/** Each faction of the reply, ready to draw: its name (`name`), colour (`colour`),
- * existence, members, leaders and member counts. Aliases of the same recorded
- * native holder stay one member; a replacement holder starts its own lane. */
 export function factionViews(reply: CountryGroupReply, name: (faction: FactionGroup, hour?: number) => FactionName, colour: (id: string) => string): FactionView[] {
   const identities = countryIdentityIndex(reply.countryIdentities);
   const gaps = factionGaps(reply);
@@ -126,12 +97,10 @@ export function factionViews(reply: CountryGroupReply, name: (faction: FactionGr
   });
 }
 
-/** The member's proved alias at the supplying hour; gaps never acquire a tag. */
 export function tagAt(view: FactionView, member: MemberView, hour: number): string | null {
   return view.identities.aliasesAt(new Set([member.key]), hour)[0] ?? null;
 }
 
-/** The members of a faction at an hour, by their tag then. */
 export function membersHeld(view: FactionView, hour: number): string[] {
   return view.members.flatMap(member => {
     const tag = tagAt(view, member, hour);
@@ -139,19 +108,15 @@ export function membersHeld(view: FactionView, hour: number): string[] {
   });
 }
 
-/** Who led at an hour; null when no leader was recorded then. */
 export function leaderAt(leaders: readonly MembershipRun[], hour: number): string | null {
   return leaders.find(run => run.firstHour <= hour && hour <= run.lastHour)?.tag ?? null;
 }
 
-/** How many members at an hour; null when the roster is not known then. */
 export function membersAt(view: FactionView, hour: number): number | null {
   if (view.unknown.some(span => span.firstHour <= hour && hour <= span.lastHour)) return null;
   return view.counts.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
 }
 
-/** A member's run cut where its leadership starts and ends, so a leader's stretch
- * is its own bar, marked. */
 export function leadershipParts(run: MembershipRun, leaders: readonly MembershipRun[]): { firstHour: number; lastHour: number; leader: boolean }[] {
   const led = merged(leaders.filter(item => item.tag === run.tag && item.firstHour <= run.lastHour && run.firstHour <= item.lastHour)
     .map(item => ({ firstHour: Math.max(item.firstHour, run.firstHour), lastHour: Math.min(item.lastHour, run.lastHour) })));
@@ -166,7 +131,6 @@ export function leadershipParts(run: MembershipRun, leaders: readonly Membership
   return parts;
 }
 
-/** How the widget names things: countries and days, in the words it shows. */
 export interface FactionText {
   country: (tag: string) => CountryFlagLook & { name: string };
   day: (hour: number) => string;
@@ -175,18 +139,13 @@ export interface FactionText {
 export interface LaneOptions {
   order: FactionOrder;
   members: MemberOrder;
-  /** Dissolved factions and members who left are shown. */
   ended: boolean;
-  /** Only factions any of these countries ever belonged to; null for every faction. */
   countries: ReadonlySet<string> | null;
-  /** Manual all-ever holders or group holders at their counted membership dates. */
   countryIds?: ReadonlySet<string> | null;
 }
 
 export const UNNAMED = UNNAMED_FACTION;
 
-/** A faction's name as shown: the display name or the recorded one, else said to have none. */
-/** A faction's name at `hour`; once it has ended, the name it ended with. A gap in its life takes no other hour's name. */
 export function factionNameShown(view: FactionView, hour: number): FactionName {
   const end = view.lifetime.at(-1)?.lastHour;
   return view.nameAt(end !== undefined && hour > end ? end : hour);
@@ -194,7 +153,6 @@ export function factionNameShown(view: FactionView, hour: number): FactionName {
 
 export const factionLabel = (view: FactionView, hour?: number) => (hour == null ? view.name : factionNameShown(view, hour).name) ?? UNNAMED;
 
-/** Words for a membership's state (`describeRun`). */
 function memberWords(day: (hour: number) => string): RunWords {
   return {
     since: hour => `Joined ${day(hour)}`, before: hour => `Member before ${day(hour)}`,
@@ -202,7 +160,6 @@ function memberWords(day: (hour: number) => string): RunWords {
   };
 }
 
-/** Words for a faction's existence. */
 export function factionWords(day: (hour: number) => string): RunWords {
   return {
     since: hour => `Founded ${day(hour)}`, before: hour => `Founded before ${day(hour)}`,
@@ -212,31 +169,21 @@ export function factionWords(day: (hour: number) => string): RunWords {
 
 const firstHour = (runs: readonly HourRange[]) => runs[0]?.firstHour ?? Infinity;
 
-/** What a lane is about: a faction, and for a member lane the member. */
 export interface LaneInfo { faction: FactionView; member: MemberView | null }
 
-/** A lane's id: structured, so no tag (a mod's tags may hold any character) can
- * blur two lanes, and never parsed back. A member's is its key (its country). */
 export const laneId = (faction: string, member: string | null) => JSON.stringify(member == null ? ['faction', faction] : ['member', faction, member]);
 
-/** The timeline's lanes at `hour` (the playhead, or the end with Live off): for each
- * faction founded by then, a heading lane with its member-count band, then a lane per
- * member who joined by then, and what each lane is about. Only what has started by
- * `hour` is listed, so lanes appear as playback reaches them. */
 export function factionLanes(views: readonly FactionView[], hour: number, options: LaneOptions, text: FactionText,
   unobserved: readonly HourSpan[], branchFirstHour: number): { lanes: TimelineLane[]; info: Map<string, LaneInfo> } {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, LaneInfo>();
   const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
-  // Only memberships begun by the hour involve a country: a later one admits nothing yet.
   const involves = (view: FactionView) => { for (const [key, since] of view.countryIds) if (since <= hour && chosen!.has(key)) return true; return false; };
   const shown = views.filter(view => firstHour(view.existence) <= hour
     && (options.ended || runState(view.lifetime, hour, unobserved).kind !== 'ended')
     && (!chosen || involves(view)));
-  // Each faction's members at the hour, counted once rather than in every comparison.
   const counts = new Map(shown.map(view => [view, membersAt(view, hour) ?? -1]));
   const count = (view: FactionView) => counts.get(view)!;
-  // Only name sorting needs a lookup map; other orders resolve in the heading.
   const names = options.order === 'name' ? new Map(shown.map(view => [view, factionLabel(view, hour)])) : null;
   shown.sort(options.order === 'name' ? (a, b) => names!.get(a)!.localeCompare(names!.get(b)!) || compareIds(a.id, b.id)
     : options.order === 'members' ? (a, b) => count(b) - count(a) || firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id)
@@ -247,7 +194,6 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
     const leader = leaderAt(view.leaders, hour);
     const recordedCount = count(view);
     const members = recordedCount < 0 ? null : recordedCount;
-    // The heading counts members; its leader is marked in the member rows below it.
     const state = exists
       ? members == null ? 'Members not recorded' : `${members} ${members === 1 ? 'member' : 'members'}`
       : describeRun(view.lifetime, hour, factionWords(text.day), unobserved, branchFirstHour) ?? '';
@@ -264,7 +210,6 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
     const memberUnobserved = view.unknown;
     const shownMembers = view.members.filter(member => firstHour(member.runs) <= hour
       && (options.ended || runState(member.stretches, hour, memberUnobserved).kind !== 'ended'));
-    // Each member's tag at the hour, found once.
     const tags = new Map(shownMembers.map(member => [member, tagAt(view, member, hour)]));
     const tagOf = (member: MemberView) => tags.get(member) ?? null;
     const leading = (member: MemberView) => leader !== null && leader === tagOf(member) ? 0 : 1;
@@ -277,7 +222,6 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
       const country = countryAt(tag);
       const now = describeRun(member.stretches, hour, memberWords(text.day), memberUnobserved, branchFirstHour) ?? '';
       const ended = runState(member.stretches, hour, memberUnobserved).kind === 'ended';
-      // Span ids need only be unique within their lane.
       const spans: TimelineSpan[] = member.runs.flatMap(run => leadershipParts(run, view.leaders).map(part => ({
         id: `${part.firstHour}`, firstHour: part.firstHour, lastHour: part.lastHour, label: country.name,
         color: view.color, ...(part.leader ? { glyph: LEADER_GLYPH } : {}),
@@ -293,13 +237,10 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
   return { lanes, info };
 }
 
-/** Recorded faction ids are integers: ordered numerically, so an order is stable. */
 function compareIds(a: string, b: string): number {
   return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
 }
 
-/** The countries the given lanes name (a member, a faction's leader at `hour`), for
- * reading their names and flags. */
 export function laneCountries(lanes: readonly TimelineLane[], info: ReadonlyMap<string, LaneInfo>, hour: number): string[] {
   const tags = new Set<string>();
   for (const lane of lanes) {

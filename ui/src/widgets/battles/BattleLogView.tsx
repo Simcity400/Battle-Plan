@@ -45,44 +45,24 @@ interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
 interface ManifestReply { windows: BattleWindow[]; available: boolean; unavailable: string | null; contentWarnings: string[] }
 interface WindowReply { observed: [number, number][]; contentWarnings: string[]; warnings: BattleWarning[] }
 interface RankingReply { censusHour: number | null; effectiveMeasure: string; warnings: BattleWarning[]; contentWarnings: string[] }
-/** What an adapter's own view needs beyond the shared log props. */
 export interface BattleViewContext {
   runtime: WidgetRuntime; track: WidgetRuntime['tracks'][number]; active: boolean; widget: WidgetSpec;
   setOption?: WidgetProps['setOption'];
-  /** The hour the rows' structure is read at: following, the first hour of the block the log draws (its battles' later
-   * states drawn ahead and revealed by the clock), so the list renders once a block. */
   shownHour: number;
-  /** Following, the head's hour now (read in a painter's frame); null otherwise. */
   headHour: () => number | null;
-  /** The rows as of an hour, for painting the numbers that move between structural hours. */
   rowsAt: (hour: number) => ReadonlyArray<BattleRow>;
-  /** One battle's row as of an hour (as `rowsAt` lists it), null where it is not listed: a painter reads only the rows drawn. */
   rowAt: (id: string, hour: number) => BattleRow | null;
-  /** What Biggest ranks by: the ranking's effective measure, which falls back from the chosen one where the
-   * recording lacks it. */
   rankedMeasure: string;
-  /** A place name still loading, as opposed to a read that named nothing. */
   placePending: (row: BattleRow & { provinceId: number }) => boolean;
-  /** Following the log: every place of the battles in the windows held, so what the rows need is asked when a window
-   * lands, never as a row comes into view; null otherwise, and the rows drawn are asked. */
   heldPlaces: readonly { provinceId: number; hour: number }[] | null;
 }
-/** A battle and the hour its details are read at. */
 export interface BattleDetailAsk { id: string; hour: number }
-/** Details read beside a battle's row (a naval battle's fleets and named ships lost), by battle and hour. The rows drawn
- * ask theirs at their own hour; following the log, every battle run of the windows held is asked once, at the hour its
- * run begins, as its window lands, so a row entering while playing asks nothing. */
 export interface BattleDetails<Row, Window> {
   product: string;
   validate: (data: unknown) => { rows: readonly BattleDetailAsk[]; warnings: string[] };
-  /** What a row asks: its battle at the hour shown, or (`following`) at the hour its run begins. */
   ask: (row: Row, following: boolean) => BattleDetailAsk;
-  /** Every battle run the windows hold, as a row of it asks while following. */
   held: (windows: ReadonlyMap<number, Window>) => BattleDetailAsk[];
-  /** A row's description from its details: undefined while they are not held, `pending` while still being read, else
-   * failed with `error` or not answered by the reply; never silently nothing. */
   description: (detail: BattleDetailAsk | undefined, read: { pending: boolean; error: Failure | undefined }) => string | null;
-  /** A row's tooltip rows from its details, or what keeps them. */
   tooltipRows: (detail: BattleDetailAsk | undefined, error: Failure | undefined) => readonly TooltipRow[];
 }
 export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply> {
@@ -93,13 +73,9 @@ export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowRep
   validateWindow: (data: unknown) => Window;
   validateRanking: (data: unknown) => Ranking;
   rows: (windows: ReadonlyMap<number, Window>, hour: number, matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null) => ReadonlyArray<Row>;
-  /** One battle's row as `rows` lists it, null where it is not listed. */
   row: (windows: ReadonlyMap<number, Window>, id: string, hour: number, matches: (tag: string, hour: number) => boolean, all: boolean, from: number | null) => Row | null;
-  /** The hours at which the rows' structure (which battles, their end and result) changes, and which battles change then. */
   changes: (windows: ReadonlyMap<number, Window>) => BattleChanges;
-  /** What a row renders, beside its painted numbers: a battle gets a log row per state (`battleState` by default). */
   state?: (row: Row) => string;
-  /** Every battle's place in the windows (its province at the hour it is named at), each once in hour order. */
   windowPlaces?: (windows: ReadonlyMap<number, Window>) => { provinceId: number; hour: number }[];
   rankedRows: (data: Ranking | undefined, hour: number) => ReadonlyArray<Row>;
   labels: BattleLabels;
@@ -113,7 +89,6 @@ export interface BattleViewAdapter<Row extends ViewRow, Window extends WindowRep
   tooltipRows?: (row: Row) => readonly TooltipRow[];
   details?: BattleDetails<Row, Window>;
   diagnostics?: readonly string[];
-  /** Replaces the shared log and table with the widget's own view of the same rows. */
   view?: ComponentType<BattleLogProps<Row> & { context: BattleViewContext }>;
 }
 const NO_ROWS: readonly never[] = [];
@@ -130,11 +105,6 @@ type PlaceAt = { provinceId: number; hour: number };
 const placeAtKey = (place: PlaceAt) => placeKey(place.provinceId, place.hour);
 const NO_WARNINGS: string[] = [];
 
-/** A battle log over the replay's blocks: the blocks at and before the hour shown are asked as the list needs them,
- * and the rows replayed from them at the hour. Following, the log renders once a block: each battle's states through
- * the block's end, within the windows held, a state per beginning, change of sides, end or result, revealed by the
- * clock at its hour; the numbers between are the view's to paint from `rowsAt` at the head. Biggest asks the ranking at
- * most once per 256 hours of the head's travel. */
 export default function BattleLogView<Row extends ViewRow, Window extends WindowReply, Ranking extends RankingReply>(
   { widget, runtime, active, onDiagnostics, setOption, adapter }: WidgetProps & { adapter: BattleViewAdapter<Row, Window, Ranking> }) {
   const live = widget.time.mode === 'follow';
@@ -164,9 +134,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const windows = manifest.data?.windows;
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
   const browsing = view === 'log' && browse.identity === identity && browse.hour !== null;
-  // Following the log, a block of hours renders at once: the states of the battles through its end, which the windows
-  // held cover, each revealed by the clock (`reveal`). It renders again when the clock leaves the block, and its end is
-  // read from what the render before held, so a window landing inside a block renders nothing.
   const ahead = following && view === 'log' && !browsing;
   const blockInputs = useRef<{ hourAt: typeof hourAt; windows: readonly BattleWindow[]; held: ReadonlyMap<number, unknown>; changes: readonly number[] }>(
     { hourAt, windows: [], held: new Map(), changes: [] });
@@ -178,14 +145,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return Math.floor(clockHour) + Math.min(aheadEnd(hours, at, hoursPerSecond, playing), heldWindowsEnd(spans, held, at)) - at;
   }, [runtime.clock]);
   const block = useAheadHour(runtime.clock, ahead, end);
-  // The head's window: following the log, the block's (it moves with the block's render); else at the head.
   const headWindow = useAtHead(runtime.clock, following && !ahead, clockHour => battleWindowIndex(windows ?? [], hourAt(clockHour) ?? first));
   const playheadWindow = ahead ? battleWindowIndex(windows ?? [], hourAt(block.hour) ?? first) : headWindow;
   const blockHour = windows?.[playheadWindow]?.lastHour ?? null;
   const browseIndex = browsing ? battleWindowIndex(windows ?? [], browse.hour!) : playheadWindow;
   const [visibleWindows, setVisibleWindows] = useDistinctState<VisibleWindows>(NO_VISIBLE_WINDOWS, sameWindows);
-  // The windows of the rows drawn, until the list reports others: never dropped as the playhead enters a window, which
-  // released the history in view and asked it again at the head.
   const visibleIndices = visibleWindows.identity === identity ? visibleWindows.windows : [];
   const inBranch = !!track && playheadWindow >= 0;
   const wantedWindows = inBranch && view === 'log' ? battleWindows(manifest.data, windows?.[playheadWindow]?.firstHour ?? first, live,
@@ -196,7 +160,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const all = widget.countries.kind === 'all';
   const from = widget.time.mode === 'range' ? first : null;
   const battleChanges = useMemo(() => adapter.changes(history.data), [adapter, history.data]);
-  // Where every battle may change: a window or census span beginning, a change of the countries chosen, the range's start.
   const whole = useMemo(() => {
     const matching = countryMatchChangeHours(match.matches);
     return !all && matching === undefined ? null : new Set([...battleChanges.whole, ...matching ?? [], ...(from === null ? [] : [from])]);
@@ -210,7 +173,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     const at = hourAt(clockHour);
     return at === null || !track ? null : following ? rankingHour(at, first, track.branch.lastHour) : at;
   });
-  // Not following, the rows are read at the widget's own hour, numbers and all.
   const hour = browsing ? Math.min(browse.hour!, blockHour ?? browse.hour!) : view === 'biggest' ? headHour
     : following ? structureHour : hourAt(runtime.clock.getHour());
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
@@ -223,13 +185,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const shown = useMemo(() => !inBranch || hour === null || !match.ready ? NO_ROWS : view === 'biggest' ? adapter.rankedRows(ranking.data, hour)
     : adapter.rows(history.data, hour, match.matches, all, from),
   [adapter, inBranch, view, ranking.data, history.data, hour, match, all, from]);
-  // Replayed once an hour for the painters, the render and every row's tooltip at the head.
   const rowsAt = useMemo(() => heldAtHour((at: number) => view === 'biggest' ? adapter.rankedRows(ranking.data, at) : adapter.rows(history.data, at, match.matches, all, from)),
     [adapter, view, ranking.data, history.data, match, all, from]);
   const rowAt = useMemo(() => view === 'biggest' ? (id: string, at: number) => rowsById(rowsAt(at)).get(id) ?? null
     : (id: string, at: number) => adapter.row(history.data, id, at, match.matches, all, from), [view, rowsAt, adapter, history.data, match, all, from]);
-  // The log's rows: each battle's states over the block (the hour's alone where no block is drawn ahead), all of them
-  // read at its first hour, then only the battles changing at each later hour.
   const blockLast = structureHour === null ? null : structureHour + block.until - 1 - Math.floor(block.hour);
   const states = useMemo(() => {
     if (view !== 'log' || !inBranch || hour === null || !match.ready) return NO_LOG as readonly LogRow<Row>[];
@@ -238,24 +197,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       at => whole === null || whole.has(at) ? null : battleChanges.battles.get(at) ?? [], (id, at) => adapter.row(history.data, id, at, match.matches, all, from));
   }, [view, inBranch, hour, blockLast, changes, whole, battleChanges, match, adapter, history.data, all, from, live, browsing]);
   const head = useCallback(() => following && !browsing && view === 'log' ? hourAt(runtime.clock.getHour()) : null, [following, browsing, view, hourAt, runtime.clock]);
-  // Following, the measures that move between structural hours are painted from the rows at the head.
   const paintHead = useMemo(() => following && !browsing
     ? { hour: () => hourAt(runtime.clock.getHour()), rowsAt, clock: runtime.clock } : undefined, [following, browsing, hourAt, rowsAt, runtime.clock]);
   const [visible, setVisible] = useDistinctState<readonly Row[]>(NO_ROWS, sameRows);
-  // Biggest's drawn rows as the ranking now has them; the log's are its states as drawn, each at its own hour.
   const currentRows = useMemo(() => view === 'log' ? null : new Map(shown.map(row => [row.id, row])), [view, shown]);
-  // Following the log, what the rows need is asked for the windows held or the block drawn, never as rows come into
-  // view: the rows drawn are not held, so no render follows the list's.
   const drawn = useMemo(() => ahead ? NO_ROWS : currentRows ? visible.flatMap(row => { const current = currentRows.get(row.id); return current ? [current] : []; }) : visible,
     [ahead, visible, currentRows]);
   const wanted = useMemo(() => battleCountryRequests(ahead ? states.map(row => row.item) : drawn), [ahead, states, drawn]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(country => country.hour)).size));
   const country = useCallback((tag: string, at: number) => labelAt(at)(tag), [labelAt]);
-  // Following the log, every place of the battles in the windows held (the window at the head as it lands, then each
-  // one ahead), led by the block's rows in the list's order, those shown at its first hour first, so the rows in view
-  // are read first (`useKeyedReads`' lead); else the rows drawn. Each place, and each battle's details, is asked once,
-  // the first time it is wanted; a read in flight is never cancelled by a window landing or a block moving on, so a log
-  // opened, sought or switched to inside a window has its rows named when that read lands.
   const content = useContentRevision(runtime.client);
   const namesOwner = identity === null ? null : JSON.stringify([identity, content, adapter.landPlaceNames === true]);
   const leading = useMemo(() => {
@@ -272,7 +222,6 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   [runtime.client, track, adapter.landPlaceNames]);
   const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, windowPlaces ?? drawnPlaces, active, placeAtKey, readPlaces);
   const knownNames = placeReads.reads.values;
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- the names held grow as each read lands
   const placeNamesHeld = useMemo(() => ({ places: [...knownNames.values()], states: [], warnings: [] }), [knownNames, placeReads.version]);
   const named = useMemo(() => namedBattles(shown, placeNamesHeld), [shown, placeNamesHeld]);
   const namedStates = useMemo(() => {
@@ -280,9 +229,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     return states.map((row, index) => items[index] === row.item ? row : { ...row, item: items[index] });
   }, [states, placeNamesHeld]);
   const placePending = useCallback((row: BattleRow & { provinceId: number }) => placeReads.reads.pending({ provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour }),
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- a new identity as each read lands
   [placeReads.reads, placeReads.version]);
-  // Details as places: following, every battle run of the windows held, as each window lands; else the rows drawn.
   const details = adapter.details;
   const detailWanted = useMemo(() => !details ? NO_ASKS : ahead ? [...leading.map(row => details.ask(row, true)), ...details.held(history.data)]
     : drawn.map(row => details.ask(row, false)), [details, ahead, history.data, drawn, leading]);
@@ -298,13 +245,11 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       description: (row: Row) => { const ask = details.ask(row, ahead); return details.description(reads.values.get(detailKey(ask)), { pending: reads.pending(ask), error: reads.failure(ask) }); },
       tooltipRows: (row: Row) => { const ask = details.ask(row, ahead); return details.tooltipRows(reads.values.get(detailKey(ask)), reads.failure(ask)); },
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- the details held grow as each read lands
   }, [details, ahead, detailReads.reads, detailReads.version]);
   const onVisibleRows = useCallback((drawnRows: readonly Row[]) => {
     if (!ahead) setVisible(currentRows ? drawnRows.map(row => currentRows.get(row.id) ?? row) : drawnRows);
     if (view === 'log') {
       const indices = [...new Set(drawnRows.map(row => row.windowIndex))].sort((a, b) => a - b);
-      // Windows already held need no state: only rows scrolled to an older window ask it.
       if (ahead && indices.every(index => wantedWindows.includes(index))) return;
       setVisibleWindows({ identity, at: playheadWindow, windows: indices });
     }
@@ -316,10 +261,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const diagnostics = useMemo(() => [...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS), ...warnings,
     ...placeReads.reads.warnings, ...detailReads.reads.warnings, ...failures(placeReads.reads, 'Place names'), ...failures(detailReads.reads, 'Battle details'),
     ...(adapter.diagnostics ?? NO_WARNINGS)])],
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- the reads' warnings grow as each lands
   [warnings, manifest.data, placeReads.reads, placeReads.version, detailReads.reads, detailReads.version, adapter.diagnostics]);
   useDiagnostics(onDiagnostics, diagnostics);
-  // A place or a detail that lands is written into the rows naming it in the frame it lands (`BattleLog`'s `keyed`).
   const root = useRef<HTMLDivElement>(null);
   useKeyedPainter(placeReads.reads as never, root, 'place', key => {
     const place = placeReads.reads.values.get(key), loading = !place && placeReads.reads.pendingKey(key);
@@ -371,10 +314,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   return <div ref={root} className="battle-widget">{groupFailure}
     {summary && <p className="battle-note">{summary}</p>}
     {view === 'biggest' && live && hour !== null && <p className="battle-note">Ranked as of {formatDateTime(hour)}.</p>}
-    {/* A range cuts battles short; their peak and duration are still the whole battle's. */}
+    { }
     {widget.time.mode === 'range' && <p className="battle-note">Peak and duration cover the whole battle.</p>}
     {navigation}
-    {/* Only a window the rows shown need: the ones asked ahead of the head show nothing, nor move the list as they come. */}
+    { }
     {view === 'log' && wantedWindows.some(index => index <= browseIndex && !history.data.has(index) && !history.errors.has(index)) && <p className="battle-note" role="status">Updating…</p>}
     {View ? <View {...props} context={{ runtime, track, active, widget, setOption, shownHour: hour!, headHour: head, rowsAt, rowAt, rankedMeasure, placePending, heldPlaces: windowPlaces }} /> : <BattleLog {...props} />}
   </div>;

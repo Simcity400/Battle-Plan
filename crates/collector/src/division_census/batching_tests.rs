@@ -155,15 +155,11 @@ fn batched_core_province_one_shot_refuses_no_more_and_counts_fallback() {
             1
         );
         let serial = capture(&bytes, &seeds, false, Some(at), true).0;
-        // The relaxed owner rule permits the speculative batch to consume
-        // a one-shot fault: its serial retry may publish more, never less.
         assert!(actual.ids.len() >= serial.ids.len());
         assert_eq!(actual, capture(&bytes, &seeds, false, None, false).0);
     }
 }
 
-/// Row-at-a-time reference: never calls capture_core or stage_provinces.
-/// Fresh child identities force every original source gate for each row.
 fn serial_core(census: &mut Census, memory: &impl Memory, limit: usize) {
     let roots = census.core_roots.take().unwrap();
     let result = (|| {
@@ -201,8 +197,6 @@ fn serial_core(census: &mut Census, memory: &impl Memory, limit: usize) {
 fn batched_core_projection_alias_duplicates_and_faults_equal_serial() {
     use crate::sampling::divisions_test_kit as kit;
     let mut bytes = kit::fixture();
-    // The fixture already contains a country alias and a null province.
-    // Repeat both divisions across the batch boundary, with alias owners.
     for offset in [8, 12] {
         let at = kit::C0 + ccountry::DIVISIONS + offset;
         bytes[at..at + 4].copy_from_slice(&65_u32.to_le_bytes());
@@ -239,8 +233,6 @@ fn batched_core_projection_alias_duplicates_and_faults_equal_serial() {
                     let inputs = census.unit_inputs.as_mut().unwrap();
                     let seeds =
                         &mut engine_allocation::SharedBox::get_mut(inputs).unwrap().seeds;
-                    // The original identity/owner gates precede province
-                    // projection even when lookahead has read it already.
                     if invalid == 2 {
                         seeds[0].primary_vtable = Some(0);
                     } else if invalid == 3 {
@@ -259,9 +251,6 @@ fn batched_core_projection_alias_duplicates_and_faults_equal_serial() {
                 let allocated = actual.allocated_bytes();
                 actual.capture_core(&memory());
                 serial_core(&mut serial, &memory(), usize::MAX);
-                // Relaxed read order may consume a one-shot province
-                // fault before projection; it must never shorten the
-                // serial prefix or alter any row it did publish.
                 if once && fault.is_some() {
                     assert!(actual.rows.len() >= serial.rows.len());
                     assert_eq!(&actual.rows[..serial.rows.len()], serial.rows);
@@ -340,7 +329,6 @@ fn batched_core_province_collision_revisit_duplicates_and_null_equal_serial() {
         );
         let actual = capture(&bytes, &seeds, true, Some(fault), true).0;
         let serial = capture(&bytes, &seeds, false, Some(fault), true).0;
-        // Reordered speculation may recover a one-shot source fault.
         assert!(actual.ids.len() >= serial.ids.len());
         assert_eq!(actual, capture(&bytes, &seeds, false, None, false).0);
     }

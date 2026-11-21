@@ -1,4 +1,3 @@
-//! Lit-tree submission selected by the tree graphics setting.
 use eframe::wgpu;
 use installed_content_core::{
     pdxshader::DepthStencilState, pdxshader::RasterizerState, pdxshader::program::Stage,
@@ -17,21 +16,17 @@ pub fn technique(high: bool) -> &'static str {
     if high { "tree" } else { "tree_low_gfx" }
 }
 
-/// Lit mode clears the matrix and writes zero seasons. Its 80-byte allocation retains an unknown
-/// tail at bytes 76 through 79.
 fn constants(fade: f32) -> Vec<u8> {
     let mut bytes = vec![0; 80];
     bytes[72..76].copy_from_slice(&fade.to_le_bytes());
     bytes
 }
 
-/// The pixel slot the engine binds the shadow screen buffer to for the lit canopy.
 pub const SHADOW_SLOT: u32 = 8;
 
 pub struct Lit {
     retained: super::shader_scene::Program,
     pub pipeline: Arc<gpu::Pipeline>,
-    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub texel_reads: Option<String>,
 }
 
@@ -44,7 +39,6 @@ impl Lit {
         samples: u32,
         high: bool,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, format, depth, samples, high)
         })
@@ -73,7 +67,6 @@ impl Lit {
             .retain(|key, _| (0..16).any(|slot| *key == binding(slot, Stage::Pixel)));
         let mut pass = gpu::Pass::packed(&compiled, &state, format, samples);
         pass.vertices = super::tree_caster::vertex_layouts(&compiled.vertex.inputs)?;
-        // Use the tree raster state and retain renderer depth restored by rivers and railways.
         let raster = RasterizerState::default();
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleList).0;
         pass.depth_stencil =

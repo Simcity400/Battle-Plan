@@ -1,12 +1,3 @@
-//! A layer rebuilt whole on its worker, read after the vision layer on a recording made in memory:
-//! while its worker holds a build it carries nothing and has published nothing, once built it shows
-//! the hour of its rows, and a table its builder reads that the recording holds nothing of is
-//! refused by name, never declared. Builds run under the recording's executable tables, a build
-//! that panics is a named refusal of a worker that goes on, and one round learns every table a
-//! build reaches. A worker builds nothing while no table it reads changes, its product then
-//! standing at the newer hours, and with a step every frame it makes the product of each step's
-//! rows, waiting for no clock. What the scene takes after a compose is taken anew however many
-//! products were taken before the scene was given one.
 
 use super::{Build, Seen, Whole};
 use engine_executable::executable_tables::Tables;
@@ -37,10 +28,8 @@ use std::{
 };
 use viewer_foundation::map::{perspective::{Choice, VISION_TABLES, Vision}, presentation::Continuity};
 
-/// Shut, a build waits at it, so the worker holds its work; a minute shut fails the build by name.
 #[derive(Default)]
 struct Gate {
-    /// Whether it is open, and whether a build has reached it.
     state: Mutex<(bool, bool)>,
     moved: Condvar,
 }
@@ -65,7 +54,6 @@ impl Gate {
         self.state.lock().unwrap().1
     }
 
-    /// Shut again, no build reached.
     fn close(&self) {
         *self.state.lock().unwrap() = (false, false);
     }
@@ -85,7 +73,6 @@ impl Gate {
     }
 }
 
-/// Opens the gate when the test ends, so the worker's build ends and the layer can stop.
 struct Opens(Arc<Gate>);
 
 impl Drop for Opens {
@@ -94,7 +81,6 @@ impl Drop for Opens {
     }
 }
 
-/// Passes the gate, reads `reads` and answers the hour of its rows.
 struct Probe {
     reads: Vec<TableId>,
     gate: Arc<Gate>,
@@ -116,15 +102,12 @@ impl Build for Probe {
     }
 }
 
-/// A recording's executable tables: every one withheld, as of an image that is no executable.
 fn recording_tables() -> Tables {
     static TABLES: OnceLock<Tables> = OnceLock::new();
     let decoded = || engine_executable::executable_tables::decode(engine_executable::build::ExecutableIdentity::of(b"rebuilt test"), Vec::new(), std::path::Path::new("no game install"));
     *TABLES.get_or_init(|| -> Tables { Box::leak(Box::new(decoded())) })
 }
 
-/// Builds only under the recording's tables; outside them it stops as a build reaching the trigger
-/// registries does.
 struct NeedsTables {
     given: Option<Tables>,
 }
@@ -143,8 +126,6 @@ impl Build for NeedsTables {
     }
 }
 
-/// Reads `reads` in order and stops at the first not held, as today's plan stops at the first
-/// table it misses.
 struct InOrder {
     reads: Vec<TableId>,
 }
@@ -172,14 +153,10 @@ fn vision_content() -> Arc<vision::Content> {
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() })))
 }
 
-/// Forty hours of the vision layer's tables and the Clock: three countries with their tags, so
-/// typed rows of Countries can be made, the viewer the first.
 fn record() -> Units {
     recording(40, |_, _| {})
 }
 
-/// `hours` of [`record`]'s tables with the Clock's speed written anew each hour: the Clock changes
-/// every hour, LocalPlayer never.
 fn ticking(hours: u32) -> Units {
     recording(hours, |at, store| {
         if at > 0 {
@@ -193,7 +170,6 @@ fn recording(hours: u32, mut every: impl FnMut(u32, &mut Store)) -> Units {
     tables.push(TableId::Clock);
     tables.sort_unstable();
     tables.dedup();
-    // Each test its own recording: one name is one playhead, and tests run side by side.
     static RECORDED: AtomicUsize = AtomicUsize::new(0);
     let name = format!("rebuilt test {}", RECORDED.fetch_add(1, Ordering::Relaxed));
     let strings = |at: u32| if at == 0 { ["AAA", "BBB", "CCC"].map(str::to_owned).to_vec() } else { Vec::new() };
@@ -223,7 +199,6 @@ fn recording(hours: u32, mut every: impl FnMut(u32, &mut Store)) -> Units {
     Units { name, pages, timeline, kinds }
 }
 
-/// `units` with nothing of `table` in any block's page: a recording that never held it.
 pub fn without(units: Units, table: TableId) -> Units {
     struct Without {
         inner: Arc<dyn Pages>,
@@ -259,9 +234,6 @@ pub fn without(units: Units, table: TableId) -> Units {
     Units { name: units.name, pages, timeline, kinds: units.kinds }
 }
 
-/// The vision layer, then each of `probes` declaring only the Clock, each given the playhead's rows
-/// before the seek to the first hour (so the seek brings their tables), played until that reset is
-/// swapped in.
 fn side_with<B: Build>(units: Units, probes: Vec<(&'static str, B)>) -> MapSide {
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut layers: Vec<Box<dyn Layer>> = vec![Box::new(vision::Vision::new(vision_content()))];
@@ -297,7 +269,6 @@ fn a_rebuilt_layer_after_vision_settles_while_its_worker_holds_its_build() {
     let mut side = side_of(record(), Vec::new(), &gate);
     let _opens = Opens(Arc::clone(&gate));
     recorded::frames_until(&mut side, |_, _| gate.reached());
-    // The proof's settle: settled until no layer carries anything, while the worker still builds.
     let mut carrying = Vec::new();
     for _ in 0..1_000 {
         side.settle_all().unwrap();
@@ -343,7 +314,6 @@ fn a_build_runs_under_the_recordings_executable_tables_and_one_that_panics_is_re
     let why = refused.product.as_ref().expect_err("a build that panics is refused");
     assert!(why.contains("panicked") && why.contains("no recording's tables are in scope"), "the refusal names the panic: {why}");
     let builds = unscoped.builds().count;
-    // The worker goes on: a later frame is built, and refused, again.
     recorded::frames_until(&mut side, |side, _| layer_of::<NeedsTables>(side, 2).rebuilt().builds().count > builds);
     let unscoped = layer_of::<NeedsTables>(&side, 2).rebuilt();
     assert!(unscoped.stopped().is_none(), "the worker has not stopped");
@@ -353,8 +323,6 @@ fn a_build_runs_under_the_recordings_executable_tables_and_one_that_panics_is_re
 
 #[test]
 fn a_build_that_misses_three_tables_learns_the_three_in_one_round() {
-    // Three tables the recording holds whole and empty: typed rows of them can be made (its
-    // Countries rows lack most columns, which rows at the head rightly refuse by name).
     let reads = vec![TableId::FactionMembers, TableId::WarRelations, TableId::Subjects];
     let mut side = side_with(record(), vec![("in order", InOrder { reads: reads.clone() })]);
     recorded::frames_until(&mut side, |side, _| layer_of::<InOrder>(side, 1).rebuilt().builds().count > 0);
@@ -366,14 +334,10 @@ fn a_build_that_misses_three_tables_learns_the_three_in_one_round() {
     assert_eq!(built.product.as_ref().ok(), Some(&built.hour), "once joined the build reads all three: {:?}", built.product.as_ref().err());
 }
 
-/// The vision layer, then the probe as the window makes it: its rows from the playhead, built for the
-/// view's perspective with the vision left to the builder, each product it takes handed to the scene;
-/// drawn below a camera height of 500.
 fn window_side(units: Units, gate: &Arc<Gate>) -> MapSide {
     window_side_with(units, gate, false)
 }
 
-/// [`window_side`], the probe [`Whole::exact`] when `exact`.
 fn window_side_with(units: Units, gate: &Arc<Gate>, exact: bool) -> MapSide {
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let probe = Whole::new("probe", Probe { reads: Vec::new(), gate: Arc::clone(gate) }, |_, view| view.camera_height < 500.0, |_| 0, &[TableId::Clock], false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
@@ -386,8 +350,6 @@ fn window_side_with(units: Units, gate: &Arc<Gate>, exact: bool) -> MapSide {
     side
 }
 
-/// What a wait of the window's tests saw last: the map's hour and compose, and the probe's
-/// published, carried, product, builds and the tables its worker waits for.
 fn window_state(side: &MapSide, gate: &Gate) -> String {
     let probe = side.parts().map(|_| probe_of(side)).map(|probe| {
         let rebuilt = probe.rebuilt();
@@ -396,8 +358,6 @@ fn window_state(side: &MapSide, gate: &Gate) -> String {
     format!("applied {:?}, newest {:?}, composing {}, gate reached {}; the probe: {probe:?}", side.applied(), side.entry().playhead().newest(), side.composing(), gate.reached())
 }
 
-/// Frames with the head at `head` (none: the hour applied) until `done` holds; fails by name,
-/// printing what it saw, within 120 s.
 fn frames_at(side: &mut MapSide, head: Option<Hour>, gate: &Gate, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -413,8 +373,6 @@ fn frames_at(side: &mut MapSide, head: Option<Hour>, gate: &Gate, what: &str, mu
     }
 }
 
-/// The head moves only when the test moves it: held at the hour applied while the worker builds,
-/// then one step on with the layer hidden.
 #[test]
 fn a_window_layer_shows_todays_plan_until_its_first_product_and_nothing_where_the_view_hides_it() {
     let gate = Gate::shut();
@@ -438,16 +396,10 @@ fn a_window_layer_shows_todays_plan_until_its_first_product_and_nothing_where_th
     assert!(probe_of(&side).product().is_none(), "hidden, it holds no product");
     assert!(probe_of(&side).shows(), "hidden, it draws nothing, as today's draws nothing there");
     assert!(!probe_of(&side).uploaded(), "an empty plan is due to the scene");
-    // Before any frame settles it again, so before its worker can build: no product yet.
     side.set_view(View::default()).unwrap();
     assert!(!probe_of(&side).shows(), "shown again, today's plan is drawn until the layer's first product");
 }
 
-/// An exact layer (a map mode's colours) is part of the hour's picture: a step waits on the side's
-/// thread for the product of its own hour, while the worker is held, and the layer then stands at
-/// the hour applied. Before, a step took whatever product the worker had published, so the mode's
-/// colours of an older hour were drawn under the newer hour's overlay and the hour said was the
-/// newer.
 #[test]
 fn an_exact_layer_is_the_product_of_the_hour_each_step_applies() {
     let gate = Gate::opened();
@@ -456,7 +408,6 @@ fn an_exact_layer_is_the_product_of_the_hour_each_step_applies() {
     frames_at(&mut side, None, &gate, "the probe's first product", |side| probe_of(side).product().is_some());
     let hour = side.applied().expect("the head has reached an hour");
     gate.close();
-    // The worker is held again: the next step's product waits for a build the test lets through.
     let opener = {
         let gate = Arc::clone(&gate);
         std::thread::spawn(move || {
@@ -476,10 +427,6 @@ fn an_exact_layer_is_the_product_of_the_hour_each_step_applies() {
     assert_eq!(probe.published(), crate::layers::Published::Current, "and the layer stands at it");
 }
 
-/// A seek back to the hour the layer stands at is a compose, a new point in history: the product
-/// built before it is let go, and the one the layer then holds was built after it. Before, the old
-/// product was still of that hour and generation, so a seek to the same hour on another branch kept
-/// drawing the history it left.
 #[test]
 fn a_compose_lets_the_product_built_before_it_go() {
     let gate = Gate::opened();
@@ -493,10 +440,6 @@ fn a_compose_lets_the_product_built_before_it_go() {
     assert_eq!(probe_of(&side).product().map(|built| built.hour), Some(hour), "built again at the hour sought: {}", window_state(&side, &gate));
 }
 
-/// A change of viewing country lets the product made for the country before go at once, the scene
-/// given nothing in its place, and takes only one built for the new country. Before, the old
-/// product stayed installed (an aircraft flight plan of the country before under the new one) and a
-/// build begun before the change was still taken.
 #[test]
 fn a_viewing_country_change_lets_the_product_made_for_the_country_before_go() {
     use viewer_foundation::map::perspective::Country;
@@ -515,10 +458,6 @@ fn a_viewing_country_change_lets_the_product_made_for_the_country_before_go() {
     assert_eq!(built.seen.as_ref().map(|(choice, _)| choice), Some(&chosen.perspective), "for the chosen country");
 }
 
-/// A compose is owed one plan the scene takes anew, and the install pays it. On the base the
-/// compose's reset was spent by the product that happened to be taken first, so a product taken
-/// after it and before the scene had been given anything was handed on as a continuation, and
-/// which of them the scene took was a race between the layer's worker and the frame.
 #[test]
 fn the_plan_the_scene_takes_after_a_compose_is_taken_anew_however_many_products_were_taken_first() {
     let gate = Gate::opened();
@@ -537,7 +476,6 @@ fn the_plan_the_scene_takes_after_a_compose_is_taken_anew_however_many_products_
     );
 }
 
-/// Builds nothing of the rows, and stands at any rows that hold its tables unchanged.
 struct Steady;
 
 impl Build for Steady {
@@ -556,9 +494,6 @@ impl Build for Steady {
     }
 }
 
-/// The vision layer, then [`Steady`] reading `reads` from the side's views; its reader declared
-/// before the seek to the first hour (so the seek's reset brings its tables), played until that
-/// reset is swapped in.
 fn steady_side(units: Units, reads: &[TableId]) -> MapSide {
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let steady = Whole::new("steady", Steady, |_, _| true, |_| 0, reads, false).unwrap();
@@ -575,8 +510,6 @@ fn steady_of(side: &MapSide) -> &Whole<Steady> {
     layer_of(side, 1)
 }
 
-/// The frame that applies the next step, four hours on (the head moves only here, a step a frame):
-/// the hour.
 fn next_hour(side: &mut MapSide) -> i32 {
     let before = side.applied().expect("the head has reached an hour");
     for _ in 0..50_000_000u64 {
@@ -608,10 +541,6 @@ fn a_layer_builds_nothing_while_no_table_it_reads_changes_and_its_product_stands
     assert_eq!(steady_of(&side).carried().entities, 0);
 }
 
-/// The Clock changes every hour and a step is applied every frame: with rows due at the step, the
-/// worker makes the product of each step's rows once the one before is made, held for no clock. On
-/// the base it took rows at most once a tenth of a second of its pace's clock, at four or ten
-/// frames of rows a second: a step's rows could be passed over for the next tick's.
 #[test]
 fn a_layer_with_a_step_every_frame_makes_the_product_of_each_steps_rows_and_waits_for_no_clock() {
     let mut side = steady_side(ticking(520), &[TableId::Clock]);

@@ -16,16 +16,13 @@ test('a flag replacing another clears it at once, and draws only once its pictur
   });
   try {
     let cleared = 0;
-    // A canvas still showing an earlier flag of the same size, which React leaves as it is.
     const canvas = { width: 82, height: 52, getContext: () => ({ clearRect: () => { cleared++; } }) } as unknown as HTMLCanvasElement;
     const flag = (png: string) => ({ width: 82, height: 52, png });
-    // A replacement that cannot be decoded leaves the frame empty.
     showFlag(canvas, flag('http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png'));
     assert.equal(cleared, 1);
     decodes[0].reject();
     await new Promise(resolve => setTimeout(resolve));
     assert.deepEqual(observed, []);
-    // One decoded is drawn; one stopped before its decode never is.
     const stop = showFlag(canvas, flag('http://artwork.localhost/cccccccccccccccccccccccccccccccc.png'));
     stop();
     showFlag(canvas, flag('http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png'));

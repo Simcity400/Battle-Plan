@@ -32,9 +32,6 @@ import type { OccupationReserveReply, ReserveHistoryReply } from '../../generate
 const PARAMS = {} as const;
 const NO_TAGS: readonly string[] = [];
 
-/** Foreign garrison manpower each country holds in reserve, as a ranked race whose bars split by the country that sent
- * it. The holders and their entries' sources are a pushed panel at the head, rendered only when they change; the bars,
- * their ranks and parts are painted from the entries' live amounts each frame. A holder opens its sources over time. */
 export default function OccupationReserveWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
@@ -43,7 +40,6 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const pinned = options.show === 'breakdown';
-  // The reserve's read hour moves with its reads: kept from every push for the tooltip, never rendered for.
   const readHour = useRef<number | null>(null);
   const head = useHeadProduct<OccupationReserveReply>(runtime, widget, 'occupation-reserve-manpower', track && !pinned ? PARAMS : null,
     { active, validate: validateOccupationReserve, structure: reserveStructure, paint: reply => { readHour.current = reply.readHour; } });
@@ -64,7 +60,6 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
-  // Chosen countries and group members alike follow their native holders through renames.
   const counted = useMemo(() => (manual || grouped) && identities ? projectResolvedCountries(resolved, countryMatchFilter(widget.countries, fallback ? [fallback] : [],
     groups.data, track?.branch.lastHour ?? 0, identities, track?.branch.firstHour ?? 0)) : resolved,
   [manual, grouped, identities, resolved, widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour]);
@@ -89,8 +84,6 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const top = resolved.top ?? null;
   const ranked = useMemo(() => mapLive(live, values => raceEntries(holders, values, top, sourceColour, moment)), [live, holders, top, sourceColour, moment]);
   const liveRanked = useMemo<LiveRaceEntries>(() => ({ entries: ranked.read, hour: () => head.shownAt() ?? moment, bind: ranked.subscribe }),
-    // `head.shownAt` reads the follow store; the entries are what move.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [ranked, moment]);
   const byTag = useMemo(() => new Map(holders.map(holder => [holder.country.tag!, holder])), [holders]);
   const [chosen, setChosen] = useState<{ tag: string; id: number } | null>(null);
@@ -108,7 +101,6 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (resolved.reason && !all) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
-  // A group with no member at the moment says why.
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="flag" /></>;
   if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
   if (data.missing) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." detail={data.missing} /></>;
@@ -142,8 +134,6 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   </div>;
 }
 
-/** One holder's reserve from each source over the branch, stacked by source (`occupation-reserve-history`: its entries'
- * history a stretch, asked once); the legend's values and the negative entries are those at `hour`. */
 function HolderSources({ widget, runtime, active, holder, hour, extent, playhead, liveHead }: WidgetProps & {
   holder: { tag: string; id: number } | null; hour: number; extent: [number, number]; playhead: number | null; liveHead: LiveHead | undefined;
 }) {
@@ -154,7 +144,6 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
   const { data, error, retry } = useProduct<ReserveHistoryReply>(runtime.client, request, active, validateReserveHistory, track?.source);
   const sources = useMemo(() => data ? historySources(data) : [], [data]);
   const bands = useMemo(() => data ? holderBands(data, sources) : [], [data, sources]);
-  // Each source named and coloured by the tag its raw id held at the hour shown, else its last.
   const tagOf = useCallback((source: number) => data ? sourceTagAt(data, source, hour)
     ?? [...data.sources.find(item => item.id === source)?.tags ?? []].reverse().find(tag => tag.tag !== null)?.tag ?? null : null, [data, hour]);
   const sourceTags = useMemo(() => [...new Set(sources.flatMap(source => { const tag = tagOf(source); return tag === null ? [] : [tag]; }))], [sources, tagOf]);
@@ -187,7 +176,6 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
     <dt>Negative entries</dt>
     {negative.map((entry, index) => { const tag = sourceTagAt(data, entry.source, Math.floor(hour)); return <dd key={index}><span>{tag === null ? 'Source country unavailable' : looks.name(tag, hour)}</span><span>{persons(entry.amount)}</span></dd>; })}
   </dl>;
-  // Admitted with no positive entry anywhere in the history: nothing to stack, a proven zero.
   if (segment?.admitted && !sources.length) return <div className="occupation-holder">
     <WidgetState kind="empty" icon="flag" message={`${looks.name(holder.tag, hour)} holds no reserve manpower at this date.`} />{list}
   </div>;

@@ -6,7 +6,6 @@ export const SORT_CHOICES = [
   { key: 'date', label: 'Newest first', direction: 'descending' },
   { key: 'name', label: 'Name', direction: 'ascending' },
 ] as const;
-// No numerical bars or rank column in this card; keep only its approved sort.
 export const OPTIONS: readonly OptionField[] = [...tableSortOptions(SORT_CHOICES, DEFAULT_SORT), NARROW_TABLE_OPTION];
 export const definition = {
   kind: 'aces', version: 1, title: 'Aces', icon: 'star',

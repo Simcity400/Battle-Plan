@@ -35,12 +35,10 @@ fn a_battle_records_modifiers_are_the_newest_rows_its_record_inserted_never_an_e
     let key = |battle: u32, side: u8, ordinal: u32| u128::from(battle) << 40 | u128::from(side) << 32 | u128::from(ordinal);
     let row = |hour, key, modifier, hours| number_row(hour, key, &[(0, log::Cell::Number(modifier)), (1, log::Cell::Number(hours))], 2);
     let rows = [
-        // Slot 4's earlier battle, before the record at hour 100.
         row(60, key(4, 0, 0), 1, 5),
         row(100, key(4, 0, 0), 2, 6),
         row(100, key(4, 1, 0), 3, 7),
         row(120, key(4, 1, 0), 3, 8),
-        // A battle not referenced.
         row(110, key(5, 0, 0), 9, 9),
     ];
     let battles = BTreeMap::from([(4, 100)]);

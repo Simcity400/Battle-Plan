@@ -9,7 +9,6 @@ test('slice activation retains the actual drawn native node, callback and held h
   const owner = { source: 'recording-A', branch: '1', view: 'share', numbers: {} };
   const calls: unknown[] = [];
   const frame = { owner, nodes: [node], onPick: (selected: SunburstNode) => { calls.push([140, selected.key, selected.label]); return true; } };
-  // A later render has the same semantic owner but another hour and label.
   const refreshed = { owner, nodes: [{ ...node, label: 'New content name' }],
     onPick: (selected: SunburstNode) => { calls.push([141, selected.key, selected.label]); return true; } };
   assert.equal(pickSunburst(frame, refreshed.owner, true, node.id), true);

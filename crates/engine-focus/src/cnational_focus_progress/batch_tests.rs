@@ -41,9 +41,6 @@ fn capture(
 fn governance_batch_focus_persistent_and_one_shot_every_serial_operand() {
     let world = World::new(1);
     let country = World::country(1);
-    // The daily focus update uses the stored progress; the completed-focus query uses the completed
-    // roster and focus token. The two definition gathers share a counter key but each fault below
-    // meets just one of them.
     for (offset, reader) in [
         (engine_governance_tests::FOCUS + PROGRESS, "focus_progress"),
         (
@@ -103,7 +100,6 @@ fn governance_batch_focus_persistent_and_one_shot_every_serial_operand() {
                     .count()
                     <= 1
             );
-            // Summary and completed definitions are two independent batches.
             assert!(
                 after
                     .fallbacks

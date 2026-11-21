@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Runs a command on the self-hosted runner the way agents share this machine: after any game run
-# holding BATTLE_PLAN_GAME_LOCK (one older than 90 minutes is stale), inside one slot of the shared prep
-# lock that BATTLE_PLAN_PREP_LOCK takes. The runner's .env names both.
-# Usage: with-machine-locks.sh <tag> <command> [args...]
 set -euo pipefail
 tag=${1:?tag}; shift
 : "${BATTLE_PLAN_GAME_LOCK:?the runner's .env must name BATTLE_PLAN_GAME_LOCK}"

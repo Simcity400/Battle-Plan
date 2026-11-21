@@ -8,6 +8,5 @@ license.workspace = true
 
 [lib]
 doctest = false
-# Synthetic helpers are exercised by their consuming crates.
 test = false
 bench = false

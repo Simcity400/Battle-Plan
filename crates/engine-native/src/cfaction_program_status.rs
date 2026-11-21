@@ -1,5 +1,3 @@
-//! A faction's ordered programme references. The save retains the full native
-//! references without resolving them; stale and null references remain data.
 
 use engine_sites::Rva;
 use crate::{Memory, allocation, cpdx_array::Array, read};

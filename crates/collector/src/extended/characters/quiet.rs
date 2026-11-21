@@ -1,53 +1,3 @@
-//! Quiet roster hours of the roster job ([`crate::roster_changes`]).
-//!
-//! The roster is the `CCharacterManager`'s historical and dynamic `CPdxArray<CCharacter*>`. An
-//! element is only appended, by `roster push(array, unique_ptr)`, and freed only with its whole
-//! array, by `roster clear(array)`; nothing erases, swaps or reorders one. The manager is rebuilt
-//! only by its constructor, and a rostered character's id is written after its push only by
-//! character identity repair. Every one of them moves the roster domain's quiet token
-//! ([`engine_mutations::character_roster_mutations`]), so while the token stands still the roster's
-//! occurrences (pointers), their order (roster and ordinal) and their ids are those of the job's
-//! latest complete full pass.
-//!
-//! The roster job takes the token at the start of each hourly pass, before
-//! any registration or read, and holds it with the scope only when that pass
-//! was a complete full pass: a complete portrait census, no staging overflow
-//! and no failed read. Pooled jobs rotate; each holds its own token, census
-//! and carry, and equal tokens since that job's own pass prove that no
-//! roster writer ran since. A later role hour whose token equals the held
-//! one, for the same module and game state and outside a full hour, walks no
-//! roster (headers, pointer pages or character views):
-//!
-//! 1. Characters rows: the carry is certified as on every hour
-//!    ([`carry::Carry::begin_hour`]); every occurrence of the held portrait
-//!    census must be a held character with the same pointer and id whose
-//!    certificate holds, and all of them are carried this pass.
-//! 2. The role census is gathered from the held portrait census, as after a
-//!    full pass ([`gather_role_census`]): each occurrence's country, unit
-//!    leader pointer and role headers afresh in one guarded call, keeping
-//!    its generation when byte-identical so role jobs keep their quiet hours.
-//! 3. UnitLeaders rows, which change at any hour without a hook, are read as
-//!    a census role job reads them: the unit leader of every occurrence with
-//!    one, in roster order ([`copy_unit`]), then the appended formation
-//!    fields. These reads are the job's prepared read program, keyed by the
-//!    role census's generation ([`program_key`]): while the census keeps its
-//!    generation, every read runs afresh in one guarded execution that
-//!    compares each selecting byte before the read it selects, and a changed
-//!    byte continues the pass from that read. Any other hour runs the reads
-//!    one by one and prepares the program for the next.
-//!
-//! The decode walks the role census with the carry ([`walk`]): each
-//! Characters row is the held row with this hour's id, country, roster and
-//! ordinal, exactly as a full pass builds a carried row, and each UnitLeaders
-//! row comes from the recorded reads. Those Characters rows are a function of
-//! the role census's generation and the carry's version ([`RowsKey`]); the
-//! job keeps the rows of its latest quiet decode ([`Published`]), and a quiet
-//! hour with the same key publishes a copy of them instead of rebuilding
-//! every row. The rows, the loaned portrait census
-//! and the role census equal what the full pass publishes over the same
-//! memory. Any step that cannot complete runs the full pass instead; a failed
-//! gather is not repeated after it, so no failed read is retried. Each
-//! roster-job hour records its use of the domain once.
 use super::*;
 use crate::roster_changes::{Counts, Roster, Table};
 
@@ -57,17 +7,11 @@ struct Held {
     scope: (usize, usize),
 }
 
-/// The roster job's held token and its quiet-hour state.
 pub(crate) struct QuietRoster {
     domain: &'static dyn Roster,
-    /// The token taken before this job's latest complete full pass.
     held: Option<Held>,
-    /// This payload came from a quiet hour: decode walks the role census.
     pub(super) quiet: bool,
-    /// The quiet attempt already certified this hour's carry.
     pub(super) carry_begun: bool,
-    /// The quiet attempt gathered the role census; the full pass does not
-    /// gather it again.
     gathered: bool,
     counts: Counts,
 }
@@ -82,8 +26,6 @@ impl std::fmt::Debug for QuietRoster {
     }
 }
 
-/// Tests: a domain that never observes, so the shared hooks' domain never
-/// leaks between parallel tests. Quiet-hour tests choose their own.
 #[cfg(test)]
 struct Unobserved;
 
@@ -117,22 +59,16 @@ impl QuietRoster {
         }
     }
 
-    /// This job's latest roster-job hour.
     #[cfg(test)]
     pub(super) fn counts(&self) -> Counts {
         self.counts
     }
 
-    /// The roster domain's token.
     pub(super) fn token(&self) -> Option<(u64, u64)> {
         self.domain.token()
     }
 }
 
-/// The roster job's hourly pass (part 0 alone): a quiet hour when the roster
-/// stood still since this job's latest complete full pass, otherwise the
-/// full pass, followed on role hours (`gather`) by the role census. `token`
-/// was taken before any registration or read of this pass.
 pub(super) fn capture(
     memory: &impl Memory,
     ctx: CharactersCopyContext,
@@ -171,10 +107,7 @@ pub(super) fn capture(
     job.roster.domain.record(Table::Characters, &counts);
 }
 
-/// Steps 1 to 3 of a quiet hour; false runs the full pass instead.
 fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut CharactersJob) -> bool {
-    // Step 1, exactly as the full pass begins (`copy_pass`), which then
-    // skips it.
     job.carry
         .begin_hour(ctx.active[0] && !ctx.force_full && cfg!(feature = "character_changes"));
     job.roster.carry_begun = true;
@@ -187,8 +120,6 @@ fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut Charac
         return false;
     }
     let _reads = read_accounting::table(TABLES[anchor(ctx.active)]);
-    // The payload holds this hour's census and unit reads, as a census role
-    // job's does.
     job.log.clear();
     job.leader_rows = 0;
     job.advisor_demand = AdvisorDemand::default();
@@ -199,7 +130,6 @@ fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut Charac
     job.advisor_section_complete = false;
     job.census_visited.clear();
     job.census_required = 0;
-    // Step 2: the held census is this hour's (complete for this scope).
     job.census_current = true;
     job.role_census_current = false;
     job.roster.gathered = true;
@@ -209,15 +139,6 @@ fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut Charac
         return false;
     }
     job.census_capture = true;
-    // Step 3: the leaders the unit carry holds unchanged are not read
-    // ([`unit_carry`]); the others are read one by one. When it carries none,
-    // as this job's prepared read program (`program_key`): while the role
-    // census keeps its generation, every unit-leader read of the job's latest
-    // full quiet pass runs afresh in one guarded execution, which compares
-    // each byte that selected a later read (a skill pointer, a category, a
-    // string header) before that read. A changed selecting byte stops it
-    // there and the pass continues from that read; a changed generation or no
-    // program runs the pass, which prepares the next one.
     let source_mask = job.source_mask();
     let census = job
         .role_census
@@ -233,8 +154,6 @@ fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut Charac
         && !carrying
         && key.is_some_and(|key| job.log.begin_planned_capture(memory, key));
     if !planned {
-        // A completed program read exactly what its pass read, so that
-        // pass's unit text demand holds; otherwise the pass counts it again.
         job.unit_demand = AdvisorDemand::default();
         job.appended_roles.clear();
         job.appended_required = 0;
@@ -249,15 +168,12 @@ fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut Charac
     true
 }
 
-/// An occurrence's unit leader pointer; `None` for none.
 pub(super) fn unit(occurrence: census::Occurrence) -> Option<usize> {
     usize::try_from(u64::from_le_bytes(occurrence.unit()))
         .ok()
         .filter(|&unit| unit != 0)
 }
 
-/// The census index, unit pointer and character id of every occurrence with
-/// a unit leader, in census order.
 pub(super) fn leaders(
     census: census::Admitted<'_>,
 ) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
@@ -267,14 +183,8 @@ pub(super) fn leaders(
     })
 }
 
-/// Marks a quiet pass's program apart from the full pass's, whose third key
-/// word is the job's five-bit source mask.
 const QUIET_PROGRAM: usize = 1 << (usize::BITS - 1);
 
-/// The key of a quiet pass's prepared program. Its reads are selected only
-/// by the role census (each occurrence's unit pointer and id, in roster
-/// order), whose generation names its exact content, and by the job's
-/// tables; every other selecting byte is a control the program compares.
 fn program_key(
     ctx: CharactersCopyContext,
     source_mask: u32,
@@ -288,11 +198,6 @@ fn program_key(
     ]
 }
 
-/// Step 3: every occurrence's Characters demand and, when `read` (no
-/// prepared program completed), the unit leader of each occurrence with one,
-/// in roster order, with the full pass's reads and failure order from its
-/// unit pointer on; when `carrying`, only the leaders the unit carry does not
-/// carry.
 fn copy_units(
     memory: &impl Memory,
     ctx: CharactersCopyContext,
@@ -300,7 +205,6 @@ fn copy_units(
     read: bool,
     carrying: bool,
 ) {
-    /// Occurrences ahead whose leader lines are hinted.
     const LOOKAHEAD: usize = 16;
     let mut dead = Dead {
         characters: !ctx.active[0],
@@ -310,14 +214,11 @@ fn copy_units(
         traits: true,
     };
     job.character_demand = AdvisorDemand::default();
-    // Taken while the job is written; the census itself is not.
     let roles = job.role_census.take();
     if let Some(census) = roles
         .as_deref()
         .and_then(|census| census.admitted(ctx.base, ctx.game_state))
     {
-        // Decode supplies every occurrence's held row; their text joins this
-        // pass's demand.
         let (rows, bytes) = job.carry.census_demand(census);
         job.character_demand.add(rows, bytes);
         if carrying {
@@ -326,7 +227,6 @@ fn copy_units(
                     job.experience.touch(pointer, character);
                 }
             }
-            // And the carried leaders' held rows.
             let (rows, bytes) = job.unit_carry.carried_demand();
             job.unit_demand.add(rows, bytes);
             for at in 0..job.unit_carry.visit_count() {
@@ -363,8 +263,6 @@ fn copy_units(
                     (cunit_leader::EXILE_COUNTRY, 4),
                 ] {
                     if let Some(address) = ahead.checked_add(offset) {
-                        // The census selects these lines, so the program
-                        // keeps them as its own hints.
                         job.log.prefetch(address, len);
                     }
                 }
@@ -390,10 +288,6 @@ fn copy_units(
     job.role_census = roles;
 }
 
-/// What a quiet roster hour's Characters rows are a function of: the role
-/// census they follow (each occurrence's pointer, id, country and roster
-/// position, which its nonzero generation names) and the carry's held rows,
-/// which such an hour publishes for every occurrence (its version).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RowsKey {
     scope: (usize, usize),
@@ -401,8 +295,6 @@ pub(super) struct RowsKey {
     carry: u64,
 }
 
-/// The key of this payload's Characters rows when it came from a quiet
-/// roster hour; `None` otherwise.
 pub(super) fn rows_key(base: usize, job: &CharactersJob) -> Option<RowsKey> {
     if !job.roster.quiet || !job.role_census_current {
         return None;
@@ -415,7 +307,6 @@ pub(super) fn rows_key(base: usize, job: &CharactersJob) -> Option<RowsKey> {
     })
 }
 
-/// The Characters rows of the job's latest quiet decode, under their key.
 #[derive(Debug, Default)]
 pub(crate) struct Published {
     key: Option<RowsKey>,
@@ -425,7 +316,6 @@ pub(crate) struct Published {
 }
 
 impl Published {
-    /// Whether a payload with `key` publishes exactly the held rows.
     pub(super) fn matches(&self, key: Option<RowsKey>) -> bool {
         key.is_some() && key == self.key
     }
@@ -440,8 +330,6 @@ impl Published {
         crate::raw_memory::vector_bytes(&self.rows) + crate::raw_memory::vector_bytes(&self.bytes)
     }
 
-    /// Decode worker: holds a quiet decode's complete rows under `key`.
-    /// Storage is advisory: rows that cannot be held are rebuilt next hour.
     pub(super) fn hold(
         &mut self,
         key: RowsKey,
@@ -468,8 +356,6 @@ impl Published {
         }
     }
 
-    /// What [`Self::copy_into`] returns, for buffers that already hold the
-    /// rows.
     pub(super) fn result(&self) -> ReadResult {
         ReadResult {
             outcome: Outcome::Rows {
@@ -480,8 +366,6 @@ impl Published {
         }
     }
 
-    /// Copies the held rows into a capture's buffers, as the decode would
-    /// have built them.
     pub(super) fn copy_into(
         &self,
         rows: &mut Vec<ccharacter::Row>,
@@ -505,8 +389,6 @@ impl Published {
     }
 }
 
-/// The generation of the role census this payload's quiet hour gathered;
-/// zero for none.
 pub(super) fn census_generation(job: &CharactersJob) -> u64 {
     job.role_census_current
         .then_some(job.role_census.as_deref())
@@ -514,9 +396,6 @@ pub(super) fn census_generation(job: &CharactersJob) -> u64 {
         .map_or(0, census::RoleCensus::generation)
 }
 
-/// Decode of a quiet hour whose buffers hold its held leaders' UnitLeaders
-/// table: whether every leader the hour read afresh equals its held row, so
-/// that table is this hour's.
 pub(super) fn fresh_leaders_unchanged<M: Memory>(
     memory: &M,
     base: usize,
@@ -546,10 +425,6 @@ pub(super) fn fresh_leaders_unchanged<M: Memory>(
     true
 }
 
-/// Decode of a quiet hour: `walk_census` over this pass's role census with
-/// the carry, every occurrence in roster order; when only the unit leader
-/// tables are decoded (the Characters rows republished), only the
-/// occurrences with a unit leader, the others producing no row.
 pub(super) fn walk<M: Memory>(
     memory: &M,
     base: usize,
@@ -568,7 +443,6 @@ pub(super) fn walk<M: Memory>(
     };
     let [characters, leaders, _, advisors] = family.required();
     let units_only = !characters && !leaders && !advisors;
-    // The unit carry's visits are the occurrences with a unit leader.
     let leaders = job.unit_carry.visited().filter(|_| units_only);
     let every = leaders.is_none().then(|| {
         (0..census.len())

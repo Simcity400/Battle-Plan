@@ -1,14 +1,3 @@
-//! Persistent espionage-operation object.
-//!
-//! Completion retains the selected effect's localized description and the bonus
-//! and detection flags. These are exact client bytes and outcome flags, rather
-//! than reconstructed effects or a universal success state. Serialization writes
-//! true bonus/detection flags and writes the description only for terminal
-//! operations outside checksum mode.
-//!
-//! The map icons' preparation display reads the selected phases, the
-//! requirement records and the inline equipment pool the preparation checks
-//! fill ([`Instance::parts`]).
 
 use engine_sites::Rva;
 use crate::{
@@ -16,82 +5,39 @@ use crate::{
     cpdx_array::Array, cprovince, csubject_relation::Name, read,
 };
 
-/// Primary vtable at subobject offset zero.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_8fc0);
-/// Packed full reference, u64: low word type and high word instance ID.
 pub const HANDLE: usize = 0x08;
-/// Known operation-instance reference type. Admission uses the dynamic full
-/// handle; this value is not an admission whitelist.
 pub const REFERENCE_TYPE: u32 = 4_713;
-/// COperationInstance signed i64 fixed-point preparation.
 pub const PREPARATION_CURRENT: usize = 0x30;
-/// COperationInstance signed i64 fixed-point preparation requirement.
 #[cfg(any(test, feature = "test-support"))]
 pub const PREPARATION_REQUIRED: usize = 0x38;
-/// COperationInstance auto-repeat flag.
 #[cfg(any(test, feature = "test-support"))]
 pub const AUTO_REPEAT: usize = 0x41;
-/// Completion sets this byte after applying the selected effect.
 pub const TERMINAL: usize = 0x42;
-/// Operation-definition pointer; authenticate the pointee's vtable.
 pub const DEFINITION: usize = 0x48;
-/// Owning country pointer, joined through its raw country reference.
 pub const OWNER_COUNTRY: usize = 0x50;
-/// Target-country raw reference, u32, joined to the country table.
 pub const TARGET_COUNTRY_ID: usize = 0x58;
-/// Optional target province pointer; authenticate the selected province
-/// before following its state pointer.
 pub const TARGET_PROVINCE: usize = 0x60;
-/// Signed i32 start hour, copied from the game date on start and saved only
-/// when duration is nonzero.
 pub const START_HOUR: usize = 0x70;
-/// COperationInstance signed i32 duration days.
 pub const DURATION_DAYS: usize = 0x80;
-/// Completion moves the localized effect text here and trims trailing whitespace.
-/// The tooltip reads this retained string.
 pub const EFFECT_DESCRIPTION: usize = 0xa0;
-/// String construction and assignment refuse lengths above the game's maximum;
-/// no smaller text cap is imposed.
 pub const DESCRIPTION_MAX_LENGTH: u64 = 0x7fff_ffff_ffff_ffff;
-/// Bonus trial result; a nonzero value selects the bonus effect definition.
-/// Serialized under its bonus token.
 pub const BONUS: usize = 0xc0;
-/// Detection result set after the risk trial and action dispatch, read by
-/// the completion icon and serialized under its detection token.
 pub const DETECTED: usize = 0xc1;
-/// Assigned-operative record-array data, with 0x38-byte records.
 pub const ASSIGNED_OPERATIVE_DATA: usize = 0xe0;
-/// Selected-phase array data containing the chosen definition pointers, with
-/// its capacity and count after it as a CPdxArray header.
 pub const PHASE_DATA: usize = 0xf8;
-/// Signed phase-array count; definition pointers are serialized in this order.
 pub const PHASE_COUNT: usize = 0x104;
-/// Phase definition pointer width.
 pub const PHASE_STRIDE: usize = 8;
-/// A phase definition's u32 lexer token, saved as its `phases` spelling.
 pub const PHASE_TOKEN: usize = 0x08;
-/// Inline equipment pool (`cequipment_variant_pool`) the preparation checks
-/// fill: its variant entries are saved as `equipment` and its per-archetype
-/// totals are what the requirements are checked against.
 pub const EQUIPMENT_POOL: usize = 0x110;
-/// Requirement-record array pointer, with its capacity and signed count after
-/// it as a CPdxArray header. Preparation checks read it with 0x20-byte records.
 pub const REQUIREMENT_DATA: usize = 0x158;
-/// Requirement-record stride.
 pub const REQUIREMENT_STRIDE: usize = 0x20;
-/// Requirement amount, signed i64 fixed5.
 pub const REQUIREMENT_AMOUNT: usize = 0x00;
-/// Requirement preparation days, i32.
 pub const REQUIREMENT_DAYS: usize = 0x08;
-/// Requirement equipment-type pointer; null for the civilian-factory
-/// requirement. The type's archetype (`cequipment_type::ARCHETYPE`) names it.
 pub const REQUIREMENT_EQUIPMENT: usize = 0x10;
-/// Requirement byte: nonzero when the requirement uses preparation time.
 pub const REQUIREMENT_USES_TIME: usize = 0x18;
-/// Operation-instance serializer.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x014a_0a70;
-/// Operation-instance loader.
 #[cfg(test)]
 pub const LOADER_RVA: usize = 0x0149_e700;
 
@@ -109,26 +55,19 @@ pub struct Row {
     pub terminal: u8,
     pub bonus: u8,
     pub detected: u8,
-    /// Exact retained client-localized bytes in the caller-owned arena.
     pub effect_description: Name,
     pub start_hour: i32,
     pub duration_days: i32,
     pub phase_count: u32,
     pub assigned_slots: u32,
-    /// The operation's parts in the caller's part arena from `parts_start`:
-    /// `phase_count` phases, then `requirement_count` requirements,
-    /// `equipment_count` pool variant entries and `equipment_total_count`
-    /// pool archetype totals, each in native order with repeats.
     pub parts_start: usize,
     pub requirement_count: u32,
     pub equipment_count: u32,
     pub equipment_total_count: u32,
-    /// The equipment pool's raw allow-zero byte (`allow_zero_entries`).
     pub equipment_allow_zero: u8,
 }
 
 impl Row {
-    /// The parts this row holds in the part arena.
     pub fn part_count(&self) -> usize {
         self.phase_count as usize
             + self.requirement_count as usize
@@ -137,22 +76,15 @@ impl Row {
     }
 }
 
-/// One requirement record. The civilian-factory requirement has no
-/// equipment type: `equipment` and `archetype` are zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Requirement {
     pub amount: i64,
     pub days: i32,
-    /// The equipment type's archetype lexer token.
     pub archetype: u32,
-    /// 1 for an equipment requirement, 0 for the civilian-factory one.
     pub equipment: u8,
-    /// The raw uses-preparation-time byte.
     pub uses_time: u8,
 }
 
-/// One equipment pool variant entry: its full variant reference, the lexer
-/// token of its equipment type's archetype, and its amount.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Equipment {
     pub variant: u64,
@@ -160,20 +92,16 @@ pub struct Equipment {
     pub amount: i64,
 }
 
-/// One equipment pool archetype total: the archetype's lexer token and the
-/// stored total the requirements are checked against.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EquipmentTotal {
     pub archetype: u32,
     pub amount: i64,
 }
 
-/// One entry of an operation's parts ([`Row::parts_start`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     #[default]
     Empty,
-    /// A selected phase definition's lexer token.
     Phase(u32),
     Requirement(Requirement),
     Equipment(Equipment),
@@ -187,15 +115,11 @@ pub struct Instance {
     pub effect_description: Literal,
     pub phases: Array,
     pub requirements: Array,
-    /// The pool's variant entries and its archetype totals.
     pub equipment: Array,
     pub equipment_totals: Array,
 }
 
 impl Instance {
-    /// Every part in arena order, each read and authenticated: phase tokens,
-    /// requirement records (an equipment requirement's type and archetype
-    /// authenticated), pool variant entries and pool archetype totals.
     pub fn parts(
         &self,
         memory: &impl Memory,
@@ -295,8 +219,6 @@ impl Instance {
     }
 }
 
-/// An equipment type, archetype or null placeholder: each shares the
-/// complete type layout.
 fn authenticate_type(
     memory: &impl Memory,
     base: usize,
@@ -316,7 +238,6 @@ fn authenticate_type(
     Ok(())
 }
 
-/// An authenticated archetype's lexer token.
 fn archetype_token(
     memory: &impl Memory,
     base: usize,

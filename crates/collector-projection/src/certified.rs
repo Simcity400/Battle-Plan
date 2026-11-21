@@ -1,5 +1,3 @@
-//! Immutable, path-copied rows certified by writer observation. A changed
-//! range costs logarithmic storage; quiet hours share the complete root.
 use engine_allocation as allocation;
 use replay_data::rows::{RowCodec, TableSchema};
 use std::{
@@ -102,8 +100,6 @@ fn put<R: RowCodec>(root: &Link<R>, row: R) -> Result<Arc<Node<R>>, &'static str
         std::cmp::Ordering::Equal => node(row, n.left.clone(), n.right.clone()),
     })
 }
-/// Replacements preserve tree geometry. Paths already private to this batch
-/// need neither another node allocation nor another drop of that same path.
 fn replace<R: RowCodec>(root: &mut Link<R>, row: R) -> Result<(), &'static str> {
     let Some(n) = root.as_mut().and_then(Arc::get_mut) else {
         *root = Some(put(root, row)?);
@@ -176,7 +172,6 @@ pub struct Snapshot<R> {
     pub changed: Vec<R>,
 }
 impl<R: RowCodec> Snapshot<R> {
-    /// Find the first row at or above the range start without a row scan.
     pub fn has_range(&self, range: Range<u128>) -> bool {
         let mut next = self.root.as_deref();
         while let Some(node) = next {
@@ -236,7 +231,6 @@ impl<R> Default for Store<R> {
     }
 }
 impl<R: RowCodec> Store<R> {
-    /// A rare withdrawal edits only dependent ranges, sharing every other path.
     pub fn from_snapshot(snapshot: Arc<Snapshot<R>>) -> Self {
         Self {
             root: snapshot.root.clone(),
@@ -378,7 +372,6 @@ mod tests {
         for ordinal in (0..100).filter(|&ordinal| ordinal != 20) {
             assert!(Arc::ptr_eq(&rows[ordinal], &previous[ordinal]));
         }
-        // Cached byte totals must match an independently rebuilt tree.
         let mut fresh = Store::default();
         for row in rows {
             fresh.insert(row).unwrap();

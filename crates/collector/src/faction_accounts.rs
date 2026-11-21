@@ -1,4 +1,3 @@
-//! Writer-selected autonomous accounts, independent of faction membership.
 use crate::faction_companion_changes::Changes;
 use engine_allocation as allocation;
 use engine_native::{Memory, cfaction_member_status as native, cpdx_array::Array};
@@ -40,7 +39,6 @@ pub(crate) struct Account {
     pub previous_war_score_raw: i64,
     pub upgrade_groups: Vec<u32>,
     pub upgrade_tokens: Vec<u32>,
-    /// Nullable goal definitions: token words or the null sentinel.
     pub completed_goals: Vec<u64>,
 }
 use std::{collections::BTreeMap, sync::Arc};
@@ -101,8 +99,6 @@ impl Store {
             self.failure = Some("faction members' accounts could not be followed in the game");
             return;
         };
-        // The marking registry transfers ownership on take. Retain these marks
-        // until their native changes have been acquired under quiet certificates.
         let mut capacity_failed = false;
         let taken = changes.take_accounts(&mut |address| {
             if allocation::reserve(&mut self.marks, 1).is_err() {
@@ -171,8 +167,6 @@ impl Store {
                     self.read(memory, base, index, changes, true)?;
                 }
             } else {
-                // Marks carry native addresses. The baseline array geometry selects
-                // exactly one account; foreign-world notifications select none.
                 for at in 0..self.marks.len() {
                     let address = self.marks[at];
                     if let Some(offset) = address.checked_sub(self.array.data) {
@@ -542,7 +536,6 @@ mod tests {
     const STATE: usize = 0x1000;
     const SYSTEM: usize = 0x2000;
     const ACCOUNTS: usize = 0x3000;
-    /// Two retained aliases and the canonical slot share one native country.
     pub(super) fn alias_fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x7000];
         put(
@@ -831,7 +824,7 @@ mod tests {
         assert_eq!(store.failure, None);
         assert!(memory.reads.get() > first && memory.reads.get() - first < 15);
         let next = memory.reads.get();
-        drop(changes.0.notify(0x100)); // a different system's array
+        drop(changes.0.notify(0x100));
         store.acquire(&memory, 0, STATE, false, &changes);
         assert_eq!(store.failure, None);
         assert_eq!(memory.reads.get(), next);

@@ -1,17 +1,3 @@
-//! The map's railway gun counters, from the mirrors: per `RailwayGunCounterInputs` slot what the
-//! counters' class-13 pass makes of the gun (a member of a land source, left out and why, or
-//! unnamed), decided by `viewer_counters::map::counters::gun_member` as today's pass decides it.
-//! Laying the sources out for the camera stays camera-bound; a gun's position on its route is
-//! made there from its route cells.
-//!
-//! Guns are few and today offers every gun whatever the camera, so every gun is made. A gun's
-//! location warning reads its province's rail row, whose sample counts only while its hour is the
-//! head's and which the recording writes again every hour: the guns standing on a rail row
-//! ([`GunCounters::on_rail`]) are marked when the head's hour moves, and no other gun is touched by
-//! the hour; the rail rows' own changes are not scanned.
-//!
-//! Vision, the type-icon relations and the destination hostility of moving guns are other
-//! layers' products; until they can be read, they are inputs set from outside.
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Text, View, owned::opaque};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
@@ -43,15 +29,10 @@ use viewer_foundation::{
     table_access::{TokenError, TokenKeys},
 };
 
-/// Whether each moving gun's last ordinary-route province is held by an enemy of its logical
-/// owner, by gun: the relations owner's product, set from outside until a layer of it is read.
 pub type Hostility = BTreeMap<u64, Result<bool, &'static str>>;
 
-/// What the layer reads of the content: stack anchors, the map's land provinces, the movement
-/// map routes are placed on, and the authored sub-unit keys gun tokens name.
 pub struct Content {
     counters: Option<Arc<CounterContent>>,
-    /// Whether the map defines a province as land.
     land: Box<dyn Fn(u32) -> bool + Send + Sync>,
     movement: Option<Arc<MovementContent>>,
     subunits: Result<TokenKeys, String>,
@@ -63,14 +44,11 @@ impl Content {
         Self { counters: Some(counters), land: Box::new(move |province| GunGround::land_of(&map)(province)), movement, subunits }
     }
 
-    /// No anchors and no movement map: every route stands still or in its combat stand-off, on
-    /// the provinces `land` names land.
     #[cfg(any(test, feature = "test-support"))]
     pub fn bare(subunits: TokenKeys, land: impl Fn(u32) -> bool + Send + Sync + 'static) -> Self {
         Self { counters: None, land: Box::new(land), movement: None, subunits: Ok(subunits) }
     }
 
-    /// The height at and above which the game's camera draws no unit counter.
     fn icons_cutoff(&self) -> f32 {
         self.counters.as_ref().map_or(f32::INFINITY, |counters| counters.defines.icons_cutoff)
     }
@@ -110,10 +88,8 @@ struct Columns {
     literal: Text,
 }
 
-/// The tables it reads.
 const TABLES: [TableId; 6] = [TableId::RailwayGunCounterInputs, TableId::CountryLinks, TableId::Countries, TableId::ProvinceUnitOrder, TableId::RailCooldowns, TableId::LexicalTokens];
 
-/// The rows a table holds at the head: none when unavailable, not recorded or in a gap.
 fn held(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
@@ -126,13 +102,10 @@ fn u64s(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {
     bytes.chunks_exact(8).map(|word| u64::from_le_bytes(word.try_into().expect("eight bytes")))
 }
 
-/// The mirrors a settle reads.
 struct Tables<'a> {
     guns: Option<&'a Mirror>,
     links: Option<&'a Mirror>,
-    /// `ProvinceUnitOrder` only when wholly recorded: a partial census establishes no order.
     order: Option<&'a Mirror>,
-    /// `RailCooldowns` only when wholly recorded, with the hour its cells are at.
     rail: Option<(&'a Mirror, Hour)>,
     tokens: Option<&'a Mirror>,
     tokens_complete: bool,
@@ -151,7 +124,6 @@ impl<'a> Tables<'a> {
     }
 }
 
-/// The joins of one gun's member, from the mirrors and the inputs set from outside.
 struct Joins<'a> {
     tables: &'a Tables<'a>,
     columns: Columns,
@@ -159,7 +131,6 @@ struct Joins<'a> {
     relations: &'a type_tint::Index,
     hostility: &'a Hostility,
     names: &'a HashMap<u32, Result<String, String>>,
-    /// Whether its province has a rail row.
     on_rail: Flag<bool>,
 }
 
@@ -199,7 +170,6 @@ impl GunJoins for Joins<'_> {
     }
 }
 
-/// One `RailCooldowns` row's status at `hour` ([`RailStatus::of`]): the one place that table is read.
 fn rail_status(rail: &Mirror, columns: Columns, slot: u32, hour: Hour) -> Result<RailStatus, String> {
     let selection_hour = match rail.number(columns.selection_hour, slot) {
         Cell::Value(hour) => Recorded::Value(Some(hour)),
@@ -211,7 +181,6 @@ fn rail_status(rail: &Mirror, columns: Columns, slot: u32, hour: Hour) -> Result
     RailStatus::of(&selection_hour, &selection, cooldown, hour)
 }
 
-/// A token's spelling in the hour's `LexicalTokens`, as `TokenNames::name` gives it.
 fn spelling<'a>(tables: &Tables<'a>, literal: Text, token: u32) -> Result<&'a str, TokenError> {
     if token == 0 {
         return Err(TokenError::Rejected);
@@ -223,37 +192,22 @@ fn spelling<'a>(tables: &Tables<'a>, literal: Text, token: u32) -> Result<&'a st
     std::str::from_utf8(bytes).ok().filter(|name| !name.contains('\0')).ok_or(TokenError::NotText(token))
 }
 
-/// The settle phases [`GunCounters::phases`] counts.
 pub const PHASES: [&str; 3] = ["guns", "on rail", "names"];
 
-/// The railway gun counters' arrays and what keeps them.
 pub struct GunCounters {
     content: Arc<Content>,
     columns: Option<Columns>,
-    /// Why nothing is drawn: a core table not recorded, an input not set, or not composed yet.
     refused: Option<String>,
-    /// Per `RailwayGunCounterInputs` slot: what the pass makes of its gun.
     guns: Vec<Option<(u64, Gun)>>,
-    /// Per slot of a member: its route, which the window lays its position out from.
     routes: Vec<Option<GunRoute>>,
-    /// The gun rows held, drawn or not.
     rows: usize,
-    /// Moves on with every change of what [`Self::published`] holds.
     version: u64,
-    /// The guns as the window's counters draw them, and the version they were made at.
     published: Option<(u64, Arc<LayeredGuns>)>,
-    /// Per slot: the province its row stands in and the token it names, as last settled.
     at: Vec<(u32, u32)>,
-    /// Per province: the slots standing there.
     by_province: HashMap<u32, Vec<u32>>,
-    /// By slot: its province had a rail row at its last settle, so it is marked when the head's
-    /// hour moves.
     on_rail: Vec<u64>,
-    /// The rail hour the guns were last settled at.
     hour: Option<Hour>,
-    /// Token names asked so far this hour, each kept until its `LexicalTokens` row changes.
     names: HashMap<u32, Result<String, String>>,
-    /// The gun census is incomplete: no gun is decided, these many rows are held.
     census: Option<usize>,
     dirty: Dirty,
     all: bool,
@@ -266,7 +220,6 @@ pub struct GunCounters {
     hostility_new: AtomicBool,
     statuses: HashMap<usize, Status>,
     frame: u64,
-    /// Guns the steps have marked.
     marked: usize,
     phases: [(u64, u64); PHASES.len()],
 }
@@ -304,7 +257,6 @@ impl GunCounters {
         }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let fresh = Self { columns: self.columns, hidden: self.hidden, ..Self::new(Arc::clone(&self.content)) };
         if let Some((choice, vision)) = self.perspective() {
@@ -319,8 +271,6 @@ impl GunCounters {
         fresh
     }
 
-    /// The viewing country's vision at the head under `choice`; every gun is made again when it
-    /// changes.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         let mut held = lock(&self.vision);
         if held.as_ref().is_none_or(|(_, held)| !Arc::ptr_eq(held, &vision) && **held != *vision) {
@@ -329,7 +279,6 @@ impl GunCounters {
         *held = Some((choice, vision));
     }
 
-    /// The viewing country's type-icon relations at the head.
     pub fn set_relations(&self, relations: Arc<type_tint::Index>) {
         let mut held = lock(&self.relations);
         if held.as_ref().is_none_or(|held| !Arc::ptr_eq(held, &relations)) {
@@ -338,7 +287,6 @@ impl GunCounters {
         *held = Some(relations);
     }
 
-    /// Each moving gun's destination hostility at the head.
     pub fn set_hostility(&self, hostility: Arc<Hostility>) {
         let mut held = lock(&self.hostility);
         if held.as_ref().is_none_or(|held| !Arc::ptr_eq(held, &hostility) && **held != *hostility) {
@@ -347,7 +295,6 @@ impl GunCounters {
         *held = Some(hostility);
     }
 
-    /// The perspective and vision it was last given.
     pub fn perspective(&self) -> Option<(Choice, Arc<Vision>)> {
         lock(&self.vision).clone()
     }
@@ -356,39 +303,32 @@ impl GunCounters {
         self.columns.expect("the gun counters layer is declared before it composes")
     }
 
-    /// Why the layer draws nothing at the head, by name; none when it draws.
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }
 
-    /// The view does not draw the railway gun counters, by today's rule for the class-13 pass.
     pub fn hidden(&self) -> bool {
         self.hidden
     }
 
-    /// The rows the hour holds while the gun census is incomplete; none when it is whole.
     pub fn census(&self) -> Option<usize> {
         self.census
     }
 
-    /// Every live gun's decision, by id.
     pub fn guns(&self) -> impl Iterator<Item = &(u64, Gun)> + '_ {
         self.guns.iter().flatten()
     }
 
-    /// The guns the window's counters draw, as of the last settle; none while refused or hidden.
     pub fn published(&self) -> Option<&Arc<LayeredGuns>> {
         self.published.as_ref().filter(|_| self.refused.is_none() && !self.hidden).map(|(_, guns)| guns)
     }
 
-    /// Makes the published product again when what it holds changed since.
     fn publish(&mut self) {
         if self.refused.is_none() && !self.hidden && self.published.as_ref().is_none_or(|(version, _)| *version != self.version) {
             self.published = Some((self.version, Arc::new(self.product())));
         }
     }
 
-    /// The members in key order with their routes, the guns that cannot be named and why.
     fn product(&self) -> LayeredGuns {
         let mut members: Vec<GunPlaced> = self
             .guns
@@ -416,23 +356,19 @@ impl GunCounters {
         }
     }
 
-    /// Guns standing on a rail row at their last settle.
     #[cfg(any(test, feature = "test-support"))]
     pub fn on_rail(&self) -> usize {
         self.on_rail.iter().map(|word| word.count_ones() as usize).sum()
     }
 
-    /// Guns the steps have marked since the layer was made.
     pub fn marked(&self) -> usize {
         self.marked
     }
 
-    /// Entities taken and nanoseconds spent by settle phase since the layer was made.
     pub fn phases(&self) -> impl Iterator<Item = (&'static str, u64, u64)> + '_ {
         PHASES.iter().zip(&self.phases).map(|(&name, &(entities, ns))| (name, entities, ns))
     }
 
-    /// Why the guns cannot be drawn from the mirrors at the head, by name.
     fn core(&self, mirrors: &Mirrors) -> Result<(Arc<Vision>, Arc<type_tint::Index>, Arc<Hostility>), String> {
         let (_, vision) = self.perspective().ok_or("the viewing country's vision is not set")?;
         let relations = lock(&self.relations).clone().ok_or("the viewing country's type-icon relations are not set")?;
@@ -461,7 +397,6 @@ impl GunCounters {
         slots.into_iter().for_each(|slot| self.mark(slot));
     }
 
-    /// Everything dropped and every gun marked.
     fn recompose(&mut self, mirrors: &Mirrors) {
         self.drop_all();
         self.statuses = mirrors.iter().filter_map(|mirror| mirror.status().map(|status| (mirror.table().index(), status))).collect();
@@ -471,7 +406,6 @@ impl GunCounters {
         }
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it; its view, inputs and counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.content));
         let kept = std::mem::replace(self, empty);
@@ -490,8 +424,6 @@ impl GunCounters {
         self.dirty.clear();
     }
 
-    /// The rows the hour holds when its gun census is not whole (none at all when unavailable or
-    /// not recorded); none when it is whole.
     fn census_of(mirrors: &Mirrors) -> Option<usize> {
         let guns = mirrors.get(TableId::RailwayGunCounterInputs);
         if guns.is_some_and(Mirror::complete) {
@@ -500,7 +432,6 @@ impl GunCounters {
         Some(held(guns).map_or(0, |guns| guns.rows().count()))
     }
 
-    /// A live gun row's values, when every one is recorded; its paths copied to `paths`.
     fn fields<'p>(guns: &Mirror, slot: u32, columns: Columns, paths: &'p mut [Vec<u32>; 2]) -> Option<GunFields<'p>> {
         let key = guns.key(slot)?;
         let number = |column: Num<u32>| guns.number(column, slot).value();
@@ -549,7 +480,6 @@ impl GunCounters {
         })
     }
 
-    /// One gun made again from the mirrors.
     fn settle_gun(&mut self, tables: &Tables<'_>, seen: (&Vision, &type_tint::Index, &Hostility), slot: u32, paths: &mut [Vec<u32>; 2]) {
         self.version += 1;
         let at = slot as usize;
@@ -604,13 +534,11 @@ impl GunCounters {
         self.guns[at] = Some((fields.id, gun));
     }
 
-    /// Recomputes what is dirty within `settling`, the rest carried.
     fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         let refused = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let (vision, relations, hostility) = match refused {
             Ok(seen) => seen,
-            // Nothing is held or marked while refused: drawn again, it is taken whole.
             Err(why) => {
                 if self.refused.as_ref() != Some(&why) {
                     self.release();
@@ -625,7 +553,6 @@ impl GunCounters {
             self.all = false;
             self.recompose(mirrors);
         }
-        // An incomplete gun census decides no gun: first-fit membership cannot be established.
         let census = Self::census_of(mirrors);
         if census.is_some() {
             if self.census.is_none() {
@@ -689,7 +616,6 @@ impl GunCounters {
                 }
                 marked.into_iter().for_each(|slot| self.mark(slot));
             }
-            // A written rail row's gun is on rail, marked with the hour; a row born or gone is not.
             TableId::RailCooldowns => lives(changes).into_iter().for_each(|province| self.mark_province(province)),
             TableId::LexicalTokens => {
                 let mut tokens = lives(changes);
@@ -708,7 +634,6 @@ impl GunCounters {
         }
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;

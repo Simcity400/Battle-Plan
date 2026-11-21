@@ -1,5 +1,3 @@
-//! Ordered faction rule choices, shared programme references and saved positive
-//! manpower contributions. The pool uses the same writer as garrison manpower.
 use crate::{block, field, invalid, null_permitted_handle, scalar};
 use installed_content_core::parser::Item;
 use std::io;
@@ -178,9 +176,6 @@ pub(crate) fn parse(items: &[Item]) -> io::Result<Snapshot> {
                 .collect::<io::Result<_>>()?;
         }
     }
-    // The faction writer emits an empty persistent wrapper, then the explicit
-    // manpower payload under the same key. The loader appends each wrapper;
-    // none clears earlier entries, even when empty or independently populated.
     for pool in items
         .iter()
         .filter(|item| item.key.as_deref() == Some(b"manpower_pool"))
@@ -296,8 +291,6 @@ mod tests {
         {
             let fields = block(&item.value).unwrap();
             let saved = crate::parse_faction(fields).unwrap();
-            // Compare every original wrapper independently with the shared
-            // single-wrapper reader; no transformed or deduplicated save.
             let mut expected = Vec::new();
             let mut wrappers = 0;
             for pool in fields

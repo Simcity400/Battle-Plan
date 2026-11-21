@@ -77,9 +77,6 @@ fn column(table: TableId, field: &str) -> usize {
     (0..64).find(|&column| table.field_name(column) == Some(field)).unwrap_or_else(|| panic!("{table:?}.{field}"))
 }
 
-/// The layer's tables written over `hours` hours by `hour`, complete unless `status` says
-/// otherwise; hour 0 names string 0 ("not captured"). Steps race ahead of the first compose, so
-/// tests change things from hour 200.
 fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -129,8 +126,6 @@ fn opaque<T: NativeValue>(value: T) -> Vec<u8> {
 
 const INTERCEPT: u32 = 1 << 9;
 
-/// Wing `id` at `slot` of raw owner `owner` in `region`, registered at `ordinal` (its
-/// registration and mission inputs at the same slot), its interception gate proved.
 fn wing(store: &mut Store, slot: u32, id: u64, owner: u32, region: u32, planes: i32, mask: u32, ordinal: u32) {
     insert(store, TableId::AirWings, slot, u128::from(id));
     write(store, TableId::AirWings, slot, "owner", Cell::U32(owner));
@@ -147,7 +142,6 @@ fn summary(severity: i32) -> Option<AirSupplySummary> {
     Some(AirSupplySummary { severity, needed: 10, supplied: 5, deficit: 5 })
 }
 
-/// An interception record of ours dated `date` that proves the alert while it is in the window.
 fn records(dates: &[i32]) -> Vec<u8> {
     let records: Vec<AirCombatRecord> = dates
         .iter()
@@ -156,7 +150,6 @@ fn records(dates: &[i32]) -> Vec<u8> {
     opaque(Arc::new(records))
 }
 
-/// Our holder row of region 3 at slot 0 with own records at `dates`.
 fn holder(store: &mut Store, dates: &[i32]) {
     if store.table(TableId::AirRegionCombat.index()).unwrap().slot(10 << 32 | 3).is_none() {
         insert(store, TableId::AirRegionCombat, 0, 10 << 32 | 3);
@@ -165,9 +158,6 @@ fn holder(store: &mut Store, dates: &[i32]) {
     write(store, TableId::AirRegionCombat, 0, "own", Cell::Opaque(&records(dates)));
 }
 
-/// Two linked countries (raw 10 is ours, slot 0); our wings 900 (interception, 50 planes) and
-/// 901 (interception and kind 2, 20 planes) in region 3, another country's wing 902 there; Ground
-/// Crews supply whole, region 3 low on supply and its control not active; our command power.
 fn world(store: &mut Store) {
     for (slot, key) in [(0, 10u128), (1, 11)] {
         insert(store, TableId::CountryLinks, slot, key);
@@ -194,7 +184,6 @@ fn air_view() -> View {
     View { map_mode: MapMode::Stock(Stock::StrategicAir), fog: false, ..View::default() }
 }
 
-/// A roster history that answers only once it is let go.
 struct Held {
     open: Mutex<bool>,
     signal: Condvar,
@@ -271,8 +260,6 @@ fn reach(side: &mut MapSide, hour: i32) {
     panic!("the map side never reached hour {hour}");
 }
 
-/// Frames with the head never past `cap` until the mirrors are at or past `hour`: a step ends at
-/// most four hours on, so the mirrors land between them.
 fn reach_within(side: &mut MapSide, hour: i32, cap: i32) -> Hour {
     for _ in 0..50_000_000u64 {
         let head = side.entry().playhead().newest().unwrap_or(0).min(cap);
@@ -354,7 +341,6 @@ fn a_region_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -425,14 +411,12 @@ fn tables_not_wholly_recorded_draw_as_today_draws_them() {
     settled_equals_composed(&mut side);
     let value = layer(&side).values()[&3].clone();
     assert!(value.uncertain.contains(&(9, "the regional combat census is incomplete")), "{:?}", value.uncertain);
-    // Both checks inside the AirGroundCrews gap (hours 280 to 287), a step apart.
     let first = reach_within(&mut side, 280, 283);
     settled_equals_composed(&mut side);
     let value = layer(&side).values()[&3].clone();
     assert_eq!(layer(&side).supply(), (false, false), "no supply census, no supply");
     assert_eq!((value.counts[10], value.supply), (-1, None));
     assert!(matches!(&value.ground, Some(Err(why)) if why.contains("AirGroundCrews")), "{:?}", value.ground);
-    // A later step inside the gap changes none of its tables: the refusal still names the head's hour, as today's does.
     let head = reach_within(&mut side, first + 1, 287);
     settled_equals_composed(&mut side);
     let value = layer(&side).values()[&3].clone();
@@ -475,7 +459,6 @@ fn an_alert_waiting_for_the_daily_pass_is_undecided_and_settles_when_it_is_answe
         230 => holder(store, &[230]),
         _ => {}
     });
-    // With no timeout, the pass at 240 prunes the record of hour 230: whether it ran decides.
     let mut side = side_with(units, layer_with(0, Arc::clone(&passes) as Passes));
     reach(&mut side, 244);
     let value = layer(&side).values()[&3].clone();
@@ -529,8 +512,6 @@ fn the_layer_declares_against_this_schema() {
     assert_eq!(inputs.into_tables().len(), TABLES.len());
 }
 
-/// Frames with the head never past `cap` until `done` holds; failing, it names what it waited for
-/// and what the layer and the host showed instead.
 fn within(side: &mut MapSide, cap: i32, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
     for _ in 0..50_000_000u64 {
         let head = side.entry().playhead().newest().unwrap_or(0).min(cap);
@@ -553,11 +534,6 @@ fn within(side: &mut MapSide, cap: i32, what: &str, mut done: impl FnMut(&MapSid
     );
 }
 
-/// While a question is out on the daily-pass worker (held by the test) the layer carries nothing for
-/// it and publishes the hour its counts stood for before the pass, which the host shows; answered,
-/// it is current again. The head stays within 247, so the pass at 240 asks the only question. On
-/// the base the waiting region was carried and the layer published `Current`, so the host kept the
-/// hour it last carried nothing at.
 #[test]
 fn a_question_out_on_the_daily_pass_worker_is_not_carried_and_the_hour_its_counts_stand_for_is_shown() {
     let passes = Held::new(false, true);
@@ -567,8 +543,6 @@ fn a_question_out_on_the_daily_pass_worker_is_not_carried_and_the_hour_its_count
         _ => {}
     });
     let mut side = side_with(units, layer_with(0, Arc::clone(&passes) as Passes));
-    // Read at the publication that asked, while the hours run: a head standing still makes a
-    // still picture, which waits for the answer the test holds.
     reach(&mut side, 244);
     assert!(!layer(&side).waiting.is_empty() && layer(&side).carried().entities == 0, "a question out with nothing carried");
     let stands = match Layer::published(layer(&side)) {

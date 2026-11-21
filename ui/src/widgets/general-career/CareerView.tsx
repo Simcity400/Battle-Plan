@@ -29,8 +29,6 @@ import type { LeaderCareerReply, LeaderHourReply } from '../../generated/dashboa
 
 const NO_PORTRAIT: readonly PortraitAt[] = [];
 
-/** One view for the leaderboard drill and the standalone career widget: the whole career, read once per leader, and the
- * leader at the hour (a pushed panel at the head, its experience painted from followed cells). */
 export default function CareerView({ reference, onPick, caption, widget, runtime, active, onDiagnostics }: WidgetProps & {
   reference: string; onPick?: (hour: number) => void; caption?: ReactNode;
 }) {

@@ -1,4 +1,3 @@
-//! The naval base map icon's own hover, seen by the viewing country.
 use super::{Arg, Tooltip, counter_content, tooltip_text_state_name};
 use installed_content_localisation::localisation::Localisation;
 use replay_data::rows::tables;
@@ -6,28 +5,18 @@ use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::{naval_count_approx, perspective::Vision};
 use viewer_foundation::tooltip_text::localise;
 
-/// The DLC feature that gives a naval base's detail an intel ratio ("La Resistance"), bit 5 of
-/// the recorded simulation mask.
 const INTEL_FEATURE: u32 = 1 << 5;
 const FULL_RATIO: i64 = 100_000;
 
-/// What the game reads for one naval base's hover, each operand or why it is not held.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Facts {
-    /// The state's display name, `None` for a province without a state.
     pub state: Result<Option<String>, String>,
     pub level: i32,
-    /// Whether the viewing country is the base's holder.
     pub own: bool,
-    /// The intel DLC feature, from the recorded mask.
     pub intel_feature: Result<bool, String>,
-    /// Full country visibility of the holder, or fog off.
     pub sees: Result<bool, String>,
-    /// Ships waiting in this base's repair queue.
     pub queue: Result<i32, String>,
-    /// Whether any task force stands in the base's province.
     pub occupied: Result<bool, String>,
-    /// Whether the replay's selection holds naval units, which add the game's order hints.
     pub fleet_selected: bool,
 }
 
@@ -128,7 +117,6 @@ fn facts(
     })
 }
 
-/// The hover's main and delayed text from its operands, in the game's order.
 pub fn lines(loc: &Localisation, defines: &naval_count_approx::Defines, facts: &Facts) -> Tooltip {
     let mut out = Tooltip::default();
     let push = |out: &mut Tooltip, name: &str, text: Result<String, String>| match text {
@@ -195,8 +183,6 @@ pub fn lines(loc: &Localisation, defines: &naval_count_approx::Defines, facts: &
     if facts.fleet_selected {
         out.refuse("naval base order hints", "the selected fleet's order check is not reproduced".into());
     }
-    // The game's delayed selection hint is omitted: it advertises Shift and Ctrl clicks the
-    // replay leaves inert.
     out
 }
 

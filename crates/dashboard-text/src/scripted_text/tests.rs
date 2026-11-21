@@ -88,9 +88,6 @@ const LOCALISATION: &str = concat!(
     " MOD_idea:0 \"[ROOT.GetAdjectiveCap] spirit of [Root.Overlord.GetNameDef]\"\n",
 );
 
-/// A mod-style content folder read by the catalogue's own readers: its
-/// localisation, `NGame.MAX_SCRIPTED_LOC_RECURSION` and the scripted
-/// localisation `scripted`, with `extra` localisation lines replacing.
 pub(super) fn catalogue(
     scripted: &str,
     extra: &str,
@@ -98,7 +95,6 @@ pub(super) fn catalogue(
     catalogue_with(scripted, extra, &[])
 }
 
-/// [`catalogue`] with further content files.
 pub(super) fn catalogue_with(
     scripted: &str,
     extra: &str,
@@ -107,7 +103,6 @@ pub(super) fn catalogue_with(
     let extra = format!("\u{feff}l_english:\n{extra}");
     let mut all = vec![
         ("localisation/mod_l_english.yml", LOCALISATION),
-        // A replace file overwrites.
         ("localisation/replace/extra_l_english.yml", extra.as_str()),
         (
             "common/defines/00_defines.lua",
@@ -248,9 +243,6 @@ fn with_party(mut frame: DecodedFrame) -> DecodedFrame {
     frame
 }
 
-/// Party naming falls back to the group token when neither `_party` key is
-/// defined and probes `_long` only on a `_party` key, so the token's own
-/// `_long` entry is not used.
 #[test]
 fn a_long_party_name_falling_back_to_the_group_token_is_the_token() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -309,7 +301,6 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
     {
         rows[0].original_tag_reference = Recorded::Value(Some(300));
         rows[0].original_tag = Recorded::Value(Some(b"MOD_wrong".to_vec()));
-        // The own tag is SOV; its static slot has no dynamic name_tag.
         rows[1].original_tag_reference = Recorded::Value(Some(400));
         rows[1].original_tag = Recorded::Value(Some(b"MOD_original".to_vec()));
     }
@@ -324,7 +315,6 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *frame.tables[TableId::CountryAppearance.index()]
     {
-        // A positive original-tag reference selects its spelling even when empty.
         rows[1].original_tag = Recorded::Value(Some(Vec::new()));
     }
     assert_eq!(
@@ -393,7 +383,6 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
             token: b"fascism".to_vec(),
             ..party.clone()
         };
-        // Neither an own-key hit nor an explicit stored name reads original_tag.
         *frame.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
         };
@@ -430,8 +419,6 @@ fn party_original_fallback_uses_the_party_tag_and_keeps_earlier_hits() {
     assert_eq!(name(&frame, &party, false).unwrap(), "Party-tag original");
 }
 
-/// Text processing, scope promotion and property lookup in a country's
-/// event scope, through the real localiser and catalogue path.
 #[test]
 fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -449,7 +436,6 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
             ..Default::default()
         });
     }
-    // SOV (slot 2) is a subject of GER.
     let sov = ScriptedText::new(&frame, localisation, content, 2);
     let ger = ScriptedText::new(&frame, localisation, content, 1);
     let expand = |text: &str, at: &ScriptedText| at.expand(text);
@@ -457,14 +443,12 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
         crate::catalogue::localised_in(localisation, "MOD_idea", &[], &sov).as_deref(),
         Ok("Soviet spirit of the German Reich")
     );
-    // Names fold at their exact length; tags are exact.
     assert_eq!(expand("[root.gettag]", &sov).as_deref(), Ok("SOV"));
     assert_eq!(expand("[GER.GetName]", &sov).as_deref(), Ok("German Reich"));
     assert_eq!(
         expand("[GER.GetAdjectiveCap]", &sov).as_deref(),
         Ok("German")
     );
-    // No overlord: the context stays.
     assert_eq!(expand("[ROOT.Overlord.GetTag]", &ger).as_deref(), Ok("GER"));
     assert_eq!(expand("[ROOT.Capital.GetID]", &ger).as_deref(), Ok("64"));
     assert_eq!(
@@ -488,18 +472,13 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
         Ok("National Socialist Party")
     );
     assert_eq!(expand("[ROOT.GetFlag]", &ger).as_deref(), Ok("\u{12}GER"));
-    // An unknown promotion is logged and leaves the context; an unknown
-    // property that no scripted localisation defines is empty; a bare
-    // property in the root event scope is not a country's.
     assert_eq!(
         expand("a[ROOT.Nowhere.GetTag]b", &ger).as_deref(),
         Ok("aGERb")
     );
     assert_eq!(expand("a[ROOT.GetNothing]b", &ger).as_deref(), Ok("ab"));
     assert_eq!(expand("[GetName]", &ger).as_deref(), Ok(""));
-    // An unclosed `[` drops the text from the last bracket on.
     assert_eq!(expand("x[ROOT.GetTag] y [z", &ger).as_deref(), Ok("xGER"));
-    // Refused by name with the missing input.
     for (text, reason) in [
         ("[Player.GetName]", "local player"),
         ("[(ROOT.GetName?a:b)]", "the conditional scripted text"),
@@ -517,12 +496,10 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
     }
 }
 
-/// Occurrence text names its scopes' countries and nothing the hour's end may have changed.
 #[test]
 fn names_only_expansion_reads_country_names_through_scope_links() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // A mod's scripted text named like a property, reading a variable.
     let (catalogue, _folder) = catalogue(
         "defined_text = { name = GetName text = { localization_key = READS_VARIABLE } }",
         " READS_VARIABLE:0 \"[?amount]\"
@@ -561,7 +538,6 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
             "{expression}: {error}"
         );
     }
-    // An unproven scope's links still lead on; only its own name is refused.
     let linked = EventScopes::new(vec![
         EventScope {
             from: Link::Scope(1),
@@ -588,7 +564,6 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
         error.contains("event scope 1: it carries a character"),
         "{error}"
     );
-    // Names the occurrence recorded replace the hour's; the tag is the country's own.
     let recorded = [ScopeName::Recorded([
         b"Old Reich".to_vec(),
         b"the Old Reich".to_vec(),
@@ -613,8 +588,6 @@ fn numeric_brackets_use_the_country_the_text_is_shown_for() {
     let content = catalogue.scripted_content().unwrap();
     content.set_synthetic_environment(Default::default());
     let mut frame = frame();
-    // World::new also requires Provinces; this numeric-only world has none.
-    // The base frame already supplies complete links, countries and states.
     *frame.tables[TableId::Provinces.index()] =
         TableView::Complete(TableRows::Provinces(Vec::new()));
     for id in [
@@ -655,9 +628,6 @@ fn numeric_brackets_use_the_country_the_text_is_shown_for() {
     }
 }
 
-/// Scripted text finds a name or proves it undefined only over a whole
-/// inventory: a file the reader replay cannot follow leaves every other
-/// name unknown, refused by file and cause through the catalogue.
 #[test]
 fn a_property_no_read_file_defines_is_empty_only_when_every_file_is_known() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -686,13 +656,11 @@ fn a_property_no_read_file_defines_is_empty_only_when_every_file_is_known() {
             && error.contains("bound localisation reader is unsupported"),
         "{error}"
     );
-    // A name read before the unsupported block is still defined.
     assert!(
         at.expand("[ROOT.GetModText]")
             .unwrap_err()
             .contains("scripted localisation definitions are uncertain")
     );
-    // Through the catalogue: refused once per key, the reading noted.
     assert_eq!(partial.localise_in("MOD_nothing", &at), None);
     let lines = partial.refusal_lines();
     assert!(
@@ -709,13 +677,6 @@ fn a_property_no_read_file_defines_is_empty_only_when_every_file_is_known() {
     );
 }
 
-/// Scope promotion leaves the context unchanged only for an absence
-/// the frame proves; a lookup the recording cannot answer is refused
-/// by table and cause.
-/// Promotion step 3 tries the tag alias database after the
-/// country tags: an alias's country is chosen at run time by the trigger
-/// evaluator; when resolution fails, text naming the alias is refused
-/// by that name. A tag stays a tag.
 #[test]
 fn a_tag_alias_is_resolved_or_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -743,7 +704,6 @@ fn a_tag_alias_is_resolved_or_refused_by_name() {
                 .with_aliases(std::sync::Arc::clone(&content.tag_aliases))))
             .is_ok()
     );
-    // Every table the evaluator reads complete.
     let mut whole = frame();
     for id in TableId::ALL {
         if matches!(&*whole.tables[id.index()], TableView::Unavailable { .. }) {
@@ -754,7 +714,6 @@ fn a_tag_alias_is_resolved_or_refused_by_name() {
     *unrecorded.tables[TableId::LocalPlayer.index()] = TableView::Unavailable {
         reason: "not sampled".into(),
     };
-    // The local player is GER (link 100); the view shows SOV (slot 2).
     *whole.tables[TableId::LocalPlayer.index()] =
         TableView::Complete(TableRows::from_rows::<tables::LocalPlayer>(vec![
             replay_data::rows::LocalPlayerRow {
@@ -766,8 +725,6 @@ fn a_tag_alias_is_resolved_or_refused_by_name() {
     let refused = text.expand("[SPA.GetName]").unwrap_err();
     assert!(refused.contains("tag alias SPA: "), "{refused}");
     assert_eq!(text.expand("[GER.GetTag]").as_deref(), Ok("GER"));
-    // Resolve an alias in a scope set to the local player's country,
-    // whatever country the view shows.
     assert_eq!(text.expand("[ALI.GetTag]").as_deref(), Ok("GER"));
     let text = ScriptedText::new(&unrecorded, localisation, content, 2);
     let refused = text.expand("[ALI.GetTag]").unwrap_err();
@@ -785,18 +742,14 @@ fn promotions_tell_absence_from_a_recording_gap() {
         ScriptedText::new(frame, localisation, content, root).expand(text)
     };
     let whole = frame();
-    // A character of the country, by script token; GetName copies its
-    // empty stored name without falling back to the saved name token.
     assert_eq!(
         expand(&whole, 1, "[ROOT.GER_erwin_rommel.GetName]").as_deref(),
         Ok("")
     );
-    // Proven absent: the context stays.
     assert_eq!(
         expand(&whole, 1, "[ROOT.Nobody.GetTag]").as_deref(),
         Ok("GER")
     );
-    // A positive state ID no state holds is a null state.
     assert_eq!(
         expand(&whole, 1, "[ROOT.99.GetName]").as_deref(),
         Ok("NULL")
@@ -836,7 +789,6 @@ fn promotions_tell_absence_from_a_recording_gap() {
         "[ROOT.Nobody.GetTag]",
         "Nobody: whether it is a country tag is unknown: countries: the table is unavailable: fixture",
     );
-    // SOV's overlord link 100 needs CountryLinks.
     let mut unlinked = frame();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *unlinked.tables[TableId::CountryAppearance.index()]
@@ -849,7 +801,6 @@ fn promotions_tell_absence_from_a_recording_gap() {
         "[ROOT.Overlord.GetTag]",
         "the overlord link 300 of country slot 2 resolves to no country",
     );
-    // A faction whose first member is not recorded.
     let mut faction = frame();
     *faction.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
@@ -876,7 +827,6 @@ fn promotions_tell_absence_from_a_recording_gap() {
         expand(&faction, 2, "[ROOT.FactionLeader.GetTag]").as_deref(),
         Ok("GER")
     );
-    // Without a faction the context stays.
     let mut no_faction = frame();
     *no_faction.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(Vec::new()));
@@ -892,9 +842,6 @@ fn promotions_tell_absence_from_a_recording_gap() {
     );
 }
 
-/// GetFactionName localises NO_FACTION without a faction; content
-/// without it shows the key's bytes, as the localiser copies a missing
-/// top-level key.
 #[test]
 fn no_faction_localises_its_key() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -970,7 +917,6 @@ fn scripted_faction_names_use_the_recorded_template_and_copy_literals() {
         }]));
     let content = catalogue.scripted_content().unwrap();
     let at = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
-    // Bound names are localised once and GetFactionName does not evaluate brackets.
     assert_eq!(at.faction_name(1).as_deref(), Ok("[ROOT.GetTag] Pact $"));
     for template in ["empty", "localised_empty"] {
         *frame.tables[TableId::LexicalTokens.index()] =
@@ -1001,9 +947,6 @@ fn scripted_faction_names_use_the_recorded_template_and_copy_literals() {
     );
 }
 
-/// First-byte uppercase and whole-text lowercase use the C runtime's
-/// toupper and tolower in the "C" locale the game never leaves: a byte
-/// above 0x7F stays, first or not.
 #[test]
 fn a_case_change_leaves_a_byte_above_0x7f() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1104,8 +1047,6 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
         ),
     ]);
     let content = cat.scripted_content().unwrap();
-    // This synthetic content stack deliberately has no map/default.map or
-    // resource defines. No empty geography or resource result is invented.
     let mut frame = frame();
     *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
         reason: "unrelated province read failed".into(),
@@ -1145,7 +1086,7 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
             .leader_ideology = b"first_subtype".to_vec();
     }
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    assert!(text.world().is_err()); // A strict caller cannot poison the shared world.
+    assert!(text.world().is_err());
     let world = text.trigger_world().unwrap();
     let parsed = installed_content_core::triggers::read(
         b"has_government=mod_group has_country_flag=occupation_flag has_completed_focus=occupation_focus has_country_leader_ideology=FIRST_SUBTYPE",

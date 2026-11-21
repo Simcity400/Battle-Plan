@@ -7,8 +7,6 @@ import type { CountryLooks } from './countryLooks';
 import type { FlagRead } from './countryFlags';
 import { FAILED_FACT } from './countryFacts.ts';
 
-// Drive the real sampled hook. Transport leaves are replaced; the plan, identity
-// guard, held-look merge and current pending/failure semantics remain.
 test('visible sampled flags retain backend reasons, clear current failures and never decode the whole country inventory', async () => {
   const state = { slots: [] as { value: unknown; deps?: readonly unknown[] }[], cursor: 0, content: '',
     styleFailure: undefined as Error | undefined, flags: new Map<string, FlagRead | null | typeof FAILED_FACT>(), current: undefined as CountryLooks | undefined,

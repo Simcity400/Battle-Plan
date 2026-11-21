@@ -27,12 +27,9 @@ import { factionMembersAt, factionMemberSpans, stateValues } from './factionTota
 export interface FactionMembersProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   kind: string; measure: string; label: string; format: (value: number) => string;
-  /** The faction, as the recorded groups hold it, or null where it is not found. */
   faction: FactionGroup | null;
   extent: [number, number]; playhead: number | null;
-  /** The hour the members are listed at: the head's while `head` is given. */
   hour: number;
-  /** Following the head: the members' followed values, by tag. */
   head: Live<ReadonlyMap<string, number>> | null;
   onPick?: (hour: number) => void;
 }
@@ -43,8 +40,6 @@ function validateStates(value: unknown): SeriesStateReply {
   return reply;
 }
 
-/** One faction's members: each member's line stacked over the hours it was a member (tiles, drawn as they land), and
- * the members at the hour shown with each one's part of the total, painted from the followed values while following. */
 export default function FactionMembers({ runtime, track, active, options, kind, measure, label, format, faction, extent, playhead, hour, head, onPick }: FactionMembersProps) {
   const tokens = useChartTokens();
   const spans = useMemo(() => faction ? factionMemberSpans(faction) : new Map<string, HourSpan[]>(), [faction]);
@@ -88,15 +83,15 @@ export default function FactionMembers({ runtime, track, active, options, kind, 
       const end = Math.min(x[1], until ?? x[1]);
       return stack && end >= x[0] ? compactStackExtent(stack.model, x[0], end) : null;
     },
-  }], [stackOf, colourList.join('|'), until]); // eslint-disable-line react-hooks/exhaustive-deps
+  }], [stackOf, colourList.join('|'), until]);
   const data = useMemo<ChartData>(() => ({ revision: () => summaries() ?? [], subscribe: lines.subscribe }), [summaries, lines.subscribe]);
-  const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => lines.onSummaryView(view), [lines.onSummaryView]); // eslint-disable-line react-hooks/exhaustive-deps
+  const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => lines.onSummaryView(view), [lines.onSummaryView]);
   const liveHead = useMemo<LiveHead | undefined>(() => head ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [head, runtime.clock, track.axisOffset]);
   const rowsOf = useCallback((values: ReadonlyMap<string, number> | undefined): DrillPart[] => at.map(tag => {
     const value = values?.get(tag);
     return { id: tag, label: looks.name(tag), value: value ?? null, color: colours.get(tag), icon: looks.flag(tag), ...(value === undefined ? { text: 'Not known' } : {}) };
-  }), [atKey, looks, colours]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [atKey, looks, colours]);
   const live = useMemo<LiveDrillParts | undefined>(() => head ? {
     read: () => {
       const parts = rowsOf(head.read());

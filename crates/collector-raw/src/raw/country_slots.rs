@@ -1,24 +1,15 @@
-//! The country table's slots as `ccountry::Reader::at` reads them, recorded so
-//! a replay of the same reader over the log admits the same countries.
-//!
-//! A positive slot may hold an alias of another slot's country, or of the
-//! reserved slot-zero object (whose id is zero). The reader authenticates both
-//! and publishes each country once, at its canonical slot.
 
 use super::RawLog;
 use engine_native::{Memory, ccountry, cpdx_array::Array};
 
-/// One census pass over the country table and its links.
 pub struct CountrySlots {
     countries: Array,
     links: Array,
     vtable: u64,
-    /// The authenticated reserved object, once a slot aliased it.
     reserved: Option<usize>,
 }
 
 impl CountrySlots {
-    /// `None` where the reader refuses the two headers.
     pub fn new(countries: Array, links: Array, base: usize) -> Option<Self> {
         if countries.count < 2 || links.count == 0 {
             return None;
@@ -31,18 +22,14 @@ impl CountrySlots {
         })
     }
 
-    /// Slots, the reserved slot zero included.
     pub fn count(&self) -> u32 {
         self.countries.count
     }
 
-    /// The link table every raw reference resolves through.
     pub fn links(&self) -> Array {
         self.links
     }
 
-    /// What `ccountry::Reader::resolve` reads for `raw`, stopping where it fails:
-    /// a raw alias's own link and the slot it names, which the census may not hold.
     pub fn resolve<const N: usize>(
         &self,
         log: &mut RawLog<N>,
@@ -66,9 +53,6 @@ impl CountrySlots {
         Some(())
     }
 
-    /// Slot `slot` (one or more): `Some(Some(pointer))` for the country it is
-    /// canonical for, `Some(None)` for a null slot or an authenticated alias,
-    /// and `None` where the reader fails, which ends the census.
     pub fn take<const N: usize>(
         &mut self,
         log: &mut RawLog<N>,
@@ -117,8 +101,6 @@ impl CountrySlots {
         usize::try_from(u64_at(log, memory, self.countries.element(slot, 8), mask)?).ok()
     }
 
-    /// The canonical slot a raw reference links to; `None` for a zero, unlinked
-    /// or out-of-table reference, which the reader refuses.
     fn canonical<const N: usize>(
         &self,
         log: &mut RawLog<N>,
@@ -171,9 +153,6 @@ mod tests {
     const OBJECTS: usize = 0x4000;
     const SIZE: usize = 0x20;
 
-    /// Six slots: zero the reserved object, one and four a country with its
-    /// alias at five, two null, three an alias of the reserved object. A
-    /// fourth object, unreferenced, is another country whose id is zero.
     fn world() -> Vec<u8> {
         let mut bytes = vec![0; object(4)];
         let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
@@ -226,7 +205,6 @@ mod tests {
         (log, Some(admitted))
     }
 
-    /// What the reader admits over `memory`: each canonical country's object.
     fn reader(memory: &impl Memory) -> Result<Vec<usize>, &'static str> {
         let reader = ccountry::Reader::new(memory, BASE, STATE)?;
         let mut admitted = Vec::new();
@@ -249,14 +227,12 @@ mod tests {
         let expected = vec![object(1), object(2)];
         assert_eq!(admitted, Some(expected.clone()));
         assert_eq!(reader(&memory), Ok(expected.clone()));
-        // The reader replayed over the recorded spans alone admits the same countries.
         assert_eq!(reader(&Recorded::build(&log).unwrap()), Ok(expected));
     }
 
     #[test]
     fn a_raw_alias_without_a_physical_slot_resolves_once_its_reads_are_recorded() {
         let mut bytes = world();
-        // Raw two names the country at slot four; its own slot is null.
         bytes[LINKS + 2 * 4..][..4].copy_from_slice(&4_u32.to_le_bytes());
         let memory = SliceMemory {
             base: 0,
@@ -277,7 +253,6 @@ mod tests {
         let slots = CountrySlots::new(countries, links, BASE).unwrap();
         assert_eq!(slots.resolve(&mut log, &memory, 2, 1), Some(()));
         assert_eq!(replayed(&log), live.resolve(2));
-        // An unlinked reference fails both readers alike.
         assert_eq!(slots.resolve(&mut log, &memory, 3, 1), None);
         assert!(live.resolve(3).is_err());
     }
@@ -286,7 +261,6 @@ mod tests {
     fn an_id_zero_object_other_than_the_reserved_one_ends_the_census_as_the_reader_fails() {
         for slot in [3, 0] {
             let mut bytes = world();
-            // Slot three points at another id-zero object, or the reserved slot is null.
             let pointer = if slot == 3 { object(3) as u64 } else { 0 };
             bytes[COUNTRIES + slot * 8..][..8].copy_from_slice(&pointer.to_le_bytes());
             let memory = SliceMemory {

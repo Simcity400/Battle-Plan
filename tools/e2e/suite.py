@@ -45,15 +45,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-# Outside the repository; the nightly runner passes its own.
 DEFAULT_STATE = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
 WINDOW = (1920, 1080)
-# AllWidgets is fitted to a 4K client area so its minimum-size grid can be shown at once.
 SCREEN_VIEWS, TALL_VIEW, SCREEN = ("AllWidgets", "AllWidgetsLegible"), "AllWidgetsTall", (3840, 2160)
 BOAT_FAILED = 75
 CLOSE_SECONDS = 60
 STAGES = ("copy", "sweep", "report")
-# Each session is a fresh app on the profile with every cache emptied, so what it times first is cold.
 SESSIONS = (
     ("pages", "pages", {}),
     ("seeks", "seeks", {}),
@@ -61,19 +58,14 @@ SESSIONS = (
     ("map uncapped", "mapfps", {"BATTLE_PLAN_VIEWER_NO_VSYNC": "1"}),
     ("catalogue", "catalogue", {}),
     ("controls", "controls", {}),
-    # Only with --pages-at.
     ("pages at", "pages-at", {}),
 )
-# The quick tier: one cold session, so opening is judged cold and everything after it shares the app.
 QUICK_SESSIONS = (
     ("quick", "glance,playback,catalogue,controls", {}),
 )
-# Under the fresh profile: emptied before every session.
 CACHES = ("local/HOI4Replay/viewer", "local/HOI4Replay/shader-cache", "local/HOI4Replay/artwork", "local/Microsoft",
           "roaming", "webview")
-# What every session keeps: the recording.
 KEPT = ("local/HOI4Replay/captures",)
-# Each suite run's app while it runs, as `<pid>-<creation time>.json`, so runs on one machine count each other.
 APPS = Path(tempfile.gettempdir()) / "battle-plan-e2e" / "apps"
 APP_EXE = "replay-desktop.exe"
 SHELL_FEATURE = "replay-desktop/served-ui"
@@ -193,9 +185,8 @@ class App:
         self.desktop = checked(u.CreateDesktopW(self.desktop_name, None, None, 0, 0x1FF, None))
         self.job = checked(k.CreateJobObjectW(None, None))
         limits = Extended()
-        # KILL_ON_JOB_CLOSE | PRIORITY_CLASS: other agents share this machine; above normal keeps their load off the app.
         limits.basic.flags = 0x2000 | 0x20
-        limits.basic.priority = 0x8000  # ABOVE_NORMAL_PRIORITY_CLASS
+        limits.basic.priority = 0x8000
         checked(k.SetInformationJobObject(self.job, 9, c.byref(limits), c.sizeof(limits)))
         self.log = open(log, "wb")
         null = open(os.devnull, "rb")
@@ -204,13 +195,12 @@ class App:
         startup = Startup()
         startup.cb = c.sizeof(startup)
         startup.desktop = "winsta0\\" + self.desktop_name
-        startup.flags = 0x100  # STARTF_USESTDHANDLES
+        startup.flags = 0x100
         startup.stdout = startup.stderr = msvcrt_handle(self.log)
         startup.stdin = msvcrt_handle(null)
         block = "".join(f"{key}={value}\0" for key, value in environment.items()) + "\0"
         self.info = ProcessInfo()
         command = c.create_unicode_buffer(subprocess.list2cmdline([str(exe), *args]))
-        # Suspended until it is in the Job, so nothing it starts escapes it; Unicode environment block.
         checked(k.CreateProcessW(str(exe), command, None, None, True, 0x08000004 | 0x400, (c.c_wchar * len(block))(*block),
                                  str(exe.parent), c.byref(startup), c.byref(self.info)))
         checked(k.AssignProcessToJobObject(self.job, self.info.process))
@@ -258,8 +248,8 @@ class App:
 
     def size(self, width, height):
         hwnd = self.main_window()
-        u.ShowWindow(hwnd, 9)  # SW_RESTORE: a maximised window keeps its size
-        checked(u.SetWindowPos(hwnd, None, 0, 0, width, height, 0x14))  # SWP_NOZORDER | SWP_NOACTIVATE
+        u.ShowWindow(hwnd, 9)
+        checked(u.SetWindowPos(hwnd, None, 0, 0, width, height, 0x14))
         rect = w.RECT()
         checked(u.GetWindowRect(hwnd, c.byref(rect)))
         if (rect.right - rect.left, rect.bottom - rect.top) != (width, height):
@@ -326,7 +316,7 @@ def note_app(process, pid):
 
 
 def alive(pid, creation):
-    process = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    process = k.OpenProcess(0x1000, False, pid)
     if not process:
         return False
     try:
@@ -348,7 +338,7 @@ def running_apps(own):
         if pid.isdigit() and creation.isdigit() and alive(int(pid), int(creation)):
             noted += 1
     machine = None
-    snapshot = k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    snapshot = k.CreateToolhelp32Snapshot(0x2, 0)
     if snapshot and snapshot != c.c_void_p(-1).value:
         try:
             machine = 0
@@ -368,7 +358,6 @@ def machine_load(own, seconds=1.0):
     def times():
         idle, kernel, user = c.c_uint64(), c.c_uint64(), c.c_uint64()
         checked(k.GetSystemTimes(c.byref(idle), c.byref(kernel), c.byref(user)))
-        # Kernel time includes idle time.
         return idle.value, kernel.value + user.value
     idle, total = times()
     time.sleep(seconds)
@@ -425,7 +414,7 @@ def refresh_hz():
     """The display's refresh rate, which sets what a dropped frame is."""
     mode = DisplayMode()
     mode.size = c.sizeof(mode)
-    checked(u.EnumDisplaySettingsW(None, 0xFFFFFFFF, c.byref(mode)))  # ENUM_CURRENT_SETTINGS
+    checked(u.EnumDisplaySettingsW(None, 0xFFFFFFFF, c.byref(mode)))
     if mode.frequency <= 1:
         raise RuntimeError(f"the display reports no refresh rate ({mode.frequency})")
     return mode.frequency
@@ -522,7 +511,6 @@ def cold_profile(work):
     """Empties every cache under the fresh profile; what is left is said."""
     profile = work / "profile"
     for cache in CACHES:
-        # The last app's processes release their files a moment after its Job ends.
         deadline = time.monotonic() + 30
         while (profile / cache).exists():
             shutil.rmtree(profile / cache, ignore_errors=True)
@@ -590,14 +578,11 @@ def run_locked(args, started, state):
     source = fixture_recording(args.fixture)
     args.user_folder = user_folder(args.user_dir)
     record["userFolder"] = str(args.user_folder)
-    # Baselines are of one fixture: its name and size tell a swapped fixture from tonight's.
     record["fixture"] = {"name": source.name, "bytes": source.stat().st_size}
     shader_compiler(state, Path(args.app))
-    # In the fresh profile's own library, where the app lists it, as a recording the user saved.
     recording = work / "profile" / "local" / "HOI4Replay" / "captures" / source.name
     if "copy" in stages:
         began = time.monotonic()
-        # Every night from nothing: the copied recording in a fresh profile.
         if work.exists():
             shutil.rmtree(work)
         recording.parent.mkdir(parents=True)
@@ -615,13 +600,10 @@ def run_locked(args, started, state):
             if chosen:
                 planned.append((name, chosen, environment))
         for name, chosen, environment in planned:
-            # Asked for, whether or not its session starts: the report judges each phase asked for, and only those.
             record["requested"] += chosen
             began = time.monotonic()
             session = {"name": name, "phases": chosen, "emptied": list(CACHES), "kept": list(KEPT)}
             slug = name.replace(" ", "-")
-            # A session that cannot start is a failure of its own; the next still runs, and the report is written.
-            # The map's suite input channel, for pointer and key input to the native map: suite sessions only.
             input_address = f"127.0.0.1:{free_port()}"
             if args.record_replies:
                 session["recordedReplies"] = recorded_replies(args.record_replies, slug, len(planned))

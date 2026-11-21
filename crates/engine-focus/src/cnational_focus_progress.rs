@@ -1,4 +1,3 @@
-//! CNationalFocusProgress state. Preserve complete signed i64 progress.
 
 use crate::{
     Memory, ccontinuous_national_focus, ccountry, cnational_focus, cnational_focus_tree,
@@ -6,35 +5,21 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CNationalFocusProgress primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x027b_7ad8);
-/// Focus progress's owning country pointer; the constructor stores its RDX
-/// argument here.
 pub const COUNTRY: usize = 0x08;
-/// Focus progress's current focus pointer, dereferenced by country focus acquisition.
 pub const CURRENT: usize = 0x10;
-/// CNationalFocusProgress current CContinuousNationalFocus pointer.
 pub const CONTINUOUS: usize = 0x18;
-/// Active/banked focus progress, signed i64 fixed5; accumulates even while idle.
 pub const PROGRESS: usize = 0x38;
-/// CNationalFocusProgress completed-focus pointer-array data.
 pub const COMPLETED_DATA: usize = 0x40;
-/// CNationalFocusProgress completed-focus signed i32 capacity.
 #[cfg(test)]
 pub const COMPLETED_CAPACITY: usize = 0x48;
-/// CNationalFocusProgress completed-focus signed i32 count.
 pub const COMPLETED_COUNT: usize = 0x4c;
-/// Completed-focus pointer stride for eight-byte elements.
 pub const COMPLETED_STRIDE: usize = 8;
-/// CNationalFocusProgress paused byte.
 pub const PAUSED: usize = 0xb0;
 
-/// Focus daily update follows country/diplomacy joins and completes before hourly return.
 pub const DAILY_UPDATE_RVA: Rva = Rva(0x002e_8bd0);
 
-/// National-focus completion entry; no event hook is installed.
 pub const COMPLETED_RVA: Rva = Rva(0x002e_7d00);
-/// Exact national-focus completion entry bytes.
 pub const COMPLETED_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
 ];
@@ -51,9 +36,7 @@ pub struct Row {
     pub tree: Option<TokenSpan>,
     pub current: Option<TokenSpan>,
     pub continuous: Option<TokenSpan>,
-    /// Native signed fixed5 accumulator, retained even while no focus is selected.
     pub progress: i64,
-    /// Native byte, without collapsing a nonzero value to a Rust boolean.
     pub paused: u8,
     pub completed_count: i32,
 }
@@ -61,7 +44,6 @@ pub struct Row {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CompletedRow {
     pub country: u32,
-    /// Position in the native completed-focus vector, preserving its order.
     pub ordinal: u32,
     pub token: TokenSpan,
 }
@@ -71,9 +53,6 @@ pub struct FocusWalk {
     pub outcome: Outcome,
     pub completed_outcome: Outcome,
     pub bytes_len: usize,
-    /// Observed native token bytes, including the first row omitted because the
-    /// arena was full. This is a lower bound when the walk stops at capacity;
-    /// grow storage off-thread without inspecting the omitted suffix here.
     pub required_bytes: usize,
 }
 
@@ -120,8 +99,6 @@ impl Tokens<'_> {
     }
 }
 
-// The daily focus update and completed-focus query use these exact existing
-// fields, kept in one root record.
 const ROOT_FIELDS: [crate::memory::RecordField; 6] = crate::memory::packed_fields([
     (0, 8),
     (CURRENT, 16),
@@ -144,11 +121,6 @@ pub fn count(memory: &impl Memory, base: usize, country: usize, country_id: u32)
     walk_buffer(memory, base, country, country_id, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Reads one authenticated country's current focus state and completed roster
-/// into caller-owned storage. Country enumeration/authentication belongs to the
-/// caller. Exact-field batches use advisory worker storage; a failed batch
-/// permits one original serial pass, without engine calls or event hooks. Summary and completion failures remain independent after the common
-/// focus-status root is authenticated; arena exhaustion never shortens a token.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

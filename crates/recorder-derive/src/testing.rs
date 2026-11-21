@@ -1,12 +1,8 @@
-//! For tests of the writers and their doors: the schema's column kinds, and a store of every
-//! table that typed rows are written into.
 
-/// Every table's column kinds, as the schema names them.
 pub fn kinds() -> Vec<Vec<Kind>> {
     TableId::ALL.iter().map(|&table| column_kinds(table)).collect()
 }
 
-/// A writer noting, each hour it runs, the keys it set and deleted of each of its tables.
 #[cfg(test)]
 pub(crate) mod noting {
     use crate::framework::{Hour, Output, Read, Rows, Uses, Writer};
@@ -14,19 +10,16 @@ pub(crate) mod noting {
     use replay_data::rows::TableId;
     use std::{cell::RefCell, io};
 
-    /// An hour's keys set and deleted, ascending, of each table it set or deleted rows of.
     pub(crate) type Noted = Vec<(TableId, Vec<u128>, Vec<u128>)>;
 
     thread_local! {
         static NOTED: RefCell<Vec<Noted>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// The hours noted on this thread since the last call, in order.
     pub(crate) fn take() -> Vec<Noted> {
         NOTED.with(|noted| std::mem::take(&mut *noted.borrow_mut()))
     }
 
-    /// `W`, noted.
     #[derive(Default)]
     pub(crate) struct Noting<W>(pub W);
 
@@ -103,7 +96,6 @@ use replay_columnar::{
 use replay_data::rows::{Field, List, Opaque, RowCodec, TABLE_COUNT, TableId};
 use std::io;
 
-/// `table`'s columns' kinds in the store.
 pub fn column_kinds(table: TableId) -> Vec<Kind> {
     use replay_data::rows::Kind as Wire;
     table
@@ -131,7 +123,6 @@ pub fn column_kinds(table: TableId) -> Vec<Kind> {
         .collect()
 }
 
-/// A store of every table with its schema's kinds and logs, a run begun.
 pub fn store() -> Store {
     let mut store = Store::new(kinds(), vec![false; TABLE_COUNT]);
     store.declare_logs(&replay_data::rows::logs()).expect("logs declared on an empty store");
@@ -143,7 +134,6 @@ fn is_log(store: &Store, table: TableId) -> bool {
     store.logs().get(table.index()).copied().unwrap_or(false)
 }
 
-/// The texts a run appended, by id, as its file gives them back.
 struct Texts(Vec<Option<Vec<u8>>>);
 
 impl StringSource for Texts {
@@ -159,20 +149,15 @@ fn take_up(stopped: &Store, texts: Texts) -> Store {
     store
 }
 
-/// A store taking up the run `stopped` holds at its last hour, as a recorder resuming from its
-/// file does: every table, and the strings live cells name read again from `texts`, the run's
-/// appends in order.
 pub fn resumed(stopped: &Store, texts: &[&[u8]]) -> Store {
     take_up(stopped, Texts(texts.iter().map(|text| Some(text.to_vec())).collect()))
 }
 
-/// [`resumed`], the strings read again from those `stopped` holds.
 pub fn resumed_holding(stopped: &Store) -> Store {
     let strings = stopped.strings();
     take_up(stopped, Texts((0..strings.next()).map(|id| strings.get(id).map(<[u8]>::to_vec)).collect()))
 }
 
-/// One cell of a row, owned while the row is written.
 enum Held {
     Scalar(Cell<'static>),
     Text(u32),
@@ -182,8 +167,6 @@ enum Held {
     Unrecorded,
 }
 
-/// Writes `row` into `table` of `store` this hour, each cell offered, or appends it to a log; a
-/// text field names the string at its index in `texts`, the strings the run appended in that order.
 pub fn put<R: RowCodec>(store: &mut Store, table: TableId, row: &R, texts: &[&[u8]]) -> io::Result<()> {
     let mut cells = Vec::new();
     row.visit_wire(&mut |_, field| {
@@ -265,8 +248,6 @@ pub fn put<R: RowCodec>(store: &mut Store, table: TableId, row: &R, texts: &[&[u
     Ok(())
 }
 
-/// Deletes `table`'s row `key` from `store` this hour, when it holds one. A log's row is
-/// forgotten by its ordinal ([`forget`]).
 pub fn remove(store: &mut Store, table: TableId, key: u128) -> io::Result<()> {
     if is_log(store, table) {
         return Err(io::Error::other(format!("{table:?} is a log: a row of it is forgotten by its ordinal")));
@@ -278,8 +259,6 @@ pub fn remove(store: &mut Store, table: TableId, key: u128) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes `given` (column, cell) of `table`'s row `key` in `store` this hour, each offered; the
-/// row's other cells are not recorded when the row is new.
 pub fn cells(store: &mut Store, table: TableId, key: u128, given: &[(usize, Cell<'_>)]) -> io::Result<()> {
     let columns = column_kinds(table).len();
     let log = is_log(store, table);
@@ -306,13 +285,10 @@ pub fn cells(store: &mut Store, table: TableId, key: u128, given: &[(usize, Cell
     Ok(())
 }
 
-/// Log `table`'s row `ordinal` forgotten in `store` this hour.
 pub fn forget(store: &mut Store, table: TableId, ordinal: u64) -> io::Result<()> {
     store.table(table.index())?.forget(ordinal)
 }
 
-/// Deletes every row of `table` in `store` whose key is not in `keep`, this hour; a log holds
-/// only the hour's appended rows, so it keeps nothing to delete.
 pub fn keep_only(store: &mut Store, table: TableId, keep: &[u128]) -> io::Result<()> {
     if is_log(store, table) {
         return match keep {
@@ -328,13 +304,10 @@ pub fn keep_only(store: &mut Store, table: TableId, keep: &[u128]) -> io::Result
     Ok(())
 }
 
-/// The ordinals log `table` lists in `store`, ascending; none of a state table.
 pub fn listed(store: &Store, table: TableId) -> Vec<u64> {
     store.table_state(table.index()).and_then(|held| held.listed()).map(|listed| listed.ones().collect()).unwrap_or_default()
 }
 
-/// `table`'s rows as `store` holds them, ascending by key, each cell as the store holds it; of a
-/// log, the rows the hour appended.
 pub fn rows(store: &Store, table: TableId) -> Vec<(u128, Vec<String>)> {
     let view = store.view(table.index());
     let mut rows: Vec<(u128, Vec<String>)> = view

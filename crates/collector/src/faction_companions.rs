@@ -1,4 +1,3 @@
-//! Independent carried faction lists, selected in the existing faction census.
 use crate::faction_companion_changes::Changes;
 use engine_allocation as allocation;
 use engine_native::Memory;
@@ -435,7 +434,6 @@ struct ListStore<S: List> {
     spares: Vec<Arc<TableRows>>,
     before: Option<(u64, u64, u64)>,
     quiet: Option<(u64, u64, u64)>,
-    /// A store was carried on the family token alone, which must then hold to the walk's end.
     quiet_carried: bool,
     failure: Option<&'static str>,
     changed: bool,
@@ -962,9 +960,6 @@ mod tests {
         assert_eq!(rows[1].seed, Some(u32::MAX));
         assert!(rows[1].name.is_empty());
     }
-    /// A session's first hour reads every faction under its own store certificate; another
-    /// store's writer during the walk (the variable family's token is every script store's) left
-    /// those exact rows refused. An hour that carried stores on the family token still refuses.
     #[test]
     fn faction_stores_read_under_their_own_certificates_survive_other_writers_during_the_walk() {
         let _lock = crate::faction_companion_changes::TEST_LOCK

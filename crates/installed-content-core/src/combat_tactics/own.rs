@@ -1,5 +1,3 @@
-//! Specialized value reads beyond assignment, comparison, and direct bodies.
-//! Body paths use the class's one KEY_READERS entry, including inline loops.
 
 use super::{Node, Shaper};
 use crate::parser::native::{Field, Shape};
@@ -7,25 +5,17 @@ use crate::parser::native::{Field, Shape};
 impl Shaper<'_> {
     pub(super) fn own_value(&self, token: u32, address: u64, field: &Field<'_>) -> Shape<Node> {
         match address {
-            // Body and variable-trigger readers use the key loop or embedded
-            // helper selected by KEY_READERS.
             0x1404540c0 | 0x141446060 | 0x14049F250 | 0x14049F6A0 | 0x14049FAF0 | 0x14049FF40
             | 0x1404A0390 => Shape::Body(Node::Class(token)),
-            // Scalar first unless the value opens the class's key loop.
             0x140454140 | 0x140454290 | 0x140454870 | 0x1414461e0 | 0x14046ACF0 | 0x14046ADF0 => {
                 Shape::ObjectIfOpen(Node::Class(token))
             }
-            // Integer arrays read resolved tokens without registering definitions.
             0x140490D60 => Shape::RawList,
-            // Read the numeric expression.
             0x14056E240 => Shape::Expression,
             0x140454190 | 0x1404545b0 | 0x140454860 | 0x1404C1810 => Shape::One,
             0x140490D00 => Shape::Current,
-            // Opening blocks report errors and skip raw tokens; other values read once.
             0x1404540d0 if field.opens() => Shape::SkipIfOpen,
             0x1404540d0 => Shape::One,
-            // `<` and `>` select a comparison; every other operator selects a
-            // body read, including `=` with an opening value.
             0x140477CA0
                 if matches!(
                     field.operator,
@@ -35,10 +25,8 @@ impl Shaper<'_> {
                 Shape::One
             }
             0x140477CA0 => Shape::Body(Node::Class(token)),
-            // A trait leaf reads a scalar token or the class's block-key loop.
             0x140477CC0 if field.opens() => Shape::Body(Node::Class(token)),
             0x140477CC0 => Shape::One,
-            // The weather reader never reaches its block form; a scalar resolves one weather.
             0x140497D20 if !field.opens() => Shape::One,
             _ => Self::refuse_reader(address, field.key.c_str()),
         }
@@ -52,8 +40,6 @@ mod tests {
         parser::native::{self, Shape},
     };
 
-    /// The state-building reader rejects missing or provincial buildings;
-    /// the province-building reader requires a provincial building.
     #[test]
     fn non_damaged_building_level_rejects_provincial_buildings() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -72,8 +58,6 @@ mod tests {
         assert!(accepted.unsettled.is_none(), "{accepted:?}");
         assert!(accepted.misreads.is_empty(), "{accepted:?}");
         for building in ["port", "missing"] {
-            // Scalar error recovery reads nothing. A stale invalid building
-            // with `{` consumed as its operator must skip that block.
             let text = format!(
                 "non_damaged_building_level = {{ building = {building} building {{ @lost = 7 level > 0 }} level > 2 }} always = @lost"
             );
@@ -89,7 +73,6 @@ mod tests {
         }
     }
 
-    /// Assignment reads a body through its key reader.
     #[test]
     fn completed_mio_trait_count_reads_its_assignment_body() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -107,7 +90,6 @@ mod tests {
         assert_eq!(result.items[1].value.scalar(), Some(b"2".as_slice()));
     }
 
-    /// The game skips unknown trait-leaf block keys unread.
     #[test]
     fn mio_trait_leaves_read_a_scalar_or_their_block_keys() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -168,8 +150,6 @@ mod tests {
     fn own_key_loops_skip_unknown_blocks_without_registering_definitions() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // One fixture for every reached skip-dispatch family; a generic
-        // by-key reader defines @lost inside the unknown field instead.
         for (class, key) in [
             ("has_dynamic_modifier", "modifier"),
             ("has_naval_invasion_against_state", "state"),
@@ -232,8 +212,6 @@ mod tests {
                 "{class}: {:?}",
                 result.unsettled
             );
-            // The brace given to `value` consumes no body. Its closing brace
-            // ends the class, and the last probe remains readable at top level.
             let class_body = result.items[0].value.items().unwrap()[0]
                 .value
                 .items()

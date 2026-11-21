@@ -1,27 +1,3 @@
-//! Chart tiles against today's chart reply, and each tile's cold time (playback P4's dev bench;
-//! deleted with the lane's dev tools).
-//!
-//! `tile-bench equal --recording R --out FILE [--views N] [--dump DIR]`: views from the whole
-//! timeline down to a week, each ending at one of N heads spread over it, 600 pixels wide, for
-//! three series; each view assembled from tiles as the UI does and compared with today's reply
-//! for the view widened to whole bins, bin by bin, and its hours not recorded with today's reply
-//! for the view itself.
-//! `tile-bench hourly --recording R --out FILE [--views N] [--dump DIR]`: views of a week or less
-//! (an hour to a pixel or finer) at N heads, assembled from hourly tiles as the UI does and compared
-//! with today's hourly reply, runs and bins.
-//! `tile-bench marks --recording R --out FILE [--views N]`: each tile's drops per bin against
-//! today's clusters for views whose cluster is one bin, and the clusters a 600-pixel view draws
-//! today against the bins it draws from tiles.
-//! `tile-bench cells --recording R --out FILE --dump DIR [--views N]`: for cells of k bins of b hours (the cell a
-//! chart of 18-pixel clusters draws), N views on the grid and N shifted off it, each view's tiles with marks and
-//! today's clusters dumped for the UI's grouping to be compared with.
-//! `tile-bench regroup --recording R --out FILE`: today's clusters of a year's view following the head a day a frame,
-//! and how many of those wholly before the head change between frames.
-//! `tile-bench time --recording R --out FILE [--group G] [--threads T]`: for 8, 100 and every tag, every view
-//! of three tiles of bins at both ends of every level and of one-hour bins, its keys asked in
-//! groups of G at once on the service's reply threads, the file's cached pages dropped and the
-//! recording opened afresh before each view (the open timed apart): each reply's time and bytes,
-//! and from the first request to the last reply.
 
 use dashboard_query::{
     Index, Query,
@@ -76,7 +52,6 @@ fn open(path: &Path) -> Result<Replay> {
     Ok(Replay::open_path(path)?.into_timelines(&Default::default())?)
 }
 
-/// The longest timeline's query.
 fn query<'a>(replay: &'a Replay, index: &Index) -> Result<Query<'a>> {
     let id = replay
         .timelines()
@@ -91,7 +66,6 @@ fn line<'q, 'a>(query: &'q Query<'a>, kind: &str, measure: &str) -> Result<Line<
     Ok(Line::new(query, series, series.measure(measure).ok_or("no measure")?)?)
 }
 
-/// The tags held longest, most first.
 fn tags(query: &Query<'_>) -> Vec<String> {
     let mut held: Vec<(i64, &String)> = query
         .holders
@@ -154,7 +128,6 @@ fn equal(path: &Path, heads: usize, dump: Option<PathBuf>) -> Result<Value> {
             totals["views"] = json!(totals["views"].as_u64().unwrap() + 1);
             let hours = i64::from(to) - i64::from(from) + 1;
             if hours <= i64::from(WIDTH) {
-                // An hour to a pixel or finer: today's reply carries the hourly runs; no tile serves it.
                 totals["hourlyViews"] = json!(totals["hourlyViews"].as_u64().unwrap() + 1);
                 rows.push(json!({ "series": kind, "view": name, "from": from, "to": to, "hourly": true }));
                 continue;
@@ -169,7 +142,6 @@ fn equal(path: &Path, heads: usize, dump: Option<PathBuf>) -> Result<Value> {
             let mut replies = Vec::new();
             for index in wide_from.div_euclid(span)..=wide_to.div_euclid(span) {
                 let reply = tile::tile(&line, "bench", &asks(&held), None, bin, index, false)?;
-                // A tile of one-hour bins carries runs: its bins are their hours.
                 let buckets = match reply.hour_bytes {
                     0 => tile::decode_runs(&unbase64(&reply.bins), held.len(), reply.first_hour, line_scale(&line), reply.raw_values)?
                         .into_iter()
@@ -199,7 +171,6 @@ fn equal(path: &Path, heads: usize, dump: Option<PathBuf>) -> Result<Value> {
                     first.first_break = true;
                 }
             }
-            // Today's reply for the view widened to whole bins, and for the view itself.
             let wide_hours = wide_to - wide_from + 1;
             let wide_width = if bin == 1 { bins as u32 - 1 } else { bins as u32 };
             assert_eq!(grid(wide_hours, wide_width).1, bin, "{name}: the widened view reads other bins");
@@ -247,7 +218,6 @@ fn line_scale(line: &Line<'_, '_>) -> f64 {
     10_f64.powi(i32::from(line.decimals()))
 }
 
-/// Drops the pages Windows caches of `path`: opening it unbuffered does.
 fn purge(path: &Path) {
     #[cfg(windows)]
     {
@@ -257,7 +227,6 @@ fn purge(path: &Path) {
     }
 }
 
-/// The lines of a series without parts.
 fn asks(tags: &[String]) -> Vec<Ask> {
     tags.iter().map(|tag| Ask::whole(tag)).collect()
 }
@@ -269,12 +238,8 @@ fn percentile(sorted: &[f64], fraction: f64) -> f64 {
     sorted[((sorted.len() - 1) as f64 * fraction).round() as usize]
 }
 
-/// An hourly tile's runs of every tag, the wire read back: per tag (first, last, value, flags).
 type Runs = Vec<Vec<(i32, i32, f64, u8)>>;
 
-/// The runs of the tiles of one-hour bins over `from..=to`, joined across their seams, cut to the
-/// view as today's reply cuts them: the run holding `from` starts a line only where `from` starts
-/// its holder's segment. With each tag's parts.
 fn view_runs(line: &Line<'_, '_>, tags: &[String], from: i32, to: i32) -> Result<(Vec<Vec<ChartRun>>, Vec<Vec<tile::TilePart>>, Vec<Vec<MissingSpan>>, Vec<Value>)> {
     let span = tile::BINS as i64;
     let mut joined: Vec<Vec<ChartRun>> = vec![Vec::new(); tags.len()];
@@ -314,7 +279,6 @@ fn view_runs(line: &Line<'_, '_>, tags: &[String], from: i32, to: i32) -> Result
     Ok((cut, parts, missing, replies))
 }
 
-/// Today's hourly bins from `runs`, as its reply makes them for a view of an hour to a pixel.
 fn hourly_bins(runs: &[ChartRun], from: i32, to: i32) -> Vec<Option<ChartBucket>> {
     let mut out = vec![None; (to - from + 1) as usize];
     for run in runs {
@@ -389,8 +353,6 @@ fn hourly(path: &Path, heads: usize, dump: Option<PathBuf>) -> Result<Value> {
     Ok(json!({ "recording": path, "timeline": [first, last], "totals": totals, "views": rows }))
 }
 
-/// A tile's clusters for a view: one per bin with drops, its hours the bin's within the view, its
-/// first ordinal the tag's drops before it.
 fn tile_clusters(line: &Line<'_, '_>, tag: &String, bin: i64, from: i32, to: i32) -> Result<Vec<MarkCluster>> {
     let span = tile::BINS as i64 * bin;
     let mut out = Vec::new();
@@ -419,8 +381,6 @@ fn marks(path: &Path, heads: usize) -> Result<Value> {
     let held: Vec<String> = tags(&query).into_iter().filter(|tag| !line.parts(tag, first, last).is_empty()).take(8).collect();
     let mut totals = json!({ "views": 0, "clusters": 0, "differing": 0 });
     let mut equal_rows = Vec::new();
-    // Views whose eighteen-pixel cluster is exactly one bin of a bucket size, aligned to it: today's
-    // clusters are then one bin each.
     for (at, &bin) in [6i64, 96, 1_536, 6, 96].iter().cycle().take(heads).enumerate() {
         let head = first + ((i64::from(last) - i64::from(first)) * (at as i64 + 1) / (heads as i64 + 1)) as i32;
         let bins = 120i64;
@@ -428,7 +388,6 @@ fn marks(path: &Path, heads: usize) -> Result<Value> {
         let from = ((i64::from(to) + 1 - bins * bin).max(i64::from(first))).div_euclid(bin) * bin;
         let from = from.max(i64::from(first).div_euclid(bin) * bin + bin) as i32;
         let hours = i64::from(to) - i64::from(from) + 1;
-        // A recording shorter than a few of these bins has no such view, nor one cut short of a bin's end.
         if hours < 4 * bin || hours % bin != 0 {
             continue;
         }
@@ -450,7 +409,6 @@ fn marks(path: &Path, heads: usize) -> Result<Value> {
         }
         equal_rows.push(json!({ "from": from, "to": to, "binHours": bin, "width": width, "clusters": clusters, "tagsDiffering": differing }));
     }
-    // A chart's own views: today's clusters per eighteen pixels against a cluster per bin.
     let mut pictures = Vec::new();
     for (name, span) in [("campaign", i64::from(last) - i64::from(first) + 1), ("year", 8_760), ("quarter", 2_190)] {
         let to = first + ((i64::from(last) - i64::from(first)) * 2 / 3) as i32;
@@ -472,7 +430,6 @@ fn marks(path: &Path, heads: usize) -> Result<Value> {
     Ok(json!({ "recording": path, "totals": totals, "equal": equal_rows, "pictures": pictures }))
 }
 
-/// The `n` tags of `line` that dropped most over the timeline, most first (ties by tag): one cluster of every drop.
 fn droppers(line: &Line<'_, '_>, query: &Query<'_>, n: usize) -> Result<Vec<String>> {
     let (first, last) = (query.timeline.first, query.timeline.last);
     let all: Vec<String> = tags(query).into_iter().filter(|tag| !line.parts(tag, first, last).is_empty()).collect();
@@ -486,7 +443,6 @@ fn droppers(line: &Line<'_, '_>, query: &Query<'_>, n: usize) -> Result<Vec<Stri
     Ok(counted.into_iter().take(n).map(|(_, tag)| tag).collect())
 }
 
-/// Cells of `k` bins of `b` hours, and the pixels wide a view of them is drawn so a cell is eighteen.
 const CELLS: [(i64, i64, i64); 7] = [(1, 2, 40), (1, 3, 40), (1, 6, 40), (1, 12, 40), (1, 18, 40), (48, 18, 40), (96, 32, 30)];
 
 fn cells(path: &Path, heads: usize, dump: PathBuf) -> Result<Value> {
@@ -547,7 +503,6 @@ fn regroup(path: &Path) -> Result<Value> {
         let from = to - 8_760 + 1;
         let today = line.marks_of(&held, from, to, WIDTH)?;
         if let Some(before) = &previous {
-            // Clusters wholly before the earlier head, matched by their first drop.
             let (mut changed, mut compared) = (0, 0);
             for (old, new) in before.iter().zip(&today) {
                 for cluster in old.clusters.iter().filter(|cluster| cluster.last_hour < to - 24 && cluster.first_hour > from + 2_000) {
@@ -575,8 +530,6 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
         let query = query(&replay, &index)?;
         ((query.timeline.first, query.timeline.last), tags(&query))
     };
-    // The service's reply lane: half the machine's threads, at least two. Its count ignores an affinity mask, so a
-    // run held to fewer cores names its own.
     let threads = threads.unwrap_or_else(|| (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 2).max(2));
     let sets: Vec<(String, Vec<String>)> = [8, 100, all.len()].into_iter().map(|n| (format!("{n}"), all.iter().take(n).cloned().collect())).collect();
     let mut rows = Vec::new();
@@ -598,7 +551,6 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
                 let query = query(&replay, &index_state)?;
                 opens.push(opened.elapsed().as_secs_f64() * 1e3);
                 purge(path);
-                // Every group of every tile of the view asked at once; the reply threads take them in turn.
                 let jobs: Vec<(i64, &[String])> = indices.iter().flat_map(|&index| groups.iter().map(move |&tags| (index, tags))).collect();
                 let next = std::sync::atomic::AtomicUsize::new(0);
                 let started = Instant::now();

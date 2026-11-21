@@ -1,8 +1,3 @@
-//! A faction's theatres: the political map draws one pin on each theatre's
-//! first strategic region for every faction member whose tag is outside the
-//! theatre's hidden set. The pin number counts its countries, its sprite uses
-//! the faction miniature icon and its anchor averages all listed regions. Its
-//! tooltip names the theatre, its owner, its commander and its countries.
 
 use crate::{
     Memory, cfaction, cfaction_system,
@@ -12,53 +7,32 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Manager primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a9_8778);
-/// Owning CFaction pointer.
 pub const OWNER: usize = 0x08;
-/// Theatre array header: data, capacity and count. Serialization and pin visibility use the stored
-/// count.
 pub const THEATRES: usize = 0x10;
-/// Theatre entry stride; theatre serialization and every pin reader step by 0xA8.
 pub const THEATRE_STRIDE: usize = 0xa8;
-/// Theatre name, an MSVC string shown and saved as stored.
 pub const NAME: usize = 0x00;
-/// Theatre owner's raw country tag.
 pub const THEATRE_OWNER: usize = 0x20;
-/// Theatre commander reference: u32 type, then u32 id; both zero is no commander.
 pub const COMMANDER: usize = 0x24;
-/// Theatre raw-country-tag array; the pin number is its count.
 pub const COUNTRIES: usize = 0x30;
-/// Theatre strategic-region id array, signed i32; first-region lookup
-/// compares the initial entry when present.
 pub const REGIONS: usize = 0x48;
-/// Theatre hidden-pin country tags, sorted by canonical slot.
 pub const HIDDEN_FOR: usize = 0x88;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CFaction reference, as in the Factions walk.
     pub faction: u64,
-    /// Native index in the theatre array.
     pub ordinal: u32,
-    /// Faction icon bytes in the icon arena, shared by the faction's rows.
     pub icon_start: usize,
     pub icon_len: usize,
-    /// Theatre name bytes in the name arena.
     pub name_start: usize,
     pub name_len: usize,
-    /// Raw CCountryTag link of the theatre's owner.
     pub owner: u32,
-    /// Packed commander reference (low u32 type, high u32 id); zero is none.
     pub commander: u64,
-    /// Raw CCountryTag links in the country arena, in native order.
     pub countries_start: usize,
     pub countries_len: usize,
-    /// Raw i32 region ids, bit-preserved, in the region arena.
     pub regions_start: usize,
     pub regions_len: usize,
     pub country_count: u32,
-    /// Raw CCountryTag links in the hidden arena, in native order.
     pub hidden_start: usize,
     pub hidden_len: usize,
 }
@@ -71,8 +45,6 @@ pub struct Walk {
     pub countries_len: usize,
     pub regions_len: usize,
     pub hidden_len: usize,
-    /// Demand including rows omitted for any capacity. A faction's icon
-    /// counts once, and only when it has a theatre.
     pub required_rows: usize,
     pub required_icons: usize,
     pub required_names: usize,
@@ -100,7 +72,6 @@ impl Walk {
     }
 }
 
-/// Output rows and the arenas their spans index.
 pub struct Arenas<'a> {
     pub rows: crate::walk::Buffer<'a, Row>,
     pub icons: crate::walk::Buffer<'a, u8>,
@@ -110,7 +81,6 @@ pub struct Arenas<'a> {
     pub hidden: crate::walk::Buffer<'a, u32>,
 }
 
-/// Growing worker storage, one vector per [`Arenas`] field.
 pub struct Storage<'a> {
     pub rows: &'a mut Vec<Row>,
     pub icons: &'a mut Vec<u8>,
@@ -137,7 +107,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
     )
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, storage: Storage<'_>) -> Walk {
     use crate::walk::Buffer::Growing;
     walk_buffer(
@@ -338,8 +307,6 @@ pub fn walk_buffer(memory: &impl Memory, base: usize, game_state: usize, arenas:
     }
 }
 
-/// The manager is embedded in its faction: authenticate its class and owner
-/// before trusting the theatre array header.
 fn manager(memory: &impl Memory, base: usize, faction: usize) -> Result<Array, &'static str> {
     let manager = faction
         .checked_add(cfaction::THEATER_MANAGER)
@@ -396,7 +363,6 @@ mod tests {
         put32(bytes, address + 12, count);
     }
 
-    /// An MSVC string at `string`, inline when short, else at `heap`.
     fn string(bytes: &mut [u8], string: usize, heap: usize, value: &[u8]) {
         let source = if value.len() <= 15 {
             put64(bytes, string + msvc_string::CAPACITY, 15);
@@ -411,7 +377,6 @@ mod tests {
         bytes[source + value.len()] = 0;
     }
 
-    /// Writes a u32 list at `at` and its header at `header`.
     fn list(bytes: &mut [u8], header: usize, at: usize, values: &[u32]) {
         array(
             bytes,
@@ -425,10 +390,6 @@ mod tests {
         }
     }
 
-    /// Three factions: the first has two theatres (the second with a hidden
-    /// set, no regions, an empty name and no commander), the second none, the
-    /// third one with a heap icon, a heap name, no countries and a commander
-    /// reference whose id word alone is zero.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x8000];
         put64(&mut bytes, GS + cgame_state::FACTION_SYSTEM, SYSTEM as u64);
@@ -721,7 +682,6 @@ mod tests {
                 faction + cfaction::THEATER_MANAGER + THEATRES + 12,
                 0,
             );
-            // A faction without theatres does not read its icon.
             put64(
                 &mut bytes,
                 faction + cfaction::ICON + msvc_string::CAPACITY,
@@ -742,22 +702,18 @@ mod tests {
         for (at, value) in [
             (manager, 0),
             (manager + OWNER, SECOND as u64),
-            // Capacity one below the count of two.
             (manager + THEATRES + 8, (2_u64 << 32) | 1),
             (manager + THEATRES, u64::MAX - 8),
             (entry + REGIONS + 8, 1_u64 << 32),
             (entry + HIDDEN_FOR, 0),
             (entry + COUNTRIES, 0),
-            // A name capacity below the inline buffer.
             (entry + NAME + msvc_string::CAPACITY, 3),
-            // A heap name whose terminator is unreadable.
             (THEATRES_A + 2 * THEATRE_STRIDE + NAME, 0x10_0000),
             (FIRST + cfaction::ICON + msvc_string::LENGTH, 16),
             (FACTION_POINTERS + 16, FIRST as u64),
         ] {
             let mut bytes = fixture();
             put64(&mut bytes, at, value);
-            // Headers are checked even when no row fits.
             for size in [0, 8] {
                 let walk = Out::sized([size, size * 8, size * 8, size, size, size]).run(&bytes);
                 assert!(
@@ -767,7 +723,6 @@ mod tests {
                 assert_eq!(walk.required_rows, 0);
             }
         }
-        // An unreadable list is found only when its row is copied.
         for list in [HIDDEN_FOR, COUNTRIES] {
             let mut bytes = fixture();
             put64(&mut bytes, entry + list, 0x10_0000);

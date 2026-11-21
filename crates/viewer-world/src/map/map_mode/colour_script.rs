@@ -1,21 +1,3 @@
-//! A scripted map mode's `country`, `state` and `state_controller` layers: each target's `color`
-//! callback, run through the shared trigger evaluator, colours its own region.
-//!
-//! The callback runs in an event scope whose ROOT, THIS and PREV are the viewing country and whose
-//! FROM is the target: the country, or the state, whose own FROM is itself, or for a
-//! `state_controller` layer the controller of that portion of the state. A callback that holds
-//! leaves its colour in the temps `red`, `green`, `blue` and `alpha` (each clamped to 0..1, unset
-//! reading 0), `highlighted` (pulsing when non-zero) and, with `thickness = yes`, `thickness`,
-//! set to 1 before the callback runs and used unclamped as the region's fill factor. A callback
-//! the evaluator cannot decide is refused, counted by its reason.
-//!
-//! Each target's border is kept between refreshes, as the game keeps it. A refresh first compares
-//! the target's province list with the kept one and clears the border when it changed; the colour
-//! is then set only when the callback holds with an alpha above 0, so a callback that fails keeps
-//! the colour of an unchanged border. The game refreshes when the mode is selected or loaded and,
-//! with `update_daily` enabled, at each day's first hour; between refreshes the kept
-//! borders show as they are. A replay's seek or fresh open acts as a load and starts from empty
-//! borders; playing forward carries them across the days.
 use super::{Inputs, Style, pack};
 use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use dashboard_text::triggers::{Eval, Evaluator, Temps};
@@ -25,14 +7,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use viewer_foundation::map::tables::core;
 
-/// One in fixed5.
 const FIXED5: i64 = 100_000;
 
-/// Hours in a day: the daily refresh runs at each day's first hour, hour index 0.
 #[cfg(test)]
 const HOURS_PER_DAY: i32 = 24;
 
-/// The flat gradient byte a layer without `thickness = yes` fills its regions with.
 pub(super) const FLAT_GRADIENT: u8 = 244;
 
 pub use map_display_data::landscape::ColourState;
@@ -40,15 +19,11 @@ pub(super) use map_display_data::landscape::TargetId;
 #[cfg(test)]
 pub(super) use map_display_data::landscape::{Border, LayerState};
 
-/// Whether this hour refreshes the mode's colour layers given the previous hour's borders: a
-/// first hour (no previous, as after a seek, an open or a selection) always does; otherwise the
-/// day's first hour does when the mode updates daily.
 #[cfg(test)]
 pub(super) fn refreshes(previous: Option<&ColourState>, update_daily: bool, hour: i32) -> bool {
     previous.is_none() || (update_daily && hour.rem_euclid(HOURS_PER_DAY) == 0)
 }
 
-/// Actual native refresh calls in this hour's event interval, after the effect's gates.
 pub(super) fn forced_refresh(mode: &str, inputs: &Inputs) -> Result<bool, String> {
     use replay_data::rows::{MapEventFamily, MapEventPayload};
     let Some(index) = inputs
@@ -183,7 +158,6 @@ pub(super) fn close_lazy<'a, 'w>(
         .close_lazy(mode, side, layer, inputs, world)
 }
 
-/// The callback's colour for one target: `None` when it does not hold or its alpha is 0.
 fn colour(
     evaluator: &Evaluator<'_, '_>,
     layer: &Layer,
@@ -210,8 +184,6 @@ fn colour(
     let unit = |name: &[u8]| -> Result<f32, Vec<String>> {
         Ok(temp(name)?.clamp(0, FIXED5) as f32 / FIXED5 as f32)
     };
-    // Alpha gates all the other output reads. In particular a proved zero
-    // alpha does not need inherited RGB/highlight values.
     let alpha = unit(b"alpha")?;
     if alpha <= 0.0 {
         return Ok(None);

@@ -15,8 +15,6 @@ const NO_DETAILS: readonly NameAt[] = [];
 const NO_STATIC_TEXT: readonly Artwork[] = [];
 const NO_WARNINGS: readonly string[] = [];
 
-/** Focus tokens reuse the dated fact store's client ownership and bounded queue. Each
- * database keeps its own store, so a national and a continuous focus of one id never share. */
 function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   database: FocusDatabase, wanted: readonly NameAt[], active: boolean, mode: FocusFactsMode) {
   const spec = useMemo<FactSpec<FocusArtworkFact>>(() => ({
@@ -43,7 +41,6 @@ function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, c
   return { read, warnings };
 }
 
-/** Dated national focus text resolves independently; icons arrive in small batches. */
 export function useFocusText(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   wanted: readonly NameAt[], active: boolean) {
   return useFocusFacts(client, track, country, 'national', wanted, active, 'titles');
@@ -52,7 +49,6 @@ export function useFocusText(client: DashboardClient, track: BoundTrack | undefi
 function useDatedFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   database: FocusDatabase, wanted: readonly NameAt[], active: boolean, detailsWanted: readonly NameAt[],
   staticText: readonly Artwork[]) {
-  // The current validated history reply proves these names are country-independent.
   const staticTitles = useMemo(() => new Map(staticText.filter(item => item.name !== null).map(item => [item.token, item])), [staticText]);
   const titleWanted = useMemo(() => wanted.filter(item => !staticTitles.has(item.tag)), [wanted, staticTitles]);
   const text = useFocusFacts(client, track, country, database, titleWanted, active, 'titles');
@@ -72,7 +68,6 @@ function useDatedFocusArtwork(client: DashboardClient, track: BoundTrack | undef
         ...base, warnings: base?.warnings ?? NO_WARNINGS,
         artwork: { token: item.tag, baseDurationDays: null, ...base?.artwork, name: titleArt?.artwork.name ?? null,
           description: detailArt?.artwork.description ?? base?.artwork.description ?? null, icon: imageArt?.artwork.icon ?? null },
-        // Images and descriptions cannot settle the independent title read.
         titlePending: reading && !known && title === undefined,
         titleReason: known ? undefined : isFailedFact(title) ? failureText(title, 'Focus name request failed.')
           : title === null ? 'Focus name was not recorded at this hour.' : title?.reason ?? undefined,
@@ -92,14 +87,12 @@ function useDatedFocusArtwork(client: DashboardClient, track: BoundTrack | undef
     [text.warnings, images.warnings, details.warnings]) };
 }
 
-/** National focuses: tree entries, completions and the current focus. */
 export function useFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   wanted: readonly NameAt[], active: boolean, detailsWanted: readonly NameAt[] = NO_DETAILS,
   staticText: readonly Artwork[] = NO_STATIC_TEXT) {
   return useDatedFocusArtwork(client, track, country, 'national', wanted, active, detailsWanted, staticText);
 }
 
-/** A country's active continuous focus, looked up in the continuous database. */
 export function useContinuousFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   wanted: readonly NameAt[], active: boolean, staticText: readonly Artwork[] = NO_STATIC_TEXT) {
   return useDatedFocusArtwork(client, track, country, 'continuous', wanted, active, NO_DETAILS, staticText);

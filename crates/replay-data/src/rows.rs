@@ -1,4 +1,3 @@
-//! Engine-native typed tables and lossless field-mask codecs.
 pub use crate::checkpoint::endpoint::EndpointRows;
 pub use replay_rows::rows::*;
 pub use replay_rows_economy::*;
@@ -141,9 +140,6 @@ use crate::{
 };
 
 
-/// The log tables: rows given once, complete, and never changed, a key given once a run. The
-/// recorder holds a count of each and nothing per row; a recording says of each of its tables
-/// which it is. A row the game stops listing is forgotten in the log's own stream.
 pub const LOGS: [TableId; 15] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
@@ -161,26 +157,7 @@ pub const LOGS: [TableId; 15] = [
     TableId::LeaderTraitGains,
     TableId::LeaderCommands,
 ];
-// The collector's event tables that stay state, by what their rows did on the 13-year fixture
-// (cells written after insert / rows changed / keys inserted again), the first column changed:
-// CombatLogState 1 / 1 / 0, prune_observed.
-// CombatLogGroups 8,206 / 6,454 / 14,673, ordinal.
-// CombatLogMonths 184,520 / 18,046 / 17,520, date.
-// CombatLogEquipment 1,579,398 / 294,471 / 574,318, amount_raw.
-// CombatLogEnemyEquipment 5,913,172 / 759,492 / 328,002, amount_raw.
-// CombatLogManpower 300,566 / 10,326 / 2,964, losses_0.
-// CombatLogTemplates 718,227 / 8,316 / 3,239, wins.
-// CombatLogReferences 9,361,480 / 37,427 / 22,052, battle.
-// CombatLogBattles 44,099 / 7,760 / 14,055, reference_count.
-// CombatLogBattleSides 361 / 130 / 28,110.
-// CombatLogBattleEquipment 7,617 / 6,312 / 1,143,638.
-// CombatLogBattleCountries 101 / 100 / 32,261.
-// EquipmentDestruction 469,520 / 1,611 / 2,026,233.
-// CountryExperienceGains 2,514,233 / 447 / 1, complete.
-// DivisionEquipmentDeletions 0 / 0 / 40: a key inserted again, which a log holds once.
-// LandEventCoverage, MapEvents, EventFeedHistory: one row rewritten every hour.
 
-/// [`LOGS`] by table index.
 pub fn logs() -> [bool; TABLE_COUNT] {
     let mut logs = [false; TABLE_COUNT];
     for table in LOGS {
@@ -188,7 +165,6 @@ pub fn logs() -> [bool; TABLE_COUNT] {
     }
     logs
 }
-/// Number of registered recording tables, shared by rows and frame consumers.
 pub const TABLE_COUNT: usize = TableId::ALL.len();
 
 pub trait TableSchema {
@@ -204,7 +180,6 @@ pub mod compatibility;
 pub mod restricted_changes;
 mod words;
 
-/// A value shown by a descriptor's function, for a derived-looking `Debug`.
 struct Shown<'a, T>(&'a T, fn(&T, &mut fmt::Formatter<'_>) -> fmt::Result);
 impl<T> fmt::Debug for Shown<'_, T> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -212,8 +187,6 @@ impl<T> fmt::Debug for Shown<'_, T> {
     }
 }
 
-/// The registry: each table's id, row type and descriptor ([`crate::ops`]), whose functions
-/// do every typed operation on the table's rows. An arm here only picks the descriptor.
 macro_rules! define_tables {
     (
         recorded { $($recorded:ident = $recorded_id:literal => $recorded_variant:ident($recorded_row:ident)),+ $(,)? }
@@ -226,7 +199,6 @@ macro_rules! define_tables {
             $($(, $later = $later_id => $later_variant($later_row))+)?
         }
         impl TableId {
-            /// Whether the recorder derives this table; the collector never acquires it.
             pub const fn is_derived(self) -> bool {
                 matches!(self, $(Self::$derived)|+)
             }
@@ -238,7 +210,6 @@ macro_rules! define_tables {
         #[repr(u16)]
         pub enum TableId { $($table = $id),+ }
         pub enum TableRows { $($table(Vec<$row>)),+ }
-        /// Inspection borrows concrete rows; decoded storage never owns this enum.
         #[derive(Clone, Copy, Eq)]
         pub enum RowRef<'a> { $($variant(&'a $row)),+ }
         pub enum RowIter<'a> { $($table(std::slice::Iter<'a, $row>)),+ }
@@ -259,7 +230,6 @@ macro_rules! define_tables {
         })+
         impl TableId {
             pub const ALL: [Self; [$(stringify!($table)),+].len()] = [$(Self::$table),+];
-            /// Dense storage position, independent of wire IDs.
             pub const fn index(self) -> usize {
                 enum Index { $($table),+ }
                 match self { $(Self::$table => Index::$table as usize),+ }
@@ -270,13 +240,10 @@ macro_rules! define_tables {
             pub const fn key_bits(self) -> u32 {
                 match self { $(Self::$table => <$row as RowCodec>::KEY_BITS),+ }
             }
-            /// The display step ([`crate::display`]) of top-level field
-            /// `field`; nested steps belong to their value declarations.
             pub fn display_step(self, field: usize) -> Option<Step> {
                 let steps: &[Option<Step>] = match self { $(Self::$table => <$row as Fields>::STEPS),+ };
                 steps.get(field).copied().flatten()
             }
-            /// The row member field `field` is stored from, as its codec names it.
             pub fn field_name(self, field: usize) -> Option<&'static str> {
                 let names: &[&str] = match self { $(Self::$table => <$row as Fields>::NAMES),+ };
                 names.get(field).copied()
@@ -284,8 +251,6 @@ macro_rules! define_tables {
             pub fn decode_rows(self, count: usize, input: &mut Decoder<'_>) -> io::Result<TableRows> {
                 Ok(match self { $(Self::$table => TableRows::$table((crate::ops::$table.decode)(count, input)?)),+ })
             }
-            /// This table's rows at `keys`, in their order, each field as `wire(row, field)` hands
-            /// it in its wire form ([`RowCodec::from_wire`]).
             pub fn rows_from_wire<'a>(
                 self,
                 keys: &[u128],
@@ -293,8 +258,6 @@ macro_rules! define_tables {
             ) -> io::Result<TableRows> {
                 Ok(match self { $(Self::$table => TableRows::$table((crate::ops::$table.from_wire)(keys, wire)?)),+ })
             }
-            /// [`Self::rows_from_wire`] holding only the fields `mask` names, every other default
-            /// ([`RowCodec::from_wire_fields`]).
             pub fn rows_from_wire_fields<'a>(
                 self,
                 keys: &[u128],
@@ -387,12 +350,9 @@ macro_rules! define_tables {
                     _ => Err(invalid("key range table type mismatch")),
                 }),+ }
             }
-            /// `visit` over this table's rows by their own type.
             pub fn visit<V: RowsVisit>(&self, visit: V) -> V::Output {
                 match self { $(Self::$table(rows) => visit.rows(rows)),+ }
             }
-            /// `visit` over this table's rows and `other`'s, when both are the same table;
-            /// otherwise the visit back.
             pub fn visit_pair<V: RowsPairVisit>(&self, other: &TableRows, visit: V) -> Result<V::Output, V> {
                 match self { $(Self::$table(rows) => match other {
                     Self::$table(others) => Ok(visit.rows(rows, others)),
@@ -402,22 +362,15 @@ macro_rules! define_tables {
             pub fn inline_bytes(&self) -> usize {
                 match self { $(Self::$table(rows) => rows.len() * std::mem::size_of::<$row>()),+ }
             }
-            /// Bytes of the row allocation: its capacity at this table's own
-            /// row size. Strings and lists a row owns on the heap are not counted.
             pub fn allocated_bytes(&self) -> usize {
                 match self { $(Self::$table(rows) => rows.capacity() * std::mem::size_of::<$row>()),+ }
             }
-            /// Bytes the rows keep alive: their allocation and what each
-            /// row's strings, lists and nested values hold in turn.
             pub fn heap_bytes(&self) -> usize {
                 match self { $(Self::$table(rows) => (crate::ops::$table.heap_bytes)(rows)),+ }
             }
             pub fn truncate(&mut self, len: usize) {
                 match self { $(Self::$table(rows) => (crate::ops::$table.truncate)(rows, len)),+ }
             }
-            /// Round every row's stepped fields to their display steps
-            /// ([`crate::display`]), as capture stores them; a table without
-            /// steps is left untouched.
             pub fn round_to_display(&mut self) {
                 match self { $(Self::$table(rows) => (crate::ops::$table.round_to_display)(rows)),+ }
             }
@@ -425,9 +378,6 @@ macro_rules! define_tables {
             pub fn empty(table: TableId) -> Self {
                 match table { $(TableId::$table => Self::$table(Vec::new())),+ }
             }
-            /// One default row of `table`: the shape a complete singleton table
-            /// (`key_bits() == 0`) must have, for fixtures that complete every
-            /// singleton from the registry rather than by name.
             #[cfg(any(test, feature = "test-support"))]
             pub fn one_default(table: TableId) -> Self {
                 match table { $(TableId::$table => Self::$table((crate::ops::fixtures::$table.one_default)())),+ }
@@ -465,12 +415,9 @@ macro_rules! define_tables {
             pub fn encode_rows(&self, output: &mut Vec<u8>) -> io::Result<()> {
                 match self { $(Self::$table(rows) => (crate::ops::$table.encode)(rows, output)),+ }
             }
-            /// One row's fields in schema order, without its key.
             pub fn encode_row_fields(&self, index: usize, output: &mut Vec<u8>) -> io::Result<()> {
                 match self { $(Self::$table(rows) => (crate::ops::$table.encode_row_fields)(rows, index, output)),+ }
             }
-            /// One row's recorded fields in schema order, without its key, and a bit per
-            /// field it did not record (skipped).
             pub fn encode_row_recorded_fields(&self, index: usize, output: &mut Vec<u8>) -> io::Result<u64> {
                 match self { $(Self::$table(rows) => (crate::ops::$table.encode_row_recorded_fields)(rows, index, output)),+ }
             }
@@ -480,8 +427,6 @@ macro_rules! define_tables {
                     _ => Err(invalid("table rows have different types")),
                 }),+ }
             }
-            /// [`Self::encode_changes`], recording in `changed` each row it writes and each
-            /// key it deletes; it writes nothing when no row changed.
             pub fn encode_changes_recorded(&self, previous: &Self, output: &mut Vec<u8>, deleted: &mut Vec<u8>, changed: &mut ChangedRows) -> io::Result<bool> {
                 match self { $(Self::$table(rows) => match previous {
                     Self::$table(previous) => (crate::ops::$table.encode_changes)(rows, previous, output, deleted, Some(changed)),
@@ -495,9 +440,6 @@ macro_rules! define_tables {
                     _ => Err(invalid("replacement rows have different types")),
                 }),+ }
             }
-            /// Indices, types and unchanged keys were checked while encoding,
-            /// before any table in the frame could change its baseline.
-            /// Returns the replaced rows, in the replacement's storage.
             #[cfg(any(test, feature = "capture", feature = "test-support"))]
             pub fn install_replacements(&mut self, mut replacement: Self, indices: &[usize]) -> Self {
                 match self { $(Self::$table(previous) => match &mut replacement {
@@ -509,23 +451,15 @@ macro_rules! define_tables {
             pub fn apply_delta(self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table((crate::ops::$table.apply_delta)(rows, changed, deleted)?)),+ })
             }
-            /// [`Self::apply_delta`] to rows whose keys are valid, then
-            /// [`Self::validate_keys`] of the result.
             pub fn apply_delta_validated(self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table((crate::ops::$table.apply_delta_validated)(rows, changed, deleted)?)),+ })
             }
-            /// [`Self::apply_delta`] for a baseline that stays shared.
             pub fn apply_delta_shared(&self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table((crate::ops::$table.apply_delta_shared)(rows, changed, deleted)?)),+ })
             }
-            /// [`Self::apply_delta_validated`] for a baseline that stays shared.
             pub fn apply_delta_shared_validated(&self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table((crate::ops::$table.apply_delta_shared_validated)(rows, changed, deleted)?)),+ })
             }
-            /// What `self` changed since `previous`, both valid rows of one
-            /// table: each row it holds that `previous` does not hold equal at
-            /// its key, copied, and each key of `previous` it lacks. None when
-            /// they hold different tables.
             pub fn changes_since(&self, previous: &Self) -> io::Result<Option<RowChanges>> {
                 Ok(match self { $(Self::$table(rows) => match previous {
                     Self::$table(previous) => {
@@ -535,19 +469,14 @@ macro_rules! define_tables {
                     _ => None,
                 }),+ })
             }
-            /// The rows at `keys`, ascending and each present, as a later
-            /// [`Self::apply_changes`] sets them: the rows an hour wrote.
             pub fn rows_at(&self, keys: &[u128], deleted: Vec<u128>) -> io::Result<RowChanges> {
                 Ok(match self { $(Self::$table(rows) => RowChanges {
                     rows: Self::$table((crate::ops::$table.rows_at)(rows, keys)?),
                     deleted,
                 }),+ })
             }
-            /// The rows [`Self::changes_since`] found `changes` from: each of
-            /// its rows set at its key and each of its deleted keys removed.
             pub fn apply_changes(mut self, changes: RowChanges) -> io::Result<Self> {
                 let RowChanges { rows: mut changed, deleted } = changes;
-                // Whole enums share unwind cleanup instead of expanding each variant pairing.
                 match &mut self { $(Self::$table(rows) => {
                     let Self::$table(changed) = &mut changed else {
                         return Err(invalid("row changes of another table"));
@@ -556,9 +485,6 @@ macro_rules! define_tables {
                 }),+ }
                 Ok(self)
             }
-            /// Each row keyed as `patches` names, in key order, with the fields its mask names
-            /// set as `wire(patch, field)` hands them ([`RowCodec::patch_from_wire`]); a row
-            /// that cannot be patched is built whole from every field.
             pub fn patch_from_wire<'a>(
                 &mut self,
                 patches: &[(u128, u64)],
@@ -638,8 +564,6 @@ macro_rules! define_tables {
     };
 }
 
-// Ids are positions: a new table takes the next id at the end, and one removed renumbers those
-// after it (a schema change that refuses older recordings by name).
 define_tables! {
 recorded {
 Clock = 0 => Clock(ClockRow),
@@ -1161,7 +1085,6 @@ AirLossTotals = 512 => AirLossTotal(AirLossTotalRow),
 BombingTotals = 513 => BombingTotal(BombingTotalRow),
 GarrisonStrengths = 514 => GarrisonStrength(GarrisonStrengthRow),
 }
-// Recorded tables added after the derived ones, so every wire id stays its position.
 recorded {
 LandUnitOrder = 515 => LandUnitOrder(LandUnitOrderRow),
 StrategicRegionWeights = 516 => StrategicRegionWeight(StrategicRegionWeightRow),
@@ -1169,8 +1092,6 @@ StateBuildingInputs = 517 => StateBuildingInput(StateBuildingInputRow),
 }
 }
 impl TableId {
-    /// Discard only proven field framing. No old row is decoded, validated as
-    /// today's type, or translated; Opaque payloads are skipped by byte length.
     pub fn skip_snapshot(&self, fields: usize, input: &mut Decoder<'_>) -> io::Result<()> {
         let schema = &self.schema()[..fields];
         let minimum = 1 + schema
@@ -1230,8 +1151,6 @@ impl TableId {
         Ok(())
     }
 
-    /// Whether a field's changes are whole byte strings (strings, lists and
-    /// nested records) rather than numeric differences.
     pub fn byte_field(self, field: usize) -> bool {
         matches!(
             self.schema().get(field),
@@ -1239,23 +1158,18 @@ impl TableId {
         )
     }
 
-    /// The exact bytes of one field's plain encoding, read from `input`.
     pub fn field_span<'a>(self, field: usize, input: &mut Decoder<'a>) -> io::Result<&'a [u8]> {
         let before = input.rest();
         self.schema()[field].decode(input)?;
         Ok(&before[..before.len() - input.remaining()])
     }
 
-    /// The exact bytes of one field's plain delta change, read from `input`.
     pub fn change_span<'a>(self, field: usize, input: &mut Decoder<'a>) -> io::Result<&'a [u8]> {
         let before = input.rest();
         self.schema()[field].decode_change(input)?;
         Ok(&before[..before.len() - input.remaining()])
     }
 
-    /// Walk one plain table update in `format`, from its status byte, and
-    /// report every token's exact bytes in wire order. Counts, masks and field
-    /// framing get the same checks as decoding; row values are not decoded.
     pub fn walk_update<'a>(
         self,
         bytes: &'a [u8],
@@ -1303,7 +1217,6 @@ impl TableId {
         input.finish()
     }
 
-    /// A counted run of snapshot rows, changed rows or deleted keys.
     fn walk_rows<'a>(
         self,
         fields: usize,
@@ -1433,16 +1346,11 @@ impl TableId {
 }
 
 impl TableRows {
-    /// Counts field gaps independently of a table's row completeness: every field the rows hold
-    /// as not recorded, by its codec name, then every nested gap.
     pub fn field_gaps(&self) -> impl Iterator<Item = (&'static str, usize)> + use<> {
         let (fields, nested) = self.field_gaps_by_level();
         fields.chain(nested)
     }
 
-    /// [`Self::field_gaps`] apart: the table's own fields, by codec name (a member path such as
-    /// `temperature.drift`, which only the table qualifies), and the nested gaps, each named by
-    /// its own value type.
     pub fn field_gaps_by_level(
         &self,
     ) -> (
@@ -1473,7 +1381,6 @@ impl TableRows {
 
 #[cfg(any(test, feature = "test-support"))]
 impl TableRows {
-    /// Synthetic historical fixtures: copy just the established field prefix.
     pub fn fixture_prefix(&self, fields: usize) -> Vec<u8> {
         let table = self.table();
         let mut current = Vec::new();
@@ -1517,7 +1424,6 @@ enum WalkRows {
     Deleted,
 }
 
-/// Read one value and return it with the exact bytes it occupied.
 fn span<'a, T>(
     input: &mut Decoder<'a>,
     read: impl FnOnce(&mut Decoder<'a>) -> io::Result<T>,
@@ -1527,7 +1433,6 @@ fn span<'a, T>(
     Ok((value, &before[..before.len() - input.remaining()]))
 }
 
-/// One token of a plain table update ([`TableId::walk_update`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Token {
     Status,
@@ -1540,8 +1445,6 @@ pub enum Token {
     Field(usize),
 }
 
-/// The rows a later version of a table changed or added since an earlier
-/// one, and the keys it dropped ([`TableRows::changes_since`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RowChanges {
@@ -1550,12 +1453,10 @@ pub struct RowChanges {
 }
 
 impl RowChanges {
-    /// `rows` to set at their keys and `deleted` keys to remove, both in key order.
     pub fn new(rows: TableRows, deleted: Vec<u128>) -> Self {
         Self { rows, deleted }
     }
 
-    /// Bytes its rows and deleted keys hold.
     pub fn heap_bytes(&self) -> usize {
         self.rows.heap_bytes() + self.deleted.capacity() * size_of::<u128>()
     }
@@ -1568,8 +1469,6 @@ impl RowChanges {
     }
 }
 
-/// Table `table`'s schema field `column` from the wire form a columnar walk holds it in, as
-/// the row decoder reads it: step units become native units.
 pub fn field_from_wire<T: NativeValue>(
     table: TableId,
     column: usize,
@@ -1611,8 +1510,6 @@ pub fn decode_delta(
     previous_key: u128,
     decoder: &mut Decoder<'_>,
 ) -> io::Result<DeltaRow> {
-    // A decoded change admits only its canonical encoding, so the recorded
-    // bytes are the values encoding them again would write.
     let (key, mask, fields, values) = decode_delta_with(table, previous_key, decoder)?;
     let values = allocation::copy_vec(values)?;
     #[cfg(any(test, feature = "test-support"))]
@@ -1626,8 +1523,6 @@ pub fn decode_delta(
     })
 }
 
-/// Validate the recorded delta fields without copying their borrowed values.
-/// Typed nested validation and baseline arithmetic remain reconstruction work.
 pub fn validate_delta_row(
     table: TableId,
     previous_key: u128,
@@ -1636,8 +1531,6 @@ pub fn validate_delta_row(
     decode_delta_with(table, previous_key, decoder).map(|(key, ..)| key)
 }
 
-/// One recorded delta row's key, mask and field count, every field change
-/// validated, and the bytes of those changes.
 fn decode_delta_with<'a>(
     table: TableId,
     previous_key: u128,
@@ -1682,7 +1575,6 @@ pub mod delta_decode_ownership {
         });
     }
 
-    /// Observe just this thread and restore the previous observation on panic.
     pub fn count<T>(read: impl FnOnce() -> T) -> (T, usize) {
         struct Reset(Option<usize>);
         impl Drop for Reset {
@@ -1697,12 +1589,6 @@ pub mod delta_decode_ownership {
     }
 }
 
-/// Every table whose rows hold a [`PacketHour`]. Each is hourly. The
-/// witnessed attack packets ([`Witnessed`]) of DivisionStatus,
-/// OrdersGroupCounterInputs, CountryCounterInputs, ReservedCountryNaming,
-/// Provinces and WeatherRegions hold one too; those hosts are hourly as well,
-/// and their playback consumer admits a packet with
-/// [`PacketHour::fresh_at`].
 pub const PACKET_HOUR_HOSTS: [TableId; 10] = [
     TableId::DivisionMovement,
     TableId::CountryCounterInputs,
@@ -1715,7 +1601,6 @@ pub const PACKET_HOUR_HOSTS: [TableId; 10] = [
     TableId::CountryWars,
     TableId::DivisionTemplateIcons,
 ];
-/// Every packet hour a host row holds.
 #[cfg(any(test, feature = "test-support"))]
 pub fn packet_hours(rows: &TableRows) -> Vec<PacketHour> {
     fn some<T>(field: &Recorded<Option<T>>, hour: impl Fn(&T) -> PacketHour) -> Option<PacketHour> {
@@ -1788,7 +1673,6 @@ pub fn packet_hours(rows: &TableRows) -> Vec<PacketHour> {
     }
     hours
 }
-/// The retired tables that held the split reserved packet, in [`TableId`] order.
 pub const RESERVED_SPLIT_TABLES: [TableId; 9] = [
     TableId::TransportNavies,
     TableId::TransportLedgers,
@@ -2234,9 +2118,6 @@ mod tests {
         pair(TableId::PeaceSettlements, success, failure);
     }
 
-    /// A battle keeps its coordinates' exact bits (negative zero and a NaN
-    /// payload included), its members in order with repeats, and its
-    /// sounding flag; a moved battle stores only its changed fields.
     #[test]
     fn battle_sounds_round_trip_exact_bits_and_member_order() {
         let row = BattleSoundRow {
@@ -2449,8 +2330,6 @@ mod tests {
                 any
             );
             assert_eq!(actual, expected);
-            // Recorded: the same bytes when a row changed, none otherwise, and each written
-            // row beside its baseline row, with the deleted keys.
             let mut recorded = Vec::new();
             let mut rows = ChangedRows::default();
             assert_eq!(
@@ -2472,8 +2351,6 @@ mod tests {
         }
     }
 
-    /// A recorded merge of a table equal to its baseline writes nothing and needs no room, as
-    /// the unchanged form it leaves the encoder to write does not.
     #[test]
     fn a_recorded_merge_of_an_unchanged_table_grows_nothing() {
         let rows = TableRows::States(vec![StateRow {
@@ -2502,7 +2379,6 @@ mod tests {
             expeditionary_owner: 0,
             province: 123,
             template: 0x8000_0002_0000_002a,
-            // Whole display steps (crate::display), as capture stores them.
             hit_points: -9_007_199_254_740_000,
             organisation: 100_000,
             orders_group: 0x0000_0039_0000_0035,
@@ -2729,7 +2605,6 @@ mod tests {
             area_node: Default::default(),
         };
         assert_eq!(TableId::Provinces.full_mask(), 8191);
-        // Keep the independently covered legacy seven-field mask domain.
         for mask in 1..=127 {
             let next = ProvinceRow {
                 id: previous.id,
@@ -2800,8 +2675,6 @@ mod tests {
             let mut input = Decoder::new(&wire);
             assert_eq!(input.varint().unwrap(), row.key());
             let fields = wire.len() - input.remaining();
-            // Victory points remain after the three legacy country/state words,
-            // independently of the newly appended attack operand envelope.
             assert_eq!(
                 &wire[fields + 12..fields + 16],
                 &victory_points.to_le_bytes()
@@ -2810,8 +2683,6 @@ mod tests {
         }
     }
 
-    /// Labels, a null area, a refused label, a refused node operand and a
-    /// known empty contact list are each their own value, field by field.
     #[test]
     fn province_areas_keep_labels_null_and_node_refusals_distinct() {
         let base = ProvinceRow {
@@ -3067,7 +2938,6 @@ mod tests {
             assert_eq!(delta.mask, mask);
             let mut bytes = Vec::new();
             encode_delta(TableId::States, &delta, 0, &mut bytes).unwrap();
-            // Fourteen fields take a two-byte mask.
             let scalars = 5
                 + 2
                 + usize::from(mask & 1 != 0)
@@ -3081,9 +2951,7 @@ mod tests {
                 + usize::from(mask & 1024 != 0)
                 + 2 * usize::from(mask & 2048 != 0)
                 + 2 * usize::from(mask & 4096 != 0)
-                // The infrastructure: a length, the option's tag and three fixed words.
                 + 17 * usize::from(mask & 8192 != 0);
-            // The name fields add their own length-prefixed bytes.
             let names = 6 * usize::from(mask & 8 != 0) + 5 * usize::from(mask & 16 != 0);
             if names == 0 {
                 assert_eq!(bytes.len(), scalars);
@@ -3113,7 +2981,6 @@ mod tests {
                 &bytes[key_len + 16..key_len + 24],
                 &division().template.to_le_bytes()
             );
-            // Hit points and organisation are stored in tenths.
             assert_eq!(
                 &bytes[key_len + 24..key_len + 32],
                 &(division().hit_points / 10_000).to_le_bytes()
@@ -3556,7 +3423,6 @@ mod tests {
         };
         assert!(!zero.has_values());
         assert_ne!(zero, refused);
-        // An older recording's histories are refused by name, not read with unrecorded channels.
         let table = TableId::AirNavalPatrolHistories;
         let gap = table
             .last_change()
@@ -3969,8 +3835,6 @@ mod registry_tests {
     use super::*;
     use std::fmt::Write;
 
-    /// Every table's id, name, key width and fields, as the tree declared them before the rows
-    /// moved into replay-rows; the wire and the schema digest are functions of this list.
     #[test]
     fn registry_holds_every_table_as_before_the_split() {
         let mut listed = String::new();
@@ -3980,7 +3844,6 @@ mod registry_tests {
                 .collect();
             writeln!(listed, "{} {table:?} {} {}", table as u16, table.key_bits(), fields.join(",")).unwrap();
         }
-        // By lines: a checkout may hand the expected list over with Windows line endings.
         let expected = include_str!("rows/registry.golden");
         assert_eq!(listed.lines().collect::<Vec<_>>(), expected.lines().collect::<Vec<_>>());
     }

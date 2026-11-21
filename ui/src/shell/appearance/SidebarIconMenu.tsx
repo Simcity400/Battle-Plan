@@ -7,7 +7,6 @@ import { defaultSidebarIcon, isSidebarIconId, sidebarIconIds } from './sidebarIc
 import type { SidebarIconId } from './sidebarIcons';
 import type { Appearance } from './useAppearance';
 
-/** The glyph each sidebar item draws until it is given its own. */
 export function defaultSidebarGlyph(id: SidebarIconId): IconName {
   if (id === 'analytics') return 'chart-bars';
   if (id === 'map') return 'map';
@@ -15,7 +14,6 @@ export function defaultSidebarGlyph(id: SidebarIconId): IconName {
   return settingsSections.find(section => section.id === id)?.icon ?? pageIcon(id);
 }
 
-/** One icon and colour menu shared by the sidebar's navigation buttons. */
 export function useSidebarIconMenu(appearance: Appearance) {
   const mode = appearance.resolved.mode;
   const menu = useIconStyleMenu<SidebarIconId>(appearance, {

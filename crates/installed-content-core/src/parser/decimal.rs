@@ -1,4 +1,3 @@
-//! Exact text decimal values with retained spelling and precision.
 
 use std::io;
 
@@ -8,8 +7,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The literal's exact value in the engine's /100000 representation. The
-/// original spelling and visible precision remain available to the oracle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decimal {
     pub raw: i64,

@@ -1,8 +1,5 @@
-//! Optional retained last-target information. It copies the target group
-//! member count without retaining target identity.
 use engine_sites::Rva;
 use crate::{Memory, cnaval_combatant::field};
-/// Last-target information primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a9_a168);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

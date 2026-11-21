@@ -1,6 +1,3 @@
-//! Receiver-local evidence of genuine overlapping native writers. Prepared marks
-//! exclude uncertain snapshots; terminal reads recover current state, never the
-//! unobservable occurrences. Ordinary STORE contention loses no callback.
 use super::*;
 use collector_certificates::watch_registry::WatchRegistry;
 
@@ -49,8 +46,6 @@ pub(super) struct Repairs {
 impl Drop for Repairs {
     fn drop(&mut self) {
         if !self.admitted {
-            // Failed mark consumption cannot reopen a clean census between
-            // dropping this guard and the caller posting its refusal.
             unobserved!();
         }
         REPAIRING.store(false, Ordering::Release);
@@ -62,8 +57,6 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
         watches: Vec::new(),
         lost: 0,
     };
-    // Consuming the marks does not yet publish their replacement values. Keep
-    // carried reads closed until the boundary has applied and checked them.
     REPAIRING.store(true, Ordering::Release);
     let pending = PENDING.swap(false, Ordering::AcqRel);
     let added = ADDED.swap(false, Ordering::AcqRel);
@@ -79,14 +72,10 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return Err("variant repair epoch changed");
     }
-    // The dirty set keeps its storage across boundaries; each holds the hour's marks only.
     let mut pointers = lock(&DIRTY).take().unwrap_or_default();
     pointers.clear();
     engine_allocation::reserve_set(&mut pointers, MARKS.registered() + store.watched.len())
         .map_err(|_| "variant repair allocation failed")?;
-    // Publication can add a saved design since the last prepared slots. Until
-    // this boundary registers it, a lost callback cannot have marked its slot.
-    // Repair those new bindings too, but never dereference retired pointers.
     let mut published = std::mem::take(&mut store.published.pointers);
     if std::mem::take(&mut store.published.overflowed) {
         published.clear();
@@ -122,9 +111,6 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
             repairs.watches.push(*watch);
         }
     }
-    // No recorded snapshot of this receiver is trustworthy after an overlap.
-    // Keep binding tombstones, shared-source and author-liveness occurrences;
-    // terminal repair is applied after those independent ordered events.
     batch.events.retain(|event| {
         !matches!(event.kind, Kind::Design)
             || event.removed
@@ -135,8 +121,6 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
     repairs.admitted = true;
     Ok(repairs)
 }
-/// A boundary that applied every marked design's current state leaves it carried by the census
-/// again, as an observed edit's design is; a refused boundary leaves it for the census to read.
 pub(super) fn settle(watches: &[Watch]) {
     let Some(store) = STORE.get() else {
         return;
@@ -154,8 +138,6 @@ pub(super) fn settle(watches: &[Watch]) {
         }
     }
 }
-/// A marked design's live reads, refusing any read inside a design another occurrence of this
-/// hour consumed (`removed`), except the receiver's own root.
 pub(super) struct Surviving<'a, M> {
     pub source: &'a M,
     pub removed: &'a [usize],
@@ -181,10 +163,6 @@ impl<M: Memory> Memory for Surviving<'_, M> {
         self.source.copy(address, output)
     }
 }
-/// A lost edit can reach a parent absent from the preceding held state.
-/// Guard the reader itself, not a separate earlier sample of PARENT: native
-/// receiver changes must never make repair authenticate consumed storage.
-/// `walk` is this design's walk and decode a lane already took through the same guard.
 pub(super) fn snapshot(
     memory: &impl Memory,
     base: usize,
@@ -235,7 +213,7 @@ pub(super) fn complete(
     ];
     Ok(())
 }
-/// Hooks and acquisition have stopped before their owner releases storage.
+#[doc = " Hooks and acquisition have stopped before their owner releases storage."]
 pub(super) unsafe fn release() {
     unsafe {
         MARKS.release();

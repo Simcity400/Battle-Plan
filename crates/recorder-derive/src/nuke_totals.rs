@@ -1,7 +1,3 @@
-//! `CountryNukeTotals`: each live country's nuclear stockpile as the top bar adds it, so a
-//! country's total ranks and draws over time as a declared series. State is the tables: each
-//! country's types as Nukes holds them, applied as the hour changes them; a fresh hour or a resume
-//! reads Nukes and Countries whole.
 
 use crate::{
     forces::{invalid, written},
@@ -18,15 +14,11 @@ const STOCK: [usize; 2] = columns::<NukeRow, 2>(["amount_raw", "ready"]);
 
 const READS: &[Read] = &[
     Read { table: TableId::Nukes, columns: Columns::These(&STOCK), watch: Watch::Changed, required: true },
-    // Only countries coming and going.
     Read { table: TableId::Countries, columns: Columns::These(&[]), watch: Watch::Changed, required: true },
 ];
 
-/// One type of a country's stockpile: whole bombs as shown and ready drops; none while a cell is
-/// not recorded.
 type Stock = Option<(i32, i64)>;
 
-/// The Nukes row at `slot`: its country, its type and its stock.
 fn stock(view: &TableView<'_>, slot: u32) -> io::Result<(u32, u32, Stock)> {
     let key = view.key(slot).ok_or_else(|| invalid(format!("Nukes slot {slot} holds no row")))?;
     let amount = view.number(STOCK[0], slot);
@@ -36,10 +28,8 @@ fn stock(view: &TableView<'_>, slot: u32) -> io::Result<(u32, u32, Stock)> {
 
 #[derive(Default)]
 pub struct NukeTotals {
-    /// The writer must read its inputs whole before its next hour: a resume.
     rebuild: bool,
     countries: HashSet<u32>,
-    /// Each country's types with a Nukes row, by type.
     stocks: HashMap<u32, BTreeMap<u32, Stock>>,
 }
 
@@ -60,7 +50,6 @@ impl NukeTotals {
         }
     }
 
-    /// `country`'s row: total and ready, each not recorded while a stock it adds is not.
     fn cells(&self, country: u32) -> Vec<Value> {
         let types = self.stocks.get(&country);
         let mut total = Some(0_i32);
@@ -151,7 +140,6 @@ impl Writer for NukeTotals {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads Nukes and Countries whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

@@ -24,7 +24,6 @@ use std::{
 use viewer_foundation::map::perspective::Choice;
 use viewer_world::map::{trade_routes::ConvoyLine, unit_models::PreparedModels};
 
-/// Counts the builds it is given and refuses each by name: a test makes no models without the content.
 #[derive(Default)]
 struct Counted {
     jobs: AtomicUsize,
@@ -41,15 +40,11 @@ impl Select for Counted {
     }
 }
 
-/// A layer whose maker is the models' worker, reading the side's view store: it asks at the step's
-/// apply and joins at its settle, as the units layer does, so the test drives the real step.
 struct Maker {
     select: Arc<dyn Select>,
     learned: Vec<TableId>,
     views: Option<views::Views>,
     models: Option<Models>,
-    /// How its settle joins the models: nothing at all for a test of the ask alone, and a budget
-    /// the test moves as it steps.
     joins: Arc<Mutex<Option<Settling>>>,
     head: Option<Hour>,
 }
@@ -135,7 +130,6 @@ fn models(side: &MapSide) -> &Models {
     maker(side).models.as_ref().expect("the models' worker started")
 }
 
-/// A side of one maker layer over `recorded`, sought to hour 0.
 fn side_of(recorded: Units, layer: Maker) -> (Arc<Entry>, MapSide) {
     let entry = open(recorded, hourly_steps()).unwrap();
     entry.set_capture(CaptureMode::Full);
@@ -145,14 +139,10 @@ fn side_of(recorded: Units, layer: Maker) -> (Arc<Entry>, MapSide) {
     (entry, side)
 }
 
-/// Steps the side to `hour`; fails by name if it never applies it.
 fn step_to(side: &mut MapSide, hour: Hour) {
     stepping(side, hour, false);
 }
 
-/// Steps the side to `hour` and on until its maker has answered the rows of that hour. A frame is
-/// withheld while a table the maker declared is not home yet, so the first steps apply an hour the
-/// maker is not answering yet.
 fn answered_at(side: &mut MapSide, hour: Hour) {
     stepping(side, hour, true);
 }
@@ -170,7 +160,6 @@ fn stepping(side: &mut MapSide, hour: Hour, answered: bool) {
     panic!("the map side never {} hour {hour}: it applied {:?}", if answered { "answered" } else { "applied" }, side.applied());
 }
 
-/// Waits until `done` holds, within ten seconds, or fails by name.
 fn until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done() {
@@ -179,7 +168,6 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// A clock whose hour the models read, written every hour.
 fn clock(name: &str, hours: u32) -> Units {
     record_with(name, hours, |store, at| {
         store.status(TableId::Clock.index(), Status::Complete, true, Some(at as i32), true).unwrap();
@@ -206,9 +194,6 @@ fn the_models_declare_the_tables_they_are_known_to_read_and_those_learned_not_th
 
 #[test]
 fn a_build_begins_only_for_rows_whose_declared_tables_changed() {
-    // The Clock, which the ships' movement reads, from hour 0 and its speed moving at hour 2;
-    // LandCombats, which the build no longer reads (the land figures are the layer's own), moving
-    // at hour 1.
     let speed = crate::layers::recorded::column(TableId::Clock, "speed");
     let recorded = record_with("models jobs", 3, |store, at| {
         for table in [COMBATS, TableId::Clock] {
@@ -236,9 +221,6 @@ fn a_build_begins_only_for_rows_whose_declared_tables_changed() {
     assert!(models(&side).refused.as_deref().is_some_and(|why| why.contains("no unit models in this test")), "{:?}", models(&side).refused);
 }
 
-/// Today's models held on the worker until the test opens the gate (ten seconds at most, after which
-/// the build goes on and the test's assertions fail by name), each answering with empty models; it
-/// counts the builds begun and the rows each was begun over.
 #[derive(Default)]
 struct Gated {
     begun: Mutex<Vec<Hour>>,
@@ -252,12 +234,10 @@ impl Gated {
         self.changed.notify_all();
     }
 
-    /// Holds every build from now on.
     fn hold(&self) {
         *self.held.lock().unwrap() = true;
     }
 
-    /// The hours of the rows the builds were begun over.
     fn begun(&self) -> Vec<Hour> {
         self.begun.lock().unwrap().clone()
     }
@@ -280,9 +260,6 @@ impl Select for Gated {
     }
 }
 
-/// Asked what the models are made for, the worker builds the rows of the step's hour with no join
-/// at all: its build runs beside the step's other makers. On the base the layer handed it a frame
-/// of rows at its join, so nothing was built before the step reached it.
 #[test]
 fn the_models_are_asked_at_the_apply_and_build_before_any_join() {
     let gated = Arc::new(Gated::default());
@@ -295,16 +272,12 @@ fn the_models_are_asked_at_the_apply_and_build_before_any_join() {
     gated.open();
 }
 
-/// Steps faster than a build keep the figures the last finished build made: the models published
-/// stand at their own hour while the build runs, only the newest rows are ever taken (the hours
-/// between them are never built), and the build begun is finished and published.
 #[test]
 fn steps_faster_than_a_build_keep_the_latest_finished_models() {
     let gated = Arc::new(Gated::default());
     let joins = Arc::new(Mutex::new(Some(Settling::Whole)));
     let (_entry, mut side) = side_of(clock("models faster", 12), Maker::new(Arc::clone(&gated) as Arc<dyn Select>, &[], &joins));
     answered_at(&mut side, 0);
-    // Answered on the worker, the models are taken at the next join.
     for _ in 0..5_000_000u64 {
         if models(&side).stands().is_some() {
             break;
@@ -315,8 +288,6 @@ fn steps_faster_than_a_build_keep_the_latest_finished_models() {
     assert_eq!(models(&side).stands(), Some(0), "the models of hour 0: {:?}", models(&side).refused);
     let first = Arc::clone(&models(&side).prepared.as_ref().expect("models made").1);
 
-    // The build of hour 1 held on the worker while the side steps to hour 8, each step's join
-    // taking what is published with no budget to wait in.
     gated.hold();
     *joins.lock().unwrap() = Some(Settling::step());
     step_to(&mut side, 1);
@@ -327,7 +298,6 @@ fn steps_faster_than_a_build_keep_the_latest_finished_models() {
         assert!(std::ptr::eq(Arc::as_ptr(&models(&side).prepared.as_ref().expect("models").1), Arc::as_ptr(&first)), "hour {hour}: the same models, not remade");
     }
     assert_eq!(gated.begun(), vec![0, 1], "one build at a time: the seven hours stepped over while it ran queued no build of their own");
-    // The held build published, it catches up to the newest rows, never going back.
     gated.open();
 
     until("the models of the newest rows", || {

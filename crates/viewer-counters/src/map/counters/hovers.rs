@@ -1,4 +1,3 @@
-//! Tooltip observers from the children actually presented by the land batch.
 
 use super::*;
 use viewer_foundation::map::counter_hovers::gui_authored::Authored;
@@ -13,14 +12,8 @@ use viewer_foundation::map::test_support::test_tga_rgba8;
 #[derive(Default)]
 pub(super) struct Sprite {
     pub(super) origin: [f32; 2],
-    /// How far these quads stand from where the painting drew them: a plate whose stack and
-    /// style did not change is moved to a new origin rather than drawn again
-    /// ([`viewer_foundation::map::anchored::shift`]), and the batch records where it stands.
     pub(super) stood: [i32; 2],
-    /// The column priority its quads' layers were ranked with.
     pub(super) priority: i8,
-    /// The painting these quads came from, which the batch records so the sprite pass knows the
-    /// plate draws what it drew ([`viewer_foundation::map::sprites::next_painting`]).
     pub(super) painting: u64,
     pub(super) batch: Batch,
     pub(super) presented: Presented,
@@ -32,9 +25,6 @@ pub(super) struct Presented {
     pub(super) refused: Vec<String>,
 }
 
-/// Before `rank_children` replaces attachment indices with renderer layers,
-/// retain only presented controls. The sprite retains its observers through
-/// redraw caching. Normal siblings participate in the same reverse hit order.
 pub(super) fn presented(
     inputs: &CounterInputs<'_>,
     stack: &land::Stack,
@@ -83,7 +73,6 @@ pub(super) fn presented(
                 .text_box()
                 .is_some_and(|text| text.always_transparent)
         {
-            // Transparent icons pass through the pointer and skip button observer dispatch.
             continue;
         }
         if element.is_named("active_abilities") {
@@ -92,9 +81,6 @@ pub(super) fn presented(
         }
         let control = control(element, railway_gun);
         if let Some(text) = element.text_box() {
-            // Use the authored layout position and height, independently of glyph ink.
-            // The existing TextChild has the game's parent-orientation anchor;
-            // native integer point comparisons exclude both lower edges.
             let layout = if railway_gun {
                 inputs
                     .assets
@@ -148,8 +134,6 @@ pub(super) fn presented(
             if let Some(icon) = element.icon()
                 && icon.rotation != 0.0
             {
-                // Test the unturned frame.
-                // Undo the admitted bars' draw placement before using that frame.
                 if element.is_named("bar_org") || element.is_named("bar_str") {
                     rect[1] -= (frame.drawn[1] - frame.drawn[0]) * scale * 0.5;
                 } else {
@@ -170,9 +154,6 @@ pub(super) fn presented(
             continue;
         }
         if rect[2] > 0.0 && rect[3] > 0.0 {
-            // The manual batch admits enabled buttons only (layouts::child),
-            // and applies no enabled-state overrides. Never infer a disabled
-            // selector for a form that the actual drawing path refuses.
             if element.button().is_some_and(|button| !button.enabled) {
                 out.refused.push(format!(
                     "{window}.{} disabled counter batch control is not admitted",
@@ -187,7 +168,6 @@ pub(super) fn presented(
     out
 }
 
-/// The selected drawable's metadata, not an arbitrary sprite sharing its texture.
 struct Frame {
     hit: Hit,
     texture: [f32; 2],
@@ -197,8 +177,6 @@ struct Frame {
 
 impl Frame {
     fn scaled_size(&self, scale: f32) -> [f32; 2] {
-        // Multiply the complete size by the scale,
-        // then the reciprocal grid size, all in native float precision.
         [0, 1].map(|axis| self.texture[axis] * scale * (1.0 / self.grid[axis] as f32))
     }
 }
@@ -282,8 +260,6 @@ fn selected_frame(
         .map(|icon| icon.sprite.as_slice())
         .or_else(|| element.button().map(|button| button.sprite.as_slice()))
         .ok_or("unsupported child hover kind")?;
-    // These are the same draw bindings used by draw_land_children/draw_gun_children.
-    // HQ backgrounds and action sheets can differ from the authored placeholder.
     let sheet = if element.is_named("count_bg") && stack.hq && !coarse && stack.gun.is_none() {
         inputs.assets.sheet("GFX_onmap_unit_counter_empty")
     } else if element.is_named("onmap_action_icon") {
@@ -513,7 +489,6 @@ mod tests {
         );
         assert_eq!(batch.quads[0].rect, rect);
         assert_eq!(batch.quads[0].uv, [0., 0.5, 1., 1.]);
-        // Scale the full texture before dividing.
         let fractional = Frame {
             texture: [12., 31.],
             grid: [1, 3],

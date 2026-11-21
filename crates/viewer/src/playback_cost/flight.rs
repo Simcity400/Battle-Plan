@@ -1,15 +1,7 @@
-//! `--flight x,z[,height]`: the camera a paced run flies, frame by frame, so a wide and moving
-//! view is measured the same way every run. From `(x, z)` at `height` (100 by default, under the
-//! land units' cutoff) the free eye, tilted 12 degrees down as the orbit's lowest elevation and
-//! looking east with the flying lens, holds still, flies east at an aircraft's boosted speed,
-//! turns on the spot at an aircraft's turn rate, climbs through the units' and the shadows'
-//! cutoffs, and holds high; then the path starts again. A frame's place on the path is its due
-//! time, so every run and every binary sees the same camera at the same frame.
 use crate::controls::{flight, orbit};
 use std::io;
 use viewer_foundation::map::camera::{Free, Lens, Placement, Pose};
 
-/// Each leg's name and seconds, in order.
 pub(crate) const LEGS: [(&str, f32); 5] = [
     ("tilted", 4.0),
     ("pan", 6.0),
@@ -18,13 +10,10 @@ pub(crate) const LEGS: [(&str, f32); 5] = [
     ("high", 3.0),
 ];
 
-/// The height the climb ends at: above the shadows' cutoff (400) and the units' (120).
 pub(crate) const CLIMB_TO: f32 = 600.0;
 
-/// The height the path starts at when none is given: under the land units' cutoff (120).
 const LOW: f32 = 100.0;
 
-/// The path's start, height and heading.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Flight {
     pub start: [f32; 2],
@@ -53,8 +42,6 @@ impl Flight {
         })
     }
 
-    /// The leg and the camera `seconds` into the path, its east-west place wrapped on a map
-    /// `map_width` wide.
     pub(crate) fn at(&self, seconds: f64, map_width: f32) -> (&'static str, Placement) {
         let total: f32 = LEGS.iter().map(|(_, seconds)| seconds).sum();
         let mut left = (seconds as f32).rem_euclid(total);

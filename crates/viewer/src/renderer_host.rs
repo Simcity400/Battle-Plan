@@ -9,7 +9,6 @@ type SharedRenderer = egui::mutex::RwLock<egui_wgpu::Renderer>;
 
 pub(crate) struct RendererSession;
 
-// A weak renderer key prevents address reuse without keeping retired renderers alive.
 struct Registry<K, S> {
     entries: Vec<(Weak<K>, Arc<S>)>,
 }
@@ -86,7 +85,6 @@ impl Local<'_> {
     }
 
     fn run(&self, command: Command) -> Reply {
-        // Commands finish at their call points; no queue changes registration or paint order.
         self.session.execute(self.state, command)
     }
 }
@@ -126,16 +124,12 @@ impl RendererSession {
     }
 }
 
-/// One painted frame: the seconds spent waiting for a swap chain image, and whether the frame
-/// reached the window (a hidden window, an outdated or lost swap chain and an unpresented
-/// profiling frame take their texture changes alone).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Painted {
     pub acquire: f32,
     pub presented: bool,
 }
 
-/// The map window's surface, configured for its size and present mode.
 pub(crate) struct WindowSurface {
     surface: wgpu::Surface<'static>,
     configured: Option<([u32; 2], egui_wgpu::SurfaceConfig)>,
@@ -167,8 +161,6 @@ impl WindowSurface {
         Ok(())
     }
 
-    /// Draws a frame's egui output into the window and presents it, or only takes its texture
-    /// changes when `size` is `None` (the window hidden).
     #[expect(clippy::too_many_arguments, reason = "one frame's paint inputs, as eframe's painter takes them")]
     pub(crate) fn paint(
         &mut self,
@@ -192,8 +184,6 @@ impl WindowSurface {
         if self.configured != Some((size, config)) {
             self.configure(state, size, config)?;
         }
-        // Everything this frame needs is staged before the swap chain image is asked for, so the
-        // wait for it is the last thing the frame thread does.
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point };
         let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map frame") });
         update_textures(state, textures_delta);
@@ -202,7 +192,6 @@ impl WindowSurface {
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                // Configured again for the next frame; this one keeps its texture changes.
                 self.configured = None;
                 update_textures(state, textures_delta);
                 free_textures(state, textures_delta);
@@ -240,7 +229,6 @@ fn free_textures(state: &egui_wgpu::RenderState, textures_delta: &mut egui::Text
     }
 }
 
-/// One frame's egui output drawn into `view` and submitted.
 fn draw(
     state: &egui_wgpu::RenderState,
     view: &wgpu::TextureView,
@@ -258,7 +246,6 @@ fn draw(
     free_textures(state, textures_delta);
 }
 
-/// The staged frame drawn into `view` and submitted.
 fn encode(
     state: &egui_wgpu::RenderState,
     mut encoder: wgpu::CommandEncoder,
@@ -296,9 +283,6 @@ fn encode(
     state.queue.submit(user.into_iter().chain([encoder.finish()]));
 }
 
-/// Measurement only (`BATTLE_PLAN_PERF_SKIP_MAP_PRESENT`): every frame is drawn as usual but into a
-/// texture of the window's size, never presented, so a run can compare the page's frame rate with
-/// the map drawing but not composited against the map presenting.
 fn skip_present() -> bool {
     static SKIP: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var_os("BATTLE_PLAN_PERF_SKIP_MAP_PRESENT").or_else(|| std::env::var_os("HOI4_PERF_SKIP_MAP_PRESENT")).is_some());
@@ -306,7 +290,6 @@ fn skip_present() -> bool {
 }
 
 thread_local! {
-    /// The texture unpresented frames are drawn into, kept while the window keeps its size.
     static UNPRESENTED: std::cell::RefCell<Option<(wgpu::TextureView, [u32; 2], wgpu::TextureFormat)>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -338,7 +321,6 @@ fn paint_unpresented(
     });
     let Some(view) = view else { return 0.0 };
     draw(state, &view, size, pixels_per_point, clear_color, clipped_primitives, textures_delta);
-    // Paced by the display's compositions, as a presented frame is by its swap chain.
     let started = std::time::Instant::now();
     #[cfg(windows)]
     {
@@ -346,7 +328,6 @@ fn paint_unpresented(
         unsafe extern "system" {
             fn DwmFlush() -> i32;
         }
-        // SAFETY: DwmFlush takes no arguments and only waits for the next composition.
         unsafe {
             DwmFlush();
         }

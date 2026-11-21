@@ -1,5 +1,3 @@
-//! Selected faction rules in native occurrence order. Rule definitions and
-//! permission conditions belong to the recorded content stack.
 
 use engine_sites::Rva;
 use crate::{Memory, allocation, cpdx_array::Array, read};

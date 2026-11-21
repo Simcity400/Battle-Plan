@@ -1,14 +1,8 @@
 use super::*;
 
-/// The tables the line output self-check decodes along the branch.
 pub(super) const LINE_OUTPUT_TABLES: [TableId; 2] =
     [TableId::ProductionLineOutput, TableId::ProductionLines];
 
-/// The save keeps no per-line count, so ProductionLineOutput is self-checked
-/// along the branch, from its observation start to the compared hour: each
-/// publication's live output rows pair with the same read's ProductionLines
-/// census (`census::CensusCheck`). Each row's producing country is compared
-/// with the save separately.
 pub fn compare_line_output(
     replay: &Replay,
     frame: &DecodedFrame,
@@ -23,9 +17,6 @@ pub fn compare_line_output(
         "ProductionLineOutput",
     );
     let rows = complete::<tables::ProductionLineOutput>(frame)?;
-    // Every row of a branch shares its observation start. After the last
-    // line ended and its final rows were dropped, the table is empty, but
-    // the earlier publications still hold credits the history must match.
     let since = match rows.first() {
         Some(row) => Some(row.since_hour),
         None => observation_start(replay, frame)?,
@@ -61,7 +52,6 @@ pub fn compare_line_output(
     blocks.sort_by_key(|block| block.first_hour);
     let mut census = census::CensusCheck::new(since);
     for block in blocks {
-        // Every block starts with a keyframe.
         replay.visit_blocks(
             &[block],
             &LINE_OUTPUT_TABLES,
@@ -82,9 +72,6 @@ pub fn compare_line_output(
     Ok(())
 }
 
-/// The observation start of the branch's latest publication with rows at or
-/// before the frame's hour, searching its blocks from the latest back; `None`
-/// when no publication up to that hour held a row.
 fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option<Hour>> {
     let mut blocks = replay
         .index

@@ -10,14 +10,12 @@ license.workspace = true
 doctest = false
 
 [features]
-# Constructors other crates' tests build effects with.
 test-support = []
 
 [dependencies]
 job-priority.workspace = true
 installed-content-core.workspace = true
 wgpu = "30.0.0"
-# Exact: the persistent cache ABI names this translator version.
 naga = { version = "=30.0.1", features = ["spv-in", "wgsl-in", "wgsl-out"] }
 bytemuck.workspace = true
 pollster.workspace = true

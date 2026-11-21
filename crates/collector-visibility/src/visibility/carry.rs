@@ -1,9 +1,3 @@
-//! Per-country raw CountryVisibility inputs, following the appearance and
-//! counter stores: the dirty set's held epoch and census identity certify
-//! reuse. The only runtime accumulator writers are
-//! country modifier recalculation and country appearance reset
-//! (country_input_mutations' Clear/filtered modifier block addition/merge caller audit).
-//! Definition and eligibility operands remain fresh in the native reader.
 use crate::country_input_changes::{self as changes, Changes, Counts, Table};
 use engine_allocation as allocation;
 use engine_native::{
@@ -18,8 +12,6 @@ struct HeldCountry {
     raw: Value,
 }
 
-/// Worker-only held inputs and the current hour's census-order observations.
-/// Storage grows from acquired live countries through checked advisory allocation.
 pub(super) struct Store {
     epoch: Option<u64>,
     held: Vec<Option<HeldCountry>>,
@@ -49,7 +41,6 @@ impl Store {
         }
     }
 
-    /// A failed hour or job certifies nothing. No allocation or deallocation.
     pub(super) fn forget(&mut self) {
         self.epoch = None;
         self.held.fill(None);
@@ -119,9 +110,6 @@ impl Store {
         Ok(raw)
     }
 
-    /// Native census and per-country reads retain their original order. The
-    /// native reader applies each raw value's live effective definition before
-    /// advancing to the next country, even when that raw value was carried.
     pub(super) fn capture(
         &mut self,
         memory: &impl Memory,

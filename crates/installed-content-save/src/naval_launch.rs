@@ -1,9 +1,3 @@
-//! Ordered saved launch-base words, without interpreting country tags as aliases.
-//!
-//! The writer emits every physical country after slot zero, with its
-//! `strategic_navy` and the base list under `naval_base`. Each base province
-//! word is formatted as a signed i32 key. The base holder's raw country word
-//! is not serialized.
 
 use std::io;
 
@@ -13,19 +7,14 @@ use super::{block, integer, invalid};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CountryNavalLaunchOccurrence {
-    /// Position in the original countries block, including repeated tags.
     pub ordinal: usize,
     pub tag: Vec<u8>,
-    /// None means no serialized navy. A present navy with no list is empty.
-    /// Signed key order and repeated keys are preserved exactly.
     pub naval_bases: Option<Vec<NavalBaseOccurrence>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavalBaseOccurrence {
     pub province: i32,
-    /// `disabled_for_repairs` is emitted once per country word, in order,
-    /// including repeats and empty tag strings.
     pub countries: Vec<Vec<u8>>,
 }
 
@@ -56,9 +45,6 @@ fn singleton<'a>(items: &'a [Item], key: &[u8]) -> io::Result<Option<&'a Value>>
     Ok(found)
 }
 
-/// Project the shared parser's original `countries` Item sequence. Ordinary
-/// payloads are required; this deliberately does not build a tag-keyed map.
-/// Full Save parsing retains all its separate corruption/duplicate checks.
 pub fn parse_country_occurrences(
     countries: &[Item],
 ) -> io::Result<Vec<CountryNavalLaunchOccurrence>> {

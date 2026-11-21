@@ -6,7 +6,6 @@ import { raidAt, raidIcon, raidPlaceId, raidPreparationText, raidStatus, raidTyp
 import type { RaidAt } from '../../dashboard/raids';
 import type { PlaceNamesReply, RaidEpisode, RaidLogReply } from '../../generated/dashboard';
 
-/** Chips cover only the types this branch's raids show; All types still accepts every type. */
 export function raidLogTypes(data: RaidLogReply): { token: string; label: string; icon: string | null }[] {
   const used = new Map<string, RaidEpisode>();
   for (const episode of data.episodes) if (episode.raidType !== null && !used.has(episode.raidType)) used.set(episode.raidType, episode);
@@ -15,8 +14,6 @@ export function raidLogTypes(data: RaidLogReply): { token: string; label: string
   return raidTypeChoices([...declared, ...undeclared]).map(choice => ({ ...choice, icon: raidIcon(data, used.get(choice.token)!) }));
 }
 
-/** The raids at `hour`, newest first, each dated by the phase it shows then: those of the chosen `types` (every type
- * when none) whose raider `matches` at that date, from `from` on when given. */
 export function raidLogRows(data: Pick<RaidLogReply, 'episodes'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
   from: number | null): ReadonlyArray<LogRow<RaidAt>> {
   const selected = new Set(types);
@@ -27,8 +24,6 @@ export function raidLogRows(data: Pick<RaidLogReply, 'episodes'>, hour: number, 
   }));
 }
 
-/** The targets to name, all at `hour` (one frame read, whatever the raids' hours): a state where the target has one,
- * else its province; every raid's, each place once. */
 export function targetNameRequest(episodes: readonly RaidEpisode[], hour: number): { places: { provinceId: number; hour: number }[]; states: { stateId: number; hour: number }[] } {
   const places = new Map<number, { provinceId: number; hour: number }>(), states = new Map<number, { stateId: number; hour: number }>();
   for (let at = episodes.length - 1; at >= 0; at--) {
@@ -39,7 +34,6 @@ export function targetNameRequest(episodes: readonly RaidEpisode[], hour: number
   return { places: [...places.values()], states: [...states.values()] };
 }
 
-/** Target names by place, `state:<id>` or `province:<id>`, each its name or why it has none. */
 export type TargetNames = ReadonlyMap<string, { name: string | null; missing: string | null }>;
 
 export function targetNames(reply: PlaceNamesReply): TargetNames {
@@ -49,7 +43,6 @@ export function targetNames(reply: PlaceNamesReply): TargetNames {
   return names;
 }
 
-/** A target's name, else its id and why it is not named (only its id while no names are known). */
 export function targetText(episode: RaidEpisode, names?: TargetNames | null): string {
   const [kind, id] = episode.state !== null ? ['state', episode.state] as const : episode.province !== null ? ['province', episode.province] as const : [null, null];
   if (kind === null) return raidPlaceId(episode);

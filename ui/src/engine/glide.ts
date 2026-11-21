@@ -1,14 +1,12 @@
 import { engine } from './frame.ts';
 import type { FrameEngine } from './frame.ts';
 
-/** A CSS `cubic-bezier(x1, y1, x2, y2)` timing curve, as a function of the time fraction `t` in [0, 1]. */
 export function bezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
   const along = (s: number, p1: number, p2: number) => 3 * (1 - s) * (1 - s) * s * p1 + 3 * (1 - s) * s * s * p2 + s * s * s;
   const slope = (s: number) => 3 * (1 - s) * (1 - s) * x1 + 6 * (1 - s) * s * (x2 - x1) + 3 * s * s * (1 - x2);
   return t => {
     if (t <= 0) return 0;
     if (t >= 1) return 1;
-    // The curve's parameter where x reaches t, by Newton's method from t.
     let s = t;
     for (let step = 0; step < 8; step++) {
       const d = slope(s);
@@ -19,20 +17,13 @@ export function bezier(x1: number, y1: number, x2: number, y2: number): (t: numb
   };
 }
 
-/** CSS's `ease`, the table bars' transition. */
 export const cssEase = bezier(0.25, 0.1, 0.25, 1);
-/** The rows' glide (`.moving-row`'s transition). */
 export const rowEase = bezier(0.2, 0.8, 0.2, 1);
 
-/** What a glide holds: where it started, where it goes, when it started, and where it is. */
 interface Gliding { from: number; to: number; started: number; ms: number; now: number }
 
-/** A style the engine writes one transform of. */
 export interface GlidedStyle { transform?: string }
 
-/** Transforms eased by the engine instead of a CSS transition: one paint-phase task moves every style gliding toward its
- * target along `curve` over the glide's time, retargeted from where it is, as a CSS transition was. A CSS transition on
- * `transform` made each element a compositor layer restyled every frame (RG1: 80 bars, 166 layers, a 27.7 ms frame). */
 export class StyleGlides {
   private readonly gliding = new Map<GlidedStyle, Gliding>();
   private readonly shown = new WeakMap<GlidedStyle, number>();
@@ -49,7 +40,6 @@ export class StyleGlides {
     this.clock = clock;
   }
 
-  /** Shows `style` at `value`: at once with no glide time or nothing shown before, else gliding there over `ms`. */
   to(style: GlidedStyle, value: number, ms: number): void {
     const held = this.gliding.get(style);
     if (held ? held.to === value : this.shown.get(style) === value) return;
@@ -64,7 +54,6 @@ export class StyleGlides {
     else this.task = this.frames.every('paint', frame => this.step(frame.now));
   }
 
-  /** Where `style` is now. */
   at(style: GlidedStyle): number | undefined {
     return this.gliding.get(style)?.now ?? this.shown.get(style);
   }
@@ -85,13 +74,9 @@ export class StyleGlides {
   }
 }
 
-/** Bars shown by their scale along x (a table's `.table-cellbar`). */
 export const barGlides = new StyleGlides(fraction => `scaleX(${fraction})`, cssEase);
-/** Rows placed by a vertical offset in pixels (a table's rows). */
 export const rowGlides = new StyleGlides(y => `translateY(${y}px)`, rowEase);
-/** A progress bar's fill, by its scale along x, and its knob's track, as wide as the bar, slid by the same fraction. */
 export const progressFill = new StyleGlides(fraction => `scaleX(${fraction})`, rowEase);
 export const progressKnob = new StyleGlides(fraction => `translateX(${(fraction - 1) * 100}%)`, rowEase);
 
-/** Whether the app asks for reduced motion: the engine's glides then take no time. */
 export const reducedMotion = (): boolean => typeof document !== 'undefined' && document.documentElement.dataset.motion === 'reduced';

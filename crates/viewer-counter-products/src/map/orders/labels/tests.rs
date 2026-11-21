@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use viewer_foundation::map::test_support::localisation::loaded;
 use viewer_foundation::map::text::GlyphBox;
 
-/// Every letter is 10 font pixels wide and tall, advancing 10.
 struct Fixed;
 
 impl GlyphMetrics for Fixed {
@@ -92,7 +91,6 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
         army_group,
         count,
     };
-    // An army-group move with no counted members: order name and group.
     let empty_group = compose(super::super::TYPE_MOVE, "Army Group 11", true, 0);
     assert_eq!(
         empty_group.text(Variant::Full).as_deref(),
@@ -103,11 +101,9 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
         Ok("No divisions")
     );
     assert_eq!(empty_group.text(Variant::Short).as_deref(), Ok("No Divs"));
-    // A line never carries the order name.
     let line = compose(super::super::TYPE_LINE, "Army 28", false, 2);
     assert_eq!(line.text(Variant::Full).as_deref(), Ok("2 Divs - Army 28"));
     assert_eq!(line.text(Variant::Middle).as_deref(), Ok("2 Divs"));
-    // A group name that is not UTF-8 refuses only the variant using it.
     let latin1 = Composer {
         group_name: b"Arm\xe9e 28",
         ..line
@@ -127,7 +123,6 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
         drop.text(Variant::Full).as_deref(),
         Ok("South Sudetenland Strategic Offensive Operation - 4 Paras - Army 3")
     );
-    // A unique name that is not UTF-8 is refused, not drawn lossily.
     let broken = Composer {
         name: OrderName {
             unique: b"S\xff",
@@ -187,8 +182,6 @@ fn extended_transports_append_to_full_only_after_the_strict_point_threshold() {
     );
     assert_eq!(reads.get(), 1);
 
-    // A native zero count is appended even when the assigned-member count
-    // is zero; the suffix is outside the count-dependent composition.
     let drop = Composer {
         order_type: super::super::TYPE_PARADROP,
         count: 0,
@@ -235,8 +228,6 @@ fn a_missing_transport_operand_refuses_only_the_full_variant_that_uses_it() {
         Ok("2 Divs")
     );
 
-    // Unsupported content in the appended suffix is handled by the same
-    // map-text refusal as a control in the ordinary label.
     let loc = [(KEY_PARADROP_TRANSPORTS.into(), "\u{12}GER".into())]
         .into_iter()
         .collect();
@@ -254,7 +245,6 @@ fn a_missing_transport_operand_refuses_only_the_full_variant_that_uses_it() {
 #[test]
 fn the_run_is_centred_on_the_integer_half_width() {
     let run = centred_run(&Fixed, "AB C", 1.0);
-    // Width 40 px, pen starts at -20; the space emits nothing.
     assert_eq!(run.len(), 3);
     assert!((run[0].left + 1.0).abs() < 1e-6);
     assert!((run[2].right - 1.0).abs() < 1e-6);
@@ -265,12 +255,8 @@ fn the_run_is_centred_on_the_integer_half_width() {
 #[test]
 fn the_text_path_is_the_longest_x_run_read_left_to_right() {
     let p = |x: i64, z: i64| [x * SCALE, z * SCALE];
-    // Five units west, then a short eastward hook: the westward run is the
-    // longer one and is read reversed; the last control is not included.
     let controls = [p(10, 0), p(5, 0), p(0, 0), p(1, 1), p(2, 2)];
     assert_eq!(text_path(&controls), vec![[5.0, 0.0], [10.0, 0.0]]);
-    // A one-point backstep between five-point runs (1 < 5 * 0.25) is
-    // merged, and the equal-direction runs then join.
     let controls: Vec<Point> = [0, 1, 2, 3, 4, 5, 4, 6, 7, 8, 9, 10]
         .into_iter()
         .map(|x| p(x, 0))
@@ -278,8 +264,6 @@ fn the_text_path_is_the_longest_x_run_read_left_to_right() {
     let path = text_path(&controls);
     assert_eq!(path.len(), 11);
     assert_eq!(path[0], [0.0, 0.0]);
-    // Beside three-point runs (0.75 <= 1) the backstep survives, and the
-    // longer of the two eastward runs is chosen.
     let controls: Vec<Point> = [0, 1, 2, 3, 2, 4, 5, 6]
         .into_iter()
         .map(|x| p(x, 0))
@@ -309,16 +293,11 @@ fn the_first_fitting_variant_is_placed_along_the_arc() {
     let placed = place(&variants, &controls, &Fixed, 1.0, 0.0, &flat)
         .unwrap()
         .unwrap();
-    // The path is ten units (the last control is not part of it) and the
-    // full label, twenty cells of half a unit, is exactly as wide.
     assert_eq!(placed.text, "LONG LONG LONG LABEL");
-    // A label that fits in full builds no other variant.
     assert_eq!(tried.take(), [Variant::Full]);
-    // Glyphs lie along +x, centred across z = 0, at the sampled height.
     let first = placed.glyphs[0].corners;
     assert!(first[0][2] > 0.0 && first[3][2] < 0.0);
     assert_eq!(first[0][1], 10.0);
-    // Too short a path takes the middle variant, then none at all.
     let short: Vec<Point> = (0..=4).map(p).collect();
     let placed = place(&variants, &short, &Fixed, 1.0, 0.0, &flat)
         .unwrap()
@@ -332,8 +311,6 @@ fn the_first_fitting_variant_is_placed_along_the_arc() {
             .is_none()
     );
 
-    // The height callback receives the glyph segment's control index over
-    // the control count.
     let seen = RefCell::new(Vec::new());
     let lift = |_: f32, _: f32, t: f32| {
         seen.borrow_mut().push(t);
@@ -353,8 +330,6 @@ fn the_first_fitting_variant_is_placed_along_the_arc() {
     assert!(placed.glyphs[0].corners[0][1] > 0.0);
 }
 
-/// Content where the short label holds a text icon and the empty-short
-/// key is missing, loaded as the game loads it.
 fn modded() -> Localisation {
     loaded(concat!(
         "l_english:\n",
@@ -366,9 +341,6 @@ fn modded() -> Localisation {
     ))
 }
 
-/// Localize and check a variant only when layout reaches it. An unused short
-/// variant with an icon does not hide a full label that fits; a reached one
-/// refuses the label by name.
 #[test]
 fn only_a_reached_variant_can_refuse_the_label() {
     let loc = modded();
@@ -383,14 +355,11 @@ fn only_a_reached_variant_can_refuse_the_label() {
     let p = |x: i64| [x * SCALE, 0];
     let flat = |_: f32, _: f32, _: f32| 0.0;
     let drawn = |variant| composer.drawn(variant);
-    // "4 Fj. - Armée 3": fifteen characters, the `é` outside the test font.
     let long: Vec<Point> = (0..=11).map(p).collect();
     let placed = place(&drawn, &long, &Fixed, 1.0, 0.0, &flat)
         .unwrap()
         .unwrap();
     assert_eq!(placed.text, "4 Fj. - Armée 3");
-    // Too short for the full label: the middle variant is reached and drawn. Its 0x14 control is
-    // a codepoint the glyph run skips, so the label is the variant's other glyphs.
     let short: Vec<Point> = (0..=4).map(p).collect();
     let middle = place(&drawn, &short, &Fixed, 1.0, 0.0, &flat)
         .unwrap()
@@ -400,7 +369,6 @@ fn only_a_reached_variant_can_refuse_the_label() {
         middle.glyphs.len(),
         centred_run(&Fixed, "4 Div.", 1.0).len()
     );
-    // Shorter still: the short variant is reached and its icon refuses the label.
     let shorter: Vec<Point> = (0..=2).map(p).collect();
     assert_eq!(
         place(&drawn, &shorter, &Fixed, 1.0, 0.0, &flat).unwrap_err(),
@@ -408,8 +376,6 @@ fn only_a_reached_variant_can_refuse_the_label() {
     );
 }
 
-/// The glyph run reads the 0x14 control as a codepoint without a glyph: it takes no advance and
-/// ends kerning, so the glyphs either side stand where a kerned pair would not.
 #[test]
 fn the_currency_control_takes_no_advance_and_ends_kerning() {
     struct Kerned;
@@ -436,15 +402,11 @@ fn the_currency_control_takes_no_advance_and_ends_kerning() {
         }
     }
     let left = |run: &[RunGlyph]| run.iter().map(|glyph| glyph.left).collect::<Vec<_>>();
-    // Kerned: the pair is 16 wide, starting at -8; V stands 6 font pixels after A.
     assert_eq!(left(&centred_run(&Kerned, "AV", 1.0)), [-0.4, -0.1]);
-    // Split by the control: no kerning, the pair is 20 wide, starting at -10.
     assert_eq!(left(&centred_run(&Kerned, "A\u{14}V", 1.0)), [-0.5, 0.0]);
     assert_eq!(drawable("A\u{14}V".to_owned()), Ok("A\u{14}V".to_owned()));
 }
 
-/// A `MAP_ARROWS_*` label key and a recorded name token both use their own
-/// bytes when absent from the content, like any missing top-level localization key.
 #[test]
 fn a_missing_label_key_and_a_missing_token_are_copied() {
     let loc = modded();

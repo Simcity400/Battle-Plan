@@ -142,8 +142,6 @@ impl FogProduct {
     }
 }
 
-/// Equal snow grids as one allocation, for every grid some holder still keeps: a view that
-/// uploaded one uploads nothing for an equal grid. A grid nobody holds is forgotten.
 #[derive(Default)]
 pub struct SnowMemo {
     values: Mutex<Vec<std::sync::Weak<map_snow::SnowMud>>>,

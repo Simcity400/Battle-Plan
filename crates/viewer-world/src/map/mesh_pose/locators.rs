@@ -1,11 +1,3 @@
-//! Retained native locator records, projected from already parsed content.
-//!
-//! Binary import keeps the first root `locator` block, all children
-//! and duplicate names, float-only p/q, and a source-order parent ordinal.
-//! It scales p alone and consumes q without normalization. Entity records
-//! retain their declaration-time array and parent ordinal through clones;
-//! when a changed origin mesh prevents recovering that ordinal, only the
-//! reached locator refuses instead of resolving its name in the new mesh.
 
 use std::io;
 
@@ -23,13 +15,9 @@ pub struct Locator {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LookupMode {
-    /// Child attachment keeps the last entity match.
     Attachment,
-    /// A dummy child cannot reach the binary/joint fallback.
     AttachmentDummy,
-    /// Naval locator lookup keeps the first entity match.
     Naval,
-    /// State event enqueue asks the native mesh first.
     Event,
 }
 
@@ -40,11 +28,6 @@ pub enum Binding<'a> {
 }
 
 impl Binding<'_> {
-    /// An absent played palette leaves joint attachments
-    /// at the actor root and locators in root space. A present palette uses
-    /// the current joint matrix, never a skin/bind
-    /// matrix. A present but unavailable pose remains a named refusal when
-    /// this binding needs it; an unparented locator does not read that pose.
     pub fn local(self, joints: Result<Option<&[Matrix]>, String>) -> Result<Matrix, String> {
         match self {
             Self::Locator(locator) => {
@@ -79,8 +62,6 @@ impl Binding<'_> {
     }
 }
 
-/// Binary names are Latin1 projections; script strings retain UTF8 bytes.
-/// Locator lookup compares those original bytes, not decoded text.
 fn latin1_equals_bytes(stored: &str, query: &[u8]) -> bool {
     stored
         .chars()
@@ -116,7 +97,6 @@ fn floats<const N: usize>(node: &mesh::Node, field: &str) -> io::Result<[f32; N]
         })
 }
 
-/// Project once from the shared parsed mesh tree, without any new file I/O.
 pub fn binary(
     root: &mesh::Node,
     skeleton: &[NativeJoint],
@@ -144,8 +124,6 @@ pub fn binary(
                     value
                         .strings()
                         .and_then(|values| values.first())
-                        // Both pa and skeleton names come from the binary
-                        // Latin1 container; their decoded equality is exact.
                         .map(|name| skeleton.iter().position(|joint| joint.name == *name))
                         .ok_or_else(|| {
                             invalid(
@@ -174,10 +152,6 @@ pub fn binary(
         .collect()
 }
 
-/// Native registration resolves entity parents once. The flattened content
-/// roster carries that origin mesh with a clone-copied locator array. A
-/// changed mesh with a parent name needs its original ordinal, never a name
-/// lookup in the child's current skeleton.
 pub fn entity(
     entries: &[(String, mesh::Locator)],
     skeleton: &[NativeJoint],
@@ -215,7 +189,6 @@ pub fn entity(
         .collect()
 }
 
-/// Caller-specific exact precedence with ordered duplicates retained.
 pub fn lookup<'a>(source: &'a Source, name: &str, mode: LookupMode) -> Option<Binding<'a>> {
     let name = name.split('\0').next().unwrap_or_default();
     let entity = || {
@@ -432,8 +405,6 @@ mod tests {
 
     #[test]
     fn locator_lookup_compares_binary_latin1_and_script_utf8_as_original_bytes() {
-        // Container byte E9 is decoded as "é"; bytes C3 A9 as "Ã©".
-        // Script UTF8 "é" is C3 A9 and must match only the second record.
         let mut source = Source {
             pdxmesh: true,
             skeleton: skeleton(&["é", "Ã©"]),

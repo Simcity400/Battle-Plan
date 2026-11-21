@@ -1,6 +1,3 @@
-//! The proof tool's lines for P6's layers: weather, snow and mud, fog and intel, radar. Each
-//! layer's arrays against today's product of the same hour (the cold per-hour builder) and
-//! against itself composed anew from the same mirrors.
 
 use super::Compared;
 use crate::{
@@ -71,7 +68,6 @@ pub(super) fn snow_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::snow::for_document(document)
 }
 
-/// Entries of the layer's grid that differ from `today`'s snow grid.
 fn snow_against(layer: &Snow, today: &map_snow::SnowMud, compared: &mut Compared) {
     let texels: Vec<u8> = layer.texels().iter().flatten().copied().collect();
     let pairs: [(&str, Vec<u8>, Vec<u8>); 2] = [("texels", today.texels.to_vec(), texels), ("unknown", today.unknown.to_vec(), layer.unknown())];
@@ -190,7 +186,6 @@ pub(super) fn vision_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::vision::for_document(document)
 }
 
-/// Today's vision built cold from the hour's rows, as `perspective::cached_vision` builds it.
 fn vision_cold(document: &Document, choice: &viewer_foundation::map::perspective::Choice) -> io::Result<viewer_foundation::map::perspective::Vision> {
     use viewer_foundation::map::{perspective, tables};
     let frame = document.frame()?;
@@ -234,8 +229,6 @@ pub(super) fn vision_today(layer: &dyn Layer, document: &Document) -> io::Result
     Ok(compared)
 }
 
-/// What a dependent asks the layer in place, against today's vision: every division's land
-/// sight where it stands, and every country's shared vision. The queries asked.
 fn dependent_queries(layer: &Vision, today: &viewer_foundation::map::perspective::Vision, document: &Document, compared: &mut Compared) -> io::Result<u64> {
     use replay_data::rows::tables;
     use viewer_foundation::map::tables::core;
@@ -330,9 +323,6 @@ pub(super) fn intel_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::intel::for_document(document)
 }
 
-/// The intel layer, stepped from the vision layer's changes, against today's intel map; and the
-/// province bytes it holds against today's vision of the hour, which with the vision line's own
-/// equality makes its composed copy the one made from the vision layer.
 pub(super) fn intel_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = self::layer::<Intel>(layer);
     let choice = viewer_foundation::map::perspective::Choice::default();
@@ -397,7 +387,6 @@ pub(super) fn radar_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::radar::for_document(document)
 }
 
-/// The radar field the layer's groups make for viewer `ours`, with the document's content.
 fn radar_field(layer: &Radar, document: &Document, ours: u32) -> io::Result<viewer_world::map::radar_symbols::Field> {
     let hour = document.hour()?;
     let mut field = viewer_world::map::radar_symbols::Field::default();

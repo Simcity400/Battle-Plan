@@ -9,7 +9,6 @@ import DiplomaticPactsWidget from './DiplomaticPactsWidget';
 import { agreementKinds, validatePacts } from './pactsData';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
 
-/** One Kinds choice per kind of agreement the chosen country has, named as the game names it. */
 function usePactKinds(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryKey(track);

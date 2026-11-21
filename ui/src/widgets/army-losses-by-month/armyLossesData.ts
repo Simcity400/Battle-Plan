@@ -7,10 +7,8 @@ import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import type { ArmyLossesReply, LossArmy, LossDesign, LossEquipment, LossManpower, LossView } from './types';
 
-/** An equipment row with its design's names. */
 export type DesignRow = Omit<LossEquipment, 'design'> & LossDesign;
 
-/** The reply with its amounts read: a channel or amount without a value is null, its month then not known. */
 export interface ArmyLossesData extends Omit<ArmyLossesReply, 'manpower' | 'equipment' | 'designs'> {
   hour: number;
   manpower: (LossManpower & { losses: [number, number, number] | null })[];
@@ -22,21 +20,16 @@ export type ManpowerStack = 'channel' | 'armyGroup';
 export type EquipmentStack = 'type' | 'armyGroup';
 export type Ledger = 'combat' | 'attrition' | 'recovered' | 'enemy';
 
-/** The game's Combat Log equipment ledgers, by what each heading adds up: the three
- * attrition modes partition attrition and add together; recovery and losses dealt
- * stand alone and are never netted against losses. */
 export const LEDGERS: Readonly<Record<Ledger, readonly number[]>> = { combat: [0], attrition: [1, 2, 3], recovered: [4], enemy: [5] };
 export const LEDGER_LABELS: Readonly<Record<Ledger, string>> = {
   combat: 'Lost in combat', attrition: 'Lost to attrition', recovered: 'Recovered', enemy: 'Enemy losses dealt' };
 export const CHANNELS = [{ key: 'ground', label: 'Ground' }, { key: 'air', label: 'Air' }, { key: 'navy', label: 'Navy' }] as const;
 export const INDEPENDENT = 'independent', UNRESOLVED = 'unresolved', UNCLASSIFIED = 'unclassified', OTHER = 'other';
 
-/** What the chart of `measure` in `ledger` asks: only that measure's months, never every ledger's designs. */
 export function chartView(measure: Measure, ledger: Ledger): LossView {
   return measure === 'manpower' ? { kind: 'manpower' } : { kind: 'equipment', ledgers: [...LEDGERS[ledger]] };
 }
 
-/** What the drill of `month` asks: its manpower and every ledger's designs, for that month alone. */
 export const monthView = (month: number): LossView => ({ kind: 'month', month });
 
 const isArray = Array.isArray;
@@ -53,7 +46,6 @@ export function validateArmyLosses(value: unknown): ArmyLossesReply {
   return reply;
 }
 
-/** The reply's structure with its amounts at `hour` from its live cells; a cell without a value is null. */
 export function resolveArmyLosses(reply: ArmyLossesReply, hour: number, values: LiveValues<number>): ArmyLossesData {
   const whole = (key: string, column: string) => { const value = values.get(liveKey(key, column)); return value === undefined ? null : Math.round(value); };
   const { designs, ...rest } = reply;
@@ -68,38 +60,24 @@ export function resolveArmyLosses(reply: ArmyLossesReply, hour: number, values: 
     }) };
 }
 
-/** The armies whose logs make the country's total: every distinct ordinary army of
- * the country once, whether it has an army group or not. Army groups keep no log
- * of their own, so no parent is ever added beside its armies. */
 export function countedArmies(reply: Pick<ArmyLossesData, 'armies'>): ReadonlyMap<string, LossArmy> {
   return new Map(reply.armies.map(army => [army.reference, army]));
 }
 
-/** The army group an army belongs to now, the independent armies, or the explicit unresolved bucket. */
 export function armyGroupOf(army: LossArmy): string {
   return army.parent ?? (army.parentMissing === null ? INDEPENDENT : UNRESOLVED);
 }
 
-/** Manpower adds as the game's signed 32-bit counters add: wrapping, never widened. */
 const addManpower = (left: bigint, right: bigint) => BigInt.asIntN(32, left + right);
 const addExact = (left: bigint, right: bigint) => left + right;
 
 export interface Part { key: string; label: string }
-/** A part's exact amount (whole people, or the equipment's five-decimal fixed point as
- * stored) and the number it plots at. */
 export interface MonthPart { key: string; value: number; raw: bigint }
-/** A month's column: its parts' plotted amounts as the column's bands, in part order. */
 export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[] }
 export interface MonthBars { periods: MonthPeriod[]; parts: Part[]; first: number; last: number }
 
-/** The number an exact amount plots at. */
 const plotted = (raw: bigint, measure: Measure) => measure === 'manpower' ? Number(raw) : fixedNumber(String(raw), 5);
 
-/** Each calendar month from the first to the last hour, stacked by the chosen parts.
- * A month with no retained entry is unknown: the game kept nothing for it (pruned, or
- * never written), which is not a known zero. So is a month any counted army's ledger
- * holds unwitnessed amounts for: the others alone are not its total. `limit` folds the
- * smallest parts into Other. Amounts add exactly; only plotting makes them numbers. */
 export function monthBars(reply: ArmyLossesData, measure: Measure, stack: ManpowerStack | EquipmentStack, ledger: Ledger,
   firstHour: number, lastHour: number, limit: number): MonthBars {
   const armies = countedArmies(reply);
@@ -141,14 +119,12 @@ export function monthBars(reply: ArmyLossesData, measure: Measure, stack: Manpow
       known.add(row.month);
       const amount = BigInt(row.amountRaw);
       if (stack === 'type') {
-        // Content names are tagged: an archetype named like a bucket (unclassified, other) stays its own part.
         const key = row.archetype === null ? UNCLASSIFIED : JSON.stringify(['archetype', row.archetype]);
         if (!labels.has(key)) labels.set(key, row.archetype === null ? 'Equipment type unavailable' : row.archetypeName ?? 'Equipment name unavailable');
         add(row.month, key, amount);
       } else add(row.month, groupKey(army), amount);
     }
   }
-  // Order parts by their total over the shown months, largest first; fold the rest.
   const totals = new Map<string, bigint>();
   for (const [month, parts] of values) if (month >= first && month <= last)
     for (const [key, value] of parts) totals.set(key, (totals.get(key) ?? 0n) + (value < 0n ? -value : value));
@@ -182,12 +158,10 @@ export function monthLabel(month: number): string {
   return `${monthNames[number - 1]} ${year}`;
 }
 
-/** Whole people, or whole items of a five-decimal amount, from an exact value. */
 export function formatAmount(value: number | bigint, measure: Measure): string {
   return measure === 'manpower' ? usNumber.format(value) : designAmount(String(value));
 }
 
-/** A month's parts, its exact total and whether the playback date is inside it. */
 export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measure: Measure, caption: string, playhead: number | null,
   colour: (key: string) => string): TooltipContent {
   const title = monthLabel(Number(period.key));
@@ -203,13 +177,9 @@ export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measur
   return { title, subtitle: caption, rows };
 }
 
-/** One army's retained month: its channels, its ledgers' designs, the ledgers whose amounts
- * were not witnessed, and its exact amount in the chosen ledgers, for the drill. */
 export interface MonthArmy { army: LossArmy; losses: [number, number, number] | null; designs: { name: string; amountRaw: string | null; ledger: number }[];
   unknown: number[]; amount: bigint | null }
 
-/** Every counted army with a retained entry in `month`. Its amount in `kinds` is unknown, never
- * zero, when its own amounts there were not witnessed or no army kept the month there (as `monthBars`). */
 export function monthArmies(reply: ArmyLossesData, month: number, kinds: readonly number[]): MonthArmy[] {
   const out = new Map<string, MonthArmy>();
   const entry = (army: LossArmy) => out.get(army.reference)

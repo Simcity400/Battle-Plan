@@ -10,27 +10,19 @@ import type { MissingSpan, SeriesState } from '../../generated/dashboard';
 export const STATES = ['noSupply', 'strained', 'inSupply'] as const;
 export type SupplyState = (typeof STATES)[number];
 export const STATE_LABELS = { noSupply: 'No supply', strained: 'Strained', inSupply: 'In supply' } as const;
-/** The declared series' share of each state, in the order of [`STATES`]. */
 export const SHARE_MEASURES = ['noSupplyShare', 'strainedShare', 'inSupplyShare'] as const;
 export const SUPPLY_FAMILY = 'supply-health';
-/** The declared series' divisions, the three counts together. */
 export const DIVISIONS = 'divisions';
 
 export type SupplyCounts = Readonly<Record<SupplyState, number>>;
-/** A country's supply at an hour: its counts, why there are none, or undefined while not read yet. */
 export type SupplyAt = { counts: SupplyCounts } | { missing: string } | undefined;
 
-/** Shares drawn as integers over one denominator: enough places that a pixel never shows the rounding. */
 const SHARE_UNITS = 1_000_000_000;
 
 export const totalDivisions = (counts: SupplyCounts) => STATES.reduce((sum, state) => sum + counts[state], 0);
 export const formatShare = (count: number, total: number) =>
   total ? `${formatFixed(rescale(BigInt(count) * 100n, total, 2), 2, 2)}%` : 'Not known';
 
-/** One country's stacked shares from its three share lines' bins: a bin is drawn at the shares of its first hour,
- * so the bin holding the head never shows an hour after it; a bin any line lacks, or holds hours without a value in,
- * is a gap. With `head`, tiled lines' bins stop at the head's bin, which holds the shares at the head (`valueAt`: the
- * followed shares while following) to the head from its first hour or the hour after the last of `missing` in it. */
 export function shareRunsFromLines(lines: readonly (ChartSummary | undefined)[], head: number | null = null,
   missing: readonly MissingSpan[] = []): ShareRun[] {
   const [first, ...rest] = lines;
@@ -65,9 +57,6 @@ export function shareRunsFromLines(lines: readonly (ChartSummary | undefined)[],
 
 type Live<T> = { read(): T; subscribe(listener: () => void): () => void };
 
-/** `tag`'s stacked shares as a chart draws them: [`shareRunsFromLines`] of the three share lines' newest tiles at the
- * head, clipped by `clip`, made again only when a line, the head or one of `answers` (the followed answers each head
- * bin is drawn at) moves. */
 export function liveShareRuns(tag: string, clip: (runs: ShareRun[]) => ShareRun[], lines: readonly Live<ReadonlyMap<string, TiledLine> | null>[],
   answers: Live<readonly unknown[]>): LiveShares {
   let seen: { held: unknown[]; head: number | null; runs: readonly ShareRun[] } | null = null;
@@ -86,15 +75,12 @@ export function liveShareRuns(tag: string, clip: (runs: ShareRun[]) => ShareRun[
   };
 }
 
-/** The most divisions any bin of a divisions line holds: null where no bin holds a count (not recorded). */
 export function mostDivisions(line: ChartSummary | undefined): number | null {
   let most: number | null = null;
   for (const bucket of line?.buckets ?? []) if (bucket) most = Math.max(most ?? 0, bucket.maxValue);
   return most;
 }
 
-/** A country's counts at an hour from the three counts' state replies, in [`STATES`] order: missing for the first
- * reason a count gives, undefined while an hour is not read. */
 export function supplyAt(replies: readonly (readonly SeriesState[])[] | undefined, tag: string, hour: number): SupplyAt {
   if (!replies || replies.length !== STATES.length) return undefined;
   const found = replies.map(states => states.find(state => countryKey(state.country) === tag && state.hour === hour));
@@ -117,7 +103,6 @@ export function supplyTooltip(date: string, name: string, countryFlag: TooltipCo
       value: `${formatShare(at.counts[state], total)} · ${usNumber.format(at.counts[state])} ${at.counts[state] === 1 ? 'division' : 'divisions'}` })) };
 }
 
-/** The breakdown's rows of counts at an hour. */
 export function supplyParts(counts: SupplyCounts, colors: readonly string[]) {
   const total = totalDivisions(counts);
   return STATES.map((state, index) => ({ id: state, label: STATE_LABELS[state], value: counts[state], color: colors[index],

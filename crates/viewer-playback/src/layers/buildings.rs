@@ -1,12 +1,3 @@
-//! The map's buildings from the mirrors: per authored slot the building it shows at the head (type,
-//! level, health, the gates of fog, hub and detection), per floating harbour its deployment, and
-//! per province the city damage, each kept as today's builder decides it from a frame of rows and
-//! recomputed only for what a step touched. What the camera admits (creation, growth, the
-//! destroyed latch) stays with the scene's building history, which takes these slots as today.
-//!
-//! Which provinces the viewer sees is the vision's (P6's layer): until a layer can read another's
-//! product it is given whole ([`Buildings::set_vision`]). CountryLinks not wholly recorded refuses
-//! the hour, as today; every other table degrades as today's builder degrades it.
 
 use std::time::Instant;
 use super::{
@@ -40,20 +31,15 @@ use viewer_world::map::{
     sprawl::average_health,
 };
 
-/// The building tables, state then province: a row's `provincial` indexes them.
 const TABLES: [TableId; 2] = [TableId::StateBuildings, TableId::ProvinceBuildings];
 
 pub mod fed;
 pub use fed::BuildingsFed;
 const CORE: &str = "Provinces, CountryLinks and Countries";
 const NO_ROW: u32 = u32::MAX;
-/// `fog_seen` of a province with no slot over it and no harbour on it.
 const NOT_SLOTTED: u8 = u8::MAX;
-/// `fog_seen` of a slotted province whose decisions were never read.
 const UNSEEN: u8 = u8::MAX - 1;
 
-/// A province's two fog decisions, for its buildings (at least `MAP_OBJECT_VISIBILITY`) and its
-/// floating harbours (at least `FLOATING_HARBOR_VISIBILITY`), each undecided, hidden or seen.
 fn fog_decisions(byte: Option<u8>) -> u8 {
     let decided = |seen: Option<bool>| match seen {
         None => 0,
@@ -62,10 +48,7 @@ fn fog_decisions(byte: Option<u8>) -> u8 {
     };
     decided(byte.map(|byte| byte >= MAP_OBJECT_VISIBILITY)) | decided(byte.map(|byte| byte >= FLOATING_HARBOR_VISIBILITY)) << 2
 }
-/// What a slot reads of a building row: level, health class (destroyed, damaged, in the
-/// hysteresis band), status flags, owner override.
 type Read = (i16, (bool, bool, bool), u32, u32);
-/// What marked a slot, harbour or city location, as the paced report names them.
 const CAUSES: [&str; 9] = [
     "slots: a row's read changed",
     "slots: fog",
@@ -84,7 +67,6 @@ const CITY: usize = 6;
 const WRITTEN: usize = 7;
 const HELD: usize = 8;
 
-/// The sprawl's drawn state of a province's city damage: no entry, idle, damaged or burning.
 fn city_class(health: Option<Option<i64>>, (damaged, destroyed): (i64, i64)) -> u8 {
     match health {
         None => 0,
@@ -95,19 +77,13 @@ fn city_class(health: Option<Option<i64>>, (damaged, destroyed): (i64, i64)) -> 
     }
 }
 
-/// An average health of 100 percent, in the game's fixed5 units.
 const FULL_HEALTH: i64 = 100_000;
 
-/// What the slots read of the viewer's sight: whose it is, and a province's fog byte as today's
-/// `Vision::province_byte` gives it.
 pub trait Seen {
     fn ours(&self) -> u32;
     fn byte(&self, province: u32) -> Option<u8>;
 }
 
-/// What the layer reads of the vision layer registered before it: its viewer, whether a fog is
-/// drawn and its sight epoch; why it has no vision; its bytes; and what it changed since the last
-/// settle, the provinces whose byte moved or the whole of it.
 pub trait Upper {
     fn state(&self) -> (Option<u32>, bool, u64);
     fn refused(&self) -> Option<String>;
@@ -115,7 +91,6 @@ pub trait Upper {
     fn moved(&self) -> Change<'_>;
 }
 
-/// The vision layer itself, as the host hands it upstream.
 struct FromLayer<'a> {
     sight: &'a Sight,
     changed: Change<'a>,
@@ -145,8 +120,6 @@ impl Upper for FromLayer<'_> {
     }
 }
 
-/// What the proof and the tests compare of the layer: its refusal, slots, city damage, warnings and
-/// what it read.
 pub struct Inspected {
     pub refused: Option<String>,
     pub slots: Vec<PreparedSlot>,
@@ -158,7 +131,6 @@ pub struct Inspected {
 }
 
 impl Inspected {
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -191,18 +163,14 @@ impl Inspected {
     }
 }
 
-/// The view's declaration as the layer takes it: beyond its reach, the columns it reads (none when
-/// it declares nothing) and the fog switch.
 #[derive(Clone, Copy)]
 pub struct Declared {
     columns: Option<Columns>,
     fog: bool,
 }
 
-/// The product the scene installs and whether it continues the scene's building history.
 pub type Install = (wire::Buildings, bool);
 
-/// Marks by cause, uploads installed and held back, and the installs' parts, for the paced report.
 fn figures(causes: &[u64; CAUSES.len()], uploads: &[u64; 6], upload_ns: &[u64; 3]) -> serde_json::Value {
     let [index, product, install] = upload_ns.map(|ns| ns as f64 / 1e6);
     serde_json::json!({
@@ -237,12 +205,9 @@ impl Seen for Sight {
     }
 }
 
-/// The slot table, the types and meshes, the city terrain the slots are decided over, and the
-/// height the city sprawl is drawn below.
 pub trait Catalogue: Send + Sync {
     fn assets(&self) -> &MapBuildingAssets;
     fn city(&self) -> CityTerrain<'_>;
-    /// `CITY_SPRAWL_SHRINK_DISTANCE`.
     fn sprawl_cutoff(&self) -> f32;
 }
 
@@ -274,7 +239,6 @@ struct Columns {
     rows: [Rows; 2],
     literal: Text,
     province_state: Num<u32>,
-    /// Provinces' and States' controllers.
     controller: [Num<u32>; 2],
     link: Num<u32>,
     supply_controller: Num<u16>,
@@ -288,7 +252,6 @@ struct Columns {
     target_detected: Text,
 }
 
-/// A table's status as the layer reacts to it: whole, part, none.
 fn class(mirror: Option<&Mirror>) -> u8 {
     match mirror.and_then(Mirror::status) {
         Some(Status::Complete) => 0,
@@ -297,7 +260,6 @@ fn class(mirror: Option<&Mirror>) -> u8 {
     }
 }
 
-/// The mirror when it holds rows the hour recorded (whole or truncated).
 fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| class(Some(mirror)) < 2)
 }
@@ -315,7 +277,6 @@ const READ: [TableId; 10] = [
     TableId::CountryLinks,
 ];
 
-/// Words of a table the hour does not hold whole, as today's frame words them.
 fn not_whole(mirror: Option<&Mirror>, table: TableId, hour: Option<i32>) -> Option<String> {
     let hour = hour.map_or_else(|| "?".to_owned(), |hour| hour.to_string());
     match mirror {
@@ -327,122 +288,71 @@ fn not_whole(mirror: Option<&Mirror>, table: TableId, hour: Option<i32>) -> Opti
 pub struct Buildings {
     content: Arc<dyn Catalogue>,
     columns: Option<Columns>,
-    /// Whether it reads the vision layer registered before it (the window) rather than a vision
-    /// given whole (the proof tool, until it registers the vision layer).
     reads_layer: bool,
-    /// The vision layer's viewer, whether it draws a fog, and its sight epoch, when last taken in.
     seen_state: Option<(Option<u32>, bool, u64)>,
-    /// Every province with a slot over it or a floating harbour on it, and per province id the
-    /// fog decisions its slots last read (`fog_decisions`; `NOT_SLOTTED` for the rest): a vision
-    /// change marks a province's slots only when its decisions moved, as today's `fog_changes`.
     fog_provinces: Vec<u32>,
     fog_seen: Vec<u8>,
-    /// Provinces whose fog decisions are to be read again, and whether they are all to be read
-    /// afresh (after a restart).
     fog_dirty: Dirty,
     fog_fill: bool,
-    /// The vision given and not yet taken, flagged when new.
     given: Mutex<Option<(Choice, Arc<Vision>)>>,
     fresh_vision: AtomicBool,
     vision: Option<(Choice, Arc<Vision>)>,
-    /// The status classes of the tables read, as last settled.
     held: Option<[u8; READ.len()]>,
     refused: Option<String>,
-    /// Every slot by id: the ordinary slots, then the floating harbours.
     slots: Vec<PreparedSlot>,
-    /// Per ordinary slot, the gates its last settle read (`READS_*`): a gate's change marks only
-    /// the slots that read it, as today's patch does.
     gate_reads: Vec<u8>,
     harbours: Vec<HarbourCounts>,
-    /// Per sea province, the harbours over it.
     seas: HashMap<u32, Vec<u32>>,
     templates: Result<Vec<usize>, String>,
-    /// Rows referencing each token (token 0 left out), both tables.
     rows_of: HashMap<u32, u32>,
     classes: HashMap<u32, TokenClass>,
-    /// Per type index, the tokens of that type, descending: a location's row of a type is the one
-    /// of its greatest token, as today.
     tokens_of: Vec<Vec<u32>>,
-    /// City damage by location, state then province: the least average health of the damage
-    /// types' rows of a positive level there; a location without one is at full health.
     city: [HashMap<u32, i64>; 2],
     city_refused: Option<String>,
-    /// The first row (state table first, then by key) whose token has no name, with its words.
     first_unnamed: Option<String>,
     provinces_held: usize,
-    /// Per province id its state, `NO_ROW` when Provinces holds no row for it; and by state.
     province_state: Vec<u32>,
     state_provinces: BTreeSet<(u32, u32)>,
-    /// Per table (Provinces, States), each location's raw controller, and by controller.
     controller_of: [HashMap<u32, u32>; 2],
     by_controller: BTreeSet<(u32, u8, u32)>,
-    /// Raid-target rows with a building scope, by scope and ordinal, and each ordinal's scope.
     targets: BTreeSet<(Scope, u32)>,
     target_scope: HashMap<u32, Scope>,
-    /// FloatingHarborDeployments by (country, province, ordinal): its status.
     deployments: BTreeMap<(u32, i32, u32), u8>,
-    /// Building rows a step touched, and whether it inserted or deleted them (else it wrote them).
     rows_dirty: Vec<(bool, u128)>,
     rows_seen: HashMap<(bool, u128), bool>,
-    /// Per building table, by mirror slot, what a slot reads of its row: a write that leaves it
-    /// alone (a health tick within one health class) reaches the city damage only, as today.
     reads: [Vec<Option<Read>>; 2],
     tokens_dirty: BTreeSet<u32>,
     controllers_dirty: Vec<(u8, u32)>,
     links_dirty: BTreeSet<u32>,
     ports_dirty: Vec<u32>,
     targets_dirty: BTreeSet<u32>,
-    /// The rows the steps applied since touched, not yet read.
     touched: Touched,
     unnamed_check: bool,
     slot_dirty: Dirty,
     harbour_dirty: Dirty,
-    /// City damage locations to recompute, state then province.
     city_dirty: [Dirty; 2],
     frame: u64,
-    /// Rows, slots and provinces the steps and the vision marked; cells read that held no value.
     marked: [usize; 3],
     unreadable: u64,
-    /// Its settled slots, harbours, fog and city damage by province or state, for the paced count
-    /// of those in view.
     scoped: Scoped,
-    /// Visions given that could not be compared with the last, by why: every slot was marked.
     whole_visions: BTreeMap<&'static str, u64>,
-    /// What the scene holds: the wire product last uploaded, the chunks of 64 slots whose slots
-    /// changed since, the city damage index it was given, and whether the next upload starts the
-    /// scene's history cold (a reset). The index holds each province's damage as of the last time
-    /// its drawn state (no entry, idle, damaged, burning) moved: the sprawl reads nothing else of
-    /// it, so a health tick inside one state leaves it, and the scene, alone.
     wired: Option<wire::Buildings>,
     pages: Option<SlotPages>,
     chunks_changed: BTreeSet<usize>,
     health_index: ValueIndex<u32, Option<i64>>,
-    /// Provinces whose drawn state moved since the index was given (decided in the settle), and
-    /// whether the index is to be made whole (a reset, a refusal's start or end, new thresholds).
     index_due: BTreeSet<u32>,
     city_whole: bool,
     cold: bool,
-    /// The hour's warnings as last made: none once a token's class, a row count, a harbour's
-    /// counts or the city refusal moved.
     warned: Option<Vec<String>>,
-    /// Per province the drawn state the scene's index gives it, and the sprawl's thresholds it was
-    /// decided with (none before the first upload, or without a sprawl: every move is due).
     drawn_class: Vec<u8>,
     drawn_by: Option<(i64, i64)>,
-    /// Per sea province with a harbour, what its harbours read of ProvinceSupply (controller,
-    /// deployment flag) as last seen; per deployment row its key in `deployments`.
     supply_read: HashMap<u32, (Option<u16>, Option<u8>)>,
     deployment_of: HashMap<u128, (u32, i32, u32)>,
-    /// Marks by cause ([`CAUSES`]); installs made, with slot chunks, with drawn states moved,
-    /// provinces patched into the index, provinces judged in the settle; nanoseconds of the
-    /// installs' parts: health index, pages and product, the scene's install.
     causes: [u64; CAUSES.len()],
     uploads: [u64; 6],
     upload_ns: [u64; 3],
-    /// The head hour settled, which the scene's history orders hours by.
     hour: i32,
     fog: bool,
-    /// Mirror rows its applies read: none.
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
@@ -535,18 +445,15 @@ impl Buildings {
         Self { fog_provinces, fog_seen, ..layer }
     }
 
-    /// Mirror rows its applies read since it was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
 
-    /// The window's: it reads the vision layer registered before it.
     pub fn reading_vision(content: Arc<dyn Catalogue>) -> Self {
         Self { reads_layer: true, ..Self::new(content) }
     }
 
-    /// A layer of the same content, inputs and vision, made from scratch.
     pub fn fresh(&self) -> Self {
         let fresh = Self { columns: self.columns, reads_layer: self.reads_layer, ..Self::new(Arc::clone(&self.content)) };
         if let Some((choice, vision)) = &self.vision {
@@ -555,25 +462,21 @@ impl Buildings {
         fresh
     }
 
-    /// What the viewer sees at the head and the perspective it is for.
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         *self.given.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((choice, vision));
         self.fresh_vision.store(true, Ordering::Release);
     }
 
-    /// Why the hour is not drawn, as today refuses it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }
 
-    /// Every slot by id: the ordinary slots, then the floating harbours.
     #[cfg(any(test, feature = "test-support"))]
     pub fn slots(&self) -> &[PreparedSlot] {
         &self.slots
     }
 
-    /// Each province Provinces holds, with its city damage (`None` for a province of no state).
     pub fn health(&self) -> impl Iterator<Item = (u32, Option<i64>)> + '_ {
         let full = |at: usize, location: u32| self.city[at].get(&location).copied().unwrap_or(FULL_HEALTH);
         self.province_state.iter().enumerate().filter(|_| self.city_refused.is_none()).filter(|(_, state)| **state != NO_ROW).map(move |(province, &state)| {
@@ -587,7 +490,6 @@ impl Buildings {
         self.city_refused.as_deref()
     }
 
-    /// The hour's map-building warnings, in today's words and order.
     pub fn warnings(&self) -> Vec<String> {
         let mut summary = MapBuildingSummary::default();
         for (&token, &count) in &self.rows_of {
@@ -604,7 +506,6 @@ impl Buildings {
         summary.warnings()
     }
 
-    /// Composed whole from `mirrors` with the vision layer read through `upper`.
     fn compose_upper(&mut self, mirrors: &Mirrors, upper: Option<&dyn Upper>) -> io::Result<()> {
         let marked = self.marked;
         (self.held, self.seen_state) = (None, None);
@@ -613,7 +514,6 @@ impl Buildings {
         Ok(())
     }
 
-    /// What the proof and the tests compare of it.
     pub fn inspect(&self) -> Inspected {
         Inspected {
             refused: self.refused.clone(),
@@ -626,7 +526,6 @@ impl Buildings {
         }
     }
 
-    /// The view's declaration taken: declaring nothing drops its marks.
     fn declare(&mut self, declared: Declared) {
         match declared.columns {
             None => {
@@ -642,16 +541,12 @@ impl Buildings {
         }
     }
 
-    /// The scene's city presentation thresholds: new ones make the index whole.
     fn note_thresholds(&mut self, thresholds: Option<(i64, i64)>) {
         if thresholds.is_some() && thresholds != self.drawn_by && self.wired.is_some() {
             self.city_whole = true;
         }
     }
 
-    /// The product the scene installs, made from the settled slots (the changed chunks made again,
-    /// the rest shared) and the city damage index, when anything changed since the last; and
-    /// whether it continues the scene's history (a reset starts it cold).
     fn make(&mut self, bank: [u8; 32], thresholds: Option<(i64, i64)>) -> io::Result<Option<Install>> {
         if self.columns.is_none() || self.refused.is_some() || self.uploaded() {
             return Ok(None);
@@ -685,11 +580,6 @@ impl Buildings {
         self.columns.expect("the buildings layer is declared before it composes")
     }
 
-    /// Whether this view draws a building or a city at all: its switch on and the camera (or the
-    /// height a zoom is sending it to, so the slots are settled during the zoom's own ease) below
-    /// the height the game creates and updates that figure at. Above both, the layer declares
-    /// nothing and settles nothing, as the trains and the rails do; coming back below declares
-    /// again, which composes the slots whole from the mirrors.
     fn drawn(&self, view: &View) -> bool {
         let height = |cutoff: f32, at: f32| at - viewer_foundation::map::camera::WATER_HEIGHT < cutoff;
         let below = |cutoff: f32| view.camera.is_none() || height(cutoff, view.camera_height) || view.target.is_some_and(|target| height(cutoff, target.height));
@@ -737,7 +627,6 @@ impl Buildings {
         }
     }
 
-    /// A city location whose damage moved: its provinces judged (a state's, or the province).
     fn city_moved(&mut self, provincial: bool, location: u32) {
         if provincial {
             self.judge(location);
@@ -747,8 +636,6 @@ impl Buildings {
         }
     }
 
-    /// Whether `province`'s drawn state moved from the one the scene's index gives it: then its
-    /// entry is due. Without thresholds every move is due.
     fn judge(&mut self, province: u32) {
         self.uploads[4] += 1;
         let held = self.drawn_class.get(province as usize).copied().unwrap_or(0);
@@ -757,7 +644,6 @@ impl Buildings {
         }
     }
 
-    /// A row inserted or deleted, or written so that what a slot reads of it changed.
     fn mark_row(&mut self, provincial: bool, key: u128) {
         if let Entry::Vacant(seen) = self.rows_seen.entry((provincial, key)) {
             seen.insert(true);
@@ -766,7 +652,6 @@ impl Buildings {
         }
     }
 
-    /// What a slot reads of the row in `slot`, stored; whether it changed.
     fn reread(&mut self, mirror: &Mirror, at: usize, slot: u32) -> bool {
         let columns = self.columns().rows[at];
         let defines = self.content.assets().defines;
@@ -782,7 +667,6 @@ impl Buildings {
         std::mem::replace(&mut reads[slot as usize], read) != read
     }
 
-    /// The slots among `ids` whose last settle read the gate `read`.
     fn mark_reading(&mut self, ids: impl IntoIterator<Item = u32>, read: u8) {
         let cause = match read {
             READS_FOG => 1,
@@ -796,13 +680,11 @@ impl Buildings {
         }
     }
 
-    /// The slots at `location` that read detection: its controller, links or raid targets moved.
     fn mark_location(&mut self, location: u32) {
         let content = Arc::clone(&self.content);
         self.mark_reading(content.assets().slots_at(location), READS_DETECTION);
     }
 
-    /// The slots and city provinces a row of `token` at `location` reaches through type `index`.
     fn reach(&mut self, provincial: bool, location: u32, index: usize) {
         let content = Arc::clone(&self.content);
         self.mark_slots(content.assets().slots_of(provincial, location, index));
@@ -840,7 +722,6 @@ impl Buildings {
         }
     }
 
-    /// Everything dropped and rebuilt from the mirrors, every slot, harbour and province marked.
     fn restart(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         self.rows_of.clear();
@@ -913,7 +794,6 @@ impl Buildings {
         self.chunks_changed.clear();
     }
 
-    /// Token `token`'s class from LexicalTokens; its rows' slots marked when it changed.
     fn classify(&mut self, mirrors: &Mirrors, token: u32) {
         let columns = self.columns();
         let lexical = mirrors.get(TableId::LexicalTokens);
@@ -947,7 +827,6 @@ impl Buildings {
         }
     }
 
-    /// The first row whose token has no name, state table first and then by key, in today's words.
     fn find_unnamed(&self, mirrors: &Mirrors) -> Option<String> {
         let unnamed: HashSet<u32> = self.classes.iter().filter(|(token, class)| self.rows_of.contains_key(token) && matches!(class, TokenClass::Refused { unnamed: true, .. })).map(|(&token, _)| token).collect();
         if unnamed.is_empty() {
@@ -1002,8 +881,6 @@ impl Buildings {
         }
     }
 
-    /// One deployment row as the mirror holds it now: the harbours over its old and new sea
-    /// province are marked when its entry moved.
     fn redeploy(&mut self, mirror: &Mirror, columns: Columns, key: u128) {
         let now = mirror.slot(key).and_then(|slot| {
             let province = mirror.number(columns.deploy_province, slot).value();
@@ -1031,7 +908,6 @@ impl Buildings {
         }
     }
 
-    /// Whether the controller of sea `province` deployed its floating harbour; `None` undecided.
     fn deployed(columns: Columns, deployments: &BTreeMap<(u32, i32, u32), u8>, mirrors: &Mirrors, province: u32) -> Option<bool> {
         let supply = mirrors.get(TableId::ProvinceSupply);
         let held = rows(supply).and_then(|mirror| mirror.slot(u128::from(province)).map(|slot| (mirror, slot)));
@@ -1051,7 +927,6 @@ impl Buildings {
         Some(deployments.range((country, province, 0)..).next().filter(|((held, at, _), _)| *held == country && *at == province).is_some_and(|(_, &status)| status != 0))
     }
 
-    /// The vision given since the last settle, and the slots and harbours whose gates it moved.
     fn take_vision(&mut self) {
         if !self.fresh_vision.swap(false, Ordering::AcqRel) {
             return;
@@ -1112,10 +987,6 @@ impl Buildings {
         }
     }
 
-    /// The vision layer's changes since this layer last settled (the host keeps them until every
-    /// dependent has): the slots that read the fog of a province whose byte moved, and its
-    /// harbours; everything when the viewer changed; every fog province when the fog switched, a gap
-    /// came or went or another whole part of the sight moved (its sight epoch).
     fn take_upstream(&mut self, upper: &dyn Upper) {
         let state = upper.state();
         if self.seen_state.is_none_or(|(ours, ..)| ours != state.0) {
@@ -1130,8 +1001,6 @@ impl Buildings {
             self.fog_fill = true;
             return;
         }
-        // Its state unmoved and the provinces named: only those. A whole change, or a state that
-        // moved, reads every fog province's decisions again.
         let moved = match upper.moved() {
             Change::Marked(moved) if self.seen_state == Some(state) => moved,
             _ => {
@@ -1149,9 +1018,6 @@ impl Buildings {
         }
     }
 
-    /// The marked provinces' fog decisions read again within the settling; the slots and harbours of
-    /// those whose decisions moved are marked. After a restart every slotted province's decisions
-    /// are read whole first, as the slots marked then read them too.
     fn settle_fog(&mut self, vision: &dyn Seen) -> io::Result<()> {
         if std::mem::take(&mut self.fog_fill) {
             for &province in &self.fog_provinces {
@@ -1184,8 +1050,6 @@ impl Buildings {
         Ok(())
     }
 
-    /// Rows, tokens, controllers, links, ports, raid targets and deployments a step touched, made
-    /// into the slots, harbours and provinces they reach.
     fn prepare(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         for token in std::mem::take(&mut self.tokens_dirty) {
@@ -1262,7 +1126,6 @@ impl Buildings {
         }
     }
 
-    /// The city damage refusal at the head, in today's words.
     fn city_refusal(&self, mirrors: &Mirrors) -> Option<String> {
         let hour = mirrors.get(TableId::Provinces).and_then(Mirror::head);
         for table in [TableId::StateBuildings, TableId::ProvinceBuildings, TableId::LexicalTokens] {
@@ -1283,7 +1146,6 @@ impl Buildings {
         self.frame += 1;
         let Some(columns) = self.columns else { return Ok(()) };
         self.take_vision();
-        // A layer given its vision whole drains no fog marks: the vision upstream is not its own.
         if self.reads_layer
             && let Some(upper) = upper
         {
@@ -1378,7 +1240,6 @@ impl Buildings {
             }
             Ok(())
         })?;
-        // While the city damage is refused its locations stay marked, to be settled once it is not.
         if self.city_refused.is_none() {
             let templates = self.templates.as_deref().unwrap_or_default();
             let mut moved = Vec::new();
@@ -1415,7 +1276,6 @@ impl Buildings {
         Ok(())
     }
 
-    /// Whether a written `column` of `table` is one the layer reads (1), or not (0).
     fn groups(table: TableId, column: usize, columns: Columns) -> u8 {
         let read = |read: &[usize]| u8::from(read.contains(&column));
         let row = |rows: Rows| read(&[rows.country.column, rows.flags.column, rows.level.column, rows.healthy.column, rows.partial.column]);
@@ -1433,8 +1293,6 @@ impl Buildings {
         }
     }
 
-    /// The marks the applies left, taken while `settling` lasts: each row a step touched, marked
-    /// where it is read. A table not holding rows now marks nothing.
     fn take_touched(&mut self, mirrors: &Mirrors) {
         let mut touched = std::mem::take(&mut self.touched);
         touched.take(mirrors, |table, touch, key| {
@@ -1465,7 +1323,6 @@ impl Buildings {
                 if !self.seas.contains_key(&province) {
                     return;
                 }
-                // A harbour reads the controller and the deployment bit; another bit moves nothing.
                 let read = mirror.slot(key).map_or((None, None), |slot| (mirror.number(columns.supply_controller, slot).value(), mirror.number(columns.supply_flags, slot).value().map(|flags| flags & 1)));
                 if self.supply_read.insert(province, read) == Some(read) {
                     return;
@@ -1484,7 +1341,6 @@ impl Buildings {
         }
     }
 
-    /// A building row gone, come or written.
     fn touch_row(&mut self, mirror: &Mirror, provincial: bool, touch: Touch, key: u128) {
         match touch {
             Touch::Gone | Touch::Came => {
@@ -1497,7 +1353,6 @@ impl Buildings {
                     self.mark_row(provincial, key);
                     return;
                 }
-                // What a slot reads held: a damage template's row still moves its city's damage.
                 self.causes[HELD] += 1;
                 if let Some(&TokenClass::Type(index)) = self.classes.get(&(key as u32))
                     && self.templates.as_ref().is_ok_and(|templates| templates.contains(&index))
@@ -1528,7 +1383,6 @@ impl Buildings {
         }
     }
 
-    /// The viewer the slots were decided for.
     fn seen_ours(&self) -> u32 {
         match (&self.vision, self.seen_state) {
             (_, Some((Some(ours), ..))) if self.reads_layer => ours,
@@ -1537,15 +1391,12 @@ impl Buildings {
         }
     }
 
-    /// One province's entry in today's city damage: none without a Provinces row (or while the
-    /// damage is refused), no value for a province of no state.
     fn province_health(&self, province: u32) -> Option<Option<i64>> {
         let full = |at: usize, location: u32| self.city[at].get(&location).copied().unwrap_or(FULL_HEALTH);
         let state = self.province_state.get(province as usize).copied().unwrap_or(NO_ROW);
         (self.city_refused.is_none() && state != NO_ROW).then(|| (state != 0).then(|| full(0, state).min(full(1, province))))
     }
 
-    /// The drawn state of every province under `thresholds` (none: not known, every move due).
     fn note_whole(&mut self, thresholds: Option<(i64, i64)>) {
         self.drawn_by = thresholds;
         self.drawn_class.clear();
@@ -1554,9 +1405,6 @@ impl Buildings {
         }
     }
 
-    /// The city damage index the scene is given: made whole after a reset, a refusal's start or end
-    /// or new thresholds, else patched for the provinces whose drawn state moved (the settle
-    /// decided which), each now at its current damage.
     fn health_index(&mut self, thresholds: Option<(i64, i64)>) -> io::Result<ValueIndex<u32, Option<i64>>> {
         if self.city_whole {
             self.uploads[5] += 1;
@@ -1585,14 +1433,12 @@ impl Buildings {
         Ok(self.health_index.clone())
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     #[cfg(any(test, feature = "test-support"))]
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         self.inspect().differ(&other.inspect())
     }
 }
 
-/// A candidate's row: the row of the type's greatest token at the location.
 struct Found<'a> {
     tables: [Option<&'a Mirror>; 2],
     columns: Columns,
@@ -1625,7 +1471,6 @@ impl Found<'_> {
     }
 }
 
-/// A slot's gates read from the mirrors and the given vision.
 struct Gates<'a> {
     vision: &'a dyn Seen,
     city: CityTerrain<'a>,
@@ -1634,7 +1479,6 @@ struct Gates<'a> {
     naval_complete: bool,
     controllers: [Option<&'a Mirror>; 2],
     links: Option<&'a Mirror>,
-    /// The raid targets by scope, when RaidTargetStatuses is complete.
     targets: Option<(&'a BTreeSet<(Scope, u32)>, &'a Mirror)>,
 }
 
@@ -1751,7 +1595,6 @@ impl Layer for Buildings {
         self.settle_dirty(mirrors, upper.as_ref().map(|upper| upper as &dyn Upper))
     }
 
-    /// Marks only: the rows each of its tables' change sets names, read at the settle.
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         if step.gap() || self.columns.is_none() {
             return;
@@ -1776,9 +1619,6 @@ impl Layer for Buildings {
         self.settle_dirty(mirrors, None)
     }
 
-    /// The settled slots handed to the scene as today's chunk pages (the changed chunks made again,
-    /// the rest shared), installed in its building history as today's part installs them without
-    /// converting a slot; a reset starts that history cold.
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         if self.columns.is_none() || self.refused.is_some() {
             return Ok(());
@@ -1795,15 +1635,11 @@ impl Layer for Buildings {
         Ok(())
     }
 
-    /// Declaring nothing, it has nothing to install: a map that draws no building and no city
-    /// (hidden by its switches, or above the heights they are drawn at) never wired a product, and
-    /// a first picture that waited for one would never be drawn.
     fn uploaded(&self) -> bool {
         self.columns.is_none() || (self.wired.is_some() && self.chunks_changed.is_empty() && !self.city_whole && self.index_due.is_empty())
     }
 
     fn carried(&self) -> Carried {
-        // Hidden or refused, a settle can do none of the marked work; it waits there for the next.
         if self.columns.is_none() || self.refused.is_some() {
             return Carried::default();
         }
@@ -1850,14 +1686,11 @@ impl Layer for Buildings {
     }
 }
 
-/// `install` given to the scene's building history, as today's part installs it.
 fn install(gpu: &mut Gpu<'_>, (product, continues): Install) -> io::Result<()> {
     let continued: &[&wire::Buildings] = &[];
     gpu.scene.set_map_buildings(gpu.device, gpu.queue, &gpu.content.map_buildings, product, continues.then_some(continued))
 }
 
-/// The buildings layer's figures for the paced report: what marked it, by cause, and what its
-/// uploads did.
 pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<BuildingsFed>())).map_or(serde_json::Value::Null, BuildingsFed::figures)
 }

@@ -1,43 +1,26 @@
-//! Country-owned incoming diplomatic-action queue with a signed count.
-//! The owner is resolved independently from the queue's own country reference.
-//! Serialization skips null slots and keys non-null wrappers by their original
-//! vector index; null entries leave gaps rather than renumbering later entries.
 
 use crate::{
     Memory, ccountry, cincoming_diplomatic_action, cpdx_array::Array, diplomatic_action_body, read,
     walk::Outcome,
 };
 
-/// Incoming queue pointer-vector data.
 pub const ACTIONS: usize = 0x08;
-/// Incoming queue capacity u32.
 pub const CAPACITY: usize = 0x10;
-/// Signed i32 queue size.
 pub const COUNT: usize = 0x14;
-/// Incoming queue owning country guard read u32.
 pub const OWNER: usize = 0x20;
 
-/// One queued incoming diplomatic action, in native queue order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw country reference of the queue owner, preserved as read.
     pub country: u32,
-    /// Native vector index; the save writer uses the same index as its key.
     pub ordinal: u32,
-    /// Full CIncomingDiplomaticAction reference in the wrapper.
     pub handle: u64,
-    /// Raw wrapper byte; the constructor zeroes it and no writer saves it.
     pub status: u8,
-    /// Raw action-body i32 word.
     pub action_type: i32,
-    /// Actor raw country reference; only signed-positive values are resolved.
     pub actor: u32,
     pub original_actor: u32,
     pub recipient: u32,
     pub original_recipient: u32,
-    /// Raw engine date word in the body, kept in the engine's own representation.
     pub hour: i32,
-    /// Raw engine second date word in the body.
     pub last_command_hour: i32,
 }
 
@@ -45,10 +28,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Walks every canonical country's incoming queue once. A null queue pointer is
-/// the engine's own absence and contributes no rows; a null slot inside a
-/// readable queue contributes no row but still consumes its native index, which
-/// is exactly what the save writer does.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -82,14 +61,10 @@ pub fn walk_buffer(
             if queue == 0 {
                 continue;
             }
-            // The queue's own owner must match the country holding it before
-            // its rows can be keyed.
             let owner = reader.field::<u32>(queue, OWNER)?;
             if owner != country.id {
                 return Err("incoming diplomatic action queue owner differs from its country");
             }
-            // The header is data, capacity and count in the engine's usual order, which places the
-            // count exactly after the capacity.
             let actions = queue
                 .checked_add(ACTIONS)
                 .and_then(|address| Array::read(memory, address, 8))
@@ -150,8 +125,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 
     fn row(&self, wrapper: usize, owner: u32, ordinal: u32) -> Result<Row, &'static str> {
-        // Vtable, complete handle, status byte and body pointer form one
-        // exact constructor-ordered span.
         let header = read::<[u8; 32]>(self.memory, wrapper)
             .ok_or("incoming diplomatic action identity unreadable")?;
         let expected = engine_sites::at(self.base, cincoming_diplomatic_action::VTABLE_RVA)
@@ -175,7 +148,6 @@ impl<M: Memory> Reader<'_, M> {
                 .unwrap(),
         ))
         .map_err(|_| "incoming diplomatic action body pointer overflow")?;
-        // A queued wrapper must have a body; null is malformed rather than an empty action.
         if body == 0 {
             return Err("queued incoming diplomatic action has a null body");
         }
@@ -228,7 +200,6 @@ mod tests {
         (u64::from(id) << 32) | u64::from(kind)
     }
 
-    /// Three stored slots with a null middle entry; later indices retain their positions.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x7000];
         vector(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 2);
@@ -365,7 +336,6 @@ mod tests {
                 last_command_hour: 60_818_945,
             }
         );
-        // The null slot consumes index one exactly as the writer's key does.
         assert_eq!(rows[1].ordinal, 2);
         assert_eq!(rows[1].status, 0xff);
     }
@@ -407,13 +377,10 @@ mod tests {
             }
         );
 
-        // A count beyond the vector's capacity is an invalid header.
         let mut bytes = fixture();
         p32(&mut bytes, QUEUE + COUNT, 9);
         assert!(matches!(run(&bytes, 4).0, Outcome::Unavailable { .. }));
 
-        // A queue whose own owner is not the country holding it cannot key its
-        // rows, so it fails rather than mis-attributing them.
         let mut bytes = fixture();
         p32(&mut bytes, QUEUE + OWNER, 2);
         assert_eq!(

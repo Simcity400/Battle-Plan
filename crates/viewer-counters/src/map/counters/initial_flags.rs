@@ -1,19 +1,13 @@
-//! Initial-hour candidates for the same flag stores the hour workers warm.
 
 use super::*;
 use replay_data::rows::{CountryAppearanceRow, CountryRow};
 
-/// Decides only the initial frame's recorded candidates, without acquiring cells.
-/// An unavailable input is advisory here: the host keeps the normal hour-worker
-/// warm and synchronous draw-time cold fallback, including their original errors.
 pub fn warm_initial_flags(frame: &DecodedFrame, assets: &CounterAssets) -> io::Result<()> {
     countries(frame)?.warm_flags(assets);
     Ok(())
 }
 
 fn countries(frame: &DecodedFrame) -> io::Result<Countries> {
-    // Keep the counter country's first core gate even though aliases do not add
-    // flag candidates of their own.
     core::<tables::CountryLinks>(frame)?;
     let source = core::<tables::Countries>(frame)?;
     let country_rows = source

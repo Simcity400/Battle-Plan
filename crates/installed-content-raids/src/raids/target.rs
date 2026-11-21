@@ -1,4 +1,3 @@
-//! Recorded raid target joins, shared by the dashboard and map hovers.
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 
@@ -23,22 +22,15 @@ fn state_row(frame: &dyn DecodedSource, id: u32) -> Result<&StateRow> {
         .map_err(|_| format!("raid target state {id} is absent"))
 }
 
-/// Target country priority: building, province, state, resolved captive
-/// leader's captor, then leader province. A resolved captor's raw word
-/// suppresses the leader-province fallback.
 pub fn country(frame: &dyn DecodedSource, scope: &RaidScope) -> Result<Option<u32>> {
     scope.country_with(|id| province(frame, id).map(|row| row.controller), |id| state_row(frame, id).map(|row| row.controller))
 }
 
-/// Plain location priority: explicit state, province, leader province,
-/// then building state. A provincial building resolves through its province.
 pub fn state(frame: &dyn DecodedSource, scope: &RaidScope) -> Result<Option<u32>> {
     scope.state_with(|id| province(frame, id).map(|row| row.state))
 }
 
 fn owner_tag(frame: &dyn DecodedSource, owner: u32) -> Result<&str> {
-    // Owner zero still resolves reserved country slot zero, whose
-    // original or own tag supplies the qualified localisation key.
     if owner == 0 {
         return crate::country_names::reserved_zero_original_tag(frame);
     }
@@ -79,10 +71,6 @@ fn owner_tag(frame: &dyn DecodedSource, owner: u32) -> Result<&str> {
         .map_err(|reason| format!("raid target state owner {owner}'s {reason}"))
 }
 
-/// Victory-point localisation tests key existence, not text length:
-/// an existing empty qualified name suppresses the bare-key retry.
-/// Plain location then falls back to the state's display name.
-/// The callback keeps text controls until after this emptiness test.
 pub fn victory_point(
     frame: &dyn DecodedSource,
     id: u32,
@@ -106,9 +94,6 @@ pub fn victory_point(
     Ok(None)
 }
 
-/// Plain target location, without a province rename override. Consumers
-/// resolve localisation through their recorded content stack and supply
-/// the shared stored-state-name rule in their display representation.
 pub fn location(
     frame: &dyn DecodedSource,
     scope: &RaidScope,
@@ -127,7 +112,6 @@ pub fn location(
     }
     match state(frame, scope)? {
         Some(id) => state_name(id),
-        // A null state supplies the literal `no_target_name` without localisation.
         None => Ok("no_target_name".into()),
     }
 }

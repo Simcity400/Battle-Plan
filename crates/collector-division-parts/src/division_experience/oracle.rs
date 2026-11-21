@@ -1,7 +1,6 @@
 use super::*;
 use std::cell::Cell;
 
-/// Main's index before the offset guess.
 #[derive(Default)]
 struct ReferenceOrder {
     baseline: Option<u64>,
@@ -47,8 +46,6 @@ impl<T: Clone> Store<T> {
                     order.entries.sort_unstable_by_key(|entry| entry.0);
                     order.baseline = self.baseline;
                 } else {
-                    // A refused advisory index must not turn a carry into a
-                    // fresh native read (and potentially a different refusal).
                     return self.held.iter().find(|held| {
                         held.division == seed.division
                             && held.army == seed.pointer
@@ -67,7 +64,6 @@ impl<T: Clone> Store<T> {
             .filter(|held| held.army == seed.pointer && self.matches(held, certificate))
     }
 
-    /// Main's `prefetch_value` over `ReferenceOrder`.
     fn reference_value(
         &self,
         base: usize,

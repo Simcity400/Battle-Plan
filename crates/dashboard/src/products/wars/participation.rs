@@ -1,6 +1,3 @@
-//! Each native group's contributions at an hour: every member's share of its side's war score,
-//! from the directional participation ledgers and the same-side deliveries, as the war screen
-//! counts them.
 use super::{WarSide, native::Blob};
 use dashboard_base::catalogue::Catalogue;
 use replay_data::{
@@ -19,7 +16,7 @@ use ts_rs::TS;
 pub struct WarContributionCountry {
     pub tag: String,
     pub side: WarSide,
-    /// All quantities are exact signed fixed5 words.
+    #[doc = " All quantities are exact signed fixed5 words."]
     pub equipment_damage: String,
     pub occupation: String,
     pub air_damage: String,
@@ -48,8 +45,6 @@ pub(crate) fn factors(cat: Option<&Catalogue>) -> Result<Factors, String> {
         .war_participation_factors()
 }
 
-/// Each of the viewpoint's `blobs`' contributions from the participation tables `frame` holds,
-/// countries resolved through the hour's tags and links; `active` tells the hour's relations.
 pub(crate) fn contributions(
     blobs: &[Blob],
     (tags, raw_to_slot): (&HashMap<u32, String>, &HashMap<u32, u32>),

@@ -1,17 +1,11 @@
 import { drawableIcon } from './artwork.ts';
 
-/** One frame of an authored sprite, as a product returned it; frame is zero-based. `recorded`
- * is the sprite the recording's own interface chooses in its place, which the sprite route draws
- * when the selected visual mods cannot draw `key`. */
 export interface SpriteFrame { key: string; frame: number; recorded?: string }
 
-/** The lookup id of one sprite frame: its parts as a list, so no two frames share one. */
 export const spriteId = (sprite: SpriteFrame) => JSON.stringify([sprite.frame, sprite.key, sprite.recorded ?? null]);
 
-/** Whether `value` is an absent or usable `recorded` choice. */
 export const optionalKey = (value: unknown) => value === undefined || typeof value === 'string' && value.length > 0;
 
-/** The distinct sprite frames a widget draws, in a stable order, so one request serves them all. */
 export function spriteFrames(sprites: Iterable<SpriteFrame | null | undefined>): SpriteFrame[] {
   const shown = new Map<string, SpriteFrame>();
   for (const sprite of sprites)
@@ -22,8 +16,6 @@ export function spriteFrames(sprites: Iterable<SpriteFrame | null | undefined>):
   return [...shown.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, sprite]) => sprite);
 }
 
-/** Each asked frame's drawable image from a `sprite-artwork` reply, by `spriteId`: null where
- * the art is refused or cannot be drawn. A reply answering frames it was not asked for is malformed. */
 export function spriteIcons(reply: unknown, asked: readonly SpriteFrame[]): Map<string, string | null> {
   const value = reply as { items?: unknown; warnings?: unknown };
   const malformed = () => new Error('The sprite artwork reply is malformed.');

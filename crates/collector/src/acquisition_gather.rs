@@ -1,7 +1,3 @@
-//! Owned single walks for callback-bounded acquisition jobs.
-//!
-//! The caller moves a preallocated payload into a request and restores it after
-//! collection. Every accepted request runs at most once, including on failure.
 
 use engine_native::walk::Outcome;
 
@@ -75,7 +71,6 @@ mod tests {
             let pointer = rows.as_ptr();
             let mut request = Some(Request::take(0, 0, &mut rows));
             assert!(rows.is_empty());
-            // SAFETY: all inputs are owned and this test collects its one job.
             let ticket = unsafe { pool.submit(&mut request) }.unwrap();
             let completion = pool.finish(ticket).unwrap();
             assert_eq!(completion.report.unwrap().result, Outcome::Rows { len: 1 });
@@ -127,7 +122,6 @@ mod tests {
         let mut rows = vec![0; 4];
         let pointer = rows.as_ptr();
         let mut request = Some(Request::take(0, 0, &mut rows));
-        // SAFETY: this test retains its owned buffers until collection.
         let ticket = unsafe { pool.submit(&mut request) }.unwrap();
         let completion = pool.finish(ticket).unwrap();
         assert!(matches!(

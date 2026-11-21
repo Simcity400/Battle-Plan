@@ -1,10 +1,3 @@
-//! The audio conversions of SDL 2.0.20, which the game links and mixes
-//! through: its sample loader converts every file to 16-bit stereo at the
-//! mixer rate ([`to_mixer`]), and its output device, opened at the mixer's
-//! 16-bit stereo 44,100 Hz with no format changes allowed, converts each
-//! 1,024-frame mix to the device's own format through an audio stream
-//! ([`Stream`]).
-//!
 //! Altered from SDL 2.0.20's `SDL_audiocvt.c` and `SDL_audiotypecvt.c`
 //! (Copyright (C) 1997-2022 Sam Lantinga; zlib licence, see
 //! `LICENSES/SDL-LICENSE.txt`): the same float and double arithmetic in the
@@ -15,10 +8,7 @@
 use installed_content_sound::wav::{DIVBY32768, Format, Pcm};
 use std::{collections::VecDeque, sync::OnceLock};
 
-/// The mixer's rate, which the loader converts to and the device stream
-/// converts from.
 pub const MIXER_RATE: i32 = 44_100;
-/// The resampler's table: its zero crossings and samples per crossing.
 const ZERO_CROSSINGS: usize = 5;
 const SAMPLES_PER_ZERO_CROSSING: usize = 1 << (16 / 2 + 1);
 const FILTER_SIZE: usize = SAMPLES_PER_ZERO_CROSSING * ZERO_CROSSINGS + 1;
@@ -28,7 +18,6 @@ struct Filter {
     differences: Vec<f32>,
 }
 
-/// SDL's modified Bessel function of the first kind.
 fn bessel(x: f64) -> f64 {
     let half = x / 2.0;
     let mut i0 = 1.0f64;
@@ -46,7 +35,6 @@ fn bessel(x: f64) -> f64 {
     i0
 }
 
-/// The Kaiser-windowed sinc table and its differences, built once.
 fn filter() -> &'static Filter {
     static FILTER: OnceLock<Filter> = OnceLock::new();
     FILTER.get_or_init(|| {
@@ -73,7 +61,6 @@ fn filter() -> &'static Filter {
     })
 }
 
-/// The frames of padding the resampler reads on each side.
 fn padding(in_rate: i32, out_rate: i32) -> usize {
     if in_rate == out_rate {
         0
@@ -84,9 +71,6 @@ fn padding(in_rate: i32, out_rate: i32) -> usize {
     }
 }
 
-/// Resamples `input` (interleaved `channels`), reading `left` and `right`
-/// padding past its ends, as SDL's bandlimited resampler does in one call;
-/// its output position restarts at zero each call.
 fn resample(
     channels: usize,
     in_rate: i32,
@@ -151,7 +135,6 @@ fn resample(
     out
 }
 
-/// SDL's scalar float-to-16-bit conversion of one sample.
 fn s16_scalar(sample: f32) -> i16 {
     if sample >= 1.0 {
         32_767
@@ -162,11 +145,6 @@ fn s16_scalar(sample: f32) -> i16 {
     }
 }
 
-/// SDL's SSE2 float-to-16-bit conversion of a buffer converted in place.
-/// `offset` is the buffer's start address modulo 16: samples before the
-/// first 16-byte aligned output convert one at a time, then aligned
-/// blocks of eight clamp and round to nearest, and the rest convert one at
-/// a time again.
 fn s16_sse2(samples: &[f32], offset: usize) -> Vec<i16> {
     let mut out = Vec::with_capacity(samples.len());
     let mut index = 0;
@@ -176,7 +154,6 @@ fn s16_sse2(samples: &[f32], offset: usize) -> Vec<i16> {
         index += 1;
         address += 2;
     }
-    // The input, four bytes a sample, must be aligned too.
     if (offset + index * 4).is_multiple_of(16) {
         while samples.len() - index >= 8 {
             for sample in &samples[index..index + 8] {
@@ -190,10 +167,6 @@ fn s16_sse2(samples: &[f32], offset: usize) -> Vec<i16> {
     out
 }
 
-/// A loaded file converted to the mixer's 16-bit stereo at
-/// [`MIXER_RATE`], as the game's loader converts it: nothing for 16-bit
-/// stereo at that rate; otherwise to float, mono duplicated to both
-/// sides, resampled with silence past both ends, then to 16 bits.
 pub fn to_mixer(pcm: &Pcm) -> Vec<i16> {
     let rate = pcm.rate as i32;
     let channels = usize::from(pcm.channels.clamp(1, 2));
@@ -216,19 +189,15 @@ pub fn to_mixer(pcm: &Pcm) -> Vec<i16> {
         let silence = vec![0.0f32; padding(rate, MIXER_RATE) * 2];
         stereo = resample(2, rate, MIXER_RATE, &silence, &silence, &stereo);
     }
-    // The converted buffer is a fresh, 16-byte aligned allocation.
     s16_sse2(&stereo, 0)
 }
 
-/// The device's sample format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceFormat {
     F32,
     S16,
 }
 
-/// The mixer's channels up-mixed to `channels` as SDL's converters do;
-/// stereo stays as it is. `None` for counts SDL does not convert to.
 fn up_mix(stereo: &[f32], channels: usize) -> Option<Vec<f32>> {
     let frames = stereo.chunks_exact(2);
     Some(match channels {
@@ -268,34 +237,23 @@ fn up_mix(stereo: &[f32], channels: usize) -> Option<Vec<f32>> {
     })
 }
 
-/// The device side of SDL's audio stream: each [`MIXER_FRAMES`]-frame mix
-/// (16-bit stereo at [`MIXER_RATE`]) is put in, converted to float,
-/// resampled with the previous put's tail as left padding and the held
-/// tail of this one as right padding, up-mixed and converted to the
-/// device's format, and queued for the device.
 #[derive(Debug)]
 pub struct Stream {
     rate: i32,
     channels: usize,
     format: DeviceFormat,
-    /// Channels while resampling: mono devices mix down first.
     resampled: usize,
     padding: usize,
     first: bool,
-    /// The left padding: the end of the last resampled input.
     state: Vec<f32>,
-    /// The input held back as the next put's start and this one's right padding.
     held: Vec<f32>,
-    /// Puts shorter than the padding wait here.
     staging: Vec<i16>,
     queue: VecDeque<f32>,
 }
 
-/// Frames the game's mixer renders per device callback.
 pub const MIXER_FRAMES: usize = 1024;
 
 impl Stream {
-    /// `None` for channel counts SDL does not convert the mixer's stereo to.
     pub fn new(rate: u32, channels: usize, format: DeviceFormat) -> Option<Self> {
         if !matches!(channels, 1 | 2 | 4 | 6 | 8) || rate == 0 {
             return None;
@@ -317,13 +275,10 @@ impl Stream {
         })
     }
 
-    /// Converted samples waiting for the device, interleaved, in [-1, 1]
-    /// for float devices and 16-bit steps scaled by 1/32768 otherwise.
     pub fn queue(&mut self) -> &mut VecDeque<f32> {
         &mut self.queue
     }
 
-    /// Puts one mix (interleaved 16-bit stereo) into the stream.
     pub fn put(&mut self, mix: &[i16]) {
         let staging = self.padding * 2;
         let mut mix = mix;
@@ -346,7 +301,6 @@ impl Stream {
     }
 
     fn put_internal(&mut self, mix: &[i16]) {
-        // A device in the mixer's own format opens without a stream.
         if self.rate == MIXER_RATE && self.channels == 2 && self.format == DeviceFormat::S16 {
             self.queue
                 .extend(mix.iter().map(|sample| f32::from(*sample) * DIVBY32768));
@@ -379,7 +333,6 @@ impl Stream {
             };
             self.first = false;
             work.extend_from_slice(&pre);
-            // The resampled output follows the work buffer's input in it.
             let offset = (work.len() * 4) % 16;
             let needed = self.padding * chans;
             let tail = work.split_off(work.len() - needed.min(work.len()));
@@ -387,8 +340,6 @@ impl Stream {
                 Vec::new()
             } else {
                 let out = resample(chans, MIXER_RATE, self.rate, &self.state, &tail, &work);
-                // The left padding's end takes the end of what was resampled;
-                // its start keeps what it held.
                 let keep = needed.min(work.len());
                 let start = self.state.len() - keep;
                 self.state[start..].copy_from_slice(&work[work.len() - keep..]);

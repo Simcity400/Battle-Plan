@@ -27,8 +27,6 @@ fn header(
     bytes
 }
 
-/// A 5x3 `DXT5` texture is a 8x4 texture: its extent rounds to whole blocks, and its chain
-/// halves the rounded sides.
 #[test]
 fn block_extents_round_up_to_whole_blocks() {
     let mut file = header(5, 3, 9, 4, b"DXT5", 0, [0; 4]);
@@ -40,16 +38,11 @@ fn block_extents_round_up_to_whole_blocks() {
         .map(|mip| (mip.width, mip.height))
         .collect();
     assert_eq!(sides, [(8, 4), (4, 2), (2, 1)]);
-    // `DXT2` fails the load; the chain goes on.
     assert_eq!(load(&header(4, 4, 1, 4, b"DXT2", 0, [0; 4])).unwrap(), None);
 }
 
-/// A cube map takes the six-face branch: each face, in order, holds its whole chain, halved
-/// from the block-rounded extent; a file too short for the six is not what the game reads
-/// past its end.
 #[test]
 fn a_cube_map_holds_six_chains_in_face_order() {
-    // 6x5 DXT1 rounds to 8x8; two levels of 8x8 (4 blocks) and 4x4 (1 block) per face.
     let mut file = header(6, 5, 2, 4, b"DXT1", 0, [0; 4]);
     file[112..116].copy_from_slice(&0xFE00_u32.to_le_bytes());
     for face in 0..6_u8 {
@@ -68,7 +61,6 @@ fn a_cube_map_holds_six_chains_in_face_order() {
     assert!(matches!(load(&file), Err(Failure::Undefined(why)) if why.contains("face 5")));
 }
 
-/// Additional empty mip levels cannot change the decode outcome, even with a huge declared count.
 #[test]
 fn a_zero_extent_cube_keeps_two_empty_levels_a_face() {
     let mut file = header(0, 0, u32::MAX, 4, b"DXT1", 0, [0; 4]);
@@ -127,8 +119,6 @@ fn bc7_keeps_logical_mips_and_exact_payload_offsets() {
     }
 }
 
-/// The native padding step copies BC7's logical block rows, including sub-block mips,
-/// without reinterpreting them as the native BC1-3 chain.
 #[test]
 fn bc7_force_pow2_copies_logical_block_rows_at_the_padded_pitch() {
     use super::super::{Decode, decode_texture_image};
@@ -158,7 +148,6 @@ fn bc7_force_pow2_copies_logical_block_rows_at_the_padded_pitch() {
         assert_eq!((padded.width, padded.height, padded.faces), (16, 8, 1));
         assert_eq!(padded.format, TextureFormat::Bc7 { srgb });
         assert_eq!(padded.mip_count(), 4);
-        // Logical and padded extents.
         let expected = [
             ((10, 6), (16, 8)),
             ((5, 3), (8, 4)),
@@ -235,8 +224,6 @@ fn bc7_refuses_unreached_cube_array_and_volume_forms_by_name() {
     }
 }
 
-/// A 32-bit surface is `B8G8R8A8` whatever its masks and alpha flag say; a missing level
-/// ends the chain with the levels before it.
 #[test]
 fn a_32_bit_surface_is_bgra_whatever_its_masks() {
     let mut file = header(2, 2, 5, 0x40, b"\0\0\0\0", 32, [0xFF, 0xFF00, 0xFF_0000, 0]);
@@ -251,9 +238,6 @@ fn a_32_bit_surface_is_bgra_whatever_its_masks() {
     );
 }
 
-/// A 16-bit surface keeps its words: `X1R5G5B5` is promoted to opaque `A1R5G5B5`,
-/// `A1R5G5B5` keeps its top bit as alpha, and a 5-bit channel of 1 samples as `1 / 31`, not
-/// as the 8-bit `8 / 255`.
 #[test]
 fn sixteen_bit_forms() {
     let texels = [0x7FFF_u16, 0x001F].map(u16::to_le_bytes).concat();
@@ -283,7 +267,6 @@ fn sixteen_bit_forms() {
         a1555.format.sample_16(word(&a1555, 1)),
         Some([0.0, 16.0 / 31.0, 16.0 / 31.0, 0.0])
     );
-    // Red, green and blue 1 of a 5-6-5 surface: `c / max`, alpha 1.
     let mut r565 = header(1, 1, 1, 0x40, b"\0\0\0\0", 16, [0xF800, 0x7E0, 0x1F, 0]);
     r565.extend(0x0821_u16.to_le_bytes());
     let r565 = load(&r565).unwrap().unwrap().0;

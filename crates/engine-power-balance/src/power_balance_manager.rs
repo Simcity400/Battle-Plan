@@ -1,8 +1,5 @@
-//! Power-balance manager reached from game state; caller supplies the consistency boundary.
 
-/// Power-balance record-array pointer.
 pub const RECORDS: usize = 0x08;
-/// Record-array signed count.
 #[cfg(test)]
 pub const RECORD_COUNT: usize = 0x14;
 
@@ -29,7 +26,6 @@ pub struct Census {
     pub ranges: Outcome,
     pub overrides: Outcome,
     pub text_len: usize,
-    /// Exact sum of native token lengths, including whole rows omitted for capacity.
     pub required_text: usize,
 }
 
@@ -60,11 +56,6 @@ impl Count {
     }
 }
 
-/// Direct manager census into reusable rows and one byte arena. Records and
-/// their children retain native order. Full buffers omit whole rows and report
-/// their exact count; a failed dependency refuses the census, never an empty
-/// success. There are no allocations, engine calls, retries or display getters.
-/// The caller owns hourly consistency and measures this walk with its other tables.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -83,8 +74,6 @@ pub fn walk(
             .and_then(|p| Array::read(memory, p, power_balance_record::STRIDE))
             .ok_or("power balance record array unreadable or invalid")?;
         output.records.ensure(roster.count as usize)?;
-        // Definitions can change on a load. Read current flags in this callback;
-        // a feature callback is not equivalent to a passive accumulator lookup.
         let definitions = engine_sites::at(base, modifier_definition::TABLE_RVA)
             .and_then(|p| read::<u64>(memory, p))
             .and_then(|p| usize::try_from(p).ok())
@@ -595,7 +584,7 @@ mod tests {
         m.qword(RECORD + power_balance_record::ACTIVE_RANGE, RANGE as u64);
         m.text(RANGE + power_balance_range::IDENTITY, b"range");
         m.header(RECORD + power_balance_record::MEMBERS, MEMBER_DATA, 1);
-        m.dword(MEMBER_DATA, 2); // Native alias survives canonical authentication.
+        m.dword(MEMBER_DATA, 2);
         m.header(RECORD + power_balance_record::RANGES, RANGE_DATA, 1);
         m.qword(RANGE_DATA, RANGE as u64);
         m.header(

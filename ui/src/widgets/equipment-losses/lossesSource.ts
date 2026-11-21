@@ -9,28 +9,21 @@ import { nearest, stepHours, validateLossesReply, withEdges } from './lossesData
 import type { LossWindow } from './lossesData';
 import type { LossSource, LossesParams, LossesReply, NavigationKey } from '../../generated/dashboard';
 
-/** The declared series the keyboard steps through: each leaf's totals row is a part of the identity's. */
 const SERIES = { kind: 'equipment-losses', measure: 'total' };
 const PART_BITS = 41n;
 
-/** `window` counted within the stretch its hour lies in: totals restart after hours the timeline does not hold, so
- * one reaching back before them counts from its stretch's first hour, `since`, and never across them. */
 export function stretchWindow(reply: LossesReply, window: LossWindow): LossWindow {
   const since = stretchSince(reply.restarts, window.hour);
   if (since === null || window.from != null && window.from >= since) return { ...window, since: null };
   return { ...window, from: null, since };
 }
 
-/** Whether `reply` holds `hour` exactly, not to a bin. */
 export const exactLossHour = (reply: LossesReply, hour: number) => reply.exactHours.includes(hour);
 
-/** A leaf's part in the declared series: its totals key below the identity. */
 export const leafPart = (key: string) => (BigInt(key) & ((1n << PART_BITS) - 1n)).toString();
 
 export interface LossSelection { branchId: string; country: LossesParams['country']; landSource: LossesParams['landSource']; identity?: LossesParams['identity'] }
 
-/** The window's history: one request per selection, chart view and exact hours, never the playhead's hour (a followed
- * view asks for the whole branch and paints the head from followed cells). `exact` are the hours read to the hour. */
 export function useLossHistory(client: DashboardClient, track: BoundTrack | undefined, selection: LossSelection | null,
   view: LossWindow | null, exact: readonly number[], active: boolean, open: boolean) {
   const key = JSON.stringify([track?.source.id, track?.source.revision, selection, view?.first, view?.end, view?.from]);
@@ -72,7 +65,7 @@ export function useLossHistory(client: DashboardClient, track: BoundTrack | unde
       if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) });
       return null;
     } finally { picks.current.delete(controller); }
-  }, [owner, active, request]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owner, active, request]);
   const navigate = useCallback((key: NavigationKey, origin: number | null, x: readonly [number, number], until: number | null,
     leaves: readonly (readonly [LossSource, string])[], shipHours: readonly number[]) => {
     if (!active || !track || !selection || !view) return;
@@ -93,7 +86,7 @@ export function useLossHistory(client: DashboardClient, track: BoundTrack | unde
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The equipment-loss navigation is malformed.');
       land(nearest(key, reply.hour as number | null, ships));
     }).catch(failure => { if (!controller.signal.aborted && alive.current === owner) setError({ owner, failure: asFailure(failure) }); });
-  }, [owner, active, track, selection, view]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owner, active, track, selection, view]);
   return { ...read, request, onSummaryView, onHover, exactAt, navigate,
     retry: () => { setError(undefined); read.retry(); },
     error: read.error ?? (error?.owner === owner ? error.failure : undefined),

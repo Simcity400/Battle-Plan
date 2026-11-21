@@ -1,5 +1,3 @@
-//! A watched source's write is noted in the callback; the boundary copies each noted source
-//! once, as it ends the hour.
 use super::*;
 use collector_hooks::hook::Hook;
 use native::source_mutations::{BONUS_BODY, IDEA_SOURCES, MUTATIONS};
@@ -109,7 +107,6 @@ fn provider(log: &mut RawLog<1>, memory: &impl Memory, pointer: usize) -> Result
     }
     Ok(())
 }
-/// Source writes this hour, and those of a watched source.
 pub(super) static WRITES: AtomicU64 = AtomicU64::new(0);
 pub(super) static NOTES: AtomicU64 = AtomicU64::new(0);
 pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
@@ -169,8 +166,6 @@ pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, reti
         store.batch.failure = Some(reason);
     }
 }
-/// The hour's noted sources, read once at the boundary: of each source's notes only the last
-/// write survives, after any retirement, and is copied live into the batch's log.
 pub(super) fn materialize(
     batch: &mut Batch,
     memory: &impl Memory,
@@ -293,7 +288,6 @@ unsafe fn around<const SITE: usize>(
         } else if provider {
             observe(&memory, base, sources::Key::Provider(a), false);
         } else if SITE == 2 && SOURCE_BASELINE.load(Ordering::Acquire) {
-            // This rare postprocessing boundary owns only this idea's source list.
             if let Some(roster) = Array::read(&memory, a + IDEA_SOURCES, 8) {
                 for ordinal in 0..roster.count {
                     if let Some(pointer) = roster

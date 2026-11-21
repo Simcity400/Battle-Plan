@@ -1,6 +1,3 @@
-//! What a measured stretch of this process took: wall time, CPU over every thread, and the
-//! bytes and calls it read from files, as the operating system counts them.
-
 use serde_json::{Value, json};
 use std::time::Instant;
 
@@ -30,7 +27,6 @@ fn counters() -> Counters {
         WriteTransferCount: 0,
         OtherTransferCount: 0,
     };
-    // SAFETY: the pseudo-handle of the current process and owned out-parameters.
     unsafe {
         GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user);
         GetProcessIoCounters(GetCurrentProcess(), &mut io);
@@ -48,13 +44,11 @@ fn counters() -> Counters {
     Counters::default()
 }
 
-/// A stretch being measured.
 pub struct Meter {
     wall: Instant,
     before: Counters,
 }
 
-/// What a stretch took.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Spent {
     pub wall_ms: f64,
@@ -98,7 +92,6 @@ pub fn round(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
 }
 
-/// `values`' median, 95th percentile and largest; `values` is sorted in place.
 pub fn spread(values: &mut [f64]) -> Value {
     values.sort_by(f64::total_cmp);
     let at = |quantile: f64| {

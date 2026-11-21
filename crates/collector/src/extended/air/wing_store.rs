@@ -1,23 +1,3 @@
-//! WingEquipment rows held between hours per air wing
-//! ([`crate::wing_changes`]).
-//!
-//! The air pass still walks every wing each hour (AirWings, WingCumulative, theatre memberships and
-//! game-score inputs need it). A wing's held rows are carried, without reading its equipment pool's
-//! vtable, header, entries or their variants, only when all of these hold at this boundary: the
-//! same wing address and id as the held read, and no hooked writer touched its pool
-//! (`cair_wing::EQUIPMENT_POOL`) since that read registered it (same watch epoch and sequence; a
-//! load, gap, recovery, table change, poison or running writer revokes it). Every writer of a
-//! wing's pool is a hooked site ([`engine_mutations::air_wing_equipment_mutations`]), and a wing built at a
-//! destroyed wing's address carries that destructor's notification, so a carried wing's rows equal
-//! a fresh read's.
-//!
-//! The store travels with the AirWing job's payload and holds only the wings
-//! of the latest complete pass, so its size follows live demand. Allocation
-//! is advisory: a wing whose rows cannot be held is read afresh next hour.
-//! Each part of a census split by owner slots has its own store; the census
-//! keeps every part's rows only when it was complete as a whole
-//! ([`WingStore::conclude`]). A wing whose owner moved to another part is
-//! read afresh by that part's store once.
 use crate::wing_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_mutations::air_wing_equipment_mutations::POOL;
@@ -37,14 +17,11 @@ pub(crate) struct Certificate {
 struct Entry {
     certificate: Certificate,
     rows: Range<usize>,
-    /// During a pass only: range into the changed-read scratch, not held rows.
     fresh: bool,
 }
 
-/// One pass's held rows.
 #[derive(Default, Debug)]
 struct Held {
-    /// Sorted by wing once the pass finishes.
     entries: Vec<Entry>,
     rows: Vec<WingEquipmentRow>,
 }
@@ -55,7 +32,6 @@ impl Held {
         self.rows.clear();
     }
 
-    /// The held rows of exactly `certificate`.
     fn find(&self, certificate: &Certificate) -> Option<Range<usize>> {
         let index = self
             .entries
@@ -71,19 +47,14 @@ impl Held {
     }
 }
 
-/// Rows of the latest complete pass and the pass being made.
 #[derive(Default, Debug)]
 pub(crate) struct WingStore {
     current: Held,
     previous: Held,
     counts: Counts,
     wings: usize,
-    /// Allocated bytes as of the last settlement, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next pass drops every held row.
     forgotten: bool,
-    /// Only fresh reads need row scratch; carried rows remain ranges into
-    /// the preceding whole buffer until settlement.
     fresh: Vec<WingEquipmentRow>,
 }
 
@@ -92,13 +63,10 @@ impl WingStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next pass reads afresh.
-    /// Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last settlement, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -125,12 +93,9 @@ impl WingStore {
         self.fresh.clear();
     }
 
-    /// Indexes this pass's rows for the next hour; [`Self::conclude`]
-    /// decides whether they are kept.
     fn settle(&mut self) {
         let entries = &mut self.current.entries;
         entries.sort_unstable_by_key(|entry| entry.certificate.wing);
-        // A wing occurring twice names no single held read.
         let mut index = 0;
         while index < entries.len() {
             let wing = entries[index].certificate.wing;
@@ -159,8 +124,6 @@ impl WingStore {
         } else if allocation::advisory(|| allocation::reserve(&mut self.current.rows, live_rows))
             .is_ok()
         {
-            // Only a changed pass or withdrawal merges ranges. Each live row
-            // is copied once, whether it came from a fresh or a held read.
             for entry in &mut self.current.entries {
                 let source = if entry.fresh {
                     &self.fresh
@@ -186,7 +149,6 @@ impl WingStore {
         self.measure();
     }
 
-    /// A carried range needs only an entry, not another copy of its rows.
     fn hold_carried(&mut self, certificate: Certificate, rows: Range<usize>) {
         if allocation::advisory(|| allocation::reserve(&mut self.current.entries, 1)).is_ok() {
             self.current.entries.push(Entry {
@@ -219,14 +181,10 @@ impl WingStore {
             + self.fresh.capacity() * size_of::<WingEquipmentRow>();
     }
 
-    /// This pass's counts and the wings it planned.
     pub(crate) fn tally(&self) -> (Counts, usize) {
         (self.counts, self.wings)
     }
 
-    /// Keeps the settled pass's rows only when every wing of the census, in
-    /// every part, was read or carried completely. Allocation-free for the
-    /// game thread, which concludes a split census.
     pub(crate) fn conclude(&mut self, complete: bool) {
         if !complete {
             self.current.clear();
@@ -235,22 +193,18 @@ impl WingStore {
     }
 }
 
-/// One wing's plan: carry its held rows, or read it afresh.
 #[derive(Clone, Debug)]
 pub(crate) struct Plan {
     certificate: Option<Certificate>,
-    /// The carryable held rows, indexing the previous pass's rows.
     held: Option<Range<usize>>,
 }
 
 impl Plan {
-    /// Rows the caller must have room for to carry the wing, when it may.
     pub(crate) fn carry_rows(&self) -> Option<usize> {
         self.held.as_ref().map(Range::len)
     }
 }
 
-/// One pass's view of the store and the observation that certifies reuse.
 pub(crate) struct WingReuse<'a> {
     store: &'a mut WingStore,
     changes: &'a dyn Changes,
@@ -262,9 +216,6 @@ impl<'a> WingReuse<'a> {
         Self { store, changes }
     }
 
-    /// Registers one wing's pool and plans its rows: carried without a read
-    /// when the held read of the same wing and id is proved current.
-    /// Registration precedes every read it certifies.
     pub(crate) fn plan(&mut self, wing: usize, id: u64) -> Plan {
         self.store.wings += 1;
         let certificate =
@@ -280,8 +231,6 @@ impl<'a> WingReuse<'a> {
         Plan { certificate, held }
     }
 
-    /// The carried rows of a plan whose [`Plan::carry_rows`] the caller has
-    /// room for, held again for the next hour.
     pub(crate) fn carry(&mut self, plan: &Plan) -> &[WingEquipmentRow] {
         let (Some(certificate), Some(range)) = (plan.certificate, plan.held.clone()) else {
             return &[];
@@ -292,8 +241,6 @@ impl<'a> WingReuse<'a> {
         &self.store.previous.rows[range]
     }
 
-    /// A fresh read of a planned wing: `rows` are its rows in pool order when
-    /// `outcome` is complete. They are held for the next hour.
     pub(crate) fn read(&mut self, plan: &Plan, outcome: Outcome, rows: &[WingEquipmentRow]) {
         let store = &mut *self.store;
         store.counts.read += 1;
@@ -303,8 +250,6 @@ impl<'a> WingReuse<'a> {
         }
     }
 
-    /// Ends this part's pass; its store keeps the rows until the census
-    /// concludes ([`WingStore::conclude`]).
     pub(crate) fn settle(self) {
         self.store.settle();
     }

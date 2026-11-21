@@ -1,25 +1,13 @@
-//! Viewer-side class-13 map-counter decisions from simulation inputs.
-//!
-//! The recorder keeps the gun and rail operands (`RailwayGunCounterInputs`).
-//! Camera, fog, route, stack kind and every counter child are decisions of
-//! the viewer. The stack kind and position are the movement layer's class-13
-//! rules (`counter_move::UnitRoute::railway_gun`); the counter children are
-//! made here as pure functions of those rows and matching content.
 
 use super::counter_action::{self, Action};
 use replay_data::rows::RailwayGunCounterInputRow;
 
-/// The action categories the native own-gun plate join distinguishes. Other
-/// actions can differ and still join. Route or combat presence wins over the
-/// reference-entry state, as the game evaluates it.
 pub fn join_action(row: &RailwayGunCounterInputRow) -> u8 {
     join_action_of(&GunOperands::of(row))
 }
 
-/// The gun operands its counter's children read, as values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GunOperands {
-    /// The ordinary route's length.
     pub path: u32,
     pub combat_count: u32,
     pub reference_entry_count: i32,
@@ -51,7 +39,6 @@ impl GunOperands {
     }
 }
 
-/// [`join_action`] from values.
 pub fn join_action_of(row: &GunOperands) -> u8 {
     if !crate::map::unit_rules::idle(row.path, row.combat_count) {
         2
@@ -62,9 +49,6 @@ pub fn join_action_of(row: &GunOperands) -> u8 {
     }
 }
 
-/// Class-13 action uses the ordinary route independently of the alternate animation route. A
-/// stationary gun in combat attacks when its owner is an attacking participant, otherwise holds.
-/// destination_enemy tests war against the last ordinary-route province's controller.
 pub fn action_code(
     row: &RailwayGunCounterInputRow,
     destination_enemy: Result<bool, &'static str>,
@@ -72,7 +56,6 @@ pub fn action_code(
     action_code_of(&GunOperands::of(row), destination_enemy)
 }
 
-/// [`action_code`] from values.
 pub fn action_code_of(row: &GunOperands, destination_enemy: Result<bool, &'static str>) -> Action {
     if row.path == 0 {
         return if !crate::map::unit_rules::idle(0, row.combat_count) {
@@ -96,7 +79,6 @@ pub fn action_code_of(row: &GunOperands, destination_enemy: Result<bool, &'stati
     counter_action::route_tail(destination_enemy, row.naval_transfer != 0, row.combat_count)
 }
 
-/// guns compare every member; divisions compare full-intel members.
 pub fn aggregate_actions(actions: impl IntoIterator<Item = Action>) -> Action {
     let mut actions = actions.into_iter();
     counter_action::aggregate_actions(
@@ -105,8 +87,6 @@ pub fn aggregate_actions(actions: impl IntoIterator<Item = Action>) -> Action {
     )
 }
 
-/// Same-hour raw signed pair count and cooldown for one railway-gun rail entry. Sorted RailEdges
-/// do not certify the count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RailStatus {
     pub neighbor_pairs: i32,
@@ -118,7 +98,6 @@ impl RailStatus {
         Self::of(&row.selection_hour, &row.selection, row.cooldown_ticks, hour)
     }
 
-    /// [`Self::read`] from a row's values.
     pub fn of(
         selection_hour: &replay_data::rows::Recorded<Option<i32>>,
         selection: &replay_data::rows::Recorded<Option<replay_data::rows::RailwaySelectionInputs>>,
@@ -145,9 +124,6 @@ impl RailStatus {
     }
 }
 
-/// The no_orders child checks a standing, untransferred, unexiled land gun for rail neighbours,
-/// cooldown and positive railway-building level. Null rail info/building or nonpositive level proves
-/// the warning. Other missing raw pair-count or cooldown operands leave it undecided.
 pub fn location_warning(
     row: &RailwayGunCounterInputRow,
     land: bool,
@@ -156,7 +132,6 @@ pub fn location_warning(
     location_warning_of(&GunOperands::of(row), land, rail)
 }
 
-/// [`location_warning`] from values.
 pub fn location_warning_of(row: &GunOperands, land: bool, rail: Option<RailStatus>) -> Option<bool> {
     if row.path != 0 || row.naval_transfer != 0 || row.exiled != 0 || !land {
         return Some(false);
@@ -167,8 +142,6 @@ pub fn location_warning_of(row: &GunOperands, land: bool, rail: Option<RailStatu
     }
 }
 
-/// A nonpositive fixed5 maximum reads full. The stack bar takes the visible-member mean used by
-/// divisions (`counter_status::stack_fill`).
 pub fn strength_ratio(current: i64, maximum: i64) -> i64 {
     if maximum < 1 || (current as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
     {
@@ -239,8 +212,6 @@ mod tests {
         assert_eq!(action_code(&row, Err("hostility")), Ok(1));
         row.reference_entry_count = 1;
         assert_eq!(action_code(&row, Err("hostility")), Ok(12));
-        // Standing in combat: attacking in any combat is 5, else the gun holds with 2,
-        // including a gun that defends in its first combat.
         row.combat_role = 2;
         row.combat_count = 2;
         row.attacking = 1;
@@ -327,7 +298,6 @@ mod tests {
         assert_eq!(strength_ratio(7, -3), 100_000);
         assert_eq!(strength_ratio(-1, 10), 0);
         assert_eq!(strength_ratio(30, 10), 100_000);
-        // Native sentinels read full; multiplication wraps before the division.
         for current in [i64::MIN, i64::MIN + 1, i64::MAX] {
             assert_eq!(strength_ratio(current, 100_000), 100_000);
         }

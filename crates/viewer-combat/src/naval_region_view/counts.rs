@@ -1,5 +1,3 @@
-//! The ship counts and air shares: the observed navy's ships on missions in the region, the
-//! enemies' as its civilian intel estimates them, and each side's share of the region's air.
 use super::{Content, Element, enemies, links, own_raw, percent, text};
 use crate::binding::Bindings;
 use replay_data::rows::tables;
@@ -7,11 +5,8 @@ use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, HashMap};
 use viewer_foundation::map::{count_math, perspective::Vision};
 
-/// The salt the game adds to the enemy ship estimate's variation.
 const SHIP_SALT: u32 = 0x8b;
 
-/// Each country's ships on missions in the region: every registration's task force counts its
-/// ships again, as the game walks the region's mission ledger.
 struct Ledgers {
     ships: HashMap<u64, i32>,
     ledgers: BTreeMap<u32, Vec<u64>>,
@@ -40,7 +35,6 @@ impl Ledgers {
         Ok(Self { ships, ledgers, ids })
     }
 
-    /// The ships of the country in slot `slot` on missions in the region.
     fn count(&self, slot: u32) -> i32 {
         let Some(id) = self.ids.get(&slot) else {
             return 0;
@@ -54,13 +48,10 @@ impl Ledgers {
     }
 }
 
-/// An estimate's text: one number when both bounds agree, else the low and high bounds.
 pub(super) fn range_text([low, high]: [i32; 2]) -> String {
     if low == high { low.to_string() } else { format!("{low}-{high}") }
 }
 
-/// The observed country's civilian intel on `target` as a share of the lane's cap: full when it
-/// shares vision with the target or fog is off.
 pub(super) fn intel(frame: &DecodedFrame, vision: &Vision, links: &BTreeMap<u32, u32>, target: u32, cap: i64) -> Result<i64, String> {
     if vision.shares_vision_or_fog(target).map_err(|why| why.clause())? {
         return Ok(100_000);
@@ -74,7 +65,6 @@ pub(super) fn intel(frame: &DecodedFrame, vision: &Vision, links: &BTreeMap<u32,
     Ok(count_math::ratio(lane, cap))
 }
 
-/// The enemies' ships in the region, each estimated from the observed country's intel on it.
 fn enemy_ships(content: &Content, frame: &DecodedFrame, vision: &Vision, ledgers: &Ledgers) -> Result<[i32; 2], String> {
     let [cap, minimum, maximum, range] = content.assets.naval_region_ship_intel.clone()?;
     let links = links(frame)?;
@@ -89,7 +79,6 @@ fn enemy_ships(content: &Content, frame: &DecodedFrame, vision: &Vision, ledgers
     Ok(sum)
 }
 
-/// Each side's share of the region's air superiority score.
 fn air_shares(friendly: i64, enemy: i64) -> [i64; 2] {
     let total = friendly.wrapping_add(enemy);
     let share = |part: i64| {

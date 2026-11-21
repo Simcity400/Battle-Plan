@@ -1,4 +1,3 @@
-//! Effect values and their nested field grammars.
 
 use crate::{
     key_names::KeyNames,
@@ -14,7 +13,6 @@ use super::{
     key_readers::{ELSE_IF_TOKEN, ELSE_TOKEN},
 };
 
-// Reader identities select grammar; authored data still comes from the content stack.
 mod reader_identity {
     pub(super) const RANDOM_TRAIT_VALUE: u64 = 0x140309020;
     pub(super) const REMOVE_UNIT_LEADER_VALUE: u64 = 0x140309040;
@@ -223,7 +221,6 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
         Form::AlwaysKeys(source) => {
             let reader = source.address(value, key);
             own_reader(reader, |name| field.key.is_keyword(name))?;
-            // This grammar enters its field loop even after a scalar or stale value.
             return Some(Shape::EffectValueKeys(reader));
         }
         Form::List => {
@@ -234,7 +231,6 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
             });
         }
         Form::Ideas => {
-            // Raw lists resolve tokens without replacing the retained value slot.
             return Some(if field.opens() {
                 Shape::RawList
             } else {
@@ -284,8 +280,6 @@ pub(super) fn shape(value: u64, key: u64, field: &Field<'_>) -> Option<Shape<()>
 }
 
 fn string_scalar(field: &Field<'_>) -> ScalarRead {
-    // Bare names can already be dynamically interned by the content stack.
-    // The executable vocabulary cannot settle that distinction or stale input.
     if !field.fresh {
         ScalarRead::Deferred
     } else if field.value.kind == Kind::Quoted {
@@ -556,7 +550,6 @@ impl OwnReader {
                 | b"captured",
             ) => One,
             (Self::CreateOperative, b"nationalities") => OwnValue::RawListRequired,
-            // Traits enter the raw loop even after a scalar; flags skip only an opening block.
             (Self::CreateOperative, b"traits") => OwnValue::RawList,
             (Self::CreateOperative, b"gender") => OwnValue::Gender,
             (Self::CreateOperative, b"state") => OwnValue::OperativeState,
@@ -678,7 +671,6 @@ fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader
     })
 }
 
-/// Project nested effects using the same field grammar as parsing.
 pub(super) fn description_fields(
     value: u64,
     key: u64,
@@ -782,7 +774,6 @@ impl<'n, 'c> Shaper<'n, 'c> {
                 self.field(address, reader, field)
             }
             Node::IterationOutput => {
-                // Anonymous blocks skip; assignments retain one token, including an empty key.
                 if !field.fresh && field.opens() {
                     Shape::Skip
                 } else {
@@ -891,7 +882,6 @@ impl<'n, 'c> Shaper<'n, 'c> {
             OwnValue::BoundLocalization => Shape::One,
             OwnValue::Statements(node) => Shape::Statements(node),
             OwnValue::Gender | OwnValue::OperativeState => {
-                // Gender reads the current token; operative state reads the retained value.
                 let (token, report) = match value {
                     OwnValue::Gender => (field.current, "invalid gender"),
                     OwnValue::OperativeState => (field.value, "invalid operative state"),
@@ -1042,7 +1032,6 @@ impl Shaper<'_, '_> {
         match placement {
             Placement::Point => Shape::TemplatePoint,
             Placement::Column => {
-                // Missing widths affect consumption only when rejection could skip a block.
                 if !field.skips_block() {
                     return Shape::One;
                 }
@@ -1102,20 +1091,17 @@ pub(crate) fn template_point(reader: &mut Reader<'_>) -> Value {
     let mut items = Vec::new();
     let mut component = 0usize;
     loop {
-        // Test the peek before resolving it, since a resolved closing token does not stop here.
         let ends = reader.peek().ends_block();
         let token = take(reader);
         if ends {
             break;
         }
         if token.is_number() {
-            // Keep lexical values for the point consumer's conversion.
             items.push(item(None, token));
             component += 1;
             continue;
         }
         let Some(expected) = template_point_component(component) else {
-            // Extra numeric components still consume; an unavailable named label refuses.
             reader.refuse_native(
                 token.line,
                 format!(
@@ -1221,7 +1207,6 @@ mod scope_reader_identity {
     pub(super) const RANDOM_ORGANISATION_KEYS: u64 = 0x14144C220;
 }
 
-// Only grammars that forward effects supply a known body scope.
 fn scope_policy(reader: u64) -> ScopePolicy {
     use scope_reader_identity::*;
     match reader {
@@ -1320,7 +1305,6 @@ fn target_kind(target: &crate::scope::Scope) -> u32 {
     }
 }
 
-/// Scope targets replace context only after effect registry lookup fails.
 pub(crate) fn body_scope(
     names: Option<&KeyNames>,
     key: &Token,

@@ -1,11 +1,3 @@
-//! `viewer --playhead-proof <recording> --out <dir>`: the map's layers played flat on the
-//! recording's playhead, each layer's arrays compared at sampled hours and after seeks with
-//! today's product of the same hour built from the same recording, and with the layer
-//! composed from scratch; per frame the mirror's apply, each layer's apply and settle, entities
-//! dirty and carried, and what the host holds. `--timing` plays without comparing.
-//!
-//! A layer joins by one entry in [`LINES`]: how it is made from the document, and how its arrays
-//! are compared with today's product and with itself composed anew.
 
 use crate::{
     document::{Document, InitialHour},
@@ -57,16 +49,11 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-/// How one layer is made, compared and counted.
 struct Line {
     name: &'static str,
     make: fn(&Document) -> Box<dyn Layer>,
-    /// Its arrays against today's product at the document's hour.
     today: fn(&dyn Layer, &Document) -> io::Result<Compared>,
-    /// Its arrays against itself composed from `mirrors`.
-    /// The layer composed anew, given the layers before it.
     fresh: fn(&dyn Layer, &Mirrors, &crate::layers::Upstream<'_>) -> io::Result<Compared>,
-    /// Entities it has marked since it was made, by kind.
     marked: fn(&dyn Layer) -> Vec<(&'static str, u64)>,
 }
 
@@ -126,30 +113,19 @@ struct Options {
     select: Option<PathBuf>,
     every: u64,
     seeks: usize,
-    /// `--seek-to`: the hours sought after flat play, in order, in place of the spread `seeks`.
     seek_to: Vec<Hour>,
-    /// `--from-hour`: where flat play starts; the timeline's first hour without it.
     from: Option<Hour>,
     hours: Option<u32>,
     timing: bool,
     speed: f64,
-    /// `--engaged-fold`: the viewing countries the engaged index is folded and compared for. The
-    /// recorded viewer by default: three lines (engagements, land and naval markers) compare
-    /// against today's markers refined with that fold, and without it they refuse.
     engaged: Option<String>,
     rows: Option<String>,
-    /// `--rows details`: the detail report's lines against today's, compared at every sample.
     details: bool,
-    /// `--combat`: the combat readers' line: which are timed (`all`, `none`: only the stepper's
-    /// step, or names), with the tables an earlier run learned after `@`.
     combat: Option<String>,
     hovers: Option<String>,
-    /// `--scripts on|off`: the map's script readers at the head, or only the step times beside them.
     scripts: Option<(bool, Option<String>)>,
-    /// `--paced`: flat play holds each frame to its due time at 60 a second.
     paced: bool,
     view: View,
-    /// `fit`, or `x,z,height`: the camera the layers admit at; none admits everything.
     camera: Option<String>,
 }
 
@@ -193,7 +169,6 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
             "--timing" => options.timing = true,
             "--engaged-fold" => options.engaged = Some(value()?),
             "--rows" => {
-                // `details`: the detail report's lines against today's; the other names are row sets.
                 let names = value()?;
                 options.details |= names.split(',').any(|name| name == "details");
                 let sets: Vec<&str> = names.split(',').filter(|name| *name != "details").collect();
@@ -251,7 +226,6 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     let (local, roaming) = (out.join("cache/local"), out.join("cache/roaming"));
     fs::create_dir_all(&local)?;
     fs::create_dir_all(&roaming)?;
-    // Isolation is set before any viewer worker exists.
     unsafe {
         std::env::set_var("LOCALAPPDATA", local);
         std::env::set_var("APPDATA", roaming);
@@ -413,18 +387,11 @@ struct Proof<'a> {
     options: &'a Options,
     frames: BufWriter<File>,
     compares: BufWriter<File>,
-    /// Per frame that applied a step: mirror ns, then per layer apply and settle ns, dirty, carried
-    /// and frames late; the whole frame's ns.
     records: Vec<Record>,
     held: Vec<Value>,
-    /// Per comparison name: entries compared, differing, samples.
     totals: BTreeMap<String, (u64, u64, u64)>,
-    /// Per comparison name: samples that compared entries, and samples counted as loading.
     sampled: BTreeMap<String, [u64; 2]>,
-    /// Today's limitation lines left uncompared because their owning layer is not registered, by
-    /// owner, over every sample.
     not_registered: BTreeMap<String, u64>,
-    /// The mirror's apply by table: every frame's nanoseconds, and the most one frame took.
     mirror_tables: BTreeMap<usize, (u64, u64)>,
     skipped: u64,
     steps: u64,
@@ -432,7 +399,6 @@ struct Proof<'a> {
     started: Instant,
     marked_before: Vec<Vec<(&'static str, u64)>>,
     told: Instant,
-    /// The cycle counter's rate, cycles a second.
     hz: f64,
     rows: Option<playhead_host::views::proof::Line>,
     combat: Option<playhead_host::views::combat::Line>,
@@ -445,14 +411,12 @@ struct Record {
     frame_ns: u64,
     mirror_ns: u64,
     mirror_cycles: u64,
-    /// Per layer: apply and settle cycles.
     cycles: Vec<(u64, u64)>,
     layers: Vec<(u64, u64, usize)>,
     marked: Vec<Vec<(&'static str, u64)>>,
 }
 
 impl Proof<'_> {
-    /// A progress line on stderr every two seconds, the output flushed with it.
     fn tell(&mut self, side: &MapSide, what: &str) -> io::Result<()> {
         if self.told.elapsed() < Duration::from_secs(2) {
             return Ok(());
@@ -469,10 +433,6 @@ impl Proof<'_> {
         Ok(())
     }
 
-    /// Plays from `first` to `last` as fast as steps are built, the head a step
-    /// past the last applied but never past the newest built, so steps keep their length and a
-    /// frame takes one; a comparison every `every` frames and at the steps either side of every
-    /// block end.
     fn play_flat(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, timeline: &Timeline, first: Hour, last: Hour) -> io::Result<Value> {
         let started = Instant::now();
         let quantum = (self.options.speed / playhead_host::settings().rate).max(1.0) as Hour;
@@ -538,8 +498,6 @@ impl Proof<'_> {
         Ok(json!({"seconds": started.elapsed().as_secs_f64(), "last": applied}))
     }
 
-    /// Seeks to hours either side of block ends and to hours spread over the span, or to the hours
-    /// `--seek-to` names, each compared once its reset is composed and swapped in.
     fn seek_all(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, timeline: &Timeline, last: Hour) -> io::Result<Value> {
         let first = timeline.first();
         let mut targets = Vec::new();
@@ -661,27 +619,19 @@ impl Proof<'_> {
         writeln!(self.frames, "{line}")
     }
 
-    /// Every layer settled whole at `hour` and compared with today's product and with itself
-    /// composed anew; false when a table is not at the hour yet.
     fn compare(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, hour: Hour, why: &str) -> io::Result<bool> {
         document.playback.seek(branch, hour)?;
         give_vision(side, document, &self.options.view.perspective)?;
         side.settle_all()?;
-        // A layer's work on its own worker is in flight until a later settle takes it.
         let progress = Instant::now();
         while side.parts().is_some_and(|(_, layers)| layers.iter().any(|layer| layer.carried().entities > 0)) {
             if progress.elapsed() > Duration::from_secs(60) {
-                // By name: which layers still carry work, how much, and whether each draws.
                 let carrying: Vec<String> = side.layer_states().into_iter().zip(side.parts().map(|(_, layers)| layers).unwrap_or_default()).filter(|(_, layer)| layer.carried().entities > 0).map(|((name, draws, ..), layer)| format!("{name} carries {} ({})", layer.carried().entities, if draws { "drawn" } else { "not drawn" })).collect();
                 return Err(io::Error::other(format!("The layers did not settle at hour {hour} within a minute: {}", carrying.join(", "))));
             }
             std::thread::sleep(Duration::from_micros(200));
             side.settle_all()?;
         }
-        // A layer whose own worker holds work newer than the product it has published stands at
-        // an older hour and says so ([`crate::layers::Published`]): the sample waits for it, as it
-        // waits for the settles, so the comparison is of the picture whole at the hour and never
-        // of one half arrived.
         let progress = Instant::now();
         loop {
             let waiting = behind_at(side, hour);
@@ -729,8 +679,6 @@ impl Proof<'_> {
             let absent: Vec<String> = absent.iter().map(|table| format!("{table:?}")).collect();
             writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "details:today", "entries": entries, "differing": differing, "first": first, "not_in_the_units": absent}))?;
         }
-        // The whole list: today's limitation lines of the document's hour, every line, against the
-        // map's at the head, and the layers' own notes against the layers composed anew.
         let today = document.limitations(&self.options.view.perspective)?.into_lines();
         let compared = playhead_host::limitations::differ(side, &every, &today);
         let total = self.totals.entry("limitations:today".into()).or_default();
@@ -740,7 +688,6 @@ impl Proof<'_> {
         }
         let apart: Vec<String> = compared.apart.iter().map(|table| format!("{table:?}")).collect();
         writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "limitations:today", "entries": compared.entries, "differing": compared.differing, "first": compared.first, "notes": {"missing_at_the_head": compared.missing, "not_today": compared.extra, "apart_not_in_the_units": apart, "not_given": compared.not_given, "not_registered": compared.not_registered, "raid_lines_apart_no_scripts_layer": compared.raids_apart, "refused_layers": compared.refused_layers, "today_lines": today.len()}}))?;
-        // The same lines in another order are their own count: the order is what the user reads.
         let total = self.totals.entry("limitations:order".into()).or_default();
         (total.0, total.1, total.2) = (total.0 + compared.matched, total.1 + compared.reordered, total.2 + 1);
         writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "limitations:order", "entries": compared.matched, "differing": compared.reordered}))?;
@@ -799,14 +746,12 @@ impl Proof<'_> {
     }
 }
 
-/// The cycle counter's rate, timed against the wall clock over a tenth of a second.
 fn tsc_hz() -> f64 {
     let (wall, cycles) = (Instant::now(), replay_frame::cpu::stamp());
     std::thread::sleep(Duration::from_millis(100));
     (replay_frame::cpu::stamp() - cycles) as f64 / wall.elapsed().as_secs_f64()
 }
 
-/// Refused by name once nothing has arrived for a minute.
 fn stalled(progress: &mut Instant, what: &str) -> io::Result<()> {
     if progress.elapsed() > Duration::from_secs(60) {
         return Err(io::Error::other(format!("No step arrived for a minute in {what}")));
@@ -814,7 +759,6 @@ fn stalled(progress: &mut Instant, what: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether `hour` ends a block of its run.
 fn is_block_end(timeline: &Timeline, side: &MapSide, hour: Hour) -> bool {
     let runs = side.entry().pages().runs();
     timeline.pieces().iter().find(|piece| piece.first <= hour && hour <= piece.last).is_some_and(|piece| {
@@ -823,8 +767,6 @@ fn is_block_end(timeline: &Timeline, side: &MapSide, hour: Hour) -> bool {
     })
 }
 
-/// The political tables' cells in the mirrors against today's rows of the hour: whether the
-/// playhead and today's reader agree at the source.
 fn source_check(mirrors: &Mirrors, document: &Document) -> io::Result<Value> {
     let frame = document.frame()?;
     let mut differing = 0u64;
@@ -889,9 +831,6 @@ fn field(values: &[u32]) -> ProvinceField {
     ProvinceField(Arc::new(Storage::Dense(Arc::new(values.to_vec()))))
 }
 
-/// The layer's arrays against today's political product and border plans at the document's hour,
-/// at the default map mode and recorded perspective. Today's sea-region attributes and the naval
-/// warnings after the territory's are not this layer's and are left out, counted.
 fn political_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = political(layer);
     if !layer.drawn() {
@@ -997,8 +936,6 @@ fn political_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::laye
     Ok(Compared { entries: (layer.country_of().len() * 3 + layer.classes().len()) as u64, differing, first, notes: Value::Null })
 }
 
-/// Gives the units, convoys and counters layers today's vision of the document's hour, until they
-/// read the vision layer's.
 fn give_vision(side: &MapSide, document: &Document, choice: &perspective::Choice) -> io::Result<()> {
     for layer in side.parts().map_or(&[][..], |(_, layers)| layers) {
         if let Some(units) = layer.any().downcast_ref::<Units>() {
@@ -1049,8 +986,6 @@ fn convoys_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("rows", rows as u64), ("products", products as u64), ("ribbons kept", reused as u64), ("ribbons made", made as u64), ("product us", micros as u64)]
 }
 
-/// The viewed country's convoys against today's (`orders_and_convoys`), and the trade-route
-/// warnings it puts on the order field against the product's.
 fn convoys_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = convoys_of(layer);
     if layer.hidden() {
@@ -1107,9 +1042,6 @@ fn orders_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("plans", plans), ("rebuilt for tables learned", learned), ("plan us", micros)]
 }
 
-/// The battle plan made from rows at the head against today's (`plan_field`) at the document's
-/// hour, the layer's perspective and allied switch: every part but what its raid units measured
-/// and the labels' upload generation.
 fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = orders_of(layer);
     let choice = layer.perspective().cloned().unwrap_or_default();
@@ -1146,14 +1078,11 @@ fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> 
     Ok(compared)
 }
 
-/// A plan is made whole from the rows at the head each time: composed anew it is the same build.
 fn orders_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = orders_of(layer);
     Ok(Compared { entries: 1, differing: u64::from(layer.plan().is_none()), first: layer.plan().is_none().then(|| "no plan".to_owned()), notes: json!({"built": "whole, from rows at the head"}) })
 }
 
-/// The window's units layer: each division's sight read from the vision layer registered before
-/// it (every line naming `units` names `vision` first), never a vision given whole.
 fn units_make(document: &Document) -> Box<dyn Layer> {
     Box::new(Units::reading_vision(Arc::clone(&document.content) as Arc<dyn Ground>))
 }
@@ -1167,10 +1096,6 @@ fn units_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     vec![("divisions", divisions as u64), ("stacks", stacks as u64), ("figures placed", figures as u64)]
 }
 
-/// The layer's stacks and land figures against today's unit models at the document's hour and the
-/// layer's perspective: the stack count, the unseen stacks, and every land target today places against the layer's figure of the
-/// same stack, all but the mesh (the selection's). Stacks the layer places that today omits must
-/// be within today's selection omissions.
 fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     use viewer_world::map::unit_history::Kind;
     let layer = units(layer);
@@ -1208,7 +1133,6 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
         return Ok(compared);
     }
     let figures = layer.figures();
-    // A stack outside the camera may hold a deferred division's stale place: admitted ones win.
     let by_identity: BTreeMap<u64, &Figure> = figures.values().filter(|figure| !figure.admitted).chain(figures.values().filter(|figure| figure.admitted)).map(|figure| (figure.selection.oldest, *figure)).collect();
     let withheld = |why: Withheld| by_identity.values().filter(|figure| matches!(&figure.placed, Some(Err(held)) if *held == why)).count();
     compared.entries += 2;
@@ -1220,8 +1144,6 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     if whole && report.unseen != unseen {
         note(&mut compared, format!("unseen stacks: today {}, the layer {unseen}", report.unseen));
     }
-    // Only what the camera admits is drawn: outside it a division's change waits, deferred, so a
-    // stack there may be stale or absent by design.
     let mut outside = 0;
     for target in &today {
         if !layer.admits(target.province) {
@@ -1270,9 +1192,6 @@ fn units_fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::U
     Ok(Compared { entries: layer.stack_count() as u64 + 1, differing, first, notes: Value::Null })
 }
 
-/// A layer that only declares: the columns of a selection file, so the mirror's cost is measured
-/// with every layer's columns before those layers exist. A line a table: `Table` for every
-/// column, `Table:numeric`, or `Table:col,col` by field name.
 struct Declare {
     lines: Vec<(TableId, Option<String>)>,
 }
@@ -1339,8 +1258,6 @@ impl Layer for Declare {
     }
 }
 
-/// The battle ambience layer's line: the battles its worker hands the audio against today's battle
-/// sounds of the hour.
 mod sounds_line {
     use super::{Compared, Document, Layer, Mirrors};
     use crate::layers::sounds::{Sounds, SoundsFed, differ_battles};
@@ -1351,7 +1268,6 @@ mod sounds_line {
         layer.any().downcast_ref::<SoundsFed>().expect("the sounds line's layer")
     }
 
-    /// The window's layer: the battle list made on its worker.
     pub(super) fn make(document: &Document) -> Box<dyn Layer> {
         Box::new(SoundsFed::new(Sounds::new(document.content.audio.as_ref().map(|source| Arc::clone(&source.content)))))
     }
@@ -1378,7 +1294,6 @@ mod sounds_line {
     }
 }
 
-/// The strikes layer's line: the impacts at the head against today's nuclear impacts of the hour.
 mod strikes_line {
     use super::{Compared, Document, Layer, Mirrors};
     use crate::layers::strikes::{Strikes, differ_impacts};
@@ -1414,9 +1329,6 @@ mod strikes_line {
     }
 }
 
-/// The land markers' line: made with the engaged index the engagement line folded, compared with
-/// today's markers refined with today's fold of the same hours (`--engaged-fold` must name
-/// `recorded`).
 mod land_markers_line {
     use super::{Compared, Document, Layer, engagements_line::FOLDED};
     use crate::layers::{engagements::Index, land_markers::proof};
@@ -1445,8 +1357,6 @@ mod land_markers_line {
     }
 }
 
-/// The engagement layer's line: its flags at the head against today's `CombatFlags::read` with
-/// today's index folded over the same hours (`--engaged-fold` must name `recorded`).
 mod engagements_line {
     use super::{Compared, Document, Layer, Mirrors, engaged::Folded};
     use crate::layers::engagements::{Engagements, Index};
@@ -1457,7 +1367,6 @@ mod engagements_line {
         map::{tables::core, visibility::Relations},
     };
 
-    /// The folds `--engaged-fold` made for the recorded viewer, and that viewer's slot.
     pub(super) static FOLDED: Mutex<Option<(Folded, u32)>> = Mutex::new(None);
 
     fn of(layer: &dyn Layer) -> &Engagements {

@@ -1,5 +1,3 @@
-//! Deferred native reserve credits, keyed by complete source division handle.
-//! Only the drain grows them; per-source lists recycle on deletion.
 use super::queue_index::FixedIndex;
 const NONE: usize = usize::MAX;
 const STORAGE_FAILED: &str = "equipment return credit storage allocation failed";
@@ -8,8 +6,6 @@ const STORAGE_FAILED: &str = "equipment return credit storage allocation failed"
 pub(super) struct Net {
     pub variant: u64,
     pub country: u32,
-    // Deferred deficit plus actual credit retains the exact source-time sum.
-    // Merge uses only amount; no reserve credit is retained for that operation.
     pub amount: i128,
     pub credited: i128,
 }
@@ -36,7 +32,6 @@ pub(super) struct Credits {
     heads: FixedIndex<u64, Head>,
     nodes: Vec<Node>,
     free: usize,
-    /// Advances when a native mutation goes unobserved; a head keeps the one it began with.
     revision: u64,
 }
 impl Credits {
@@ -248,8 +243,6 @@ pub(super) fn push(output: &mut Vec<Net>, value: Net) -> Result<(), &'static str
     output.push(value);
     Ok(())
 }
-/// Wide sums preserve signed duplicate entries even when their partial sum
-/// exceeds i64. Only the final serialized correction must fit the native width.
 pub(super) fn compact(values: &mut [Net]) -> Result<usize, &'static str> {
     values.sort_unstable_by_key(|value| (value.country, value.variant));
     let mut len = 0;

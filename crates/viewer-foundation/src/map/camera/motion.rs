@@ -1,88 +1,33 @@
-//! The game's map camera motion: edge scrolling, the wheel, the arrow keys and the zoom keys move a
-//! target camera, and the shown camera eases towards the target every frame. The game has no drag;
-//! the viewer's middle-button drag is its own addition and moves the shown camera directly.
-//!
-//! A frame gathers one move for the target eye, in the game's order:
-//!
-//! 1. Edge scrolling, when `settings.txt` `corner_scrolling` is on and the cursor's whole pixel lies
-//!    within 2 pixels of the map's edge: the pan direction towards the cursor.
-//! 2. Each wheel notch: a step along the ray from the eye to the ground point under the cursor, its
-//!    forward component shortened by `map height * 0.015 * (1 - t)`. `t` is the eye's height between
-//!    its floor and the highest height, 0 at the floor and 1 at the top; the floor is the terrain
-//!    under the eye, at least `CAMERA_MIN_HEIGHT`. The step is
-//!    `frame * zoom_speed * CAMERA_ZOOM_SPEED * (1 + CAMERA_ZOOM_SPEED_DISTANCE_MULT * (1 + sin(t π/2 - π/2)))`.
-//!    No notch zooms out at the top or in at the floor. When the gathered move reaches below the
-//!    floor it is held there and its sideways part is scaled by `t + 0.1`.
-//! 3. Each held arrow key: the pan direction towards the middle of the matching map edge.
-//!
-//! A pan direction is the cursor ray through that pixel, kept to its part in the camera's right and
-//! up plane and with its height dropped, so it is not normalised: held keys add, a diagonal is
-//! their sum, and the step follows the view's field and aspect. A pan step is
-//! `frame * scroll_speed * 0.1 * height`. Frame times are capped at 0.7 seconds, and every step
-//! reads the frame time as the game's does.
-//!
-//! A zoom key sets the target height to the shown height plus or minus
-//! `CAMERA_ZOOM_SPEED * zoom_speed * CAMERA_ZOOM_KEY_SCALE`; Page Up zooms in. A key move that the
-//! height limits shorten below one unit is dropped.
-//!
-//! Every frame the shown eye and look-at point move by
-//! `(100 - camera_speed) * CAMERA_INTERPOLATION_SPEED * frame` (within 0 and 1) of their way to
-//! the target's, until both are within a squared distance of 0.02. Heights stay between the floor
-//! and `CAMERA_MAX_HEIGHT` and the look-at point's z within the map, the limits truncated to whole
-//! units as the game stores them.
-//!
-//! The content's defines and the user's `settings.txt` supply every operand; `camera_speed` is
-//! held within 5 and 95 as the game holds it when reading the file.
 
 use std::{f32::consts::FRAC_PI_2, io};
 
 use super::{Camera, Placement};
 
-/// The frame time a step reads at most, in seconds.
 const LONGEST_FRAME: f32 = 0.7;
-/// The squared eye and look-at distances within which the camera stops easing.
 const SETTLED: f32 = 0.02;
-/// `camera_speed` is held within these when the game reads `settings.txt`.
 const CAMERA_SPEED_RANGE: [f32; 2] = [5.0, 95.0];
-/// The easing rate reads `camera_speed` from this.
 const CAMERA_SPEED_SCALE: f32 = 100.0;
-/// A notch's forward correction per map row at the floor.
 const FORWARD_CORRECTION: f32 = 0.015;
-/// Added to `t` to scale a frame's sideways movement when it is held at the floor.
 const FLOOR_DAMPING: f32 = 0.1;
-/// A key move shortened below this is dropped.
 const LEAST_KEY_MOVE: f32 = 1.0;
-/// Edge scrolling starts this many whole pixels from the map's edge.
 const EDGE_PIXELS: i32 = 2;
-/// A pan step is this fraction of the eye's height per unit of `scroll_speed` and second.
 const PAN_PER_HEIGHT: f32 = 0.1;
-/// The minimap's zoom steps: fractions of the height, and the least step.
 const ZOOM_IN_STEP: f32 = 0.5;
 const ZOOM_OUT_STEP: f32 = 0.75;
 const LEAST_ZOOM_STEP: f32 = 10.0;
 
-/// The operands of the camera motion law.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraLaw {
-    /// `NGraphics.CAMERA_ZOOM_SPEED`.
     pub speed: f32,
-    /// `NGraphics.CAMERA_ZOOM_KEY_SCALE`.
     pub key_scale: f32,
-    /// `NGraphics.CAMERA_ZOOM_SPEED_DISTANCE_MULT`.
     pub distance_mult: f32,
-    /// `NFrontend.CAMERA_INTERPOLATION_SPEED`.
     pub interpolation: f32,
-    /// `settings.txt` `zoom_speed`.
     pub zoom_speed: f32,
-    /// `settings.txt` `camera_speed`, held within 5 and 95.
     pub camera_speed: f32,
-    /// `settings.txt` `scroll_speed`.
     pub scroll_speed: f32,
-    /// `settings.txt` `corner_scrolling`: edge scrolling is on.
     pub edge_scrolling: bool,
 }
 
-/// The user's stored camera settings the law reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Speeds {
     pub zoom_speed: f32,
@@ -92,14 +37,11 @@ pub struct Speeds {
 }
 
 impl CameraLaw {
-    /// Reads the defines it is given (the graphics defines while visual mods show) and the
-    /// speeds from the user's settings.
     pub fn load(
         defines: &installed_content_core::defines::Defines,
         settings: &installed_content_settings::settings::SettingsKeys,
     ) -> io::Result<Self> {
         use installed_content_settings::settings::constructed;
-        // An absent file reads as the game's constructed settings.
         let setting = |key: &str, constructed: f32| -> io::Result<f32> {
             settings
                 .f32_or_constructed(&[key], constructed)
@@ -120,8 +62,6 @@ impl CameraLaw {
         ))
     }
 
-    /// The content's defines the law reads: `CAMERA_ZOOM_SPEED`, `CAMERA_ZOOM_KEY_SCALE`,
-    /// `CAMERA_ZOOM_SPEED_DISTANCE_MULT` and `CAMERA_INTERPOLATION_SPEED`, in [`Self::new`]'s order.
     pub fn content_defines(defines: &installed_content_core::defines::Defines) -> io::Result<[f32; 4]> {
         let define = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
@@ -139,8 +79,6 @@ impl CameraLaw {
         ])
     }
 
-    /// The law from its defines (`speed`, `key_scale`, `distance_mult`, `interpolation`) and the
-    /// stored speeds, `camera_speed` held as the game holds it.
     pub fn new(defines: [f32; 4], speeds: Speeds) -> Self {
         let [speed, key_scale, distance_mult, interpolation] = defines;
         let Speeds {
@@ -169,8 +107,6 @@ impl CameraLaw {
         }
     }
 
-    /// Whether a cursor at framebuffer point `cursor` edge-scrolls a map of `viewport` pixels: the
-    /// setting is on and the cursor's whole pixel lies within the edge band.
     pub fn edge_scrolls(&self, cursor: [f32; 2], viewport: [u32; 2]) -> bool {
         let [width, height] = viewport.map(|side| side as i32);
         let [x, y] = cursor.map(|value| value as i32);
@@ -181,7 +117,6 @@ impl CameraLaw {
                 || x >= width - EDGE_PIXELS)
     }
 
-    /// The shipped content's defines and default settings, for synthetic fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test() -> Self {
         Self::new(
@@ -196,17 +131,12 @@ impl CameraLaw {
     }
 }
 
-/// Where the camera is going, and the wheel's part notch.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Motion {
-    /// The target camera, once any zoom set one. It is kept after the camera arrives, as the
-    /// game keeps it: later notches move it on from where it is.
     target: Option<Placement>,
-    /// Wheel lines short of a whole notch, kept for the next turn.
     lines: f32,
 }
 
-/// The held arrow keys.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pan {
     pub up: bool,
@@ -215,34 +145,25 @@ pub struct Pan {
     pub right: bool,
 }
 
-/// One frame's map input.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Input<'a> {
-    /// The cursor's framebuffer point while it is over the map and the map takes edge scrolling.
     pub cursor: Option<[f32; 2]>,
-    /// Wheel notches, one entry a notch, in order.
     pub notches: &'a [i32],
-    /// The ground point under the cursor that the camera's pick finds.
     pub ground: Option<[f32; 3]>,
-    /// The arrow keys held this frame.
     pub keys: Pan,
 }
 
-/// The terrain the motion reads: the floor height under a world `(x, z)`.
 pub type Floor<'a> = &'a dyn Fn(f32, f32) -> f32;
 
 impl Motion {
-    /// The target camera, if a zoom set one.
     pub fn target(&self) -> Option<Placement> {
         self.target
     }
 
-    /// Forgets the target, as a camera placed afresh does.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
-    /// Moves the target with the shown camera, as the viewer's own drag does.
     pub fn shift(&mut self, by: [f32; 2]) {
         if let Some(target) = &mut self.target {
             target.center[0] += by[0];
@@ -250,8 +171,6 @@ impl Motion {
         }
     }
 
-    /// The whole notches `lines` of wheel turn completes, signed and in order; the part notch left
-    /// over waits for the next turn, as the window system's wheel report does.
     pub fn notches(&mut self, lines: f32) -> i32 {
         if !lines.is_finite() {
             return 0;
@@ -262,9 +181,6 @@ impl Motion {
         whole as i32
     }
 
-    /// A frame's wheel reports, in order, as signed single notches in that order: each report
-    /// completes its whole notches from the part notch carried before it. The game reads its wheel
-    /// records one by one, so a blocked notch never cancels a later one.
     pub fn wheel_events(&mut self, lines: impl IntoIterator<Item = f32>) -> Vec<i32> {
         let mut notches = Vec::new();
         for lines in lines {
@@ -277,7 +193,6 @@ impl Motion {
         notches
     }
 
-    /// One zoom-key press: Page Up zooms in (`zoom_in`), Page Down out.
     pub fn key(&mut self, camera: &mut Camera, law: &CameraLaw, zoom_in: bool, floor: Floor<'_>) {
         let mut step = law.speed * law.zoom_speed * law.key_scale;
         if zoom_in {
@@ -295,9 +210,6 @@ impl Motion {
         });
     }
 
-    /// Sets the target's look-at point to `center`, and its height to `height` when given, then
-    /// holds it within the game's limits, as the game's own placing of its camera does. A height
-    /// change the limits shorten below one unit leaves the target where it was.
     pub fn place(
         &mut self,
         camera: &mut Camera,
@@ -318,8 +230,6 @@ impl Motion {
         self.target = Some(target);
     }
 
-    /// One zoom step about the target's look-at point, as the minimap's wheel takes it: in by
-    /// half the target's height, out by three quarters, each at least ten units.
     pub fn zoom_step(&mut self, camera: &mut Camera, zoom_in: bool, floor: Floor<'_>) {
         let before = self.target.unwrap_or_else(|| camera.placement());
         let factor = if zoom_in { ZOOM_IN_STEP } else { ZOOM_OUT_STEP };
@@ -332,7 +242,6 @@ impl Motion {
         self.place(camera, before.center, Some(height), floor);
     }
 
-    /// A frame's wheel notches alone, in order; see [`Self::step`].
     pub fn wheel(
         &mut self,
         camera: &Camera,
@@ -350,9 +259,6 @@ impl Motion {
         self.step(camera, law, frame, [0, 0], &input, floor);
     }
 
-    /// One frame's edge scrolling, wheel notches and held arrow keys, gathered into one move of the
-    /// target in the game's order. `viewport` is the map's framebuffer size. `true` when the
-    /// target moved.
     pub fn step(
         &mut self,
         camera: &Camera,
@@ -431,10 +337,6 @@ impl Motion {
         true
     }
 
-    /// Eases the shown camera one frame towards the target, then holds its visible ground within
-    /// the map's allowances; `true` while it moves. A frame the boundary moves the camera sets the
-    /// target's look-at z to the camera's, as the game resets its target there, so a target beyond
-    /// the boundary is not chased.
     pub fn ease(
         &mut self,
         camera: &mut Camera,
@@ -447,7 +349,6 @@ impl Motion {
             return false;
         };
         let lead = camera.defines.tilt_lead;
-        // The eye and look-at point share x and the lead, so their differences reduce to these.
         let along = [
             target.center[0] - camera.center[0],
             target.height - camera.height,
@@ -479,8 +380,6 @@ impl Motion {
     }
 }
 
-/// The game's per-frame limits on both cameras: the look-at z within the map, then both heights
-/// between the floor under the shown eye and the highest height.
 fn clamp(camera: &mut Camera, target: &mut Placement, floor: Floor<'_>) {
     let rows = camera.map.height as i32 as f32;
     for z in [&mut camera.center[1], &mut target.center[1]] {
@@ -505,12 +404,10 @@ fn clamp(camera: &mut Camera, target: &mut Placement, floor: Floor<'_>) {
     }
 }
 
-/// `CAMERA_MIN_HEIGHT` and `CAMERA_MAX_HEIGHT` as the camera stores them, truncated to whole units.
 fn limits(camera: &Camera) -> [f32; 2] {
     camera.defines.heights.map(|height| height as i32 as f32)
 }
 
-/// The floor under `eye`: its terrain height, at least the lowest height.
 fn floor_under(camera: &Camera, eye: [f32; 3], floor: Floor<'_>) -> f32 {
     floor(eye[0], eye[2]).max(limits(camera)[0])
 }

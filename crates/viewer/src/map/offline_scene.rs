@@ -1,4 +1,3 @@
-//! Opt-in content-stack integration check; never launches or attaches to the game.
 use viewer_playback::map_icons::MapIcons;
 use eframe::wgpu;
 use installed_content_core::ResolvedLayers;
@@ -29,15 +28,12 @@ struct Input {
     hour: i32,
     language: String,
     camera_tilt: f32,
-    /// The client's `settings.txtforce_pow2_textures`, which the map's texture files load under.
     #[serde(default)]
     force_pow2_textures: bool,
     #[serde(default = "default_steps")]
     presentation_steps: u32,
     #[serde(default)]
     presentation_dt: f32,
-    /// Synthetic strike impacts, started with the first presentation step:
-    /// the content's effect entities at each province's authored standstill anchor.
     #[serde(default)]
     impacts: Vec<SyntheticImpact>,
 }
@@ -126,7 +122,6 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let decode = installed_content_image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
-    // The offline scene renders the recorded content alone, so both define sets are recorded.
     let assets = crate::map_assets::load_with_products(
         None,
         layers,
@@ -142,8 +137,6 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     eprintln!("Content scene: interface assets");
     let map_data = installed_content_core::map::load(layers)?;
     let regions = installed_content_regions::regions::read(layers)?.regions;
-    // No settings.txt here: the constructor's 1280 x 720 frame, which decides
-    // only which resources the map-icon windows load.
     let viewer_playback::map_icons::LoadedIcons {
         combat,
         raids,
@@ -248,9 +241,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
             &icons.lazy,
             Default::default(),
         )?;
-        // An offline scene is a capture: its models draw complete, built in place.
         scene.settle_builds(true);
-        // An offline scene installs no hours: its names build where they draw.
         scene.build_names_in_upload(true);
         scene.set_trees(
             &device,
@@ -260,7 +251,6 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
             &tree_field,
         )?;
         scene.set_map_frame(&device, &queue, &frame_assets)?;
-        // Every view this dump saves poses its figures on the frame that draws them.
         scene.settle_poses(true);
         scene.warm_weather(&device, &queue, weather)?;
         scene.set_rivers(&device, &queue, &river_assets, &river_mesh)?;
@@ -289,7 +279,6 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
                 no_trees: false,
             };
             let mut submissions = Vec::new();
-            //The underwater shader consumes the preceding shadow frame.
             for step in 0..input.presentation_steps.max(2) {
                 scene.render(
                     &device,
@@ -327,7 +316,6 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     })
 }
 
-/// Impacts with ascending ids at their provinces' authored standstill anchors.
 fn synthetic_impacts(
     layers: &ResolvedLayers,
     impacts: &[SyntheticImpact],

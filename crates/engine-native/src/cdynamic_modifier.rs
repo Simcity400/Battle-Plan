@@ -1,13 +1,9 @@
-//! CDynamicModifier definition, referenced by timed modifier entries.
 
 use crate::{Memory, msvc_string, read};
 use engine_sites::Rva;
 
-/// CDynamicModifier vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0285_3e78);
-/// CDynamicModifier definition id std::string.
 pub const ID: usize = 0x28;
-/// CDynamicModifier value-expression count i32.
 pub const VALUE_COUNT: usize = 0x1c4;
 
 pub fn value_count(memory: &impl Memory, definition: usize) -> Result<u32, &'static str> {
@@ -36,8 +32,6 @@ pub fn token(
     )
 }
 
-/// Returns exact MSVC token storage and byte length, without a fixed token cap.
-/// Both modifier definitions and tactic definitions use this same representation.
 pub(crate) fn literal(
     memory: &impl Memory,
     address: usize,

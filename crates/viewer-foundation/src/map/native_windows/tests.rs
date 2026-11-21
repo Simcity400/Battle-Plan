@@ -5,9 +5,6 @@ use crate::map::{
 };
 const STILL: Tick = Tick { time: 0.0, dt: 0.0 };
 
-/// Inline icons appearing through localised button, text-box or nested-window text
-/// are acquired with window assets. Lookup tries GFX_ plus the name, then the name.
-/// Missing localisation keys show themselves.
 #[test]
 fn inline_icons_of_localised_authored_texts_are_acquired() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -42,7 +39,6 @@ fn inline_icons_of_localised_authored_texts_are_acquired() {
         assert!(assets.sprites.contains(name.as_bytes()), "{name}");
     }
     assert!(!assets.sprites.contains(b"GFX_unrelated_inline".as_slice()));
-    // Without the entries nothing but the keys is shown, and no icon is acquired.
     let bare = windows.assets(&Default::default());
     assert!(!bare.sprites.contains(b"GFX_note_icon".as_slice()));
 }
@@ -68,8 +64,6 @@ fn raid_tooltip_regression_inventory_loads_runtime_selected_localisation() {
     }
 }
 
-/// `unit_counter_navy` holding a `windowType` whose width is `max_resolution` and whose
-/// background comes from its `parent`, as a mod may declare it.
 const MAX_RESOLUTION_NAVY: &str = r#"guiTypes = {
     windowType = { name = "base" size = { x = 40 y = 20 } background = "GFX_base_bg" }
     containerWindowType = { name = "unit_counter_navy" size = { width = 66 height = 33 }
@@ -78,9 +72,6 @@ const MAX_RESOLUTION_NAVY: &str = r#"guiTypes = {
             size = { x = max_resolution y = 5 } } }
     containerWindowType = { name = "naval_combat_mapicon" size = { width = 33 height = 43 } } }"#;
 
-/// The load-time read decides only the asset set, which no GUI viewport changes: the synthetic
-/// windows and a `max_resolution` fixture read at two viewports acquire the same sprites,
-/// fonts and textures.
 #[test]
 fn the_asset_set_does_not_depend_on_the_gui_viewport() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -105,8 +96,6 @@ fn the_asset_set_does_not_depend_on_the_gui_viewport() {
     }
 }
 
-/// A `max_resolution` window lays out under the viewer's GUI viewport: read, constructed and
-/// laid out in `gui_viewport(size, ui_scale)` (1366 x 768 at 1.25 is 1092 x 614).
 #[test]
 fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -131,8 +120,6 @@ fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
     assert!(part(&layout, "count_bg").is_some());
 }
 
-/// Intel, resource and adjacency windows load their authored sprites with the other
-/// map-icon windows, so their backgrounds and glyphs draw.
 #[test]
 fn intel_and_resource_icon_windows_load_their_authored_sprites() {
     engine_executable::executable_tables::initialize_for_tests()

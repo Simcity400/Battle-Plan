@@ -1,9 +1,3 @@
-//! Destruction writers only. Every event uses its native owner and exact signed
-//! pool difference. A writer copies what it reads into events of its own and
-//! pushes them lock-free where it once took the store, before it returns to
-//! the game; the hourly drain folds them in push order into deltas, provenance
-//! and credits. Refusal, a failed allocation or a lost drain refuses its
-//! interval until a clean hourly boundary.
 use crate::hook::Hook;
 type Clock = engine_native::cgame_state::Clock<u64>;
 use collector_primitives::spill_stack::{Reserved, SpillStack};
@@ -34,11 +28,8 @@ pub struct Entry {
     pub cause: native::Cause,
     pub disposition: native::Disposition,
     pub expeditionary_owner: u32,
-    /// Nonzero only for the once-per-division deletion witness. Equipment
-    /// removals remain aggregated by owner, cause and complete design handle.
     pub division_handle: u64,
     pub variant: u64,
-    /// Signed fixed5 net removal; a negative amount is a native pool gain.
     pub amount_raw: i64,
 }
 
@@ -65,7 +56,6 @@ struct HeldRow {
     row: Row,
 }
 
-/// A deletion scope as its writer opened it; the drain resolves its provenance.
 #[derive(Clone, Copy)]
 struct Scope {
     id: u64,
@@ -95,7 +85,6 @@ struct Event {
     kind: Kind,
 }
 
-/// Each kind is one place a writer once held the store, with what it read there.
 enum Kind {
     Boundary {
         transition: bool,
@@ -115,19 +104,16 @@ enum Kind {
         identity: Option<u64>,
     },
     SkippedQueue,
-    /// A pool writer inside a whole merge, on an army of the merge's scope.
     Nested {
         site: SiteId,
         army: usize,
         scope: Scope,
         identity: Read<u64>,
     },
-    /// Pushed before the writer reads, so no window can fall between its reads and its place.
     Open {
         id: u64,
         site: SiteId,
     },
-    /// What the writer read once its window was open.
     Basis {
         id: u64,
         site: SiteId,
@@ -147,7 +133,6 @@ enum Kind {
         handle: Option<u64>,
         scope: Option<u64>,
     },
-    /// A division destructor's window, open before it reads the pool.
     Freeing {
         id: u64,
         army: usize,
@@ -169,7 +154,6 @@ enum Kind {
     },
 }
 
-/// What an observed writer read before its native original.
 enum Pre {
     Pool(PoolPre),
     Variant(VariantPre),
@@ -208,7 +192,6 @@ struct ReturnPre {
 }
 struct MergePre {
     excluded: Read<bool>,
-    /// The survivor and its handle, after every merged army authenticated.
     head: Read<(usize, u64)>,
     country: Read<u32>,
     armies: Read<Vec<MergeArmy>>,
@@ -232,7 +215,6 @@ struct MergeScope {
     touched: Vec<Row>,
 }
 impl Pre {
-    /// The army a refused writer leaves unobserved, for its skipped credits.
     fn source(&self) -> (Option<Scope>, Option<usize>, Option<u64>) {
         match self {
             Self::Pool(pre) => (pre.scope, pre.army, pre.identity.ok()),
@@ -241,7 +223,6 @@ impl Pre {
             Self::Merge(_) => (None, None, None),
         }
     }
-    /// The pools its window covers, and whether it reads shared reserves.
     fn window(&mut self, site: SiteId) -> (Pools, bool) {
         match self {
             Self::Pool(pre) => (
@@ -259,7 +240,6 @@ impl Pre {
     }
 }
 
-/// An observation's pools; only a merge's need storage of their own.
 enum Pools {
     None,
     One(usize),
@@ -285,7 +265,6 @@ impl Pools {
     }
 }
 
-/// A pool whose two threads' native writes cannot be ordered.
 #[derive(Clone, Copy, serde::Serialize)]
 struct Contest {
     reason: &'static str,
@@ -295,7 +274,6 @@ struct Contest {
     country: u32,
 }
 
-/// What it read after the original returned, or why it never did.
 enum Post {
     Unsettled,
     WorldChanged,
@@ -338,7 +316,6 @@ fn event(kind: Kind) -> Event {
         kind,
     }
 }
-/// Hook path: never waits. A refused event refuses the interval it may belong to.
 fn log(kind: Kind) {
     if LOG.push(event(kind)).is_err() {
         refused_event(None);
@@ -370,7 +347,6 @@ struct Deletion {
     expeditionary_owner: u32,
     returned: bool,
     ignored: bool,
-    // Direct Merge caller remains known when queued HQ disposition wins.
     merge_source: bool,
 }
 impl Deletion {
@@ -389,15 +365,12 @@ impl Deletion {
     }
 }
 
-/// An observation between its two events.
 struct Opened {
     site: SiteId,
     thread: u32,
     pools: Pools,
     reserves: bool,
-    /// `None` when the drain excluded or refused it before the original.
     state: Option<OpenState>,
-    /// Until its basis arrives: how many windows had closed when it opened.
     since: Option<u64>,
 }
 enum OpenState {
@@ -440,7 +413,6 @@ impl OpenState {
         }
     }
 }
-/// A window that closed while another thread's observation awaited its basis.
 struct Closed {
     at: u64,
     thread: u32,
@@ -450,7 +422,6 @@ enum Window {
     Observation { site: SiteId, pools: Pools },
     Destructor { pool: usize },
 }
-/// A division destructor between its two events.
 struct Freeing {
     thread: u32,
     army: usize,
@@ -468,7 +439,6 @@ const NO_BASIS: &str = "equipment observation closed without its pre-state";
 const NO_WINDOW: &str = "equipment observation pre-state has no open window";
 const DRAIN_STORAGE_FAILED: &str = "equipment destruction drain storage allocation failed";
 
-/// The drain's fold of the event log. Writers never take it.
 struct Store {
     _charge: crate::raw_memory::Charge,
     entries: Vec<Entry>,
@@ -486,11 +456,9 @@ struct Store {
     scopes: HashMap<u64, Deletion>,
     open: HashMap<u64, Opened>,
     freeing: HashMap<u64, Freeing>,
-    /// Windows closed so far, and those an awaiting basis is still checked against.
     closes: u64,
     closed: Vec<Closed>,
     net: Vec<Net>,
-    /// Refused-event and unsettled-call counts already charged to an interval.
     charged: (u64, u64),
 }
 impl Store {
@@ -530,7 +498,6 @@ impl Store {
     fn append(&mut self, site: SiteId, entry: Entry) -> Result<(), &'static str> {
         append_entry(&mut self.entries, site, entry)
     }
-    /// Accounts for what the fold grew.
     fn recharge(&mut self) {
         let capacity = owned_capacity(
             &self.entries,
@@ -551,7 +518,6 @@ impl Store {
         self.poisoned = true;
         UNAVAILABLE.store(true, Ordering::Relaxed);
     }
-    /// A refused native writer can mutate any open observation's pools.
     fn revoke(&mut self) {
         if !self.open.is_empty() {
             self.credits.advance();
@@ -602,8 +568,6 @@ impl Store {
         }
     }
 
-    /// Folds every pushed event in push order. A failure counted while the
-    /// log is taken cannot be placed on either side of it, so it refuses both.
     fn fold(&mut self) {
         let before = hook_failures();
         let taken = LOG.take();
@@ -612,7 +576,6 @@ impl Store {
             self.apply(event);
         }
         if after.0 > self.charged.0 {
-            // A refused event can hide a provenance or credit change.
             self.credits.advance();
             self.charge(EVENT_STORAGE_FAILED);
         }
@@ -624,7 +587,6 @@ impl Store {
         UNAVAILABLE.store(self.poisoned, Ordering::Relaxed);
         self.recharge();
     }
-    /// A writer already counted this refusal; only the interval learns of it.
     fn charge(&mut self, reason: &'static str) {
         self.refusal.get_or_insert(Refusal {
             site_index: None,
@@ -698,8 +660,6 @@ impl Store {
             }
         }
     }
-    /// What a writer entering a refused interval skipped: its native original
-    /// still ran, so an open observation and its army's credits lose their basis.
     fn skipped_entry(
         &mut self,
         site: SiteId,
@@ -739,16 +699,13 @@ impl Store {
         {
             return;
         }
-        // A revision mismatch is a persistent refusal on retained heads.
         self.credits.advance();
     }
-    /// The writer's deletion scope for this army, as the drain resolved it.
     fn scope_of(&self, scope: Option<Scope>, army: usize) -> Option<Deletion> {
         scope
             .filter(|scope| scope.army == army)
             .and_then(|scope| self.scopes.get(&scope.id).copied())
     }
-    /// The scope only while the army still has the scope's handle.
     fn context(
         &self,
         scope: Option<Scope>,
@@ -777,8 +734,6 @@ impl Store {
             self.skipped_entry(site, Some(scope), Some(army), identity.ok());
             return;
         }
-        // Unit deletion can flush a transferred source through other native
-        // writers. Whole-merge scratch excludes that source's later bookkeeping too.
         match self.context(Some(scope), army, identity) {
             Err(reason) => self.fail(site, reason),
             Ok(Some(context))
@@ -819,7 +774,6 @@ impl Store {
                 return Ok(self.credits.state(handle, army, country)? == PoolState::Bookkeeping);
             }
         }
-        // A recycled address cannot inherit another division's transfer witness.
         if let Some(pending) = pending {
             return Ok(identity? == pending.handle);
         }
@@ -882,13 +836,11 @@ impl Store {
         }
         self.settle();
     }
-    /// Closed windows matter only while an observation awaits its basis.
     fn settle(&mut self) {
         if !self.open.values().any(|opened| opened.since.is_some()) {
             self.closed.clear();
         }
     }
-    /// A closing window another thread's awaiting observation may have read across.
     fn closed(&mut self, thread: u32, window: Window) {
         self.closes += 1;
         if !self
@@ -913,9 +865,6 @@ impl Store {
             window,
         });
     }
-    /// Another thread's window over the same pools, or any destructor beside
-    /// shared reserves, open since this window opened: the order of their
-    /// native writes is unknown.
     fn conflict(
         &self,
         thread: u32,
@@ -953,7 +902,6 @@ impl Store {
                     })
             })
     }
-    /// The recording has no keyed refusal, so a contest refuses the interval.
     fn contest(
         &mut self,
         site: SiteId,
@@ -987,7 +935,6 @@ impl Store {
             .filter(|opened| opened.since.is_some())
             .map(|opened| opened.site)
         {
-            // Its writer unwound before it pushed what it read.
             self.fail(site, NO_BASIS);
         }
         if matches!(post, Post::WorldChanged)
@@ -1148,8 +1095,6 @@ impl Store {
         )
     }
 
-    // Bulk reserve credits saturate independently of their still-owned source
-    // pool. Retain actual credits until that source dies.
     fn return_open(&mut self, site: SiteId, pre: ReturnPre) -> Read<Option<OpenState>> {
         let army = pre.army?;
         let context = self.scope_of(pre.scope, army);
@@ -1218,8 +1163,6 @@ impl Store {
             self.credits
                 .visit(handle, army, country, |value| transfers::push(&mut net, value))?;
             if !bookkeeping {
-                // The source is copied before credit. Later excluded cleanup writes
-                // to this retained bookkeeping pool cannot invent a second gain/loss.
                 for row in &sources {
                     transfers::push(
                         &mut net,
@@ -1256,9 +1199,7 @@ impl Store {
             }
             let len = transfers::compact(&mut net)?;
             self.credits.check_continuity(handle)?;
-            // Keep the revision observed before reads, including first-head creation.
-            // A rejected callback in between must never supply a new certified basis.
-            self.credits.begin(handle, army, country, revision)?; // keeps an explicit zero-credit witness
+            self.credits.begin(handle, army, country, revision)?;
             self.credits.invalidate(handle);
             for value in &net[..len] {
                 if value.amount != 0 || value.credited != 0 {
@@ -1279,8 +1220,6 @@ impl Store {
         Ok(())
     }
 
-    // Merging copies signed nonzero source/survivor entries, clears the
-    // survivor, saturates each retained allocation, and can round reserve credits.
     fn merge_open(&mut self, pre: MergePre) -> Read<Option<OpenState>> {
         if pre.excluded? {
             return Ok(None);
@@ -1296,10 +1235,6 @@ impl Store {
             None
         };
         let country = country?;
-        // Selected main quantities transfer to the survivor's aggregate before
-        // allocation and credit, both survivor-owned. Its net correction therefore
-        // belongs to that recipient, even for mixed owners. Canceled delivery
-        // returns instead belong to each resolved reserve owner.
         let mut net = Vec::new();
         for army in &pre.armies? {
             let credited = if army.army == survivor {
@@ -1311,8 +1246,6 @@ impl Store {
                         .state(army.identity, army.army, army.owner?)?
                         == PoolState::Bookkeeping
             };
-            // Returned bookkeeping still selects credits. Its source-time deficit
-            // settles separately; live donor inventory remains a real input.
             if !credited {
                 for row in &army.rows {
                     transfers::push(
@@ -1454,9 +1387,6 @@ impl Store {
         }
         entry
     }
-    // The original can reject a nested scheduling request or free the unit.
-    // Retire its owned identity without reading that unit. Cleanup scopes
-    // lacking a live handle use only the excluded object's opaque address.
     fn retire(&mut self, army: usize, handle: Option<u64>) {
         if let Some(handle) = handle.or_else(|| self.queued_by_army.get(&army).copied()) {
             self.take_queued(army, handle);
@@ -1528,7 +1458,6 @@ impl Store {
                         .map(|entry| (entry.cause, entry.disposition))
                         .unwrap_or((native::Cause::Unknown, native::Disposition::Loss))
                 });
-                // A later direct caller cannot undo an already proved pool transfer.
                 if let Some(entry) =
                     pending.filter(|entry| entry.disposition != native::Disposition::Loss)
                 {
@@ -1635,8 +1564,6 @@ impl Store {
             }
         }
         if observing && !merge_source && context.is_none_or(|context| !context.ignored) {
-            // Its destructor returns held deliveries,
-            // including shared reserves outside the authenticated Merge inputs.
             self.fail(
                 SiteId::DivisionFree,
                 "equipment deletion native pools overlap observation",
@@ -1664,8 +1591,6 @@ impl Store {
             self.scopes.remove(&scope);
         }
     }
-    /// No read follows this callback's native destructor. The marker is present
-    /// even for a division whose remaining pool is empty.
     fn observe_deleted(
         &mut self,
         context: Deletion,
@@ -1711,8 +1636,6 @@ impl Store {
             {
                 return Ok(());
             }
-            // Whole Merge cleared/reallocated this pool after the old return.
-            // Its old source-time deficit and new live residual are independent.
         } else {
             if matches!(
                 disposition,
@@ -1774,7 +1697,6 @@ fn append_entry(entries: &mut Vec<Entry>, site: SiteId, entry: Entry) -> Result<
     } else if entry.amount_raw == 0 {
         return Ok(());
     }
-    // The attempts, refused ones too, size the receiving frames.
     let attempted = EVENT_ATTEMPTS
         .fetch_add(1, Ordering::Relaxed)
         .saturating_add(1);
@@ -1790,8 +1712,6 @@ fn append_entry(entries: &mut Vec<Entry>, site: SiteId, entry: Entry) -> Result<
     Ok(())
 }
 
-// Pending credits already carry compact per-design deficits. This visitor
-// settles them without touching a whole Merge's own corrections.
 fn settle_credit(store: &mut Store, context: Deletion) -> Result<(), &'static str> {
     store
         .credits
@@ -1834,7 +1754,6 @@ fn owned_capacity(
     }
 }
 
-/// Off-thread after final drain and hook/IP/callback quiescence.
 pub fn release() -> Result<(), &'static str> {
     if ENABLED.load(Ordering::SeqCst)
         || SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst)
@@ -1860,11 +1779,8 @@ pub fn release() -> Result<(), &'static str> {
 }
 
 thread_local! {
-    // Unit deletion can enter nested cleanup. Each scope restores its caller's
-    // context without allocating across a native callback.
     static DELETION: Cell<Option<Scope>> = const { Cell::new(None) };
     static WHOLE_MERGE: Cell<bool> = const { Cell::new(false) };
-    // This thread's open observation and division destructors.
     static OBSERVING: Cell<bool> = const { Cell::new(false) };
     static FREEING: Cell<usize> = const { Cell::new(0) };
 }
@@ -1879,11 +1795,8 @@ impl Drop for DeletionScope {
         DELETION.set(self.0);
     }
 }
-// Starts empty at attach and grows only in the drain, to what the hours need.
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::new()));
-// The first attach-level diagnostic stays visible before the drain folds it.
 static FIRST_REFUSAL: OnceLock<Refusal> = OnceLock::new();
-// Only the hourly boundary writes this clock.
 static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
 static WORLD_GENERATION: AtomicU64 = AtomicU64::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -1898,7 +1811,6 @@ static HOURLY_PEAK_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SUPPLEMENTAL_ENABLED: AtomicBool = AtomicBool::new(false);
 static UNAVAILABLE: AtomicBool = AtomicBool::new(false);
-/// Observations between their two events, on every thread.
 static OPEN: AtomicUsize = AtomicUsize::new(0);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static SKIPPED_QUEUE: AtomicBool = AtomicBool::new(false);
@@ -1925,9 +1837,7 @@ static CONTEST: Mutex<Option<Contest>> = Mutex::new(None);
 static LOST: AtomicU64 = AtomicU64::new(0);
 static DRAINS: AtomicU64 = AtomicU64::new(0);
 static HANDED_OVER: AtomicU64 = AtomicU64::new(0);
-/// Events a writer could not allocate.
 static STORAGE_REFUSALS: AtomicU64 = AtomicU64::new(0);
-/// Armed writers whose native original unwound.
 static UNSETTLED_CALLS: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_CALLERS: AtomicU64 = AtomicU64::new(0);
 
@@ -1940,7 +1850,6 @@ fn hook_failures() -> (u64, u64) {
 pub fn active() -> usize {
     ACTIVE.iter().map(|v| v.load(Ordering::SeqCst)).sum()
 }
-/// Rows the receiving frames need: the largest hour seen, counting attempts the drain refused.
 pub(crate) fn demand() -> usize {
     HOURLY_PEAK_EVENTS
         .load(Ordering::Relaxed)
@@ -1948,8 +1857,6 @@ pub(crate) fn demand() -> usize {
 }
 fn record_hourly_peak(events: usize, capacity: usize) {
     if events > HOURLY_PEAK_EVENTS.load(Ordering::Relaxed) {
-        // Only the drain appends, so the capacity belongs to this peak.
-        // Partial and refused intervals remain included as headroom evidence.
         HOURLY_PEAK_CAPACITY.store(capacity, Ordering::Relaxed);
         HOURLY_PEAK_EVENTS.store(events, Ordering::Relaxed);
     }
@@ -1977,13 +1884,11 @@ pub fn lost_drain() {
 const EVENT_STORAGE_FAILED: &str = "equipment destruction event storage allocation failed";
 const QUEUE_STORAGE_FAILED: &str = "equipment deletion provenance storage allocation failed";
 
-/// A full log or index grew as the drain folded.
 fn count_growth(site: SiteId) {
     OVERFLOW.fetch_add(1, Ordering::Relaxed);
     SITE_OVERFLOW[site as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-/// The drain's only growth of the provenance indexes: both doubled.
 fn grow_queue(store: &mut Store) -> Result<(), &'static str> {
     count_growth(SiteId::Queue);
     let limit = store
@@ -2002,8 +1907,6 @@ fn grow_queue(store: &mut Store) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Called before acquisition (also when no reusable frame exists). First,
-/// load and discontinuity boundaries discard the previous partial interval.
 pub fn boundary(clock: Option<Clock>) {
     #[cfg(test)]
     if !tests::owns_observation() {
@@ -2065,8 +1968,6 @@ fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<us
         ));
     }
     if store.transition {
-        // This interval was already discarded. Keep the provenance window
-        // open for later queued deletions, but do not refuse it a second time.
         store.unproven_queue = false;
         store.entries.clear();
         return Err("equipment destruction first/branch interval is partial");
@@ -2109,7 +2010,6 @@ struct Call {
     site: SiteId,
     unsettled: bool,
     returned: Cell<bool>,
-    // Last field: it drops last and records the whole callback.
     timing: crate::hook_timing::Span,
 }
 impl Call {
@@ -2118,8 +2018,6 @@ impl Call {
         ACTIVE[site as usize].fetch_add(1, Ordering::SeqCst);
         CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
         if ENABLED.load(Ordering::SeqCst) {
-            // Refused calls still reach their original writer. Count their
-            // live burst without reading additional native operands.
             let attempted = CALL_ATTEMPTS
                 .fetch_add(1, Ordering::Relaxed)
                 .saturating_add(1);
@@ -2147,12 +2045,9 @@ impl Call {
 impl Drop for Call {
     fn drop(&mut self) {
         if self.unsettled {
-            // No allocation while a native exception unwinds this frame.
             UNSETTLED_CALLS.fetch_add(1, Ordering::SeqCst);
             record_refusal(Some(self.site as usize), UNSETTLED);
         }
-        // Cleanup can run while Windows still traverses our shim/native return.
-        // Only normal return proves that detach may retire this callback.
         if !self.returned.get() || std::thread::panicking() {
             return;
         }
@@ -2187,8 +2082,6 @@ impl Drop for InDestructor {
     }
 }
 
-/// A closing event whose storage is held before the original runs, so an
-/// observation always closes; unwinding pushes it as it stands.
 struct Closing(Option<Reserved<'static, Event>>);
 impl Closing {
     fn finish(mut self, finish: impl FnOnce(&mut Kind)) {
@@ -2206,8 +2099,6 @@ impl Drop for Closing {
     }
 }
 
-/// Own the copies without retaining a lock or a native-memory borrow across
-/// the original. A writer the drain cannot place runs normally and refuses.
 fn observe_native<T, C>(
     site: SiteId,
     bail: impl FnOnce(),
@@ -2294,7 +2185,6 @@ fn recording() -> bool {
         && !crate::world_lifetime::invalidating()
         && SUPPLEMENTAL_ENABLED.load(Ordering::SeqCst)
         && !crate::allocation::failed();
-    // Refused native originals still mutate pools used by an active observer.
     if !admitted {
         revoke_active_observation();
     }
@@ -2324,7 +2214,6 @@ fn skipped_credit_mutation(army: Option<usize>) {
     });
 }
 
-/// The pool's rows in storage of their own.
 fn pool_rows(memory: &impl Memory, base: usize, pool: usize) -> Read<Vec<Row>> {
     let count = engine_native::cequipment_variant_pool::entries(memory, base, pool)?.count as usize;
     let mut rows = engine_allocation::advisory(|| engine_allocation::default_vec(count))
@@ -2333,7 +2222,6 @@ fn pool_rows(memory: &impl Memory, base: usize, pool: usize) -> Read<Vec<Row>> {
     rows.truncate(len);
     Ok(rows)
 }
-/// The destination rows `selected` reaches, in storage of their own.
 fn touched_rows(
     memory: &impl Memory,
     base: usize,
@@ -2356,7 +2244,6 @@ fn variant_amount(memory: &impl Memory, base: usize, pool: usize, variant: usize
         .map_err(|_| EVENT_STORAGE_FAILED)?;
     native::variant_amount(memory, base, pool, variant, &mut scratch)
 }
-/// Whether `source` selects `variant` among sources sorted by variant pointer.
 fn selects(sources: &[Row], variant: usize) -> bool {
     let start = sources.partition_point(|row| row.variant_pointer < variant);
     sources[start..]
@@ -2380,8 +2267,6 @@ fn army_receiver(site: SiteId, receiver: usize) -> Result<Option<usize>, &'stati
     }
 }
 
-/// Inside a whole merge, a writer on one of its armies is left to the drain:
-/// a transferred source's flush is excluded, any other overlaps the merge.
 fn nested_in_merge(site: SiteId, army: Option<usize>) -> bool {
     let Some((army, scope)) = army
         .filter(|_| WHOLE_MERGE.get())
@@ -2407,8 +2292,6 @@ fn nested_in_merge(site: SiteId, army: Option<usize>) -> bool {
     true
 }
 
-/// The owner a writer on this army sees: its deletion scope's, while the army
-/// keeps the scope's handle, else the live owner.
 fn observed_owner(scope: Option<Scope>, identity: Read<u64>, owner: Read<u32>) -> Read<u32> {
     match scope {
         Some(scope) if (scope.ignored && scope.handle == 0) || identity == Ok(scope.handle) => {
@@ -2469,8 +2352,6 @@ fn measure_pool(
                 _ => native::pool(receiver, site),
             };
             let rows = pool.and_then(|pool| pool_rows(&memory, base, pool));
-            // A strike's division and wing pool changes are forwarded to the nuclear
-            // strike family ([`crate::nuclear_strikes::equipment`]) as they happen.
             let forward = (strike && army.is_none_or(|_| scope.is_none_or(|s| !s.ignored)))
                 .then(|| {
                     let country = if army.is_some() {
@@ -2521,8 +2402,6 @@ fn measure_pool(
 
 type ArmyFn =
     unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize, usize, usize, usize);
-// The entry shim copies all four stack arguments and adds the original return
-// PC as argument nine. Unlike a naked framed shim, its unwind is described.
 core::arch::global_asm!(
     ".text", ".globl destruction_land_entry", ".seh_proc destruction_land_entry",
     "destruction_land_entry:", "sub rsp, 0x78", ".seh_stackalloc 0x78", ".seh_endprologue",
@@ -2549,10 +2428,7 @@ unsafe extern "system-unwind" fn land(
     caller: usize,
 ) {
     let _call = Call::enter(SiteId::Land);
-    // The native XP clamp also runs on zero-damage calls.
     let _experience = crate::army_stat_changes::experience_damage(a);
-    // Zero damage changes no pool (land damage writer scales only a
-    // nonzero amount), so only a damaging call must be observed.
     let _strike = (b != 0)
         .then(|| crate::nuclear_strikes::equipment_call(None))
         .flatten();
@@ -2572,15 +2448,12 @@ unsafe extern "system-unwind" fn land(
     measure_pool(SiteId::Land, a, cause, _strike.is_some(), run);
 }
 
-/// A tail jump with no frame: the native three arguments remain unchanged.
 #[unsafe(naked)]
 unsafe extern "system-unwind" fn air_entry() {
     core::arch::naked_asm!("mov r9, [rsp]", "jmp {body}", body = sym air);
 }
 unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize) {
     let _call = Call::enter(SiteId::Air);
-    // This site's one patch also serves the wing equipment watch: on every
-    // path, before the original, and dropped after it returns.
     let _wing = crate::wing_changes::kill_airplanes(a);
     let _crew = collector_observers::crew_changes::notify(a);
     let _strike = (b as u32 != 0)
@@ -2598,8 +2471,6 @@ unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize
     }
     let base = BASE.load(Ordering::Relaxed);
     let cause = count_cause(native::air_cause(base, caller));
-    // Airplane losses accept a negative request and add its negation;
-    // observe that native gain as a signed correction too.
     measure_pool(SiteId::Air, a, cause, _strike.is_some(), run);
 }
 unsafe extern "system-unwind" fn garrison(a: usize, b: usize, c: usize) {
@@ -2659,7 +2530,6 @@ unsafe extern "system-unwind" fn attrition(pool: usize, variant: usize, quantity
     );
 }
 
-/// The scope a deletion opens, or `None` when the unit is not an army.
 fn deletion_scope(
     memory: &impl Memory,
     base: usize,
@@ -2679,8 +2549,6 @@ fn deletion_scope(
     };
     native::current_state(memory, base, state)?;
     if native::cleanup(memory, base)? {
-        // Default/partially read objects can have no live handle or owner.
-        // This scope suppresses their destructor without authenticating them.
         return Ok(Some((Scope::ignored(army), 0, None)));
     }
     if !native::is_army(memory, base, army)? {
@@ -2707,9 +2575,6 @@ fn deletion_scope(
     )))
 }
 
-/// Unit deletion keeps the entry owner before it clears expeditionary ownership.
-/// Its original can flush damage through another hooked writer, so no event
-/// spans that call. Only the later destructor takes the residual snapshot.
 #[unsafe(naked)]
 unsafe extern "system-unwind" fn delete_entry() {
     core::arch::naked_asm!("mov rax, [rsp]", "jmp {body}", body = sym destruction_delete_shim);
@@ -2841,7 +2706,6 @@ unsafe extern "system-unwind" fn hq_returned(reserves: usize, pool: usize) {
     }
 }
 
-/// A direct destructor's own scope, or `None` for an excluded object.
 fn direct_scope(memory: &impl Memory, base: usize, army: usize) -> Read<Option<(Scope, u32)>> {
     if native::cleanup(memory, base)? || native::fake_intel_division(memory, army)? {
         return Ok(None);
@@ -3001,8 +2865,6 @@ unsafe extern "system-unwind" fn queue(state: usize, unit: usize, caller: usize)
             Err(reason) => observation_failed(SiteId::Queue, reason),
         }
     } else if ENABLED.load(Ordering::SeqCst) {
-        // Enable ordering and refused intervals can skip a real native queue
-        // request. Its later unit deletion must not fabricate Unknown loss.
         log(Kind::SkippedQueue);
     } else {
         SKIPPED_QUEUE.store(true, Ordering::SeqCst);
@@ -3194,7 +3056,6 @@ fn merge_selected(sources: &[Row], held: &[HeldRow], main: bool, variant: usize)
             .is_ok()
 }
 
-/// What a merge's post reads select: the merged sources and each destination.
 #[derive(Default)]
 struct MergeReads {
     survivor: usize,
@@ -3202,7 +3063,6 @@ struct MergeReads {
     scopes: Vec<(usize, bool, Vec<HeldRow>)>,
 }
 
-// Observe physical pools once; source pools are gone after the native call.
 fn merge_pre(memory: &impl Memory, base: usize, argument: usize) -> (Pre, MergeReads) {
     let mut reads = MergeReads::default();
     let mut pools = Vec::new();
@@ -3280,7 +3140,6 @@ fn merge_pre(memory: &impl Memory, base: usize, argument: usize) -> (Pre, MergeR
     let pre = boxed(pre).map_or_else(failed_pool, Pre::Merge);
     (pre, reads)
 }
-/// An observation whose own record could not be held; the drain refuses it by name.
 fn failed_pool(reason: &'static str) -> Pre {
     Pre::Pool(PoolPre {
         cause: native::Cause::Unknown,
@@ -3309,8 +3168,6 @@ fn merge_rest(
     let mut held: Vec<HeldRow> = Vec::new();
     for &army in armies {
         let mut destination = None;
-        // Destructed source families resolve their own roster country. Only
-        // reinforcement is canceled on the survivor.
         native::canceled_delivery_pools(memory, base, army, army != survivor, |pool| {
             let rows = pool_rows(memory, base, pool)?;
             if rows.is_empty() {
@@ -3428,8 +3285,6 @@ unsafe extern "system-unwind" fn merge(argument: usize) {
         unsafe { std::mem::transmute(ORIGINAL[SiteId::Merge as usize].load(Ordering::Acquire)) };
     let run = || _call.run(|| unsafe { original(argument) });
     if !recording() {
-        // A skipped whole operation can mutate survivor and donor lifetimes;
-        // its failed admission has no authenticated complete receiver set.
         skipped_credit_mutation(None);
         run();
         return;
@@ -3446,7 +3301,6 @@ unsafe extern "system-unwind" fn merge(argument: usize) {
     );
 }
 
-/// Locate every site of one group before constructing any; a withheld site refuses the group.
 fn locate_sites(
     base: usize,
     supplemental: bool,
@@ -3520,10 +3374,7 @@ pub struct Hooks {
     supplemental: Vec<(native::SiteId, Hook)>,
 }
 impl Hooks {
-    /// The original writers and optional supplemental group verify
-    /// and install independently. No member of a refused group is enabled.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
-        // Initialize the store on the loader before any writer can enter.
         LazyLock::force(&STORE);
         BASE.store(base, Ordering::Relaxed);
         let install = |supplemental| -> Result<Vec<(native::SiteId, Hook)>, Cow<'static, str>> {
@@ -3615,7 +3466,6 @@ impl Hooks {
         crate::army_stat_changes::experience_forwarder(
             self.original.iter().any(|(id, _)| *id == SiteId::Land),
         );
-        // The aircraft loss writer detour is live exactly when its site installed.
         crate::wing_changes::observe_kills(
             self.original
                 .iter()
@@ -3629,7 +3479,6 @@ impl Hooks {
             enabled && self.original.len() == original_count,
             Ordering::SeqCst,
         );
-        // The land and air sites forward a strike's pool changes.
         crate::nuclear_strikes::forwarder(
             replay_data::rows::NuclearStrikePart::Equipment,
             ENABLED.load(Ordering::SeqCst),
@@ -3646,8 +3495,6 @@ impl Hooks {
                 );
                 SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
                 let _ = SUPPLEMENTAL_UNHOOKED.set(Cow::Owned(reason));
-                // Preserve hook storage until detach. A safe rollback is
-                // necessary before the original group can run independently.
                 if !set_sites_enabled(&mut self.supplemental, false).inspect_err(|reason| {
                     crate::hook::installation::refused(
                         crate::hook::installation::Kind::Rollback,

@@ -1,12 +1,3 @@
-//! Maps beside the harness's own, as a dashboard draws them, set by the environment:
-//! `BATTLE_PLAN_EXTRA_MAPS=<n>` more readers of the map's playhead, each opened off the frame thread as
-//! the window opens one and drawn every frame at the map's view and hour once it arrives;
-//! `BATTLE_PLAN_EXTRA_RECORDING=<file>` one map of another recording, on a playhead of its own playing on
-//! its clock; `BATTLE_PLAN_MAP_CHURN=<frames>` the extra maps closed and opened again every so many
-//! frames; `BATTLE_PLAN_HIDE=extra|map:<from>:<frames>` the first extra map scrolled out, or the harness's
-//! own map covered, for so many frames from frame `from`, then shown again;
-//! `BATTLE_PLAN_AS_DASHBOARD_MAP=1` the harness's own map drawn as a dashboard map. What they cost is the
-//! report's `extra_maps`.
 
 use crate::{
     document::Document,
@@ -25,7 +16,6 @@ fn number(name: &str) -> io::Result<Option<u64>> {
     }
 }
 
-/// Whether the harness's map is drawn as a dashboard map.
 pub(super) fn as_dashboard_map() -> bool {
     std::env::var("BATTLE_PLAN_AS_DASHBOARD_MAP").or_else(|_| std::env::var("HOI4_AS_DASHBOARD_MAP")).is_ok_and(|value| value == "1")
 }
@@ -36,31 +26,24 @@ enum Hidden {
     Map,
 }
 
-/// A map hidden for a while and shown again: when it was shown, when its reader arrived, when it
-/// drew its first picture, and what the playhead held while it was hidden.
 #[derive(Default)]
 struct Shown {
     at: Option<u64>,
     arrived: Option<u64>,
     pictured: Option<u64>,
-    /// Per hidden frame: the playhead's bytes, its ring's steps and bytes, its lanes.
     hidden: Vec<(usize, usize, usize, usize)>,
-    /// Per frame after the first picture: the hours its layers are behind the head.
     lag: Vec<f64>,
 }
 
-/// An extra map drawn, and the reader opening whose first picture it has not drawn yet.
 struct Drawn {
     side: SideThread,
     opened: Option<usize>,
-    /// The hidden map shown again, until its first picture and its lag after.
     watched: bool,
 }
 
 struct Pending {
     opening: Opening,
     started: u64,
-    /// Whether it is the hidden extra map shown again.
     shown: bool,
 }
 
@@ -73,27 +56,19 @@ pub(super) struct Extras {
     sides: Vec<Drawn>,
     pending: Vec<Pending>,
     other: Option<SideThread>,
-    /// Per frame: the extra maps' frames on the window thread, the other timeline's, the map's step
-    /// built by the stepper (most a step).
     draw_ms: Vec<f64>,
-    /// The extra maps' frames, the window thread's own CPU, milliseconds.
     draw_cpu_ms: Vec<f64>,
     other_ms: Vec<f64>,
     step_ms: Vec<f64>,
     events: Vec<(u64, &'static str, f64)>,
-    /// Per frame with an opening started, waiting or arriving: the frame thread's CPU and wall
-    /// time on it (start, poll, install), microseconds.
     opening_work: Vec<(u64, f64, f64)>,
-    /// Per reader opened: frames from its start to its arrival, and to its first picture.
     opened: Vec<(u64, Option<u64>, Option<u64>)>,
-    /// The map's own frames: (frame, lag in hours of what its layers show, resets, steps).
     map: Vec<(u64, Option<f64>, u32, u32)>,
     shown: Shown,
     held: Vec<Value>,
 }
 
 impl Extras {
-    /// The extras the environment asks for beside `main`, the harness's map of `document`.
     pub(super) fn open(document: &Document, main: Option<&SideThread>, speed: f64) -> io::Result<Self> {
         let wanted = number("BATTLE_PLAN_EXTRA_MAPS")?.unwrap_or(0) as usize;
         let churn = number("BATTLE_PLAN_MAP_CHURN")?.filter(|&frames| frames > 0);
@@ -136,7 +111,6 @@ impl Extras {
         self.wanted > 0 || self.other.is_some() || self.hide.is_some()
     }
 
-    /// The window's layers for another recording's map.
     fn layers(document: &Document) -> Vec<Box<dyn crate::layers::Layer>> {
         let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
         let place_in = Arc::clone(&document.content);
@@ -147,8 +121,6 @@ impl Extras {
         ]
     }
 
-    /// Starts the readers wanted that are neither drawn nor being made, as a dashboard map opens
-    /// one: on a worker, joining the playhead already anchored at its clock.
     fn start(&mut self, document: &Document, index: u64, shown: bool) {
         while self.sides.len() + self.pending.len() < self.wanted {
             match Opening::start(document, None) {
@@ -161,17 +133,14 @@ impl Extras {
         }
     }
 
-    /// Whether the harness's own map is covered this frame.
     pub(super) fn main_hidden(&self, index: u64) -> bool {
         self.hide.is_some_and(|(which, from, frames)| which == Hidden::Map && (from..from + frames).contains(&index))
     }
 
-    /// The playhead's clock, for frames whose map is covered.
     pub(super) fn head(&self, now: Instant) -> Option<Hour> {
         self.entry.as_ref().map(|entry| entry.playhead().head(now))
     }
 
-    /// One frame of every extra map, after the harness's map drew at `head` (none while covered).
     pub(super) fn frame(&mut self, document: &Document, main: Option<&SideThread>, index: u64, head: Head) -> Value {
         if !self.active() {
             return Value::Null;
@@ -188,7 +157,6 @@ impl Extras {
                 self.start(document, index, false);
                 "opened"
             } else {
-                // Let go off the frame thread, as the window's dropper does.
                 let closed = (std::mem::take(&mut self.sides), std::mem::take(&mut self.pending).into_iter().map(|pending| pending.opening).collect::<Vec<_>>());
                 std::thread::spawn(move || drop(closed));
                 "closed"
@@ -243,8 +211,6 @@ impl Extras {
         let draw = started.elapsed().as_secs_f64() * 1e3;
         let draw_cpu = current_thread_cpu_time().zip(draw_cpu).map(|(now, then)| now.saturating_sub(then).as_secs_f64() * 1e3);
         for drawn in &mut self.sides {
-            // An extra map has no scene to upload to, so its first picture is its layers composed
-            // and drawing; its lag is what it has applied behind the head.
             if !drawn.side.draws("political") {
                 continue;
             }
@@ -290,8 +256,6 @@ impl Extras {
         json!({"extra_draw_ms": draw, "extra_draw_cpu_ms": draw_cpu, "other_ms": other, "event": event, "main_drawn": main.is_some()})
     }
 
-    /// While a map is hidden, what the playhead holds; once the covered map is shown again, when
-    /// its reader arrives, when it first draws, and its lag after.
     fn track_hidden(&mut self, main: Option<&SideThread>, index: u64) {
         let Some((which, from, frames)) = self.hide else { return };
         if (from..from + frames).contains(&index)
@@ -332,8 +296,6 @@ impl Extras {
         })
     }
 
-    /// What the extra maps cost over the run, and how the map's own frames fared around each
-    /// opening, closing, hiding and showing.
     pub(super) fn summary(&self) -> Value {
         if !self.active() {
             return Value::Null;
@@ -379,8 +341,6 @@ impl Extras {
     }
 }
 
-/// An extra map's window for `head`: a stepped head waits for the picture of its hour, as the
-/// harness's own map does.
 fn window_for(side: &mut SideThread, head: Head) -> Option<crate::playhead_host::side::Window<'_>> {
     match head {
         Head::Stepped(hour) => side.stepped_window(hour),

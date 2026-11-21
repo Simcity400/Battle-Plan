@@ -1,29 +1,3 @@
-//! A flat, preallocated pool for hour-bounded native acquisition.
-//!
-//! The queue mutex owns metadata and claim order, never a running payload.
-//! Each slot has one cell and one word: `generation << 3 | phase`.
-//! Submission owns a VACANT cell under the queue mutex, initializes its job,
-//! marks metadata Queued and releases PENDING before enqueueing. Claiming
-//! removes that entry and releases RUNNING under the mutex; only that claimant
-//! then borrows the job, in place, outside the mutex. It ends every live reader
-//! and job borrow, fills the completion and counters, and releases PUBLISHED.
-//! After publication it never accesses the cell again. Cancellation owns only
-//! still-Queued cells under the mutex and publishes their Stopped completions.
-//! An acquire CAS from PUBLISHED to COLLECTING gives exactly one collector the
-//! complete cell. Collection moves that value once into `out`, then releases
-//! VACANT; report-only inspection copies R and restores PUBLISHED without
-//! moving the request or transferring its ticket. A new submitter acquires VACANT under the mutex before reusing the storage.
-//! Parked cells are PENDING but metadata Parked: only locked unpark or
-//! rejection completion accesses them. Rejection initializes its completion
-//! directly in the existing heap cell and never admits or runs the job.
-//!
-//! Jobs own outputs and source leases. The running capture must collect
-//! every accepted ticket before it returns, including on unwind. A join
-//! may run its exact awaited queued job when caller execution is allowed;
-//! optional join help is bounded by learned body times. Worker-only jobs
-//! always retain their completion barrier. Registered publication continuations
-//! may submit successors, but never inspect a Running cell. The callback owns
-//! their draining ledgers and closes admission before its unwind drain.
 
 use std::sync::Arc;
 use std::{os::windows::io::AsRawHandle, thread::JoinHandle};
@@ -46,10 +20,6 @@ use windows_sys::Win32::System::Threading::{
 };
 
 pub(crate) const MAX_WORKERS: usize = 15;
-// Ordinary naval tree censuses fall back to borrowed ancestor frames when
-// pack depth scratch is short. Keep the worker reserve explicit, independent
-// of RUST_MIN_STACK, matching the supported executable's stack reserve (4 MiB).
-// Native retention/copy depth is documented beside the engine reader.
 const WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
 const VACANT: u64 = 0;
 const PENDING: u64 = 1;
@@ -58,7 +28,6 @@ const COLLECTING: u64 = 3;
 const RUNNING: u64 = 4;
 const PHASE_MASK: u64 = 7;
 const MAX_GENERATION: u64 = u64::MAX >> 3;
-/// Collectors hold no partial state a panicked holder could leave behind.
 pub(crate) fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
@@ -78,9 +47,7 @@ mod readiness_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
-    /// Partial observations are retained but no report is valid; never retry.
     Panicked,
-    /// Cancellation or terminal allocation failure; never retry.
     Stopped,
 }
 
@@ -93,15 +60,12 @@ pub(crate) struct Completion<J, R> {
     pub profile: Profile,
 }
 
-/// A detached dependency ledger, retained independently of its published cell.
 pub(crate) trait Publication: Send + Sync {
     fn published(&self);
     fn failed(&self) {}
 }
 type OnCompleted<J, R> = fn(&mut J, &Result<R, Failure>) -> Option<Arc<dyn Publication>>;
 
-/// Diagnostic stages in raw QPC ticks. The publisher cannot stamp a wake's
-/// end in the cell: the collector owns it immediately after publication.
 #[cfg(feature = "callback_profile")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Profile {
@@ -117,8 +81,6 @@ pub(crate) struct Profile {
     pub collected_qpc: i64,
 }
 
-/// Pool identity, 61-bit generation and a single-use collection CAS prevent
-/// foreign, stale or racing tickets from consuming another output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct Ticket {
     pool: u64,
@@ -164,17 +126,14 @@ pub(crate) struct Calibration {
     pub rejected: u64,
     pub caller_executed: u64,
     pub worker_executed: u64,
-    /// WaitOnAddress calls by joins, including spurious returns.
     pub join_sleeps: u64,
     pub join_help: bool,
     pub help_executed: u64,
-    /// Body wall of jobs executed by join help, also in caller_executed.
     pub help_ns: u64,
     pub callback_help: bool,
     pub callback_help_executed: u64,
     pub callback_help_ns: u64,
     pub wake_boost_refusals: u64,
-    /// Workers left at normal priority because raising it failed.
     pub priority_refusals: u64,
     pub joins: u64,
     pub join_wall_ns: u64,
@@ -212,9 +171,6 @@ struct Counters {
 #[cfg(feature = "executor_join_help")]
 const JOIN_HELP_ATTEMPTS: usize = 4;
 
-/// A join never replenishes either budget after a spurious wake. The time
-/// budget is half its first valid predicted remainder, charged by each
-/// admitted candidate's decaying maximum, rather than its eventual body time.
 #[cfg(feature = "executor_join_help")]
 struct HelpBudget {
     attempts: usize,
@@ -237,7 +193,6 @@ impl HelpBudget {
     }
 }
 
-/// Hold an armed help attempt before try_lock, with its budget still available.
 #[cfg(all(test, feature = "executor_join_help"))]
 #[derive(Default)]
 struct HelpAttemptGate {
@@ -262,7 +217,6 @@ enum Phase {
 
 struct Slot {
     generation: u64,
-    /// Lower priority first, with FIFO for equal priorities.
     priority: u8,
     worker_only: bool,
     callback_help: bool,
@@ -278,19 +232,12 @@ struct Claim {
     class: Option<usize>,
 }
 
-/// The job is initialized once on admission. Other completion fields become
-/// initialized before PUBLISHED. No Drop here: Shared drops only owned fields
-/// according to the slot word, after every participant has gone away.
 struct Cell<J, R>(UnsafeCell<MaybeUninit<Completion<J, R>>>);
 impl<J, R> Cell<J, R> {
     fn pointer(&self) -> *mut Completion<J, R> {
         self.0.get().cast()
     }
 }
-// SAFETY: the module ownership protocol admits one cell writer/reader at a
-// time. The mutex hands Queued ownership to a runner; release publication and
-// acquire collection hand it to one collector; release VACANT and locked
-// acquire admission hand it to the next submitter. No shared J/R references.
 unsafe impl<J: Send, R: Send> Sync for Cell<J, R> {}
 
 struct State {
@@ -359,8 +306,6 @@ impl State {
         slot.phase = Phase::Running;
         shared.active.fetch_add(1, Ordering::SeqCst);
         #[cfg(feature = "callback_profile")]
-        // SAFETY: the queue mutex and removed ready entry give this claimant
-        // exclusive ownership of the Queued cell, before its runner begins.
         unsafe {
             (*shared.cells[index].pointer()).profile.claimed_qpc = crate::sampling::qpc();
         }
@@ -402,8 +347,6 @@ impl State {
         Some(self.claim(shared, position))
     }
 
-    /// A worker parent's own child, still unclaimed; worker-only children included, as the
-    /// parent is a worker.
     fn take_child<J, R>(&mut self, shared: &Shared<J, R>, ticket: Ticket) -> Option<Claim> {
         let slot = self.slots.get(ticket.slot)?;
         if slot.generation != ticket.generation
@@ -427,9 +370,6 @@ impl State {
             let slot = &self.slots[index];
             debug_assert!(slot.phase == Phase::Queued);
             let completion = shared.cells[index].pointer();
-            // SAFETY: cancellation holds the mutex and has removed the only
-            // ready entry. No claimant can access this Queued cell. The job
-            // and optional profile were initialized at submission.
             unsafe {
                 std::ptr::addr_of_mut!((*completion).report).write(Err(Failure::Stopped));
                 #[cfg(test)]
@@ -446,8 +386,6 @@ impl State {
 type Runner<J, R> = dyn Fn(&mut J) -> R + Send + Sync;
 type Classes<J> = (usize, fn(&J) -> usize);
 struct BatchContext(UnsafeCell<crate::allocation::Context>);
-// SAFETY: writes are locked and require uncollected == 0 and active == 0.
-// Both the native body and its detached continuation end before active retires.
 unsafe impl Sync for BatchContext {}
 
 struct Shared<J, R> {
@@ -455,19 +393,12 @@ struct Shared<J, R> {
     state: Mutex<State>,
     started_ready: Condvar,
     work_ready: Condvar,
-    /// Where reserves sleep through a capture read beside the game.
     reserve_ready: Condvar,
-    /// Workers below this index always work; the rest are reserves until called up.
     regulars: AtomicUsize,
     called_up: AtomicBool,
-    /// The thread priority every working worker takes.
     priority: AtomicI32,
-    /// One plus the processor whose physical core working workers keep off; zero for anywhere.
     away: AtomicU32,
-    /// Moved, under the queue lock, each time [`Pool::hurry`] sets every worker's priority and
-    /// core itself: a worker then forgets what it last applied.
     hurried: AtomicU64,
-    /// Remaining held-burst notifications, relayed one per worker claim.
     burst_peers: AtomicUsize,
     run: Box<Runner<J, R>>,
     callback_help: OnceLock<fn(&J) -> bool>,
@@ -477,15 +408,10 @@ struct Shared<J, R> {
     words: Box<[AtomicU64]>,
     active: AtomicUsize,
     uncollected: AtomicUsize,
-    /// One sleeping collector: its ticket generation, or zero.
     awaited: AtomicU64,
     worker_waiters: AtomicUsize,
-    /// The callback's readiness scheduler waits for any producer publication,
-    /// without collecting or running an unrelated job in a fixed join order.
     ready_waiting: AtomicBool,
     ready_wake: AtomicU64,
-    /// Registered active-count waiters. A count preserves concurrent shutdown:
-    /// an early zero observer cannot unregister another still-sleeping waiter.
     settling: AtomicUsize,
     counters: Counters,
     #[cfg(test)]
@@ -528,7 +454,6 @@ impl<J, R> Shared<J, R> {
         self.work_ready.notify_all();
         self.reserve_ready.notify_all();
     }
-    /// Workers that take work now: every worker, or the regulars while the reserves rest.
     fn working(&self) -> usize {
         let all = self.thread_ids.len();
         if self.called_up.load(Ordering::Acquire) {
@@ -540,29 +465,18 @@ impl<J, R> Shared<J, R> {
 
     fn publish(&self, index: usize, generation: u64) {
         #[cfg(feature = "callback_profile")]
-        // SAFETY: called only by the unique Running claimant, or by locked
-        // cancellation of Queued work. Every completion field is initialized
-        // and exclusively owned until the SC release store below.
         unsafe {
             (*self.cells[index].pointer()).profile.published_qpc = crate::sampling::qpc();
         }
         self.words[index].store(word(generation, PUBLISHED), Ordering::SeqCst);
-        // No cell access after this store, even if the slot is already reused.
-        // Dekker in the SC order: either the sleeper's word reload sees this
-        // store, or this load sees its awaited registration. WaitOnAddress
-        // also returns immediately if publication precedes its actual wait,
-        // because the slot word differs.
         if self.ready_waiting.load(Ordering::SeqCst) {
             self.ready_wake.fetch_add(1, Ordering::SeqCst);
-            // SAFETY: stable aligned storage lives through the callback wait.
             unsafe { WakeByAddressSingle(self.ready_wake.as_ptr().cast()) };
         }
         if self.awaited.load(Ordering::SeqCst) == generation {
-            // SAFETY: stable, aligned atomic storage lives through every wait.
             unsafe { WakeByAddressSingle(self.words[index].as_ptr().cast()) };
         }
         if self.worker_waiters.load(Ordering::SeqCst) != 0 {
-            // Worker joins never overwrite the callback's single awaited registration.
             unsafe { WakeByAddressAll(self.words[index].as_ptr().cast()) };
         }
     }
@@ -574,9 +488,6 @@ impl<J, R> Shared<J, R> {
             if active == 0 {
                 break;
             }
-            // The same SC Dekker as publication: the zero decrement either
-            // precedes this reload or observes settling and wakes all waiters.
-            // SAFETY: stable aligned usize and a same-size local comparison.
             unsafe {
                 WaitOnAddress(
                     self.active.as_ptr().cast(),
@@ -593,9 +504,6 @@ impl<J, R> Shared<J, R> {
         let index = claim.index;
         let completion = self.cells[index].pointer();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Acquisition);
-        // SAFETY: claim was removed under the mutex, incrementing active and
-        // retaining one uncollected admission. Context cannot reset until all
-        // admissions are collected and every active publisher has retired.
         let borrowed_context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
         let reads = crate::read_accounting::Capture::new();
         #[cfg(feature = "callback_profile")]
@@ -609,27 +517,19 @@ impl<J, R> Shared<J, R> {
         let mut report = if crate::allocation::failed() {
             Err(Failure::Stopped)
         } else {
-            // SAFETY: only this claimant owns the Running cell. The job was
-            // initialized at admission; no move or other cell reference occurs
-            // while its body runs. The borrow ends inside the unwind boundary.
             match catch_unwind(AssertUnwindSafe(|| unsafe {
                 (self.run)(&mut (*completion).request)
             })) {
                 Ok(report) if !crate::allocation::failed() => Ok(report),
                 Ok(_) => Err(Failure::Stopped),
                 Err(payload) => {
-                    // Arbitrary payload Drop may panic; a stopped pool bounds
-                    // these leaks by its active runners.
                     std::mem::forget(payload);
                     Err(Failure::Panicked)
                 }
             }
         };
-        // The hook only transfers owned outputs and clones its ledger. Its
-        // notification runs after publication, with no remaining cell borrow.
         let publication = match catch_unwind(AssertUnwindSafe(|| {
             self.on_completed.get().and_then(|completed| {
-                // SAFETY: the claimant still exclusively owns this Running cell.
                 unsafe { completed(&mut (*completion).request, &report) }
             })
         })) {
@@ -654,13 +554,9 @@ impl<J, R> Shared<J, R> {
                 },
                 1,
             );
-            // Failure closes admission and cancels queued work before this
-            // runner publishes. Running peers keep their owned completions.
             self.lock().stop(self);
             self.work_ready.notify_all();
         }
-        // SAFETY: still the sole Running claimant, with the job borrow ended.
-        // Initialize report/counts and update only already-initialized stages.
         unsafe {
             std::ptr::addr_of_mut!((*completion).report).write(report);
             #[cfg(test)]
@@ -720,13 +616,8 @@ impl<J, R> Shared<J, R> {
             },
             1,
         );
-        // Counters precede publication: an acquire collector observes them
-        // when it immediately calls calibration, even before active retires.
         self.publish(index, claim.generation);
         if let Some(publication) = publication {
-            // Retain the allocation context through successor admission and
-            // keep this runner active until that bounded handoff has ended.
-            // SAFETY: active still retains this batch's immutable context.
             let _context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
             if let Err(payload) =
                 catch_unwind(AssertUnwindSafe(|| publication.published()))
@@ -745,7 +636,6 @@ impl<J, R> Shared<J, R> {
         }
         let active = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
         if active == 0 && self.settling.load(Ordering::SeqCst) != 0 {
-            // SAFETY: active lives until every runner/waiter releases Shared.
             unsafe { WakeByAddressAll(self.active.as_ptr().cast()) };
         }
     }
@@ -809,16 +699,12 @@ impl<J, R> Shared<J, R> {
                     return false;
                 };
                 let candidate_maximum = self.maxima[class].load(Ordering::Relaxed);
-                // Divide rather than multiply, so a saturated maximum cannot
-                // overflow the two-times bound. No history means no help.
                 candidate_maximum != 0
                     && candidate_maximum <= remaining / 2
                     && candidate_maximum <= available
             })
             .min_by_key(|(_, index)| state.slots[**index].priority)
             .map(|(position, _)| position)?;
-        // Refresh the prediction after searching: bodies and their class
-        // histories can advance without the queue mutex while we choose a job.
         let candidate = &state.slots[state.ready[position]];
         let candidate_maximum = self.maxima[candidate.class?].load(Ordering::Relaxed);
         let elapsed = (crate::sampling::qpc().max(0) as u64).saturating_sub(begin);
@@ -844,25 +730,17 @@ impl<J, R> Drop for Shared<J, R> {
                 match state.load(Ordering::Relaxed) & PHASE_MASK {
                     VACANT => {}
                     PENDING | RUNNING => {
-                        // SAFETY: last Shared owner: no runner, submitter, unpark
-                        // or collector remains. Every pending/running cell has a job;
-                        // other fields may be uninitialized after an executor
-                        // failure, so only drop the owned job.
                         unsafe {
                             std::ptr::addr_of_mut!((*cell.pointer()).request).drop_in_place()
                         };
                     }
                     PUBLISHED => {
-                        // SAFETY: last owner, fully initialized at publication;
-                        // this completion was never moved out by collection.
                         unsafe { cell.pointer().drop_in_place() };
                     }
                     _ => unreachable!("last acquisition owner cannot still be collecting"),
                 }
             }));
             if let Err(payload) = dropped {
-                // Match the batch and runner teardown convention: an arbitrary
-                // panic payload's destructor must not interrupt later cells.
                 std::mem::forget(payload);
             }
         }
@@ -879,8 +757,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     pub(crate) fn set_on_completed(&self, completed: OnCompleted<J, R>) {
         assert!(self.shared.on_completed.set(completed).is_ok());
     }
-    /// Unclassified pools disable join help, including tests and portable
-    /// benchmarks. Zero workers executes accepted jobs on their collector.
     #[cfg(test)]
     pub(crate) fn start(
         worker_count: usize,
@@ -966,7 +842,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 body_begin.push(AtomicU64::new(0));
             }
             let mut frequency = 0_i64;
-            // SAFETY: valid local output, queried once before workers start.
             if unsafe {
                 windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
             } == 0
@@ -1027,9 +902,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             join_failed: AtomicBool::new(false),
             context: BatchContext(UnsafeCell::new(crate::allocation::Context::default())),
         });
-        // Arc allocates strong/weak atomic counts followed by its aligned
-        // value. Count the real storage; vector capacities and boxed slices
-        // include reserved space, and a zero-sized run closure costs no bytes.
         let allocated_bytes = {
             let state = shared.lock();
             let arc_layout = std::alloc::Layout::new::<[AtomicUsize; 2]>()
@@ -1087,12 +959,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Ok(pool)
     }
 
-    /// # Safety
-    /// Keep the foreign live-read lease until EVERY accepted ticket and
-    /// continuation successor is drained, then settle active publishers,
-    /// including on failure. Mutable outputs must be disjoint; shared
-    /// seeds live through all consumers. Each ticket has one collecting owner.
-    /// Nested workers collect only their children through finish_worker_into.
+    #[doc = " # Safety"]
+    #[doc = " Keep the foreign live-read lease until EVERY accepted ticket and"]
+    #[doc = " continuation successor is drained, then settle active publishers,"]
+    #[doc = " including on failure. Mutable outputs must be disjoint; shared"]
+    #[doc = " seeds live through all consumers. Each ticket has one collecting owner."]
+    #[doc = " Nested workers collect only their children through finish_worker_into."]
     #[cfg(test)]
     pub(crate) unsafe fn submit(&self, request: &mut Option<J>) -> Result<Ticket, SubmitError> {
         unsafe { self.submit_with_priority(request, 0, false, true) }
@@ -1109,10 +981,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Ok(())
     }
 
-    /// Lower claim priority first, FIFO for ties. Held bursts use wake_workers.
-    /// Rejection retains the caller's request, including a full pending pool.
-    /// # Safety
-    /// The same lease and unique-collector contract as submit.
+    #[doc = " # Safety"]
+    #[doc = " The same lease and unique-collector contract as submit."]
     pub(crate) unsafe fn submit_with_priority(
         &self,
         request: &mut Option<J>,
@@ -1146,9 +1016,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if self.shared.uncollected.load(Ordering::Acquire) == 0
             && self.shared.active.load(Ordering::Acquire) == 0
         {
-            // SAFETY: no runner or detached continuation can still borrow
-            // this context. Parked jobs never run. The mutex excludes any
-            // competing claim, admission or reset.
             unsafe { *self.shared.context.0.get() = crate::allocation::context() };
         }
         let index = free.expect("checked free acquisition slot");
@@ -1174,10 +1041,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             self.shared.body_begin[index].store(0, Ordering::Relaxed);
         }
         let completion = self.shared.cells[index].pointer();
-        // SAFETY: locked admission acquired this word's VACANT release; the
-        // preceding collector/unpark finished its read and owns the old job.
-        // The cell holds no initialized owned value. Initialize each field
-        // separately, without constructing or moving a whole completion.
         unsafe {
             std::ptr::addr_of_mut!((*completion).request)
                 .write(request.take().expect("checked owned acquisition request"));
@@ -1203,9 +1066,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         })
     }
 
-    /// Cancel unstarted work, then wait on active rather than the queue mutex
-    /// or a condvar. Completed/failed payloads remain collectable. The Batch
-    /// unwind barrier calls this even if one retained collection panicked.
     pub(crate) fn settle(&self) {
         self.shared.lock().cancel_queued(&self.shared);
         self.shared.wait_active();
@@ -1228,21 +1088,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         {
             self.shared.lock().counters.notified_one += 1;
         }
-        // The collector notifies one worker, not every peer in a held burst.
-        // Claims relay the rest before their bodies, one notification each.
         self.shared.work_ready.notify_one();
     }
-    /// The game thread waits for the capture, about to run or running: every worker, above normal
-    /// priority and on any core, so other processes cannot lengthen the pause. A worker inside a
-    /// job takes the pool's pace only when it returns, so each is raised and freed here too.
     pub(crate) fn hold_pace(&self) {
         let state = self.shared.lock();
-        // Under the queue lock no worker is between reading the pace and applying it. The join
-        // that closes a handle holds `threads`, so it is only tried: a pool shutting down is idle.
         if let Ok(threads) = self.threads.try_lock() {
             for thread in threads.iter() {
                 let handle = thread.as_raw_handle();
-                // SAFETY: a live worker handle owned by `threads`, held through these calls.
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1252,9 +1104,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         }
         self.pace(state, usize::MAX, THREAD_PRIORITY_ABOVE_NORMAL, true, None);
     }
-    /// The capture about to run reads beside the running game: `regulars` workers below its
-    /// priority and off the physical core of the game thread's `game` processor, the rest in
-    /// reserve.
     pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
         let state = self.shared.lock();
         self.pace(state, regulars.max(1), THREAD_PRIORITY_BELOW_NORMAL, false, game);
@@ -1278,12 +1127,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if called_up && rested {
             self.shared.reserve_ready.notify_all();
         } else if !called_up {
-            // A called-up reserve asleep among the regulars goes back to its own rest.
             self.shared.work_ready.notify_all();
         }
     }
-    /// Park never admits, queues or counts a request. Prefer its partition,
-    /// then any VACANT cell; exhaustion/fullness retains it with the caller.
     pub(crate) fn park(&self, request: &mut Option<J>, worker_only: bool) -> Option<Ticket> {
         let mut state = self.shared.lock();
         if request.is_none() || state.generation == MAX_GENERATION {
@@ -1302,8 +1148,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         slot.priority = 0;
         slot.worker_only = worker_only;
         slot.phase = Phase::Parked;
-        // SAFETY: locked park acquired VACANT and exclusively owns the empty
-        // cell. Parked has only an initialized job; no completion is exposed.
         unsafe {
             std::ptr::addr_of_mut!((*self.shared.cells[index].pointer()).request)
                 .write(request.take().expect("checked parked request"))
@@ -1329,8 +1173,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         {
             return None;
         }
-        // SAFETY: locked, matching Parked cell owns exactly this job and no
-        // runner/collector can access it. Read once; release VACANT afterwards.
         let request = unsafe {
             std::ptr::addr_of!((*self.shared.cells[ticket.slot].pointer()).request).read()
         };
@@ -1340,10 +1182,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Some(request)
     }
 
-    /// Complete a rejected request in its already allocated cell. `complete`
-    /// must not call back into this pool; None retains the job for another path.
-    /// In particular, no job-sized request or table-count array is constructed
-    /// on the rejection handler's stack.
     #[inline(never)]
     pub(crate) fn finish_parked_into(
         &self,
@@ -1367,15 +1205,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             return false;
         }
         let cell = self.shared.cells[ticket.slot].pointer();
-        // SAFETY: the matching parked cell has one initialized request, owned
-        // exclusively under the mutex. A panicking handler leaves it parked,
-        // so the batch's drain still owns and drops it exactly once.
         let Some(report) = complete(unsafe { &mut (*cell).request }) else {
             return false;
         };
-        // SAFETY: initialize the other fields in the heap cell, then move its
-        // sole completion into empty output before releasing the cell. The
-        // promoted zero array is copied directly without a stack temporary.
         unsafe {
             std::ptr::addr_of_mut!((*cell).report).write(report);
             #[cfg(test)]
@@ -1411,8 +1243,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         }
         collected
     }
-    /// A worker parent runs its own child inline while no worker has claimed it; whether it
-    /// ran. Its completion is then collected as any other.
     pub(crate) fn run_unclaimed_child(&self, ticket: Ticket) -> bool {
         if ticket.pool != self.shared.id
             || self.shared.words.get(ticket.slot).map(|value| value.load(Ordering::Acquire))
@@ -1458,7 +1288,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             {
                 return false;
             }
-            // Registration/reload pairs with publication's SC store/load, including cancellation.
             unsafe {
                 WaitOnAddress(
                     value.as_ptr().cast(),
@@ -1486,10 +1315,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             return false;
         }
         let completion = self.shared.cells[ticket.slot].pointer();
-        // SAFETY: acquire CAS synchronizes with fully initialized publication
-        // and gives this collector exclusive ownership. Racing/stale tickets
-        // cannot read the cell. Move straight into empty out, without Drop;
-        // no cell references survive the following VACANT release.
         unsafe {
             #[cfg(feature = "callback_profile")]
             {
@@ -1551,8 +1376,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             }
             let observed = value.load(Ordering::Acquire);
             if observed == word(ticket.generation, PUBLISHED) {
-                // Publication may race the failed CAS above. Retry collection
-                // instead of treating this newly completed ticket as invalid.
                 continue;
             }
             if observed != word(ticket.generation, PENDING)
@@ -1569,19 +1392,15 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 continue;
             }
             self.shared.awaited.store(ticket.generation, Ordering::SeqCst);
-            // Publication pairs its SC word store and awaited load with this
-            // registration and the SC word reload below.
             let observed = value.load(Ordering::SeqCst);
             if observed == word(ticket.generation, PENDING)
                 || observed == word(ticket.generation, RUNNING)
             {
                 add(&self.shared.counters.join_sleeps, 1);
-                // Spurious returns recheck every predicate without a queue lock.
                 #[cfg(test)]
                 if let Some(hook) = self.shared.hooks.before_join_wait.get() {
                     hook(ticket);
                 }
-                // SAFETY: the stable atomic and local comparison have identical widths.
                 unsafe {
                     WaitOnAddress(
                         value.as_ptr().cast(),
@@ -1645,11 +1464,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             join_wall_max_ns: JOIN_WALL_MAX_NS.load(Ordering::Relaxed),
         }
     }
-    /// Wait until the sole callback collector can advance a dependency edge.
-    /// `ready` only probes tickets or a nonblocking handoff.
-    /// Registration precedes both the sequence snapshot and the readiness
-    /// recheck: a publication either appears in that recheck or changes the
-    /// sequence before the address wait. Parking holds no executor queue lock.
     pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
         #[cfg(feature = "callback_profile")]
         if let Some(value) = ready() {
@@ -1663,7 +1477,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         value
     }
 
-    /// Only the configured helper may claim admitted jobs before this wait.
     fn park_until_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
         if let Some(value) = ready() {
             return value;
@@ -1694,7 +1507,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             if let Some(hook) = self.shared.hooks.before_readiness_wait.get() {
                 hook();
             }
-            // SAFETY: the stable atomic and local comparison have identical widths.
             unsafe {
                 WaitOnAddress(
                     self.shared.ready_wake.as_ptr().cast(),
@@ -1772,14 +1584,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     pub(crate) fn notify_ready(&self) {
         if self.shared.ready_waiting.load(Ordering::SeqCst) {
             self.shared.ready_wake.fetch_add(1, Ordering::SeqCst);
-            // SAFETY: the readiness address lives through every callback wait.
             unsafe { WakeByAddressSingle(self.shared.ready_wake.as_ptr().cast()) };
         }
     }
-    /// Inspect only a published, copyable report, without taking the request.
-    /// The collection CAS excludes a racing collector while it is copied; no
-    /// reference to the cell escapes. The sole pending collector may defer a
-    /// contained failure's settlement while advancing a successful edge.
     pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<R, Failure>> {
         if ticket.pool != self.shared.id {
             return None;
@@ -1793,8 +1600,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 Ordering::Relaxed,
             )
             .ok()?;
-        // SAFETY: the CAS exclusively owns the fully initialized completion;
-        // copying R neither moves nor drops its request or other fields.
         let report = unsafe { (*self.shared.cells[ticket.slot].pointer()).report };
         value.store(word(ticket.generation, PUBLISHED), Ordering::SeqCst);
         Some(report)
@@ -1840,11 +1645,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
     }
 }
 
-// The pool's priority and the existing dynamic-wake-boost policy; no affinity change. While a
-// capture holds the game the workers run above normal priority, so other processes'
-// normal-priority threads cannot lengthen that pause; while it reads beside the running game
-// they run below it, off the game thread's physical core. Between hours they wait for work and
-// take no CPU.
 fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     shared: Arc<Shared<J, R>>,
     index: usize,
@@ -1854,12 +1654,10 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     #[cfg(feature = "worker_sampler")]
     let _sampler_registration = crate::worker_sampler::register_worker();
     {
-        // SAFETY: this worker's pseudo-handle needs no close.
         if !wake_boost && unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
             BOOST_REFUSALS.fetch_add(1, Ordering::Relaxed);
         }
     }
-    // Unset: the first pass below takes the pool's priority.
     let mut priority = i32::MIN;
     let mut away = crate::frame_priority::AwayFromGame::default();
     let mut hurried = 0;
@@ -1879,7 +1677,6 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
                 .unwrap_or_else(|error| error.into_inner());
             continue;
         }
-        // `Pool::hold_pace` set this thread above normal and on any core itself.
         let hurry = shared.hurried.load(Ordering::Acquire);
         if hurry != hurried {
             hurried = hurry;
@@ -1889,7 +1686,6 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
         let wanted = shared.priority.load(Ordering::Acquire);
         if wanted != priority {
             priority = wanted;
-            // SAFETY: this worker's pseudo-handle needs no close.
             if unsafe { SetThreadPriority(GetCurrentThread(), wanted) } == 0 {
                 PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
             }
@@ -1897,7 +1693,6 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
         away.follow(shared.away.load(Ordering::Acquire).checked_sub(1));
         if let Some(claim) = state.take_ready(&shared, None) {
             let relay = if state.ready.is_empty() {
-                // Under the queue mutex: no unclaimed job needs another wake.
                 shared.burst_peers.store(0, Ordering::Release);
                 false
             } else {
@@ -1925,43 +1720,31 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     }
 }
 
-/// One acquisition worker per logical CPU the game may run on, beyond the
-/// collecting callback. These reads are memory-latency bound, so SMT siblings
-/// add real throughput, and the game's own threads are parked for the whole
-/// block. The game's process affinity counts, not the machine's CPUs. Query
-/// once before hook install; this neither pins threads nor changes game affinity.
 pub(crate) fn recommended_worker_count() -> usize {
     let machine = std::thread::available_parallelism().map_or(1, usize::from);
     worker_count_for_cpus(machine, allowed_cpus())
 }
 
-/// The logical CPUs the game process may run on.
 pub(crate) fn usable_cpus() -> usize {
     let machine = std::thread::available_parallelism().map_or(1, usize::from);
     cpus(machine, allowed_cpus())
 }
 
-/// Workers for `machine` logical CPUs of which the process may use `allowed`.
 fn worker_count_for_cpus(machine: usize, allowed: Option<usize>) -> usize {
     worker_count_for_topology(cpus(machine, allowed))
 }
 
-/// The CPUs of `machine` the process may use (`allowed`; None: affinity
-/// unreadable, use the machine count).
 fn cpus(machine: usize, allowed: Option<usize>) -> usize {
     allowed.map_or(machine, |allowed| allowed.min(machine))
 }
 
-/// Logical CPUs in the game process's affinity mask (current processor group).
 fn allowed_cpus() -> Option<usize> {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
     let (mut process, mut system) = (0_usize, 0_usize);
-    // SAFETY: the pseudo-handle needs no close; both outputs are valid locals.
     let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) };
     (ok != 0 && process != 0).then(|| process.count_ones() as usize)
 }
 
-/// Hardware threads minus the callback, within the pool's admitted range.
 fn worker_count_for_topology(available: usize) -> usize {
     available.saturating_sub(1).clamp(1, MAX_WORKERS)
 }
@@ -1990,14 +1773,9 @@ mod tests {
             "acquisition did not progress under the hang guard"
         );
     }
-    /// Wake a join sleeping on its slot word.
     fn wake_join<J: Send + 'static, R: Copy + Send + 'static>(pool: &Pool<J, R>, slot: usize) {
-        // SAFETY: stable aligned words of this live pool.
         unsafe { WakeByAddressAll(pool.shared.words[slot].as_ptr().cast()) };
     }
-    /// After a fixture's observation window, wake its join repeatedly until
-    /// `returned`, within the hang guard, so a lost wake fails an assertion
-    /// instead of blocking the scoped join. Returns whether it returned.
     fn rescue_join<J: Send + 'static, R: Copy + Send + 'static>(
         pool: &Pool<J, R>,
         slot: usize,
@@ -2011,7 +1789,6 @@ mod tests {
             false
         })
     }
-    /// Always releases a gated body on test unwind before its pool drops.
     struct Gate(Arc<AtomicBool>);
     impl Gate {
         fn open(&self) {
@@ -2038,8 +1815,6 @@ mod tests {
             let helper = scope.spawn(move || {
                 let lock = pool_ref.shared.lock();
                 held_tx.send(()).unwrap();
-                // Old collection blocks here until the guard releases; mark
-                // that release so the test fails an assertion, never hangs.
                 let requested = release_rx.recv_timeout(crate::TEST_HANG_GUARD).is_ok();
                 released_ref.store(true, Ordering::Release);
                 drop(lock);
@@ -2069,13 +1844,11 @@ mod tests {
         let pool = {
             let release = Arc::clone(&release);
             Pool::start(2, 2, move |gated: &mut bool| {
-                // SAFETY: no preconditions.
                 let worker = unsafe { GetCurrentThreadId() };
                 if *gated {
                     entered_tx.send(worker).unwrap();
                     wait_until(|| release.load(Ordering::Acquire));
                 }
-                // SAFETY: the pseudo-handle names only this thread.
                 (worker, unsafe { GetThreadPriority(GetCurrentThread()) })
             })
             .unwrap()
@@ -2083,7 +1856,6 @@ mod tests {
         let release = Gate(release);
         let ids = pool.thread_ids();
         let (regular, reserve) = (ids[0], ids[1]);
-        // A collector that only collects published work never runs a job itself.
         let run = |pool: &Pool<bool, (u32, i32)>| {
             let ticket = submit(pool, &mut Some(false));
             wait_until(|| pool.is_complete(ticket));
@@ -2098,7 +1870,6 @@ mod tests {
                     "a resting reserve took work"
                 );
             }
-            // The regular is busy: only a called-up reserve can run the next job.
             let held = submit(&pool, &mut Some(true));
             assert_eq!(
                 entered_rx.recv_timeout(crate::TEST_HANG_GUARD),
@@ -2111,7 +1882,6 @@ mod tests {
             assert_eq!(pool.finish(queued).unwrap().report.unwrap().0, reserve);
             release.open();
             wait_until(|| pool.is_complete(held));
-            // The regular was raised inside its job, not only once it returned.
             assert_eq!(
                 pool.finish(held).unwrap().report.unwrap(),
                 (regular, THREAD_PRIORITY_ABOVE_NORMAL)
@@ -2208,8 +1978,6 @@ mod tests {
         assert_eq!(pool.calibration().uncollected, 0);
     }
 
-    /// A one-worker pool whose worker-only jobs hold until released, so
-    /// each join finds its job running with no idle worker and sleeps.
     fn busy_pool() -> (Pool<u64, u64>, Gate, mpsc::Receiver<()>) {
         let release = Arc::new(AtomicBool::new(false));
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -2226,9 +1994,6 @@ mod tests {
         (pool, Gate(release), entered_rx)
     }
 
-    /// One round: the join sleeps on its running job, then the job publishes.
-    /// Returns its report, whether the join was seen asleep, and whether it
-    /// returned within `window` without a rescue.
     fn busy_pool_round(
         pool: &Pool<u64, u64>,
         release: &Gate,
@@ -2360,8 +2125,6 @@ mod tests {
             let returned = progressed(|| settled.load(Ordering::Acquire));
             drop(lock);
             if !returned {
-                // SAFETY: stable active word in the borrowed live pool;
-                // rescue a missing settle wake before asserting.
                 unsafe { WakeByAddressAll(pool.shared.active.as_ptr().cast()) };
             }
             helper.join().unwrap();
@@ -2373,7 +2136,6 @@ mod tests {
         assert_eq!(pool.finish(running).unwrap().report, Ok(1));
         assert_eq!(pool.finish(queued).unwrap().report, Err(Failure::Stopped));
         assert_eq!(pool.shared.active.load(Ordering::Acquire), 0);
-        // Nothing running: the barrier returns with no address wait necessary.
         pool.settle();
         assert_eq!(pool.shared.settling.load(Ordering::SeqCst), 0);
         assert!(!pool.stopped());
@@ -2425,8 +2187,6 @@ mod tests {
                 release.open();
                 let returned = progressed(|| stopped.load(Ordering::Acquire) == 2);
                 if !returned {
-                    // SAFETY: stable active word in the borrowed live pool;
-                    // rescue a lost wake so the regression fails an assertion.
                     unsafe { WakeByAddressAll(pool.shared.active.as_ptr().cast()) };
                 }
                 assert_eq!(caller.join().unwrap().report, Ok(42));
@@ -2508,8 +2268,6 @@ mod tests {
                     })
                 };
                 release_ref.open();
-                // Retain this receiver until the worker has run a candidate
-                // excluded from help; dropping it sooner would panic its body.
                 let worker_ran = expected_help
                     || ran_rx
                         .recv_timeout(crate::TEST_HANG_GUARD)
@@ -2584,8 +2342,6 @@ mod tests {
             .unwrap()
         };
         let release = Gate(release);
-        // Four ticks would admit a one-tick candidate before subtracting
-        // elapsed time. Hold the actual body until all four have elapsed.
         pool.shared.means[0].store(4, Ordering::Relaxed);
         pool.shared.means[1].store(1, Ordering::Relaxed);
         pool.shared.maxima[1].store(1, Ordering::Relaxed);
@@ -2596,8 +2352,6 @@ mod tests {
         wait_until(|| (crate::sampling::qpc().max(0) as u64).saturating_sub(begin) >= 4);
         let helped = pool.shared.try_help(awaited, &mut HelpBudget::new());
         if let Some(claim) = helped {
-            // Complete even an incorrect claim before asserting, so this test
-            // cannot strand active on the failure it is meant to catch.
             pool.shared.execute(claim, true, true);
         }
         release.open();
@@ -2776,9 +2530,6 @@ mod tests {
                 let done = pool_ref.finish(awaited).unwrap();
                 done_tx.send(done.report).unwrap();
             });
-            // Hold the first budgeted attempt after validation unlocks, before
-            // its try_lock. Spurious address returns cannot spend its budget
-            // before we own the mutex and install the candidate's history.
             let armed = progressed(|| {
                 pool.shared
                     .help_attempt_gate
@@ -2871,8 +2622,6 @@ mod tests {
         }
         let dropped: [Arc<AtomicUsize>; 3] = std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
         let pool = Pool::start(0, 3, |_: &mut Request| ()).unwrap();
-        // Admission uses highest slot first. Arrange ascending drain order:
-        // slot 0 panics, slot 1 is healthy Published, slot 2 is healthy Parked.
         let parked = pool
             .park(
                 &mut Some(Request {
@@ -2932,8 +2681,6 @@ mod tests {
             assert_eq!(size_of::<Cell<J, R>>(), size_of::<Completion<J, R>>());
             let state = pool.shared.lock();
             let threads = pool.threads.lock().unwrap();
-            // Compute the Arc header's padding independently of Layout::extend
-            // and account for each live allocation, including reserved space.
             let shared_alignment = std::mem::align_of::<Shared<J, R>>();
             let shared_offset = (2 * size_of::<AtomicUsize>()).next_multiple_of(shared_alignment);
             let arc_alignment = shared_alignment.max(std::mem::align_of::<AtomicUsize>());
@@ -3083,12 +2830,10 @@ mod tests {
 
     #[test]
     fn a_parked_request_never_runs_and_returns_once_to_its_submitter() {
-        // Reserving worker-only slots requires a worker.
         for workers in [1, 2] {
             let pool = Pool::start(workers, 3, |request: &mut u8| *request).unwrap();
             pool.reserve_worker_slots(2).unwrap();
             pool.shutdown().unwrap();
-            // A stopped pool rejects; the request parks in its own partition.
             let mut request = Some(7);
             assert_eq!(
                 unsafe { pool.submit_with_priority(&mut request, 0, true, true) },
@@ -3097,7 +2842,6 @@ mod tests {
             let parked = pool.park(&mut request, true).unwrap();
             assert!(request.is_none());
             assert!(parked.slot < 2);
-            // Collection neither runs nor returns it, and waits for nothing.
             assert!(pool.finish(parked).is_none());
             let calibration = pool.calibration();
             assert_eq!(calibration.accepted, 0);
@@ -3105,8 +2849,6 @@ mod tests {
             assert_eq!(calibration.queued, 0);
             assert_eq!(calibration.uncollected, 0);
             assert_eq!(calibration.caller_executed + calibration.worker_executed, 0);
-            // A full partition parks in the other one; a full pool leaves the
-            // request with its caller.
             let second = pool.park(&mut Some(8), true).unwrap();
             assert!(second.slot < 2);
             let other = pool.park(&mut Some(9), true).unwrap();
@@ -3128,8 +2870,6 @@ mod tests {
             );
             assert_eq!(pool.shared.lock().parked, 0);
         }
-        // A parked request beside idle runners stays parked; its slot is
-        // reused once returned, and a stale ticket takes nothing.
         let pool = Pool::start(1, 1, |request: &mut u8| *request + 1).unwrap();
         let parked = pool.park(&mut Some(3), false).unwrap();
         assert_eq!(unsafe { pool.submit(&mut Some(4)) }, Err(SubmitError::Full));
@@ -3158,7 +2898,6 @@ mod tests {
         assert!(out.is_none());
         crate::test_support::with_allocations_denied(|| {
             assert!(pool.finish_parked_into(ticket, &mut out, |request| {
-                // SAFETY: the handler exclusively borrows this parked cell.
                 assert_eq!(request as *mut _, unsafe {
                     std::ptr::addr_of_mut!((*cell).request)
                 });
@@ -3205,7 +2944,6 @@ mod tests {
         pool: &Pool<J, R>,
         request: &mut Option<J>,
     ) -> Ticket {
-        // Tests own ordinary Rust data and keep all accepted leases alive.
         unsafe { pool.submit(request) }.unwrap()
     }
 
@@ -3464,8 +3202,6 @@ mod tests {
         let second_started = entered_rx.recv().unwrap();
         let queued = submit(&pool, &mut Some(3));
         panic_release.wait();
-        // Observe completion without callback assistance, so the panic must
-        // originate on the worker and cancel the still-queued third request.
         wait_until(|| pool.shared.counters.panicked.load(Ordering::Acquire) != 0);
         let failed = pool.finish(second).unwrap();
         let canceled = pool.finish(queued).unwrap();
@@ -3497,12 +3233,8 @@ mod tests {
         })
         .unwrap();
         let ticket = submit(&pool, &mut Some(1));
-        // Submit must wake one idle worker through work_ready, not changed.
         entered_rx.recv().unwrap();
 
-        // Atomic publication wakes a collector. The same panic-induced stop
-        // also wakes the idle peer from work_ready so both workers can exit
-        // without a second stop notification.
         wait_until(|| pool.shared.counters.panicked.load(Ordering::Acquire) != 0);
         let failed = pool.finish(ticket).unwrap();
         assert_eq!(failed.request, 9);
@@ -3539,8 +3271,6 @@ mod tests {
         assert_eq!(entered_rx.recv().unwrap(), 1);
         let second = submit(&pool, &mut Some(2));
         assert_eq!(entered_rx.recv().unwrap(), 2);
-        // Both workers are occupied. Collect the queued third participant;
-        // collecting a running participant cannot supply its unrelated peer.
         let third = submit(&pool, &mut Some(3));
         assert_eq!(pool.finish(third).unwrap().report, Ok(4));
         for (index, ticket) in [first, second].into_iter().enumerate() {
@@ -3598,7 +3328,6 @@ mod tests {
         }
     }
 
-    /// A runner that counts starts, then sleeps its request in milliseconds.
     fn sleeping_pool(workers: usize) -> (Pool<u64, u64>, Arc<AtomicU64>) {
         let started = Arc::new(AtomicU64::new(0));
         let counter = Arc::clone(&started);
@@ -3625,7 +3354,6 @@ mod tests {
         let (pool, started) = sleeping_pool(1);
         let running = unsafe { pool.submit_with_priority(&mut Some(20), 0, true, true) }.unwrap();
         wait_for_starts(&started, 1);
-        // Queued behind the only worker, then running on it: never a spare CPU.
         let queued = unsafe { pool.submit_with_priority(&mut Some(2), 0, true, true) }.unwrap();
         assert_eq!(pool.finish(queued).unwrap().report.unwrap(), 2);
         assert_eq!(pool.finish(running).unwrap().report.unwrap(), 20);
@@ -3633,8 +3361,6 @@ mod tests {
 
     #[test]
     fn a_panic_during_a_join_is_collected_and_cancels_queued_work() {
-        // Gates hold both jobs running until the queue is arranged, so the
-        // scenario does not depend on scheduling speed.
         let panic_gate = Arc::new(AtomicBool::new(false));
         let slow_gate = Arc::new(AtomicBool::new(false));
         let (panic_now, slow_done) = (Arc::clone(&panic_gate), Arc::clone(&slow_gate));
@@ -3656,14 +3382,12 @@ mod tests {
         wait_until_running(&pool, 1);
         let failing = unsafe { pool.submit_with_priority(&mut Some(99), 0, true, true) }.unwrap();
         wait_until_running(&pool, 2);
-        // Both workers are busy, so this ticket waits in the queue.
         let queued = unsafe { pool.submit_with_priority(&mut Some(7), 0, true, true) }.unwrap();
         panic_gate.store(true, Ordering::Release);
         assert!(matches!(
             pool.finish(failing).unwrap().report,
             Err(Failure::Panicked)
         ));
-        // The panic cancelled the queued ticket and published it for waiters.
         assert!(matches!(
             pool.finish(queued).unwrap().report,
             Err(Failure::Stopped)
@@ -3672,20 +3396,15 @@ mod tests {
             pool.shared.words[queued.slot].load(Ordering::Acquire),
             word(queued.generation, VACANT)
         );
-        // The slow job was already running and completes normally.
         slow_gate.store(true, Ordering::Release);
         assert_eq!(pool.finish(slow).unwrap().report.unwrap(), 50);
     }
 
     #[test]
     fn process_affinity_limits_the_pool_below_the_machine_count() {
-        // A 16-thread machine with the game held to 4 CPUs: 3 workers.
         assert_eq!(worker_count_for_cpus(16, Some(4)), 3);
         assert_eq!(worker_count_for_cpus(16, Some(16)), 15);
-        // Unreadable affinity falls back to the machine count.
         assert_eq!(worker_count_for_cpus(16, None), 15);
-        // A mask wider than the reported machine (another processor group)
-        // never raises the count; one allowed CPU still keeps one worker.
         assert_eq!(worker_count_for_cpus(8, Some(64)), 7);
         assert_eq!(worker_count_for_cpus(16, Some(1)), 1);
         assert_eq!(worker_count_for_cpus(64, Some(40)), MAX_WORKERS);
@@ -3704,16 +3423,12 @@ mod tests {
         assert_eq!(worker_count_for_topology(8), 7);
         assert_eq!(worker_count_for_topology(4), 3);
         assert_eq!(worker_count_for_topology(2), 1);
-        // A single thread, and an unavailable count, still leave one worker.
         assert_eq!(worker_count_for_topology(1), 1);
         assert_eq!(worker_count_for_topology(0), 1);
-        // Wider boxes stop at the pool's cap.
         assert_eq!(worker_count_for_topology(32), MAX_WORKERS);
         assert!(Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request).is_err());
     }
 
-    /// One collector wake releases the burst through worker relays. Every
-    /// gated job must enter on a distinct worker before any can return.
     #[test]
     fn a_release_wakes_one_worker_per_job_and_the_workers_run_them_all() {
         for workers in 1..=4 {
@@ -3818,14 +3533,9 @@ mod tests {
         assert_eq!(pool.calibration().uncollected, 0);
     }
 
-    /// Times job-sized submission and the burst wakes against a pool of
-    /// `MAX_WORKERS` workers running jobs, with wake boost and burst wake-all
-    /// independently enabled, without and with the CPUs the pool leaves busy.
     #[test]
     #[ignore = "release micro-bench: cargo test -p collector --release --lib -- --ignored --nocapture --test-threads=1 dispatch_and_release_against_fifteen_workers"]
     fn dispatch_and_release_against_fifteen_workers() {
-        // Job-sized requests and completions: a stack the size of a worker's
-        // several times over.
         std::thread::Builder::new()
             .stack_size(64 << 20)
             .spawn(dispatch_and_release_bench)
@@ -3898,7 +3608,6 @@ mod tests {
                         pool.wake_workers(jobs);
                     }
                 };
-                // Submission wall per job, and wall per release, by kind.
                 const ROUNDS: usize = 200;
                 let mut held = Vec::with_capacity(52 * ROUNDS);
                 let mut waking = Vec::with_capacity(20 * ROUNDS);
@@ -3918,25 +3627,21 @@ mod tests {
                         samples.push(qpc_ns(begin));
                         tickets.push(ticket);
                     };
-                    // The first burst, held and released at once.
                     for _ in 0..45 {
                         submit(300, false, &mut held);
                     }
                     let begin = Instant::now();
                     wake(45);
                     releases[0].push(qpc_ns(begin));
-                    // A small burst while the pool is busy.
                     for _ in 0..6 {
                         submit(200, false, &mut held);
                     }
                     let begin = Instant::now();
                     wake(6);
                     releases[1].push(qpc_ns(begin));
-                    // Waking submissions, one worker each.
                     for _ in 0..20 {
                         submit(100, true, &mut waking);
                     }
-                    // A one-job burst.
                     submit(100, false, &mut held);
                     let begin = Instant::now();
                     wake(1);

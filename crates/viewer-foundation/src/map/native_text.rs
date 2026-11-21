@@ -1,18 +1,6 @@
-//! Bitmap-font text layout and drawing for [`super::native_gui`].
-//!
-//! Layout uses integer arithmetic with division truncating toward zero. Words break
-//! at zero-height glyphs, including spaces; a single-word line can break within the
-//! word. Trailing spaces contribute width. Line feeds and carriage returns end lines,
-//! and the layout holds at most 255 lines.
-//!
-//! Drawing uses line alignment, glyph offsets and kerning, preserving text colour
-//! stacks and inline icons. Missing printable glyphs use the question-mark fallback;
-//! control codepoints have no glyph or width.
 
 use std::collections::BTreeMap;
 
-/// One glyph as the layout measures it: the codepoint drawn (a missing one's `?`), its
-/// advance, its box and offsets, in font pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Glyph {
     pub ch: char,
@@ -23,25 +11,17 @@ pub struct Glyph {
     pub yoffset: i32,
 }
 
-/// A font's glyphs as the game's text code reads them.
 pub trait Glyphs {
-    /// The glyph `ch` draws, before the `?` fallback.
     fn own(&self, ch: char) -> Option<Glyph>;
-    /// The kerning after `a` before `b`.
     fn kerning(&self, a: char, b: char) -> i32;
-    /// `common lineHeight` of the first file.
     fn line_height(&self) -> i32;
 
-    /// the glyph, else `?`'s for a codepoint above 0x1F.
     fn glyph(&self, ch: char) -> Option<Glyph> {
         self.own(ch)
             .or_else(|| (u32::from(ch) > 0x1F).then(|| self.own('?')).flatten())
     }
 }
 
-/// Decode UTF-8 codepoints with the established conversion and error policy.
-/// The output allocation counts leading bytes. Invalid input returns `None`;
-/// no usable codepoints leave empty text.
 pub fn decode(bytes: &[u8]) -> Option<Vec<char>> {
     const OFFSETS: [u32; 6] = [
         0x0000_0000,
@@ -68,7 +48,6 @@ pub fn decode(bytes: &[u8]) -> Option<Vec<char>> {
         if extra >= bytes.len() - at {
             return None;
         }
-        // Validate trailing bytes in reverse order, then the byte immediately after the lead.
         if extra >= 4 {
             return None;
         }
@@ -103,7 +82,6 @@ pub fn decode(bytes: &[u8]) -> Option<Vec<char>> {
             code = code.wrapping_add(u32::from(*byte));
         }
         let code = code.wrapping_sub(OFFSETS[extra]);
-        // Strict: a surrogate fails; nothing past U+10FFFF passes the checks above.
         out.push(char::from_u32(code)?);
         at += extra + 1;
     }
@@ -112,34 +90,23 @@ pub fn decode(bytes: &[u8]) -> Option<Vec<char>> {
     Some(out)
 }
 
-/// The special sequences the game reads, by their control codepoint.
 pub const COLOR: char = '\u{11}';
 pub const FLAG: char = '\u{12}';
-/// Viewer-resolved flag key, parsed only for producer-bound text.
 pub const RESOLVED_FLAG: char = '\u{1f}';
 pub const ICON: char = '\u{13}';
 pub const CURRENCY: char = '\u{14}';
 pub const NUMBER: char = '\u{1a}';
-/// The layout's advance for the 0x14 control, whatever the font.
 pub const CURRENCY_ADVANCE: i32 = 16;
 
-/// One special sequence at the start of `text`: how many codepoints it takes, and what it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Special {
-    /// `0x11 X`: the colour code `X`.
     Color(Option<char>),
-    /// `0x12` and up to three codepoints: a country's flag, 12 wide.
     Flag(String),
-    /// `0x13`, a name of `0-9 A-Z a-z _ |` (up to 128) and the codepoint that ends it:
-    /// `GFX_<name>`'s frame.
     Icon(String),
-    /// `0x14`: 16 wide.
     Currency,
-    /// `0x1A` and two digits: 8 wide.
     Number(String),
 }
 
-/// The special sequence starting at `text[0]`, if its first codepoint opens one.
 pub fn special(text: &[char]) -> Option<(usize, Special)> {
     let rest = &text[1..];
     Some(match *text.first()? {
@@ -155,7 +122,6 @@ pub fn special(text: &[char]) -> Option<(usize, Special)> {
                 .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '|'))
                 .collect();
             let length = name.chars().count();
-            // The codepoint after the name ends it and is taken with it.
             (
                 1 + length + usize::from(rest.len() > length),
                 Special::Icon(name),
@@ -170,7 +136,6 @@ pub fn special(text: &[char]) -> Option<(usize, Special)> {
     })
 }
 
-/// The length of the resolved flag key the text starts with, when it names one.
 type KeyResolver<'a> = dyn Fn(&[char]) -> Option<usize> + 'a;
 
 fn sequence(text: &[char], resolved_key: Option<&KeyResolver<'_>>) -> Option<(usize, Special)> {
@@ -188,12 +153,8 @@ fn sequence(text: &[char], resolved_key: Option<&KeyResolver<'_>>) -> Option<(us
     special(text)
 }
 
-/// Inline sprite geometry uses its loaded texture dimensions, frame count
-/// and selected frame, preserving signed division and zero-frame refusal.
 pub type IconSprite = ([i32; 2], i32);
 
-/// An inline icon the content defines: the sprite found, its texture size and frames, and the
-/// frame index (0 when the name has no `|`, the draw's own).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextIcon {
     pub sprite: Vec<u8>,
@@ -203,8 +164,6 @@ pub struct TextIcon {
 }
 
 impl TextIcon {
-    /// Divide width by frame count after converting each to unsigned 32 bits.
-    /// A zero frame count divides by zero, which ends the game.
     pub fn advance(&self) -> Result<i32, String> {
         if self.frames == 0 {
             return Err(format!(
@@ -215,10 +174,6 @@ impl TextIcon {
         Ok(((self.texture[0] as u32) / (self.frames as u32)) as i32)
     }
 
-    /// The quad: `width / frames` (signed) by the texture's height, at the frame's
-    /// coordinates along `u` (inline icons never read `framedirectiony`): `step = 1.0f / n`,
-    /// `u0 = frame * step`, `u1 = min((frame + 1) * step, 1.0)`, `v` 0 to 1, the frame not
-    /// clamped.
     pub fn quad(&self) -> ([i32; 2], [f32; 4]) {
         let step = 1.0f32 / self.frames as f32;
         let u0 = self.frame as f32 * step;
@@ -230,7 +185,6 @@ impl TextIcon {
     }
 }
 
-/// The inline icon `name` shows, if the content defines it ([`icon_lookup`]).
 pub fn find_icon(name: &str, sprite: &dyn Fn(&[u8]) -> Option<IconSprite>) -> Option<TextIcon> {
     let (names, frame) = icon_lookup(name);
     names.into_iter().find_map(|found| {
@@ -244,9 +198,6 @@ pub fn find_icon(name: &str, sprite: &dyn Fn(&[u8]) -> Option<IconSprite>) -> Op
     })
 }
 
-/// A special sequence's width and word height: an icon uses its advance (none
-/// when absent from content) and, under `icons_add_height`, its texture's height.
-/// A flag is 12 wide, a currency sign 16 and a number 8.
 fn special_advance(
     special: &Special,
     sprite: &dyn Fn(&[u8]) -> Option<IconSprite>,
@@ -255,7 +206,6 @@ fn special_advance(
     Ok(match special {
         Special::Color(_) => (0, None),
         Special::Flag(_) => (12, None),
-        // The game skips lookup for an empty parsed name, even if content defines GFX_.
         Special::Icon(name) if name.is_empty() => (0, icons_add_height.then_some(0)),
         Special::Icon(name) => match find_icon(name, sprite) {
             Some(icon) => (icon.advance()?, icons_add_height.then_some(icon.texture[1])),
@@ -266,8 +216,6 @@ fn special_advance(
     })
 }
 
-/// Parse the inline icon name and optional frame selector. Preserve empty-name
-/// and missing-sprite behavior; the frame suffix does not establish a name.
 pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
     let (stem, suffix) = match name.split_once('|') {
         Some((stem, suffix)) => (stem, Some(suffix)),
@@ -283,38 +231,25 @@ pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
         }
         if value < 0 { 0 } else { value - 1 }
     });
-    // The name's codepoints are ASCII (`special` takes `0-9 A-Z a-z _ |` only), so its bytes are
-    // the bytes the draw hands the lookup.
     (
         [format!("GFX_{stem}").into_bytes(), stem.as_bytes().to_vec()],
         frame,
     )
 }
 
-/// What a layout is run with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// The box width; 0 or less is no limit (`0x7FFFFFFF`).
     pub width: i32,
     pub height: i32,
     pub border: [i32; 2],
-    /// Writes a line feed where a line breaks (the draw's layout).
     pub newlines: bool,
-    /// Copies literal leading spaces after a soft line feed; tooltip
-    /// prewrapping enables this, ordinary preparation and drawing do not.
     pub preserve_indent: bool,
-    /// Ends cut text with three dots (`truncate`).
     pub ellipsis: bool,
     pub multiline: bool,
-    /// Reads the special sequences (`ignore_special_chars = no`).
     pub special: bool,
-    /// With the font's `icons_add_height`, an inline icon raises its line to the
-    /// texture's height.
     pub icons_add_height: bool,
 }
 
-/// A layout: the text as written out (cut, with line feeds when asked), each line's width and
-/// height, and whether the text was cut.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Laid {
     pub text: Vec<char>,
@@ -325,7 +260,6 @@ pub struct Laid {
     resolved_keys: Vec<Vec<char>>,
 }
 
-/// The state.
 struct Layout<'a> {
     glyphs: &'a dyn Glyphs,
     limits: Limits,
@@ -347,8 +281,6 @@ struct Layout<'a> {
 }
 
 impl Layout<'_> {
-    /// Count only U+0020 after the last LF, accepting the count only
-    /// when its signed, wrapping width is strictly below the available width.
     fn soft_line_feed(&mut self) -> i32 {
         if !self.limits.newlines {
             return 0;
@@ -376,8 +308,6 @@ impl Layout<'_> {
         (count as i32).wrapping_mul(self.space_advance)
     }
 
-    /// Whether a new line may start: not when single-line, nor when it would reach the height
-    /// limit.
     fn room(&self) -> bool {
         let used: i32 = self
             .heights
@@ -387,31 +317,25 @@ impl Layout<'_> {
             && self.height > self.glyph_h.wrapping_add(self.line_h).wrapping_add(used)
     }
 
-    /// An overflow: `false` when the text is cut here, else the line broken
-    ///
     fn overflow(&mut self) -> bool {
         if !self.room() {
             self.truncated = true;
             return false;
         }
         if self.line_x == self.word_w {
-            // The line is the word: it stays, and the codepoint starts the next line.
             self.out.append(&mut self.word);
             let indent = self.soft_line_feed();
             self.widths.push(self.line_x);
             self.heights.push(self.line_h.max(self.word_h));
-            // Keep the copied spaces in the pen, then clears the new word.
             self.line_x = indent;
             self.word_w = 0;
             self.line_h = self.base;
             self.word_h = self.base;
         } else {
-            // The pending word moves to the next line; the width drops the last space's advance.
             let indent = self.soft_line_feed();
             self.out.append(&mut self.word);
             self.widths.push(self.line_x - self.word_w - self.trail);
             self.heights.push(self.line_h);
-            // In this branch the copied spaces belong to the pending word's width.
             self.word_w = self.word_w.wrapping_add(indent);
             self.line_x = self.word_w;
             self.line_h = self.word_h;
@@ -428,9 +352,6 @@ impl Layout<'_> {
     }
 }
 
-/// Lay out codepoints with the resolved font and inline-sprite lookup.
-/// Zero frame counts refuse the division; unavailable sprites contribute
-/// only their specified fallback geometry.
 pub fn lay_out(
     glyphs: &dyn Glyphs,
     sprite: &dyn Fn(&[u8]) -> Option<IconSprite>,
@@ -440,10 +361,6 @@ pub fn lay_out(
     layout(glyphs, sprite, text, limits, None)
 }
 
-/// Producer-bound combat text: U+001F then its selected Normal-atlas key. The character after
-/// the key remains text; unknown keys still reach the caller's counted resource refusal.
-/// Authored text uses [`lay_out`]. Flags keep the native advance and draw
-/// placement.
 pub fn lay_out_resolved_flags(
     glyphs: &dyn Glyphs,
     sprite: &dyn Fn(&[u8]) -> Option<IconSprite>,
@@ -514,7 +431,6 @@ fn layout(
             continue;
         }
         if let Some(glyph) = layout.glyphs.glyph(ch) {
-            // The game looks the original codepoint up in the previous glyph's table.
             let kerning = previous.map_or(0, |previous| layout.glyphs.kerning(previous, ch));
             let advance = glyph.advance + kerning;
             if (glyph.height != 0 || layout.word_w == 0)
@@ -526,7 +442,6 @@ fn layout(
             layout.word.push(ch);
             layout.advance(advance);
             if glyph.height == 0 {
-                // A break opportunity: the word is written out.
                 layout.out.append(&mut layout.word);
                 layout.line_h = layout.line_h.max(layout.word_h);
                 layout.word_w = 0;
@@ -576,10 +491,6 @@ fn layout(
     })
 }
 
-/// with more than two codepoints written, up to three of the last are turned
-/// into `.` until three dots fit in `room` (each dot's advance plus one, less a dot pair's
-/// kerning), and the rest of the three appended. A font without a `.` is not read (the game
-/// reads the missing glyph).
 fn ellipsis(glyphs: &dyn Glyphs, out: &mut Vec<char>, room: i32) {
     if out.len() <= 2 {
         return;
@@ -601,44 +512,32 @@ fn ellipsis(glyphs: &dyn Glyphs, out: &mut Vec<char>, room: i32) {
     out.extend(std::iter::repeat_n('.', 3 - replaced));
 }
 
-/// Where each line of a drawn text starts and where its first line's top is: `start(line,
-/// width)` is a line's pen x.
 pub struct Placement<'a> {
     pub top: i32,
     pub start: &'a dyn Fn(usize, i32) -> i32,
 }
 
-/// One drawn piece of a text.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Piece {
-    /// A glyph's quad top-left, straight RGBA.
     Glyph {
         ch: char,
         at: [i32; 2],
         color: [f32; 4],
     },
-    /// An inline icon: its sprite's texture at the frame's raw coordinates, `size` at `at`.
     Icon {
         sprite: Vec<u8>,
         at: [i32; 2],
         size: [i32; 2],
         uv: [f32; 4],
     },
-    /// An icon the content does not define (`text_icon_lookup` finds nothing): no width, drawn
-    /// as nothing.
     Undefined(String),
-    /// A flag : the three-codepoint tag's small
-    /// flag, 10 by 7 at `at`.
     Flag {
         tag: String,
         at: [i32; 2],
-        /// The producer already resolved an atlas key, rather than a native country tag.
         resolved: bool,
     },
 }
 
-/// The colours a text draws with: the text's own (its object colour), the font's `textcolors`
-/// and the global table.
 pub struct Colors<'a> {
     pub own: [f32; 4],
     pub font: &'a BTreeMap<u8, [f32; 4]>,
@@ -646,8 +545,6 @@ pub struct Colors<'a> {
 }
 
 impl Colors<'_> {
-    /// The lookup of a code: the font's table, then the global one, by its low
-    /// byte.
     pub fn lookup(&self, code: char) -> Option<[f32; 4]> {
         let byte = (u32::from(code) & 0xFF) as u8;
         self.font
@@ -657,16 +554,10 @@ impl Colors<'_> {
     }
 }
 
-/// a colour packed to bytes, `f * 255`
-/// truncated.
 pub fn packed(color: [f32; 4]) -> [f32; 4] {
     color.map(|value| ((value * 255.0) as i64 & 0xFF) as f32 / 255.0)
 }
 
-/// Draw laid-out lines from their alignment positions, preserving glyph offsets,
-/// kerning, colour stacks and inline artwork. Each draw starts with an empty
-/// colour stack. Inline flags use three codepoints and their dedicated geometry.
-/// Currency and numeric sprite records remain uninitialised and refuse drawing.
 pub fn draw(
     glyphs: &dyn Glyphs,
     sprite: &dyn Fn(&[u8]) -> Option<IconSprite>,
@@ -741,7 +632,6 @@ pub fn draw(
                         });
                         pen += advance;
                     }
-                    // "Couldnt find texticon": no advance.
                     None => pieces.push(Piece::Undefined(name.clone())),
                 },
                 Special::Flag(tag) => {
@@ -785,57 +675,33 @@ pub fn draw(
     Ok(pieces)
 }
 
-/// Loaded font page texture and the extent used for glyph UVs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Page {
-    /// The caller's texture id.
     pub texture: usize,
-    /// The texture extent used to normalise the glyph's box.
     pub size: [i32; 2],
 }
 
-/// A resolved font with the selected language family and loaded glyph pages.
-/// The registry supplies fallback font selection; each page retains its loaded
-/// texture extent and independent read failures.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Font {
-    /// The registered font's facts: its name, `color`, `textcolors`, `icons_add_height`.
     pub facts: installed_content_core::gui::native::fonts::FontFacts,
-    /// The selected family's glyphs.
     pub glyphs: installed_content_core::gui::native::fonts::GlyphSet,
-    /// Missing font-page textures retain a zero-by-zero extent and null binding.
-    /// Their glyphs remain in layout but draw no visible pixels.
     pub pages: Vec<Option<Page>>,
-    /// Why a text in this font cannot be drawn as the game draws it: the reader's refusals of
-    /// its declaration ([`installed_content_core::gui::native::fonts::FontFacts::refusals`]), a `.fnt` the
-    /// layers cannot address, a page in a format this port has not implemented. A layout
-    /// refuses a text in it by these reasons.
     pub refusals: Vec<(super::native_gui::RefusalKind, String)>,
 }
 
-/// A glyph's quad as the game writes it : its box in
-/// font pixels and its texture coordinates, the box over the page's extent (in `f32`, so a null
-/// page's 0 by 0 gives infinite or NaN coordinates), `v` running down.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphQuad {
     pub page: Page,
     pub size: [i32; 2],
     pub uv: [f32; 4],
-    /// The page's texture name when its texture did not load: the quad binds the null texture
-    /// ([`super::sprites::NO_TEXTURE`]), which a caller notes.
     pub null_page: Option<Vec<u8>>,
 }
 
 impl Font {
-    /// The registered name, lossy for display.
     pub fn name(&self) -> String {
         String::from_utf8_lossy(&self.facts.name).into_owned()
     }
 
-    /// The quad of the glyph drawn for `ch` (already the drawn codepoint, a fallback's `?`):
-    /// `x / w`, `y / h`, `(x + width) / w`, `(y + height) / h` in `f32`, over the null texture's
-    /// 0 by 0 when its page did not load. A glyph's page is the index of the family file it was
-    /// read from ([`installed_content_core::gui::native::fonts::Glyph::page`]), which always has a record.
     pub fn quad(&self, ch: char) -> Option<GlyphQuad> {
         let glyph = self.glyphs.glyphs.get(&u32::from(ch))?;
         let index = glyph.page as usize;
@@ -871,14 +737,12 @@ impl Glyphs for Font {
             ch,
             advance: glyph.xadvance,
             width: glyph.width,
-            // The font loader already stored the space height as zero.
             height: glyph.height,
             xoffset: glyph.xoffset,
             yoffset: glyph.yoffset,
         })
     }
 
-    /// the first pair of `b` in `a`'s list, from any file loaded so far.
     fn kerning(&self, a: char, b: char) -> i32 {
         self.glyphs
             .glyphs
@@ -888,14 +752,11 @@ impl Glyphs for Font {
             .unwrap_or(0)
     }
 
-    /// `lineHeight` of the family's first file, or 0 when that file does not load.
     fn line_height(&self) -> i32 {
         self.glyphs.line_height.unwrap_or(0)
     }
 }
 
-/// A font of every printable ASCII glyph `width` wide and `height` tall on one page (the space
-/// `load_font`'s height 0), for tests.
 #[cfg(any(test, feature = "test-support"))]
 pub fn monospace(name: &str, width: i32, height: i32) -> Font {
     use installed_content_core::{

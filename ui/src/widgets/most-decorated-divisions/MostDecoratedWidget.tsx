@@ -36,7 +36,6 @@ const RECORD_LOG = logSettings({});
 export default function MostDecoratedWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // The ranking is followed; the countries a group names, and a record that follows, read the fallback's clock.
   const playback = useFallbackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
@@ -98,7 +97,6 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip}
     onVisibleRows={setVisible} hoursPerSecond={hoursPerSecond} menu={row => [{ label: 'Open service record', run: () => open(row) }]} />;
   const pickedHour = drillHour(drill, Math.floor(playback) + (track?.axisOffset ?? 0)) ?? hour;
-  // The opened record may still show an earlier hour while the picked one loads.
   const [answered, setAnswered] = useState<number | undefined>();
   const shownHour = drill.breakdown ? answered ?? pickedHour : pickedHour;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; state.root(element); }, [state.root]);

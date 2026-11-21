@@ -1,4 +1,3 @@
-//! Recorded country and relation inputs shared by allegiance and grouping tests.
 use replay_data::{
     Hour, rows::CountryLinkRow, rows::FactionMemberRow, rows::TableId, rows::TableRows,
     rows::WarRelationRow, rows::tables,
@@ -6,14 +5,10 @@ use replay_data::{
 use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use std::collections::BTreeMap;
 
-/// A concrete internal-calendar hour for the date arithmetic fixture.
 pub(crate) const NIGHT_HOUR: Hour = 60_826_315;
 
-/// Null end date: day 1 825 365, year 5001 in the simulation's 365-day calendar.
 pub(crate) const NO_END_HOUR: i32 = 43_808_760;
 
-/// Three linked countries whose raw references deliberately differ from
-/// their canonical slots, so a test that confused the two would fail.
 pub(crate) fn frame(wars: Vec<WarRelationRow>, members: Vec<FactionMemberRow>) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for the allegiance tables".into(),

@@ -1,8 +1,3 @@
-//! Sparse independent faction writer domains. Callbacks never allocate or walk
-//! accounts. Supported arithmetic boundaries supply initiative increments and
-//! products; exact share boundaries read only their reached denominator words.
-//! Rank reads one member identity and getter completion reads one result word.
-//! One extraction completion observer reads registered final pools.
 use crate::{
     hook::{Hook, Registers, Tap},
     hook_timing::CallCounters,
@@ -115,8 +110,8 @@ pub(crate) fn prime() {
     presize();
     boundary(false);
 }
-/// # Safety
-/// Only the Factions worker under its exclusive native quiescent lease.
+#[doc = " # Safety"]
+#[doc = " Only the Factions worker under its exclusive native quiescent lease."]
 pub(crate) unsafe fn install_growth() {
     for watches in &WATCHES {
         unsafe {
@@ -150,8 +145,8 @@ pub struct Hooks {
     available: [bool; FAMILIES],
 }
 impl Hooks {
-    /// # Safety
-    /// Attach owns the authenticated image, patch publication and hook lifetime.
+    #[doc = " # Safety"]
+    #[doc = " Attach owns the authenticated image, patch publication and hook lifetime."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
@@ -520,7 +515,6 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
                 .checked_add(engine_native::cfaction::INFLUENCE_TOTAL)
                 .and_then(|at| engine_native::read::<i64>(&memory, at))
         } else {
-            // The range body's and the worker's captures hold the denominator pointer.
             let (holder, offset) = if site == 48 {
                 (registers.r15, 0x10)
             } else {
@@ -757,9 +751,6 @@ mod tests {
         19
     }
 
-    /// A call in flight through a site holds its publication back. The family reports that
-    /// as not ready, never as an error, so attach retries it: on its own, and from an attach
-    /// round, whose collect pass goes on past the publication and whose report says busy.
     #[test]
     fn busy_attach_publication_remains_retryable() {
         static FLIGHT: AtomicUsize = AtomicUsize::new(1);

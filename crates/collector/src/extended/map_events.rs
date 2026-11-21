@@ -1,6 +1,3 @@
-//! The hourly map event interval. The game thread seals its coverage in
-//! constant time; the spool thread copies, decodes and queues its events,
-//! and frees their lane space only after the frame is written.
 use crate::{map_events, spooling::unavailable};
 use engine_native::walk::Outcome;
 use replay_data::{rows::TableId, rows::TableRows};
@@ -36,7 +33,6 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         [unavailable(ASSEMBLED)]
     }
-    /// Game thread, at the hourly cut.
     pub(crate) fn seal(&mut self, hour: i32) -> u64 {
         let started = crate::sampling::qpc();
         self.interval = Some(map_events::interval::seal(
@@ -50,14 +46,12 @@ impl Captured {
 #[derive(Default)]
 pub struct Ledger;
 
-/// What committing a written interval frees.
 pub(crate) struct Publication(map_events::lanes::Assembled);
 impl Publication {
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.0.allocated_bytes()
     }
 
-    /// Allocation-free; call after queue admission and before assembling another interval.
     pub(crate) fn admitted(&self) {
         self.0.admitted();
     }
@@ -66,14 +60,11 @@ impl Publication {
     }
 }
 
-/// After the writer lost admitted frames, once none of them is still queued.
 pub(crate) fn reset_admitted() {
     map_events::lanes::reset_admitted();
 }
 
 impl Ledger {
-    /// Spool worker only. An interval that cannot be copied or decoded is
-    /// unavailable, and the next one reports its events as lost.
     pub(crate) fn assemble_owned(
         &mut self,
         captured: &Captured,
@@ -101,9 +92,6 @@ impl Ledger {
                 Some(Publication(assembled))
             }
             Err(reason) => {
-                // Free what was copied once the frame is written, so a frame
-                // that cannot decode is reported lost rather than retried
-                // every hour.
                 map_events::interval::lost_output();
                 tables[TableId::MapEvents.index()] = TableInput::Sampled(unavailable(reason));
                 Some(Publication(assembled))

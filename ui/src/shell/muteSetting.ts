@@ -4,10 +4,6 @@ import { listen } from '@tauri-apps/api/event';
 import { desktopAvailable, errorMessage } from './api';
 import { newestSwitch, type MapSwitch } from './mapSwitch';
 
-/**
- * The maps' mute choice. The desktop host saves it, sends it to the native maps and
- * tells every window through `map-muted`. Volumes themselves follow the map settings.
- */
 export function useMapMuted() {
   const [muted, setMuted] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1,6 +1,5 @@
 use windows_sys::Win32::System::Threading::THREAD_PRIORITY_BELOW_NORMAL;
 
-/// Best-effort caps bake priority at below normal, restoring its exact entry priority on exit.
 pub fn at_bake_priority<T>(work: impl FnOnce() -> T) -> T {
     with_priority(super::current_priority, set_priority, work)
 }
@@ -42,7 +41,6 @@ fn set_priority(priority: i32) -> bool {
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
-        // SAFETY: the calling thread's pseudo handle needs no closing.
         unsafe { SetThreadPriority(GetCurrentThread(), priority) != 0 }
     }
     #[cfg(not(windows))]

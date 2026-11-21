@@ -1,5 +1,3 @@
-//! Compiled LUT blends use three 1024-by-32 BGRA8 UNORM targets. Every blend stores bytes before the
-//! next reads them, preserving intermediate rounding before final restore sampling.
 
 use std::io;
 
@@ -7,7 +5,6 @@ use eframe::wgpu;
 
 use super::{LutProgram, LutSource, PostAssets, invalid};
 
-/// The engine's colour-cube size: 32 blue slices of 32x32 side by side.
 const LUT_SIZE: [u32; 2] = super::compiled_luts::SIZE;
 
 pub(super) struct LutRenderer {
@@ -118,8 +115,6 @@ impl LutRenderer {
         }
     }
 
-    /// Runs the frame's native blends; Restore binds `result` directly.
-    /// An unchanged program draws nothing.
     pub(super) fn draw(
         &mut self,
         arena: &shader_pipeline::gpu::Arena,

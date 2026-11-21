@@ -1,4 +1,3 @@
-//! Interval row framing around its exact occurrence-delta value.
 use super::*;
 use crate::event_feed_rows::columns::{self, Batch};
 
@@ -216,7 +215,6 @@ impl RowCodec for EventFeedHistoryRow {
         key: u128,
         wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
     ) -> io::Result<Self> {
-        // Its events field has a framing of its own, which only its decoding reads.
         from_wire_encoded(key, Self::SCHEMA.len(), wire)
     }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {

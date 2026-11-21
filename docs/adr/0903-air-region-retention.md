@@ -1,0 +1,11 @@
+# 0903. Reconstruct retained air combat from the last witnessed daily visit
+
+The collector reads a holder's ordered own and foreign air-combat vectors. A daily pass can prune them between reads. At a midnight sample the pass already used the newly reached hour. It subtracts the loaded signed timeout with wrapping 32-bit arithmetic and removes only the leading run older than the cutoff. A later out-of-order record remains after the first kept record.
+
+For each holder, use the latest pass after the branch's first sample whose roster included the container country. Earlier passes are subsumed by the later cutoff. A pass after that country's last visit leaves the holder alone. AirDailyRoster provides the eligibility on each side of the tick. If those reads disagree, whether the pass visited the country is unknown. A recorded holder with no visiting pass retains its stored vectors. A caller without this roster proof cannot assume the current daily pass pruned a country without a state.
+
+Cap the replay pruning cutoff at the pass hour because a negative timeout can move the native cutoff past that hour. The pass could remove pre-existing records, but it cannot have seen a record created after it. Applying this capped cutoff to either a pre-pass or post-pass row reproduces the retained sequence without reading live memory.
+
+The strategic-air damage grids scan newest records first and stop at the first too-old record. Each matching record must overlap the selected mission mask and match the classification byte. The view scans one side's vector and damage channel, then the other side's counterpart, in that order. Wrapping per-cause totals preserve the native arithmetic. After each scan, a positive sum of plane high-water marks renormalizes cause 3 to its fixed5 ratio, including the sentinel results. A subsequent scan can renormalize it again. A cause outside the eleven entries refuses the result. In presentation, cause 4 includes cause 9, and cause 9 receives no separate line. The air grid selects its unclassified mission group. The ground grid combines classified mission groups in native order with the side-specific selected causes.
+
+[Air combat retention and totals](../../crates/replay-derive/src/air_region_derive.rs)

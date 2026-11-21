@@ -1,6 +1,3 @@
-//! The map's own window: a plain Win32 window, a child of the host's window (or a harness's
-//! top-level one), made by and pumped on the thread that owns the host's window. Its messages
-//! become egui input sent to the map's thread; the map runs no event loop of its own.
 
 use eframe::egui;
 use std::{
@@ -26,30 +23,20 @@ use windows_sys::Win32::{
 };
 
 const CLASS: &str = "HOI4ReplayMap";
-/// The pointer left the window (TrackMouseEvent), from the common controls' message range.
 const WM_MOUSELEAVE: u32 = 0x02a3;
-/// Applies the map's pointer capture on the window's thread.
 const WM_APPLY_CAPTURE: u32 = WM_APP + 1;
-/// Gives the window the keyboard focus, on its own thread.
 const WM_TAKE_FOCUS: u32 = WM_APP + 2;
-/// Destroys the window, on its own thread, once nothing draws on it.
 const WM_RETIRE: u32 = WM_APP + 3;
 
-/// What the window tells the map.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Input {
     Event(egui::Event),
     Focus(bool),
-    /// Its size or DPI changed: the map reads both again.
     Resized,
-    /// Draw again, after this long.
     Repaint(std::time::Duration),
-    /// The window was asked to close (or was destroyed with its parent): the map stops drawing and
-    /// lets go of its surface, and only then is the window destroyed ([`Window::destroy`]).
     Close,
 }
 
-/// What both threads share: where input goes, and the pointer state the map chose.
 pub(crate) struct Link {
     sender: Mutex<mpsc::Sender<Input>>,
     captured: AtomicBool,
@@ -64,14 +51,12 @@ impl Link {
     }
 }
 
-/// The map's window, by handle; any thread may hold it.
 #[derive(Clone)]
 pub struct Window {
     hwnd: usize,
     link: Arc<Link>,
 }
 
-/// The map thread's end of a window: its input.
 pub struct Inputs {
     pub(crate) received: mpsc::Receiver<Input>,
 }
@@ -81,8 +66,6 @@ fn wide(text: &str) -> Vec<u16> {
 }
 
 impl Window {
-    /// Makes the window on the calling thread, which must pump its messages: a child of `parent`,
-    /// hidden until the map shows it, or a top-level window of `size` when there is no parent.
     pub fn create(parent: Option<usize>, size: [u32; 2], title: &str) -> io::Result<(Self, Inputs)> {
         let (sender, received) = mpsc::channel();
         let link = Arc::new(Link {
@@ -94,8 +77,6 @@ impl Window {
         });
         let class = wide(CLASS);
         let title = wide(title);
-        // SAFETY: a class registered once per process with this module's procedure; the window
-        // keeps one strong reference to the link, released at WM_NCDESTROY.
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
             let description = WNDCLASSEXW {
@@ -107,7 +88,6 @@ impl Window {
                 lpszClassName: class.as_ptr(),
                 ..std::mem::zeroed()
             };
-            // A class registered by an earlier map is reused.
             RegisterClassExW(&description);
             let (style, ex_style, width, height) = match parent {
                 Some(_) => (WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 1, 1),
@@ -133,7 +113,6 @@ impl Window {
                 return Err(io::Error::last_os_error());
             }
             if parent.is_none() {
-                // The client area is the size asked for.
                 let mut outer = RECT { left: 0, top: 0, right: size[0] as i32, bottom: size[1] as i32 };
                 AdjustWindowRectEx(&mut outer, style, 0, ex_style);
                 SetWindowPos(hwnd, ptr::null_mut(), 0, 0, outer.right - outer.left, outer.bottom - outer.top, SWP_NOMOVE | SWP_NOZORDER);
@@ -150,17 +129,12 @@ impl Window {
         &self.link
     }
 
-    /// Destroys the window from any thread, on its own: only once no surface is made on it, or
-    /// the map's thread has let its surface go.
     pub fn destroy(&self) {
-        // SAFETY: posting to a handle that may already be gone fails harmlessly.
         unsafe { PostMessageW(self.hwnd as HWND, WM_RETIRE, 0, 0) };
     }
 
-    /// The client size in device pixels and the device pixels per point.
     pub(crate) fn metrics(&self) -> ([u32; 2], f32) {
         let mut client = RECT::default();
-        // SAFETY: query APIs on the window's handle.
         let dpi = unsafe {
             GetClientRect(self.hwnd as HWND, &mut client);
             GetDpiForWindow(self.hwnd as HWND)
@@ -169,35 +143,26 @@ impl Window {
         (size, if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 })
     }
 
-    /// Gives the window the keyboard focus.
     pub fn focus(&self) {
-        // SAFETY: posting to the window's own handle.
         unsafe { PostMessageW(self.hwnd as HWND, WM_TAKE_FOCUS, 0, 0) };
     }
 
-    /// Puts a top-level window behind the others without activating it (a background profile).
     pub(crate) fn send_to_back(&self) {
-        // SAFETY: a call on the window's handle.
         unsafe { SetWindowPos(self.hwnd as HWND, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) };
     }
 
-    /// Whether the window and every window it is in are shown.
     pub(crate) fn shown(&self) -> bool {
-        // SAFETY: query APIs on the window's handle.
         unsafe {
             IsWindowVisible(self.hwnd as HWND) != 0 && IsIconic(GetAncestor(self.hwnd as HWND, GA_ROOT)) == 0
         }
     }
 
-    /// Hides and confines the pointer while the map holds it (Fly and Walk), or gives it back.
     pub(crate) fn capture(&self, captured: bool) {
         if self.link.captured.swap(captured, Ordering::AcqRel) != captured {
-            // SAFETY: posting to the window's own handle.
             unsafe { PostMessageW(self.hwnd as HWND, WM_APPLY_CAPTURE, 0, 0) };
         }
     }
 
-    /// The pointer's shape over the map.
     pub(crate) fn cursor(&self, icon: egui::CursorIcon) {
         self.link.cursor.store(cursor_index(icon), Ordering::Release);
     }
@@ -243,7 +208,6 @@ fn system_cursor(index: u8) -> Option<windows_sys::core::PCWSTR> {
 }
 
 fn modifiers() -> egui::Modifiers {
-    // SAFETY: GetKeyState reads this thread's key state.
     let down = |key: u16| unsafe { GetKeyState(i32::from(key)) } < 0;
     let ctrl = down(VK_CONTROL);
     egui::Modifiers { alt: down(VK_MENU), ctrl, shift: down(VK_SHIFT), mac_cmd: false, command: ctrl }
@@ -252,13 +216,11 @@ fn modifiers() -> egui::Modifiers {
 fn points(hwnd: HWND, lparam: LPARAM) -> egui::Pos2 {
     let x = (lparam & 0xffff) as i16 as f32;
     let y = ((lparam >> 16) & 0xffff) as i16 as f32;
-    // SAFETY: a query on the window's handle.
     let dpi = unsafe { GetDpiForWindow(hwnd) };
     let scale = if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 };
     egui::pos2(x / scale, y / scale)
 }
 
-/// The key a virtual-key code names, as egui names keys; `shifted` picks `+` over `=`.
 pub(crate) fn key(vk: u16, shifted: bool) -> Option<egui::Key> {
     use egui::Key;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -311,7 +273,6 @@ pub(crate) fn key(vk: u16, shifted: bool) -> Option<egui::Key> {
     })
 }
 
-/// The key at a scan code's place on a US keyboard, for controls laid out by position (WASD).
 pub(crate) fn physical_key(scan: u32, extended: bool) -> Option<egui::Key> {
     use egui::Key;
     if extended {
@@ -343,7 +304,6 @@ fn button(message: u32, wparam: WPARAM) -> Option<(egui::PointerButton, bool)> {
     })
 }
 
-/// The middle of the window in screen pixels, where a held pointer is kept.
 unsafe fn center(hwnd: HWND) -> POINT {
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client) };
@@ -353,9 +313,6 @@ unsafe fn center(hwnd: HWND) -> POINT {
 }
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // SAFETY: the link pointer is the window's own strong reference from WM_NCCREATE until
-    // WM_NCDESTROY, read only on this, the window's, thread; the OS supplies each message's
-    // documented struct pointer for the call.
     unsafe {
         if message == WM_NCCREATE {
             let created = &*(lparam as *const CREATESTRUCTW);
@@ -436,7 +393,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         modifiers: state,
                     }));
                 }
-                // Alt combinations stay the top-level window's (its menu, Alt+F4).
                 if matches!(message, WM_SYSKEYDOWN | WM_SYSKEYUP) {
                     DefWindowProcW(hwnd, message, wparam, lparam)
                 } else {
@@ -461,7 +417,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             }
             WM_SETFOCUS | WM_KILLFOCUS => {
                 link.send(Input::Focus(message == WM_SETFOCUS));
-                // Modifiers pressed while another window had the keyboard sent this window no key.
                 if message == WM_SETFOCUS {
                     link.send(Input::Event(egui::Event::ModifiersChanged(modifiers())));
                 }
@@ -502,7 +457,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 SetFocus(hwnd);
                 0
             }
-            // The map's surface is made on this handle: the map lets it go, then destroys it.
             WM_CLOSE => {
                 link.send(Input::Close);
                 0
@@ -526,10 +480,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     }
 }
 
-/// Pumps this thread's messages until a top-level map window it made is destroyed.
 pub fn pump() {
     let mut message = MSG::default();
-    // SAFETY: the standard message loop on the calling thread.
     unsafe {
         while GetMessageW(&mut message, ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&message);
@@ -554,17 +506,14 @@ mod tests {
         assert_eq!(key(0x6b, false), Some(Key::Plus));
         assert_eq!(key(0xbd, false), Some(Key::Minus));
         assert_eq!(key(0x10, false), None, "Shift is a modifier, not a key");
-        // An AZERTY keyboard's Z sits where a US keyboard has W.
         assert_eq!(physical_key(0x11, false), Some(Key::W));
         assert_eq!(physical_key(0x1e, false), Some(Key::A));
         assert_eq!(physical_key(0x0b, false), Some(Key::Num0));
         assert_eq!(physical_key(0x48, true), None);
     }
 
-    /// Dispatches what this thread's windows were posted.
     fn dispatch_posted() {
         let mut message = MSG::default();
-        // SAFETY: the standard message dispatch on the calling thread, without waiting.
         unsafe {
             while PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
                 DispatchMessageW(&message);
@@ -572,15 +521,12 @@ mod tests {
         }
     }
 
-    /// A close (the title bar's, or Alt+F4's) only asks the map to stop: the map's surface is made
-    /// on the window's handle, so the window is destroyed once the map has let go of it.
     #[test]
     fn a_close_asks_the_map_to_stop_and_only_the_map_destroys_the_window() {
         let (window, inputs) = Window::create(Some(HWND_MESSAGE as usize), [1, 1], "close test").unwrap();
         let hwnd = window.hwnd() as HWND;
         dispatch_posted();
         let _ = inputs.received.try_iter().count();
-        // SAFETY: a message sent to this thread's own window, and a query on its handle.
         unsafe {
             SendMessageW(hwnd, WM_CLOSE, 0, 0);
             assert_ne!(IsWindow(hwnd), 0, "the window outlives a close");
@@ -588,13 +534,9 @@ mod tests {
         assert_eq!(inputs.received.try_iter().collect::<Vec<_>>(), [Input::Close]);
         window.destroy();
         dispatch_posted();
-        // SAFETY: as above.
         assert_eq!(unsafe { IsWindow(hwnd) }, 0, "the map destroys the window once it lets it go");
     }
 
-    /// Shift held down while another window had the keyboard (the dashboard) never reached the map
-    /// as a key: gaining the focus tells the map which modifiers are down, so a Shift-click
-    /// extends the selection.
     #[test]
     fn gaining_the_focus_tells_the_map_which_modifiers_are_down() {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
@@ -603,7 +545,6 @@ mod tests {
         dispatch_posted();
         let _ = inputs.received.try_iter().count();
         let mut keys = [0_u8; 256];
-        // SAFETY: this thread's own key state, and messages sent to this thread's own window.
         unsafe {
             GetKeyboardState(keys.as_mut_ptr());
             let held = keys;

@@ -60,7 +60,6 @@ $children=New-Object Collections.Generic.List[Diagnostics.Process]
 $recordRoot=Join-Path $Out 'recording'
 $gameState=Join-Path (Split-Path -Parent $GameLock) 'hoi4-screen-game.json'
 $recorder=if (-not $Bare) {Join-Path (Resolve-Path -LiteralPath $BinaryDirectory).ProviderPath 'recorder.exe'} else {$null}
-# The game clock is read by recorder.exe's clock command: BinaryDirectory's, or this checkout's release build.
 . (Join-Path $PSScriptRoot 'game-clock.ps1')
 $clockRecorder=Resolve-ClockRecorder $BinaryDirectory
 $result=[ordered]@{passed=$false;bare=[bool]$Bare;save=$ExpectedSave;requested_window_seconds=$Seconds;reload_attempts=0;verified_reloads=0;clean_detaches=0;error=$null;cleanup_errors=@()}

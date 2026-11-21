@@ -67,7 +67,6 @@ def launch(args):
     source = pathlib.Path(args[0]).resolve(strict=True)
     ROOT.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, ROOT / source.name)
-    # The app's map loads the pinned shader compiler from beside the app.
     for filename in ['dxcompiler.dll', 'dxil.dll']:
         if (source.parent / filename).is_file():
             shutil.copy2(source.parent / filename, ROOT / filename)
@@ -153,7 +152,6 @@ if __name__=='__main__':
     arguments=cli.arguments
     if action=='launch':
         code=launch(arguments)
-        # Signed, so a crash status such as 0xC0000005 is the script's own exit code.
         sys.exit(code-(1<<32) if code>=1<<31 else code)
     else:
         desk=desktop()
@@ -178,7 +176,6 @@ if __name__=='__main__':
             if len(dialogs)!=1:raise RuntimeError(f'Expected one dialog: {dialogs}')
             dialog=dialogs[0];items=windows(dialog['hwnd'])
             if action=='choose':
-                # Folder picker (1152) and recording file picker (1148).
                 field=next(item for item in items if item['class']=='Edit' and item['id'] in (1152,1148))
                 u.SendMessageW.argtypes=[w.HWND,w.UINT,w.WPARAM,w.LPCWSTR];u.SendMessageW.restype=w.LPARAM
                 checked(u.SendMessageW(field['hwnd'],0xc,0,str(pathlib.Path(arguments[0]))))

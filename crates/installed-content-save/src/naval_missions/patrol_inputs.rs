@@ -1,11 +1,8 @@
-//! Saved retained patrol words, bound through the recorded lexical dictionary.
 use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PatrolMissionFields {
-    /// A stale full reference remains present; the writer does not resolve it.
     pub target: Option<u64>,
-    /// Signed nonzero values are emitted; omission means exactly zero.
     pub progress: Option<Decimal>,
     pub chance: Option<Decimal>,
 }

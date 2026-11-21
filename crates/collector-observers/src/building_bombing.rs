@@ -1,5 +1,3 @@
-//! Signed building health removals, observed without querying native code.
-//! A lost interval is unavailable; unresolved execution retains partial recovery.
 use crate::{
     clock::qpc,
     event_ledger::{Event, EventLedger},
@@ -82,7 +80,6 @@ pub fn mark_stranded() {
 pub fn capacity() -> usize {
     LEDGER.demand()
 }
-/// The latest building census, which also sizes the nuclear strike ledger.
 pub fn buildings() -> usize {
     BUILDINGS.load(Ordering::Acquire)
 }
@@ -113,7 +110,6 @@ fn writer_cost(start: i64) {
     INTERVAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
 }
 
-/// Off-thread census; overflow demand grows even when the census is unavailable.
 pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
@@ -163,8 +159,6 @@ fn drain_admitted() -> Result<(), &'static str> {
     }
     Ok(())
 }
-// Reviewed Win64 frame: native call is outside Rust; .seh_stackalloc covers the owned snapshot.
-// Relocation moves only the five-byte store of RBX to its home slot.
 core::arch::global_asm!(
     ".text", ".globl building_damage_entry", ".seh_proc building_damage_entry",
     "building_damage_entry:", "sub rsp, 0x138", ".seh_stackalloc 0x138", ".seh_endprologue",
@@ -346,11 +340,11 @@ pub struct Hooks {
     hook: Option<Hook>,
 }
 impl Hooks {
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Self {
         BASE.store(base, Ordering::Relaxed);
         let mut frequency = 0;

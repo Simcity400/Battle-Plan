@@ -8,7 +8,6 @@ export const COLUMNS = [
   { key: 'template', label: 'Template' }, { key: 'fielded', label: 'Fielded' },
   { key: 'battalions', label: 'Battalions' }, { key: 'width', label: 'Base combat width' }, { key: 'priority', label: 'Priority' },
 ] as const;
-/** The Template column sorts by the game's roster order. */
 export const DEFAULT_SORT = { column: 'template', direction: 'ascending' } as const;
 export const COUNT_FOR_OPTION: OptionField = { key: 'countFor', section: 'options', label: 'Expeditionary forces count for', kind: 'choice', default: 'owner',
   choices: [{ value: 'owner', label: 'Owner' }, { value: 'host', label: 'Host' }] };

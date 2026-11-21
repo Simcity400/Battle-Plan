@@ -1,11 +1,6 @@
-//! Static pixel centroids, directed borders and nearest-owned centers.
 use installed_content_core::map::MapData;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Static province quantities read from the content province bitmap: the
-/// integer pixel centroid (truncated mean), directed integer border pixels
-/// towards each neighbour, and the owned pixel a one-province line starts from.
-/// Neighbour order, kinds and crossings come from the content movement map.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProvinceGeometry {
     pub width: u32,
@@ -16,7 +11,6 @@ pub struct ProvinceGeometry {
 }
 
 impl ProvinceGeometry {
-    /// Centroids and border tracing, cached once at map load.
     pub fn build(map: &MapData) -> Self {
         let width = map.width as usize;
         let height = map.height as usize;
@@ -30,7 +24,6 @@ impl ProvinceGeometry {
                 entry.0 += column as u64;
                 entry.1 += (height - 1 - row) as u64;
                 entry.2 += 1;
-                // The map wraps in x, like the engine's border collection.
                 let right = map.province_ids[row * width + (column + 1) % width];
                 if right != id {
                     edge_pixels.push((id, right, (height - 1 - row) as u32, column as u32));
@@ -50,8 +43,6 @@ impl ProvinceGeometry {
                 }
             }
         }
-        // Collect each province's own integer pixels, once per distinct neighbour
-        // at a pixel. World rows run south to north.
         edge_pixels.sort_unstable();
         edge_pixels.dedup();
         let mut borders = BTreeMap::new();
@@ -69,7 +60,6 @@ impl ProvinceGeometry {
             borders.insert((a, b), sorted);
             edges = &edges[count..];
         }
-        // Centroid sums use i32 fields, so a sum past i32 wraps; division is signed.
         let pixels = sums.iter().map(|entry| entry.2 as u32).collect();
         let centroids: Vec<Option<[i32; 2]>> = sums
             .into_iter()
@@ -92,19 +82,15 @@ impl ProvinceGeometry {
         }
     }
 
-    /// Pixel count used by the trade-line province search.
     pub fn pixel_count(&self, province: u32) -> Option<u32> {
         self.pixels.get(province as usize).copied()
     }
 
-    /// World `(x, z)` of a province's integer pixel centroid.
     pub fn centroid(&self, province: u32) -> Option<[f32; 2]> {
         self.pixel_centroid(province)
             .map(|[x, z]| [x as f32, z as f32])
     }
 
-    /// The province's integer map position uses the pixel-centroid mean.
-    /// A province with no pixels has zero fields and returns `None`.
     pub fn map_position(&self, province: u32) -> Option<[i32; 2]> {
         self.pixel_centroid(province)
     }
@@ -113,15 +99,11 @@ impl ProvinceGeometry {
         self.centroids.get(province as usize).copied().flatten()
     }
 
-    /// Provinces with pixels, for reporting.
     pub fn provinces(&self) -> usize {
         self.centroids.iter().flatten().count()
     }
 }
 
-/// Start at the least-connected pixel (Manhattan distance <5), then greedily
-/// extend the nearer end. Swap-removal and first-tie order matter.
-/// The local pixel census avoids a quadratic seed-neighbour scan.
 pub fn sort_edge_pixels(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     if points.len() < 2 {
         return points.to_vec();
@@ -172,8 +154,6 @@ pub fn sort_edge_pixels(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     out
 }
 
-/// The native nearest-owned-pixel search result, cached once per map for the
-/// provinces whose integer centroid lies outside their own raster.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Centers {
     pub centers: BTreeMap<u32, [i64; 2]>,
@@ -196,9 +176,6 @@ impl Centers {
                 candidates[province] = Some((centroid, i64::MAX, None));
             }
         }
-        // Build province runs in increasing world Z then X. Accept only a strictly
-        // smaller Manhattan distance, so the first pixel wins ties, including on
-        // disconnected shapes.
         if candidates.iter().any(Option::is_some) {
             for z in 0..map.height {
                 let row = (map.height - 1 - z) as usize * map.width as usize;

@@ -14,7 +14,6 @@ fn random_headers_weights_modifiers_and_member_seed_reset() {
     assert!(out.text.starts_with("3 options:\n50%: "), "{}", out.text);
     assert_eq!(out.text.matches("50%: ").count(), 2);
     assert!(out.text.ends_with("0%: No effect\n"), "{}", out.text);
-    // The zero-weight final member still resets both seed words.
     assert_eq!(graph.scopes[0].random_seed, 1);
     assert_eq!(
         graph.scopes[0].random_counter,
@@ -87,7 +86,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
         },
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    assert_eq!(out.text, "XP2\nPP1\n"); // Fixed5 truncates at zero decimals.
+    assert_eq!(out.text, "XP2\nPP1\n");
     let out = fixture.render_native(
         "meta_effect={X=2 text={army_experience=[x]}}",
         &mut fresh(),
@@ -96,7 +95,7 @@ fn meta_uses_native_reader_and_case_sensitive_parameter_substitution() {
             ..Default::default()
         },
     );
-    assert_eq!(out.text, "XP0\n"); // Unmatched parameter emits no text; the native reader retains '='.
+    assert_eq!(out.text, "XP0\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render_native(
         "meta_effect={}",

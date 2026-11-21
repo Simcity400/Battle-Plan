@@ -11,7 +11,6 @@ fn opened(bytes: Vec<u8>) -> Recording {
     Recording::open(bytes).unwrap()
 }
 
-/// A recording's bytes in a file of their own, removed afterwards.
 struct Saved(std::path::PathBuf);
 
 impl Saved {
@@ -48,7 +47,6 @@ fn append_revision(bytes: &mut Vec<u8>, revision: u64) {
     bytes.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
 }
 
-/// The frames of every hour of every run, read on hour after hour.
 fn read_on(file: &Recording, tables: &[TableId]) -> Vec<fixtures::Seen> {
     let mut frames = Frames::new(file, tables).unwrap();
     let mut out = Vec::new();
@@ -64,12 +62,10 @@ fn read_on(file: &Recording, tables: &[TableId]) -> Vec<fixtures::Seen> {
     out
 }
 
-/// Each table's view and sample hour, the metrics aside: the writer's frames carry none.
 fn same(read: &fixtures::Seen, written: &fixtures::Seen) -> bool {
     read.0.branch == written.0.branch && read.0.hour == written.0.hour && read.0.tables == written.0.tables && read.1 == written.1
 }
 
-/// Five runs, two of one branch, one after the other.
 const CHURNED: [(u64, i32, u32); 5] = [
     (1, 100, 5),
     (1, 100 + 5 * envelope::UNIT_ORDINALS as i32, 4),
@@ -80,8 +76,6 @@ const CHURNED: [(u64, i32, u32); 5] = [
 
 const WATCHED: [TableId; 2] = [TableId::Countries, TableId::WorldTension];
 
-/// Frames read on hour after hour, from a file and from memory, are the writer's own tables at
-/// every hour of every run: rows, strings, statuses and sample hours.
 #[test]
 fn frames_read_on_are_the_writer_s_tables_at_every_hour_of_every_run() {
     let (bytes, expected) = fixtures::churned(&CHURNED);
@@ -98,10 +92,6 @@ fn frames_read_on_are_the_writer_s_tables_at_every_hour_of_every_run() {
     }
 }
 
-/// A derived table is its writer's, run each hour as the recorder runs it: a balance that falls
-/// reads back as that hour's drop, and what the hours themselves say of the table is left out.
-/// A cell its writer leaves unrecorded reads back not recorded: a ceiling without its command
-/// power row.
 #[test]
 fn a_derived_table_reads_back_as_its_writer_wrote_it_whatever_the_hours_say() {
     use super::synthetic::{Input, Sample};
@@ -109,7 +99,6 @@ fn a_derived_table_reads_back_as_its_writer_wrote_it_whatever_the_hours_say() {
     let derived = TableId::BalanceDrops;
     assert!(recorder_derive::writers().tables().contains(&derived.index()));
     const FIRST: i32 = 100;
-    // Rises four hours and falls on the fifth.
     let power = |ordinal: u32| i64::from(ordinal % 5) * 1_000;
     let inputs = CountryStabilityInputRow {
         country: 9,
@@ -121,7 +110,6 @@ fn a_derived_table_reads_back_as_its_writer_wrote_it_whatever_the_hours_say() {
         stability_factor: Some(0),
         party_popularity_stability_factor: Some(0),
         war_support_factor: Some(0),
-        // A key per total, none for a total not read; the command power keys are not read.
         keys: vec![1, 2, u32::MAX, u32::MAX, u32::MAX, 6, u32::MAX, u32::MAX, u32::MAX, u32::MAX],
         ..Default::default()
     };
@@ -157,8 +145,6 @@ fn a_derived_table_reads_back_as_its_writer_wrote_it_whatever_the_hours_say() {
     assert_eq!(drops, (envelope::UNIT_ORDINALS as usize - 1) / 5);
 }
 
-/// A table holding a cell not recorded in a field its row cannot leave unrecorded is withheld by
-/// name at that hour, and every other table of the hour is built.
 #[test]
 fn a_table_whose_row_cannot_say_not_recorded_is_withheld_by_name_not_the_hour() {
     use super::synthetic::{Input, Sample};
@@ -186,8 +172,6 @@ fn a_table_whose_row_cannot_say_not_recorded_is_withheld_by_name_not_the_hour() 
     }
 }
 
-/// A frame sought at any hour, each table restored at its last restore before the hour and
-/// advanced to it, is the frame reading on reaches there.
 #[test]
 fn a_frame_sought_at_any_hour_is_the_one_reading_on_reaches() {
     let (bytes, expected) = fixtures::churned(&CHURNED);
@@ -200,7 +184,6 @@ fn a_frame_sought_at_any_hour_is_the_one_reading_on_reaches() {
         }
     }
     let mut frames = Frames::new(&file, &WATCHED).unwrap();
-    // Every 37th hour, backwards, so no seek reads on from the one before.
     for (at, &(run, ordinal, branch)) in starts.iter().enumerate().rev().step_by(37) {
         frames.seek(run, ordinal).unwrap();
         let frame = frames.frame(branch).unwrap();
@@ -209,12 +192,8 @@ fn a_frame_sought_at_any_hour_is_the_one_reading_on_reaches() {
     }
 }
 
-/// Frames moved forward a day at a time through a run, across its block ends, are at every stop
-/// the frame a fresh seek reads; each table's reader goes on from where it stands and restores
-/// only across a block end the table was restored at.
 #[test]
 fn frames_moved_forward_by_days_go_on_and_are_the_ones_sought() {
-    // Seven blocks: the writer restores each table at block 5's end, six blocks after its first.
     let (bytes, _) = fixtures::churned(&[(1, 0, 7)]);
     let file = opened(bytes);
     let ordinals = file.run(0).unwrap().ordinals;
@@ -251,7 +230,6 @@ fn frames_moved_forward_by_days_go_on_and_are_the_ones_sought() {
     assert_eq!(crossed, [true, true], "the walk crosses a block end with no restore and one with");
 }
 
-/// Every table's [`Spent`] of `frames`, summed.
 fn total(frames: &Frames<&Recording>) -> Spent {
     frames.spent().fold(Spent::default(), |sum, (_, spent)| Spent {
         patched: sum.patched + spent.patched,
@@ -264,13 +242,6 @@ fn total(frames: &Frames<&Recording>) -> Spent {
     })
 }
 
-/// Every hour of every run of `file`, stepped to as a walk of blocks steps (each block's first
-/// hour a keyframe), its frame and recorded facts made three ways at once: every view built from
-/// every cell, the reference; views patched while the frame and facts of the hour before are
-/// still held, so each patch copies; and patched with them dropped, so each patch is in the rows'
-/// own storage. Each patched hour is the reference's: every table's view, sample hour and update,
-/// and whether it is a keyframe. `seen` sees the dropped walk's frames before each move (false)
-/// and after it (true). The [`Spent`] totals of the reference, the held walk and the dropped one.
 fn three_ways(file: &Recording, tables: &[TableId], mut seen: impl FnMut(&Frames<&Recording>, bool)) -> [Spent; 3] {
     let mut rebuilt = Frames::new(file, tables).unwrap().rebuilding();
     let mut held = Frames::new(file, tables).unwrap();
@@ -306,29 +277,18 @@ fn three_ways(file: &Recording, tables: &[TableId], mut seen: impl FnMut(&Frames
     [total(&rebuilt), total(&held), total(&dropped)]
 }
 
-/// The three walks took the paths they name: the reference patched nothing; a patch beside a
-/// held frame copied its rows and its Snapshot; one with the hour before dropped patched both in
-/// their own storage.
 fn took_each_path([rebuilt, held, dropped]: [Spent; 3]) {
     assert_eq!(rebuilt.patched, 0, "the reference patched: {rebuilt:?}");
     assert!(held.patched > 0 && held.in_place == 0 && held.snapshots_patched == 0, "a frame held copies: {held:?}");
     assert!(dropped.patched > 0 && dropped.in_place == dropped.patched && dropped.snapshots_patched > 0, "a frame dropped is patched in place: {dropped:?}");
 }
 
-/// At every hour of every run of the churned recording (strings coming back blocks later, a row
-/// leaving and returning, a table unavailable for stretches) a patched view is the view built
-/// from every cell, and its update the update built with it, whether the frame before is held
-/// or dropped. A patch that missed a delete or put rows out of key order fails the view's
-/// assertion in [`three_ways`].
 #[test]
 fn a_view_patched_at_every_hour_is_the_view_built_from_every_cell_held_or_dropped() {
     let (bytes, _) = fixtures::churned(&CHURNED);
     took_each_path(three_ways(&opened(bytes), &WATCHED, |_, _| {}));
 }
 
-/// The same through every edit a step patches and every move it does not: rows written, inserted,
-/// deleted, deleted one hour and back the next, a deleted row's slot taken by a row inserted the
-/// same hour; a block's end packing the table; hours read in part and not at all.
 #[test]
 fn a_view_patched_through_inserts_deletes_packs_and_status_changes_is_the_view_built_from_every_cell() {
     let (bytes, _) = fixtures::edited(3);
@@ -356,7 +316,6 @@ fn a_view_patched_through_inserts_deletes_packs_and_status_changes_is_the_view_b
     took_each_path(spent);
 }
 
-/// The keys `now` holds that `before` does not hold equal, and the keys of `before` it lacks.
 fn keyed_edits<T: replay_data::rows::RowCodec>(now: &[T], before: &[T]) -> (Vec<u128>, Vec<u128>) {
     let at = |rows: &[T], key: u128| rows.binary_search_by_key(&key, T::key).ok();
     let changed = now.iter().filter(|row| at(before, row.key()).is_none_or(|old| before[old] != **row)).map(T::key).collect();
@@ -364,7 +323,6 @@ fn keyed_edits<T: replay_data::rows::RowCodec>(now: &[T], before: &[T]) -> (Vec<
     (changed, deleted)
 }
 
-/// [`keyed_edits`] of a watched table's complete rows.
 fn watched_edits(now: &TableRows, before: &TableRows) -> (Vec<u128>, Vec<u128>) {
     match (now, before) {
         (TableRows::Countries(now), TableRows::Countries(before)) => keyed_edits(now, before),
@@ -373,13 +331,6 @@ fn watched_edits(now: &TableRows, before: &TableRows) -> (Vec<u128>, Vec<u128>) 
     }
 }
 
-/// With change facts, every hour stepped to from the hour built before names, against that
-/// hour's view, exactly the keys the writer changed, inserted and deleted that hour: a consumer
-/// asking since that view gets those facts, or Unchanged when the hour wrote no row (a view
-/// rebuilt for its sample hour alone keeps its stamp's fields), and the field stamps tell a
-/// field no hour writes unchanged; an hour reached by any other move (a run's
-/// first hour, a seek back, a move of two hours, two steps with no frame between) names none, and
-/// frames without change facts never do.
 #[test]
 fn an_hour_stepped_to_names_what_it_changed_and_no_other_move_does() {
     use crate::frame::{ChangeDiscontinuity, HourInput, TableChanges};
@@ -487,7 +438,6 @@ fn an_hour_stepped_to_names_what_it_changed_and_no_other_move_does() {
     assert!(discontinuous(since(&next, &built)));
 }
 
-/// Strings come back blocks after they were last held, as cells and as reasons, after a seek.
 #[test]
 fn strings_that_return_on_later_blocks_are_read_after_a_seek() {
     let (bytes, _) = fixtures::churned(&[(1, 0, 6)]);
@@ -510,9 +460,6 @@ fn strings_that_return_on_later_blocks_are_read_after_a_seek() {
     assert_eq!(*frames.frame(1).unwrap().tables[TableId::WorldTension.index()], TableView::Unavailable { reason: "refused 0".into() });
 }
 
-/// A table whose part in a block cannot be read is unavailable by name from there, and the
-/// other tables read on; a seek before that block reads it, and one past it, replaying from the
-/// table's last restore before the damage, names it too.
 #[test]
 fn a_damaged_part_refuses_its_table_by_name_and_no_other() {
     let (bytes, expected) = fixtures::churned(&[(1, 0, 4)]);
@@ -544,13 +491,10 @@ fn a_damaged_part_refuses_its_table_by_name_and_no_other() {
     let TableView::Unavailable { reason } = &*frame.tables[TableId::Countries.index()] else { panic!("a seek past the damage read it") };
     assert!(reason.contains("Countries of run 0 in block 1"), "{reason}");
     assert_eq!(frame.tables[TableId::WorldTension.index()], expected[2 * block + 5].0.tables[TableId::WorldTension.index()]);
-    // Lost to the damage, the same frames sought back before it read the clean hour again.
     frames.seek(0, 300).unwrap();
     assert_eq!(frames.frame(1).unwrap().tables[TableId::Countries.index()], expected[300].0.tables[TableId::Countries.index()], "a seek back before the damage reads it again");
 }
 
-/// A recording opened ends where the last footer whose root verifies does, from a file and from
-/// memory.
 #[test]
 fn torn_tails_choose_the_last_committed_root_for_both_inputs() {
     let runs = [(1, 0, 10)];
@@ -570,8 +514,6 @@ fn torn_tails_choose_the_last_committed_root_for_both_inputs() {
     assert_eq!(opened(bytes).len(), original as u64);
 }
 
-/// A recording opened from its file keeps the revision it opened while a writer appends the
-/// next, and reads its hours.
 #[test]
 fn an_open_recording_keeps_its_revision_while_its_file_grows() {
     let runs = [(1, 0, 10)];
@@ -597,16 +539,11 @@ fn root_and_run_lists_hold_many_short_runs() {
     }
 }
 
-/// The columns a format-136 or 134 recording framed (each format's field counts are
-/// replay-data's `earlier_native_formats_frame_their_tables_as_written`), the tables whose
-/// meaning changed since withheld by name, and since format 140 framed the division tables
-/// narrower, no prefix of this build's schema.
 #[test]
 fn format_136_columns_are_this_builds_but_the_appended() {
     use replay_data::rows::compatibility::AIR_HISTORY_SLOTS_FORMAT;
     let schema = schema().unwrap();
     let columns = columns_at(AIR_HISTORY_SLOTS_FORMAT).unwrap();
-    // The division tables whose meaning changed at format 140 are withheld by name; no other.
     let mut changed = [TableId::DivisionMovement, TableId::DivisionPanelStats, TableId::DivisionStatus, TableId::LandCombatDivisions, TableId::LandCombatDivisionModifiers].map(TableId::index).to_vec();
     changed.sort_unstable();
     let named = |format: u16| {
@@ -620,8 +557,6 @@ fn format_136_columns_are_this_builds_but_the_appended() {
             .collect::<Vec<usize>>()
     };
     assert_eq!(named(AIR_HISTORY_SLOTS_FORMAT), changed);
-    // A format-134 capture frames its tables as written and withholds by name those whose
-    // layout changed since; every other table reads.
     use replay_data::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT;
     let mut expected = changed.clone();
     expected.extend([TableId::AirNavalPatrolHistories, TableId::AirMissionInputs].map(TableId::index));
@@ -631,9 +566,6 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     assert_eq!(earlier[TableId::AirNavalPatrolHistories.index()], 3);
     assert_eq!(earlier[TableId::Cryptology.index()], 4);
     assert_eq!(earlier[TableId::RaidAirScores.index()], 6);
-    // Each format held this build's tables but those added at format 142, the division tables
-    // framed wider then than now: a recording of either format is refused by name as of another
-    // schema, not read.
     for held in [&earlier, &columns] {
         assert_eq!(held.len(), TABLE_COUNT - 3);
         assert_eq!(replay_columnar::envelope::schema_digest_prefix(&schema[..held.len()], held), None);
@@ -649,7 +581,6 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     );
 }
 
-/// `bytes` with one more root, naming schema `theirs`.
 fn naming_schema(mut bytes: Vec<u8>, theirs: [u8; 32]) -> Vec<u8> {
     let (extent, _) = envelope::last_root(&bytes).unwrap();
     let raw = zstd::bulk::decompress(extent.stored_in(&bytes).unwrap(), 1 << 20).unwrap();
@@ -660,7 +591,6 @@ fn naming_schema(mut bytes: Vec<u8>, theirs: [u8; 32]) -> Vec<u8> {
     bytes
 }
 
-/// Opening `bytes` is refused as of schema `theirs`, naming its digest and this build's.
 fn refused_naming_both(bytes: Vec<u8>, theirs: &[u8; 32]) {
     let hex = |digest: &[u8; 32]| digest[..8].iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let error = Recording::open(bytes).unwrap_err().to_string();
@@ -668,9 +598,6 @@ fn refused_naming_both(bytes: Vec<u8>, theirs: &[u8; 32]) {
     assert!(error.contains(&format!("This recording was written with another schema (its digest {}, this build's {ours})", hex(theirs))), "{error}");
 }
 
-/// A recording written with another schema is refused naming both digests, the words a person
-/// sees: the schema before the log tables (LogForgets a table of its own after
-/// DivisionModelInputs, the event tables state) among them.
 #[test]
 fn another_schema_is_refused_naming_both_digests() {
     let mut before_logs = schema().unwrap();
@@ -682,16 +609,6 @@ fn another_schema_is_refused_naming_both_digests() {
     }
 }
 
-/// A recording of format 141, written as that build wrote it (its identity naming that format's
-/// schema; its journal, store, pages and restores holding the tables it held, each framed as
-/// then), opens and plays: its hours read, each table added at format 142 is not recorded at
-/// every hour, its reason named, and refused by every reader of its pages, each field appended at 142 reads as not
-/// recorded (an opaque one among them, which a cell decoded at this build's columns gave as an
-/// empty payload), and the rest reads as written, across a closed span and an open block. A
-/// table keeping its last complete read restores it at every block's end as that format framed
-/// it, so a seek past any restore reads what reading on reads. A format-141 capture whose
-/// identity names a schema that is no prefix of this build's framed at that format is still
-/// refused naming both digests.
 #[test]
 fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
     use super::synthetic::{Input, Sample};
@@ -707,8 +624,6 @@ fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
         DivisionRowAt141 { id: (3_u64 << 32) | 1, roster_owner: 7, province: 11, hit_points: 500_000, organisation: 250_000, ..Default::default() },
         DivisionRowAt141 { id: (4_u64 << 32) | 1, roster_owner: 7, province: 12, ..Default::default() },
     ];
-    // The block's last hours read the divisions in part, so every block end restores Divisions
-    // with its last complete read kept apart.
     let partial = |ordinal: u32| ordinal % envelope::UNIT_ORDINALS >= envelope::UNIT_ORDINALS - 10;
     let runs = [(1, 100, envelope::SPAN_BLOCKS + 1)];
     let (bytes, _) = fixtures::written_at(format, b"format 141", &runs, &[TableId::States, TableId::Countries], |synthetic, _, ordinal| {
@@ -734,12 +649,10 @@ fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
         let gap = table.last_change().table_gap(*table, format).unwrap();
         assert_eq!(recording.predates(table.index()), Some(gap.as_str()));
         assert_eq!(recording.withheld_reason(table.index()), Some(gap.as_str()));
-        // Its pages name no such table: a reader of them is refused by name, never given rows.
         for error in [recording.table_entry(0, 0, table.index()).map(|_| ()).unwrap_err(), recording.span_summaries(0, 0, table.index()).map(|_| ()).unwrap_err()] {
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
             assert!(error.to_string().contains(&gap), "{error}");
         }
-        // A table reader reads it not recorded at every hour, however it moves.
         let mut reader = crate::cells::TableReader::new(&recording, 0, *table, Some(&[0])).unwrap();
         reader.keep_tracks();
         let not_recorded = |reader: &crate::cells::TableReader, at: &str| {
@@ -788,16 +701,12 @@ fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
             assert_eq!(*frame.tables[table.index()], TableView::NotRecorded { mode }, "hour {ordinal}: {table:?}");
         }
     }
-    // A seek just past a block end restores every table there, Divisions with its last complete
-    // read as format 141 framed it.
     for ordinal in [block, 6 * block + 3, 12 * block + 1, envelope::SPAN_BLOCKS * block + 2] {
         let mut frames = Frames::new(&recording, &tables).unwrap();
         frames.seek(0, ordinal).unwrap();
         let sought = frames.frame(runs[0].0).unwrap();
         assert_eq!(sought.tables, read[ordinal as usize].0.tables, "sought to {ordinal}");
     }
-    // Its schema with a table's columns other than that format framed them, or with the tables
-    // added since framed as empty, is no format's: refused naming both digests.
     let schema = schema().unwrap();
     let mut columns = columns_at(format).unwrap();
     let every_table: Vec<usize> = columns.iter().copied().chain(added.iter().map(|_| 0)).collect();
@@ -809,10 +718,6 @@ fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
     }
 }
 
-/// A log's cells at an hour are the rows it lists then, as the collector held them: impacts that
-/// each live a stretch from their hour, read back by seek, by step (the step's appends as inserted
-/// rows and its forgets as deleted ones), across a block's end and by an advance; a stretch of
-/// track events is refused by name.
 #[test]
 fn a_log_reads_at_an_hour_as_the_rows_it_lists() {
     use super::synthetic::{Input, Sample};
@@ -864,8 +769,6 @@ fn a_log_reads_at_an_hour_as_the_rows_it_lists() {
     assert!(refused.contains("NuclearStrikes is a log"), "{refused}");
 }
 
-/// A log at an hour read in part, as the recorder writes it, lists its rows as at any other hour:
-/// the hour's appends and the rows it held before, which no partial read forgets.
 #[test]
 fn a_log_read_in_part_lists_its_rows() {
     use crate::frame::{FrameInput, Metrics, TableInput, TableView};
@@ -901,8 +804,6 @@ fn a_log_read_in_part_lists_its_rows() {
     assert!(stepped.read_rows().is_none());
 }
 
-/// A pool whose last owner lets go of it on one of its own threads ends without waiting on its
-/// threads there, which would never finish.
 #[test]
 fn a_pool_let_go_last_on_its_own_thread_ends() {
     use std::sync::mpsc;

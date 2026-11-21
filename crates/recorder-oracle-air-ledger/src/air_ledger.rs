@@ -1,9 +1,3 @@
-//! Daily save-slot equality and owned event attribution checks.
-//! The game completes `(M-24,M]` before the roster-gated midnight
-//! advance. Events retain the authenticated native daily cursor, so writes
-//! either side of that advance at the same hour use their actual save slot.
-//! Queue serializers retain current and previous physical records;
-//! event context is not saved.
 use super::{ContentRead, Report, complete, country_context, invalid};
 use engine_air_history::air_loss_sites::FIELD_COUNT;
 use installed_content_save::air::Pack;
@@ -32,10 +26,6 @@ const ORACLE_TABLES: [TableId; 4] = [
 ];
 
 fn loss_only_ordinal(index: usize) -> bool {
-    // Other writers: bombing 0/41, division/ship damage
-    // 1/42 and 2/43, logistics 36..39 and
-    // enemy channels 77..80.
-    // Credited missile total 81 has no other indexed writer.
     !matches!(index, 0|1|2|36..=39|41..=43|77..=80)
 }
 
@@ -92,14 +82,13 @@ struct DailyCheck {
     seen: BTreeSet<(i32, Vec<u8>)>,
     ids: BTreeSet<u64>,
     sums: BTreeMap<(Vec<u8>, u32, u32), [i64; FIELD_COUNT]>,
-    /// The branch's recorded event losses, as the reads each lies between.
     event_losses: Vec<(i32, i32)>,
 }
 impl DailyCheck {
     fn new(end: i32) -> io::Result<Self> {
         let midnight = end
             .checked_sub(end.rem_euclid(24))
-            .ok_or_else(|| invalid("air daily oracle midnight underflow"))?; // Calendar epoch 43800000 is a multiple of 24.
+            .ok_or_else(|| invalid("air daily oracle midnight underflow"))?;
         let start = midnight
             .checked_sub(24)
             .ok_or_else(|| invalid("air daily oracle hour underflow"))?;
@@ -149,8 +138,6 @@ impl DailyCheck {
                 }
             }
         }
-        // A recorded event loss leaves this window's events unknown; its
-        // saved sums cannot be certified, but the reason is the loss.
         if let Some(&(after, lost)) = self
             .event_losses
             .iter()
@@ -160,9 +147,6 @@ impl DailyCheck {
                 "the air day window includes a recorded event loss between the reads of hours {after} and {lost}: the recorder was detached for part of it, so its air losses are incomplete"
             )));
         }
-        // Include the start-midnight drain: a writer after that advance can
-        // already target the final previous slot. Slot identity, not hour,
-        // separates writes on opposite sides of either midnight advance.
         for row in complete::<tables::AirLossEvents>(frame)? {
             event_hour(frame, row.game_hour, "AirLossEvents")?;
             if !self.ids.insert(row.id) {
@@ -181,7 +165,6 @@ impl DailyCheck {
             {
                 return Err(invalid("AirLossEvents opponent has no CountryLink"));
             }
-            // The replay decoder validates family, cause, amount and cursor.
             if row.game_hour < self.start {
                 continue;
             }
@@ -265,8 +248,6 @@ impl DailyCheck {
                 }
             }
         }
-        // An allocated saved regional history must include its daily window.
-        // An absent window cannot certify zero even when no event was recorded.
         for row in &save.statistics {
             if self.roster.get(&row.country) == Some(&true)
                 && !saved_keys.contains(&(row.country.clone(), row.region))
@@ -282,13 +263,10 @@ impl DailyCheck {
                 );
             }
         }
-        // A recorded nonzero field without a saved queue is a difference too.
         for ((tag, region, slot), sums) in self.sums {
             if self.roster.get(&tag) != Some(&true) {
                 continue;
             }
-            // Older physical slots in the start-midnight drain are outside
-            // the two saved records compared above.
             if saved_keys.contains(&(tag.clone(), region)) {
                 continue;
             }
@@ -350,8 +328,6 @@ pub fn compare_bombing_damage(
                 "BuildingBombingDamage contains a zero applied health change",
             ));
         }
-        // Country resolution maps raw zero to
-        // the reserved null slot, not a country from the positive census.
         null_victims += usize::from(row.victim == 0);
         for country in row
             .attacker
@@ -376,8 +352,6 @@ pub fn compare_bombing_damage(
                 String::from_utf8_lossy(name)
             )));
         }
-        // The building-state lookup returns the province's state pointer
-        // directly, including null (recorded state 0).
         let state_known = if row.state == 0 {
             row.province.is_some()
         } else {
@@ -607,8 +581,6 @@ mod tests {
     #[test]
     fn daily_slots_bucket_writes_on_both_midnight_sides_exactly() {
         let events = BTreeMap::from([
-            // An older slot at start is ignored; the post-advance start write
-            // already belongs to the saved previous record.
             (
                 24,
                 vec![
@@ -748,8 +720,6 @@ mod tests {
         assert!(check.observe(&frame, &regions).is_err());
     }
 
-    /// A window that includes a recorded event loss stays uncertified and
-    /// says why, even when the interval's table reads complete.
     #[test]
     fn a_recorded_event_loss_in_the_window_is_named_and_never_compared() {
         let regions = region_content();

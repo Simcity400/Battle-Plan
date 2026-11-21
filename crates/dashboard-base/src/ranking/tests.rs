@@ -521,7 +521,6 @@ fn ranked_piece_walk_preserves_gaps_and_cancels() {
 
 #[test]
 fn the_top_n_change_where_any_value_changes_and_unknown_values_are_not_ranked() {
-    // (first, last, value); None is unknown.
     let series: BTreeMap<String, Vec<(i32, i32, Option<i64>)>> = [
         ("AAA".to_owned(), vec![(0, 9, Some(5))]),
         ("BBB".to_owned(), vec![(0, 4, Some(3)), (5, 9, Some(9))]),
@@ -545,7 +544,6 @@ fn the_top_n_change_where_any_value_changes_and_unknown_values_are_not_ranked() 
         })
     };
     assert_eq!(spans("AAA"), [(0, 9)]);
-    // Unknown at 0..=2 is not ranked, so BBB holds second place until CCC is known.
     assert_eq!(spans("BBB"), [(0, 2), (5, 9)]);
     assert_eq!(spans("CCC"), [(3, 4)]);
 }
@@ -647,7 +645,6 @@ fn event_membership_spans_join_clip_and_keep_only_hours_within() {
         first_hour,
         last_hour,
     };
-    // Unordered, overlapping, touching and out-of-window spans of one key.
     assert_eq!(
         joined_spans(
             vec![span(8, 12), span(1, 3), span(4, 5), span(20, 30), span(-5, -1)],

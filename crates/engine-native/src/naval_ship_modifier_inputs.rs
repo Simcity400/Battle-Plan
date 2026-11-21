@@ -1,11 +1,3 @@
-//! Ordered raw source operands for ship and weapon modifiers. No modifier
-//! total, doctrine weight, fuel fraction or weapon damage is evaluated.
-//! Source indices preserve stored list order.
-//!
-//! These inputs require fresh reads: effective stats, medals, doctrine, fuel,
-//! headquarters membership, leader adjustment and skill selection have independent
-//! writers. Equal source pointers or counts cannot establish unchanged values or
-//! receiver lifetime.
 use crate::{
     Memory,
     capture_text::{Owned, Value},
@@ -21,7 +13,6 @@ pub struct ContextRow {
     pub commander: u64,
     pub ship_class: u32,
     pub subunit: u32,
-    /// Five stored ship-base operands in getter-case order.
     pub weapon_bases: [i64; 5],
     pub weather_factor: i64,
     pub fuel: [i64; 2],
@@ -35,12 +26,6 @@ pub struct ContextRow {
     pub sources: [usize; 2],
 }
 
-/// Scopes0 country,1 pride,2 ship experience,3 medals,4 doctrine,5 terrain,
-///6 region weather,7 province night,8 task force,9 commander,
-///10 commander class,11 critical,12..15 support influence definitions.
-/// Scopes20 terrain weapon adjuster,21 commander terrain adjuster,
-///22 commander class adjuster,23 commander night adjuster,24 fuel defines.
-/// Weights carry raw counts/denominators or the named adjuster's gun/depth pair.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SourceRow {
     pub scope: u8,
@@ -48,13 +33,9 @@ pub struct SourceRow {
     pub selector: u32,
     pub reference: u64,
     pub weights: [i64; 2],
-    /// Terrain speed-adjustment operand, populated only for scopes 20 and 25.
     pub movement: i64,
-    /// Selected doctrine country-modifier keys.
     pub dynamic_keys: [u32; 2],
     pub terms: [usize; 2],
-    /// Transient source identity for shared term spans and this hour's child-tree
-    /// capture. Never projected to replay.
     pub accumulator: usize,
 }
 
@@ -66,8 +47,6 @@ pub struct ModifierTerm {
     pub feature_selector: u32,
 }
 
-/// Independent caller-owned storage for active or retained influence sources.
-/// Worker capture grows these vectors from the original validated native counts.
 pub struct InfluenceBuffers<'a> {
     pub sources: &'a mut Vec<SourceRow>,
     pub terms: &'a mut Vec<ModifierTerm>,
@@ -75,17 +54,9 @@ pub struct InfluenceBuffers<'a> {
     pub required: &'a mut [usize; 2],
 }
 
-/// One capture's modifier definition table header and successful metadata
-/// reads (flags, category mask and feature selector, the 12 bytes at
-/// `FLAGS`) by key. Both are static content, so in the stopped world a
-/// capture reads each once rather than once per accumulator entry; a failed
-/// read is not kept, so it recurs where it would.
 pub struct TermMetadata {
-    /// Whether anything is kept; [`Self::unkept`] reads every time.
     keep: bool,
     table: Option<Array>,
-    /// Indexed by key, sized to the live table's row count on first use; an
-    /// allocation failure leaves it unsized, and every read direct.
     rows: Vec<Option<[u8; 12]>>,
     sized: bool,
 }
@@ -102,8 +73,6 @@ impl Default for TermMetadata {
 }
 
 impl TermMetadata {
-    /// A memo that keeps nothing: the table header and each entry's
-    /// metadata are read every time (benchmarks compare against it).
     pub fn unkept() -> Self {
         Self {
             keep: false,
@@ -120,7 +89,6 @@ impl TermMetadata {
         Ok(table)
     }
 
-    /// The metadata of `key`, whose row `at` lies in `table`.
     fn flags(
         &mut self,
         memory: &impl Memory,
@@ -168,8 +136,6 @@ pub fn capture_influence(
     Ok([start, capture.buffers.lengths[0] - start])
 }
 
-/// A resolved naval headquarters influence reaches four skill-definition
-/// accumulators. Count the shared visitor's source and term headers only.
 pub fn influence_demand(
     memory: &impl Memory,
     base: usize,
@@ -198,7 +164,6 @@ fn add(p: usize, o: usize) -> Result<usize, &'static str> {
         .filter(|_| p != 0)
         .ok_or("naval weapon pointer invalid")
 }
-// Names use exact string segments and content-based fallback, without a byte cap.
 fn text<const TERMINAL: bool>(
     memory: &impl Memory,
     address: usize,
@@ -240,7 +205,6 @@ struct Capture<'a, 'b, M> {
     memory: &'a M,
     base: usize,
     buffers: InfluenceBuffers<'b>,
-    /// The capture's metadata memo, when the caller keeps one.
     metadata: Option<&'b mut TermMetadata>,
 }
 impl<M: Memory> Capture<'_, '_, M> {
@@ -253,9 +217,6 @@ impl<M: Memory> Capture<'_, '_, M> {
         self.buffers.required[0] = self.buffers.required[0]
             .checked_add(1)
             .ok_or("naval weapon source demand overflow")?;
-        // Adjacent ships often select the same country and task-force accumulators.
-        // Share a recent owned term span within this callback, retaining every source
-        // occurrence in order. Bound the search because each ship's accumulator is unique.
         if let Some(accumulator) = accumulator
             && let Some(previous) = self.buffers.sources.get(..source).and_then(|rows| {
                 rows.iter()
@@ -344,7 +305,6 @@ impl<M: Memory> Capture<'_, '_, M> {
     }
 }
 
-/// Terrain source selection preserves both selected and default raw values.
 pub(crate) fn terrain_class(
     memory: &impl Memory,
     terrain: usize,
@@ -362,7 +322,6 @@ pub(crate) fn terrain_class(
     hash = (hash >> 16 ^ hash).wrapping_mul(0x45d9f3b);
     hash ^= hash >> 16;
     let mut selected = None;
-    // Probe distance and extension are stored u8 fields.
     for probe in 1..=u32::from(u8::MAX) {
         let index = (hash & mask)
             .checked_add(probe - 1)
@@ -407,9 +366,6 @@ pub(crate) fn terrain_with_policy<const TERMINAL: bool>(
     terrain_from_template_with_policy::<TERMINAL>(memory, base, ptr(memory, definition, 0x30)?)
 }
 
-/// [`terrain`] keeping the ocean fallback in `ocean` for the capture. The
-/// fallback is content, fixed after load, so every fallback of one stopped
-/// capture resolves the same terrain; only a complete one is kept.
 pub(crate) fn terrain_kept(
     memory: &impl Memory,
     base: usize,
@@ -419,9 +375,6 @@ pub(crate) fn terrain_kept(
     terrain_from_template_kept(memory, base, ptr(memory, definition, 0x30)?, ocean)
 }
 
-/// The same native terrain selector, consuming a template pointer already
-/// acquired by the caller (which avoids reacquiring that selecting control),
-/// keeping the ocean fallback as [`terrain_kept`].
 pub(crate) fn terrain_from_template_kept(
     memory: &impl Memory,
     base: usize,
@@ -439,8 +392,6 @@ pub(crate) fn terrain_from_template_kept(
     Ok(terrain)
 }
 
-/// Terrain lookup: the template's terrain when present and active, else the
-/// terrain database's ocean.
 fn terrain_from_template_with_policy<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -452,7 +403,6 @@ fn terrain_from_template_with_policy<const TERMINAL: bool>(
     }
 }
 
-/// The template's own terrain when present and active.
 fn template_terrain(
     memory: &impl Memory,
     base: usize,
@@ -466,15 +416,10 @@ fn template_terrain(
     Ok(None)
 }
 
-/// Terrain lookup's fallback: the one active terrain named by the
-/// installation's five-byte ocean key, found by hashed-name lookup over the
-/// database.
 fn ocean_terrain<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
 ) -> Result<usize, &'static str> {
-    // Capture the key from the pinned module instead of assuming English
-    // content.
     let key: [u8; 5] = field(memory, site(base, Rva(0x029f_5b58))?, 0)?;
     let root = ptr(
         memory,
@@ -525,61 +470,32 @@ pub(crate) fn selected_class(
     Ok(found.unwrap_or(add(leader, fallback)?))
 }
 
-/// One capture's task-force-level sources for the weapon contexts: the
-/// rows each task force's doctrine walk emitted, in order, each fleet's
-/// default leader and each commander's selected class records, each roster
-/// country, each task force's location terms and each terrain's class
-/// records. Every ship of a task force in the stopped capture reaches the
-/// same ones, so later ships re-emit the doctrine rows instead of walking
-/// the tree and take the other observations instead of reading them again,
-/// in the same order as the reads they replace. A walk, search or read that
-/// fails keeps nothing, so its failure recurs where it would.
 #[derive(Default)]
 pub struct SourceMemo {
-    /// Task force -> its doctrine rows' span of `rows`.
     tasks: crate::recent::Recent<usize, (usize, usize), 16>,
     rows: Vec<(SourceRow, Option<usize>)>,
-    /// Fleet -> its default leader (zero: none).
     leaders: crate::recent::Recent<usize, usize, 8>,
-    /// (commander, subunit, modifier or adjuster) -> the selected record.
     classes: crate::recent::Recent<(usize, u32, bool), usize, 16>,
-    /// (game, native country id) -> the resolved country.
     countries: crate::recent::Recent<(usize, u32), crate::ccountry::Country, 8>,
-    /// (task force, location) -> its location terms and terrain name, the
-    /// latest [`LOCATION_SLOTS`] task forces.
     locations: Vec<((usize, usize), LocationTerms, Owned)>,
-    /// (selected terrain, ship class) -> its class records.
     terrain_classes: crate::recent::Recent<(usize, u32), TerrainClass, 16>,
-    /// Task force -> its HQ influence rows' span of `rows`.
     influences: crate::recent::Recent<usize, (usize, usize), 16>,
-    /// The fuel defines, eligibility answer and trade feature flags (scopes
-    /// 24 and 26), module globals.
     globals: Option<([i64; 2], i64, u32)>,
 }
 
-/// Task forces whose location terms a [`SourceMemo`] keeps.
 const LOCATION_SLOTS: usize = 16;
 
-/// A task force's location terms in ship modifier source selection's location
-/// branch, as the first ship of it read them: the relation the
-/// expeditionary-or-roster owner holds with the location's controller, the
-/// selected terrain and the weather region and province records.
 #[derive(Clone, Copy)]
 struct LocationTerms {
     owner_id: u32,
     target: u32,
-    /// The relation's accumulator, when the matrix holds one.
     relation: Option<usize>,
     selected: usize,
-    /// The weather region record's modifiers.
     region: usize,
-    /// The province weather record.
     record: usize,
     night: i64,
 }
 
-/// A terrain's class records for one ship class: the modifier and the
-/// adjuster's gun, depth and movement words.
 #[derive(Clone, Copy)]
 struct TerrainClass {
     modifier: usize,
@@ -587,8 +503,6 @@ struct TerrainClass {
     movement: i64,
 }
 
-/// A copy of `text` in its own storage; an allocation failure fails as a
-/// read of it would.
 fn owned_copy(text: &Owned) -> Result<Owned, &'static str> {
     let mut copy = Owned::default();
     copy.prepare(text.len)
@@ -635,9 +549,6 @@ impl SourceMemo {
     }
 }
 
-/// `selected`'s class records for `class` (`terrain_class`) through `memo`
-/// when the caller keeps one, emitting its modifier (scope 5) between the
-/// selection and the adjuster's words as the location branch does.
 fn terrain_class_kept(
     memory: &impl Memory,
     memo: &mut Option<&mut SourceMemo>,
@@ -668,9 +579,6 @@ fn terrain_class_kept(
     Ok(found)
 }
 
-/// A negative ship class delegates to an unweighted average of each task-force
-/// ship's terrain adjuster, not an opaque cache: one scope 25 row per roster
-/// ship.
 fn mixed_terrain(
     memory: &impl Memory,
     base: usize,
@@ -704,12 +612,7 @@ fn mixed_terrain(
     Ok(())
 }
 
-/// Ship modifier source selection's location branch for the first ship of a
-/// task force at `location`: the relation (scope 16), terrain (5, 20, 25),
-/// weather region (6), province (7) and task-force (8) sources, the terrain
-/// name and night, read in native order and kept in `memo` for the task force's
-/// later ships. Returns the selected terrain.
-#[allow(clippy::too_many_arguments)] // The ship's context row, the capture's memo and visitor.
+#[allow(clippy::too_many_arguments)]
 fn location_terms<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -724,9 +627,6 @@ fn location_terms<const TERMINAL: bool>(
     use crate::ccountry;
     auth(memory, base, location, crate::cprovince::VTABLE_RVA)?;
     let province = field::<u32>(memory, location, crate::cprovince::ID)?;
-    // Ship modifier source selection chooses expeditionary owner when positive,
-    // then the relation matrix entry for the location's controller (ordinal0
-    // when unowned). Keep this separate from roster-country modifier scope0.
     let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
     let owner_id = if expeditionary > 0 {
         expeditionary as u32
@@ -820,7 +720,6 @@ fn location_terms<const TERMINAL: bool>(
     Ok(selected)
 }
 
-/// [`selected_class`] through `memo` when the caller keeps one.
 fn class_kept(
     memory: &impl Memory,
     memo: &mut Option<&mut SourceMemo>,
@@ -834,8 +733,6 @@ fn class_kept(
     }
 }
 
-/// `task`'s doctrine sources: re-emitted from `memo` when an earlier ship of
-/// the capture walked them, else walked ([`visit_doctrine`]) and kept.
 fn doctrine_kept<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -874,9 +771,6 @@ fn doctrine_kept<const TERMINAL: bool>(
     result
 }
 
-/// `task`'s HQ influence sources (scopes 12 to 15): re-emitted from `memo` when an earlier ship of
-/// the capture read them, else read ([`visit_influence`] over the task force's
-/// attached-headquarters array) and kept.
 fn influences_kept(
     memory: &impl Memory,
     base: usize,
@@ -923,9 +817,6 @@ fn influences_kept(
     result
 }
 
-/// The fuel defines (scope 24) and the modifier eligibility answer and
-/// trade feature flags (scope 26), module globals read once per capture when
-/// the caller keeps a memo.
 fn globals_kept(
     memory: &impl Memory,
     base: usize,
@@ -968,14 +859,8 @@ fn globals_kept(
     Ok(())
 }
 
-/// Doctrine selector -> its two country keys ([`doctrine_keys`]) for one
-/// capture or sizing pass.
 pub type DoctrineKeys = crate::recent::Recent<u32, [u32; 2], 64>;
 
-/// [`doctrine_keys`] keeping each selector's complete answer in `keys`. The
-/// lexer's dictionary does not change within a stopped capture, so a capture
-/// walks it once per selector rather than once per doctrine node of every
-/// ship.
 pub(crate) fn doctrine_keys_kept<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -990,11 +875,6 @@ pub(crate) fn doctrine_keys_kept<const TERMINAL: bool>(
     Ok(found)
 }
 
-/// Select the two native country keys without calculating either modifier.
-/// Country key selection constructs prefix+lexer(type)+suffix and maps its
-/// lexer id through the immutable modifier-key dictionary. We compare the raw
-/// string segments while walking that bounded dictionary; no engine lexer
-/// method or lock runs.
 pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -1041,7 +921,6 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     let mut node = ptr(memory, head, 8)?;
     let mut previous = head;
     let mut result = [0; 2];
-    // Predecessor/next links reject a revisited node because its predecessor cannot match both visits.
     while node != head {
         if ptr(memory, node, 0)? != previous {
             return Err("naval doctrine modifier dictionary link invalid");
@@ -1137,8 +1016,6 @@ fn visit_doctrine<const TERMINAL: bool>(
     keys: &mut DoctrineKeys,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    // Task-force doctrine uses successor order and a stored u64 count, without
-    // a chosen node ceiling. Reuse its count-bounded cursor and link validation.
     let mut tree = crate::msvc_tree_node::Cursor::read(memory, task, 0x640)
         .map_err(|_| "naval doctrine tree header invalid")?;
     let mut previous = None;
@@ -1173,7 +1050,6 @@ fn visit_doctrine<const TERMINAL: bool>(
     Ok(())
 }
 
-/// Authenticates a live CShip and captures the shared source visitor's operands.
 pub(crate) fn read(
     memory: &impl Memory,
     base: usize,
@@ -1208,9 +1084,7 @@ pub(crate) fn read(
     Ok(row)
 }
 
-/// Shared ship modifier source selection, in native order, without reading
-/// accumulator entries. Capture and off-thread sizing supply separate visitors.
-#[allow(clippy::too_many_arguments)] // The ship, its side, and the capture's memos and visitor.
+#[allow(clippy::too_many_arguments)]
 pub fn visit_sources<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -1314,13 +1188,10 @@ pub fn visit_sources<const TERMINAL: bool>(
         visit_modifier(emit, 1, ptr(memory, root, 0xb0)?)?;
     }
     visit_modifier(emit, 2, add(ship, 0x740)?)?;
-    // Medals select their own accumulator and label, rebuilt independently of ship experience.
     let medals = ptr(memory, ship, 0x8f8)?;
     visit_modifier(emit, 3, add(medals, 0x1a0)?)?;
     doctrine_kept::<TERMINAL>(memory, base, task, doctrine_keys, &mut memo, emit)?;
     let location = ptr(memory, task, cunit::LOCATION)?;
-    // A later ship of a task force whose location terms an earlier ship
-    // read: the same rows and the same remaining reads, in the same order.
     let kept = memo
         .as_deref()
         .filter(|_| location != 0)
@@ -1340,7 +1211,6 @@ pub fn visit_sources<const TERMINAL: bool>(
                 Some(accumulator),
             )?;
         }
-        // The terrain name where the first ship read it: after the relation.
         if let Some((_, name)) = memo
             .as_deref()
             .and_then(|memo| memo.location(task, location))
@@ -1424,8 +1294,6 @@ pub fn visit_sources<const TERMINAL: bool>(
             None,
         )?;
     }
-    // Strength/org/detection getters pass commander=0; gun/carrier bonus
-    // getters pass the combat's leader. Preserve both when they differ.
     if default_leader != 0 {
         auth(memory, base, default_leader, cnavy_leader::VTABLE_RVA)?;
         let reference = field(memory, default_leader, 8)?;

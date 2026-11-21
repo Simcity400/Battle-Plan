@@ -13,7 +13,6 @@ export function TooltipRowView({ row, element }: { row: TooltipRow; element?: (n
   </div>;
 }
 
-/** The whole tooltip scrolls; its complete row list mounts only the rows in view. */
 export function ScrollableTooltipRows({ content, owner, top }: { content: TooltipContent; owner: string; top: number }) {
   const rows = useRef<HTMLDivElement>(null);
   const elements = useRef(new Map<number, HTMLDivElement>());

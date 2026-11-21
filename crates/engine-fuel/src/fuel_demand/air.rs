@@ -39,8 +39,6 @@ fn vtable(
     Ok(())
 }
 
-/// Air-base country translation uses signed references. Raw zero selects the
-/// reserved slot without translation, including its container authentication.
 pub(super) fn slot<M: Memory>(
     memory: &M,
     countries: &ccountry::Reader<'_, M>,
@@ -70,8 +68,6 @@ fn modifier(
     modifier_accumulator::requested_operand_at(memory, base, at(pointer, offset)?, key)
 }
 
-// Use an engaged module-flag cache; otherwise scan variants and modules
-// in stored order without populating the game cache.
 fn module_flag(memory: &impl Memory, ship: usize) -> Result<bool, &'static str> {
     if field::<u8>(memory, ship, 0x802)? != 0 {
         return Ok(field::<u8>(memory, ship, 0x801)? != 0);
@@ -100,7 +96,6 @@ fn module_flag(memory: &impl Memory, ship: usize) -> Result<bool, &'static str> 
     Ok(found)
 }
 
-/// Signed i32 capacity result; calls no game getter.
 pub(super) fn capacity(
     memory: &impl Memory,
     base: usize,
@@ -118,7 +113,6 @@ pub(super) fn capacity(
         let host = field::<u64>(memory, air_base, cair_base::HOST_REFERENCE)?;
         let ship = creference_registry::resolve(memory, base, host)?
             .ok_or("fuel demand capacity host ship reference unresolved")?;
-        // Host flag checks use the ship's primary registered receiver.
         vtable(memory, base, ship, crate::cship::VTABLE_RVA)?;
         kind = if field::<u8>(memory, ship, crate::cship::FORMATION_FLAGS)? & 0x80 != 0 {
             3
@@ -160,7 +154,6 @@ pub(super) fn context(
         if out.context_slots.len() != before {
             out.context_slots.fill(0);
             let mask = out.context_slots.len() - 1;
-            // Reindex original owned contexts, retaining cached failures without live retries.
             for (index, context) in out.contexts.rows[..out.contexts.len].iter().enumerate() {
                 let mut bucket = (context.pointer >> 4).wrapping_mul(0x9e37_79b9) & mask;
                 while out.context_slots[bucket] != 0 {
@@ -170,8 +163,6 @@ pub(super) fn context(
             }
         }
     }
-    // Current pack only. The sampling callback has joined weather jobs; a
-    // reused region owns every raw operand and its failure from this boundary.
     let mut bucket = 0;
     if !out.context_slots.is_empty() {
         let mask = out.context_slots.len() - 1;
@@ -204,8 +195,6 @@ pub(super) fn context(
             let count = field::<i32>(memory, region, crate::cstrategic_region::PROVINCES_COUNT)?;
             result.counts[slot] = count;
             if count > 0 {
-                // Follow the copied manager pointer only when a positive province
-                // occurrence reaches weather evaluation.
                 vtable(memory, base, manager, crate::cweather_manager::VTABLE_RVA)?;
                 let provinces = array(memory, region, crate::cstrategic_region::PROVINCES, 8)?;
                 if provinces.count != count as u32 {
@@ -245,7 +234,6 @@ pub(super) fn context(
                     })?;
                 }
             }
-            // The threshold is reached after each complete slot average.
             result.thresholds[slot] = global(memory, base, defines::CONTEXT_THRESHOLD_RVA)?;
         }
         Ok(())
@@ -260,7 +248,7 @@ pub(super) fn context(
     result.reason.map_or(Ok((index, result)), Err)
 }
 
-#[allow(clippy::type_complexity)] // Native inputs, weather span, context index and selected owner.
+#[allow(clippy::type_complexity)]
 fn inputs<M: Memory>(
     memory: &M,
     base: usize,
@@ -324,8 +312,6 @@ fn inputs<M: Memory>(
         result.planes = field(memory, wing, cair_wing::PLANE_COUNT)?;
         defines::TRAINING_COST_INDEX
     } else {
-        // Mission masks use signed shifting. Multi-bit masks reach the highest
-        // bit when game assertions do not halt evaluation.
         if (result.mission_selected as i32) < 0 {
             return Err(
                 "fuel demand native mission-bit loop does not terminate for a negative mask",
@@ -336,7 +322,6 @@ fn inputs<M: Memory>(
     };
     let costs = global::<u64>(memory, base, defines::MISSION_COSTS_RVA)? as usize;
     result.mission_cost = field(memory, costs, index * 8)?;
-    // Read base fuel before ace and owner modifiers.
     result.base_fuel = field(memory, wing, cair_wing::BASE_FUEL)?;
     result.ace = field(memory, wing, cair_wing::ACE_REFERENCE)?;
     if result.ace != 0
@@ -400,7 +385,7 @@ fn inputs<M: Memory>(
         ccountry::MODIFIER_ACCUMULATOR,
         0x19e,
     )?;
-    result.period = field(memory, wing, 0xa8)?; // One sample, after helper, before weight.
+    result.period = field(memory, wing, 0xa8)?;
     result.air_weight = global(memory, base, defines::AIR_WEIGHT_RVA)?;
     let region = field::<u64>(
         memory,
@@ -423,7 +408,7 @@ fn inputs<M: Memory>(
     Ok((result, weather, context_index, Some((raw, overridden))))
 }
 
-#[allow(clippy::too_many_arguments)] // Shared census, native site context and caller-owned output.
+#[allow(clippy::too_many_arguments)]
 fn site<M: Memory>(
     memory: &M,
     base: usize,
@@ -500,8 +485,6 @@ fn site<M: Memory>(
                     }
                     Err(reason) => (None, Span::default(), None, None, Some(reason)),
                 };
-                // Actor metadata may fail independently of a native skipped zero.
-                // The modifier helper's selected owner, when reached, is retained.
                 let owner = owner.map(Ok).unwrap_or_else(|| {
                     let override_country = field::<i32>(memory, wing, cair_wing::COUNTRY_OVERRIDE)?;
                     if override_country > 0 {
@@ -546,7 +529,6 @@ pub(super) fn country<M: Memory>(
     vtable(memory, base, manager, cstrategic_air_manager::VTABLE_RVA)?;
     let owners = array(memory, manager, cstrategic_air_manager::COUNTRY_AIR, 8)?;
     let air = pointer(memory, owners, country.canonical_slot)?;
-    // A missing strategic-air country entry has no established native zero.
     vtable(memory, base, air, cstrategic_air::VTABLE_RVA)?;
     let raw = field(memory, air, cstrategic_air::COUNTRY)?;
     if slot(memory, countries, raw)? != country.canonical_slot {

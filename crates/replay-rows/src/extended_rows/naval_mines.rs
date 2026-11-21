@@ -1,9 +1,5 @@
-//! Sparse complete country-owned regional mine amounts.
 use super::*;
 
-/// Kind zero is a completeness witness: `region` is the vector's count and
-/// `amount` is zero. Kind one is a nonzero raw signed fixed5 amount at `region`.
-/// Only a witness proves omitted indices below its count have zero mines.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRegionalMineRow {

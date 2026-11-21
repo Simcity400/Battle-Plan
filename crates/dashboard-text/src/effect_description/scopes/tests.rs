@@ -229,7 +229,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
         unreachable!()
     };
     rows[2].mixed.pop();
-    rows.remove(0); // Even an empty province needs its captured census.
+    rows.remove(0);
     assert!(
         roster(&fixture, Scope::State(7))
             .unwrap_err()
@@ -584,7 +584,6 @@ fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
     let out = fixture.render("every_state={limit={state=1} display_individual_scopes=yes army_experience=2} every_state={limit={always=no} visible_when_empty=yes tooltip=TIP army_experience=3}", &mut fresh(), Content::default());
     assert_eq!(out.text, "(\u{11}YOne\u{11}!):\n   XP2\ntip:\n   XP3\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    // Multiple-target is true even with one leaf.
     let out = fixture.render(
         "BBB={every_state={limit={state=1} army_experience=2}}",
         &mut fresh(),
@@ -721,8 +720,6 @@ fn subject_roster_preserves_alias_duplicates_after_native_filters() {
         unreachable!()
     };
     rows[1].owned_state_count = 0;
-    // retain repeated canonical targets; neither
-    // alias resolution nor the existence/caller filters deduplicate them.
     let out = fixture.render(
         "every_subject_country={army_experience=2}",
         &mut fresh(),
@@ -759,8 +756,6 @@ fn subject_roster_reads_existence_before_excluding_caller_alias() {
         unreachable!()
     };
     rows.retain(|row| row.country != 100);
-    // Subject count is read before alias-aware self exclusion.
-    // Do not hide a reached unavailable count behind that later exclusion.
     let out = fixture.render(
         "every_subject_country={army_experience=2} random_subject_country={army_experience=3}",
         &mut fresh(),
@@ -872,7 +867,6 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
             end_hour: -10,
             ..Default::default()
         }]));
-    // A row is an active matrix relation; its date is not the native predicate.
     let out = fixture.render(
         "every_enemy_country={army_experience=2}",
         &mut fresh(),
@@ -1208,7 +1202,6 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             "Politics\nideology=tip\nParty tip\n",
         ),
         ("ruling_party=ideology", 1, "Politics\nParty tip\n"),
-        // A long-name override bypasses ideology-party lookup.
         (
             "ruling_party=ideology long_name=TIP",
             2,
@@ -1267,7 +1260,6 @@ fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
     let out = fixture.render("every_state={limit={OR={state=1 state=2}} display_individual_scopes=yes random_state={army_experience=2}}", &mut graph, Content::default());
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert_eq!(out.text.matches("XP2").count(), 2);
-    // Both descriptions advance the same iterator copy; the caller is unchanged.
     assert_eq!(graph.scopes[0].random_seed, 1);
     assert!(graph.scopes.iter().any(|scope| scope.this
         == crate::scripted_text::EventObject::State(2)
@@ -1323,7 +1315,6 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
             &mut graph,
             Content::default(),
         );
-        // Native draw 411376010 % 3 == 2, against the stored array.
         assert_eq!(out.text, format!("(\u{11}Y{picked}\u{11}!): XP2\n"));
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
         assert_eq!(graph.scopes[0].random_seed, 2);
@@ -1333,7 +1324,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
         &mut fresh(),
         Content::default(),
     );
-    assert_eq!(out.text, "(\u{11}YThree\u{11}!): XP2\n"); // Priority retains [3,1], not authored [1,3].
+    assert_eq!(out.text, "(\u{11}YThree\u{11}!): XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let TableView::Complete(TableRows::States(rows)) =
         &mut *fixture.frame.tables[TableId::States.index()]
@@ -1346,7 +1337,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
         &mut fresh(),
         Content::default(),
     );
-    assert_eq!(out.text, "(\u{11}YOne\u{11}!): XP2\n"); // [3,1,2] filters to [1,2].
+    assert_eq!(out.text, "(\u{11}YOne\u{11}!): XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
@@ -1609,8 +1600,8 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
             ..Default::default()
         }]));
     for limit in [
-        "set_temp_variable={stable=1} always=no", // Idempotent write.
-        "set_temp_variable={stable=2} set_temp_variable={stable=1} always=no", // Cancelled writes.
+        "set_temp_variable={stable=1} always=no",
+        "set_temp_variable={stable=2} set_temp_variable={stable=1} always=no",
         "check_variable={random > 2}",
     ] {
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
@@ -1772,7 +1763,7 @@ fn collection_builder_renders_header_in_caller_and_body_in_representative() {
     assert_eq!(out.text, "Faction roster:\n   XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render("every_collection_element={input={input=game:scope name=REFERENCE operators={faction_members}} army_experience=2}", &mut fresh(), Content::default());
-    assert_eq!(out.text, "AAA:\n   XP2\n"); // Header uses caller, not selected BBB.
+    assert_eq!(out.text, "AAA:\n   XP2\n");
     assert!(out.refusals.is_empty());
     let out = fixture.render("every_collection_element={input={input=game:scope operators={faction_members limit={always=no}}} army_experience=2}", &mut fresh(), Content::default());
     assert!(out.text.is_empty() && out.refusals.is_empty());
@@ -1811,8 +1802,6 @@ fn ability_context_header_uses_country_while_character_getters_keep_leader() {
             44
         );
     });
-    // tests carried country before character;
-    // text ROOT.naming separately prefers the character.
     let out = fixture.render("ROOT={army_experience=2}", &mut graph, Content::default());
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert!(
@@ -1909,7 +1898,7 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
     {
         rows[0].original_tag_reference = Recorded::Value(Some(0));
-        rows[0].original_tag = Recorded::NotRecorded; // Numeric roster selection needs no text.
+        rows[0].original_tag = Recorded::NotRecorded;
     }
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -1939,9 +1928,6 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
             )
         })
     };
-    // Both rawzero and a signed-negative word are filtered before resolution
-    // and state-count demand. The raw300 occurrence remains twice, then the
-    // selected own raw100 is appended unconditionally.
     assert_eq!(
         roster(&fixture, 1),
         Ok(vec![
@@ -1972,5 +1958,5 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
             .unwrap_err()
             .contains("original tag buckets of reserved country naming not recorded")
     );
-    assert_eq!(roster(&fixture, 0), Ok(Vec::new())); // Selectedraw<=0 fast path.
+    assert_eq!(roster(&fixture, 0), Ok(Vec::new()));
 }

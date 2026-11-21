@@ -320,7 +320,6 @@ impl Consumer {
             let mapped = if len <= bytes.len() as u64 {
                 self.reasons.intern(&bytes[..n])?
             } else {
-                // Oversized reasons stream to owned spill pages.
                 let offset = self.payloads.allocate(len)?;
                 let mut at = offset;
                 payload.reason(self.reason_count, |part| {
@@ -477,7 +476,6 @@ impl Consumer {
         if record.value_type == Type::Evidence {
             let evidence = EvidenceRef::decode(record.value);
             let mapped = self.reason(evidence.reason, payload)?;
-            // A carried cell owns its reason mapping across segment-local dictionary reuse.
             let mut reason = [0; 24];
             self.reason_remap.read(mapped, &mut reason)?;
             cell[25..33].copy_from_slice(&reason[..8]);

@@ -1,0 +1,9 @@
+# 0903. Derive hourly directed-war cells from complete WarRelations
+
+The direct-war query uses the receiver's relation cell for the target's canonical slot. The relation's retired byte is cleared when it is constructed and remains unchanged through the relevant writers. Linking installs the relation in both endpoint cells and in the owner's relations. Reset and unlinking clear those cells. The WarRelations collector verifies that every endpoint resolves to a positive slot and that both cells hold that relation, then emits it once. A complete hourly table therefore proves those active cells, including that the receiver's own slot and slot zero have no relation. Civil-war transfer can populate the relations before updating an enemy vector, so the enemy vector cannot establish the cells.
+
+Use a legacy packet when an older recording holds it. It owns its missing cells as well as its recorded cells. Otherwise use the complete hourly relations and aliases. Active war from an authenticated legacy cell is independently known before any target or subject operand is demanded. The caller applies raw-self and nonzero alias-self vetoes and the signed-positive receiver gate before the admission. A borrowed owner admits once for its immutable frame, on first reachable demand. This prevents the same lookup from carrying prior-hour data and preserves the same failure for later targets in that frame.
+
+The synthetic oracle uses a native memory fixture for declarations, peace, aliasing and civil-war transfer. It compares the matrix predicate for every canonical target of each positive receiver to the recorded derivation. A broken endpoint membership withholds the collected relation.
+
+[War-cell derivation](../../crates/replay-derive/src/directed_war_derive.rs) · [Per-frame admission](../../crates/replay-derive/src/directed_wars.rs)

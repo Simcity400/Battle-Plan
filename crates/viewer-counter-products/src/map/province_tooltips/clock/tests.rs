@@ -18,13 +18,10 @@ fn clock(local_hour: i32, night_factor: i64) -> Clock {
 
 #[test]
 fn held_clocks_do_not_consult_the_hour_gates_or_content() {
-    // Newly allocated native rows start with hour zero and night at one.
     for (hour, night, frame) in [(0, 100_000, 2), (24, 49_999, 1), (7, 50_000, 2)] {
         for province in [
             row(5, DayNightClock::held(clock(hour, night))),
-            // Format 101 recorded every row's clock.
             row(5, DayNightClock::historical(clock(hour, night))),
-            // Slot 0 is never updated; it always holds its clock.
             row(0, DayNightClock::held(clock(hour, night))),
         ] {
             let resolved = resolve(
@@ -65,7 +62,6 @@ fn updated_clocks_are_derived_for_the_row_without_consulting_the_gates() {
             icon_frame: 1
         }
     );
-    // A derivation that cannot run is refused by name, never zero.
     assert_eq!(
         resolve(&province, |_| Err("defines unread".into()), || Ok(None)).unwrap_err(),
         "defines unread"
@@ -102,7 +98,6 @@ fn old_recordings_derive_only_when_the_gates_prove_the_update() {
         .unwrap_err()
         .contains("simulation features absent")
     );
-    // Slot 0 is never updated, whatever the gates say.
     assert!(
         resolve(
             &row(0, DayNightClock::NOT_RECORDED),

@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, io, sync::Arc};
 
-// Immutable AVL paths share untouched nodes.
 pub struct CopyIndex<K, V>(Option<Arc<Node<K, V>>>);
 struct Node<K, V> {
     key: K,
@@ -232,7 +231,6 @@ impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for CopyIndex<K, V>
     }
 }
 pub struct Iter<'a, K, V> {
-    // An AVL tree addressable by usize cannot reach twice usize::BITS levels.
     stack: [Option<&'a Node<K, V>>; 2 * usize::BITS as usize],
     len: usize,
 }

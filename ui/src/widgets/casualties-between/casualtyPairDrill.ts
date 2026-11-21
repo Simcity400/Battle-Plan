@@ -12,8 +12,6 @@ export const casualtyPairIds = (replies: readonly CasualtyPairsReply[]) => [...n
   pairFlowId(pair.identity, 'first'), pairFlowId(pair.identity, 'second'),
 ])))];
 
-/** A saved selection belongs to one campaign and branch, and keeps native holders,
- * not merely their reusable country tags. */
 export function readPairSelection(value: unknown, track: Pick<BoundTrack, 'source' | 'branch'>): string[] | null {
   if (typeof value !== 'string' || !value) return null;
   try {
@@ -39,7 +37,6 @@ export function pinPairs(widget: WidgetSpec, track: BoundTrack, ids: readonly st
     branch: track.branch.id, ids: [...new Set(ids)] })) } };
 }
 
-// A window's directed runs are decoded once, however many other windows arrive after it.
 const decoded = new WeakMap<CasualtyPairsReply, { id: string; run: StackRun; positive: bigint }[]>();
 function directedRuns(reply: CasualtyPairsReply) {
   let runs = decoded.get(reply);
@@ -56,9 +53,6 @@ function directedRuns(reply: CasualtyPairsReply) {
   return runs;
 }
 
-/** Positive geometry for the same directed native lifetimes. Outside an observed
- * block the stack breaks. An absent relation contributes no geometry; exact rows
- * still distinguish its absence from a recorded zero. */
 export function pairHistory(replies: readonly CasualtyPairsReply[], ids: readonly string[]) {
   const source = new Map(ids.map(id => [id, [] as StackRun[]]));
   const observed = replies.flatMap(reply => reply.observed).sort((a, b) => a.firstHour - b.firstHour);
@@ -85,9 +79,6 @@ export function pairHistory(replies: readonly CasualtyPairsReply[], ids: readonl
   return model;
 }
 
-/** The drill's selected flows at `hour` of `reply` (none where the window is not loaded or not recorded): the
- * flows present with their subtotal marks (`rows`, the drill's structure), each one's amount and share keyed as its
- * table paints them, and the total line. */
 export function pairDrillAt(reply: CasualtyPairsReply | undefined, hour: number, selected: ReadonlySet<string>): {
   rows: string; values: Map<string, bigint | number>; total: string;
 } {

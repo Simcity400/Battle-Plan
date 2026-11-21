@@ -1,15 +1,3 @@
-// The acceptance sweep over one running app with a recording open: every page cold and warm,
-// seeks on every page, pictures at a fixed hour, the map, playback, every catalogue view and every control case.
-// usage: node tools/e2e/sweep.mjs --port <port> --out <dir> --work <dir> --session <name> --desktop <name> --app-pid <pid> --input <address>
-//   [--phases pages,seeks,visual,map,mapfps,playback,catalogue,controls,pages-at,glance] [--cases id,...] [--pages page,...] [--pages-at <fraction>]
-// `--cases` names the control cases to run, and in the map phases the map interactions to run, the rest of the map
-// phase (modes, hover, the pop-out) being left out then.
-//   [--tier full|quick] [--history <file>] [--pin all|product] [--record-replies <file.jsonl.gz>] [--app-revision <commit>]
-// One app session: its results go to sweep-<session>.json, its pictures to visual/manifest-<session>.json. The quick tier
-// glances at every page at mid-recording, plays its heaviest pages at 1,440 h/s under the trace, adds the catalogue's
-// slowest cards and changes one setting of each widget kind. `--history` names the cases that ever failed (`coverage.mjs`);
-// `--pin product` lets only the product's failures keep a case from being left out as a repeat. `--record-replies` records
-// every reply and followed message the page receives, for tests on real replies (`replies.mjs`).
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -33,7 +21,6 @@ const work = flag('--work');
 const desktop = flag('--desktop');
 const appPid = Number(flag('--app-pid'));
 const session = flag('--session');
-// The viewer's suite input channel (BATTLE_PLAN_E2E_INPUT), for pointer and key input to the native map.
 const input = flag('--input');
 if (!port || !out || !work || !desktop || !appPid || !session || !input) throw new Error('usage: sweep.mjs --port <port> --out <dir> --work <dir> --session <name> --desktop <name> --app-pid <pid> --input <address>');
 export const PHASES = ['pages', 'seeks', 'visual', 'map', 'mapfps', 'playback', 'catalogue', 'controls'];
@@ -47,38 +34,25 @@ const history = historyFile && existsSync(historyFile) ? readHistory(JSON.parse(
 if (!history) log('no failure history: every case runs, none is left out as a repeat');
 const pin = flag('--pin', 'all');
 if (!PINS.includes(pin)) throw new Error(`--pin takes ${PINS.join(' or ')}, not ${pin}`);
-/** `--cases` names the control cases to run; in the map phases, the map interactions (`MAP_INTERACTIONS` ids),
- * whose modes, hover and pop-out are left out then, so one interaction can be measured on its own. */
 const only = flag('--cases')?.split(',') ?? null;
-/** The pages the playback and control phases visit (`--pages`): all by default, so either phase can run in parts. */
 const onlyPages = flag('--pages')?.split(',') ?? null;
-/** The every-widget page when `--pages` names it: written into this run's web view before the campaign opens. */
 const fixture = onlyPages?.some(name => Object.hasOwn(VIEWS, name)) ? await allWidgetPages() : null;
 const pageOf = name => fixture && Object.hasOwn(VIEWS, name) ? VIEWS[name].page : name;
-/** The share of the span the `pages-at` phase visits every page at. */
 const pagesAt = flag('--pages-at') === null ? null : Number(flag('--pages-at'));
 const recordReplies = flag('--record-replies');
 if (pagesAt !== null && !(pagesAt >= 0 && pagesAt <= 1)) throw new Error(`--pages-at takes a share of the timeline from 0 to 1, not ${flag('--pages-at')}`);
-/** Early, mid-war and late: fixed shares of the fixture's span. */
 export const SEEKS = [['early', 0.05], ['mid-war', 0.5], ['late', 0.95]];
-/** How far apart each page's seek hours are, as a share of the span: no two pages seek the same hour. */
 const SEEK_STEP = 0.004;
-/** The hour pictures are taken at: mid-war. */
 const PICTURE_SEEK = SEEKS[1];
-/** Playback speeds measured, in game hours per second (presets of the speed menu). */
 export const SPEEDS = [24, 1440];
-/** The quick tier plays the heaviest pages at the fastest speed. */
 const QUICK_PLAYBACK = { pages: ['Politics', 'Overview', 'Army'], speeds: [1440] };
-/** The quick tier glances at every page at this share of the span. */
 const GLANCE_AT = 0.5;
 const PRESETS = [0.25, 1, 4, 24, 168, 720, 1440];
 const PLAY_SECONDS = Number((process.env.BATTLE_PLAN_PLAY_SECONDS ?? process.env.HOI4_PLAY_SECONDS) ?? 8);
 const rate = Number(flag('--cpu-throttle', '1'));
 if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(PLAY_SECONDS))) throw new Error('Invalid playback duration or throttle');
-/** One window a page is played again under the browser's trace, apart from the timed windows the tracing would slow. */
 const TRACE_SPEED = 1440;
 const TRACE_SECONDS = 4;
-/** The page catalogue views are added to, emptied first. */
 const CATALOGUE_PAGE = 'Intelligence';
 
 const app = await connect(port);
@@ -89,10 +63,8 @@ if (fixture) {
   await loaded;
   for (const entry of Object.values(fixture.pages)) log('fixture', `${entry.label}: ${entry.widgets.length} widgets, ${entry.rows} rows`);
 }
-// Before the recording opens, so its source and every reply after it are recorded.
 const replies = recordReplies ? await ReplyRecorder.start(app, recordReplies,
   { pid: appPid, revision: flag('--app-revision'), root: path.resolve(import.meta.dirname, '../..') }) : null;
-// From the start, so the map's first states and mode lists are seen.
 await app.evaluate('__e2e.listenMaps()');
 const throttle = async value => {
   if (rate === 1) return;
@@ -116,12 +88,8 @@ const save = async () => {
   await writeFile(path.join(out, `sweep-${session}.json`), JSON.stringify({ meta, results, console: app.messages.map(message => ({ ...message, session })) }, null, 1));
   await visual.finish({ pictureSeek: PICTURE_SEEK, viewport: meta.viewport });
 };
-/** Recording replies, each step waits until nothing is in flight however long it takes, so the recording holds every
- * reply the page asks there; a step timed out by the suite's bound would leave the rest unasked. */
 const settledForReplies = async () => {
   if (!replies) return;
-  // Requests and the deliberate waits before one: what can still bring a reply. (Data updates are left out: on the
-  // fed926180f app a paused page queues one every few frames and never holds still.)
   const quiet = await app.evaluate(`new Promise(resolve => {
     const until = performance.now() + 60000, kinds = ['requests', 'waits'];
     let since = null;
@@ -134,15 +102,11 @@ const settledForReplies = async () => {
   })`, 90_000);
   if (!quiet) log('recording replies: the page still asked after 60 s; moving on');
 };
-/** Seeks to `fraction` without measuring it, and waits for the page to settle. */
 const seekTo = async fraction => {
   const line = await s.timeline();
   await app.click(Session.timelineX(line, fraction), line.y);
   await app.evaluate(`(__e2e.mark(null), ${settleCall(15000, 300)})`, 60_000);
 };
-/** Chooses `speed` from the speed menu and proves the clock took it (the trigger's tooltip names the speed in force): a
- * window measured at another speed than its label is worthless (run 19: windows labelled 1,440 h/s played at 24). A
- * choice the app did not take is retried once, then fails by name. */
 const speedTaken = speed => `document.querySelector('.header-speed')?.dataset.tooltip === ${JSON.stringify(`${speed} game ${speed === 1 ? 'hour' : 'hours'} per second`)}`;
 const setSpeed = async speed => {
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -156,8 +120,6 @@ const setSpeed = async speed => {
   throw new Error(`the clock never took ${speed} h/s from the speed menu`);
 };
 
-// The fixture is the one recording in the fresh profile's library, on its shelf of recordings not yet loaded:
-// the shelf opened and the row clicked, as a user does.
 app.setCase('startup');
 const loadRow = '.sidebar-menu button.sidebar-row[aria-label^="Load "]';
 const shelf = 'button.sidebar-shelf-toggle[aria-expanded="false"]';
@@ -176,7 +138,6 @@ meta.pages = await s.pages();
 meta.viewport = await app.evaluate(`({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })`);
 meta.startPage = await s.currentPage();
 log('pages', meta.pages.join(', '), 'viewport', JSON.stringify(meta.viewport), 'start', meta.startPage);
-// The page shown as the recording opened, at its opening hour: where a fixture replaying the run begins.
 if (replies) {
   await s.until(`document.querySelector('.dash-grid article.dash-widget')`, 30_000);
   await settledForReplies();
@@ -193,17 +154,12 @@ async function phase(name, run) {
   await save();
 }
 
-/** A page visit: the switch, then a wheel turn at a time to the bottom; each step measures the widgets it showed and
- * saves its screenshot, passed or not, so every widget on the page is seen. `area` is the phase it is recorded under;
- * `extra` goes on every step's result. */
 async function visit(pass, page, { area = 'pages', extra = {} } = {}) {
   if (meta.startPage === page && pass === 'cold')
     await s.fail(area, `cold/${page}`, 'switch', 'shown at startup before any input: its cold visit cannot be measured from input');
   const check = pass !== 'warm';
-  // The switch is done once the page it clicked is the one shown, and its widgets have settled (names landed included).
   await s.step(area, `${pass}/${page}`, 'switch', () => s.click('.sidebar-page-list button.sidebar-subrow', { text: page }),
     { done: pageShown(page), timeout: 8000, quiet: 300, check, shot: true, extra });
-  // A click the app never took fails the switch by name; the page is then opened unmeasured, so its widgets are still seen.
   if (!await s.holds(pageShown(page))) await s.openPage(page, { force: true });
   await settledForReplies();
   await replies?.mark('page', { page, pass, area });
@@ -221,12 +177,10 @@ await phase('pages', async () => {
   for (const pass of ['cold', 'warm']) for (const page of meta.pages) { await visit(pass, page); await save(); }
 });
 
-// Every page visited and scrolled as the page pass does, at one chosen hour: each its first visit at that hour.
 await phase('pages-at', async () => {
   if (pagesAt === null) throw new Error('no --pages-at: the hour to visit the pages at was not given');
   meta.pagesAt = { fraction: pagesAt, hours: [] };
   for (const page of meta.pages) {
-    // The switch is measured, so it starts from another page.
     if (await s.currentPage() === page) {
       const other = meta.pages.find(name => name !== page);
       if (other) await s.openPage(other);
@@ -239,15 +193,12 @@ await phase('pages-at', async () => {
   }
 });
 
-// The quick tier's look at every page: one seek to mid-recording, then each page's first visit there, scrolled to its
-// bottom with a screenshot a step, recorded as the pages-at pass is.
 await phase('glance', async () => {
   meta.pagesAt = { fraction: GLANCE_AT, hours: [] };
   await seekTo(GLANCE_AT);
   const hour = (await s.timeline()).value;
   meta.pagesAt.hours.push(hour);
   const first = meta.pages.indexOf(await s.currentPage());
-  // The page shown at the seek is visited last, so its switch is measured from another page.
   const order = first < 0 ? meta.pages : [...meta.pages.slice(first + 1), ...meta.pages.slice(0, first + 1)];
   for (const page of order) { await visit('at', page, { area: 'pages-at', extra: { fraction: GLANCE_AT, hour } }); await save(); }
 });
@@ -261,8 +212,6 @@ await phase('seeks', async () => {
   })()`);
   for (const [index, page] of meta.pages.entries()) {
     await s.openPage(page);
-    // Each page seeks hours of its own, so every cold seek is that hour's first visit in this fresh session; then the same
-    // hours again (warm).
     for (const pass of ['cold', 'warm']) for (const [label, base] of SEEKS) {
       const fraction = base + index * SEEK_STEP;
       const line = await s.timeline();
@@ -292,7 +241,6 @@ await phase('visual', async () => {
       await app.evaluate(`document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({ block: 'start' })`);
       await app.evaluate(`(__e2e.mark(null), ${settleCall(10000, 300)})`, 60_000);
       await visual.capture(`widget/${page}/${id}`, 'widget', selector);
-      // The hour it reports showing, read later from the perf log, against the clock's now.
       const check = await app.evaluate(`(() => { const a = document.querySelector(${JSON.stringify(selector)});
         return { kind: [...a.classList].find(c => c.startsWith('kind-'))?.slice(5), title: a.getAttribute('aria-label'), at: performance.timeOrigin + performance.now() }; })()`);
       s.results.push({ area: 'hours', item: check.kind, label: `${page}: ${check.title}`, page, title: check.title, kind: check.kind, widget: id, at: check.at, hour: (await s.timeline()).value, pass: true, reasons: [] });
@@ -300,7 +248,6 @@ await phase('visual', async () => {
     await app.evaluate(`document.querySelector('.dash-grid-scroll').scrollTo({ top: 0 })`);
     await save();
   }
-  // Key interaction states, each opened by trusted input and closed again.
   await s.openPage('Overview');
   const states = [
     ['speed menu', '.header-speed', '.playback-speed-menu'],
@@ -318,7 +265,6 @@ await phase('visual', async () => {
     } catch (error) { visual.fail(`state/${name}`, 'state', error.message); }
     await s.escape();
   }
-  // A tooltip, held where the pointer leaves it.
   try {
     const at = await s.need('button[aria-label="Next hour"]');
     await app.mouse('mouseMoved', at.x, at.y);
@@ -344,8 +290,6 @@ await phase('map', async () => {
     if (only === null) await hover(s, native, meta.viewport.dpr);
   } finally { native.close(); }
   if (only !== null) return;
-  // The pop-out is the campaign map's, from its own Map settings on the Campaign map tab. Opening or closing it
-  // closes the menu once done; the menu, opened again, shows which state it reached.
   await s.click('#tab-map');
   await sleep(1500);
   const settings = '.header-workspace-tools button[aria-label="Map settings"]';
@@ -361,8 +305,6 @@ await phase('map', async () => {
     return false;
   };
   await s.step('map', 'pop-out', 'open settings', () => s.click(settings), { done: menu });
-  // Open once its viewer reports the campaign loaded at the clock's hour; the report times it to that viewer's first
-  // presented frame of that hour. Closed once the host reports the pop-out closed.
   const hour = (await s.timeline()).value;
   const loaded = `__e2e.popoutStates.find(x => x.receivedAt > __e2e.t0Epoch && x.status?.ready && x.status.viewer?.path && x.status.viewer.hour === ${hour} && !x.status.error && !x.error)`;
   const opened = await s.step('map', 'pop-out', 'open pop-out', () => s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Pop out map', partial: true }),
@@ -381,8 +323,6 @@ await phase('mapfps', async () => {
   try { await interactions(s, native, meta.viewport.dpr, PRESETS.indexOf(SPEEDS.at(-1)), { label: 'uncapped', only }); } finally { native.close(); }
 });
 
-/** `page` played under the browser's trace (`trace.mjs`): its summary is recorded, the raw trace kept beside the results
- * (it opens in DevTools' performance panel). The perf log runs too, so the report can take the app's own painting out. */
 const traceWindow = async page => {
   let stop = null;
   try {
@@ -434,8 +374,6 @@ const DASHBOARD_INVENTORY = `(() => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
     const placeholder = a.querySelector('.dash-empty[role="status"]');
     const notMigrated = !!placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim());
-    // Each mounted worker canvas names a surface its pictures report. Ink visibility is tracked separately.
-    // A mounted worker surface remains a declaration while its ink is hidden between reads.
     const surfaces = [...new Set([...a.querySelectorAll('canvas[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
     return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated };
   });
@@ -476,8 +414,6 @@ async function playbackInputs() {
       return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
   })()`);
   const mark = kind => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)})`);
-  // Lists each visible dated widget (one with a worker surface) that does not yet show a picture for the target hour.
-  // Widgets with no worker surface are not on the dated path: the verdict reports them as not migrated, unjudged.
   const unsettled = `(() => {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
@@ -548,8 +484,6 @@ async function playbackInputs() {
   if (!await s.until(`Number(document.querySelector('input.header-timeline').value) === ${scrubTarget}`, 10_000))
     throw new Error(`Playback scrub target ${scrubTarget} was not reached`);
   await s.frames(4);
-  // Settling is a precondition for the next input, not a verdict: how long it took is recorded, so a slow stress page is
-  // reported rather than hidden or stopped at an arbitrary two seconds.
   const scrub = await settleInputs();
   const article = 'article.dash-widget';
   const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
@@ -572,10 +506,8 @@ async function playbackInputs() {
   } else await mark('pin', 'no widget offers a pinnable time setting');
   await s.click('button[aria-label="Play recording"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
-  // Marks the first scrollable node inside a widget and returns its selector: evaluate returns values, never nodes.
   const selector = await s.app.evaluate(`(() => {
     for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
-    // A wheel can only move a node that scrolls, has room left, and is what the pointer hits at its centre.
     const scrolls = node => node.scrollHeight - node.clientHeight - node.scrollTop > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
     for (const node of document.querySelectorAll('.dash-widget *')) {
       if (!scrolls(node)) continue;
@@ -758,7 +690,6 @@ await phase('playback', async () => {
 });
 
 await phase('catalogue', async () => {
-  // A new page starts empty, so each card lands alone, at the top, in view.
   await s.step('catalogue', 'setup', 'add a page', () => s.click('button[aria-label="Add a page"]'), { done: `document.querySelector('.sidebar-page-list input')` });
   await s.key('Enter');
   await s.until(`!document.querySelector('.sidebar-page-list input')`, 3000);
@@ -767,8 +698,6 @@ await phase('catalogue', async () => {
   const editing = `document.querySelector('button[aria-label="Done arranging"]')`;
   const catalogueOpen = `document.querySelector('.widget-catalogue:popover-open')`;
   const empty = `document.querySelectorAll('article.dash-widget').length === 0`;
-  // The catalogue's first opening in an editing session is measured; opening it again for the next card on the same empty
-  // page is the same case, done unmeasured on its signal, unless its step ever failed after that card.
   let openedThisEdit = false;
   const edit = card => { openedThisEdit = false; return s.step('catalogue', 'setup', 'edit', () => s.click('button[aria-label="Edit layout"]'), { done: editing, extra: { card } }); };
   const open = async card => {
@@ -785,7 +714,6 @@ await phase('catalogue', async () => {
     title: c.querySelector('.widget-card-text strong')?.textContent.trim(), view: c.hasAttribute('data-variant'),
     unavailable: c.querySelector('.widget-card-add')?.disabled ? (c.querySelector('.widget-card-text small')?.textContent.trim() || 'cannot be added') : null }))`);
   meta.catalogue = cards;
-  // The quick tier adds only the cards the last full run found slowest to show content.
   const slowest = quick ? new Set(history?.slowest ?? []) : null;
   if (slowest && !slowest.size) throw new Error('no record of the slowest catalogue cards: a full run with --history writes them');
   for (const [index, card] of cards.entries()) {
@@ -803,10 +731,7 @@ await phase('catalogue', async () => {
     added.view = card.view;
     added.widget = await app.evaluate(`document.querySelector('article.dash-widget')?.dataset.widget ?? null`);
     added.hour = (await s.timeline()).value;
-    // The catalogue closed, so the picture is of the view alone.
     await s.escape();
-    // The native map draws only once arranging is done: it is shown through Done arranging, timed from that click to the
-    // frame presenting the clock's hour, and then deleted, as it is saved.
     const map = await s.holds(`document.querySelector('article.dash-widget.kind-map')`);
     if (map && added.widget) {
       const shown = await s.step('catalogue', item, 'show map', () => s.click('button[aria-label="Done arranging"]'),
@@ -814,11 +739,9 @@ await phase('catalogue', async () => {
       shown.drawnAt = await app.evaluate(`__e2e.mapState(${JSON.stringify(added.widget)}, __e2e.t0Epoch, x => !x.loading && !x.error && x.hour === ${added.hour})?.drawnAt ?? null`);
       added.shownFrom = shown.input;
     }
-    // The pictures are the full tier's visual check; the quick tier takes none.
     if (!quick) await visual.capture(`catalogue/${String(index).padStart(3, '0')} ${card.title}`, 'catalogue', 'article.dash-widget');
     const extra = { card: item };
     if (map) {
-      // A widget is deleted only while arranging; Done then keeps the page empty for the next card.
       if (!await s.holds(editing)) await edit(item);
       await s.click('article.dash-widget button[aria-label="Map settings"]');
       await s.until(`document.querySelector('.map-controls-menu:popover-open button[aria-label="Delete widget"]')`, 3000);
@@ -826,8 +749,6 @@ await phase('catalogue', async () => {
       await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done arranging"]'),
         { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')`, extra });
     } else {
-      // Deleted from its own settings while arranging: the page is empty again, still being arranged, for the next card. A
-      // card whose discard failed in a run before keeps that case, as does one whose menu offers no delete.
       const remove = ':is(.widget-settings-menu, .map-controls-menu):popover-open button[aria-label="Delete widget"]';
       let offered = false;
       if (!s.everFailed('catalogue', item, 'discard')) {
@@ -841,13 +762,11 @@ await phase('catalogue', async () => {
     }
     if ((index + 1) % 10 === 0) await save();
   }
-  // What is left arranging is the empty page, saved as it is.
   if (await s.holds(editing)) await s.step('catalogue', 'setup', 'done', () => s.click('button[aria-label="Done arranging"]'),
     { done: `${empty} && document.querySelector('button[aria-label="Edit layout"]')` });
 });
 
 await phase('controls', async () => {
-  // The host's save dialog and a colour input's dialog are native windows: the suite's native input fills them.
   s.native = new NativeInput(desktop, appPid, input);
   s.work = work;
   try { await controls(); } finally { s.native.close(); s.native = null; }
@@ -856,7 +775,6 @@ await phase('controls', async () => {
 async function controls() {
   for (const control of CASES) {
     if (only && !only.includes(control.id)) continue;
-    // The quick tier: one setting of each widget kind.
     if (quick && control.id !== 'widget/settings') continue;
     const pages = control.page === '*' ? meta.pages : control.page === null ? [await s.currentPage()] : [control.page];
     for (const page of pages.filter(name => onlyPages === null || onlyPages.includes(name))) {
@@ -868,7 +786,6 @@ async function controls() {
       }
       await s.escape();
       await s.escape();
-      // A case left editing discards its changes, so the next starts from the saved layout.
       if (await s.holds(`document.querySelector('button[aria-label="Done arranging"]')`)) await s.click('button[aria-label="Cancel layout changes"]').catch(() => {});
       await save();
     }

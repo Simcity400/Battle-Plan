@@ -1,4 +1,3 @@
-//! A facility's research speed and its sources, as the game multiplies them.
 
 use super::{Namer, ProjectLabel};
 use engine_projects::program_details as kinds;
@@ -82,7 +81,6 @@ fn kind(value: u32) -> (&'static str, &'static str) {
     }
 }
 
-/// `program`'s speed and sources as its daily read holds them; none where they were not recorded.
 pub(super) fn present(frame: &DecodedFrame, program: &ProjectProgramRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<FacilityDetails> {
     let Recorded::Value(Some(values)) = &program.facility else { return None };
     let speed = total(program, values);

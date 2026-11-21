@@ -107,8 +107,6 @@ fn whole_frame_historical_suffixes_are_counted_once_without_comparison_credit() 
         }]));
     let mut report = Report::default();
     report.record_tables(&frame);
-    // The retired selected-route preview fields are named only as
-    // compatibility gaps of the recording; the comparison never reads them.
     let retired = |report: &Report| {
         report
             .limitations
@@ -156,7 +154,6 @@ fn node(first_land: u32, neighbours: &[u32]) -> Option<ControllerAreaNode> {
     })
 }
 
-/// Areas 1 (provinces 1 and 2) and 3 (province 3) touch; 4 is sea.
 fn areas_frame(rows: Vec<ProvinceRow>) -> DecodedFrame {
     let (mut frame, _) = fixture();
     *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(rows));
@@ -187,9 +184,7 @@ fn recorded_areas_are_checked_for_smallest_member_labels_roots_nodes_and_contact
     let report = check(consistent());
     assert!(report.differences.is_empty(), "{report:?}");
     assert_eq!(report.compared_tables["Provinces selected route areas"], 4);
-    // Each broken invariant is one named difference.
     for (rows, field) in [
-        // A label larger than its province is not the smallest member.
         (
             {
                 let mut rows = consistent();
@@ -200,7 +195,6 @@ fn recorded_areas_are_checked_for_smallest_member_labels_roots_nodes_and_contact
             },
             "Provinces 1.owner_area",
         ),
-        // Only the label province holds the node.
         (
             {
                 let mut rows = consistent();
@@ -209,7 +203,6 @@ fn recorded_areas_are_checked_for_smallest_member_labels_roots_nodes_and_contact
             },
             "Provinces 2.area_node",
         ),
-        // The representative is a member.
         (
             {
                 let mut rows = consistent();
@@ -218,7 +211,6 @@ fn recorded_areas_are_checked_for_smallest_member_labels_roots_nodes_and_contact
             },
             "Provinces 1.area_node.first_land",
         ),
-        // Contacts name other areas' labels.
         (
             {
                 let mut rows = consistent();
@@ -227,7 +219,6 @@ fn recorded_areas_are_checked_for_smallest_member_labels_roots_nodes_and_contact
             },
             "Provinces 1.area_node.neighbours[1]",
         ),
-        // A refused label is a difference, not a quiet gap.
         (
             {
                 let mut rows = consistent();
@@ -286,7 +277,6 @@ fn division_exile_compares_with_the_saved_truth() {
             assert_eq!(report.scalar_checks, 1);
         }
     }
-    // A division the save does not hold is a difference.
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![status(id + 1, false)]));
     assert_eq!(run(&frame, &saved).differences.len(), 1);

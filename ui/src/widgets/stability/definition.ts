@@ -4,16 +4,11 @@ import type { OptionField } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import type { Breakdown } from '../../charts/drill/drillState';
 
-/** The breakdowns a click opens, and that Pin as widget can show as the widget itself. */
 export const STABILITY_BREAKDOWNS: readonly Breakdown[] = [
   { id: 'stability', label: 'Stability parts' },
   { id: 'warSupport', label: 'War support parts' },
 ];
 
-/** Settings: either line can be switched
- * off, the scale is fixed 0–100% or zooms to the data, line playback is
- * selectable (draw-in by default; the whole campaign stops at the playhead
- * unless set to show past it), and values sit at the line ends. */
 export const STABILITY_OPTIONS: readonly OptionField[] = [
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },

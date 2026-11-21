@@ -44,9 +44,7 @@ fn wings_fly_region_by_region_ours_first_then_both_arrays_in_registration_order(
         .iter()
         .map(|visit| (visit.region, visit.wing.id, visit.side))
         .collect();
-    // Country 10 is no participant; country 8 sits in both arrays.
     assert_eq!(ids, [(4, 4, 0), (5, 2, 0), (5, 1, 0), (5, 3, 0), (5, 3, 1)]);
-    // Each country entry is its own grouping call.
     let calls: Vec<_> = order.iter().map(|visit| visit.call).collect();
     assert!(calls.windows(2).all(|pair| pair[0] <= pair[1]));
     assert_ne!(order[3].call, order[4].call);
@@ -91,7 +89,6 @@ fn recorded_vectors_and_hosts_build_the_viewpoints_arrays() {
     assert!(gap.is_none());
     assert_eq!(arrays.a, [202, 303]);
     assert_eq!(arrays.b, [404]);
-    // A gap in a vector's positions is refused.
     *frame.tables[TableId::AirCountryRelations.index()] =
         TableView::Complete(TableRows::AirCountryRelations(vec![relation(7, 2, 1, 404)]));
     assert!(participant_countries(&frame, 7, &links).is_err());
@@ -101,9 +98,6 @@ fn recorded_vectors_and_hosts_build_the_viewpoints_arrays() {
     let (arrays, gap) = participant_countries(&frame, 7, &links).unwrap();
     assert!(arrays.a.is_empty() && arrays.b.is_empty() && gap.is_some());
 }
-/// Countries `1..=n` at war in two blocs: each allied to the rest of its
-/// bloc, the enemy of the other and given two donors from its own bloc.
-/// The viewing country 1 volunteers to host country `n`.
 fn bloc_war(n: u32) -> (DecodedFrame, BTreeMap<u32, u32>) {
     use replay_data::{rows::TableId, rows::TableRows, rows::VolunteerHostRow};
     use replay_frame::{frame::Metrics, frame::TableView};
@@ -175,7 +169,6 @@ fn a_bloc_war_reads_only_the_vectors_the_arrays_use() {
     let (frame, links) = bloc_war(40);
     let (arrays, gap) = participant_countries(&frame, 1, &links).unwrap();
     assert!(gap.is_none());
-    // The same arrays as from every country's complete vectors.
     let Available::Complete(rows) = rows::<tables::AirCountryRelations>(&frame).unwrap() else {
         unreachable!("complete fixture")
     };
@@ -201,7 +194,6 @@ fn a_bloc_war_reads_only_the_vectors_the_arrays_use() {
     }
     let expected = ordered_participants(1, &Complete(complete), &[40], &links).unwrap();
     assert_eq!(arrays, expected);
-    // Own donors, then each ally and its donors; the host, then its allies.
     assert_eq!(arrays.a[..4], [2, 3, 4, 5]);
     assert_eq!((arrays.a.len(), arrays.b.len()), (40, 40));
     assert_eq!(arrays.b[..3], [21, 22, 23]);
@@ -314,7 +306,6 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audi
             && line.contains("AbsentFlap")
             && line.contains("(2)")
     }));
-    // Its sound events play; they are no longer refused.
     assert!(typed.iter().all(|(_, line)| !line.contains("sound")));
     let report = AircraftPlan::default().report(&assets);
     assert!(
@@ -344,8 +335,6 @@ fn a_plane_attachment_cycle_is_refused_by_name() {
 fn a_refused_entity_stops_the_ladder_instead_of_falling_through() {
     let ladder = candidates("GER", "small_airframe_2", "small_airframe", "light_plane");
     let generic = |entity: &str| (entity == "small_airframe_entity").then_some(4);
-    // A country entity the engine would find, refused here, is named
-    // rather than replaced by the generic plane below it.
     let refused = format!("it {}", why());
     let unusable = BTreeMap::from([("GER_small_airframe_entity".to_owned(), refused.clone())]);
     assert_eq!(
@@ -355,7 +344,6 @@ fn a_refused_entity_stops_the_ladder_instead_of_falling_through() {
             reason: refused.clone(),
         })
     );
-    // Entities the game lacks are still skipped.
     assert_eq!(
         resolve_entity(&ladder, generic, &BTreeMap::new()),
         Ok(Some(4))
@@ -364,7 +352,6 @@ fn a_refused_entity_stops_the_ladder_instead_of_falling_through() {
         resolve_entity(&ladder, |_| None, &BTreeMap::new()),
         Ok(None)
     );
-    // Each affected wing is counted under its entity and reason.
     let mut refusals = Refusals::default();
     let mut diagnostics = Vec::new();
     for wing in [1, 2] {
@@ -426,12 +413,8 @@ fn a_roster_whose_every_plane_is_refused_keeps_each_reason() {
     );
 }
 
-/// A descriptor file that does not parse, read before the others.
 const BROKEN: &str = "gfx/entities/a_broken.asset";
 
-/// A plane the visual roster cannot decide is drawn from the recorded roster only when
-/// that roster registers it without a refused declaration; an absent or refused one stays
-/// refused by name rather than being baked from the recording.
 #[test]
 fn a_plane_the_mods_leave_undecided_uses_only_an_accepted_recorded_declaration() {
     use crate::map::models::tests::{MESHES_GFX, PLANE_ASSET, triangle_mesh, visual_stack};
@@ -494,8 +477,6 @@ fn a_plane_the_mods_leave_undecided_uses_only_an_accepted_recorded_declaration()
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The ordinary and lazy paths share the same plane library; the rest of these assets
-/// needs no content for a test that chooses its aircraft by name.
 fn aircraft_with_planes(layers: &ResolvedLayers, declared: &[String]) -> AircraftAssets {
     let map = MapData {
         width: 1,
@@ -634,7 +615,6 @@ fn recorded_mesh_retries_and_draw_counterparts_keep_the_planes_declaration_check
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// Declaration and file failures must be cached just like successful cold bakes.
 const CLAIMED_PLANES: &[u8] = br#"entity = { name = plane pdxmesh = body state = { name = idle } }
     entity = { name = lazy_one clone = plane }
     entity = { name = lazy_two clone = plane }
@@ -646,7 +626,6 @@ const CLAIMED_PLANES: &[u8] = br#"entity = { name = plane pdxmesh = body state =
         state = { name = idle animation_speed = 0 } }
     entity = { name = unreadable_plane pdxmesh = hull state = { name = idle } }"#;
 
-/// Each name resolved, the last one declared nowhere.
 const RESOLVED: [&str; 7] = [
     "plane",
     "lazy_one",
@@ -671,7 +650,6 @@ fn claimed_stack(name: &str) -> (std::path::PathBuf, ResolvedLayers) {
     )
 }
 
-/// A resolve's outcome by entity rather than slot: slots follow the order bakes merge in.
 fn named(
     assets: &AircraftAssets,
     resolved: Result<usize, Unresolved>,
@@ -679,7 +657,6 @@ fn named(
     resolved.map(|slot| assets.library().meshes[slot].name.clone())
 }
 
-// The reference is a fresh asset set resolved once per entity by one worker.
 #[test]
 fn concurrent_resolves_bake_each_plane_once_and_equal_single_worker_claims() {
     let (root, layers) = claimed_stack("aircraft_claimed_resolves");
@@ -1258,7 +1235,6 @@ fn why() -> String {
     format!("may be declared in {BROKEN}, which does not parse")
 }
 
-/// One planes descriptor's text as a parsed roster holds it.
 fn roster(text: &str) -> mesh::Roster {
     mesh::Roster {
         descriptors: mesh::parse_descriptors(text.as_bytes(), "gfx/entities/planes.asset").unwrap(),
@@ -1266,8 +1242,6 @@ fn roster(text: &str) -> mesh::Roster {
     }
 }
 
-/// `Roster::read` over [`DEPENDENCIES_GFX`], [`DEPENDENCIES`] and a
-/// [`BROKEN`] file holding `hidden`.
 fn read_roster(name: &str, hidden: &[&str]) -> mesh::Roster {
     let root = std::env::temp_dir().join(format!(
         "viewer-aircraft-roster-{name}-{}",
@@ -1336,10 +1310,6 @@ const DEPENDENCIES: &str = r#"
         animation = { name = "hidden_animation" file = "hidden.anim" }
     "#;
 
-/// A plane is refused, with the declaration named, when it, a clone
-/// ancestor it copied, the mesh it names, an animation its states play or
-/// an attached entity may be declared in a file that does not parse; the
-/// wings it would draw are counted under that reason.
 #[test]
 fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration() {
     let roster = read_roster(
@@ -1387,8 +1357,6 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
     .unwrap();
     assert_eq!(unusable["GER_plane_entity"], copied);
     assert_eq!(unusable["hidden_mesh_plane_entity"], mesh);
-    // No layer holds the clean plane's mesh file, so it is refused as
-    // not loaded rather than drawn, with why.
     assert!(
         unusable["clean_plane_entity"].starts_with(&format!(
             "{NOT_LOADED}: clean_plane_entity: pdxmesh clean_mesh (clean.mesh) cannot be loaded: "
@@ -1408,8 +1376,6 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
             .contains(&format!("hidden_mesh_plane_entity ({mesh})"))
     );
 
-    // A country plane whose parent is refused stops the ladder, and each
-    // wing it would draw is counted under that reason.
     let ladder = candidates("GER", "plane", "", "");
     let mut refusals = Refusals::default();
     let mut diagnostics = Vec::new();
@@ -1426,10 +1392,6 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
     );
 }
 
-/// A country plane declared only in a descriptor file that does not
-/// parse is refused with that file named; the wing does not fall
-/// through to the valid generic plane. A readable plane whose mesh that
-/// file may declare is refused too.
 #[test]
 fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
     let broken = br#"entity = { name = "GER_plane_entity" pdxmesh = "ger_mesh" } }{ = ="#;
@@ -1455,8 +1417,6 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
     );
     assert_eq!(roster.refused_declaration("plane_entity"), None);
 
-    // The loader's candidate filter admits the unreadable name, so the
-    // ladder stops there instead of drawing the generic plane.
     let declared = declared_planes(&roster, &BTreeSet::from(["plane"]));
     assert!(declared.contains(&"GER_plane_entity".to_owned()));
     assert!(declared.contains(&"plane_entity".to_owned()));
@@ -1489,17 +1449,12 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
             "2 wings omitted: their aircraft entity GER_plane_entity is refused: it {why}"
         )]
     );
-    // Without the unreadable file the generic plane is drawn.
     assert_eq!(
         resolve_entity(&ladder, generic, &BTreeMap::new()),
         Ok(Some(4))
     );
 }
 
-/// The unreadable file's names are read as the parser's lexer reads
-/// them: a bare CR ends a comment, and a quoted name's escapes are
-/// decoded. Either way the country plane is refused, its wings are
-/// counted and none falls through to the valid generic plane.
 #[test]
 fn an_unreadable_file_s_cr_comments_and_escaped_names_still_refuse() {
     let path = "gfx/entities/broken.asset";
@@ -1556,8 +1511,6 @@ fn an_unreadable_file_s_cr_comments_and_escaped_names_still_refuse() {
     }
 }
 
-/// A scenario is refused by a clone ancestor it copied, its mesh and the
-/// animation of the state it plays, not by an animation of another state.
 #[test]
 fn a_scenario_using_a_possibly_hidden_parent_mesh_or_animation_is_refused() {
     let roster = read_roster("scenario", &["hidden_parent_entity", "hidden_animation"]);
@@ -1597,15 +1550,12 @@ fn wing_batch_discards_remainder_after_choosing_triples() {
     assert_eq!(batches(60), Some((1, 2)));
     assert_eq!(batches(100), Some((3, 1)));
     assert_eq!(batches(400), Some((3, 4)));
-    // A modded transport step of two singles drops the odd unit; the
-    // loops that compare it with their wings use the grouped array count.
     let paired = SteppedFamily {
         single: 2,
         ..fighters
     };
     assert_eq!(paired.batches(1), None);
     assert_eq!(paired.batches(2), Some((1, 1)));
-    // A negative division factor floors every positive count to one unit.
     let negative = FamilyDefines {
         factor: -30,
         ..fighters.sizing
@@ -1622,8 +1572,6 @@ fn naval_patrol_uses_combat_location_and_recorded_losses() {
         (20, ProvinceKind::Sea),
     ]);
     let sources = |sunk: i64, lost: i64| NavalPatrolSources {
-        // Country 7's first task force in combat is in region 2, its
-        // second in region 1 at province 12.
         combats: BTreeMap::from([(7, vec![(20, 2), (12, 1)])]),
         sums: BTreeMap::from([((3, 1), (sunk, lost))]),
     };
@@ -1636,18 +1584,14 @@ fn naval_patrol_uses_combat_location_and_recorded_losses() {
             start,
         )
     };
-    // Ships sunk and fighters lost: the combat's province, success.
     let ((outcome, province), _) = choose(&sources(100_000, 100_000), 3);
     assert_eq!((outcome, province), (SUCCESS, 12));
-    // Sunk but none lost, or a viewer without history: the draw, default.
     let ((outcome, province), start) = choose(&sources(100_000, 99_999), 3);
     assert_eq!((outcome, province), (0, start));
     let ((outcome, province), start) = choose(&sources(100_000, 100_000), 4);
     assert_eq!((outcome, province), (0, start));
-    // None sunk, a fighter lost: another reached sea province, success.
     let ((outcome, province), _) = choose(&sources(99_999, 100_000), 3);
     assert_eq!((outcome, province), (SUCCESS, 10));
-    // A negative sunk count falls back.
     let ((outcome, _), _) = choose(&sources(-100_000, 100_000), 3);
     assert_eq!(outcome, 0);
 }
@@ -1672,13 +1616,10 @@ fn a_full_side_skips_the_next_grouping_call() {
         assert!(groups.admit(&visit(0, 0), 1, 0));
     }
     assert!(!groups.admit(&visit(0, 0), 1, 0));
-    // Other groups of the same call still fill.
     assert!(groups.admit(&visit(0, 0), 4, 0));
     groups.counts[0] = [GROUP_CAPACITY; 5];
-    // A new call on a full side is skipped whole; side B is separate.
     assert!(!groups.admit(&visit(1, 0), 4, 0));
     assert!(groups.admit(&visit(2, 1), 1, 0));
-    // A new region starts empty.
     let other = Visit {
         region: 6,
         ..visit(3, 0)
@@ -1696,7 +1637,6 @@ fn take_off_and_landing_scale_with_the_content_distances() {
     assert_eq!(defines.landing_scale(0.5), 1.0);
     assert!((defines.landing_scale(0.95) - 0.5).abs() < 1e-5);
     assert_eq!(defines.landing_scale(1.0), 0.1);
-    // Degenerate distances follow the native IEEE arithmetic.
     defines.scale_takeoff = 0.0;
     defines.scale_landing = 1.0;
     assert!(defines.takeoff_scale(0.0).is_nan());
@@ -1785,7 +1725,6 @@ fn bit17_base_equipment_has_only_the_coarse_group_call_gate() {
         assert!(groups.admit(&visit, 2, 0));
     }
     assert_eq!(groups.counts[0][2], GROUP_CAPACITY + 1);
-    // Its earlier bomber-definition arm still applies the local cap.
     let overlapping = AirWingRow {
         mission_mask: 0x20002,
         ..wing.clone()
@@ -2076,7 +2015,6 @@ fn strategic_threshold_conversion_uses_native_f32_rounding() {
 }
 
 #[test]
-// Animation's private channel storage requires constructing this fixture via Default.
 #[allow(clippy::field_reassign_with_default)]
 fn scenario_tracks_bind_native_source_ordinals_without_animation_name_aliases() {
     use crate::map::mesh_pose::Source;
@@ -2126,8 +2064,6 @@ fn scenario_tracks_bind_native_source_ordinals_without_animation_name_aliases() 
     assert_eq!(tracks[0][0].translation, [18.0, 24.0, 30.0]);
     assert_eq!(tracks[0][0].basis[0], [3.0, 0.0, 0.0]);
     assert_eq!(absent, [false]);
-    // An absent node is the entity's root for every sample: the rig origin
-    // at the entity's scale, as the game reads for an unfound node.
     let (tracks, absent) = scenario_tracks(
         &source,
         &animation,
@@ -2193,8 +2129,6 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
         );
         (rig, warnings)
     };
-    // Vanilla's rocket rig: the node is absent, the game's log line is kept
-    // and the rocket rides the root at ROCKET_SPEED, without a landing.
     let (missile, warnings) = rig((15, 0), scenario_bones(15), Ok(15.0), Ok(band));
     let missile = missile.unwrap();
     assert_eq!(
@@ -2210,7 +2144,6 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
             "Aircraft scenario scenario_entity has no attachment node rocket: the game logs it and that actor rides the scenario entity's root".to_owned()
         )]
     );
-    // A missing ROCKET_SPEED refuses only that rig.
     let (missile, warnings) = rig(
         (15, 0),
         scenario_bones(15),
@@ -2231,7 +2164,6 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     assert_eq!(warnings[0].0, installed_content_core::DiagnosticKind::Logged);
     let (bound, _) = rig((6, 0), vec![(0, "joint1".into())], Err("unused"), Ok(band));
     assert_eq!(bound.unwrap().unbound, [None]);
-    // A rocket on a real node flies: the near-ground band is ported.
     let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), Ok(band));
     let rocket = rocket.unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -2239,8 +2171,6 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
         (rocket.unbound.as_slice(), rocket.lands.as_slice()),
         (&[None][..], &[false][..])
     );
-    // A rocket on its node never rides the root, so an unreadable
-    // ROCKET_SPEED leaves it flying.
     let (rocket, warnings) = rig(
         (15, 0),
         vec![(0, "joint1".into())],
@@ -2249,8 +2179,6 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     );
     assert!(warnings.is_empty(), "{warnings:?}");
     assert_eq!(rocket.unwrap().unbound, [None]);
-    // Unreadable band defines refuse only a rig with an actor that does not
-    // land, by name; a landing rig never reads them.
     let missing = Err("NDefines.NAirGfx.AIRPLANES_GROUND_COLLISION_OFFSET_Y is unreadable");
     let (rocket, warnings) = rig((15, 0), vec![(0, "joint1".into())], Ok(15.0), missing);
     assert!(rocket.is_none());
@@ -2264,10 +2192,6 @@ fn scenario_rigs_log_an_absent_node_and_read_rocket_speed_and_band_only_where_ne
     assert!(bomber.is_some() && warnings.is_empty());
 }
 
-/// The scenario analysis builds no landing route for the rocket, kamikaze
-/// fighters that succeed, defending slots of a successful interception or
-/// dogfight and attacking slots of a lost dogfight. The viewer used to fly
-/// all of them home.
 #[test]
 fn the_slots_the_game_gives_no_landing_route() {
     let landing = |kind: u8, outcome: u8| {
@@ -2298,9 +2222,6 @@ fn the_slots_the_game_gives_no_landing_route() {
     }
 }
 
-/// One scenario of one actor that takes off for a second and plays `poses`
-/// at `fps`, over flat terrain at height 10 (heightmap byte 100), anchored
-/// at x = 2, z = 2 on that terrain.
 fn one_run(
     poses: Vec<Transform>,
     fps: f32,
@@ -2375,12 +2296,6 @@ const BAND: Band = Band {
     explosion_delay: 0.6,
 };
 
-/// The game tests the band on the pose an actor draws at each of its
-/// frames. A 120 Hz rig dips into the terrain between two 60 Hz frames: no
-/// frame draws it there, so nothing collides; a dip a frame draws ends the
-/// rocket's scenario on that frame and plays its explosion. Before, the
-/// viewer tested only the rig's samples, and then a dense path between
-/// them, finding collisions no frame draws.
 #[test]
 fn the_band_is_met_at_the_viewer_s_frames() {
     let defines = FlightDefines::for_tests();
@@ -2390,13 +2305,11 @@ fn the_band_is_met_at_the_viewer_s_frames() {
         one_run(poses, 120.0, false, true, Explode::Absent)
     };
     let frames: Vec<f32> = (0..=7).map(|frame| 1.0 + frame as f32 / 60.0).collect();
-    // Sample 5 (rig time 5/120) lies between the frames at 2/60 and 3/60.
     let (mut plan, rigs) = dip(5);
     for &frame in &frames {
         plan.advance(&rigs, &defines, Some(BAND), frame, &|_| None);
     }
     assert_eq!((plan.runs[0].cycle, plan.finished.len()), (0, 0));
-    // Sample 6 is the frame at 3/60.
     let (mut plan, rigs) = dip(6);
     let mut ended = None;
     for &frame in &frames {
@@ -2408,23 +2321,15 @@ fn the_band_is_met_at_the_viewer_s_frames() {
     assert!((ended.unwrap() - (1.0 + 3.0 / 60.0)).abs() < 1e-5);
     assert_eq!(plan.finished.len(), 1);
     assert_eq!(plan.finished[0].id, 1);
-    // A clock that goes back restarts the run at its phase.
     plan.advance(&rigs, &defines, Some(BAND), 0.5, &|_| None);
     assert_eq!(plan.runs[0].cycle, 0);
 }
 
-/// In the band an actor with an `explode` state requests it and stays at
-/// the pose it drew; it is done, and hidden for good, once its own player
-/// reads the band's delay. Without the state it is hidden at once, and done
-/// while it stays at or below the band. Actors with a landing route never
-/// end a scenario early.
 #[test]
 fn an_actor_in_the_band_explodes_or_hides_by_its_own_player() {
     let defines = FlightDefines::for_tests();
     let falling = || vec![height(3.0), height(1.0), height(-1.0), height(-1.0)];
     let (mut plan, rigs) = one_run(falling(), 1.0, false, false, Explode::Plays);
-    // Frames at rig times 0.5 and 1.5: the second draws it at y 10, on the
-    // terrain and so in the band.
     plan.advance(&rigs, &defines, Some(BAND), 1.5, &|_| None);
     assert_eq!(plan.runs[0].grounds[0], Ground::Following);
     plan.advance(&rigs, &defines, Some(BAND), 2.5, &|_| None);
@@ -2440,38 +2345,28 @@ fn an_actor_in_the_band_explodes_or_hides_by_its_own_player() {
         (pose.translation, entry, hidden),
         ([2.0, 10.0, 2.0], 2.5, false)
     );
-    // Its player reads below the delay: still drawn, frozen.
     plan.advance(&rigs, &defines, Some(BAND), 2.6, &|_| {
         Some(Some((0.5, 2.0)))
     });
     let placed = plan.placed_runs(&rigs, &defines, 2.6);
     assert_eq!(placed[0].1.position, [2.0, 10.0, 2.0]);
-    // Reading the delay hides it and, as the scenario's only actor, ends it.
     plan.advance(&rigs, &defines, Some(BAND), 2.7, &|key| {
         assert_eq!(key, (3, 0, 0));
         Some(Some((0.6, 2.0)))
     });
     assert_eq!((plan.runs[0].cycle, plan.finished.len()), (1, 1));
-    // Without `explode` it is hidden on its first frame in the band.
     let (mut plan, rigs) = one_run(falling(), 1.0, false, false, Explode::Absent);
     plan.advance(&rigs, &defines, Some(BAND), 2.5, &|_| None);
     assert_eq!(plan.runs[0].cycle, 1);
-    // A landing actor never ends it early, and lands.
     let (mut plan, rigs) = one_run(falling(), 1.0, true, false, Explode::Absent);
     for frame in [1.5, 2.5, 3.5] {
         plan.advance(&rigs, &defines, Some(BAND), frame, &|_| None);
     }
     assert_eq!((plan.runs[0].cycle, plan.finished.len()), (0, 0));
-    // The cycle is 1 + 3 + 1 seconds; its landing ends at 5.
     plan.advance(&rigs, &defines, Some(BAND), 5.1, &|_| None);
     assert_eq!((plan.runs[0].cycle, plan.finished.len()), (1, 1));
 }
 
-/// A formation whose actors read the explosion delay on successive frames
-/// ends on the frame the last one does: an actor that has read it stays
-/// done and placed, hidden, so its player keeps stepping. Before, the first
-/// to finish lost its placement and player, read as unfinished, and the
-/// scenario never ended.
 #[test]
 fn a_formation_finishing_on_successive_frames_ends_with_its_last_actor() {
     let defines = FlightDefines::for_tests();
@@ -2488,14 +2383,12 @@ fn a_formation_finishing_on_successive_frames_ends_with_its_last_actor() {
             .iter()
             .all(|ground| matches!(ground, Ground::Exploding { hidden: false, .. }))
     );
-    // Each actor's player reads the delay on its own frame, and no other.
     for (frame, actor) in [(2.6, 0), (2.7, 1)] {
         plan.advance(&rigs, &defines, Some(BAND), frame, &|(_, index, _)| {
             (index == actor).then_some(Some((0.6, 2.0)))
         });
         assert_eq!(plan.runs[0].cycle, 0, "{frame}");
     }
-    // The finished ones stay placed, frozen, for their players.
     assert_eq!(plan.placed_runs(&rigs, &defines, 2.75).len(), 3);
     plan.advance(&rigs, &defines, Some(BAND), 2.8, &|(_, index, _)| {
         (index == 2).then_some(Some((0.6, 2.0)))
@@ -2503,10 +2396,6 @@ fn a_formation_finishing_on_successive_frames_ends_with_its_last_actor() {
     assert_eq!((plan.runs[0].cycle, plan.finished.len()), (1, 3));
 }
 
-/// The shared player keeps reading the clip a pdxmesh root played before it
-/// entered an `explode` state that plays no animation, past that clip's end
-/// when it does not loop: entered 0.25 s into a 1 s idle, it reads the 2 s
-/// delay 1.75 s later. The band reads that player, so the explosion ends.
 #[test]
 fn a_retained_nonlooping_clip_reads_the_explosion_delay() {
     use crate::map::entity_animation::{Clip, Clock, Node, Player, Request, Rig as ActorRig};
@@ -2598,13 +2487,6 @@ fn a_retained_nonlooping_clip_reads_the_explosion_delay() {
     assert!(read(&mut early, &mut palette, 1.75) < 2.0);
 }
 
-/// The game eases each actor's drawn transform toward its pose every frame:
-/// per elapsed 30 Hz frame the position moves
-/// `AIRPLANES_SMOOTH_INTERPOLATION_MOVE` of the way and the heading and up
-/// axis `_TURN` times the clock's speed. The drawn actor lags a node that
-/// moves; the band and the runs keep reading the pose. A new cycle starts
-/// on its take-off route's first point, and a later hour's plan carries the
-/// transforms on. Before, the viewer drew the pose itself.
 #[test]
 fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
     let defines = FlightDefines::for_tests();
@@ -2634,11 +2516,8 @@ fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
         let eased = plan.eased_runs(&rigs, &defines, seconds)[0].1;
         (pose, eased)
     };
-    // First seen mid-rig, it stands on its pose.
     let (pose, eased) = drawn(&mut plan, 2.0);
     assert_eq!(eased.position, pose.position);
-    // One frame later the node has moved 0.2 along x; the drawn actor 13% of
-    // that.
     let (pose, eased) = drawn(&mut plan, 2.0 + frame);
     assert!((pose.position[0] - 2.2).abs() < 1e-4);
     assert!(
@@ -2646,16 +2525,12 @@ fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
         "{:?}",
         eased.position
     );
-    // Two frames' time in one frame step twice as far, never past the pose.
     let before = eased.position[0];
     let (pose, eased) = drawn(&mut plan, 2.0 + 3.0 * frame);
     let expected = before + (pose.position[0] - before) * 0.26;
     assert!((eased.position[0] - expected).abs() < 1e-4);
-    // A long pause brings it onto the pose.
     let (pose, eased) = drawn(&mut plan, 4.9);
     assert!((eased.position[0] - pose.position[0]).abs() < 1e-3);
-    // The next cycle starts on the take-off route's first point and eases
-    // from there.
     let (pose, eased) = drawn(&mut plan, 5.02);
     let start = [-10.0, 10.0, 2.0];
     let moved = (0.13 * 0.12 * 1000.0 / EASING_FRAME_MS).min(1.0);
@@ -2666,14 +2541,12 @@ fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
         eased.position
     );
     assert_ne!(eased.position, pose.position);
-    // A later plan of the same flight carries the transform on.
     let mut next = plan.clone();
     next.eased.clear();
     next.eased_at = None;
     next.carry_easing(&mut plan);
     let (pose, carried) = drawn(&mut next, 5.02 + frame);
     assert_ne!(carried.position, pose.position);
-    // Without it the new plan stands on the pose.
     let mut fresh = next.clone();
     fresh.eased.clear();
     fresh.eased_at = None;
@@ -2681,9 +2554,6 @@ fn the_drawn_transform_eases_toward_the_pose_and_lags_it() {
     assert_eq!(snapped.position, pose.position);
 }
 
-/// A missile scenario plays its explosion once per cycle, when its landing
-/// ends or its rocket ends it, keyed by its flight and the cycle that
-/// follows; a long gap plays only the last.
 #[test]
 fn a_missile_scenario_finishes_once_per_cycle() {
     let defines = FlightDefines::for_tests();
@@ -2721,20 +2591,13 @@ fn a_default_outcome_scenario_without_a_default_state_plays_its_default_state() 
         scenario_state(&descriptors, "fighter_1_patrol_entity", 0),
         "default"
     );
-    // Without a declared default state the engine's own default stands.
     assert_eq!(
         scenario_state(&descriptors, "bare_entity", 0),
         mesh::DEFAULT_STATE
     );
-    // Outcome states are never replaced.
     assert_eq!(scenario_state(&descriptors, "paired_entity", 3), "fail");
 }
 
-/// A scenario rig whose mesh or animation file does not read is refused by
-/// name, and the assets still load: the missile rig's mesh file is missing,
-/// and the conventional patrol rig's mesh reads but its animation file is
-/// missing. Before, either failure aborted the whole load, and with it the
-/// document, even with no missile or patrol flight to draw.
 #[test]
 fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
     let root = std::env::temp_dir().join(format!(
@@ -2843,8 +2706,6 @@ fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
     assert!(!assets.rigs.contains_key("fighter_1_patrol"));
 }
 
-/// The flying mode's crash reads the content's plane ground contact: its height above the surface
-/// and how long the explosion plays before the entity goes.
 #[test]
 fn ground_contact_reads_the_content_defines_and_names_a_missing_one() {
     let defines = Defines::new().unwrap();
@@ -2881,10 +2742,8 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
         offset: 0.0,
         explosion: 4.0,
     };
-    // The play position, not the clip's length, meets the delay.
     assert!(!contact.exploded(Some(Some((3.9, 10.0)))));
     assert!(contact.exploded(Some(Some((4.0, 2.0)))));
-    // Before its player exists nothing has played; a root that plays no animation reads zero.
     assert!(!contact.exploded(None));
     assert!(!contact.exploded(Some(None)));
     assert!(
@@ -2896,10 +2755,6 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
     );
 }
 
-/// A chosen aircraft bakes once from the map's own roster, an entity or a bare
-/// mesh. Declaration refusals precede file reads; a meshless actor is baked and
-/// retained, then refused for Fly. Repeated rejection keeps one named refusal.
-/// Catalogue reasons and mesh-file failures stay named and refused.
 #[test]
 fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3007,9 +2862,6 @@ fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
     assert_eq!(layers.refused(), refusals);
 }
 
-/// A scenario rig the visual mods break (an animation of theirs that does not read) is flown
-/// from the recorded layers, named; one neither builds is refused by its stable name for the
-/// map's fallback, with the shown stack's reason.
 #[test]
 fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
     let layers = ResolvedLayers::default();
@@ -3047,7 +2899,6 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
         )]
     );
     assert!(layers.refused().is_empty());
-    // Neither stack builds it: refused by name, with the shown stack's reason.
     let mut warnings = Vec::new();
     let flown = shown_or_recorded(
         &layers,

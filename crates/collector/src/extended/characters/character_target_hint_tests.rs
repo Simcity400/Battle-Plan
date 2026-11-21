@@ -142,7 +142,6 @@ fn character_target_hints_obey_independent_dead_guards_and_empty_maps() {
             (0x4ed4, 1)
         ]
     );
-    // Aliased sentinels remain two independently requested hints.
     assert_eq!(
         targets(&view(0x2000, 0, 0x2000, 0, 0x2000), &Dead::default()),
         [
@@ -324,9 +323,6 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
         assert_eq!(job.log.spans, spans);
         assert_eq!(job.log.bytes.as_ref(), used);
 
-        // Failed partial bytes may be reused by a later successful field.
-        // Only successful offsets are visible, both before and after an
-        // append grows and moves the raw arena.
         let fields: Vec<_> = (0..VIEW_LENS.len())
             .map(|index| copied.field(&job, index).to_vec())
             .collect();
@@ -354,8 +350,6 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
             assert_eq!(copied.field(&job, index), field);
         }
     }
-    // Zero-length inactive scatter slots may have the same raw offset as
-    // the next successful field. They must never publish that offset.
     for active in [
         [true, false, false, true, true, true],
         [false, true, false, false, false, false],
@@ -384,13 +378,9 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
             }
         }
     }
-    // Eight span offsets (including gender), the optional unit ID and the
-    // carried flag replace the old 128-byte image.
     assert_eq!(size_of::<ViewCopy>(), 44);
 }
 
-// Frozen pre-hint text path: independent caller sequencing, with the same
-// unchanged literal parser and exact copy primitive.
 fn original_text(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -446,13 +436,11 @@ fn character_heap_hints_preserve_exact_observations_and_failure_prefix() {
                     calls: RefCell::new(Vec::new()),
                 };
                 let mut actual = CharactersJob {
-                    // One owned view header leaves the former payload budget.
                     log: crate::raw::RawLog::new(9, 192),
                     game_state: 0,
                     ..CharactersJob::default()
                 };
                 let mut expected = CharactersJob {
-                    // One owned view header leaves the former payload budget.
                     log: crate::raw::RawLog::new(9, 192),
                     game_state: 0,
                     ..CharactersJob::default()

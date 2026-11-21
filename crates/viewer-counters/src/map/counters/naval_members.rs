@@ -1,13 +1,7 @@
-//! The hour part of a task force's naval counter: whether the ordinary pass makes it a source at
-//! sea (its province, stack kind and ordinal) or leaves it out and why, whether the naval base's
-//! pass puts it in port, and the operands its item reads, decided from values. Today's hour
-//! tables (`add_task_forces`, `PortTables`) and the map's naval counter layer both decide through
-//! [`naval_member`]; only how they join the hour's tables differs ([`NavalJoins`]).
 
 use super::*;
 use viewer_foundation::map::task_force_visual::Placement;
 
-/// One `TaskForces` row's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ForceFields {
     pub id: u64,
@@ -35,8 +29,6 @@ impl ForceFields {
     }
 }
 
-/// What places a task force on the map: the content's stack anchors and scales, regions, which
-/// provinces are land, and the route geometry.
 #[derive(Clone, Copy)]
 pub struct SeaGround<'a> {
     pub content: &'a CounterContent,
@@ -50,7 +42,6 @@ impl SeaGround<'_> {
         naval::province_is_land(self.map, self.movement, province)
     }
 
-    /// Where a task force on `province` with `route` stands this hour.
     pub fn place(&self, province: u32, route: &counter_move::UnitRoute<'_>) -> Result<Placement, &'static str> {
         viewer_foundation::map::task_force_visual::visual_of(
             province,
@@ -64,38 +55,24 @@ impl SeaGround<'_> {
     }
 }
 
-/// What a task force's member reads besides its own row.
 pub trait NavalJoins {
-    /// A raw country reference's canonical slot.
     fn owner(&self, raw: u32) -> Option<u32>;
-    /// `None` without a whole occupant order; `Some(None)` when `province`'s mixed array does not
-    /// hold the task force.
     fn mixed(&self, force: u64, province: u32) -> Option<Option<u32>>;
-    /// The same of `province`'s naval array.
     fn naval(&self, force: u64, province: u32) -> Option<Option<u32>>;
     fn land(&self, province: u32) -> bool;
-    /// The province's strategic region.
     fn region(&self, province: u32) -> Option<u32>;
-    /// Where it stands from its motion row; why the hour cannot place it.
     fn placement(&self, force: &ForceFields) -> Result<Placement, &'static str>;
-    /// [`MissionSkips::skip`](viewer_foundation::map::task_force_visual::MissionSkips::skip).
     fn skip(&self, force: &ForceFields, kind: u32, region: Option<u32>) -> Option<bool>;
-    /// Whether its first carrier has an air base (the air map mode's test); `None` when unknown.
     fn carries(&self, force: u64) -> Option<bool>;
-    /// Its ship count and wrapping strength sum; `None` when no `Ships` row names it.
     fn ships(&self, force: u64) -> Option<(usize, i64)>;
     fn ships_complete(&self) -> bool;
-    /// Its strength and organisation ratios, when the hour's ship operands are whole.
     fn ratio(&self, force: u64) -> Option<(i64, i64)>;
     fn vision(&self) -> &Vision;
     fn type_tint(&self, roster: u32, logical: u32) -> Option<type_tint::Side>;
-    /// Whether its ordinary route is empty; why the hour cannot tell.
     fn docked(&self, force: u64) -> Result<bool, &'static str>;
-    /// Whether a naval base stands on `province`.
     fn base(&self, province: u32) -> bool;
 }
 
-/// A task force as one counter member, when its perspective shows it at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NavalOperands {
     pub slot: u32,
@@ -108,7 +85,6 @@ pub struct NavalOperands {
 }
 
 impl NavalOperands {
-    /// `None` for an unlinked roster owner or a task force the perspective does not see.
     pub fn of(force: &ForceFields, ships: Option<(usize, i64)>, ships_complete: bool, vision: &Vision, owner: &impl Fn(u32) -> Option<u32>) -> Option<Self> {
         let slot = owner(force.roster_owner)?;
         let byte = vision.navy_byte(force.id, slot);
@@ -126,33 +102,24 @@ impl NavalOperands {
     }
 }
 
-/// What the ordinary pass makes of a task force at sea, its camera admission aside.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sea {
-    /// A member of source `(province, kind)`.
     Source { kind: u32, ordinal: u32, moving: bool },
-    /// Left out, and the step that left it out.
     Out(&'static str),
-    /// Undecided: an operand the hour lacks, by why.
     Refused(&'static str),
 }
 
-/// What the naval base's pass makes of a task force.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Port {
-    /// In its base's roster at this naval ordinal.
     In(u32),
     Out,
-    /// Undecided, which leaves its base's items undecided.
     Undecided(&'static str),
 }
 
-/// One task force's hour part.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavalMember {
     pub fields: ForceFields,
     pub sea: Sea,
-    /// Why its route could not be placed, so that it stands on its province.
     pub unplaced: Option<&'static str>,
     pub port: Port,
     pub unit: Option<NavalOperands>,
@@ -168,7 +135,6 @@ pub(super) const ON_MISSION: &str = "on its mission here: the mission icon shows
 pub(super) const UNSEEN: &str = "unseen, or its roster owner is not a linked country";
 pub(super) const SKIP_UNRECORDED: &str = "its mission skip's counter inputs or current region are not recorded";
 
-/// The ordinary pass's decision for a task force at sea, with its placement when it was placed.
 pub(super) fn sea_place(force: &ForceFields, kinds: UnitKinds, joins: &impl NavalJoins) -> (Sea, Option<Placement>) {
     let ordinal = match joins.mixed(force.id, force.province) {
         Some(Some(ordinal)) => ordinal,
@@ -197,8 +163,6 @@ pub(super) fn sea_place(force: &ForceFields, kinds: UnitKinds, joins: &impl Nava
     (sea, Some(placement))
 }
 
-/// The naval base pass's decision: a task force with a fleet and ships, docked on a land
-/// province holding a base, in that province's naval array, of a linked owner, seen.
 pub(super) fn port_place(force: &ForceFields, joins: &impl NavalJoins) -> Port {
     if force.province == 0 || force.fleet == 0 || !joins.land(force.province) || !joins.base(force.province) {
         return Port::Out;
@@ -226,7 +190,6 @@ pub(super) fn port_place(force: &ForceFields, joins: &impl NavalJoins) -> Port {
     }
 }
 
-/// One task force's hour part at map mode `kinds`.
 pub fn naval_member(force: ForceFields, kinds: UnitKinds, joins: &impl NavalJoins) -> NavalMember {
     let (sea, placement) = sea_place(&force, kinds, joins);
     let unit = NavalOperands::of(&force, joins.ships(force.id), joins.ships_complete(), joins.vision(), &|raw| joins.owner(raw));
@@ -245,40 +208,32 @@ pub fn naval_member(force: ForceFields, kinds: UnitKinds, joins: &impl NavalJoin
     }
 }
 
-/// A fleet's group-marker operands: whether it is a reserve fleet, and its colour's bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FleetMarker {
     pub reserve: Option<bool>,
     pub colour: [u32; 4],
 }
 
-/// The naval base pass's whole-hour part: each base's anchor (or none), in base order, and each
-/// base province whose items are undecided, by why.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PortSummary {
-    /// Anchored bases' anchors' bits, in base order.
     pub anchors: Vec<(u32, [u32; 3])>,
     pub unanchored: usize,
     pub undecided: BTreeMap<u32, String>,
 }
 
-/// The undecided reason a base's items take from a task force's.
 pub fn port_undecided_reason(reason: &str) -> String {
     naval::port_undecided(reason).into_owned()
 }
 
-/// A task force row absent from an incomplete census, named by a base's naval array.
 pub fn port_force_unrecorded() -> String {
     port_undecided_reason(naval::PORT_FORCE_UNRECORDED)
 }
 
-/// Today's joins: the hour tables built from a frame of rows.
 pub(super) struct HourJoins<'a, 't, O> {
     pub(super) land: &'a CounterTables<'t>,
     pub(super) context: &'a NavalContext<'t>,
     pub(super) owner: &'a O,
     pub(super) ground: SeaGround<'a>,
-    /// The task force asked about.
     pub(super) row: &'t replay_data::rows::TaskForceRow,
     pub(super) bases: &'a BTreeSet<u32>,
 }
@@ -348,19 +303,15 @@ impl<O: Fn(u32) -> Option<u32>> NavalJoins for HourJoins<'_, '_, O> {
     }
 }
 
-/// Today's naval hour part as values.
 pub struct TodayNaval {
     pub members: Vec<NavalMember>,
     pub fleets: BTreeMap<u64, FleetMarker>,
     pub ports: PortSummary,
-    /// Whether the viewing country's peace conference hides every unit counter.
     pub peace_conference: bool,
     pub forces_complete: bool,
 }
 
 impl HourTables {
-    /// Every recorded task force's hour part at map mode `kinds`, each fleet's marker operands
-    /// and the bases' part, as today's hour tables decide them.
     pub fn naval_members(&self, ground: SeaGround<'_>, kinds: UnitKinds, equipment: Result<&installed_content_core::equipment::Database, &str>) -> io::Result<TodayNaval> {
         let frame = &self.frame;
         let ideology = |slot: u32| self.ideologies.get(&slot).cloned().unwrap_or(Ok(None));
@@ -392,7 +343,6 @@ impl HourTables {
     }
 }
 
-/// A task force's joins as a test states them.
 #[cfg(test)]
 pub(super) struct Fake<'a> {
     pub(super) row: &'a replay_data::rows::TaskForceRow,

@@ -18,8 +18,6 @@ export interface CasualtyChord extends FoldedChord {
   readonly hour: number;
 }
 
-/** Only geometry converts to Number. Signed corrections remain exact in the
- * detail table; they do not turn into positive casualty ribbons. */
 export function casualtyChord(snapshot: PairSnapshot, most: number, hour: number,
   labels: CountryLabel, color: (tag: string) => string, muted: string): CasualtyChord {
   const totals = chordTotals(snapshot.flows, flow => flow.from, flow => flow.to,
@@ -75,17 +73,11 @@ export class CasualtyChordSegmentCache {
   }
 }
 
-/** The countries a chord asks names and colours for, and the hour. Following with `identityHour` known (the last hour at
- * or before the head at which one of `windowTags`' identities changed), every country of the windows held, there: each
- * reads there as at every hour since, so entering a window asks nothing and nothing is asked again until an identity
- * changes. Otherwise the countries shown (`shownTags`) at `hour`, the hour shown. */
 export function chordNamesAsked(following: boolean, identityHour: number | null, hour: number, windowTags: readonly string[],
   shownTags: readonly string[]): { readonly hour: number; readonly tags: readonly string[] } {
   return following && identityHour !== null ? { hour: identityHour, tags: windowTags } : { hour, tags: shownTags };
 }
 
-/** The hour a chord frame at `read` names its countries at: following, `since`, the last hour at or before `read` at
- * which one of their identities changed; else `read`. Its names and colours are exact where that is the hour asked. */
 export const chordNameHour = (read: number, since: number | null) => since ?? read;
 
 export function chordPairs(hit: ChordHit, chord: CasualtyChord): PairFlow[] {

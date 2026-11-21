@@ -1,15 +1,3 @@
-//! `FactionTotals`: each faction's members summed at the hour, column by column as faction
-//! strength and territory sum them: a column named as a TerritoryTotals column from each member's
-//! row there (by canonical slot), a factory count (`<mode><mask>`) by the game's rule
-//! ([`factories`]) from its CountryFactories row (by the raw id of the live country in that slot). A faction
-//! has a row while it has a member; a roster not read whole, factions not observed, an input not
-//! complete or a member's cell not recorded leave the cells it adds not recorded, never smaller.
-//!
-//! State is the tables: memberships from GroupSpans and Groups, each slot's live country from
-//! Countries. An hour that changes a membership, a faction's number or a country recomputes every
-//! faction (they change rarely and a faction's members are few); an hour that changes only
-//! territory or factory rows recomputes the factions those rows' slots are members of; an hour
-//! changing none returns at once. A resume reads the inputs whole (empty blob).
 
 use crate::{
     forces::invalid,
@@ -24,7 +12,6 @@ use std::{
 };
 
 const READS: &[Read] = &[
-    // Only spans coming and going: a span's key holds its whole fact.
     Read { table: TableId::GroupSpans, columns: Columns::These(&[]), watch: Watch::Changed, required: true },
     Read { table: TableId::Groups, columns: Columns::These(&[0]), watch: Watch::Changed, required: true },
     Read { table: TableId::Countries, columns: Columns::These(&[0]), watch: Watch::Changed, required: true },
@@ -32,16 +19,12 @@ const READS: &[Read] = &[
     Read { table: TableId::CountryFactories, columns: Columns::These(&factories::READS), watch: Watch::Changed, required: false },
 ];
 
-/// What a FactionTotals column sums over a faction's members.
 #[derive(Clone, Copy)]
 enum Source {
-    /// The TerritoryTotals column of the same name.
     Territory(usize),
-    /// A factory count: its mode ([`factories::MODES`]) over the groups of its mask.
     Factories { mode: usize, mask: usize },
 }
 
-/// Each FactionTotals column's source, from its name.
 fn sources() -> io::Result<Vec<Source>> {
     let (table, territory) = (TableId::FactionTotals, TableId::TerritoryTotals);
     (0..table.field_count())
@@ -67,23 +50,16 @@ fn sources() -> io::Result<Vec<Source>> {
 
 #[derive(Default)]
 pub struct FactionTotals {
-    /// The writer must read its inputs whole before its next hour: a resume.
     rebuild: bool,
-    /// Each faction's members (canonical slots), by faction id.
     members: BTreeMap<u64, BTreeSet<u32>>,
-    /// Factions whose roster was not read whole.
     incomplete: HashSet<u64>,
-    /// Faction memberships were not observed at all.
     unobserved: bool,
-    /// The live country in each canonical slot.
     country: HashMap<u32, u32>,
-    /// Whether TerritoryTotals and CountryFactories were complete at the hour before.
     complete: (bool, bool),
     sources: Vec<Source>,
 }
 
 impl FactionTotals {
-    /// Memberships and countries from the tables, whole.
     fn read_rosters(&mut self, hour: &Hour<'_>) -> io::Result<()> {
         let groups = hour.table(TableId::Groups);
         let mut numbers: HashMap<u32, u64> = HashMap::new();
@@ -125,12 +101,10 @@ impl FactionTotals {
         Ok(())
     }
 
-    /// The factions slot `slot` is a member of.
     fn factions_of(&self, slot: u32) -> impl Iterator<Item = u64> + '_ {
         self.members.iter().filter(move |(_, members)| members.contains(&slot)).map(|(&faction, _)| faction)
     }
 
-    /// `faction`'s cells: each measure summed over its members, not recorded where any cell it adds is not.
     fn cells(&self, hour: &Hour<'_>, faction: u64) -> io::Result<Vec<Value>> {
         let members = &self.members[&faction];
         let known = !self.unobserved && !self.incomplete.contains(&faction);
@@ -229,7 +203,6 @@ impl Writer for FactionTotals {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads its inputs whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

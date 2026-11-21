@@ -1,24 +1,17 @@
-//! The game's generic confirmation pop-up (`default_confirmation_popup`), hosted through the
-//! retained native GUI walk. The order it confirms is never posted, so either button closes it
-//! and nothing else changes.
 
 use super::{Drawn, Values, binding::Bindings, gui, gui_resources};
 use std::io;
 use viewer_foundation::map::native_gui::{self, lifecycle, pointer::Input};
 
 pub const CONFIRMATION_WINDOW: &str = "default_confirmation_popup";
-/// The template the pop-up draws, for the GUI resource inventory.
 pub const TEMPLATES: &[&[u8]] = &[b"default_confirmation_popup"];
 
-/// Where a pop-up's quads start among the windows' layers.
 const POPUP_LAYERS: u32 = 1 << 30;
 
-/// A control of the pop-up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     Accept,
     Decline,
-    /// The window background: absorbs clicks without an action.
     Window,
 }
 
@@ -30,8 +23,6 @@ fn control(name: &str) -> Option<Control> {
     }
 }
 
-/// One frame of the pop-up: its quads, sounds and tooltips, its controls in paint order and the
-/// controls clicked with each click's order among the frame's button changes.
 #[derive(Clone, Default)]
 pub struct ConfirmationDrawn {
     pub drawn: Drawn,
@@ -40,7 +31,6 @@ pub struct ConfirmationDrawn {
 }
 
 impl ConfirmationDrawn {
-    /// The topmost control under `point`.
     pub fn control_at(&self, point: [f32; 2]) -> Option<Control> {
         self.controls
             .iter()
@@ -50,7 +40,6 @@ impl ConfirmationDrawn {
     }
 }
 
-/// The open pop-up's retained window; closed, it holds nothing.
 #[derive(Default)]
 pub struct Confirmation {
     built: Option<([i32; 2], viewer_foundation::map::native_windows::NativeWindows)>,
@@ -60,17 +49,14 @@ pub struct Confirmation {
 }
 
 impl Confirmation {
-    /// Whether the primary button holds one of its buttons.
     pub fn holding(&self) -> bool {
         self.root.as_ref().is_some_and(gui::Retained::holding)
     }
 
-    /// Whether a button the pointer holds still changes on the clock.
     pub fn pointing(&self) -> bool {
         self.root.as_ref().is_some_and(gui::Retained::pointing)
     }
 
-    /// Lays out and draws the pop-up with its localised `title` and `description`.
     #[allow(clippy::too_many_arguments, reason = "the window's texts, extent, clock and pointer, each from another owner")]
     pub fn draw(
         &mut self,
@@ -136,7 +122,6 @@ impl Confirmation {
         if !gui::draw_prepared(&prepared.layout, &prepared.items, origin, &resources, &mut out.drawn) {
             return Ok(out);
         }
-        // A pop-up draws above every window.
         for (index, quad) in out.drawn.batch.quads.iter_mut().enumerate() {
             quad.layer = viewer_foundation::map::sprites::gui_layer(POPUP_LAYERS.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)), 0);
         }
@@ -165,7 +150,6 @@ impl Confirmation {
         Ok(out)
     }
 
-    /// Each button's first authored shortcut: what the pop-up's keys select.
     pub fn shortcuts(content: &super::content::Content, extent: [f32; 2]) -> io::Result<Vec<(Control, String)>> {
         let windows = content.window_cache.at(extent.map(|value| value as u32))?;
         let root = gui::template(&windows, CONFIRMATION_WINDOW).map_err(super::invalid)?;

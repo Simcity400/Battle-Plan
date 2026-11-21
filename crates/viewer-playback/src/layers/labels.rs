@@ -1,11 +1,3 @@
-//! The victory-point and capital labels' per-hour part, from the mirrors: per candidate province
-//! (positive victory points or a capital star) its points, star, controller and name; the viewing
-//! country's tag and war sides. Where they are laid out for the camera stays where it is.
-//!
-//! What a country contributes is kept per country and per state and changed only where a step
-//! changed it: links per raw id, each canonical slot's original-or-own tag and capital state, each
-//! state's star. The viewing country is an input (act 1: set from today's vision; the vision layer
-//! gives it later). Provinces, CountryLinks and Countries not wholly recorded draw no labels.
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Text, Upstream, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
@@ -49,7 +41,6 @@ struct Columns {
 const CORE: [TableId; 3] = [TableId::Provinces, TableId::CountryLinks, TableId::Countries];
 const OTHERS: [TableId; 5] = [TableId::States, TableId::Politics, TableId::CountryAppearance, TableId::ProvinceNames, TableId::WarRelations];
 
-/// What a status changes for a reader: rows complete, rows in part, or none.
 fn class(status: Status) -> u8 {
     match status {
         Status::Complete => 0,
@@ -62,7 +53,6 @@ fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
-/// Why a table's rows lack an entry, in today's words.
 fn gap(mirror: Option<&Mirror>) -> String {
     match mirror.and_then(Mirror::status) {
         Some(Status::Complete) => "the complete table has no row for it".into(),
@@ -74,38 +64,26 @@ fn gap(mirror: Option<&Mirror>) -> String {
 pub struct Labels {
     localisation: Arc<Localisation>,
     columns: Option<Columns>,
-    /// The viewing slot: the vision layer's when one is registered before this one, else the
-    /// one given.
     ours: Option<u32>,
-    /// Whether it declares the vision layer it reads (the window); the proof tool gives a slot.
     reads_vision: bool,
-    /// Whether the view draws labels.
     shown: bool,
-    /// The viewing slot's tag.
     perspective: Option<String>,
     refused: Option<String>,
     links: HashMap<u32, u32>,
-    /// Per canonical slot, the raw ids linked to it.
     raws_of_slot: HashMap<u32, BTreeSet<u32>>,
     natives: BTreeSet<(u32, u32)>,
     native_slot: HashMap<u32, u32>,
     state_provinces: HashMap<u32, BTreeSet<u32>>,
     province_state: HashMap<u32, u32>,
-    /// Per canonical slot its capital state (Politics, the highest raw id linked to it with one).
     capital_of_slot: HashMap<u32, u32>,
-    /// Per state the province its star stands on.
     stars: HashMap<u32, u32>,
-    /// Per capital state whose star is withheld, why.
     withheld: BTreeMap<u32, &'static str>,
-    /// Provinces whose recorded name this port cannot lay out, and those whose name a step wrote.
     unreadable: BTreeSet<u32>,
     renamed: BTreeSet<u32>,
-    /// The withheld stars' and unreadable names' limitation notes, made again once either moved.
     notes: Vec<String>,
     notes_stale: bool,
     capitals: BTreeSet<u32>,
     candidates: BTreeMap<u32, LabelCandidate>,
-    /// Per candidate its raw controller, so a link's change finds it.
     controller_of: HashMap<u32, u32>,
     allegiances: BTreeMap<u32, u32>,
     next_war_end: Option<Hour>,
@@ -120,19 +98,14 @@ pub struct Labels {
     moved: Dirty,
     renamed_states: Dirty,
     every: bool,
-    /// A gap's wording changed: every refused candidate again.
     refusals_dirty: bool,
     wars_dirty: bool,
     statuses: HashMap<usize, Status>,
     hour: Hour,
     frame: u64,
-    /// Provinces, states renamed and war recounts the steps marked.
     marked: [usize; 3],
-    /// What the window lays out: the labels as today's product holds them, made again once stale.
     drawn: Arc<Display>,
     drawn_stale: bool,
-    /// The settled hours [`Self::drawn`] holds for, from the hour it was made; none while it was
-    /// made over a settle left unfinished.
     drawn_hours: Option<(Hour, Hour)>,
 }
 
@@ -191,17 +164,14 @@ impl Labels {
         Self { columns: self.columns, shown: self.shown, reads_vision: self.reads_vision, ..Self::new(Arc::clone(&self.localisation), self.ours) }
     }
 
-    /// The settled hours the labels the window lays out hold for; none until a settle finished.
     pub fn drawn_hours(&self) -> Option<std::ops::RangeInclusive<Hour>> {
         self.drawn_hours.map(|(from, to)| from..=to)
     }
 
-    /// The window's: it reads the viewing slot of the vision layer registered before it.
     pub fn reading_vision(self) -> Self {
         Self { reads_vision: true, ..self }
     }
 
-    /// The vision layer's viewing slot, when one is registered before this one; whether it changed.
     fn take_ours(&mut self, upstream: &Upstream<'_>) -> bool {
         let Some(vision) = upstream.get::<crate::layers::vision::Vision>() else { return false };
         let ours = vision.ours();
@@ -226,13 +196,10 @@ impl Labels {
         self.marked
     }
 
-    /// The labels' limitation notes in today's words: the provinces whose recorded name is not
-    /// text, then each reason capital stars are withheld; none while hidden or refused.
     pub fn notes(&self) -> &[String] {
         if !self.shown || self.refused.is_some() { &[] } else { &self.notes }
     }
 
-    /// Whether province `id`'s recorded name, if any, is bytes this port cannot lay out.
     fn read_name(&mut self, mirrors: &Mirrors, id: u32) {
         let columns = self.columns();
         let bytes = rows(mirrors.get(TableId::ProvinceNames)).and_then(|names| {
@@ -259,7 +226,6 @@ impl Labels {
         self.columns.expect("the labels layer is declared before it composes")
     }
 
-    /// The labels' per-hour product as today's builds it.
     pub fn display(&self) -> Display {
         Display {
             perspective: self.perspective.clone(),
@@ -296,7 +262,6 @@ impl Labels {
         None
     }
 
-    /// Everything read again: the indexes, the original tags, the capitals, every province.
     fn restart(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
         self.statuses = OTHERS.iter().filter_map(|&table| mirrors.get(table).and_then(Mirror::status).map(|status| (table.index(), status))).collect();
@@ -382,8 +347,6 @@ impl Labels {
         self.wars_dirty = false;
     }
 
-    /// The slot's original-or-own tag as today reads CountryAppearance: the row of the highest raw
-    /// id linked to the slot, with the slot's last Countries row; none without either.
     fn original_tag(&self, mirrors: &Mirrors, slot: u32) -> Option<Result<String, String>> {
         let columns = self.columns();
         let native = self.by_slot(slot)?;
@@ -404,7 +367,6 @@ impl Labels {
         })())
     }
 
-    /// The slot's capital state: Politics' row of the highest raw id linked to it with one.
     fn capital_of(&self, mirrors: &Mirrors, slot: u32) -> Option<u32> {
         let politics = rows(mirrors.get(TableId::Politics))?;
         let column = self.columns().capital;
@@ -414,8 +376,6 @@ impl Labels {
         })
     }
 
-    /// The province `state`'s star stands on: when its controller has it as capital, the one province
-    /// with the most positive victory points, or why it is withheld.
     fn star_of(&self, mirrors: &Mirrors, state: u32) -> Option<Result<u32, &'static str>> {
         let columns = self.columns();
         let states = rows(mirrors.get(TableId::States))?;
@@ -473,7 +433,6 @@ impl Labels {
         }
     }
 
-    /// The raw owner of `state`, when States holds it.
     fn owner(&self, mirrors: &Mirrors, state: u32) -> Option<u32> {
         let states = rows(mirrors.get(TableId::States))?;
         Some(states.number(self.columns().state_owner, states.slot(u128::from(state))?).value().unwrap_or(0))
@@ -555,7 +514,6 @@ impl Labels {
         }
     }
 
-    /// Every candidate whose name or controller reads `raw`'s link, or slot `slot`'s original tag.
     fn mark_reading(&mut self, mirrors: &Mirrors, raw: Option<u32>, slot: Option<u32>) {
         let mut marked = Vec::new();
         for (&id, &controller) in &self.controller_of {
@@ -811,7 +769,6 @@ impl Layer for Labels {
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
         self.shown = view.overlay.labels;
         if !self.shown {
-            // Hidden, nothing is read; shown again, the layer is made anew from the mirrors.
             self.refused = Some("the labels are hidden".into());
             return Ok(());
         }
@@ -925,7 +882,6 @@ impl Layer for Labels {
         self.compose(mirrors)
     }
 
-    /// The viewing slot decides only the perspective's tag and the sides: a change reads the wars again.
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         if self.take_ours(upstream) {
             self.wars_dirty = true;
@@ -933,11 +889,7 @@ impl Layer for Labels {
         self.settle(mirrors, settling)
     }
 
-    /// The labels the window lays out, made again once a candidate, side or the perspective
-    /// changed. Made here, on the side's thread: the layer writes nothing to the GPU, so this is
-    /// its whole install.
     fn stage(&mut self) -> io::Result<()> {
-        // Refused labels hold for no hour: their emptiness is no hour's victory points.
         let (settled, hour) = (self.refused.is_none() && self.carried().entities == 0, self.hour);
         if self.drawn_stale {
             self.drawn = Arc::new(self.display());
@@ -954,7 +906,6 @@ impl Layer for Labels {
     }
 
     fn carried(&self) -> Carried {
-        // Refused, a settle can do none of the marked work: the restart once the core is back reads it all.
         if self.refused.is_some() {
             return Carried::default();
         }
@@ -992,7 +943,6 @@ impl Layer for Labels {
     }
 }
 
-/// The labels the window lays out, with the viewing slot, branch and hours they hold for.
 #[derive(Clone, Debug)]
 pub struct Stamped {
     pub labels: Arc<Display>,
@@ -1001,15 +951,12 @@ pub struct Stamped {
     pub hours: std::ops::RangeInclusive<Hour>,
 }
 
-/// [`drawn`], stamped with the side's branch and the hours they hold for; none while the side has
-/// no branch or the labels hold for no settled hour.
 pub fn stamped(side: &crate::playhead_host::MapSide) -> Option<Stamped> {
     let (labels, ours) = drawn(side)?;
     let layer = side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<Labels>())?;
     Some(Stamped { labels, ours, branch: side.branch()?, hours: layer.drawn_hours()? })
 }
 
-/// The labels the window lays out while the labels layer draws them, and the viewing slot they are for.
 pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<(Arc<Display>, u32)> {
     if !side.draws("labels") {
         return None;

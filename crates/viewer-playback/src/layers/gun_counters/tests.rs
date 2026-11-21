@@ -77,9 +77,6 @@ fn column(table: TableId, field: &str) -> usize {
     (0..64).find(|&column| table.field_name(column) == Some(field)).unwrap_or_else(|| panic!("{table:?}.{field}"))
 }
 
-/// The layer's tables written over `hours` hours from hour 0 by `hour`, every table complete
-/// unless `status` says otherwise; hour 0 names the strings `Railway_Gun` (0) and `Other` (1).
-/// Steps race ahead of the first compose, so tests change things from hour 200.
 fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -123,8 +120,6 @@ fn opaque<T: NativeValue>(value: T) -> Vec<u8> {
     bytes
 }
 
-/// A standing gun at `slot`, keyed `id`, of link `owner`, in `province`, naming `token`, at full
-/// strength over a positive railway level.
 fn gun(store: &mut Store, slot: u32, id: u64, owner: u32, province: u32, token: u32) {
     let table = TableId::RailwayGunCounterInputs;
     insert(store, table, slot, u128::from(id));
@@ -151,7 +146,6 @@ fn order(store: &mut Store, slot: u32, province: u32, units: &[u64]) {
     write(store, TableId::ProvinceUnitOrder, slot, "mixed", Cell::U64List(units));
 }
 
-/// `province`'s rail row at `slot`, sampled at `hour` with `pairs` neighbour pairs.
 fn rail(store: &mut Store, slot: u32, province: u32, hour: i32, pairs: i32) {
     if store.table(TableId::RailCooldowns.index()).unwrap().slot(u128::from(province)).is_none() {
         insert(store, TableId::RailCooldowns, slot, u128::from(province));
@@ -162,8 +156,6 @@ fn rail(store: &mut Store, slot: u32, province: u32, hour: i32, pairs: i32) {
     write(store, TableId::RailCooldowns, slot, "selection_hour", Cell::OptionalI32(Some(hour)));
 }
 
-/// Two linked countries; token 3 spelled `Railway_Gun`, token 4 `Other`; gun 500 in province 5
-/// (its array: 500), gun 501 in province 6 (its array: 600, 501).
 fn world(store: &mut Store) {
     for (slot, key) in [(0, 10u128), (1, 11)] {
         insert(store, TableId::CountryLinks, slot, key);
@@ -180,7 +172,6 @@ fn world(store: &mut Store) {
     order(store, 1, 6, &[600, 501]);
 }
 
-/// Four hours a step, a frame a second.
 fn quick() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
@@ -189,7 +180,6 @@ fn fog_off() -> View {
     View { fog: false, ..View::default() }
 }
 
-/// Viewed as country slot 0 with fog off: every gun seen; provinces 5 to 9 are land.
 fn layer_seeing_all() -> GunCounters {
     let subunits = TokenKeys::new(&["railway_gun".to_owned()]);
     let layer = GunCounters::new(Arc::new(Content::bare(subunits, |province| (5..10).contains(&province))));
@@ -224,8 +214,6 @@ fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &crate::playh
     panic!("the map side never reached what the test waits for");
 }
 
-/// Frames with the head held within three hours past `hour` until the mirrors are at or past it
-/// and nothing is composing.
 fn reach(side: &mut MapSide, hour: i32) {
     for _ in 0..50_000_000u64 {
         crate::layers::recorded::reads_landed(side);
@@ -241,7 +229,6 @@ fn reach(side: &mut MapSide, hour: i32) {
     panic!("the map side never reached hour {hour}");
 }
 
-/// Frames with the head at `hour` until the playhead has built steps to it, whatever is declared.
 fn hold(side: &mut MapSide, hour: i32) {
     while side.entry().playhead().newest().is_none_or(|newest| newest < hour) {
         let head = side.entry().playhead().newest().unwrap_or(0).min(hour);
@@ -255,7 +242,6 @@ fn layer(side: &MapSide) -> &GunCounters {
     side.parts().unwrap().1[0].any().downcast_ref::<GunCounters>().unwrap()
 }
 
-/// The layer settled whole equals itself composed anew from the same mirrors.
 fn settled_equals_composed(side: &mut MapSide) {
     side.settle_all().unwrap();
     let (mirrors, _) = side.parts().unwrap();
@@ -320,7 +306,6 @@ fn a_gun_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -342,7 +327,6 @@ fn a_gun_deleted_and_another_inserted_in_its_slot_updates_every_array_naming_the
             gun(store, 0, 502, 11, 7, 3);
             order(store, 2, 7, &[502]);
         }
-        // Samples of an hour long past: stale, so only the rows' changes mark.
         220 => rail(store, 0, 5, 0, 2),
         230 => rail(store, 1, 7, 0, 2),
         _ => {}
@@ -375,7 +359,6 @@ fn tables_not_wholly_recorded_draw_as_today_draws_them() {
         0 => world(store),
         200 => write(store, TableId::RailwayGunCounterInputs, 1, "subunit_token", Cell::U32(8)),
         210 => write(store, TableId::RailwayGunCounterInputs, 0, "subunit_token", Cell::U32(4)),
-        // Gun 500 keeps a current rail sample every hour from here.
         at if at >= 220 => {
             write(store, TableId::RailwayGunCounterInputs, 0, "subunit_token", Cell::U32(3));
             rail(store, 0, 5, at as i32, 2);
@@ -412,7 +395,6 @@ fn tables_not_wholly_recorded_draw_as_today_draws_them() {
 fn the_rail_sample_follows_the_hour_and_the_hour_touches_only_guns_on_a_rail_row() {
     let units = record(BLOCK, |_, _| Status::Complete, |at, store| match at {
         0 => world(store),
-        // Province 5's row sampled every hour until 219, then left: stale from 220.
         at @ 200..=219 => rail(store, 0, 5, at as i32, 0),
         _ => {}
     });
@@ -461,9 +443,6 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert!(layer(&side).published().is_none(), "and the window is given no gun to draw");
     settled_equals_composed(&mut side);
     side.set_view(fog_off()).unwrap();
-    // Its tables left the mirrors while hidden, and nobody else keeps them: shown again, they are
-    // read from the file, and it composes with its rows once they have landed (the frames give the
-    // reads their turn, `reads_landed`); the hours between show nothing of it.
     frames_until(&mut side, |side, frame| frame.steps > 0 && !side.composing() && side.parts().is_some_and(|(mirrors, _)| mirrors.get(TableId::RailwayGunCounterInputs).is_some()));
     settled_equals_composed(&mut side);
     assert_eq!(layer(&side).refused(), None);

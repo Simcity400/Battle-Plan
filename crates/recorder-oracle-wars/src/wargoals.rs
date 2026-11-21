@@ -1,4 +1,3 @@
-//! Compare complete goal inventories and justification serializer projections.
 use super::*;
 use installed_content_save::{Save, SavedDate};
 use replay_data::rows::WargoalTargetRow;
@@ -80,7 +79,6 @@ pub fn compare(
             .or_default()
             .push(row);
     }
-    // Every saved country participates, including complete empty inventories.
     for (tag, inventory) in &save.wargoal_countries {
         let mut actual = by_country.remove(tag).unwrap_or_default();
         actual.sort_by_key(|r| r.ordinal);
@@ -98,7 +96,6 @@ pub fn compare(
             actual.iter().map(|r| r.handle).collect::<Vec<_>>(),
             inventory.goals.clone(),
         );
-        // Empty object rosters can still have an available-reference roster.
         let raw = frame
             .complete::<tables::Countries>()?
             .iter()
@@ -170,7 +167,6 @@ pub fn compare(
                     expected.clone(),
                 );
             }
-            // The native serializer writes only dates beyond its initial-year gate.
             let expires = row.serialized_expiry();
             equal(
                 report,

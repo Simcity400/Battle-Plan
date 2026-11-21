@@ -13,10 +13,8 @@ use replay_data::rows::{
 const TEXTS: &[&[u8]] = &[b""];
 const FIRST: u64 = 0x0000_0011_0000_0003;
 const SECOND: u64 = 0x0000_0012_0000_0003;
-/// One dockyard's daily output at full power with no modifier: the powered naval speed.
 const OUTPUT: i64 = 250_000;
 
-/// Makes `table` hold exactly `rows` this hour, with `status`.
 fn fill<R: RowCodec>(store: &mut Store, hour: i32, table: TableId, rows: &[R], status: Status) {
     store.status(table.index(), status, true, Some(hour), true).unwrap();
     let keys: Vec<u128> = rows.iter().map(RowCodec::key).collect();
@@ -30,9 +28,6 @@ fn fill<R: RowCodec>(store: &mut Store, hour: i32, table: TableId, rows: &[R], s
     }
 }
 
-/// One hour of the inputs: dockyards in use by raw country, the modifiers' status, the base at
-/// province 5's allocation and queue (ordinal, ship), the ships (id, strength) of task force
-/// 1000, and the province that task force is in.
 #[derive(Clone)]
 struct World {
     used: Vec<(u32, i32)>,
@@ -41,7 +36,6 @@ struct World {
     queue: Vec<(u32, u64)>,
     ships: Vec<(u64, i64)>,
     province: u32,
-    /// The first side's casualties of a war of 10 on 20, when there is one.
     war: Option<i64>,
 }
 
@@ -111,11 +105,6 @@ fn part(value: Option<i64>) -> Option<Vec<Option<i64>>> {
     Some(vec![value, None, None, None])
 }
 
-/// The rate is dockyards in use times one dockyard's output; each base selects its queued ships
-/// in order up to its allocation, skipping a ship at full hit points without critical damage and
-/// a task force elsewhere, and the selection splits the rate by design while the allocations
-/// reconcile with the dockyards in use; a design no longer selected loses its row, and an
-/// unknown output leaves the rate not recorded.
 #[test]
 fn repair_rates_follow_the_bases_selections_and_say_what_is_not_known() {
     let mut hours = vec![World::default(); 5];
@@ -149,8 +138,6 @@ fn repair_rates_follow_the_bases_selections_and_say_what_is_not_known() {
     }
 }
 
-/// No dockyard in use is a recorded zero rate, split as nothing; a country whose dockyards row
-/// goes loses its rows.
 #[test]
 fn no_dockyard_in_use_is_a_zero_rate_and_a_gone_row_takes_its_rates() {
     let mut hours = vec![World::default(); 3];
@@ -174,8 +161,6 @@ fn no_dockyard_in_use_is_a_zero_rate_and_a_gone_row_takes_its_rates() {
     }
 }
 
-/// A resume takes the writer up from its tables alone: every hour after it equals a run that
-/// never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let mut hours = vec![World::default(); 6];
@@ -208,8 +193,6 @@ fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     }
 }
 
-/// A war's casualties moving, as they do every hour of a war, move nothing the ports rule reads,
-/// so no base is selected again; a war beginning or ending does.
 #[test]
 fn only_a_war_coming_or_going_moves_the_relations_the_bases_read() {
     let hours = [Some(10), Some(25), Some(25), None];

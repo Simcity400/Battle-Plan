@@ -33,29 +33,19 @@ impl SeekTarget {
 #[derive(Default)]
 pub(super) struct Pending {
     pub(super) actions: VecDeque<dashboard::protocol::MapAction>,
-    /// Select the Campaign map over the dashboard's maps.
     pub(super) campaign_map: bool,
     pub(super) bounds: Option<ViewBounds>,
     pub(super) visibility: Option<bool>,
-    /// The recording to open and the revision the page expects of it; none when the user
-    /// chose the file and the map reads the revision itself.
     pub(super) open: Option<(String, Option<String>)>,
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<Vec<DashboardMapView>>,
-    /// The controller message waiting for the viewer, merged with any sent after it
-    /// ([`GamepadMessage::merge`](dashboard::protocol::GamepadMessage::merge)).
     pub(super) gamepad: Option<dashboard::protocol::GamepadMessage>,
     pub(super) close: bool,
 }
 
-/// Map actions queued at most.
 pub(super) const MAX_QUEUED_ACTIONS: usize = 16;
 
 impl Pending {
-    /// Whether another map action fits. A full queue refuses with
-    /// [`MAP_CONTROLS_BUSY`], which the frontend may try again.
-    ///
-    /// [`MAP_CONTROLS_BUSY`]: dashboard::transport::MAP_CONTROLS_BUSY
     pub(super) fn action_room(&self) -> Result<(), String> {
         if self.actions.len() >= MAX_QUEUED_ACTIONS {
             return Err(format!(
@@ -94,8 +84,6 @@ impl Pending {
         if let Some(bounds) = self.bounds.take() {
             commands.push(bounds.command());
         }
-        // Analytics can open another recording without loading its map assets.
-        // Keep only the latest document request until Map becomes visible.
         if visible && let Some((path, revision)) = self.open.take() {
             commands.push(NativeCommand::Open { path, revision });
         }
@@ -149,8 +137,6 @@ impl Inner {
         }
     }
 
-    /// Commands may already have been sent when a map ends.
-    /// Retain unacknowledged requests, otherwise reopen its last displayed hour.
     pub(super) fn restore_commands(&mut self) {
         if self.active_dashboard {
             let views = self.dashboard_views.clone().unwrap_or_default();

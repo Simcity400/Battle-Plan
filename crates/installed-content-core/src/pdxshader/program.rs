@@ -1,7 +1,3 @@
-//! PdxShader declarations and DX11 source assembly.
-//! Includes contribute declarations in child-first order; the root supplies
-//! techniques and states, and entry lookup tries common declarations first.
-//! Raw code is content, never a table of recognised effect filenames.
 
 use std::collections::BTreeSet;
 
@@ -24,7 +20,6 @@ pub struct Source {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Structure {
     pub name: String,
-    /// Declarations and native `@ifdef`/`@else`/`@endif` translated to preprocessor lines.
     pub body: String,
     pub members: Vec<Member>,
 }
@@ -39,7 +34,6 @@ pub struct Member {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstantBuffer {
     pub index: u32,
-    /// The DX9 register; DX11 deliberately ignores it.
     pub legacy_register: u32,
     pub body: String,
 }
@@ -50,7 +44,6 @@ pub struct Entry {
     pub source: Source,
 }
 
-/// A lowered filter: an authored `None` becomes point filtering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Filter {
     Point,
@@ -58,8 +51,6 @@ pub enum Filter {
     Anisotropic,
 }
 
-/// The read sampler defaults are retained. The DX11 declaration only
-/// distinguishes `Type = cube`; `3d` and `shadow` declare 2D textures.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sampler {
     pub name: String,
@@ -70,7 +61,6 @@ pub struct Sampler {
     pub mip: Filter,
     pub u: Address,
     pub v: Address,
-    /// Lowered samplers always wrap W; D3D11's null sampler clamps it.
     pub w: Address,
     pub lod_bias: f32,
     pub min_lod: i32,
@@ -107,7 +97,6 @@ pub struct Technique {
     pub rasterizer: String,
 }
 
-/// State after the native reader applies repeated keys and its defaults.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State<T> {
     pub name: String,
@@ -116,11 +105,8 @@ pub struct State<T> {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Program {
-    /// The effect as the sprite names it, as text for messages (its bytes may not be UTF-8).
     pub effect: String,
-    /// SHA256 of the resolved root, ordered includes (including absent files) and backend header.
     pub identity: [u8; 32],
-    /// Every file the effect reads, by the bytes the content stack is asked for.
     pub dependencies: Vec<Vec<u8>>,
     pub warnings: Vec<String>,
     pub common: Declarations,
@@ -135,22 +121,14 @@ pub struct Program {
 
 #[derive(Default)]
 struct File {
-    /// Each `Includes` name as the file holds it: bytes, opened
-    /// under `gfx/FX/` as they are.
     includes: Vec<Vec<u8>>,
     program: Program,
 }
 
-/// Effect sources covered by the recorded policy are verified; any other source is named
-/// in `Program::warnings`, which diagnostics must retain as for other uncovered visual assets.
-/// `effect` is the sprite's name as its bytes, and every path is opened by its bytes
-/// ([`ResolvedLayers::read_uncovered_path`]), without a text conversion.
 pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
     read_layers(layers, effect, false)
 }
 
-/// Ordinary reporting reads retain uncovered source paths in the stack's shared diagnostics.
-/// The caller must retain `ResolvedLayers::report_uncovered_reads()` at its reporting boundary.
 pub fn read_reported(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
     let program = read_layers(layers, effect, true)?;
     for warning in &program.warnings {
@@ -203,9 +181,6 @@ fn read_layer_program(layers: &ResolvedLayers, effect: &[u8], reported: bool) ->
     Ok(program)
 }
 
-/// Resolves each complete file through the caller's recorded content stack. Missing includes
-/// contribute nothing after their diagnostic. A missing root is the empty
-/// lookup record; a present root still requires its backend header.
 pub fn read_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     effect: &[u8],
     read: &dyn Fn(&[u8]) -> Option<B>,
@@ -228,12 +203,10 @@ pub fn read_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::c
     Ok(program)
 }
 
-/// `gfx/FX/` and an `Includes` name, byte for byte.
 fn include(name: &[u8]) -> Vec<u8> {
     [b"gfx/FX/".as_slice(), name].concat()
 }
 
-/// A path or name as text, for messages and `#line` labels only.
 fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -248,7 +221,6 @@ fn read_with_inner<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate:
         seen: &mut BTreeSet<Vec<u8>>,
         out: &mut Vec<(Vec<u8>, File)>,
     ) -> Result<(), String> {
-        // Native child-first, once-only traversal; authored nesting never consumes the Rust stack.
         enum Visit {
             Open(Vec<u8>),
             Close(Vec<u8>, Box<File>),
@@ -283,8 +255,6 @@ fn read_with_inner<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate:
         let path = effect_path(effect);
         let mut files = Vec::new();
         let Some(bytes) = read(&path) else {
-            // A missing effect returns an empty technique record.
-            // Keep this distinct from malformed present source or a failed filesystem read.
             return Ok(Program {
                 effect: name.clone(),
                 warnings: vec![format!(
@@ -300,8 +270,6 @@ fn read_with_inner<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate:
         for name in &root.includes {
             walk(&include(name), read, &mut seen, &mut files)?;
         }
-        // States/effects belong to the root file. Only stage declarations are accumulated
-        // from includes.
         let mut program = Program {
             effect: name.clone(),
             techniques: root.program.techniques,
@@ -328,7 +296,6 @@ fn read_with_inner<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate:
         program.common.append(root.program.common);
         program.vertex.append(root.program.vertex);
         program.pixel.append(root.program.pixel);
-        // The backend header is loaded through the recorded content stack.
         let header = "gfx/FX/defines_hlsl_dx11.fxh";
         program.header = Source {
             path: header.into(),
@@ -343,15 +310,12 @@ fn read_with_inner<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate:
 }
 
 impl Program {
-    /// The first case-insensitive match wins.
     pub fn technique(&self, name: &str) -> Option<&Technique> {
         self.techniques
             .iter()
             .find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
-    /// The states a technique names: the root file's first case-insensitive match,
-    /// else the reader's defaults.
     pub fn blend(&self, technique: &Technique) -> super::BlendState {
         named(&self.blends, &technique.blend)
     }
@@ -372,10 +336,6 @@ impl Program {
         }
     }
 
-    /// The literal value of a `static const float` the effect's code declares once outside every
-    /// preprocessor conditional, or why it cannot be read: absent, declared more than once or
-    /// inside a conditional, named by a macro or by one of `defines` or a technique's, or not a
-    /// plain literal. No value that might not be the compiled one is returned.
     pub fn static_float(&self, name: &str, defines: &[String]) -> Result<f32, String> {
         let effect = &self.effect;
         let defined = |define: &String| {
@@ -391,7 +351,6 @@ impl Program {
         {
             return Err(format!("{effect}: {name} is defined for the compiler"));
         }
-        // Each stage compiles the header, the common code, then its own code, in that order.
         let mut found = Vec::new();
         let mut depth = 0;
         for source in std::iter::once(&self.header).chain(&self.common.code) {
@@ -418,7 +377,6 @@ impl Program {
         }
     }
 
-    /// Last common then pixel declaration owns each physical sampler.
     pub fn sampler(&self, index: u32) -> Option<&Sampler> {
         self.common
             .samplers
@@ -428,9 +386,6 @@ impl Program {
             .find(|s| s.index == index)
     }
 
-    /// DX11 source order: stage define, caller then technique defines, content header,
-    /// stage samplers, common/stage buffers, common/stage structures, common/stage code,
-    /// selected main. Entry lookup searches common entries before stage entries.
     pub fn hlsl(
         &self,
         technique: &Technique,
@@ -464,7 +419,6 @@ impl Program {
             name, index, cube, ..
         } in &decl.samplers
         {
-            // Only cube changes the texture declaration; `3d` stays Texture2D.
             let kind = if *cube { "Cube" } else { "2D" };
             out.push_str(&format!("Texture{kind} {name}_Texture : register(t{index});\nSamplerState {name}_Sampler : register(s{index});\n#define {name} CreateSampler{kind}({name}_Texture, {name}_Sampler)\n"));
         }
@@ -510,8 +464,6 @@ fn source(out: &mut String, source: &Source) {
     ));
 }
 
-// The shared native shader reader owns token walking, defaults, malformed keys and scanners.
-// This adapter emits the backend's source spelling and records source-file identity.
 fn parse(path: &str, bytes: impl Into<crate::content::Bytes>) -> Result<File, String> {
     fn text(path: &str, bytes: &[u8]) -> Result<String, String> {
         String::from_utf8(bytes.to_vec())
@@ -666,21 +618,13 @@ fn parse(path: &str, bytes: impl Into<crate::content::Bytes>) -> Result<File, St
     })
 }
 
-/// What [`scan_static_floats`] finds of a name.
 #[derive(Clone, Debug, PartialEq)]
 enum Found {
-    /// A `static const float` outside every conditional: its value, or its text when it is not a
-    /// plain literal.
     Declared(Result<f32, String>),
-    /// A `static const float` inside a conditional, whose value may not be the compiled one.
     Conditional,
-    /// A `#define` or `#undef` of the name.
     Macro,
 }
 
-/// Adds what uncommented `code` holds of `name` to `found`: each `static const float name =
-/// value;` and each macro of the name. `depth` is the conditional nesting `code` starts in and
-/// is left at the nesting it ends in.
 fn scan_static_floats(code: &str, name: &str, depth: &mut u32, found: &mut Vec<Found>) {
     let plain = uncommented(code);
     let (mut statement, mut conditional) = (String::new(), false);
@@ -701,7 +645,6 @@ fn scan_static_floats(code: &str, name: &str, depth: &mut u32, found: &mut Vec<F
                 Some("define" | "undef") if words.next() == Some(name) => found.push(Found::Macro),
                 _ => {}
             }
-            // A statement a conditional cuts through is conditional.
             let branch = matches!(
                 word,
                 Some("if" | "ifdef" | "ifndef" | "else" | "elif" | "endif")
@@ -723,7 +666,6 @@ fn scan_static_floats(code: &str, name: &str, depth: &mut u32, found: &mut Vec<F
     }
 }
 
-/// `statement` as a declaration `static const float name = value`, when it is one.
 fn static_float_in(statement: &str, name: &str, conditional: bool) -> Option<Found> {
     let spaced = statement.replace('=', " = ");
     let tokens: Vec<&str> = spaced.split_whitespace().collect();
@@ -738,7 +680,6 @@ fn static_float_in(statement: &str, name: &str, conditional: bool) -> Option<Fou
     Some(Found::Declared(literal.parse::<f32>().map_err(|_| text.clone())))
 }
 
-/// `code` without its comments, its lines kept.
 fn uncommented(code: &str) -> String {
     let mut plain = String::with_capacity(code.len());
     let mut rest = code;
@@ -809,7 +750,6 @@ mod tests {
         assert!(program(&[constants]).static_float("WATER", &[]).is_err());
         refusal(&[constants, constants], "more than once");
         refusal(&["static const float WATER_HEIGHT = 19.0f / 2.0f;"], "not a literal");
-        // A value a conditional or a macro may replace is never read, whichever branch compiles.
         let modded = "#ifdef MOD_WATER\nstatic const float WATER_HEIGHT = 12;\n#else\n\
             #define WATER_HEIGHT 9.5\n#endif\n";
         refusal(&[modded], "macro");
@@ -947,9 +887,6 @@ mod tests {
         assert!(error.contains("missing Pixel MainCode"));
     }
 
-    /// An effect name and an `Includes` name that are not UTF-8 open by their bytes.
-    /// The U+FFFD spelling of either finds nothing; text supplies only a diagnostic
-    /// label, leaving the path identity unchanged.
     #[test]
     fn effect_and_include_names_open_by_their_bytes() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -977,7 +914,6 @@ mod tests {
             .hlsl(&program.techniques[0], Stage::Pixel, &[])
             .unwrap();
         assert!(code.contains("\nINCLUDED\n"));
-        // The lossy spelling is another path.
         let missing = read_with("gfx/FX/\u{FFFD}.lua".as_bytes(), &read).unwrap();
         assert!(missing.techniques.is_empty());
         assert!(missing.warnings[0].contains("empty technique record"));

@@ -1,22 +1,3 @@
-//! Passive current-hour task-force counter ETA operands. Read stored stats,
-//! actual-location common modifiers and fuel; playback applies the searched
-//! departure's separate terrain adjustment. Speed/visibility modifier results
-//! are recorded before content distance scaling and halving. The reader never
-//! refreshes stored abilities or calls getters. Exile is serialized; the raw
-//! strategic-redeployment request is retained with unresolved task-force save law.
-//!
-//! One receiver packet shares selectors and ETA/risk keys. Original ledger
-//! contributors independently demand their limited keys and stat fields without
-//! own mission gates. Full risk borrows original speed, visibility and context
-//! attempts. All demanded keys use one common graph. Repeated ship runs and HQ
-//! entries retain occurrences; failure ends that receiver graph without retry.
-//! Later task forces are separate observations. Metadata/root failures last
-//! only this capture; array bounds and fixed stack storage bound traversal.
-//! The pointer-free packet remains separate from transient authenticated owner
-//! controls, consumed and cleared by shared acquisition before return. Combined
-//! visitors consume original gates/header attempts; risk borrowers consume the
-//! original nullable ledger certificate. Neither retries failures. World/hour
-//! admission and live validation belong to the caller.
 
 use crate::{
     Memory, ccountry, cfleet,
@@ -40,8 +21,6 @@ const KEYS: [u32; 5] = [
     keys::NAVY_WEATHER_PENALTY,
     keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
 ];
-// These common modifier queries use province zero and include local sources.
-// Detection retains its own selection.
 const RISK_KEYS: [u32; 5] = [
     keys::NAVAL_DETECTION,
     keys::NAVAL_COORDINATION,
@@ -51,21 +30,12 @@ const RISK_KEYS: [u32; 5] = [
 ];
 const TERM_COUNT: usize = 3 + RISK_KEYS.len();
 const VALUE_COUNT: usize = KEYS.len() + RISK_KEYS.len();
-/// Keys a [`HeldCensus`] holds at most.
 pub const CENSUS_KEYS: usize = VALUE_COUNT;
 
-/// A certified receiver's `(epoch, sequence)` certificate.
 pub type Certificate = (u64, u64);
 
-/// A census's identity: accumulator address, receiver and padded sorted keys.
 pub type CensusIdentity = (usize, usize, [u32; VALUE_COUNT]);
 
-/// One sorted-key census (the raw values of the requested keys) of a certified receiver's
-/// accumulator: a roster country's modifier tree (`ccountry::MODIFIER_ACCUMULATOR`) or a fleet
-/// leader's, which the naval tree family certifies, with the receiver's certificate taken before
-/// the census was read ([`Censuses::certify`]). A capture records every such census it used
-/// ([`Reader::with_censuses`]); a later capture is served one, without reading the accumulator,
-/// while the receiver's certificate is still that one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeldCensus {
     pub receiver: usize,
@@ -81,23 +51,11 @@ impl HeldCensus {
     }
 }
 
-/// The certified receivers' censuses a capture may be served, sorted by
-/// [`HeldCensus::identity`], the receivers' certifier, and the log of the
-/// certified censuses the capture used. `certify` gives a receiver's current
-/// certificate (registering it) or `None` when it cannot be certified; the
-/// reader asks it once per certified census, before serving or reading it.
 pub struct Censuses<'a> {
     pub held: &'a [HeldCensus],
     pub certify: &'a dyn Fn(usize) -> Option<Certificate>,
     pub log: &'a mut Vec<HeldCensus>,
 }
-/// The fields the graph reads of a task force's stat block (vtable, terrain
-/// class, speed and range), of its location province (vtable, strategic
-/// region), that region (vtable, template, id), the template (vtable,
-/// terrain), its fleet (vtable, leader reference) and that leader (vtable,
-/// handle): each object's gathered in one guarded call when the graph reaches
-/// it and served to its unchanged readers ([`cship::GatheredObject`]). A field
-/// a gather could not copy is read alone, as before.
 const STAT_FIELDS: [(usize, usize); 3] = [(0, 8), (8, 4), (0x1a8, 16)];
 const PROVINCE_FIELDS: [(usize, usize); 2] = [(0, 8), (crate::cprovince::STRATEGIC_REGION, 8)];
 const REGION_FIELDS: [(usize, usize); 3] = [
@@ -105,13 +63,10 @@ const REGION_FIELDS: [(usize, usize); 3] = [
     (crate::cstrategic_region::TEMPLATE, 8),
     (crate::cstrategic_region::ID, 4),
 ];
-/// The template's terrain pointer (in the template).
 const TEMPLATE_FIELDS: [(usize, usize); 2] = [(0, 8), (0x130, 8)];
 const FLEET_FIELDS: [(usize, usize); 2] = [(0, 8), (cfleet::LEADER, 8)];
 const LEADER_FIELDS: [(usize, usize); 1] = [(0, 16)];
 
-/// `pointer`'s `fields` in one guarded call; an incomplete gather is a
-/// bounded fallback ([`crate::batch_fallback`]).
 fn gather<const N: usize>(
     memory: &impl Memory,
     pointer: usize,
@@ -124,17 +79,10 @@ fn gather<const N: usize>(
     gathered
 }
 
-// Targeted spotting reads this separate current relation accumulator, apart
-// from fleet-leader terms.
 const TARGETED_INDEX: usize = VALUE_COUNT;
 const TARGETED_SPOTTING_KEY: u32 = keys::SPOTTING_CHANCE_AGAINST;
 type Terms = [Result<i64, &'static str>; TERM_COUNT];
 
-/// Immediate loan from the original ordered SHIPS walk. A numerical arena
-/// belongs to the caller and is prepared before this native callback. Native
-/// pointers may be consumed only during `ship`; they must not be retained.
-/// The sink borrows original ship-model attempts, including their failures,
-/// and may acquire only genuinely unattempted outside-census model leaves.
 pub trait OriginalRiskShips {
     fn begin(&mut self, receiver: u64, count: Result<i32, &'static str>);
     fn ship(
@@ -148,7 +96,6 @@ pub trait OriginalRiskShips {
     fn finish(&mut self, receiver: u64, original: Result<(), &'static str>);
 }
 
-/// Independent native results; no absent value is a numerical zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FreshEtaInputs {
     pub sample_hour: i32,
@@ -160,38 +107,25 @@ pub struct FreshEtaInputs {
     pub strategic_redeployment: Result<u8, &'static str>,
 }
 
-/// Independent same-pass mission-risk observation. An unreached native query
-/// is `Ok(None)`; a failed demand or reached source is never numerical zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissionRiskInputs {
     pub sample_hour: i32,
-    /// Raw fixed5 spotting result before adding unity.
     pub combined_detection: Result<Option<i64>, &'static str>,
-    /// Raw combined values without an added unity term.
     pub coordination: Result<Option<i64>, &'static str>,
     pub spotting_chance: Result<Option<i64>, &'static str>,
     pub night_spotting_chance: Result<Option<i64>, &'static str>,
     pub visibility: Result<Option<i64>, &'static str>,
-    /// ETA speed uses actual source, ignoring destination. Reuse original speed
-    /// attempts; playback adds source terrain and loaded content scale.
     pub speed_base: Result<Option<i64>, &'static str>,
     pub speed_modifier: Result<Option<i64>, &'static str>,
     pub terrain_class: Result<Option<i32>, &'static str>,
-    /// Original authenticated stat selector shared with ETA. Each stat leaf
-    /// retains its own failure, independently of the common modifier graph.
     pub stats: Result<Option<crate::transport_spotting_graph::TaskForceStats>, &'static str>,
     pub roster_owner: Result<Option<u32>, &'static str>,
     pub location: Result<Option<u32>, &'static str>,
     pub region: Result<Option<u32>, &'static str>,
     pub location_controller: Result<Option<u32>, &'static str>,
     pub detached_activity: Result<Option<i32>, &'static str>,
-    /// Original SHIPS header's signed native count. Zero proves the native
-    /// carrier loop is empty; a failed or unobserved header proves nothing.
     pub ship_count: Result<Option<i32>, &'static str>,
-    /// Original roster owner's relation toward actual-location controller.
     pub targeted_spotting_modifier: Result<Option<i64>, &'static str>,
-    /// Actual-source terrain speed. Negative stored class borrows the original
-    /// ordered SHIPS class observations.
     pub actual_terrain_speed: Result<Option<i64>, &'static str>,
 }
 
@@ -231,25 +165,18 @@ struct RiskSources {
     detached_activity: Result<i32, &'static str>,
 }
 
-/// Capture-local roots and fixed-key metadata, prepared without allocation.
 pub(super) struct Reader<'a, M: Memory> {
     memory: &'a M,
     base: usize,
     state: usize,
     countries: Option<Result<ccountry::Reader<'a, M>, &'static str>>,
     weather: Option<Result<cweather_manager::Reader<'a, M>, &'static str>>,
-    /// Terrain lookup's ocean fallback, content resolved once per capture.
     ocean: Option<usize>,
-    /// Complete sorted-key censuses by accumulator: task forces share their
-    /// country's, terrain classes', weather regions' and commanders' sources.
     censuses: Recent<(usize, [u32; VALUE_COUNT]), [Value; VALUE_COUNT], 32>,
-    /// Successful selectors and identities, valid only in this stopped capture.
     terrain_classes: Recent<(usize, u32), (usize, usize), 16>,
     locations: Recent<usize, (u32, usize), 16>,
-    /// Each location's region id and terrain, held for its world.
     world_locations: Option<&'a mut ctask_force::WorldHold<(u32, usize)>>,
     fleets: Recent<usize, Option<usize>, 16>,
-    /// Each fleet's navy leader, held under the fleet's and leader's certifiers.
     fleet_leaders: Option<(
         &'a mut ctask_force::FleetLeaders,
         ctask_force::Certify,
@@ -265,9 +192,7 @@ pub(super) struct Reader<'a, M: Memory> {
     speed_class: Result<i32, &'static str>,
     ship_observer: Option<&'a mut dyn OriginalRiskShips>,
     receiver_handle: Option<u64>,
-    /// Certified receivers' censuses: served and logged.
     certified: Option<Censuses<'a>>,
-    /// The current task force's stat block fields ([`STAT_FIELDS`]).
     stat_view: cship::GatheredObject<3>,
 }
 
@@ -291,8 +216,6 @@ fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(
     Ok(())
 }
 
-/// The roster ship fields both ship walks read: vtable, parent, class and
-/// handle (the risk loan's).
 const ROSTER_SHIP: [(usize, usize); 4] = [
     (0, 8),
     (cship::TASK_FORCE, 8),
@@ -311,9 +234,6 @@ enum RosterFields<'a> {
     Record(&'a [u8]),
 }
 
-/// A complete roster record, or the original per-object [`FieldBatch`] for
-/// an incomplete record's bounded fallback. Fields are consulted where the
-/// walk reads them; null or overflowing ships read each as [`field`] does.
 struct RosterShip<'a> {
     ship: usize,
     fields: RosterFields<'a>,
@@ -356,7 +276,6 @@ impl<'a> RosterShip<'a> {
         }
     }
 
-    /// The ship is a CShip of `task`'s roster: its vtable, then its parent.
     fn admit(
         &self,
         memory: &impl Memory,
@@ -419,9 +338,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
     }
 
-    /// Serve the certified receivers' censuses in `censuses.held` instead of
-    /// reading them while their certificates hold, and log every certified
-    /// census this capture uses under the certificate taken before it.
     pub(super) fn with_censuses(mut self, censuses: Censuses<'a>) -> Self {
         self.certified = Some(censuses);
         self
@@ -484,7 +400,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Ok(());
         }
         let pointer = ship.ship;
-        // The caller already admitted the exact SHIPS pointer and parent.
         let handle = ship.get::<u64>(self.memory, 3).and_then(|handle| {
             if handle >> 32 == 0 || handle as u32 != cship::HANDLE_TYPE {
                 Err("risk original ship full handle unsupported")
@@ -530,8 +445,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         definition.map(|definition| definition.effective(value.raw))
     }
 
-    /// The exact metadata::operands branch, with its shared global roots retained
-    /// as success/failure observations rather than reacquired for another key.
     fn definition(&mut self, index: usize) -> Result<Operands, &'static str> {
         let root = *self.metadata_root.get_or_insert_with(|| {
             let address = engine_sites::at(self.base, metadata::TABLE_RVA)
@@ -597,8 +510,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(values)
     }
 
-    /// One sorted accumulator census supplies all demanded keys. Reorder only
-    /// the fixed lookup requests, never the native ship/HQ occurrences.
     fn requested_values(
         &mut self,
         address: usize,
@@ -636,13 +547,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         for (key, &(value, _)) in sorted_keys.iter_mut().zip(&requests[..len]) {
             *key = value;
         }
-        // A census in this stopped capture reads the same accumulator alike.
         let sorted = match self.censuses.get(&(address, sorted_keys)) {
             Some(sorted) => sorted,
             None => {
-                // The receiver's certificate, taken before its census is
-                // served or read: a writer after it moves it, and the census
-                // is then neither served nor held again.
                 let certificate = match (receiver, self.certified.as_ref()) {
                     (Some(receiver), Some(certified)) => (certified.certify)(receiver),
                     _ => None,
@@ -695,7 +602,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(output)
     }
 
-    /// `country`'s modifier-tree census at `address`.
     fn country_values(
         &mut self,
         address: usize,
@@ -723,8 +629,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
-    /// [`Self::terms`] of a certified receiver's accumulator (a fleet
-    /// leader's modifier tree), served from its held census when given.
     fn certified_terms(
         &mut self,
         address: usize,
@@ -741,8 +645,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(self.effective_terms(values, eta, risk))
     }
 
-    /// Terrain-class selection picks the same records at each occurrence in
-    /// this stopped capture. A failed selection is never kept.
     fn terrain_class(
         &mut self,
         terrain: usize,
@@ -757,8 +659,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(found)
     }
 
-    /// The common modifier's authenticated location-to-terrain selector. Risk's
-    /// independent province leaves keep their original demand and order.
     fn location(&mut self, location: usize, risk: bool) -> Result<(u32, usize), &'static str> {
         let found = match self.locations.get(&location) {
             Some(found) => Some(found),
@@ -827,8 +727,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(found)
     }
 
-    /// The common modifier's default fleet leader. Successful identity
-    /// and absence observations are shared only within this capture.
     fn fleet_leader(&mut self, fleet: usize) -> Result<Option<usize>, &'static str> {
         if let Some(found) = self.fleets.get(&fleet) {
             return Ok(found);
@@ -839,7 +737,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             self.fleets.insert(fleet, found);
             return Ok(found);
         }
-        // Each certificate precedes the read of its object.
         let fleet_certificate = self
             .fleet_leaders
             .as_ref()
@@ -874,7 +771,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(leader)
     }
 
-    /// One common graph for requested native keys at the task's actual location.
     fn common(
         &mut self,
         task: usize,
@@ -1046,9 +942,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         };
         let memory = self.memory;
         let walked = {
-            // The ETA walk keeps these SHIPS occurrences in order. Validated
-            // pointer pages supply exact records; a stopped gather's suffix
-            // takes the original per-object path once (and is counted).
             let mut bytes = [0; ROSTER_STRIDE * crate::cpdx_array::POINTER_PAGE];
             let mut complete = [false; crate::cpdx_array::POINTER_PAGE];
             crate::cpdx_array::pointer_pages(
@@ -1209,7 +1102,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         } else {
             self.effective(4, country_values?[4])?
         };
-        // Loaded underway-replenishment range bonus.
         let address = engine_sites::at(self.base, Rva(0x033d_fbc0))
             .ok_or("fresh task-force define address overflow")?;
         let define =
@@ -1261,9 +1153,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
-    /// Current diplomacy matrix selected by original roster country and actual
-    /// location controller. Raw zero and readable unlinked references select
-    /// physical slot zero.
     fn targeted_spotting(
         &mut self,
         roster: ccountry::Country,
@@ -1292,7 +1181,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(stats)
     }
 
-    /// A stat block field, from the task force's [`STAT_FIELDS`] gather.
     fn stat<T: Raw>(&self, stats: usize, offset: usize) -> Result<T, &'static str> {
         field(&self.stat_view.memory(self.memory), stats, offset)
     }
@@ -1453,8 +1341,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
     }
 
-    /// An authenticated original demand survives a separate motion refusal.
-    /// It reads risk stats and speed once, without range or simulation flags.
     #[cfg(test)]
     pub(super) fn capture_mission_risk(
         &mut self,
@@ -1588,8 +1474,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             self.modifier_guard
                 .and(Err("fresh task-force fuel query unreached"))
         };
-        // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
-        // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
             self.deficit(fuel, Rva(0x033d_f978))
                 .map(|deficit| value.wrapping_add(deficit))

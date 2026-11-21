@@ -1,4 +1,3 @@
-//! supply trains save comparisons and recorded consistency checks.
 use installed_content_save as save;
 use installed_content_save::Save;
 #[cfg(test)]

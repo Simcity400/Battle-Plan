@@ -1,15 +1,3 @@
-//! Allocation-free notifications from the native writers of each country's
-//! available- and appointed-advisor arrays and character records and of the
-//! character manager's advisor idea-token set
-//! ([`engine_mutations::advisor_pool_mutations`]). A detour only notifies the shared
-//! watch registry ([`WatchRegistry`]) for the object its first argument
-//! names, counts its site and calls the original; it never changes game
-//! behaviour. remove_advisor_role names no pool, so it revokes
-//! every certificate. A carried AvailableAdvisors row also needs its
-//! character's certificate from [`crate::character_changes`], whose sites
-//! cover every write of a listed `CAdvisor`. Anything unobserved (disabled,
-//! poisoned, a refused registration, an epoch change, a running writer)
-//! makes the capture read afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -22,36 +10,22 @@ use std::{
 };
 
 const SITES: usize = MUTATIONS.len();
-/// The unappointment helper, the last site: country_input_changes
-/// patches it and forwards each call ([`forwarded_unappoint`]); this family
-/// patches the sites before it.
 const UNAPPOINT: usize = SITES - 1;
-/// This family's own patches are enabled.
 static PATCHED: AtomicBool = AtomicBool::new(false);
-/// country_input_changes' patch of the unappointment helper is enabled.
 static UNAPPOINT_FORWARDER: AtomicBool = AtomicBool::new(false);
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Per table (AvailableAdvisors pools, AdvisorTokens tables, HiredAdvisors
-/// and character record hours): reused and read; reused and read rows.
 static READS: [[AtomicU64; 4]; 4] = [const { [const { AtomicU64::new(0) }; 4] }; 4];
-/// Pools the latest complete capture walked, for off-thread sizing.
 static POOLS: AtomicUsize = AtomicUsize::new(0);
 
-/// The carried tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
     AvailableAdvisors,
     AdvisorTokens,
-    /// Counted per hour: a quiet hour is reused, any other read.
     HiredAdvisors,
-    /// CountryCharacters and CountryRetiredCharacters, counted per hour as
-    /// HiredAdvisors.
     CharacterRecords,
 }
 
-/// One observation domain: the watched pools and token sets and each writer
-/// site's calls.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
@@ -73,9 +47,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `object`; `None` names none and revokes every
-    /// certificate. Dropping the guard notifies its return.
     pub fn notify(&self, object: Option<usize>, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         match object {
@@ -87,7 +58,6 @@ impl Watches {
         }
     }
 
-    /// An enabled domain with a table for `objects` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(objects: usize) -> Self {
         let watches = Self::new();
@@ -97,7 +67,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
@@ -109,21 +78,12 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications: this family's objects and the
-/// characters of listed advisors.
 pub trait Changes: Sync {
-    /// `(epoch, sequence)` of a pool or token set, registering it; `None`
-    /// when it cannot be observed.
     fn sequence(&self, object: usize) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of a character in the character domain,
-    /// registering it; `None` when it cannot be observed.
     fn character(&self, character: usize) -> Option<(u64, u64)>;
-    /// The character domain's `(epoch, revision)` with no writer running;
-    /// equal values around a read prove no character writer ran during it.
     fn characters_quiet(&self) -> Option<(u64, u64)>;
 }
 
-/// The hooks' domains.
 pub struct Observer;
 impl Changes for Observer {
     fn sequence(&self, object: usize) -> Option<(u64, u64)> {
@@ -137,7 +97,6 @@ impl Changes for Observer {
     }
 }
 
-/// A test domain over its own pool and character watches.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Pair<'a> {
     pub pools: &'a Watches,
@@ -163,29 +122,18 @@ fn receiver(receiver: Receiver, first: usize) -> Option<usize> {
     }
 }
 
-/// The domain's quiet token: `(epoch, revision)` while observed with no
-/// writer running. Every notification of any pool, appointed list or token
-/// set moves it, so equal tokens prove no observed writer ran between them.
 pub fn quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the pools the latest capture
-/// walked and the token set. Nothing is offered before a capture walked
-/// them: a later larger table waits for an invalidating hour, while the
-/// first installs at once.
 pub fn presize() {
     let pools = POOLS.load(Ordering::Relaxed);
     if pools != 0 {
@@ -193,12 +141,10 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's pools or token tables, and rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
@@ -207,8 +153,6 @@ pub struct Counts {
     pub read_rows: u64,
 }
 
-/// A worker publishes one capture's counts and, when it walked every pool,
-/// their number for sizing.
 pub fn record(table: Table, counts: &Counts, pools: Option<usize>) {
     for (target, value) in READS[table as usize].iter().zip([
         counts.reused,
@@ -228,14 +172,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; both tables then
-    /// read afresh.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled; both tables then"]
+    #[doc = " read afresh."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "advisor_pool_changes")
@@ -280,10 +224,6 @@ impl Hooks {
                 false,
             );
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -291,11 +231,7 @@ impl Hooks {
         }
         PATCHED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         observe();
-        // The roster family observes the manager constructor through this
-        // patch.
         crate::roster_changes::set_manager_forward(enabled && !self.hooks.is_empty());
-        // The country counter inputs observe the pool constructor and destructor, which replace a
-        // country's characters pointer, through this patch.
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::AdvisorPool,
             enabled && !self.hooks.is_empty(),
@@ -308,48 +244,30 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-/// Observe while this family's patches and the unappointment forwarder's are
-/// enabled. Enabling starts a new epoch, so nothing held from before a gap
-/// certifies.
 fn observe() {
     WATCHES
         .registry
         .set_enabled(PATCHED.load(Ordering::SeqCst) && UNAPPOINT_FORWARDER.load(Ordering::SeqCst));
 }
 
-/// country_input_changes' unappointment patch enabled or disabled; outside
-/// attach and detach only. It disables before its patch goes and enables
-/// after it is in place.
 pub fn unappoint_forwarder(enabled: bool) {
     UNAPPOINT_FORWARDER.store(enabled, Ordering::SeqCst);
     observe();
 }
 
-/// Hook path, allocation-free: the forwarded unappointment helper
-/// `unappoint advisor(pool, advisor, flag)` is about to change `pool`'s appointed
-/// advisors. The patching family's detour holds the guard across the
-/// original.
 pub fn forwarded_unappoint(pool: usize) -> Notification<'static> {
     WATCHES.notify(receiver(MUTATIONS[UNAPPOINT].1, pool), UNAPPOINT)
 }
 
-// Each site takes at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original; the first names the object as
-// its [`Receiver`] says. The notification covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($first:ident $(, $arg:ident)*)) => {
         unsafe extern "system" fn $name($first: usize $(, $arg: usize)*) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorPoolChanges);
             let _notification = WATCHES.notify(receiver(MUTATIONS[$site].1, $first), $site);
-            // The pool constructor and destructor also replace a country's The characters pointer,
-            // which the country counter inputs observe.
             let _inputs = crate::country_input_changes::forwarded_pool($site);
             let original: unsafe extern "system" fn($first: usize $(, $arg: usize)*) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
@@ -357,30 +275,19 @@ macro_rules! callback {
         }
     };
 }
-// Update advisor status (pool, status record).
 callback!(update_advisor_status, 0, (pool, record));
-// Add advisor (pool, character key, template).
 callback!(add_advisor, 1, (pool, key, template));
-// Retire character (pool, character, record, flags) -> bool.
 callback!(retire_character, 2, (pool, character, record, flags));
-// Transfer characters (source pool, list, destination party).
 callback!(transfer_characters, 3, (pool, list, party));
-// Remove advisor role (effect, scope): names no pool.
 callback!(remove_advisor_role, 4, (effect, scope));
-// Country character pool construction(pool, country) -> pool.
 callback!(construct_pool, 5, (pool, country));
-// Country character pool destruction(pool).
 callback!(destroy_pool, 6, (pool));
-// Update advisor tokens (manager, character, erase list, insert list).
 callback!(
     update_advisor_tokens,
     7,
     (manager, character, erase, insert)
 );
-// Clear character manager (manager, flags).
 callback!(clear_character_manager, 8, (manager, flags));
-// Character manager construction(manager) -> manager. It also
-// builds a new roster, which the roster family observes through this patch.
 unsafe extern "system" fn construct_character_manager(manager: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorPoolChanges);
     let _roster = crate::roster_changes::manager_constructed();
@@ -389,11 +296,7 @@ unsafe extern "system" fn construct_character_manager(manager: usize) -> usize {
         unsafe { std::mem::transmute(ORIGINAL[9].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(manager) })
 }
-// Character manager destruction(manager, flags) -> manager.
 callback!(destroy_character_manager, 10, (manager, flags));
-// Insert appointed advisor (pool, advisor).
 callback!(insert_appointed_advisor, 11, (pool, advisor));
-// Character registration (pool, character, flag).
 callback!(register_character, 12, (pool, character, flag));
-// Civil-war retired-record copy (destination pool, source pool).
 callback!(copy_retired_characters, 13, (pool, source));

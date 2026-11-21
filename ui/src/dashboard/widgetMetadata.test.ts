@@ -8,7 +8,6 @@ import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 import { syntheticDashboardSource } from './source.fixture.ts';
 
 test('widget metadata preserves world controls and content-choice title policies', async () => {
-  // Only UI leaves are replaced; metadata, frame, settings and picker decisions are production code.
   const fixtures: Record<string, string> = {
     '/components/Popover.tsx': `export const usePopover = () => ({ trigger: null, open: true, close() {} });
       export const Popover = ({ children }) => children; export const PopoverBody = ({ children }) => children();`,
@@ -67,7 +66,6 @@ test('widget metadata preserves world controls and content-choice title policies
     assert.match(grid(), /World history: follow playback/);
     template.widgets = [country];
     assert.match(grid(), /COUNTRY_CHIP/);
-    // In a browser the body waits for its turn to mount, behind the loading state widgets show.
     Object.defineProperty(globalThis, 'IntersectionObserver', { configurable: true, value: class {} });
     try {
       const waiting = grid();

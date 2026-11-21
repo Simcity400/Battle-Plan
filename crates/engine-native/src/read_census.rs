@@ -1,11 +1,3 @@
-//! Deterministic guarded-read census used by pure-function cost proxies.
-//!
-//! A walker's game-thread cost is dominated by how many times it crosses the
-//! guarded copy boundary and how many bytes it pulls out of the foreign heap.
-//! Wrapping any `Memory` in this counter makes both quantities exact and
-//! reproducible in ordinary `cargo test` assertions, with no timing, no
-//! sampling and no framework. It records observations only; every returned
-//! value, completed-prefix count and failure position comes from the source.
 
 use std::cell::Cell;
 
@@ -14,7 +6,6 @@ use crate::{
     memory::{RecordLayout, RecordSources},
 };
 
-/// Counts boundary crossings, copied spans and copied bytes for one walk.
 pub struct ReadCensus<'a, M> {
     source: &'a M,
     calls: Cell<usize>,
@@ -32,18 +23,14 @@ impl<'a, M: Memory> ReadCensus<'a, M> {
         }
     }
 
-    /// Guarded boundary crossings: one per `copy`, `copy_scattered` or
-    /// `copy_records` invocation that reaches the source.
     pub fn calls(&self) -> usize {
         self.calls.get()
     }
 
-    /// Individual nonempty spans copied out of the source.
     pub fn spans(&self) -> usize {
         self.spans.get()
     }
 
-    /// Bytes copied out of the source, counting only completed spans.
     pub fn bytes(&self) -> usize {
         self.bytes.get()
     }

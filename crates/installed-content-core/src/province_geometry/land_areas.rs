@@ -1,8 +1,3 @@
-//! Each province's land area in raster cells, counted while the province raster streams in a
-//! piece at a time. Colours resolve to records exactly as the engine's map does
-//! ([`super::engine_map_checked`]): an unknown colour invents a record, narrowed to u16, and the
-//! same rasters are refused. No per-pixel map is held: what is held is bounded by the record
-//! domain (u16 ids) and the raster's width, never its height.
 
 use super::{RasterLayout, color_key, raster_layout};
 use crate::{
@@ -11,28 +6,19 @@ use crate::{
 };
 use std::{collections::HashMap, io};
 
-/// Record ids narrow to u16, so every per-record count fits this many.
 const RECORDS: usize = 1 << 16;
 
-/// A raster's land cells counted so far, by record.
 pub struct LandAreas {
     color_to_id: HashMap<u32, u32>,
     land: Vec<bool>,
-    /// Records, invented ones included.
     count: u32,
-    /// The header's bytes until it is read.
     head: Vec<u8>,
     layout: Option<RasterLayout>,
-    /// File bytes taken.
     received: usize,
-    /// Decoded storage from its index `base`; `decoded` bytes of it made so far.
     window: Vec<u8>,
     base: usize,
     decoded: usize,
-    /// The next file row to resolve.
     row: usize,
-    /// Per record: its cells, its raster runs, and whether a run keeps a length once narrowed to
-    /// u16. A raster's rows and pixels are bounded by its i32 allocation, so u32 counts hold.
     cells: Vec<u32>,
     runs: Vec<u32>,
     kept: Vec<bool>,
@@ -40,8 +26,6 @@ pub struct LandAreas {
 }
 
 impl LandAreas {
-    /// Records in `definition.csv` position order; a record whose id is not its position is
-    /// refused, as map area keys records by id.
     pub fn new(definition_csv: &[u8]) -> io::Result<Self> {
         let rows = definition_rows(definition_csv)?;
         if rows.iter().enumerate().any(|(index, row)| usize::from(row.id) != index) {
@@ -54,7 +38,6 @@ impl LandAreas {
             if ordinal != 0 && row.kind() == Some(ProvinceKind::Land) {
                 land[ordinal] = true;
             }
-            // The lookup tests the stored id, not presence: record zero is a miss.
             let [red, green, blue] = row.rgb;
             if row.id != 0 {
                 color_to_id.insert(color_key(red, green, blue), u32::from(row.id));
@@ -78,7 +61,6 @@ impl LandAreas {
         })
     }
 
-    /// The raster's next bytes, in file order.
     pub fn piece(&mut self, mut bytes: &[u8]) -> io::Result<()> {
         if self.layout.is_none() {
             let take = (54 - self.head.len()).min(bytes.len());
@@ -88,15 +70,12 @@ impl LandAreas {
                 return Ok(());
             }
             self.layout = Some(raster_layout(&self.head)?);
-            // The pixels may start inside the header (bfOffBits below 54).
             let head = std::mem::take(&mut self.head);
             self.feed(&head)?;
         }
         self.feed(bytes)
     }
 
-    /// Takes `bytes` at the file's next offset into the decoded storage: each row before the last
-    /// at its advance, the last whole, the bytes before the pixels and past the rows skipped.
     fn feed(&mut self, bytes: &[u8]) -> io::Result<()> {
         let layout = self.layout.expect("the header was read");
         let mut at = 0;
@@ -109,7 +88,6 @@ impl LandAreas {
                 continue;
             }
             let offset = self.received - layout.pixels;
-            // Rows of no bytes (1bpp under five pixels wide) decode nothing: every read refused.
             if layout.padded == 0 || offset / layout.padded >= layout.height {
                 self.received += left;
                 break;
@@ -129,8 +107,6 @@ impl LandAreas {
         Ok(())
     }
 
-    /// Resolves every row whose pixels' bytes the decoded storage holds; with `last`, every row
-    /// left, one reading past the storage refused.
     fn resolve(&mut self, last: bool) -> io::Result<()> {
         let layout = self.layout.expect("the header was read");
         let (width, components) = (layout.width, layout.components);
@@ -175,7 +151,6 @@ impl LandAreas {
         self.kept[id as usize] |= length as u16 != 0;
     }
 
-    /// The record a colour resolves to: an unknown one invents the next, as land.
     fn id(&mut self, colour: u32) -> io::Result<u32> {
         match self.color_to_id.get(&colour) {
             Some(&id) if id != 0 => Ok(id),
@@ -189,8 +164,6 @@ impl LandAreas {
         }
     }
 
-    /// Every record's land cells, by record (zero for unpainted land and for water), once the
-    /// whole raster was taken.
     pub fn finish(mut self) -> io::Result<Vec<i64>> {
         let Some(layout) = self.layout else {
             return raster_layout(&self.head).map(|_| Vec::new());
@@ -218,7 +191,6 @@ impl LandAreas {
         Ok(land)
     }
 
-    /// The bytes it holds, about.
     pub fn held(&self) -> usize {
         self.color_to_id.capacity() * 16 + self.land.capacity() + self.kept.capacity() + (self.cells.capacity() + self.runs.capacity()) * 4 + self.window.capacity() + self.head.capacity()
     }

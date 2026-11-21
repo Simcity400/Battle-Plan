@@ -1,67 +1,28 @@
-//! Peace-conference identity and turn state from the game-state roster.
-//! The roster reader requires neither window refresh nor a game resolver call.
-//! It records resident conferences, not participants, bids or settlement actions.
-//!
-//! Finalization applies outcomes, marks the conference finalized and destroys
-//! its history tree, bidding turns and actions. Subsequent roster cleanup deletes
-//! the conference and its participant and aggregate storage. Creation can apply
-//! and finalize a civil-war or zero-factor conference immediately; a complete
-//! conference may therefore occur between hourly samples.
-//!
-//! [`peace_finalizer_site`] supplies the pre-destruction observation used by
-//! [`peace_settlement`]. History is ordered by country, turn and action; statuses
-//! three and four are excluded from settlement. Reduced outcomes and automatic
-//! transfers are retained separately because accepted bids do not establish
-//! one state transfer per action. An empty action history can still accompany
-//! territory transferred without a bid.
-//!
-//! Resident-conference saves retain participants, current bids and reduced outcomes
-//! but finalization has already destroyed original action history. A completed
-//! save cannot validate that original action list. A pre-finalization fresh save
-//! can compare bid operands at its sampled hour; it cannot certify the eventual
-//! deal, raw reference bits, finalized hour or a war identity. Stored owner changes
-//! cannot recover a missed conference or unambiguously attribute overlapping
-//! settlements and other effects. Conference IDs are distinct from war IDs, and
-//! messages do not establish a war name.
 
 use crate::{Memory, cgame_state, cpdx_array::Array, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// Conference primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_da28);
-/// Conference full reference, two u32 words.
 pub const REFERENCE: usize = 0x08;
-/// Signed i32 turn, incremented live and rebuilt from saved history.
 pub const CURRENT_TURN: usize = 0xd8;
-/// Finalized byte set before history destruction and roster removal.
 pub const FINALIZED: usize = 0xdd;
 
-/// Raw country arrays used during settlement.
 pub const WINNERS: usize = 0x60;
 pub const LOSERS: usize = 0x78;
-/// Owned participant arrays in settlement-application order.
 pub const WINNER_PARTICIPANTS: usize = 0xf8;
 pub const LIBERATED_PARTICIPANTS: usize = 0x128;
 pub const SUBJECT_PARTICIPANTS: usize = 0x140;
 pub const GOVERNMENT_PARTICIPANTS: usize = 0x158;
-/// Country-keyed history header, sentinel pointer followed by u64 size.
 pub const HISTORY: usize = 0x1f8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native reference, low u32 type and high u32 id.
     pub id: u64,
-    /// Position in the roster; ordinal zero is processed first.
     pub ordinal: u32,
     pub current_turn: i32,
-    /// Native byte, preserved without conversion to bool.
     pub finalized: u8,
 }
 
-/// Copies resident conferences, including any queued behind the first one, into
-/// caller-owned rows. A readable zero-length roster is empty; an unreadable or
-/// unauthenticated nonzero entry is unavailable. No UI state or pointers enter
-/// the rows. Capacity stops the walk and reports every remaining roster entry.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -88,7 +49,6 @@ pub fn walk_buffer(
         }
         let expected_vtable =
             engine_sites::at(base, VTABLE_RVA).ok_or("peace conference module address overflow")?;
-        // Roster append copies pointer slots using the signed capacity/count header.
         let header = game_state
             .checked_add(cgame_state::PEACE_CONFERENCES_DATA)
             .ok_or("peace conference roster address overflow")?;
@@ -109,8 +69,6 @@ pub fn walk_buffer(
                     .checked_add(offset)
                     .ok_or("peace conference object address overflow")
             };
-            // Vtable and handle are adjacent. Authenticate before reading
-            // non-header fields; no unrelated object bytes are copied.
             let identity =
                 read::<[u8; 16]>(memory, pointer).ok_or("peace conference identity unreadable")?;
             if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected_vtable as u64 {
@@ -136,8 +94,6 @@ pub fn walk_buffer(
                 finalized: finalized[0],
             };
         }
-        // An in-place sort is bounded by caller capacity; native ordering is
-        // retained separately in ordinal and duplicate handles cannot alias rows.
         output[..len].sort_unstable_by_key(|row| row.id);
         if output[..len]
             .windows(2)
@@ -242,7 +198,6 @@ mod tests {
     #[test]
     fn the_count_probe_reports_unread_conferences_without_touching_their_fields() {
         let bytes = fixture();
-        // The second object is inaccessible; the count probe reads no conference.
         let bytes = &bytes[..SECOND - GAME];
         assert_eq!(
             walk_buffer(

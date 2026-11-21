@@ -1,9 +1,3 @@
-//! The reader's numeric loops: one per model and cell width, monomorphic, over a stream's track
-//! state held as arrays. Bytes are read from a frame followed by zero bytes, eight at a time; a
-//! read that runs off its track or past the frame is noted as damage and reported after the loop,
-//! never as a result per event. A track's cell is written once a step, at the width the column
-//! holds; a value that does not fit stops the loop at that track, the column widens, and the loop
-//! takes the track up again from its start.
 
 use super::{GROUP, NEVER, Tracks};
 use crate::{
@@ -13,7 +7,6 @@ use crate::{
 };
 use std::io;
 
-/// A varint of up to 128 bits, a byte at a time; past the bytes or 128 bits is damage.
 #[inline(never)]
 fn long(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u128 {
     let (mut value, mut shift) = (0_u128, 0_u32);
@@ -35,7 +28,6 @@ fn long(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u128 {
     }
 }
 
-/// A varint of three to eight bytes in the eight-byte window `word`: its value and length.
 #[inline(always)]
 fn window(word: [u8; 8]) -> Option<(u64, usize)> {
     let word = u64::from_le_bytes(word);
@@ -51,7 +43,6 @@ fn window(word: [u8; 8]) -> Option<(u64, usize)> {
     Some((value, length))
 }
 
-/// A varint of up to 64 bits.
 #[inline(always)]
 pub(super) fn varint(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u64 {
     if let Some(word) = bytes.get(*at..*at + 8) {
@@ -73,8 +64,6 @@ pub(super) fn varint(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u64 {
     value as u64
 }
 
-/// Where the `count` varints from `at` end, 64 bytes at a time, then eight; none when they pass
-/// `end`.
 pub(super) fn skip(bytes: &[u8], mut at: usize, end: usize, mut count: usize) -> Option<usize> {
     let end = end.min(bytes.len());
     const HIGH: u64 = 0x8080_8080_8080_8080;
@@ -108,7 +97,6 @@ pub(super) fn skip(bytes: &[u8], mut at: usize, end: usize, mut count: usize) ->
     Some(at)
 }
 
-/// Hours between two events: more than a block's is damage.
 #[inline(always)]
 pub(super) fn hours(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u32 {
     let gap = varint(bytes, at, damaged);
@@ -116,8 +104,6 @@ pub(super) fn hours(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> u32 {
     gap.min(u64::from(BLOCK) + 1) as u32
 }
 
-/// A numeric event's code as the code past its low bit and that bit: `(zigzag, 0)` for a
-/// number, `(0, 1)` missing, `(1, 1)` unrecorded.
 #[inline(always)]
 pub(super) fn code(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> (u64, u64) {
     if let Some(word) = bytes.get(*at..*at + 8) {
@@ -140,14 +126,11 @@ pub(super) fn code(bytes: &[u8], at: &mut usize, damaged: &mut bool) -> (u64, u6
     ((value >> 1) as u64, (value & 1) as u64)
 }
 
-/// A column's cells at one width, read and written by slot.
 pub(super) trait Cells {
     fn get(&self, slot: usize) -> u64;
-    /// Writes `value` when it fits the width; false when it does not.
     fn put(&mut self, slot: usize, value: u64) -> bool;
 }
 
-/// A column every cell of which is zero (width 0).
 struct Zero;
 
 impl Cells for Zero {
@@ -190,7 +173,6 @@ width!(Two, u16, i16, 2);
 width!(Four, u32, i32, 4);
 width!(Eight, u64, i64, 8);
 
-/// A bool column: any value but zero is true.
 struct Truth<'a>(&'a mut Flags);
 
 impl Cells for Truth<'_> {
@@ -206,7 +188,6 @@ impl Cells for Truth<'_> {
     }
 }
 
-/// A text column's ids, which hold 32 bits.
 struct Text<C>(C);
 
 impl<C: Cells> Cells for Text<C> {
@@ -221,55 +202,41 @@ impl<C: Cells> Cells for Text<C> {
     }
 }
 
-/// Which tracks a pass moves and to which hour.
 pub(super) struct Pass<'a> {
-    /// The padded frame the stream lies in.
     pub(super) bytes: &'a [u8],
     pub(super) from: u16,
     pub(super) to: u16,
-    /// Tracks of rows the step inserted (born at `from` or later), or the others.
     pub(super) inserted: bool,
-    /// Each slot's insert hour in the part under way.
     pub(super) born: &'a [u16],
 }
 
-/// What a pass applied, the tracks it looked at, and whether it met damage.
 #[derive(Default)]
 pub(super) struct Count {
     pub(super) events: u64,
-    /// Stream bytes the events applied took.
     pub(super) bytes: u64,
     pub(super) scanned: u64,
     pub(super) visited: u64,
     pub(super) damaged: bool,
 }
 
-/// Where a pass stopped when it did not finish: the track it stopped at, and why.
 enum Stop {
     Done,
-    /// The track's value does not fit the column's width.
     Widen(usize, u64),
-    /// The track holds a missing or unrecorded event and the loop kept no bits.
     Bits(usize),
-    /// The track leaves a cell missing in a column whose cells are never missing.
     Missing,
 }
 
-/// The presence and unrecorded bits of a column, for the loops that keep them.
 struct Bits<'a> {
     present: Option<&'a mut Flags>,
     unrecorded: &'a mut Option<Flags>,
 }
 
-/// The step's state of one group's loop besides the cells.
 struct Run<'a, 'p> {
     pass: &'p Pass<'a>,
     live: &'p Flags,
     slots: usize,
 }
 
-/// Moves a pass's tracks of one group of a numeric stream of `model`: each due track's events
-/// through hour `pass.to`, its cell written once.
 #[allow(clippy::too_many_arguments, reason = "the loop's one entry, every part given apart so none goes through a context")]
 pub(super) fn advance(model: u8, tracks: &mut Tracks, born_group: bool, pass: &Pass<'_>, numbers: Numbers<'_>, written: &mut Vec<u32>, count: &mut Count) -> io::Result<()> {
     if tracks.slot.is_empty() || tracks.due > pass.to {
@@ -343,8 +310,6 @@ fn models<C: Cells>(model: u8, full: bool, born: bool, cells: &mut C, tracks: &m
     }
 }
 
-/// A track's cell before the step: its value and whether it holds one (0), is missing (1) or is
-/// unrecorded (2).
 #[inline(always)]
 fn held<C: Cells, const BITS: bool>(cells: &C, bits: &Bits<'_>, slot: usize) -> (u64, u8) {
     if !BITS {
@@ -359,7 +324,6 @@ fn held<C: Cells, const BITS: bool>(cells: &C, bits: &Bits<'_>, slot: usize) -> 
     }
 }
 
-/// Writes a track's cell as the step left it; why not, when it could not.
 #[inline(always)]
 fn commit<C: Cells, const BITS: bool>(cells: &mut C, bits: &mut Bits<'_>, slot: usize, value: u64, state: u8, index: usize) -> Option<Stop> {
     if !BITS {
@@ -390,9 +354,6 @@ fn commit<C: Cells, const BITS: bool>(cells: &mut C, bits: &mut Bits<'_>, slot: 
     None
 }
 
-/// Whether track `index` of a group of tracks born in the part moves in this pass, and whether
-/// its row is gone again (inserted and deleted within the step: its events move, its cell
-/// stays). `None` when the pass leaves it.
 #[inline(always)]
 fn born_track(tracks: &Tracks, index: usize, run: &Run<'_, '_>, damaged: &mut bool) -> Option<bool> {
     let born = tracks.born[index];
@@ -408,7 +369,6 @@ fn born_track(tracks: &Tracks, index: usize, run: &Run<'_, '_>, damaged: &mut bo
     Some(now && (!run.live.get(slot) || run.pass.born.get(slot as usize).copied() != Some(born)))
 }
 
-/// A loop's counts, kept in registers while it runs, given back as it leaves.
 macro_rules! leave {
     ($count:expr, $damaged:expr, $events:expr, $bytes:expr, $scanned:expr, $visited:expr, $stop:expr) => {{
         $count.damaged |= $damaged;
@@ -420,7 +380,6 @@ macro_rules! leave {
     }};
 }
 
-/// Models of differences (0), raw values (2) and second differences (3).
 #[inline(never)]
 fn plain<const MODEL: u8, C: Cells, const BITS: bool, const BORN: bool>(
     cells: &mut C,
@@ -434,7 +393,6 @@ fn plain<const MODEL: u8, C: Cells, const BITS: bool, const BORN: bool>(
     let bytes = run.pass.bytes;
     let to = u32::from(run.pass.to);
     let (mut damaged, mut all_events, mut took, mut scanned, mut visited) = (false, 0_u64, 0_u64, 0_u64, 0_u64);
-    // Tracks go in groups of [`GROUP`]: a group whose earliest event lies past the step is passed over.
     let mut group = start / GROUP;
     while group * GROUP < tracks.slot.len() {
         let begin = group * GROUP;
@@ -527,7 +485,6 @@ fn plain<const MODEL: u8, C: Cells, const BITS: bool, const BORN: bool>(
     leave!(count, damaged, all_events, took, scanned, visited, Stop::Done)
 }
 
-/// The model of runs: each entry an event's hours and code and how many more times both repeat.
 #[inline(never)]
 fn runs<C: Cells, const BITS: bool, const BORN: bool>(
     cells: &mut C,
@@ -541,7 +498,6 @@ fn runs<C: Cells, const BITS: bool, const BORN: bool>(
     let bytes = run.pass.bytes;
     let to = u32::from(run.pass.to);
     let (mut damaged, mut all_events, mut took, mut scanned, mut visited) = (false, 0_u64, 0_u64, 0_u64, 0_u64);
-    // Tracks go in groups of [`GROUP`]: a group whose earliest event lies past the step is passed over.
     let mut group = start / GROUP;
     while group * GROUP < tracks.slot.len() {
         let begin = group * GROUP;
@@ -607,7 +563,6 @@ fn runs<C: Cells, const BITS: bool, const BORN: bool>(
                 }
                 events += 1;
                 if left != 0 {
-                    // The run's repeats due by the step's end, applied at once.
                     let due = if gap == 0 { left } else { ((to - hour) / gap).min(left) };
                     if odd == 0 {
                         value = value.wrapping_add((unzig(half) as u64).wrapping_mul(u64::from(due)));
@@ -651,8 +606,6 @@ fn runs<C: Cells, const BITS: bool, const BORN: bool>(
     leave!(count, damaged, all_events, took, scanned, visited, Stop::Done)
 }
 
-/// One track's events from `at` to `end` applied to a cell holding `value` in `state` (0 a value,
-/// 1 missing, 2 unrecorded): the cell after them; none when an event runs past the track.
 pub(super) fn track(model: u8, bytes: &[u8], mut at: usize, end: usize, mut value: u64, mut state: u8) -> Option<(u64, u8)> {
     let mut damaged = false;
     let mut last = 0_u64;
@@ -684,8 +637,6 @@ pub(super) fn track(model: u8, bytes: &[u8], mut at: usize, end: usize, mut valu
     }
 }
 
-/// The inserted values of a numeric stream for the rows `inserted` (in insert order), from `at`
-/// (moved on) up to `end`, each put at its row's slot.
 pub(super) fn inserted(bytes: &[u8], at: &mut usize, end: usize, numbers: Numbers<'_>, inserted: &[u32]) -> io::Result<()> {
     let Numbers { slots, mut cells, mut present, unrecorded, .. } = numbers;
     let mut damaged = false;

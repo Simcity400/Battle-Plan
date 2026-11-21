@@ -7,9 +7,6 @@ use crate::{
     reference_bucket as bucket,
 };
 
-/// 13k or 40k provinces over 3,000 or 10,000 states; a quarter are sea,
-/// every 100th is in a border conflict whose combat (one per ten such
-/// provinces) is fought between two registered orders groups at border war.
 #[test]
 #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
 fn bench_province_gates_and_border_conflicts() {
@@ -41,7 +38,6 @@ fn bench_province_gates_and_border_conflicts() {
         arena.u64(terrain, arena.rva(cterrain_type::VTABLE_RVA));
         arena.u32(terrain + cterrain_type::DATABASE_INDEX, 7);
         let area = arena.alloc(0x10);
-        // Two orders groups at border war, in one eight-bucket registry.
         let registry_table = arena.alloc(0x20);
         let entries = arena.alloc(16 * bucket::STRIDE);
         arena.u64(
@@ -143,8 +139,6 @@ fn bench_province_gates_and_border_conflicts() {
                 walk.groups_len
             )
         });
-        // The same table under a held walk the hour's take certifies, with
-        // no mark: every unconflicted province carried.
         let mut capture = Capture::try_with_capacity(provinces, conflicts, 2 * conflicts).unwrap();
         capture.province_store = Some(Box::new(carry::RowStore::new()));
         let take = Some([1, 1]);
@@ -162,9 +156,6 @@ fn bench_province_gates_and_border_conflicts() {
             let counts = capture.province_store.as_ref().unwrap().counts();
             format!("{} carried, {} read", counts.carried, counts.read)
         });
-        // A marked hour as 1936 averages (about six controller changes an
-        // hour), and the area step's read of every carried row's pointers
-        // that such an hour asks for.
         report(
             &format!("{label}, marked hour (6 provinces), area pointers"),
             n,
@@ -179,11 +170,6 @@ fn bench_province_gates_and_border_conflicts() {
                 format!("{} carried, {} read", counts.carried, counts.read)
             },
         );
-        // The same marked hour when the area step compares only the
-        // provinces a controller change can re-point (`controller_areas::
-        // Store::repointable`): live areas average about 40 provinces (304
-        // carried areas over 13k provinces at 1936), so six marks reach about
-        // three areas each; modelled as the 120 ids around each mark.
         let marked: Vec<u32> = (1..=6).map(|index| index * provinces as u32 / 7).collect();
         report(
             &format!("{label}, marked hour (6 provinces), bounded area pointers"),

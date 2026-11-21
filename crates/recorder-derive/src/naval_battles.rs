@@ -1,18 +1,3 @@
-//! `NavalBattles` and `NavalResultObservations`: each live naval battle's first hour, peak ships
-//! and sunk floors, and for each retained result the battle its source observed. A battle is one
-//! combat handle read at every hour at one province; another province, or hours not read, start
-//! a new one. Each side's quantities count its participants (a zero ship is a convoy, state bit
-//! 0x20 sunk); groups can be detached, so sunk counts are kept as floors, never summed.
-//!
-//! A result is joined to a combat only through a persistent NavalResultSources row, never by
-//! province, hour or members: its combat read at the hour, or else the hour before, gives the
-//! battle as it stood at the read at or before the source's game hour. A source out of order or a
-//! persistent merge, a combat linked before or a result seen before, a battle begun after the
-//! source, or a combat not read refuses the observation by name; a transient strike observes none.
-//!
-//! State is each live battle and its participants, read again from the tables at a resume; the
-//! resume blob holds the last source's id and hour, the combats linked while live, and the
-//! observations whose result the census has not yet listed.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -48,7 +33,6 @@ struct Quantities {
     convoys_sunk: u32,
 }
 
-/// A side's participants counted, and how many hold a cell not recorded.
 #[derive(Clone, Copy, Debug, Default)]
 struct Counts {
     quantities: Quantities,
@@ -88,7 +72,6 @@ fn highest(a: Option<u32>, b: Option<u32>) -> Option<u32> {
     }
 }
 
-/// A battle as one read left it: the sides' quantities then, and the peak and floors through it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Sample {
     sides: [Option<Quantities>; 2],
@@ -98,7 +81,6 @@ struct Sample {
 }
 
 impl Sample {
-    /// The sample of a read at `hour` of `sides`, after `previous`.
     fn next(previous: Option<&Sample>, sides: [Option<Quantities>; 2], hour: i32) -> Self {
         let current = sides[0].zip(sides[1]).map(|(a, b)| a.ships.saturating_add(b.ships));
         let peak = match (previous.and_then(|previous| previous.peak), current) {
@@ -129,7 +111,6 @@ impl Sample {
     }
 }
 
-/// A live battle.
 #[derive(Clone, Copy, Debug)]
 struct Live {
     province: u32,
@@ -163,15 +144,11 @@ fn observed(combat: u64, live: &Live, sample: &Sample, last: i32) -> Vec<Value> 
 #[derive(Default)]
 pub struct NavalBattles {
     live: HashMap<u64, Live>,
-    /// Each participant's convoy and sunk flags, by its key; none for a cell not recorded.
     members: HashMap<u128, Option<(bool, bool)>>,
     counts: HashMap<u64, [Counts; 2]>,
-    /// Participants were read complete at the last hour.
     participants: bool,
-    /// Combats a persistent source named, while they live.
     linked: HashSet<u64>,
     last_source: Option<(u64, i32)>,
-    /// Observations whose result the census did not list when they were written.
     unconfirmed: Vec<u64>,
     last: Option<i32>,
 }
@@ -190,7 +167,6 @@ impl NavalBattles {
         counts[side].change(flags, add);
     }
 
-    /// Every participant from the table as it stands.
     fn read_members(&mut self, hour: &Hour<'_>) {
         self.members.clear();
         self.counts.clear();
@@ -207,7 +183,6 @@ impl NavalBattles {
         }
     }
 
-    /// The hour's participant changes; returns the combats they moved.
     fn move_members(&mut self, hour: &Hour<'_>) -> HashSet<u64> {
         let table = TableId::NavalCombatParticipants;
         let view = hour.table(table);
@@ -238,7 +213,6 @@ impl NavalBattles {
         self.live.insert(combat, Live { province, first: hour, sample });
     }
 
-    /// The observation `source`'s result takes, of a combat read at `at` or the hour before.
     fn observe(&mut self, hour: &Hour<'_>, out: &Rows<'_>, source: &Source, earlier: &HashMap<u64, Sample>, before: &HashMap<u64, Live>, written: &HashMap<u64, Vec<Value>>) -> Option<Vec<Value>> {
         let at = hour.hour;
         let valid = source.id != 0
@@ -294,7 +268,6 @@ impl Writer for NavalBattles {
         READS
     }
 
-    // Hourly: a battle is a combat read at consecutive hours: a gap starts another.
     fn hourly(&self) -> bool {
         true
     }
@@ -304,7 +277,6 @@ impl Writer for NavalBattles {
     }
 
     fn hour(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
-        // Its tables keep their own status: a result not logged is a battle without its result.
         for &table in TABLES {
             out.status(table, Status::Complete);
         }
@@ -400,8 +372,6 @@ impl Writer for NavalBattles {
             }
             self.unconfirmed.clear();
         }
-        // A result two sources name in one hour holds the later's row, as one named in a later
-        // hour does: the later is refused as a duplicate.
         let mut written: HashMap<u64, Vec<Value>> = HashMap::new();
         for source in sources(hour)?.unwrap_or_default() {
             if let Some(cells) = self.observe(hour, out, &source, &earlier, &before, &written) {
@@ -420,7 +390,6 @@ impl Writer for NavalBattles {
         Ok(())
     }
 
-    /// The battles live at the commit's hour and their participants as the tables hold them.
     fn prime(&mut self, hour: &Hour<'_>) {
         self.live.clear();
         self.read_members(hour);

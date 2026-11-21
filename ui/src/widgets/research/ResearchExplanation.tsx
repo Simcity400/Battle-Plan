@@ -18,10 +18,7 @@ const date = (hour: number) => { const value = gameDate(hour); return value ? fo
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
 const days = (raw: bigint) => { const text = amount(raw); return `${text} ${text === '1' ? 'day' : 'days'}`; };
 
-/** Two rows on one time axis (see `researchTimeRows`). Hovering a segment
- * highlights it and names it underneath. */
 function TimeBar({ split, active }: { split: ResearchTimeSplit; active: boolean }) {
-  // The key only: playback replaces the segments, and a gone one ends the hover.
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const rows = useMemo(() => researchTimeRows(split, active), [split, active]);
   const hovered = hoveredKey === null || !rows ? null : [...rows.expected, ...rows.took].find(s => s.key === hoveredKey) ?? null;
@@ -52,16 +49,12 @@ function TimeBar({ split, active }: { split: ResearchTimeSplit; active: boolean 
   </div>;
 }
 
-/** The breakdown parts of `entry`'s journey: each assignment it moved through, read through its end, or through
- * `asked` (the hour the breakdown was opened at) while still researched. */
 export function breakdownParts(slots: readonly ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry, asked: number): ResearchBreakdownPart[] {
   return researchAssignments(slots, slot, entry).map(part => ({ slot: part.slot.index, firstObservedHour: part.entry.firstObservedHour,
     lastHour: part.entry.endedByHour ?? Math.max(part.entry.firstObservedHour, asked),
     started: part.entry.startedAfterHour !== null }));
 }
 
-/** How a technology's research time came about. Its reads are asked once when it opens (`research-breakdown`),
- * never again as playback moves: an assignment still researched is explained through the hour it was opened at. */
 export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description }: {
   client: DashboardClient; track: BoundTrack; tag: string; hour: number;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
@@ -72,8 +65,6 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
   const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);
   const joinedSlots = useMemo(() => withBreakdown(slots, data), [slots, data]);
   const joinedSlot = joinedSlots.find(owner => owner.index === slot.index) ?? slot;
-  // Playback recreates clipped entries every hour. Completed work depends only
-  // on immutable source history and its already-visible observation bounds.
   const completed = useMemo(() => data ? completedResearchJourney(joined, slot.index, entry) : null,
     [data, joined, slot.index, entry.firstObservedHour, entry.technologyHandle, entry.level, entry.token,
       entry.outcome, entry.endedByHour, entry.outcomeObservedHour]);

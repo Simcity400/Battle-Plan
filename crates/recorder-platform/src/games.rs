@@ -3,12 +3,10 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessState {
     Running,
-    /// Every thread suspended, as while Windows Error Reporting writes a crash dump.
     Frozen,
     Exiting,
 }
 
-/// A process named as the game, with its creation FILETIME, which tells it apart across PID reuse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameProcess {
     pub pid: u32,
@@ -16,7 +14,6 @@ pub struct GameProcess {
     pub state: ProcessState,
 }
 
-/// One thread as the system lists it: its scheduling state and, while waiting, why.
 #[derive(Clone, Copy, Debug)]
 pub struct Thread {
     pub state: u32,
@@ -27,7 +24,6 @@ const WAITING: u32 = 5;
 const SUSPENDED: u32 = 5;
 const WR_SUSPENDED: u32 = 12;
 
-/// Frozen when no thread could run: none left, or every one waits suspended.
 pub fn classify(threads: &[Thread], deleting: bool, signalled: bool) -> ProcessState {
     if deleting || signalled {
         ProcessState::Exiting
@@ -47,11 +43,9 @@ pub enum Discovery {
     Several(SeveralGames),
 }
 
-/// More than one live game: nothing is chosen until one closes.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SeveralGames(pub Vec<GameProcess>);
 
-/// Only running processes are games; a frozen or exiting one beside them is not.
 pub fn choose_game(found: &[GameProcess]) -> Discovery {
     let mut running = found
         .iter()
@@ -66,7 +60,6 @@ pub fn choose_game(found: &[GameProcess]) -> Discovery {
     }
 }
 
-/// "PID 1, started 20:46, and PID 2, started 22:16".
 fn named(games: &[GameProcess], clock: impl Fn(u64) -> Option<(u16, u16)>) -> String {
     let each: Vec<String> = games
         .iter()
@@ -83,7 +76,6 @@ fn named(games: &[GameProcess], clock: impl Fn(u64) -> Option<(u16, u16)>) -> St
 }
 
 impl SeveralGames {
-    /// `clock` gives a start time's local hour and minute.
     pub fn text(&self, clock: impl Fn(u64) -> Option<(u16, u16)>) -> String {
         let (count, close) = match self.0.len() {
             2 => ("Two".to_owned(), "Close one"),
@@ -102,7 +94,6 @@ impl fmt::Display for SeveralGames {
     }
 }
 
-/// Live games beside the one being recorded, named again only when they change.
 #[derive(Default)]
 pub struct OtherGames(Vec<u32>);
 

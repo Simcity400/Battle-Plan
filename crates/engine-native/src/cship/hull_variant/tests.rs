@@ -134,7 +134,6 @@ fn current_tuple_preserves_signed_words_unsigned_version_and_fixed_budget() {
         (14, 101)
     );
     assert_eq!(reads.iter().filter(|(at, _)| *at == LIST + 8).count(), 1);
-    // The DB validation reads one selected slot, not another equipment walk.
     assert!(!reads.iter().any(|(at, _)| *at == LIST));
 }
 
@@ -231,7 +230,6 @@ fn definition_alias_and_database_faults_withhold_only_the_ordinal() {
         ),
         (DATABASE, 0_u64.to_le_bytes().to_vec()),
         (DATABASE + DEFINITIONS + 12, 3_u32.to_le_bytes().to_vec()),
-        // An equal-token clone must not be accepted at a different native slot.
         (LIST + 8, (DEFINITION as u64 + 8).to_le_bytes().to_vec()),
     ] {
         let mut world = World::fixture();
@@ -256,8 +254,6 @@ fn null_ordinal_is_not_admitted_as_a_real_definition_and_other_terms_survive() {
         read_hull_variant(&world, BASE, &world.source(), &mut ModelMemo::default()),
         Some(wanted)
     );
-    // An artificial ordinary-vptr -1 must not claim the native null object
-    // or become real ordinal0, even when the database's slot0 points to it.
 }
 
 fn native_null_world() -> World {
@@ -401,8 +397,6 @@ fn consecutive_aliases_retain_failed_fields_and_common_failure_until_reset() {
             first
         );
         assert_eq!(world.reads.borrow().len(), count);
-        // A fresh capture's reset permits a new observation, without healing
-        // the previous capture's already published None/partial field packet.
         assert_eq!(
             read_hull_variant(&world, BASE, &world.source(), &mut ModelMemo::default()),
             Some(expected())
@@ -531,13 +525,11 @@ fn each_complete_packet_of_the_capture_is_reused_but_never_a_refused_one() {
     }
     let count = world.reads.borrow().len();
     assert_eq!(count, 28);
-    // The first variant again after a different one is the capture's.
     assert_eq!(
         read_hull_variant(&world, BASE, &world.source(), &mut memo),
         Some(expected())
     );
     assert_eq!(world.reads.borrow().len(), count);
-    // The next capture forgets every observation and pointer key.
     memo.reset();
     assert!(memo.hull_variant.complete.is_empty());
     let count = world.reads.borrow().len();
@@ -547,7 +539,6 @@ fn each_complete_packet_of_the_capture_is_reused_but_never_a_refused_one() {
     );
     assert_eq!(world.reads.borrow().len(), count + 14);
 
-    // A refused field stays only for the adjacent same-key observation.
     for failed in [0, 9] {
         let mut world = World::fixture();
         let copy = world.regions[0].1.clone();

@@ -1,4 +1,3 @@
-//! Synthetic performance input from a supplied recording; not a native fidelity oracle.
 use replay::{campaign::Replay, campaign::SeekResult, spool::Record};
 use replay_data::{
     rows::CountryLinkRow, rows::LandCombatRow, rows::LandCombatSideRow, rows::TableId,
@@ -10,11 +9,7 @@ use std::{
     env, fs, io,
 };
 
-/// Divisions in land combat, in percent. A recorded 925-hour war of about
-/// 3,200 divisions peaked at 10.1% (mean 5.0%), and the collector's combat-walk
-/// bench takes 10,000 of 50,000 (20%); this takes that 20%, twice the peak.
 const COMBAT_SHARE_PERCENT: usize = 20;
-/// Divisions per side of an added combat; the same war averaged 7.6 per combat.
 const SIDE_DIVISIONS: usize = 4;
 
 fn main() -> io::Result<()> {
@@ -74,7 +69,6 @@ fn main() -> io::Result<()> {
         let mut row = templates.get(source).expect("source appearance").clone();
         row.country = id;
         row.overlord = 0;
-        // Appearance facts and localisation come from the recorded source country.
         if row.name_tag.is_empty() {
             row.name_tag = original
                 .iter()
@@ -108,7 +102,6 @@ fn main() -> io::Result<()> {
         province.owner = country.id;
         province.controller = country.id;
     }
-    // Exclude the raid targets from synthetic measurements, without changing viewer code.
     frame.tables[TableId::RaidTargets.index()] = TableView::Unavailable {
         reason: "raid inputs excluded from the unit-scale fixture (#63)".into(),
     }
@@ -197,10 +190,6 @@ fn main() -> io::Result<()> {
             row.planes = 10;
         }
     }
-    // Recorded combats stay; out-of-combat divisions, spread over every owner,
-    // join added combats until the share is met. Attackers come from the first
-    // half of the owner order and defenders from the second, at the first
-    // defender's province.
     let TableView::Complete(TableRows::Divisions(division_rows)) =
         &*frame.tables[TableId::Divisions.index()]
     else {
@@ -216,8 +205,6 @@ fn main() -> io::Result<()> {
         panic!("land combats missing")
     };
     let mut combats = recorded.clone();
-    // Recorded combats keep their recorded side row (lists, indicator and
-    // flags) except for the lists of an hour whose membership churns.
     let recorded_sides: BTreeMap<u64, LandCombatSideRow> =
         match &*frame.tables[TableId::LandCombatSides.index()] {
             TableView::Complete(TableRows::LandCombatSides(rows))
@@ -273,10 +260,6 @@ fn main() -> io::Result<()> {
         .iter()
         .map(|combat| combat.attackers.len() + combat.defenders.len())
         .sum();
-    // A side's lists as the game appends them for each unit in order: the
-    // logical owner unless an equivalent country is listed, and the
-    // roster owner when it is positive, not the logical owner's
-    // country and not yet listed. Equivalence uses the canonical slot through CountryLinks.
     let same = |a: u32, b: u32| {
         a == b
             || (a != 0
@@ -332,14 +315,11 @@ fn main() -> io::Result<()> {
         in_combat as f64 / division_count as f64,
         recorded.len()
     );
-    // Engaged-index coverage only: marker coverage is incomplete.
     println!(
         "marker coverage incomplete: added_combats={added_count} without LandCombatDetails or LandCombatDivisions rows (a seen one draws no tint) and with the out-of-combat DivisionMovement operands their divisions were cloned with; recorded combats keep their recorded side operands"
     );
     let mut branch = replay.branches[0].clone();
     branch.first_hour = first;
-    // A save load, which rebuilds every combat side's engaged flag: the flags
-    // are known from the first hour, so markers take their seen path.
     branch.reason = BranchReason::LoadSignal;
     branch.loaded_hour = Some(first);
     let mut records = vec![
@@ -356,7 +336,6 @@ fn main() -> io::Result<()> {
             panic!("clock missing")
         };
         clock[0].hour = hour.hour;
-        // Hourly country changes invalidate keys without inventing extra assets or units.
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *hour.tables[TableId::Countries.index()]
         {
@@ -364,8 +343,6 @@ fn main() -> io::Result<()> {
                 country.command_power_raw += i64::from(offset);
             }
         }
-        // Exercise invalidation without inventing movement geometry or combat
-        // membership. This is value churn, not a simulated busy game tick.
         if let TableView::Complete(TableRows::Divisions(rows)) =
             &mut *hour.tables[TableId::Divisions.index()]
         {
@@ -380,8 +357,6 @@ fn main() -> io::Result<()> {
                 row.organisation += i64::from(offset);
             }
         }
-        // A removal then a join on a tenth of the combats each hour, so the
-        // engaged flag's rebuild path runs every hour.
         let mut hour_combats = combats.clone();
         if offset % 2 == 1 {
             for combat in hour_combats

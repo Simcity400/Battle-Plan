@@ -1,4 +1,3 @@
-//! Infrastructure colours and hover values use the same hourly native limit snapshot.
 
 use super::{
     Inputs, LEVEL_GRADIENT, ModeDefines, ModeLayer, complete, finish, region_table_len, style,

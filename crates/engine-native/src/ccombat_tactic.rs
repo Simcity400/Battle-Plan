@@ -1,4 +1,3 @@
-//! `CCombatTactic` identity and preferred-tactic modifier key.
 
 use crate::{
     Memory, ccountry, cdynamic_modifier, cnull_combat_tactic, modifier_accumulator,
@@ -6,27 +5,18 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Tactic primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_3970);
-/// Token string.
 pub const TOKEN: usize = 0x10;
-/// Name string.
 pub const NAME: usize = 0x30;
-/// Database id, i32.
 pub const ID: usize = 0x98;
-/// Countered tactic id compared with the opposing tactic id.
 pub const COUNTER_ID: usize = 0x90;
-/// Modifier-metadata key, u32.
 pub const MODIFIER_KEY: usize = 0x174;
-/// Tactic-database singleton, lazily created by the game; recording never creates it.
 pub const DATABASE_RVA: Rva = Rva(0x033d_f180);
-/// Tactic-pointer array in id order, with a null entry at index zero.
 pub const DATABASE_ENTRIES: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Zero represents the authenticated CNullCombatTactic object only.
     pub tactic_id: i32,
     pub token_len: usize,
 }
@@ -35,14 +25,10 @@ pub struct Row {
 pub struct Preferred {
     pub outcome: Outcome,
     pub row: Row,
-    /// Transient authenticated source pointer for the same callback's weight
-    /// read. This address is not replay identity and must not be serialized.
     pub pointer: usize,
     pub required_token_bytes: usize,
 }
 
-/// One country's authenticated selection: its tactic object and database ID,
-/// `None` for CNullCombatTactic. A null pointer or unknown vtable is an error.
 fn selection(
     memory: &impl Memory,
     base: usize,
@@ -72,9 +58,6 @@ fn selection(
     Ok((pointer, Some(tactic_id)))
 }
 
-/// [`preferred`] without token bytes for consumers needing only selection
-/// and weight. Weight evaluation reads no name, so name length cannot
-/// make it unavailable.
 pub fn preferred_identity(
     memory: &impl Memory,
     base: usize,
@@ -166,7 +149,6 @@ pub fn preferred_buffer(
     })
 }
 
-/// Shared immutable metadata context read once per callback, not once per country.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WeightContext {
     pub country_factor_raw: i64,
@@ -205,9 +187,6 @@ pub struct WeightRow {
     pub accumulator_entry_present: u8,
 }
 
-/// Reads native inputs to the selected-tactic bonus. Derived addition belongs
-/// to playback, so the representation retains even values whose sum overflows.
-/// A failed weight read does not invalidate the independently read identity.
 pub fn weight(
     memory: &impl Memory,
     country: usize,
@@ -318,13 +297,9 @@ mod tests {
         ));
     }
 
-    /// The identity-only read takes the same selection and ID and never
-    /// reads the name, so a name longer than any buffer cannot make it fail,
-    /// and it weighs the same as the full read.
     #[test]
     fn identity_ignores_the_name_and_weighs_as_the_full_read() {
         let mut bytes = fixture();
-        // A 200-byte heap name at an unmapped address.
         put(&mut bytes, 0x2800 + TOKEN, 0x9000_0000_u64.to_le_bytes());
         put(&mut bytes, 0x2800 + TOKEN + 16, 200_u64.to_le_bytes());
         put(&mut bytes, 0x2800 + TOKEN + 24, 200_u64.to_le_bytes());
@@ -336,7 +311,6 @@ mod tests {
         assert_eq!(identity.outcome, Outcome::Rows { len: 1 });
         assert_eq!((identity.row.country, identity.row.tactic_id), (9, 7));
         assert_eq!(identity.pointer, 0x2800);
-        // The full read cannot copy that name into its 128-byte buffer.
         assert!(!matches!(
             preferred_buffer(&memory, BASE, 0x1000, 9, crate::walk::Buffer::Growing(&mut vec![0; 128])).outcome,
             Outcome::Rows { .. }

@@ -1,4 +1,3 @@
-//! Concrete drawn counter and selection observations shared by producers and hover text.
 pub mod gui_authored;
 pub mod land;
 pub mod task_force;

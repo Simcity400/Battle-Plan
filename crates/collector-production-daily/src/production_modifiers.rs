@@ -1,8 +1,3 @@
-//! Daily production-hover supplement, independent of the ordinary census.
-//! Native formatter requests use the shared caller-owned tree reader. Buffers
-//! grow on the acquisition worker; each failed root retains its original verdict.
-//! Production selects its own daily requests and retains capture pressure for
-//! off-hour growth; attrition_modifier_breakdown::demand only sizes army hovers.
 
 use crate::{
     clock::qpc,
@@ -64,8 +59,6 @@ impl Capacities {
     }
 }
 
-/// One slot range's capture: the whole capture's arenas when it is not
-/// split.
 pub struct Part {
     countries: Arena<native::Country>,
     lines: Arena<native::Line>,
@@ -76,8 +69,6 @@ pub struct Part {
     text: Arena<u8>,
     stack: Arena<tree::Frame>,
     archetypes: Arena<usize>,
-    /// The reads each country's accumulator walks repeat across its keys
-    /// ([`tree::RepeatCache`]), kept for reuse of its storage.
     repeats: tree::RepeatCache,
     context: Option<native::Context>,
     outcome: Outcome,
@@ -155,8 +146,6 @@ impl Part {
     pub fn fail_capture(&mut self, hour: i32, full: bool, reason: &'static str) {
         self.outcome = super::failed_capture(TABLES[0], hour, full, reason);
     }
-    /// The capture of census slots `slots`, with `provided` defines when
-    /// the capture is split ([`native::capture_slots`]).
     #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &mut self,
@@ -215,7 +204,6 @@ impl Part {
             self.archetypes.required = inputs.archetype_required;
             result?;
             if self.requests.len == 0 {
-                // No country/line rows can publish any of these unused values.
                 self.context = Some(native::Context::default());
                 return Ok(());
             }
@@ -258,8 +246,6 @@ impl Part {
         };
         [qpc().saturating_sub(started).max(0) as u64, 0]
     }
-    /// This part's span checks: every node name, root node range and line
-    /// efficiency range inside its arenas, and every country's roots present.
     fn invalid(&self) -> Option<&'static str> {
         let span = |start: usize, len: usize| start.checked_add(len);
         let roots = &self.roots.first[..self.roots.len];
@@ -290,7 +276,6 @@ impl Part {
         }
         None
     }
-    /// The root of (`accumulator`, `key`): roots are sorted within a part.
     fn root(&self, accumulator: usize, key: u32) -> Option<&tree::Root> {
         let roots = &self.roots.first[..self.roots.len];
         roots
@@ -362,30 +347,15 @@ impl Part {
     }
 }
 
-/// Parts a slot hour's capture is split into, the first included.
 pub const MAX_PARTS: usize = 4;
-/// Fewer countries with lines than this are not split.
 const SPLIT_COUNTRIES: usize = 16;
 
-/// The daily production modifiers: one capture, or on a slot hour up to
-/// [`MAX_PARTS`] captures of consecutive census slot ranges, the first in
-/// the ProductionDaily job and each other in its own job, joined in slot
-/// order. Their tables walk the parts in slot order: each part's rows are the
-/// whole walk's for its slots and each country's roots are in its own part,
-/// so the tables are the whole walk's, and the first part that failed fails
-/// them with the reason the whole walk would have met first.
 pub struct Captured {
     first: Part,
-    /// The other parts, allocated off the game thread by `grow`.
     extra: [Option<Box<Part>>; MAX_PARTS - 1],
-    /// Parts of this hour's capture, set by [`Self::prepare_parts`] and taken
-    /// by the capture, which resets it.
     prepared: usize,
-    /// Parts in use: the prepared split from its preparation, and the
-    /// capture's from the capture on.
     split: usize,
     starts: [u32; MAX_PARTS - 1],
-    /// The defines read once for every part of a split capture.
     provided: Option<Result<native::Context, &'static str>>,
 }
 
@@ -410,7 +380,6 @@ impl Captured {
         self.first.reset();
         self.unsplit();
     }
-    /// No split prepared or in use.
     fn unsplit(&mut self) {
         self.split = 1;
         self.prepared = 1;
@@ -425,8 +394,6 @@ impl Captured {
                 .map(|part| size_of::<Part>() + part.allocated_bytes())
                 .sum::<usize>()
     }
-    /// Grows the first part; the other parts are allocated empty here, off
-    /// the game thread, and grow on their workers.
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.first.grow(capacity);
         for extra in &mut self.extra {
@@ -439,8 +406,6 @@ impl Captured {
         self.first.fail_capture(hour, full, reason);
         self.unsplit();
     }
-    /// The first part's capture: the whole census, or its slot range of a
-    /// split capture.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -455,7 +420,6 @@ impl Captured {
         self.first
             .capture(memory, base, state, hour, full, slots, provided)
     }
-    /// Census slots of part `part` of this hour's split.
     fn slots(&self, part: usize) -> std::ops::Range<u32> {
         let first = if part == 0 { 1 } else { self.starts[part - 1] };
         let end = if part + 1 < self.split {
@@ -465,10 +429,6 @@ impl Captured {
         };
         first..end
     }
-    /// On the game thread before a slot hour's dispatch: splits the census
-    /// at `starts` (the previous slot hour's balance, [`Self::next_starts`])
-    /// into as many parts as are allocated, reading the defines once when it
-    /// splits. Returns the parts, the first included.
     pub fn prepare_parts(&mut self, memory: &impl Memory, base: usize, starts: &[u32]) -> usize {
         let allocated = 1 + self.extra.iter().take_while(|part| part.is_some()).count();
         let parts = (starts.len() + 1).min(allocated).min(MAX_PARTS);
@@ -478,8 +438,6 @@ impl Captured {
         self.provided = (parts > 1).then(|| native::Context::read(memory, base));
         parts
     }
-    /// Loans part `part` (1..) of the prepared split, with its slots and the
-    /// defines.
     #[allow(clippy::type_complexity)]
     pub fn take_part(
         &mut self,
@@ -495,8 +453,6 @@ impl Captured {
             .expect("prepared part allocated");
         (boxed, slots, self.provided)
     }
-    /// Returns part `part`; a part whose job failed fails its tables as a
-    /// failed Slow did.
     pub fn restore_part(
         &mut self,
         part: usize,
@@ -510,7 +466,6 @@ impl Captured {
         }
         self.extra[part - 1] = Some(boxed);
     }
-    /// This hour's parts in slot order; a part not returned ends them.
     fn parts(&self) -> impl Iterator<Item = &Part> + Clone {
         std::iter::once(&self.first).chain(
             self.extra[..self.split - 1]
@@ -518,8 +473,6 @@ impl Captured {
                 .map_while(|part| part.as_deref()),
         )
     }
-    /// The parts' combined outcome: the first failure in slot order, else
-    /// every part's rows.
     fn combined(&self) -> Result<[usize; N], &'static str> {
         let returned = self.parts().count();
         let mut lens = [0; N];
@@ -538,9 +491,6 @@ impl Captured {
         }
         Ok(lens)
     }
-    /// The next slot hour's split of a complete capture: starts at the
-    /// countries that balance countries and lines across [`MAX_PARTS`]
-    /// parts; `previous` otherwise.
     pub fn next_starts(
         &self,
         previous: ([u32; MAX_PARTS - 1], usize),
@@ -585,8 +535,6 @@ impl Captured {
             Ok(lens) => lens,
             Err(reason) => return [unavailable(reason), unavailable(reason)],
         };
-        // The defines of the first part that read them; a capture without a
-        // country with lines published the default with no rows.
         let Some(context) = self
             .parts()
             .find(|part| part.requests.len != 0)
@@ -625,17 +573,10 @@ impl Captured {
     }
 }
 
-/// Parts as a capture leaves them, for the lifecycle tests: the native walk
-/// is the engine's to test, and these fill a part with the rows it would
-/// publish.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::*;
 
-    /// A complete part of `countries` (id, accumulator, lines), each line
-    /// with one factory efficiency and each country with a one-node tree
-    /// per key, read under `context`; no country gives the default context,
-    /// as a capture without a country with lines does.
     pub fn part(countries: &[(u32, usize, usize)], context: native::Context) -> Part {
         let lines: usize = countries.iter().map(|&(_, _, lines)| lines).sum();
         let mut capacity = Capacities {
@@ -699,7 +640,6 @@ pub mod test_support {
         part
     }
 
-    /// A failed part, as a capture that met `reason` leaves it.
     pub fn failed(reason: &'static str) -> Part {
         let mut part = Part::vacant();
         part.outcome = Outcome::Unavailable { reason };
@@ -707,18 +647,14 @@ pub mod test_support {
     }
 
     impl Captured {
-        /// The whole capture of `part`.
         pub fn whole(part: Part) -> Self {
             Self::of(part)
         }
-        /// The first part's capture as [`Captured::capture`] leaves it, with
-        /// `part` in place of the native walk's rows.
         pub fn captured_as(&mut self, part: Part) {
             self.split = std::mem::replace(&mut self.prepared, 1);
             self.provided = None;
             self.first = part;
         }
-        /// The prepared split's part slots.
         pub fn prepared_slots(&self) -> Vec<std::ops::Range<u32>> {
             (0..self.split).map(|part| self.slots(part)).collect()
         }
@@ -826,10 +762,6 @@ mod tests {
         assert_eq!(lines[0].converting, replay_data::rows::Recorded::Value(true));
     }
 
-    /// The tables of a capture split in two are the whole capture's though
-    /// the parts' accumulators interleave (each part's roots are searched in
-    /// its own run); a failed later part fails both tables with its reason,
-    /// and a complete capture balances the next split over its countries.
     #[test]
     fn split_parts_publish_the_whole_capture_s_tables_in_slot_order() {
         let countries = [(1, 900), (2, 100), (3, 500), (4, 300)];
@@ -858,13 +790,11 @@ mod tests {
         };
         assert_eq!(split.outcomes(), [refused; N]);
         assert_eq!(split.next_starts(([7, 0, 0], 1)), ([7, 0, 0], 1));
-        // Twenty countries split in four, each start a later country's slot.
         let many: Vec<_> = (1..=20).map(|id| (id, 1_000 + id as usize)).collect();
         let (starts, parts) = Captured::of(part_of(&many)).next_starts(([0; 3], 0));
         assert_eq!(parts, MAX_PARTS - 1);
         assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(starts[0] > 1 && starts[2] <= 20);
-        // Too few countries are not split.
         assert_eq!(whole.next_starts(([7, 0, 0], 1)), ([0; 3], 0));
     }
 }

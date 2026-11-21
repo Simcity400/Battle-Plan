@@ -1,10 +1,3 @@
-//! A country's training queue at an hour: each deployment order (a template ordered in some
-//! amount) in the game's order, with the divisions in training under it and their training,
-//! manpower and equipment, from the queue's latest daily read: a rows-at-an-hour product
-//! ([`AtHour`]), requested for an hour and followed as a panel at the head (the queue moves once a
-//! day). The country is the tag's holder at the hour; a read older than a day is not used.
-//! Nothing is interpolated: training is the stored value of that read, an amount ordered never
-//! becomes invented divisions, and a stored halting reason is reported only as present.
 
 use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
@@ -30,9 +23,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The queue tables, read together once a day.
 const QUEUE: [TableId; 4] = [TableId::DeploymentConveyors, TableId::DeploymentLines, TableId::DeploymentManpower, TableId::DeploymentEquipment];
-/// What names and measures the queue.
 const NAMING: [TableId; 10] = [
     TableId::Countries,
     TableId::CountryAppearance,
@@ -46,7 +37,6 @@ const NAMING: [TableId; 10] = [
     TableId::VariantDefinitions,
 ];
 
-/// The deployment view's priority buttons, in stored priority order.
 const CONVEYOR_VIEW: &str = "military_deployment_conveyor_view";
 const PRIORITY_BUTTONS: [&str; 3] = ["low_prio", "medium_prio", "high_prio"];
 
@@ -60,45 +50,41 @@ pub struct TrainingQueueParams {
     pub country: Country,
 }
 
-/// One country's manpower entry for a division in training.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingManpower {
     pub tag: Option<String>,
-    /// Available (false) or needed (true).
+    #[doc = " Available (false) or needed (true)."]
     pub needed: bool,
     pub amount: i32,
 }
 
-/// One design held by a division in training.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingEquipment {
     pub variant: String,
-    /// The design's saved name; none where the design keeps the game's generated name.
+    #[doc = " The design's saved name; none where the design keeps the game's generated name."]
     pub name: Option<String>,
     pub archetype: Option<String>,
     pub archetype_name: Option<String>,
-    /// Signed fixed-point amount with five decimals.
+    #[doc = " Signed fixed-point amount with five decimals."]
     pub amount_raw: String,
 }
 
-/// One archetype a division in training needs, by its template.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingNeed {
     pub archetype: String,
     pub name: Option<String>,
-    /// Fixed-point need with five decimals.
+    #[doc = " Fixed-point need with five decimals."]
     pub need_raw: String,
-    /// What the division holds of it, fixed-point with five decimals.
+    #[doc = " What the division holds of it, fixed-point with five decimals."]
     pub held_raw: String,
 }
 
-/// One division in training.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -107,25 +93,24 @@ pub struct TrainingDivision {
     pub ordinal: u32,
     pub name: Option<String>,
     pub name_missing: Option<String>,
-    /// Fixed-point training and its maximum, five decimals.
+    #[doc = " Fixed-point training and its maximum, five decimals."]
     pub training_raw: String,
     pub max_training_raw: String,
-    /// Signed sums of the available and needed entries, as the game adds them.
+    #[doc = " Signed sums of the available and needed entries, as the game adds them."]
     pub manpower: i32,
     pub manpower_needed: i32,
     pub max_manpower: i32,
     pub contributors: Vec<TrainingManpower>,
     pub equipment: Vec<TrainingEquipment>,
-    /// What the template needs; empty with `need_missing` when unknown.
+    #[doc = " What the template needs; empty with `need_missing` when unknown."]
     pub need: Vec<TrainingNeed>,
     pub need_missing: Option<String>,
-    /// Why held equipment cannot be measured against the need.
+    #[doc = " Why held equipment cannot be measured against the need."]
     pub comparison_missing: Option<String>,
-    /// A halting reason is stored; its meaning is not named.
+    #[doc = " A halting reason is stored; its meaning is not named."]
     pub halted: bool,
 }
 
-/// One deployment order: a template ordered in an amount.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -138,16 +123,16 @@ pub struct TrainingOrder {
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
     pub amount: i32,
-    /// The stored priority, and the game's text for it.
+    #[doc = " The stored priority, and the game's text for it."]
     pub priority: u32,
     pub priority_name: Option<String>,
     pub priority_missing: Option<String>,
-    /// The stored province (zero for none), and the name the game shows for it.
+    #[doc = " The stored province (zero for none), and the name the game shows for it."]
     pub location: u32,
     pub location_name: Option<String>,
     pub location_missing: Option<String>,
     pub closed: bool,
-    /// A government in exile's order names that country.
+    #[doc = " A government in exile's order names that country."]
     pub exile: Option<String>,
     pub divisions: Vec<TrainingDivision>,
 }
@@ -157,9 +142,9 @@ pub struct TrainingOrder {
 #[serde(rename_all = "camelCase")]
 pub struct TrainingQueueReply {
     pub tag: String,
-    /// The read the queue is from; none when none falls within a day.
+    #[doc = " The read the queue is from; none when none falls within a day."]
     pub read_hour: Option<i32>,
-    /// Why the queue is unknown at this hour, when it is.
+    #[doc = " Why the queue is unknown at this hour, when it is."]
     pub missing: Option<String>,
     pub orders: Vec<TrainingOrder>,
     pub warnings: Vec<String>,
@@ -184,8 +169,6 @@ fn template_name(frame: &DecodedFrame, handle: u64, cat: &Result<Arc<Catalogue>,
         .map_err(|why| format!("Template name unavailable: {why}"))
 }
 
-/// The game's text for each stored deployment priority: the localised tooltip of its button in
-/// the effective interface files, its scoped expressions evaluated for the country.
 fn priorities(cat: &Result<Arc<Catalogue>, String>, frame: &DecodedFrame, root: u32, refusals: &mut Refusals) -> Vec<Result<String, String>> {
     let cat = match cat {
         Ok(cat) => cat,
@@ -222,8 +205,6 @@ fn priorities(cat: &Result<Arc<Catalogue>, String>, frame: &DecodedFrame, root: 
     names
 }
 
-/// An order's location as the game shows it: the display name of the state owning its province,
-/// or the game's text for no location.
 fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province: u32) -> Result<String, String> {
     if province == 0 {
         return localised(cat, "CONVEYOR_SET_LOCATION_NOT_SET");
@@ -235,8 +216,6 @@ fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
 }
 
-/// A held design: its name (saved, else the game's generated one), and its equipment's archetype
-/// through the recorded content.
 fn design(frame: &DecodedFrame, names: &Content, units: Option<&installed_content_core::equipment::Database>, variant: u64, refusals: &mut Refusals) -> (Option<String>, Option<String>, Option<String>) {
     let cat = &names.cat;
     let Ok(rows) = frame.complete::<tables::VariantDefinitions>() else {
@@ -379,7 +358,6 @@ impl AtHour for TrainingQueue {
                         TrainingEquipment { variant: row.variant_handle.to_string(), name, archetype, archetype_name, amount_raw: row.amount_raw.to_string() }
                     })
                     .collect();
-                // A held design of unresolved type may fill any need.
                 let unclassified = held.iter().any(|row| row.archetype.is_none());
                 let (need, need_missing) = match &need {
                     Ok(need) => (

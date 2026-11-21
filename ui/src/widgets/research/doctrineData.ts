@@ -22,7 +22,6 @@ export function validateDoctrines(value: unknown): DoctrineReply {
   return value as unknown as DoctrineReply;
 }
 
-/** Exact decimal display, including signed values beyond JavaScript's safe integers. */
 export function masteryText(raw: string): string {
   const value = BigInt(raw), magnitude = value < 0n ? -value : value;
   const fraction = (magnitude % 100000n).toString().padStart(5, '0').replace(/0+$/, '');

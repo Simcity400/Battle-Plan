@@ -37,8 +37,6 @@ fn d16_equipment_reuse_verifies_covered_reads_in_native_order() {
         ),
     ];
     for remove in [false, true] {
-        // Each directory is verified, and simultaneous changes retain the first
-        // refusal from the native upgrades/modules/equipment read order.
         for changed in [vec![0], vec![1], vec![2], vec![0, 1, 2]] {
             let (catalogue, folder) = equipment_catalogue(&files);
             let layers = &catalogue.content.layers;
@@ -83,9 +81,6 @@ fn d16_equipment_reuse_keeps_the_complete_database_refusal() {
     assert_eq!(actual.to_string(), expected.to_string());
 }
 
-/// Every file icon content reads is one the store key stamps (`recorded_source_files`), so
-/// prepared icon choices hold wherever their directory is read, unless `default.map` names a
-/// file where coverage stops ([`crate::products::equipment_icon::inputs_stamped`]).
 #[test]
 fn icon_content_reads_only_files_the_store_key_stamps() {
     use crate::products::equipment_icon::inputs_stamped;
@@ -140,7 +135,6 @@ fn icon_content_reads_only_files_the_store_key_stamps() {
         );
     }
     assert!(inputs_stamped(layers).unwrap());
-    // `default.map` may name a continent file below a folder coverage skips.
     let (uncovered, _folder) = super::tests::folder_catalogue(&[
         (
             "map/default.map",

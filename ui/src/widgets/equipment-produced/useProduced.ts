@@ -34,15 +34,12 @@ export function validateAtReply(data: unknown): ProducedAtReply {
   return reply;
 }
 
-/** Every type produced in the branch, named by its content, and the one delivered most: asked once a branch. */
 export function useProducedTypes(runtime: WidgetRuntime, track: BoundTrack | undefined, refits: boolean, active: boolean) {
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-types',
     params: { branchId: track.branch.id, refits } } : null;
   return useProduct<ProducedTypesReply>(runtime.client, request, active, validateTypesReply, track?.source);
 }
 
-/** One country's designs at one hour: for a tooltip being read and the breakdown's table. Asked only for an hour a
- * person points at or picks, never for the hour the playhead moves through. */
 export function useProducedAt(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | null, hour: number | null,
   measure: Measure, refits: boolean, active: boolean) {
   const request = track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced-at',
@@ -50,8 +47,6 @@ export function useProducedAt(runtime: WidgetRuntime, track: BoundTrack | undefi
   return useProduct<ProducedAtReply>(runtime.client, request, active, validateAtReply, track?.source);
 }
 
-/** The types to include: every type produced in the recording, named by its content. Keys of types content does not
- * resolve (`:spelling`) are escaped so they can be stored too. */
 export function useProducedTypeChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const types = useProducedTypes(runtime, track, resolveOptions(OPTIONS, widget.options).refits === true, true);

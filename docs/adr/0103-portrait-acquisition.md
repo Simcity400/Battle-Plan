@@ -1,0 +1,11 @@
+# 0103. Reuse portrait rows under roster and writer witnesses
+
+The roster is divided into four contiguous shares with separate capture jobs and owned row payloads. The walk retains every portrait entry from both character rosters, including the original header counts when the projected output is empty. A whole-roster acquisition remains available for direct capture. Owned work runs on the assigned worker after the frame reset. A terminal failure records the refused work, retains growth demand for recycling, leaves unfinished timing unmeasured, and withholds partial rows.
+
+A share can skip native reads when the roster census still matches its occurrences and the watched-holder revision matches a complete previous capture. A previously matched census stamp can skip the occurrence comparison. Without a roster census the plan reads the roster and identities again. A holder without a watch is read each hour. Writes to unwatched holders leave existing watched shares quiet, but a write that overlaps a walk can tear that walk and prevents certification. When a watched holder changes during acquisition, the capture uses the version settled at the start of acquisition.
+
+The prepared read program keeps ownership and header dependencies only. Build it from a fully reused, complete walk, since a cold or changed walk also touches descriptor data which an unchanged pass must avoid rereading. Growth of retained buffers leaves quiet-census identity intact. A whole-table witness requires every share under the same scope, portrait revision, and roster token.
+
+Merge each character-ordered share into the same order a single walk produces and check duplicates across shares. The projection can retain the row permutation without retaining row values or arena borrows. Validate the permutation against the current share sizes and row ordinals on reuse. A changed distribution can make it invalid even when the total row count matches. A refused larger capture still conveys new growth demand. Reused storage may contain longer previous strings, so only their published extent contributes to the output fingerprint.
+
+[Portrait capture](../../crates/collector/src/extended/character_portraits.rs) · [Projection tests](../../crates/collector/src/extended/character_portraits/projection_tests.rs)

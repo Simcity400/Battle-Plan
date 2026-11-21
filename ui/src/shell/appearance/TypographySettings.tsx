@@ -99,7 +99,6 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
     }
     setText(family); setSettled(true); setMessage(null); onChange(family); menu.close();
   };
-  // Tables have no size of their own: they take the interface's.
   const sized = role === 'tables' ? null : role;
   const [min, max] = sized ? FONT_SIZE_LIMITS[sized] : [0, -1];
   const changed = !!value || (!!sized && size !== DEFAULT_TYPOGRAPHY.sizes[sized]);

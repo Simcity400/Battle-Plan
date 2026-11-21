@@ -48,7 +48,6 @@ fn bake_permutations_preserve_event_light_and_audio_admission_and_random_streams
         ),
         (-0.25, 0.25)
     );
-    // Draws 0..7 admit two voices; 84 rejected starts consume three each, so the probe starts at 260.
     let trace = [
         (
             [1_448_581_189u32, 612_099_500, 43_820_730, 1_778_769_266],

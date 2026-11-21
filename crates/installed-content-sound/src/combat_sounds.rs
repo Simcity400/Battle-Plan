@@ -1,34 +1,21 @@
-//! Battle ambience layers: `sound/combat_sounds/*.txt` and the `NSound`
-//! battle defines.
-//!
-//! Each definition names a sound effect, the sub-unit types it listens for
-//! and a `divisions_range = { min max }` of how many of those sub-units the
-//! battle holds; `max` -1 has no upper bound. The game plays a definition's
-//! effect for a battle while the count of one of its sub-unit types lies in
-//! the range ([`Layers::slots`]).
 
 use crate::sound::Notes;
 use installed_content_core::{ResolvedLayers, crt, defines, parser};
 use std::io;
 
-/// The folder the game reads battle sound definitions from.
 pub const FOLDER: &str = "sound/combat_sounds";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatSound {
     pub name: String,
     pub effect: String,
-    /// Sub-unit type names, in authored order.
     pub units: Vec<String>,
     pub min: i32,
-    /// `None` for an authored -1: no upper bound.
     pub max: Option<i32>,
     pub source: String,
 }
 
 impl CombatSound {
-    /// Whether `count` sub-units of one listed type sound this definition.
-    /// No sub-unit of the type sounds nothing.
     pub fn sounds(&self, count: usize) -> bool {
         let count = i64::try_from(count).unwrap_or(i64::MAX);
         count > 0
@@ -37,9 +24,6 @@ impl CombatSound {
     }
 }
 
-/// The definitions in load order, and the slots the game keeps per battle:
-/// one per distinct sub-unit type name, in the order the definitions first
-/// list them, each with the definitions that list it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layers {
     pub sounds: Vec<CombatSound>,
@@ -158,14 +142,10 @@ impl Layers {
     }
 }
 
-/// `NSound`'s battle ambience defines.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BattleDefines {
-    /// The distant battle ambience's sound effect.
     pub effect: String,
-    /// The hearing distance when the effect names no falloff.
     pub falloff_default: f32,
-    /// The fewest divisions in a battle that sound it.
     pub min_unit_count: i32,
 }
 

@@ -29,8 +29,6 @@ fn capacity_generation_coalesces_until_acknowledged() {
 
 #[test]
 fn capacity_full_handshake_covers_all_dequeue_interleavings() {
-    // Queue and callback events advance explicitly, with a competing producer.
-    // No sleeps, time assertions or dependence on worker scheduling.
     for point in 0..4 {
         let capacity = Arc::new(Capacity::default());
         let (notify, wakes) = mpsc::channel();
@@ -46,7 +44,7 @@ fn capacity_full_handshake_covers_all_dequeue_interleavings() {
         };
         if point == 0 {
             dequeue_and_refill();
-            wakes.try_recv().unwrap(); // already handled before rearming
+            wakes.try_recv().unwrap();
         }
         let before = listener.acknowledge();
         if point == 1 {
@@ -66,8 +64,6 @@ fn capacity_full_handshake_covers_all_dequeue_interleavings() {
         if point == 0 {
             assert!(!changed);
             assert!(matches!(wakes.try_recv(), Err(mpsc::TryRecvError::Empty)));
-            // Full with a stable generation is safe to wait; the next dequeue
-            // must create a fresh event after the prior event was acknowledged.
             inbox.try_recv().unwrap();
             capacity.dequeued();
             wakes.try_recv().unwrap();
@@ -113,7 +109,6 @@ fn capacity_callbacks_can_subscribe_and_unsubscribe_outside_registry_lock() {
     capacity.dequeued();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     drop(listener);
-    // Empty-listener fast path performs no generation/fanout work.
     let generation = capacity.listen(|| {});
     let before = generation.generation();
     drop(generation);

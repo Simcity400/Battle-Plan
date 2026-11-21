@@ -1,75 +1,36 @@
-//! Sounds, sound effects, falloffs, categories and compressors from the
-//! recorded content stack.
-//!
-//! Every `.asset` file below `sound/` loads in the asset loader's recursive
-//! order: files before subdirectories, each level in byte order, a path
-//! repeated across layers read from the winning layer. Each file may hold
-//! `sound`, `soundeffect`, `falloff`, `category`, `master_compressor` and
-//! `music_compressor` blocks in any order.
-//!
-//! The first declaration of a sound, sound effect or falloff name is kept; a
-//! later one is refused by name, as the game refuses adding a name twice. A
-//! sound is named by the first 63 bytes of its name; a reference by its whole name.
-//! References are resolved after every file is read: an effect's sounds and
-//! falloff by exact name, and each category's effect list in category order,
-//! where a later category takes an effect over from an earlier one. A missing
-//! name is a named, counted refusal that leaves the reference empty: an effect
-//! whose falloff is missing plays without distance attenuation, and an effect
-//! without a category plays outside every category.
-//!
-//! A sound's `file` is relative to the folder of the asset file declaring it.
-//! Sample files are outside the recording's hash coverage; reads go through
-//! [`ResolvedLayers::read_uncovered`] and are reported as uncovered.
 
 use crate::{ResolvedLayers, crt, defines, parser};
 use installed_content_core::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
 
-/// The game keeps a sound's or music track's name in 64 bytes: it is added and found by 63.
 pub(crate) fn registered(name: &str) -> &[u8] {
     &name.as_bytes()[..name.len().min(63)]
 }
 
-/// One `sound` block: a named sample file and its volume.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sound {
     pub name: String,
-    /// The layer path of the sample file.
     pub path: String,
     pub volume: f32,
-    /// The mixer ranks voices by this times their gain when more play than
-    /// it mixes.
     pub priority: f32,
-    /// The declaring asset file, for diagnostics.
     pub source: String,
 }
 
-/// One candidate of an effect's `sounds` list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Choice {
-    /// Index into [`Catalog::sounds`].
     pub sound: usize,
-    /// `sound = x` weighs 1; `weighted_sound = { sound = x weight = n }` weighs n.
     pub weight: u32,
 }
 
-/// What happens when an effect already has `max_audible` audible instances.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overflow {
-    /// `fail`: a new instance does not start.
     Fail,
-    /// `silent` (the default): the instance plays but is held silent while the
-    /// effect is at its limit.
     Silent,
 }
 
-/// A falloff's attenuation curve over the normalised distance `t` between its
-/// minimum and maximum distance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Curve {
-    /// `1 - t`.
     Linear,
-    /// `-log10(0.9 t + 0.1)`, the default.
     Logarithmic,
 }
 
@@ -78,7 +39,6 @@ pub struct Falloff {
     pub name: String,
     pub min_distance: f32,
     pub max_distance: f32,
-    /// Scales the vertical offset between listener and emitter when positive.
     pub height_scale: f32,
     pub curve: Curve,
 }
@@ -95,7 +55,6 @@ impl Default for Falloff {
     }
 }
 
-/// A random offset drawn between two authored values, in authored order.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Range {
     pub first: f32,
@@ -107,24 +66,16 @@ pub struct Effect {
     pub name: String,
     pub choices: Vec<Choice>,
     pub volume: f32,
-    /// Index into [`Catalog::falloffs`]; `None` plays without attenuation.
     pub falloff: Option<usize>,
     pub looping: bool,
-    /// `is3d`: pans by the emitter's direction from the listener.
     pub positional: bool,
-    /// Negative is unlimited.
     pub max_audible: i32,
     pub overflow: Overflow,
-    /// Seconds.
     pub fade_in: f32,
-    /// Seconds.
     pub fade_out: f32,
     pub volume_offset: Range,
-    /// Seconds.
     pub delay_offset: Range,
-    /// A rate factor; authored in percent.
     pub playback_rate: f32,
-    /// A rate offset; authored in percent.
     pub playback_rate_offset: Range,
     pub looping_volume_offset: bool,
     pub looping_delay_offset: bool,
@@ -132,7 +83,6 @@ pub struct Effect {
     pub random_sound_when_looping: bool,
     pub prevent_random_repetition: bool,
     pub polyphony: i32,
-    /// Index into [`Catalog::categories`].
     pub category: Option<usize>,
     pub source: String,
 }
@@ -166,8 +116,6 @@ impl Effect {
     }
 }
 
-/// A dynamic range compressor. Gains are linear; the threshold is in decibels
-/// and times in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Compressor {
     pub enabled: bool,
@@ -199,8 +147,6 @@ pub struct Category {
     pub compressor: Option<Compressor>,
 }
 
-/// `NDefines.NSound`: the category whose volume follows camera altitude and
-/// the ambient slider, and the category the voice slider sets.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Defines {
     pub height_category: String,
@@ -209,7 +155,6 @@ pub struct Defines {
     pub height_min_volume: f32,
     pub height_max_volume: f32,
     pub voice_category: String,
-    /// `VOICE_OVER_COOL_DOWN`: the seconds after a voice-over starts before another may.
     pub voice_cool_down: f32,
 }
 
@@ -234,8 +179,6 @@ impl Defines {
         })
     }
 
-    /// The height category's altitude factor at camera height `altitude`:
-    /// the altitude clamped to its range, mapped linearly onto the volumes.
     pub fn height_volume(&self, altitude: f32) -> f32 {
         let clamped = if altitude < self.height_min_altitude {
             self.height_min_altitude
@@ -250,7 +193,6 @@ impl Defines {
     }
 }
 
-/// Named, counted refusals in first-seen order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Notes(Vec<(String, usize)>);
 
@@ -271,7 +213,6 @@ impl Notes {
         self.0.is_empty()
     }
 
-    /// One line per message, with its count when repeated.
     pub fn lines(&self) -> Vec<String> {
         self.0
             .iter()
@@ -291,7 +232,6 @@ pub struct Catalog {
     pub categories: Vec<Category>,
     pub master_compressor: Option<Compressor>,
     pub music_compressor: Option<Compressor>,
-    /// Asset files read, in load order.
     pub files: Vec<ScriptPath>,
     pub notes: Notes,
     sound_names: BTreeMap<Vec<u8>, usize>,
@@ -300,7 +240,6 @@ pub struct Catalog {
     category_names: BTreeMap<String, usize>,
 }
 
-/// An effect's references before resolution.
 struct Pending {
     effect: usize,
     sounds: Vec<(String, u32)>,
@@ -328,7 +267,6 @@ impl Catalog {
                     continue;
                 }
             };
-            // Sample paths need a UTF-8 folder, but the descriptor filename need not be UTF-8.
             let directory = file.folder_text();
             catalog.files.push(file.clone());
             for item in &document.items {
@@ -592,9 +530,6 @@ impl Catalog {
                 )),
             }
         }
-        // A repeated name adds its effects to the same category; a later
-        // compressor block replaces the earlier one, as the game's category
-        // registry takes a repeated category's compressor when it has one.
         let index = match self.category_names.get(&name) {
             Some(&index) => {
                 if compressor_block.is_some() {
@@ -639,8 +574,6 @@ impl Catalog {
                 }
             }
         }
-        // Every declaration of a category adds to its one list; the lists then resolve once in
-        // category order, so reopening an earlier category does not take an effect back.
         let mut lists: Vec<Vec<(&str, &str)>> = vec![Vec::new(); self.categories.len()];
         for (category, members, source) in &assignments {
             lists[*category].extend(
@@ -738,7 +671,6 @@ fn compressor(fields: &[parser::Item], path: &str, notes: &mut Notes) -> Compres
             Some("postgain") => out.postgain = decibels(field, path, notes),
             Some("ratio") => {
                 number_into(field, &mut out.ratio, path, notes);
-                // A zero ratio is held as one: no compression.
                 if out.ratio == 0.0 {
                     out.ratio = 1.0;
                 }
@@ -755,7 +687,6 @@ fn compressor(fields: &[parser::Item], path: &str, notes: &mut Notes) -> Compres
     out
 }
 
-/// Gains are authored in decibels and held linear.
 fn decibels(field: &parser::Item, path: &str, notes: &mut Notes) -> f32 {
     let mut value = 0.0;
     number_into(field, &mut value, path, notes);
@@ -776,8 +707,6 @@ fn bool_into(field: &parser::Item, out: &mut bool, path: &str, notes: &mut Notes
     }
 }
 
-/// `{ first second }`, each divided by `scale` (percent ranges by 100).
-/// Anything else is refused by name and keeps the range.
 fn range_into(field: &parser::Item, out: &mut Range, scale: f32, path: &str, notes: &mut Notes) {
     let values: Option<Vec<f32>> = field.value.items().and_then(|items| {
         items
@@ -800,8 +729,6 @@ fn range_into(field: &parser::Item, out: &mut Range, scale: f32, path: &str, not
     }
 }
 
-/// The keyword a field dispatches on, folded as the lexer folds it; `None` for a quoted,
-/// numeric or anonymous key, which names no property.
 fn key(field: &parser::Item) -> Option<String> {
     field
         .keyword()

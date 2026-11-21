@@ -1,14 +1,3 @@
-//! Special projects (`special-projects`): one country's project episodes over its branch, each a
-//! list of runs of equal observed values (progress, state, iterations, scientist), with their
-//! names, icons, scientists and the game's iteration text. Episodes are a fold at the reply over
-//! the holder's own rows, read as the hours they change ([`replay::lanes::history`]) of
-//! `Projects`, `ProjectHistory` and the programs they name, never a walk of hours. The two values
-//! the game deletes (a completed project's scientist, the first hour seen cancelled) fall out of
-//! the fold. Text and art come from the recording's facts at the reply.
-//!
-//! [`completions`] is the event feed's: every project completion dated within a window.
-//! [`details`] is the at-hour panel of scientists, facilities and rewards, and the effects of one
-//! project's output and reward options.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -51,16 +40,11 @@ use fold::{Entry, Fold, Observed, Person, Row};
 const ITERATIONS_KEY: &str = "ONGOING_PROJECT_BREAKTHROUGHS_NUMBER";
 const PLACEHOLDER_ICON: &str = "GFX_PLACEHOLDER_sp_project_icon";
 const ICON_EDGE: u32 = 96;
-/// The native reference types of a project's program and of a program's scientist.
 const PROGRAM_REFERENCE: u32 = 83;
 const CHARACTER_REFERENCE: u32 = 73;
 
-/// `Projects` columns the fold reads: definition, program reference, started, state offset,
-/// not completed, prototype progress.
 const PROJECT_COLUMNS: [usize; 6] = [0, 1, 2, 4, 9, 12];
-/// `ProjectHistory` columns: reward handle, option handle, date.
 const HISTORY_COLUMNS: [usize; 3] = [0, 1, 2];
-/// `ProjectPrograms`' scientist reference.
 const SCIENTIST_COLUMNS: [usize; 1] = [3];
 
 pub struct SpecialProjects;
@@ -81,7 +65,7 @@ pub struct SpecialProjectsParams {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDate {
     pub hour: i32,
-    /// False: it happened by this hour, not at it.
+    #[doc = " False: it happened by this hour, not at it."]
     pub exact: bool,
 }
 
@@ -89,7 +73,7 @@ pub struct ProjectDate {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPerson {
-    /// None where the recorded reference cannot say whether a scientist is assigned.
+    #[doc = " None where the recorded reference cannot say whether a scientist is assigned."]
     pub assigned: Option<bool>,
     pub id: Option<u32>,
     pub name: Option<String>,
@@ -106,9 +90,9 @@ pub struct ProjectPresentation {
     pub specialization_name: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
-    /// Its index in `people`.
+    #[doc = " Its index in `people`."]
     pub scientist: u32,
-    /// A completed project loses its program: the last hour its scientist was seen assigned.
+    #[doc = " A completed project loses its program: the last hour its scientist was seen assigned."]
     pub scientist_as_of: Option<i32>,
 }
 
@@ -129,14 +113,14 @@ pub enum ProjectState {
 pub struct SpecialProjectRun {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Its index in `presentations`.
+    #[doc = " Its index in `presentations`."]
     pub presentation: u32,
-    /// Prototype progress, percent, clamped to -100..=100.
+    #[doc = " Prototype progress, percent, clamped to -100..=100."]
     pub progress: i32,
     pub state: ProjectState,
     pub completion: Option<ProjectDate>,
     pub cancellation: Option<ProjectDate>,
-    /// History entries less the completion's; none where the history was not recorded.
+    #[doc = " History entries less the completion's; none where the history was not recorded."]
     pub iterations: Option<i32>,
 }
 
@@ -155,23 +139,22 @@ pub struct ProjectEpisode {
 pub struct SpecialProjectsReply {
     pub branch_id: String,
     pub tag: String,
-    /// The tag's holders over the branch.
+    #[doc = " The tag's holders over the branch."]
     pub identities: Vec<CountryIdentityRun>,
-    /// The hours the holders' projects were recorded.
+    #[doc = " The hours the holders' projects were recorded."]
     pub available: Vec<HourSpan>,
     pub projects: Vec<ProjectEpisode>,
     pub presentations: Vec<ProjectPresentation>,
     pub people: Vec<ProjectPerson>,
-    /// The game's text for each iteration count shown, none where it cannot be made.
+    #[doc = " The game's text for each iteration count shown, none where it cannot be made."]
     pub iteration_texts: BTreeMap<i32, Option<String>>,
-    /// Why nothing is shown, apart from a country with no projects.
+    #[doc = " Why nothing is shown, apart from a country with no projects."]
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(SpecialProjectsReply);
 
-/// The project content of one catalogue: definitions and the icons drawn from it.
 pub(crate) struct ProjectContent {
     pub politics: Arc<PoliticsContent>,
     pub definitions: Arc<Catalog>,
@@ -183,7 +166,6 @@ struct State {
     held: Option<Arc<ProjectContent>>,
 }
 
-/// The request's project content, read once per catalogue.
 pub(crate) fn content(source: &Source, load: &LoadContext) -> io::Result<Arc<ProjectContent>> {
     let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Special projects need the recorded content stack"))?;
     let politics = politics_content(source, options)?;
@@ -198,19 +180,15 @@ pub(crate) fn content(source: &Source, load: &LoadContext) -> io::Result<Arc<Pro
     Ok(held)
 }
 
-/// A localisation key of `tag`'s: its country-prefixed form where the content has one.
 fn country_key(content: &ProjectContent, tag: &str, key: &str) -> String {
     let prefixed = format!("{tag}_{key}");
     if content.politics.catalogue.localisation.get(&prefixed).is_some() { prefixed } else { key.to_owned() }
 }
 
-/// Whether `key`'s text reads scripted scope (an expression in brackets).
 fn needs_scope(content: &ProjectContent, key: &str) -> bool {
     content.politics.catalogue.localisation.localise(key.as_bytes()).is_ok_and(|text| text.contains('['))
 }
 
-/// The sprite a project shows: a nonempty authored icon, even one the content lacks; else its
-/// token's country-prefixed sprite, the generic one, or the placeholder.
 fn icon_key(authored: Option<&str>, token: &str, tag: &str, has: impl Fn(&str) -> Result<bool, String>) -> Result<String, String> {
     if let Some(icon) = authored.filter(|icon| !icon.is_empty()) {
         return Ok(icon.to_owned());
@@ -224,7 +202,6 @@ fn icon_key(authored: Option<&str>, token: &str, tag: &str, has: impl Fn(&str) -
     Ok(if has(&generic)? { generic } else { PLACEHOLDER_ICON.to_owned() })
 }
 
-/// A definition as a reply names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Named {
     pub name: String,
@@ -240,7 +217,6 @@ impl Named {
     }
 }
 
-/// One reply's naming: what it could not name, by reason, and its art failures, counted.
 pub(crate) struct Naming<'c> {
     pub content: &'c ProjectContent,
     pub refusals: Mutex<Refusals>,
@@ -275,8 +251,6 @@ impl<'c> Naming<'c> {
         drawn
     }
 
-    /// The definition `token` (recorded id `id`; none where the recording does not spell it) as
-    /// `tag` shows it; a name that reads scope is evaluated by `scoped`.
     pub fn definition(&mut self, token: Option<&str>, id: u32, tag: &str, scoped: &mut dyn FnMut(&str) -> Result<Option<String>, String>) -> Named {
         let Some(token) = token else {
             self.note("its definition token is not recorded", id.to_string());
@@ -331,12 +305,10 @@ impl<'c> Naming<'c> {
         self.content.politics.catalogue.localised_with_refusals(&key, &[], View::Scripted, &self.refusals)
     }
 
-    /// The game's text for `count` iterations.
     pub fn iterations(&self, count: i32) -> Option<String> {
         self.content.politics.catalogue.localised_with_refusals(ITERATIONS_KEY, &[("NUMBER", Argument::Int32(count))], View::Plain, &self.refusals)
     }
 
-    /// Character `id` of `frame` as a scientist: its name and portrait.
     pub fn person(&mut self, frame: &DecodedFrame, id: u32) -> ProjectPerson {
         let mut person = ProjectPerson { assigned: Some(true), id: Some(id), name: None, portrait: None, missing: None };
         let character = frame.complete::<tables::Characters>().ok().and_then(|rows| rows.binary_search_by_key(&id, |row| row.id).ok().map(|at| &rows[at]));
@@ -362,7 +334,6 @@ impl<'c> Naming<'c> {
         person
     }
 
-    /// The reply's warnings of what it could not name or draw.
     pub fn warnings(self) -> Vec<String> {
         let mut out = self.refusals.into_inner().unwrap_or_else(|error| error.into_inner()).lines("Project texts");
         out.extend(self.art.into_iter().map(|(reason, count)| format!("{reason} (count: {count})")));
@@ -370,7 +341,6 @@ impl<'c> Naming<'c> {
     }
 }
 
-/// The spelling of each of `ids` in `frame`'s LexicalTokens.
 pub(crate) fn spellings(frame: &DecodedFrame, ids: impl IntoIterator<Item = u32>) -> HashMap<u32, String> {
     let Ok(rows) = frame.complete::<tables::LexicalTokens>() else { return HashMap::new() };
     ids.into_iter()
@@ -382,8 +352,6 @@ pub(crate) fn spellings(frame: &DecodedFrame, ids: impl IntoIterator<Item = u32>
         .collect()
 }
 
-/// A scoped name of a country in canonical slot `slot` evaluated at `hour`, from the tables
-/// scripted text reads.
 fn scoped_at(query: &Query<'_>, content: &ProjectContent, key: &str, hour: i32, slot: u32) -> Result<Option<String>, String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
@@ -393,7 +361,6 @@ fn scoped_at(query: &Query<'_>, content: &ProjectContent, key: &str, hour: i32, 
     Ok(catalogue.localise_in(key, &text))
 }
 
-/// The cells of a key at an hour of a history: none where its row is not shown.
 struct Cursor<'a> {
     steps: &'a [Step],
     at: usize,
@@ -404,7 +371,6 @@ impl<'a> Cursor<'a> {
         Self { steps, at: 0 }
     }
 
-    /// Its cells at `hour`; the hours asked never go back.
     fn at(&mut self, hour: i32) -> Option<&'a [Cell]> {
         while self.at + 1 < self.steps.len() && self.steps[self.at + 1].hour <= hour {
             self.at += 1;
@@ -439,7 +405,6 @@ fn history_entry(ordinal: u32, cells: &[Cell]) -> Option<Entry> {
     Some(Entry { ordinal, completion: reward == fold::COMPLETION_MARKER && option == fold::COMPLETION_MARKER, date })
 }
 
-/// The hours `table` of run `run` could be read from `first` through `last`, as runs.
 fn available(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
     let runs = dashboard_query::cost::storage(|| lanes::statuses(query.replay.recording(), run, table, first, last))?;
     Ok(runs.into_iter().filter(|run| matches!(run.status, Status::Complete | Status::Truncated { .. })).map(|run| (run.first, run.last)).collect())
@@ -450,7 +415,6 @@ fn within(spans: &[(i32, i32)], hour: i32) -> bool {
     spans.get(at).is_some_and(|span| span.0 <= hour)
 }
 
-/// The hours of `first..=last` none of `spans` (ascending) covers.
 fn uncovered(spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
     let mut at = first;
@@ -466,8 +430,6 @@ fn uncovered(spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
     out
 }
 
-/// The raw ids linking to canonical slot `slot` within `first..=last`, each with its hours: a
-/// project's owner is any raw id of its country.
 fn owner_ids(links: &RunLinks, slot: u32, first: i32, last: i32) -> BTreeMap<u32, Vec<(i32, i32)>> {
     let mut out: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
     for (&raw, runs) in &links.slots {
@@ -483,8 +445,6 @@ fn owner_ids(links: &RunLinks, slot: u32, first: i32, last: i32) -> BTreeMap<u32
     out
 }
 
-/// Who program reference `program` names, from its program's scientist cells at the hour (none
-/// where the program row is not shown); `scientist` is none where the reference names no program.
 fn person(program: u64, scientist: Option<Option<&[Cell]>>) -> Person {
     if program == 0 {
         return Person::Unassigned;
@@ -506,7 +466,6 @@ fn person(program: u64, scientist: Option<Option<&[Cell]>>) -> Person {
     }
 }
 
-/// One holder's stretch of a run of the timeline.
 struct Piece {
     run: u32,
     first: i32,
@@ -515,9 +474,7 @@ struct Piece {
     id: u32,
 }
 
-/// The holder's rows over a piece, read as the hours they change.
 struct PieceRows {
-    /// Per owner raw id, in `owners`' order.
     projects: Vec<History>,
     histories: Vec<History>,
     programs: History,
@@ -569,8 +526,6 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
     })
 }
 
-/// The hours from which the observation of a piece may change, ascending: its first, every hour a
-/// row it reads changes, and every edge of a status run or of an owner's link.
 fn boundaries(first: i32, last: i32, histories: &[&History], spans: &[&[(i32, i32)]]) -> Vec<i32> {
     let mut hours = vec![first];
     for history in histories {
@@ -590,7 +545,6 @@ fn boundaries(first: i32, last: i32, histories: &[&History], spans: &[&[(i32, i3
     hours
 }
 
-/// The fold of the holder's projects over `piece`, the hours observed added to `observed`.
 fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut Vec<(i32, i32)>, cancelled: &AtomicBool) -> io::Result<()> {
     let mut histories: Vec<&History> = read.projects.iter().chain(&read.histories).collect();
     histories.push(&read.programs);
@@ -652,8 +606,6 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
     Ok(())
 }
 
-/// The holder runs of `country` through `through` over the timeline cut at its stretches, and the
-/// holders as identity runs.
 fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
     let mut pieces = Vec::new();
     let mut identities: Vec<CountryIdentityRun> = Vec::new();
@@ -670,7 +622,6 @@ fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Ve
     (pieces, identities)
 }
 
-/// Run `run`'s links, read once a reply.
 fn links_of<'l>(query: &Query<'_>, held: &'l mut HashMap<u32, RunLinks>, run: u32) -> io::Result<&'l RunLinks> {
     if !held.contains_key(&run) {
         let links = dashboard_query::cost::storage(|| country_ids::run_links(query.replay.recording(), run))?;
@@ -679,8 +630,6 @@ fn links_of<'l>(query: &Query<'_>, held: &'l mut HashMap<u32, RunLinks>, run: u3
     Ok(&held[&run])
 }
 
-/// What the reply names, each read at the hour it first shows: definitions' tokens, and
-/// characters with their portraits and name tokens.
 struct Spelled {
     tokens: HashMap<u32, String>,
     people: HashMap<u32, ProjectPerson>,
@@ -721,7 +670,6 @@ fn unread_person(person: &Person) -> ProjectPerson {
     }
 }
 
-/// Values by equality, each once, in the order first met.
 struct Interned<T> {
     values: Vec<T>,
     ids: HashMap<T, u32>,
@@ -743,8 +691,6 @@ impl<T: Clone + Eq + std::hash::Hash> Interned<T> {
     }
 }
 
-/// `params`' reply: the fold of each holder's stretches, then the names, art and people of what
-/// it shows.
 fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let query = crate::answer::query(source, branch)?;
@@ -771,7 +717,6 @@ fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Pro
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
 
-/// The reply over `fold`, naming the country `tag`, the name it goes by at the hour shown.
 fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observed: Vec<(i32, i32)>, identities: Vec<CountryIdentityRun>, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let mut naming = Naming::new(content);
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
@@ -910,15 +855,10 @@ impl Product for SpecialProjects {
     }
 }
 
-/// A project completion, as the event feed lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectCompletion {
-    /// The tag holding the project's country when the completion was read; none where no tag
-    /// holds it.
     pub tag: Option<String>,
-    /// The game's completion date.
     pub date: i32,
-    /// The hour the recording first held the completion.
     pub observed_hour: i32,
     pub owner: u32,
     pub project: u32,
@@ -927,18 +867,12 @@ pub struct ProjectCompletion {
     pub icon_missing: Option<String>,
 }
 
-/// Every project completion dated within a window.
 pub struct Completions {
     pub events: Vec<ProjectCompletion>,
-    /// Hours of the window the project histories were not recorded: a completion dated there may
-    /// be missing.
     pub unrecorded: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
 
-/// The event feed's project completions: the history entries marking a completion dated within
-/// `from..=to` (the game dates them itself), read as the hours the histories change over the
-/// window, each named for its country as it stood when read.
 pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
     let recording = query.replay.recording();
     let content = content(source, load)?;

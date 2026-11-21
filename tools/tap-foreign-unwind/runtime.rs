@@ -1,4 +1,3 @@
-//! Test-only client of tools/tap-foreign-unwind/probe.cpp, never a Rust catcher.
 use std::{os::windows::ffi::OsStrExt, sync::Mutex};
 use windows_sys::Win32::{
     Foundation::{FreeLibrary, HMODULE},
@@ -31,8 +30,6 @@ impl Probe {
         let path: Vec<_> = path.encode_wide().chain(Some(0)).collect();
         let module = unsafe { LoadLibraryW(path.as_ptr()) };
         assert!(!module.is_null(), "load shared native probe DLL");
-        // Address conversion assigns each native export its documented ABI;
-        // no non-unwinding Rust callback is cast into an unwind-capable one.
         unsafe {
             Self {
                 module,
@@ -73,13 +70,8 @@ impl Probe {
             },
         ]
     }
-    /// # Safety
-    /// Entry and its argument must remain valid through normal and foreign
-    /// dispatch; the shared native handlers must catch before returning here.
     pub unsafe fn run(&self, case: Case, entry: Entry, argument: usize) {
         let mut witness = [0usize; 30];
-        // Both native drivers catch before their non-unwinding return. The
-        // shared authored wrapper records the actual native handler continuation.
         let result = unsafe { invoke(case.driver, entry, argument, witness.as_mut_ptr()) };
         assert_eq!(
             result, case.expected,
@@ -117,8 +109,6 @@ const WRAPPER_REGISTERS: [usize; 8] = [
     0x2201, 0x2202, 0x2203, 0x2204, 0x2205, 0x2206, 0x2207, 0x2208,
 ];
 
-// The native DLL catches all exceptions before this wrapper returns. Set every
-// nonvolatile, then witness its actual return state before restoring our caller.
 #[unsafe(naked)]
 unsafe extern "system" fn invoke(
     _driver: Driver,

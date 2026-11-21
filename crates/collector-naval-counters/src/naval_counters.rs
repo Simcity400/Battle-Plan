@@ -1,7 +1,3 @@
-//! Hourly task-force mission, link and supply operands, fleet colour, region count and ordered
-//! roster, each task force's movement operands and its registered mission regions, all from
-//! one fleet walk. Port searching/status inputs are independent optional groups;
-//! raw strings use a separate loan of the existing Names arena type.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -34,7 +30,6 @@ static FRESH_REFUSALS: [std::sync::atomic::AtomicU64; 6] =
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// Tests: read each task force's fields directly, without its gather.
     static TASK_GATHER_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -45,18 +40,12 @@ fn task_gather_enabled() -> bool {
     true
 }
 
-/// Captures, task forces walked, and QPC ticks of the whole walk and of its
-/// mission and motion (with fresh ETA) readers, cumulative.
 static PHASES: [std::sync::atomic::AtomicU64; 5] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 5];
 
-/// Mission region ids and fresh ETA location terms served from the world's hold and read, and
-/// fresh ETA fleet leaders carried and read, cumulative.
 static WORLD_HOLDS: [std::sync::atomic::AtomicU64; 6] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 6];
 
-/// What the counter walk may hold across hours: map content for the native world occurrence
-/// (`None`: unobserved) and fleet leaders under the fleet leader binding certificate.
 #[derive(Clone, Copy)]
 pub struct Holds {
     pub world: Option<u64>,
@@ -68,19 +57,16 @@ fn unobserved(_: usize) -> Option<(u64, u64)> {
 }
 
 impl Holds {
-    /// Nothing is held: every value is read.
     pub const NONE: Self = Self {
         world: None,
         fleets: unobserved,
     };
 }
 
-/// Where the task-force counter walk's time goes.
 pub fn phase_data() -> impl serde::Serialize {
     let load = |index: usize| PHASES[index].load(std::sync::atomic::Ordering::Relaxed);
     let held = |index: usize| WORLD_HOLDS[index].load(std::sync::atomic::Ordering::Relaxed);
     let mut frequency = 0;
-    // SAFETY: an out pointer to a live local.
     let hz = unsafe {
         windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
     } != 0;
@@ -168,8 +154,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Fleet/task rosters and both unit traversal routes size every
-    /// independent motion/counter arena.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -287,8 +271,6 @@ struct HeldFleetRegions {
     regions: Option<std::sync::Arc<Vec<u32>>>,
 }
 
-/// The existing fleet census supplies identities; this helper acquires no
-/// payload while its writer certificate holds or observation is unavailable.
 fn observe_fleet_regions(
     store: &mut std::collections::BTreeMap<u64, HeldFleetRegions>,
     pointer: usize,
@@ -322,8 +304,6 @@ fn observe_fleet_regions(
     let regions = certified.then_some(regions).flatten();
     let held = HeldFleetRegions {
         pointer,
-        // A race cannot certify the stale header under the writer's newer
-        // token. Leave it unheld so the next stable census can acquire it.
         certificate: certified.then_some(after).flatten(),
         regions,
     };
@@ -341,8 +321,6 @@ pub struct Captured {
     rosters: Arena<u64>,
     motion: CaptureRows<ctask_force::MapMotionRow>,
     paths: Arena<u32>,
-    /// First-combat answers for this capture's task forces. The fleet walk runs apart from the
-    /// division and railway-gun captures, so it keeps its own memo, sized off-thread.
     combats: FirstCombatMemo,
     missions: CaptureRows<ctask_force::MissionRow>,
     regions: Arena<u32>,
@@ -350,41 +328,21 @@ pub struct Captured {
     supply_origins: Arena<engine_native::cunit_supply_inputs::Origin>,
     port_searchers: Arena<ctask_force::port_mission::Searcher>,
     port_avoided: Arena<Option<engine_native::cname_group_member::Span>>,
-    /// A separate instance of the existing Names arena: port growth and
-    /// faults never consume the earlier cached-name field's capacity.
     port_bytes: Arena<u8>,
-    /// Reader Drop erases transient registry pointers before acquisition exits.
     port_answers: Arena<ctask_force::port_mission::ReferenceAnswer>,
-    /// The fresh ETA graph's certified censuses, kept across hours.
     censuses: CensusStore,
-    /// Mission region ids and fresh ETA location terms, held for their world.
     region_ids: ctask_force::WorldIds,
     locations: ctask_force::WorldHold<(u32, usize)>,
-    /// Fresh ETA fleet leaders, held under their certificates.
     fleet_leaders: ctask_force::FleetLeaders,
 }
 
-/// The fresh ETA graph's censuses of certified receivers (roster countries'
-/// and fleet leaders' modifier trees, which the naval tree family
-/// certifies), each under the receiver's certificate taken before the census
-/// was read. A complete capture holds the censuses whose receivers still have
-/// that certificate when it ends; the frame's next capture is served them
-/// while the certificate still holds when served. The held censuses leave the
-/// store when a capture begins and return only when it completes, so a
-/// capture that does not complete (or an Ordinary family that fails:
-/// [`Captured::forget_censuses`]) holds nothing.
 #[derive(Default)]
 struct CensusStore {
-    /// Sorted by [`ctask_force::HeldCensus::identity`].
     held: Vec<ctask_force::HeldCensus>,
-    /// The censuses held before this capture, which it may be served, sorted
-    /// by identity.
     serve: Vec<ctask_force::HeldCensus>,
-    /// The certified censuses this capture used.
     log: Vec<ctask_force::HeldCensus>,
 }
 
-/// The census of `identity` in `sorted`.
 fn held_census(
     sorted: &[ctask_force::HeldCensus],
     identity: &ctask_force::CensusIdentity,
@@ -396,16 +354,12 @@ fn held_census(
 }
 
 impl CensusStore {
-    /// Before a capture: take the held censuses out to be served.
     fn prepare(&mut self) {
         self.serve.clear();
         std::mem::swap(&mut self.held, &mut self.serve);
         self.log.clear();
     }
 
-    /// After a capture: hold this capture's censuses whose receivers'
-    /// certificates are still the ones taken before them (nothing when it
-    /// did not complete). Returns how many censuses were served.
     fn finish(
         &mut self,
         complete: bool,
@@ -426,10 +380,8 @@ impl CensusStore {
                 if held_census(&self.serve, &census.identity())
                     .is_some_and(|held| held.certificate == census.certificate)
                 {
-                    // The reader served exactly this census.
                     served += 1;
                 }
-                // No writer moved the receiver since its census was taken.
                 if certificate(census.receiver) == Some(census.certificate) {
                     self.held.push(*census);
                 }
@@ -439,7 +391,6 @@ impl CensusStore {
         served
     }
 
-    /// Hold nothing, keeping the allocations.
     fn forget(&mut self) {
         self.held.clear();
         self.serve.clear();
@@ -452,7 +403,6 @@ impl CensusStore {
     }
 }
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
@@ -488,10 +438,6 @@ impl Captured {
             fleet_leaders: Default::default(),
         }
     }
-    /// Hold no census of the counter walk: an Ordinary family that failed
-    /// (a part refused, panicked or stopped, wherever this pack was) keeps
-    /// nothing a later capture could be served. The per-hour reset keeps
-    /// them.
     pub fn forget_censuses(&mut self) {
         self.censuses.forget();
         self.fleet_regions.clear();
@@ -512,7 +458,6 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
-        // A later sibling failure must not lose this completed walk's refusals.
         self.decode_owned();
         self.clear_fresh_owner_demands();
         self.task_forces.reset();
@@ -600,8 +545,6 @@ impl Captured {
         self.capture_at(memory, base, state, Some(hour), modifier_guard)
     }
 
-    /// Native observations and certificates finish before the owned diagnostic
-    /// and retired-fleet bookkeeping tail is handed to FIFO decode.
     pub fn acquire_with_hour(
         &mut self,
         memory: &impl Memory,
@@ -651,16 +594,10 @@ impl Captured {
         self.region_ids.begin(holds.world);
         self.locations.begin(holds.world);
         self.fleet_leaders.begin();
-        // Answers are valid for one capture only; clearing keeps the reserved room.
         self.combats.clear();
-        // Each task force's fixed fields in one guarded call, selected once the walk has
-        // authenticated its identity and served to every reader below.
         let tasks = engine_native::cship::SwitchedObject::new(memory, ctask_force::TASK_FIELDS);
         let memory = &tasks;
-        // The walk's task forces and the time its mission and motion readers
-        // took, for status.
         let (mut visited, mut missions_ticks, mut motion_ticks) = (0_u64, 0_u64, 0_u64);
-        // The certified censuses this frame held and may serve this hour.
         self.censuses.prepare();
         let mut motion = ctask_force::MapMotionCollector::new(
             memory,
@@ -785,7 +722,6 @@ impl Captured {
         {
             phase.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
         }
-        // A walk that fails leaves the motion and mission censuses unknown too.
         let failed = match captured.task_forces {
             Outcome::Unavailable { reason } => Some(reason),
             _ => None,
@@ -825,8 +761,6 @@ impl Captured {
         [qpc().saturating_sub(begin).max(0) as u64, 0, 0, 0]
     }
 
-    /// No Memory capability: receiver certificates and the poison decision
-    /// were finalized at acquisition; only owned rows and map retention remain.
     pub fn decode_owned(&mut self) {
         if !std::mem::take(&mut self.owned_pending) {
             return;
@@ -842,7 +776,6 @@ impl Captured {
             self.fleet_regions.clear();
             self.fleet_region_bytes = 0;
         }
-        // Retired receivers are compacted only when they materially outnumber live fleets.
         if self.fleet_regions.len() > self.fleets.outcome.len().saturating_mul(2) {
             let live: std::collections::BTreeSet<_> = self.fleets.rows[..self.fleets.outcome.len()]
                 .iter()
@@ -916,8 +849,6 @@ impl Captured {
             .get(row.supply_origins_start..end)
     }
 
-    /// Called off-thread. No native pointer or string descriptor is retained;
-    /// nullable slots preserve independent faults and source ordering.
     fn port_inputs(&self, row: &ctask_force::CounterRow) -> Option<NavalPortMissionInputs> {
         let input = row.port_mission?;
         let span = |(start, len): engine_native::cname_group_member::Span| {
@@ -952,7 +883,6 @@ impl Captured {
                 Some(owned_vec(copy_vec(bytes)))
             }))))
         });
-        // The frame's reset capture holds only this hour's port operands.
         Some(NavalPortMissionInputs {
             sample_hour: replay_data::rows::PacketHour::Host,
             searching,
@@ -973,9 +903,6 @@ impl Captured {
         ]
     }
 
-    /// Same-pass authenticated roster owners of admitted moving task forces.
-    /// The caller also requires a complete motion outcome before certifying its
-    /// domain; failures and truncation cannot stand for an empty owner set.
     #[cfg(any(test, feature = "test-support"))]
     pub fn fresh_owner_demands(
         &self,
@@ -986,8 +913,6 @@ impl Captured {
             .filter_map(|row| row.fresh_owner.map(|owner| (row.logical_owner, owner)))
     }
 
-    /// End the transient owner loan before this pack leaves Ordinary, on every
-    /// success and failure path. These pointers never reach projection.
     pub fn clear_fresh_owner_demands(&mut self) {
         for row in &mut self.motion.rows {
             row.fresh_owner = None;
@@ -1089,8 +1014,6 @@ impl Captured {
         }) {
             return unavailable("task-force route lies outside the captured arena");
         }
-        // Each task force sits in one fleet roster; a repeated handle is a torn census. Checked
-        // here, off the game thread.
         let Ok(mut handles) = collect_vec(rows.iter().map(|row| row.id)) else {
             return unavailable("collector allocation failed");
         };
@@ -1177,11 +1100,9 @@ mod tests {
         assert_eq!(ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed)), after);
     }
 
-    /// A source recording every single (unbatched) copy.
     struct Singles<'a> {
         source: &'a SliceMemory<'a>,
         singles: std::cell::RefCell<Vec<(usize, usize)>>,
-        /// Guarded calls of any kind.
         calls: std::cell::Cell<usize>,
     }
 
@@ -1239,7 +1160,6 @@ mod tests {
     const TASK: usize = 0x5000;
     const REGION: usize = 0x8000;
 
-    /// One country, fleet and task force whose mission patrols one strategic region.
     fn cold_storage_world() -> Vec<u8> {
         use engine_native::{ccountry, cgame_state, cnaval_mission, cstrategic_region, cunit};
         let mut bytes = vec![0; 0x9000];
@@ -1314,9 +1234,6 @@ mod tests {
         bytes
     }
 
-    /// A mission region's id is read once per native world occurrence: a later hour of the
-    /// same world answers it without a read, even after it changed underneath, and a new or
-    /// unobserved world reads it again. Every other table stays as read.
     #[test]
     fn mission_region_ids_are_held_for_their_world() {
         use engine_native::cstrategic_region;
@@ -1354,16 +1271,13 @@ mod tests {
         assert!(capture(&mut captured, &bytes, Some(7)));
         assert_eq!(regions(&captured), [1]);
         let first = captured.tables();
-        // Same world: the held id answers, though the region's id changed underneath.
         p32(&mut bytes, REGION + cstrategic_region::ID, 9);
         assert!(!capture(&mut captured, &bytes, Some(7)));
         assert_eq!(regions(&captured), [1]);
         assert_eq!(captured.tables()[0], first[0]);
-        // A new world reads it again; its changed id no longer sits at its slot.
         p32(&mut bytes, REGION + cstrategic_region::ID, 1);
         assert!(capture(&mut captured, &bytes, Some(8)));
         assert_eq!(regions(&captured), [1]);
-        // An unobserved world holds nothing.
         assert!(capture(&mut captured, &bytes, None));
         assert!(capture(&mut captured, &bytes, None));
     }
@@ -1385,8 +1299,6 @@ mod tests {
         assert_eq!(captured.allocated_bytes(), 0);
         captured.capture_with_hour(&memory, 0, STATE, 123, Err("fixture modifier refusal"));
         assert_eq!(captured.outcomes(), [Outcome::Rows { len: 1 }; N]);
-        // The counter, cached-name and supply readers' task-force fields come
-        // from one gather: none is read alone.
         let singles = memory.singles.borrow();
         for (offset, len) in [
             (0x258, 32),
@@ -1398,7 +1310,6 @@ mod tests {
             );
         }
         drop(singles);
-        // Guarded calls of one capture, with and without the gather.
         let calls = |gather: bool| {
             TASK_GATHER_OFF.set(!gather);
             memory.calls.set(0);
@@ -1710,7 +1621,6 @@ mod tests {
                 strategic_redeployment: None,
             }))
         );
-        // Even an unpublished staged prefix must release its native pointer.
         capture.motion.rows[1].fresh_owner = Some(Err("fixture owner refusal"));
         capture.motion.outcome = Outcome::Unavailable {
             reason: "fixture later census fault",
@@ -1733,8 +1643,6 @@ mod tests {
                 .all(|row| row.fresh_owner.is_none())
         );
         assert_eq!(capture.motion.rows[0].fresh.unwrap().sample_hour, 123);
-        // Reset changes table availability; retained owned packet bytes are not
-        // a fresh sample and cannot be projected through the unavailable prefix.
         assert!(matches!(
             capture.motion_table(),
             TableView::Unavailable { .. }
@@ -1858,8 +1766,6 @@ mod tests {
             (supply.ship_demand.count, supply.ship_demand.value),
             (3, 190_000)
         );
-        // Amounts at the footer's display step; a nonzero amount below half a
-        // step keeps one step with its sign (UnitSupplyInputs::STEP).
         let origins = supply.origins.as_ref().unwrap();
         assert_eq!(
             (
@@ -2115,7 +2021,6 @@ mod tests {
         );
     }
 
-    /// A census of `receiver`'s tree with `raw`, as the reader logs it.
     fn census(receiver: usize, raw: i64, certificate: (u64, u64)) -> ctask_force::HeldCensus {
         let mut census = ctask_force::HeldCensus {
             receiver,
@@ -2128,10 +2033,6 @@ mod tests {
         census
     }
 
-    /// The reader's step for one certified census whose tree holds `current`:
-    /// take the receiver's certificate, then serve the held census under it or
-    /// read `current` (counted in `reads`), and log what it used. Returns the
-    /// value used.
     fn use_census(
         store: &mut CensusStore,
         registry: &crate::watch_registry::WatchRegistry,
@@ -2156,8 +2057,6 @@ mod tests {
         used.values[0].raw
     }
 
-    /// A capture of every receiver in `trees` (receiver, current value): the
-    /// values used and the censuses served.
     fn census_capture(
         store: &mut CensusStore,
         registry: &crate::watch_registry::WatchRegistry,
@@ -2177,10 +2076,6 @@ mod tests {
 
     const TREE: usize = 0x10_0000;
 
-    /// A census read under a certificate is not held once a writer moves it
-    /// before the capture completes, though the capture registered the
-    /// receiver for the first time: its certificate was taken before the
-    /// read, not at completion, so the next capture reads the new values.
     #[test]
     fn a_fresh_census_is_not_held_past_a_writer_after_its_read() {
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
@@ -2188,7 +2083,6 @@ mod tests {
         let mut reads = 0;
         store.prepare();
         assert_eq!(use_census(&mut store, &registry, TREE, 10, &mut reads), 10);
-        // A hooked writer rebuilds the tree before the capture completes.
         drop(registry.notify(TREE));
         store.finish(true, |receiver| registry.sequence(receiver));
         assert!(
@@ -2199,8 +2093,6 @@ mod tests {
         assert_eq!((used, reads), (vec![11], 2));
     }
 
-    /// A served census is not held again once a writer moves its certificate
-    /// after it was served: the next capture reads the tree afresh.
     #[test]
     fn a_served_census_is_not_held_past_a_writer_after_it_was_served() {
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
@@ -2219,9 +2111,6 @@ mod tests {
         assert_eq!((used, reads), (vec![11], 2));
     }
 
-    /// A writer before the receiver's first registration (which the registry
-    /// cannot observe) precedes the read that registration precedes, so the
-    /// census holds its result and is served unchanged.
     #[test]
     fn a_writer_before_the_first_registration_is_read() {
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
@@ -2234,8 +2123,6 @@ mod tests {
         assert_eq!((used, served, reads), (vec![11], 1, 1));
     }
 
-    /// A capture that does not complete, or never reaches its completion,
-    /// leaves nothing to serve; forgetting keeps the allocations.
     #[test]
     fn an_incomplete_census_capture_holds_nothing() {
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
@@ -2248,7 +2135,6 @@ mod tests {
         assert!(store.held.is_empty());
         census_capture(&mut store, &registry, &[(TREE, 10)], &mut reads);
         assert_eq!(store.held.len(), 1);
-        // A capture that panics between preparation and completion.
         store.prepare();
         assert!(store.held.is_empty(), "taken out while the capture runs");
         store.prepare();
@@ -2261,8 +2147,6 @@ mod tests {
         assert_eq!(store.allocated_bytes(), bytes);
     }
 
-    /// Distinct receivers (one census each) are all held and all served in
-    /// the next capture, by sorted lookups.
     #[test]
     fn censuses_of_many_receivers_are_held_and_served() {
         const RECEIVERS: usize = 8;
@@ -2270,7 +2154,6 @@ mod tests {
             crate::watch_registry::WatchRegistry::enabled((4 * RECEIVERS).next_power_of_two());
         let mut store = CensusStore::default();
         let mut reads = 0;
-        // Allocated one after another, used in reverse.
         let trees: Vec<_> = (0..RECEIVERS)
             .rev()
             .map(|index| (TREE + index * 0x1310, index as i64))
@@ -2365,8 +2248,6 @@ mod tests {
                 output[..8].copy_from_slice(&0x300_u64.to_le_bytes());
                 output[8..12].copy_from_slice(&count.to_le_bytes());
                 output[12..16].copy_from_slice(&count.to_le_bytes());
-                // The original header has been copied, then a writer completes
-                // before the independent payload observer receives that header.
                 if !self.changed.replace(true) {
                     self.sequence.set(self.sequence.get() + 1);
                 }
@@ -2380,8 +2261,6 @@ mod tests {
         };
         let token = || Some(fleet(1, memory.sequence.get()));
         let mut store = std::collections::BTreeMap::new();
-        // Include a quiet held value: a race must not return it as if the
-        // original header had been acquired under the writer's new token.
         let _ = observe_fleet_regions(&mut store, 16, 7, token(), token, || Ok(vec![9]));
         let before_header = token();
         let old = engine_native::cpdx_array::Array::read(&memory, 16 + cfleet::MISSION_REGIONS, 8)
@@ -2392,8 +2271,6 @@ mod tests {
         });
         assert!(store[&7].regions.is_none());
         assert_eq!(store[&7].certificate, None);
-        // A later quiet writer interval retries the original census header;
-        // the aborted observation must not pin an empty result forever.
         let before_header = token();
         let current =
             engine_native::cpdx_array::Array::read(&memory, 16 + cfleet::MISSION_REGIONS, 8)

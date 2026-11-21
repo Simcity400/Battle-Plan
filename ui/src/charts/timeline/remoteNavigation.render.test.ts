@@ -54,7 +54,6 @@ test('remote keyboard stops queue exact reads, use their hour for Jump, and disc
     assert.ok(shown.every(hour => hour <= 20), 'a null first stop never exposes head + 1');
     key('ArrowLeft'); await tick(); key('Escape'); requests[4].resolve(7); await tick();
     assert.notEqual(shown.at(-1), 7);
-    // A lane changed to shows its last change, at 20; Left asks for the change before that one.
     key('ArrowDown'); key('ArrowDown'); key('ArrowLeft'); await tick();
     assert.deepEqual([requests.at(-1)!.from, requests.at(-1)!.forward], [20, false]);
   } finally {

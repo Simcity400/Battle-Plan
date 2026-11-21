@@ -1,7 +1,3 @@
-//! Guarded operands for reciprocal war-link and annex dispatch boundaries.
-//! Fresh reciprocal matrix checks authenticate attachment. The caller establishes
-//! world and thread lifetime independently; these reads establish neither
-//! load/replacement eligibility nor safe hook publication.
 
 use crate::{
     Memory, ccountry, cdiplomacy_status, cevent_scope, cgame_state, cpdx_array::Array, crelation,
@@ -15,19 +11,15 @@ pub struct CallSite {
     pub target_rva: Rva,
 }
 
-/// Second war-link CALL: RCX status, RDX candidate retained in RDI.
-/// The continuation initializes the war bookkeeping discriminators.
 pub const WAR: CallSite = CallSite {
     rva: Rva(0x00d8_b6b8),
     target_rva: Rva(0x00d8_ec50),
 };
-/// Annex dispatch CALL: R8 the primary scope's frame slot, R9D zero.
 pub const ANNEX: CallSite = CallSite {
     rva: Rva(0x0071_d4c8),
     target_rva: Rva(0x00ac_af60),
 };
 
-/// Source meanings, not replay discriminant allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Declaration,
@@ -36,13 +28,10 @@ pub enum Source {
     Annex,
 }
 
-/// Preserve the source reference independently of its resolved full native CCountry ID and its
-/// surrender target; the latter is data, not an incarnation counter.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryIdentity {
     pub reference: u32,
     pub id: u32,
-    /// Raw surrender target retained under the recording's legacy field name.
     pub instance: u32,
 }
 impl CountryIdentity {
@@ -51,7 +40,6 @@ impl CountryIdentity {
     }
 }
 
-/// Only owned integer operands; no native address is publishable history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Operands {
     pub source: Source,
@@ -60,8 +48,6 @@ pub struct Operands {
     pub target: CountryIdentity,
 }
 
-/// Register snapshot immediately before the war-link CALL. This RSP differs
-/// from Rust callback RSP and the eight-byte-lower stub-entry RSP.
 #[derive(Debug, Clone, Copy)]
 pub struct WarFrame {
     pub rsp_before_call: usize,
@@ -70,9 +56,6 @@ pub struct WarFrame {
     pub rdi: usize,
 }
 
-/// Opaque correlation for this one original invocation only. It is not Clone,
-/// serializable or an event key. The owner retains it on uncertain completion;
-/// only a proved normal return may consume it through war_returned.
 pub struct WarPending {
     candidate: usize,
     state: usize,
@@ -82,7 +65,6 @@ pub struct WarPending {
 }
 
 impl WarPending {
-    /// Owned pre-call operands; attachment needs the normal-return check.
     pub fn operands(&self) -> Operands {
         self.operands
     }
@@ -127,7 +109,6 @@ fn state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     Ok(state)
 }
 
-/// The country a raw reference resolves to with its full native ID.
 pub fn identity(
     memory: &impl Memory,
     base: usize,
@@ -135,7 +116,6 @@ pub fn identity(
     reference: u32,
 ) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
     let country = if reference == 0 {
-        // Country resolution selects the physical reserved slot zero.
         let array = countries.arrays()[0];
         let address = array
             .element(0, 8)
@@ -168,7 +148,6 @@ fn same(
     a: u32,
     b: u32,
 ) -> Result<bool, &'static str> {
-    // Country equality checks raw references first, then two nonzero links.
     Ok(a == b
         || (a != 0
             && b != 0
@@ -238,22 +217,17 @@ fn candidate(
     ])
 }
 
-/// Returns of the declaration, join and civil-war transfer calls into war creation.
 const DECLARATION: Rva = Rva(0x00d9_8a1e);
 const JOIN: Rva = Rva(0x00d9_ed0a);
 const TRANSFER: Rva = Rva(0x0116_8728);
 const WAR_FRAME_RETURNS: [Rva; 2] = [Rva(0x00d8_1bff), Rva(0x00d8_167d)];
 
-/// Every frame and producer key the war-source classifier distinguishes resolves, or the first
-/// withheld one's reason.
 pub fn war_source_sites(base: usize) -> Result<(), &'static str> {
     engine_sites::require(base, &WAR_FRAME_RETURNS)?;
     engine_sites::require(base, &[DECLARATION, JOIN, TRANSFER])
 }
 
 fn war_source(memory: &impl Memory, base: usize, frame: WarFrame) -> Result<Source, &'static str> {
-    // Include return-address space for every intervening call when validating
-    // the three nested frame extents.
     if value::<u64>(memory, frame.rsp_before_call, 0x1d8)? != site(base, WAR_FRAME_RETURNS[0])? as u64
         || value::<u64>(memory, frame.rsp_before_call, 0x448)?
             != site(base, WAR_FRAME_RETURNS[1])? as u64
@@ -262,7 +236,6 @@ fn war_source(memory: &impl Memory, base: usize, frame: WarFrame) -> Result<Sour
         return Err("event feed war creator frame mismatch");
     }
     let source_pc = pointer(memory, frame.rsp_before_call, 0x4a8)?;
-    // Declaration, join and transfer routes have independent caller identities.
     match engine_sites::which(base, source_pc, &[DECLARATION, JOIN, TRANSFER]) {
         Some(DECLARATION) => Ok(Source::Declaration),
         Some(JOIN) => Ok(Source::Join),
@@ -271,9 +244,6 @@ fn war_source(memory: &impl Memory, base: usize, frame: WarFrame) -> Result<Sour
     }
 }
 
-/// Copy before the second replacement. No pre-null requirement: native may
-/// replace an old relation whose destructor reenters. The same candidate
-/// already installed in the selected slot is an unproved-source refusal.
 pub fn war_before(
     memory: &impl Memory,
     base: usize,
@@ -321,11 +291,6 @@ pub fn war_before(
     })
 }
 
-/// Only on a proven normal return, before resuming the original caller.
-/// Replacement destroys the prior relation before storing the candidate.
-/// Fresh reads retain full country IDs, raw candidate pair and that exact
-/// candidate in both matrix slots. Never retry or substitute a relation.
-/// Root-address equality cannot authenticate world lifetime.
 pub fn war_returned(
     memory: &impl Memory,
     base: usize,
@@ -380,9 +345,6 @@ pub struct AnnexFrame {
     pub r9: u64,
 }
 
-/// Copy the annex operation before authored dispatch can mutate either role.
-/// Zero country references are preserved through the reserved native object.
-/// Escape handling and partial observations belong to the enclosing runtime owner.
 pub fn annex_before(
     memory: &impl Memory,
     base: usize,

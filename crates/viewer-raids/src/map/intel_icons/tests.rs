@@ -7,7 +7,6 @@ use replay_data::{
     rows::LocalPlayerRow, rows::RaidCounterOperative, rows::RaidIntelInputRow, rows::StateRow,
 };
 
-/// The recording client views the country of raw `country` (positive) or observes `observer`.
 fn client(frame: &mut replay_frame::frame::DecodedFrame, country: u32, observer_country: u32) {
     put::<tables::LocalPlayer>(frame, vec![LocalPlayerRow { country, observer_country }]);
 }
@@ -54,8 +53,6 @@ fn the_cutoff_is_strict_and_divides_in_single_precision() {
     let mut d = defines();
     assert!(visible(899.999, &d));
     assert!(!visible(900.0, &d));
-    // The stored integer rounds to an f32 before the division: 10742.1875, where a division
-    // in double precision gives the next f32 up.
     d.cutoff = 1_074_218_815;
     assert!(visible(10742.187, &d));
     assert!(!visible(10742.1875, &d));
@@ -63,12 +60,10 @@ fn the_cutoff_is_strict_and_divides_in_single_precision() {
 
 #[test]
 fn containers_centre_round_half_away_and_take_the_offset() {
-    // 300 x 64 at (400, 300): (R(250) + 12, R(268) + 40).
     assert_eq!(
         container_point([400.0, 300.0], [300, 64], [12, 40]),
         [262, 308]
     );
-    // Halves round away from zero on both sides of the origin.
     assert_eq!(container_point([150.5, 32.5], [300, 64], [0, 0]), [1, 1]);
     assert_eq!(
         container_point([100.2, -10.6], [300, 64], [12, 40]),
@@ -105,7 +100,6 @@ fn the_shield_rating_takes_the_foreign_agent_factor_and_the_defense_terms() {
         }],
         ..Default::default()
     };
-    // (50,000 + 50,000) x 2 + 100,000, over the divisor 1.
     let rating = counter_rating(&row, &d).unwrap();
     assert_eq!(rating, 300_000);
     assert_eq!(round_whole(agency_defense(rating, &d).unwrap()), 3);
@@ -114,7 +108,6 @@ fn the_shield_rating_takes_the_foreign_agent_factor_and_the_defense_terms() {
         divisor: 0,
         ..d
     };
-    // ln(2.71828) truncates to 0.99999.
     assert_eq!(agency_defense(171_828, &log), Ok(99_999));
     assert_eq!(round_whole(150_000), 2);
     assert_eq!(round_whole(149_999), 1);
@@ -135,7 +128,6 @@ fn the_shield_rating_takes_the_foreign_agent_factor_and_the_defense_terms() {
 fn root_out_stacks_greatest_first_ties_by_reference_with_successive_weights() {
     assert_eq!(root_out_base(10_000, 20_000, 30_000, 0), 15_000);
     assert_eq!(root_out_base(10_000, -300_000, 0, 0), 0);
-    // Handles hold the reference type low and the id high.
     let handle = |kind: u64, id: u64| (id << 32) | kind;
     let stacked = root_out_stacked(
         &[
@@ -196,7 +188,6 @@ fn the_preparation_value_keeps_the_native_order() {
         preparation_current: 25_000,
         preparation_required: 100_000,
         requirements: vec![requirement(100_000, 7, 0), requirement(0, 0, 1)],
-        // The variant entries are not what the requirements are checked against.
         equipment: vec![OperationEquipment {
             variant: 1,
             archetype: 7,
@@ -214,7 +205,6 @@ fn the_preparation_value_keeps_the_native_order() {
         ],
         ..Default::default()
     };
-    // R = 0.5, T = 0.25: 0.5 - ((0.5 x 0.75) x 1) / 2.
     assert_eq!(preparation(&row), Ok(31_250));
     row.preparation_current = 100_000;
     assert_eq!(preparation(&row), Ok(50_000));
@@ -243,9 +233,7 @@ fn kinds(state: &StateIcon) -> Vec<(EntryKind, EntryKey)> {
 #[test]
 fn entries_group_by_state_sort_and_bound_the_operations() {
     let raids = test_support::assets();
-    // GER is raw 10 at slot 2, ENG raw 11 at slot 1.
     let mut frame = test_support::positive_frame();
-    // A capital is a state id; each country controls its own capital state.
     put::<tables::Politics>(
         &mut frame,
         vec![
@@ -300,7 +288,6 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
                 target_state: Some(20),
                 ..operative(5, 1, 3)
             },
-            // Counterintelligence stands in its target's capital state.
             OperativeMissionRow {
                 variant: Some(3),
                 target_country: Some(10),
@@ -312,7 +299,6 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
                 cooldown_end_hour: Some(hour + 30),
                 ..operative(7, 2, 1)
             },
-            // Another roster's operative, and one neither on a mission nor relocating.
             OperativeMissionRow {
                 roster_country: 11,
                 owner_country: 11,
@@ -363,7 +349,6 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
     let [ger, eng] = &icons.states[..] else {
         unreachable!()
     };
-    // The province with the greatest positive victory points, else the bounding centre.
     assert_eq!(ger.anchor, Anchor::Province(2));
     assert_eq!(eng.anchor, Anchor::Centre([3.0, 0.0, 0.0]));
     assert_eq!(
@@ -373,7 +358,6 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
             (EntryKind::Operative, EntryKey::Operative(10, (6 << 32) | 9)),
         ]
     );
-    // Operatives by roster position; the third operation past the stack limit makes More.
     assert_eq!(
         kinds(eng),
         [
@@ -384,13 +368,11 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
             (EntryKind::More, EntryKey::More),
         ]
     );
-    // 2.5 rounds away from zero.
     assert!(
         ger.entries[0]
             .writes
             .contains(&Write::Text("rating_txt", "3".into()))
     );
-    // The relocating operative shows its route and remaining time.
     let relocating = &eng.entries[1].writes;
     assert!(relocating.contains(&Write::Shown("leader_enroute", true)));
     assert!(relocating.contains(&Write::Shown("mission_icon", false)));
@@ -398,16 +380,13 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
         "mission_progress_text",
         "\u{11}Y1DAY_UNIT_SHORT\u{11}!".into()
     )));
-    // A prepared operation shows its equipment overlay's second frame and no running parts.
     let operation = &eng.entries[2].writes;
     assert!(operation.contains(&Write::Shown("operation_icon", false)));
     assert!(operation.contains(&Write::Frame("operation_equipment_overlay", 2)));
     assert!(operation.contains(&Write::Shown("phase_circular_progress_icon", false)));
-    // The More entry's only line is its click footer, left out.
     assert_eq!(*eng.entries[4].tooltip, Tooltip::default());
 }
 
-/// A shield stands only on a capital its country controls: occupied, it is not drawn.
 #[test]
 fn a_shield_needs_its_country_to_control_its_capital_state() {
     let raids = test_support::assets();
@@ -445,8 +424,6 @@ fn a_shield_needs_its_country_to_control_its_capital_state() {
     assert!(built(&frame).states.is_empty());
 }
 
-/// The operative's own sprite stands only where a complete character table
-/// proves it has no linked character.
 #[test]
 fn an_unavailable_character_table_withholds_the_operative_portrait() {
     let raids = test_support::assets();
@@ -468,7 +445,6 @@ fn an_unavailable_character_table_withholds_the_operative_portrait() {
             ..Default::default()
         }],
     );
-    // Counterintelligence stands in its target's capital state.
     put::<tables::OperativeMissions>(
         &mut frame,
         vec![OperativeMissionRow {
@@ -562,7 +538,6 @@ fn state(kinds: &[EntryKind]) -> Arc<IntelIcons> {
     })
 }
 
-/// One operation entry with `writes`, drawn into `view`.
 fn drawn_into(
     view: &mut IntelView,
     windows: &viewer_foundation::map::native_windows::NativeWindows,
@@ -593,14 +568,11 @@ fn drawn_into(
     hits
 }
 
-/// A child a withheld write hid shows again once a later hour's write sets it.
 #[test]
 fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = IntelView::default();
-    // Retained visibility belongs to one registry binding; a new registry
-    // recreates every window instead of exercising the next frame's writes.
     let windows = gui::windows(GUI);
     let top = 308.0 + 14.0 + 5.0;
     let icon = [262.0 + 115.0 + 1.0, top];
@@ -616,7 +588,6 @@ fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
     assert_eq!(title(&withheld, icon), None);
     let recovered = drawn_into(&mut view, &windows, vec![Write::Frame("operation_icon", 1)]);
     assert_eq!(title(&recovered, icon), Some("0".into()));
-    // The game's own hide stays.
     let hidden = drawn_into(
         &mut view,
         &windows,
@@ -630,7 +601,6 @@ fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
 fn drawn(kinds: &[EntryKind]) -> (Vec<IntelHit>, usize, IntelReport) {
     let mut resources = gui::fixture();
     resources.add_sprite("wide", [68, 48], 1);
-    // Sprites take pointer geometry only with the physical viewport, as the map's resources give.
     resources.physical = Some([2048, 1152]);
     let windows = gui::windows(GUI);
     let context = Context {
@@ -692,8 +662,6 @@ fn a_free_eye_hits_the_nearest_shown_container_in_its_own_layout() {
 fn entries_take_the_list_places_and_hover_by_their_own_children() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // The container stands at (262, 308) and its list 14 below; four entries of 68 with one
-    // between start at 12.
     let (hits, count, report) = drawn(&[EntryKind::Operation; 4]);
     assert_eq!(count, 1, "{report:?}");
     assert_eq!(hits.len(), 4);
@@ -704,10 +672,8 @@ fn entries_take_the_list_places_and_hover_by_their_own_children() {
             Some(index.to_string())
         );
     }
-    // Inside the entry's rectangle but outside its icon, or on its transparent child: no hit.
     assert_eq!(title(&hits, [262.0 + 12.0 + 25.0, top]), None);
     assert_eq!(title(&hits, [262.0 + 12.0 + 35.0, top]), None);
-    // One entry is centred at 115.
     let (hits, _, _) = drawn(&[EntryKind::Operation]);
     assert_eq!(title(&hits, [262.0 + 115.0 + 1.0, top]), Some("0".into()));
     assert_eq!(title(&hits, [262.0 + 114.0, top]), None);
@@ -717,12 +683,10 @@ fn entries_take_the_list_places_and_hover_by_their_own_children() {
 fn compressed_entries_overlap_and_the_later_one_wins() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Five 68-pixel entries in 300 advance by 58 from 0.
     let (hits, _, report) = drawn(&[EntryKind::More; 5]);
     assert_eq!(hits.len(), 5, "{report:?}");
     let top = 308.0 + 14.0 + 5.0;
     assert_eq!(title(&hits, [262.0 + 2.0, top]), Some("0".into()));
-    // 60 lies in the first (0..68) and the second (58..126): the later paints over it.
     assert_eq!(title(&hits, [262.0 + 60.0, top]), Some("1".into()));
     assert_eq!(title(&hits, [262.0 + 232.0 + 67.0, top]), Some("4".into()));
     assert_eq!(title(&hits, [262.0 + 232.0 + 68.0, top]), None);
@@ -737,7 +701,7 @@ fn both_operative_frames_test_alpha_and_transparent_pixels_leave_lower_hits() {
     resources.add_sprite("frame", [8, 8], 1);
     resources.sprites.get_mut("frame").unwrap().hit = native_gui::Hit::Alpha;
     let mut mask = vec![1; 64];
-    mask[1] = 0; // An alpha-1 texel still takes the pointer.
+    mask[1] = 0;
     resources.alpha.insert(
         "frame",
         native_gui::AlphaMask {
@@ -809,7 +773,6 @@ fn buffered_operation_icons(
     buffered_operation_icons_for(operations, buffer, (10, 0))
 }
 
-/// The icons of GER (slot 2) while the recording client views `(country, observer)`.
 fn buffered_operation_icons_for(
     operations: Vec<OperationRow>,
     buffer: Option<AgencyOperationBuffersRow>,
@@ -908,12 +871,10 @@ fn the_client_buffer_draws_only_while_the_map_is_viewed_as_the_clients_country()
         ..Default::default()
     };
     let operations = |icons: &IntelIcons| icons.states.iter().flat_map(|state| &state.entries).filter(|entry| entry.key == EntryKey::Operation(1)).count();
-    // GER viewed, the client playing GER or observing it: its buffer is GER's.
     for client in [(10, 0), (0, 10)] {
         let shown = buffered_operation_icons_for(vec![buffered_test_operation(1)], Some(buffer()), client);
         assert_eq!(operations(&shown), 1, "{client:?}: {:?}", shown.report);
     }
-    // The client views ENG: the buffer is ENG's, and GER's is not recorded.
     let shown = buffered_operation_icons_for(vec![buffered_test_operation(1)], Some(buffer()), (11, 0));
     assert_eq!(operations(&shown), 0);
     assert!(
@@ -921,7 +882,6 @@ fn the_client_buffer_draws_only_while_the_map_is_viewed_as_the_clients_country()
         "{:?}",
         shown.report
     );
-    // No client viewpoint recorded: withheld by name, never guessed.
     let raids = test_support::assets();
     let mut frame = test_support::positive_frame();
     put::<tables::Operations>(&mut frame, vec![buffered_test_operation(1)]);

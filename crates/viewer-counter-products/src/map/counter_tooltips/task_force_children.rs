@@ -1,5 +1,3 @@
-//! At-sea task-force child tooltips use the secondary receiver.
-//! Port items have separate child and arrival behavior.
 
 use super::*;
 use replay_data::{
@@ -15,8 +13,6 @@ fn force<'a>(context: &Context<'a>, id: u64) -> Result<Option<&'a TaskForceRow>,
         .frame
         .complete::<tables::TaskForces>()
         .map_err(|e| e.to_string())?;
-    // Retained item references may dangle. Complete absence is a native skip;
-    // an incomplete census leaves their resolution unknown.
     Ok(rows
         .binary_search_by_key(&id, |row| row.id)
         .ok()
@@ -43,7 +39,6 @@ fn fleet<'a>(context: &Context<'a>, id: u64) -> Result<&'a FleetCounterInputRow,
         .map_err(|_| format!("FleetCounterInputs fleet {id} is absent"))
 }
 
-/// Known positive terms settle the common text even when another member is unknown.
 #[derive(Default)]
 struct Any {
     found: bool,
@@ -73,15 +68,10 @@ pub(super) fn specific(context: &Context<'_>, input: &Hover) -> Option<Tooltip> 
     let mut out = Tooltip::default();
     match input.control {
         Control::NoOrders => {
-            // Handled even when no member contributes text. Unlike the
-            // glyph updater, this callback does not filter own/intel/repair state.
             let mut missing = Any::default();
             for &id in input.members.iter() {
                 missing.add((|| {
                     let Some(force) = force(context, id)? else {
-                        // Task-force children skip failed reference resolution
-                        // before reading mission inputs. The land
-                        // callback's null group reference is a separate failure.
                         return Ok(false);
                     };
                     if !counter_inputs::needs_regions(force.mission) {
@@ -113,8 +103,6 @@ pub(super) fn specific(context: &Context<'_>, input: &Hover) -> Option<Tooltip> 
     Some(out)
 }
 
-/// Invalid-order text also appears on a coarse counter. Its idle term reads
-/// the raw mission, while the glyph updater uses the detached mission.
 fn invalid_orders<'a>(
     context: &Context<'_>,
     input: &Hover,
@@ -204,16 +192,12 @@ fn invalid_orders<'a>(
     }
 }
 
-/// The first qualifying pride task force supplies both names.
-/// A failed native gate falls through to the ordinary summary.
 fn pride(context: &Context<'_>, input: &Hover, out: &mut Tooltip) -> bool {
     for &id in input.members.iter() {
         let chosen: Result<Option<&CountryCounterInputRow>, String> = (|| {
             let Some(force) = force(context, id)? else {
                 return Ok(None);
             };
-            // Resolve the country tag before testing relations. The
-            // retained country may have a different raw id from this alias.
             let slot = context.slot(force.roster_owner)?;
             let roster = context
                 .frame
@@ -273,10 +257,6 @@ fn pride(context: &Context<'_>, input: &Hover, out: &mut Tooltip) -> bool {
     false
 }
 
-/// Shared native pride title. The caller authenticates this country's full
-/// pride reference and its current ship task force before reaching either name.
-/// The country name cache is bound to that SAME pride_of_the_fleet field;
-/// an unrelated battle-name snapshot cannot substitute it.
 pub(super) fn pride_name(
     context: &Context<'_>,
     country: &CountryCounterInputRow,
@@ -313,8 +293,6 @@ pub(super) fn pride_name(
     )
 }
 
-/// Every accessible carrier contributes its air-base title text;
-/// an empty result is still handled. No live air-view/right-click hint is emitted.
 pub(super) fn carrier(context: &Context<'_>, members: &[u64], out: &mut Tooltip) {
     let ships = context
         .frame
@@ -405,7 +383,6 @@ pub(super) fn append(context: &Context<'_>, input: &Hover, out: &mut Tooltip) {
                 let Some(&first) = input.members.first() else {
                     return Ok(false);
                 };
-                // Use the representative's roster country.
                 let Some(force) = force(context, first)? else {
                     return Ok(false);
                 };
@@ -417,8 +394,6 @@ pub(super) fn append(context: &Context<'_>, input: &Hover, out: &mut Tooltip) {
             })();
             match permitted {
                 Ok(true) => {
-                    // The game aggregates in item order, including members whose
-                    // intel is low. The final disruption term overwrites earlier ones.
                     let members = input.members.iter().filter_map(|&id| match force(context, id) {
                         Ok(None) => None,
                         Err(reason) => Some(Err(reason)),
@@ -879,8 +854,6 @@ mod tests {
             assert_eq!(out.title, "task nine: ship eleven");
             assert!(out.refused.is_empty());
         });
-        // A changed full pride reference cannot inherit the old bound row's
-        // name, even when a ship with the same low id would have matched.
         test_put(
             &mut frame,
             TableRows::Ships(vec![ShipRow {

@@ -1,5 +1,3 @@
-//! Retained native unit names, shared by political counters, combat entries,
-//! scripted UNIT names and recorded-unit products.
 
 use installed_content_division_names::division_names::Database;
 use installed_content_localisation::localisation::Localisation;
@@ -7,9 +5,6 @@ use installed_content_localisation::localisation::Localisation;
 use replay_data::rows::DivisionStatusRow;
 use replay_data::{rows::NameOperands, rows::Recorded, rows::TaskForceCounterInputRow};
 
-/// Return the task force's stored name directly. No generator choice
-/// survives in this cache, so readable nonempty text keeps the
-/// recording-language guard; empty bytes are exact.
 pub fn task_force_name(
     row: &TaskForceCounterInputRow,
     localisation: &Localisation,
@@ -33,15 +28,6 @@ pub fn task_force_name(
     )
 }
 
-/// Return the retained army name without running the generator.
-/// A recorded cache is authoritative, including
-/// empty text, and a current capture failure never substitutes generator output.
-/// Only historical absence uses the recorded generator operands and content.
-///
-/// The database is acquired lazily, so readable cached text needs neither a
-/// name-group database nor successful naming operands. A nonprogrammatic
-/// literal whose bytes equal the cache establishes a literal name;
-/// all other cached text keeps the recording-language guard.
 pub fn army_name<'a, 'b>(
     status: impl Into<replay_frame::frame::DivisionName<'b>>,
     localisation: &Localisation,
@@ -86,8 +72,6 @@ pub fn army_name<'a, 'b>(
     }
 }
 
-/// The historical generator-operand path. It never assigns another ordinal or
-/// runs the legacy allocator when authored names are exhausted.
 fn legacy_army_name<'a>(
     naming: &NameOperands,
     localisation: &Localisation,
@@ -124,13 +108,6 @@ fn legacy_army_name<'a>(
         })
 }
 
-/// Copy a nonempty authored literal, otherwise localise a nonempty fallback
-/// key for the genuine signed composition country. Unlike retained army caches,
-/// these are explicit naming operands, so a literal has no recording-language
-/// guard or generator demand.
-///
-/// The caller supplies the existing country-localisation path;
-/// it is acquired lazily and never consulted for literal or known empty text.
 pub fn template_name(
     parts: replay_data::rows::TemplateDisplayNameParts<'_>,
     raw_country: i32,
@@ -139,7 +116,6 @@ pub fn template_name(
     template_name_with(parts, raw_country, |text| text, localise_for_country)
 }
 
-/// [`template_name`], its copied and localised text each made into `T`.
 pub fn template_name_with<T>(
     parts: replay_data::rows::TemplateDisplayNameParts<'_>,
     raw_country: i32,

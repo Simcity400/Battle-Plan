@@ -35,7 +35,6 @@ fn refusal(name: &str) -> Option<String> {
     ))
 }
 
-// Geometry, skeletons and palette bytes are fixed, never obtained by re-running the importer.
 fn expected_add(
     library: &mut ModelLibrary,
     layers: &ResolvedLayers,
@@ -291,7 +290,6 @@ fn single_parse_bakes_keep_fixed_bytes_and_ordered_refusals() {
         property(name, b's', 1, payload.into_iter())
     }
     let tx = |x: f32| [1., 0., 0., 0., 1., 0., 0., 0., 1., x, -0., 2.25];
-    // A native skeleton and parented binary locators read from the same tree.
     let body = [
         triangle_mesh(3.5),
         node(3, "skeleton"),
@@ -314,7 +312,6 @@ fn single_parse_bakes_keep_fixed_bytes_and_ordered_refusals() {
     .concat();
     let files = [
         ("body", body),
-        // Parsed, but the typed mesh refuses its triangle.
         (
             "tri",
             [
@@ -352,7 +349,6 @@ fn single_parse_bakes_keep_fixed_bytes_and_ordered_refusals() {
             ]
             .concat(),
         ),
-        // A decoded shape, then a later one the typed mesh refuses.
         (
             "late",
             [

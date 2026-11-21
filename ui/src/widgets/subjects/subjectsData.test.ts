@@ -9,8 +9,6 @@ import { laneRequests } from '../../charts/timeline/laneRequests.ts';
 import { changesBy } from '../../charts/timeline/runState.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 
-/** A modded campaign: a mod's own levels (one the content does not order, one with
- * no localisation), a dynamic overlord, and a subject released and taken again. */
 const levels: SubjectLevel[] = [
   { token: 'autonomy_mod_march', name: 'March', ordered: true },
   { token: 'autonomy_puppet', name: 'Puppet', ordered: true },
@@ -25,7 +23,6 @@ const reply: SubjectReply = {
     { overlord: 'D01', subject: 'MY TAG', startHour: 50, firstHour: 100, lastHour: 199,
       steps: [step(100, 149, 'autonomy_mod_march'), step(150, 199, 'autonomy_puppet')] },
     { overlord: 'D01', subject: 'MY TAG', startHour: 250, firstHour: 250, lastHour: 299, steps: [step(250, 299, 'autonomy_mod_unnamed')] },
-    // One relation recorded either side of an unrecorded stretch: two runs, one start.
     { overlord: 'D01', subject: 'A:B', startHour: 120, firstHour: 120, lastHour: 299, steps: [step(120, 299, null)] },
     { overlord: 'ENG', subject: 'CAN', startHour: 10, firstHour: 100, lastHour: 400, steps: [step(100, 400, 'autonomy_puppet')] },
     { overlord: 'D01', subject: 'A:B', startHour: 120, firstHour: 310, lastHour: 400, steps: [step(310, 400, 'autonomy_mod_unordered')] },
@@ -110,7 +107,6 @@ test('a subjects reply is validated, down to steps covering their run and naming
 test('level colours follow the content order, never a level name, and fold past the palette', () => {
   const colours = levelColours(levels, ['c0', 'c1', 'c2'], 'other');
   assert.deepEqual([...colours], [['autonomy_mod_march', 'c0'], ['autonomy_puppet', 'c1'], ['autonomy_mod_unnamed', 'c2'], ['autonomy_mod_unordered', 'other']]);
-  // Missing localized names use an unavailable label; an unrecorded level says so.
   assert.equal(levelName(byToken, 'autonomy_mod_unnamed'), 'Autonomy level name unavailable');
   assert.equal(levelName(byToken, null), 'Level not recorded');
 });
@@ -119,16 +115,13 @@ test('each overlord heads its subjects, dated as the game dates them, coloured b
   const views = overlordViews(reply);
   const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
   const { lanes, info } = subjectLanes(views, byToken, colours, 160, options, text, reply.unobserved);
-  // ENG's subject began first (the game dates it at hour 10), so ENG comes first.
   assert.deepEqual(lanes.map(lane => [lane.identity?.label, lane.label]), [
     ['United Kingdom', '1 subject'], ['Canada', 'Puppet · since day 10'],
     ['Free Republic', '2 subjects'], ['Modded Realm', 'Puppet · since day 50'], ['Colon Land', 'Level not recorded · since day 120'],
   ]);
   assert.equal(lanes[0].heading, true);
   assert.equal(lanes[1].depth, 1);
-  // The overlord's band counts its subjects.
   assert.deepEqual(lanes[2].spans[0].band?.map(item => [item.firstHour, item.value]).slice(0, 2), [[100, 1], [120, 2]]);
-  // A bar per level stretch, coloured by level; an unrecorded level is left uncoloured.
   const realm = lanes[3].spans;
   assert.deepEqual(realm.map(span => [span.firstHour, span.label, span.color]), [[100, 'March', 'c0'], [150, 'Puppet', 'c1'], [250, 'Autonomy level name unavailable', 'c2']]);
   assert.equal(lanes[4].spans[0].color, undefined);
@@ -142,9 +135,7 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
   const at = (hour: number, extra: Partial<LaneOptions> = {}) => subjectLanes(views, byToken, colours, hour, { ...options, ...extra }, text, reply.unobserved)
     .lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.ok(at(220).includes('Modded Realm: Ended day 200'));
-  // Taken again later: a new relation, dated by its own start.
   assert.ok(at(260).includes('Modded Realm: Autonomy level name unavailable · since day 250'));
-  // Its hours after 299 were not recorded: unknown, then ended by the first recorded hour.
   assert.ok(at(305).includes('Modded Realm: Last recorded day 299'));
   assert.ok(at(320).includes('Modded Realm: Ended by day 310'));
   assert.ok(at(305).includes('Free Republic: Subjects not recorded'));
@@ -154,7 +145,6 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
 });
 
 test('an unrecorded hour is a gap in the overlord band, not a drop in its subjects', () => {
-  // At 101 a relation named a country the recording could not identify: the hour is unobserved.
   const partial: SubjectReply = { ...reply, unobserved: [{ firstHour: 101, lastHour: 101 }], runs: [
     { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 100, lastHour: 200, steps: [step(100, 200, 'autonomy_puppet')] },
     { overlord: 'D01', subject: 'BBB', startHour: 50, firstHour: 100, lastHour: 100, steps: [step(100, 100, 'autonomy_puppet')] },
@@ -162,7 +152,6 @@ test('an unrecorded hour is a gap in the overlord band, not a drop in its subjec
   ] };
   const [overlord] = overlordViews(partial);
   assert.deepEqual(overlord.counts.map(item => [item.firstHour, item.lastHour, item.value]), [[100, 100, 2], [102, 200, 2]]);
-  // And BBB's relation continues across it: one stretch, never "ended".
   assert.equal(overlord.subjects.find(view => view.runs[0].subject === 'BBB')!.stretches.length, 1);
 });
 
@@ -170,7 +159,6 @@ test('a relation continued across an unrecorded stretch is still held; a new sta
   const gap: SubjectReply = { ...reply, unobserved: [{ firstHour: 200, lastHour: 209 }], runs: [
     { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
     { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 210, lastHour: 300, steps: [step(210, 300, 'autonomy_puppet')] },
-    // Released and taken again across the same gap: another start hour, so ended then.
     { overlord: 'D01', subject: 'BBB', startHour: 60, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
     { overlord: 'D01', subject: 'BBB', startHour: 205, firstHour: 210, lastHour: 300, steps: [step(210, 300, 'autonomy_puppet')] },
   ] };
@@ -187,7 +175,6 @@ test('a change of tag of a subject or its overlord keeps one lane and one overlo
   const renamed: SubjectReply = { ...reply, unobserved: [], runs: [
     { overlord: 'D01', subject: 'AAA', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
     { overlord: 'D01', subject: 'BBB', startHour: 50, firstHour: 200, lastHour: 249, steps: [step(200, 249, 'autonomy_puppet')] },
-    // The overlord changes tag too; its other subject keeps its relation.
     { overlord: 'D01', subject: 'CCC', startHour: 70, firstHour: 100, lastHour: 249, steps: [step(100, 249, 'autonomy_colony')] },
     { overlord: 'D02', subject: 'BBB', startHour: 50, firstHour: 250, lastHour: 300, steps: [step(250, 300, 'autonomy_puppet')] },
     { overlord: 'D02', subject: 'CCC', startHour: 70, firstHour: 250, lastHour: 300, steps: [step(250, 300, 'autonomy_colony')] },
@@ -201,14 +188,11 @@ test('a change of tag of a subject or its overlord keeps one lane and one overlo
   assert.equal(overlordTagAt(views[0], 280), 'D02');
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
   const labels = subjectLanes(views, byToken, colours, 280, options, text, []).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
-  // Named by the tags they have at the hour, neither said to have ended.
   assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · since day 50', 'CCC: Autonomy level name unavailable · since day 70']);
-  // Without the changes, the renamed subject would look released and another taken.
   assert.equal(overlordViews(renamed).length, 2);
 });
 
 test('a tag an overlord gave up and another country later took is another overlord', () => {
-  // AAA holds S1, becomes BBB at 200 still holding it; at 400 another country takes AAA and S2.
   const reused: SubjectReply = { ...reply, unobserved: [], runs: [
     { overlord: 'AAA', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
     { overlord: 'BBB', subject: 'S1', startHour: 50, firstHour: 200, lastHour: 500, steps: [step(200, 500, 'autonomy_puppet')] },
@@ -219,14 +203,12 @@ test('a tag an overlord gave up and another country later took is another overlo
   const byTag = (tag: string) => views.find(view => overlordTagAt(view, 450) === tag)!;
   assert.deepEqual(byTag('BBB').subjects.map(view => view.runs.map(run => run.subject)), [['S1', 'S1']]);
   assert.deepEqual(byTag('AAA').subjects.map(view => view.runs.map(run => run.subject)), [['S2']]);
-  // Every lane id is unique.
   const colours = levelColours(levels, ['c0'], 'other');
   const ids = subjectLanes(views, byToken, colours, 450, options, text, []).lanes.map(lane => lane.id);
   assert.equal(new Set(ids).size, ids.length);
 });
 
 test('a subject released by a country later renamed is not merged into whoever takes the old tag', () => {
-  // AAA holds S1 and S2, releases S2 at 151, becomes BBB at 200 keeping S1; a new AAA takes S2 at 400.
   const released: SubjectReply = { ...reply, unobserved: [], runs: [
     { overlord: 'AAA', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 199, steps: [step(100, 199, 'autonomy_puppet')] },
     { overlord: 'AAA', subject: 'S2', startHour: 60, firstHour: 100, lastHour: 150, steps: [step(100, 150, 'autonomy_puppet')] },
@@ -235,7 +217,6 @@ test('a subject released by a country later renamed is not merged into whoever t
   ] };
   const views = overlordViews(released, new Lineage([{ hour: 200, from: 'AAA', to: 'BBB' }]));
   const byTag = (tag: string) => views.find(view => overlordTagAt(view, 450) === tag)!;
-  // The renamed country keeps both its lanes; the new AAA has its own overlord and lane.
   assert.equal(views.length, 2);
   assert.deepEqual(byTag('BBB').subjects.map(view => view.runs.map(run => `${run.overlord}/${run.subject}@${run.firstHour}`)).sort(),
     [['AAA/S1@100', 'BBB/S1@200'], ['AAA/S2@100']]);
@@ -243,7 +224,6 @@ test('a subject released by a country later renamed is not merged into whoever t
 });
 
 test('a former subject is named by its current alias and manual tags keep every holder', () => {
-  // S1 is released at 150 and renamed S2 at 200; a new S1 appears at 400 under nobody.
   const released: SubjectReply = { ...reply, unobserved: [], runs: [
     { overlord: 'OVR', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 150, steps: [step(100, 150, 'autonomy_puppet')] },
     { overlord: 'OVR', subject: 'KEPT', startHour: 50, firstHour: 100, lastHour: 500, steps: [step(100, 500, 'autonomy_puppet')] },
@@ -254,7 +234,6 @@ test('a former subject is named by its current alias and manual tags keep every 
   const colours = levelColours(levels, ['c0'], 'other');
   const labels = (extra: Partial<LaneOptions>) => subjectLanes(views, byToken, colours, 450, { ...options, ...extra }, text, []).lanes.map(lane => lane.identity?.label);
   assert.deepEqual(labels({}), ['OVR', 'KEPT', 'S2']);
-  // Each literal tag includes the former holder, even though S1 was later reused.
   for (const tag of ['S1', 'S2']) assert.deepEqual(labels({ countries: new Set([tag]), countryIds: identities.selected([tag]) }), ['OVR', 'KEPT', 'S2']);
 });
 
@@ -347,7 +326,6 @@ test('proved subject aliases across a native gap retain one relation but never s
 });
 
 test('a world of 1,500 countries lays out a lane per subject and overlord', () => {
-  // `size` subjects under size / 10 overlords, each released and taken again at another level.
   const world = (size: number): SubjectReply => ({
     ...reply, unobserved: [],
     runs: Array.from({ length: size }, (_, index) => [
@@ -376,7 +354,6 @@ test('the timeline renders only where a relation, a level, a stretch not recorde
   const hours = changeHours(reply, [{ hour: 120 }]);
   assert.ok(hours.every((hour, index) => index === 0 || hours[index - 1] < hour), 'ascending and distinct');
   for (const hour of [100, 120, 150, 200, 300, 310]) assert.ok(hours.includes(hour), `${hour} is a change`);
-  // Inside one level of one relation the structure holds, however the hour moves.
   assert.equal(changesBy(hours, 101), changesBy(hours, 119));
   assert.notEqual(changesBy(hours, 119), changesBy(hours, 120));
   assert.equal(changesBy(hours, 0), 0);

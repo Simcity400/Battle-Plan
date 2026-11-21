@@ -1,6 +1,3 @@
-//! The recorder's derived tables: writers that run after each hour's recorded tables are applied
-//! and before the hour is written, each owning ordinary tables of the schema
-//! ([`framework`]), and the registry of them in dependency order ([`writers`]).
 
 pub mod aid;
 pub mod air_force;
@@ -66,7 +63,6 @@ pub mod trade_flows;
 
 pub use framework::{Definitions, Facts, Writers};
 
-/// The writers, in dependency order: a writer may read the tables of those before it.
 pub fn writers() -> Writers {
     Writers::new(vec![
         Box::new(identity::TagHolders::default()),

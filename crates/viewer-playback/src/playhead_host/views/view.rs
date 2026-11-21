@@ -1,6 +1,3 @@
-//! One table's view of rows made from a whole-table mirror with the table's own row codec: every
-//! live row, ascending by key, each field as the recording's wire form hands it, and the status as
-//! today's frame reader makes it.
 
 use crate::playhead_host::mirror::{Cell, Mirror, Resolved};
 use replay_columnar::{manifest::Status, state::Kind};
@@ -8,25 +5,16 @@ use replay_data::rows::{Field, List, Opaque, RowChanges, TableId};
 use replay_frame::frame::TableView;
 use std::io;
 
-/// What making a view did besides the view.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Made {
-    /// Rows made: every row of a view made whole, those made again in a patch.
     pub rows: usize,
-    /// Text cells whose string the playhead never named since the table's last whole restore:
-    /// made "not recorded", never guessed.
     pub untold: u64,
 }
 
-/// `table`'s view from `mirror`, which holds the columns of `kinds` that `declared` names (a
-/// column it does not name reads as its kind's zero); `gap` during a gap in the recording. The status's words (an unavailable table's reason, the capture mode a table is not
-/// recorded in) are the mirror's.
 pub fn make(table: TableId, mirror: &Mirror, held: (&[Kind], u64), gap: bool, order: &mut Vec<(u128, u32)>) -> (TableView, Made) {
     make_of(table, mirror, held, gap, |_| true, order)
 }
 
-/// [`make`] of the rows whose keys `keep` names alone (rows at the head by key); `order` is left
-/// holding their keys and slots, ascending.
 pub fn make_of(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64), gap: bool, keep: impl Fn(u128) -> bool, order: &mut Vec<(u128, u32)>) -> (TableView, Made) {
     let mut made = Made::default();
     let status = if gap { Status::NotRecorded } else { mirror.status().unwrap_or(Status::NotRecorded) };
@@ -64,20 +52,12 @@ fn rows(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64), keep
     table.rows_from_wire(&keys, &mut |row, column| wire(table, mirror, &held, order[row].1, column, untold))
 }
 
-/// Each of the table's columns as a view's reads take it: its kind, whether a reader named it
-/// (one it did not reads as the kind's zero), and the mirror's column looked up once. Every row of
-/// a view reads the same columns, so the lookup is done here instead of per cell.
 fn resolve<'m>(mirror: &'m Mirror, kinds: &[Kind], declared: u64) -> Vec<(Kind, bool, Resolved<'m>)> {
     (0..kinds.len()).map(|column| (kinds[column], column >= 64 || declared & (1 << column) != 0, mirror.resolve(column))).collect()
 }
 
-/// The columns of a row a step inserted or deleted, or wrote past the 64th column: made whole.
 pub const EVERY: u64 = u64::MAX;
 
-/// `previous`, the rows [`make`] or this made from `mirror` before the steps that touched the rows
-/// of `touched` (ascending by key, each with the columns written, [`EVERY`] for a row inserted or
-/// deleted), with those rows alone made again: what [`make`] gives now. Only rows are patched, and
-/// only while the steps left the table's status alone; `made.rows` counts the rows made again.
 pub fn patch(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64), previous: TableView, touched: &[(u128, u64)], made: &mut Made) -> io::Result<TableView> {
     let (mut rows, missing) = match previous {
         TableView::Complete(rows) => (rows, None),
@@ -111,7 +91,6 @@ pub fn patch(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64),
     })
 }
 
-/// One cell of `slot` as the row codec reads it; a column no reader named is its kind's zero.
 fn wire<'m>(table: TableId, mirror: &'m Mirror, held: &[(Kind, bool, Resolved<'m>)], slot: u32, column: usize, untold: &mut u64) -> io::Result<Field<'m>> {
     let &(kind, named, resolved) = held.get(column).ok_or_else(|| io::Error::other(format!("{table:?} has no column {column}")))?;
     if !named {
@@ -120,7 +99,6 @@ fn wire<'m>(table: TableId, mirror: &'m Mirror, held: &[(Kind, bool, Resolved<'m
     Ok(field(mirror, kind, resolved, slot, untold))
 }
 
-/// One cell as the row codec reads it from the wire.
 fn field<'m>(mirror: &'m Mirror, kind: Kind, resolved: Resolved<'m>, slot: u32, untold: &mut u64) -> Field<'m> {
     match kind {
         Kind::U32List | Kind::U64List | Kind::Opaque => match resolved.list(slot) {
@@ -155,7 +133,6 @@ fn field<'m>(mirror: &'m Mirror, kind: Kind, resolved: Resolved<'m>, slot: u32, 
     }
 }
 
-/// A column no reader named, as its kind's zero: never read by a reader that names its columns.
 fn zero(kind: Kind) -> Field<'static> {
     match kind {
         Kind::Bytes => Field::Bytes(&[]),

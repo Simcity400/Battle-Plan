@@ -1,33 +1,19 @@
-//! Native equipment entry shared by division banks, production stockpiles,
-//! market stockpiles, convoy pools, air-wing banks, deployment and upgrade delivery pools.
-//!
-//! The concrete C++ pair/record name has not been established. Signed amounts
-//! are retained before any consumer's clamping, filtering or display rounding.
 
 use crate::{Memory, cequipment_variant, cpdx_array::Array, read as read_memory, walk::Outcome};
 
-/// Equipment-entry stride.
 pub const STRIDE: usize = 0x10;
-/// Equipment-entry CEquipmentVariant pointer.
 pub const VARIANT: usize = 0x00;
-/// Equipment-entry amount, i64 native fixed point.
 pub const AMOUNT: usize = 0x08;
-/// Equipment-entry native fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Source array order; duplicate variants remain distinct entries.
     pub source_ordinal: u32,
-    /// Complete native reference, low u32 type and high u32 id.
     pub variant_handle: u64,
     pub amount_raw: i64,
-    /// Callback-local discovery address. Never serialize this machine pointer.
     pub variant_pointer: usize,
 }
 
-/// Read the two contiguous native qwords, then authenticate their variant.
-/// Zero and negative amounts are state, not missing rows.
 pub fn read(
     memory: &impl Memory,
     module_base: usize,
@@ -49,9 +35,6 @@ pub fn read(
     })
 }
 
-/// Walk an already bounded array in native order. Header authentication belongs
-/// to its owning struct; these entries have no sentinel or filtered row kind.
-/// Capacity exhaustion reads no omitted entries and reports their exact count.
 pub fn walk(memory: &impl Memory, module_base: usize, array: Array, output: &mut [Row]) -> Outcome {
     let len = output.len().min(array.count as usize);
     for (ordinal, destination) in output[..len].iter_mut().enumerate() {

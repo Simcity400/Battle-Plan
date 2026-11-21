@@ -6,24 +6,16 @@ import { loadProduct } from './products.ts';
 import { useHeldFailures } from './heldFailures.ts';
 import { inFrame } from './frameUpdates.ts';
 
-/** A product asked for one fixed window of hours at a time (such as a month of a
- * country's daily reads), so no reply grows with the campaign. */
 export interface ProductWindows<T> {
-  /** The windows wanted and loaded, by index. */
   data: ReadonlyMap<number, T>;
-  /** Framed windows with published prefixes report failures through the frame, not this map. */
   errors: ReadonlyMap<number, Failure>;
-  /** Asks again for every failed window wanted. */
   retry: () => void;
 }
 
-/** The windows loaded (or failed) for one identity. */
 export interface Held<T> { identity: string | null; data: ReadonlyMap<number, T>; errors: ReadonlyMap<number, Failure> }
 
 export interface WindowDisplay<T> { identity: string; data: T; hour: number }
 
-/** Keep the previous window at its own hour while the next is loading. A new
- * recording/content identity never borrows the previous recording's rows. */
 export function windowDisplay<T>(previous: WindowDisplay<T> | null, identity: string | null, data: T | undefined, hour: number): WindowDisplay<T> | null {
   if (identity === null) return null;
   if (data === undefined) return previous?.identity === identity ? previous : null;
@@ -40,10 +32,6 @@ export function useWindowDisplay<T>(identity: string | null, data: T | undefined
 
 const withEntries = withWindowEntries;
 
-/** An updater React may apply again to a state it has seen: it re-applies queued updates after
- * rendering past a skipped one, and replays them when a rebased render is interrupted. Each
- * state gives the same result for the updater's life, so a re-run renders nothing new; fresh
- * maps on every run would rebuild every row and never settle. */
 function sameOnRerun<S extends object>(update: (previous: S) => S): (previous: S) => S {
   const made = new WeakMap<S, S>();
   return previous => {
@@ -54,9 +42,6 @@ function sameOnRerun<S extends object>(update: (previous: S) => S): (previous: S
 }
 
 
-/** What is held once `wanted` is all that is wanted: nothing of another identity, and
- * none of the windows no longer wanted; the same object when nothing changes, so a
- * render that wants the same windows is not repeated. */
 export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: ReadonlySet<number>): Held<T> {
   if (held.identity !== identity) return { identity, data: new Map(), errors: new Map() };
   const keep = <V>(map: ReadonlyMap<number, V>) => [...map.keys()].every(window => wanted.has(window)) ? map : new Map([...map].filter(([window]) => wanted.has(window)));
@@ -64,12 +49,6 @@ export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: Re
   return data === held.data && errors === held.errors ? held : { identity, data, errors };
 }
 
-/** Loads the `wanted` windows of a product (`request` gives each window's request;
- * `identity` names everything else it asks, so a new one starts afresh) through the
- * shared product cache, and holds them while they are wanted: a window wanted ahead
- * (the next month during playback) is ready the moment it is shown, with no load in
- * between. Windows no longer wanted are released. With `progressive`, a window
- * answered from its prepared prefix is held and replaced as that prefix grows. */
 export function useProductWindows<T>(client: DashboardClient, identity: string | null, request: (window: number) => ProductRequest,
   wanted: readonly number[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource, progressive = false): ProductWindows<T> {
   const owner = useMemo(() => ({ client, identity }), [client, identity]);
@@ -82,16 +61,12 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
     const controller = new AbortController();
     const want = new Set(wanted);
     const asking = [...want].filter(window => !current?.errors.has(window) && !current?.data.has(window));
-    // Release what is no longer wanted; a new identity starts afresh. While a window is asked, what goes is released
-    // with its landing, so moving on to the next window (playback) is one commit, not two.
     const release = (previous: Held<T> & { owner: typeof owner; attempt: number }) => {
       if (previous.owner !== owner) return { owner, identity, data: new Map<number, T>(), errors: new Map<number, Failure>(), attempt: 0 };
       const kept = keepWanted(previous, identity, want);
       return kept === previous ? previous : { ...kept, owner, attempt: previous.attempt };
     };
     if (!asking.length || current === null) setHeld(sameOnRerun(release));
-    // Windows landing before the next frame (a tick while playing) commit together: a widget
-    // asking for a whole campaign renders once a frame, not once a window.
     const arrived: { data: [number, T][]; errors: [number, Failure][] } = { data: [], errors: [] };
     let scheduled = false;
     const commit = () => {
@@ -116,14 +91,10 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
         error => arrive(() => arrived.errors.push([window, asFailure(error)])),
       );
     }
-    // Replies that landed before this request set changed still count.
     return () => { commit(); controller.abort(); };
-    // The identity and the wanted windows name every request; `request` is rebuilt each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, key, active, attempt]);
   const data = current?.data;
   const errors = current?.errors;
-  // A failed load already left the shared cache; retrying only asks again.
   const retry = useMemo(() => () => {
     setHeld(sameOnRerun(previous => previous.owner !== owner ? previous : { ...previous, errors: new Map(), attempt: previous.attempt + 1 }));
   }, [owner]);

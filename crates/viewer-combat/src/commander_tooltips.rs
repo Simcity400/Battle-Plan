@@ -1,10 +1,3 @@
-//! Commander hover text, rebuilt from recorded identities and content.
-//!
-//! Portrait hovers append learning traits only for the viewing country.
-//! The land helper constructs modifier text in its second output string, then
-//! overwrites that string with the commander's description. Those temporary
-//! modifier descriptions are not displayed here. The recorded leader keeps
-//! both a localized description cache and its raw description token.
 use installed_content_core::{
     ResolvedLayers, defines::Defines, leader_traits::LeaderTraits, tokens::Token,
     unit_leader::Adjuster, unit_leader::Component, unit_leader::Leaders, unit_leader::Skills,
@@ -50,32 +43,15 @@ use {
 
 #[derive(Debug)]
 pub(super) struct Content {
-    /// `common/unit_leader` as read without the modifier registry: a block
-    /// under a modifier entry is read as skipped and left a condition.
     leaders: Arc<Leaders>,
-    /// Content terrain spellings used to rebuild adjusters.
     terrain: Vec<String>,
-    /// The re-read with the recorded modifier registry and the name index
-    /// it used, when the content depends on it. The index is held, not its
-    /// address: an evicted index stays alive here, so a new one never
-    /// matches it by a reused address.
     settled: Mutex<Option<(Arc<super::modifier_text::NameIndex>, Arc<Leaders>)>>,
-    /// `NCharacter.{SPECIALIST,EXPERT,GENIUS}_ADVISOR_MIN_RANK`, or the
-    /// define that failed and why.
     advisor_ranks: Result<[i32; 3], String>,
-    /// `NMilitary.GENERAL_PROXIMITY_{DEFAULT,CLOSE,MEDIUM}` thresholds
-    /// for selecting distance titles from proximity offsets.
     proximity: Result<[i32; 3], String>,
-    /// The sub-unit database `sub_unit_modifiers` sorts by, or why the
-    /// content cannot give it.
     sub_units: Result<Arc<SubUnits>, String>,
-    /// The country-leader traits (`common/country_leader`, loaded before
-    /// the trait bodies by content loading), which the
-    /// advisor-trait fields name, or why they are unread.
     leader_traits: Result<Arc<LeaderTraits>, String>,
 }
 
-/// Three `int32` defines of one category, or the first that failed.
 fn int_defines(defines: &Defines, category: &str, names: [&str; 3]) -> Result<[i32; 3], String> {
     let mut values = [0; 3];
     for (value, name) in values.iter_mut().zip(names) {
@@ -90,23 +66,16 @@ impl Content {
     pub(super) fn sub_units(&self) -> Result<&installed_content_core::unit_leader::SubUnits, &str> {
         self.sub_units.as_deref().map_err(String::as_str)
     }
-    /// The commander content, and the `leader_skills` the same files'
-    /// readers hold, which the leader skill hover reads.
     pub(super) fn shared_sub_units(&self) -> Result<Arc<SubUnits>, String> {
         self.sub_units.clone()
     }
 
-    /// `sub_units` is the one sub-unit database read
-    /// (installed_content_core::unit_leader::sub_units) and `leader_traits` the one
-    /// country-leader trait read (installed_content_core::leader_traits), or why each
-    /// could not be read.
     pub(super) fn load(
         layers: &ResolvedLayers,
         defines: &Defines,
         sub_units: Result<SubUnits, String>,
         leader_traits: Result<Arc<LeaderTraits>, String>,
     ) -> io::Result<(Self, Skills)> {
-        // Build an adjuster for each terrain type resolved from the content stack.
         let (terrain, _) = installed_content_core::terrain::read(layers)?;
         let terrain: Vec<String> = terrain
             .categories
@@ -115,8 +84,6 @@ impl Content {
             .collect();
         let leaders = Leaders::load(layers, &|name| spelling(&terrain, name))?;
         let skills = leaders.skills.clone();
-        // The game reads these authored rank thresholds. An unsupported Lua
-        // expression affects only the advisor-unlock hover line.
         let advisor_ranks = int_defines(
             defines,
             "NCharacter",
@@ -150,7 +117,6 @@ impl Content {
     }
 }
 
-/// A content terrain type matched without ASCII case, by its registered spelling.
 fn spelling(terrain: &[String], name: &str) -> Option<String> {
     terrain
         .iter()
@@ -159,12 +125,6 @@ fn spelling(terrain: &[String], name: &str) -> Option<String> {
 }
 
 impl Content {
-    /// The commander content as the game read it with the recording's
-    /// modifier registry (the game finds a name through the lexer's token
-    /// table, which the recorded definitions index): read again only when a
-    /// block under a modifier entry makes the reading depend on it, and
-    /// kept while the name index is the same. Without the definitions, the
-    /// load-time reading, whose conditions the hovers then refuse by name.
     pub(super) fn settled(&self, definitions: Result<&Definitions<'_>, &Refusal>) -> Arc<Leaders> {
         let Ok(definitions) = definitions else {
             return Arc::clone(&self.leaders);
@@ -186,8 +146,6 @@ impl Content {
             &|name| spelling(&self.terrain, name),
             &|name| match definitions.index(&String::from_utf8_lossy(name)) {
                 Ok(index) => Some(index.is_some()),
-                // Two definitions carry the name: which the token table
-                // keeps is not recorded.
                 Err(_) => None,
             },
         ));
@@ -195,8 +153,6 @@ impl Content {
         leaders
     }
 
-    /// Malformed `leader_traits` entries and readings the port cannot
-    /// follow, counted, and each place the game's reading leaves the text.
     pub(super) fn warnings(&self) -> Vec<String> {
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for what in &self.leaders.traits.unsupported {
@@ -219,7 +175,6 @@ impl Content {
     }
 }
 
-/// Both hover strings through the shared tooltip setter.
 fn set(values: &mut Values, key: impl Into<String>, text: Option<(String, String)>) {
     let (text, description) = match text {
         Some((text, description)) => (hover_text(&text), hover_text(&description)),
@@ -228,9 +183,6 @@ fn set(values: &mut Values, key: impl Into<String>, text: Option<(String, String
     set_hover(values, key, text, description);
 }
 
-/// Prefer TAG_key (or TAG_key_desc), with the raw
-/// simulation country tag. Cosmetic and localized country names are unrelated.
-/// `tag` is the country's recorded tag or why it is unavailable.
 pub(super) fn country_localized(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -245,19 +197,12 @@ fn ratio(experience: i64, required: i32) -> Option<i64> {
     super::fixed::fraction(experience, i64::from(required) * super::fixed::ONE)
 }
 
-/// The learning traits a portrait lists.
 #[derive(Clone, Copy)]
 pub(super) enum Learning<'a> {
-    /// The commander's raw trait-experience vector and the recorded floor
-    /// (naval commander inputs): the portrait's ratio and strict test.
     Raw(&'a [LandCombatCommanderLearningTrait], i64),
-    /// The rows the portrait shows, decided at capture with the live floor
-    /// (a land side's [`LandCombatSideInputs`]).
     Shown(&'a [LandCombatLearningProgress]),
 }
 
-/// One shown learning-trait row: the trait localised for the viewing
-/// country and its progress `$PERC|%0H$`, then a newline.
 fn learning_row(
     lines: &mut String,
     icons: &dyn TextIcons,
@@ -304,7 +249,6 @@ fn learning(
                             super::fixed::TRAP
                         )
                     })?;
-                // The native test is strictly greater; equality is not shown.
                 if progress <= threshold {
                     continue;
                 }
@@ -332,7 +276,6 @@ fn learning(
     ))
 }
 
-/// portrait hover, or the token, key or operand that failed.
 pub(super) fn portrait(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -348,8 +291,6 @@ pub(super) fn portrait(
     Ok((text, description))
 }
 
-/// Immediate portrait text: the role title and name, the
-/// learning-trait progress when given, and the initiative line.
 fn portrait_text(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -361,8 +302,6 @@ fn portrait_text(
     let name =
         token(icons, loc, name).map_err(|refusal| format!("the commander's name: {refusal}"))?;
     let title = role_title(icons, loc, role.0, role.1)?;
-    // Append one space and the localized name to the role title, even when
-    // an unknown category leaves the title empty.
     let name = format!("{title} {name}");
     let mut text = builtin(
         icons,
@@ -380,27 +319,16 @@ fn portrait_text(
     Ok(text)
 }
 
-/// A recording without the side hover inputs ([`LandCombatSideInputs`], LandCombatDetails field 10)
-/// holds no learning traits for the viewing country's commander, whose portrait shows its learning
-/// rows.
 const LAND_LEARNING_UNRECORDED: &str = "the viewing country's commander shows its learning-trait progress (learning rows), which this recording does not record";
 
-/// The capture could not read the live floor that decides which rows show.
 const LAND_LEARNING_UNREAD: &str = "the viewing country's commander shows its learning-trait progress above the live LEADER_TRAITS_XP_SHOW, which could not be read at capture";
 
-/// Nor its description token, the portrait's delayed text.
 const LAND_DESCRIPTION_UNRECORDED: &str =
     "the commander's description token is not recorded in this recording";
 
-/// Nor its timed traits, which each trait hover tests for its expiry.
 const LAND_TIMED_TRAITS_UNRECORDED: &str =
     "LandCombatDetails.side_inputs (timed traits) not recorded";
 
-/// The land portrait hover's immediate text. Only the viewing country's
-/// commander lists its learning traits, which the side inputs hold as the
-/// portrait shows them; without them that commander's portrait refuses with
-/// `learning`'s reason. A country this hour cannot resolve decides nothing
-/// when no row is shown, since both answers give the same text.
 #[allow(clippy::too_many_arguments)]
 fn land_portrait(
     icons: &dyn TextIcons,
@@ -430,8 +358,6 @@ fn land_portrait(
     }
 }
 
-/// Select the role title by commander category. Operatives check the
-/// skill-specific key before falling back to the general operative title.
 fn role_title(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -454,16 +380,10 @@ fn role_title(
     builtin(icons, loc, key, &[])
 }
 
-/// An authored entry the game's reader drops, and why.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Dropped {
-    /// No recorded modifier definition carries the name: the game reports
-    /// it and drops it.
     Modifier(String),
-    /// The sub-unit database lacks the key: the game reports it and drops
-    /// it.
     SubUnit(String),
-    /// The sub-unit is already specified: the game keeps the first.
     Repeat(String),
 }
 
@@ -486,22 +406,13 @@ impl std::fmt::Display for Dropped {
     }
 }
 
-/// Why a trait's effect lines cannot be rebuilt, counted per trait grid.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum EffectRefusal {
-    /// A form the port cannot keep, such as text that is not UTF-8.
     Content(String),
-    /// The game's parse of the trait's file leaves the text before or in
-    /// the trait, or may, depending on the modifier registry.
     OutOfStep(String),
     Modifier(Refusal),
-    /// `sub_unit_modifiers` needs the sub-unit database order, which the
-    /// content failed to give.
     SubUnitOrder(String),
-    /// The localisation refusal, naming the key and why.
     Localisation(String),
-    /// A proximity offset needs the NMilitary proximity defines: why they
-    /// are unavailable.
     ProximityDefines(String),
 }
 
@@ -527,15 +438,10 @@ impl std::fmt::Display for EffectRefusal {
     }
 }
 
-/// A content key: one the localisation lacks shows as itself,
-/// so only output the localiser or the native text layout cannot produce refusals.
 fn text(icons: &dyn TextIcons, loc: &Localisation, key: &str) -> Result<String, EffectRefusal> {
     token(icons, loc, key.as_bytes()).map_err(EffectRefusal::Localisation)
 }
 
-/// A key the executable names: it must be in the localisation, and a missing
-/// or unsupported one is refused by name (the owner's rule for built-in names),
-/// never shown as its own text as a content key would be.
 fn named(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -545,8 +451,6 @@ fn named(
     builtin(icons, loc, key, args).map_err(EffectRefusal::Localisation)
 }
 
-/// The key's name as a header, then the
-/// movement, attack and defence lines that are not zero.
 fn adjuster(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -555,17 +459,12 @@ fn adjuster(
     if adjuster.attack == 0 && adjuster.defence == 0 && adjuster.movement == 0 {
         return Ok(String::new());
     }
-    // the key's localisation in the highlight colour, the marks
-    // appended to an unbounded string (byte appending), outside the
-    // localiser's buffer.
     let mut out = format!("\u{11}H{}\u{11}!", text(icons, loc, &adjuster.key)?);
     out.push('\n');
     out.push_str(&adjuster_lines(icons, loc, adjuster)?);
     Ok(out)
 }
 
-/// value lines: the game builds `STAT_ADJUSTER_<STAT>` and its
-/// `_DIFF` value, each ended by a newline.
 fn adjuster_lines(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -594,29 +493,18 @@ fn adjuster_lines(
     Ok(out)
 }
 
-/// What the game needs besides the trait itself.
 struct EffectContext<'a> {
     icons: &'a dyn TextIcons,
     loc: &'a Localisation,
     definitions: Result<&'a Definitions<'a>, &'a Refusal>,
-    /// The traits as read with the recording's modifier registry.
     traits: &'a Traits,
     proximity: Result<[i32; 3], &'a str>,
-    /// The chosen country's tag: the game localises for the player's
-    /// country, which is the viewer's chosen country. The error says why it
-    /// is unavailable.
     viewing_tag: Result<&'a str, &'a str>,
-    /// The sub-unit database, from the content.
     sub_units: Result<&'a SubUnits, &'a str>,
 }
 
-/// The trait item passes indent 1: two spaces
-/// before each sub-unit modifier line.
 const SUB_UNIT_INDENT: &str = "  ";
 
-/// Kept adjusters and modifier blocks keyed
-/// by sub-unit index, merged in index order, each under the sub-unit's
-/// highlighted name.
 fn sub_units(
     context: &EffectContext<'_>,
     definition: &TraitEffects,
@@ -635,7 +523,6 @@ fn sub_units(
     let mut blocks: BTreeMap<u32, Block> = BTreeMap::new();
     for entry in &definition.sub_units {
         let key = &entry.adjuster.key;
-        // The game finds the sub-unit without case.
         let index = match order.get(key) {
             SubUnit::Index(index) => index,
             SubUnit::Unknown => {
@@ -648,7 +535,6 @@ fn sub_units(
                 )));
             }
         };
-        // A sub-unit already kept is "already specified" and skipped.
         if adjusters.contains_key(&index) || blocks.contains_key(&index) {
             dropped.push(Dropped::Repeat(key.clone()));
             continue;
@@ -660,7 +546,6 @@ fn sub_units(
         let (mut block, names) =
             Block::build(definitions, &entry.block).map_err(EffectRefusal::Modifier)?;
         dropped.extend(names.into_iter().map(Dropped::Modifier));
-        // Copied into the entry, then into the array.
         block.custom_tooltips = entry
             .block
             .tooltip_table()
@@ -673,7 +558,6 @@ fn sub_units(
             blocks.insert(index, block);
         }
     }
-    // The game names the sub-unit by its registered spelling.
     let name = |index: u32| -> Result<String, EffectRefusal> {
         let key = order
             .name(index)
@@ -681,7 +565,6 @@ fn sub_units(
             .map_err(EffectRefusal::Content)?;
         let name = country_localized(context.icons, context.loc, context.viewing_tag, key)
             .map_err(EffectRefusal::Localisation)?;
-        // The game appends the marks to an unbounded string.
         Ok(format!("\u{11}H{name}\u{11}!\n"))
     };
     let mut out = String::new();
@@ -710,9 +593,6 @@ fn sub_units(
     Ok(out)
 }
 
-/// Trait description with the combat grid's indent 1 and scale 1.0.
-/// Names the definition table lacks go to `dropped`: the native reader
-/// reports and drops them, and the caller counts them.
 fn effects(
     context: &EffectContext<'_>,
     definition: &TraitEffects,
@@ -720,8 +600,6 @@ fn effects(
 ) -> Result<String, EffectRefusal> {
     let (icons, loc) = (context.icons, context.loc);
     let mut out = String::new();
-    // A trait whose content was refused is refused whole: which override
-    // lines the game's reader would have kept is not known either.
     if let Some(what) = definition.unsupported.first() {
         return Err(if what.starts_with("the game's parse of ") {
             EffectRefusal::OutOfStep(what.clone())
@@ -729,12 +607,9 @@ fn effects(
             EffectRefusal::Content(what.clone())
         });
     }
-    // A block under a registered modifier earlier in the file leaves the
-    // trait's reading unknown.
     Definitions::settle(context.definitions, &definition.conditions)
         .map_err(EffectRefusal::OutOfStep)?;
     if !definition.override_tooltips.is_empty() {
-        // The early return suppresses every standard effect.
         for token in &definition.override_tooltips {
             out.push_str(&text(icons, loc, token)?);
             out.push('\n');
@@ -753,8 +628,6 @@ fn effects(
     } else {
         None
     };
-    // modifier, non_shared_modifier, field_marshal_modifier and
-    // corps_commander_modifier, each through the shared formatter.
     for (index, authored) in definition.blocks.iter().enumerate() {
         if let Some(definitions) = definitions {
             let (block, names) =
@@ -774,7 +647,6 @@ fn effects(
         ensure_newlines(&mut out, 1);
         out.push_str(&adjuster(icons, loc, item)?);
     }
-    // The game appends the sub-unit text without a newline of its own.
     out.push_str(&sub_units(context, definition, dropped)?);
     let [
         attack,
@@ -816,7 +688,6 @@ fn effects(
         let [default, close, medium] = context
             .proximity
             .map_err(|reason| EffectRefusal::ProximityDefines(reason.into()))?;
-        // The offset is added to the default distance before formatting.
         let distance = definition.proximity_offset.wrapping_add(default);
         let title = if distance < 1 {
             LEADER_PROXIMITY_FRONTLINE_TITLE
@@ -837,7 +708,6 @@ fn effects(
             &[("NAME", Argument::Text(&title))],
         )?);
     }
-    // The reader kept only keys naming a trait, by its registered spelling.
     for (token, value) in &definition.experience_factors {
         ensure_newlines(&mut out, 1);
         let name = country_localized(icons, loc, context.viewing_tag, token)
@@ -862,8 +732,6 @@ struct AdvisorTrait<'a> {
     ordinal: u32,
 }
 
-/// The game stores the country-leader trait resolved by token,
-/// or null when the field is absent or the token names no trait.
 fn advisor_trait<'a>(
     reference: Option<&TraitReference>,
     traits: Result<&'a LeaderTraits, &str>,
@@ -875,8 +743,6 @@ fn advisor_trait<'a>(
     let traits = traits.map_err(|reason| {
         format!("advisor trait {name}: the country-leader traits are unavailable ({reason})")
     })?;
-    // The game compares tokens with A-Z folding.
-    // No matching trait means a null field.
     match traits.by_token(&Token::c_str(name.as_bytes())) {
         Ok(Some(found)) => {
             let ordinal = traits
@@ -897,8 +763,6 @@ fn advisor_trait<'a>(
     }
 }
 
-/// The game searches roles in map order: genius first, then expert below
-/// expert rank. Recorded definition ordinals preserve pointer identity.
 fn selected_advisor_trait<'a>(
     definition: &TraitEffects,
     skill: i32,
@@ -907,15 +771,12 @@ fn selected_advisor_trait<'a>(
     roles: Result<&[&CharacterRoleTraitRow], &str>,
 ) -> Result<(&'a str, Option<i32>), String> {
     let resolved = |slot: usize| advisor_trait(definition.advisor_traits[slot].as_ref(), traits);
-    // If no rank trait matches, read the specialist advisor trait.
     let specialist_trait = || {
         resolved(0)?.ok_or_else(|| {
             "the trait's specialist_advisor_trait is null (never read, or naming no country-leader trait), which the game falls back to"
                 .to_owned()
         })
     };
-    // Native rank tests retain their order even with unordered thresholds.
-    // The game tests the minimum-rank suffix independently.
     let minimum_rank = (skill < specialist).then_some(specialist);
     let selected = if skill >= genius {
         resolved(2)?
@@ -953,7 +814,6 @@ fn advisor_line(
     trait_token: &str,
     minimum_rank: Option<i32>,
 ) -> Result<String, String> {
-    // The caller asks only for a trait with a slot.
     let slot_key = definition
         .advisor_slot
         .as_deref()
@@ -981,9 +841,6 @@ fn advisor_line(
     Ok(text)
 }
 
-/// The game tests the first matching entry of the commander's timed-trait
-/// vector. Its signed day count decides: -1 is not an expiring trait, zero
-/// still is.
 fn timed_days(
     timed: &[LandCombatCommanderTimedTrait],
     item: &LandCombatCommanderTrait,
@@ -1006,8 +863,6 @@ struct AssignedCommander<'a> {
     advisor_roles: Result<Vec<&'a CharacterRoleTraitRow>, String>,
 }
 
-/// Trait grid hovers at scale 1.0, counting
-/// each refusal and each entry the native readers drop.
 fn assigned(
     out: &mut Bindings,
     content: &Content,
@@ -1017,8 +872,6 @@ fn assigned(
     effect_context: &EffectContext<'_>,
 ) {
     let Some(grid) = out.values.get_mut(key) else {
-        // presentation.rs builds every side's grid, so this is a binder
-        // order fault, reported rather than dropped.
         out.warnings.push(format!(
             "Combat trait hover {key}: the trait grid is not bound; its hovers are omitted."
         ));
@@ -1028,7 +881,6 @@ fn assigned(
     let mut refused: BTreeMap<String, usize> = BTreeMap::new();
     let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
     let mut ignored: BTreeMap<String, usize> = BTreeMap::new();
-    // Advisor unlock lines and whole hovers refused, counted by reason.
     let mut advisor: BTreeMap<String, usize> = BTreeMap::new();
     let mut absent: BTreeMap<String, usize> = BTreeMap::new();
     let shown: Vec<_> = commander
@@ -1045,8 +897,6 @@ fn assigned(
                 .as_ref()
                 .copied()
                 .map_err(Clone::clone)?;
-            // The game names HEADER literally; exile hovers require the
-            // content definition rather than the localiser's missing-key text.
             if item.kind == 6 && loc.get(super::tooltips::HEADER).is_none() {
                 return Err(format!(
                     "native exile tooltip key {} is not defined in the content localisation",
@@ -1063,7 +913,6 @@ fn assigned(
                 super::tooltips::HEADER,
                 &[("KEY", Argument::Text(&name))],
             )?;
-            // The recorded token names the trait without case.
             let definition = effect_context.traits.get(trait_token).ok_or_else(|| {
                 format!("trait {trait_token} is not in the content's leader traits")
             })?;
@@ -1072,7 +921,6 @@ fn assigned(
                     .entry(format!("trait {trait_token} has {what}"))
                     .or_default() += 1;
             }
-            // The game prefixes the description with a newline.
             text.push('\n');
             let mut names = Vec::new();
             match effects(effect_context, definition, &mut names) {
@@ -1092,12 +940,10 @@ fn assigned(
                     .or_default() += 1;
             }
             ensure_newlines(&mut text, 1);
-            // each custom effect line, then a newline.
             for key in &definition.custom_tooltips {
                 text.push_str(&token(icons, loc, key.as_bytes())?);
                 text.push('\n');
             }
-            // Context 0 or 4 and a required-rank flag of 1 admit the advisor unlock line.
             if commander.context != 0 && commander.context != 4 && definition.army_only {
                 text.push_str(&builtin(
                     icons,
@@ -1126,8 +972,6 @@ fn assigned(
                         });
                         match line {
                             Ok(line) => {
-                                // The game separates the advisor unlock from
-                                // the effect/custom-tooltip lines by two newlines.
                                 ensure_newlines(&mut text, 2);
                                 text.push_str(&line);
                             }
@@ -1157,9 +1001,6 @@ fn assigned(
             let description_key = format!("{trait_token}_desc");
             let mut description =
                 country_localized(icons, loc, commander.country_tag, &description_key)?;
-            // A temporary trait's first matching timed entry with nonnegative days
-            // appends a newline and
-            // TRAIT_WILL_EXPIRE with its days to the delayed text.
             if let Some(days) = timed_days(timed, item) {
                 description.push('\n');
                 description.push_str(&builtin(
@@ -1173,7 +1014,6 @@ fn assigned(
         })();
         let result = match result {
             Ok(result) => Some(result),
-            // An empty reason was counted with the effect refusals.
             Err(reason) => {
                 if !reason.is_empty() {
                     *absent
@@ -1184,10 +1024,6 @@ fn assigned(
             }
         };
         if item.kind == 6 {
-            // The game selects the exile template and installs the trait
-            // handler on its container. the game propagates it
-            // to every child, including exile_flag, with no
-            // Background. Follow the authored tree, including mod children.
             let template = grid
                 .entry_templates
                 .get(&index)
@@ -1255,7 +1091,6 @@ fn assigned(
     }
 }
 
-/// The country's recorded tag, or why it is unavailable.
 fn country_tag(countries: &[CountryRow], country: u32) -> Result<&str, &'static str> {
     let row = countries
         .iter()
@@ -1270,10 +1105,6 @@ fn unit_leader(leaders: &[UnitLeaderRow], reference: u64) -> Option<&UnitLeaderR
         .find(|row| ((u64::from(row.id) << 32) | u64::from(row.reference_type)) == reference)
 }
 
-/// character lookup, then the nonempty advisor vectors of its
-/// role map. The recorder stores each role's map position, including
-/// positions skipped for empty vectors (engine_characters::character_inputs). A partial
-/// table cannot prove that no earlier role selects another definition.
 fn advisor_roles<'a>(
     leader: Option<&UnitLeaderRow>,
     characters: Result<&[CharacterRow], String>,
@@ -1327,7 +1158,7 @@ pub(super) fn bind(
     let features = rows::<tables::SimulationFeatures>(frame)?;
     let advisor_feature = if features.is_complete() {
         match features.rows() {
-            [feature] => Some(feature.dlc_mask & 0x80 != 0), // The game feature 0x25
+            [feature] => Some(feature.dlc_mask & 0x80 != 0),
             _ => None,
         }
     } else {
@@ -1353,8 +1184,6 @@ pub(super) fn bind(
             .as_deref()
             .map_err(String::as_str),
     };
-    // Naval windows install the same trait hover handler
-    // as land. presentation.rs has already bound each of these trait grids.
     let naval =
         |out: &mut Bindings, key: &str, commander: &replay_data::rows::NavalCommanderInputs| {
             if commander.commander == 0 {
@@ -1368,7 +1197,7 @@ pub(super) fn bind(
                 key,
                 AssignedCommander {
                     traits: &commander.traits,
-                    context: 2, // Naval trait context.
+                    context: 2,
                     timed_traits: commander
                         .timed_traits
                         .require("NavalCommanderInputs.timed_traits")
@@ -1432,7 +1261,6 @@ pub(super) fn bind(
         );
         return Ok(());
     };
-    // The side hover inputs: NotRecorded before LandCombatDetails field 10.
     let side_inputs = detail.side_inputs.require("LandCombatDetails.side_inputs");
     for (index, prefix) in ["attacker", "defender"].into_iter().enumerate() {
         let side = &detail.sides[index];
@@ -1446,18 +1274,13 @@ pub(super) fn bind(
             "land_battle_leader_frame2"
         };
         if side.commander == 0 {
-            // No commander, no portrait hover (the game is not reached).
             refuse_hovers(&mut out.values, [frame_key]);
             continue;
         }
         let glow = format!("{prefix}_leader_initiative_overlay_glow");
         let initiative = out.values.get(&glow).is_some_and(|widget| !widget.hidden);
-        // The game appends the learning traits only for the viewing
-        // country's commander (a country equality).
         let own_commander =
             country_slot(&links, side.commander_country).map(|slot| slot == Some(vision.ours()));
-        // The shown rows, or why they are unknown: not recorded, or the
-        // live floor that decides them could not be read.
         let learning = inputs
             .map_err(|reason| format!("{LAND_LEARNING_UNRECORDED}: {reason}"))
             .and_then(|inputs| {
@@ -1484,8 +1307,6 @@ pub(super) fn bind(
                 None
             }
         };
-        // The game's delayed text is the commander's localised description;
-        // it is refused alone, and the immediate text stands.
         let description = text.as_ref().and_then(|_| {
             let description = inputs
                 .map_err(|reason| format!("{LAND_DESCRIPTION_UNRECORDED}: {reason}"))
@@ -1509,7 +1330,6 @@ pub(super) fn bind(
             text.clone(),
             description.clone(),
         );
-        // Only a shown glow carries the hover.
         if initiative {
             set_hover(&mut out.values, glow, text, description);
         }
@@ -1521,7 +1341,7 @@ pub(super) fn bind(
             &format!("{prefix}_traits_grid"),
             AssignedCommander {
                 traits: &side.traits,
-                context: 4, // Land commander trait-grid context.
+                context: 4,
                 timed_traits: inputs
                     .map(|inputs| inputs.timed_traits.as_slice())
                     .map_err(|reason| format!("{LAND_TIMED_TRAITS_UNRECORDED}: {reason}")),
@@ -1546,7 +1366,6 @@ pub(super) fn bind(
     Ok(())
 }
 
-/// The icon and its skill text share the component hover.
 fn naval_skills(
     out: &mut Bindings,
     icons: &dyn TextIcons,
@@ -1568,7 +1387,6 @@ fn naval_skills(
     {
         let text = (|| -> Result<String, String> {
             let key = super::tooltips::LEADER_SKILL_DESC;
-            // The game displays a missing localisation key itself.
             let mut text = builtin(
                 icons,
                 loc,
@@ -1580,8 +1398,6 @@ fn naval_skills(
             if selected.present == 0 {
                 return Err("the selected component skill definition is null".into());
             }
-            // Use the retained component skill definition rather than looking it up
-            // from the displayed level. An invalid skill has no modifiers.
             if selected.valid == 0 {
                 return Ok(text);
             }
@@ -1603,8 +1419,6 @@ fn naval_skills(
             for name in dropped {
                 out.refuse(format!("Naval commander skill {prefix}/{stat}: content modifier {name} has no recorded definition; the native reader drops it"));
             }
-            // Content supplies the hidden set; keep the retained definition's
-            // recorded values and custom tooltip slot order.
             block.values = commander
                 .modifiers
                 .iter()
@@ -1621,8 +1435,6 @@ fn naval_skills(
                 .iter()
                 .map(|tooltip| tooltip.text.clone())
                 .collect();
-            // precision 2, all categories, no
-            // indentation, scale 1.0. Reuse its shared modifier formatter.
             text.push_str(
                 &block
                     .describe(definitions, icons, loc, super::fixed::ONE, "", u32::MAX)
@@ -1640,7 +1452,6 @@ fn naval_skills(
             }
         };
         for kind in ["icon", "text"] {
-            // The game binds leader_stat_{attack,defense,maneuvering,coordination}_{icon,text}.
             set_hover(
                 &mut out.values,
                 format!("{prefix}/leader_stat_{stat}_{kind}"),
@@ -1668,7 +1479,6 @@ pub(super) fn bind_naval(
     let content = &static_content.assets.commander_tooltips;
     let read = content.settled(definitions.as_ref());
     for (side, label) in detail.sides.iter().zip(["attacker", "defender"]) {
-        // The game binds header_container/{attacker,defender}_stats.
         let prefix = format!("header_container/{label}_stats");
         if let Some(commander) = &side.commander_inputs
             && commander.commander != 0
@@ -1687,7 +1497,6 @@ pub(super) fn bind_naval(
     Ok(())
 }
 
-// Role key literals: commander role selection.
 tooltip_keys! {
     FM_LEADER = "fm_leader",
     CC_LEADER = "cc_leader",

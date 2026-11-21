@@ -39,7 +39,6 @@ fn reset_withdraws_without_waiting_and_registration_cannot_admit_a_later_move() 
     let invocation = unsafe { forwarding.begin(Writer::Update, 0x1234) }.unwrap();
     {
         let _control = forwarding.state.lock().unwrap();
-        // A control-thread quiescence wait has already stopped dispatch.
         forwarding
             .receiver
             .store(std::ptr::null_mut(), Ordering::SeqCst);
@@ -267,8 +266,6 @@ fn reset_during_delivery_revokes_the_capability_before_the_receiver_can_certify(
     forwarding.register(None);
 }
 
-// The shared hook owner counts every original, including a move that never
-// reached Forwarding::begin while its dispatch gate was withdrawn.
 static GAP_WRITERS: collector_certificates::watch_registry::WatchRegistry =
     collector_certificates::watch_registry::WatchRegistry::new();
 static MOVE_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -318,8 +315,6 @@ fn rejected_move_in_registration_gap_drains_before_capability_publication() {
         });
         withdrawn.wait();
         assert!(!old.is_current());
-        // Pause the rejected move immediately before its original. Its owner
-        // must retain this flight even though no forwarding invocation exists.
         let flight = GAP_WRITERS.notify(0);
         assert!(unsafe { forwarding.begin(Writer::MoveAssign, 0x1234) }.is_none());
         assert_eq!(forwarding.active.load(Ordering::SeqCst), 0);
@@ -332,8 +327,6 @@ fn rejected_move_in_registration_gap_drains_before_capability_publication() {
         assert!(!candidate.is_current());
         assert!(!registered.load(Ordering::SeqCst));
         assert!(!moved.load(Ordering::SeqCst));
-        // A later move already sees prepared dispatch and notifies, even while
-        // the rejected flight prevents the capability becoming current.
         collector_test_support::with_allocations_denied(|| {
             let later_flight = GAP_WRITERS.notify(0);
             let invocation = unsafe { forwarding.begin(Writer::MoveAssign, 0x1234) }.unwrap();
@@ -342,7 +335,6 @@ fn rejected_move_in_registration_gap_drains_before_capability_publication() {
         });
         assert_eq!(MOVE_EVENTS.load(Ordering::SeqCst), 3);
         assert!(!candidate.is_current());
-        // Resume the original, then exit its whole callback scope.
         moved.store(true, Ordering::SeqCst);
         drop(flight);
         control.join().unwrap();
@@ -350,7 +342,6 @@ fn rejected_move_in_registration_gap_drains_before_capability_publication() {
         assert!(candidate.is_current());
         assert!(!old.is_current());
         assert!(moved.load(Ordering::SeqCst));
-        // Entry after publication must notify this epoch as well.
         let _flight = GAP_WRITERS.notify(0);
         let invocation = unsafe { forwarding.begin(Writer::MoveAssign, 0x1234) }.unwrap();
         unsafe { invocation.finish() };
@@ -391,7 +382,6 @@ fn withdraw_then_register_waits_for_rejected_move_return_or_unwind() {
                 forwarding.available(true);
                 registered.store(true, Ordering::SeqCst);
             });
-            // Wait for the actual census check, or detect a premature return.
             while !GAP_DRAIN_SEEN.load(Ordering::SeqCst) && !registered.load(Ordering::SeqCst) {
                 std::thread::yield_now();
             }

@@ -13,8 +13,6 @@ fn shifted<T>(pieces: Vec<(i32, i32, T)>, by: i32) -> Vec<(i32, i32, T)> {
     pieces.into_iter().map(|(first, last, value)| (first + by, last + by, value)).collect()
 }
 
-/// Thirty hours from the span's first: the country row shown but at 10-14; Rocket readable but at
-/// 20-24.
 fn read(span: Span) -> SpanRead {
     let by = span.first;
     let mut rows = BTreeMap::new();
@@ -46,7 +44,6 @@ fn a_design_is_zero_without_a_row_and_rocket_and_the_total_sum_their_parts_or_sa
         (15, 19, Amount::Known(100)),
         (20, 29, Amount::Unknown(Why::LostOutput)),
     ]);
-    // A leaf a span holds no row of is zero there, not missing.
     assert_eq!(read.amounts(&(false, 99, Some(1)), |row| row.spent)[0], (0, 9, Amount::Known(0)));
     assert_eq!(read.rocket_total(), vec![
         (0, 7, Amount::Known(0)),
@@ -55,7 +52,6 @@ fn a_design_is_zero_without_a_row_and_rocket_and_the_total_sum_their_parts_or_sa
         (20, 24, Amount::Unknown(Why::RocketTableUnavailable)),
         (25, 29, Amount::Known(42)),
     ]);
-    // Without refits, a country row whose sum was not recorded is unknown, never its parts' guess.
     assert_eq!(read.equipment(false), vec![(0, 9, Amount::Known(90)), (10, 14, Amount::Unknown(Why::NotRecorded)), (15, 29, Amount::Unknown(Why::SpendingUnavailable))]);
     let total = super::zip(&read.equipment(true), &read.rocket_total(), |a, b| a.plus(*b));
     assert_eq!(total[0], (0, 7, Amount::Known(100)));
@@ -103,8 +99,6 @@ fn a_repaired_design_is_zero_where_the_split_is_known_and_unknown_where_it_is_no
     assert_eq!(repairs.part(None)[0], (0, 9, Amount::Known(1_400)));
 }
 
-/// The Rocket source is the one building content classifies as Rocket production; two, or one
-/// declared ambiguously, name none.
 #[test]
 fn the_rocket_source_is_the_one_building_content_classifies_and_ambiguity_names_none() {
     use installed_content_core::buildings::{Buildings, FactoryFlags};

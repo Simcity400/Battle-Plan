@@ -1,11 +1,3 @@
-//! Battle ambience from the mirrors: per recorded battle (a BattleSounds row) its centre, radius,
-//! members and what its member provinces' land combats hold; per province with combats its front
-//! (units, sub-units by type, divisions without a composition); per combat its province and
-//! members. These are the values today's battle sounds derive from a frame of rows, kept per
-//! entity and updated from the step's changes.
-//!
-//! The sounds the map's entities fire (`viewer_world::map::sound_events`) belong to the animated
-//! models and stay with the presented frame; only the battle list is hour work.
 
 use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Scope, Scoped, Sight, Text, View, touched::Touched};
 use crate::playhead_host::mirror::{Mirror, Mirrors, UNREAD_REASON};
@@ -32,8 +24,6 @@ struct Columns {
     province: Num<u32>,
     attackers: List,
     defenders: List,
-    /// With the sub-unit layers: the members' classes, divisions' templates, templates' slots and
-    /// the tokens' names.
     layers: Option<Layered>,
 }
 
@@ -47,7 +37,6 @@ struct Layered {
     literal: Text,
 }
 
-/// One land combat's part of its province's front.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Combat {
     province: u32,
@@ -55,8 +44,6 @@ struct Combat {
     divisions: Box<[u64]>,
 }
 
-/// One battle, its members' divisions without a composition, and the fronts' generation it was
-/// made at.
 #[derive(Clone, Debug, PartialEq)]
 struct Held {
     ordinal: u32,
@@ -65,16 +52,13 @@ struct Held {
     made_at: u64,
 }
 
-/// The most of a frame the layer's applies and settle take together; a busier step is carried.
 
 const TABLES: [TableId; 5] = [TableId::BattleSounds, TableId::LandCombats, TableId::Divisions, TableId::DivisionTemplateIcons, TableId::LexicalTokens];
 
-/// The table's rows as today reads them: none when unavailable, not recorded or in a gap.
 fn rows(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
-/// Why a table today's battle sounds read is not whole, in its words; none when complete.
 fn note(mirror: Option<&Mirror>, name: &str) -> Option<String> {
     match mirror.and_then(Mirror::status) {
         Some(Status::Complete) => None,
@@ -96,57 +80,36 @@ fn list(mirror: &Mirror, column: List, slot: u32) -> &[u8] {
     mirror.list(column, slot).value().unwrap_or(&[])
 }
 
-/// The battle ambience layer's arrays and what keeps them.
 pub struct Sounds {
     audio: Option<Arc<viewer_audio::Content>>,
     columns: Option<Columns>,
-    /// Per LandCombats slot, its part of a front.
     combats: Vec<Option<Combat>>,
-    /// Per province, the combat slots in it; per division in a combat, its combats.
     by_province: HashMap<u32, Vec<u32>>,
     members: HashMap<u64, Vec<u32>>,
     fronts: HashMap<u32, Front<u32>>,
-    /// Per BattleSounds slot, its battle; per province, the battles it is a member of.
     battles: Vec<Option<Held>>,
     battle_of: HashMap<u32, Vec<u32>>,
-    /// Per battle identity ([`identity`]), its battle as last made: a battle BattleSounds moved to
-    /// another place in its list keeps it; one whose fronts changed since is made again.
     by_identity: HashMap<u64, Held>,
-    /// Per province, the generation its front last changed at, counted by `generation`: a battle
-    /// in transit between slots holds no province's index, so it is judged by these when read.
     changed_at: HashMap<u32, u64>,
     generation: u64,
-    /// A battle's content changed since the mix's battles were last published.
     content_changed: bool,
-    /// Battles made (their members' fronts summed and named) since it was made.
     made: u64,
-    /// Per template, its sub-units by type (none when a part is not recorded).
     compositions: HashMap<u64, Option<Vec<(u32, usize)>>>,
-    /// Sub-unit type names by the id the fronts sum them under; ids grow with the types met.
     names: Names,
     notes: Vec<String>,
-    /// The product as last settled whole, handed to the audio mix.
     published: Arc<std::sync::Mutex<Option<Arc<Battles>>>>,
-    /// The mix's worker, started on the first publish; a compose mixes on its own thread instead.
     mixer: Option<std::sync::mpsc::Sender<Mix>>,
     mix_inline: bool,
-    /// The table notes as last published.
     last_notes: Option<Vec<String>>,
     combat_dirty: Dirty,
     province_dirty: Dirty,
     battle_dirty: Dirty,
-    /// Everything is made again at the next settle: a compose or a table's status changed.
     whole: bool,
     statuses: HashMap<usize, Option<Status>>,
     frame: u64,
-    /// Combats, provinces and battles the steps have marked.
     marked: [usize; 3],
-    /// The divisions, templates and tokens the steps applied since touched, not yet read.
     touched: Touched,
-    /// Its settled combats, fronts and battles by where they sound, for the paced count of those
-    /// within hearing.
     scoped: Scoped,
-    /// Mirror rows its applies read: none.
     #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
@@ -188,13 +151,10 @@ impl Sounds {
         }
     }
 
-    /// A layer of the same content and inputs, made from scratch.
     pub fn fresh(&self) -> Self {
         Self { columns: self.columns, ..Self::new(self.audio.clone()) }
     }
 
-    /// Whether the content sounds battles at all: today's product is none without the battle
-    /// defines, and the layer declares nothing.
     fn drawn(&self) -> bool {
         self.audio.as_ref().is_some_and(|audio| audio.battle.is_some())
     }
@@ -203,7 +163,6 @@ impl Sounds {
         self.audio.as_ref().is_some_and(|audio| !audio.layers.sounds.is_empty())
     }
 
-    /// The battles in recorded order with today's refusals; none when the content plays none.
     pub fn product(&self) -> Option<Battles> {
         self.columns?;
         let mut held: Vec<&Held> = self.battles.iter().filter_map(Option::as_ref).collect();
@@ -213,7 +172,6 @@ impl Sounds {
         Some(Battles { battles: held.into_iter().map(|held| (*held.battle).clone()).collect(), refusals })
     }
 
-    /// Today's notes of the tables it reads that are not whole, in its order.
     fn read_notes(&mut self, mirrors: &Mirrors) {
         let Some(columns) = self.columns else { return };
         let read: &[TableId] = if columns.layers.is_some() { &TABLES } else { &TABLES[..2] };
@@ -221,9 +179,6 @@ impl Sounds {
         self.notes.extend(read.iter().filter_map(|table| note(mirrors.get(*table), &format!("{table:?}"))));
     }
 
-    /// Hands the mix its battles: shared, in place order, with the notes; the worker (or, in a
-    /// compose, this thread) sorts them into the recorded order and makes the `Battles` the audio
-    /// side takes.
     fn publish(&mut self, notes: Vec<String>) {
         self.last_notes = Some(notes.clone());
         let kept = || self.battles.iter().filter_map(Option::as_ref);
@@ -257,7 +212,6 @@ impl Sounds {
         self.marked
     }
 
-    /// Mirror rows its applies read since it was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
@@ -281,7 +235,6 @@ impl Sounds {
         }
     }
 
-    /// Every combat whose members include a division of `wanted` (a template's, or any).
     fn mark_members(&mut self, mirrors: &Mirrors, wanted: impl Fn(Option<u64>) -> bool) {
         let Some(layered) = self.columns.and_then(|columns| columns.layers) else { return };
         let divisions = rows(mirrors.get(TableId::Divisions));
@@ -290,14 +243,11 @@ impl Sounds {
         self.mark_fronts_of(slots);
     }
 
-    /// The fronts of combats whose members' compositions changed: their lists did not, so the
-    /// combats are not read again, only their provinces' fronts.
     fn mark_fronts_of(&mut self, slots: BTreeSet<u32>) {
         let provinces: BTreeSet<u32> = slots.into_iter().filter_map(|slot| self.combats.get(slot as usize)?.as_ref().map(|combat| combat.province)).collect();
         provinces.into_iter().for_each(|province| self.mark_province(province));
     }
 
-    /// A division's sub-units by type, as today's composition reads them; templates cached.
     fn composition(compositions: &mut HashMap<u64, Option<Vec<(u32, usize)>>>, names: &mut Names, mirrors: &Mirrors, layered: Layered, division: u64) -> Option<Vec<(u32, usize)>> {
         let divisions = rows(mirrors.get(TableId::Divisions))?;
         let template = divisions.number(layered.template, divisions.slot(u128::from(division))?).value()?;
@@ -325,7 +275,6 @@ impl Sounds {
             .clone()
     }
 
-    /// One combat's part of its front, from the mirror; its old and new provinces marked.
     fn read_combat(&mut self, slot: u32, mirrors: &Mirrors) {
         let columns = self.columns.expect("declared before it settles");
         let at = slot as usize;
@@ -362,7 +311,6 @@ impl Sounds {
         self.combats[at] = now;
     }
 
-    /// One province's front from its combats; the battles it is a member of marked when it moved.
     fn read_front(&mut self, province: u32, mirrors: &Mirrors) {
         let mut front = Front::default();
         if let Some(slots) = self.by_province.get(&province) {
@@ -390,7 +338,6 @@ impl Sounds {
         }
     }
 
-    /// One battle from its BattleSounds row and its members' fronts.
     fn read_battle(&mut self, slot: u32, mirrors: &Mirrors) {
         let columns = self.columns.expect("declared before it settles");
         let at = slot as usize;
@@ -435,8 +382,6 @@ impl Sounds {
         self.battles[at] = now;
     }
 
-    /// Every held and live combat, province and battle marked, the arrays kept until each is
-    /// settled: the settle that follows makes them whole.
     fn mark_all(&mut self, mirrors: &Mirrors) {
         self.compositions.clear();
         self.statuses = TABLES.iter().map(|table| (table.index(), mirrors.get(*table).and_then(Mirror::status))).collect();
@@ -448,7 +393,6 @@ impl Sounds {
         battles.into_iter().for_each(|slot| self.mark_battle(slot));
     }
 
-    /// Combats, then fronts, then battles, every one marked.
     fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         if self.columns.is_none() {
@@ -497,8 +441,6 @@ impl Sounds {
         }
     }
 
-    /// A step's change sets marked: the combats and battles by the slots it names; the rows of
-    /// divisions, templates and tokens noted, read at the settle.
     fn apply_step(&mut self, step: &Step) {
         let Some(columns) = self.columns else { return };
         if step.gap() {
@@ -553,8 +495,6 @@ impl Sounds {
         }
     }
 
-    /// The divisions, templates and tokens the applies noted, taken while `settling` lasts: the
-    /// fronts of the combats whose members' compositions they move.
     fn take_touched(&mut self, mirrors: &Mirrors) {
         let mut touched = std::mem::take(&mut self.touched);
         let (mut divisions, mut templates, mut tokens) = (BTreeSet::new(), BTreeSet::new(), false);
@@ -583,8 +523,6 @@ impl Sounds {
     }
 }
 
-/// The battle ambience the drawn sounds layer's worker last settled whole: `Some` while it draws,
-/// its battles none when the content plays none; `None` while a reset composes or it is not drawn.
 pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<Option<Arc<Battles>>> {
     if !side.draws("sounds") {
         return None;
@@ -593,8 +531,6 @@ pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<Option<Arc<Battles>
     layers.iter().find_map(|layer| layer.any().downcast_ref::<SoundsFed>()).map(|layer| layer.battles().cloned())
 }
 
-/// One mix to make: every live battle (shared) with its place in the list, the table notes, the
-/// members' divisions without a composition, and whether the content plays battles at all.
 struct Mix {
     battles: Vec<(u32, Arc<Battle>)>,
     notes: Vec<String>,
@@ -603,7 +539,6 @@ struct Mix {
 }
 
 impl Mix {
-    /// The battles in recorded order with today's refusals, as [`Sounds::product`] gives them.
     fn make(mut self) -> Option<Arc<Battles>> {
         if !self.drawn {
             return None;
@@ -615,14 +550,10 @@ impl Mix {
     }
 }
 
-/// A battle's identity across hours: the one function a recorded label for the battle's life
-/// replaces. Today the battle object the game keeps its sounds on (`object`); BattleSounds is keyed
-/// by the battle's place in the game's list, which moves whenever a battle before it begins or ends.
 fn identity(mirror: &Mirror, columns: Columns, slot: u32) -> u64 {
     mirror.number(columns.object, slot).value().unwrap_or(0)
 }
 
-/// Battles and refusals that differ between two products, the first described.
 pub fn differ_battles(a: Option<&Battles>, b: Option<&Battles>) -> (u64, Option<String>) {
     let mut differing = 0;
     let mut first = None;
@@ -651,12 +582,10 @@ pub fn differ_battles(a: Option<&Battles>, b: Option<&Battles>) -> (u64, Option<
     (differing, first)
 }
 
-/// The slots `changes` wrote in the columns `wanted`.
 fn written<'a>(changes: &'a Changes, wanted: &'a [usize]) -> impl Iterator<Item = u32> + 'a {
     changes.columns().iter().filter(|written| wanted.contains(&written.column())).flat_map(|written| written.slots().iter().copied())
 }
 
-/// Sub-unit type names interned: the fronts sum ids, and a battle names each type once.
 #[derive(Default)]
 struct Names {
     names: Vec<String>,

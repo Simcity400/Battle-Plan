@@ -1,4 +1,3 @@
-//! Shared recorded country access and intel branches for map and equipment queries.
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 
@@ -29,9 +28,6 @@ impl IntelBranch {
     }
 }
 
-/// Equipment-detail reveal is an observer/target query, never an observer/design
-/// matrix. Explicit bypass and disabled fog compare the full fraction against
-/// the threshold, even when a mod sets a threshold above full visibility.
 #[allow(
     clippy::too_many_arguments,
     reason = "Keep observer/target visibility gates and content thresholds explicit without an observer/design state matrix."
@@ -54,7 +50,6 @@ pub fn design_details(
         return Ok(threshold <= 100_000);
     }
     fog?;
-    // The native intel getter tests the signed raw target before indexing.
     let raw = if target as i32 <= 0 {
         0
     } else {
@@ -81,7 +76,6 @@ fn complete<'a, T: crate::rows::TableSchema>(
 ) -> Result<&'a [T::Row], &'static str> {
     frame.complete::<T>().map_err(|_| name)
 }
-/// Each row of `T` when complete, wherever `frame` holds it; refused as `name` otherwise.
 fn each<T: crate::rows::TableSchema, F: Tables + ?Sized>(
     frame: &F,
     name: &'static str,
@@ -96,7 +90,6 @@ fn each<T: crate::rows::TableSchema, F: Tables + ?Sized>(
     }
     Ok(())
 }
-/// A zero maximum or reserved raw lane produces zero-extended -1, exceeding every cutoff.
 pub fn intel_fraction(raw: i64, maximum: i64) -> Result<i64, &'static str> {
     if maximum == 0 || matches!(raw, i64::MAX | i64::MIN) || raw == i64::MIN + 1 {
         Ok(i64::from(u32::MAX))
@@ -107,15 +100,12 @@ pub fn intel_fraction(raw: i64, maximum: i64) -> Result<i64, &'static str> {
     }
 }
 
-/// One owner's `CountryIntel` rows. Decoded rows are in key order
-/// (owner reference, then target slot), so a binary search finds the slice.
 pub fn owner_rows(rows: &[CountryIntelRow], owner: u32) -> &[CountryIntelRow] {
     let start = rows.partition_point(|row| row.owner_country < owner);
     let end = rows.partition_point(|row| row.owner_country <= owner);
     &rows[start..end]
 }
 
-/// Raw country references per canonical slot, for reading keyed rows.
 pub fn raw_references(links: &BTreeMap<u32, u32>) -> BTreeMap<u32, Vec<u32>> {
     let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     for (&raw, &slot) in links {
@@ -124,7 +114,6 @@ pub fn raw_references(links: &BTreeMap<u32, u32>) -> BTreeMap<u32, Vec<u32>> {
     out
 }
 
-/// Army lanes read on demand from the key-sorted table, never copied.
 pub struct Intel<'a> {
     pub rows: Result<&'a [CountryIntelRow], &'static str>,
     pub raws: BTreeMap<u32, Vec<u32>>,
@@ -155,8 +144,6 @@ impl Intel<'_> {
             .unwrap_or(0))
     }
 
-    /// Actual receiver0's native getter, not a positive alias's keyed rows.
-    /// The signed raw gate precedes its daily sample and vector demand.
     pub fn zero_army(
         &self,
         frame: &dyn DecodedSource,
@@ -226,8 +213,6 @@ pub fn reserved(frame: &dyn DecodedSource) -> Result<&ReservedCountryNamingRow, 
     Ok(row)
 }
 
-/// Only the native MapIntel boundary admits literal0. General link readers
-/// remain strict, and an unrecorded positive alias never becomes Country0.
 pub fn map_intel_slot(links: &BTreeMap<u32, u32>, raw: u32) -> Result<u32, &'static str> {
     if raw == 0 {
         Ok(0)
@@ -248,8 +233,6 @@ pub fn active_war(war: [u8; 2]) -> Result<bool, &'static str> {
     Ok(present == 1 && retired == 0)
 }
 
-/// Complete same-hour membership is demanded only after the war veto and a
-/// nonnull source faction. Missing target membership then means native null.
 pub fn map_intel_faction(
     frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
@@ -279,7 +262,6 @@ pub fn reserved_faction(row: &ReservedCountryNamingRow) -> Result<u64, &'static 
     }
 }
 
-/// Country0's fresh reverse-visibility cell toward `target`.
 fn reverse_cell<'a>(
     frame: &dyn DecodedSource,
     row: &'a ReservedCountryNamingRow,
@@ -304,9 +286,6 @@ fn reverse_cell<'a>(
         .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused")
 }
 
-/// Test subject parties in order against the reached cell's raw target. Null or wrong-type
-/// subjects decide before requiring that target. A known second match can preserve truth after an
-/// unavailable first party.
 pub fn map_intel_subject(
     subject: &ZeroSubjectInputs,
     links: &BTreeMap<u32, u32>,
@@ -341,7 +320,6 @@ pub fn map_intel_subject(
     second
 }
 
-/// Physical receiver0, : no symmetric relation-table inference.
 pub fn reverse_zero_shared(
     frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
@@ -369,9 +347,6 @@ pub fn reverse_zero_shared(
     map_intel_subject(subject, links, cell_target)
 }
 
-/// Prefer the current positive receiver's directed status0 packet. Only older
-/// field absence keeps the established exact-zero publication guard; a fresh
-/// refused packet never falls back to the independent legacy observations.
 pub fn forward_zero_shared(
     frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
@@ -396,9 +371,6 @@ pub fn forward_zero_shared(
     )
 }
 
-/// [`forward_zero_shared`] from the owner's `CountryCounterInputs` packets, its faction
-/// ([`map_intel_faction`]) and the reserved country's ([`reserved_faction`]), each read only
-/// when the decision reaches it.
 pub fn forward_zero_shared_of(
     links: &BTreeMap<u32, u32>,
     forward: &Recorded<Option<crate::rows::ReverseZeroVisibilityInputs>>,
@@ -436,9 +408,6 @@ pub fn forward_zero_shared_of(
     map_intel_subject(subject, links, Ok(0))
 }
 
-/// A positive receiver's visibility matrix from this complete hourly table. The cell's raw target
-/// includes positive aliases of Country0. War and military admission precede any demand for the
-/// target or subject.
 pub fn forward_visibility_shared(
     frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
@@ -454,8 +423,6 @@ pub fn forward_visibility_shared(
     })
 }
 
-/// [`forward_visibility_shared`] with `same_faction` answering whether the owner shares the
-/// reserved country's faction, asked only when the decision reaches it.
 pub fn forward_visibility_shared_of(
     links: &BTreeMap<u32, u32>,
     inputs: &Recorded<Option<crate::rows::ReverseZeroVisibilityInputs>>,
@@ -503,9 +470,6 @@ pub fn forward_visibility_shared_of(
     })
 }
 
-/// Map-text visibility admits paradrops through directed military access and disables docking.
-/// Receiver comparison uses the resolved object's own ID. Actual Country0 therefore requires its
-/// first matrix for a positive target alias of Country0, even when incoming aliases are equal.
 pub fn event_shared(
     frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
@@ -633,8 +597,6 @@ pub fn event_shared(
     })
 }
 
-/// Ordered native OR after a known clear war veto. A skipped/refused earlier
-/// operand cannot erase an independently proven positive later branch.
 pub fn event_or(
     first: Result<bool, &'static str>,
     second: impl FnOnce() -> Result<bool, &'static str>,
@@ -650,9 +612,6 @@ pub fn event_or(
     second
 }
 
-/// Faction, subject and attache visibility inputs in canonical slots, without wars. Subjects use
-/// recorded installed typed pointers without retirement or date filtering; RelationLinks records
-/// attache membership. Callers with their own war census can read these inputs independently.
 #[derive(Clone, Default)]
 pub struct Families {
     factions: BTreeMap<u32, u64>,
@@ -661,7 +620,6 @@ pub struct Families {
 }
 
 impl Families {
-    /// From each country slot's faction and each (overlord, subject) slot pair.
     pub fn from_parts(factions: BTreeMap<u32, u64>, subjects: impl IntoIterator<Item = (u32, u32)>) -> Self {
         let mut out = Self { factions, ..Self::default() };
         for (a, b) in subjects {
@@ -670,7 +628,6 @@ impl Families {
         out
     }
 
-    /// Faction and subject inputs for full-country visibility.
     pub fn read(
         frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,
@@ -687,8 +644,6 @@ impl Families {
         links: &BTreeMap<u32, u32>,
     ) -> Result<(), &'static str> {
         for row in complete::<tables::FactionMembers>(frame, "FactionMembers")? {
-            // Faction rosters include genuine Country0 members. Recognize the literal only here; unknown
-            // positive links remain failures.
             let country = if row.country == 0 {
                 0
             } else {
@@ -714,7 +669,6 @@ impl Families {
         Ok(())
     }
 
-    /// [`Self::read_factions`] of any frame's tables, a walk's views among them.
     pub fn read_factions_tables<F: Tables + ?Sized>(
         &mut self,
         frame: &F,
@@ -754,7 +708,6 @@ impl Families {
         Ok(())
     }
 
-    /// [`Self::read_subjects`] of any frame's tables, a walk's views among them.
     pub fn read_subjects_tables<F: Tables + ?Sized>(
         &mut self,
         frame: &F,
@@ -765,7 +718,6 @@ impl Families {
         })
     }
 
-    /// Relations where each pair shares a faction of its own.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn factions_for_tests(pairs: &[(u32, u32)]) -> Self {
         let mut out = Self::default();
@@ -775,7 +727,6 @@ impl Families {
         out
     }
 
-    /// Also admits recorded attache country slots.
     pub fn with_attaches(
         mut self,
         frame: &dyn DecodedSource,
@@ -790,39 +741,32 @@ impl Families {
         Ok(self)
     }
 
-    /// The faction `slot` is a member of.
     pub fn faction(&self, slot: u32) -> Option<u64> {
         self.factions.get(&slot).copied()
     }
 
-    /// Every faction member and its faction.
     pub fn members(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
         self.factions.iter().map(|(&slot, &faction)| (slot, faction))
     }
 
-    /// Every overlord and subject of `slot`.
     pub fn partners(&self, slot: u32) -> impl Iterator<Item = u32> + '_ {
         self.subjects.range((slot, 0)..=(slot, u32::MAX)).map(|&(_, other)| other)
     }
 
-    /// The same country, a faction partner, an overlord or a subject, before the live-war veto.
     pub fn family(&self, a: u32, b: u32) -> bool {
         a == b || self.subjects.contains(&(a, b)) || self.same_faction(a, b)
     }
 
-    /// one non-null faction.
     pub fn same_faction(&self, a: u32, b: u32) -> bool {
         self.factions
             .get(&a)
             .is_some_and(|&f| self.member_of_faction(b, f))
     }
 
-    /// Scan the target's exact faction roster.
     pub fn member_of_faction(&self, country: u32, faction: u64) -> bool {
         self.factions.get(&country) == Some(&faction)
     }
 
-    /// Counter sharing excludes the null faction, unlike full-country sharing.
     pub fn counter_shared(&self, a: u32, b: u32) -> bool {
         self.subjects.contains(&(a, b))
             || self
@@ -831,13 +775,11 @@ impl Families {
                 .is_some_and(|faction| *faction != 0 && self.factions.get(&b) == Some(faction))
     }
 
-    /// Attache sharing has no war veto and uses the source's directed attache slot toward the viewer.
     pub fn allied_for_fog(&self, source: u32, viewer: u32) -> bool {
         self.family(source, viewer) || self.attaches.contains(&(source, viewer))
     }
 }
 
-/// [`Families`] with the recorded wars whose retired byte is zero.
 #[derive(Clone, Default)]
 pub struct Relations {
     families: Families,
@@ -845,7 +787,6 @@ pub struct Relations {
 }
 
 impl Relations {
-    /// Relations at peace where each pair shares a faction of its own.
     #[cfg(any(test, feature = "test-support"))]
     pub fn factions_for_tests(pairs: &[(u32, u32)]) -> Self {
         Self {
@@ -854,7 +795,6 @@ impl Relations {
         }
     }
 
-    /// Faction, war and subject inputs for full-country visibility.
     pub fn read(
         frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,
@@ -872,7 +812,6 @@ impl Relations {
         Ok(out)
     }
 
-    /// Also admits recorded attache country slots.
     pub fn with_attaches(
         mut self,
         frame: &dyn DecodedSource,
@@ -882,7 +821,6 @@ impl Relations {
         Ok(self)
     }
 
-    /// [`Self::read`] of any frame's tables, a walk's views among them.
     pub fn read_tables<F: Tables + ?Sized>(
         frame: &F,
         links: &BTreeMap<u32, u32>,
@@ -896,8 +834,6 @@ impl Relations {
         Ok(out)
     }
 
-    /// [`Self::read_tables`] of the relation tables' rows held elsewhere, as raw country
-    /// references: faction members (country, faction), war pairs and (overlord, subject) pairs.
     pub fn from_pairs(
         factions: impl IntoIterator<Item = (u32, u64)>,
         wars: impl IntoIterator<Item = (u32, u32)>,
@@ -931,35 +867,27 @@ impl Relations {
         Ok(())
     }
 
-    /// Distinct countries with an active war relation.
     pub fn at_war(&self, a: u32, b: u32) -> bool {
         a != b && self.wars.contains(&(a, b))
     }
 
-    /// The countries in an active war relation with `a`.
     pub fn enemies(&self, a: u32) -> impl Iterator<Item = u32> + '_ {
         self.wars.range((a, 0)..=(a, u32::MAX)).map(|&(_, b)| b)
     }
 
-    /// See [`Families::same_faction`].
     pub fn same_faction(&self, a: u32, b: u32) -> bool {
         self.families.same_faction(a, b)
     }
 
-    /// Full visibility is vetoed by a live war; otherwise it admits the same country, a faction
-    /// partner, an overlord or a subject.
     pub fn shared(&self, a: u32, b: u32) -> bool {
         a == b || (!self.wars.contains(&(a, b)) && self.families.family(a, b))
     }
 
-    /// See [`Families::allied_for_fog`].
     pub fn allied_for_fog(&self, source: u32, viewer: u32) -> bool {
         self.families.allied_for_fog(source, viewer)
     }
 }
 
-/// Directed military access and docking rights from `RelationLinks`, in canonical `(holder, target)`
-/// order.
 #[derive(Clone, Debug, Default)]
 pub struct AccessLinks {
     military: BTreeSet<(u32, u32)>,
@@ -967,7 +895,6 @@ pub struct AccessLinks {
 }
 
 impl AccessLinks {
-    /// [`Self::read`] of any frame's tables, a walk's views among them.
     pub fn read_tables<F: Tables + ?Sized>(
         frame: &F,
         links: &BTreeMap<u32, u32>,
@@ -979,8 +906,6 @@ impl AccessLinks {
         Ok(out)
     }
 
-    /// [`Self::read_tables`] of RelationLinks rows held elsewhere: (raw country, target index,
-    /// links).
     pub fn from_rows(
         rows: impl IntoIterator<Item = (u32, u32, u8)>,
         links: &BTreeMap<u32, u32>,
@@ -1036,8 +961,6 @@ impl AccessLinks {
 }
 
 impl Relations {
-    /// A live war vetoes visibility. Otherwise admit military access or docking rights from the viewer
-    /// toward the owner, faction membership, or overlord/subject relations.
     pub fn known_port(&self, access: &AccessLinks, viewer: u32, owner: u32) -> bool {
         viewer == owner
             || (!self.wars.contains(&(viewer, owner))
@@ -1046,9 +969,6 @@ impl Relations {
                     || self.families.family(viewer, owner)))
     }
 
-    /// Province access excludes lakes. It admits sea provinces; unowned states; the viewer's own states
-    /// or controlled provinces; war, military access or docking rights toward the controller; and
-    /// shared faction or direct subject relations with the controller.
     pub fn province_access(
         &self,
         access: &AccessLinks,
@@ -1079,8 +999,6 @@ impl Relations {
     }
 }
 
-/// Province access inputs: definition flags, state owner (`None` for no owner), and controller
-/// (`None` for none).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProvinceAccess {
     pub lake: bool,

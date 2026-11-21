@@ -1,5 +1,3 @@
-//! Content-only checks of every registered dashboard product: what each reads of the game's
-//! content, read through the recorded stack, with every refusal named.
 
 use crate::{catalogue::Catalogue, products};
 pub use dashboard_core::findings::{Finding, Kind};
@@ -16,7 +14,6 @@ pub struct ProductCheck {
     pub elapsed: Duration,
     pub error: Option<String>,
     pub findings: Vec<Finding>,
-    /// Explicit coverage, including products with no offline content inputs.
     pub note: String,
 }
 
@@ -57,7 +54,6 @@ impl Content {
     }
 
     fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, String> {
-        // The corpus ideologies reader owns these typed native notes.
         self.ideologies
             .get_or_init(|| {
                 installed_content_core::ideologies::read(&self.resolved.layers)
@@ -80,8 +76,6 @@ impl Content {
     }
 }
 
-/// Runs in registry order, sharing the catalogue and product readers. No
-/// recorded operands are invented; runtime-only checks name their limitation.
 pub fn check(content: Arc<ResolvedContent>, language: &str) -> Vec<ProductCheck> {
     let content = Content::new(content, language);
     let checks: Vec<_> = products::PRODUCTS
@@ -153,7 +147,6 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         player_apm::PlayerApm::KEY => Ok("eAPM requires recorded accepted-command kinds, player lifetimes, provenance and unpaused timing coverage; no authored content is read. Recording-dependent values are unavailable offline.".into()),
         national_focus::NationalFocus::KEY
         | focus_artwork::FocusArtwork::KEY => {
-            // Each database's focuses are checked as they are looked up: in it alone.
             let national = artwork_check(
                 content,
                 artwork::Kind::Focus(crate::FocusDatabase::National),
@@ -515,8 +508,6 @@ fn wargoals_check(content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             ));
             continue;
         }
-        // Country arguments remain unavailable offline, including through
-        // nested localisation references. Other text uses the runtime renderer.
         if !name.is_empty() && catalogue.localisation.get(&key).is_none() {
             findings.push(Finding::new(
                 Kind::Fallback,
@@ -597,14 +588,11 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
     }
     let cells = flag_cells(&content.resolved.layers).map_err(|error| error.to_string())?;
     let tags = content.tags()?;
-    // Flag preparation needs ideology groups alone, not the idea databases.
     let ideologies = content.ideologies()?;
     let (groups, _) = ideologies.groups();
     let mut cache = FlagCache::default();
     for (tag, definition) in tags {
         if definition.dynamic {
-            // Dynamic tags declare runtime slots; the product's choices()
-            // resolves their recorded appearance.
             findings.push(Finding::new(
                 Kind::Offline,
                 format!("country {tag:?}"),
@@ -630,9 +618,6 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                     &mut cache,
                 )
                 .map_err(|error| error.to_string())?;
-                // A completely missing group/set authored no image, and the
-                // game skips it while searching for a decodable flag.
-                // Keep file refusals, but no diagnostic for authored absence.
                 findings.extend(
                     problems
                         .into_iter()
@@ -648,9 +633,6 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
                 }
             }
         }
-        // Probe the null-group candidate only if every group/set was absent,
-        // and retain one visible-fallback note per tag, rather than three
-        // impossible requests.
         if !any {
             let candidates = installed_content_country_names::country_names::flag_keys(Some(tag), "", None);
             let mut plain_found = false;

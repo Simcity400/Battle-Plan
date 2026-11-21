@@ -1,9 +1,3 @@
-//! Tag aliases are resolved through their
-//! candidates, each checked against its triggers in a scope whose
-//! THIS is the candidate, PREV the scope that used the alias and ROOT and
-//! FROM that scope's; the first to pass, or the best `country_score`, else
-//! the fallback. Nothing caches the answer natively, so it is recomputed
-//! from the recorded hour on every use.
 use crate::triggers::Failure;
 
 use installed_content_core::{tag_aliases::TagAlias, tag_aliases::VariableKey};
@@ -13,7 +7,6 @@ use super::{Eval, Scope, Scopes, eval::Evaluator};
 
 type Candidates = Vec<Result<u32, Failure>>;
 
-/// A tag alias under resolution, with what a re-entry must repeat to never return.
 pub(super) struct Entry {
     name: String,
     caller: Scopes,
@@ -22,8 +15,6 @@ pub(super) struct Entry {
 }
 
 impl Evaluator<'_, '_> {
-    /// State-mode script targets use state array values and state specifiers, with the
-    /// same initiator ROOT and target FROM filter as country targets.
     pub fn script_state_target_candidates(
         &self,
         targets: &installed_content_core::country_scorers::ScriptTargets,
@@ -40,7 +31,6 @@ impl Evaluator<'_, '_> {
                     return Ok(Vec::new());
                 }
             }
-            // This selector never consults the country selector's state-target marker.
             let unported: Vec<_> = targets
                 .unported
                 .iter()
@@ -50,11 +40,8 @@ impl Evaluator<'_, '_> {
             if !unported.is_empty() {
                 return Err(format!("state script targets: {}", unported.join("; ")).into());
             }
-            // The state selector does not use the country-only dynamic tail.
             let mut selected = std::collections::BTreeSet::new();
             let mut accept = |state| -> Result<(), Failure> {
-                // Accepted states are skipped before their filters can write temps again.
-                // A rejected candidate remains eligible for a later visit.
                 if state == 0 || state == super::NULL_STATE || selected.contains(&state) {
                     return Ok(());
                 }
@@ -87,9 +74,6 @@ impl Evaluator<'_, '_> {
         })
     }
 
-    /// Resolve a country tag or tag alias in `scopes`: an alias through its candidates,
-    /// with no original-tag substitution of its answer; a tag through the
-    /// recorded resolver (crate::scope). `None` is no country.
     pub(super) fn resolve_tag(&self, tag: &str, scopes: Scopes) -> Result<Option<u32>, Failure> {
         let recorded = self.world().recorded();
         match recorded.alias_entry(tag) {
@@ -98,7 +82,6 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// Resolve `alias` for the scope `caller`.
     fn resolve_alias(
         &self,
         name: &str,
@@ -106,20 +89,13 @@ impl Evaluator<'_, '_> {
         caller: Scopes,
     ) -> Result<Option<u32>, Failure> {
         let within = |why: Failure| why.context(|why| format!("tag alias {name}: {why}"));
-        // A body the reading cannot be followed through holds unknown
-        // fields, the variable among them.
         if let Some(why) = &alias.refused {
             return Err(within(why.clone().into()));
         }
-        // The frame holds through the variable and the fallback too, so a
-        // self or mutual cycle, which the game follows without a guard, is
-        // refused by name.
         let graph = self.event_graph.borrow().clone();
         let frame = format!("tag alias {name}").into_bytes();
         if let Some(why) = self.enter_frame(frame) {
             let why = Failure::from(why);
-            // The same caller with nothing written since resolves the same
-            // way again, so the game never returns.
             let endless = self.aliases.borrow().iter().any(|entry| {
                 entry.name == name
                     && entry.caller == caller
@@ -152,9 +128,6 @@ impl Evaluator<'_, '_> {
         caller: Scopes,
         within: impl Fn(Failure) -> Failure,
     ) -> Result<Option<u32>, Failure> {
-        // The variable, event target or global event target
-        // decides alone, in the caller's
-        // scope.
         if let Some((key, text)) = &alias.variable {
             return match key {
                 VariableKey::Variable => self
@@ -166,8 +139,6 @@ impl Evaluator<'_, '_> {
                     } else {
                         "event_target:"
                     };
-                    // Prepend the target prefix and append ".id", then
-                    // parse the resulting scoped operand.
                     self.scoped_country(&[prefix.as_bytes(), text, b".id"].concat(), caller)
                         .map_err(within)
                 }
@@ -177,8 +148,6 @@ impl Evaluator<'_, '_> {
         if found.is_some() {
             return Ok(found);
         }
-        // Only when nothing won: neither checked nor tested for
-        // existence.
         match &alias.fallback {
             Some(fallback) => self
                 .operand_tag(fallback, caller)
@@ -187,9 +156,6 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// A scoped operand's country text: a recorded tag or an alias,
-    /// else a variable evaluated in
-    /// `scopes`.
     fn operand_tag(&self, text: &[u8], scopes: Scopes) -> Result<Option<u32>, Failure> {
         let recorded = self.world().recorded();
         match std::str::from_utf8(text) {
@@ -200,9 +166,6 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    /// Native physical-array order for checks_all; otherwise the selected
-    /// original's own country, followed by its actual stored bucket. Unknown
-    /// later operands are deferred until an earlier unscored candidate fails.
     fn original_candidates(&self, alias: &TagAlias, caller: Scopes) -> Result<Candidates, Failure> {
         let recorded = self.world().recorded();
         let candidate = |raw| super::refusal::deferred(|| recorded.positive_country(raw));
@@ -256,8 +219,6 @@ impl Evaluator<'_, '_> {
         Ok(out)
     }
 
-    /// Sorted/deduplicated script targets, reached after the original phase
-    /// for an unscored alias, or included in scoring for a scored alias.
     fn target_candidates(&self, alias: &TagAlias, caller: Scopes) -> Result<Candidates, Failure> {
         if alias.checks_all() {
             return Ok(Vec::new());
@@ -279,7 +240,6 @@ impl Evaluator<'_, '_> {
         Ok(targets.into_iter().map(Ok).collect())
     }
 
-    /// Script target selection, shared by aliases, scorers and scripted map modes.
     pub fn script_target_candidates(
         &self,
         targets: &installed_content_core::country_scorers::ScriptTargets,
@@ -300,8 +260,6 @@ impl Evaluator<'_, '_> {
             if !targets.unported.is_empty() {
                 return Err(format!("script targets: {}", targets.unported.join("; ")).into());
             }
-            // The dynamic tail requires a country slot boundary
-            // that this selector does not yet resolve.
             if targets.dynamic {
                 return Err(
                     "script targets_dynamic: dynamic country slot boundary is not supported".into(),
@@ -313,8 +271,6 @@ impl Evaluator<'_, '_> {
                     return Ok(());
                 }
                 if !targets.target_limit.is_empty() {
-                    // The target filter runs on the initiator with FROM=target;
-                    // the score subsequently reverses them.
                     let target = self.fresh_country_scope(Some(slot), None)?;
                     let initiator = self.fresh_country_scope(country, Some(target))?;
                     if !self
@@ -346,8 +302,6 @@ impl Evaluator<'_, '_> {
         })
     }
 
-    /// Native first passing candidate, or highest positive score with the
-    /// first occurrence winning ties. Duplicate native visits remain visits.
     fn choose(&self, alias: &TagAlias, caller: Scopes) -> Result<Option<u32>, Failure> {
         let phases: [&dyn Fn() -> Result<Candidates, Failure>; 2] =
             [&|| self.original_candidates(alias, caller), &|| {

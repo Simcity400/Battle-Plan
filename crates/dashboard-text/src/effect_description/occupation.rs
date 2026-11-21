@@ -1,10 +1,6 @@
-//! The active occupation badge's definition description in its supplied scopes.
 use super::*;
 use installed_content_core::occupation_modifiers::Definition;
 
-/// Map badges request an active definition without the additional threshold and
-/// trigger detail. The disable effects describe that active definition; the
-/// modifier list and authored tooltip remain raw localisation.
 pub fn occupation_modifier_description(
     definition: &Definition,
     context: &Context<'_, '_>,

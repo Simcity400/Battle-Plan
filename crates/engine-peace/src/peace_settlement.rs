@@ -1,7 +1,3 @@
-//! Owned observation at `peace_finalizer_site`, distinct from hourly walks.
-//! History uses in-order country nodes, turn order and action order; statuses
-//! three and four are excluded. Reduced transfers remain separate because a
-//! split demand need not transfer a state to its taker.
 
 use crate::{
     Memory, cpdx_array::Array, peace_action, peace_conference as conference,
@@ -17,7 +13,6 @@ pub struct Action {
     pub operands: peace_action::Row,
     pub name_len: usize,
     pub name_start: usize,
-    /// The native SSO length is storage, not a text cap; longer names use Output.
     pub name_inline: [u8; crate::msvc_string::INLINE_CAPACITY as usize],
 }
 
@@ -25,7 +20,6 @@ pub struct Action {
 pub struct Transfer {
     pub state: i32,
     pub taker: u32,
-    /// Native automatic civil-war list, with no invented action token/giver.
     pub automatic: bool,
 }
 
@@ -44,15 +38,11 @@ pub struct Snapshot {
     pub transfers: usize,
     pub subjects: usize,
     pub name_bytes: usize,
-    /// First unavailable name's exact required byte count, for off-thread growth.
     pub required_name_bytes: usize,
-    /// Lower bound on unread operands; stop at the first capacity limit.
     pub omitted: usize,
-    /// First read/authentication failure; partial operands cannot be exact.
     pub failure: Option<&'static str>,
 }
 
-/// Worker resident-bid buffers sized from original country/action counts and retained name lengths.
 pub struct Output<'a> {
     pub winners: crate::walk::Buffer<'a, u32>,
     pub losers: crate::walk::Buffer<'a, u32>,
@@ -94,8 +84,6 @@ fn validate_last<T: crate::memory::Raw>(
     Ok(())
 }
 
-/// A growing destination reserves for `required` only once the array's last
-/// element reads, so a header nothing backs never sizes an allocation.
 fn reserve<T: Default, E: crate::memory::Raw>(
     memory: &impl Memory,
     destination: &mut crate::walk::Buffer<'_, T>,
@@ -117,7 +105,6 @@ fn remember_node(seen: &mut HashSet<usize>, node: usize) -> Result<(), &'static 
     Ok(())
 }
 
-/// [`copy`] into storage that grows to what the backed arrays hold.
 pub fn copy(
     memory: &impl Memory,
     base: usize,
@@ -127,7 +114,6 @@ pub fn copy(
     copy_internal(memory, base, pointer, output, true, false)
 }
 
-/// Worker-only continuation from the first acquired headers, without retries.
 pub fn copy_bids(
     memory: &impl Memory,
     base: usize,
@@ -137,8 +123,6 @@ pub fn copy_bids(
     copy_internal(memory, base, pointer, output, false, false)
 }
 
-/// Off-thread sizing from backed native arrays, including rejected bids and empty turns.
-/// No payload is recorded; cached-name headers supply their variable byte demand.
 pub fn demand(memory: &impl Memory, base: usize, pointer: usize) -> Snapshot {
     crate::allocation::advisory(|| demand_advisory(memory, base, pointer))
 }
@@ -237,15 +221,12 @@ fn copy_internal(
                 as usize;
             let countries = array(memory, state, crate::cgame_state::COUNTRIES, 8)?;
             validate_last::<u64>(memory, countries)?;
-            // History keys select countries through the live game-state country roster.
             if expected > u64::from(countries.count) {
                 return Err("peace history exceeds country registry");
             }
         }
-        // Only off-thread sizing allocates cycle-detection storage, as nodes are read.
         let mut seen = measuring.then(HashSet::new);
         let mut links = measuring.then(HashSet::new);
-        // A valid tree traverses at most three links per native node.
         let step_limit = usize::try_from(expected)
             .ok()
             .and_then(|count| count.checked_mul(3))
@@ -303,7 +284,6 @@ fn copy_internal(
                 for ordinal in 0..actions.count as usize {
                     let action_pointer =
                         || element::<u64>(memory, actions, ordinal).map(|at| at as usize);
-                    // An excluded bid needs no storage, so it can neither fill nor truncate.
                     if settled
                         && !peace_action::included_in_settlement(memory, base, action_pointer()?)?
                     {
@@ -352,7 +332,6 @@ fn copy_internal(
                 links.clear();
                 remember_node(links, node)?;
             }
-            // Native successor traversal; a bounded step count refuses corrupt links.
             if current.right != head {
                 node = current.right;
                 loop {

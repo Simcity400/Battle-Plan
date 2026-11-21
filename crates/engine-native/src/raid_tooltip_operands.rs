@@ -1,8 +1,3 @@
-//! Stored operands of ordinary-map raid tooltips. Army statistics and
-//! wing mission-8 statistics are read on demand. Keep stored numerators
-//! and every manpower entry; the viewer computes derived fractions.
-//! Hourly acquisition preserves equipment, strength, organisation and
-//! experience changes during any hour.
 use crate::modifier_keys as keys;
 use crate::{
     Memory, cair_wing, carmy, cpdx_array::Array, craid_instance, creference_registry, cunit,
@@ -47,30 +42,15 @@ pub const ADDITIONAL_ORDER: u32 = 28;
 pub const SOURCE_NAME: u32 = 29;
 pub const SOURCE_NAME_GROUP: u32 = 30;
 pub const SOURCE_CUSTOM_NAME: u32 = 31;
-/// Global subunit discriminator. Scope zero holds ordered database entries; key zero is the null
-/// fallback.
 pub const SUBUNIT_ACTIVE: u32 = 32;
-/// The only row of a raid whose operands could not be read; the other
-/// raids keep theirs.
 pub const UNREADABLE: u32 = 33;
-/// Stored wing text: length at u32::MAX, chunks at zero-based keys.
-/// A negative length is a NameReadError code, with no chunks.
 pub const WING_NAME: u32 = 34;
-/// The source ship's retained display name (its naming member's cache),
-/// which the game shows for the ship: length at u32::MAX, chunks at
-/// zero-based keys, or a negative NameReadError code with no chunks. It is
-/// read independently of the naming operands, so a failed cache read keeps
-/// them and a refused name reconstruction can still show the game's text.
 pub const SOURCE_CACHED_NAME: u32 = 35;
-/// Static lexer tokens used to resolve names.
 pub const NUCLEAR_BOMB_TOKEN: u32 = 0x4bf0;
 pub const THERMONUCLEAR_BOMB_TOKEN: u32 = 0x4bf1;
-/// Definition keys use the unused null reference-type arm; ordinary raid
-/// keys retain their native nonzero reference type.
 pub fn definition_key(token: u32) -> u64 {
     u64::from(token) << 32
 }
-/// Keys in NAME, apart from CNameGroupMember offsets.
 pub const ARMY_RESOLVED: u32 = 0x1000;
 pub const WING_RESOLVED: u32 = 0x1001;
 pub const UNIT_RAID_REFERENCE: u32 = 0x1002;
@@ -118,7 +98,6 @@ pub fn wing_name_error(code: i64) -> &'static str {
         .map(NameReadError::reason)
         .unwrap_or("unsupported wing-name read failure code")
 }
-// CONTEXT keys name the source word, never a calculated value.
 pub const TARGET_PROVINCE: u32 = 0;
 pub const TARGET_REGION: u32 = 1;
 pub const WING_REGION: u32 = 2;
@@ -127,11 +106,8 @@ pub const WING_MISSION_MASK: u32 = 4;
 pub const CARRIER_MISSION: u32 = 5;
 pub const NIGHT_FACTOR: u32 = 6;
 pub const TARGET_COUNTRY: u32 = 7;
-/// A native binary-search operand, apart from the direct vector scan.
 pub const LOOKUP: u32 = 1 << 31;
 
-/// Keys within a scalar family are native byte offsets, and within a stat
-/// family native stat indexes. Ordinals preserve repeated vector entries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub raid: u64,
@@ -205,14 +181,10 @@ fn unit(
 }
 
 fn army(memory: &impl Memory, pointer: usize, sink: &mut Sink<'_>) -> Result<(), &'static str> {
-    // Experience uses `carmy::EXPERIENCE` and sums the signed manpower array
-    // (`carmy::MANPOWER_VALUES`),
-    // without deduplication.
     for offset in [0x420, 0x428, 0x430] {
         sink.push(ARMY, offset as u32, field(memory, pointer, offset)?)?;
     }
     let stats = field::<u64>(memory, pointer, cunit::STAT_BLOCK)? as usize;
-    // Recon and maximum strength; maximum strength clamps at 100.
     for offset in [0xd0, 0x288] {
         sink.push(ARMY_STATS, offset as u32, field(memory, stats, offset)?)?;
     }
@@ -246,8 +218,6 @@ fn wing_stats(
     )?;
     let index = cair_wing::mission_stat_index(memory, pointer, 8).map_err(raid_stat_reason)?;
     let stats = cair_wing::mission_stat_record(memory, pointer, index).map_err(raid_stat_reason)?;
-    // Stored mission-stat inputs for wing statistics and raid reliability.
-    // No getter or modifier is executed.
     for key in [0x2f, 0x31, 0x32, 0x41, 0x4c] {
         sink.push(WING_STATS, key, field(memory, stats, key as usize * 8)?)?;
     }
@@ -267,8 +237,6 @@ fn raid_stat_reason(reason: cair_wing::MissionStatError) -> &'static str {
     }
 }
 
-/// Direct scans visit every occurrence; other queries binary-search this
-/// sorted vector. Preserve order and duplicate keys for both users.
 fn modifiers(
     memory: &impl Memory,
     at: usize,
@@ -295,8 +263,6 @@ fn modifiers(
             )?;
         }
     }
-    // Preserve the stored entry selected by the native binary search even
-    // if an accumulator contains repeated keys; no sum or clamp here.
     for &key in keys {
         let (mut lower, mut upper) = (0, array.count);
         while lower < upper {
@@ -360,8 +326,6 @@ fn object(
 }
 
 fn nearest(memory: &impl Memory, state: usize) -> Result<usize, &'static str> {
-    // The map X axis does not wrap; squared distances wrap as signed i32,
-    // and equal distances keep the first occurrence.
     let template = field::<u64>(memory, state, crate::cstate::TEMPLATE)? as usize;
     let point = |at, offset| -> Result<[i32; 2], &'static str> {
         let bytes = field::<[u8; 8]>(memory, at, offset)?;
@@ -417,7 +381,6 @@ fn targets(
     } else {
         building_location
     };
-    // Building requirements and target selection have distinct precedence.
     let state = if explicit_state != 0 {
         explicit_state
     } else if province != 0 {
@@ -450,11 +413,9 @@ fn target_inputs(
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
     if state != 0 {
-        // The resistance branch reads the live state's resistance numerator.
         sink.push(TARGET_STATE, 0x278, field(memory, state, 0x278)?)?;
     }
     if province != 0 {
-        // Enemy-unit counts use this roster rather than the map-counter roster.
         let roster =
             Array::read(memory, province + 0x110, 8).ok_or("raid tooltip target units invalid")?;
         for index in 0..roster.count {
@@ -492,8 +453,6 @@ fn wing(
         let holder = field::<u64>(memory, pool, raid_speed_inputs::WING_POOL_OWNER)? as usize;
         field::<u32>(memory, holder, raid_speed_inputs::POOL_OWNER_COUNTRY)?
     };
-    // Wing statistics use this wing-country accumulator. The selected slot
-    // is a stored country tag, never a modifier result.
     let slot = countries
         .link(raw)?
         .ok_or("raid tooltip wing country unresolved")?;

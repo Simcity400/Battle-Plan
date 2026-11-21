@@ -634,7 +634,6 @@ fn railway_source_gate_precedes_inherited_retreat_operands() {
         );
         assert_eq!(*world.trace.borrow(), ["railway-retreat-edge"]);
     }
-    // Railway organisation admits the inherited hostile-controller organisation gate.
     let world = World {
         controller: 2,
         wars: BTreeMap::from([((2, 1), Ok(true))]),
@@ -875,7 +874,6 @@ fn province_access_actual_zero_active_war_skips_later_operands() {
     };
     let army = Army { owner: 0, ..army() };
     let mut selected = unit(&army);
-    // Country access also applies when a positive logical-owner alias resolves to zero.
     for raw in [0, 99] {
         selected.logical_owner_raw = raw;
         assert_eq!(mover.common_class_access(&selected, 2), Ok(true));
@@ -891,7 +889,6 @@ fn province_access_actual_zero_clear_war_demands_military_access() {
         controller: 200,
         state_owner: 200,
         wars: BTreeMap::from([((0, 2), Ok(false))]),
-        // A nonzero controller overlord prevents a false slot-zero success.
         overlords: BTreeMap::from([(0, Ok(0)), (2, Ok(3))]),
         ..Default::default()
     };
@@ -951,7 +948,6 @@ fn raw_self_and_nonpositive_f3a00_gates_do_not_demand_direct_packet() {
     assert_eq!(mover.raw_at_war(0, 99), Ok(false));
     assert_eq!(mover.raw_at_war(1, 1), Ok(false));
     assert!(world.trace.borrow().is_empty());
-    // Raw zero versus a nonzero zero-alias does not take the both-nonzero alias arm.
     assert_eq!(mover.raw_same(0, 99), Ok(false));
 }
 #[test]
@@ -1849,9 +1845,6 @@ fn railway_route_relaxation_keeps_earlier_heap_key_frozen_and_expands_duplicate(
             "rail-edge:2->5"
         ]
     );
-    // Province 2 was relaxed from 1000 to 10 before its first pop. Its original
-    // entry stays 1000, so province 4 at 50 expands before province 2's duplicate pop.
-    // A heap reading mutable node.f would reverse those last two probes.
 }
 
 #[test]

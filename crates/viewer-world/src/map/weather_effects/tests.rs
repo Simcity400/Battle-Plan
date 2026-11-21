@@ -10,11 +10,9 @@ fn weather_parent_acceptance_is_a_fresh_ordered_prefix_with_plane_contact() {
         parent_admission([0.; 3], 1., &views),
         Some(native::ViewMask::Some(vec![false, true, true]))
     );
-    //The previous call does not leave a stamp in a later frame.
     assert!(parent_admission([0.; 3], 1., &[([0.; 3], outside); 3]).is_none());
     assert!(parent_admission([0.; 3], -1., &[([0.; 3], [[0.; 4]; 6])]).is_none());
     assert!(parent_admission([f32::MAX, 0., 0.], 1., &[([0.; 3], contact)]).is_none());
-    // A free camera's frame can hold more views than eight: the mask has one per view.
     let mut many = vec![([0.; 3], outside); 8];
     many.extend([([0.; 3], contact), ([0.; 3], outside)]);
     let mask = parent_admission([0.; 3], 1., &many).expect("a view accepts it");
@@ -110,8 +108,6 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
     )];
     let mut starts = SoundStarts::new();
     let mut fades = fade::Fades::default();
-    // The pairs the anchors drew are kept for the field and presentation that drew them, and the
-    // sounds read them: a kept answer is the one a fresh walk gives, and a new hour draws again.
     let mut drawn = Drawn::default();
     let mut changes = 0;
     let mut collect = |height: f32, time: f32, field: &Field, presentation: &Presentation| {
@@ -121,8 +117,6 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
         let kept = drawn
             .for_field(&anchors, &systems, field, presentation, changes)
             .to_vec();
-        // A change count the store has not seen makes the draws again: the fresh walk over every
-        // anchor must give what the kept answer gave for the same field and presentation.
         changes += 1;
         let again = drawn
             .for_field(&anchors, &systems, field, presentation, changes)
@@ -156,7 +150,6 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
             .map(|&(effect, age)| (effect.to_owned(), age))
             .collect::<Vec<_>>()
     };
-    // Mid zoom shows both members of the new pair; the timed event waits for its time.
     let near = collect(800.0, 10.0, &field, &presentation);
     assert_eq!(effects(&near), named(&[("rain_loop", 0.0), ("far_wind", 0.0)]));
     assert_eq!(near[0].position, [10.0, 5.0, 20.0]);
@@ -166,16 +159,12 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
         named(&[("rain_loop", 6.0), ("thunder", 1.0), ("far_wind", 6.0)])
     );
     assert_eq!(far[0].key, near[0].key, "the region kept its weather");
-    // Below the zoom-in cutoff the fading entity goes inactive; the entity keeps its far-band
-    // state, so it still sounds.
     assert_eq!(
         effects(&collect(300.0, 17.0, &field, &presentation)),
         named(&[("rain_loop", 7.0), ("thunder", 2.0)])
     );
-    // Beyond the far cutoff both go inactive, and the entity stays so back below the far band.
     assert!(collect(1600.0, 17.5, &field, &presentation).is_empty());
     assert!(collect(300.0, 17.75, &field, &presentation).is_empty());
-    // A region whose producer holds no weather presents nothing.
     let clear = Field {
         hour: 21,
         kinds: BTreeMap::new().into(),
@@ -184,7 +173,6 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
     assert!(collect(800.0, 18.0, &clear, &Presentation::default()).is_empty());
 }
 
-/// The game compares the wanted kind with the held one only when a region's producer runs.
 #[test]
 fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_when_listed() {
     let defines = reference_defines();
@@ -193,7 +181,6 @@ fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_
         hour,
         kinds: kinds.iter().copied().collect::<BTreeMap<_, _>>().into(),
     };
-    // Anchors 0 and 1 lie in region 7, anchor 2 in region 8.
     let region_of = |anchor: usize| if anchor < 2 { 7 } else { 8 };
     let mut wanted = Presentation::default();
     let mut previous = field(10, &[(7, 0), (8, 0)]);
@@ -211,13 +198,11 @@ fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_
         fades.produce(listed.iter().copied().filter(|region| held.0.contains_key(region)), 1300.0, &defines, |_| true);
         (swap, held.clone(), fades.members(7), runtimes.clone())
     };
-    // The first listed frame creates the pairs with the runtimes prepared for them.
     let ((swapped, let_go), first, members, made) = run(&[7, 8], &wanted, &mut pending);
     assert!(swapped && let_go.is_empty() && pending.is_empty());
     assert_eq!(first.0[&7], RegionPresentation { kind: 0, seed_hour: 10 });
     assert_eq!(made.values().copied().collect::<Vec<_>>(), ["rain 0", "rain 1", "rain 2"]);
     assert!(members.iter().all(|member| member.active));
-    // Region 7 goes clear, then rains again, between listed frames: the wanted rain begins anew.
     for (hour, kinds) in [(11, &[(8, 0)][..]), (12, &[(7, 0), (8, 0)][..])] {
         let next = field(hour, kinds);
         wanted.transition(&previous, &next, Continuity::Continue);
@@ -226,8 +211,6 @@ fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_
         assert!(!swapped && let_go.is_empty());
     }
     assert_eq!(wanted.0[&7].seed_hour, 12);
-    // Listed again, its producer finds the kind it holds: pairs, seed, runtimes and member
-    // states stay, and the runtimes prepared for the new rain are not taken.
     let mut prepared = BTreeMap::from([((0, false, 0), "new rain 0")]);
     let ((swapped, let_go), kept, kept_members, kept_runtimes) = run(&[7], &wanted, &mut prepared);
     assert!(!swapped && let_go.is_empty());
@@ -235,7 +218,6 @@ fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_
     assert_eq!(kept_members, members);
     assert_eq!(kept_runtimes, made);
     assert_eq!(prepared.len(), 1);
-    // Region 7 turns to snow, unlisted: nothing changes until its first listed frame swaps.
     let next = field(13, &[(7, 2), (8, 0)]);
     wanted.transition(&previous, &next, Continuity::Continue);
     let mut prepared = BTreeMap::from([((0, false, 0), "snow 0")]);
@@ -248,21 +230,16 @@ fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_
     assert_eq!(let_go, ["rain 0", "rain 1"]);
     assert_eq!(snow_runtimes.values().copied().collect::<Vec<_>>(), ["snow 0", "rain 2"]);
     assert_eq!(snow_members, fade::created(1300.0, &defines), "the new pairs start fresh");
-    // Wanting no weather, the producer lets its pairs go and holds nothing.
     let clear = field(14, &[(8, 0)]);
     wanted.transition(&next, &clear, Continuity::Continue);
     let ((swapped, let_go), none, _, rest) = run(&[7], &wanted, &mut BTreeMap::new());
     assert!(swapped && let_go == ["snow 0"] && !none.0.contains_key(&7));
     assert_eq!(rest.values().copied().collect::<Vec<_>>(), ["rain 2"]);
-    // The weather switch off makes every run want none ([`Pass::produce`]): region 8 keeps its
-    // pairs while unlisted, lets them go when listed, and gets new ones only on a listed frame
-    // after the switch is back on.
     let off = Presentation::default();
     let held_8 = |held: &Presentation| held.0.get(&8).copied();
     let rain_8 = Some(RegionPresentation { kind: 0, seed_hour: 10 });
     let ((swapped, _), kept, _, kept_runtimes) = run(&[7], &off, &mut BTreeMap::new());
     assert!(!swapped && held_8(&kept) == rain_8 && kept_runtimes.len() == 1);
-    // A replacement prepared for region 8 goes with its pairs; nothing stays resident.
     let mut storm = BTreeMap::from([((2, true, 0), "storm 2")]);
     let ((swapped, let_go), released, _, rest) = run(&[8], &off, &mut storm);
     assert!(swapped && let_go == ["rain 2", "storm 2"] && held_8(&released).is_none());
@@ -321,14 +298,11 @@ fn gates(height: f32) -> (f32, bool, f32) {
 
 #[test]
 fn merging_keeps_retained_runtimes_and_retires_the_rest() {
-    // Anchors 1 and 2 sit in kept regions, 3 and 4 in changed ones.
     let kept = |anchor: &u32| *anchor <= 2;
     let mut current = BTreeMap::from([(1, "old 1"), (3, "old 3"), (4, "old 4")]);
     let prepared = BTreeMap::from([(1, "new 1"), (2, "new 2"), (3, "new 3"), (5, "new 5")]);
     let mut retired = merge_runtimes(&mut current, prepared, kept);
     retired.sort_unstable();
-    // Anchor 2's region was kept but had no runtime; its prepared one is
-    // let go too, since a kept region continues exactly as it was.
     assert_eq!(
         current,
         BTreeMap::from([(1, "old 1"), (3, "new 3"), (5, "new 5")])
@@ -421,8 +395,6 @@ fn playback_skips_keep_live_rain_and_snow_runtimes_advancing() {
         assert_same_state(simulation, expected);
         assert!(simulation.age > 0.2);
     }
-    // An explicit same-hour seek (also used for gaps/country changes)
-    // replaces populated runtimes, even though no weather kind changed.
     let retained = presentation.transition(&next, &next, Continuity::Reset);
     assert!(retained.is_empty());
     let retired = merge_runtimes(
@@ -467,22 +439,18 @@ fn changed_content_controls_both_camera_bands_and_the_playback_floor() {
 
 #[test]
 fn the_camera_fade_runs_from_the_zoom_in_cutoff_and_the_far_band_starts_at_1100() {
-    // `WEATHER_ZOOM_IN_FADE_FACTOR` is 0, so nothing draws below the cutoff.
     assert_eq!(gates(50.0).0, 0.0);
     assert_eq!(gates(310.131).0, 0.0);
     assert_eq!(gates(357.999).0, 0.0);
-    // The entity's zoom-in fade runs from 358 to 578.
     assert_eq!(gates(358.0).0, 0.0);
     assert!((gates(431.4655).0 - 0.333_934).abs() < 1e-5);
     assert!((gates(468.0).0 - 0.5).abs() < 1e-6);
     assert_eq!(gates(597.5275).0, 1.0);
     assert_eq!(gates(1100.0).0, 1.0);
-    // The far fade takes both from 1100 to 1500, and nothing draws above it.
     assert_eq!(gates(1300.0).0, 0.5);
     assert!((gates(1167.101).0 - 0.832_25).abs() < 1e-5);
     assert_eq!(gates(1500.0).0, 0.0);
     assert_eq!(gates(1600.0).0, 0.0);
-    // The far band starts above 1100 and includes the heights beyond the cutoff.
     for h in [50.0, 310.131, 358.0, 431.4655, 597.5275, 1100.0] {
         assert!(!gates(h).1, "far at {h}");
     }
@@ -524,7 +492,6 @@ fn scalar_and_block_curve_parameters_both_preserve_the_reference() {
     assert_eq!(alpha.sample(0.5, 1.0), 0.0);
     assert!((size.sample(1.0, 0.5) - 7.0).abs() < 0.01);
     assert!((size.sample(0.0, 0.5) - 5.0).abs() < 0.01);
-    // Each comma track keeps its last number.
     let doc = parser::parse(br#"rotation={ 0.000,0.000 0.000,180.000 }"#).unwrap();
     let rotation = Parameter::read(&doc.items, "rotation", 0.0, &curves);
     assert_eq!((rotation.base, rotation.spread), (0.0, 180.0));
@@ -552,8 +519,6 @@ fn assert_near(left: [f32; 3], right: [f32; 3]) {
     );
 }
 
-/// A spin force moves a still particle exactly onto its rotation by `amount * dt` about the
-/// axis, then trades the velocity along its path for the next step's rotation.
 #[test]
 fn spin_turns_a_particle_by_its_amount_each_update() {
     let mut emitter = activation_test_emitter();
@@ -574,8 +539,6 @@ fn spin_turns_a_particle_by_its_amount_each_update() {
     assert_near(sim.particles[0].velocity, [-1.0, 0.0, -1.0]);
 }
 
-/// A vortex pushes along the axis-perpendicular offset turned by its yaw: at 90 degrees the
-/// push is tangential, at none it is radial. Its amount scales with the displacement scale.
 #[test]
 fn vortex_pushes_around_its_axis_by_its_yaw() {
     let quarter = 90f32 * std::f32::consts::PI / 180.0;
@@ -600,8 +563,6 @@ fn vortex_pushes_around_its_axis_by_its_yaw() {
     }
 }
 
-/// A system's creation draws every subsystem's creation values in order from its one stream,
-/// the leading subsystem's, and seeds the turbulence fields from it only after them.
 #[test]
 fn a_system_draws_its_subsystems_then_its_turbulence_from_one_stream() {
     let mut leader = activation_test_emitter();
@@ -633,8 +594,6 @@ fn a_system_draws_its_subsystems_then_its_turbulence_from_one_stream() {
     assert_eq!((a.seed, b.seed), (stream, 8));
 }
 
-/// A system's turbulence fields live once, with its leading subsystem, and every populated
-/// subsystem's update advances them: two populated subsystems advance two slices a step.
 #[test]
 fn subsystems_of_one_system_share_and_advance_its_turbulence_fields() {
     let mut leader = activation_test_emitter();
@@ -655,14 +614,11 @@ fn subsystems_of_one_system_share_and_advance_its_turbulence_fields() {
     assert!(!a.particles.is_empty() && !b.particles.is_empty());
     assert_eq!((a.noise.len(), b.noise.len()), (1, 0));
     assert_eq!(a.noise[0].slice, 2);
-    // The follower's particles felt the shared field; advanced alone, with none, they do not.
     let mut alone = Simulation::cold(&follower, 8, [0.; 3], 0.);
     alone.advance(&follower, 0.05, 1.0);
     assert_ne!(b.particles[0].velocity, alone.particles[0].velocity);
 }
 
-/// A delayed particle system does not exist until its entity event fires: a negative sampled
-/// start cannot make it emit early, and it starts its own clock from its creation.
 #[test]
 fn a_delayed_system_waits_for_its_event_before_it_starts() {
     let mut emitter = activation_test_emitter();
@@ -671,15 +627,11 @@ fn a_delayed_system_waits_for_its_event_before_it_starts() {
     let mut sim = Simulation::cold(&emitter, 7, [0.; 3], 0.);
     sim.advance(&emitter, 1.0, 1.0);
     assert!(sim.waiting() && sim.particles.is_empty());
-    // The entity tests `previous <= event < current`: at the event time it has not fired.
     sim.advance(&emitter, 2.0, 1.0);
     assert!(sim.waiting() && sim.particles.is_empty());
-    // It fires before the frame's particle updates, which then take the whole frame.
     sim.advance(&emitter, 2.25, 1.0);
     assert!(!sim.waiting() && !sim.particles.is_empty());
-    // Three float substeps on 3.0.
     assert!((sim.age - 3.25).abs() < 1e-5, "{}", sim.age);
-    // An event crossed while culled has fired when the system returns to view.
     let mut culled = Simulation::cold(&emitter, 7, [0.; 3], 0.);
     culled.advance(&emitter, 1.0, 1.0);
     culled.time = 5.0;
@@ -687,8 +639,6 @@ fn a_delayed_system_waits_for_its_event_before_it_starts() {
     assert!(!culled.waiting() && !culled.particles.is_empty());
 }
 
-/// A pair's entity begins when its producer creates it, on the clock of the frame that did,
-/// whatever the camera sees; a let-go pair forgets it and a clock that went back restamps it.
 #[test]
 fn a_producer_s_pairs_keep_the_clock_they_were_created_on() {
     let defines = reference_defines();
@@ -705,8 +655,6 @@ fn a_producer_s_pairs_keep_the_clock_they_were_created_on() {
     assert_eq!(fades.born(7), None);
 }
 
-/// An entity event's emitters retire together: a finished subsystem stays on its system's
-/// clock while a sibling still has particles.
 #[test]
 fn an_event_s_finished_subsystem_retires_with_its_system() {
     let mut short = activation_test_emitter();
@@ -730,12 +678,10 @@ fn an_event_s_finished_subsystem_retires_with_its_system() {
     let state = simulations.presentation_state();
     let lines: Vec<_> = state.lines().collect();
     assert_eq!(lines.len(), 2, "{state}");
-    // The finished subsystem was kept, not recreated emitting at the current age.
     assert!(lines.iter().all(|line| line.contains("time=0.7 ")), "{state}");
     assert!(lines[1].contains("emitting=false") && lines[1].contains("particles=[]"), "{state}");
 }
 
-/// A ranged value's base takes its spawn-time animation before the spread draws around it.
 #[test]
 fn a_ranged_value_draws_around_its_animated_base() {
     let half = Curve::new(&[[0.0, 0.5], [1.0, 0.5]], 0.0, 1.0, 0.0, 1.0);
@@ -753,7 +699,6 @@ fn a_ranged_value_draws_around_its_animated_base() {
     assert!((3.0..=7.0).contains(&drawn));
 }
 
-/// `emission = { base spread }` draws a fresh rate within the range at every emitting update.
 #[test]
 fn a_ranged_emission_draws_a_new_rate_every_update() {
     let mut emitter = activation_test_emitter();
@@ -778,9 +723,6 @@ fn a_ranged_emission_draws_a_new_rate_every_update() {
     assert!(rates.windows(2).any(|pair| pair[0] != pair[1]));
 }
 
-/// Subsystems name system forces in their own order, a repeat applying twice and an unknown
-/// name skipped; types fold case and a yaw turns in degrees. Ranged emission and position read
-/// both tracks. A force of an unknown type, or a nested subsystem, refuses the particle by name.
 #[test]
 fn particle_blocks_read_forces_ranges_and_refuse_what_the_map_cannot_present() {
     let doc = parser::parse(
@@ -828,7 +770,6 @@ fn particle_blocks_read_forces_ranges_and_refuse_what_the_map_cannot_present() {
         let error = parse_emitters(root).unwrap_err().to_string();
         assert!(error.contains(why), "{error}");
     }
-    // A hidden subsystem draws nothing, its children with it.
     let doc = parser::parse(
         br#"particle = { name = storm subsystem = { name = outer hide = yes max_amount = 4
             subsystem = { name = inner max_amount = 2 } } }"#,
@@ -852,7 +793,6 @@ fn test_force(kind: ForceKind, position: [f32; 3], direction: [f32; 3], amount: 
     }
 }
 
-/// [`activation_test_emitter`] with particles that live ten seconds.
 pub(crate) fn long_lived_test_emitter() -> Emitter {
     let mut emitter = activation_test_emitter();
     emitter.life.base = 10.;
@@ -1045,7 +985,6 @@ fn expiry_preserves_native_packet_order_and_ages_each_survivor_once() {
                 }
             );
         }
-        //New births append after native compaction, without aging this tick.
         emitter.emission.base = 2.;
         simulation.tick(&emitter, 0.5);
         assert_eq!(simulation.particles.last().unwrap().age, 0.);
@@ -1097,9 +1036,6 @@ fn suspension_retains_population_instead_of_inventing_steady_state() {
     assert_eq!(simulation.time, 20.0);
 }
 
-/// Simulations move in and out of the pass's map on every hour change, so
-/// the large noise tables stay on the heap.
-// regression: b8f2e16886 Free weather runtimes off the frame path and box their noise tables
 #[test]
 fn a_simulation_moves_without_its_noise_table() {
     assert!(std::mem::size_of::<Simulation>() < 256);

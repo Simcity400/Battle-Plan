@@ -1,22 +1,13 @@
 use crate::{Memory, cpdx_array::Array};
 
-/// A worker-owned vector, whole or from an offset, or a count-only probe.
-/// Growing readers reserve from their acquired headers before filling, without
-/// restarting native reads. A count-only probe stores nothing and never grows:
-/// a sizing walk reads only what it needs to count the rows the table holds.
 pub enum Buffer<'a, T> {
     Count,
-    /// Storage sized to a count the caller took from the same unchanging data,
-    /// such as the combat-log prune detour, which must not allocate, or a
-    /// decode of a recorded copy into storage reserved from that copy's demand.
-    /// It never grows.
     Exact(&'a mut [T]),
     Growing(&'a mut Vec<T>),
     GrowingFrom(&'a mut Vec<T>, usize),
 }
 
 impl<T: Default> Buffer<'_, T> {
-    /// Whether `required` rows fit; only a count-only probe answers `false`.
     pub fn ensure(&mut self, required: usize) -> Result<bool, &'static str> {
         if required <= self.len() {
             return Ok(true);
@@ -34,7 +25,6 @@ impl<T: Default> Buffer<'_, T> {
     }
 }
 
-/// Grows worker storage to hold `end` values, as [`Buffer::ensure`] grows it.
 pub fn grow<T: Default>(values: &mut Vec<T>, end: usize) -> Result<(), &'static str> {
     if end <= values.len() {
         return Ok(());
@@ -48,8 +38,6 @@ impl<T> Buffer<'_, T> {
         !matches!(self, Self::Count | Self::Exact(_))
     }
 
-    /// Continue an original walk in the same owned allocation. A slice would
-    /// discard the worker's ability to grow after a nested header is acquired.
     pub fn suffix(&mut self, start: usize) -> Buffer<'_, T> {
         match self {
             Self::Count => Buffer::Count,
@@ -88,8 +76,6 @@ pub enum Outcome {
     Rows {
         len: usize,
     },
-    /// Rows the table holds whose fields were not stored: every row of a
-    /// count-only probe, or rows the game leaves unresolved.
     Truncated {
         len: usize,
         unread_rows: u32,
@@ -112,10 +98,6 @@ impl Outcome {
     }
 }
 
-/// These game arrays reserve slot zero. Null holes contain no row. A fault never
-/// turns a prefix into a successful table. Exact pointer spans are copied in
-/// bounded batches. Earlier complete rows keep their validation precedence over
-/// a later unreadable pointer in the batch.
 pub fn pointers<R: Default>(
     memory: &impl Memory,
     array: Array,
@@ -232,7 +214,6 @@ mod tests {
                 .blocked
                 .is_some_and(|blocked| (address..address + destination.len()).contains(&blocked))
             {
-                // No byte from a partial failed pointer may become a row.
                 destination.fill(0xff);
                 return false;
             }

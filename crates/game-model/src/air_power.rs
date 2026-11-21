@@ -1,4 +1,3 @@
-//! A strategic-air region entry's air-power breakdown, shared by its reader and the recorded row.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
@@ -11,7 +10,6 @@ pub struct Contribution {
 #[derive(replay_spool::Spooled)]
 pub struct Menu {
     pub coverage: i64,
-    /// Enemy AA, friendly AA, enemy missiles, friendly missiles.
     pub reductions: [i64; 4],
     pub contributions: [Vec<Contribution>; 2],
 }

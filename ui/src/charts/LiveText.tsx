@@ -4,7 +4,6 @@ import type { LiveTexts } from './live.ts';
 export { liveTexts, separated } from './live.ts';
 export type { LiveTexts, TextClock, TextSource } from './live.ts';
 
-/** A text kept current by the frame, never rendered for: React writes it, each frame paints it when it moved. */
 export default function LiveText({ live, at }: { live: LiveTexts; at: string }) {
   const element = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {

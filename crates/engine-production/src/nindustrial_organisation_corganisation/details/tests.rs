@@ -160,7 +160,6 @@ fn daily_scalars_observe_direct_assignments_while_certified_rosters_and_stores_c
         &654321_i32.to_le_bytes(),
     );
     put(&mut bytes, ORG + SOURCE_LOCATION_ACTIVE, &[0]);
-    // None of these certified stores is readable in this observation.
     put(&mut bytes, ORG + UNLOCKED, &0_u64.to_le_bytes());
     put(&mut bytes, ORG + VARIABLES, &0_u64.to_le_bytes());
     put(&mut bytes, ORG + FLAGS, &0_u64.to_le_bytes());
@@ -358,8 +357,6 @@ fn country_policies_keep_cached_names_context_and_selection_score() {
             cached_score_raw: i64::MIN
         }]
     );
-    // Direct set-effects and adjustments need no cache notification: these
-    // scalars are read on every daily visit, even while rare fields carry.
     put(&mut bytes, policy + POLICY_COST, &23_i32.to_le_bytes());
     put(&mut bytes, policy + POLICY_DAYS, &71_i32.to_le_bytes());
     put(&mut bytes, policy + POLICY_NAME + 24, &0_u64.to_le_bytes());
@@ -446,10 +443,8 @@ fn policy_cost_modifier_is_the_country_accumulators_effective_entry() {
     memory.entries(&[(KEY - 1, 11), (KEY, -75_000), (KEY + 1, 13)]);
     memory.flags(0);
     assert_eq!(policy_cost_modifier(&memory, 0, COUNTRY), Ok(-75_000));
-    // The definition's clamp applies as the game's getter applies it.
     memory.flags(definitions::CLAMP_MAXIMUM);
     assert_eq!(policy_cost_modifier(&memory, 0, COUNTRY), Ok(0));
-    // A known absent entry is zero; an unreadable accumulator is not.
     memory.entries(&[(KEY - 1, 11), (KEY + 1, 13)]);
     assert_eq!(policy_cost_modifier(&memory, 0, COUNTRY), Ok(0));
     assert!(policy_cost_modifier(&memory, 0, COUNTRY + 0x100).is_err());

@@ -18,7 +18,6 @@ export const definition = {
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 10 },
   countries: { max: 1 }, options: OPTIONS,
   factionColours: true,
-  // The viewpoint was its own option; a picked country stays, anything else follows the dashboard.
   migrate: (_from, { options: { viewpoint, ...options } = {}, ...widget }) => ({ ...widget, options,
     countries: viewpoint === 'country' && widget.countries.kind === 'tags' && widget.countries.tags.length ? widget.countries : { kind: 'selected' } }),
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Wars by country'),

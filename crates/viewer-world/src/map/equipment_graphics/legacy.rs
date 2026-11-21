@@ -1,39 +1,24 @@
-//! Conventional equipment models, after authored graphical pools.
-//!
-//! Best-variant selection builds a
-//! ranked candidate set, rather than taking the first country-prefixed name.
-//! This module receives simulation identities and authored definitions, and
-//! the country's stored best-variant candidates,
-//! which the collector records daily beside its rosters.
 
 use super::{Candidate, insert_legacy};
 use std::cmp::Ordering;
 
-/// Authored equipment operands used by the conventional model selector.
 #[derive(Clone, Copy, Debug)]
 pub struct Equipment<'a> {
     pub archetype: &'a str,
     pub archetype_ordinal: usize,
     pub sprite: &'a str,
-    /// The equipment's visual level.
     pub visual_level: i32,
-    /// Sum of authored visual additions along the parent chain, at least one.
     pub model_priority: i32,
-    /// Number of parent links.
     pub parent_depth: i32,
-    /// Content-defined authored module slots and the shared DLC category mask.
     pub has_enabled_module_slots: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Variant<'a> {
     pub handle: u64,
-    /// The persistent object's ID word, not its entire typed handle.
     pub id: u32,
     pub creator_reference: i32,
     pub creator_slot: i32,
-    /// Wrapping signed 32-bit sum of the recorded upgrade-level bytes.
-    /// The game derives this operand; it is not separately recorded.
     pub upgrade_sum: i32,
     pub equipment: Equipment<'a>,
 }
@@ -52,8 +37,6 @@ pub struct Subunit<'a> {
     pub key: &'a str,
     pub sprite: &'a str,
     pub categories: u64,
-    /// First sub-unit requirement entry. None means the
-    /// authored requirement list is empty, not that content is unavailable.
     pub first_archetype: Option<&'a str>,
 }
 
@@ -62,17 +45,10 @@ pub struct Context<'a> {
     pub country: Country<'a>,
     pub subunit: Subunit<'a>,
     pub selected: Option<&'a Variant<'a>>,
-    /// Complete saved country `available_equipments` membership. Creator alone
-    /// cannot establish this list: civil wars clear/rebuild it independently.
     pub available: &'a [Variant<'a>],
-    /// The model country's recorded best-variant candidates, scanned
-    /// for the selected archetype.
     pub best_candidates: &'a [Variant<'a>],
 }
 
-/// Append conventional candidates to the *same* ranked vector populated by
-/// authored graphical pools. Duplicate entity identifiers keep their original
-/// entry, including its weight. This is significant across the two producers.
 pub fn append_candidates(
     context: &Context<'_>,
     candidates: &mut Vec<Candidate>,
@@ -81,7 +57,6 @@ pub fn append_candidates(
     append_candidates_with_priority(context, candidates, 0, entity_exists)
 }
 
-/// The game supplies its per-subunit score to the persistent suffix bins.
 pub fn append_candidates_with_priority(
     context: &Context<'_>,
     candidates: &mut Vec<Candidate>,
@@ -91,19 +66,13 @@ pub fn append_candidates_with_priority(
     append_candidates_with_sources(context, candidates, base_priority, entity_exists).map(|_| ())
 }
 
-/// What a conventional candidate's option-list label is made from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// A numbered candidate of this variant handle.
     Variant(u64),
-    /// The best variant's fallback candidate (its handle).
     Best(u64),
-    /// The sub-unit's own unnumbered candidate.
     Subunit,
 }
 
-/// [`append_candidates_with_priority`], also returning each entity it
-/// inserted, in insertion order, with what its label is made from.
 pub fn append_candidates_with_sources(
     context: &Context<'_>,
     candidates: &mut Vec<Candidate>,
@@ -118,7 +87,6 @@ pub fn append_candidates_with_sources(
         .iter()
         .filter(|variant| variant.equipment.archetype == archetype)
         .collect();
-    // Use a stable sort with the shared variant comparator.
     variants.sort_by(|left, right| compare(context.country, left, right));
     let mut best = context
         .best_candidates
@@ -141,8 +109,6 @@ pub fn append_candidates_with_sources(
         source: Source::Subunit,
         sources: Vec::new(),
     };
-    // Equipment's sprite is a separate, strongly preferred spelling. It is
-    // not substituted for the subunit key and does not erase later candidates.
     if let Some(selected) = context.selected
         && !selected.equipment.sprite.is_empty()
     {
@@ -160,7 +126,6 @@ pub fn append_candidates_with_sources(
     Ok(producer.sources)
 }
 
-/// Variant comparison, including archetype registration order for the combined roster.
 pub(crate) fn compare(owner: Country<'_>, left: &Variant<'_>, right: &Variant<'_>) -> Ordering {
     let order = |variant: &Variant<'_>| dashboard_text::variant_names::VariantOrder {
         archetype_ordinal: variant.equipment.archetype_ordinal,
@@ -182,8 +147,6 @@ pub(crate) fn compare(owner: Country<'_>, left: &Variant<'_>, right: &Variant<'_
     )
 }
 
-/// Ship-type sub-units rank by the parent-chain priority, others by
-/// `visual_level`.
 fn visual_level(subunit: Subunit<'_>, variant: &Variant<'_>) -> i32 {
     if subunit.categories & 0x80_0040_03c1 == 0 {
         variant.equipment.visual_level
@@ -196,7 +159,6 @@ struct Producer<'a, 'b, F> {
     context: &'b Context<'a>,
     candidates: &'b mut Vec<Candidate>,
     entity_exists: &'b mut F,
-    /// What the candidates being produced are labelled from.
     source: Source,
     sources: Vec<(String, Source)>,
 }
@@ -241,8 +203,6 @@ impl<F: FnMut(&str) -> bool> Producer<'_, '_, F> {
                 .wrapping_add(28);
             self.source = Source::Best(best.handle);
             self.prefixes(&format!("{stem}_entity"), rank)?;
-            // This unusual extra tag is present in the game's best-variant
-            // fallback. Its result still passes through the prefix expander.
             self.alternatives(&format!("{}_{stem}", self.context.country.tag), rank)?;
         }
         self.source = Source::Subunit;

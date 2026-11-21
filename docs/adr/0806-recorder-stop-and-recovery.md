@@ -1,0 +1,15 @@
+# Publish terminal evidence independently of collector unload
+
+Readiness and detachment waits follow collector status and step progress. A stalled step has its own deadline, and progressing waits have a total cap. One hook publication can be silent while the game threads are suspended, so the inactivity deadline allows for observed slow publications. Finalization monitors inactivity rather than imposing a duration limit on useful work. Advisory step and progress files can fail without blocking finalization or hiding in-process counters. Status is read more frequently for tray admission and progress than for command-line messages.
+
+`thread_cpu` reads CPU time through the calling thread's pseudo-handle. `GetThreadTimes` writes into four distinct, owned `FILETIME` values. Each is plain data with a valid zero representation.
+
+Collector completion follows joined spool and status writers and release of the output lock. It proves the spool is final independently of collector unload, whose delay or retained-thread reason is reported separately. A complete terminal witness is authoritative even while the collector is loaded. A concurrent partial write is not evidence until its checksum validates. Recovery validates the whole witness after the spool is final. Standalone detach checks that same terminal result before printing success, including when the controlling recorder exits near completion. An explicit Discard of a failed capture preserves diagnostics and drops the hours it is safe to discard. Its pending cleanup can remove spool, copied collector and evidence only after collector absence or process exit. Failure reports retain bounded recent diagnostics and no captured hours.
+
+A refresh request is published whole under a unique token. The corresponding reply acknowledges the same token. Withdrawal after acknowledgement or abandonment prevents a later attach from acting on the request. The collector, rather than the CLI, performs the next hourly full refresh.
+
+The benchmark metrics reader has a positional entry point. `bench.ps1` invokes its configured reader directly with the recording path, branch, first hour and last hour. The recorder recognizes the recording path first and dispatches to its metrics reader so the script can use the reader for the candidate's format.
+
+Abandoned sessions are reconciled only when no recorder holds their claim and the collector is known to be absent, or the process has exited. Busy or failed recovery can retry while idle. Waiting hours are listed before writing them, preserving the user's Save or Discard choice even if finalization subsequently fails. A session with no spooled hours differs from a session whose loads were omitted. Unreadable waiting hours remain unknown and listed. Successful publication or cutback clears the relevant campaign from other ended sessions' waiting lists. Save names waiting recordings from their own content stacks, and can reuse resolved localisation across a stack and installation.
+
+[Recorder stop and abandoned-session handling](../../crates/recorder/src/recording.rs) · [Terminal history witness](./0806-recorder-terminal-history.md)

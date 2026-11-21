@@ -1,7 +1,3 @@
-//! The occupation trend's reading of some occupiers at an hour, asked where a reader points: each
-//! occupier's totals as live cells of OccupierTotals by its holder (`resistanceSum`,
-//! `complianceSum`, `states`, `heldStates`, `heldComplete`; the means are the series'), and, when
-//! asked, the countries it occupies with their collaboration toward it.
 
 use dashboard_base::products::Country;
 use super::{occupied, slot};
@@ -26,7 +22,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The live cells of an occupier's row: its column and OccupierTotals' field.
 pub const TOTALS: [(&str, &str); 5] = [("resistanceSum", "resistance_sum"), ("complianceSum", "compliance_sum"), ("states", "states"), ("heldStates", "held_states"), ("heldComplete", "held_complete")];
 
 const COLLABORATION: [TableId; 4] = [TableId::StateResistance, TableId::States, TableId::StateGarrisons, TableId::CountryCollaboration];
@@ -38,13 +33,11 @@ pub struct OccupationDetail;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupationDetailParams {
     pub branch_id: String,
-    /// None asks every occupier with a row at the hour.
+    #[doc = " None asks every occupier with a row at the hour."]
     pub countries: Vec<Country>,
     pub collaboration: bool,
 }
 
-/// A country an occupier occupies: its identity, its tag at the hour, and its collaboration toward
-/// the occupier (fixed5 fraction), none where no row was recorded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -54,15 +47,14 @@ pub struct OccupationCollaboration {
     pub progress_raw: Option<String>,
 }
 
-/// An asked tag; its totals are the live cells of row `tag`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationDetailRow {
     pub country: Country,
-    /// Why the tag names no occupier at the hour.
+    #[doc = " Why the tag names no occupier at the hour."]
     pub missing: Option<String>,
-    /// By tag; empty unless asked.
+    #[doc = " By tag; empty unless asked."]
     pub collaboration: Vec<OccupationCollaboration>,
 }
 
@@ -71,15 +63,13 @@ pub struct OccupationDetailRow {
 #[serde(rename_all = "camelCase")]
 pub struct OccupationDetailReply {
     pub occupiers: Vec<OccupationDetailRow>,
-    /// Why collaboration is not shown, when asked and not known.
+    #[doc = " Why collaboration is not shown, when asked and not known."]
     pub collaboration_missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(OccupationDetailReply);
 
-/// Each occupier slot's occupied country slots, with a raw id naming each: the occupied countries
-/// of its active resistance and of its garrisons.
 pub(super) fn occupied_by(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, BTreeMap<u32, u32>>> {
     let links = frame.complete::<tables::CountryLinks>()?;
     let controllers: HashMap<u32, u32> = frame.complete::<tables::States>()?.iter().map(|state| (state.id, state.controller)).collect();
@@ -168,7 +158,6 @@ impl AtHour for OccupationDetail {
                 Err(why) => collaboration_missing = Some(why),
             }
         }
-        // No tag asked: every occupier with a row, by the tag naming its holder at the hour.
         let every: Vec<Country>;
         let asked = if params.countries.is_empty() {
             let names = crate::products::country_ids::Names::new(at.holders);

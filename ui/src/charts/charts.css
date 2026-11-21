@@ -1,8 +1,6 @@
-/* Chart pieces shared by every widget. */
 .stacked-share-chart { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: var(--space-2); }
 .stacked-share-plot { flex: 1; min-height: 0; }
 .time-chart, .race-chart { position: relative; width: 100%; height: 100%; min-height: 0; }
-/* Rows that need more room than the chart scroll; the canvas stays put and draws them at the scroll. */
 .race-scroll { height: 100%; overflow-x: hidden; overflow-y: auto; }
 .race-chart canvas { display: block; position: sticky; top: 0; width: 100%; height: 100%; }
 .race-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
@@ -10,11 +8,9 @@
 .time-chart .time-chart-overlay { position: absolute; inset: 0; pointer-events: none; }
 .time-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .timeline-chart { position: relative; width: 100%; }
-/* The dates stay in view while overscanned lanes scroll beneath them. */
 .timeline-view { position: sticky; top: 0; overflow: hidden; }
 .timeline-chart canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .timeline-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
-/* A flow diagram (flow/FlowDiagram.tsx) fills what its widget gives it. */
 .flow-diagram { position: relative; flex: 1; width: 100%; min-height: 0; }
 .flow-diagram canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .flow-diagram canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
@@ -35,9 +31,7 @@
 .chart-tooltip.is-scrollable::-webkit-scrollbar-thumb { background: var(--line-soft); border-radius: 999px; }
 .chart-tooltip-row.has-divider { margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--line-soft); }
 .chart-tooltip-row > span { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
-/* A row that asks for it stays on one line, so a row count bounds the tooltip's height. */
 .chart-tooltip-row.is-short > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* A shortened label gives way; its value never wraps. */
 .chart-tooltip-row.is-short > b { flex: none; }
 .chart-tooltip-row i { width: 8px; height: 8px; flex: none; border-radius: 2px; }
 .chart-tooltip-row > span > img, .chart-tooltip-row .chart-tooltip-flag { width: 18px; height: 12px; flex: none; object-fit: cover; border-radius: 1px; }
@@ -79,26 +73,18 @@
 .widget-state > svg { width: 20px; height: 20px; flex: none; }
 .widget-state .skeleton-chart { width: 100%; height: 100%; min-height: 60px; border-radius: var(--r-sm); }
 
-/* A key naming a chart's solid and dashed lines, so a line never rests on its dash alone. */
 .chart-line-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-3); font-size: var(--type-sm); color: var(--muted); }
 .chart-line-key > i, .chart-line-key > span > i { width: 16px; flex: none; border-top: 2px solid currentColor; }
 .chart-line-key > i.is-dashed, .chart-line-key > span > i.is-dashed { border-top-style: dashed; }
-/* Hours still being prepared: the light band their charts draw (PENDING_ALPHA). */
 .chart-line-key > span > i.is-pending { height: 10px; border: none; background: color-mix(in srgb, var(--muted) 12%, transparent); }
 .chart-line-key > span { display: inline-flex; align-items: center; gap: var(--space-1); }
 .chart-line-swatch { flex: none; }
 
-/* Table rows that slide to their new place, flash in and fade out (useRowMotion). A
-   widget places each row with a translateY and sets --row-glide from the app's motion. */
 .moving-row { transition: transform var(--row-glide, 450ms) cubic-bezier(.2, .8, .2, 1), opacity 450ms; }
-/* Every row motion is transform or opacity, which the compositor runs: the flash is an overlay
-   under the row's content that fades, never an animated background. Each row is positioned. */
 .moving-row.is-entering { isolation: isolate; animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
 .moving-row.is-entering::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
   background: var(--row-flash, color-mix(in srgb, var(--accent) 16%, transparent)); opacity: 0; animation: moving-row-flash 700ms cubic-bezier(.2, .8, .2, 1); }
 .moving-row.is-leaving { opacity: 0; pointer-events: none; }
-/* Rows held ahead of a reveal clock (LogList, Table): painted, never rendered. Hidden until the clock reaches them, then
-   entering as a new row does; a row its successor replaced fades out. */
 .moving-row[data-reveal='ahead'] { visibility: hidden; }
 .moving-row[data-reveal='gone'] { opacity: 0; pointer-events: none; }
 .moving-row[data-reveal='in'] { isolation: isolate; animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
@@ -109,18 +95,14 @@
 .windowed-rows .moving-row { position: absolute; top: 0; left: 0; right: 0; }
 @keyframes moving-row-in { from { opacity: 0; } }
 @keyframes moving-row-flash { from { opacity: 1; } }
-/* Reduced motion as the app resolves it (Appearance → Motion, where "system" follows the
-   system's preference, useAppearance): rows neither glide, flash nor fade. */
 :root[data-motion='reduced'] .moving-row { transition: none; }
 :root[data-motion='reduced'] .moving-row.is-entering { animation: none; }
 :root[data-motion='reduced'] .moving-row.is-entering::after { content: none; }
 :root[data-motion='reduced'] .moving-row[data-reveal='in'] { animation: none; }
 :root[data-motion='reduced'] .moving-row[data-reveal='in']::after { content: none; }
-/* Shared project/content blueprint tile, also used by lane label identities. */
 .blueprint-tile { width:72px; height:48px; border-radius:6px; background:var(--blueprint); display:grid; place-items:center; box-shadow:inset 0 0 0 1px var(--blueprint-border); color:var(--blueprint-text); }
 .blueprint-tile img { width:64px; height:39px; object-fit:contain; }
 
-/* A picture slot the game has no picture for (components/ArtFallback). */
 .art-fallback { display: grid; place-items: center; width: 100%; height: 100%; border-radius: var(--r-xs);
   background: var(--hover); color: var(--quiet); }
 .art-fallback svg { width: 55%; height: 55%; max-width: 18px; max-height: 18px; }

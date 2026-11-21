@@ -15,7 +15,6 @@ const GROUPS: usize = HEAP + 0x10_0000;
 
 impl World {
     fn new(count: usize) -> Self {
-        // Native growth never builds fewer than 2^MINIMUM_EXPONENT buckets.
         let buckets = count
             .next_power_of_two()
             .max(1 << registry::MINIMUM_EXPONENT);
@@ -110,11 +109,8 @@ fn worker_growth_does_not_retry_a_failed_original_group_identity() {
     assert_eq!(*world.header_reads.borrow(), 1);
 }
 
-/// The census takes each group's identity and country in one guarded gather.
 #[test]
 fn the_census_gathers_each_group_identity_and_country_once() {
-    /// Logs a copy's address and a gather's source pointers: one entry per
-    /// guarded call into a group.
     struct Calls<'a>(&'a World, RefCell<Vec<usize>>);
     impl Memory for Calls<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -155,7 +151,6 @@ fn the_census_gathers_each_group_identity_and_country_once() {
     }
 }
 
-/// Logs each gather's source pointers.
 struct Gathers<'a, M>(&'a M, RefCell<Vec<Vec<usize>>>);
 impl<M: Memory> Memory for Gathers<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -174,7 +169,6 @@ impl<M: Memory> Memory for Gathers<'_, M> {
     }
 }
 
-/// Fails the first copy that covers `at`, then reads it as the world does.
 struct OneShot<'a> {
     world: &'a World,
     at: usize,
@@ -189,7 +183,6 @@ impl Memory for OneShot<'_> {
     }
 }
 
-/// A chunk's groups are gathered in one guarded copy, in bucket order.
 #[test]
 fn a_chunks_groups_are_gathered_in_one_copy_in_bucket_order() {
     let world = World::new(3);
@@ -202,10 +195,6 @@ fn a_chunks_groups_are_gathered_in_one_copy_in_bucket_order() {
     assert_eq!(memory.1.into_inner(), [groups]);
 }
 
-/// A persistent fault in a group's country gives the single walk's failure;
-/// one that clears after its first touch refuses nothing: the chunk's
-/// groups from the failed one on are read alone, once, and the census is
-/// complete.
 #[test]
 fn a_gather_fault_falls_back_to_the_single_reads_once() {
     let at = GROUPS + 70 * 0x1000 + COUNTRY;
@@ -235,8 +224,6 @@ fn a_gather_fault_falls_back_to_the_single_reads_once() {
         before + 1
     );
     assert_eq!(roots[70].country, 71);
-    // The second chunk's gather stopped at group 70; groups 70 to 127 were
-    // then read alone, and the other chunks' groups only in their gathers.
     let gathers = memory.1.into_inner();
     let alone: Vec<usize> = gathers
         .iter()

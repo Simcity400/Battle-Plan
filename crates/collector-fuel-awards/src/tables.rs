@@ -1,6 +1,3 @@
-//! Hourly hook handover, assembled into CountryFuel's daily suffix: each
-//! country's last 24 applied updates, summed as the Fuel widget shows them
-//! ([`FuelAwardDay`]).
 use crate::{
     fuel_awards::{self, Entry},
     output_log::Drained,
@@ -75,17 +72,12 @@ pub struct Windows {
     hour: Option<i32>,
     epoch: Option<u64>,
     cursor: Option<u64>,
-    // Start is a sampled-hour boundary paired with branch, not native ID.
-    // BranchTracker rejects repeated/backward hours before assemble; duplicate
-    // roots within one sample refuse the country instead of starting twice.
     countries: HashMap<u32, (i32, VecDeque<FuelAwardHour>)>,
     identities: HashMap<u32, (u32, usize)>,
     status_owners: HashMap<usize, u32>,
     reason: Option<&'static str>,
 }
 impl Windows {
-    /// Consume even when a disk write later fails. Missing drains, short drains,
-    /// branch/load boundaries and discontinuities cannot become known zero.
     pub fn assemble(
         &mut self,
         branch: BranchId,
@@ -189,8 +181,6 @@ impl Windows {
                 .get(country)
                 .is_some_and(|(_, pointer)| pointer == status)
         });
-        // Recipient events preceding an authenticated end belong only to that
-        // root, never to the next country's update or a reused native pointer.
         let mut recipients: HashMap<u64, Vec<&Entry>> = HashMap::new();
         let entries = captured
             .entries
@@ -334,22 +324,14 @@ impl Windows {
         Ok(())
     }
 }
-/// Days refused because a sum left its native i64.
 static DAY_SUM_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Days refused because a sum left its native i64, for status.
 pub fn day_sum_refusals() -> u64 {
     DAY_SUM_REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// One receipt of a day: its identity operands, update hour and amount.
 type Receipt<'a> = ((u32, u64, u32, u64, Option<&'a [u8]>, &'a [u8]), i32, i64);
 
-/// What the Fuel widget shows of a country's 24 applied updates: their sums,
-/// each update's own gain converted (`quantity`) and summed, and each
-/// recipient identity's receipts, in the order of kind, reference, owner,
-/// host, name and name reason; None when a sum leaves its native i64. The
-/// caller fills the identity, continuity and reason.
 fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> {
     let mut gains = [0_i128; 4];
     let mut transfers = [0_i128; 4];
@@ -388,7 +370,6 @@ fn sum_day(hours: &VecDeque<FuelAwardHour>) -> io::Result<Option<FuelAwardDay>> 
             ));
         }
     }
-    // Unstable: a recipient's first and last hours are its extreme ones.
     receipts.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let groups = receipts
         .iter()

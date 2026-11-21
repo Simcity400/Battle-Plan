@@ -1,9 +1,3 @@
-//! A template's equipment need per archetype, as the game sums it: each grouped sub-unit's
-//! requirements times its count, by archetype (its lexer token). A global definition's
-//! requirements come from the sub-unit needs definition (the recording's facts), their archetype
-//! names spelled to tokens through LexicalTokens; a country-local clone's are its recorded
-//! CountryLocalSubunits row, already by archetype token, else, when that complete table names
-//! none for it, its global definition's.
 
 use super::inputs::{self, LocalSubunit, TemplateFacts};
 use crate::forces::Owners;
@@ -11,18 +5,14 @@ use crate::framework::Hour;
 use installed_content_core::unit_leader::needs::SubUnitNeeds;
 use std::collections::{HashMap, HashSet};
 
-/// A clone's requirements, or why they cannot be used.
 type Override = Result<Vec<(u32, i64)>, String>;
 
-/// Which clones' requirements an hour moved: some, by (canonical slot, token), or every one (why
-/// none can be used changed).
 pub(super) enum Moved {
     All,
     Clones(HashSet<(u32, u32)>),
 }
 
 impl Moved {
-    /// Whether a need that looked up `clones` may read otherwise now.
     pub fn touches(&self, clones: &[(u32, u32)]) -> bool {
         match self {
             Self::All => !clones.is_empty(),
@@ -33,25 +23,16 @@ impl Moved {
 
 #[derive(Default)]
 pub(super) struct Rules {
-    /// Each archetype name the needs definition holds, under the fold, and its lexer token; none
-    /// for a name two tokens spell.
     tokens: HashMap<String, Option<u32>>,
-    /// Each differing clone by (canonical slot, token), with the raw country whose row it is.
     local: HashMap<(u32, u32), (u32, Override)>,
-    /// Why no clone can be used: a row's country no link resolves, or two rows of one slot name
-    /// one clone.
     local_error: Option<String>,
-    /// CountryLocalSubunits is complete: a clone it does not name is its global definition.
     local_complete: bool,
 }
 
-/// The archetype names of `needs`, folded.
 fn names(needs: &SubUnitNeeds) -> HashSet<String> {
     needs.needs.values().flatten().map(|(name, _)| name.to_ascii_lowercase()).collect()
 }
 
-/// Token `token` spelling a name of `names` (folded into `folded`) in `tokens`: a name two
-/// tokens spell is spelled by none.
 fn spells(tokens: &mut HashMap<String, Option<u32>>, names: &HashSet<String>, folded: &mut String, token: u32, spelling: &[u8]) {
     let Ok(text) = std::str::from_utf8(spelling) else { return };
     folded.clear();
@@ -69,7 +50,6 @@ fn spells(tokens: &mut HashMap<String, Option<u32>>, names: &HashSet<String>, fo
     }
 }
 
-/// A clone's requirements as a need reads them.
 fn clone_of(slot: u32, token: u32, requirements: Vec<(u32, i64)>) -> Override {
     let mut seen = HashSet::new();
     match requirements.iter().find(|(archetype, _)| *archetype == 0 || !seen.insert(*archetype)) {
@@ -80,8 +60,6 @@ fn clone_of(slot: u32, token: u32, requirements: Vec<(u32, i64)>) -> Override {
 }
 
 impl Rules {
-    /// The archetype names of `needs` spelled to tokens, from every token the hour holds; whether
-    /// any name's token moved.
     pub fn spell(&mut self, hour: &Hour<'_>, needs: Result<&SubUnitNeeds, &str>) -> bool {
         let mut tokens = HashMap::new();
         if let Ok(needs) = needs {
@@ -98,7 +76,6 @@ impl Rules {
         moved
     }
 
-    /// The names `tokens`, tokens the hour added, spell besides; whether any name's token moved.
     pub fn spell_more(&mut self, hour: &Hour<'_>, needs: Result<&SubUnitNeeds, &str>, tokens: &[u32]) -> bool {
         let Ok(needs) = needs else { return false };
         let names = names(needs);
@@ -112,7 +89,6 @@ impl Rules {
         before != self.tokens
     }
 
-    /// The differing clones the hour holds, by slot through `owners`, read whole.
     pub fn read_local(&mut self, hour: &Hour<'_>, owners: &Owners, complete: bool) -> std::io::Result<Moved> {
         self.local_complete = complete;
         let (local, error) = Self::whole(inputs::local_subunits(hour)?, owners);
@@ -145,9 +121,6 @@ impl Rules {
         (local, None)
     }
 
-    /// The clones of the rows the hour deleted (`gone`, raw country and token) and wrote or
-    /// inserted (`rows`, slots) moved; read whole when a row's country no link resolves, two rows
-    /// of a slot name one clone, or none can be used already.
     pub fn update_local(&mut self, hour: &Hour<'_>, owners: &Owners, gone: &[(u32, u32)], rows: &[u32]) -> std::io::Result<Moved> {
         let whole = |rules: &mut Self| rules.read_local(hour, owners, rules.local_complete).map(|_| Moved::All);
         if self.local_error.is_some() {
@@ -176,8 +149,6 @@ impl Rules {
         Ok(Moved::Clones(moved))
     }
 
-    /// Template `handle`'s need by archetype token, ascending; why it is not known. Each clone it
-    /// looks up, (slot, token), is added to `clones`.
     pub fn need(&self, hour: &Hour<'_>, needs: Result<&SubUnitNeeds, &str>, owners: &Owners, handle: u64, facts: Option<&TemplateFacts>, clones: &mut Vec<(u32, u32)>) -> Result<Vec<(u32, i64)>, String> {
         let facts = facts.ok_or_else(|| format!("template {handle} equipment composition was not recorded"))?;
         let units = facts.units.as_ref().ok_or_else(|| format!("template {handle} grouped sub-units were not readable"))?;
@@ -217,7 +188,6 @@ impl Rules {
         Ok(out)
     }
 
-    /// Global sub-unit `spelling`'s requirements by archetype token.
     fn global(&self, needs: &SubUnitNeeds, spelling: &str) -> Result<Vec<(u32, i64)>, String> {
         let requirements = needs.get(spelling).ok_or_else(|| format!("missing authored sub-unit {spelling}"))?;
         requirements

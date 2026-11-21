@@ -1,13 +1,6 @@
-//! The game's descriptions of a division's recorded career entries, shared by
-//! the map's division tooltip and the dashboard's service record: which
-//! localisation key describes each entry kind, the native date text and the
-//! arguments the description receives.
 use installed_content_localisation::localisation::Argument;
 use replay_data::rows::DivisionHistoryRow;
 
-/// The localisation key describing an entry, in the native order of entry
-/// kinds; a custom entry names its own key. Kinds with no ordinary
-/// description are refused by number.
 pub fn event_key(entry: &DivisionHistoryRow) -> Result<&[u8], String> {
     const KEYS: [&[u8]; 25] = [
         b"CONQUERED_PROVINCE_HISTORY",
@@ -50,8 +43,6 @@ pub fn event_key(entry: &DivisionHistoryRow) -> Result<&[u8], String> {
         })
 }
 
-/// An entry's date as the description's DATE argument writes it, on the
-/// game's fixed 365-day calendar.
 pub fn date(hour: i32) -> String {
     let elapsed = i64::from(hour) - i64::from(replay_data::temperature::EPOCH);
     let year = elapsed.div_euclid(8760);
@@ -67,7 +58,6 @@ pub fn date(hour: i32) -> String {
     format!("{year}.{month}.{}", day + 1)
 }
 
-/// The arguments an entry's description receives.
 pub fn arguments<'a>(
     entry: &DivisionHistoryRow,
     subject: &'a str,
@@ -86,8 +76,6 @@ pub fn arguments<'a>(
     ]
 }
 
-/// The entry's provinces joined as the game joins them, from the separator
-/// keys `token` localises.
 pub fn province_list(
     provinces: &[String],
     token: impl Fn(&[u8], &[(&str, Argument<'_>)]) -> Result<String, String>,

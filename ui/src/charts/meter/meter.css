@@ -2,7 +2,6 @@
 .progress-meter i { display:block; height:100%; border-radius:inherit; background:var(--accent); }
 .progress-meter.is-done i { background:var(--positive); }
 .progress-meter.is-idle i { background:var(--muted); }
-/* The sweep's tiles (one per two fill widths) slide by transform, so it never repaints the page. */
 .progress-meter.is-live.has-sweep i { position:relative; overflow:hidden; }
 .progress-meter.is-live.has-sweep i::after { content:''; position:absolute; top:0; bottom:0; left:-400%; width:600%; background:linear-gradient(90deg,transparent 0 40%,var(--meter-sweep) 50%,transparent 60% 100%) 0 0 / calc(100% / 3) 100%; animation:progress-meter-sweep var(--meter-sweep-duration) linear infinite; }
 @keyframes progress-meter-sweep { to { transform:translateX(calc(200% / 3)); } }

@@ -1,7 +1,5 @@
 use super::*;
 
-/// What the map files define for one province. None of it changes while a save
-/// is loaded, so an entry read once serves every later hour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaticProvince {
     pub pointer: usize,
@@ -11,11 +9,8 @@ pub struct StaticProvince {
     pub terrain_index: i32,
 }
 
-/// The adjacency between two provinces, or its absence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StaticEdge {
-    /// The native first-adjacency distance, including the 100000 fallback a
-    /// pair with no adjacency takes.
     pub distance: i64,
     pub crossing: Option<u8>,
 }
@@ -47,7 +42,6 @@ fn observe_static_key(
     (key, root.and_then(|root| Array::from_header(root, 8)))
 }
 
-/// The same root/session law used by StaticGeometry::begin, without a memo.
 pub fn static_geometry_demand_key(
     memory: &impl Memory,
     base: usize,
@@ -65,11 +59,6 @@ pub struct StaticCounters {
     pub cleared: u64,
 }
 
-/// Immutable province geometry kept across hours, owned by one acquisition
-/// range. Adjacencies and the embark define are reloadable and are retained
-/// only within a walk. Every entry comes from an authenticated live read; a new
-/// module base, game state, play session or province census array clears the
-/// whole memo. `begin` validates the key before immutable entries are reused.
 #[derive(Default)]
 pub struct StaticGeometry {
     key: Option<StaticGeometryKey>,
@@ -85,38 +74,24 @@ pub struct StaticGeometry {
 }
 
 impl StaticGeometry {
-    /// Re-key the memo for this hour, clearing it when the session or the
-    /// province census it was built from changed. Reads the current province
-    /// header and session identity once each.
     pub fn begin(&mut self, memory: &impl Memory, base: usize, state: usize) -> bool {
-        // The counters describe this walk, not the memo's whole life.
         self.counters = StaticCounters::default();
-        // Define reloading, including file-watch updates, rewrites this value without
-        // changing the session or province census. Only immutable map geometry
-        // survives this walk.
         self.embark = None;
-        // Strait reloading updates existing crossing kinds and can append
-        // adjacencies without replacing the province census or play session.
         self.edges.clear();
         let (key, root) = observe_static_key(memory, base, state);
         if key.is_none() || self.key != key {
             self.clear();
             self.counters.cleared = self.counters.cleared.saturating_add(1);
         }
-        // An unreadable key leaves the memo unusable rather than denying the
-        // walk: every lookup then reads live and nothing is retained.
         self.key = key;
         self.root = root;
         self.root.is_some()
     }
 
-    /// True when this hour's key is known, so entries may be served and kept.
     fn usable(&self) -> bool {
         self.key.is_some()
     }
 
-    /// Certifies the same session/root key observed by begin for this pass.
-    /// Fresh map domains cannot reuse immutable entries after a failed key.
     pub fn province_count(&self) -> Result<usize, &'static str> {
         self.demand_key()?;
         self.root
@@ -124,14 +99,11 @@ impl StaticGeometry {
             .ok_or("static geometry province root invalid")
     }
 
-    /// The successfully begun immutable-map key, without another source read.
     pub fn demand_key(&self) -> Result<StaticGeometryKey, &'static str> {
         self.root.ok_or("static geometry province root invalid")?;
         self.key.ok_or("static geometry session key unavailable")
     }
 
-    /// Prepare immutable province slots outside acquisition. Rekeying clears
-    /// their values without discarding this prepared length.
     pub fn reserve_slots(&mut self, count: usize) -> std::io::Result<()> {
         if self.provinces.len() < count {
             crate::allocation::resize(&mut self.provinces, count, None)?;
@@ -160,7 +132,6 @@ impl StaticGeometry {
         *self.provinces.get(id as usize)?
     }
 
-    /// One province's map data, from the memo or from an authenticated read.
     pub fn province(
         &mut self,
         memory: &impl Memory,
@@ -185,8 +156,6 @@ impl StaticGeometry {
         Ok(province)
     }
 
-    /// The same authentication `GeometryPacket` performs: the census backlink,
-    /// the province vtable and identity, and the definition's own identity.
     fn read_province(
         &self,
         memory: &impl Memory,
@@ -202,8 +171,6 @@ impl StaticGeometry {
         if id == 0 || pointer == 0 {
             return Err("static geometry province identity mismatch");
         }
-        // The three province fields are independent, as are the three
-        // definition fields, so each group is one prefetched scattered copy.
         let (mut vtable, mut identity, mut definition) = ([0_u8; 8], [0_u8; 4], [0_u8; 8]);
         let fields = [
             pointer,
@@ -256,8 +223,6 @@ impl StaticGeometry {
         })
     }
 
-    /// The native first adjacency between two provinces, from the memo or from
-    /// a live scan of the source province's neighbour list.
     pub fn edge(
         &mut self,
         memory: &impl Memory,
@@ -277,13 +242,10 @@ impl StaticGeometry {
         let header = geometry_field(memory, definition, crate::province_definition::NEIGHBOURS)?;
         let neighbours = Array::from_header(header, crate::province_neighbour::STRIDE)
             .ok_or("static geometry adjacency header invalid")?;
-        // The native walk takes the first entry naming the destination; a pair
-        // with none takes the 100000 fallback, which is memoized like any other.
         let mut edge = StaticEdge {
             distance: 100_000,
             crossing: None,
         };
-        // The whole scanned prefix is one contiguous span; hint it once.
         if let Some(first) = neighbours.element(0, crate::province_neighbour::STRIDE) {
             crate::prefetch::span(
                 first,
@@ -327,7 +289,6 @@ impl StaticGeometry {
         Ok(edge)
     }
 
-    /// The reloadable native embark distance define, read once per walk.
     pub fn embark(&mut self, memory: &impl Memory, base: usize) -> Result<i64, &'static str> {
         if self.usable()
             && let Some(distance) = self.embark

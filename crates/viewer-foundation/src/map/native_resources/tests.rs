@@ -4,7 +4,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::collections::BTreeSet;
 
-/// A 32-bit uncompressed Targa of `width` by `height` transparent texels.
 fn tga(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = vec![0u8; 18];
     bytes[2] = 2;
@@ -16,7 +15,6 @@ fn tga(width: u16, height: u16) -> Vec<u8> {
     bytes
 }
 
-/// A `.fnt` of the given `char` lines, `lineHeight` `line`.
 fn fnt(line: i32, chars: &[(char, i32)]) -> Vec<u8> {
     let mut text = format!(
         "info face=\"x\" size={line}\ncommon lineHeight={line} base={line} scaleW=999 scaleH=999 pages=1\n\
@@ -32,7 +30,6 @@ fn fnt(line: i32, chars: &[(char, i32)]) -> Vec<u8> {
     text.into_bytes()
 }
 
-/// A content stack of one folder holding `files`.
 fn stack(name: &str, files: &[(&str, Vec<u8>)]) -> (PathBuf, ResolvedLayers) {
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_native_resources_{name}_{}_{:?}",
@@ -108,9 +105,6 @@ fn lazy_plain_resources_share_native_metadata_without_loading_texture() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// A mod's font: `path` appends and `fontfiles` replaces in order, the first file holding a
-/// glyph wins, a page that does not load is named when a glyph on it draws, a language
-/// override selects its own family, and an unknown name takes `fallback font lookup`'s font.
 #[test]
 fn fonts_load_through_the_native_registry() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -142,8 +136,6 @@ fn fonts_load_through_the_native_registry() {
     let (english, images) = loaded(&layers, b"l_english", &assets);
     let font = english.font(b"mod_font").unwrap();
     assert_eq!(font.facts.color, 0xFF10_2030);
-    // `a` was replaced by `fontfiles`; `b` holds `A` first, and its line height is the first
-    // file's.
     assert_eq!(font.own('A').unwrap().advance, 5);
     assert_eq!(font.own('B').unwrap().advance, 6);
     assert_eq!(font.line_height(), 10);
@@ -151,12 +143,10 @@ fn fonts_load_through_the_native_registry() {
     assert_eq!(a.page.size, [8, 16]);
     assert_eq!(a.uv, [1.0 / 8.0, 2.0 / 16.0, 4.0 / 8.0, 6.0 / 16.0]);
     assert_eq!(images.len(), 1);
-    // A page whose texture does not load keeps its glyphs over the null texture's 0 by 0.
     let b = font.quad('B').unwrap();
     assert_eq!(b.null_page.as_deref(), Some(b"gfx/fonts/c.tga".as_slice()));
     assert_eq!((b.page.texture, b.page.size), (NO_TEXTURE, [0, 0]));
     assert!(b.uv[0].is_infinite());
-    // The one font is every unknown name's fallback.
     assert!(std::ptr::eq(english.font(b"missing_font").unwrap(), font));
     let (korean, _) = loaded(&layers, b"l_korean", &assets);
     assert_eq!(
@@ -166,7 +156,6 @@ fn fonts_load_through_the_native_registry() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// The loaded resources as a layout reads them, over one GUI document's templates.
 struct Drawn<'a> {
     resources: &'a GuiResources,
     gui: &'a installed_content_core::gui::native::Gui,
@@ -209,9 +198,6 @@ impl crate::map::native_gui::Resources for Drawn<'_> {
     }
 }
 
-/// A mod whose GUI and GFX name a sprite with the same non-UTF-8 bytes: collected, loaded
-/// and drawn under those bytes, not
-/// under their lossy spelling, which another declaration holds.
 #[test]
 fn byte_names_match_end_to_end() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -258,14 +244,10 @@ fn byte_names_match_end_to_end() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// A texture whose bytes do not determine what the game draws (FreeImage's format sniff
-/// reading past a three-byte file) refuses what draws it, where a texture the game fails to
-/// load draws nothing: a sprite, a font page, an edit box's texture file.
 #[test]
 fn undetermined_textures_are_refused_not_dropped() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Three bytes: FreeImage's ICO validate compares six (uninitialised memory past them).
     let jpeg = vec![0, 0, 1];
     let (root, layers) = stack(
         "unimplemented",
@@ -302,7 +284,6 @@ fn undetermined_textures_are_refused_not_dropped() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// A 16-bit page stays at full precision; shader-pipeline handles device filtering.
 #[test]
 fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -359,10 +340,6 @@ fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Two sprites sharing a texture whose draw the file does not determine are refused alike,
-/// whichever loads it first and whether they load for the same window or for separate ones
-/// (a second [`GuiResources::load`] finds the texture already loaded); a font page on it is
-/// refused too.
 #[test]
 fn a_shared_refused_texture_refuses_every_user() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -378,7 +355,6 @@ fn a_shared_refused_texture_refuses_every_user() {
                   bitmapfonts = { bitmapfont = { name = \"f\" path = \"gfx/x\" } }"
                     .to_vec(),
             ),
-            // Three bytes: FreeImage's ICO validate compares six.
             ("gfx/x.dds", vec![0, 0, 1]),
             ("gfx/b.tga", tga(4, 4)),
             ("gfx/x.fnt", fnt(10, &[('A', 5)])),
@@ -390,7 +366,6 @@ fn a_shared_refused_texture_refuses_every_user() {
     };
     let mut seen = Vec::new();
     for order in [[&b"GFX_one"[..], b"GFX_two"], [b"GFX_two", b"GFX_one"]] {
-        // Separate windows: one load each.
         let mut resources = GuiResources::new(
             Registry::load(&layers).unwrap(),
             b"l_english",
@@ -403,7 +378,6 @@ fn a_shared_refused_texture_refuses_every_user() {
                 .load(&layers, &window(sprite), &mut images)
                 .unwrap();
         }
-        // One window: both in one load.
         let both = Assets {
             sprites: order.iter().map(|name| name.to_vec()).collect(),
             fonts: [b"f".to_vec()].into(),
@@ -424,9 +398,6 @@ fn a_shared_refused_texture_refuses_every_user() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// A mod's sprites: the latest declaration's texture and frames, a texture that does not
-/// load named (the plain draw then returns), an undefined name left to the fallback, and an
-/// missing effect as the native null record and a missing backend header named explicitly.
 #[test]
 fn sprites_load_through_the_native_registry() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -464,15 +435,12 @@ fn sprites_load_through_the_native_registry() {
     assert_eq!((info.texture, info.frames, info.missing), ([6, 2], 3, None));
     assert!(!info.effect.unwrap().has_technique("Up"));
     assert_eq!(resources.sheet(b"GFX_mod").unwrap().size, [6, 2]);
-    // One texture, loaded once for both sprites that name it.
     assert_eq!(images.len(), 1);
     let gone = resources.sprite(b"GFX_gone").unwrap();
     assert!(gone.missing.unwrap().contains("gfx/gone.dds"));
     assert_eq!(gone.hit, Hit::Through);
     assert!(gone.effect.unwrap_err().contains("defines_hlsl_dx11.fxh"));
     assert!(resources.sprite(b"GFX_undefined").is_none());
-    // A lazily loaded sprite keeps no records; a texture file is answered once loaded, and
-    // not before.
     assert_eq!(resources.sprite_animations(b"GFX_mod"), Some(Vec::new()));
     assert!(matches!(
         resources.texture_file(b"gfx/b.tga"),
@@ -481,7 +449,6 @@ fn sprites_load_through_the_native_registry() {
     assert_eq!(resources.texture_file(b"gfx/other.dds"), None);
     assert!(resources.sprite(FALLBACK_SPRITE).is_some());
     assert!(resources.registry().sprite(b"GFX_undefined").is_none());
-    // The effects the game's code names are missing here; the content declares no `textcolors`.
     assert!(!resources.text_effect().unwrap().has_technique("Text"));
     assert!(
         !resources
@@ -524,7 +491,6 @@ Effect Up { VertexShader = V PixelShader = P }
         .effect_result(&layers, b"gfx/FX/mod-owned.lua", false)
         .unwrap();
     assert!(effect.has_technique("Up"));
-    // The renderer's globals come first, then the GUI's own defines.
     assert_eq!(
         effect.compiled.as_ref().unwrap().defines,
         super::super::native_shader::library::globals([5632, 2048], Decode::default())
@@ -555,7 +521,6 @@ Effect Up { VertexShader = V PixelShader = P }
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Texture decoding and effect globals share the client power-of-two setting.
 #[test]
 fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -606,9 +571,6 @@ fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// A GUI font page the visual mods break is the recording's own, named; a page of a mod's font
-/// that no stack supplies is refused by name for the map's fallback, so a text drawn blank is
-/// never silent.
 #[test]
 fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -685,11 +647,6 @@ fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
     assert!(refusals.contains("texture gfx/fonts/j.tga ("), "{refusals}");
 }
 
-/// With the recording's own registry, a sprite and a font the visual mods cannot draw as they
-/// declare them (a texture and a font page of theirs that does not load, at paths the recording
-/// lacks) are the recording's own declarations, drawn from the recording and named; without it,
-/// as the map draws, each file is retried by its path, so the sprite is missing and the font's
-/// page blank. What the mods draw stays theirs either way.
 #[test]
 fn what_the_mods_cannot_draw_is_the_recordings_own_declaration_with_its_registry() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -717,8 +674,6 @@ fn what_the_mods_cannot_draw_is_the_recordings_own_declaration_with_its_registry
     write("base/gfx/x.tga", &tga(8, 2));
     write("base/gfx/fonts/j.fnt", &fnt(10, &[('A', 5)]));
     write("base/gfx/fonts/j.tga", &tga(4, 4));
-    // The mod's file replaces the recording's: its sprite and font point at files of its own
-    // that do not load; its kept sprite draws.
     write(
         "art/interface/a.gfx",
         format!(
@@ -788,8 +743,6 @@ path=\"{art}\"
     assert!(!fallbacks.iter().any(|why| why.contains("kept")), "{fallbacks:?}");
 }
 
-/// A game folder `base` with a folder mod `art` mounted over it as the presentation, each
-/// holding `files`; the folder's root, to remove, and the mounted layers.
 fn mounted(
     name: &str,
     base: &[(&str, Vec<u8>)],
@@ -833,8 +786,6 @@ fn mounted(
     (root, layers)
 }
 
-/// The resources of `layers`' presentation with the recording's own registry, loaded with
-/// `assets`, and what the load named as drawn from the recording.
 fn with_recorded(
     layers: &ResolvedLayers,
     assets: &Assets,
@@ -870,7 +821,6 @@ fn fonts(names: &[&str]) -> Assets {
     }
 }
 
-/// Deny reads without making the file absent, so lookup cannot fall through to another layer.
 fn held_unreadable(path: &Path) -> std::fs::File {
     #[cfg(windows)]
     {
@@ -892,9 +842,6 @@ fn held_unreadable(path: &Path) -> std::fs::File {
 const FALLBACK_DECLARATION: &str =
     "spriteType = { name = \"GFX_default_fallback_texture\" texturefile = \"gfx/b.tga\" }";
 
-/// A mod texture whose read fails (not a missing file) fails the mods' attempt, not the load:
-/// the recording's own declaration draws, named. Where the recording does not declare the
-/// sprite, the failed read is the outcome, as without the recording's registry.
 #[test]
 fn a_mod_read_that_fails_is_the_attempts_failure() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -926,7 +873,6 @@ fn a_mod_read_that_fails_is_the_attempts_failure() {
             ("gfx/mod_x.tga", tga(6, 6)),
         ],
     );
-    // A folder in its place would be no file to the lookup, which passes it to the next layer.
     let held = held_unreadable(&root.join("art/gfx/mod_x.tga"));
     let (loaded, resources, fallbacks) = with_recorded(&layers, &sprites(&["GFX_x"]));
     let (only_mod, _, _) = with_recorded(&layers, &sprites(&["GFX_mod"]));
@@ -939,9 +885,6 @@ fn a_mod_read_that_fails_is_the_attempts_failure() {
     assert!(only_mod.is_err(), "a sprite only the mods declare keeps their outcome");
 }
 
-/// Two fonts the recording declares and the mods do not, which both resolve to the mods' broken
-/// fallback font, are each the recording's own of its name; a font only the mods declare, and
-/// cannot draw, is theirs, never another font of the recording's.
 #[test]
 fn fonts_fall_back_to_the_recordings_own_of_their_name_only() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -996,15 +939,11 @@ fn fonts_fall_back_to_the_recordings_own_of_their_name_only() {
     assert!(!fallbacks.iter().any(|why| why.starts_with("font font_m (")), "{fallbacks:?}");
 }
 
-/// What the mods' attempt at a sprite noted (their shader replacing the recording's, refused)
-/// is dropped when the recording's own declaration is drawn instead, and named again when a
-/// later sprite the mods draw uses that kept effect.
 #[test]
 fn only_the_kept_attempts_notes_are_named() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shader = |technique: &str| {
-        // A `}` after a member on its line does not close the struct for the effect reader.
         format!(
             "VertexStruct I {{ float3 p : POSITION;\n}};\n\
              VertexStruct O {{ float4 p : SV_POSITION;\n}};\n\
@@ -1042,7 +981,6 @@ fn only_the_kept_attempts_notes_are_named() {
                 .into_bytes(),
             ),
             ("gfx/mod_x.tga", b"broken".to_vec()),
-            // A replacement that does not read is refused without compiling, so no DXC is needed.
             ("gfx/FX/shared.shader", b"Code [[ \x80 ]]".to_vec()),
         ],
     );
@@ -1075,7 +1013,7 @@ fn transparency_masks_keep_mip_zero_alpha_one_and_shared_texture_identity() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut image = tga(4, 1);
-    image[17] = 0x28; // Top-left source rows.
+    image[17] = 0x28;
     for (pixel, alpha) in [0, 1, 128, 255].into_iter().enumerate() {
         image[18 + pixel * 4 + 3] = alpha;
     }

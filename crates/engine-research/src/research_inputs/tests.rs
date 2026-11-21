@@ -211,8 +211,6 @@ impl Memory for MemoryTrace<'_> {
         layout: &RecordLayout<'_>,
         out: &mut [u8],
     ) -> usize {
-        // Let the established implementation enumerate exact spans; count this
-        // as one native guarded batch, not as one guard per decoded field.
         struct Fields<'a, 'b>(&'a MemoryTrace<'b>);
         impl Memory for Fields<'_, '_> {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {
@@ -410,8 +408,6 @@ fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
             (Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 })
         );
         assert_eq!(m.calls.get(), expected_calls);
-        // The acquired status remains available to demanded sharing callbacks,
-        // including when this slot has no assigned technology.
         assert_eq!(rows[0].status_pointer, STATUS);
         assert!(!m.reads.borrow().iter().any(|&(at, _)| at
             == STATUS + ctechnology_status::LIMITED_BONUSES
@@ -752,7 +748,6 @@ fn governance_batch_research_inputs_persistent_and_one_shot_every_serial_operand
         (outcome, rows, bonuses)
     };
     let country = World::country(1);
-    // The inputs-only applied-bonus span also belongs to the technology gather.
     for (offset, reader) in [
         (SLOTS, "slot_pointers"),
         (SLOT + crate::cresearch_slot::STATUS, "slots"),

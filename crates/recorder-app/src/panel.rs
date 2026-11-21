@@ -1,4 +1,3 @@
-//! The panel window, placed beside the tray icon or where it was dragged, destroyed on focus loss.
 use crate::{tray::TRAY_ID, worker::Recorder};
 use serde::Serialize;
 use std::{
@@ -13,29 +12,18 @@ use tauri::{
 
 pub const LABEL: &str = "panel";
 pub const ASK_STOP_EVENT: &str = "recorder-ask-stop";
-/// The design's panel width in CSS pixels.
 const WIDTH: f64 = 360.0;
-/// Distance from the taskbar and screen edges, in CSS pixels.
 const MARGIN: f64 = 12.0;
-/// A tray click that arrives this soon after the panel closed is the click that
-/// closed it, not a request to open it again.
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
-/// The replay app's identifier: its WebView data folder holds the user's
-/// appearance, so the panel opens with the same theme.
 const REPLAY_IDENTIFIER: &str = "local.hoi4.replay";
 
-/// What the panel opens on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {
     Panel,
-    /// Quit's Save or Discard prompt alone, beside the tray icon; an open panel shows its own instead.
     QuitPrompt,
-    /// The Discard confirmation alone, beside the tray icon; an open panel shows its own instead.
     DiscardPrompt,
 }
 
-/// Why the Stop prompt was asked for: Quit waits on its answer, or Discard was chosen and only
-/// its confirmation is left.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Ask {
     pub quitting: bool,
@@ -62,17 +50,12 @@ struct State {
     closed_at: Option<Instant>,
     ask_stop: bool,
     ask: Ask,
-    /// The window shows only the Stop prompt.
     compact: bool,
-    /// Where the user dragged the panel, kept while the recorder runs.
     moved: Option<PhysicalPosition<i32>>,
-    /// Where the panel was last put, so its own placement is not taken for a drag.
     placed: Option<PhysicalPosition<i32>>,
-    /// A native dialog owns focus; losing focus to it does not close the panel.
     dialog: bool,
     focused: bool,
     shown: bool,
-    /// A window is being created on its own thread.
     opening: bool,
     recordings_panel: Option<String>,
 }
@@ -88,12 +71,10 @@ fn state(app: &AppHandle) -> std::sync::MutexGuard<'_, State> {
         .unwrap_or_else(|error| error.into_inner())
 }
 
-/// What a left click on the tray icon does.
 #[derive(Debug, PartialEq, Eq)]
 enum Click {
     Close,
     Open,
-    /// The panel is still being created, or this is the click that just closed it.
     Ignore,
 }
 
@@ -107,15 +88,10 @@ fn click(exists: bool, opening: bool, closed_recently: bool) -> Click {
     }
 }
 
-/// Whether losing focus closes the panel: only once it has shown and held
-/// focus, and not while a native dialog owns it. The hidden window loses focus
-/// before it shows when the click came from the hidden-icons flyout, whose
-/// closing hands focus back to the previous window; that is not clicking away.
 fn closes_on_focus_loss(shown: bool, focused: bool, dialog: bool) -> bool {
     shown && focused && !dialog
 }
 
-/// Left click on the tray icon: open the panel, or close it when open.
 pub fn toggle(app: &AppHandle, anchor: Rect) {
     let window = app.get_webview_window(LABEL);
     let (opening, closed_recently) = {
@@ -138,9 +114,6 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
     }
 }
 
-/// Open the panel (or focus it), optionally on the Stop prompt. Tray and menu
-/// callbacks run on the event loop, where building a webview window would wait
-/// on that same loop, so the window is created on its own thread.
 pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
     let ask_stop = opening != Opening::Panel;
     let ask = Ask::of(opening);
@@ -163,7 +136,6 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
     {
         let mut state = state(app);
         if state.opening {
-            // The window being created will ask for the Stop prompt when it draws.
             state.ask_stop |= ask_stop;
             state.ask.join(ask);
             return;
@@ -223,8 +195,6 @@ fn builder(
 }
 
 fn build(app: &AppHandle) -> tauri::Result<()> {
-    // Share the replay app's WebView storage for its appearance settings. Should
-    // that WebView refuse this window's options, open with the recorder's own.
     let window = match builder(app, replay_webview_data(app)).build() {
         Ok(window) => window,
         Err(error) => {
@@ -271,7 +241,6 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Whether the panel opens on the Stop prompt, whether that is all it shows, and why it was asked.
 pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool, Ask) {
     let mut state = state(app);
     if state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel) {
@@ -288,7 +257,6 @@ pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool, Ask) {
     )
 }
 
-/// Size the panel to its content, place it and show it.
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
     let (anchor, moved) = {
         let state = state(app);
@@ -302,7 +270,6 @@ pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Resul
             screens.push(screen);
         }
     }
-    // Tray rectangles are physical on Windows.
     let anchor = anchor.map(|rect| {
         let position = rect.position.to_physical::<f64>(1.0);
         let size = rect.size.to_physical::<f64>(1.0);
@@ -346,7 +313,6 @@ fn screen(monitor: &Monitor) -> Screen {
     }
 }
 
-/// A rectangle in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Area {
     pub x: i32,
@@ -368,7 +334,6 @@ impl Area {
         (self.x..self.right()).contains(&x) && (self.y..self.bottom()).contains(&y)
     }
 
-    /// Squared distance from a point to the nearest point inside.
     fn distance(&self, (x, y): (i32, i32)) -> i64 {
         let dx = i64::from((self.x - x).max(0).max(x - (self.right() - 1)));
         let dy = i64::from((self.y - y).max(0).max(y - (self.bottom() - 1)));
@@ -376,7 +341,6 @@ impl Area {
     }
 }
 
-/// A monitor: its bounds and work area in physical pixels, and its scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     pub bounds: Area,
@@ -384,7 +348,6 @@ pub struct Screen {
     pub scale: f64,
 }
 
-/// The panel's physical position and size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Placement {
     pub x: i32,
@@ -401,7 +364,6 @@ enum Side {
     Right,
 }
 
-/// Where the dragged position `at`, else the tray icon, puts the panel; the first screen is the primary.
 pub fn placement(
     screens: &[Screen],
     anchor: Option<Area>,
@@ -429,7 +391,6 @@ pub fn placement(
         |logical: f64, room: i32| ((logical * screen.scale).round() as i32).clamp(1, room.max(1));
     let width = fit(size.0, work.width - 2 * margin);
     let height = fit(size.1, work.height - 2 * margin);
-    // `value` kept so `length` from it ends by `high`, and never before `low`.
     let clamp =
         |value: i32, low: i32, length: i32, high: i32| value.clamp(low, (high - length).max(low));
     let (x, y) = match (at, anchor) {
@@ -439,7 +400,6 @@ pub fn placement(
         ),
         (None, Some(icon)) => {
             let (centre_x, centre_y) = (icon.x + icon.width / 2, icon.y + icon.height / 2);
-            // An auto-hidden taskbar is at the monitor edge nearest the icon.
             let bounds = screen.bounds;
             let side = if centre_y >= work.bottom() {
                 Side::Bottom
@@ -497,7 +457,6 @@ pub fn placement(
     })
 }
 
-/// Run a native dialog without the panel closing when it takes focus.
 pub fn with_dialog<T>(app: &AppHandle, dialog: impl FnOnce() -> T) -> T {
     state(app).dialog = true;
     let result = dialog();
@@ -537,7 +496,6 @@ mod tests {
         }
     }
 
-    /// The placement lies wholly inside the work area.
     fn inside(placed: Placement, work: Area) -> bool {
         placed.x >= work.x
             && placed.y >= work.y
@@ -549,7 +507,6 @@ mod tests {
 
     #[test]
     fn the_panel_stands_beside_the_tray_icon_away_from_a_taskbar_on_any_edge() {
-        // 1080p at 100%, taskbar at the bottom.
         let work = area(0, 0, 1920, 1032);
         let monitor = screen(area(0, 0, 1920, 1080), work, 1.0);
         let placed = placement(&[monitor], Some(area(1700, 1036, 32, 40)), None, PANEL).unwrap();
@@ -562,7 +519,6 @@ mod tests {
                 height: 200
             }
         );
-        // 1440p at 125%, taskbar at the top: below the icon, pulled in from the edge.
         let work = area(0, 60, 2560, 1380);
         let monitor = screen(area(0, 0, 2560, 1440), work, 1.25);
         let placed = placement(&[monitor], Some(area(2400, 10, 40, 40)), None, PANEL).unwrap();
@@ -576,7 +532,6 @@ mod tests {
             }
         );
         assert!(inside(placed, work));
-        // 4K at 150%, taskbar on the left: to the icon's right.
         let work = area(72, 0, 3768, 2160);
         let monitor = screen(area(0, 0, 3840, 2160), work, 1.5);
         let placed = placement(&[monitor], Some(area(16, 2000, 40, 40)), None, PANEL).unwrap();
@@ -590,7 +545,6 @@ mod tests {
             }
         );
         assert!(inside(placed, work));
-        // 4K at 200%, taskbar on the right: to the icon's left.
         let work = area(0, 0, 3744, 2160);
         let monitor = screen(area(0, 0, 3840, 2160), work, 2.0);
         let placed = placement(&[monitor], Some(area(3780, 1900, 48, 48)), None, PANEL).unwrap();
@@ -608,7 +562,6 @@ mod tests {
 
     #[test]
     fn an_auto_hidden_taskbar_is_found_at_the_nearest_monitor_edge() {
-        // The work area is the whole monitor; the icon shows inside it.
         let whole = area(0, 0, 1920, 1080);
         let monitor = screen(whole, whole, 1.0);
         let bottom = placement(&[monitor], Some(area(1700, 1040, 32, 40)), None, PANEL).unwrap();
@@ -652,7 +605,6 @@ mod tests {
         let by_tray = placement(&screens, Some(area(3600, 2080, 64, 64)), None, PANEL).unwrap();
         assert_eq!((by_tray.width, by_tray.height), (720, 400));
         assert!(inside(by_tray, primary_work));
-        // Dragged onto the secondary: its own scale, where the user left it.
         let dragged = placement(&screens, None, Some((4000, 600)), PANEL).unwrap();
         assert_eq!(
             dragged,
@@ -663,14 +615,11 @@ mod tests {
                 height: 200
             }
         );
-        // Dragged partly off the secondary: pulled fully back onto it.
         let off = placement(&screens, None, Some((5700, 1400)), PANEL).unwrap();
         assert_eq!((off.x, off.y), (5400, 1332));
         assert!(inside(off, secondary_work));
-        // Left where no monitor is (the secondary was unplugged): the nearest one.
         let gone = placement(&screens, None, Some((9000, 600)), PANEL).unwrap();
         assert!(inside(gone, secondary_work));
-        // A remembered position wins over the tray.
         let both = placement(
             &screens,
             Some(area(3600, 2080, 64, 64)),
@@ -693,7 +642,6 @@ mod tests {
         .unwrap();
         assert_eq!((placed.width, placed.height), (1080, 960));
         assert!(inside(placed, work));
-        // Without a tray position, the primary work area's corner.
         let corner = placement(&[monitor], None, None, PANEL).unwrap();
         assert_eq!((corner.x, corner.y), (804, 396));
         assert!(placement(&[], None, None, PANEL).is_none());
@@ -701,12 +649,8 @@ mod tests {
 
     #[test]
     fn focus_lost_before_the_panel_shows_does_not_close_it() {
-        // Opened from the hidden-icons flyout: focus returns to the previous
-        // window while the panel is still hidden.
         assert!(!closes_on_focus_loss(false, true, false));
-        // Shown and focused, then clicking away closes it.
         assert!(closes_on_focus_loss(true, true, false));
-        // A native dialog taking focus, or a panel that never held focus, stays.
         assert!(!closes_on_focus_loss(true, true, true));
         assert!(!closes_on_focus_loss(true, false, false));
     }

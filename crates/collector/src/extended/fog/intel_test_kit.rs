@@ -144,13 +144,8 @@ pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
     );
 }
 
-/// Partitioned dual-path proof: division-family and fleet-family rows
-/// decoded from the same shared spans equal the direct walk's
-/// per-family partitions.
 pub(crate) fn assert_paths_match_direct(split: &Split, direct: &Split) {
     use engine_native::ctask_force;
-    // Task-force handles carry the naval type tag in the low word;
-    // divisions carry another.
     let is_fleet = |unit: u64| (unit & 0xffff_ffff) == u64::from(ctask_force::DEFAULT_HANDLE_TYPE);
     for fleet in [false, true] {
         let split_path: Vec<_> = split.rows[..split.outcome.len()]

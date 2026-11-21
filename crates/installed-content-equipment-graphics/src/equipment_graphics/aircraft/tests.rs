@@ -3,7 +3,6 @@ use crate::equipment_graphics::Names;
 use installed_content_core::ResolvedLayers;
 use std::path::{Path, PathBuf};
 
-/// Content folders and archives under a fresh temporary root.
 struct Root(PathBuf);
 
 impl Root {
@@ -29,7 +28,6 @@ impl Root {
         folder
     }
 
-    /// A stored ZIP of `files`, as a DLC ships its content.
     fn archive(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let path = self.0.join(name);
         std::fs::write(&path, stored_zip(files)).unwrap();
@@ -95,8 +93,6 @@ const MESHES: &str = "gfx/models/planes.gfx";
 const ENTITIES: &str = "gfx/entities/planes.asset";
 const POOLS: &str = "gfx/interface/equipmentdesigner/graphic_db/00_planes.txt";
 
-/// The vanilla layer: one plane line with an archetype, sprite and family,
-/// a land type, their entities and the default and German pools.
 fn vanilla(root: &Root) -> PathBuf {
     root.folder(
         "vanilla",
@@ -147,8 +143,6 @@ fn vanilla(root: &Root) -> PathBuf {
     )
 }
 
-/// A DLC archive: its copy of the entity file rebinds one vanilla entity's
-/// mesh and adds a geometry-less plane; its own pool file adds a model.
 fn dlc(root: &Root) -> PathBuf {
     root.archive(
         "dlc.zip",
@@ -176,8 +170,6 @@ fn dlc(root: &Root) -> PathBuf {
     )
 }
 
-/// A mod: its own plane line, a reskin cloning a vanilla plane, and a
-/// custom plane nothing references.
 fn modded(root: &Root) -> PathBuf {
     root.folder(
         "mod",
@@ -194,7 +186,6 @@ fn modded(root: &Root) -> PathBuf {
                 r#"objectTypes = { pdxmesh = { name = "jet_mesh" file = "gfx/models/jet.mesh" } }"#,
             ),
             (
-                // Read after the planes it clones: entity files load in filename order.
                 "gfx/entities/zz_mod_planes.asset",
                 r#"
                 entity = { name = "SOV_jet_equipment_1_entity" pdxmesh = "jet_mesh" }
@@ -285,7 +276,6 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
             "unbound_plane_entity",
         ]
     );
-    // Another country's pool counts, under its own bucket.
     assert_eq!(
         entry(&catalogue, "GER_ace_plane_entity").references,
         BTreeSet::from([Reference::Pool {
@@ -294,7 +284,6 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
             file: POOLS.into(),
         }])
     );
-    // The ladder's country prefix, archetype key and sprite key.
     assert_eq!(
         entry(&catalogue, "GER_fighter_equipment_1_entity").references,
         BTreeSet::from([Reference::Ladder {
@@ -310,7 +299,6 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
                 prefix: None
             })
     );
-    // A mod's own plane type, by the ladder, with its pool listing a bare mesh.
     assert_eq!(
         entry(&catalogue, "SOV_jet_equipment_1_entity").references,
         BTreeSet::from([Reference::Ladder {
@@ -320,7 +308,6 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
     );
     let jet = entry(&catalogue, "jet_mesh");
     assert_eq!((jet.kind, &jet.refusal), (Kind::Mesh, &None));
-    // A recorded design of a plane type; designs of other types or none add nothing.
     assert_eq!(
         entry(&catalogue, "designer_plane_entity").references,
         BTreeSet::from([Reference::Design {
@@ -337,7 +324,6 @@ fn the_catalogue_lists_every_referenced_plane_of_the_whole_stack() {
             .any(|line| line.contains("1 recorded design types")
                 && line.contains("removed_equipment"))
     );
-    // Clones of a referenced plane, at any depth, and what a referenced plane clones.
     assert_eq!(
         entry(&catalogue, "skin_plane_entity").references,
         BTreeSet::from([Reference::CloneOf {
@@ -368,9 +354,7 @@ fn every_registered_entity_and_bare_mesh_is_listed_with_its_layer_precedence() {
     ] {
         assert_eq!(entry(&catalogue, name).kind, kind, "{name}");
     }
-    // `fighter_mesh` is bound by entities and listed as a mesh of its own.
     assert_eq!(entry(&catalogue, "fighter_mesh").kind, Kind::Mesh);
-    // The DLC archive's entity file replaces vanilla's: its binding is the one registered.
     let roster = stack.descriptor_roster().unwrap();
     assert_eq!(
         roster.descriptors.entities["fighter_equipment_0_entity"]
@@ -378,7 +362,6 @@ fn every_registered_entity_and_bare_mesh_is_listed_with_its_layer_precedence() {
             .as_deref(),
         Some("pool_mesh")
     );
-    // Without the DLC, its planes and pool are absent.
     let without = catalogue_without_dlc(&vanilla, &modded);
     assert!(
         without
@@ -392,7 +375,6 @@ fn every_registered_entity_and_bare_mesh_is_listed_with_its_layer_precedence() {
             .iter()
             .any(|entry| entry.name == "unbound_plane_entity")
     );
-    // A clone keeps its own name and entry beside its parent's: distinct skins stay distinct.
     assert_eq!(roster.clones["skin_plane_entity"], "light_plane_entity");
     assert_eq!(roster.clones["deep_skin_entity"], "skin_plane_entity");
     assert_eq!(
@@ -499,7 +481,6 @@ fn a_mod_replace_path_hides_the_planes_below_it() {
             .iter()
             .all(|entry| entry.name != "GER_fighter_equipment_1_entity")
     );
-    // The mod's clone of a hidden plane is dropped as the engine drops it.
     assert!(
         catalogue
             .entries
@@ -512,7 +493,6 @@ fn a_mod_replace_path_hides_the_planes_below_it() {
             .iter()
             .any(|line| line.contains("finding no entity light_plane_entity to clone yet"))
     );
-    // The pool still names the hidden plane: it is listed, unregistered.
     assert_eq!(
         entry(&catalogue, "light_plane_entity").kind,
         Kind::Unregistered
@@ -536,7 +516,6 @@ fn the_ladder_needs_a_nonempty_prefix_and_a_whole_key() {
             ("equipment_1", Some("fighter"))
         ]
     );
-    // Any nonempty prefix is one a cosmetic tag can be.
     assert_eq!(
         ladder_keys("_fighter_equipment_1_entity", &keys),
         [("equipment_1", Some("_fighter"))]
@@ -547,10 +526,6 @@ fn the_ladder_needs_a_nonempty_prefix_and_a_whole_key() {
     assert!(ladder_keys("xfighter_equipment_1_entity", &keys).is_empty());
 }
 
-/// A meshless entity draws what is attached to it, as the model composer places attachments on
-/// its locators, so it is flyable when an entity attached at any depth draws; it is refused when
-/// nothing in it draws. The composer skips an attachment child no entity registers, so a bare
-/// mesh attached directly draws nothing, though a bare mesh can be flown on its own.
 #[test]
 fn a_meshless_entity_with_a_drawable_attachment_can_be_flown() {
     let root = Root::new("attachments");

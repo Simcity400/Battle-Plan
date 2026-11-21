@@ -34,8 +34,6 @@ const GLOBAL_BUILDING_SLOTS: u32 = 0xa1;
 const GLOBAL_BUILDING_SLOTS_FACTOR: u32 = 0xa2;
 const LOCAL_BUILDING_SLOTS: u32 = 0xa3;
 const LOCAL_BUILDING_SLOTS_FACTOR: u32 = 0xa4;
-/// The instance's operands no hooked writer covers: both construction queue headers and the level
-/// bonus, in one record.
 const QUEUE_FIELDS: [RecordField; 3] = packed_fields([(PRIMARY_CONSTRUCTION, 16), (SECONDARY_CONSTRUCTION, 16), (MAXIMUM_BONUS, 2)]);
 pub const QUEUE_BYTES: usize = 34;
 const QUEUE_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&QUEUE_FIELDS, QUEUE_BYTES) {
@@ -108,7 +106,6 @@ fn queue_bonus(queue: &Queue) -> i16 {
     i16::from_le_bytes([queue[32], queue[33]])
 }
 
-/// One gather of every instance's [`Queue`], `QUEUE_BYTES` per instance in `bytes`.
 pub fn gather_queues(memory: &impl Memory, instances: &[usize], bytes: &mut [u8], complete: &mut [bool]) {
     gather_records(memory, instances, &QUEUE_LAYOUT, &mut bytes[..instances.len() * QUEUE_BYTES], &mut complete[..instances.len()]);
 }
@@ -207,8 +204,6 @@ fn free_slots(memory: &impl Memory, base: usize, game: usize, state: usize, coun
     Ok(maximum.wrapping_sub(occupied).max(0))
 }
 
-/// The infrastructure definition's operands. Content, so a later hour reuses them while the
-/// database and definition pointers are unchanged.
 pub struct Plan {
     database: usize,
     definition: usize,
@@ -233,7 +228,6 @@ impl Plan {
 
     fn read(memory: &impl Memory, base: usize, (database, definition): (usize, usize)) -> Result<Self, &'static str> {
         authenticate(memory, base, definition, template::VTABLE_RVA)?;
-        // The game's province cap reads the province of the status, which a state's status has none of.
         if field::<i32>(memory, definition, PROVINCE_MAXIMUM)? > 0 { return Err("infrastructure map province-capped definition unsupported"); }
         let state_maximum = field::<i32>(memory, definition, STATE_MAXIMUM)?;
         let maximum = if state_maximum > 0 { state_maximum } else { global(memory, base, DEFAULT_MAXIMUM)? };
@@ -263,8 +257,6 @@ impl Plan {
     }
 }
 
-/// Whether an exclusive building type has levels queued in `status`: the game walks the building
-/// database from its second template and looks each instance up by ordinal.
 fn exclusive_queued(memory: &impl Memory, plan: &Plan, status: usize) -> Result<bool, &'static str> {
     let templates = array(memory, plan.database, cbuilding_database::TEMPLATES, cbuilding_database::TEMPLATE_STRIDE)?;
     let indices = array(memory, status, status::BUILDING_INDICES, 4)?;
@@ -283,10 +275,6 @@ fn exclusive_queued(memory: &impl Memory, plan: &Plan, status: usize) -> Result<
     Ok(false)
 }
 
-/// What a fresh read learnt from the state's own building status that only hooked building
-/// writers change (the definition's instance, its level, whether the status names a country),
-/// and the controller, which only hooked territory writers change. Every such writer marks the
-/// state, so a state no writer marked since keeps them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Held {
     instance: Option<usize>,
@@ -296,14 +284,11 @@ pub struct Held {
 }
 
 impl Held {
-    /// The building instance whose [`Queue`] proves a quiet hour.
     pub fn instance(&self) -> Option<usize> {
         self.instance
     }
 }
 
-/// The operands one read used that no writer marks, and the value they gave: an hour whose
-/// operands are all equal publishes the value without reading the state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Proof {
     queue: Option<Queue>,
@@ -319,21 +304,16 @@ impl Proof {
     }
 }
 
-/// Owned by the caller across hours: the plan and the storage of the hour-scoped caches.
 #[derive(Default)]
 pub struct Cache {
     plan: Option<Plan>,
     generation: u64,
-    /// By canonical slot: the hour that read the controller's limit, and the limit.
     technologies: Vec<(u64, i32)>,
-    /// This hour's authenticated categories and their limits.
     categories: Vec<(usize, i32)>,
-    /// This hour's resolved controllers by raw id.
     controllers: Vec<(u32, ccountry::Country)>,
 }
 
 impl Cache {
-    /// The next hour reads the plan afresh.
     pub fn forget(&mut self) {
         self.plan = None;
     }
@@ -346,8 +326,6 @@ impl Cache {
     }
 }
 
-/// One hour's infrastructure reads. Global operands are read once for the hour, a controller's
-/// resolution and technology limit and a category's limit once per distinct one.
 pub struct Hour<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -363,7 +341,6 @@ pub struct Hour<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> Hour<'a, M> {
-    /// `reuse` keeps a held plan whose pointers still hold; otherwise the plan is read afresh.
     pub fn new(memory: &'a M, base: usize, game: usize, cache: &'a mut Cache, reuse: bool) -> Result<Self, &'static str> {
         let Cache { plan, generation, technologies, categories, controllers } = cache;
         let located = Plan::locate(memory, base);
@@ -382,8 +359,6 @@ impl<'a, M: Memory> Hour<'a, M> {
         Ok(Self { memory, base, game, plan, generation: *generation, technologies, categories, controllers, countries: None, fort: None, states: None })
     }
 
-    /// Whether every operand this plan reads is either held or in a [`Proof`]; a plan that walks
-    /// other buildings, provinces or slot modifiers reads each state every hour.
     pub fn proves(&self) -> bool {
         self.plan.exclusive.is_empty() && !self.plan.shares_slots && (self.plan.state_maximum <= 0 || self.plan.group == NO_GROUP)
     }
@@ -441,7 +416,6 @@ impl<'a, M: Memory> Hour<'a, M> {
         Ok(limit)
     }
 
-    /// The state object of census row `id`, authenticated by its own identity.
     pub fn state_of(&mut self, id: u32) -> Result<usize, &'static str> {
         let (memory, game) = (self.memory, self.game);
         let states = (*self.states.get_or_insert_with(|| array(memory, game, cgame_state::STATES, 8)))?;
@@ -451,7 +425,6 @@ impl<'a, M: Memory> Hour<'a, M> {
         Ok(state)
     }
 
-    /// The authenticated `state` read afresh, with what later hours may hold.
     pub fn fresh(&mut self, state: usize) -> Result<(Held, Proof), &'static str> {
         let status = state.checked_add(cstate::BUILDING_STATUS).ok_or("infrastructure map status overflow")?;
         let instance = building(self.memory, self.base, status, self.plan.definition)?;
@@ -462,10 +435,6 @@ impl<'a, M: Memory> Hour<'a, M> {
         Ok((held, self.carried(state, held)?))
     }
 
-    /// Whether `proof` still holds for a state no writer marked since it was taken: `queue` is
-    /// its instance's gathered [`Queue`] (none without an instance) and `category` its category
-    /// pointer this hour. Reads no state; a queued construction is never proven, since its
-    /// entries are separate objects.
     pub fn quiet(&mut self, held: &Held, proof: &Proof, queue: Option<&Queue>, category: u64) -> bool {
         if !self.proves() || proof.category != category {
             return false;
@@ -490,8 +459,6 @@ impl<'a, M: Memory> Hour<'a, M> {
         true
     }
 
-    /// `state` with `held` from an earlier hour, when no writer that marks it has run since;
-    /// everything else is read now.
     pub fn carried(&mut self, state: usize, held: Held) -> Result<Proof, &'static str> {
         let (memory, base, plan) = (self.memory, self.base, self.plan);
         let status = state.checked_add(cstate::BUILDING_STATUS).ok_or("infrastructure map status overflow")?;
@@ -535,7 +502,6 @@ impl<'a, M: Memory> Hour<'a, M> {
             if blocked { return Ok(proof(Infrastructure { building_type: plan.token, level, maximum: 0 })); }
         }
         if plan.state_maximum > 0 {
-            // Ungrouped, the state's own instance is the only building counted.
             let used = if plan.group == NO_GROUP {
                 level.wrapping_add(i32::from(queued))
             } else {
@@ -559,7 +525,6 @@ impl<'a, M: Memory> Hour<'a, M> {
     }
 }
 
-/// Every census row read afresh, holding nothing.
 pub fn snapshot(memory: &impl Memory, base: usize, game: usize, census: crate::walk::Outcome, rows: &mut [cstate::Row]) {
     let rows = &mut rows[..census.len()];
     for row in rows.iter_mut() { row.infrastructure = None; }

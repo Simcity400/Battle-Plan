@@ -1,10 +1,7 @@
-//! Pointer geometry for retained GUI objects.
-//! Hit extents and transforms are independent of stretched or cropped draw quads.
 
 use super::{Clip, Hit, Holder, Rect, truncate_f32};
 use std::sync::Arc;
 
-/// One byte per mip-0 texel: nonzero only for alpha-zero pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AlphaMask {
     pub width: i32,
@@ -23,10 +20,7 @@ pub struct HitGeometry {
     pub form: Hit,
     position: [i32; 2],
     viewport: [i32; 2],
-    // Absolute logical positions, outer object first. Epsilon gates and f32
-    // rounding make a composed affine differ from the native per-node walk.
     parents: Vec<(f32, [i32; 2])>,
-    // Only synthetic holders use this additional initial translation.
     initial: [f32; 2],
     shape: Shape,
     clip: Option<Clip>,
@@ -116,13 +110,11 @@ impl HitGeometry {
         }
     }
 
-    /// A plain rectangle's pointer geometry in a viewport, for fixtures of hover consumers.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_rectangle(position: [i32; 2], size: [i32; 2], viewport: [i32; 2]) -> Self {
         Self::rectangle(position, size, viewport, None)
     }
 
-    /// The drawable keeps its mask and selected frame separately from its rectangle.
     pub(super) fn with_alpha(
         mut self,
         mask: Option<AlphaMask>,
@@ -178,8 +170,6 @@ impl HitGeometry {
         hit
     }
 
-    // Construction adds a truncated double-precision half-viewport before
-    // subtracting the float half. Those terms do not always cancel in f32.
     fn wrapper_local(&self, position: [i32; 2]) -> [f32; 2] {
         let half = self.viewport.map(|v| v as f32 * 0.5);
         let at = [0, 1].map(|axis| {
@@ -207,8 +197,6 @@ impl HitGeometry {
         let (world, pivot) = match self.shape {
             Shape::Sprite { size, physical, .. } => {
                 let half = physical.map(|v| v as f32 * 0.5);
-                // Own scale is already reflected in the queried size and frame. A shown
-                // object uses its retained hit geometry.
                 let local = [
                     relative[0] as f32 + -(physical[0] as f32) * 0.5,
                     (half[1] - size[1] as f32) - relative[1] as f32,
@@ -225,8 +213,6 @@ impl HitGeometry {
                 measured_height,
                 ..
             } => {
-                // Add the retained layout position after traversal; graphical local
-                // translation begins at zero.
                 advance(
                     &mut translation,
                     &mut scale,
@@ -249,8 +235,6 @@ impl HitGeometry {
                     None,
                 );
                 let half = self.viewport.map(|v| v as f32 * 0.5);
-                // A zero size query falls back to the authored extent before applying
-                // the size-dependent world position.
                 let pivot = [
                     half[0] + translation[0],
                     -((translation[1] - half[1]) + size[1] as f32),
@@ -261,7 +245,6 @@ impl HitGeometry {
         (world, pivot, scale)
     }
 
-    /// Conservative diagnostic footprint; dispatch must use contains.
     pub fn bounds(&self) -> Option<Rect> {
         let (world, pivot, inherited) = self.world();
         let at = world.map(truncate_f32);
@@ -293,7 +276,6 @@ impl HitGeometry {
     }
 
     pub fn contains(&self, point: [f32; 2]) -> bool {
-        // Logical clipping precedes the inverse, with inclusive upper edges.
         if self.clip.is_some_and(|[left, top, right, bottom]| {
             point[0] < left as f32
                 || (right as f32) < point[0]
@@ -305,7 +287,6 @@ impl HitGeometry {
         self.contains_unclipped(point)
     }
 
-    /// [`Self::contains`] for a point its caller already clipped, in the clips' own space.
     pub(super) fn contains_unclipped(&self, point: [f32; 2]) -> bool {
         if self.form == Hit::Through {
             return false;
@@ -341,8 +322,6 @@ impl HitGeometry {
         if self.form != Hit::Alpha {
             return true;
         }
-        // Rectangular admission happens first. The mask uses the drawable origin,
-        // truncation before and after f32 division, then the integer frame offset.
         let Some(AlphaHit {
             mask: Some(mask),
             scale,
@@ -355,7 +334,6 @@ impl HitGeometry {
             truncate_f32(truncate_f32(point[axis] - world[axis]) as f32 / scale)
                 .wrapping_add(offset[axis])
         });
-        // Only the flattened index is checked: no separate X/Y clamp or Y flip.
         let index = y.wrapping_mul(mask.width).wrapping_add(x);
         usize::try_from(index)
             .ok()
@@ -368,8 +346,6 @@ fn scaled(value: f32) -> bool {
     (value - 1.0).abs() > 0.001
 }
 
-/// Native ADDSS first, then conditional MULSS/ADDSS. Half is flag144==0.
-/// Own scale is gated independently of incoming scale.
 fn advance(
     translation: &mut [f32; 2],
     scale: &mut f32,
@@ -423,17 +399,13 @@ mod tests {
         };
         let hit = make([0, 0]);
         assert!(!hit.contains([20.0, 20.0]));
-        // trunc(1.99) / 0.7 truncates to 1, not 2. No filtering or half texel.
         assert!(hit.contains([21.99, 20.0]));
         assert!(!hit.contains([22.0, 20.0]));
-        // The next row is transparent: there is no Y flip.
         assert!(!hit.contains([21.99, 21.0]));
         assert!(!hit.contains([26.0, 20.0]));
         assert!(!hit.contains([21.0, 22.0]));
-        // Horizontal and vertical frame texel offsets.
         assert!(make([4, 0]).contains([20.0, 20.0]));
         assert!(!make([0, 1]).contains([21.99, 20.0]));
-        // Only the flattened index is checked, even if X alone is out of range.
         assert!(make([12, -1]).contains([21.99, 20.0]));
         assert!(make([0, 20]).contains([20.0, 20.0]));
         assert!(make([-50, 0]).contains([20.0, 20.0]));
@@ -443,15 +415,12 @@ mod tests {
 
         let mut fractional = hit;
         fractional.initial = [0.75, 0.75];
-        // Subtract the fractional drawable origin before truncating.
         assert!(!fractional.contains([21.5, 20.75]));
         assert!(fractional.contains([22.5, 20.75]));
     }
 
     #[test]
     fn native_add_then_correction_keeps_rounding_and_incoming_epsilon() {
-        // ADDSS rounds 20_000_000 + 3 to 20_000_004 before the next ADDSS.
-        // A composed 2*3 + translation would instead give 20_000_006.
         let mut at = [20_000_000.0, 0.0];
         let mut scale = 2.0;
         advance(&mut at, &mut scale, [3.0, 0.0], 0.5, None);
@@ -463,7 +432,6 @@ mod tests {
         advance(&mut at, &mut scale, [20.0, -20.0], 2.0, None);
         assert_eq!(at, [30.0, -30.0]);
         assert_eq!(scale, 2.001);
-        // Zero and below-threshold content scales do not collapse descendants.
         for own in [0.0, 0.001, -0.001] {
             let mut at = [0.0; 2];
             let mut scale = 1.0;
@@ -510,7 +478,6 @@ mod tests {
         assert!(hit.contains([32.0, 28.0]));
         assert!(!hit.contains([31.9, 28.0]));
         assert!(!hit.contains([40.0, 46.0]));
-        // Clip tests the original pointer, and its upper edge is inclusive.
         hit.clip = Some([32, 28, 40, 40]);
         assert!(hit.contains([40.0, 40.0]));
         assert!(!hit.contains([40.001, 40.0]));
@@ -525,7 +492,6 @@ mod tests {
         let mut hit = HitGeometry::text([-2, -2], [1, 1], [10, 10], 4, LOGICAL, None);
         hit.inherit(1.0, [-2, -2]);
         hit.inherit(0.5, [-3, -3]);
-        // World -1.5 truncates to -1 before the strict comparison.
         assert_eq!(hit.world().0, [-1.5, -1.5]);
         assert!(hit.contains([-0.2, 2.0]));
         assert!(!hit.contains([-1.25, 2.0]));

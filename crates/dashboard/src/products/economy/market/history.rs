@@ -1,8 +1,3 @@
-//! Lend-lease agreements a branch saw end (`lend-lease-history`): each with its terms at its last
-//! read, so a table at a later hour lists it as ended. An agreement ended where its row leaves
-//! `LendLeaseAgreements` for good or in an hour the table was read ([`ended_spans`]). Each run's ended agreements are read once (`revision`'s history, then each row at its
-//! last hour) and kept with the source.
-
 use super::{LeaseTerms, lease_terms, lease_variants};
 use crate::{
     Source,
@@ -31,8 +26,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// An agreement that ended: its key, the hours it stood in its run, its row at its last read, and
-/// whether every pool of that row was read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ended {
     pub key: u128,
@@ -47,7 +40,6 @@ struct Runs {
     runs: HashMap<u32, Arc<Vec<Ended>>>,
 }
 
-/// `LendLeaseAgreements`' columns, as the schema numbers them.
 struct Columns {
     numbers: [usize; 9],
     pools: [usize; 5],
@@ -72,7 +64,6 @@ impl Columns {
         })
     }
 
-    /// The row at `slot` of `view`, keyed `key`; whether every pool decoded.
     fn row(&self, view: &TableView<'_>, slot: u32, key: u128) -> (LendLeaseAgreementRow, bool) {
         let number = |at: usize| view.number(self.numbers[at], slot).unwrap_or_default();
         let mut whole = true;
@@ -107,9 +98,6 @@ impl Columns {
     }
 }
 
-/// The spans each key stood in `history`'s steps that ended: its row left in an hour the table was
-/// read (`read`), or left and never came back in the run. A row hidden by hours the table was not
-/// read and shown again after them did not end.
 pub fn ended_spans(history: &[(u128, Vec<lanes::Step>)], read: impl Fn(i32) -> bool) -> Vec<(u128, i32, i32)> {
     let mut out = Vec::new();
     for (key, steps) in history {
@@ -131,7 +119,6 @@ pub fn ended_spans(history: &[(u128, Vec<lanes::Step>)], read: impl Fn(i32) -> b
     out
 }
 
-/// Run `run`'s ended agreements, read once and kept.
 pub fn run_ended(source: &Source, run: u32) -> io::Result<Arc<Vec<Ended>>> {
     let state = source.state::<Runs>();
     if let Some(found) = state.lock().unwrap_or_else(PoisonError::into_inner).runs.get(&run) {
@@ -163,7 +150,6 @@ pub fn run_ended(source: &Source, run: u32) -> io::Result<Arc<Vec<Ended>>> {
     Ok(made)
 }
 
-/// An agreement the branch saw end, with its terms and fuel totals at its last read.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -171,9 +157,9 @@ pub struct EndedLease {
     pub terms: LeaseTerms,
     pub fuel_sent_raw: String,
     pub fuel_sunk_raw: String,
-    /// The first hour it stood in its run, within the branch.
+    #[doc = " The first hour it stood in its run, within the branch."]
     pub first_hour: i32,
-    /// Its last read.
+    #[doc = " Its last read."]
     pub last_hour: i32,
 }
 
@@ -182,9 +168,9 @@ pub struct EndedLease {
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseHistoryReply {
     pub branch_id: String,
-    /// By the hour each ended, then key.
+    #[doc = " By the hour each ended, then key."]
     pub agreements: Vec<EndedLease>,
-    /// Equipment named at the end of each stretch of the branch.
+    #[doc = " Equipment named at the end of each stretch of the branch."]
     pub variants: Vec<VariantName>,
     pub icons: Vec<EquipmentIcon>,
     pub warnings: Vec<String>,

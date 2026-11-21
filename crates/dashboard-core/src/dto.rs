@@ -1,5 +1,3 @@
-//! Recording metadata and token artwork shared by several products and the
-//! frontend. Engine identifiers and native fixed-point values are decimal strings.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -11,31 +9,30 @@ pub struct ReplayMetadata {
     pub name: String,
     pub format: u16,
     pub capture_mode: CaptureMode,
-    /// The recorded campaign identity as hex, the same key the map settings use.
-    /// Every recording of one campaign shares it; app settings are stored under it.
+    #[doc = " The recorded campaign identity as hex, the same key the map settings use."]
+    #[doc = " Every recording of one campaign shares it; app settings are stored under it."]
     pub campaign_key: String,
     pub branches: Vec<BranchMetadata>,
-    /// Observations from each branch's first readable country snapshot, one
-    /// per (slot, tag) at its first observation in branch order. Later
-    /// products add their catalogue; this is never a census of all hours.
+    #[doc = " Observations from each branch's first readable country snapshot, one"]
+    #[doc = " per (slot, tag) at its first observation in branch order. Later"]
+    #[doc = " products add their catalogue; this is never a census of all hours."]
     pub countries: Vec<CountryMetadata>,
-    /// The recorded player's canonical slot, from the first readable snapshot.
+    #[doc = " The recorded player's canonical slot, from the first readable snapshot."]
     pub player_country_id: Option<String>,
-    /// The recorder's identity witness, not a new local asset verification.
+    #[doc = " The recorder's identity witness, not a new local asset verification."]
     pub content_verified: bool,
-    /// The capture stopped after the verified prefix; independent of gap coverage.
+    #[doc = " The capture stopped after the verified prefix; independent of gap coverage."]
     pub partial: Option<PartialRecording>,
     #[serde(default)]
     #[ts(optional = nullable)]
     pub damaged: Option<DamagedRecording>,
     pub warnings: Vec<String>,
-    /// The recorded and installed game builds, when either needs a warning; worked out as
-    /// metadata is served, since the installed game can change under a cached recording.
+    #[doc = " The recorded and installed game builds, when either needs a warning; worked out as"]
+    #[doc = " metadata is served, since the installed game can change under a cached recording."]
     #[serde(default)]
     pub build_warnings: Vec<String>,
 }
 
-/// replay-data's `scope::CaptureMode`, as the frontend names it.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum CaptureMode {
@@ -66,7 +63,7 @@ pub struct DamagedRecording {
 pub struct PartialRecording {
     pub session_id: String,
     pub reason: String,
-    /// No hour is inferred for an idle or status failure.
+    #[doc = " No hour is inferred for an idle or status failure."]
     pub failed_hour: Option<i32>,
 }
 
@@ -75,27 +72,27 @@ pub struct PartialRecording {
 pub struct BranchMetadata {
     pub id: String,
     pub session_id: String,
-    /// Includes missing leading/trailing hours. This range is not a count of frames.
+    #[doc = " Includes missing leading/trailing hours. This range is not a count of frames."]
     pub first_hour: i32,
     pub last_hour: i32,
-    /// The history holding the latest recorded play: the campaign as it went on. Listed first.
+    #[doc = " The history holding the latest recorded play: the campaign as it went on. Listed first."]
     pub main: bool,
-    /// For a history other than the main one that shares its early play: the main history, and
-    /// the first hour where they part, from which this one's play was left behind.
+    #[doc = " For a history other than the main one that shares its early play: the main history, and"]
+    #[doc = " the first hour where they part, from which this one's play was left behind."]
     pub fork: Option<BranchFork>,
-    /// Each place it goes on with play recorded after a load or in another session.
+    #[doc = " Each place it goes on with play recorded after a load or in another session."]
     pub joins: Vec<BranchJoin>,
     pub sample_boundary: String,
-    /// Reported capture losses, not a claim that recovered frames are absent.
+    #[doc = " Reported capture losses, not a claim that recovered frames are absent."]
     pub gaps: Vec<RecordingGap>,
-    /// Recorded event losses: intervals between two reads whose recorded
-    /// events are incomplete because the recorder was detached for part of
-    /// them. They are not gaps; a lost frame at either read is its own gap.
-    /// Absent when the branch has none.
+    #[doc = " Recorded event losses: intervals between two reads whose recorded"]
+    #[doc = " events are incomplete because the recorder was detached for part of"]
+    #[doc = " them. They are not gaps; a lost frame at either read is its own gap."]
+    #[doc = " Absent when the branch has none."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub event_losses: Option<Vec<RecordingEventLoss>>,
-    /// Without a complete country-table read, catalogue membership is unknown, not empty.
+    #[doc = " Without a complete country-table read, catalogue membership is unknown, not empty."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub catalogue_hour: Option<i32>,
@@ -108,37 +105,29 @@ pub struct BranchFork {
     pub hour: i32,
 }
 
-/// Why recorded play joins the history before it.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum JoinEvidence {
-    /// The save's counters continue that history's and no other's.
     Counters,
-    /// The only recorded history at the save's date its counters allow.
     Only,
-    /// The same game went on after hours the recorder lost.
     Process,
-    /// Play the recorder never saw lies between them; joined to the latest history before.
     Unrecorded,
-    /// The recording can't tell which history the save came from; joined to the latest.
     Unconfirmed,
-    /// The viewer chose it.
     Chosen,
 }
 
-/// Where a history goes on with another stretch of recorded play.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchJoin {
-    /// The first hour of the play joined.
+    #[doc = " The first hour of the play joined."]
     pub hour: i32,
-    /// The recorded stretch joined, which a choice names.
+    #[doc = " The recorded stretch joined, which a choice names."]
     pub segment_id: String,
-    /// The recorded stretch it goes on from.
+    #[doc = " The recorded stretch it goes on from."]
     pub parent_id: String,
     pub evidence: JoinEvidence,
-    /// What the viewer may join it to instead, when the recording can't tell: each earlier
-    /// stretch the save could have come from. Empty when proven.
+    #[doc = " What the viewer may join it to instead, when the recording can't tell: each earlier"]
+    #[doc = " stretch the save could have come from. Empty when proven."]
     pub choices: Vec<JoinChoice>,
 }
 
@@ -150,8 +139,6 @@ pub struct JoinChoice {
     pub last_hour: i32,
 }
 
-/// An interval between the reads of `after_hour` and `hour` whose recorded
-/// events are incomplete (`ControlRecord::EventLoss`).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingEventLoss {
@@ -171,19 +158,16 @@ pub struct RecordingGap {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CountryMetadata {
-    /// Canonical country slot, resolved through that hour's CountryLinks.
+    #[doc = " Canonical country slot, resolved through that hour's CountryLinks."]
     pub id: String,
     pub tag: String,
-    /// The display name in the user's game language, or the tag when the game
-    /// folders are not chosen or the name cannot be resolved.
+    #[doc = " The display name in the user's game language, or the tag when the game"]
+    #[doc = " folders are not chosen or the name cannot be resolved."]
     pub name: String,
     pub observed_branch_id: String,
     pub observed_hour: i32,
 }
 
-/// The focus database a focus id is looked up in: national focuses (trees,
-/// completions and the current focus) or continuous focuses. One id can name
-/// a different focus in each.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum FocusDatabase {
@@ -191,8 +175,6 @@ pub enum FocusDatabase {
     Continuous,
 }
 
-/// Localised name, description and thumbnail for one game token (a focus or a
-/// technology). Missing pieces stay null rather than guessed.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 #[derive(replay_spool::Spooled)]
@@ -201,6 +183,6 @@ pub struct Artwork {
     pub name: Option<String>,
     pub description: Option<String>,
     pub base_duration_days: Option<f64>,
-    /// The artwork URL of the first authored sprite frame.
+    #[doc = " The artwork URL of the first authored sprite frame."]
     pub icon: Option<String>,
 }

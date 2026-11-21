@@ -1,32 +1,17 @@
-//! Shared camera and political-field operands and colour arithmetic.
 
 use std::io;
 
 use crate::errors::invalid;
 
-/// Texture downscale divisor. Production uses full-quality divisor two; the game can increase it when
-/// a device cannot hold the texture.
 pub const DIVISOR: u32 = 2;
-/// The `NDefines.NGraphics.GRADIENT_BORDERS_*` and `STRATEGIC_NAVY_COLOR_NEUTRAL` operands the
-/// camera and political layers read, from the recorded content.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FieldDefines {
-    /// `COUNTRY_CENTER_THICKNESS`: the band next to the boundary where the field falls one byte
-    /// per pixel.
     pub center: f32,
-    /// `THICKNESS_COUNTRY_LOW` and `_HIGH`, in map pixels.
     pub country_thickness: [f32; 2],
-    /// `FIELD_COUNTRY_LOW` and `_HIGH`: the country area range, in map pixels.
     pub country_area: [f32; 2],
-    /// `THICKNESS_STRATEGIC_REGIONS`, layer 1's whole thickness rule.
     pub strategic_thickness: f32,
-    /// `OPTIMIZATION_RANGE`: a floor on how far the political field is carried.
     pub optimization_range: f32,
-    /// `STRATEGIC_NAVY_COLOR_NEUTRAL` truncated to bytes for layer 1.
     pub navy_neutral: [u8; 3],
-    /// The thickest fixed rule a map mode gives the country channel: the largest of
-    /// `THICKNESS_STATE`, `_DIPLOMACY` and `_RESISTANCE`, so one channel's search reach covers
-    /// every map mode's regions.
     pub mode_thickness_max: f32,
 }
 
@@ -68,7 +53,6 @@ impl FieldDefines {
         })
     }
 
-    /// The shipped content's values, for synthetic fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub const TEST: Self = Self {
         center: 2.0,
@@ -81,9 +65,6 @@ impl FieldDefines {
     };
 }
 
-/// HSV-to-RGB conversion in f32 with hue in turns. Floor six times hue and cap the sector at five.
-/// Sectors zero through four have explicit cases; every other value, including negative or NaN,
-/// takes the final case.
 pub fn hsv_to_rgb([hue, saturation, value]: [f32; 3]) -> [f32; 3] {
     if saturation == 0.0 {
         return [value; 3];

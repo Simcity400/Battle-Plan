@@ -38,7 +38,6 @@ const NO_HOURS: readonly number[] = [];
 const rowKey = (row: ElectionRow) => row.key;
 const tieKey = (row: ElectionRow) => row.tag;
 
-/** The term passed as text and, with `cellBars`, a meter, both painted each frame at `shown()`, never rendered for. */
 function TermCell({ row, live, clock, shown, cellBars }: { row: ElectionRow; live: LiveTexts; clock: TextClock; shown: () => number; cellBars: boolean }) {
   const cell = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
@@ -58,9 +57,6 @@ function TermCell({ row, live, clock, shown, cellBars }: { row: ElectionRow; liv
     {cellBars && <ProgressMeter value={termAt(row, shown())} state="live" label="Term passed" />}</span>;
 }
 
-/** The table's columns: each country by `label` (sorted by `sortName`), the hiding columns' values in the row
- * tooltip. Days left and the term passed are painted each frame from `live` and `clock`, never rendered for; a Term
- * sort follows the table's live values (`termSortValues`), the others read `shown()`. */
 export function electionColumns(sortName: (tag: string) => string, label: CountryLabel, cellBars: boolean, live: LiveTexts, clock: TextClock,
   shown: () => number): TableColumn<ElectionRow>[] {
   const at = (column: 'term' | 'days' | 'next') => (row: ElectionRow) => electionValues(shown())[column](row);
@@ -77,8 +73,6 @@ export function electionColumns(sortName: (tag: string) => string, label: Countr
   ];
 }
 
-/** Every country holding elections at the playback date: the whole branch's schedules are read once; following
- * playback, the table renders only at the hours a schedule changes, its countdown painted between. */
 export default function NextElectionsWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -93,11 +87,9 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  // The rows change where a schedule or the countries chosen do.
   const hours = useMemo(() => data ? changeHours(data, countryMatchChangeHours(match.matches)) : NO_HOURS, [data, match]);
   const trackHour = useCallback((clockHour: number) => {
     const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
@@ -113,13 +105,11 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const rows = view?.rows ?? NO_ROWS;
   const shown = useCallback(() => trackHour(runtime.clock.getHour()), [runtime.clock, trackHour]);
   const live = useMemo(() => liveTexts(runtime.clock, shown, at => countdownTexts(rows, at)), [runtime.clock, shown, rows]);
-  // The term order moves with the shown hour between the hours the rows change: the table re-sorts by it as it plays.
   const sortLive = useMemo(() => liveAt(runtime.clock, () => shown(), termSortValues(rows)), [runtime.clock, shown, rows]);
   const [visible, setVisible] = useState<readonly ElectionRow[]>(NO_ROWS);
   const onVisibleRows = useCallback((rows: readonly ElectionRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => visible.map(row => ({ hour, tag: row.tag })), [visible, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  // A name sort needs every name; flags still load only for mounted rows.
   const sortingNames = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour, tag: row.tag })) : [], [rows, sort.column, hour]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
   const columns = useMemo(() => electionColumns(tag => nameReadText(names.get(nameKey(hour, tag))), labelAt(hour), options.cellBars === true, live,

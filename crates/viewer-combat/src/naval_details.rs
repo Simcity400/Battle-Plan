@@ -1,4 +1,3 @@
-//! Native naval member grouping and retained result dispatch.
 use super::{
     HoverText, Selection, Values, Widget,
     binding::{Bindings, Flags, NavalEntry, TEXT, country_flag, hide, text},
@@ -38,9 +37,6 @@ struct AirGroup<'a> {
     planes: Vec<&'a NavalCombatPlane>,
 }
 
-/// Visit the forward groups' active-air arrays before the ship arrays. Join
-/// a plane with the first entry having the same equipment registration ID
-/// and equivalent country.
 fn air_group_slot(groups: &[AirGroup<'_>], side: u8, model: usize, owner: u32) -> Option<usize> {
     groups
         .iter()
@@ -82,9 +78,6 @@ fn display_air_plane(plane: &NavalCombatPlane) -> bool {
         && plane.carrier_state & 4 == 0
 }
 
-/// Air-base display names use the state name for a state base, otherwise the
-/// host ship name. Wing short names are distinct and retain wing order.
-/// Wing additions and list rebuilds keep this name list current.
 fn air_presentation(
     static_content: &StaticContent,
     frame: &DecodedFrame,
@@ -207,7 +200,6 @@ fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
         hidden: name.is_none(),
         sprite: name,
         frame: Some(icon_frame(side, false)),
-        // The game sets this dynamic hover after constructing the row.
         hover_owned: true,
         ..Widget::default()
     }
@@ -260,12 +252,6 @@ fn push_air_entry(
     });
 }
 
-/// The carrier section appends the linked member's 0x24 (and, for a fighter
-/// pool, 0x1B6) source trees, each followed by its box-2/3
-/// screening line, only when that member is present and the sortie
-/// efficiency differs from ONE. Source formatting takes the ship's sources
-/// when the member's ship is live and its side's sources otherwise
-/// ([`super::naval_trees::Sources`]).
 #[allow(
     clippy::too_many_arguments,
     reason = "the plane, its side, the joins, the trees and the text resources are separate operands"
@@ -322,10 +308,6 @@ fn sortie_member_breakdown(
     Ok(text)
 }
 
-/// `Countries` rows by every recorded reference to them: a reference resolves through
-/// `CountryLinks` (`links`, raw reference to canonical slot) to its canonical slot, as the game
-/// resolves it, and names that slot's row. A historical alias names the same row as the
-/// country's own id.
 pub(crate) fn countries_by_reference<'a>(
     links: &BTreeMap<u32, u32>,
     countries: &'a [CountryRow],
@@ -340,7 +322,7 @@ pub(crate) fn countries_by_reference<'a>(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)] // The hour's frame, the battle's identity and its draw state.
+#[allow(clippy::too_many_arguments)]
 fn air_entries(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -524,8 +506,6 @@ fn air_entries(
         if let Ok(name) = sprite_name {
             candidates.push(format!("GFX_navalcombat_air_icon_{name}"));
         }
-        // country, archetype, definition.sprite cascade is tested
-        // against the effective `.gfx` registry, never a vanilla name list.
         let found = candidates.into_iter().find_map(|name| {
             static_content
                 .assets
@@ -535,8 +515,6 @@ fn air_entries(
         let (name, size) = if let Some((name, size)) = found {
             (Some(name), size)
         } else {
-            // An absent drawable hides only the icon. The row and its counts retain
-            // their authored template size.
             out.refuse(format!("Naval combat {id} air group model {} icon is hidden: no stacked naval air icon resolves from its country, archetype and definition sprite.", group.model + 1));
             let size = static_content
                 .assets
@@ -599,8 +577,6 @@ fn air_entries(
                         efficiency_suffixes.push(String::new());
                         continue;
                     }
-                    // Select the first wing in the active second list whose resolved
-                    // air base has no state before constructing its text.
                     let wings = wing_index.as_ref().ok_or("AirWings are incomplete")?;
                     let bases = base_index.as_ref().ok_or("AirBases are incomplete")?;
                     let eligible = plane.wings[1].iter().any(|handle| {
@@ -675,7 +651,6 @@ fn air_entries(
                 None
             }
         };
-        // The game sums current and max(initial,current) in signed i32.
         let current = group
             .planes
             .iter()
@@ -685,8 +660,6 @@ fn air_entries(
         });
         let low_efficiency = (|| {
             for plane in &group.planes {
-                // Walk the active second wing list. Skip missing resolved wings
-                // or bases; incomplete tables make the result unknown.
                 for handle in &plane.wings[1] {
                     let wings = wing_index
                         .as_ref()
@@ -756,8 +729,6 @@ pub(super) fn bind(
     }
 }
 
-// The game uses the same display-box predicate as carrier sortie modifiers:
-// The game tests both the ship and its positive equipment pool's bits 22/37.
 pub(super) fn column(row: &NavalCombatShipRow, pool_flags: u64) -> Option<&'static str> {
     match super::naval_air_groups::display_box(row, pool_flags) {
         1 => Some("screen"),
@@ -776,7 +747,6 @@ fn pool_flags(
     models: &BTreeMap<u64, &replay_data::rows::ShipModelRow>,
     incomplete: Option<&str>,
 ) -> Result<u64, String> {
-    // These branches of the game do not depend on the equipment predicate.
     if !matches!(row.state, 1 | 2 | 8)
         || row.live_convoy != 0
         || row.live_ship == 0
@@ -956,8 +926,6 @@ fn active(
         }
     };
     let mut members: Vec<_> = table.rows().iter().filter(|r| r.combat == id).collect();
-    // The native forward traversal and retained-member list are separate. Do
-    // not drop source1 when its ship has already left NavalCombatParticipants.
     members.sort_by_key(|r| {
         (
             r.member_source,
@@ -989,8 +957,6 @@ fn active(
         Available::Unavailable { reason } => Some((*reason).to_owned()),
         Available::NotRecorded { mode } => Some(format!("not recorded in a {mode} recording")),
     };
-    // Incoming live ships whose owner's sharing the hour cannot
-    // decide, by missing input: their box is unknown, so they are omitted.
     let mut undecided: BTreeMap<SharingUnknown, usize> = BTreeMap::new();
     for row in members {
         let unknown = if row.state == 4 && row.live_ship != 0 {
@@ -1134,7 +1100,6 @@ fn active(
                     .fold(0_i64, i64::wrapping_add);
                 let ratio = mean(total, live.len());
                 bar(&mut values, "bar_str", ratio);
-                // A refused ship organisation family was reported once above.
                 if organisation_admitted || live.iter().all(|row| row.live_ship == 0) {
                     match live.iter().try_fold(0_i64, |sum, row| {
                         let maximum = organisation_maximum(row)
@@ -1225,13 +1190,9 @@ fn active(
     Ok(())
 }
 
-/// The game advances sunk entries by the grid's authored slot direction and
-/// limits. Fighting boxes instead supply explicit pixel offsets.
 pub(super) fn entry_offset(column: &str, x: f32, y: f32) -> Option<[f32; 2]> {
     (column != "sunk").then_some([x, y])
 }
-/// The icon uses one-based frame 1 or 2 according to the column side,
-/// reversed when any group member is escaping (8) or in state 16.
 pub(super) fn icon_frame(side: u8, reversed: bool) -> u32 {
     u32::from(side == 0) ^ u32::from(reversed)
 }
@@ -1245,7 +1206,6 @@ fn mean(total: i64, count: usize) -> i64 {
         fixed_ratio(total, (count as i64).wrapping_mul(100_000))
     }
 }
-/// maximum organisation, or which operand refuses it.
 pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, String> {
     if row.live_ship == 0 {
         if row.live_convoy == 0 {
@@ -1253,8 +1213,6 @@ pub(super) fn organisation_maximum(row: &NavalCombatShipRow) -> Result<i64, Stri
         }
         return Ok(row.base_organisation.max(100));
     }
-    // Use the task force's default commander for maximum organisation.
-    // Other recorded sources, including the HQ scopes, still contribute.
     let mut context = row.weapon_context.clone();
     context.sources.retain(|s| !matches!(s.scope, 9 | 10));
     for source in &mut context.sources {

@@ -1,4 +1,3 @@
-//! Decision names and highlight scopes.
 
 use crate::{
     ResolvedLayers,
@@ -14,8 +13,6 @@ use std::{
     io,
 };
 
-/// Triggered icon text. Conditions remain data until a consumer supplies
-/// the recorded event scope at the row's hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TriggeredIcon {
     pub text: String,
@@ -38,15 +35,12 @@ pub struct Decision {
     pub selectable_mission: bool,
     pub targeted: bool,
     pub state_target: bool,
-    /// Each triggered text appends, including scalar icons.
     pub icons: Vec<TriggeredIcon>,
     pub icon_refusal: Option<String>,
     pub source: String,
-    /// The authored identifier's ASCII-folded FNV-1a hash.
     pub seed_component: i32,
     pub mission: bool,
     pub fixed_random_seed: bool,
-    /// Target-object presence is retained even for an empty body.
     pub has_state_targets: bool,
     pub highlight_states: Vec<Item>,
     pub highlight_conditions: Vec<Item>,
@@ -54,24 +48,18 @@ pub struct Decision {
     pub target_trigger: Vec<Item>,
     pub target_arrays: Vec<Vec<u8>>,
     pub target_states: Vec<Vec<u8>>,
-    /// Content effects described in fresh country scopes.
     pub complete_effect: Vec<Item>,
     pub remove_effect: Vec<Item>,
     pub cancel_effect: Vec<Item>,
     pub timeout_effect: Vec<Item>,
     pub days_remove: Vec<u8>,
     pub modifier: Vec<Item>,
-    /// Each targeted modifier is retained separately and visited in stored order.
     pub targeted_modifier: Vec<Vec<Item>>,
-    /// Whether its category is bound to a power balance.
     pub power_balance: bool,
     pub refused: Option<String>,
 }
 
 impl Decision {
-    /// State naming applies when the highlight conjunction has a child or
-    /// the targets object is present. Both default to empty. Use shared
-    /// trigger dispatch to distinguish ignored keys.
     pub fn name_selects_state(
         &self,
         has_children: impl FnOnce(&[Item]) -> Result<bool, String>,
@@ -85,9 +73,6 @@ impl Decision {
         }
     }
 
-    /// Try cosmetic tag, current tag, then no tag. Each tries the ruling
-    /// ideology suffix before the base key. Localisation presence selects
-    /// the key before scoped expansion.
     pub fn name_key(
         &self,
         tag: &str,
@@ -118,9 +103,6 @@ impl Decision {
         })
     }
 
-    /// A sole icon bypasses its trigger; otherwise the first true condition
-    /// wins, falling back to the first icon when none pass. Unknown
-    /// conditions stop selection rather than acting as false.
     pub fn select_icon(
         &self,
         mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -142,8 +124,6 @@ impl Decision {
         }
     }
 
-    /// Try the decision-token sprite, then the selected text with the decision
-    /// prefix, then its direct sprite, and finally the unknown-decision sprite.
     pub fn sprite_candidates(&self, selected: Option<&str>) -> Result<Vec<String>, String> {
         let token = std::str::from_utf8(&self.id)
             .map_err(|why| format!("{} decision identifier: {why}", self.source))?;
@@ -167,7 +147,6 @@ pub struct CategoryConditions {
 #[derive(Clone, Debug, Default)]
 pub struct Database {
     pub entries: BTreeMap<Vec<u8>, Decision>,
-    /// Category name key, without the decision-country fallback ladder.
     pub categories: BTreeMap<Vec<u8>, Vec<u8>>,
     power_balance_categories: BTreeSet<Vec<u8>>,
     pub category_conditions: BTreeMap<Vec<u8>, CategoryConditions>,
@@ -176,7 +155,6 @@ pub struct Database {
 }
 
 impl Database {
-    /// Complete recorded-content roster, including valid emptiness.
     pub fn roster(&self) -> Result<impl Iterator<Item = &Decision>, String> {
         if let Some(why) = &self.unread {
             return Err(why.clone());
@@ -197,14 +175,12 @@ impl Database {
         if let Some(why) = &self.unread {
             return Err(why.clone());
         }
-        // Title metadata is built only after a matching active instance.
         Ok(self
             .entries
             .get(&parser::c_string(token).to_ascii_lowercase()))
     }
 }
 
-/// The ASCII-folded first-NUL identifier hash used in the decision seed.
 pub fn seed_component(id: &[u8]) -> i32 {
     parser::c_string(id)
         .iter()
@@ -225,7 +201,6 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-/// Target members read scoped operands.
 fn targets(field: &Field<'_>) -> Option<Shape<Node>> {
     Some(match field.keyword().as_deref()? {
         b"targets" => Shape::List,
@@ -257,7 +232,6 @@ fn append(
         Some(names),
         crate::scope::ScopeKind::Country.bit(),
         &mut |node, field| match node {
-            // Read every category and decision, including missing categories.
             Node::File => Shape::Object(Node::Category),
             Node::Category => {
                 positions.push(field.key.line);
@@ -288,7 +262,6 @@ fn append(
                     Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                     Some(b"highlight_states") => Shape::Object(Node::Highlight),
                     Some(b"icon") => Shape::ObjectIfOpen(Node::Icon),
-                    // Append a scoped variable using the retained token.
                     Some(
                         b"war_with_on_remove" | b"war_with_on_complete" | b"war_with_on_timeout",
                     ) => Shape::One,
@@ -319,7 +292,6 @@ fn append(
                     _ => Shape::Skip,
                 }
             }
-            // Highlight conditions read in state scope.
             Node::Highlight => match field.keyword().as_deref() {
                 Some(b"highlight_state_targets") => Shape::Object(Node::Targets),
                 Some(b"highlight_states_trigger") => Shape::Trigger,
@@ -329,10 +301,8 @@ fn append(
                     | b"highlight_color_before_active"
                     | b"highlight_color_while_active",
                 ) => Shape::One,
-                // This reader ignores unknown tokens without error recovery or skipping.
                 _ => Shape::One,
             },
-            // Text and key replace earlier text; trigger blocks append.
             Node::Icon => match field.keyword().as_deref() {
                 Some(b"text" | b"key") => Shape::One,
                 Some(b"trigger") => Shape::Trigger,
@@ -461,7 +431,6 @@ fn append(
                 }
                 if field.keyword_is("name") {
                     let name = field.value.read_string().unwrap_or_default();
-                    // Empty alternate key keeps the authored identifier.
                     decision.name = if name.is_empty() {
                         id.clone()
                     } else {
@@ -531,7 +500,6 @@ fn append(
                     }
                 }
             }
-            // The first matching decision definition is retained.
             let key = id.to_ascii_lowercase();
             if let std::collections::btree_map::Entry::Vacant(entry) = database.entries.entry(key) {
                 entry.insert(decision);
@@ -562,7 +530,6 @@ fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
             }
         }
     } else {
-        // Scalar icon text ends at its first NUL; block text/key fields use string reads.
         icon.text = std::str::from_utf8(parser::c_string(value.scalar().unwrap_or_default()))
             .map_err(|why| why.to_string())?
             .to_owned();
@@ -570,7 +537,6 @@ fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
     Ok(icon)
 }
 
-/// Load category names before decision bodies; both directories use lexer mode 0.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut categories = BTreeSet::new();
@@ -606,7 +572,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
         for item in &read.items {
             let id = parser::c_string(item.key.as_deref().unwrap_or_default());
             if database.categories.contains_key(&id.to_ascii_lowercase()) {
-                continue; // First registered category wins.
+                continue;
             }
             database
                 .categories
@@ -629,8 +595,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
                 .insert(id.to_ascii_lowercase(), conditions);
         }
     }
-    // `common/bop` binds `decision_category`; category bodies do not
-    // read a `power_balance` field.
     let mut balances = BTreeMap::new();
     for path in layers.directory_files("common/bop", ".txt")? {
         let read = native::read(
@@ -666,7 +630,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
                 .and_then(|item| item.value.scalar())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            balances.insert(token, category); // Repeated balance definitions rebuild.
+            balances.insert(token, category);
         }
     }
     database.power_balance_categories.extend(

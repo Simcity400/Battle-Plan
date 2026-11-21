@@ -1,5 +1,3 @@
-//! Incoming registration order is carried separately from the hourly progress
-//! operands. Both reuse the mission job's complete wing and base witnesses.
 use super::{BaseWitness, WingIdentity};
 use engine_allocation as allocation;
 use engine_native::{Memory, cair_base, cair_wing, cpdx_array::Array, read};
@@ -153,7 +151,6 @@ mod tests {
                 |_| Some((1, 0)),
             )
             .unwrap();
-        // A fault on the first changed read remains unknown under that token.
         store
             .capture_with(
                 &MemoryView {
@@ -261,7 +258,6 @@ struct Base {
 #[derive(Default)]
 pub(crate) struct Store {
     bases: Vec<Base>,
-    /// Destination and census index; one bulk arena, never a vector per wing.
     demand: Vec<(u64, usize)>,
     pointers: Vec<(usize, usize)>,
     scratch: Vec<Member>,
@@ -403,8 +399,6 @@ impl Store {
                         .ok()
                         .map(|index| self.bases[at].members[index].ordinal)
                 });
-                // A certified direct vector proves nonmembership. Unobserved
-                // membership keeps an explicit unknown row instead.
                 if known.is_some() && ordinal.is_none() {
                     continue;
                 }

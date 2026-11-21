@@ -41,8 +41,6 @@ fn database() -> Database {
     sources.grand.insert(
         grand,
         DefinitionSources {
-            // All three links are the fresh country, independently of the
-            // caller's description graph or variable session.
             available: installed_content_core::parser::parse(
                 b"ROOT={tag=AAA} FROM={tag=AAA} PREV={tag=AAA}",
             )
@@ -148,8 +146,6 @@ fn occurrences_order_nested_names_and_all_reward_mastery_are_preserved() {
             format!("R:Sub/{track}/5"),
         ]
     );
-    // Country two fails the available gate, while the unrelated sub
-    // remains. The context perspective three is not the gate's country.
     let (sources, refused) = run(&database(), 2);
     assert!(refused.is_empty(), "{refused:?}");
     assert_eq!(sources.unwrap().len(), 4);
@@ -205,7 +201,7 @@ fn bound_name_failure_and_default_define_shortage_are_feature_local() {
         .push(bad);
     database.tactic_sources.default_reward_mastery = None;
     let (sources, refused) = run(&database, 1);
-    assert_eq!(sources.unwrap().len(), 6); // Four grand + two valid direct-sub.
+    assert_eq!(sources.unwrap().len(), 6);
     assert!(refused.keys().any(|why| why.contains("unported")));
     assert!(
         refused
@@ -228,7 +224,7 @@ fn unknown_available_gate_keeps_independent_sources_and_is_not_false() {
         .unwrap()
         .items;
     let (sources, refused) = run(&database, 1);
-    assert_eq!(sources.unwrap().len(), 4); // Independent sub sources survive.
+    assert_eq!(sources.unwrap().len(), 4);
     assert!(refused.keys().any(|why| why.contains("CompletedFocuses")));
     database.tactic_sources.sub_order.clear();
     let (sources, refused) = run(&database, 1);

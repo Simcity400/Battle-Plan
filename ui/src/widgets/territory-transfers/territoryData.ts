@@ -6,7 +6,6 @@ import { contentKey, setToken } from '../../dashboard/options.ts';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import type { PeaceDeal, PeaceDealsReply, PeaceTransferCountry } from '../../generated/dashboard';
 
-/** Conference handles hold only within their campaign and branch. */
 export const conferenceToken = (campaign: string, branch: string, id: string) => setToken(campaignToken(campaign, JSON.stringify([branch, id])));
 export function conferenceChoiceId(token: string, campaign: string, branch: string): string | null {
   if (!token) return '';
@@ -19,44 +18,31 @@ export function conferenceChoiceId(token: string, campaign: string, branch: stri
   } catch { return null; }
 }
 
-/** One end of a transfer: its native holder and the read that names it. */
 export interface TransferSide { key: string; tag: string; hour: number }
-/** One state changing hands once; a state transferred twice is two occurrences. */
 export interface TransferOccurrence {
   key: string; deal: string; state: number;
-  /** Null only where an older bridge names several former owners for one release. */
   from: TransferSide | null; to: TransferSide;
   beforeHour: number; afterHour: number;
-  /** The supplying observation, independently of the outcome's actual date. */
   knownAt: number;
   victoryPoints: bigint | null; victoryPointsReadHour: number | null;
-  /** Live has not reached this state's own victory-points read. */
   victoryPointsPending?: boolean;
-  /** The same settlement released the taker. */
   released: boolean;
-  /** An exact finalizer outcome (false), an ownership comparison (true), or no matching item. */
   derived: boolean | null;
 }
 export interface TransferData {
   reply: PeaceDealsReply;
   deals: ReadonlyMap<string, PeaceDeal>;
-  /** Every occurrence by its date; a deal's own list keeps the same order. */
   all: readonly TransferOccurrence[];
   byDeal: ReadonlyMap<string, readonly TransferOccurrence[]>;
-  /** Dates, supplying observations and VP reads, so playback ticks reuse one cut. */
   hours: readonly number[];
   conferenceHours: readonly number[];
 }
 
 const side = (country: PeaceTransferCountry): TransferSide => ({ key: countryIdentityKey(country), tag: country.tag, hour: country.hour });
-/** A holder an older bridge names only by tag; never joined to a native identity. */
 const tagSide = (tag: string, hour: number): TransferSide => ({ key: JSON.stringify(['tag', tag]), tag, hour });
 const provenanceKey = (state: number, before: number, after: number, from: string, to: string) => JSON.stringify([state, before, after, from, to]);
 const decoded = new WeakMap<PeaceDealsReply, TransferData>();
 
-/** Every deal's graph occurrence, joined to its deal and item provenance once. A
- * reply from a bridge built before released states joined the graphs keeps them
- * from the release item, without victory points. */
 export function decodeTransfers(reply: PeaceDealsReply): TransferData {
   const held = decoded.get(reply);
   if (held) return held;
@@ -66,7 +52,6 @@ export function decodeTransfers(reply: PeaceDealsReply): TransferData {
     const knownAt = peaceDealKnownAt(deal);
     const provenance = new Map<string, boolean>();
     const witness = (key: string, derived: boolean) => {
-      // An exact finalizer item supersedes a matching derived observation.
       if (!provenance.has(key) || provenance.get(key) && !derived) provenance.set(key, derived);
     };
     for (const item of deal.items) {
@@ -94,8 +79,6 @@ export function decodeTransfers(reply: PeaceDealsReply): TransferData {
     for (const item of deal.items) {
       const change = item.change;
       if (change.kind !== 'countryReleased' || change.transfers !== undefined) continue;
-      // Only a single former owner can be named for each state; the giver lost
-      // other states in this settlement, so the graph holds its identity.
       const owner = change.from.length === 1 ? change.from[0] : null;
       const known = owner == null ? undefined : graphStates.find(state => state.fromCountry.tag === owner)?.fromCountry;
       const from = owner == null ? null : known ? side(known) : tagSide(owner, item.dates.beforeHour);
@@ -117,12 +100,9 @@ export function decodeTransfers(reply: PeaceDealsReply): TransferData {
 }
 const byDate = (a: TransferOccurrence, b: TransferOccurrence) => a.afterHour - b.afterHour || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
-/** The campaign's occurrences, or one conference's. */
 export const transferScope = (data: TransferData, conference: string | null): readonly TransferOccurrence[] =>
   conference == null ? data.all : data.byDeal.get(conference) ?? [];
 
-/** Last hour at which anything shown can change, so playback ticks between them
- * reuse the same lists without another pass. */
 export function transferCutoff(hours: readonly number[], hour: number): number {
   let low = 0;
   let high = hours.length;
@@ -133,8 +113,6 @@ export function transferCutoff(hours: readonly number[], hour: number): number {
   return low ? hours[low - 1] : -Infinity;
 }
 
-/** Occurrences reached by `through`, dated from `from` (Range includes both ends).
- * Unless the whole campaign is shown, a state's VP waits for its own read. */
 export function transfersAt(list: readonly TransferOccurrence[], through: number, from = -Infinity, wholeCampaign = true): TransferOccurrence[] {
   const shown: TransferOccurrence[] = [];
   for (const occurrence of list) {
@@ -146,16 +124,12 @@ export function transfersAt(list: readonly TransferOccurrence[], through: number
   return shown;
 }
 
-/** A country's peace-settlement territory: states received and given up, with their
- * counterparts. Missing VPs make that side unknown; no partial sum becomes known. */
 export interface CountryBalance {
   key: string;
-  /** The newest read naming this holder among the shown transfers. */
   side: TransferSide;
   gained: number; lost: number;
   gainedVictoryPoints: bigint | null; lostVictoryPoints: bigint | null;
   from: ReadonlyMap<string, Counterpart>; to: ReadonlyMap<string, Counterpart>;
-  /** Received states whose former owner is not named. */
   unattributed: number;
   first: number; last: number;
 }
@@ -197,12 +171,10 @@ export function countryBalances(list: readonly TransferOccurrence[]): CountryBal
 export const netVictoryPoints = (row: Pick<CountryBalance, 'gainedVictoryPoints' | 'lostVictoryPoints'>) =>
   row.gainedVictoryPoints == null || row.lostVictoryPoints == null ? null : row.gainedVictoryPoints - row.lostVictoryPoints;
 
-/** Transfers involving one holder, or the old pinned giver → taker links. */
 export function involving(list: readonly TransferOccurrence[], key: string): TransferOccurrence[] {
   return list.filter(occurrence => occurrence.to.key === key || occurrence.from?.key === key);
 }
 
-/** How the recorded settlement moved the state, as far as it records. */
 export interface TransferHow { released: boolean; subjectOf: string | null; action: string | null }
 export function transferHow(occurrence: TransferOccurrence, deal: PeaceDeal | undefined): TransferHow {
   const to = occurrence.to.tag;
@@ -211,24 +183,18 @@ export function transferHow(occurrence: TransferOccurrence, deal: PeaceDeal | un
   for (const item of deal.items) if (item.change.kind === 'newSubject' && item.change.subject === to) subjectOf = item.change.overlord;
   subjectOf ??= deal.captured?.subjects.find(subject => subject.subjectTag === to)?.overlordTag ?? null;
   const actions = deal.captured?.actions ?? [];
-  // The content's own action name, never a guessed one; a demand naming its country (a puppet's) releases none.
   const action = actions.find(action => action.name != null && action.state === occurrence.state && (action.takerTag == null || action.takerTag === to))
     ?? (occurrence.released ? actions.find(action => action.name != null && action.nameCountry == null && action.countryOperandTag === to) : undefined);
   return { released: occurrence.released, subjectOf, action: action?.name ?? null };
 }
 
-/** Plain dates in rows; the tooltip carries the hour and any "by" caveat. */
 export function transferDate(hour: number): string {
   const date = gameDate(hour);
   return date ? formatDate(date) : formatDateTime(hour);
 }
-/** An ownership comparison bounds the change between two reads. */
 export const transferIsBy = (occurrence: Pick<TransferOccurrence, 'derived' | 'beforeHour' | 'afterHour'>) =>
   occurrence.derived !== false && occurrence.beforeHour !== occurrence.afterHour;
 
-/** Gaps in the hourly settlement, ownership and war inputs that establish transfers,
- * including hours missing from the recording. The conference roster is read once a
- * day: the hours between its reads are its cadence, not missing transfers. */
 export function transferGaps(reply: PeaceDealsReply, from: number, to: number): HourSpan[] {
   const sorted = [...reply.unobserved.settlements, ...reply.unobserved.ownership, ...reply.unobserved.wars]
     .filter(span => span.firstHour <= to && span.lastHour >= from)
@@ -242,13 +208,11 @@ export function transferGaps(reply: PeaceDealsReply, from: number, to: number): 
   }
   return spans;
 }
-/** One hint for every gap in the shown time, never one line per gap. */
 export function transferGapHint(gaps: readonly HourSpan[]): string | null {
   if (!gaps.length) return null;
   const between = `between ${formatDateTime(gaps[0].firstHour)} and ${formatDateTime(gaps.at(-1)!.lastHour)}`;
   return gaps.length === 1 ? `Not fully recorded ${between}.` : `${gaps.length} stretches not fully recorded ${between}.`;
 }
-/** A completed conference's gaps belong to its own observed interval; an active one follows Live. */
 export function transferGapWindow(conference: PeaceDeal | null, list: readonly TransferOccurrence[], firstHour: number, moment: number): [number, number] {
   if (!conference) return [firstHour, moment];
   let first = conference.firstObservedHour;
@@ -257,22 +221,16 @@ export function transferGapWindow(conference: PeaceDeal | null, list: readonly T
   return [first, completed ? Math.min(moment, peaceDealHour(conference)) : moment];
 }
 
-/** The body's message when nothing is shown. */
 export const transferEmptyMessage = (filtered: boolean) => filtered ? 'No territory transfers for these countries yet.' : 'No territory transfers yet.';
 
-/** Conferences available to the scope picker, including active conferences whose
- * outcome is still unknown. The product already supplies newest-first order. */
 export function visibleConferences(deals: readonly PeaceDeal[], hour: number, from = -Infinity): PeaceDeal[] {
   return deals.filter(deal => peaceDealHour(deal) >= from && peaceDealKnownAt(deal) <= hour);
 }
 
-/** A chosen conference stays chosen. A choice from another recording is explicit
- * missing data; automatic chooses the newest conference playback has reached. */
 export function chosenConference(deals: readonly PeaceDeal[], id: string): PeaceDeal | null {
   return id ? deals.find(deal => deal.id === id) ?? null : deals[0] ?? null;
 }
 
-/** Event bounds and the war name, for the conference picker and the scope line. */
 export function transferConferenceLabel(deal: PeaceDeal): string {
   return `${peaceDealIsBy(deal) ? 'by ' : ''}${formatDateTime(peaceDealHour(deal))} · ${peaceWarName(deal)}`;
 }

@@ -1,4 +1,3 @@
-//! Exact retained naval state comparisons, including native list order.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -78,7 +77,6 @@ pub fn compare(
     passed &= report.attempt("naval RailCooldowns", |report| {
         compare_railways(frame, saved, report)
     });
-    // This helper records six independent attempts before returning its error.
     passed &= compare_theatres(frame, saved, links, report).is_ok();
     report.limitation(
         "serialized country tags cannot distinguish equivalent raw country-reference aliases",
@@ -202,7 +200,6 @@ fn compare_ships(
     Ok(())
 }
 
-/// Compares one retained or embedded sunk-ship record with its saved representation.
 pub fn compare_ship(
     actual: &SunkShipEntry,
     expected: &saved::SunkShip,
@@ -221,7 +218,6 @@ pub fn compare_ship(
     ] {
         if let Some(expected) = expected {
             let field = format!("{label}.{field}");
-            // Ship names use quoted text serialization, which consumes c_str.
             let actual = serialized_text(report, &field, actual);
             equal(report, field, actual, expected.as_slice());
         } else {
@@ -282,9 +278,6 @@ pub fn compare_ship(
                 "sunk ship class uses the fixed15 formatter token, not a directly serialized lexical spelling",
             ));
         }
-        // The ship writer emits both class tokens unconditionally through the token writer.
-        // The token writer passes the lexical c_str to the stream, but the concrete sink's
-        // termination behavior is not proved by the retained formatter alone.
         let field = format!("{label}.{field}");
         if literal.contains(&0) {
             report.limitation("embedded-NUL lexical class literal has unproved text-stream termination; its saved spelling is not compared", field);
@@ -359,7 +352,6 @@ fn compare_results(
             .or_default()
             .push(row.province_ordinal);
     }
-    // Each province bucket holds its results once, at ordinals 0..n.
     for ordinals in buckets.values_mut() {
         ordinals.sort_unstable();
         if ordinals
@@ -658,8 +650,6 @@ fn compare_supremacy(
                 equal(report, format!("{label}.{field}"), actual, expected);
             }
         } else {
-            // The save exposes tags, so raw country aliases can collapse to one
-            // tag. Compare every exact six-field tuple with its multiplicity.
             actual.sort_unstable();
             expected.sort_unstable();
             equal(report, &label, actual, expected);

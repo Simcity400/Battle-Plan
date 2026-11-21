@@ -31,12 +31,8 @@ import struct
 import subprocess
 import sys
 
-# The game's main thread reserves 4 MiB (hoi4.exe SizeOfStackReserve) and is already
-# inside its own frames when the hourly game update enters our hook. Every hook-path
-# frame stays small, and the deepest chain under a tenth of that reserve.
 MAX_FRAME = 64 * 1024
 MAX_DEPTH = 384 * 1024
-# Rust paths (demangled, without the hash) of the entries the game's threads call.
 GAME_THREAD_ROOTS = ("collector::sampling::tick",)
 
 LLVM_DIRS = (r"C:\Program Files\LLVM\bin",)
@@ -96,25 +92,25 @@ class Image:
         while index < count:
             code = codes[index]
             op, info = (code >> 8) & 0xF, code >> 12
-            if op == 0:  # UWOP_PUSH_NONVOL
+            if op == 0:
                 size, index = size + 8, index + 1
-            elif op == 1:  # UWOP_ALLOC_LARGE
+            elif op == 1:
                 if info == 0:
                     size, index = size + codes[index + 1] * 8, index + 2
                 else:
                     size, index = size + (codes[index + 1] | codes[index + 2] << 16), index + 3
-            elif op == 2:  # UWOP_ALLOC_SMALL
+            elif op == 2:
                 size, index = size + info * 8 + 8, index + 1
-            elif op == 10:  # UWOP_PUSH_MACHFRAME
+            elif op == 10:
                 size, index = size + (48 if info else 40), index + 1
-            elif op in (4, 6, 8):  # SAVE_NONVOL, EPILOG (v2), SAVE_XMM128
+            elif op in (4, 6, 8):
                 index += 2
-            elif op in (5, 9):  # SAVE_NONVOL_FAR, SAVE_XMM128_FAR
+            elif op in (5, 9):
                 index += 3
-            else:  # SET_FPREG and spare codes
+            else:
                 index += 1
         chained = None
-        if (version_flags >> 3) & 4:  # UNW_FLAG_CHAININFO
+        if (version_flags >> 3) & 4:
             chained = struct.unpack_from("<III", data, at + 4 + 2 * (count + (count & 1)))
         return size, chained
 
@@ -184,7 +180,7 @@ class Functions:
     def __init__(self, image):
         base = image.image_base
         self.frame = {}
-        self.ranges = []  # (begin, end, primary start)
+        self.ranges = []
         for begin, end, unwind in image.pdata:
             size, chained, primary = 0, (begin, end, unwind), begin
             seen = 0
@@ -222,7 +218,6 @@ def call_graph(dll, functions):
                           int(match.group(3), 16)))
     if process.wait() != 0:
         sys.exit("stack-frames: llvm-objdump failed")
-    # Leaf functions have no .pdata: they start at a call target outside every range.
     leaves = sorted({target for _, call, target in edges
                      if call and functions.containing(target) is None})
     for leaf in leaves:
@@ -243,7 +238,6 @@ def call_graph(dll, functions):
         if call:
             callee = owner(target)
         else:
-            # A jump is a tail call only when it lands on another function's start.
             callee = functions.containing(target)
             if callee != target or callee == caller:
                 continue
@@ -258,11 +252,9 @@ def deepest(graph, frame, root):
     memo, active = {}, set()
 
     def through(node, callee):
-        # A tail jump leaves after the caller's epilogue: the callee's frame replaces it.
         return memo[callee][0] + (frame.get(node, 8) if graph[node][callee] else 0)
 
     def visit(function):
-        # Iterative post-order: a recursive call chain counts each function once.
         stack = [(function, iter(sorted(graph.get(function, ()))))]
         active.add(function)
         best = {function: (frame.get(function, 8), None)}
@@ -327,7 +319,6 @@ def main():
     graph = call_graph(arguments.dll, functions)
     failures = 0
     for root_name in arguments.root or GAME_THREAD_ROOTS:
-        # Debug-information names carry generic arguments; publics do not.
         roots = sorted(address for address, name in names.items()
                        if name == root_name or name.startswith(root_name + "<"))
         if not roots:

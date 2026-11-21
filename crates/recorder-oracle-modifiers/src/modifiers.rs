@@ -1,5 +1,3 @@
-//! ModifierDefinitions (no save counterpart; an explicit limitation) and
-//! HiredAdvisors against each country's saved `appointed_advisors`.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content_core::parser::c_string;
@@ -30,8 +28,6 @@ pub fn compare(
     }
 }
 
-/// No writer serializes `modifier_definition::table`; its rows are checked
-/// only for the reader's own invariants and named as unverified.
 fn definitions(
     frame: &DecodedFrame,
     tokens: &TokenNames<'_>,
@@ -53,7 +49,6 @@ fn definitions(
             format!("ModifierDefinitions: {unnamed} rows"),
         );
     }
-    // The eligibility callback is one process-wide pointer read with the table.
     if rows
         .windows(2)
         .any(|pair| pair[0].eligibility != pair[1].eligibility)
@@ -74,12 +69,6 @@ fn character_handle(id: u32) -> u64 {
     (u64::from(id) << 32) | 73
 }
 
-/// Each country's appointed array against `appointed_advisors`, which
-/// the country character save writer writes in array order: order, character
-/// and slot compare exactly. The save has no idea token for the entry; it is
-/// compared with the saved advisor role of the same character and slot (one
-/// role per slot: the game refuses a second through
-/// the advisor-slot lookup).
 fn hired_advisors(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -147,7 +136,6 @@ fn hired_advisors(
             if c_string(&row.slot).len() != row.slot.len() {
                 truncated_text.push(format!("{label}.slot"));
             }
-            // The role of this character with the same slot carries the idea.
             let role = roles
                 .and_then(|manager| manager.characters.get(&saved.character))
                 .map(|character| {
@@ -159,9 +147,6 @@ fn hired_advisors(
                 });
             match role.as_deref() {
                 Some([role]) => {
-                    // The writer emits idea_token only for a nonempty C string, so presence
-                    // is compared too: an empty capture must match an omitted token, and a
-                    // saved empty token is itself a difference.
                     let written = c_string(&row.idea);
                     let matches = match role.idea.as_deref() {
                         None => written.is_empty(),
@@ -270,7 +255,6 @@ mod tests {
     fn frame(rows: Vec<HiredAdvisorRow>) -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
-            // HiredAdvisors is hourly: the table is fresh at any hour.
             hour: 21,
             tables: std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
@@ -345,31 +329,25 @@ mod tests {
 
     #[test]
     fn order_identity_slot_idea_and_membership_differences_are_reported() {
-        // Swapped order: both positions differ in character, slot and idea.
         let report = run(vec![
             row(102, 0, 1451, b"GER_b", b"high_command"),
             row(102, 1, 1482, b"GER_a", b"political_advisor"),
         ]);
         assert_eq!(report.differences.len(), 6, "{:?}", report.differences);
-        // A wrong idea for the right role, and a missing second advisor.
         let report = run(vec![row(102, 0, 1482, b"GER_x", b"political_advisor")]);
         assert!(report.differences.iter().any(|d| d.contains(".idea")));
         assert!(report.differences.iter().any(|d| d.contains("count")));
         assert!(report.differences.iter().any(|d| d.contains("[1]")));
-        // An empty captured idea is not the saved token: presence is compared too.
         let report = run(vec![
             row(102, 0, 1482, b"", b"political_advisor"),
             row(102, 1, 1451, b"GER_b", b"high_command"),
         ]);
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].contains("[0].idea"));
-        // A gap in the recorded ordinals is malformed, not a difference.
         let report = run(vec![row(102, 1, 1451, b"GER_b", b"high_command")]);
         assert!(report.failed_comparisons.contains_key("HiredAdvisors"));
     }
 
-    /// HiredAdvisors is hourly (has_idea reads it), so every oracle hour
-    /// compares it.
     #[test]
     fn appointments_are_compared_at_every_hour() {
         assert_eq!(
@@ -388,7 +366,6 @@ mod tests {
         compare(&rows, &pack(), &links, Ok(&BTreeMap::new()), &mut report).unwrap();
         assert!(report.compared_tables.contains_key("HiredAdvisors"));
         assert!(!report.differences.is_empty());
-        // A token outside the dictionary is named, not guessed.
         assert!(
             report
                 .limitations

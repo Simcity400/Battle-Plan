@@ -1,10 +1,3 @@
-//! Supply train operands (SupplyNodes, TrainInventory), with independent
-//! table capacities and costs. The `supply_trains` sliced family (owner
-//! decision 2026-10-11: the trains are decorative and the vehicle operands
-//! panel-only): each hour reads the companions of that hour's country slice,
-//! of every new country and of every country whose last read was not
-//! published, and every country on a full hour; a country's nodes, vertex
-//! rows and inventory come from the same read.
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -26,15 +19,10 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::SupplyNodes, TableId::TrainInventory];
-/// Country-slot shares, each its own pool job. Keeping the census together
-/// lets countries reuse current-hour route and endpoint observations instead
-/// of acquiring the same global edges in separate workers.
 pub const PARTS: usize = 1;
 const _: () = assert!(supply_node::VERTEX == SupplyNodeRow::VERTEX);
-// The hour's owner selection travels with part 0 and governs every part.
 const _: () = assert!(PARTS == 1);
 
-/// Inputs for one exclusively owned hourly acquisition.
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureContext {
     pub base: usize,
@@ -43,17 +31,11 @@ pub struct CaptureContext {
     pub force_full: bool,
 }
 
-/// The hour's owner selection and the family's fingerprint store, loaned
-/// with part 0 from dispatch to join.
 pub struct Slice {
     pub selection: SliceSelection,
     pub fingerprints: Option<Box<SliceFingerprints>>,
 }
 
-/// Scans the country census into this hour's selection
-/// ([`crate::slicing::scan_countries`]): a supply system exists for every
-/// canonical country (`csupply_system::Reader::at`), so the country census
-/// is the family's owner census.
 pub fn select_countries(
     memory: &impl Memory,
     context: CaptureContext,
@@ -71,9 +53,6 @@ pub fn select_countries(
     );
 }
 
-/// One SupplyTrains job: part `part`'s node share and, with part 0, the
-/// train inventory, for the countries of the hour's selection, which part 0
-/// scans first. A full hour reads and checks every slot.
 pub fn capture_job(
     memory: &impl Memory,
     context: CaptureContext,
@@ -111,21 +90,13 @@ pub fn capture_job(
     CaptureReport { ticks }
 }
 
-/// Acquisition ticks in TABLES order. Interrupted work has no completed timing.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CaptureReport {
     pub ticks: [u64; N],
 }
 
-/// The supply walk's province checks since attach, for the status writer:
-/// allocation-free counters and last observation written by the walk's worker
-/// after each read.
-/// Ids the game holds as a null province are recorded as stored
-/// ([`supply_node::ProvinceCheck::is_null_province`]); every other failed
-/// check refuses the hour's SupplyNodes read.
 struct WalkObservations {
     by_check: [std::sync::atomic::AtomicU64; supply_node::ProvinceCheck::ALL.len()],
-    /// The last observation with its hour, copied whole so a reader never mixes two.
     last: std::sync::Mutex<Option<(i32, supply_node::ProvinceObservation)>>,
 }
 
@@ -204,7 +175,6 @@ impl WalkObservations {
 static NULL_PROVINCES: WalkObservations = WalkObservations::new();
 static PROVINCE_REFUSALS: WalkObservations = WalkObservations::new();
 
-/// Publish one walk's province observations.
 fn observe_walk(hour: i32, report: &supply_node::Report) {
     if let Some(observed) = report.last_null_province {
         NULL_PROVINCES.record(u64::from(report.null_provinces), hour, observed);
@@ -214,10 +184,6 @@ fn observe_walk(hour: i32, report: &supply_node::Report) {
     }
 }
 
-/// The supply walk's province diagnostics: how many province ids it
-/// recorded as the game's null province and how many checks refused a walk
-/// (by check), each with the last one's owner country, node index, stored
-/// value, role and check.
 pub fn node_walk_data() -> impl serde::Serialize {
     crate::status::status!({
         "null_provinces": NULL_PROVINCES.total(),
@@ -244,9 +210,7 @@ pub struct Capacities {
     countries: usize,
     paths: usize,
     entries: usize,
-    /// Nonzero controller-access bytes across all countries.
     access: usize,
-    /// Maximal nonzero controller-access runs across all countries.
     access_runs: usize,
 }
 
@@ -260,7 +224,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// TrainInventory has one row per country supply system.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.countries, rows(slots, 1));
@@ -288,11 +251,9 @@ impl Capacities {
     }
 }
 
-/// One share of the node census: its rows and their path arena.
 pub struct Part {
     nodes: CaptureRows<supply_node::Row>,
     paths: Arena<u32>,
-    /// Session memo of authenticated province pointers.
     provinces: supply_node::ProvinceMemo,
 }
 impl Part {
@@ -325,8 +286,6 @@ impl Part {
         self.nodes.grow(&mut c.nodes);
         self.paths.grow(&mut c.paths);
     }
-    /// Walk share `part` of the country slots, of the countries `select`
-    /// admits when present.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -358,13 +317,10 @@ impl Part {
     }
 }
 
-/// The train inventory: one walk, loaned with part 0.
 pub struct Trains {
     countries: CaptureRows<ccountry_supply_system::TrainRow>,
     entries: Arena<supply_train_entry::Row>,
-    /// Nonzero controller-access bytes, run after run.
     access: Arena<u8>,
-    /// `[native start, length]` of each nonzero access run.
     access_runs: Arena<[u32; 2]>,
     vehicle_failures: [u32; 3],
 }
@@ -406,7 +362,6 @@ impl Trains {
         self.access.grow(&mut c.access);
         self.access_runs.grow(&mut c.access_runs);
     }
-    /// The inventory of the countries `select` admits when present.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -441,7 +396,6 @@ impl Trains {
 pub struct Captured {
     parts: Vec<Part>,
     trains: Trains,
-    /// Which countries this hour's rows cover (`slicing::SUPPLY_TRAINS`).
     selection: SliceSelection,
     terminal_failure: Option<&'static str>,
 }
@@ -465,18 +419,14 @@ impl Captured {
         }
     }
 
-    /// The countries whose rows this frame's read replaced.
     pub fn selection(&self) -> &SliceSelection {
         &self.selection
     }
 
-    /// Start a frame's selection at its hour; the job resets it again.
     pub fn reset_selection(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
     }
 
-    /// Loan the selection to part 0's job; [`Self::restore_selection`]
-    /// takes it back at the join.
     pub fn take_selection(&mut self) -> SliceSelection {
         std::mem::replace(&mut self.selection, SliceSelection::new(false))
     }
@@ -501,25 +451,18 @@ impl Captured {
         self.trains.grow(c);
     }
 
-    /// Whole-family capture on the calling thread, for a callback that never
-    /// dispatched the parts.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_owned(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
     ) -> CaptureReport {
-        // Without a fingerprint store every country is read.
         self.selection.reset(context.hour, true);
         CaptureReport {
             ticks: self.capture(memory, context.base, context.game_state),
         }
     }
 
-    /// Complete an accepted failed request without reading or retrying native
-    /// state. Keep observed growth demand and allocations behind a publication
-    /// failure until recycling; partial rows must never reach table conversion.
-    /// The caller stores this terminal report even though its ticks are unmeasured.
     pub fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
         self.terminal_failure = Some(reason);
         CaptureReport::default()
@@ -600,10 +543,6 @@ impl Captured {
         [nodes, self.trains.countries.outcome]
     }
 
-    /// The hour's read rows, converted whole: a sliced read holds only its
-    /// owners' rows, which the spool merges into the held table by owner
-    /// (`Campaign::merge_sliced_inputs`), so it is never compared with the
-    /// encoder's complete baseline.
     pub fn table_inputs(&self) -> [TableInput; N] {
         let outcomes = self.outcomes();
         [self.node_input(outcomes[0]), self.train_input(outcomes[1])]
@@ -628,9 +567,6 @@ impl Captured {
         {
             return unavailable("walker row count exceeds allocated buffer").into();
         }
-        // Parent provinces can belong to another country's companion. Preserve
-        // those authenticated edges without imposing same-country closure.
-        // The conversion sorts by key and refuses repeated engine ids.
         let mut rows = Vec::new();
         if reserve(&mut rows, outcome.len()).is_err() {
             return unavailable("collector allocation failed").into();
@@ -686,8 +622,6 @@ impl Captured {
         ) else {
             return unavailable("train payload exceeds captured arena").into();
         };
-        // Each row's runs must lie in the run arena and cover exactly its
-        // values, which must lie in the value arena.
         let access_of = |r: &ccountry_supply_system::TrainRow| {
             let runs = spans.get(r.runs_start..r.runs_start.checked_add(r.runs_len)?)?;
             let values = access.get(r.values_start..r.values_start.checked_add(r.values_len)?)?;
@@ -757,8 +691,6 @@ mod tests {
             access_runs: 2,
         };
         let mut capture = Captured::with_capacities(&capacities);
-        // Exercise merging and reordering independently of production's
-        // worker count, including duplicate keys across distinct parts.
         capture.parts = (0..4).map(|_| Part::new(&capacities)).collect();
         for (part, country) in capture.parts.iter_mut().zip([3, 1, 4, 2]) {
             part.nodes.outcome = Outcome::Rows { len: 1 };
@@ -814,7 +746,6 @@ mod tests {
             },
         ]);
         capture.trains.entries.len = 3;
-        // The native array [0, 255, 128]: one run of two nonzero bytes at 1.
         capture.trains.access.first[..2].copy_from_slice(&[255, 128]);
         capture.trains.access.len = 2;
         capture.trains.access_runs.first[0] = [1, 2];
@@ -822,10 +753,6 @@ mod tests {
         capture
     }
 
-    /// A sliced read converts every field of its owners' rows, in key order,
-    /// as a whole sampled table for the spool to merge by owner: it is never
-    /// reduced to a comparison with the encoder's complete baseline, which
-    /// held every owner's rows when the family was read whole each hour.
     #[test]
     fn sliced_reads_convert_every_field_whole_in_key_order() {
         let capture = read_fixture();
@@ -842,7 +769,6 @@ mod tests {
         else {
             panic!("a sliced inventory read converts whole");
         };
-        // The parts walked countries 3, 1, 4 and 2; rows leave in key order.
         assert_eq!(
             nodes.iter().map(|row| row.country).collect::<Vec<_>>(),
             [1, 2, 3, 4]
@@ -897,7 +823,6 @@ mod tests {
                 required_trains: Recorded::Value(Some(i32::MAX)),
             }]
         );
-        // A repeated engine id or an escaped span refuses the table.
         let mut repeated = read_fixture();
         repeated.parts[1].nodes.rows[0].country = repeated.parts[0].nodes.rows[0].country;
         assert!(matches!(
@@ -912,9 +837,6 @@ mod tests {
         ));
     }
 
-    /// The SupplyTrains job reads only the hour's country slice: a new
-    /// country joins at once, an unchanged one waits for its slice, and a
-    /// read the spool could not publish is read again at the next hour.
     #[test]
     fn the_job_selects_new_countries_then_only_its_slice_and_rereads_unpublished_reads() {
         let mut store = SliceFingerprints::new();
@@ -928,22 +850,17 @@ mod tests {
             selection.finish_pass(store, true);
             selection
         };
-        // First sight: every country is new, so all are read early.
         let first = seen(&mut store, 5, &[1, 29, 30]);
         assert!(first.contains(1) && first.contains(29) && first.contains(30));
-        // The next hour (slice 6): only 30 is in its slice.
         let next = seen(&mut store, 6, &[1, 29, 30]);
         assert!(!next.contains(1) && !next.contains(29) && next.contains(30));
         assert_eq!(next.early_count, 0);
-        // That read is not published: its owners are read again an hour later.
         next.invalidate(&mut store);
         let retry = seen(&mut store, 7, &[1, 29, 30]);
         assert!(retry.contains(30) && !retry.contains(1) && !retry.contains(29));
         assert_eq!(retry.early_count, 1);
-        // A country first seen now is read at once.
         let joined = seen(&mut store, 8, &[1, 29, 30, 4_999]);
         assert!(joined.contains(4_999) && !joined.contains(30));
-        // Without a store (the typed fallback) every country is read.
         let mut whole = SliceSelection::new(false);
         let context = CaptureContext {
             base: 0,
@@ -957,7 +874,6 @@ mod tests {
         };
         select_countries(&memory, context, &mut whole, None);
         assert!(whole.force_full && whole.contains(1) && whole.contains(4_999));
-        // An unreadable census is no census: every country is read.
         let mut selection = SliceSelection::new(true);
         select_countries(&memory, context, &mut selection, Some(&mut store));
         assert!(selection.force_full);
@@ -1264,7 +1180,6 @@ mod tests {
             }
             assert!(owned.terminal_failure.is_none());
             assert_eq!(*owned_memory.0.borrow(), *direct_memory.0.borrow());
-            // Each part keys its province memo (two reads) before its root fails.
             assert_eq!(owned_memory.0.borrow().len(), 3 * PARTS + 1);
             assert_eq!(owned.outcomes(), direct.outcomes());
             assert_eq!(owned.tables(), direct.tables());

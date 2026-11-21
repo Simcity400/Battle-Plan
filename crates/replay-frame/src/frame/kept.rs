@@ -1,17 +1,3 @@
-//! Answers kept across hours while every row, row range, table field and derived entry they
-//! read reads the same: an hour rebuilds only the answers whose reads changed, at any step.
-//!
-//! A computation runs inside [`record`]. Every table it reads through the frame is a read of
-//! the whole table, unless the computation notes narrower reads of that table with
-//! [`note_row`], [`note_range`] or [`note_table`]: then those notes are all it read of it, so
-//! a computation that notes one read of a table notes every read of it. A product's own
-//! derived reads are noted with [`note`].
-//!
-//! [`Kept`] holds the answers with their reads. An hour's [`Changes`] say what changed since
-//! the hour the answers were kept at: a walk's change facts, or two held frames compared
-//! ([`Between`]). An indexed [`Kept`] finds the answers those changes reach through
-//! [`Dependents`], at a cost that follows what changed; a plain one checks each answer it is
-//! asked for, and each read once.
 mod dependents;
 pub use dependents::{Dependents, Grouped};
 
@@ -28,21 +14,16 @@ use std::{
     },
 };
 
-/// One read an answer depends on. `D` is the product's own derived read.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Read<D> {
-    /// The fields `fields` of the row keyed `key`, or its absence.
     Row { table: TableId, key: u128, fields: u64 },
-    /// Which rows hold keys in `from..to`, and their fields `fields`.
     Range { table: TableId, from: u128, to: u128, fields: u64 },
-    /// The fields `fields` of every row, and which rows there are.
     Table { table: TableId, fields: u64 },
     Derived(D),
 }
 
 impl<D> Read<D> {
-    /// The table a row, range or table read reads.
     pub fn table(&self) -> Option<TableId> {
         match self {
             Self::Row { table, .. } | Self::Range { table, .. } | Self::Table { table, .. } => {
@@ -53,40 +34,28 @@ impl<D> Read<D> {
     }
 }
 
-/// What changed of a table since the hour kept answers were kept at.
 #[derive(Clone, Copy, Debug)]
 pub enum Change<'a> {
     Same,
-    /// Only these fields, of rows that all stay.
     Fields(u64),
-    /// These rows ascending by key, each with the fields it wrote (every field for one
-    /// inserted), and these keys deleted.
     Rows(&'a [(u128, u64)], &'a [u128]),
-    /// Anything.
     Any,
 }
 
-/// What changed since the hour kept answers were kept at, table by table.
 pub trait Changes {
-    /// What may have changed of `table`, as far as is known cheaply.
     fn table(&self, table: TableId) -> Change<'_>;
 
-    /// Which rows of `table` changed, when [`Self::table`] says less, at a cost that follows
-    /// the table; None when unknown.
     fn rows(&self, table: TableId) -> Option<(&[(u128, u64)], &[u128])> {
         let _ = table;
         None
     }
 
-    /// Whether `table`'s rows keyed `from..to` read the same in `fields`, compared directly
-    /// where both hours' rows are held; None when they are not.
     fn same_rows(&self, table: TableId, from: u128, to: u128, fields: u64) -> Option<bool> {
         let _ = (table, from, to, fields);
         None
     }
 }
 
-/// Whether `changed` rows or `deleted` keys reach keys `from..to` in `fields`.
 fn reaches(changed: &[(u128, u64)], deleted: &[u128], from: u128, to: u128, fields: u64) -> bool {
     let start = changed.partition_point(|row| row.0 < from);
     let gone = deleted.partition_point(|&key| key < from);
@@ -97,8 +66,6 @@ fn reaches(changed: &[(u128, u64)], deleted: &[u128], from: u128, to: u128, fiel
         || deleted.get(gone).is_some_and(|&key| key < to)
 }
 
-/// The changes between two held frames of a branch: a table's field stamps first, then its
-/// rows compared, once per table.
 pub struct Between<'a> {
     then: &'a DecodedFrame,
     now: &'a DecodedFrame,
@@ -156,7 +123,6 @@ impl Changes for Between<'_> {
     }
 }
 
-/// A recording on this thread's stack.
 trait Frame {
     fn table_read(&mut self, read: TableRead);
     fn as_any(&mut self) -> &mut dyn Any;
@@ -194,22 +160,18 @@ fn note_table_read(read: TableRead) {
     });
 }
 
-/// Notes a read of the fields `fields` of `table`'s row keyed `key`, or of its absence.
 pub fn note_row(table: TableId, key: u128, fields: u64) {
     note_table_read(TableRead::Row(table, key, fields));
 }
 
-/// Notes a read of which rows of `table` hold keys in `from..to`, and of their fields `fields`.
 pub fn note_range(table: TableId, from: u128, to: u128, fields: u64) {
     note_table_read(TableRead::Range(table, from, to, fields));
 }
 
-/// Notes a read of the fields `fields` of all of `table`.
 pub fn note_table(table: TableId, fields: u64) {
     note_table_read(TableRead::Table(table, fields));
 }
 
-/// Notes the product's derived `read` in a recording of its kind.
 pub fn note<D: 'static>(read: impl FnOnce() -> D) {
     FRAMES.with(|frames| {
         if let Some(frame) = frames.borrow_mut().last_mut()
@@ -220,8 +182,6 @@ pub fn note<D: 'static>(read: impl FnOnce() -> D) {
     });
 }
 
-/// Notes `reads`, which a kept answer or an inner recording read, for the recording now: its
-/// table reads in a recording of any kind, its derived reads in one of its kind.
 pub fn note_all<D: Clone + 'static>(kept: &[Read<D>]) {
     FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
@@ -247,14 +207,10 @@ pub fn note_all<D: Clone + 'static>(kept: &[Read<D>]) {
     });
 }
 
-/// Runs `work` on `frame`, returning what it read, each once: what it noted, and each table
-/// of `frame` it read without noting, whole. Recordings nest: one around this one also holds
-/// what was read inside.
 pub fn record<'f, D: Clone + Ord + 'static, T>(
     frame: impl Into<HourFrame<'f>>,
     work: impl FnOnce() -> T,
 ) -> (T, Vec<Read<D>>) {
-    // Pops this recording even when `work` unwinds.
     struct Pop(bool);
     impl Drop for Pop {
         fn drop(&mut self) {
@@ -292,9 +248,6 @@ pub fn record<'f, D: Clone + Ord + 'static, T>(
     (value, reads)
 }
 
-/// The rows `now` changes from `then` in `table`, ascending by key, each with the fields it
-/// changed (every field for one `now` inserts), and the keys it deletes; None when either
-/// view is not complete.
 pub fn changed_rows(
     table: TableId,
     then: &SharedView,
@@ -315,8 +268,6 @@ pub fn changed_rows(
     }
 }
 
-/// Two views of `table` that hold different kinds of rows, a defect: counted, logged and
-/// failed in debug builds. Answers that read it are made again.
 fn mismatched(table: TableId) {
     static MISMATCHED: AtomicU64 = AtomicU64::new(0);
     let count = MISMATCHED.fetch_add(1, Ordering::Relaxed) + 1;
@@ -365,7 +316,6 @@ impl RowsPairVisit for Diff {
     }
 }
 
-/// Two tables' rows keyed in `from..to` compared in some fields.
 struct Compare {
     from: u128,
     to: u128,
@@ -390,7 +340,6 @@ impl RowsPairVisit for Compare {
     }
 }
 
-/// A kept answer and what it read.
 pub struct Answer<V, D> {
     pub value: Arc<V>,
     pub reads: Arc<[Read<D>]>,
@@ -405,8 +354,6 @@ impl<V, D> Clone for Answer<V, D> {
     }
 }
 
-/// The answers of one product kept by key, each with what it read. The holder keeps the hour
-/// they were kept at, and gives the next hour the changes since then.
 pub struct Kept<K, V, D> {
     answers: HashMap<K, Answer<V, D>>,
     index: Option<Dependents<K, D>>,
@@ -431,13 +378,10 @@ impl<K, V, D> Default for Kept<K, V, D> {
 }
 
 impl<K: Clone + Eq + Hash, V, D: Clone + Eq + Hash + Grouped + 'static> Kept<K, V, D> {
-    /// Answers checked when asked for: for an hour that asks for few of many kept.
     pub fn checked() -> Self {
         Self::default()
     }
 
-    /// Answers indexed by what they read: an hour drops those its changes reach, and keeps
-    /// the rest unasked.
     pub fn indexed() -> Self {
         Self {
             answers: HashMap::new(),
@@ -445,8 +389,6 @@ impl<K: Clone + Eq + Hash, V, D: Clone + Eq + Hash + Grouped + 'static> Kept<K, 
         }
     }
 
-    /// The answers for an hour `changes` lead to from the hour they were kept at. `changed`
-    /// says whether a derived read reads otherwise now.
     pub fn hour<'c, C: Changes + ?Sized, F: Fn(&D) -> bool>(
         mut self,
         changes: &'c C,
@@ -476,13 +418,10 @@ impl<K: Clone + Eq + Hash, V, D: Clone + Eq + Hash + Grouped + 'static> Kept<K, 
     }
 }
 
-/// One hour's use of [`Kept`] answers: those still held, and those the hour makes, kept for
-/// the next.
 pub struct Checked<'c, K, V, D, C: ?Sized, F> {
     kept: Kept<K, V, D>,
     changes: &'c C,
     changed: F,
-    /// A plain [`Kept`]'s reads checked this hour, and the answers confirmed or made.
     checked: RefCell<HashMap<Read<D>, bool>>,
     confirmed: HashSet<K>,
 }
@@ -494,7 +433,6 @@ where
     C: Changes + ?Sized,
     F: Fn(&D) -> bool,
 {
-    /// Whether every one of `reads` reads the same now as at the kept hour.
     pub fn holds(&self, reads: &[Read<D>]) -> bool {
         let mut checked = self.checked.borrow_mut();
         reads.iter().all(|read| {
@@ -534,7 +472,6 @@ where
         }
     }
 
-    /// The answer kept for `key`, when it still holds; noted for any recording now.
     pub fn get(&mut self, key: &K) -> Option<Answer<V, D>> {
         let answer = self.kept.answers.get(key)?;
         if self.kept.index.is_none() && !self.confirmed.contains(key) {
@@ -549,7 +486,6 @@ where
         Some(answer)
     }
 
-    /// `key`'s answer: kept when it holds, else `build`'s on `frame`, recorded.
     pub fn get_or_build<'f>(
         &mut self,
         key: K,
@@ -566,7 +502,6 @@ where
         self.put(key, value, reads).value
     }
 
-    /// Keeps `value` for `key` with the reads that made it.
     pub fn put(&mut self, key: K, value: V, reads: Vec<Read<D>>) -> Answer<V, D> {
         let answer = Answer {
             value: Arc::new(value),
@@ -582,7 +517,6 @@ where
         answer
     }
 
-    /// The answers for the next hour: every one that still holds.
     pub fn finish(mut self) -> Kept<K, V, D> {
         if self.kept.index.is_none() {
             let mut answers = std::mem::take(&mut self.kept.answers);

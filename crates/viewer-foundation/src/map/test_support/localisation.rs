@@ -1,8 +1,5 @@
-//! Localisation fixture read through the actual content-stack reader.
 use installed_content_localisation::localisation::Localisation;
 
-/// Localisation as the game content loads it: `yml` is one file of a
-/// folder layer, read by `installed_content_localisation::localisation::read`.
 pub fn loaded(yml: &str) -> Localisation {
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_label_names_{}_{:?}",

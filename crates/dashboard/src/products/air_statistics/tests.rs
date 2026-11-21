@@ -28,7 +28,6 @@ fn a_pair_is_its_two_recorded_words_and_only_the_holders_regions_are_shown() {
     assert_eq!(reply.missing, None);
     let shown: Vec<_> = reply.regions.iter().map(|region| region.region.as_str()).collect();
     assert_eq!(shown, ["7", "8", "11"]);
-    // The words are live cells: read from a frame of the rows, each region's pair exact.
     let live = cells.finish();
     let mut frame = replay_frame::frame::DecodedFrame { branch: 1, hour: 41, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
     *frame.tables[TableId::AirStatistics.index()] = TableView::Complete(replay_data::rows::TableRows::AirStatistics(rows.to_vec()));

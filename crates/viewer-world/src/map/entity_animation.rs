@@ -1,8 +1,3 @@
-//! Entity clocks, state selection, weighted variants and attachment poses.
-//! Presentation seed is 0x414e494d XOR the stable unit handle. The engine's
-//! shared RNG state and state-entry times are not recorded. Reconstructed
-//! combat entry phases remain reconstructions. Clocks and state-entry history
-//! belong to the viewer, never the recording client's renderer.
 
 use super::models::{ModelInstance, PaletteJoint};
 use installed_content_core::{mesh, mesh::EntityState, mesh::JointPose, mesh::Transform};
@@ -19,40 +14,24 @@ pub const RETREAT: u32 = 4;
 pub const SUPPORT: u32 = 5;
 pub const TRAINING: u32 = 6;
 pub const TRAIN: u32 = 7;
-/// The game switches building entities between these authored states. They
-/// use their own state-entry clock and authored random starts, without the
-/// unit figure's reconstructed phase spread.
 pub const BUILDING_IDLE: u32 = 8;
 pub const BUILDING_DAMAGED: u32 = 9;
-/// The game sends idle only for use_animation=yes; no unit phase spread.
 pub const AMBIENT_IDLE: u32 = 10;
 pub const STOPPED: u32 = 11;
-/// An actor that requests no state: the game creates it in its entity's
-/// `default_state` and plays that state on from there (ambient objects with
-/// `use_animation = no`). [`super::models::ModelPass::animate`] turns it
-/// into that state's request on a clock from when the actor appeared.
 pub const DEFAULT_STATE: u32 = 12;
-/// The first code of a content-named stage ([`named_stage`]).
 pub const NAMED: u32 = 0x4000_0000;
-// A callback requests once; unlike a raid stage it does not request again
-// after an automatic next_state.
 const DIRECT: u32 = 0x8000_0000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     pub time: f32,
-    /// Naval callbacks carry their phase age even while active age is frozen.
-    /// Ordinary producer callbacks use only `time`.
     pub phase_time: Option<f32>,
     pub state: String,
 }
 
-/// Entity seconds, separate from the scenario's playback rate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Clock {
     pub time: f32,
-    /// Naval wrappers can suppress traversal while played clips keep advancing.
-    /// Other producers retain their ordinary single-clock behavior with `None`.
     pub phase: Option<Phase>,
     pub requests: Arc<Vec<Request>>,
 }
@@ -60,25 +39,10 @@ pub struct Clock {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Phase {
     pub time: f32,
-    /// A manager root is visited while hidden; an attached hull is not.
-    /// Played animation instances advance globally in either case.
     pub root_advances_hidden: bool,
-    /// Also initializes an actor hidden before its first rendered placement.
     pub instance: ModelInstance,
 }
 
-/// A stage the content names, such as a raid type's `unit_animations`
-/// stage: its state and the intro that leads into it. The code, from
-/// [`NAMED`] up, is what [`state_name`] spells and [`stage_intro`] reads.
-/// Stages are interned for the process, bounded by the content's distinct
-/// stages.
-///
-/// The root node requests nothing while already in the stage's state or intro.
-/// Otherwise it requests the intro when one exists and the entity is not freshly
-/// shown, or the state itself. A newly shown raid arrow takes the state at once,
-/// as does an entity created from a loaded save.
-/// The viewer's fresh entity is a player with no history: a first placement,
-/// a seek ([`super::models::ModelPass::reset_animation`]) or a dump.
 pub fn named_stage(state: &str, intro: Option<&str>) -> u32 {
     let mut names = NAMES
         .get_or_init(Default::default)
@@ -100,7 +64,6 @@ pub fn named_stage(state: &str, intro: Option<&str>) -> u32 {
     NAMED + index as u32
 }
 
-/// A single native state request, permitting authored `next_state` afterward.
 pub fn named_request(state: &str) -> u32 {
     named_stage(state, None) | DIRECT
 }
@@ -117,7 +80,6 @@ fn named(state: u32) -> Option<Stage> {
     names.get(state.checked_sub(NAMED)? as usize).copied()
 }
 
-/// The intro of a [`named_stage`] code; `None` for every other state.
 pub fn stage_intro(state: u32) -> Option<&'static str> {
     named(state).and_then(|(_, intro)| intro)
 }
@@ -133,9 +95,6 @@ pub fn state_name(state: u32) -> &'static str {
         RETREAT => "retreat",
         SUPPORT => "support_attack",
         TRAINING => "training",
-        // The game sends idle while the wagon is visible. The train .gfx
-        // deliberately maps idle to train_locomotive_1_moving, and move to
-        // its stationary clip. Choosing a state by its English name is wrong.
         TRAIN => "idle",
         BUILDING_IDLE => "idle",
         BUILDING_DAMAGED => "damaged",
@@ -157,18 +116,12 @@ pub struct Node {
     pub follows_parent: bool,
     pub parent: Option<(usize, String, String)>,
     pub scale: f32,
-    /// The pdxmesh scale inside `scale`. The engine bakes it into the mesh
-    /// and skeleton, so event particles do not carry it.
     pub mesh_scale: f32,
     pub skin_base: Option<u32>,
     pub rigid: u32,
-    /// Entity locators in the node's frame, with their `parent_joint`.
     pub locators: BTreeMap<String, (Transform, Option<String>)>,
 }
 
-/// A joint's pose under which event particles take the entity scale only:
-/// the engine's baked skeleton keeps the scaled joint position but not the
-/// pdxmesh scale in its basis.
 pub fn joint_event_local(joint: &Transform, mesh_scale: f32) -> Transform {
     joint.compose(&Transform::from_trs(
         [0.0; 3],
@@ -177,9 +130,6 @@ pub fn joint_event_local(joint: &Transform, mesh_scale: f32) -> Transform {
     ))
 }
 
-/// A locator's node-space transform: under its parent joint's pose when the
-/// skeleton has that joint (locator times joint world), otherwise in
-/// entity space, as the engine keeps a locator whose joint it cannot find.
 pub fn locator_local(locator: &Transform, joint: Option<&Transform>) -> Transform {
     joint.map_or(*locator, |joint| joint.compose(locator))
 }
@@ -190,8 +140,6 @@ pub struct Rig {
     pub end: usize,
 }
 
-/// The game's integer mixer for state variants, start offsets and other presentation draws,
-/// including signed mask.
 #[derive(Clone, Default)]
 pub struct Random {
     pub(crate) seed: u32,
@@ -202,7 +150,6 @@ impl Random {
         Self { seed, index: 0 }
     }
 
-    /// A stream's two words mixed from its construction-time nanosecond counter.
     pub fn from_counter(nanoseconds: u32) -> Self {
         let mix = |factor: u32, add: u32, multiply: u32| {
             let value = nanoseconds.wrapping_mul(factor);
@@ -240,8 +187,6 @@ struct Playing {
     propagate: bool,
     random: Random,
     cycle: u64,
-    /// The clip reached its end and the node entered an automatic successor
-    /// since the state was last requested.
     completed: bool,
 }
 pub struct Player {
@@ -253,8 +198,6 @@ pub struct Player {
     direct_state: Option<u32>,
     kept: Vec<Kept>,
     event_refusals: BTreeMap<String, usize>,
-    /// States are chosen by the game's own rule, which takes a state's only
-    /// variant whatever its chance ([`Player::native_choice`]).
     native_choice: bool,
     scratch: EvaluationScratch,
     native_actors: std::cell::RefCell<Option<NativeActors>>,
@@ -293,8 +236,6 @@ struct Kept {
     life: KeptLife,
 }
 
-/// A kept event's life: its particle runtime finishes it once none of its particles lives,
-/// and its player then drops it, as the game drops a kept emitter it reads as finished.
 #[derive(Clone, Default)]
 pub struct KeptLife(Arc<std::sync::atomic::AtomicBool>);
 
@@ -316,7 +257,6 @@ pub(crate) struct NativeSample {
     previous: Option<(usize, f32, f32)>,
 }
 
-/// Exact presentation identity; RNG seeds need not be unique across actors.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventKey {
     pub pass: u64,
@@ -328,7 +268,6 @@ pub struct EventKey {
 }
 
 impl EventKey {
-    /// This identity without its pass namespace, which differs between passes built alike.
     #[cfg(test)]
     pub(crate) fn without_pass(&self) -> Self {
         Self {
@@ -337,7 +276,6 @@ impl EventKey {
         }
     }
 
-    /// The emitting actor's live namespace, stable asset and unchanged shared-player key.
     pub fn actor(&self) -> super::models::ActorAddress {
         (self.pass, self.model.clone(), self.actor.0, self.actor.1)
     }
@@ -350,26 +288,19 @@ pub struct Event {
     pub age: f32,
     pub seed: u32,
     pub key: EventKey,
-    /// Event age at which emission stops, retaining live particles.
     pub emission_end: Option<f32>,
-    /// Whether the display hides the event's actor or layer. Every simulation still advances
-    /// on it; only its particles and light go unsubmitted.
     pub hidden: bool,
-    /// The producer's requested state for the actor ([`IDLE`], [`ATTACK`], ...).
     pub state: u32,
-    /// A kept event's life, for its particle runtime to finish ([`KeptLife::finish`]).
     pub kept: Option<KeptLife>,
 }
 
 impl Event {
-    /// Whether the producer presents the actor in combat.
     pub fn in_combat(&self) -> bool {
         matches!(self.state & !DIRECT, ATTACK | DEFEND)
     }
 }
 
 impl EventKey {
-    /// The emitting player's address within this event's live pass namespace.
     pub fn player(&self) -> super::models::ActorAddress {
         self.actor()
     }
@@ -409,8 +340,6 @@ fn event_seed(
     instance.animation_seed ^ (node as u32).rotate_left(8) ^ event as u32 ^ state
 }
 
-/// The game finishes kept emitters at both an explicit request and an
-/// automatic next_state, without retiring children whose state stays put.
 fn keep_events(
     kept: &mut Vec<Kept>,
     node: &Node,
@@ -471,8 +400,6 @@ fn pick(node: &Node, name: &str, random: &mut Random, native: bool) -> Option<us
         if count <= 1 {
             return variants.clone().next().map(|(index, _)| index);
         }
-        // Sum signed-positive native weights in i64,
-        // draw in double precision, or choose uniformly when all are zero.
         let fraction = f64::from(random.next_word()) / 2_147_483_648.0;
         let total: i64 = variants
             .clone()
@@ -500,8 +427,6 @@ fn pick(node: &Node, name: &str, random: &mut Random, native: bool) -> Option<us
         .map(|c| c.state.chance.max(0.0))
         .sum();
     if total <= 0.0 {
-        // The game's one state setter enters a lone variant whatever its
-        // chance, and draws uniformly among several that all have none.
         let mut variants = node
             .clips
             .iter()
@@ -608,9 +533,6 @@ impl Player {
         }
     }
 
-    /// A player that chooses states by the game's rule: a state with one
-    /// variant is entered whatever its chance, as the game's state setter
-    /// draws only among several variants.
     pub fn native_choice(rig: &Rig) -> Self {
         Self {
             native_choice: true,
@@ -618,12 +540,6 @@ impl Player {
         }
     }
 
-    /// Replay every crossed callback before sampling the actor. Both a fresh
-    /// shifted flight and a skipped frame enter states at their callback time.
-    /// Missing states do nothing. Ordinary callbacks skip the current state;
-    /// naval callbacks force reentry.
-    /// All poses and effects still use
-    /// evaluate, shared with buildings and ordinary meshed entities.
     pub fn evaluate_clock(
         &mut self,
         rig: &Rig,
@@ -635,17 +551,12 @@ impl Player {
         self.evaluate_clock_inner(rig, instance, clock, palette, events, true);
     }
 
-    /// Hidden wrappers retain explicit requests and played phases, without
-    /// admitting state events or automatic successors.
     pub fn advance_hidden(&mut self, rig: &Rig, clock: &Clock) {
         if let Some(phase) = clock.phase {
             self.evaluate_clock_inner(rig, phase.instance, clock, &mut [], &mut Vec::new(), false);
         }
     }
 
-    /// An attached entity without a played animation is not visited through a
-    /// hidden parent. Its local phase freezes; played animation instances
-    /// advance in the separate global animation-manager pass.
     #[cfg(test)]
     pub fn phase_advances_hidden(&self, rig: &Rig) -> bool {
         self.native_samples
@@ -740,8 +651,6 @@ impl Player {
                     playing.requested.clear();
                 }
                 instance.animation = named_stage(&request.state, None) | DIRECT;
-                // Naval normal-state range belongs to the first callback,
-                // not factory default or later damage/death requests.
                 instance.native_flags = if self.requested == 0 {
                     native_flags
                 } else {
@@ -787,8 +696,6 @@ impl Player {
     }
 
     fn finish_phase(&mut self, rig: &Rig, instance: ModelInstance, time: f32) {
-        // The rig is parent-first. Native visits attached children in reverse
-        // order and finishes each subtree before its parent.
         for (index, node) in rig.nodes.iter().enumerate().rev() {
             let Some(playing) = &mut self.nodes[index] else {
                 continue;
@@ -843,9 +750,6 @@ impl Player {
                 0.0
             };
             playing.cycle += 1;
-            // The setter propagates immediately, before an ancestor's own
-            // finish. Use the same bounded rig pass without effects or another
-            // automatic finish; this also refreshes retained played samples.
             self.evaluate_inner(rig, instance, time, &mut [], &mut Vec::new(), false);
         }
     }
@@ -854,8 +758,6 @@ impl Player {
         self.native_actors_held(rig).0
     }
 
-    /// A number that changes when this play's samples do, which is what a figure's limbs are
-    /// made from: the picture count reads it to say whether a figure posed again.
     pub(super) fn sample_bits(&self) -> u64 {
         let mut bits = 0xcbf2_9ce4_8422_2325_u64;
         let mut eat = |value: u64| bits = (bits ^ value).wrapping_mul(0x100_0000_01b3);
@@ -879,8 +781,6 @@ impl Player {
         bits
     }
 
-    /// [`Self::native_actors`], and whether they were held from an earlier frame (this frame's
-    /// samples draw the same) rather than evaluated.
     pub(super) fn native_actors_held(&self, rig: &Rig) -> (Arc<[super::mesh_pose::Actor]>, bool) {
         if let Some(held) = self.held_actors(rig) {
             return (held, true);
@@ -890,7 +790,6 @@ impl Player {
         (actors, false)
     }
 
-    /// The pose held from an earlier frame when this frame's samples draw the same.
     fn held_actors(&self, rig: &Rig) -> Option<Arc<[super::mesh_pose::Actor]>> {
         fn same_sample(node: &Node, a: Option<NativeSample>, b: Option<NativeSample>) -> bool {
             if node
@@ -943,7 +842,6 @@ impl Player {
             .map(|held| Arc::clone(&held.actors))
     }
 
-    /// Holds `actors` as the pose of this frame's samples.
     fn hold_actors(&self, rig: &Rig, actors: &Arc<[super::mesh_pose::Actor]>) {
         let mut cache = self.native_actors.borrow_mut();
         let rig_key = std::ptr::from_ref(rig) as usize;
@@ -965,15 +863,11 @@ impl Player {
         locals_of(&self.native_samples, rig, index)
     }
 
-    /// The samples this play left: the whole of what a pose is made from beside its rig, so a
-    /// pose can be made away from the player ([`crate::map::poses`]).
     pub(super) fn samples(&self) -> &[Option<NativeSample>] {
         &self.native_samples
     }
 }
 
-/// [`Player::native_locals`] from samples alone, for a pose made away from its player. Samples
-/// of another rig play nothing, as a player that has not reached this node does.
 pub(super) fn locals_at(
     samples: &[Option<NativeSample>],
     rig: &Rig,
@@ -985,7 +879,6 @@ pub(super) fn locals_at(
     locals_of(samples, rig, index)
 }
 
-/// The local poses node `index` of `rig` plays at `samples`' sample, as a player's own.
 fn locals_of(
     samples: &[Option<NativeSample>],
     rig: &Rig,
@@ -1031,7 +924,6 @@ fn locals_of(
 }
 
 impl Player {
-    /// The root animation's current clip phase, not entity age.
     pub fn root_clip_phase(&self, rig: &Rig) -> f64 {
         let Some((sample, root)) = self
             .native_samples
@@ -1061,8 +953,6 @@ impl Player {
             phase.clamp(0.0, duration)
         }
     }
-    /// Work is bounded by the current rig and elapsed state boundaries. The
-    /// caller discards players for despawned instances, never retaining replay history.
     pub fn evaluate(
         &mut self,
         rig: &Rig,
@@ -1086,8 +976,6 @@ impl Player {
     ) {
         let event_start = events.len();
         self.kept.retain(|kept| !kept.life.finished());
-        // Native draws and native event packets use their source-order actors,
-        // not the optional name-joined palette returned to other consumers.
         let pose_required =
             !palette.is_empty() || rig.nodes.iter().any(|node| node.native.is_none());
         if time < self.last {
@@ -1154,12 +1042,6 @@ impl Player {
                 (index == 0 && instance.animation >= NAMED && instance.animation & DIRECT == 0)
                     .then(|| stage_intro(instance.animation));
             let (changed, chosen) = match (stage, &self.nodes[index]) {
-                // A stage asks for nothing while the entity
-                // is in its state or its intro, then for the authored intro,
-                // or for the state when the entity is fresh or the type
-                // authors no intro. An intro the entity lacks is still asked
-                // for, but a missing state leaves the entity unchanged because
-                // the default request flags select no alternate action.
                 (Some(intro), Some(playing)) => {
                     let current = node.clips[playing.clip].state.name.as_str();
                     let settled = current == chosen || Some(current) == intro;
@@ -1173,7 +1055,6 @@ impl Player {
                     }
                 }
                 (Some(_), None) => (true, chosen),
-                // A same-state request returns before finishing live events.
                 (None, playing) => (
                     playing.as_ref().is_none_or(|p| p.requested != chosen)
                         || (self.phase.is_some()
@@ -1218,13 +1099,6 @@ impl Player {
                     self.phase.is_some() || self.native_choice,
                 )
                 .map(|clip| {
-                    // Idle has no random start: the request keeps its default
-                    // zero range, so initialization falls back to the
-                    // authored `animation_random_start_time`, which no shipped
-                    // entity sets. The game still shows neighbouring figures in
-                    // different poses, so the spread is their unrecorded
-                    // state-entry times. This five-second range is that
-                    // stand-in, not a native constant.
                     let random_range = if index == 0
                         && instance.native_flags & 8 != 0
                         && instance.animation_phase > 0.0
@@ -1244,7 +1118,6 @@ impl Player {
                     } else {
                         random_range
                     };
-                    // Unknown combat entry time: deterministic distribution over its clip.
                     let phase = if self.phase.is_some() && random_range == 0.0 {
                         0.0
                     } else if previous.is_none()
@@ -1276,8 +1149,6 @@ impl Player {
                     Playing {
                         requested: chosen,
                         clip,
-                        // A building or a named stage enters its state on
-                        // the viewer's wall clock, advancing by each frame's delta.
                         start,
                         event_time: self.phase.map_or(start, |(_, phase)| phase),
                         previous,
@@ -1322,8 +1193,6 @@ impl Player {
                     }
                     playing.cycle = *cycle;
                 } else if admitted && self.phase.is_none() {
-                    // A looping state repeats its clip; nonlooping variants re-enter
-                    // next_state (or the requested state) and redraw the authored chance.
                     for _ in 0..128 {
                         let clip = &node.clips[playing.clip];
                         let length = duration(clip);
@@ -1389,8 +1258,6 @@ impl Player {
                         weight,
                     ))
                 });
-                // A non-null animationless state changes entity events, but
-                // The game leaves the actual played pdxmesh clip untouched.
                 let retained = (clip.animation.is_none()
                     && node.native.as_ref().is_some_and(|source| source.pdxmesh))
                 .then(|| {
@@ -1486,7 +1353,6 @@ impl Player {
                                 .and_then(|j| worlds[*parent].get(j.index as usize))
                                 .copied()
                                 .or_else(|| {
-                                    // A meshless parent's locator still places children.
                                     rig.nodes[*parent]
                                         .locators
                                         .get(joint)
@@ -1525,10 +1391,6 @@ impl Player {
                     .iter()
                     .map(|event| (event, age, None, None, None, None))
                     .collect::<Vec<_>>();
-                // Before entering the spline's visible interval, the game
-                // sends move; its keep_particle exhaust survives
-                // the switch to idle. Reconstruct that entry from
-                // the same seeded departure that places the locomotive.
                 if index == 0 && instance.animation == TRAIN {
                     authored.extend(
                         node.clips
@@ -1589,8 +1451,6 @@ impl Player {
                     } else {
                         age
                     };
-                    // Compare events with clip phase, while particle age uses
-                    // elapsed entity time.
                     let event_time = if instance.animation & DIRECT != 0 && emission_end.is_none() {
                         (event.time - node.clips[clip].state.start) / node.clips[clip].state.speed
                     } else {
@@ -1600,8 +1460,6 @@ impl Player {
                         continue;
                     }
                     let local = if node.native.is_some() {
-                        // Resolve native packets after every actor's current
-                        // sample is available, with caller-specific precedence.
                         Transform::IDENTITY
                     } else {
                         node.mesh
@@ -1722,7 +1580,6 @@ impl Player {
 }
 
 pub fn world_transform(instance: ModelInstance) -> Transform {
-    // The game preserves the aircraft caller's full route/rig basis, including roll.
     if instance.native_flags & 4 != 0 {
         return Transform {
             basis: instance
@@ -1744,8 +1601,6 @@ pub fn world_transform(instance: ModelInstance) -> Transform {
     ))
 }
 
-/// A raid unit's entity for tests: a cruise state, and a dive stage whose
-/// intro chains into it, each clip two seconds long.
 #[cfg(any(test, feature = "test-support"))]
 pub fn stage_rig(dive_intro: bool) -> Rig {
     let mut animation = mesh::Animation::default();
@@ -1787,11 +1642,6 @@ pub fn stage_rig(dive_intro: bool) -> Rig {
 }
 
 impl Player {
-    /// The root's played animation as an owner that retires its entity at the
-    /// end of the root clip reads it: the clip's play position since the root
-    /// entered it, and its animation's length, both in animation seconds.
-    /// `None` when the root plays no animation: such an owner reads zero
-    /// against zero and retires the entity.
     pub fn root_play_position(&self, rig: &Rig) -> Option<(f32, f32)> {
         let node = rig.nodes.first()?;
         let playing = self.nodes.first()?.as_ref()?;
@@ -1807,19 +1657,12 @@ impl Player {
         }
         let clip = &node.clips[clip];
         let length = clip.animation.as_ref()?.duration();
-        // A clip that ended and entered its automatic successor between two
-        // reads has reached its length, whatever the successor now plays.
         if playing.completed {
             return Some((length, length));
         }
         Some((age.max(0.0) * clip.state.speed + clip.state.start, length))
     }
 
-    /// The clip [`Self::root_play_position`] reads, as it reads it: the
-    /// clip's timing, its age now in entity seconds, and whether it has
-    /// completed into its successor. A pdxmesh root keeps reading the clip
-    /// it last played while it enters a state that plays no animation.
-    /// `None` when the root plays no animation.
     pub fn root_play_clip(&self, rig: &Rig) -> Option<(StateTiming, f32, bool)> {
         let node = rig.nodes.first()?;
         let playing = self.nodes.first()?.as_ref()?;
@@ -1846,8 +1689,6 @@ impl Player {
         ))
     }
 
-    /// Current root clip, phase entry time, RNG draw count and automatic cycle.
-    /// Getter-only integration fixtures can prove they do not admit setters.
     #[cfg(test)]
     pub fn root_entry(&self) -> Option<(usize, f32, u32, u64)> {
         let playing = self.nodes.first()?.as_ref()?;
@@ -1859,7 +1700,6 @@ impl Player {
         ))
     }
 
-    /// The state its root node plays, for tests.
     #[cfg(test)]
     pub fn root_playing<'r>(&self, rig: &'r Rig) -> Option<&'r str> {
         let playing = self.nodes.first()?.as_ref()?;
@@ -1867,11 +1707,6 @@ impl Player {
     }
 }
 
-/// How the root's played position ([`Player::root_play_position`]) moves
-/// with the age of the clip it reads ([`Player::root_play_clip`]): it starts
-/// at `start` and advances by `speed` per entity second. A nonlooping clip
-/// completes after its `length` in animation seconds and then reads
-/// `length`; a looping one keeps advancing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StateTiming {
     pub start: f32,
@@ -1881,10 +1716,6 @@ pub struct StateTiming {
 }
 
 impl StateTiming {
-    /// Entity seconds after entry while the played position reads at least
-    /// `threshold`: from the first such time, until the clip completes when
-    /// the length it then reads is below the threshold (`None`: for good).
-    /// `None` when it never does.
     pub fn reads_at_least(self, threshold: f32) -> Option<(f32, Option<f32>)> {
         let completes = (self.speed > 0.0 && !self.looping && self.length > 0.0)
             .then(|| self.length / self.speed);
@@ -1904,8 +1735,6 @@ impl StateTiming {
         }
     }
 
-    /// Entity seconds after entry until the played position first reads at
-    /// least `threshold`; `None` when it never does.
     pub fn reaches(self, threshold: f32) -> Option<f32> {
         self.reads_at_least(threshold).map(|(from, _)| from)
     }
@@ -1972,7 +1801,6 @@ mod tests {
     #[test]
     fn callback_players_enter_a_lone_zero_chance_variant_and_draw_among_unweighted_ones() {
         let mut rig = stage_rig(false);
-        // `dive` keeps one variant with no chance; `cruise` gets a second, and neither has any.
         rig.nodes[0].clips[1].state.chance = 0.0;
         rig.nodes[0].clips[0].state.chance = 0.0;
         let second = rig.nodes[0].clips[0].clone();
@@ -2052,11 +1880,9 @@ mod tests {
         };
         let kept = |events: &[Event]| events.iter().filter(|event| event.kept.is_some()).count();
         let mut player = Player::new(&rig);
-        // Leaving the intro keeps its particle event until its runtime says otherwise.
         let events = evaluate(&mut player, 4.2);
         assert_eq!(kept(&events), 1);
         assert_eq!(kept(&evaluate(&mut player, 4.3)), 1);
-        // No emitter draws it, so nothing of it lives: the runtime finishes it.
         crate::map::weather_effects::advance_entity_effects(
             &mut Default::default(),
             &BTreeMap::new(),
@@ -2213,14 +2039,11 @@ mod tests {
         let dive = raid_unit(named_stage("dive", Some("dive_intro")));
         player.evaluate(&rig, cruise, 10.0, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "cruise");
-        // The wall clock, not the replay hour, runs the intro.
         player.evaluate(&rig, dive, 11.0, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "dive_intro");
         assert_eq!(player.nodes[0].as_ref().unwrap().start, 11.0);
         player.evaluate(&rig, dive, 12.9, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "dive_intro");
-        // The intro's `next_state` takes it into the stage's state, which
-        // then holds: a stage asks for nothing while its state plays.
         player.evaluate(&rig, dive, 13.1, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "dive");
         player.evaluate(&rig, dive, 30.0, &mut palette, &mut events);
@@ -2231,9 +2054,6 @@ mod tests {
     fn a_fresh_entity_mid_stage_shows_the_state_from_its_own_entry() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // A first placement, a seek or a dump creates a fresh arrow,
-        // which requests
-        // the state, not the intro.
         let rig = stage_rig(true);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -2259,18 +2079,15 @@ mod tests {
             &mut palette,
             &mut events,
         );
-        // The failed intro request changes nothing, frame after frame.
         let dive = raid_unit(named_stage("dive", Some("dive_intro")));
         player.evaluate(&rig, dive, 11.0, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "cruise");
         assert_eq!(player.nodes[0].as_ref().unwrap().start, 10.0);
         player.evaluate(&rig, dive, 30.0, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "cruise");
-        // A type that authors no intro asks for the state itself.
         let plain = raid_unit(named_stage("dive", None));
         player.evaluate(&rig, plain, 31.0, &mut palette, &mut events);
         assert_eq!(playing_state(&player, &rig), "dive");
-        // A fresh entity is asked for the state, intro or not.
         let mut fresh = Player::new(&rig);
         fresh.evaluate(&rig, dive, 40.0, &mut palette, &mut events);
         assert_eq!(playing_state(&fresh, &rig), "dive");

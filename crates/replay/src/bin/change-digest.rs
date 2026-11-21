@@ -1,28 +1,3 @@
-//! Per table and block of a recording: a chain over the block's hours of each hour's changes by
-//! key, and a digest of the table's whole state by key at the block's end. Two recordings agree
-//! at every hour exactly when every line agrees: slots, restores and encoders may differ. Dev
-//! tool, deleted with the recorder build.
-//!
-//! `change-digest recording <recording> [--threads=N] [--first-block=N] [--newest]` prints
-//! `run block table chain state rows` per line (the references were made from format-11 walks
-//! so), from a format-12 recording read back through [`replay::columnar_frames::Recording`] and
-//! the unit's reader primitives, every
-//! table, derived ones included, hour by hour from each run's first restore, with every restore
-//! at a block's end read with `restore` and checked against the state reached; `--first-block`
-//! numbers the blocks as the reference does when the run started after its block `N - 1`;
-//! `--rows=<file>` also writes each hour's changes to the rows of the tables whose keys hold an
-//! epoch. `--seek` also reads every table from each of its restores, the run's first included, as a
-//! seek does: a fresh reader holding only the strings that restore and the table's later parts give
-//! it, read to the table's next restore and compared at every block's end with the reader from the
-//! run's start, every cell, text cells and the statuses' reasons by their bytes.
-//!
-//! An hour's record of a table: its status and sample hour when they changed, the keys of the
-//! rows a table read in part holds as read (those read still live, and those inserted), deleted keys, inserted rows (key and every cell), every cell an event
-//! named on a row older than the hour (SET, ADD, PATCH, NOOP, FILL, unrecorded) with its value,
-//! touched keys; each sorted by key, then column. Text cells and refusal reasons are hashed as
-//! their text. A log's hour: its appended rows (key and every cell) as inserted rows are, then the
-//! ordinals it forgot; its state is its count and its live set.
-
 use rayon::prelude::*;
 use replay::columnar_frames::{Recording, schema};
 use replay_columnar::{
@@ -54,7 +29,6 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// A cell as both front ends see it: a number by value, a list by its bytes, text by its text.
 #[derive(Clone, Copy)]
 enum Value<'a> {
     Unrecorded,
@@ -111,7 +85,6 @@ fn put_status<'t>(out: &mut Vec<u8>, status: Status, sampled: Option<i32>, text:
     }
 }
 
-/// What a front end gives the digest of one table: its rows by slot.
 trait Rows {
     fn columns(&self) -> usize;
     fn key(&self, slot: u32) -> Option<u128>;
@@ -119,25 +92,20 @@ trait Rows {
     fn value(&self, column: usize, slot: u32) -> Value<'_>;
 }
 
-/// One table's changes of one hour, as the front end found them: slots.
 #[derive(Default)]
 struct HourChanges {
     read: Option<Vec<u32>>,
     deleted_keys: Vec<u128>,
     inserted: Vec<u32>,
-    /// (slot, column), any order.
     written: Vec<(u32, usize)>,
     touched: Vec<u32>,
-    /// A log's ordinals forgotten.
     forgotten: Vec<u64>,
 }
 
-/// One table's chain over its block and what it last held.
 struct TableDigest {
     chain: blake3::Hasher,
     status: Option<(Status, Option<i32>)>,
     hours: u32,
-    /// Every hour's record and the block's rows printed on stderr (`BATTLE_PLAN_DIGEST_TRACE=<Table>`).
     traced: bool,
 }
 
@@ -162,7 +130,6 @@ impl TableDigest {
         }
     }
 
-    /// As a walk from a run's start holds it: every table not recorded.
     fn at_run_start(mut self) -> Self {
         self.status = Some((Status::NotRecorded, None));
         self
@@ -173,7 +140,6 @@ impl TableDigest {
         Self { traced, ..Self::new() }
     }
 
-    /// Adds `table`'s hour to the chain.
     fn hour<'t>(
         &mut self,
         hour: i32,
@@ -285,7 +251,6 @@ impl TableDigest {
         self.hours += 1;
     }
 
-    /// A log's block line: its chain, and its status, count and live set.
     fn log_end<'t>(&mut self, count: u64, listed: &Listed, text: &dyn Fn(u32) -> Option<&'t [u8]>) -> (String, String, usize) {
         let chain = std::mem::replace(&mut self.chain, blake3::Hasher::new()).finalize();
         self.hours = 0;
@@ -303,7 +268,6 @@ impl TableDigest {
         (hex(&chain.as_bytes()[..16]), hex(&state.finalize().as_bytes()[..16]), listed.len())
     }
 
-    /// The block's line: its chain, and the whole state by key.
     fn block_end<'t>(&mut self, rows: &dyn Rows, view: Option<Vec<u32>>, text: &dyn Fn(u32) -> Option<&'t [u8]>) -> (String, String, usize) {
         let chain = std::mem::replace(&mut self.chain, blake3::Hasher::new()).finalize();
         self.hours = 0;
@@ -347,8 +311,6 @@ fn main() -> io::Result<()> {
 
 const USAGE: &str = "change-digest recording <format-12 recording> [--threads=N] [--first-block=N] [--newest] [--rows=<file>] [--seek] | change-digest journal <session directory> <capture> [--times=<factors>] [--start=<block> --start-file=<file>] [--hours=N]";
 
-/// Every string the journal appended, for the store to read again what it let go of: what the
-/// file holds for the recorder.
 #[derive(Clone, Default)]
 struct Archive(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
 
@@ -358,10 +320,6 @@ impl replay_columnar::store::StringSource for Archive {
     }
 }
 
-/// The recorder's store filled from a journal alone, through the generator ([`replay::multiplied`],
-/// `--times` and `--start` as `journal-encode` takes them), its lines printed as a recording's are
-/// (journal tables only: no writer runs), with the store's bytes at each block's end on stderr. The
-/// journal is read only.
 fn journal_mode(args: &[String]) -> io::Result<()> {
     use replay::{
         columnar_journal::{Record, Source},
@@ -504,7 +462,6 @@ fn journal_mode(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-/// A table of the store as the digest reads it, its texts the store's.
 struct Stored<'a> {
     table: &'a TableState,
     kinds: &'a [Kind],
@@ -538,12 +495,8 @@ impl Rows for Stored<'_> {
     }
 }
 
-/// The tables `--rows` prints every hour of: those whose keys hold a run-wide epoch.
 const EPOCHED: [TableId; 2] = [TableId::TagHolders, TableId::LookSpans];
 
-/// An hour of an epoched table as `--rows` prints it, against `held`, the hour before's status and
-/// rows: `hour table +|- number epoch rest` per row added or gone, the key taken apart, and
-/// `hour table !status` when its status changed. A table not complete holds no rows here.
 fn epoched_lines(hour: i32, name: TableId, status: Status, cells: &TableState, texts: &Texts<'_>, held: &mut (String, BTreeSet<String>), out: &mut Vec<String>) {
     let shown = match status {
         Status::Complete => "complete",
@@ -583,7 +536,6 @@ fn epoched_lines(hour: i32, name: TableId, status: Status, cells: &TableState, t
     *last = rows;
 }
 
-/// A table of a unit reader's as the digest's whole state reads it, with its status.
 fn state_line(table: &TableState, kinds: &[Kind], texts: &HashMap<u32, Vec<u8>>, status: (Status, Option<i32>)) -> String {
     let mut digest = TableDigest::new();
     digest.status = Some(status);
@@ -592,7 +544,6 @@ fn state_line(table: &TableState, kinds: &[Kind], texts: &HashMap<u32, Vec<u8>>,
     digest.block_end(&rows, table.view().map(<[u32]>::to_vec), &text).1
 }
 
-/// A table's cells as a unit reader holds them, as the digest reads them.
 struct Read<'a> {
     table: &'a TableState,
     kinds: &'a [Kind],
@@ -626,7 +577,6 @@ impl Rows for Read<'_> {
     }
 }
 
-/// A text by id: those a table's parts and restores listed, else the run's appends.
 struct Texts<'a> {
     own: HashMap<u32, Vec<u8>>,
     appended: &'a HashMap<u32, Vec<u8>>,
@@ -637,7 +587,6 @@ impl Texts<'_> {
         self.own.get(&id).or_else(|| self.appended.get(&id)).map(Vec::as_slice)
     }
 
-    /// Every text the table's cells and refusal name, for the digest's rows.
     fn named(&self, cells: &TableState) -> HashMap<u32, Vec<u8>> {
         let mut out = HashMap::new();
         let mut name = |id: u32| {
@@ -662,7 +611,6 @@ impl Texts<'_> {
     }
 }
 
-/// What one table's read of a run found besides its lines.
 #[derive(Default)]
 struct Checked {
     restores: u64,
@@ -672,8 +620,6 @@ struct Checked {
     seek: Seeks,
 }
 
-/// The seek pass's counts: restores a fresh reader started from, block ends it was compared at,
-/// cells compared, texts it held no bytes of, and rows or cells that differ otherwise.
 #[derive(Clone, Copy, Default)]
 struct Seeks {
     restores: u64,
@@ -693,8 +639,6 @@ impl std::ops::AddAssign for Seeks {
     }
 }
 
-/// A reader of one table started from one of its restores, as a seek starts one: its cells, and
-/// the strings that restore and the table's parts since gave it, nothing else.
 struct Seek {
     cells: TableState,
     texts: HashMap<u32, Vec<u8>>,
@@ -706,7 +650,6 @@ impl Seek {
         Ok(Self { cells, texts: meta.strings.into_iter().collect() })
     }
 
-    /// Reads `page`'s block on from hour `start` to its end.
     fn block(&mut self, file: &dyn Extents, page: &BlockPage, table: usize, kinds: &[Kind], all: &[usize], start: u16) -> io::Result<()> {
         let entry = &page.tables[table];
         let mut cursor = Cursor::new(kinds, all, start);
@@ -731,8 +674,6 @@ impl Seek {
         }
     }
 
-    /// Against the forward reader at a block's end: every live row by key and every cell, text
-    /// cells by their bytes, and every reason the block's statuses named by its bytes.
     fn compare(&self, forward: &TableState, texts: &Texts<'_>, reasons: &BTreeSet<u32>, seeks: &mut Seeks) {
         seeks.block_ends += 1;
         let by_key = |table: &TableState| -> HashMap<u128, u32> { table.rows().filter_map(|slot| Some((table.key(slot)?, slot))).collect() };
@@ -761,9 +702,6 @@ impl Seek {
     }
 }
 
-/// Table `table` of run `run` read back from the recording hour by hour through the unit's
-/// reader primitives, from the run's first restore: its block lines, and every restore at a
-/// block's end read with `restore` against the state the cursor reached.
 #[allow(clippy::too_many_arguments, reason = "one table's walk over the run, given whole")]
 fn read_table(
     file: &dyn Extents,
@@ -823,7 +761,6 @@ fn read_table(
                 match cursor.advance(hour, 1, &mut cells, &mut written, &mut lives).map_err(|error| invalid(format!("{name:?} block {} hour {hour}: {error}", page.block)))? {
                     Advanced::Reached => break,
                     Advanced::Missing { .. } => {
-                        // A table quiet for the rest of the block has no part for it.
                         let Some(part) = entry.parts.get(next_part) else { break };
                         let last = entry.parts.get(next_part + 1).map_or(page.hours - 1, |next| next.first - 1);
                         let fetched = std::time::Instant::now();
@@ -912,9 +849,6 @@ fn read_table(
     Ok((lines, checked, dumped))
 }
 
-/// One log table of a run read back hour by hour from its parts (each hour's appends and forgets)
-/// with the log cursor: its lines, and every block end's count, live set and status, followed
-/// from the run's start, checked against that block's restore.
 #[allow(clippy::too_many_arguments, reason = "one table's walk over the run, given whole")]
 fn read_log(
     file: &dyn Extents,
@@ -939,7 +873,6 @@ fn read_log(
         if entry.count != count {
             return Err(invalid(format!("{name:?} block {}: its entry counts {} rows before it, its parts {count}", page.block, entry.count)));
         }
-        // A log quiet in its run's first hour starts its first part at the next.
         let mut cursor = LogCursor::new(kinds, &all, entry.parts.first().map_or(0, |part| part.first));
         let mut next_part = 0;
         let block_first = run_first + (page.block * BLOCK) as i32;
@@ -999,7 +932,6 @@ fn read_log(
     Ok((lines, checked, Vec::new()))
 }
 
-/// A table's cells as a unit reader holds them, their texts looked up as the hour needs them.
 struct TextRows<'a> {
     table: &'a TableState,
     kinds: &'a [Kind],
@@ -1033,9 +965,6 @@ impl Rows for TextRows<'_> {
     }
 }
 
-/// A format-12 recording read back hour by hour, every table of every run, through the format's
-/// reader ([`Recording`]) and the unit's reader primitives: the same lines as the walk's,
-/// and every restore checked against the state reached.
 fn recording_mode(args: &[String]) -> io::Result<()> {
     let [path, rest @ ..] = args else {
         return Err(invalid(USAGE));
@@ -1140,7 +1069,6 @@ mod tests {
         unit::{Encoder, PartSink, Settings},
     };
 
-    /// A unit written to memory.
     #[derive(Default)]
     struct Memory {
         bytes: Vec<u8>,
@@ -1166,8 +1094,6 @@ mod tests {
         }
     }
 
-    /// A log quiet in its run's first hour starts its first part at the next: the walk from the
-    /// run's start reads it, and the block's restore lists what its appends and forgets left.
     #[test]
     fn a_log_quiet_in_its_run_s_first_hour_is_walked_from_its_first_part() {
         let kinds = schema().unwrap();

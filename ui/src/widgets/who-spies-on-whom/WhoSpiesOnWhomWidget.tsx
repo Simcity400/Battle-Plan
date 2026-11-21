@@ -30,9 +30,6 @@ import type { Country, OperativePlacementReply } from '../../generated/dashboard
 
 const NO_TAGS: readonly string[] = [];
 
-/** Operatives abroad at the hour as a chord: a ribbon from each country spying to each it spies on, sized by its
- * operatives. The census is a pushed panel at the head; the chord is painted from it with no render, which only
- * the set of countries (names, flags, colours) causes. */
 export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
@@ -52,7 +49,6 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   [top, selection, fallback, groups.data, hour, track?.branch.lastHour]);
   const most = top ?? Number(options.mostCountries);
   const tags = useMemo(() => head.data ? tagsOf(head.data.placements.flatMap(row => [row.owner, row.target])) : NO_TAGS, [head.data]);
-  // Pushed, the countries are named where one of them last changed, never at the clock's hour of each render.
   const pushed = head.read === 'followed';
   const label = useIntelLabels(runtime, widget, tags, hour, active, pushed);
   const named = usePushedLooksHour(runtime, widget, track, tags, active && pushed, hour ?? 0);
@@ -69,8 +65,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
     exact.set(chord.data, chord);
     live.set({ data: chord.data, segment, playing: runtime.clock.getSnapshot().playing });
   };
-  // A render (new names, flags, colours or settings) draws the reply held again.
-  useLayoutEffect(() => { if (head.data) paint.current(head.data); }, [head.data, label, colour, most, filter, segment]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => { if (head.data) paint.current(head.data); }, [head.data, label, colour, most, filter, segment]);
   useShownEachFrame(runtime.clock, () => head.data ? head.hour ?? runtime.clock.getHour() : null);
   const [chartError, setChartError] = useState<string | null>(null);
   const menu = useContextMenu('Operative placement actions');

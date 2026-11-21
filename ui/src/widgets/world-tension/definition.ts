@@ -10,9 +10,6 @@ const tension = (options: Readonly<Record<string, unknown>>) => (options.view ??
 const stacked = (options: Readonly<Record<string, unknown>>) => tension(options) && (options.show ?? 'main') === 'main';
 const overTime = (options: Readonly<Record<string, unknown>>) => tension(options) || options.view === 'lines';
 
-/** Settings: the stacked view (Top 5 + Other layers by default or Top 8, each a country's share of world tension or
- * its recorded contribution, which can add up past the game's 100% cap), event markers and the values beside the
- * chart, its breakdown inline, popped out or pinned; and the contributions as a race, lines, or the threat events. */
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'tension', choices: [
     { value: 'tension', label: 'World tension' }, { value: 'race', label: 'Contributions race' },
@@ -39,10 +36,8 @@ export const definition = {
   description: 'World tension over time, stacked by the countries whose actions generated it, with the events that did.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
-  // Every country by default; chosen countries or a group narrow the layers to them.
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   options: OPTIONS,
-  // Main's widgets (version 1) and the first port's (version 2) keep their options; a stray view becomes the stack.
   migrate: (_from, { options = {}, ...widget }) => ({ ...widget,
     options: { ...options, view: typeof options.view === 'string' && ['tension', 'race', 'lines', 'events'].includes(options.view) ? options.view : 'tension' } }),
   variants: [...breakdownVariants('World tension & threat', OPTIONS.filter(field => field.key === 'show')),

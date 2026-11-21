@@ -1,4 +1,3 @@
-//! The collector's cycle-to-time model without its capture/status dependencies.
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
@@ -20,9 +19,6 @@ impl CalibrationSample {
         let end_skew = self.end.after.checked_sub(self.end.before)?;
         let skew = start_skew.checked_add(end_skew)?;
         let interval = self.end.before.checked_sub(self.start.after)?;
-        // The counter interval lies between interval and interval + skew. Refuse
-        // samples whose two unmatched edges exceed 0.1% of the guaranteed span;
-        // a long sleep/preemption between readings expands both clocks, not skew.
         if interval < Duration::from_millis(10) || skew > interval / 1000 {
             return None;
         }
@@ -42,7 +38,6 @@ fn select_calibration(samples: impl IntoIterator<Item = CalibrationSample>) -> O
         .map(|(_, hz)| hz)
 }
 
-/// A single process-wide rate keeps differences between samples comparable.
 pub fn cpu_clock_hz() -> Option<u64> {
     #[cfg(all(windows, any(target_arch = "x86", target_arch = "x86_64")))]
     {
@@ -53,13 +48,10 @@ pub fn cpu_clock_hz() -> Option<u64> {
             #[cfg(target_arch = "x86_64")]
             use std::arch::x86_64::{__cpuid, _mm_lfence, _rdtsc};
             use std::time::Instant;
-            // A changing TSC rate cannot convert samples from different cores.
-            // CPUID is available on the supported Windows x86 targets.
             if __cpuid(0x8000_0000).eax < 0x8000_0007 || __cpuid(0x8000_0007).edx & (1 << 8) == 0 {
                 return None;
             }
             let stamp = || unsafe {
-                // Keep both the measured interval and its wall-clock reads ordered.
                 _mm_lfence();
                 let cycles = _rdtsc();
                 _mm_lfence();
@@ -76,8 +68,6 @@ pub fn cpu_clock_hz() -> Option<u64> {
                     after,
                 }
             };
-            // Once, only when PROFILE first demands CPU time; never per frame/job.
-            // Repeated brackets expose preemption at either unmatched clock edge.
             let samples: [_; 5] = std::array::from_fn(|_| {
                 let start = read();
                 std::thread::sleep(Duration::from_millis(10));
@@ -98,10 +88,8 @@ pub(super) fn current() -> Option<Duration> {
         unsafe extern "system" {
             fn QueryThreadCycleTime(thread: HANDLE, cycles: *mut u64) -> i32;
         }
-        // Calibrate before reading the sample, so calibration is not CPU usage.
         let hz = cpu_clock_hz()?;
         let mut cycles = 0;
-        // SAFETY: the current thread pseudo-handle needs no close; output is live.
         if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } == 0 {
             return None;
         }

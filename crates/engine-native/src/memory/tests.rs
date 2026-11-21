@@ -41,8 +41,6 @@ fn record_source_envelope_never_rejects_fields_across_a_canonical_gap() {
     ];
     let (first, end) = RecordLayout::new(&fields, 8).unwrap().envelope.unwrap();
     assert!(!is_canonical_range(1 + first, end - first));
-    // No reads occur here. Both nonempty fields are canonical even though
-    // the conservative envelope crosses the noncanonical gap between them.
     assert_eq!(
         record_source_prefix(
             RecordSources::Pointers(&[1]),
@@ -232,8 +230,6 @@ fn strided_records_keep_empty_overflow_and_repeated_observations() {
     );
     assert_eq!(*memory.calls.borrow(), [0x1000, 0x1000]);
 
-    // A synthetic Memory retains its own numeric-address space. Only the
-    // LiveMemory implementation imposes host canonical-address checks.
     memory.calls.borrow_mut().clear();
     assert_eq!(
         memory.copy_records(
@@ -364,8 +360,6 @@ fn record_destination_bounds_fail_before_access_and_sources_fail_in_order() {
         #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
         {
             let source = [0x6d; 16];
-            // SAFETY: sources are immutable owned bytes; invalid
-            // destination geometry must be rejected before native entry.
             let live = unsafe { LiveMemory::new() };
             assert_eq!(
                 layout.as_ref().map_or(0, |layout| live.copy_records(
@@ -471,9 +465,6 @@ fn native_records_preserve_exact_unaligned_bytes_and_fault_field_positions() {
         },
     ];
     let source: [u8; 64] = std::array::from_fn(|index| 255 - index as u8);
-    // SAFETY: readable sources are immutable Rust-owned bytes. The null,
-    // overflow and inaccessible null-page sources are contained by the
-    // checked C gather; Rust never dereferences these source pointers.
     let memory = unsafe { LiveMemory::new() };
     for bad_pointer in [
         0,
@@ -501,7 +492,6 @@ fn native_records_preserve_exact_unaligned_bytes_and_fault_field_positions() {
         for index in [0, 2, 41, 47, 48] {
             assert_eq!(bytes[index], 0xa5);
         }
-        // Byte 49 belongs to the failed field; no later field may change.
         assert_eq!(bytes[50..], [0xa5; 96][50..]);
     }
     let mut bytes = [0xa5; 48];
@@ -559,9 +549,6 @@ fn native_records_copy_only_the_proven_prefix_including_partial_rows() {
     ];
     for prefix in 0..=6 {
         let mut bytes = [0xa5; 16];
-        // SAFETY: every nonempty field in this explicit prefix points to
-        // immutable owned bytes; all metadata/destination bounds are valid.
-        // A readable suffix intentionally remains outside the C contract.
         assert_eq!(
             unsafe {
                 seh_guarded_copy_records(
@@ -593,8 +580,6 @@ fn native_records_copy_only_the_proven_prefix_including_partial_rows() {
 #[test]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn native_records_unreadable_prefix_wins_over_later_preflight_failures() {
-    // SAFETY: inaccessible null-page sources are only used by guarded C;
-    // Rust preflight checks their arithmetic without dereferencing them.
     let memory = unsafe { LiveMemory::new() };
     for bad_offset in [usize::MAX, 0x0000_8000_0000_0000 - 1] {
         let fields = [
@@ -639,9 +624,6 @@ fn native_records_unreadable_prefix_wins_over_later_preflight_failures() {
     }
 }
 
-/// A gathered value is served only when every byte of it was gathered:
-/// inside one span, never across a gap, a span edge or the map's end, and
-/// never from an incomplete record.
 #[test]
 fn gathered_values_come_only_from_covered_bytes_of_complete_records() {
     const SPANS: [(usize, usize); 3] = [(0, 8), (0x10, 4), (0x20, 16)];
@@ -667,7 +649,6 @@ fn gathered_values_come_only_from_covered_bytes_of_complete_records() {
         );
     }
     assert_eq!(record.get::<[u8; 16]>(0x20).unwrap(), object[0x20..0x30]);
-    // Across the end of a span, a gap, an uncovered byte or the map.
     for offset in [5, 8, 0xe, 0x11, 0x1e, 0x2d, 0x30, usize::MAX] {
         assert_eq!(record.get::<u32>(offset), None, "{offset:#x}");
     }
@@ -832,8 +813,6 @@ fn prefetched_scattered_uses_the_adapters_scattered_protocol() {
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn native_prefetched_scattered_keeps_empty_repeated_and_invalid_prefixes() {
     let source: [u8; 16] = std::array::from_fn(|index| index as u8);
-    // SAFETY: valid sources are immutable owned bytes; invalid sources are
-    // rejected by preflight or contained in the native exact-source guard.
     let memory = unsafe { LiveMemory::new() };
     for invalid in [0, usize::MAX, 1, 0x0000_8000_0000_0000] {
         let mut empty = [];
@@ -923,8 +902,6 @@ fn scattered_empty_fields_succeed_without_copying_or_validating_addresses() {
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn native_scattered_copy_preserves_the_prefix_before_an_invalid_address() {
     let source = (i64::MIN + 0x1234).to_le_bytes();
-    // SAFETY: the only accessed source is immutable, Rust-owned memory that
-    // outlives the call. The zero address is rejected before entering C.
     let memory = unsafe { LiveMemory::new() };
     let mut empty = [];
     let mut first = [0; 8];
@@ -960,9 +937,6 @@ fn native_scattered_copy_preserves_the_prefix_before_an_invalid_address() {
 fn native_scattered_fault_preserves_completed_fields_and_leaves_later_fields_alone() {
     let source: [u8; 65] = std::array::from_fn(|index| index as u8);
     let source = &source[1..];
-    // SAFETY: valid sources are immutable owned bytes. The intentionally
-    // inaccessible Windows null-page address faults inside the C SEH shim;
-    // it is never dereferenced by Rust or returned as a Rust reference.
     let memory = unsafe { LiveMemory::new() };
     for width in [1, 2, 4, 8, 12, 16, 24, 26, 32, 48, 64] {
         let mut first = [0xa5; 64];
@@ -987,11 +961,6 @@ fn native_scattered_fault_preserves_completed_fields_and_leaves_later_fields_alo
     }
 }
 
-/// `copy_uninit` returns exactly the bytes `copy` writes, and nothing
-/// when the copy fails, in every source: the guarded live copy across a
-/// page it cannot read (where a failed copy may already have written a
-/// prefix), the owned slice, the counting adapter, and the default that
-/// initializes first. `read_slice_uninit` keeps `read_slice`'s gates.
 #[test]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn uninitialized_copies_expose_only_complete_copies() {
@@ -1005,29 +974,23 @@ fn uninitialized_copies_expose_only_complete_copies() {
     struct Pages(*mut c_void);
     impl Drop for Pages {
         fn drop(&mut self) {
-            // SAFETY: this test owns the complete allocation until here.
             unsafe { VirtualFree(self.0, 0, 0x8000) };
         }
     }
-    // SAFETY: allocation has no requested address and no executable pages.
     let pages = Pages(unsafe { VirtualAlloc(std::ptr::null_mut(), 8192, 0x3000, 4) });
     assert!(!pages.0.is_null());
     let boundary = pages.0 as usize + 4096;
     let mut old = 0;
-    // SAFETY: both pages belong to this allocation; only page two is protected.
     assert_ne!(
         unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &mut old) },
         0
     );
-    // SAFETY: the first page remains owned and writable.
     let first = unsafe { std::slice::from_raw_parts_mut(pages.0.cast::<u8>(), 4096) };
     for (index, byte) in first.iter_mut().enumerate() {
         *byte = index as u8 ^ 0x5a;
     }
-    // SAFETY: all sources are this test's pages; faults are contained.
     let live = unsafe { LiveMemory::new() };
 
-    /// Default adapter: only `copy`, so `copy_uninit` initializes first.
     struct Plain<'a>(&'a LiveMemory);
     impl Memory for Plain<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -1077,7 +1040,6 @@ fn uninitialized_copies_expose_only_complete_copies() {
     check(&Plain(&live), boundary);
     check(&counted, boundary);
     check(&slice, boundary);
-    // The counting adapter counts an uninitialized copy as the copy it is.
     ReadCounts::take_current();
     let mut scratch = [MaybeUninit::<u8>::uninit(); 16];
     assert!(counted.copy_uninit(boundary - 16, &mut scratch).is_some());
@@ -1103,26 +1065,18 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
     struct Pages(*mut c_void);
     impl Drop for Pages {
         fn drop(&mut self) {
-            // SAFETY: this test owns the complete allocation until here.
             unsafe { VirtualFree(self.0, 0, 0x8000) };
         }
     }
-    // Two owned Windows pages: readable bytes followed by an inaccessible
-    // page. No game process or external address space is involved.
-    // SAFETY: allocation has no requested address and no executable pages.
     let pages = Pages(unsafe { VirtualAlloc(std::ptr::null_mut(), 8192, 0x3000, 4) });
     assert!(!pages.0.is_null());
     let boundary = pages.0 as usize + 4096;
     let mut old = 0;
-    // SAFETY: both pages belong to this allocation; only page two is protected.
     assert_ne!(
         unsafe { VirtualProtect(boundary as *mut c_void, 4096, 1, &mut old) },
         0
     );
-    // SAFETY: the first page remains owned and writable.
     unsafe { std::ptr::write_bytes(pages.0.cast::<u8>(), 0x6d, 4096) };
-    // SAFETY: all inputs below are owned storage or the test's inaccessible
-    // page, whose faults are contained by the same native guarded copies.
     let memory = unsafe { LiveMemory::new() };
     let zero = [0_u8; 5];
     let all_bits = [255_u8; 5];
@@ -1137,8 +1091,6 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
         let mut exact = [0xa5; 66];
         assert!(memory.copy(valid, &mut exact[1..1 + width]));
         assert_eq!(exact[1..1 + width], [0x6d; 64][..width]);
-        // The fixed-width entries also accept an unaligned source; the
-        // destination uses the same one-byte inset for both successful reads.
         assert!(memory.copy(valid - 1, &mut exact[1..1 + width]));
         assert_eq!(exact[1..1 + width], [0x6d; 64][..width]);
         assert_eq!(exact[0], 0xa5);
@@ -1147,12 +1099,8 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
         assert_eq!(exact[0], 0xa5);
         assert!(exact[1 + width..].iter().all(|&byte| byte == 0xa5));
         if matches!(width, 4 | 8) {
-            // Direct generic FFI callers still accept these widths through
-            // memcpy after LiveMemory selects the dedicated scalar entries.
             for (address, expected) in [(valid, 1), (valid - 1, 1), (crossing, 0)] {
                 exact.fill(0xa5);
-                // SAFETY: destination is owned writable storage; all source
-                // bytes or faults belong to this test's guarded allocation.
                 let result = unsafe {
                     seh_guarded_copy(exact[1..].as_mut_ptr(), address as *const u8, width)
                 };
@@ -1208,9 +1156,6 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
         assert_eq!(records[..width], [0x6d; 64][..width]);
         assert!(records[width * 2..].iter().all(|&byte| byte == 0xa5));
     }
-    // A guard-page exception is the first failed scalar observation too;
-    // there is no retry after the operating system consumes that guard.
-    // SAFETY: page two belongs to this test and no Rust reference covers it.
     assert_ne!(
         unsafe { VirtualProtect(boundary as *mut c_void, 4096, 0x104, &mut old) },
         0
@@ -1220,9 +1165,6 @@ fn native_copy_widths_stop_at_exact_page_boundaries_and_keep_field_prefixes() {
 
 #[test]
 fn canonical_range_rejects_live_crash_vectors_and_keeps_valid_spans() {
-    // Synthetic noncanonical pointers have nonzero high bits while bit 47 is
-    // zero. They must fail before copying, with the same outcome as an unreadable
-    // canonical source.
     assert!(!is_canonical_range(0x0072_6f74_6361_665f, 8));
     assert!(!is_canonical_range(0x6f74_6361_665f_7374, 8));
     assert!(!is_canonical_range(0x0000_8000_0000_0000, 8));
@@ -1266,8 +1208,6 @@ fn records_gate_derived_noncanonical_fields_in_copy_order() {
             len: 8,
         },
     ];
-    // SAFETY: the only readable source is immutable Rust-owned storage;
-    // The gather rejects the derived noncanonical address before reading it.
     let memory = unsafe { LiveMemory::new() };
     let mut bytes = [0xa5; 24];
     assert_eq!(
@@ -1280,8 +1220,6 @@ fn records_gate_derived_noncanonical_fields_in_copy_order() {
     );
     assert_eq!(bytes[..8], source);
     assert_eq!(bytes[8..], [0xa5; 16]);
-    // An earlier unreadable canonical field wins over the later invalid
-    // derived field. Empty fields count but do not inspect their source.
     bytes.fill(0xa5);
     assert_eq!(
         memory.copy_records(
@@ -1292,8 +1230,6 @@ fn records_gate_derived_noncanonical_fields_in_copy_order() {
         1
     );
     assert_eq!(bytes, [0xa5; 24]);
-    // A range crossing the canonical gap must fail before copying any of
-    // it, even though its starting address is itself canonical.
     let crossing = [RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -1313,10 +1249,6 @@ fn records_gate_derived_noncanonical_fields_in_copy_order() {
 #[test]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn live_memory_rejects_noncanonical_sources_pre_copy() {
-    // SAFETY: noncanonical sources never reach the guarded instruction;
-    // the Rust gate returns `false`/prefix without dereferencing them.
-    // Canonical valid sources still copy; canonical unreadable (null page)
-    // still fails gracefully via the C shim.
     let memory = unsafe { LiveMemory::new() };
     let mut out = [0xa5; 8];
     assert!(!memory.copy(0x0072_6f74_6361_665f, &mut out));
@@ -1326,8 +1258,6 @@ fn live_memory_rejects_noncanonical_sources_pre_copy() {
     let mut valid = [0; 8];
     assert!(memory.copy(source.as_ptr() as usize, &mut valid));
     assert_eq!(valid, source);
-    // Scattered prefix stops at the noncanonical span with earlier fields
-    // intact, exactly like a null/overflow break.
     let mut first = [0; 8];
     let mut failed = [0xa5; 8];
     let mut later = [0xa5; 8];
@@ -1345,8 +1275,6 @@ fn live_memory_rejects_noncanonical_sources_pre_copy() {
     assert_eq!(first, source);
     assert_eq!(failed, [0xa5; 8]);
     assert_eq!(later, [0xa5; 8]);
-    // Records prefix stops at the noncanonical field just as it does for
-    // null/overflow, with the leading row's bytes preserved.
     let fields = [RecordField {
         source_offset: 0,
         destination_offset: 0,
@@ -1368,10 +1296,6 @@ fn live_memory_rejects_noncanonical_sources_pre_copy() {
 #[test]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn guarded_copy_handles_noncanonical_fault_address_gracefully() {
-    // Directly exercises C containment for `copy_fault`'s `-1` path, bypassing
-    // the Rust gate. The invalid source returns graceful failure (0). The Rust
-    // gate makes this path unreachable through `LiveMemory`/`take_inner`, so
-    // the test calls the C branch directly.
     unsafe extern "C" {
         fn seh_guarded_copy(dst: *mut u8, src: *const u8, len: usize) -> i32;
         fn seh_guarded_copy4(dst: *mut u8, src: *const u8) -> i32;
@@ -1379,21 +1303,15 @@ fn guarded_copy_handles_noncanonical_fault_address_gracefully() {
         fn seh_guarded_read4(src: *const u8) -> u64;
     }
     let mut dst = [0xa5; 8];
-    // SAFETY: destination is valid stack memory; the noncanonical source
-    // is only touched by the guarded C copy, which handles the fault.
     let result =
         unsafe { seh_guarded_copy(dst.as_mut_ptr(), 0x0072_6f74_6361_665f as *const u8, 8) };
     assert_eq!(result, 0);
     assert_eq!(dst, [0xa5; 8]);
     for copy in [seh_guarded_copy4, seh_guarded_copy8] {
-        // SAFETY: each entry writes at most eight valid destination bytes;
-        // its identical SEH filter contains the noncanonical source fault.
         let result = unsafe { copy(dst.as_mut_ptr(), 0x0072_6f74_6361_665f as *const u8) };
         assert_eq!(result, 0);
         assert_eq!(dst, [0xa5; 8]);
     }
-    // SAFETY: the value-return entry retains identical noncanonical source
-    // containment, without exposing any failed partial value.
     assert_eq!(
         unsafe { seh_guarded_read4(0x0072_6f74_6361_665f as *const u8) },
         0

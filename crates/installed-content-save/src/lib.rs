@@ -1,5 +1,3 @@
-//! Text-save values for the oracle. The shared Clausewitz parser owns syntax;
-//! this crate projects the state fields used by recording comparisons.
 
 pub mod air;
 pub mod characters;
@@ -75,7 +73,6 @@ pub struct GameDate {
     pub year: i32,
     pub month: u8,
     pub day: u8,
-    /// Text saves use 1 through 24, not zero through 23.
     pub hour: u8,
 }
 
@@ -104,8 +101,6 @@ impl GameDate {
         Ok(date)
     }
 
-    /// The game's date parser and formatter use a fixed 365-day calendar,
-    /// epoch 43,800,000, and zero-based month/day/hour internally.
     pub fn engine_hour(self) -> io::Result<i32> {
         if !(0..99_998).contains(&self.year) {
             return Err(invalid(
@@ -134,10 +129,6 @@ impl GameDate {
     }
 }
 
-/// A saved date field that may hold the engine's invalid date.
-/// Objects initialize unset dates to raw hour 43,791,240, which the serializers
-/// test as unset and the formatter writes as `-1.1.1.1`. This is not a
-/// supported BCE calendar date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SavedDate {
     Calendar(GameDate),
@@ -145,7 +136,6 @@ pub enum SavedDate {
 }
 
 impl SavedDate {
-    /// Raw engine hour of the invalid-date sentinel.
     pub const INVALID_HOUR: i32 = 43_791_240;
 
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {
@@ -159,9 +149,6 @@ impl SavedDate {
     pub fn engine_hour(self) -> io::Result<i32> {
         match self {
             Self::Calendar(date) => date.engine_hour(),
-            // The formatter uses signed year /8760 and hour %24. Month
-            // and day use (delta /24) %365, so delta=-8760
-            // uniquely writes -1.1.1.1 with epoch 43,800,000.
             Self::Invalid => Ok(Self::INVALID_HOUR),
         }
     }
@@ -184,10 +171,6 @@ pub struct EquipmentAmount {
     pub amount: Decimal,
 }
 
-/// One `received_air_volunteer_permission` block of a saved country.
-///
-/// The country writer emits one block per position of the host
-/// vector, in vector order, with the resolved host tag and its paired count.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VolunteerPermission {
     pub tag: Vec<u8>,
@@ -197,81 +180,37 @@ pub struct VolunteerPermission {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Country {
     pub tag: Vec<u8>,
-    /// The country writer emits major only when its stored byte is nonzero.
     pub major: bool,
-    /// The country writer emits the cosmetic tag unconditionally.
-    /// Empty means none; omission stays distinct for the oracle to reject.
     pub cosmetic_tag: Option<Vec<u8>>,
-    /// The country writer emits `original_tag` only when its stored signed
-    /// country reference is positive, using the tag's bytes.
-    /// Omission certifies nonpositive original; it never means the own tag.
     pub original_tag: Option<Vec<u8>>,
     pub political_power: Option<Decimal>,
     pub command_power: Option<Decimal>,
     pub stability: Option<Decimal>,
     pub war_support: Option<Decimal>,
-    /// The manpower writer emits manpower.current only when the signed residual is nonzero.
     pub manpower_residual: i32,
     pub recruitment_ratio: Option<i64>,
     pub exile_manpower: Option<i32>,
     pub exile_manpower_cap: Option<i32>,
-    /// Serialized stockpile entries, not an assumed equivalent of a live cache.
     pub convoy_equipment: Option<Vec<EquipmentAmount>>,
     pub instances_counter: Option<u32>,
-    /// Ordered host blocks; absence and an empty vector are indistinguishable.
     pub volunteer_permissions: Vec<VolunteerPermission>,
-    /// `strategic_navy.per_region_mines` by region. The writer lists only
-    /// positive amounts, so a region missing from a present block holds zero.
     pub naval_mines: Option<BTreeMap<u32, Decimal>>,
-    /// `strategic_navy.per_region_access` as (strategic region id, mode) pairs in
-    /// saved order; `None` when the country saved no strategic navy. An
-    /// omitted access child is a known empty list. The writer omits an empty
-    /// array and emits only signed-positive byte modes.
     pub naval_region_access: Option<Vec<(u32, u8)>>,
-    /// `strategic_navy.regional_convoys`: each saved record's delivery efficiency by
-    /// strategic region id; `None` when the country saved no strategic navy. The writer
-    /// omits `efficiency` at 1.0 and a whole record whose required convoys are zero,
-    /// efficiency is 1.0 and last sinking is unset, so a missing region is full.
     pub regional_convoy_efficiency: Option<BTreeMap<u32, Decimal>>,
-    /// Stored stability and war-support terms. The country writer
-    /// writes each only when its word is nonzero, so absence is zero. Each
-    /// is a five-decimal number: the Q15 penalties truncated toward zero, the
-    /// coastal term through the fixed5 writer.
     pub stability_terms: StabilityTerms,
-    /// Refresh flags are written unconditionally as `refresh`.
-    /// The pre-hourly update consumes them each hour:
-    /// bit 1 rebuilds modifiers and recalculates the production status's
-    /// factory totals, bit 9 recalculates the totals alone.
     pub refresh: Option<u32>,
-    /// `cores`: the IDs of the states the country is a core of, omitted
-    /// when empty. The state holds the same membership reciprocally;
-    /// loading a save updates both sides.
     pub cores: Vec<u32>,
-    /// `claims`: the IDs of the states the country claims, omitted when
-    /// empty. The state holds the same membership reciprocally, as it does
-    /// for cores.
     pub claims: Vec<u32>,
-    /// `civil_war_target`: one tag per entry of the civil-war array, in
-    /// array order, written only for a nonzero count.
     pub civil_war_targets: Vec<Vec<u8>>,
 }
 
-/// The country's Q15 penalties and coastal term
-/// as saved: each a five-decimal number (the writer converts a Q15 word to
-/// fixed5 first); `None` is an omitted (zero) word.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StabilityTerms {
-    /// The saved `propaganda_stability_penalty` term.
     pub propaganda_stability_penalty: Option<Decimal>,
-    /// The saved `coastal_protection_ratio` term.
     pub coastal_protection_ratio: Option<Decimal>,
-    /// The saved `being_bombed_support_penalty` term.
     pub being_bombed_support_penalty: Option<Decimal>,
-    /// The saved `heroes_dying_war_support_penalty` term.
     pub heroes_dying_war_support_penalty: Option<Decimal>,
-    /// The saved `convoy_raiding_war_support_penalty` term.
     pub convoy_raiding_war_support_penalty: Option<Decimal>,
-    /// The saved `propaganda_war_support_penalty` term.
     pub propaganda_war_support_penalty: Option<Decimal>,
 }
 
@@ -279,57 +218,30 @@ pub struct StabilityTerms {
 pub struct State {
     pub id: u32,
     pub owner: Option<Vec<u8>>,
-    /// The literal field only; absence is retained until its native save rule
-    /// is applied by known_state_control, independently of province control.
     pub controller: Option<Vec<u8>>,
-    /// The state writer emits this boolean unconditionally. Missing is
-    /// retained so the oracle can reject it, never silently assumed false.
     pub demilitarized: Option<bool>,
-    /// The state writer always emits the border-conflict flag.
     pub is_border_conflict: Option<bool>,
-    /// The pool writer emits manpower_pool.available. The state writer omits
-    /// the whole pool when total <= 0, so omission cannot prove available is zero.
     pub manpower_available: Option<i32>,
     pub manpower_locked: Option<i32>,
-    /// The pool writer's `total`, the state's population: `None` when the
-    /// pool is omitted (which certifies only a nonpositive population),
-    /// `Some(None)` for a pool written without it.
     pub population: Option<Option<i32>>,
-    /// The `state_category` name the state writer emits for the state's
-    /// category definition.
     pub category: Option<Vec<u8>>,
-    /// The set_state_name rename, emitted as `name` only when the string
-    /// is nonempty.
     pub name: Option<Vec<u8>>,
-    /// `strategic_region_data`: the state's strategic locations in stored
-    /// order, each `{ <location> <anchor province> }`, written only when the
-    /// list is nonempty.
     pub strategic_locations: Vec<(Vec<u8>, u32)>,
-    /// `contested_owners`: the state's contested owner tags in stored order, written only when
-    /// the list is nonempty.
     pub contested_owners: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProvinceOverride {
     pub id: u32,
-    /// The province writer emits `name` only when its override is nonempty.
     pub name: Option<Vec<u8>>,
     pub owner: Option<Vec<u8>>,
     pub controller: Option<Vec<u8>>,
-    /// The province writer emits the signed victory-point integer only when nonzero.
     pub victory_points: Option<i32>,
-    /// `strategic_province_location`: the province's own strategic locations
-    /// in stored order, written only when the list is nonempty.
     pub strategic_locations: Vec<Vec<u8>>,
 }
 
-/// The engine's monotonic allocation counters as the save header serializes
-/// them. The header serializer emits every key unconditionally, so an
-/// absent key is a header change rather than a default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocationCounters {
-    /// Written through the unsigned formatter, unlike every other counter.
     pub debug_current_ref_id: u32,
     pub unit: i32,
     pub order_index: i32,
@@ -345,9 +257,6 @@ pub struct AllocationCounters {
     pub multiplayer_random_count: i32,
 }
 
-/// One `countries.<tag>.diplomacy.active_relations.<target>` record's cached
-/// opinion. The relation-status writer emits `cached_sum` only when the
-/// native dword is nonzero, so an absent key proves an exact zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationOpinion {
     pub owner: Vec<u8>,
@@ -355,29 +264,19 @@ pub struct RelationOpinion {
     pub cached_sum: i32,
 }
 
-/// One typed relation block under an `active_relations` target. The key spelling
-/// is the relation class's own token, so the comparator joins on it rather than
-/// on a reconstructed name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationTuple {
     pub owner: Vec<u8>,
     pub target: Vec<u8>,
-    /// The literal block key, which is the relation type token's spelling.
     pub kind: Vec<u8>,
-    /// Native order within this target's relation blocks.
     pub ordinal: u32,
     pub first: Vec<u8>,
     pub second: Vec<u8>,
-    /// The relation writer omits this exactly when cancel is set.
     pub start_date: Option<GameDate>,
-    /// Omission proves end <= start, not a particular raw end-hour default.
     pub end_date: Option<GameDate>,
     pub cancel: bool,
 }
 
-/// One record of a country's positional four-lane intel list. The record
-/// writer omits a lane exactly when its raw qword is zero and writes every
-/// present lane through the fixed5 path, so each lane's raw value is exact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CountryIntelRecord {
     pub civilian: i64,
@@ -388,23 +287,16 @@ pub struct CountryIntelRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarRelation {
-    /// Stored directional ledgers; presence stays explicit for oracle coverage.
     pub participation: [Option<war_participation::Ledger>; 2],
     pub first_goals: Vec<u64>,
     pub second_goals: Vec<u64>,
-    /// Enclosing `countries.<tag>`, retained independently of the explicit first.
     pub roster_owner: Vec<u8>,
-    /// Enclosing `diplomacy.active_relations.<tag>`, independently of second.
     pub target: Vec<u8>,
-    /// Native ordered endpoints; neither country IDs nor instigator sort them.
     pub first: Vec<u8>,
     pub second: Vec<u8>,
-    /// The relation writer omits this exactly when cancel is set.
     pub start_date: Option<GameDate>,
-    /// Omission proves end <= start, not a particular raw end-hour default.
     pub end_date: Option<GameDate>,
     pub cancel: bool,
-    /// The war-relation writer emits all four signed integers unscaled.
     pub first_casualties: i64,
     pub second_casualties: i64,
     pub first_unknown_casualties: i64,
@@ -416,60 +308,32 @@ pub struct WarRelation {
 pub struct Faction {
     pub goals: faction_goals::Status,
     pub companions: faction_companions::Snapshot,
-    /// Full native reference: type low u32, id high u32; only both zero is null.
     pub id: u64,
-    /// The faction writer emits the name only for a nonzero stored length;
-    /// an emitted empty first-NUL prefix differs from an omitted name.
     pub name: Option<Vec<u8>>,
-    /// The native pointer-array order, with its leader first when nonempty.
     pub members: Vec<Vec<u8>>,
-    /// The faction writer always emits `icon`.
     pub icon: Option<Vec<u8>>,
-    /// `template`: the spelling of the template's lexer token,
-    /// written only when the faction has a template.
     pub template: Option<Vec<u8>>,
-    /// `color`: each component multiplied by 255.0f and truncated to an integer.
-    /// Red, green and blue are included; alpha is included only when it is
-    /// not 1.0. None when the save omits it.
     pub color: Option<Vec<i64>>,
-    /// `is_color_overridden`, the stored override byte as yes or no.
     pub color_overridden: Option<bool>,
-    /// `pings.regions` in saved theatre order.
     pub theatres: Vec<FactionTheatre>,
-    /// `upgrades.slots` in native slot order: each slot's `advisor`, the
-    /// character token of the slot's advisor, `None` for an empty slot.
-    /// The faction writer saves its upgrade status as `upgrades`, whose
-    /// writer emits `slots` only for a nonzero slot count, one block per
-    /// slot, with `advisor` only for a non-null advisor; omission is no slots.
     pub advisor_slots: Vec<Option<Vec<u8>>>,
 }
 
-/// One saved faction theatre. Execution type, template and the saved integer
-/// list are not kept.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FactionTheatre {
-    /// `name`, the stored name; the writer omits it only in checksum mode.
     pub name: Option<Vec<u8>>,
-    /// `tag`, the owner's tag.
     pub tag: Option<Vec<u8>>,
-    /// `commander`, the full reference; the writer omits a null one.
     pub commander: Option<u64>,
-    /// `ids`: strategic region ids as raw i32 bits, in native order.
     pub regions: Vec<u32>,
-    /// `countries` tags, in native order.
     pub countries: Vec<Vec<u8>>,
-    /// Hidden-pin tags, written under the same `hidden` key the event,
-    /// idea-category and achievement readers use.
     pub hidden: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Player {
     pub country: Vec<u8>,
-    /// Stored user name, distinct from the unsaved display name.
     pub user: Vec<u8>,
     pub country_leader: bool,
-    /// The player writer omits precisely the signed -1 value.
     pub id: i32,
 }
 
@@ -479,46 +343,26 @@ pub struct Save {
     pub campaign_id: Vec<u8>,
     pub version: Vec<u8>,
     pub seed: i32,
-    /// The save header's own allocation counters at the instant it was written.
     pub counters: AllocationCounters,
     pub countries: BTreeMap<Vec<u8>, Country>,
-    /// Full physical emission ledger after the witnessed whole-Item gate.
-    /// None for an ordinary strict parse without that identity witness.
     pub country_emissions: Option<Vec<SavedCountryEmission>>,
     pub states: BTreeMap<u32, State>,
-    /// Sparse: absent entries are not evidence of a missing engine province.
     pub provinces: BTreeMap<u32, ProvinceOverride>,
-    /// Full typed handles uniquely identify divisions across every country roster.
     pub divisions: BTreeMap<u64, Division>,
-    /// Full typed handles uniquely identify railway guns across country rosters.
     pub railway_guns: BTreeMap<u64, RailwayGun>,
     pub division_templates: BTreeMap<u64, DivisionTemplate>,
-    /// The country's explicit division_template_id roster, including unused ones.
     pub division_template_owners: BTreeMap<u64, Vec<u8>>,
-    /// One first-owned entry per ordered country pair, not a grouped war ID.
     pub war_relations: Vec<WarRelation>,
     pub war_goals: BTreeMap<u64, war_goals::WarGoal>,
     pub wargoal_countries: BTreeMap<Vec<u8>, war_goals::CountryInventory>,
-    /// Every saved `cached_sum`; a pair without one held an exact zero opinion.
     pub relation_opinions: Vec<RelationOpinion>,
     pub war_delivery_histories: Vec<war_participation::DeliveryHistory>,
-    /// Every typed relation block except `war_relation`, which has its own table.
     pub relation_tuples: Vec<RelationTuple>,
-    /// Per-country positional intel list, indexed by the target's canonical
-    /// country-link slot; a country without a list held no records at all,
-    /// which is a different fact from a list of all-zero records.
     pub country_intel: BTreeMap<Vec<u8>, Vec<CountryIntelRecord>>,
-    /// Physical country-emission order and each navy's ordered signed base keys.
-    /// This projection does not relax the full parser's duplicate-country rule.
     pub country_naval_launch: Vec<naval_launch::CountryNavalLaunchOccurrence>,
     pub factions: BTreeMap<u64, Faction>,
     pub faction_accounts: Option<faction_accounts::Accounts>,
-    /// The saving client's viewing country tag (`player`). The writer uses
-    /// the viewed country when signed-positive, else the fallback country.
-    /// Every game save has it; only synthetic fixtures omit it.
     pub player: Option<Vec<u8>>,
-    /// The saved header preserves repeated country keys and may retain users
-    /// absent from the live roster; it is not a current-player census.
     pub players: Vec<Player>,
     pub land_combats: BTreeMap<u64, LandCombat>,
     pub fleets: BTreeMap<u64, Fleet>,
@@ -530,10 +374,7 @@ pub struct Save {
     pub air_wings: BTreeMap<u64, AirWing>,
     pub naval_combats: BTreeMap<u64, NavalCombat>,
     pub naval_combat_participants: BTreeMap<(u64, u8, u32), NavalCombatParticipant>,
-    /// Saved (id, type) to equipment-definition key. Repeated definition names
-    /// are normal; the typed engine ids uniquely identify each saved variant.
     pub equipment_definitions: BTreeMap<(u32, u32), Vec<u8>>,
-    /// Repeated top-level blocks, in native registry order.
     pub saved_event_targets: Vec<saved_event_targets::Target>,
     pub air: air::Pack,
     pub characters: characters::Pack,
@@ -728,8 +569,6 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
     })
 }
 
-/// The strategic navy's `per_region_access`, written as flat region id and
-/// mode pairs, the same layout consumed when loading.
 fn naval_region_access(items: &[Item]) -> io::Result<Option<Vec<(u32, u8)>>> {
     let Some(navy) = field(items, b"strategic_navy")? else {
         return Ok(None);
@@ -755,9 +594,6 @@ fn naval_region_access(items: &[Item]) -> io::Result<Option<Vec<(u32, u8)>>> {
         .map(Some)
 }
 
-/// The strategic navy's `regional_convoys`: a leading record count, then anonymous records
-/// of `index` (the strategic region id) and `data`. Only records writing `efficiency` are
-/// kept; the others are full.
 fn regional_convoy_efficiency(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Decimal>>> {
     let Some(navy) = field(items, b"strategic_navy")? else {
         return Ok(None);
@@ -836,8 +672,6 @@ fn typed_handle(value: &Value) -> io::Result<u64> {
     Ok(handle)
 }
 
-/// Raw reference words where the native writer serializes a stored null
-/// reference as `{ id=0 type=0 }`.
 fn null_permitted_handle(value: &Value) -> io::Result<u64> {
     let fields = block(value)?;
     let id: u32 = integer(&required_bytes(fields, b"id")?)?;
@@ -927,11 +761,6 @@ fn parse_war_relation(
     })
 }
 
-/// The two relation classes whose rows belong to other recorded tables:
-/// War relations (WarRelations) and subject relations (Subjects). They still
-/// occupy an ordinal because the native serializable vector holds them too.
-/// Every other relation-shaped block becomes a RelationTuple, so a class this
-/// build spells differently is reported as a difference rather than dropped.
 pub const OWN_TABLE_RELATION_KINDS: [&[u8]; 2] = [b"war_relation", b"puppet"];
 
 fn parse_allocation_counters(items: &[Item]) -> io::Result<AllocationCounters> {
@@ -998,9 +827,6 @@ fn parse_relation_tuple(
     })
 }
 
-/// The list is positional: every element is an anonymous block whose lanes the
-/// writer emits in a fixed order and only when their raw qword is nonzero, so
-/// an omitted lane is an exact zero and an empty block is four exact zeroes.
 fn parse_country_intel(items: &[Item]) -> io::Result<Vec<CountryIntelRecord>> {
     let mut records = Vec::with_capacity(items.len());
     for item in items {
@@ -1088,7 +914,6 @@ fn parse_faction(items: &[Item]) -> io::Result<Faction> {
     })
 }
 
-/// `upgrades.slots`: one anonymous block per slot, its optional `advisor`.
 fn parse_faction_advisor_slots(items: &[Item]) -> io::Result<Vec<Option<Vec<u8>>>> {
     let Some(upgrades) = field(items, b"upgrades")? else {
         return Ok(Vec::new());
@@ -1113,8 +938,6 @@ fn parse_faction_advisor_slots(items: &[Item]) -> io::Result<Vec<Option<Vec<u8>>
         .collect()
 }
 
-/// The faction theatre writer emits `regions` only for a
-/// nonempty theatre array, so `pings={}` is an exact empty list.
 fn parse_faction_theatres(items: &[Item]) -> io::Result<Vec<FactionTheatre>> {
     let Some(pings) = field(items, b"pings")? else {
         return Ok(Vec::new());
@@ -1210,7 +1033,6 @@ fn object_id(items: &[Item]) -> io::Result<u64> {
     id.ok_or_else(|| invalid("saved object lacks typed id"))
 }
 
-/// A saved list of bare tokens, in order; empty when the key is absent.
 fn token_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     let Some(value) = field(items, key)? else {
         return Ok(Vec::new());
@@ -1227,9 +1049,6 @@ fn token_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
         .collect()
 }
 
-/// A state's `strategic_region_data`: one anonymous block per location,
-/// each holding exactly the location and its anchor province as two bare
-/// values, as the text save writes them.
 fn state_strategic_locations(state: &[Item]) -> io::Result<Vec<(Vec<u8>, u32)>> {
     let Some(value) = field(state, b"strategic_region_data")? else {
         return Ok(Vec::new());
@@ -1272,8 +1091,6 @@ fn integer_list(items: &[Item], key: &[u8]) -> io::Result<Vec<u32>> {
         .collect()
 }
 
-/// Binary saves are refused before parsing. This never rounds a save decimal or
-/// fills a missing field with a historical or runtime default.
 pub fn parse(input: &[u8]) -> io::Result<Save> {
     SaveDocument::read(input)?.parse()
 }
@@ -1330,8 +1147,6 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
         if countries.insert(tag.to_vec(), country).is_some() {
             return Err(invalid("duplicate country tag in save"));
         }
-        // The country writer omits units when all three unit rosters
-        // are empty. Other unit kinds within a present block are separate tables.
         if let Some(units) = field(country_items, b"units")? {
             for item in block(units)?
                 .iter()
@@ -1435,14 +1250,6 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                         cached_sum: integer(scalar(sum)?).map_err(context)?,
                     });
                 }
-                // The relation-status writer emits every serializable relation
-                // contiguously from one vector, so the ordinal counts every
-                // relation-shaped block, including the two families that have
-                // their own recorded tables. A block is recognised as a
-                // relation by the `first`/`second` pair that the base relation
-                // writer emits unconditionally for every class. This identifies
-                // the saved shape without reconstructing runtime membership;
-                // no other sub-block written here carries both keys.
                 let mut ordinal = 0;
                 for entry in record {
                     let Some(kind) = entry.key.as_deref() else {
@@ -1687,20 +1494,12 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
     })
 }
 
-/// Static province membership comes from the same verified content layers the
-/// viewer uses, not from the replay being checked. Id zero is the map sentinel.
-/// The state-history reader keeps `provinces` apart from history; province
-/// initialization assigns each province's state from that array. No owner,
-/// controller, core, building or victory-point
-/// history value is a membership input; comparisons take those from the save.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapMembership {
     pub provinces: BTreeMap<u32, Option<u32>>,
 }
 
 impl MapMembership {
-    /// Every record's id, as `definition.csv` is read for the map
-    /// (`installed_content_core::map::definition_rows`).
     pub fn from_definition(bytes: &[u8]) -> io::Result<Self> {
         let mut provinces = BTreeMap::new();
         for row in installed_content_core::map::definition_rows(bytes)? {
@@ -1714,7 +1513,6 @@ impl MapMembership {
         Ok(Self { provinces })
     }
 
-    /// Consume the shared StateDefinition used by every content consumer.
     pub fn add_state_history(
         &mut self,
         state: &installed_content_states::states::StateDefinition,
@@ -1733,7 +1531,6 @@ impl MapMembership {
                     "state {id} uses unknown or already assigned province {province}"
                 )));
             }
-            // Province initialization ignores repeats within one state.
             assignments.insert(province);
         }
         if assignments.is_empty() {
@@ -1746,9 +1543,6 @@ impl MapMembership {
     }
 }
 
-/// A province's state assignment is either verified (including no state), or
-/// unknown because it is a candidate of an excluded state. Unknown never means
-/// unassigned; its state ids identify the exclusions a consumer must report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProvinceMembership {
     Known(Option<u32>),
@@ -1761,14 +1555,9 @@ pub struct ExcludedState {
     pub reasons: Vec<String>,
 }
 
-/// Verified assignments for the readable states, with explicit exclusions for
-/// every state whose reader produced a diagnostic. The province census remains
-/// exact; the excluded states' candidate provinces have unknown membership.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartialMapMembership {
     pub provinces: BTreeMap<u32, ProvinceMembership>,
-    /// Clean kept templates, even when another template makes a province's
-    /// assignment unknown.
     pub known_states: BTreeSet<u32>,
     pub excluded_states: BTreeMap<u32, ExcludedState>,
     pub notes: Vec<String>,
@@ -1811,8 +1600,6 @@ pub fn read_partial_map_membership(layers: &ResolvedLayers) -> io::Result<Partia
     partial_map_membership(layers, &states, notes)
 }
 
-/// Read state history once for the oracle's membership and authored resources.
-/// A resource representation failure does not discard verified membership.
 pub fn read_partial_state_history(
     layers: &ResolvedLayers,
 ) -> io::Result<(
@@ -1862,8 +1649,6 @@ fn partial_map_membership(
         if excluded_states.contains_key(&id) {
             continue;
         }
-        // Validate every clean assignment before marking excluded candidates
-        // unknown, so an exclusion cannot hide a clean/clean overlap.
         known.add_state_history(state)?;
         known_states.insert(id);
     }
@@ -1881,14 +1666,6 @@ fn partial_map_membership(
     Ok(membership)
 }
 
-/// The oracle uses the same native reader and recorded registry/defines/map
-/// as the viewer, retaining explicit partial coverage.
-/// A `Deferred effect` warns of an unported token reader, not an unapplied
-/// history result. Reading history calls each effect's key reader and queues
-/// state-history commands by date. Game setup runs the history commands in
-/// their state scopes. We read those scripts exactly, but never substitute
-/// their authored operands for
-/// the saved post-setup control, buildings or province victory points.
 fn content_state_history(
     layers: &ResolvedLayers,
 ) -> io::Result<(
@@ -1906,9 +1683,6 @@ fn content_state_history(
     Ok((states, notes))
 }
 
-/// The oracle's state history over the shipped game in `BATTLE_PLAN_GAME_DIR`: every
-/// state file reads with no diagnostic (a deferred history effect once refused
-/// it whole).
 #[test]
 #[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
 fn vanilla_state_history_reads_without_diagnostics() {

@@ -5,7 +5,6 @@ import type { HeatChartProps } from './HeatChart';
 import type { TimeChartProps } from '../TimeChart';
 import { tokensFromValues } from '../tokens.ts';
 
-// Exercise the component's own hooks and handlers without a browser/build.
 test('campaign labels, scrolled cells and keyboard rows share the bounded viewport', async () => {
   const memory: unknown[] = [];
   const effects: (() => unknown)[] = [];

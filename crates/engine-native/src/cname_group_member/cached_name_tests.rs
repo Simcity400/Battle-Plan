@@ -39,7 +39,6 @@ fn read_name(
     (result, owned, required)
 }
 
-/// The census count probe: no bytes stored, the validated demand counted.
 fn count_name(bytes: &[u8]) -> (Result<Option<Span>, &'static str>, usize) {
     let mut names = Names {
         bytes: crate::walk::Buffer::Count,
@@ -83,7 +82,6 @@ fn cached_army_name_keeps_empty_inline_heap_and_embedded_nul_bytes() {
             Ok(text.len())
         );
     }
-    // Generator fields and template/group pointers are outside this reader.
     let mut bytes = member(b"Retained");
     bytes[TYPE..TYPE + 4].copy_from_slice(&i32::MIN.to_le_bytes());
     bytes[TEMPLATE_REFERENCE..TEMPLATE_REFERENCE + 8].fill(0xff);
@@ -129,9 +127,6 @@ fn cached_army_name_refuses_identity_headers_and_short_payloads_independently() 
     assert_eq!(read_name(&bytes[..0x104], 64).0, Err(CACHED[3]));
 }
 
-/// The cache read from an already copied member span: the same result as
-/// the separate reads, a heap text that fits is one copy of its bytes and
-/// terminator, and anything else falls back to the separate reads' errors.
 #[test]
 fn member_span_cache_matches_separate_reads_with_one_heap_copy() {
     struct Reads<'a>(SliceMemory<'a>, std::cell::RefCell<Vec<(usize, usize)>>);
@@ -180,7 +175,6 @@ fn member_span_cache_matches_separate_reads_with_one_heap_copy() {
     assert_eq!(from_span(&bad, 64).2, 0);
     let bytes = member(text);
     assert_eq!(from_span(&bytes[..0x104], 64).0, Err(CACHED[3]));
-    // A text the arena cannot hold with its terminator grows as before.
     let (result, arena, required, _) = from_span(&bytes, 4);
     assert_eq!(result, Ok(Some((0, text.len()))));
     assert_eq!((&arena[..text.len()], required), (&text[..], text.len()));

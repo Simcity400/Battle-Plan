@@ -5,7 +5,6 @@ use crate::{
 };
 use replay_columnar::{manifest::Status, store::Store};
 
-/// One hour: the aggregates (slot, contribution) and the table's status.
 fn feed(store: &mut Store, hour: i32, aggregates: &[(u32, i64)], status: Status) {
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     let rows: Vec<ThreatCountryAggregateRow> =
@@ -34,9 +33,6 @@ const HOURS: &Hours = &[
     (&[], Status::Complete),
 ];
 
-/// The sum adds every slot's contribution, negative ones included and past the game's cap, as
-/// rows come, change and go; no contribution is a recorded zero; the input not read in full
-/// withholds the table by name.
 #[test]
 fn the_sum_adds_every_contribution_as_rows_come_change_and_go() {
     let mut store = store();
@@ -53,8 +49,6 @@ fn the_sum_adds_every_contribution_as_rows_come_change_and_go() {
     }
 }
 
-/// A contribution not recorded leaves the sum not recorded, never a sum without it; once
-/// recorded again the sum returns.
 #[test]
 fn a_contribution_not_recorded_leaves_the_sum_not_recorded() {
     let mut store = store();
@@ -76,7 +70,6 @@ fn a_contribution_not_recorded_leaves_the_sum_not_recorded() {
     assert_eq!(sum(&store), Some(vec![Some(400)]));
 }
 
-/// A resume reads the aggregates whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {

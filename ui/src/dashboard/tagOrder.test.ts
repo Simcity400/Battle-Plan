@@ -6,10 +6,8 @@ import { compareTags } from './tagOrder.ts';
 
 test('tags order by their UTF-8 bytes, as the data service (Rust) orders them', () => {
   const sorted = (tags: string[]) => [...tags].sort(compareTags);
-  // Upper case before lower case, unlike localeCompare.
   assert.deepEqual(sorted(['aaa', 'AAA', 'BBB', 'Aa']), ['AAA', 'Aa', 'BBB', 'aaa']);
   assert.ok('aaa'.localeCompare('AAA') < 0, 'localeCompare disagrees');
-  // U+E000 before an astral character, unlike UTF-16 code units.
   assert.deepEqual(sorted(['\u{10000}', '']), ['', '\u{10000}']);
   assert.ok('\u{10000}' < '', 'code units disagree');
   assert.equal(compareTags('GER', 'GER'), 0);

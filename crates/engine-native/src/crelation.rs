@@ -1,4 +1,3 @@
-//! Fields shared by relation subclasses.
 
 use crate::{
     cair_base_access_relation, cattache_relation, cboost_party_popularity_relation,
@@ -10,31 +9,18 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Stored relation type identifier.
 pub const TYPE_ID: usize = 0x08;
-/// War-relation type used by world-tension policy caps.
 pub const TENSION_CAP_TYPE: u32 = 0x380a;
-/// First country-link reference, u32.
 pub const FIRST_COUNTRY: usize = 0x10;
-/// Second country-link reference, u32.
 pub const SECOND_COUNTRY: usize = 0x14;
-/// Raw start hour, i32.
 pub const START_HOUR: usize = 0x20;
-/// Embedded start date with signed raw hour.
 pub const START_DATE: usize = 0x18;
-/// Raw end hour, i32.
 pub const END_HOUR: usize = 0x38;
-/// Cancellation byte; nonzero replaces start-date serialization with cancellation.
 pub const CANCEL: usize = 0x48;
-/// CRelation retired byte; native relation predicates exclude every nonzero value from the active set.
 pub const RETIRED: usize = 0x49;
 
-/// Base relation constructor installing vtable and passed type.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d7_9400);
 
-/// Supported relation subclasses as primary vtable RVA and type-word pairs.
-/// War and subject relations have separate recorded tables but remain admitted
-/// here so unclassified vtables produce explicit failures.
 pub const CLASSES: [(Rva, u32); 19] = [
     (
         cnaval_blockade_relation::VTABLE_RVA,
@@ -96,7 +82,6 @@ pub const CLASSES: [(Rva, u32); 19] = [
     ),
 ];
 
-/// The supported primary vtables, in [`CLASSES`] order.
 pub const CLASS_VTABLES: [Rva; CLASSES.len()] = {
     let mut out = [CLASSES[0].0; CLASSES.len()];
     let mut index = 0;
@@ -107,7 +92,6 @@ pub const CLASS_VTABLES: [Rva; CLASSES.len()] = {
     out
 };
 
-/// Type word paired with this supported primary vtable.
 pub fn class_type(vtable_rva: Rva) -> Option<u32> {
     let mut index = 0;
     while index < CLASSES.len() {

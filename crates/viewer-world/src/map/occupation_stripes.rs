@@ -1,4 +1,3 @@
-//! Occupation map stripes use the occupied country's inherited primary colour.
 use installed_content_core::{defines::Defines, map::MapData};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -7,7 +6,6 @@ use viewer_foundation::map::color_inheritance::inheritance;
 
 pub use super::air_assignment::Field;
 
-/// The content's occupation-country stripe opacity, clamped before byte packing.
 #[derive(Clone, Copy, Debug)]
 pub struct Alpha(f32);
 
@@ -26,8 +24,6 @@ fn note(out: &mut Field, why: impl Into<String>, count: usize) {
     *out.refused.entry(why.into()).or_default() += count;
 }
 
-/// Prepare a fresh local occupation presentation. The caller selects Resistance
-/// or Compliance; another mode supplies an empty field to clear its old stripes.
 pub fn read(
     frame: &DecodedFrame,
     viewer: u32,
@@ -328,9 +324,6 @@ mod tests {
         let actual = field(&fixture());
         assert_eq!(actual.provinces, [(1, [191, 127, 63, 127])].into());
         assert!(actual.refused.is_empty());
-        // Zero levels and inactive resistance do not suppress country stripes.
-        // Another controller, zero controller, unoccupied state and a state
-        // outside the exact controlled roster remain unstriped.
     }
 
     #[test]

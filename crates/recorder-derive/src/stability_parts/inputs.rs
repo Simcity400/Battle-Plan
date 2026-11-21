@@ -1,5 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{Columns, Hour, columns};
 use replay_data::{
@@ -12,14 +10,12 @@ pub(super) fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The inputs' columns the parts read: every operand and modifier total, and the modifier keys.
 const INPUT_COLUMNS: u64 = (1 << 35) - 1;
 const CHARACTER: [usize; 7] =
     columns::<CharacterRow, 7>(["name_token_id", "token", "template_present", "template_tag", "template_file", "template_line", "template_generated"]);
 const LITERAL: [usize; 1] = columns::<LexicalTokenRow, 1>(["literal"]);
 const SAMPLE_HOUR: [usize; 1] = columns::<SliceReadRow, 1>(["sample_hour"]);
 
-/// `table`'s row in `slot`, its fields `mask` names, as the row decoder reads them.
 fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io::Result<R> {
     let held = hour.table(table);
     let key = held.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
@@ -27,19 +23,16 @@ fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io
     R::from_wire_fields(key, mask, &mut |column| replay_frame::frame::field(&held, slot, column, format))
 }
 
-/// The keys of the rows the hour inserted, deleted or wrote of `table`.
 fn edited<'a>(hour: &'a Hour<'a>, table: TableId) -> impl Iterator<Item = u128> + 'a {
     let held = hour.table(table);
     let slots = hour.written_rows(table, Columns::Every);
     slots.into_iter().filter_map(move |slot| held.key(slot)).chain(hour.deleted_keys(table))
 }
 
-/// Whether country `id` has a Countries row.
 pub(super) fn live(hour: &Hour<'_>, id: u32) -> bool {
     hour.table(TableId::Countries).slot(u128::from(id)).is_some()
 }
 
-/// The countries whose Countries row the hour added or removed.
 pub(super) fn touched_countries(hour: &Hour<'_>, out: &mut Vec<u32>) {
     let changes = hour.changes(TableId::Countries);
     let held = hour.table(TableId::Countries);
@@ -47,19 +40,16 @@ pub(super) fn touched_countries(hour: &Hour<'_>, out: &mut Vec<u32>) {
     out.extend(changes.deleted.iter().map(|&(_, key)| key as u32));
 }
 
-/// Country `id`'s CountryStabilityInputs row as last read; none when it has none.
 pub(super) fn inputs(hour: &Hour<'_>, id: u32) -> io::Result<Option<CountryStabilityInputRow>> {
     let held = hour.table(TableId::CountryStabilityInputs);
     held.slot(u128::from(id)).map(|slot| row(hour, TableId::CountryStabilityInputs, slot, INPUT_COLUMNS)).transpose()
 }
 
-/// Every country with a CountryStabilityInputs row.
 pub(super) fn every_input(hour: &Hour<'_>, out: &mut Vec<u32>) {
     let held = hour.table(TableId::CountryStabilityInputs);
     out.extend(held.rows().filter_map(|slot| held.key(slot)).map(|key| key as u32));
 }
 
-/// The countries whose CountryStabilityInputs row the hour changed.
 pub(super) fn touched_inputs(hour: &Hour<'_>, out: &mut Vec<u32>) {
     out.extend(edited(hour, TableId::CountryStabilityInputs).map(|key| key as u32));
 }
@@ -68,14 +58,10 @@ fn read_key(table: TableId, id: u32) -> u128 {
     (table.index() as u128) << 32 | u128::from(id)
 }
 
-/// The hour country `id`'s inputs were last read at, as SliceReads dates them; none when it dates
-/// none.
 pub(super) fn inputs_read(hour: &Hour<'_>, id: u32) -> Option<i32> {
     read_hour(hour, TableId::CountryStabilityInputs, id)
 }
 
-/// The hour country `id`'s lines were last read at; none when SliceReads dates none, as for a
-/// country whose read found no lines.
 pub(super) fn lines_read(hour: &Hour<'_>, id: u32) -> Option<i32> {
     read_hour(hour, TableId::CountryStabilityLines, id)
 }
@@ -86,14 +72,11 @@ fn read_hour(hour: &Hour<'_>, table: TableId, id: u32) -> Option<i32> {
     held.number(SAMPLE_HOUR[0], slot).map(|hour| hour as i32)
 }
 
-/// The countries whose inputs' or lines' read hours the hour changed.
 pub(super) fn touched_reads(hour: &Hour<'_>, out: &mut Vec<u32>) {
     let ours = [TableId::CountryStabilityInputs.index() as u128, TableId::CountryStabilityLines.index() as u128];
     out.extend(edited(hour, TableId::SliceReads).filter(|key| ours.contains(&(key >> 32))).map(|key| key as u32));
 }
 
-/// Each country's CountryStabilityLines keys below the country (line, then modifier key),
-/// ascending: tree order.
 #[derive(Default)]
 pub(super) struct Lines(HashMap<u32, Vec<u64>>);
 
@@ -102,7 +85,6 @@ fn line_country(key: u128) -> u32 {
 }
 
 impl Lines {
-    /// Reads every line's key.
     pub(super) fn rebuild(&mut self, hour: &Hour<'_>) {
         self.0.clear();
         let held = hour.table(TableId::CountryStabilityLines);
@@ -114,7 +96,6 @@ impl Lines {
         }
     }
 
-    /// Follows the hour's changes of the lines, adding to `out` each country whose lines changed.
     pub(super) fn follow(&mut self, hour: &Hour<'_>, out: &mut Vec<u32>) {
         let changes = hour.changes(TableId::CountryStabilityLines);
         if changes.whole {
@@ -145,7 +126,6 @@ impl Lines {
         out.extend(changes.written.iter().filter_map(|&(slot, _)| held.key(slot)).map(line_country));
     }
 
-    /// Country `id`'s lines, in tree order.
     pub(super) fn of(&self, hour: &Hour<'_>, id: u32) -> io::Result<Vec<CountryStabilityLineRow>> {
         let Some(keys) = self.0.get(&id) else {
             return Ok(Vec::new());
@@ -161,17 +141,13 @@ impl Lines {
     }
 }
 
-/// A part's character as Characters held it, each field none while not known.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Naming {
     pub(super) script: Option<Box<[u8]>>,
     pub(super) saved: Option<Box<[u8]>>,
-    /// The template it was built from; `Some(None)` when it holds none.
     pub(super) template: Option<Option<Template>>,
 }
 
-/// A character's template: its tag as LexicalTokens spells it (none while not held), and where
-/// it was read.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Template {
     pub(super) tag: Option<Box<[u8]>>,
@@ -181,7 +157,6 @@ pub(super) struct Template {
 }
 
 impl Naming {
-    /// A part that names no character.
     pub(super) fn none() -> Self {
         Self { script: Some(Box::default()), saved: Some(Box::default()), template: Some(None) }
     }
@@ -191,9 +166,6 @@ impl Naming {
     }
 }
 
-/// Character `id` as the hour holds it, each field none while not known: Characters not
-/// complete or holding no such row, a token's spelling not held. A character with no script token
-/// (a negative token, or token zero unspelled) has an empty one.
 pub(super) fn character(hour: &Hour<'_>, id: u32) -> Naming {
     if !hour.complete(TableId::Characters) {
         return Naming::unknown();
@@ -226,7 +198,6 @@ pub(super) fn character(hour: &Hour<'_>, id: u32) -> Naming {
     Naming { script, saved: text(CHARACTER[1]), template }
 }
 
-/// LexicalTokens' spelling of `token`; none while not held.
 fn spelling(hour: &Hour<'_>, token: u32) -> Option<Box<[u8]>> {
     if !hour.complete(TableId::LexicalTokens) {
         return None;

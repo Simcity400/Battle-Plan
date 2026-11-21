@@ -1,4 +1,3 @@
-//! Event scope copies and description-only target storage.
 use crate::triggers::Failure;
 
 use std::{cell::RefCell, rc::Rc};
@@ -56,7 +55,6 @@ pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize
 }
 
 fn terminal(graph: &EventScopes, mut at: usize, root: bool) -> Result<usize, Failure> {
-    // Both storage walks stop after 101 links.
     for _ in 0..101 {
         let current = graph.scopes.get(at).ok_or("event scope is not given")?;
         let next = linked(graph, at, if root { current.root } else { current.from })?;
@@ -74,7 +72,6 @@ fn lookup(rows: &[(Vec<u8>, EventObject)], name: &[u8]) -> Option<EventObject> {
         .map(|(_, value)| *value)
 }
 
-/// Graph projection needs no World; unavailable operands are checked when read.
 pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure> {
     let scope = graph.scopes.get(at).ok_or("event scope is not given")?;
     let selected = |link| {
@@ -100,9 +97,6 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure>
         target_state: graph.variables.target_state,
         target_province: graph.variables.target_province,
         target_leader: graph.variables.target_leader,
-        // Clearing country/state/combat setters
-        // leave no character. Retained operands
-        // use distinct combined carriers, including after link copies.
         bare: matches!(
             scope.this,
             EventObject::Country(_) | EventObject::State(_) | EventObject::Combat
@@ -111,7 +105,6 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure>
     })
 }
 
-/// Outer completion is independent of whether an operand needed World.
 pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), Failure> {
     if !graph.tooltip_targets.is_empty() {
         let owner = terminal(graph, at, false)?;
@@ -121,7 +114,6 @@ pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<
     Ok(())
 }
 
-/// Target lookup order: local tooltip, local saved, global tooltip.
 pub(crate) fn event_tooltip_target(
     graph: &EventScopes,
     at: usize,
@@ -141,7 +133,6 @@ pub(crate) fn event_tooltip_target(
         .or_else(|| lookup(&graph.global_tooltip_targets, name)))
 }
 
-/// Restores a caller's graph binding after a shared description invocation.
 pub struct EventGraphGuard<'g, 'e, 'a> {
     evaluator: &'g Evaluator<'e, 'a>,
     previous: Option<Rc<RefCell<EventScopes>>>,
@@ -234,7 +225,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// Project only the immediate links; the cursor keeps deeper links intact.
     pub fn event_scopes(&self, at: usize) -> Result<Scopes, Failure> {
         let binding = self.event_graph.borrow();
         let graph = binding
@@ -244,7 +234,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         project(&graph, at)
     }
 
-    /// Nested checks share TLS temps.
     pub fn begin_description(&self) {
         if self.description_depth.get() == 0 && self.checking.get() == 0 {
             self.local_temps.borrow_mut().clear();
@@ -253,8 +242,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.description_depth.set(self.description_depth.get() + 1);
     }
 
-    /// Begin TLS in the outer caller, before child scope changes.
-    /// Retain an unavailable seed as a failed temp, without refusing unrelated text.
     pub(crate) fn begin_description_in(&self, scopes: Scopes) {
         let outer = self.description_depth.get() == 0 && self.checking.get() == 0;
         self.begin_description();
@@ -263,7 +250,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// Clear only terminal FROM storage and global tooltip targets.
     pub fn end_description(&self, scopes: Scopes) -> Result<(), Failure> {
         let depth = self.description_depth.get();
         if depth == 0 {
@@ -282,7 +268,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// Save the current object on terminal ROOT.
     pub fn save_tooltip_target(&self, name: &[u8], scopes: Scopes) -> Result<(), Failure> {
         let at = scopes
             .cursor
@@ -293,11 +278,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .ok_or("description target needs caller scope graph")?
             .borrow_mut();
         let owner = terminal(&graph, at, true)?;
-        // Saved targets project UNIT/RAID, but have no PROJECT arm.
         let target = match graph.scopes[at].this {
             EventObject::Project { .. } => EventObject::State(super::NULL_STATE),
-            // Check country before character and write one
-            // saved-target arm; scope copies still retain both operands.
             EventObject::CountryUnitLeader { country, leader } => {
                 if self.variable_scope_has_country(country)? {
                     EventObject::Country(country)
@@ -320,8 +302,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// Write the description registry, not saved globals.
-    /// State precedes country in a combined scope.
     pub(crate) fn save_global_tooltip_target(
         &self,
         name: &[u8],
@@ -345,7 +325,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 EventObject::State(state)
             }
             EventObject::CountryState { country, .. } => EventObject::Country(country),
-            // Choose positive country before ability caster.
             EventObject::CountryUnitLeader { country, leader } => {
                 if self.variable_scope_has_country(country)? {
                     EventObject::Country(country)
@@ -393,8 +372,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             event_tooltip_target(&graph, at, name)?
         };
         Ok(target.map(|target| match (reader, target) {
-            // Context and text have no saved RAID setter;
-            // text also has no saved UNIT setter. Keep the caller's object.
             (Reader::Context | Reader::Text, EventObject::Raid(_))
             | (Reader::Text, EventObject::Unit(_)) => scopes.this,
             (_, target) => object(target),
@@ -466,7 +443,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             let Some(result) = self.enter_graph(then, first)? else {
                 return Ok(None);
             };
-            // Dotted-tail exit restores the original PREV.
             let binding = self.event_graph.borrow();
             let mut graph = binding
                 .as_ref()
@@ -514,7 +490,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             self.saved_scope(name.as_bytes(), Reader::Context, scopes)?
                 .map(|s| s.this)
         } else {
-            // All non-link selectors still use the existing resolver/evaluator.
             self.enter_flat(parsed, scopes)?
         };
         let Some(value) = value else {
@@ -550,7 +525,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Link::Itself => Link::Scope(source),
             other => other,
         };
-        // Copying members carries links; only following one reads it.
         copied.root = match graph.scopes[caller].root {
             Link::Itself => Link::Scope(caller),
             root => root,
@@ -559,7 +533,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         copied.this = event_object(this)?;
         let index = graph.scopes.len();
         graph.scopes.push(copied);
-        // Copying members copies storage rather than sharing it.
         if let Some(targets) = graph.tooltip_targets.get(&source).cloned() {
             graph.tooltip_targets.insert(index, targets);
         }
@@ -569,14 +542,12 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(index)
     }
 
-    /// Fresh scorer scope with FROM copied independently.
     pub(crate) fn fresh_country_scope(
         &self,
         country: Option<u32>,
         from: Option<Scopes>,
     ) -> Result<Scopes, Failure> {
         let binding = self.event_graph.borrow();
-        // Default construction keeps country zero.
         let this = EventObject::Country(country.unwrap_or(0));
         let Some(graph) = binding.as_ref() else {
             let this = object(this);
@@ -628,7 +599,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.event_scopes(index)
     }
 
-    /// Set each target on the same copied scope.
     pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
@@ -647,7 +617,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Collection setters keep caller ROOT/FROM and install PREV.
     pub fn with_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
@@ -659,8 +628,6 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         })
     }
 
-    /// Fresh collection scopes use default seeds; terminal representatives
-    /// follow the caller's ROOT environment.
     pub(crate) fn collection_scope(
         &self,
         scopes: Scopes,

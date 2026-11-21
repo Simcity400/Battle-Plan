@@ -1,5 +1,3 @@
-//! Worker-only deep state. The ordinary observer owns the certificate; these
-//! values cannot make an incomplete interval complete.
 use super::*;
 use std::{
     collections::HashMap,
@@ -35,13 +33,9 @@ pub(in super::super) fn certified() -> Option<Certified> {
         && active() == 0)
         .then(|| Certified(cache()))
 }
-/// Recovery still acquires/authenticates the complete registry and every
-/// prefix. Only untouched deep values from the last complete dependency
-/// interval survive a local occurrence-log refusal.
 pub(in super::super) struct Census {
     proof: CensusProof,
 }
-// Callback revisions revoke carried values even after STORE has been released.
 pub(in super::super) struct CensusProof {
     revision: u64,
     epoch: u64,
@@ -58,7 +52,6 @@ impl CensusProof {
     }
 }
 impl Census {
-    /// Holds STORE for this one receiver only; no callback waits for a walk.
     pub(in super::super) fn get(
         &self,
         source: &native::RegistryRow,
@@ -98,8 +91,6 @@ pub(in super::super) fn census() -> Option<Census> {
         .get()?
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Capture before admission: a completed callback after the gate must not
-    // become part of the proof for values acquired before its lost edit.
     let revision = REVISION.load(Ordering::Acquire);
     let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
     if native::mutations::WRITER_AUDIT_REFUSAL.is_some()
@@ -144,7 +135,6 @@ pub(super) fn seed(
         }) {
             continue;
         }
-        // A witness proves the state its walk held; a census read replaces that state.
         super::witness::remove(source.pointer());
         held.insert(source.id, (source.pointer(), Arc::clone(&row.design)));
     }
@@ -220,7 +210,6 @@ fn apply_to_shared(
             state.named_sources = engine_allocation::copy_vec(&sources.named)
                 .map_err(|_| "variant source change allocation failed")?;
             let pointer = *pointer;
-            // The design's witness proves its last walk's sources, which this change replaced.
             super::witness::remove(pointer);
             held.insert(row.variant, (pointer, Arc::new(state)));
             continue;
@@ -289,8 +278,6 @@ fn apply_to_shared(
     }
     Ok(())
 }
-/// Lifetime events invalidate dependent parent identities, not just their own
-/// rows. Rebuild the census rather than carry a child of a consumed binding.
 pub(super) fn check_lifetimes(events: &[Event]) -> Result<(), &'static str> {
     if !events.iter().any(|event| event.removed) {
         return Ok(());
@@ -571,7 +558,6 @@ mod census_tests {
         AFTER_CENSUS_ADMISSION.with(|hook| hook.set(Some(admitted)));
         let recovered = acquire(&space.memory(), space.base, &sources[..7], true);
         writer.join().unwrap();
-        // The waiting writer's receiver is marked for the boundary's live read.
         assert!(repair::pending());
         assert!(pending());
         assert!(LOCK_CONTENTIONS.load(Ordering::Relaxed) >= 1);
@@ -649,7 +635,6 @@ mod census_tests {
         let (_space, sources, _) = setup();
         let proof = census().unwrap();
         repair::mark(sources[0].pointer());
-        // Even unchanged writer/dependency revisions cannot certify a mark.
         assert_eq!(proof.proof.revision, REVISION.load(Ordering::Acquire));
         assert_eq!(
             proof.proof.dependencies,
@@ -667,7 +652,6 @@ mod census_tests {
         let removed = sources[2];
         let at = changed.pointer() + native::AUTO_UPGRADED - space.bytes.as_ptr() as usize;
         space.bytes[at] = 1;
-        // The boundary reads the marked design; unrelated deep state keeps its proof.
         mark_design(&space.memory(), space.base, changed.pointer(), false);
         let mut changes = Vec::new();
         assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
@@ -719,7 +703,6 @@ mod census_tests {
         );
         assert_eq!(views(reduced), views(full));
 
-        // A read refusal in a design the reduced census reads is the full reader's verdict.
         let new = sources.last().unwrap().pointer();
         let failing = Meter {
             space: &space,
@@ -753,8 +736,6 @@ mod census_tests {
         assert!(!cache().contains_key(&removed.id));
         assert_eq!(cache().len(), sources.len());
     }
-    // Exercise the shared owner's real dispatch gate and original-call flight,
-    // rather than calling the production adapter or changing its counter.
     fn shared_bonus_refresh() -> world_input_changes::Original {
         world_input_changes::forwarder(Some(world_input_changes::Forwarder {
             call: forwarded,
@@ -803,7 +784,6 @@ mod census_tests {
             let store = STORE.get().unwrap().lock().unwrap();
             sources::certified_bindings().unchanged(design.id, &store.interests)
         };
-        // The same bytes again: its witness reads back the same, so nothing is decoded.
         mark_design(&space.memory(), space.base, design.pointer(), false);
         assert_eq!(drain(space.base, 8, &mut changes), Ok(1));
         assert_eq!(changes.len(), 1);
@@ -825,8 +805,6 @@ mod census_tests {
         let (space, sources, _) = setup();
         BASE.store(space.base, Ordering::Release);
         let refresh = shared_bonus_refresh();
-        // The fixture supplies a fresh census before shared dispatch is opened.
-        // Such a census still cannot survive a new unforwarded original.
         let proof = census().unwrap();
         let revision = REVISION.load(Ordering::Acquire);
         let pause = Barrier::new(2);
@@ -924,7 +902,6 @@ mod census_tests {
         BASE.store(space.base, Ordering::Release);
         let refresh = shared_bonus_refresh();
         observe_world_forwarder(true);
-        // Event storage that cannot grow makes this tombstone refuse locally.
         assert!(collector_test_support::with_allocations_denied(|| {
             retire(&space.memory(), space.base, sources[1].pointer())
         }));
@@ -940,7 +917,6 @@ mod census_tests {
         let revision = REVISION.load(Ordering::Acquire);
         assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
         assert!(REVISION.load(Ordering::Acquire) > revision);
-        // The forwarded refresh marked its receiver; the next boundary reads it.
         assert!(census().is_none());
         assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
         let recovered = acquire(&space.memory(), space.base, &sources, true);
@@ -1096,7 +1072,6 @@ mod census_tests {
             return;
         }
         let (space, sources, _) = setup();
-        // Event storage that cannot grow makes this tombstone refuse locally.
         assert!(collector_test_support::with_allocations_denied(|| {
             retire(&space.memory(), space.base, sources[0].pointer())
         }));
@@ -1160,9 +1135,6 @@ mod census_tests {
         }
         let (space, sources, _) = setup();
         BASE.store(space.base, Ordering::Release);
-        // The last registry row is deliberately outside the saved baseline.
-        // Keep an actual log owner inside its original while a second thread
-        // edits that draft, exercising the rejected callback admission path.
         let draft = sources[7].pointer();
         let pause = Barrier::new(2);
         let pause_pointer = &pause as *const Barrier as usize;
@@ -1183,7 +1155,6 @@ mod census_tests {
         assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(0));
         assert!(!needs_full());
         assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
-        // Publishing that same draft is different: it adds a saved member.
         unrecorded_writer(Receiver::Published, sources[7].pointer(), None);
         assert!(drain(space.base, 7, &mut Vec::new()).is_err());
         assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 0);
@@ -1206,7 +1177,6 @@ mod census_tests {
         );
         assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(2));
         let proof = census().unwrap();
-        // The standing boundary read both receivers and settled them back into the carry.
         for at in [1, 2] {
             assert_eq!(
                 proof.get(&sources[at]).as_deref(),

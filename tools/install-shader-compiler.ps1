@@ -1,7 +1,3 @@
-# Puts the pinned, SPIR-V-enabled upstream DXC that compiles PdxShader effects, dxcompiler.dll and
-# its dxil.dll, into -Destination: beside replay-desktop.exe for the installer and for development,
-# beside the viewer harness or test programs. The SDK's DXC can advertise -spirv while being built
-# without its code generator. Its licences ship from the repository's LICENSES folder.
 [CmdletBinding()]
 param(
     [string]$ArchivePath,
@@ -10,7 +6,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# Release asset digest published by microsoft/DirectXShaderCompiler on GitHub.
 $releaseUri = 'https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/dxc_2026_07_29.zip'
 $expectedDigest = 'a1dfb116ba3eeae6a1582291b53a8e7bf65ad760676bd3194685c8f7367cd241'
 $downloaded = $false
@@ -28,7 +23,6 @@ try {
     $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $ArchivePath))
     try {
         New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-        # Extract only named files: no authored path, native installer or machine-wide setting.
         foreach ($member in @('bin/x64/dxcompiler.dll', 'bin/x64/dxil.dll')) {
             $entry = $zip.Entries | Where-Object { $_.FullName.Replace('\', '/') -ceq $member } | Select-Object -First 1
             if (-not $entry) { throw "DXC archive is missing $member" }

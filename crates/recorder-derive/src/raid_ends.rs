@@ -1,13 +1,3 @@
-//! `RaidEnds`: a log of raids' ends, a row living the hour a raid's row is first read ended or
-//! is gone without an ended read, carrying what a finished raid shows, so a reply reads one row
-//! per finished raid instead of its row's history. The victim is the game's target country rule
-//! ([`RaidScope::country_with`]) at the end hour: an ended raid's frozen at its
-//! first ended read. A raid already ended at the writer's first read in the run has no row; one
-//! gone during hours Raids was not complete ends at the first hour it is read again.
-//!
-//! Held, per live raid not yet ended: the first hour its row was read and the first read it was
-//! launched, which no table holds, so they are the resume state (about 24 bytes a live raid). An
-//! ended raid holds nothing; a deleted one's last cells are the hour's kept cells.
 
 use crate::{
     forces::invalid,
@@ -22,16 +12,12 @@ use replay_columnar::{
 use replay_data::rows::{CountryLinkRow, ProvinceRow, RaidEndRow, RaidScope, StateRow, TableId, TagHolderRow};
 use std::{collections::HashMap, io};
 
-/// Raids' columns, as the schema numbers them.
 const PARENT_SLOT: usize = 0;
 const PHASE: usize = 2;
 const OUTCOME: usize = 3;
 const TRAVELLED: usize = 16;
 const PREPARATION: usize = 17;
-/// Raids' columns whose change can launch or end a raid.
 const COURSE: [usize; 2] = [PHASE, TRAVELLED];
-/// RaidTargets' columns as the schema numbers them, the scope's nine then the type token, and
-/// how the end row holds each.
 const TARGET: [(usize, Kind); 10] = [
     (0, Kind::U32),
     (1, Kind::U32),
@@ -64,7 +50,6 @@ enum Kind {
     OptionalI32,
 }
 
-/// A row's cells: a live row's at its slot, or a deleted row's as the hour kept them.
 enum Cells<'a> {
     Live(&'a TableView<'a>, u32),
     Kept(&'a [Kept]),
@@ -78,7 +63,6 @@ impl Cells<'_> {
         }
     }
 
-    /// A number its row cannot leave unrecorded.
     fn number(&self, column: usize) -> io::Result<u64> {
         match self.value(column) {
             Held::Number(bits) => Ok(bits),
@@ -86,7 +70,6 @@ impl Cells<'_> {
         }
     }
 
-    /// An optional number: none for a missing value.
     fn optional(&self, column: usize) -> io::Result<Option<u64>> {
         match self.value(column) {
             Held::Number(bits) => Ok(Some(bits)),
@@ -95,7 +78,6 @@ impl Cells<'_> {
         }
     }
 
-    /// Column `column` copied as a column of `kind` holds it; not recorded where the cell is not.
     fn copy(&self, column: usize, kind: Kind) -> Value {
         match (self.value(column), kind) {
             (Held::Number(bits), Kind::U32) => Value::U32(bits as u32),
@@ -108,34 +90,25 @@ impl Cells<'_> {
     }
 }
 
-/// The fixed64 finite domain: every signed value but the three infinity and undefined sentinels.
 fn finite(raw: i64) -> bool {
     (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// Whether a raid's row proves it launched: in progress, or a finite nonzero distance flown
-/// (entering progress clears the distance and only progress adds to it).
 fn launched(raid: &Cells<'_>) -> io::Result<bool> {
     Ok(raid.number(PHASE)? as i32 == PHASE_IN_PROGRESS || raid.optional(TRAVELLED)?.is_some_and(|distance| distance != 0 && finite(distance as i64)))
 }
 
-/// What the writer holds of a live raid not yet ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Live {
-    /// The first hour its row was read; none when first read after hours Raids was not complete.
     first: Option<i32>,
-    /// It was first read the hour after one Raids was read without it.
     first_exact: bool,
     launched: Option<i32>,
 }
 
-/// The hour as a raid's end reads it beside the raid's own row.
 struct Places<'a> {
     at: i32,
-    /// The hour Raids was read before.
     previous: i32,
     targets: TableView<'a>,
-    /// RaidTargets rows the hour deleted, by key.
     gone: HashMap<u128, &'a [Kept]>,
     provinces: TableView<'a>,
     states: TableView<'a>,
@@ -155,7 +128,6 @@ impl<'a> Places<'a> {
         }
     }
 
-    /// `column` of row `id` of `view`, while it is complete and holds it recorded.
     fn cell(view: &TableView<'_>, id: u32, column: usize) -> Result<u32, u8> {
         if view.status() != Status::Complete {
             return Err(RaidEndRow::LOCATION_UNKNOWN);
@@ -164,8 +136,6 @@ impl<'a> Places<'a> {
         view.number(column, slot).map(|value| value as u32).ok_or(RaidEndRow::LOCATION_UNKNOWN)
     }
 
-    /// The target columns of raid `key`, from its RaidTargets row as the hour deleted it or as it
-    /// lives; not recorded without one.
     fn target(&self, key: u128) -> Vec<Value> {
         let cells = match (self.gone.get(&key), self.targets.slot(key)) {
             (Some(cells), _) => Cells::Kept(cells),
@@ -175,8 +145,6 @@ impl<'a> Places<'a> {
         TARGET.iter().map(|&(column, kind)| cells.copy(column, kind)).collect()
     }
 
-    /// The end row's target state, victim, victim slot and why the victim is not recorded, from
-    /// its target columns.
     fn victim(&self, target: &[Value]) -> [Value; 4] {
         let none = Value::U32(TagHolderRow::NONE);
         let Some(scope) = scope(target) else {
@@ -193,8 +161,6 @@ impl<'a> Places<'a> {
         }
     }
 
-    /// Raid `key`'s end row this hour: `kind`, its own cells `raid` (none when its last read is
-    /// lost), and what was held of it.
     fn end(&self, out: &mut Rows, key: u128, kind: u8, raid: Option<&Cells<'_>>, held: Live) -> io::Result<()> {
         let target = self.target(key);
         let victim = self.victim(&target);
@@ -216,7 +182,6 @@ impl<'a> Places<'a> {
     }
 }
 
-/// The scope the target columns hold, none while one is not recorded.
 fn scope(target: &[Value]) -> Option<RaidScope> {
     let u32_at = |at: usize| match target[at] {
         Value::U32(value) => Some(value),
@@ -246,7 +211,6 @@ fn scope(target: &[Value]) -> Option<RaidScope> {
 
 #[derive(Default)]
 pub struct RaidEnds {
-    /// The last hour the writer read Raids; none before its first read in the run.
     last: Option<i32>,
     live: HashMap<u64, Live>,
 }
@@ -268,7 +232,6 @@ impl Writer for RaidEnds {
         READS
     }
 
-    // Hourly: its rows live one hour, and a raid's first hour is exact after a read hour.
     fn hourly(&self) -> bool {
         true
     }
@@ -284,7 +247,6 @@ impl Writer for RaidEnds {
         }
         let raids = hour.table(TableId::Raids);
         let Some(previous) = self.last.replace(at) else {
-            // The first read is a baseline: every raid not ended is held, none ends.
             self.live.clear();
             for slot in raids.rows() {
                 let raid = Cells::Live(&raids, slot);
@@ -308,7 +270,6 @@ impl Writer for RaidEnds {
             places.end(out, *key, RaidEndRow::DELETED, Some(&raid), held.unwrap_or_default())?;
         }
         if hour.fresh {
-            // Raids gone while the writer was not run: their deletion and last read are lost.
             let mut gone: Vec<u64> = self.live.keys().copied().filter(|&key| raids.slot(u128::from(key)).is_none()).collect();
             gone.sort_unstable();
             for key in gone {
@@ -325,9 +286,7 @@ impl Writer for RaidEnds {
             let held = match self.live.remove(&(key as u64)) {
                 _ if inserted.contains(&slot) => Some(Live { first: Some(at), first_exact: previous == at - 1, launched: launch }),
                 Some(held) => Some(Live { launched: held.launched.or(launch), ..held }),
-                // First read after hours Raids was not complete.
                 None if !ended => Some(Live { first: None, first_exact: false, launched: launch }),
-                // Ended before: its end was read, or it was ended at the first read.
                 None => None,
             };
             match held {
@@ -341,7 +300,6 @@ impl Writer for RaidEnds {
         Ok(())
     }
 
-    /// The last hour read, then each live raid by key: first hour, whether it is exact, launch.
     fn save(&self, blob: &mut Bytes) -> io::Result<()> {
         fn optional(blob: &mut Bytes, value: Option<i32>) -> io::Result<()> {
             match value {

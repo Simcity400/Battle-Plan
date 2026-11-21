@@ -25,9 +25,6 @@ fn observe(fold: &mut Fold, first: i32, last: i32, rows: &[(Row, Option<Vec<Entr
     fold.observe(HOLDER, first, last, &shown);
 }
 
-/// A running project's scientist stays on its completed runs, dated by the hour last seen
-/// assigned; the history's completion entry dates the completion exactly; progress steps and the
-/// iteration count split runs, equal stretches join.
 #[test]
 fn a_completed_project_keeps_its_last_scientist_and_its_history_date() {
     let mut fold = Fold::new(START);
@@ -46,9 +43,6 @@ fn a_completed_project_keeps_its_last_scientist_and_its_history_date() {
     assert_eq!(fold.looks[last.presentation as usize], Look { definition: 40, person: scientist, as_of: Some(1_071) });
 }
 
-/// A completion the history does not date within the campaign is known only by its first
-/// observation, and that bound holds over the runs after it; a completion entry dated before the
-/// campaign began is not taken as its date.
 #[test]
 fn a_completion_without_a_campaign_date_is_bounded_by_its_first_observation() {
     let mut fold = Fold::new(START);
@@ -64,8 +58,6 @@ fn a_completion_without_a_campaign_date_is_bounded_by_its_first_observation() {
     assert_eq!(fold.episodes[1].runs[0].iterations, None, "no history is not zero iterations");
 }
 
-/// A project that ends and runs again, or whose iterations fall, starts a new episode; one
-/// cancelled keeps the hour it was first seen cancelled; another holder closes every episode.
 #[test]
 fn episodes_end_at_a_restart_a_fall_in_iterations_and_another_holder() {
     let mut fold = Fold::new(START);
@@ -86,8 +78,6 @@ fn episodes_end_at_a_restart_a_fall_in_iterations_and_another_holder() {
     assert_eq!(fold.episodes.len(), 5, "another holder's project is a new episode");
 }
 
-/// A project not yet started and never seen is not shown; a state the rule does not know is
-/// shown as unknown and counted.
 #[test]
 fn unstarted_projects_are_hidden_and_unknown_states_are_named() {
     let mut fold = Fold::new(START);
@@ -99,8 +89,6 @@ fn unstarted_projects_are_hidden_and_unknown_states_are_named() {
     assert_eq!(fold.warnings.values().sum::<usize>(), 1);
 }
 
-/// The scientist a program names: none assigned, a reference of an unknown type or a program not
-/// recorded named as unknown, never as no one.
 #[test]
 fn a_programs_scientist_is_a_character_no_one_or_unknown_by_name() {
     let program = (7_u64 << 32) | u64::from(PROGRAM_REFERENCE);
@@ -113,8 +101,6 @@ fn a_programs_scientist_is_a_character_no_one_or_unknown_by_name() {
     assert!(matches!(person(7, None), Person::Unknown(_)));
 }
 
-/// A completion entry is the one whose reward and option are both the marker; the latest dated
-/// by the observation within the campaign wins.
 #[test]
 fn the_latest_completion_entry_dated_by_the_observation_dates_it() {
     let marker = i64::from(COMPLETION_MARKER);
@@ -126,8 +112,6 @@ fn the_latest_completion_entry_dated_by_the_observation_dates_it() {
     assert_eq!(fold::completion_date(&history, 1_005, START), None);
 }
 
-/// A country's projects are those of every raw id linking to its slot, over the hours each does;
-/// the observation's edges are those of rows, statuses and links within the piece.
 #[test]
 fn owners_are_every_raw_id_linking_to_the_slot_and_edges_stay_in_the_piece() {
     let links = RunLinks { slots: HashMap::from([(10, vec![(0, 99, Some(5)), (100, 199, Some(6))]), (11, vec![(50, 199, Some(5))]), (12, vec![(0, 199, Some(6))])]) };

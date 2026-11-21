@@ -1,8 +1,3 @@
-//! Supply child footer: aggregate the consumer inputs, then format their text.
-//! Receipts are recorded consumer amounts, never inferred from nearby hubs.
-//! Divisions, railway guns and task forces record the footer's operands at
-//! its display step ([`UnitSupplyInputs::STEP`]), so a footer over several
-//! units sums the printed hundredths.
 
 use super::*;
 use replay_data::{rows::Recorded, rows::UnitSupplyDemand, rows::UnitSupplyInputs};
@@ -13,7 +8,6 @@ use viewer_foundation::tooltip_text::state_name;
 struct Origins {
     requested: i64,
     received: i64,
-    /// First positive native occurrence fixes a province's tie position.
     visible: Vec<(i32, i64)>,
 }
 
@@ -32,7 +26,7 @@ fn aggregate<'a>(members: impl IntoIterator<Item = &'a UnitSupplyInputs>) -> Agg
         out.scalars.received = out.scalars.received.wrapping_add(member.received);
         out.scalars.from_state = out.scalars.from_state.wrapping_add(member.from_state);
         out.scalars.air_drops = out.scalars.air_drops.wrapping_add(member.air_drops);
-        out.scalars.disruption = member.disruption; // The disruption is overwritten, not summed.
+        out.scalars.disruption = member.disruption;
         for (sum, value) in [
             (&mut out.scalars.division_demand, &member.division_demand),
             (&mut out.scalars.airplane_demand, &member.airplane_demand),
@@ -63,7 +57,6 @@ fn aggregate<'a>(members: impl IntoIterator<Item = &'a UnitSupplyInputs>) -> Agg
         }
     }
     if let Some(origins) = &mut out.origins {
-        // stable descending receipt, without an ID tiebreak.
         origins
             .visible
             .sort_by_key(|(_, amount)| std::cmp::Reverse(*amount));
@@ -71,7 +64,6 @@ fn aggregate<'a>(members: impl IntoIterator<Item = &'a UnitSupplyInputs>) -> Agg
     out
 }
 
-/// The game precision2 rounds the signed fixed5 word before localisation.
 fn round_two(value: i64) -> i64 {
     let shifted = value.wrapping_add(if value > 0 { 500 } else { -500 });
     shifted.wrapping_sub(shifted % 1_000)
@@ -175,7 +167,6 @@ fn footer(
             let text = localise(context.loc, "FROM_SUPPLY_NODES", &[])
                 .and_then(|label| consumer(context, &label, origins.received, 2));
             line(context, out, "supply nodes", text);
-            // The game stops at the first receipt below 0.05 and after six rows.
             for &(province, value) in origins
                 .visible
                 .iter()
@@ -241,7 +232,6 @@ fn demand_text(loc: &Localisation, key: &str, demand: &UnitSupplyDemand) -> Resu
     .map(|text| format!("  {text}"))
 }
 
-/// Preserve the recorded rename, victory-point and state-name ladder.
 fn province_name(context: &Context<'_>, id: i32) -> Result<String, String> {
     let id = id as u32;
     let provinces = context
@@ -249,7 +239,7 @@ fn province_name(context: &Context<'_>, id: i32) -> Result<String, String> {
         .complete::<tables::Provinces>()
         .map_err(|e| e.to_string())?;
     let Some(province) = provinces.iter().find(|row| row.id == id) else {
-        return Ok(String::new()); // Null province resolution returns an empty label.
+        return Ok(String::new());
     };
     let overrides = context
         .frame
@@ -330,13 +320,9 @@ fn province_name(context: &Context<'_>, id: i32) -> Result<String, String> {
 const NOT_RECORDED: &str = "consumer supply inputs were not recorded";
 const UNREADABLE: &str = "consumer supply inputs were unreadable when recorded";
 
-/// A railway gun's or a division's supply child.
 pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
     let members = (|| {
         let mut members = Vec::new();
-        // The game resolves original full references and skips known
-        // dangling ones before demanding a consumer supply packet; only a
-        // complete census proves a dangling skip.
         if input.railway_gun {
             let guns = context
                 .frame
@@ -387,8 +373,6 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
     let mut result = Tooltip::default();
     member_footer(context, &members, &mut result);
     if !result.body.is_empty() {
-        // Append the footer to title, independently
-        // of the ETA/statistics body already produced by the generic handler.
         ensure_newlines(&mut out.title, 2);
         out.title.push_str(&result.body);
     }
@@ -404,8 +388,6 @@ pub(super) fn member_footer(
 ) {
     if let Some(reason) = members.iter().find_map(|member| member.as_ref().err()) {
         refuse(out, "supply detail", reason.clone());
-        // An unreadable earlier member invalidates sums, but never the known
-        // last member's overwrite-only disruption operand.
         if let Some(Ok(last)) = members.last() {
             disruption(context, out, last.disruption);
         }

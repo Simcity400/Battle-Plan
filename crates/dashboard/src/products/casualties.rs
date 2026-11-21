@@ -1,18 +1,3 @@
-//! Casualties between countries, from the recorder's `CasualtyLifetimes` (one row per live
-//! lifetime of a war relation between two country identities; an ended lifetime's row goes, and
-//! its counters are its row's at its last hour) and `CasualtyTotals` (each
-//! identity's sums; its `partial` flag says a lifetime's last hours were lost in a gap). A
-//! country's own totals are the declared series `casualty-totals`; these products add what a
-//! series cannot: the pairs (`casualty-pairs`), one country's losses by enemy and lifetime
-//! (`casualty-breakdown`), and the content's name for losses no attacker dealt
-//! (`casualty-labels`). The breakdown groups each lifetime by the war holding it in the asked
-//! country's own view of its wars (the `wars` walk with that country as viewpoint).
-//!
-//! Both history products answer per replay block (a window): the manifest of windows, and one
-//! window's runs when asked (its index names one of the manifest's). A window reads the lifetimes the run kept at open, then the runs of the asked
-//! lifetimes' counters and their identities' `partial` flags over the window: it costs the
-//! lifetimes and the changes in them, never the hours of the campaign. Identities are named by
-//! the one identity rule; an hour an identity holds no tag is left out, never named by a guess.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -40,18 +25,13 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The content's name for losses no attacker dealt, and what it is shown as without it.
 const UNKNOWN_KEY: &str = "CASUALTIES_UNKNOWN";
 const UNKNOWN_FALLBACK: &str = "Unknown attacker";
-/// Why a breakdown run is under no war: several wars hold its lifetime, or none does.
 pub const SEVERAL_WARS: &str = "The native view places this relation in multiple war episodes.";
 pub const NO_WAR: &str = "The native war grouping was not recorded for this relation observation.";
 
-/// A country identity: its canonical slot and the raw id of its Countries row.
 pub type Identity = (u32, u32);
 
-/// A `CasualtyLifetimes` key's identities (`a` the lesser) and its relation's start hour, as the
-/// row codec packs them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Lifetime {
     pub a: Identity,
@@ -66,7 +46,6 @@ impl Lifetime {
     }
 }
 
-/// The `CasualtyTotals` key of an identity (`Key::Holder`).
 pub fn holder_key((slot, id): Identity) -> u128 {
     dashboard_declare::Key::Holder.of(slot, id)
 }
@@ -75,7 +54,6 @@ fn identity_text((slot, id): Identity) -> String {
     format!("{slot}:{id}")
 }
 
-/// Whether `identity`, holding `tag`, is `country`.
 pub fn matches(country: &Country, identity: Identity, tag: &str) -> bool {
     match country {
         Country::Tag(chosen) => chosen == tag,
@@ -83,7 +61,6 @@ pub fn matches(country: &Country, identity: Identity, tag: &str) -> bool {
     }
 }
 
-/// Each holder identity's tags over a timeline, from the identity layer's holder runs.
 #[derive(Default)]
 pub struct HolderTags {
     by: HashMap<Identity, Vec<(String, i32, i32)>>,
@@ -109,14 +86,12 @@ impl HolderTags {
         Self { by }
     }
 
-    /// The tag `identity` holds at `hour`.
     pub fn tag_at(&self, identity: Identity, hour: i32) -> Option<&str> {
         let runs = self.by.get(&identity)?;
         let at = runs.partition_point(|run| run.2 < hour);
         runs.get(at).filter(|run| run.1 <= hour).map(|run| run.0.as_str())
     }
 
-    /// Each hour `identity`'s tag changes within `first..=last` (its runs' edges).
     fn edges(&self, identity: Identity, first: i32, last: i32, out: &mut BTreeSet<i32>) {
         for (_, a, b) in self.by.get(&identity).map(Vec::as_slice).unwrap_or_default() {
             for edge in [*a, b.saturating_add(1)] {
@@ -127,8 +102,6 @@ impl HolderTags {
         }
     }
 
-    /// The identities that were `country` within `first..=last`, each with its hours there: a
-    /// tag's holders, or a slot's own identities whatever tags they held.
     pub fn holding(&self, country: &Country, first: i32, last: i32) -> Vec<(Identity, i32, i32)> {
         let mut held: Vec<(Identity, i32, i32)> = self
             .by
@@ -149,7 +122,6 @@ impl HolderTags {
     }
 }
 
-/// The value of `runs` (ascending) at `hour`, none outside them or where not recorded.
 fn value_at(runs: &read::Runs, hour: i32) -> Option<i64> {
     let at = runs.partition_point(|run| run.1 < hour);
     runs.get(at).filter(|run| run.0 <= hour).and_then(|run| run.2)
@@ -162,14 +134,11 @@ fn sorted(mut runs: HashMap<u128, read::Runs>) -> HashMap<u128, read::Runs> {
     runs
 }
 
-/// Whether `hour` lies in `spans` (ascending, disjoint).
 fn within(spans: &[(i32, i32)], hour: i32) -> bool {
     let at = spans.partition_point(|span| span.1 < hour);
     spans.get(at).is_some_and(|span| span.0 <= hour)
 }
 
-/// What a window read of the casualty tables holds: each asked lifetime's two counters, each
-/// asked identity's `partial` flag, and the hours the lifetimes were written.
 #[derive(Default)]
 pub struct WindowReads {
     pub taken_a: HashMap<u128, read::Runs>,
@@ -213,19 +182,15 @@ impl WindowReads {
     }
 }
 
-/// Consecutive hours `first..=last` cut where any of `edges` falls, each piece's first hour.
 fn pieces(edges: &BTreeSet<i32>, first: i32, last: i32) -> impl Iterator<Item = (i32, i32)> + '_ {
     let starts: Vec<i32> = edges.range(first..=last).copied().collect();
     (0..starts.len()).map(move |at| (starts[at], starts.get(at + 1).map_or(last, |next| next - 1)))
 }
 
-/// A lifetime's counter at `hour`: its row's while it lives, its last row's once it has ended.
 fn held_at(runs: &read::Runs, gone: i64, hour: i32) -> Option<i64> {
     value_at(runs, i64::from(hour).min(gone) as i32)
 }
 
-/// The sum of `counters` (one per lifetime) at `hour`; none when no lifetime was born by then or
-/// one that was has its counter not recorded.
 fn summed(counters: &[Option<&read::Runs>], lives: &[(i64, i64)], hour: i32) -> Option<i128> {
     let mut total = 0i128;
     let mut any = false;
@@ -248,8 +213,6 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
     runs.push(run);
 }
 
-// ---------------------------------------------------------------------------------------------
-// casualty-pairs
 
 pub struct CasualtyPairs;
 
@@ -259,9 +222,9 @@ pub struct CasualtyPairs;
 pub struct CasualtyPairsParams {
     pub branch_id: String,
     pub countries: Vec<Country>,
-    /// Otherwise each chosen country's casualties with every enemy.
+    #[doc = " Otherwise each chosen country's casualties with every enemy."]
     pub between: bool,
-    /// None asks for the window manifest.
+    #[doc = " None asks for the window manifest."]
     pub window: Option<usize>,
 }
 
@@ -273,10 +236,10 @@ pub struct CasualtyPairRun {
     pub last_hour: i32,
     pub read_hour: i32,
     pub hourly: bool,
-    /// What the first country took from the second, over every lifetime of the pair.
+    #[doc = " What the first country took from the second, over every lifetime of the pair."]
     pub first_taken: String,
     pub second_taken: String,
-    /// Either country's recorded history lost a lifetime's last hours in a gap.
+    #[doc = " Either country's recorded history lost a lifetime's last hours in a gap."]
     pub incomplete: bool,
 }
 
@@ -298,19 +261,16 @@ pub struct CasualtyPairsReply {
     pub available: bool,
     pub windows: Vec<HourSpan>,
     pub window: Option<usize>,
-    /// Hours of the window the casualty tables were written.
+    #[doc = " Hours of the window the casualty tables were written."]
     pub observed: Vec<HourSpan>,
     pub pairs: Vec<CasualtyPairSeries>,
-    /// The window has hours the casualty tables were not written.
+    #[doc = " The window has hours the casualty tables were not written."]
     pub has_gap: bool,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(CasualtyPairsReply, CasualtyBreakdownReply, CasualtyLabelsReply);
 
-/// The pairs of `lifetimes` (key, born, gone) over `first..=last`: every lifetime of one
-/// identity pair summed, cut where either identity's tag changes, kept where `keep` says so
-/// for the two tags.
 pub fn fold_pairs(
     lifetimes: &[(u128, i64, i64)],
     reads: &WindowReads,
@@ -375,7 +335,6 @@ pub fn fold_pairs(
         .collect()
 }
 
-/// A window of `query`'s timeline, its run, and the lifetimes the run kept that meet it.
 struct Window {
     first: i32,
     last: i32,
@@ -387,7 +346,6 @@ fn window(source: &Source, query: &Query<'_>, spans: &[HourSpan], index: usize) 
     let span = spans.get(index).ok_or_else(|| invalid("Unknown casualty history window"))?;
     let (first, last) = (span.first_hour, span.last_hour);
     let run = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?.run;
-    // A lifetime ended before the window still counts: its last counters hold.
     let lifetimes = crate::answer::lifetimes(source, run, TableId::CasualtyLifetimes)?
         .iter()
         .filter(|&&(_, born, _)| born <= i64::from(last))
@@ -396,15 +354,11 @@ fn window(source: &Source, query: &Query<'_>, spans: &[HourSpan], index: usize) 
     Ok(Window { first, last, run, lifetimes })
 }
 
-/// The counters of `lives` and the `partial` flags of `identities` over `window`, and the hours
-/// the lifetimes were available there. A lifetime ended before the window is its row at its last
-/// hour, one run of that hour, from the run's ended counters kept at open (`ended`).
 fn window_reads(query: &Query<'_>, window: &Window, lives: &[(u128, i64, i64)], identities: &[Identity], ended: &EndedCounters) -> io::Result<WindowReads> {
     let recording = query.replay.recording();
     let column = |table: TableId, name: &str| dashboard_declare::field(table, name).map(Column::Cell);
     let (first, last, run) = (window.first, window.last, window.run);
     let mut reads = WindowReads {
-        // An hour read but refused holds no rows: it is not an observed hour.
         observed: replay::lanes::available_reads(recording, run, TableId::CasualtyLifetimes, first, last)?,
         ..WindowReads::default()
     };
@@ -428,13 +382,9 @@ fn window_reads(query: &Query<'_>, window: &Window, lives: &[(u128, i64, i64)], 
     Ok(reads)
 }
 
-/// Each lifetime of a run that ended before the run's last hour: its two counters at its last
-/// hour (`taken_a`, `taken_b`; none where not recorded), read once at open.
 #[derive(Default)]
 pub struct EndedCounters(pub HashMap<u128, (Option<i64>, Option<i64>)>);
 
-/// Run `run`'s ended lifetimes' last counters: one reader through the run's blocks for every
-/// ended lifetime, so a window never reads before itself.
 pub fn run_ends(source: &Source, run: u32) -> io::Result<EndedCounters> {
     let recording = source.replay_ref().recording();
     let last = recording.run(run)?.last_hour();
@@ -454,8 +404,6 @@ pub fn run_ends(source: &Source, run: u32) -> io::Result<EndedCounters> {
     Ok(out)
 }
 
-/// A lifetime's war over consecutive hours: the one war holding it, or none (`ambiguous` when
-/// several hold it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grouping {
     pub first: i32,
@@ -464,8 +412,6 @@ pub struct Grouping {
     pub ambiguous: bool,
 }
 
-/// Each of `keys`' groupings (ascending) by the wars (an id, the lifetimes it held and when) that
-/// hold it; the hours between are a grouping of no war.
 pub(crate) fn lifetime_groupings<'a>(wars: impl IntoIterator<Item = (&'a str, &'a [WarRelationMembership])>, keys: &HashSet<u128>) -> HashMap<u128, Vec<Grouping>> {
     let mut changes: HashMap<u128, BTreeMap<i64, Vec<(&'a str, i32)>>> = HashMap::new();
     for (war, held) in wars {
@@ -513,7 +459,6 @@ fn spans(runs: &[(i32, i32)]) -> Vec<HourSpan> {
     runs.iter().map(|&(first_hour, last_hour)| HourSpan { first_hour, last_hour }).collect()
 }
 
-/// The hours losses were read over the branch, for a manifest: from page entries alone.
 fn branch_observed(query: &Query<'_>) -> io::Result<Vec<HourSpan>> {
     let mut out = Vec::new();
     for stretch in &query.timeline.stretches {
@@ -565,7 +510,6 @@ impl Product for CasualtyPairs {
         let tags = HolderTags::new(&query);
         let chosen = |(identity, tag): (Identity, &str)| params.countries.iter().any(|country| matches(country, identity, tag));
         let keep = |a: (Identity, &str), b: (Identity, &str)| params.countries.is_empty() || if params.between { chosen(a) && chosen(b) } else { chosen(a) || chosen(b) };
-        // A lifetime is read only when some tag its identities held in the window is kept.
         let names = |identity: Identity| -> BTreeSet<&str> {
             let mut out = BTreeSet::new();
             if let Some(runs) = tags.by.get(&identity) {
@@ -602,8 +546,6 @@ impl Product for CasualtyPairs {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// casualty-breakdown
 
 pub struct CasualtyBreakdown;
 
@@ -628,9 +570,9 @@ pub struct CasualtyBreakdownRun {
     pub grouping_hourly: bool,
     pub enemy_hour: i32,
     pub enemy_hourly: bool,
-    /// What the country took in this lifetime.
+    #[doc = " What the country took in this lifetime."]
     pub value: String,
-    /// The war the lifetime belongs to; null with `reason` when not known.
+    #[doc = " The war the lifetime belongs to; null with `reason` when not known."]
     pub war_id: Option<String>,
     pub reason: Option<String>,
     pub incomplete: bool,
@@ -657,7 +599,6 @@ pub struct CasualtyBreakdownCountryRun {
     pub incomplete: bool,
 }
 
-/// A war's name over hours, as the wars family names it.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -699,7 +640,7 @@ pub struct CasualtyBreakdownReply {
     pub windows: Vec<HourSpan>,
     pub window: Option<usize>,
     pub observed: Vec<HourSpan>,
-    /// The identities holding the tag within the observed hours.
+    #[doc = " The identities holding the tag within the observed hours."]
     pub countries: Vec<CasualtyBreakdownCountryRun>,
     pub series: Vec<CasualtyBreakdownSeries>,
     pub wars: Vec<CasualtyBreakdownWar>,
@@ -707,9 +648,6 @@ pub struct CasualtyBreakdownReply {
     pub warnings: Vec<String>,
 }
 
-/// `tag`'s losses over `first..=last`: a series per lifetime of each identity holding it (cut
-/// where the enemy's tag or the lifetime's war changes), and the identities' runs. An ended
-/// lifetime stays in the war that held it at its last hour.
 pub fn fold_breakdown(
     tag: &Country,
     lifetimes: &[(u128, i64, i64)],
@@ -815,8 +753,6 @@ pub fn fold_breakdown(
     (countries, series.into_values().collect())
 }
 
-/// The wars of `view` that `series` names, as shown to `last`: their hours and names to it, never
-/// a later name.
 fn shown_wars(view: &WarsReply, series: &[CasualtyBreakdownSeries], last: i32) -> Vec<CasualtyBreakdownWar> {
     let used: HashSet<&str> = series.iter().flat_map(|series| &series.runs).filter_map(|run| run.war_id.as_deref()).collect();
     view.wars
@@ -926,8 +862,6 @@ impl Product for CasualtyBreakdown {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// casualty-labels
 
 pub struct CasualtyLabels;
 
@@ -935,7 +869,7 @@ pub struct CasualtyLabels;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyLabelsReply {
-    /// The game's name for losses no attacker dealt, in the recording's language.
+    #[doc = " The game's name for losses no attacker dealt, in the recording's language."]
     pub unknown_label: String,
     pub warnings: Vec<String>,
 }

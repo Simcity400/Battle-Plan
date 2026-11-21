@@ -15,7 +15,6 @@ use std::{
 
 type Op = Box<dyn FnOnce(&mut Rows) + Send>;
 
-/// The inputs' producer: each hour it sets what the test queued, and every input table is read.
 struct Feed(Arc<Mutex<Vec<Op>>>);
 
 const FED: &[Output] = &[
@@ -100,7 +99,6 @@ fn store() -> Store {
     store
 }
 
-/// A typed row as the capture lands it.
 fn set<R: RowCodec + Send + 'static>(table: TableId, row: R) -> Op {
     Box::new(move |out: &mut Rows| {
         let mut cells = Vec::new();
@@ -146,16 +144,13 @@ fn unavailable(table: TableId, reason: &'static str) -> Op {
 
 const GER: u32 = 1;
 const ENG: u32 = 2;
-/// A second raw id of GER's slot.
 const GER_ALIAS: u32 = 11;
-/// A raw id no link resolves.
 const STRAY: u32 = 99;
 
 fn handle(variant: u32) -> u64 {
     u64::from(variant) << 32 | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE)
 }
 
-/// GER and ENG, each its own slot, GER with a second link.
 fn countries() -> Vec<Op> {
     let mut ops = Vec::new();
     for id in [GER, ENG] {
@@ -236,7 +231,6 @@ impl Run {
         self.hour += 1;
     }
 
-    /// The writer stopped at its commit and taken up again from what it saved.
     fn resume(&mut self) {
         let saved = self.writers.save().unwrap();
         let mut store = store();
@@ -270,7 +264,6 @@ impl Run {
         self.store.view(table.index()).status()
     }
 
-    /// Every row of the writer's tables, texts read out.
     fn dump(&self) -> Vec<(TableId, u128, Vec<String>)> {
         let mut rows = Vec::new();
         for table in TABLES.iter().map(|output| output.table()) {
@@ -377,14 +370,11 @@ fn rows_the_game_deletes_keep_their_amount_and_a_returning_or_aliased_entry_coun
     assert_eq!(combat(&run), number(7), "the alias's entry kept as dropped still stands over the other");
 }
 
-/// A sunk ship (identity, name, sinking hour) as its rows hold it: slot, country, signature.
 fn sunk_key(slot: u32, country: u32, name: &[u8], sunk: i32) -> (u32, u32, u64) {
     (slot, country, signature(&ship(name, sunk), SIGNATURE_SEED) & ShipLossRow::SIGNATURE)
 }
 
 impl Run {
-    /// The ShipLosses rows, each of the hour just run: (slot, country, signature) to (sinking
-    /// hour, count, check).
     fn ship_log(&self) -> BTreeMap<(u32, u32, u64), (i64, i64, i64)> {
         let view = self.store.view(TableId::ShipLosses.index());
         view.rows()
@@ -399,11 +389,6 @@ impl Run {
     }
 }
 
-/// Each hour logs the signatures a complete read lists more often than the read before (two
-/// aliases of a slot counting as one), every listed one at the run's first hour and after a read
-/// not complete, and every one of a slot whose raw ids moved (a victim's link resolving) alone. A reply's most per
-/// signature up to each hour is what the table held before it was a log: the most entries one read
-/// listed, a ship no longer listed staying sunk, dated at its sinking.
 #[test]
 fn sunk_ships_count_the_most_one_read_listed_at_their_sinking_hour() {
     let hood = SunkShipEntry { victim_country: STRAY, ..ship(b"Hood", -10) };
@@ -525,8 +510,6 @@ fn land_coverage_follows_the_census_of_an_admitted_country() {
     assert_eq!(land_coverage(true, 3, 0, true), (Coverage::LOGGED, None));
 }
 
-/// `row` landed in `store` as a new row with every column it gives, texts interned: as the
-/// journal door's adapter lands one.
 fn land<R: RowCodec>(store: &mut Store, table: TableId, row: &R) {
     use replay_columnar::state::Cell as Put;
     let mut cells: Vec<Option<Put<'static>>> = Vec::new();
@@ -561,12 +544,8 @@ fn land<R: RowCodec>(store: &mut Store, table: TableId, row: &R) {
     }
 }
 
-/// The tables an hour of [`through_journal`] holds complete; the others are not recorded.
 const HELD: [TableId; 3] = [TableId::Countries, TableId::CountryLinks, TableId::EquipmentDestruction];
 
-/// An hour of no section through the journal door's real adapter: the [`HELD`] tables complete
-/// with their rows as they were, those of `read` stamped read at the hour, the others keeping
-/// their older sample hour.
 fn through_journal(journal: &mut replay_columnar::store::journal::Journal, store: &mut Store, hour: i32, read: &[TableId]) {
     let mut statuses = vec![Status::NotRecorded; TABLE_COUNT];
     for table in HELD {
@@ -593,11 +572,6 @@ fn through_journal(journal: &mut replay_columnar::store::journal::Journal, store
     journal.applied(store);
 }
 
-/// The drain is counted at every hour that read it and at none that did not. Hour 0 reads it
-/// with a row of GER's; hour 1 reads it again, its rows equal (the read bit, no section): a
-/// second drain. Hour 2 does not read it (its rows and its sample hour 1 stay): nothing is added,
-/// and the run's row names the drain not read and makes the drain a lower bound from hour 2.
-/// Hour 3 reads it: counting goes on, the lower bound standing.
 #[test]
 fn a_drain_counts_at_every_hour_that_read_it_and_at_none_that_did_not() {
     let mut store = store();
@@ -626,7 +600,6 @@ fn a_drain_counts_at_every_hour_that_read_it_and_at_none_that_did_not() {
     writers.hour(1, 0, true, &mut store).unwrap();
     store.end_hour(&mut Discard).unwrap();
     let drain = TableId::EquipmentDestruction.index();
-    // A run row's optional hour: none without the row, then none or the hour.
     let run_hour = |store: &Store, column: usize| -> Option<Option<i64>> {
         let held = store.view(TableId::EquipmentLossCoverage.index());
         let slot = held.slot(RUN_KEY)?;
@@ -667,15 +640,12 @@ fn a_drain_counts_at_every_hour_that_read_it_and_at_none_that_did_not() {
 
 const FRA: u32 = 3;
 
-/// What one hour of the writer set: the totals keys it set and the CombatLogDropped rows it set
-/// or deleted.
 #[derive(Debug, Default)]
 struct Noted {
     totals: Vec<u128>,
     dropped: usize,
 }
 
-/// The writer, noting what each hour sets.
 struct Noting {
     inner: EquipmentLosses,
     noted: Arc<Mutex<Vec<Noted>>>,
@@ -734,7 +704,6 @@ impl Writer for Noting {
 }
 
 impl Run {
-    /// A run whose writer notes what each hour sets.
     fn noting() -> (Self, Arc<Mutex<Vec<Noted>>>) {
         let feed = Arc::new(Mutex::new(Vec::new()));
         let noted = Arc::new(Mutex::new(Vec::new()));
@@ -744,8 +713,6 @@ impl Run {
     }
 }
 
-/// GER, ENG and FRA, GER with its alias; `groups` Combat Log rows of FRA (one leaf, design 8, 1
-/// each), and GER's design 7 under both its raw ids, in different groups (3 and 2).
 fn three_countries(groups: u32) -> Vec<Op> {
     let mut ops = countries();
     ops.push(set(TableId::Countries, CountryRow { id: FRA, canonical_slot: FRA, tag: b"TAG".to_vec(), ..Default::default() }));
@@ -756,9 +723,6 @@ fn three_countries(groups: u32) -> Vec<Op> {
     ops
 }
 
-/// A holder change (GER's alias moving to ENG) counts the Combat Log leaves of the two slots it
-/// moved again and sets nothing of FRA's, whose 200 rows it does not touch; the moved rows'
-/// amounts follow their raw id. An hour that changes nothing sets no Combat Log leaf.
 #[test]
 fn a_holder_change_counts_again_only_the_slots_it_moved() {
     let (mut run, noted) = Run::noting();
@@ -779,9 +743,6 @@ fn a_holder_change_counts_again_only_the_slots_it_moved() {
     assert!(quiet.totals.iter().all(|&key| leaf_source(key) >= Total::SUNK_CONVOYS), "a quiet hour sets no Combat Log leaf: {:?}", quiet.totals);
 }
 
-/// Taken up at a commit, the writer primes its holders from the tables, so a holder change in
-/// the first hour after counts again only the slots it moved, and the tables equal a run that
-/// never stopped.
 #[test]
 fn a_holder_change_right_after_a_resume_counts_again_only_the_slots_it_moved() {
     let hours = || vec![three_countries(50), vec![logged(FRA, 0, 100, 8, 4)], vec![set(TableId::CountryLinks, CountryLinkRow { id: GER_ALIAS, canonical_slot: ENG }), logged(FRA, 1, 100, 8, 6)]];
@@ -810,15 +771,11 @@ fn a_holder_change_right_after_a_resume_counts_again_only_the_slots_it_moved() {
     assert_eq!(combat.len(), 3, "GER's and ENG's design 7 counted again, FRA's design 8 by its one changed row: {combat:?}");
 }
 
-/// Memory labels, in a build counting them (the counting allocator is `framework::tests`'s).
-/// Run alone: labels and phases are the process's.
 #[cfg(feature = "memory-labels")]
 mod labelled {
     use super::*;
     use engine_allocation::labels;
 
-    /// A holder change over a Combat Log of 100,000 rows of another slot allocates for the slots
-    /// it moved, not for the log: the writer's label stays under 1 MiB in its hour.
     #[test]
     fn a_holder_change_allocates_for_the_slots_it_moved_not_for_the_log() {
         let mut run = Run::new();
@@ -835,14 +792,11 @@ mod labelled {
     }
 }
 
-/// The first hour of January 1943, and its month.
 const JAN_1943: i32 = 43_800_000 + 1943 * 8760;
 const JAN: u16 = 1943 * 12;
-/// The first hour of February 1943.
 const FEB_1943: i32 = JAN_1943 + 31 * 24;
 
 impl Run {
-    /// A run from `start` whose writer holds a Combat Log retention of `months`.
     fn retaining(start: i32, months: i64) -> Self {
         let mut run = Self::new();
         run.store.begin_run(start);
@@ -851,7 +805,6 @@ impl Run {
         run
     }
 
-    /// Steps to `hour`, past the hours between.
     fn step_at(&mut self, hour: i32, ops: Vec<Op>) {
         self.hour = hour;
         self.step(ops);
@@ -862,19 +815,12 @@ impl Run {
     }
 }
 
-/// GER's design 7 in three month entries of group 4: ten months old (3), last month's (5) and
-/// this month's (1); the two older ones leave the log at hour 1.
 fn three_months() -> Vec<Vec<Op>> {
     let mut first = countries();
     first.extend([logged(GER, 4, JAN - 10, 7, 3), logged(GER, 4, JAN - 1, 7, 5), logged(GER, 4, JAN, 7, 1)]);
     vec![first, vec![gone(TableId::CombatLogEquipment, log_key(GER, 4, JAN - 10, 7)), gone(TableId::CombatLogEquipment, log_key(GER, 4, JAN - 1, 7))]]
 }
 
-/// Under a retention of six months, the entry of ten months before January (its month plus six
-/// plus one is past) is freed in the hour it leaves the log, never held, and last month's is
-/// held: its amount stays in the leaf, as `freed`. Last month's is freed at the turn of the month
-/// its retention ends. A holder change after counts the leaf again from the log, the dropped rows
-/// and `freed`: the same total.
 #[test]
 fn dropped_rows_whose_lines_the_game_freed_leave_the_table_and_stay_in_their_leaf() {
     assert_eq!((month_bucket(JAN_1943), month_bucket(FEB_1943), month_bucket(FEB_1943 - 1)), (i32::from(JAN), i32::from(JAN) + 1, i32::from(JAN)));
@@ -905,7 +851,6 @@ fn dropped_rows_whose_lines_the_game_freed_leave_the_table_and_stay_in_their_lea
     assert_eq!(unknown.cell(TableId::CombatLogDropped, log_key(GER, 4, JAN - 10, 7), 1), number(3), "under a retention below one nothing is freed");
 }
 
-/// Taken up at January's last commit, the run frees February's lines as one never stopped.
 #[test]
 fn a_resume_before_a_month_turns_frees_what_a_run_never_stopped_frees() {
     let mut unbroken = Run::retaining(JAN_1943, 6);
@@ -932,7 +877,6 @@ fn a_resume_before_a_month_turns_frees_what_a_run_never_stopped_frees() {
     assert_eq!(stopped.freed(GER, GER, 7), number(3));
 }
 
-/// The producer of CombatLogMonths, complete every hour, from its own queue.
 struct MonthsFeed(Arc<Mutex<Vec<Op>>>);
 
 impl Writer for MonthsFeed {
@@ -974,14 +918,12 @@ impl Writer for MonthsFeed {
     }
 }
 
-/// The first hour of month bucket `month`.
 fn first_hour(month: u16) -> i32 {
     const DAYS: [i32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let (year, within) = (i32::from(month / 12), usize::from(month % 12));
     43_800_000 + year * 8760 + DAYS[..within].iter().sum::<i32>() * 24
 }
 
-/// GER's month entry `ordinal` of group `group`'s own-loss array, first written in `month`.
 fn listed(group: u32, ordinal: u32, month: u16) -> Op {
     set(TableId::CombatLogMonths, CombatLogMonthRow { country: GER, group, kind: 0, ordinal, reason: 0, date: first_hour(month), allow_zero: false })
 }
@@ -990,10 +932,6 @@ fn unlisted(group: u32, ordinal: u32) -> Op {
     gone(TableId::CombatLogMonths, CombatLogMonthRow { country: GER, group, kind: 0, ordinal, ..Default::default() }.key())
 }
 
-/// With no retention define held, what CombatLogMonths lists tells which dropped lines the game
-/// freed: the prune removing group 4's oldest entry frees that entry's dropped line and not the
-/// next one's, and group 5's log deleted whole frees its dropped line; each amount stays in its
-/// leaf as `freed`.
 #[test]
 fn without_the_retention_define_the_month_entries_the_game_lists_tell_which_lines_it_freed() {
     for month in [JAN - 10, JAN - 1, JAN] {
@@ -1029,22 +967,12 @@ fn without_the_retention_define_the_month_entries_the_game_lists_tell_which_line
     assert_eq!(run.cell(TableId::CombatLogDropped, lines[1], 1), number(5));
 }
 
-/// GER's design 7 in group 4's entries of ten months ago (3), last month's (5) and this month's
-/// (1), and in group 5's entry of last month (2).
 fn four_lines() -> [Op; 4] {
     [logged(GER, 4, JAN - 10, 7, 3), logged(GER, 4, JAN - 1, 7, 5), logged(GER, 4, JAN, 7, 1), logged(GER, 5, JAN - 1, 7, 2)]
 }
 
-/// The feed of a run reading CombatLogMonths: each hour's month entries, then its other inputs.
 type Listing = (Vec<Op>, Vec<Op>);
 
-/// Each hour of a run the game prunes as it does, from January 1943:
-/// 0. both groups' entries listed and their lines read;
-/// 1. group 5's log deleted whole: its line and its entry leave in one hour;
-/// 2. group 4's oldest entry pruned with its line, in one hour;
-/// 3. last month's line leaves the read's listing while its entry is listed: held;
-/// 4. an entry pruned and one made in one hour, the entries dated anew and none deleted: last
-///    month's line is freed.
 fn pruned() -> Vec<Listing> {
     let mut first = countries();
     first.extend(four_lines());
@@ -1063,7 +991,6 @@ fn listing_writers(feed: &Arc<Mutex<Vec<Op>>>, months: &Arc<Mutex<Vec<Op>>>) -> 
     writers
 }
 
-/// A run from January 1943 whose CombatLogMonths comes from `months`, no retention define held.
 fn listing_run(months: &Arc<Mutex<Vec<Op>>>) -> Run {
     let mut run = Run::new();
     run.store.begin_run(JAN_1943);
@@ -1077,9 +1004,6 @@ fn listing_step(run: &mut Run, months: &Arc<Mutex<Vec<Op>>>, (listing, ops): Lis
     run.step(ops);
 }
 
-/// A line that leaves the log in the hour its entry does (a group's log deleted whole, an
-/// array's oldest entry pruned) is freed in that hour, never held for the run; one whose entry
-/// is listed is held until its entry goes, a prune dating the entries anew included.
 #[test]
 fn a_line_leaving_with_its_month_entry_is_freed_that_hour_not_held_for_the_run() {
     let months = Arc::new(Mutex::new(Vec::new()));
@@ -1107,9 +1031,6 @@ fn a_line_leaving_with_its_month_entry_is_freed_that_hour_not_held_for_the_run()
     assert!(run.store.view(TableId::CombatLogDropped.index()).rows().next().is_none(), "nothing the game freed is held");
 }
 
-/// A run stopped after any hour and taken up holds, at every later hour, the CombatLogDropped and
-/// EquipmentLossTotals rows of a run never stopped: a taken-up hour reads every array whole and
-/// finds nothing a run never stopped still holds.
 #[test]
 fn a_run_taken_up_after_any_hour_holds_the_dropped_lines_and_totals_of_one_never_stopped() {
     let months = Arc::new(Mutex::new(Vec::new()));

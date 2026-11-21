@@ -151,7 +151,6 @@ fn hq_every_required_read_failure_withholds_the_table() {
     }
 }
 
-/// Sparse bytes: an address never written is unreadable.
 #[derive(Default)]
 struct Bytes(std::collections::BTreeMap<usize, u8>);
 impl Bytes {
@@ -278,12 +277,10 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     assert_eq!((census.calls(), census.bytes()), (20, 160));
     assert_eq!((rows[0].country, rows[0].tag_reference), (2, 1));
     assert_eq!(rows[0].tag.as_bytes(), b"GER");
-    // Link 3 is a readable zero entry: no country, so no tag is invented.
     assert_eq!((rows[1].country, rows[1].tag_reference), (3, 0));
     assert!(rows[1].tag.as_bytes().is_empty());
     let expected = rows.clone();
 
-    // Each source is authenticated again, even within the capture that selected it.
     f.put(0x6008, &(ids[0] + (1 << 32)).to_le_bytes());
     assert_eq!(
         walk_portrait_paths(&f, 0, GS, &sources, &mut rows),
@@ -301,8 +298,6 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     );
     f.put(0x6000, &(VTABLE_RVA.0 as u64).to_le_bytes());
 
-    // Two raw aliases resolve to the same authenticated object. All leader
-    // and country authentication reads remain; only one complete tag is read.
     f.put(LINKS + 12, &1u32.to_le_bytes());
     let census = ReadCensus::new(&f);
     assert_eq!(
@@ -314,7 +309,6 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         [(2, 1), (3, 1)]
     );
     assert!(rows.iter().all(|row| row.tag.as_bytes() == b"GER"));
-    // Without tag reuse these same two linked leaders need 31 calls / 224 bytes.
     assert_eq!((census.calls(), census.bytes()), (26, 200));
 
     struct Observed<'a> {
@@ -376,7 +370,6 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         assert_eq!(observed.reads.borrow().last().unwrap().0, fault);
     }
 
-    // Each walk starts fresh, even when all native pointers and IDs match.
     f.put(TAGS + 0x20, &[0xff, 0, b'X']);
     assert_eq!(
         walk_portrait_paths(&f, 0, GS, &sources, &mut rows),
@@ -396,14 +389,12 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
         Outcome::Rows { len: 2 }
     );
     assert!(rows.iter().all(|row| row.tag.as_bytes() == &heap_tag[..20]));
-    // A heap tag adds its pointer read and preserves every non-UTF-8 byte.
     assert_eq!((census.calls(), census.bytes()), (27, 225));
     f.put(TAGS + 0x20, &[0; 32]);
     f.put(TAGS + 0x20, b"GER");
     f.put(TAGS + 0x20 + 16, &3u64.to_le_bytes());
     f.put(TAGS + 0x20 + 24, &15u64.to_le_bytes());
 
-    // A zero raw reference and a live link to a null country both stay empty.
     f.put(0x7000 + super::COUNTRY, &0u32.to_le_bytes());
     assert_eq!(
         walk_portrait_paths(&f, 0, GS, &sources, &mut rows),
@@ -419,9 +410,6 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     );
     assert_eq!(rows, expected);
 
-    // Slots 1 and 65 collided in the old 64-cell memo; each canonical slot
-    // now has its own cell, so a later return to slot 1 reuses GER without
-    // rereading it and never carries slot 65's FRA. Raw aliases survive.
     const OTHER_COUNTRY: usize = 0xb000;
     f.put(COUNTRIES, &[0; 66 * 8]);
     f.put(COUNTRIES + 8, &(COUNTRY as u64).to_le_bytes());
@@ -465,7 +453,6 @@ fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty
     );
     assert_eq!((census.calls(), census.bytes()), (40, 288));
 
-    // A changed original-tag reference is reacquired on the next walk too.
     f.put(COUNTRY + ccountry::ORIGINAL_TAG, &0i32.to_le_bytes());
     assert_eq!(
         walk_portrait_paths(&f, 0, GS, &sources, &mut rows),

@@ -5,8 +5,6 @@ import { formatDateTime } from './calendar';
 import type { CountryLabel } from './countryFlagsAt';
 import type { LiveValue } from '../components/DateTimePicker';
 
-/** Callers resolve the native country and supply the label at the displayed hour. With `live` (the head), the
- * date it is as of is painted from it every frame; `hour` is then only the hour the label is read at. */
 export default function DatedCountryChip({ label, hour, reason, failure, live }: {
   label: ReturnType<CountryLabel> | null; hour: number | null; reason: string | null; failure?: Failure | null; live?: LiveValue;
 }) {
@@ -39,7 +37,6 @@ export default function DatedCountryChip({ label, hour, reason, failure, live }:
   </span>;
 }
 
-/** The header of a breakdown that has no country yet: an unchosen selection. */
 export function ChooseCountryChip() {
   return <span className="dash-widget-country"><CountryFlag /><span>Choose a country</span></span>;
 }

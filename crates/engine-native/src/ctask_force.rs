@@ -1,11 +1,3 @@
-//! Task-force complete-object layout with primary and secondary bases.
-//! Reference type is separate from class: fleet-space and ship-space handles
-//! can both occur. Location follows the stored province pointer, independently
-//! of inherited supply cache. Shared unit handle, supply, owner, location and
-//! definition fields are in `cunit`.
-//! `cfleet::walk_counter_inputs` visits authenticated task forces for movement
-//! target, first combat role and both routes through `cunit::read_map_motion`,
-//! shared with railway guns. Fixtures cover routes, roles and truncation.
 
 use crate::{
     Memory, ccountry, cfleet,
@@ -24,41 +16,23 @@ mod cached_name;
 pub use cached_name::{cached_name, cached_name_demand};
 pub mod port_mission;
 
-/// Primary vtable at displacement zero.
 pub const VTABLE_RVA: Rva = Rva(0x029d_f900);
-/// Secondary vtable at `SECONDARY_BASE`.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029d_fae0);
-/// Supply-consumer/reference-object secondary base.
 pub const SECONDARY_BASE: usize = 0x10;
-/// Default reference type assigned through fleet-ID minting.
 #[cfg(any(test, feature = "test-support"))]
 pub const DEFAULT_HANDLE_TYPE: u32 = 61;
-/// Parent fleet pointer.
 pub const FLEET: usize = 0x340;
-/// Ship-pointer array.
 pub const SHIPS: usize = 0x348;
-/// Ship-array count, u32.
 #[cfg(test)]
 pub const SHIP_COUNT: usize = 0x354;
-/// Mission enum, u32, including the reserve discriminator.
 pub const MISSION: usize = 0x374;
-/// Embedded naval mission initialized by task-force construction.
 pub const NAVAL_MISSION: usize = 0x360;
-/// Repair-parent full handle, serialized as `repair_parent`; linked forces
-/// are excluded from roster presentation.
 pub const REPAIR_PARENT: usize = 0x4b0;
-/// Detached mission, i32, saved as `repair_last_mission`, restored on return
-/// and selected while the detached marker is nonzero.
 pub const REPAIR_LAST_MISSION: usize = 0x4f0;
-/// Detached-activity enum, u32.
 pub const DETACHED_ACTIVITY: usize = 0x4b8;
-/// Repair-target province pointer.
 pub const REPAIR_TARGET: usize = 0x4c0;
-/// Current fuel usage, i64, read from fleet-vector task forces.
 pub const CURRENT_FUEL_USAGE: usize = 0x500;
-/// Constructor installing all task-force interface identities.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00dc_96e0);
-/// Destructor restoring the same interface identities.
 pub const DESTRUCTOR_RVA: Rva = Rva(0x00dc_99e0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +44,7 @@ pub struct Row {
     pub expeditionary_owner: u32,
     pub province: u32,
     pub mission: u32,
-    /// [`cunit::ORDINARY_ROUTE_COUNT`], the signed route length.
     pub route_count: i32,
-    /// Combat presence tests the signed count for positive.
     pub combat_references: i32,
 }
 
@@ -112,7 +84,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok(id)
     }
 
-    /// No owner check: the game never refuses a roster owner unlike its fleet's country.
     pub(crate) fn row(&self, pointer: usize, id: u64, fleet: u64) -> Result<Row, &'static str> {
         let at = |offset| {
             pointer
@@ -164,7 +135,6 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Task-force presentation operands beyond the TaskForces row.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CounterRow {
     pub id: u64,
@@ -176,49 +146,23 @@ pub struct CounterRow {
     pub repair_parent: u64,
     pub detached_activity: i32,
     pub repair_last_mission: i32,
-    /// Received-supply ratio, signed fixed5, read by the low-supply child.
     pub received_supply_ratio: i64,
-    /// Attached naval-HQ count; nonzero shows the combat control for the viewer's
-    /// task force when it is in combat.
     pub attached_headquarters: i32,
-    /// Uncommitted retained name-member bytes, independently copied after the established counter
-    /// prefix. None refuses only the cached-name field.
     pub name: Option<crate::cname_group_member::Span>,
-    /// Stored supply footer operands independent of motion prefix and cached
-    /// name. Ship count/demand are read through the secondary supply object.
-    /// Origin failure withholds only that fragment.
     pub supply: Option<crate::cunit_supply_inputs::Inputs>,
     pub supply_origins_start: usize,
     pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
-    /// Ordered port searching/status operands, independently captured after
-    /// the established prefix, retained name and supply inputs.
     pub port_mission: Option<port_mission::Inputs>,
 }
 
-/// Caller-owned origin storage for admitted task-force supply suffixes.
-/// Workers grow from the original distributed-supply header; fixed callback
-/// storage retains an explicit shortage.
 pub struct SupplyOrigins<'a> {
     pub origins: Buffer<'a, crate::cunit_supply_inputs::Origin>,
     pub len: usize,
     pub required: usize,
 }
 
-/// Attached naval-HQ array whose count gates combat presentation.
 pub const ATTACHED_HEADQUARTERS: usize = 0x728;
 
-/// Task-force fields the hourly counter walk's readers (counter inputs,
-/// cached name, supply, port mission, missions, map motion and fresh ETA)
-/// read for each task force, each span enclosing their exact reads: the
-/// identity and handle; the supply scalars, received ratio and origin
-/// header; the stats pointer; the combat count; the owners, location and
-/// both routes; the movement and arrow scalars; the cached name; the risk
-/// flags; the fleet and ship roster; the embedded naval mission and mission
-/// id, region status, bombardment region and accessible regions; the
-/// underway and convoy words; the repair link and detached activity; the
-/// last repair mission and fuel; the local accumulator header; and the
-/// attached-HQ array. The walk's caller gathers them in one guarded call per
-/// task force ([`crate::cship::SwitchedObject`]).
 pub const TASK_FIELDS: [(usize, usize); 30] = {
     use crate::{cnaval_mission as mission, cunit_supply_inputs as supply};
     [
@@ -255,11 +199,6 @@ pub const TASK_FIELDS: [(usize, usize); 30] = {
     ]
 };
 
-/// Authenticates a task force's embedded CNavalMission from the first 16 bytes read at
-/// [`NAVAL_MISSION`]: the CNavalMission vtable, then the task-force back-pointer (mission
-/// construction initializes both during task-force construction). Every reader of the mission
-/// checks it for every task force it observes, so no reader's authentication depends on another
-/// reader's buffer having room.
 pub(crate) fn authenticate_mission(
     header: &[u8],
     base: usize,
@@ -278,9 +217,6 @@ pub(crate) fn authenticate_mission(
     Ok(())
 }
 
-/// Reads an already-authenticated task force's embedded CNavalMission and link fields.
-/// The mission is authenticated ([`authenticate_mission`]); a bombardment region must be the
-/// registered CStrategicRegion at its id. Null pointers stay zero.
 pub(crate) fn read_counter_inputs(
     memory: &impl Memory,
     base: usize,
@@ -369,14 +305,10 @@ pub(crate) fn read_counter_inputs(
     })
 }
 
-/// One task force's movement target, first-combat role and routes, the routes
-/// as ranges of the caller's arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MapMotionRow {
     pub id: u64,
     pub target: u32,
-    /// [`cunit::first_combat_side`] of the first combat reference: 0 without a
-    /// combat, 1 when the logical owner is on the attacking side, else 2.
     pub combat_role: u8,
     pub ordinary_start: usize,
     pub ordinary_len: usize,
@@ -385,15 +317,9 @@ pub struct MapMotionRow {
     pub retreat: Option<u8>,
     pub withdrawal: Option<u8>,
     pub naval_transfer: Option<u8>,
-    /// First raw combat and first reached native naval combat, full references.
     pub combat_links: Option<[u64; 2]>,
-    /// Current-hour pure counter-search inputs; absent outside its native demand
-    /// or when the caller did not supply an authenticated sample hour.
     pub fresh: Option<FreshEtaInputs>,
-    /// Existing-prefix logical owner; no second native owner read.
     pub logical_owner: u32,
-    /// Transient same-pass roster-owner loan for shared naval/theatre operands.
-    /// The collector clears it before the Ordinary acquisition returns.
     pub fresh_owner: Option<Result<ccountry::Country, &'static str>>,
 }
 
@@ -429,9 +355,6 @@ impl MissionRiskDemand {
                 if in_regions? == 0 {
                     return Ok(false);
                 }
-                // The old motion prefix may have stopped before this header.
-                // A failed original header is retained, never read as a word
-                // again to hide its failure. Signed negative is native idle.
                 let count = *count.get_or_insert_with(|| {
                     pointer
                         .checked_add(cunit::COMBAT_REFERENCE_COUNT)
@@ -448,16 +371,9 @@ impl MissionRiskDemand {
     }
 }
 
-/// Task forces whose fresh ETA operands the motion collector captured, and
-/// the QPC ticks those captures took, cumulative (diagnostics only: no row
-/// depends on them).
 pub static FRESH_ETA: [std::sync::atomic::AtomicU64; 2] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
-/// Collects [`MapMotionRow`]s for the task forces the fleet walk authenticates,
-/// through [`cunit::read_map_motion`], the reader railway guns share. A full row
-/// buffer or route arena truncates the table; a bad read makes it unavailable.
-/// Nothing of the map entity, the camera or a selection is read.
 pub struct MapMotionCollector<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -477,8 +393,6 @@ pub struct MapMotionCollector<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> MapMotionCollector<'a, M> {
-    /// Worker motion capture retains serialized unit routes. Each original
-    /// header grows its arena before copying.
     pub fn new(
         memory: &'a M,
         base: usize,
@@ -530,39 +444,26 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         }
     }
 
-    /// Serve the fresh ETA reader the certified censuses in `censuses.held`
-    /// (country and fleet-leader modifier trees) while `censuses.certify`
-    /// still gives the certificate each was read under, and log every
-    /// certified census it uses under the certificate taken before it.
     pub fn with_censuses(mut self, censuses: Censuses<'a>) -> Self {
         self.fresh = self.fresh.with_censuses(censuses);
         self
     }
 
-    /// Supplies this callback's simulation hour. The legacy constructor has no
-    /// clock and therefore cannot claim a fresh ETA packet.
     pub fn with_fresh_hour(mut self, hour: i32) -> Self {
         self.fresh_hour = Some(hour);
         self
     }
 
-    /// Attachment-owned fixed-key verification, checked once before dispatch.
-    /// A refused/unverified guard withholds only modifier-derived ETA/range;
-    /// native stats, simulation bytes and the owner loan remain independent.
     pub fn with_fresh_modifier_guard(mut self, guard: Result<(), &'static str>) -> Self {
         self.fresh = self.fresh.with_modifier_guard(guard);
         self
     }
 
-    /// Answer each location's region id and terrain from `held`, which keeps those read for
-    /// its world.
     pub fn with_world_locations(mut self, held: &'a mut WorldHold<(u32, usize)>) -> Self {
         self.fresh = self.fresh.with_world_locations(held);
         self
     }
 
-    /// Answer each fleet's navy leader from `held` while `fleets` (leader binding) and
-    /// `leaders` (the leader's lifetime) still give the certificates it was read under.
     pub fn with_fleet_leaders(
         mut self,
         held: &'a mut FleetLeaders,
@@ -573,14 +474,11 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         self
     }
 
-    /// Bind an off-thread prepared sink to the existing original SHIPS walk.
-    /// Its immediate pointer loans retire before this owner callback returns.
     pub fn with_risk_ship_observer(mut self, observer: &'a mut dyn OriginalRiskShips) -> Self {
         self.fresh = self.fresh.with_risk_ship_observer(observer);
         self
     }
 
-    /// `pointer` and `id` are a task force the fleet walk has authenticated.
     pub fn visit(&mut self, pointer: usize, id: u64) {
         if self.error.is_none()
             && let Err(reason) = self.read(pointer, id, None, &mut None, &mut None)
@@ -589,16 +487,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         }
     }
 
-    /// Borrows risk for an authenticated receiver outside the old motion
-    /// census, using this same current-pass observer and its failure memos.
-    /// The loan pairs the original primary pointer with the full handle from
-    /// `counter_identity`, after its same-world class-1 and registry checks.
-    /// The caller retains that full handle for the packet join and deduplicates
-    /// receiver acquisition while preserving ledger occurrences separately. Null ledger
-    /// or backlink skips never call this method. Do not manufacture a successful
-    /// loan or retry a failed identity/source observation.
-    /// This method neither reprobes the loan nor touches motion rows, routes,
-    /// capacity accounting or the old census outcome. No pointer is retained.
     #[cfg(test)]
     pub fn borrow_mission_risk(
         &mut self,
@@ -627,13 +515,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             .capture_mission_risk_union(pointer, hour, demand, guard, contributor))
     }
 
-    /// Visits this authenticated receiver once for motion and an independent original same-pass
-    /// mission-risk demand. Use instead of `visit`, never after it. The caller owns
-    /// nullable-ledger/backlink and original counter / signed-combat-count admission; failures must
-    /// not be retried or guessed. `guard` authenticates the risk keys and speed/weather keys.
-    /// Motion/path/row-capacity failure is retained by the normal census while a valid risk-only
-    /// observation remains available. No native pointer is retained. Missing current-hour
-    /// authentication is an outer refusal.
     #[cfg(test)]
     pub fn visit_with_mission_risk(
         &mut self,
@@ -664,10 +545,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             .capture_mission_risk(pointer, hour, demand, guard))
     }
 
-    /// The ordinary visitor's risk demand from its original counter fact and signed combat-count
-    /// observation. Its combat count shares the old motion header attempt even when vector
-    /// validation, paths or capacity refuses motion. A stopped prefix may read the independently
-    /// reached word once; a failed original header cannot be retried. Use instead of either visit.
     #[cfg(test)]
     pub fn visit_with_original_counter_risk(
         &mut self,
@@ -681,9 +558,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         )
     }
 
-    /// Also loans original signed count and logical-owner attempts for the
-    /// receiver packet. None means the old prefix/native risk demand did not
-    /// reach the count, or the old motion prefix never attempted the owner.
     #[cfg(test)]
     pub fn visit_with_original_counter_risk_observed(
         &mut self,
@@ -705,10 +579,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         )
     }
 
-    /// Same-pass contribution union for an original authenticated region-ledger
-    /// receiver. The contributor must come from that ledger. Its graph is
-    /// independently demanded without a combat gate; own mission facts retain
-    /// their original failures without withholding the contribution.
     #[allow(clippy::too_many_arguments)]
     pub fn visit_with_original_counter_contribution_observed(
         &mut self,
@@ -797,9 +667,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             self.memory,
             &mut self.paths[self.paths_len..self.paths_len + needed],
         )?;
-        // The old row and both route copies succeeded before these isolated
-        // scalar reads. None cannot affect this census or the next unit. The
-        // authenticated visitor pointer is not retained after this call.
         let arrow = cunit::read_movement_arrow_scalars(self.memory, pointer);
         let combat_links = cunit::read_map_motion_combat_links(
             self.memory,
@@ -855,7 +722,6 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         Ok(fresh.and_then(|(_, _, packet)| packet))
     }
 
-    /// `graph_error` is the fleet walk's own failure, which leaves the census unknown.
     pub fn finish(self, graph_error: Option<&'static str>) -> MapMotionWalk {
         let outcome = if let Some(reason) = graph_error.or(self.error) {
             Outcome::Unavailable { reason }
@@ -875,23 +741,14 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
     }
 }
 
-/// Mission country whose strategic navy registers the mission.
 pub const MISSION_OWNER: usize = 0x10;
-/// Currently patrolled strategic region; patrol display counts it active
-/// when it is the icon region.
 pub const MISSION_CURRENT_REGION: usize = 0x70;
 
-/// Registered mission regions come from original accessible-region lists
-/// after removing earlier occurrences. These rows retain the country ledger
-/// used by naval mission-map presentation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MissionRow {
     pub id: u64,
-    /// Raw country reference held by the naval mission (`MISSION_OWNER`).
     pub owner: u32,
-    /// Strategic region id (`MISSION_CURRENT_REGION`), zero for none.
     pub current_region: u32,
-    /// Range of accessible region ids (`cnaval_mission::ACCESSIBLE_REGIONS`) in the caller's arena, in order.
     pub regions_start: usize,
     pub regions_len: usize,
 }
@@ -903,18 +760,13 @@ pub struct MissionWalk {
     pub required_regions: usize,
 }
 
-/// Map content by object address, held while its world lives: provinces, strategic regions and
-/// their templates and terrain are built at load and never rebuilt inside a world, so a held
-/// value needs no read.
 pub struct WorldHold<V> {
     world: Option<u64>,
     values: std::collections::HashMap<usize, V>,
-    /// Values served from the hold and read this capture.
     pub held: u64,
     pub read: u64,
 }
 
-/// Strategic region ids by region address.
 pub type WorldIds = WorldHold<u32>;
 
 impl<V> Default for WorldHold<V> {
@@ -929,7 +781,6 @@ impl<V> Default for WorldHold<V> {
 }
 
 impl<V: Copy> WorldHold<V> {
-    /// Begin a capture in `world`; an unobserved or different world holds nothing.
     pub fn begin(&mut self, world: Option<u64>) {
         if world.is_none() || world != self.world {
             self.values.clear();
@@ -962,16 +813,11 @@ impl<V: Copy> WorldHold<V> {
     }
 }
 
-/// A receiver's `(epoch, sequence)` certificate, registering it; `None` while unobserved.
 pub type Certify = fn(usize) -> Option<(u64, u64)>;
 
-/// Each fleet's navy leader, held under the fleet's leader-binding certificate and the
-/// leader's naval tree certificate, each taken before its object was read; binding, reserve
-/// conversion and the leader's construction, copy and destruction move them.
 #[derive(Default)]
 pub struct FleetLeaders {
     held: std::collections::HashMap<usize, (Option<usize>, (u64, u64), (u64, u64))>,
-    /// Fleets served from the hold and read this capture.
     pub carried: u64,
     pub read: u64,
 }
@@ -1024,8 +870,6 @@ impl FleetLeaders {
     }
 }
 
-/// The registered id of a `CStrategicRegion*`, which must sit at its own roster slot, or its
-/// id held for this world.
 fn mission_region_id(
     memory: &impl Memory,
     regions: Array,
@@ -1052,8 +896,6 @@ fn mission_region_id(
     Ok(id)
 }
 
-/// Collects [`MissionRow`]s for task forces with a current region or an accessible region;
-/// a row buffer or region arena that is too short truncates, a bad read makes it unavailable.
 pub struct MissionCollector<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -1069,8 +911,6 @@ pub struct MissionCollector<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> MissionCollector<'a, M> {
-    /// Worker mission capture grows regions from the original mission header
-    /// before following its pointers.
     pub fn new(
         memory: &'a M,
         base: usize,
@@ -1115,14 +955,11 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
         }
     }
 
-    /// Answer region ids from `held`, which keeps those read for its world.
     pub fn with_region_ids(mut self, held: &'a mut WorldIds) -> Self {
         self.held = Some(held);
         self
     }
 
-    /// `pointer` and `id` are a task force the fleet walk has authenticated; its mission is
-    /// authenticated here, whether or not a row is kept for it.
     pub fn visit(&mut self, pointer: usize, id: u64) {
         if self.error.is_none()
             && let Err(reason) = self.read(pointer, id)
@@ -1137,7 +974,6 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
             .checked_add(NAVAL_MISSION)
             .ok_or("task force address overflow")?;
         let field = |offset: usize| root.checked_add(offset).ok_or("mission address overflow");
-        // The identity header and the owner after it, in one read.
         let header = read::<[u8; MISSION_OWNER + 4]>(self.memory, root)
             .ok_or("naval mission identity unreadable")?;
         authenticate_mission(&header, self.base, pointer)?;
@@ -1178,7 +1014,6 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
         } else {
             mission_region_id(self.memory, self.regions, &mut self.held, current)?
         };
-        // The pointers a page at a time.
         let start = self.arena_len;
         let (memory, regions, held, arena) =
             (self.memory, self.regions, &mut self.held, &mut self.arena);

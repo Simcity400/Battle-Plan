@@ -1,4 +1,3 @@
-//! Ordered raid launch eligibility over the recorded hour.
 
 use super::{
     RaidAssets, TypeToken,
@@ -7,17 +6,6 @@ use super::{
 use installed_content_raids::raids::RaidType;
 use replay_data::rows::tables;
 
-/// Launch-trigger order:
-///
-/// - Type unlocked for the owner (`visible` and category unlock through
-///   [`super::offers::category_admits_unlock`]), not used up (`fire_only_once`),
-///   and `show_target`.
-/// - Off cooldown and `available`.
-/// - `launchable`.
-/// - `launchable_from`, with the source country as ROOT.
-///
-/// Every trigger except the last uses owner scopes: owner as ROOT, target
-/// country as FROM, and target state, province and leader as variables.
 pub fn launch_triggers(
     assets: &RaidAssets,
     world: &World<'_>,
@@ -80,8 +68,6 @@ pub fn launch_triggers(
         )
 }
 
-/// `fire_only_once` and the type in the owner's recorded used types
-/// (`RaidCountries.used_types`).
 pub fn used_up(assets: &RaidAssets, world: &World<'_>, owner: u32, kind: &RaidType) -> Eval {
     if !kind.fire_only_once {
         return Eval::False;
@@ -106,8 +92,6 @@ pub fn used_up(assets: &RaidAssets, world: &World<'_>, owner: u32, kind: &RaidTy
     result
 }
 
-/// Owner cooldown (`RaidCooldowns`) of this type whose building, province,
-/// state and leader arms match the target.
 pub fn on_cooldown(
     assets: &RaidAssets,
     world: &World<'_>,

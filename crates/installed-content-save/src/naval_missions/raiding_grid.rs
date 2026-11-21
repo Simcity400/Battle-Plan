@@ -1,4 +1,3 @@
-//! Retained convoy-raiding grid fields, bound through recorded lexical spellings.
 use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

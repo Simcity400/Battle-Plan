@@ -24,30 +24,23 @@ const MANIFEST: ConstructionLogManifestReply = {
 };
 const STATES = [{ id: 5, name: 'Ruhr' }, { id: 6, name: null }, { id: 40, name: 'Moscow' }, { id: 41, name: 'Smolensk' }];
 const PROJECTS = [
-  // Built at 144, read gone at 148.
   project({ built: [{ hour: 144, knownAt: 148, count: 1, repair: false, carried: false }], end: { kind: 'finished', hour: 144, knownAt: 148, unknown: null } }),
-  // A repair of state 6's infrastructure, still going, first read at 124.
   project({ id: '2', building: 12203, repair: true, state: 6, createdHour: 110, firstRead: 124, runs: [{ firstHour: 124, lastHour: 151, factories: 0, remaining: 0, repairLevels: 2 }] }),
-  // Three levels: one built at 120; removed by 172 after a gap (not carried past 151).
   project({ id: '3', createdHour: 95, runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 3, repairLevels: 0 }, { firstHour: 124, lastHour: 151, factories: 12, remaining: 2, repairLevels: 0 }],
     built: [{ hour: 120, knownAt: 124, count: 1, repair: false, carried: false }], end: { kind: 'removed', hour: null, knownAt: 172, unknown: null } }),
-  // A railway of ITA from Moscow to Smolensk whose ending is unknown.
   project({ id: '4', kind: 'railway', tag: 'ITA', building: 19649, state: 40, toState: 41, routeProvinces: 3, baseLevel: 1, targetLevel: 2, costRaw: '56000000',
     runs: [{ firstHour: 100, lastHour: 123, factories: 4, remaining: 2, repairLevels: 0 }, { firstHour: 124, lastHour: 147, factories: 4, remaining: 1, repairLevels: 0 }],
     built: [{ hour: null, knownAt: 124, count: 1, repair: false, carried: false }],
     end: { kind: 'unknown', hour: null, knownAt: 148, unknown: 'notRecorded' } }),
 ];
-/** A window of the manifest listing projects and naming the fixture's states. */
 const windowOf = (projects: ConstructionProject[], index = 0, states = STATES): ConstructionLogReply => ({
   window: index, interval: MANIFEST.windows[index], projects, states, warnings: [] });
-/** The log as one window holding every project shows it. */
 const WHOLE: ConstructionLogManifestReply = { ...MANIFEST, windows: [{ firstHour: 0, lastHour: 300 }] };
 const logOf = (projects: ConstructionProject[], states = STATES) =>
   mergeWindows(WHOLE, new Map([[0, { ...windowOf(projects, 0, states), interval: WHOLE.windows[0] }]]), 0);
 const LOG = logOf(PROJECTS);
 const RUN: ConstructionOutputRun = { from: 100, to: 100, constructionRaw: '1', repairRaw: '0', reason: null, beforeObservation: false };
 const every: LogFilter = { types: [], projects: 'all', country: () => true, from: null };
-/** Project 3 as the three windows list it: each its rows there, the counts reached before a window carried. */
 const SPLIT: ConstructionProject[] = [
   { ...PROJECTS[2], runs: [{ firstHour: 100, lastHour: 119, factories: 15, remaining: 3, repairLevels: 0 }], built: [], end: null },
   { ...PROJECTS[2], runs: [{ firstHour: 120, lastHour: 123, factories: 15, remaining: 3, repairLevels: 0 }, { firstHour: 124, lastHour: 151, factories: 12, remaining: 2, repairLevels: 0 }], end: null },
@@ -193,7 +186,6 @@ test('possible work alone changes a merged run without claiming exact work', () 
 });
 
 test('work before the first read stays unknown, including on a single level', () => {
-  // Created at 110 with two levels; one built at 120 before the first read at 124.
   const opening = project({ createdHour: 110, firstRead: 124, earlierUnknown: true,
     runs: [{ firstHour: 124, lastHour: 147, factories: 10, remaining: 1, repairLevels: 0 }],
     built: [{ hour: 144, knownAt: 148, count: 1, repair: false, carried: false }], end: { kind: 'finished', hour: 144, knownAt: 148, unknown: null } });
@@ -243,16 +235,13 @@ test('a project shows from its first read, and its ending only from the read tha
   const [built] = PROJECTS;
   assert.equal(projectAt(built, 99), null);
   const before = projectAt(built, 146)!;
-  // The factory rose at 144, but no read showed it before 148.
   assert.deepEqual([before.status, before.built, before.levels, before.changed, before.stage], ['building', 0, 1, 90, 0]);
   const after = projectAt(built, 148)!;
   assert.deepEqual([after.status, after.built, after.levels, after.changed, after.changedBy, after.stage], ['finished', 1, 1, 144, false, 2]);
   assert.equal(factoriesShown(after), 10);
-  // A row shows factories only while the project is in the queue; its tooltip keeps the last read's.
   assert.deepEqual([rowFactories(before), rowFactories(after)], [{ factories: 10 }, null]);
   assert.deepEqual([statusTone(before), statusTone(after)], ['accent', 'positive']);
   const removed = projectAt(PROJECTS[2], 160)!;
-  // Between the gap and the next read nothing is carried.
   assert.deepEqual([removed.status, removed.built, removed.levels, factoriesShown(removed)], ['unread', 1, 3, null]);
   const gone = projectAt(PROJECTS[2], 172)!;
   assert.deepEqual([gone.status, gone.levels, gone.changed, gone.changedBy, factoriesShown(gone)], ['removed', 3, 172, true, 12]);
@@ -269,13 +258,11 @@ test('rows are newest first by their latest change, and enter again when they ch
   assert.deepEqual(keys(124), ['4:1@124?', '3:1@120', '2:0@110', '1:0@90', ]);
   assert.deepEqual(keys(172), ['3:2@172?', '4:2@148?', '1:2@144', '2:0@110']);
   assert.deepEqual(keys(172, every, 'start'), ['2@110', '3@95', '1@90', '4@90']);
-  // Filters: types, new or repair, countries at the first read, and a date range.
   assert.deepEqual(keys(172, { ...every, types: ['infrastructure'] }), ['2:0@110']);
   assert.deepEqual(keys(172, { ...every, projects: 'repair' }), ['2:0@110']);
   assert.deepEqual(keys(172, { ...every, projects: 'new' }), ['3:2@172?', '4:2@148?', '1:2@144']);
   assert.deepEqual(keys(172, { ...every, country: (tag, hour) => tag === 'ITA' && hour === 100 }), ['4:2@148?']);
   assert.deepEqual(keys(172, { ...every, from: 145 }), ['3:2@172?', '4:2@148?']);
-  // In the queue: still building, or unread since a gap, at the hour shown.
   assert.deepEqual(keys(172, { ...every, queue: true }), ['2:0@110']);
   assert.deepEqual(logRows(LOG, 148, { ...every, queue: true }, 'change').map(row => row.id), ['3', '2']);
   assert.deepEqual(logRows(LOG, 124, { ...every, queue: true }, 'start').map(row => row.id).sort(), ['1', '2', '3', '4']);
@@ -331,7 +318,6 @@ test('the tooltip dates its read, names its levels and cost, and says why an end
   assert.equal(full.subtitle, 'Italy · Moscow to Smolensk');
   const value = (label: string) => full.rows.find(row => row.label === label)?.value;
   assert.equal(value('Segments built'), '1 of 2');
-  // It left the queue: the factories are those of its last read, and the cost needs no unit to fit.
   assert.equal(value('Factories'), undefined);
   assert.equal(value('Factories at its last read'), '4');
   assert.equal(value('Cost'), undefined);
@@ -355,22 +341,18 @@ test('the building types offered are the recording’s own, by name', () => {
 });
 
 test('a level lost while the building was not recorded stays counted, as a range, never erased', () => {
-  // Two levels at 100; at 124 one is left, and whether the other was built is not known.
   const unrecorded = project({ id: '9', runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 2, repairLevels: 0 },
     { firstHour: 124, lastHour: 147, factories: 15, remaining: 1, repairLevels: 0 }], unaccounted: [{ hour: null, knownAt: 124, count: 1, repair: false, carried: false }],
   built: [{ hour: 144, knownAt: 148, count: 1, repair: false, carried: false }], end: { kind: 'finished', hour: 144, knownAt: 148, unknown: null } });
   const at = (hour: number) => projectAt(unrecorded, hour)!;
   assert.deepEqual([at(130).built, at(130).unknown, at(130).levels, levelsLabel(at(130))], [0, 1, 2, '0–1 of 2']);
-  // Finished, its last level confirmed: the row keeps the range the tooltip gives.
   assert.deepEqual([at(148).status, at(148).built, at(148).unknown, at(148).levels, levelsLabel(at(148))], ['finished', 1, 1, 2, '1–2 of 2']);
   assert.equal(projectTooltip(LOG, at(148), 148, 'Germany')[0].rows.find(item => item.label === 'Levels built')?.value, levelsLabel(at(148)));
   assert.equal(describeRow(LOG, logRows(logOf([unrecorded]), 148, every, 'change')[0], 'Germany'),
     `Germany, Civilian Factory 1–2 of 2 in Ruhr, built, ${formatDateTime(144)}`);
-  // Left the queue unknowably, its levels all unaccounted: a range too, never "×2".
   const left = project({ id: '11', runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 2, repairLevels: 0 }],
     unaccounted: [{ hour: null, knownAt: 124, count: 2, repair: false, carried: false }], end: { kind: 'unknown', hour: null, knownAt: 124, unknown: 'notRecorded' } });
   assert.equal(levelsLabel(projectAt(left, 130)!), '0–2 of 2');
-  // A new stage: the row re-enters, dated only by the read.
   const [row] = logRows(logOf([unrecorded]), 130, every, 'change');
   assert.deepEqual([row.key, row.hour, row.by, row.id], ['9:1', 124, true, '9']);
   const tip = projectTooltip(LOG, at(130), 130, 'Germany')[0];
@@ -378,30 +360,25 @@ test('a level lost while the building was not recorded stays counted, as a range
 });
 
 test('levels built after the last read and before a removal are counted once', () => {
-  // Three left at its last read; one built at 144, then removed by 148.
   const removed = project({ id: '10', runs: [{ firstHour: 100, lastHour: 147, factories: 15, remaining: 3, repairLevels: 0 }],
     built: [{ hour: 144, knownAt: 148, count: 1, repair: false, carried: false }], end: { kind: 'removed', hour: null, knownAt: 148, unknown: null } });
   const at = projectAt(removed, 160)!;
   assert.deepEqual([at.status, at.built, at.levels, levelsLabel(at)], ['removed', 1, 3, '×3']);
   assert.equal(projectTooltip(LOG, at, 160, 'Germany')[0].rows.find(item => item.label === 'Levels built')?.value, '1 of 3');
-  // Before the removal was read: three to build, none built yet.
   assert.deepEqual([projectAt(removed, 140)!.built, projectAt(removed, 140)!.levels], [0, 3]);
 });
 
 test('of changes one read confirms, the latest dates the row', () => {
-  // The read at 124 failed; read 148 confirms levels risen at 120 and 144.
   const both = project({ id: '12', runs: [{ firstHour: 100, lastHour: 147, factories: 15, remaining: 2, repairLevels: 0 }],
     built: [{ hour: 120, knownAt: 148, count: 1, repair: false, carried: false }, { hour: 144, knownAt: 148, count: 1, repair: false, carried: false }], end: { kind: 'finished', hour: 144, knownAt: 148, unknown: null } });
   const building = project({ ...both, id: '18', end: null, runs: [{ firstHour: 100, lastHour: 147, factories: 15, remaining: 2, repairLevels: 0 },
     { firstHour: 148, lastHour: 160, factories: 15, remaining: 1, repairLevels: 0 }], built: [{ hour: 144, knownAt: 148, count: 1, repair: false, carried: false }, { hour: 120, knownAt: 148, count: 1, repair: false, carried: false }] });
   assert.deepEqual([projectAt(building, 150)!.changed, projectAt(building, 150)!.changedBy], [144, false]);
-  // A range from 130 keeps it.
   const log = logOf([both, building]);
   assert.deepEqual(logRows(log, 150, { ...every, from: 130 }, 'change').map(row => `${row.id}@${row.hour}`), ['12@144', '18@144']);
 });
 
 test('levels a project may have built unseen before it left are a range, never zero', () => {
-  // Two left at 100; hours 101-123 missing; gone at 124, ending unknown.
   const gone = project({ id: '13', runs: [{ firstHour: 100, lastHour: 100, factories: 15, remaining: 2, repairLevels: 0 }],
     unaccounted: [{ hour: null, knownAt: 124, count: 2, repair: false, carried: false }], end: { kind: 'unknown', hour: null, knownAt: 124, unknown: 'notRecorded' } });
   const at = projectAt(gone, 130)!;
@@ -413,19 +390,15 @@ test('levels a project may have built unseen before it left are a range, never z
 
 test('the Jump to menu keeps the latest change whatever the order', () => {
   const at = projectAt(PROJECTS[2], 130)!;
-  // Started 95, a level at 120; not yet ended at 130.
   assert.deepEqual(jumpHours(at, 130), [95, 120]);
   const [row] = logRows(logOf([PROJECTS[2]]), 130, every, 'start');
   assert.equal(row.hour, 95);
   assert.deepEqual(jumpHours(row.item, 130), [95, 120]);
-  // Once its removal is read, the ending too.
   assert.deepEqual(jumpHours(projectAt(PROJECTS[2], 172)!, 172), [95, 172]);
-  // A project with no change yet offers its start alone.
   assert.deepEqual(jumpHours(projectAt(PROJECTS[1], 124)!, 124), [110]);
 });
 
 test('a level built while another was added counts both: built and still to build', () => {
-  // One left at 100; one added and one built by 124 (one still left); built again at 144, gone at 148.
   const masked = project({ id: '14', runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 1, repairLevels: 0 },
     { firstHour: 124, lastHour: 147, factories: 15, remaining: 1, repairLevels: 0 }],
   built: [{ hour: 120, knownAt: 124, count: 1, repair: false, carried: false }, { hour: 144, knownAt: 148, count: 1, repair: false, carried: false }],
@@ -435,7 +408,6 @@ test('a level built while another was added counts both: built and still to buil
   assert.deepEqual([at(130).built, at(130).levels, at(130).added, levelsLabel(at(130))], [1, 2, 1, '1 of 2']);
   assert.deepEqual([at(150).built, at(150).levels, levelsLabel(at(150))], [2, 2, '×2']);
   assert.equal(projectTooltip(LOG, at(130), 130, 'Germany')[0].rows.find(row => row.label === 'Added while under way')?.value, '1 level');
-  // Added and built at once before it left: the ending's addition counts.
   const burst = project({ id: '15', runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 1, repairLevels: 0 }],
     built: [{ hour: 110, knownAt: 124, count: 1, repair: false, carried: false }, { hour: 120, knownAt: 124, count: 1, repair: false, carried: false }],
     added: [{ hour: null, knownAt: 124, count: 1, repair: false, carried: false }], end: { kind: 'finished', hour: 120, knownAt: 124, unknown: null } });
@@ -444,7 +416,6 @@ test('a level built while another was added counts both: built and still to buil
 });
 
 test('what a line does is classified per stretch: a repair, then new levels', () => {
-  // First read repairing one level with one new level queued; repaired at 110; building from 124; built at 140.
   const both = project({ id: '16', repair: true, runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 1, repairLevels: 1 },
     { firstHour: 124, lastHour: 147, factories: 15, remaining: 1, repairLevels: 0 }],
   built: [{ hour: 110, knownAt: 124, count: 1, repair: true, carried: false }, { hour: 140, knownAt: 148, count: 1, repair: false, carried: false }],
@@ -454,24 +425,18 @@ test('what a line does is classified per stretch: a repair, then new levels', ()
   assert.deepEqual([at(130).kind, at(130).repairing, statusLabel(at(130)), builtLabel(at(130))], ['repairThenNew', false, 'Building, after repair', '1 of 2']);
   assert.deepEqual([statusLabel(at(150)), builtLabel(at(150)), kindLabel(at(150).kind)], ['Repaired and built', '2 of 2', 'Repair, then new']);
   assert.equal(projectTooltip(LOG, at(150), 150, 'Germany')[0].subtitle, 'Germany · Ruhr · repair, then new');
-  // Its completions follow the stretches: repaired at 110, built at 140, never "Repaired" at the build's date.
   const dates = (hour: number) => projectTooltip(LOG, at(hour), hour, 'Germany')[0].rows
     .filter(row => ['Repaired', 'Built', 'Finished'].includes(row.label)).map(row => `${row.label}: ${row.value}`);
   assert.deepEqual(dates(150), [`Repaired: ${formatDateTime(110)}`, `Built: ${formatDateTime(140)}`]);
   assert.deepEqual(dates(130), [`Repaired: ${formatDateTime(110)}`, 'Built: Not yet']);
   assert.deepEqual(dates(110), ['Repaired: Not yet', 'Built: Not yet']);
-  // A plain repair and a plain new building keep their one completion row.
   assert.deepEqual(projectTooltip(LOG, projectAt(PROJECTS[0], 150)!, 150, 'Germany')[0].rows.filter(row => row.label === 'Finished').map(row => row.value),
     [formatDateTime(144)]);
-  // Both filters show it; a plain repair only under repairs, a new building only under new.
   const log = logOf([both, PROJECTS[0], PROJECTS[1]]);
   const ids = (projects: 'new' | 'repair') => logRows(log, 150, { ...every, projects }, 'start').map(row => row.id).sort();
   assert.deepEqual(ids('repair'), ['16', '2']);
   assert.deepEqual(ids('new'), ['1', '16']);
-  // A line first read building is new, however its flag was set.
   assert.equal(projectAt(project({ repair: true }), 110)!.kind, 'new');
-  // Damaged and repaired between two reads that both show nothing to repair: the
-  // repair and its added work count, and it shows under repairs from that read.
   const between = project({ id: '17', runs: [{ firstHour: 100, lastHour: 147, factories: 15, remaining: 1, repairLevels: 0 }],
     built: [{ hour: 120, knownAt: 124, count: 1, repair: true, carried: false }], added: [{ hour: null, knownAt: 124, count: 1, repair: true, carried: false }] });
   const inBetween = (hour: number) => projectAt(between, hour)!;
@@ -506,7 +471,6 @@ test('a place on its own line keeps the game’s names and capitalises only what
   assert.equal(placeTitle(project({ state: null, province: 5007 }), log.states), 'Province 5007');
   assert.equal(placeTitle(project({ state: null }), log.states), 'An unknown place');
   assert.equal(placeTitle(project({ kind: 'railway', state: null, toState: null }), log.states), 'An unknown route');
-  // A state no window names says so, never a guess.
   const unnamed = logOf([PROJECTS[0]], []);
   const tip = datedProjectTooltip(unnamed, projectAt(PROJECTS[0], 124)!, 124, 'Country')[0];
   assert.match(tip.subtitle ?? '', /State 5/);
@@ -522,7 +486,6 @@ test('the log keeps exact signed output, writes it in whole IC and distinguishes
   const tip = projectTooltip(log, at, 124, 'Synthetic country')[0];
   assert.equal(tip.rows?.find(row => row.label === 'Construction output')?.value, '90,071,992,547');
   assert.equal(tip.rows?.find(row => row.label === 'Repair output')?.value, '0');
-  // Only the writing rounds: the amounts held stay exact and signed.
   assert.deepEqual([outputAt(p, 124)?.constructionRaw, outputAt(p, 124)?.repairRaw, outputAt(p, 124)?.knownAt], ['9007199254741499', '-1', 100]);
   assert.equal(outputAt(p, 99), null);
   assert.match(tip.note ?? '', /Earlier progress unknown/);
@@ -543,7 +506,6 @@ test('a line several windows list is one line: runs and output joined, counts ca
   const outputs = joinProject({ ...SPLIT[0], outputs: [{ ...RUN, from: 100, to: 119 }] },
     { ...SPLIT[1], outputs: [{ ...RUN, from: 120, to: 140 }, { ...RUN, from: 141, to: 151, constructionRaw: '2' }] }).outputs;
   assert.deepEqual(outputs.map(run => [run.from, run.to, run.constructionRaw]), [[100, 140, '1'], [141, 151, '2']]);
-  // Whichever windows are held, a line shows at an hour as the whole branch shows it.
   const windows = new Map(SPLIT.map((item, index) => [index, windowOf([item], index)]));
   for (const hour of [110, 124, 130, 160, 172, 200]) {
     const current = windowAt(MANIFEST.windows, hour);
@@ -558,19 +520,15 @@ test('a line several windows list is one line: runs and output joined, counts ca
 });
 
 test('the log holds the windows its drawn rows need, reaching back only when short', () => {
-  // At first: the hour's window and the one before, and the next during playback.
   assert.deepEqual(constructionWindows(5, 2, true, null), [1, 2, 3]);
   assert.deepEqual(constructionWindows(5, 4, true, null), [3, 4]);
   assert.deepEqual(constructionWindows(0, 0, true, null), []);
-  // A reach asked at this window or the one before holds; after a far jump it starts afresh.
   assert.deepEqual(constructionWindows(5, 3, false, { at: 2, lower: 0 }), [0, 1, 2, 3]);
   assert.deepEqual(constructionWindows(5, 4, false, { at: 2, lower: 0 }), [3, 4]);
   const log = mergeWindows(MANIFEST, new Map([[1, windowOf(PROJECTS, 1)], [2, windowOf([SPLIT[2]], 2)]]), 2);
   const rows = logRows(log, 172, every, 'change');
   assert.deepEqual(rows.map(row => row.key), ['3:2', '4:2', '1:2']);
-  // One drawn: the next row, read in window 1, is held.
   assert.equal(logReach(log, rows, rows.slice(0, 1), null), 1);
-  // All drawn: short of as many below, it reaches back twice as far, unless a range starts in what it holds.
   assert.equal(logReach(log, rows, rows, null), 0);
   assert.equal(logReach(log, rows, rows, 130), 1);
 });

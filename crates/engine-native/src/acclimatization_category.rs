@@ -1,19 +1,11 @@
-//! Registered acclimatization category definition.
 
 use crate::{Memory, cpdx_array::Array, read, read_slice};
 use engine_sites::Rva;
 
-/// Pointer to the array header of ordered registered category pointers.
 pub const REGISTRY_RVA: Rva = Rva(0x033d_e940);
-/// Category name string at object start.
 pub const NAME: usize = 0x00;
-/// Category u32 token used to key serialized weights.
 pub const TOKEN: usize = 0x20;
 
-/// The registered categories as (pointer, token), sorted by pointer. Read once
-/// per capture: an entry's category pointer is authenticated by membership and
-/// resolved to its token without another read. Workers reserve the original
-/// registry count before payload; fixed readers report any storage shortage.
 #[derive(Debug, Default)]
 pub struct Categories {
     entries: Vec<(usize, u32)>,
@@ -39,8 +31,6 @@ impl Categories {
         self.entries.capacity() * std::mem::size_of::<(usize, u32)>()
     }
 
-    /// Replaces the contents with the live registry. `required` receives the
-    /// registry length whenever it is readable.
     pub fn load(
         &mut self,
         memory: &impl Memory,
@@ -99,7 +89,6 @@ impl Categories {
         Ok(())
     }
 
-    /// The token of a registered category; `None` for any other pointer.
     pub fn token(&self, pointer: usize) -> Option<u32> {
         self.entries
             .binary_search_by_key(&pointer, |(pointer, _)| *pointer)

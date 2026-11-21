@@ -7,8 +7,6 @@ import type { StockpileArtworkReply } from '../../generated/dashboard';
 
 const text = (value: unknown) => value === null || typeof value === 'string';
 
-/** Checks a pictures reply (`stockpile-artwork`): each entry once, an archetype's (`type:<key>`) or a design's own
- * (`variant:<handle>`), with a drawable picture or none. */
 export function validateStockpileArtwork(data: unknown): StockpileArtworkReply {
   const reply = data as StockpileArtworkReply;
   if (!reply || typeof reply.tag !== 'string' || !Array.isArray(reply.entries)
@@ -21,9 +19,6 @@ export function validateStockpileArtwork(data: unknown): StockpileArtworkReply {
   return reply;
 }
 
-/** An archetype's picture as the game's Logistics screen draws it (its country's best design), and the pictures of
- * `variants` by handle, for the hour `widget` shows: followed at the head as a pushed panel, which changes only when a
- * picture does, else asked for that hour. Other widgets show a design's art through this hook. */
 export function useStockpileArtwork(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, variants: readonly string[], active: boolean,
   hoverHour: number | null = null) {
   return useHeadProduct<StockpileArtworkReply>(runtime, widget, 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,

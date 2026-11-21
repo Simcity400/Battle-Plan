@@ -1,54 +1,14 @@
-//! A power-balance record's cached description trees, derived on playback
-//! from its recorded static-modifier sources
-//! ([`crate::rows::PowerBalanceModifierBreakdownRow::sources`]) and the
-//! content stack's static modifiers.
-//!
-//! Power-balance description formatting reads the record's description accumulator for key 0x98 and
-//! then 0x99, with scale 1, precision 2 and depth -1. That accumulator is written only from the
-//! source roster:
-//!
-//! - Rebuilding clears the accumulator and adds every source in array order
-//!   with fixed5 scale one, an all-bits filter and depth zero; removal,
-//!   remove-all and post-load processing rebuild.
-//! - Addition refuses a pointer already listed, pushes the new source to
-//!   the end of the roster and adds it with the same settings, leaving the tree
-//!   a rebuild of the new roster would build.
-//!
-//! Filtered addition returns at once for an effectively empty source (no custom tooltip in the
-//! accumulator, no `added_modifier` child, and no entry whose definition is eligible: a zero
-//! feature selector, or a selector the eligibility callback's flags meet, whatever the entry's
-//! value). Otherwise, the root's depth (1 from construction) being positive, it appends one child,
-//! cloning at depth zero with both scales one. Cloning copies every entry unscaled, the display
-//! string and no grandchild (depth 0). Each child's value for a key is the effective-value getter
-//! on that copy: zero when the source has no entry for the key or the key's definition is not
-//! eligible, else the stored value, clamped to [0, 100000] when the definition's flags carry
-//! `CLAMP_MAXIMUM`.
-//!
-//! The root's own value is never shown: at depth -1 the formatter reads a node's value
-//! only for a leaf, and a root without children has no entry (the clear, then no source
-//! added). The derivation holds it at zero. Each child is named by its source's script
-//! name, which the description localises; the native display string is that name's
-//! localisation.
 
 pub use crate::modifier_registry::Registry;
 use crate::rows::ModifierBreakdownNode;
 
-/// One stored static modifier: what the emptiness test and effective-value getter read of
-/// it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Source<'a> {
-    /// The recorded script name, which names the derived child.
     pub name: &'a [u8],
-    /// A custom tooltip key (a positive tooltip-key count) or an `added_modifier` child (nonzero):
-    /// either keeps the source nonempty.
     pub auxiliary: bool,
-    /// Every stored entry: the modifier's script name, ASCII-folded as the
-    /// lexer folds it, and the stored fixed5. Hidden entries are stored
-    /// entries too.
     pub values: Vec<(&'a str, i64)>,
 }
 
-/// Whether the source is effectively empty.
 fn nonempty(source: &Source<'_>, registry: &Registry<'_>) -> Result<bool, String> {
     if source.auxiliary {
         return Ok(true);
@@ -61,8 +21,6 @@ fn nonempty(source: &Source<'_>, registry: &Registry<'_>) -> Result<bool, String
     Ok(false)
 }
 
-/// The record's description tree for `key` (0x98 or 0x99), as the modifier-breakdown formatter
-/// walks it: the root, then one leaf per nonempty source in roster order.
 pub fn tree(
     key: u32,
     sources: &[Source<'_>],
@@ -74,7 +32,6 @@ pub fn tree(
         if !nonempty(source, registry)? {
             continue;
         }
-        // Cloning copies every entry; the effective-value getter reads the copy.
         let mut value = 0;
         for (name, raw) in &source.values {
             if registry.named(name)?.index != key {
@@ -93,10 +50,6 @@ pub fn tree(
     Ok(nodes)
 }
 
-/// Whether a native witness tree shows what the derivation shows: the same
-/// leaves, names and values in order, and a childless root with value zero.
-/// A root with children is compared by its child count only: its own value
-/// is never formatted at depth -1.
 pub fn witness_matches(
     witness: &[ModifierBreakdownNode],
     derived: &[ModifierBreakdownNode],
@@ -161,9 +114,6 @@ mod tests {
             .collect()
     }
 
-    /// One child per nonempty occurrence, repeats kept; an empty source, a source holding
-    /// only an ineligible key, and a source without the key follow the emptiness and
-    /// effective-value rules.
     #[test]
     fn children_follow_the_roster_and_the_native_emptiness_and_getter() {
         let (definitions, tokens) = definitions();
@@ -207,7 +157,6 @@ mod tests {
                 (0, 0, b"zero".as_slice()),
             ]
         );
-        // The weekly definition clamps.
         let weekly = tree(WEEKLY, &sources, &registry).unwrap();
         assert_eq!(
             values(&weekly[1..]),
@@ -218,15 +167,12 @@ mod tests {
                 (0, 0, b"zero".as_slice()),
             ]
         );
-        // The callback's flags meet the gated key: the source is nonempty.
         let met = Registry::new(&definitions, &tokens, Some(0x8)).unwrap();
         assert_eq!(tree(DAILY, &sources, &met).unwrap()[0].children, 5);
-        // A gated key with no recorded flags cannot be decided.
         let unknown = Registry::new(&definitions, &tokens, None).unwrap();
         assert!(tree(DAILY, &sources, &unknown).is_err());
     }
 
-    /// An empty roster derives the bare root the native clear leaves.
     #[test]
     fn an_empty_roster_is_a_bare_root() {
         let (definitions, tokens) = definitions();

@@ -116,7 +116,6 @@ pub(super) fn fixture() -> Fixture {
             )
             .collect(),
     );
-    // These synthetic stored strings were recorded in this declared language.
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         fixture.catalogue.recorded_language.clone();
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
@@ -277,7 +276,6 @@ fn excluded_categories_intersect_independently_of_the_include_mask() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     definitions(&mut fixture)[1].category_mask = 3;
-    // Include bit 1 is excluded, but the definition also has unexcluded bit 2.
     let options = ModifierListOptions {
         category_mask: 1,
         excluded_category_mask: 1,
@@ -554,7 +552,6 @@ fn bound_idea_names_use_fresh_country_carrier_and_details_keep_caller_scope() {
             ])
             .collect(),
     );
-    // These synthetic stored strings were recorded in this declared language.
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         fixture.catalogue.recorded_language.clone();
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
@@ -665,7 +662,6 @@ fn format99_timed_idea_uses_first_stored_days_and_component_floors() {
             .chain([("January".into(), "SyntheticJanuary".into())])
             .collect(),
     );
-    // These synthetic stored strings were recorded in this declared language.
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         fixture.catalogue.recorded_language.clone();
     *fixture.frame.tables[TableId::TimedIdeas.index()] =
@@ -763,7 +759,6 @@ fn modify_timed_idea_keeps_spaced_colon_comma_that_add_timed_cleans() {
             ])
             .collect(),
     );
-    // These synthetic stored strings were recorded in this declared language.
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         fixture.catalogue.recorded_language.clone();
     *fixture.frame.tables[TableId::TimedIdeas.index()] =
@@ -866,7 +861,6 @@ fn swap_ideas_differentials_keep_numeric_research_rules_and_equipment_order() {
     assert_eq!(
         result.text,
         concat!(
-            // copies the fixture's leading label spaces.
             "Replace OLD/NEW\n Attack: \u{11}G+1.00\u{11}!\n Defense: \u{11}G+0.50\u{11}!\n",
             "Industry: 20%\n\nRule [yes Volunteers]\n\n",
             "\u{11}YEquipment\u{11}!: \n    Soft (5%)\n    Hard (20%)\n\n\n"
@@ -1169,8 +1163,6 @@ fn scaled_static_modifiers_scale_each_value_and_prefix_each_line() {
             crate::effect_description::scaled_static_modifiers(context, "SYN_NETWORK", "  ", scale)
         })
     };
-    // A quarter of each value, the prefix before each line's label (the fixture's
-    // labels start with a space).
     assert_eq!(
         list(25_000),
         Ok("   Attack: \u{11}G+0.25\u{11}!\n   Defense: \u{11}G+0.50\u{11}!".to_owned())

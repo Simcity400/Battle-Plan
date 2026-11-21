@@ -1,4 +1,3 @@
-//! Conversion, differencing and durable output. Nothing here runs on the game thread.
 
 use crate::extended::characters::{CharacterConversion, CharacterShadow};
 use crate::extended::intel::{
@@ -40,7 +39,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Baseline and borrowed conversion caches for one spool frame.
 pub(crate) struct SpoolConversion<'a, 'cache> {
     pub(crate) variables_baseline: Option<(BaselineToken, &'a [ScriptVariablesRow])>,
     pub(crate) variables_scratch: &'a mut ScriptVariableComparison,
@@ -48,20 +46,15 @@ pub(crate) struct SpoolConversion<'a, 'cache> {
     pub(crate) lexical: Option<&'a mut LexicalConversion<'cache>>,
     pub(crate) intel: Option<&'a mut IntelConversion<'cache>>,
     pub(crate) projection: Option<&'a mut Projection<'cache>>,
-    /// The conversion helpers and the hour's plan for them.
     pub(crate) helper: Option<HelperSplit<'a>>,
 }
 
-/// The conversion helpers, with the spool thread's backlog verdict, and the
-/// hour's plan for them.
 #[derive(Clone, Copy)]
 pub(crate) struct HelperSplit<'a> {
     pub(crate) helpers: crate::spool_helper::Helpers<'a>,
     pub(crate) plan: crate::pack_conversion::Plan,
 }
 
-/// One hour's sliced read: the merged complete rows, or an update of the
-/// cached rows the encoder shares.
 enum Merged {
     Rows(TableRows),
     Update(BaselineToken, replay_data::sliced::SliceUpdate),
@@ -90,7 +83,6 @@ impl<T> TableCache<T> {
     }
 }
 
-/// Sorted owner reads per table. Updates reserve a whole batch, then merge linearly.
 struct ReadHours([Vec<(u32, i32)>; TABLE_COUNT]);
 impl ReadHours {
     fn new() -> Self {
@@ -99,8 +91,6 @@ impl ReadHours {
     fn clear(&mut self) {
         self.0.iter_mut().for_each(Vec::clear);
     }
-    /// Merge returned owners, selected empty reads and carried provenance in
-    /// key order, preserving that precedence without sorting the result.
     fn merge(
         &mut self,
         table: TableId,
@@ -110,8 +100,6 @@ impl ReadHours {
     ) -> io::Result<()> {
         let mut ordered;
         let owners = if owners.windows(2).any(|pair| pair[0] >= pair[1]) {
-            // Only normalize provenance. The encoder still validates the
-            // original rows and names any refused row keys.
             ordered = engine_allocation::vec(owners.len())?;
             ordered.extend_from_slice(owners);
             ordered.sort_unstable();
@@ -163,9 +151,6 @@ impl ReadHours {
         Ok(())
     }
 
-    /// SliceReads has no producer sharing its complete rows. Keep its initial
-    /// baseline owned, then replace only changed sample hours when keys match.
-    /// The encoder withdraws the token at keyframes, gaps and recovery.
     fn input(
         &self,
         frame_reads: &[Option<Vec<(u32, i32)>>; TABLE_COUNT],
@@ -249,7 +234,6 @@ impl ReadHours {
     }
 }
 
-/// Write what `campaign` owes its segment and close it, under its own allocation context.
 fn set_aside_in_context(
     id: &str,
     campaign: &mut Campaign,
@@ -321,8 +305,6 @@ fn error_reason(error: &io::Error) -> Cow<'static, str> {
     match error.kind() {
         io::ErrorKind::OutOfMemory => Cow::Borrowed("collector allocation failed"),
         io::ErrorKind::InvalidData => {
-            // Retained by the spool worker, after the original error is dropped.
-            // Checked formatting keeps allocation failure on its existing path.
             replay_data::codec::try_format(format_args!("spool validation failed: {error}"))
                 .map(Cow::Owned)
                 .unwrap_or(Cow::Borrowed("collector allocation failed"))
@@ -343,8 +325,6 @@ pub(crate) use collector_extended_support::distribution::Distribution;
 struct PendingBranch {
     start: BranchStart,
     gaps: Vec<Gap>,
-    /// The reads a resumed session's unobserved event interval lies between
-    /// ([`ControlRecord::EventLoss`]), written with the branch's context.
     event_loss: Option<(i32, i32)>,
 }
 
@@ -393,9 +373,6 @@ fn lexical_cache(
     }
 }
 
-/// The tables the row spool's frames hold beside those [`crate::history`] reads back: the
-/// recorder's clock, campaign, players and lexicon, and every table recording names read. The
-/// native capture holds every table.
 const SPOOL_TABLES: [TableId; 12] = [
     TableId::Clock,
     TableId::Campaign,
@@ -411,7 +388,6 @@ const SPOOL_TABLES: [TableId; 12] = [
     TableId::ReservedCountryNaming,
 ];
 
-/// Whether the row spool's frames hold `table`'s updates.
 fn spooled(table: TableId) -> bool {
     #[cfg(test)]
     if KEEP_EVERY_TABLE.with(std::cell::Cell::get) {
@@ -425,13 +401,11 @@ thread_local! {
     static KEEP_EVERY_TABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Spools every table's updates on this thread, for tests of the rows the encoder writes.
 #[cfg(test)]
 pub(crate) fn keep_every_table() {
     KEEP_EVERY_TABLE.with(|keep| keep.set(true));
 }
 
-/// Tables whose packs witness their captures ([`crate::projection::Witness`]).
 const REPUBLISHING: [(&str, TableId); 9] = [
     ("division_templates", TableId::DivisionTemplates),
     ("division_templates", TableId::DivisionTemplateIcons),
@@ -460,7 +434,6 @@ fn character_cache(
     })
 }
 
-/// A refused table, column and reason, logged once.
 struct ValidationRefusal {
     table: String,
     column: Option<String>,
@@ -513,10 +486,6 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     directory: PathBuf,
     session: SessionStart,
     tracker: BranchTracker,
-    /// A reattached process session's recorded tail (branch, last hour)
-    /// until its first observation: event completeness was lost for part of
-    /// the interval since the read of that hour, while the recorder was
-    /// detached.
     resumed: Option<(BranchId, i32)>,
     encoder: FrameEncoder,
     spool: crate::spool_writer::Output<B>,
@@ -531,28 +500,17 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     )>,
     staggered_cache: TableCache<CachedTable>,
     staggered_branch: Option<BranchId>,
-    /// Paired with the latest CountryIntel cache, even before durable publication.
     country_intel_sample: Option<replay_data::rows::ReservedCountryIntelSample>,
-    /// Acquisition hour of the latest CountryIntel cache when it is complete,
-    /// the sample certified spotting navy lanes cite.
     country_intel_hour: Option<i32>,
-    /// The latest complete rows of each sliced table on `sliced_branch`.
     sliced_cache: TableCache<Arc<TableRows>>,
-    /// The read hour of each (sliced table, owner) in `sliced_cache`.
     sliced_reads: ReadHours,
     sliced_branch: Option<BranchId>,
-    /// This frame's slice updates of `sliced_cache` rows, held until the
-    /// frame's admission succeeds (the encoder then holds the updated rows) or
-    /// fails (the cache then takes the merged rows).
     pending_slices: Vec<(TableId, Arc<replay_data::sliced::SliceUpdate>)>,
-    /// What this campaign's commits no longer hold, for freeing elsewhere.
     retired: Vec<replay_frame::frame::Retired>,
-    /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
     operation_outcomes: crate::extended::operation_outcomes::Ledger,
     map_events: crate::extended::map_events::Ledger,
     politics: crate::extended::politics::Ledger,
-    /// Each construction line's output on the current branch.
     construction_ic: crate::extended::construction_ic::Totals,
     fuel_awards: crate::extended::fuel_awards::Windows,
     variables_scratch: ScriptVariableComparison,
@@ -561,7 +519,6 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     projection_scratch: ProjectionScratch,
     lexical_conversion: LexicalConversionStats,
     history_lease: Option<File>,
-    /// The campaign's columnar recording, written beside the rows.
     columnar: crate::columnar::Columnar,
 }
 
@@ -575,8 +532,6 @@ impl Campaign {
         journal_thread: &std::sync::Arc<crate::columnar::JournalThread>,
     ) -> io::Result<Self> {
         let directory = root.join(id);
-        // An attach has its own root. Reusing an unfinalized root would conceal
-        // history from the tracker and could assign existing branch ids again.
         if directory.exists()
             && fs::read_dir(&directory)
                 .map_err(engine_allocation::allocation_error)?
@@ -720,10 +675,6 @@ impl<B: SegmentBackend> Campaign<B> {
             .filter(|pending| Some(pending.start.id) == self.tracker.current_branch())
             .map_or(&[][..], |pending| pending.gaps.as_slice());
         let observation = self.tracker.observe(loaded, hour, signal, gaps)?;
-        // A resumed session's first observation that continues its recorded
-        // branch ends an interval whose event completeness was lost while the
-        // recorder was detached, between the read of `after` and this attach's
-        // hooks. A new branch starts its own first interval instead.
         let event_loss = self
             .resumed
             .take()
@@ -736,36 +687,12 @@ impl<B: SegmentBackend> Campaign<B> {
         Ok(observation.branch)
     }
 
-    /// Replace the rows of the owners this frame read in each sliced table's
-    /// latest complete rows on this branch. A full read replaces everything.
-    /// When those rows are the encoder's shared baseline for this hour, the
-    /// frame carries the read as a slice update of them instead of a merged
-    /// copy: the encoder visits and replaces only the read owners' rows, and
-    /// the cache follows the write's outcome ([`Self::write`]).
-    /// Without earlier complete rows a slice cannot stand alone: the table is
-    /// unavailable and the next hour must read every slice (returns true).
-    /// A failed acquisition publishes its failure and keeps earlier rows, whose
-    /// read hours show their age once a later slice completes the table.
-    /// SliceReads is assembled here: the read hour of every owner with rows
-    /// in each owned sliced table, and of every owner a complete read covered
-    /// that returned none, replaced only for the owners read now.
-    ///
-    /// `walked` is whether the walk published rows for a table. Such a table
-    /// that conversion or merging made unavailable was never published although
-    /// the game thread saw a successful read, so its family is returned in
-    /// the second value (bit per [`crate::slicing::FAMILIES`] index) for the
-    /// game thread to forget ([`crate::slicing::SliceFingerprints::forget`]).
-    /// Frames already captured before that forget took effect trusted the
-    /// unpublished read, so the family's earlier rows are dropped here too:
-    /// until a full read replaces them, no hour merges rows from before the
-    /// failure, and a full refresh is requested.
     fn try_merge_sliced_inputs<'a>(
         &mut self,
         source: &mut FrameInput,
         selection: impl Fn(TableId) -> Option<&'a crate::slicing::SliceSelection>,
         walked: impl Fn(TableId) -> bool,
     ) -> io::Result<(bool, u32)> {
-        // An update whose write never ran leaves the cache as a failure does.
         self.settle_failed_slices();
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
@@ -854,11 +781,6 @@ impl<B: SegmentBackend> Campaign<B> {
                     if !replay_data::sliced::is_keyed(table) {
                         let owners = match &merged {
                             Merged::Rows(rows) => replay_data::sliced::try_owners(rows)?,
-                            // Unread live owners already have their provenance
-                            // in `previous`, including owners with no rows. The
-                            // ordered provenance merge keeps it. Only fresh owners
-                            // need a new sample hour; do not rescan the complete
-                            // baseline merely to enumerate its carried owners.
                             Merged::Update(_, update) => {
                                 replay_data::sliced::try_owners(update.rows())?
                             }
@@ -952,9 +874,6 @@ impl<B: SegmentBackend> Campaign<B> {
         Ok((retry, unpublished))
     }
 
-    /// Before this frame's commit: the producer lets go of the rows its slice
-    /// updates replace, so the encoder replaces them in place. Returns the
-    /// tables whose cache [`Self::adopt_slices`] refills.
     fn release_slices(&mut self) -> [bool; TABLE_COUNT] {
         let mut released = [false; TABLE_COUNT];
         for (table, _) in self.pending_slices.drain(..) {
@@ -964,7 +883,6 @@ impl<B: SegmentBackend> Campaign<B> {
         released
     }
 
-    /// After this frame's commit: the cache holds the encoder's updated rows.
     fn adopt_slices(&mut self, released: [bool; TABLE_COUNT]) {
         for table in TableId::ALL
             .into_iter()
@@ -976,9 +894,6 @@ impl<B: SegmentBackend> Campaign<B> {
         }
     }
 
-    /// A frame whose slice updates were not committed: the cache takes the
-    /// merged rows they describe, as it holds the latest merge whatever the
-    /// write's outcome.
     fn settle_failed_slices(&mut self) {
         for (table, update) in std::mem::take(&mut self.pending_slices) {
             let Some(previous) = self.sliced_cache.get(&table) else {
@@ -988,7 +903,6 @@ impl<B: SegmentBackend> Campaign<B> {
                 Ok(merged) => {
                     self.sliced_cache.insert(table, Arc::new(merged));
                 }
-                // Allocation failure ends the capture; nothing more is merged.
                 Err(_) => {
                     self.sliced_cache.remove(&table);
                 }
@@ -1007,9 +921,6 @@ impl<B: SegmentBackend> Campaign<B> {
             .unwrap()
     }
 
-    /// Add this frame's production ticks to the branch's per-line totals and
-    /// publish ProductionLineOutput beside the frame's ProductionLines. Before
-    /// the staggered carry, so an off-slot hour's skip is carried.
     fn assemble_line_output(&mut self, source: &mut FrameInput, captured: &Captured) {
         self.line_output.assemble(
             source.branch,
@@ -1019,9 +930,6 @@ impl<B: SegmentBackend> Campaign<B> {
         );
     }
 
-    /// Add this frame's construction output to the branch's per-line totals and
-    /// publish ConstructionLineOutput beside the frame's construction queues.
-    /// Before the staggered carry, so an off-slot hour's skip is carried.
     fn assemble_construction_ic(&mut self, source: &mut FrameInput, captured: &Captured) {
         self.construction_ic.assemble(
             source.branch,
@@ -1031,8 +939,6 @@ impl<B: SegmentBackend> Campaign<B> {
         );
     }
 
-    // Spool-internal carry-forward keeps format-neutral byte-identical output. The hour's
-    // tables are final here but for refusals, so each table's read is marked ([`mark_reads`]).
     fn try_apply_staggered_inputs(
         &mut self,
         source: &mut FrameInput,
@@ -1077,8 +983,6 @@ impl<B: SegmentBackend> Campaign<B> {
                     .encoder
                     .can_carry(table, source.branch, source.hour, restarting)
                 {
-                    // Keep the small marker. The encoder already owns a
-                    // validated complete baseline; no row clone or recheck.
                 } else if let Some(cached @ CachedTable::Complete(_)) = cached {
                     *input = cached.input()?;
                 } else if let Some(rows) = self.encoder.keyframe_carry(
@@ -1087,7 +991,6 @@ impl<B: SegmentBackend> Campaign<B> {
                     source.hour,
                     restarting,
                 ) {
-                    // A compared refresh cached no rows; its baseline holds them.
                     let rows = Arc::new(rows.try_clone()?);
                     self.staggered_cache
                         .insert(table, CachedTable::Complete(Arc::clone(&rows)));
@@ -1121,7 +1024,6 @@ impl<B: SegmentBackend> Campaign<B> {
                         }
                     }
                     TableInput::Sampled(TableView::NotRecorded { .. }) => continue,
-                    // Only hourly tables are compared natively.
                     TableInput::ComparedEqual(_)
                     | TableInput::ComparedChanges { .. }
                     | TableInput::SliceUpdate { .. } => CachedTable::Unavailable {
@@ -1130,9 +1032,6 @@ impl<B: SegmentBackend> Campaign<B> {
                         )?,
                     },
                 };
-                // Keep the latest sample even if encoding or writing fails.
-                // Recovery resets the encoder, but can snapshot this allocation
-                // on an off hour without retaining a native capture buffer.
                 if table == TableId::CountryIntel {
                     self.country_intel_hour =
                         matches!(&cached, CachedTable::Complete(_)).then_some(source.hour);
@@ -1151,8 +1050,6 @@ impl<B: SegmentBackend> Campaign<B> {
         Ok(skipped)
     }
 
-    /// RCN is acquired hourly, while this certificate follows the exact daily
-    /// CountryIntel sample selected above. Never fill a refused naming prefix.
     fn assemble_reserved_intel_sample(&self, source: &mut FrameInput) {
         let TableInput::Sampled(TableView::Complete(TableRows::ReservedCountryNaming(rows))) =
             &mut source.tables[TableId::ReservedCountryNaming.index()]
@@ -1294,8 +1191,6 @@ impl<B: SegmentBackend> Campaign<B> {
         self.write_with(source.into(), qpc, signal, unknown, work, None)
     }
 
-    /// [`Self::write`], encoding the frame's larger tables on the spool
-    /// thread and `helpers` at once.
     fn write_with(
         &mut self,
         mut source: FrameInput,
@@ -1320,8 +1215,6 @@ impl<B: SegmentBackend> Campaign<B> {
             self.construction_ic.written(work.construction_ic_receipt);
         }
         if let Err(error) = &result {
-            // Codec/validation errors are failures too. Closing also prevents a
-            // partially published context from being reused after such an error.
             let _span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Write);
             let _ = self.spool.finish_segment();
             self.disk_branch = None;
@@ -1382,7 +1275,6 @@ impl<B: SegmentBackend> Campaign<B> {
                         hour,
                         error,
                     )?;
-                    // No refused table may survive in a producer's cached rows.
                     self.staggered_cache.remove(&table);
                     self.sliced_cache.remove(&table);
                     self.projection_scratch.forget(table);
@@ -1415,7 +1307,6 @@ impl<B: SegmentBackend> Campaign<B> {
         let columnar = self.columnar.prepare(prepared.input(), row, &lanes)?;
         let mut span = span.switch(crate::spool_phases::Phase::Write);
         let encoded = prepared.take_frame_keeping(spooled)?;
-        // Rotate only at an already encoded keyframe; never reset the capture encoder for packing.
         let rotate = restarting || encoded.keyframe();
         let mut context = self.context(rotate, 2)?;
         if unknown != 0 {
@@ -1441,7 +1332,6 @@ impl<B: SegmentBackend> Campaign<B> {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         if queued {
-            // No other hour can observe this staged baseline before admission succeeds.
             self.commit_baseline(prepared)?;
             if let Some(hour) = columnar {
                 span = span.switch(crate::spool_phases::Phase::Columnar);
@@ -1454,7 +1344,6 @@ impl<B: SegmentBackend> Campaign<B> {
             )?);
             self.columnar.queued(branch, hour);
         } else {
-            // The file takes the hour once the rows hold it, as a queued hour waits for its write.
             if let Some(hour) = columnar {
                 span = span.switch(crate::spool_phases::Phase::Columnar);
                 self.columnar.commit(hour, true, &lanes)?;
@@ -1622,7 +1511,6 @@ impl<B: SegmentBackend> Campaign<B> {
         Ok(())
     }
 
-    /// A lost queued hour can change later branches' parents; pending starts follow.
     fn lose_hour(&mut self, branch: BranchId, hour: i32) -> io::Result<()> {
         self.tracker.lose_hour(branch, hour)?;
         for pending in &mut self.pending {
@@ -1636,20 +1524,15 @@ impl<B: SegmentBackend> Campaign<B> {
     }
 }
 
-/// A daily table that truncated waits for its slot otherwise; a static table
-/// that failed would wait for the next full hour.
 #[cfg(test)]
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
     retry_table(tables).is_some()
 }
 
-/// Why the spool last asked for a full hour, for naming that hour: a table index plus one, or
-/// [`RETRY_SLICED`] or [`RETRY_VALIDATION`].
 pub(crate) static RETRY_CAUSE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 pub(crate) const RETRY_SLICED: u16 = u16::MAX;
 pub(crate) const RETRY_VALIDATION: u16 = u16::MAX - 1;
 
-/// The first table [`needs_retry`] finds incomplete.
 fn retry_table(tables: &[TableInput; TABLE_COUNT]) -> Option<TableId> {
     TableId::ALL.into_iter().find(|&table| {
         let input = &tables[table.index()];
@@ -1661,18 +1544,11 @@ fn retry_table(tables: &[TableInput; TABLE_COUNT]) -> Option<TableId> {
             replay_data::cadence::Cadence::Daily(_) => {
                 matches!(input, TableInput::Sampled(TableView::Truncated { .. }))
             }
-            // A failed, truncated or dropped slice read is read again at the
-            // next hour (SliceSelection::invalidate); the merge requests a full
-            // refresh only when it has no earlier rows to merge into.
             replay_data::cadence::Cadence::Hourly | replay_data::cadence::Cadence::Sliced => false,
         }
     })
 }
 
-/// The country the recording client views and the operands that pick its flag
-/// (own tag, cosmetic tag, original-or-own tag, ruling ideology group), copied
-/// from committed rows for the recorder's panel. The status omits it while any
-/// of those rows is unavailable.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 struct ViewedFlag {
     tag: String,
@@ -1702,7 +1578,6 @@ impl ViewedFlag {
     }
 }
 
-/// The viewed country's flag operands from the encoder's committed baselines.
 fn viewed_flag(encoder: &FrameEncoder) -> Option<replay_data::country_flags::FlagOperands<'_>> {
     replay_data::country_flags::viewed_country(
         encoder.committed::<tables::LocalPlayer>()?.1,
@@ -1715,7 +1590,6 @@ fn viewed_flag(encoder: &FrameEncoder) -> Option<replay_data::country_flags::Fla
     .ok()
 }
 
-/// Keep the published viewed country current, copying only when it changes.
 fn set_viewed(
     slot: &mut Option<ViewedFlag>,
     operands: Option<replay_data::country_flags::FlagOperands<'_>>,
@@ -1733,7 +1607,6 @@ struct Statistics {
     hours: u64,
     campaign: Option<String>,
     last_hour: Option<i32>,
-    /// The recording client's viewed country, for the recorder's panel.
     player: Option<ViewedFlag>,
     total_ns: u64,
     callback: Distribution,
@@ -1777,8 +1650,6 @@ impl Default for Statistics {
     }
 }
 
-/// Owned conversion for exactly one hour. Write it before preparing another
-/// hour, flushing or detaching: comparison tokens belong to the current encoder.
 #[must_use = "prepared observations must be written before processing another hour"]
 pub(crate) struct PreparedFrame {
     writer_epoch: u64,
@@ -1788,7 +1659,6 @@ pub(crate) struct PreparedFrame {
     qpc: i64,
     unknown: u64,
     retry_full: bool,
-    /// Sliced families whose read conversion or merging withheld (bit per family).
     unpublished_families: u32,
     work: WorkSample,
     sampled: CapturedStatistics,
@@ -1807,13 +1677,11 @@ impl PreparedFrame {
     }
 }
 
-/// Everything success accounting needs after the capture slot has been reused.
 struct CapturedStatistics {
     total_ns: u64,
     hour: Option<i32>,
     seq: u64,
     phases: crate::sampling::HourPhases,
-    /// The longest table reads, kept for an hour over budget only.
     tables: Option<[(TableId, u64); 4]>,
     pool_bytes: u64,
     dropped_frames: u64,
@@ -1968,21 +1836,12 @@ pub struct Processor {
     stats: Statistics,
     unknown_pending: u64,
     suppress_origin: bool,
-    /// A staggered table truncated or a static table failed this hour; the
-    /// runtime asks the collector to walk everything again next hour.
     retry_full: bool,
-    /// Sliced families a conversion withheld; the runtime has the collector
-    /// forget their fingerprint stores.
     unpublished_families: u32,
-    /// Convert the map tables and the movable packs beside this thread, and
-    /// share the comparison and the encoding.
     helpers: Vec<crate::spool_helper::SpoolHelper>,
-    /// The spool thread's latest backlog verdict, which the helper follows.
     backlogged: bool,
-    /// Decisions of the comparison before encoding.
     comparison: Box<crate::spool_compare::Counters>,
     writer: crate::spool_writer::Writer,
-    /// Writes the campaigns' journals.
     journal_thread: std::sync::Arc<crate::columnar::JournalThread>,
     queued: std::collections::VecDeque<Box<QueuedFrame>>,
     flight: Option<(String, BranchId)>,
@@ -2142,9 +2001,6 @@ impl Processor {
         })
     }
 
-    /// Add a conversion helper to this processor's pool; false if it could
-    /// not be kept. Without any, the spool thread converts every table itself
-    /// with identical output.
     pub(crate) fn set_helper(&mut self, helper: crate::spool_helper::SpoolHelper) -> bool {
         if engine_allocation::reserve(&mut self.helpers, 1).is_err() {
             return false;
@@ -2153,7 +2009,6 @@ impl Processor {
         true
     }
 
-    /// The capture-buffer backlog verdict for the next conversion.
     pub(crate) fn set_backlogged(&mut self, backlogged: bool) {
         self.backlogged = backlogged;
     }
@@ -2199,26 +2054,20 @@ impl Processor {
 
     fn error(&mut self, error: &io::Error) {
         self.stats.errors += 1;
-        // Preserve the cause of recovery when later sync/detach work also fails.
         self.stats
             .last_error
             .get_or_insert_with(|| error_reason(error));
     }
 
-    /// A failed or racing off-thread sizing hint loses no captured data; it is
-    /// counted here and never becomes the session warning.
     pub(crate) fn observe_input_demand_error(&mut self, reason: &'static str) {
         self.observe_input_demand_errors(1, reason);
     }
 
-    /// `count` such errors, `last` the latest; the sizing thread reports them
-    /// together.
     pub(crate) fn observe_input_demand_errors(&mut self, count: u64, last: &'static str) {
         self.stats.input_demand_errors = self.stats.input_demand_errors.saturating_add(count);
         self.stats.input_demand_last_error = Some(last);
     }
 
-    /// Off-thread observations prepare storage without affecting session warnings.
     pub(crate) fn observe_input_demand<T>(&mut self, result: Result<T, &'static str>) -> Option<T> {
         match result {
             Ok(demand) => Some(demand),
@@ -2229,9 +2078,6 @@ impl Processor {
         }
     }
 
-    /// The caller retains the buffer until this succeeds. Opening a campaign may
-    /// do I/O, but this preflight never observes or acknowledges a callback.
-    /// Once prepared, consume its loss witnesses and then call `frame` once.
     pub fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
@@ -2268,7 +2114,6 @@ impl Processor {
         result
     }
 
-    /// Quiescent detach uses the same preflight before consuming its final batch.
     pub fn prepare_losses(&mut self, losses: &LossBatch) -> io::Result<()> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
@@ -2341,7 +2186,6 @@ impl Processor {
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
         self.poll_writer()?;
-        // Invalid identities take the accounted unknown-loss path below.
         if let Some(clock) = captured.clock.as_ref()
             && let Ok(id) = campaign_name(clock.campaign_id.as_bytes())
         {
@@ -2481,7 +2325,6 @@ impl Processor {
         } else {
             Some(clock.hour)
         };
-        // Native invalidation can leave every stored clock operand unchanged.
         if campaign
             .world_generation
             .is_some_and(|previous| previous != captured.world_generation)
@@ -2509,7 +2352,6 @@ impl Processor {
                 (qpc, clock.hour, clock.play_session_started_at),
             );
         }
-        // Keyed updates edit the shared baseline its complete conversions leave.
         let variables_baseline = campaign
             .encoder
             .slice_baseline(
@@ -2682,20 +2524,15 @@ impl Processor {
             load_signal: Some(clock.play_session_started_at),
             failed_hour: Some(clock.hour),
         });
-        // Preparation already admitted this campaign. No other processor operation
-        // may intervene between preparation and writing its baseline-bound input.
         let campaign = self
             .campaigns
             .get_mut(&id)
             .expect("prepared campaign remains admitted");
-        // The native capture holds most tables: while it cannot take hours, each is a gap
-        // naming why, without the write failure's recovery.
         if let Some(reason) = campaign.columnar.halted() {
             let reason = engine_allocation::string(reason)?;
             campaign.gap(branch, clock.hour, clock.hour, reason)?;
             return self.drain_writer();
         }
-        // Compare before encoding with the same restart verdict the write uses.
         let helpers = (!self.helpers.is_empty()).then(|| crate::spool_helper::Helpers {
             pool: &self.helpers,
             backlogged: self.backlogged,
@@ -2966,7 +2803,6 @@ impl Processor {
             crate::extended::map_events::reset_admitted();
         }
         if failed {
-            // A failure cancels the entire queued suffix before publishing its completion.
             self.writer.resume_after_failure();
         }
         Ok(())
@@ -2977,7 +2813,6 @@ impl Processor {
         self.poll_writer()
     }
 
-    /// This hour is written, so a failure here is the other campaign's, as in a flush.
     fn set_aside_others(&mut self, current: &str) {
         if crate::allocation::failed() {
             return;
@@ -3165,7 +3000,6 @@ impl Processor {
             load_signal: campaign.tracker.last_load_signal(),
             failed_hour: None,
         });
-        // A refused close gives the same context again, which the capture holds once.
         campaign.columnar.note(&context);
         let result = campaign.spool.try_close_context(context, restarting);
         crate::allocation::set_context(caller);
@@ -3194,8 +3028,6 @@ impl Processor {
         Ok(())
     }
 
-    /// The recorder checkpoints the campaign being recorded: it adds the hours closed segments hold
-    /// to the end of the history file, which keeps every hour it had. Let go of the file meanwhile.
     #[cfg(test)]
     pub(crate) fn lend_history(&mut self, id: &str) {
         match self.campaigns.get_mut(id) {
@@ -3204,7 +3036,6 @@ impl Processor {
         }
     }
 
-    /// Answer the recorder's `<token> release|lend|retake <campaign>` with `<token> ok|refused <reason>`.
     #[cfg(test)]
     pub(crate) fn begin_history_request(&mut self, request: &str) -> HistoryReply {
         let mut words = request.split_whitespace();
@@ -3255,8 +3086,6 @@ impl Processor {
         }
     }
 
-    /// Waits until the journal thread wrote everything queued so far, as a recorder reading the
-    /// journals would find it.
     #[cfg(test)]
     fn settle_journals(&self) {
         for campaign in self.campaigns.values() {
@@ -3264,7 +3093,6 @@ impl Processor {
         }
     }
 
-    /// Hold a campaign's history file again, as the recorder saved it.
     #[cfg(test)]
     pub(crate) fn retake_history(&mut self, id: &str) -> io::Result<()> {
         let lease = match self.history.history_path(id)? {
@@ -3558,7 +3386,6 @@ impl Processor {
                 0
             };
             let detached = campaign.detach(unknown);
-            // Optional work is skipped once an allocation failed: the rows' detach first.
             let exhausted = crate::allocation::failed()
                 || detached
                     .as_ref()
@@ -3590,7 +3417,6 @@ impl Processor {
         }
     }
 
-    /// What the campaigns' commits no longer hold, for freeing off this thread.
     pub(crate) fn take_retired(&mut self) -> Vec<replay_frame::frame::Retired> {
         let mut retired = Vec::new();
         for (_, campaign) in &mut self.campaigns {
@@ -3605,8 +3431,6 @@ impl Processor {
         retired
     }
 
-    /// Ends a spool frame, over budget or not: an over-budget frame of an hour
-    /// carries that hour's costliest conversion.
     pub(crate) fn end_spool_frame(
         &mut self,
         frame: Option<crate::slow_hours::SpoolFrame>,
@@ -3627,14 +3451,10 @@ impl Processor {
         std::mem::take(&mut self.retry_full)
     }
 
-    /// Sliced families (bit per [`crate::slicing::FAMILIES`] index) whose
-    /// walked read conversion or merging withheld since the last call.
     pub fn take_unpublished_families(&mut self) -> u32 {
         std::mem::take(&mut self.unpublished_families)
     }
 
-    /// The campaign directories whose `spool.*` files `status.json` reports
-    /// as `spool_bytes`. The status writer measures them off this thread.
     pub fn spool_directories(&self) -> io::Result<Vec<std::path::PathBuf>> {
         let _details = replay_data::codec::error_details_scope();
         let mut directories = engine_allocation::vec(self.campaigns.0.len())?;
@@ -3644,8 +3464,6 @@ impl Processor {
         Ok(directories)
     }
 
-    /// Status without file-system I/O; `spool_bytes` is added by the status
-    /// writer (`status_writer::StatusHandle`).
     #[cfg(test)]
     pub fn status(&self) -> io::Result<impl Serialize + '_> {
         self.status_fields()
@@ -3725,8 +3543,6 @@ fn prepare_campaigns<'a>(
 ) -> io::Result<()> {
     let mut seen = Vec::new();
     for bytes in ids {
-        // Malformed identities cannot become valid through an I/O retry. Their
-        // actual consumption emits an unattributed loss and a named error.
         let id = match campaign_name(bytes) {
             Ok(id) => id,
             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
@@ -3747,14 +3563,11 @@ pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
             "campaign id is not a UUID; refusing an unsafe output path",
         ));
     }
-    // Preserve the engine's spelling, including case, in both the path and row.
     engine_allocation::string(std::str::from_utf8(bytes).expect("validated UUID is ASCII"))
 }
 
 pub(crate) use crate::table_conversion::{table, table_iter, unavailable};
 
-/// The controller-area node a province row holds
-/// ([`engine_native::cprovince::Row::area_node`]): the area it labels.
 fn area_node(
     nodes: &engine_native::controller_areas::Output,
     province: &engine_native::cprovince::Row,
@@ -3766,7 +3579,6 @@ fn area_node(
     })
 }
 
-/// [`area_node`] compared with a baseline row without building it.
 fn area_node_equal(
     nodes: &engine_native::controller_areas::Output,
     province: &engine_native::cprovince::Row,
@@ -3785,8 +3597,6 @@ fn area_node_equal(
     }
 }
 
-/// States with both display names from the frame's name arena; a span outside
-/// the bytes the walk copied denies the table.
 fn state_table(
     captured: &Captured,
     projection: Option<&mut crate::projection::Projection<'_>>,
@@ -3929,9 +3739,6 @@ fn decoded(
     ))
 }
 
-/// Each table's time as the read it names: a table the hour read with no time of its own (charged
-/// to a sibling of its walk, or assembled after the timing pass) is read without a time, and one
-/// the hour skipped carries none. A refusal is read only where its walk was timed.
 fn mark_reads(source: &mut FrameInput, skipped: &[bool; TABLE_COUNT]) {
     for ((input, ns), &skipped) in source.tables.iter().zip(&mut source.metrics.table_ns).zip(skipped) {
         let read = !skipped
@@ -4032,17 +3839,10 @@ fn decoded_with_costs(
         tables,
         metrics,
     };
-    // Every converted table's stepped fields are rounded to their display
-    // steps (replay_data::display) before merges, carries and comparisons read
-    // them, so a row that drifted only below the game's display precision
-    // equals its baseline. Projected rows arrive rounded (crate::projection);
-    // a table still shared with its producer's cache is rounded only while
-    // this hour holds its sole reference, and the encoder rounds the rest.
     input.round_to_display();
     (input, costs)
 }
 
-/// Clock through FactionMembers: the core tables before the map tables.
 fn core_tables(
     captured: &Captured,
     clock: &Clock<&[u8]>,
@@ -4169,7 +3969,6 @@ fn core_tables(
                 port_sea: province.port_sea,
                 fort_bunker: replay_data::rows::Recorded::Value(province.fort_bunker),
                 selected_areas: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
-                // No province operand is witnessed; current writers leave it empty.
                 attack: replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None)),
                 controller_area: replay_data::rows::Recorded::Value(province.controller_area),
                 owner_area: replay_data::rows::Recorded::Value(province.owner_area),
@@ -4232,13 +4031,6 @@ fn core_tables(
     ]
 }
 
-/// One hour's map tables and helper packs, converted beside this thread's core
-/// tables and own packs: the first helper converts the map tables, then every
-/// thread (this one after its own share, and the plan's helpers) takes the
-/// movable packs from one queue in the plan's order until it is empty. Every
-/// table lands in the slot the serial order fills, whichever thread converted
-/// it, and the ordinary-job refusal is applied after every share merged, so
-/// the frame is the serial one.
 fn convert_with_helper(
     captured: &Captured,
     clock: &Clock<&[u8]>,
@@ -4249,14 +4041,11 @@ fn convert_with_helper(
     span: crate::spool_phases::Span<'static>,
 ) {
     use crate::spool_phases::{HELPER, Phase};
-    /// What the threads converted from the queue, and the map tables.
     struct Converted {
         map: Option<[TableInput; 10]>,
         packs: [Option<TableInput>; TABLE_COUNT],
         costs: crate::pack_conversion::HourCosts,
     }
-    /// Moves one thread's conversion into the hour's. Each slot is filled by
-    /// one pack, so the order the threads finish in changes nothing.
     fn take_in(
         converted: &std::sync::Mutex<Converted>,
         map: Option<[TableInput; 10]>,
@@ -4286,9 +4075,6 @@ fn convert_with_helper(
     let view = captured.extended.helper_view();
     let map = &captured.map;
     let context = crate::allocation::context();
-    // The characters and intel packs convert with the spool caches lent for
-    // this join to whichever thread takes them; this thread converts its own
-    // packs with its other caches.
     let SpoolConversion {
         variables_baseline,
         variables_scratch,
@@ -4385,9 +4171,6 @@ fn convert_with_helper(
     captured.extended.refuse_failed_ordinary(tables);
 }
 
-/// The BorderConflicts outcome after a Provinces walk: unavailable with it,
-/// and truncated with it, since a province the walk did not reach recorded
-/// no conflicts; otherwise the conflict walk's own outcome.
 fn border_conflicts_outcome(provinces: Outcome, conflicts: Outcome) -> Outcome {
     match (provinces, conflicts) {
         (Outcome::Unavailable { reason }, _) | (_, Outcome::Unavailable { reason }) => {
@@ -4404,8 +4187,6 @@ fn border_conflicts_outcome(provinces: Outcome, conflicts: Outcome) -> Outcome {
     }
 }
 
-/// The border-conflict rows of the Provinces walk. They are complete only
-/// when that walk completed, and fail alone after it did.
 fn border_conflicts_table(captured: &Captured) -> TableView {
     let province = &captured.provinces;
     let outcome =
@@ -4428,7 +4209,6 @@ fn border_conflicts_table(captured: &Captured) -> TableView {
     })
 }
 
-/// What a frame holds for a table no producer filled, a derived table among them.
 const NOT_ACQUIRED: &str = "table was not acquired";
 
 fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
@@ -4440,8 +4220,6 @@ fn unavailable_tables(reason: &'static str) -> [TableInput; TABLE_COUNT] {
     })
 }
 
-/// A retired table's catalogued refusal, which every recording decodes in its
-/// place; no pack produces the table, so its frame view is this refusal.
 fn retired_reason(table: TableId) -> Option<&'static str> {
     static REASONS: std::sync::OnceLock<[Option<String>; TABLE_COUNT]> = std::sync::OnceLock::new();
     REASONS.get_or_init(|| {
@@ -4461,7 +4239,6 @@ pub(crate) fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
     Processor::new(root, PreparedCampaigns::default(), tests::session())
 }
 
-/// An hour of `campaign` at load `signal`.
 #[cfg(test)]
 pub(crate) fn campaign_frame(campaign: &[u8], signal: i64, hour: i32) -> Captured {
     let mut frame = tests::captured(hour);
@@ -4519,7 +4296,6 @@ mod tests {
     #[test]
     fn the_viewed_country_is_published_from_committed_rows_and_copied_only_on_change() {
         use replay_data::country_flags::FlagOperands;
-        // No committed rows: nothing to publish.
         assert_eq!(viewed_flag(&FrameEncoder::new()), None);
         let germany = FlagOperands {
             tag: "mod-country-long-tag",
@@ -4533,11 +4309,9 @@ mod tests {
             serde_json::to_value(&slot).unwrap(),
             json!({"tag":"mod-country-long-tag","cosmetic":"","original":"mod-country-long-tag","group":"synthetic_group"})
         );
-        // The same operands an hour later keep the copied text.
         let copied = slot.as_ref().unwrap().tag.as_ptr();
         set_viewed(&mut slot, Some(germany)).unwrap();
         assert_eq!(slot.as_ref().unwrap().tag.as_ptr(), copied);
-        // A new cosmetic tag or ruling group replaces it; an unread original stays unknown.
         let changed = FlagOperands {
             cosmetic: "variants/red",
             original: None,
@@ -4549,7 +4323,6 @@ mod tests {
             serde_json::to_value(&slot).unwrap()["original"],
             Value::Null
         );
-        // Unavailable rows withdraw it rather than keep a stale country.
         set_viewed(&mut slot, None).unwrap();
         assert_eq!(slot, None);
     }
@@ -4604,7 +4377,6 @@ mod tests {
                     ..Default::default()
                 }]))
                 .into();
-            // Also fail a second table: containment must visit every offender.
             prepared.source.tables[TableId::Campaign.index()] =
                 TableView::Complete(TableRows::Campaign(Vec::new())).into();
             processor.write_prepared(prepared).unwrap();
@@ -4977,7 +4749,6 @@ mod tests {
             .map(|entry| entry.path())
             .find(|path| path.extension().is_some_and(|extension| extension == "h4s"))
             .unwrap();
-        // The recorder takes a segment no one may write as settled.
         let settled = |path: &Path| {
             fs::OpenOptions::new()
                 .read(true)
@@ -4986,8 +4757,6 @@ mod tests {
                 .is_ok()
         };
         assert!(!settled(&segment));
-        // The game loaded another campaign, paused before its first hour.
-        // A close for a load it has left since is refused; the load it is on closes.
         assert_eq!(
             processor.history_request(&format!("1 close {name} 9999")),
             "1 refused the campaign was loaded again"
@@ -5028,7 +4797,6 @@ mod tests {
             paths.sort();
             paths
         };
-        // The recorder takes a segment no one may write as settled.
         let settled = |path: &Path| {
             fs::OpenOptions::new()
                 .read(true)
@@ -5044,7 +4812,6 @@ mod tests {
         assert!(settled(&open), "the left campaign's segment is closed");
         let closed = fs::read(&open).unwrap();
         processor.frame(&load(OTHER, 5678, 21)).unwrap();
-        // Loading it again starts a new segment with its own context.
         processor.frame(&load(ID, 9999, 30)).unwrap();
         processor.detach().unwrap();
         assert_eq!(
@@ -5131,7 +4898,6 @@ mod tests {
             report: None,
         };
         let recording = || replay::recording_files::recording_of(&target, ID).unwrap();
-        // Each game process records the campaign, then ends with Auto save off.
         let mut branches = Vec::new();
         for (process, signal, hours) in [(1, 1234, 10..=12), (2, 5678, 20..=21)] {
             let session = SessionStart {
@@ -5170,9 +4936,7 @@ mod tests {
             assert_eq!(ended.unsaved, [unsaved.clone()]);
             assert_eq!(recording(), None, "nothing is saved");
         }
-        // The restarted capture continued the first one's branches.
         assert_ne!(branches[0], branches[1]);
-        // Save: both captures, as one recording.
         let saved = replay_io::save_waiting(&target, name, naming).unwrap();
         let recording = recording().unwrap();
         assert_eq!(saved, Some(recording.clone()));
@@ -5215,7 +4979,6 @@ mod tests {
             settings: &settings,
             report: None,
         };
-        // An ended session's journals are written to their end and its recordings saved.
         let end = |writers: replay_io::Live, folder: &Path| {
             let ended = replay_io::finalize_session_ahead(folder, &target, &|| Ok(()), writers, naming, &|_| {
                 replay_io::Destination::Recording
@@ -5224,13 +4987,11 @@ mod tests {
             assert!(ended.errors.is_empty(), "{:?}", ended.errors);
             ended.replays[0].clone()
         };
-        // What a running session's journal holds of the campaign so far is written, and Save asked.
         let save = |writers: &mut replay_io::Live, folder: &Path| -> Result<Option<PathBuf>, String> {
             writers.retry();
             writers.advance(folder, &target, &|_| false, naming, &|| false)?;
             writers.save(folder, &target, name, naming)
         };
-        // An earlier game process saved the campaign.
         let earlier = root.join("sessions").join("1");
         let mut processor =
             Processor::new(&earlier, PreparedCampaigns::default(), session()).unwrap();
@@ -5242,7 +5003,6 @@ mod tests {
         processor.detach().unwrap();
         drop(processor);
         let recording = end(replay_io::Live::default(), &earlier);
-        // This process holds that recording as the campaign's history.
         let session = SessionStart {
             id: 2,
             process_start_time: 2000,
@@ -5259,7 +5019,6 @@ mod tests {
         processor
             .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
             .unwrap();
-        // Before its journal is on disk the recorder sees nothing to write, and saves as it was.
         processor.settle_journals();
         let held = fs::read(&recording).unwrap();
         let conflict = fs::OpenOptions::new()
@@ -5274,7 +5033,6 @@ mod tests {
         );
         assert_eq!(fs::read(&recording).unwrap(), held);
         drop(conflict);
-        // The campaign being recorded keeps its history, but lends it to a checkpoint.
         assert_eq!(
             processor.history_request(&format!("1 release {other}")),
             "1 refused the campaign is recording"
@@ -5300,7 +5058,6 @@ mod tests {
                 .is_err(),
             "held again after the checkpoint"
         );
-        // A checkpoint borrows the history of the campaign the game is recording too.
         assert_eq!(
             processor.history_request(&format!("7 lend {other}")),
             "7 ok"
@@ -5313,8 +5070,6 @@ mod tests {
             processor.history_request(&format!("2 release {name}")),
             "2 ok"
         );
-        // The collector holds the campaign's journal until it detaches: its hours are written
-        // into the recording now, and saved with the session's end.
         let deferred = save(&mut writers, &folder).unwrap_err();
         assert!(deferred.contains("saved when recording stops"), "{deferred}");
         assert_eq!(
@@ -5352,8 +5107,6 @@ mod tests {
     }
 
 
-    /// Once the native capture halts, every later hour is a gap, without the write failure's full
-    /// refresh, and the rows hold no hour the native capture lacks.
     #[test]
     fn a_halted_native_capture_gaps_every_later_hour_without_a_full_refresh() {
         let directory =
@@ -5362,7 +5115,6 @@ mod tests {
         let mut processor =
             Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
         processor.frame(&captured(10)).unwrap();
-        // The first hour's own refresh request, for the tables it could not read.
         processor.take_retry_full();
         let campaign = processor
             .campaigns
@@ -5400,8 +5152,6 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    /// A session's spool holds the spooled tables its mode records; it leaves every other table
-    /// its mode records to the native capture, and marks every table its mode leaves out.
     #[test]
     fn a_session_spools_only_the_spooled_tables_its_mode_records() {
         use replay_data::scope::{self, CaptureMode};
@@ -5513,7 +5263,6 @@ mod tests {
             .chain([TableId::ScriptFlags, TableId::ScriptVariables])
             .chain(crate::extended::intel::TABLES)
             .chain(crate::extended::governance::TABLES)
-            // FinalInputs uses DivisionStatus as the anchor for its shared reads.
             .filter(|&table| {
                 table != TableId::DivisionStatus && !scope::records(CaptureMode::Map, table)
             })
@@ -5730,8 +5479,6 @@ mod tests {
         const TEST: &str =
             "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";
         const CHILD: &str = "BATTLE_PLAN_SPOOL_VALIDATION_DETAIL_TEST";
-        // Allocation hooks are process-wide. Exercise the worker with the same
-        // hooks as capture without changing other tests' diagnostic behaviour.
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
@@ -5757,8 +5504,6 @@ mod tests {
         processor.prepare(&source).unwrap();
         processor.frame(&source).unwrap();
 
-        // Fail an ordinary hour after the forced sample's successful keyframe.
-        // The failed write closes the segment and queues a gap for recovery.
         source = captured(11);
         let mut prepared = processor.prepare_frame(&source).unwrap();
         prepared.source.tables[TableId::Clock.index()] =
@@ -5792,7 +5537,6 @@ mod tests {
         );
         processor.detach().unwrap();
 
-        // Gap-only detach preserves the original refusal.
         let mut bytes = Vec::new();
         crate::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
         let status_path = directory.join("status.json");
@@ -5801,8 +5545,6 @@ mod tests {
         assert_eq!(persisted["write_errors"], 2);
         assert_eq!(persisted["last_error"], expected);
 
-        // Preflight and loss handling must retain static reasons with capture
-        // hooks installed too, and must restore callback behaviour on return.
         let mut preflight =
             Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
         assert_eq!(
@@ -5870,8 +5612,6 @@ mod tests {
         assert_eq!(first["total_ns"], 300);
         assert_eq!(first["callback_work"]["calls"], 3);
         assert_eq!(first["callback_work"]["total_ns"], 600);
-        // Other tests can update the process-wide acquisition counters between
-        // snapshots. Compare this processor's callback summary and gauges only.
         let repeated = processor.json();
         for field in [
             "hours",
@@ -5947,15 +5687,12 @@ mod tests {
     }
 
     pub(super) fn captured(hour: i32) -> Captured {
-        // The conversion fixtures write one core row per family, two division
-        // identities/member occurrences and six faction-name bytes.
         let mut captured = Captured::with_capacities(
             &[1, 1, 1, 1, 2, 1, 1, 2, 6, 0, 0, 0],
             &crate::map_capture::MapCapacities::default(),
             &crate::extended::Capacities::default(),
         )
         .unwrap();
-        // A capture reads the clock once, as it starts.
         captured.clock = Some(clock(hour));
         captured.qpc = 1000 + i64::from(hour);
         captured.countries_result = Outcome::Rows { len: 0 };
@@ -6008,7 +5745,6 @@ mod tests {
         source.dropped_frames = 2;
         let expected = decoded(&source, clock(10), 1);
         let prepared = owned_prepared_fixture(&source, 1);
-        // Reuse every field and allocation of the producer before consumption.
         let _ = std::mem::replace(&mut source, captured(11));
         let PreparedFrame {
             source: owned,
@@ -6033,7 +5769,6 @@ mod tests {
     fn prepared_retry_verdict_retains_frame() {
         let source = captured(10);
         let mut prepared = owned_prepared_fixture(&source, 1);
-        // Synthetic fully complete tables represent a successful full refresh.
         prepared.source.tables = TableId::ALL
             .map(|table| TableInput::Sampled(TableView::Complete(TableRows::empty(table))));
         prepared.retry_full = needs_retry(&prepared.source.tables);
@@ -6101,8 +5836,6 @@ mod tests {
             ..Default::default()
         };
         captured.states_result = Outcome::Rows { len: 1 };
-        // Equal numeric ids in different native type namespaces remain separate
-        // rows. Their roster order is intentionally opposite to wire key order.
         captured.divisions[0] = engine_native::carmy::Row {
             id: (u64::from(u32::MAX) << 32) | 4713,
             roster_owner: 7,
@@ -6154,8 +5887,6 @@ mod tests {
             ]
         );
         for division in divisions.rows::<tables::Divisions>().unwrap() {
-            // Capture stores organisation at its display step, a tenth
-            // truncated toward zero (replay_data::display); the sentinel stays.
             assert_eq!(division.hit_points, i64::MIN);
             assert_eq!(division.organisation, 9_007_199_254_740_000);
             assert_eq!(division.template, u64::MAX);
@@ -6258,7 +5989,6 @@ mod tests {
             unavailable("division pointer unreadable")
         );
         captured.clock = None;
-        // Every table a Full recording holds names the clock; the others decode as a recording does.
         let mut expected =
             unavailable_tables("clock unreadable as its capture began").map(|input| match input {
                 TableInput::Sampled(view) => view,
@@ -6285,7 +6015,6 @@ mod tests {
         assert_eq!(border_conflicts_outcome(rows(9), rows(3)), rows(3));
         assert_eq!(border_conflicts_outcome(rows(9), failed), failed);
         assert_eq!(border_conflicts_outcome(provinces, rows(3)), provinces);
-        // A truncated walk never reached some provinces' conflicts.
         assert_eq!(
             border_conflicts_outcome(truncated(9, 4), rows(3)),
             truncated(3, 4)
@@ -6294,7 +6023,6 @@ mod tests {
             border_conflicts_outcome(truncated(9, 4), truncated(3, 2)),
             truncated(3, 6)
         );
-        // Through a decoded frame.
         let mut captured = captured(10);
         captured.provinces_result = truncated(0, 5);
         captured.provinces.conflict_walk.outcome = rows(0);
@@ -6779,7 +6507,6 @@ mod tests {
             .map(|(&index, bytes)| (index, recover_prefix(bytes)))
             .collect();
         let replay = Replay::from_recovered(ID.to_vec(), &recovered).unwrap();
-        // Complete bytes may survive a failed flush. They occur only once.
         assert_eq!(replay.recorded_hours(first).unwrap(), vec![10, 11]);
         assert!(matches!(
             replay.seek(first, 11).unwrap(),
@@ -6797,9 +6524,6 @@ mod tests {
         ));
     }
 
-    /// A load is read as the first hourly update after it is entered, so the new
-    /// branch starts at the loaded hour L and its parent is the branch that
-    /// recorded L. Detach writes no frame for an hour whose update has not returned.
     #[test]
     fn end_of_hour_reload_starts_at_the_loaded_hour_and_detach_invents_no_sample() {
         let (mut campaign, store) = campaign();
@@ -6825,7 +6549,6 @@ mod tests {
         let first = write(&mut campaign, 10, 1);
         assert_eq!(write(&mut campaign, 11, 1), first);
         assert_eq!(write(&mut campaign, 12, 1), first);
-        // Load the hour-11 save: the first update after the load reads hour 11 first.
         let reloaded = write(&mut campaign, 11, 2);
         assert_ne!(reloaded, first);
         let start = campaign.tracker.branch_start(reloaded).unwrap();
@@ -6946,14 +6669,8 @@ mod tests {
             .collect()
     }
 
-    /// A same-process reattach that continues its branch records an event
-    /// loss between the detached session's last read and the reattached
-    /// session's first: event completeness was lost for part of that interval.
-    /// A fresh session, and a reattach whose first observation starts another
-    /// branch, record none.
     #[test]
     fn a_same_process_reattach_records_the_unobserved_event_interval_once() {
-        // The frames' Clock rows carry this load signal; the resumed tail reads it.
         let signal = clock(10).play_session_started_at;
         let (mut first, store) = campaign();
         let branch = publish(&mut first, 10, signal).unwrap();
@@ -6976,18 +6693,12 @@ mod tests {
         assert!(resumed.gaps.is_empty());
         assert_eq!(resumed.recorded_hours(branch).unwrap(), vec![12, 13]);
 
-        // Time passed while detached: the first observation is a new branch,
-        // whose first interval is its own, so no loss is recorded.
         let (mut moved, later) = reattach();
         assert_ne!(publish(&mut moved, 15, signal).unwrap(), branch);
         moved.detach(0).unwrap();
         assert!(event_losses(&recovered(&later)).is_empty());
     }
 
-    /// The reattached session's first frame can fail after its context was
-    /// written, or be lost to the queue: the event loss still ends at that
-    /// first observation, is kept once after the retry, and the lost frame
-    /// stays its own gap.
     #[test]
     fn a_reattach_whose_first_frame_is_lost_keeps_one_event_loss_and_the_gap() {
         let signal = clock(10).play_session_started_at;
@@ -7068,8 +6779,6 @@ mod tests {
             vec![ID, second, second, third]
         );
         assert_eq!(prepared.len(), 3);
-        // A malformed-only batch completes preflight without an endlessly
-        // retryable open failure; consumption below still records its loss.
         prepare_campaigns([b"malformed".as_slice()], |_| {
             panic!("invalid path was opened")
         })
@@ -7151,7 +6860,6 @@ mod tests {
         &input.tables[TableId::ResearchInputs.index()]
     }
 
-    /// The (owner, read hour) pairs SliceReads holds for ResearchInputs.
     fn reads(input: &FrameInput) -> Vec<(u32, i32)> {
         let TableInput::Sampled(TableView::Complete(TableRows::SliceReads(rows))) =
             &input.tables[TableId::SliceReads.index()]
@@ -7188,16 +6896,13 @@ mod tests {
                 },
             )
         };
-        // The walk published rows, conversion withheld them: forget the family.
         let (retry, unpublished) =
             campaign.merge_sliced_inputs(&mut failed(), |_| Some(&selection), |_| true);
         assert_eq!(unpublished, 1 << RESEARCH);
         assert!(retry);
-        // A failed walk is invalidated by the collector itself.
         let (_, unpublished) =
             campaign.merge_sliced_inputs(&mut failed(), |_| Some(&selection), |_| false);
         assert_eq!(unpublished, 0);
-        // A skipped table was never read.
         let mut skipped = sliced_input(
             1,
             1,
@@ -7210,10 +6915,6 @@ mod tests {
         assert_eq!(unpublished, 0);
     }
 
-    /// A sliced table's first hour on a branch is a full read: it publishes
-    /// its complete rows with no earlier ones and records every owner's read
-    /// hour. Only a truncated first read has nothing to merge into, which is
-    /// why a full hour's capture must hold every row.
     #[test]
     fn a_first_full_hour_publishes_complete_sliced_rows_without_earlier_ones() {
         use crate::slicing::SliceSelection;
@@ -7263,7 +6964,6 @@ mod tests {
             &mut full(0),
             SliceSelection::for_test(0, true, &[])
         ));
-        // Hour 1's read is withheld by conversion.
         let mut failed = sliced_input(
             1,
             1,
@@ -7276,8 +6976,6 @@ mod tests {
             campaign.merge_sliced_inputs(&mut failed, |_| Some(&selection), |_| true);
         assert_ne!(unpublished, 0);
         assert_eq!(reads(&failed), [(1, 0), (2, 0)]);
-        // Hour 2 was captured before the game thread forgot: its slice is not
-        // merged onto hour 0's rows, and a full refresh is requested.
         let mut slice = sliced_input(1, 2, TableView::Complete(research_rows(&[(2, 0, 7, 2)])));
         assert!(merge_with(
             &mut campaign,
@@ -7289,7 +6987,6 @@ mod tests {
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
         assert!(reads(&slice).is_empty());
-        // The full read publishes again.
         let mut refreshed = full(3);
         assert!(!merge_with(
             &mut campaign,
@@ -7337,8 +7034,6 @@ mod tests {
         let scan = |store: &mut SliceFingerprints, hour, full| {
             let mut selection = SliceSelection::for_test(hour, full, &[]);
             for owner in [1, 2, 3] {
-                // Research changes its print at hour 1; raid state inputs use
-                // a constant print and read the changed owner in its slice.
                 let print = u64::from(table == TableId::ResearchInputs && owner == 1 && hour > 0);
                 selection.scan(store, owner, Some(print));
             }
@@ -7364,8 +7059,6 @@ mod tests {
         let selection = scan(&mut store, 1, false);
         assert!(selection.contains(1));
         assert!(!selection.contains(2));
-        // Sorted, unique rows pass conversion, but owner 2 was not selected:
-        // merge_slice itself rejects this read after owner 1's print advanced.
         let bad_rows = rows(&[(1, 11), (2, 20)]);
         let bad_view = if truncated {
             selection.invalidate(&mut store);
@@ -7378,7 +7071,6 @@ mod tests {
         };
         let mut failed = frame(1, bad_view);
 
-        // These frames are already captured when the spool discovers the error.
         let in_flight: Vec<_> = (2..=3)
             .map(|hour| {
                 let selection = scan(&mut store, hour, false);
@@ -7436,8 +7128,6 @@ mod tests {
             );
         }
 
-        // Deliver the spool's feedback. Forgetting reads every owner even off
-        // slice; the requested full refresh restores exact rows and read hours.
         store.forget();
         let selection = scan(&mut store, 4, false);
         assert_eq!(selection.read_owners().collect::<Vec<_>>(), [1, 2, 3]);
@@ -7447,7 +7137,6 @@ mod tests {
             merge(&mut campaign, &mut full, &scan(&mut store, 4, true)),
             (false, 0)
         );
-        // Ordinary hours can carry that recovered baseline indefinitely.
         for hour in 5..=6 {
             let mut later = frame(hour, TableView::Complete(rows(&[])));
             assert_eq!(
@@ -7480,10 +7169,6 @@ mod tests {
         }
     }
 
-    /// The supply trains (owner decision 2026-10-11: daily slices, hourly
-    /// before) merge by country: a country's node and vertex rows and its
-    /// inventory row take the same read hour, an hour's slice keeps every
-    /// other country's rows and hours, and a vanished country leaves at once.
     #[test]
     fn supply_trains_merge_each_countrys_nodes_and_inventory_at_its_read_hour() {
         use crate::slicing::SliceSelection;
@@ -7538,7 +7223,6 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let (mut campaign, _) = campaign();
-        // Hour 0 is a full hour: every country is read.
         let mut full = input(
             0,
             nodes(&[(1, 0, 10), (1, VERTEX | 7, 0), (2, 0, 20), (25, 0, 250)]),
@@ -7549,7 +7233,6 @@ mod tests {
             &mut full,
             SliceSelection::for_test(0, true, &[]).with_census(&[1, 2, 25])
         ));
-        // Hour 1 reads slice 1, countries 1 and 25; country 2 keeps hour 0.
         let mut slice = input(
             1,
             nodes(&[(1, 0, 11), (1, VERTEX | 8, 0), (25, 0, 251)]),
@@ -7575,7 +7258,6 @@ mod tests {
                 "{table:?}"
             );
         }
-        // Hour 3 reads nobody: every country holds its own read and hour.
         let mut quiet = input(3, nodes(&[]), trains(&[]));
         assert!(!merge_with(
             &mut campaign,
@@ -7593,7 +7275,6 @@ mod tests {
                 "{table:?}"
             );
         }
-        // A census without country 25 drops its rows now, not at its slice.
         let mut vanished = input(4, nodes(&[]), trains(&[]));
         assert!(!merge_with(
             &mut campaign,
@@ -7614,7 +7295,6 @@ mod tests {
     fn slices_replace_only_their_owners_and_keep_other_owners_rows_and_hours() {
         use crate::slicing::SliceSelection;
         let (mut campaign, _) = campaign();
-        // Without earlier complete rows a slice cannot stand alone.
         let mut orphan = sliced_input(1, 1, TableView::Complete(research_rows(&[(1, 0, 5, 1)])));
         assert!(merge_with(
             &mut campaign,
@@ -7625,7 +7305,6 @@ mod tests {
             merged(&orphan),
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
-        // A full read is complete by itself.
         let full_rows =
             research_rows(&[(1, 0, 10, 0), (1, 1, 11, 0), (3, 0, 30, 0), (25, 0, 250, 0)]);
         let mut full = sliced_input(1, 0, TableView::Complete(full_rows.clone()));
@@ -7638,8 +7317,6 @@ mod tests {
             panic!("full read complete")
         };
         assert_eq!(**rows, full_rows);
-        // Hour 1 reads slice 1 (owners 1 and 25) plus an early re-read of 3.
-        // Owner 1 lost a slot, owner 25 is gone, owner 3 changed; the rest stays.
         let mut slice = sliced_input(
             1,
             1,
@@ -7655,7 +7332,6 @@ mod tests {
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
         assert_eq!(reads(&slice), [(1, 1), (3, 1)]);
-        // Hour 2 reads nobody here; owners keep their own read hours.
         let mut quiet = sliced_input(1, 2, TableView::Complete(research_rows(&[])));
         assert!(!merge_with(
             &mut campaign,
@@ -7667,7 +7343,6 @@ mod tests {
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
         assert_eq!(reads(&quiet), [(1, 1), (3, 1)]);
-        // A failed walk publishes its failure and keeps the earlier rows.
         let mut failed = sliced_input(1, 3, unavailable("research acquisition panicked"));
         let selection = SliceSelection::for_test(3, false, &[]);
         assert!(
@@ -7679,7 +7354,6 @@ mod tests {
             merged(&failed),
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
-        // A truncated slice keeps everyone else and publishes what it read.
         let mut partial = sliced_input(
             1,
             27,
@@ -7688,8 +7362,6 @@ mod tests {
                 missing: 1,
             },
         );
-        // Owner 1 is selected early but the truncated walk never reached it:
-        // it keeps its earlier row and sample hour instead of disappearing.
         assert!(!merge_with(
             &mut campaign,
             &mut partial,
@@ -7700,9 +7372,7 @@ mod tests {
             panic!("truncated slice merged")
         };
         assert_eq!(*rows, research_rows(&[(1, 0, 12, 1), (3, 0, 33, 27)]));
-        // Only the returned owner is read at this hour in the truncated view.
         assert_eq!(reads(&partial), [(1, 1), (3, 27)]);
-        // The truncated read did not replace the base for later slices.
         let mut later = sliced_input(1, 28, TableView::Complete(research_rows(&[])));
         assert!(!merge_with(
             &mut campaign,
@@ -7713,11 +7383,7 @@ mod tests {
             panic!("later merged")
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1), (3, 0, 31, 1)]));
-        // The truncated read did not replace the base hours either.
         assert_eq!(reads(&later), [(1, 1), (3, 1)]);
-        // A new branch starts without earlier rows.
-        // A complete census that no longer sees owner 3 drops its rows now,
-        // not at its next slice; owner 1 was seen and keeps its row.
         let mut vanished = sliced_input(1, 30, TableView::Complete(research_rows(&[])));
         assert!(!merge_with(
             &mut campaign,
@@ -7728,7 +7394,6 @@ mod tests {
             panic!("census merged")
         };
         assert_eq!(**rows, research_rows(&[(1, 0, 12, 1)]));
-        // A new branch starts without earlier rows.
         let mut other = sliced_input(2, 29, TableView::Complete(research_rows(&[])));
         assert!(merge_with(
             &mut campaign,
@@ -7737,9 +7402,6 @@ mod tests {
         ));
     }
 
-    /// A walker that reads only some census owners (the building overrides
-    /// visit controllers only) stamps only the owners it read, including one
-    /// read with no rows; a census owner it never walked gets no read hour.
     #[test]
     fn a_tracking_walker_stamps_only_the_owners_it_read() {
         use crate::slicing::SliceSelection;
@@ -7747,20 +7409,15 @@ mod tests {
         let mut full = sliced_input(1, 0, TableView::Complete(research_rows(&[(2, 0, 20, 0)])));
         let mut selection = SliceSelection::for_test(0, true, &[]).with_census(&[2, 3, 26]);
         selection.track_reads();
-        // Owner 2 returned a row, 26 was read with none; 3 was never walked.
         selection.mark_read(2);
         selection.mark_read(26);
         assert_eq!(selection.read_owners().collect::<Vec<_>>(), [2, 26]);
         merge_with(&mut campaign, &mut full, selection);
         assert_eq!(reads(&full), [(2, 0), (26, 0)]);
-        // Without tracking every covered census owner counts as read.
         let untracked = SliceSelection::for_test(0, true, &[]).with_census(&[2, 3, 26]);
         assert_eq!(untracked.read_owners().collect::<Vec<_>>(), [2, 3, 26]);
     }
 
-    /// An owner a complete read covered that returned no rows still has its
-    /// read hour, kept while it lives and not read again; without a scan the
-    /// spool cannot know it was read, so it has none.
     #[test]
     fn owners_read_without_rows_keep_their_read_hour() {
         use crate::slicing::SliceSelection;
@@ -7772,7 +7429,6 @@ mod tests {
             SliceSelection::for_test(0, true, &[]).with_census(&[2, 26]),
         );
         assert_eq!(reads(&full), [(2, 0), (26, 0)]);
-        // Hour 2 reads slice 2 (owners 2 and 26); 26 again has no rows.
         let mut slice = sliced_input(1, 2, TableView::Complete(research_rows(&[(2, 0, 21, 2)])));
         merge_with(
             &mut campaign,
@@ -7780,7 +7436,6 @@ mod tests {
             SliceSelection::for_test(2, false, &[]).with_census(&[2, 26]),
         );
         assert_eq!(reads(&slice), [(2, 2), (26, 2)]);
-        // Hour 3 reads neither; both keep their hours.
         let mut quiet = sliced_input(1, 3, TableView::Complete(research_rows(&[])));
         merge_with(
             &mut campaign,
@@ -7788,7 +7443,6 @@ mod tests {
             SliceSelection::for_test(3, false, &[]).with_census(&[2, 26]),
         );
         assert_eq!(reads(&quiet), [(2, 2), (26, 2)]);
-        // A census without 26 drops its read.
         let mut gone = sliced_input(1, 4, TableView::Complete(research_rows(&[])));
         merge_with(
             &mut campaign,
@@ -7796,7 +7450,6 @@ mod tests {
             SliceSelection::for_test(4, false, &[]).with_census(&[2]),
         );
         assert_eq!(reads(&gone), [(2, 2)]);
-        // An early read of 26 without a scan does not know it returned no rows.
         let mut unscanned = sliced_input(1, 27, TableView::Complete(research_rows(&[])));
         merge_with(
             &mut campaign,
@@ -7841,9 +7494,7 @@ mod tests {
             (**rows).clone()
         };
         assert_eq!(frame(0, definitions(&[1, 3]), true), definitions(&[1, 3]));
-        // A reload removed template 3: the next complete read replaces the table.
         assert_eq!(frame(1, definitions(&[1]), false), definitions(&[1]));
-        // An hour whose slice reached no roster keeps every definition.
         assert_eq!(frame(2, definitions(&[]), false), definitions(&[1]));
     }
 
@@ -7881,8 +7532,6 @@ mod tests {
                 &mut input,
                 SliceSelection::for_test(hour, full, &[])
             ));
-            // Between keyframes the read updates the rows the encoder shares
-            // with the cache; the first hour and the keyframe carry them whole.
             assert_eq!(
                 matches!(merged(&input), TableInput::SliceUpdate { .. }),
                 hour != 0 && hour != 720,
@@ -7910,14 +7559,11 @@ mod tests {
                 .shared_baseline(TableId::ResearchInputs)
                 .unwrap();
             assert!(Arc::ptr_eq(cached, shared), "hour {hour}");
-            // Equal row counts replace the held rows in place: one allocation
-            // from each whole table to the next.
             let current = Arc::as_ptr(cached);
             if hour != 0 && hour != 720 {
                 assert_eq!(allocation, Some(current), "hour {hour}");
             }
             allocation = Some(current);
-            // Each commit hands back what it no longer holds.
             assert_eq!(campaign.retired.len(), hour as usize + 1);
         }
         campaign.spool.finish_segment().unwrap();
@@ -7948,7 +7594,6 @@ mod tests {
             else {
                 panic!("slice reads decoded")
             };
-            // Each owner was read at its own slot, or at the full hour 0.
             for row in reads {
                 let slot = replay_data::cadence::slice_of(row.owner) as i32;
                 let expected_read = (0..=decoded.hour)
@@ -7960,7 +7605,6 @@ mod tests {
             assert_eq!(reads.len(), 48);
             if frame.keyframe {
                 keyframes.push(decoded.hour);
-                // A keyframe alone decodes the whole held table.
                 let alone = FrameDecoder::new().advance(frame).unwrap().tables
                     [TableId::ResearchInputs.index()]
                 .clone();
@@ -7996,9 +7640,6 @@ mod tests {
             .collect()
     }
 
-    /// A slice update whose write fails leaves the cache with the merged rows
-    /// of that hour, as a merged copy would have been cached, and the next
-    /// hours merge into them.
     #[test]
     fn a_failed_slice_update_write_caches_the_merged_rows_of_its_hour() {
         use crate::slicing::SliceSelection;
@@ -8047,14 +7688,12 @@ mod tests {
                 true,
                 false,
             );
-            // Hour 1 updates owner 1 and its write fails.
             write(&mut campaign, 1, &[(1, 0, 11, 1)], false, true);
             assert!(campaign.pending_slices.is_empty());
             assert_eq!(
                 **campaign.sliced_cache.get(&TableId::ResearchInputs).unwrap(),
                 research_rows(&[(1, 0, 11, 1), (2, 0, 20, 0), (3, 0, 30, 0)])
             );
-            // Hour 2 restarts the spool with a keyframe of the merged rows.
             write(&mut campaign, 2, &[(2, 0, 22, 2)], false, false);
             let last = frames_of(&store).pop().unwrap();
             assert!(last.keyframe);
@@ -8066,7 +7705,6 @@ mod tests {
                     (3, 0, 30, 0)
                 ]))
             );
-            // Hour 3 updates the rows the keyframe committed.
             write(&mut campaign, 3, &[(3, 0, 33, 3)], false, false);
             let mut decoder = FrameDecoder::new();
             let mut decoded = None;
@@ -8119,7 +7757,6 @@ mod tests {
                 }
             }
         }
-        // A retired table decodes as its catalogued refusal.
         for table in TableId::ALL {
             if let Some(reason) = super::retired_reason(table) {
                 tables[table.index()] = TableView::Unavailable {
@@ -8127,7 +7764,6 @@ mod tests {
                 };
             }
         }
-        // A table Full leaves out decodes as not recorded.
         replay_frame::frame::retire_absent(DecodedFrame {
             branch,
             hour,
@@ -8136,10 +7772,8 @@ mod tests {
         })
     }
 
-    /// A staggered (daily) table.
     const DAILY: TableId = TableId::AirAces;
 
-    /// Rows of [`DAILY`].
     fn daily_rows(value: u8) -> TableRows {
         assert!(replay_data::cadence::is_staggered(DAILY));
         TableRows::AirAces(vec![replay_data::rows::AirAceRow {
@@ -8412,8 +8046,6 @@ mod tests {
             let retry_before = needs_retry(&source.tables);
             campaign.apply_staggered_inputs(&mut source);
             crate::fixed_layout::apply(&mut source.tables, &Ok(report)).unwrap();
-            // Permanent refusals run after the recovery decision; a successful
-            // static/daily capture does not trigger repeated full acquisition.
             assert!(!retry_before);
             let frame = campaign
                 .encoder
@@ -8433,9 +8065,6 @@ mod tests {
         }
     }
 
-    /// The hour's drained ticks reach the branch totals whether or not the
-    /// lines' slot is read; the table is published with the census, carried
-    /// off its slot, and round-trips through the encoder.
     #[test]
     fn line_output_totals_publish_with_the_census_and_carry_off_its_slot() {
         use crate::line_output::{Drained, Entry};
@@ -8494,8 +8123,6 @@ mod tests {
             assert_eq!(rows[0].country, 5001);
             published.push((rows[0].units, rows[0].mio_credit, rows[0].since_hour));
         }
-        // The first frame's ticks came before the observation began; hour 1
-        // carries hour 0's publication; hour 2 publishes hour 1's two ticks.
         let retired = replay_data::rows::RetiredI64::default();
         assert_eq!(
             published,
@@ -8503,9 +8130,6 @@ mod tests {
         );
     }
 
-    /// Each hour's drained construction output reaches the branch totals whether
-    /// or not the queues' slot is read; the table is published with the queues'
-    /// census, carried off its slot, and round-trips through the encoder.
     #[test]
     fn construction_output_publishes_with_the_queues_and_carries_off_their_slot() {
         use crate::construction_ic::{Drained, Entry};
@@ -8575,8 +8199,6 @@ mod tests {
                     .collect::<Vec<_>>(),
             );
         }
-        // The first frame's output came before the observation began; hour 1
-        // carries hour 0's publication; hour 2 publishes hour 1's two days.
         let zero = vec![(LINE, false, 0, 0), (RAIL, true, 0, 0)];
         assert_eq!(
             published,
@@ -8591,8 +8213,6 @@ mod tests {
         );
     }
 
-    /// A line that ends in a publication whose write fails keeps its final
-    /// totals: the next written frame, a census at the next hour, repeats it.
     #[test]
     fn a_failed_write_keeps_the_final_totals_of_ended_lines() {
         use crate::line_output::{Drained, Entry};
@@ -8663,7 +8283,6 @@ mod tests {
             );
             assert_eq!(written.is_err(), fails, "hour {hour}");
         }
-        // The failure closed the first segment; the next one starts at hour 2.
         let recovered = recover_prefix(store.borrow().segments.get(&1).unwrap());
         let frame = recovered
             .records
@@ -8888,8 +8507,6 @@ mod tests {
             );
             assert!(!campaign.spool.is_open());
             campaign.observe(None, 3, Some(1)).unwrap();
-            // A freshly acquired exact native input is required even though the
-            // memo's immutable result survives the failed write/encoder reset.
             let restored = intel_frame(&mut campaign, branch, 3, 20);
             assert!(Arc::ptr_eq(
                 &latest,
@@ -9030,7 +8647,6 @@ mod tests {
                 campaign
                     .write(current, 1001, Some(1), 0, &mut WorkSample::default())
                     .unwrap();
-                // The runtime frees what the commit handed back.
                 campaign.retired.clear();
                 assert!(previous.upgrade().is_none());
                 let next = character_frame(&mut campaign, branch, 2, 10);
@@ -9193,7 +8809,6 @@ mod tests {
                     &mut WorkSample::default(),
                 )
                 .unwrap();
-            // The runtime frees what the commit handed back.
             campaign.retired.clear();
             let rows = cached_complete(&campaign, table);
             assert_eq!(
@@ -9227,8 +8842,6 @@ mod tests {
         }
     }
 
-    /// A refresh compared with its baseline caches no rows, so a periodic keyframe before the
-    /// next slot carried a refusal there and the hours after it (VariantDefinitions).
     #[test]
     fn a_compared_refresh_carries_its_rows_through_a_periodic_keyframe() {
         crate::spooling::keep_every_table();
@@ -9401,8 +9014,6 @@ mod tests {
     }
 
     impl WithHour for DecodedFrame {
-        /// The frame of a later hour that skipped every staggered table: the same views, and
-        /// no staggered table read.
         fn carried_to(&self, hour: i32) -> Self {
             let mut next = self.clone();
             next.hour = hour;
@@ -9420,10 +9031,6 @@ mod tests {
         }
     }
 
-    /// A daily table the hour read with no time of its own (the economy rest copy charges its
-    /// walk to another table), and one assembled after the timing pass, are marked read in the
-    /// hours they were read and sampled there; an hour that skipped them marks neither, even
-    /// when a time was charged to them, and keeps their sample.
     #[test]
     fn a_table_read_with_no_time_of_its_own_is_marked_read_and_a_skipped_one_is_not() {
         use replay::native_frame::FrameWriter;
@@ -9502,8 +9109,6 @@ mod tests {
             let mut staggered = hourly;
             for table in TableId::ALL {
                 let index = table.index();
-                // A retired table is never walked; both recordings decode
-                // its catalogued refusal every hour.
                 let retired = super::retired_reason(table).is_some();
                 if retired || replay_data::cadence::should_walk(table, hour, hour == 0) {
                     expected_tables[index] = Some((*hourly_decoded.tables[index]).clone());
@@ -9546,22 +9151,12 @@ mod tests {
 
     #[test]
     fn truncated_decode_forces_snapshot_next_refresh() {
-        // B3: a truncated refresh (as produced by a copy→decode payload
-        // with pooled caps smaller than the census) clears the encoder
-        // baseline, so the next refresh of that table is a snapshot —
-        // never unchanged/delta off a cleared baseline. Extends the
-        // hand-built-frame pattern with decode-payload shapes: first frame
-        // carries Truncated (rows + missing), second carries the full rows.
         use replay_data::rows::TableId;
         use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
         let (mut campaign, _) = campaign();
         let branch = 3;
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
-        // First refresh: WorldTension truncated (1 row kept, 2 missing),
-        // as a decode payload with tiny pooled caps would emit. Precede it
-        // with a Complete frame so the truncation lands off-keyframe
-        // (branch-start keyframes refuse truncated tables by design).
         let mut base = staggered_frame(branch, 10, false);
         campaign.apply_staggered_cache(&mut base);
         let base_frame = encoder.encode(base.clone(), false).unwrap();
@@ -9582,8 +9177,6 @@ mod tests {
             frame.tables[TableId::WorldTension.index()]
         );
         assert_eq!(decoder.apply(&frame).unwrap(), first);
-        // Second refresh: full rows. Must be a snapshot (baseline was
-        // cleared by the truncation), never unchanged/delta.
         let mut second = staggered_frame(branch, 12, false);
         campaign.apply_staggered_cache(&mut second);
         let frame = encoder.encode(second.clone(), false).unwrap();

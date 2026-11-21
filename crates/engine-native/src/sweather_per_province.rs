@@ -1,9 +1,3 @@
-//! SWeatherPerProvince snow, temperature words and mud at the completed hourly boundary, with
-//! the manager's per-province display bytes and stored day/night clock.
-//!
-//! Normal staging jobs finish before publication jobs, then display bytes
-//! are written serially. Provinces update in rotating subsets; each row
-//! preserves its stored state.
 
 use engine_sites::Rva;
 use crate::{
@@ -15,53 +9,22 @@ use crate::{
     walk::Outcome,
 };
 
-/// Province-weather vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_4098);
-/// Province-weather array stride.
 pub const STRIDE: usize = 0x180;
-/// Province ID, i32, authenticated against its array slot.
 pub const ID: usize = 0x08;
-/// Permanent snow, signed i64 fixed5, written during load setup and
-/// retained at hourly boundaries.
 pub const PERMANENT_SNOW: usize = 0x30;
-/// Snow, i64 fixed5, clamped and stored at full width.
 pub const SNOW: usize = 0x40;
-/// Embedded modifier collection.
 pub const MODIFIERS: usize = 0x58;
-/// Temperature, signed i64 fixed5, used for truncated numeric text and
-/// temperature classification. Serialization retains all eight bytes,
-/// including zero.
 pub const TEMPERATURE: usize = 0x118;
-/// Committed drift, signed i64 fixed5: weather smoothing averages the active neighbours' words and
-/// weather modifier tasks commit the working drift (`WORKING_DRIFT`) into it with the staged
-/// temperature.
 pub const DRIFT: usize = 0x128;
-/// Raw mud byte tested by the province tooltip. Display updating writes display mud from this OR
-/// the custom mud, so it is independent.
 pub const RAW_MUD: usize = 0x130;
-/// Static modifier list, a `CPdxArray` header (data, capacity, count) of
-/// [`STATIC_MODIFIER_STRIDE`] entries, each definition at most once, in insertion order.
-/// Province modifier addition inserts or overwrites the days, removal and the daily expiry
-/// drop an entry, and the daily expiry counts every positive days word down by one per
-/// visit of the province in the manager's expiring list.
 pub const STATIC_MODIFIERS: usize = 0x148;
-/// Static modifier list entry stride: the definition pointer, then [`STATIC_MODIFIER_DAYS`].
 pub const STATIC_MODIFIER_STRIDE: usize = 0x10;
-/// Remaining days, i32; zero or less never expires.
 pub const STATIC_MODIFIER_DAYS: usize = 0x08;
-/// Staged temperature, signed i64 fixed5: province weather calculation stores `TEMPERATURE` plus
-/// the clamped working drift and weather smoothing then smooths it; weather modifier tasks commit
-/// it into `TEMPERATURE` when the record's commit flag is set.
 pub const STAGED_TEMPERATURE: usize = 0x160;
-/// Working drift, signed i64 fixed5: province weather calculation adds the
-/// hashed step, clamps it and resets it outside the period's range.
 pub const WORKING_DRIFT: usize = 0x170;
-/// Separate day/night row stride; day and night getters index the weather manager's day/night array
-/// (`cweather_manager::PROVINCE_CLOCKS`) by this physical province slot.
 pub const CLOCK_STRIDE: usize = 0x330;
-/// Stored night factor, signed i64 fixed5, updated by day/night processing and read at full width.
 pub const CLOCK_NIGHT_FACTOR: usize = 0x240;
-/// Stored local hour, signed i32. Suspension may retain zero after reset.
 pub const CLOCK_LOCAL_HOUR: usize = 0x260;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -69,9 +32,7 @@ pub struct Row {
     pub id: u32,
     pub snow: i64,
     pub permanent_snow: i64,
-    /// The weather manager's display snow for the slot (`cweather_manager::DISPLAY_SNOW`), filled by [`fill_display`].
     pub display_snow: u8,
-    /// The weather manager's display mud for the slot (`cweather_manager::DISPLAY_MUD`), filled by [`fill_display`].
     pub display_mud: u8,
     pub raw_mud: u8,
     pub temperature: i64,
@@ -82,7 +43,6 @@ pub struct Row {
     pub night_factor: i64,
 }
 
-/// Identity and stored weather values, gathered per batch without padding.
 pub const FIELDS: [RecordField; 8] = [
     RecordField {
         source_offset: 0,
@@ -127,23 +87,16 @@ pub const FIELDS: [RecordField; 8] = [
 ];
 pub const RECORD_BYTES: usize = 61;
 
-/// The static modifier list header alone, gathered apart from [`FIELDS`] only when the lists
-/// are read.
 pub const STATIC_MODIFIER_HEADER: [RecordField; 1] = [RecordField {
     source_offset: STATIC_MODIFIERS,
     destination_offset: 0,
     len: 16,
 }];
 
-/// A copied static modifier list header; `None` when it is malformed.
 pub fn static_modifier_list(header: [u8; 16]) -> Option<Array> {
     Array::from_header(header, STATIC_MODIFIER_STRIDE)
 }
 
-/// Appends every entry of a static modifier list to `out` as its days (i32), its
-/// definition's script name length (u32) and the name's bytes, all little endian, in list
-/// order. Each definition must carry the static modifier vtable `definition_vtable`. On an
-/// error `out` may hold a partial entry; the caller discards it.
 pub fn read_static_modifiers(
     memory: &impl Memory,
     list: Array,
@@ -187,8 +140,6 @@ pub fn read_static_modifiers(
     Ok(())
 }
 
-/// Only the two stored clock words: no row identity or dense padding exists
-/// in this capture. The authenticated manager and equal live counts own the join.
 pub const CLOCK_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: CLOCK_NIGHT_FACTOR,
@@ -203,8 +154,6 @@ pub const CLOCK_FIELDS: [RecordField; 2] = [
 ];
 pub const CLOCK_RECORD_BYTES: usize = 12;
 
-/// Decode the same exact-field record on the typed path and owned-copy worker.
-/// Commit both words only after the whole record succeeded; preserve raw values.
 pub fn fill_clock_record(record: &[u8], copied: usize, row: &mut Row) -> Result<(), &'static str> {
     if record.len() < CLOCK_RECORD_BYTES || copied < CLOCK_FIELDS.len() {
         return Err("weather clock fields unreadable");
@@ -214,8 +163,6 @@ pub fn fill_clock_record(record: &[u8], copied: usize, row: &mut Row) -> Result<
     Ok(())
 }
 
-/// Join the admitted weather prefix to the equally sized native clock array.
-/// Exact fields are copied in bounded batches without allocating at the hook.
 pub fn fill_clocks(
     memory: &impl Memory,
     array: Array,
@@ -272,7 +219,6 @@ pub(crate) fn walk(memory: &impl Memory, base: usize, array: Array, output: &mut
     )
 }
 
-/// Decode one owned exact-field gather, retaining native field-failure order.
 pub fn decode_record(
     index: u32,
     record: &[u8],
@@ -308,10 +254,6 @@ pub fn decode_record(
     })
 }
 
-/// Copies the two display byte arrays into the rows, which hold slots
-/// `0..rows.len()` of an array of `provinces` rows. Both arrays are sized to
-/// the province count, so any other count refuses the table.
-/// Whole arrays are read in fixed chunks, without allocating.
 pub fn fill_display(
     memory: &impl Memory,
     [snow, mud]: [Array; 2],

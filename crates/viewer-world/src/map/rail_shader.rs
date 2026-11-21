@@ -1,4 +1,3 @@
-//! Railway submission with resolved effects and retained render state.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
@@ -28,26 +27,21 @@ pub struct Inputs<'a> {
     pub shadow_matrix: &'a [[f32; 4]; 4],
     pub time: f32,
     pub alpha: f32,
-    /// Actual retained PS b2 allocation, including its initialized-byte ranges.
     pub retained_pixel_b2: super::shader_constants::WorldPixelConstants,
     pub textures: [&'a wgpu::TextureView; 16],
 }
 
 pub struct Geometry<'a> {
     pub vertices: &'a wgpu::Buffer,
-    /// Every run's strip in one index list, each closed by the restart index, and its length
-    /// ([`super::railways::strip_indices`]): drawn with one call.
     pub strips: Option<(&'a wgpu::Buffer, u32)>,
 }
 
-/// The pixel slot the engine binds the shadow screen buffer to for railways.
 pub const SHADOW_SLOT: u32 = 15;
 
 pub struct Rail {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     stencil_reference: u32,
-    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub texel_reads: Option<String>,
 }
 
@@ -59,7 +53,6 @@ impl Rail {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, samples, format, depth)
         })
@@ -116,11 +109,9 @@ impl Rail {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
-        // Apply every authored state handle and triangle-strip topology.
         let technique = &program.techniques[selection.index];
         let raster = program.rasterizer(technique);
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
-        // The restart index closes each strip of the joined list.
         pass.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
         let (depth, stencil_reference) =
             gpu::depth_stencil(&program.depth_stencil(technique), &raster, depth);
@@ -166,7 +157,6 @@ impl Rail {
             .collect();
         let mut bound = Vec::new();
         for frame in inputs.frames {
-            // An 80-byte allocation initializes 72 matrix/time/alpha bytes; bytes 72 through 79 remain unknown.
             let mut constants = bytemuck::bytes_of(inputs.shadow_matrix).to_vec();
             constants.extend_from_slice(bytemuck::cast_slice(&[
                 inputs.time,

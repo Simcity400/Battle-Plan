@@ -1,4 +1,3 @@
-//! A block's clock ([`Clock`]): every hour's flags and metrics, what is truly per hour.
 
 use crate::{
     block::{put_varint, unzig, zig},
@@ -7,7 +6,6 @@ use crate::{
 };
 use std::io;
 
-/// One hour's flags and metrics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClockHour {
     pub flags: u8,
@@ -16,7 +14,6 @@ pub struct ClockHour {
     pub dropped_frames: u64,
 }
 
-/// A block's clock: every hour's flags, then its metrics.
 #[derive(Default)]
 pub struct Clock {
     flags: Vec<u8>,
@@ -41,7 +38,6 @@ impl Clock {
         out
     }
 
-    /// Every hour of the clock `payload` of a block of `hours` ordinals.
     pub fn read(payload: &[u8], hours: u32) -> io::Result<Vec<ClockHour>> {
         let mut reader = Reader::new(payload);
         if reader.varint_u32()? != hours {

@@ -31,16 +31,12 @@ import { useSupplySeries } from './supplySeries';
 import { useSupplyHead } from './supplyHead';
 import type { supplyCountrySelection } from './SupplyCountryChip';
 
-/** One country's supply at a day as bars of each state's divisions, and the same counts over time; following
- * playback, the bars are painted from the head's followed counts. */
 export default function SupplyBreakdown({ runtime, track, active, options, countrySlot, headerSelection, identities, extent, playhead, liveHead, dayText,
   tag, hour, originHour, following, pinned, onPick, onFollow, onWarnings }: {
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
   countrySlot: HTMLElement | null; headerSelection: ReturnType<typeof supplyCountrySelection>;
-  /** Every tag's holder runs, from the country groups; null while they load. */
   identities: readonly CountryIdentityHistory[] | null;
   extent: [number, number]; playhead: number | null;
-  /** While following playback: the head, read each frame, and the day it names. */
   liveHead?: Live<number>; dayText?: LiveTexts;
   tag: string | null; hour: number; originHour: number;
   following: boolean; pinned: boolean; onPick: (hour: number) => void; onFollow: () => void;
@@ -67,10 +63,9 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const head = useSupplyHead(store, liveHead !== undefined && active, track?.branch.id, tag, root, colors);
   const actor = countryDrillTagAt(identitySpans, hour);
   const runs = useMemo(() => tag ? clipToSpans(clipToSpans(supply.sharesOf(tag), spans), [{ firstHour: extent[0], lastHour: extent[1] }]) : [],
-    [supply.shares, tag, spans, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Following, the chart draws the newest lines with the head's bin at the followed shares, clipped as `runs` is.
+    [supply.shares, tag, spans, extent[0], extent[1]]);
   const live = useMemo(() => tag && liveHead ? supply.liveShares(tag, held => clipToSpans(clipToSpans(held, spans), [{ firstHour: extent[0], lastHour: extent[1] }])) : undefined,
-    [supply.liveShares, tag, liveHead, spans, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+    [supply.liveShares, tag, liveHead, spans, extent[0], extent[1]]);
   const extentKey = JSON.stringify(extent);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: JSON.stringify([track?.source.id, track?.branch.id, tag, originHour]),
     extent: extentKey, model: runs }), [runtime.client, track?.source.id, track?.branch.id, tag, originHour, extentKey, runs]);

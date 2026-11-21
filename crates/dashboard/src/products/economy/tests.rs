@@ -15,7 +15,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 pub(super) const FIRST: i32 = 100;
 pub(super) const LAST: i32 = 130;
-/// GER's raw country id and canonical slot in the fixture.
 pub(super) const GER: u32 = 9001;
 
 pub(super) fn open(frames: Vec<DecodedFrame>) -> Source {
@@ -27,7 +26,6 @@ pub(super) fn load() -> LoadContext {
     LoadContext { content: None }
 }
 
-/// `P`'s request-path reply data at `hour` for `params`, or its error text.
 pub(super) fn asked<P: AtHour>(source: &Source, mut params: Value, hour: i32) -> Result<Value, String> {
     params["hour"] = json!(hour);
     let text = (entry::<P>().registered.load)(source, "lease", params, &load(), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
@@ -35,15 +33,12 @@ pub(super) fn asked<P: AtHour>(source: &Source, mut params: Value, hour: i32) ->
     Ok(reply["data"].take())
 }
 
-/// The panel's data over the whole tables at `hour`, as rows at the head hold them.
 pub(super) fn followed(source: &Source, panel: &mut dyn Panel, hour: i32) -> PanelData {
     let tables = panel.tables().to_vec();
     let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&tables)).unwrap() else { panic!("hour {hour} is recorded") };
     panel.data(&frame)
 }
 
-/// Each hour's request and panel replies are one reply: the panel carries the structure, the
-/// request's its live cells beside it.
 pub(super) fn same_on_both_paths<P: AtHour>(source: &Source, params: Value) {
     let mut asked_panel = params.clone();
     asked_panel["panel"] = json!(P::KEY);
@@ -55,7 +50,6 @@ pub(super) fn same_on_both_paths<P: AtHour>(source: &Source, params: Value) {
     }
 }
 
-/// A request's single-source live cells, by (row, column): each its number, or why it has none.
 pub(super) fn cells(reply: &Value) -> std::collections::BTreeMap<(String, String), Value> {
     let live = &reply["live"];
     let numbers = |value: &Value| value.as_array().unwrap().iter().map(|item| item.as_u64().unwrap() as usize).collect::<Vec<_>>();
@@ -88,8 +82,6 @@ mod fuel {
         CountryFuelConsumerRow { country, index, priority: 1, requested_raw, received_raw }
     }
 
-    /// GER's army asks more each ten hours and gets half; another country's consumers sit
-    /// between GER's in key order; the consumers are not recorded at `UNREAD`.
     fn recording() -> Source {
         open(
             (FIRST..=LAST)
@@ -146,9 +138,6 @@ mod resources {
         ResourceExchangeRow { id, exporter, importer, resource, delivered, assigned_factories: 1, convoys_assigned: 2, convoys_required: 3, ..Default::default() }
     }
 
-    /// Two resources (oil, then steel); GER produces more oil each ten hours, sells steel to FRA and
-    /// buys oil from it; another country's pools sit beside GER's; the deals are not recorded at
-    /// `DEALS_UNREAD`.
     fn recording() -> Source {
         open(
             (FIRST..=LAST)
@@ -195,7 +184,6 @@ mod resources {
         assert_eq!((cell("1", "produced"), cell("2", "produced"), cell("1", "production")), (json!(1_200_000), json!(700_000), json!(-3)));
         assert_eq!(cells.len(), 18, "eight pools of each of GER's two rows and each of its two deals' delivery, none of another country's");
         assert_eq!((cell("6", "delivered"), cell("5", "delivered")), (json!(300_000), json!(200_000)));
-        // Oil nets 1,199,997 on a 1,200,000 bar, steel 699,997 on 700,000: steel is the smaller surplus, oil the longer bar.
         let ordered = |order: &str| asked::<ResourceBalance>(&source, json!({ "branchId": "1", "country": "GER", "order": order }), 125).unwrap()["shown"].clone();
         assert_eq!((ordered("game"), ordered("shortfall"), ordered("volume")), (json!([1, 2]), json!([2, 1]), json!([1, 2])));
         assert_eq!(at["deals"], json!([
@@ -214,7 +202,6 @@ mod resources {
         let params = serde_json::from_value(json!({ "branchId": "1", "country": "GER" })).unwrap();
         let reply = ResourceSizes::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
         let sizes: Vec<(u32, Option<&str>)> = reply.sizes.iter().map(|size| (size.id, size.longest_raw.as_deref())).collect();
-        // Oil's supply is what it produced, 1,300,000 at its largest; its demand is 3. Steel's is 700,000.
         assert_eq!(sizes, [(1, Some("1300000")), (2, Some("700000"))]);
     }
 }
@@ -230,9 +217,6 @@ mod lend_lease {
         WarLendLeaseHistoryRow { country, target, industry_sent, fuel_sent: 0, industry_received, fuel_received: 0 }
     }
 
-    /// GER (raw ids 9001 and 11, slot 7) sends FRA (44, slot 8) industry from both its raw ids; FRA
-    /// records what it received; MOD (66, slot 10) is on the war rosters with no history; the
-    /// histories are not recorded at `UNREAD`.
     fn recording() -> Source {
         open(
             (FIRST..=LAST)
@@ -290,7 +274,6 @@ mod lend_lease {
         let partner = &reply["partners"][0];
         assert_eq!(partner["slot"], 8);
         assert_eq!(partner["tags"][0]["tag"], "FRA");
-        // Raw id 11 sends 100; raw id 9001 sends (hour / 10) * 100, 1,000 at hour 100: summed per hour, never across the unread one.
         let sent = json!([[100, 109, "1100"], [110, 111, "1200"], [113, 119, "1200"], [120, 129, "1300"], [130, 130, "1400"]]);
         let at = asked::<LendLeaseBalance>(&source, json!({ "branchId": "1", "holder": "GER" }), 125).unwrap();
         assert_eq!(at["rows"][0]["values"][0], "1300", "the partner's sum over time is the at-hour reply's at the same hour");
@@ -303,7 +286,6 @@ mod lend_lease {
     #[test]
     fn partner_pieces_sum_by_hour_within_the_known_hours_and_hold_zero_after_they_end() {
         use crate::products::economy::lend_lease_partners::summed;
-        // Two rows overlap at 12..=14; the second ends at 19; nothing is known at 16.
         let pieces = [(10, 14, 5), (12, 19, 7)];
         let known = [(10, 15), (17, 25)];
         assert_eq!(summed(&pieces, &known), [(10, 11, 5), (12, 14, 12), (15, 15, 7), (17, 19, 7), (20, 25, 0)]);
@@ -318,19 +300,13 @@ mod market {
     use replay_data::rows::{CountryLinkRow, CountryMarketRow, CountryRow, LendLeaseAgreementRow, MarketContractTermsRow, MarketEquipment, MarketPool, PurchaseContractRow, SharedMarketPool, tables};
 
     const FRA: u32 = 44;
-    /// Purchase progress is not recorded.
     const UNREAD: i32 = 117;
-    /// GER's agreement with FRA has left the table.
     const ENDS: i32 = 124;
 
     fn equipment(variant: u64, amount_raw: i64) -> SharedMarketPool {
         MarketPool { allow_zero: false, items: vec![MarketEquipment { variant, amount_raw }] }.into()
     }
 
-    /// FRA lists equipment and sells to GER on a purchase contract; FRA's request names a buyer with
-    /// no identity; GER lists more each hour and lends to FRA until `ENDS`; GER's collected CIC
-    /// and fuel sent move every hour. The naming tables are complete, as a recording's are, and
-    /// define none of the variants listed.
     fn recording() -> Source {
         open(
             (FIRST..=LAST)

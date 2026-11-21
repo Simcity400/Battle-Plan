@@ -1,15 +1,3 @@
-//! Saved counterparts of the naval mission icon operands (NavalMissionTaskForces,
-//! NavalMissionLedgers).
-//!
-//! The task-force writer emits `underway_replenishment` unconditionally,
-//! `fuel` and `requested` only when nonzero, and one `naval_headquarter` entry
-//! per attached headquarters only when there is one. The mission writer emits
-//! `mission` unconditionally and `num_convoys_in_regions` only when strictly
-//! positive. An omitted convoy key means nonpositive, not necessarily zero.
-//! The fleet writer emits `leader` only when it differs from the runtime
-//! invalid reference. `convoy_escort_presence_history` has one ring per region
-//! id that has one, head to tail. Absence is retained so the oracle can apply
-//! these rules.
 
 use std::{collections::BTreeMap, io};
 
@@ -29,15 +17,11 @@ pub(crate) use spotting_cache::spotting_caches;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Bound through recorded lexical keys when regional mission members demand it.
     pub patrol_inputs: Option<PatrolMissionSave>,
     pub spotting_caches: Option<MissionSpottingCaches>,
-    /// Present when the oracle bound the retained-grid fields through recorded lexical tokens.
     pub raiding_grid: Option<RaidingGridSave>,
     pub task_forces: BTreeMap<u64, TaskForce>,
-    /// Saved fleet leader references by fleet handle; `None` when the field was omitted.
     pub fleet_leaders: BTreeMap<u64, Option<u64>>,
-    /// Each country's saved presence rings by region id, entries head to tail.
     pub presence: BTreeMap<Vec<u8>, BTreeMap<u32, Vec<i32>>>,
 }
 

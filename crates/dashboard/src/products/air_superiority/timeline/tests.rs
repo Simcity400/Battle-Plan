@@ -10,7 +10,6 @@ fn run(tag: &str) -> Run {
     Run { tag: tag.into(), first_hour: 0, last_hour: LAST }
 }
 
-/// ENG leads faction 7 with FRA; both fight GER; USA is at peace. Each tag's raw id is its slot.
 fn index() -> AirIndex {
     let groups = Groups {
         factions: [(7, FactionHistory { first_hour: 0, members: vec![run("ENG"), run("FRA")], leaders: vec![run("ENG")], incomplete: vec![] })].into(),
@@ -33,12 +32,6 @@ fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRo
     RaidAirScoreRow { country, region, friendly, enemy, ..Default::default() }
 }
 
-/// Each day's rows at its end. Region 1 has one big day (ENG, 1,000 on day 3); region 2 many
-/// small ones (GER, 150 on days 0 to 9); in region 3 FRA, a member its leader speaks for, scores
-/// 5,000 every day and ENG 10 on day 0, so its bound is far above its sum; region 4 has USA's
-/// 1,100 on the last day alone. Enemy scores give the viewpoints something to read. ENG, GER and
-/// USA hold a zero row in region 9 every day: each has an air object, so a region they have no row
-/// in is a known zero for them.
 fn world() -> Vec<Vec<RaidAirScoreRow>> {
     (0..DAYS as i32)
         .map(|day| {
@@ -94,8 +87,6 @@ fn params(mode: AirMode, viewpoint: Option<&str>, country: bool, sides: Option<&
     }
 }
 
-/// What `AirRegionActivity` bounds a region by over the view: every owner's scores summed, a
-/// negative one as zero, at the end of every day (the friendly ones alone for the sides).
 fn bounds(world: &[Vec<RaidAirScoreRow>], viewpoint: bool) -> HashMap<u32, u128> {
     let mut out: HashMap<u32, u128> = HashMap::new();
     for row in world.iter().flatten() {
@@ -106,9 +97,6 @@ fn bounds(world: &[Vec<RaidAirScoreRow>], viewpoint: bool) -> HashMap<u32, u128>
 
 const REGIONS: [u32; 4] = [1, 2, 3, 4];
 
-/// Main ranks the most active regions by the sum over the view's completed days of each day's
-/// composed activity: many small days above one big day, a region whose scores are a member's
-/// its leader speaks for low however great they are, and a last day not yet over not counted.
 #[test]
 fn regions_rank_by_their_sum_of_composed_days_as_main_ranks_them() {
     let world = world();
@@ -133,7 +121,6 @@ fn regions_rank_by_their_sum_of_composed_days_as_main_ranks_them() {
     }
 }
 
-/// No composition exceeds the sums of every owner's scores, in any mode: the bound holds.
 #[test]
 fn every_composition_is_within_every_owners_summed_scores() {
     let world = world();
@@ -167,8 +154,6 @@ fn every_composition_is_within_every_owners_summed_scores() {
     assert_eq!(timeline.totals(&REGIONS, DAYS, &cancelled).unwrap(), [1000, 900, 10, 1100], "a day counts only where its theatres hold the region");
 }
 
-/// Each day's cell is the moment's composition at its end; a day not read has none, equal days
-/// are one run, and the sides named are each named once.
 #[test]
 fn a_regions_days_are_the_moments_composition_at_each_days_end() {
     let world = world();
@@ -196,8 +181,6 @@ fn a_regions_days_are_the_moments_composition_at_each_days_end() {
     assert_eq!(named.len(), keys.len(), "each side named once");
 }
 
-/// A viewpoint's cells carry its friendly and enemy scores, zero where it has no row; a side
-/// filter keeps the chosen sides' parts alone and says so.
 #[test]
 fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
     let world = world();
@@ -217,15 +200,10 @@ fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
     assert_eq!(shown.cells[0], [(DAYS as u32, Some(AirDayCell::Sides(AirDaySides { parts: vec![], viewpoints: vec![], unknown: vec![], no_air_object: vec![], filtered: true })))], "ENG's part is not a chosen side's");
 }
 
-/// Main counts each day once, at its last recorded hour: a stretch cut by a load inside a day leaves
-/// that day to the stretch after it, and a last day not yet over is not counted. `AirRegionDays`'
-/// rows at each stretch's two edges give exactly those sums.
 #[test]
 fn a_regions_days_are_summed_once_each_from_two_reads_a_stretch() {
     let row = |day, activity, total| DayActivity { day, activity, total };
-    // Days 0 and 1 end at 5; day 2 reaches 7 before the load at hour 60 cuts it.
     let cut = StretchDays { first_day: 0, last_day: 2, counts_last: false, start: [(1, row(0, 5, 0))].into(), end: [(1, row(2, 7, 10)), (2, row(2, 3, 0))].into() };
-    // The run after the load: day 2 ends at 7, day 3 at 8, day 4 (not over) reads 9.
     let after = StretchDays { first_day: 2, last_day: 4, counts_last: false, start: [(1, row(2, 7, 0))].into(), end: [(1, row(4, 9, 15))].into() };
     let sums = day_sums(&[cut, after]);
     assert_eq!(sums[&1], 5 + 5 + 7 + 8, "days 0 to 3, day 2 once, day 4 not over");

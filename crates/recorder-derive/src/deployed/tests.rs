@@ -6,7 +6,6 @@ use replay_data::rows::{
     CountryDeployedManpowerRow, DivisionManpowerContributor, Field, List, ManpowerReferences, Opaque,
 };
 
-/// A cell as an edit holds it until the hour applies it.
 enum Owned {
     Plain(Cell<'static>),
     Text(Vec<u8>),
@@ -47,18 +46,15 @@ fn owned(field: Field<'_>) -> Owned {
     }
 }
 
-/// What an hour changes of the store's recorded tables.
 #[derive(Default)]
 pub(crate) struct Edits {
     rows: Vec<(TableId, u128, Vec<Owned>)>,
     deletes: Vec<(TableId, u128)>,
-    /// Each status given, an unavailable one by its reason's text.
     statuses: Vec<(TableId, Result<Status, Vec<u8>>)>,
     unstamped: Vec<TableId>,
 }
 
 impl Edits {
-    /// `table` holds `row`, every field as given.
     pub fn put<R: RowCodec>(&mut self, table: TableId, row: R) -> &mut Self {
         let mut cells = Vec::new();
         row.visit_wire(&mut |_, field| {
@@ -75,28 +71,23 @@ impl Edits {
         self
     }
 
-    /// `table` read with `status`; an unavailable one is given by [`Self::unavailable`].
     pub fn status(&mut self, table: TableId, status: Status) -> &mut Self {
         assert!(!matches!(status, Status::Unavailable { .. }), "an unavailable status names its reason with Edits::unavailable");
         self.statuses.push((table, Ok(status)));
         self
     }
 
-    /// `table` is unavailable for `reason`, a string the hour adds.
     pub fn unavailable(&mut self, table: TableId, reason: &[u8]) -> &mut Self {
         self.statuses.push((table, Err(reason.to_vec())));
         self
     }
 
-    /// `table` lands with no read bit and its sample hour unmoved, as the journal door lands a
-    /// section its hour's manifest does not mark read.
     pub fn unstamped(&mut self, table: TableId) -> &mut Self {
         self.unstamped.push(table);
         self
     }
 }
 
-/// A recorder's store and its writers, run hour by hour from hour 0.
 pub(crate) struct Run {
     pub store: Store,
     writers: Writers,
@@ -106,15 +97,12 @@ pub(crate) struct Run {
 }
 
 impl Run {
-    /// A run of the writers `make` makes, whose recorded inputs are `inputs`.
     pub fn new(make: fn() -> Vec<Box<dyn Writer>>, inputs: &'static [TableId]) -> Self {
         let mut writers = Writers::new(make());
         writers.start_run();
         Self { store: store(), writers, make, inputs, next: 0 }
     }
 
-    /// The next hour: `edits` applied (every table they name, and in the run's first hour every
-    /// input, complete unless they say otherwise), then the writers.
     pub fn hour(&mut self, edits: &Edits) {
         let hour = self.next;
         self.next += 1;
@@ -180,13 +168,10 @@ impl Run {
         self.store.end_hour(&mut Discard).unwrap();
     }
 
-    /// The writers hold `definitions` from the next hour.
     pub fn define(&mut self, definitions: Definitions) {
         self.writers.define(definitions);
     }
 
-    /// The run taken up from a commit at its last hour, as a recorder restarted there takes it:
-    /// the strings its cells name read again, its definitions handed before the writers load.
     pub fn resumed(&self) -> Self {
         let saved = self.writers.save().unwrap();
         let mut store = crate::testing::resumed_holding(&self.store);
@@ -197,7 +182,6 @@ impl Run {
         Self { store, writers, make: self.make, inputs: self.inputs, next: self.next }
     }
 
-    /// `table`'s rows in key order, every field as the row decoder reads it.
     pub fn rows<R: RowCodec>(&self, table: TableId) -> Vec<R> {
         let view = self.store.view(table.index());
         let every: Vec<usize> = (0..table.field_count()).collect();
@@ -210,7 +194,6 @@ impl Run {
         self.store.view(table.index()).status()
     }
 
-    /// `table`'s status, an unavailable one with its reason's text: for a failing assertion.
     pub fn why(&self, table: TableId) -> String {
         let view = self.store.view(table.index());
         match view.status() {
@@ -240,7 +223,6 @@ pub(crate) fn volunteer(country: u32, ordinal: u32, division: u64) -> SentVolunt
     SentVolunteerRow { country, ordinal, division }
 }
 
-/// GER (10, alias 11) at slot 1, ITA (20) at 2, ROM (30) at 3.
 pub(crate) fn world(edits: &mut Edits) -> &mut Edits {
     edits
         .put(TableId::Countries, country(10, 1, b"GER"))
@@ -294,27 +276,22 @@ fn wing(id: u64, owner: u32, exile: Option<i32>, acquired: Option<i32>) -> AirWi
     AirWingRow { id, owner, exile_country: exile.into(), acquired_manpower: acquired.into(), ..Default::default() }
 }
 
-/// Hour 0 of the attribution test: every rule's case once.
 fn forces() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits)
         .put(TableId::DivisionTemplateIcons, template(7, Some(false)))
         .put(TableId::DivisionTemplateIcons, template(8, Some(true)))
-        // GER's own division: its entry counts, ITA's does not.
         .put(TableId::Divisions, division(1, 10, 10, 0, 7))
         .put(TableId::DivisionLandInputs, land(1, &[(20, 50), (11, 1000)]))
-        // Commanded by ITA, and of an exile template: neither counts.
         .put(TableId::Divisions, division(2, 10, 20, 0, 7))
         .put(TableId::DivisionLandInputs, land(2, &[(10, 5)]))
         .put(TableId::Divisions, division(3, 10, 10, 0, 8))
         .put(TableId::DivisionLandInputs, land(3, &[(10, 5)]))
-        // GER's expeditionary in ITA's roster, listed twice beside a null and a dead reference.
         .put(TableId::Divisions, division(4, 20, 20, 10, 7))
         .put(TableId::DivisionLandInputs, land(4, &[(10, 300), (20, 7)]))
         .put(TableId::CountryCounterInputs, counters(10, Some(&[4, 4, 0, 99])))
         .put(TableId::CountryCounterInputs, counters(20, Some(&[])))
         .put(TableId::CountryCounterInputs, counters(30, Some(&[])))
-        // ITA's volunteer in ROM's roster: ITA's entry for ITA, ROM's (none) for ROM.
         .put(TableId::Divisions, division(5, 30, 30, 0, 7))
         .put(TableId::DivisionLandInputs, land(5, &[(20, 40)]))
         .put(TableId::SentVolunteers, volunteer(20, 0, 5))
@@ -332,7 +309,6 @@ fn forces() -> Edits {
 
 const U: Option<i32> = None;
 
-/// Each live country's row as (slot, army, navy, required crews, air, exile air).
 fn deployed(run: &Run) -> Vec<(u32, [Option<i32>; 5])> {
     let value = |cell: &Recorded<i32>| match cell {
         Recorded::Value(value) => Some(*value),
@@ -344,9 +320,6 @@ fn deployed(run: &Run) -> Vec<(u32, [Option<i32>; 5])> {
         .collect()
 }
 
-/// The army counts a country's own entry in its own ordinary divisions and in the live divisions
-/// it lists, repeats kept; the navy goes by the fleet's owner, the air by owner and exile; each
-/// hour moves only what it changed.
 #[test]
 fn deployed_manpower_attributes_each_term_as_the_game_does() {
     let mut run = Run::new(writers, INPUTS);
@@ -376,9 +349,6 @@ fn deployed_manpower_attributes_each_term_as_the_game_does() {
     assert_eq!(deployed(&run).iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2], "a slot no live country holds loses its row");
 }
 
-/// A term not known makes its country's cell (or every country's, for a ship no fleet holds or a
-/// wing whose exile was not read) not recorded, never zero; an input not complete makes its
-/// columns not recorded until it returns.
 #[test]
 fn what_deployed_manpower_cannot_know_is_not_recorded() {
     let mut run = Run::new(writers, INPUTS);
@@ -419,7 +389,6 @@ fn what_deployed_manpower_cannot_know_is_not_recorded() {
     assert_eq!(deployed(&run)[1], (2, [Some(41), Some(70), Some(80), Some(0), Some(0)]), "Ships complete again");
 }
 
-/// A run taken up at a commit writes, from its next hour, the tables a run never stopped writes.
 #[test]
 fn a_resumed_deployed_writer_writes_the_tables_of_one_never_stopped() {
     let mut unbroken = Run::new(writers, INPUTS);

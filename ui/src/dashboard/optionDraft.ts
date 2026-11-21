@@ -1,7 +1,6 @@
 import { setOption } from './options.ts';
 import type { OptionField, OptionValue, WidgetOptions } from './options';
 
-/** Compose several immediate option saves before the parent publishes new props. */
 export class OptionDraft {
   private supplied: WidgetOptions | undefined;
   private current: WidgetOptions | undefined;
@@ -16,7 +15,6 @@ export class OptionDraft {
     return this.updateAll(fields, { [key]: value });
   }
 
-  /** Several options as one change: all are applied, or none if any is invalid. */
   updateAll(fields: readonly OptionField[] | undefined, values: Readonly<Record<string, OptionValue>>): WidgetOptions | null {
     let next: WidgetOptions | null | undefined = this.current;
     for (const [key, value] of Object.entries(values)) {

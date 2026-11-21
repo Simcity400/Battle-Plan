@@ -1,9 +1,3 @@
-//! The window's buildings: the slots, harbours and city damage ([`Buildings`]) made on a worker the
-//! layer owns, with the product the scene installs. The worker keeps its own copies of the tables
-//! they read (made at a compose, kept by applying each step as the frame's mirrors are) and of the
-//! vision layer's bytes they read (the fog provinces', kept from what the vision layer names as
-//! moved), settles every mark whole and makes the scene's product. The frame never waits for it
-//! while playing: it installs the newest product that has arrived and shows the hour it is of.
 
 use std::time::Instant;
 use super::{Buildings, Declared, FromLayer, Inspected, Install, NOT_SLOTTED, READ, Seen, Upper};
@@ -21,11 +15,8 @@ use std::{
 };
 use viewer_foundation::map::perspective::{Choice, Vision};
 
-/// What the scene gives the product: its building bank's binding and the city presentation's
-/// thresholds.
 type SceneInputs = ([u8; 32], Option<(i64, i64)>);
 
-/// The vision layer's bytes the slots read (the fog provinces'), kept on the worker.
 struct VisionCopy {
     state: (Option<u32>, bool, u64),
     refused: Option<String>,
@@ -61,31 +52,22 @@ impl Upper for VisionCopy {
     }
 }
 
-/// The vision layer as the frame last saw it, for the worker: gone, or its state and refusal with
-/// the bytes of every fog province (`whole`, at a new sight epoch or a whole publish) or of those
-/// named as moved.
 enum Seeing {
     Absent,
     Seen { state: (Option<u32>, bool, u64), refused: Option<String>, whole: bool, bytes: Vec<(u32, Option<u8>)>, moved: Vec<u64> },
 }
 
 enum Job {
-    /// The buildings composed again from the tables' copies: the worker's own (made from `model` the
-    /// first time), composed in place as the frame's layer is.
     Reset { epoch: u64, model: Option<Box<Buildings>>, mirrors: Box<Mirrors>, declared: Declared, seeing: Option<Seeing>, given: Option<(Choice, Arc<Vision>)>, scene: Option<SceneInputs> },
-    /// One frame's view declared, steps in order, vision and scene; the product stamped `stamp`.
     Frame { epoch: u64, stamp: Option<Hour>, declared: Option<Declared>, steps: Vec<Arc<Step>>, seeing: Option<Seeing>, given: Option<(Choice, Arc<Vision>)>, scene: Option<SceneInputs> },
-    /// What the proof compares, answered between products.
     Inspect(mpsc::Sender<Inspected>),
 }
 
-/// What the worker made for `answers` jobs, current at `stamp` (none: the compose's).
 struct Made {
     epoch: u64,
     stamp: Option<Hour>,
     answers: usize,
     install: Option<Install>,
-    /// The scene's inputs the install was made with.
     scene: Option<SceneInputs>,
     refused: Option<String>,
     error: Option<String>,
@@ -98,7 +80,6 @@ struct Made {
     held: usize,
 }
 
-/// The worker's buildings, the copies of what they read, and the scene's inputs once given.
 struct Work {
     model: Box<Buildings>,
     mirrors: Box<Mirrors>,
@@ -107,8 +88,6 @@ struct Work {
 }
 
 impl Work {
-    /// The view's declaration, a frame's steps applied to the copies and marked, then the vision
-    /// and the scene's inputs, in the order the frame's layer takes them.
     fn take(&mut self, declared: Option<Declared>, steps: Vec<Arc<Step>>, seeing: Option<Seeing>, given: Option<(Choice, Arc<Vision>)>, scene: Option<SceneInputs>) {
         if let Some(declared) = declared {
             self.model.declare(declared);
@@ -146,7 +125,6 @@ impl Work {
         }
     }
 
-    /// Composed whole from the copies, or settled whole, then the scene's product made.
     fn settle(&mut self, compose: bool) -> io::Result<Option<Install>> {
         let upper = self.vision.as_ref().map(|copy| copy as &dyn Upper);
         if compose {
@@ -212,7 +190,6 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
                 let held = match (work.take(), model) {
                     (_, Some(model)) => Work { model, mirrors, vision: None, scene: None },
                     (Some(held), None) => Work { mirrors, ..held },
-                    // Never sent: the first reset carries the buildings. The frame finds the worker stopped.
                     (None, None) => return,
                 };
                 let held = work.insert(held);
@@ -220,13 +197,10 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
                 let result = held.settle(true);
                 held.made(epoch, None, 1, result)
             }
-            // Jobs go in the order sent, each epoch's after its reset: one of an epoch composed again
-            // is dropped by the frame.
             Job::Frame { epoch: of, .. } if of != epoch => continue,
             Job::Frame { stamp, declared, steps, seeing, given, scene, .. } => {
                 let Some(held) = &mut work else { continue };
                 held.take(declared, steps, seeing, given, scene);
-                // The jobs queued meanwhile go into the same product, made for the newest hour.
                 let (mut stamp, mut answers) = (stamp, 1);
                 while let Ok(queued) = jobs.try_recv() {
                     match queued {
@@ -251,32 +225,20 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
     }
 }
 
-/// The window's buildings layer: what its view declares, the frame's steps and the vision layer's
-/// moves handed to its worker, and the worker's newest product installed.
 pub struct BuildingsFed {
-    /// The buildings as the view declares them: never composed or settled here.
     spec: Buildings,
     jobs: Option<mpsc::Sender<Job>>,
     made: Option<mpsc::Receiver<Made>>,
     epoch: u64,
-    /// The worker holds its buildings (sent at the first compose).
     started: bool,
-    /// Jobs of this epoch sent whose products have not been received.
     owed: usize,
     products: Products<Made>,
-    /// The steps handed and not yet sent with a frame's job, in order.
     waiting: VecDeque<Arc<Step>>,
-    /// The view's declaration as last taken, and whether it is new since the last job.
     declared: Option<Declared>,
     declared_new: bool,
-    /// The vision layer's state and refusal as last sent; none: the next goes whole.
     seen_sent: Option<((Option<u32>, bool, u64), Option<String>)>,
-    /// The vision given whole (the proof's) as last taken.
     given: Option<(Choice, Arc<Vision>)>,
-    /// The scene's inputs as last seen at an upload.
     scene: Option<SceneInputs>,
-    /// The newest product not installed yet, and whether a product dropped unshown started the
-    /// scene's history cold.
     pending: Option<Install>,
     cold_owed: bool,
     refused: Option<String>,
@@ -289,12 +251,10 @@ pub struct BuildingsFed {
     install_ns: u64,
     scoped: Scoped,
     worker_held: usize,
-    /// The worker stopped (it panicked): no buildings are installed from then on.
     stopped: bool,
 }
 
 impl BuildingsFed {
-    /// The window's layer over `buildings`.
     pub fn new(buildings: Buildings) -> Self {
         Self {
             spec: buildings,
@@ -326,7 +286,6 @@ impl BuildingsFed {
         }
     }
 
-    /// What the viewer sees at the head and the perspective it is for (the proof's).
     pub fn set_vision(&self, choice: Choice, vision: Arc<Vision>) {
         self.spec.set_vision(choice, vision);
     }
@@ -335,24 +294,20 @@ impl BuildingsFed {
         self.given.as_ref().map(|(choice, _)| choice)
     }
 
-    /// The hour's map-building warnings, as of the newest product.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
     }
 
-    /// Rows, slots and provinces its worker marked, as of the newest product.
     pub fn marked(&self) -> [usize; 3] {
         self.marked
     }
 
-    /// What the worker's buildings hold now, for the proof; none once it stopped.
     pub fn inspect(&self) -> Option<Inspected> {
         let (reply, answer) = mpsc::channel();
         self.jobs.as_ref()?.send(Job::Inspect(reply)).ok()?;
         answer.recv().ok()
     }
 
-    /// Buildings as the view declares them, with the vision given, made from nothing.
     pub fn fresh(&self) -> Buildings {
         let fresh = self.spec.fresh();
         if let Some((choice, vision)) = &self.given {
@@ -375,8 +330,6 @@ impl BuildingsFed {
         }
     }
 
-    /// The vision layer's change since the last job, for the worker: whole at a new sight epoch (or
-    /// the first), else the bytes of the fog provinces named as moved; none when nothing moved.
     fn seeing(&mut self, upstream: &Upstream<'_>) -> Option<Seeing> {
         if !self.spec.reads_layer {
             return None;
@@ -398,7 +351,6 @@ impl BuildingsFed {
         Some(Seeing::Seen { state, refused, whole, bytes, moved })
     }
 
-    /// A vision given whole since the last job.
     fn take_given(&mut self) -> Option<(Choice, Arc<Vision>)> {
         if !self.spec.fresh_vision.swap(false, Ordering::AcqRel) {
             return None;
@@ -412,8 +364,6 @@ impl BuildingsFed {
         self.declared.unwrap_or(Declared { columns: self.spec.columns, fog: self.spec.fog })
     }
 
-    /// Receives what the worker made and takes every product due, in order. With `wait` (a whole
-    /// settle, a compose), until every job sent is answered; otherwise what has arrived.
     fn exchange(&mut self, wait: bool) -> io::Result<()> {
         if let Some(receive) = &self.made {
             loop {
@@ -436,8 +386,6 @@ impl BuildingsFed {
         self.products.take(|made| due.push(made));
         for made in due {
             if let Some((product, continues)) = made.install {
-                // A product made with other scene inputs than the scene's now is never installed:
-                // the worker makes another with these.
                 if made.scene == self.scene {
                     if let Some((_, held)) = self.pending.replace((product, continues)) {
                         self.cold_owed |= !held;
@@ -482,8 +430,6 @@ impl Layer for BuildingsFed {
         self.compose_with(mirrors, &Upstream::new(&[]))
     }
 
-    /// The worker composes its buildings again from the tables' copies (made here, off the frame
-    /// thread) and the vision layer's bytes; its first product waited for.
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
@@ -527,13 +473,10 @@ impl Layer for BuildingsFed {
         true
     }
 
-    /// The steps the frame applied (and those built past it), kept until the frame's job goes.
     fn ahead(&mut self, steps: &[Arc<Step>]) {
         self.waiting.extend(steps.iter().cloned());
     }
 
-    /// Its worker is given only steps applied, so it folded nothing void: the steps kept past `kept`
-    /// go, and are handed again.
     fn void_ahead(&mut self, _mirrors: &Mirrors, kept: Option<Hour>) {
         self.waiting.retain(|step| kept.is_some_and(|kept| step.last() <= kept));
     }
@@ -542,9 +485,6 @@ impl Layer for BuildingsFed {
         self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
-    /// What the worker made taken, never waited for while playing; this frame's declaration, steps,
-    /// vision moves and a vision given then go to the worker in one job. A whole settle waits for the
-    /// product of its hour.
     fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         let whole = settling.waits();
         self.exchange(false)?;
@@ -562,9 +502,6 @@ impl Layer for BuildingsFed {
         self.exchange(whole)
     }
 
-    /// The scene's inputs handed to the worker when they change (it makes no product before it has
-    /// them); the newest product that has arrived installed. A picture that must be whole at its
-    /// hour waits for the product of that hour; a playing frame waits for nothing the worker holds.
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         if self.declared_now().columns.is_none() {
             return Ok(());
@@ -577,7 +514,6 @@ impl Layer for BuildingsFed {
                 self.send(Job::Frame { epoch: self.epoch, stamp, declared: None, steps: Vec::new(), seeing: None, given: None, scene: Some((bank, thresholds)) });
             }
             Ok(_) => {}
-            // As today: an hour to draw without the bank's binding fails the upload by name.
             Err(error) if self.refused.is_none() => return Err(error),
             Err(_) => {}
         }
@@ -593,20 +529,14 @@ impl Layer for BuildingsFed {
         Ok(())
     }
 
-    /// Nothing the worker has handed over is left for a later frame. Declaring nothing, it has
-    /// nothing to install ([`Buildings::uploaded`]); a product the worker still owes is its own
-    /// cadence, which [`Self::published`] says, not an install this frame left behind.
     fn uploaded(&self) -> bool {
         self.declared_now().columns.is_none() || self.pending.is_none()
     }
 
     fn carried(&self) -> Carried {
-        // Every mark is the worker's: published, not carried.
         Carried::default()
     }
 
-    /// Current once the product of the hour applied is taken; while a step is with the worker, the
-    /// hour of the product it has.
     fn published(&self) -> Published {
         if self.stopped {
             return Published::Nothing;

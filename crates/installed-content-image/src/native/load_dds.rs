@@ -1,61 +1,26 @@
-//! DDS texture decoding for the GUI resource path (no mip skipped: sprite loaders pass a zero
-//! skip).
-//!
-//! The engine reads its header fields without checking them: the four-character code alone
-//! picks a block format (`DXT1`, `DXT3`, `DXT5`; `DXT2` and `DXT4` fail the load), with no look
-//! at the `DDPF_FOURCC` flag; any other surface takes its bytes per pixel from the flags and the
-//! bit count (4 when `flags & 0x20240` is clear or the count is 32, else 3 for 24, 2 for 16,
-//! else 1) and never reads the channel masks except to tell the three 16-bit forms apart. A
-//! 32-bit surface is `B8G8R8A8` (format `0xD`) whatever its masks and alpha flag say, a 24-bit
-//! one `B8G8R8` (`0xB`, uploaded with an ignored fourth byte), a 16-bit one kept in its own
-//! words (formats 7 and 8, uploaded as `B5G6R5_UNORM` and `B5G5R5A1_UNORM` unexpanded, so
-//! a 5-bit channel samples as `c / 31`, never as an 8-bit value), so a DX10 file (its 20 extra
-//! header bytes skipped only when the flags are exactly `DDPF_FOURCC`) is read as `B8G8R8A8`
-//! whatever `dxgiFormat` it names. A block texture's extent is rounded up to whole blocks:
-//! that rounded extent is the texture's size, which every sprite size and UV divides. The
-//! chain of levels halves both sides from there, stops after a level with a side of 1, at the
-//! header's mip count (at least one level), or at the first level the file does not hold,
-//! keeping the levels before it.
-//! A cube map (`DDSCAPS2_CUBEMAP`) takes the six-face branch: every face, in DDS order, holds
-//! that chain in turn, and the loader reads them without checking the file's length.
-//!
-//! DX10 BC7 alone takes the supported exception below: its logical DDS extent and complete
-//! authored mip chain, never the native block-rounded chain.
 
 use super::{Failure, Zero, oversized};
 use crate::dds::{MipLevel, Texture, TextureFormat};
 
 const HEADER: usize = 128;
-/// `DDSCAPS2_CUBEMAP`, which sends `load_dds` to its six-face branch.
 const CUBE_MAP: u32 = 0x200;
-/// `DDSCAPS2_VOLUME`, which the BC7 branch refuses.
 const VOLUME: u32 = 0x20_0000;
-/// The DX10 header's `DDS_RESOURCE_MISC_TEXTURECUBE`, which the BC7 branch refuses.
 const DX10_CUBE: u32 = 4;
 
 fn code(name: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*name)
 }
 
-/// The native pixel format a non-block surface takes.
 #[derive(Clone, Copy)]
 enum Pixels {
-    /// 7: `B5G6R5`.
     B5G6R5,
-    /// 8: `A1R5G5B5`.
     A1R5G5B5,
-    /// 9: `X1R5G5B5`, promoted to format 8 with every top bit set.
     X1R5G5B5,
-    /// 0xB: `B8G8R8`, uploaded as `B8G8R8X8`.
     B8G8R8,
-    /// 0xD: `B8G8R8A8`.
     B8G8R8A8,
 }
 
 impl Pixels {
-    /// What a zeroed texel of the format samples as once texture decoding has promoted
-    /// `X1R5G5B5` to `A1R5G5B5`: what the padding fills with (for a 16-bit format, its zeroed
-    /// word).
     fn zero(self) -> Zero {
         match self {
             Self::B5G6R5 | Self::B8G8R8 => Zero::Opaque,
@@ -71,7 +36,6 @@ impl Pixels {
         }
     }
 
-    /// The texture format a level's texels are kept in.
     fn format(self) -> TextureFormat {
         match self {
             Self::B5G6R5 => TextureFormat::B5G6R5,
@@ -80,8 +44,6 @@ impl Pixels {
         }
     }
 
-    /// One level's texels in [`Self::format`]: straight RGBA8 for the 8-bit forms, the file's
-    /// own words for the 16-bit ones, `X1R5G5B5`'s with the top bit set.
     fn convert(self, source: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(source.len() / self.bytes() * self.format().unit().1);
         for texel in source.chunks_exact(self.bytes()) {
@@ -89,7 +51,6 @@ impl Pixels {
                 Self::B8G8R8A8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]),
                 Self::B8G8R8 => out.extend_from_slice(&[texel[2], texel[1], texel[0], 255]),
                 Self::B5G6R5 | Self::A1R5G5B5 => out.extend_from_slice(texel),
-                // Set the top bit to make the texel opaque, then keep format 8.
                 Self::X1R5G5B5 => out.extend_from_slice(&[texel[0], texel[1] | 0x80]),
             }
         }
@@ -102,8 +63,6 @@ enum Form {
     Pixels(Pixels),
 }
 
-/// Load a file with DDS magic: `Ok(None)` for `DXT2`/`DXT4`, so the decoding chain goes on.
-/// A zero side is kept: texture creation refuses it unless `pad_power_of_two` widens it first.
 pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Zero)>, Failure> {
     let bytes = bytes.into();
     if bytes.len() < HEADER {
@@ -121,10 +80,6 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
     } else {
         HEADER
     };
-    // The BC7-only exception decodes DDS logical mips and the header's colour space.
-    // The ordinary DDS path ignores dxgiFormat, reads BC7 as BGRA and keeps no levels,
-    // which texture creation refuses. Other DX10 files use that path; BC1-3 keeps its
-    // block-rounded chain below.
     if start == HEADER + 20 && bytes.len() >= HEADER + 4 && matches!(word(128), 98 | 99) {
         return bc7(&bytes, word, word(128) == 99);
     }
@@ -189,10 +144,6 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
         Form::Pixels(pixels) => (pixels.format(), pixels.zero()),
     };
     if cube {
-        // The six-face branch: each face in DDS order holds its whole chain,
-        // halved from the (block-rounded) extent, ending after a level with a side of 1 or at the
-        // header's count, one level at least. It records where each level lies in the file
-        // without checking the file's length.
         let mut offset = start;
         let mut faces = Vec::with_capacity(6);
         for face in 0..6 {
@@ -220,7 +171,6 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
                 {
                     break;
                 }
-                // After two empty levels, zero extents cannot change the outcome; stop decoding.
                 if level_width == 0 && level_height == 0 && levels.len() == 2 {
                     break;
                 }
@@ -257,9 +207,6 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
         if level_width == 1 || level_height == 1 || levels.len() as u64 >= u64::from(mip_count) {
             break;
         }
-        // Two sides of 0 never reach 1: the game appends empty levels up to the header's count.
-        // Past the second, none changes the outcome (the texture is refused unpadded, and its
-        // second padded level is already empty), so decoding stops there.
         if level_width == 0 && level_height == 0 && levels.len() == 2 {
             break;
         }
@@ -285,7 +232,6 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
     )))
 }
 
-/// The BC7-only DX10 branch: DDS logical sizes and complete authored mip chains.
 fn bc7(
     bytes: &crate::Bytes,
     word: impl Fn(usize) -> u32,
@@ -318,7 +264,6 @@ fn bc7(
             word(140)
         )));
     }
-    // DDSD_MIPMAPCOUNT: without it the mipMapCount word does not declare a chain.
     let count = if word(8) & 0x2_0000 != 0 {
         word(28).max(1)
     } else {

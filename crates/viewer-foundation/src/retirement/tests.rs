@@ -5,10 +5,8 @@ use std::sync::{
     mpsc::{Receiver, Sender},
 };
 
-/// However long the destructor stalls, handing over a retirement frees nothing here.
 #[test]
 fn a_stalled_destructor_never_makes_the_caller_free_a_retirement() {
-    /// Counts its drop; the first one stalls the destructor until released.
     struct Counted(
         Arc<std::sync::atomic::AtomicUsize>,
         Option<(Sender<()>, Receiver<()>)>,
@@ -35,15 +33,12 @@ fn a_stalled_destructor_never_makes_the_caller_free_a_retirement() {
     let dropper = Dropper::new().unwrap();
     dropper.drop_later(Counted(Arc::clone(&dropped), Some((started, wait))));
     stalled.recv().unwrap();
-    // A frame's pieces take one place in the queue however many.
     let frames = 4 * builder_count();
     for _ in 0..frames {
         dropper.drop_later(frame(3));
     }
     assert_eq!(dropped.load(Ordering::SeqCst), 0, "the caller freed nothing");
     release.send(()).unwrap();
-    // The destructor frees the queue in order, so the last retirement handed over says, as it is
-    // freed, that every one before it has been: the test waits for that word, not for the clock.
     struct Last(Sender<()>);
     impl Drop for Last {
         fn drop(&mut self) {

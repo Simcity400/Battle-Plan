@@ -10,7 +10,6 @@ pub enum Lookup<'a, T> {
     Missing(Missing<'a>),
 }
 
-// Read the pinned call-hour version after its events, even when decoding has advanced.
 pub trait RowValues: Send + Sync {
     fn value(&self, hour: Hour, slot: usize, field: FieldId) -> io::Result<CellValue<'_>>;
 }
@@ -79,10 +78,8 @@ pub enum FilterInsertion<'a> {
     Missing(Missing<'a>),
 }
 
-// Reads are pinned at At::hour after its events; declaration and relation ids are family-local.
 pub trait CallContext {
     fn hour(&self) -> Hour;
-    // A declared cross-family span stream; querying it never calls its owner.
     fn observation(&self, declaration: DeclarationId) -> io::Result<&dyn ObservationStream>;
     fn exact(&self, table: TableId, key: Key<'_>, field: FieldId) -> io::Result<CellValue<'_>>;
     fn previous(&self, table: TableId, key: Key<'_>, field: FieldId) -> io::Result<CellValue<'_>>;
@@ -113,13 +110,9 @@ pub trait CallContext {
     ) -> io::Result<Lookup<'_, ()>>;
     fn snapshot(&self, table: TableId) -> io::Result<Lookup<'_, &dyn Rows>>;
     fn take_watch(&mut self, declaration: DeclarationId) -> io::Result<bool>;
-    // The reader wakes the family for live timers; scheduling replaces the same id.
     fn schedule(&mut self, timer: Timer<'_>) -> io::Result<()>;
     fn cancel(&mut self, id: Key<'_>) -> io::Result<bool>;
-    // Close this key through the call hour, inclusively; keep prior inputs and never reopen it.
-    // Closing declares the key's outgoing summary fields final; writing one later is a family error.
     fn close_window(&mut self, rule: DeclarationId, key: Key<'_>) -> io::Result<()>;
-    // Membership changes now; an existing newly reached row is delivered before any later lookup.
     fn insert_filter(
         &mut self,
         declaration: DeclarationId,

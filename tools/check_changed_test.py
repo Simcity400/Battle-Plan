@@ -25,7 +25,8 @@ def names(steps):
 class Plan(unittest.TestCase):
     def test_a_change_with_no_code_runs_only_the_always_steps(self):
         steps, notes = plan(["AGENTS.md"])
-        self.assertEqual(names(steps), ["Machine paths", "Agent context"])
+        self.assertEqual(names(steps), ["Machine paths", "Agent context", "Comments"])
+        self.assertEqual(dict(steps)["Comments"], ["py", "tools/check-comments.py", "--against", "BASE"])
         self.assertEqual(notes, [])
 
     def test_changed_crates_are_checked_once_each_and_never_their_dependents(self):
@@ -38,7 +39,7 @@ class Plan(unittest.TestCase):
     def test_a_manifest_change_adds_the_dependency_checks_and_a_non_rust_one_skips_the_rust_scans(self):
         steps, _ = plan(["crates/a/Cargo.toml"])
         self.assertEqual(
-            names(steps)[2:],
+            names(steps)[3:],
             ["Build dependencies", "Content dependencies", "Feature unification", "Rust check"],
         )
 

@@ -18,23 +18,10 @@ export interface HoverRead {
   flag: FlagRead | null | undefined | typeof FAILED_FACT | Error;
 }
 
-/** Countries in a tooltip, named and flagged as the recording showed them at the hour
- * the tooltip is about. A chart's tooltip callback asks for its countries (`ask`),
- * which is cheap to call every frame: only a new hour or set of countries starts a
- * read, and only the countries of the tooltip shown are asked for, so requests stay
- * bounded however far the pointer travels. Each part (name, flag) on its own, as the
- * kit's looks rule reads it (`LookRead`): while its read is going a country shows the
- * look its lists sample for that hour (`lookPlan`: the same recorded stretch and, given
- * `segmentAt`, identity segment). Unknown continuity shows loading; `pending` applies
- * only to countries/hours not asked about. Once the exact read completes,
- * what it gave is shown, and a part it did not give, or whose read failed, is not known
- * (an unavailable-name label; no flag). `revision` changes as the question or any answer changes, for
- * the chart to redraw the tooltip. */
 export function useHoverLabels(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active: boolean,
   pending: CountryLabel, missingName?: string, segmentAt?: (tag: string, hour: number) => number | null) {
   const [asked, setAsked] = useState<{ hour: number; tags: readonly string[] } | null>(null);
   const key = useRef('');
-  // Called from a tooltip callback, outside React's render: a state change only when the question changes.
   const ask = useCallback((hour: number, tags: readonly string[]) => {
     const next = JSON.stringify([hour, tags]);
     if (next === key.current) return;
@@ -42,7 +29,6 @@ export function useHoverLabels(client: DashboardClient, track: Pick<BoundTrack, 
     queueMicrotask(() => setAsked({ hour, tags }));
   }, []);
   useEffect(() => { if (!active) { key.current = ''; setAsked(null); } }, [active]);
-  // The sampled hours stay the same as the pointer moves within a month, so their reads are shared.
   const samples = useMemo(() => new Map(asked && segmentAt ? lookPlan(track?.branch, asked.tags, asked.hour, segmentAt).samples.map(sample => [sample.tag, sample.hour]) : []),
     [asked, track?.branch, segmentAt]);
   const wanted = useMemo<NameAt[]>(() => asked ? [...asked.tags.map(tag => ({ hour: asked.hour, tag })),
@@ -65,14 +51,10 @@ export function useHoverLabels(client: DashboardClient, track: Pick<BoundTrack, 
       ...metadata,
     };
   }, [asked, askedTags, readOf, pending, missingName]);
-  // Changes whenever the question or any answer for it changes, so a chart redraws its
-  // tooltip even when one country's answers replace another's with maps of the same size.
   const revision = useMemo(() => hoverRevision(asked, readOf), [asked, readOf]);
   return { ask, labelAt, revision };
 }
 
-/** The hovered hour's read, each part held from its sample while that part is still
- * being read; a sample that gave nothing, or failed, holds nothing. */
 export function heldRead(exact: HoverRead, sample: HoverRead): HoverRead {
   return {
     style: exact.style === undefined && sample.style && !isFailedFact(sample.style) ? sample.style : exact.style,
@@ -80,9 +62,6 @@ export function heldRead(exact: HoverRead, sample: HoverRead): HoverRead {
   };
 }
 
-/** What a tooltip's labels depend on, as a string that changes when the question (the
- * hour and countries asked) or any answer (a name, a flag, a read finishing with none)
- * changes. A flag is fingerprinted by its length and end, not copied whole. */
 export function hoverRevision(asked: { hour: number; tags: readonly string[] } | null, read: (tag: string) => HoverRead): string {
   if (!asked) return '';
   const part = <V>(value: V | null | undefined | typeof FAILED_FACT | Error, show: (value: V) => unknown) => value === undefined ? 0 : value === null ? 1 : isFailedFact(value) ? failureKey(value) : show(value);

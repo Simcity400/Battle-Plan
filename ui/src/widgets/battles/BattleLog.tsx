@@ -47,26 +47,18 @@ export interface BattleLogProps<T extends BattleRow> {
   description?: (row: T) => string | null;
   tooltipRows?: (row: T) => readonly TooltipRow[];
   onVisibleRows: (rows: readonly T[]) => void;
-  /** A place name still loading reads Loading…, never the unnamed label. */
   placePending?: (row: T) => boolean;
-  /** Following: the rows at the head, whose measures are painted each frame between the renders of the structure. */
   paintHead?: { hour: () => number | null; rowsAt: (hour: number) => ReadonlyArray<BattleRow>; clock: Pick<PlaybackController, 'subscribe' | 'subscribeFrame'> };
-  /** The keys a row's place and detail line are painted by (`useKeyedPainter`): a name or a detail landing shows in its
-   * frame, never through a render. */
   keyed?: { place: (row: T) => string; detail?: (row: T) => string };
-  /** The log view's rows: each battle's states over the block drawn (`battleStateRows`). */
   logRows: readonly LogRow<T>[];
-  /** Following, the clock that reveals the states drawn ahead (`LogList`'s `reveal`). */
   reveal?: RevealClock;
 }
 
-/** The text of `measure` for `row`, as a cell shows it. */
 function measureText<T extends BattleRow>(measure: BattleMeasure<T>, row: T): string {
   const value = measure.value(row);
   return value.value === null ? '—' : (measure.format ?? battleValueText)(value, row);
 }
 
-/** Writes each measure cell under `root` from the rows at the head: only cells whose text moved are touched. */
 function useMeasurePainter<T extends BattleRow>(root: RefObject<HTMLDivElement | null>, measures: readonly BattleMeasure<T>[], paintHead: BattleLogProps<T>['paintHead']) {
   useLayoutEffect(() => {
     if (!paintHead) return undefined;
@@ -104,7 +96,6 @@ function sideCell<T extends BattleRow>(row: T, index: number, country: BattleCou
   </span>;
 }
 
-/** The caller supplies every measure and word; no battle-domain facts live here. */
 export default function BattleLog<T extends BattleRow>({ rows, label, labels, country, live, view, log, measures, resultMeasure, sort,
   setOption, cellBars, rankMarkers, narrow, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows, placePending, paintHead,
   logRows, reveal, keyed }: BattleLogProps<T>) {

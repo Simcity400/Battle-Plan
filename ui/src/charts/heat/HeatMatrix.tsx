@@ -24,22 +24,14 @@ export type { MatrixAxisItem, MatrixCell } from './matrix';
 
 export interface HeatMatrixProps {
   label: string;
-  /** Rows and columns, each in the caller's order; any number, windowed both ways. */
   rows: readonly MatrixAxisItem[]; columns: readonly MatrixAxisItem[];
-  /** The cell where a row meets a column: a colour, the unknown hatch, or nothing. */
   cell: (row: number, column: number) => MatrixCell;
-  /** Changes whenever `cell` would answer differently, so the matrix redraws. */
   revision: unknown;
-  /** The playhead's cells, keyed `liveKey(row.id, column.id)`, read as each frame draws in place of `cell`: they move
-   * with no render. A key it does not hold draws the unknown hatch; `null` is an empty cell, as from `cell`. */
   live?: Live<LiveValues<MatrixCell>>;
   tooltip: (row: number, column: number) => TooltipContent | null;
-  /** A row or column's own tooltip, for the gutter and header; its label by default. */
   axisTooltip?: (item: MatrixAxisItem, axis: 'row' | 'column') => TooltipContent | null;
-  /** Click, Enter or Space on a cell. */
   onSelect?: (row: number, column: number) => void;
   menu?: (row: number, column: number) => readonly MenuItem[];
-  /** The rows and columns drawn, so a caller loads only their flags. */
   onVisible?: (rows: readonly string[], columns: readonly string[]) => void;
   legend?: readonly { id?: string; label: string; color?: string }[];
   active: boolean;
@@ -48,9 +40,6 @@ export interface HeatMatrixProps {
 interface Geometry { gutter: number; header: number; cell: number; scrollLeft: number; scrollTop: number; width: number; height: number }
 const UNKNOWN: MatrixCell = { unknown: true };
 
-/** Content-neutral matrix: rows against columns, one cell each, with the heat kit's
- * unknown hatch, row labels with flags in a fixed gutter and column flags in a fixed
- * header. Both axes scroll and draw only the cells in view; keys step cells. */
 export default function HeatMatrix(props: HeatMatrixProps) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -63,7 +52,6 @@ export default function HeatMatrix(props: HeatMatrixProps) {
   const geometry = useRef<Geometry>({ gutter: 0, header: MATRIX_HEADER, cell: 0, scrollLeft: 0, scrollTop: 0, width: 0, height: 0 });
   const pointer = useRef<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
   const keyed = useRef<MatrixKeyed | null>(null);
-  // A fresh key may take the shared tooltip; redraws of a kept keyboard cell may not.
   const keyIntent = useRef(false);
   const [extent, setExtent] = useState({ width: 0, height: 0 });
   const [client, setClient] = useState({ width: 0, height: 0 });
@@ -121,7 +109,6 @@ export default function HeatMatrix(props: HeatMatrixProps) {
         reported.current = visibleKey;
         queueMicrotask(() => latest.current.props.onVisible?.(rowIds, columnIds));
       }
-      // Cells, clipped to the plot under the fixed header and beside the fixed gutter.
       ctx.save(); ctx.beginPath(); ctx.rect(gutter, MATRIX_HEADER, width - gutter, height - MATRIX_HEADER); ctx.clip();
       const values = p.live?.read();
       for (let row = rows.first; row < rows.end; row++) for (let column = columns.first; column < columns.end; column++) {
@@ -142,7 +129,6 @@ export default function HeatMatrix(props: HeatMatrixProps) {
         ctx.strokeRect(gutter + focus.column * cell - scrollLeft + 1, MATRIX_HEADER + focus.row * cell - scrollTop + 1, cell - 2, cell - 2);
       }
       ctx.restore();
-      // Row labels: flag then name, in the race's label weight; names give way to flags when narrow.
       ctx.save(); ctx.beginPath(); ctx.rect(0, MATRIX_HEADER, gutter, height - MATRIX_HEADER); ctx.clip();
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = t.text;
       for (let row = rows.first; row < rows.end; row++) {
@@ -155,7 +141,6 @@ export default function HeatMatrix(props: HeatMatrixProps) {
         }
       }
       ctx.restore();
-      // Column flags (or a short label) above their columns; names on hover.
       ctx.save(); ctx.beginPath(); ctx.rect(gutter, 0, width - gutter, MATRIX_HEADER); ctx.clip();
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = t.muted;
       for (let column = columns.first; column < columns.end; column++) {
@@ -166,7 +151,6 @@ export default function HeatMatrix(props: HeatMatrixProps) {
       ctx.restore();
       ctx.strokeStyle = t.grid; ctx.lineWidth = t.lineWidth.grid;
       ctx.beginPath(); ctx.moveTo(gutter, MATRIX_HEADER + 0.5); ctx.lineTo(width, MATRIX_HEADER + 0.5); ctx.stroke();
-      // The tooltip of the focused cell, or of the row or column label under the pointer.
       let content: TooltipContent | null = null;
       if (focus) content = p.tooltip(focus.row, focus.column);
       else if (pointer.current) {

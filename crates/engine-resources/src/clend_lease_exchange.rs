@@ -1,12 +1,3 @@
-//! Lend-lease exchange from giver to receiver, recording delivery and loss.
-//!
-//! Creation finds the giver's exchange for the receiver or allocates 0x380
-//! bytes and appends to both countries' exchange lists. Delivery transfers
-//! convoys, accumulates delivered equipment and credits logistics series 9
-//! for received and 10 for sent quantities. Loss booking moves equipment
-//! from in-transit pools into the sunk pool. The giver's save contains both
-//! sunk and delivered totals. These pools accumulate over the exchange
-//! lifetime; ending lend-lease deletes the exchange and its totals.
 
 use crate::{
     Memory, allocation, ccountry, ccountry_resources, cequipment_variant,
@@ -19,30 +10,19 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Lend-lease exchange primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a9_9cf8);
-/// The exchange's reference (u32 type, u32 id) of its CReferenceObject base.
 pub const HANDLE: usize = 0x08;
-/// The receiver's raw country reference.
 pub const RECEIVER: usize = 0xb8;
-/// Equipment sunk in transit, per variant.
 pub const SUNK: usize = 0x298;
-/// Equipment delivered, per variant.
 pub const DELIVERED: usize = 0x2d8;
-/// Allocation size.
 pub const SIZE: usize = 0x380;
-/// Country-resource outgoing exchange pointer array, the giver's list, with its signed count.
 pub const OUTGOING: usize = 0x758;
-/// Giver resources backlink.
 pub const GIVER_RESOURCES: usize = 0xb0;
-/// Recurring absolute, production-share and one-time equipment terms.
 pub const MONTHLY_NEED: usize = 0xd8;
 pub const PERCENTAGE_NEED: usize = 0x118;
 pub const ONCE_NEED: usize = 0x158;
-/// Native dates retained independently of delivery and fuel quantities.
 pub const LAST_DELIVERY_DATE: usize = 0x320;
 pub const ACTIVE_SINCE: usize = 0x338;
-/// Fuel quantities use fixed15, while the percentage uses fixed5.
 pub const FUEL_DAILY: usize = 0x350;
 pub const FUEL_PERCENTAGE: usize = 0x358;
 pub const FUEL_SENT: usize = 0x360;
@@ -68,8 +48,6 @@ pub struct TermPool {
     pub equipment: Vec<Term>,
 }
 
-/// Changed-holder acquisition only. The caller reuses this storage and must
-/// withhold it on any failure. This reader schedules no census or polling.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Terms {
     pub identity: Identity,
@@ -81,8 +59,6 @@ pub struct Terms {
     pub fuel_percentage_raw: i64,
 }
 
-/// A complete replacement is published as a header followed by its ordered
-/// entries. The observer supplies prepared storage; this reader never allocates.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduleHeader {
     pub counts: [u32; 3],
@@ -97,9 +73,6 @@ pub struct ScheduleItem {
     pub amount_raw: i64,
 }
 
-/// Only the three pools supplied by a reached agreement amendment.
-/// A rejected append stops the occurrence immediately; partial replacements
-/// must be withheld by the observer's interval coverage.
 pub fn schedules(
     memory: &impl Memory,
     base: usize,
@@ -148,8 +121,6 @@ fn address(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("lend-lease address overflow")
 }
 
-/// Authenticate a selected exchange without walking countries, exchanges or
-/// variant pools. Its giver is the resource owner's independent backlink.
 pub fn identity(
     memory: &impl Memory,
     base: usize,
@@ -162,8 +133,6 @@ pub fn identity(
     }
     let id = crate::read::<u64>(memory, address(exchange, HANDLE)?)
         .ok_or("lend-lease exchange reference unreadable")?;
-    // Convoy-client references are minted from the live dynamic-type counter.
-    // Their low word is not a fixed class discriminator.
     let resources = crate::read::<u64>(memory, address(exchange, GIVER_RESOURCES)?)
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
@@ -232,28 +201,19 @@ pub fn terms(
     Ok(())
 }
 
-/// Row kinds.
 pub const DELIVERED_KIND: u8 = 0;
 pub const SUNK_KIND: u8 = 1;
 
-/// One variant's amount in one pool of one exchange.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The giver's raw country reference (the country whose list holds it).
     pub giver: u32,
-    /// The exchange reference's id.
     pub exchange: u32,
-    /// [`DELIVERED_KIND`] or [`SUNK_KIND`].
     pub kind: u8,
-    /// The variant reference's id (type 70).
     pub variant: u32,
-    /// The receiver's raw country reference.
     pub receiver: u32,
-    /// The pool amount, fixed5.
     pub amount_raw: i64,
 }
 
-/// Exchange bytes copied: through the delivered pool's entry header.
 const EXCHANGE_BYTES: usize = DELIVERED + pool::ITEMS + 16;
 const _: () = assert!(EXCHANGE_BYTES <= SIZE);
 const EXCHANGE_FIELDS: [RecordField; 1] = [RecordField {
@@ -269,13 +229,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, Buffer::Count)
 }
 
-/// Reads every country's outgoing exchanges in country slot and list order:
-/// the delivered pool, then the sunk pool, each in pool order. Every exchange
-/// and pool is authenticated by vtable and every variant by vtable and
-/// reference type; a pool may name a variant once. Any other form and any
-/// failed read makes the table unavailable. From the first exchange whose
-/// rows do not fit, its and every later exchange's pool entries are counted
-/// unread.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -285,7 +238,6 @@ pub fn walk(
     walk_buffer(memory, base, game_state, Buffer::Growing(rows))
 }
 
-/// Original exchange/pool headers only, for attach and cadence sizing.
 pub fn row_demand(
     memory: &impl Memory,
     base: usize,
@@ -393,8 +345,6 @@ fn walk_inner(
                         equipment_entry::STRIDE,
                     )
                     .ok_or("lend-lease pool entry array invalid")?;
-                    // Delivery and loss retain complete equipment pools.
-                    // Grow from the already acquired header.
                     rows.ensure(
                         len.checked_add(items.count as usize)
                             .ok_or("lend-lease row demand overflow")?,

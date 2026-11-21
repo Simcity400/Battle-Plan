@@ -1,4 +1,3 @@
-//! Shared plain template, country-configuration and HQ sections from recorded facts.
 use installed_content_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use std::fmt::Write;
@@ -21,7 +20,6 @@ fn reference(
     }
 }
 
-/// Retained display-name operands, localised for the composition country.
 pub fn display_name(
     frame: &dyn replay_frame::frame::DecodedSource,
     handle: u64,
@@ -30,7 +28,6 @@ pub fn display_name(
     display_naming(frame, handle)?.localise(loc)
 }
 
-/// A template's display name before localisation: its text, or a key and its tag.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum TemplateNaming {
@@ -39,7 +36,6 @@ pub enum TemplateNaming {
 }
 
 impl TemplateNaming {
-    /// The name in `loc`'s language.
     pub fn localise(&self, loc: &Localisation) -> Result<String, String> {
         match self {
             Self::Text(text) => Ok(text.clone()),
@@ -59,7 +55,6 @@ impl TemplateNaming {
     }
 }
 
-/// [`display_name`]'s operands at the frame's hour.
 pub fn display_naming(
     frame: &dyn replay_frame::frame::DecodedSource,
     handle: u64,
@@ -67,7 +62,6 @@ pub fn display_naming(
     let dictionaries = frame
         .complete::<tables::DivisionTemplates>()
         .map_err(|e| e.to_string())?;
-    // Complete rows are in key order: templates by handle, countries by id.
     let dictionary = dictionaries
         .binary_search_by_key(&handle, |r| r.template)
         .ok()
@@ -92,8 +86,6 @@ pub fn display_naming(
             let missing = || format!("template country {raw} missing");
             let country = match countries.binary_search_by_key(&(raw as u32), |r| r.id) {
                 Ok(at) => &countries[at],
-                // Another raw reference to a recorded country reaches its row
-                // through CountryLinks.
                 Err(_) => {
                     let link = u32::try_from(raw)
                         .ok()
@@ -125,8 +117,6 @@ pub fn display_naming(
     )
 }
 
-/// [`display_naming`] of any frame's tables, a walk's views among them: the template's own rows
-/// and its country's built by key.
 pub fn display_naming_in(
     frame: replay_frame::frame::HourFrame<'_>,
     handle: u64,
@@ -137,7 +127,6 @@ pub fn display_naming_in(
     }
     const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
     const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
-    // Templates are keyed by handle, countries and links by id.
     let key = u128::from(handle);
     let dictionary = frame
         .complete::<tables::DivisionTemplates>(u64::MAX)
@@ -165,8 +154,6 @@ pub fn display_naming_in(
                 .map_err(|e| e.to_string())?;
             let country = match direct {
                 Some(country) => country,
-                // Another raw reference to a recorded country reaches its row
-                // through CountryLinks.
                 None => {
                     let link = u32::try_from(raw)
                         .ok()
@@ -242,7 +229,6 @@ fn definition(tokens: &Result<Tokens<'_>, String>, token: u32) -> Result<String,
     Ok(name.to_owned())
 }
 
-/// Rendered sibling facts and the individual fields their reads refused.
 #[derive(Debug, Default)]
 pub struct Rendered {
     pub text: String,
@@ -309,7 +295,6 @@ pub fn template(
     template_with(frame, handle, loc, &|_| Ok(()))
 }
 
-/// Validate each text-bearing fact before joining it with its independent siblings.
 pub fn template_with(
     frame: &dyn replay_frame::frame::DecodedSource,
     handle: u64,
@@ -494,7 +479,6 @@ pub fn country(
     country_with(frame, slot, loc, canonical, &|_| Ok(()))
 }
 
-/// Validate reference names independently from country configuration.
 pub fn country_with(
     frame: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
@@ -573,7 +557,6 @@ pub fn hq(
     hq_with(frame, group, loc, &|_| Ok(()))
 }
 
-/// Validate HQ names and requirement spellings independently from its pools.
 pub fn hq_with(
     frame: &dyn replay_frame::frame::DecodedSource,
     group: u64,

@@ -1,12 +1,3 @@
-//! What a log table saves: synthetic rows of the three combat-log tables' shapes appended over
-//! the small fixture's hours, as logs (with forgets, oldest first, the listed rows capped, and
-//! without) and as ordinary tables (inserted, deleted at the cap): the store's bytes, the unit's
-//! bytes, restores, apply time per row, and the readers' times. Dev tool, deleted before the PR.
-//!
-//! `log-table-bench [--rows=N] [--hours=H] [--cap=N] [--level=L]`; `log-table-bench asked
-//! [--repeat=N]` reads rows by ordinal of the playback stream's log the old way and by
-//! `log_rows_at`.
-
 use replay::columnar_frames::schema;
 use replay_columnar::{
     manifest::Status,
@@ -26,7 +17,6 @@ use std::{
 };
 
 const TABLES: [TableId; 3] = [TableId::CombatLogBattleEquipment, TableId::CombatLogEnemyEquipment, TableId::CombatLogEquipment];
-/// Each table's share of the rows, in thousandths (their rows in the 13-year campaign's late war).
 const SHARES: [u64; 3] = [900, 70, 30];
 const TEXT: u32 = 1 << 30;
 
@@ -55,7 +45,6 @@ impl PartSink for Memory {
     }
 }
 
-/// The unit's bytes, counting what is read: calls and stored bytes.
 struct Counted<'a> {
     bytes: &'a [u8],
     read: Mutex<(u64, u64)>,
@@ -79,7 +68,6 @@ enum Mode {
     State,
 }
 
-/// One row's owned cells, from its ordinal.
 struct Row {
     numbers: Vec<Option<Cell<'static>>>,
     lists: Vec<Vec<u32>>,
@@ -93,7 +81,6 @@ fn mix(seed: u64) -> u64 {
     value.wrapping_mul(0xBF58_476D_1CE4_E5B9) >> 17
 }
 
-/// Cells like a battle's equipment line's: ids from a few hundred, counts that vary, small lists.
 fn row(kinds: &[Kind], ordinal: u64) -> Row {
     let mut row = Row { numbers: Vec::new(), lists: Vec::new(), longs: Vec::new(), opaque: Vec::new() };
     for (column, &kind) in kinds.iter().enumerate() {
@@ -254,8 +241,6 @@ fn run(mode: Mode, kinds: &[Vec<Kind>], rows: u64, hours: u32, cap: u64, level: 
     })
 }
 
-/// The readers on a run: a block's span of rows, the rows listed at the last block's end, and
-/// their cells.
 fn read(outcome: &Outcome, kinds: &[Vec<Kind>]) -> io::Result<serde_json::Value> {
     let memory = &outcome.memory;
     let pages = &memory.pages;
@@ -350,8 +335,6 @@ fn read(outcome: &Outcome, kinds: &[Vec<Kind>]) -> io::Result<serde_json::Value>
         "listed_cells_stored_mb": cells_read.1 as f64 / 1e6, "listed_cells_reads": cells_read.0 }))
 }
 
-/// The playback stream's log (its `log-lane-bench`): 4 numeric columns and a text column, 1,389
-/// rows an hour for 10 blocks, the oldest forgotten past 10,000 listed, written at level 3.
 fn playback_log() -> io::Result<(Memory, Vec<Kind>)> {
     const RATE: u64 = 1_389;
     let kinds = vec![Kind::I64, Kind::U32, Kind::I32, Kind::U16, Kind::Bytes];
@@ -393,8 +376,6 @@ fn playback_log() -> io::Result<(Memory, Vec<Kind>)> {
     Ok((memory, kinds))
 }
 
-/// What a read of rows by ordinal did: nanoseconds, those fetching, parts fetched and walked, and
-/// stored and decompressed bytes.
 #[derive(Default, Clone, Copy)]
 struct Took {
     ns: u64,
@@ -406,8 +387,6 @@ struct Took {
     rows: u64,
 }
 
-/// The parts a block's rows `asked` need: each block's furthest part holding one, and the parts
-/// holding one.
 fn needed(pages: &[BlockPage], asked: &[u64]) -> Vec<(usize, usize, Vec<usize>)> {
     let mut blocks = Vec::new();
     for (index, page) in pages.iter().enumerate() {
@@ -422,9 +401,6 @@ fn needed(pages: &[BlockPage], asked: &[u64]) -> Vec<(usize, usize, Vec<usize>)>
     blocks
 }
 
-/// The read before this step, as the playback stream makes it: each block's parts fetched through
-/// the furthest holding a row asked, those holding one walked whole by a [`LogCursor`]. With
-/// `walk` false, the fetches alone.
 fn before(memory: &Memory, kinds: &[Kind], columns: &[usize], asked: &[u64], walk: bool) -> io::Result<Took> {
     let pages = &memory.pages;
     let mut took = Took::default();
@@ -464,7 +440,6 @@ fn before(memory: &Memory, kinds: &[Kind], columns: &[usize], asked: &[u64], wal
     Ok(took)
 }
 
-/// The read by [`reader::log_rows_at`].
 fn after(memory: &Memory, kinds: &[Kind], columns: &[usize], asked: &[u64]) -> io::Result<(Took, u64)> {
     let counted = Counted { bytes: &memory.bytes, read: Mutex::new((0, 0)) };
     let (mut took, mut named) = (Took::default(), 0);
@@ -482,7 +457,6 @@ fn after(memory: &Memory, kinds: &[Kind], columns: &[usize], asked: &[u64]) -> i
     Ok((took, named))
 }
 
-/// A [`LogCursor`] over every part of the log, its parts fetched first: nanoseconds a row.
 fn cursor_alone(memory: &Memory, kinds: &[Kind], columns: &[usize]) -> io::Result<f64> {
     let (mut ns, mut rows) = (0_u64, 0_u64);
     for page in &memory.pages {
@@ -507,8 +481,6 @@ fn median(mut values: Vec<u64>) -> u64 {
     values[values.len() / 2]
 }
 
-/// `log-table-bench asked [--repeat=N]`: 1,000 rows by ordinal of the playback stream's log, spread
-/// over it and among the 10,000 listed at its end, read the old way and by `log_rows_at`.
 fn bench_asked(repeat: usize) -> io::Result<()> {
     let started = Instant::now();
     let (memory, kinds) = playback_log()?;

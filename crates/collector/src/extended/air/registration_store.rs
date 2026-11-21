@@ -1,27 +1,3 @@
-//! AirBaseRegistrations log segments held per state air base between hours
-//! ([`crate::air_base_carry_changes`]).
-//!
-//! A state base's registration subtree (its slot vector and dense list, its
-//! containers, their pools and the pools' wings) is read into the shared air
-//! bases log every hour unless its held segment carries it: the spans and
-//! bytes its latest fresh read logged, which the replay's walk reads exactly
-//! as it read them then. A segment is carried only while the base is at the
-//! same address, its watch certificate (epoch and sequence) is the one taken
-//! before that read, so no hooked writer of anything the subtree reads
-//! touched it since, and the hour takes its slots as that read did (dense
-//! plan or whole scan). Its container countries' links are not held: the
-//! hour resolves each again, as the walk would, and a link that no longer
-//! resolves to the held slot reads the base afresh. Host bases, whose carrier
-//! fuel changes every hour, are always read.
-//!
-//! The store follows the AirBases job's loan and holds only the bases the
-//! latest complete pass visited, so its size follows live demand. Allocation
-//! is advisory: a base whose segment cannot be held is read afresh next hour.
-//!
-//! Each held segment has an id, unique in the process, that the job reports
-//! for every base whose subtree in the hour's log is that segment's (carried,
-//! or read afresh and held). The decode worker keeps each base's walked
-//! output under its segment's id ([`super::DecodedRegistrations`]).
 pub(crate) use crate::air_base_carry_changes::registration::Counts;
 use crate::raw::Span;
 use std::collections::HashMap;
@@ -29,21 +5,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_SEGMENT: AtomicU64 = AtomicU64::new(1);
 
-/// One base's segment as its fresh read logged it.
 #[derive(Debug)]
 struct Held {
     pointer: usize,
     certificate: (u64, u64),
-    /// The read took the dense plan's slots, not the whole scan's.
     planned: bool,
-    /// Its successful spans but the link takes, `start` into `bytes`.
     spans: Vec<Span>,
     bytes: Vec<u8>,
-    /// Each nonzero container country and the slot its link resolved to.
     links: Vec<(u32, u32)>,
-    /// Registration rows and wing handles the subtree demanded.
     demand: [usize; 2],
-    /// The pass that last visited the base.
     pass: u64,
     segment: u64,
 }
@@ -53,19 +23,14 @@ pub(crate) struct RegistrationStore {
     held: HashMap<u64, Held>,
     pass: u64,
     counts: Counts,
-    /// State bases this pass visited, and those the latest complete pass
-    /// visited, which size the watches whether or not they were held.
     visited: usize,
     bases: usize,
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next pass drops every segment.
     forgotten: bool,
     pub(super) state_inputs: super::state_fuel_inputs::Store,
     pub(super) census: super::census_store::CensusStore,
 }
 
-/// A held segment a pass may carry.
 pub(crate) struct Carried<'a> {
     pub spans: &'a [Span],
     pub bytes: &'a [u8],
@@ -74,19 +39,13 @@ pub(crate) struct Carried<'a> {
     pub segment: u64,
 }
 
-/// One base's fresh read, as the log holds it.
 pub(crate) struct Fresh<'a> {
     pub spans: &'a [Span],
-    /// The log's bytes from the first byte the read logged.
     pub bytes: &'a [u8],
-    /// The log offset of `bytes[0]`.
     pub start: usize,
     pub links: &'a [(u32, u32)],
     pub demand: [usize; 2],
-    /// The span range of the country link table, whose takes are not held.
     pub link_table: std::ops::Range<usize>,
-    /// The containers and wings the read reached, whose spans are held as
-    /// consumed.
     pub containers: &'a [usize],
     pub wings: &'a [usize],
 }
@@ -96,24 +55,9 @@ impl Fresh<'_> {
         self.spans
             .iter()
             .filter(|span| !(span.len == 4 && self.link_table.contains(&span.addr)))
-            // An optional summary read that failed stays absent in the held
-            // snapshot, so it remains unknown without polling. Splice keeps
-            // its existing successful-span contract.
             .filter(|span| span.ok || span.mask != 0)
     }
 
-    /// Appends the bytes of `span` the registration rows consume; bytes the
-    /// walk reads but no row consumes, which change without a registration
-    /// writer, are held as zero:
-    /// - a container's span keeps its country and capacity
-    ///   words; its sortie factor, fuel demand and allocation words are
-    ///   rewritten every hour (the hourly air sortie update from the hourly
-    ///   strategic-air stage, and the hourly air fuel update) and only a host
-    ///   base's carrier observer reads them;
-    /// - a wing's identity keeps its two vtables and its
-    ///   handle; after it comes its `CSelectable` state (the selected
-    ///   byte, set by the selection writer when the player selects
-    ///   it), which the walk does not check.
     fn consumed(&self, span: &Span, output: &mut Vec<u8>) {
         use engine_native::{cair_base::CONTAINER_SPAN, ccountry_air_container as container};
         let start = span.start as usize - self.start;
@@ -140,13 +84,10 @@ impl RegistrationStore {
         Self::default()
     }
 
-    /// Nothing held carries anything: the next pass reads every base.
-    /// Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -171,14 +112,10 @@ impl RegistrationStore {
         self.census.begin(self.pass);
     }
 
-    /// The pass reaches a state base.
     pub(crate) fn visit(&mut self) {
         self.visited += 1;
     }
 
-    /// The segment of `handle` this pass may carry: held from a read of the
-    /// base at `pointer` under `certificate`, taking its slots as `planned`
-    /// says. Marks the base visited.
     pub(crate) fn carryable(
         &mut self,
         handle: u64,
@@ -204,7 +141,6 @@ impl RegistrationStore {
         })
     }
 
-    /// The id of the segment this pass held for `handle`, carried or read.
     pub(crate) fn segment(&self, handle: u64) -> Option<u64> {
         self.held
             .get(&handle)
@@ -216,10 +152,6 @@ impl RegistrationStore {
         self.counts.carried += 1;
     }
 
-    /// Holds `fresh` for `handle` under `certificate`. A read with a failed
-    /// required span, or one without a certificate, is not held. Failed
-    /// optional summary spans are retained as absence until a writer changes
-    /// the certificate.
     pub(crate) fn hold(
         &mut self,
         handle: u64,
@@ -268,13 +200,10 @@ impl RegistrationStore {
         self.held.insert(handle, held);
     }
 
-    /// The state bases the latest complete pass visited.
     pub(crate) fn bases(&self) -> usize {
         self.bases
     }
 
-    /// Ends the pass: a complete one keeps the bases it visited, any other
-    /// keeps nothing.
     pub(crate) fn finish(&mut self, complete: bool) {
         if complete {
             let pass = self.pass;
@@ -288,7 +217,6 @@ impl RegistrationStore {
         self.refresh_allocated_bytes();
     }
 
-    /// Worker-only accounting after an independent state-input cache grows.
     pub(super) fn refresh_allocated_bytes(&mut self) {
         self.bytes = self.state_inputs.bytes()
             + self.census.bytes()

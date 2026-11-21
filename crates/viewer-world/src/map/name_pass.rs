@@ -1,20 +1,3 @@
-//! World-space country names drawn into the HDR scene before post-processing.
-//!
-//! [`super::names`] places names in map-pixel space. This module groups
-//! provinces, resolves display strings, adds world-space terrain heights and
-//! submits the recorded content's compiled name shader. Font atlases are UNORM;
-//! country names receive scene grading. Screen-space labels draw afterward.
-//!
-//! Connected components group provinces by controller. Raster neighbours wrap
-//! horizontally, stop at the poles and include the diagonal of a four-province
-//! crossing. Every authored adjacency row also joins its pair, regardless of
-//! crossing kind. Province zero contributes no raster neighbours.
-//!
-//! Political mode draws only country names, faded by the content cutoff.
-//! Heights are bilinearly sampled from the bottom-up raster and clamped per
-//! corner to water height. Removing the diagonal saddle component makes each
-//! quad planar while preserving its mean and both slopes; mixed heights are
-//! not clamped again.
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -51,10 +34,8 @@ use {
     },
 };
 
-/// World units per heightmap byte.
 const HEIGHT_SCALE: f32 = 0.1;
 
-/// The province adjacency graph the component grouping walks.
 #[derive(Clone, Debug, Default)]
 pub struct ProvinceGraph {
     ids: Vec<u32>,
@@ -73,11 +54,6 @@ fn marked(bits: &[u64], id: usize) -> bool {
 }
 
 impl ProvinceGraph {
-    /// Builds the graph from a province image and the authored adjacency rows.
-    ///
-    /// Pairs are collected into a set first, so the cost is one pass over the
-    /// image and the memory is the number of distinct adjacent pairs, not the
-    /// number of boundary pixels.
     pub fn build(
         width: u32,
         height: u32,
@@ -156,10 +132,6 @@ impl ProvinceGraph {
         })
     }
 
-    /// Splits `members` into connected components, each sorted ascending.
-    ///
-    /// The components come back in ascending order of their smallest member, so
-    /// a headless render always lays the same areas out in the same order.
     pub fn components(&self, members: &BTreeSet<u32>) -> Vec<Vec<u32>> {
         if members.is_empty() {
             return Vec::new();
@@ -203,19 +175,15 @@ impl ProvinceGraph {
         &self.flat[self.rows[ordinal]..self.rows[ordinal + 1]]
     }
 
-    /// Distinct adjacent province pairs the graph holds, for reporting.
     pub fn edge_count(&self) -> usize {
         self.edges
     }
 }
 
-/// The game content the name layers need, read once per document.
 pub struct NameContent {
     id: u64,
     pub graph: ProvinceGraph,
     pub bounds: HashMap<u32, ProvinceBounds>,
-    /// Sea and lake provinces: the ones a fitted baseline crosses without its
-    /// run ending (`names::best_run`).
     pub bridged: HashSet<u32>,
     pub localisation: Arc<Localisation>,
 }
@@ -224,7 +192,6 @@ impl NameContent {
     pub fn projection_id(&self) -> u64 {
         self.id
     }
-    /// Reads the adjacency rows and the localisation in `language`, and scans the bounds.
     pub fn load(layers: &ResolvedLayers, map: &MapData, language: &str) -> io::Result<Self> {
         Self::load_with_localisation(layers, map, || {
             localisation::read(layers, language).map(Arc::new)
@@ -259,7 +226,6 @@ impl NameContent {
     }
 }
 
-/// Everything the placement reads that does not change within an hour.
 pub struct PlacementInputs<'a> {
     pub map: &'a MapData,
     pub heightmap: &'a IndexedImage,
@@ -267,8 +233,6 @@ pub struct PlacementInputs<'a> {
     pub font: &'a text::Font,
 }
 
-/// Places the country names for one decoded hour; with `groups`, grouped countries carry their
-/// group's name instead.
 pub fn place(
     inputs: &PlacementInputs<'_>,
     frame: &DecodedFrame,
@@ -278,14 +242,10 @@ pub fn place(
     Ok(place_areas(inputs, &areas, None))
 }
 
-/// Everything [`place`] reads from an hour: each country that controls land,
-/// its tag, the name it resolves to (or why it shows its tag) and the provinces
-/// it controls. Two hours with equal areas place the same names.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NameAreas {
     countries: Vec<CountryArea>,
     warnings: Vec<String>,
-    /// The areas named close in, below the country-name cutoff.
     near: Option<Box<NameAreas>>,
 }
 
@@ -294,15 +254,11 @@ struct CountryArea {
     tag: String,
     text: Result<String, String>,
     members: BTreeSet<u32>,
-    /// A group's area (a faction's or a player's), which shows no tag when its name does not
-    /// resolve.
     faction: bool,
     strategic: bool,
 }
 
 impl NameAreas {
-    /// The strategic-name layer groups every province kind by strategic region;
-    /// connected components and name fitting follow the ordinary map-name pass.
     pub fn strategic(
         map: &MapData,
         regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
@@ -328,10 +284,6 @@ impl NameAreas {
         }
     }
 
-    /// The hour's name areas. With `groups`, a group's countries form one area under the
-    /// group's name: a faction's members in the factions mode, a player's country in the
-    /// players mode. Countries outside every group keep their own names when the groups say so,
-    /// and carry none otherwise. Groups the recording cannot read leave no names at all.
     pub fn read(
         map: &MapData,
         localisation: &Localisation,
@@ -352,7 +304,6 @@ impl NameAreas {
             if !map.definitions.contains_key(&province.id) {
                 continue;
             }
-            // Positive controllers admit owned lakes to the component and regression statistics.
             if let Some(slot) = links
                 .get(&province.controller)
                 .filter(|_| province.controller > 0)
@@ -364,7 +315,6 @@ impl NameAreas {
         let warnings = Vec::new();
         let groups = match groups {
             Some(Ok(labels)) => Some(labels),
-            // Names the recording cannot group are withheld, not replaced with the countries'.
             Some(Err(why)) => {
                 return Ok(Self {
                     countries: Vec::new(),
@@ -399,8 +349,6 @@ impl NameAreas {
             };
             areas.push(CountryArea {
                 tag: String::from_utf8_lossy(&country.tag).into_owned(),
-                // The game draws its stored name in its own language;
-                // the viewer rebuilds it in the reader's.
                 text: names.name(slot),
                 members,
                 faction: false,
@@ -415,8 +363,6 @@ impl NameAreas {
         })
     }
 
-    /// The hour's state areas: each state's provinces on the map, under the state's name. A
-    /// state whose name does not resolve carries none.
     pub fn states(
         map: &MapData,
         frame: &DecodedFrame,
@@ -450,7 +396,6 @@ impl NameAreas {
         })
     }
 
-    /// These areas far out, and `near` close in.
     pub fn with_near(self, near: NameAreas) -> Self {
         Self {
             near: Some(Box::new(near)),
@@ -459,11 +404,6 @@ impl NameAreas {
     }
 }
 
-/// Names already placed for one country's connected area, so an hour whose
-/// fronts moved re-places only the areas that changed. Placement is a pure
-/// function of the tag, the text and the area, so a hit is the same name.
-///
-/// Holds the areas the last placement showed: each placement keeps only what it read.
 #[derive(Default)]
 pub struct PlacedAreas {
     areas: Mutex<Areas>,
@@ -474,7 +414,6 @@ type AreaKey = (String, String, Vec<u32>, bool);
 #[derive(Default)]
 struct Areas {
     placed: HashMap<AreaKey, PlacedArea>,
-    /// Counts placements; an area's `used` is the placement that last read it.
     generation: u64,
 }
 
@@ -490,19 +429,16 @@ impl PlacedAreas {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Starts a placement: the areas it reads count as used by it.
     fn begin(&self) -> u64 {
         let mut areas = self.lock();
         areas.generation += 1;
         areas.generation
     }
 
-    /// Ends placement `generation`: what it did not read is no longer shown.
     fn end(&self, generation: u64) {
         self.lock().placed.retain(|_, area| area.used >= generation);
     }
 
-    /// The name of one area, placed by `build` unless the last placement has it.
     fn place(
         &self,
         generation: u64,
@@ -525,7 +461,6 @@ impl PlacedAreas {
     }
 }
 
-/// Places the names of `areas`, reusing `placed` areas when given.
 pub fn place_areas(
     inputs: &PlacementInputs<'_>,
     areas: &NameAreas,
@@ -539,7 +474,6 @@ pub fn place_areas(
     result
 }
 
-/// [`place_areas`] within one placement `generation` of `placed`.
 fn place_in(
     inputs: &PlacementInputs<'_>,
     areas: &NameAreas,
@@ -599,16 +533,12 @@ fn place_in(
     result
 }
 
-/// What one area shows: its name, its tag in place of a name it cannot draw, or nothing.
 pub enum AreaText<'a> {
     Shown(&'a str),
-    /// The tag, with the line saying why.
     Tag(&'a str, String),
-    /// A group whose name does not resolve shows none, with the line saying why.
     Withheld(String),
 }
 
-/// What the area of `tag` named `text` shows; `faction` for a group's area.
 pub fn area_text<'a>(tag: &'a str, text: &'a Result<String, String>, faction: bool) -> AreaText<'a> {
     match text {
         Err(reason) if faction => AreaText::Withheld(format!("{tag}: {reason}")),
@@ -623,12 +553,10 @@ pub fn area_text<'a>(tag: &'a str, text: &'a Result<String, String>, faction: bo
     }
 }
 
-/// The line naming a connected area that carries no name.
 pub fn unplaced_line(tag: &str, component: &[u32]) -> String {
     format!("{tag} ({} provinces)", component.len())
 }
 
-/// The lines a placement adds after its areas' own warnings, in their order.
 pub fn placement_warnings(
     unnamed: &[String],
     unnamed_factions: &[String],
@@ -667,7 +595,6 @@ pub fn placement_warnings(
     warnings
 }
 
-/// One connected area's name in world space, or none where no line fits.
 pub fn place_component(
     inputs: &PlacementInputs<'_>,
     key: &str,
@@ -678,7 +605,6 @@ pub fn place_component(
     world_name(inputs, key, text, area, strategic)
 }
 
-/// Places one area and converts the result to world space.
 fn world_name(
     inputs: &PlacementInputs<'_>,
     key: &str,
@@ -712,8 +638,6 @@ fn world_name(
         let mut heights = glyph
             .corners
             .map(|p| height_at(inputs.heightmap, p[0], p[1]));
-        // Remove the diagonal component while preserving mean and both slopes. Do not clamp mixed
-        // heights.
         let saddle = (heights[0] - heights[1] + heights[2] - heights[3]) * 0.25;
         heights[0] -= saddle;
         heights[1] += saddle;
@@ -728,8 +652,6 @@ fn world_name(
     if uvs.is_empty() {
         return None;
     }
-    // `world_from_pixel` flips y, so the pixel-space min and max of y become
-    // the world-space max and min of z.
     let (_, z_of_min_y) = world_from_pixel(map.height, 0.0, placed.aabb[1]);
     let (_, z_of_max_y) = world_from_pixel(map.height, 0.0, placed.aabb[3]);
     Some(WorldName {
@@ -747,8 +669,6 @@ fn world_name(
     })
 }
 
-/// Bilinear height on the bottom-up raster at (x-.5,z-.5),
-/// clamped up to the water plane before the quad's planar projection.
 fn height_at(heightmap: &IndexedImage, x: f32, y: f32) -> f32 {
     if heightmap.width < 2 || heightmap.height < 2 {
         return WATER_HEIGHT;
@@ -769,7 +689,6 @@ fn height_at(heightmap: &IndexedImage, x: f32, y: f32) -> f32 {
     ((low + (high - low) * fz) * HEIGHT_SCALE).max(WATER_HEIGHT)
 }
 
-/// One placed name's static geometry, located in the vertex chunks.
 #[derive(Clone, Debug, PartialEq)]
 struct StaticName {
     strategic_provinces: Option<Arc<[u32]>>,
@@ -778,16 +697,10 @@ struct StaticName {
     chunk: usize,
     vertices: std::ops::Range<u32>,
     wrapped: bool,
-    /// Every glyph corner's `[min, max]` world box, for view culling.
     bounds: [[f32; 3]; 2],
-    /// [`WorldName::alpha`].
     alpha: f32,
 }
 
-/// Builds every name's six vertices per glyph once, split into chunks of at
-/// most `max_vertices` vertices without splitting a name. A name whose glyphs
-/// span several font pages becomes one entry per run of equal pages, since a
-/// draw binds one page.
 fn static_names(
     placements: &Placements,
     max_vertices: u64,
@@ -807,7 +720,6 @@ fn static_names(
     (chunks, names)
 }
 
-/// One name's six vertices a glyph appended to `out`, and an entry a run of equal font pages.
 fn name_glyphs(
     name: &WorldName,
     source: usize,
@@ -856,8 +768,6 @@ fn name_glyphs(
     }
 }
 
-/// The glyph order a pass draws: BL, BR, TL, TR, BR, TL, vertices 3 and 4 exchanged while bending
-/// country glyphs.
 fn drawn_order(vertices: &[NameVertex], country_layer: bool) -> Vec<NameVertex> {
     let order = if country_layer {
         [5, 2, 0, 2, 1, 0]
@@ -870,25 +780,19 @@ fn drawn_order(vertices: &[NameVertex], country_layer: bool) -> Vec<NameVertex> 
         .collect()
 }
 
-/// A key's names in the draw order of the names of every key below it, and per key its glyph
-/// buffer: names kept by the caller's key, each key written alone.
 #[derive(Default)]
 struct Keyed {
-    /// The generation the keyed names began at, and the newest written.
     begun: u64,
     generation: u64,
-    /// Per key held, its buffer's index in `buffers`.
     keys: std::collections::BTreeMap<u64, usize>,
     buffers: Vec<Option<wgpu::Buffer>>,
     free: Vec<usize>,
 }
 
-/// The first [`StaticName::source`] a keyed name of `key` takes; its names follow in order.
 fn keyed_source(key: u64) -> usize {
     (key as usize) << 24
 }
 
-/// Native camera-view order, with one admitted view owning the whole name.
 #[derive(Clone, Debug, PartialEq)]
 struct NativeDraw {
     chunk: usize,
@@ -939,7 +843,6 @@ fn native_hover_copies(
     for (view, wrap) in wraps.iter().copied().enumerate() {
         let mut camera = camera;
         camera.center[0] -= wrap;
-        // Test the complete glyph boxes against this view's expanded planes.
         let planes = side_planes(camera, viewport);
         for group in names.chunk_by(|a, b| a.source == b.source) {
             let first = &group[0];
@@ -953,7 +856,6 @@ fn native_hover_copies(
                 continue;
             }
             let mut bounds = first.bounds;
-            // Bound every final 20-byte glyph vertex, then subtract map width from both wrapped X endpoints.
             for name in &group[1..] {
                 for (row, values) in bounds.iter_mut().enumerate() {
                     for (axis, value) in values.iter_mut().enumerate() {
@@ -965,7 +867,6 @@ fn native_hover_copies(
                     }
                 }
             }
-            // Test both boxes; the wrapped box wins if both survive.
             let offset = if first.wrapped && admits_box(bounds, -camera.map.x(), &planes) {
                 -camera.map.x()
             } else if admits_box(bounds, 0., &planes) {
@@ -973,7 +874,6 @@ fn native_hover_copies(
             } else {
                 continue;
             };
-            // Country layer passes FLT_MAX as the squared draw distance.
             let alpha = names::label_alpha(layer_alpha) * first.alpha;
             for name in group {
                 draws.push(NativeDraw {
@@ -990,8 +890,6 @@ fn native_hover_copies(
     draws
 }
 
-/// Collect arrows, then draws each label once with
-/// alpha and zero X offset. Glyph bounds do not participate in admission.
 fn arrow_draws(names: &[StaticName], admitted: &[(usize, usize)]) -> Vec<NativeDraw> {
     admitted
         .iter()
@@ -1010,29 +908,20 @@ fn arrow_draws(names: &[StaticName], admitted: &[(usize, usize)]) -> Vec<NativeD
         .collect()
 }
 
-/// The content shader, font pages and placed country names or order labels.
 pub struct NamePass {
     strategic_names: StrategicNames,
     country_layer: bool,
     compiled: Result<super::name_shader::Names, String>,
     pages: Vec<shader_pipeline::gpu::TextureBinding>,
     chunks: Vec<wgpu::Buffer>,
-    /// The names held by key instead of [`Self::chunks`]' whole placements.
     keyed: Option<Keyed>,
     draws: Vec<NativeDraw>,
     names: Vec<StaticName>,
-    /// [`Placements::generation`] the chunks were built from.
     generation: Option<u64>,
-    /// The names the chunks hold; a new generation of equal names keeps them.
     built: Option<Vec<WorldName>>,
     count: u32,
-    /// [`Self::upload`] builds the glyph buffers its placements lack: chosen by renders that
-    /// install no hours ([`Self::build_in_upload`]).
     builds_in_upload: bool,
-    /// Why the frame's names are refused: placements nothing prepared before it.
     unprepared: Option<String>,
-    /// The flight record's section for this pass, and what last prepared its glyph buffers: an
-    /// install, a draw (placements with no names, or a render that builds in upload), or keys.
     section: &'static str,
     prepared_by: &'static str,
 }
@@ -1079,24 +968,18 @@ impl NamePass {
         })
     }
 
-    /// Whether [`Self::upload`] builds glyph buffers itself, for renders that install no hours.
-    /// Otherwise the hour's install prepares them ([`Self::prepare_static`]), and placements it
-    /// did not prepare are refused by name.
     pub fn build_in_upload(&mut self, builds: bool) {
         self.builds_in_upload = builds;
     }
 
-    /// The flight record's section for this pass (the near country names').
     pub fn record_as(&mut self, section: &'static str) {
         self.section = section;
     }
 
-    /// What prepared the glyph buffers last was an hour's install.
     pub fn prepared_by_install(&mut self) {
         self.prepared_by = "install";
     }
 
-    /// Whether the glyph buffers hold `placements`' names.
     fn holds(&self, placements: &Placements) -> bool {
         self.generation == Some(placements.generation)
             || self.keyed.as_ref().is_some_and(|keyed| {
@@ -1110,8 +993,6 @@ impl NamePass {
         self.strategic_names = selection;
     }
 
-    /// Uploads glyphs once per placement and selects visible country names.
-    /// Order labels use their arrow's admission via [`Self::select_arrows`].
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -1137,8 +1018,6 @@ impl NamePass {
             }
             self.prepare_static(device, placements);
         } else if placements.country.is_empty() {
-            // No names to draw, and the buffers keep what an install prepared: a frame handed none
-            // (the names layer away composing) must not unprepare the names handed again after it.
             self.update_count();
             return;
         } else {
@@ -1178,7 +1057,6 @@ impl NamePass {
         self.update_count();
     }
 
-    /// Builds the glyph buffers of `placements`, which no camera changes, unless they hold them.
     pub fn prepare_static(&mut self, device: &wgpu::Device, placements: &Placements) {
         if self.keyed.is_some() && self.holds(placements) {
             return;
@@ -1211,20 +1089,14 @@ impl NamePass {
         self.generation = Some(placements.generation);
     }
 
-    /// Whether its glyph buffers hold `placements`' names: what [`Self::upload`] asks before it
-    /// draws them.
     pub fn holds_placements(&self, placements: &Placements) -> bool {
         placements.country.is_empty() || self.holds(placements)
     }
 
-    /// The generation of the names the pass holds by key ([`Self::set_keyed`]); none while it
-    /// holds whole placements.
     pub fn keyed_generation(&self) -> Option<u64> {
         self.keyed.as_ref().map(|keyed| keyed.generation)
     }
 
-    /// Drops every name held, whole or by key: the pass then holds keyed names, none yet, as
-    /// placements of `generation`.
     pub fn begin_keyed(&mut self, generation: u64) {
         self.chunks.clear();
         self.names.clear();
@@ -1236,10 +1108,6 @@ impl NamePass {
         self.update_count();
     }
 
-    /// `key`'s names (none: it is dropped) written alone, drawn after every lower key's and before
-    /// every higher's, as a whole [`Self::prepare_static`] of placements listing them in key order
-    /// draws them; the pass then holds placements of `generation`. Only after
-    /// [`Self::begin_keyed`]; a key below 2^39 holds fewer than 2^24 names.
     pub fn set_keyed(
         &mut self,
         device: &wgpu::Device,
@@ -1258,7 +1126,6 @@ impl NamePass {
         let start = self.names.partition_point(|name| name.source < first);
         let end = self.names.partition_point(|name| name.source < keyed_source(key + 1));
         self.names.drain(start..end);
-        // A key's buffer is kept when it lets go of it, and written again by the next key that fits.
         if let Some(buffer) = keyed.keys.remove(&key) {
             keyed.free.push(buffer);
         }
@@ -1304,7 +1171,6 @@ impl NamePass {
         Ok(())
     }
 
-    /// The vertex buffer a draw reads.
     fn chunk(&self, chunk: usize) -> io::Result<&wgpu::Buffer> {
         match &self.keyed {
             Some(keyed) => keyed.buffers.get(chunk).and_then(Option::as_ref),
@@ -1346,7 +1212,6 @@ impl NamePass {
         Ok(())
     }
 
-    /// Blends country names over the world passes already in the target.
     pub fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1407,18 +1272,11 @@ impl NamePass {
         Ok(())
     }
 
-    /// Vertices the last upload drew, every copy counted, for reporting.
     pub fn vertex_count(&self) -> u32 {
         self.count
     }
 }
 
-/// The country layer's fade.
-///
-/// the engine walks the alpha by the frame delta towards 1 at
-/// or above `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF` and 0 below it, so the
-/// transition takes one second. A headless render has no frame history, so
-/// [`LayerFade::instant`] jumps straight to the target.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerFade(pub f32);
 
@@ -1431,13 +1289,10 @@ impl LayerFade {
         }
     }
 
-    /// The settled value at this camera.
     pub fn instant(camera: Camera) -> Self {
         Self(Self::target(camera))
     }
 
-    /// A changed hovered region resets the already stepped fade, unless the local preference
-    /// requests all names.
     pub fn strategic_hover(
         self,
         show_all: bool,
@@ -1451,7 +1306,6 @@ impl LayerFade {
         }
     }
 
-    /// One frame of the engine's integration.
     pub fn step(self, camera: Camera, delta: f32) -> Self {
         let (value, target, delta) = (self.0, Self::target(camera), delta.max(0.0));
         Self(if target > value {

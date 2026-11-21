@@ -1,23 +1,3 @@
-//! What the resources map mode reads of a state's resource origins, from one recorded hour: which
-//! states carry a resource icon, whose origin each resource reads under resource rights, and each
-//! resource's nominal and delivered amounts (the icon's `MAX` and `VAL`, the hover's nominal and
-//! delivered figures).
-//!
-//! A state's resources are read through its controller's own origin (`ResourceOrigins` list 0).
-//! A resource whose rights the controller gave away (`ResourceRights`) reads the holder's origin
-//! for the state instead (list 1). Per resource, with every product fixed5 and truncated:
-//!
-//! - nominal = (grants x oil + full x infrastructure x route) x local - cost
-//! - delivered = max(0, (grants x oil + current x infrastructure x route) x local
-//!   - current x damage x local + temporary) x efficiency - cost
-//!
-//! `full` is the state's base amount ([`base_amount`]), `current` the same clamped at zero,
-//! `grants` the state's building grants under the controller's overrides, `oil` one plus the
-//! controller's `production_oil_factor` for the content's `NGame.OIL_RESOURCE` (one otherwise),
-//! `infrastructure` the controller's infrastructure factor ([`infrastructure_factor`]), `route`,
-//! `local` (one plus `local_resources_factor`) and `efficiency` the origin's own, `damage` the
-//! infrastructure building's damaged levels times `INFRASTRUCTURE_RESOURCE_BONUS`, `temporary`
-//! the state's temporary resources and `cost` its resource cost.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,7 +10,6 @@ use dashboard_text::state_resources::{
 pub use dashboard_text::state_resources::{
     ResourceOperands, building_grants_from, grant_lists, grant_of, resource_operands,
 };
-/// The infrastructure building's lexer token, whose damaged levels the icon reads.
 pub const INFRASTRUCTURE_TOKEN: u32 = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
 use installed_content_core::{ResolvedLayers, buildings::Buildings, defines::Defines};
 use replay_data::{
@@ -39,25 +18,17 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-/// What the origins read of the recorded content stack.
 pub struct Content {
-    /// Every resource declaration in load order, which is the resource database's order:
-    /// declaration `i` is database index `i + 1`.
     pub resources: Vec<installed_content_core::resources::Resource>,
-    /// Building types, for their `local_resources_<resource>` grants.
     pub buildings: Buildings,
-    /// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and `SUPPLY_ROUTE_RESOURCE_BONUS`, fixed5.
     pub bonuses: [i64; 2],
-    /// `NGame.OIL_RESOURCE`: the resource `production_oil_factor` scales.
     pub oil: String,
-    /// What the resource files misread, for the warning area.
     pub warnings: Vec<String>,
 }
 
 impl Content {
     pub fn load(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         let (resources, notes) = installed_content_core::resources::read(layers)?;
-        // The origins name resources by database index, which a file that stops short leaves unknown.
         if let Some(gap) = resources.gap() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, gap.to_string()));
         }
@@ -71,21 +42,15 @@ impl Content {
     }
 }
 
-/// One recorded resource joined to its declaration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Definition {
-    /// The one-based database index, which `ResourceRights` names.
     pub index: u32,
-    /// The resource's lexer token, which the state tables name.
     pub token: u32,
-    /// The declared key.
     pub name: String,
-    /// The resource strip's one-based frame, `None` when the declaration has none.
     pub icon_frame: Option<u32>,
 }
 
 impl Definition {
-    /// `PRODUCTION_MATERIALS_` and the upper-cased key: the resource's name.
     pub fn name_key(&self) -> String {
         format!(
             "PRODUCTION_MATERIALS_{}",
@@ -94,25 +59,17 @@ impl Definition {
     }
 }
 
-/// The operands of one resource read through one origin, all fixed5.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Operands {
-    /// The state's base amount, unclamped.
     pub full: i64,
-    /// The building grants under the controller's overrides: the origin's building pool.
     pub grants: i64,
-    /// One plus the controller's `production_oil_factor` for the oil resource, else one.
     pub oil: i64,
     pub infrastructure: i64,
-    /// The origin's supply-route factor.
     pub route: i64,
-    /// One plus the origin's `local_resources_factor`.
     pub local: i64,
     pub cost: i64,
-    /// The damaged infrastructure levels times `INFRASTRUCTURE_RESOURCE_BONUS`.
     pub damage: i64,
     pub temporary: i64,
-    /// The origin's stored efficiency.
     pub efficiency: i64,
 }
 
@@ -120,14 +77,12 @@ fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-/// The nominal amount: the icon's `MAX`.
 pub fn nominal(operands: &Operands) -> i64 {
     let o = operands;
     let scaled = mul(mul(o.infrastructure, o.full), o.route);
     mul(mul(o.grants, o.oil).wrapping_add(scaled), o.local).wrapping_sub(o.cost)
 }
 
-/// The delivered amount: the icon's `VAL`.
 pub fn delivered(operands: &Operands) -> i64 {
     let o = operands;
     let current = o.full.max(0);
@@ -139,19 +94,14 @@ pub fn delivered(operands: &Operands) -> i64 {
     mul(produced, o.efficiency).wrapping_sub(o.cost)
 }
 
-/// A fixed5 value to the nearest whole number, halves away from zero, as the icon and the hover
-/// print it.
 pub fn whole(value: i64) -> i32 {
     dashboard_text::triggers::fixed_round(value) as i32
 }
 
-/// One recorded resource origin's values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Origin {
     pub state: u32,
-    /// The country whose list holds it.
     pub country: u32,
-    /// 0: the controller's own list; 1: a rights holder's.
     pub list: u8,
     pub efficiency: i64,
     pub route_factor: i64,
@@ -177,7 +127,6 @@ impl From<&ResourceOriginRow> for Origin {
     }
 }
 
-/// What the icon reads of a state's recorded resource inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
     pub gate: u8,
@@ -197,60 +146,38 @@ impl From<&StateResourceInputRow> for Input {
     }
 }
 
-/// One resource of a state, read through the origin its rights choose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Amounts {
-    /// Index into [`Values::definitions`].
     pub definition: usize,
     pub nominal: i64,
     pub delivered: i64,
     pub operands: Operands,
-    /// The origin read: the controller's own, or the rights holder's.
     pub origin: Origin,
-    /// The rights holder's raw country reference, when it is not the controller.
     pub holder: Option<u32>,
-    /// The infrastructure building's damaged levels (level minus healthy level).
     pub damaged: i32,
 }
 
-/// A state's controller and its own origin for the state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controlled {
-    /// Raw country reference and canonical slot.
     pub controller: u32,
     pub slot: u32,
-    /// `None` when the controller holds no origin for the state.
     pub origin: Option<Origin>,
 }
 
-/// What the resources mode reads of the state at an hour, by key: today's frame ([`Hour`]) or a
-/// map layer's mirrors.
 pub trait Values {
     fn content(&self) -> &Content;
-    /// The recorded resources in database order.
     fn definitions(&self) -> &[Definition];
-    /// Index into [`Self::definitions`] of the oil resource, if the database has it.
     fn oil(&self) -> Option<usize>;
-    /// A raw country reference's canonical slot.
     fn slot(&self, raw: u32) -> Option<u32>;
-    /// The state's controller, raw.
     fn controller(&self, state: u32) -> Option<u32>;
-    /// The state's first origin in table order of `list` whose country's canonical slot is `slot`.
     fn origin(&self, state: u32, list: u8, slot: u32) -> Option<Origin>;
-    /// The holder of the state's rights to the resource of database index `index`, raw.
     fn right(&self, state: u32, index: u32) -> Option<u32>;
-    /// The `production_oil_factor` of the country at canonical `slot`.
     fn oil_factor(&self, slot: u32) -> Option<i64>;
     fn temporary(&self, state: u32, token: u32) -> Option<i64>;
     fn input(&self, state: u32) -> Option<Input>;
-    /// The state resource's retained pool and cost.
     fn stored(&self, state: u32, token: u32) -> Option<(i64, i64)>;
-    /// Whether the state's template lists the resource.
     fn listed(&self, state: u32, token: u32) -> bool;
-    /// The infrastructure building's level and healthy level.
     fn infrastructure(&self, state: u32) -> Option<(i16, i16)>;
-    /// The state resource's operands under the overrides of the controller at canonical
-    /// `controller`.
     fn operands(&self, state: u32, token: u32, controller: u32) -> Result<ResourceOperands, String>;
 }
 
@@ -258,7 +185,6 @@ fn slot_of(values: &dyn Values, raw: u32) -> Result<u32, String> {
     values.slot(raw).ok_or_else(|| format!("CountryLinks lacks {raw}"))
 }
 
-/// The state's controller and the controller's own origin for it.
 pub fn controlled(values: &dyn Values, state: u32) -> Result<Controlled, String> {
     let controller = values
         .controller(state)
@@ -271,9 +197,6 @@ pub fn controlled(values: &dyn Values, state: u32) -> Result<Controlled, String>
     })
 }
 
-/// Whether the state carries a resource icon: some resource its template lists, of a positive
-/// pool, with a building pool above zero in the controller's origin, or of a non-zero cost; or
-/// its additive gate is set.
 pub fn has_icon(values: &dyn Values, state: u32) -> Result<bool, String> {
     let definitions = values.definitions();
     for definition in definitions {
@@ -306,8 +229,6 @@ pub fn has_icon(values: &dyn Values, state: u32) -> Result<bool, String> {
     Ok(false)
 }
 
-/// The origin the resource reads: the controller's own, or, for a resource whose rights the
-/// controller gave to another country, that holder's origin for the state.
 fn origin_for(
     values: &dyn Values,
     state: u32,
@@ -333,13 +254,10 @@ fn origin_for(
     Ok((origin, Some(holder)))
 }
 
-/// One resource of the state, through the origin its rights choose. The state's controller must
-/// hold an origin for it ([`controlled`]).
 pub fn amounts(values: &dyn Values, state: u32, definition: usize) -> Result<Amounts, String> {
     amounts_for(values, state, definition, &controlled(values, state)?)
 }
 
-/// [`amounts`] with the state's controller already read.
 fn amounts_for(
     values: &dyn Values,
     state: u32,
@@ -394,8 +312,6 @@ fn amounts_for(
     })
 }
 
-/// The state's icon, `Ok(None)` for a state without one. A state with an icon whose controller
-/// holds no origin for it is refused: the game's value would read a missing origin.
 pub fn icon(values: &dyn Values, state: u32) -> Result<Option<StateIcon>, String> {
     if !has_icon(values, state)? {
         return Ok(None);
@@ -443,11 +359,8 @@ pub fn icon(values: &dyn Values, state: u32) -> Result<Option<StateIcon>, String
     Ok(Some(StateIcon { rows, flag }))
 }
 
-/// A lowercase spelling to its lexer token, or why several tokens share it.
 pub type Folds = BTreeMap<Vec<u8>, Result<u32, String>>;
 
-/// Folds `token`'s `literal` into `folds`, tokens taken in ascending order: a spelling a second
-/// token shares is refused by that token's literal.
 pub fn fold(folds: &mut Folds, token: u32, literal: &[u8]) {
     let folded = literal.to_ascii_lowercase();
     match folds.get(&folded) {
@@ -462,8 +375,6 @@ pub fn fold(folds: &mut Folds, token: u32, literal: &[u8]) {
     }
 }
 
-/// The recorded resources (database id and lexer token, in any order) joined to the content's
-/// declarations in database order, each spelled by `spelled`; and the oil resource's index.
 pub fn definitions<'s>(
     content: &Content,
     rows: impl IntoIterator<Item = (u32, u32)>,
@@ -526,31 +437,22 @@ fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
     frame.complete::<T>().map_err(|error| error.to_string())
 }
 
-/// One recorded hour's resource origins and the state operands they read.
 pub struct Hour<'a> {
     content: &'a Content,
     links: BTreeMap<u32, u32>,
     folds: Folds,
     resources: StateResources<'a>,
     definitions: Vec<Definition>,
-    /// Index into `definitions` of the oil resource, if the database has it.
     oil: Option<usize>,
     controllers: BTreeMap<u32, u32>,
-    /// By state, in table order.
     origins: BTreeMap<u32, Vec<&'a ResourceOriginRow>>,
-    /// (state, database index) to the holder's raw reference.
     rights: BTreeMap<(u32, u32), u32>,
-    /// By canonical slot.
     oil_factors: BTreeMap<u32, i64>,
-    /// (state, token).
     temporary: BTreeMap<(u32, u32), i64>,
     inputs: BTreeMap<u32, &'a StateResourceInputRow>,
     stored: BTreeMap<(u32, u32), &'a StateResourceRow>,
-    /// (state, token) the state's template lists.
     listed: BTreeSet<(u32, u32)>,
-    /// By state: the infrastructure building's level and healthy level.
     infrastructure: BTreeMap<u32, (i16, i16)>,
-    /// (canonical slot, state) to the origin route's kind.
     routes: BTreeMap<(u32, u32), u8>,
 }
 
@@ -635,17 +537,14 @@ impl<'a> Hour<'a> {
         })
     }
 
-    /// The recorded resources in database order.
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
     }
 
-    /// Every recorded state, in id order.
     pub fn states(&self) -> impl Iterator<Item = u32> + '_ {
         self.controllers.keys().copied()
     }
 
-    /// A raw country reference's canonical slot.
     pub fn slot(&self, raw: u32) -> Result<u32, String> {
         slot_of(self, raw)
     }
@@ -657,41 +556,33 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// The state's controller and the controller's own origin for it.
     pub fn controlled(&self, state: u32) -> Result<Controlled, String> {
         controlled(self, state)
     }
 
-    /// Whether the state carries a resource icon ([`has_icon`]).
     pub fn has_icon(&self, state: u32) -> Result<bool, String> {
         has_icon(self, state)
     }
 
-    /// One resource of the state ([`amounts`]).
     pub fn amounts(&self, state: u32, definition: usize) -> Result<Amounts, String> {
         amounts(self, state, definition)
     }
 
-    /// The state's icon ([`icon`]).
     pub fn icon(&self, state: u32) -> Result<Option<StateIcon>, String> {
         icon(self, state)
     }
 
-    /// Whether the state's template lists the resource.
     pub fn listed(&self, state: u32, definition: usize) -> bool {
         self.listed
             .contains(&(state, self.definitions[definition].token))
     }
 
-    /// Whether the state reads temporary resources and holds some of `definition`'s.
     pub fn temporary(&self, state: u32, definition: usize) -> Option<i64> {
         self.temporary
             .get(&(state, self.definitions[definition].token))
             .copied()
     }
 
-    /// The kind of `origin`'s route (`TradeRoutes` class 0 of its list owner and state): 0 none,
-    /// 1 land, 2 naval, 3 other.
     pub fn route_kind(&self, origin: Origin) -> Result<u8, String> {
         let slot = self.slot(origin.country)?;
         self.routes
@@ -771,9 +662,6 @@ impl Values for Hour<'_> {
     }
 }
 
-/// The state's own amount of every recorded resource, in database order, fixed5: what the
-/// state view lists (the state's `StateResources::amount` under its controller), read without
-/// the origins.
 pub fn state_amounts(
     frame: &DecodedFrame,
     content: &Content,
@@ -821,31 +709,22 @@ pub fn state_amounts(
         .collect()
 }
 
-/// `TradeRoutes`' class of a resource origin's route.
 pub const ORIGIN_ROUTE_CLASS: u8 = 0;
 
-/// What one state's resource icon shows: its rows (resources of a positive nominal amount, in
-/// database order) and the flags of resource rights.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateIcon {
     pub rows: Vec<IconRow>,
-    /// The holder every row's rights go to, when that is one country other than the
-    /// controller: the window's own flag, and then no row has one.
     pub flag: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IconRow {
-    /// Index into [`Hour::definitions`].
     pub definition: usize,
     pub nominal: i64,
     pub delivered: i64,
-    /// The row's own flag: its rights holder's raw reference, when the window shows none.
     pub flag: Option<u32>,
 }
 
-/// The colour code a row's value is written in: red below the nominal amount (or below
-/// zero), green above it, none at it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowColour {
     Red,
@@ -864,7 +743,6 @@ impl RowColour {
         }
     }
 
-    /// The colour code's letter.
     pub fn code(self) -> Option<char> {
         match self {
             Self::Red => Some('R'),

@@ -1,7 +1,3 @@
-//! The game's diacritic folding: the code point to ASCII character map its find box folds names
-//! and queries with. The game builds the map at run time from (code point, character) pairs that
-//! one function stores as immediates into a stack array, then inserts them in order, the first of
-//! a repeated code point kept. The executable's code holds exactly one such run of stores.
 
 use super::PeImage;
 use iced_x86::{Code, OpKind, Register};
@@ -9,12 +5,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io;
 
-/// Fewest pairs a run must hold to be the table; the game's holds far more.
 const MIN_PAIRS: usize = 16;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FoldingTable {
-    /// Each folded code point and the ASCII character it folds to; every key is non-ASCII.
     pub letters: BTreeMap<u32, u8>,
 }
 
@@ -35,7 +29,6 @@ impl FoldingTable {
         Self::from_pairs(words.chunks_exact(2).map(|pair| (pair[0], pair[1])))
     }
 
-    /// The map the game builds from `pairs` in order: the first of a repeated code point kept.
     pub fn from_pairs(pairs: impl IntoIterator<Item = (u32, u32)>) -> io::Result<Self> {
         let mut letters = BTreeMap::new();
         for (point, letter) in pairs {
@@ -67,8 +60,6 @@ fn folded_letter(letter: u32) -> bool {
     (0x21..=0x7e).contains(&letter)
 }
 
-/// One `mov dword [rsp + disp], imm32` or `mov dword [rbp + disp], imm32` at the start of
-/// `code`: its length, whether its base is rbp, its displacement and its immediate.
 fn stack_store(code: &[u8]) -> Option<(usize, bool, i32, u32)> {
     let [0xc7, modrm, ..] = *code else {
         return None;
@@ -92,8 +83,6 @@ fn stack_store(code: &[u8]) -> Option<(usize, bool, i32, u32)> {
     Some((at + 4, rbp, displacement, immediate))
 }
 
-/// Each maximal run of consecutive stack stores that reads as at least [`MIN_PAIRS`] pairs, each
-/// into the next dword of its base register's frame: its offset in `code` and its store count.
 fn candidate_runs(code: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     let mut at = 0;
     std::iter::from_fn(move || {
@@ -126,7 +115,6 @@ fn candidate_runs(code: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     })
 }
 
-/// The run's immediates, decoded again as whole instructions of the function that holds it.
 fn verified_stores(image: &PeImage, at: u32, stores: usize) -> io::Result<Vec<u32>> {
     let start = image.base + u64::from(at);
     let instructions = image.function_instructions(at)?;
@@ -193,13 +181,10 @@ mod tests {
         PeImage::parse(bytes).unwrap()
     }
 
-    /// Synthetic pairs: code points from U+0100 up, folding to letters cycling from `a`.
     fn pairs(count: u32) -> Vec<(u32, u32)> {
         (0..count).map(|index| (0x100 + index, 0x61 + index % 26)).collect()
     }
 
-    /// The pairs as consecutive stores, the first `rsp_pairs` against rsp and the rest against
-    /// rbp, which the frame puts 0x100 above rsp.
     fn stores(pairs: &[(u32, u32)], rsp_pairs: usize) -> Vec<u8> {
         let mut code = vec![0x48, 0x83, 0xec, 0x08];
         for (index, word) in pairs.iter().flat_map(|&(point, letter)| [point, letter]).enumerate() {
@@ -235,7 +220,6 @@ mod tests {
         twice.pop();
         twice.extend(&stores(&pairs(20), 20)[4..]);
         let mut gap = stores(&pairs(20), 20);
-        // A displacement that skips a dword splits the run in two short ones.
         gap[4 + 10 * 11 + 3] += 4;
         let mut ascii_key = pairs(20);
         ascii_key[3].0 = 0x41;
@@ -254,7 +238,6 @@ mod tests {
 
     #[test]
     fn a_run_off_its_function_instructions_is_withheld() {
-        // The run sits inside a longer instruction: a mov rax, imm64 swallowing its first bytes.
         let mut code = vec![0x48, 0xb8];
         code.extend(&stores(&pairs(20), 20)[4..]);
         assert!(FoldingTable::decode(&image(&code)).is_err());

@@ -1,7 +1,6 @@
 use super::*;
 use std::{collections::BTreeMap, time::Duration};
 
-/// A map's aircraft assets over one plane entity and one geometry-less entity.
 fn assets(name: &str) -> Arc<AircraftAssets> {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
@@ -59,12 +58,9 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
         &mut Vec::new(),
     )
     .unwrap();
-    // Bakes read the files later, so the folder stays for the test.
     Arc::new(assets)
 }
 
-/// Polls until a status other than loading comes back, as frames do after
-/// each repaint the bake asks for.
 fn settle(fly: &mut FlyAircraft, assets: &Arc<AircraftAssets>) -> FlyAircraftStatus {
     let (send, receive) = mpsc::channel();
     let mut last = None;
@@ -98,7 +94,6 @@ fn status(aircraft: Option<&str>, state: FlyAircraftState) -> FlyAircraftStatus 
 fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() {
     let first = assets("first");
     let mut fly = FlyAircraft::default();
-    // No choice is ready at once; an unchanged status is not reported again.
     assert_eq!(
         fly.poll(Some(&first), || {}),
         Some(status(None, FlyAircraftState::Ready))
@@ -106,7 +101,6 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
     assert_eq!(fly.poll(Some(&first), || {}), None);
     assert!(fly.ready(&first).is_none());
     fly.choose(Some("plane_entity".into()));
-    // Without an open map it waits.
     assert_eq!(
         fly.poll(None, || {}),
         Some(status(Some("plane_entity"), FlyAircraftState::Loading))
@@ -118,7 +112,6 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
     let baked = fly.ready(&first).unwrap().clone();
     assert_eq!(baked.name, "plane_entity");
     assert_eq!(first.library().slot("plane_entity"), Some(baked.slot));
-    // A map that loads again has its own assets, and the choice bakes there.
     let second = assets("second");
     assert_eq!(
         fly.poll(Some(&second), || {}),
@@ -133,7 +126,6 @@ fn a_chosen_aircraft_reports_loading_then_ready_and_bakes_again_for_a_new_map() 
         second.library().slot("plane_entity"),
         Some(fly.ready(&second).unwrap().slot)
     );
-    // A slot of the old map's library is never handed out for another.
     assert!(fly.ready(&first).is_none());
     fly.choose(None);
     assert_eq!(
@@ -165,9 +157,6 @@ fn a_refused_aircraft_reports_why_and_is_never_ready() {
     }
 }
 
-/// Fly mode flies only what the user chose: with nothing chosen the scene gets no aircraft
-/// wherever the flight's view would place one, and a chosen plane is drawn from its own slot of
-/// the open map's library.
 #[test]
 fn fly_mode_draws_the_chosen_plane_and_no_aircraft_without_a_choice() {
     use crate::app::fly::placed;

@@ -70,7 +70,6 @@ fn a_root_names_each_section_once_in_order_with_its_version() {
         level: Some(-7),
     };
     assert_eq!(Root::read(&root.write().unwrap()).unwrap(), root);
-    // A root written before roots recorded their level reads as recording none.
     let unrecorded = Root { level: None, ..root.clone() };
     assert_eq!(Root::read(&unrecorded.write().unwrap()).unwrap(), unrecorded);
     assert!(root.write().unwrap().len() > unrecorded.write().unwrap().len());
@@ -88,7 +87,6 @@ fn a_root_names_each_section_once_in_order_with_its_version() {
     assert!(foreign.write().is_err());
 }
 
-/// The frozen extent at `at`, read down through the pages holding it.
 fn entry_at(file: &[u8], key: SectionKey, frozen: &Frozen, at: u64) -> Extent {
     let (mut page, mut level, mut at) = match frozen.locate(at).unwrap() {
         Place::Extent(extent) => return *extent,
@@ -119,7 +117,6 @@ fn a_section_pages_its_frozen_extents_a_fanout_at_a_time() {
         let extent = writer.put(Kind::Stored, tags, 1, &[at as u8]).unwrap();
         writer.append(family(1), extent).unwrap();
     }
-    // A frozen extent named out of the order it was written is refused.
     assert!(writer.append(family(1), data(0)).is_err());
     writer.commit(None, true, |_| Ok(())).unwrap();
     let section = writer.section_of(family(1)).unwrap().clone();
@@ -127,7 +124,6 @@ fn a_section_pages_its_frozen_extents_a_fanout_at_a_time() {
     let levels: Vec<usize> = section.frozen.levels().iter().map(Vec::len).collect();
     assert_eq!(levels, vec![5, 3, 1]);
     let file = writer.file_mut().get_ref().clone();
-    // Every position read back through its pages names the extent appended there.
     for at in [0_u64, 31, 32, 1023, 1024, 1024 + 95, u64::from(count) - 1] {
         assert_eq!(u64::from(entry_at(&file, family(1), &section.frozen, at).stream), at);
     }
@@ -159,8 +155,6 @@ fn a_crash_resumes_at_the_newest_root_whose_state_slot_verifies() {
     let recovered = recover(read(&path).as_slice(), Some(&StateFile::open(&state_path).unwrap())).unwrap();
     assert_eq!((recovered.root.revision, recovered.skipped), (3, 0));
     assert_eq!(recovered.state, vec![entry(b"third")]);
-    // A slot that no longer verifies falls back to the root naming the other: slot 3 is the
-    // first header's.
     let mut damaged = read(&state_path);
     damaged[16] ^= 1;
     let damaged_path = directory.join("damaged.state");
@@ -168,15 +162,12 @@ fn a_crash_resumes_at_the_newest_root_whose_state_slot_verifies() {
     let earlier = recover(read(&path).as_slice(), Some(&StateFile::open(&damaged_path).unwrap())).unwrap();
     assert_eq!((earlier.root.revision, earlier.skipped), (2, 1));
     assert_eq!(earlier.state, vec![entry(b"second")]);
-    // A slot write a crash left unnamed leaves the slot the last root names.
     let named = recovered.root.state;
     let mut state = StateFile::open(&state_path).unwrap();
     state.write(4, b"unnamed", named).unwrap();
     drop(state);
     let recovered = recover(read(&path).as_slice(), Some(&StateFile::open(&state_path).unwrap())).unwrap();
     assert_eq!((recovered.root.revision, recovered.skipped), (3, 0));
-    // With the slots of every root gone, none is taken up: slot 3 is the first header's, slot 4
-    // the second's.
     let mut damaged = read(&state_path);
     damaged[16] ^= 1;
     std::fs::write(&state_path, &damaged).unwrap();
@@ -228,7 +219,6 @@ fn a_map_restore_section_names_each_points_hour_ordinal_and_spacing() {
     let second = points.add(&mut writer, 124, b"opaque change", Payload::Stored).unwrap();
     assert_eq!((point_of(&first), point_of(&second)), ((100, 0, 24), (124, 1, 24)));
     writer.commit(None, true, |_| Ok(())).unwrap();
-    // A writer declared again goes on after the points the section holds.
     assert_eq!(MapRestoreWriter::new(&mut writer, 1, 3, schedule).unwrap().points(), 2);
     assert!(MapRestoreWriter::new(&mut writer, 1, 4, schedule).is_err());
     let file = writer.file_mut().get_ref().clone();
@@ -248,10 +238,6 @@ fn a_catalogue_gives_each_key_one_id_and_reads_its_chunks_in_order() {
     assert!(read.read_chunk(&chunk).is_err());
 }
 
-/// A reader opens the newest saved revision, whatever is appended after it: revisions that are
-/// not saved, and the bytes of one being written. A save is one more root; a file taken up
-/// keeps its saved revision; cut back to it, the file is that revision again; and a file none of
-/// whose revisions is saved has none to open.
 #[test]
 fn a_reader_opens_the_newest_saved_revision() {
     let mut writer = ContainerWriter::create(Cursor::new(Vec::new()), identity(), 3, None).unwrap();
@@ -267,7 +253,6 @@ fn a_reader_opens_the_newest_saved_revision() {
             (read.revision, length, read.section(family(1)).unwrap().len())
         })
     };
-    // Nothing saved yet: a reader has no revision, the writer has its own.
     let first = add(&mut writer, false);
     let file = writer.file_mut().get_ref().clone();
     assert_eq!(opened(&file, Open::Saved), None);
@@ -280,15 +265,11 @@ fn a_reader_opens_the_newest_saved_revision() {
     let mut file = writer.file_mut().get_ref().clone();
     assert_eq!(opened(&file, Open::Saved), Some((2, saved.length, 2)));
     assert_eq!(opened(&file, Open::Newest), Some((4, third.length, 4)));
-    // The bytes of a revision being appended, its extents and a root no footer names yet, are
-    // no revision.
     file.extend_from_slice(&[0x5a; 300]);
     file.extend_from_slice(FOOTER_MAGIC);
     assert_eq!(opened(&file, Open::Saved), Some((2, saved.length, 2)));
     assert_eq!(opened(&file, Open::Newest), Some((4, third.length, 4)));
     file.truncate(third.length as usize);
-    // Taken up after its newest revision, the file keeps the saved one it names, and a save is
-    // one more root holding no extent.
     let (root, length) = locate(file.as_slice(), Open::Newest).unwrap().unwrap();
     let at = Revision {
         number: 4,
@@ -304,20 +285,15 @@ fn a_reader_opens_the_newest_saved_revision() {
     let after = writer.file_mut().get_ref().clone();
     assert_eq!(opened(&after, Open::Saved), Some((5, marked.length, 4)));
     assert!(marked.length - third.length < 400, "a save appends a root and a footer");
-    // Cut back to its saved revision, the file is that revision: the discarded ones are gone.
     file.truncate(saved.length as usize);
     assert_eq!(opened(&file, Open::Saved), Some((2, saved.length, 2)));
     assert_eq!(opened(&file, Open::Newest), Some((2, saved.length, 2)));
-    // A root naming a saved revision the file does not hold is refused, never guessed around.
     let mut damaged = after[..second.length as usize].to_vec();
     damaged[saved.length as usize - FOOTER_BYTES + 20] ^= 1;
     assert!(locate(damaged.as_slice(), Open::Saved).is_err());
     assert_eq!(opened(&damaged, Open::Newest), Some((3, second.length, 3)));
 }
 
-/// Each root records the level its file was written at: kept by a writer taking the file up at
-/// that level, none once one takes it up at another, and a file written to replace another numbers
-/// its first revision after that one's last.
 #[test]
 fn a_root_records_the_level_every_revision_of_its_file_was_written_at() {
     let newest = |file: &[u8]| {

@@ -1,32 +1,3 @@
-//! The land movement speed's shared operands, read beside the division status
-//! pass from the same census seeds: MovementStateTerms, CoreSupplyAccess,
-//! CountryUnitSpeedEntries, RiverRelations and DivisionTransportSpeeds for the
-//! hour's movers (divisions with a nonempty ordinary route). Land families
-//! exclude transfer, sea, invasion and unblocked redeployment branches; combat
-//! movement is read whenever an itinerary edge uses ordinary land speed.
-//!
-//! Each operand is read once per sharing key, never per division: each
-//! province's state, controller, controller area, strategic region and sea flag
-//! once per unique province of the movers' locations and routes
-//! ([`cprovince::movement_province`]); the state's id and controller once per
-//! state; the state block once per (state, roster owner) and the controller
-//! branch once per (owner, state controller); core supply access once per
-//! (owner, controller area), with province-keyed rows, only for movers whose noncore-supply term can
-//! apply (exile and noncore bypass bytes both zero); each combat once; the
-//! relation river crossing entry once per (owner, controller) over route
-//! provinces; the unit speed entries once per (owner country, key) over the
-//! movement speed keys of the movers' templates; and the transport speed
-//! through one batched query per logical owner sharing one [`SpeedCache`]
-//! ([`engine_naval_history::cnaval_unit_transfer::movement_speeds`]).
-//!
-//! CountryUnitSpeedEntries are carried across hours under the unit speed set
-//! ([`Table::UnitSpeeds`]), which every writer of the counter set marks: a
-//! country unmarked since its held read keeps its held entries; a marked or new
-//! country, or one needing a key its held read lacks, is read afresh.
-//!
-//! A refused read is that row's counted refusal; a mover whose key cannot be
-//! formed (its location, state, route or template unreadable) has no row, and
-//! the refusal is counted under the family.
 use engine_executable::modifier_keys as keys;
 use engine_native::{
     Memory, carmy::DivisionSeed, ccountry, cpdx_array::Array, cprovince,
@@ -58,12 +29,9 @@ pub const TABLES: [TableId; N] = [
     TableId::DivisionTransportSpeeds,
 ];
 
-/// The count families: the five tables, then DivisionStatus.combat_movement.
 const FAMILIES: usize = N + 1;
 const COMBAT: usize = N;
 
-/// The ordered state block keys: army speed, controller speed, enemy speed,
-/// attack speed.
 const STATE_KEYS: [u32; 4] = [
     keys::ARMY_SPEED_FACTOR,
     keys::ARMY_SPEED_FACTOR_FOR_CONTROLLER,
@@ -79,26 +47,19 @@ const UNCAPTURED: Outcome = Outcome::Unavailable {
 };
 const ALLOCATION: &str = "division speed term allocation failed";
 
-/// One mover's keys, from its seed.
 #[derive(Clone, Copy)]
 struct Mover {
     division: u64,
     attacking: Result<bool, &'static str>,
-    /// Whether any route edge reaches ordinary land speed.
     land: Result<bool, &'static str>,
     strategic: Option<u8>,
     roster: Option<u32>,
-    /// Expeditionary owner if positive, else roster owner (raw).
     owner: Option<u32>,
     logical: Option<u32>,
-    /// The location province's id.
     location: Result<u32, &'static str>,
     template: Option<usize>,
-    /// Exile and noncore bypass bytes both zero: the noncore term can apply.
     noncore: Option<bool>,
-    /// A nonnull naval transfer membership.
     transfer: Option<bool>,
-    /// Its route provinces in the hour's route arena.
     route: Result<(usize, usize), &'static str>,
 }
 
@@ -111,7 +72,6 @@ struct CombatOperands {
     complete: Result<(), &'static str>,
 }
 
-/// Common state entries only; the attack entry has its own conditional verdict.
 fn state_keys(branch: u8) -> ([u32; 2], usize) {
     match branch {
         StateMovementTerms::FRIENDLY => ([STATE_KEYS[0], STATE_KEYS[1]], 2),
@@ -120,7 +80,6 @@ fn state_keys(branch: u8) -> ([u32; 2], usize) {
     }
 }
 
-/// One country's held unit speed entries.
 #[derive(Clone, Copy)]
 struct HeldCountry {
     owner: u32,
@@ -129,13 +88,10 @@ struct HeldCountry {
     len: usize,
 }
 
-/// The latest held read of CountryUnitSpeedEntries.
 #[derive(Default)]
 struct Held {
-    /// The take epoch it was certified under; `None` holds nothing.
     epoch: Option<u64>,
     arrays: [Array; 2],
-    /// By owner, ascending.
     countries: Vec<HeldCountry>,
     keys: Vec<u32>,
     values: Vec<Option<i64>>,
@@ -156,10 +112,6 @@ impl Held {
     }
 }
 
-/// River crossing answers by (from, to) province id for one world. A province's
-/// neighbour crossing kinds are written only by the map load and the authored
-/// adjacency loader the straits reload runs again; both start a new world. One
-/// world's answer serves its every later hour.
 #[derive(Default)]
 struct HeldCrossings {
     world: Option<u64>,
@@ -170,7 +122,6 @@ struct HeldCrossings {
 static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = Mutex::new(None);
 #[cfg(test)]
 thread_local! {
-    // Each test thread is its own process.
     static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = const { Mutex::new(None) };
 }
 
@@ -188,14 +139,9 @@ fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
     HELD_CROSSINGS.with(with)
 }
 
-/// `carmy::movement_attacking` for the hour's land movers from their route copy
-/// and census owner. Each destination id and each (controller, logical owner)
-/// pair is read once per pass rather than once per mover. Only a successful
-/// read is kept: a failure stays the reading mover's and is read again after.
 #[derive(Default)]
 struct Hostility {
     provinces: Option<Array>,
-    /// Each destination's controller, or `None` for an empty province slot.
     destinations: std::collections::HashMap<u32, Option<i32>>,
     pairs: std::collections::HashMap<(u32, u32), bool>,
 }
@@ -212,8 +158,6 @@ impl Hostility {
             + self.pairs.capacity() * (size_of::<((u32, u32), bool)>() + 1)
     }
 
-    /// The mover whose route ends at `last` and whose logical owner is `logical`.
-    /// A memo that cannot grow only costs its repeated read.
     fn attacking(
         &mut self,
         memory: &impl Memory,
@@ -280,9 +224,6 @@ pub(super) struct SpeedTerms {
     rivers: Vec<RiverRelationRow>,
     transport: Vec<OwnerTransportSpeedRow>,
     outcomes: [Outcome; N],
-    /// DivisionStatus.combat_movement by division, ascending, when
-    /// `combat_captured`.
-    /// In census order; [`Self::combat_order`] finds a division.
     combat: Vec<(u64, Option<Option<i64>>)>,
     combat_order: Vec<(u64, u32)>,
     combat_captured: bool,
@@ -291,32 +232,24 @@ pub(super) struct SpeedTerms {
     route: Vec<Result<u32, &'static str>>,
     route_values: Vec<u32>,
     crossings: cprovince::GeometryPacket,
-    /// Each unique province's movement facts, by id.
     provinces: Vec<(u32, Result<cprovince::MovementProvince, &'static str>)>,
-    /// Each unique state's id and controller, by pointer.
-    // Keep each pointer's id/controller result and refusal in the same memo entry.
     #[allow(clippy::type_complexity)]
     state_facts: Vec<(usize, Result<(u32, u32), &'static str>)>,
-    /// Each unique template's movement speed keys in `keys`, by pointer.
-    // The span into `keys` stays paired with its template pointer and refusal.
     #[allow(clippy::type_complexity)]
     templates: Vec<(usize, Result<(usize, usize), &'static str>)>,
     keys: Vec<u32>,
     observed_entries: owned::Entries,
     observed_rows: owned::Rows,
-    /// Each unique combat's movement word and attacking side in `attackers`.
     combats: Vec<Result<CombatOperands, &'static str>>,
     combat_index: std::collections::HashMap<usize, usize>,
     hostility: Hostility,
     attackers: Vec<usize>,
     regions: Vec<TransportRegion>,
-    /// Reused across hours; only qualifying sea/transfer edges append.
     transport_demand: Vec<(u32, usize)>,
     speed_cache: SpeedCache,
     held: owned::Loan,
     settle_pending: bool,
     changes: &'static dyn Changes,
-    /// The hour's family counts: reads, carried, refusals.
     counts: [[u64; 3]; FAMILIES],
 }
 
@@ -358,7 +291,6 @@ impl Default for SpeedTerms {
     }
 }
 
-/// The movement facts of province `id`, read once in [`SpeedTerms::prepare`].
 fn province(
     provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
     id: u32,
@@ -366,7 +298,6 @@ fn province(
     memo(provinces, id).ok_or("movement province unread")?
 }
 
-/// A mover's route provinces in the hour's route arena.
 fn route<'a>(
     arena: &'a [Result<u32, &'static str>],
     mover: &Mover,
@@ -377,7 +308,6 @@ fn route<'a>(
         .ok_or("division route outside its arena")
 }
 
-/// A sorted memo's entry for `key`.
 fn memo<K: Ord + Copy, V: Copy>(memo: &[(K, V)], key: K) -> Option<V> {
     memo.binary_search_by_key(&key, |entry| entry.0)
         .ok()
@@ -419,10 +349,7 @@ impl SpeedTerms {
             + self.held.bytes()
     }
 
-    /// Before the speed pass: nothing of a previous hour is published. The
-    /// held entries stay.
     pub(super) fn reset(&mut self) {
-        // A reused/dropped frame cannot carry unfinished owned settlement.
         if self.settle_pending {
             self.held.clear();
         }
@@ -441,8 +368,6 @@ impl SpeedTerms {
         self.combat_captured = false;
     }
 
-    /// A failed or stopped acquisition: every table refuses and nothing held
-    /// certifies the next hour.
     pub(super) fn fail(&mut self, reason: &'static str) {
         self.reset();
         self.outcomes = [Outcome::Unavailable { reason }; N];
@@ -450,8 +375,6 @@ impl SpeedTerms {
         owned::forget();
     }
 
-    /// The hour's DivisionStatus.combat_movement of `division`; the outer
-    /// `None` is its refusal.
     pub(super) fn combat_movement(&self, division: u64) -> Option<Option<i64>> {
         if !self.combat_captured {
             return None;
@@ -463,8 +386,6 @@ impl SpeedTerms {
         self.combat.get(self.combat_order[at].1 as usize)?.1
     }
 
-    /// [`Self::combat_movement`] of the division at census `position`, found there without a
-    /// search when it is that division's.
     pub(super) fn combat_movement_at(&self, position: usize, division: u64) -> Option<Option<i64>> {
         if !self.combat_captured {
             return None;
@@ -475,7 +396,6 @@ impl SpeedTerms {
         }
     }
 
-    /// Orders [`Self::combat`] for lookups by division, within the capacity it was captured with.
     fn index_combat(&mut self) {
         self.combat_order.clear();
         self.combat_order.extend(
@@ -570,8 +490,6 @@ impl SpeedTerms {
         result
     }
 
-    /// Every family's native-demand selection and reads, timed in TABLES order.
-    /// The held baseline remains lent until FIFO decode completes publication.
     pub(super) fn acquire(
         &mut self,
         memory: &impl Memory,
@@ -612,8 +530,6 @@ impl SpeedTerms {
         crate::sampling::qpc().saturating_sub(started).max(0) as u64
     }
 
-    /// The common failed-frame return path also runs when there is no army
-    /// store loan. Release this independent loan before the next acquisition.
     pub(super) fn discard_owned(&mut self) {
         self.held.abandon();
         self.settle_pending = false;
@@ -640,8 +556,6 @@ impl SpeedTerms {
             Outcome::Truncated { .. } => Err("division census truncated"),
             Outcome::Unavailable { reason } => Err(reason),
         };
-        // The unit speed set's marks are taken every hour, so they never
-        // accumulate across an hour that reads nothing.
         let take = self.take();
         let seeds = match census {
             Ok(seeds) => seeds,
@@ -702,13 +616,10 @@ impl SpeedTerms {
             self.capture_transport(memory, base, game)
         };
         lap(4, &mut at);
-        // Region pointers never outlive the acquisition.
         self.regions.clear();
         ticks
     }
 
-    /// The unit speed set's hourly take: its epoch, whether every mark was
-    /// recorded, and the marked native ids, ascending.
     fn take(&mut self) -> Take {
         let mut marked = Vec::new();
         let mut complete = true;
@@ -727,17 +638,12 @@ impl SpeedTerms {
         }
     }
 
-    /// DivisionStatus.combat_movement for movers with any ordinary land edge.
-    /// Stationary and early-return speed branches publish known absence without
-    /// reading combat lists. Each demanded combat is read once.
     fn capture_combat(
         &mut self,
         memory: &impl Memory,
         base: usize,
         seeds: &[DivisionSeed],
     ) -> Result<(), &'static str> {
-        // The combat list of a division the field reads: `Ok(None)` when it
-        // is not in combat or is withdrawing.
         let list = |seed: &DivisionSeed| -> Result<Option<Array>, &'static str> {
             let demand = memo(&self.combat_demand, seed.division).unwrap_or(Ok(false));
             if demand == Ok(false) || seed.withdrawal.is_some_and(|value| value != 0) {
@@ -826,8 +732,6 @@ impl SpeedTerms {
         Ok(())
     }
 
-    /// The movers' keys, their routes and every province, state and template
-    /// fact the families share.
     fn prepare(
         &mut self,
         memory: &impl Memory,
@@ -851,7 +755,6 @@ impl SpeedTerms {
                 Some(route) => copy_route(memory, route, &mut self.route, &mut self.route_values),
                 None => Err("division route unreadable"),
             };
-            // Missing roster fields do not suppress logical-owner transports.
             let roster = seed.roster_owner;
             let owner = seed.expeditionary_owner.and_then(|expeditionary| {
                 if expeditionary as i32 > 0 {
@@ -863,7 +766,6 @@ impl SpeedTerms {
             let location = match seed.location {
                 None => Err("division location unreadable"),
                 Some(0) => Err("division has no location"),
-                // The census gathered the mover's location id once for every consumer.
                 Some(location) => match seed.location_id {
                     Some(id) => id,
                     None => location
@@ -890,7 +792,6 @@ impl SpeedTerms {
                 route,
             });
         }
-        // Each unique province of the movers' locations and routes, once.
         let mut ids: Vec<u32> = Vec::new();
         reserve(&mut ids, self.movers.len() + self.route.len())?;
         ids.extend(self.movers.iter().filter_map(|mover| mover.location.ok()));
@@ -913,7 +814,6 @@ impl SpeedTerms {
                 .extend(ids.iter().map(|&id| (id, Err(reason)))),
         }
         self.prepare_land_demand(memory, base, game)?;
-        // Only location states whose speed operands will be read.
         let mut states: Vec<usize> = Vec::new();
         reserve(&mut states, self.movers.len())?;
         states.extend(
@@ -936,7 +836,6 @@ impl SpeedTerms {
                 engine_native::cstate::id_and_controller(memory, state),
             ));
         }
-        // Each unique template's speed keys, once.
         let mut templates: Vec<usize> = Vec::new();
         reserve(&mut templates, self.movers.len())?;
         templates.extend(
@@ -966,17 +865,12 @@ impl SpeedTerms {
         Ok(())
     }
 
-    /// Demand follows the itinerary, not just the first speed observation.
-    /// Once one readable ordinary edge establishes demand, later edges cannot
-    /// revoke it. Strategic redeployment retains its native early return.
     fn prepare_land_demand(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game: usize,
     ) -> Result<(), &'static str> {
-        // Branch before demanding land families; sea/invasion and transfer
-        // itineraries never read their state, category or supply operands.
         let countries = ccountry::Reader::new(memory, base, game);
         for mover in &mut self.movers {
             mover.land = (|| {
@@ -1033,8 +927,6 @@ impl SpeedTerms {
                     .attacking(memory, base, game, last, mover.logical);
             }
             if mover.land.is_err() {
-                // Charge the failed gate in this existing traversal. River
-                // acquisition separately owns failures of reached edges.
                 for family in &mut self.counts[..4] {
                     family[2] += 1;
                 }
@@ -1043,20 +935,15 @@ impl SpeedTerms {
         self.combat_demand.clear();
         reserve(&mut self.combat_demand, self.movers.len())?;
         for mover in &self.movers {
-            // ETA evaluates every edge: an embarkation can reach an ordinary
-            // land edge later, where the current combat operand still applies.
             self.combat_demand.push((mover.division, mover.land));
         }
         self.combat_demand.sort_unstable_by_key(|entry| entry.0);
         Ok(())
     }
 
-    /// MovementStateTerms: one row per (state, roster, owner).
-    // Local tuples retain demand keys, selected branches and their independent refusals.
     #[allow(clippy::type_complexity)]
     fn capture_states(&mut self, memory: &impl Memory, base: usize, game: usize) -> Outcome {
         let result = (|| -> Result<usize, &'static str> {
-            // (state id, roster, owner, state pointer, state controller)
             let mut wanted: Vec<(u32, u32, u32, usize, u32, bool)> = Vec::new();
             reserve(&mut wanted, self.movers.len())?;
             for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
@@ -1092,7 +979,6 @@ impl SpeedTerms {
                 kept.5 |= later.5;
                 true
             });
-            // Each (owner, controller) branch once.
             let mut branches: Vec<((u32, u32), Result<u8, &'static str>)> = Vec::new();
             reserve(&mut branches, wanted.len())?;
             branches.extend(
@@ -1116,8 +1002,6 @@ impl SpeedTerms {
                     )
                 })();
             }
-            // Each selected block/branch is shared; unselected relation entries
-            // are neither queried nor allowed to refuse this row.
             let mut block: Option<(
                 (usize, u32, u8, bool),
                 Result<owned::StateInputs, &'static str>,
@@ -1171,8 +1055,6 @@ impl SpeedTerms {
         self.finish(result, 0)
     }
 
-    /// CoreSupplyAccess: one row per (owner, location province) of a mover
-    /// whose noncore-supply term can apply.
     fn capture_access(&mut self, memory: &impl Memory, base: usize, game: usize) -> Outcome {
         let mut wanted = std::mem::take(&mut self.observed_rows.access);
         let mut areas = std::mem::take(&mut self.observed_rows.access_areas);
@@ -1193,9 +1075,6 @@ impl SpeedTerms {
             }
             wanted.sort_unstable();
             wanted.dedup();
-            // Several location provinces can share the same controller area.
-            // Query that predicate once per owner/area, while retaining the
-            // province key playback joins without a second area column.
             reserve(&mut areas, wanted.len())?;
             for &(owner, province) in &wanted {
                 if let Ok(facts) = self::province(&self.provinces, province)
@@ -1222,8 +1101,6 @@ impl SpeedTerms {
         self.finish(result, 1)
     }
 
-    /// CountryUnitSpeedEntries: one row per (owner, key) over the movement
-    /// speed keys of the movers' templates, carried under the unit speed set.
     #[cfg(test)]
     fn capture_entries(
         &mut self,
@@ -1296,7 +1173,6 @@ impl SpeedTerms {
                     .as_ref()
                     .map_err(|reason| *reason)
                     .and_then(|reader| reader.resolve(owner));
-                // The held read that certifies this country, when unmarked.
                 let held = country.ok().filter(|_| certified).and_then(|country| {
                     let at = self
                         .held
@@ -1350,8 +1226,6 @@ impl SpeedTerms {
         )
     }
 
-    /// RiverRelations: one row per (owner, controller) over the movers' route
-    /// provinces.
     fn capture_rivers(
         &mut self,
         memory: &impl Memory,
@@ -1479,9 +1353,6 @@ impl SpeedTerms {
         self.finish(result, 3)
     }
 
-    /// DivisionTransportSpeeds: for each logical owner of a mover with a naval
-    /// transfer or an edge to or from the sea, the transport speed in each
-    /// such edge's source strategic region.
     fn capture_transport(&mut self, memory: &impl Memory, base: usize, game: usize) -> Outcome {
         let result = (|| -> Result<usize, &'static str> {
             self.transport_demand.clear();
@@ -1503,8 +1374,6 @@ impl SpeedTerms {
             let demand = &mut self.transport_demand;
             demand.sort_unstable();
             demand.dedup();
-            // Each unique region's identity once; a province without a
-            // readable region is skipped and counted.
             let mut pointers: Vec<usize> = Vec::new();
             reserve(&mut pointers, demand.len())?;
             pointers.extend(demand.iter().map(|&(_, region)| region));
@@ -1579,7 +1448,6 @@ impl SpeedTerms {
         self.finish(result, 4)
     }
 
-    /// The table's outcome; a failed table publishes no row.
     fn finish(&mut self, result: Result<usize, &'static str>, slot: usize) -> Outcome {
         match result {
             Ok(len) => Outcome::Rows { len },
@@ -1597,9 +1465,6 @@ impl SpeedTerms {
     }
 }
 
-/// Preserve each readable edge's source demand, counting refused positions
-/// separately. Transfers read only their source region; they do not need the
-/// destination's flags or any roster-country fields.
 fn append_transport_demand(
     demand: &mut Vec<(u32, usize)>,
     arena: &[Result<u32, &'static str>],
@@ -1638,7 +1503,6 @@ fn append_transport_demand(
             Ok(None) => {}
             Err(_) => refused += 1,
         }
-        // A later bad position is a diagnostic refusal, never rollback.
         if to.is_err() && edge.is_ok() {
             refused += 1;
         }
@@ -1655,8 +1519,6 @@ fn noncore_demand(exiled: Option<u8>, bypass: Option<u8>) -> Option<bool> {
     }
 }
 
-/// Bulk copy on healthy routes. A failed bulk read falls back to individual
-/// positions without erasing readable prefixes, suffixes or other movers.
 fn copy_route(
     memory: &impl Memory,
     path: Array,
@@ -1685,7 +1547,6 @@ fn copy_route(
     Ok((start, len))
 }
 
-/// The unit speed set's hourly take.
 struct Take {
     epoch: Option<u64>,
     complete: bool,

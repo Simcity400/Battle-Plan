@@ -1,50 +1,22 @@
-//! Fixed windows used as list-box rows and nested `windowType` children.
-//!
-//! Size comes from the type; maximum-resolution axes subtract the stored value from
-//! the GUI root extent. Position and orientation use the viewport for roots and the
-//! outer window size for children, with a viewport-sized position object.
-//!
-//! Background lookup checks the type's name tree, then its parent template, and builds
-//! the drag button first at the window size. Child kinds are built in fixed factory
-//! order using the last type of each name. Declared order then attaches built objects
-//! by fixed lookup priority; unmatched objects do not draw. The window draws and clips
-//! nothing of its own and has no fade. A row's [`Layout::size`] uses its background
-//! drawable extent when present, otherwise the window's own extent.
 
 use super::*;
 
-/// A `windowType`'s kind lists in construction order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Listed {
-    /// `iconType`.
     Icon,
-    /// `browserType`.
     Browser,
-    /// `curveGraphType`.
     CurveGraph,
-    /// `dropDownBoxType`.
     DropDown,
-    /// `scrollbarType`.
     Scrollbar,
-    /// `listBoxType`.
     ListBox,
-    /// `smoothListboxType`.
     SmoothListBox,
-    /// `OverlappingElementsBoxType`.
     Overlapping,
-    /// `instantTextBoxType`.
     InstantText,
-    /// `guiButtonType`.
     GuiButton,
-    /// `multiSpriteButtonType`.
     MultiSprite,
-    /// `textBoxType`.
     TextBox,
-    /// `editBoxType`.
     EditBox,
-    /// `checkboxType`.
     Checkbox,
-    /// `windowType`, built after the others.
     Window,
 }
 
@@ -67,7 +39,6 @@ impl Listed {
         Listed::Window,
     ];
 
-    /// The list a child of `kind` is read into.
     fn of(kind: &Kind) -> Option<Listed> {
         Some(match kind {
             Kind::Icon => Listed::Icon,
@@ -90,41 +61,26 @@ impl Listed {
     }
 }
 
-/// The object a factory builds, by the class its constructor makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
-    /// Fixed-window button child.
     Button,
-    /// An icon.
     Icon,
-    /// A check box.
     CheckBox,
     MultiSprite,
-    /// An instant text box.
     InstantText,
-    /// A text box.
     TextBox,
-    /// A scrollbar.
     Scrollbar,
-    /// An edit box.
     EditBox,
-    /// A standard or smooth list box.
     ListBox {
         smooth: bool,
     },
-    /// An overlapping elements box.
     Overlapping,
-    /// A browser.
     Browser,
-    /// A curve graph.
     CurveGraph,
-    /// A drop-down box.
     DropDown,
-    /// A nested fixed window.
     Window,
 }
 
-/// Button-compatible types: `guiButtonType`, `multiSpriteButtonType`, `checkboxType`, `buttonType`.
 fn button_type(kind: &Kind) -> bool {
     matches!(
         kind,
@@ -133,9 +89,6 @@ fn button_type(kind: &Kind) -> bool {
 }
 
 impl Class {
-    /// Build an object for `list` from `found`, the type held under the entry's name.
-    /// Icon and button factories follow the found type's own class; every other
-    /// factory interprets the type as its expected class.
     fn of(list: Listed, found: &Element) -> Result<Class, Refusal> {
         let kind = &found.kind;
         let confused = |what: &str| {
@@ -219,17 +172,13 @@ impl Class {
     }
 }
 
-/// One object a list entry builds.
 struct Built<'a> {
     list: Listed,
-    /// The entry's name as the list holds it.
     name: &'a [u8],
-    /// The type its factory took.
     data: &'a Element,
     class: Class,
 }
 
-/// A `windowType`'s fields; `Err` for any other kind.
 fn fields(window: &Element) -> Result<&native::Window, Refusal> {
     window.window().ok_or_else(|| {
         Refusal::new(
@@ -240,8 +189,6 @@ fn fields(window: &Element) -> Result<&native::Window, Refusal> {
     })
 }
 
-/// The last child held under the case-folded `name` in `window`'s name tree,
-/// whatever its kind. Inserting a repeated name replaces the previous child.
 fn named<'a>(window: &'a Element, name: &[u8]) -> Option<&'a Element> {
     window
         .children
@@ -250,8 +197,6 @@ fn named<'a>(window: &'a Element, name: &[u8]) -> Option<&'a Element> {
         .find(|child| child.is_named(name))
 }
 
-/// The window's size: a `max_resolution` axis is the GUI root's extent less
-/// the reader's stored value.
 fn size(window: &Element, viewport: Option<[i32; 2]>) -> Result<[i32; 2], Refusal> {
     let own = fields(window)?;
     let mut out = [0; 2];
@@ -273,9 +218,6 @@ fn size(window: &Element, viewport: Option<[i32; 2]>) -> Result<[i32; 2], Refusa
     Ok(out)
 }
 
-/// Position a fixed window against the GUI viewport for roots or the outer
-/// window size for children. Add the authored position and orientation offset;
-/// list rows then move it to their retained row position.
 pub fn fixed_window_origin(window: &Element, extent: [i32; 2]) -> Result<[i32; 2], Refusal> {
     let own = fields(window)?;
     let anchor = control_anchor(own.orientation, extent);
@@ -285,9 +227,6 @@ pub fn fixed_window_origin(window: &Element, extent: [i32; 2]) -> Result<[i32; 2
     ])
 }
 
-/// Resolve a background from the window's own last child of that name, then
-/// one level of its parent template. No background returns `None`; null or
-/// incompatible reached templates refuse construction.
 pub(super) fn background<'a>(
     window: &'a Element,
     gui_type: &dyn Fn(&[u8]) -> Option<&'a Element>,
@@ -350,8 +289,6 @@ pub(super) fn background<'a>(
     Ok(Some(found))
 }
 
-/// Every list's entries of `window`, in the constructor's order, each the object its factory
-/// builds; the refusals of the factories given a type of another class.
 fn build<'a>(window: &'a Element, own: &native::Window) -> (Vec<Built<'a>>, Refusals) {
     let mut built: Vec<Built> = Vec::new();
     let mut refused = Refusals::new();
@@ -376,41 +313,25 @@ fn build<'a>(window: &'a Element, own: &native::Window) -> (Vec<Built<'a>>, Refu
     (built, refused)
 }
 
-/// Fixed-window typed name lookups search their constructed object lists
-/// in kind-specific order. A list row's bound role selects the corresponding
-/// object. The last matching declaration and each lookup's accepted kinds
-/// remain distinct from container lookup.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FixedFind {
-    /// the button arrays, else the multi-sprite arrays.
     Button,
     InstantTextBox,
     Icon,
-    /// the `textBoxType` map.
     TextBox,
     CheckBox,
     EditBox,
     Browser,
-    /// the curve graph arrays.
     CurveGraph,
     DropDownBox,
-    /// the scrollbar map.
     Scrollbar,
     OverlappingElementsBox,
     StandardListBox,
     SmoothListBox,
-    /// the nested windows, byte for byte.
     Subwindow,
 }
 
-/// The template used to build the object returned by `window`'s typed lookup
-/// `find` for `name`; callers bind values to it through [`Bindings::bind`].
-/// `None` means no object was found. Arrays return the first case-folded name,
-/// maps the last, and each object is built from the last child under that name
-/// in the window's name tree, regardless of kind. Thus a button lookup can
-/// return an object built from a `multiSpriteButtonType` with the same name.
-/// Neither [`Element::find`] nor container lookups use this rule.
 #[cfg(any(test, feature = "test-support"))]
 pub fn fixed_window_find(
     window: &Element,
@@ -457,8 +378,6 @@ pub fn fixed_window_find(
     }
 }
 
-/// Refusals that end the game while an object is built, whether or not it is ever attached; what
-/// only its drawing needs (a resource, an input, a pipeline) does not matter for one never drawn.
 fn construction_failure(refusal: &Refusal) -> bool {
     matches!(
         refusal.kind,
@@ -470,9 +389,6 @@ fn construction_failure(refusal: &Refusal) -> bool {
     )
 }
 
-/// Lay out a fixed-window root from its supplied top-left position. Retain
-/// its background-derived content size, child construction order and inherited
-/// clip. The lifecycle instance dispatches this layout.
 pub fn fixed_window_layout(
     window: &Element,
     resources: &dyn Resources,
@@ -481,7 +397,6 @@ pub fn fixed_window_layout(
     fields(window).map_err(|refusal| vec![refusal])?;
     let gui_type = |name: &[u8]| resources.gui_type(name);
     let mut reader = reader_refusals(window);
-    // A background the `parent` template holds is read with it.
     if let Ok(Some(found)) = background(window, &gui_type)
         && !std::ptr::eq(found, window)
         && !window
@@ -534,7 +449,6 @@ pub fn fixed_window_layout(
             ),
             None => pointer_targets(&drawn.parts, &drawn.hits, &drawn.regions, pointer)?,
         };
-        // A held button keeps the pointer: no other button takes Over until the release.
         let hovered = match &pointer.pressed {
             Some(pressed) => hovered.filter(|hovered| hovered == pressed),
             None => hovered,
@@ -544,8 +458,6 @@ pub fn fixed_window_layout(
         }
         drawn.target = target;
     }
-    // A background drawable supplies the list row's content size; without a
-    // background use the window size.
     let content = match background(window, &gui_type).map_err(|refusal| vec![refusal])? {
         None => extent,
         Some(found) => {
@@ -570,8 +482,6 @@ pub fn fixed_window_layout(
 }
 
 impl Walk<'_> {
-    /// Place `window` with its top-left at `origin`. Draw when `draw` is true;
-    /// otherwise build it without drawing.
     fn fixed(
         &mut self,
         window: &Element,
@@ -606,7 +516,6 @@ impl Walk<'_> {
         }
         let (first_region, first_holder) = (self.regions.len(), self.holders.len());
         let resources = self.resources;
-        // Attach the window-sized background first, then the declared child objects.
         if let Some(found) = background(window, &|name| resources.gui_type(name))?
             && draw
         {
@@ -617,8 +526,6 @@ impl Walk<'_> {
                 origin[0].wrapping_add(button.position[0]),
                 origin[1].wrapping_add(button.position[1]),
             ];
-            // Its own object, whether its type is one of the window's children (which may be
-            // built again as one) or its `parent` template's ([`Role::Background`]).
             let drawn = self.built(window, Role::Background, |walk| {
                 walk.drag_part(found, button, button.frame, at, Some(extent), clip)
             });
@@ -631,7 +538,6 @@ impl Walk<'_> {
         }
         let (built, refused) = build(window, own);
         self.refusals.extend(refused);
-        // The attach loop over the order list.
         let mut attached: Vec<usize> = Vec::new();
         for (index, child) in window.children.iter().enumerate() {
             if child.kind == Kind::MultiSpriteButton || own.unlisted.contains(&index) {
@@ -642,8 +548,6 @@ impl Walk<'_> {
                 attached.push(object);
             }
         }
-        // Hidden or unattached objects draw nothing, but their construction
-        // failures still apply.
         for (index, object) in built.iter().enumerate() {
             if draw && attached.contains(&index) && self.shown(object.data) {
                 continue;
@@ -681,9 +585,6 @@ impl Walk<'_> {
             self.top = None;
         }
         if self.bindings.regions {
-            // One logical-viewport C2dPositionObject, flag144=1, unlike a
-            // container's separate outer and scaled content objects
-            //
             for region in &mut self.regions[first_region..] {
                 if let Some(hit) = &mut region.hit {
                     hit.inherit(1.0, origin);
@@ -698,8 +599,6 @@ impl Walk<'_> {
         Ok(true)
     }
 
-    /// Draw one built window object at `origin` with `extent`, the size every factory
-    /// receives. With `construct`, only build it to apply its construction effects.
     fn fixed_object(
         &mut self,
         object: &Built,
@@ -717,8 +616,6 @@ impl Walk<'_> {
             (Class::CheckBox, Fields::Button(button)) => {
                 self.check_box(data, button, origin, extent, clip)
             }
-            // Build a standard button with orientation 0, no extent, size or border,
-            // scale 1, no rotation and frame 1, using the type's sprite, position and font.
             (Class::MultiSprite, Fields::Button(button)) => {
                 let multi = native::Button {
                     orientation: Some(Orientation::UpperLeft),
@@ -737,7 +634,6 @@ impl Walk<'_> {
             (Class::TextBox, Fields::TextSprite(text)) => {
                 self.fixed_text_box(data, text, origin, extent, clip)
             }
-            // Hide the constructed object before its later lifecycle writes.
             (Class::Scrollbar, Fields::Scrollbar(bar)) if construct => {
                 self.plain(data, bar).map(|_| ())
             }
@@ -758,7 +654,6 @@ impl Walk<'_> {
             (Class::CurveGraph, Fields::Browser(_)) => self.curve_graph(data),
             (Class::DropDown, Fields::DropDown(drop)) => self.drop_down(data, drop, origin, clip),
             (Class::Window, Fields::Window(_)) => {
-                // built against this window's size.
                 let place = self
                     .bound(data)
                     .and_then(|bound| bound.position)
@@ -773,9 +668,6 @@ impl Walk<'_> {
         }
     }
 
-    /// Bake a text box through the sprite registered under its own name. A matching
-    /// text-sprite type supplies its effect; another sprite kind drops the text.
-    /// Text blocks retain their layout and alignment rules.
     fn fixed_text_box(
         &mut self,
         element: &Element,
@@ -806,8 +698,6 @@ impl Walk<'_> {
                 .wrapping_add(text.position[1])
                 .wrapping_add(offset[1]),
         ];
-        // No replayed mission-entry path sets this text box's text; construction
-        // retains the authored text.
         let Some(shown) = self.authored_text(element, &text.text) else {
             return Ok(());
         };
@@ -823,11 +713,6 @@ impl Walk<'_> {
     }
 }
 
-/// Look up one order-list `name` for attachment in this priority: scrollbars,
-/// buttons, multi-sprite buttons, text boxes, instant text, edit boxes, icons,
-/// browsers, curve graphs, check boxes, standard and smooth list boxes, nested
-/// windows, then overlapping lists. Drop-downs are never attached. Arrays give
-/// the first case-folded name; maps give the last.
 fn attach_lookup(built: &[Built], name: &[u8]) -> Option<usize> {
     let same = |object: &Built| object.name.eq_ignore_ascii_case(name);
     let first = |list: Listed| {

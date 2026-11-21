@@ -25,8 +25,6 @@ impl Renderer<'_, '_, '_> {
         self.numeric_leaf(item, scopes, key, NumericFormat::Fixed5)
     }
 
-    // Evaluate the value, substitute it, expand the text and append LF.
-    // Other forms retain their integer conversion.
     pub(super) fn numeric_leaf(
         &self,
         item: &Item,
@@ -37,7 +35,7 @@ impl Renderer<'_, '_, '_> {
         let value = if matches!(format, NumericFormat::Xp | NumericFormat::Threat) {
             i64::from(self.numeric_int_operand(item, scopes)?) * 100_000
         } else if scope_selector(item).is_some() {
-            0 // scope-selector parsing leaves scoped variable at zero.
+            0
         } else {
             self.scoped_value(item.value.scalar().unwrap_or(b"0"), scopes)?
         };
@@ -55,7 +53,7 @@ impl Renderer<'_, '_, '_> {
                 Argument::Int32(crate::triggers::fixed_round(value) as i32),
                 false,
                 true,
-            ), // Skill effects share numeric formatting.
+            ),
             NumericFormat::Rounded => (
                 "VAL",
                 Argument::Int32(crate::triggers::fixed_round(value) as i32),
@@ -76,10 +74,8 @@ impl Renderer<'_, '_, '_> {
                 Argument::Int32(((value / 100_000) as i32).wrapping_abs()),
                 true,
                 true,
-            ), // zero takes REMOVE.
+            ),
             NumericFormat::Garrison => {
-                // scale 1, precision 1,
-                // positive-good, '%' suffix and '+' even for zero; no expansion.
                 let scaled = value.wrapping_mul(100_000) / 100_000;
                 let colour = if scaled > 0 {
                     'G'
@@ -113,8 +109,6 @@ impl Renderer<'_, '_, '_> {
             return Ok(0);
         }
         let operand = scalar_operand(item)?;
-        // literal %i or
-        // signed fixed5 division, narrowed to i32. Shares the existing parser.
         match installed_content_core::fixed5::int_operand(operand, item.quoted()) {
             installed_content_core::fixed5::IntOperand::Integer(value) => Ok(value),
             installed_content_core::fixed5::IntOperand::Constant(value) => Ok((value / 100_000) as i32),
@@ -131,7 +125,6 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or(Ok(0))
     }
 
-    // Capitalized definite country name.
     fn numeric_marked_country(&self, country: u32) -> Result<String, String> {
         let name = installed_content_localisation::localisation::crt_case_text(
             &self.country_name(country, true)?,
@@ -180,7 +173,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // feature gate, nonzero value, no LF.
+        )
     }
 
     pub(super) fn numeric_decryption(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -223,7 +216,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 true,
             )
-        } // ratio's assigned flag wins over amount; LF.
+        }
     }
 
     pub(super) fn numeric_intel(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -297,7 +290,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // no LF.
+        )
     }
 
     pub(super) fn numeric_mines(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -334,7 +327,6 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // start of current day + rounded days.
     }
 
     pub(super) fn numeric_import(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -368,8 +360,8 @@ impl Renderer<'_, '_, '_> {
                 },
             )
             .next_back()
-            .unwrap_or(0); // integer parsing retains failed writes.
-        let resource = format!("{amount}\u{13}resources_strip|{icon} "); // Literal.
+            .unwrap_or(0);
+        let resource = format!("{amount}\u{13}resources_strip|{icon} ");
         let source = self.current_country(scopes)?;
         let target = field(fields, "exporter").ok_or("create_import exporter is absent")?;
         let target = self.country_target(target, scopes)?.unwrap_or(0);
@@ -412,7 +404,6 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // factories have no description operand, no LF.
     }
 
     pub(super) fn numeric_license(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -437,7 +428,6 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )
-        // priority/cost change execution only, explicit LF.
     }
 
     pub(super) fn numeric_launch_nuke(
@@ -445,8 +435,6 @@ impl Renderer<'_, '_, '_> {
         _item: &Item,
         _scopes: Scopes,
     ) -> Result<String, String> {
-        // constructs and destroys the formatted state text, then
-        // unconditionally clears the output.
         Ok(String::new())
     }
 }

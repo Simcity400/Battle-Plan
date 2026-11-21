@@ -1,8 +1,3 @@
-//! CDeploymentStatus, reached through `ccountry::DEPLOYMENT_MANAGER`, owns the complete deployment
-//! queue.
-//!
-//! The walker authenticates the owner backlink and reports each failure
-//! explicitly. Hourly consistency and writer lifetime remain unproven.
 
 use crate::{
     Memory, ccountry, cequipment_type, cmilitary_deployment, cmilitary_deployment_conveyor,
@@ -15,38 +10,24 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CDeploymentStatus primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29dc598);
-/// CDeploymentStatus conveyor CPdxArray.
 pub const CONVEYORS: usize = 0x48;
-/// CDeploymentStatus conveyor-array pointer stride.
 pub const CONVEYOR_STRIDE: usize = 0x08;
-/// CDeploymentStatus owning CCountry pointer.
 pub const OWNER: usize = 0x118;
-/// The persistent unit-bonus list's embedded CPdxArray header: every bonus the
-/// country gained, which its local sub-unit clones are rebuilt from
-/// ([`crate::unit_bonuses`]).
 pub const UNIT_BONUSES: usize = 0x08;
 
-/// The stored military-staff template reference.
 pub const SELECTED_STAFF_TEMPLATE: usize = 0xac;
-/// Monotonic allocation order of the next headquarters deployment.
 pub const NEXT_HQ_ORDER: usize = 0xa8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TemplateState {
     pub country: u32,
-    /// Full reference word, including a retained reference that no longer resolves.
     pub selected_staff: u64,
     pub next_hq_order: i32,
     pub lock_all: u8,
-    /// Authenticated source identity for the caller's writer certificate.
     pub manager: usize,
 }
 
-/// Country identity was authenticated by the supplying census. The manager's
-/// vtable and owner backlink authenticate the selection independently of its
-/// queue membership; countries with an empty template roster still have state.
 pub fn template_state(
     memory: &impl Memory,
     base: usize,
@@ -78,46 +59,32 @@ pub fn template_state(
 pub use cmilitary_deployment_conveyor::Row as ConveyorRow;
 pub use cmilitary_deployment_line::Row as LineRow;
 
-/// One manpower entry of a deployment's available or needed container.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ManpowerRow {
-    /// Owning line's full native handle.
     pub line: u64,
-    /// `cmilitary_deployment::SIDE_HAVE` or `SIDE_NEED`; both containers exist.
     pub side: u8,
     pub ordinal: u32,
-    /// Raw source-country link exactly as stored; zero is a value.
     pub source_country: u32,
-    /// Raw signed manpower count, including nonpositive values.
     pub amount: i32,
 }
 
-/// One in-transit equipment entry of a deployment's own variant pool.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EquipmentRow {
-    /// Owning line's full native handle.
     pub line: u64,
     pub ordinal: u32,
-    /// Authenticated CEquipmentVariant handle, not a process pointer.
     pub variant_handle: u64,
-    /// Native i64 fixed5 amount; zero and negative amounts are state.
     pub amount_raw: i64,
 }
 
-/// Per-table outcomes of one deployment walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outcomes {
     pub conveyors: Outcome,
     pub lines: Outcome,
     pub manpower: Outcome,
     pub equipment: Outcome,
-    /// Conveyor-name bytes written into the caller's arena.
     pub name_bytes: usize,
-    /// Bytes the arena would have needed for the names actually reached.
     pub required_name_bytes: usize,
-    /// Line custom-name bytes written into the caller's second arena.
     pub custom_name_bytes: usize,
-    /// Bytes the second arena would have needed for the custom names reached.
     pub required_custom_name_bytes: usize,
 }
 
@@ -136,7 +103,6 @@ impl Outcomes {
     }
 }
 
-/// Authenticates the manager reached from a previously authenticated country.
 pub(crate) fn manager(
     memory: &impl Memory,
     base: usize,
@@ -166,15 +132,6 @@ pub(crate) fn manager(
     Ok(pointer)
 }
 
-/// Reads every canonical country's deployment queue in native order.
-///
-/// The four tables share one traversal and one failure domain: a broken root,
-/// conveyor, line or deployment object makes the whole walk unavailable rather
-/// than publishing a partial queue, because a partial queue cannot be told from
-/// a shorter one. Capacity exhaustion is reported per table with the exact
-/// number of rows that were not read, so the traversal always visits every
-/// conveyor and line even when their rows cannot be stored: a child count is
-/// only knowable from its parent's array header.
 #[allow(
     clippy::too_many_arguments,
     reason = "the independent deployment rows and literal arenas share one original graph"
@@ -251,8 +208,6 @@ pub fn walk_buffer(
                     memory, base, country.id, index, pointer, &mut names, used,
                 )?;
                 required = required.saturating_add(conveyor.wanted);
-                // A conveyor is omitted when its row buffer is full or when its
-                // name does not fit the arena; both are capacity, not a fault.
                 match conveyor.row.filter(|_| conveyors.remaining() != 0) {
                     Some(row) => {
                         used = conveyor.used;
@@ -281,10 +236,6 @@ pub fn walk_buffer(
                         custom_used,
                     )?;
                     custom_required = custom_required.saturating_add(read.wanted);
-                    // An omitted line publishes no orphan children, and their
-                    // exact counts come from the deployment's array headers.
-                    // A line is omitted when its row buffer is full or when its
-                    // custom name does not fit the arena; both are capacity.
                     let Some(line) = read.row.filter(|_| lines.remaining() != 0) else {
                         lines.omit(1);
                         manpower.omit(read.children.manpower[0].count);
@@ -400,25 +351,18 @@ impl<'a, R: Default> Sink<'a, R> {
     }
 }
 
-/// Country-local subunit clones. A global definition is copied here when
-/// research, a doctrine or an army unlocks it for the country.
 pub const LOCAL_SUBUNITS: usize = 0x20;
 
-/// A country-local clone whose requirement vector differs from its global
-/// definition's; every other clone is absent.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LocalSubunitRow {
-    /// Raw CCountry id of the owning deployment status.
     pub country: u32,
     pub token: u32,
     pub requirements: crate::creferenced_division_template::Span,
 }
 
-/// One requirement of a differing clone, in native order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LocalRequirement {
     pub archetype_token: u32,
-    /// Native signed fixed5 amount.
     pub amount_raw: i64,
 }
 
@@ -438,8 +382,6 @@ const fn record_field(source_offset: usize, destination_offset: usize, len: usiz
     }
 }
 
-/// A clone's identity (vtable, token, real flag), database index and
-/// requirement vector header, gathered for a batch of clones at once.
 const CLONE_FIELDS: [RecordField; 3] = [
     record_field(0, 0, 17),
     record_field(csub_unit_definition::DATABASE_INDEX, 20, 4),
@@ -449,11 +391,8 @@ const CLONE_RECORD: usize = 40;
 const CLONE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&CLONE_FIELDS, CLONE_RECORD).expect("valid local subunit layout");
 const CLONE_BATCH: usize = 64;
-/// Requirement entries compared per span.
 const REQUIREMENT_SPAN: usize = 16;
 
-/// Whether two requirement vectors hold the same (archetype, amount) entries in
-/// order, reading each vector in spans.
 fn same_requirements(
     memory: &impl Memory,
     local: Array,
@@ -507,13 +446,6 @@ pub fn count_local_subunits(memory: &impl Memory, base: usize, game_state: usize
     walk_local_subunits_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_| LocalSelection::Read, |_| {})
 }
 
-/// Every country's clones whose ordered (archetype, amount) requirements differ
-/// from the global definition. A clone equal to its global definition, which is
-/// what nearly every clone is, needs no row: its absence from a complete table
-/// means the global requirements apply. Rows that do not fit are counted and
-/// their requirements' demand retained, so the next capture grows off-thread.
-/// Clones are read in batches: pointers in one span, each clone's fixed fields
-/// gathered together, and each requirement vector compared in spans.
 pub fn walk_local_subunits(
     memory: &impl Memory,
     base: usize,
@@ -532,53 +464,36 @@ pub fn walk_local_subunits(
     )
 }
 
-/// One country's rows a caller holds from an earlier walk; their requirement
-/// spans index `requirements`.
 #[derive(Clone, Copy, Debug)]
 pub struct HeldLocalSubunits<'a> {
     pub rows: &'a [LocalSubunitRow],
     pub requirements: &'a [LocalRequirement],
 }
 
-/// What [`walk_local_subunits_selected`] does with one country.
 #[derive(Clone, Copy, Debug)]
 pub enum LocalSelection<'a> {
-    /// Read the country's clones.
     Read,
-    /// Publish the held rows without reading the country: the caller proved
-    /// them current.
     Carry(HeldLocalSubunits<'a>),
-    /// Publish the held rows when the country's deployment status and clone
-    /// vector header are these, and read the country otherwise.
     Confirm {
         deployment: Deployment,
         held: HeldLocalSubunits<'a>,
     },
 }
 
-/// A country's authenticated deployment status and its clone vector header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deployment {
     pub status: usize,
     pub clones: Array,
 }
 
-/// What the walk did with one country, in walk order.
 #[derive(Clone, Debug)]
 pub struct LocalVisit {
     pub country: ccountry::Country,
-    /// The status and header this walk read; `None` for a carried country.
     pub deployment: Option<Deployment>,
-    /// The country's rows in the output.
     pub rows: std::ops::Range<usize>,
-    /// Whether its clones were read (otherwise its held rows were published).
     pub read: bool,
 }
 
-/// [`walk_local_subunits`] over the countries `select` lets it read:
-/// a carried or confirmed country's held rows are copied in its place, so the
-/// walk publishes what a fresh one would whenever every held row is current.
-/// `visit` sees each country once, after its rows.
 pub fn walk_local_subunits_selected<'a>(
     memory: &impl Memory,
     base: usize,
@@ -599,7 +514,6 @@ pub fn walk_local_subunits_selected<'a>(
     )
 }
 
-/// A country's authenticated deployment status and clone vector header.
 pub fn deployment(
     memory: &impl Memory,
     base: usize,
@@ -613,7 +527,6 @@ pub fn deployment(
     Ok(Deployment { status, clones })
 }
 
-/// The rows and requirements written so far, and the rows that did not fit.
 struct LocalOutput<'r> {
     rows: crate::walk::Buffer<'r, LocalSubunitRow>,
     requirements: crate::walk::Buffer<'r, LocalRequirement>,
@@ -622,9 +535,6 @@ struct LocalOutput<'r> {
 }
 
 impl LocalOutput<'_> {
-    /// Appends `row` with its `count` requirements (`row.requirements` is
-    /// rewritten), or counts it missing when a fixed output is full. Its
-    /// demand is counted either way.
     fn push(
         &mut self,
         result: &mut LocalSubunitWalk,
@@ -640,8 +550,6 @@ impl LocalOutput<'_> {
             .required_requirements
             .checked_add(count)
             .ok_or("local subunit requirement count overflow")?;
-        // Cloning and its original requirement header bound the worker-owned
-        // output before publishing a row.
         self.rows.ensure(
             self.len
                 .checked_add(1)
@@ -764,8 +672,6 @@ fn walk_local_subunits_buffer<'a>(
     result
 }
 
-/// One country's clones that differ from their global definitions, appended
-/// to `output`.
 fn read_country(
     memory: &impl Memory,
     base: usize,
@@ -837,8 +743,6 @@ fn read_country(
             )? {
                 continue;
             }
-            // The table is keyed by (country, token); cloning creates a
-            // definition once per country, so a repeat is refused.
             if output.rows[country_rows..output.len]
                 .iter()
                 .any(|row| row.token == token)

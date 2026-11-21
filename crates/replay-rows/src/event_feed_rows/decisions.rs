@@ -1,4 +1,3 @@
-//! Retained decision operations share the event stream's clock, order and receipts.
 use super::*;
 
 pub const TAKEN: u8 = 0;
@@ -16,7 +15,6 @@ pub const ALL: u8 = 16;
 pub const MOVED: u8 = 32;
 pub const ORDINAL: u8 = 64;
 pub const ITERATION: u8 = 128;
-/// Candidate-clear flag; member operations use this bit for an ordinal.
 pub const CLEAR_ALL_CANDIDATES: u8 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +35,6 @@ pub enum Operation {
     Rebuild = 11,
     Candidate = 12,
     Ignore = 13,
-    /// The capture refused this owner's retained state (the event's actor);
-    /// the token is the reason. Other owners keep their certificates.
     Refused = 14,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,9 +43,7 @@ pub struct DecisionChange {
     pub operation: Operation,
     pub container: u8,
     pub flags: u8,
-    /// Native ordinal/count, candidate target, or signed random-count target word.
     pub ordinal: u32,
-    /// Certified fixed5 political balance at a final roster boundary only.
     pub political_power: Option<i64>,
 }
 impl DecisionChange {
@@ -143,7 +137,6 @@ impl Value for DecisionChange {
     }
 }
 impl Operation {
-    /// The operation `code` stores.
     pub fn of(code: u8) -> io::Result<Self> {
         use Operation::*;
         Ok(match code {
@@ -194,7 +187,6 @@ pub struct DecisionState {
     pub country: EventFeedCountry,
     members: [Vec<RetainedDecision>; CONTAINERS],
     pub random_counts: Vec<RetainedRandomCount>,
-    /// Certified candidate sets: kind, definition token, target word.
     pub candidates: BTreeSet<(u8, Vec<u8>, u32, u32)>,
     pub ignored: BTreeSet<Vec<u8>>,
     pub target_countries: BTreeMap<u32, EventFeedCountry>,
@@ -206,8 +198,6 @@ pub struct DecisionState {
     pub(super) version: super::state::Version,
 }
 impl DecisionState {
-    /// The owner's version: it holds the same, but its days and completeness, while it stays
-    /// the same.
     pub fn version(&self) -> Option<u64> {
         self.version.get()
     }
@@ -305,9 +295,6 @@ impl DecisionState {
         let occurrence = super::state::Change::of(row, event);
         self.apply(row.read_hour, occurrence, script, change, true, false)
     }
-    /// [`Self::observe`] of a planned change of the read at `read_hour`: `write` whether to
-    /// write its target country, which the owner may hold already, and `cancelled` whether a
-    /// later clear or baseline of the owner in the same pack cancels its candidate change.
     pub fn apply(
         &mut self,
         read_hour: i32,
@@ -350,7 +337,6 @@ impl DecisionState {
                 self.baseline_hour = Some(read_hour);
             }
             Invalidate => self.gap(),
-            // Also closes an open baseline: a Ready after it has nothing to complete.
             Refused => {
                 self.gap();
                 self.building = false;
@@ -508,8 +494,6 @@ impl DecisionState {
         }
         Ok(())
     }
-    /// A candidate change: a clear of one kind or every kind, or one candidate's removal or
-    /// addition. Only a change of what the owner holds moves its version.
     pub fn candidate(
         &mut self,
         token: &[u8],

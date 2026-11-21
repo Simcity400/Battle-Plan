@@ -1,17 +1,10 @@
-//! Manpower-value entry used by division training, deployment and garrison
-//! walks. Each eight-byte entry holds a country reference and signed i32 amount.
 
-/// Manpower-value entry stride.
 pub const STRIDE: usize = 0x08;
-/// Four-byte country reference, serialized as a tag.
 pub const SOURCE_COUNTRY_LINK: usize = 0x00;
-/// Signed i32 amount; serialization includes only positive amounts.
 pub const COUNT: usize = 0x04;
 
 use crate::{Memory, carmy_manpower_values, cpdx_array::Array, read};
 
-/// Visits all entries that fit, retaining signed native counts and every source
-/// link. The remaining array count is reported without walking omitted values.
 pub fn visit(
     memory: &impl Memory,
     base: usize,

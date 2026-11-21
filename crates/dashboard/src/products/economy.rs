@@ -1,5 +1,3 @@
-//! Economy families served from the recording's own tables with no writer: fuel by branch,
-//! resource balance, convoy health, the international market and lend-lease balances.
 
 pub mod fuel;
 pub mod fuel_branches;

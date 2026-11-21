@@ -24,7 +24,6 @@ test('at 15 hours a frame for 600 frames, the page plays as well with the prepar
     assert.deepEqual(on.played.asked, off.played.asked, 'playing, the same requests at the head, lane on or off');
     assert.equal(on.played.commits, off.played.commits, 'playing, the page commits as often, lane on or off');
     assert.equal(await act<boolean>('hostShown()'), false, 'no prepared page laid out at the end of play');
-    // Frame intervals are the display's, measured on one machine twice: the lane on is no worse beyond one refresh's jitter.
     assert.ok(on.played.p95 <= off.played.p95 * 1.25 + 2, `frame interval p95: on ${on.played.p95.toFixed(1)} ms, off ${off.played.p95.toFixed(1)} ms`);
     assert.deepEqual(await act('heldFirstRender()'), { product: true, followed: true }, 'a reply the lane holds shows from the first render: no loading state, not for a frame');
     assert.deepEqual(await act('heldBetweenRenders()'), { product: true, products: true, followed: true },
@@ -36,8 +35,6 @@ test('at 15 hours a frame for 600 frames, the page plays as well with the prepar
   }));
 });
 
-// Run 17: the suite seeks and then plays at once, while the lane has another page laid out. The copy was dropped only by an
-// effect after the play's commit, so every widget of it first rendered as playing (Overview: a 1.3 s commit as play began).
 test('play pressed while the lane has a page laid out drops it in the play commit: no widget of it renders as playing', async () => {
   await withNativePage('prepare-play', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('prepare play', async () => {
     const played = await page.evaluate<{ laid: boolean; playingRenders: number; shown: boolean }>('window.prepareLane.playWhilePreparing()');

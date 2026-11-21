@@ -1,64 +1,21 @@
-//! Display steps: drifting values recorded at the precision the game shows.
-//!
-//! A column with a [`Step`] holds whole multiples of the step, rounded the way
-//! the game's own formatter rounds the value where it shows it, so a viewer
-//! formatting the stored value with the same formatter prints the game's text.
-//! The wire holds the value divided by the step (its *units*): snapshots keep
-//! the column's fixed width and deltas its zigzag varint, so smaller numbers
-//! compress better without a layout change. Decoders multiply back, and
-//! consumers read native units. A recording before
-//! [`DISPLAY_PRECISION_FORMAT`] holds exact values in these columns and
-//! decodes them unscaled.
-//!
-//! Writers round twice: capture rounds each stepped field once the row is
-//! converted ([`crate::rows::TableRows::round_to_display`]), so rows that
-//! changed only below the step compare equal, and the encoder rounds again
-//! (idempotently) before dividing, so every encoding path stores a multiple.
-//!
-//! The extreme words `i64::MIN`, `i64::MIN + 1` and `i64::MAX`, which native
-//! code and the viewer use as sentinels, are stored exactly: their units are
-//! the same words, which no rounded value reaches.
-//!
-//! Values that advance in fixed steps or count things (identities, handles,
-//! counters, dates, seeds, route progress), values whose exact digits a
-//! discrete decision reads (a glyph threshold, a content define comparison),
-//! and values the game shows at full precision are never stepped. Derived
-//! displays (combat progress, strength percentages, damage estimates) read the
-//! stepped values and can differ from the game in their last digit at
-//! boundaries, by owner decision 2026-10-11. The reasoning for each stepped
-//! field sits beside its declaration.
 
 use crate::codec::invalid_static as invalid;
 pub use crate::rows::compatibility::DISPLAY_PRECISION_FORMAT;
 use std::io;
 
-/// How a value becomes a multiple of its step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rounding {
-    /// Drop the remainder: the fixed5 formatter prints the integer quotient and remainder
-    /// of the magnitude, truncating discarded digits.
     TowardZero,
-    /// [`Self::TowardZero`], except that a nonzero value below one step keeps
-    /// one step with its sign, so the zero tests, signs and sign colours a
-    /// consumer applies read the same; such a value shows that one step.
     TowardZeroNonzero,
-    /// Round to the nearest multiple, a half step away from zero.
     HalfAwayFromZero,
-    /// [`Self::HalfAwayFromZero`], except that a nonzero value below half a
-    /// step keeps one step with its sign, so the zero tests and signs a
-    /// consumer applies read the same; such a value shows that one step.
     HalfAwayFromZeroNonzero,
 }
 
-/// A column's display precision: `raw` native units per step, over `scale`
-/// native units per displayed unit (100000 for fixed5, 32768 for Q15, 1 for
-/// plain integers). A step can apply to some elements of an array only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Step {
     raw: i64,
     scale: i64,
     rounding: Rounding,
-    /// Bit `i` set: element `i` of an array or list takes the step.
     elements: u64,
 }
 
@@ -69,7 +26,6 @@ const fn sentinel(value: i64) -> bool {
 }
 
 impl Step {
-    /// A fixed5 step of `raw` hundred-thousandths.
     pub const fn fixed5(raw: i64, rounding: Rounding) -> Self {
         assert!(raw > 1 && (100_000 % raw == 0 || raw % 100_000 == 0));
         Self {
@@ -80,7 +36,6 @@ impl Step {
         }
     }
 
-    /// This step for the listed array elements only; the others stay exact.
     pub const fn only(self, elements: &[usize]) -> Self {
         let mut mask = 0;
         let mut index = 0;
@@ -95,12 +50,10 @@ impl Step {
         }
     }
 
-    /// Whether element `index` of an array or list takes this step.
     pub const fn applies(self, index: usize) -> bool {
         index < 64 && self.elements & (1 << index) != 0
     }
 
-    /// This step for every element of a nested value.
     pub const fn whole(self) -> Self {
         Self {
             elements: u64::MAX,
@@ -116,7 +69,6 @@ impl Step {
         self.rounding
     }
 
-    /// The multiple of the step `value` is stored as; a sentinel word stays.
     #[inline]
     pub const fn round(self, value: i64) -> i64 {
         if sentinel(value) {
@@ -126,16 +78,11 @@ impl Step {
         }
     }
 
-    /// `value` rounded and divided by the step; a sentinel word stays itself.
-    /// A multiple outside i64 keeps the next multiple toward zero.
     #[inline]
     pub const fn units(self, value: i64) -> i64 {
         if sentinel(value) {
             return value;
         }
-        // Sentinel exclusion bounds the magnitude by i64::MAX - 1. A rounded
-        // product is at most magnitude + raw, so even the overflow check fits
-        // in u64; no wide division is needed for an ordinary display value.
         let raw = self.raw as u64;
         let magnitude = value.unsigned_abs();
         let truncated = magnitude / raw;
@@ -165,7 +112,6 @@ impl Step {
         if value < 0 { -quotient } else { quotient }
     }
 
-    /// The native value of `units` steps; a product outside i64 is malformed.
     pub fn value(self, units: i64) -> io::Result<i64> {
         if sentinel(units) {
             return Ok(units);
@@ -176,7 +122,6 @@ impl Step {
             .ok_or_else(|| invalid("display step value exceeds native range"))
     }
 
-    /// The precision as the report names it, e.g. `0.1 (fixed5, toward zero)`.
     pub fn describe(self) -> String {
         let unit = match self.scale {
             100_000 => "fixed5",
@@ -212,7 +157,6 @@ impl Step {
     }
 }
 
-/// Whether a value decoded in `format` holds step units.
 pub const fn stepped_format(format: u16) -> bool {
     format >= DISPLAY_PRECISION_FORMAT
 }
@@ -227,8 +171,6 @@ mod tests {
 
     #[test]
     fn toward_zero_matches_the_fixed5_formatter_at_every_boundary() {
-        // The fixed5 formatter prints the absolute integer part, then the remainder's
-        // leading digits: 1.29999 shows "1.2", -1.29999 shows "-1.2".
         for (value, stored) in [
             (0, 0),
             (1, 0),
@@ -287,8 +229,6 @@ mod tests {
 
     #[test]
     fn half_away_nonzero_keeps_one_step_below_half_a_step_and_its_sign() {
-        // The two-decimal formatter rounds half away from zero; a nonzero value it would
-        // print as zero keeps one step instead.
         const NONZERO_HUNDREDTH: Step = Step::fixed5(1_000, Rounding::HalfAwayFromZeroNonzero);
         for (value, stored) in [
             (0, 0),

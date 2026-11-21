@@ -1,5 +1,3 @@
-//! Raid icon window bindings and updates. Preparing an hour never changes
-//! a presented instance.
 
 #[cfg(test)]
 use viewer_foundation::map::camera::MapDefines;
@@ -18,8 +16,6 @@ use viewer_foundation::map::icon_windows::PoolView;
 
 const BUTTON_CONTAINER: &str = "raid_map_icon_button_container";
 const FRAME: &str = "raid_map_icon_frame";
-/// An offer bubble's frame state: selected while its target details window shows, else hovered
-/// under the pointer, else the icon's own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FrameState {
     Own,
@@ -28,8 +24,6 @@ pub(crate) enum FrameState {
 }
 
 impl FrameState {
-    /// The zero-based strip frame the game draws for the state: selected is frame 2 and hovered
-    /// frame 3, one-based.
     fn frame(self, own: u32) -> u32 {
         match self {
             Self::Own => own,
@@ -50,21 +44,17 @@ pub struct PreparedRaids {
 struct Placed {
     screen: [f32; 2],
     icon: RaidIcon,
-    /// Where the icon stands for a free eye.
     anchor: IconAnchor,
 }
 
 pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
     let defines = &inputs.camera.defines;
     let [near, far] = defines.raid_icons;
-    // The map mode chooses how far the icons reach, or hides them.
     let far = match inputs.reach {
         Some(RaidReach::Normal) => Some(far),
         Some(RaidReach::RaidMode) => Some(defines.raid_icons_raid_mode),
         None => None,
     };
-    // The game's camera shows them all within the distances or none; a free eye shows each
-    // within them by its own distance.
     let free = inputs.camera.free().is_some();
     let shown = far.is_some_and(|far| free || (near..=far).contains(&inputs.camera.height));
     let far = far.unwrap_or(near);
@@ -116,7 +106,6 @@ pub(crate) struct Controls<'a> {
 }
 
 pub(crate) fn controls(root: &native::Element) -> Result<Controls<'_>, String> {
-    // Find the named child container, then recursively find its controls and icons.
     let container = root
         .find_recursive(native::Kind::Container, BUTTON_CONTAINER.as_bytes())
         .ok_or_else(|| format!("no container named {BUTTON_CONTAINER}"))?;
@@ -141,7 +130,6 @@ pub(crate) fn update(
     controls: Controls<'_>,
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
-    // Set the frame and one-based sprite index in order.
     instance.set_sprite(
         root,
         controls.frame,
@@ -151,10 +139,8 @@ pub(crate) fn update(
     let frame = state.frame(icon.frame);
     instance.set_frame(root, controls.frame, frame.wrapping_add(1) as i32)?;
     if icon.frame == 0 {
-        // Offers enable or disable the frame only.
         instance.control(root, controls.frame)?.enabled = Some(icon.enabled);
     } else {
-        // Own and incoming refreshes enable the glyph.
         instance.control(root, controls.glyph)?.enabled = Some(true);
     }
     let glyph = icon
@@ -244,7 +230,6 @@ impl PreparedRaids {
                 owners: &owners,
             },
             Box::new(|instance, root| {
-                // Initially hide plus_icon and set its hide bit.
                 let plus = controls(root)?.plus;
                 instance.hide(root, plus)?;
                 instance.set_hide_flag(root, plus, true)
@@ -269,9 +254,6 @@ impl PreparedRaids {
             return 0;
         }
         let (mut drawn, painted) = view.painted();
-        // Sort and reverse-attach visible windows before GUI painting; hit-test
-        // the paint list backwards. Pool/live order can differ after camera moves
-        // or slot reuse, so hover follows draw rank.
         drawn.sort_by_key(|(drawn, _)| placed[&drawn.owner].0);
         let mut count = 0;
         for (drawn, generation) in drawn {
@@ -313,8 +295,6 @@ impl PreparedRaids {
             {
                 let layer = sprites::layer(priority, ordinal as u32, 1);
                 batch.at_layer(layer);
-                // The open window's panel takes the pointer where it draws a part that does, and
-                // does nothing with it.
                 if let Some((panel, buttons)) = super::details::draw(context, shown, drawn.origin, batch, &mut report.reasons) {
                     if let Some(rect) = panel {
                         hits.push(tooltips::Hit {
@@ -326,7 +306,6 @@ impl PreparedRaids {
                             supported: false,
                         });
                     }
-                    // Each type button hovers above the panel; its click stays inert.
                     for button in buttons {
                         let Some(target) = button.target(shown) else { continue };
                         hits.push(tooltips::Hit {
@@ -371,7 +350,6 @@ mod tests {
     use super::super::test_support::{DRAW_GUI, assets, draw_resources};
     use super::*;
 
-    /// A raid icon standing nowhere in particular, for draws that do not test placement.
     const UNANCHORED: IconAnchor = IconAnchor {
         world: [0.0; 3],
         cutoff: f32::INFINITY,
@@ -492,7 +470,6 @@ mod tests {
                 &icons,
             );
             let expected = if swapped { 2 } else { 1 };
-            // Distinct projected depths; the southward eye draws the near icon last.
             assert_eq!(prepared.placed.last().unwrap().icon.province, expected);
             let mut batch = Batch::default();
             let mut hits = Vec::new();
@@ -642,8 +619,6 @@ mod tests {
         let mut view = PoolView::default();
         let mut hits = Vec::new();
         let mut report = RaidReport::default();
-        // A retained pool's live order differs from the new near-to-far ranks.
-        // The first fixture populates that history; the second is paint order.
         for order in [[1, 3, 2], [2, 3, 1]] {
             let prepared = PreparedRaids {
                 placed: order.map(placed).into(),
@@ -692,8 +667,6 @@ mod tests {
                 scripted_content: &Err("no scripted substitutions in this fixture".into()),
                 flag_exists: &|_| true,
             });
-            // Use the building's state. A building-only target does not query its
-            // province's victory-point name.
             assert!(
                 tooltip
                     .title
@@ -701,8 +674,6 @@ mod tests {
                 "{point:?}: {tooltip:?}",
             );
         }
-        // A null ruling-party pointer cannot skip the earlier native
-        // group-qualified flag rung, even with plain artwork available.
         let mut politics = frame.complete::<tables::Politics>().unwrap().to_vec();
         politics[0].ruling_party = None;
         put::<tables::Politics>(&mut frame, politics);
@@ -788,8 +759,6 @@ mod tests {
         assert!(batch.quads.is_empty());
     }
 
-    /// A state-building raid and a province raid group apart but may stand at one building
-    /// site: each keeps its own window, so neither replaces the other.
     #[test]
     fn groups_standing_at_one_province_keep_their_own_windows() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -935,7 +904,6 @@ mod tests {
             Some(false)
         );
         assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(1));
-        // The game draws a hovered offer on strip frame 3.
         update(&mut instance, root, &icon, FrameState::Hovered, controls, &resources).unwrap();
         assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(3));
         update(&mut instance, root, &icon, FrameState::Own, controls, &resources).unwrap();
@@ -948,8 +916,6 @@ mod tests {
         let native_gui::PartKind::Sprite { geometry, .. } = &frame.kind else {
             panic!("frame is a sprite");
         };
-        // Inherit only the sprite; the derived control retains its own default
-        // position and orientation.
         assert_eq!(&geometry.rect[..2], &[0., 0.]);
         assert!(
             layout
@@ -966,7 +932,6 @@ mod tests {
             &resources,
         )
         .unwrap();
-        // An open details window draws the frame in its selected state, still an offer's.
         assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(2));
         assert_eq!(instance.control(root, controls.frame).unwrap().enabled, Some(false));
         let layout = instance.layout(root, &resources, None).unwrap().unwrap();

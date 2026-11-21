@@ -1,6 +1,3 @@
-//! The element readers: GUI's file level and `guiTypes`, and each element kind's
-//! field dispatch, driven by one explicit stack of the elements being read, so a nested element
-//! is read as deep as the text nests it.
 
 use crate::parser::{
     native::{Kind as TokenKind, Token},
@@ -17,7 +14,6 @@ use super::{
     spill::{self, Layout},
 };
 
-/// The element kinds, as the reader builds them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Build {
     Container,
@@ -40,7 +36,6 @@ pub(super) enum Build {
     Browser,
     CurveGraph,
     Window,
-    /// A `guiTypes` kind no container or window builds.
     Opaque(&'static str),
 }
 
@@ -105,9 +100,6 @@ impl Build {
     }
 }
 
-/// Child element kinds a container builds, selected by folded keyword. Other kinds
-/// (`textBoxType`, `windowType`, `guiButtonType`, `multiSpriteButtonType`...) are unknown keys
-/// there and skip their blocks.
 fn container_child(key: &str) -> Option<Build> {
     Some(match key {
         "containerwindowtype" => Build::Container,
@@ -130,7 +122,6 @@ fn container_child(key: &str) -> Option<Build> {
     })
 }
 
-/// Child kinds a window builds, registered without a duplicate check.
 fn window_child(key: &str) -> Option<Build> {
     Some(match key {
         "icontype" => Build::Icon,
@@ -152,8 +143,6 @@ fn window_child(key: &str) -> Option<Build> {
     })
 }
 
-/// Template kinds built from `guiTypes` entries. Other keys report an unexpected token and skip
-/// a block.
 fn template_kind(key: &str) -> Option<Build> {
     Some(match key {
         "containerwindowtype" => Build::Container,
@@ -179,7 +168,6 @@ fn template_kind(key: &str) -> Option<Build> {
     })
 }
 
-/// File-level GUI string keys (tokens 0x2C2 to 0x2C5).
 const DEFAULT_SOUNDS: [&str; 4] = [
     "default_clicksound",
     "default_oversound",
@@ -187,7 +175,6 @@ const DEFAULT_SOUNDS: [&str; 4] = [
     "default_upsound",
 ];
 
-/// Keys a drop-down refuses and skips as blocks instead of handing to its inner container.
 const DROP_DOWN_REFUSED: [&str; 12] = [
     "show_position",
     "hide_position",
@@ -203,7 +190,6 @@ const DROP_DOWN_REFUSED: [&str; 12] = [
     "horizontalscrollbar",
 ];
 
-/// One element while its keys are read.
 pub(super) struct Building {
     build: Build,
     spelled: String,
@@ -214,27 +200,16 @@ pub(super) struct Building {
     fields: Fields,
     children: Vec<Element>,
     refusals: Vec<Refusal>,
-    /// Fields refused for good.
     refused: Refused,
-    /// The last `orientation` text of a text box or text sprite, parsed once the element is
-    /// read (their post-load pass).
     orientation_text: Option<Vec<u8>>,
-    /// Whether a grid has read its `background`.
     grid_background: bool,
-    /// Whether element reader names it when unnamed: not under `background`, not a
-    /// drop-down's inner container.
     named: bool,
-    /// A drop-down's inner container while it is read.
     inner: Option<Box<Building>>,
-    /// A browser's or curve graph's `spriteType` string, as the component readers can reach it.
     sprite_string: spill::CxxString,
-    /// Why a scrollbar's child factory is no longer the one its constructor stored, once a
-    /// `slider_pos_shift` component wrote it.
     factory: Option<String>,
 }
 
 impl Building {
-    /// Stores what one conversion stored, if anything, into the field.
     fn store<T>(&mut self, value: Option<T>, slot: impl FnOnce(&mut Fields, T)) {
         if let Some(value) = value {
             slot(&mut self.fields, value);
@@ -242,7 +217,6 @@ impl Building {
     }
 }
 
-/// A part slot of an extended scrollbar or a drop-down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
     ScrollbarBackground,
@@ -254,37 +228,26 @@ enum Part {
     ExpandedWindow,
 }
 
-/// Where a finished element goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Attach {
-    /// The element the driver was asked for.
     Root,
-    /// A child, registered in its parent's name tree.
     Child,
-    /// A container's `background`, appended.
     Background,
-    /// A grid's first `background`.
     GridBackground,
-    /// A child or `background` of a drop-down's inner container.
     InnerChild,
     InnerBackground,
     Part(Part),
 }
 
-/// An element the key being read opens.
 struct Nested {
     build: Build,
     spelled: String,
     attach: Attach,
 }
 
-/// What a kind's own switch did with a key.
 enum Handled {
-    /// Its own key, read.
     Yes,
-    /// Its own key, which opens an element.
     Opens(Nested),
-    /// Keys handled by the common element reader or its default.
     No,
 }
 
@@ -307,8 +270,6 @@ impl Handled {
 }
 
 impl Reader<'_> {
-    /// The file's own persistent key loop. A `}` at this level ends reading the file. Each
-    /// `guiTypes` block contributes its templates in order.
     pub(super) fn file(&mut self) -> Vec<Vec<Element>> {
         let mut blocks = Vec::new();
         while self.next_key() {
@@ -334,13 +295,11 @@ impl Reader<'_> {
         blocks
     }
 
-    /// Build and read each `guiTypes` entry, then queue it for registration.
     fn gui_types(&mut self) -> Vec<Element> {
         let mut templates = Vec::new();
         while self.next_key() {
             let key = self.key.clone();
             match keyword_of(&key).and_then(template_kind) {
-                // A template's path starts at its own name.
                 Some(build) => {
                     let element = self.element(build, &spelling(&key.text), None);
                     templates.push(element);
@@ -397,8 +356,6 @@ impl Reader<'_> {
         element
     }
 
-    /// Read one element over tokens after the value, regardless of that value, and its nested
-    /// elements on the driver's own stack. `parent` is the parent's label; a template has none.
     fn element(&mut self, build: Build, spelled: &str, parent: Option<usize>) -> Element {
         let mut stack = vec![(self.open(build, spelled, parent, true), Attach::Root)];
         loop {
@@ -435,8 +392,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Dispatch an element key through its own reader, then common fields, then the default.
-    /// Return an element opened by the key for the driver to read.
     fn dispatch(&mut self, element: &mut Building, key: &Token) -> Option<Nested> {
         let Some(word) = keyword_of(key) else {
             self.unexpected();
@@ -476,8 +431,6 @@ impl Reader<'_> {
         }
     }
 
-    /// A drop-down's own keys and `name`, with a few container keys refused; all other keys
-    /// belong to its inner container.
     fn drop_down_key(&mut self, element: &mut Building, word: &str, key: &Token) -> Option<Nested> {
         let text = self.value.text.clone();
         let Fields::DropDown(fields) = &mut element.fields else {
@@ -507,8 +460,6 @@ impl Reader<'_> {
                     }
                 }
             }
-            // A second one only logs (lines 0x2E, 0x3B) and reads nothing: its block is read as
-            // the drop-down's own keys.
             "expandbutton" => {
                 if fields.expand_button.is_none() {
                     return Some(Nested {
@@ -554,12 +505,10 @@ impl Reader<'_> {
         None
     }
 
-    /// The common element reader's keys.
     fn generic_key(&mut self, element: &mut Building, word: &str) -> bool {
         let text = self.value.text.clone();
         match word {
             "name" => element.name = read_string(&text),
-            // Case 0xA5 returns at once.
             "dontrender" => {}
             "tooltip" | "tooltiptext" | "pdx_tooltip" => {
                 element.common.tooltip = fnv64(&text);
@@ -588,7 +537,6 @@ impl Reader<'_> {
                 element.common.tooltip_anchor.set = true;
                 self.tooltip_anchor(&mut element.common);
             }
-            // Read only while unset; a repeat reports an error and skips nothing.
             "context_aware_tooltip" | "bound_tooltip" => {
                 if element.common.bound_tooltip.is_empty() {
                     element.common.bound_tooltip = self.bound_localization();
@@ -602,9 +550,6 @@ impl Reader<'_> {
         true
     }
 
-    /// `pdx_tooltip_anchor` (0x2DD) runs its own key loop regardless of the value, with extra
-    /// key/operator/value diagnostics enabled. `x` and `y` use `%i`, `relative` and `below` use
-    /// booleans, and other keys are unexpected.
     fn tooltip_anchor(&mut self, common: &mut Common) {
         while self.next_key() {
             let key = self.key.clone();
@@ -620,10 +565,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Read bound localization from the value: a scalar becomes one node with its text as the
-    /// formatted localization key. A block becomes a pre-order tree; keys other than
-    /// `localization_key` are named arguments, and block arguments are nested nodes. Consume
-    /// each node's `}`. A root without a key empties the whole result.
     fn bound_localization(&mut self) -> BoundLocalization {
         let mut bound = BoundLocalization::default();
         if self.value.kind != TokenKind::Open {
@@ -664,13 +605,11 @@ impl Reader<'_> {
             });
         }
         if bound.nodes[0].key.is_empty_key() {
-            // A root without a localisation key clears the array.
             bound.nodes.clear();
         }
         bound
     }
 
-    /// The container reader's own keys.
     fn container_key(&mut self, element: &mut Building, word: &str) -> Handled {
         if let Some(build) = container_child(word) {
             return Handled::child(build, &self.key);
@@ -731,7 +670,6 @@ impl Reader<'_> {
                 }
             }
             "orientation" | "origo" => {
-                // The keyword orientation reader: anything but a keyword among the nine is logged and 0.
                 let value = Orientation::from_keyword(&self.value).unwrap_or_default();
                 let fields = container(element);
                 if word == "orientation" {
@@ -740,8 +678,6 @@ impl Reader<'_> {
                     fields.origo = value;
                 }
             }
-            // Case 0x277 reads into a cleared temporary and stores it in the clipping byte, so a
-            // failed read replaces the tri-state with false.
             "clipping" => container(element).clipping = Some(read_bool(&text).unwrap_or(false)),
             "margin" | "background_margin" => {
                 let fields = container(element);
@@ -800,7 +736,6 @@ impl Reader<'_> {
                         match word {
                             "fade_time" => fields.fade_time = value,
                             "fade_delay" => fields.fade_delay = value,
-                            // Read into the show time, then copied to the hide time.
                             "animation_time" => {
                                 fields.show_animation_time = value;
                                 fields.hide_animation_time = value;
@@ -846,7 +781,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// Animation type from the value keyword; other values are logged and stored as `none`.
     fn animation(&self) -> Animation {
         [
             ("none", Animation::None),
@@ -860,8 +794,6 @@ impl Reader<'_> {
         .map_or(Animation::None, |(_, value)| *value)
     }
 
-    /// `drag_scroll` (0x274): convert a nonblock value as one drag button; otherwise read and
-    /// resolve every token through `}`, combining the button bits with OR.
     fn drag_scroll(&mut self) -> u8 {
         let button = |token: &Token| -> u8 {
             [("left", 1), ("middle", 2), ("right", 4)]
@@ -886,7 +818,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Applies what integer point reader wrote to `target`, refusing the field for an undefined axis.
     fn store_point(element: &mut Building, key: &str, point: [Axis; 2], target: &mut [i32; 2]) {
         for (target, axis) in target.iter_mut().zip(point) {
             match axis {
@@ -905,7 +836,6 @@ impl Reader<'_> {
         }
     }
 
-    /// The icon reader's own keys.
     fn icon_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
@@ -915,7 +845,6 @@ impl Reader<'_> {
                 }
             }
             "position" => {
-                // A zeroed local, then both axes as floats.
                 let mut point = [0; 2];
                 let axes = self.int_point();
                 Self::store_point(element, "position", axes, &mut point);
@@ -952,14 +881,12 @@ impl Reader<'_> {
                     }
                 }
             }
-            // Report unsupported icon text fields without storing them.
             "font" | "text" | "buttontext" | "buttonfont" => {}
             _ => return Handled::No,
         }
         Handled::Yes
     }
 
-    /// The button reader's own keys.
     fn button_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
@@ -982,7 +909,6 @@ impl Reader<'_> {
                 }
             }
             "bordersize" => {
-                // A zeroed local, both axes copied.
                 let axes = self.int_point();
                 let mut point = [0; 2];
                 Self::store_point(element, "borderSize", axes, &mut point);
@@ -1007,8 +933,6 @@ impl Reader<'_> {
                 }
             }),
             "format" => {
-                // Only keyword ids dispatch; other values are logged and leave the format
-                // unchanged.
                 if let (Some(format), Some(button)) =
                     (self.text_format(), element.fields.button_mut())
                 {
@@ -1074,14 +998,12 @@ impl Reader<'_> {
                     _ => button.shortcuts.push(value),
                 }
             }
-            // Report the unsupported key and skip a block value.
             "open_browser" => self.unexpected(),
             _ => return Handled::No,
         }
         Handled::Yes
     }
 
-    /// A text format by the value's keyword id: `left` 0, `right` 1, `center` or `centre` 2.
     fn text_format(&self) -> Option<TextFormat> {
         if self.value.is_keyword("left") {
             Some(TextFormat::Left)
@@ -1094,7 +1016,6 @@ impl Reader<'_> {
         }
     }
 
-    /// A vertical alignment by the value's keyword id.
     fn vertical_alignment(&self) -> Option<VerticalAlignment> {
         if self.value.is_keyword("top") {
             Some(VerticalAlignment::Top)
@@ -1107,7 +1028,6 @@ impl Reader<'_> {
         }
     }
 
-    /// The instant text box reader's own keys.
     fn text_box_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
@@ -1121,10 +1041,7 @@ impl Reader<'_> {
                     }
                 }
             }
-            // Case 0x25 returns at once.
             "texturefile" => {}
-            // Case 0x2F reports the deprecated field, then reads a point into a zeroed local
-            // and discards it.
             "size" => {
                 let _ = self.point_tokens();
             }
@@ -1196,7 +1113,6 @@ impl Reader<'_> {
                 }
             }
             "text_color_code" => {
-                // Exactly one byte; anything else is logged and kept.
                 if let ([code], Some(text_box)) = (
                     crate::parser::c_string(&text),
                     element.fields.text_box_mut(),
@@ -1204,8 +1120,6 @@ impl Reader<'_> {
                     text_box.text_color_code = *code;
                 }
             }
-            // Cases 0x31B and 0x31D read only while unset; repeats report an error and skip
-            // nothing.
             "context_aware_text" | "bound_text" => {
                 let unset = element
                     .fields
@@ -1226,7 +1140,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The grid reader's own keys.
     fn grid_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
@@ -1264,10 +1177,6 @@ impl Reader<'_> {
                 }
             }
             "orientation" => {
-                // Keywords among the nine orientations dispatch directly. Other keywords and
-                // numbers report invalid orientation and store 0. Strings (0xF, quoted or
-                // unregistered) are lowered and compared; `center`, `center_left` and
-                // `center_right` all store 4.
                 let value = match Orientation::from_keyword(&self.value) {
                     Some(orientation) => orientation as i32,
                     None if self.value.quoted() => {
@@ -1303,7 +1212,6 @@ impl Reader<'_> {
                     }
                 });
             }
-            // The integer component reader from `max_slots_horizontal` ([`GridBytes`]).
             "max_slots" => {
                 let mut written = Vec::new();
                 let result = self.components(|index, value| written.push((index, value as u32)));
@@ -1333,8 +1241,6 @@ impl Reader<'_> {
                 }
             }
             "background" => {
-                // Read only the first background; later ones are logged and their blocks
-                // skipped.
                 if !std::mem::replace(&mut element.grid_background, true) {
                     return Handled::Opens(Nested {
                         build: Build::Button,
@@ -1348,7 +1254,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The overlapping elements reader's own keys.
     fn list_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
@@ -1389,8 +1294,6 @@ impl Reader<'_> {
                 .map(|(_, value)| *value);
                 match (value, element.fields.list_mut()) {
                     (Some(value), Some(list)) => list.format = value,
-                    // Report the invalid format, retain the previous value and skip a block
-                    // value.
                     (None, _) => self.unexpected(),
                     _ => {}
                 }
@@ -1415,7 +1318,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The position type reader's own keys.
     fn position_type_key(&mut self, element: &mut Building, word: &str) -> Handled {
         match word {
             "position" => {
@@ -1442,7 +1344,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The list box reader's own keys.
     fn list_box_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         let Fields::ListBox(fields) = &mut element.fields else {
@@ -1500,8 +1401,6 @@ impl Reader<'_> {
             }
             "clipping" => fields.clipping = read_bool(&text).unwrap_or(fields.clipping),
             "scrollbar_side" => {
-                // Compare the text without ASCII case sensitivity; anything else is logged and
-                // kept.
                 let side = read_string(&text);
                 if side.eq_ignore_ascii_case(b"left") {
                     fields.scrollbar_side = 0;
@@ -1514,7 +1413,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The text box reader's own keys.
     fn text_sprite_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
@@ -1549,8 +1447,6 @@ impl Reader<'_> {
                     "font" => fields.font = read_string(&text),
                     "texturefile" => fields.texture = read_string(&text),
                     "text" => fields.text = read_string(&text),
-                    // Only `centre`, `right` and `left`; `center` and anything else change
-                    // nothing, with no log.
                     "format" => {
                         if self.value.is_keyword("centre") {
                             fields.format = 2;
@@ -1580,15 +1476,12 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// Read a text block with the persistent key loop without checking its value. Read keys
-    /// through `}` or EOF; unknown keys return without skipping anything.
     fn text_block(&mut self) -> TextBlock {
         let mut block = TextBlock::default();
         self.read_text_block(&mut block);
         block
     }
 
-    /// The same text block reader updates an animated map text type's block in place.
     pub(super) fn read_text_block(&mut self, block: &mut TextBlock) {
         while self.next_key() {
             let key = self.key.clone();
@@ -1623,13 +1516,10 @@ impl Reader<'_> {
         }
     }
 
-    /// The edit box reader's own keys.
     fn edit_box_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         match word {
             "size" | "position" | "bordersize" => {
-                // The integer component reader from `position`, `size` or `borderSize`
-                // ([`EditBoxBytes`]).
                 let start = match word {
                     "position" => 0x150,
                     "size" => 0x158,
@@ -1690,7 +1580,6 @@ impl Reader<'_> {
                             "only_numbers" => 0x8,
                             _ => 0x10,
                         };
-                        // A zeroed local: a value that is not `yes` or `no` clears the bit.
                         let set = read_bool(&text).unwrap_or(false);
                         let mut bytes = fields.slots[9].to_le_bytes();
                         if set {
@@ -1707,7 +1596,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The scrollbar reader's own keys, and its children.
     fn scrollbar_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         if matches!(word, "guibuttontype" | "buttontype" | "icontype")
@@ -1717,7 +1605,6 @@ impl Reader<'_> {
         }
         match word {
             "guibuttontype" => return Handled::child(Build::GuiButton, &self.key),
-            // Handed to the factory as `guiButtonType`.
             "buttontype" => return Handled::child(Build::Button, &self.key),
             "icontype" => return Handled::child(Build::Icon, &self.key),
             "position" | "size" | "bordersize" => {
@@ -1739,7 +1626,6 @@ impl Reader<'_> {
                     }
                 }
             }
-            // The integer component reader from `slider_pos_shift` ([`ScrollbarBytes`]).
             "slider_pos_shift" => {
                 let mut written = Vec::new();
                 let result = self.components(|index, value| written.push((index, value as u32)));
@@ -1815,7 +1701,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The extended scrollbar reader's own keys.
     fn extended_scrollbar_key(&mut self, element: &mut Building, word: &str) -> Handled {
         let text = self.value.text.clone();
         let parts = [
@@ -1836,8 +1721,6 @@ impl Reader<'_> {
                 Part::IncreaseButton => bar.increase_button.is_some(),
                 _ => bar.decrease_button.is_some(),
             };
-            // A second one only logs and reads nothing: its block is read as the scrollbar's own
-            // keys.
             if taken {
                 return Handled::Yes;
             }
@@ -1916,12 +1799,8 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// Browser and curve-graph `position` and `size` use the integer component reader into four
-    /// consecutive `i32`s followed by the `spriteType` string.
     fn browser_key(&mut self, element: &mut Building, word: &str) -> Handled {
         match word {
-            // The integer component reader into the four `i32`s and on into `spriteType`
-            // ([`BrowserBytes`]).
             "position" | "size" => {
                 let mut written = Vec::new();
                 let result = self.components(|index, value| written.push((index, value as u32)));
@@ -1935,7 +1814,6 @@ impl Reader<'_> {
                     let start = bytes.base() + if word == "position" { 0 } else { 8 };
                     let written =
                         spill::spill(&mut bytes, "integer component reader", start, written);
-                    // The browser's drawable reads the string as the components left it.
                     match written.and_then(|()| {
                         element.sprite_string.text().map_err(|reason| {
                             format!("leaves spriteType (its string) unreadable: {reason}")
@@ -1966,7 +1844,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// The window reader's own keys.
     fn window_key(&mut self, element: &mut Building, word: &str) -> Handled {
         if let Some(build) = window_child(word) {
             return Handled::child(build, &self.key);
@@ -2046,10 +1923,6 @@ impl Reader<'_> {
         Handled::Yes
     }
 
-    /// A `windowType` size uses the integer point walk. Each number scans with `%i` into an
-    /// uninitialised local and is stored. `max_resolution` (0x1D9) stores the root's extent
-    /// less the show position, or the position when show position is 0,0, as read so far. Other
-    /// values store nothing.
     fn window_size(&mut self, element: &mut Building) {
         let values = self.point_tokens();
         let Fields::Window(window) = &mut element.fields else {
@@ -2084,8 +1957,6 @@ impl Reader<'_> {
         }
     }
 
-    /// The element as read: generated name, text box orientation parsed from its last text, and
-    /// refusals.
     fn finish_element(&mut self, mut element: Building) -> Element {
         if element.named && element.name.is_empty() {
             element.name = format!("unnamed_gui_{}", self.unnamed).into_bytes();
@@ -2139,8 +2010,6 @@ impl Reader<'_> {
     }
 }
 
-/// A zeroed local point after integer point reading. Undefined axes stay 0: text blocks have no
-/// visible effect to refuse.
 fn point_or_zero(axes: [Axis; 2]) -> [i32; 2] {
     axes.map(|axis| match axis {
         Axis::Value(value) => value,
@@ -2148,7 +2017,6 @@ fn point_or_zero(axes: [Axis; 2]) -> [i32; 2] {
     })
 }
 
-/// Places a finished element in its parent.
 fn attach_to(parent: &mut Building, attach: Attach, child: Element) {
     match attach {
         Attach::Root => {}
@@ -2193,9 +2061,6 @@ fn attach_to(parent: &mut Building, attach: Attach, child: Element) {
             _ => {}
         },
         Attach::Child => match parent.build {
-            // No duplicate check: every child is kept, the tree keeping the last. A button of
-            // the background's name as read so far goes into no list (cases 0x7F and 0xB4 of
-            // the window reader: string comparison, byte for byte).
             Build::Window => {
                 if let Fields::Window(window) = &mut parent.fields
                     && matches!(child.kind, Kind::GuiButton | Kind::MultiSpriteButton)
@@ -2205,7 +2070,6 @@ fn attach_to(parent: &mut Building, attach: Attach, child: Element) {
                 }
                 parent.children.push(child);
             }
-            // The tree replaces: only the last of a name is reachable.
             Build::Scrollbar => {
                 parent
                     .children
@@ -2218,8 +2082,6 @@ fn attach_to(parent: &mut Building, attach: Attach, child: Element) {
                     .iter()
                     .any(|own| own.is_named(child.name_bytes()))
                 {
-                    // A later duplicate is destroyed with its refusals and does not enter the
-                    // child lists.
                     for refusal in &child.refusals {
                         if refusal.cause == Cause::Unaligned {
                             record(
@@ -2243,7 +2105,6 @@ fn spelling(key: &[u8]) -> String {
     String::from_utf8_lossy(key).into_owned()
 }
 
-/// The container fields of an element being read as one.
 fn container(element: &mut Building) -> &mut Container {
     match &mut element.fields {
         Fields::Container(container) => container,
@@ -2251,7 +2112,6 @@ fn container(element: &mut Building) -> &mut Container {
     }
 }
 
-/// A grid from `max_slots_horizontal`.
 struct GridBytes<'a>(&'a mut Grid);
 
 impl Layout for GridBytes<'_> {
@@ -2265,7 +2125,6 @@ impl Layout for GridBytes<'_> {
             0x1B8 | 0x1BC => grid.max_slots[(offset - 0x1B8) / 4] = bits as i32,
             0x1C0 => grid.format = bits as i32,
             0x1C4 => grid.orientation = bits as i32,
-            // `add_horizontal`'s byte; the constructor writes nothing past it.
             0x1C8 => grid.add_horizontal = bits.to_le_bytes()[0] != 0,
             _ => {}
         }
@@ -2273,8 +2132,6 @@ impl Layout for GridBytes<'_> {
     }
 }
 
-/// An edit box's 0x180 bytes from `position`: the twelve slots kept by [`EditBox::slots`], through
-/// the object's end.
 struct EditBoxBytes<'a>(&'a mut EditBox);
 
 impl Layout for EditBoxBytes<'_> {
@@ -2288,7 +2145,6 @@ impl Layout for EditBoxBytes<'_> {
     }
 }
 
-/// A scrollbar's 0x2A0 bytes from `slider_pos_shift`.
 struct ScrollbarBytes<'a> {
     bar: &'a mut Scrollbar,
     factory: &'a mut Option<String>,
@@ -2301,8 +2157,6 @@ impl Layout for ScrollbarBytes<'_> {
 
     fn write(&mut self, offset: usize, bits: u32) -> Result<(), String> {
         match offset {
-            // `slider_pos_shift`, then `maxValue`, `minValue`, `stepSize`, `startValue`, `priority`
-            // and the padding after it.
             0x1F0..=0x20C => {
                 let slot = (offset - 0x1F0) / 4;
                 self.bar.slots[slot] = bits;
@@ -2310,10 +2164,7 @@ impl Layout for ScrollbarBytes<'_> {
                     self.bar.min_value_set = true;
                 }
             }
-            // The building container's second constructor argument, which no later reader uses.
             0x210 | 0x214 => {}
-            // The child factory (the container's own factory pointer), which field dispatch calls
-            // through for each later child kind: failing only if one follows.
             0x218 | 0x21C => {
                 self.factory.get_or_insert_with(|| {
                     "follows a slider_pos_shift whose eleventh or twelfth component wrote the \
@@ -2330,9 +2181,6 @@ impl Layout for ScrollbarBytes<'_> {
                         .into(),
                 );
             }
-            // The map's queue of batched inserts, which the scrollbar destructor walks through its
-            // head and frees; the map batches nothing here (its batching flag, 0 from the
-            // constructor, lies in the refused range above).
             0x240 | 0x244 if bits != 0 => {
                 return Err(
                     "the child map's batch queue, which the scrollbar destructor walks \
@@ -2340,12 +2188,8 @@ impl Layout for ScrollbarBytes<'_> {
                         .into(),
                 );
             }
-            // The queue's tail and count, which only a batched insert reads and name tree clearing
-            // resets; the map's next two words, the second of which decides only the insert's
-            // discarded return (name tree insertion); then padding.
             0x240..=0x25C => {}
             0x260 => self.bar.horizontal = bits as i32,
-            // Padding (the constructor writes nothing there).
             0x264 => {}
             0x268 | 0x26C | 0x278 | 0x27C => {
                 return Err(
@@ -2355,10 +2199,8 @@ impl Layout for ScrollbarBytes<'_> {
                         .into(),
                 );
             }
-            // Its capacity: nothing appends after the constructor.
             0x270 => {}
             0x274 => self.bar.listed = bits as i32,
-            // `lockable`, `drag`, then padding.
             0x280 => {
                 self.bar.lockable = bits.to_le_bytes()[0] != 0;
                 self.bar.drag = bits.to_le_bytes()[1] != 0;
@@ -2376,15 +2218,12 @@ impl Layout for ScrollbarBytes<'_> {
             }
             0x298 => self.bar.use_range_limit = bits.to_le_bytes()[0] != 0,
             0x29C => self.bar.scroll_speed = bits as i32,
-            // The padding after `drag`.
             _ => {}
         }
         Ok(())
     }
 }
 
-/// A browser (0x130 bytes, ending with `position`, `size` and `spriteType`) or curve graph (0x120
-/// bytes, ending the same way): four `i32`s, the string, then the object's end.
 struct BrowserBytes<'a> {
     fields: &'a mut Browser,
     sprite: &'a mut spill::CxxString,
@@ -2392,7 +2231,6 @@ struct BrowserBytes<'a> {
 }
 
 impl BrowserBytes<'_> {
-    /// `position`'s offset.
     fn base(&self) -> usize {
         if self.curve { 0xF0 } else { 0x100 }
     }

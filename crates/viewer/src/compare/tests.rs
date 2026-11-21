@@ -1,7 +1,5 @@
 use super::*;
 
-/// A deterministic synthetic frame with variation in every channel and no value above 200,
-/// so a test may add an offset without clamping.
 fn gradient(width: u32, height: u32) -> Image {
     let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
     for y in 0..height {
@@ -24,7 +22,6 @@ fn solid(width: u32, height: u32, colour: [u8; 3]) -> Image {
     Image::from_rgb(width, height, rgb).unwrap()
 }
 
-/// Copies `image` and adds `delta` to every channel of every pixel inside `rect`.
 fn offset_rect(image: &Image, rect: Rect, delta: i16) -> Image {
     let mut rgb = image.rgb().to_vec();
     for y in rect.y..rect.bottom() {
@@ -63,7 +60,6 @@ fn identical_images_have_no_error_and_perfect_structure() {
     for channel in report.overall.mae_channels {
         assert!(close(channel, 0.0));
     }
-    // 64x48 halves to 32x24 and 16x12, so all three levels have complete 11x11 windows.
     for level in report.overall.ssim_levels {
         assert!(close(level, 1.0), "expected SSIM 1, got {level:?}");
     }
@@ -144,7 +140,6 @@ fn masking_every_pixel_leaves_no_metrics() {
 #[test]
 fn region_indices_are_row_major_and_tile_the_frame() {
     let game = gradient(96, 48);
-    // Cell (row 1, column 1) of a 4x2 grid covers x 24..48 and y 24..48.
     let wrong = Rect {
         x: 24,
         y: 24,
@@ -193,7 +188,6 @@ fn small_regions_report_no_ssim_rather_than_failing() {
     let image = gradient(96, 48);
     let mask = Mask::full(96, 48).unwrap();
     let report = compare(&image, &image, &mask, 4, 2).unwrap();
-    // Cells are 24x24: level 0 and level 1 fit an 11x11 window, level 2 at 6x6 does not.
     let cell = &report.regions[0].metrics;
     assert!(close(cell.ssim_levels[0], 1.0));
     assert!(close(cell.ssim_levels[1], 1.0));
@@ -202,7 +196,6 @@ fn small_regions_report_no_ssim_rather_than_failing() {
 
 #[test]
 fn the_colour_distance_sees_a_hue_change_the_luminance_ssim_misses() {
-    // Two colours chosen for near equal Rec. 601 luminance but opposite hue.
     let purple = [150u8, 50, 200];
     let green = [40u8, 140, 40];
     assert!((luminance(purple) - luminance(green)).abs() < 2.0);
@@ -289,7 +282,6 @@ fn the_difference_image_amplifies_and_greys_masked_pixels() {
     });
     let diff = diff_image(&game, &viewer, &mask).unwrap();
     assert_eq!(diff.pixel(0, 0), Some(DIFF_MASKED));
-    // 10 and 70 amplified four times, the second clamped at 255.
     assert_eq!(diff.pixel(1, 0), Some([40, 0, 255]));
     assert_eq!(diff.pixel(3, 1), Some([40, 0, 255]));
 }
@@ -327,7 +319,6 @@ fn images_reject_a_buffer_that_does_not_match_the_dimensions() {
     assert!(Mask::full(2, 0).is_err());
 }
 
-/// Encodes packed samples as a PNG in memory so decoding can be tested without a file.
 fn encode(width: u32, height: u32, colour: png::ColorType, data: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut encoder = png::Encoder::new(&mut bytes, width, height);
@@ -391,7 +382,6 @@ fn the_measured_game_interface_rectangles_stay_inside_the_frame() {
         assert!(rect.right() <= GAME_UI_WIDTH && rect.bottom() <= GAME_UI_HEIGHT);
         mask.exclude_rect(rect);
     }
-    // The map is still the large majority of the frame after the interface is removed.
     let total = u64::from(GAME_UI_WIDTH) * u64::from(GAME_UI_HEIGHT);
     assert!(mask.included_pixels() > total * 3 / 4);
     assert!(!mask.includes(0, 99));
@@ -428,18 +418,13 @@ fn the_text_report_lists_every_metric_and_one_row_per_region() {
 
 #[test]
 fn upscaling_two_by_two_to_four_by_four_aligns_pixel_centres() {
-    // A single red channel ramp: 0, 100 on the top row, 200, 40 below.
     let image = Image::from_rgb(2, 2, vec![0, 0, 0, 100, 0, 0, 200, 0, 0, 40, 0, 0]).unwrap();
     let scaled = upscale(&image, 2.0).unwrap();
     assert_eq!((scaled.width(), scaled.height()), (4, 4));
-    // Destination x maps to source -0.25, 0.25, 0.75, 1.25, clamped to
-    // 0.0, 0.25, 0.75, 1.0, so the top row reads 0, 25, 75, 100.
     let row: Vec<u8> = (0..4).map(|x| scaled.pixel(x, 0).unwrap()[0]).collect();
     assert_eq!(row, vec![0, 25, 75, 100]);
-    // The bottom row is the same interpolation of 200 and 40.
     let row: Vec<u8> = (0..4).map(|x| scaled.pixel(x, 3).unwrap()[0]).collect();
     assert_eq!(row, vec![200, 160, 80, 40]);
-    // Row 1 sits a quarter of the way from the top row to the bottom row.
     assert_eq!(scaled.pixel(0, 1).unwrap()[0], 50);
     assert_eq!(scaled.pixel(3, 2).unwrap()[0], 55);
 }

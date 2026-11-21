@@ -112,7 +112,6 @@ fn model(bytes: &[u8]) -> Result<ModelRow, &'static str> {
 #[test]
 fn model_selects_first_signed_maximum_and_preserves_bits_and_native_bytes() {
     let mut bytes = fixture();
-    // Even an i64::MIN first entry is selected, and an equal second loses.
     let row = model(&bytes).unwrap();
     assert_eq!(row.ship, SHIP_ID);
     assert_eq!(row.variant, (1 << 32) | 70);
@@ -415,8 +414,8 @@ fn subunit_index_preserves_signed_words_and_authenticates_the_embedded_copy() {
     for (token, valid, index) in [
         (0, 1, i32::MIN),
         (0, 1, -1),
-        (0x165, 0, 0), // The null singleton is copied with the ordinary vtable.
-        (0, 1, 17),    // A later rejected-name definition may also have token0.
+        (0x165, 0, 0),
+        (0, 1, 17),
         (u32::MAX, 255, i32::MAX),
     ] {
         let mut bytes = fixture();
@@ -445,7 +444,6 @@ fn subunit_index_preserves_signed_words_and_authenticates_the_embedded_copy() {
             *trace.reads.borrow(),
             [(BASE + SUBUNIT_DEFINITION, 12), (BASE + SUBUNIT_INDEX, 4)]
         );
-        // The optional read does not change the original model's result.
         assert_eq!(model(&bytes).unwrap().subunit_index, None);
         for at in [SUBUNIT_DEFINITION, CLASS_DATABASE_ID] {
             bytes[at] ^= 1;
@@ -529,7 +527,6 @@ impl Memory for CounterSource {
     }
 }
 
-// The original scalar statements, including lazy address construction.
 fn scalar_model_counters(
     memory: &impl Memory,
     pointer: usize,
@@ -702,8 +699,6 @@ fn traced_model_memo(memory: &impl Memory, memo: &mut ModelMemo) -> Result<Model
     )
 }
 
-// Primary observation order, with the source diagnostic if
-// that exact copy fails. Hints never add an entry to this sequence.
 fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
     let ship = "ship model fields unreadable";
     let parent = "ship model task force identity unreadable";
@@ -786,8 +781,6 @@ fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
 
 #[test]
 fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
-    // The memo retains its sprite inline, including payloads that use native
-    // heap storage.
     for (heap, len, extra_calls, extra_bytes) in
         [(false, 3, 0, 0), (true, 0, 1, 1), (true, 256, 2, 257)]
     {
@@ -825,7 +818,6 @@ fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
             (census.calls(), census.spans(), census.bytes()),
             (15, 24, 265)
         );
-        // All independent observations still occur, in their original order.
         let reads: Vec<_> = full_model_reads()[..24]
             .iter()
             .map(|&(a, n, _)| (a, n))
@@ -865,7 +857,6 @@ fn model_hull_reuse_keeps_other_ship_and_selected_variant_inputs_fresh() {
         .is_ok()
     );
 
-    // The second ship selects a different variant that shares the definition.
     word(&mut bytes, BANK + 24, 6);
     dword(
         &mut bytes,
@@ -987,7 +978,6 @@ fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() 
 
 #[test]
 fn model_memo_reuses_every_completed_hull_definition_of_the_capture() {
-    // Ships of one task force alternate hull definitions: A, B, then A again.
     let mut bytes = full_model_fixture();
     let first = BASE + DEFINITIONS[0]..BASE + DEFINITIONS[1];
     let mut memo = ModelMemo::default();
@@ -1014,7 +1004,6 @@ fn model_memo_reuses_every_completed_hull_definition_of_the_capture() {
         .iter()
         .filter(|(address, _)| first.contains(address))
         .count();
-    // The capture's earlier complete observation of that definition is reused.
     assert_eq!(definition_reads, 0);
     memo.reset();
     assert!(memo.hulls.is_empty());
@@ -1072,11 +1061,9 @@ fn model_prefetched_groups_keep_every_primary_fault_prefix_and_guard_count() {
     let memory = Trace::new(&source);
     assert!(traced_model(&memory).is_ok());
     assert_eq!(*memory.reads.borrow(), reads);
-    // Ship, parent, counters and selected-variant gathers.
     assert_eq!(memory.prefetched.get(), 4);
     let census = crate::read_census::ReadCensus::new(&source);
     assert!(traced_model(&census).is_ok());
-    // Primary reads retain the existing four batched field groups.
     assert_eq!(
         (census.calls(), census.spans(), census.bytes()),
         (17, 26, 309)
@@ -1299,7 +1286,6 @@ fn model_pool_lookahead_preserves_chunks_ties_and_every_positive_duplicate_read(
                 );
                 assert_eq!(*memory.reads.borrow(), reads[..=ordinal]);
             }
-            // A later repeated variant's fresh flags still affect the union.
             let ordinal = reads
                 .iter()
                 .rposition(|&(a, n)| {
@@ -1317,8 +1303,6 @@ fn model_pool_lookahead_preserves_chunks_ties_and_every_positive_duplicate_read(
     }
 }
 
-// No helper or new suffix executes inside the original model reader;
-// all optional capture follows maximum organisation.
 #[test]
 fn selected_companion_preserves_the_original_model_read_sequence_and_fault_prefix() {
     let bytes = fixture();
@@ -1331,8 +1315,6 @@ fn selected_companion_preserves_the_original_model_read_sequence_and_fault_prefi
         task_force: PARENT_ID,
         ..Default::default()
     };
-    // The existing fixture's signed-MIN bank amounts do not read positive flags.
-    // Inline sprites use only their descriptors, without live payload rereads.
     let expected = [
         (BASE, 16),
         (BASE + TASK_FORCE, 8),
@@ -1414,7 +1396,6 @@ fn empty_selected_pool_has_no_companion_and_the_memo_keeps_current_selectors() {
     let (first, selected) =
         read_model_with_selection(&memory, 0, BASE, &source, &mut memo).unwrap();
     assert_eq!(selected.unwrap().handle, first.variant);
-    // Reuse the sprite memo, but still mint from the fresh selected fields.
     word(
         &mut bytes,
         VARIANTS[0] + cequipment_variant::TYPE,
@@ -1603,8 +1584,6 @@ fn a_warm_null_sprite_memo_still_requires_each_selected_variant_to_be_registered
         singleton: (BASE + DEFINITIONS[0]) as u64,
     };
     assert!(read_model_with_selection(&memory, 0, BASE, &source, &mut memo).is_ok());
-    // Only the fresh selected CID changes; the memo key's definition/token
-    // match must not hide the null-source admission guard on that new variant.
     word(
         &mut bytes,
         VARIANTS[0] + 8,
@@ -1663,13 +1642,6 @@ fn model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
     }
 }
 
-/// The model reader through gathered ship, task-force, pool-entry and
-/// variant fields ([`ShipFields`]) returns the direct reader's row, and for a
-/// fault at the first or last byte of any read either makes its exact
-/// failure, never reading a failed span again; it needs 11 guarded calls, the
-/// capture's one game singleton gather among them, for the direct reader's 17.
-/// A later ship of the capture with the same variants gathers only itself and
-/// its pool entries for them.
 #[test]
 fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;
@@ -1717,10 +1689,6 @@ fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
     assert_eq!(traced_model(&fields.memory(&census)), healthy);
 }
 
-/// A held ship serves its own objects without reading them: the row is the
-/// fresh read's, and only the game singleton, its task force and variants are
-/// gathered. A read of a changed field differs from the held one; an unchanged
-/// read does not.
 #[test]
 fn held_ships_serve_their_own_objects_without_reading_them() {
     use crate::read_census::ReadCensus;
@@ -1760,10 +1728,6 @@ fn held_ships_serve_their_own_objects_without_reading_them() {
     assert!(!fresh.held().same(&held));
 }
 
-/// A heap fallback sprite is gathered with the pool entries, terminator
-/// included: the row and every fault's failure are the direct reader's,
-/// never reading a failed span again, and the reader's terminator and
-/// payload reads cost no call.
 #[test]
 fn gathered_heap_sprites_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;

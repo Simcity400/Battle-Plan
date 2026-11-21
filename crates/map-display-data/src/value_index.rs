@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, io, sync::Arc};
 
-// Owned values share immutable AVL paths.
 pub struct ValueIndex<K, V>(Option<Arc<Node<K, V>>>);
 struct Node<K, V> {
     key: K,
@@ -50,9 +49,6 @@ impl<K: Ord + Clone, V: Clone + PartialEq> ValueIndex<K, V> {
     pub fn contains_key(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
-    /// Items in ascending key order, each key once, build the tree bottom-up: one node a key,
-    /// where inserting them one at a time rebuilds every ancestor of each. Items in any other
-    /// order are inserted one at a time.
     pub fn try_from_iter(items: impl IntoIterator<Item = (K, V)>) -> io::Result<Self> {
         let mut held = Vec::new();
         for item in items {
@@ -73,8 +69,6 @@ impl<K: Ord + Clone, V: Clone + PartialEq> ValueIndex<K, V> {
         Ok(index)
     }
 
-    /// The balanced tree of `items`, which are in ascending key order: the middle item is the root
-    /// and each half is built the same way, so every node is made once.
     fn from_ordered(items: &mut [Option<(K, V)>]) -> io::Result<Self> {
         let Some(middle) = items.len().checked_div(2).filter(|_| !items.is_empty()) else {
             return Ok(Self::default());
@@ -84,7 +78,6 @@ impl<K: Ord + Clone, V: Clone + PartialEq> ValueIndex<K, V> {
         let (key, value) = here.take().expect("each item once");
         Self::node(key, value, Self::from_ordered(left)?, Self::from_ordered(right)?)
     }
-    // Sorted unique edits rebuild each affected ancestor once, including across AVL rotations.
     pub fn patched(&self, edits: &[(K, Option<V>)]) -> io::Result<Self> {
         if edits.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return Err(io::Error::new(
@@ -351,7 +344,6 @@ impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for ValueIndex<K, V
     }
 }
 pub struct Iter<'a, K, V> {
-    // An AVL tree addressable by usize cannot reach twice usize::BITS levels.
     stack: [Option<&'a Node<K, V>>; 2 * usize::BITS as usize],
     len: usize,
 }
@@ -582,8 +574,6 @@ mod tests {
         let mut quiet = 0;
         tree.visit_changes(&tree, |_, _, _| quiet += 1);
         assert_eq!(quiet, 0);
-        // An index of the same keys in order holds the same entries, balanced, whichever way it
-        // was built, and one of keys out of order or repeated is built an insert at a time.
         let ordered = ValueIndex::try_from_iter(tree.iter().map(|(key, value)| (*key, value.clone()))).unwrap();
         checked(&ordered);
         assert_eq!(

@@ -6,30 +6,20 @@ import FollowControl from './FollowControl';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
-/** Hosts a widget's main view and one open breakdown. In the widget (the default)
- * the view slides across to the breakdown and ← Back returns; beside it, the
- * breakdown opens in a panel next to the widget that closes with ×, Esc or a click
- * elsewhere. Both share the header: the day shown, Follow playback and Pin as widget. */
 export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPause, onPin, anchor, returnFocus, main, children }: {
   mode: 'inline' | 'popout'; open: boolean; title: string; day: import('react').ReactNode; following: boolean; canFollow: boolean;
   onClose: () => void; onFollow: () => void; onPause?: () => void; onPin?: () => void;
-  /** The widget body the pop-out panel sits beside. */
   anchor: RefObject<HTMLElement | null>;
-  /** Return to this chart after close only while focus still belongs to this drill. */
   returnFocus?: string;
   main: ReactNode; children: ReactNode;
 }) {
   const panel = usePopover('start');
-  // usePopover returns a new object each render; effects use this ref so they run only
-  // when the drill state changes, not on every render.
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const back = useRef<HTMLButtonElement>(null);
   const close = useRef({ onClose, returnFocus, open });
   close.current = { onClose, returnFocus, open };
   const popout = mode === 'popout';
-  // Opening starts the slide at once; the breakdown mounts a frame later, as it slides in,
-  // so however much it draws the click answers immediately.
   const [mounted, setMounted] = useState(open);
   useEffect(() => {
     if (!open) { setMounted(false); return; }
@@ -57,13 +47,10 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
     const current = panelRef.current;
     const element = current.popup.current;
     if (!open) { if (element?.matches(':popover-open')) element.hidePopover(); return; }
-    // The panel sits beside the widget, measured each time it is placed so it follows scrolling.
     current.openAt(() => {
       const rect = anchor.current?.getBoundingClientRect();
       return rect ? { left: rect.right + 8, right: rect.right + 8, top: rect.top - 6, bottom: rect.top - 6 } : null;
     });
-    // A manual panel ignores clicks on its own widget (picking a day, the chart menu)
-    // and closes on a click anywhere else.
     const outside = (event: PointerEvent) => {
       const target = event.target as Node;
       if (element?.contains(target) || anchor.current?.contains(target)) return;
@@ -73,8 +60,6 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
     document.addEventListener('pointerdown', outside, true);
     return () => document.removeEventListener('pointerdown', outside, true);
   }, [popout, open, anchor]);
-  // In the widget, focus moves to Back when the breakdown opens (the main view becomes
-  // inert). Esc anywhere in the widget, or in the pop-out, closes the breakdown.
   useEffect(() => {
     if (!open) return;
     if (!popout) back.current?.focus({ preventScroll: true });

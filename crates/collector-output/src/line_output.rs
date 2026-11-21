@@ -1,37 +1,3 @@
-//! Allocation-free observation of every production tick
-//! ([`engine_production::line_output_sites`]): the units each production line completes,
-//! which the game counts nowhere per line. A detour only records and calls the
-//! original; it never changes game behaviour and calls no game function.
-//!
-//! The delivery site runs only when a production call delivers, with the
-//! units times [`UNIT_SCALE`]; from one of the four equipment production callers
-//! it leaves that amount pending on its thread. The credit site ends every
-//! production call with the count the game credits the line's organisation.
-//! At its entry it takes the pending delivery of the same production call and
-//! reads the line's handle, producing country, variant and organisation, the
-//! exact signed CREDIT input and the tick's purpose (new, converted or refit),
-//! including ticks with no delivery; on the call's normal return it appends
-//! them to a bounded lock-free log. Nothing is read after the call: CREDIT can
-//! refresh the producer's lines before it returns. Converted is conversion
-//! progress, not proof that a source unit was removed. A naval line that cannot deploy credits without
-//! delivering, so the two counts differ exactly there and on non-positive
-//! counts. Rocket spending comes from daily production, and its delivery
-//! uses the same DELIVERY hook with a distinct return PC.
-//!
-//! Every clocked hourly callback hands the log over since its last drain into
-//! its frame ([`drain`]); the spool totals it per branch
-//! (`extended::line_output`). The detours run on the simulation thread only
-//! (the daily production pass is serial); the log is multi-producer safe
-//! anyway, and a delivery pairs only with a credit on its own thread.
-//! Storage follows live equipment and rocket header demand, observed before the
-//! hooks are installed and by the spool's sizing thread. After draining, the callback
-//! installs an offered larger log only with no waiting entries or active
-//! writer; the spool frees the retired log. A swap preserves cursor and epoch.
-//!
-//! A site whose prologue differs from the pinned sentinel, or that cannot be
-//! detoured, leaves both uninstalled: the collector still attaches and
-//! ProductionLineOutput is unavailable with the reason (`unhooked` in
-//! `status.json`).
 #[path = "line_output/rocket_observer.rs"]
 mod rocket_observer;
 pub use crate::output_log::Drained;
@@ -59,10 +25,6 @@ use std::{
     },
 };
 
-/// One serial daily pass uses the live header-derived equipment/Rocket event demand.
-/// Reserve two passes: one can remain after a short drain while its storage
-/// grows off-thread, with room for the next pass. Retained attempted bursts
-/// also prepare storage when the live population is unchanged.
 fn capacity_for_lines(events: usize) -> usize {
     events
         .saturating_mul(2)
@@ -75,7 +37,6 @@ struct Slot {
     country: AtomicU32,
     variant: AtomicU64,
     organisation: AtomicU64,
-    /// Delivered units in the low half, the credited count in the high half.
     counts: AtomicU64,
     exact: AtomicU8,
     spent: AtomicU64,
@@ -89,7 +50,6 @@ struct Storage {
     slots: Vec<Slot>,
 }
 impl Storage {
-    /// Off-thread; an advisory offer may fail without stopping capture.
     fn new(capacity: usize) -> Option<Box<Self>> {
         let mut slots = engine_allocation::vec(capacity).ok()?;
         slots.resize_with(capacity, Slot::default);
@@ -113,8 +73,6 @@ static CAPACITY: &AtomicUsize = &OBSERVATION.capacity;
 static SWAPS: AtomicU64 = AtomicU64::new(0);
 static FAILED_OFFERS: AtomicU64 = AtomicU64::new(0);
 
-/// Loader/spool thread: offer storage for the live output event demand. Never
-/// shrink or replace an equally large offer; allocation stays off-thread.
 pub fn presize(events: usize) {
     engine_allocation::advisory(|| presize_storage(events));
 }
@@ -139,8 +97,6 @@ fn presize_storage(events: usize) {
     }
 }
 
-/// Hourly simulation-thread boundary, after the drain and before production
-/// can run (also before installing the hooks): neither allocate nor free.
 pub fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
@@ -165,7 +121,6 @@ pub fn install_offered() {
     }
 }
 
-/// Sizing thread: no writer or drain can still hold the replaced log.
 pub fn collect() {
     if native_retention_required() {
         return;
@@ -176,28 +131,20 @@ pub fn collect() {
 }
 
 fn log() -> Option<&'static Storage> {
-    // SAFETY: writers hold Call and the sole consumer is the simulation
-    // thread. Only its empty, writer-free boundary replaces the log, and
-    // detach drains every callback before releasing storage.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 
-/// Entries ever appended; each log maps `n` to `n % slots.len()`.
 static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
-/// The trampolines: credit, delivery, then rocket advance.
 static ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
-/// The module base the native reads are relative to.
 static BASE: AtomicUsize = AtomicUsize::new(0);
-/// Live return addresses of `CREDIT.callers`, `DELIVERY.callers` and the rocket delivery.
 static CREDIT_CALLERS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static DELIVERY_CALLERS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static ROCKET_DELIVERY: AtomicUsize = AtomicUsize::new(0);
 
-/// Callers are matched by live return address; a withheld one refuses the family.
 fn bind_callers(base: usize) -> Result<(), &'static str> {
     let bind = |slot: &AtomicUsize, key| {
         let address = engine_sites::resolve(base, key)
@@ -216,13 +163,8 @@ fn bind_callers(base: usize) -> Result<(), &'static str> {
         engine_production::line_output_sites::ROCKET_DELIVERY_RETURN,
     )
 }
-/// The next entry the hourly drain hands over; only the callback moves it.
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
-/// Why the hooks are not installed, when they are not.
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-/// `[credits, deliveries from a production call, other deliveries, entries,
-/// inexact entries, drains, entries handed over, intervals given up for entry
-/// storage, unobserved drains, failed producer reads]`.
 static COUNTERS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 static SIZING_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static FIRST_SIZING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -233,20 +175,16 @@ static FIRST_SPENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::On
 static PURPOSE_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static FIRST_PURPOSE_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
-/// Capture and spool arithmetic keep their first refusal and count every loss.
 pub fn refuse_spending(reason: &'static str) {
     SPENDING_REFUSALS.fetch_add(1, Ordering::Relaxed);
     let _ = FIRST_SPENDING_REFUSAL.set(reason);
 }
 
-/// A tick whose purpose cannot be read is Unknown, never new production.
 fn refuse_purpose(reason: &'static str) {
     PURPOSE_REFUSALS.fetch_add(1, Ordering::Relaxed);
     let _ = FIRST_PURPOSE_REFUSAL.set(reason);
 }
 
-/// An unsupported normal-return DELIVERY has no authenticated producer. Its
-/// owned log marker breaks delivery coverage without erasing known spending.
 fn refuse_delivery(reason: &'static str) {
     COUNTERS[2].fetch_add(1, Ordering::Relaxed);
     DELIVERY_REFUSALS.fetch_add(1, Ordering::Relaxed);
@@ -256,35 +194,17 @@ pub fn refuse_sizing(reason: &'static str) {
     SIZING_REFUSALS.fetch_add(1, Ordering::Relaxed);
     let _ = FIRST_SIZING_REFUSAL.set(reason);
 }
-/// One production-output event in the shared log.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
-    /// Common-log payload discriminator, independent of equipment fields.
     pub kind: OutputKind,
-    /// The line's CID, `ProductionLines.handle`.
     pub line: u64,
-    /// Producing country's raw reference, resolved through CountryLinks.
     pub country: u32,
-    /// The produced variant's CID, zero when the line had no variant.
     pub variant: u64,
-    /// The organisation CID the game credits, zero for none.
     pub mio: u64,
-    /// Equipment units are zero without an exact paired delivery. Rocket
-    /// DELIVERY retains known signed units even if ownership is inexact.
     pub units: i32,
-    /// The count the game passed to the organisation credit.
     pub credit: i32,
-    /// Applied fixed5 progress, classified as factory output or instant input.
-    /// Classification fails together; units/MIO remain independently exact.
     pub spending: Option<(i64, i64)>,
-    /// The caller produced equipment and any delivery paired with it: the
-    /// same production call, the same variant, and a nonnegative whole number
-    /// of units equal to the credit (including a conversion clamped to zero).
-    /// Rocket spending uses operand completeness; Rocket DELIVERY uses
-    /// producer/design coherence independently of signed unit availability.
     pub exact: bool,
-    /// What the tick's input was for; Unknown outside the four equipment
-    /// producers.
     pub purpose: OutputPurpose,
 }
 
@@ -323,7 +243,6 @@ impl OutputKind {
 }
 
 impl Entry {
-    /// Preserve every common-log index; equipment is an explicit no-op marker.
     pub fn rocket_event(&self) -> crate::rocket_output::Entry {
         use crate::rocket_output::Entry as Rocket;
         match self.kind {
@@ -358,7 +277,6 @@ impl Entry {
         }
     }
 }
-/// Native escape retains the callbacks, hooks and log until detach refuses unload.
 pub fn native_retention_required() -> bool {
     rocket_observer::retention_required()
 }
@@ -367,15 +285,12 @@ pub fn rocket_unavailable_reason() -> Option<&'static str> {
     rocket_observer::unavailable_reason()
 }
 
-/// A delivery waiting for the credit of its production call.
 #[derive(Clone, Copy)]
 struct Pending {
     generation: Option<u64>,
-    /// Index of the delivering equipment production caller (`HookSite::callers`).
     producer: Option<usize>,
     variant: usize,
     amount: i64,
-    /// A second delivery arrived before any credit took the first.
     doubled: bool,
 }
 const NOTHING_PENDING: Pending = Pending {
@@ -390,7 +305,6 @@ thread_local! {
     static PENDING: Cell<Pending> = const { Cell::new(NOTHING_PENDING) };
 }
 
-/// A hook state change or a lapped writer: no drain can continue across it.
 pub fn invalidate() {
     OBSERVATION.invalidate();
 }
@@ -404,21 +318,18 @@ impl Call {
     }
 }
 
-/// The equipment production caller index returning to `caller`, if any.
 fn producer(callers: &[AtomicUsize; 4], caller: usize) -> Option<usize> {
     callers
         .iter()
         .position(|address| address.load(Ordering::Relaxed) == caller)
 }
 
-/// A live native value the game is using; the detour's receivers are the line
-/// the game just produced for and its variant.
+#[doc = " A live native value the game is using; the detour's receivers are the line"]
+#[doc = " the game just produced for and its variant."]
 fn live_u64(address: usize) -> u64 {
     unsafe { std::ptr::read_volatile(address as *const u64) }
 }
 
-/// After the delivery site returned to `caller`: leave its amount pending when
-/// a production call called it.
 fn observe_delivery(caller: usize, variant: usize, amount: i64) {
     let Some(index) = producer(&DELIVERY_CALLERS, caller) else {
         COUNTERS[2].fetch_add(1, Ordering::Relaxed);
@@ -435,12 +346,6 @@ fn observe_delivery(caller: usize, variant: usize, amount: i64) {
     });
 }
 
-/// At the credit site's entry, with the delivery `pending` before it: the
-/// call's entry, or None when its producer cannot be read. Everything is read
-/// before the original runs, as the production call that made the tick left
-/// it: CREDIT can refresh the producer's lines before it returns (an
-/// organisation's automatic design upgrade reassigns factories), changing a
-/// line's design, organisation or conversion control.
 fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pending) -> Option<Entry> {
     let variant = live_u64(line.wrapping_add(LINE_VARIANT)) as usize;
     let producer = producer(&CREDIT_CALLERS, caller);
@@ -463,7 +368,6 @@ fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pen
             }
         }
     };
-    // The serial native pass keeps the line, status and country alive here.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let country = engine_production::line_output_sites::producing_country(&memory, base, line).ok()?;
@@ -474,7 +378,6 @@ fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pen
         })
         .map_err(refuse_spending)
         .ok();
-    // Producers in `PRODUCERS` order: only military production converts.
     let purpose = match producer {
         Some(0) => match engine_production::line_output_sites::converting(&memory, line) {
             Ok(true) => OutputPurpose::Converted,
@@ -509,9 +412,6 @@ fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pen
     })
 }
 
-/// After the credit site returned normally: append the entry its entry froze,
-/// including exact zero-unit ticks; a producer that could not be read ends
-/// the observation.
 fn observe_credit(frozen: Option<Entry>) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
     match frozen {
@@ -523,7 +423,6 @@ fn observe_credit(frozen: Option<Entry>) {
     }
 }
 
-/// Store an entry, guarded by [`Log::enter`], in its ring slot or the spill.
 fn append(entry: Entry) {
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
     if !entry.exact {
@@ -561,7 +460,6 @@ fn entry(slot: &Slot) -> Entry {
     let counts = slot.counts.load(Ordering::SeqCst);
     Entry {
         kind: OutputKind::from_raw(slot.kind.load(Ordering::SeqCst)).unwrap_or_else(|| {
-            // The drain's epoch recheck refuses the whole owned prefix.
             invalidate();
             OutputKind::Equipment
         }),
@@ -582,7 +480,6 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-/// Copy settled entries; short storage defers the rest.
 pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
@@ -653,13 +550,13 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// The runtime's build gate admitted this family. Installation failure leaves
-    /// the output table unavailable; site order preserves paired observation.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family. Installation failure leaves"]
+    #[doc = " the output table unavailable; site order preserves paired observation."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize, events: usize) -> Self {
         presize(events);
         install_offered();
@@ -703,13 +600,9 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         if native_retention_required() {
-            // Retain Hook vector/relay/trampoline and all log owners. Runtime
-            // must retain the DLL too; dropping this Rust field is no IP proof.
             return;
         }
         unsafe { ManuallyDrop::drop(&mut self.shared) };
-        // Like the hook relays, storage is released only if hooks were never
-        // enabled, or after they were removed and every callback drained.
         LOG.store(ptr::null_mut(), Ordering::SeqCst);
         CAPACITY.store(0, Ordering::Release);
         let mut swap = LOG_SWAP
@@ -720,7 +613,6 @@ impl Drop for Hooks {
     }
 }
 
-/// Tests that touch the process-wide observation state take this first.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -728,8 +620,6 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Observation on (true) or off, with the callers' RVAs relative to zero and
-/// the drain at the current cursor. Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn observe_for_test(enabled: bool) {
     crate::world_lifetime::observe_for_test(enabled);
@@ -756,9 +646,6 @@ pub fn reset_log_for_test(capacity: usize) {
     };
 }
 
-/// One production call of a synthetic line: the delivery (when `delivered`
-/// is some) and the credit, as the native calls return to `producer`'s sites.
-/// Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Option<i64>) {
     if let Some(amount) = delivered {
@@ -818,8 +705,6 @@ mod tests {
         );
     }
 
-    /// A line and its variant in owned memory, laid out at the offsets the
-    /// detours read.
     pub(super) struct Line {
         line: Vec<u64>,
         variant: Vec<u64>,
@@ -858,15 +743,12 @@ mod tests {
         pub(super) fn address(&self) -> usize {
             self.line.as_ptr() as usize
         }
-        /// Sets or clears the conversion control; a set control converts
-        /// into this design, which has a parent design.
         pub(super) fn set_converting(&mut self, converting: bool) {
             let bit = 1_u64 << (8 * (engine_production::line_output_sites::LINE_CONVERSION % 8));
             let word = &mut self.line[engine_production::line_output_sites::LINE_CONVERSION / 8];
             *word = if converting { *word | bit } else { *word & !bit };
             self.variant[engine_native::cequipment_variant::PARENT / 8] = 0x1_0000_0046;
         }
-        /// The design and organisation a line refresh replaced them with.
         pub(super) fn replace(&mut self, variant: u64, mio: u64) {
             self.variant[VARIANT_HANDLE / 8] = variant;
             self.line[LINE_ORGANISATION / 8] = mio;
@@ -1015,8 +897,6 @@ mod tests {
             capacity_for_lines(20)
         );
         assert!(LOG_SWAP.lock().unwrap().retired.is_some());
-        // Until the spool collects the old log, another swap would free it
-        // on the game thread and must wait too.
         presize(2000);
         install_offered();
         assert_eq!(
@@ -1041,9 +921,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// Deliveries pair with the credit of the same production call; a naval
-    /// line that cannot deploy credits without delivering; ticks without
-    /// either still retain the applied input; rocket delivery is never paired.
     #[test]
     fn deliveries_pair_with_their_credit_and_blocked_ships_credit_alone() {
         let _lock = test_lock();
@@ -1053,10 +930,8 @@ mod tests {
         produce_for_test(a.address(), MILITARY, 3, Some(3 * UNIT_SCALE));
         produce_for_test(a.address(), MILITARY, 0, None);
         produce_for_test(b.address(), NAVAL, 2, None);
-        // The rocket line delivers from elsewhere; nothing waits for a credit.
         observe_delivery(0x00ff_5a7a, b.variant_pointer(), 5 * UNIT_SCALE);
         produce_for_test(b.address(), NAVAL, 0, None);
-        // A negative count is credited, with nothing delivered.
         produce_for_test(a.address(), MILITARY, -1, None);
         let (result, entries) = drained(8);
         let drained = result.unwrap();
@@ -1135,8 +1010,6 @@ mod tests {
         observe_for_test(true);
         let a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0);
         let other = Line::new(0x12_0000_0021, 0x6_0000_0046, 0);
-        // Conversion can clamp to zero after
-        // entering the positive-count block, which still calls both hooks.
         produce_for_test(a.address(), MILITARY, 0, Some(0));
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
         let (_, entries) = drained(8);
@@ -1146,8 +1019,6 @@ mod tests {
         assert_eq!((entries[1].units, entries[1].credit), (1, 1));
         assert!(entries.iter().all(|entry| entry.spending.is_none()));
 
-        // Even a zero delivery must pair: wrong producer, variant, duplicate,
-        // unknown caller, or nonzero credit cannot be excused as a no-op.
         observe_delivery(DELIVERY.callers[NAVAL].0, a.variant_pointer(), 0);
         observe_credit(credit_entry(
             a.address(),
@@ -1182,8 +1053,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// A converting military line's ticks are conversion progress, whether
-    /// or not they complete anything; the refit producer's are refits.
     #[test]
     fn purposes_follow_the_producer_and_the_conversion_control() {
         let _lock = test_lock();
@@ -1192,7 +1061,6 @@ mod tests {
         a.set_converting(true);
         produce_for_test(a.address(), MILITARY, 0, None);
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
-        // Only military production converts.
         produce_for_test(a.address(), 1, 1, Some(UNIT_SCALE));
         produce_for_test(a.address(), 2, 0, None);
         produce_for_test(a.address(), 3, 1, Some(UNIT_SCALE));
@@ -1228,8 +1096,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// A delivery that another production call, another variant, a second
-    /// delivery or an amount that is not whole units claims is not guessed.
     #[test]
     fn deliveries_that_do_not_pair_exactly_make_the_tick_inexact() {
         let _lock = test_lock();
@@ -1248,11 +1114,9 @@ mod tests {
             exact: false,
             purpose,
         };
-        // The naval site delivered; the military site credits.
         observe_delivery(DELIVERY.callers[NAVAL].0, a.variant_pointer(), UNIT_SCALE);
         let pending = PENDING.replace(NOTHING_PENDING);
         observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY].0, pending));
-        // Another variant was delivered.
         observe_delivery(
             DELIVERY.callers[MILITARY].0,
             other.variant_pointer(),
@@ -1260,13 +1124,10 @@ mod tests {
         );
         let pending = PENDING.replace(NOTHING_PENDING);
         observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY].0, pending));
-        // Two deliveries before one credit.
         observe_delivery(DELIVERY.callers[MILITARY].0, a.variant_pointer(), UNIT_SCALE);
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
-        // Part of a unit, and a negative amount.
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE / 2));
         produce_for_test(a.address(), NAVAL, -2, Some(-2 * UNIT_SCALE));
-        // A credit from an unknown caller.
         observe_credit(credit_entry(a.address(), 0, 0, 0x1234, NOTHING_PENDING));
         let (_, entries) = drained(8);
         assert_eq!(
@@ -1277,15 +1138,12 @@ mod tests {
                 inexact(1, OutputPurpose::New),
                 inexact(1, OutputPurpose::New),
                 inexact(-2, OutputPurpose::New),
-                // An unknown caller has no purpose.
                 inexact(0, OutputPurpose::Unknown)
             ]
         );
         observe_for_test(false);
     }
 
-    /// A writer that is active hands over nothing yet; short storage grows to
-    /// every entry.
     #[test]
     fn active_writers_defer_entries_and_short_storage_grows_without_losing_them() {
         let _lock = test_lock();
@@ -1317,9 +1175,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// A burst past the log is handed over whole and in order into short
-    /// storage that grows, and the log grows only once it is empty; disabled
-    /// hooks hand over nothing; an epoch change is visible to the spool.
     #[test]
     fn bursts_past_the_log_disabled_hooks_and_epochs_are_handed_over_as_they_are() {
         let _lock = test_lock();
@@ -1367,8 +1222,6 @@ mod tests {
         observe_for_test(false);
     }
 
-    /// Concurrent producers each keep every entry they append: the log's
-    /// indices are claimed atomically.
     #[test]
     fn concurrent_producers_keep_every_entry() {
         let _lock = test_lock();

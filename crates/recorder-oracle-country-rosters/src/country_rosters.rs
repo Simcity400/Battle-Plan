@@ -1,4 +1,3 @@
-//! Country roster set comparisons.
 
 use super::{Report, Save, invalid};
 use replay_data::rows::CountryCounterInputRow;
@@ -59,7 +58,6 @@ pub fn compare_lists(
         if let Some(owner) = &state.owner {
             owned.entry(owner.as_slice()).or_default().insert(id);
         }
-        // The loader supplies an omitted controller from its owner.
         if let Some(controller) = state.controller.as_ref().or(state.owner.as_ref()) {
             controlled
                 .entry(controller.as_slice())
@@ -166,8 +164,6 @@ pub fn compare_lists(
                 controlled.remove(tag).unwrap_or_default(),
             );
         }
-        // The country writer saves the ordered core-state roster as `cores`
-        // in native order, retaining duplicates rather than reconstructing it.
         match core_states {
             Some(Some(states)) => {
                 if states.contains(&0) {
@@ -220,9 +216,6 @@ pub fn compare_lists(
             .filter(|status| status.unit_leader == Some(true))
         {
             let character = &status.character;
-            // Character roles of kinds 0/1 use the leader roster, kind 2 the advisor roster.
-            // It resolves raw references; operative fallback kind 3 is
-            // independent of the serialized military roles and both rosters.
             match leader_roles.get(character) {
                 Some(leader) if leader.category < 2 => {
                     army.insert(leader.id);

@@ -34,7 +34,6 @@ function assignment(index: number, from: number, to: number, speed: bigint, save
 
 test('juggling into a banked slot carries prior progress and adds the converted credit once', () => {
   const first = assignment(0, 0, 60, 100000n, 0n, 0n, 'switched');
-  // 60 days already earned + 30 saved days at 1.5x = 105 base days.
   const second = assignment(1, 60, 110, 150000n, 3000000n, 10500000n, 'completed');
   const slots = [first, second];
   const result = researchJourney(slots, second, second.entries[0]);
@@ -46,21 +45,20 @@ test('juggling into a banked slot carries prior progress and adds the converted 
   assert.equal(result.comparison?.creditGain, 4500000n);
   assert.equal(result.comparison?.difference, 0n);
   assert.deepEqual(slots.map(s => s.entries.filter(e => e.outcome === 'completed').length), [0, 1]);
-  assert.equal(slots[0].entries[0].outcome, 'switched'); // Kept for the explanation, not shown as another completion.
+  assert.equal(slots[0].entries[0].outcome, 'switched');
 });
 
 test('moving again refunds saved credit at its original rate; it cannot be counted twice', () => {
   const first = assignment(0, 0, 20, 100000n, 3000000n, 3000000n, 'switched');
   const second = assignment(1, 20, 40, 150000n, 3000000n, 6500000n, 'switched');
   const third = assignment(2, 40, 50, 200000n, 0n, 5000000n, 'active');
-  // A later modifier does not reprice the credit stamped on slot 1.
   const snapshot = structuredClone(first.states[0]);
   snapshot.details!.modifiers!.totalBonusRaw = '200000';
   assert.equal(savedResearchCredit(snapshot), 3000000n);
   const result = researchJourney([first, second, third], third, third.entries[0]);
   assert.deepEqual(result.credits.map(c => c.work), [3000000n, -3000000n, 4500000n, -4500000n]);
   assert.equal(result.comparison?.rateGain, 7000000n);
-  assert.equal(result.comparison?.creditGain, -3000000n); // Opening credit was already in initial progress.
+  assert.equal(result.comparison?.creditGain, -3000000n);
   assert.equal(result.comparison?.observed, 4000000n);
   assert.equal(result.comparison?.difference, 0n);
 });
@@ -90,7 +88,6 @@ test('rewind shows the new assignment credit immediately and hides future refund
 
 test('a new continuity run, technology level, or native handle prevents a false transfer link', () => {
   const first = assignment(0, 0, 10, 100000n, 0n, 0n, 'switched');
-  // A repeated definition (same token and handle, another template) is another technology.
   for (const change of [{ continuityStartHour: start + 10 * 24 }, { level: 1 }, { technologyHandle: 8 }, { databaseIndex: 8 }, { databaseIndex: null }]) {
     const second = assignment(1, 10, 20, 100000n, 0n, 1000000n, 'active');
     Object.assign(second.entries[0], change);
@@ -114,7 +111,6 @@ test('a witnessed assignment of parked research does not claim a whole-technolog
   assert.equal(result.initial, 9000000n);
   assert.equal(result.startKnown, false);
   assert.equal(result.complete, false);
-  // Its observed portion remains useful and reconciles independently.
   assert.equal(result.comparison?.difference, 0n);
 });
 
@@ -158,7 +154,6 @@ test('completed explanations clip immutable history at outcome knowledge and dis
   const first = assignment(0, 0, 10, 100000n, 0n, 0n, 'switched');
   const second = assignment(1, 10, 20, 100000n, 0n, 1000000n, 'completed');
   second.entries[0].outcomeObservedHour = start + 21 * 24;
-  // A later discovery cannot retroactively change the earlier explanation.
   first.entries[0].outcome = 'completed';
   first.entries[0].outcomeObservedHour = start + 30 * 24;
   const history = { coverage: [{ firstHour: start, lastHour: start + 40 * 24 }], slots: [first, second] };
@@ -170,7 +165,6 @@ test('completed explanations clip immutable history at outcome knowledge and dis
   assert.equal(result.startKnown, false);
   const later = researchAt(history, start + 40 * 24)![1].entries[0];
   assert.deepEqual(completedResearchJourney(history, 1, later), result);
-  // Replacing source history provides a fresh calculation, never a stale cache.
   const replacement = structuredClone(history);
   replacement.slots[1].progress[0].progressRaw = '0';
   assert.equal(completedResearchJourney(replacement, 1, later)!.startKnown, true);
@@ -190,17 +184,14 @@ test('time out of a slot lengthens the Took row instead of replacing research ti
   const saved = researchTimeRows({ ...split, juggle: 100000n }, true)!.took.find(segment => segment.key === 'juggle');
   assert.equal(saved?.name, 'Saved research days');
   assert.equal(saved?.effect, '−1 day');
-  // Researched, paused and what came off still close exactly on Expected plus the pause.
   assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expectedTotal + split.paused);
 });
 
 test('maluses adding more days than were researched keep every segment its own effect and both rows closing', () => {
   const total = (segments: readonly { value: bigint }[]) => segments.reduce((sum, s) => sum + s.value, 0n);
   const modifier = (key: string, days: bigint) => ({ key, kind: 'research speed', label: key, days });
-  // 100 days at a net +100%: +300% saved 150 days and −200% added 100 in the 50 days researched.
   const mixed: ResearchTimeSplit = { base: 10000000n, penalty: 0n, bonus: 5000000n, juggle: 0n, earlier: 0n, remaining: 0n, paused: 0n, taken: 5000000n,
     modifiers: [modifier('Bonus', 15000000n), modifier('Malus', -10000000n)], other: 0n, floored: false };
-  // A −150% malus held at a 10% minimum speed: 1000 days researched, the clamp saving 600.
   const floored: ResearchTimeSplit = { base: 10000000n, penalty: 0n, bonus: -90000000n, juggle: 0n, earlier: 0n, remaining: 0n, paused: 0n, taken: 100000000n,
     modifiers: [modifier('Malus', -150000000n)], other: 60000000n, floored: true };
   for (const [split, row] of [[mixed, 20000000n], [floored, 160000000n]] as const) {
@@ -216,12 +207,10 @@ test('maluses adding more days than were researched keep every segment its own e
 });
 
 test('after a witnessed start an unexplained surplus shows no breakdown', () => {
-  // Completed at a base of 180 days after only 90 days at 1x and no saved days.
   const slot = assignment(0, 0, 90, 100000n, 0n, 0n, 'completed');
   const journey = researchJourney([slot], slot, slot.entries[0]);
   assert.equal(journey.startKnown, true);
   assert.equal(researchTimeSplit(journey, false), null);
-  // Parked research started earlier is a real cause, shown as earlier progress.
   const parked = assignment(0, 60, 150, 100000n, 3000000n, 9000000n, 'completed');
   const split = researchTimeSplit(researchJourney([parked], parked, parked.entries[0]), false)!;
   assert.equal(split.earlier, 6000000n);

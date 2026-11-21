@@ -1,7 +1,6 @@
 import { tooltipRowHeight } from './tooltip.ts';
 import type { TooltipRow } from './tooltip';
 
-/** Estimate unseen rows and retain actual measurements for rows already drawn. */
 export function tooltipRowOffsets(rows: readonly TooltipRow[], measured: ReadonlyMap<number, number> = new Map()): number[] {
   const offsets = [0];
   for (let index = 0; index < rows.length; index++) offsets.push(offsets[index] + (measured.get(index) ?? tooltipRowHeight(rows[index])));
@@ -11,8 +10,6 @@ export function tooltipRowOffsets(rows: readonly TooltipRow[], measured: Readonl
 export const tooltipScrollTop = (offsets: readonly number[], top: number, height: number, leading = 0, trailing = 0) =>
   Math.max(0, Math.min(top, leading + (offsets[offsets.length - 1] ?? 0) + trailing - height));
 
-/** A measured viewport chooses the rows in view. The complete list stays in the
- * tooltip store; any row is reachable, with no chosen count or private limit. */
 export function tooltipRowWindow(offsets: readonly number[], top: number, height: number, leading = 0, trailing = 0): { first: number; last: number } {
   if (!(height > 0) || offsets.length < 2) return { first: 0, last: 0 };
   const scrollTop = tooltipScrollTop(offsets, top, height, leading, trailing) - leading;

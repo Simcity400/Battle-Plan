@@ -1,54 +1,26 @@
-//! Reverse lexer dictionary, copied once between mutation witnesses.
-//!
-//! Dynamic insertion holds the writer flag and increments the dynamic count
-//! before touching reverse strings. Lookup rebuild additionally grows the
-//! table extent. Reset and runtime destruction follow the application update
-//! loop. Matching writer-free witnesses permit hourly publication; an
-//! overlapping change discards the table without retry or locking. The hourly
-//! update holds the simulation thread rather than the lexer lock. These
-//! checks cover insertion and rebuild, but cannot exclude arbitrary writes
-//! through escaped string aliases.
 
 use engine_sites::Rva;
 use crate::{Memory, msvc_string, read, read_slice, walk::Outcome};
 use std::sync::atomic::{Ordering, compiler_fence};
 
-/// Empty research-slot token authenticated by the shared fixed-token contract.
 pub const IDLE_RESEARCH_TOKEN: u32 = 0x2a4e;
 
-/// Maximum-speed token authenticated by the shared fixed-token contract.
 pub const MAXIMUM_SPEED_TOKEN: u32 = 0x2eb2;
 
-/// Lexer initialized byte required to be one.
 pub const INITIALIZED_RVA: Rva = Rva(0x0368f570);
-/// Maximum admitted token ID, signed i32, used as an inclusive bound.
 pub const MAX_TOKEN_ID_RVA: Rva = Rva(0x0368f574);
-/// Static maximum calculated from loaded static token definitions.
 pub const STATIC_MAX_TOKEN_ID_RVA: Rva = Rva(0x0368f57c);
-/// Dynamic-record pointer to its separate 0x48-byte-record array.
 pub const DYNAMIC_TOKENS_RVA: Rva = Rva(0x0368f580);
-/// Dynamic-array signed capacity, compared against count.
 pub const DYNAMIC_CAPACITY_RVA: Rva = Rva(0x0368f588);
-/// Dynamic count, incremented before reverse-name assignment or rebuild.
 pub const DYNAMIC_COUNT_RVA: Rva = Rva(0x0368f58c);
-/// Exclusive flag set atomically and decremented on release.
 pub const WRITER_FLAG_RVA: Rva = Rva(0x0368f59c);
-/// Token-name table pointer.
 pub const TOKEN_NAMES_RVA: Rva = Rva(0x0368f5a0);
-/// Reverse-string allocation capacity used during lookup rebuilding. No code addresses it
-/// directly: it is the field between the verified table pointer and capacity, never a located key.
 pub const TOKEN_ALLOCATION_RVA: Rva = TOKEN_NAMES_RVA.after(8);
-/// Token-name capacity, signed i32, validated against the maximum token ID.
 pub const TOKEN_CAPACITY_RVA: Rva = Rva(0x0368f5ac);
-/// MSVC string entry stride for token-name lookup.
 pub const TOKEN_NAME_STRIDE: usize = 0x20;
-/// Dynamic-token wrapper used during strategic-resource loading.
 pub const ADD_DYNAMIC_TOKEN_RVA: Rva = Rva(0x0253ded0);
-/// Static long-fixed token formatted as fixed15 numeric text instead of its
-/// spelling; saves never serialize the name.
 pub const FIXED15_TOKEN: u32 = 0x167;
 
-/// The globals copied as one 64-byte witness starting at [`INITIALIZED_RVA`].
 const WITNESS_MEMBERS: [Rva; 8] = [
     MAX_TOKEN_ID_RVA,
     STATIC_MAX_TOKEN_ID_RVA,
@@ -60,12 +32,10 @@ const WITNESS_MEMBERS: [Rva; 8] = [
     TOKEN_CAPACITY_RVA,
 ];
 
-/// A witness member's offset in the block; [`witness_address`] proves the live layout keeps it.
 pub const fn witness_offset(key: Rva) -> usize {
     key.0 - INITIALIZED_RVA.0
 }
 
-/// The live witness block, once every member is located at its offset in it.
 pub fn witness_address(base: usize) -> Result<usize, &'static str> {
     let block = engine_sites::at(base, INITIALIZED_RVA).ok_or("lexer witness withheld")?;
     if block.checked_add(64).is_none() {
@@ -103,8 +73,6 @@ impl Walk {
     }
 }
 
-/// Process-lifetime storage identity. Dynamic ids only increase during valid
-/// play; reset/destruction occur outside the application's hourly update loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreparedWitness {
     maximum: u32,
@@ -121,8 +89,6 @@ impl PreparedWitness {
     fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let block = witness_address(base)?;
         let writer = block + witness_offset(WRITER_FLAG_RVA);
-        // The pinned x86-64 scalar loads are aligned and load/load ordered.
-        // Compiler fences also keep the foreign copies inside their witnesses.
         compiler_fence(Ordering::SeqCst);
         if read::<u32>(memory, writer) != Some(0) {
             return Err("lexer writer active or unreadable");
@@ -138,8 +104,6 @@ impl PreparedWitness {
         Self::from_header(header)
     }
 
-    /// Validate a captured native witness header without reading live memory.
-    /// Callers must separately retain the two surrounding writer-flag checks.
     pub fn from_header(header: [u8; 64]) -> Result<Self, &'static str> {
         if header[0] != 1 {
             return Err("lexer is not initialized");
@@ -202,9 +166,6 @@ impl PreparedWitness {
     }
 }
 
-/// Attach/worker sizing follows the inclusive token maximum and reverse
-/// strings between the same writer witnesses as acquisition. Only readable
-/// payload bytes become text demand.
 pub fn demand(memory: &impl Memory, base: usize) -> Result<(usize, usize), &'static str> {
     let before = PreparedWitness::read(memory, base)?;
     let dictionary = TokenNames {
@@ -227,10 +188,6 @@ pub fn demand(memory: &impl Memory, base: usize) -> Result<(usize, usize), &'sta
     Ok((rows, bytes))
 }
 
-/// Copy all admitted native ordinals, including empty/reserved entries. Only
-/// stable capacity shortages publish a prefix; mutation discards even that prefix
-/// and any observed growth requirement. The caller must use the accepted hourly
-/// callback: process shutdown/CRT destruction is outside this lifetime protocol.
 pub fn walk(memory: &impl Memory, base: usize, rows: &mut [Row], text: &mut [u8]) -> Walk {
     let before = match PreparedWitness::read(memory, base) {
         Ok(witness) => witness,
@@ -298,10 +255,6 @@ pub fn walk(memory: &impl Memory, base: usize, rows: &mut [Row], text: &mut [u8]
     result
 }
 
-/// Certify only the next bounded growth step for an unacquired string payload.
-/// A declared length is not allocation evidence. Probe in source order using
-/// fixed scratch storage; the first failed chunk is terminal for this capture.
-/// Successful bytes are not published or reused on the next scheduled capture.
 pub fn probe_growth_prefix(
     memory: &impl Memory,
     address: usize,
@@ -330,15 +283,12 @@ pub fn probe_growth_prefix(
     Ok(target)
 }
 
-/// Foreign addresses never escape the single witnessed walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenNames {
     table: usize,
     maximum: u32,
 }
 
-/// Fails unless the dictionary still matches the witness taken before a
-/// caller's individual lookups, with no writer active at either edge.
 pub fn unchanged(
     memory: &impl Memory,
     base: usize,
@@ -352,8 +302,6 @@ pub fn unchanged(
 }
 
 impl TokenNames {
-    /// The dictionary for individual lookups between two witnesses; the caller
-    /// must pass the returned witness to [`unchanged`] after its last read.
     pub fn witnessed(
         memory: &impl Memory,
         base: usize,
@@ -368,8 +316,6 @@ impl TokenNames {
         ))
     }
 
-    /// Resolves a native ordinal to its exact bytes without allocating or
-    /// copying names that a caller already emitted into its frame dictionary.
     pub fn text(self, memory: &impl Memory, token: u32) -> Result<TokenText, &'static str> {
         if token > self.maximum {
             return Err("lexer token exceeds native maximum");
@@ -392,8 +338,6 @@ impl TokenNames {
     }
 }
 
-/// A callback-local foreign byte source, not portable identity. Serialize the
-/// native ordinal and copied bytes; never serialize or cache this pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenText {
     source: usize,
@@ -401,8 +345,6 @@ pub struct TokenText {
 }
 
 impl TokenText {
-    /// Parse the same exact header as `TokenNames::text`; the independent
-    /// terminator observation still has to succeed and contain zero.
     pub fn from_header(address: usize, header: [u8; 32]) -> Result<Self, &'static str> {
         let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
         let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
@@ -435,8 +377,6 @@ impl TokenText {
     pub fn is_empty(self) -> bool {
         self.len == 0
     }
-    /// Insufficient capacity leaves the output untouched; the caller reports a
-    /// truncated whole dictionary row and grows its arena off the game thread.
     pub fn copy(self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
         if output.len() < self.len {
             return Err("lexer token destination too small");

@@ -1,7 +1,3 @@
-//! The desktop host's content preferences: the game and user folders. The host and its
-//! development bridge write them;
-//! the native viewer receives them from the host, and headless tools read them
-//! as defaults for their own folder options.
 
 use crate::invalid;
 use installed_content_core::ResolveOptions;
@@ -15,14 +11,11 @@ use std::{
 pub struct Config {
     pub game_dir: PathBuf,
     pub user_dir: PathBuf,
-    /// Folders of other game versions, which a recording made before recordings carried their
-    /// game facts may be upgraded from when the game folder no longer matches it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub older_game_dirs: Vec<PathBuf>,
 }
 
 impl Config {
-    /// `content.json` in the host's preference folder, beside its video settings.
     pub fn path() -> io::Result<PathBuf> {
         Ok(
             PathBuf::from(
@@ -45,7 +38,6 @@ impl Config {
         }
     }
 
-    /// Stores the folders once they name a usable installation, keeping the other preferences.
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
         self.save_folders_at(&Self::path()?)
@@ -73,7 +65,6 @@ impl Config {
         })
     }
 
-    /// The folder the app keeps its content caches in, its hashes of the game's files among them.
     pub fn content_cache_dir() -> io::Result<PathBuf> {
         Ok(PathBuf::from(
             std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
@@ -83,10 +74,6 @@ impl Config {
     }
 }
 
-/// Runs `work` as one transaction on the preferences. The desktop host's folder
-/// Apply and the development bridge both write the same file, so an exclusive lock on a sibling file spans the whole
-/// read-modify-write and what the writer does with it, across threads and
-/// processes alike.
 fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let folder = path
         .parent()
@@ -101,8 +88,6 @@ fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T>
     work()
 }
 
-/// Reads, changes and replaces the preferences; each writer stages its bytes in
-/// a file of its own. Only under [`locked`].
 fn replace(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
     let mut config = Config::load_from(path)?;
     change(&mut config);
@@ -115,16 +100,10 @@ fn replace(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
     written
 }
 
-/// Game and user folders chosen in Settings, needed by products that read
-/// artwork or localisation, and the visual mods one request's game-look artwork shows.
 #[derive(Clone)]
 pub struct ContentOptions {
     pub options: ResolveOptions,
     pub allow_unverified: bool,
-    /// The source's presentation as the service admitted the request, and its mount once the
-    /// request reads its artwork ([`crate::presentation::Admitted`]): every catalogue,
-    /// binding and artwork read the request makes, on any thread, reads this value, so a
-    /// selection changed while it runs never mixes two presentations in one reply.
     pub presentation: crate::presentation::Admitted,
 }
 
@@ -155,7 +134,6 @@ mod tests {
     #[test]
     fn a_folder_save_keeps_the_other_preferences() {
         let folder = folder();
-        // The host's preference folder need not exist before the first save.
         let path = folder.join("battle-plan").join("content.json");
         assert_eq!(Config::load_from(&path).unwrap(), Config::default());
         for round in 0..2 {

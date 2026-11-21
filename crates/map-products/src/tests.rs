@@ -618,7 +618,6 @@ fn witness_changes_on_mod_order_replace_paths_and_a_new_higher_layer_file() {
         Entry::Read { layer: Some(layer), .. } if layer.id == "test1")));
 }
 
-// Frozen viewer builders; the independent fog branches live in fog_oracle.
 struct Original<'a> {
     content: &'a ProductContent,
     frame: &'a DecodedFrame,
@@ -1489,7 +1488,6 @@ fn snow_product_is_owned_deduplicates_equal_outputs_and_keeps_refresh_identity()
         product_codec::encode(&original).unwrap()
     );
     frame.hour += 1;
-    // A fresh source allocation is immaterial to the product identity.
     frame.tables[TableId::WeatherProvinces.index()] = (*frame.tables
         [TableId::WeatherProvinces.index()])
     .clone()
@@ -2028,7 +2026,6 @@ fn frozen_fog_keeps_hidden_intel_distinct_from_missing_and_truncated_sources() {
             } else if table == TableId::UnitIntel && status == 0 {
                 assert_eq!(reference.land_byte_known(7, 3, 3), None);
                 assert_eq!(reference.land_byte_known(8, 3, 3), Some(150));
-                // The omitted row could reveal the unit: drawn as fog off draws it.
                 assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::Full);
                 assert_eq!(expected.intel, hidden.intel);
             } else {
@@ -2195,7 +2192,6 @@ fn territory_labels_and_shared_rail_graph_release_the_borrowed_host() {
     frame.hour += 1;
     {
         let hour = ProductHour::new(&content, &frame, 0.0);
-        // Territory is observed each hour; unchanged rows keep the folded planes.
         let next = hour.territory().unwrap();
         let mut observed = (*territory.facts).clone();
         observed.countries.observed_hour = frame.hour;
@@ -2748,7 +2744,6 @@ fn snow_boundary_deltas_keep_refresh_only_changes_and_recover_after_refusal() {
                 _ => next.display = Recorded::NotRecorded,
             }
             let update = if matches!(next.display, Recorded::NotRecorded) {
-                // No delta unrecords a field: only a historical recording's whole rows hold one.
                 assert!(next.delta(Some(&row)).is_err());
                 TableUpdate::Snapshot(TableRows::WeatherProvinces(vec![next.clone()]))
             } else {
@@ -2897,7 +2892,6 @@ impl Default for CertifiedFrames {
 impl CertifiedFrames {
     fn advance(&mut self, frame: &mut DecodedFrame) {
         use replay_frame::frame::{SharedView, TableUpdate};
-        // Certify complete operands without normalizing deliberate synthetic gaps.
         let mut surrogate = frame.clone();
         let mut complete = Vec::new();
         let mut stamped = Vec::new();
@@ -2919,7 +2913,6 @@ impl CertifiedFrames {
             .into();
         }
         let mut encoded = self.encoder.encode(surrogate, false).unwrap();
-        // Current writers cannot store a historical packet stamp; hand those rows over as its recording did.
         for &index in &stamped {
             encoded.tables[index] = match self.decoder.current() {
                 Some(current)
@@ -2958,7 +2951,6 @@ impl CertifiedFrames {
                 let TableView::Complete(rows) = &*frame.tables[index] else {
                     unreachable!("certified rows are complete")
                 };
-                // The encoder never held the stamped rows that the decoder is replacing.
                 let mut bytes = vec![1];
                 bytes.extend_from_slice(&current.hour.to_le_bytes());
                 rows.encode_changes(previous, &mut bytes, &mut Vec::new())

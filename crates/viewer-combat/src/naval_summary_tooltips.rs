@@ -1,4 +1,3 @@
-//! Dynamic hovers of the active naval combat summary.
 
 use installed_content_core::unit_leader::SubUnits;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
@@ -21,8 +20,6 @@ use {
     viewer_foundation::tooltip_text::{TextIcons, builtin},
 };
 
-// Executable keys for paired stat text and background widgets.
-// The tooltip also has a delayed second string.
 tooltip_keys! {
     COMBAT_STAT_LIGHT_GUNS_INFO = "combat_stat_light_guns_info",
     COMBAT_STAT_HEAVY_GUNS_INFO = "combat_stat_heavy_guns_info",
@@ -77,7 +74,6 @@ const WEAPON_HOVERS: [(&str, &str); 4] = [
     ("stat_torpedo", COMBAT_STAT_TORPEDOES_INFO),
     ("stat_depth_charges", COMBAT_STAT_DEPTH_CHARGES_INFO),
 ];
-// The six target-category pairs are visited in this order.
 const DAMAGE_CATEGORIES: [&str; 6] = [
     DAMAGE_DEALT_SCREEN,
     DAMAGE_DEALT_BATTLE_BOX,
@@ -86,8 +82,6 @@ const DAMAGE_CATEGORIES: [&str; 6] = [
     DAMAGE_DEALT_SUBS,
     DAMAGE_DEALT_AIR,
 ];
-// Visit the five weapon pairs before target categories; the last pair is
-// weapon 4 / damage_dealt_air.
 const DAMAGE_WEAPONS: [&str; 5] = [
     DAMAGE_DEALT_LIGHT_GUNS,
     DAMAGE_DEALT_HEAVY_GUNS,
@@ -96,17 +90,10 @@ const DAMAGE_WEAPONS: [&str; 5] = [
     DAMAGE_DEALT_AIR,
 ];
 
-/// The game saturates a failed or overflowing fixed5 ratio to 0xffffffff.
 fn damage_ratio(value: i64, denominator: i64) -> i64 {
     super::fixed::fraction(value, denominator).unwrap_or(super::fixed::EXCEPTIONAL)
 }
 
-/// Prefix the screen-box description with the side's country
-/// 0x1B3 source breakdown when it takes the correction branch: the country
-/// bonus applied, or a zero uncorrected result for a side with a country and
-/// no eligible submarine (the breakdown is appended even when the numerical
-/// bonus is not positive). Source formatting receives null province and
-/// commander, so only the country's tree prints, without a trailing newline.
 #[allow(
     clippy::too_many_arguments,
     reason = "the correction branch's census, side and text resources are separate operands"
@@ -133,9 +120,6 @@ fn country_correction(
     Ok(text)
 }
 
-/// Render two screening descriptions from the fresh census. Static bonus
-/// blocks use named content modifiers; the screen
-/// box starts with the 0x1B3 country correction ([`country_correction`]).
 #[expect(
     clippy::too_many_arguments,
     reason = "native screening text has separate combat and content operands"
@@ -266,12 +250,6 @@ fn screening_description(
     Ok((text, dropped))
 }
 
-/// Write the fresh positioning description in this order into an empty
-/// string: the base line, the country/weather/terrain/commander
-/// sources of key 0x1B2 and, for an early defender, of 0x5A with the opposing
-/// commander (`sources`), the escort bonus, the relative terms and the
-/// penalty block. Then prepend the immediate heading and one
-/// newline.
 fn positioning_description(
     terms: super::naval_positioning::Terms,
     sources: impl FnOnce(&mut String) -> Result<(), String>,
@@ -333,7 +311,6 @@ fn positioning_description(
         description.push('\n');
         for (impact, key, argument) in [
             (defines.positioning_impacts[0], BM_ATTACK_VALUE, "VALUE"),
-            // These two lines use the fixed-point argument NUM.
             (defines.summary_fixed[7], SCREENING_VALUE, "NUM"),
             (defines.positioning_impacts[1], AA_MODIFIER, "NUM"),
         ] {
@@ -369,9 +346,6 @@ fn positioning_description(
     Ok(text)
 }
 
-/// the flag's delayed description starts with the stored total,
-/// then weapon and target-category sums, and finally the sorted damage map.
-/// A negative opposing baseline returns an empty string before that walk.
 pub(super) fn flag_description(
     side: &NavalCombatSideDetails,
     opponent: &NavalCombatSideDetails,
@@ -437,8 +411,6 @@ pub(super) fn flag_description(
     }
     result.push('\n');
     result.push_str(&builtin(icons, loc, DAMAGE_DEALT_BY_SHIP_TYPES, &[])?);
-    // Display the sorted list from lowest to highest, retaining map order
-    // for ties by inserting after equal values.
     let mut by_type: Vec<_> = side.damage_by_type.iter().collect();
     by_type.sort_by_key(|source| source.damage);
     for source in by_type {
@@ -452,8 +424,6 @@ pub(super) fn flag_description(
                     .as_bytes(),
             )
         };
-        // A missing sub-unit uses the null entry's empty name. Append
-        // DAMAGE_DEALT_BY_TYPE even with empty TYPE.
         let name = sub_units.token_name(&token)?;
         let name = country_localised(loc, viewing_tag, name)?;
         validate(icons, &name)?;
@@ -475,9 +445,6 @@ pub(super) fn flag_description(
     Ok(result)
 }
 
-/// The delayed weapon body: sum the weapon's six category
-/// cells with signed wrapping addition, then the game visits each positive
-/// category cell and optionally adds the light/heavy piercing explanation.
 fn weapon_description(
     side: &NavalCombatSideDetails,
     opponent: &NavalCombatSideDetails,
@@ -524,8 +491,6 @@ fn weapon_description(
             )?);
         }
     }
-    // Only light and heavy guns include the piercing explanation.
-    // Its arrays come from the resolved NNavy defines.
     if weapon <= 1 {
         let defines = piercing
             .ok_or("the matching NNavy piercing defines are unavailable")?
@@ -587,7 +552,7 @@ fn header(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Both sides' recorded details and text resources.
+#[allow(clippy::too_many_arguments)]
 fn side_hovers(
     out: &mut Bindings,
     icons: &dyn TextIcons,
@@ -602,8 +567,6 @@ fn side_hovers(
     for (index, (widget, key)) in WEAPON_HOVERS.into_iter().enumerate() {
         let pair = [format!("{path}/{widget}"), format!("{path}/{widget}_bg")];
         header(out, icons, loc, id, side, &pair, key);
-        // Widget order light, heavy, torpedo, depth maps to native weapon
-        // indices 0, 1, 2, 3.
         let description = weapon_description(value, opponent, index, defines, icons, loc);
         for key in pair {
             out.values.entry(key).or_default().tooltip_description =
@@ -615,8 +578,6 @@ fn side_hovers(
             ));
         }
     }
-    // Emit this header for each screening icon, then build its delayed
-    // explanation from the current category census.
     for widget in [
         "capital_screening_efficiency",
         "carrier_screening_efficiency",
@@ -633,9 +594,6 @@ fn side_hovers(
     }
 }
 
-/// The game only needs a model for an uncategorized ship's
-/// carrier predicate. A missing unrelated model table must not
-/// withhold a submarine/convoy-only side's complete screening explanation.
 fn screening_inputs<'a>(
     id: u64,
     side: u8,
@@ -653,8 +611,6 @@ fn screening_inputs<'a>(
 > {
     let defines = defines.ok_or("matching naval combat defines are unavailable")?;
     let ships = ships.ok_or("NavalCombatShips is incomplete")?;
-    // An incomplete model roster supplies no model: census refuses only
-    // when the current member actually requires the equipment predicate.
     let model_rows = if models.is_complete() {
         models.rows()
     } else {
@@ -664,8 +620,6 @@ fn screening_inputs<'a>(
         .ok_or("ShipModels is unordered")?;
     let census =
         super::naval_screening::census(id, side, ships, &keyed_models).map_err(|reason| {
-            // An empty model roster can fail census only at the carrier lookup.
-            // Preserve the table gap there; sides not using it still render.
             match models {
                 Available::Complete(_) => reason.to_owned(),
                 Available::Truncated { missing, .. } => {
@@ -684,9 +638,6 @@ fn screening_inputs<'a>(
     Ok((census, screening, defines))
 }
 
-/// Show the positioning description, built around the ordered
-/// country/weather/terrain/commander breakdown of key
-/// 0x1B2 (and of 0x5A with the opposing commander for an early defender).
 #[allow(
     clippy::too_many_arguments,
     reason = "the hover's fresh terms, both sides, trees and text resources are separate operands"
@@ -736,8 +687,6 @@ fn positioning_hover(
     }
 }
 
-/// Native dynamic stat callbacks own their widgets even when a historical
-/// operand is absent.
 pub(super) fn bind(
     out: &mut Bindings,
     static_content: &StaticContent,
@@ -785,8 +734,6 @@ pub(super) fn bind(
         [None; 2]
     };
     for (side, name) in ["left", "right"].into_iter().enumerate() {
-        // The game returns false before selecting a stat when both
-        // primary country references are empty.
         if !detail.sides[side].summary.countries.is_empty() {
             side_hovers(
                 out,

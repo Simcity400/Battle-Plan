@@ -26,8 +26,6 @@ import { useChangedState } from '../../dashboard/changedState.ts';
 type HistoryChart = Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>;
 export interface DrillChart extends HistoryChart { detailHours: number }
 
-/** A detail history chart's drawn range, kept while it reaches the same detail windows, so zoom and playback easing
- * render only when it reaches another. */
 export function useDetailView(start: number, end: number, detailHours: number) {
   const [visible, setVisible] = useChangedState<readonly [number, number]>([start, end]);
   const onViewChange = useCallback((x: readonly [number, number]) => setVisible(before => {
@@ -37,7 +35,6 @@ export function useDetailView(start: number, end: number, detailHours: number) {
   return [visible, onViewChange] as const;
 }
 
-/** The parts of the day at the moment as a drill shows them, coloured as the history chart draws them. */
 function partRows(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn', digits: number, color: (id: string) => string | undefined) {
   const read = reply?.read;
   const values = reply && read ? fuelParts(reply, read, measure, digits) : null;
@@ -48,8 +45,6 @@ function partRows(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn',
   return { values, parts, total: Number(values.total) / Number(values.scale), totalText: formatFuelPart(values.total, values.scale, digits) };
 }
 
-/** The day's gain or burn at the moment, by source or consumer, and each part over time; a consumer's recipients and
- * one recipient's receipts over time. Country amounts are written to `digits`; a recipient's receipts stay exact. */
 export default function FuelBreakdown({ runtime, widget, track, tag, measure, hour, follows, within, selection: retained, onSelection, digits, campaign, aliases, detailHours, ...chart }: {
   runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; measure: 'gain' | 'burn'; hour: number | null; follows: boolean; digits: number;
   campaign: string; aliases?: ReadonlyMap<string, readonly Span[]>;
@@ -76,7 +71,6 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
   useEffect(() => { setConsumer(null); }, [chart.pickOwner]);
   const consumer = selected?.consumer ?? pickedConsumer;
   const basis = selected?.basis ?? (reply?.read?.day?.awards ? readBasis(track.branch.id, tag, reply.read) : null);
-  // Each part over time, from the day series' tiles; incoming lend-lease on a chart of its own.
   const series = usePartSeries(runtime, track, FUEL_DAYS, ids.map(([name]) => name), tag, undefined, chart.active);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hovered = useProduct<CountryFuelReply>(runtime.client, hoverHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
@@ -157,7 +151,6 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
   </div>;
 }
 
-/** One recipient's receipts at each read, a window of `detailHours` at a time, around the moment. */
 function RecipientHistory({ runtime, track, basis, recipientKey, name, hour, detailHours, chart }: {
   runtime: WidgetRuntime; track: BoundTrack; basis: FuelBasis; recipientKey: string; name: string | null; hour: number | null; detailHours: number; chart: HistoryChart;
 }) {

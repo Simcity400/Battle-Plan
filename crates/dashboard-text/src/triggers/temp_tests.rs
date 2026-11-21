@@ -17,8 +17,6 @@ fn temp_colour_lifetime_depends_on_the_outer_variable_context() {
     with_world(&variables_frame(), "", Err("none"), |world| {
         let scopes = Scopes::of(Scope::Country(0));
         let evaluator = Evaluator::new(world, None);
-        // Synthetic callback branches: red, explicit blue override, green,
-        // then red. Nested checks retain channels the later branch omits.
         let scripts = [
             "set_temp_variable={alpha=1} set_temp_variable={red=1}",
             "set_temp_variable={alpha=1} set_temp_variable={red=0} set_temp_variable={green=0} set_temp_variable={blue=1}",
@@ -432,7 +430,6 @@ fn temp_variables_keep_pending_writers_expressions_and_residuals_named() {
             why.contains(REFUSED) && why.contains("expression") && why.contains("pow"),
             "{why}"
         );
-        // OR is true, but the first condition may skip the setter.
         let why = world
             .evaluate(
                 &items(
@@ -472,7 +469,6 @@ fn format98_random_temp_trigger_and_mtth_share_the_seed_context() {
     }
     with_world(&frame, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        // Canonical slot 0 still carries raw country reference 100 here.
         assert_eq!(
             evaluator
                 .evaluate(
@@ -494,7 +490,6 @@ fn format98_random_temp_trigger_and_mtth_share_the_seed_context() {
                 .decided(),
             Ok(true)
         );
-        // Each modifier consumes the next TLS fraction in one mean-time context.
         let fields = installed_content_core::parser::parse(
             b"base=1 modifier={always=yes factor=random} modifier={always=yes factor=random}",
         )

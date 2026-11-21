@@ -1,53 +1,35 @@
-//! Scientist roster of the country-character object selected by `ccountry::CHARACTERS`. No vtable
-//! guard identifies the root. The walk authenticates the country roster, each character vtable and
-//! reference type, and each scientist vtable. The roster root's own identity remains unestablished.
 
 use crate::{
     Memory, ccharacter, ccountry, cpdx_array::Array, cscientist, read, scientist_roster_entry,
     scientist_skill_entry, walk::Outcome,
 };
 
-/// Wrapper-pointer array data in the roster.
 pub const ENTRIES: usize = 0xa0;
-/// Wrapper capacity, u32, between the data pointer and the count in the data/capacity/count header.
 pub const CAPACITY: usize = 0xa8;
-/// Wrapper count in the roster.
 pub const COUNT: usize = 0xac;
 
-/// One country roster entry and the scientist state of its character.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw country reference of the roster that holds this entry.
     pub country: u32,
-    /// Native roster vector position; membership order is engine state.
     pub ordinal: u32,
-    /// CCharacter numeric id, the key the Characters table already uses.
     pub character: u32,
-    /// Native CScientist trait-vector count, not its capacity.
     pub trait_count: i32,
-    /// Native CScientist specialization-vector count.
     pub skill_count: i32,
-    /// None is a failed appended-byte read; membership and skills remain available.
     pub active: Option<u8>,
     pub injury_days: Option<i32>,
     pub template_visibility: Option<u8>,
     pub template_origin: Option<(usize, usize, u32)>,
 }
 
-/// One specialization record of one scientist, in native vector order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SkillRow {
     pub character: u32,
     pub ordinal: u32,
-    /// Full specialization token, u32.
     pub token: u32,
-    /// Native signed level; zero is a real level, never an absence.
     pub level: i32,
-    /// Signed experience in the record, independent of level.
     pub experience_raw: i64,
 }
 
-/// Worker-owned rows and names, grown from each roster header.
 pub struct Buffers<'a> {
     pub scientists: &'a mut Vec<Row>,
     pub skills: &'a mut Vec<SkillRow>,
@@ -117,9 +99,6 @@ impl Count {
     }
 }
 
-/// Walks every canonical country's scientist roster once. A null roster
-/// pointer contributes no rows; an unreadable or invalid roster fails both
-/// tables with its reason.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -143,7 +122,6 @@ pub fn walk_buffer(
     walk_buffer_with_injury(memory, base, game_state, output, true)
 }
 
-/// Existing roster acquisition, with injury operands demanded only at a daily supplying read.
 pub fn walk_with_injury(
     memory: &impl Memory,
     base: usize,
@@ -363,8 +341,6 @@ mod tests {
         p32(bytes, at + 12, count);
     }
 
-    /// One country with two rostered scientists: the first has two traits and
-    /// four specializations, the second has neither.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x9000];
         vector(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 2);
@@ -404,7 +380,6 @@ mod tests {
             );
             p64(&mut bytes, scientist, cscientist::VTABLE_RVA.0 as u64);
         }
-        // The trait vector's capacity deliberately exceeds its count.
         p64(&mut bytes, SC1 + cscientist::TRAIT_DATA, 0x8800);
         p32(&mut bytes, SC1 + cscientist::TRAIT_CAPACITY, 8);
         p32(&mut bytes, SC1 + cscientist::TRAIT_COUNT, 2);
@@ -513,7 +488,6 @@ mod tests {
                     country: 1,
                     ordinal: 0,
                     character: 265,
-                    // The word before the count is the capacity; the native count follows it.
                     trait_count: 2,
                     skill_count: 4,
                     active: Some(253),
@@ -544,10 +518,8 @@ mod tests {
                 experience_raw: 0,
             }
         );
-        // Experience is an independent native field, not a function of level.
         assert_eq!(skills[1].experience_raw, 21_918_000);
         assert_eq!(skills[1].level, 0);
-        // Zero is a real recorded level, not an absence.
         assert_eq!(skills[3].level, 0);
         assert_eq!(
             skills[3].token,
@@ -643,7 +615,6 @@ mod tests {
             assert!(matches!(result.skills, Outcome::Unavailable { .. }));
         }
 
-        // A character without a scientist role cannot be in the roster.
         let mut bytes = fixture();
         p64(&mut bytes, CH2 + ccharacter::SCIENTIST, 0);
         let (result, ..) = run(&bytes, [4, 8]);
@@ -654,7 +625,6 @@ mod tests {
             }
         );
 
-        // A negative native trait count is invalid, not an empty vector.
         let mut bytes = fixture();
         p32(&mut bytes, SC1 + cscientist::TRAIT_COUNT, u32::MAX);
         let (result, ..) = run(&bytes, [4, 8]);

@@ -1,4 +1,3 @@
-//! Focus databases, native file waves, ordering and scripted icon definitions.
 
 #[cfg(test)]
 use installed_content_core::test_support;

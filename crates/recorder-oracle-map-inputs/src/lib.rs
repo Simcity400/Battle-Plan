@@ -1,4 +1,3 @@
-//! map inputs save comparisons and recorded consistency checks.
 use installed_content_save as save;
 #[cfg(test)]
 use installed_content_save::Decimal;

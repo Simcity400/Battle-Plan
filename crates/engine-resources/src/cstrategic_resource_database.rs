@@ -1,31 +1,17 @@
-//! CStrategicResourceDatabase with a null object at item zero.
-//!
-//! Keys omit the null object, so `keys[index - 1]` names `items[index]`.
 
 use crate::{Memory, cpdx_array::Array, cstrategic_resource, read};
 use engine_sites::Rva;
 
-/// CStrategicResourceDatabase global pointer.
 pub const SINGLETON_RVA: Rva = Rva(0x33dd4d0);
-/// CStrategicResourceDatabase item pointer array.
 pub const ITEMS: usize = 0x28;
-/// CStrategicResourceDatabase item-pointer stride.
 pub const ITEM_STRIDE: usize = 0x08;
-/// CStrategicResourceDatabase item count, i32 including null object.
 pub const COUNT: usize = 0x34;
-/// Parallel resource token-key array.
 pub const KEYS: usize = 0x40;
-/// CStrategicResourceDatabase token-key stride.
 pub const KEY_STRIDE: usize = 0x04;
-/// Oil descriptor pointer.
 pub const OIL: usize = 0x60;
-/// Fuel descriptor pointer.
 pub const FUEL: usize = 0x68;
-/// Database constructor initializing item zero with the null object.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0xb13aa0);
 
-/// Item and key arrays load together. Validate descriptor/key correspondence
-/// without resolving the separate dynamically mutable lexer table.
 pub(crate) struct Reader<'a, M: Memory> {
     memory: &'a M,
     base: usize,

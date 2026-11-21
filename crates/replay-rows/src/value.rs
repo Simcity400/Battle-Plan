@@ -1,8 +1,3 @@
-//! Explicit native values inside a nested field, without row or delta framing.
-//!
-//! Collections carry a u32 element count, options carry a strict 0/1 tag, and
-//! fixed arrays carry neither. Struct fields are written in declaration order.
-//! No Rust padding, addresses or intermediate encoded buffers are involved.
 
 use std::io;
 
@@ -11,24 +6,16 @@ use crate::display::Step;
 use engine_allocation as allocation;
 
 pub trait Value: Sized {
-    /// Lower bound for every encoding of this type, including absent/empty values.
     const MINIMUM_ENCODED_BYTES: usize;
     #[cfg(any(test, feature = "test-support"))]
     const STRUCT_FIELDS: usize = 0;
-    /// Whether this value holds a field with a display step
-    /// ([`crate::display`]), directly or nested.
     const HAS_STEPS: bool = false;
 
-    /// Round every stepped field inside this value to its step, in place.
     fn round_display(&mut self) {}
-    /// Round this value's numbers to `step`, in place. Only numbers and
-    /// containers of numbers take a step.
     fn round_to(&mut self, _step: Step) {}
-    /// This value's numbers rounded and divided by `step`, as the wire holds them.
     fn to_units(&self, _step: Step) -> io::Result<Self> {
         Err(invalid("value takes no display step"))
     }
-    /// A decoded wire value's numbers multiplied back by `step`.
     #[allow(clippy::wrong_self_convention, reason = "the pair to `to_units`: consumes a decoded wire value")]
     fn from_units(self, _step: Step) -> io::Result<Self> {
         Err(invalid("value takes no display step"))
@@ -44,8 +31,6 @@ pub trait Value: Sized {
         })
     }
     fn try_clone(&self) -> io::Result<Self>;
-    /// Checked owning copy of a collection. Scalar implementations copy the
-    /// slice at once; structured elements retain their checked nested clones.
     fn try_clone_many(values: &[Self]) -> io::Result<Vec<Self>> {
         let mut owned = allocation::vec(values.len())?;
         for value in values {
@@ -53,9 +38,6 @@ pub trait Value: Sized {
         }
         Ok(owned)
     }
-    /// Bytes this value's own allocations hold: each collection it owns at
-    /// its capacity and element size, and what those elements hold in turn.
-    /// Its inline size is counted by whatever holds it.
     fn heap_bytes(&self) -> usize;
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()>;
     fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
@@ -68,7 +50,6 @@ pub trait Value: Sized {
     }
     fn visit_field_gaps(&self, _visit: &mut dyn FnMut(&'static str)) {}
 
-    /// The default handles structured elements; byte values override it to copy once.
     fn encode_many(values: &[Self], output: &mut Vec<u8>) -> io::Result<()> {
         for value in values {
             value.encode_reserved(output)?;
@@ -76,7 +57,6 @@ pub trait Value: Sized {
         Ok(())
     }
 
-    /// Validate the declared count before allocating the final owning collection.
     fn decode_many(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<Self>> {
         check_count(count, Self::MINIMUM_ENCODED_BYTES, input.remaining())?;
         let mut values = allocation::vec(count)?;
@@ -87,8 +67,6 @@ pub trait Value: Sized {
     }
 }
 
-/// Immutable, unstepped nested operands shared by held capture rows. Cloning a
-/// row retains the same payload allocation; decoding still owns its wire values.
 impl<T: Value> Value for std::sync::Arc<T> {
     const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES;
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -191,14 +169,10 @@ impl<T: Value> Value for crate::rows::Recorded<T> {
     }
 }
 
-/// Object-safe adapter for a borrowed native complex field. Its caller owns any
-/// outer byte-length prefix and can write/fill that prefix around this direct append.
 pub trait EncodeValue {
     fn encoded_bytes(&self) -> io::Result<usize>;
     fn recorded_bytes(&self) -> io::Result<usize>;
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()>;
-    /// Append after the enclosing field/row reserved this value's encoded
-    /// bound. Custom encoders may retain their ordinary checked path.
     fn encode_value_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         self.encode_value(output)
     }
@@ -254,8 +228,6 @@ macro_rules! integer {
 
 integer!(i8, u16, i16, u32, i32, u64);
 
-/// The only number a display step applies to: every stepped native value is a
-/// signed 64-bit word (fixed5 or Q15).
 impl Value for i64 {
     fn heap_bytes(&self) -> usize {
         0
@@ -480,8 +452,6 @@ impl<T: Value> Value for Vec<T> {
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         let count = u32::try_from(self.len())
             .map_err(|_| invalid("nested collection count exceeds u32"))?;
-        // A nonempty zero-width collection cannot be bounded by its payload.
-        // Zero-length fixed arrays remain usable as fields and in empty vectors.
         if count != 0 && T::MINIMUM_ENCODED_BYTES == 0 {
             return Err(invalid(
                 "nonempty nested collection has zero-width elements",
@@ -563,8 +533,6 @@ impl<T: Value, const N: usize> Value for [T; N] {
         if Self::MINIMUM_ENCODED_BYTES > input.remaining() {
             return Err(invalid("nested array exceeds remaining payload"));
         }
-        // Safe stack construction also drops initialized elements if a later
-        // element fails. No temporary Vec, unsafe initialization or Copy bound.
         let mut values = std::array::from_fn::<_, N, _>(|_| None);
         for value in &mut values {
             *value = Some(T::decode(input)?);
@@ -573,7 +541,6 @@ impl<T: Value, const N: usize> Value for [T; N] {
     }
 }
 
-/// Nested values use their own catalog, independent of the parent's field count.
 pub fn decode_appended<T: Value>(
     record: crate::rows::compatibility::NestedRecord,
     name: &str,
@@ -591,7 +558,6 @@ pub fn decode_appended<T: Value>(
     }
 }
 
-/// A field's display step in a value or row declaration: `None` without one.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! display_step {
@@ -605,7 +571,6 @@ macro_rules! display_step {
 
 pub(crate) use display_step;
 
-/// Whether any flag is set, for constant declarations.
 pub const fn any(flags: &[bool]) -> bool {
     let mut index = 0;
     while index < flags.len() {
@@ -617,7 +582,6 @@ pub const fn any(flags: &[bool]) -> bool {
     false
 }
 
-/// Round a declared field: to its own step, or each stepped part inside it.
 pub fn round_field<T: Value>(value: &mut T, step: Option<Step>) {
     match step {
         Some(step) => value.round_to(step),
@@ -626,7 +590,6 @@ pub fn round_field<T: Value>(value: &mut T, step: Option<Step>) {
     }
 }
 
-/// Encode a declared field, in step units when it has a step.
 pub fn encode_field<T: Value>(
     value: &T,
     step: Option<Step>,
@@ -638,7 +601,6 @@ pub fn encode_field<T: Value>(
     }
 }
 
-/// A declared field decoded in `format`: step units become native units.
 pub fn from_stored<T: Value>(value: T, step: Option<Step>, format: u16) -> io::Result<T> {
     match step {
         Some(step) if crate::display::stepped_format(format) => value.from_units(step),
@@ -646,10 +608,6 @@ pub fn from_stored<T: Value>(value: T, step: Option<Step>, format: u16) -> io::R
     }
 }
 
-/// Implement a declared struct's wire field order without encoding its layout.
-/// Example: value_struct!(Entry { name: Vec<u8>, amount: i64 });
-/// A field written `amount @ STEP: i64` is stored at a display step
-/// ([`crate::display`]).
 macro_rules! value_struct {
     ($ty:ty { $($field:ident $(@ $step:path)? : $field_ty:ty),* $(,)? } $(appended $record:ident { $($appended:ident $(@ $appended_step:path)? : $appended_ty:ty),* $(,)? })?) => {
         $crate::checkpoint::values::structure!($ty { $($field: $field_ty,)* $($($appended: $appended_ty,)*)? });
@@ -820,8 +778,6 @@ mod tests {
         assert!(Option::<i64>::decode(&mut Decoder::new(&[1, 0, 0])).is_err());
         assert!(<[Option<i64>; 2]>::decode(&mut Decoder::new(&[0, 2])).is_err());
 
-        // An absent option consumes its own tag, never an absent payload or the
-        // following field. A present zero is observably different from absence.
         let mut input = Decoder::new(&[0, 0xff]);
         assert_eq!(Option::<u64>::decode(&mut input).unwrap(), None);
         assert_eq!(input.u8().unwrap(), 0xff);
@@ -872,7 +828,6 @@ mod fleet_membership_tests {
                 values
             );
         }
-        // Full references and fleet memberships.
         check(Arc::new(vec![u64::MAX, 0, u64::MAX]));
         check(Arc::new(vec![2_u32, 2, 7]));
     }

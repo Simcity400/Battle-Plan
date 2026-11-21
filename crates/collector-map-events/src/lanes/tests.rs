@@ -36,7 +36,6 @@ fn an_interval_is_every_event_numbered_up_to_the_seal_in_sequence_order() {
     assert_eq!(event(1, 5, b"x"), Err(Refusal::Staging));
     assert!(grow(2, MINIMUM_LANE_BYTES).unwrap());
     assert_eq!(event(1, 5, b"first"), Ok(1));
-    // Another thread takes the second lane; the order is the sequence's.
     std::thread::scope(|scope| {
         scope.spawn(|| assert_eq!(event(2, 5, b"second"), Ok(2)));
     });
@@ -49,7 +48,6 @@ fn an_interval_is_every_event_numbered_up_to_the_seal_in_sequence_order() {
             complete: true
         }
     );
-    // Published after the cut: the next interval's.
     assert_eq!(event(4, 6, b"later"), Ok(4));
     assert_eq!(
         drained(seal),
@@ -59,7 +57,6 @@ fn an_interval_is_every_event_numbered_up_to_the_seal_in_sequence_order() {
             (3, 6, 3, Vec::new()),
         ]
     );
-    // A quiet interval after a commit copies nothing twice.
     let second = super::seal();
     assert_eq!(drained(second), vec![(4, 6, 4, b"later".to_vec())]);
     assert!(drained(super::seal()).is_empty());
@@ -84,8 +81,6 @@ fn an_uncommitted_interval_is_copied_again_and_a_failed_writer_takes_no_number()
     let mut assembled = Assembled::default();
     assemble(seal, &mut assembled).unwrap();
     assert_eq!(assembled.frames.len(), 1);
-    // The frame was never written: nothing is freed, and the next interval
-    // copies the event again.
     assert_eq!(event(0, 2, b"next"), Ok(2));
     let rows = drained(super::seal());
     assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), vec![1, 2]);
@@ -102,8 +97,6 @@ fn a_full_lane_spills_without_overwriting_and_its_demand_grows_the_next_generati
     for sequence in 1..=3 {
         assert_eq!(event(6, 9, &payload), Ok(sequence));
     }
-    // The fourth does not fit the lane: it spills whole, numbered in order, and nothing in
-    // the lane is overwritten.
     assert_eq!(event(6, 9, &payload), Ok(4));
     let before = capacity();
     assert_eq!(
@@ -114,7 +107,6 @@ fn a_full_lane_spills_without_overwriting_and_its_demand_grows_the_next_generati
     let after = capacity();
     assert_eq!(after.generations, 2);
     assert!(after.lane_bytes > before.lane_bytes);
-    // Callbacks move to the new generation; the old one drains, spill included, then unlinks.
     assert_eq!(event(6, 10, &payload), Ok(5));
     let rows = drained(seal());
     assert_eq!(
@@ -127,7 +119,6 @@ fn a_full_lane_spills_without_overwriting_and_its_demand_grows_the_next_generati
     );
     assert_eq!(capacity().generations, 1);
     assert_eq!(capacity().spill_pending, 0);
-    // An unchanged demand installs nothing.
     assert!(!grow(1, MINIMUM_LANE_BYTES).unwrap());
 }
 
@@ -140,7 +131,6 @@ fn a_spill_never_waits_for_the_spool_and_a_burst_keeps_every_event_in_order() {
     grow(1, MINIMUM_LANE_BYTES).unwrap();
     let log = unsafe { &*CURRENT.load(Ordering::SeqCst) };
     let payload = |n: u64| vec![n as u8; MINIMUM_LANE_BYTES / 4];
-    // The spool's spilled events stay held through the whole burst.
     let consumer = log.spill.lock().unwrap();
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
@@ -185,7 +175,6 @@ fn threads_beyond_the_rings_publish_through_the_shared_lane_in_sequence() {
         (1..=6).collect::<Vec<_>>()
     );
     assert_eq!(capacity().required_lanes, 5);
-    // The registered thread count sizes the next generation's rings.
     assert!(grow(1, MINIMUM_LANE_BYTES).unwrap());
     assert_eq!(capacity().lanes, 5);
 }
@@ -198,7 +187,6 @@ fn a_number_taken_but_not_published_at_the_cut_marks_the_seal_incomplete() {
     reset_for_tests();
     grow(1, MINIMUM_LANE_BYTES).unwrap();
     event(0, 1, b"a").unwrap();
-    // A producer between taking its number and publishing.
     SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let seal = seal();
     assert_eq!(
@@ -242,7 +230,6 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     grow(1, MINIMUM_LANE_BYTES).unwrap();
     let quarter = vec![7_u8; MINIMUM_LANE_BYTES / 4];
     assert_eq!(event(0, 1, &quarter), Ok(1));
-    // A thread past the only ring publishes through the shared lane.
     assert_eq!(shared_event(1, 1, b"shared"), 2);
     let mut first = Assembled::default();
     assemble(seal(), &mut first).unwrap();
@@ -250,7 +237,6 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     first.admitted();
     assert_eq!(event(0, 2, &quarter), Ok(3));
     assert_eq!(shared_event(1, 2, b"later"), 4);
-    // The first frame is still queued: the next interval starts after it.
     let mut second = Assembled::default();
     assemble(seal(), &mut second).unwrap();
     assert_eq!(sequences(&second), [3, 4]);
@@ -260,7 +246,6 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     assemble(seal(), &mut quiet).unwrap();
     assert!(quiet.frames.is_empty());
     quiet.admitted();
-    // Nothing queued is written yet, so nothing is freed.
     let log = current();
     assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), 0);
     assert_eq!(
@@ -271,7 +256,6 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
         2
     );
     assert_eq!(event(0, 3, &quarter), Ok(5));
-    // The queued intervals hold the lane's space, so the next event spills.
     assert_eq!(event(0, 3, &quarter), Ok(6));
     first.commit();
     assert_eq!(
@@ -287,7 +271,6 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
             .collect::<Vec<_>>(),
         [4]
     );
-    // Only the written interval's space came back.
     assert_eq!(event(0, 3, &quarter), Ok(7));
     assert_eq!(event(0, 3, &quarter), Ok(8));
     assert_eq!(capacity().spill_pending, 2);
@@ -326,7 +309,6 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     let mut first = Assembled::default();
     assemble(seal(), &mut first).unwrap();
     first.admitted();
-    // Admitting twice is admitting once.
     first.admitted();
     assert_eq!(event(0, 2, b"next"), Ok(3));
     let mut second = Assembled::default();
@@ -334,7 +316,6 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     assert_eq!(sequences(&second), [3]);
     second.admitted();
     assert_eq!(ADMITTED.load(Ordering::Acquire), 2);
-    // The writer lost both queued frames.
     drop((first, second));
     reset_admitted();
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
@@ -344,7 +325,6 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
             .iter()
             .all(|health| health.faults.contains(Fault::OutputLost))
     );
-    // Their events are still held, and the next interval lists them again.
     assert_eq!(
         drained(seal()),
         vec![
@@ -353,7 +333,6 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
             (3, 2, 0, b"next".to_vec()),
         ]
     );
-    // With nothing queued, a reset loses nothing.
     reset_admitted();
     assert!(
         crate::interval::seal(4, Some(1))

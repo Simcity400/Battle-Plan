@@ -1,18 +1,3 @@
-//! Hourly class-13 simulation operands; map presentation remains viewer-owned.
-//!
-//! One walk of every country's railway-gun roster. Guns move, fight and lose
-//! strength at any hour, so the table is hourly. Rows, route cells, stored
-//! names and tooltip scratch grow from original live headers in the worker,
-//! never from a fixed content bound. Optional tooltip failures remain local.
-//!
-//! OwnerTransportSpeeds follows the walk: for each positive logical owner of
-//! a walked gun, the transport speed of every strategic region its guns stand
-//! in or route through (recorded ordinary and alternate paths), which their
-//! sea-crossing and transfer legs move at. One batched query per owner
-//! shares the owner's and its enemies' reads across regions, and every owner
-//! shares each region's identity and weather and each navy's regional
-//! operands ([`engine_naval_history::cnaval_unit_transfer::movement_speeds`]); a region's
-//! refusal stays its own row's.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
@@ -85,7 +70,6 @@ pub fn eta_data() -> impl serde::Serialize {
     })
 }
 
-/// One refused query or province of this capture, by reason.
 fn count_refusal(refused: &mut Vec<(&'static str, u64)>, reason: &'static str) {
     match refused.iter_mut().find(|(known, _)| *known == reason) {
         Some((_, count)) => *count += 1,
@@ -97,8 +81,6 @@ fn count_refusal(refused: &mut Vec<(&'static str, u64)>, reason: &'static str) {
     }
 }
 
-/// Cumulative refused owner/region transport queries and gun provinces
-/// whose region could not be read, by reason.
 static TRANSPORT_REFUSALS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
 
 fn note_transport_refusals(refused: &[(&'static str, u64)]) {
@@ -223,25 +205,17 @@ pub struct Captured {
     fixed_layout: Option<engine_fixed_layout::fixed_layout::Report>,
     fixed_layout_buffer: Vec<u8>,
     supply_origins: Arena<engine_native::cunit_supply_inputs::Origin>,
-    /// First-combat answers for this capture's guns. The gun job runs apart from the
-    /// division movement packet, so it keeps its own memo, sized off-thread.
     combats: FirstCombatMemo,
-    /// The strategic regions of this capture's gun provinces and routes, by id,
-    /// their pointers cleared after use.
     regions: Vec<engine_naval_history::cnaval_unit_transfer::TransportRegion>,
-    /// Each positive logical owner of a walked gun, once.
     owners: Vec<u32>,
     transport: Vec<TransportRow>,
     transport_outcome: Outcome,
     transport_refused: Vec<(&'static str, u64)>,
-    /// Native-demand sorts still run parked; their live-sized scratch survives
-    /// the hour instead of allocating and freeing five temporary vectors.
     transport_demand: Vec<(u32, u32)>,
     transport_provinces: Vec<u32>,
     transport_located: Vec<(u32, u32)>,
     transport_wanted: Vec<(u32, usize)>,
     transport_indices: Vec<usize>,
-    /// What every owner's transport query of one capture shares.
     speed_cache: engine_naval_history::cnaval_unit_transfer::SpeedCache,
 }
 
@@ -249,7 +223,6 @@ const TRANSPORT_UNCAPTURED: Outcome = Outcome::Unavailable {
     reason: "owner transport speeds not captured",
 };
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities_and_layout(
             &Capacities {
@@ -307,7 +280,6 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
-        // Failed siblings may discard this cut before its ordinary FIFO turn.
         self.decode_owned();
         self.decode_transport();
         self.speed_cache.finish();
@@ -394,7 +366,6 @@ impl Captured {
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        // Answers are valid for one capture only; clearing keeps the reserved room.
         self.combats.clear();
         let mut names = railway_gun_counter_inputs::NameArena {
             bytes: Buffer::Growing(&mut self.names.first),
@@ -459,8 +430,6 @@ impl Captured {
         ticks
     }
 
-    /// FIFO-only reduction of copied transport operands and diagnostics.
-    /// Supply consumers in the pause use the unchanged native row prefix.
     pub fn decode_owned(&mut self) {
         if !std::mem::take(&mut self.owned_pending) {
             return;
@@ -508,8 +477,6 @@ impl Captured {
         self.decode_transport();
     }
 
-    /// OwnerTransportSpeeds for this walk's guns: every live region for each
-    /// positive logical owner, in owner then region order.
     fn acquire_transport(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         self.transport_pending = false;
         self.transport.clear();
@@ -527,7 +494,6 @@ impl Captured {
                 Outcome::Unavailable { reason }
             }
         };
-        // Region pointers never outlive the acquisition.
         self.regions.clear();
         self.transport_pending = true;
     }
@@ -566,8 +532,6 @@ impl Captured {
             .first
             .get(..self.paths.len)
             .ok_or("railway-gun path arena length invalid")?;
-        // Each positive owner with the provinces its guns stand on and route
-        // through, the sources of every leg of their recorded routes.
         let demand = &mut self.transport_demand;
         for gun in guns.iter().filter(|gun| gun.logical_owner as i32 > 0) {
             let route = |start: usize, len: usize| {
@@ -599,7 +563,6 @@ impl Captured {
         if self.owners.is_empty() {
             return Ok(0);
         }
-        // Each distinct province's region once, then every owner's regions.
         let provinces = &mut self.transport_provinces;
         provinces
             .try_reserve(demand.len())
@@ -614,8 +577,6 @@ impl Captured {
         self.regions
             .try_reserve(provinces.len())
             .map_err(|_| ALLOCATION)?;
-        // A province whose region cannot be read is skipped and counted; its
-        // legs refuse by name in the viewer, and every other province stands.
         for &province in provinces.iter() {
             match engine_naval_history::cnaval_unit_transfer::province_region(
                 memory, base, game_state, province,
@@ -739,8 +700,6 @@ impl Captured {
         }) {
             return unavailable("railway-gun route lies outside the captured arena");
         }
-        // Each gun sits in exactly one country roster; a repeated handle is a
-        // torn census. Checked here, off the game thread, in n log n.
         let mut handles: Vec<u64> = match collect_vec(rows.iter().map(|row| row.gun)) {
             Ok(handles) => handles,
             Err(_) => return unavailable("collector allocation failed"),
@@ -752,9 +711,7 @@ impl Captured {
         let route = |start: usize, len: usize| owned_vec(copy_vec(&paths[start..start + len]));
         table::<tables::RailwayGunCounterInputs, _>(self.rows.outcome, &self.rows.rows, |r| {
             RailwayGunCounterInputRow {
-                // The selected transport preview's operands retired.
                 transport: Recorded::Value(replay_data::rows::Retired),
-                // Packets store no hour; only this capture's reads are published.
                 combat_references: Recorded::Value(super::unit_combat_references::project(
                     self.sample_hour,
                     r.combat_references.and_then(|(start, len)| {
@@ -1116,7 +1073,6 @@ mod tests {
             None,
         ] {
             capture.rows.rows[0].fresh = fresh;
-            // Operands read for another capture hour are refused.
             capture.sample_hour = Some(0);
             let [
                 TableView::Complete(TableRows::RailwayGunCounterInputs(stale)),
@@ -1211,8 +1167,6 @@ mod tests {
             let Recorded::Value(Some(supply)) = &rows[0].supply else {
                 panic!("scalar supply values");
             };
-            // At the footer's display step, half away from zero; a nonzero
-            // amount below half a step keeps one step (UnitSupplyInputs::STEP).
             assert_eq!(
                 (supply.asked, supply.received, supply.disruption),
                 (-12_000, 35_000, -1_000)
@@ -1243,9 +1197,6 @@ mod tests {
         assert_eq!(rows[0].supply, Recorded::Value(None));
         assert_eq!(rows[0].name, Recorded::Value(Some(b"gun".to_vec())));
     }
-    /// The transport table follows the gun census: no positive logical owner
-    /// reads no region, a refused census or route refuses the table by name,
-    /// and an unreadable province is skipped and counted.
     #[test]
     fn owner_transport_speeds_follow_the_gun_census_and_its_owners() {
         let mut capture = Captured::with_capacities(&Capacities {
@@ -1281,7 +1232,6 @@ mod tests {
                 TableView::Complete(TableRows::OwnerTransportSpeeds(ref rows)) if rows.is_empty()
             ));
         }
-        // A route outside the captured arena refuses by name.
         capture.rows.rows[0] = railway_gun_counter_inputs::Row {
             logical_owner: 10,
             ..gun(1)
@@ -1293,8 +1243,6 @@ mod tests {
             TableView::Unavailable { ref reason }
                 if reason == "railway-gun route lies outside the captured arena"
         ));
-        // Owners are taken once each; a province whose region cannot be read
-        // is skipped and counted, leaving no row rather than refusing the table.
         for (index, owner) in [10, 4, 10].into_iter().enumerate() {
             capture.rows.rows[index] = railway_gun_counter_inputs::Row {
                 logical_owner: owner,

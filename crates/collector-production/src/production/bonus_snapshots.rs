@@ -1,6 +1,3 @@
-//! Immutable applied bonus values, interned on acquisition/decode workers.
-//! A design keeps references to the exact snapshot it held, including repeated
-//! sources. Equal values share payloads across designs and subsequent events.
 use super::*;
 use std::{
     collections::HashMap,
@@ -113,7 +110,6 @@ pub(super) fn input(snapshot: &Snapshot) -> TableInput {
     }
 }
 
-/// The larger snapshot is the later complete prefix of the append-only cache.
 pub(super) fn latest(a: &Snapshot, b: &Snapshot) -> Snapshot {
     match (a, b) {
         (Some(a), Some(b)) => Some(Arc::clone(if a.len() >= b.len() { a } else { b })),

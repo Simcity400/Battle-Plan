@@ -257,10 +257,8 @@ fn native_values_aliases_and_dummy_parents_survive() {
     assert_eq!(children[0].source.province, 450);
     assert_eq!(children[0].source.ship_reference_type, u32::MAX);
     assert_eq!(children[0].source.ship_reference_id, 0x8765_4321);
-    // The distance travelled is read whatever the phase.
     assert_eq!(children[0].travelled, 2_210_000);
     assert_eq!(children[0].preparation_hours, 360);
-    // The source's building reference, as stored.
     assert_eq!(
         (
             children[0].source.building_type,
@@ -453,9 +451,6 @@ fn cooldowns_keep_owner_order_and_type_and_grow_with_demand() {
     assert_eq!(cooldowns[0].scope.province, 450);
 }
 
-/// `countries` slots (plus the dummy slot 0), each with eight eligible
-/// types, one used type, one raid shown to two countries and two target
-/// cooldowns: a busy hour.
 fn scaled(countries: usize) -> Vec<u8> {
     let slots = countries + 1;
     let (parents, array, links) = (0x10000, 0x10000 + slots * ccountry_raid_status::STRIDE, 0);
@@ -623,8 +618,6 @@ fn scaled(countries: usize) -> Vec<u8> {
     bytes
 }
 
-/// A short type-token arena must not omit parents after the observed
-/// demand sizes storage for the complete hour.
 #[test]
 fn a_first_hour_past_the_default_type_token_arena_grows_to_its_demand() {
     let countries = 600;

@@ -1,14 +1,10 @@
-/* One chrome surface, the sidebar and the top bar together, around the workspace. */
 .app-shell {
   position: relative; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr);
   width: 100%; height: 100%; transition: grid-template-columns var(--t-slow) var(--ease);
 }
-/* The sidebar and top bar share one glass surface with no seam between them. */
 .sidebar, .shell-header { background: var(--chrome-glass); -webkit-backdrop-filter: blur(var(--chrome-blur)) saturate(1.3); backdrop-filter: blur(var(--chrome-blur)) saturate(1.3); }
 
-/* Backdrop: behind everything, painted once. */
 .app-backdrop { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; background: var(--canvas); }
-/* The main view's own backdrop covers the window's there, under its panels. */
 .app-backdrop.is-workspace { position: absolute; z-index: auto; }
 .app-backdrop[data-kind='ambient']::before {
   content: ''; position: absolute; inset: -15%;
@@ -27,7 +23,6 @@
 .app-backdrop-image { position: absolute; inset: calc(var(--backdrop-blur) * -2.5); background: center / cover no-repeat; filter: blur(var(--backdrop-blur)); }
 .app-backdrop-dim { position: absolute; inset: 0; background: color-mix(in srgb, var(--canvas) var(--backdrop-dim), transparent); }
 
-/* Sidebar: its header shares the top bar's row, so navigation starts level with the content. */
 .app-shell.is-resizing { transition: none; cursor: col-resize; user-select: none; }
 .sidebar-rail { position: absolute; top: 0; right: -3px; bottom: 0; z-index: 7; width: 7px; cursor: col-resize; touch-action: none; }
 .sidebar-rail::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background var(--t-fast) var(--ease); }
@@ -39,7 +34,6 @@
   opacity: 1; transition: opacity var(--t) var(--ease);
 }
 .app-shell[data-sidebar='hidden'] .sidebar { opacity: 0; visibility: hidden; }
-/* Hovering the left edge of a hidden sidebar slides it over the workspace. */
 .sidebar-peek-overlay { width: 0; height: 0; margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none; }
 .sidebar-edge { position: fixed; top: 0; bottom: 0; left: 0; z-index: 8; width: 6px; }
 .app-shell:is([data-sidebar='hidden'], [data-sidebar='peek']) .sidebar {
@@ -104,7 +98,6 @@
 .sidebar-utility[data-sidebar-icon='settings']:hover:not(:disabled) svg { transform: rotate(45deg); }
 .sidebar-footer .update-button { margin-left: auto; }
 
-/* Top bar */
 .shell-header { grid-column: 2 / -1; grid-row: 1; display: flex; flex-wrap: wrap; align-items: flex-start; min-width: 0; container-type: inline-size; box-shadow: inset 1px 0 0 var(--line-soft); }
 .app-shell:is([data-sidebar='hidden'], [data-sidebar='peek']) .shell-header { box-shadow: none; }
 .shell-recording-notice { flex-basis: 100%; margin: 0 10px 8px; }
@@ -119,9 +112,7 @@
 .shell-switch-failure { flex-basis: 100%; align-items: center; margin: 0 10px 8px; }
 .shell-switch-failure > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
-/* Workspace: square corner, one hairline where it meets the chrome. */
 .workspace { grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0; overflow: hidden; background: color-mix(in srgb, var(--canvas) 72%, transparent); }
-/* Docked beside the workspace, which narrows for it: the native map is measured from the workspace, so a docked panel never covers it. Empty, the column takes no room. */
 .workspace-side { grid-column: 3; grid-row: 2; display: flex; min-height: 0; overflow: hidden; box-shadow: inset 1px 0 0 var(--line-soft); background: var(--surface, var(--canvas)); }
 .workspace-side:empty, .workspace-side[hidden] { display: none; }
 .workspace::after { content: ''; position: absolute; inset: 0; z-index: 6; pointer-events: none; box-shadow: inset 1px 0 0 var(--line), inset 0 1px 0 var(--line-soft); }

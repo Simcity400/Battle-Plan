@@ -39,7 +39,6 @@ fn row<'a>(
     ]
 }
 
-/// Prepares one hour's rows; nothing held changes.
 fn prepare(
     writer: &mut TableWriter,
     dictionary: &mut Dictionary,
@@ -53,8 +52,6 @@ fn prepare(
     hour.finish()
 }
 
-/// Writes one hour, applies its section to `reader` as a walker would, commits it and
-/// checks both hold the same table.
 fn hour(
     writer: &mut TableWriter,
     dictionary: &mut Dictionary,
@@ -67,7 +64,6 @@ fn hour(
     written(writer, dictionary, reader, coverage, evidence, at, rows).1
 }
 
-/// [`hour`], with what the hour's runs carried and its op flags.
 fn written(
     writer: &mut TableWriter,
     dictionary: &mut Dictionary,
@@ -98,7 +94,6 @@ fn written(
     (census, applied)
 }
 
-/// The reader holds every row as given: the cells an hour wrote are the ones it was handed.
 fn holds(reader: &Table, dictionary: &mut Dictionary, rows: &[(u128, [Input<'_>; 6])]) {
     for (key, cells) in rows {
         let slot = reader.slot(*key).unwrap();
@@ -117,7 +112,6 @@ fn holds(reader: &Table, dictionary: &mut Dictionary, rows: &[(u128, [Input<'_>;
     }
 }
 
-/// Rows of a table of many: each key's U32 value and flag, its other cells alike.
 fn many(
     keys: impl IntoIterator<Item = u128>,
     value: impl Fn(u128) -> u32,
@@ -152,7 +146,6 @@ fn first_hour(writer: &mut TableWriter, dictionary: &mut Dictionary, reader: &mu
         ],
     )
     .unwrap();
-    // New rows take their slots in key order.
     assert_eq!(changes.inserted, [0, 1, 2]);
 }
 
@@ -179,7 +172,6 @@ fn hours_write_what_a_reader_applies_and_reuse_the_lowest_freed_slot() {
         ],
     )
     .unwrap();
-    // Key 20 was not visited: deleted, and its slot holds the new key.
     assert_eq!(changes.deleted, [1]);
     assert_eq!(changes.inserted, [1]);
     assert_eq!(changes.changed, [0]);
@@ -269,7 +261,6 @@ fn an_unrecorded_cell_is_known_again_only_through_a_set() {
     .unwrap();
     assert_eq!(changes.changed, [0]);
     assert!(!reader.recorded(0, 0));
-    // The same value recorded again is a change: the cell was unknown.
     let changes = hour(
         &mut writer,
         &mut dictionary,
@@ -282,7 +273,6 @@ fn an_unrecorded_cell_is_known_again_only_through_a_set() {
     .unwrap();
     assert_eq!(changes.changed, [0]);
     assert!(reader.recorded(0, 0));
-    // An inserted row's unrecorded cell holds no value a reader could take.
     let mut inserted = row(9, Some(9), b"i", &[9], b"9", true);
     inserted[1] = Input::Unrecorded;
     let changes = hour(
@@ -326,7 +316,6 @@ fn a_partial_read_names_the_rows_it_read_and_deletes_none() {
     assert_eq!(changes.inserted, [3]);
     assert_eq!(writer.view(), [1, 3]);
     assert_eq!(writer.table().slot(10), Some(0));
-    // A quiet partial read still writes the rows it read.
     let changes = hour(
         &mut writer,
         &mut dictionary,
@@ -340,7 +329,6 @@ fn a_partial_read_names_the_rows_it_read_and_deletes_none() {
     assert_eq!(changes.read, [1]);
     assert!(changes.changed.is_empty());
     assert_eq!(writer.view(), [1]);
-    // A complete hour clears the view.
     hour(
         &mut writer,
         &mut dictionary,
@@ -395,7 +383,6 @@ fn a_restored_writer_continues_as_the_unbroken_one() {
     let mut reader = Table::new(&KINDS).unwrap();
     let mut dictionary = Dictionary::new();
     first_hour(&mut unbroken, &mut dictionary, &mut reader);
-    // Deleting key 20 leaves a free slot below the extent.
     hour(
         &mut unbroken,
         &mut dictionary,
@@ -421,12 +408,10 @@ fn a_restored_writer_continues_as_the_unbroken_one() {
     unbroken.commit(Some(expected), COMPLETE, 3).unwrap();
     resumed.commit(Some(actual), COMPLETE, 3).unwrap();
     assert_eq!(resumed.table(), unbroken.table());
-    // The new row took the freed slot.
     assert_eq!(resumed.table().slot(50), Some(1));
     assert_eq!(resumed.restart().unwrap(), unbroken.restart().unwrap());
 }
 
-/// Visits `visits` in one hour; the last is refused, and the hour then never finishes.
 fn refused(
     writer: &mut TableWriter,
     dictionary: &mut Dictionary,
@@ -464,19 +449,16 @@ fn refusals_name_their_cause_and_change_nothing_held() {
         .begin(&mut dictionary, Coverage::Changes { removed: &[70] })
         .unwrap();
     assert!(absent.finish().is_err());
-    // Only the latest hour's preparation commits, and only to its own writer.
     let stale = prepare(&mut writer, &mut dictionary, Coverage::Complete, &[]).unwrap();
     let latest = prepare(&mut writer, &mut dictionary, Coverage::Partial, &[]).unwrap();
     assert!(writer.commit(Some(stale), COMPLETE, 2).is_err());
     let mut other = TableWriter::new(&KINDS).unwrap();
     let foreign = prepare(&mut other, &mut dictionary, Coverage::Complete, &[]).unwrap();
     assert!(writer.commit(Some(foreign), COMPLETE, 2).is_err());
-    // A partial read and a complete status do not come together.
     assert!(writer.commit(Some(latest), COMPLETE, 2).is_err());
     assert!(writer.commit(None, TRUNCATED, 2).is_err());
     assert_eq!(writer.table(), &reader);
     assert_eq!(writer.status(), Status::Complete);
-    // A refused hour leaves the next one exact.
     hour(
         &mut writer,
         &mut dictionary,
@@ -559,7 +541,6 @@ fn samples_and_availability_follow_the_walker() {
     assert_eq!(writer.acquisition().last_read, None);
 }
 
-/// A writer and the walker beside it, an hour at a time.
 struct Fixture {
     writer: TableWriter,
     reader: Table,
@@ -579,7 +560,6 @@ impl Fixture {
         fixture
     }
 
-    /// The next hour, as [`written`]; the reader then holds `rows` as given.
     fn step(
         &mut self,
         coverage: Coverage<'_>,
@@ -600,7 +580,6 @@ impl Fixture {
         written
     }
 
-    /// The next hour's changed rows, and what its runs carried.
     fn changes(&mut self, rows: &[(u128, [Input<'_>; 6])]) -> Census {
         let ((hour, _), _) = self.step(Coverage::Changes { removed: &[] }, COMPLETE, rows);
         hour
@@ -614,29 +593,24 @@ fn an_integer_delta_no_longer_than_its_value_is_an_add() {
         (10, row(1, None, b"a", &[], b"", false)),
         (20, row(2, Some(2), b"b", &[2, 2], b"yy", true)),
     ]);
-    // A delta as long as the value it replaces: 1 to 100 is one byte either way.
     let rows = [(10, row(100, None, b"a", &[], b"", false))];
     assert_eq!(fixture.changes(&rows), census(0, 1, 0));
-    // A shorter delta is an ADD; an unsigned column's negative delta wraps to five bytes.
     let rows = [
         (10, row(200, None, b"a", &[], b"", false)),
         (30, row(1, Some(-3), b"c", &[3], b"z", true)),
     ];
     assert_eq!(fixture.changes(&rows), census(1, 1, 0));
-    // A signed column's negative delta is short; an optional value appearing or going is a SET.
     let rows = [
         (20, row(2, Some(-1_000), b"b", &[2, 2], b"yy", true)),
         (10, row(200, Some(5), b"a", &[], b"", false)),
         (30, row(1, None, b"c", &[3], b"z", true)),
     ];
     assert_eq!(fixture.changes(&rows), census(2, 1, 0));
-    // A cell recorded again after it was not takes a SET, however close the stale value.
     let mut unrecorded = row(2, Some(-1_000), b"b", &[2, 2], b"yy", true);
     unrecorded[0] = Input::Unrecorded;
     assert_eq!(fixture.changes(&[(20, unrecorded)]), census(0, 0, 0));
     let rows = [(20, row(3, Some(-1_000), b"b", &[2, 2], b"yy", true))];
     assert_eq!(fixture.changes(&rows), census(1, 0, 0));
-    // Byte-wide values are raw either way.
     let rows = [(10, row(200, Some(5), b"a", &[], b"", true))];
     assert_eq!(fixture.changes(&rows), census(1, 0, 0));
 }
@@ -648,19 +622,15 @@ fn a_list_or_opaque_edit_shorter_than_its_cell_is_a_patch() {
         (10, row(1, None, b"a", &first, b"abcdefghijklmnop", false)),
         (20, row(2, None, b"b", &second, b"z", false)),
     ]);
-    // One item of eight in each list, visited against slot order; two bytes of sixteen, one
-    // hunk across the equal byte between them; and a two-byte cell whose edit is longer.
     let (first, second) = ([1, 2, 3, 4, 5, 6, 7, 9], [11, 12, 13, 14, 15, 16, 17, 19]);
     let rows = [
         (20, row(2, None, b"b", &second, b"zy", false)),
         (10, row(1, None, b"a", &first, b"aXcXefghijklmnop", false)),
     ];
     assert_eq!(fixture.changes(&rows), census(1, 0, 3));
-    // A grown list and a shrunk opaque cell keep their common prefix.
     let grown = [1, 2, 3, 4, 5, 6, 7, 9, 10];
     let rows = [(10, row(1, None, b"a", &grown, b"aXcXefghijklmno", false))];
     assert_eq!(fixture.changes(&rows), census(0, 0, 2));
-    // Edits as long as the cell are a SET.
     let replaced = [21, 22, 23, 24, 25, 26, 27, 28, 29];
     let rows = [(10, row(1, None, b"a", &replaced, b"aXcXefghijklmno", false))];
     assert_eq!(fixture.changes(&rows), census(1, 0, 0));
@@ -669,7 +639,6 @@ fn a_list_or_opaque_edit_shorter_than_its_cell_is_a_patch() {
 #[test]
 fn a_column_of_one_value_is_one_set_run_or_a_fill_of_the_live_rows() {
     let mut fixture = Fixture::new(&many(1..=20, |key| key as u32, |_| false));
-    // Every row's flag: a FILL with no exception, its slots apart from the changed list.
     let rows = many(1..=20, |key| key as u32, |_| true);
     let ((hour, ops), changes) = fixture.step(Coverage::Complete, COMPLETE, &rows);
     let changes = changes.unwrap();
@@ -678,14 +647,11 @@ fn a_column_of_one_value_is_one_set_run_or_a_fill_of_the_live_rows() {
     assert_eq!(ops, manifest::FILLS);
     assert!(changes.changed.is_empty());
     assert_eq!(changes.fill_slots, (0..20).collect::<Vec<u32>>());
-    // A partial read's sixteen rows of twenty: the four it did not read are exceptions.
     let rows = many(1..=16, |key| key as u32, |_| false);
     let ((hour, _), _) = fixture.step(Coverage::Partial, TRUNCATED, &rows);
     assert_eq!((hour.fills, hour.fill_exceptions), (1, 4));
     let unread = many(17..=20, |key| key as u32, |_| true);
     holds(&fixture.reader, &mut fixture.dictionary, &unread);
-    // Sixteen values of the 21 rows live after a delete and two inserts: the rows left and
-    // the inserted ones are exceptions.
     let flag = |key: u128| (17..=20).contains(&key);
     let rows = many(2..=22, |key| if key <= 17 { 0 } else { key as u32 }, flag);
     let ((hour, _), changes) = fixture.step(Coverage::Complete, COMPLETE, &rows);
@@ -693,7 +659,6 @@ fn a_column_of_one_value_is_one_set_run_or_a_fill_of_the_live_rows() {
     let fill = (hour.fills, hour.fill_slots, hour.fill_exceptions);
     assert_eq!(fill, (1, 16, 5));
     assert_eq!((changes.deleted.len(), changes.inserted.len()), (1, 2));
-    // Three of one value, whose deltas alone would be ADDs, are one SET run.
     let rows = many(
         2..=22,
         |key| match key {
@@ -705,7 +670,6 @@ fn a_column_of_one_value_is_one_set_run_or_a_fill_of_the_live_rows() {
     );
     let (written, _) = fixture.step(Coverage::Complete, COMPLETE, &rows);
     assert_eq!(written, (census(3, 0, 0), 0));
-    // Fifteen of one value are fewer than a FILL takes.
     let rows = many(
         2..=22,
         |key| match key {
@@ -724,10 +688,8 @@ fn a_column_of_one_value_is_one_set_run_or_a_fill_of_the_live_rows() {
 fn a_fill_takes_at_least_half_the_rows_live_after_the_hour() {
     let first = many(1..=33, |key| key as u32, |_| false);
     let mut fixture = Fixture::new(&first);
-    // Sixteen of 33 live rows are one SET run.
     let rows = many(1..=16, |_| 100, |_| false);
     assert_eq!(fixture.changes(&rows), census(16, 0, 0));
-    // Sixteen of the 32 left after a delete are a FILL.
     let rows = many(1..=16, |_| 200, |_| false);
     let coverage = Coverage::Changes { removed: &[33] };
     let ((hour, _), _) = fixture.step(coverage, COMPLETE, &rows);
@@ -736,7 +698,6 @@ fn a_fill_takes_at_least_half_the_rows_live_after_the_hour() {
     holds(&fixture.reader, &mut fixture.dictionary, &first[16..32]);
 }
 
-/// `rows` as `batch`'s rows of a `kinds` table, each cell as [`Hour::row`] takes it.
 fn batched<'r, 'c: 'r>(
     batch: &mut Batch,
     kinds: &[Kind],
@@ -757,7 +718,6 @@ fn batched<'r, 'c: 'r>(
     Ok(())
 }
 
-/// Every kind, and a second Bytes column whose strings intern beside the first's.
 const WIDE: [Kind; 18] = [
     Kind::U8,
     Kind::I8,
@@ -779,7 +739,6 @@ const WIDE: [Kind; 18] = [
     Kind::Bytes,
 ];
 
-/// One row of every [`WIDE`] column, owned.
 #[derive(Clone)]
 struct Wide {
     key: u128,
@@ -788,12 +747,10 @@ struct Wide {
     u32s: Vec<u32>,
     u64s: Vec<u64>,
     opaque: Vec<u8>,
-    /// A bit per column whose cell the recording did not record.
     unrecorded: u32,
 }
 
 impl Wide {
-    /// Row `key`, its values drawn from `value`.
     fn new(key: u128, value: u32) -> Self {
         let signed = i64::from(value);
         Self {
@@ -839,14 +796,12 @@ impl Wide {
         inputs
     }
 
-    /// The row with scalar column `column` holding `cell`.
     fn with(mut self, column: usize, cell: Cell<'static>) -> Self {
         self.scalars[column] = cell;
         self
     }
 }
 
-/// One path's writer and dictionary, and the walker its sections build.
 struct Side {
     writer: TableWriter,
     dictionary: Dictionary,
@@ -868,7 +823,6 @@ impl Side {
         }
     }
 
-    /// The hour's rows, one at a time.
     fn rows(&mut self, coverage: Coverage<'_>, rows: &[(u128, Vec<Input<'_>>)]) -> Prepared {
         let mut hour = self.writer.begin(&mut self.dictionary, coverage).unwrap();
         for (key, cells) in rows {
@@ -881,7 +835,6 @@ impl Side {
         self.writer.prepare(&mut self.dictionary, coverage, batch).unwrap()
     }
 
-    /// Applies `prepared` as a walker would, then commits it.
     fn commit(&mut self, prepared: Prepared, evidence: Evidence, at: i32) -> Option<Changes> {
         let truncated = matches!(evidence.status, Status::Truncated { .. });
         let applied = prepared.section.as_ref().map(|bytes| {
@@ -903,14 +856,10 @@ impl Side {
     }
 }
 
-/// The same hours staged a row at a time and as one batch, by two writers, and both ways
-/// again by two writers clearing and finishing every column every hour.
 struct Twin {
     rows: Side,
     batch: Side,
-    /// A row at a time, then as one batch, sweeping every column.
     swept: [Side; 2],
-    /// One batch for every hour, as a run keeps it.
     staged: Batch,
     at: i32,
 }
@@ -926,8 +875,6 @@ impl Twin {
         }
     }
 
-    /// One hour through every path: the same section, manifest entry, census and strings,
-    /// and then the same held table, view and walker.
     fn hour(
         &mut self,
         coverage: Coverage<'_>,
@@ -969,12 +916,10 @@ impl Twin {
         changes
     }
 
-    /// The batch's hour found its held rows' slots by key.
     fn looked_up(&self) -> bool {
         !self.batch.writer.visited.is_empty()
     }
 
-    /// Every writer's restart, which is the same.
     fn restart(&self) -> Vec<u8> {
         let bytes = self.rows.writer.restart().unwrap();
         for side in std::iter::once(&self.batch).chain(&self.swept) {
@@ -983,7 +928,6 @@ impl Twin {
         bytes
     }
 
-    /// Every writer restored from `bytes`, sweeping as it did.
     fn restore(&mut self, bytes: &[u8]) {
         let [swept_rows, swept_batch] = &mut self.swept;
         for side in [&mut self.rows, &mut self.batch, swept_rows, swept_batch] {
@@ -1000,12 +944,8 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     let mut twin = Twin::new();
     let first: Vec<Wide> = (1..=20).map(|key| Wide::new(key * 10, key as u32)).collect();
     twin.hour(Coverage::Complete, COMPLETE, &first);
-    // The same rows in the same order: their slots are known, and nothing changes.
     assert!(twin.hour(Coverage::Complete, COMPLETE, &first).is_none());
     assert!(!twin.looked_up());
-    // Every kind changes in place: ADDs, SETs and PATCHes, a FILL, an optional value going
-    // and one appearing, a cell no longer recorded, and new strings in both text columns,
-    // one twice and one already another column's, interned in row order.
     let mut third = first.clone();
     for (index, row) in third.iter_mut().enumerate() {
         row.scalars[0] = Cell::U8(200);
@@ -1030,8 +970,6 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     let changes = twin.hour(Coverage::Complete, COMPLETE, &third).unwrap();
     assert!(!twin.looked_up());
     assert_eq!(changes.filled, [0]);
-    // Reversed, without key 50, with two new rows, one leaving cells unrecorded, and the
-    // cell no longer recorded recorded again as it was.
     let mut fourth: Vec<Wide> = third.iter().rev().filter(|row| row.key != 50).cloned().collect();
     for row in &mut fourth {
         row.unrecorded = 0;
@@ -1043,7 +981,6 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     let changes = twin.hour(Coverage::Complete, COMPLETE, &fourth).unwrap();
     assert!(twin.looked_up());
     assert_eq!((changes.deleted.len(), changes.inserted.len()), (1, 2));
-    // The same rows in key order change nothing; that order is then the one known.
     let mut fifth = fourth.clone();
     fifth.sort_by_key(|row| row.key);
     assert!(twin.hour(Coverage::Complete, COMPLETE, &fifth).is_none());
@@ -1056,7 +993,6 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     let changes = twin.hour(Coverage::Complete, COMPLETE, &sixth).unwrap();
     assert!(!twin.looked_up());
     assert_eq!(changes.filled, [3]);
-    // A partial read changes rows but brings or drops none, so the order still holds.
     let mut read = sixth[5..10].to_vec();
     read[1].scalars[5] = Cell::I32(4);
     read[3].u64s.clear();
@@ -1067,7 +1003,6 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     seventh[0].scalars[6] = Cell::U64(1);
     twin.hour(Coverage::Complete, COMPLETE, &seventh).unwrap();
     assert!(!twin.looked_up());
-    // A removed row ends the order; the next complete hour finds its rows by key.
     let changed = [seventh[2].clone().with(4, Cell::U32(3))];
     let removed = [seventh[3].key];
     twin.hour(Coverage::Changes { removed: &removed }, COMPLETE, &changed);
@@ -1080,7 +1015,6 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     let changes = twin.hour(Coverage::Complete, COMPLETE, &ninth).unwrap();
     assert!(twin.looked_up());
     assert_eq!((changes.deleted.len(), changes.inserted.len()), (1, 1));
-    // Three cells of one value are one SET run.
     let mut tenth = ninth.clone();
     for row in &mut tenth[..3] {
         row.scalars[5] = Cell::I32(77);
@@ -1088,11 +1022,9 @@ fn a_batch_writes_what_its_rows_write_one_at_a_time() {
     let changes = twin.hour(Coverage::Complete, COMPLETE, &tenth).unwrap();
     assert!(!twin.looked_up());
     assert!(changes.filled.is_empty());
-    // A partial read with a new row ends the order too.
     let read = [tenth[1].clone().with(1, Cell::I8(9)), Wide::new(1, 40)];
     twin.hour(Coverage::Partial, TRUNCATED, &read);
     assert!(!twin.batch.writer.order.held);
-    // Writers restored from either's restart go on as both would.
     let bytes = twin.restart();
     twin.restore(&bytes);
     let mut eleventh = tenth.clone();
@@ -1114,8 +1046,6 @@ fn a_refused_batch_changes_nothing_held() {
     let mut dictionary = Dictionary::new();
     first_hour(&mut writer, &mut dictionary, &mut reader);
     let same = row(1, None, b"a", &[], b"", false);
-    // A cell before its row's key, of another kind, or a second of a column in a row is
-    // refused as it is added.
     let mut batch = Batch::new();
     batch.begin(&KINDS, 1).unwrap();
     assert!(batch.value(0, Cell::U32(1)).is_err());
@@ -1126,8 +1056,6 @@ fn a_refused_batch_changes_nothing_held() {
     assert!(batch.unrecorded(6).is_err());
     batch.value(0, Cell::U32(1)).unwrap();
     assert!(batch.value(0, Cell::U32(1)).is_err());
-    // A row short of a cell, a key visited twice, a removed key changed, and another table's
-    // columns are refused by the hour.
     assert!(writer.prepare(&mut dictionary, Coverage::Complete, &batch).is_err());
     batched(&mut batch, &KINDS, [(10, &same[..]), (10, &same[..])].into_iter()).unwrap();
     assert!(writer.prepare(&mut dictionary, Coverage::Complete, &batch).is_err());
@@ -1137,7 +1065,6 @@ fn a_refused_batch_changes_nothing_held() {
     batched(&mut batch, &KINDS[..5], [(10, &same[..5])].into_iter()).unwrap();
     assert!(writer.prepare(&mut dictionary, Coverage::Complete, &batch).is_err());
     assert_eq!(writer.table(), &reader);
-    // A refused hour leaves the next one exact.
     let changed = [(10, row(8, None, b"a", &[], b"", false))];
     let cells = changed.iter().map(|(key, cells)| (*key, &cells[..]));
     batched(&mut batch, &KINDS, cells).unwrap();
@@ -1153,10 +1080,6 @@ fn a_refused_batch_changes_nothing_held() {
     holds(&reader, &mut dictionary, &changed);
 }
 
-/// Hours that change nothing clear and finish no column, whether their rows are staged whole,
-/// as changes of no row or as a partial read; a changed column is finished, then cleared,
-/// alone; a refused hour has the next clear every column. The writers sweeping every column
-/// write the same.
 #[test]
 fn an_hour_works_only_the_columns_it_staged() {
     fn quiet(twin: &mut Twin, rows: &[Wide]) {
@@ -1166,7 +1089,6 @@ fn an_hour_works_only_the_columns_it_staged() {
     let w = |hours, columns| Work { hours, columns };
     let mut twin = Twin::new();
     let mut rows: Vec<Wide> = (1..=40).map(|key| Wide::new(key * 10, key as u32)).collect();
-    // The inserts stage every column; the next hour clears them all, then none.
     twin.hour(Coverage::Complete, COMPLETE, &rows);
     assert_eq!(twin.batch.writer.work(), w(1, all));
     quiet(&mut twin, &rows);
@@ -1179,14 +1101,12 @@ fn an_hour_works_only_the_columns_it_staged() {
     twin.hour(Coverage::Partial, TRUNCATED, &rows[10..15]);
     quiet(&mut twin, &rows);
     assert_eq!(twin.batch.writer.work(), w(15, 2 * all));
-    // One changed cell.
     rows[7] = rows[7].clone().with(4, Cell::U32(1));
     twin.hour(Coverage::Changes { removed: &[] }, COMPLETE, &rows[7..8]);
     assert_eq!(twin.batch.writer.work(), w(16, 2 * all + 1));
     quiet(&mut twin, &rows);
     quiet(&mut twin, &rows);
     assert_eq!(twin.batch.writer.work(), w(18, 2 * all + 2));
-    // A new string in a text column and a cell no longer recorded in another.
     rows[5].names[0] = b"renamed".to_vec();
     rows[3].unrecorded = 1 << 0;
     twin.hour(Coverage::Complete, COMPLETE, &rows).unwrap();
@@ -1196,7 +1116,6 @@ fn an_hour_works_only_the_columns_it_staged() {
     for side in &twin.swept {
         assert_eq!(side.writer.work(), w(20, 40 * all));
     }
-    // A refused hour may leave cells in any column.
     let inputs = rows[0].inputs();
     let twice = [(rows[0].key, &inputs[..]), (rows[0].key, &inputs[..])];
     batched(&mut twin.staged, &WIDE, twice.into_iter()).unwrap();
@@ -1212,8 +1131,6 @@ fn an_hour_works_only_the_columns_it_staged() {
     twin.restart();
 }
 
-/// A batch keeps no cell of an earlier table's hour: a wider table's rows, then a narrower
-/// table's, then an hour of no rows, each stage only their own.
 #[test]
 fn a_batch_begun_again_holds_only_its_own_cells() {
     let mut batch = Batch::new();
@@ -1239,8 +1156,6 @@ fn inputs(rows: &[Wide]) -> Vec<(u128, Vec<Input<'_>>)> {
     rows.iter().map(|row| (row.key, row.inputs())).collect()
 }
 
-/// Writers holding `first`: one clearing and finishing the columns its hours touch, one every
-/// column.
 fn holding(first: &[Wide]) -> [Side; 2] {
     let rows = inputs(first);
     [Side::new(), Side::sweeping(Sweep::Every)].map(|mut side| {
@@ -1251,7 +1166,6 @@ fn holding(first: &[Wide]) -> [Side; 2] {
     })
 }
 
-/// A writer new from `side`'s restart, holding the same strings: it has begun no hour.
 fn restored(side: &Side) -> Side {
     let bytes = side.writer.restart().unwrap();
     let held = restart::read(&bytes, &WIDE, &mut Scratch::default()).unwrap();
@@ -1267,8 +1181,6 @@ fn restored(side: &Side) -> Side {
     }
 }
 
-/// An attempt at an hour reading the run's strings, as tables prepared side by side do: its
-/// rows one at a time, or `batch`.
 fn attempt(
     side: &mut Side,
     batch: Option<&Batch>,
@@ -1286,9 +1198,6 @@ fn attempt(
     hour.finish()
 }
 
-/// The second hour by `sides`, which abandoned attempts at it, and by a writer new from their
-/// restart, which began none: the same section, manifest entry, census and strings, then the
-/// same table.
 fn again(sides: &mut [Side; 2], hour: impl Fn(&mut Side) -> Prepared) {
     let mut fresh = restored(&sides[0]);
     let expected = hour(&mut fresh);
@@ -1311,17 +1220,11 @@ fn again(sides: &mut [Side; 2], hour: impl Fn(&mut Side) -> Prepared) {
     }
 }
 
-/// An hour that stages cells in several columns, then misses a string the run has not used
-/// while reading the run's strings, is prepared again interning: a row at a time or as one
-/// batch, it writes what a writer that never began it writes, as does the writer sweeping every
-/// column.
 #[test]
 fn an_hour_prepared_again_after_a_missed_string_writes_what_it_would_have() {
     let first: Vec<Wide> = (1..=40)
         .map(|key| Wide::new(key * 10, key as u32))
         .collect();
-    // A FILL, a SET, PATCHes of a list and an opaque cell and a cell no longer recorded, then
-    // late in the hour a changed cell beside a new name, and another new name.
     let mut next = first.clone();
     for row in &mut next[..25] {
         row.scalars[0] = Cell::U8(200);
@@ -1357,17 +1260,11 @@ fn an_hour_prepared_again_after_a_missed_string_writes_what_it_would_have() {
     }
 }
 
-/// An hour refused as it finishes, after staging cells in several columns, has the next write
-/// what a writer that never began it writes: a row at a time, refused for a touch of a row it
-/// did not visit once its columns' runs are laid out; as one batch, for a removed row the table
-/// does not hold.
 #[test]
 fn an_hour_after_one_refused_as_it_finishes_writes_what_it_would_have() {
     let first: Vec<Wide> = (1..=40)
         .map(|key| Wide::new(key * 10, key as u32))
         .collect();
-    // A FILL, a grown list, an optional value going, a cell no longer recorded and a string the
-    // run has used.
     let mut changed = first[..24].to_vec();
     for row in &mut changed {
         row.scalars[0] = Cell::U8(200);
@@ -1417,15 +1314,11 @@ fn an_hour_after_one_refused_as_it_finishes_writes_what_it_would_have() {
     }
 }
 
-/// An hour begun, staged into and dropped before it finishes has the next clear every column,
-/// though it marked those it staged in, and write what a writer that never began it writes.
 #[test]
 fn an_hour_after_one_dropped_unfinished_writes_what_it_would_have() {
     let first: Vec<Wide> = (1..=40)
         .map(|key| Wide::new(key * 10, key as u32))
         .collect();
-    // A FILL, an opaque cell cut short and a cell no longer recorded, in the columns the next
-    // hour changes.
     let mut dropped = first.clone();
     for row in &mut dropped[..20] {
         row.scalars[4] = Cell::U32(1);
@@ -1459,11 +1352,8 @@ fn an_hour_after_one_dropped_unfinished_writes_what_it_would_have() {
     assert_eq!(sides[0].writer.work(), after);
 }
 
-/// Committing an hour's FILLs grows nothing once the writer's buffers are warm: their slots
-/// and masks merge in the buffers its apply keeps, copying no FILL's slots.
 #[test]
 fn committing_fills_grows_nothing_once_warm() {
-    // Every row's value changes each hour; the flag changes in all rows but the first four.
     let rows = |at: u32| many(1..=40, move |_| at % 2, move |key| at % 2 == 1 && key > 4);
     let mut writer = TableWriter::new(&KINDS).unwrap();
     let mut dictionary = Dictionary::new();
@@ -1477,7 +1367,6 @@ fn committing_fills_grows_nothing_once_warm() {
         }
         let before = engine_allocation::growths();
         writer.commit(Some(prepared), COMPLETE, at as i32 + 1).unwrap();
-        // The first hours size the buffers; the later ones only reuse them.
         if at >= 3 {
             assert_eq!(engine_allocation::growths(), before, "hour {at}");
         }
@@ -1488,10 +1377,8 @@ fn committing_fills_grows_nothing_once_warm() {
     }
 }
 
-/// `held` after `edits`, as a reader applies a PATCH.
 fn patched<T: Copy>(held: &[T], edits: &[(u32, u32, u32)], new: &[T]) -> Vec<T> {
     let (mut out, mut from, mut item) = (Vec::new(), 0, 0);
-    // A PATCH's inserted items are the new cell's, in order.
     let mut inserted = Vec::new();
     let mut at = 0;
     for &(skip, _, added) in edits {
@@ -1519,7 +1406,6 @@ fn records(count: u32, first: u32) -> Vec<u8> {
 
 #[test]
 fn a_list_behind_a_changed_count_keeps_its_records() {
-    // Appended, pruned at the front and in the middle: a count first, then records.
     let held = records(40, 0);
     let mut pruned = records(30, 10);
     pruned.splice(4 + 96 * 12..4 + 96 * 14, []);

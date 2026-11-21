@@ -42,7 +42,6 @@ fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
         assert!(copy.raw_ok);
         assert_eq!(memory.census_reads.get(), 1);
         if hour == 23 {
-            // An inactive slot cannot make the active memo ineligible.
             job.log.fault[2] = true;
         }
         let private = if active {
@@ -238,7 +237,6 @@ fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
     assert!(report.compared && report.hit && !report.installed);
     assert_rows(&air, &fog, &direct);
 
-    // Both dependent heap payloads participate in the memo witness.
     for (seq, address) in [(3, DEFINITION_BYTES), (4, SPRITE_BYTES)] {
         bytes[address] = bytes[address].wrapping_add(1);
         stage(&mut job, &bytes);
@@ -281,8 +279,6 @@ fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
 fn memo_compares_every_span_field_order_alias_and_only_used_bytes() {
     use crate::raw::Span;
     let mut log = RawLog::<3>::new(4, 64);
-    // Bulk and exact aliases plus a second exact observation deliberately
-    // have different bytes. A partition or last-value-only key is invalid.
     log.bytes.extend_from_slice(&[10, 11, 12, 13, 20, 21]);
     log.spans.extend([
         Span {
@@ -352,7 +348,7 @@ fn memo_compares_every_span_field_order_alias_and_only_used_bytes() {
     let spans = log.spans.clone();
     log.clear();
     log.bytes.extend_from_slice(&[99; 32]);
-    log.clear(); // Dirty spare bytes must not invalidate equal used input.
+    log.clear();
     log.bytes.extend_from_slice(&memo.bytes);
     log.spans.extend_from_slice(&spans);
     log.has_bulk = true;
@@ -372,13 +368,12 @@ fn memo_reuses_complete_current_capture_in_independently_owned_frame() {
     let (mut first, first_fog, report) = run(&mut memo, &job, context(1), CAPS);
     assert!(!report.hit && report.installed && report.eligible);
     assert_rows(&first, &first_fog, &expected);
-    // Recycling or mutation of the old native frame cannot change the memo.
     first.bases.rows.fill(cair_base::Row::default());
     first.aces.rows.fill(cace::Row::default());
     first.names.first.fill(0);
     drop(first);
     drop(first_fog);
-    stage(&mut job, &bytes); // Actual fresh owned observations, not old values.
+    stage(&mut job, &bytes);
     let (mut air, mut fog) = parts(CAPS);
     let report = memo.decode(&mut air, &mut fog, &job, context(2), &mut [0; 3]);
     assert!(report.hit && report.compared && !report.installed);
@@ -443,7 +438,7 @@ fn memo_context_capacity_branch_and_missing_refresh_never_reuse_old_entry() {
             3 => ctx.hour += 1,
             4 => ctx.seq += 1,
             5..=9 => cap[case - 5] += 1,
-            10 => memo.invalidate(), // Missing staging/typed fallback adapter.
+            10 => memo.invalidate(),
             _ => unreachable!(),
         }
         assert!(!run(&mut memo, &job, ctx, cap).2.hit, "case {case}");

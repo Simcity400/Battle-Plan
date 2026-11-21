@@ -1,6 +1,3 @@
-/** The widgets whose replies are windows of hours (`./heldWindows.ts`) following the head at 1,440 h/s in a real
- * browser: equipment produced, naval supremacy, production spending, trade flows and aircraft losses, over a recording
- * of forty windows. Every request with the head it was sent at, and each widget's commits. */
 import { Component, Profiler } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -44,7 +41,6 @@ class Clock {
 }
 
 const identities = (tag: string) => [{ firstHour: 0, lastHour: HOURS - 1, slot: TAGS.indexOf(tag) + 1, countryId: TAGS.indexOf(tag) + 1 }];
-/** Window `index`'s hours, and its days: every day a run, as a long campaign's daily reads are. */
 const hoursOf = (index: number) => [index * WINDOW_HOURS, Math.min(HOURS, (index + 1) * WINDOW_HOURS) - 1] as const;
 const days = (index: number) => { const [first, last] = hoursOf(index); return Array.from({ length: Math.ceil((last - first + 1) / 24) }, (_, day) => first + day * 24); };
 
@@ -88,7 +84,6 @@ function air(params: Record<string, unknown>) {
   const index = params.window as number, [firstHour, lastHour] = hoursOf(index);
   const identity = (tag: string) => `${TAGS.indexOf(tag) + 1}:${TAGS.indexOf(tag) + 1}`;
   const sides = [['GER', false, 300_000], ['GER', true, 100_000], ['ITA', false, 100_000], ['ITA', true, 200_000]] as const;
-  // Each window's points run from its first hour; what every window before it held is carried in.
   const before = Array.from({ length: index }, (_, at) => days(at).length).reduce((sum, count) => sum + count, 0);
   return { family: params.family, window: index, firstHour, lastHour, countedFrom: 0, available: true, observed: [{ firstHour, lastHour }], incomplete: [],
     countries: TAGS.map(tag => ({ tag, identity: identity(tag), present: [{ firstHour, lastHour }], membership: null })),
@@ -137,14 +132,12 @@ class Boundary extends Component<{ id: string; children: ReactNode }, { failed: 
   render() { return this.state.failed ? null : this.props.children; }
 }
 
-/** One widget as the dashboard mounts it: measured, its commits counted. */
 function Counted({ id, children }: { id: string; children: ReactNode }) {
   return <MeasuredWidget value={id}><Boundary id={id}>
     <Profiler id={id} onRender={() => { renders[id] = (renders[id] ?? 0) + 1; }}>{children}</Profiler>
   </Boundary></MeasuredWidget>;
 }
 
-/** The product each widget asks its windows of. */
 export const PRODUCTS = { produced: 'equipment-produced', supremacy: 'naval-supremacy', spending: 'production-spending', trade: 'trade-flows', air: 'military-air-ledger' } as const;
 
 export const fixture = {
@@ -170,7 +163,6 @@ export const fixture = {
     </>);
     await settle(60);
   },
-  /** Plays `frames` frames of `hours` each, settling a moment after anchoring as the app does; each widget's commits meanwhile. */
   async play(frames: number, hours: number) {
     clock.playing = true; clock.anchor();
     await settle(30);
@@ -181,14 +173,10 @@ export const fixture = {
     return { from, head: clock.getHour(), rendered: Object.fromEntries(Object.keys(PRODUCTS).map(id => [id, (renders[id] ?? 0) - (before[id] ?? 0)])) };
   },
   pause() { clock.playing = false; clock.anchor(); },
-  /** Every request made before playing. */
   opened: () => requests.filter(request => !request.playing),
-  /** Every request made while playing, with the head it was sent at. */
   played: () => requests.filter(request => request.playing),
-  /** Every request, for a failing assertion's message. */
   all: () => requests.map(request => `${request.product}${request.window === null ? '' : `#${request.window}`}@${request.head}`),
   errors: () => ({ ...errors }),
-  /** Each widget's text, to see that it drew its data rather than a state. */
   states: () => Object.fromEntries([...host!.querySelectorAll<HTMLElement>('.widget-state')].map(state => [state.closest<HTMLElement>('[data-widget]')?.dataset.widget ?? '',
     `${state.textContent ?? ''} ${state.dataset.detail ?? ''}`])),
 };

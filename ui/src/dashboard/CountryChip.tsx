@@ -13,15 +13,10 @@ import type { WidgetCountryChipProps } from './definitions';
 
 const NO_KEYS: readonly string[] = [];
 
-/** A parts race's header: the country its pinned breakdown shows, named by the body at its displayed hour; otherwise
- * the widget's countries. */
 export function PartsCountryChip(props: WidgetCountryChipProps) {
   return props.widget.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
 }
 
-/** The widget header's country: flag and name, with "+N" when it shows several.
- * Names are the recording's own; the tooltip previews three countries. It follows
- * playback only while its widget is in view. */
 export default function CountryChip({ widget, runtime, active }: Omit<WidgetCountryChipProps, 'onSlot'>) {
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
@@ -30,13 +25,11 @@ export default function CountryChip({ widget, runtime, active }: Omit<WidgetCoun
   const overrides = settings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
   const tags = selectedCountryKeys(widget.countries, track);
   const shownHour = (clockHour: number) => track ? resolveWindow(effective, track, runtime.tracks, clockHour)?.lastHour ?? Number.NaN : Number.NaN;
-  // Named and flagged as every label names a country at the hour shown, never by its catalogue entry's hour.
   const war = widget.countries.kind === 'group' && widget.countries.group.type === 'war' ? widget.countries.group.tag : null;
-  const shownKeys = useMemo(() => war !== null ? [war] : tags.slice(0, 3), [war, JSON.stringify(tags)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownKeys = useMemo(() => war !== null ? [war] : tags.slice(0, 3), [war, JSON.stringify(tags)]);
   const labels = useKeyLabelsAt(runtime, track, war !== null || widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? shownKeys : NO_KEYS,
     shownHour, widget.time.mode === 'follow', active);
   const name = () => chipName(labels[0]);
-  // A faction's name at the head is read each frame and renders only when it changes.
   const faction = widget.countries.kind === 'group' && widget.countries.group.type === 'faction';
   const label = useAtHead(runtime.clock, active && widget.time.mode === 'follow' && faction, clockHour => widget.countries.kind === 'group'
     ? groupLabel(widget.countries.group, groups.data, name, track ? shownHour(clockHour) : undefined, overrides) : '');

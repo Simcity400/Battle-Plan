@@ -145,8 +145,6 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
                 releases += 1;
             }
             if draw == 2 && frame % 6 == 2 {
-                // Grow across a real Arena buffer boundary before the next bind.
-                // Conservative room-before-dedup and all padding stay in Arena.
                 for value in [0x31, 0x52] {
                     let bytes = vec![value; 2 << 20];
                     for arena in &arenas {
@@ -159,7 +157,6 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
                 .into_iter()
                 .flat_map(u32::to_le_bytes)
                 .collect();
-            // Full supplied allocation, not only the reflected 16-byte prefix.
             let skin = [bytes.as_slice(), bytes.as_slice()].concat();
             let data = |slot| match slot { 0 => Some(bytes.as_slice()), 4 => Some(skin.as_slice()), _ => None };
             let fresh = if held[key].is_none() {
@@ -169,8 +166,6 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
                 held[key] = Some(captured);
                 bindings
             } else {
-                // Interleave the GENERAL wrapper too: invalidating its last hint must
-                // still find the exact existing texture group, never create another.
                 pipeline
                     .bind_with(&arenas[0], data, |_| Some(&views[key]))
                     .unwrap()

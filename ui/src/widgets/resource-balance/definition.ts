@@ -18,7 +18,6 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'bars', label: 'Balance bars' }, { value: 'time', label: 'Over time' }] },
   { key: 'resources', section: 'options', label: 'Resources over time', kind: 'content-set',
     automatic: 'Largest resource', default: '', visibleWhen: overTime },
-  // Automatic counts as one selection; the chart separately checks drawn declarations.
   { key: 'gap', section: 'options', label: 'Shade surplus and shortfall', kind: 'toggle', default: true,
     visibleWhen: options => options.show !== 'resource' && overTime(options) && contentSet(options.resources ?? '').length <= 1 },
   { key: 'order', section: 'options', label: 'Order', kind: 'choice', default: 'game', visibleWhen: options => options.view === 'bars',

@@ -136,10 +136,10 @@ test('full map carries seek identity across coalesced playback, same-hour seeks 
   replies.shift()!(); await tick();
   assert.deepEqual(calls[1].slice(3), [150, { playing: true, seekSequence: 1, fraction: 0, hoursPerSecond: 24, composedAt: 0 }]);
   replies.shift()!(); await tick();
-  playback.play(50, false); // Same-hour pause must reach the viewer.
+  playback.play(50, false);
   assert.deepEqual(calls[2].slice(3), [150, { playing: false, seekSequence: 1, fraction: 0, hoursPerSecond: 24, composedAt: 0 }]);
   replies.shift()!(); await tick();
-  playback.seek(50); // And a same-hour seek must reset it.
+  playback.seek(50);
   assert.deepEqual(calls[3].slice(3), [150, { playing: false, seekSequence: 2, fraction: 0, hoursPerSecond: 24, composedAt: 0 }]);
   stop(); replies.shift()!(); await tick();
 });
@@ -153,7 +153,6 @@ test('each anchor carries when the page composed it, and a new reading alone sen
   playback.stamp(1_234.5);
   playback.seek(5); await tick();
   assert.deepEqual(calls.at(-1)!.slice(3), [105, { playing: false, seekSequence: 1, fraction: 0, hoursPerSecond: 24, composedAt: 1_234.5 }]);
-  // The clock stands where it stood: a later reading of it is not a new anchor.
   playback.stamp(9_999);
   playback.update({}); await tick();
   assert.equal(calls.length, 2);

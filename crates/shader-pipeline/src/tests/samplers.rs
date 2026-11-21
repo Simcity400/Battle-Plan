@@ -66,7 +66,6 @@ Effect Test { VertexShader = V PixelShader = P }
     let floats = create(wgpu::TextureFormat::Rgba32Float, 2);
     queue.write_texture(
         floats.as_image_copy(),
-        // Avoid half-integer UNORM conversion ties in the readback oracle.
         bytemuck::cast_slice(&[0.75_f32, 0.25, 0.5, 1., 0., 0., 0., 0.]),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
@@ -446,7 +445,6 @@ fn samples_native_addressing_and_mip_bias() {
         ("mirror_once", 0, "Sample", 0),
         ("clamp", 2, "Sample", 2),
         ("mirror_once", 2, "Sample", 2),
-        // 7.18.11: MipLODBias applies to an explicit LOD as well.
         ("clamp", 2, "SampleLevel", 2),
     ] {
         let lod = if method == "SampleLevel" { ", 0" } else { "" };
@@ -480,8 +478,6 @@ Effect Test {{ VertexShader = V PixelShader = P }}
             .compile(&program, &program.techniques[0], &[])
             .unwrap();
         let mut state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
-        // A retained sampler can come from a cube declaration: addressing still follows the
-        // active program's 2D texture, rather than that old declaration's texture dimension.
         state
             .samplers
             .get_mut(&binding(0, Stage::Pixel))
@@ -497,7 +493,6 @@ Effect Test {{ VertexShader = V PixelShader = P }}
             &state,
         )
         .unwrap();
-        // Width one in UV retains a known implicit LOD 0; half lies left of the texture.
         let vertices: Vec<[f32; 5]> = [0, 1, 2, 0, 2, 3]
             .iter()
             .map(|&i| {
@@ -593,9 +588,6 @@ Effect Test {{ VertexShader = V PixelShader = P }}
     }
 }
 
-/// MIRROR_ONCE, which wgpu lacks, against a CPU reference of D3D11 7.18: a gather (22.4.2), and
-/// texel offsets applied per level before addressing on a single-mip texture, at an explicit
-/// point-mip LOD, and under isotropic trilinear filtering with MipLODBias.
 #[test]
 #[ignore = "requires a shader compiler and GPU"]
 fn mirror_once_gathers_and_offsets_match_d3d() {
@@ -604,7 +596,6 @@ fn mirror_once_gathers_and_offsets_match_d3d() {
     let compiler = Compiler::discover().unwrap();
     let (device, queue) = device();
     let arena = gpu::Arena::new(&device);
-    // Texel (x, y) of level l is (16x, 16y, 50l, 255).
     let texture = |levels: u32| {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("mirror-once reference"),
@@ -654,8 +645,6 @@ fn mirror_once_gathers_and_offsets_match_d3d() {
         }
         texture
     };
-    // u = 2x - 16.25 texels of level 0 at pixel x (dU/dx = 2 texels, LOD 1); v = y + 0.75.
-    // No coordinate lands on a texel boundary at any level, so the reference is exact.
     let (u0, u1, v0, v1) = (-1.078125_f32, 0.921875, 0.015625, 1.015625);
     let vertices: Vec<[f32; 5]> = [0, 1, 2, 0, 2, 3]
         .iter()
@@ -720,14 +709,12 @@ fn mirror_once_gathers_and_offsets_match_d3d() {
             }),
         ),
         (
-            // LOD 1.5 > 0 minifies (7.18.11): bilinear on the only level, never the point mag.
             "single-mip minification with point mag",
             "MagFilter = Point MinFilter = Linear MipFilter = Linear MipMapLodBias = 0.5",
             "Map_Texture.Sample(Map_Sampler, v.uv, int2(1, 0))",
             1,
             Box::new(move |x, y| {
                 let (u, v) = at(x, y, 0);
-                // Footprint at p - 0.5: both fractions are 0.25, so the weights are exact.
                 let (x0, y0) = ((u + 0.5).floor() as i32, (v - 0.5).floor() as i32);
                 let m = |i| mirror(i, 16);
                 let c = |i: i32| i.clamp(0, 15);
@@ -744,7 +731,6 @@ fn mirror_once_gathers_and_offsets_match_d3d() {
             "MagFilter = Point MinFilter = Point MipFilter = Linear MipMapLodBias = 0.5",
             "Map_Texture.Sample(Map_Sampler, v.uv, int2(1, 0))",
             5,
-            // LOD 1 + 0.5: levels 1 and 2 blended half and half, each with its own offset.
             Box::new(move |x, y| {
                 let (u1, v1) = at(x, y, 1);
                 let (u2, v2) = at(x, y, 2);

@@ -17,7 +17,6 @@ test('orders keep the game’s order and their own divisions only', () => {
   const rows = queueRows(reply);
   assert.deepEqual(rows.map(row => row.key), ['order:b', 'order:a']);
   assert.ok(rows[0].kind === 'order' && rows[0].children.map(row => row.key).join() === 'line:2,line:1');
-  // A pushed panel renders only when the queue it shows differs; warnings alone do not.
   assert.equal(queueStructure({ ...reply, warnings: ['a name refused'] }), queueStructure(reply));
   assert.notEqual(queueStructure({ ...reply, readHour: 32 }), queueStructure(reply));
   assert.throws(() => validateTrainingQueue({ tag: 'GER', readHour: 8, missing: 3, warnings: [], orders: [] }), /Invalid/);

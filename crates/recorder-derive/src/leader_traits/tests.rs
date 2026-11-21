@@ -23,7 +23,6 @@ fn leader_row(handle: u64) -> UnitLeaderRow {
     UnitLeaderRow { id: (handle >> 32) as u32, reference_type: handle as u32, ..Default::default() }
 }
 
-/// Each leader's traits at `hour`, in list order; UnitLeaderTraits is not read at hour 3.
 fn listed(hour: i32) -> Vec<(u64, Vec<i32>)> {
     match hour {
         0 => vec![(L1, vec![A, B])],
@@ -67,7 +66,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// The hour's rows: (leader, token, hour, class), sorted; each row spells its token.
 fn gains(store: &Store) -> Vec<(u64, i32, i64, i64)> {
     let view = store.view(TableId::LeaderTraitGains.index());
     let mut rows: Vec<(u64, i32, i64, i64)> = testing::rows(store, TableId::LeaderTraitGains)
@@ -83,8 +81,6 @@ fn gains(store: &Store) -> Vec<(u64, i32, i64, i64)> {
     rows
 }
 
-/// What a reply folds from the log up to each hour: each (leader, token)'s last gain, a first
-/// observation of a trait the run saw before being none.
 fn folded(logged: &[Vec<(u64, i32, i64, i64)>]) -> Vec<Vec<(u64, i32, i64, i64)>> {
     let mut held: std::collections::BTreeMap<(u64, i32), (i64, i64)> = std::collections::BTreeMap::new();
     let mut out = Vec::new();
@@ -100,10 +96,6 @@ fn folded(logged: &[Vec<(u64, i32, i64, i64)>]) -> Vec<Vec<(u64, i32, i64, i64)>
     out
 }
 
-/// Each hour's rows are its gains, living that hour; a reply folding them answers what the
-/// table answered before it was a log: a lost trait keeps its last gain, traits moving up the
-/// list are no gain, a trait read after an hour the traits were not is first observed (the ones
-/// seen before being none), a trait regained is dated again.
 #[test]
 fn held_gained_and_first_observed_traits_are_dated_and_a_trait_moving_up_the_list_is_none() {
     let (mut store, mut writers) = (testing::store(), writers());
@@ -158,8 +150,6 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
     }
 }
 
-/// Each (leader, token)'s date as LeaderTraitDates gives it: (hour, class) of the last gain, else
-/// of the first row.
 fn dates(store: &Store) -> Vec<(u64, i32, i64, i64)> {
     let view = store.view(TableId::LeaderTraitDates.index());
     testing::rows(store, TableId::LeaderTraitDates)
@@ -176,9 +166,6 @@ fn dates(store: &Store) -> Vec<(u64, i32, i64, i64)> {
         .collect()
 }
 
-/// The dates are the leaderboard's fold of the run's gain rows through the hour (a gain always
-/// dates a trait, any other row only one not dated yet), and a leader's dates go in the hour its
-/// UnitLeaders row is deleted.
 #[test]
 fn trait_dates_are_the_fold_of_the_run_s_gains_through_the_hour() {
     let (mut store, mut writers) = (testing::store(), writers());

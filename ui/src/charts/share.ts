@@ -1,5 +1,3 @@
-/** Exact held stacked shares, built from counts over one common denominator.
- * A zero denominator and every missing band leave a gap, never a full share. */
 import { buildStack, stackedSegments } from './stack.ts';
 import type { StackModel, StackRun, StackSegment } from './stack';
 import { heldStackSegment } from './race/countryRace.ts';
@@ -13,7 +11,6 @@ export type ShareRun = Breakable & { counts: readonly number[] };
 export const SHARE_TICKS = [0, 25, 50, 75, 100] as const;
 export interface ShareBand { id: string; label: string; color: string; alpha?: number }
 
-/** Dense display samples use complete bucket coverage; broken buckets keep gaps. */
 export function summaryShareRuns(runs: readonly ShareRun[], summaries?: readonly ChartSummary[]): readonly ShareRun[] {
   if (!summaries?.length || summaries[0].runs !== undefined) return runs;
   const result: ShareRun[] = [];
@@ -49,7 +46,6 @@ export function shareStack(runs: readonly ShareRun[], bands: number): StackModel
   return buildStack(values);
 }
 
-/** Half-pixel sampling retains internal band extremes, gaps and exact hover data. */
 export function shareSegments(model: StackModel, from: number, to: number, hoursPerPixel = 0) {
   return stackedSegments(model, from, to, hoursPerPixel / 2, true).map(segment => {
     const last = segment.hours.at(-1)!;
@@ -72,7 +68,6 @@ function heldIndex(hours: readonly number[], hour: number): number {
   return Math.max(0, low - 1);
 }
 
-/** One unsnapped, held polygon and fill per band per recorded stretch. */
 export function drawShareBands(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   segments: readonly StackSegment[], bands: readonly ShareBand[]): void {
   ctx.save();
@@ -106,9 +101,6 @@ export function drawShareBands(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   ctx.restore();
 }
 
-/** Integrate held areas in device columns. Signed row differences keep the work
- * proportional to input edges plus output pixels, without subpixel Canvas paths.
- * A partial missing hour contributes no pixels, rather than a zero-valued share. */
 export function sharePixels(ctx: CanvasRenderingContext2D, model: StackModel, frame: PlotFrame,
   colors: Uint8ClampedArray, firstColumn = 0, lastColumn = frame.width): ImageData {
   const width = frame.width; const height = frame.height;
@@ -207,9 +199,6 @@ function changedHour(before: StackModel, after: StackModel): number {
 export interface ShareLayer extends ChartLayer { update(model: StackModel, extent: readonly [number, number]): void }
 type EdgeRaster = { first: number; end: number; key: string; canvas: HTMLCanvasElement };
 
-/** Stable device-resolution tiles. Dense columns integrate exact coverage; sparse
- * polygons have at most two path vertices per device column plus run boundaries.
- * Playback only projects/clips cached pixels; data changes dirty their suffix. */
 export function shareLayer(model: StackModel, bands: readonly ShareBand[], extent: readonly [number, number],
   createCanvas = () => document.createElement('canvas')): ShareLayer {
   let key = ''; let tileHours = 0;
@@ -309,12 +298,8 @@ export function shareLayer(model: StackModel, bands: readonly ShareBand[], exten
   } };
 }
 
-/** Shares read as the chart draws them: the runs up to the head (`read(head)`, the head's bin at the followed
- * values), the layer taking each new set in place, so a tile landing or the head moving repaints without a render. */
 export interface LiveShares { read(head: number | null): readonly ShareRun[]; revision(): unknown; subscribe(listener: () => void): () => void }
 
-/** `layer` fed from `live` as it draws: a set of runs not seen before is stacked and taken in place (its changed
- * suffix redrawn), the same set draws as held. */
 export function liveShareLayer(layer: ShareLayer, live: LiveShares, bands: number, extent: () => readonly [number, number],
   summaries?: () => readonly ChartSummary[] | undefined): ChartLayer {
   let seen: readonly ShareRun[] | null = null;

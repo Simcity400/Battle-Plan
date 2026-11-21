@@ -1,8 +1,3 @@
-//! The naval layer on a recording made in memory with the real schema, read after the vision
-//! layer: every frame its attributes equal a value oracle of today's classification and itself
-//! composed; a region changed is marked once and shows its newest rows; a row deleted or inserted
-//! and a faction left reach every region; a NavalSupremacy not recorded withholds every sea region;
-//! another map mode declares nothing and the default mode composes again.
 
 use super::{Naval, reads};
 use crate::{
@@ -25,7 +20,6 @@ use viewer_world::map::{
     naval_dominance::{Content, Fact, Relations, Sides, Supremacy},
 };
 
-/// Regions 10 and 11 are sea, 12 land.
 fn content() -> Arc<Content> {
     Arc::new(Content::for_tests(&[(10, true, 100_000), (11, true, 100_000), (12, false, 100_000)], 60_000))
 }
@@ -36,8 +30,6 @@ fn vision_content() -> Arc<vision::Content> {
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() })))
 }
 
-/// Today's classification over the world as the test wrote it: slots 1 (the viewer) and 3 share a
-/// faction until hour 13, slot 2 is at war with the viewer.
 struct Oracle {
     links: BTreeMap<u32, u32>,
     factions: BTreeMap<u32, u64>,
@@ -62,7 +54,6 @@ impl Relations for Oracle {
     }
 }
 
-/// What the world holds at an hour.
 #[derive(Clone, Default)]
 struct Truth {
     rows: BTreeMap<(u32, u32), (i64, i64)>,
@@ -96,7 +87,6 @@ fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::uni
     tables.dedup();
     let mut truth = Truth { recorded: true, ..Truth::default() };
     let column = recorded::column;
-    // Each test its own recording: one name is one playhead, and tests run side by side.
     static RECORDED: AtomicUsize = AtomicUsize::new(0);
     let name = format!("naval test {}", RECORDED.fetch_add(1, Ordering::Relaxed));
     recorded::record(&name, 40, |at, store| {
@@ -130,7 +120,6 @@ fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::uni
                 }
             }
             5 => supremacy(store, &mut truth, 1, (10, 102), 2_000_000, 100_000),
-            // Changed twice inside one step: the newest shows.
             6 => supremacy(store, &mut truth, 2, (11, 102), 100_000, 500_000),
             7 => supremacy(store, &mut truth, 2, (11, 102), 700_000, 100_000),
             9 => {
@@ -139,7 +128,6 @@ fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::uni
                 insert(store, TableId::NavalSupremacy, 4, key((10, 103)));
                 supremacy(store, &mut truth, 4, (10, 103), 3_000_000, 1);
             }
-            // Slot 3 leaves the viewer's faction: every region's sides are read again.
             13 => {
                 store.table(TableId::FactionMembers.index()).unwrap().delete(1).unwrap();
                 truth.factions.remove(&103);
@@ -155,27 +143,20 @@ fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::uni
     })
 }
 
-/// Four hours a step.
 fn quick() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
-/// Plays to `last` with the vision and naval layers, calling `each` after every frame that took a
-/// step or swapped a composed reset in, with nothing composing and every layer settled; `each` may
-/// change the view. The head moves only here, a step a frame (four hours, or a step of none), and
-/// stays at the last hour applied while a layer composes, so `each` sees every step's hour.
 fn play(last: i32, each: impl FnMut(i32, &mut MapSide, &BTreeMap<i32, Truth>)) {
     play_with(vec![Box::new(vision::Vision::new(vision_content())), Box::new(Naval::new(content()))], last, each);
 }
 
-/// [`play`] with `layers` registered in order.
 fn play_with(layers: Vec<Box<dyn Layer>>, last: i32, mut each: impl FnMut(i32, &mut MapSide, &BTreeMap<i32, Truth>)) {
     let mut history = BTreeMap::new();
     let units = record_world(&mut history);
     let entry = open(units, quick()).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
     assert!(side.refusals().next().is_none());
-    // Playing, a table declared again joins as while playing; nothing reads the clock's hour.
     entry.playhead().play(4.0);
     entry.playhead().seek(0);
     let (mut seen, mut applied) = (Vec::new(), None::<i32>);
@@ -226,7 +207,6 @@ fn naval_regions_follow_their_rows_and_relations_settle_to_the_newest_and_equal_
             withheld += 1;
             assert!(layer.warnings()[0].contains("withheld for 2 strategic regions"), "{:?}", layer.warnings());
         }
-        // The step of hours 5 to 8 touches region 10 once and region 11 twice: each marked once.
         if hour == 8 && previous == Some(4) {
             assert_eq!(layer.marked()[0] - marked_before[0], 2, "regions 10 and 11, each once");
         }
@@ -263,10 +243,6 @@ fn another_map_mode_declares_nothing_and_the_default_composes_again() {
             }
             return;
         };
-        // Its tables come back as a reset in the first step built after the declaration: past the
-        // steps the ring held, at most `ring` steps of four hours past the hour shown, or at the
-        // recording's last hour in a step of no hours. A table joined short of its step's end is
-        // caught up by a step of no hours at that hour, before any later one.
         let by = (shown + 4 * (ring + 1)).min(39);
         let (mirrors, layer) = naval(side);
         let heads: Vec<(TableId, Option<i32>)> = mirrors.iter().map(|mirror| (mirror.table(), mirror.head())).collect();
@@ -284,7 +260,6 @@ fn another_map_mode_declares_nothing_and_the_default_composes_again() {
     assert!(back.is_some() && drawn_again > 0, "the layer was not drawn again at the default mode (hidden at {hidden_at:?}, shown at {shown_at:?}): hours seen {hours:?}");
 }
 
-/// One land province, held by the viewer, beside one sea province.
 fn political_content() -> Arc<crate::layers::political::Content> {
     use installed_content_core::map::{MapData, ProvinceDefinition, ProvinceKind};
     use viewer_world::map::borders::{BorderClass, BorderMesh, BorderMeshes};
@@ -310,7 +285,6 @@ fn the_limitation_lines_while_the_political_layer_draws_are_the_political_and_na
         let (_, naval) = naval(side);
         let mut expected = political.warnings();
         expected.extend(naval.warnings());
-        // Today's political part is empty while the layers draw it: its lines must not be the ones shown.
         let lines = crate::presentation::political_lines(side);
         assert_eq!(lines, expected, "the political and naval layers' lines at hour {hour}");
         if !history[&hour].recorded {

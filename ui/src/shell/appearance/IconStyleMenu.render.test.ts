@@ -39,10 +39,8 @@ test('icon menus offer each change, reset only what differs from the default, an
         update(change: (previous: AppearanceSettings) => AppearanceSettings) { saved = change(settings); } } as never;
     };
     const labels = (items: readonly MenuItem[]) => items.map(item => item.label);
-    // An element outside any widget: no settings button to return focus to.
     const anchor = { closest: () => null } as unknown as HTMLButtonElement;
 
-    // The sidebar's right-click menu has the two changes; each picker holds its own reset.
     fixture.editing = { id: 'map', label: 'Campaign map', part: 'colour' };
     const picker = (styles: AppearanceSettings['sidebarIcons']) => renderToStaticMarkup(useSidebarIconMenu(appearance({ sidebarIcons: styles })).menu);
     assert.doesNotMatch(picker({}), /Reset icon colour/, 'a default colour has nothing to reset');
@@ -59,7 +57,6 @@ test('icon menus offer each change, reset only what differs from the default, an
     assert.equal(sidebar({ map: { icon: image } })[1].disabled, true);
     assert.equal(sidebar({ map: { icon: image } })[1].hint, 'Images keep their own colours');
 
-    // A widget header's menu adds a reset for each part that differs from the kind's default.
     const header = (styles: AppearanceSettings['widgetIcons']) => {
       fixture.items = [];
       useWidgetIconMenu(appearance({ widgetIcons: styles })).icons.openMenu('navy-size', anchor, 'Navy size', 0, 0);
@@ -78,7 +75,6 @@ test('icon menus offer each change, reset only what differs from the default, an
     useWidgetIconMenu(appearance({ widgetIcons: { 'navy-size': { icon: 'globe', colour: '#ff0000' }, aces: { icon: 'star' } } })).icons.reset('navy-size');
     assert.deepEqual(saved!.widgetIcons, { aces: { icon: 'star' } });
 
-    // Choosing a part's default stores nothing for it.
     const menu = useIconStyleMenu(appearance({ sidebarIcons: { map: { icon: 'globe', colour: '#ff0000' } } }), {
       label: 'Sidebar icon', read: settings => settings.sidebarIcons, write: (settings, sidebarIcons) => ({ ...settings, sidebarIcons }),
       defaultIcon: () => 'map', defaultColour: () => '#34d399', swatches: [] });
@@ -89,8 +85,6 @@ test('icon menus offer each change, reset only what differs from the default, an
     menu.change('map', { icon: 'flag', colour: '#00ff00' });
     assert.deepEqual(saved!.sidebarIcons, { map: { icon: 'flag', colour: '#00ff00' } });
 
-    // A closed picker hands focus back to where it was opened from (the settings button when its row unmounted),
-    // whether focus was left on the page or inside the picker, but never takes it from somewhere the user moved it.
     let focused = 0;
     const target = { isConnected: true, focus: () => { focused++; } } as unknown as HTMLElement;
     const body = {} as Element, inside = {} as Element, elsewhere = {} as Element;

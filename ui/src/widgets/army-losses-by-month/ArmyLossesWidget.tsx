@@ -38,9 +38,7 @@ import './armyLosses.css';
 
 const armyKey = (row: MonthArmy) => row.army.reference;
 const SORT = { column: 'army', direction: 'ascending' } as const;
-/** Monthly bars keep their wider gaps, and a month's small losses still show beside large ones. */
 const BAR_STYLE = { spacing: 'proportional', thinBands: true } as const;
-/** The rows the reply shows: armies, months and designs, never their amounts. */
 const structureOf = (reply: ArmyLossesReply) => JSON.stringify([reply.absent, reply.armies, reply.manpower.map(row => row.key),
   reply.equipment.map(row => [row.key, row.design]), reply.designs, reply.emptyMonths, reply.unknownMonths, reply.availability]);
 
@@ -49,7 +47,6 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const shown = useShownHour();
   const chosen = typeof widget.options?.country === 'string' ? [widget.options.country] : [];
   const following = widget.time.mode === 'follow';
-  // The country is resolved at an hour that moves only when its identity does; the months are the followed panel's.
   const identityHour = useIdentityHour(runtime.client, track, chosen, runtime.clock, active && following,
     clockHour => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null);
   const window = track && resolveWindow(widget, track, runtime.tracks, identityHour ?? runtime.clock.getHour());
@@ -67,18 +64,15 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const stack = measure === 'manpower' ? (options.manpowerStack === 'armyGroup' ? 'armyGroup' : 'channel') as ManpowerStack
     : (options.equipmentStack === 'armyGroup' ? 'armyGroup' : 'type') as EquipmentStack;
   const tokens = useChartTokens();
-  // The chart's reply holds the one measure it draws; the drill asks its month's every part on its own.
   const state = useHeadProduct(runtime, widget, 'army-losses', track && window && tag ? { country: countryFromKey(tag), view: chartView(measure, ledger) } : null,
     { active, validate: validateArmyLosses, structure: structureOf });
   const reply = state.data;
   useDiagnostics(onDiagnostics, reply?.warnings ?? null);
   const first = widget.time.mode === 'range' && window ? Math.floor(window.firstHour) : track?.branch.firstHour ?? 0;
   const structureHour = state.at ?? hour;
-  // The structure's bars at the hour it was made: the legend, the parts' colours and the drill's rows.
   const data = useMemo(() => reply ? resolveArmyLosses(reply, structureHour, state.live.read()) : null, [reply, structureHour, state.live]);
   const bars = useMemo(() => data ? monthBars(data, measure, stack, ledger, first, data.hour, CATEGORY_LIMIT) : null,
     [data, measure, stack, ledger, first]);
-  // The amounts at the head, read each frame from the panel's cells; made again only when the cells or the hour move.
   const liveData = useMemo<Live<{ data: ArmyLossesData; bars: MonthBars }> | null>(() => {
     if (!reply) return null;
     let made: { at: number; cells: LiveValues<number>; value: { data: ArmyLossesData; bars: MonthBars } } | null = null;
@@ -97,7 +91,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
         return () => { for (const stop of stops) stop(); };
       },
     };
-  }, [reply, state.live, following, structureHour, hourAt, runtime.clock, measure, stack, ledger, first]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reply, state.live, following, structureHour, hourAt, runtime.clock, measure, stack, ledger, first]);
   const colourOf = useMemo(() => new Map(bars?.parts.map((part, index) => [part.key, part.key === OTHER ? tokens.muted : tokens.categories[index % tokens.categories.length]]) ?? []),
     [bars, tokens]);
   const colour = useCallback((key: string) => colourOf.get(key) ?? tokens.muted, [colourOf, tokens]);
@@ -109,7 +103,6 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     extent: range => { const now = liveData.read().bars; return columnsLayer(now.periods, now.parts.map(part => colour(part.key)), BAR_STYLE).extent?.(range) ?? null; },
   }] : [], [liveData, colour]);
   const chartData = useMemo(() => liveData ? { revision: () => [liveData.read()], subscribe: liveData.subscribe } : undefined, [liveData]);
-  // Following, `hour` moves only when the country's identity does: the chart's playhead, which ends its columns, is the clock's.
   const liveHead = useMemo<LiveHead | undefined>(() => following ? { read: () => hourAt(runtime.clock.getSnapshot().position), subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, hourAt, runtime.clock]);
   const monthAt = (at: number) => { const now = liveData?.read().bars; return now?.periods[columnAt(now.periods, Math.floor(at))] ?? null; };
@@ -121,7 +114,6 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const drillReply = drillState.data;
   const drillHour = drillState.at ?? hour;
   const anchor = useRef<HTMLDivElement>(null);
-  // One ref for the widget's lifetime: an inline one sets the follow root twice a render, an empty commit after each.
   const stateRoot = state.root, drillRoot = drillState.root;
   const rootRef = useCallback((element: HTMLDivElement | null) => {
     (anchor as { current: HTMLDivElement | null }).current = element; stateRoot(element); drillRoot(element);
@@ -132,7 +124,6 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const kinds = LEDGERS[ledger];
   const drillData = useMemo(() => drillReply ? resolveArmyLosses(drillReply, drillHour, drillState.live.read()) : null, [drillReply, drillHour, drillState.live]);
   const drillRows = useMemo(() => drillData && month !== null ? monthArmies(drillData, month, kinds) : [], [drillData, month, kinds]);
-  // The drill's amounts are painted from its month's cells; its rows are that reply's structure.
   const drillNow = useMemo(() => {
     if (!drillReply) return null;
     let made: { cells: LiveValues<number>; data: ArmyLossesData } | null = null;
@@ -191,7 +182,6 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)} data={chartData}
         fitValues={span => span ? [Math.min(0, span[0]), Math.max(0, span[1])] : null}
         active={active} revision={`${structureHour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
-        // A month at the head totals only through the hour the cells are of.
         tooltip={at => { const period = monthAt(at); return period && liveData ? monthTooltip(period, liveData.read().bars.parts, measure, caption, pinned ? liveData.read().data.hour : null, colour) : null; }}
         onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
         onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.floor(at))])} />

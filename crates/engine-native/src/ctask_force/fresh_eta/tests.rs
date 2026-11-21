@@ -83,7 +83,6 @@ impl Fixture {
             self.i64(data + index * 16 + 8, *value);
         }
     }
-    /// Reads of exactly `len` bytes at `address`.
     fn observed(&self, address: usize, len: usize) -> usize {
         self.reads
             .borrow()
@@ -117,7 +116,7 @@ fn fixture() -> Fixture {
     memory.u64(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
     memory.u32(COUNTRY + ccountry::ID, 1);
     memory.u32(TASK + cunit::ROSTER_OWNER, 1);
-    memory.u32(TASK + cunit::LOGICAL_OWNER, 7); // Never selects common modifiers.
+    memory.u32(TASK + cunit::LOGICAL_OWNER, 7);
     memory.u64(TASK + cunit::STAT_BLOCK, STATS as u64);
     memory.u64(STATS, csub_unit_definition::VTABLE_RVA.0 as u64);
     memory.u32(STATS + 8, u32::MAX);
@@ -178,8 +177,6 @@ fn source_capture_with_risk<M: Memory>(
     }
 }
 
-// Serial source acquisition shares the unchanged key arithmetic and packet
-// projection, but reads every selector and roster ship at its original occurrence.
 impl<M: Memory> Reader<'_, M> {
     fn serial_location(
         &mut self,
@@ -517,8 +514,6 @@ impl<M: Memory> Reader<'_, M> {
             self.modifier_guard
                 .and(Err("fresh task-force fuel query unreached"))
         };
-        // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
-        // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
             self.deficit(fuel, Rva(0x033d_f978))
                 .map(|deficit| value.wrapping_add(deficit))
@@ -585,10 +580,6 @@ fn current_packet_preserves_native_values_and_independent_stats_fields() {
     assert_eq!(memory.calls(TASK + cunit::ROSTER_OWNER), 1);
 }
 
-/// A lasting fault on the range alone stops the stat gather at its
-/// speed-and-range span: speed and class are read alone and kept, and the
-/// range is refused only where it is used (an accepted ETA guard); a refused
-/// guard keeps its own refusal and the independent risk result.
 #[test]
 fn a_range_only_fault_keeps_speed_and_class_and_the_guard_decides_its_use() {
     let mut memory = fixture();
@@ -613,11 +604,6 @@ fn a_range_only_fault_keeps_speed_and_class_and_the_guard_decides_its_use() {
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
 }
 
-/// The stat block is gathered in one call; a gather that stops at a faulting
-/// field reads the later fields alone, so a speed fault keeps the range as
-/// the per-field reads did, and the fallback is counted. A fault that clears
-/// after its first touch refuses no more than those reads: the gather meets
-/// it and the speed read alone succeeds.
 #[test]
 fn a_stat_gather_that_stops_early_reads_the_rest_alone() {
     use crate::batch_fallback::{Batch, count};
@@ -677,8 +663,6 @@ fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
     }
 }
 
-/// Task forces of a capture share their country's accumulator: its census
-/// is read once per reader, and each task force's terms are the same.
 #[test]
 fn a_capture_reads_a_shared_accumulator_census_once() {
     let mut memory = fixture();
@@ -696,7 +680,6 @@ fn a_capture_reads_a_shared_accumulator_census_once() {
     assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 1);
 }
 
-/// The country census a certified reader logged.
 fn country_census(log: &[HeldCensus]) -> HeldCensus {
     let address = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
     *log.iter()
@@ -704,10 +687,6 @@ fn country_census(log: &[HeldCensus]) -> HeldCensus {
         .expect("the certified country census is logged")
 }
 
-/// A reader logs the certified country census it used under the certificate
-/// it took before reading it; a later reader served that census from the
-/// held ones (the certificate unchanged) reads no country accumulator, gives
-/// the same packet and logs the census again under the same certificate.
 #[test]
 fn a_held_country_census_is_served_without_reading() {
     let mut memory = fixture();
@@ -717,7 +696,6 @@ fn a_held_country_census_is_served_without_reading() {
         0x1800,
         &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
     );
-    // Each certification of the country: the accumulator reads before it.
     let asked = RefCell::new(Vec::new());
     let certify = |receiver: usize| {
         if receiver == COUNTRY {
@@ -757,10 +735,6 @@ fn a_held_country_census_is_served_without_reading() {
     assert_eq!(next, log);
 }
 
-/// A held census is served only under the certificate it was read under.
-/// After a writer moved the receiver's certificate, the reader takes the new
-/// certificate, then reads the accumulator afresh: it gives the current
-/// values, and logs them under the new certificate, never the held values.
 #[test]
 fn a_held_census_whose_certificate_moved_is_read_afresh() {
     let mut memory = fixture();
@@ -781,7 +755,6 @@ fn a_held_census_whose_certificate_moved_is_read_afresh() {
     let mut held = log.clone();
     held.sort_by_key(HeldCensus::identity);
     let before = country_census(&held);
-    // A hooked writer rebuilds the tree, moving its certificate to (1, 6).
     memory.accumulator(
         address,
         0x1800,
@@ -823,8 +796,6 @@ fn a_held_census_whose_certificate_moved_is_read_afresh() {
     );
 }
 
-/// A receiver that cannot be certified (no certificate before the read) is
-/// never served its held census, and its fresh census is not logged.
 #[test]
 fn an_uncertified_census_is_read_and_not_logged() {
     let mut memory = fixture();
@@ -872,13 +843,11 @@ fn fuel_uses_native_full_default_skips_and_independent_deficit_defines() {
     let row = verified_reader(&memory).capture(TASK, 2).0;
     assert!(row.speed_modifier.is_err());
     assert_eq!(row.modified_range, Ok(100_000));
-    // A deficit fuel acquisition is shared by speed and range, never reread.
     assert_eq!(memory.calls(TASK + mission::FUEL), 1);
 }
 
 fn located_fixture() -> Fixture {
     let mut memory = fixture();
-    // The shared terrain selector authenticates against a nonzero module image.
     memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA.0) as u64);
     memory.u64(
         STATS,
@@ -938,7 +907,6 @@ fn located_fixture() -> Fixture {
         0xe000,
         (TERRAIN_IMAGE + cweather_manager::VTABLE_RVA.0) as u64,
     );
-    // Region outside an authenticated zero-count weather roster: native absent.
     memory
 }
 
@@ -959,8 +927,6 @@ fn actual_location_terrain_keeps_adjacent_class_runs_and_native_weighting() {
     assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
 }
 
-/// A pointer page and one record batch serve every ship of this page. A
-/// fourth ship needs no extra guarded call; its failed parent still refuses.
 #[test]
 fn eta_roster_ships_share_a_guarded_record_batch() {
     const FOURTH: usize = 0x20000;
@@ -1205,7 +1171,7 @@ fn unreached_underway_skips_country_and_missing_flag_is_component_local() {
 fn reached_underway_uses_signed_convoy_ratio_and_positive_expeditionary_alias() {
     let mut memory = fixture();
     memory.array(STATE + crate::cgame_state::COUNTRY_LINKS, 0x900, 3);
-    memory.u32(0x908, 1); // Positive raw owner 2 aliases native country 1.
+    memory.u32(0x908, 1);
     memory.accumulator(
         COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
         0x1800,
@@ -1255,7 +1221,6 @@ fn eligibility_global_failure_is_not_healed_by_a_later_present_key() {
     }
     assert_eq!(memory.calls(metadata::ELIGIBILITY_CALLBACK_RVA.0), 1);
     assert_eq!(memory.calls(metadata::TRADE_FEATURE_FLAGS_RVA.0), 1);
-    // A new capture expires the failure observation.
     let row = verified_reader(&memory).capture(TASK, 3).0;
     assert_eq!(row.speed_modifier, Ok(123));
     assert_eq!(row.modified_range, Ok(100_000));
@@ -1344,8 +1309,8 @@ fn headquarters_fixture() -> Fixture {
 fn fleet_leader_adds_once_and_headquarters_sum_then_take_maximum_from_zero() {
     let memory = headquarters_fixture();
     let row = verified_reader(&memory).capture(TASK, 12).0;
-    assert_eq!(row.speed_modifier, Ok(220)); // Fleet 100 + max(HQ80,HQ120,0).
-    assert_eq!(row.modified_range, Ok(1_000_100)); // Negative HQ range sums never beat zero.
+    assert_eq!(row.speed_modifier, Ok(220));
+    assert_eq!(row.modified_range, Ok(1_000_100));
     assert_eq!(memory.calls(0x8000 + mission::LEADER_MODIFIERS), 1);
     assert_eq!(memory.calls(TASK + ctask_force::ATTACHED_HEADQUARTERS), 1);
 }
@@ -1357,7 +1322,6 @@ fn first_headquarters_key_failure_survives_later_skill_and_entry_raw_faults() {
         0x9300 + mission::HEADQUARTERS_COMMANDER,
     ] {
         let mut memory = headquarters_fixture();
-        // Speed metadata is first reached in the first HQ, after the fleet's range key.
         memory.accumulator(
             0x8000 + mission::LEADER_MODIFIERS,
             0x8800,
@@ -1476,8 +1440,6 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
         );
         assert_eq!(rows[0].fresh_owner.unwrap().unwrap().id, 1);
         assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 0);
-        // The range arrives in the stat gather's speed-and-range span, read
-        // once; nothing reads it alone, and the refused guard keeps it unused.
         assert_eq!(memory.observed(STATS + 0x1a8, 16), 1);
         assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
         assert_eq!(memory.calls(TASK + cunit::LOCATION), 0);
@@ -1486,8 +1448,6 @@ fn refused_or_unverified_layout_skips_modifier_graph_and_keeps_independent_prefi
     }
 }
 
-// Mission-risk sources use unused addresses so the existing HQ/registry graph
-// and every baseline fixture remain byte-for-byte unchanged.
 const RISK_LOCATION: usize = 0x30000;
 const RISK_TERRAIN: usize = 0x33000;
 const RISK_CLASS_TREE: usize = 0x34138;
@@ -1499,9 +1459,6 @@ fn mission_risk_fixture() -> Fixture {
     use crate::creference_registry as registry;
     let mut memory = headquarters_fixture();
     memory.bytes.resize(0x40000, 0);
-    // Keep baseline HQ fixtures at image zero. This terrain-bearing risk
-    // fixture authenticates every reached object and global root against the
-    // same nonzero image as the separately reviewed terrain fixture.
     memory.u64(COUNTRY, (TERRAIN_IMAGE + ccountry::VTABLE_RVA.0) as u64);
     memory.u64(
         STATS,
@@ -1527,7 +1484,6 @@ fn mission_risk_fixture() -> Fixture {
             (TERRAIN_IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64,
         );
     }
-    // Native accumulator keys stay sorted: 29, 2A, 8A, 8B, 248.
     memory.accumulator(
         COUNTRY + ccountry::MODIFIER_ACCUMULATOR,
         0x1800,
@@ -1573,7 +1529,6 @@ fn mission_risk_fixture() -> Fixture {
     memory.array(RISK_TERRAIN + 0x198, 0x34100, 1);
     memory.accumulator(
         RISK_CLASS_TREE,
-        // Keep modifier entries outside the class record's speed at 0x34208.
         0x34500,
         &[
             (KEYS[0], 300),
@@ -1681,7 +1636,6 @@ fn source_risk_fixture() -> Fixture {
             ((ordinal as u64 + 1) << 32) | u64::from(cship::HANDLE_TYPE),
         );
     }
-    // Keep a repeated native occurrence, not a deduplicated membership.
     memory.u64(0x34408, 0x35000);
     memory
 }
@@ -1870,7 +1824,7 @@ fn original_risk_ship_sink_preserves_repeated_handles_and_one_original_header() 
     let handle = (4_u64 << 32) | u64::from(cship::HANDLE_TYPE);
     memory.u64(0x35008, handle);
     memory.u64(0x37008, handle.wrapping_add(1_u64 << 32));
-    memory.u64(0x34408, 0x35000); // Genuine repeated original occurrence.
+    memory.u64(0x34408, 0x35000);
     let mut sink = RiskShipSink::default();
     let packet = {
         let mut reader = mission_risk_reader(&memory).with_risk_ship_observer(&mut sink);
@@ -2036,8 +1990,6 @@ fn assert_mission_risk_graph_read_once(memory: &Fixture) {
             "duplicate graph read at {address:x}"
         );
     }
-    // The selector returns wrappers. Only their accumulators are lookup roots; neither old wrapper
-    // address is read as an accumulator.
     for wrapper in [RISK_CLASS_TREE - 0x10, RISK_TERRAIN + 0xa8] {
         assert_eq!(
             memory.calls(wrapper),
@@ -2074,11 +2026,9 @@ fn mission_risk_combines_country_terrain_weather_local_leader_and_headquarters_o
     let (eta, owner, risk) =
         mission_risk_reader(&memory).capture_with_mission_risk(TASK, 23, Ok(true), Ok(()));
     assert_eq!((eta.sample_hour, risk.sample_hour), (23, 23));
-    assert_eq!(owner.unwrap().id, 1); // Logical owner 7 never selects the country tree.
+    assert_eq!(owner.unwrap().id, 1);
     assert_eq!(eta.speed_modifier, Ok(1_420));
     assert_eq!(eta.modified_range, Ok(1_000_600));
-    // -120001 country + (6000*2-3000)/3 terrain -80/2 weather 70 local, 500 fleet and max(-10*4,
-    // 30*4, 0) headquarters.
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
     assert!(risk.combined_detection.unwrap().unwrap() < -100_000);
     assert_mission_risk_graph_read_once(&memory);
@@ -2219,8 +2169,6 @@ fn mission_risk_shared_pointer_failure_stops_later_sources_without_retry() {
         (Err(reason), Err(reason))
     );
     assert_eq!(memory.calls(TASK + cunit::LOCATION), 1);
-    // The independently observed empty/nonempty SHIPS header remains available
-    // after the common modifier graph's earlier location refusal.
     assert_eq!(memory.calls(TASK + ctask_force::SHIPS), 1);
     for address in [
         STATE + crate::cgame_state::WEATHER_MANAGER,
@@ -2482,7 +2430,6 @@ fn mission_risk_present_native_zero_is_reached_and_demands_metadata() {
 #[test]
 fn mission_risk_full_modifier_union_and_stat_leaves_share_original_observations() {
     let mut memory = mission_risk_fixture();
-    // The native accumulator stores these built-in keys in strict order.
     let mut values = vec![
         (0x19, 119),
         (KEYS[0], 300),
@@ -2576,8 +2523,6 @@ fn contribution_only_borrows_detection_stats_without_own_risk_later_leaves() {
         for offset in [0x148, 0x150] {
             assert_eq!(memory.calls(STATS + offset), 0);
         }
-        // The stat gather copies the class and the speed-and-range span once
-        // each; the own-risk speed and coordination above stay unused.
         assert_eq!(memory.observed(STATS + 8, 4), 1);
         assert_eq!(memory.observed(STATS + 0x1a8, 16), 1);
         assert_eq!(memory.observed(STATS + mission::STAT_RANGE, 8), 0);
@@ -2652,8 +2597,6 @@ fn borrowed_mission_risk_outside_census_uses_no_motion_capacity_or_identity_prob
         &mut combats,
     )
     .with_fresh_hour(35);
-    // The producer already authenticated this original loan. Its primary
-    // vtable/class/handle are deliberately not seeded for a second probe.
     let risk = collector
         .borrow_mission_risk(Ok((TASK, (71_u64 << 32) | 61)), Ok(true), Ok(()))
         .unwrap();
@@ -2792,7 +2735,7 @@ fn borrowed_mission_risk_unreached_demand_refusal_and_guard_leave_graph_and_cens
 
 #[test]
 fn borrowed_mission_risk_preserves_existing_invalid_motion_roster_refusal() {
-    let memory = mission_risk_fixture(); // No legacy province roster is installed.
+    let memory = mission_risk_fixture();
     let mut rows = vec![];
     let mut paths = vec![];
     let mut combats = cunit::FirstCombatMemo::new(1);
@@ -2848,8 +2791,6 @@ fn borrowed_mission_risk_distinct_receiver_retains_normal_visit_metadata_failure
         let normal = collector
             .visit_with_mission_risk(TASK, 7, Ok(true), Ok(()))
             .unwrap();
-        // A different receiver/full handle owns this one outside-census loan.
-        // Never repeat either pair: per-pass dedup belongs to the producer.
         let outside = collector
             .borrow_mission_risk(Ok((OUTSIDE_TASK, (72_u64 << 32) | 61)), Ok(true), Ok(()))
             .unwrap();
@@ -2909,9 +2850,6 @@ fn original_counter_risk_preserves_signed_count_and_owner_from_one_motion_attemp
             risk.combined_detection,
             Ok(reached.then_some(RISK_COMBINED))
         );
-        // The original motion header supplies the count once. A successful
-        // motion also rereads that header to certify the combat-links suffix
-        // (cunit::read_map_motion_combat_links); refused motion never reaches it.
         assert_eq!(
             memory.calls(TASK + cunit::COMBAT_REFERENCE_DATA),
             1 + usize::from(count == 0)

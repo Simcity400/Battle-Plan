@@ -139,7 +139,6 @@ test('mounted Select preserves authored choices, focus and label layout', async 
         assert.notEqual((await snapshot()).activeRole, 'option', 'Shift+Tab leaves the first enabled choice');
       });
       await context.test('narrow viewports wrap and measure long rows while preserving keyboard access', async () => {
-        // Emulation belongs to a CDP session, so retain it for the assertions.
         const viewport = new WebSocket(page);
         await new Promise<void>((done, reject) => {
           viewport.addEventListener('open', () => viewport.send(JSON.stringify({ id: 1, method: 'Emulation.setDeviceMetricsOverride',
@@ -160,7 +159,6 @@ test('mounted Select preserves authored choices, focus and label layout', async 
           assert.equal(long.labelWidth, long.labelScrollWidth);
           assert.ok(long.top >= narrow.scrollTop! && long.top + long.height <= narrow.scrollTop! + narrow.listHeight!, 'the full focused row is revealed after measuring its wrapped text');
           assert.equal(narrow.rows.find(row => row.index === 101)!.top, long.top + long.height, 'the next row starts after the wrapped label');
-          // Its owner rendering again with an equal list (a new array) leaves every measured row where it was drawn.
           const same = await act('sameChoicesNow()') as { before: [string, number][]; after: [string, number][] };
           assert.deepEqual(same.after, same.before, 'an equal list passed anew keeps the wrapped rows where they were');
           await act('settle()');

@@ -1,0 +1,13 @@
+# Exercise observation loss at the same boundaries as production
+
+Recovery tests invoke the actual callback and its refusal path after establishing complete observations. The withheld-forwarder case keeps partial coverage and no newly acquired baseline. Later recovery waits for the exact failed publication's receipt, reacquires the registry first, then recovers queues through the existing owner's census. When an unobserved native operation can have destroyed an object, a reused address gets a new label. The first stable owner baseline restores the exact ordered queue, and both registry observations belong to the hour that actually visited them.
+
+Storage tests use an arena with no spare capacity when they need to trigger a real allocation. They distinguish a successful fallback growth under a larger actual burst from a named allocation failure. They also hold healthy publications in flight while preparing later owners so a spare cannot rely on releasing their storage. Receipt pressure fixtures include gaps, outstanding reservations and late contradictory outcomes. An owned publication keeps the original options and zero-valued country operands even after later callbacks overwrite staging.
+
+The writer-cut tests cover the first read of the world, selected owner fields and queue headers. An operation can begin and end during that read or stay in flight across both registry attempts. A refused store acquisition still advances the cut. A crossed sample never certifies the payload, and a quiet return to the census can retry. A refusal in the delayed registry does not take back an already published decision certificate. The fixtures also distinguish an unbroken failed owner read from a crossed read, even though the next owner visit can retry either one. A lost political balance writer forces the owner to reacquire its scalar before carry resumes.
+
+Tests stage witnesses from distinct thread and frame tokens in production identity order. A frame that never publishes, or one whose arena resets before it publishes, leaves a named refusal. The refusal receipt ends that loss. A later frame publishes normally using the new arena epoch. Settlement earlier in the native nesting order does not change acquisition order in the history.
+
+[Observation tests](../../crates/collector-observers/src/event_feed_history/tests.rs) · [Recovery allocation tests](../../crates/collector-observers/src/event_feed_history/recovery_tests.rs)
+
+`script_scopes_record_the_native_country_and_names_each_reference_resolved_to` builds the reference names as inline MSVC string objects. The fixture puts string bytes first, followed by length and inline capacity, so it exercises the same guarded name copy as the observer.

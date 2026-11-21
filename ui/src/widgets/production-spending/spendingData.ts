@@ -7,7 +7,6 @@ import type { FactoryKind } from './definition.ts';
 import type { Domain, ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown, RepairRatePart, StockVariantName } from '../../generated/dashboard';
 
 export const LEVELS = ['domainLevel', 'typeLevel', 'variantLevel'] as const;
-/** The centre's unit. */
 export const UNIT = 'IC';
 const ATTRIBUTION_NOTE = 'Equipment type unknown.';
 
@@ -30,7 +29,6 @@ type UnknownReason = ProductionSpendingUnknown | 'outsideRead' | 'observationCha
 export const unknownLabel = (reason: string) => UNKNOWN_LABELS[reason as ProductionSpendingUnknown]
   ?? (reason === 'observationChanged' ? 'Campaign total unavailable.' : reason === 'unattributed' ? ATTRIBUTION_NOTE : 'Spending unavailable at this time.');
 
-/** A design whose domain is unresolved could be either, so both charts keep it. */
 const unattributed = (design: { rocket: boolean; domain: Domain | null }) => !design.rocket && design.domain == null;
 export const inFactoryKind = (design: { rocket: boolean; domain: Domain | null }, kind: FactoryKind) =>
   unattributed(design) || (kind === 'dockyards' ? !design.rocket && design.domain === 'naval' : design.rocket || design.domain !== 'naval');
@@ -48,10 +46,8 @@ export const validRuns = (value: unknown): value is ProductionSpendingRun[] => A
 export const validNames = (names: unknown): names is StockVariantName[] => Array.isArray(names) && names.every((name, index) => typeof name === 'object' && name != null
   && int(name.firstHour) && text(name.name) && text(name.design) && typeof name.known === 'boolean' && (index === 0 || names[index - 1].firstHour < name.firstHour));
 
-/** The reply's data over the windows joined, which hold no one window's hours. */
 export type SpendingData = Omit<ProductionSpendingReply, 'window' | 'firstHour' | 'lastHour'>;
 
-/** Fixed-point totals and missing values keep their distinct meanings. */
 export function validateSpendingData(data: unknown): SpendingData {
   const reply = data as SpendingData;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
@@ -80,19 +76,16 @@ export function validateSpendingData(data: unknown): SpendingData {
   return reply;
 }
 
-/** One window of the reply as the service sends it: its data and the window and hours it names. */
 export function validateProductionSpendingReply(data: unknown): ProductionSpendingReply {
   const reply = validateSpendingData(data) as ProductionSpendingReply;
   if (!int(reply.window) || reply.window < 0 || !int(reply.firstHour) || !int(reply.lastHour)) throw new Error('The production spending reply is malformed.');
   return reply;
 }
 
-/** A leaf's identity: its design and source, and a line's purpose. */
 export const leafKey = (leaf: ProductionSpendingLeaf) => JSON.stringify([leaf.variant, leaf.rocket, leaf.purpose]);
 
 export interface SpendingAmount { exact: bigint | null; reason: UnknownReason | null }
 
-/** No amount outside a run: a missing hour never holds the preceding value. */
 export function spendingAt(values: readonly ProductionSpendingRun[], hour: number): SpendingAmount {
   const run = runAt(values, Math.floor(hour));
   return run ? { exact: run.totalRaw == null ? null : BigInt(run.totalRaw), reason: run.reason }
@@ -101,11 +94,8 @@ export function spendingAt(values: readonly ProductionSpendingRun[], hour: numbe
 
 export interface SpendingWindow { from: number | null; hour: number; end: number }
 
-/** The observations a leaf's runs count from. */
 export const observationsOf = (reply: SpendingData, leaf: { rocket: boolean }) => leaf.rocket ? reply.rocketObservations : reply.equipmentObservations;
 
-/** The amount `values` reached at `hour`, or spent since `from` within one uninterrupted observation and
- * holder; unknown otherwise. */
 export function amountIn(values: readonly ProductionSpendingRun[], from: number | null, hour: number, observations: readonly number[]): SpendingAmount {
   const amount = spendingAt(values, hour);
   if (from == null || amount.exact == null) return amount;
@@ -118,7 +108,6 @@ export function amountIn(values: readonly ProductionSpendingRun[], from: number 
   return { exact: amount.exact - before.exact, reason: null };
 }
 
-/** The sum of `amounts`: unknown where one is, with its reason. */
 export function sumAmounts(amounts: Iterable<SpendingAmount>): SpendingAmount {
   let exact = 0n;
   for (const amount of amounts) {
@@ -128,14 +117,11 @@ export function sumAmounts(amounts: Iterable<SpendingAmount>): SpendingAmount {
   return { exact, reason: null };
 }
 
-/** A design as Production spending shows it: the input of its purposes counted (refits only when they are), or
- * a Rocket design's output. */
 export interface SpendingDesign {
   variant: string; typeKey: string; name: string | null; domain: Domain | null; rocket: boolean;
   names: readonly StockVariantName[]; parts: readonly ProductionSpendingLeaf[];
 }
 
-/** The designs `kind` shows, their counted purposes' leaves together; every design when no kind is given. */
 export function spendingDesigns(reply: SpendingData, refits: boolean, kind?: FactoryKind): SpendingDesign[] {
   const designs = new Map<string, SpendingDesign & { parts: ProductionSpendingLeaf[] }>();
   for (const leaf of reply.leaves) {
@@ -152,15 +138,12 @@ export function spendingDesigns(reply: SpendingData, refits: boolean, kind?: Fac
 export const designAmount = (reply: SpendingData, design: SpendingDesign, from: number | null, hour: number) =>
   sumAmounts(design.parts.map(part => amountIn(part.runs, from, hour, observationsOf(reply, design))));
 
-/** The country's runs of `kind`'s whole: dockyards build only on lines, so their whole is the lines' own. */
 function wholeOf(reply: SpendingData, kind: FactoryKind | undefined, refits: boolean): { runs: readonly ProductionSpendingRun[]; observations: readonly number[] } {
   return kind === 'dockyards'
     ? { runs: refits ? reply.equipmentTotal : reply.equipmentTotalWithoutRefits, observations: reply.equipmentObservations }
     : { runs: refits ? reply.total : reply.totalWithoutRefits, observations: reply.observations };
 }
 
-/** Whether the reply knows any amount spent. The output tables' read hours (`reads`) are not that: an older journal
- * never stamped them, while the totals were still derived from the rows. */
 export const spendingRecorded = (reply: SpendingData): boolean =>
   [reply.total, reply.equipmentTotal, reply.rocketTotal].some(runs => runs.some(run => run.totalRaw != null));
 
@@ -169,8 +152,6 @@ export const noProductionAt = (reply: SpendingData, hour: number, refits = true)
   return evidence?.present === false && evidence.emptyCensusHour != null && spendingAt(refits ? reply.total : reply.totalWithoutRefits, hour).exact === 0n;
 };
 
-/** The country's total, or one kind's: the sum of its designs, unknown while the whole is, or while spending on
- * a design of unresolved domain could belong to either. */
 export function kindAmount(reply: SpendingData, designs: readonly SpendingDesign[], from: number | null, hour: number, kind: FactoryKind | undefined, refits: boolean): SpendingAmount {
   const whole = wholeOf(reply, kind, refits);
   const all = amountIn(whole.runs, from, hour, whole.observations);
@@ -196,8 +177,6 @@ export function spendingEmptyLabel(reply: SpendingData, designs: readonly Spendi
 
 export interface SpendingFinal { exact: bigint | null; geometry: number }
 
-/** Made once per date window. An unknown endpoint's earlier maximum is only a stable colour/order key, never a
- * claimed whole total. */
 export function spendingFinals(reply: SpendingData, designs: readonly SpendingDesign[], from: number | null, end: number): SpendingFinal[] {
   return designs.map(design => {
     const amount = designAmount(reply, design, from, end);
@@ -219,7 +198,6 @@ export function spendingFinals(reply: SpendingData, designs: readonly SpendingDe
   });
 }
 
-/** The shared sunburst owns grouping, navigation, colours and missing totals. */
 export function productionSpendingItems(reply: SpendingData, window: SpendingWindow, designs: readonly SpendingDesign[],
   finals: readonly SpendingFinal[], kind: FactoryKind | undefined, refits: boolean): SunburstItem[] {
   const amounts = designs.map(design => designAmount(reply, design, window.from, window.hour));
@@ -263,8 +241,6 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
   return items;
 }
 
-/** Country totals do not depend on whether content can attribute every design; a kind's total does, as it is
- * the sum of that kind's designs. */
 export function spendingTotal(reply: SpendingData, designs: readonly SpendingDesign[], window: SpendingWindow, kind: FactoryKind | undefined, refits: boolean): SunburstTotal {
   const amount = kindAmount(reply, designs, window.from, window.hour, kind, refits);
   const final = kindAmount(reply, designs, window.from, window.end, kind, refits);
@@ -275,15 +251,12 @@ export function spendingTotal(reply: SpendingData, designs: readonly SpendingDes
   };
 }
 
-/** Applied IC (`decimals` recorded places) written to `digits` places, from the exact amount, including values
- * beyond 2^53. */
 export const formatAppliedIc = (value: number, exact: bigint | null, decimals: number, digits: number) =>
   formatIc(value, exact, decimals, digits);
 
 
 const sameRun = (a: ProductionSpendingRun, b: ProductionSpendingRun) => a.totalRaw === b.totalRaw && a.reason === b.reason;
 
-/** `next` after `runs`, a run continuing the one before with the same total joined to it unless it starts afresh. */
 function joinRuns(runs: ProductionSpendingRun[], next: readonly ProductionSpendingRun[]): void {
   for (const run of next) {
     const open = runs.at(-1);
@@ -299,7 +272,6 @@ function joinNames(names: StockVariantName[], next: readonly StockVariantName[])
 
 const union = (lists: readonly (readonly number[])[]) => [...new Set(lists.flat())].sort((a, b) => a - b);
 
-/** The windows held, joined in hour order into the reply of their hours together; null while none is held. */
 export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingReply>): SpendingData | null {
   const held = [...windows.values()].sort((a, b) => a.window - b.window);
   if (!held.length) return null;

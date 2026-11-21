@@ -1,25 +1,3 @@
-//! `FuelDays`: at each read of CountryFuel, each country's day of fuel updates the read holds.
-//!
-//! The applied-update day (`CountryFuel.award_day`, the collector's sums of the 24 updates before
-//! the read) is the day when it is complete, of this read and observed since before its first
-//! update. Otherwise the day is the ring's sums, shown only when the game updated the country's
-//! fuel at each of those 24 updates: the update booked at hour k ran after sample k - 1, so the
-//! read at r holds the updates governed by samples r - 24 ..= r - 1, and each must show the
-//! read's country (its Countries row, its link resolving to its own slot) owning a state. A
-//! sample showing it without a state, or gone, leaves the day out as not updated; a sample the
-//! run did not observe, or observed without complete Countries, CountryLinks and States, or with
-//! the country's link unresolved, or showing it without a state while some state's owner no link
-//! resolves, leaves it out as ownership not recorded. A run's first hour is such a gap.
-//!
-//! Days do not overlap: a read in the fuel table's daily slot keeps its day unless a slot read
-//! kept one within the 23 hours before; a read outside the slot keeps its day unless any read
-//! kept one within them, and a slot read up to 23 hours later leaves it out after all
-//! (`overlapped` on that read's row names it).
-//!
-//! State (its resume blob): the samples' inputs over the last day as change logs (the inputs'
-//! completeness and unresolved owners, each slot's owning a state, each country's slot), the
-//! first hour of the stretch observed, and each country's kept and pending days; the current
-//! links, countries and state owners are read again from the tables.
 
 use crate::{
     deployed::{invalid, number, row},
@@ -39,9 +17,7 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-/// Updates in a read's day.
 const DAY: i32 = HISTORY_RING_ENTRIES as i32;
-/// Hours within which two reads' days overlap.
 const LAG: i32 = DAY - 1;
 
 const FUEL: [usize; 7] = columns::<CountryFuelRow, 7>([
@@ -64,28 +40,21 @@ const READS: &[Read] = &[
     Read { table: TableId::States, columns: Columns::These(&OWNER), watch: Watch::Changed, required: false },
 ];
 
-/// The tables that tell ownership.
 const OWNERSHIP: [TableId; 3] = [TableId::Countries, TableId::CountryLinks, TableId::States];
 
-/// What the samples of every country share: whether the ownership tables were complete, and
-/// whether some state's owner no link resolved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Shared {
     known: bool,
     unresolved: bool,
 }
 
-/// A country's place at a sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Presence {
-    /// No Countries row.
     Absent,
-    /// Its link does not resolve to its own slot.
     Unresolved,
     At(u32),
 }
 
-/// What a sample says of a country.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sample {
     Owns(u32),
@@ -93,16 +62,12 @@ enum Sample {
     Unknown,
 }
 
-/// A value's changes over the last day: each from its hour until the next.
 type Log<T> = VecDeque<(i32, T)>;
 
-/// The value in force at `hour`; none before the first.
 fn at<T: Copy>(log: &Log<T>, hour: i32) -> Option<T> {
     log.iter().rev().find(|(from, _)| *from <= hour).map(|&(_, value)| value)
 }
 
-/// Adds `value` from `hour` when it differs from the value in force, keeping the entry in force at
-/// `hour - DAY` and every later one.
 fn push<T: Copy + PartialEq>(log: &mut Log<T>, hour: i32, value: T) {
     if log.back().is_some_and(|&(_, held)| held == value) {
         return;
@@ -119,13 +84,11 @@ fn push<T: Copy + PartialEq>(log: &mut Log<T>, hour: i32, value: T) {
     }
 }
 
-/// A read's day: the ring's sums, or the applied updates that supersede them.
 enum Day<'a> {
     Ring { gained: i64, burned: i64, received: [i64; 3], other: i64 },
     Awards(&'a FuelAwardDay),
 }
 
-/// A day's cells in [`FuelDayRow::RAW`] order; a ring day holds none of the applied-only ones.
 fn raw(day: &Day<'_>) -> [Option<i64>; 14] {
     match day {
         Day::Ring { gained, burned, received, other } => {
@@ -140,8 +103,6 @@ fn raw(day: &Day<'_>) -> [Option<i64>; 14] {
     }
 }
 
-/// The read's applied-update day: complete, of this read and observed since before its first
-/// update; else why not.
 fn awards(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, &[u8]> {
     let Recorded::Value(day) = &row.award_day else {
         return Err(b"Applied fuel source and recipient history not recorded");
@@ -158,8 +119,6 @@ fn awards(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, &[u8]> {
     Ok(day)
 }
 
-/// A country's kept days: the last kept slot day, the last kept day, and a kept day outside the
-/// slot that a slot read can still overlap.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Kept {
     slot: Option<i32>,
@@ -169,20 +128,16 @@ struct Kept {
 
 #[derive(Default)]
 pub struct FuelDays {
-    /// The first hour of the unbroken stretch observed.
     observed: Option<i32>,
     shared: Log<Shared>,
     owning: HashMap<u32, Log<bool>>,
     presence: HashMap<u32, Log<Presence>>,
     kept: HashMap<u32, Kept>,
-    /// The tables as they stand: links, each country's slot, each state's owner, states owned by
-    /// slot, and states whose owner no link resolves.
     links: HashMap<u32, u32>,
     countries: HashMap<u32, u32>,
     owners: HashMap<u32, u32>,
     owned: HashMap<u32, u32>,
     unresolved: u32,
-    /// The tables are to be read again before the next hour: a resume.
     reread: bool,
 }
 
@@ -194,7 +149,6 @@ impl FuelDays {
         self.links.get(&owner).map(|&slot| Some(slot))
     }
 
-    /// Counts state owner `owner` once more (`by` 1) or once less (`by` -1).
     fn count(&mut self, owner: u32, by: i32) {
         match self.resolve(owner) {
             Some(None) => {}
@@ -209,7 +163,6 @@ impl FuelDays {
         }
     }
 
-    /// Reads the links, countries and state owners again from the tables.
     fn read_tables(&mut self, hour: &Hour<'_>) {
         self.links.clear();
         let links = hour.table(TableId::CountryLinks);
@@ -252,7 +205,6 @@ impl FuelDays {
         OWNERSHIP.iter().all(|&table| hour.complete(table))
     }
 
-    /// Logs every value as the tables stand at `hour`: what differs from the value in force.
     fn log_all(&mut self, hour: i32, known: bool) {
         push(&mut self.shared, hour, Shared { known, unresolved: self.unresolved > 0 });
         let mut slots: HashSet<u32> = self.owning.keys().copied().collect();
@@ -270,14 +222,12 @@ impl FuelDays {
         self.forget(hour);
     }
 
-    /// Drops logs that hold only a default value in force for a whole day.
     fn forget(&mut self, hour: i32) {
         let old = |log_len: usize, from: i32| log_len == 1 && from <= hour - DAY;
         self.owning.retain(|_, log| !(old(log.len(), log[0].0) && !log[0].1));
         self.presence.retain(|_, log| !(old(log.len(), log[0].0) && log[0].1 == Presence::Absent));
     }
 
-    /// Starts observing at `hour` from the tables as they stand.
     fn restart(&mut self, hour: &Hour<'_>) {
         let kept = std::mem::take(&mut self.kept);
         *self = Self { kept, ..Self::default() };
@@ -286,7 +236,6 @@ impl FuelDays {
         self.log_all(hour.hour, Self::known(hour));
     }
 
-    /// Logs what the hour changed of the ownership inputs.
     fn observe(&mut self, hour: &Hour<'_>) {
         let known = Self::known(hour);
         let whole = OWNERSHIP.iter().any(|&table| hour.changes(table).status_changed)
@@ -329,7 +278,6 @@ impl FuelDays {
         self.forget(hour.hour);
     }
 
-    /// What the sample at `hour` says of country `raw`.
     fn sample(&self, raw: u32, hour: i32) -> Sample {
         if self.observed.is_none_or(|first| hour < first) {
             return Sample::Unknown;
@@ -346,8 +294,6 @@ impl FuelDays {
         }
     }
 
-    /// Why the ring day of a read of `raw` at `read` is left out by ownership; none when every
-    /// governing sample shows it owning a state.
     fn left_out(&self, raw: u32, read: i32) -> Option<u8> {
         let identity = match self.sample(raw, read) {
             Sample::Owns(slot) => Some(slot),
@@ -368,7 +314,6 @@ impl FuelDays {
         unknown.then_some(FuelDayRow::OWNERSHIP_NOT_RECORDED)
     }
 
-    /// The row of `row`'s read at `read`.
     fn day(&mut self, row: &CountryFuelRow, read: i32, out: &mut Rows) -> Vec<Value> {
         let applied = awards(row, read);
         let mut left_out = match applied {
@@ -414,7 +359,6 @@ impl FuelDays {
         cells
     }
 
-    /// Writes every country's day at a read of CountryFuel at `read`.
     fn read(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         let view = hour.table(TableId::CountryFuel);
         let mut live = HashSet::new();

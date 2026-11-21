@@ -11,10 +11,7 @@ import { divisionChoices, validateDivisionCareers } from './careersData';
 import ServiceRecordWidget from './ServiceRecordWidget';
 import { useFallbackHour } from '../../dashboard/follow/useFollow';
 
-/** Divisions of the chosen countries in service at the hour the record shows: the
- * widget's pinned or range end, or the playback hour while it follows. */
 function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  // Asked when the settings open, at the fallback's clock: choices are a list at one hour, not a moving value.
   const playbackHour = useFallbackHour(runtime.clock, widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);

@@ -1,4 +1,3 @@
-//! Resistance embedded in state, retaining full fixed5 qwords.
 
 use crate::{
     Memory, cgame_state,
@@ -12,33 +11,19 @@ pub mod changes;
 pub mod hover;
 pub mod map_icons;
 
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_aa20);
-/// Owning state pointer from the second constructor argument.
 pub const STATE: usize = 0x08;
-/// Resistance level, signed i64 fixed5, advanced by speed and clamped to its bounds.
 pub const LEVEL: usize = 0x10;
-/// Resistance speed, signed i64 fixed5, added to level.
 pub const SPEED: usize = 0x18;
-/// Compliance level, signed i64 fixed5, advanced by speed and clamped to its bounds.
 pub const COMPLIANCE: usize = 0x40;
-/// Compliance speed, signed i64 fixed5.
 pub const COMPLIANCE_SPEED: usize = 0x48;
-/// Four-byte country link.
 pub const COUNTRY: usize = 0x50;
-/// Embedded local-compliance modifier.
 pub const COMPLIANCE_MODIFIER: usize = 0x58;
-/// Embedded local-resistance modifier.
 pub const RESISTANCE_MODIFIER: usize = 0x118;
-/// Active boolean byte used by updates.
 pub const ACTIVE: usize = 0x208;
-/// Fixed5 scale for level and speed arithmetic.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Maximum signed level/compliance.
 pub const MAX_LEVEL: i64 = 10_000_000;
-/// Constructor installing identity, owner and signed-qword fields.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x0101_5520);
-/// Update integrating signed speeds into bounded levels.
 pub const UPDATE_RVA: Rva = Rva(0x0101_c5e0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +37,6 @@ pub struct Row {
     pub active: u8,
 }
 
-/// Reads every state's embedded resistance object, including inactive entries.
-/// Native country links, signed qwords and the active byte are not normalized.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -133,8 +116,6 @@ pub fn read_state(
     let active_address = resistance
         .checked_add(ACTIVE)
         .ok_or("resistance address overflow")?;
-    // Each span contains only the fields below: vtable/backlink/level/speed,
-    // compliance/compliance-speed/country, then the separate active byte.
     let mut header = [0; 32];
     let mut compliance = [0; 20];
     let mut active = [0; 1];

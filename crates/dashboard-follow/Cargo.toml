@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-# Dev tool (playback build): followed queries over the playhead, timed and checked.
 bench = []
 
 [dependencies]

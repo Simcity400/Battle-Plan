@@ -1,9 +1,7 @@
-//! Synthetic content-layer fixtures for reader tests.
 
 use crate::ResolvedLayers;
 use std::path::{Path, PathBuf};
 
-/// A base game folder and a mod folder under a fresh temporary root.
 pub struct Stack {
     root: PathBuf,
 }
@@ -47,20 +45,14 @@ impl Drop for Stack {
     }
 }
 
-/// One record of [`zip_records`].
 pub struct Record<'a> {
     pub name: &'a [u8],
-    /// The high byte of its version-made-by.
     pub host: u8,
-    /// Its general-purpose flags (`0x800`: the name is UTF-8).
     pub flags: u16,
-    /// Raw deflate (method 8) rather than stored.
     pub deflate: bool,
     pub data: &'a [u8],
 }
 
-/// A ZIP written byte by byte after `prefix` (a self-extractor's stub, which every offset in
-/// the archive leaves out).
 pub fn zip_records(prefix: &[u8], records: &[Record]) -> Vec<u8> {
     fn crc32(bytes: &[u8]) -> u32 {
         let mut crc = !0_u32;

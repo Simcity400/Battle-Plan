@@ -337,7 +337,6 @@ fn naval_equal(left: &NavalSources, right: &NavalSources) {
             }
         }
     }
-    // This driver varies ordinary formations, not combat-template assets.
     assert!(left.combats.battles.is_empty() && right.combats.battles.is_empty());
     assert_eq!(left.combats.links, right.combats.links);
     assert_eq!(
@@ -483,7 +482,6 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
         frame.hour = hour;
         frame.branch = 1 + u64::from(hour > 290);
         random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
-        // New snapshots and each relevant input changing independently are misses.
         if hour % 11 == 0 {
             let id = INPUTS[(hour as usize / 11) % INPUTS.len()];
             frame.tables[id.index()] = SharedView::from((*frame.tables[id.index()]).clone());
@@ -501,7 +499,6 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
         if hour % 23 == 0 {
             held = frame.clone();
         }
-        // Top-level errors retain this hour's reason, never a cached prior hour.
         if hour % 29 == 3 {
             frame.tables[TableId::AvailableEquipmentVariants.index()] = TableView::Unavailable {
                 reason: format!("hour {hour} unavailable"),
@@ -546,8 +543,6 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
                 }]),
             );
         }
-        // New immutable content/cache owners exercise cold joins, while both
-        // sides preserve the same baked library's slot history across hours.
         reference.sub_units = content();
         reference.conventional = RetainedBridge::default();
         let direct = bridge::reference::read(&frame, &reference.sub_units)
@@ -752,8 +747,6 @@ fn coarse_selection_scopes_keep_hour_records_and_lazy_join_order() {
         );
         assert!(selection.len() <= 13);
         reached.extend(selection);
-        // Lazy join completion remains at the original call, before the
-        // separately appended stage totals, without nested RefCell borrowing.
         let bridge = records
             .iter()
             .position(|record| record.name == "units.selection.bridge_read");

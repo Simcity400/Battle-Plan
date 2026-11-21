@@ -1,4 +1,3 @@
-//! Actual drawn naval observer inputs and retained metadata.
 use super::gui_authored::Authored;
 use super::unit_hits as unit_selection;
 use crate::map::counter_inputs::{self, NavalMember};
@@ -15,11 +14,9 @@ pub enum Control {
     Carrier,
     Pride,
     Spotting,
-    /// A drawn opaque object with no callback. It blocks siblings beneath it.
     Unbound,
 }
 
-/// Independent metadata fields retained by port-item updates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Metadata {
     pub country: u32,
@@ -115,14 +112,12 @@ impl Metadata {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hover {
     pub control: Control,
-    /// Index of this item's typed plate in the same CounterReport.
     pub unit_hit: usize,
     pub rect: [f32; 4],
     pub supported: bool,
     pub hit: Option<HitGeometry>,
     pub members: Arc<[u64]>,
     pub metadata: Metadata,
-    /// Static content is used only when this object's callback is absent or false.
     pub authored: Option<Authored>,
 }
 

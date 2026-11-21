@@ -78,9 +78,6 @@ fn a_covered_death_is_exact_at_its_province_with_its_killer_and_a_sighting_is_bo
     assert_eq!(shown(&ambiguous, "killerTag"), LogCell::Missing);
 }
 
-/// The recorder's division log over a run crossing blocks: GER's division of template 1 from the
-/// first hour (the baseline, no row), one of template 2 from 1,100 to 1,499 (sighted, then
-/// vanished), another of template 1 from 1,900 and another of template 2 from 2,500.
 fn templates_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
     use replay_data::rows::{DivisionEquipmentDeletionRow, DivisionRow, DivisionTemplateIconRow, PacketHour, TableRows, TemplateDisplayName, TemplateNameValue};
     use replay_frame::frame::TableView;
@@ -106,8 +103,6 @@ fn templates_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
     frame
 }
 
-/// Each template the log names is read from its first row in the run, a vanished division's row
-/// naming none, across the log's blocks.
 #[test]
 fn a_runs_templates_are_named_by_their_first_row_in_the_log() {
     let frames = (1_000..=2_600).map(templates_frame).collect();

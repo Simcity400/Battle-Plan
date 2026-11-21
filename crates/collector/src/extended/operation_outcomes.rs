@@ -1,5 +1,3 @@
-//! Hourly sealed completion batches. Only lane indices cross the game-thread
-//! boundary; exact description bytes and replay rows are copied off-thread.
 use crate::{
     operation_outcomes as hooks,
     spooling::unavailable,
@@ -61,7 +59,6 @@ impl Captured {
             &mut capacity.entries,
             self.drained_pending.load(Ordering::Relaxed),
         );
-        // Native exact overflow demand is retained even for unavailable hours.
         capacity.prepare();
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -111,7 +108,6 @@ impl Publication {
         self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
 
-    /// Allocation-free; call after queue admission and before assembling another interval.
     pub(crate) fn admitted(&self) {
         self.handoff.admitted(&self.cursors);
     }
@@ -120,13 +116,10 @@ impl Publication {
     }
 }
 
-/// After the writer lost admitted frames, once none of them is still queued.
 pub(crate) fn reset_admitted() {
     hooks::reset_admitted();
 }
 impl Ledger {
-    /// Spool worker only. A lost or short interval yields no event rows;
-    /// it never publishes the successfully copied subset as a complete batch.
     pub(crate) fn assemble_owned(
         &mut self,
         captured: &Captured,

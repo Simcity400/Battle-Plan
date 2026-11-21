@@ -1,9 +1,3 @@
-//! What `--dump` reads: the recording's playhead sought to
-//! the dump's hour, the window's layers composed there, and rows at the head of the map's tables
-//! (the ones today's map frame selects), presented as the document's frame, so every product that
-//! reads rows reads them. A product a
-//! layer makes in the dump's own type comes from the layer ([`FROM_LAYERS`]); the rest are today's
-//! calls over those rows ([`TODAY`]).
 
 #[cfg(test)]
 mod tests;
@@ -27,14 +21,10 @@ use std::{io, sync::Arc, time::Duration};
 use viewer_foundation::map::perspective;
 use viewer_world::map::{map_mode::MapMode, political::PoliticalLayers, strike_effects::Impacts};
 
-/// How long the dump waits for its hour's rows and layers.
 const LIMIT: Duration = Duration::from_secs(600);
 
-/// The dump's products a layer makes.
 pub(crate) const FROM_LAYERS: &[&str] = &["political fill and border keys (default map mode, recorded perspective)", "nuclear impacts"];
 
-/// The dump's products still made by today's calls, over rows at the head: their layer is not
-/// merged, or makes nothing in the type the dump renders (it uploads to the window's scene).
 pub(crate) const TODAY: &[&str] = &[
     "political fill of other map modes and perspectives, the sea regions' naval attributes",
     "map mode fill",
@@ -59,17 +49,14 @@ pub(crate) const TODAY: &[&str] = &[
     "air rosters (the roster history, from today's cursor)",
 ];
 
-/// A playhead sought to one hour, its layers composed there and its rows held.
 pub(crate) struct DumpHead {
     side: MapSide,
-    /// Holds the views' tables declared while the dump runs.
     _reader: ViewReader,
     frame: Arc<DecodedFrame>,
     tables: usize,
     units: String,
 }
 
-/// The dump's head at `document`'s hour, on the playhead of the recording it reads.
 pub(crate) fn open(document: &Document) -> io::Result<DumpHead> {
     let units = playhead_host::units::of(document.playback.replay(), document.playback.branch())?;
     let name = units.name.clone();
@@ -82,8 +69,6 @@ pub(crate) fn open(document: &Document) -> io::Result<DumpHead> {
     at(entry, layers, document.playback.hour(), document.playback.branch(), dashboard_base::map_tables::selected_tables(), name)
 }
 
-/// `layers` composed at `hour` on `entry`'s playhead, and rows at the head of `tables` there,
-/// stamped with `branch`.
 pub(crate) fn at(entry: Arc<Entry>, layers: Vec<Box<dyn Layer>>, hour: Hour, branch: replay_data::BranchId, tables: &[TableId], units: String) -> io::Result<DumpHead> {
     let timeline = entry.playhead().timeline();
     if !(timeline.first()..=timeline.last()).contains(&hour) {
@@ -96,14 +81,12 @@ pub(crate) fn at(entry: Arc<Entry>, layers: Vec<Box<dyn Layer>>, hour: Hour, bra
         return Err(io::Error::other(format!("The {name} layer is refused: {why}")));
     }
     side.anchor(hour, false, 0.0, true);
-    // The side's steps make the views: once it stands at `hour`, so do they.
     side.catch_up(hour)?;
     let frame = reader.wait(|frame| frame.hour == hour, LIMIT)?;
     Ok(DumpHead { side, _reader: reader, frame, tables: tables.len(), units })
 }
 
 impl DumpHead {
-    /// The rows at the head, for the document to present as its frame.
     pub(crate) fn frame(&self) -> Arc<DecodedFrame> {
         Arc::clone(&self.frame)
     }
@@ -112,9 +95,6 @@ impl DumpHead {
         self.side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<T>())
     }
 
-    /// The political fill the dump renders: the political layer's at the default map mode and the
-    /// recorded perspective, keeping today's sea-region attributes, mode draw and the warnings
-    /// after the territory's, which no layer makes yet; today's elsewhere.
     pub(crate) fn political(&self, mode: &MapMode, choice: &perspective::Choice, today: PoliticalLayers) -> io::Result<PoliticalLayers> {
         if *mode != MapMode::default() || *choice != perspective::Choice::default() {
             return Ok(today);
@@ -138,12 +118,10 @@ impl DumpHead {
         Ok(PoliticalLayers { regions: Arc::new(regions), build: today.build })
     }
 
-    /// The strikes layer's impacts at the hour.
     pub(crate) fn impacts(&self) -> io::Result<Impacts> {
         self.layer::<Strikes>().map(Strikes::product).ok_or_else(|| io::Error::other("The strikes layer is not drawn at the dump's hour"))
     }
 
-    /// What the dump says about where its products come from and what the head held.
     pub(crate) fn lines(&self) -> Vec<String> {
         let (now, peak, _) = self.side.entry().playhead().held();
         let held = self.side.views().held();
@@ -162,7 +140,6 @@ impl DumpHead {
         ]
     }
 
-    /// The tables the dump's own reader declares, as the store holds them.
     #[cfg(test)]
     pub(crate) fn declared(&self) -> usize {
         self._reader.reads()

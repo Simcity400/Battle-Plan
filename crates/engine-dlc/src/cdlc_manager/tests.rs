@@ -14,7 +14,6 @@ fn equivalent_mount_notation_preserves_root_membership_and_priority() {
     assert!(mounts_match(&actual, &expected));
     assert!(mounts_match(&[text(b"F:/")], &[r"\\?\F:\".to_owned()]));
     assert_eq!(mount_path("/"), Some("/".to_owned()));
-    // Paths that differ as written are left to the disk, so these depend on no drive.
     assert_ne!(mount_path("F:/"), mount_path("F:"));
     assert_ne!(mount_path("F:/game/"), mount_path(r"\\?\C:\game"));
     assert!(!mounts_match(
@@ -35,7 +34,6 @@ fn equivalent_mount_notation_preserves_root_membership_and_priority() {
     ));
     assert!(mounts_match(&[text(b"F:/game")], &[r"F:\game".to_owned()]));
     assert_ne!(mount_path("F:/game"), mount_path("F:/GAME"));
-    // Empty lists cannot establish even the vanilla root.
     assert!(!mounts_match::<Descriptor>(&[], &[]));
 }
 
@@ -46,7 +44,6 @@ fn mount(path: &str) -> Descriptor {
     text
 }
 
-/// A folder under the temporary folder, removed with what it holds when dropped.
 struct Scratch(std::path::PathBuf);
 impl Scratch {
     fn new(name: &str) -> Self {
@@ -66,7 +63,6 @@ impl Drop for Scratch {
     }
 }
 
-/// A directory junction at `link` to `target`; making one needs no privilege.
 fn junction(link: &std::path::Path, target: &std::path::Path) {
     let output = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
@@ -84,7 +80,6 @@ fn junction(link: &std::path::Path, target: &std::path::Path) {
     );
 }
 
-/// The 8.3 spelling of `path`, which is `path` itself where the volume makes no short names.
 fn short_path(path: &std::path::Path) -> std::path::PathBuf {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
@@ -100,8 +95,6 @@ fn short_path(path: &std::path::Path) -> std::path::PathBuf {
     std::ffi::OsString::from_wide(&short[..length as usize]).into()
 }
 
-/// The game names its profile mount by the path it was given (8.3 names, a junction), the
-/// recorder by the canonical path: one folder, two spellings, one mount.
 #[test]
 fn another_spelling_of_the_same_folder_is_the_same_mount() {
     let root = Scratch::new("mount-spellings");
@@ -311,7 +304,6 @@ fn node(bytes: &mut [u8], at: usize, left: usize, parent: usize, right: usize, n
 #[test]
 fn active_membership_and_map_order_are_observed_without_claiming_mount_order() {
     let mut bytes = vec![0_u8; 0x1800];
-    // This test addresses the maps directly; no live module image is needed.
     let manager = 0x100;
     let head = 0x300;
     let first = 0x400;
@@ -453,7 +445,6 @@ fn partial_requests_cannot_claim_an_empty_active_mod_roster() {
     );
     assert_eq!(observation.requested_mods, Outcome::Rows { len: 1 });
     assert_eq!(requested[0].as_bytes(), b"mod/a.mod");
-    // A requested descriptor can be undiscovered. The two lists stay distinct.
     assert_eq!(observation.mods, Outcome::Rows { len: 0 });
 }
 
@@ -485,7 +476,6 @@ fn counts_read_headers_and_the_mount_terminator_only() {
         bytes[manager + offset + 12..manager + offset + 16].copy_from_slice(&count.to_le_bytes());
     }
     u64_at(&mut bytes, manager + DLCS + msvc_map::COUNT, 90);
-    // The native map size remains demand even above the former node ceiling.
     u64_at(&mut bytes, manager + MODS + msvc_map::COUNT, 5_001);
     for index in 0..80 {
         u64_at(&mut bytes, 0x1000 + index * 8, 0x1800);
@@ -502,7 +492,6 @@ fn counts_read_headers_and_the_mount_terminator_only() {
             mounts: 80,
         }
     );
-    // Singleton, two headers, two map counts, the root and 81 list entries.
     assert_eq!(memory.calls(), 1 + 2 + 2 + 1 + 81);
     assert_eq!(observe_counts(&Rooted(&[]), 0), Counts::default());
 }

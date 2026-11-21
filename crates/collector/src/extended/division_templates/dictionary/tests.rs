@@ -1,7 +1,6 @@
 use super::*;
 use engine_native::memory::SliceMemory;
 
-/// Two templates whose literal names and keys are inline MSVC strings.
 const FIRST: usize = 0x1000;
 const SECOND: usize = 0x2000;
 
@@ -14,7 +13,6 @@ fn world() -> Vec<u8> {
     bytes
 }
 
-/// An inline string of up to 15 bytes.
 fn put(bytes: &mut [u8], at: usize, text: &[u8]) {
     bytes[at..at + 16].fill(0);
     bytes[at..at + text.len()].copy_from_slice(text);
@@ -22,10 +20,8 @@ fn put(bytes: &mut [u8], at: usize, text: &[u8]) {
     bytes[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
 }
 
-/// A template's pointer, literal name and key; `None` is a name the walk could not read.
 type Template<'a> = (usize, Option<(&'a [u8], &'a [u8])>);
 
-/// The icon walk's rows for `templates`, with their names in `names`.
 fn icons(templates: &[Template<'_>]) -> (Vec<native::IconRow>, Vec<u8>) {
     let mut names = Vec::new();
     let rows = templates
@@ -91,7 +87,6 @@ fn hour(memory: &impl engine_native::Memory, icons: &(Vec<native::IconRow>, Vec<
     }
 }
 
-/// The walk's names, held or read, are published without a native read.
 #[test]
 fn the_walks_names_are_published_without_a_read() {
     struct Unreadable;
@@ -113,8 +108,6 @@ fn the_walks_names_are_published_without_a_read() {
     assert_eq!((read.rows[0].owner, read.rows[0].unit_type), (7, 3));
 }
 
-/// A name the walk could not read is read again; an unreadable one, an
-/// unknown unit type or an unavailable walk refuses the dictionary.
 #[test]
 fn unread_names_are_read_again_and_failures_refuse_the_dictionary() {
     let mut world = world();

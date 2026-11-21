@@ -1,22 +1,3 @@
-//! Country-wide simulation doctrine unlocks for possible-tactic presentation.
-//! The doctrine array uses canonical country slots with 0xA0-byte rows. Its
-//! ordered tactic-pointer vector appends an unlock only without a matching
-//! unlock token. Serialization writes database IDs in vector order and omits
-//! empty lists. Missing authored names select the authenticated null tactic
-//! at database entry 0, recorded as ID 0.
-//!
-//! Pointers authenticate against the loaded tactic database read once into an
-//! address-keyed table. Each country costs one 0x30-byte row copy covering its
-//! identity and vector header, then a bulk copy for a nonempty list. The
-//! callback supplies the authenticated roster; content and the lexical
-//! dictionary supply the authored-name token.
-//!
-//! Every hour reads the full census. Unlock effects, reward application and
-//! revocation, save loading and construction/move/destruction write lists.
-//! Reward paths reach rows through back-pointers in other objects, so observing
-//! only the row owner does not justify skipping an hour.
-//! Capture each country once, including explicit empty lists. No viewing
-//! country, combat side, locked background or trigger result is read.
 
 use crate::{
     Memory, ccombat_tactic, ccountry, cgame_state, cnull_combat_tactic, cpdx_array::Array, read,
@@ -24,37 +5,27 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Game-state doctrine-system pointer.
 pub const DOCTRINE_SYSTEM: usize = 0x400;
-/// Doctrine-system country-status array, serialized as the country-status table.
 pub const DOCTRINE_ROWS: usize = 8;
 pub const DOCTRINE_STRIDE: usize = 0xa0;
-/// Country-status raw country reference initialized on emplacement and serialized.
 pub const ROW_TAG: usize = 8;
-/// CCountryDoctrineStatus tactic-pointer vector.
 pub const TACTICS: usize = 0x28;
-/// One copy spans the row tag through the vector header (inclusive).
 const ROW_SPAN: usize = TACTICS + 0x10 - ROW_TAG;
 const POINTER: usize = 8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw CCountryTag identity, not the canonical array index.
     pub country: u32,
     pub unlock_start: usize,
     pub unlock_count: usize,
 }
 
-/// One loaded tactic: its object address and its database ID (0 for the null tactic at index 0), a
-/// slot of an open-addressed table keyed by the address (pointer 0 is an empty slot). The address
-/// is never recorded.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryEntry {
     pub pointer: usize,
     pub id: u32,
 }
 
-/// The headers a capture was bounded by; they must be unchanged when it ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Roots {
     pub database: usize,
@@ -66,15 +37,11 @@ struct Roots {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
     pub outcome: Outcome,
-    /// Same-pass doctrine table for companion acquisition; never serialized.
     pub status_data: usize,
     pub status_count: u32,
     pub required_rows: usize,
     pub required_unlocks: usize,
-    /// Database table slots (`registry_slots` of the entries including the
-    /// null entry at index 0).
     pub required_registry: usize,
-    /// Bytes of the database entries or the longest country list.
     pub required_list: usize,
 }
 
@@ -118,12 +85,6 @@ fn decode(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
         .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("eight bytes")) as usize)
 }
 
-/// Slots of the database table for `count` entries: at least twice as many,
-/// so every probe sequence ends at an empty slot within a step or two.
-/// A native pointer list's count becomes growth demand only once its first
-/// and last entries are proven readable, so a torn header cannot ask the spool
-/// for more staging than the game has mapped at that address. A list that
-/// fits the current staging needs no probe: reading it whole proves it.
 fn prove_ends(memory: &impl Memory, entries: Array) -> Result<(), &'static str> {
     if entries.count == 0 {
         return Ok(());
@@ -149,8 +110,6 @@ fn home(pointer: usize, mask: usize) -> usize {
     ((pointer as u64 >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as usize & mask
 }
 
-/// Database ID of a loaded tactic. Null pointer names no tactic; the null
-/// tactic is an authenticated nonzero singleton, separate from an empty slot.
 fn lookup(table: &[RegistryEntry], pointer: usize) -> Option<u32> {
     if pointer == 0 {
         return None;
@@ -170,7 +129,6 @@ fn lookup(table: &[RegistryEntry], pointer: usize) -> Option<u32> {
     None
 }
 
-/// The database and doctrine-system headers every capture is bounded by.
 fn roots(memory: &impl Memory, base: usize, game: usize) -> Result<Roots, &'static str> {
     let global = engine_sites::at(base, ccombat_tactic::DATABASE_RVA)
         .ok_or("country tactic unlock input unreadable")?;
@@ -195,11 +153,6 @@ fn roots(memory: &impl Memory, base: usize, game: usize) -> Result<Roots, &'stat
     })
 }
 
-/// Read the database into an open-addressed table in `registry`,
-/// authenticating entry 0 as the null tactic (ID 0) and every other entry as
-/// the `CCombatTactic` carrying its own index. `false` when the buffers are
-/// too small; the demand is [`registry_slots`] entries and `entries.count * 8`
-/// staging bytes.
 fn registry(
     memory: &impl Memory,
     base: usize,
@@ -227,7 +180,6 @@ fn registry(
         vtable(ccombat_tactic::VTABLE_RVA)?,
     );
     for (index, object) in decode(&list[..bytes]).enumerate() {
-        // Database ordinal is the assigned ID; mismatch refuses identity.
         let expected = if index == 0 { null } else { tactic };
         if object == 0
             || field::<u64>(memory, object, 0)? != expected
@@ -235,7 +187,6 @@ fn registry(
         {
             return Err("tactic database entry identity invalid");
         }
-        // Each object carries its own index, so no object appears twice.
         let mask = slots - 1;
         let mut slot = home(object, mask);
         while table[slot].pointer != 0 {
@@ -249,7 +200,6 @@ fn registry(
     Ok(true)
 }
 
-/// Grow on the worker from the original database, country and unlock headers.
 #[allow(clippy::too_many_arguments)]
 pub fn count(memory: &impl Memory, base: usize, game: usize) -> Capture {
     capture_buffer(
@@ -301,7 +251,6 @@ fn capture_buffer(
         required_registry: 0,
         required_list: 0,
     };
-    // A list that was read but could not be stored makes the capture pressure.
     let mut unstored = false;
     let result = (|| {
         let observed = roots(memory, base, game)?;
@@ -310,8 +259,6 @@ fn capture_buffer(
         prove_ends(memory, observed.entries)?;
         capture.required_registry = registry_slots(observed.entries.count);
         capture.required_list = list_bytes(observed.entries.count)?;
-        // The live database and acquired list extents authorize complete storage
-        // before interpreting captured lists.
         table.ensure(capture.required_registry)?;
         list.ensure(capture.required_list)?;
         let database = registry(memory, base, observed.entries, &mut table, &mut list)?
@@ -335,7 +282,6 @@ fn capture_buffer(
                 if !read_slice(memory, native, &mut span) {
                     return Err("country tactic unlock row unreadable");
                 }
-                // The row's own CCountryTag must name this country.
                 let tag = u32::from_le_bytes(span[..4].try_into().expect("four bytes"));
                 if tag == 0 || countries.link(tag)? != Some(country.canonical_slot) {
                     return Err("country tactic unlock row names another country");

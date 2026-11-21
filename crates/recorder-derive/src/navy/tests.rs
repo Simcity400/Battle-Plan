@@ -6,8 +6,6 @@ use crate::{
 use replay_columnar::{manifest::Status, store::Store};
 use replay_data::rows::{CountryLinkRow, CountryRow, NavyClassRow, ShipCounterInputs};
 
-/// One hour of the inputs: task forces (id, roster owner, logical owner), ships (id, task force,
-/// strength, class), models (ship, counter maximum) and ShipModels' status.
 #[derive(Clone)]
 struct World {
     forces: Vec<(u64, u32, u32)>,
@@ -70,10 +68,6 @@ fn class(store: &Store, slot: u32, side: usize, class: u32) -> Option<Vec<Option
     cells(store, TableId::NavyClasses, class_key(slot, side, class))
 }
 
-/// Ships count for their task force's roster and logical owners and move with it; a negative
-/// hull HP leaves its country's (and class's) HP unknown; a ship without a model counter, or
-/// ShipModels not complete, leaves the maximum unknown; a ship in a task force the table does not
-/// hold leaves both attributions unknown in every row, and their class rows go.
 #[test]
 fn navy_totals_follow_task_forces_and_say_what_is_not_known() {
     let mut hours = vec![base(); 6];
@@ -134,8 +128,6 @@ fn navy_totals_follow_task_forces_and_say_what_is_not_known() {
     }
 }
 
-/// A resume takes the writer up from its tables alone: every table, every hour after it, equals
-/// a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let mut hours = vec![base(); 6];

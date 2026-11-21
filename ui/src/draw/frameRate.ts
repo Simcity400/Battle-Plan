@@ -19,7 +19,6 @@ export class PresentationRate {
   }
 }
 
-/** Short animation-frame intervals expose the display period even when a few frames are missed. */
 export class DisplayRate {
   private previous?: number;
   private gaps: number[] = [];

@@ -1,29 +1,15 @@
-//! Combat stats observer embedded in a land combatant. Serialization retains
-//! positive manpower and equipment gated by archetype allocations. Pools
-//! omit zero entries unless explicitly allowed. Terminal acquisition follows
-//! original finalization, which flushes pending losses before side deletion.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_a0d0);
-/// CStatsObserver cached leader-tally array.
 pub const LEADERS: usize = 0x20;
-/// CStatsObserver leader-tally u32 count.
 pub const LEADER_COUNT: usize = 0x2c;
-/// CStatsObserver contiguous SDamageDone array.
 pub const DAMAGE: usize = 0x38;
-/// Manpower loss, signed i32, accumulated from removed and remaining
-/// participant manpower.
 pub const MANPOWER_LOSS: usize = 0x60;
-/// Embedded equipment-variant pool. Category accumulation updates aggregate
-/// and category pools with pointer/i64-fixed5 pairs of stride 0x10 and signed count.
 pub const EQUIPMENT_LOSSES: usize = 0x70;
 
 use crate::memory::{RecordField, RecordLayout, RecordSources};
 use crate::{Memory, cequipment_variant, cequipment_variant_pool, cpdx_array::Array};
 
-/// Native 16-byte pool record, with its pointer replaced by the authenticated
-/// full variant handle after acquisition. No machine pointer is serialized.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct LossEntry {
@@ -72,9 +58,6 @@ const LOSS_LAYOUT: RecordLayout<'static> = RecordLayout::new(
 .unwrap();
 
 impl LossPlan {
-    /// The caller authenticates the land side; its embedded observer and pool
-    /// authenticate independently. Counters mutate in place: pool size or sum
-    /// equality is not a witness that the per-variant amounts are unchanged.
     pub fn read(memory: &impl Memory, base: usize, side: usize) -> Result<Self, &'static str> {
         if side == 0 {
             return Err("land loss side null");
@@ -119,7 +102,6 @@ impl LossPlan {
         })
     }
 
-    /// Attacker/defender observers share one ordered guarded header batch.
     pub fn read_sides(
         memory: &impl Memory,
         base: usize,
@@ -149,8 +131,6 @@ impl LossPlan {
         ])
     }
 
-    /// Both complete pools and their identities take two guarded batches,
-    /// regardless of variant count. The caller supplies their combined arena.
     pub fn copy_sides(
         plans: [Self; 2],
         memory: &impl Memory,
@@ -177,8 +157,6 @@ impl LossPlan {
         authenticate(memory, base, &mut entries[..count], pointers, identities)
     }
 
-    /// Private log words: manpower, count, then full handle/amount pairs.
-    /// Terminal hooks cannot allocate scratch, so they stream exact entries.
     pub fn words(self) -> Result<usize, &'static str> {
         (self.equipment.count as usize)
             .checked_mul(2)
@@ -207,7 +185,6 @@ impl LossPlan {
 }
 
 fn entry_bytes(entries: &mut [LossEntry]) -> Result<&mut [u8], &'static str> {
-    // Exactly two integer words; every bit pattern is valid.
     const {
         assert!(std::mem::size_of::<LossEntry>() == crate::equipment_entry::STRIDE);
     }

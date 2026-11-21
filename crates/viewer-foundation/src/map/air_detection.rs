@@ -1,4 +1,3 @@
-//! Regional Air detection, reconstructed from simulation execution and raw modifiers.
 use replay_data::{rows::AirMissionInputRow, rows::CountryCounterInputRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{cell::OnceCell, collections::BTreeMap};
@@ -6,7 +5,6 @@ use std::{cell::OnceCell, collections::BTreeMap};
 const ONE: i64 = 100_000;
 const REFUSED: i64 = 0xffff_ffff;
 
-/// A certified complete console vector, including exact absence and zero overrides.
 pub fn console_override(frame: &DecodedFrame, country: u32) -> Result<Option<i64>, String> {
     use replay_data::rows::AirSortieModifierRow as Row;
     let rows = frame
@@ -32,7 +30,6 @@ pub fn console_override(frame: &DecodedFrame, country: u32) -> Result<Option<i64
     Ok(value.map(|row| row.raw))
 }
 
-/// Entries share the country counter accumulator's fixed purpose-key order.
 #[derive(Clone, Copy)]
 pub enum CountryModifier {
     InterceptionDetection = 0,
@@ -47,7 +44,6 @@ pub enum CountryModifier {
     Fuel = 9,
 }
 
-/// One hour's country entries, indexed by canonical identity once for all regions.
 pub struct Countries<'a> {
     frame: &'a DecodedFrame,
     rows: BTreeMap<u32, &'a CountryCounterInputRow>,
@@ -167,7 +163,6 @@ impl<'a> Countries<'a> {
     }
 }
 
-/// The same scaled ace entries used by detection and wing fuel normalization.
 fn ace_term(
     wing: &replay_data::rows::AirWingRow,
     index: usize,
@@ -197,7 +192,6 @@ fn ace_term(
     Ok(multiply(ONE.wrapping_add(effectiveness), scaled))
 }
 
-/// Raw wing and country terms combine in native order; the end alone clamps.
 pub fn wing_normalization(
     wing: &replay_data::rows::AirWingRow,
     input: &replay_data::rows::AirMissionNormalization,
@@ -212,7 +206,6 @@ pub fn wing_normalization(
     ))
 }
 
-/// Night and weather have separate native demand gates in combat-stat queries.
 pub fn wing_night_normalization(
     wing: &replay_data::rows::AirWingRow,
     input: &replay_data::rows::AirMissionNormalization,
@@ -238,7 +231,6 @@ pub fn wing_night_normalization(
                 .ok_or("current mission night statistic is unavailable")?,
         )
         .wrapping_add(ace_term(wing, 0, defines, countries, sources)?);
-    // This branch reads the wing's selected bombing bit, not its current execution.
     if wing.mission_region.is_some() && wing.mission_mask & 8 != 0 {
         night = night.wrapping_add(countries.value(slot, CountryModifier::BomberNight)?);
     }
@@ -355,7 +347,6 @@ fn fraction(value: i64, denominator: i64, zero: i64) -> i64 {
     }
 }
 
-/// Current execution is deliberately separate from selected missions and graphical sorties.
 pub fn derive(
     defines: Defines,
     modifiers: MissionModifiers,
@@ -685,7 +676,6 @@ mod tests {
             wing_normalization(&wing, &packet, true, range, &countries, &sources).unwrap(),
             (140_000, 120_000)
         );
-        // A selected bombing bit without a target does not reach its bonus.
         wing.mission_region = None;
         assert_eq!(
             wing_normalization(&wing, &packet, false, range, &countries, &sources).unwrap(),
@@ -738,7 +728,6 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        // An unassigned ace must not demand the wing census to prove its scale is one.
         let wing = AirWingRow {
             ace: 7,
             ..Default::default()

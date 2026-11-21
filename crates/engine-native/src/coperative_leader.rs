@@ -1,11 +1,3 @@
-//! Operative leader fields use the primary object pointer. The walk follows
-//! agency-owned containers.
-//!
-//! Detection dispatches an action after a daily risk trial; the detection cheat
-//! dispatches the same action. Neither path stores a persistent detected/exposed
-//! byte, and serialization has no detection field. Captivity, assignment and
-//! authored effects can persist independently. The description string's length
-//! byte must not be read as detection state.
 
 use engine_sites::Rva;
 use crate::{
@@ -21,94 +13,47 @@ use crate::{
     walk::Outcome,
 };
 
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_28a0);
-/// COperativeLeader two-u32 identity (`IDENTITY`).
 pub const IDENTITY: usize = 0x08;
-/// Identity type dword validated against the admitted operative type.
 pub const TYPE: usize = 0x08;
-/// COperativeLeader engine id dword.
 pub const ID: usize = 0x0c;
-/// Operative handle type required by authentication.
 pub const HANDLE_TYPE: u32 = 4713;
-/// Stored name/key string localised into the display cache. Serialization
-/// writes the original name/key string.
 pub const NAME: usize = 0x20;
-/// String construction and assignment refuse lengths above the game's maximum;
-/// no smaller name cap is imposed.
 pub(crate) const NAME_MAX_LENGTH: u64 = 0x7fff_ffff_ffff_ffff;
-/// COperativeLeader duplicate name std::string.
 #[cfg(test)]
 pub const NAME_DUPLICATE: usize = 0x40;
-/// COperativeLeader portrait gfx std::string.
 pub const PORTRAIT_GFX: usize = 0x100;
-/// Owning country reference, u32, relative to the primary object.
 pub const OWNER_COUNTRY: usize = 0x120;
-/// COperativeLeader trait-definition pointer vector.
 pub const TRAITS: usize = 0xdc8;
-/// COperativeLeader trait-vector capacity u32.
 pub const TRAIT_CAPACITY: usize = 0xdd0;
-/// Trait-vector count read as u32; game signedness unresolved.
 pub const TRAIT_COUNT: usize = 0xdd4;
-/// COperativeLeader skill-object pointer.
 pub const SKILL_OBJECT: usize = 0xe60;
-/// Inherited experience, i64/100000; required experience uses the same scale.
 pub const EXPERIENCE: usize = 0xe68;
-/// Cooldown kind used by agency cooldown status.
 pub const COOLDOWN_KIND: usize = 0xe84;
-/// Cooldown start date; its signed hour is inside the date.
 pub const COOLDOWN_START_HOUR: usize = 0xe90;
-/// Cooldown end date; its signed hour is inside the date.
 pub const COOLDOWN_END_HOUR: usize = 0xea8;
 pub const COOLDOWN_ASSIGNMENT: u32 = 1;
-/// COperativeLeader nationality country-reference u32 vector.
 pub const NATIONALITIES: usize = 0xf68;
-/// The operative's own modifier accumulator, whose effective values its
-/// mission getters (root-out-resistance effectiveness) read.
 pub const MODIFIER_ACCUMULATOR: usize = 0x418;
-/// Own packed operation-instance handle, resolved using both words and also
-/// written during reservation.
 pub const OPERATION_REFERENCE: usize = 0xf80;
-/// Inline pending mission, carried while the operative relocates to its
-/// mission and started on arrival; its fields are the `operative_action`
-/// `PENDING_*` offsets.
 pub const PENDING_MISSION: usize = 0xf88;
-/// Pending-mission presence byte; nonzero when a mission is pending.
 pub const PENDING_MISSION_PRESENT: usize = 0xfa8;
-/// COperativeLeader capturer country id.
 pub const CAPTURER_COUNTRY: usize = 0xfb0;
-/// Captured-at raw hour, i32, copied from the current game date.
 pub const CAPTURE_HOUR: usize = 0xfc0;
-/// COperativeLeader assignment u32.
 pub const ASSIGNMENT: usize = 0x1080;
-/// COperativeLeader inline action/mission value.
 pub const ACTION: usize = 0x1088;
-/// Mission assignment discriminator required before reading mission state.
 pub const MISSION_ASSIGNMENT: u32 = 3;
-/// Operation start resets mission and sets assignment 4; stop clears the
-/// operation reference and restores assignment 3.
 pub const OPERATION_ASSIGNMENT: u32 = 4;
-/// Owner setter used by agency admission on accepted and pooled paths.
 pub const SET_OWNER_RVA: Rva = Rva(0x00c7_bc30);
-/// Operative element serializer.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c7_ebf0;
-/// Embedded codename member. Serialization retains naming operands while
-/// display reads its generated cache; acquire operands independently.
 pub const CODENAME: usize = 0xfd0;
-/// Assignment token, always emitted.
 pub const TOKEN_ASSIGNMENT: u32 = 0x01b7;
-/// Serialized literal for assignment 0.
 pub const ASSIGNMENT_LITERAL_IDLE: u32 = 0x4a51;
-/// Serialized literal for assignment 1.
 pub const ASSIGNMENT_LITERAL_TRAINING: u32 = 0x4a52;
-/// Serialized literal for assignment 2.
 pub const ASSIGNMENT_LITERAL_HIDING: u32 = 0x4a53;
-/// Serialized literal for assignment 3.
 pub const ASSIGNMENT_LITERAL_MISSION: u32 = 0x394c;
-/// Serialized literal for assignment 4.
 pub const ASSIGNMENT_LITERAL_OPERATION: u32 = 0x4a50;
-/// Serialized literal for assignment 5.
 pub const ASSIGNMENT_LITERAL_CAPTURED: u32 = 0x336c;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -116,16 +61,13 @@ pub struct Row {
     pub id: u64,
     pub owner_country: u32,
     pub roster_country: u32,
-    /// 0 = active; 1/2/3 = the three recruitment holding vectors, in native order.
     pub roster_kind: u8,
-    /// Position in the original holding vector.
     pub ordinal: u32,
     pub assignment: u32,
     pub experience_raw: i64,
     pub skill: Option<i32>,
     pub capturer_country: u32,
     pub captured_hour: i32,
-    /// Nonzero action discriminator, independent of assignment.
     pub action_variant: Option<u32>,
     pub target_country: Option<u32>,
     pub operation: Option<u64>,
@@ -139,11 +81,7 @@ pub struct Walk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
-    /// First authenticated membership whose read failed. The whole table
-    /// is unavailable; this is one refused read, not a partial census.
     pub failed_membership: Option<(u64, u32, u8)>,
-    /// Rows whose active operation no longer resolves. Other rows survive;
-    /// the outcome counts these as unread, separately from storage shortages.
     pub refused_rows: u32,
     pub first_refused: Option<Refusal>,
 }
@@ -161,11 +99,6 @@ enum ReadRow {
     Refused(&'static str),
 }
 
-/// Reads every membership of the four persistent agency holding vectors.
-/// A leader present in more than one holding vector produces distinct rows,
-/// keyed by (native handle, roster country, roster kind). This preserves the
-/// engine's membership without a heap census, allocation or deduplication cache.
-/// Saved name and active target are copied in this same membership walk.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -268,8 +201,6 @@ pub fn walk_buffer(
                         .map_err(|_| "operative saved name unreadable or invalid")?;
                     Literal::validate(memory, [&name])
                         .map_err(|_| "operative saved name terminator unreadable or invalid")?;
-                    // Resolve even in sizing-only walks: a refused membership
-                    // is not a capacity shortage and must not demand growth.
                     let mut row = match read_row(
                         memory,
                         base,
@@ -369,7 +300,6 @@ fn read_row<M: Memory>(
         }
     }
     let assignment = field::<u32>(memory, pointer, ASSIGNMENT)?;
-    // Cooldown status is reached only for assignment 1.
     let (cooldown_kind, cooldown_start_hour, cooldown_end_hour) =
         if assignment == COOLDOWN_ASSIGNMENT {
             (
@@ -391,9 +321,6 @@ fn read_row<M: Memory>(
     let target_country = match assignment {
         MISSION_ASSIGNMENT => mission_country,
         OPERATION_ASSIGNMENT => {
-            // The operation-instance lookup may return null and must be tested before
-            // dereferencing. Refuse this membership while keeping the rest of the census
-            // and naming and counting the missing target.
             let Some(handle) = operation else {
                 return Ok(ReadRow::Refused(
                     "active operative operation reference is null",
@@ -557,7 +484,6 @@ mod tests {
             0xffff_ffff_8000_1269_u64.to_le_bytes(),
         );
         put(&mut bytes, 0x7000 + OWNER_COUNTRY, 1_u32.to_le_bytes());
-        // Localized description length must never become a detection flag.
         put(&mut bytes, 0x7000 + 0x70, [0xfe]);
         put(
             &mut bytes,
@@ -746,7 +672,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(0, 0), (0, 1), (2, 0)]
         );
-        // Stable removal compacts the remaining element to native slot zero.
         put(&mut bytes, 0x6000, (other as u64).to_le_bytes());
         put(
             &mut bytes,
@@ -866,7 +791,6 @@ mod tests {
             0x7000 + ACTION + operative_action::IMPLEMENTATION,
             0x8500_u64.to_le_bytes(),
         );
-        // This is a state pointer, never an alternative source of country.
         put(&mut bytes, 0x8518, u64::MAX.to_le_bytes());
         let mut rows = vec![Row::default(); 2];
         for (index, rva) in operative_action_implementation::VTABLE_RVAS

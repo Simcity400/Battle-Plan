@@ -1,4 +1,3 @@
-//! Exact retained incident save projection; damage has no serialized counterpart.
 use super::{Report, complete, country_tag, invalid, required_country_tag};
 use installed_content_save::{naval_accidents as saved, naval_history::Pack};
 use replay_data::rows::CountryRow;

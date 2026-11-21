@@ -1,5 +1,3 @@
-//! The recorded wire form of the content identity ([`replay_identity`]):
-//! validated on write and on read.
 
 use std::io;
 
@@ -8,11 +6,8 @@ use crate::rows::compatibility::CAPTURE_MODE_FORMAT;
 use engine_allocation as allocation;
 pub use replay_identity::*;
 
-/// The identity types as the recording writes and reads them.
 pub trait IdentityCodec: Sized {
-    /// Validates and appends the recorded form.
     fn encode(&self, out: &mut Vec<u8>) -> io::Result<()>;
-    /// Reads and validates the recorded form.
     fn decode(decoder: &mut Decoder<'_>) -> io::Result<Self>;
 }
 
@@ -187,7 +182,6 @@ impl IdentityCodec for SessionStart {
             process_start_time: decoder.u64()?,
             qpc_frequency: decoder.u64()?,
             sample_boundary: SampleBoundary::from_byte(decoder.u8()?)?,
-            // Every table was recorded before capture modes existed.
             capture_mode: if decoder.format < CAPTURE_MODE_FORMAT {
                 CaptureMode::Full
             } else {
@@ -226,7 +220,6 @@ mod tests {
     fn session_fields_keep_all_bits_and_hash_bytes() {
         let mut identity = fixture();
         identity.exe_size = u64::MAX;
-        // Unknown policies are preserved for a viewer to name and refuse.
         identity.coverage_policy = u32::MAX;
         let start = SessionStart {
             id: u64::MAX - 1,
@@ -328,7 +321,6 @@ mod tests {
         let mut unknown = current.clone();
         unknown[29] = 2;
         assert!(SessionStart::decode(&mut Decoder::new(&unknown)).is_err());
-        // An earlier format's session has no mode byte: it recorded everything.
         session.capture_mode = CaptureMode::Full;
         let mut earlier = Vec::new();
         session.encode(&mut earlier).unwrap();

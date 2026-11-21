@@ -1,17 +1,11 @@
-//! Special-facility map flag for program provinces. Visibility uses the province-graphics
-//! special-facility byte to show its icon. Program loading and addition set it; per-province and
-//! dynamic-country resets clear it. This is the recording client's map graphics. Program rosters
-//! enumerate every province that can hold a set flag.
 
 use crate::{
     Memory, ccountry, cgraphical_map, cin_game_idler, cpdx_array::Array, nproject_cprogram,
     nproject_cprogram_status, read, walk::Outcome,
 };
 
-/// The province graphics' special-facility flag byte.
 pub const FACILITY_FLAG: usize = 0x175b;
 
-/// One program province whose flag byte is nonzero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub province: u32,
@@ -22,8 +16,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads the flag of every province a country's program names, in country and program order;
-/// a province two programs name appears twice. Nothing is allocated.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -71,11 +63,9 @@ pub fn walk_buffer(
                     .checked_add(nproject_cprogram::PROVINCE_PRIMARY)
                     .and_then(|p| read::<u32>(memory, p))
                     .ok_or("program province unreadable")?;
-                // Province 0 is the map's null province, where no icon draws.
                 if province == 0 {
                     continue;
                 }
-                // The native lookup's own bound check never refuses; this one does.
                 if province >= graphics.count {
                     return Err("program province outside the province graphics");
                 }
@@ -92,7 +82,6 @@ pub fn walk_buffer(
                 if flag == 0 {
                     continue;
                 }
-                // Program writers can flag every reached occurrence.
                 output.ensure(len.checked_add(1).ok_or("facility flag count overflow")?)?;
                 if len == output.len() {
                     unread = unread
@@ -116,8 +105,6 @@ pub fn walk_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The in-game idler map delegate's graphical map and its province-indexed
-/// graphics array.
 fn province_graphics(memory: &impl Memory, base: usize) -> Result<Array, &'static str> {
     let pointer = |address: usize| {
         read::<u64>(memory, address)
@@ -171,7 +158,6 @@ mod tests {
         put(bytes, at + 12, &count.to_le_bytes());
     }
 
-    /// One country with two programs at provinces 2 (flagged) and 3 (clear).
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x10000];
         array(&mut bytes, GAME + cgame_state::COUNTRIES, COUNTRIES, 2);
@@ -260,7 +246,6 @@ mod tests {
         bytes
     }
 
-    /// The fixture's bytes plus the idler singleton, which lies far past them.
     struct Image<'a> {
         bytes: SliceMemory<'a>,
         idler: u64,
@@ -321,7 +306,6 @@ mod tests {
                 unread_rows: 1
             }
         );
-        // A program naming a province past the graphics array refuses the table.
         let mut outside = bytes.clone();
         put(
             &mut outside,
@@ -329,7 +313,6 @@ mod tests {
             &9_u32.to_le_bytes(),
         );
         assert!(matches!(run(&outside, 4).0, Outcome::Unavailable { .. }));
-        // Without the in-game map there is nothing to read.
         assert!(matches!(
             run_with(&bytes, 0, 4).0,
             Outcome::Unavailable { .. }

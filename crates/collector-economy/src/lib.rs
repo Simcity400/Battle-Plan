@@ -1,4 +1,3 @@
-//! Owned economy and fuel-demand capture, raw staging/decoding and replay projection. The host schedules acquisition and supplies snapshots and native sources. Each capture owns its rows, refusal outcomes, arenas and growth.
 
 use collector_memory::read_accounting;
 use collector_primitives::{clock, country_slots as country_scale, raw_memory, table_capture};

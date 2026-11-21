@@ -1,7 +1,3 @@
-//! Native design mutation boundaries. Every site has integer/pointer arguments
-//! in the four register argument slots and preserves its native return value.
-//! Commands name the variant through their stored reference; publication names
-//! it in the second argument; bulk flag writers name an ordered pointer array.
 use engine_sites::Rva;
 #[derive(Clone, Copy)]
 pub enum Receiver {
@@ -19,12 +15,7 @@ pub struct Mutation {
     pub witness: Option<usize>,
 }
 pub const COMMAND_VARIANT: usize = 0x28;
-/// World-input owns these entries; receivers retain the complete descriptor order.
 pub const FORWARDED_SITES: [usize; 3] = [2, 3, 9];
-/// Hook installation authenticates sites, not completeness of their writer set.
-/// Accepted publication/edit boundaries, base destruction, shared clone/move,
-/// source/provider lifetime and narrow author registration boundaries close
-/// the writer set. Runtime admission additionally requires all three baselines.
 pub const WRITER_AUDIT_REFUSAL: Option<&str> = None;
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {

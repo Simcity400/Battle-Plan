@@ -1,6 +1,5 @@
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
-/// The shared payload limit for dated playback queues.
 #[derive(Debug)]
 pub struct ByteBudget {
     limit: usize,

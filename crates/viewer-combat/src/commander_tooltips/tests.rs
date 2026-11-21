@@ -150,7 +150,6 @@ fn naval_trait_hovers_refuse_each_shown_entry_by_name_and_clear_authored_seeds()
         }),
         ..Default::default()
     };
-    // Counts survive reporting; the panel collects them after binding, before drawing.
     let warnings = window.warnings(&[]);
     assert!(warnings.contains(&format!("{} (4 times)", reason("repeat"))));
     assert!(warnings.contains(&reason("exile")));
@@ -208,7 +207,6 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
     );
     let mut commander = NavalCommanderInputs {
         commander: 17,
-        // The displayed value differs from the retained definition's level.
         skills: [4, 7, 7, 7, 7],
         ..Default::default()
     };
@@ -287,8 +285,6 @@ fn naval_component_skill_icons_and_text_share_native_tooltips() {
     assert!(out.refused().is_empty(), "{:?}", out.refused());
 }
 
-/// A modifier block of `key = value` entries as the shared reader
-/// stores it.
 fn modifiers(entries: &[(&str, &str)]) -> installed_content_core::modifiers::Modifiers {
     let items: Vec<_> = entries
         .iter()
@@ -587,10 +583,6 @@ fn exile_badge_hover_uses_mod_values_and_counts_named_refusals() {
     );
 }
 
-/// The settled re-read is keyed by the name index itself: the cache
-/// holds the index alive (so no later index can reuse its address), a
-/// second index with the same names is another key, and the first
-/// index still finds its own re-read.
 #[test]
 fn the_settled_cache_holds_the_index_it_was_read_with() {
     let text = b"leader_traits = { t = { modifier = { army_org = { y = 0.2 } x = 0.1 } } }";
@@ -609,13 +601,11 @@ fn the_settled_cache_holds_the_index_it_was_read_with() {
     let first = Definitions::from_parts(&rows, &[(&b"army_org"[..], 1)], None);
     let settled = content.settled(Ok(&first));
     assert!(!settled.conditional());
-    // The definitions, the cache and this reference.
     assert_eq!(Arc::strong_count(&first.identity()), 3);
     assert!(Arc::ptr_eq(&settled, &content.settled(Ok(&first))));
     let second = Definitions::from_parts(&rows, &[(&b"other"[..], 1)], None);
     let other = content.settled(Ok(&second));
     assert!(!Arc::ptr_eq(&settled, &other));
-    // The first index's own re-read is read again, not the second's.
     drop(second);
     let again = content.settled(Ok(&first));
     assert!(!Arc::ptr_eq(&again, &other));
@@ -661,7 +651,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
             index: 1,
             token: 9,
             name_key: b"MODIFIER_ATTACK".to_vec(),
-            // Shown as a percentage of one, positive is good.
             flags: 0b11,
             category_mask: 1,
             precision: 1,
@@ -669,8 +658,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
         },
     ];
     let definitions = Definitions::from_parts(&rows, &[(&b"army_attack_factor"[..], 1)], None);
-    // The sub-unit database: cruiser before destroyer, read as the
-    // database reads `sub_units`.
     let mut order = SubUnits::default();
     order.read(b"sub_units = { cruiser = {} destroyer = {} }", "units.txt");
     let traits = Traits::default();
@@ -705,7 +692,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
         "Division Attack: \u{11}G+5.0%\u{11}!\n\u{11}HForest\u{11}!\nMovement: \u{11}G+5.0%\u{11}!\nAttack: \u{11}G+10.0%\u{11}!\nAttack: \u{11}G+1\u{11}!\nStarting Proximity: Close\n\u{11}HInfantry Leader\u{11}! experience factor: \u{11}H100%\u{11}!\n"
     );
     assert_eq!(dropped, [Dropped::Modifier("unknown_modifier".into())]);
-    // An override replaces every other line; a script value refuses them.
     definition.override_tooltips = vec!["forest".into()];
     assert_eq!(
         effects(&context, &definition, &mut dropped).unwrap(),
@@ -715,9 +701,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     definition.unsupported = vec!["a script value".into()];
     assert!(effects(&context, &definition, &mut dropped).is_err());
     definition.unsupported.clear();
-    // A block under a name no definition carries was skipped with its
-    // block; under a registered one (`ARMY_ATTACK_FACTOR` folds) the
-    // trait's reading is unknown.
     let condition = |modifier: &str| installed_content_core::unit_leader::Conditional {
         modifier: modifier.into(),
         place: "file.txt trait t modifier".into(),
@@ -731,9 +714,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
         "{refused:?}"
     );
     definition.conditions.clear();
-    // Sub-units follow the database order under their names, after the
-    // adjusters and without a newline of their own; a repeat and an
-    // unknown key are dropped.
     let sub_unit = |key: &str, attack: i64, entries: &[(&str, &str)]| {
         installed_content_core::unit_leader::SubUnitModifiers {
             adjuster: Adjuster {
@@ -758,7 +738,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
         effects(&context, &only_sub_units, &mut dropped).unwrap(),
         "\u{11}HCruiser\u{11}!\nAttack: \u{11}G+10.0%\u{11}!\n\u{11}HDestroyer\u{11}!\n  Division Attack: \u{11}G+5.0%\u{11}!\n"
     );
-    // The database finds `CRUISER` without case.
     assert_eq!(
         dropped,
         [
@@ -766,7 +745,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
             Dropped::SubUnit("submarine".into())
         ]
     );
-    // Without the content order the lines are refused, not guessed.
     let context = EffectContext {
         sub_units: Err("common/units unreadable"),
         ..context
@@ -777,8 +755,6 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     ));
 }
 
-/// The portrait hover names the token, key or tag that failed instead of
-/// "unresolved localization or learning-trait operands".
 #[test]
 fn the_portrait_hover_names_what_it_lacks() {
     let loc: Localisation = [
@@ -813,7 +789,6 @@ fn the_portrait_hover_names_what_it_lacks() {
             None,
             true
         ),
-        // A missing top-level key shows its own bytes.
         Ok((
             "General Rommel\n\nLEADER_HAS_INITIATIVE".into(),
             "Desert fox".into()
@@ -852,11 +827,6 @@ fn the_portrait_hover_names_what_it_lacks() {
         );
 }
 
-/// A land side's recorded learning rows are the ones the game shows: the
-/// viewing country's commander lists them under the heading, another
-/// country's commander shows none, and an unresolved country decides only
-/// when there is a row. A recording without the side inputs refuses the
-/// viewing country's commander by name.
 #[test]
 fn the_land_portrait_lists_the_recorded_rows_and_refuses_only_without_them() {
     let loc: Localisation = [
@@ -872,7 +842,6 @@ fn the_land_portrait_lists_the_recorded_rows_and_refuses_only_without_them() {
     .collect();
     let shown = [LandCombatLearningProgress {
         token: b"trait_engineer".to_vec(),
-        // 57.999%, stored at the printed precision as capture stores it.
         progress: 57_000,
         ..Default::default()
     }];
@@ -902,8 +871,6 @@ fn the_land_portrait_lists_the_recorded_rows_and_refuses_only_without_them() {
             .unwrap_err()
             .ends_with("is unknown: no link")
     );
-    // Without the rows, the viewing country's commander refuses with the
-    // reason the binder names (not recorded, or the live floor unread).
     for reason in [LAND_LEARNING_UNRECORDED, LAND_LEARNING_UNREAD] {
         assert_eq!(portrait(Ok(true), Err(reason)), Err(reason.to_owned()));
         assert_eq!(
@@ -1211,7 +1178,6 @@ fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
                     if historical {
                         assert!(text.is_none());
                     } else {
-                        // The shared tooltip setter trims the generated trailing newline.
                         assert_eq!(
                             text,
                             Some("\u{11}HExiled Leader\u{11}!\n\nInactive army trait.")
@@ -1233,11 +1199,6 @@ fn naval_bind_uses_live_and_result_grid_paths_and_skips_null_commanders() {
     }
 }
 
-/// The game resolves the lexer's current token against the
-/// country-leader traits: a quoted name is token 0xF,
-/// no trait's, so the field is null and the game falls back to the
-/// specialist; a bare name that is a trait is shown; one the traits do
-/// not hold, or without the traits, is refused by name.
 #[test]
 fn advisor_traits_resolve_through_the_country_leader_traits() {
     let root = std::env::temp_dir().join(format!(
@@ -1289,14 +1250,11 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
         selected_advisor_trait(get("bare"), 4, ranks, traits, Ok(&[])),
         Ok(("valid_specialist", None))
     );
-    // No trait of the token is null: the game falls back to the
-    // specialist, itself null here.
     assert!(
         selected_advisor_trait(get("missing"), 3, ranks, traits, Ok(&[]))
             .unwrap_err()
             .starts_with("the trait's specialist_advisor_trait is null")
     );
-    // The token folds A-Z: another spelling finds the trait.
     assert_eq!(
         selected_advisor_trait(get("folded"), 3, ranks, traits, Ok(&[])),
         Ok(("valid_specialist", Some(4)))
@@ -1321,8 +1279,6 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
     };
     let expert = role(1, &[3]);
     let genius = role(5, &[2]);
-    // The first role wins, even when a later role carries genius. At
-    // expert rank the earlier expert no longer stops the search.
     let ordered = [&expert, &genius];
     for (skill, expected) in [
         (4, "valid_expert"),
@@ -1335,14 +1291,11 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
             Ok((expected, None))
         );
     }
-    // Within one role genius is checked first, regardless of vector order.
     let both = role(0, &[3, 2]);
     assert_eq!(
         selected_advisor_trait(get("bare"), 4, ranks, traits, Ok(&[&both])),
         Ok(("valid_genius_name", None))
     );
-    // A later definition of the same name is a different pointer. With
-    // no match, expert rank defaults to expert; specialist rank to specialist.
     let repeat = role(0, &[4]);
     for (skill, expected) in [(4, "valid_specialist"), (6, "valid_expert")] {
         assert_eq!(
@@ -1350,8 +1303,6 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
             Ok((expected, None))
         );
     }
-    // A missing/quoted expert field is null: the caller falls back to
-    // specialist, even at expert rank. A quoted genius cannot match.
     assert_eq!(
         selected_advisor_trait(get("quoted"), 6, ranks, traits, Ok(&[&genius])),
         Ok(("valid_specialist", None))
@@ -1366,8 +1317,6 @@ fn advisor_traits_resolve_through_the_country_leader_traits() {
         ),
         Err("CharacterRoleTraits is truncated".into())
     );
-    // The native genius test precedes the specialist test; the suffix
-    // separately compares specialist even with thresholds out of order.
     assert_eq!(
         selected_advisor_trait(get("bare"), 8, [10, 6, 8], traits, Err("unavailable roles")),
         Ok(("valid_genius_name", Some(10)))

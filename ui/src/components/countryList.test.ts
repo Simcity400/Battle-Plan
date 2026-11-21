@@ -11,7 +11,6 @@ const windowRows = Math.ceil(LIST / COUNTRY_ROW_HEIGHT) + 1 + 2 * COUNTRY_ROW_OV
 test('a picker over thousands of countries renders only the rows in view', () => {
   for (const count of [5_000, 65_535]) {
     const countries = Array.from({ length: count }, (_, index) => country(index));
-    // Another branch's witness of the same tag is not another choice.
     const choices = countryChoices([...countries, ...countries.map(entry => ({ ...entry, observedBranchId: '2' }))]);
     assert.equal(choices.length, count);
     assert.ok(choices.every(({ country }) => country.observedBranchId === '1'));
@@ -67,7 +66,6 @@ test('drill choices retain later aliases absent from the first canonical-slot ro
   assert.equal(renamed.observedBranchId, '2');
   assert.equal(renamed.observedHour, 150);
   assert.deepEqual(filterChoices(choices, 'ger').map(choice => choice.country.tag), ['GER']);
-  // The normal picker still uses only the ownership roster supplied to it.
   assert.deepEqual(countryChoices(metadata).map(choice => choice.country.tag), ['OLD', 'ITA']);
   const tags = Array.from({ length: 5000 }, (_, index) => `LATER${index}`);
   const many = allowedCountryChoices(metadata, tags, { branchId: '2', hour: 150 });
@@ -95,7 +93,6 @@ test('restricted chooser searches the historical name it displays, with an absen
 
 test('a header name read in flight during playback is kept until it answers, then the newest day is asked', () => {
   assert.equal(nameAskHour(null, 100, false), 100, 'the first day wanted is asked');
-  // Playback moves to 101, 102… while day 100 is still being read: 100 stays asked.
   assert.equal(nameAskHour(100, 102, false), 100);
   assert.equal(nameAskHour(100, 102, true), 102, 'once 100 answers, the newest day is asked');
   assert.equal(nameAskHour(102, 102, true), 102);

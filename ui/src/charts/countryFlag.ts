@@ -6,7 +6,6 @@ import type { ChartTokens } from './tokens';
 import type { TooltipContent } from './tooltip';
 import { fitTooltip } from './tooltip.ts';
 
-/** Preserve the sampled read; a present URL has its own pending/failed decode. */
 export function canvasCountryFlag(flag: CountryFlagLook, wake: () => void): CountryFlagLook {
   if (!flag.flag) return flag;
   const read = canvasImageRead(flag.flag, wake);
@@ -15,8 +14,6 @@ export function canvasCountryFlag(flag: CountryFlagLook, wake: () => void): Coun
   return flag;
 }
 
-/** Missing native flags keep the same neutral filled slot; generic art opts out. */
-/** The placeholder's fill of each theme's tokens: mixed once, not for every flag of every frame. */
 const placeholders = new WeakMap<object, string>();
 
 export function drawCountryFlag(context: CanvasRenderingContext2D, flag: CountryFlagLook | undefined,
@@ -39,8 +36,6 @@ export function drawCountryFlag(context: CanvasRenderingContext2D, flag: Country
   context.restore();
 }
 
-/** Decode displayed/fitted country rows only; full spoken metadata stays decode-free.
- * A missing flag is decorative, so it adds nothing to what is read out. */
 export function countryFlagContent(content: TooltipContent | null, flag: CountryFlagLook | undefined, wake: () => void): TooltipContent | null {
   if (!content) return null;
   if (!flag && !content.countryFlag && !content.rows.some(row => row.countryFlag)) return content;
@@ -50,8 +45,6 @@ export function countryFlagContent(content: TooltipContent | null, flag: Country
   return { ...content, countryFlag, rows };
 }
 
-/** Dated tooltip metadata wins over a node's look. Scrolling rows are decoded
- * only when the shared tooltip layer mounts them. */
 export function countryTooltipContent(raw: TooltipContent | null, flag: CountryFlagLook | undefined,
   wake: () => void, height: number, keep = 0): TooltipContent | null {
   if (!raw) return null;

@@ -1,5 +1,3 @@
-//! Shared loss semantics for the two air ledgers. Only the game thread touches
-//! the store. The spool thread publishes an empty spare through a separate slot.
 type Clock = engine_native::cgame_state::Clock<u64>;
 use std::sync::{
     Mutex,
@@ -18,7 +16,6 @@ struct Claim {
 }
 struct Store<T> {
     entries: Vec<T>,
-    // Nested/concurrent native callbacks invalidate observation before claiming.
     claim: Option<Claim>,
     next_call: usize,
     next_id: u64,
@@ -52,7 +49,6 @@ pub struct EventLedger<T> {
     native_recovery: AtomicBool,
     pub stranded: AtomicBool,
     pub active: AtomicUsize,
-    // Published census/overflow demand, never pooled Vec allocation headroom.
     pub capacity: AtomicUsize,
     required: AtomicUsize,
     attempted_calls: AtomicUsize,
@@ -60,7 +56,6 @@ pub struct EventLedger<T> {
     pub calls: AtomicU64,
     pub events: AtomicU64,
     pub zero_writes: AtomicU64,
-    /// Times a full store grew in the writer's callback.
     pub overflow: AtomicU64,
     pub refusals: AtomicU64,
     pub lost_drains: AtomicU64,
@@ -114,7 +109,6 @@ impl<T: Event> EventLedger<T> {
             hourly_peak_capacity: AtomicUsize::new(0),
         }
     }
-    /// Bootstrap only, before hook publication, from the retained replay leases.
     pub fn restore_sequence(&self, previous: Option<u64>) -> Result<(), &'static str> {
         if self.active.load(Ordering::SeqCst) != 0 {
             return Err("event ledger sequence restoration requires quiet callbacks");
@@ -211,7 +205,6 @@ impl<T: Event> EventLedger<T> {
             self.refuse_preparation("event ledger preparation allocation failed");
             return;
         }
-        // No writer ever locks this slot; its short install runs at drain.
         if let Ok(mut slot) = self.spare.lock() {
             if slot
                 .as_ref()
@@ -230,8 +223,6 @@ impl<T: Event> EventLedger<T> {
             self.refuse("event ledger native calls overlap");
         }
     }
-    /// Reached native writer, including calls skipped after an interval loss.
-    /// This sizes the next prepared store without acquiring refused operands.
     pub fn attempt(&self) {
         let attempted = self
             .attempted_calls
@@ -245,7 +236,6 @@ impl<T: Event> EventLedger<T> {
         }
     }
     pub fn mark_stranded(&self) {
-        // Called only at a proved serial boundary/detach after native work.
         if self.active.load(Ordering::SeqCst) != 0 {
             self.stranded.store(true, Ordering::SeqCst);
             self.native_recovery.store(true, Ordering::SeqCst);
@@ -257,8 +247,6 @@ impl<T: Event> EventLedger<T> {
         store.entries.clear();
     }
     pub fn refuse(&self, reason: &'static str) {
-        // Storage loss and a callback rejected by prior poisoning add no
-        // unresolved native execution to a spool-only loss.
         if !matches!(
             reason,
             STORAGE_FAILED | "event ledger observation invalidated"
@@ -271,7 +259,6 @@ impl<T: Event> EventLedger<T> {
             self.discard(&mut store);
         }
     }
-    // Spool-thread loss paths must never contend with native writers.
     fn invalidate(&self) {
         self.refusals.fetch_add(1, Ordering::Relaxed);
         self.poisoned.store(true, Ordering::SeqCst);
@@ -396,20 +383,14 @@ impl<T: Event> EventLedger<T> {
                 .fetch_add(store.entries.len() as u64, Ordering::Relaxed);
             store.entries.clear();
             store.claim = None;
-            // Private clock recovery can occur within one replay branch.
-            // Event ordinals remain monotonic for this entire attachment.
             store.partial = true;
             store.recovery = false;
             store.refusal = None;
             self.poisoned.store(false, Ordering::SeqCst);
             self.native_recovery.store(false, Ordering::SeqCst);
         } else if self.poisoned.swap(false, Ordering::SeqCst) {
-            // A spool-only loss ends at this clean boundary. Preserve a later
-            // partial interval only for unresolved native execution.
             self.discard(&mut store);
             store.claim = None;
-            // Refusal may have lost try_lock while a writer held the store.
-            // The atomic invalidation still makes this interval unavailable.
             store.refusal.get_or_insert("event ledger lost interval");
             store.recovery = self.native_recovery.swap(false, Ordering::SeqCst);
         } else {
@@ -433,9 +414,6 @@ impl<T: Event> EventLedger<T> {
             self.partial_intervals.fetch_add(1, Ordering::Relaxed);
         }
     }
-    /// Worker boundary hint for state consumers: an incomplete event interval
-    /// requires a fresh census, independently of the replay encoder's cadence.
-    /// This never clears a refusal or certifies a later drain.
     pub fn interval_incomplete(&self) -> bool {
         self.poisoned.load(Ordering::SeqCst)
             || self.active.load(Ordering::SeqCst) != 0
@@ -444,8 +422,6 @@ impl<T: Event> EventLedger<T> {
                 .try_lock()
                 .map_or(true, |store| store.partial || store.refusal.is_some())
     }
-    /// Worker-only: owned events still covered by this interval size the
-    /// returned frame before handoff; no native operation is attempted again.
     pub fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
         self.drain_buffer(output)
     }
@@ -504,7 +480,6 @@ impl<T: Event> EventLedger<T> {
             self.discard(&mut store);
             return Err("event ledger drain storage exhausted");
         }
-        // Keep the writer capacity when an older pooled frame is smaller.
         if output.capacity() >= store.entries.capacity() {
             std::mem::swap(output, &mut store.entries);
         } else {
@@ -653,7 +628,6 @@ mod tests {
             assert!(ledger.drain(&mut frames[0].rows).is_err());
             ledger.prepare(0);
 
-            // A one-entry census increase makes the old frames reserve 16.
             ledger.prepare(9);
             let mut capacity = 9;
             for hour in 2..=10 {
@@ -852,8 +826,6 @@ mod tests {
             assert_eq!(ledger.drain(&mut published).unwrap(), 1);
             let before = published[0].0;
 
-            // Sampling still publishes hour 3 on this same recorder branch.
-            // The ledger cannot acquire/update its private clock at that hour.
             let store = if active {
                 ledger.enter();
                 None
@@ -879,7 +851,6 @@ mod tests {
             assert_eq!(ledger.drain(&mut published).unwrap(), 1);
             assert!(published[0].0 > before);
 
-            // A true clock transition may also discard data, never reuse IDs.
             let recovered = published[0].0;
             ledger.boundary(clock(-10));
             assert!(
@@ -955,7 +926,6 @@ mod tests {
             } else {
                 ledger.lost_drain();
             }
-            // The spool path leaves the store entirely to the game thread.
             assert_eq!(store.entries.len(), 1);
             assert_eq!(store.refusal, None);
             assert!(ledger.poisoned.load(Ordering::SeqCst));
@@ -976,9 +946,7 @@ mod tests {
                 ledger.lost_events_unknown.load(Ordering::Relaxed),
                 u64::from(!output_loss)
             );
-            // The next intact callback interval must retain its events.
             let token = ledger.claim((2, 2)).unwrap();
-            // boundary(3) has already ended the loss, so this write succeeds.
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
             ledger.boundary(clock(4));
             assert!(!ledger.interval_incomplete());
@@ -988,8 +956,6 @@ mod tests {
             ledger.boundary(clock(5));
             assert_eq!(ledger.drain(&mut Vec::new()).unwrap(), 0);
         }
-        // With the store free, the old spool-side refuse() discarded events
-        // itself. Atomic invalidation leaves that work to the game thread.
         let ledger = prepared();
         ledger.boundary(clock(1));
         ledger.boundary(clock(2));
@@ -1012,8 +978,6 @@ mod tests {
             let mut rows = Vec::with_capacity(8);
             assert_eq!(
                 ledger.drain_buffer_with(&mut rows, || {
-                    // The initial poison check and event transfer have passed;
-                    // the drain still owns the store when the spool invalidates.
                     assert!(!ledger.poisoned.load(Ordering::SeqCst));
                     assert!(ledger.store.try_lock().is_err());
                     if output_loss {
@@ -1034,7 +998,6 @@ mod tests {
             let token = ledger.claim((2, 2)).unwrap();
             ledger.complete(token, Ok(Some(Row(0)))).unwrap();
             ledger.boundary(clock(103));
-            // This is the market boundary's state-census invalidation hint.
             assert!(!ledger.interval_incomplete());
             assert_eq!(ledger.drain(&mut rows), Ok(1));
             assert_eq!(rows[0].0, 1);
@@ -1080,7 +1043,6 @@ mod tests {
         let mut rows = Vec::with_capacity(8);
         assert_eq!(
             ledger.drain_buffer_with(&mut rows, || {
-                // A native refusal can publish its flag without the store lock.
                 ledger.refuse("synthetic native observation failure");
                 ledger.lost_drain();
             }),

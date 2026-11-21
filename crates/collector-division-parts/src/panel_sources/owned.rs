@@ -1,4 +1,3 @@
-//! Capture observer boundaries while native writers are parked; settle only owned observations.
 use super::*;
 
 pub(super) struct Boundary {
@@ -10,7 +9,6 @@ pub(super) struct Boundary {
     pub stamp: Option<((u64, u64), u64)>,
     pub retired: Vec<usize>,
     pub dirty: Vec<usize>,
-    /// The equipment pools a membership writer touched since the previous hour.
     pub operands: crate::observations::Taken,
     pub result: Result<(), &'static str>,
 }
@@ -37,7 +35,6 @@ impl Boundary {
     }
 }
 impl Store {
-    /// Must precede range reads and resume. Never drains a later hour's marks on decode.
     pub fn capture_boundary(&mut self) {
         let boundary = &mut self.boundary;
         if boundary.active {
@@ -72,7 +69,6 @@ impl Store {
             .operands
             .take(|visit| operands::take_operands(visit));
     }
-    /// New or retired bindings retain the original ordered authentication path.
     pub fn can_settle_owned(&self) -> bool {
         self.boundary.active
             && self.boundary.result.is_ok()
@@ -116,7 +112,6 @@ impl Store {
         result
     }
 }
-/// Missing staging can never turn into a live read on the decode thread.
 struct Owned;
 impl Memory for Owned {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {

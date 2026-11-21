@@ -1,36 +1,27 @@
-//! The layer's arithmetic, in the game's fixed point (five decimals) and the order it takes.
 
 use super::{ActivityDefines, CounterDefines, IntelDefines, OperationState};
 use crate::map::raids::tooltips::intel as counter;
 use replay_data::{rows::OperationRow, rows::RaidIntelInputRow};
 use viewer_foundation::map::native_text::COLOR;
 
-/// One whole in fixed5.
 pub const ONE: i64 = 100_000;
 
-/// An activity level past the content's colours.
 pub const MAGENTA: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 
-/// The alignment that centres a window on its projected point on both axes.
 const CENTRED: u8 = 0x12;
 
-/// A fixed5 product, truncated toward zero.
 pub fn times(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-/// A fixed5 quotient, truncated toward zero; `None` where the division has no result.
 pub fn divide(a: i64, b: i64) -> Option<i64> {
     a.wrapping_mul(ONE).checked_div(b)
 }
 
-/// Whether the icons show at eye height `height`: strictly below the cutoff.
 pub fn visible(height: f32, defines: &IntelDefines) -> bool {
     height < defines.cutoff()
 }
 
-/// The container's top-left: centred on its projected point, each axis rounded half away from
-/// zero, then moved by the define's truncated offset.
 pub fn container_point(screen: [f32; 2], size: [i32; 2], offset: [i32; 2]) -> [i32; 2] {
     let point = viewer_foundation::map::icon_windows::point(screen, size, CENTRED);
     [
@@ -39,8 +30,6 @@ pub fn container_point(screen: [f32; 2], size: [i32; 2], offset: [i32; 2]) -> [i
     ]
 }
 
-/// The activity level: it starts at zero and advances while the activity reaches the level's
-/// threshold.
 pub fn activity_level(activity: i64, defines: &ActivityDefines) -> usize {
     let mut level = 0;
     while defines
@@ -53,12 +42,10 @@ pub fn activity_level(activity: i64, defines: &ActivityDefines) -> usize {
     level
 }
 
-/// The shield's tint at `level`: the content's colour, or magenta past the colours.
 pub fn activity_color(level: usize, defines: &ActivityDefines) -> [f32; 4] {
     defines.colors.get(level).copied().unwrap_or(MAGENTA)
 }
 
-/// Each counteroperative's weighted contribution to `row`'s country, strongest first.
 pub fn counter_contributions(
     row: &RaidIntelInputRow,
     d: &CounterDefines,
@@ -71,8 +58,6 @@ pub fn counter_contributions(
     )
 }
 
-/// The agency's counterintelligence rating: the base, the country's defense and the
-/// counteroperatives' stacked sum, not below zero; zero without a strategic object.
 pub fn counter_rating(row: &RaidIntelInputRow, d: &CounterDefines) -> Result<i64, String> {
     match row.strategic_present {
         0 => Ok(0),
@@ -88,8 +73,6 @@ pub fn counter_rating(row: &RaidIntelInputRow, d: &CounterDefines) -> Result<i64
     }
 }
 
-/// The agency defense of a rating: the log factor times the natural logarithm of one plus the
-/// rating, plus the rating over the divisor, a term skipped whose factor or divisor is zero.
 pub fn agency_defense(rating: i64, d: &CounterDefines) -> Result<i64, String> {
     let mut defense = 0_i64;
     if d.log_factor != 0 {
@@ -110,7 +93,6 @@ pub fn agency_defense(rating: i64, d: &CounterDefines) -> Result<i64, String> {
     Ok(defense)
 }
 
-/// A fixed5 value rounded to a whole number, halves away from zero.
 pub fn round_whole(value: i64) -> i64 {
     if value < 0 {
         value.wrapping_sub(ONE / 2) / ONE
@@ -119,8 +101,6 @@ pub fn round_whole(value: i64) -> i64 {
     }
 }
 
-/// An operative's root-out efficiency before stacking: the base efficiency times one plus the
-/// country's and the operative's factors and the nationality's, not below zero.
 pub fn root_out_base(base: i64, country: i64, operative: i64, nationality: i64) -> i64 {
     times(
         base,
@@ -131,9 +111,6 @@ pub fn root_out_base(base: i64, country: i64, operative: i64, nationality: i64) 
     .max(0)
 }
 
-/// Root-out efficiencies after stacking among one owner's operatives in one state, by handle:
-/// deduplicated, greatest first, ties to the greater unsigned (type, id), weighted by the
-/// running product of the stacking factor.
 pub fn root_out_stacked(operatives: &[(u64, i64)], factor: i64) -> Vec<(u64, i64)> {
     let mut unique: Vec<(u64, i64)> = Vec::with_capacity(operatives.len());
     for &(handle, value) in operatives {
@@ -162,13 +139,11 @@ pub fn root_out_stacked(operatives: &[(u64, i64)], factor: i64) -> Vec<(u64, i64
     out
 }
 
-/// Whole days since `start`, each hour's day truncated from the game's epoch.
 pub fn elapsed_days(start: i32, hour: i32) -> i32 {
     let day = |hour: i32| hour.wrapping_sub(replay_data::day_night::EPOCH) / 24;
     day(hour).wrapping_sub(day(start))
 }
 
-/// The operation's state at `hour`.
 pub fn operation_state(row: &OperationRow, hour: i32) -> OperationState {
     if row.terminal != 0 {
         OperationState::Finished
@@ -183,8 +158,6 @@ pub fn operation_state(row: &OperationRow, hour: i32) -> OperationState {
     }
 }
 
-/// The running operation's current phase index: the elapsed days times the phase count over
-/// the duration, none at the start and end sentinels or past the count.
 pub fn current_phase(row: &OperationRow, hour: i32) -> Option<usize> {
     let OperationState::Running { elapsed, .. } = operation_state(row, hour) else {
         return None;
@@ -201,20 +174,16 @@ pub fn current_phase(row: &OperationRow, hour: i32) -> Option<usize> {
         .map(|phase| phase as usize)
 }
 
-/// The circular progress's percent: the elapsed share of the duration.
 pub fn phase_progress(elapsed: i32, duration: i32) -> i32 {
     let share = elapsed as f32 / duration as f32 * 100.0;
     if share.is_finite() { share as i32 } else { 0 }
 }
 
-/// The preparation value: the received share of the untimed requirements, less the timed
-/// requirements' share of what preparation still lacks.
 pub fn preparation(row: &OperationRow) -> Result<i64, String> {
     let (mut required, mut received, mut timed) = (0_i64, 0_i64, 0_i64);
     for requirement in &row.requirements {
         if requirement.uses_time == 0 {
             required = required.wrapping_add(requirement.amount);
-            // The pool's stored total for the requirement's archetype; none is zero.
             let pool = row
                 .equipment_totals
                 .iter()
@@ -242,23 +211,18 @@ pub fn preparation(row: &OperationRow) -> Result<i64, String> {
     Ok(ratio.wrapping_sub(share))
 }
 
-/// Whole percent of a fixed5 fraction.
 pub fn percent(value: i64) -> String {
     installed_content_core::fixed5::fixed5_percent(value, 0, true)
 }
 
-/// Whole percent of a fixed5 value already in percent.
 pub fn percent_points(value: i64) -> String {
     installed_content_core::fixed5::fixed5_percent(value, 0, false)
 }
 
-/// `text` in the colour `code`.
 pub fn coloured(code: char, text: &str) -> String {
     format!("{COLOR}{code}{text}{COLOR}!")
 }
 
-/// A cooldown's remaining time: whole days in yellow with the day unit while one remains,
-/// otherwise hours with the hour unit.
 pub fn cooldown_text(remaining_hours: i32, day_unit: &str, hour_unit: &str) -> String {
     let days = remaining_hours / 24;
     if days >= 1 {
@@ -268,7 +232,6 @@ pub fn cooldown_text(remaining_hours: i32, day_unit: &str, hour_unit: &str) -> S
     }
 }
 
-/// The status frame of a build-network mission: 1 for a gain, 2 for a loss, 3 for none.
 pub fn gain_frame(gain: i64) -> i32 {
     match gain.signum() {
         1 => 1,
@@ -277,8 +240,6 @@ pub fn gain_frame(gain: i64) -> i32 {
     }
 }
 
-/// The ideology group's share of the country's party popularity, as the popularity getter
-/// gives it; zero without popularity.
 pub fn ideology_share(matching: i64, total: i64) -> i64 {
     if total == 0 {
         return 0;

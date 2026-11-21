@@ -1,4 +1,3 @@
-//! Disposable synthetic processes isolate terminal state and allocator refusal.
 
 use crate::allocation::{self, Code, Context, Phase};
 use crate::test_support::with_allocations_denied;
@@ -64,7 +63,6 @@ fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // Bounds deadlock while allowing filesystem recovery on a shared host.
     let deadline = Instant::now() + Duration::from_secs(120);
     while process.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
@@ -79,7 +77,6 @@ fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
         std::thread::sleep(Duration::from_millis(10));
     }
     let output = process.wait_with_output().unwrap();
-    // A failed child keeps its files for diagnosis.
     if output.status.success() {
         let _ = fs::remove_dir_all(&run);
     }
@@ -110,8 +107,6 @@ fn allocation_sites(output: &Output) -> Vec<u64> {
 }
 #[cfg(feature = "alloc-fault-injection")]
 static SITES: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
-/// Keys a counted attempt by its return addresses relative to their modules, which are the
-/// same in every run of this test binary.
 #[cfg(feature = "alloc-fault-injection")]
 fn record_site() {
     use windows_sys::Win32::System::{
@@ -162,10 +157,6 @@ fn observed_allocations(output: &Output) -> usize {
         .unwrap()
 }
 
-/// An unwinding callback drains every job its batch accepted, finished or
-/// cancelled before it starts, whether a terminal allocation failure came
-/// before the unwind or during the drain
-/// (`acquisition_jobs::batch_drain_tests`).
 #[test]
 fn a_terminal_failure_never_skips_the_callbacks_drain() {
     for mode in ["batch-drain-terminal", "batch-drain-midway"] {
@@ -180,8 +171,6 @@ fn a_terminal_failure_never_skips_the_callbacks_drain() {
     }
 }
 
-/// An hour that finds no frame free and cannot allocate one is the collector's allocation
-/// failure, naming that hour; it waits for nothing and invents no loss witness or gap.
 #[test]
 fn a_refused_frame_allocation_names_its_hour_and_stops_recording() {
     let output = child("frame-growth-refused", "callback", usize::MAX);
@@ -192,11 +181,6 @@ fn a_refused_frame_allocation_names_its_hour_and_stops_recording() {
     );
 }
 
-/// An hour's new frame with each of its allocations refused in turn, and every one after it:
-/// each refusal is the collector's allocation failure naming the hour, the hour goes no further,
-/// and the process never aborts. On the base the frame's constructor allocated infallibly in
-/// places (part lists, spare boxes, shared homes, the spare division census), so the child
-/// aborted at the first refusal to reach one.
 #[test]
 fn every_refused_allocation_of_a_new_frame_names_its_hour_and_never_aborts() {
     let output = child("frame-build-refused", "callback", usize::MAX);
@@ -208,13 +192,6 @@ fn every_refused_allocation_of_a_new_frame_names_its_hour_and_never_aborts() {
     );
 }
 
-/// Attach (`Shared::with_sizing`, what the loader calls before any hook) with each of its
-/// allocations refused in turn, and every one after it: each refusal is the collector's
-/// allocation failure in the bootstrap phase, attach returns the error, leaves the doctrine
-/// observer unbound, and the process never aborts. Every allocation of the stores, the shared
-/// homes and pointers and the first frame is refused, then a spread across the other three
-/// frames. On the base the stores, homes, census parts and shared pointers allocated
-/// infallibly, so the child aborted at the first refusal to reach one.
 #[test]
 fn every_refused_allocation_of_attach_names_the_failure_and_never_aborts() {
     let output = child("attach-refused", "bootstrap", usize::MAX);
@@ -226,11 +203,6 @@ fn every_refused_allocation_of_attach_names_the_failure_and_never_aborts() {
     );
 }
 
-/// The decode payload pools attach prepares, with each allocation refused in turn: each refusal
-/// is the collector's allocation failure in the bootstrap phase, the preparation returns the
-/// error and releases what it prepared, and the process never aborts. On the base the
-/// characters job's boxed advisor pass and shared censuses and the retirement queue allocated
-/// infallibly, so the child aborted at the first refusal to reach one.
 #[test]
 fn every_refused_allocation_of_the_payload_pools_is_named_and_never_aborts() {
     let output = child("payload-pools-refused", "bootstrap", usize::MAX);
@@ -242,14 +214,6 @@ fn every_refused_allocation_of_the_payload_pools_is_named_and_never_aborts() {
     );
 }
 
-/// Each allocation of an hour's decode work (projects and capitulation) refused in turn, then the
-/// next hour with memory. A refusal inside a decode costs that decode's tables for the hour,
-/// by name: no terminal failure, the frame is published with the other decode's tables as an
-/// unrefused hour has them, and the next hour decodes every table as before. A refusal outside
-/// the decodes stays terminal and publishes nothing. On the base every refusal ended the capture,
-/// so none was contained.
-/// Raw is swept with Decode: each hour's fresh projects log builds its span index under Raw, and
-/// an hour on a reused frame makes no Decode allocation of its own.
 #[cfg(feature = "alloc-fault-injection")]
 #[test]
 fn a_refused_decode_allocation_costs_its_tables_for_the_hour_and_capture_goes_on() {
@@ -320,7 +284,6 @@ fn decode_refused(ordinal: usize) {
 fn payload_pools_refused() {
     allocation::reset();
     allocation::install_hooks();
-    // The retirement queue is made once per process; later preparations reuse it.
     drop(crate::decode::prepare_payload_pools(true).unwrap());
     let prepare = |ordinal: usize| {
         let scope = allocation::enter(Phase::Bootstrap);
@@ -335,7 +298,6 @@ fn payload_pools_refused() {
     let (prepared, total, _) = prepare(usize::MAX);
     assert_eq!(prepared, Ok(()));
     assert!(!allocation::failed());
-    // The pools are filled in equal rounds; every ordinal of the first, then a spread.
     let first = total.div_ceil(3);
     let spread = (first + 1..=total).step_by(total / 64 + 1).chain(Some(total));
     for ordinal in (1..=first).chain(spread) {
@@ -368,7 +330,6 @@ fn frame_build_refused() {
     let held: Vec<_> = (0..crate::frame_pool::STEADY)
         .map(|_| shared.take_frame(&mut 0).unwrap())
         .collect();
-    // A vacant slot of its own, so every build below allocates exactly what a frame does.
     let extra = shared.take_frame(&mut 0).unwrap();
     drop(shared.frames.vacate(extra));
     let context = Context {
@@ -413,7 +374,6 @@ fn frame_build_refused() {
         assert_eq!(shared.frames.live(), live);
         assert_eq!(shared.frames.gauge().grown, grown);
     }
-    // The last refused hour records nothing: no acquisition, no loss witness, no drop.
     let complete = unsafe {
         crate::sampling::synthetic_callback(
             &shared,
@@ -439,7 +399,6 @@ fn attach_refused() {
     allocation::install_hooks();
     let sizing = crate::country_scale::Sizing::for_slots(0);
     let unbind = || {
-        // SAFETY: no hook is installed in this child, so nothing calls the handler.
         unsafe {
             collector_observers::doctrine_changes::bind(
                 0,
@@ -447,8 +406,6 @@ fn attach_refused() {
             );
         }
     };
-    // Statics an attach prepares once (the watch tables, thread-local first use) are ready
-    // before the count, so every attach below makes the same allocations.
     drop(crate::sampling::Shared::with_sizing(0, 0, 1, &sizing).unwrap());
     let stores = {
         let guard = NullGuard::new(usize::MAX);
@@ -524,8 +481,6 @@ fn frame_growth_refused() {
     assert_eq!(witness.failed_hour, Some(41));
     assert_eq!(shared.frames.live(), crate::frame_pool::STEADY);
     assert_eq!(shared.frames.gauge().grown, 0);
-    // The hour goes no further: no acquisition, recording stops, and the failure alone names
-    // it, with no loss witness or dropped frame of its own.
     let complete = unsafe {
         crate::sampling::synthetic_callback(
             &shared,
@@ -632,8 +587,6 @@ fn checked_allocation_sweep_stops_once_and_preserves_prefix() {
     }
     let next = AtomicUsize::new(0);
     let completed = AtomicUsize::new(0);
-    // Each child has its own allocator, terminal state, synthetic memory and
-    // PID-qualified files. Only the coordinator shares these work counters.
     std::thread::scope(|scope| {
         for _ in 0..4 {
             scope.spawn(|| {
@@ -658,8 +611,6 @@ fn checked_allocation_sweep_stops_once_and_preserves_prefix() {
     println!("collector-checked-sweep-total={}", cases.len());
 }
 
-/// Each ordinal of the Spool sweep, with or without changed loads, names the same allocation
-/// on every run, so a failing child fails again when it is rerun alone.
 #[cfg(feature = "alloc-fault-injection")]
 #[test]
 fn the_spool_sweep_counts_the_same_allocations_in_the_same_order_every_run() {
@@ -679,7 +630,6 @@ fn the_spool_sweep_counts_the_same_allocations_in_the_same_order_every_run() {
     }
 }
 
-/// A refused allocation on a collector thread names that thread's own phase, never Bootstrap.
 #[test]
 fn a_refused_allocation_on_a_collector_thread_names_its_own_phase() {
     for phase in ["spool-helper", "spool", "journal", "hook"] {
@@ -808,8 +758,6 @@ fn deferred_failure() -> io::Result<()> {
     Ok(())
 }
 
-/// Refuses one allocation on the collector thread labelled `phase`, outside any work it does
-/// under another phase.
 fn thread_label(phase: Phase) -> io::Result<()> {
     allocation::reset();
     allocation::install_hooks();
@@ -845,7 +793,6 @@ fn thread_label(phase: Phase) -> io::Result<()> {
                         .and_then(|()| processor.frame(&frame));
                 }
             }
-            // The journal writer finishes its queued work before dropping the processor joins it.
             drop(processor);
         }
         Phase::Hook => {
@@ -861,7 +808,6 @@ fn thread_label(phase: Phase) -> io::Result<()> {
     Ok(())
 }
 
-/// A loss pending as the game leaves a campaign commits under that campaign's name.
 fn set_aside_witness() -> io::Result<()> {
     const OTHER: &[u8; 36] = b"01234567-89ab-cdef-0123-456789abcdee";
     allocation::reset();
@@ -901,7 +847,6 @@ fn set_aside_witness() -> io::Result<()> {
     assert_eq!(Some(witness), read_witness(&witness_file)?);
     allocation::clear_handle();
     drop(processor);
-    // The witness is on disk; the recorder finalizes with allocation working again.
     allocation::reset();
     let finalized =
         recorder_replay::replay_io::finalize_session_outcome(&root, &root.join("recordings"))
@@ -1181,7 +1126,6 @@ struct Exercise {
 }
 
 fn case_root(phase: Phase, ordinal: usize, checked: bool) -> PathBuf {
-    // Windows reuses child PIDs across runs and case modes.
     PathBuf::from(std::env::var_os("BATTLE_PLAN_COLLECTOR_ALLOCATION_RUN").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_RUN")).unwrap())
         .join(std::env::var_os("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap())
         .join(format!(
@@ -1215,7 +1159,6 @@ fn read_witness(file: &File) -> io::Result<Option<replay_data::witness::Terminal
 }
 
 fn validate(outcome: &Exercise, refused: bool) {
-    // A refusal inside a payload decode costs that decode's tables for the hour, not the capture.
     let failed = refused && !outcome.contained;
     if outcome.contained {
         assert_eq!(outcome.phase, Phase::Decode);
@@ -1273,8 +1216,6 @@ fn validate(outcome: &Exercise, refused: bool) {
 }
 
 fn minimal_sizing() -> crate::country_scale::Sizing {
-    // Sizing contains only integer capacity fields. The synthetic source has
-    // no content roster; zero demand keeps repeated fault sweeps small.
     unsafe { std::mem::zeroed() }
 }
 
@@ -1296,7 +1237,6 @@ fn exercise_pipeline(
         .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
     let shared = crate::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing())?;
     let mut processor = crate::spooling::spool_failure_fixture(&root)?;
-    // The writer counts in the Spool sequence too: one thread at a time fixes each ordinal.
     if phase == Phase::Spool {
         processor.lockstep_writer();
     }
@@ -1390,7 +1330,6 @@ fn exercise_pipeline(
         }
         last_attempted_hour = hour;
         callback_calls += 1;
-        // The fixture campaign is fixed; copy only clock scalars before the mutable frame lease.
         let entry = if idle {
             None
         } else {
@@ -1408,8 +1347,6 @@ fn exercise_pipeline(
                         Phase::Bootstrap => {}
                         Phase::Callback | Phase::Acquisition => {
                             let _scope = allocation::enter(phase);
-                            // These use the same retained synthetic native census as
-                            // existing primary-copy/decode equivalence tests.
                             crate::sampling::copy_divisions_refresh(
                                 &crate::sampling::divisions_test_kit::memory(&bytes),
                                 crate::sampling::DivisionsCopyContext {
@@ -1583,8 +1520,6 @@ fn exercise_pipeline(
     let allocations_before_cleanup = allocation::allocation_count();
     if failed {
         let _scope = allocation::enter(Phase::Teardown);
-        // Teardown refuses checked growth after failure, and a competing
-        // terminal reason cannot replace the already published witness.
         let _ = engine_allocation::vec::<u8>(1);
         allocation::fail(Phase::Teardown, Code::Thread);
     }
@@ -1614,8 +1549,6 @@ fn exercise_pipeline(
     allocation::clear_handle();
     #[cfg(feature = "alloc-fault-injection")]
     allocation::inject(Phase::Bootstrap, u64::MAX);
-    // Recovery runs outside the simulated game-owned allocation interval.
-    // Reader allocations must no longer observe the stopped collector state.
     allocation::reset();
     let (prefix_hours, attempted_hour_committed) =
         recovered_hours(&root, last_attempted_hour, first.as_ref())?;

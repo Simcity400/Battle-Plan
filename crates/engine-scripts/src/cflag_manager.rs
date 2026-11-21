@@ -1,25 +1,14 @@
-//! Dense scripted-flag storage shared by country, state and global scopes.
 
 use crate::{Memory, cscript_flag, memory::RecordSources, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// CFlagManager primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_9d98);
-/// CFlagManager primary vtable pointer.
 pub const VTABLE: usize = 0x00;
-/// CFlagManager dense flag-row array pointer.
 pub const ROWS: usize = 0x08;
-/// CFlagManager signed capacity.
 pub const SLOT_COUNT: usize = 0x10;
-/// CFlagManager signed live count.
 pub const ENTRY_COUNT: usize = 0x14;
-/// CFlagManager allocator pointer.
 pub const ALLOCATOR: usize = 0x18;
 
-/// Reads one caller-supplied scope without allocation, retries or engine calls.
-/// The scope and owner form the replay key together with the native token.
-/// Capacity stops before the next row and reports the exact omitted count.
-/// Output is sorted by token and rejects duplicate identities in the read prefix.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -29,15 +18,9 @@ pub fn walk(
     walk_buffer(memory, base, manager, crate::walk::Buffer::Growing(output))
 }
 
-/// Bytes of the header `walk_header_buffer` consumes: vtable, rows, capacity
-/// and count.
 pub const HEADER: usize = 24;
-/// Dense rows gathered per guarded record call.
 const ROW_BATCH: usize = 64;
 
-/// Whether the daily expiry pass writes the manager: it visits the live rows and decrements, then
-/// removes at zero, only a positive remaining-days the expiry byte, so a manager with none is left
-/// untouched. An unreadable count or row answers true.
 pub fn daily_expiry_writes(memory: &impl Memory, manager: usize) -> bool {
     let (Some(rows), Some(count)) = (
         manager
@@ -59,7 +42,6 @@ pub fn daily_expiry_writes(memory: &impl Memory, manager: usize) -> bool {
     })
 }
 
-/// The manager header, exactly the span `walk_buffer` reads first.
 pub fn read_header(memory: &impl Memory, manager: usize) -> Option<[u8; HEADER]> {
     read::<[u8; HEADER]>(memory, manager)
 }
@@ -73,11 +55,6 @@ pub fn walk_buffer(
     walk_header_buffer(memory, base, read_header(memory, manager), output)
 }
 
-/// `walk_buffer` from its header span as copied by the caller (None when that
-/// read failed), so a scope walk can gather it with the scope's own identity.
-/// Rows are gathered ROW_BATCH at a time with exactly `read_row`'s three spans
-/// per row; each row is authenticated in order, so the first failure, its
-/// reason and the truncation prefix equal a row-at-a-time walk.
 pub fn walk_header_buffer(
     memory: &impl Memory,
     base: usize,
@@ -120,8 +97,6 @@ pub fn walk_header_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The flag reader walks the dense rows in order. A gather may read ahead of an
-/// invalid row, but an earlier row's failure is reported before a later one.
 fn read_rows(
     memory: &impl Memory,
     base: usize,
@@ -133,7 +108,6 @@ fn read_rows(
         .checked_mul(cscript_flag::STRIDE)
         .and_then(|span| rows.checked_add(span));
     if end.is_none() {
-        // Some row address overflows: keep the row-at-a-time order exactly.
         for (index, target) in output.iter_mut().enumerate() {
             let address = index
                 .checked_mul(cscript_flag::STRIDE)
@@ -226,19 +200,16 @@ mod tests {
                 MANAGER,
             )
         };
-        // Every fixture row is permanent (-1): the expiry changes nothing.
         assert!(!writes(&bytes));
         let last = 0x40 + 2 * cscript_flag::STRIDE + cscript_flag::REMAINING_DAYS;
         bytes[last..last + 2].copy_from_slice(&0_i16.to_le_bytes());
         assert!(!writes(&bytes));
         bytes[last..last + 2].copy_from_slice(&1_i16.to_le_bytes());
         assert!(writes(&bytes));
-        // A row beyond the live count is not visited.
         bytes[20..24].copy_from_slice(&2_i32.to_le_bytes());
         assert!(!writes(&bytes));
         bytes[20..24].copy_from_slice(&0_i32.to_le_bytes());
         assert!(!writes(&bytes));
-        // An unreadable row or header is a possible write.
         bytes[20..24].copy_from_slice(&3_i32.to_le_bytes());
         assert!(writes(&bytes[..0x40 + 2 * cscript_flag::STRIDE]));
         assert!(writes(&bytes[..0x10]));
@@ -307,7 +278,6 @@ mod tests {
         );
     }
 
-    /// The former walk: one scattered read per row, in order.
     fn row_at_a_time(memory: &impl Memory, output: &mut [cscript_flag::Row]) -> Outcome {
         let result = (|| {
             for (index, target) in output.iter_mut().enumerate() {
@@ -351,7 +321,6 @@ mod tests {
             walk(&census, BASE, MANAGER, &mut rows),
             Outcome::Rows { len: ROWS }
         );
-        // The header, then 64 rows per guarded call instead of one per row.
         assert_eq!(census.calls(), 1 + ROWS.div_ceil(64));
         let mut expected = [cscript_flag::Row::default(); ROWS];
         row_at_a_time(
@@ -362,8 +331,6 @@ mod tests {
             &mut expected,
         );
         assert_eq!(rows, expected);
-        // A later row's invalid vtable precedes a still later unreadable row,
-        // and every field or padding byte keeps the row-at-a-time verdict.
         bytes[0x40 + 70 * cscript_flag::STRIDE] ^= 1;
         for row in [0, 63, 64, 70, 100, 129] {
             for offset in [0, 11, 12, cscript_flag::DATE, 0x27, 0x2c, 0x2f] {

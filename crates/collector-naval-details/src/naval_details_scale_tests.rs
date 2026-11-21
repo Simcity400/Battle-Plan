@@ -29,8 +29,6 @@ fn naval_empty_hour_keeps_all_tables_complete_without_storage() {
     );
 }
 
-/// A source recording every single (unbatched) copy; batched reads go to
-/// the fixture unrecorded.
 struct Singles<'a> {
     source: &'a Fixture,
     singles: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -69,8 +67,6 @@ impl Memory for Singles<'_> {
     }
 }
 
-/// A live combat ship's fixed fields, which its detail row and weapon
-/// context read, come from one gather: none is read alone.
 #[test]
 fn combat_ship_fields_are_read_in_one_gather() {
     let fixture = Fixture::new(1);
@@ -225,14 +221,6 @@ fn naval_hint_reserve_failure_keeps_existing_lengths() {
     captured.try_grow_hint(&capacities).unwrap();
 }
 
-/// Pack reset and real collector capture callback, then separate spool projection.
-/// Synthetic population: ten countries with 200 children each, eight sorted
-/// entries per child and 300 root entries; 30 live ships per combat, including
-/// four carrier-linked wing planes and five state-8 ships. Each side has one
-/// damage-map node. These are fixture dimensions, not a measured live census.
-/// Quiet changes nothing; typical changes two roots and one damage cell per
-/// side; all-changed also changes every country child value, task-force fuel,
-/// ship stat and plane count. All three run the same production capture path.
 #[test]
 #[ignore]
 fn naval_window_operand_scale_bench() {
@@ -262,7 +250,6 @@ fn naval_window_operand_scale_bench() {
                 captured.reset();
                 let ticks = black_box(captured.capture(&memory, IMAGE, STATE));
                 let elapsed = began.elapsed();
-                // NavalCombatShips' share of the capture's charged ticks.
                 let charged = ticks.iter().sum::<u64>().max(1);
                 let ship_share = elapsed.mul_f64(ticks[1] as f64 / charged as f64);
                 assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
@@ -311,13 +298,8 @@ fn naval_window_operand_scale_bench() {
     }
 }
 
-/// Doctrine nodes per task force in the bench's doctrine configurations,
-/// about a late-war navy's.
 const DOCTRINE_NODES: usize = 30;
 
-/// A task force's doctrine sources, walked for its first ship of the
-/// capture, are re-emitted for its later ships in the same rows and order:
-/// the capture with the memo equals the capture without it.
 #[test]
 fn doctrine_sources_reemitted_equal_the_walks() {
     let capture = |sources: bool| {
@@ -362,10 +344,6 @@ fn doctrine_sources_reemitted_equal_the_walks() {
     assert_eq!(capture(true), walked);
 }
 
-/// A task force's location terms are read by its first ship of the
-/// capture and served to its later ships: the location's controller word is
-/// read alone once per task force rather than once per ship, and the fuel
-/// defines once per capture.
 #[test]
 fn location_terms_are_read_once_per_task_force() {
     let fixture = Fixture::live_sized(2).with_locations();
@@ -393,7 +371,6 @@ fn location_terms_are_read_once_per_task_force() {
         "{reads} reads of the location's controller for {} ships",
         2 * SHIPS_PER_COMBAT
     );
-    // The fuel defines, module globals: once per capture, not per ship.
     let defines = memory
         .singles
         .borrow()
@@ -406,18 +383,10 @@ fn location_terms_are_read_once_per_task_force() {
     );
 }
 
-/// NavalCombatShips with live-sized weapon-context accumulators
-/// ([`LIVE_ENTRIES`]) in a typical hour, with and without the capture's
-/// metadata memo: the median block and the ships' share in ms, and the
-/// weapon terms captured. Run with
-/// `cargo test --release -p collector naval_live_accumulator_bench -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn naval_live_accumulator_bench() {
-    // (live-sized accumulators, metadata memo, live ships)
     for combats in [20, 40] {
-        // (live-sized accumulators, metadata memo, live ships, doctrine nodes
-        // per task force, source memo)
         for (live, memo, ships_live, doctrines, sources) in [
             (true, false, true, 0, true),
             (true, true, true, 0, true),
@@ -474,7 +443,6 @@ fn naval_live_accumulator_bench() {
             }
             super::TERM_MEMO_OFF.set(false);
             super::SOURCE_MEMO_OFF.set(false);
-            // Sources and the terms they own (a shared span counts once), by scope.
             let mut scopes = std::collections::BTreeMap::<u8, (usize, usize)>::new();
             let mut owned = std::collections::BTreeSet::new();
             for source in &captured.weapon_sources.first[..captured.weapon_sources.len] {

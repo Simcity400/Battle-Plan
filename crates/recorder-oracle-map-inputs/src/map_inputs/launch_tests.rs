@@ -23,7 +23,7 @@ fn fixture(physical: Vec<u32>, countries: &[u8], words: &[i32]) -> (DecodedFrame
                             .iter()
                             .map(|&word| LaunchNavalBase {
                                 base_province: word as u32,
-                                country: u32::MAX, // Unsaved raw bits need no country-link resolution.
+                                country: u32::MAX,
                             })
                             .collect(),
                     ),

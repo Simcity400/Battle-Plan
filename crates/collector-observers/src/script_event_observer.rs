@@ -1,5 +1,3 @@
-//! Script occurrences join the event feed at native fire/selection boundaries.
-//! There is no queue census and no added hourly native acquisition.
 
 use crate::{
     event_feed_history::ScriptFact,
@@ -24,8 +22,6 @@ static DECISION_ORIGINAL: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
 static ACTIVATION_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 const RETAIN_NATIVE_FLIGHT: usize = 1 << 63;
-/// A bracketed native original in flight. Its entry and return move the
-/// event feed's writer epoch, so no baseline sample certifies across it.
 pub(crate) struct Flight {
     normal: bool,
 }
@@ -53,8 +49,6 @@ pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
 
-/// Record a reached execution or writer boundary. Effect invocation carries
-/// no invented lifecycle/duration result; terminal operands come from stores.
 pub fn decision(
     source: EventFeedSource,
     definition: usize,
@@ -179,8 +173,6 @@ unsafe extern "system-unwind" fn targeted_execute(
     flight.returned();
     result
 }
-/// The targeted decision whose selector view `selector` is, or `None` for the
-/// standalone target the select command passes before it marks the instance.
 fn selected_instance(
     memory: &impl Memory,
     base: usize,
@@ -212,7 +204,6 @@ fn targeted_execution(
     selector: usize,
     definition: usize,
 ) -> Result<EventFeedSource, &'static str> {
-    // The timed updater stores its terminal result before executing.
     let Some(instance) = selected_instance(memory, base, selector, definition)? else {
         return Ok(EventFeedSource::DecisionSelected);
     };
@@ -244,7 +235,6 @@ fn last_instance(
         .ok_or("mission append has no selected entry")?;
     field::<u64>(memory, last, 0).map(|pointer| pointer as usize)
 }
-/// An appended mission: its stores precede this tap.
 fn appended(status: usize, definition: usize, days: i32) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let result = last_instance(
@@ -257,8 +247,6 @@ fn appended(status: usize, definition: usize, days: i32) {
         feed::refuse(reason);
     }
 }
-/// A reached reactivation, after its enclosing activation returned: the
-/// committed days and active state of the instance its latch staged.
 pub(super) fn reactivated(status: usize, definition: usize, instance: usize) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let result = (|| {
@@ -452,7 +440,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         1 => {
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
             match field::<u32>(&memory, registers.rsi, cevent::OPTION_COUNT) {
-                Ok(0) => {} // Optionless dispatch did not mint an instance.
+                Ok(0) => {}
                 Ok(_) => feed::script_instance(registers.rbp, registers.rdi as u32),
                 Err(reason) => feed::refuse(reason),
             }
@@ -460,8 +448,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         2 | 3 => option(registers.rbx, registers.rsi, registers.rdi as i32),
         4 => appended(registers.rbp, registers.rsi, registers.r12 as i32),
         6 => appended(registers.r15, registers.r14, registers.r12 as i32),
-        // Reactivation stores follow these taps: only the enclosing
-        // activation publishes, after its return.
         5 => staging::stage(
             staging::Unit::AutoActivation,
             staging::Witness::Reactivated {
@@ -478,8 +464,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                 instance: registers.rdi,
             },
         ),
-        // The fired-match branch: the node is unlinked and the count
-        // decrement follows, so the enclosing retirement CALL publishes.
         8 => staging::stage(
             staging::Unit::FiredRetirement,
             staging::Witness::FiredMatch {
@@ -490,8 +474,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
         _ => feed::refuse("script event tap identity differs"),
     }
 }
-/// A fired-event retirement whose match branch was staged, after its CALL
-/// returned. The old definition stays live; the freed node is never read.
 pub(super) fn retired_fired(state: usize, definition: usize) {
     #[cfg(test)]
     staging::published(staging::Published::Fired { definition });
@@ -552,7 +534,7 @@ unsafe extern "system-unwind" fn remove_pending(state: usize, instance: usize) -
         )?;
         if before == after {
             return Ok(None);
-        } // Native no-match call.
+        }
         if after.checked_add(1) != Some(before) {
             return Err("pending event removal count differs");
         }
@@ -652,8 +634,6 @@ unsafe extern "system-unwind" fn insert_fired(set: usize, definition: usize) -> 
 fn option(event: usize, scope: usize, ordinal: i32) {
     feed::record_script(|world, memory, base| {
         let (id, token) = definition(memory, base, event)?;
-        // This execution entry has one caller: the select command's body.
-        // Authenticate its owned scope before taking the instance/actor words.
         let command = scope
             .checked_sub(native::OPTION_COMMAND_SCOPE)
             .ok_or("event option command address underflow")?;
@@ -697,14 +677,11 @@ pub(super) fn terminal_hook_failure(
     stage: &str,
     cause: impl std::fmt::Display,
 ) -> &'static str {
-    // A terminal installation failure is retained for status until unload,
-    // matching the runtime's installation-message lifetime. Busy retries do
-    // not enter this path or allocate a diagnostic.
     Box::leak(format!("{label}: {stage} failed: {cause}").into_boxed_str())
 }
 
-/// The site's address and the 16 bytes its patch replaces, of which the first `N` are verified
-/// and owned.
+#[doc = " The site's address and the 16 bytes its patch replaces, of which the first `N` are verified"]
+#[doc = " and owned."]
 fn verify_hook<const N: usize>(
     base: usize,
     site: native::Site,
@@ -717,9 +694,9 @@ fn verify_hook<const N: usize>(
     Ok((code.address, original))
 }
 
-/// # Safety
-/// The host owns publication, restoration, native-flight and executable-range
-/// quiescence with the complete event-feed family.
+#[doc = " # Safety"]
+#[doc = " The host owns publication, restoration, native-flight and executable-range"]
+#[doc = " quiescence with the complete event-feed family."]
 pub unsafe fn hooks(
     _memory: &impl Memory,
     base: usize,
@@ -801,13 +778,12 @@ pub unsafe fn hooks(
     Ok((hooks, taps))
 }
 
-/// The script-variable family owns the delayed pass and forwards it here.
 pub fn delayed_pass(country: usize, run: impl FnOnce() -> usize) -> usize {
     delayed::forwarded_pass(country, run)
 }
-/// # Safety
-/// The script-variable owner publishes/restores these selected cursor taps
-/// together with the pass entry and retains their ranges through quiescence.
+#[doc = " # Safety"]
+#[doc = " The script-variable owner publishes/restores these selected cursor taps"]
+#[doc = " together with the pass entry and retains their ranges through quiescence."]
 pub unsafe fn delayed_pass_taps(
     _memory: &impl Memory,
     base: usize,
@@ -815,11 +791,6 @@ pub unsafe fn delayed_pass_taps(
     unsafe { delayed::forwarded_taps(base) }
 }
 
-/// The politics family's targeted decision entry: `run` is its original
-/// and politics forwarding. The selection tap inside only stages the
-/// selected instance; its stored days and active state publish once `run`
-/// returned, all under one writer flight. An unwinding `run` discards the
-/// frame and retains the flight.
 pub fn targeted_selection(run: impl FnOnce() -> usize) -> usize {
     let detour = staging::Detour::enter(staging::Unit::TargetedSelection);
     let result = run();
@@ -837,17 +808,15 @@ std::thread_local! {
     static SELECTION_CAUSE: std::cell::Cell<Option<replay_data::event_feed_rows::EventFeedCause>> =
         const { std::cell::Cell::new(None) };
 }
-/// Test only: the provenance cause in force when [`targeted_selection`]
-/// last published, taken.
 #[cfg(any(test, feature = "test-support"))]
 pub fn take_selection_cause() -> Option<replay_data::event_feed_rows::EventFeedCause> {
     SELECTION_CAUSE.take()
 }
 
-/// # Safety
-/// The politics family owns this function and forwards its selected final
-/// store through this tap, which only stages its witness for
-/// [`targeted_selection`].
+#[doc = " # Safety"]
+#[doc = " The politics family owns this function and forwards its selected final"]
+#[doc = " store through this tap, which only stages its witness for"]
+#[doc = " [`targeted_selection`]."]
 pub unsafe fn targeted_selection_tap(
     _memory: &impl Memory,
     base: usize,

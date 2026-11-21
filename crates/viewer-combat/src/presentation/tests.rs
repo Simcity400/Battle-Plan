@@ -1,7 +1,5 @@
 use super::*;
 
-/// A refused tactic picture clears its earlier sprite and hides the widget.
-/// An undeclared portrait sprite preserves the widget. Both are named and counted.
 #[test]
 fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -21,7 +19,6 @@ fn a_refused_portrait_or_tactic_picture_hides_the_earlier_sprite() {
         }],
         ..Default::default()
     };
-    // An undeclared sprite: the setter keeps the widget as it was.
     portrait(&mut out, &has, "leader", &value, 2);
     assert_eq!(out.values["leader"].sprite.as_deref(), Some("GFX_earlier"));
     let tactics =
@@ -153,7 +150,6 @@ fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
         Some("combat_tactic:mod_defense")
     );
 
-    // A real null pointer has no ID for the counter predicate.
     sides[0].tactic_kind = 0;
     land_tactics(&mut out, &has, &content, false, &sides);
     assert!(out.values["defender_countered_tactic_overlay"].hidden);

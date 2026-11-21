@@ -18,8 +18,6 @@ const integer = (value: unknown, min = -4_294_967_296, max = 4_294_967_296): val
 const text = (value: unknown, max = 160): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
 const widgetTitle = (value: unknown): value is string => typeof value === 'string';
 const id = (value: unknown): value is string => text(value, 80) && /^[a-zA-Z0-9_-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
-/** Request tags are opaque nonempty strings without NUL; content decides which
- * tags exist. */
 export const storableTag = (value: unknown): value is string => typeof value === 'string' && value.length > 0
   && !value.includes('\0');
 
@@ -58,15 +56,12 @@ function selection(value: unknown, dropped?: (count: number) => void): CountrySe
     return group && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
       ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
   }
-  // A tag that cannot be stored is dropped on its own; the widget and the layout stay.
   if (value.kind !== 'tags' || !Array.isArray(value.tags)) return null;
   const tags = value.tags.filter(storableTag);
   dropped?.(value.tags.length - tags.length);
   return { kind: 'tags', tags: [...new Set(tags)] };
 }
 
-/** Runs a widget's migration, keeping the stored widget unchanged if the migration
- * throws or returns settings that would not pass these same checks. */
 function safeMigrate(widget: WidgetSpec, trackIds: Set<string>): WidgetSpec {
   let migrated: WidgetSpec;
   try { migrated = migrateWidget(widget); } catch { return widget; }
@@ -78,12 +73,10 @@ function safeMigrate(widget: WidgetSpec, trackIds: Set<string>): WidgetSpec {
   return valid ? migrated : widget;
 }
 
-/** Parse an allowlist; unknown fields can never smuggle runtime data into storage. */
 export function parseTemplate(input: unknown): DashboardTemplate | null {
   return parseTemplateWithNotes(input)?.template ?? null;
 }
 
-/** A restored template and the country tag entries its bounds could not retain. */
 export function parseTemplateWithNotes(input: unknown): { template: DashboardTemplate; droppedTags: number } | null {
   let droppedTags = 0;
   if (!object(input) || input.version !== 1 || !text(input.name) || !['calendar', 'anchors'].includes(String(input.alignment))) return null;
@@ -93,7 +86,6 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
   const roles: SourceRole[] = [], roleIds = new Set<string>();
   for (const role of input.roles) {
     if (!object(role) || !id(role.id) || !text(role.label) || !(role.selectedTag === null || typeof role.selectedTag === 'string') || roleIds.has(role.id)) return null;
-    // An unstorable selected country clears to none, with a restoration warning.
     if (role.selectedTag !== null && !storableTag(role.selectedTag)) droppedTags++;
     roles.push({ id: role.id, label: role.label, selectedTag: storableTag(role.selectedTag) ? role.selectedTag : null });
     roleIds.add(role.id);
@@ -117,7 +109,6 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
       || widgetById.has(widget.id as string)) return null;
     const countries = selection(widget.countries, count => { droppedTags += count; });
     const time = timeMode(widget.time, trackIds);
-    // Options are kept even for a widget type that is not installed.
     const options = widget.options === undefined ? undefined : parseStoredOptions(widget.options);
     if (!countries || !time || options === null) return null;
     const campaign = widget.campaign === 'default' || (widget.campaign === undefined && widget.trackIds.length === 1 && widget.trackIds[0] === 'main' && time.mode !== 'pin') ? 'default' : 'tracks';
@@ -183,22 +174,16 @@ export function droppedTagWarning(count: number): string | null {
   return count ? `${count} country tag ${count === 1 ? 'entry was' : 'entries were'} left out of the saved layout because ${count === 1 ? 'it' : 'they'} could not be stored.` : null;
 }
 
-/** Overview keeps the original key, so layouts saved before pages existed stay on it. */
 const libraryKey = (page: PageId) => page === 'overview' ? LIBRARY_KEY : `${LIBRARY_KEY}.${page}`;
 
 const defaultLibrary = (page: PageId): LayoutLibrary =>
   ({ version: 1, activeId: 'default', layouts: [{ id: 'default', template: { ...defaultTemplate(page), name: 'Default layout' } }] });
 
-/** Whether a page opens exactly as designed: nothing saved, or saved layouts equal to its
- * default. Saved layouts that could not be restored whole are not: a reset clears them. */
 export function layoutsAtDefault(page: PageId, storage?: LayoutStorage): boolean {
   const { library, warning } = loadLayouts(storage, page);
   return warning === null && stableJson(library) === stableJson(parseLayoutLibrary(defaultLibrary(page)));
 }
 
-/** Whether any page has a layout change it has not saved: its draft, shown or kept while
- * another page is shown, differs from its saved active layout. `merge` adds what both
- * sides share before comparing (the loaded campaigns). */
 export function layoutsUnsaved(pages: Iterable<{ library: LayoutLibrary; template: DashboardTemplate }>,
   merge: (template: DashboardTemplate) => DashboardTemplate = template => template): boolean {
   for (const { library, template } of pages) {
@@ -219,7 +204,6 @@ export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'):
       if (!parsed) throw new Error('Invalid layouts');
       return { library: migrateDefaultName(parsed.library), warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
     }
-    // Restore the previous single-layout format without overwriting it.
     const legacy = page === 'overview' ? target.getItem(STORAGE_KEY) : null;
     if (legacy !== null) {
       if (legacy.length > 1_000_000) throw new Error('Saved layout is too large.');
@@ -233,13 +217,12 @@ export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'):
   }
 }
 
-/** Forgets a page's saved layouts, so it next opens at its default arrangement. */
 export function clearLayouts(page: PageId, storage?: Pick<Storage, 'removeItem'>) {
   try {
     const target = storage ?? localStorage;
     target.removeItem(libraryKey(page));
     if (page === 'overview') target.removeItem(STORAGE_KEY);
-  } catch { /* Nothing saved can be removed; the defaults already apply. */ }
+  } catch {  }
 }
 
 export function saveLayouts(library: LayoutLibrary, storage?: LayoutStorage, page: PageId = 'overview'): string | null {

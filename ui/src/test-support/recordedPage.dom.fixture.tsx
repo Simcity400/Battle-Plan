@@ -1,7 +1,3 @@
-/** A dashboard page as the app lays it out, its widgets served only the replies and followed messages the app received
- * on the 13-year recording (`recorded.ts`): the page's own grid at the recorded size and hour, so every request a widget
- * makes is one the app made, or a miss named. Paused at a mark of the run, or playing one of its 1,440 h/s windows. */
-// Before react-dom: the hook it reports each commit to, for which widget committed and why.
 import { attributeCommits } from '../shell/commitCount.ts';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -13,7 +9,6 @@ import '@fontsource-variable/cascadia-code';
 import '../styles.css';
 import '../shell/shell.css';
 import '../dashboard/dashboard.css';
-// Every widget's renderer registered, as the dashboard does.
 import '../widgets';
 import DashboardGrid, { bodiesWaiting } from '../dashboard/DashboardGrid';
 import PreparedPages from '../dashboard/PreparedPages';
@@ -40,7 +35,6 @@ applySavedAppearance();
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<number>(resolve => native(now => resolve(now)));
 
-/** What a widget reported shown and painted, by widget; only while `counting`, layout read back and text measured. */
 const shown = new Map<string, number | null>();
 const paints = new Map<string, number[]>();
 const asked = { layout: 0, measure: 0 };
@@ -65,7 +59,6 @@ for (const proto of [CanvasRenderingContext2D.prototype, OffscreenCanvasRenderin
   proto.measureText = function (this: Context, text: string) { if (counting) asked.measure++; return measureText.call(this, text); };
 }
 
-/** Commits each widget made while counting, and why. */
 const commits = new Map<string, number>();
 const why = new Map<string, Map<string, number>>();
 attributeCommits((zones, causes) => {
@@ -83,10 +76,7 @@ let recorded: Recorded | null = null;
 let root: Root | null = null, host: HTMLDivElement | null = null;
 let clock: PlaybackController | null = null, client: RecordedClient | null = null, laneClient: DashboardClient | null = null;
 let template: DashboardTemplate | null = null;
-/** The page laid out now: shown again at a later mark, it is sought there, as the app's clock sought it, not laid out anew. */
 let shownPage: string | null = null;
-/** Where this mount's requests begin in the client's: one client lives through every mount, as the app's session did,
- * so what the app held from a page before is held here too. */
 let mountedAt = 0;
 
 const pageId = (label: string): PageId => {
@@ -95,7 +85,6 @@ const pageId = (label: string): PageId => {
   return page.id;
 };
 
-/** Until nothing is in flight for two frames running (at least `least` frames, at most `timeout` ms). */
 async function settle(least = 2, timeout = 8_000): Promise<boolean> {
   const until = performance.now() + timeout;
   for (let frames = 0, quiet = 0; performance.now() < until; frames++) {
@@ -106,14 +95,12 @@ async function settle(least = 2, timeout = 8_000): Promise<boolean> {
   return false;
 }
 
-/** The followed messages the app received from the mark before `mark` up to `to`: what a follow made here is answered from. */
 function receivedAround(mark: RecordedMark, to: RecordedMark): { hour: number | null; bytes: Uint8Array }[] {
   const marks = recorded!.entries.filter((entry): entry is RecordedMark => entry.t === 'mark');
   const before = marks.filter(item => item.at < mark.at).at(-1) ?? { ...mark, at: -Infinity };
   return recorded!.messages(before, to);
 }
 
-/** The mark after `mark` in the run, or `mark` itself when it is the last. */
 function nextMark(mark: RecordedMark): RecordedMark {
   const marks = recorded!.entries.filter((entry): entry is RecordedMark => entry.t === 'mark');
   return marks[marks.indexOf(mark) + 1] ?? mark;
@@ -142,29 +129,23 @@ export const fixture = {
       marks: recorded.entries.filter(entry => entry.t === 'mark').map(mark => `${(mark as RecordedMark).label} ${(mark as RecordedMark).page ?? ''}`) };
   },
 
-  /** `page` paused at `mark`, laid out at the size the app had, its follows answered as the app's were then; already shown,
-   * the clock seeks there. */
   async mount(page: string, label: string, speed?: number) {
     await fixture.load();
     const mark = recorded!.mark(label, page, item => speed === undefined || (item.speed === speed && !item.trace));
     if (mark.head === null) throw new Error(`the ${label} mark of ${page} holds no hour`);
     mountedAt = client!.asked.length;
-    // Paused at a page's mark, the app went on receiving until its next step: follows made while scrolling were answered
-    // then. A window played starts from what was received by its mark.
     const received = receivedAround(mark, label === 'play' ? mark : nextMark(mark));
     client!.window = received.map(item => item.bytes);
     client!.at = mark.at;
     client!.windowEnd = nextMark(mark).at;
     if (shownPage === page && label === 'page') {
       clock!.seek(mark.head);
-      // What the service pushed for the hour sought, to the follows already made.
       for (const item of received) if (item.hour === mark.head) client!.deliver(item.bytes);
       await settle(8);
       return { hour: mark.head, widgets: template!.widgets.length };
     }
     root?.unmount(); host?.remove(); clock?.stop();
     shown.clear();
-    // A mark taken before the grid was laid out (the run's start) takes the page's layout from its next mark.
     const layout = mark.layout?.grid ? mark.layout : recorded!.marks('page', page)[0]?.layout;
     if (!layout?.scroll || !layout.grid) throw new Error(`the ${label} mark of ${page} holds no layout`);
     const source = recorded!.source;
@@ -184,12 +165,8 @@ export const fixture = {
     const shell = host.appendChild(document.createElement('div'));
     shell.className = 'dash-grid-scroll';
     shell.style.cssText = `width: ${layout.scroll.width}px; height: ${layout.scroll.height}px; overflow: auto;`;
-    // The page's code first, as the shipped bundle has it at hand: what is timed and counted is the widgets', not the
-    // test server compiling them.
     const kinds = new Set(PAGES.flatMap(item => defaultTemplate(item.id).widgets.map(widget => widget.kind)));
     await Promise.all([...kinds].map(async kind => { if (!await loadWidgetRenderer(kind)) throw new Error(`no renderer for ${kind}`); }));
-    // The prepare lane as the dashboard runs it: the page shown, then every other page from the next, laid out unseen and
-    // asked through the lane, so a page comes to be shown holding what the app's lane had asked for it.
     const ids: PageId[] = PAGES.map(item => item.id), at = ids.indexOf(pageId(page));
     const prepared: PreparedPage[] = [...ids.slice(at), ...ids.slice(0, at)].map(id => {
       const paged = defaultTemplate(id);
@@ -211,7 +188,6 @@ export const fixture = {
     return { hour: mark.head, widgets: template.widgets.length };
   },
 
-  /** As the sweep's glance did, a step a call: the page scrolled a screen further, each step settled; false at its bottom. */
   async scroll() {
     const view = scroller();
     if (view.scrollTop + view.clientHeight >= view.scrollHeight - 1) return false;
@@ -220,8 +196,6 @@ export const fixture = {
     return true;
   },
 
-  /** Once scrolled to its bottom: the follows made as the app scrolled answered as they were before its next mark, and
-   * what each widget shows. */
   async glanced(page: string) {
     const mark = recorded!.mark('page', page);
     await settle(4);
@@ -233,11 +207,6 @@ export const fixture = {
       lane: { asked: asked.length - shownAsks.length, misses: asked.filter(ask => ask.lane && !ask.served).length } };
   },
 
-  /** `page` (mounted at its 1,440 h/s window's mark) playing that window: the clock running at that speed from the window's
-   * hour, each recorded message handed over once the clock reaches its hour; what each widget committed, asked, painted
-   * and showed, times in ms from play. With `until` (one of the window's message hours, `windowHours`), it stops there and
-   * the clock seeks to exactly that hour, its settled answer handed over as the service pushes it: two replays to the same
-   * hour show the same, frame timing aside. */
   async play(page: string, until = Infinity) {
     const start = recorded!.mark('play', page, mark => mark.speed === 1440 && !mark.trace);
     const end = recorded!.mark('pause', page, mark => mark.speed === 1440 && !mark.trace && mark.at > start.at);
@@ -279,26 +248,22 @@ export const fixture = {
       paints: Object.fromEntries(paints), shown: Object.fromEntries(shown), states: widgetStates() };
   },
 
-  /** The app's window as it recorded: the browser takes its size before a page is mounted. */
   async viewport() {
     await fixture.load();
     const layout = recorded!.entries.find((entry): entry is RecordedMark => entry.t === 'mark' && !!entry.layout)?.layout;
     if (!layout) throw new Error(`${recorded!.file} holds no layout`);
     return layout.viewport;
   },
-  /** Where the run began: the page shown as the recording opened, at its opening hour; nothing when the run marked none. */
   async start() {
     await fixture.load();
     const [start] = recorded!.marks('start');
     if (!start?.page) return null;
     return fixture.mount(start.page, 'start');
   },
-  /** The pages the run glanced at, in its order. */
   async pages() {
     await fixture.load();
     return recorded!.marks('page').map(mark => mark.page!);
   },
-  /** The hours of `page`'s 1,440 h/s window that a message was pushed for, in order. */
   async windowHours(page: string) {
     await fixture.load();
     const start = recorded!.mark('play', page, mark => mark.speed === 1440 && !mark.trace);
@@ -306,13 +271,10 @@ export const fixture = {
     return [...new Set(recorded!.messages(start, end).flatMap(item => item.hour === null ? [] : [item.hour]))];
   },
   states: () => widgetStates(),
-  /** What each widget shows now, by id: the text it draws (painted cells included) and the hour it reports showing. The
-   * old code and the new, mounted from the same recording at the same mark or window hour, should give the same. */
   values: () => Object.fromEntries([...host!.querySelectorAll<HTMLElement>('article.dash-widget')].map(article => [article.dataset.widget!, {
     kind: [...article.classList].find(name => name.startsWith('kind-'))!.slice(5),
     text: (article.querySelector<HTMLElement>('.dash-widget-content')?.innerText ?? '').replace(/\s+/g, ' ').trim(),
     shown: shown.get(article.dataset.widget!) ?? null }])),
-  /** Each widget whose size differs from the app's at `page`'s mark by more than a pixel: the app's, then this page's. */
   sizes(page: string, label = 'page') {
     const layout = recorded!.mark(label, page).layout!;
     return [...host!.querySelectorAll<HTMLElement>('article.dash-widget')].flatMap(article => {

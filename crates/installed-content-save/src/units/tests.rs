@@ -269,8 +269,6 @@ fn template_fallback_key_is_saved_independently_of_explicit_name() {
 
 #[test]
 fn template_name_fields_keep_omitted_empty_and_nonempty_presence_independently() {
-    // The writer omits stored-empty strings, but
-    // emits an empty scalar for a stored-nonempty string with a leading NUL.
     let parse = |fields: &str| {
         let document = installed_content_core::parser::parse(
             format!("division_templates={{division_template={{id={{id=3 type=52}} country=AAA template_counter=0 ingame_set_template_counter=no {fields}}}}}").as_bytes(),
@@ -290,7 +288,6 @@ fn template_name_fields_keep_omitted_empty_and_nonempty_presence_independently()
         ] {
             let rows = parse(&format!("{name} {key}")).unwrap();
             let row = &rows[&id];
-            // Existing byte consumers retain exactly their old projection.
             assert_eq!(row.name, name_bytes);
             assert_eq!(row.name_key, key_bytes);
             assert_eq!(row.name_present, name_present);

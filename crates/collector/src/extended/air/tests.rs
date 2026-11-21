@@ -4,7 +4,6 @@ fn combat(province: u32, region: u32) -> TaskForceCombat {
     TaskForceCombat { province, region }
 }
 
-/// Country 1 patrols regions 5 and 9, country 2 region 5.
 fn patrols(scratch: &mut [u64]) -> usize {
     scratch[..3].copy_from_slice(&[2 << 32 | 5, 1 << 32 | 9, 1 << 32 | 5]);
     3
@@ -15,7 +14,6 @@ fn walk(
     emit: &mut dyn FnMut(TaskForceCombat) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let fleet: &[TaskForceCombat] = match slot {
-        // Region 7 is not patrolled: skipped without an ordinal.
         1 => &[combat(10, 7), combat(11, 9), combat(12, 5)],
         2 => &[combat(20, 5)],
         _ => &[],
@@ -171,7 +169,6 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
     }
 }
 
-// regression: da93900628 Size live collector storage and preserve native observation intervals
 #[test]
 fn worker_air_growth_hands_off_complete_mod_rosters() {
     use crate::{map_capture::MapCaptured, unit_scale_tests::fixture};
@@ -245,8 +242,6 @@ fn worker_air_growth_hands_off_complete_mod_rosters() {
             .all(|(ordinal, row)| row.name == Some((ordinal * 4, 4)))
     );
 
-    // A job without an identity census installs its refusal: the frame never
-    // rebuilds one from the job's sources into its wing-sized arena.
     assert_eq!(job.source_outcome, Outcome::Rows { len: WINGS });
     job.identity_outcome = NO_WING_SOURCE;
     let mut captured = Captured::with_capacities(&capacity);
@@ -380,9 +375,6 @@ fn zero_hint_wing_growth_preserves_fixed_original_read_order_and_first_faults() 
         let fixed_calls = fixed_memory.calls.borrow();
         let original_requests: std::collections::BTreeSet<_> =
             fixed_calls.iter().copied().collect();
-        // The worker also reads its independent fuel and map-flag leaves.
-        // Preserve every original request, including repeats and first faults;
-        // a new observation of an original key must not disappear from this check.
         let growing_original_calls: Vec<_> = growing_memory
             .calls
             .borrow()
@@ -475,7 +467,6 @@ fn registration_failures_name_the_country_and_region_and_do_not_survive_reset() 
 
 #[test]
 fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
-    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
     let _hint = crate::country_scale::hint_guard();
     use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
     static LOCAL: Tracker = Tracker::new();
@@ -495,7 +486,6 @@ fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
     };
     let initial = LOCAL.snapshot().current.auxiliary_vectors;
     assert_eq!(initial, expected(&job));
-    // Growth responds to observed pressure; an idle job keeps its storage.
     job.grow();
     assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, initial);
     job.required_census = job.census.capacity() + 1;
@@ -883,14 +873,6 @@ fn daily_statistics_skip_reads_and_capacity_preflight() {
 
 #[test]
 fn wing_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 2 wings with 3 equipment rows and 2 cumulative rows;
-    // equipment cap 2 is the overflow-by-one arm (total 3 == cap+1),
-    // cumulative cap 1 the overflow arm (total 2 == cap+1), cap 0 the
-    // zero/massive arm. u32 unread saturation is not reachable and is
-    // covered by the walk's own saturating arithmetic.
     use super::Capacities;
     use super::wing_test_kit as kit;
     let bytes = kit::fixture();
@@ -911,7 +893,6 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
         );
         kit::assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows with all rows present.
     let capacity = Capacities {
         rows: [3, 2048, 2, 1024, 2048, 4096, 1024, 64, 0],
         ace_names: 65536,
@@ -950,8 +931,6 @@ fn wing_copy_includes_assigned_mission_region_and_skips_null_country_slots() {
     );
     bytes[region + cstrategic_region::ID..region + cstrategic_region::ID + 4]
         .copy_from_slice(&17u32.to_le_bytes());
-    // The fixture's third slot is an unused alias; a null country slot
-    // is not an absent wing census and must not stop discovery.
     put(&mut bytes, 0x11000 + 16, 0);
     let memory = kit::memory(&bytes);
     let direct = kit::direct(&memory);
@@ -1060,8 +1039,6 @@ fn stats_split_copy_matches_direct_walk() {
     assert_eq!(split.rows[1].channels[0], 2000);
     let anchor = TableId::AirStatistics;
     let mut expected = read_accounting::ZERO;
-    // 21 census scalars, 14 header scalars per history, two nine-span
-    // channel gathers and one two-pointer record batch: 790 requested bytes.
     expected[anchor.index()] = ReadCounts {
         copy_calls: 49,
         scattered_calls: 2,
@@ -1110,12 +1087,6 @@ fn stats_split_copy_matches_direct_walk() {
 
 #[test]
 fn stats_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Cap 1 is the overflow-by-one arm (total 2 == cap+1), cap 0 the
-    // zero/massive arm. u32 unread saturation is not reachable with 2
-    // rows and is covered by the walk's own saturating arithmetic.
     use super::stats_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -1143,8 +1114,6 @@ fn stats_truncation_matrix_matches_direct_with_same_caps() {
     assert_eq!(split.outcome, Outcome::Rows { len: 2 });
 }
 
-/// A positive slot holding the reserved slot-zero object is skipped as `Reader::at` skips it:
-/// the census stages that authentication, so the aces replay still reads every country.
 #[test]
 fn air_bases_split_copy_matches_direct_walk_with_a_reserved_country_alias() {
     use super::air_bases_test_kit as kit;
@@ -1158,8 +1127,6 @@ fn air_bases_split_copy_matches_direct_walk_with_a_reserved_country_alias() {
     kit::assert_matches_direct(&split, &direct);
 }
 
-/// The statistics walk reads a country only where an owner resolves, so a reserved-object alias
-/// or a null slot before the owner's country loses nothing.
 #[test]
 fn stats_split_copy_matches_direct_walk_past_a_reserved_alias_and_a_null_slot() {
     use super::stats_test_kit as kit;
@@ -1176,9 +1143,6 @@ fn stats_split_copy_matches_direct_walk_past_a_reserved_alias_and_a_null_slot() 
 
 #[test]
 fn air_bases_split_copy_matches_direct_walk_with_alias_and_rocket_vector() {
-    // Census alias skip plus a non-state base vector: the alias slot
-    // publishes no duplicate rows and the rocket base decodes from the
-    // same shared spans.
     use super::air_bases_test_kit as kit;
     let mut bytes = kit::fixture();
     kit::add_alias_and_rocket(&mut bytes);
@@ -1201,9 +1165,6 @@ fn air_bases_split_copy_matches_direct_walk() {
     let (split, report, _) = kit::split(&memory);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Two state bases plus one stateless host; two registrations (one
-    // with two wings, one empty); two aces (one alive inline, one dead
-    // heap-named).
     assert_eq!(split.bases_outcome, Outcome::Rows { len: 3 });
     assert_eq!(split.aces_outcome, Outcome::Rows { len: 2 });
     assert_eq!(split.regs.outcome, Outcome::Rows { len: 2 });
@@ -1221,9 +1182,6 @@ fn air_bases_split_copy_matches_direct_walk() {
 
 #[test]
 fn air_bases_truncation_matrix_preserves_other_tables_and_grows_registrations() {
-    // Bases and aces retain their bounded typed result. Registrations can
-    // fill complete current rows from the already-owned payload even when
-    // their initial wing arena is too small.
     use super::air_bases_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -1249,7 +1207,6 @@ fn air_bases_truncation_matrix_preserves_other_tables_and_grows_registrations() 
         );
         kit::assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows with all rows present.
     let direct = kit::direct_with(&memory, 3, 2, 2, 64);
     assert_eq!(direct.bases_outcome, Outcome::Rows { len: 3 });
     assert_eq!(direct.aces_outcome, Outcome::Rows { len: 2 });
@@ -1258,11 +1215,6 @@ fn air_bases_truncation_matrix_preserves_other_tables_and_grows_registrations() 
 
 #[test]
 fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
-    // Every fault arm asserts byte-identical decode (same outcome and
-    // rows as the typed walk on the same torn memory) plus the expected
-    // per-slot raw-compare attribution: shared census faults block all
-    // three slots, manager/vector faults block bases and registrations,
-    // private faults block only their own slot.
     use super::air_bases_test_kit as kit;
     use engine_native::memory::SliceMemory;
     struct Fault<'a> {
@@ -1281,25 +1233,20 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
         }
     }
     for fault in [
-        // Shared country census: every slot blocks.
         kit::GAME_STATE + engine_native::cgame_state::COUNTRIES,
         kit::C0,
         kit::LTAB + 4,
-        // Shared manager and vectors: bases and registrations block.
         kit::MANAGER,
         kit::SVEC,
         kit::B0,
-        // Bases-private fields: only bases blocks.
         kit::B0 + engine_native::cair_base::HOST_REFERENCE,
         kit::S0,
-        // Registrations-private spans: only registrations blocks.
         kit::CONT1,
         kit::CONT1 + engine_native::ccountry_air_container::COUNTRY,
         kit::POOL0,
         kit::W0,
         kit::W0 + engine_native::cair_wing::POOL,
         kit::W1 + engine_native::cair_wing::POOL + 7,
-        // Aces-private spans: only aces blocks.
         kit::C0 + engine_native::ccountry::ACES,
         kit::A0,
         kit::A0 + engine_native::cace::ALIVE,
@@ -1317,18 +1264,11 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
         let (split, report, job) = kit::split(&memory);
         assert!(report.raw_ok, "fault={fault:x}");
         kit::assert_matches_direct(&split, &direct);
-        // The census keeps copying discoverable subtrees after a country
-        // fault, so counts can be complete while the table is unavailable.
-        // The worker's fault gate must still reject that storage hint.
         assert_eq!(
             job.registration_demand.filter(|_| !job.log.fault[1]),
             matches!(direct.regs.outcome, Outcome::Rows { .. }).then_some([2, 2]),
             "fault={fault:x}"
         );
-        // Empty registration storage must preserve every unavailable
-        // result, including census faults with complete subtree counts.
-        // Keep unrelated bases/aces admitted: their zero-capacity walkers
-        // skip validation reads and have a different acquisition contract.
         if matches!(direct.regs.outcome, Outcome::Unavailable { .. }) {
             let direct = kit::collect_typed(&memory, [8; SIZED], 256, 0, 0);
             let (split, _, job) = kit::collect_split(&memory, [8; SIZED], 256, 0, 0);
@@ -1342,8 +1282,6 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
 fn air_bases_registration_demand_counts_duplicate_occurrences_and_empty_rows() {
     use super::air_bases_test_kit as kit;
     let mut bytes = kit::fixture();
-    // Revisit the same bases in another vector, the same pool twice, and
-    // the first wing twice per pool. Every occurrence remains a value.
     let vector = kit::MANAGER + cstrategic_air_manager::STATE_GUN_BASES;
     kit::put64(&mut bytes, vector, kit::SVEC as u64);
     kit::put32(&mut bytes, vector + 8, 3);
@@ -1391,8 +1329,6 @@ fn air_bases_registration_demand_counts_duplicate_occurrences_and_empty_rows() {
         job.clear();
         assert_eq!(job.registration_demand, None);
     }
-    // An invalid repeated wing still refuses the table even though the
-    // original acquisition already saw the container and pool counts.
     for (address, value) in [
         (kit::W0 + cair_wing::REFERENCE_TYPE, 0),
         (kit::W0 + cair_wing::POOL, 0),
@@ -1416,9 +1352,6 @@ fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
     let mut bytes = kit::fixture();
     let header = kit::B0 + engine_native::cair_base::COUNTRY_CONTAINERS;
     let array = u64::from_le_bytes(bytes[header..header + 8].try_into().unwrap()) as usize;
-    // The fixture reserves space before the first container. Keep its one
-    // nonnull slot, and extend the zero-filled pointer table across three
-    // chunks without changing any registration row.
     assert!(array + 130 * 8 <= kit::CONT1);
     kit::put32(&mut bytes, header + 8, 130);
     kit::put32(&mut bytes, header + 12, 130);
@@ -1481,8 +1414,6 @@ fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
             assert!(chunks.iter().all(|span| span.ok && span.bulk));
         }
     }
-    // A later pointer fault must not replace the first container's own
-    // independent failure, in either the native reader or owned replay.
     kit::put64(&mut bytes, kit::CONT1, 0);
     let memory = Fault {
         source: kit::memory(&bytes),
@@ -1502,9 +1433,6 @@ fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
 
 #[test]
 fn air_bases_shared_resolve_link_taken_once_per_pass() {
-    // Shared-copy proof: two containers name the same country, but the
-    // resolve link read is taken exactly once per pass (mirroring the
-    // walk's Resolver cache) while both registrations decode.
     use super::air_bases_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -1522,7 +1450,6 @@ fn air_bases_shared_resolve_link_taken_once_per_pass() {
     assert_eq!(takes, 1, "resolve link takes: {:?}", first.log.spans);
 }
 
-/// Frozen pre-index resolver for exact observation/failure comparisons.
 fn linear_air_link(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl Memory,
@@ -1574,9 +1501,6 @@ impl Memory for AirLinkMemory {
 
 #[test]
 fn air_bases_link_index_matches_linear_collisions_faults_and_growth() {
-    // One-cell indexes deliberately collide every raw. Successful
-    // observations stay authoritative even if the source changes or
-    // faults; failed and invalid resolutions must be observed again.
     let steps = [
         (0, Some(1)),
         (1, Some(2)),
@@ -1734,8 +1658,6 @@ fn air_bases_link_index_validates_hints_and_resets_between_passes() {
         Some(2)
     );
     assert_eq!(memory.calls.borrow().len(), 2);
-    // The other bucket is cold despite the populated seen list. Faults
-    // and invalid slots leave it empty; a successful observation fills it.
     assert_eq!(job.seen_link_index[0], usize::MAX);
     for (value, expected, calls) in [(None, None, 3), (Some(8), None, 4), (Some(3), Some(3), 5)] {
         memory.value.set(value);
@@ -1832,9 +1754,6 @@ fn air_bases_link_index_keeps_the_complete_capture_read_trace() {
 
 #[test]
 fn air_bases_registrations_decode_matches_direct_from_shared_log() {
-    // Dual-decode proof: the registrations half decoded alone from the
-    // shared log (fresh fog buffers, no bases state) equals the typed
-    // walk, proving both families read identical rows from shared spans.
     use super::air_bases_test_kit as kit;
     use crate::extended::fog::Capacities as FogCapacities;
     let bytes = kit::fixture();
@@ -1857,7 +1776,6 @@ fn kit_memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
     engine_native::memory::SliceMemory { base: 0, bytes }
 }
 
-/// Every guarded copy's first address over a flat fixture.
 struct SlotReads<'a> {
     inner: engine_native::memory::SliceMemory<'a>,
     reads: std::cell::RefCell<Vec<usize>>,
@@ -1875,10 +1793,6 @@ const SPARSE_SLOTS: usize = 0x70000;
 const SPARSE_COUNTRIES: u32 = 5_001;
 const SPARSE_HANDLE: u64 = (0x43_u64 << 32) | engine_native::cair_base::TYPE as u64;
 
-/// 5,001 countries; one host base whose country-container vector holds
-/// containers at slots 1, 2600 and 5000, its dense list naming them in that
-/// order, and optionally one more container at `stray`, which the list
-/// lacks.
 fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
     use engine_native::{ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager};
     const MANAGER: usize = 0x20000;
@@ -1995,8 +1909,6 @@ fn sparse_slot_world(stray: Option<u32>) -> Vec<u8> {
     bytes
 }
 
-/// One accepted acquisition of `bytes` under `run`, after the census grows
-/// to the fixture's countries: the job and the second pass's live reads.
 fn sparse_slot_copy(
     bytes: &[u8],
     run: crate::air_base_changes::SlotRun,
@@ -2023,7 +1935,6 @@ fn sparse_slot_copy(
     (job, memory.reads.into_inner())
 }
 
-/// The owned replay of `job`'s registrations, and the direct full walk.
 fn sparse_slot_decode(
     bytes: &[u8],
     job: &AirBasesJob,
@@ -2047,15 +1958,10 @@ fn sparse_slot_decode(
     (owned.registrations_snapshot(), direct)
 }
 
-/// A container the dense list lacks, whether it shares a listed container's
-/// chunk or not, is read by neither the plan nor its replay: the plan relies
-/// on its writers keeping the list in step, and the whole scan sees it.
 #[test]
 fn a_container_the_dense_list_lacks_is_missed_by_the_plan_alone() {
     let _hint = crate::country_scale::hint_guard();
     use crate::air_base_changes::SlotRun;
-    // Slot 2 shares slot 1's chunk; slot 4000 lies in a chunk no listed
-    // container names.
     for stray in [2, 4000] {
         let bytes = sparse_slot_world(Some(stray));
         let (job, _) = sparse_slot_copy(&bytes, SlotRun { dense: true });
@@ -2117,7 +2023,6 @@ fn supply_merges_into_sorted_ground_crews_and_adds_flagged_rows() {
             (3, 2, None),
         ]
     );
-    // Only the region without a Ground Crews row asks for its flag.
     assert_eq!(asked, [(0x100, 0x60)]);
     let supply = |at: usize| match &ground[at].supply {
         rows::Recorded::Value(supply) => supply.as_ref().map(|supply| supply.needed),

@@ -16,9 +16,7 @@ import type { Appearance } from './useAppearance';
 import '../settings.css';
 import './iconStyle.css';
 
-/** Where a menu's styles live and what each id shows by default. */
 export interface IconStyleSource<Id extends string> {
-  /** Names the right-click menu, as in "Sidebar icon actions". */
   label: string;
   read: (settings: AppearanceSettings) => IconStyles<Id>;
   write: (settings: AppearanceSettings, styles: IconStyles<Id>) => AppearanceSettings;
@@ -32,8 +30,6 @@ type Change = { [Part in keyof IconStyle]?: IconStyle[Part] | null };
 export const IMAGE_COLOURS = 'Images keep their own colours';
 const iconLabel = (name: IconName) => name[0].toUpperCase() + name.slice(1).replaceAll('-', ' ');
 
-/** After a picker closes, however it closed (Escape, a click elsewhere, its close button), focus goes back to where
- * the user opened it from, unless they have already moved focus elsewhere. */
 export function restoreFocus(target: HTMLElement | null, popup: HTMLElement | null, active: Element | null, body: Element | null) {
   if (!target?.isConnected) return false;
   if (active && active !== body && !popup?.contains(active)) return false;
@@ -41,8 +37,6 @@ export function restoreFocus(target: HTMLElement | null, popup: HTMLElement | nu
   return true;
 }
 
-/** The icon and icon-colour menus behind a right-click, shared by the sidebar and widget headers:
- * a searchable grid of the app's icons with an image upload, and the colour picker. */
 export function useIconStyleMenu<Id extends string>(appearance: Appearance, source: IconStyleSource<Id>) {
   const actions = useContextMenu(`${source.label} actions`);
   const picker = usePopover('start');
@@ -51,11 +45,8 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
   const [query, setQuery] = useState('');
   const [refusal, setRefusal] = useState<string | null>(null);
   const file = useRef<HTMLInputElement>(null);
-  // Choices made for each id, so an upload still being drawn cannot overwrite a newer one.
   const revisions = useRef(new Map<Id, number>());
-  // Where focus returns when the picker closes: the button that opened it, or one the caller names.
   const returnTo = useRef<HTMLElement | null>(null);
-  // Menu items and the widget context outlive a render; they act on the latest settings.
   const live = useRef({ appearance, source });
   live.current = { appearance, source };
   const styles = source.read(appearance.settings);
@@ -63,7 +54,6 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
   const colour = (id: Id) => style(id).colour ?? source.defaultColour(id);
   const value = editing ? colour(editing.id) : '';
   useEffect(() => setText(value), [value]);
-  /** A part set to its default is stored as the default, so it has nothing to reset. */
   const change = useCallback((id: Id, parts: Change) => {
     const { appearance, source } = live.current;
     revisions.current.set(id, (revisions.current.get(id) ?? 0) + 1);
@@ -73,7 +63,6 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
     appearance.update(previous => source.write(previous, withIconStyle(source.read(previous), id, next)));
   }, []);
   const { openAt, trigger } = picker;
-  /** `focusAfter` takes focus when the picker closes; by default the anchor, when it is a button. */
   const edit = useCallback((id: Id, anchor: HTMLElement, label: string, part: Part, focusAfter?: HTMLElement | null) => {
     setEditing({ id, label, part });
     setQuery('');
@@ -83,7 +72,6 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
     returnTo.current = focusAfter ?? trigger.current;
     openAt(() => anchor.isConnected ? anchor.getBoundingClientRect() : null);
   }, [openAt, trigger]);
-  /** Change icon and Change icon colour; an image keeps its own colours. `focusAfter` as for `edit`. */
   const items = useCallback((id: Id, anchor: HTMLElement, label: string, focusAfter?: HTMLElement | null): MenuItem[] => {
     const image = isIconImage(iconStyleOf(live.current.source.read(live.current.appearance.settings), id).icon);
     return [
@@ -91,7 +79,6 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
       { label: 'Change icon colour', icon: 'palette', disabled: image, hint: image ? IMAGE_COLOURS : undefined, run: () => edit(id, anchor, label, 'colour', focusAfter) },
     ];
   }, [edit]);
-  /** A reset for each part that differs from its default. */
   const resets = useCallback((id: Id): MenuItem[] => {
     const own = iconStyleOf(live.current.source.read(live.current.appearance.settings), id);
     return [

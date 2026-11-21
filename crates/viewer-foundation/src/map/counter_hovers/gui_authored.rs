@@ -1,4 +1,3 @@
-//! Authored fallback after the map tooltip handler returns false.
 
 use super::refuse;
 use crate::tooltip_text::ensure_newlines;
@@ -9,7 +8,6 @@ use installed_content_localisation::localisation::Localisation;
 pub struct AuthoredKey {
     hash: u64,
     bytes: Vec<u8>,
-    /// Bound text uses the formatter; ordinary hashes return the stored string.
     bound: bool,
 }
 
@@ -22,8 +20,6 @@ pub struct Authored {
 }
 
 impl Authored {
-    /// The game checks occupied bound text before the ordinary hash probe.
-    /// The disabled selector chooses each disabled hash independently.
     pub fn read(element: &installed_content_core::gui::native::Element, disabled: bool) -> Option<Self> {
         use installed_content_core::{gui::native::FormattedLocalization, gui::native::tooltip_hash};
         let common = &element.common;
@@ -83,8 +79,6 @@ impl Authored {
         Some(out)
     }
 
-    /// A missing ordinary lookup preserves the handler's corresponding field.
-    /// Present raw strings replace it; unscoped bound text appends the title.
     pub fn fallback(&self, loc: &Localisation, icons: &dyn TextIcons, out: &mut Tooltip) {
         if let Some(reason) = &self.refusal {
             refuse(out, "authored tooltip", format!("{}: {reason}", self.path));
@@ -104,8 +98,6 @@ impl Authored {
                 if key.bound {
                     localise(loc, text_key, &[]).map(Some)
                 } else {
-                    // Return stored bytes or nullptr;
-                    // the caller scans to NUL, without expanding localisation.
                     Ok(loc.get(text_key).map(|text| {
                         std::str::from_utf8(installed_content_core::parser::c_string(text.as_bytes()))
                             .expect("a UTF-8 string split at NUL remains UTF-8")

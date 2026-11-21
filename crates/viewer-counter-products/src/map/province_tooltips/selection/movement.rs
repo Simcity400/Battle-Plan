@@ -1,7 +1,3 @@
-//! Selected rejection demand. Check each unit only while the shared rejection
-//! buffer is empty; its return value does not gate the next member.
-//! Class-wrapper gates run before common route checks. Missing route or
-//! transport producer operands refuse when reached.
 
 use super::{Class, Tooltip, line, refuse};
 use crate::map::division_eta::{CounterQueries, CounterUnit};
@@ -48,8 +44,6 @@ fn append_queried(
         )
     });
     match message {
-        // The selected text owns the outer red/reset bytes, even when effective
-        // localization includes its own colour controls.
         Ok(text) => {
             let nonempty = !text.is_empty();
             if nonempty {

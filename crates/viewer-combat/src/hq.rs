@@ -1,27 +1,18 @@
-//! The land window's HQ badge, from the recorded commander formation.
 
 use replay_data::{rows::LandCombatSideDetails, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{fmt, io};
 use viewer_foundation::table_access::{Available, rows};
 
-/// The runtime DLC feature bit the game tests.
 const FORMATIONS_FEATURE: u32 = 1 << 17;
 
-/// Why the badge's operands are unavailable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Unavailable {
-    /// The SimulationFeatures table failed this hour, with its reason.
     FeaturesFailed(String),
-    /// The SimulationFeatures walk did not finish.
     FeaturesTruncated,
-    /// The table holds this many rows, not the one feature row.
     FeatureRows(usize),
-    /// The OrdersGroups table failed this hour, with its reason.
     FormationsFailed { formation: u64, reason: String },
-    /// The OrdersGroups walk did not reach the formation's row.
     FormationNotReached { formation: u64, missing: u32 },
-    /// The complete OrdersGroups table has no row for the formation.
     FormationAbsent { formation: u64 },
 }
 
@@ -52,11 +43,6 @@ impl fmt::Display for Unavailable {
     }
 }
 
-/// only an army commander (category 0 or 1) with feature bit 17, a
-/// nonnull formation reference, a formation leader and
-/// a committed HQ provider shows the badge.
-///
-/// `Ok(0)` is a proven hidden badge; the error names the missing operand.
 pub(super) fn unit(
     frame: &DecodedFrame,
     side: &LandCombatSideDetails,

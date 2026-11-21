@@ -94,7 +94,6 @@ fn reserved_faction_uses_its_fresh_getter_including_null_and_refusals() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
-    // An empty member table does not reverse-certify Country0's getter.
     for (captured, expected) in [
         (Recorded::Value(Some(7)), Some(Ok(Some(7)))),
         (Recorded::Value(Some(0)), Some(Ok(None))),
@@ -139,8 +138,6 @@ fn theatres(frame: &mut DecodedFrame, count: Recorded<Option<u32>>) {
     );
 }
 
-/// Country0 has a regular group with no primary orders; country 1 has
-/// a reached invasion, so unavailable payloads have a real other owner.
 fn empty_reserved_group_and_positive_invasion() -> DecodedFrame {
     let mut frame = frame();
     set::<tables::CountryLinks>(
@@ -292,11 +289,9 @@ fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
             assert_reserved_empty(&world);
             let reason = world.complete_invasion_orders(1).err().unwrap();
             assert!(reason.contains(&format!("{unavailable:?}")), "{reason}");
-            // The reached owner's cached refusal cannot change an empty one.
             assert_reserved_empty(&world);
             assert!(world.complete_invasion_orders(2).unwrap().is_empty());
         });
-        // A nonzero certificate still needs the complete group roster.
         *frame.tables[TableId::OrdersGroups.index()] = TableView::Unavailable {
             reason: "reserved regular roster not proven".into(),
         };
@@ -335,8 +330,6 @@ fn empty_primary_roots_ignore_unavailable_order_payloads() {
             reason: "unreached order payload unavailable".into(),
         };
     }
-    // A possibly matching positive theatre still prevents proving absence,
-    // even when the known owner's primary-root list is empty.
     set::<tables::LandTheatres>(
         &mut frame,
         vec![
@@ -400,7 +393,7 @@ fn reserved_theatre_group_faults_stay_with_their_owner() {
         &mut frame,
         vec![OrdersGroupRow {
             handle: 30,
-            country: 100, // Stored group country does not select its roster owner.
+            country: 100,
             theatre: 10,
             theatre_ordinal: Some(0),
             ..Default::default()

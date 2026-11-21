@@ -78,7 +78,6 @@ fn family_refuses_every_write_if_one_sentinel_changed_and_checks_retries() {
     );
     assert!(hooks.iter().all(|hook| !hook.enabled));
     assert_eq!(unsafe { invoke(sites[0].0) }, 7);
-    // A refused family never owned these bytes; disable must leave them alone.
     assert_eq!(Hook::set_family_enabled(&mut hooks, false), Ok(true));
     assert_eq!(unsafe { ptr::read((sites[1].0 + 15) as *const u8) }, 0xcc);
     unsafe {
@@ -112,8 +111,6 @@ fn enabled_drop_retains_relay_and_relocation_without_panicking() {
     drop(hook);
     assert_eq!(unsafe { invoke(site) }, 19);
     assert_eq!(unsafe { invoke(trampoline) }, 7);
-    // The deliberate leak is confined to this test process. Restore the
-    // owned stub before freeing it; no game memory is involved.
     unsafe {
         ptr::copy_nonoverlapping(bytes.as_ptr(), site as *mut u8, 16);
     }
@@ -187,7 +184,6 @@ fn installation_keeps_the_first_native_rollback_failure_after_successful_disable
 fn owned_family_restores_after_capture_stop_without_clearing_it() {
     const CHILD: &str = "BATTLE_PLAN_HOOK_RESTORE_AFTER_CAPTURE_STOP";
     if std::env::var_os(CHILD).is_none() {
-        // Isolate the process-global capture stop hook from other fixture threads.
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -257,10 +253,6 @@ fn owned_family_restores_after_capture_stop_without_clearing_it() {
     }
 }
 
-/// A publication holds the process-wide publication lock from its first
-/// page-protection change through its flush and restore, so a second
-/// publisher on another thread (whose sites may share the code page) waits
-/// instead of writing into a page the first has already made read-only.
 #[test]
 fn publication_holds_the_process_lock_through_its_writes() {
     let _guard = FAMILY_TEST
@@ -288,11 +280,6 @@ fn publication_holds_the_process_lock_through_its_writes() {
     assert_eq!(unsafe { invoke(site) }, 7);
 }
 
-/// A census thread id that, by the time it is opened, names another
-/// process's thread (the listed thread exited and the id was reused) is not
-/// opened: suspending it would hold a foreign process, and a protected one
-/// refuses with ERROR_ACCESS_DENIED, which failed publication with "Windows
-/// error 5". A child process's thread stands in for the reused id.
 #[test]
 fn a_reused_thread_id_of_another_process_is_not_opened() {
     let mut child = std::process::Command::new("ping")
@@ -328,7 +315,6 @@ fn a_reused_thread_id_of_another_process_is_not_opened() {
     let _ = child.kill();
     let _ = child.wait();
     assert_eq!(opened, Ok(None));
-    // This process's own threads still open.
     let own = std::thread::spawn(|| unsafe { GetCurrentThreadId() });
     let id = unsafe { GetCurrentThreadId() };
     drop(own.join());
@@ -338,11 +324,6 @@ fn a_reused_thread_id_of_another_process_is_not_opened() {
     }
 }
 
-/// A thread that is terminating when publication suspends it refuses with
-/// ERROR_ACCESS_DENIED (STATUS_THREAD_IS_TERMINATING) before its handle is
-/// signalled, which failed the whole publication with "Windows error 5"
-/// whenever a test or game thread happened to exit at that moment. It never
-/// runs user code again and is left unheld; other refusals still fail.
 #[test]
 fn a_terminating_thread_is_left_unheld_and_other_refusals_still_fail() {
     assert_eq!(refused_suspension(ERROR_ACCESS_DENIED, false), Ok(false));
@@ -353,11 +334,6 @@ fn a_terminating_thread_is_left_unheld_and_other_refusals_still_fail() {
     );
 }
 
-/// Families publish under one census and suspension, so a thread executing
-/// any one site of a family holds back the whole family (no site of it is
-/// written, the attempt is not ready and is retried), while another family
-/// publishes. Once the thread leaves, the family publishes all its sites under
-/// one suspension.
 #[test]
 fn a_thread_at_any_site_holds_its_whole_family_under_one_suspension() {
     assert_busy_family_publication(true);
@@ -375,7 +351,6 @@ fn assert_busy_family_publication(track_busy: bool) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
     let (first, _) = code.stub(0, original as *const () as usize);
-    // The second site jumps to itself: a thread entering it stays inside.
     let held = code.0 as usize + 64;
     let (_, held_bytes) = code.stub(64, held);
     let (other, _) = code.stub(128, original as *const () as usize);
@@ -398,7 +373,6 @@ fn assert_busy_family_publication(track_busy: bool) {
     };
     let mut other_family = vec![new((other, code_bytes(other)))];
     let worker = std::thread::spawn(move || unsafe { invoke(held) });
-    // Wait until the worker executes inside the held site.
     let handle = worker.as_raw_handle() as HANDLE;
     let started = std::time::Instant::now();
     loop {
@@ -430,10 +404,8 @@ fn assert_busy_family_publication(track_busy: bool) {
         "no site written"
     );
     assert_eq!(unsafe { invoke(first) }, 7);
-    // Another family is not held back by it.
     assert_eq!(Hook::set_family_enabled(&mut other_family, true), Ok(true));
     assert_eq!(unsafe { invoke(other) }, 19);
-    // Let the worker out, then put the held site's bytes back as they were.
     let target = held + 11;
     let flush = |address: usize| {
         assert_ne!(
@@ -609,9 +581,6 @@ fn push_frame_refuses_unknown_instructions_before_allocating_or_reading_the_site
     }
 }
 
-/// A held idle-priority thread, like the graphics driver's workers, is raised so it reaches its
-/// suspension without waiting for an idle processor, and gets its own priority back before it
-/// runs again.
 #[test]
 fn a_held_idle_thread_is_raised_while_held_and_restored_before_it_resumes() {
     use std::os::windows::io::AsRawHandle;

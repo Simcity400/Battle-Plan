@@ -1,4 +1,3 @@
-//! Particle submission and declaration.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use installed_content_core::ResolvedLayers;
@@ -11,7 +10,6 @@ pub mod trail;
 pub const QUAD: [[f32; 2]; 4] = [[0., 0.], [0., 1.], [1., 0.], [1., 1.]];
 pub const INDICES: [u16; 6] = [0, 1, 2, 2, 1, 3];
 
-///Native instance stride48. The final12 bytes are not in the declaration.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Instance {
@@ -29,7 +27,6 @@ pub struct Packet {
     pub time: f32,
 }
 
-/// Compute world-column squared lengths in order, take their ordered maximum, then its square root.
 pub fn world_scale(basis: [[f32; 3]; 3]) -> f32 {
     let [a, b, c] = basis.map(|v| v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     let maxss = |a, b| if a > b { a } else { b };

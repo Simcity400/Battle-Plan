@@ -1,13 +1,3 @@
-//! The window's readers of the hour besides its tooltips and panels: the selection observers and a
-//! selection's movement arrows, the clicks and menu of the overlay's map modes, the walk camera's
-//! figure, the clock's speed, the picker's fourth button and the province order cursor. Each reads rows at the head while the
-//! map's playhead is open, and nothing else: while those rows do not hold what it reads it keeps
-//! what it gave and is loading by name. Today's frame is read only with no open playhead map. Each
-//! is open only while it is asked: a selection's while something is selected, the walk camera's
-//! while walking, the order cursor's while a selection is over the ground; the clock's and the picker's every frame the open map draws. The clicks' is open
-//! while the map is, holding only the tables of what the view can click ([`click_tables`]), and a
-//! click reads the rows of the hour it was made at ([`super::held_clicks`]). The overlay itself is made on the map side's thread
-//! ([`crate::playhead_host::overlay`]).
 
 use crate::{
     document::Document,
@@ -21,17 +11,10 @@ use viewer_counters::map::counters::Shown;
 #[cfg(test)]
 mod tests;
 
-/// The open map's view store, whose mirrors every reader here reads the hour from; none while the
-/// map's playhead is off.
 pub(crate) type Head<'a> = Option<&'a Views>;
 
-/// What a person sees change on the map: a selection, an icon, the clock's speed; at the step.
 const PACE: Pace = Pace::Step;
 
-/// What a click can read at any view: the ground's and Ctrl+click's provinces, states and owners,
-/// the fleet roster's and a naval base's fleets, an air base's province, a raid offer's targets and
-/// the selection sounds' divisions and countries. Each is a table the overlay reads at every view
-/// too, so its rows are made once for both, but for the few no overlay family names.
 const CLICKS: &[TableId] = &[
     TableId::Provinces,
     TableId::States,
@@ -53,40 +36,26 @@ const CLICKS: &[TableId] = &[
     TableId::RaidFacilities,
 ];
 
-/// What only a naval mission bubble's click reads.
 const NAVAL_MISSION_CLICKS: &[TableId] = &[TableId::NavalMissionLedgers];
 
-/// What only the air clicks read: an air base's, an air grid's, an air mission's, a box's wings and
-/// an air order's.
 const AIR_CLICKS: &[TableId] = &[TableId::AirBases, TableId::AirBaseRegistrations, TableId::AirReferenceWitnesses, TableId::AirWings];
 
-/// What only a selected division's sounds read.
 const DIVISION_CLICKS: &[TableId] = &[TableId::ArmyIconInputs, TableId::DivisionTemplateIcons];
 
-/// What only a raid offer's details read beyond [`CLICKS`]: a captive leader's name.
 const RAID_CLICKS: &[TableId] = &[TableId::UnitLeaders];
 
-/// What the map can be clicked on at a view: each family's click reads its tables only while it
-/// can be clicked, so the click reader makes no hidden family's rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Clickable {
-    /// The icon families the overlay on screen and the one asked for draw.
     pub shown: Shown,
-    /// Air bases, air grids or air missions are drawn, or air wings are selected.
     pub air: bool,
-    /// Divisions can be selected: their counters or their models are drawn.
     pub divisions: bool,
-    /// The overlay draws a raid offer.
     pub raids: bool,
 }
 
 impl Clickable {
-    /// Nothing but the ground.
     pub(crate) const GROUND: Self = Self { shown: Shown { units: false, bases: false, land_combats: false, naval_missions: false }, air: false, divisions: false, raids: false };
 }
 
-/// The tables the click reader declares at a view that can click `clickable`, with the tables
-/// clicks were found to read beyond them (`learned`).
 pub(crate) fn click_tables(clickable: Clickable, learned: &[TableId]) -> Vec<TableId> {
     let family = |held: bool, tables: &'static [TableId]| held.then_some(tables).unwrap_or_default();
     let mut tables: Vec<TableId> = CLICKS
@@ -103,7 +72,6 @@ pub(crate) fn click_tables(clickable: Clickable, learned: &[TableId]) -> Vec<Tab
     tables
 }
 
-/// The tables only the overlay's icon families `shown` leaves out read.
 pub(crate) fn hidden_families(shown: Shown) -> Vec<TableId> {
     use crate::playhead_host::overlay::{overlay_tables, tables_shown};
     let drawn = tables_shown(shown);
@@ -114,38 +82,26 @@ pub(crate) fn head(side: Option<&crate::playhead_host::side::SideThread>) -> Hea
     side.map(crate::playhead_host::side::SideThread::views)
 }
 
-/// The branch the open map's rows are stamped with, which follows the clock's; the document's
-/// with no open map.
 pub(crate) fn branch(side: Option<&crate::playhead_host::side::SideThread>, document: &Document) -> replay_data::BranchId {
     side.and_then(crate::playhead_host::side::SideThread::branch).unwrap_or_else(|| document.playback.branch())
 }
 
 #[derive(Debug)]
 pub(crate) struct HeadRows {
-    /// The observers ask only whether a key lives: they hold keys, no column.
     units: AtHead,
     arrows: AtHead,
     air: AtHead,
     fleets: AtHead,
-    /// A click or menu of the overlay's map modes: the tables what can be clicked at the view reads
-    /// ([`click_tables`]), read on the frame thread at the hour the click was made.
     clicks: AtHead,
-    /// What can be clicked at the view, which the click reader's tables follow.
     clickable: Clickable,
-    /// The tables a click read beyond [`click_tables`], learned whole.
     learned: Vec<TableId>,
-    /// The branch and hour a click reads: the overlay's on screen, or a held click's own.
     click_at: Option<(BranchId, Hour)>,
     walk: AtHead,
     map: AtHead,
-    /// The find view's index, while the view is open.
     find: AtHead,
-    /// The province order cursor over the first selected unit, its tables learned whole.
     cursor: AtHead,
-    /// The recording client's unit list order the model picker walks, with the hour it was read at.
     order: AtHead,
     order_read: Option<(BranchId, Hour, super::selection_input::ClientOrder)>,
-    /// The fourth button's answer at the head, kept while the rows load.
     four: Option<bool>,
 }
 
@@ -171,8 +127,6 @@ impl Default for HeadRows {
     }
 }
 
-/// `read` over the rows at the head of `head`'s playhead when it is open, learning the tables it
-/// reads; none while those rows load. Over `today` only with no open map.
 fn read_at<T>(at: &mut AtHead, head: Head<'_>, today: Option<&DecodedFrame>, mut read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
     match head {
         Some(views) => {
@@ -184,49 +138,38 @@ fn read_at<T>(at: &mut AtHead, head: Head<'_>, today: Option<&DecodedFrame>, mut
 }
 
 impl HeadRows {
-    /// The unit selection's observer: it reads only the key fields of its rows.
     pub(crate) fn units<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.units, head, today, read)
     }
 
-    /// The unit selection's movement arrows, whose tables are learned whole.
     pub(crate) fn arrows<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.arrows, head, today, read)
     }
 
-    /// The air selection's observer: keys only.
     pub(crate) fn air<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.air, head, today, read)
     }
 
-    /// The fleet selection's observer: keys only.
     pub(crate) fn fleets<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.fleets, head, today, read)
     }
 
-    /// The walk camera's figure.
     pub(crate) fn walk<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.walk, head, today, read)
     }
 
-    /// The hour the walk camera's figure is read at while rows at the head give it.
     pub(crate) fn walk_hour(&mut self, head: Head<'_>) -> Option<Hour> {
         self.walk.frame(head?).map(|rows| rows.hour)
     }
 
-    /// The find view's index over one frame of the rows at the head, which carries their hour;
-    /// none with no open map.
     pub(crate) fn find<T>(&mut self, head: Head<'_>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.find, Some(head?), None, read)
     }
 
-    /// The province order cursor.
     pub(crate) fn cursor<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.cursor, head, today, read)
     }
 
-    /// The recording client's unit list order and the country it views, at the head; read once an
-    /// hour. None while those rows load.
     pub(crate) fn unit_order(&mut self, head: Head<'_>) -> Option<super::selection_input::ClientOrder> {
         let rows = self.order.frame(head?)?;
         if let Some((branch, hour, read)) = &self.order_read
@@ -239,13 +182,10 @@ impl HeadRows {
         Some(read)
     }
 
-    /// The clock's speed and the picker's fourth button.
     pub(crate) fn map<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         read_at(&mut self.map, head, today, read)
     }
 
-    /// Whether the recording owns the fourth large button's feature: at the head with an open map,
-    /// the last answer while its rows load and today's default before the first; today's without.
     pub(crate) fn four_buttons(&mut self, head: Head<'_>, document: &Document) -> bool {
         if head.is_none() {
             return super::picker::four_buttons(document);
@@ -257,7 +197,6 @@ impl HeadRows {
     }
 
 
-    /// The branch and hour clicks read from now on; none while the map shows no hour.
     pub(crate) fn click_at(&mut self, at: Option<(BranchId, Hour)>) {
         self.click_at = at;
     }
@@ -266,9 +205,6 @@ impl HeadRows {
         self.click_at
     }
 
-    /// What can be clicked at the view from now on: the click reader declares its tables, letting
-    /// a family it can no longer click go, with the learned tables only a family this view cannot
-    /// draw names. A click that reads one again learns it again and holds it until the next change.
     pub(crate) fn clickable(&mut self, clickable: Clickable) {
         if clickable != self.clickable {
             self.clickable = clickable;
@@ -283,9 +219,6 @@ impl HeadRows {
         self.clicks.declare(&needs);
     }
 
-    /// A click or menu of the overlay's map mode, over its inputs' rows of the hour it was made
-    /// at ([`Self::click_at`]); today's frame with no open map. None while that hour's rows are not
-    /// read.
     pub(crate) fn clicks<T>(&mut self, head: Head<'_>, today: Option<&DecodedFrame>, mut read: impl FnMut(&DecodedFrame) -> T) -> Option<T> {
         let Some(views) = head else { return today.map(read) };
         let (branch, hour) = self.click_at?;
@@ -294,7 +227,6 @@ impl HeadRows {
         if missed.is_empty() {
             return Some(value);
         }
-        // Learned whole, the set is the one any other reader of the whole table reads.
         for (table, _) in missed {
             if !self.learned.contains(&table) {
                 self.learned.push(table);
@@ -304,8 +236,6 @@ impl HeadRows {
         None
     }
 
-    /// Once a frame, after the last ask: a reader not asked this frame closes and retires its
-    /// tables. The clicks' stays open while `head`'s map is, so a click's hour is read as it comes.
     pub(crate) fn end_frame(&mut self, head: Head<'_>) {
         if let Some(views) = head {
             self.clicks.keep(views);

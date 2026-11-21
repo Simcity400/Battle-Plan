@@ -1,9 +1,3 @@
-//! Current country colour bits, cosmetic tag, name operands, the retained old
-//! names and the ruling party's first leader's character, sampled hourly.
-//! The reserved-country naming singleton has independent availability and
-//! live-sized operand bytes; it never enters the positive country census.
-//! The selected transport preview's packet, convoy pools and spotting owners
-//! retired; the singleton and rows store their tombstones.
 use super::country_naval_movement_inputs as naval;
 use super::reserved_visibility;
 use crate::{
@@ -111,11 +105,6 @@ impl Capacities {
     fn raw_capacity(&self) -> engine_native::raw_country_observations::Capacity {
         let mut raw = self.raw;
         raw.links = raw.links.max(self.rows).max(self.country_array);
-        // Countries reads at most two link words and one tag per physical
-        // country; CountryLinks reads at most three words per live link.
-        // Appearance retains the original scalar, selection and text, then
-        // its optional suffix. Leave room for reserved controls.
-        // The zero-sized worker placeholder must remain allocation-free.
         let active = raw.links != 0 || self.rows != 0;
         raw.occurrences = raw.occurrences.max(
             self.rows
@@ -130,7 +119,6 @@ impl Capacities {
         raw
     }
 
-    /// One row per canonical country slot.
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
         crate::country_scale::raise(&mut self.subjects, crate::country_scale::rows(slots, 1));
@@ -193,7 +181,6 @@ pub struct Captured {
     reverse_visibility: reserved_visibility::Captured,
 }
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: 0,
@@ -282,8 +269,6 @@ impl Captured {
             .get(name.start..name.start.checked_add(name.len)?)
     }
 
-    /// The singleton's required prefix must be projectable before the
-    /// restored assembly admits its optional owner-zero theatre suffix.
     pub fn reserved_land_certificate_ready(&self) -> bool {
         let row = &self.reserved.row;
         matches!(self.reserved.outcome, Outcome::Rows { len: 1 })
@@ -352,8 +337,6 @@ impl Captured {
         self.launch_state_scratch.grow(&mut capacity.launch_states);
         self.reverse_visibility
             .grow(&mut capacity.reverse_visibility);
-        // Registry and arena hints must prepare the same journal storage as
-        // construction, even before an unused frame has observed pressure.
         capacity.raw = capacity.raw_capacity();
         let _ = self
             .raw
@@ -386,12 +369,9 @@ impl Captured {
         }
         self.raw.begin(hour);
         let ticks = self.capture_original(memory, base, state, None);
-        // No later borrower reads the journal's native controls.
         self.raw.finish_native();
         ticks
     }
-    /// The Countries job's read; with `carry`, countries the held store
-    /// certifies are copied instead of read ([`store`]).
     pub fn capture_preacquired(
         &mut self,
         memory: &impl Memory,
@@ -495,8 +475,6 @@ impl Captured {
             engine_native::raw_country_observations::Source::ReservedTag,
             self.reserved.outcome,
         );
-        // This control exists even when mandatory naming failed. Consume its
-        // one attempted count and clear its root before leaving the callback.
         if let Some(control) = self.reserved.launch_states.take() {
             let result = control.capture(
                 memory,
@@ -616,11 +594,6 @@ impl Captured {
         self.reverse_visibility.ticks()
     }
 
-    /// Appends each positive original reference's tag bytes to the naming
-    /// arena in row order (`capture_appearance_original_tags`). A carried
-    /// row's are its held bytes, placed where a full read puts them; one that
-    /// cannot be placed, and every row once a subject payload refusal moved
-    /// rows, is read.
     fn capture_original_tags(
         &mut self,
         memory: &impl Memory,
@@ -637,7 +610,6 @@ impl Captured {
             if index < len && held.is_none() {
                 continue;
             }
-            // The fresh rows before this carried row (or the end).
             if start < index {
                 ccountry::capture_appearance_original_tags_observed(
                     memory,
@@ -666,9 +638,6 @@ impl Captured {
         }
     }
 
-    /// Appends a carried row's held original tag bytes as the native pass would (a positive
-    /// original-tag reference: its bytes; otherwise an empty span); false when the arena cannot
-    /// hold them.
     fn place_held_tag(&mut self, index: usize, bytes: &[u8]) -> bool {
         let used = self.naming.len;
         let row = &mut self.rows.rows[index];
@@ -710,8 +679,6 @@ impl Captured {
         self.capture_subjects_carrying(memory, None);
     }
 
-    /// Copies each row's subject roster payload into the subject arena; a
-    /// carried row's is its held payload.
     fn capture_subjects_carrying(&mut self, memory: &impl Memory, store: Option<&AppearanceStore>) {
         let result = (|| {
             let initial = self.rows.outcome;
@@ -739,8 +706,6 @@ impl Captured {
                     .len
                     .checked_add(subjects.count as usize)
                     .ok_or("country subject arena demand overflow")?;
-                // Native faction previews name the stored roster in its order
-                // in subject naming. Read no payload for countries without subjects.
                 let held = store.and_then(|store| store.carried_subjects(index));
                 let copied = self
                     .subjects
@@ -790,8 +755,6 @@ impl Captured {
         self.tables_at(None)
     }
 
-    /// `hour` is the frame's: a packet is published only when read for it.
-    /// Tests without a frame pass None.
     pub fn tables_at(&self, hour: Option<i32>) -> [TableView; N] {
         [self.appearance_table(), self.reserved_table(hour)]
     }
@@ -905,9 +868,7 @@ impl Captured {
             },
             None => None,
         };
-        // Malformed optional spans refuse only their field, never the prefix.
         let original_tag = r.original_tag.and_then(span);
-        // Packets store no hour: only one read for this frame's hour is published.
         let current = |sample: Option<i32>| {
             sample.is_some_and(|sample| frame_hour.is_none_or(|hour| sample == hour))
         };
@@ -915,7 +876,6 @@ impl Captured {
             self.reserved.outcome,
             std::slice::from_ref(r),
             |_| ReservedCountryNamingRow {
-                // Country0's operands are not witnessed; current writers leave them empty.
                 attack: replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None)),
                 raw_country_observations: replay_data::rows::Recorded::Value(
                     replay_data::rows::Retired,

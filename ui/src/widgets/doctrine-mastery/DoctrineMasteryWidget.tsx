@@ -31,9 +31,6 @@ import { OPTIONS } from './definition';
 import './doctrineMastery.css';
 import type { DoctrineMasteryReply, DoctrineRewardsReply, MasteryFolder, MasteryTrack } from '../../generated/dashboard';
 
-/** Each doctrine track's mastery against its reward thresholds, filling downward as the game's track does. Following
- * playback it is a pushed panel that renders only when folders, tracks, names or unlocks change; mastery, bank, gains
- * and the meters' fill are live cells painted each frame. */
 export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -59,9 +56,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const artNode = (key: string | null | undefined) => key && <img data-doctrine-art={spriteId(doctrineSprite(key)!)} src={art(key) ?? undefined} hidden={!art(key)} alt="" />;
   const chosen = contentSet(options.folders).map(contentKey);
   const shown = useMemo(() => data?.folders.filter(folder => !chosen.length || chosen.includes(folder.id)) ?? [],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, JSON.stringify(chosen)]);
-  // The hour a tooltip speaks of: the one asked, else the head's when followed.
   const hourShown = () => head.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
   const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing ? { sourceId: track.source.id, revision: track.source.revision,
@@ -90,16 +85,13 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
       ...description ? { description } : {} };
     }
     return trackTooltip(folder, item, numbers, dayLabel(hourShown()));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks, described.data, head.hour, live]);
   const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, hourShown())]); } });
-  // A hovered reward's descriptions, with the country's values, load for its track at the hour then shown.
   useEffect(() => {
     const [kind, key] = tips.hovered?.split('#') ?? [];
     const [folder, item] = (key ?? '').split('|').map(Number);
     setDescribing(kind === 'mark' && Number.isSafeInteger(folder) && Number.isSafeInteger(item) ? { folder: folder!, track: item!, hour: hourShown() } : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tips.hovered]);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...(described.data?.warnings ?? [])] : null);
   const nameHour = head.at ?? head.hour;
@@ -132,7 +124,6 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
           const marks = trackMarks(item, true);
           const numbers = trackNumbers(values, key);
           const texts = trackTexts(numbers);
-          // A known scale draws the fill element; its height is painted from the mastery cell.
           const ratio = trackRatio(item, numbers.mastery);
           return <div key={key} data-track={key} className={`doctrine-mastery-track${item.sub === null ? ' is-empty' : ''}`} {...tips.rowProps(`track#${key}`)}>
             {tips.hovered === `track#${key}` && <span id={tips.descriptionId(`track#${key}`)} className="sr-only">{tooltipText(trackTooltip(folder, item, numbers, dayLabel(hourShown())))}</span>}

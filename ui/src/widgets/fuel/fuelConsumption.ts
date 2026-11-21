@@ -44,8 +44,6 @@ export function validateFuelDemandHistory(value: unknown): FuelDemandHistoryRepl
 export const siteLevel = (site: FuelDemandReply['sites'][number], index: number) =>
   `site:${JSON.stringify([index, site.list, site.ordinal, site.base, site.containerOwner])}`;
 
-/** The consumers a level shows: all, a family, an army and the armies under it, a fleet, or an air base's wings. Only the
- * pack's own links select a consumer. */
 export function consumptionParts(reply: FuelDemandReply, level: string): FuelDemandPart[] {
   if (level === 'all') return reply.parts;
   if (/^family:[012]$/.test(level)) return reply.parts.filter(part => part.kind === Number(level.slice(7)));
@@ -74,7 +72,6 @@ export function consumptionLevelAvailable(reply: FuelDemandReply, level: string)
     || reply.fleets.some(fleet => `fleet:${fleet.reference}` === level) || reply.sites.some((site, index) => siteLevel(site, index) === level);
 }
 
-/** Whether every consumer a level shows was counted, so its sum is the level's demand rather than a subtotal. */
 export function levelComplete(reply: FuelDemandReply, level: string, shown: readonly FuelDemandPart[]): boolean {
   if (shown.some(part => part.amountRaw === null)) return false;
   if (level.startsWith('site:')) {
@@ -109,12 +106,10 @@ export function readFuelConsumption(token: unknown, campaign: string, branch: st
   } catch { return null; }
 }
 
-/** A dated detail's basis from the demand reply it was picked in. */
 export function demandBasis(branchId: string, reply: FuelDemandReply): FuelBasis | null {
   return reply.countryInstance === null ? null : { branchId, tag: reply.tag, hour: reply.readHour, country: reply.country, countryInstance: reply.countryInstance };
 }
 
-/** A consumer's projection runs as chart runs: gaps where a read did not hold it, a new line after each gap. */
 export function demandGeometry(runs: readonly { firstHour: number; lastHour: number; startsSegment: boolean; amountRaw: string | null }[], scale: number) {
   return runs.flatMap((run, i) => run.amountRaw === null ? [] : [{ firstHour: run.firstHour, lastHour: run.lastHour,
     value: Math.max(0, Number(run.amountRaw) / scale), breakBefore: run.startsSegment || i === 0 || runs[i - 1].amountRaw === null || runs[i - 1].lastHour + 1 !== run.firstHour }]);

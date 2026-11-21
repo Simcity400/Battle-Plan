@@ -7,20 +7,13 @@ import type { Run, Span } from './series';
 import { formatAxisValue } from './valueAxis';
 import type { TooltipContent } from './tooltip';
 
-/** One held line: exact runs of one name, in hour order. */
 export interface RunLine { nameFailure?: Error; id: string; label: string; color: string; runs: readonly Run[]; format?: (value: number) => string }
 
-/** Held-step lines of exact runs over the shared time chart: each line holds its value
- * from a run's first hour to its last, gaps stay open, and hours outside `known` are
- * shaded as not recorded. The hover lists every line's value at the hour; a line
- * without a run then is absent. Callers own the values, wording and colours. */
 export default function RunLines({ label, extent, branchStart, playhead, hour, lines, known, active, revision, hoursPerSecond, onPick, onContextMenu, formatValue, empty }: {
   label: string; extent: readonly [number, number]; branchStart: number; playhead: number | null;
-  /** The hour the rest of the widget shows, marked on the plot. */
   hour: number | null;
   lines: readonly RunLine[]; known?: readonly Span[]; active: boolean; revision: unknown; hoursPerSecond?: number;
   onPick?: (hour: number) => void; onContextMenu?: (hour: number, clientX: number, clientY: number) => void; formatValue?: (value: number) => string;
-  /** The tooltip row when no line holds a value at the hour. */
   empty?: string;
 }) {
   const gaps = useMemo(() => {

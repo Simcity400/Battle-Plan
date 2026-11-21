@@ -1,6 +1,3 @@
-//! The ships' and aircraft's lines: each layer's product, built on its worker from rows at the head,
-//! against today's product of the same hour from the recording, and against itself built again from
-//! the same rows and vision.
 
 use super::{Compared, Document, Layer, Mirrors};
 use crate::layers::{aircraft::Aircraft, rebuilt::Built, ships::Ships};
@@ -9,11 +6,6 @@ use std::{io, sync::Arc, time::Duration};
 use viewer_foundation::map::perspective::Choice;
 use viewer_world::map::unit_models::naval_differ;
 
-/// How long a comparison waits for a worker's answer at the hour; a refused worker answers at once
-/// and a stopped one fails the sample at once. A table a worker learns it reads lands at the head
-/// only while the clock is held (after a seek); while it plays, as in flat play with the head held
-/// for a comparison, it lands in the next step, past that head. A sample whose product is not built
-/// then is counted as loading, by name, never as equal, and the summary counts those samples.
 const WAIT: Duration = Duration::from_secs(30);
 
 fn loading(why: String) -> Compared {
@@ -36,8 +28,6 @@ pub(super) fn aircraft_make(document: &Document) -> Box<dyn Layer> {
     Box::new(crate::layers::aircraft::new(Arc::clone(&document.content), true).expect("the aircraft layer's worker starts"))
 }
 
-/// Gives the layers the playhead whose rows they read; the ships today's vision of the document's
-/// hour, the aircraft the perspective alone, as the window does.
 pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, document: &Document, choice: &Choice) -> io::Result<()> {
     let recording = crate::playhead_host::views::Recording { branch: document.playback.branch() };
     if let Some(ships) = layer.any().downcast_ref::<Ships>() {
@@ -53,8 +43,6 @@ pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, docu
     Ok(())
 }
 
-/// What a line's notes say of the worker: builds, their milliseconds, frames passed over, and the
-/// tables it reads.
 fn worker<P: Send + Sync + 'static>(rebuilt: &crate::layers::rebuilt::Rebuilt<P>, built: &Built<P>) -> Value {
     let builds = rebuilt.builds();
     json!({
@@ -69,9 +57,6 @@ fn note(compared: &mut Compared, what: String) {
     compared.first.get_or_insert(what);
 }
 
-/// The admitted task forces' candidates, placements and formations against today's at the
-/// document's hour. Today's land competitors and naval combats are not this layer's yet, and a
-/// province today drops whole for a refused competitor is left out; both counted.
 pub(super) fn ships_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     use viewer_world::map::unit_history::NavalSources;
     use viewer_foundation::unit_class::CounterClass;
@@ -137,7 +122,6 @@ pub(super) fn ships_today(layer: &dyn Layer, document: &Document) -> io::Result<
     Ok(compared)
 }
 
-/// The hour's aircraft plan against today's at the document's hour.
 pub(super) fn aircraft_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = aircraft(layer);
     let mut compared = Compared::default();
@@ -187,7 +171,6 @@ pub(super) fn aircraft_today(layer: &dyn Layer, document: &Document) -> io::Resu
 
 pub(super) fn ships_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = ships(layer);
-    // A view that draws no ship model composes none: there is nothing to build again.
     if !layer.drawn() {
         return Ok(Compared { entries: 1, notes: json!({"drawn": false}), ..Compared::default() });
     }

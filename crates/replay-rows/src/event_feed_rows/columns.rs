@@ -1,12 +1,6 @@
-//! Exact occurrence stream. The interval row supplies world and clock context; each
-//! occurrence stores its sequence gap and only the operand words that differ from
-//! the occurrence before it, so a run of similar occurrences (a rebuilt candidate
-//! roster, say) costs its few changing words and repeats byte for byte when the
-//! same run recurs.
 use super::*;
 use crate::rows::Field;
 
-// Source, country/cause leaves, script spans/flags/operands and operation leaves.
 const FIELDS: usize = 37;
 type Words = [Option<u64>; FIELDS];
 
@@ -95,19 +89,15 @@ fn words(event: &EventFeedEvent, read_hour: i32) -> Words {
     words
 }
 
-/// The words of an occurrence that differ from the previous occurrence's.
 fn changed(words: &Words, previous: &Words) -> u64 {
     (0..FIELDS).fold(0, |mask, column| {
         mask | (u64::from(words[column] != previous[column]) << column)
     })
 }
 
-/// Where the occurrence stream goes: counted for sizing, or appended after
-/// the caller reserved the counted bytes.
 trait Sink {
     fn put(&mut self, bytes: &[u8]) -> io::Result<()>;
     fn varint(&mut self, value: u128) -> io::Result<()>;
-    /// One word as the ordinary optional column change from its previous value.
     fn change(&mut self, value: Option<u64>, previous: Option<u64>) -> io::Result<()>;
 }
 struct Count(usize);
@@ -150,11 +140,6 @@ impl Sink for Vec<u8> {
 
 pub struct Batch<'a>(pub &'a EventFeedHistoryRow);
 impl Batch<'_> {
-    /// The occurrence count, then per occurrence its sequence gap (the first
-    /// from zero), its changed-word mask (zero when it repeats the previous
-    /// occurrence's mask, else the mask above a set low bit) and each changed
-    /// word as the ordinary optional column change. The first occurrence
-    /// differs from all-absent words.
     fn write(&self, output: &mut impl Sink) -> io::Result<()> {
         let count = u32::try_from(self.0.events.len())
             .map_err(|_| invalid("too many Event feed occurrences"))?;
@@ -201,11 +186,9 @@ pub fn decode(
     row: &EventFeedHistoryRow,
     input: &mut Decoder<'_>,
 ) -> io::Result<Vec<EventFeedEvent>> {
-    // Every occurrence stores at least its sequence gap and mask code.
     let count = input.count(2)?;
     let mut events = Vec::new();
     allocation::reserve_exact(&mut events, count)?;
-    // The words in force, which each occurrence changes in place, and which of them are held.
     let (mut sequence, mut words, mut held, mut previous_mask) =
         (0_u64, [None; FIELDS], 0_u64, 0_u64);
     for index in 0..count {
@@ -243,7 +226,6 @@ pub fn decode(
     Ok(events)
 }
 
-/// A word stored as the ordinary optional column change from its `previous` value.
 fn changed_word(input: &mut Decoder<'_>, previous: Option<u64>) -> io::Result<Option<u64>> {
     match input.u8()? {
         0 => return Ok(None),
@@ -263,8 +245,6 @@ fn changed_word(input: &mut Decoder<'_>, previous: Option<u64>) -> io::Result<Op
         .map_err(|_| invalid("numeric delta exceeds native field range"))
 }
 
-/// An occurrence's words as its fields read them, each read marked: a held word no field
-/// reads is refused.
 struct Read<'w> {
     words: &'w Words,
     read: u64,
@@ -321,7 +301,6 @@ impl ChangeOperands for Read<'_> {
     }
 }
 
-/// The occurrence `words` hold, of which those of `held` are present.
 fn event(
     row: &EventFeedHistoryRow,
     sequence: u64,
@@ -548,7 +527,6 @@ mod tests {
                 cause: Recorded::Value(Default::default()),
                 script: Some(EventFeedScript {
                     token_start: 2,
-                    // An owner refusal's token is its reason.
                     token_len: if identity || change == DelayedRefused {
                         5
                     } else {
@@ -615,7 +593,6 @@ mod tests {
         roundtrip(&row);
         let mut later = row.clone();
         later.read_hour += 1;
-        // A metadata-only delta must keep the absolute event dates, not rebase held occurrences.
         assert_eq!(
             later
                 .delta(Some(&row))
@@ -652,7 +629,6 @@ mod tests {
         let held = |words: &Words| {
             (0..FIELDS).fold(0, |held, at| held | u64::from(words[at].is_some()) << at)
         };
-        // A script operand without a script flag is not silently discarded.
         let mut entry = words(&row.events[0], row.read_hour);
         entry[36] = Some(1);
         assert!(event(&row, 1, &entry, held(&entry)).is_err());
@@ -664,7 +640,6 @@ mod tests {
         assert!(repeated.validate().is_err());
     }
 
-    /// One owner's candidate roster: an interned token and consecutive targets.
     fn roster(row: &mut EventFeedHistoryRow, owner: u32, targets: impl Iterator<Item = u32>) {
         use decisions::{DecisionChange, Operation};
         for target in targets {
@@ -721,9 +696,6 @@ mod tests {
         roster(&mut row, 3, 1..=40);
         roster(&mut row, 4, (1..=40).filter(|target| *target != 4));
         roundtrip(&row);
-        // From its third, each candidate stores its sequence gap, a repeated
-        // mask and its three changed target words, nothing else; the second
-        // wrote that mask out.
         let alone = {
             let mut first = row.clone();
             first.events.truncate(40);
@@ -735,8 +707,6 @@ mod tests {
                 .chunks(8)
                 .all(|item| item == [1, 0, 1, 2, 1, 2, 1, 2])
         );
-        // The same run in a later hour, after another owner's occurrence and at
-        // other sequence numbers, repeats those bytes exactly.
         let mut later = row.clone();
         later.read_hour += 24;
         later.events.clear();
@@ -750,8 +720,6 @@ mod tests {
         assert!(batch(&later).ends_with(repeated));
     }
 
-    /// The writer's stream, with each occurrence's mask code and stored words
-    /// chosen from its changed mask and the mask before it.
     fn stream(
         row: &EventFeedHistoryRow,
         mut code: impl FnMut(usize, u64, u64) -> (u128, u64),
@@ -799,10 +767,8 @@ mod tests {
             decode(&row, &mut Decoder::new(&encoded)).unwrap(),
             row.events
         );
-        // A repeated mask written out again.
         let explicit = stream(&row, |_, mask, _| (u128::from(mask) << 1 | 1, mask));
         assert!(decode(&row, &mut Decoder::new(&explicit)).is_err());
-        // An unchanged word (the actor's ID) stored as a change.
         let unchanged = stream(&row, |index, mask, previous| {
             if index == 2 {
                 let stored = mask | 1 << 3;
@@ -812,7 +778,6 @@ mod tests {
             }
         });
         assert!(decode(&row, &mut Decoder::new(&unchanged)).is_err());
-        // A word outside the occurrence and a code without its mask bit.
         for code in [(1_u128 << FIELDS) << 1 | 1, 2] {
             let malformed = stream(&row, |index, mask, previous| {
                 if index == 1 {

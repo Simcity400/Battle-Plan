@@ -14,7 +14,6 @@ use std::{
 };
 use viewer_world::map::map_mode::{MapMode, Stock};
 
-/// Provinces 1 to 6; connected areas are runs of consecutive ids; a name is its tag, text and area.
 struct Stub(Arc<Localisation>);
 
 impl Atlas for Stub {
@@ -37,8 +36,6 @@ impl Atlas for Stub {
         out
     }
 
-    /// Today's rule in small: the factions mode writes faction names, the terrain mode none, every
-    /// other stock mode the countries' own; a scripted mode is not declared.
     fn name_layers(&self, mode: &MapMode) -> Option<NameLayers> {
         let layers = |far, near| Some(NameLayers { far, near });
         match mode {
@@ -49,7 +46,6 @@ impl Atlas for Stub {
         }
     }
 
-    /// One name, keyed by the mode and the hour of the rows it was made from.
     fn mode_names(&self, frame: &replay_frame::frame::DecodedFrame, mode: &MapMode) -> std::io::Result<Arc<Placements>> {
         let name = WorldName { key: format!("{} at {}", mode.token(), frame.hour), ..self.place("", "", &[]).unwrap() };
         Ok(Arc::new(Placements { country: vec![name], generation: viewer_foundation::map::name_draw::next_generation(), ..Placements::default() }))
@@ -74,7 +70,6 @@ impl Atlas for Stub {
             alpha: 1.0,
         })
     }
-    /// The height the country names draw at, as the content's defines give it.
     fn names_cutoff(&self) -> f32 {
         260.0
     }
@@ -87,9 +82,6 @@ fn key(high: u32, low: u32) -> u128 {
     u128::from(high) << 32 | u128::from(low)
 }
 
-/// Two countries and six provinces: a province changing hands twice inside one step, a tag renamed,
-/// a ruling party naming a group, a province's row deleted, a third country inserted, and Provinces
-/// not recorded for a stretch; the Clock, which a mode's whole names are made at.
 fn side(name: &str) -> crate::playhead_host::MapSide {
     side_of(pages(), Box::new(Names::new(Arc::new(stub()))), name)
 }
@@ -169,19 +161,15 @@ fn names(side: &crate::playhead_host::MapSide) -> &Names {
     home(side).expect("the names layer is read while the map is not composing")
 }
 
-/// The layer, or none while the map's layers are away composing (a view whose tables changed).
 fn home(side: &crate::playhead_host::MapSide) -> Option<&Names> {
     side.parts().map(|(_, layers)| layers[0].any().downcast_ref::<Names>().unwrap())
 }
 
-/// What a wait saw last: the hour applied, a compose, and the layer's carried, published and shown.
 fn state(side: &crate::playhead_host::MapSide) -> String {
     let layer = home(side).map(|layer| (layer.carried(), layer.published(), layer.shown().country.iter().map(|name| name.key.clone()).collect::<Vec<_>>()));
     format!("applied {:?}, composing {}, carried, published and shown {layer:?}", side.applied(), side.composing())
 }
 
-/// Steps of four hours, each taken once the layer has settled the last and published it (its
-/// placement worker included); `each` sees every settled hour until it returns true, within 120 s.
 fn settled_steps(side: &mut crate::playhead_host::MapSide, mut each: impl FnMut(&crate::playhead_host::MapSide, i32) -> bool) {
     let idle = |side: &crate::playhead_host::MapSide| !side.composing() && side.parts().is_some_and(|(_, layers)| layers[0].carried().entities == 0 && layers[0].published() == Published::Current);
     let (mut applied, mut checked) = (None::<i32>, None::<i32>);
@@ -246,12 +234,9 @@ fn names_settled_every_step_equal_composed_and_follow_owners_operands_rows_and_g
     assert!(latency.worker_areas > 0 && latency.buckets.iter().sum::<u64>() == latency.worker_areas, "placed on the worker: {latency:?}");
 }
 
-/// The stub's placement, of `held`'s tag only, held at a gate the test opens: `None` lets every call
-/// through, `Some(n)` n more. Counts the calls of that tag that reached the gate.
 struct Gated {
     stub: Stub,
     held: &'static str,
-    /// The one placement of `held` the gate holds and counts: the component it is placed over.
     component: &'static [u32],
     gate: Arc<(Mutex<(Option<u64>, u64)>, Condvar)>,
 }
@@ -298,28 +283,22 @@ impl Atlas for Gated {
         drop(gate);
         self.stub.place(tag, text, component)
     }
-    /// The height the country names draw at, as the content's defines give it.
     fn names_cutoff(&self) -> f32 {
         260.0
     }
 
 }
 
-/// The stepped harness settles once without a limit and then needs the hour whole: an area placed
-/// again on that step is on screen, not still on the worker.
 #[test]
 fn names_settled_without_a_limit_carry_nothing_left_on_the_worker() {
     let mut side = side("names-unlimited");
     side.catch_up(8).unwrap();
-    // Out of settling, the frames leave every change to the settle without a limit, which places them.
     side.catch_up(12).unwrap();
     let layer = names(&side);
     assert_eq!((layer.carried().entities, layer.published()), (0, Published::Current), "the hour province 3 changed hands in is placed whole: {:?}", layer.carried());
     assert!(layer.areas()[&2].members.contains(&3) && layer.areas()[&2].placed.iter().any(|(component, _)| component.contains(&3)), "placed with its newest owner");
 }
 
-/// Opens the gate when dropped, so a failed assertion does not leave the worker waiting at it while
-/// the layer joins it.
 struct Opens(Arc<(Mutex<(Option<u64>, u64)>, Condvar)>);
 
 impl Drop for Opens {
@@ -330,11 +309,6 @@ impl Drop for Opens {
     }
 }
 
-/// The worker makes a step's product once every area the step changed is placed. Alpha's
-/// placement is held at the gate from its change in the step from hour 9, in which Beta changes too:
-/// the frames go on without waiting, and the names show the product of hour 8, Beta's old placement
-/// included, never anything of the step held. Released, the step's product is shown whole: Alpha's
-/// and Beta's new placements, equal to the names composed there.
 #[test]
 fn names_with_a_placement_held_show_the_last_product_whole_and_never_part_of_the_step_held() {
     let pages = recorded(104, |at| if at == 0 { ["AAA", "BBB", "CCC"].map(str::to_owned).to_vec() } else { Vec::new() }, |at, store| {
@@ -364,8 +338,6 @@ fn names_with_a_placement_held_show_the_last_product_whole_and_never_part_of_the
         }
     });
     let localisation: Localisation = [("AAA", "Alpha"), ("BBB", "Beta"), ("CCC", "Gamma")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    // Alpha's placement over province 1 alone, which only the step from hour 9 asks: held from the
-    // start, as the worker may place a step it was fed ahead of the frames before the test looks.
     let gate = Arc::new((Mutex::new((Some(0), 0u64)), Condvar::new()));
     let atlas = Gated { stub: Stub(Arc::new(localisation)), held: "AAA", component: &[1], gate: Arc::clone(&gate) };
     let mut side = side_of(pages, Box::new(Names::new(Arc::new(atlas))), "names-held");
@@ -441,8 +413,6 @@ fn names_hidden_by_another_map_mode_are_refused_by_name_and_composed_again_when_
     });
 }
 
-/// A stand-in for the scene's names held by area: each area's names, and what each call wrote;
-/// and the whole placements given their glyph buffers.
 #[derive(Default)]
 struct Held {
     generation: Option<u64>,
@@ -485,13 +455,10 @@ impl super::Target for Held {
 }
 
 impl Held {
-    /// The scene's own precondition for drawing `placements` (`NamePass::upload`): no names, or
-    /// glyph buffers prepared for them, whole or by area.
     fn takes(&self, placements: &Placements) -> bool {
         placements.country.is_empty() || self.prepared.contains(&placements.generation) || self.generation == Some(placements.generation)
     }
 
-    /// The names drawn, in the order the pass draws them: area after area.
     fn drawn(&self) -> Vec<WorldName> {
         self.areas.values().flatten().cloned().collect()
     }
@@ -499,7 +466,6 @@ impl Held {
 
 const AREAS: u32 = 200;
 
-/// `AREAS` areas, each one country's single connected area with its name placed.
 fn areas() -> Names {
     let empty = || Arc::new(std::iter::empty::<(String, String)>().collect::<Localisation>());
     let stub = Stub(empty());
@@ -512,9 +478,6 @@ fn areas() -> Names {
     layer
 }
 
-/// One area placed again: the upload writes that area's names alone, not every area's, and the
-/// scene draws the layer's whole placements. Before, an upload cloned every name into new
-/// placements and the scene built every glyph buffer again.
 #[test]
 fn names_upload_writes_only_the_area_placed_again() {
     let (mut layer, mut scene) = (areas(), Held::default());
@@ -535,7 +498,6 @@ fn names_upload_writes_only_the_area_placed_again() {
     assert!(layer.uploaded() && layer.drawn.generation == scene.generation.unwrap());
 }
 
-/// Nothing changed: nothing is written and the window's placements stay the same.
 #[test]
 fn names_upload_with_no_area_changed_writes_nothing() {
     let (mut layer, mut scene) = (areas(), Held::default());
@@ -546,8 +508,6 @@ fn names_upload_with_no_area_changed_writes_nothing() {
     assert!(Arc::ptr_eq(&drawn, &layer.drawn), "the window's placements are the same");
 }
 
-/// The scene holding names the layer did not send (another placement drew there): one upload sends
-/// every area again, and the window's placements follow the scene's generation.
 #[test]
 fn names_sent_again_whole_send_every_area_in_one_upload() {
     let (mut layer, mut scene) = (areas(), Held::default());
@@ -561,9 +521,6 @@ fn names_sent_again_whole_send_every_area_in_one_upload() {
     assert_eq!(scene.drawn(), layer.placements().country, "the areas draw today's placements");
 }
 
-/// Plays a step a frame, as at 1,440 hours a second: between two steps, frames at the hour applied
-/// (taking none) hand the layer the steps built past the head until its worker has made the next
-/// step's product; then the frame that takes the step, which `each` sees until it returns true.
 fn ahead_steps(side: &mut crate::playhead_host::MapSide, mut each: impl FnMut(&mut crate::playhead_host::MapSide, &crate::playhead_host::Frame, i32) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -585,11 +542,6 @@ fn ahead_steps(side: &mut crate::playhead_host::MapSide, mut each: impl FnMut(&m
     }
 }
 
-/// Fed the steps ahead, the names' worker settles and places each step before the frame applies
-/// it: in the frame that takes a step, the names show that step's hour (the product was ready),
-/// equal to the names composed from the mirrors there, through owners, renames, operands, a deleted
-/// row and a stretch the core is not recorded. Before, the frame settled the step and asked the
-/// placements of it, and the names showed the hour before until they came back.
 #[test]
 fn names_fed_ahead_show_the_hour_applied_in_the_frame_that_applies_it() {
     let mut side = side("names-ahead");
@@ -609,10 +561,6 @@ fn names_fed_ahead_show_the_hour_applied_in_the_frame_that_applies_it() {
     assert!(seen >= 18, "steps seen: {seen}");
 }
 
-/// A seek while products are made ahead restarts the worker from the mirrors at the hour sought: no
-/// product made before it is shown. Sought back to hour 12 after the worker made the hours past the
-/// rename at 20, the names show Beta's tag, not the rename's, until the step that renames it, and
-/// equal the names composed at every step.
 #[test]
 fn names_sought_back_restart_from_the_mirrors_and_show_nothing_made_before() {
     let mut side = side("names-sought");
@@ -647,11 +595,6 @@ fn names_sought_back_restart_from_the_mirrors_and_show_nothing_made_before() {
     });
 }
 
-/// A naming string the recording does not name (one made before the recorder named every string at
-/// a seek): the worker's read refuses it by name, as the mirror's read did. The area keeps its tag,
-/// its name is the refusal, and the window's warnings carry it; never a name made as if the cell
-/// were empty. On `8abb44618d` the cell read as empty and the area was named as if it had no
-/// cosmetic tag.
 #[test]
 fn names_whose_naming_string_is_not_named_are_refused_by_name() {
     let mut side = side("names-unnamed");
@@ -677,11 +620,6 @@ fn names_whose_naming_string_is_not_named_are_refused_by_name() {
     assert!(warnings.iter().any(|line| line.contains("AAA: ") && line.contains("cosmetic tag: string 99 is not named at the head")), "the window's warning names it: {warnings:?}");
 }
 
-/// The product a reset makes is placed where the camera draws names. That product is what a
-/// compose waits for, and a compose is the first picture of a cold seek and of a saved frame, so a
-/// reset carries the camera's answer rather than a message sent after it: a first product made with
-/// whatever answer the worker happened to hold placed no name at all, and the first picture after a
-/// seek drew none.
 #[test]
 fn a_reset_places_its_areas_where_the_camera_draws_names() {
     let mut side = side("names-reset");
@@ -711,8 +649,6 @@ fn view(mode: Stock) -> View {
     View { map_mode: MapMode::Stock(mode), ..View::default() }
 }
 
-/// The layer as the window makes it, building a mode's whole names from the rows of its playhead,
-/// at the default mode and composed.
 fn windowed(name: &str) -> crate::playhead_host::MapSide {
     let pages = pages();
     let kinds = Arc::new((0..TableId::ALL.len()).map(|table| pages.kinds(table).map(<[replay_columnar::state::Kind]>::to_vec).unwrap_or_default()).collect());
@@ -727,7 +663,6 @@ fn windowed(name: &str) -> crate::playhead_host::MapSide {
     side
 }
 
-/// The names equal those composed from the mirrors now.
 fn equal_composed(side: &crate::playhead_host::MapSide, what: &str) {
     let (mirrors, _) = side.parts().unwrap();
     let mut fresh = names(side).fresh();
@@ -735,14 +670,6 @@ fn equal_composed(side: &crate::playhead_host::MapSide, what: &str) {
     assert_eq!(names(side).differ(&fresh), (0, None), "{what}: equal to composed");
 }
 
-/// Today's rule decides what a mode draws. At the default mode and at another that writes the
-/// countries' own names (resources here) the layer declares its tables and draws the names composed
-/// for the mode, the same names, with no restart between them. At a mode that writes names over
-/// areas that are not the countries' (factions here) it shows nothing of the old mode at once, then
-/// today's names of that mode made from the rows at the head, and never a country name meanwhile.
-/// Back at the default, nothing of the factions' names is shown, and the countries' names are
-/// composed anew and equal the mirrors'. Before, every mode but the default was refused and drew
-/// no names at all.
 #[test]
 fn names_at_each_mode_draw_what_todays_rule_writes_there_and_never_the_old_modes() {
     let mut side = windowed("names-modes");
@@ -763,8 +690,6 @@ fn names_at_each_mode_draw_what_todays_rule_writes_there_and_never_the_old_modes
     assert_eq!(side.refusals().count(), 0, "the factions mode writes names: drawn, not refused");
     assert!(names(&side).shown().country.is_empty() && names(&side).shown().generation != before, "the old mode's names are dropped at once");
     assert!(names(&side).areas().is_empty());
-    // The mode declares other tables: the map composes, and the layer is away until it swaps in.
-    // A mode's whole names reach the window only through the upload, once the scene holds them.
     let mut scene = Held::default();
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -798,8 +723,6 @@ fn names_at_each_mode_draw_what_todays_rule_writes_there_and_never_the_old_modes
 
     side.set_view(View::default()).unwrap();
     assert!(names(&side).shown().country.is_empty(), "nothing of the factions' names is shown at the default mode");
-    // The clock ran on through the factions loop, so the hour reached here may be in GAP, where
-    // Provinces are not recorded and today's rule draws no names.
     settled_steps(&mut side, |side, hour| {
         let layer = names(side);
         assert!(layer.shown().country.is_empty(), "back at the default mode no mode's names are shown at hour {hour}: {:?}; {}", layer.shown().country.iter().map(|name| &name.key).collect::<Vec<_>>(), state(side));
@@ -812,10 +735,6 @@ fn names_at_each_mode_draw_what_todays_rule_writes_there_and_never_the_old_modes
     equal_composed(&side, "back at the default mode");
 }
 
-/// A mode's whole names handed to the window are installed again when the scene no longer holds
-/// them (a new scene, as the window's arrives after the layer's first install, or another install
-/// since): the window never draws names the scene did not prepare. Before, the layer installed a
-/// product once and handed it on, and a scene that had not prepared it refused it by name.
 #[test]
 fn a_modes_whole_names_are_installed_again_in_a_scene_that_does_not_hold_them() {
     let mut side = windowed("names-whole-again");
@@ -852,8 +771,6 @@ fn a_modes_whole_names_are_installed_again_in_a_scene_that_does_not_hold_them() 
     assert!(fresh.takes(names(&side).shown()), "the next upload gives the new scene the names the window is handed: {:?} prepared", fresh.prepared);
 }
 
-/// At a mode whose rule writes no names (terrain here) the layer declares no table, holds nothing,
-/// hands the window no name and holds no hour back.
 #[test]
 fn names_at_a_mode_that_writes_none_declare_and_hold_nothing() {
     let mut side = windowed("names-none");
@@ -869,10 +786,6 @@ fn names_at_a_mode_that_writes_none_declare_and_hold_nothing() {
     assert_eq!(names(&side).published(), Published::Current);
 }
 
-/// The picture the window is handed after the upload, at every kind of mode (the countries' own
-/// names, a mode's whole names, none), meets the scene's precondition for drawing it: no names, or
-/// glyph buffers the scene prepared. On round 7 a mode's whole names were handed to the window
-/// without being prepared, and the window stopped before its first frame at every such mode.
 #[test]
 fn names_hand_the_window_only_pictures_the_scene_has_prepared_at_every_kind_of_mode() {
     let mut side = windowed("names-prepared");
@@ -880,7 +793,6 @@ fn names_hand_the_window_only_pictures_the_scene_has_prepared_at_every_kind_of_m
     let upload = |side: &mut crate::playhead_host::MapSide, scene: &mut Held, what: &str| {
         let applied = side.applied().unwrap();
         side.frame(applied).unwrap();
-        // While the map composes (a mode whose tables differ) the window is handed nothing new.
         if side.composing() {
             return false;
         }
@@ -911,11 +823,6 @@ fn names_hand_the_window_only_pictures_the_scene_has_prepared_at_every_kind_of_m
     }
 }
 
-/// The names' worker had placed the four-hour steps built ahead, the rename at hour 20 among them,
-/// when the pace fell to an hour a step at hour 16: those steps are built again an hour each, the
-/// worker starts over from the mirrors at hour 16, and at every hour after, a step of one hour a
-/// frame, the names equal those composed from the mirrors there and Beta keeps its tag until the
-/// hour that renames it: nothing made from a step that was void is shown.
 #[test]
 fn names_after_a_slower_pace_start_over_and_equal_composed_at_each_hour() {
     let mut side = side("names-pace");

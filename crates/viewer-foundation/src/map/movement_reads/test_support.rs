@@ -1,4 +1,3 @@
-//! Synthetic shared movement reads.
 use super::*;
 use crate::trigger_content::TriggerContent;
 use dashboard_text::triggers::LeaderRoles;
@@ -147,8 +146,6 @@ pub fn frame() -> DecodedFrame {
             },
         ],
     );
-    // This legacy fixture maps GER's raw holder to slot0. Its known null
-    // faction needs the separate reserved getter, even with no members.
     put::<tables::ReservedCountryNaming>(
         &mut frame,
         vec![replay_data::rows::ReservedCountryNamingRow {
@@ -188,7 +185,6 @@ pub fn frame() -> DecodedFrame {
             },
         ],
     );
-    // Each country owns its state count, read by a tag operand.
     put::<tables::CountryCounterInputs>(
         &mut frame,
         [10, 11]

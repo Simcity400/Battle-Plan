@@ -1,10 +1,3 @@
-//! Intelligence (family 55): cipher races, operatives abroad, agencies, an agency's roster and the
-//! espionage log, each read from the recording's own tables. Rows at an hour are [`AtHour`]
-//! products; each cipher attempt's start and break come from the timeline's cipher history, read
-//! once; an agency's departed operatives are a read of their history at the request; completed
-//! operations are the declared log `operation-completions`.
-//!
-//! [`AtHour`]: super::at_hour::AtHour
 
 pub mod agencies;
 pub mod agency_content;
@@ -28,18 +21,14 @@ use std::{collections::HashMap, io, sync::Arc};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The identity tables every intelligence reply names its countries through.
 pub const IDENTITY: [TableId; 2] = [TableId::Countries, TableId::CountryLinks];
 
-/// Each raw country id's tag at a frame's hour, by the one identity rule: the id's canonical slot
-/// through CountryLinks, the slot's tag from its first country by ascending raw id.
 pub struct Tags {
     slots: HashMap<u32, u32>,
     tags: HashMap<u32, String>,
 }
 
 impl Tags {
-    /// The frame's countries; refused by name where either identity table is not recorded.
     pub fn read(frame: &DecodedFrame) -> io::Result<Self> {
         let countries = frame.complete::<tables::Countries>()?;
         let links = frame.complete::<tables::CountryLinks>()?;
@@ -60,13 +49,10 @@ impl Tags {
         self.slots.get(&raw).copied()
     }
 
-    /// The tag `raw` names at the hour; none when its link or its country is absent.
     pub fn tag(&self, raw: u32) -> Option<String> {
         self.slot(raw).and_then(|slot| self.tags.get(&slot).cloned())
     }
 
-    /// Every country present at the hour (a slot past the reserved one that the identity names),
-    /// each by the least raw id linked to its slot, ascending by tag.
     pub fn present(&self) -> Vec<Country> {
         let mut least: HashMap<u32, u32> = HashMap::new();
         for (&raw, &slot) in &self.slots {
@@ -80,7 +66,6 @@ impl Tags {
     }
 }
 
-/// A country a reply names: its raw id and, where the hour's identity names it, its tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -95,8 +80,6 @@ impl Country {
     }
 }
 
-/// What the intelligence replies read of the recorded content: the reader's localisation and the
-/// cipher defines, each with why it is missing (a reply keeps its recorded numbers either way).
 pub struct Content {
     pub localisation: Result<Arc<Localisation>, String>,
     pub defines: Result<cryptology::Defines, String>,
@@ -117,7 +100,6 @@ impl Content {
         Self { localisation, defines }
     }
 
-    /// `key`'s text in the reader's language: a localisation key, else the bytes as they are.
     pub fn text(&self, key: &[u8]) -> Option<String> {
         if key.is_empty() {
             return None;
@@ -131,12 +113,10 @@ impl Content {
     }
 }
 
-/// Why `table` holds no usable rows at the frame's hour, as the frame names it.
 pub fn missing(frame: &DecodedFrame, table: TableId) -> Option<String> {
     dashboard_text::scope::unread(table, &frame.tables[table.index()])
 }
 
-/// The branch params every intelligence product is asked with.
 pub fn branch(branch_id: &str) -> Result<(), &'static str> {
     branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
 }

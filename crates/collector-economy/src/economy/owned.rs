@@ -1,7 +1,6 @@
 use super::*;
 use crate::raw::CountrySlots;
 
-/// Acquire one owned payload and report its per-table costs.
 pub fn copy_economy_rest_refresh(
     memory: &impl Memory,
     ctx: EconomyRestCopyContext,
@@ -20,7 +19,6 @@ fn copy_economy_rest(
     job.game_state = ctx.game_state;
     job.resources_active = ctx.resources_active;
     job.other_active = ctx.other_active;
-    // Worker buffers grow from the original headers without restarting acquisition.
     if ctx.resources_active {
         job.resources.prepare(ctx.resource_rows, ctx.resource_scratch);
     }
@@ -45,7 +43,6 @@ fn copy_economy_rest(
             .iter()
             .any(|span| !span.ok && span.mask == M_E_CENSUS)
     {
-        // Failed shared input must not be retried by the typed resource group.
         job.resources.outcomes = [Some(Outcome::Unavailable {
             reason: "economy shared country census unreadable",
         }); 3];
@@ -131,8 +128,6 @@ fn acquire_resource_group(
         owned.outcomes[1],
         Some(Outcome::Rows { .. })
     ));
-    // A market census epoch must include its contract baseline even off the
-    // daily fuel/purchase slot. Carried epochs return without native reads.
     collector_observers::market_changes::held::recover_contracts(memory, ctx.base, ctx.game_state);
     ticks[7] = elapsed(started);
     reads.select(TABLES[8]);
@@ -149,11 +144,6 @@ fn acquire_resource_group(
 }
 
 impl Captured {
-    /// Interpret eight indexed raw tables and install three owned native tables.
-    /// Resource rows are already acquired in dependency order; their
-    /// installation performs no native reads, index lookup or replayed walk.
-    /// All rows, arenas and truncation outcomes reach the same FIFO
-    /// handoff. Clears `rest_raw_mode` so the next capture starts clean.
     pub fn decode_economy_rest_payload(
         &mut self,
         base: usize,
@@ -289,7 +279,6 @@ impl Captured {
         self.rest_raw_mode = false;
     }
 
-    /// Finish an accepted acquisition failure without retrying live memory.
     pub fn fail_economy_rest_capture(&mut self, reason: &'static str) {
         self.fuel.outcome = Outcome::Unavailable { reason };
         self.experience.outcome = Outcome::Unavailable { reason };
@@ -307,25 +296,7 @@ impl Captured {
     }
 }
 
-// ===========================================================================
-// Economy-rest raw-copy split (CountryFuel, CountryExperience,
-// ProvinceSupply, HubMotorization, DisruptedSupply, ForeignHomebases,
-// ResourceDefinitions, CountryResources, ResourceExchanges,
-// PurchaseContracts, CountryFuelConsumers).
-//
-// Eight tables retain their raw mirror and indexed decode. The Economy
-// acquisition request also owns native resource-definition, pool and exchange
-// rows, acquired by the direct readers with exact per-frame capacity grants.
-// All raw staging completes before typed resource acquisition, preventing a
-// later raw capacity shortage from retrying an already-read resource source.
-//
-// Shared raw census spans cover the seven daily raw tables, never ProvinceSupply.
-// A source fault there also blocks active typed resource acquisition. When the
-// other daily tables are inactive, only ProvinceSupply is staged; country and
-// market sources are untouched. Supply-root masks include only active supply tables.
-// ===========================================================================
 
-/// Raw bits retain full eleven-table positions; slots6..8 use owned native rows.
 const M_E_FUEL: u32 = 0x001;
 const M_E_EXP: u32 = 0x002;
 const M_E_SUPPLY: u32 = 0x004;
@@ -334,15 +305,11 @@ const M_E_DISRUPTED: u32 = 0x010;
 const M_E_FOREIGN: u32 = 0x020;
 const M_E_PURCH: u32 = 0x200;
 const M_E_FUEL_CONSUMERS: u32 = 0x400;
-/// The fuel status serves both fuel tables; the ring feeds CountryFuel alone.
 const M_E_FUEL_STATUS: u32 = M_E_FUEL | M_E_FUEL_CONSUMERS;
 const M_E_CENSUS: u32 = 0x63B;
 const M_E_SUPPLY_ROOT: u32 = 0x03C;
 const M_E_SUPPLY_OBJ: u32 = 0x038;
 
-/// One hour of eight raw tables and three owned native resource tables.
-/// Raw staging and resource pools grow from their original headers on the
-/// allocating Economy worker; decode grows the receiving frame before installation.
 #[derive(Debug, Default)]
 pub struct EconomyRestJob {
     pub log: RawLog<N>,
@@ -365,7 +332,6 @@ impl EconomyRestJob {
         }
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -379,9 +345,6 @@ impl EconomyRestJob {
         self.log.grow_for_next() || self.resources.needs_growth()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed walk
-    /// in the meantime, so sizing is a pure performance knob.
     pub fn grow(&mut self) {
         self.log.grow();
         self.resources.grow();
@@ -390,31 +353,21 @@ impl EconomyRestJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EconomyRestCopyReport {
-    /// False for an unstarted resource group when staging needs capacity and
-    /// has not consumed a source fault. Source faults plus overflow are accepted
-    /// terminal unavailable payloads, never a reason to reread failed memory.
     pub raw_ok: bool,
     pub copy_ticks: [u64; N],
-    /// Indexed raw payload bytes. Owned resource tables have zero raw bytes;
-    /// their native row storage is included in raw-memory payload-vector cost.
     pub raw_bytes: [u64; N],
 }
 
-/// Acquisition-job parameters supplied at the sampling boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct EconomyRestCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub resource_rows: [usize; 3],
     pub resource_scratch: usize,
-    /// CountryResources, ResourceExchanges and their census are walked
-    /// (hourly).
     pub resources_active: bool,
     pub other_active: bool,
 }
 
-/// Owned native rows only. Capacity grants are the enclosing frame's exact
-/// logical limits, not these pools' (potentially larger) physical storage.
 #[derive(Debug, Default)]
 pub(super) struct OwnedResources {
     pub(super) definitions: Vec<cstrategic_resource::Row>,
@@ -506,8 +459,6 @@ fn e_pool_u32(log: &RawLog<N>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 fn espan(
     log: &mut RawLog<N>,
     memory: &impl Memory,
@@ -518,8 +469,6 @@ fn espan(
     log.take(memory, addr?, len, mask)
 }
 
-/// Bulk variant for contiguous table copies (status blocks, array data).
-/// Enclosed sub-reads serve from the bulk span at replay.
 fn esbulk(
     log: &mut RawLog<N>,
     memory: &impl Memory,
@@ -530,8 +479,6 @@ fn esbulk(
     log.take_bulk(memory, addr?, len, mask)
 }
 
-/// Mirror of one MSVC string's reads: 32-byte header plus heap payload and
-/// terminator. Inline strings ride in the header span.
 fn copy_economy_string(log: &mut RawLog<N>, memory: &impl Memory, string: usize, mask: u32) {
     let Some(header_start) = espan(log, memory, Some(string), 32, mask) else {
         return;
@@ -585,8 +532,6 @@ fn copy_economy_string(log: &mut RawLog<N>, memory: &impl Memory, string: usize,
     let _ = espan(log, memory, source.checked_add(len), 1, mask);
 }
 
-/// One structural copy pass over the active raw tables. The hourly supply
-/// block is independent of the daily country and market sources.
 #[allow(clippy::collapsible_if)]
 fn copy_economy_rest_pass(
     memory: &impl Memory,
@@ -597,14 +542,10 @@ fn copy_economy_rest_pass(
 ) {
     let _reads = read_accounting::table(TABLES[2]);
     log.has_bulk = true;
-    // Retain the independent hourly sample before a daily census can fail.
     copy_economy_province_supply(log, memory, game_state, other_active);
     if !other_active {
         return;
     }
-    // Census runs inline with per-country details copied immediately while
-    // iterating slots, parsing link bytes from the log. No heap allocation on
-    // the acquisition worker.
     let Some(countries_start) = espan(
         log,
         memory,
@@ -640,7 +581,6 @@ fn copy_economy_rest_pass(
     let Some(mut slots) = CountrySlots::new(countries, links, base) else {
         return;
     };
-    // Market manager shared by purchases.
     let market = game_state
         .checked_add(cgame_state::MARKET_MANAGER)
         .and_then(|p| {
@@ -670,18 +610,12 @@ fn copy_economy_rest_pass(
             M_E_PURCH,
         );
     }
-    // Per-country batched gathers: fuel, experience, resources, market status,
-    // supply systems with hub/disrupted/foreign details.
-    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
     for slot in 1..slots.count() {
         let pointer = match slots.take(log, memory, slot, M_E_CENSUS) {
             Some(Some(pointer)) => pointer,
             Some(None) => continue,
             None => return,
         };
-        // Fuel status block (batched gather): one bulk covers the walk's
-        // scattered status reads for both fuel tables, then its consumer
-        // entries and history ring.
         let _ = espan(
             log,
             memory,
@@ -705,7 +639,6 @@ fn copy_economy_rest_pass(
                 }
             }
         }
-        // Experience block: one contiguous 0x58 bulk.
         if let Some(ptr_start) = espan(
             log,
             memory,
@@ -720,7 +653,6 @@ fn copy_economy_rest_pass(
                 let _ = esbulk(log, memory, Some(status), 0x58, M_E_EXP);
             }
         }
-        // Market status backlink for purchase authentication.
         if let Some(ptr_start) = espan(
             log,
             memory,
@@ -739,15 +671,10 @@ fn copy_economy_rest_pass(
             return;
         }
     }
-    // Supply per-system details plus market contracts (second loops over the
-    // same slots using log-served discovery).
     copy_economy_supply_details(log, memory, base, game_state);
     copy_economy_market_contracts(log, memory, base, market);
 }
 
-/// Mirror of the fuel walk's consumer-entry and history-ring reads, found
-/// through the headers in the status bulk at `start`. A header the walk
-/// refuses stages nothing; the replay refuses it from the same bulk.
 fn copy_fuel_arrays(log: &mut RawLog<N>, memory: &impl Memory, start: usize) {
     use ccountry_fuel_status::{CONSUMERS, HISTORY_RING, HISTORY_RING_ENTRIES, MAX_CONSUMERS};
     let header = |log: &RawLog<N>, offset: usize| -> [u8; 16] {
@@ -811,7 +738,6 @@ fn copy_economy_province_supply(
                 M_E_SUPPLY_ROOT,
             );
         }
-        // Use the first header's recorded bytes to discover its contiguous rows.
         if let Some(start) = province_data {
             let mut header = [0; 16];
             header.copy_from_slice(&log.bytes[start..start + 16]);
@@ -900,7 +826,6 @@ fn copy_economy_supply_details(
         obj.copy_from_slice(
             &log.bytes[obj_start..obj_start + engine_native::ccountry_supply_system::SIZE],
         );
-        // Hub settings array.
         let hub_data = usize::try_from(u64::from_le_bytes(
             obj[engine_native::ccountry_supply_system::HUB_SETTINGS_DATA
                 ..engine_native::ccountry_supply_system::HUB_SETTINGS_DATA + 8]
@@ -951,8 +876,6 @@ fn copy_economy_supply_details(
                 }
             }
         }
-        // Disrupted buckets: header already in the 0x290 bulk; copy the
-        // bucket extent plus end sentinel.
         {
             let buckets = usize::try_from(u64::from_le_bytes(
                 obj[engine_native::ccountry_supply_system::DISRUPTED_BUCKETS
@@ -994,7 +917,6 @@ fn copy_economy_supply_details(
                 }
             }
         }
-        // Foreign homebases: array plus records with source strings.
         {
             let foreign_data = usize::try_from(u64::from_le_bytes(
                 obj[engine_native::ccountry_supply_system::FOREIGN_HOMEBASE_DATA
@@ -1023,8 +945,6 @@ fn copy_economy_supply_details(
                     ) else {
                         continue;
                     };
-                    // Source string lives inside the record; take the exact header span plus
-                    // payload for exact service (the bulk above already covers the record itself).
                     let _ = rec_start;
                     if let Some(raddr) = rec_addr
                         .and_then(|r| r.checked_add(engine_map_air::foreign_homebase_node::SOURCE))
@@ -1043,8 +963,6 @@ fn copy_economy_supply_details(
     }
 }
 
-/// Mirror of the market contracts: owned vector with 0x260 bulks plus
-/// per-country directional vectors. All spans carry the purchases mask.
 fn copy_economy_market_contracts(
     log: &mut RawLog<N>,
     memory: &impl Memory,
@@ -1099,8 +1017,6 @@ fn copy_economy_market_contracts(
             }
         };
         if let Some(start) = esbulk(log, memory, Some(pointer), 0x260, M_E_PURCH) {
-            // These headers are already present in the existing contract bulk.
-            // No additional native read or independent census for event sizing.
             let count = |pool| {
                 e_pool_u32(
                     log,

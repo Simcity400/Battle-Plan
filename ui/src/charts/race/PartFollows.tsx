@@ -9,8 +9,6 @@ import type { SeriesStateReply } from '../../generated/dashboard';
 import { keyedAnswer, keyedStates, measureAnswer, measureParts, measureStates } from './measureParts.ts';
 import type { MeasureParts, PartValues } from './measureParts';
 
-/** The parts' followed answers at the head, read as a chart draws: a part's answer landing wakes the readers and
- * renders nothing. */
 export class PartsHead {
   private entries = new Map<string, FollowEntry | null>();
   private ticks = 0;
@@ -18,7 +16,6 @@ export class PartsHead {
   private made: { ticks: number; tags: readonly string[]; values: Map<string, PartValues> } | null = null;
   constructor(readonly parts: MeasureParts) {}
 
-  /** Moves whenever a part's answer lands or its follow starts or stops. */
   version = () => this.ticks;
 
   subscribe = (wake: () => void) => { this.wakes.add(wake); return () => { this.wakes.delete(wake); }; };
@@ -34,13 +31,11 @@ export class PartsHead {
     for (const wake of [...this.wakes]) wake();
   }
 
-  /** Whether every part's follow answers at the head. */
   followed(): boolean {
     const ids = this.parts.kind === 'measures' ? this.parts.items.map(item => item.id) : ['keyed'];
     return ids.every(id => this.entries.get(id) != null);
   }
 
-  /** Each of `tags`' parts at the head; the same map while nothing landed. */
   values(tags: readonly string[]): Map<string, PartValues> {
     if (this.made && this.made.ticks === this.ticks && this.made.tags === tags) return this.made.values;
     const parts = this.parts;
@@ -61,8 +56,6 @@ function PartFollow({ store, query, root, id, head }: { store: FollowStore | nul
   return null;
 }
 
-/** Follows each part of `tags` at the head while `on`: one followed `series-state` per part measure, or one of the
- * sub-keyed series (each owner's parts). Renders nothing; `head` holds the answers. */
 export function PartFollows({ store, branchId, tags, on, root, head }: { store: FollowStore | null; branchId: string | undefined;
   tags: readonly string[]; on: boolean; root: RefObject<Element | null>; head: PartsHead }) {
   const parts = head.parts;
@@ -78,8 +71,6 @@ function validateStates(value: unknown): SeriesStateReply {
   return reply;
 }
 
-/** `tags`' parts at `hour`, asked once per (tags, hour): one `series-state` per part measure, or one of the sub-keyed
- * series. Nothing is asked while `enabled` is off; a failure is held with its retry. */
 export function usePartStates(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined, parts: MeasureParts | undefined,
   tags: readonly string[], hour: number, enabled: boolean) {
   const key = enabled && source && branchId && parts && tags.length ? JSON.stringify([source.id, source.revision, branchId, parts.kind === 'keyed' ? parts.family
@@ -98,8 +89,6 @@ export function usePartStates(client: DashboardClient, source: DashboardSource |
     made.then(values => { if (!controller.signal.aborted) setState({ key, values }); },
       error => { if (!controller.signal.aborted) setState({ key, error }); });
     return () => controller.abort();
-    // `key` names the parts, tags and hour asked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, client, attempt]);
   const held = state?.key === key ? state : undefined;
   return { values: held?.values, error: held?.error, retry: () => setAttempt(count => count + 1) };

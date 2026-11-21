@@ -1,6 +1,3 @@
-//! What a followed query asks: a table, columns and rows (keys, all, the top N by a column, or
-//! those appended since the last push), or a declared series' measure for countries through the
-//! one identity rule. Its declaration to the playhead is its table and columns.
 
 use crate::{invalid, table_name};
 use dashboard_declare::{Measure, Series};
@@ -12,27 +9,16 @@ use replay_columnar::summary::Source;
 use replay_data::{Hour, rows::TableId};
 use std::{collections::HashMap, io, sync::Arc};
 
-/// The rows of its table a query reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rows {
-    /// These, by key, in this order; a key with no live row answers "no row".
     Keys(Vec<u128>),
-    /// As `Keys`, each once; after the first answer, each push holds only the rows that differ
-    /// from the push before it (an answer of rows changed), so a push costs what changed.
     Live(Vec<u128>),
-    /// Every live row, by key ascending.
     All,
-    /// The `n` live rows greatest in `column` (ties by key ascending), greatest first; a row
-    /// without a value there is not ranked.
     Top { column: usize, n: usize },
-    /// The rows inserted since the last push, in insert order, each with its insert hour.
     Appended,
-    /// A log's rows the game lists now, in ordinal order, each by its key; their cells are asked
-    /// by ordinal while the query is followed. Refused for a table holding state.
     Listed,
 }
 
-/// The identity a series' countries are read through: the query layer's holders and timeline.
 #[derive(Clone)]
 pub struct Identity {
     pub holders: Arc<Holders>,
@@ -42,18 +28,11 @@ pub struct Identity {
 #[derive(Clone)]
 pub enum Query {
     Cells { table: usize, columns: Vec<usize>, rows: Rows },
-    /// A declared series' measure at the head for each country, as `series-state` answers it; with
-    /// `top`, the `top` tags greatest in it (a tie by tag in byte order, as the UI ranks), greatest first, of every tag held, each
-    /// row named by its tag. With `parts` (a sub-keyed series), each country's parts at the head in
-    /// key order, or with `top` its `top` parts greatest in it (ties by key), each row named by
-    /// its country ([`Country::key`]). With `least`, an owners' top is the `top` least instead, least first.
     Series { series: &'static Series, measure: &'static Measure, countries: Vec<Country>, top: Option<usize>, least: bool, parts: bool, identity: Identity },
-    /// A value its owner makes from its own source ([`crate::head`]).
     Head(crate::head::Head),
 }
 
 impl Query {
-    /// Refused by name unless its table and columns exist and it reads what the head can answer.
     pub(crate) fn check(&self) -> io::Result<()> {
         match self {
             Self::Cells { table, columns, rows } => {
@@ -101,7 +80,6 @@ impl Query {
         }
     }
 
-    /// Where a series' value comes from; none for a query of cells.
     pub(crate) fn source(&self) -> Option<Source> {
         match self {
             Self::Cells { .. } | Self::Head(_) => None,
@@ -109,7 +87,6 @@ impl Query {
         }
     }
 
-    /// A series over its owners' parts.
     pub(crate) fn parts(&self) -> bool {
         matches!(self, Self::Series { parts: true, .. })
     }
@@ -122,7 +99,6 @@ impl Query {
         }
     }
 
-    /// The columns its answer reads, in order: a series' value's inputs.
     pub(crate) fn shown(&self) -> Vec<usize> {
         match self {
             Self::Cells { columns, .. } => columns.clone(),
@@ -131,7 +107,6 @@ impl Query {
         }
     }
 
-    /// The columns it declares to the playhead, ascending.
     pub(crate) fn declared(&self) -> Vec<usize> {
         let mut columns = self.shown();
         if let Self::Cells { rows: Rows::Top { column, .. }, .. } = self {
@@ -142,7 +117,6 @@ impl Query {
         columns
     }
 
-    /// Its pushes after the first hold the rows that changed.
     pub(crate) fn live(&self) -> bool {
         matches!(self, Self::Cells { rows: Rows::Live(_), .. })
     }
@@ -155,13 +129,11 @@ impl Query {
         matches!(self, Self::Cells { rows: Rows::Listed, .. })
     }
 
-    /// The series' measure over every tag held, its `n` greatest at the head.
     pub fn series_top(series: &'static Series, measure: &'static Measure, n: usize, identity: Identity) -> Self {
         let countries = identity.holders.tags.keys().map(Country::from).collect();
         Self::Series { series, measure, countries, top: Some(n), least: false, parts: false, identity }
     }
 
-    /// An owners' top as its `n` least instead, least first.
     pub fn least(self) -> Self {
         match self {
             Self::Series { series, measure, countries, top, parts, identity, .. } => Self::Series { series, measure, countries, top, least: true, parts, identity },
@@ -170,21 +142,18 @@ impl Query {
     }
 }
 
-/// A series' tag at an hour: its holder's key, or why it has none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TagRow {
     Key(u128),
     Absent(String),
 }
 
-/// A series' tags at an hour, and for a top, each holder's key to its tag.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Tags {
     pub(crate) rows: Vec<TagRow>,
     pub(crate) by_key: HashMap<u128, u32>,
 }
 
-/// A series' tags at `hour`; none for a query of cells.
 pub(crate) fn tags_at(query: &Query, hour: Hour) -> Tags {
     let rows = tag_rows(query, hour);
     let by_key = match query {
@@ -194,7 +163,6 @@ pub(crate) fn tags_at(query: &Query, hour: Hour) -> Tags {
     Tags { rows, by_key }
 }
 
-/// Each of a series' tags at `hour`, through the one identity rule; none for a query of cells.
 fn tag_rows(query: &Query, hour: Hour) -> Vec<TagRow> {
     let Query::Series { series, measure, countries, identity, .. } = query else { return Vec::new() };
     let unheld = identity.timeline.at(hour).is_none().then(|| identity.timeline.reason(hour));
@@ -224,13 +192,10 @@ fn tag_rows(query: &Query, hour: Hour) -> Vec<TagRow> {
         .collect()
 }
 
-/// A series' owner key of a holder.
 pub(crate) fn holder_key(series: &Series, slot: u32, id: u32) -> u128 {
     series.key.of(slot, id)
 }
 
-/// The next hour after `hour` at which who holds any of `countries`, or whether the timeline holds
-/// the hour, changes: the answer cannot change from identity before it.
 pub(crate) fn identity_until(identity: &Identity, countries: &[Country], hour: Hour) -> Hour {
     let mut until = Hour::MAX;
     let mut after = |edge: Hour| {

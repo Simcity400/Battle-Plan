@@ -20,7 +20,6 @@ const history = (id = 'episode'): LandBattle => ({ id, provinceId: 17, start: { 
   runs: [{ firstHour: 10, lastHour: 20, counts: [3, 2], rosterUnknown: false, countries: [['mod/tag'], ['other']], countriesUnknown: [false, false], duration: 1 }] });
 const reply = (rows = [history()], window = 0): LandBattlesWindow => ({ window, interval: { firstHour: 10, lastHour: 21 },
   rows, observed: [[10, 21]], warnings: [], contentWarnings: [] });
-/** The product's compact form: interned labels and warning reasons. */
 const wire = (rows: unknown[] = [history()], labels: string[] = []) => ({ ...reply([]), labels, rows, reasons: [], warnings: [] });
 const read = (h = history(), at = 20, all = true, matches = (_tag: string, _hour: number) => true) => landBattleRows(new Map([[0, reply([h])]]), at, matches, all);
 const countryGroups = (): CountryGroupReply => ({ branchId: '1', warnings: [], identityChanges: [], factions: [], wars: [],
@@ -88,10 +87,8 @@ test('a result side without countries keeps the last hourly read\'s participants
   assert.deepEqual(row.sides[0].countries, [{ tag: 'late attacker', hour: 21 }]);
   assert.deepEqual(row.sides[1].countries, [{ tag: 'other', hour: 20 }]);
   assert.equal(row.sides[1].countriesUnknown, undefined);
-  // A participant set the hourly read recorded no longer survives every country filter as unknown.
   assert.equal(read(h, 21, false, tag => tag === 'unrelated').length, 0);
   assert.equal(read(h, 21, false, (tag, at) => tag === 'other' && at === 20).length, 1);
-  // Unknown in both reads stays unknown, keeping the result's partial list.
   const unread = { ...h, result: { ...h.result, countries: [['late attacker'], ['partial']] as [string[], string[]] },
     runs: [{ ...h.runs[0], countries: [['mod/tag'], []] as [string[], string[]], countriesUnknown: [false, true] as [boolean, boolean] }] };
   const unknown = read(unread, 21)[0];
@@ -321,8 +318,6 @@ test('server ranking predicate equals countryMatch, and ranked summaries retain 
   assert.deepEqual(filter, { tags: null, membership: groups.humans, unobserved: groups.unobserved.humans });
   assert.deepEqual(countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], groups, 40), { tags: null,
     membership: [{ tag: 'former/other', firstHour: 1, lastHour: 9 }, { tag: 'other', firstHour: 10, lastHour: 40 }], unobserved: [] });
-  // The scope a server keeps a log to admits a country at exactly the hours countryMatch does: a group counted at each
-  // hour loses the hours its history was not recorded; a pick keeps every tag its country held.
   const scope = countryScope(selection, [], groups, 40)!;
   assert.deepEqual(scope, [{ tag: 'other', firstHour: 10, lastHour: 18 }, { tag: 'other', firstHour: 21, lastHour: 40 }]);
   const matches = countryMatch(selection, [], groups, 40).matches;
@@ -402,7 +397,6 @@ test('replies that list each design are reduced to each side\'s exact total', ()
   assert.deepEqual(losses.map(read => read.equipmentRaw), [['149999', '0'], ['199999', '1']]);
   assert.deepEqual(losses[1].sides[0], [{ label: 'Manpower lost', value: 4 }, { label: 'Equipment lost', value: 1.99999 }]);
   assert.equal(validateLandBattlesReply(wire([h], labels)).rows[0].priorSidePeaks, null);
-  // A reply without design labels cannot name per-design amounts.
   assert.throws(() => validateLandBattlesReply(wire([h])), /malformed/);
 });
 
@@ -473,14 +467,12 @@ test('one battle read at its own changes is the row the whole read lists, so a b
   const manpower = (attacker: number | null, defender: number): [BattleValue[], BattleValue[]] => [
     [attacker === null ? { label: 'Manpower lost', value: null, unknown: 'Hourly losses not recorded' } : { label: 'Manpower lost', value: attacker }],
     [{ label: 'Manpower lost', value: defender }]];
-  // a: GER v POL from 10, sizes change at 13 and ENG joins at 16; losses read at 11, again at 14, not read at 17; won and ended at 19.
   const a: LandBattle = { ...history('a'), end: { hour: 19, bound: 'exact' }, result: { hour: 19, duration: 9, winner: { side: 0 }, countries: [['GER'], ['POL', 'ENG']], countriesUnknown: [false, false] },
     losses: [{ hour: 11, terminal: false, sides: manpower(100, 50) }, { hour: 14, terminal: false, sides: manpower(180, 90) }, { hour: 17, terminal: false, sides: manpower(null, 120) }],
     runs: [
       { firstHour: 10, lastHour: 12, counts: [2, 1], rosterUnknown: false, countries: [['GER'], ['POL']], countriesUnknown: [false, false], duration: 0 },
       { firstHour: 13, lastHour: 15, counts: [3, 1], rosterUnknown: false, countries: [['GER'], ['POL']], countriesUnknown: [false, false], duration: 3 },
       { firstHour: 16, lastHour: 18, counts: [3, 1], rosterUnknown: false, countries: [['GER'], ['POL', 'ENG']], countriesUnknown: [false, false], duration: 6 }] };
-  // b: ITA v FRA from 14, its census stopping after 25 with no ending read.
   const b: LandBattle = { ...history('b'), start: { hour: 14, bound: 'exact' }, end: null,
     runs: [{ firstHour: 14, lastHour: 25, counts: [4, 4], rosterUnknown: false, countries: [['ITA'], ['FRA']], countriesUnknown: [false, false], duration: 0 }] };
   const windows = new Map([[0, { ...reply([a, b]), interval: { firstHour: 10, lastHour: 30 }, observed: [[10, 30]] as [number, number][] }]]);

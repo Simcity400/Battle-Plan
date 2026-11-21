@@ -1,4 +1,3 @@
-//! Shared synthetic terrain and sub-unit inputs for movement timing tests.
 use crate::{movement_timing::TerrainSpeedContent, table_access::TokenKeys};
 use installed_content_regions::regions::StrategicRegion;
 use std::{collections::BTreeMap, sync::Arc};

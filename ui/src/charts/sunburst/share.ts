@@ -10,20 +10,16 @@ export interface ShareReading {
   missingLabel: 'Not recorded' | 'Share unavailable';
 }
 
-/** Entity-coloured shares need every selected look; neutral belongs to the remainder. */
 export function shareColourReason(keys: readonly string[], colourOf: (key: string) => string | null | undefined): string | null {
   return keys.some(key => colourOf(key) == null) ? "The selected slices' colours were not recorded at this hour." : null;
 }
 
-/** An answered dated label owns its flag, including a recorded missing flag. */
 export function shareTooltip(forms: readonly TooltipContent[], label: ReturnType<CountryLabel> | undefined,
   subtitle: string, note?: string): TooltipContent[] {
   return forms.map(form => ({ ...form, title: label?.name ?? form.title, icon: label ? undefined : form.icon,
     countryFlag: label ?? form.countryFlag, subtitle, note: note ?? form.note }));
 }
 
-/** A world share needs the whole and every candidate to be proven. A remainder
- * includes everything outside the selected leaders, including unassigned amounts. */
 export function shareReading(values: readonly ShareValue[], world: number | null, count: number,
   look: (key: string) => SunburstKey, rest: SunburstKey, reason?: string | null): ShareReading {
   const missing = (unavailableReason: string, unsupported = false): ShareReading =>

@@ -1,4 +1,3 @@
-//! The shared regional mine summary used by Air, Navy and mine controls.
 use super::inputs::Names;
 use super::{Arg, Tooltip, counter_content};
 use replay_data::{rows::AirCountryRelationRow, rows::tables};
@@ -31,7 +30,6 @@ impl Side {
     }
 }
 
-/// Builds a control hover from game state; no local panel or selection input.
 pub fn build(
     content: &counter_content::Content,
     frame: &DecodedFrame,
@@ -70,8 +68,6 @@ pub fn build(
     out
 }
 
-/// The enemies' mine density in the region as the observed country feels it: their mines against
-/// the content maximum, reduced by its mine reduction and its intel lead over them.
 pub fn enemy_share(
     content: &counter_content::Content,
     frame: &DecodedFrame,
@@ -170,8 +166,6 @@ impl Inputs<'_> {
         }) {
             hostile.casualty(report.sunk);
         }
-        // The enemy report collector is entered only while the viewer has a
-        // nonempty enemy roster, and preserves each registration occurrence.
         if !enemies.is_empty() {
             for &enemy in &enemies {
                 if (enemy as i32) > 0 {

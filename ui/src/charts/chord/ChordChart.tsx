@@ -26,22 +26,16 @@ export interface ChordChartProps {
   label: string;
   caption: string;
   frame: ChordFrame;
-  /** Local playback lookup; reuse data identity until exact data changes. */
   frameAt?: (now: number) => ChordFrame;
-  /** The playhead's frame, read as each frame draws in place of `frame` and `frameAt`: the ribbons move with no
-   * render. Its data null is a frame the source does not hold, drawn as unavailable, never as empty ribbons. */
   live?: Live<ChordFrame>;
   hoursPerSecond?: number;
   active: boolean;
-  /** Always describes the resolved data, never the eased geometry. */
   tooltip: (hit: ChordHit, data: ChordData) => TooltipContent | null;
   onContextMenu?: (hit: ChordHit, data: ChordData, clientX: number, clientY: number) => void;
   onPick?: (hit: ChordHit, data: ChordData) => void;
-  /** A refused frame is cleared; null reports recovery on the next valid frame. */
   onError: (message: string | null) => void;
 }
 
-/** Style-6's directed ribbons, on the dashboard's shared animation scheduler. */
 export default function ChordChart(props: ChordChartProps) {
   const owner = useId(), canvas = useRef<HTMLCanvasElement>(null);
   const tokens = useChartTokens(), viewportHeight = useViewportHeight();
@@ -164,7 +158,6 @@ export default function ChordChart(props: ChordChartProps) {
       const measure = (text: string) => textWidth(context, text);
       for (const right of [true, false]) {
         const side = labels.filter(label => label.right === right);
-        // Small neighbouring arcs would stack their names: spread each side apart, along the ring and clear of the caption.
         const placed = layoutEndLabels(side, 2, height - (right ? 26 : 2), 1);
         for (const { arc, id } of side) {
           const ly = placed.get(id)!, ring = radius + 12, reach = Math.sqrt(Math.max(0, ring * ring - (ly - y) ** 2));
@@ -181,7 +174,6 @@ export default function ChordChart(props: ChordChartProps) {
         }
       }
       context.globalAlpha = 1; context.font = font(t, t.fontSize.small, 500); context.fillStyle = t.muted;
-      // The caption explains ribbons, so an empty ring has none.
       context.textAlign = 'right'; context.textBaseline = 'middle'; if (labels.length) context.fillText(p.caption, width - 12, height - 14);
       publish();
       return eased.moving || Boolean(frame.playing);

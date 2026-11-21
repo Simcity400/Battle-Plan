@@ -1,14 +1,3 @@
-//! `map/ambient_object.txt`: the entities the map places once, at fixed world
-//! positions, for as long as the map exists.
-//!
-//! `map/default.map` names the ambient-object file. Each `type` block names an
-//! entity from `gfx/entities/*.asset`, an optional uniform `scale` the entity's
-//! own scale multiplies, and one or more `object` placements. Positions use
-//! game world space (x right, y height, z into the map), the same space as
-//! `map/unitstacks.txt`.
-//!
-//! Placements use the type's flags as they are read. Entity admission and
-//! presentation lifetime belong to the viewer.
 
 use crate::key_names::KeyNames;
 use std::io;
@@ -23,40 +12,24 @@ use crate::{
     },
 };
 
-/// The conventional filename; `read` uses the path authored in `default.map`.
 pub const PATH: &str = "map/ambient_object.txt";
 
-/// One placement of an ambient object's entity.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AmbientObject {
-    /// The placement's own name, which the engine uses for save-game state and
-    /// which is not the entity name.
     pub name: String,
-    /// World `(x, y, z)`.
     pub position: [f32; 3],
-    /// Authored degrees. Only the Y component is consumed for rotation.
     pub rotation: [f32; 3],
-    /// Routing uses the flag at the `object` token, before later type-key updates.
     pub always_queued: bool,
 }
 
-/// One `type` block: an entity and every place the map puts it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AmbientObjectType {
-    /// The `entity` name declared in `gfx/entities/*.asset`.
     pub entity: String,
-    /// The block's uniform scale; `1.0` when the block declares none.
     pub scale: f32,
-    /// `use_animation`; true when absent.
     pub use_animation: bool,
-    /// `always_visible`, which exempts the object from distance culling;
-    /// `false` when absent.
     pub always_visible: bool,
-    /// Instance countdown; nonpositive values never expire.
     pub duration: f32,
-    /// Signed admission ceiling; nonpositive means unlimited.
     pub max_visible: i32,
-    /// Conjunction trigger payload, retained for the consumer's evaluator.
     pub dlc: Option<Vec<Item>>,
     pub objects: Vec<AmbientObject>,
 }
@@ -76,7 +49,6 @@ impl Default for AmbientObjectType {
     }
 }
 
-/// Reads ambient type and object blocks with persistent field consumption.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<AmbientObjectType>> {
     #[derive(Clone, Copy)]
     enum Node {
@@ -84,7 +56,6 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<AmbientObjectType
         Type,
         Object,
     }
-    // This reader keeps the leading mark instead of skipping it on file open.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -141,28 +112,23 @@ fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
             } else {
                 &mut out.always_visible
             };
-            // Both boolean fields retain their previous value when a read fails.
             *dst = field
                 .value
                 .scalar()
                 .and_then(crate::parser::read_bool)
                 .unwrap_or(*dst);
         } else if field.keyword_is("time_duration") {
-            // A failed float conversion keeps the value.
             out.duration =
                 crt::scan_f32(field.value.scalar().unwrap_or_default()).unwrap_or(out.duration);
         } else if field.keyword_is("max_visible") {
-            // A failed integer prefix scan keeps the value.
             if let crt::Scanned::Stored(value) =
                 crt::scan_i32(field.value.scalar().unwrap_or_default())
             {
                 out.max_visible = value;
             }
         } else if field.keyword_is("dlc_allowed") {
-            // Each field creates a new conjunction; the last is kept.
             out.dlc = Some(field.value.items().unwrap_or_default().to_vec());
         } else if field.keyword_is("object") {
-            // Route the placement with the flag the type has now.
             let mut object = AmbientObject {
                 always_queued: out.always_visible,
                 ..Default::default()
@@ -189,8 +155,6 @@ fn parse_type(items: &[Item]) -> io::Result<AmbientObjectType> {
     Ok(out)
 }
 
-/// Initialize three fixed5 components to zero, read the bounded span, then
-/// convert each int64 to f32 and divide by the fixed5 scale.
 fn triple(value: &Value) -> io::Result<[f32; 3]> {
     let mut out = [0.0; 3];
     for (dst, item) in out.iter_mut().zip(block(value, "ambient vector")?) {
@@ -200,7 +164,6 @@ fn triple(value: &Value) -> io::Result<[f32; 3]> {
     Ok(out)
 }
 
-/// Reads the map's ambient objects from the resolved layers.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AmbientObjectType>> {
     let path = crate::terrain::read_default_map(layers)?.file("ambient_object")?;
     parse(&layers.read(&path)?, &*layers.key_names()?)
@@ -211,7 +174,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<AmbientObjectType>> {
 mod tests {
     use super::*;
 
-    /// Two placements with different scales, positions and visibility flags.
     const PLACEMENTS: &[u8] = br#"
 type={
     type="signal_arch_entity"
@@ -303,8 +265,6 @@ type={
         assert_eq!(types[0].objects[2].position, [1.0, 2.0, 3.0]);
         assert_eq!(types[0].objects[2].name, "kept");
         assert_eq!(types[0].objects[3].position, [0.0; 3]);
-        // The overflow token is checked after `@` resolution: a variable
-        // holding `{` has its block skipped.
         let types = parse(
             br#"@open={
             type={type=a object={
@@ -358,7 +318,6 @@ type={
         let raw: [i64; 3] = [123456, -12345, 300012345];
         assert_eq!(object.position, raw.map(|value| value as f32 / 100_000.));
         assert_eq!(object.rotation, [0., 30., 0.]);
-        // `@limit` is resolved or stays its text, which `%i` does not scan.
         assert_eq!(
             parse(b"type={type=a max_visible=@limit}", &KeyNames::default()).unwrap()[0]
                 .max_visible,

@@ -1,15 +1,3 @@
-//! A front or snapped offensive line drawn along its province pairs' integer
-//! gradient-border pixels.
-//!
-//! Each pair `(source, target)` contributes the source province's own border
-//! pixels towards the target, or towards a sea crossing's Through neighbour.
-//! The original target still drives the teeth probe. The first join orients
-//! the chain once; reverse a chain when its nearer raw end is its last pixel.
-//! Drop a pixel that jumps four or more pixels on either axis from the last
-//! accepted one.
-//! Overlapping fronts are offset by `ROOT_FRONT_OFFSET` per stored overlap unit
-//! to the side a controller-majority probe picks. The side the teeth face
-//! comes from a raster probe across the first chain.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +6,6 @@ use replay_data::rows::ProvinceRow;
 
 use super::fixed::{self, Point, SCALE, Smoothing};
 
-/// One province pair of a chain and its stored byte-wide overlap units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pair {
     pub source: u32,
@@ -26,24 +13,18 @@ pub struct Pair {
     pub units: u8,
 }
 
-/// What the builder reads besides the pairs.
 pub struct ChainWorld<'a> {
     pub borders: &'a BTreeMap<(u32, u32), Vec<[i32; 2]>>,
-    /// The source-owned border target after a one-hop sea crossing redirect
-    /// through its neighbour. `None` is a neighbour miss.
     pub border_target: &'a dyn Fn(u32, u32) -> Option<u32>,
     pub raster: Option<&'a Raster<'a>>,
 }
 
-/// Province raster and recorded controllers compared by the offset probe.
 pub struct Raster<'a> {
     pub map: &'a MapData,
     pub controllers: Controllers<'a>,
     pub links: &'a BTreeMap<u32, u32>,
 }
 
-/// Each province's recorded controller, read from the hour's rows themselves: they are ascending
-/// by id, so a probe searches them instead of a map built for every plan.
 #[derive(Clone, Copy)]
 pub struct Controllers<'a>(&'a [ProvinceRow]);
 
@@ -59,7 +40,6 @@ impl<'a> Controllers<'a> {
 }
 
 impl Raster<'_> {
-    /// The raster id at world `(x, z)`, zero outside the map; no wrap.
     pub fn at(&self, x: i64, z: i64) -> u32 {
         if x < 0 || z < 0 || x >= i64::from(self.map.width) || z >= i64::from(self.map.height) {
             return 0;
@@ -68,7 +48,6 @@ impl Raster<'_> {
         self.map.province_ids[row * self.map.width as usize + x as usize]
     }
 
-    /// Positive controllers that are equal or the same canonical country.
     fn same_controller(&self, source: u32, point: Point) -> bool {
         let [x, z] = point.map(|value| value / SCALE);
         let target = self.at(x, z);
@@ -87,31 +66,20 @@ impl Raster<'_> {
     }
 }
 
-/// The builder's arguments after the pairs.
 #[derive(Clone, Copy, Debug)]
 pub struct ChainParams {
-    /// The fourth argument: subdivide before each smoothing pass.
     pub subdivided: bool,
     pub smoothing: Smoothing,
-    /// The seventh argument, added to every pair's stored units.
     pub extra_units: u8,
-    /// `NGraphics.ROOT_FRONT_OFFSET`, fixed5.
     pub offset: i64,
-    /// `ROOT_FRONT_MAX_INTERSECTION_TESTS_ORDER`, or `_FRONT` when the
-    /// graphics have no bound order.
     pub max_intersection_tests: i32,
-    /// Run the teeth probe for a bound order whose type declares culling_direction.
     pub probe_teeth: bool,
 }
 
-/// The chain's stored controls and what the builder decided on the way.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Chain {
     pub points: Vec<Point>,
-    /// Teeth side stored by the raster probe, when decided.
     pub side: Option<i32>,
-    /// True when some pair was offset: then submit each point through the
-    /// stored-control builder with intersection tests.
     pub offset: bool,
 }
 
@@ -119,7 +87,6 @@ fn manhattan(a: [i32; 2], b: [i32; 2]) -> i32 {
     (a[0] - b[0]).abs() + (a[1] - b[1]).abs()
 }
 
-/// Builds the chain; `None` when some offset is needed but no raster was given.
 pub fn build(pairs: &[Pair], world: &ChainWorld<'_>, params: ChainParams) -> Option<Chain> {
     let mut chain = Chain::default();
     let mut out: Vec<Point> = Vec::new();
@@ -203,16 +170,12 @@ pub fn build(pairs: &[Pair], world: &ChainWorld<'_>, params: ChainParams) -> Opt
     Some(chain)
 }
 
-/// Rotate by the float quarter-turn angle -1.5708.
 fn rotate_back(x: f32, z: f32) -> (f32, f32) {
     let angle = f32::from_bits(0xbfc9_0fdb);
     let (sine, cosine) = (angle.sin(), angle.cos());
     (x * cosine - sine * z, x * sine + cosine * z)
 }
 
-/// At the first kept pixel inside the source, sample the raster one
-/// quarter-turned step to either side. Source on the positive side and target
-/// on the negative stores -1; the reverse stores 1.
 fn teeth_side(raster: &Raster<'_>, kept: &[[i32; 2]], source: u32, target: u32) -> Option<i32> {
     for window in kept.windows(2) {
         let [x, z] = window[0];
@@ -233,9 +196,6 @@ fn teeth_side(raster: &Raster<'_>, kept: &[[i32; 2]], source: u32, target: u32) 
     None
 }
 
-/// One side for the whole directed chain from its fixed5 normals: a strict
-/// majority of `ROOT_FRONT_OFFSET * 1.5` probes landing on the source's
-/// controller chooses the positive side; ties and misses the negative one.
 fn offset_points(
     kept: &[[i32; 2]],
     source: u32,
@@ -297,7 +257,6 @@ fn offset_points(
 mod tests {
     use super::*;
 
-    /// Province rows of `(id, controller)` pairs, ascending by id as the hour's rows are.
     fn provinces(each: &[(u32, u32)]) -> Vec<ProvinceRow> {
         each.iter().map(|&(id, controller)| ProvinceRow { id, controller, ..ProvinceRow::default() }).collect()
     }
@@ -439,8 +398,6 @@ mod tests {
 
     #[test]
     fn the_teeth_probe_reads_the_source_side_of_the_first_chain() {
-        // Bitmap rows run downward: province 2 is the north row (z = 2),
-        // province 1 the two rows below it.
         let m = map(3, 3, vec![2, 2, 2, 1, 1, 1, 1, 1, 1]);
         let rows = provinces(&[]);
         let controllers = Controllers::of(&rows);
@@ -450,12 +407,8 @@ mod tests {
             controllers,
             links: &links,
         };
-        // West (-1, 0) turns by -90 degrees to (0, 1): plus is north (the
-        // target), minus south (the source), which stores 1.
         assert_eq!(teeth_side(&raster, &[[2, 1], [1, 1]], 1, 2), Some(1));
-        // East (1, 0) turns to (0, -1): plus is the source, which stores -1.
         assert_eq!(teeth_side(&raster, &[[0, 1], [1, 1]], 1, 2), Some(-1));
-        // A pixel outside the source is not probed.
         assert_eq!(teeth_side(&raster, &[[0, 2], [1, 2]], 1, 2), None);
     }
 
@@ -488,7 +441,6 @@ mod tests {
         };
         let redirected = build(&pair(2, 0), &world, params).unwrap();
         assert_eq!(redirected.points, vec![[0, SCALE], [SCALE, SCALE]]);
-        // Through is province 3, but the original pair's target is province 2.
         assert_eq!(redirected.side, None);
         assert_eq!(build(&pair(3, 0), &world, params).unwrap().side, Some(-1));
         params.extra_units = 1;

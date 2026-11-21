@@ -31,13 +31,10 @@ import './activeResearch.css';
 const NO_WARNINGS: string[] = [];
 const NO_TOKENS: readonly string[] = [];
 
-/** One card per research slot open at the hour shown: what it researches, its
- * latest read progress, the game's estimate and idle slots' saved days. */
 export default function ActiveResearchWidget(props: WidgetProps) {
   return <ResearchWithDoctrines {...props} body={ActiveResearchBody} />;
 }
 
-/** An opened breakdown: the slot, the assignment's first observation, and the hour it was opened at. */
 type Shown = { scope: string; slotIndex: number; token: string; firstObservedHour: number; hour: number };
 
 function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
@@ -47,15 +44,12 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const history = useResearchReply(widget, runtime, active);
   const { track, tag, data } = history;
   const root = useRef<HTMLElement | null>(null);
-  // Cards render when what the slots hold changes; their numbers are painted each frame (progress from live cells).
   const now = useResearchSlots(widget, runtime, active && !!data, slotsStructure, root);
   const { latest } = now;
   const reply = now.data;
   const { categories } = useChartTokens();
   const cards = useMemo(() => data && reply ? activeSlots(data.history, reply) : [], [data, reply]);
   const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : new Map(), [data, categories]);
-  // Every technology the country's history names, asked once with the history as Research history asks it (one store):
-  // a slot taking one up while playing asks nothing.
   const tokens = useMemo(() => data ? [...new Set(historyTokens(data.history).map(use => typeof use === 'string' ? use : use[0]))] : NO_TOKENS, [data]);
   const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
   const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data, recorded);
@@ -71,7 +65,6 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
   const breakdown = usePopover('start');
-  // An open breakdown names one assignment of the recording, branch and country it was opened for.
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const [stored, setShown] = useState<Shown | null>(null);
   const shown = stored?.scope === scope ? stored : null;

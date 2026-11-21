@@ -1,14 +1,9 @@
-//! The raid target details window's toggle: one window is open at a time.
 
 use std::sync::Arc;
 use viewer_raids::map::raids::tooltips::Details;
 
-/// What the overlay draws of the raid bubbles from the frame alone, laying nothing out: the bubble
-/// whose details window is open, with what its click built, and the bubble under the pointer.
 pub(crate) type Shown = (Option<(u32, Arc<Details>)>, Option<u32>);
 
-/// Whether an overlay last drawn showing `drawn` draws again to show `now`: a click's window opens
-/// or closes, or the pointer moves to another bubble.
 pub(crate) fn redraws(drawn: &Shown, now: &Shown) -> bool {
     let same_window = match (&drawn.0, &now.0) {
         (Some((one, a)), Some((two, b))) => one == two && Arc::ptr_eq(a, b),
@@ -18,8 +13,6 @@ pub(crate) fn redraws(drawn: &Shown, now: &Shown) -> bool {
     !same_window || drawn.1 != now.1
 }
 
-/// Whether a click on the offer bubble of `clicked` opens its window: the bubble whose window is
-/// open closes it, another bubble replaces it.
 pub(crate) fn opens(open: Option<u32>, clicked: u32) -> bool {
     open != Some(clicked)
 }

@@ -1,5 +1,3 @@
-//! Typed operations of a share of the recording's tables ([`replay_rows::rows::RowOps`]),
-//! compiled apart from the others so no one compilation holds every table's.
 use replay_rows::rows::*;
 
 replay_rows::row_ops! {

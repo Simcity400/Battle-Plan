@@ -1,0 +1,9 @@
+# 0706. Treat war goal rosters and naming operands as separate observations
+
+The owned roster keeps native creation, removal, consumption, reset, load and daily expiry semantics. The reader observes the retained roster without expiring goals or deciding eligibility. It authenticates the country and diplomacy state, sizes against native headers, and withholds incomplete inventory. A timed goal can retain a null claimed-state member. A count probe reads its header without following the members.
+
+The worker's complete inventory keeps serializable goals, unused handle occurrences and justification activities separately. Claimed state, liberation country, puppet, unused handle and justification selection lists retain their source ordering and repeats. Justification positions are positions in the full timed-activity roster, including other activity types. The reader follows only the justification types for payload. A certificate permits skipping unchanged domains, and failure withholds the inventory and its certificate. Known writers revoke only the owning country's witness. Loading and an unknown receiver revoke all of them. The shared daily update forwards the expiry observation. Deletion and validity pruning may change both the objects and their activity ordinals.
+
+The relation view uses the first state and first country of their ordered naming arrays. It retains zero when a handle is null or stale and refuses the table on failed reads. The type's authored naming override comes from its war name, separate from a general war label or the declared type token.
+
+[Owned roster](../../crates/engine-native/src/cwar_goal.rs) · [Inventory](../../crates/engine-native/src/cwar_goal/inventory.rs) · [Writer coverage](../../crates/engine-native/src/cwar_goal/mutations.rs) · [Relation naming](../../crates/engine-native/src/cwar_goal/relation.rs)

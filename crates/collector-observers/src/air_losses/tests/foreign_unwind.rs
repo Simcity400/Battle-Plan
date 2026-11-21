@@ -1,4 +1,3 @@
-//! Actual native handler dispatch through the production CALL tap and bridge.
 use super::*;
 use crate::foreign_unwind_probe as probe;
 use std::mem::offset_of;
@@ -22,9 +21,6 @@ struct NativeCall {
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 const NATIVE_RETURN: usize = 0x7450_a17f_1234_5678;
 
-// Authored native caller and original. Foreign raises happen only after pre
-// returned, in assembly; neither a Rust catcher nor a non-unwind Rust frame
-// surrounds the raise. Windows uses these real .seh frames during dispatch.
 core::arch::global_asm!(
     ".text", ".globl air_foreign_caller", ".seh_proc air_foreign_caller",
     "air_foreign_caller:", "push rsi", ".seh_pushreg rsi",
@@ -245,8 +241,6 @@ fn air_loss_foreign_unwind_retains_stranded_observation_and_restores_call() {
             "PASS air loss {}: actual handler, stranded capture, restored native call",
             case.name
         );
-        // The synthetic call and native handler have returned; no live game or
-        // runtime detach is involved. This reset is diagnostic teardown only.
         drop(hook);
         LEDGER.reset();
         CURRENT.store(0, Ordering::Release);

@@ -1,4 +1,3 @@
-//! Native names for the additional event scope carriers.
 
 use super::*;
 use replay_data::rows::{AirWingRow, ProvinceRow, RaidScope, tables};
@@ -10,8 +9,6 @@ const PROVINCE_STATE: u64 = mask::<ProvinceRow>(&["state"]);
 mod tests;
 
 impl Renderer<'_, '_, '_> {
-    /// narrative name, then default token;
-    /// TAG_key when defined, expanded in a fresh owner country environment.
     pub(super) fn project_name(&self, owner: u32, id: u32) -> Result<String, String> {
         let world = self.context.world()?;
         let row = world.project(owner, id).map_err(|why| why.to_string())?;
@@ -60,11 +57,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    /// Single unit-name entry point: the army name or the selected
-    /// wing's stored text.
     pub(super) fn unit_name(&self, reference: u64) -> Result<String, String> {
-        // A positive full wing handle is independent class evidence; it needs
-        // no division census. Old formats retain the active-raid projection.
         if let Ok(wings) = self.tables().complete::<tables::AirWings>(WING_NAME)
             && let Some(wing) = keyed(&wings, u128::from(reference))?
         {
@@ -100,8 +93,6 @@ impl Renderer<'_, '_, '_> {
         let divisions = match world.tables().complete::<tables::Divisions>(0) {
             Ok(rows) => rows,
             Err(why) => {
-                // The legacy raid's exact references and native resolution
-                // witnesses can independently establish a selected wing.
                 if let Ok(bytes) = world.raid_wing_name(reference) {
                     return crate::scripted_text::stored_text(
                         self.context.localisation,
@@ -141,8 +132,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    /// Instance: raid_inst_item_desc(TYPE, TARGET),
-    /// Both raid descriptions use the same localised name.
     #[allow(
         dead_code,
         reason = "shared carrier name entry point for raid effect ports"
@@ -162,7 +151,7 @@ impl Renderer<'_, '_, '_> {
             .map_err(built)?
             .ok_or_else(|| format!("raid targets lacks raid {reference:#x}"))?;
         let (kind, type_name) = if target.raid_type == 0 {
-            (None, String::new()) // null type contributes empty TYPE.
+            (None, String::new())
         } else {
             let token = self
                 .context
@@ -238,7 +227,6 @@ impl Renderer<'_, '_, '_> {
         let location = if !vp.is_empty() {
             vp.clone()
         } else {
-            // explicit state, province/leader province, building state.
             let state = if scope.state != 0 {
                 scope.state
             } else if province != 0 {

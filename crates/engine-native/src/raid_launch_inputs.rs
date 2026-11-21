@@ -1,44 +1,3 @@
-//! Stored raid-offer launch-gate inputs, evaluated per viewing country. The
-//! canonical-country pass acquires allocated command power, capacity modifiers
-//! and ace-country modifiers for every country. Selected countries additionally
-//! supply convoy reservations, stockpile archetype totals, strategic-air site
-//! lists and access containers, ace-range operands and autonomous-controller
-//! state.
-//!
-//! - Command power: allocated power (`ccountry::ALLOCATED_COMMAND_POWER`) and effective capacity
-//!   modifiers for every country ([`CommandPowerRow`]), with the ace country
-//!   modifiers every raid reads live (`ace_effectiveness_factor`,
-//!   `air_ace_bonuses_factor`).
-//!
-//! - Convoys: the reservations used for available counts by priority, whose
-//!   cache is already `Countries.convoys_raw`.
-//!
-//! - Essential equipment: stock of every archetype listed by a raid type,
-//!   compared in whole units from the production status's stockpile pool (`cproduction_status::STOCKPILE_POOL`) with each required
-//!   amount and capped at the largest amount any raid type requires
-//!   ([`Essential`]).
-//!
-//! - Raid sources: the country's strategic-air site lists and access container
-//!   at each site, used by site access and country-pool registration checks.
-//!
-//! - Aces' modified map-range terms.
-//!
-//! - The autonomous flag used by AI-control lookup.
-//!
-//! Command power, country inputs and aces ([`CommandPowerRow`], [`CountryRow`],
-//! [`AceRow`]) are read for every country each walk: accumulator, allocated
-//! power, reservation and ace roster headers in one guarded call, every launch
-//! key searched in the copied accumulator, and autonomous flags a chunk per
-//! guarded call. Reservations change at any hour when supply, trade, task-force
-//! maintenance and naval transfers request convoys. An ace's wing and alive
-//! byte change with assignment and death on the hourly air tick, so no writer
-//! certifies a held row. Essential stock is read for every country each walk:
-//! each pool's archetype totals are copied with the other countries', and only
-//! essential archetypes' entries become rows. Air sites are read only for the
-//! canonical slots the caller selects.
-//!
-//! No engine function is called. Modifier values are effective getter results:
-//! the stored accumulator value under the modifier definition's stored clamp.
 
 use crate::{
     Memory, cace, cair_base, cconvoys, ccountry, ccountry_air_container, cequipment_type,
@@ -56,25 +15,6 @@ use engine_sites::Rva;
 mod volunteer_air;
 pub use volunteer_air::VolunteerAir;
 
-/// The modifier keys the launch gate reads, in [`CountryRow::modifiers`] order.
-/// Each getter passes a compiled-in index, so these are fixed built-in keys
-/// (`modifier_keys`), checked once per attachment by the fixed layout
-/// contract (`replay_derive::fixed_layout`'s "raid launch", "command power" and
-/// "country ace modifiers" families withhold their tables on a mismatch):
-///
-/// - `air_range_factor`: wing and equipment-variant map range.
-///
-/// - `naval_commando_raid_distance`: raid-unit range limit.
-///
-/// - `air_ace_bonuses_factor`: the wing country's ace range and speed bonuses.
-///
-/// - `max_command_power`, `max_command_power_mult`: command-power affordability
-///   capacity.
-///
-/// - `ace_effectiveness_factor`: the ace owner's scaled modifier factor.
-///
-/// The command power and ace columns are [`CommandPowerRow`]'s, the others
-/// [`CountryRow`]'s; both are read for every country.
 pub const MODIFIER_KEYS: [u32; MODIFIERS] = [
     crate::modifier_keys::AIR_RANGE_FACTOR,
     crate::modifier_keys::NAVAL_COMMANDO_RAID_DISTANCE,
@@ -84,24 +24,18 @@ pub const MODIFIER_KEYS: [u32; MODIFIERS] = [
     crate::modifier_keys::ACE_EFFECTIVENESS_FACTOR,
 ];
 pub const MODIFIERS: usize = 6;
-/// [`MODIFIER_KEYS`] position of `air_range_factor`, which the aces also read.
 const AIR_RANGE: usize = 0;
-/// [`MODIFIER_KEYS`] positions of the command power capacity pair.
 pub const MAX_COMMAND_POWER: usize = 3;
 pub const MAX_COMMAND_POWER_MULT: usize = 4;
-/// [`MODIFIER_KEYS`] positions of the ace country modifiers.
 pub const AIR_ACE_BONUSES: usize = 2;
 pub const ACE_EFFECTIVENESS: usize = 5;
 
-/// The launch keys the walk reads. `None` leaves a column unknown; the
-/// collector always passes [`Keys::FIXED`], and tests leave keys out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keys {
     pub keys: [Option<u32>; MODIFIERS],
 }
 
 impl Keys {
-    /// Every launch key at its fixed index.
     pub const FIXED: Self = Self {
         keys: [
             Some(MODIFIER_KEYS[0]),
@@ -113,7 +47,6 @@ impl Keys {
         ],
     };
 
-    /// The registered keys, ascending with their [`MODIFIER_KEYS`] positions.
     fn sorted(&self) -> ([(u32, usize); MODIFIERS], usize) {
         let mut sorted = [(0, 0); MODIFIERS];
         let mut len = 0;
@@ -128,40 +61,26 @@ impl Keys {
     }
 }
 
-/// Ace-type definition whose embedded modifier accumulator supplies range terms.
 pub const ACE_TYPE_DEFINITION: usize = 0x170;
 pub const ACE_TYPE_MODIFIERS: usize = 0x38 + 0x10;
-/// A convoy reservation: `{ i32 priority, i32 quantity }`.
 const RESERVATION: usize = 8;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CountryRow {
     pub canonical_slot: u32,
-    /// Uncapped whole-plane stockpile sum for demanded volunteer senders.
     pub volunteer_stockpile_planes: Option<i32>,
-    /// Effective modifier values for each of [`MODIFIER_KEYS`]; `None` for a
-    /// key the walk was not given. The command power and ace columns are
-    /// [`CommandPowerRow`]'s; the conversion leaves them out.
     pub modifiers: [Option<i64>; MODIFIERS],
-    /// The game state's autonomous flag for the slot (`cgame_state::AUTONOMOUS_STATUS`); `None` past the controller arrays.
     pub autonomous: Option<u32>,
-    /// Flattened `(priority, quantity)` pairs in the caller's arena.
     pub reservations_start: usize,
     pub reservations_len: usize,
 }
 
-/// Every country's command power operands and ace country modifiers, each
-/// walk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommandPowerRow {
     pub canonical_slot: u32,
-    /// `ccountry::ALLOCATED_COMMAND_POWER`.
     pub allocated_raw: i64,
-    /// `max_command_power` and `max_command_power_mult`; `None` for a key
-    /// the walk was not given.
     pub maximum: Option<i64>,
     pub maximum_factor: Option<i64>,
-    /// `ace_effectiveness_factor` and `air_ace_bonuses_factor`, likewise.
     pub ace_effectiveness: Option<i64>,
     pub ace_bonuses: Option<i64>,
 }
@@ -169,32 +88,17 @@ pub struct CommandPowerRow {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArchetypeRow {
     pub canonical_slot: u32,
-    /// The archetype's lexer token (`cequipment_type::TOKEN`).
     pub archetype: u32,
-    /// Whole units in stock, obtained by dividing quantity by 100000 and
-    /// narrowing to i32, at most the archetype's [`Essential::cap`].
     pub units: i32,
 }
 
-/// An archetype some raid type lists as essential equipment, with the largest amount any raid type
-/// requires of it. A raid type's `essential_equipment` is its essential-equipment map
-/// (`raid_database::ESSENTIAL_EQUIPMENT`), keyed by equipment type with one amount per key
-/// ([`crate::raid_database::equipment_map`]); the stock requirement checking compares with each
-/// amount is that of the equipment's archetype (`cequipment_type::ARCHETYPE`, found by its id
-/// `cequipment_type::ARCHETYPE_ID`). Capped there, the stock still decides every comparison and
-/// every shortfall the raid offer prints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Essential {
-    /// The archetype's `CEquipmentType`.
     pub archetype: usize,
-    /// Its lexer token.
     pub token: u32,
     pub cap: i32,
 }
 
-/// Every raid type's essential archetypes, each once with its largest
-/// amount, in first-listed order, into `out`. The raid types are content, so
-/// the walk reads them afresh: a few nodes per type.
 pub fn essentials(
     memory: &impl Memory,
     base: usize,
@@ -289,15 +193,12 @@ pub fn essentials(
     Ok(())
 }
 
-/// One site of a country's strategic air site lists (list 0 or list 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SiteRow {
     pub canonical_slot: u32,
-    /// Position across both lists, list 0 first.
     pub ordinal: u32,
     pub list: u8,
     pub base: u64,
-    /// The country's container capacity at the site, `None` without one.
     pub container_capacity_raw: Option<i64>,
 }
 
@@ -307,24 +208,18 @@ pub struct AceRow {
     pub canonical_slot: u32,
     pub wing: u64,
     pub alive: u8,
-    /// Effective key 5 on the ace's own modifiers.
     pub range: i64,
-    /// Effective key 5 on its type definition's modifiers.
     pub type_range: i64,
-    /// Raw night/weather entries from the same complete range accumulator read.
     pub normalization: Option<[Option<i64>; 2]>,
     pub fuel_modifier: Option<[Option<i64>; 1]>,
-    /// Living ace raw speed, attack and defence from the same complete copy.
     pub combat_modifiers: Option<[Option<i64>; 3]>,
     pub type_speed_modifier_raw: Option<i64>,
-    /// Bit zero proves the living type copy, bits one/two are positive attack/defence.
     pub type_combat_flags: u8,
 }
 
 pub struct Buffers<'a> {
     pub memo: &'a DefinitionMemo,
     pub keys: &'a Keys,
-    /// The walk's [`essentials`]; its storage is kept.
     pub essentials: &'a mut Vec<Essential>,
     pub countries: crate::walk::Buffer<'a, CountryRow>,
     pub command_power: crate::walk::Buffer<'a, CommandPowerRow>,
@@ -444,7 +339,6 @@ fn vtable(
         .ok_or(what)
 }
 
-/// Effective lookup on an accumulator.
 fn effective(
     memory: &impl Memory,
     base: usize,
@@ -459,11 +353,8 @@ fn effective(
     effective_memo(memory, base, key, value.raw, memo)
 }
 
-/// Effective range and raw normalization, fuel and combat entries.
 type AceRangeTerms = (i64, [Option<i64>; 2], [Option<i64>; 1], [Option<i64>; 3]);
 
-/// Project normalization entries from the complete raw range read, without
-/// another accumulator lookup or metadata demand.
 fn ace_range_with_normalization(
     memory: &impl Memory,
     base: usize,
@@ -517,7 +408,6 @@ struct AceTypeTerms {
     flags: u8,
 }
 
-/// One original type-range copy also supplies the raw combat predicates.
 fn ace_type_terms(
     memory: &impl Memory,
     base: usize,
@@ -554,7 +444,6 @@ fn ace_type_terms(
     })
 }
 
-/// Pointers, rows and records copied per guarded call.
 const BATCH: usize = 64;
 
 const fn layout(fields: &'static [RecordField], stride: usize) -> RecordLayout<'static> {
@@ -564,14 +453,12 @@ const fn layout(fields: &'static [RecordField], stride: usize) -> RecordLayout<'
     }
 }
 
-/// A reservation's `{ priority, quantity }`.
 const RESERVATION_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
     len: RESERVATION,
 }];
 const RESERVATION_LAYOUT: RecordLayout<'static> = layout(&RESERVATION_FIELDS, RESERVATION);
-/// A container's vtable and capacity.
 const CONTAINER_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -585,7 +472,6 @@ const CONTAINER_FIELDS: [RecordField; 2] = [
     },
 ];
 const CONTAINER_LAYOUT: RecordLayout<'static> = layout(&CONTAINER_FIELDS, 16);
-/// An ace's vtable and reference, wing, alive byte and type definition.
 const ACE_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
@@ -611,7 +497,6 @@ const ACE_FIELDS: [RecordField; 4] = [
 const ACE_BYTES: usize = 33;
 const ACE_LAYOUT: RecordLayout<'static> = layout(&ACE_FIELDS, ACE_BYTES);
 
-/// Successful original shared dependencies of one acquisition.
 #[derive(Default)]
 struct Shared<T> {
     values: std::collections::HashMap<usize, T>,
@@ -638,9 +523,6 @@ impl<T: Copy> Shared<T> {
     }
 }
 
-/// Lower-bound search of a sorted accumulator for each registered launch key,
-/// ascending by column. `probe` uses the owned copy or one guarded read per probe
-/// when the array exceeds [`ACCUMULATOR_ENTRIES`].
 fn search(
     count: u32,
     mut probe: impl FnMut(u32) -> Result<[u8; 16], &'static str>,
@@ -650,7 +532,6 @@ fn search(
     let mut lower = 0;
     for &(key, column) in sorted {
         let value = &mut out[column];
-        // Keys ascend, so each search starts where the previous one ended.
         let mut remaining = count - lower;
         let mut found = None;
         while remaining > 0 {
@@ -677,7 +558,6 @@ fn search(
     Ok(())
 }
 
-/// Copies the pointer array's elements `first..` into `out`, up to its length.
 fn pointers(
     memory: &impl Memory,
     array: Array,
@@ -687,7 +567,6 @@ fn pointers(
 ) -> Result<usize, &'static str> {
     let count = ((array.count - first) as usize).min(BATCH);
     let source = array.slice(first, count as u32, 8).map_err(|_| what)?;
-    // Copy the whole requested span before callers validate entries; a short read still wins.
     crate::cpdx_array::pointers(memory, source, what, |index, pointer| {
         out[index as usize] = pointer;
         Ok(())
@@ -695,8 +574,6 @@ fn pointers(
     Ok(count)
 }
 
-/// Up to [`BATCH`] spans `(address, len)`, back to back in `destination`, in
-/// one guarded call; returns how many leading spans were copied.
 fn gather(memory: &impl Memory, spans: &[(usize, usize)], destination: &mut [u8]) -> usize {
     debug_assert!(spans.len() <= BATCH);
     let mut addresses = [0_usize; BATCH];
@@ -713,15 +590,12 @@ fn gather(memory: &impl Memory, spans: &[(usize, usize)], destination: &mut [u8]
         .min(spans.len())
 }
 
-/// A country's production status pointer.
 const PRODUCTION_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: ccountry::PRODUCTION_STATUS,
     destination_offset: 0,
     len: 8,
 }];
 const PRODUCTION_LAYOUT: RecordLayout<'static> = layout(&PRODUCTION_FIELDS, 8);
-/// `cproduction_status::manager`'s vtable and country, then
-/// `cequipment_variant_pool::allocation_entries`' pool vtable and header.
 const MANAGER_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
@@ -746,16 +620,9 @@ const MANAGER_FIELDS: [RecordField; 4] = [
 ];
 const MANAGER_BYTES: usize = 40;
 const MANAGER_LAYOUT: RecordLayout<'static> = layout(&MANAGER_FIELDS, MANAGER_BYTES);
-/// Allocation rows one guarded gather copies; a longer pool is read alone.
 const STOCK_ROWS: usize = 1024;
 const ROW: usize = crate::allocation_equipment_row::STRIDE;
 
-/// StockpileArchetypes for every canonical country: 64 countries per guarded
-/// call for the production pointers and for the managers and pools, and the
-/// allocation rows of consecutive countries gathered up to [`STOCK_ROWS`]
-/// per guarded call, of which only the `essentials`' entries become rows.
-/// Each country keeps the failure order and messages of
-/// `cproduction_status::manager` and `cequipment_variant_pool::allocation_entries`.
 fn stockpiles(
     memory: &impl Memory,
     base: usize,
@@ -786,7 +653,6 @@ fn stockpiles(
             }
             slot += 1;
         }
-        // Each country's production status, up to the first unreadable one.
         let mut words = [0_u8; BATCH * 8];
         let copied = memory.copy_records(
             RecordSources::Pointers(&countries[..len]),
@@ -807,8 +673,6 @@ fn stockpiles(
                 break;
             }
         }
-        // Their managers and pools, then each country's allocation array or
-        // its first failure.
         let mut records = [0_u8; BATCH * MANAGER_BYTES];
         let completed = memory.copy_records(
             RecordSources::Pointers(&managers[..read]),
@@ -840,7 +704,6 @@ fn stockpiles(
                 break;
             }
         }
-        // The rows of consecutive countries that fit, in slot order.
         let mut next = 0;
         while next < len {
             let pool = pools[next]?;
@@ -848,7 +711,6 @@ fn stockpiles(
                 air.begin(memory, slots[next], countries[next]);
             }
             if pool.count as usize > STOCK_ROWS {
-                // A long pool reads alone, in chunks.
                 let mut first = 0;
                 while first < pool.count {
                     let count = ((pool.count - first) as usize).min(STOCK_ROWS);
@@ -916,11 +778,6 @@ fn stockpiles(
     Ok(())
 }
 
-/// The essential entries of one country's allocation rows as StockpileArchetypes rows. Archetype
-/// quantity lookup returns the entry whose archetype id is the essential's, in an array kept sorted
-/// by that id with one entry per archetype; an id names one archetype object, so the entry's
-/// archetype pointer is compared instead, and an essential archetype without an entry has no row
-/// (zero stock).
 fn emit(
     rows: &[u8],
     slot: u32,
@@ -953,9 +810,6 @@ fn emit(
     Ok(())
 }
 
-/// A country's headers in the order the walk uses them: the modifier
-/// accumulator, the allocated command power, the convoy reservations and the
-/// ace roster.
 const COUNTRY_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: ccountry::MODIFIER_ACCUMULATOR,
@@ -980,14 +834,9 @@ const COUNTRY_FIELDS: [RecordField; 4] = [
 ];
 const COUNTRY_BYTES: usize = 56;
 const COUNTRY_LAYOUT: RecordLayout<'static> = layout(&COUNTRY_FIELDS, COUNTRY_BYTES);
-/// Accumulator entries a country's search copies in one guarded call; a
-/// longer accumulator is searched one probe per guarded call.
 const ACCUMULATOR_ENTRIES: usize = 1024;
-/// Autonomous flags copied per guarded call.
 const FLAG_CHUNK: usize = 256;
 
-/// The game state's autonomous flags (`cgame_state::AUTONOMOUS_STATUS`), copied [`FLAG_CHUNK`]
-/// slots at a time as the ascending walk reaches them.
 struct Flags {
     array: Array,
     first: u32,
@@ -1005,9 +854,6 @@ impl Flags {
         }
     }
 
-    /// The flag at `slot`, as AI-control lookup reads it. A slot past the
-    /// array's count, or in a chunk that did not copy, is read alone, so it
-    /// fails only as that read would.
     fn get(&mut self, memory: &impl Memory, slot: u32) -> Result<u8, &'static str> {
         if slot < self.first || slot - self.first >= self.len {
             let count = self.array.count.saturating_sub(slot).min(FLAG_CHUNK as u32);
@@ -1028,7 +874,6 @@ impl Flags {
             .ok_or("autonomous flag unreadable")
     }
 }
-/// A strategic-air object's vtable and both site list headers.
 const STRATEGIC_FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: 0,
@@ -1048,7 +893,6 @@ const STRATEGIC_FIELDS: [RecordField; 3] = [
 ];
 const STRATEGIC_BYTES: usize = 40;
 const STRATEGIC_LAYOUT: RecordLayout<'static> = layout(&STRATEGIC_FIELDS, STRATEGIC_BYTES);
-/// A site's vtable and handle, then its country container table header.
 const SITE_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -1063,7 +907,6 @@ const SITE_FIELDS: [RecordField; 2] = [
 ];
 const SITE_BYTES: usize = 32;
 const SITE_LAYOUT: RecordLayout<'static> = layout(&SITE_FIELDS, SITE_BYTES);
-/// One pointer at its address.
 const POINTER_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -1071,7 +914,6 @@ const POINTER_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const POINTER_LAYOUT: RecordLayout<'static> = layout(&POINTER_FIELDS, 8);
 
-/// The walk's rows and arena length.
 #[derive(Default)]
 struct Sliced {
     countries: Bounded,
@@ -1081,9 +923,6 @@ struct Sliced {
     reservations_len: usize,
 }
 
-/// CountryCommandPower, RaidCountryInputs and AceRangeInputs for every
-/// canonical slot, and RaidAirSites for the slots `selected` accepts, in slot
-/// order.
 #[allow(clippy::too_many_arguments)]
 fn sliced(
     memory: &impl Memory,
@@ -1099,7 +938,6 @@ fn sliced(
     let keys = *buffers.keys;
     let (sorted, sorted_len) = keys.sorted();
     let sorted = &sorted[..sorted_len];
-    // The aces read `air_range_factor`: without it their table is unknown.
     let air_range = keys.keys[AIR_RANGE];
     let module = |key: Rva| {
         engine_sites::at(base, key)
@@ -1112,7 +950,6 @@ fn sliced(
         module(cace::VTABLE_RVA)?,
         module(cstrategic_air::VTABLE_RVA)?,
     );
-    // Ace type ranges, shared across countries.
     let mut type_ranges = Shared::<AceTypeTerms>::new();
     let mut list = [0_usize; BATCH];
     let humans = array(
@@ -1155,8 +992,6 @@ fn sliced(
         let Some(country) = reader.at(slot)? else {
             continue;
         };
-        // Every header the country needs, in one guarded call; a field that
-        // did not copy fails at its turn with its own error.
         let mut header = [0_u8; COUNTRY_BYTES];
         let fields = memory.copy_records(
             RecordSources::Pointers(&[country.pointer]),
@@ -1169,7 +1004,6 @@ fn sliced(
             .ok_or("modifier accumulator header unreadable or invalid")?;
         let mut values = [modifier_accumulator::Value::default(); MODIFIERS];
         if accumulator.count as usize <= ACCUMULATOR_ENTRIES {
-            // The whole accumulator in one guarded call, searched locally.
             let bytes = &mut entries[..accumulator.count as usize * STRIDE];
             if !bytes.is_empty() && !memory.copy(accumulator.data, bytes) {
                 return Err("modifier accumulator entry unreadable");
@@ -1203,7 +1037,6 @@ fn sliced(
                 0
             });
         }
-        // Command power and the ace country modifiers, every country.
         if fields < 2 {
             return Err("allocated command power unreadable");
         }
@@ -1223,7 +1056,6 @@ fn sliced(
         } else {
             None
         };
-        // Convoy reservations.
         let held = (fields >= 3)
             .then(|| Array::from_header(header[24..40].try_into().unwrap(), 8))
             .flatten()
@@ -1287,7 +1119,6 @@ fn sliced(
                 .checked_add(1)
                 .ok_or("raid input count overflow")?;
         }
-        // Aces.
         let roster = (fields >= 4)
             .then(|| Array::from_header(header[40..56].try_into().unwrap(), 8))
             .flatten()
@@ -1377,11 +1208,9 @@ fn sliced(
             }
             first += count as u32;
         }
-        // The sliced tables read only the selected countries.
         if !selected(slot) {
             continue;
         }
-        // Raid source sites: the object and both list headers in one call.
         let strategic = if slot < air.count {
             element(memory, air, slot, "strategic air country unreadable")?
         } else {
@@ -1426,11 +1255,6 @@ fn sliced(
     Ok(())
 }
 
-/// Up to [`BATCH`] sites of one list in three guarded calls: every site's
-/// identity and container table header, the country's container pointer in
-/// each table that reaches its slot, and every present container's vtable
-/// and capacity. The first failing site reports its own error, in the order
-/// a per-site read would meet it.
 #[allow(clippy::too_many_arguments)]
 fn sites_batch(
     memory: &impl Memory,
@@ -1443,7 +1267,6 @@ fn sites_batch(
     output: &mut crate::walk::Buffer<'_, SiteRow>,
 ) -> Result<(), &'static str> {
     let count = list.len();
-    // A null site fails at its turn; only the sites before it are read.
     let readable = list.iter().position(|&site| site == 0).unwrap_or(count);
     let mut identities = [0_u8; BATCH * SITE_BYTES];
     let completed = memory.copy_records(
@@ -1451,8 +1274,6 @@ fn sites_batch(
         &SITE_LAYOUT,
         &mut identities[..readable * SITE_BYTES],
     );
-    // Each site's handle and its container address, up to the first site
-    // whose identity or table fails.
     let mut handles = [0_u64; BATCH];
     let mut addresses = [0_usize; BATCH];
     let mut owners = [usize::MAX; BATCH];
@@ -1492,7 +1313,6 @@ fn sites_batch(
         &POINTER_LAYOUT,
         &mut words[..wanted * 8],
     );
-    // A container read that stopped before the identity failure comes first.
     if found < wanted {
         return Err("air site container unreadable");
     }
@@ -1506,7 +1326,6 @@ fn sites_batch(
         ))
         .map_err(|_| "air site container unreadable")?;
     }
-    // Every present container's vtable and capacity, in one guard.
     let mut present = [0_usize; BATCH];
     let mut present_len = 0;
     for &container in &containers[..count] {
@@ -1551,9 +1370,6 @@ fn sites_batch(
     Ok(())
 }
 
-/// The reservation arena demand of every country: two words per convoy
-/// reservation (`CConvoys` reservations, [`CountryRow::reservations_len`]).
-/// Header words only, for presizing the arena before a full hour.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageDemand {
     pub countries: usize,
@@ -1563,7 +1379,6 @@ pub struct StorageDemand {
     pub reservations: usize,
 }
 
-/// Original allocation, site and ace headers size the complete first slice without a country multiplier.
 pub fn storage_demand(
     memory: &impl Memory,
     base: usize,
@@ -1676,11 +1491,6 @@ pub fn required_reservations(
     Ok(words)
 }
 
-/// One pass over the canonical countries. CountryCommandPower,
-/// RaidCountryInputs, AceRangeInputs and StockpileArchetypes cover every
-/// country; RaidAirSites covers only the canonical slots `selected` accepts.
-/// StockpileArchetypes fails apart from the rest; the others are read in the
-/// same country pass and fail together.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -1691,7 +1501,6 @@ pub fn walk(
     walk_with_volunteer_air(memory, base, game_state, buffers, selected, None)
 }
 
-/// The same census with independently certified volunteer stockpile demand.
 pub fn walk_with_volunteer_air(
     memory: &impl Memory,
     base: usize,
@@ -1777,7 +1586,6 @@ pub(crate) mod tests {
     use crate::{allocation_equipment_row, modifier_definition};
     use std::collections::BTreeMap;
 
-    // The fixtures register the launch keys at the static indices.
     const AIR_RANGE: u32 = 0x05;
     const MAX_COMMAND_POWER: u32 = 0x14b;
     const MAX_COMMAND_POWER_FACTOR: u32 = 0x14d;
@@ -1838,7 +1646,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Fixture writers over any test image.
     trait Put {
         fn bytes(&mut self, address: usize, bytes: &[u8]);
         fn u32(&mut self, address: usize, value: u32) {
@@ -1852,9 +1659,6 @@ pub(crate) mod tests {
             self.u32(address + 8, count);
             self.u32(address + 12, count);
         }
-        /// An equipment map at `at` (head node at `head`, then one node per
-        /// entry 0x40 apart) of `(equipment, amount)` entries in order: a
-        /// right-leaning chain, as `std::map` may hold it.
         fn equipment_map(&mut self, at: usize, head: usize, entries: &[(usize, i32)]) {
             let node = |index: usize| head + 0x40 * (index + 1);
             let last = entries.len().checked_sub(1).map_or(head, node);
@@ -1879,8 +1683,6 @@ pub(crate) mod tests {
                 self.u32(at + crate::raid_database::NODE_AMOUNT, amount as u32);
             }
         }
-        /// The raid definition database at `database` with one raid type per essential map, each in
-        /// its own 0x1000-byte block after `types`.
         fn raid_types(&mut self, database: usize, types: usize, maps: &[&[(usize, i32)]]) {
             use crate::raid_database as db;
             self.u64(db::SINGLETON_RVA.0, database as u64);
@@ -1896,7 +1698,6 @@ pub(crate) mod tests {
                 self.equipment_map(raid + db::ESSENTIAL_EQUIPMENT, raid + 0xc00, entries);
             }
         }
-        /// A sorted accumulator of `(key, raw)` entries.
         fn accumulator(&mut self, address: usize, data: usize, entries: &[(u32, i64)]) {
             self.array(address, data, entries.len() as u32);
             for (index, &(key, raw)) in entries.iter().enumerate() {
@@ -1912,7 +1713,6 @@ pub(crate) mod tests {
         for key in MODIFIERS {
             let row = DEFINITIONS + key as usize * modifier_definition::STRIDE;
             memory.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
-            // The capacity factor clamps to [0, 1].
             let flags = if key == MAX_COMMAND_POWER_FACTOR {
                 modifier_definition::CLAMP_MAXIMUM
             } else {
@@ -1991,9 +1791,7 @@ pub(crate) mod tests {
         memory.bytes(ACE + cace::ALIVE, &[1]);
         memory.accumulator(ACE + cace::MODIFIERS, 0x12_000, &[(AIR_RANGE, 10_000)]);
         memory.u64(ACE + ACE_TYPE_DEFINITION, ACE_TYPE as u64);
-        // The range operand is the type's embedded accumulator, independently of its header constant.
         memory.accumulator(ACE_TYPE + 0x48, 0x13_000, &[(AIR_RANGE, 5_000)]);
-        // The enclosing modifier head is distinct from its accumulator.
         memory.u64(ACE_TYPE + 0x38, 0x14_000);
         memory.u64(ACE_TYPE + 0x40, 1);
         memory
@@ -2061,9 +1859,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A launch key the running game does not register by name leaves its
-    /// value `None`, never zero; the aces, which read `air_range_factor`,
-    /// are unknown without it, with the name.
     #[test]
     fn ace_normalization_projects_raw_words_without_changing_range_reads() {
         let mut world = fixture();
@@ -2168,11 +1963,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// An unselected country still reads its country inputs and aces with
-    /// its command power: every launch key, the autonomous flag, the convoy
-    /// reservations and each ace's range terms, so a launch key whose
-    /// definition is unreadable fails them whether or not the country is
-    /// selected.
     #[test]
     fn an_unselected_country_reads_its_country_inputs_and_aces() {
         let run = run_selected(&fixture(), 2, &|_| false);
@@ -2211,8 +2001,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Two words per reservation of every country, from the headers alone:
-    /// the arena size a full hour needs to read every country.
     #[test]
     fn the_reservation_demand_sizes_a_full_hour() {
         let memory = fixture();
@@ -2237,9 +2025,6 @@ pub(crate) mod tests {
                 ace_bonuses: Some(7_000),
             }
         );
-        // Present keys pass the getter; the factor clamps; absent keys are
-        // zero. One evaluation serves both rows; the conversion publishes the
-        // hourly columns only in CountryCommandPower.
         assert_eq!(
             run.country.modifiers,
             [
@@ -2253,7 +2038,6 @@ pub(crate) mod tests {
         );
         assert_eq!(run.country.autonomous, Some(1));
         assert_eq!(run.pairs, [1, 12]);
-        // 40 in stock, capped at the 30 the raid type requires.
         assert_eq!((run.archetype.archetype, run.archetype.units), (0x3309, 30));
         assert_eq!(
             (
@@ -2321,8 +2105,6 @@ pub(crate) mod tests {
         assert_eq!(run.walk.sites, Outcome::Rows { len: 1 });
     }
 
-    /// The fixture with readable controller arrays, a player count and a
-    /// second site in list 0.
     fn site_fixture() -> Synthetic {
         let mut memory = fixture();
         memory.bytes(HUMANS, &[0, 0]);
@@ -2332,15 +2114,12 @@ pub(crate) mod tests {
         memory.u64(SITES + 8, SITE_B as u64);
         memory.u64(SITE_B, cair_base::VTABLE_RVA.0 as u64);
         memory.u64(SITE_B + cair_base::HANDLE, 0x0000_000a_0000_0041);
-        // Slot 1 has no entry in the second site's container table.
         memory.array(SITE_B + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 1);
         memory
     }
 
     #[test]
     fn each_site_reports_its_own_failure_in_site_order() {
-        // The second site's container table is invalid; the first site's
-        // container pointer is unreadable, which a per-site read meets first.
         let mut memory = site_fixture();
         memory.array(SITE_B + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 2);
         memory.u32(SITE_B + cair_base::COUNTRY_CONTAINERS + 12, 9);
@@ -2362,7 +2141,6 @@ pub(crate) mod tests {
 
     #[test]
     fn an_unselected_country_reads_no_air_site() {
-        // Its air sites are never read; its essential stock is.
         let mut memory = fixture();
         memory
             .0
@@ -2374,21 +2152,13 @@ pub(crate) mod tests {
         assert_eq!(run.walk.archetypes, Outcome::Rows { len: 1 });
         assert_eq!(run.walk.command_power, Outcome::Rows { len: 1 });
         assert_eq!(run.command_power.allocated_raw, 3_000_000);
-        // Selected, the same memory fails the sites.
         let run = run_selected(&memory, 2, &|slot| slot == 1);
         assert!(matches!(run.walk.sites, Outcome::Unavailable { .. }));
     }
 
-    /// Only an archetype some raid type lists as essential is recorded, in
-    /// whole units capped at the largest amount any type requires of it:
-    /// two types listing equipment of one archetype take the larger amount,
-    /// a stock below the cap is exact, and a pool entry of another archetype
-    /// has no row. Without the raid definitions only this table fails.
     #[test]
     fn the_essential_stock_is_recorded_in_whole_units_up_to_the_largest_requirement() {
         let mut memory = fixture();
-        // A second type needs 35 of the archetype itself; the pool also
-        // holds 2.5 of a non-essential archetype.
         memory.u64(ARCHETYPE + cequipment_type::ARCHETYPE, ARCHETYPE as u64);
         memory.raid_types(
             RAIDS,
@@ -2423,8 +2193,6 @@ pub(crate) mod tests {
         assert_eq!(unread.walk.countries, Outcome::Rows { len: 1 });
     }
 
-    /// The autonomous flags are copied a chunk per guarded call; a slot whose
-    /// chunk does not copy is read alone, so only an unreadable flag fails.
     #[test]
     fn autonomous_flags_copy_by_chunk_and_fall_back_to_their_own_read() {
         let mut memory = Synthetic::default();
@@ -2434,8 +2202,6 @@ pub(crate) mod tests {
             count: 4,
         };
         let mut flags = Flags::new(array);
-        // The fourth flag is missing: every chunk reaching it fails, and
-        // each readable slot reads alone.
         assert_eq!(flags.get(&memory, 1), Ok(1));
         assert_eq!(flags.get(&memory, 2), Ok(0));
         assert_eq!(flags.get(&memory, 3), Err("autonomous flag unreadable"));
@@ -2446,13 +2212,11 @@ pub(crate) mod tests {
             assert_eq!(flags.get(&counted, slot as u32), Ok(flag));
         }
         assert_eq!(counted.guards.get(), 1);
-        // A slot past the count fails as its own read would.
         assert_eq!(flags.get(&counted, 4), Err("autonomous flag unreadable"));
     }
 
     const SITE_B: usize = 0x2a_000;
 
-    /// A flat, growing byte image at address zero.
     #[derive(Default)]
     pub(crate) struct Flat(pub(crate) Vec<u8>);
 
@@ -2481,11 +2245,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A [`Flat`] image read through the guarded native copies: every image
-    /// address, including those stored in it, is rebased onto the image's
-    /// storage at each read, so a bench pays what production pays per
-    /// guarded call and per record. An address past the image reads as a
-    /// non-canonical one, which faults gracefully; null stays null.
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     pub(crate) struct Rebased {
         image: Flat,
@@ -2495,8 +2254,6 @@ pub(crate) mod tests {
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     impl Rebased {
         pub(crate) fn new(image: Flat) -> Self {
-            // SAFETY: every rebased read stays in `image`, which this owns
-            // and never mutates while it is read.
             let live = unsafe { crate::memory::LiveMemory::new() };
             Self { image, live }
         }
@@ -2581,7 +2338,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The median wall time of `runs` calls, in milliseconds.
     pub(crate) fn median_ms(runs: usize, mut call: impl FnMut()) -> f64 {
         let mut times: Vec<f64> = (0..runs)
             .map(|_| {
@@ -2594,8 +2350,6 @@ pub(crate) mod tests {
         times[runs / 2]
     }
 
-    // Per-country block of the scaled world, above the module slots the walk
-    // reads at base 0, which a country block would otherwise overwrite.
     const WORLD: usize = 0x400_0000;
     const _: () = assert!(
         WORLD >= modifier_definition::TABLE_RVA.0 + 8
@@ -2614,16 +2368,11 @@ pub(crate) mod tests {
     const B_ACE_MODIFIERS: usize = 0x4000;
     const MODIFIER_ENTRIES: usize = 200;
     const ARCHETYPES: usize = 30;
-    /// Archetypes the scaled world's raid type lists as essential.
     const ESSENTIALS: usize = 4;
     const RESERVATIONS_PER_COUNTRY: usize = 4;
     const SITES_PER_COUNTRY: usize = 10;
     const ACES_PER_COUNTRY: usize = 5;
 
-    /// The worst plausible hour for `countries` countries: every country
-    /// with 200 accumulator entries (the six keys among them), 4 convoy
-    /// reservations, 30 stockpile archetypes, 10 air sites where it has a
-    /// container, and 5 aces.
     fn scaled(countries: usize) -> Flat {
         let mut memory = Flat::default();
         let slots = countries + 1;
@@ -2633,7 +2382,6 @@ pub(crate) mod tests {
             memory.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
             memory.u32(row + modifier_definition::FLAGS, 0);
         }
-        // Globals past the country blocks: tables, archetypes, sites.
         let globals = WORLD + slots * BLOCK;
         let table = globals;
         let links = table + slots * 8;
@@ -2668,8 +2416,6 @@ pub(crate) mod tests {
             .map(|index| (archetypes + index * 0x500 * (ARCHETYPES / ESSENTIALS), 10))
             .collect();
         memory.raid_types(ace_type + 0x1000, ace_type + 0x2000, &[&essentials]);
-        // Every site shares one container table in which every country has
-        // a container.
         for slot in 1..slots {
             memory.u64(containers + slot * 8, container as u64);
         }
@@ -2783,7 +2529,6 @@ pub(crate) mod tests {
         memory
     }
 
-    /// `cargo test --release -p engine raid_launch_inputs_bench -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn raid_launch_inputs_bench() {
@@ -2830,7 +2575,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Evicts the caches by streaming a buffer larger than the last level.
     struct Evictor(Vec<u8>);
 
     impl Evictor {
@@ -2846,7 +2590,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The median of 20 runs, each after `prepare`, in milliseconds.
     fn median_after(mut prepare: impl FnMut(), mut call: impl FnMut()) -> f64 {
         let mut times: Vec<f64> = (0..20)
             .map(|_| {
@@ -2860,7 +2603,6 @@ pub(crate) mod tests {
         times[10]
     }
 
-    /// The walk's rows, sized for the scaled world.
     struct Rows {
         countries: Vec<CountryRow>,
         command_power: Vec<CommandPowerRow>,
@@ -2902,8 +2644,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The callback's authenticated country census over a bench memory, as
-    /// production's country memory supplies it to every reader.
     struct Census<'a, M> {
         inner: &'a M,
         slots: Vec<Option<ccountry::Country>>,
@@ -2965,10 +2705,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A launch hour as the collector runs it: every country's command power
-    /// and one daily slice of the sliced tables (the first hour of a session
-    /// reads every country).
-    /// `cargo test --release -p engine raid_launch_hour_bench -- --ignored --nocapture`
     #[test]
     #[ignore]
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
@@ -3006,7 +2742,6 @@ pub(crate) mod tests {
 mod shared_demand_tests {
 
     use super::*;
-    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
     fn shared_raid_sources_retain_original_dependencies() {
         let mut memo = Shared::<u32>::new();

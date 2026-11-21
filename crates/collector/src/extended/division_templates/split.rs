@@ -1,26 +1,12 @@
-//! The template walk split by country slot ranges across the acquisition workers. Each range
-//! walks its countries into arenas of its own and decides, on the stores the hour began with and
-//! without changing them, what the serial walk would decide; it records those decisions, where
-//! each row ends in its arenas, and its countries' reads. The stitch applies the ranges in slot
-//! order to the real stores, up to and including the first range that failed, and decides every
-//! occurrence again as the serial walk does. Where that differs from the range's (a template met
-//! earlier in the hour), the occurrence's row is taken again: from the held row, or by reading
-//! that one occurrence. The join places every row's data where the serial walk places it, so the
-//! rows, the stores and the first failure are the serial walk's. A refused allocation, a missing
-//! part, or a failed range whose last batch a repeated template could re-decide leaves the hour
-//! to the serial walk, with the stores untouched.
 use super::*;
 use crate::hour_stages::TemplateFallback as Fallback;
 use crate::template_changes::Changes;
 use engine_allocation::SharedBox;
 use std::ops::Range;
 
-/// Fewer templates than this are walked on the template job's own thread.
 const SPLIT_ROWS: usize = 2 * PART_ROWS;
-/// The fewest templates a range is given.
 const PART_ROWS: usize = 64;
 
-/// The walk's stores, lent read-only to the ranges while they run.
 #[derive(Default)]
 pub(super) struct Lent {
     held: held::Store,
@@ -28,11 +14,9 @@ pub(super) struct Lent {
     countries: countries::Store,
 }
 
-/// One roster occurrence as a range met and decided it.
 #[derive(Clone, Copy)]
 struct Occurrence {
     country: u32,
-    /// The country's slot and its place among the range's country visits.
     slot: u32,
     visit: u32,
     pointer: usize,
@@ -45,15 +29,12 @@ struct Occurrence {
     carried: bool,
 }
 
-/// What a range met, in walk order: each batch's occurrences, then each of its rows placed.
 enum Event {
     Batch,
     Demand(Occurrence),
-    /// A row placed: the range's `[bytes, counts, variants, names]` lengths after it.
     Placed([usize; 4]),
 }
 
-/// One range of country slots: its arenas, definition slots, decisions and country reads.
 #[derive(Default)]
 pub(crate) struct WalkPart {
     slots: Range<u32>,
@@ -71,13 +52,10 @@ pub(crate) struct WalkPart {
     events: Vec<Event>,
     visits: Vec<countries::Visit>,
     scratch: Vec<GarrisonTemplateSelection>,
-    /// The speed keys of each row the range read, by row.
     speed_keys: Vec<u32>,
     speed_spans: Vec<(u32, Option<(usize, usize)>)>,
-    /// The first row's place among the hour's rows, once stitched.
     row_offset: usize,
     country_ticks: u64,
-    /// A decision or country read the range could not record.
     incomplete: bool,
 }
 
@@ -149,7 +127,6 @@ impl WalkPart {
         self.incomplete = policy.incomplete || lost_visit;
         self.walk = Some(walk);
         if let Outcome::Rows { len } = walk.outcome {
-            // A carried row's speed keys are its held ones; every row read is read here.
             let carried = self.events.iter().filter_map(|event| match event {
                 Event::Demand(occurrence) => Some(occurrence.carried),
                 _ => None,
@@ -188,7 +165,6 @@ impl WalkPart {
             + self.speed_spans.capacity() * size_of::<(u32, Option<(usize, usize)>)>()
     }
 
-    /// The template occurrences the range visited.
     #[cfg(test)]
     pub(crate) fn visited(&self) -> usize {
         self.events
@@ -197,7 +173,6 @@ impl WalkPart {
             .count()
     }
 
-    /// The speed keys of each row the range read, at the row's place among the hour's rows.
     pub(super) fn staged_speed_keys(&self) -> impl Iterator<Item = (usize, Option<&[u32]>)> + '_ {
         self.speed_spans.iter().map(|&(at, span)| {
             (
@@ -222,17 +197,13 @@ impl WalkPart {
     }
 }
 
-/// A range's policy: the serial policy's decisions, taken on the stores the walk began with and
-/// recorded for the stitch; it changes no store.
 struct Observed<'a> {
     held: &'a held::Store,
     core: &'a super::core::Store,
     changes: &'a dyn Changes,
     stamps: held::Stamps,
     events: &'a mut Vec<Event>,
-    /// The slot of the country being walked, set by its visit.
     slot: &'a std::cell::Cell<u32>,
-    /// The countries met so far.
     countries: u32,
     incomplete: bool,
 }
@@ -296,24 +267,19 @@ impl native::DetailPolicy for Observed<'_> {
     }
 }
 
-/// Splits the hour's walk across the workers; parts may return in any order.
 pub(crate) struct TemplateWorkers<'a> {
     pub lanes: usize,
     pub walk: &'a mut dyn FnMut(Vec<WalkPart>) -> Result<Vec<WalkPart>, &'static str>,
 }
 
-/// The walk of one hour, serial or stitched.
 pub(super) struct Walked {
     pub walk: native::IconWalk,
-    /// Carried and read occurrences.
     pub counts: [u64; 2],
     pub country_len: usize,
     pub country_failure: Option<&'static str>,
     pub country_ticks: u64,
 }
 
-/// An occurrence the stores decided otherwise than its range: its row as the serial walk
-/// places it, with spans from zero into the stitch's arenas at `at`.
 struct Override {
     part: usize,
     row: usize,
@@ -321,23 +287,18 @@ struct Override {
     carried: bool,
     at: [usize; 4],
     len: [usize; 4],
-    /// The range's own row in its arenas, which this replaces.
     replaced: [[usize; 4]; 2],
 }
 
-/// The stitch's storage, kept from hour to hour.
 #[derive(Default)]
 pub(super) struct Stitching {
-    /// The hour's template handles, sorted, repeats kept.
     templates: Vec<u64>,
-    /// One range's occurrences and what the stores decided for each: `(details, kept)`.
     decided: Vec<(Occurrence, bool, bool)>,
     overrides: Vec<Override>,
     bytes: Vec<u8>,
     counts: Vec<native::SubunitCount>,
     variants: Vec<u64>,
     names: Vec<u8>,
-    /// One occurrence's read.
     read_rows: Vec<native::IconRow>,
     read_bytes: Vec<u8>,
     read_counts: Vec<native::SubunitCount>,
@@ -360,7 +321,6 @@ impl Stitching {
             + self.read_rows.capacity() * size_of::<native::IconRow>()
     }
 
-    /// Appends `[bytes, counts, variants, names]` to the stitch's arenas; returns where.
     fn append(
         &mut self,
         bytes: &[u8],
@@ -388,21 +348,17 @@ impl Stitching {
     }
 }
 
-/// How many times the sorted `templates` hold `template`.
 fn occurrences(templates: &[u64], template: u64) -> usize {
     templates.partition_point(|&held| held <= template)
         - templates.partition_point(|&held| held < template)
 }
 
 impl Captured {
-    /// The occurrences this hour's stitch took again.
     #[cfg(test)]
     pub(crate) fn taken_again(&self) -> usize {
         self.stitching.overrides.len()
     }
 
-    /// The walk split by country slot ranges and stitched; a refusal leaves the hour to the
-    /// serial walk with every store as the hour began.
     pub(super) fn walk_split(
         &mut self,
         memory: &impl Memory,
@@ -433,7 +389,6 @@ impl Captured {
             part.slots = slots;
             part.state = state;
             part.lent = Some(SharedBox::clone(&lent));
-            // Slots that do not fit only cost live lookups.
             engine_allocation::advisory(|| {
                 crate::table_capture::grow_vec(&mut part.database, self.database.first.len());
                 crate::table_capture::grow_vec(&mut part.globals, self.globals.first.len());
@@ -463,7 +418,6 @@ impl Captured {
         parts.sort_unstable_by_key(|part| part.slots.start);
         let complete = parts.len() == count
             && parts.iter().all(|part| part.walk.is_some() && !part.incomplete);
-        // The ranges up to and including the first that failed, as far as the serial walk reads.
         let applied = parts
             .iter()
             .position(WalkPart::failed)
@@ -486,7 +440,6 @@ impl Captured {
         walked
     }
 
-    /// Contiguous slot ranges balanced by their templates and countries.
     fn walk_ranges(
         &mut self,
         memory: &impl Memory,
@@ -532,7 +485,6 @@ impl Captured {
         (ranges.len() >= 2).then_some(ranges)
     }
 
-    /// The stores, moved into the shared loan the ranges read.
     fn lend(&mut self) -> Option<SharedBox<Lent>> {
         if self.lent.is_none() {
             self.lent = engine_allocation::advisory(|| engine_allocation::shared(Lent::default()))
@@ -548,8 +500,6 @@ impl Captured {
         Some(lent)
     }
 
-    /// The stores back from a loan no range holds any more; false when one still does, which
-    /// leaves the hour to a serial walk without them.
     fn take_back(&mut self, mut lent: SharedBox<Lent>) -> bool {
         let Some(stores) = SharedBox::get_mut(&mut lent) else {
             return false;
@@ -561,9 +511,6 @@ impl Captured {
         true
     }
 
-    /// Room to stitch: the stitch's decisions, and the held store's entry for every new
-    /// template. A failed range's last batch is the serial walk's only while no occurrence in
-    /// it can be decided otherwise, so a repeated template there leaves the hour serial.
     fn admit_decisions(&mut self, parts: &[WalkPart]) -> Result<(), Fallback> {
         let stitch = &mut self.stitching;
         stitch.templates.clear();
@@ -599,8 +546,6 @@ impl Captured {
             .ok_or(Fallback::Room)
     }
 
-    /// Applies the ranges' decisions and country reads in slot order, deciding each occurrence
-    /// again on the real stores, and joins their arenas.
     fn stitch(
         &mut self,
         memory: &impl Memory,
@@ -636,7 +581,6 @@ impl Captured {
                         let kept =
                             !details && self.core.carry(o.template, o.pointer, o.country, o.certificate);
                         counts[usize::from(!kept)] += 1;
-                        // Reserved for the range's every occurrence.
                         stitch.decided.push((o, details, kept));
                     }
                     Event::Placed(end) => {
@@ -673,7 +617,6 @@ impl Captured {
                             )
                         };
                         if let Err(reason) = taken {
-                            // The serial walk stops at this row, having met its country.
                             failure = Some(reason);
                             visits = visits.min(o.visit as usize + 1);
                             break;
@@ -718,8 +661,6 @@ impl Captured {
         }
     }
 
-    /// The held row the stores carry for occurrence `row` of range `part`, placed as the walk
-    /// places a held row.
     fn hold_again(
         &self,
         stitch: &mut Stitching,
@@ -752,8 +693,6 @@ impl Captured {
         Ok(())
     }
 
-    /// Occurrence `row` of range `part` read again with the details the stores demand, and held
-    /// as the serial walk holds it.
     #[allow(
         clippy::too_many_arguments,
         reason = "the walk's context, the stitch's storage and the occurrence"
@@ -836,8 +775,6 @@ impl Captured {
         Ok(())
     }
 
-    /// The ranges' rows and arenas in slot order, each row's data where the serial walk places
-    /// it: a row taken again replaces the range's own, and the rest shift around it.
     fn join(&mut self, parts: &mut [WalkPart], stitch: &Stitching) -> native::IconWalk {
         let mut joined = native::IconWalk {
             outcome: Outcome::Rows { len: 0 },
@@ -951,7 +888,6 @@ impl Captured {
                     .copy_from_slice(&stitch.variants[o.at[2]..o.at[2] + o.len[2]]);
                 self.name_bytes.first[out[3]..out[3] + o.len[3]]
                     .copy_from_slice(&stitch.names[o.at[3]..o.at[3] + o.len[3]]);
-                // The range's decision for this row is replaced, not placed.
                 carried.next();
                 self.icon_rows.rows[len + o.row] = shifted(o.value, out, o.carried);
                 for i in 0..4 {
@@ -978,10 +914,6 @@ impl Captured {
     }
 }
 
-/// A row at its place among the hour's arenas: `shift` is added, wrapping, to every span the
-/// walk placed in `[bytes, counts, variants, names]`, and only those. A carried row places its
-/// core's spans; a read row also its group key, forbidden equipment unless refused, and, while
-/// its extension is fresh, cells.
 fn shifted(mut row: native::IconRow, [bytes, counts, variants, names]: [usize; 4], carried: bool) -> native::IconRow {
     let shift = |span: &mut native::Span, by: usize| span.start = span.start.wrapping_add(by);
     shift(&mut row.priority_unit_name, bytes);

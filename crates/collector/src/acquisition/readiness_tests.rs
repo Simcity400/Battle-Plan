@@ -1,10 +1,7 @@
-//! Completion-driven dispatch uses gates, never completion-time guesses.
 use super::*;
 use std::sync::mpsc;
 
-/// The job that holds the pool's only worker.
 const HOLD: u8 = u8::MAX;
-/// Releases the held worker when dropped.
 struct Held(Arc<AtomicBool>);
 impl Drop for Held {
     fn drop(&mut self) {
@@ -12,8 +9,6 @@ impl Drop for Held {
     }
 }
 
-/// As in production: every slot reserved for workers, and the pool's one worker held
-/// on a job the callback may not help, so admitted work waits for the callback.
 fn held_pool(
     capacity: usize,
     eligible: fn(&u8) -> bool,
@@ -133,7 +128,6 @@ fn callback_help_contains_panics_and_preserves_the_cancelled_completion() {
     assert_eq!(pool.finish(second).unwrap().report, Err(Failure::Stopped));
     drop(held);
     assert_eq!(pool.finish(hold).unwrap().report, Ok(HOLD));
-    // The worker publishes the held job before it retires its active claim.
     pool.settle();
     assert_eq!(pool.calibration().callback_help_executed, 1);
     assert_eq!(pool.calibration().active, 0);
@@ -203,7 +197,6 @@ fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
         registered: Condvar::new(),
         released: Mutex::new(released),
     });
-    // Install the ticket before the worker is released.
     let ticket = unsafe {
         pool.submit_with_priority(
             &mut Some(Work(Some(Arc::clone(&notification)))),
@@ -218,14 +211,11 @@ fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
     pool.wake_workers(1);
     ready.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
-    // The publisher is still in its detached notification. Reusing its cell
-    // must neither alias its old request nor end its active/context lease.
     crate::allocation::set_context(crate::allocation::Context {
         branch: Some(23),
         ..Default::default()
     });
     let next = unsafe { pool.submit(&mut Some(Work(None))).unwrap() };
-    // SAFETY: admission must preserve this immutable context while active.
     assert_eq!(unsafe { (*pool.shared.context.0.get()).branch }, Some(17));
     assert_eq!(pool.calibration().active, 1);
     let settling = Arc::clone(&pool);
@@ -241,7 +231,6 @@ fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
     assert_eq!(pool.finish(next).unwrap().report, Err(Failure::Stopped));
     let last = unsafe { pool.submit(&mut Some(Work(None))).unwrap() };
     assert_eq!(pool.finish(last).unwrap().report, Ok(7));
-    // SAFETY: the last publication ended its context borrow; no admission races.
     assert_eq!(unsafe { (*pool.shared.context.0.get()).branch }, Some(23));
     pool.settle();
     assert_eq!(pool.calibration().active, 0);
@@ -311,8 +300,6 @@ fn readiness_dispatches_dependents_before_an_unrelated_fixed_join() {
     let loan = Box::new([0; 4]);
     let address = (&*loan) as *const [usize; 4];
     let mut pending = submit(Job { stage: 1, loan });
-    // DivisionInputs -> Divisions -> ArmyIcons -> Late: each consumer is
-    // admitted after collecting its producer, not after the first fixed join.
     for stage in 1..=4 {
         pool.wait_ready(|| pool.is_complete(pending).then_some(()));
         assert!(!pool.is_complete(unrelated));
@@ -355,8 +342,6 @@ fn readiness_cannot_lose_publication_before_registration_or_before_address_wait(
         pool.park_until_ready(|| {
             calls += 1;
             if calls == if before_registration { 1 } else { 2 } {
-                // The late case publishes after the registered sequence
-                // snapshot but before a deliberately stale readiness result.
                 release.send(()).unwrap();
                 let began = std::time::Instant::now();
                 while !pool.is_complete(ticket) {
@@ -466,8 +451,6 @@ fn readiness_registration_is_removed_on_unwind() {
     assert_eq!(pool.wait_ready(|| Some(7)), 7);
 }
 
-/// Parts may publish in reverse order, but the consumer waits for every
-/// producer and the callback keeps serial slot order and its first refusal.
 #[test]
 fn readiness_multi_producer_barrier_keeps_dispatch_order_and_first_failure() {
     for failed_slots in 0..4 {

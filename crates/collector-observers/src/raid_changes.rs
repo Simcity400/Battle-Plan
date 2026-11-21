@@ -1,52 +1,3 @@
-//! Allocation-free notifications from the native writers of the raid state
-//! inputs and the building-resource overrides ([`engine_mutations::raid_mutations`]).
-//! A detour only marks the id its arguments name in one of the family's
-//! [`DirtySet`]s, counts its site and calls the original; it never changes
-//! game behaviour.
-//!
-//! Four sets, each taken once an hour by one job; the first two by the
-//! RaidState job ([`crate::extended::raid_state_inputs`]):
-//! - `STATES` (state ids, `cstate::ID`): the state writers name their state
-//!   directly, the pool method through its pool's offset, the origin
-//!   constructor through `r8` and the origin destructor through the origin's own link; an
-//!   origin without a state marks nothing. The building status writers,
-//!   whose patches [`crate::building_changes`] owns, are forwarded
-//!   ([`building_changed`], [`building_unnamed`]) for the infrastructure
-//!   level: a state status marks its state.
-//! - `COUNTRIES` (raw country links held by the country resources): the override
-//!   writers; the consumer resolves each link to its country.
-//! - `SITES` (raw country links), taken by the RaidLaunch job
-//!   ([`crate::extended::raid_launch_inputs`]): the site list writers name
-//!   their `CStrategicAir`'s country link or the link RDX points to; the
-//!   initialization and load writers name every country; the capacity setter
-//!   names the link R8 points to only when the value it stores differs from
-//!   the one there. The daily air base capacity refresh, which calls the
-//!   setter for every (base, country) pair, is read once before it runs: when every
-//!   store keeps its value and no base is withdrawn, its setter calls skip
-//!   their own read, since none would mark.
-//!
-//! - `ROUTES` (raw country links), taken by the RaidState job's resources map capture
-//!   ([`crate::extended::raid_state_inputs`]): the route writers name the country holding
-//!   the route, the route update its sender link and the constructors the link RDX points
-//!   to (a route's sender, or a new country resources object's country, whose delivery
-//!   routes it builds); the save loader names every country.
-//!   Supply's port-to-port updater names its route's sender too. Origin refresh
-//!   marks only a changed kind (or an unreadable check): its inline clear bypasses
-//!   the route updater, while its path rebuilds pass through that updater. Its
-//!   flight refuses a route take even when no kind change has been published yet.
-//!   Both origin paths mark the origin's client country, the census list owner;
-//!   a rights-held origin can have a different route sender. The nested updater
-//!   receives that owner through a scope matching only the origin's embedded route.
-//!
-//! A take that returns the epoch of the family's previous read certifies
-//! that every state or country no take visited since then is unchanged; the
-//! consumer then reads the marked owners (and, for states, the daily slice of
-//! origin states, whose supply-route flag no hook observes), and anything
-//! unobserved (disabled, poisoned, an id beyond the bitmap, an unnamed
-//! writer, an epoch change, a running writer) makes it read every owner.
-//! Entering nudge mode or an uninstalled building family poisons the state
-//! set; it observes only while both its own hooks and that forwarder are
-//! enabled.
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
@@ -61,51 +12,28 @@ use std::{
 };
 
 const SITES: usize = MUTATIONS.len();
-/// The country air pool capacity setter's [`MUTATIONS`] index.
 const CAPACITY_SITE: usize = 24;
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// The daily air base capacity refresh's original.
 static DAILY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// Daily pass originals in flight; one that never returns stays counted.
 static DAILY_FLIGHTS: AtomicUsize = AtomicUsize::new(0);
 std::thread_local! {
-    /// The calling thread is inside a daily pass whose every capacity store
-    /// was read unchanged before it ran ([`daily_refresh_base_capacities`]).
     static CERTIFIED_PASS: Cell<bool> = const { Cell::new(false) };
-    /// Only this origin's embedded updater uses its list owner instead of its sender.
     static REFRESHING_ORIGIN: Cell<Option<usize>> = const { Cell::new(None) };
 }
-/// The module base the capacity setter's tag resolves against; stored before
-/// any hook is enabled.
 static BASE: AtomicUsize = AtomicUsize::new(0);
-/// Per [`Family`] and [`Counts`] field, cumulative.
 static READS: [[AtomicU64; 6]; 4] = [const { [const { AtomicU64::new(0) }; 6] }; 4];
-/// Ids of the latest complete census per [`Family`] (state slots, country
-/// link ids), for off-thread sizing.
 static IDS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
-/// Calls of the strategic-air base and missile list clears, which
-/// strategic-air reset makes before zeroing a country's RaidAirScores pairs in place,
-/// and every change of the hooks' state ([`air_clear_token`]).
 static AIR_CLEARS: AtomicU64 = AtomicU64::new(0);
 
-/// What the two sets mark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
-    /// The `raid_state` sliced family: StateResourceInputs, StateResources,
-    /// StateDynamicModifiers and StateCores (cores, claims and strategic
-    /// locations), by state id.
     States = 0,
-    /// The `raid_country_buildings` sliced family: CountryBuildingResources,
-    /// by country.
     Countries = 1,
-    /// RaidAirSites in the `raid_launch` sliced family, by canonical slot.
     Sites = 2,
-    /// TradeRoutes in the `trade_routes` sliced family, by the country holding each route.
     Routes = 3,
 }
 
-/// One observation domain: the two sets and each writer site's calls.
 pub struct Watches {
     states: DirtySet,
     countries: DirtySet,
@@ -113,43 +41,24 @@ pub struct Watches {
     routes: DirtySet,
     origin_flights: AtomicUsize,
     calls: CallCounters<SITES>,
-    /// Also closes the completed-origin overlap proof in `take`.
     origin_calls: AtomicU64,
-    /// Receivers whose id did not read.
     unnamed: AtomicU64,
-    /// Forwarded building writes of a state status, and those naming no
-    /// status.
     buildings: [AtomicU64; 2],
-    /// Capacity setter calls that stored the value already there, counted
-    /// apart from `calls` so that their common path makes one increment.
     unchanged_capacities: AtomicU64,
-    /// Daily passes whose stores were all certified unchanged before they
-    /// ran, and those left to the setter's own path.
     daily_passes: [AtomicU64; 2],
-    /// Certified stores omitted from timing, counted once on the pass's normal return.
     untimed_capacities: AtomicU64,
-    /// This family's hooks, and the building family's forwarder, enabled.
     hooks: AtomicBool,
     forwarder: AtomicBool,
 }
 
-/// What a site's arguments name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A state; `None` when its id does not read.
     State(Option<usize>),
-    /// A raw country link; `None` when it does not read.
     Country(Option<usize>),
-    /// The raw link of a country whose air sites change; `None` when it does
-    /// not read.
     Site(Option<usize>),
-    /// Every country's air sites.
     EverySite,
-    /// The raw link of the country holding a route; `None` when it does not read.
     Route(Option<usize>),
-    /// Every country's routes.
     EveryRoute,
-    /// Nothing any row reads: an origin without a state, link zero.
     Nothing,
 }
 
@@ -193,9 +102,6 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// whose arguments name `target` is about to run. Dropping the guard
-    /// marks its return.
     pub fn notify(&self, site: usize, target: Target) -> Option<Dirty<'_>> {
         if site == ORIGIN_ROUTE_SITE {
             self.origin_calls.fetch_add(1, Ordering::Relaxed);
@@ -213,10 +119,6 @@ impl Watches {
         }
     }
 
-    /// The origin refresh can clear kind without the route updater. Keep its
-    /// whole original in flight, but mark only a changed or unreadable kind.
-    /// Path changes with an unchanged kind are covered by the nested updater,
-    /// scoped to this origin so it marks the same own or rights-holder list owner.
     fn refresh_origin<R>(
         &self,
         origin: usize,
@@ -253,9 +155,6 @@ impl Watches {
         result
     }
 
-    /// Hook path, allocation-free: the capacity setter `site` is about to
-    /// store a value; `changed` when it differs from the one there (or that
-    /// does not read). Only a changing store names and marks its country.
     pub fn capacity(
         &self,
         site: usize,
@@ -269,9 +168,6 @@ impl Watches {
         None
     }
 
-    /// A forwarded building write of the status with `flags` and `location`:
-    /// a state status marks its state, whose infrastructure building it may
-    /// hold; a province status holds none a row reads.
     fn building(&self, flags: u32, location: u32) -> Option<Dirty<'_>> {
         if flags & engine_native::cbuilding_status::STATE_FLAG == 0 {
             return None;
@@ -285,9 +181,6 @@ impl Watches {
         self.states.notify_every()
     }
 
-    /// The state set observes only while both the hooks and the building
-    /// forwarder are enabled, the country and site sets while the hooks are;
-    /// enabling starts an epoch.
     fn apply(&self) {
         let hooks = self.hooks.load(Ordering::SeqCst);
         crate::division_panel_changes::state_forwarder(
@@ -300,8 +193,6 @@ impl Watches {
         self.routes.set_enabled(hooks);
     }
 
-    /// An enabled domain with bitmaps for `states` and `countries` ids (the
-    /// site set takes the country size).
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(states: usize, countries: usize) -> Self {
         let watches = Self::new();
@@ -318,7 +209,6 @@ impl Watches {
         watches
     }
 
-    /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         for set in self.sets() {
@@ -326,14 +216,11 @@ impl Watches {
         }
     }
 
-    /// The building family's forwarder turned off or on.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_forwarder(&self, enabled: bool) {
         self.forward(enabled);
     }
 
-    /// Only the state set depends on the building family's forwarder;
-    /// enabling a set starts a new epoch, so the country set is left as it is.
     fn forward(&self, enabled: bool) {
         self.forwarder.store(enabled, Ordering::SeqCst);
         self.states
@@ -351,10 +238,7 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// The single consumer's hourly take of `family`'s marked ids
-    /// ([`DirtySet::take`]); `None` certifies nothing.
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64>;
 }
 
@@ -366,8 +250,6 @@ impl Changes for Watches {
             return None;
         }
         let epoch = self.sets()[family as usize].take(visit);
-        // A refresh may start and finish inside the bitmap walk. Its completed
-        // call count catches that overlap even when both flight reads see zero.
         if let Some(before) = origin_calls
             && (self.origin_flights.load(Ordering::SeqCst) != 0
                 || self.origin_calls.load(Ordering::Acquire) != before)
@@ -378,7 +260,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
@@ -386,9 +267,7 @@ impl Changes for Observer {
     }
 }
 
-/// What a site's arguments name.
 fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Target {
-    // SAFETY: guarded reads of live memory on the calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     match receiver {
         Receiver::CountryResources => Target::Country(
@@ -405,8 +284,6 @@ fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Targ
         }
         Receiver::EveryCountry => Target::EverySite,
         Receiver::Route | Receiver::RouteSender | Receiver::OriginRoute => {
-            // Rights-held origins keep the holder as their census owner even
-            // when the embedded route sends resources from the grantor.
             let (receiver, first) = if matches!(receiver, Receiver::Route) {
                 REFRESHING_ORIGIN
                     .with(Cell::get)
@@ -434,18 +311,12 @@ fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Targ
     }
 }
 
-/// Notifications running now.
-/// Sites 21 and 22: the strategic-air list clears.
 fn note_air_clear(site: usize) {
     if site == 21 || site == 22 {
         AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
     }
 }
 
-/// The token RaidAirScores carries its off-phase pairs under
-/// ([`engine_raid_inputs::raid_air_scores::Held::certify`]): the count of in-place clears
-/// while the hooks observe, `None` while they do not. Enabling or disabling
-/// the hooks moves it, so a clear no hook saw cannot leave it unchanged.
 pub fn air_clear_token() -> Option<u64> {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(token) = TEST_AIR_CLEAR_TOKEN.with(std::cell::Cell::get) {
@@ -459,7 +330,6 @@ pub fn air_clear_token() -> Option<u64> {
 
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
-    /// Tests carry under a fixed token unless they set another.
     pub static TEST_AIR_CLEAR_TOKEN: std::cell::Cell<Option<Option<u64>>> =
         const { std::cell::Cell::new(Some(Some(0))) };
 }
@@ -470,44 +340,29 @@ pub fn active() -> usize {
         + WATCHES.origin_flights.load(Ordering::SeqCst)
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     for set in WATCHES.sets() {
         set.boundary(invalidate);
     }
 }
 
-/// Disable the state set for the attachment: a writer it cannot observe may
-/// run (nudge mode, or no building family to forward building writes).
 pub fn poison() {
     crate::division_panel_changes::state_forwarder(false);
     WATCHES.states.poison();
 }
 
-/// The building family's forwarder enabled or disabled; outside attach and
-/// detach only.
 pub fn forwarder(enabled: bool) {
     WATCHES.forward(enabled);
 }
 
-/// Hook path, allocation-free: a building writer of the status with `flags` and `location`
-/// (`cbuilding_status::FLAGS` and `ID`) is about to run. Marks the state of a state status, whose
-/// infrastructure level the state inputs read. Hold the result over the native call.
 pub fn building_changed(flags: u32, location: u32) -> Option<Dirty<'static>> {
     WATCHES.building(flags, location)
 }
 
-/// Hook path, allocation-free: a building writer whose status cannot be
-/// named is about to run; every state is read.
 pub fn building_unnamed() -> Dirty<'static> {
     WATCHES.building_unnamed()
 }
 
-/// Off the game thread: size each set for the ids the latest census saw.
-/// Nothing is offered before a census: a later larger bitmap waits for an
-/// invalidating hour, while the first installs at once.
 pub fn presize() {
     for (set, ids) in WATCHES.sets().into_iter().zip(&IDS) {
         let ids = ids.load(Ordering::Relaxed);
@@ -517,30 +372,21 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free replaced bitmaps.
 pub fn collect() {
     for set in WATCHES.sets() {
         set.collect();
     }
 }
 
-/// One hour's use of a family's marks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Owners marked by writer notifications or the changed route census.
     pub marked: u64,
-    /// Owners read: the marked, the new, the re-read and any slice.
     pub read: u64,
-    /// Census owners not read: their held rows carry.
     pub carried: u64,
-    /// Owners read only because a take marked them.
     pub early: u64,
-    /// Every owner read: the take did not certify the previous read's epoch.
     pub full: bool,
 }
 
-/// A worker publishes one hour's counts and, after a complete census, the
-/// ids it saw for sizing.
 pub fn record(family: Family, counts: &Counts, ids: Option<usize>) {
     for (target, value) in READS[family as usize].iter().zip([
         1,
@@ -562,14 +408,14 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled; the raid state
-    /// tables and RaidAirSites then read every owner every hour.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled; the raid state"]
+    #[doc = " tables and RaidAirSites then read every owner every hour."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "raid_changes")
@@ -623,8 +469,6 @@ impl Hooks {
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
-            // Without the daily pass's patch every store takes the setter's
-            // own path.
             let daily = DAILY_CAPACITIES;
             if crate::located(base, daily.rva).is_ok() {
                 let code = engine_sites::hook(base, daily.rva)?;
@@ -662,10 +506,6 @@ impl Hooks {
                 false,
             );
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         let publication = if enabled {
             Hook::set_family_enabled_shared_prepared(&mut self.hooks, enabled, || {
                 AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
@@ -680,14 +520,10 @@ impl Hooks {
             .hooks
             .store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         WATCHES.apply();
-        // The country counter inputs observe the core insert and erase here
-        // ([`crate::country_input_changes`]).
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::Raid,
             enabled && !self.hooks.is_empty(),
         );
-        // The air base registrations observe capacities only through this
-        // family's capacity patch.
         crate::air_base_carry_changes::forwarder(
             crate::air_base_carry_changes::Forwarder::Raid,
             enabled && !self.hooks.is_empty(),
@@ -696,7 +532,6 @@ impl Hooks {
             crate::occupation_changes::Forwarder::States,
             enabled && !self.hooks.is_empty(),
         );
-        // The provinces' bunker terms observe the modifier writers here.
         crate::territory_changes::modifier_forwarder(enabled && !self.hooks.is_empty());
         Ok(true)
     }
@@ -706,19 +541,12 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the bitmaps are dropped only once
-        // the hooks were never enabled, or were removed and drained after
-        // the last capture; the building family's forwarders are restored
-        // with the other families before any hook is dropped.
         for set in WATCHES.sets() {
             unsafe { set.release() };
         }
     }
 }
 
-// Each site takes at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original; the first three name the receiver
-// as its [`Receiver`] says. The mark covers the original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -741,8 +569,6 @@ macro_rules! callback {
                 Target::State(id) => Some(crate::division_panel_changes::state_notify(id)),
                 _ => None,
             };
-            // The gate refresh rebuilds, and state destruction drops, the
-            // accumulator and country hash a province's bunker term reads.
             let _modifiers = match target {
                 Target::State(id) if matches!($site, 0 | 5) => {
                     Some(crate::territory_changes::modifier_state(id))
@@ -750,8 +576,6 @@ macro_rules! callback {
                 _ => None,
             };
             let _mark = WATCHES.notify($site, target);
-            // The core insert and erase also write the tag's core states,
-            // which the country counter inputs observe through this patch.
             let _inputs = crate::country_input_changes::forwarded_raid($site, first, second);
             note_air_clear($site);
             let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
@@ -760,71 +584,38 @@ macro_rules! callback {
         }
     };
 }
-// Refresh resource modifier gates (state).
 callback!(refresh_resource_modifier_gates, 0);
-// Building dynamic modifier add (state, ...).
 callback!(add_building_dynamic_modifier, 1);
-// Building dynamic modifier remove (state, ...).
 callback!(remove_building_dynamic_modifier, 2);
-// Add_resource (state, amount, days).
 callback!(add_resource, 3);
-// Pool method (the state's resource pool, amount).
 callback!(expire_timed_resource, 4);
-// Destroy state (state).
 callback!(destroy_state, 5);
-// Core insert (state, tag).
 callback!(add_core, 6);
-// Core erase (state, tag).
 callback!(remove_core, 7);
-// Construct resource origin (origin, tag, state).
 callback!(construct_resource_origin, 8);
-// Resource origin destruction(origin).
 callback!(destroy_resource_origin, 9);
-// Add building resource modifier (resources, ...).
 callback!(add_building_resource_modifier, 10);
-// Country resource clearing (resources).
 callback!(clear_country_resources, 11);
-// Strategic-air construction(air, tag, manager).
 callback!(construct_strategic_air, 12);
-// Air base country-container creation  (air, base).
 callback!(append_air_site, 13);
-// Append missile site (air, base).
 callback!(append_missile_site, 14);
-// Air base access refresh  (air, countries).
 callback!(refresh_air_base_access, 15);
-// Initial population (manager).
 callback!(populate_air_sites, 16);
-// Repair containers  (base).
 callback!(repair_air_base_containers, 17);
-// Air base withdrawal  (air, base).
 callback!(withdraw_air_site, 18);
-// Withdraw missile site (air, base).
 callback!(withdraw_missile_site, 19);
-// Host transfer (manager, from, to, base).
 callback!(transfer_air_base, 20);
-// Air site list clear (air).
 callback!(clear_air_sites, 21);
-// Missile site list clear (air).
 callback!(clear_missile_sites, 22);
-// Strategic-air destruction(air).
 callback!(destroy_strategic_air, 23);
-// Claim insert (state, tag).
 callback!(add_claim, 25);
-// Claim erase (state, tag).
 callback!(remove_claim, 26);
-// State strategic-location append (state, location, anchor province).
 callback!(add_state_strategic_location, 27);
-// Province strategic-location append (province, location): marks its state.
 callback!(add_province_strategic_location, 28);
-// Route update (route, from, to, force).
 callback!(update_trade_route, 29);
-// Route construction (route, &sender, &receiver).
 callback!(construct_trade_route, 30);
-// Country resources construction (resources, &country): its delivery routes.
 callback!(construct_country_resources, 31);
-// Route save loading (route, reader, token).
 callback!(load_trade_route, 32);
-// Port-to-port supply route update (route, from province, to province).
 callback!(update_supply_trade_route, 33);
 
 unsafe extern "system" fn refresh_origin_trade_route(
@@ -845,11 +636,6 @@ unsafe extern "system" fn refresh_origin_trade_route(
     )
 }
 
-/// `country air pool capacity setter(base, capacity, tag)` stores `capacity` unchanged at the
-/// slot's container capacity (the daily pass stores most containers' value again): only a store
-/// that differs from the value there, or one whose container does not read, marks the tag's
-/// country, and is forwarded to [`crate::air_base_carry_changes`], whose registrations record the
-/// capacity.
 unsafe extern "system" fn set_country_pool_capacity(
     first: usize,
     second: usize,
@@ -859,12 +645,9 @@ unsafe extern "system" fn set_country_pool_capacity(
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[CAPACITY_SITE].load(Ordering::Acquire)) };
     if CERTIFIED_PASS.get() {
-        // A store of a certified daily pass keeps its value, as the pass
-        // counted.
         return unsafe { original(first, second, third, fourth) };
     }
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
-    // SAFETY: guarded reads of live memory on the calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let held = engine_mutations::raid_mutations::pool_capacity(
         &memory,
@@ -880,22 +663,6 @@ unsafe extern "system" fn set_country_pool_capacity(
     timing.original(|| unsafe { original(first, second, third, fourth) })
 }
 
-/// `daily air base capacity refresh(air, pairs)`, the
-/// daily pass that calls the capacity setter for every (base, country) pair.
-/// When each of its stores keeps the capacity already there and it withdraws
-/// no base ([`engine_mutations::raid_mutations::daily_unchanged`]), the pass changes
-/// nothing the setter reads, so every one of its setter calls would find its
-/// store unchanged and mark nothing: they are counted here and run the
-/// original without reading. Any other pass, or one whose words do not read,
-/// leaves every store to the setter's own path, which marks a changing store
-/// as before.
-///
-/// Only a pass inside the hourly original is certified: there it runs from
-/// daily strategic-air update's serial loop after the
-/// manager's TBB stages join, on the thread the hourly detour holds. The
-/// Same pass reached from game session initialization  (through
-/// daily game update) takes the per-call path. The original
-/// is a counted flight ([`active`]) on every path.
 unsafe extern "system" fn daily_refresh_base_capacities(
     first: usize,
     second: usize,
@@ -904,7 +671,6 @@ unsafe extern "system" fn daily_refresh_base_capacities(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
     DAILY_FLIGHTS.fetch_add(1, Ordering::SeqCst);
-    // SAFETY: guarded reads of live memory on the calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let unchanged = collector_extended_support::hourly::ticking()
         .then(|| {
@@ -931,13 +697,10 @@ unsafe extern "system" fn daily_refresh_base_capacities(
             .untimed_capacities
             .fetch_add(stores, Ordering::Relaxed);
     }
-    // Only a normal return retires the flight.
     DAILY_FLIGHTS.fetch_sub(1, Ordering::SeqCst);
     result
 }
 
-/// The calling thread inside a certified daily pass, until it returns; the
-/// enclosing state is restored.
 struct CertifiedPass(bool);
 impl CertifiedPass {
     fn enter() -> Self {
@@ -954,7 +717,7 @@ impl Drop for CertifiedPass {
 mod tests {
     use super::*;
 
-    /// Tests and benches driving the global detours take this first.
+    #[doc = " Tests and benches driving the global detours take this first."]
     static DAILY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn take(watches: &Watches, family: Family) -> (Option<u64>, Vec<usize>) {
@@ -970,9 +733,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Each receiver names its state or country through live memory: a state's id, the pool's
-    /// state, the origin constructor's `r8`, the origin's own link and the resources' country link;
-    /// an origin without a state names nothing, and an unreadable receiver names none.
     #[test]
     fn receivers_name_their_state_or_country() {
         let mut state = vec![0_u8; 0x400];
@@ -1026,8 +786,6 @@ mod tests {
             target(Receiver::CountryResources, 0, 0, 0),
             Target::Country(None)
         );
-        // A site list writer names its strategic air object's link, the
-        // link RDX or R8 points to, or every country; link zero names none.
         let mut air = vec![0_u8; 0x100];
         air[engine_native::cstrategic_air::COUNTRY..][..4].copy_from_slice(&7_u32.to_le_bytes());
         let tag = 11_u32.to_le_bytes();
@@ -1050,8 +808,6 @@ mod tests {
         );
         assert_eq!(target(Receiver::StrategicAir, 0, 0, 0), Target::Site(None));
         assert_eq!(target(Receiver::EveryCountry, 0, 0, 0), Target::EverySite);
-        // A route writer names the country holding its route: the route's sender link, or
-        // the link RDX points to for the constructors.
         let mut route = [0_u8; 0x40];
         route[engine_resources::resource_map::ROUTE_LINKS[0]..][..4]
             .copy_from_slice(&6_u32.to_le_bytes());
@@ -1071,7 +827,6 @@ mod tests {
         assert_eq!(target(Receiver::EveryRoute, 0, 0, 0), Target::EveryRoute);
     }
 
-    /// The family a site's receiver marks.
     fn family_of(receiver: Receiver) -> Family {
         match receiver {
             Receiver::CountryResources => Family::Countries,
@@ -1139,8 +894,6 @@ mod tests {
                 (epoch, if marked { vec![6] } else { vec![] })
             );
         }
-        // Rebuilding a path can keep its kind: the nested updater still marks
-        // it even though the enclosing refresh has no inline kind change.
         watches.refresh_origin(
             0,
             || Some(2),
@@ -1212,13 +965,11 @@ mod tests {
                     || target(Receiver::OriginRoute, origin, 0, 0),
                     || {
                         assert_eq!(take(&watches, Family::Routes).0, None);
-                        // Other routes still use their own sender during a refresh.
                         assert_eq!(
                             target(Receiver::Route, unrelated, 0, 0),
                             Target::Route(Some(6))
                         );
                         if repath {
-                            // The nested update keeps kind and census membership.
                             drop(watches.notify(
                                 engine_mutations::raid_mutations::FIRST_ROUTE_SITE,
                                 target(Receiver::Route, route, 0, 0),
@@ -1263,9 +1014,6 @@ mod tests {
         assert_eq!(take(&watches, Family::Routes), (epoch, vec![]));
     }
 
-    /// A state writer marks its state, an override writer its link and a
-    /// site list writer its country's link, each in its own set; an unnamed
-    /// receiver moves its set's epoch only.
     #[test]
     fn each_site_marks_its_set() {
         const FAMILIES: [Family; 4] = [
@@ -1310,7 +1058,6 @@ mod tests {
                 );
             }
         }
-        // An origin without a state marks nothing and keeps both epochs.
         let watches = Watches::enabled(64, 64);
         let states = take(&watches, Family::States).0;
         assert!(
@@ -1321,9 +1068,6 @@ mod tests {
         assert_eq!(take(&watches, Family::States), (states, vec![]));
     }
 
-    /// The state's claim insertion and erasure are observed: each marks its
-    /// state in the state set, so StateCores' claims are read within the
-    /// hour like its cores.
     #[test]
     fn claim_writers_mark_their_state() {
         for name in ["add_claim", "remove_claim"] {
@@ -1340,9 +1084,6 @@ mod tests {
         }
     }
 
-    /// The strategic-location appenders are observed: the state's marks its
-    /// state, and the province's marks the province's state, so StateCores'
-    /// strategic locations are read within the hour.
     #[test]
     fn strategic_location_writers_mark_their_state() {
         let index = site("add_state_strategic_location");
@@ -1353,7 +1094,6 @@ mod tests {
         let epoch = take(&watches, Family::States).0.unwrap();
         drop(watches.notify(index, Target::State(Some(12))));
         assert_eq!(take(&watches, Family::States), (Some(epoch), vec![12]));
-        // The province receiver names its state through the province.
         let mut memory = vec![0_u8; 0x200];
         let state = memory.as_ptr() as usize + 0x100;
         let state_slot = engine_native::cprovince::STATE;
@@ -1369,9 +1109,6 @@ mod tests {
         assert_eq!(target(Receiver::Province, province, 0, 0), Target::Nothing);
     }
 
-    /// A forwarded write of a state status marks that state; a province
-    /// status marks nothing; one without a location, or naming no status,
-    /// moves the state set's epoch.
     #[test]
     fn forwarded_building_writes_mark_state_statuses() {
         use engine_native::{cbuilding_status::PROVINCE_FLAG, cbuilding_status::STATE_FLAG};
@@ -1391,9 +1128,6 @@ mod tests {
         assert_ne!(take(&watches, Family::States).0, Some(epoch));
     }
 
-    /// Without the building family's forwarder the state set certifies
-    /// nothing, as an infrastructure write could go unseen; the country set
-    /// still observes. Poisoning the state set leaves the others observing.
     #[test]
     fn the_state_set_observes_only_with_the_forwarder() {
         let watches = Watches::enabled(64, 64);
@@ -1414,9 +1148,6 @@ mod tests {
         assert_eq!(take(&watches, Family::States).0, None);
     }
 
-    /// A capacity store of the value already there names no country, marks
-    /// nothing and keeps the epoch; a changing one marks its country; a load
-    /// writer moves the site set's epoch. Both count as the site's calls.
     #[test]
     fn only_a_changing_capacity_marks_its_country() {
         let site = MUTATIONS
@@ -1441,9 +1172,6 @@ mod tests {
         assert_ne!(take(&watches, Family::Sites).0, epoch);
     }
 
-    /// A daily pass in process memory: two bases (a host base, then a state
-    /// base whose own container is stocked), each with the pairs (raw 2,
-    /// raw 3), and every capacity 100,000.
     struct DailyWorld {
         memory: Vec<u64>,
     }
@@ -1537,7 +1265,7 @@ mod tests {
         }
     }
 
-    /// The native capacity store: the slot container's capacity.
+    #[doc = " The native capacity store: the slot container's capacity."]
     unsafe extern "system" fn store(base: usize, capacity: usize, tag: usize, _: usize) -> usize {
         let containers = unsafe {
             *((base + engine_native::cair_base::COUNTRY_CONTAINERS) as *const *const usize)
@@ -1551,11 +1279,10 @@ mod tests {
         0
     }
 
-    /// [`active`] as the native daily pass saw it.
     static FLIGHTS_SEEN: AtomicUsize = AtomicUsize::new(0);
 
-    /// Daily air base capacity refresh without its withdrawal: every pair through the patched
-    /// setter, in base order.
+    #[doc = " Daily air base capacity refresh without its withdrawal: every pair through the patched"]
+    #[doc = " setter, in base order."]
     unsafe extern "system" fn native_daily(air: usize, pairs: usize, _: usize, _: usize) -> usize {
         FLIGHTS_SEEN.store(active(), Ordering::SeqCst);
         unsafe {
@@ -1589,13 +1316,6 @@ mod tests {
         assert!(!CERTIFIED_PASS.get());
     }
 
-    /// Inside the hourly original, a daily pass whose stores all keep their
-    /// capacity counts them and marks nothing, its setter calls reading
-    /// nothing more; a pass with one changing store, or any pass outside the
-    /// hourly original (initialization), leaves every store to the setter,
-    /// which marks exactly the changing pair's country, as the setter alone
-    /// always did. Every pass's original is an active flight until it
-    /// returns.
     #[test]
     fn a_certified_daily_pass_counts_its_stores_and_a_changing_pass_marks_per_call() {
         let _serial = DAILY_TEST.lock().unwrap();
@@ -1622,9 +1342,8 @@ mod tests {
         let untimed_before = WATCHES.untimed_capacities.load(Ordering::Relaxed);
         let world = DailyWorld::new();
         collector_extended_support::hourly::in_tick(|| world.pass());
-        // Counted once by the pass: the setter calls added nothing.
         assert_eq!(counts(), ([certified + 1, per_call], unchanged + 4));
-        assert_eq!(timed(), timed_before + 1); // Only the enclosing daily pass.
+        assert_eq!(timed(), timed_before + 1);
         assert_eq!(
             WATCHES.untimed_capacities.load(Ordering::Relaxed),
             untimed_before + 4
@@ -1636,10 +1355,9 @@ mod tests {
         assert!(marked.is_empty());
         assert!(!CERTIFIED_PASS.get());
 
-        // Outside the hourly original the setter reads and counts each store.
         world.pass();
         assert_eq!(counts(), ([certified + 1, per_call + 1], unchanged + 8));
-        assert_eq!(timed(), timed_before + 6); // Pass plus all four setters.
+        assert_eq!(timed(), timed_before + 6);
         assert_eq!(
             WATCHES.untimed_capacities.load(Ordering::Relaxed),
             untimed_before + 4
@@ -1671,9 +1389,6 @@ mod tests {
         WATCHES.apply();
     }
 
-    /// The daily air base capacity refresh stores every base's capacity for every
-    /// country through country air pool capacity setter, nearly always the value already there.
-    /// Release: one such store through the detour, minus the native store.
     #[test]
     #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
     fn hook_cost_raid_capacity() {
@@ -1716,7 +1431,6 @@ mod tests {
         }
         let words = memory.as_mut_ptr().cast::<u32>();
         for slot in 1..=COUNTRIES {
-            // Raw link `slot` names canonical slot `slot`.
             unsafe {
                 *words.add((LINKS + slot * 4) / 4) = slot as u32;
                 *words.add((TAGS + slot * 4) / 4) = slot as u32;
@@ -1771,9 +1485,6 @@ mod tests {
         );
     }
 
-    /// A claim insertion through the detour: the state read, the mark in the
-    /// state set and the forward check, minus the native call. Release, with
-    /// the family observing.
     #[test]
     #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
     fn hook_cost_raid_claim() {

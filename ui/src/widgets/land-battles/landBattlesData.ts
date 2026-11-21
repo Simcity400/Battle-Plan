@@ -9,10 +9,8 @@ import { battleChanges, battleMeasure, battleValueText, isBattleValue } from '..
 import { placeKey } from '../../dashboard/placeNamesData.ts';
 import type { BattleWindow, LandBattleHistory, LandBattlesManifestReply, LandBattlesRankingReply, LandBattlesReply } from '../../generated/dashboard';
 
-/** A loss read as shown: each side's manpower and equipment total; the raw is that total's exact fixed5. */
 export interface LandLossRead { hour: number; terminal: boolean; sides: [BattleValue[], BattleValue[]]; equipmentRaw?: [string | null, string | null] }
 export interface LandPeak { value: number; hour: number }
-/** `priorSidePeaks` is null for replies from builds that did not send each side's peak. */
 export type LandBattle = Omit<LandBattleHistory, 'losses' | 'priorSidePeaks'> & { losses: LandLossRead[]; priorSidePeaks: [LandPeak | null, LandPeak | null] | null };
 export type LandBattlesWindow = Omit<LandBattlesReply, 'rows' | 'reasons' | 'warnings'> & { rows: LandBattle[]; warnings: BattleWarning[] };
 export type LandBattlesRanking = Omit<LandBattlesRankingReply, 'rows'> & { rows: LandBattle[] };
@@ -23,7 +21,6 @@ export interface LandBattleRow extends BattleRow {
   readHour: number;
   peak: LandPeak;
   peakUnknown: boolean;
-  /** Each side's most divisions at once, attacker then defender; null when not sent or no roster was read. */
   sidePeaks: [LandPeak | null, LandPeak | null] | null;
   length: BattleValue;
   casualties: BattleValue;
@@ -42,7 +39,6 @@ const rawAmount = (v: unknown): v is string => typeof v === 'string' && v.length
 const MANPOWER = 'Manpower lost';
 const EQUIPMENT = 'Equipment lost';
 const MAX_EXACT = BigInt(Number.MAX_SAFE_INTEGER);
-/** A safe fixed5 amount is a number, a wider one its exact text; the raw stays exact either way. */
 function equipmentValue(label: string, raw: bigint): BattleValue {
   const amount = raw < 0n ? -raw : raw;
   return amount <= MAX_EXACT ? { label, value: Number(raw) / 100000 }
@@ -52,8 +48,6 @@ type Variants = [number, string][];
 const variants = (v: unknown, size: number): v is Variants => Array.isArray(v) && v.every(entry => Array.isArray(entry) && entry.length === 2
   && int(entry[0]) && entry[0] >= 0 && entry[0] < size && rawAmount(entry[1]));
 interface LossSide { values: BattleValue[]; raw: string | null; variants: Variants | null }
-/** A side's exact equipment total; replies from builds that listed each design
- * (by `labels`) are reduced to that total, by position against the previous read. */
 function lossSide(v: unknown, labels: readonly string[] | null, previous: LossSide | null): LossSide | null {
   if (!object(v)) return null;
   const manpower: BattleValue = typeof v.manpower === 'number' ? { label: MANPOWER, value: v.manpower } : { label: MANPOWER, value: null, unknown: v.manpower as string };
@@ -71,7 +65,6 @@ function lossSide(v: unknown, labels: readonly string[] | null, previous: LossSi
   const total = list.reduce((sum, [, amount]) => sum + BigInt(amount), 0n);
   return { values: [manpower, equipmentValue(EQUIPMENT, total)], raw: String(total), variants: list };
 }
-/** Rebuilds each read's full values; a side's changes apply to its previous read in the reply. */
 function lossReads(v: unknown, start: unknown, labels: readonly string[] | null): LandLossRead[] | null {
   if (!Array.isArray(v) || !object(start) || !hour(start.hour)) return null;
   const reads: LandLossRead[] = [];
@@ -127,7 +120,6 @@ export function validateLandBattlesManifest(v: unknown): LandBattlesManifestRepl
     throw new Error('The land battles manifest is malformed.');
   return v as unknown as LandBattlesManifestReply;
 }
-/** Decodes the window's loss reads and interned warning reasons into full reads and warnings. */
 export function validateLandBattlesReply(v: unknown): LandBattlesWindow {
   const rows = object(v) ? battles(v.rows, v.labels) : null;
   const reasons = object(v) && texts(v.reasons) ? v.reasons : null;
@@ -148,20 +140,14 @@ export function validateLandBattlesRanking(v: unknown): LandBattlesRanking {
     warnings: v.warnings as BattleWarning[], contentWarnings: v.contentWarnings };
 }
 
-/** A result side supplies the participants unless the result does not record that side while
- * the battle's last hourly read did; that read's countries stay, at their own date. */
 const resultSide = (result: NonNullable<LandBattle['result']>, run: LandBattle['runs'][number], index: number) =>
   !result.countriesUnknown[index] || run.countriesUnknown[index];
-/** Merge in recording order, independent of network completion order. */
 type Windows = ReadonlyMap<number, LandBattlesWindow>;
 type CountryMatch = (tag: string, hour: number) => boolean;
 const rowPlaybacks = new WeakMap<Windows, WeakMap<CountryMatch, Map<string, PlaybackIntervals<ReadonlyArray<LandBattleRow>>>>>();
 const matchAll: CountryMatch = () => true;
 const rankedWindows = new WeakMap<LandBattlesRanking, Windows>();
 
-/** The hours at which the land battle rows' structure changes: any battle where a block or census span begins; a battle
- * where it begins, its sides' countries change, its census stops, it ends or is decided, or which of its losses are known
- * changes. Its sizes and losses between are painted. */
 export function landBattleChanges(windows: Windows): BattleChanges {
   const whole: number[] = [];
   const battles: [string, number[]][] = [];
@@ -188,8 +174,6 @@ export function landBattleChanges(windows: Windows): BattleChanges {
   return battleChanges(whole, battles);
 }
 
-/** Whether two loss reads name the same losses, each known or unknown alike: what a row renders of them beside the
- * painted numbers. */
 function sameKnownLosses(a: LandLossRead, b: LandLossRead): boolean {
   return a.sides.every((side, index) => {
     const other = b.sides[index];
@@ -203,7 +187,6 @@ function sameKnownLosses(a: LandLossRead, b: LandLossRead): boolean {
 
 const battleEntries = new WeakMap<Windows, Map<string, { history: LandBattle; index: number; firstHour: number }[]>>();
 
-/** The row of the battle `id` at `at`, as `landBattleRows` lists it; null where it is not listed. */
 export function landBattleRow(windows: Windows, id: string, at: number, matches: CountryMatch, all: boolean, from: number | null = null): LandBattleRow | null {
   let entries = battleEntries.get(windows);
   if (!entries) {
@@ -219,8 +202,6 @@ export function landBattleRow(windows: Windows, id: string, at: number, matches:
   return found ? landRowAt(found.history, found.index, at, matches, all, from) : null;
 }
 
-/** Every battle's place in the windows: its province at its start, the hour its name is read at; each once, in hour
- * order. Asked as the windows land, so a battle coming into view while playing asks nothing. */
 export function landWindowPlaces(windows: Windows): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
   for (const window of windows.values()) for (const history of window.rows) {
@@ -229,7 +210,6 @@ export function landWindowPlaces(windows: Windows): { provinceId: number; hour: 
   return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
 }
 
-/** Each side's manpower lost as a row shows it, or null where either is not known. */
 export function landManpowerLost(row: LandBattleRow): [number, number] | null {
   const values = row.sides.map(side => side.losses.find(value => value.label === MANPOWER) ?? null);
   return values.every(value => value !== null && value.value !== null) ? values.map(value => value!.value as number) as [number, number] : null;
@@ -289,7 +269,6 @@ function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMat
   const run = runs.at(-1);
   if (!run) return null;
   const read = Math.min(at, run.lastHour);
-  // An end and its result show from the hour the recording settled them, dated by their own hours.
   const known = (hour: number) => (h.settledHour ?? hour) <= at;
   const result = h.result && known(h.result.hour) ? h.result : null;
   const participants = [0, 1].map(index => result && resultSide(result, run, index)
@@ -323,7 +302,6 @@ function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMat
   const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read, start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
     sidePeaks: sides,
     lossRead: loss ? { hour: loss.hour, terminal: loss.terminal, equipmentRaw: loss.equipmentRaw } : null,
-    // Only a battle under way when its recorded stretch began has a length that is a minimum.
     length: { label: 'Length', value: Math.max((result?.hour ?? read) - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },
     casualties: { label: 'Casualties', value: null, unknown: 'Not in this recording' },
     sides: ['Attackers', 'Defenders'].map((label, index) => ({ label, countries: countries[index],
@@ -350,7 +328,6 @@ export function landDivisionText(value: BattleValue, compact: boolean): string {
   return compact ? text : `${text} ${value.value === 1 ? 'division' : 'divisions'}`;
 }
 export const landCasualtiesMissing = (rows: readonly LandBattleRow[]) => rows.length > 0 && rows.every(row => row.casualties.value === null);
-/** Equipment shows whole numbers, as the game counts equipment, from the read's exact fixed5 total. */
 export function landLossText(value: BattleValue, row: LandBattleRow, side: number, tooltip: boolean): string {
   const raw = value.label === EQUIPMENT ? row.lossRead?.equipmentRaw?.[side] : null;
   return raw == null ? landCasualtyText(value, row, tooltip) : datedLossText(formatFixed(raw, 5, 0), row, tooltip);
@@ -359,7 +336,6 @@ export function casualtyRankingNote(data: LandBattlesRanking | undefined): strin
   if (data?.effectiveMeasure === 'Peak size') return 'Casualties unavailable; ranked by peak size.';
   return null;
 }
-/** Ranking is computed before top N by the product, including country selection. */
 export function rankedLandBattleRows(data: LandBattlesRanking | undefined, at: number): ReadonlyArray<LandBattleRow> {
   if (!data) return [];
   let windows = rankedWindows.get(data);

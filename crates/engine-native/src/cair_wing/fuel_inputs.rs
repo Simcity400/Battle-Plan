@@ -1,6 +1,3 @@
-//! Independent raw fuel leaves of an already authenticated census wing.
-//! Acquisition stays on the existing worker. A failed leaf never invalidates
-//! the wing, and current-execution observations are forwarded to mission reads.
 use super::{BASE_FUEL, MISSION, Row};
 use crate::{Memory, air_mission, creference_registry::ScopedResolver, memory::Raw, read};
 
@@ -18,11 +15,6 @@ fn field<T: Raw>(memory: &impl Memory, wing: usize, offset: usize) -> Option<T> 
     wing.checked_add(offset).and_then(|at| read(memory, at))
 }
 
-/// Retain maximum fuel's cached statistic even for idle and zero-plane wings.
-/// Current fuel demands its count only for a nonzero execution mask. Training
-/// capacity follows the existing eligibility leaves and an unresolved transfer
-/// override; no new unit or base walk is performed. The mode is a potential
-/// current-fuel operand, independently of later pool-capacity/content gates.
 pub fn capture(
     memory: &impl Memory,
     base: usize,

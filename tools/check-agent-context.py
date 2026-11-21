@@ -23,7 +23,6 @@ CONTEXT_FILES = ("AGENTS.md",)
 
 
 def measure(root):
-    # Line endings are normalised so a CRLF checkout measures the same as an LF one.
     return {name: len((root / name).read_bytes().replace(b"\r\n", b"\n")) for name in CONTEXT_FILES}
 
 

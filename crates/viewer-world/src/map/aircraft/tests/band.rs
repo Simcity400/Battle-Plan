@@ -1,5 +1,3 @@
-//! The near-ground band, the slots without a landing route and the game's
-//! clamped terrain sample.
 use super::paired::defines;
 use super::*;
 use crate::map::entity_animation::{Clip, Clock, Node, Player, Rig as ActorRig, StateTiming};
@@ -14,8 +12,6 @@ fn geometry() -> ProvinceGeometry {
     })
 }
 
-/// One fighter diving through poses 5, 2, 0.5 and -1 above its anchor, one
-/// sample a second.
 fn diving_rig(kind: u8, outcome: u8) -> Rig {
     let pose = |y: f32| Transform {
         translation: [0.0, y, 0.0],
@@ -40,8 +36,6 @@ const BAND: Band = Band {
     explosion_delay: 0.6,
 };
 
-/// Places one scenario of `rig` for an actor whose entity meets the band as
-/// `explode` says, on flat terrain ten units high.
 fn place(rig: &Rig, key: &str, explode: Explode) -> (AircraftPlan, Random) {
     let geometry = geometry();
     let heights = HeightField {
@@ -77,8 +71,6 @@ fn place(rig: &Rig, key: &str, explode: Explode) -> (AircraftPlan, Random) {
     (out, random)
 }
 
-/// The presentation time the flight's first full cycle has played
-/// `rig_time` of its rig (or of its landing past the rig's end).
 fn at_rig(plan: &AircraftPlan, rigs: &BTreeMap<String, Rig>, rig_time: f32) -> f32 {
     let defines = defines();
     let flight = &plan.flights[0];
@@ -87,8 +79,6 @@ fn at_rig(plan: &AircraftPlan, rigs: &BTreeMap<String, Rig>, rig_time: f32) -> f
         / defines.clock_speed
 }
 
-/// The flight's instance at `rig_time` by its phase alone, or `None` when it
-/// is not drawn.
 fn shown(
     plan: &AircraftPlan,
     rigs: &BTreeMap<String, Rig>,
@@ -101,11 +91,6 @@ fn shown(
         .map(|(_, instance)| instance)
 }
 
-/// A kamikaze that succeeds has no landing route: on the first frame its
-/// drawn pose is in the band it requests `explode` and stays there, and the
-/// scenario ends once its player reads the delay; without that state it is
-/// hidden there and the scenario ends. If neither ends it, the landing
-/// hides it. Before, it followed its node into the ground and flew home.
 #[test]
 fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
     let key = rig_key(scenario_name(16), SUCCESS);
@@ -114,7 +99,6 @@ fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
     let rigs = BTreeMap::from([(key.clone(), diving_rig(16, SUCCESS))]);
     let defines = defines();
     let band = BAND;
-    // Frames every sixtieth of a rig second through the rig.
     let frames = |plan: &AircraftPlan| -> Vec<f32> {
         (0..=180)
             .map(|frame| at_rig(plan, &rigs, frame as f32 / 60.0))
@@ -122,9 +106,6 @@ fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
     };
     let (mut plan, _) = place(&rig, &key, Explode::Plays);
     assert!(!plan.flights[0].lands && plan.flights[0].terrain.is_some());
-    // The anchor stands on the terrain (10); the samples are at 15, 12,
-    // 10.5 and 9, and the band reaches 11: the drawn path enters it two
-    // thirds of the way from the second sample to the third.
     assert_eq!(plan.flights[0].origin[1], 10.0);
     let mut entered = None;
     for frame in frames(&plan) {
@@ -136,8 +117,6 @@ fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
     let (frame, pose) = entered.unwrap();
     assert!((frame - at_rig(&plan, &rigs, 1.0 + 2.0 / 3.0)).abs() <= 1.0 / 60.0);
     assert!(pose.translation[1] <= 11.0 && pose.translation[1] > 10.9);
-    // Its player never read the delay: it stood frozen through the rig, and
-    // the landing hides it.
     assert_eq!(
         plan.placed_runs(&rigs, &defines, at_rig(&plan, &rigs, 2.9))[0]
             .1
@@ -149,7 +128,6 @@ fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
             .is_empty()
     );
     assert_eq!(plan.runs[0].cycle, 1);
-    // Once its player reads the delay the scenario ends there.
     let (mut plan, _) = place(&rig, &key, Explode::Plays);
     let mut ended = None;
     for frame in frames(&plan) {
@@ -163,8 +141,6 @@ fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
     }
     let ended = ended.unwrap();
     assert!(ended > frame && ended - frame <= 1.5 / 60.0);
-    // Without `explode` it is hidden where it enters the band, which ends
-    // the scenario there.
     let (mut plan, _) = place(&rig, &key, Explode::Absent);
     let mut ended = None;
     for frame in frames(&plan) {
@@ -177,10 +153,6 @@ fn a_successful_kamikaze_explodes_in_the_band_and_does_not_fly_home() {
     assert!((ended.unwrap() - frame).abs() < 1e-4);
 }
 
-/// Every scenario whose slots land keeps its draws and its presentation:
-/// the same three draws of the shared stream, no band, and the landing
-/// drawn. Only the terrain sample changes
-/// ([`the_anchor_and_route_take_the_game_s_clamped_terrain_sample`]).
 #[test]
 fn landing_scenarios_keep_their_draws_and_presentation() {
     for (kind, outcome) in [(0, 0), (16, 0), (6, 0), (19, 0)] {
@@ -197,15 +169,11 @@ fn landing_scenarios_keep_their_draws_and_presentation() {
         assert!(flight.lands && flight.terrain.is_none(), "{key}");
         assert!(flight_requests(flight, &rig, &paired::actor_rig(), 2.0).is_empty());
         let rigs = BTreeMap::from([(key.clone(), diving_rig(kind, outcome))]);
-        // It follows its node into the ground and lands.
         assert!((shown(&plan, &rigs, 2.5).unwrap().position[1] - 9.75).abs() < 1e-3);
         assert!(shown(&plan, &rigs, 3.0 + flight.travel * 0.5).is_some());
     }
 }
 
-/// The game samples the terrain under the anchor, under the route's interior
-/// points and under an actor in the band with its clamped bilinear sampler,
-/// not the nearest heightmap pixel the viewer used.
 #[test]
 fn the_anchor_and_route_take_the_game_s_clamped_terrain_sample() {
     let values = [100, 140, 180, 220, 100, 140, 180, 220];
@@ -244,8 +212,6 @@ fn the_anchor_and_route_take_the_game_s_clamped_terrain_sample() {
     let [x, _, z] = plan.flights[0].origin;
     assert_eq!(plan.flights[0].origin[1], heights.native_height(x, z));
     assert_ne!(heights.native_height(x, z), heights.height_at_world(x, z));
-    // A route below the terrain rides its minimum elevation above the
-    // clamped sample at every interior point.
     let route = Route::build(
         [0.6, 0.0, 0.5],
         [2.6, 0.0, 0.5],
@@ -307,9 +273,6 @@ fn actor(clips: Vec<Clip>) -> ActorRig {
     }
 }
 
-/// The played-position timing the shared player reports: a nonlooping clip
-/// reads its length once it completes, and the player names the clip it
-/// reads ([`Player::root_play_clip`]).
 #[test]
 fn the_explode_state_plays_the_band_delay_as_the_player_reports_it() {
     let rig = actor(vec![
@@ -322,8 +285,6 @@ fn the_explode_state_plays_the_band_delay_as_the_player_reports_it() {
         length: 2.0,
         looping: false,
     };
-    // It completes after a second, then reads its length: a threshold above
-    // the length holds only until then.
     let (from, until) = timing.reads_at_least(2.4).unwrap();
     assert!((from - 0.95).abs() < 1e-6 && until == Some(1.0));
     assert_eq!(timing.reads_at_least(2.0), Some((0.75, None)));
@@ -332,8 +293,6 @@ fn the_explode_state_plays_the_band_delay_as_the_player_reports_it() {
     assert_eq!(timing.reaches(2.0), Some(0.75));
     assert!((timing.reaches(2.4).unwrap() - 0.95).abs() < 1e-6);
     assert_eq!(timing.reaches(2.6), None);
-    // The player agrees: requested at entity second 1, it reads each
-    // threshold from the time `reaches` names.
     let entry = 1.0;
     let requests = Arc::new(vec![crate::map::entity_animation::Request {
         time: entry,
@@ -374,14 +333,12 @@ fn the_explode_state_plays_the_band_delay_as_the_player_reports_it() {
             }
         }
     }
-    // The player reads the explode clip it entered at that timing.
     let (read, _, _) = player.root_play_clip(&rig).unwrap();
     assert_eq!(read, timing);
     assert_eq!(explode(&rig), Explode::Plays);
     assert_eq!(explode(&actor(Vec::new())), Explode::Absent);
 }
 
-/// The game reads a negative `RANDOM_SCENARIO_ANIMATION_MAX_DELAY` as zero.
 #[test]
 fn a_negative_launch_delay_reads_as_zero() {
     let defines = Defines::new().unwrap();

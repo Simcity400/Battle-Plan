@@ -1,0 +1,13 @@
+# Match number readers to the native conversion at each call site
+
+The same token can have different numeric values in two game fields. A shared strict Rust parser would change which operands are read and what is stored. Select the native conversion used by each field and keep the distinction between a successful store, end of input without a store, and a conversion that matched nothing.
+
+The CRT scans terminate at the first NUL and use ASCII digit and whitespace rules. Signed scans accumulate and clamp at 64 bits before the caller narrows. `%i` and `%lli` recognize radix prefixes, `%d` uses decimal, and `%u` and `%x` use unsigned decimal and hexadecimal respectively. The unsigned conversion saturates on magnitude overflow and otherwise negates a signed magnitude with unsigned wrapping. An input ending in whitespace, a sign, or a radix prefix before any digit can report EOF. Some native callers test a nonzero return code and keep the initial slot in this case. Callers requiring a stored value distinguish EOF from a match. A numeric list field explicitly models the slot initialized before the scan.
+
+`%f` retains the CRT mantissa limit and one-character push-back. Partial special values, a bare radix prefix, or an exponent marker without digits can consume too much to produce a result. Decimal and hexadecimal mantissas round once to the nearest representable `f32`, ties to even. The hexadecimal dropped digits participate as a sticky tail. The native float-to-`i32` conversion truncates toward zero and uses `i32::MIN` for invalid or out-of-range input.
+
+Script fixed5 reads the whole part and at most five fractional digits with the integer scanner. Save decimals follow their own precision rules. Decimal token and scoped-variable conversions instead preserve the field's wrapping arithmetic over the fractional bytes. A quoted numeric operand follows the scoped-variable path, so bare `010` and quoted `"010"` can differ. Rendering fixed5 truncates at the requested precision and implements both fixed and trimmed modes, including the cut past the fifth digit. Formatting the minimum signed value retains the native wrapping result.
+
+The generic Clausewitz field adapter reports a named error when a consumer cannot use a field. It takes the last matching assignment for scalar lookups and preserves source order for repeated values. It shares exact yes/no recognition with standalone token reads.
+
+[CRT scans](../../crates/installed-content-core/src/crt.rs) · [Fixed5](../../crates/installed-content-core/src/fixed5.rs) · [Field adapters](../../crates/installed-content-core/src/fields.rs)

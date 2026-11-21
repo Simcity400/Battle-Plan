@@ -47,9 +47,7 @@ class Job:
     def __init__(self):
         self.handle = checked(k.CreateJobObjectW(None, None))
         limits = Extended()
-        # No breakaway flags: every descendant inherits membership, including
-        # detached browser/encoder children. Supervisor death closes this handle.
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        limits.basic.flags = 0x2000
         try:
             checked(k.SetInformationJobObject(self.handle, 9, c.byref(limits), c.sizeof(limits)))
         except BaseException:
@@ -129,7 +127,6 @@ def main():
             return 124
         return code.value
     finally:
-        # The retained process and job handles are the only termination authority.
         reaped = False
         try:
             if info.process and not assigned:

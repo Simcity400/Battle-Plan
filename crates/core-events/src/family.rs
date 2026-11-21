@@ -17,11 +17,9 @@ pub struct At<'a> {
     pub hour: Hour,
     pub since: QuietView,
     pub reads: &'a [ReadSpans<'a>],
-    // Hours after the previous call through this hour, including unknown runs; Never emits no Observed.
     pub observations: &'a [ObservationSpans<'a>],
     pub starts: bool,
     pub opens: bool,
-    // Only this family's delivered, filtered events, including mandatory notifications and due timers.
     pub events: &'a [Event<'a>],
 }
 
@@ -42,7 +40,6 @@ pub enum Ending<'a> {
 
 #[derive(Clone, Copy)]
 pub struct End<'a> {
-    // Includes the remaining observation spans even when no real call followed.
     pub at: At<'a>,
     pub ending: Ending<'a>,
     pub delivered_watermark: Option<Hour>,
@@ -58,8 +55,6 @@ pub trait BoundarySummary {
 
 pub struct ReconciledSummary<'a> {
     pub dependencies: &'a dyn crate::WindowDependencies,
-    // The batch's outgoing dependencies come from replay; every other field keeps the pass's transfer.
-    // Sound only because close_window makes a key's outgoing fields final: the pass never writes them after the close.
     pub replayed: &'a dyn BoundarySummary,
     pub transfer: &'a dyn BoundarySummary,
 }
@@ -122,7 +117,6 @@ pub struct Reconciliation<'a> {
     pub expected_at_close: &'a dyn BoundarySummary,
 }
 
-// Replay freezes each scoped key at its own close, checked against expected_at_close, not the segment's end.
 pub trait WindowReplay {
     fn replay<'a>(
         &mut self,
@@ -134,7 +128,6 @@ pub trait WindowReplay {
 
 pub trait Family {
     fn subscription(&self) -> Subscription;
-    // Restore only scope.keys() on Replay, including their timers; other starts restore the full family.
     fn begin(
         &mut self,
         at: &Start<'_>,
@@ -147,14 +140,12 @@ pub trait Family {
         context: &mut dyn CallContext,
         out: &mut dyn Publication,
     ) -> io::Result<()>;
-    // A provisional B pass returns its reduced Transfer; resolved passes return Resolved; C retains state in self.
     fn end(
         &mut self,
         at: &End<'_>,
         context: &mut dyn CallContext,
         out: &mut dyn Publication,
     ) -> io::Result<Boundary<'_>>;
-    // Prefix evaluation of a segment's reduced transfer runs separately from window replay.
     fn resolve_boundary(
         &mut self,
         incoming: &dyn BoundarySummary,

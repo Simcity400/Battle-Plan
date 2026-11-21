@@ -68,7 +68,6 @@ impl PartialEq for Instance {
 #[derive(Clone, Default)]
 pub struct SlotChunks(
     ValueIndex<usize, Retained<Vec<Slot>>>,
-    // In-memory products own their producer pages; the wire restores them after decoding.
     Option<Producer>,
 );
 #[derive(Clone)]

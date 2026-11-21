@@ -7,7 +7,6 @@ use replay_columnar::{manifest::Status, store::Store};
 use replay_data::rows::{AirTheatreGroupRow, AirTheatreMemberRow, AirWingRow};
 use std::collections::BTreeMap;
 
-/// One hour's inputs: groups (id, theatre), members (group, wing), wings (id, mission region).
 struct World {
     groups: &'static [(u64, u64)],
     members: &'static [(u64, u64)],
@@ -16,19 +15,13 @@ struct World {
 }
 
 const HOURS: &[World] = &[
-    // Theatre 1 holds group 10 (wings 100 and 101, regions 5 and 6); theatre 2 group 20 (wing 200 in 5).
     World { groups: &[(10, 1), (20, 2)], members: &[(10, 100), (10, 101), (20, 200)], wings: &[(100, Some(5)), (101, Some(6)), (200, Some(5)), (300, Some(7))], status: Status::Complete },
-    // Wing 101 flies to region 5; wing 300 (no member) moves and counts nowhere.
     World { groups: &[(10, 1), (20, 2)], members: &[(10, 100), (10, 101), (20, 200)], wings: &[(100, Some(5)), (101, Some(5)), (200, Some(5)), (300, Some(8))], status: Status::Complete },
-    // Group 20 moves to theatre 1; wing 300 joins group 20; wing 100 loses its mission.
     World { groups: &[(10, 1), (20, 1)], members: &[(10, 100), (10, 101), (20, 200), (20, 300)], wings: &[(100, None), (101, Some(5)), (200, Some(5)), (300, Some(8))], status: Status::Complete },
-    // Members not read in full: the table is withheld.
     World { groups: &[(10, 1), (20, 1)], members: &[(10, 101)], wings: &[(100, None), (101, Some(5)), (200, Some(5)), (300, Some(8))], status: Status::Truncated { missing: 1 } },
-    // Wing 200 leaves; wing 300 is deleted; group 10 is gone with its member.
     World { groups: &[(20, 1)], members: &[(20, 300)], wings: &[(100, None), (101, Some(5)), (200, Some(5))], status: Status::Complete },
 ];
 
-/// Each hour's expected rows: (theatre, region) to wings.
 fn expected(hour: usize) -> BTreeMap<(u64, u32), i64> {
     match hour {
         0 => [((1, 5), 1), ((1, 6), 1), ((2, 5), 1)].into(),
@@ -67,9 +60,6 @@ fn held(store: &Store) -> BTreeMap<(u64, u32), i64> {
     out
 }
 
-/// A theatre's regions are its member wings' mission regions, followed through a wing's move, a
-/// group changing theatre, a wing joining, losing its mission and leaving; members not read in full
-/// withhold the table by name.
 #[test]
 fn a_theatres_regions_are_its_member_wings_mission_regions() {
     let mut store = store();
@@ -85,7 +75,6 @@ fn a_theatres_regions_are_its_member_wings_mission_regions() {
     }
 }
 
-/// A resume reads the inputs whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {

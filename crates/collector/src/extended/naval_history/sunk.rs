@@ -1,26 +1,8 @@
 use super::*;
 
-// ===========================================================================
-// Hourly sunk-ships split (SunkShips).
-//
-// The game thread copies raw bytes only: the sunk-ship history vector, every
-// record with its class headers and name strings, and province links. No
-// row is decoded on the game thread. The single FIFO decode worker replays
-// `csunk_ship_info::walk` against the recorded spans, so rows, ordinals,
-// skips, truncation counts and failure reasons are identical by construction
-// (see `crate::raw` for the mirror rules).
-//
-// Record takes are exact spans with no batching (the typed walk reads one
-// record at a time and stops at pooled capacity, which the replay applies
-// identically against the real pooled buffers). Name headers parse locally
-// from the staged record bytes; only terminator and content bytes are taken.
-// ===========================================================================
 
 const SUNK_MASK: u32 = 0x01;
 
-/// One hour of raw sunk-ships payload. Flat pools recycle capacities and the
-/// steady state reuses storage. Worker logs grow before each original request;
-/// decode grows from the complete accepted payload.
 #[derive(Debug, Default)]
 pub(crate) struct SunkJob {
     pub log: RawLog<SUNK_N>,
@@ -37,7 +19,6 @@ impl SunkJob {
     #[cfg(test)]
     pub(super) fn fixture() -> Self {
         Self {
-            // Explicit raw storage for fixed synthetic fault/read fixtures.
             log: RawLog::new(1 << 13, 2 << 20),
             game_state: 0,
             hour: 0,
@@ -63,9 +44,6 @@ impl SunkJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SunkCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed
-    /// walk (identical rows through the existing path) and enqueues no
-    /// payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; SUNK_N],
 }
@@ -82,8 +60,6 @@ fn sunk_pool_u64(log: &RawLog<SUNK_N>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads.
 fn kspan(
     log: &mut RawLog<SUNK_N>,
     memory: &impl engine_native::Memory,
@@ -94,9 +70,6 @@ fn kspan(
     log.take(memory, addr?, len, mask)
 }
 
-/// Mirror of one sunk-ship class reference: header take with vtable check
-/// plus the class name string takes. Returns false exactly when the typed
-/// class read fails.
 fn copy_sunk_class(
     log: &mut RawLog<SUNK_N>,
     memory: &impl engine_native::Memory,
@@ -140,16 +113,12 @@ fn copy_sunk_class(
     )
 }
 
-/// Mirror of one sunk-ship text: header validation is a local parse over the
-/// staged header bytes, heap names take the terminator byte plus the content
-/// bytes. Returns false exactly when the typed text read fails.
 fn copy_sunk_string(
     log: &mut RawLog<SUNK_N>,
     memory: &impl engine_native::Memory,
     address: usize,
     head: usize,
 ) -> bool {
-    // Copy the staged header out first so later takes can borrow the log.
     let mut header = [0u8; msvc_string::STRIDE];
     header.copy_from_slice(&log.bytes[head..head + msvc_string::STRIDE]);
     let len = u64::from_le_bytes(
@@ -201,9 +170,6 @@ fn copy_sunk_string(
     true
 }
 
-/// Mirror of one sunk-ship record: full record take with local validation
-/// plus class and text takes. Returns false exactly when the typed walk
-/// fails at or before this record.
 fn copy_sunk_record(
     log: &mut RawLog<SUNK_N>,
     memory: &impl engine_native::Memory,
@@ -215,7 +181,6 @@ fn copy_sunk_record(
         Some(start) => start,
         None => return false,
     };
-    // Copy the staged record out first so later takes can borrow the log.
     let mut staged = [0u8; csunk_ship_info::SIZE];
     staged.copy_from_slice(&log.bytes[record..record + csunk_ship_info::SIZE]);
     let u64_at = |offset: usize| u64::from_le_bytes(staged[offset..offset + 8].try_into().unwrap());
@@ -265,7 +230,6 @@ fn copy_sunk_record(
             return false;
         }
     }
-    // Class names parse from the staged class headers above.
     let province_pointer = u64_at(csunk_ship_info::PROVINCE);
     if province_pointer != 0 {
         let province = match usize::try_from(province_pointer).ok() {
@@ -298,9 +262,6 @@ fn copy_sunk_record(
     true
 }
 
-/// One structural copy pass: history vector plus every record with class,
-/// text and province takes. The job is cleared on entry so pooled refreshes
-/// never accumulate spans across hours.
 fn copy_sunk_pass(
     job: &mut SunkJob,
     memory: &impl engine_native::Memory,
@@ -381,7 +342,6 @@ fn copy_sunk_tables(
     }
 }
 
-/// Acquire one owned hourly sunk-ships payload.
 pub(crate) fn copy_sunk_refresh(
     memory: &impl Memory,
     ctx: SunkCopyContext,
@@ -400,17 +360,12 @@ pub(crate) fn copy_sunk_refresh(
 }
 
 impl Captured {
-    /// Finish an accepted failure after independent capture without live retry.
     pub(crate) fn fail_sunk_capture(&mut self, reason: &'static str) {
         self.sunk.outcome = failed(self.active[13], reason);
         self.sunk_names.reset();
         self.sunk_raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a raw sunk-ships payload: replays the
-    /// sunk-ship walk against the recorded spans into the pooled buffers,
-    /// with the identical bounded/capacity handling the game thread applies.
-    /// Installs identical rows, truncation counts and failure reasons.
     pub(crate) fn decode_sunk_payload(
         &mut self,
         base: usize,

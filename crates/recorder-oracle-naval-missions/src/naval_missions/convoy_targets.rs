@@ -1,4 +1,3 @@
-//! The first nonzero convoy-pool occurrence is a saved, ordered identity.
 use super::*;
 
 fn first_design(country: &installed_content_save::Country) -> io::Result<u64> {

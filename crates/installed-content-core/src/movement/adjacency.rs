@@ -1,16 +1,8 @@
-//! The native ordered province-neighbour lists.
-//!
-//! Shared by the movement map and `installed_content_save::naval_history::RailwayAdjacency`,
-//! whose saved railway levels follow the same order.
 
 use std::{collections::HashMap, io};
 
 use crate::{ResolvedLayers, fields::invalid, terrain::DefaultMap};
 
-/// The authored adjacency file, if the content has one. Its path starts
-/// empty and is set to `map/` plus the `adjacencies` value. A missing key
-/// or file means no authored adjacencies, while a present file that cannot
-/// be read still fails.
 pub fn read_authored(
     layers: &ResolvedLayers,
     default_map: &DefaultMap,
@@ -22,7 +14,6 @@ pub fn read_authored(
         Ok(bytes) => Ok(Some(bytes)),
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
-                // A listing the recording withholds proves no absence.
                 && !layers.paths().map_or(true, |mut paths| {
                     paths.any(|known| known.eq_ignore_ascii_case(path.as_bytes()))
                 }) =>
@@ -33,7 +24,6 @@ pub fn read_authored(
     }
 }
 
-/// The `map/` path of the authored adjacency file; `None` without the key.
 pub(crate) fn authored_path(default_map: &DefaultMap) -> Option<String> {
     default_map.file("adjacencies").ok()
 }
@@ -47,16 +37,11 @@ fn append(lists: &mut [Vec<u32>], source: u32, target: u32) {
 
 fn append_pair(lists: &mut [Vec<u32>], source: u32, target: u32) {
     if target != 0 && source != target && !lists[source as usize].contains(&target) {
-        // Raster pairs append the reciprocal first.
         append(lists, target, source);
         append(lists, source, target);
     }
 }
 
-/// Scans pixels in file order: right, next row, left, previous row,
-/// wrapping horizontally, then the next-row diagonal of a four-province
-/// crossing. `ids` holds file rows (row 0 is the bottom) of record IDs
-/// below `count`; the result is indexed by ID.
 pub fn raster(width: usize, height: usize, ids: &[u32], count: usize) -> io::Result<Vec<Vec<u32>>> {
     if width == 0
         || height == 0
@@ -100,9 +85,6 @@ pub fn raster(width: usize, height: usize, ids: &[u32], count: usize) -> io::Res
     Ok(lists)
 }
 
-/// Applies authored rows ([`crate::adjacencies::parse`]) in file order.
-/// New pairs append source then target; a repeated pair keeps its position
-/// and takes the row's crossing kind and raw signed Through in both directions.
 pub fn append_authored(
     lists: &mut [Vec<u32>],
     kinds: &mut HashMap<(u32, u32), (u8, i32)>,
@@ -128,7 +110,6 @@ pub fn append_authored(
 mod tests {
     use super::*;
 
-    /// Native file rows, bottom first.
     fn lists(rows: &[&[u32]], count: usize, authored: &[u8]) -> Vec<Vec<u32>> {
         let ids: Vec<u32> = rows.iter().flat_map(|row| row.iter().copied()).collect();
         let mut lists = raster(rows[0].len(), rows.len(), &ids, count).unwrap();
@@ -182,7 +163,6 @@ mod tests {
         .unwrap();
         assert_eq!(kinds[&(3, 1)], (2, -1));
         assert_eq!(lists[1], [2, 3]);
-        // Row "2" has no readable target, so it reuses 3.
         assert_eq!(lists[2], [1, 3]);
         assert_eq!(kinds[&(3, 2)], (0, -1));
         assert!(append_authored(&mut lists, &mut kinds, b"h\n1;4;sea;-1;-1;-1;-1;-1;;\n").is_err());

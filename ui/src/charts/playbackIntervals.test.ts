@@ -51,7 +51,6 @@ test('a count read at an hour holds over the span its rows show the same, and no
   const intervals = new PlaybackIntervals([10, 20, 30], hour => hour >= 20);
   assert.deepEqual(intervals.span(25), { first: 20, end: 30 });
   assert.deepEqual(intervals.span(5), { first: -Infinity, end: 10 });
-  // Display bounds (a daily wording refresh) end the held value, never the span of what it is read from.
   const daily = new PlaybackIntervals([10, 20, 30], hour => hour >= 20, () => ({ first: 24, end: 26 }));
   daily.at(25);
   assert.deepEqual(daily.span(25), { first: 20, end: 30 });

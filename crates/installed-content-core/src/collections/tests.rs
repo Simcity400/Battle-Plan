@@ -117,7 +117,6 @@ fn collection_misreads_are_local_to_their_definition() {
             .unwrap_err()
             .contains("unknown_operator")
     );
-    // EOF ends the reader, preserving earlier complete definitions.
     db.read_file(b"tail={input=", &KeyNames::default());
     let input = crate::parser::parse(b"input=collection:good")
         .unwrap()
@@ -128,6 +127,5 @@ fn collection_misreads_are_local_to_their_definition() {
         .unwrap()
         .items
         .remove(0);
-    // A missing name still resolves to an empty collection.
     assert_eq!(compile(&missing, Some(&db)).unwrap().input, Input::Empty);
 }

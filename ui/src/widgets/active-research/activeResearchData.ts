@@ -3,16 +3,11 @@ import { isUnjoinedResearch, researchAt, researchEntryAt, researchRateAt } from 
 import { coverageAt } from '../research/researchLayout.ts';
 import type { ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
 
-/** What one slot is doing at the hour of `read`. Its moving numbers (progress, days left, saved days) are painted
- * from the read (`slotNumbers`), not held here. */
 export type ActiveSlot =
   | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string; aheadOf: number | null }
   | { kind: 'idle'; slot: ResearchSlotHistory; read: ResearchSlotNow }
   | { kind: 'unavailable'; slot: ResearchSlotHistory; reason: string };
 
-/** One card per slot open at the slots' hour, in slot order, from the whole `history` and the slots' latest read
- * `now`. At an hour no read covers, the slots open at the last read show as unavailable; a slot closed by then is
- * not shown. */
 export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): ActiveSlot[] {
   const hour = now.hour;
   const coverage = coverageAt(history.coverage, hour);
@@ -30,7 +25,6 @@ export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): Act
     if (!entry && !isUnjoinedResearch(read.state)) return [{ kind: 'idle', slot, read }];
     const rate = researchRateAt(read.state, hour);
     return [{ kind: 'researching', slot, read, entry, token: entry?.token ?? read.state.token!,
-      // The ahead-of-time penalty applies at this hour: the technology's year is still to come.
       aheadOf: rate && BigInt(rate.penaltyRaw) > 0n ? read.state.details!.modifiers!.year : null }];
   });
 }

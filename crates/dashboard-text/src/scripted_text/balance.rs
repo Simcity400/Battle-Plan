@@ -1,4 +1,3 @@
-//! Country balance-of-power properties.
 use super::*;
 use installed_content_localisation::localisation::Argument;
 use replay_data::rows::{
@@ -6,7 +5,6 @@ use replay_data::rows::{
     PowerBalanceRow, SimulationFeatureRow,
 };
 
-/// The fields of each table the balance properties read.
 const DEFINITION_TEXT: u64 = mask::<ModifierDefinitionRow>(&[
     "token",
     "name_key",
@@ -139,12 +137,11 @@ impl<'a> ScriptedText<'a> {
             let mut context = crate::effect_description::Context::new(
                 self,
                 self.localisation,
-                self.root, // Viewing country.
+                self.root,
                 name,
                 content.view(None),
             )
             .with_expansion_scopes(scopes);
-            // Nested descriptions preserve active thread-local variables.
             let session = scopes.session.borrow().clone();
             if let Some(session) = &session {
                 context = context.with_variable_session(session);
@@ -207,7 +204,6 @@ impl<'a> ScriptedText<'a> {
         };
         let mut text = String::new();
         let key = if which == 9 {
-            // List registered keys by index, then custom tooltip slots.
             let mut values: Vec<_> = range
                 .modifiers
                 .listed()
@@ -228,7 +224,6 @@ impl<'a> ScriptedText<'a> {
                 {
                     continue;
                 }
-                // Clamp first; even this unit scale uses wrapping multiplication.
                 let value =
                     if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
                         modifier.value.clamp(0, 100_000)
@@ -240,8 +235,6 @@ impl<'a> ScriptedText<'a> {
                     continue;
                 }
                 if definition.feature_selector != 0 {
-                    // The definition's feature selector requires any matching bit
-                    // in the recorded DLC mask.
                     let features = match self.frame.complete::<tables::SimulationFeatures>(DLC) {
                         Ok(rows) if rows.len() == 1 => each(rows).next().transpose()?,
                         _ => None,
@@ -300,7 +293,6 @@ impl<'a> ScriptedText<'a> {
             }
             b"PROGRESS_SECTION_MODIFIER".as_slice()
         } else if which == 10 {
-            // Changed rules follow registry order.
             let mut start = 0;
             for (&value, &(_, key, default, fulfilled)) in range
                 .rules
@@ -351,7 +343,6 @@ impl<'a> ScriptedText<'a> {
         if text.is_empty() {
             return Ok(text);
         }
-        // Substitute DESC, then expand in a country event.
         let text = self
             .localisation
             .localise_with(key, &[("DESC", Argument::Text(&text))])
@@ -363,10 +354,6 @@ impl<'a> ScriptedText<'a> {
         Ok(text)
     }
 
-    /// The record's cached description trees for keys 0x98 and 0x99, derived from its recorded
-    /// static-modifier sources and the content stack's static modifiers
-    /// ([`replay_derive::power_balance_derive`]); a source the content cannot resolve refuses both by
-    /// name.
     fn balance_trees(
         &self,
         sources: &[Vec<u8>],
@@ -379,8 +366,6 @@ impl<'a> ScriptedText<'a> {
             .ok_or("static modifiers are unavailable")?;
         let mut blocks = Vec::with_capacity(sources.len());
         for source in sources {
-            // The game compares the name's bytes; the native string ends at
-            // its first NUL.
             let key =
                 std::str::from_utf8(installed_content_core::parser::c_string(source)).map_err(|_| {
                     format!(
@@ -429,8 +414,6 @@ impl<'a> ScriptedText<'a> {
             return Ok(None);
         };
         let which = property as usize;
-        // Select the first manager record containing the country.
-        // Whole membership is required, including records preceding a found one.
         let members = self
             .frame
             .complete::<tables::PowerBalanceMembers>(MEMBER)
@@ -461,7 +444,6 @@ impl<'a> ScriptedText<'a> {
         };
         if which < 6 {
             let Some(record) = record.as_deref() else {
-                // Null identities are empty.
                 return Ok(Some(String::new()));
             };
             let key = match which {
@@ -474,8 +456,6 @@ impl<'a> ScriptedText<'a> {
                 _ => &record.active_range,
             };
             let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
-            // Definition names use a fresh empty event; the active range
-            // instead receives a fresh country event.
             if which == 5 {
                 return self
                     .expand_fresh_country(&text, slot, name, scopes)
@@ -574,8 +554,6 @@ impl<'a> ScriptedText<'a> {
                         Ok(text)
                     },
                 )?;
-                // Add a separator after nonempty daily text only
-                // when the breakdown has not already ended with a newline.
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -599,11 +577,9 @@ impl<'a> ScriptedText<'a> {
                 weekly = weekly.wrapping_add(native.weekly_effective());
             }
         }
-        // Signed 64-bit seven-times-daily plus weekly.
         let weekly_change = daily.wrapping_mul(7);
         let weekly_change = weekly_change.wrapping_add(weekly);
         if which == 7 {
-            // Trend icon name and trailing space.
             return Ok(Some(if weekly_change == 0 {
                 String::new()
             } else {
@@ -613,7 +589,6 @@ impl<'a> ScriptedText<'a> {
                 )
             }));
         }
-        // Preserve the sentinel path and wrapping fixed5 product.
         let converted = if !(i64::MIN + 2..=i64::MAX - 1).contains(&weekly) {
             0xffff_ffff
         } else {

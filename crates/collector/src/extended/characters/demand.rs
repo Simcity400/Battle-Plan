@@ -1,4 +1,3 @@
-//! Capacity observations supply hints only, never captured values.
 
 use super::{
     Capacities, Memory, ccharacter, ccharacter_manager, cunit_leader, read, unit_identity,
@@ -34,8 +33,6 @@ pub(super) fn presize(
     base: usize,
     state: usize,
 ) -> Result<(), &'static str> {
-    // Both character vectors retain every occurrence, and each occurrence
-    // keeps its own leader; duplicate pointers are demand, not deduplication.
     let roster = ccharacter_manager::Roster::read(memory, base, state)?;
     super::census::remember_roster(roster.count() as usize);
     if let Ok(demand) = engine_native::cadvisor::definitions_demand(

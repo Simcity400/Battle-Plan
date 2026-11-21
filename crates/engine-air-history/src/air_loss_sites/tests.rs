@@ -48,7 +48,6 @@ impl Fixture {
 
     fn new() -> Self {
         let mut f = Self(vec![0; 0xb000]);
-        // Raw country references 2 and 3 are aliases of canonical slot 1.
         f.array(GAME + cgame_state::COUNTRIES, 0x10800, 3);
         f.pointer(0x10808, COUNTRY);
         f.pointer(0x10810, COUNTRY);
@@ -116,7 +115,6 @@ fn air_loss_snapshot_reads_selected_scout_words_aliases_and_clamp_effects() {
     for index in 0..FIELD_COUNT {
         f.value(index, -(index as i64));
     }
-    // The native add can saturate; capture its actual increment.
     const NATIVE_MAX: i64 = 0x53e2_d620_fb40;
     f.value(71, NATIVE_MAX - 7);
     let snapshot = f.before(1, 1);
@@ -143,10 +141,8 @@ fn air_loss_new_history_zero_is_known_only_at_the_writer_boundary() {
     assert_eq!(snapshot.fields, [0; 2]);
     assert!(after(&f.memory(), BASE, GAME, &snapshot).is_err());
     f.pointer(0x13800 + 23 * 8, HISTORY);
-    // A newly allocated window need not use the placeholder pre-call slot.
     f.u32(WINDOW + loop_history_window::CURRENT_SLOT, 7);
     f.pointer(0x15800 + 7 * 8, RECORD);
-    // Missile cause six overlaps native field 46. Retain exact positions.
     f.value(40, 200_000);
     f.value(46, 200_000);
     let change = after(&f.memory(), BASE, GAME, &snapshot).unwrap();
@@ -177,7 +173,6 @@ fn daily_roster_keeps_true_false_aliases_and_refuses_invalid_slots() {
             eligible: false
         }]
     );
-    // A valid raw link cannot stand in for a missing native country slot.
     f.array(GAME + cgame_state::DAILY_COUNTRY_ROSTER, 0x109e0, 1);
     f.u32(0x109e0, 2);
     f.pointer(0x10810, 0);
@@ -205,7 +200,6 @@ fn opponent_reads_the_opposite_native_signed_tag_word() {
 #[test]
 fn air_loss_current_cursor_layout_and_short_fields_are_guarded() {
     let mut f = Fixture::new();
-    // Slot zero before any wrap is a valid current record for event reads.
     f.u32(WINDOW + loop_history_window::CURRENT_SLOT, 0);
     f.bytes(WINDOW + loop_history_window::WRAPPED, &[0]);
     f.pointer(0x15800, RECORD);
@@ -265,7 +259,6 @@ fn air_loss_reload_cursor_record_and_signed_delta_changes_refuse_the_event() {
         after(&f.memory(), BASE, GAME, &snapshot),
         Err("air loss writer current record changed during call")
     );
-    // A history the call created is authenticated in full.
     let mut f = Fixture::new();
     f.pointer(0x13800 + 23 * 8, 0);
     let snapshot = f.before(0, 1);
@@ -283,8 +276,6 @@ fn air_loss_reload_cursor_record_and_signed_delta_changes_refuse_the_event() {
     );
 }
 
-/// The current record reads each field it checks, in order, and the two
-/// selected words in one guarded copy of exactly those spans.
 #[test]
 fn air_loss_current_record_reads_the_selected_words_in_one_copy() {
     let mut f = Fixture::new();
@@ -300,14 +291,9 @@ fn air_loss_current_record_reads_the_selected_words_in_one_copy() {
         (current.record, current.slot, current.fields),
         (RECORD, 29, [7, 9])
     );
-    // History 4 reads / 28 bytes, window 7 / 49, slot pointer 1 / 8,
-    // record 2 / 24, then both words in one copy.
     assert_eq!((memory.calls.get(), memory.bytes.get()), (15, 125));
 }
 
-/// With a history before the call, the writer changes only its two selected
-/// words, so `after` reads the current slot and record in one guarded copy
-/// of exactly those fields and the words in another.
 #[test]
 fn air_loss_after_an_existing_history_reads_only_the_witnesses_and_words() {
     let mut f = Fixture::new();
@@ -531,7 +517,6 @@ impl ScaleFixture {
     }
 }
 
-/// Fails every copy that touches `fault`: always, or only the first.
 struct Faulted<'a> {
     inner: SliceMemory<'a>,
     fault: usize,
@@ -553,8 +538,6 @@ impl ScaleFixture {
     const SINGLETON: usize = 0x3000;
     const REGION: usize = 0x2800;
 
-    /// The gathered operands of country `ordinal`'s loss, and the serial
-    /// reads' composition of the same call.
     fn call(
         &self,
         memory: &impl Memory,
@@ -601,9 +584,6 @@ impl ScaleFixture {
     }
 }
 
-/// On healthy memory every country's gathered call equals the serial reads,
-/// in six gathered copies, the words and the country resolution instead of
-/// about forty guarded reads.
 #[test]
 fn air_loss_gathered_call_equals_the_serial_reads() {
     let mut f = ScaleFixture::new(70);
@@ -647,10 +627,6 @@ fn air_loss_gathered_call_equals_the_serial_reads() {
     assert!(serial >= memory.calls.get() + 20, "{serial}");
 }
 
-/// A fault at any operand withholds the gathered call, so the hook takes the
-/// serial reads: a persistent fault refuses there as before, and a one-shot
-/// fault the gather met leaves the serial reads the healthy result, never
-/// more refusal than they would give.
 #[test]
 fn air_loss_gathered_faults_fall_back_to_the_serial_reads() {
     let mut f = ScaleFixture::new(4);
@@ -683,7 +659,6 @@ fn air_loss_gathered_faults_fall_back_to_the_serial_reads() {
         assert_eq!(f.call(&once, 1, 0, 1), None, "{address:#x}");
         assert_eq!(f.serial(&once, 1, 0, 1), Ok(healthy), "{address:#x}");
     }
-    // A check the serial reads refuse withholds the gathered call too.
     f.u32(ScaleFixture::REGION + cstrategic_region::ID, 7);
     assert_eq!(f.call(&f.memory(), 1, 0, 1), None);
 }
@@ -695,8 +670,6 @@ fn air_loss_live_memory_five_thousand_country_cost() {
     use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
 
     let f = ScaleFixture::new(5_000);
-    // SAFETY: the owned arena remains immutable and allocated throughout
-    // all guarded reads; every synthetic pointer targets that arena.
     let memory = CountedMemory::new(unsafe { LiveMemory::new() });
     let prior_counts = ReadCounts::take_current();
     let census_started = std::time::Instant::now();

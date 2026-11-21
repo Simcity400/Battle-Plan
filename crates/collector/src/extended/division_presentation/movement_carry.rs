@@ -1,4 +1,3 @@
-//! Transfer transport speeds, one batched query per owner; each region is authenticated once an hour.
 use engine_native::{Memory, carmy::DivisionSeed, cprovince};
 use engine_naval_history::cnaval_unit_transfer::{
     SpeedCache, SpeedInputs, TransportRegion, movement_speeds_inputs,
@@ -10,13 +9,9 @@ const QUERY_MISSING: &str = "division transport query missing";
 
 #[derive(Default)]
 pub(super) struct Transport {
-    /// This hour's authenticated regions, by pointer.
     regions: HashMap<usize, TransportRegion>,
-    /// This hour's transfer divisions by row index: owner and region, or the refusal.
     pending: Vec<(usize, Result<(u32, TransportRegion), &'static str>)>,
-    /// Distinct by id.
     wanted_regions: Vec<TransportRegion>,
-    /// Distinct (owner, region index) pairs, ascending; `results` follows them.
     queries: Vec<(u32, usize)>,
     results: Vec<Result<SpeedInputs, &'static str>>,
     wanted: Vec<usize>,
@@ -39,7 +34,6 @@ impl Transport {
             + self.cache.allocated_bytes()
     }
 
-    /// Forget the hour.
     pub(super) fn clear(&mut self) {
         self.regions.clear();
         self.pending.clear();
@@ -86,13 +80,11 @@ impl Transport {
             }
             Ok((owner, region))
         })();
-        // Room for every census row was reserved in begin.
         if self.pending.len() < self.pending.capacity() {
             self.pending.push((index, region));
         }
     }
 
-    /// Emits every pushed division's inputs or refusal, in push order.
     pub(super) fn acquire(
         &mut self,
         memory: &impl Memory,
@@ -108,7 +100,6 @@ impl Transport {
         );
     }
 
-    /// [`Self::acquire`] with `query` answering one owner's wanted regions.
     fn acquire_with(
         &mut self,
         mut query: impl FnMut(
@@ -142,7 +133,6 @@ impl Transport {
             self.wanted
                 .extend(self.queries[start..end].iter().map(|&(_, at)| at));
             let results = &mut self.results;
-            // Each wanted region is emitted once, in order.
             query(
                 owner,
                 &self.wanted_regions,

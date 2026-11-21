@@ -1,11 +1,3 @@
-//! The terrain map mode's province hover, which replaces the political location text.
-//!
-//! A sea province (neither land nor lake in its definition flags) shows the naval terrain
-//! text of its strategic region's `naval_terrain`, or `ocean`, as the naval combat
-//! background does ([`naval_terrain`](super::naval_terrain)). A land or lake province shows
-//! its definition's terrain category: the highlighted name on its own line, then the land
-//! combat terrain text ([`land_terrain`](super::land_terrain)), then its local province
-//! effects ([`local`]).
 
 use installed_content_core::terrain::TerrainCategory;
 use installed_content_localisation::localisation::Localisation;
@@ -20,10 +12,8 @@ use super::{content::Content, modifier_text::Definitions};
 
 mod local;
 
-/// Definition flags of a land and of a lake province.
 const LAND_OR_LAKE: u8 = 1 | 2;
 
-/// The hover of `province` this hour.
 pub fn hover(content: &Content, frame: &DecodedFrame, province: u32, vision: &Vision) -> Tooltip {
     let mut out = Tooltip::default();
     let mut dropped = Vec::new();
@@ -41,8 +31,6 @@ pub fn hover(content: &Content, frame: &DecodedFrame, province: u32, vision: &Vi
     out
 }
 
-/// The province terrain text the state view's terrain picture gives, the same the terrain map
-/// mode's hover makes; what it leaves out is added to `refused`.
 pub(crate) fn province_text(content: &Content, frame: &DecodedFrame, province: u32, vision: &Vision, refused: &mut Vec<String>) -> Result<String, String> {
     let mut local = None;
     let text = text(content, frame, province, vision, refused, &mut local);
@@ -50,8 +38,6 @@ pub(crate) fn province_text(content: &Content, frame: &DecodedFrame, province: u
     text
 }
 
-/// The province's weather record's modifier accumulator described alone, as the state view's
-/// weather icons give it.
 pub(crate) fn weather_modifiers(content: &Content, frame: &DecodedFrame, province: u32) -> Result<String, String> {
     let definitions = Definitions::read(frame, &content.modifier_names)
         .map_err(|why| why.to_string())?
@@ -118,8 +104,6 @@ fn text(
     )
 }
 
-/// A land or lake province's text: its category's highlighted name on its own line, the
-/// land terrain text, then the local effects, whose refusal leaves the rest.
 fn land(
     category: &TerrainCategory,
     definitions: &Definitions<'_>,

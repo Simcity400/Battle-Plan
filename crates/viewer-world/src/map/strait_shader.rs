@@ -1,5 +1,3 @@
-//! Strait registration, inputs/state, geometry.
-//! Authored alpha writes feed the bloom seed; the old runtime port masked them.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
@@ -9,7 +7,6 @@ use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
 use installed_content_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 
-/// CPU ribbon representation shared with the geometry builder and port oracle.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct StraitVertex {
@@ -52,7 +49,6 @@ impl Compiled {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(device, effect, samples, format, depth)
         })
@@ -157,8 +153,6 @@ impl Straits {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         for triangle in source.chunks_exact(6) {
-            // Native writes four32-byte vertices, then uint16 indices
-            // 0,1,3,0,3,2. Its short index casts wrap; there is no chosen cap.
             let base = vertices.len() as u16;
             for i in [0, 1, 5, 2] {
                 let v = triangle[i];
@@ -223,14 +217,11 @@ impl Straits {
         let Some((vertices, indices, count)) = &self.geometry else {
             return Ok(());
         };
-        // Bind the retained strait texture, snow/mud and A8 intel inputs irrespective of authored sampler
-        // names.
         let textures = [&self.texture, snow_mud_and_intel[0], snow_mud_and_intel[1]]
             .into_iter()
             .enumerate()
             .map(|(slot, view)| (binding(slot as u32, Stage::Pixel), view.clone()))
             .collect();
-        // Retain that wrap's416-byte scene b0 on both stages.
         let bindings = frames
             .iter()
             .map(|frame| {
@@ -257,7 +248,6 @@ impl Straits {
                     .map_err(refuse)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        // Hidden straits keep the inputs they retain and submit nothing.
         if !visible {
             return Ok(());
         }

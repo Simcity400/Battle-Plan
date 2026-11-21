@@ -1,6 +1,3 @@
-//! The faction-theatre pin's hover: the theatre of the observed country's faction, as the game
-//! describes it. The pin's click opens the faction window, which the replay does not have, so the
-//! game's delayed "click to select" line is left out.
 use super::counter_content;
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::{Argument as Arg, Localisation};
@@ -12,17 +9,12 @@ use viewer_foundation::tooltip_text::{Tooltip, localise};
 
 type Fact<T> = Result<T, String>;
 
-/// One theatre's recorded facts the hover reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Theatre<'a> {
     pub name: Recorded<&'a [u8]>,
-    /// The raw country link of the theatre's owner.
     pub owner: Recorded<u32>,
-    /// The commander reference (type in the low half, id in the high half); `None` for none.
     pub commander: Recorded<Option<u64>>,
-    /// Raw country links, in stored order.
     pub countries: Recorded<&'a [u32]>,
-    /// Strategic region ids, in stored order.
     pub regions: &'a [u32],
 }
 
@@ -55,24 +47,20 @@ pub struct Country {
 pub struct Leader {
     pub name: String,
     pub category: i32,
-    /// The skill level, `None` when the leader has no skill definition.
     pub skill: Option<i32>,
 }
 
-/// The hover's operands, each resolved or why it is not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Facts {
     pub name: Fact<String>,
     pub owner: Fact<Country>,
     pub commander: Fact<Option<Leader>>,
     pub countries: Fact<Vec<Country>>,
-    /// Region display names, in stored order.
     pub regions: Fact<Vec<String>>,
 }
 
 const LINE: &str = "faction theatre";
 
-/// The hover of theatre `ordinal` of `faction`.
 pub fn build(content: &counter_content::Content, frame: &DecodedFrame, faction: u64, ordinal: u32) -> Tooltip {
     let row = frame.complete::<tables::FactionTheatres>().map_err(|e| e.to_string()).and_then(|rows| {
         rows.binary_search_by_key(&(faction, ordinal), |row| (row.faction, row.ordinal))
@@ -93,7 +81,6 @@ pub fn build(content: &counter_content::Content, frame: &DecodedFrame, faction: 
     }
 }
 
-/// Resolves a theatre's facts against the hour's rows and the content's regions.
 pub fn facts(
     loc: &Localisation,
     recorded_language: &str,
@@ -105,7 +92,6 @@ pub fn facts(
         .name
         .require("FactionTheatres.name")
         .and_then(|bytes| String::from_utf8(bytes.to_vec()).map_err(|_| "the stored theatre name is not UTF-8".to_owned()));
-    // The hour's tables are read only for the facts that need them.
     let links = std::cell::OnceCell::new();
     let slot = |raw: u32| -> Fact<u32> {
         let links = links.get_or_init(|| frame.complete::<tables::CountryLinks>().map_err(|e| e.to_string())).as_ref().map_err(Clone::clone)?;
@@ -164,8 +150,6 @@ fn leader(loc: &Localisation, recorded_language: &str, frame: &DecodedFrame, han
     })
 }
 
-/// The hover text from its operands; withheld whole, each missing operand named, when one is
-/// missing.
 pub fn lines(loc: &Localisation, facts: &Facts) -> Tooltip {
     let mut out = Tooltip::default();
     let commander = facts.commander.clone().and_then(|leader| commander_text(loc, leader.as_ref()));
@@ -225,8 +209,6 @@ fn commander_text(loc: &Localisation, leader: Option<&Leader>) -> Fact<String> {
     localise(loc, "FACTION_THEATER_TOOLTIP_COMMANDER", &[("NAME", Arg::Text(&leader.name)), ("TITLE", Arg::Text(&title))])
 }
 
-/// The leader's localised role title by category; an operative's skill-specific title when the
-/// localisation has it, and nothing for an unknown category.
 fn role_title(loc: &Localisation, category: i32, skill: Option<i32>) -> Fact<String> {
     let key = match category {
         0 => "fm_leader".to_owned(),
@@ -242,8 +224,6 @@ fn role_title(loc: &Localisation, category: i32, skill: Option<i32>) -> Fact<Str
     localise(loc, &key, &[])
 }
 
-/// Each item's text, a newline before each that does not follow one, or the empty key's text;
-/// with the item count.
 fn joined<T>(loc: &Localisation, items: &[T], empty: &str, item: impl Fn(&T) -> Fact<String>) -> Fact<(i32, String)> {
     let count = i32::try_from(items.len()).map_err(|_| "the list is longer than the game can count".to_owned())?;
     if items.is_empty() {

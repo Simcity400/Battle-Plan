@@ -231,7 +231,6 @@ pub(super) fn capture(
             failure: None,
         });
     }
-    // The native walk rejects duplicate global keys after its pool census.
     let valid = engine_allocation::advisory(|| {
         let mut keys = Vec::new();
         for part in &parts {
@@ -284,7 +283,6 @@ fn prepare_runtime(parts: &mut [ProjectPart]) -> bool {
         return false;
     };
     rows.sort_unstable_by_key(|row| row.key());
-    // Register serially so the parts cannot refuse each other's first registration.
     for row in rows {
         let Some(store) = row.source_pointer.checked_add(nproject_cproject::VARIABLES) else {
             return false;
@@ -519,7 +517,6 @@ mod tests {
             engine_native::walk::Buffer::Growing(&mut Vec::new()),
             &mut |_| true,
         );
-        // A growing buffer is padded with default rows past the walked length.
         projects.truncate(outcome.len());
         let mut ordered: Vec<_> = {
             let memory = world.memory();
@@ -723,7 +720,6 @@ mod runtime_merge_tests {
             assert_eq!(variables.entries.len(), 3);
         }
         let expected = variable_test_kit::encoded(&reference);
-        // Exercise first registrations, not just the observer's already-held fast path.
         collector_observers::project_variable_changes::retain_live(|_, _| false);
         assert!(prepare_runtime(&mut parts));
         let (parts, fixtures): (Vec<_>, Vec<_>) = std::thread::scope(|scope| {

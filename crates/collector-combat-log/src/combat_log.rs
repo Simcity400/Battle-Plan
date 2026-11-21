@@ -1,32 +1,3 @@
-//! The game's own equipment-loss records.
-//!
-//! CombatLogEquipment: every country's Combat Log, per orders group,
-//! loss reason, month and variant, and
-//! its recoveries. It is sliced by country: each hour reads the countries of
-//! that hour's slice. A country whose last complete read was in this or the
-//! previous calendar month is read through each array's last two month
-//! entries (every entry that can have changed since); a country never read
-//! completely in this session, or last read earlier, and every country at a
-//! full hour, is read whole. At the last sample before the daily prune it
-//! also reads each country holding the log of a deleted orders group.
-//!
-//! The prune detour ([`crate::combat_log_prune`]) keeps the final rows of
-//! every log the prune deletes. Each is published once, with a read of its
-//! country at the next sample, and then kept for [`RETAIN_HOURS`]: a sign
-//! that a read may not have been published ([`forget_reads`], or a full
-//! hour) publishes every kept final again.
-//!
-//! The finals and each country's last complete read hour belong to the
-//! session (load signal) they were observed in and are shared by every
-//! capture buffer ([`Store`]); a load starts them afresh.
-//!
-//! CombatLogState: hourly, the writer's country-gate operand
-//! and whether the prunes since the previous sample were observed. It helps
-//! explain why the game did not keep a country's land losses; the writer also
-//! requires an orders group. It never selects what the collector captures.
-//!
-//! LendLeaseEquipment: daily, each giver's lend-lease exchanges' delivered
-//! and sunk equipment per variant.
 use crate::{
     clock::qpc, slicing::SliceSelection, table_capture::CaptureRows, table_conversion::table,
 };
@@ -65,47 +36,27 @@ pub const TABLES: [TableId; N] = [
     TableId::CombatLogBattleCountries,
 ];
 
-/// Detach worker, after capture jobs and native writers have quiesced. Static
-/// Rust owners are not dropped by DLL unloading; release the retained cache
-/// explicitly. In-flight owned snapshots keep their independent Arc lifetime.
 pub fn release_retained_history() {
     with_store(|store| store.retained = crate::history_capture::State::new());
     crate::history_capture::release_conversion();
 }
 
-/// The sample before the daily prune: the hourly update runs the daily
-/// update, including the Combat Log prune, at raw hour `% 24 == 23`,
-/// after that hour's sample.
 pub const PRUNE_HOUR: i32 = 23;
 
-/// Hours a published final is kept, to be published again if the frame that
-/// published it turns out unpublished. The spool reports an unpublished frame
-/// ([`forget_reads`], or a full-refresh retry) when it takes the frame, which
-/// is within the capture buffers' rotation of a few hours.
 pub const RETAIN_HOURS: i32 = 24;
-/// A country with no complete read in this session.
 const NEVER: i32 = i32::MIN;
 
-/// A deleted log's final row, and the hour a published read carried it.
 #[derive(Clone, Copy)]
 struct Final {
     row: native::Row,
     published: Option<i32>,
 }
 
-/// The Combat Log state every capture buffer shares, for one session (load
-/// signal). Captures run one at a time: each hour's Slow worker completes
-/// inside that hour's callback. So the lock is never
-/// contended; only the capture takes it, and the game thread only raises
-/// [`FORGET`].
 struct Store {
     retained: crate::history_capture::State,
     signal: Option<i64>,
-    /// The last sample hour the store was brought to.
     hour: Option<i32>,
     finals: Vec<Final>,
-    /// Each observed country's last complete read hour, sorted by raw owner.
-    /// Manager headers retain these links.
     read_hour: Vec<(u32, i32)>,
 }
 
@@ -153,12 +104,9 @@ const EMPTY_STORE: Store = Store {
 
 #[cfg(not(any(test, feature = "test-support")))]
 static STORE: Mutex<Store> = Mutex::new(EMPTY_STORE);
-/// A read since the last capture may not have been published.
 #[cfg(not(any(test, feature = "test-support")))]
 static FORGET: AtomicBool = AtomicBool::new(false);
 
-// Tests run captures on many threads at once: each test thread has its own
-// store and flag, so no test sees another's.
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static STORE: Mutex<Store> = const { Mutex::new(EMPTY_STORE) };
@@ -188,10 +136,6 @@ fn take_forget() -> bool {
     FORGET.with(|forget| forget.swap(false, Ordering::AcqRel))
 }
 
-/// Some Combat Log read may not have been published (a failed Slow job, a
-/// dropped frame, a family the spool could not publish): the next capture
-/// reads every country whole at its next read and publishes every kept final
-/// again. Any thread.
 #[cfg(not(any(test, feature = "test-support")))]
 pub fn forget_reads() {
     FORGET.store(true, Ordering::Release);
@@ -201,8 +145,6 @@ pub fn forget_reads() {
     FORGET.with(|forget| forget.store(true, Ordering::Release));
 }
 
-/// Hand the prune log's rows of this session over. Under test, only a test
-/// thread that opted in ([`drain_prune_log_for_test`]) drains the shared log.
 fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
     #[cfg(any(test, feature = "test-support"))]
     if !DRAINS.get() {
@@ -211,8 +153,6 @@ fn drain_prune_log(signal: i64, output: &mut Vec<native::Row>) -> bool {
     crate::combat_log_prune::drain(signal, output).is_ok()
 }
 
-/// This test thread's captures drain the prune log, and its store starts
-/// empty. Hold [`crate::combat_log_prune::test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn drain_prune_log_for_test() {
     DRAINS.set(true);
@@ -220,10 +160,6 @@ pub fn drain_prune_log_for_test() {
     take_forget();
 }
 
-/// Whether a country last read completely at `last` must be read whole at
-/// `hour`: never read, read in a later hour (never in one session), or read
-/// before the previous calendar month, whose entries the window no longer
-/// covers.
 fn needs_all(last: i32, hour: i32) -> bool {
     last == NEVER || last > hour || month_bucket(last) < month_bucket(hour).saturating_sub(1)
 }
@@ -242,7 +178,6 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        // Keep each successful hint when the independent sibling is unreadable.
         let writers =
             engine_land_inputs::combat_log_events::noncombat_writer_demand(memory, base, state);
         if let Ok(demand) = writers {
@@ -252,7 +187,6 @@ impl Capacities {
         let lend = lend_lease::row_demand(memory, base, state);
         if let Ok(rows) = logs {
             crate::country_scale::raise(&mut self.rows, rows);
-            // A prune can delete any retained group log before the next sample.
             crate::combat_log_prune::prepare(rows);
         }
         if let Ok(rows) = lend {
@@ -268,15 +202,10 @@ pub struct Captured {
     lend_lease: CaptureRows<lend_lease::Row>,
     viewing: Result<i32, &'static str>,
     prune_observed: bool,
-    /// The countries this hour's read covered.
     selection: SliceSelection,
-    /// The walk's variant memo, cleared at the start of every walk.
     memo: native::VariantMemo,
-    /// The sample's load signal ([`Self::set_signal`]).
     signal: i64,
-    /// Rows the prune log handed over this hour, before they join the store.
     drained: Vec<native::Row>,
-    /// The countries this hour's walk read.
     visited: Vec<u32>,
 }
 
@@ -289,10 +218,8 @@ impl Captured {
         self.lend_lease
             .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
         self.retained.fail(reason);
-        // The state is read every hour, so a failed job loses it.
         self.viewing = Err(reason);
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self {
             retained: crate::history_capture::Captured::new(),
@@ -341,18 +268,14 @@ impl Captured {
         self.lend_lease.grow(&mut capacity.lend_lease);
     }
 
-    /// The countries whose CombatLogEquipment rows this frame's read replaced.
     pub fn selection(&self) -> &SliceSelection {
         &self.selection
     }
 
-    /// Start a frame's selection at its hour; the capture resets it again.
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
     }
 
-    /// The sample's load signal (`Clock::play_session_started_at`), which
-    /// names the session the store and the prune log's rows must belong to.
     pub fn set_signal(&mut self, signal: i64) {
         self.signal = signal;
     }
@@ -403,14 +326,7 @@ impl Captured {
         costs
     }
 
-    /// Bring the shared store to this sample: a new session starts it afresh,
-    /// a possibly unpublished read or a full hour publishes every kept final
-    /// again, finals published [`RETAIN_HOURS`] ago retire, and the prunes
-    /// since the previous sample add theirs. Whether those prunes were all
-    /// observed.
     fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
-        // A load (a new signal; an earlier hour could only be one too):
-        // nothing kept describes the new branch.
         let new_session =
             store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last);
         if new_session {
@@ -429,7 +345,6 @@ impl Captured {
             }
         }
         if forget || force_full {
-            // A full hour is also how the spool retries an unpublished frame.
             for kept in &mut store.finals {
                 kept.published = None;
             }
@@ -460,7 +375,6 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> Outcome {
-        // Finals not yet published go with a read of their country now.
         for kept in store.finals.iter().filter(|kept| kept.published.is_none()) {
             self.selection.select(kept.row.country);
         }
@@ -516,8 +430,6 @@ impl Captured {
         let Outcome::Rows { len } = outcome else {
             return outcome;
         };
-        // The unpublished finals follow the read. A deleted log's rows never
-        // collide with a live log's: its orders group id is not reused.
         let pending = store
             .finals
             .iter()
@@ -533,7 +445,6 @@ impl Captured {
         {
             return Outcome::Unavailable { reason };
         }
-        // Reserve all original visited owners before publishing any new read.
         if let Err(reason) = store.remember_reads(&self.visited, hour) {
             return Outcome::Unavailable { reason };
         }
@@ -606,8 +517,6 @@ impl Captured {
             ),
         ]
     }
-    /// Production conversion shares unchanged certified snapshots directly with
-    /// the encoder. It allocates no collection per retained entity per hour.
     pub fn table_inputs(&self) -> [replay_frame::frame::TableInput; N] {
         let mut ordinary = self.ordinary_tables().into_iter();
         let mut retained = self.retained.inputs().into_iter();
@@ -677,8 +586,6 @@ mod tests {
                     reason: SKIPPED_REASON,
                 };
             assert_eq!(skipped, hour != PRUNE_HOUR, "{hour}");
-            // This synthetic state has no manager array: the log is
-            // unavailable, never an empty table.
             assert!(
                 matches!(log, Outcome::Unavailable { reason } if reason != SKIPPED_REASON),
                 "{hour}"
@@ -743,8 +650,6 @@ mod tests {
 
     const SIGNAL: i64 = 1_778_888_888;
 
-    /// A game state whose Combat Log holds only the null sentinel slot: a
-    /// complete read with no rows of its own.
     fn logged_state() -> Vec<u8> {
         let mut bytes = game_state(4);
         let header = engine_native::cgame_state::COMBAT_LOGS;
@@ -827,8 +732,6 @@ mod tests {
         }
     }
 
-    /// Capture `hour` in `captured` with load signal `signal`: its Combat
-    /// Log rows.
     fn capture(
         captured: &mut Captured,
         bytes: &[u8],
@@ -881,22 +784,16 @@ mod tests {
         crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
         assert_eq!(capture(&mut a, &bytes, SIGNAL, 5, false), [row(29, 7)]);
         assert!(a.selection().contains(29));
-        // Another buffer's later read neither repeats it nor reads its
-        // country outside the slice.
         assert!(capture(&mut b, &bytes, SIGNAL, 6, false).is_empty());
         assert!(!b.selection().contains(29));
-        // A read that may not have been published: every kept final again.
         forget_reads();
         assert_eq!(capture(&mut c, &bytes, SIGNAL, 7, false), [row(29, 7)]);
         assert!(capture(&mut d, &bytes, SIGNAL, 8, false).is_empty());
-        // Retired a day after it last went out: nothing to publish again.
         assert!(capture(&mut a, &bytes, SIGNAL, 7 + RETAIN_HOURS, false).is_empty());
         forget_reads();
         assert!(capture(&mut b, &bytes, SIGNAL, 8 + RETAIN_HOURS, false).is_empty());
     }
 
-    /// Codex #160 round 1: a buffer holding a deleted group's final, a load of
-    /// an earlier save, and that buffer's return round the rotation.
     #[test]
     fn a_load_leaves_no_final_of_the_left_branch_in_any_buffer() {
         let _lock = crate::combat_log_prune::test_lock();
@@ -906,7 +803,6 @@ mod tests {
         let [mut a, mut b, mut c, mut d] = buffers();
         crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
         assert_eq!(capture(&mut a, &bytes, SIGNAL, 100, false), [row(29, 7)]);
-        // The left session's prune after its last sample, then the load.
         crate::combat_log_prune::append_for_test(SIGNAL, &[row(30, 8)]);
         let loaded = SIGNAL + 1;
         assert!(capture(&mut b, &bytes, loaded, 50, true).is_empty());
@@ -915,14 +811,11 @@ mod tests {
         assert!(capture(&mut a, &bytes, loaded, 53, false).is_empty());
         forget_reads();
         assert!(capture(&mut b, &bytes, loaded, 54, true).is_empty());
-        // Should a load keep its signal, an earlier hour still starts afresh.
         crate::combat_log_prune::append_for_test(loaded, &[row(31, 9)]);
         assert_eq!(capture(&mut c, &bytes, loaded, 60, false), [row(31, 9)]);
         assert!(capture(&mut d, &bytes, loaded, 40, true).is_empty());
     }
 
-    /// A gap or a retried frame in the same session forces a full hour: a
-    /// full read cannot see a deleted log, so its kept final goes out again.
     #[test]
     fn a_full_hour_in_the_same_session_publishes_kept_finals_again() {
         let _lock = crate::combat_log_prune::test_lock();
@@ -935,7 +828,6 @@ mod tests {
         assert_eq!(capture(&mut b, &bytes, SIGNAL, 9, true), [row(29, 7)]);
     }
 
-    /// Raw game hour of a day of a year (365-day years from the game's epoch).
     fn day(year: i32, day: i32) -> i32 {
         43_800_000 + year * 8760 + day * 24
     }

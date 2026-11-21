@@ -1,12 +1,3 @@
-//! Division equipment at an hour: what a country's divisions hold, need and miss, by type and
-//! by template, then one template's divisions and one division's pool: a rows-at-an-hour product
-//! ([`AtHour`]).
-//!
-//! The country's overview is its rows of the derived division equipment tables (each division
-//! capped at its own need before the sums, by the recorder's writer), read with a key range of its
-//! slot and attribution: no division is read for it. A drill into a template or a division reads
-//! the hour's divisions, their pools and their templates' needs and compares each division as the
-//! writer does. National stock is dated context only, never part of a shortfall.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{ArmyAttribution, Content, Countries, Refusals, attributed, design_handle, find, side, templates::slot_side_range, token_key, unavailable};
@@ -30,7 +21,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// What the country's overview reads: its rows of the derived tables, and what names them.
 const OVERVIEW: [TableId; 10] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -44,7 +34,6 @@ const OVERVIEW: [TableId; 10] = [
     TableId::DivisionEquipmentByTemplate,
 ];
 
-/// What a drill reads beside the overview's: the hour's divisions, their pools and needs.
 const DRILL: [TableId; 8] = [
     TableId::Divisions,
     TableId::DivisionStatus,
@@ -71,7 +60,6 @@ pub struct DivisionEquipmentParams {
     pub division: Option<String>,
 }
 
-/// Holdings of one design, never a design-specific requirement.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -85,19 +73,19 @@ pub struct EquipmentVariant {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentType {
-    /// None is the unclassified bucket, not a content key.
+    #[doc = " None is the unclassified bucket, not a content key."]
     pub archetype: Option<String>,
     pub name: Option<String>,
     pub name_missing: Option<String>,
-    /// What every read pool holds, its comparison known or not; none when not known.
+    #[doc = " What every read pool holds, its comparison known or not; none when not known."]
     pub held_raw: Option<String>,
     pub needed_raw: Option<String>,
-    /// Each known division's holding capped at its own need, summed.
+    #[doc = " Each known division's holding capped at its own need, summed."]
     pub filled_raw: Option<String>,
     pub missing_raw: Option<String>,
     pub divisions_short: Option<u32>,
     pub unknown_divisions: Option<u32>,
-    /// National stock, never used in the shortfall.
+    #[doc = " National stock, never used in the shortfall."]
     pub stockpile_raw: Option<String>,
     pub stockpile_hour: Option<i32>,
     pub variants: Vec<EquipmentVariant>,
@@ -117,9 +105,9 @@ pub struct EquipmentTemplate {
     pub manpower_required: Option<String>,
     pub hp_raw: Option<String>,
     pub hp_max_raw: Option<String>,
-    /// Known divisions only, `unknown_divisions` naming the rest.
+    #[doc = " Known divisions only, `unknown_divisions` naming the rest."]
     pub needed_raw: Option<String>,
-    /// Needed archetypes only, each division capped at its own need.
+    #[doc = " Needed archetypes only, each division capped at its own need."]
     pub held_raw: Option<String>,
     pub types_short: Option<u32>,
     pub unknown_divisions: Option<u32>,
@@ -138,10 +126,10 @@ pub struct EquipmentDivision {
     pub hp_max_raw: Option<String>,
     pub needed_raw: Option<String>,
     pub held_raw: Option<String>,
-    /// None when the comparison with the need is not known.
+    #[doc = " None when the comparison with the need is not known."]
     pub types_short: Option<u32>,
     pub pool_known: bool,
-    /// The previous template's name during conversion.
+    #[doc = " The previous template's name during conversion."]
     pub converting_from: Option<String>,
 }
 
@@ -151,7 +139,7 @@ pub struct EquipmentDivision {
 pub struct DivisionPoolType {
     pub archetype: Option<String>,
     pub name: Option<String>,
-    /// None when the division's pool was not read.
+    #[doc = " None when the division's pool was not read."]
     pub held_raw: Option<String>,
     pub needed_raw: Option<String>,
     pub missing_raw: Option<String>,
@@ -171,7 +159,7 @@ pub struct DivisionPool {
     pub hp_raw: Option<String>,
     pub hp_max_raw: Option<String>,
     pub types: Vec<DivisionPoolType>,
-    /// An unread pool lists template needs with unknown holdings, not an empty pool.
+    #[doc = " An unread pool lists template needs with unknown holdings, not an empty pool."]
     pub pool_known: bool,
 }
 
@@ -181,25 +169,24 @@ pub struct DivisionPool {
 pub struct DivisionEquipmentReply {
     pub tag: String,
     pub count_for: ArmyAttribution,
-    /// Why the country's division equipment is not known at this hour, when it is not.
+    #[doc = " Why the country's division equipment is not known at this hour, when it is not."]
     pub missing: Option<String>,
     pub pool_hour: Option<i32>,
     pub divisions: Option<u32>,
-    /// Divisions with a known shortfall of any type.
+    #[doc = " Divisions with a known shortfall of any type."]
     pub divisions_short: Option<u32>,
     pub unknown_divisions: Option<u32>,
     pub types: Vec<EquipmentType>,
     pub templates: Vec<EquipmentTemplate>,
-    /// A template's divisions, when one is asked.
+    #[doc = " A template's divisions, when one is asked."]
     pub division_rows: Option<Vec<EquipmentDivision>>,
-    /// A division's pool, when one is asked.
+    #[doc = " A division's pool, when one is asked."]
     pub pool: Option<DivisionPool>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(DivisionEquipmentReply);
 
-/// What the drills need beside the names: the content's sub-unit needs.
 pub struct EquipmentContext {
     pub content: Content,
     needs: Result<Arc<Needs>, String>,
@@ -258,8 +245,6 @@ impl AtHour for DivisionEquipment {
         tables
     }
 
-    /// The country's derived rows by key range and the shared naming tables first; then the
-    /// template settings and design definitions those rows name. A drill reads its tables whole.
     fn reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let side = side(params.count_for);
@@ -314,14 +299,12 @@ impl AtHour for DivisionEquipment {
     }
 }
 
-/// The content's sub-unit needs, loaded once per content binding.
 pub fn template_needs(cat: &Result<Arc<catalogue::Catalogue>, String>) -> Result<Arc<Needs>, String> {
     cat.as_ref()
         .map_err(|_| "Template equipment needs require the recorded content stack".to_owned())
         .and_then(|cat| cat.content.layers.derived::<catalogue::CachedResult<Needs>>().get_or_init(|| Needs::load(&cat.content.layers)).map_err(|why| format!("Template equipment content unavailable: {why}")))
 }
 
-/// A template's need by archetype content key, in first-occurrence order, fixed5.
 pub fn template_need(needs: &Result<Arc<Needs>, String>, sources: &Result<Sources<'_>, String>, frame: &DecodedFrame, handle: u64) -> Result<Vec<(String, i64)>, String> {
     let needs = needs.as_ref().map_err(Clone::clone)?;
     let sources = sources.as_ref().map_err(Clone::clone)?;
@@ -361,8 +344,6 @@ fn count(value: &Recorded<i64>) -> Option<u32> {
     }
 }
 
-/// A count of divisions short, which the writer takes among the divisions it compared: with none
-/// compared it is not known, never zero.
 pub(super) fn short_count(short: &Recorded<i64>, compared: bool) -> Option<u32> {
     if compared { count(short) } else { None }
 }
@@ -374,7 +355,6 @@ fn times(value: &Recorded<i64>) -> usize {
     }
 }
 
-/// An archetype token's content key and name.
 fn archetype(frame: &DecodedFrame, content: &Content, token: Option<u32>, refusals: &mut Refusals) -> (Option<String>, Option<String>, Option<String>) {
     let Some(token) = token else { return (None, None, Some("Equipment archetype is unclassified".into())) };
     let key = frame.complete::<tables::LexicalTokens>().map_err(|why| format!("Equipment names unavailable: {why}")).and_then(|rows| token_key(rows, token));
@@ -390,7 +370,6 @@ fn archetype(frame: &DecodedFrame, content: &Content, token: Option<u32>, refusa
     }
 }
 
-/// A design's name from its reference id.
 fn design(frame: &DecodedFrame, content: &Content, id: Option<u32>, refusals: &mut Refusals) -> Option<String> {
     let Some(id) = id else {
         refusals.note("A pool entry names no equipment design");
@@ -404,7 +383,6 @@ fn design(frame: &DecodedFrame, content: &Content, id: Option<u32>, refusals: &m
     refusals.keep(content.design_name(frame, definition)).0
 }
 
-/// The country's overview from its rows of the derived tables.
 fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String, slot: u32, content: &Content, refusals: &mut Refusals) -> io::Result<DivisionEquipmentReply> {
     let mut reply = DivisionEquipmentReply {
         tag,
@@ -429,7 +407,6 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
     let mine = |row_slot: u32, row_side: u8| row_slot == slot && row_side == side;
     let counts = frame.complete::<tables::DivisionEquipmentCounts>()?.iter().find(|row: &&DivisionEquipmentCountRow| mine(row.slot, row.side));
     let Some(counts) = counts else {
-        // No row: the country holds no division of this attribution.
         reply.divisions = Some(0);
         reply.divisions_short = Some(0);
         reply.unknown_divisions = Some(0);
@@ -502,7 +479,6 @@ fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String,
     Ok(reply)
 }
 
-/// One division's own facts and its comparison of pool against need, as the writer compares it.
 struct Compared<'a> {
     row: &'a DivisionRow,
     status: Option<&'a DivisionStatusRow>,
@@ -511,9 +487,7 @@ struct Compared<'a> {
     hp_max: Option<i64>,
     need: Result<Vec<(String, i64)>, String>,
     pool_known: bool,
-    /// Held by archetype key (none: unclassified), each design's amount.
     held: BTreeMap<Option<String>, (i128, BTreeMap<u64, i128>)>,
-    /// Each type's (key, need, filled, shortfall), when pool, need and every design's type are known.
     types: Option<Vec<(Option<String>, i128, i128, i128)>>,
 }
 
@@ -531,8 +505,6 @@ impl Compared<'_> {
     }
 }
 
-/// The pool of `division`: its newly minted rows, else its daily read's, else an empty pool when
-/// the newly minted read is whole; none when not known.
 fn pool<'a>(new: Option<&'a [DivisionEquipmentRow]>, daily: Option<&'a [DivisionEquipmentRow]>, division: u64) -> Option<&'a [DivisionEquipmentRow]> {
     let slice = |rows: &'a [DivisionEquipmentRow]| {
         let start = rows.partition_point(|row| row.division < division);
@@ -547,14 +519,12 @@ fn pool<'a>(new: Option<&'a [DivisionEquipmentRow]>, daily: Option<&'a [Division
     new.map(|_| &[][..])
 }
 
-/// A design's archetype key from its recorded definition.
 fn design_archetype(frame: &DecodedFrame, variant: u64) -> Option<String> {
     let definition = find(frame.complete::<tables::VariantDefinitions>().ok(), variant, |row| row.id)?;
     (definition.archetype_token != 0).then_some(())?;
     token_key(frame.complete::<tables::LexicalTokens>().ok()?, definition.archetype_token).ok()
 }
 
-/// A template's drill or a division's pool, beside the overview.
 fn drill(frame: &DecodedFrame, params: &DivisionEquipmentParams, slot: u32, at: &At<'_, EquipmentContext>, reply: &mut DivisionEquipmentReply, refusals: &mut Refusals) -> io::Result<()> {
     let content = &at.context.content;
     let countries = Countries::read(frame)?;
@@ -570,7 +540,6 @@ fn drill(frame: &DecodedFrame, params: &DivisionEquipmentParams, slot: u32, at: 
     if division.is_some() && members.is_empty() {
         refusals.note("The selected division is not in this country's army at this hour");
     }
-    // The daily pools stand within a day of their read, as the writer reads them.
     let daily = frame.complete::<tables::DivisionEquipment>().ok().filter(|_| {
         frame.tables[TableId::DivisionEquipment.index()].sampled_at().is_some_and(|read| read <= frame.hour && i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD))
     });
@@ -688,14 +657,10 @@ fn drill(frame: &DecodedFrame, params: &DivisionEquipmentParams, slot: u32, at: 
     Ok(())
 }
 
-/// A need's archetype names its content definition; a design's archetype is its lexer token's
-/// spelling: the two name one archetype under the ASCII fold, as the writer matches them.
 fn same_archetype(need: &str, design: &str) -> bool {
     need.eq_ignore_ascii_case(design)
 }
 
-/// Each needed or held type of one division: its need, its holding capped at the need, and its
-/// own shortfall.
 fn compare(need: &[(String, i64)], held: &BTreeMap<Option<String>, (i128, BTreeMap<u64, i128>)>) -> Vec<(Option<String>, i128, i128, i128)> {
     let mut out: Vec<(Option<String>, i128, i128, i128)> = Vec::new();
     let mut seen = BTreeSet::new();
@@ -707,7 +672,6 @@ fn compare(need: &[(String, i64)], held: &BTreeMap<Option<String>, (i128, BTreeM
         }).sum();
         out.push((Some(key.clone()), amount, holding.clamp(0, amount.max(0)), (amount - holding).max(0)));
     }
-    // A type held but not needed is listed, needing and missing nothing.
     out.extend(held.keys().filter(|kind| !seen.contains(*kind)).map(|kind| (kind.clone(), 0, 0, 0)));
     out
 }

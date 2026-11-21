@@ -66,8 +66,6 @@ fn initial_positioning_reads_the_opposing_admiral_and_ordinary_the_own() {
     let mut side = NavalCombatSideDetails::default();
     side.summary.countries.push(42);
     let cell = |raw| NavalCombatSummaryModifier { raw, present: 1 };
-    // Own admiral (scope 3) and opposing admiral (scope 4) carry
-    // different bonuses for both keys.
     side.summary.modifiers[3][0] = cell(20_000);
     side.summary.modifiers[4][0] = cell(3_000);
     side.summary.modifiers[3][2] = cell(7_000);
@@ -82,7 +80,6 @@ fn initial_positioning_reads_the_opposing_admiral_and_ordinary_the_own() {
         active_ship_slots: [0; 2],
         air: [Air::default(); 2],
     };
-    // Base, own-admiral positioning, opposing-admiral initial positioning.
     assert_eq!(displayed(&input, &definitions), Some(50_000));
     input.duration = 12;
     assert_eq!(displayed(&input, &definitions), Some(47_000));
@@ -168,8 +165,6 @@ fn ratio_penalties_respect_count_gate_opposing_admiral_fill_and_positive_only() 
             },
         ],
     };
-    // Ratio 2 gives 10% ship penalty, enemy admiral raises it to 15%;
-    // carrier ratio 0.5 at half base fill contributes 5%.
     assert_eq!(displayed(&input, &definitions), Some(70_000));
     input.active_ship_slots = [3, 2];
     assert_eq!(displayed(&input, &definitions), Some(85_000));
@@ -211,9 +206,6 @@ fn native_signed_ratio_guard_excludes_only_extreme_numerators() {
     assert!(ratio_numerator_valid(i64::MAX - 1));
     assert!(!ratio_numerator_valid(i64::MAX));
 
-    // No opposing forward slots means the ship-ratio denominator is
-    // absent. The native branch skips the penalty even at its minimum
-    // ship threshold.
     let mut definitions = defines();
     definitions.summary_integer[0] = 0;
     definitions.summary_fixed[3] = ONE;
@@ -507,9 +499,6 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
     let mut definitions = defines();
     definitions.summary_fixed[0] = ONE;
     definitions.summary_fixed[12] = 100 * ONE;
-    // the game evaluates the opposing carrier air even when night makes
-    // every sortie zero. A refused static screening term must not turn that
-    // known zero into a missing defender positioning or AA counter.
     let positioning = positioning_values(
         &detail,
         Some(&members),
@@ -555,9 +544,6 @@ fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa(
     }
 }
 
-/// The owner's design scale doubled: 40,000 ships (with their live rows,
-/// models and carrier air bases) and 100,000 wings of 10 planes (1,000,000
-/// planes) in the bases' dense rows.
 const SHIPS: u32 = 40_000;
 const WINGS: u32 = 100_000;
 
@@ -572,11 +558,6 @@ struct World {
     definitions: Defines,
 }
 
-/// Combat 7 holds `carriers` carriers, alternately attacker and defender,
-/// each with one admitted carrier-air slot linked to its combat member and
-/// flying from its own base, which holds one 10-plane wing. Combat 8 holds
-/// the same ships again and combat 9 every other ship; the other bases
-/// share the remaining wings.
 fn world(carriers: u32) -> World {
     use replay_data::{
         rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow, rows::NavalCombatAirEfficiency,
@@ -664,7 +645,6 @@ fn world(carriers: u32) -> World {
             .push(NavalCombatPlane {
                 group_index: 0,
                 air_base: base_id(ship),
-                // The defenders fly twice the attackers' planes.
                 current_planes: 10 * (1 + i32::from(side)),
                 carrier_slot: (ship / 2) as i32,
                 carrier_member_present: 1,
@@ -694,12 +674,6 @@ fn world(carriers: u32) -> World {
     }
 }
 
-/// Every carrier-air slot joins its air base, host ship, ship model and
-/// member by lookup (the old per-slot scans made about 62.5 million row
-/// visits at 5,000 carriers); ShipModels is checked once and shared by
-/// surface detection, carrier air, screening and anti-air; and only the
-/// selected combat's dense base rows are summed. The timed span is the
-/// window's per-refresh naval work in `details::naval`.
 #[test]
 fn carrier_air_joins_are_indexed_at_country_scale() {
     use super::super::{naval_anti_air, naval_screening};
@@ -750,18 +724,12 @@ fn carrier_air_joins_are_indexed_at_country_scale() {
         let started = Instant::now();
         let (values, others) = refresh(&w.models, &w.wings);
         let elapsed = started.elapsed();
-        // Every slot sorties at half organisation (0.5) from a half-full
-        // base (0.5), so each side's average base fill is 0.25. The
-        // attackers' weighted planes are half the defenders': penalty
-        // (1 - 0.5) x 1 x 0.25.
         assert_eq!(values, [Some(27_500), Some(40_000)]);
         assert_eq!(others, [(true, true); 2]);
         eprintln!(
             "naval window refresh, {carriers} carriers in combat, {SHIPS} ships, {WINGS} wings: {elapsed:?} (test build)"
         );
 
-        // A wing missing from the roster in another combat's base row
-        // leaves this combat's counts alone.
         let mut roster = w.wings.clone();
         let outside = roster.pop().expect("wings");
         assert!(
@@ -770,9 +738,6 @@ fn carrier_air_joins_are_indexed_at_country_scale() {
                 .any(|row| row.wings.contains(&outside.id))
         );
         assert_eq!(refresh(&w.models, &roster).0, values);
-        // One defender model without counter operands is refused, not
-        // guessed: the defenders' air pass and surface detection need
-        // it, and the attackers' positioning reads the defenders' air.
         let mut models = w.models.clone();
         models[1].counter = None;
         assert_eq!(refresh(&models, &w.wings).0, [None; 2]);

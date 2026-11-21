@@ -6,23 +6,15 @@ import './Popover.css';
 
 export interface AnchorRect { left: number; right: number; top: number; bottom: number }
 
-/** The closed state; one already closed is kept, so its owner does not render again. */
 const closed = (state: { open: boolean }) => state.open ? { open: false } : state;
 
-/** Keep a native popover hidden until its complete contents have been positioned.
- * It sits under its trigger button, or at a point or beside a box given to `openAt`
- * (a right-click menu, a panel beside its widget). Opened again, its contents are kept, so it is placed at once with
- * the size it had and shown in the task that opens it: a click the moment it opens reaches it, never the page under it. */
 export function usePopover(align: 'start' | 'end' = 'end') {
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
-  /** Where openAt placed the popover; re-read on every reposition so it follows scrolling. */
   const anchorRect = useRef<(() => AnchorRect | null) | null>(null);
   const [state, setState] = useState({ open: false });
   const { open } = state;
-  /** The panel's size when it was last placed. */
   const size = useRef<{ width: number; height: number } | null>(null);
-  /** Places `panel` of `width` by `height` at its anchor and shows it; false without an anchor. */
   const place = useCallback((panel: HTMLElement, width: number, height: number) => {
     const anchor = anchorRect.current ? anchorRect.current() : trigger.current?.getBoundingClientRect();
     if (!anchor) return false;
@@ -34,7 +26,6 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     panel.style.visibility = 'visible';
     return true;
   }, [align]);
-  /** As the panel opens: placed and shown at once with the size it last had, if it has been placed before. */
   const opening = useCallback((panel: HTMLElement) => !!size.current && place(panel, size.current.width, size.current.height), [place]);
   useLayoutEffect(() => {
     if (!open) { anchorRect.current = null; return; }
@@ -54,7 +45,6 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     return () => { observer.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
   }, [state, place]);
   const close = useCallback(() => { popup.current?.hidePopover(); trigger.current?.focus({ preventScroll: true }); }, []);
-  /** Opens at a point, or beside a box measured each time it is repositioned. */
   const openAt = useCallback((anchor: AnchorRect | (() => AnchorRect | null)) => {
     anchorRect.current = typeof anchor === 'function' ? anchor : () => anchor;
     const panel = popup.current;
@@ -62,20 +52,15 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     if (panel.matches(':popover-open')) setState({ open: true });
     else panel.showPopover();
   }, []);
-  // One object while the open state holds, so owners can depend on it.
   return useMemo(() => ({ trigger, popup, open, setState, close, openAt, opening }), [open, close, openAt, opening]);
 }
 
-/** Pop-down contents built only once it has opened. Closed again, they keep their last look
- * (through the exit fade) and skip rendering until it reopens. */
 export const PopoverBody = memo(function PopoverBody({ open, children }: { open: boolean; children: () => ReactNode }) {
   const opened = useRef(false);
   opened.current ||= open;
   return opened.current ? children() : null;
 }, (previous, next) => !previous.open && !next.open);
 
-/** Nested popovers stay inside their parent so native light-dismiss preserves it. */
-/** `manual` popovers are not closed by clicks elsewhere; their owner decides. */
 export function Popover({ menu, portal = true, manual = false, className = '', onToggle, children, ...props }: {
   menu: ReturnType<typeof usePopover>; portal?: boolean; manual?: boolean;
 } & Omit<ComponentProps<'div'>, 'ref' | 'popover' | 'onBeforeToggle' | 'onKeyDown'>) {
@@ -86,12 +71,9 @@ export function Popover({ menu, portal = true, manual = false, className = '', o
   }, [popup, setState]);
   const panel = <div {...props} ref={menu.popup} popover={manual ? 'manual' : 'auto'} role="dialog" className={`ui-popover ${className}`}
     onBeforeToggle={event => {
-      // Opening: shown at once where it was placed before; the first time hidden until positioned. Closing keeps it
-      // visible for the exit fade.
       if (event.target === event.currentTarget && event.newState === 'open' && !menu.opening(event.currentTarget)) event.currentTarget.style.visibility = 'hidden';
     }}
     onToggle={event => {
-      // React delivers toggles from nested details and popovers to ancestors too.
       if (event.target !== event.currentTarget) return;
       menu.setState(event.newState === 'open' ? { open: true } : closed);
       onToggle?.(event);
@@ -101,7 +83,6 @@ export function Popover({ menu, portal = true, manual = false, className = '', o
         event.preventDefault(); event.stopPropagation(); menu.close();
       }
     }}>{children}</div>;
-  // Server rendering (component tests) has no document to portal into.
   return portal && typeof document !== 'undefined' ? createPortal(panel, document.body) : panel;
 }
 

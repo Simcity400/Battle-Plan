@@ -1,10 +1,3 @@
-//! Storage of its own for a record a hook's ring has no room for.
-//!
-//! The producer allocates one node for the record, fallibly, and pushes it with
-//! one release compare-exchange: it takes no lock and never waits for another
-//! thread. The consumer swaps the whole stack out and takes the records in push
-//! order. Producers write only their own node and the head, and the consumer
-//! frees only the nodes it swapped out, so there is no ABA and nothing to reclaim.
 use engine_allocation as allocation;
 use std::{
     io,
@@ -19,11 +12,9 @@ struct Node<T> {
 }
 
 pub struct SpillStack<T> {
-    /// Pushed records the consumer has not taken, newest first.
     head: AtomicPtr<Node<T>>,
 }
 
-// A node belongs to its producer until its push, then to the consumer that takes it.
 unsafe impl<T: Send> Send for SpillStack<T> {}
 unsafe impl<T: Send> Sync for SpillStack<T> {}
 
@@ -40,13 +31,10 @@ impl<T> SpillStack<T> {
         }
     }
 
-    /// Hook path. A refused node allocation drops `value` and never stops capture.
     pub fn push(&self, value: T) -> io::Result<()> {
         self.reserve(value).map(Reserved::push)
     }
 
-    /// Hook path: storage of its own for `value`, unseen until [`Reserved::push`],
-    /// so a record can take its place in an order only once it cannot be refused.
     pub fn reserve(&self, value: T) -> io::Result<Reserved<'_, T>> {
         let node = allocation::advisory(|| {
             allocation::boxed(Node {
@@ -75,7 +63,6 @@ impl<T> SpillStack<T> {
         self.head.load(Ordering::Acquire).is_null()
     }
 
-    /// Consumer: every record pushed before the swap, oldest first.
     pub fn take(&self) -> Taken<T> {
         let mut node = self.head.swap(ptr::null_mut(), Ordering::Acquire);
         let mut oldest = ptr::null_mut();
@@ -90,8 +77,6 @@ impl<T> SpillStack<T> {
         Taken { head: oldest, len }
     }
 
-    /// Consumer: appends every pushed record to `held`. When `held` cannot grow,
-    /// the taken records come back so the caller can name what they held.
     pub fn take_into(&self, held: &mut Vec<T>) -> Result<(), Taken<T>> {
         let taken = self.take();
         if taken.len == 0 {
@@ -111,7 +96,6 @@ impl<T> Drop for SpillStack<T> {
     }
 }
 
-/// A record with its storage, freed unseen unless pushed.
 pub struct Reserved<'a, T> {
     stack: &'a SpillStack<T>,
     node: Box<Node<T>>,
@@ -137,7 +121,6 @@ impl<T> DerefMut for Reserved<'_, T> {
     }
 }
 
-/// Taken records in push order; each node is freed as its record is read.
 pub struct Taken<T> {
     head: *mut Node<T>,
     len: usize,

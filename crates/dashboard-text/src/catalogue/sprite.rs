@@ -1,4 +1,3 @@
-//! Native Up-state sprite draw at a newly shown drawable's time zero.
 use super::*;
 use installed_content_core::gui::native::sprites::FrameAnimation;
 use installed_content_image::dds;
@@ -35,41 +34,29 @@ pub(super) fn draw(
     }
     let extent = extent.map(|edge| edge as u32);
     let geometry = resources::frame_geometry(plain, size);
-    // Plain sprites overwrite the type's stretch, v_scale and flip with a
-    // new drawable's (1, 1, false); frame-animated sprites keep the authored
-    // geometry unless their drawable supplies a stretch.
     let (stretch, v_scale, flip) = if animated.is_some() {
         (plain.stretch, plain.v_scale, plain.flip_u)
     } else {
         (1.0, 1.0, false)
     };
-    // Geometry normalizes the texture before dividing its strip.
     let grid = plain.grid();
     let du = (size[0] as f32 * (1.0 / size[0] as f32)) * (1.0 / grid[0] as f32);
     let dv = (size[1] as f32 * (1.0 / size[1] as f32)) * v_scale * (1.0 / grid[1] as f32);
     let step = plain.draw_step([du, dv]);
-    // Native positive frames keep their offset past the strip; the resolved
-    // program and sampler, not the declared frame count, decide the sample.
     let offset = |frame: u64| frame_offset(plain, step, frame);
     let [ox, oy] = offset(u64::from(frame));
     let [nx, ny] = offset(u64::from(frame) + 1);
     let vertices = vertices(geometry, stretch, [du, dv], flip);
-    // The 0x70-byte upload is pooled in a 256-byte buffer.
     let mut c0 = vec![0.0; 64];
     c0[0] = 2.0 / extent[0] as f32;
     c0[5] = 2.0 / extent[1] as f32;
     c0[10] = 1.0;
     c0[12] = -1.0;
-    // World placement puts the bottom-left at the truncated queried
-    // height, with z=-1; the geometry keeps local z=1.
     c0[13] = -1.0;
     c0[14] = -1.0;
     c0[15] = 1.0;
     c0[16..20].fill(1.0);
     c0[20..24].copy_from_slice(&[ox, oy, nx, ny]);
-    // A shown play_on_show drawable's zero-dt tick writes frame 1.
-    // The draw uploads clamp((elapsed - (F-1)*SPF)/SPF, 0, 1), preserving
-    // a NaN source operand.
     if let Some(animation) = animated {
         let native_frame = if animation.play_on_show {
             i64::from(frame) + 1
@@ -82,8 +69,6 @@ pub(super) fn draw(
     }
     let mut defines = Vec::new();
     let mut textures = vec![(0, Some(texture))];
-    // MASKING is enabled only when its texture loaded; a texture failure
-    // leaves the unmasked program rather than a failed drawable.
     if !plain.masking_texture.is_empty()
         && let Some(mask) = optional(layers, &plain.masking_texture, decode)?
     {
@@ -91,8 +76,6 @@ pub(super) fn draw(
         textures.push((5, Some(mask)));
     }
     let mut constants = vec![(0, c0, std::iter::once(0..104).collect())];
-    // Unsupported animation sets are cleared; frame-animated sprites
-    // never select the overlay animation program.
     if animated.is_none() && !plain.legacy_lazy_load && !plain.animations.is_empty() {
         let program = shader_pipeline::artwork::program(layers, plain.effect()).map_err(invalid)?;
         let slots = program
@@ -104,7 +87,6 @@ pub(super) fn draw(
             .max()
             .unwrap_or(0);
         if program.technique("Up").is_some() && slots >= 5 {
-            // The pooled 0xA0-byte animation upload also exposes 256 bytes.
             let mut c1 = vec![0.0; 64];
             let mut known = vec![0..48, 80..128];
             let mut count = 0;
@@ -114,8 +96,6 @@ pub(super) fn draw(
                 }
                 let mask = optional(layers, &data.mask_file, decode)?;
                 let overlay = optional(layers, &data.texture_file, decode)?;
-                // A nonempty texture name overwrites dimensions;
-                // failed loads cache zero dimensions.
                 let overlay_size = overlay.as_ref().map_or_else(
                     || {
                         if data.texture_file.is_empty() {
@@ -128,8 +108,6 @@ pub(super) fn draw(
                 );
                 let values = at_rest(data, size, overlay_size);
                 c1[count * 20..count * 20 + 17].copy_from_slice(&values);
-                // The upload writes 0..48, blend/mode/clamp, and offset/type
-                // only for animation types 1..4. It never writes bytes 68..80.
                 let base = count as u32 * 80;
                 if (1..=4).contains(&data.kind) {
                     known.push(base + 48..base + 68);
@@ -162,7 +140,6 @@ pub(super) fn draw(
     })
 }
 
-/// The bottom-left, top-left, bottom-right, top-right vertex strip.
 fn vertices(geometry: [f32; 2], stretch: f32, uv: [f32; 2], flip: bool) -> [[f32; 5]; 4] {
     let height = stretch * geometry[1];
     let inset = -(height - geometry[1]) * 0.5;
@@ -177,7 +154,6 @@ fn vertices(geometry: [f32; 2], stretch: f32, uv: [f32; 2], flip: bool) -> [[f32
     ]
 }
 
-/// Select integer frame coordinates before scaling the step.
 fn frame_offset(plain: &Plain, step: [f32; 2], frame: u64) -> [f32; 2] {
     let [x, y] = match plain.frame_direction {
         0 => [frame, 0],
@@ -189,8 +165,6 @@ fn frame_offset(plain: &Plain, step: [f32; 2], frame: u64) -> [f32; 2] {
 }
 
 fn active_at_rest(data: &installed_content_core::gui::native::sprites::AnimationData) -> bool {
-    // Each record starts at (start=-1,last=0). The first draw enters Up (1),
-    // starting records triggered by its bit.
     (data.trigger_frames == 0 || data.trigger_frames & 2 != 0)
         && (data.frames == u32::MAX || data.frames & 2 != 0)
         && (data.looping || data.time >= 0.0 || data.time.is_nan())
@@ -201,8 +175,6 @@ pub(super) fn load(
     path: &[u8],
     decode: Decode,
 ) -> io::Result<dds::Texture> {
-    // Texture loading uses the loaded dimensions and device limits,
-    // without a decoded-texel ceiling.
     resources::stack_texture(layers, path, decode)?
         .map(|texture| texture.image)
         .map_err(|why| {
@@ -233,7 +205,6 @@ pub(super) fn optional(
     }
 }
 
-/// Animation values at t=0 and BlendFactor=1; scrolling, rotating, pulsing.
 fn at_rest(
     data: &installed_content_core::gui::native::sprites::AnimationData,
     size: [u32; 2],
@@ -249,8 +220,6 @@ fn at_rest(
             0.0
         }
     };
-    // Division/remainder remains even at t=0; zero duration can produce
-    // NaNs, which saturation passes to the shader.
     let angle_at_rest = || {
         let phase = (wrap() / data.time).clamp(0.0, 1.0);
         (phase + phase) * std::f32::consts::PI
@@ -387,7 +356,6 @@ mod tests {
                 )
                 .replace("return color;", "color.b = 0.0; return color;");
             std::fs::write(folder.0.join("gfx/FX/sample.shader"), shader).unwrap();
-            // Each stack reads its own program and retains its own rendered images.
             let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
             for direction in [0, 1, 2] {
                 let plain = Plain {
@@ -474,8 +442,6 @@ mod tests {
         let quad = vertices([7.5, 4.5], 1.0, [0.25, 0.75], false);
         assert_eq!(quad[0][1], 0.0);
         assert_eq!(quad[1][1], 4.5);
-        // Native placement is at int_h=4: the fractional half-pixel is above
-        // the top, rather than below the bottom.
         assert_eq!(4.0 - quad[1][1], -0.5);
     }
 

@@ -1,68 +1,37 @@
-//! CEquipmentProductionLicense: one granted equipment licence.
-//!
-//! The 0x58-byte object saves lended and required CIC, owner and giver tags,
-//! start date, parent variant and every produced variant in that order, without
-//! conditional field gates. Loading restores the same fields.
-//!
-//! The i64 `UNSERIALIZED_OPERAND` defaults to 100,000 and receives the creation argument. It is not
-//! serialized; its exact role remains unknown and capture preserves it raw.
 
 use crate::{Memory, cequipment_variant, cpdx_array::Array, read};
 use engine_sites::Rva;
 
-/// CEquipmentProductionLicense primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_b258);
-/// CEquipmentProductionLicense lended CIC, i32.
 pub const LENDED_CIC: usize = 0x08;
-/// CEquipmentProductionLicense required CIC, i32.
 pub const REQUIRED_CIC: usize = 0x0c;
-/// CEquipmentProductionLicense owning (licensee) raw country reference, u32.
 pub const OWNER: usize = 0x10;
-/// CEquipmentProductionLicense granting (licensor) raw country reference, u32.
 pub const GIVER: usize = 0x14;
-/// CEquipmentProductionLicense raw start-date hour, i32.
 pub const START_DATE: usize = 0x20;
-/// CEquipmentProductionLicense unserialized i64 operand.
 pub const UNSERIALIZED_OPERAND: usize = 0x30;
-/// CEquipmentProductionLicense produced-variant pointer array.
 pub const EQUIPMENT: usize = 0x38;
-/// Produced-variant array capacity, i32; the CPdxArray header at `EQUIPMENT` places it after the data pointer.
 #[cfg(test)]
 pub const EQUIPMENT_CAPACITY: usize = 0x40;
-/// Produced-variant array count, i32.
 #[cfg(test)]
 pub const EQUIPMENT_COUNT: usize = 0x44;
-/// Produced-variant pointer stride.
 pub const EQUIPMENT_STRIDE: usize = 0x08;
-/// CEquipmentProductionLicense parent CEquipmentVariant pointer.
 pub const PARENT: usize = 0x50;
-/// CEquipmentProductionLicense allocation size.
 pub const SIZE: usize = 0x58;
 
-/// One licence relation. `equipment` indexes the caller's handle arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw country reference of the licensee: the owner of this roster.
     pub owner: u32,
-    /// Stored position in the owner's array; the save writes the same order.
     pub ordinal: u32,
-    /// Raw country reference of the licensor.
     pub giver: u32,
     pub lended_cic: i32,
     pub required_cic: i32,
-    /// Native engine date hour; no calendar conversion happens here.
     pub start_date: i32,
-    /// Authenticated parent CEquipmentVariant handle, not a process pointer.
     pub parent: u64,
-    /// Unserialized raw i64 (`UNSERIALIZED_OPERAND`).
     pub operand_raw: i64,
     pub equipment_start: usize,
     pub equipment_len: usize,
 }
 
-/// Reads one licence, then its ordered produced-variant handles into the
-/// caller's arena. A list that does not fit yields `None`: the row is omitted
-/// and counted, never published with a shortened produced list.
 #[cfg(test)]
 pub(crate) fn read_row(
     memory: &impl Memory,

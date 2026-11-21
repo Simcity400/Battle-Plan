@@ -1,57 +1,29 @@
-//! CDiplomacyStatus, reached through CCountry's diplomacy pointer.
-//! These fields do not establish hourly consistency.
 
 use crate::{Memory, ccountry, cpdx_array::Array, cwar_goal, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// CDiplomacyStatus primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_e5e8);
-/// CDiplomacyStatus constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d9_6000);
-/// CDiplomacyStatus CRelationStatus pointer matrix, indexed by resolved country ordinal.
 pub const RELATIONS: usize = 0x08;
-/// Relation-matrix signed-i32 capacity in its array header.
 #[cfg(test)]
 pub const RELATION_CAPACITY: usize = 0x10;
-/// Relation-matrix signed-i32 count, sized from country ordinals
-/// without deduplicating country rows.
 #[cfg(test)]
 pub const RELATION_COUNT: usize = 0x14;
-/// CDiplomacyStatus owned CRelation pointer vector.
 pub const OWNED_RELATIONS: usize = 0x20;
-/// CDiplomacyStatus owned-vector signed-i32 capacity.
 #[cfg(test)]
 pub const OWNED_RELATION_CAPACITY: usize = 0x28;
-/// CDiplomacyStatus owned-vector signed-i32 count.
 #[cfg(test)]
 pub const OWNED_RELATION_COUNT: usize = 0x2c;
-/// Owned war-goal pointer array: the goals the country holds and has not yet
-/// used in a war. The diplomacy map mode tests the selected country's goals'
-/// recipients here.
 pub const OWNED_WARGOALS: usize = 0x68;
-/// Enemy raw-country-tag array, its count follows the capacity. Transport interdiction uses it;
-/// wartime rebuild fills it from opposing per-war lists. Reset clears it. It is not serialized.
 pub const ENEMY_COUNTRIES: usize = 0x98;
-/// Enemy-country signed count. Nonzero establishes war state before
-/// scanning relations in the ordinary mode.
 pub const ENEMY_COUNTRY_COUNT: usize = ENEMY_COUNTRIES + 0xc;
-/// Wartime-ally raw-tag array, its count follows the capacity. Rebuild adds nonenemy friendly
-/// countries and marks their relation status, then removes canonical slots that later wars list as
-/// enemies. It is not serialized.
 pub const WARTIME_ALLIES: usize = 0xb0;
-/// Ordered raw subject references used by faction descriptions.
 pub const SUBJECTS: usize = 0x170;
-/// Overlord country word, read as i32.
 pub const OVERLORD: usize = 0x188;
-/// Diplomacy status's owning country pointer, stored by its constructor.
 pub const COUNTRY: usize = 0x2d0;
-/// CDiplomacyStatus nullable CFaction pointer.
 pub const FACTION: usize = 0x2d8;
-/// CDiplomacyStatus capitulated byte, D60 accepts exactly 0 or 1; build_profile.rs:757.
 pub const CAPITULATED: usize = 0x328;
-/// Raw capitulation hour, read as i32.
 pub const CAPITULATED_HOUR: usize = 0x338;
-/// CDiplomacyStatus CCurrentAutonomyStatus pointer.
 pub const CURRENT_AUTONOMY_STATUS: usize = 0x3b8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -59,18 +31,10 @@ pub struct CapitulationRow {
     pub country: u32,
     pub capitulated: u8,
     pub capitulated_hour: i32,
-    /// The owned war goals' recipients ([`cwar_goal::RECIPIENT`]), in vector
-    /// order, at `recipients[war_goals_start..war_goals_start + len]`;
-    /// `None` when a goal could not be read, which refuses only this list.
     pub war_goals: Option<u32>,
     pub war_goals_start: usize,
 }
 
-/// Reads every canonical country's native diplomacy scalars and its owned
-/// war goals' recipients into `recipients`. Nullable save dates retain their
-/// engine sentinel, and byte flags retain their representation. A missing
-/// diplomacy root is unavailable, never a row filled with zeroes; a country
-/// whose recipients do not fit a fixed `recipients` is an unread row.
 pub fn walk_capitulation(
     memory: &impl Memory,
     base: usize,
@@ -140,9 +104,6 @@ pub fn walk_capitulation_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// A diplomacy status's owned war goals' recipients into `recipients[used..]`.
-/// `Ok(None)` when a fixed buffer is too short; `Ok(Some(None))` when a goal
-/// does not read, which refuses only this country's list.
 fn war_goals(
     memory: &impl Memory,
     base: usize,
@@ -202,8 +163,6 @@ fn read_capitulation(
             .checked_add(offset)
             .ok_or("capitulation address overflow")
     };
-    // The retired last surrender, faction join, legitimacy and exile leader count are not read, so
-    // they never refuse the row.
     let mut backlink = [0; 8];
     let mut capitulated = [0; 1];
     let mut capitulation = [0; 4];
@@ -325,8 +284,6 @@ mod tests {
 
     #[test]
     fn unreadable_retired_fields_never_refuse_the_row() {
-        // Legitimacy and the exile leader count (12 bytes), the last surrender and the faction
-        // join.
         struct Holes<'a>(SliceMemory<'a>);
         impl Memory for Holes<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -397,10 +354,6 @@ mod tests {
         ));
     }
 
-    /// Each country's owned war goals' recipients, in vector order; a goal
-    /// that does not authenticate refuses only its country's list, and a
-    /// fixed recipient buffer that is too short leaves the row unread. The
-    /// old row held no goals.
     #[test]
     fn owned_war_goal_recipients_follow_the_vector() {
         let mut bytes = fixture();
@@ -445,7 +398,6 @@ mod tests {
         assert_eq!((rows[0].war_goals, rows[0].war_goals_start), (Some(2), 0));
         assert_eq!(recipients, [7, 9]);
         assert_eq!((rows[1].war_goals, rows[1].war_goals_start), (Some(0), 2));
-        // A goal that is not a war goal refuses only that country's list.
         put(&mut bytes, 0xa200, &0_u64.to_le_bytes());
         assert_eq!(
             walk_capitulation(&memory(&bytes), BASE, GAME, &mut rows, &mut recipients),

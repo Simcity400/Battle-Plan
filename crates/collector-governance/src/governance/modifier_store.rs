@@ -1,15 +1,3 @@
-//! Each country's DynamicModifiers rows, held between the Governance job's
-//! hourly walks ([`crate::world_input_changes`]). A country's rows are
-//! carried, without reading its container, while it is the held country
-//! (same id and CCountry) and its certificate is the one taken before the
-//! held read: the dynamic modifier domain's sequence (add, renew, remove and
-//! the daily update notify the container's country) joined to the naval tree
-//! family's (`modifier recalculation`, the only country caller of the value
-//! recalculation, and `country appearance reset`, the only country caller of
-//! the clear). The daily update runs for every country, so every country is
-//! read once a day after it; an event reads only the countries it touched.
-//! A read is held only when the certificate stood still across it; a failed
-//! job forgets the store.
 use crate::world_input_changes::{self as changes, Changes};
 use engine_native::ccountry;
 use engine_stability::cdynamic_modifier_container as container;
@@ -17,8 +5,6 @@ use std::sync::{Mutex, MutexGuard, TryLockError};
 
 type Certificate = [(u64, u64); 2];
 
-/// One country's latest complete read: its rows with token and value
-/// offsets relative to its own arenas.
 struct Held {
     country: u32,
     pointer: usize,
@@ -26,11 +12,9 @@ struct Held {
     rows: Vec<container::Row>,
     tokens: Vec<u8>,
     values: Vec<i64>,
-    /// The walk that last saw the country.
     seen: u64,
 }
 
-/// Held countries, ascending by id.
 pub struct Store {
     held: Vec<Held>,
     walks: u64,
@@ -41,7 +25,6 @@ static STORE: Mutex<Store> = Mutex::new(Store {
     walks: 0,
 });
 
-/// One walk's use of the store: what each country does and the walk's counts.
 pub struct Walk<'a, C: Changes + ?Sized> {
     store: MutexGuard<'a, Store>,
     changes: &'a C,
@@ -49,15 +32,12 @@ pub struct Walk<'a, C: Changes + ?Sized> {
     read: u64,
 }
 
-/// One country's plan: its certificate before the read, and whether its
-/// held rows may be published.
 pub struct Plan {
     certificate: Option<Certificate>,
     pub carry: bool,
 }
 
 impl<'a, C: Changes + ?Sized> Walk<'a, C> {
-    /// The production store, or `None` while another walk holds it.
     pub fn begin(changes: &'a C) -> Option<Self> {
         Self::begin_in(&STORE, changes)
     }
@@ -65,7 +45,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
     pub fn begin_in(store: &'a Mutex<Store>, changes: &'a C) -> Option<Self> {
         let mut store = match store.try_lock() {
             Ok(store) => store,
-            // A walk that panicked left it: hold nothing it held.
             Err(TryLockError::Poisoned(poisoned)) => {
                 let mut store = poisoned.into_inner();
                 store.held.clear();
@@ -88,7 +67,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
             .binary_search_by_key(&country, |held| held.country)
     }
 
-    /// Before `country`'s container is read.
     pub fn plan(&mut self, country: ccountry::Country) -> Plan {
         let certificate = self.changes.country(country.pointer);
         let walk = self.store.walks;
@@ -105,8 +83,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         Plan { certificate, carry }
     }
 
-    /// A carrying plan's rows, appended at `first`, `text` and `values`
-    /// (their offsets stay relative, as a walk's); the walk's lengths.
     #[allow(clippy::too_many_arguments)]
     pub fn carry(
         &mut self,
@@ -153,9 +129,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         }
     }
 
-    /// After a fresh read of `country`: its rows, token bytes and values, when
-    /// the read completed. The read is held when the certificate stood still
-    /// across it.
     pub fn read(
         &mut self,
         country: ccountry::Country,
@@ -195,8 +168,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         }
     }
 
-    /// The walk ended; `census` when it visited every live country, whose
-    /// unvisited held countries are then gone.
     pub fn finish(mut self, census: bool) {
         if census {
             let walk = self.store.walks;
@@ -206,7 +177,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
     }
 }
 
-/// An owned copy; `None` when it cannot be allocated, and nothing is held.
 fn copy<T: Copy>(values: &[T]) -> Option<Vec<T>> {
     let mut copied = Vec::new();
     engine_allocation::reserve(&mut copied, values.len()).ok()?;
@@ -239,8 +209,6 @@ mod tests {
         }
     }
 
-    /// A country none of its writers touched is carried; a write to its
-    /// container reads it afresh, and a read across a write is not held.
     #[test]
     fn a_country_is_carried_until_a_writer_touches_its_container() {
         let changes = Isolated::new();
@@ -269,11 +237,9 @@ mod tests {
         };
         assert_eq!(hour(&[row(3)], false), None, "first read");
         assert_eq!(hour(&[row(9)], false), Some(vec![row(3)]));
-        // The daily update decremented its days: read afresh.
         changes.write_country(country.pointer);
         assert_eq!(hour(&[row(2)], false), None);
         assert_eq!(hour(&[row(9)], false), Some(vec![row(2)]));
-        // A writer ran during the read: published, not held.
         changes.write_country(country.pointer);
         assert_eq!(hour(&[row(1)], true), None);
         assert_eq!(hour(&[row(1)], false), None);

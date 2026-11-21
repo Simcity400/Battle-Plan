@@ -1,4 +1,3 @@
-//! Shared movement content, division timing derivation and the one hourly ETA cache.
 use crate::{map::tables::rows, table_access::TokenKeys};
 use installed_content_core::{
     movement::MovementDefines, movement::MovementMap, movement::RailMovementDefines,
@@ -23,15 +22,8 @@ use std::{
 mod worker;
 pub use worker::WorkerEtas;
 
-/// The branch and recorded hour one cached derivation is for.
 pub type Key = (replay_data::BranchId, replay_data::Hour);
 
-/// The hours' ETAs, so no hour is derived twice: the latest derived or asked for, and every
-/// other while an hour in flight holds it.
-///
-/// The window thread builds the counter layer for the playhead while workers
-/// build the close-zoom models for the hours ahead, so the hours in flight are
-/// not one but several and a single slot thrashes between them.
 #[derive(Default)]
 pub struct EtaCache {
     entries: Mutex<Held>,
@@ -44,7 +36,6 @@ struct Held {
 }
 
 impl Held {
-    /// `key`'s ETAs, then the latest.
     fn get(&mut self, key: Key) -> Option<Arc<Etas>> {
         if let Some((at, etas)) = &self.latest
             && *at == key
@@ -72,11 +63,6 @@ impl Held {
 }
 
 impl EtaCache {
-    /// This key's entry, building and inserting it if the cache lacks one.
-    ///
-    /// `build` runs with **no lock held**, so the window thread never waits on
-    /// a worker deriving a different hour. Two threads can therefore build the
-    /// same key at once; the first to insert wins and both share its result.
     pub fn get_or_insert_with<E>(
         &self,
         key: Key,
@@ -94,7 +80,6 @@ impl EtaCache {
         Ok(etas)
     }
 
-    /// This frame's ETAs, derived from `movement` if the cache lacks them.
     pub fn etas(
         &self,
         frame: &DecodedFrame,
@@ -108,30 +93,20 @@ impl EtaCache {
     }
 }
 
-/// How many moving divisions have an arrival estimate, and why the others do not.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    /// Moving divisions with an arrival estimate.
     pub estimated: usize,
-    /// Moving divisions without one, counted by the estimate's refusal.
     pub refused: BTreeMap<Arc<str>, usize>,
-    /// Divisions whose first-edge progress (the arrow fill target) cannot be rebuilt.
     pub progress_refused: usize,
-    /// Moving divisions whose route the content map cannot place; they stand
-    /// on their province.
     pub routes_unresolved: usize,
-    /// Later hops of placed routes that the movement polyline skips: no content
-    /// neighbour of the province before them, or no anchor.
     pub route_hops_skipped: usize,
 }
 
 impl Report {
-    /// Moving divisions without an arrival estimate.
     pub fn refused_total(&self) -> usize {
         self.refused.values().sum()
     }
 
-    /// The dump report's line, or `None` for an hour with no movement at all.
     pub fn line(&self) -> Option<String> {
         let refused = self.refused_total();
         (self.estimated != 0
@@ -161,30 +136,19 @@ impl Report {
     }
 }
 
-/// What the movement timing reads from the recorded content stack, loaded once
-/// per document: the movement map and the movement `NDefines`
-/// ([`MovementDefines::read`]), so a mod's defines apply.
 #[derive(Debug)]
 pub struct MovementContent {
     pub map: MovementMap,
     pub defines: Defines,
     pub rail: Result<RailMovementDefines, String>,
     pub task_force_terrain: Result<TerrainSpeedContent, String>,
-    /// The land terrain categories' own unit adjuster movement, by one-based terrain
-    /// index, and each province's strategic region: the movement speed's terrain and
-    /// region weather terms.
     pub land: Result<LandSpeedContent, String>,
 }
 
-/// The content the land movement speed reads beyond the movement map.
 #[derive(Debug)]
 pub struct LandSpeedContent {
-    /// Each terrain category's common unit adjuster movement, in database order: entry
-    /// `i` is terrain index `i + 1`.
     pub terrain_movement: Vec<i64>,
-    /// Each province's strategic region id.
     pub regions: BTreeMap<u32, u32>,
-    /// The sub-unit database: the special-forces share and the armour term read it.
     pub sub_units: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
 }
 
@@ -258,8 +222,6 @@ impl MovementContent {
     }
 }
 
-/// Shares the existing typed terrain database. Mission/range defines cannot
-/// make a task-force departure adjuster unavailable.
 #[derive(Debug)]
 pub struct TerrainSpeedContent {
     terrain: Arc<TerrainDefinitions>,
@@ -273,9 +235,6 @@ impl TerrainSpeedContent {
         regions: &BTreeMap<u32, StrategicRegion>,
         subunits: Fact<TokenKeys>,
     ) -> Self {
-        // The generic terrain-validity byte is 1 for real categories.
-        // Unknown or absent authored terrain is null and uses the five-byte fallback key.
-        // The authored naval_terrain boolean is independent of that validity byte.
         let fallback = terrain.category(b"ocean");
         let regions = regions
             .iter()
@@ -305,8 +264,6 @@ impl TerrainSpeedContent {
             .get(&region)
             .ok_or_else(|| format!("fresh naval ETA region {region} has no content template"))?;
         let Some(at) = *selected else {
-            // The terrain database supplies a null terrain; its common unit adjuster
-            // initializes all three values to zero.
             return Ok(0);
         };
         let terrain = &self.terrain.categories[at];
@@ -324,8 +281,6 @@ impl TerrainSpeedContent {
         else {
             return Ok(common);
         };
-        // Skip an authored class whose sub-unit resolves to null.
-        // Registered repeated class tokens keep their first bucket.
         if self
             .subunits
             .as_ref()
@@ -340,14 +295,10 @@ impl TerrainSpeedContent {
             .get(at)
             .ok_or("fresh naval ETA terrain class adjuster is unavailable")?
             .movement;
-        // Merge common values into each class after load.
         Ok(common.wrapping_add(own))
     }
 }
 
-/// The province operands an estimate reads: the content terrain, whose flags
-/// decide the embark edge. `None` for a province the content
-/// map lacks, which an estimate refuses as missing geometry.
 pub fn operands(map: &MovementMap, province: u32) -> Option<ProvinceOperands> {
     map.terrain(province).map(|terrain| ProvinceOperands {
         terrain_flags: terrain.flags,
@@ -356,7 +307,6 @@ pub fn operands(map: &MovementMap, province: u32) -> Option<ProvinceOperands> {
     })
 }
 
-/// The hour's recorded speed-term operands ([`replay_derive::eta_derive::frame_terms`]).
 pub use replay_derive::eta_derive::frame_terms::FrameTerms as HourTerms;
 
 impl SubUnitContent for MovementContent {
@@ -404,41 +354,28 @@ impl Geography for MovementContent {
     }
 }
 
-/// One hour's arrival estimates and first-edge progress per division handle.
 #[derive(Clone, Debug, Default)]
 pub struct Etas {
     by_division: Pairs,
-    /// Why a division the hour moves has no estimate.
     estimate_gaps: BTreeMap<u64, Arc<str>>,
     progress: BTreeMap<u64, i64>,
-    /// Why a division the hour moves has no progress.
     progress_gaps: BTreeMap<u64, &'static str>,
     report: Report,
 }
 
-/// Why a division without a moving route has no estimate.
 const NO_ROUTE: &str = "it has no ordinary route this hour";
-/// Why no moving division has an estimate or progress without content.
 const NO_CONTENT: &str = "the content's movement map (terrain and movement defines) failed to load";
-/// Why a moving division absent from the hour's census has neither.
 const NO_LOCATION: &str = "it has no Divisions row this hour";
 
 impl Etas {
-    /// `movement` is `None` when the content's movement map failed to load:
-    /// every moving division then has neither progress nor an estimate.
     pub fn read(frame: &DecodedFrame, movement: Option<&MovementContent>) -> io::Result<Self> {
         derive(frame, movement)
     }
 
-    /// This division's estimated `(next_remaining, destination_remaining)`,
-    /// native signed fixed5 hours, or `None` where the hour has none.
     pub fn get(&self, division: u64) -> Option<(i64, i64)> {
         self.by_division.get(&division).copied()
     }
 
-    /// The same estimate, or why the hour has none: for a moving division the
-    /// replay estimate's own refusal (for example a recording that holds no
-    /// `DivisionMovement.base_speed`).
     pub fn estimate(&self, division: u64) -> Result<(i64, i64), &str> {
         match self.by_division.get(&division) {
             Some(pair) => Ok(*pair),
@@ -449,10 +386,6 @@ impl Etas {
         }
     }
 
-    /// Native first-edge movement fraction in signed fixed5, sentinel and all, or why the hour
-    /// cannot rebuild it. Zero for an empty route. In the game it drives the movement arrow's fill
-    /// target of a selected own unit (see the module docs) and the naval invasion progress in a
-    /// combat's division hover; a counter never reads it.
     pub fn progress(&self, division: u64) -> Result<i64, &'static str> {
         match self.progress.get(&division) {
             Some(progress) => Ok(*progress),
@@ -468,7 +401,6 @@ impl Etas {
         &self.report
     }
 
-    /// Records why `division` has no estimate; equal reasons share one string.
     fn refuse(&mut self, division: u64, reason: &str) {
         let reason = match self.report.refused.get_key_value(reason) {
             Some((reason, _)) => Arc::clone(reason),
@@ -479,14 +411,11 @@ impl Etas {
     }
 }
 
-/// `(next_remaining, destination_remaining)` per division handle.
 type Pairs = BTreeMap<u64, (i64, i64)>;
 
-/// Every moving division's progress and estimate, or why it has none.
 fn derive(frame: &DecodedFrame, content: Option<&MovementContent>) -> io::Result<Etas> {
     let movement = rows::<tables::DivisionMovement>(frame)?;
     let mut etas = Etas::default();
-    // A division with no route stands still: progress zero needs no content.
     for row in movement.rows().iter().filter(|row| row.path_total == 0) {
         match eta_derive::division_progress(row, None, |_| None, |_, _| None, &Defines::default()) {
             Some(value) => {
@@ -548,7 +477,6 @@ fn derive(frame: &DecodedFrame, content: Option<&MovementContent>) -> io::Result
     Ok(etas)
 }
 
-/// One moving division's estimate, as [`Etas::read`] makes each.
 fn estimate_with(row: &DivisionMovementRow, division: &DivisionRow, terms: &HourTerms<'_>, content: &MovementContent) -> Result<(i64, i64), String> {
     let (map, defines) = (&content.map, &content.defines);
     let province = |id| operands(map, id);
@@ -558,9 +486,6 @@ fn estimate_with(row: &DivisionMovementRow, division: &DivisionRow, terms: &Hour
     })
 }
 
-/// One division's estimate as [`Etas::get`] gives it from the hour's whole [`Etas`]: `None` for a
-/// division without a route, without content, without its Divisions row (`division`), or whose
-/// estimate the hour refuses. For a caller that reads a few divisions, not the world.
 pub fn estimate_one(row: &DivisionMovementRow, division: Option<&DivisionRow>, terms: &HourTerms<'_>, content: Option<&MovementContent>) -> Option<(i64, i64)> {
     if row.path_total == 0 {
         return None;
@@ -568,9 +493,6 @@ pub fn estimate_one(row: &DivisionMovementRow, division: Option<&DivisionRow>, t
     estimate_with(row, division?, terms, content?).ok()
 }
 
-/// The counter arrival line's duration for a division: the
-/// estimate to its destination for the viewing country's own unit and to its
-/// next province otherwise, or the estimate's refusal by name.
 pub fn arrival(etas: &Etas, division: u64, ours: bool) -> Result<i64, String> {
     let (next, destination) = etas.estimate(division).map_err(str::to_owned)?;
     Ok(if ours { destination } else { next })

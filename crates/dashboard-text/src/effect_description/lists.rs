@@ -5,7 +5,6 @@ use crate::triggers::Eval;
 mod tests;
 
 impl Renderer<'_, '_, '_> {
-    /// Native attachment follows the last added child, not the last lexical field.
     fn adds_child(&self, item: &Item) -> bool {
         self.context
             .content
@@ -47,7 +46,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     pub(super) fn limit<'a>(&self, items: &'a [Item]) -> Result<&'a [Item], String> {
-        // reads another limit only while the embedded trigger has no children.
         let evaluator = self.evaluator()?;
         for body in items
             .iter()
@@ -111,8 +109,6 @@ impl Renderer<'_, '_, '_> {
         Some(String::new())
     }
 
-    // Probe each own description, then its child count.
-    // These probes are deliberately not replaced by a cached body/newline count.
     pub(super) fn multiple(&mut self, items: &[Item], scopes: Scopes) -> bool {
         let children = self.attached(items, false);
         if let [(item, branches)] = children.as_slice() {
@@ -138,7 +134,7 @@ impl Renderer<'_, '_, '_> {
 
     fn multiple_child(&mut self, item: &Item, branches: &[&Item], scopes: Scopes) -> bool {
         if self.iterator_multiple(item) {
-            return true; // also random selectors.
+            return true;
         }
         match self.effect_class(item).map(|class| class.vtable) {
             Some(0x1427f3a70) => field(children(item), "tooltip")
@@ -148,8 +144,6 @@ impl Renderer<'_, '_, '_> {
                 .if_chain(item, branches, scopes, 0, true)
                 .is_some_and(|text| !text.is_empty()),
             _ => {
-                // Base and random scope in array use this child projection.
-                // Empty overrides still inherit it.
                 let body = self.effect_children(item);
                 self.multiple(&body, scopes)
             }
@@ -168,7 +162,6 @@ impl Renderer<'_, '_, '_> {
     }
 }
 
-// The control/list own-description virtual is empty.
 pub(super) fn own() -> Result<String, String> {
     Ok(String::new())
 }
@@ -207,7 +200,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         indent: usize,
     ) -> Result<String, String> {
-        // Traversal backstop: changing THIS must not exhaust our stack.
         if self.scripted_stack.len() >= 64 {
             return Err(
                 "scripted-effect description depth exceeds the 64-level stack limit".into(),
@@ -237,7 +229,6 @@ impl Renderer<'_, '_, '_> {
             .as_ref()
             .map_err(Clone::clone)?;
         self.scripted_stack.push((name, scopes.this));
-        // scripted effect's boolean operand controls execution, not description.
         let text = self.group(body, scopes, indent);
         self.scripted_stack.pop();
         Ok(text)
@@ -254,7 +245,6 @@ impl Renderer<'_, '_, '_> {
             .and_then(|item| item.value.scalar())
             .unwrap_or(b"0");
         let chance = crate::triggers::fixed_round(self.scoped_value(value, scopes)?) as i32;
-        // rounds percent to an i32, then divides its fixed5 by 100.
         let mut text = "   ".repeat(indent);
         text.push_str(&self.localised(
             b"RANDOM_EFFECT",
@@ -286,7 +276,6 @@ impl Renderer<'_, '_, '_> {
         let members = installed_content_core::effect_keys::random_list_members(item)?;
         let mut weights = Vec::new();
         let mut total = 0_i64;
-        // Exists before Evaluate; modifiers apply in authored order.
         for member in &members {
             let operand = member.key.as_deref().unwrap_or_default();
             let mut weight = if self
@@ -338,8 +327,6 @@ impl Renderer<'_, '_, '_> {
             .cursor
             .ok_or("random_list needs an event graph cursor")?;
         let seed = self.graph.borrow().scopes[cursor];
-        // resets both words before each member. The final member's
-        // description leaves its draws; explicit execution seed is not used.
         for (member, weight) in members.iter().zip(weights) {
             let chance = if matches!(weight, i64::MAX | i64::MIN) || weight == i64::MIN + 1 {
                 0xffff_ffff
@@ -395,7 +382,6 @@ impl Renderer<'_, '_, '_> {
         else {
             return Ok(String::new());
         };
-        // decodes into a default-constructed scope, not a caller copy.
         let object = match target {
             Scope::Country(id) | Scope::CountryLeader { country: id, .. } => {
                 crate::scripted_text::EventObject::Country(id)
@@ -426,7 +412,6 @@ impl Renderer<'_, '_, '_> {
             selected.from = caller.from;
             selected.prev = crate::scripted_text::Link::Scope(cursor);
             let at = graph.scopes.len();
-            // default-constructs, then copies ROOT/FROM and sets PREV.
             if selected.root == crate::scripted_text::Link::Itself {
                 selected.root = crate::scripted_text::Link::Scope(cursor);
             }
@@ -459,7 +444,7 @@ impl Renderer<'_, '_, '_> {
                 .value
                 .scalar()
                 .ok_or("meta_effect text must be read as raw text")?,
-            None => b"".as_slice(), // Empty default script in meta effect.
+            None => b"".as_slice(),
         };
         let mut parameters = BTreeMap::new();
         for parameter in fields
@@ -488,7 +473,7 @@ impl Renderer<'_, '_, '_> {
             } else {
                 installed_content_core::fixed5::fixed5_to_string(self.scoped_value(value, scopes)?, -1)
             };
-            parameters.entry(name.to_vec()).or_insert(value); // The first exact name match.
+            parameters.entry(name.to_vec()).or_insert(value);
         }
         let mut generated = Vec::new();
         let mut remaining = raw;

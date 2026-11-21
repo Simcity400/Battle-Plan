@@ -1,9 +1,5 @@
-//! Authenticated owned peace-action operands before history destruction.
-//! Concrete allocation sizes and vtables belong to each action's struct file.
 
-/// Raw action token, initialized at construction and serialized.
 pub const TOKEN: usize = 0x08;
-/// Cached action type-name string with saved overrides, distinct from contextual demand labels.
 pub const CACHED_NAME: usize = 0x10;
 
 pub(crate) fn cached_name(
@@ -18,17 +14,12 @@ pub(crate) fn cached_name(
 
 use crate::{Memory, cstate_peace_action as state, read};
 
-/// Raw country references initialized at construction and serialized.
 pub const TAKER: usize = 0x30;
 pub const GIVER: usize = 0x34;
 pub const NEGOTIATOR: usize = 0x38;
-/// Signed status; settlement rebuilding excludes exactly three and four.
 pub const STATUS: usize = 0x3c;
-/// Signed cost, serialized without fixed-point conversion.
 pub const COST: usize = 0x40;
 
-/// Native layouts, independent of the token spelling. Unknown vtables fail
-/// the conference rather than making a new token look like an empty deal.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Form {
@@ -53,10 +44,8 @@ pub struct Row {
     pub flags: Option<[u8; 4]>,
     pub country_operand: Option<u32>,
     pub puppet_auxiliary: Option<u64>,
-    /// None for a non-navy form, Some(0) for the native null selection.
     pub ship: Option<u64>,
     pub ratio: Option<i64>,
-    /// Pinned native image literal, including its terminator.
     pub name_key: Option<[u8; crate::ctake_navy_peace_action::LABEL_LITERAL_BYTES]>,
 }
 
@@ -70,7 +59,6 @@ impl Row {
     }
 }
 
-/// The authenticated action's form and its header.
 fn identity(
     memory: &impl Memory,
     base: usize,
@@ -104,7 +92,6 @@ fn identity(
     Ok((form, header))
 }
 
-/// Whether settlement keeps the authenticated action, by status alone, reading no other operand.
 pub fn included_in_settlement(
     memory: &impl Memory,
     base: usize,
@@ -118,8 +105,6 @@ pub fn included_in_settlement(
     Ok(kept_in_settlement(status))
 }
 
-/// Copy only proven fields. Authentication precedes form-specific reads;
-/// tokens are retained without a numeric-token or spelling whitelist.
 pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
     use crate::{
         cforce_government_action as government, cliberate_country_action as liberate,
@@ -131,8 +116,6 @@ pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
             .checked_add(offset)
             .ok_or("peace action address overflow")
     };
-    // Authenticate first, then copy all operands in one guarded span. The
-    // government form ends before the puppet auxiliary; never read past it.
     let end = match form {
         Form::TakeState => state::FLAGS + 4,
         Form::Liberate => liberate::LIBERATE + 4,

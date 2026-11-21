@@ -1,9 +1,3 @@
-//! Inputs of the 3D land-model selectors that the game computes on demand
-//! while drawing: country-local sub-unit clones whose requirements differ from
-//! their global definition, every hour (a country no hooked writer touched is
-//! carried, [`local_store`]), and every country's equipment rosters, daily.
-//! Every country's persistent unit-bonus list, which the template designer's
-//! stat panel reads, is walked whole in the rosters' daily slot.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -44,9 +38,6 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    /// Three independent live equipment rosters provide their own counts,
-    /// with duplicates retained; the unit-bonus lists, their entries and
-    /// every nested output its own.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -104,7 +95,6 @@ impl Captured {
         self.bonuses
             .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
@@ -169,9 +159,6 @@ impl Captured {
         self.capture_carried(memory, base, game_state, hour, force_full, None)
     }
 
-    /// One hour's tables. With `store`, CountryLocalSubunits carries each
-    /// country the store and the local sub-unit family certify; without it
-    /// every country is read.
     pub fn capture_carried(
         &mut self,
         memory: &impl Memory,
@@ -309,8 +296,6 @@ impl Captured {
             },
         )
     }
-    /// Every entry's label, targets, grants and stats must lie inside the
-    /// captured arenas; an escape refuses the table.
     fn bonus_table(&self) -> TableView {
         let (Some(targets), Some(grants), Some(stats), Some(labels)) = (
             self.bonus_targets.first.get(..self.bonus_targets.len),
@@ -376,7 +361,6 @@ impl Captured {
     }
 }
 
-/// The values `range` names, when it lies inside `values`.
 fn span<T>(values: &[T], range: Span) -> Option<&[T]> {
     range
         .start
@@ -392,7 +376,6 @@ mod tests {
     use super::*;
     use replay_data::rows::TableRows;
 
-    /// CountryLocalSubunits walks every hour; the rosters only on their slot.
     #[test]
     fn each_table_walks_on_its_own_cadence() {
         let memory = engine_native::memory::SliceMemory {
@@ -467,8 +450,6 @@ mod tests {
         const DATABASE: usize = 0x11000;
         let variant = FIRST + COUNTRIES * STRIDE;
         let pointers = variant + 0x100;
-        // Every country's list holds three entries; the first has one exact
-        // target with one nonzero stat word.
         let entries = pointers + 64 * 8;
         let definition = entries + 3 * unit_bonuses::STRIDE;
         let exact = definition + 0x400;
@@ -651,7 +632,6 @@ mod tests {
                 value_raw: 25_000
             }]
         );
-        // A span outside the captured arena refuses the table.
         let stats = captured.bonus_stats.len;
         captured.bonus_stats.len = stats - 1;
         assert!(matches!(
@@ -659,8 +639,6 @@ mod tests {
             TableView::Unavailable { .. }
         ));
         captured.bonus_stats.len = stats;
-        // Demand grows with no country-count change or presize poll. The
-        // original changed header supplies enough space in this same capture.
         array(
             &mut bytes,
             FIRST + 0x1000 + cproduction_status::BEST_VARIANT_CANDIDATES,

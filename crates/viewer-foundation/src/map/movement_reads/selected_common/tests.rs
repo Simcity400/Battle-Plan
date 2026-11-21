@@ -1,4 +1,3 @@
-//! Synthetic selected movement fixtures.
 use super::super::test_support::{assets, frame, put};
 use super::*;
 use replay_data::{
@@ -70,7 +69,6 @@ fn selected_current_subject_pointer_overrides_historical_subject_dates() {
             ..Default::default()
         }],
     );
-    // Complete current pointer domain has no pair despite historical dates.
     for direct in [false, true] {
         assert_eq!(subject_query(&frame, direct), Ok(false));
     }
@@ -106,7 +104,6 @@ fn selected_current_subject_pointer_overrides_historical_subject_dates() {
             ..Default::default()
         }],
     );
-    // The held war pointer grants disclosure before future-date checks.
     for direct in [false, true] {
         assert_eq!(subject_query(&frame, direct), Ok(true));
     }
@@ -197,7 +194,6 @@ fn selected_railway_gates_use_raw_count_and_first_index_without_sorted_pairs() {
             .levels = Some(vec![0, 0, 99])
     });
     assert_eq!(railway_answers(&frame, 2), (Ok(true), Ok(false)));
-    // A native zero pair count is independent of a positive indexed level.
     change_railway(&mut frame, |row| {
         let packet = row.selection.require_mut("test").unwrap().as_mut().unwrap();
         packet.pair_count = Some(0);
@@ -229,7 +225,6 @@ fn selected_railway_native_early_returns_do_not_demand_later_operands() {
     });
     assert_eq!(railway_answers(&frame, 2), (Ok(false), Ok(false)));
     change_railway(&mut frame, |row| row.selection = Recorded::NotRecorded);
-    // No content neighbour returns before any info/table/packet demand.
     assert_eq!(railway_answers(&frame, 99).1, Ok(false));
     put::<tables::RailCooldowns>(&mut frame, Vec::new());
     assert_eq!(railway_answers(&frame, 2), (Ok(false), Ok(false)));
@@ -382,8 +377,6 @@ fn query(frame: &DecodedFrame, raw_target: u32) -> Fact<StraitFleet> {
 fn selected_strait_uses_direct_war_with_empty_symmetric_war_table() {
     let frame = strait_frame();
     assert!(frame.complete::<tables::WarRelations>().unwrap().is_empty());
-    // Both logical-owner war and roster-owner disclosure are independently
-    // active in the recorded direction; complete absent viewer intel is zero.
     assert_eq!(query(&frame, 20), Ok(StraitFleet::Unseen));
 }
 
@@ -494,9 +487,6 @@ fn selected_strait_retains_raw_zero_alias_in_logical_owner_war_gate() {
                 active: true,
             }];
         }
-        // Logical-owner war and roster-owner disclosure use separate queries. An
-        // active matrix-zero war veto returns before target, subject or military-access
-        // operands are demanded.
         row.forward_visibility = Some(ReverseZeroVisibilityInputs {
             war: Some([1, 0]),
             ..Default::default()
@@ -505,8 +495,6 @@ fn selected_strait_retains_raw_zero_alias_in_logical_owner_war_gate() {
     }
     put::<tables::CountryCounterInputs>(&mut frame, rows.clone());
     assert_eq!(query(&frame, 12), Ok(StraitFleet::Unseen));
-    // Historical absence uses legacy zero_war; a current refusal never does.
-    // Logical-owner directed war cannot backfill either disclosure input.
     for (input, zero_war, expected) in [
         (
             Recorded::NotRecorded,
@@ -648,7 +636,6 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
         );
     };
     let mut frame = strait_frame();
-    // Provinces 1 and 2 share controller area 1; province 3 is area 3.
     put::<tables::Provinces>(
         &mut frame,
         [(1, 1), (2, 1), (3, 3)]
@@ -674,28 +661,16 @@ fn selected_transport_follows_areas_and_naval_bases_and_refuses_past_them() {
     );
     bases(&mut frame, &[2]);
     let army = [Unit::Division(FORCE)];
-    // A complete base census proves a target without a naval base has no
-    // transport fragment, before any retired operand is demanded.
     for target in [1, 3] {
         assert_eq!(check(&frame, &army, target), none());
     }
-    // A selection with no army or railway gun has none either.
     assert_eq!(check(&frame, &[Unit::TaskForce(FORCE)], 2), none());
-    // The selected transport line compares controller areas before its source==target guard; the
-    // unit standing at the target has no fragment.
     assert_eq!(check(&frame, &army, 2), none());
-    // From a base in the same area the transport admission passes its naval-base branches
-    // and reaches the retired transfer operand.
     bases(&mut frame, &[1, 2]);
     assert_eq!(check(&frame, &army, 1), Err(TRANSPORT_RETIRED.into()));
-    // Without a source base, a target in the same area needs no transport.
     bases(&mut frame, &[1, 3]);
     assert_eq!(check(&frame, &army, 1), none());
-    // Another area: a land source without a base asks the army's retired
-    // real-template coastal test.
     assert_eq!(check(&frame, &army, 3), Err(TRANSPORT_RETIRED.into()));
-    // A railway gun there is rejected by name, in the secondary output that
-    // participates only in the selected tooltip's length gate.
     put::<tables::RailwayGunCounterInputs>(
         &mut frame,
         vec![RailwayGunCounterInputRow {
@@ -898,7 +873,7 @@ fn selected_naval_duration_refuses_missing_rows_tables_defines_and_unknown_class
         rows: TableRows::NavalCombatDetails(vec![row]),
         missing: 1,
     };
-    assert_eq!(query(&frame, Ok(7), 2), Ok(true)); // This row's duration is complete.
+    assert_eq!(query(&frame, Ok(7), 2), Ok(true));
     *frame.tables[TableId::NavalCombatDetails.index()] = TableView::Truncated {
         rows: TableRows::NavalCombatDetails(Vec::new()),
         missing: 1,
@@ -918,8 +893,6 @@ fn selected_naval_duration_refuses_missing_rows_tables_defines_and_unknown_class
     );
 }
 
-/// The transport admission's access stage reads the unit's logical owner and the target's
-/// controller through the hour's relations: refused, then admitted by military access.
 #[test]
 fn selected_transport_access_stage_reads_the_recorded_relations() {
     use replay_data::{rows::DivisionRow, rows::ProvinceRow, rows::RelationLinkRow};
@@ -964,7 +937,6 @@ fn selected_transport_access_stage_reads_the_recorded_relations() {
     });
     put::<tables::RelationLinks>(&mut frame, links);
     assert_eq!(access(&frame), Ok(true));
-    // An unknown controller refuses by name, never false.
     put::<tables::Provinces>(&mut frame, Vec::new());
     assert!(access(&frame).is_err());
 }

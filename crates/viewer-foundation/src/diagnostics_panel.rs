@@ -1,9 +1,6 @@
-//! The data-limitation lines a map's diagnostics box lists.
 use eframe::egui;
 use std::collections::BTreeMap;
 
-/// Paints `warnings` in the scroll area a map's diagnostics box opens for
-/// them, at most `max_height` tall; longer lists scroll.
 pub fn warning_list(ui: &mut egui::Ui, warnings: &[String], max_height: f32) {
     egui::ScrollArea::vertical()
         .max_height(max_height)
@@ -17,8 +14,6 @@ pub fn warning_list(ui: &mut egui::Ui, warnings: &[String], max_height: f32) {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::*;
-    /// Collects the warnings as a map frame does and paints them through the
-    /// diagnostics box's list.
     pub fn assert_diagnostics(collect: impl FnOnce() -> Vec<String>, expected: &[String]) {
         let ctx = egui::Context::default();
         let warnings = collect();
@@ -32,7 +27,6 @@ pub mod test_support {
             },
             |ui| warning_list(ui, &warnings, 800.0),
         );
-        // These frames inspect text and shapes without uploading their textures.
         output.textures_delta.clear();
         let labels: Vec<_> = output
             .shapes

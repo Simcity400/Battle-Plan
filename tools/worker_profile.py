@@ -45,7 +45,6 @@ import numpy as np
 HEADER = struct.Struct("<8s4I3Q2I16s2IQ")
 FOOTER = struct.Struct("<8sQQ")
 MAGIC = b"HOI4WSMP"
-# The game image's preferred load base (its PE ImageBase).
 GAME_PREFERRED_BASE = 0x140000000
 END_MAGIC = b"WSMPEND!"
 VERSION = 1
@@ -150,8 +149,6 @@ class SampleFile:
                                   shape=(self.count,)) if self.count
                         else np.empty(0, dtype=RECORD_DTYPE))
         if self.truncated:
-            # A crash can interrupt trailer writing as well as record writing.
-            # Keep the valid fixed-record prefix, never interpret JSON as a sample.
             for start in range(0, self.count, CHUNK_RECORDS):
                 bad = np.flatnonzero(invalid_records(self.records[start:start + CHUNK_RECORDS]))
                 if bad.size:
@@ -312,7 +309,7 @@ class RustV0:
                 return parent + "::<" + ", ".join(args) + ">"
             if kind in "MX":
                 self.disambiguator()
-                self.path()  # The impl's containing path is encoded but not displayed.
+                self.path()
                 target = self.type()
                 trait = " as " + self.path() if kind == "X" else ""
                 return "<" + target + trait + ">"
@@ -427,9 +424,6 @@ class Function:
         return self.module + ("" if self.name.startswith("+") else "!") + self.name
 
 
-# Addresses without a symbol are counted per module, not per address: a file
-# with many distinct unresolved instruction pointers would otherwise keep one
-# aggregate entry for each of them.
 UNKNOWN_MODULE = Function("unknown", 0, "<outside any module>")
 
 
@@ -441,7 +435,6 @@ def unsymbolized(module: str, base: int) -> Function:
     return Function(module, base, f"<unsymbolized {module}>")
 
 
-# Use fixed-width fields rather than platform-dependent ctypes.c_ulong.
 DWORD = ctypes.c_uint32
 DWORD64 = ctypes.c_uint64
 BOOL = ctypes.c_int32
@@ -515,8 +508,6 @@ class DbgHelpResolver:
                 raise ProfileError(f"Windows dbghelp does not export {name}") from error
             function.argtypes = arguments
             function.restype = result
-        # UNDNAME | DEFERRED_LOADS | FAIL_CRITICAL_ERRORS. No network
-        # symbol server is added; a recorded local module path supplies exports.
         self.dbg.SymSetOptions(0x2 | 0x4 | 0x200)
         if not self.dbg.SymInitializeW(self.process, str(search), False):
             raise ProfileError(f"SymInitializeW failed: Windows error {ctypes.get_last_error()}")
@@ -533,9 +524,6 @@ class DbgHelpResolver:
             if not image.is_file():
                 raise ProfileError(f"collector symbols file is missing: {image}")
             self.load(Module(self.header.collector_base, self.header.collector_size, str(image)), required=True)
-            # DEFERRED_LOADS delays PDB opening. A lookup anywhere in the image
-            # forces that load before checking its GUID/age, even if no symbol
-            # covers this particular address. Do not retain the unchecked name.
             displacement = DWORD64()
             self.dbg.SymFromAddrW(self.process, self.header.collector_base,
                                  ctypes.byref(displacement), self.symbol)
@@ -634,7 +622,7 @@ class AddressCache:
         if row is None:
             return None
         if len(self.values) >= self.capacity:
-            self.values.clear()  # Everything here is already indexed on disk.
+            self.values.clear()
         self.values[address] = int(row[0])
         return int(row[0])
 
@@ -739,9 +727,6 @@ class Aggregates:
     def _run(self, chunk_size: int, after_chunk: Callable[[], None] | None):
         for chunk in self.samples.chunks(chunk_size):
             cycles = chunk["cycles"].astype(np.float64)
-            # Sum in Python integers so even a long run cannot wrap a u64 total.
-            # numpy's weighted bincounts below use float64; ordinary captures
-            # remain exact up to 2**53 cycles per function/group.
             self.total_cycles += int(np.sum(chunk["cycles"], dtype=object))
             first = self.map_pcs(chunk)
             count = len(self.functions)
@@ -891,9 +876,6 @@ def scale_self_test(directory: str):
 
 
 def self_test() -> int:
-    # Scratch stays outside Git, including on Windows where the shared project
-    # rules reserve captures for synthetic files. The directory is removed after
-    # memmaps are closed; no real game, DLL or PDB is involved.
     with tempfile.TemporaryDirectory(prefix="worker-profile-self-test-", dir=tempfile.gettempdir()) as directory:
         path = Path(directory) / "synthetic.bin"
         records = np.zeros(5, dtype=RECORD_DTYPE)
@@ -929,7 +911,7 @@ def self_test() -> int:
             assert samples.header.guid == "12345678-1234-5678-90AB-CDEF01234567"
             assert samples.header.pdb_path == "collector.pdb"
             aggregates = Aggregates(samples, resolve)
-            aggregates.address_cache.capacity = 2  # Exercise spill and repeated-PC cache misses.
+            aggregates.address_cache.capacity = 2
             aggregates.run(chunk_size=2)
             ids = {function.name: index for index, function in enumerate(aggregates.functions)}
             assert HEADER.size == 88 and RECORD_DTYPE.itemsize == 32
@@ -967,7 +949,6 @@ def self_test() -> int:
             aggregates = Aggregates(samples, lambda address: UNKNOWN_MODULE if address & 16 == 0
                                     else unsymbolized("collector.dll", 0x180000000))
             aggregates.run(chunk_size=50_000)
-            # Distinct unresolved addresses share one entry per module.
             assert len(aggregates.functions) == 2
             assert int(aggregates.stats[:2, 0].sum()) == count and int(aggregates.stats[0, 0]) == count // 2
         finally:
@@ -986,7 +967,7 @@ def self_test() -> int:
             stream.write(json.dumps(trailer).encode("utf-8"))
         samples = SampleFile(truncated)
         try:
-            assert samples.truncated and samples.count == 5  # Partial trailer is not a record.
+            assert samples.truncated and samples.count == 5
         finally:
             samples.close()
         empty = Path(directory) / "empty.bin"

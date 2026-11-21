@@ -132,7 +132,6 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
         for (value, differences) in [
             (Recorded::Value(Some(expected + 1)), 1),
             (Recorded::Value(None), 1),
-            // An older decoder retains absence instead of a native zero.
             (Recorded::NotRecorded, 0),
         ] {
             set(
@@ -161,7 +160,6 @@ fn railway_infrastructure_uses_saved_health_and_exact_content_maximum() {
             );
         }
     }
-    // The disabled null template and missing state building both yield zero.
     saved.construction.state_buildings.clear();
     set(
         &mut frame,
@@ -251,7 +249,6 @@ fn selected_rail_building_compares_saved_scalars_without_inventing_cache_presenc
         assert_eq!(run(state(bad), &saved).differences.len(), 1);
     }
     assert_eq!(run(Recorded::Value(None), &saved).differences.len(), 1);
-    // Historical absence and observed null remain distinct named limitations.
     let old = run(Recorded::NotRecorded, &saved);
     assert!(
         old.limitations
@@ -268,7 +265,6 @@ fn selected_rail_building_compares_saved_scalars_without_inventing_cache_presenc
             .keys()
             .any(|reason| reason.contains("null-to-absence"))
     );
-    // Even though partial health is saved, native's undamaged branch omits it.
     saved
         .construction
         .province_buildings
@@ -374,10 +370,6 @@ fn railway_building_absence_requires_a_proven_unreached_gate() {
     );
 }
 
-/// The stat-block base speed is read for every division with a route and
-/// has no saved counterpart: a recorded value is counted, never compared; a
-/// refusal on a route is a difference; a division without a route is outside
-/// its demand. The retired fresh-route operands are never consulted.
 #[test]
 fn division_base_speed_is_required_for_a_route_and_never_compared() {
     let (mut frame, mut saved, _, _) = fixtures::fixture();
@@ -399,7 +391,6 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
             presentation: Default::default(),
         },
     );
-    // The row keeps its own base speed, as without the division's panel row.
     let mut run = |base_speed: Option<i64>, moving: bool| {
         let mut current_save = saved.clone();
         let path = if moving { vec![2] } else { Vec::new() };
@@ -418,7 +409,6 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
                 withdrawal: Some(0).into(),
                 movement_priority: Some(1).into(),
                 own_base_speed: Some(base_speed),
-                // Fuel compares in its own test.
                 fuel: Recorded::NotRecorded,
                 ..Default::default()
             }]),
@@ -428,12 +418,10 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
         report
     };
     for moving in [false, true] {
-        // Any raw word, including the signed extremes, is counted unchanged.
         for speed in [i64::MIN, 0, 400_000, i64::MAX] {
             let report = run(Some(speed), moving);
             assert!(report.differences.is_empty(), "{:?}", report.differences);
             assert_eq!(report.compared_tables["DivisionMovement"], 1);
-            // Only a division with a route is in the base speed's demand.
             let counted = format!(
                 "DivisionMovement.base_speed: {} rows recorded, not compared",
                 usize::from(moving)
@@ -484,8 +472,6 @@ fn fresh_task_force_packet_refusal_is_a_difference_for_idle_and_targeted_units()
             );
             let mut report = Report::default();
             pass_inputs::compare(&frame, &saved, &mut report);
-            // Other counter domains have their own fixture availability.
-            // Check only this genuine admission contract, without waiving it.
             let differences: Vec<_> = report
                 .differences
                 .iter()

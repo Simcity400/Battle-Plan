@@ -103,7 +103,6 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
             .localisation,
         "MOD_LATE"
     );
-    // The later continuous file never replaces the national focus of that id.
     assert_eq!(
         expected
             .0
@@ -228,13 +227,10 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
     assert_eq!(defined["RECOVERED"].localisation, "RECOVERED_TITLE");
     assert_eq!(defined["PREFIX"].localisation, "PREFIX_TITLE");
     assert!(defined.contains_key("COUNTED"));
-    // Complete load-point names let the reader skip this invalid trigger.
-    // The apparent variable is consumed as its missing operator, not defined.
     assert!(defined.contains_key("NATIVE_RECOVERY"));
     for absent in ["VECTOR", "UNSETTLED", "UNREACHED"] {
         assert!(!defined.contains_key(absent), "{absent}: {defined:?}");
     }
-    // The last file is refused, so what every earlier file defines is unknown.
     for id in ["RECOVERED", "PREFIX", "VECTOR"] {
         assert!(
             matches!(
@@ -280,8 +276,6 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
     Ok(())
 }
 
-/// A refused file could redefine any focus decided before it, so neither the
-/// earlier definition nor an absence stands; a later file's redefinition does.
 #[test]
 fn a_refused_file_leaves_what_it_could_redefine_unknown() -> io::Result<()> {
     engine_executable::executable_tables::initialize_for_tests()
@@ -505,7 +499,6 @@ fn a_refused_file_hides_only_its_own_databases_focuses() {
             ),
             "{id}"
         );
-        // By id alone, the refused file could define either database's focus.
         assert!(
             matches!(
                 focuses.get(id),

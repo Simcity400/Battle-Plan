@@ -1,16 +1,10 @@
-/** Recorded series as runs of equal hourly values. A hour outside every run is a
- * gap: it is never drawn as zero, and lines break across it. */
 
-/** `breakBefore` ends the line before this run even when the hours touch, such as
- * when a different country takes over the tag. */
 export interface Run { firstHour: number; lastHour: number; value: number; breakBefore?: boolean }
 export interface Point { x: number; y: number }
 export type PathCommand = readonly ['M', number, number] | readonly ['L', number, number] | readonly ['C', number, number, number, number, number, number];
 
-/** Hours from `firstHour` to `lastHour`, both included. */
 export interface Span { firstHour: number; lastHour: number }
 
-/** Admit a recorded inclusive-hour span without changing its fields. */
 export function isSpan(value: unknown): value is Record<string, unknown> & Span {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const span = value as Record<string, unknown>;
@@ -18,7 +12,6 @@ export function isSpan(value: unknown): value is Record<string, unknown> & Span 
     && typeof span.lastHour === 'number' && Number.isSafeInteger(span.lastHour) && span.firstHour <= span.lastHour;
 }
 
-/** Admit ordered, disjoint spans; adjacent spans and gaps both remain intact. */
 export function isOrderedSpans(value: unknown): value is (Record<string, unknown> & Span)[] {
   if (!Array.isArray(value)) return false;
   let last: number | null = null;
@@ -29,14 +22,10 @@ export function isOrderedSpans(value: unknown): value is (Record<string, unknown
   return true;
 }
 
-/** A run whose line may break before it: `breakBefore` on plotting runs,
- * `startsSegment` on the runs products send. */
 export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean };
 
-/** Whether a line breaks before this run even if the hours touch. */
 export const breaksBefore = (run: Breakable) => run.breakBefore === true || run.startsSegment === true;
 
-/** Replace reached hours without allowing coarse runs to shadow exact values or missing reads. */
 export function overlayRuns<T extends Breakable>(before: readonly T[], incoming: readonly T[], equal: (a:T,b:T)=>boolean, within: readonly Span[] = incoming): T[] {
   const cuts = clipToSpans([{firstHour:-2147483648,lastHour:2147483647}],within);
   const retained: T[] = [];
@@ -63,8 +52,6 @@ export function overlayRuns<T extends Breakable>(before: readonly T[], incoming:
   return joined;
 }
 
-/** The index of the run holding `hour`, by binary search over runs sorted by hour
- * that never overlap; -1 when none holds it. */
 export function runIndexAt(runs: readonly Span[], hour: number): number {
   let low = 0;
   let high = runs.length - 1;
@@ -78,14 +65,11 @@ export function runIndexAt(runs: readonly Span[], hour: number): number {
   return -1;
 }
 
-/** The run holding `hour`, by binary search over runs sorted by hour that never overlap. */
 export function runAt<T extends Span>(runs: readonly T[], hour: number): T | null {
   const index = runIndexAt(runs, hour);
   return index < 0 ? null : runs[index];
 }
 
-/** Ordered, disjoint value spans must fit wholly inside the observed hours.
- * Two cursors keep validation linear even for thousands of country histories. */
 export function spansCovered(values: readonly Span[], observed: readonly Span[]): boolean {
   let index = 0;
   for (const value of values) {
@@ -101,8 +85,6 @@ export function spansCovered(values: readonly Span[], observed: readonly Span[])
   return true;
 }
 
-/** For each run, the first hour of the unbroken stretch it belongs to: no missing
- * hour, line break or change of country since. Built once per series, in one pass. */
 export function stretchStarts(runs: readonly Breakable[]): number[] {
   const starts: number[] = [];
   runs.forEach((run, index) => {
@@ -113,9 +95,6 @@ export function stretchStarts(runs: readonly Breakable[]): number[] {
   return starts;
 }
 
-/** The first hour of the unbroken stretch holding `hour`, or null when no run holds
- * it, given the runs' `stretchStarts`. Two hours are in the same stretch, so a value
- * may glide between them (`sameStretch`), exactly when both give the same hour. */
 export function stretchAt(runs: readonly Span[], starts: readonly number[], hour: number): number | null {
   const index = runIndexAt(runs, Math.floor(hour));
   return index < 0 ? null : starts[index];
@@ -125,7 +104,6 @@ export function valueAt(runs: readonly Run[], hour: number): number | null {
   return runAt(runs, Math.floor(hour))?.value ?? null;
 }
 
-/** Bounds of ordered spans intersecting an inclusive hour range. */
 export function rangeBounds(runs: readonly Span[], from: number, to: number): [number, number] {
   let low = 0, high = runs.length;
   while (low < high) { const mid = (low + high) >>> 1; if (runs[mid].lastHour < Math.floor(from)) low = mid + 1; else high = mid; }
@@ -135,14 +113,10 @@ export function rangeBounds(runs: readonly Span[], from: number, to: number): [n
   return [first, low];
 }
 
-/** Unbroken stretches of runs overlapping [from, to]. Runs that touch hour to
- * hour join; any missing hour between them starts a new segment. */
 export function segments(runs: readonly Run[], from: number, to: number): Run[][] {
-  // An empty interval (a playhead before the view's start) draws nothing.
   if (!(to >= from)) return [];
   const result: Run[][] = [];
   let current: Run[] = [];
-  // The hour a fractional edge falls in is visible, as valueAt treats it.
   const first = Math.floor(from);
   const [start, end] = rangeBounds(runs, first, to);
   for (let i = start; i < end; i++) {
@@ -156,14 +130,6 @@ export function segments(runs: readonly Run[], from: number, to: number): Run[][
   return result;
 }
 
-/** Points along one segment about every `stepPx` pixels, always including both
- * ends. Between the ends, samples sit on a fixed grid of hours a power of two apart,
- * counted from hour 0, not spread evenly between the ends: a line growing during
- * playback, or seen through a sliding window, keeps every sample it had, so only its
- * ends move instead of the whole curve reshaping each frame. As the scale changes the
- * grid only halves or doubles, keeping the samples on both grids. Each sample takes
- * the exact recorded value at its hour, and any peak or dip between two samples is
- * kept too, so a short spike is drawn rather than skipped. */
 export function samplePoints(segment: readonly Run[], toX: (hour: number) => number, toY: (value: number) => number, stepPx = 12): Point[] {
   if (!segment.length) return [];
   const first = segment[0].firstHour;
@@ -199,9 +165,6 @@ export function samplePoints(segment: readonly Run[], toX: (hour: number) => num
   return points;
 }
 
-/** A monotone cubic (Fritsch–Carlson) through the points. Between two samples the
- * curve stays inside their values, so it never shows a peak or dip that wasn't
- * recorded. */
 export function monotonePath(points: readonly Point[]): PathCommand[] {
   if (!points.length) return [];
   const commands: PathCommand[] = [['M', points[0].x, points[0].y]];
@@ -237,16 +200,11 @@ export function monotonePath(points: readonly Point[]): PathCommand[] {
   return commands;
 }
 
-/** The curves a line through `runs` is drawn with between `from` and `to`: per
- * unbroken segment, its sample points and the monotone path through them. Lines
- * and anything that must agree with them (a fill between two lines) use this. */
 export function curveSegments(runs: readonly Run[], from: number, to: number, toX: (hour: number) => number, toY: (value: number) => number): { points: Point[]; path: PathCommand[] }[] {
   return segments(runs, from, to).map(segment => samplePoints(segment, toX, toY)).filter(points => points.length)
     .map(points => ({ points, path: monotonePath(points) }));
 }
 
-/** Exact held values: horizontal until the next read, vertical at that read.
- * Missing hours and identity breaks start separate paths, including at zoom edges. */
 export function heldSegments(runs: readonly Run[], from: number, to: number, toX: (hour: number) => number, toY: (value: number) => number): { points: Point[]; path: PathCommand[] }[] {
   if (to < from) return [];
   const result: { points: Point[]; path: PathCommand[] }[] = [];
@@ -275,16 +233,9 @@ export function heldSegments(runs: readonly Run[], from: number, to: number, toX
   return result;
 }
 
-/** Closed regions for shading between two lines drawn with `curveSegments`, split
- * by which is on top wherever they cross: `above` (the first line higher) is what
- * lies under the first curve and over the second; `below` the reverse. Each region
- * is a clip path and a fill path, both closed to the plot's `top` or `bottom` edge
- * (screen y), so the shaded area's edges are exactly the drawn curves. Segments are
- * paired by index: both lines must break at the same hours. */
 export interface GapRegion { clip: PathCommand[]; fill: PathCommand[] }
 export function gapRegions(first: readonly { points: Point[]; path: PathCommand[] }[], second: readonly { points: Point[]; path: PathCommand[] }[],
   top: number, bottom: number): { above: GapRegion[]; below: GapRegion[] } {
-  // Closes a curve down (or up) to an edge of the plot, into an area.
   const toEdge = (curve: { points: Point[]; path: PathCommand[] }, edge: number): PathCommand[] => {
     const start = curve.points[0];
     const end = curve.points.at(-1)!;
@@ -296,16 +247,12 @@ export function gapRegions(first: readonly { points: Point[]; path: PathCommand[
     const a = first[index];
     const b = second[index];
     if (a.points.length < 2 || b.points.length < 2) continue;
-    // Screen y grows downward: "under the first curve" is toward the bottom edge.
     above.push({ clip: toEdge(a, bottom), fill: toEdge(b, top) });
     below.push({ clip: toEdge(b, bottom), fill: toEdge(a, top) });
   }
   return { above, below };
 }
 
-/** Cumulative totals for stacked layers sampled at the same points: `result[k][i]`
- * is the top of layer k at point i, or null when it is unknown because that layer
- * or one below it was not recorded there. Missing never stacks as zero. */
 export function stack(layers: readonly (readonly (number | null)[])[]): (number | null)[][] {
   const tops: (number | null)[][] = [];
   let base: (number | null)[] = layers[0]?.map(() => 0) ?? [];
@@ -320,7 +267,6 @@ export function stack(layers: readonly (readonly (number | null)[])[]): (number 
   return tops;
 }
 
-/** The lowest and highest value of the runs inside [from, to], or null. */
 export function extentOf(runs: readonly Run[], from: number, to: number): [number, number] | null {
   const [start, end] = rangeBounds(runs, from, to);
   let low = Infinity, high = -Infinity;
@@ -331,20 +277,13 @@ export function extentOf(runs: readonly Run[], from: number, to: number): [numbe
   return low <= high ? [low, high] : null;
 }
 
-/** A stacked layer's lower and upper edge at each point. */
 export interface Band { low: number[]; high: number[] }
 
-/** Stacks layers of signed values: at each point the positive values stack up
- * from zero and the negative ones down, each in layer order, so a layer's band
- * is its own share either side of the axis. */
 export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
   const points = layers[0]?.length ?? 0;
   const up = new Array<number>(points).fill(0);
   const down = new Array<number>(points).fill(0);
   return layers.map(layer => {
-    // A zero sample stays on the side the layer is on around it, so a band that
-    // shrinks to nothing closes where it is instead of jumping across the axis.
-    // Leading zeros take the side of the first non-zero sample.
     const firstValue = layer.find(value => (value ?? 0) !== 0) ?? 0;
     let last = firstValue >= 0;
     const side = new Array<boolean>(points);
@@ -364,10 +303,6 @@ export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
   });
 }
 
-/** Whether the value at `to` continues the one at `from` in the same unbroken
- * stretch of runs: no missing hour, line break or change of country between them.
- * Something drawn from these runs (a bar, a number) glides between the two only
- * then; across a break it jumps, as a line breaks. */
 export function sameStretch(runs: readonly Breakable[], from: number, to: number): boolean {
   if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
   const first = Math.min(from, to);
@@ -382,17 +317,10 @@ export function sameStretch(runs: readonly Breakable[], from: number, to: number
   return true;
 }
 
-/** Runs cut to the hours of `spans` (such as a date range, or the hours a country
- * was a group member), in hour order, so nothing outside them is drawn, shaded,
- * fitted or looked up. A cut piece keeps its run's line break (a new country
- * identity) only where the run itself starts. */
 export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: readonly Span[]): T[] {
-  // One pass over both, in hour order: linear in the runs and spans, so a history
-  // of tens of thousands of each (a country swapping ranks every hour) cuts at once.
   const ordered = <S extends Span>(list: readonly S[]) =>
     list.every((item, index) => index === 0 || list[index - 1].firstHour <= item.firstHour) ? list : [...list].sort((a, b) => a.firstHour - b.firstHour);
   const sortedRuns = ordered(runs);
-  // Overlapping spans merge, so no hour is cut out twice; spans that only touch stay apart.
   const merged: Span[] = [];
   for (const span of ordered(spans)) {
     const last = merged.at(-1);
@@ -415,21 +343,17 @@ export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: read
       }
       clipped.push(piece);
     }
-    // Move past whichever ends first; the other may still meet the next one.
     if (run.lastHour < span.lastHour) runIndex++;
     else spanIndex++;
   }
   return clipped;
 }
 
-/** The value range of several run lists over [from, to], or null when none has a value there. */
 export function extentOfAll(lists: readonly (readonly Run[])[], from: number, to: number): [number, number] | null {
   const ranges = lists.map(runs => extentOf(runs, from, to)).filter((range): range is [number, number] => range != null);
   return ranges.length ? [Math.min(...ranges.map(range => range[0])), Math.max(...ranges.map(range => range[1]))] : null;
 }
 
-/** The last hour at or before `at` that runs (in hour order) hold a value for, or
- * null: where a line drawn up to `at` ends, even when `at` falls in a gap after it. */
 export function lastSampleHour(runs: readonly Span[], at: number): number | null {
   let low = 0;
   let high = runs.length - 1;
@@ -441,19 +365,11 @@ export function lastSampleHour(runs: readonly Span[], at: number): number | null
   return found ? Math.min(found.lastHour, at) : null;
 }
 
-/** Where a line's end label belongs: the last hour it is drawn at, up to `at` (the
- * playhead or the view's end) and not before `from` (the view's start); null when
- * none of it is drawn there. A playhead or view ending in a gap after the line's
- * last value still labels the line where it ends, so a drawn line is always named. */
 export function lineEndHour(runs: readonly Span[], from: number, at: number): number | null {
   const last = lastSampleHour(runs, Math.floor(at));
   return last != null && last >= Math.floor(from) ? last : null;
 }
 
-/** The hour each line is labelled: its last drawn hour within the view, capped
- * where drawing stops (`until`, the playhead unless lines continue past it). A
- * line absent there can still have
- * an earlier end label; a line with no visible hours has none. */
 export function lineLabelHours(lines: readonly { tag: string; runs: readonly Span[] }[], from: number, to: number, until: number | null): Map<string, number> {
   const hours = new Map<string, number>();
   for (const line of lines) {

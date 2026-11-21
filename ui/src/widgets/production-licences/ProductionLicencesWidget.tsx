@@ -38,7 +38,6 @@ import './productionLicences.css';
 const NO_WARNINGS: readonly string[] = [];
 const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
 const OTHER = '\u0000other';
-// The node of every licence party with no country at the hour.
 const UNNAMED = '\u0000unnamed';
 const UNNAMED_COUNTRY = 'Country name unavailable';
 const DESIGN_UNNAMED = 'Design name unavailable';
@@ -46,10 +45,6 @@ const PARAMS = {};
 const nodeTag = (tag: string | null) => tag ?? UNNAMED;
 const designsText = (row: LicenceRow) => row.designs.map(design => design.name ?? DESIGN_UNNAMED).join(', ') || DESIGN_UNNAMED;
 
-/** Who builds whose designs under licence at the moment shown: licensors left, licensees right, a ribbon per pair; a
- * country's flag or name opens its licences, kept by its canonical slot through a change of tag. Followed at the head as
- * a pushed panel; names, colours and group membership at a 30-day step of the head. A drill not following playback
- * shows its own day, asked once. */
 export default function ProductionLicencesWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
@@ -58,7 +53,6 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const width: LicenceWidth = options.width === 'factories' ? 'factories' : 'licences';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const head = useHeadProduct(runtime, widget, PRODUCTION_LICENCES, track ? PARAMS : null, { active, validate: validateLicences });
-  // Names, colours and group membership are read at a coarse step of the head: they change rarely.
   const following = active && widget.time.mode === 'follow';
   const stepped = useAtHead(runtime.clock, following, clockHour => {
     const at = track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null;
@@ -83,7 +77,6 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   useDiagnostics(onDiagnostics, warnings);
   const pairs = useMemo(() => licencePairs(rows, width).filter(pair => pair.width > 0), [rows, width]);
   const tags = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]).filter((tag): tag is string => tag !== null))], [rows]);
-  // At the head the parties are named as they are at the hour shown: read where one of them last changed.
   const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, following && head.hour === null,
     clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
   const lookRead = looksRead(following && head.hour === null, identityHour, hour);
@@ -137,7 +130,6 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   };
   const at = drillHour(drill, hour) ?? hour;
   const drillAt = drill.follow ? hour : at;
-  // A drill on a day of its own asks for that day once; following playback, it reads the panel.
   const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track ? { sourceId: track.source.id, revision: track.source.revision,
     product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillAt } } : null;
   const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
@@ -153,7 +145,6 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   if (groupFailure && !groups.data) return groupFailure;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!data || !match.ready) return <div ref={head.root}>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></div>;
-  // A group whose membership at this hour is unrecorded or empty says so, never "none".
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
   if (groupReason) return <div ref={head.root}>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></div>;
   if (data.missing) return <div ref={head.root}>{groupFailure}<WidgetState kind="unavailable" message={data.missing} /></div>;
@@ -180,7 +171,6 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   </div>;
 }
 
-/** One country's licences granted and held at the drill's hour, by its canonical slot; parties by the tags they hold then. */
 function CountryLicences({ data, picked, tag, hour, runtime, track, active, narrow }: {
   data: NonNullable<ReturnType<typeof validateLicences>>; picked: PickedCountry; tag: string | null; hour: number; runtime: WidgetProps['runtime'];
   track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>; active: boolean; narrow: ReturnType<typeof narrowTableOf>;

@@ -1,4 +1,3 @@
-//! Convoy spotting speed keeps every native fixed-point truncation separate.
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -71,12 +70,9 @@ impl Defines {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Inputs {
-    /// Trade, ordinary transfer, invasion transfer.
     pub(super) kind: usize,
     pub(super) convoys: i32,
-    /// First convoy design's visibility, surface detection, sub detection, speed.
     pub(super) design: Option<[i64; 4]>,
-    /// Task-force surface detection after its carrier aircraft and detection modifier.
     pub(super) detection: i64,
     pub(super) radar: i64,
     pub(super) air_superiority: i64,
@@ -724,7 +720,6 @@ pub(super) fn append(
         );
         out.newline(true);
     }
-    // Native night-description admission uses the preceding spotting factor.
     if let Some(night) = speed.night.filter(|_| speed.spotting != 100_000) {
         out.line(true, 0, "MODIFIER_NIGHT_SPOTTING_CHANCE_MODIFIER", vec![]);
         out.raw(

@@ -60,7 +60,6 @@ fn state_history_lists_affected_states_and_all_returned_reader_evidence() {
             "state 2 is defined by both history/states/kept.txt and history/states/discarded.txt; the game keeps the first".into()))
             .into(),
     );
-    // Consumer-only warnings do not populate the producer listing.
     fixture.diagnostics.push(Diagnostic::new(
         "states",
         Kind::Warning,

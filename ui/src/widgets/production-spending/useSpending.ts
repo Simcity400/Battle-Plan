@@ -11,11 +11,6 @@ import type { ProductionSpendingReply } from '../../generated/dashboard';
 import { mergeSpending } from './spendingData';
 import type { SpendingData } from './spendingData';
 
-/** One country's spending reply for a spending widget, joined from the windows of hours it reads: the hour shown
- * (and, following, the next window ahead, asked from the frame), the range's start and the view's end; with `whole`,
- * every window from the start to the end. Never the campaign in one reply. Following the playhead, the widget renders
- * only when `key` of the head's hour changes; `headAt` gives the head's hour at a clock position for what is painted
- * each frame. */
 export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, repairs: boolean,
   validate: (data: unknown) => ProductionSpendingReply, key: (hour: number) => string, whole = false) {
   const following = active && widget.time.mode === 'follow';
@@ -36,8 +31,6 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
   const range = widget.time.mode === 'range';
   const from = range ? window?.firstHour ?? null : null;
   const end = range ? hour : track?.branch.lastHour;
-  // The windows the hours read at a clock position fall in: the hour shown, the range's start and the hour before
-  // it, the view's end; following, the window after the hour's.
   const windowsAt = (position: number, ahead: boolean): number[] => {
     if (!track || hour == null || end == null) return [];
     const at = keys.current.headAt?.(position) ?? hour;
@@ -53,7 +46,6 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
   const held = useFrameWindows<ProductionSpendingReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'production-spending', params: { branchId: track!.branch.id, country: countryFromKey(tag!), repairs, window: index } }),
   () => windowsAt(runtime.clock.getSnapshot().position, following), subscribeClock, active, validate, track?.source);
-  // What this render reads: every window but the one ahead.
   const needed = windowsAt(runtime.clock.getSnapshot().position, false);
   const error = needed.map(index => held.errors.get(index)).find(failure => failure !== undefined);
   const complete = needed.length > 0 && needed.every(index => held.data.has(index));

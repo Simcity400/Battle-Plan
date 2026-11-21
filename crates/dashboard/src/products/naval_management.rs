@@ -1,8 +1,3 @@
-//! One country's standing naval orders at an hour (`naval-management`), a rows-at-an-hour product
-//! ([`AtHour`]): its repair allocation, each fleet's home base, each task force's repair and
-//! reinforcement orders with its ships' refits, and each repair port's priority and queue. It
-//! reads the owner's rows step by step; a refit's progress and a queued ship's hull move hourly,
-//! so each is a live cell (by line and ship handle) the panel paints, not a number of the reply.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -37,8 +32,6 @@ pub struct NavalManagementParams {
     pub country: Country,
 }
 
-/// A number a line shows that moves every hour: its value at the reply's hour (raw fixed5) and,
-/// for a hull, the maximum it is out of, painted from the live cell `(row, column)`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +43,6 @@ pub struct NavalManagementAmount {
     pub unit: String,
 }
 
-/// A line of a section: its text, and the moving amount it ends with, if any.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -112,19 +104,16 @@ fn on(value: u8) -> &'static str {
     if value != 0 { "On" } else { "Off" }
 }
 
-/// A fixed5 amount as the panel writes it.
 fn fixed(raw: i64) -> String {
     let raw = i128::from(raw);
     let magnitude = raw.abs();
     format!("{}{}.{:05}", if raw < 0 { "-" } else { "" }, magnitude / 100_000, magnitude % 100_000)
 }
 
-/// The raw country ids linked to canonical slot `slot`.
 fn raws(held: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
     held.complete::<tables::CountryLinks>().map(|rows| rows.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect()).unwrap_or_default()
 }
 
-/// The owner's task forces (by roster holder), fleets and repair ports.
 struct Owned {
     tasks: BTreeSet<u64>,
     fleets: BTreeSet<u64>,
@@ -139,14 +128,12 @@ fn owned(held: &DecodedFrame, raws: &BTreeSet<u32>) -> Owned {
     }
 }
 
-/// The owner's ships: those of its task forces, and those queued in its ports.
 fn ships(held: &DecodedFrame, owned: &Owned) -> BTreeSet<u64> {
     let mut ships: BTreeSet<u64> = held.complete::<tables::Ships>().unwrap_or_default().iter().filter(|row| owned.tasks.contains(&row.task_force)).map(|row| row.id).collect();
     ships.extend(held.complete::<tables::NavalRepairQueue>().unwrap_or_default().iter().filter(|row| owned.ports.contains(&row.province)).map(|row| row.ship));
     ships
 }
 
-/// Every key of `table` under the high bits of `owners`, shifted by `shift`.
 fn under(table: TableId, owners: &BTreeSet<u64>, shift: u32) -> Read {
     let low = |owner: u64| u128::from(owner) << shift;
     Read { table, keys: Keys::Ranges(owners.iter().map(|&owner| (low(owner), low(owner) | ((1u128 << shift) - 1))).collect()) }
@@ -188,9 +175,6 @@ impl AtHour for NavalManagement {
         TABLES.to_vec()
     }
 
-    /// Countries, links and the census tables an owner is found in; then the owner's rows of the
-    /// order tables and every ship (a ship's task force is not its key); then the owner's ships'
-    /// models and the lines refitting them; then the designs they name; then the tokens.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let raws = || raws(held, owner.slot);
@@ -258,7 +242,6 @@ impl AtHour for NavalManagement {
     }
 }
 
-/// The content's sub-units, which name ship classes, with their notes.
 fn content_units(cat: &Catalogue, warnings: &mut Vec<String>) -> Option<Arc<SubUnits>> {
     match cat.content.layers.derived::<catalogue::CachedResult<SubUnits>>().get_or_init(|| installed_content_core::unit_leader::sub_units(&cat.content.layers)) {
         Ok(units) => {
@@ -272,12 +255,10 @@ fn content_units(cat: &Catalogue, warnings: &mut Vec<String>) -> Option<Arc<SubU
     }
 }
 
-/// The work done on a refit line at the frame's hour: the hourly progress row, only while it lives.
 fn refit_progress<'a>(link: &replay_data::rows::NavalRefitShipRow, progress: Option<&'a [NavalRefitProgressRow]>) -> Option<&'a NavalRefitProgressRow> {
     progress.and_then(|rows| link.resolve_line(rows))
 }
 
-/// One owner's sections at the frame's hour; the moving amounts named in `live`.
 fn project(frame: &DecodedFrame, slot: u32, catalogue: Option<&Arc<Catalogue>>, live: &Cells) -> io::Result<NavalManagementReply> {
     let mut reply = NavalManagementReply { sections: Vec::new(), warnings: Vec::new() };
     macro_rules! rows {

@@ -104,7 +104,6 @@ fn railway_optional_projection_status_and_failed_growth_keep_their_domains() {
         rows::Recorded::Value(Some(rows::RailwayBuildingState { building: None }))
     );
     assert_eq!(cooldowns[2].building, rows::Recorded::Value(None));
-    // Every info row carries its building pointer state, outside the health demand too.
     assert_eq!(
         cooldowns.iter().map(|row| row.building_bound).collect::<Vec<_>>(),
         [true, false, true].map(|bound| rows::Recorded::Value(Some(bound)))
@@ -220,7 +219,6 @@ fn owned_failure_fixture() -> Captured {
     })
 }
 
-/// Country hints size only the original roster, without a guessed OOB ratio.
 #[test]
 fn a_large_registry_presizes_only_the_native_country_snapshot() {
     let _hint = crate::country_scale::hint_guard();
@@ -233,8 +231,6 @@ fn a_large_registry_presizes_only_the_native_country_snapshot() {
     assert_eq!(job.oob_theatre_positions.capacity(), 0);
 }
 
-/// The registry census snapshot holds only a complete census, grows to it in
-/// the pass, and is dropped with the pass.
 #[test]
 fn census_roots_snapshot_grows_in_the_pass_and_never_outlives_it() {
     let roots = [corders_group::Root::default(); 5];
@@ -256,7 +252,6 @@ fn census_roots_snapshot_grows_in_the_pass_and_never_outlives_it() {
     job.capture_roots(&roots, Outcome::Rows { len: 3 });
     job.clear();
     assert_eq!((job.roots_len, job.roots.len()), (None, 0));
-    // A census longer than the roots it names is not kept.
     job.capture_roots(&roots[..2], Outcome::Rows { len: 3 });
     assert_eq!(job.roots_len, None);
 }
@@ -458,7 +453,6 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     const OWNER: usize = 0x70000;
     const POOL: usize = 0x71000;
     const WINGS: usize = 0x72000;
-    // The fixture's original manager has country slots but no air owners.
     pointer(&mut bytes, 0x41008, OWNER);
     pointer(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA.0);
     bytes[OWNER + cstrategic_air::COUNTRY..OWNER + cstrategic_air::COUNTRY + 4]
@@ -525,11 +519,6 @@ fn naval_decode_grows_shared_memberships_from_the_original_census() {
     assert_eq!(captured.wing_sources.rows[..2], job.wing_sources);
 }
 
-/// The Naval copy leaves before the wing census joins and takes it when it
-/// returns: its raw phase reads no wing value, so it decodes as a copy given
-/// the census first does. Without a census (the wing job failed) a copy that
-/// walked the theatres is refused at the install, as a copy that found none
-/// installed is.
 #[test]
 fn a_copy_whose_wing_census_follows_it_decodes_as_one_given_it_first() {
     use super::naval_test_kit as kit;
@@ -567,13 +556,11 @@ fn a_copy_whose_wing_census_follows_it_decodes_as_one_given_it_first() {
     assert_eq!(following.log.spans.len(), first.log.spans.len());
     assert_eq!(decode(&following), decode(&first));
 
-    // The wing job failed: the theatres were walked without its census.
     let mut refused = NavalJob::fixture();
     refused.defer_wings();
     assert!(super::copy_naval_refresh(&memory, context, &mut refused).raw_ok);
     assert_eq!(refused.install_wings_after(None), (0, false));
     assert!(!refused.positive_raw_complete);
-    // As a copy that found no census installed.
     let mut unstaged = NavalJob::fixture();
     assert!(!super::copy_naval_refresh(&memory, context, &mut unstaged).raw_ok);
 }
@@ -816,13 +803,6 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
         );
     }
 }
-/// The land theatre copy through the callback's authenticated roster
-/// takes no country census span, and its decode gives the rows, ordinals
-/// and outcomes of the census copy and of the typed walk with or without
-/// the roster: clean, with an alias or a null-slot owner (whose link the
-/// replay reads), bad owners, a torn census, and a fault in every header
-/// span, on the daily slot and hourly. A snapshot without room falls back
-/// to the census copy and asks to grow.
 #[test]
 fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     use super::naval_test_kit as kit;
@@ -848,7 +828,6 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     const CTAB: usize = 0x11000;
     const LTAB: usize = 0x12000;
     let owner = kit::THEATRE + ctheatre::OWNER;
-    // A fourth, null country slot whose id links to the first country.
     let mut base = kit::fixture();
     put(
         &mut base,
@@ -926,7 +905,6 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
         roster_used += usize::from(has_roster);
         let case = format!("{name} {fault:x?} roster={has_roster}");
 
-        // Daily: every theatre table and the order of battle.
         let direct = kit::direct(&memory);
         kit::assert_matches_direct(&kit::direct(&roster), &direct);
         let (census, ..) = kit::split(&memory);
@@ -939,7 +917,6 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
             "{case}"
         );
 
-        // Hourly: the land theatre headers alone.
         let mut plain = NavalJob::fixture();
         let expected = hourly(&|job| copy_naval_refresh(&memory, context, job), &mut plain);
         assert_eq!(
@@ -954,8 +931,6 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
         let actual = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut job);
         assert_eq!(actual, expected, "{case}");
         if has_roster {
-            // No census span: neither header, the country table, a
-            // country's identity, nor a link the roster resolves.
             let spans: Vec<_> = job.log.spans.iter().map(|span| span.addr).collect();
             for address in [
                 kit::GAME_STATE + cgame_state::COUNTRIES,
@@ -970,7 +945,6 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
                 assert!(!spans.contains(&address), "{case}: {address:#x}");
             }
             assert!(spans.len() < plain.log.spans.len(), "{case}");
-            // The replay reads the null slot's link, so the copy took it.
             if *name == "null-slot owner" {
                 assert!(spans.contains(&(LTAB + 12)), "{case}");
             }
@@ -1104,14 +1078,6 @@ fn naval_split_copy_matches_direct_walk() {
 
 #[test]
 fn naval_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 1 land theatre, 1 group, 2 members, 1 OOB group;
-    // cap 1 is the overflow-by-one arm for members (total 2 == cap+1),
-    // cap 0 the zero/massive arm, cap 2 the members exact-fit arm.
-    // u32 unread saturation is not reachable and is covered by the
-    // walk's own saturating arithmetic.
     use super::Capacities;
     use super::naval_test_kit as kit;
     let bytes = kit::fixture();
@@ -1131,7 +1097,6 @@ fn naval_truncation_matrix_matches_direct_with_same_caps() {
         assert!(report.raw_ok, "rows={rows:?}");
         kit::assert_matches_direct(&split, &direct);
     }
-    // Exact-fit arm pins Rows on land/groups with both members present.
     let capacity = Capacities {
         rows: [2; 17],
         theatre_names: 1024,
@@ -1196,12 +1161,8 @@ fn naval_split_copy_matches_direct_walk_on_fault_matrix() {
     }
 }
 
-// regression: daeba7ffed Read NavalSupremacy at slot 0, the first sample of the midnight cache epoch
 #[test]
 fn supremacy_uses_slot_0() {
-    // The sorted cache is rebuilt inside the update entered at hour 23
-    // by the daily game update; slot 0 is the first
-    // sample of its epoch.
     use replay_data::rows::TableId;
     assert!(replay_data::cadence::is_staggered(TableId::NavalSupremacy));
     for hour in -24_i32..48 {
@@ -1231,8 +1192,6 @@ fn supremacy_split_copy_matches_direct_walk() {
     assert_eq!(split.rows[1].country, 1);
     let anchor = TableId::NavalSupremacy;
     let mut expected = read_accounting::ZERO;
-    // Header, two slots, three region fields, owner, entries header,
-    // and one 160-byte value vector: nine scalar requests, 260 bytes.
     expected[anchor.index()] = ReadCounts {
         copy_calls: 9,
         spans: 9,
@@ -1279,10 +1238,6 @@ fn supremacy_split_copy_matches_direct_walk() {
 
 #[test]
 fn supremacy_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // The bulk value vector serves every truncated prefix identically.
     use super::supremacy_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -1349,8 +1304,6 @@ fn sunk_split_copy_matches_direct_walk() {
     let counts = capture.finish();
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Two retained records: one with attribution class and province,
-    // one minimal with a long inline name and heap attribution name.
     assert_eq!(split.outcome, Outcome::Rows { len: 2 });
     assert_eq!(split.rows[0].victim_country, 3);
     assert_eq!(split.rows[0].province, 77);
@@ -1360,8 +1313,6 @@ fn sunk_split_copy_matches_direct_walk() {
     assert_eq!(split.rows[1].attribution_class_present, 0);
     let anchor = TableId::SunkShips;
     let mut expected = read_accounting::ZERO;
-    // Header + two slots/records + three class headers + seven strings
-    // (terminator and content each) + province identity: 24 requests, 585 bytes.
     expected[anchor.index()] = ReadCounts {
         copy_calls: 24,
         spans: 24,
@@ -1408,9 +1359,6 @@ fn sunk_split_copy_matches_direct_walk() {
 
 #[test]
 fn sunk_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
     use super::sunk_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);

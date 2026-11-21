@@ -1,4 +1,3 @@
-//! Ordinary map part tables: the battle-sound list, map facilities, naval bases and saved event targets. The host owns the ordinary map part's dispatch, loans and table assembly.
 
 use collector_memory::read_accounting;
 use collector_primitives::clock;

@@ -1,7 +1,3 @@
-//! Faction goal companions selected during the existing authenticated roster
-//! acquisition. Unchanged owners read no goal bytes. Scalar occurrence rows
-//! share retained table allocations with the spool/encoder; no owner allocates
-//! merely because another hour passed.
 use crate::faction_goal_changes::Changes;
 use engine_allocation as allocation;
 use engine_native::{Memory, cfaction_goal_status as native};
@@ -58,9 +54,6 @@ struct Held {
     progress: Vec<Progress>,
 }
 
-/// Whole-table storage is reused after its preceding spool/encoder readers
-/// release it. Only two table buffers are acquired per changed world, rather
-/// than one new vector or allocation per faction on every hour.
 #[derive(Default)]
 struct Tables {
     headers: Option<Arc<TableRows>>,
@@ -93,7 +86,6 @@ pub(crate) struct Store {
     tables: Tables,
     before: Option<(u64, u64)>,
     quiet: Option<(u64, u64)>,
-    /// An owner was carried on the family token alone, which must then hold to the walk's end.
     quiet_carried: bool,
     failure: Option<&'static str>,
     changed: bool,
@@ -143,8 +135,6 @@ impl Store {
         id: u64,
         changes: &impl Changes,
     ) {
-        // This lookup is over owned records only; the native faction identity
-        // and full reference came from the existing roster's one authentication.
         if self.before.is_none() {
             return;
         }
@@ -200,7 +190,6 @@ impl Store {
             held.certificate = None;
             held.progress.clear();
             let before = changes.sequence(status);
-            // Registration failure authorizes neither a native read nor carry.
             if before.is_none() {
                 self.failure
                     .get_or_insert("faction goal owner registration unavailable");
@@ -216,7 +205,6 @@ impl Store {
                         .get_or_insert("faction goal writer changed during acquisition");
                 }
                 Err(reason) => {
-                    // Refusals carry under the same structural certificate.
                     if before == changes.sequence(status) {
                         held.certificate = before;
                         held.failure = Some(reason);
@@ -232,8 +220,6 @@ impl Store {
                 self.failure
                     .get_or_insert("faction goal cache certificate allocation failed");
             } else if !unchanged || self.before != self.quiet {
-                // Only owned certificate lookups here. A progress write never
-                // rereads owner geometry, definitions, histories, slots or dates.
                 for (ordinal, progress) in held.progress.iter_mut().enumerate() {
                     let receiver =
                         held.data.goal_addresses[ordinal].checked_add(native::GOAL_PROGRESS_STATUS);
@@ -482,8 +468,6 @@ impl Store {
                 );
             }
         }
-        // Owner ids and list kinds are inserted in key order, but keep this
-        // independent of a future change in the roster's owned-cache order.
         headers_rows.sort_unstable_by_key(RowCodec::key);
         entries_rows.sort_unstable_by_key(RowCodec::key);
         self.tables.headers = Some(headers);
@@ -752,7 +736,6 @@ mod tests {
             1,
         );
         assert_eq!(output.failure, None);
-        // Warm returning table buffers and leave the collector sole owner.
         output = Captured::default();
         store.rebuild().unwrap();
         let goal = goals + 39 * native::GOAL_STRIDE;
@@ -784,7 +767,6 @@ mod tests {
         let first = selected.calls.get();
         acquire(&mut store, &mut output, &selected, &changes, 1);
         assert_eq!(selected.calls.get(), first);
-        // A structural writer still selects owner geometry/history.
         drop(changes.0.notify(FIRST + native::STATUS));
         acquire(
             &mut store,
@@ -927,9 +909,6 @@ mod tests {
             789
         );
     }
-    /// A forced hour reads each owner and goal under its own certificate; another goal
-    /// writer during the walk left those exact rows refused. An owner carried on the family
-    /// token still refuses.
     #[test]
     fn faction_goal_owners_read_under_their_own_certificates_survive_other_writers_during_the_walk()
     {
@@ -1002,8 +981,6 @@ mod tests {
             self.changes.sequence(receiver)
         }
     }
-    /// The owner's structure certifies the goal addresses its progress is read through, so a
-    /// structure writer before those reads refuses even an hour that carried nothing.
     #[test]
     fn faction_goal_structure_writer_before_progress_reads_refuses_a_forced_hour() {
         let (bytes, goals, _) = goal_fixture(2);
@@ -1053,7 +1030,7 @@ mod progress_buffer_tests {
             ..Default::default()
         });
         store.rebuild().unwrap();
-        store.rebuild().unwrap(); // prepare the returning table/spare slot
+        store.rebuild().unwrap();
         let pointer = store
             .tables
             .entries

@@ -41,8 +41,6 @@ fn accumulator(entries: &[(u32, i64)]) -> ProvinceWeatherModifiers {
     }
 }
 
-/// The highlighted category name, the land terrain text, then the province's
-/// accumulator in definition order under its heading.
 #[test]
 fn a_land_province_shows_its_category_then_its_local_effects() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -76,7 +74,6 @@ fn a_land_province_shows_its_category_then_its_local_effects() {
         "\u{11}HForest\u{11}!\nFlow 8.0%\nCost x1.50\nLocal province effects:\nSpeed: \u{11}R-25%\u{11}!\nAttrition: \u{11}G+10%\u{11}!"
     );
     assert!(dropped.is_empty() && refused.is_none());
-    // An empty or all-zero accumulator adds nothing; a refused one leaves the rest.
     for empty in [accumulator(&[]), accumulator(&[(4, 0)])] {
         assert_eq!(
             local::describe(&definitions, &NoIcons, &loc, &empty),

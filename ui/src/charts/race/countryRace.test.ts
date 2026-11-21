@@ -204,7 +204,6 @@ test('shared country races accept dated faction looks without changing country d
 });
 
 test('a stack changing at every read fills as one shape per stretch, never as seamed strips', () => {
-  // Two bands that change every day for 60 days, then a gap and two more days.
   const days = Array.from({ length: 60 }, (_, day) => day);
   const band = (scale: number) => [...days.map(day => ({ firstHour: day * 24, lastHour: day * 24 + 23, value: scale * (day % 7 + 1) })),
     { firstHour: 70 * 24, lastHour: 71 * 24 + 23, value: scale, breakBefore: true }];

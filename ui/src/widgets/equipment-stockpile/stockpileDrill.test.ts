@@ -43,7 +43,6 @@ test('unknown need, AI and native wrapping keep the known balance and leave the 
   const bounded = balanceOperandsAt({ ...reply, needBoundRaw: '1500000' }, group, 110)!;
   assert.deepEqual([bounded.available, bounded.need, bounded.balance], [2000000n, null, 500000n]);
   assert.match(bounded.needNote!, /Need unavailable/);
-  // A listed, unresolved zero type may hold native availability in any arm, so an arm\u2019s need and available sum are unknown.
   const unresolved = { ...reply, logistics: [...reply.logistics,
     { key: `${UNRESOLVED_MARK}mod_unknown`, available: [], balance: [run(100, 123, 0n)], stock: [run(100, 123, 0n)] }] };
   const land = stockGroups(unresolved, 'domain', Infinity).find(item => item.key === 'land')!;

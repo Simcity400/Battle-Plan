@@ -1,4 +1,3 @@
-//! Recording row paths shared with the data contract and frame-aware joins.
 pub use crate::fuel_demand::with_demand_parts;
 pub use replay_data::rows::*;
 

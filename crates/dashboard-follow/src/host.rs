@@ -1,4 +1,3 @@
-//! Dated panels and followed cells on a shared playhead.
 
 use crate::{
     Follow,
@@ -31,9 +30,6 @@ use std::{
 
 const FRAME: Duration = Duration::from_micros(16_667);
 
-/// Which tables `pages` holds: those with a restore in every run (its first, or one at a block's
-/// end where a run is read from a later block) and some hour recorded. A table every hour of which
-/// is "not recorded" (a derived table the files only name) is not.
 pub fn held_tables(pages: &dyn Pages, tables: usize) -> Vec<bool> {
     (0..tables)
         .map(|table| {
@@ -43,7 +39,6 @@ pub fn held_tables(pages: &dyn Pages, tables: usize) -> Vec<bool> {
         .collect()
 }
 
-/// Whether any hour of `run` records `table`.
 fn recorded(run: &Run, table: usize) -> bool {
     run.pages.iter().enumerate().any(|(block, page)| {
         let Some(entry) = page.tables.get(table) else { return false };
@@ -59,9 +54,6 @@ fn recorded(run: &Run, table: usize) -> bool {
     })
 }
 
-/// One panel shown: its rows reader, the frame its data was made from, the data and live cells
-/// pushed last and the hour they were pushed at, and each of those cells' groups followed, with
-/// its follow id.
 struct Shown {
     panel: Box<dyn Panel>,
     reader: Box<dyn PanelReader>,
@@ -77,7 +69,6 @@ impl Shown {
     }
 }
 
-/// The groups followed under `ids` let go.
 fn release(ids: &mut Vec<(Group, u32)>, cells: Option<&HostCells>) {
     if let Some(cells) = cells {
         for (_, id) in ids.drain(..) {
@@ -87,7 +78,6 @@ fn release(ids: &mut Vec<(Group, u32)>, cells: Option<&HostCells>) {
     ids.clear();
 }
 
-/// Where panels' live cells are followed: the playhead's follow, and which tables its files hold.
 struct HostCells {
     follow: Follow,
     held: Vec<bool>,
@@ -113,10 +103,6 @@ fn register(group: &Group, ids: &mut Vec<(Group, u32)>, kept: &mut Vec<(Group, u
     }
 }
 
-/// `data` as pushed: with `live` its cells, each group followed under the id it was followed
-/// under before when it is the same group (same table, columns and keys: the reader keeps its
-/// values, never blank while a new id waits for its first answer), else under a new id, or why it
-/// is not followed. The groups followed before for it and named no more are let go.
 fn with_cells(frame: &DecodedFrame, data: &PanelData, live: Option<&Live>, ids: &mut Vec<(Group, u32)>, cells: Option<&HostCells>) -> PanelData {
     let (Ok(reply @ Value::Object(_)), Some(live)) = (data, live.filter(|live| !live.is_empty())) else {
         release(ids, cells);
@@ -221,7 +207,6 @@ impl StepProduct {
 }
 
 impl Panels {
-    /// Panel `id` goes, its live cells with it.
     fn remove(&mut self, id: u32) {
         if let Some(product) = self.products.remove(&id) {
             if let Some(hour) = product.next { self.due.remove(&(hour, id)); }
@@ -233,7 +218,6 @@ impl Panels {
     }
 }
 
-/// The message a panic carried.
 fn panicked(payload: &(dyn std::any::Any + Send)) -> String {
     payload.downcast_ref::<&str>().map(|text| (*text).to_owned()).or_else(|| payload.downcast_ref::<String>().cloned()).unwrap_or_else(|| "a panic with no message".to_owned())
 }
@@ -281,7 +265,6 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     reads: Arc<Mutex<ProductReads>>,
     needs_seed: Arc<AtomicBool>,
     get: fn(&E) -> &Playhead,
-    /// The owner's one anchor for its (recording, timeline), which drops repeats.
     anchored: fn(&E, Anchor),
     follow: Follow,
     reader: Reader,
@@ -336,7 +319,6 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 } else {
                     product.seed = None;
                 }
-                // A subscription can join after the playhead has filled its lead.
                 if !product.joined && let Some((epoch, g, mut h)) = product.last && (epoch, g) == (step.epoch(), page_seek) && !step.reset() {
                     while h.saturating_add(quantum) < step.first() {
                         h += quantum;
@@ -405,7 +387,6 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         (self.get)(&self.owner)
     }
 
-    /// Panels from now on: their rows from `rows`, their data pushed to `push`.
     pub fn show_panels(&self, rows: Arc<dyn PanelRows>, push: Arc<Push>) {
         let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
         panels.rows = Some(rows);

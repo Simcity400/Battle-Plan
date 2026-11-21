@@ -1,4 +1,3 @@
-// Authored UNRUN, using the established movement/member census fixture.
 use super::*;
 use crate::{creference_registry as registry, reference_bucket};
 

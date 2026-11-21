@@ -1,11 +1,3 @@
-//! Hourly equipment of divisions minted since the daily `DivisionEquipment`
-//! walk. A division handle is minted either from the unit id counter or with
-//! a dynamic type from the reference registry's counter. Both counters only
-//! grow, so "not in the last daily walk" is "id past the counter of its handle
-//! type at that walk": a few divisions an hour. A unit mint takes the counter's
-//! value before incrementing it, so the counter's own value is the next unit
-//! id and is new; the registry counter is incremented first, so its value is
-//! already taken.
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
@@ -16,17 +8,13 @@ use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NewDivisionEquipment];
 
-/// The two id counters at the last daily walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Counters {
-    /// Unit id counter, for unit handles.
     pub unit: u32,
-    /// Reference registry counter, for every dynamic type.
     pub registry: u32,
 }
 
 impl Counters {
-    /// Whether a division handle (type low, id high) was minted after these.
     pub fn minted_after(self, handle: u64) -> bool {
         let id = (handle >> 32) as u32;
         if handle as u32 == cship::HANDLE_TYPE {
@@ -48,25 +36,16 @@ impl Counters {
     }
 }
 
-/// The stored word before any daily walk, or after one whose counters were
-/// unreadable.
 pub const UNKNOWN: u64 = u64::MAX;
 
-/// Which divisions this hour's table covers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mark {
-    /// No daily walk with readable counters has run on this attachment.
     #[default]
     Unknown,
-    /// The daily walk runs this hour and holds every division.
     Daily,
-    /// Divisions minted after the counters of the last daily walk.
     Above(Counters),
 }
 
-/// The hook's per-hour step: a daily hour stores this hour's counters, any
-/// other hour reads the stored ones. A signed unit counter below zero is
-/// unreadable, never a mark.
 pub fn next_mark(
     stored: &AtomicU64,
     daily: bool,
@@ -124,7 +103,6 @@ impl Captured {
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
     }
-    /// Set by the hook before the hour's walks; see [`Mark`].
     pub fn set_mark(&mut self, mark: Mark) {
         self.mark = mark;
     }
@@ -192,11 +170,8 @@ mod tests {
         };
         let unit = |id: u64| (id << 32) | u64::from(cship::HANDLE_TYPE);
         let dynamic = |id: u64| (id << 32) | 0x1269;
-        // The unit counter holds the next id to mint.
         assert!(!counters.minted_after(unit(99)));
         assert!(counters.minted_after(unit(100)));
-        // A deployed division's dynamic id is far above the unit counter
-        // without being new; only the registry counter decides it.
         assert!(!counters.minted_after(dynamic(4_000)));
         assert!(counters.minted_after(dynamic(5_001)));
     }
@@ -220,7 +195,6 @@ mod tests {
             unit: 7,
             registry: 7,
         }));
-        // Every division was minted before its counter: nothing is read.
         let old = pool::DivisionSource {
             pointer: 1,
             division: (6 << 32) | u64::from(cship::HANDLE_TYPE),

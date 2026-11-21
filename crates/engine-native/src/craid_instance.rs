@@ -1,71 +1,34 @@
-//! Persistent raid instance operands. Identity, phase, outcome, preparation
-//! and source use guarded readers; layout alone establishes neither hourly
-//! consistency nor a new observation boundary.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_ff58);
-/// CRaidInstance u32 reference type.
 pub const REFERENCE_TYPE: usize = 0x08;
-/// Raid-instance reference type identifier.
 pub const REFERENCE_TYPE_VALUE: u32 = 84;
-/// CRaidInstance u32 engine reference id.
 pub const ID: usize = 0x0c;
-/// Phase enum, i32.
 pub const PHASE: usize = 0x38;
-/// Outcome enum, i32.
 pub const OUTCOME: usize = 0x3c;
-/// Preparation hours, i32, incremented and queried in phase 2 and subtracted
-/// from remaining hours. Starting preparation clears it; serialization emits
-/// `prep_time` only when nonzero.
 pub const PREPARATION_HOURS: usize = 0x44;
-/// Distance travelled, signed i64 fixed5, increased by raid speed each
-/// phase-4 hour. Elapsed hours divide it by that speed; serialization emits
-/// `distance` only when nonzero.
 pub const DISTANCE: usize = 0x50;
-/// Owning country raid-status pointer ([`crate::ccountry_raid_status`]).
 pub const OWNER_OBJECT: usize = 0x58;
-/// Embedded variables object.
 pub const VARIABLES: usize = 0x60;
-/// Raid-type definition pointer serialized by database name.
 pub const RAID_TYPE: usize = 0x98;
-/// Embedded target scope.
 pub const TARGET: usize = 0xa0;
-/// Embedded raid unit.
 pub const UNIT: usize = 0xc8;
-/// Inline raid source.
 pub const SOURCE: usize = 0xd8;
-/// Embedded equipment object; inner layout unresolved.
 pub const EQUIPMENT: usize = 0x110;
-/// Nuke count, i32.
 pub const NUKES: usize = 0x150;
-/// Detected boolean byte, serialized only when nonzero.
 pub const DETECTED: usize = 0x190;
-/// Show-for country-handle array pointer.
 pub const SHOW_FOR_COUNTRIES: usize = 0x1b8;
-/// Show-for country-handle stride.
 pub const SHOW_FOR_COUNTRY_STRIDE: usize = 4;
-/// CRaidInstance phase 1 is ASSEMBLING.
 pub const PHASE_ASSEMBLING: i32 = 1;
-/// CRaidInstance phase 2 is PREPARING.
 pub const PHASE_PREPARING: i32 = 2;
-/// CRaidInstance phase 3 is PREPARED.
 pub const PHASE_PREPARED: i32 = 3;
-/// CRaidInstance phase 4 is IN_PROGRESS.
 pub const PHASE_IN_PROGRESS: i32 = 4;
-/// CRaidInstance phase 5 is ENDED.
 pub const PHASE_ENDED: i32 = 5;
-/// Outcome zero is absent and omitted from serialization.
 pub const OUTCOME_NONE: i32 = 0;
-/// CRaidInstance outcome 3 is SUCCESS.
 pub const OUTCOME_SUCCESS: i32 = 3;
-/// CRaidInstance outcome 4 is CRITICAL_SUCCESS.
 pub const OUTCOME_CRITICAL_SUCCESS: i32 = 4;
-/// CRaidInstance outcome 5 is CANCELED.
 pub const OUTCOME_CANCELED: i32 = 5;
 
-/// Phase description and progress text select these executable localisation
-/// keys, falling back to the absent phase outside the enum.
 pub const PHASE_KEYS: [&str; 6] = [
     "RAID_INST_PHASE_NONE",
     "RAID_INST_PHASE_ASSEMBLING",
@@ -82,8 +45,6 @@ pub const fn phase_key(phase: i32) -> &'static str {
     }
 }
 
-/// Feedback tooltip and outcome text select these executable localisation
-/// keys, falling back to absent outcome outside the enum.
 pub const OUTCOME_KEYS: [&str; 6] = [
     "RAID_INST_OUTCOME_NONE",
     "RAID_INST_OUTCOME_FAILURE",
@@ -113,24 +74,14 @@ pub struct Row {
     pub phase: i32,
     pub outcome: i32,
     pub source: craid_source::Row,
-    /// [`UNIT`] holds assigned army and air-wing references. Assignment writes
-    /// the units' reciprocal raid references and ending clears both, so these
-    /// identify units held by a live raid.
     pub unit: u64,
     pub air_wing: u64,
-    /// What the raid is aimed at, from the scope at [`TARGET`].
     pub target: craid_target::Row,
-    /// Raid-type definition lexer token, zero for a null definition.
-    /// Serialization writes its string as `type`; `LexicalTokens` names it.
     pub raid_type: u32,
-    /// [`DETECTED`] controls the incoming-raid detection icon.
     pub detected: u8,
-    /// [`SHOW_FOR_COUNTRIES`] in the caller's handle arena.
     pub show_for_start: usize,
     pub show_for_len: usize,
-    /// [`DISTANCE`], fixed5, read in every phase.
     pub travelled: i64,
-    /// [`PREPARATION_HOURS`].
     pub preparation_hours: i32,
 }
 
@@ -140,7 +91,6 @@ impl Row {
     }
 }
 
-/// One instance and its `show_for` array, which the caller copies.
 pub(crate) fn read_row(
     memory: &impl Memory,
     base: usize,
@@ -150,7 +100,6 @@ pub(crate) fn read_row(
     countries: &ccountry::Reader<'_, impl Memory>,
 ) -> Result<(Row, Array), &'static str> {
     let mut identity = [0_u8; 16];
-    // Phase, outcome, risk and preparation hours.
     let mut state = [0_u8; 16];
     let mut definition = [0_u8; 8];
     let mut detected = [0_u8; 1];

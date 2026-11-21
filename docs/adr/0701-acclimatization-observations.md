@@ -1,0 +1,7 @@
+# 0701. Authenticate acclimatization against the current category registry
+
+Resolve observed category pointers against a per-capture registry. Loading obtains the original demand from the live pointer-array header before reading the entries. Workers reserve space for that demand. Fixed-capacity callers receive an explicit shortage instead of an incomplete catalogue. Sort authenticated pointer and token pairs for lookup rather than reading each category a second time. A category's name is a string at the start of its definition. Its authored token keys the serialized weights.
+
+An embedded division's acclimatization data has a validated vtable. The category vector stores a registered pointer and signed weight per entry, with unsigned count and capacity. Preserve the maximum and weights as signed raw values. Movement compares the winning category with the active climate. No active climate gives the neutral factor. A matching category contributes its signed fixed-point factor, scaled by the winning share. The camouflage threshold is a signed fixed-point define applied to the recorded maximum. Registry verification authenticates pointer identity for that capture alone.
+
+[Category registry](../../crates/engine-native/src/acclimatization_category.rs) · [Embedded state](../../crates/engine-native/src/acclimatization_data.rs) · [Weight entries](../../crates/engine-native/src/acclimatization_entry.rs) · [Division reader](../../crates/engine-native/src/carmy.rs)

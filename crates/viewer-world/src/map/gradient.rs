@@ -1,21 +1,3 @@
-//! Gradient border fields for political fill.
-//!
-//! Two RGBA8 channel textures contain stacked strategic-region and country
-//! layers, each followed by a zero guard row. Shader constants use the layer
-//! height. Channel 1 holds colour and the distance field; channel 2 holds the
-//! layer's visibility and naval attributes. Strategic regions cover sea
-//! provinces, while country colours follow recorded controllers. There is no
-//! state layer. Naval artwork and all colour/thickness inputs resolve through
-//! the recorded content stack.
-//!
-//! A pixel outside a layer's regions holds channel-1 alpha 255 and zero
-//! channel 2. Country thickness interpolates from controlled pixel area; its
-//! configured bounds are areas and are not squared. Boundary searches inspect
-//! a fixed number of grid cells, retaining scan order and early exits.
-//!
-//! This module holds shared field arithmetic and a test-only CPU oracle that
-//! returns byte buffers. Production uses [`super::political_gpu`]; frame
-//! constants live in [`viewer_foundation::map::frame`].
 
 #[cfg(test)]
 use std::io;
@@ -25,7 +7,6 @@ use std::{collections::HashMap, thread};
 #[cfg(test)]
 use viewer_foundation::errors::invalid;
 
-/// The field's slope numerator.
 pub const SLOPE_NUMERATOR: f32 = 255.0;
 #[cfg(test)]
 use viewer_foundation::map::gradient_math::DIVISOR;
@@ -33,37 +14,21 @@ use viewer_foundation::map::gradient_math::FieldDefines;
 #[cfg(test)]
 use viewer_foundation::map::province_map::ProvinceMap;
 
-/// The constant the field formula subtracts before clamping, so the field peaks at 247 rather than
-/// 255, keeping the land pass below its outline cutoff of 0.973.
 pub const ALPHA_BIAS: i32 = 8;
-/// Side of the uniform acceleration grid in map pixels.
 pub const GRID_CELL: u32 = 16;
-/// Search-radius multiplier.
 pub const RADIUS_MULTIPLIER: f32 = 3.0;
-/// Region opacity when no map mode overrides it; it lands in `GradientBorderChannel2.g`.
 pub const DEFAULT_REGION_OPACITY: u8 = 255;
-/// The region key that means "this province is not in this layer" (sea in the country layer, for
-/// instance). Such pixels get `NO_REGION_ALPHA` in channel 1 and zero in channel 2.
 pub const NO_REGION: u32 = 0;
-/// Channel 1 alpha for pixels outside a layer's regions, including sea in layer 2 and land in
-/// layer 1.
-///
-/// Maximum alpha disables both region fill and outline for these pixels. Alpha zero denotes a
-/// region interior and retains the camera-dependent fill.
 #[cfg(test)]
 pub const NO_REGION_ALPHA: u8 = 255;
 
-/// Which thickness rule a layer follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LayerKind {
-    /// Layer 2 in political mode: one region per controller, thickness from the region's area.
     Country,
-    /// One thickness for every region; layer 1 uses `THICKNESS_STRATEGIC_REGIONS`.
     Fixed(f32),
 }
 
 impl LayerKind {
-    /// The field thickness `T` in map pixels for a region of `area_pixels`.
     pub fn thickness(self, area_pixels: u64, field: &FieldDefines) -> f32 {
         match self {
             LayerKind::Country => country_thickness(area_pixels, field),
@@ -72,12 +37,6 @@ impl LayerKind {
     }
 }
 
-/// A map mode's presentation of one region beyond its colour: the colour's alpha byte (channel
-/// two's green), whether it pulses (channel two's blue), the fill factor that widens or narrows the
-/// field's colour band, and a fixed thickness replacing the layer's rule.
-///
-/// The field byte of a region pixel, or its constant gradient, below 239 becomes
-/// `clamp(a - trunc((255 - a) * (1 - fill)), 0, 255)`; at 1.0 it is unchanged.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RegionStyle {
     pub alpha: u8,
@@ -87,7 +46,6 @@ pub struct RegionStyle {
 }
 
 impl RegionStyle {
-    /// The political default: full alpha, no pulse, no fill change, the layer's thickness.
     pub const fn plain(alpha: u8) -> Self {
         Self {
             alpha,
@@ -98,7 +56,6 @@ impl RegionStyle {
     }
 }
 
-/// The field byte after the region's fill factor.
 #[cfg(test)]
 pub fn filled_alpha(alpha: u8, fill: f32) -> u8 {
     if alpha >= 0xef {
@@ -111,33 +68,18 @@ pub fn filled_alpha(alpha: u8, fill: f32) -> u8 {
 
 pub use map_display_data::landscape::Attributes;
 
-/// One gradient layer's geometry, colour and dynamic attributes.
 pub struct Layer<'a> {
-    /// The thickness rule, which is also what the layer means.
     pub kind: LayerKind,
-    /// The content's field operands.
     pub field: &'a FieldDefines,
-    /// Region key per province id, indexed by the id itself. [`NO_REGION`] leaves the province out
-    /// of this layer. Must be long enough for every id in the province map.
     pub region_of: &'a [u32],
-    /// The region's map colour.
-    /// Called once per distinct region key, on the calling thread.
     pub region_color: &'a dyn Fn(u32) -> [u8; 3],
-    /// Optional explicit gradient and naval control/contested attributes.
     pub region_attributes: Option<&'a dyn Fn(u32) -> Attributes>,
-    /// Channel-two green opacity per layer, defaulting to DEFAULT_REGION_OPACITY unless the content-
-    /// selected map mode overrides it.
     pub region_opacity: u8,
-    /// A map mode's per-region style; `None` uses `region_opacity` and the layer's thickness.
     pub region_style: Option<&'a dyn Fn(u32) -> RegionStyle>,
-    /// Channel 1 colour outside a layer's regions: black for layer 2's sea and the configured navy
-    /// colour for layer 1's land. Naval control/contested attributes remain independent of this colour.
-    ///
     pub no_region_color: [u8; 3],
 }
 
 impl<'a> Layer<'a> {
-    /// A layer at the default opacity, with no colour where it has no region.
     pub fn new(
         kind: LayerKind,
         region_of: &'a [u32],
@@ -156,13 +98,11 @@ impl<'a> Layer<'a> {
         }
     }
 
-    /// The style of one region key.
     pub fn style(&self, key: u32) -> RegionStyle {
         self.region_style
             .map_or(RegionStyle::plain(self.region_opacity), |style| style(key))
     }
 
-    /// The field thickness of a region of `area_pixels`.
     pub fn thickness(&self, key: u32, area_pixels: u64) -> f32 {
         self.region_style
             .and_then(|style| style(key).thickness)
@@ -170,7 +110,6 @@ impl<'a> Layer<'a> {
     }
 
     pub fn center(&self, key: u32) -> f32 {
-        // Fixed map-mode shapes leave the country center band at its constructor default.
         if self.style(key).thickness.is_some() {
             0.0
         } else {
@@ -179,45 +118,29 @@ impl<'a> Layer<'a> {
     }
 }
 
-/// The two gradient border textures, ready for a straight RGBA8 upload.
-///
-/// `width` is the map width over [`DIVISOR`] and `height` is `GB_TextureHeight`, two guard rows
-/// included. Both buffers are row-major, `width * height` texels, in `provinces.bmp`'s own top-down
-/// order: row 0 is the north edge.
-///
-/// Gradient textures share the flipped map coordinate used by terrain and water: north maps to the
-/// first row and south to the last. Preserve this order when packing each layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(test)]
 pub struct GradientTextures {
     pub width: u32,
     pub height: u32,
-    /// The field texture: `rgb` = the region's map colour, `a` = the distance field.
     pub channel1: Vec<[u8; 4]>,
-    /// The FX texture: `g` = region opacity, `b` = pulse flag, `r`/`a` = naval control/contested.
     pub channel2: Vec<[u8; 4]>,
 }
 
 #[cfg(test)]
 impl GradientTextures {
-    /// Rows per layer, `H` in the module header: the map height over [`DIVISOR`].
     pub fn layer_rows(&self) -> u32 {
         self.height / 2 - 1
     }
 
-    /// The first row of a layer, `layer` being 0 or 1.
     pub fn layer_origin(&self, layer: u32) -> u32 {
         layer * (self.layer_rows() + 1)
     }
 
-    /// A texel of one layer, or `None` outside it. `y` counts from the layer's first row, which is
-    /// the north edge of `provinces.bmp`.
     pub fn channel1_texel(&self, layer: u32, x: u32, y: u32) -> Option<[u8; 4]> {
         self.texel(&self.channel1, layer, x, y)
     }
 
-    /// A texel of one layer of [`GradientTextures::channel2`], indexed like
-    /// [`GradientTextures::channel1_texel`].
     pub fn channel2_texel(&self, layer: u32, x: u32, y: u32) -> Option<[u8; 4]> {
         self.texel(&self.channel2, layer, x, y)
     }
@@ -233,10 +156,6 @@ impl GradientTextures {
     }
 }
 
-/// The country layer's field thickness `T` in map pixels for a country covering `area_pixels`.
-///
-/// Thickness interpolates from region area using the configured bounds directly; area bounds are not
-/// squared.
 pub fn country_thickness(area_pixels: u64, field: &FieldDefines) -> f32 {
     let [low, high] = field.country_area.map(f64::from);
     let [thin, thick] = field.country_thickness;
@@ -244,23 +163,10 @@ pub fn country_thickness(area_pixels: u64, field: &FieldDefines) -> f32 {
     thin + fraction * (thick - thin)
 }
 
-/// How far from a boundary the field is carried, in map pixels.
-///
-/// The optimization range is a minimum reach, so thick fields can extend beyond it. The boundary
-/// search's cell radius may end the field sooner; see `BoundaryGrid::nearest`.
 pub fn field_reach(thickness: f32, field: &FieldDefines) -> f32 {
     field.optimization_range.max(field.center + thickness)
 }
 
-/// The field byte for a pixel `distance` map pixels from the nearest region boundary, in a region
-/// of thickness `thickness`:
-///
-/// Convert distance to the capped byte field with truncation before packing.
-///
-/// It peaks at 247 *on* the boundary and falls to 0 about `C + 0.96 * T` pixels inside the region,
-/// keeping it below the outline cutoff. A separate thick-border band supplies the dark line
-/// between countries.
-///
 pub fn field_alpha(distance: f32, thickness: f32, centre: f32) -> u8 {
     if !distance.is_finite() || !thickness.is_finite() || thickness <= 0.0 {
         return 0;
@@ -268,37 +174,20 @@ pub fn field_alpha(distance: f32, thickness: f32, centre: f32) -> u8 {
     let value = if centre < distance {
         (255 - ((distance - centre) * (1.0 / thickness) * SLOPE_NUMERATOR) as i32) - centre as i32
     } else {
-        // The byte mask preserves packing after the field value is capped.
         255 - ((distance as i32) & 0xff)
     };
     (value - ALPHA_BIAS).clamp(0, 255) as u8
 }
 
-/// One layer's rows of both channel textures, ready to be stacked by [`stack`].
-///
-/// Each layer owns its geometry and attributes; strategic keys stay fixed while naval FX changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(test)]
 pub struct LayerPlane {
-    /// The map width over [`DIVISOR`].
     pub width: u32,
-    /// The map height over [`DIVISOR`], without the guard row that follows it in the texture.
     pub rows: u32,
-    /// `rgb` = the region's map colour, `a` = the distance field.
     pub channel1: Vec<[u8; 4]>,
-    /// `g` = region opacity, `r`/`a` = naval control/contested.
     pub channel2: Vec<[u8; 4]>,
 }
 
-/// Builds one layer's plane.
-///
-/// The map wraps horizontally - the pixels at `x = 0` and `x = width - 1` are neighbours - while the
-/// top and bottom edges of the map are boundaries, so a coastal or polar region gets a field along
-/// them.
-///
-/// Errors are named `InvalidData`: a province map whose id count does not match its dimensions or
-/// whose dimensions are not divisible by [`DIVISOR`], and a `region_of` table too short for an id
-/// the image uses.
 #[cfg(test)]
 pub fn build_layer(map: &ProvinceMap, layer: &Layer) -> io::Result<LayerPlane> {
     map.validate()?;
@@ -334,9 +223,6 @@ pub fn build_layer(map: &ProvinceMap, layer: &Layer) -> io::Result<LayerPlane> {
     })
 }
 
-/// Stacks two layer planes into the two textures the shader samples, guard rows included.
-///
-/// Errors are named `InvalidData` when the two planes are not the same shape.
 #[cfg(test)]
 pub fn stack(layer1: &LayerPlane, layer2: &LayerPlane) -> io::Result<GradientTextures> {
     if layer1.width != layer2.width || layer1.rows != layer2.rows {
@@ -375,27 +261,17 @@ pub fn stack(layer1: &LayerPlane, layer2: &LayerPlane) -> io::Result<GradientTex
     })
 }
 
-/// Builds both gradient border textures for one political map frame.
-///
-/// `layer1` is the strategic-region layer and `layer2` the country layer; each says how provinces
-/// group into regions, what colour a region is and how opaque it is.
 #[cfg(test)]
 pub fn build(map: &ProvinceMap, layer1: &Layer, layer2: &Layer) -> io::Result<GradientTextures> {
     stack(&build_layer(map, layer1)?, &build_layer(map, layer2)?)
 }
 
-/// The layer's regions resolved onto the pixel grid, with one dense index per region so the
-/// per-pixel work never touches a hash map or a caller closure.
 #[cfg(test)]
 struct Regions {
-    /// Dense region index per map pixel, in the image's own top-down order. 0 means no region.
     index: Vec<u32>,
-    /// Map colour per dense index; entry 0 is the unused "no region" slot.
     color: Vec<[u8; 3]>,
     attributes: Vec<Attributes>,
-    /// Map-mode style per dense index.
     style: Vec<RegionStyle>,
-    /// Field thickness `T` per dense index.
     thickness: Vec<f32>,
     center: Vec<f32>,
     field: FieldDefines,
@@ -474,23 +350,13 @@ impl Regions {
     }
 }
 
-/// The boundary points of every region of one layer, bucketed into a uniform grid.
-///
-/// Boundary pixels have a four-neighbour in another region. Horizontal neighbours wrap. All regions
-/// share a grid; search radius selects cells while preserving scan order.
 #[cfg(test)]
 struct BoundaryGrid {
     cell: u32,
     grid_width: u32,
     grid_height: u32,
-    /// Start of each bucket in `points`, `grid_width * grid_height + 1` entries.
     offsets: Vec<u32>,
     points: Vec<[u16; 2]>,
-    /// Chebyshev distance in cells from this cell to the nearest cell that holds a point, the map
-    /// wrapping in x, saturated at `u32::MAX` when the layer has no boundary at all.
-    ///
-    /// Skip empty interior cells across the complete search radius. Thick fields span multiple cells
-    /// and would otherwise repeatedly scan empty buckets.
     cell_distance: Vec<u32>,
 }
 
@@ -541,17 +407,6 @@ impl BoundaryGrid {
         }
     }
 
-    /// The distance to the nearest boundary point, or `None` when there is none in range.
-    ///
-    /// Faithful to the engine's search: the cell radius comes from the thickness, the
-    /// scan stops dead once a point is closer than `sqrt(0.5)` - which on an integer pixel grid
-    /// means the pixel is itself a boundary pixel - and a bucket is abandoned once a point is
-    /// further than `best + cellW^2 + cellH^2`. That last one is a heuristic and can in principle
-    /// skip a nearer point in the same bucket; it is the engine's, kept for identical output. The
-    /// prune on the bucket's own rectangle is ours and is exact.
-    ///
-    /// Search radius can end the field before field_reach. Its effective distance depends on pixel
-    /// position within the grid cell.
     fn nearest(&self, width: u32, x: u32, y: u32, thickness: f32, centre: f32) -> Option<f32> {
         let radius =
             ((thickness + centre).sqrt() * RADIUS_MULTIPLIER / self.cell as f32) as i32 + 1;
@@ -605,7 +460,6 @@ impl BoundaryGrid {
         (best != u32::MAX).then(|| (best as f32).sqrt())
     }
 
-    /// The exact minimum squared distance from a pixel to any pixel a bucket can hold.
     fn bucket_distance_squared(&self, width: u32, x: u32, y: u32, column: u32, row: u32) -> u32 {
         let x0 = column * self.cell;
         let x1 = ((column + 1) * self.cell).min(width) - 1;
@@ -625,12 +479,6 @@ impl BoundaryGrid {
     }
 }
 
-/// Chebyshev distance in cells to the nearest non-empty bucket, wrapping in x.
-///
-/// An eight-neighbour breadth-first search from every non-empty bucket at once, which is Chebyshev
-/// distance by construction; the grid is the map over [`GRID_CELL`] squared, a few tens of
-/// thousands of cells, so nothing cleverer is worth the risk of getting a chamfer's sweep order
-/// wrong on a cylinder.
 #[cfg(test)]
 fn chebyshev_cell_distance(offsets: &[u32], grid_width: u32, grid_height: u32) -> Vec<u32> {
     let width = grid_width as usize;
@@ -671,10 +519,6 @@ fn wrapped_distance(width: u32, a: u32, b: u32) -> u32 {
     direct.min(width - direct)
 }
 
-/// Whether the pixel belongs to a region and touches a different one, the map wrapping in x.
-///
-/// Only neighbours within the bitmap contribute vertical boundaries. The top and bottom map edges
-/// do not create an artificial country band.
 #[cfg(test)]
 fn is_boundary(map: &ProvinceMap, regions: &Regions, width: usize, x: u32, y: u32) -> bool {
     let row = (y as usize) * width;
@@ -691,12 +535,6 @@ fn is_boundary(map: &ProvinceMap, regions: &Regions, width: usize, x: u32, y: u3
         || (y + 1 < map.height && regions.index[row + width + x as usize] != here)
 }
 
-/// Writes one layer's rows of both textures.
-///
-/// The full-resolution field is never materialised: each output texel averages the
-/// [`DIVISOR`] x [`DIVISOR`] block of map pixels it covers. Rows run top-down in province-bitmap
-/// order, matching the shader's flipped coordinate; see [`GradientTextures`]. Each scoped thread
-/// writes a separate row band and shares only immutable state.
 #[cfg(test)]
 fn fill_plane(
     map: &ProvinceMap,
@@ -748,8 +586,6 @@ fn fill_band(
         for column in 0..plane_width {
             let mut sum = [0_u32; 4];
             let mut effects = [0_u32; 4];
-            // Average vertically and truncate to bytes, then average horizontally. A single rounded
-            // box mean loses both truncations.
             for dx in 0..DIVISOR {
                 let mut vertical = [0_u32; 4];
                 let mut vertical_effects = [0_u32; 4];
@@ -778,11 +614,6 @@ fn fill_band(
     }
 }
 
-/// One map pixel of the field and all four channel2 bytes.
-///
-/// Pixels beyond boundary-search reach keep their region colour and opacity with field alpha
-/// zero, preserving the camera-dependent interior fill. Pixels outside every region use
-/// [`NO_REGION_ALPHA`] and zero ordinary opacity, keeping the sea clear.
 #[cfg(test)]
 fn sample(
     map: &ProvinceMap,
@@ -798,9 +629,6 @@ fn sample(
             let [red, green, blue] = regions.color[NO_REGION as usize];
             return ([red, green, blue, NO_REGION_ALPHA], [0; 4]);
         }
-        // Extend colour and opacity one map pixel across coasts, averaging the eight neighbours
-        // belonging to a region. Out-of-bitmap neighbours are absent. Field alpha stays 255,
-        // preventing dark fringes without creating country interior on water.
         let mut sum = [0_u32; 3];
         let mut fx = [0_u8; 2];
         let mut opacity = 0_u32;
@@ -827,7 +655,6 @@ fn sample(
                     let style = regions.style[neighbour as usize];
                     opacity += u32::from(style.alpha);
                     pulse += if style.pulse { 255 } else { 0 };
-                    // Add these as bytes before unsigned division.
                     fx[0] = fx[0].wrapping_add(attr.control);
                     fx[1] = fx[1].wrapping_add(attr.contested);
                     if let Some(value) = attr.gradient {

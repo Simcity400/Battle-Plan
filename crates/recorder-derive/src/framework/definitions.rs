@@ -1,8 +1,3 @@
-//! Definitions: numeric facts of the recorded content a writer reads that no table holds, read
-//! once from the recording's own game facts pack (never from the installed game) by the
-//! `installed-content-*` readers, and handed to every writer that declares them. Only the kinds some
-//! registered writer declares are read; each kind is read on its own and absent by name when it
-//! cannot be, so one unreadable file withholds only what depends on it.
 
 use installed_content_core::{
     content::{
@@ -24,16 +19,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// One kind of fact a writer may declare.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Definition {
-    /// Each province's land area in map cells, by province id.
     ProvinceAreas,
-    /// One `NDefines` value.
     Define(Define),
-    /// Each sub-unit's equipment need per archetype, by its key.
     SubUnitNeeds,
-    /// Each province's strategic region ([`ProvinceRegions`]).
     StrategicRegions,
 }
 
@@ -48,7 +38,6 @@ impl fmt::Display for Definition {
     }
 }
 
-/// An `NDefines.<section>.<name>` value, read as the game reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Define {
     pub section: &'static str,
@@ -62,16 +51,12 @@ pub enum Form {
     Fixed5,
 }
 
-/// Each province's strategic region, by province id: the one region whose provinces list it; none
-/// where no region or several do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceRegions {
-    /// (province, region), ascending by province; a province several regions claim is absent.
     regions: Vec<(u32, u32)>,
 }
 
 impl ProvinceRegions {
-    /// Of each region's id and provinces.
     pub fn new<'a>(regions: impl IntoIterator<Item = (u32, &'a [u32])>) -> Self {
         let mut claimed: std::collections::BTreeMap<u32, Option<u32>> = std::collections::BTreeMap::new();
         for (region, provinces) in regions {
@@ -82,7 +67,6 @@ impl ProvinceRegions {
         Self { regions: claimed.into_iter().filter_map(|(province, region)| Some((province, region?))).collect() }
     }
 
-    /// `province`'s region; none where no region, or more than one, claims it.
     pub fn of(&self, province: u32) -> Option<u32> {
         self.regions.binary_search_by_key(&province, |&(held, _)| held).ok().map(|at| self.regions[at].1)
     }
@@ -92,30 +76,24 @@ impl ProvinceRegions {
     }
 }
 
-/// A definition a writer reads; while a required one is absent its tables are unavailable by
-/// name and it is not run, else it is run and decides what the absence makes unknown.
 #[derive(Clone, Copy, Debug)]
 pub struct Uses {
     pub definition: Definition,
     pub required: bool,
 }
 
-/// What a writer is handed: each kind it may declare, or why it is absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Definitions {
     areas: Result<Vec<i64>, String>,
     defines: Vec<(Define, Result<i64, String>)>,
-    /// Why a define not among `defines` is absent: none read, or why none could be.
     defines_absent: String,
     needs: Result<SubUnitNeeds, String>,
     regions: Result<ProvinceRegions, String>,
 }
 
-/// Why a kind no registered writer declares was not read.
 const UNDECLARED: &str = "no registered writer declares it";
 
 impl Definitions {
-    /// Every kind absent for `reason`.
     pub fn absent(reason: impl Into<String>) -> Self {
         let reason = reason.into();
         Self {
@@ -127,12 +105,10 @@ impl Definitions {
         }
     }
 
-    /// What a writer holds before its session's facts are packed.
     pub fn unpacked() -> Self {
         Self::absent("the session's game facts are not packed yet")
     }
 
-    /// Facts read, none of a kind yet: each set with `with_*`.
     pub fn read_none() -> Self {
         Self::absent(UNDECLARED)
     }
@@ -158,12 +134,10 @@ impl Definitions {
         self
     }
 
-    /// Each province's land area in map cells, by province id; an id past its end has none.
     pub fn areas(&self) -> Result<&[i64], &str> {
         self.areas.as_deref().map_err(String::as_str)
     }
 
-    /// `NDefines.<section>.<name>`: an int32 as is, a fixed5 raw.
     pub fn define(&self, section: &str, name: &str) -> Result<i64, &str> {
         match self.defines.iter().find(|(define, _)| define.section == section && define.name == name) {
             Some((_, value)) => value.as_ref().copied().map_err(String::as_str),
@@ -179,7 +153,6 @@ impl Definitions {
         self.regions.as_ref().map_err(String::as_str)
     }
 
-    /// Why `definition` is absent; none when it is held.
     pub fn reason(&self, definition: &Definition) -> Option<&str> {
         match definition {
             Definition::ProvinceAreas => self.areas().err(),
@@ -189,7 +162,6 @@ impl Definitions {
         }
     }
 
-    /// The bytes held, about.
     pub fn bytes(&self) -> usize {
         let areas = self.areas.as_ref().map_or(0, |areas| areas.capacity() * 8);
         let defines = self.defines.len() * 64;
@@ -201,26 +173,21 @@ impl Definitions {
     }
 }
 
-/// A game facts pack where its bytes are: in memory as the session's host gave it, or at its
-/// place in the recording's file, read a piece at a time.
 pub struct Facts {
     pub source: Arc<dyn PackSource>,
     pub length: u64,
 }
 
 impl Facts {
-    /// The pack `bytes` hold.
     pub fn held(bytes: Arc<Vec<u8>>) -> Self {
         let length = bytes.len() as u64;
         Self { source: bytes, length }
     }
 
-    /// The `length` bytes of the pack stored at `offset` of `file`.
     pub fn stored(file: File, offset: u64, length: u64) -> Self {
         Self { source: Arc::new(Stored { file: Mutex::new(file), offset }), length }
     }
 
-    /// `out.len()` bytes of the pack from `offset`.
     pub fn read_at(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
         if offset.checked_add(out.len() as u64).is_none_or(|end| end > self.length) {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "a read past the game facts pack"));
@@ -229,7 +196,6 @@ impl Facts {
     }
 }
 
-/// A pack's place in a file.
 struct Stored {
     file: Mutex<File>,
     offset: u64,
@@ -243,14 +209,8 @@ impl PackSource for Stored {
     }
 }
 
-/// Reads the definitions a writer may be handed from a pack.
 pub type Reader = fn(&Facts, &Identity, &[Definition]) -> Definitions;
 
-/// The kinds of `wanted` from game facts pack `facts` of a recording of `identity`: through the
-/// pack alone, as playback reads it, each kind read by its own reader and absent by name when
-/// that reader fails. No chunk of the pack is kept between reads, the province raster is counted
-/// as it streams, and sub-unit needs are the pack's own small fact (never the
-/// equipment database), so the reading holds a bounded part of the pack at any time.
 pub fn read(facts: &Facts, identity: &Identity, wanted: &[Definition]) -> Definitions {
     let opened = match Pack::open(Arc::clone(&facts.source), 0, facts.length) {
         Ok(opened) => Arc::new(opened.keeping(0)),
@@ -260,7 +220,6 @@ pub fn read(facts: &Facts, identity: &Identity, wanted: &[Definition]) -> Defini
         return Definitions::absent(why);
     }
     let tables = opened.tables();
-    // No folder: nothing is read but the pack's facts.
     let options = ResolveOptions { game_dir: PathBuf::new(), user_dir: PathBuf::new(), cache_dir: PathBuf::new() };
     let content = match playback(identity, Ok(Arc::clone(&opened)), &options) {
         Ok(content) => content,
@@ -307,7 +266,6 @@ pub fn read(facts: &Facts, identity: &Identity, wanted: &[Definition]) -> Defini
     })
 }
 
-/// `read`'s result, a reader that panicked named as refused rather than taking the recorder down.
 fn guarded<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|panic| {
         let text = panic.downcast_ref::<&str>().map(|text| (*text).to_owned()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
@@ -335,7 +293,6 @@ mod tests {
         }
     }
 
-    /// Bytes that are no pack withhold every kind by name, never a value.
     #[test]
     fn an_unreadable_pack_withholds_every_kind_by_name() {
         let read = read(&Facts::held(Arc::new(b"not a pack".to_vec())), &identity(), &[Definition::ProvinceAreas, Definition::SubUnitNeeds, Definition::StrategicRegions]);
@@ -357,8 +314,6 @@ mod tests {
         assert_eq!(held.reason(&Definition::StrategicRegions), Some(UNDECLARED));
     }
 
-    /// A province one region lists is that region's, listed twice by it still its; one two regions
-    /// list belongs to none, never the first or the last.
     #[test]
     fn a_province_is_the_one_region_listing_it_and_none_where_several_do() {
         let regions = ProvinceRegions::new([(7, &[100, 101, 101][..]), (8, &[102, 101][..]), (9, &[][..])]);

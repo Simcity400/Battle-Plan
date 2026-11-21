@@ -1,4 +1,3 @@
-//! Typed operations for the recorded economic tables.
 use replay_rows_economy::*;
 
 replay_rows::row_ops! {

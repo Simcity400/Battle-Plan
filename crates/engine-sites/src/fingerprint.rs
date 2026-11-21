@@ -1,5 +1,3 @@
-//! The fingerprint `tools/sites.py` computes: the length, then little-endian 8-byte words with
-//! every masked 4-byte field zeroed and the tail padded with zeros.
 
 const M1: u64 = 0x9E37_79B9_7F4A_7C15;
 const M2: u64 = 0xBF58_476D_1CE4_E5B9;
@@ -13,7 +11,6 @@ pub(crate) fn fingerprint(bytes: &[u8], mask: &[u32]) -> u64 {
     for chunk in &mut chunks {
         let mut word = [0; 8];
         word[..chunk.len()].copy_from_slice(chunk);
-        // A field may start in the previous word and spill into this one.
         while let Some(&k) = fields.peek() {
             if k >= offset + 8 {
                 break;
@@ -35,10 +32,8 @@ pub(crate) fn fingerprint(bytes: &[u8], mask: &[u32]) -> u64 {
     h ^ (h >> 29)
 }
 
-/// Bytes the prefilter covers before a full fingerprint is computed.
 const HEAD: usize = 16;
 
-/// The prefilter: the fingerprint of the first 16 bytes (or fewer) with masked bytes zeroed.
 pub(crate) fn head(bytes: &[u8], mask: &[u32]) -> u64 {
     let n = bytes.len().min(HEAD);
     let mut h = [0; HEAD];

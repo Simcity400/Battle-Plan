@@ -1,11 +1,3 @@
-//! `GarrisonStrengths`: each garrison's displayed strength, the game's fixed5 arithmetic over its
-//! equipment operands, its required and assigned manpower and the content's two strength powers;
-//! a number a live cell reads, where the operands are an opaque list no cell can.
-//!
-//! A garrison's assigned manpower is the wrapping sum of its state's StateAssignedManpower rows
-//! whose controller and occupied country resolve to the garrison's; it is not known while that
-//! table is not read whole or a row of the state resolves to no link. State is the tables: the
-//! indexes by state are rebuilt on a fresh hour, a resume, a links write or other powers.
 
 use crate::{
     forces::{self, Owners, invalid, number},
@@ -40,15 +32,11 @@ const ONE: i64 = 100_000;
 
 #[derive(Default)]
 pub struct GarrisonStrength {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     owners: Owners,
-    /// The manpower and equipment powers the rows were written with.
     powers: Option<(i32, i32)>,
     assigned_complete: bool,
-    /// Each state's StateGarrisons keys.
     garrisons: HashMap<u32, Vec<u128>>,
-    /// Each state's StateAssignedManpower keys, while that table is read whole.
     assigned: HashMap<u32, Vec<u128>>,
 }
 
@@ -102,8 +90,6 @@ impl GarrisonStrength {
         Ok(keys)
     }
 
-    /// The garrisons whose inputs the hour moved: their own rows, and every garrison of a state
-    /// whose assignment rows moved.
     fn apply(&mut self, hour: &Hour<'_>) -> io::Result<Vec<u128>> {
         let mut dirty = BTreeSet::new();
         for key in hour.deleted_keys(TableId::StateGarrisons) {
@@ -135,8 +121,6 @@ impl GarrisonStrength {
         Ok(dirty.into_iter().collect())
     }
 
-    /// The manpower assigned to the garrison of resolved `controller` and `occupied` in `state`;
-    /// none while it is not known.
     fn assigned(&self, hour: &Hour<'_>, state: u32, controller: u32, occupied: u32) -> io::Result<Option<i32>> {
         if !self.assigned_complete {
             return Ok(None);
@@ -156,7 +140,6 @@ impl GarrisonStrength {
         Ok(Some(total))
     }
 
-    /// Garrison `key`'s cells; none once its row is gone.
     fn row(&self, hour: &Hour<'_>, key: u128, powers: (i32, i32)) -> io::Result<Option<Vec<Value>>> {
         let table = TableId::StateGarrisons;
         let view = hour.table(table);
@@ -185,9 +168,6 @@ impl GarrisonStrength {
     }
 }
 
-/// The displayed strength of a garrison owing `required_manpower`, `assigned` manpower (neither
-/// zero-assigned nor flagged), with `equipment`'s operands: the weaker of its equipment and its
-/// manpower, each shortage raised to its power.
 pub(crate) fn displayed(required_manpower: i32, assigned: i32, equipment: &[GarrisonEquipment], (manpower_power, equipment_power): (i32, i32)) -> i64 {
     let equipment = equipment_fraction(equipment);
     let manpower = if required_manpower > 0 {
@@ -201,8 +181,6 @@ pub(crate) fn displayed(required_manpower: i32, assigned: i32, equipment: &[Garr
     ONE.wrapping_sub(shortage_power(ONE.wrapping_sub(equipment), equipment_power)).min(ONE.wrapping_sub(shortage_power(ONE.wrapping_sub(manpower), manpower_power)))
 }
 
-/// Low-64-bit products and sums, signed division toward zero, with the allocation branch and
-/// unsigned divide sentinel guard.
 pub(crate) fn equipment_fraction(entries: &[GarrisonEquipment]) -> i64 {
     let (mut allocated, mut required) = (0_i64, 0_i64);
     for entry in entries {
@@ -219,7 +197,6 @@ pub(crate) fn equipment_fraction(entries: &[GarrisonEquipment]) -> i64 {
     }
 }
 
-/// Every step rounds separately; exponentiation by squaring would change the answer.
 pub(crate) fn shortage_power(shortage: i64, power: i32) -> i64 {
     let mut result = shortage;
     for _ in 1..power {
@@ -277,7 +254,6 @@ impl Writer for GarrisonStrength {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads every input whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

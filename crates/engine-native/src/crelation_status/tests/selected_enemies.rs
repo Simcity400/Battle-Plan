@@ -1,4 +1,3 @@
-//! Same-pass current enemy-vector acquisition, independent of the legacy set demand.
 use super::*;
 use std::cell::RefCell;
 
@@ -130,8 +129,6 @@ fn current_keeps_ordinary_zero_rule_receivers_repeats_zero_and_one_original_read
             1
         );
     }
-    // Missing actual reserved root is a counted optional refusal, not a
-    // fabricated country-zero prefix or failure of positive relation links.
     assert_eq!(walk.ordered_refusals, 1);
 }
 #[test]
@@ -202,7 +199,6 @@ fn current_payload_faults_refuse_locally_without_retry_or_invented_empty() {
             assert_eq!(walk.countries_len, 0);
         }
     }
-    // A complete empty native vector remains known empty from an empty arena.
     links_vector(
         &mut bytes,
         DIPLOMACY[1] + cdiplomacy_status::ENEMY_COUNTRIES,

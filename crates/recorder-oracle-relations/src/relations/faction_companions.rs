@@ -1,4 +1,3 @@
-//! Independent exact save comparisons for sparse faction companions.
 use super::*;
 use installed_content_save::construction::Manpower;
 use replay_data::rows::{FactionManpowerRow, FactionProgramRow, FactionRuleRow};
@@ -45,8 +44,6 @@ pub fn variables(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             .and_then(|row| row.seed)
             .ok_or_else(|| invalid("faction variable seed occurrence missing"))?;
         let entries = &actual[1..];
-        // Embedded stores use their own emptiness gate; omitted payloads
-        // certify the untouched empty store, unlike nullable scope pointers.
         let empty = installed_content_save::intel::Variables::default();
         let expected = saved.companions.variables.as_ref().unwrap_or(&empty);
         if let Some(expected_seed) = expected.seed {

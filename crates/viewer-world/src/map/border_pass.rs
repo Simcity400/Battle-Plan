@@ -1,10 +1,3 @@
-//! Border-mesh and strait classification, uploads and compiled-content draws.
-//!
-//! [`super::borders`] traces and widens strips once from static province and
-//! height rasters. Sea, sea-region and impassable classes come from content;
-//! land edges initially use [`BorderClass::Province`]. Each hour,
-//! [`BorderPass::set_classes`] rebuilds index buffers over the shared vertices
-//! as canonical ownership and state boundaries change.
 use viewer_foundation::map::gpu_contract::Targets;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -35,40 +28,23 @@ use {
     },
 };
 
-/// Width of a strait ribbon in world units, and the pitch it tiles `strait.dds` at along its run.
-///
-/// The ribbon is four world units wide and repeats one texture tile every four units along its run,
-/// preserving square tiles.
 pub const STRAIT_WIDTH: f32 = 4.0;
 
-/// Bytes one border vertex occupies: `float3 position` then `6G16_SINT uv`.
 const BORDER_VERTEX_STRIDE: u64 = 16;
 pub use super::strait_shader::StraitVertex;
 
-/// The border and strait textures, decoded but not uploaded.
 pub struct BorderAssets {
     pub border_shader: Arc<shader_pipeline::library::Effect>,
     pub strait_shader: Arc<shader_pipeline::library::Effect>,
-    /// `map/terrain/border_<class>_<quality>.dds`, in [`BorderClass::ALL`] order.
     pub classes: Vec<dds::Texture>,
-    /// `map/terrain/strait.dds`, which has no quality suffix.
     pub strait: dds::Texture,
-    /// `NDefines.NGraphics.BORDER_COLOR_DEMILITARIZED_R/G/B/A`: selection
-    /// palette entry 7, the demilitarised line's `vSelectionColor`.
     pub demilitarized_color: [f32; 4],
-    /// The content-selected custom palette entry used by faction-theatre hover.
-    /// Unsupported definitions withhold this highlight alone.
     pub faction_highlight_color: Result<[f32; 4], String>,
     pub adjacency_highlight_color: Result<[f32; 4], String>,
-    /// `NGraphics.BORDER_COLOR_SELECTION_PROVINCE_*` and `_STATE_*`, palette entries 1 and 2: the
-    /// selected provinces' outline and the selected state's.
     pub selection_colors: Result<[[f32; 4]; 2], String>,
 }
 
 impl BorderAssets {
-    /// Select the border class suffix from map quality and read all seven textures through the
-    /// presentation layers, so a selected visual mod's borders replace them. Recorded map
-    /// content is hash-verified.
     pub fn load(
         layers: &ResolvedLayers,
         defines: &installed_content_core::defines::Defines,
@@ -79,7 +55,6 @@ impl BorderAssets {
         let channel = |name: &str| -> io::Result<f32> {
             Ok(defines.number("NGraphics", &format!("BORDER_COLOR_DEMILITARIZED_{name}"))? as f32)
         };
-        // Checked for the colour space each is uploaded in (classes sRGB, strait linear).
         let texture = |path: String, space: ColorSpace| -> io::Result<dds::Texture> {
             layers.artwork(&path, |stack| {
                 load_uploadable(&path, &|request| stack.read_path(request), decode, space)
@@ -119,8 +94,6 @@ impl BorderAssets {
     }
 }
 
-/// Use the configured faction-highlight palette index. Custom RGBA entries begin at palette
-/// index 10.
 fn faction_highlight_color(defines: &installed_content_core::defines::Defines) -> io::Result<[f32; 4]> {
     let index = defines.int32("NMapMode", "FACTION_THEATER_HIGHLIGHT_COLOR_INDEX")?;
     if !(0..=i32::from(u8::MAX) - 10).contains(&index) {
@@ -141,30 +114,16 @@ fn faction_highlight_color(defines: &installed_content_core::defines::Defines) -
     Ok(std::array::from_fn(|channel| rgba[channel] as f32))
 }
 
-/// The content-derived facts the border classifier needs.
-///
-/// All four come from files the replay's layer roster hash-verifies: `map/definition.csv`,
-/// `map/strategicregions`, `history/states` and `map/adjacencies.csv`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Topology {
-    /// Per province id: the province is sea or lake.
     water: Vec<bool>,
-    /// Land with no non-sea land adjacency.
     hidden: Vec<bool>,
-    /// Per province id: the strategic region that owns it, zero when none does.
     region_of: Vec<u32>,
-    /// Per province id: the province belongs to a state `history/states` marks `impassable`.
     impassable: Vec<bool>,
-    /// Province pairs an `impassable` row of `map/adjacencies.csv` separates, ascending.
     impassable_pairs: HashSet<(u32, u32)>,
 }
 
 impl Topology {
-    /// Builds the tables from the loaded content.
-    ///
-    /// Provinces the map does not define are ignored rather than refused: `history/states` and
-    /// `map/strategicregions` are authored by hand, and a stale id in one of them is not a reason to
-    /// refuse to draw a map.
     pub fn new(
         map: &MapData,
         states: &BTreeMap<u32, StateDefinition>,
@@ -207,8 +166,6 @@ impl Topology {
                 }
             }
         }
-        // Read the first adjacency record naming the other province. Later authored rows rewrite the
-        // kind on both sides of an existing pair, so the last row decides.
         let mut kinds = BTreeMap::new();
         for adjacency in adjacencies {
             kinds.insert(pair(adjacency.from, adjacency.to), adjacency.kind);
@@ -222,7 +179,6 @@ impl Topology {
         Ok(topology)
     }
 
-    /// Whether the province is sea or lake, the both-sides-water test `borders::trace` smooths on.
     pub fn is_water(&self, province: u32) -> bool {
         self.water(province)
     }
@@ -252,30 +208,12 @@ impl Topology {
         flagged(a) != flagged(b) || self.impassable_pairs.contains(&pair(a, b))
     }
 
-    /// The class an edge takes from content alone, or `None` when the hour decides it.
-    ///
-    /// Classifies a pair in material-priority order: water pairs use sea-region or
-    /// sea material; land pairs then test hidden edges, impassability, canonical
-    /// country ownership and state boundaries. Remaining land pairs are province
-    /// material. Coast pairs have no ordinary material.
-    ///
-    /// The rules this settles, and what each is evidence for:
-    ///
-    /// Coasts have no ordinary material and are suppressed. Water pairs use Sea within a strategic
-    /// region and SeaRegion across regions. Impassability on exactly one state, or an impassable
-    /// authored adjacency, precedes country classification. Other land pairs use the hourly land
-    /// class.
-    ///
-    /// Bit 2 hides land with no land neighbour whose kind differs from sea. Compute it before
-    /// authored adjacency overrides; see hidden_provinces.
     pub fn static_class(&self, a: u32, b: u32) -> Option<BorderClass> {
         if a == b || self.hidden(a) || self.hidden(b) {
             return None;
         }
         if self.water(a) || self.water(b) {
             if !(self.water(a) && self.water(b)) {
-                // A coast: material 0xff has no ordinary bucket. A custom
-                // highlight may remap it into the Province secondary bank.
                 return None;
             }
             if self.region(a) != self.region(b) {
@@ -289,10 +227,6 @@ impl Topology {
         None
     }
 
-    /// The classifier [`borders::build`] takes: the static class, or the land placeholder.
-    ///
-    /// A coast stays `None`, so the trace retains it in its hidden mesh rather
-    /// than an ordinary land bucket. Only custom highlight admission remaps it.
     pub fn trace_class(&self, a: u32, b: u32) -> Option<BorderClass> {
         if a == b || self.hidden(a) || self.hidden(b) || self.water(a) != self.water(b) {
             return None;
@@ -301,9 +235,6 @@ impl Topology {
     }
 }
 
-/// Reconstruct province-definition bit 2 independently of fog. Start with raster type-0 neighbours
-/// and set it only for land lacking a non-sea land neighbour. Authored adjacency overrides arrive
-/// afterward without recomputing it.
 fn hidden_provinces(map: &MapData, count: usize) -> Vec<bool> {
     let mut hidden = vec![false; count];
     for (&id, definition) in &map.definitions {
@@ -332,8 +263,6 @@ fn hidden_provinces(map: &MapData, count: usize) -> Vec<bool> {
                     let below = map.province_ids[(y + 1) * width + x];
                     let diagonal = map.province_ids[(y + 1) * width + (x + 1) % width];
                     connect(a, below);
-                    // The engine diagnoses an invalid four-province X crossing, but still
-                    // inserts this diagonal adjacency before setting the bit.
                     if [a, right, below, diagonal].iter().all(|&id| id != 0)
                         && a != right
                         && a != below
@@ -342,7 +271,6 @@ fn hidden_provinces(map: &MapData, count: usize) -> Vec<bool> {
                         && right != diagonal
                         && below != diagonal
                     {
-                        // Native y increases northward; our bitmap rows increase southward.
                         connect(right, below);
                     }
                 }
@@ -352,14 +280,6 @@ fn hidden_provinces(map: &MapData, count: usize) -> Vec<bool> {
     hidden
 }
 
-/// The class of one land edge, independent of the political fill's mode.
-///
-/// Classify canonical state owners through CountryLinks, reserving zero for a null owner. Different
-/// owners use country material; equal owners with different state ids use state material; other land
-/// pairs use province. Faction, subject and war membership do not change country identity.
-///
-/// Captured at hour 60828490: all 6,539 draws / 6,524 province pairs agree with the complete classifier;
-/// controller keying disagrees on 155 pairs. See
 pub fn land_class(regions: &Regions, a: u32, b: u32) -> BorderClass {
     let key = |province: u32| {
         regions
@@ -388,13 +308,10 @@ fn pair(a: u32, b: u32) -> (u32, u32) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
-/// Use the neighbour record's stored end when its x is nonnegative, otherwise `(0, 0)`. A zero end
-/// is derived from province pixels.
 fn authored_end(end: (i32, i32)) -> Option<(i32, i32)> {
     (end.0 >= 0 && end != (0, 0)).then_some(end)
 }
 
-/// One neighbour record: neighbour id, through value and stored end.
 #[derive(Clone, Copy)]
 struct Record {
     neighbour: u32,
@@ -402,10 +319,6 @@ struct Record {
     end: (i32, i32),
 }
 
-/// Ordered province adjacency lists, seeded with raster neighbours before applying authored rows.
-///
-/// Rewrite existing pairs in place on both sides, using stop for From and start for To. A new pair
-/// appends start for From and stop for To, only on sides that do not already list the neighbour.
 fn neighbour_records(adjacencies: &[Adjacency], raster: &[Vec<u32>]) -> BTreeMap<u32, Vec<Record>> {
     let mut lists: BTreeMap<u32, Vec<Record>> = BTreeMap::new();
     for row in adjacencies {
@@ -451,20 +364,6 @@ fn neighbour_records(adjacencies: &[Adjacency], raster: &[Vec<u32>]) -> BTreeMap
     lists
 }
 
-/// Build strait ribbons by province id and neighbour-list order. Keep a record when its neighbour
-/// id is at or below the province's own, its through value is nonzero, and the province itself is
-/// land. Crossing kind is not tested. [`neighbour_records`] retains the CSV effects: ordinary
-/// bitmap neighbours have through zero, `impassable` rows write -1, and empty columns read zero.
-///
-/// `A` is the kept record's end, `B` the end of the neighbour's first record back; an end the
-/// builder does not take ([`authored_end`]) is the nearest pixel of that province to the other
-/// ([`nearest_pixels`]).
-///
-/// Each quad extends two world units on either side of the line at height 9.5. Its cross-ribbon
-/// texture coordinate runs from zero to one, and its along-ribbon span rounds the length divided
-/// by four upward. The index order preserves the two triangles' winding.
-///
-/// The endpoints are world `(x, z)`, `z` counting up from the bottom of the map.
 pub fn strait_quads(
     adjacencies: &[Adjacency],
     map: &MapData,
@@ -536,19 +435,11 @@ pub fn strait_quads(
     Ok(vertices)
 }
 
-/// One run of a province's pixels on one map row, the `PIXEL_SPANS` record, holding only the
-/// pixels [`nearest_pixels`] can pick.
 struct Span {
     z: i32,
     xs: Vec<i32>,
 }
 
-/// Each needed province's pixel runs in the order the definition stores them: rows from the
-/// bottom of the map up, runs left to right.
-///
-/// A pixel whose four neighbours are all its own province is dropped. It can never be a nearest
-/// pixel — the neighbour one step toward any pixel of the other province is strictly closer — so
-/// dropping it leaves the native scan's first strict minimum where it was.
 fn boundary_spans(map: &MapData, needed: &HashSet<u32>) -> io::Result<BTreeMap<u32, Vec<Span>>> {
     let (width, height) = (map.width as usize, map.height as usize);
     if map.province_ids.len() != width * height {
@@ -558,7 +449,6 @@ fn boundary_spans(map: &MapData, needed: &HashSet<u32>) -> io::Result<BTreeMap<u
     if needed.is_empty() {
         return Ok(spans);
     }
-    // `province_ids` is stored north first; world z counts up from the bottom row.
     let at = |x: i64, z: i64| -> Option<u32> {
         (x >= 0 && z >= 0 && (x as usize) < width && (z as usize) < height)
             .then(|| map.province_ids[(height - 1 - z as usize) * width + x as usize])
@@ -588,9 +478,6 @@ fn boundary_spans(map: &MapData, needed: &HashSet<u32>) -> io::Result<BTreeMap<u
     Ok(spans)
 }
 
-/// The nearest pixel pair of two provinces, as `build_strait_ribbons` finds it: the first
-/// province's spans outermost, then the second's, then the first span's pixels, then the second's,
-/// keeping the first strict minimum of the squared distance.
 fn nearest_pixels(
     spans: &BTreeMap<u32, Vec<Span>>,
     first: u32,
@@ -615,10 +502,6 @@ fn nearest_pixels(
     best.1
 }
 
-/// The vertex bytes of one chunk, in `borders::Vertex`'s 16-byte layout.
-///
-/// `borders::Vertex` is `#[repr(C)]` but not `Pod`, so the bytes are written out field by field
-/// rather than reinterpreted.
 fn chunk_bytes(chunk: &[borders::Vertex]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(chunk.len() * BORDER_VERTEX_STRIDE as usize);
     for vertex in chunk {
@@ -632,11 +515,6 @@ fn chunk_bytes(chunk: &[borders::Vertex]) -> Vec<u8> {
     bytes
 }
 
-/// The quad pattern for one run of `points` points.
-///
-/// The engine shares one index buffer across every draw and offsets it by the draw's base vertex;
-/// wgpu can do that too, but folding the base vertex in here lets every strip of a class that lands
-/// in one vertex chunk be drawn with a single call instead of one call per province pair.
 pub(super) fn run_indices(base_vertex: u32, points: u32, out: &mut Vec<u32>) {
     for segment in 0..points.saturating_sub(1) {
         let base = base_vertex + segment * 2;
@@ -644,21 +522,17 @@ pub(super) fn run_indices(base_vertex: u32, points: u32, out: &mut Vec<u32>) {
     }
 }
 
-/// The fine level's quads of `draw`, then, into `coarse`, its coarse level's.
 fn draw_indices(draw: &BorderDraw, fine: &mut Vec<u32>, coarse: &mut Vec<u32>) {
     run_indices(draw.base_vertex, draw.vertex_count / 2, fine);
     run_indices(draw.coarse_base_vertex, draw.coarse_vertex_count / 2, coarse);
 }
 
-/// One run's index list: the fine level's indices, then the coarse level's, which index the
-/// chunk's coarse vertices ([`super::borders::BorderMesh::coarse_chunks`]); and how many are fine.
 fn joined(mut fine: Vec<u32>, coarse: Vec<u32>) -> (u32, Vec<u32>) {
     let count = fine.len() as u32;
     fine.extend(coarse);
     (count, fine)
 }
 
-/// Each chunk's index list ([`joined`]) over the draws in it, for chunks below `chunks`.
 fn per_chunk(chunks: usize, draws: impl Iterator<Item = BorderDraw>) -> BTreeMap<usize, (u32, Vec<u32>)> {
     let mut lists: BTreeMap<usize, (Vec<u32>, Vec<u32>)> = BTreeMap::new();
     for draw in draws {
@@ -675,11 +549,8 @@ fn per_chunk(chunks: usize, draws: impl Iterator<Item = BorderDraw>) -> BTreeMap
         .collect()
 }
 
-/// One hour's border index runs, bucketed without a device so a builder thread
-/// can do it ahead of the frame that shows the hour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClassPlan {
-    /// Runs per drawn class, in [`BorderClass::ALL`] order.
     runs: Vec<Vec<PlannedRun>>,
 }
 
@@ -687,30 +558,15 @@ pub struct ClassPlan {
 struct PlannedRun {
     source: usize,
     chunk: usize,
-    /// How many of `indices` are the fine level's ([`joined`]).
     fine: u32,
-    /// Shared with a neighbouring hour's plan when equal ([`ClassPlan::share`]),
-    /// which is how [`BorderPass::set_plan`] knows to keep the buffer it has.
     indices: Arc<Vec<u32>>,
 }
 
 impl ClassPlan {
-    /// Buckets every edge for one hour's political regions and demilitarised zone.
-    ///
-    /// Every land edge lives in the [`BorderClass::Province`] vertex chunks, so the three land
-    /// classes index those same vertices; the other three keep the class the content settled at
-    /// trace time and only drop the edges the zone splits.
-    ///
-    /// An edge the zone splits is left out of every bucket here. The engine puts each chain in
-    /// exactly one bucket, `base_material + 6 * secondary_bank`, so a demilitarised edge is drawn
-    /// by [`super::demilitarized::DemilitarizedPass`] *instead of* here, not on top of it; leaving
-    /// it in both would blend the strip twice and, with depth writes on, let the second draw fail
-    /// its own depth test.
     pub fn new(meshes: &BorderMeshes, regions: &Regions, zone: &Zone) -> Self {
         Self::matching(meshes, regions, |a, b| !zone.splits(a, b))
     }
 
-    /// Native ordinary buckets contain only edges not claimed by a secondary highlight.
     pub fn matching(
         meshes: &BorderMeshes,
         regions: &Regions,
@@ -736,15 +592,12 @@ impl ClassPlan {
                         kept(draw) && land_class(regions, draw.province_a, draw.province_b) == class
                     }),
                 ),
-                // With no zone this is every edge, which is also what `BorderPass::upload`
-                // gives these classes before any hour is set.
                 _ => Self::runs(meshes, class, draws(class.bucket()).filter(kept)),
             })
             .collect();
         Self { runs }
     }
 
-    /// Groups a class's draws by their vertex chunk, one index run per chunk.
     fn runs(
         meshes: &BorderMeshes,
         source: BorderClass,
@@ -765,8 +618,6 @@ impl ClassPlan {
             .collect()
     }
 
-    /// The province bucket's draws by vertex chunk, as indexes into its draws: what
-    /// [`Self::patch_chunks`] walks.
     pub fn chunk_draws(meshes: &BorderMeshes) -> Vec<Vec<u32>> {
         let Some(mesh) = meshes.meshes.get(BorderClass::Province.bucket()) else { return Vec::new() };
         let mut chunks = vec![Vec::new(); mesh.chunks.len()];
@@ -778,12 +629,6 @@ impl ClassPlan {
         chunks
     }
 
-    /// The three land classes' runs of the vertex chunks `chunks` rebuilt, each edge of the
-    /// province bucket in the class `class` gives it (`None`: left out, as an edge the
-    /// demilitarised zone splits); every other run keeps its list, and so its buffer. `draws` is
-    /// [`Self::chunk_draws`]; `class` is given the draw's index in the province bucket. Equal to
-    /// [`Self::new`] when `class` is [`land_class`] with the zone's cut, whatever the edges changed
-    /// in the chunks named.
     pub fn patch_chunks(&mut self, meshes: &BorderMeshes, draws: &[Vec<u32>], chunks: &[usize], class: impl Fn(usize) -> Option<BorderClass>) {
         let Some(mesh) = meshes.meshes.get(BorderClass::Province.bucket()) else { return };
         for (at, target) in BorderClass::ALL.iter().enumerate() {
@@ -808,8 +653,6 @@ impl ClassPlan {
         }
     }
 
-    /// Takes `other`'s copy of every run the two plans hold alike, so a pass
-    /// that drew `other` keeps those runs' buffers when it is given this plan.
     pub fn share(&mut self, other: &ClassPlan) {
         for (runs, others) in self.runs.iter_mut().zip(&other.runs) {
             for run in runs {
@@ -824,12 +667,9 @@ impl ClassPlan {
     }
 }
 
-/// Planned index lists on each device, by the list they hold. Views showing hours with one shared
-/// plan ([`ClassPlan::share`]) upload each run once; a buffer lives while a view draws it.
 #[derive(Default)]
 struct PlannedBuffers {
     lists: std::collections::HashMap<usize, Vec<PlannedBuffer>>,
-    /// Uploads since every list was last swept, so dead lists never outnumber live ones.
     since_sweep: usize,
 }
 
@@ -848,11 +688,9 @@ impl PlannedBuffer {
 static PLANNED: std::sync::LazyLock<std::sync::Mutex<PlannedBuffers>> =
     std::sync::LazyLock::new(Default::default);
 
-/// The index buffer of `indices` on `device`: one a view already holds, else a new upload.
 fn planned_buffer(device: &wgpu::Device, indices: &Arc<Vec<u32>>) -> io::Result<Arc<wgpu::Buffer>> {
     let key = Arc::as_ptr(indices) as usize;
     let mut planned = PLANNED.lock().unwrap_or_else(|error| error.into_inner());
-    // A held buffer keeps its list alive, so a live entry at this address holds this list.
     if let Some(held) = planned.lists.get(&key).and_then(|entries| {
         entries.iter().find_map(|entry| {
             (entry.device == *device && std::ptr::eq(entry.list.as_ptr(), Arc::as_ptr(indices)))
@@ -887,38 +725,25 @@ fn planned_buffer(device: &wgpu::Device, indices: &Arc<Vec<u32>>) -> io::Result<
     Ok(made)
 }
 
-/// One index buffer over one vertex chunk of one source bucket: `fine` indices of the fine level,
-/// then `coarse` of the coarse level.
 struct Run {
     source: usize,
     chunk: usize,
     indices: Arc<wgpu::Buffer>,
     fine: u32,
     coarse: u32,
-    /// The planned indices the buffer holds, when it came from a [`ClassPlan`].
     planned: Option<Arc<Vec<u32>>>,
 }
 
-/// What one frame of the pass needs beyond its own geometry.
 #[derive(Clone, Copy)]
 pub struct BorderFrame {
-    /// `vCamPos.y`, which decides the province and state fades.
     pub camera_height: f32,
-    /// Whether the camera draws the coarse level ([`super::line_lod::coarse`]).
     pub coarse: bool,
-    /// The content's province and state fade heights; see [`borders::class_alpha`].
     pub fades: [[f32; 2]; 2],
-    /// Whether the map mode draws province borders; the resources, infrastructure and manpower
-    /// modes give them no opacity.
     pub province_borders: bool,
-    /// Native land batch precedes rivers; sea batch follows trees and water.
     pub stage: BorderStage,
-    /// A hidden stage submits nothing but leaves the passes after it the same inputs.
     pub visible: bool,
 }
 
-/// Each world-wrap view draws terrain, buckets 0..4, rivers, map objects, trees, water, buckets
-/// 4..12, then straits with their own program and state.
 #[derive(Clone, Copy)]
 pub enum BorderStage {
     Land,
@@ -933,29 +758,21 @@ const LAND_ORDER: &[BorderClass] = &[
 ];
 const SEA_ORDER: &[BorderClass] = &[BorderClass::Sea, BorderClass::SeaRegion];
 
-/// The GPU border and strait pass.
 pub struct BorderPass {
     compiled: Result<super::border_shader::Border, String>,
     textures: Vec<wgpu::TextureView>,
     pub compiled_straits: super::strait_shader::Straits,
-    /// Vertex chunks per source bucket, in [`BorderClass::ALL`] order, at the fine level and at
-    /// the coarse level.
     vertices: Vec<Vec<wgpu::Buffer>>,
     coarse_vertices: Vec<Vec<wgpu::Buffer>>,
-    /// Index runs per drawn class, in [`BorderClass::ALL`] order.
     runs: Vec<Vec<Run>>,
-    /// Every traced edge, per source bucket in [`BorderClass::ALL`] order, kept for re-bucketing
-    /// and for leaving the demilitarised-zone edges out.
     draws: Vec<Vec<BorderDraw>>,
 }
 
 impl BorderPass {
-    /// How the program drawn reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self) -> Option<&str> {
         self.compiled.as_ref().ok()?.texel_reads.as_deref()
     }
 
-    /// Builds the content pipelines and uploads their textures.
     pub fn new(
         device: &wgpu::Device,
         samples: u32,
@@ -976,8 +793,6 @@ impl BorderPass {
             queue,
             "strait",
             &assets.strait,
-            // Strait textures use BC3_UNORM and retain linear authored values. Border strips use an
-            // sRGB view.
             ColorSpace::Linear,
         )?;
         let compiled_straits = super::strait_shader::Straits::new(
@@ -1006,10 +821,6 @@ impl BorderPass {
         })
     }
 
-    /// Uploads the traced meshes and the strait ribbons. Called once per document.
-    ///
-    /// The three land classes have no indices until [`BorderPass::set_classes`] runs; the
-    /// classes the content alone decides get theirs here.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -1044,9 +855,6 @@ impl BorderPass {
             .iter()
             .map(|mesh| mesh.draws.clone())
             .collect();
-        // The three classes the content alone settles get their indices here, so a scene that has
-        // not been given an hour yet still draws them; `set_classes` rebuilds them per hour once
-        // the demilitarised zone can take edges out.
         for class in [
             BorderClass::Impassable,
             BorderClass::Sea,
@@ -1058,17 +866,6 @@ impl BorderPass {
         Ok(())
     }
 
-    /// Re-buckets every edge for one hour's political regions and demilitarised zone.
-    ///
-    /// Every land edge lives in the [`BorderClass::Province`] vertex chunks, so the three land
-    /// classes rebuild one index buffer each over those same vertices; the other three keep the
-    /// class the content settled at trace time and only have to drop the highlighted edges.
-    ///
-    /// An edge the zone splits is left out of every bucket here. The engine puts each chain in
-    /// exactly one bucket, `base_material + 6 * secondary_bank`, so a demilitarised edge is drawn
-    /// by [`super::demilitarized::DemilitarizedPass`] *instead of* here, not on top of it; leaving
-    /// it in both would blend the strip twice and, with depth writes on, let the second draw fail
-    /// its own depth test.
     pub fn set_classes(
         &mut self,
         device: &wgpu::Device,
@@ -1079,12 +876,6 @@ impl BorderPass {
         self.set_plan(device, &ClassPlan::new(meshes, regions, zone))
     }
 
-    /// Uploads index runs [`ClassPlan::new`] bucketed, one buffer per run.
-    ///
-    /// A run whose indices are the very ones a buffer already holds (the plan
-    /// shared them with the plan drawn before, [`ClassPlan::share`]) keeps
-    /// that buffer, so an hour that moved a few edges uploads only the runs
-    /// they were in.
     pub fn set_plan(&mut self, device: &wgpu::Device, plan: &ClassPlan) -> io::Result<()> {
         for (bucket, runs) in plan.runs.iter().enumerate() {
             let chunks = |source: usize| self.vertices.get(source).map_or(0, Vec::len);
@@ -1124,7 +915,6 @@ impl BorderPass {
         Ok(())
     }
 
-    /// Groups a class's draws by their vertex chunk and builds one index buffer per chunk.
     fn build_runs(
         &self,
         device: &wgpu::Device,
@@ -1207,12 +997,6 @@ impl BorderPass {
     }
 }
 
-/// The world x translations of the wrap copies the visible rectangle reaches.
-///
-/// The border meshes are cut at the x seam and the terrain grid is never clipped in x — it wraps its
-/// own texture lookups instead (`terrain::grid`) — so a view that runs
-/// past either edge of the map needs the geometry drawn again a map width away. The engine always
-/// draws three copies; this submits only the ones that can be seen.
 pub fn wrap_offsets(visible: Option<[f32; 4]>, map_width: f32) -> Vec<f32> {
     let mut offsets = vec![0.0];
     let Some(rect) = visible else {
@@ -1227,9 +1011,6 @@ pub fn wrap_offsets(visible: Option<[f32; 4]>, map_width: f32) -> Vec<f32> {
     offsets
 }
 
-/// The world-wrap copies a free eye's reach overlaps, as [`wrap_offsets`] orders them: its own copy
-/// first, then nearer copies before farther ones, west before east. The eye can stand on any copy,
-/// so the offsets are whole map widths from the first copy rather than from the eye's.
 pub fn free_wrap_offsets(reach: Option<[f32; 4]>, map_width: f32) -> Vec<f32> {
     let Some([x0, _, x1, _]) = reach else {
         return vec![0.0];

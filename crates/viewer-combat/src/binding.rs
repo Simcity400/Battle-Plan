@@ -1,4 +1,3 @@
-//! One binding per recorded hour. Missing values stay optional; authored examples do not fill gaps.
 use super::{Assets, Selection, Values, Widget};
 use installed_content_localisation::localisation::Argument;
 use replay_data::rows::tables;
@@ -14,39 +13,26 @@ use viewer_foundation::map::templates::custom_icon_index;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, token};
 use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
 
-/// multiplier, opposing silhouette and content minimum.
 pub(super) type NavalPenalty = (i64, i32, i32);
 
 #[derive(Debug, Default)]
 pub struct Bindings {
     pub(super) air_chart: Option<super::air_menu::Chart>,
     pub values: Values,
-    /// The possible-tactics popup of a land window.
     pub(super) tactics: super::tactics::Menu,
-    /// Attacker and defender committed, then attacker and defender reserve
-    /// entries, each keyed by its division handle.
     pub entries: [Vec<(u64, Values)>; 4],
     pub warnings: Vec<String>,
     pub naval_entries: Vec<NavalEntry>,
-    /// multiplier, opposing silhouette and content minimum,
-    /// computed with the laurel once and reused by its hover.
     pub(super) naval_penalties: [Option<Result<NavalPenalty, String>>; 2],
-    /// Refusals of this hour with the times each was met, retained for diagnostics and exports.
     refused: BTreeMap<String, usize>,
 }
 impl Bindings {
-    /// Counts one refusal; the same one met again is counted, not repeated.
     pub(super) fn refuse(&mut self, refusal: String) {
         *self.refused.entry(refusal).or_default() += 1;
     }
-    /// Binds `field` of the window widget `key`. A value is set and the
-    /// widget shown; a refusal, which names what is refused and why, clears
-    /// the field, hides the widget and is counted, so no earlier binding or
-    /// authored default survives it.
     pub(super) fn bind<T>(&mut self, key: &str, field: Field<T>, value: Result<T, String>) {
         bind(&mut self.refused, &mut self.values, key, field, value);
     }
-    /// [`Self::bind`] in the widgets of one list entry.
     pub(super) fn bind_in<T>(
         &mut self,
         values: &mut Values,
@@ -56,9 +42,6 @@ impl Bindings {
     ) {
         bind(&mut self.refused, values, key, field, value);
     }
-    /// One refusal that covers several widgets of one list entry: each is
-    /// hidden with its text, sprite, flag and fill cleared, and the refusal
-    /// is counted once.
     pub(super) fn withhold_in(&mut self, values: &mut Values, keys: &[&str], refusal: String) {
         for key in keys {
             let widget = values.entry((*key).into()).or_default();
@@ -71,19 +54,15 @@ impl Bindings {
         }
         self.refuse(refusal);
     }
-    /// [`Self::withhold_in`] in the window's own widgets.
     pub(super) fn withhold(&mut self, keys: &[&str], refusal: String) {
         let mut values = std::mem::take(&mut self.values);
         self.withhold_in(&mut values, keys, refusal);
         self.values = values;
     }
-    /// The counted refusals of these bindings, including held naval contents.
     pub fn refused(&self) -> &BTreeMap<String, usize> {
         &self.refused
     }
 }
-/// The widget field one binding covers: [`TEXT`], [`SPRITE`], [`FLAG`] or
-/// [`FILL`].
 pub(super) struct Field<T>(fn(&mut Widget) -> &mut Option<T>);
 impl<T> Clone for Field<T> {
     fn clone(&self) -> Self {
@@ -126,17 +105,12 @@ pub enum NavalLayout {
 #[derive(Debug)]
 pub struct NavalEntry {
     pub layout: NavalLayout,
-    /// Combat group side and hidden-incoming identity; never inferred from a
-    /// modded grid path or sprite name.
     pub side: u8,
     pub unknown: bool,
     pub grid: String,
-    /// Explicit combat-box pixels, or None for the sunk grid's automatic slots.
     pub offset: Option<[f32; 2]>,
     pub size: [f32; 2],
     pub values: Values,
-    /// Native member slots represented by a ship entry, in hover order.
-    /// Air and legacy entries have no NavalCombatShips member slots.
     pub battle_slots: Vec<u32>,
 }
 pub(super) fn text(values: &mut Values, key: &str, value: impl Into<String>) {
@@ -160,8 +134,6 @@ pub fn sprite(values: &mut Values, key: &str, value: String) {
 pub(super) fn fill(values: &mut Values, key: &str, value: f32) {
     values.entry(key.into()).or_default().fill = Some(value);
 }
-/// The combat flag of `country`, or why its native candidate chain cannot
-/// resolve an available flag. Keep field-local capture refusals in this map.
 pub(super) type Flags = BTreeMap<u32, Result<String, String>>;
 
 pub(super) fn country_flag(flags: &Flags, country: u32) -> Result<String, String> {
@@ -186,8 +158,6 @@ pub(super) fn flags(static_content: &StaticContent, frame: &DecodedFrame) -> io:
         .collect())
 }
 impl Bindings {
-    /// `engaged` is the hour's engaged flag of every combat for the viewer; `navy_sources` the
-    /// hour's regional naval dominance sources; `rule_relations` the adjacency rule relations.
     #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
     pub fn read(
         static_content: &StaticContent,
@@ -243,7 +213,6 @@ impl Bindings {
         }
         super::naval_details::bind(&mut out, static_content, frame, selection, &flags, vision)?;
         super::presentation::bind(&mut out, static_content, frame, selection, &flags)?;
-        // Hovers bind last: they read the widgets the binders above showed.
         super::tooltips::bind(&mut out, static_content, frame, selection, vision)?;
         super::division_tooltips::bind(&mut out, static_content, frame, selection, vision)?;
         super::commander_tooltips::bind(
@@ -286,8 +255,6 @@ impl Bindings {
         ] {
             hide(&mut self.values, name);
         }
-        // The executable does not name BUTTON_DISMISS; it is the result
-        // window's button key, localised as the game localises a key.
         let label = token(
             static_content.assets.as_ref(),
             &static_content.localisation,
@@ -300,7 +267,6 @@ impl Bindings {
             .iter()
             .find(|row| row.id == id)
         {
-            // The result's port-strike flag selects the port-strike title.
             let name = super::battle_name::title(
                 static_content,
                 frame,
@@ -309,7 +275,6 @@ impl Bindings {
             )?
             .map_err(|reason| format!("Naval result {id} name is hidden: {reason}."));
             self.bind("name", TEXT, name);
-            // The result's side selectors are explicit; absence of a live combat is never used.
             let countries = rows::<tables::NavalResultCountries>(frame)?;
             for (side, prefix) in ["attacker", "defender"].iter().enumerate() {
                 let flag = countries
@@ -343,7 +308,6 @@ impl Bindings {
         id: u64,
         vision: &Vision,
     ) -> io::Result<()> {
-        // The title is set only once its combat class and sides are decided.
         let title = self.values.entry("window_title".into()).or_default();
         title.text = None;
         title.hidden = true;
@@ -374,8 +338,6 @@ impl Bindings {
             .iter()
             .map(|r| (r.id, r.canonical_slot))
             .collect();
-        // the game checks only the first primary country of each side, even
-        // one with no division left in the combat.
         let sides = engagement_progress_sides(frame)?;
         let ours = |side: usize| {
             sides.get(&id).is_some_and(|row| {
@@ -385,9 +347,6 @@ impl Bindings {
                     == Some(&vision.ours())
             })
         };
-        // Title selection uses the combat type token (0x39A5 for border wars),
-        // then the viewer's side, else
-        // BATTLE_BATTLE. A missing modifier or side row leaves it undecided.
         let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
         let title = match super::details::border_war(modifiers.rows(), id) {
             None => Err(
@@ -414,8 +373,6 @@ impl Bindings {
             TEXT,
             title.map_err(|reason| format!("Land combat {id} title is hidden: {reason}.")),
         );
-        // The terrain picture and the side flags are decided once, in
-        // `details::pictures`.
         let progress = Progresses::read(frame)?
             .attacker(id)
             .map(|progress| progress as f32 / FIXED as f32)
@@ -445,9 +402,6 @@ impl Bindings {
             .enumerate()
         {
             let prefix = if side == 0 { "attacker" } else { "defender" };
-            // The legacy combat vector contains all side members, without
-            // commitment state, so COUNT is unknown: the
-            // label takes the viewer's unknown dash rather than a zero.
             let label = builtin(
                 static_content.assets.as_ref(),
                 &static_content.localisation,
@@ -539,7 +493,6 @@ impl Bindings {
         flags: &Flags,
     ) -> io::Result<()> {
         let prefix = "header_container";
-        // Live combat details use the ordinary battle title without a result.
         let province = rows::<tables::NavalCombats>(frame)?
             .rows()
             .iter()
@@ -570,9 +523,6 @@ impl Bindings {
             self.warnings.push(format!("Naval combat {id} is absent at hour {}. Absence is not a result event; no victory, defeat or losses are inferred.",frame.hour));
             return Ok(());
         };
-        // This legacy `.gui` default is an obsolete 486x63 sky overlay. The native
-        // window replaces it with a 413x70 terrain/weather image at runtime.
-        // No battle-weather state is present in the legacy combat row.
         hide(&mut self.values, &format!("{prefix}/terrain_background"));
         let participants = rows::<tables::NavalCombatParticipants>(frame)?;
         let ships: BTreeMap<_, _> = rows::<tables::Ships>(frame)?
@@ -601,9 +551,6 @@ impl Bindings {
             } else {
                 combat.defender_anti_air
             };
-            // positioning through fixed-point percentage formatting at precision 0
-            // times 100, anti-air through fixed-point formatting at
-            // precision 1, truncating.
             text(
                 &mut self.values,
                 &format!("{prefix}/{wnd}_wnd/stat_positioning"),
@@ -614,9 +561,6 @@ impl Bindings {
                 &format!("{prefix}/{wnd}_wnd/stat_anti_air"),
                 installed_content_core::fixed5::fixed5_to_string(anti_air, 1),
             );
-            // the game selects the combat box from the exact state and ship
-            // category. the game advances by sprite height + entry spacing,
-            // adding escape-bar height for state 8. Never interpret state as HP.
             for member in members {
                 let ship = ships.get(&member.ship).copied();
                 let category = ship.map(|s| s.category);
@@ -667,8 +611,6 @@ impl Bindings {
                         ..Widget::default()
                     },
                 );
-                // One legacy slot is shown per entry because damage, reveal state
-                // and model keys needed to merge slots are absent.
                 super::naval_details::descriptions(
                     self,
                     &mut row,
@@ -678,8 +620,6 @@ impl Bindings {
                     flags,
                 );
                 if member.state == 8 {
-                    // No escape progress is recorded before format 22: the bar
-                    // stays empty, the escape icon keeps the native placement.
                     row.insert("escape_progress".into(), Widget::default());
                     row.insert(
                         if side == 0 {
@@ -699,8 +639,6 @@ impl Bindings {
                     "reserve" => format!("battle_window/outside_wnd/{wnd}_wnd/grid"),
                     _ => format!("battle_window/top_wnd/{wnd}_wnd/grid_{column}"),
                 };
-                // Sunk rows use a separate authored strip. Native damage-group
-                // merging is a gap.
                 self.naval_entries.push(NavalEntry {
                     layout: if column == "sunk" {
                         NavalLayout::Sunk
@@ -743,7 +681,7 @@ fn naval_column(state: u32, category: Option<u32>, convoy: bool) -> Option<&'sta
                 Some("carrier")
             } else {
                 match category? {
-                    2 => Some("hidden"), // The reveal byte is absent from legacy rows.
+                    2 => Some("hidden"),
                     3 | 5 => Some("screen"),
                     6 | 8 | 9 => Some("battle"),
                     10 => Some("carrier"),

@@ -1,4 +1,3 @@
-//! Intel explanations from recorded operands and the recorded define stack.
 use super::intel_details::IntelValue;
 use installed_content_core::defines::Defines;
 use replay_data::rows::IntelContributionRow;
@@ -13,7 +12,6 @@ pub(super) fn country_caps(defines: &Defines) -> Result<[i64; 4], String> {
     let values = defines
         .fixed5_array("NIntel", "COUNTRY_LEVEL_INTEL_MAXIMUMS")
         .map_err(|e| e.to_string())?;
-    // Native country maxima resize to four, filling short arrays with unity.
     Ok(std::array::from_fn(|lane| {
         values.get(lane).copied().unwrap_or(100_000)
     }))
@@ -41,8 +39,6 @@ const STATIC: [&str; 4] = [
     "RADAR",
     "INTEL_NETWORK",
 ];
-/// Pool zero is the native neutral pool. The following ordinals are established
-/// by the country's pool-parameter construction, not by installed content size.
 pub(super) fn source(
     defines: &Defines,
     row: &IntelContributionRow,
@@ -81,7 +77,6 @@ pub(super) fn source(
                 let values = defines
                     .fixed5_array("NIntel", &key)
                     .map_err(|e| e.to_string())?;
-                // Native accumulator safety ceiling when no four-lane override is held.
                 const ACCUMULATOR_CEILING: i64 = 92233720200000;
                 if values.len() < 4 {
                     [ACCUMULATOR_CEILING; 4]

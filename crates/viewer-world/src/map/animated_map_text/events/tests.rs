@@ -7,7 +7,6 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 
-/// The hour's interval prepared for `context`'s viewer, then presented.
 fn present(
     consumer: &mut Consumer,
     context: &Context<'_>,
@@ -220,7 +219,7 @@ fn fog_off_does_not_demand_missing_surviving_unit_or_actor_census() {
     *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
         reason: "not recorded".into(),
     };
-    let vision = Vision::default(); // Local fog disabled, no selected native client state.
+    let vision = Vision::default();
     let context = Context::new(&frame, &vision, &content, &loc);
     assert!(context.unit_visible(&unit(&[])).unwrap());
     assert!(context.paradrop_visible(true, 9999, 7).unwrap());
@@ -232,7 +231,6 @@ fn missing_fog_can_admit_a_known_scaled_positive_but_never_invent_a_negative() {
     assert_eq!(unit_admission(0, None, 0, true), None);
     assert_eq!(unit_admission(150, Some(0), 0, false), Some(true));
     assert_eq!(unit_admission(0, Some(0), 0, false), None);
-    // The native wrapping law remains decisive at extreme modifiers too.
     for modifier in [i64::MIN, i64::MAX, -100_000, 0] {
         if let Some(admitted) = unit_admission(150, None, modifier, false) {
             assert!(
@@ -628,7 +626,6 @@ fn a_number_in_flight_at_a_seal_is_presented_when_a_later_interval_lists_it() {
     let loc = loc();
     let vision = Vision::sharing(1, []);
     let mut consumer = Consumer::default();
-    // Number 2 was taken before the cut at 40 and published after it.
     let mut sealed = interval(39, 40, 1, 3, vec![critical(1, 40)]);
     for health in &mut sealed.health {
         health.complete = false;
@@ -672,7 +669,6 @@ fn a_number_in_flight_at_a_seal_is_presented_when_a_later_interval_lists_it() {
             .collect::<Vec<_>>(),
         [(2, 7, 7.0), (3, 7, 7.0)]
     );
-    // After a failed hour the same interval presents nothing again.
     consumer.interrupt();
     let again = present(&mut consumer, &context, &[late], true, Continuity::Continue);
     assert!(again.popups.is_empty() && again.explosions.is_empty());
@@ -790,7 +786,6 @@ fn failed_same_hour_recovery_preserves_fence_but_failed_explicit_seek_restarts_i
         Some(([0.0; 3], [0.0; 4]))
     });
     for seek in [false, true] {
-        // The scene's own path: present, fail the same hour, retry it.
         let mut presenter = Presenter::default();
         let continuity = presenter.begin(at, false);
         assert_eq!(presenter.present(&prepared, continuity).popups.len(), 1);
@@ -831,7 +826,6 @@ fn toggling_fog_on_an_hour_already_presented_replays_nothing() {
     let batch = presenter.present(&toggled, continuity);
     assert!(!batch.reset);
     assert!(batch.popups.is_empty() && batch.explosions.is_empty());
-    // A viewing-country change starts the queues again.
     let other = Vision::sharing(2, []);
     let changed = Prepared::new(
         &Context::new(&frame, &other, &content, &loc),

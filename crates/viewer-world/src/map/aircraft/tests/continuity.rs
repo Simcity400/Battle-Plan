@@ -1,7 +1,6 @@
 use super::*;
 use viewer_foundation::map::presentation::Continuity;
 
-/// A launch clip's length from its seed, for the fixtures.
 fn lifetime(_: usize, seed: u32) -> f32 {
     3.0 + (seed % 3) as f32
 }
@@ -68,7 +67,6 @@ fn reordering_or_removing_scenarios_keeps_surviving_actor_keys_and_ground_state(
     next.flights.swap(0, 1);
     next.assign_seeds(&lifetime);
     next.carry_presentation(&mut previous, Continuity::Continue).unwrap();
-    // Each flight's player follows its own identity, so swapping them swaps their seeds.
     assert_eq!((next.flight_seed(0), next.flight_seed(1)), (previous.flight_seed(1), previous.flight_seed(0)));
     assert_eq!(next.runs[0].grounds, [Ground::Hidden]);
     assert_eq!((next.runs[0].cycle, next.runs[1].cycle), (4, 1));
@@ -86,9 +84,6 @@ fn reordering_or_removing_scenarios_keeps_surviving_actor_keys_and_ground_state(
     assert_eq!(final_plan.runs[0].grounds, [Ground::Hidden]);
 }
 
-/// A run whose flights are not the ones the plan before it ran keeps none of that run's clock:
-/// it is counted in `restarts` and takes its cycle from the clock at its next frame, which is a
-/// new animation epoch for its actors.
 #[test]
 fn changed_scenarios_start_their_run_anew_and_explicit_resets_keep_no_runtime() {
     let (mut previous, _) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
@@ -163,9 +158,6 @@ fn repeated_hour_installs_without_a_frame_never_reuse_an_unretired_actor_key() {
     }
 }
 
-/// A plan whose flights differ in one wing's starts that run anew: fresh players, its flight
-/// standing on its new pose, counted in `restarts`; every other run's flights stay where they are
-/// drawn.
 #[test]
 fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
     let defines = FlightDefines::for_tests();
@@ -197,9 +189,6 @@ fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
     assert_eq!(unchanged[0], drawn[0], "the other run's flight is where it was");
 }
 
-/// A plan's animation seeds are its own flights' and launches', not a count of the plans that
-/// came before: a viewer that played to the hour through other plans and one that opened at it
-/// hold the same seeds, so they draw the same aircraft.
 #[test]
 fn a_plans_seeds_do_not_depend_on_the_plans_before_it() {
     let (source, _) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
@@ -222,9 +211,6 @@ fn a_plans_seeds_do_not_depend_on_the_plans_before_it() {
     assert_eq!(played.launches[0].length, opened.launches[0].length);
 }
 
-/// A run takes its cycle from the clock, so a plan advanced straight to a time stands where one
-/// installed and advanced frame by frame to it stands: a seek into the middle of a flight draws
-/// it where playing to that hour draws it.
 #[test]
 fn a_run_advanced_straight_to_a_time_stands_where_playing_to_it_stands() {
     let defines = FlightDefines::for_tests();

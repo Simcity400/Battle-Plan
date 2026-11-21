@@ -1,30 +1,3 @@
-//! Summary pieces: one table's buckets of game hours, per row key and summarized column, so a
-//! chart over any span reads a few pieces of one column instead of the hours.
-//!
-//! A bucket of level L covers the absolute game hours `[k·B, (k+1)·B)`, `B = 6·16^L`: every level
-//! is aligned to the game day. A level-0 piece covers one block; a level-L piece is folded from the
-//! sixteen level-(L−1) pieces of its span ([`fold`]). A piece holds every bucket its hours meet;
-//! its first and last may be partial, and the neighbouring piece holds the rest.
-//!
-//! Per key, its **life**: how many of each bucket's hours the row was live and its table
-//! available (and, read in part, read). Per key and column, one token per bucket: none (no
-//! recorded value, run-length), same (the last value, unchanged over the bucket's every life
-//! hour, run-length), set (one value over every life hour, another than the last), vary (first,
-//! last, least, greatest and the hours with a value), with the aggregates the column declares:
-//! the hour-weighted sum and absolute sum, and the hour-to-hour falls and changes. A cell not
-//! recorded, a row not live and a table not available are none, never zero.
-//!
-//! A column declared ranked also keeps, per bucket, its keys greatest in their last value there
-//! ([`Ranks`]), so a ranked view reads those keys alone.
-//!
-//! A log table's piece is keyed by its facets' values and holds the rows inserted (a log's, appended) per bucket; a
-//! lifetimes table's holds keys and life alone.
-//!
-//! Layout, stored as it is: the directory's length (u32 LE), the directory (version, level, the
-//! piece's first hour and hours, its first bucket and buckets, its key count, its shape and
-//! columns, then each frame's offset, stored and raw length), then each frame: the keys, then
-//! each key's life behind its byte length; then one per column, each key's tokens behind their
-//! byte length; then one per ranked column, its ranks. A reader of a few keys decodes only theirs.
 
 use crate::{
     block::{put_varint, unzig, zig},
@@ -44,43 +17,29 @@ use std::{
 mod tests;
 
 const VERSION: u8 = 4;
-/// Hours of a level-0 bucket.
 pub const BASE_HOURS: i64 = 6;
-/// Buckets of one level a bucket of the level above holds.
 pub const FANOUT: i64 = 16;
 
-/// Hours of a bucket of `level`.
 pub const fn bucket_hours(level: u8) -> i64 {
     BASE_HOURS * FANOUT.pow(level as u32)
 }
 
-/// The bucket of `level` holding `hour`.
 pub const fn bucket_of(hour: i64, level: u8) -> i64 {
     hour.div_euclid(bucket_hours(level))
 }
 
-/// What a column's buckets carry beyond first, last, least and greatest.
 pub mod aggregate {
-    /// The hour-weighted sum of the value.
     pub const SUM: u8 = 1;
-    /// The hour-weighted sum of the value's magnitude.
     pub const ABS: u8 = 2;
-    /// Hour-to-hour decreases.
     pub const FALLS: u8 = 4;
-    /// Hour-to-hour changes.
     pub const CHANGES: u8 = 8;
     pub const ALL: u8 = SUM | ABS | FALLS | CHANGES;
 }
 
-/// The rows a summary is built from and its columns read: the recorder's store, or a reader's
-/// table.
 pub trait Cells {
-    /// A recorded numeric cell as a signed value; none for an unrecorded cell or another kind.
     fn number(&self, column: usize, slot: u32) -> Option<i64>;
     fn key(&self, slot: u32) -> Option<u128>;
-    /// The live row with `key`.
     fn slot(&self, key: u128) -> Option<u32>;
-    /// Each live slot, ascending.
     fn each_row(&self, each: &mut dyn FnMut(u32));
 }
 
@@ -120,13 +79,9 @@ impl Cells for TableView<'_> {
     }
 }
 
-/// Where a summarized column's value comes from.
 #[derive(Clone, Copy)]
 pub enum Source {
-    /// A numeric column's cell.
     Cell(usize),
-    /// A pure function of one row's cells, by its id; `inputs` holds the bits of the columns it
-    /// reads (the first 64).
     Computed {
         id: u32,
         inputs: u64,
@@ -135,7 +90,6 @@ pub enum Source {
 }
 
 impl Source {
-    /// Its id in a piece: a cell's column, or a computed column's id past every column.
     pub fn id(&self) -> u32 {
         match self {
             Self::Cell(column) => *column as u32,
@@ -143,7 +97,6 @@ impl Source {
         }
     }
 
-    /// Its value at `slot` of `table`; none when not recorded.
     pub fn value(&self, table: &dyn Cells, slot: u32) -> Option<i64> {
         match self {
             Self::Cell(column) => table.number(*column, slot),
@@ -151,7 +104,6 @@ impl Source {
         }
     }
 
-    /// Whether a change of the columns `mask` names may change it.
     fn reads(&self, mask: u64) -> bool {
         match self {
             Self::Cell(column) => *column >= 64 || mask >> column & 1 != 0,
@@ -160,35 +112,25 @@ impl Source {
     }
 }
 
-/// Ids of computed columns start here.
 pub const COMPUTED: u32 = 1 << 16;
 
-/// One summarized column.
 #[derive(Clone, Copy)]
 pub struct Column {
     pub source: Source,
     pub aggregates: u8,
-    /// How many keys each bucket ranks by their last value there ([`Ranks`]); 0 ranks none.
     pub rank: u8,
 }
 
-/// What a table's pieces hold.
 #[derive(Clone)]
 pub enum Shape {
-    /// Life, and buckets of these columns.
     Values(Vec<Column>),
-    /// Keys and life alone.
     Lifetimes,
-    /// Rows inserted per bucket, keyed by these facets' values (at most four, 32 bits each).
     Log(Vec<Facet>),
 }
 
-/// What a log's rows are counted by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Facet {
-    /// A numeric column's value (none counts as `u32::MAX`).
     Column(usize),
-    /// 32 bits of the row's key from this shift.
     Key(u32),
 }
 
@@ -202,7 +144,6 @@ impl Shape {
     }
 }
 
-/// A recorded numeric cell as a signed value; none for an unrecorded cell or another kind.
 pub fn numeric(table: &Table, column: usize, slot: u32) -> Option<i64> {
     if !table.recorded(column, slot) {
         return None;
@@ -225,21 +166,17 @@ pub fn numeric(table: &Table, column: usize, slot: u32) -> Option<i64> {
     })
 }
 
-/// Whether a table of `status` holds values.
 fn available(status: Status) -> bool {
     matches!(status, Status::Complete | Status::Truncated { .. })
 }
 
-/// One bucket of one key and column: what its hours with a value held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fold {
-    /// Hours with a value.
     pub hours: u32,
     pub first: i64,
     pub last: i64,
     pub min: i64,
     pub max: i64,
-    /// The buckets (of the level folded) of the first, last, least and greatest value.
     pub first_bucket: i64,
     pub last_bucket: i64,
     pub min_bucket: i64,
@@ -251,7 +188,6 @@ pub struct Fold {
 }
 
 impl Fold {
-    /// `value` held over `hours` hours of bucket `bucket`.
     pub fn constant(value: i64, hours: u32, bucket: i64) -> Self {
         Self {
             hours,
@@ -270,7 +206,6 @@ impl Fold {
         }
     }
 
-    /// `later`, the bucket after, folded in.
     pub fn merge(&mut self, later: &Self) {
         if later.min < self.min {
             (self.min, self.min_bucket) = (later.min, later.min_bucket);
@@ -287,14 +222,11 @@ impl Fold {
         self.changes += later.changes;
     }
 
-    /// Its value when it held one throughout; a change into it at its first hour aside.
     fn constant_value(&self) -> Option<i64> {
         (self.first == self.last && self.min == self.max && self.first == self.min).then_some(self.first)
     }
 }
 
-/// One key's life in one bucket: its covered hours, the offset of the first from the bucket's
-/// first hour, and past the last.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Life {
     pub hours: u32,
@@ -303,7 +235,6 @@ pub struct Life {
 }
 
 impl Life {
-    /// Whether its hours lie end to end.
     pub fn contiguous(&self) -> bool {
         self.end - self.first == self.hours
     }
@@ -325,8 +256,6 @@ impl Life {
     }
 }
 
-// ---------------------------------------------------------------------------------------
-// Tokens
 
 const NONE: u8 = 0;
 const SAME: u8 = 1;
@@ -371,7 +300,6 @@ fn get_i128(reader: &mut Reader<'_>) -> io::Result<i128> {
     Ok(((value >> 1) as i128) ^ -((value & 1) as i128))
 }
 
-/// Writes one key's buckets of one column as tokens, the runs held until they end.
 struct TokenWriter {
     aggregates: u8,
     out: Vec<u8>,
@@ -400,7 +328,6 @@ impl TokenWriter {
         self.repeat(tag, 1);
     }
 
-    /// `count` more buckets of run token `tag`.
     fn repeat(&mut self, tag: u8, count: u64) {
         if count == 0 {
             return;
@@ -414,7 +341,6 @@ impl TokenWriter {
         }
     }
 
-    /// `count` whole buckets of `full` hours holding `value` throughout.
     fn constant(&mut self, value: i64, count: u64, full: u32) {
         if count == 0 {
             return;
@@ -423,7 +349,6 @@ impl TokenWriter {
         self.repeat(SAME, count - 1);
     }
 
-    /// The next bucket: its fold over its hours with a value, of `full` hours the piece covers.
     fn bucket(&mut self, fold: Option<&Fold>, full: u32) {
         let Some(fold) = fold.filter(|fold| fold.hours > 0) else {
             self.running(NONE);
@@ -474,7 +399,6 @@ impl TokenWriter {
     }
 }
 
-/// Reads one key's tokens of one column, a bucket at a time.
 pub struct TokenReader<'a> {
     reader: Reader<'a>,
     aggregates: u8,
@@ -492,8 +416,6 @@ impl<'a> TokenReader<'a> {
         }
     }
 
-    /// The next bucket's fold, `bucket` its index and `full` the hours the piece covers of it:
-    /// none without a value.
     pub fn next(&mut self, bucket: i64, full: u32) -> io::Result<Option<Fold>> {
         if self.run.is_none_or(|(_, left)| left == 0) {
             let tag = self.reader.u8()?;
@@ -517,8 +439,6 @@ impl<'a> TokenReader<'a> {
         }
     }
 
-    /// The buckets from the next: a run of buckets without a value or holding the last value
-    /// throughout, or one bucket's fold (`bucket` its index, `full` the hours the piece covers).
     pub fn span(&mut self, bucket: i64, full: u32) -> io::Result<Span> {
         let (tag, count) = match self.run.take_if(|(_, left)| *left > 0) {
             Some(run) => run,
@@ -537,7 +457,6 @@ impl<'a> TokenReader<'a> {
         })
     }
 
-    /// A set or vary token's bucket.
     fn one(&mut self, tag: u8, bucket: i64, full: u32) -> io::Result<Fold> {
         if tag == SET {
             let value = unzig(self.reader.varint()?).wrapping_add(self.last.unwrap_or(0));
@@ -593,24 +512,18 @@ impl<'a> TokenReader<'a> {
     }
 }
 
-/// Buckets read at once: a run, or one bucket.
 pub enum Span {
-    /// Buckets without a value.
     None(u64),
-    /// Buckets holding this value over all their hours.
     Same(i64, u64),
-    /// One bucket.
     One(Fold),
 }
 
-/// A key's life read a run at a time.
 pub enum LifeSpan {
     Empty(u64),
     Full(u64),
     Part(Life),
 }
 
-/// `count` more buckets of life run token `tag` (empty or full).
 fn repeat_life(out: &mut Vec<u8>, run: &mut Option<(u8, u64)>, tag: u8, count: u64) {
     if count == 0 {
         return;
@@ -647,26 +560,18 @@ fn put_life(out: &mut Vec<u8>, run: &mut Option<(u8, u64)>, life: &Life, full: u
     put_varint(out, u64::from(life.end));
 }
 
-// ---------------------------------------------------------------------------------------
-// The piece
 
-/// A piece's directory: where it sits and what it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Directory {
     pub level: u8,
-    /// Its frames are compressed.
     pub compressed: bool,
-    /// The first game hour the piece covers, and how many.
     pub first_hour: i64,
     pub hours: u32,
     pub first_bucket: i64,
     pub buckets: u32,
     pub keys: u32,
     pub shape: u8,
-    /// Each column's source id, aggregates and rank.
     pub columns: Vec<(u32, u8, u8)>,
-    /// Each frame's (offset past the directory, stored, raw): the keys', each column's, then each
-    /// ranked column's ranks.
     pub frames: Vec<(u64, u64, u64)>,
 }
 
@@ -693,7 +598,6 @@ impl Directory {
         out
     }
 
-    /// The directory at the start of a piece's `bytes`, and where its frames start.
     pub fn read(bytes: &[u8]) -> io::Result<(Self, usize)> {
         let length = u32::from_le_bytes(
             bytes
@@ -758,7 +662,6 @@ impl Directory {
         ))
     }
 
-    /// Hours of bucket `at` (of the piece's) the piece covers.
     pub fn covered(&self, at: u32) -> u32 {
         let size = bucket_hours(self.level);
         let start = (self.first_bucket + i64::from(at)) * size;
@@ -767,7 +670,6 @@ impl Directory {
         (to - from).max(0) as u32
     }
 
-    /// The offset within bucket `at` of the piece's first hour in it.
     fn offset(&self, at: u32) -> u32 {
         let size = bucket_hours(self.level);
         let start = (self.first_bucket + i64::from(at)) * size;
@@ -775,19 +677,16 @@ impl Directory {
     }
 }
 
-/// A piece built, its frames not yet compressed.
 pub struct Raw {
     directory: Directory,
     frames: Vec<Vec<u8>>,
 }
 
 impl Raw {
-    /// Its frames' bytes before compression.
     pub fn raw_bytes(&self) -> usize {
         self.frames.iter().map(Vec::len).sum()
     }
 
-    /// The piece, its frames compressed at `level`, each raw frame let go once compressed.
     pub fn assemble(self, level: i32) -> io::Result<Vec<u8>> {
         let mut directory = self.directory;
         directory.compressed = true;
@@ -811,8 +710,6 @@ impl Raw {
     }
 }
 
-/// The piece `bytes` hold with its frames compressed again at `level`: each decodes to the same
-/// bytes as before, the directory naming their new lengths.
 pub fn recompress(bytes: &[u8], level: i32) -> io::Result<Vec<u8>> {
     let (directory, start) = Directory::read(bytes)?;
     let piece = Piece {
@@ -830,7 +727,6 @@ pub fn recompress(bytes: &[u8], level: i32) -> io::Result<Vec<u8>> {
     Raw { directory: piece.directory, frames }.assemble(level)
 }
 
-/// Where the next bytes behind their byte length lie in what `reader` reads: the length's place.
 fn place(reader: &mut Reader<'_>) -> io::Result<u32> {
     let at = u32::try_from(reader.at()).map_err(|_| invalid("A summary frame passes 2^32 bytes"))?;
     let length = reader.count()?;
@@ -838,25 +734,21 @@ fn place(reader: &mut Reader<'_>) -> io::Result<u32> {
     Ok(at)
 }
 
-/// The bytes behind the byte length at `place` of `bytes`, a frame [`place`] read whole.
 fn prefixed_at(bytes: &[u8], place: u32) -> &[u8] {
     let mut reader = Reader::new(&bytes[place as usize..]);
     let length = reader.count().expect("a length read whole before");
     reader.raw(length).expect("bytes read whole before")
 }
 
-/// A piece read: its directory and keys decoded; each key's life and its columns as asked.
 pub struct Piece<'a> {
     pub directory: Directory,
     pub keys: Vec<u128>,
-    /// The keys' frame, and where each key's life tokens' byte length lies in it.
     head: Vec<u8>,
     lives: Vec<u32>,
     frames: &'a [u8],
 }
 
 impl<'a> Piece<'a> {
-    /// The piece `bytes` hold: its directory and keys, and where each key's life lies.
     pub fn read(bytes: &'a [u8]) -> io::Result<Self> {
         let (directory, start) = Directory::read(bytes)?;
         let frames = &bytes[start..];
@@ -889,7 +781,6 @@ impl<'a> Piece<'a> {
         Ok(piece)
     }
 
-    /// The piece's `at`th key's life, a bucket at a time.
     pub fn lives(&self, at: usize) -> LifeReader<'_> {
         LifeReader {
             reader: Reader::new(prefixed_at(&self.head, self.lives[at])),
@@ -898,7 +789,6 @@ impl<'a> Piece<'a> {
         }
     }
 
-    /// The piece's `at`th key's life in every bucket.
     pub fn life(&self, at: usize) -> io::Result<Vec<Life>> {
         let mut lives = self.lives(at);
         let mut out = Vec::with_capacity(self.directory.buckets as usize);
@@ -931,12 +821,10 @@ impl<'a> Piece<'a> {
         Ok(decoded)
     }
 
-    /// The place among its columns of the column of source id `id`.
     pub fn column_of(&self, id: u32) -> Option<usize> {
         self.directory.columns.iter().position(|&(held, _, _)| held == id)
     }
 
-    /// Column `at`'s frame, decoded: each key's token bytes found by their lengths.
     pub fn column(&self, at: usize) -> io::Result<ColumnFrame> {
         let raw = self.frame(1 + at)?;
         let mut places = Vec::with_capacity(self.keys.len());
@@ -952,17 +840,14 @@ impl<'a> Piece<'a> {
         })
     }
 
-    /// The position of `key` among its keys.
     pub fn key_at(&self, key: u128) -> Option<usize> {
         self.keys.binary_search(&key).ok()
     }
 
-    /// How many keys column `at` ranks per bucket; 0 when it ranks none.
     pub fn rank(&self, at: usize) -> u8 {
         self.directory.columns.get(at).map_or(0, |column| column.2)
     }
 
-    /// Column `at`'s ranks, decoded; none when it ranks no key.
     pub fn ranks(&self, at: usize) -> io::Result<Option<Ranks>> {
         let rank = self.rank(at);
         if rank == 0 {
@@ -974,7 +859,6 @@ impl<'a> Piece<'a> {
     }
 }
 
-/// One key's life in a piece, read a bucket at a time.
 pub struct LifeReader<'a> {
     reader: Reader<'a>,
     directory: &'a Directory,
@@ -982,7 +866,6 @@ pub struct LifeReader<'a> {
 }
 
 impl LifeReader<'_> {
-    /// The key's life in the piece's bucket `at`, the bucket after the last asked.
     pub fn next(&mut self, at: u32) -> io::Result<Life> {
         if self.run.is_none_or(|(_, left)| left == 0) {
             match self.reader.u8()? {
@@ -1012,7 +895,6 @@ impl LifeReader<'_> {
         })
     }
 
-    /// The buckets from the next: a run of empty or full ones, or one in part.
     pub fn span(&mut self) -> io::Result<LifeSpan> {
         let (tag, count) = match self.run.take_if(|(_, left)| *left > 0) {
             Some(run) => run,
@@ -1042,21 +924,17 @@ impl LifeReader<'_> {
     }
 }
 
-/// One column's frame of a piece.
 pub struct ColumnFrame {
     pub aggregates: u8,
     raw: Vec<u8>,
-    /// Where each key's tokens' byte length lies in `raw`.
     places: Vec<u32>,
 }
 
 impl ColumnFrame {
-    /// The tokens of the piece's `at`th key.
     pub fn tokens(&self, at: usize) -> TokenReader<'_> {
         TokenReader::new(prefixed_at(&self.raw, self.places[at]), self.aggregates)
     }
 
-    /// Every bucket of the piece's `at`th key, given its life: none without a value.
     pub fn buckets(&self, piece: &Piece<'_>, at: usize) -> io::Result<Vec<Option<Fold>>> {
         let mut tokens = self.tokens(at);
         let mut out = Vec::with_capacity(piece.directory.buckets as usize);
@@ -1069,7 +947,6 @@ impl ColumnFrame {
         Ok(out)
     }
 
-    /// For a log piece: each bucket's count of rows inserted.
     pub fn counts(&self, piece: &Piece<'_>, at: usize) -> io::Result<Vec<u64>> {
         let mut reader = Reader::new(prefixed_at(&self.raw, self.places[at]));
         let mut out = Vec::with_capacity(piece.directory.buckets as usize);
@@ -1091,13 +968,6 @@ impl ColumnFrame {
 const RANKS_SAME: u8 = 0;
 const RANKS_LIST: u8 = 1;
 
-/// A ranked column's ranks: per bucket, the positions among the piece's keys of the keys
-/// greatest in their last value in the bucket, at most the column's rank, greatest first, ties by
-/// key; only keys holding a value there. Their values are the column's own tokens.
-///
-/// Written bucket by bucket against the list before: a run of unchanged lists, or a list as its
-/// prefix shared with the one before, its length, and each later entry as its place in the list
-/// before (counted from the place after the last one taken) or a new key.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ranks {
     positions: Vec<u32>,
@@ -1105,17 +975,14 @@ pub struct Ranks {
 }
 
 impl Ranks {
-    /// Bucket `at`'s ranked keys, as positions among the piece's keys.
     pub fn bucket(&self, at: u32) -> &[u32] {
         self.lists.get(at as usize).map_or(&[], |range| &self.positions[range.clone()])
     }
 
-    /// The ranks of a piece of `directory` from each key's `tokens` of one column.
     fn build(directory: &Directory, tokens: &[&[u8]], aggregates: u8, rank: u8) -> io::Result<Self> {
         let buckets = directory.buckets;
         let rank = usize::from(rank);
         let mut best: Vec<Vec<(i64, u32)>> = vec![Vec::new(); buckets as usize];
-        // Keys come in ascending order: a value tying one held ranks after it.
         let mut offer = |bucket: u32, value: i64, position: u32| {
             let list = &mut best[bucket as usize];
             if list.len() == rank && list.last().is_some_and(|worst| worst.0 >= value) {
@@ -1197,7 +1064,6 @@ impl Ranks {
         out
     }
 
-    /// The ranks `raw` holds, of a piece of `buckets` buckets and `keys` keys ranking `rank`.
     fn read(raw: &[u8], buckets: u32, keys: usize, rank: u8) -> io::Result<Self> {
         let malformed = || invalid("A summary's ranks are malformed");
         let mut reader = Reader::new(raw);
@@ -1247,20 +1113,15 @@ impl Ranks {
     }
 }
 
-/// One key's rows counted per bucket, each bucket written once a later one opens: runs of
-/// buckets without a row, and each bucket's count.
 #[derive(Default)]
 struct Counts {
     out: Vec<u8>,
-    /// The first bucket nothing was written for.
     next: u32,
-    /// The open bucket and its count.
     open: u32,
     count: u64,
 }
 
 impl Counts {
-    /// One row in `bucket`, the open one or a later.
     fn add(&mut self, bucket: u32) {
         if self.count > 0 && bucket != self.open {
             self.close();
@@ -1283,7 +1144,6 @@ impl Counts {
         self.count = 0;
     }
 
-    /// Its counts of a piece of `buckets` buckets.
     fn finish(mut self, buckets: u32) -> Vec<u8> {
         self.close();
         if buckets > self.next {
@@ -1293,7 +1153,6 @@ impl Counts {
         self.out
     }
 
-    /// A key's counts of each bucket of a piece, as they are.
     fn of(counts: &[u64]) -> Vec<u8> {
         let mut out = Self::default();
         for (bucket, &count) in counts.iter().enumerate() {
@@ -1307,7 +1166,6 @@ impl Counts {
     }
 }
 
-/// One key's life tokens, bucket by bucket.
 fn life_tokens(life: &[Life], directory: &Directory) -> Vec<u8> {
     let mut out = Vec::new();
     let mut run = None;
@@ -1321,13 +1179,11 @@ fn life_tokens(life: &[Life], directory: &Directory) -> Vec<u8> {
     out
 }
 
-/// `bytes` appended to `frame` behind their byte length.
 fn put_prefixed(frame: &mut Vec<u8>, bytes: &[u8]) {
     put_varint(frame, bytes.len() as u64);
     frame.extend_from_slice(bytes);
 }
 
-/// Each of `count` keys' bytes in `frame`, behind their byte lengths.
 fn prefixed(frame: &[u8], count: usize) -> io::Result<Vec<&[u8]>> {
     let mut reader = Reader::new(frame);
     let mut out = Vec::with_capacity(count);
@@ -1339,9 +1195,6 @@ fn prefixed(frame: &[u8], count: usize) -> io::Result<Vec<&[u8]>> {
     Ok(out)
 }
 
-/// A piece of `directory`'s place from its keys, each key's life (`lives`) and, per column, each
-/// key's buckets or counts (`columns`), all behind their byte lengths; each ranked column's ranks
-/// read from its keys' tokens.
 fn build(directory: Directory, keys: &[u128], lives: &[u8], columns: Vec<Vec<u8>>) -> io::Result<Raw> {
     let mut head = Vec::with_capacity(2 * keys.len() + lives.len());
     let mut previous = 0u128;
@@ -1364,10 +1217,7 @@ fn build(directory: Directory, keys: &[u128], lives: &[u8], columns: Vec<Vec<u8>
     Ok(Raw { directory, frames })
 }
 
-// ---------------------------------------------------------------------------------------
-// Building a level-0 piece from a block's hours
 
-/// The hours of level-0 bucket `bucket` within `[first_hour, end)`.
 fn within(bucket: i64, first_hour: i64, end: i64) -> u32 {
     let start = bucket * BASE_HOURS;
     let from = start.max(first_hour);
@@ -1375,11 +1225,8 @@ fn within(bucket: i64, first_hour: i64, end: i64) -> u32 {
     (to - from).max(0) as u32
 }
 
-/// One cell's buckets as they complete: the open bucket's fold, and the tokens of those before.
 struct Stream {
-    /// The open bucket and its fold so far; none before the cell's first value.
     open: Option<(i64, Fold)>,
-    /// The first bucket no token was written for yet.
     next: i64,
     writer: TokenWriter,
 }
@@ -1393,7 +1240,6 @@ impl Stream {
         }
     }
 
-    /// Writes every bucket before `bucket`: the open one, then none for those that held no value.
     fn close_before(&mut self, bucket: i64, first_hour: i64, end: i64) {
         if let Some((held, fold)) = self.open.take_if(|(held, _)| *held < bucket) {
             self.writer.repeat(NONE, (held - self.next).max(0) as u64);
@@ -1404,10 +1250,8 @@ impl Stream {
         self.next = self.next.max(bucket);
     }
 
-    /// The fold of `bucket`, opened when it is not.
     fn at(&mut self, bucket: i64, first_hour: i64, value: i64) -> &mut Fold {
         if self.open.as_ref().is_some_and(|(held, _)| *held < bucket) {
-            // A later bucket than the open one: the open one is complete.
             self.close_before(bucket, first_hour, i64::MAX);
         }
         &mut self
@@ -1431,13 +1275,11 @@ impl Stream {
             .1
     }
 
-    /// Adds `[from, to)` holding `value`.
     fn add(&mut self, first_hour: i64, value: i64, from: i64, to: i64) {
         let mut at = from;
         while at < to {
             let bucket = bucket_of(at, 0);
             let start = bucket * BASE_HOURS;
-            // Whole buckets from here, none open: one run of tokens.
             let whole = (to - start) / BASE_HOURS;
             if at == start && start >= first_hour && whole > 0 && self.open.as_ref().is_none_or(|(held, _)| *held < bucket) {
                 self.close_before(bucket, first_hour, i64::MAX);
@@ -1467,13 +1309,11 @@ impl Stream {
     }
 }
 
-/// One key's life as its buckets complete.
 struct LifeStream {
     open: Option<(i64, Life)>,
     next: i64,
     out: Vec<u8>,
     run: Option<(u8, u64)>,
-    /// Whether any bucket holds a covered hour.
     any: bool,
 }
 
@@ -1498,13 +1338,11 @@ impl LifeStream {
         self.next = self.next.max(bucket);
     }
 
-    /// Adds the covered hours `[from, to)`.
     fn add(&mut self, first_hour: i64, from: i64, to: i64) {
         let mut at = from;
         while at < to {
             let bucket = bucket_of(at, 0);
             let start = bucket * BASE_HOURS;
-            // Whole buckets from here, none open: one run of full ones.
             let whole = (to - start) / BASE_HOURS;
             if at == start && start >= first_hour && whole > 0 && self.open.as_ref().is_none_or(|(held, _)| *held < bucket) {
                 self.close_before(bucket, first_hour, i64::MAX);
@@ -1542,19 +1380,14 @@ impl LifeStream {
     }
 }
 
-/// A run of hours with one value or none.
 #[derive(Clone, Copy)]
 struct Cell_ {
     value: Option<i64>,
-    /// The hour it holds since.
     since: i64,
-    /// The value at the hour before `since`, for the change at `since`.
     before: Option<i64>,
 }
 
-/// One key's tracks while its block's changes are replayed, once the block ends.
 struct Track {
-    /// Whether it is covered (live, its table available and, read in part, read) since `since`.
     covered: bool,
     since: i64,
     life: LifeStream,
@@ -1562,13 +1395,9 @@ struct Track {
     streams: Vec<Stream>,
 }
 
-/// Raw bytes of a table's changes compressed together once they fill.
 pub(crate) const CHUNK: usize = 8 << 10;
-/// Past [`CHUNK`], room for the longest change a cell writes at once: an hour, its value at the
-/// block's first hour and its new value.
 const CHANGE_ROOM: usize = 64;
 
-// A change's kind, in the low bits of its head; a cell's kind holds its column above.
 const WROTE: u64 = 0;
 const CLEARED: u64 = 1;
 const BEGAN: u64 = 2;
@@ -1578,15 +1407,10 @@ const UNCOVERED: u64 = 5;
 const HOUR_MARK: u64 = 6;
 const KIND_BITS: u32 = 3;
 
-/// A table's changes in a block, in the order applied: per change its kind and column, its key's
-/// track from the last one named, and a value from the cell's before; an hour named once ahead of
-/// its changes. Compressed a chunk at a time.
 #[derive(Default)]
 struct Changes {
-    /// Chunks compressed, with their raw length; none for one kept raw.
     chunks: Vec<(Vec<u8>, Option<usize>)>,
     open: Vec<u8>,
-    /// The hour (from the block's first) and the track last named.
     hour: u32,
     track: u32,
 }
@@ -1605,7 +1429,6 @@ impl Changes {
         self.track = track;
     }
 
-    /// A change is written whole: its chunk is compressed once it fills.
     fn ended(&mut self) {
         if self.open.len() < CHUNK {
             return;
@@ -1621,8 +1444,6 @@ impl Changes {
         self.open.clear();
     }
 
-    /// Visits each change in order: its track (under `tracks`), its hour (from the block's first),
-    /// its head and its value.
     fn each(&self, tracks: usize, visit: &mut dyn FnMut(usize, u32, u64, Option<u64>)) -> io::Result<()> {
         let malformed = || invalid("A summary builder's changes are malformed");
         let (mut hour, mut track) = (0u32, 0i64);
@@ -1656,7 +1477,6 @@ impl Changes {
         Ok(())
     }
 
-    /// Each of `tracks` tracks' changes, in order, one track after another in one allocation.
     fn split(self, tracks: usize) -> io::Result<Split> {
         let mut ends = vec![0usize; tracks];
         self.each(tracks, &mut |at, hour, head, value| ends[at] += varint_len(u64::from(hour)) + varint_len(head) + value.map_or(0, varint_len))?;
@@ -1679,12 +1499,10 @@ impl Changes {
     }
 }
 
-/// The bytes of `value` as a varint.
 fn varint_len(value: u64) -> usize {
     (64 - (value | 1).leading_zeros() as usize).div_ceil(7)
 }
 
-/// `value` as a varint into `out` at `at`; where it ends.
 fn put_varint_at(out: &mut [u8], mut at: usize, mut value: u64) -> usize {
     while value >= 0x80 {
         out[at] = value as u8 | 0x80;
@@ -1695,11 +1513,8 @@ fn put_varint_at(out: &mut [u8], mut at: usize, mut value: u64) -> usize {
     at + 1
 }
 
-/// Every track's changes, one track after another: per change its hour (from the block's first),
-/// its head and its value.
 struct Split {
     bytes: Vec<u8>,
-    /// Where each track's changes end.
     ends: Vec<usize>,
 }
 
@@ -1710,25 +1525,18 @@ impl Split {
     }
 }
 
-/// Builds one table's level-0 piece of one block from its hours, as they are applied: per key its
-/// cells as the hours leave them, and the table's changes, compressed; once the block ends each
-/// key's changes are replayed into its tokens.
 pub struct Builder {
     shape: Shape,
-    /// A values table's columns; none otherwise.
     columns: Vec<Column>,
     first_hour: i64,
     first_bucket: i64,
     tracks: Tracks,
-    /// For a log: its rows per facet key, counted per bucket.
     counts: HashMap<u128, Counts, foldhash::fast::RandomState>,
     available: bool,
     truncated: bool,
 }
 
 impl Builder {
-    /// A block's builder: `held` the table and `status` its status before the block's first hour
-    /// `first_hour`.
     pub fn open(shape: &Shape, held: &dyn Cells, status: Status, first_hour: i32) -> Self {
         let first_hour = i64::from(first_hour);
         let columns = match shape {
@@ -1759,13 +1567,11 @@ impl Builder {
         builder
     }
 
-    /// What it holds, in bytes: its keys' cells and the block's changes so far.
     pub fn held_bytes(&self) -> usize {
         let counts = self.counts.capacity() * (size_of::<(u128, Counts)>() + 1) + self.counts.values().map(|counts| counts.out.capacity()).sum::<usize>();
         self.tracks.held_bytes() + counts
     }
 
-    /// The hour `hour` changes `track`'s coverage to `covered`.
     fn cover(first_hour: i64, track: &mut Track, covered: bool, hour: i64) {
         if track.covered == covered {
             return;
@@ -1777,8 +1583,6 @@ impl Builder {
         track.since = hour;
     }
 
-    /// The hour `hour` sets a cell's value to `value`: the run before it is added, and a
-    /// change from a value the hour before counted in its bucket.
     fn set(first_hour: i64, stream: &mut Stream, cell: &mut Cell_, value: Option<i64>, hour: i64) {
         if cell.value == value && cell.since <= hour {
             return;
@@ -1799,9 +1603,6 @@ impl Builder {
         }
     }
 
-    /// Applies hour `hour` of the table: its rows as `table` holds them after it, what the hour
-    /// changed of them (`log`, settled), its `status`, and when read in part the rows it read
-    /// (`view`).
     pub fn hour(&mut self, hour: i32, table: &dyn Cells, log: &TableHour, status: Status, view: Option<&[u32]>) {
         let hour = i64::from(hour);
         if let Shape::Log(facets) = &self.shape {
@@ -1818,7 +1619,6 @@ impl Builder {
                     }
                     counts.entry(key).or_default().add(bucket);
                 };
-                // A log table's rows of the hour are its appended rows, all of them.
                 if log.whole || log.appended > 0 {
                     table.each_row(&mut count);
                 } else {
@@ -1885,8 +1685,6 @@ impl Builder {
         }
     }
 
-    /// The piece once the block's hours through `end` (exclusive) are applied; none when it holds
-    /// no key.
     pub fn finish(self, end: i32) -> io::Result<Option<Raw>> {
         let end = i64::from(end);
         let buckets = (bucket_of(end - 1, 0) - self.first_bucket + 1) as u32;
@@ -1948,22 +1746,15 @@ impl Builder {
     }
 }
 
-/// A builder's keys while a block is built: each key's cells as the hours leave them, its
-/// coverage, and the table's changes, from which each key's tokens are written once it ends.
 struct Tracks {
     first_hour: i64,
-    /// Columns, and the words of a key's bits of them.
     width: usize,
     words: usize,
     keys: Vec<u128>,
     by_key: HashMap<u128, u32, foldhash::fast::RandomState>,
-    /// Per key, each column's value; read only where `present` says it holds one.
     values: Vec<i64>,
-    /// Per key `words` words: its cells holding a value.
     present: Vec<u64>,
-    /// Per key `words` words: its cells whose value at the block's first hour `changes` holds.
     opened: Vec<u64>,
-    /// Per key two bits: covered now, and covered at the block's first hour.
     covered: Vec<u64>,
     changes: Changes,
 }
@@ -1984,7 +1775,6 @@ impl Tracks {
         }
     }
 
-    /// Room for `keys` more keys.
     fn reserve(&mut self, keys: usize) {
         self.keys.reserve_exact(keys);
         self.by_key.reserve(keys);
@@ -1994,7 +1784,6 @@ impl Tracks {
         self.covered.reserve_exact(keys.div_ceil(32));
     }
 
-    /// `key`'s track, made when it has none: no value, not covered.
     fn at(&mut self, key: u128) -> usize {
         if let Some(&at) = self.by_key.get(&key) {
             return at as usize;
@@ -2011,7 +1800,6 @@ impl Tracks {
         at
     }
 
-    /// Track `at` covered at the block's first hour, its cells holding `values`.
     fn open(&mut self, at: usize, values: impl Iterator<Item = Option<i64>>) {
         self.covered[at / 32] |= 3 << (at % 32 * 2);
         for (column, value) in values.enumerate() {
@@ -2040,7 +1828,6 @@ impl Tracks {
         (hour - self.first_hour) as u32
     }
 
-    /// The hour `hour` changes track `at`'s coverage to `covered`.
     fn cover(&mut self, at: usize, covered: bool, hour: i64) {
         if self.is_covered(at, 0) == covered {
             return;
@@ -2051,8 +1838,6 @@ impl Tracks {
         self.changes.ended();
     }
 
-    /// The hour `hour` sets track `at`'s cell `column` to `value`: written when it changes it,
-    /// behind the value the block began with the first time.
     fn set(&mut self, at: usize, column: usize, value: Option<i64>, hour: i64) {
         let now = self.value(at, column);
         if now == value {
@@ -2085,8 +1870,6 @@ impl Tracks {
         self.changes.ended();
     }
 
-    /// Track `at`'s life and each column's tokens through `end` (exclusive), its cells as the
-    /// block began replayed through `changes`, its own; none when no hour covered it.
     #[allow(clippy::type_complexity, reason = "a key's life and its columns' tokens, returned together")]
     fn replay(&self, at: usize, changes: &[u8], columns: &[Column], end: i64, end_bucket: i64) -> io::Result<Option<(Vec<u8>, Vec<Vec<u8>>)>> {
         let first_hour = self.first_hour;
@@ -2152,17 +1935,14 @@ impl Tracks {
     }
 }
 
-/// One hour of a table as a builder applies it.
 struct Applied<'a> {
     table: &'a dyn Cells,
-    /// The rows read, when read in part.
     view: Option<&'a [u32]>,
     available: bool,
     hour: i64,
 }
 
 impl Applied<'_> {
-    /// `key`'s row, at `slot` when live, as the hour leaves it; the columns `mask` names changed.
     fn update(&self, tracks: &mut Tracks, columns: &[Column], key: u128, slot: Option<u32>, mask: u64) {
         let at = tracks.at(key);
         let read = slot.filter(|&slot| self.available && self.view.is_none_or(|view| view.binary_search(&slot).is_ok()));
@@ -2177,20 +1957,13 @@ impl Applied<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------------------
-// Folding a level's pieces into the level above
 
-/// The piece of level `level + 1` covering the `hours` hours from `first_hour`, folded from
-/// `pieces`, the pieces of `level` of one table and run within them in order (a block or span
-/// with no key has none); none when they hold no key.
 pub fn fold(pieces: &[&[u8]], first_hour: i64, hours: u32) -> io::Result<Option<Raw>> {
     let read: Vec<Piece<'_>> = pieces.iter().map(|bytes| Piece::read(bytes)).collect::<io::Result<_>>()?;
     let keys = merged(&read)?;
     fold_keys(&read, &keys, first_hour, hours)
 }
 
-/// Every piece's keys once each, ascending, merged from each piece's ascending keys: counted, then
-/// written into a vector of exactly their number, never all gathered.
 fn merged(read: &[Piece<'_>]) -> io::Result<Vec<u128>> {
     if read.iter().any(|piece| !piece.keys.is_sorted_by(|before, after| before < after)) {
         return Err(invalid("A summary piece's keys do not ascend"));
@@ -2200,9 +1973,7 @@ fn merged(read: &[Piece<'_>]) -> io::Result<Vec<u128>> {
     Ok(keys)
 }
 
-/// The pieces' ascending keys in order, each once.
 struct Merge<'a> {
-    /// Each piece's next key, the least on top.
     heads: BinaryHeap<Reverse<(u128, usize)>>,
     rests: Vec<std::slice::Iter<'a, u128>>,
     last: Option<u128>,
@@ -2234,7 +2005,6 @@ impl Iterator for Merge<'_> {
     }
 }
 
-/// [`fold`] of the pieces `read`, whose keys merged are `keys`.
 fn fold_keys(read: &[Piece<'_>], keys: &[u128], first_hour: i64, hours: u32) -> io::Result<Option<Raw>> {
     let Some(first) = read.first() else {
         return Ok(None);
@@ -2272,15 +2042,12 @@ fn fold_keys(read: &[Piece<'_>], keys: &[u128], first_hour: i64, hours: u32) -> 
         frames: Vec::new(),
     };
     let (size, upper_size) = (bucket_hours(level), bucket_hours(up));
-    // Each piece's bucket `at` lies in the folded piece's bucket, at an hour offset in it.
     let place = |piece: &Piece<'_>, at: usize| -> (usize, u32) {
         let bucket = piece.directory.first_bucket + at as i64;
         let start = bucket * size;
         let upper = bucket_of(start, up);
         ((upper - first_bucket) as usize, (start - upper * upper_size) as u32)
     };
-    // Each folded bucket a piece's buckets `[from, from + count)` meet, with the hours of the
-    // piece they cover in it, `[start, end)`.
     let meets = |piece: &Piece<'_>, from: u32, count: u64, visit: &mut dyn FnMut(usize, i64, i64)| {
         let (first, last) = (piece.directory.first_hour, piece.directory.first_hour + i64::from(piece.directory.hours));
         let low = piece.directory.first_bucket + i64::from(from);
@@ -2398,53 +2165,27 @@ fn fold_keys(read: &[Piece<'_>], keys: &[u128], first_hour: i64, hours: u32) -> 
     build(directory, keys, &life_frame, frames).map(Some)
 }
 
-/// The model of what summarizing costs the recorder: what a [`Builder`] holds while its block is
-/// built, and what finishing it and folding a span hold for a moment. The dashboard's
-/// declarations are budgeted by it, and the builder's tests hold it to what it allocates.
-///
-/// A builder reserves its keys' vectors when its block opens, so they hold about their length; its
-/// map of keys holds about half again its buckets past 7/8 full; the block's changes are
-/// compressed a chunk at a time to at most half their bytes.
 pub mod cost {
     use super::{BASE_HOURS, CHANGE_ROOM, CHUNK, Counts, FANOUT, Shape};
 
-    /// A summarized table's load in a block.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Load {
-        /// The keys the block meets: a values or lifetimes table's rows, a log's combinations
-        /// of facet values.
         pub keys: u64,
-        /// Per key and summarized column, the changes the block makes (a lifetimes table: per
-        /// key its comings and goings); for a log, per key the buckets holding a row.
         pub changes: u64,
     }
 
-    /// Bytes one change of a cell takes before compression: its kind and column, its key from
-    /// the one before, its value from the cell's before (under 2^20 apart), a share of its
-    /// hour's mark.
     pub const CHANGE: u64 = 5;
-    /// Bytes a cell's value at the block's first hour takes, once the cell first changes.
     pub const OPEN: u64 = 8;
-    /// What the block's changes compress to, at most: one part in this many.
     pub const SHRINK: u64 = 2;
-    /// Bytes a token takes per bucket a change falls in, and per bucket a log's key fills.
     pub const TOKEN: u64 = 10;
-    /// What a piece compresses to, at most: one part in this many (the first wave's pieces
-    /// measured about one in six).
     pub const PACKED: u64 = 4;
-    /// Bytes a piece read holds per key: the key, its life's place, its share of the keys' frame,
-    /// and its place in one column's frame.
     const READ_KEY: u64 = 32;
-    /// Level-0 buckets of a block, its edges partial.
     const BUCKETS: u64 = 720 / BASE_HOURS as u64 + 1;
 
-    /// A hash map's bytes for an entry of `entry` bytes: its control byte, buckets at most 7/8
-    /// full, and half again for where it stands between growths.
     const fn hashed(entry: u64) -> u64 {
         (entry + 1) * 8 * 3 / (7 * 2)
     }
 
-    /// Its columns, and the keys its ranked columns rank, summed.
     fn columns(shape: &Shape) -> (u64, u64) {
         match shape {
             Shape::Values(columns) => (columns.len() as u64, columns.iter().map(|column| u64::from(column.rank)).sum()),
@@ -2452,7 +2193,6 @@ pub mod cost {
         }
     }
 
-    /// The bytes the block's changes take before compression.
     fn written(shape: &Shape, load: Load) -> u64 {
         let (width, _) = columns(shape);
         match load.changes {
@@ -2461,11 +2201,9 @@ pub mod cost {
         }
     }
 
-    /// What a builder of `shape` holds at its block's end under `load`.
     pub fn held(shape: &Shape, load: Load) -> u64 {
         let Load { keys, changes } = load;
         if let Shape::Log(_) = shape {
-            // Per bucket holding a row, its count and the run of empty buckets before it.
             let counts = size_of::<(u128, Counts)>() as u64;
             return keys * (hashed(counts) + 8 + 6 * changes.min(BUCKETS) * 3 / 2);
         }
@@ -2476,11 +2214,8 @@ pub mod cost {
         keys * per_key + written(shape, load) / SHRINK + chunks * size_of::<(Vec<u8>, Option<usize>)>() as u64 * 2 + open
     }
 
-    /// The raw bytes of the block's piece under `load`.
     pub fn piece(shape: &Shape, load: Load) -> u64 {
         let (width, ranked) = columns(shape);
-        // Per key its gap and its life; per column its tokens; per ranked column and bucket its
-        // list against the one before.
         let tokens = match shape {
             Shape::Log(_) => column(shape, load),
             _ => width * column(shape, load),
@@ -2488,18 +2223,12 @@ pub mod cost {
         tokens + load.keys * 6 + BUCKETS * (3 * width + ranked)
     }
 
-    /// What finishing a block of `shape` under `load` holds for a moment past [`held`]: its
-    /// changes split by key into one allocation (an hour per change in place of the marks), then
-    /// the piece's frames and their compressed copy.
     pub fn finishing(shape: &Shape, load: Load) -> u64 {
         let split = written(shape, load) * 6 / 5 + load.keys * size_of::<usize>() as u64;
         let piece = piece(shape, load);
         split + piece + piece / PACKED
     }
 
-    /// The bytes of one column's frame of a piece: per key a run, and a token for its first value
-    /// and per bucket a change falls in (a log: per bucket holding a row). A lifetimes piece has
-    /// no column.
     fn column(shape: &Shape, load: Load) -> u64 {
         let tokens = match shape {
             Shape::Lifetimes => return 0,
@@ -2509,11 +2238,6 @@ pub mod cost {
         load.keys * (2 + TOKEN * tokens)
     }
 
-    /// What folding a span of `shape` under `load` holds for a moment: its sixteen pieces read
-    /// back compressed, each with its keys decoded and one column's frame; their keys merged once
-    /// each into a vector of exactly their number, the span's keys taken as the block's, and per
-    /// piece the merge's next key and the rest of its keys; the folded piece's frames; and the
-    /// block's own piece, held beside its copy among the sixteen.
     pub fn folding(shape: &Shape, load: Load) -> u64 {
         let piece = piece(shape, load);
         let merging = size_of::<(u128, usize)>() + size_of::<std::slice::Iter<'static, u128>>();
@@ -2521,10 +2245,6 @@ pub mod cost {
         FANOUT as u64 * (piece / PACKED + load.keys * READ_KEY + column(shape, load)) + merged + piece + piece / PACKED
     }
 
-    /// What summarizing `tables`, in the order the recorder finishes them (ascending by table),
-    /// holds at the heaviest moment of a block that closes a span. As each table finishes and
-    /// folds, the builders after it still hold their block, and each table before it has its
-    /// block's piece and its span's folded piece awaiting the file.
     pub fn peak(tables: &[(Shape, Load)]) -> u64 {
         let mut after: u64 = tables.iter().map(|(shape, load)| held(shape, *load)).sum();
         let (mut waiting, mut most) = (0, 0);

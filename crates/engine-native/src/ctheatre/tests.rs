@@ -66,8 +66,6 @@ fn fixture() -> Vec<u8> {
     );
     put(&mut bytes, 0x2220, (AIR as u64).to_le_bytes());
     object(&mut bytes, LAND, VTABLE_RVA, REFERENCE_TYPE);
-    // Raw reference 1 and the current country reference 2 resolve to one
-    // object. Preserve the native theatre owner rather than replacing it.
     put(&mut bytes, LAND + OWNER, 1_u32.to_le_bytes());
     put(&mut bytes, LAND + VOLUNTEERS_THEATRE, 0_i32.to_le_bytes());
     array(&mut bytes, LAND + THEATER_GROUP_DATA, 0x2240, 1);
@@ -234,7 +232,6 @@ impl Captured {
     }
 }
 
-/// The count-only probe of every table.
 fn count(bytes: &[u8]) -> Walk {
     walk_buffers(
         &SliceMemory {
@@ -256,10 +253,6 @@ fn count(bytes: &[u8]) -> Walk {
     )
 }
 
-/// The gathered theatre header gives the per-field walk's rows, arenas and
-/// first failure: for a hole at every byte of the header spans, and for a
-/// changed byte at every one of them. One guarded record replaces the
-/// three field reads when it completes.
 #[test]
 fn gathered_land_headers_match_per_field_reads() {
     struct Holed<'a> {
@@ -291,7 +284,6 @@ fn gathered_land_headers_match_per_field_reads() {
             let Some(count) = layout.count(sources, destination.len()) else {
                 return 0;
             };
-            // One call for the whole record, as the guarded copy makes.
             self.calls.borrow_mut().push((usize::MAX, count));
             let mut completed = 0;
             for row in 0..sources.len() {
@@ -349,7 +341,6 @@ fn gathered_land_headers_match_per_field_reads() {
         let (walk, rows, _) = run(&bytes, None, true);
         (walk, rows)
     });
-    // The header's three spans are one record request, not three reads.
     for (offset, len) in HEADER_SPANS {
         assert!(!calls.contains(&(LAND + offset, len)));
     }
@@ -582,8 +573,6 @@ const PROVINCE_B: usize = 0x4600;
 const UNIT_A: usize = 0x4800;
 const UNIT_B: usize = 0x4a00;
 
-/// The single land theatre becomes a volunteer container with two areas and
-/// two stationed units; the second area is empty and has no representative.
 fn stationed_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     put(&mut bytes, LAND + VOLUNTEERS_THEATRE, 7_i32.to_le_bytes());
@@ -710,7 +699,6 @@ fn volunteer_theatres_keep_native_area_and_unit_order() {
     assert_eq!(units[1].unit, u64::MAX);
 }
 
-/// The single area holds thirty-three provinces, one past the copy batch.
 fn wide_area_fixture() -> Vec<u8> {
     const PROVINCES: usize = 0x8000;
     let mut bytes = stationed_fixture();
@@ -749,10 +737,7 @@ fn area_provinces_survive_the_copy_batch_boundary_in_native_order() {
     assert_eq!((walk.provinces_len, walk.required_provinces), (33, 33));
     assert_eq!(areas[0].provinces_len, 33);
     assert_eq!(&provinces[..33], (1..=33).collect::<Vec<u32>>().as_slice());
-    // The thirty-third element is the one a loop stopping at its first
-    // window would silently drop.
     assert_eq!(provinces[32], 33);
-    // A fault inside the second window still refuses the whole table.
     let mut bytes = wide_area_fixture();
     put(
         &mut bytes,
@@ -858,7 +843,6 @@ fn stationed_identity_and_header_faults_refuse_by_name() {
         }
     );
     let mut bytes = stationed_fixture();
-    // A count above its own capacity is a torn vector header.
     put(
         &mut bytes,
         AREA_A + ccontroller_area::PROVINCE_COUNT,
@@ -1047,7 +1031,6 @@ fn worker_theatres_grow_for_every_country_and_later_nested_demand_without_reread
     }
     impl Memory for Once<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            // Nested vector headers are acquired once, including after growth.
             if output.len() == 16
                 && address >= 0x30000
                 && matches!(
@@ -1094,7 +1077,6 @@ fn worker_theatres_grow_for_every_country_and_later_nested_demand_without_reread
     }
 }
 
-/// A unit's theatre resolves only through its roster country's authenticated theatre vector.
 #[test]
 fn unit_theatres_resolve_only_their_roster_country_theatres() {
     let mut bytes = fixture();

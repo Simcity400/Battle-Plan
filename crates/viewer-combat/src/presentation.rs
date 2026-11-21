@@ -1,4 +1,3 @@
-//! Hourly commander presentation, with native portrait and assigned-trait selection.
 use super::{
     Selection, Values, Widget,
     binding::{Bindings, FLAG, SPRITE, country_flag, hide, sprite},
@@ -12,9 +11,6 @@ use std::collections::BTreeMap;
 use std::io;
 use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
 
-/// The caller loads direct textures once, through the resolved content layers.
-/// Keep the declaration and texture namespaces separate: native icon kind 0/1
-/// means a GFX declaration / a file path.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum PortraitAsset {
     Declaration(String),
@@ -38,8 +34,6 @@ fn identity(bytes: &[u8]) -> Result<String, &'static str> {
 }
 fn texture(bytes: &[u8]) -> Result<PortraitAsset, &'static str> {
     let path = identity(bytes)?.replace('\\', "/");
-    // A recorded identity is content-relative. It must never authorize a read
-    // outside the resolved game content, including drive or parent traversal.
     if path.starts_with('/') || path.contains(':') || path.split('/').any(|p| p == "..") {
         return Err("portrait path outside relative game content");
     }
@@ -51,9 +45,6 @@ fn texture(bytes: &[u8]) -> Result<PortraitAsset, &'static str> {
     ))
 }
 
-/// the game asks for size 1 and maps commander categories to character roles.
-/// the game selects an exact role/size, otherwise the first role at that size.
-/// It does not skip an unset exact match in favour of another role.
 fn portrait_entry(
     presentation: &CombatCommanderPresentation,
     category: i32,
@@ -90,9 +81,6 @@ pub(super) fn select_portrait(
             _ => Err("unsupported character portrait kind"),
         };
     }
-    // Use the direct fallback texture when present. A country graphics-tag
-    // suffix requires its own content selection; political or cosmetic tags
-    // cannot substitute for it.
     if !presentation.fallback_text[0].is_empty() {
         return texture(&presentation.fallback_text[0]);
     }
@@ -107,10 +95,6 @@ pub(super) fn select_portrait(
     Ok(PortraitAsset::Declaration("GFX_leader_unknown".into()))
 }
 
-/// A present commander's portrait from [`select_portrait`], with
-/// GFX_leader_unknown when none is set. An undeclared sprite keeps the existing
-/// widget image in the game; the viewer leaves it unbound so its authored
-/// sprite shows, and reports the gap. Unresolved selection hides the portrait.
 fn portrait(
     out: &mut Bindings,
     has_sprite: &dyn Fn(&str) -> bool,
@@ -139,8 +123,6 @@ fn portrait(
     }
 }
 
-/// A side's selected tactic picture comes from its own registry entry after
-/// identity and refusal checks. Missing artwork hides the widget and reports why.
 fn tactic(
     out: &mut Bindings,
     has_sprite: &dyn Fn(&str) -> bool,
@@ -180,8 +162,6 @@ pub(super) fn land_tactics(
                 &side.tactic_token,
             );
         } else if side.tactic_kind == 1 {
-            // The nonnull singleton also attempts picture lookup; an absent `.dds`
-            // keeps the previous drawable.
             if null_picture {
                 let picture = super::tactics::NULL_PICTURE;
                 out.bind(&key, SPRITE, if has_sprite(picture) {
@@ -195,8 +175,6 @@ pub(super) fn land_tactics(
                 widget.retain_sprite = true;
             }
         }
-        // the game compares this object's counter ID with the other object's
-        // ID, including the null tactic's zero IDs.
         out.values
             .entry(format!("{prefix}_countered_tactic_overlay"))
             .or_default()
@@ -205,7 +183,6 @@ pub(super) fn land_tactics(
 }
 
 fn exile_entry(out: &mut Bindings, entry: &mut Values, flag: Result<String, String>) {
-    // Bind the exile country flag.
     match flag {
         Ok(flag) => out.bind_in(entry, "exile_flag", FLAG, Ok(flag)),
         Err(why) => {
@@ -223,18 +200,14 @@ fn traits(
     traits: &[LandCombatCommanderTrait],
     exile: &Result<String, String>,
 ) {
-    // Land, naval and result windows enable both trait filters.
-    // Preserve assigned order rather than token order.
     let mut entries = Vec::new();
     let mut entry_templates = BTreeMap::new();
-    // Trait sprites that are not loaded, counted by name and why.
     let mut missing: BTreeMap<(String, String), usize> = Default::default();
     let names = static_content.assets.tactics.trait_names();
     let not_declared = || "which the content does not declare".to_owned();
     for value in traits.iter().filter(|t| t.kind != 0 && t.relevant != 0) {
         let mut entry = Values::new();
         if value.kind == 6 {
-            // the game switches the assigned-trait entry template.
             entry_templates.insert(entries.len(), "unit_leader_exile_trait_entry".into());
             exile_entry(out, &mut entry, exile.clone());
         } else {
@@ -243,10 +216,6 @@ fn traits(
             if static_content.assets.has_sprite(&requested) {
                 sprite(&mut entry, "Background", requested);
             } else {
-                // actual missing-declaration fallback; the
-                // missing sprite is still reported by name. Only the
-                // content's trait names have their sprites loaded
-                // (installed_content_core::unit_leader::Traits::registered).
                 let why = if names.contains(&value.token) {
                     not_declared()
                 } else if names.unsupported.is_empty() {

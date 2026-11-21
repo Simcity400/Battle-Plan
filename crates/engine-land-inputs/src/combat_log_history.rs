@@ -1,6 +1,3 @@
-//! Retained Combat Log operands. Acquisition is demand driven: callers supply an
-//! already authenticated group header, and keep the resulting owned value until
-//! a native writer changes that group. No country or battle-pool census lives here.
 use crate::{
     Memory, allocation, cequipment_variant_pool as pool, cpdx_array::Array, equipment_entry,
     ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as group, read, read_slice,
@@ -28,8 +25,6 @@ pub struct Equipment {
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EquipmentMonth {
-    /// Own loss reasons 0..3, recoveries 4, enemy losses 5. Amounts for own
-    /// losses and recoveries come from CombatLogEquipment, not a second copy.
     pub kind: u8,
     pub reason: i32,
     pub date: i32,
@@ -125,9 +120,6 @@ fn pointers(
     )
 }
 
-/// Read only this group's additional operands, from the header its owner
-/// already authenticated. This function is worker-only and may grow owned data.
-/// A partial failure is never published; the caller keeps it unavailable.
 pub fn read_group(
     memory: &impl Memory,
     base: usize,
@@ -218,9 +210,6 @@ pub fn read_group(
     Ok(output)
 }
 
-/// Shared settled battle-pool operands. A pool index is reusable; it is not
-/// the live combat reference. Callers ask only for indices a native reference
-/// append/release or the initial retained group history reaches.
 pub const BATTLE_POOL_RVA: Rva = Rva(0x033e_a870);
 pub const BATTLE_COUNTS_RVA: Rva = Rva(0x033e_a888);
 pub const BATTLE_USED_RVA: Rva = Rva(0x033e_a8a0);
@@ -244,7 +233,6 @@ pub const SIDE_LEADER: usize = 0x208;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pool {
-    /// The serializer's allocation-quantity gate, independent of variants.
     pub serialized: bool,
     pub allow_zero: bool,
     pub equipment: Vec<Equipment>,
@@ -270,8 +258,6 @@ pub struct Battle {
     pub ref_count: i32,
     pub date: i32,
     pub province: u32,
-    /// Defensive victory, snow, overrun, player-is-attacker. Keep
-    /// stored bytes: serialization treats each as a truth value independently.
     pub flags: [u8; 4],
     pub attacker: SideData,
     pub defender: SideData,
@@ -512,7 +498,6 @@ mod tests {
         let used = 0xa000;
         f.array(BASE + BATTLE_COUNTS_RVA.0, counts, 5000);
         f.array(BASE + BATTLE_USED_RVA.0, used, 5000);
-        // Every unrequested slot and every record payload is unreadable.
         f.put(counts + 4999 * 2, &2_i16.to_le_bytes());
         f.put(used + 4999, &[1]);
         let mut got = Vec::new();
@@ -535,8 +520,6 @@ mod tests {
         let p = f.group();
         let m = f.month(0, 60_000_000);
         let pointers = f.alloc(16);
-        // The previous month is intentionally unreadable. A last-month writer
-        // must never revisit it merely because the group changed.
         f.u64(pointers, 1);
         f.u64(pointers + 8, m as u64);
         f.array(p + group::ENEMY_LOSSES, pointers, 2);
@@ -562,7 +545,6 @@ mod tests {
         f.i32(t + TEMPLATE_WINS, -17);
         f.i32(t + TEMPLATE_TOTAL, i32::MAX);
         let mut observed = None;
-        // The group is unreadable: the native writer already located t.
         events::template(&f, BASE, 1, t, true, &mut |fact| observed = Some(fact)).unwrap();
         let fact = observed.unwrap();
         assert_eq!(fact.root, 1);
@@ -700,7 +682,6 @@ mod tests {
         f.array(BASE + BATTLE_POOL_RVA.0, records, 2);
         f.array(BASE + BATTLE_COUNTS_RVA.0, counts, 2);
         f.array(BASE + BATTLE_USED_RVA.0, used, 2);
-        // Slot zero is deliberately unreadable. Reading slot one cannot demand it.
         for i in 0..BATTLE_SIZE {
             f.bytes.remove(&(records + i));
         }

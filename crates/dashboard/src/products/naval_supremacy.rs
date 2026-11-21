@@ -1,15 +1,3 @@
-//! Who controls each sea region day by day, from one country's point of view
-//! (`naval-supremacy`): the recorder's `NavalRegionControl` rows (the game's control rule's
-//! operands per viewer and region, [`naval_region_control`]) read at each day's last recorded
-//! hour, control and share made from them at the reply with the content's minimums and ratio.
-//! The viewer each day is whoever holds the tag then. A day the recording does not hold, or
-//! whose table is not available, is unknown by name, never contested or zero.
-//!
-//! A reply is one window of days ([`super::windows`]): the widget asks the windows it shows and the
-//! next ahead, never the campaign.
-//!
-//! Cost: per stretch of one viewer, one history of its rows and the every-viewer rows over the
-//! window (their changes, not its hours), then days x regions of arithmetic.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -38,8 +26,6 @@ mod tests;
 const DAY: i32 = 24;
 const SCALE: i32 = 100_000;
 
-/// NavalRegionControl's `friendly`, `enemy`, `ratio_friendly`, `ratio_enemy`, `own`,
-/// `control_refusal` and `share_refusal`, as the schema numbers them.
 const COLUMNS: [usize; 7] = [FRIENDLY, ENEMY, RATIO_FRIENDLY, RATIO_ENEMY, OWN, CONTROL_REFUSAL, SHARE_REFUSAL];
 const FRIENDLY: usize = 0;
 const ENEMY: usize = 1;
@@ -57,13 +43,10 @@ pub struct NavalSupremacy;
 pub struct NavalSupremacyParams {
     pub branch_id: String,
     pub country: Country,
-    /// The window of days asked ([`super::windows`]).
+    #[doc = " The window of days asked ([`super::windows`])."]
     pub window: u32,
 }
 
-/// One region's values on a run of days: control (1 friendly, -1 enemy, 0 contested), the rule's
-/// friendly and enemy sums, the explanatory share and the viewer's own supremacy, raw fixed5;
-/// each none where its operands were refused.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +69,6 @@ pub struct SupremacyRegion {
     pub runs: Vec<SupremacyRun>,
 }
 
-/// Days of the window not known, with why.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +84,7 @@ pub struct UnknownDays {
 pub struct NavalSupremacyReply {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after.
+    #[doc = " Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after."]
     pub first_day_hour: i32,
     pub day_hours: i32,
     pub days: u32,
@@ -114,7 +96,6 @@ pub struct NavalSupremacyReply {
 
 dashboard_base::reply_warnings!(NavalSupremacyReply);
 
-/// One region's values on one day.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Values {
     control: Option<i8>,
@@ -124,8 +105,6 @@ struct Values {
     own: Option<i64>,
 }
 
-/// One region's row at an hour, as the reply reads it: a number where recorded; each refusal's
-/// text, none when empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Operands {
     friendly: Option<i64>,
@@ -138,7 +117,6 @@ struct Operands {
 }
 
 impl Operands {
-    /// A region whose currents do not concern the viewer and no outsider row holds: all zero.
     const ZERO: Operands = Operands { friendly: Some(0), enemy: Some(0), ratio_friendly: Some(0), ratio_enemy: Some(0), own: Some(0), control_refusal: None, share_refusal: None };
 
     fn read(history: &lanes::History, cells: &[Cell]) -> Self {
@@ -160,8 +138,6 @@ impl Operands {
     }
 }
 
-/// A region's values from its operands by the game's control rule, with the content's minimum and
-/// ratio; each refusal noted by reason at `at`.
 fn region_values(operands: &Operands, minimum: &Result<i64, String>, ratio: &Result<i64, String>, notes: &mut Refusals, at: &str) -> Values {
     let mut values = Values { friendly: operands.friendly, enemy: operands.enemy, own: operands.own, ..Values::default() };
     let unrecorded = || "Naval region control's operands were not recorded".to_owned();
@@ -201,8 +177,6 @@ fn region_values(operands: &Operands, minimum: &Result<i64, String>, ratio: &Res
     values
 }
 
-/// The index of `steps`' step holding `hour`, from `at` on (the steps up to it are before it);
-/// none before the first step.
 fn step_at(steps: &[lanes::Step], at: &mut usize, hour: i32) -> Option<usize> {
     while *at < steps.len() && steps[*at].hour <= hour {
         *at += 1;
@@ -210,11 +184,6 @@ fn step_at(steps: &[lanes::Step], at: &mut usize, hour: i32) -> Option<usize> {
     at.checked_sub(1)
 }
 
-/// Every region's values on `days` (day, hour, ascending) for `viewer`, from `history` of its rows
-/// and the every-viewer rows: its own row, else the every-viewer row, else zeros. Added to `out`
-/// as runs of equal values on consecutive days. A region's values are made again only where one
-/// of its two rows changes, so the cost is the days plus the rows' changes, per region.
-/// `regions` are the sea regions; any region with rows is added.
 fn region_runs(history: &lanes::History, viewer: u32, days: &[(u32, i32)], regions: &BTreeSet<u32>, sea: &SeaContent, notes: &mut Refusals, out: &mut BTreeMap<u32, Vec<(u32, u32, Values)>>) {
     let none: &[lanes::Step] = &[];
     let mut own: HashMap<u32, &[lanes::Step]> = HashMap::new();
@@ -255,8 +224,6 @@ fn region_runs(history: &lanes::History, viewer: u32, days: &[(u32, i32)], regio
     }
 }
 
-/// Each region's runs of `pieces` in day order, equal neighbours joined; a day in none (not known)
-/// ends a run.
 fn runs(pieces: BTreeMap<u32, Vec<(u32, u32, Values)>>) -> BTreeMap<u32, Vec<SupremacyRun>> {
     pieces
         .into_iter()
@@ -279,8 +246,6 @@ fn runs(pieces: BTreeMap<u32, Vec<(u32, u32, Values)>>) -> BTreeMap<u32, Vec<Sup
         .collect()
 }
 
-/// The hour each day of `first..=last` is read at: its last hour the timeline holds, with the run
-/// holding it; none for a day the timeline holds no hour of.
 fn day_hours(timeline: &dashboard_query::timeline::Timeline, first: i32, last: i32) -> BTreeMap<u32, (u32, i32)> {
     let first_day = first.div_euclid(DAY);
     let mut out = BTreeMap::new();
@@ -323,7 +288,6 @@ impl Product for NavalSupremacy {
         let places = place_names::Content::read(source, load)?;
         let sea = SeaContent::read(source, load)?;
         let (first, last) = super::windows::within(&query, params.window)?;
-        // A window outside the recording holds no day: the regions are listed, nothing is known.
         let outside = first > last;
         let (first, last) = if outside { super::windows::hours(params.window).unwrap_or((first, last)) } else { (first, last) };
         let first_day = first.div_euclid(DAY);
@@ -335,7 +299,6 @@ impl Product for NavalSupremacy {
         let mut pieces: BTreeMap<u32, Vec<(u32, u32, Values)>> = BTreeMap::new();
         let mut known: BTreeSet<u32> = BTreeSet::new();
         let mut refused: BTreeMap<u32, String> = BTreeMap::new();
-        // Consecutive days of one run and one viewer are read with one history.
         let mut segment: Vec<(u32, i32)> = Vec::new();
         let mut held: Option<(u32, u32)> = None;
         let flush = |held: Option<(u32, u32)>, segment: &mut Vec<(u32, i32)>, pieces: &mut BTreeMap<u32, Vec<(u32, u32, Values)>>, known: &mut BTreeSet<u32>, refused: &mut BTreeMap<u32, String>, notes: &mut Refusals| -> io::Result<()> {

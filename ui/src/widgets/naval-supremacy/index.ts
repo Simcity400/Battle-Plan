@@ -8,7 +8,6 @@ import NavalSupremacyWidget from './NavalSupremacyWidget';
 import { validateSupremacy } from './navalSupremacyData';
 import { windowOf } from '../../dashboard/heldWindows';
 
-/** Sea regions as the content names them, from the widget's own reply of the branch's last window. */
 function useNavalSupremacyChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;

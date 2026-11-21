@@ -1,18 +1,7 @@
-//! Authored naval-combat presentation operands for the pinned game build.
-//!
-//! These values are loaded from `NDefines` by the game, then read by the
-//! naval-combat window. They are not properties of a combat, country, recorder
-//! viewpoint, or local render cache. The caller must supply the recording's
-//! matching content layers. Missing or unsupported Lua is unavailable rather
-//! than silently replaced with the shipped game's defaults.
 
 use crate::{ResolvedLayers, defines::Defines as NumericDefines};
 use std::io;
 
-/// Authored operands for positioning, screening, carrier-air and anti-air
-/// presentation, in each consumer's order. A define joins these lists only
-/// with its consumer: every read is mandatory, so an unconsumed define that
-/// failed to parse would otherwise make all consumers unavailable.
 const SUMMARY_FIXED_KEYS: [(&str, &str); 14] = [
     ("NNavy", "BASE_POSITIONING"),
     ("NNavy", "RELATIVE_SURFACE_DETECTION_TO_POSITIONING_FACTOR"),
@@ -39,8 +28,6 @@ const SUMMARY_INTEGER_KEYS: [(&str, &str); 3] = [
     ("NNavy", "NAVAL_COMBAT_PLANE_MIN_STACKING_PENALTY"),
 ];
 
-/// Six integer silhouette weights in category order, loaded from NNavy
-/// through the matching content stack.
 const SILHOUETTE_PLANE_KEYS: [&str; 6] = [
     "SHIP_SILHOUETTE_VALUE_PLANES_CAPITAL",
     "SHIP_SILHOUETTE_VALUE_PLANES_SCREEN",
@@ -55,24 +42,15 @@ pub struct Defines {
     pub summary_fixed: [i64; 14],
     pub summary_integer: [i32; 3],
     pub silhouette_planes: [i32; 6],
-    /// Silhouette weights and screen reduction from NNavy.
     pub screen_cap_reduction_factor: i64,
     pub plane_stacking_penalty_effect: i64,
-    /// Native `CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO`, indexed by the live
-    /// task force's mission/stance value. A missing index remains unavailable.
     pub sortie_stance_ratios: Vec<i64>,
     pub base_carrier_sortie_efficiency: i64,
     pub selected_sortie_initial_time: i32,
-    /// The light/heavy-gun piercing explanation's mutable NNavy arrays, loaded
-    /// through the matching content stack, or why they are unavailable: only
-    /// that explanation reads them.
     pub piercing: Result<Piercing, String>,
-    /// Three consequences of low positioning, in attack, anti-air and
-    /// submarine-reveal order.
     pub positioning_impacts: [i64; 3],
 }
 
-/// NNavy's piercing thresholds and their critical values, as authored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Piercing {
     pub thresholds: Vec<i64>,
@@ -104,7 +82,6 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
     for (index, (out, (section, key))) in
         summary_fixed.iter_mut().zip(SUMMARY_FIXED_KEYS).enumerate()
     {
-        // Convert the number before applying this define's lower bound.
         *out = native_summary_fixed(index, numbers.fixed5(section, key)?);
     }
     let mut summary_integer = [0; 3];
@@ -113,7 +90,6 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         .zip(SUMMARY_INTEGER_KEYS)
         .enumerate()
     {
-        // Truncate the Lua double to i64, then store the low signed 32 bits.
         let value = integer(numbers, section, key)?;
         *out = if index == 0 { value.max(0) } else { value };
     }
@@ -122,8 +98,6 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
         *out = integer(numbers, "NNavy", key)?;
     }
 
-    // Convert each array member to signed fixed5. The live task force's
-    // mission selects the array index.
     let sortie_stance_ratios =
         numbers.fixed5_array("NNavy", "CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO")?;
     if sortie_stance_ratios.is_empty() {
@@ -152,9 +126,6 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
 }
 
 fn native_summary_fixed(index: usize, value: i64) -> i64 {
-    // Clamp positioning factors and the fleet antiair ratio at zero,
-    // and four screening ratios at 0.01. Other loaders in this ordered set
-    // leave the signed fixed5 result unchanged.
     match index {
         1..=7 | 13 => value.max(0),
         8..=11 => value.max(1_000),
@@ -162,7 +133,6 @@ fn native_summary_fixed(index: usize, value: i64) -> i64 {
     }
 }
 
-/// Integer define conversion through [`NumericDefines::int32`].
 fn integer(numbers: &NumericDefines, section: &str, key: &str) -> io::Result<i32> {
     numbers.int32(section, key)
 }
@@ -210,7 +180,6 @@ mod tests {
         assert_eq!(definitions.mission_factor(-1), None);
     }
 
-    /// Every define but the piercing arrays, each `1`.
     fn without_piercing() -> String {
         let mut script = String::from("NDefines = { NNavy = {}, NAir = {} }\n");
         for &(section, key) in SUMMARY_FIXED_KEYS.iter().chain(&SUMMARY_INTEGER_KEYS) {
@@ -234,7 +203,6 @@ mod tests {
         script
     }
 
-    /// Piercing arrays that are missing or empty leave every other define read.
     #[test]
     fn piercing_arrays_are_needed_only_by_their_explanation() {
         let numbers = NumericDefines::new().unwrap();

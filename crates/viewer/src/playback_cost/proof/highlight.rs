@@ -1,7 +1,3 @@
-//! The pointer's faction highlight over the political layer's picture, against the one over today's
-//! political part of the same hour: for 20 pointed provinces spread over the strategic regions
-//! (each pointing its region) and the plain plans a cleared highlight restores, the border class
-//! plan, the demilitarised strips and the hover strips; and the frame's copy of the picture, timed.
 
 use super::{Compared, political, political_fresh, political_marked};
 use crate::{
@@ -20,7 +16,6 @@ use viewer_world::map::{
     map_mode::MapMode,
 };
 
-/// The cycle counter's rate, timed once against the wall clock.
 fn cycle_hz() -> f64 {
     static HZ: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *HZ.get_or_init(|| {
@@ -30,14 +25,12 @@ fn cycle_hz() -> f64 {
     })
 }
 
-/// Pointed provinces a sample compares.
 const POINTED: usize = 20;
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(Political::new(Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
 }
 
-/// The three plans a highlight of `provinces` installs, as the scene's highlight makes them.
 fn plans(meshes: &viewer_world::map::borders::BorderMeshes, regions: &Regions, zone: &Zone, provinces: &BTreeSet<u32>) -> (ClassPlan, ZonePlan, ZonePlan) {
     let highlight = |a, b| provinces.contains(&a) != provinces.contains(&b);
     (
@@ -50,8 +43,6 @@ fn plans(meshes: &viewer_world::map::borders::BorderMeshes, regions: &Regions, z
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer: &Political = political(layer);
     let mut compared = Compared::default();
-    // The picture these plans highlight is the political layer's, which only the default map mode
-    // draws: at another mode the layer draws nothing and there is no highlight to compare.
     if !layer.drawn() {
         compared.entries = 1;
         compared.notes = json!({"drawn": false});

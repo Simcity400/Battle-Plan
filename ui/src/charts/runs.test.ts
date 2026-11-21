@@ -4,7 +4,6 @@ import { IntervalIndex, intervalIndexOf } from './intervalIndex.ts';
 import { clipToSpans, extentOfAll, lastSampleHour, lineEndHour, runAt, sameStretch } from './series.ts';
 import type { Run, Span } from './series';
 
-/** A product's run: its line breaks where `startsSegment` says. */
 const product = (firstHour: number, lastHour: number, startsSegment = true) => ({ firstHour, lastHour, startsSegment, valueRaw: String(firstHour) });
 
 test('any run type is found by hour', () => {
@@ -30,13 +29,10 @@ test('a value glides only within one unbroken stretch of runs', () => {
   assert.equal(sameStretch(runs, 105, 118), true);
   assert.equal(sameStretch(runs, 118, 105), true);
   assert.equal(sameStretch(runs, 105, 105), true);
-  // A new country identity or a missing read starts a new stretch.
   assert.equal(sameStretch(runs, 118, 125), false);
-  // A gap in the recording, or nothing recorded at one end.
   assert.equal(sameStretch(runs, 125, 145), false);
   assert.equal(sameStretch(runs, 135, 145), false);
   assert.equal(sameStretch([], 1, 1), false);
-  // Plotting runs break with `breakBefore`.
   const plotted: Run[] = [{ firstHour: 0, lastHour: 9, value: 1 }, { firstHour: 10, lastHour: 19, value: 2, breakBefore: true }, { firstHour: 20, lastHour: 29, value: 3 }];
   assert.equal(sameStretch(plotted, 5, 15), false);
   assert.equal(sameStretch(plotted, 15, 25), true);
@@ -50,7 +46,6 @@ test('runs are cut to spans, keeping a line break only where a run starts', () =
   assert.equal(runAt(cut, 127), null);
   assert.equal(clipToSpans(runs, [{ firstHour: 90, lastHour: 140 }])[0].startsSegment, true);
   assert.deepEqual(clipToSpans(runs, [{ firstHour: 131, lastHour: 140 }]), []);
-  // Plotting runs cut to several spans (a country's group membership), in hour order.
   const plotted: Run[] = [{ firstHour: 0, lastHour: 20, value: 1, breakBefore: true }];
   const spans: Span[] = [{ firstHour: 15, lastHour: 30 }, { firstHour: 0, lastHour: 5 }];
   assert.deepEqual(clipToSpans(plotted, spans), [{ firstHour: 0, lastHour: 5, value: 1, breakBefore: true }, { firstHour: 15, lastHour: 20, value: 1 }]);
@@ -65,19 +60,16 @@ test('the value range of several lines spans them all', () => {
 });
 
 test('an 80,000-item interval index answers a lookup without scanning it', () => {
-  // Deals held for a few days and renewed over a long campaign: 80,000 of them.
   const items: (Span & { id: number })[] = [];
   for (let index = 0; items.length < 80000; index++) {
     const first = 1000 + index * 7 + (index % 5);
     items.push({ id: index, firstHour: first, lastHour: first + 20 + (index % 40) });
   }
-  // A few long ones span much of the campaign, as real deals do.
   for (let index = 0; index < 20; index++) items.push({ id: -index - 1, firstHour: 900 + index, lastHour: 400000 + index });
   const index = new IntervalIndex(items);
   for (const hour of [999, 1000, 1500, 123456, 400010, 560000, 700000]) {
     index.comparisons = 0;
     const found = index.at(hour);
-    // A binary search and one walk down the tree: a few dozen steps, not 80,000.
     assert.ok(index.comparisons < 80, `${index.comparisons} comparisons at ${hour}`);
     const expected = items.filter(item => item.firstHour <= hour && hour <= item.lastHour);
     assert.deepEqual(new Set(found), new Set(expected), `hour ${hour}`);
@@ -110,12 +102,9 @@ test('a line ending early is labelled at its own last sample', () => {
 });
 
 test('end labels sit where a line is last drawn in view, even when the playhead is in a gap after it', () => {
-  // Daily reads carried to 1040, then a recording gap until the next read at 1100.
   const reads = [{ firstHour: 1017, lastHour: 1040 }, { firstHour: 1100, lastHour: 1120 }];
-  // A playhead or view end at 1060, in the gap: the line is named where it ends.
   assert.equal(lineEndHour(reads, 1000, 1060), 1040);
   assert.equal(lineEndHour(reads, 1000, 1110.6), 1110);
-  // No label when nothing of the line is drawn in view.
   assert.equal(lineEndHour(reads, 1050, 1060), null);
   assert.equal(lineEndHour(reads, 1000, 1010), null);
   assert.equal(lineEndHour([], 1000, 1060), null);

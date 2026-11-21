@@ -1,28 +1,3 @@
-//! Verified reuse of evaluations. An evaluation (a country's dynamic focus
-//! presentation, a leader's traits, a scripted text) records every value it
-//! reads as an input: a key naming the read and a digest of the value read.
-//! A later hour reuses the evaluation's result when every input reads the
-//! same value again: the result is a function of the values read, so equal
-//! reads give an equal result.
-//!
-//! The hour's shared state (the trigger [`super::World`], the recorded
-//! scopes and names) is read only through recorded queries ([`query`]),
-//! which record their arguments and the digest of their result. What a query
-//! reads inside, its tables, lazily built indexes and time comparisons, is
-//! not recorded: the result already holds its whole effect. Any other table
-//! read during an evaluation is recorded whole ([`Key::Table`]), through
-//! [`replay_frame::frame::view_reads`], or by the fields it reads ([`fields`]).
-//!
-//! Each input also declares what its value is a function of
-//! ([`Key::dependence`]): some fields of some rows of some tables, their keys
-//! and availability; in a table keyed by raw country, the rows of one
-//! canonical country and those whose country does not resolve ([`Owner`]).
-//! Given what changed since the hour an evaluation last
-//! read equal ([`Since`]), an input none of whose declared reads changed
-//! reads the same without being read again, so confirming it needs no
-//! trigger world ([`Inputs::confirm_since`]). An input without a declaration
-//! is always read again. Check mode reads every input so skipped again and
-//! reports a declaration that missed a read ([`missed_dependences`]).
 
 use std::{
     cell::{Cell, RefCell},
@@ -38,8 +13,6 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity, kept, view_reads};
 use std::sync::LazyLock;
 
-/// Evaluations run, reused, and (in check mode) reused but run anyway,
-/// and of those, any that changed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReuseCounts {
@@ -49,9 +22,6 @@ pub struct ReuseCounts {
     pub mismatched: u64,
 }
 
-/// Check mode runs every reused evaluation anyway and counts any change:
-/// in tests unless one turns it off ([`reusing`]), and in preparation when
-/// `BATTLE_PLAN_REUSE_CHECK` is set.
 pub fn check_reuse() -> bool {
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -69,8 +39,6 @@ thread_local! {
     static CHECKING: Cell<bool> = const { Cell::new(true) };
 }
 
-/// Run `f` on this thread with check mode off, so reused results are
-/// returned as preparation returns them.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reusing<T>(f: impl FnOnce() -> T) -> T {
     struct Restore;
@@ -84,36 +52,20 @@ pub fn reusing<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// What an evaluation read.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Key {
-    /// A whole table's view at the hour: its allocation, which changes with
-    /// any of its rows, status or refusal.
     Table(TableId),
-    /// Some fields (change-mask bits) of every row of a table's view: its
-    /// allocation, as [`Key::Table`], which the hour's changes confirm by
-    /// these fields, the row keys and availability alone ([`fields`]).
     Fields(TableId, u64),
-    /// A query of the hour's trigger world.
     World(super::world::Query),
-    /// A query of the hour's recorded scopes.
     Scopes(crate::scope::Query),
-    /// A query of the hour's country names.
     Names(crate::scripted_text::recorded_names::Query),
-    /// A scripted text's own read of the hour.
     Text(crate::scripted_text::TextQuery),
-    /// The Clock's random seed, read when a random number is drawn from it.
     ClockSeed,
-    /// A focus country's tag resolved to its canonical slot.
     FocusTag(String),
 }
 
 impl Key {
-    /// What the value read under this key is a function of, besides the
-    /// content: every table it reads, with the fields and rows it reads.
-    /// None when undeclared: the key is then read again whenever an
-    /// evaluation that read it is confirmed.
     pub fn dependence(&self) -> Option<Vec<TableRead>> {
         match self {
             Key::Table(table) => Some(vec![TableRead::all(*table)]),
@@ -123,7 +75,6 @@ impl Key {
             }]),
             Key::World(query) => query.dependence().map(in_world),
             Key::Scopes(query) => query.dependence().map(in_world),
-            // Names and texts read the hour's tables, never its world.
             Key::Names(query) => Some(query.dependence()),
             Key::Text(query) => query.dependence(),
             Key::ClockSeed => Some(vec![TableRead::fields(TableId::Clock, &["seed"])]),
@@ -134,7 +85,6 @@ impl Key {
         }
     }
 
-    /// The table a view-valued key names.
     fn table(&self) -> Option<TableId> {
         match self {
             Key::Table(table) | Key::Fields(table, _) => Some(*table),
@@ -143,9 +93,6 @@ impl Key {
     }
 }
 
-/// A world or scope query's reads, and the reads its world is built from:
-/// the hour's trigger world exists only while its core tables are complete
-/// ([`super::world::core_gap`]).
 fn in_world(mut reads: Vec<TableRead>) -> Vec<TableRead> {
     reads.extend(
         [
@@ -159,31 +106,16 @@ fn in_world(mut reads: Vec<TableRead>) -> Vec<TableRead> {
     reads
 }
 
-/// What a read's value is a function of in one table: some fields of some
-/// rows. The keys of those rows and the table's availability (its status,
-/// a truncated table's missing count, an unavailable table's reason)
-/// always count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TableRead {
     pub table: TableId,
-    /// The fields read, as change-mask bits ([`TableId::field_name`]).
     pub fields: u64,
-    /// The keys of the rows read, inclusive; None for every row.
     pub rows: Option<(u128, u128)>,
-    /// Whether the value also compares the hour with each row's end hour,
-    /// as an ongoing relation does: it then changes when a row ends.
     pub ends: bool,
-    /// Of a table keyed by raw country first, only the rows of one
-    /// canonical country and the rows whose country does not resolve
-    /// ([`Owner`]); None for every row.
     pub owner: Option<Owner>,
 }
 
-/// The rows of one canonical country in a table keyed by raw country
-/// first: those whose key's country (the 32 bits from `shift`) `by` maps to
-/// `slot`, and those whose country it does not map. Which rows these are is
-/// a function of every slot `by` holds, which such a read also reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Owner {
@@ -192,18 +124,14 @@ pub struct Owner {
     pub by: Resolution,
 }
 
-/// What maps a raw country to its canonical slot for an [`Owner`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Resolution {
-    /// `CountryLinks`, as a row's own country reference resolves.
     Links,
-    /// `Countries`, as a country's raw id resolves (`World::raw_country`).
     Countries,
 }
 
 impl Resolution {
-    /// The read of every slot it maps by.
     fn read(self) -> TableRead {
         match self {
             Self::Links => TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
@@ -211,7 +139,6 @@ impl Resolution {
         }
     }
 
-    /// `frame`'s table it maps by; none where it is not complete, so any row may be.
     pub fn slots<'f>(self, frame: impl Into<HourFrame<'f>>) -> Option<Slots<'f>> {
         let frame = frame.into();
         view_reads::unrecorded(|| match self {
@@ -227,13 +154,11 @@ impl Resolution {
     }
 }
 
-/// The fields a [`Slots`] reads of each table it maps by.
 static CANONICAL_LINK: LazyLock<u64> =
     LazyLock::new(|| TableRead::fields(TableId::CountryLinks, &["canonical_slot"]).fields);
 static CANONICAL_COUNTRY: LazyLock<u64> =
     LazyLock::new(|| TableRead::fields(TableId::Countries, &["canonical_slot"]).fields);
 
-/// A complete table that maps raw countries to slots, keyed by raw id.
 #[derive(Clone, Copy)]
 pub enum Slots<'a> {
     Links(Rowset<'a, replay_data::rows::CountryLinkRow>),
@@ -241,8 +166,6 @@ pub enum Slots<'a> {
 }
 
 impl Slots<'_> {
-    /// The slot it maps raw country `country` to, if any; none where its row cannot be read,
-    /// so any row may be any country's.
     pub fn of(self, country: u32) -> Option<u32> {
         view_reads::unrecorded(|| match self {
             Self::Links(rows) => rows
@@ -260,7 +183,6 @@ impl Slots<'_> {
 }
 
 impl TableRead {
-    /// Every field of every row.
     pub fn all(table: TableId) -> Self {
         Self {
             fields: full_mask(table.schema().len()),
@@ -268,7 +190,6 @@ impl TableRead {
         }
     }
 
-    /// No field: the row keys and availability alone.
     pub fn keys(table: TableId) -> Self {
         Self {
             table,
@@ -279,9 +200,6 @@ impl TableRead {
         }
     }
 
-    /// The fields `names` name, of every row. A name the table lacks reads
-    /// every field, so a renamed field is never missed (and fails a debug
-    /// build).
     pub fn fields(table: TableId, names: &[&str]) -> Self {
         let mut fields = 0;
         for name in names {
@@ -301,12 +219,10 @@ impl TableRead {
         }
     }
 
-    /// Only the row keyed `key`.
     pub fn row(self, key: u128) -> Self {
         self.rows(key, key)
     }
 
-    /// Only the rows keyed `first` to `last`.
     pub fn rows(self, first: u128, last: u128) -> Self {
         Self {
             rows: Some((first, last)),
@@ -314,8 +230,6 @@ impl TableRead {
         }
     }
 
-    /// Also the hour against each row's start and end hours, which it
-    /// reads.
     pub fn ending(self) -> Self {
         Self {
             fields: self.fields | Self::fields(self.table, &["start_hour", "end_hour"]).fields,
@@ -324,9 +238,6 @@ impl TableRead {
         }
     }
 
-    /// Only the rows of canonical country `slot`, and the rows whose
-    /// country does not resolve, in a table whose key holds the raw
-    /// country above bit `shift` ([`Owner`]).
     pub fn owned_by(self, slot: u32, shift: u32) -> Self {
         Self {
             owner: Some(Owner {
@@ -338,9 +249,6 @@ impl TableRead {
         }
     }
 
-    /// Only the rows of the country whose raw id `Countries` gives canonical slot `slot`,
-    /// and the rows whose country it does not give, in a table whose key holds the raw
-    /// country above bit `shift`.
     pub fn of_country(self, slot: u32, shift: u32) -> Self {
         Self {
             owner: Some(Owner {
@@ -352,8 +260,6 @@ impl TableRead {
         }
     }
 
-    /// Whether this read reads the row keyed `key` of `frame`: in its key
-    /// range and, if owned, its country's or unresolved by `frame`'s links.
     #[cfg(test)]
     pub(crate) fn reads_row(&self, key: u128, frame: &'_ DecodedFrame) -> bool {
         self.rows
@@ -369,34 +275,23 @@ impl TableRead {
 }
 
 impl Owner {
-    /// The raw country of the row keyed `key`: the 32 bits above the shift.
     fn country(self, key: u128) -> u32 {
         key.checked_shr(self.shift).unwrap_or(0) as u32
     }
 }
 
-/// How a table may differ between two hours of a branch.
 #[derive(Clone, Copy, Debug)]
 pub enum TableChange<'a> {
-    /// The same view: nothing changed.
     Same,
-    /// Changed by exactly these rows, each with the fields it changed, and
-    /// these deleted keys.
     Rows(&'a [DeltaRow], &'a [u128]),
-    /// Only fields among these may have changed, in any row; the row keys
-    /// and availability are equal.
     Fields(u64),
-    /// Anything may have changed.
     Any,
 }
 
-/// What changed in each table between two hours of a branch. Changed rows
-/// and deleted keys ascend by key, as a decoded delta's do.
 pub trait TableChanges {
     fn table(&self, table: TableId) -> TableChange<'_>;
 }
 
-/// The fields a block reader watches in `table`, if it watches it.
 fn watched(fields: &[TableFields], table: TableId) -> Option<u64> {
     fields
         .iter()
@@ -405,10 +300,6 @@ fn watched(fields: &[TableFields], table: TableId) -> Option<u64> {
         .reduce(|all, fields| all | fields)
 }
 
-/// The [`TableChanges`] of a `BlockChange::Changed` hour since the hour
-/// before it, for a reader watching `watched`: a changed table may have
-/// changed anywhere; a rebuilt watched table only in fields it does not
-/// watch; any other table not at all.
 pub struct BlockTables<'a> {
     watched: &'a [TableFields],
     changed: &'a [TableId],
@@ -438,8 +329,6 @@ impl TableChanges for BlockTables<'_> {
     }
 }
 
-/// The [`TableChanges`] of a `BlockChange::Quiet` span's first `hours`
-/// hours since the changed hour before it, for a reader watching `watched`.
 pub struct QuietTables<'a> {
     watched: &'a [TableFields],
     quiet: &'a QuietHours,
@@ -467,9 +356,6 @@ impl TableChanges for QuietTables<'_> {
     }
 }
 
-/// The [`TableChanges`] between any two held frames of a branch, as their field stamps tell
-/// it ([`kept::Between`]): never a comparison of rows, so confirming costs no more than reading
-/// again would.
 pub struct Between<'a>(kept::Between<'a>);
 
 impl<'a> Between<'a> {
@@ -489,8 +375,6 @@ impl TableChanges for Between<'_> {
     }
 }
 
-/// The [`TableChanges`] between two frames of a branch, for tests: a table
-/// whose rows or availability differ may have changed anywhere.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Differing<'a> {
     pub before: &'a DecodedFrame,
@@ -508,24 +392,16 @@ impl TableChanges for Differing<'_> {
     }
 }
 
-/// What changed on a branch from hour `from` to hour `to`, and a frame
-/// holding, of every table these changes leave unchanged, its rows at `to`:
-/// the frame at `to` or at `from`.
 pub struct Since<'a> {
     branch: BranchId,
     from: Hour,
     to: Hour,
     rows: Option<HourFrame<'a>>,
     tables: &'a dyn TableChanges,
-    /// Each read asked about, and whether it changed: the evaluations an
-    /// hour confirms share most of their reads.
     asked: RefCell<std::collections::HashMap<TableRead, bool>>,
-    /// The countries an owned read's changed rows map to, by the read with its slot cleared:
-    /// every country's read of one shape shares them.
     owned: RefCell<std::collections::HashMap<TableRead, Reached>>,
 }
 
-/// The slots changed rows map to, and whether one maps to none or none could be mapped.
 #[derive(Default)]
 struct Reached {
     slots: HashSet<u32>,
@@ -533,12 +409,10 @@ struct Reached {
 }
 
 impl<'a> Since<'a> {
-    /// `frame`'s `tables` changes since the hour before it on its branch.
     pub fn hour_before(frame: &'a DecodedFrame, tables: &'a dyn TableChanges) -> Option<Self> {
         Self::hour_before_in(HourFrame::from(frame), tables)
     }
 
-    /// [`Self::hour_before`] of any frame's tables, a walk's views among them.
     pub fn hour_before_in(frame: HourFrame<'a>, tables: &'a dyn TableChanges) -> Option<Self> {
         Some(Self::span_in(
             frame.branch(),
@@ -549,8 +423,6 @@ impl<'a> Since<'a> {
         ))
     }
 
-    /// `tables` changes on `branch` from `from` to `to`, read without a
-    /// frame at `to` (a quiet span); `rows` is the frame at `from`, if held.
     pub fn span(
         branch: BranchId,
         from: Hour,
@@ -561,7 +433,6 @@ impl<'a> Since<'a> {
         Self::span_in(branch, from, to, rows.map(HourFrame::from), tables)
     }
 
-    /// [`Self::span`] with `rows` of any frame's tables, a walk's views among them.
     pub fn span_in(
         branch: BranchId,
         from: Hour,
@@ -580,7 +451,6 @@ impl<'a> Since<'a> {
         }
     }
 
-    /// Whether `read` may read differently at `to` than at `from`.
     pub fn changed(&self, read: &TableRead) -> bool {
         if let Some(&changed) = self.asked.borrow().get(read) {
             return changed;
@@ -596,7 +466,6 @@ impl<'a> Since<'a> {
             TableChange::Any => true,
             TableChange::Fields(fields) => fields & read.fields != 0,
             TableChange::Rows(changed, deleted) => {
-                // The rows read, found by key among the ascending changes.
                 let (changed, deleted) = match read.rows {
                     None => (changed, deleted),
                     Some((first, last)) => {
@@ -636,9 +505,6 @@ impl<'a> Since<'a> {
                 }
             }
         };
-        // An unmoved read's rows hold the same keys, start and end hours
-        // in `rows` as at `to`; an owned read's rows are its country's while
-        // the slots it maps by are the same.
         moved
             || read
                 .owner
@@ -649,9 +515,6 @@ impl<'a> Since<'a> {
                     .is_none_or(|rows| ended(rows, read, self.from, self.to)))
     }
 
-    /// The slots the rows keyed `keys` (changed or deleted) map to by `owner.by` in `rows`,
-    /// which equal those at `to` whenever an owned read can be unchanged. Without them, any
-    /// row may be any country's.
     fn reached(&self, owner: Owner, mut keys: impl Iterator<Item = u128>) -> Reached {
         let Some(slots) = self.rows.and_then(|frame| owner.by.slots(frame)) else {
             return Reached {
@@ -672,15 +535,10 @@ impl<'a> Since<'a> {
     }
 }
 
-/// Whether a delta row may insert its row: an inserted row carries every
-/// field it records.
 fn inserted(table: TableId, row: &DeltaRow) -> bool {
     row.mask == full_mask(row.recorded_fields.min(table.schema().len()))
 }
 
-/// Whether a delta row may change one of `fields`: one in its mask, or one
-/// at or past the fields an older format recorded, which a row it names
-/// takes as not recorded.
 fn touches(table: TableId, fields: u64, row: &DeltaRow) -> bool {
     let unrecorded = if row.recorded_fields < table.schema().len() {
         u32::try_from(row.recorded_fields)
@@ -693,9 +551,6 @@ fn touches(table: TableId, fields: u64, row: &DeltaRow) -> bool {
     row.mask & fields != 0 || unrecorded != 0
 }
 
-/// Whether one of `read`'s rows in `frame` ends after `from` and by `to`,
-/// so a relation ongoing at `from` is not at `to`
-/// ([`crate::triggers::ongoing`]). Every other table may.
 fn ended(frame: HourFrame<'_>, read: &TableRead, from: Hour, to: Hour) -> bool {
     fn any<T: replay_data::rows::TableSchema>(
         frame: HourFrame<'_>,
@@ -718,7 +573,6 @@ fn ended(frame: HourFrame<'_>, read: &TableRead, from: Hour, to: Hour) -> bool {
             Some((first, last)) => rows.span(first, last),
             None => rows,
         };
-        // A row that cannot be read may have ended.
         rows.iter().any(|row| {
             row.is_err()
                 || row.is_ok_and(|row| {
@@ -742,8 +596,6 @@ fn ended(frame: HourFrame<'_>, read: &TableRead, from: Hour, to: Hour) -> bool {
     })
 }
 
-/// The value an input read: a digest, or a table view's identity, which
-/// keeps the view's allocation reserved so no later view can share it.
 #[derive(Clone, Debug)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 enum Value {
@@ -751,9 +603,6 @@ enum Value {
     View(ViewIdentity),
 }
 
-/// One input: its key, the value read, and the footprint entries its value
-/// is a function of, a bit each (the last bit also for every entry past
-/// it); None when its key declares no dependence.
 #[derive(Clone, Debug)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 struct Read {
@@ -762,35 +611,25 @@ struct Read {
     uses: Option<u64>,
 }
 
-/// The reads of one evaluation, each key once, in first-read order.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Inputs {
     reads: Vec<Read>,
-    /// Every table read the reads declare, each once.
     footprint: Vec<TableRead>,
-    /// The branch and hour at which every input last read its value.
     at: Option<(BranchId, Hour)>,
 }
 
 thread_local! {
-    /// The evaluations recording on this thread, innermost last.
     static RECORDING: RefCell<Vec<Inputs>> = const { RefCell::new(Vec::new()) };
-    /// Queries and shared builds running inside an evaluation.
     static SUSPENDED: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Run `evaluate`, recording its reads: its queries, and every table view
-/// of `frame` it reads outside a query.
 pub fn capture<T>(frame: &DecodedFrame, evaluate: impl FnOnce() -> T) -> (T, Inputs) {
     capture_in(HourFrame::from(frame), evaluate)
 }
 
-/// [`capture`] of any frame's tables: a walk's views, which have no identity, are recorded by
-/// their status, and declare every row and field read.
 pub fn capture_in<T>(frame: HourFrame<'_>, evaluate: impl FnOnce() -> T) -> (T, Inputs) {
     RECORDING.with(|recording| recording.borrow_mut().push(Inputs::default()));
-    // Pop even when `evaluate` unwinds, so a later capture starts clean.
     struct Pop;
     impl Drop for Pop {
         fn drop(&mut self) {
@@ -816,7 +655,6 @@ pub fn capture_in<T>(frame: HourFrame<'_>, evaluate: impl FnOnce() -> T) -> (T, 
     let mut inputs = RECORDING.with(|recording| {
         let mut recording = recording.borrow_mut();
         let inputs = recording.last_mut().map(std::mem::take).unwrap_or_default();
-        // An enclosing evaluation read everything this one read.
         if let Some(outer) = recording.iter_mut().rev().nth(1) {
             for read in &inputs.reads {
                 outer.note(&read.key, &read.value);
@@ -829,22 +667,18 @@ pub fn capture_in<T>(frame: HourFrame<'_>, evaluate: impl FnOnce() -> T) -> (T, 
     (value, inputs)
 }
 
-/// What this thread records, for a helper thread that continues the same
-/// evaluation: [`Handoff::run`] there, then [`Carried::credit`] here.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Handoff {
     inputs: bool,
     views: bool,
 }
 
-/// The reads a helper thread made for its caller's recordings.
 pub(crate) struct Carried {
     inputs: Option<Inputs>,
     views: Vec<ViewIdentity>,
     walked: Vec<TableId>,
 }
 
-/// This thread's recording state, for a helper thread.
 pub(crate) fn handoff() -> Handoff {
     Handoff {
         inputs: recording(),
@@ -853,7 +687,6 @@ pub(crate) fn handoff() -> Handoff {
 }
 
 impl Handoff {
-    /// Run `compute` on the helper thread, recording what the caller records.
     pub(crate) fn run<T>(self, compute: impl FnOnce() -> T) -> (T, Carried) {
         if self.inputs {
             RECORDING.with(|recording| recording.borrow_mut().push(Inputs::default()));
@@ -878,7 +711,6 @@ impl Handoff {
 }
 
 impl Carried {
-    /// Credit the helper thread's reads to this thread's recordings.
     pub(crate) fn credit(self) {
         if let Some(inputs) = self.inputs {
             RECORDING.with(|recording| {
@@ -894,9 +726,6 @@ impl Carried {
     }
 }
 
-/// Run a query of the hour's shared state, recording `key` and the digest of
-/// its result in the evaluations on this thread; what it reads inside is not
-/// recorded, since its result holds all of it.
 pub fn query<V: Hash>(key: impl FnOnce() -> Key, compute: impl FnOnce() -> V) -> V {
     if !recording() {
         return compute();
@@ -906,8 +735,6 @@ pub fn query<V: Hash>(key: impl FnOnce() -> Key, compute: impl FnOnce() -> V) ->
     value
 }
 
-/// [`query`] of a result without a `Hash`, digested through its `Debug`
-/// form, which a derived `Debug` writes in full.
 pub fn query_debug<V: std::fmt::Debug>(
     key: impl FnOnce() -> Key,
     compute: impl FnOnce() -> V,
@@ -931,9 +758,6 @@ fn with_resolutions(
     }
 }
 
-/// A filtered failed join is part of the answer even when its value is unchanged.
-/// Include it when confirming reuse, so a formerly proved nonmatch cannot be
-/// reused after a raw reference stops resolving.
 pub(crate) fn resolved_digest(run: impl FnOnce() -> u64) -> u64 {
     let (value, failures) = super::refusal::resolutions(run);
     with_resolutions(value, &failures)
@@ -964,20 +788,16 @@ pub(crate) fn query_debug_resolved<V: std::fmt::Debug>(
     value
 }
 
-/// Whether an evaluation on this thread records reads here.
 pub(crate) fn recording() -> bool {
     SUSPENDED.with(Cell::get) == 0 && RECORDING.with(|recording| !recording.borrow().is_empty())
 }
 
-/// Record that the evaluations on this thread read `value` under `key`.
 pub fn read<V: Hash>(key: Key, value: &V) {
     if recording() {
         record(key, || Value::Digest(digest(value)));
     }
 }
 
-/// Run `compute` without recording anything it reads: building the hour's
-/// shared state, whose every later use is a recorded query.
 pub fn unrecorded<T>(compute: impl FnOnce() -> T) -> T {
     SUSPENDED.with(|suspended| suspended.set(suspended.get() + 1));
     struct Resume;
@@ -990,8 +810,6 @@ pub fn unrecorded<T>(compute: impl FnOnce() -> T) -> T {
     view_reads::unrecorded(compute)
 }
 
-/// Record a read of `table`'s whole view in `frame`, for state built from
-/// the whole table that an evaluation reads directly.
 pub fn table<'f>(frame: impl Into<replay_frame::frame::HourFrame<'f>>, table: TableId) {
     let frame = frame.into();
     if recording() {
@@ -999,8 +817,6 @@ pub fn table<'f>(frame: impl Into<replay_frame::frame::HourFrame<'f>>, table: Ta
     }
 }
 
-/// What a read of `table`'s view in `frame` records: the view's identity, else a digest of
-/// it; a walk's view, which has neither, its status alone.
 fn view_value(frame: replay_frame::frame::HourFrame<'_>, table: TableId) -> Value {
     match (frame.identity(table), frame.decoded()) {
         (Some(view), _) => Value::View(view),
@@ -1009,9 +825,6 @@ fn view_value(frame: replay_frame::frame::HourFrame<'_>, table: TableId) -> Valu
     }
 }
 
-/// Record a read of the fields `names` name in every row of `table`'s view
-/// in `frame`, for state built from those fields of the whole table that an
-/// evaluation reads directly ([`Key::Fields`]).
 pub fn fields<'f>(
     frame: impl Into<replay_frame::frame::HourFrame<'f>>,
     table: TableId,
@@ -1035,7 +848,6 @@ fn record(key: Key, value: impl FnOnce() -> Value) {
     });
 }
 
-/// [`digest`] of `value`'s `Debug` form.
 pub fn digest_debug<V: std::fmt::Debug + ?Sized>(value: &V) -> u64 {
     struct Digesting(std::hash::DefaultHasher);
     impl std::fmt::Write for Digesting {
@@ -1049,48 +861,32 @@ pub fn digest_debug<V: std::fmt::Debug + ?Sized>(value: &V) -> u64 {
     hasher.0.finish()
 }
 
-/// A digest of `value`; equal values have equal digests.
 pub fn digest<V: Hash + ?Sized>(value: &V) -> u64 {
-    // Fixed keys, so digests compare across hours.
     let mut hasher = std::hash::DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
 }
 
-/// Inputs skipped as unchanged whose value check mode found changed: each
-/// a declared dependence that missed a read.
 static MISSED: AtomicU64 = AtomicU64::new(0);
 
-/// How many inputs skipped by their declared dependence check mode found
-/// changed since this process started; any is a declaration that misses a
-/// read.
 pub fn missed_dependences() -> u64 {
     MISSED.load(Ordering::Relaxed)
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// This thread's misses, independent of concurrently running tests.
     static LOCAL_MISSED: Cell<u64> = const { Cell::new(0) };
-    /// Whether a missed dependence is expected here rather than a failure.
     static EXPECTING_MISSED: Cell<bool> = const { Cell::new(false) };
-    /// A test's own declarations, before each key's.
     static DECLARED: RefCell<Option<Declaration>> = const { RefCell::new(None) };
 }
 
-/// A test's declaration of a key's dependence: Some to replace the key's
-/// own.
 #[cfg(any(test, feature = "test-support"))]
 type Declaration = Box<dyn Fn(&Key) -> Option<Option<Vec<TableRead>>>>;
 
-/// Reports a reused evaluation that check mode evaluated anyway and found
-/// changed: a declared dependence of one of its inputs missed a read
-/// ([`missed_dependences`]).
 pub fn missed_reuse(evaluation: &dyn std::fmt::Debug, frame: &DecodedFrame) {
     missed(evaluation, frame.hour);
 }
 
-/// [`missed_reuse`] of an evaluation at `hour`, of any frame.
 pub fn missed_reuse_at(evaluation: &dyn std::fmt::Debug, hour: Hour) {
     missed(evaluation, hour);
 }
@@ -1109,8 +905,6 @@ fn missed(key: &dyn std::fmt::Debug, hour: Hour) {
     let _ = (key, hour);
 }
 
-/// Run `f` on this thread with a missed dependence counted rather than
-/// failing the test, returning how many were missed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn expecting_missed<T>(f: impl FnOnce() -> T) -> (T, u64) {
     struct Restore(bool);
@@ -1125,8 +919,6 @@ pub fn expecting_missed<T>(f: impl FnOnce() -> T) -> (T, u64) {
     (value, LOCAL_MISSED.with(Cell::get).wrapping_sub(before))
 }
 
-/// Run `f` on this thread with `declare` deciding each recorded key's
-/// dependence where it returns Some: a test of a wrong declaration.
 #[cfg(any(test, feature = "test-support"))]
 pub fn declaring<T>(
     declare: impl Fn(&Key) -> Option<Option<Vec<TableRead>>> + 'static,
@@ -1143,7 +935,6 @@ pub fn declaring<T>(
     f()
 }
 
-/// `key`'s dependence, or a test's declaration of it.
 fn dependence(key: &Key) -> Option<Vec<TableRead>> {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(declared) =
@@ -1156,7 +947,6 @@ fn dependence(key: &Key) -> Option<Vec<TableRead>> {
 
 impl Inputs {
     fn note(&mut self, key: &Key, value: &Value) {
-        // The first read decided the evaluation: a key reads one value.
         if self.reads.iter().any(|read| read.key == *key) {
             return;
         }
@@ -1172,7 +962,6 @@ impl Inputs {
         });
     }
 
-    /// The bit of `read`'s footprint entry, added if new.
     fn footprint_bit(&mut self, read: &TableRead) -> u64 {
         let position = match self.footprint.iter().position(|held| held == read) {
             Some(position) => position,
@@ -1184,12 +973,10 @@ impl Inputs {
         1_u64 << position.min(63)
     }
 
-    /// Whether `since` starts where every input last read its value.
     fn follows(&self, since: &Since<'_>) -> bool {
         self.at == Some((since.branch, since.from))
     }
 
-    /// The footprint entries `since` may have changed, a bit each.
     fn changed(&self, since: &Since<'_>) -> u64 {
         self.footprint
             .iter()
@@ -1200,18 +987,12 @@ impl Inputs {
             })
     }
 
-    /// Whether every input reads its recorded value at `since`'s end without
-    /// being read again: each declares its dependence, none of which `since`
-    /// changed, and `since` starts where they last read it. Confirming such
-    /// an evaluation needs no trigger world.
     pub fn unchanged(&self, since: &Since<'_>) -> bool {
         self.follows(since)
             && self.reads.iter().all(|read| read.uses.is_some())
             && self.changed(since) == 0
     }
 
-    /// [`Self::unchanged`], then the inputs read their values at `since`'s
-    /// end: for a span read without frames (a quiet span).
     pub fn advance(&mut self, since: &Since<'_>) -> bool {
         let unchanged = self.unchanged(since);
         if unchanged {
@@ -1220,9 +1001,6 @@ impl Inputs {
         unchanged
     }
 
-    /// Whether every input reads its recorded value again: a table is still
-    /// the same view of `frame`, and `reread` gives every other key's digest
-    /// now, None when it cannot read it.
     pub fn confirm(
         &mut self,
         frame: &DecodedFrame,
@@ -1231,12 +1009,6 @@ impl Inputs {
         self.confirm_since(frame, None, reread)
     }
 
-    /// [`Self::confirm`] with what changed since the hour the inputs last
-    /// read their values at, if `since` ends at `frame` and starts there: an
-    /// input whose declared dependence `since` did not change reads the same
-    /// without `reread` (a table's view is then this hour's). Check mode
-    /// rereads it anyway and reports a value that changed
-    /// ([`missed_dependences`]).
     pub fn confirm_since(
         &mut self,
         frame: &DecodedFrame,
@@ -1246,8 +1018,6 @@ impl Inputs {
         self.confirm_since_in(HourFrame::from(frame), since, reread)
     }
 
-    /// [`Self::confirm_since`] of any frame's tables. A walk's view, which has no identity, is
-    /// the same only where `since` did not change what it declares.
     pub fn confirm_since_in(
         &mut self,
         frame: HourFrame<'_>,
@@ -1268,7 +1038,6 @@ impl Inputs {
                     (Value::View(view), Some(table), Some(decoded)) => {
                         *view = decoded.tables[table.index()].identity()
                     }
-                    // A walk's view, recorded by its status: check mode reads that again.
                     (Value::Digest(digest), Some(table), None) => {
                         if checking
                             && !matches!(view_value(frame, table), Value::Digest(now) if now == *digest)
@@ -1301,7 +1070,6 @@ impl Inputs {
         true
     }
 
-    /// The tables read whole.
     #[cfg(test)]
     fn tables(&self) -> impl Iterator<Item = TableId> + '_ {
         self.reads.iter().filter_map(|read| match read.key {
@@ -1310,9 +1078,6 @@ impl Inputs {
         })
     }
 
-    /// Every table read the inputs declare, each once; None when one of
-    /// them declares none, so the evaluation must be read again whenever it
-    /// is reused.
     pub fn declared(&self) -> Option<&[TableRead]> {
         self.reads
             .iter()
@@ -1320,7 +1085,6 @@ impl Inputs {
             .then_some(self.footprint.as_slice())
     }
 
-    /// The keys read, in first-read order.
     pub fn keys(&self) -> impl Iterator<Item = &Key> + '_ {
         self.reads.iter().map(|read| &read.key)
     }

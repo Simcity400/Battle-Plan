@@ -1,6 +1,3 @@
-//! Recorded combat members projected into the existing model actor library.
-//! The game selects the first three screens and prefers a genuine capital over
-//! carriers. Strength uses the live value, not the equipment-member cache.
 
 use super::*;
 use crate::map::unit_history::naval_combat::{Battle, Health, Sources, impacts};
@@ -86,7 +83,6 @@ impl UnitModelAssets {
                     position: root,
                     scale: (bounds[2] - bounds[0]).min(bounds[3] - bounds[1]) / 50.0
                         * content.scale,
-                    // world_transform already supplies the native sign convention.
                     rotation: self
                         .ships
                         .combat_rotations
@@ -125,9 +121,6 @@ impl UnitModelAssets {
                     report.error(format!("naval_combat_effect: registry cardinality is undecided after an unreadable declaration of {name:?}"));
                     return Ok(out);
                 }
-                // The game appends nonnull entity definitions only. A known
-                // registry miss is skipped; a registered failed bake retains
-                // its native ticket as None rather than shifting later names.
                 if !self.registered(name) {
                     continue;
                 }
@@ -200,15 +193,11 @@ impl UnitModelAssets {
             .iter()
             .filter(|row| wanted.contains(&row.combat))
         {
-            // The calling province supplies geometry when it acquires the
-            // shared combat wrapper; detail.province is not a placement key.
             let root = [0.0; 3];
             let mut random = crate::map::entity_animation::Random::new(
                 detail.combat as u32 ^ (detail.combat >> 32) as u32,
             );
             let mut selected = Vec::with_capacity(8);
-            // Native refresh spends the shared budget on defenders first.
-            // The row's side convention remains attacker zero, defender one.
             for side in [0, 1] {
                 selected.extend(
                     locators[side]
@@ -455,9 +444,6 @@ fn average(sum: i64, count: i32) -> i64 {
 mod tests {
     use super::{average, strength_ratio};
 
-    // The game keeps the signed wrapping fixed-point operations and the three
-    // exceptional integer encodings. These values are independent of cached
-    // equipment-member strength, floating point ratios and clamped health percentages.
     #[test]
     fn native_strength_floor_sentinels_and_wrapping_arithmetic() {
         assert_eq!(strength_ratio(1, 0), 1_000);

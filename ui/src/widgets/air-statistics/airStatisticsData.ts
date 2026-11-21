@@ -5,13 +5,9 @@ import type { AirStatisticsChannel, AirStatisticsReply } from '../../generated/d
 
 export type { AirStatisticsReply };
 
-// A region's two words are its live cells (`region`, `ours`) and (`region`, `enemy`), never in the reply.
 
-/** The channel the widget starts with: the recording schema's fighters-lost pair. */
 export const DEFAULT_CHANNEL = '3';
-/** The schema's ours channels come first, then the same number of enemy channels. */
 export const PAIRS = 12;
-/** The game's statistic names end in a colon, as they lead a number in its window. */
 export const statisticName = (text: string) => text.replace(/\s*:\s*$/, '');
 
 const text = (value: unknown): value is string => typeof value === 'string';
@@ -30,18 +26,15 @@ export function validateAirStatistics(value: unknown): AirStatisticsReply {
   return reply;
 }
 
-/** A recorded pair channel as its request names it; null for one the schema has not. */
 export function channelIndex(channel: string): number | null {
   const index = Number(channel);
   return Number.isSafeInteger(index) && index >= 0 && index < PAIRS ? index : null;
 }
 
-/** One region's pair: its recorded words, exact; a word not known is null, `why` saying why. */
 export interface RegionPair { region: string; name: string; ours: bigint | null; enemy: bigint | null; oursWhy: string; enemyWhy: string }
 
 const word = (values: LiveValues<number>, key: string) => { const value = values.get(key); return value === undefined ? null : BigInt(Math.trunc(value)); };
 
-/** The reply's regions with their words from the live cells. */
 export const pairsOf = (reply: Pick<AirStatisticsReply, 'regions'>, values: LiveValues<number>): RegionPair[] => reply.regions.map(row => {
   const ours = liveKey(row.region, 'ours'), enemy = liveKey(row.region, 'enemy');
   return { region: row.region, name: row.name ?? `Region ${row.region} (${row.missing})`, ours: word(values, ours), enemy: word(values, enemy),
@@ -50,8 +43,6 @@ export const pairsOf = (reply: Pick<AirStatisticsReply, 'regions'>, values: Live
 
 const magnitude = (value: bigint | null) => value === null ? 0n : value < 0n ? -value : value;
 
-/** Regions ordered by ours plus enemy, largest first, ties by name; `regions` narrows them and `top` keeps that many
- * (none kept back when null). */
 export function rankedPairs(rows: readonly RegionPair[], regions: ReadonlySet<string> | null, top: number | null): RegionPair[] {
   const kept = rows.filter(row => !regions || regions.has(row.region))
     .sort((a, b) => {
@@ -61,7 +52,6 @@ export function rankedPairs(rows: readonly RegionPair[], regions: ReadonlySet<st
   return top === null ? kept : kept.slice(0, top);
 }
 
-/** A recorded word on its channel's display scale, exactly (no rounding beyond the scale); a dash when not known. */
 export function scaled(raw: bigint | null, divisor: number): string {
   if (raw === null) return '—';
   const scale = BigInt(divisor), negative = raw < 0n, whole = (negative ? -raw : raw) / scale, part = (negative ? -raw : raw) % scale;
@@ -70,10 +60,8 @@ export function scaled(raw: bigint | null, divisor: number): string {
   return `${negative ? '-' : ''}${whole.toLocaleString('en-US')}${fraction}`;
 }
 
-/** The chart operand: the scaled value as a number, for bar length only. */
 export const barValue = (raw: bigint | null, divisor: number) => raw === null ? 0 : Number(raw) / divisor;
 
-/** Enemy per ours, when ours is positive. */
 export function pairRatio(row: RegionPair, divisor: number): string {
   if (row.ours === null || row.enemy === null || row.ours <= 0n) return '—';
   return (Number(row.enemy) / divisor / (Number(row.ours) / divisor)).toLocaleString('en-US', { maximumFractionDigits: 2 });

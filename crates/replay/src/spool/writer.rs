@@ -5,7 +5,6 @@ fn encode_frame_record(frame: EncodedFrame) -> io::Result<Vec<u8>> {
     frame.into_spool_record()
 }
 
-/// An immutable envelope and the small context needed to validate its placement.
 pub struct SealedRecord {
     bytes: Vec<u8>,
     frame: Option<(BranchId, Hour, bool)>,
@@ -54,7 +53,6 @@ impl SealedRecord {
     }
 }
 
-/// Periodic synchronization work for one live segment, excluding forced barriers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BackgroundSyncWork {
     pub requested: u64,
@@ -62,23 +60,16 @@ pub struct BackgroundSyncWork {
     pub total_ns: u64,
     pub max_ns: u64,
     pub pending: bool,
-    /// Durability threads started for the segment: one persistent worker
-    /// serves every periodic request.
     pub threads: u64,
 }
 
-/// A narrow I/O seam permits fault tests without creating files or spawning processes.
 pub trait SegmentSink: Write {
     fn sync_all(&mut self) -> io::Result<()>;
 
-    /// Start periodic durability work. A sink may complete it in the background;
-    /// ordinary writes remain ordered, and forced boundaries still use sync_all.
     fn start_sync(&mut self) -> io::Result<()> {
         self.sync_all()
     }
 
-    /// Report pending durability errors before accepting more records. False
-    /// means the previous request is still running, so another must not start.
     fn poll_sync(&mut self) -> io::Result<bool> {
         Ok(true)
     }
@@ -94,8 +85,6 @@ impl SegmentSink for File {
     }
 }
 
-/// One ordered writer and at most one periodic durability worker per segment.
-/// The worker owns a cloned handle, never record bytes or capture buffers.
 pub struct FileSink {
     file: File,
     sync_file: File,
@@ -105,10 +94,6 @@ pub struct FileSink {
     ordered_sync: bool,
 }
 
-/// The segment's persistent durability thread. It starts at the first
-/// periodic request and then sleeps between requests, so periodic
-/// synchronization spawns no thread per request. At most one request is in
-/// flight; dropping the sink finishes it and joins the thread.
 struct DurabilityWorker {
     shared: Arc<DurabilityShared>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -132,7 +117,6 @@ impl DurabilityShared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The worker: one sync per request, until stopped with none pending.
     fn serve(&self, file: File) {
         let mut state = self.lock();
         loop {
@@ -176,7 +160,6 @@ impl DurabilityWorker {
         self.shared.changed.notify_all();
     }
 
-    /// The in-flight request has neither finished nor lost its thread.
     fn busy(&self) -> bool {
         self.shared.lock().finished.is_none()
             && self
@@ -185,8 +168,6 @@ impl DurabilityWorker {
                 .is_some_and(|thread| !thread.is_finished())
     }
 
-    /// Wait for the in-flight request. A worker that ended without reporting
-    /// one cannot certify durability.
     fn wait(&self) -> (u64, io::Result<()>) {
         let mut state = self.shared.lock();
         loop {
@@ -227,8 +208,6 @@ fn independent_sync_file(file: &File) -> io::Result<File> {
         Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE},
         Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile},
     };
-    // Reopen the existing object, not its path. A duplicated synchronous writer
-    // handle would share that object's I/O serialization with the flush thread.
     let handle = unsafe {
         ReOpenFile(
             file.as_raw_handle(),
@@ -276,7 +255,6 @@ impl Write for FileSink {
 impl SegmentSink for FileSink {
     fn sync_all(&mut self) -> io::Result<()> {
         self.finish_pending()?;
-        // Include writes accepted after the background request began.
         self.file.sync_all().map_err(allocation_error)
     }
 
@@ -327,9 +305,6 @@ impl SegmentSink for FileSink {
 
 impl Drop for FileSink {
     fn drop(&mut self) {
-        // The collector DLL must never unload with its worker still running.
-        // Normal close reports failures through sync_all; error cleanup only
-        // finishes the request, and dropping the worker joins its thread.
         let _ = self.finish_pending();
         self.worker = None;
     }
@@ -358,7 +333,6 @@ impl FileBackend {
         })
     }
 
-    /// Write-behind owns durability too, so it never overlaps its own writes with sync.
     pub fn ordered(directory: impl Into<PathBuf>) -> io::Result<Self> {
         let mut backend = Self::new(directory)?;
         backend.ordered_sync = true;
@@ -529,19 +503,14 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         self.append_bytes(record.bytes, force_sync)
     }
 
-    /// Publish before periodic sync can allocate; true identifies a complete frame.
-    /// The callback must not allocate.
     pub fn set_commit_hook(&mut self, hook: fn(u32, u64, bool)) {
         self.commit_hook = Some(hook);
     }
 
-    /// Publish the preceding campaign watermark before a write can become in flight.
-    /// The callback must not allocate.
     pub fn set_write_start_hook(&mut self, hook: SpoolWriteStartHook) {
         self.write_start_hook = Some(hook);
     }
 
-    /// Current open segment only; completed durations exclude forced barriers.
     pub fn background_sync_work(&self) -> Option<BackgroundSyncWork> {
         self.sink.as_ref()?.background_sync_work()
     }
@@ -569,8 +538,6 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         }
     }
 
-    /// The caller resets its table encoder and supplies a new keyframe on every restart.
-    /// Lost hours must be named in `Gap` records in this context or subsequent appends.
     #[cfg(test)]
     pub fn start_segment(&mut self, context: &[Record], keyframe: &Frame) -> io::Result<()> {
         self.start_segment_with(
@@ -630,8 +597,6 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             encoded.push(encode_record(record)?);
         }
         state.accept_frame(branch, hour, keyframe)?;
-        // Preserve context-before-payload errors for the borrowed Frame API.
-        // Neither entry point creates a segment until all bytes are ready.
         encoded.push(encode()?);
         let index = self.next_segment;
         self.next_segment = index
@@ -703,7 +668,6 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         Ok(())
     }
 
-    /// Call on the spool thread's timeout as well as on writes, so pauses still sync.
     pub fn sync_if_due(&mut self) -> io::Result<()> {
         let result = (|| {
             if let Some(sink) = &mut self.sink
@@ -778,7 +742,6 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
     }
 
     fn failed<T>(&mut self, error: io::Error) -> io::Result<T> {
-        // Dropping this handle is final: even a partial record is never appended to again.
         self.retire_sink();
         self.state = SegmentState::default();
         self.last_error = Some(error.kind());

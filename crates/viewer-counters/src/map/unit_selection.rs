@@ -1,4 +1,3 @@
-//! Unit selection belongs to one viewer, never to the recording.
 
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::counter_hovers::unit_hits::Hit;
@@ -9,8 +8,6 @@ use viewer_foundation::unit_handle::Unit;
 use replay_data::{BranchId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
-/// The game checks selection before owner and
-/// coarse grouping. Splitting keeps each selected unit on its own plate.
 pub fn joins(selected: &BTreeSet<Unit>, first: Unit, candidate: Unit, split: bool) -> bool {
     let first = selected.contains(&first);
     let candidate = selected.contains(&candidate);
@@ -29,7 +26,6 @@ impl Selection {
         &self.units
     }
 
-    /// Native tooltip dispatch and first-member queries follow insertion order.
     pub fn ordered_units(&self) -> &Arc<Vec<Unit>> {
         &self.ordered
     }
@@ -43,8 +39,6 @@ impl Selection {
         true
     }
 
-    /// A normal click replaces selection; Shift-click toggles each member of
-    /// the clicked plate. Clicking the background clears unless Shift is held.
     pub fn click(&mut self, hit: Option<&Hit>, shift: bool) -> bool {
         let hit = hit.filter(|hit| hit.ours);
         let before = Arc::clone(&self.units);
@@ -68,15 +62,12 @@ impl Selection {
         }
         let changed = *before != *self.units || *before_order != *self.ordered;
         if !changed {
-            // Keep held tooltip identities for a click which changed neither view.
             self.units = before;
             self.ordered = before_order;
         }
         changed
     }
 
-    /// A box replaces the selection with `units`, clearing it when they are none; with Shift it
-    /// adds them and never takes one away.
     pub fn select_box(&mut self, units: impl IntoIterator<Item = Unit>, shift: bool) -> bool {
         let before = (Arc::clone(&self.units), Arc::clone(&self.ordered));
         if !shift {
@@ -92,12 +83,6 @@ impl Selection {
         self.keep_unless_changed(before)
     }
 
-    /// A click on a unit model: Shift on a selected `picked` unit takes it away; otherwise the
-    /// selection is cleared unless Shift is held, and `picked`'s stack `mates` are added when they
-    /// are ours, of the first selected object's kind and of its land theatre (`theatre`, 0 for
-    /// none), or of `picked`'s when nothing stays selected. A picked unit not ours, which the
-    /// game's list keeps after an observer's switch, adds nothing and does not fall through. A
-    /// theatre not answered adds no mate, and its reason is returned.
     pub fn model_click(
         &mut self,
         picked: Unit,
@@ -141,8 +126,6 @@ impl Selection {
         (self.keep_unless_changed(before), withheld)
     }
 
-    /// Whether the selection changed since `before`; when it did not, `before` is kept, so held
-    /// tooltip identities stay.
     fn keep_unless_changed(&mut self, before: (Arc<BTreeSet<Unit>>, Arc<Vec<Unit>>)) -> bool {
         let changed = *before.0 != *self.units || *before.1 != *self.ordered;
         if !changed {
@@ -151,8 +134,6 @@ impl Selection {
         changed
     }
 
-    /// A new branch clears the selection; a new viewing country keeps it, as the game's
-    /// observer switch deselects nothing. It reads no rows.
     pub fn context(&mut self, branch: BranchId) -> bool {
         if self.context == Some(branch) {
             return false;
@@ -161,10 +142,6 @@ impl Selection {
         self.clear()
     }
 
-    /// Selection survives roster, logical and expeditionary ownership changes.
-    /// Complete censuses can retire missing handles; an absent or partial class
-    /// census cannot prove disappearance, so it preserves that class. Ownership
-    /// admits a new click but does not invalidate an already-selected handle.
     pub fn observe(&mut self, branch: BranchId, frame: &DecodedFrame) -> bool {
         let mut changed = self.context(branch);
         if self.units.is_empty() {
@@ -402,7 +379,6 @@ mod tests {
         let mut selection = Selection::default();
         selection.observe(frame.branch, &frame);
         selection.click(Some(&hit(Kind::Division, &[8, 9, 7])), false);
-        // Two toggles preserve membership but move the removed/readded member last.
         assert!(selection.click(Some(&hit(Kind::Division, &[9, 9])), true));
         assert_eq!(
             selection.ordered_units().as_slice(),
@@ -481,8 +457,6 @@ mod tests {
         let held = Arc::clone(selection.ordered_units());
         let members = Arc::clone(selection.units());
 
-        // A definite roster transfer and foreign logical/expeditionary artwork
-        // retain already-selected identities, including their full upper bits.
         frame = ownership_frame(&[
             (TRANSFERRED, 201, 101, 101),
             (ALIASED, 102, 201, 201),
@@ -501,7 +475,6 @@ mod tests {
         );
         assert_eq!(held.len(), 9);
 
-        // Further changes to raw/canonical ownership leave the same selection.
         frame = ownership_frame(&[
             (TRANSFERRED, 1, 201, 201),
             (ALIASED, 201, 201, 201),
@@ -511,8 +484,6 @@ mod tests {
         assert!(Arc::ptr_eq(&held, selection.ordered_units()));
         assert!(Arc::ptr_eq(&members, selection.units()));
 
-        // Only disappearance from complete class censuses retires the handle,
-        // retaining the survivor order and the held tooltip's previous order.
         frame = ownership_frame(&[(ALIASED, 201, 201, 201), (STEADY, 101, 101, 0)]);
         assert!(selection.observe(frame.branch, &frame));
         assert_eq!(
@@ -596,7 +567,6 @@ mod tests {
         assert!(!selection.observe(frame.branch, &frame));
         assert!(Arc::ptr_eq(&held, selection.ordered_units()));
 
-        // A complete census can still prove disappearance without owner links.
         frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
             reason: "CountryLinks read failed".into(),
         }

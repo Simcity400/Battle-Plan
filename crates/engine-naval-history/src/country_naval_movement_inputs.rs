@@ -1,14 +1,3 @@
-//! The strategic navy manager's physical slots of one frozen pass.
-//!
-//! Construction creates navies per physical slot 1..count and leaves slot zero
-//! null. Each slot's authenticated navy lends its mission ledgers to
-//! the naval mission readers and slot zero's launch naval bases to the reserved
-//! country. Neither the province roster nor a navy's access modes is read: only
-//! the retired selected transport and route previews consumed them.
-//!
-//! Controls are private, acquired once and consumed once. All payload buffers
-//! are caller-owned. A refused vector exposes no prefix and retains its known
-//! full demand. Drop/clear removes private pointers before a frozen pass ends.
 
 use engine_sites::Rva;
 use crate::{
@@ -16,7 +5,6 @@ use crate::{
     read,
 };
 
-/// The constructor stores the selecting manager.
 pub const MANAGER: usize = 0x60;
 
 const CONSUMED: &str = "naval movement input already consumed";
@@ -58,7 +46,6 @@ fn vtable(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
-    /// Whole physical navy manager geometry, including slot zero.
     pub navy_slots: Result<usize, &'static str>,
 }
 
@@ -68,7 +55,6 @@ struct Manager {
     navies: Array,
 }
 
-/// One frozen pass's independently observed shared roots.
 pub struct Reader<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -107,13 +93,10 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.manager = Err("naval movement pass cleared");
     }
 
-    /// Read the exact physical manager slot; foreign slots are not links.
-    /// Construction fills physical slots 1..count and leaves zero null.
     pub fn observe_navy(&self, slot: u32) -> Result<NavyInputs, &'static str> {
         let Some(manager) = self.manager? else {
             return Ok(NavyInputs::absent(slot));
         };
-        // The strategic-navy lookup returns null when the manager array is empty.
         if manager.navies.count == 0 {
             return Ok(NavyInputs::absent(slot));
         }
@@ -149,7 +132,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         {
             return Err("naval movement navy identity or manager mismatch");
         }
-        // Each header is independent. A failed header is retained, not retried.
         Ok(NavyInputs {
             slot,
             present: true,
@@ -171,11 +153,9 @@ impl<M: Memory> Drop for Reader<'_, M> {
     }
 }
 
-/// Independent native arrays behind one authenticated physical navy slot.
 pub struct NavyInputs {
     pub slot: u32,
     pub present: bool,
-    // Already authenticated manager selection, never serialized or reacquired.
     launch_navy: Option<usize>,
     ledger_navy: Option<usize>,
     ledgers: Option<Result<Array, &'static str>>,
@@ -198,21 +178,14 @@ impl NavyInputs {
         self.ledgers = None;
     }
 
-    /// Same authenticated physical navy, borrowed only inside its frozen pass.
-    /// Mission ledgers and presence share this control; launch consumption does
-    /// not retire it. The source owner clears it before returning the callback.
     pub fn ledger_navy(&self) -> Result<usize, &'static str> {
         self.ledger_navy.ok_or(CONSUMED)
     }
 
-    /// Consume the original outer header once; absence is the native empty list.
     pub fn take_ledger_regions(&mut self) -> Result<Array, &'static str> {
         self.ledgers.take().ok_or(CONSUMED)?
     }
 
-    /// Consume the independently reached launch provider. Native null is an
-    /// explicit observation; an empty list exits before the owner read.
-    /// Movement header/province faults are not prerequisites.
     pub fn capture_launch(
         &mut self,
         memory: &impl Memory,

@@ -1,5 +1,3 @@
-//! Unit-speed observations and the FIFO-owned publication tail. No live-memory
-//! capability reaches settlement; country pointers are identity tokens only.
 use super::*;
 use crate::acquisition::lock_unpoisoned;
 use std::{
@@ -34,7 +32,6 @@ pub(super) fn forget() {
     }
 }
 
-/// A failed/dropped/unwound frame must not publish a partial next baseline.
 #[derive(Default)]
 pub(super) struct Loan {
     value: Held,
@@ -68,7 +65,6 @@ impl Loan {
         })
     }
     pub(super) fn return_complete(&mut self) {
-        // Direct synthetic captures own their baseline without a shared loan.
         if self.owner.is_some() {
             self.complete = true;
             drop(std::mem::take(self));
@@ -76,8 +72,6 @@ impl Loan {
     }
     pub(super) fn abandon(&mut self) {
         if self.owner.is_some() {
-            // Also handles a caught settlement panic after its pending flag
-            // was consumed; reset must never wait on its own abandoned loan.
             drop(std::mem::take(self));
         }
     }
@@ -117,7 +111,6 @@ pub(super) struct Country {
     pub held: Option<HeldCountry>,
     pub start: usize,
     pub end: usize,
-    /// Fresh values in the same demanded-key order; a carried group is empty.
     pub read: Result<usize, &'static str>,
 }
 
@@ -280,8 +273,6 @@ impl SpeedTerms {
         }
     }
 
-    /// Replay rows, observer accounting and next-hour baseline construction
-    /// consume only the earlier ordered native observations.
     pub(super) fn settle_entries(&mut self) -> Outcome {
         let observed = &mut self.observed_entries;
         if !std::mem::take(&mut observed.pending) {
@@ -377,8 +368,6 @@ impl SpeedTerms {
         if result.is_ok() && holdable {
             next.epoch = observed.epoch;
             next.arrays = observed.arrays.unwrap_or_default();
-            // Retain both generations' scratch instead of allocating a fresh
-            // Held for every hour or using a pooled frame's older baseline.
             std::mem::swap(&mut *self.held, next);
             next.clear();
         } else {

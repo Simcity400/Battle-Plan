@@ -1,4 +1,3 @@
-//! Per-song reuse certified by the trigger input observer.
 use dashboard_text::triggers::{Evaluator, Scope, Scopes, World, inputs};
 use installed_content_core::parser::Item;
 use replay_data::rows::TableId;
@@ -45,17 +44,11 @@ struct Evaluation {
     value: Outcome,
     inputs: inputs::Inputs,
 }
-/// What the evaluations last read their inputs at.
 enum Then {
-    /// The frame itself: its tables' field stamps say which fields changed.
     Frame(Arc<DecodedFrame>),
-    /// Each table's identity alone: rows at the playback head keep a table's allocation while it
-    /// does not change, so no previous rows are held.
     Identities(Box<[ViewIdentity]>),
 }
 
-/// The changes between a frame's identities and a later frame's tables: a table whose allocation
-/// is not the same may have changed anywhere.
 struct Identities<'a> {
     then: &'a [ViewIdentity],
     now: &'a DecodedFrame,
@@ -76,19 +69,15 @@ struct Entry {
     songs: Vec<Option<Arc<Evaluation>>>,
 }
 
-/// A country's song evaluations, kept by the hour they were made for: the memo finds them while
-/// that hour is held.
 #[derive(Clone)]
 pub struct Kept(Arc<Entry>);
 
 impl Kept {
-    /// The hour of the rows the evaluations were made over.
     pub fn hour(&self) -> replay_data::Hour {
         self.0.hour
     }
 }
 
-/// Each country's latest evaluations while an hour holding them ([`Kept`]) lives, and no others.
 #[derive(Default)]
 pub struct Memo {
     entries: Mutex<Vec<std::sync::Weak<Entry>>>,
@@ -102,12 +91,10 @@ impl Memo {
         Self::default()
     }
 
-    /// A memo for rows at the playback head, which keeps each table's identity, never its rows.
     pub fn by_identity() -> Self {
         Self { by_identity: true, ..Self::default() }
     }
 
-    /// The chances alone; nothing keeps their evaluations for the next hour.
     pub fn chances(
         &self,
         frame: &DecodedFrame,
@@ -137,15 +124,12 @@ impl Memo {
                 .filter_map(std::sync::Weak::upgrade)
                 .find(|entry| same(entry))
         });
-        // Reread answers belong to this call only, never another hour.
         let mut rereads = HashMap::new();
         let now = if self.by_identity {
             Then::Identities(frame.tables.iter().map(|view| view.identity()).collect())
         } else {
             Then::Frame(Arc::new(frame.clone()))
         };
-        // Only the reads whose tables changed since the kept hour are read again. A step back
-        // in time moves relations' start and end hours the other way, so it reads all again.
         let held = previous.as_ref().filter(|entry| entry.hour <= frame.hour);
         let by_frame = held.and_then(|entry| match &entry.then {
             Then::Frame(then) => Some(inputs::Between::new(then, frame)),
@@ -188,7 +172,6 @@ impl Memo {
                         inputs::Key::ClockSeed => {
                             Some(inputs::digest(&dashboard_text::scripted_text::clock_seed(frame)))
                         }
-                        // Unfamiliar keys miss; Inputs confirms table identities itself.
                         inputs::Key::Table(_)
                         | inputs::Key::Fields(..)
                         | inputs::Key::Names(_)
@@ -201,7 +184,6 @@ impl Memo {
                 #[cfg(test)]
                 self.evaluations
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // The read certifies one outcome, including its refusal.
                 let (value, inputs) = inputs::capture(frame, || {
                     Outcome::evaluate(
                         &content.music.tracks[song.track].name,

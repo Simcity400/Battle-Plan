@@ -1,21 +1,11 @@
-//! Immutable attrition facts for content loading and counter hover lines.
 use crate::map::counter_inputs::SCALE as ONE;
 use std::io;
 
-/// The content the lines read: three defines and each terrain category's
-/// stored `attrition` entry.
 pub struct Content {
-    /// `NMilitary.TRAINING_ATTRITION`.
     pub training: i64,
-    /// `NMilitary.BORDER_WAR_ATTRITION_FACTOR`.
     pub border_factor: i64,
-    /// `NSupply.SUPPLY_THRESHOLD_FOR_ARMY_ATTRITION`, which its
-    /// loader clamps to [0, 100000].
     pub supply_threshold: i64,
-    /// The terrain database in load order: one-based ordinal
-    /// ordinal minus one.
     pub terrains: Vec<Terrain>,
-    /// The sub-unit database: the out-of-supply line's special-forces share reads it.
     pub sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
 }
 
@@ -36,11 +26,7 @@ impl replay_derive::eta_derive::frame_terms::SubUnitContent for Content {
 }
 
 pub struct Terrain {
-    /// The category's name, which `ATTRITION_TERRAIN`
-    /// localises.
     pub name: Vec<u8>,
-    /// The stored `attrition` entry of the category's common modifier
-    /// operand; `None` when the category has none.
     pub attrition: Option<i64>,
 }
 
@@ -74,7 +60,6 @@ impl Content {
     }
 }
 
-/// Content shared by fresh division attrition and the existing border-power calculation.
 pub struct PanelContent {
     pub terms: Content,
     pub members: std::collections::BTreeMap<u32, Vec<u32>>,

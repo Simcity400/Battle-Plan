@@ -3,12 +3,10 @@ use crate::local_subunit_changes::Watches;
 use engine_deployment::cdeployment_status;
 use engine_native::{ccountry, cequipment_type, cgame_state, csub_unit_definition};
 
-/// Base zero; the sub-unit database pointer reads as `DATABASE`.
 struct World(Vec<u8>);
 const STATE: usize = 0x1000;
 const DATABASE: usize = 0x9800;
 const ARCHETYPE: usize = 0xa000;
-/// The global definition of token 5.
 const GLOBAL: usize = 0xb000;
 impl engine_native::Memory for World {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
@@ -35,7 +33,6 @@ impl World {
         self.put(at + 8, &count.to_le_bytes());
         self.put(at + 12, &count.to_le_bytes());
     }
-    /// A sub-unit definition of token 5 requiring `amount` of the archetype.
     fn subunit(&mut self, at: usize, amount: i64) {
         self.word(at, csub_unit_definition::VTABLE_RVA.0);
         self.put(at + csub_unit_definition::TOKEN, &5_u32.to_le_bytes());
@@ -52,22 +49,17 @@ impl World {
         self.word(at + 0x700, ARCHETYPE);
         self.put(at + 0x708, &amount.to_le_bytes());
     }
-    /// Country `id`.
     fn country(id: usize) -> usize {
         0x4000 + (id - 1) * 0x2000
     }
-    /// Country `id`'s deployment status.
     fn status(id: usize) -> usize {
         Self::country(id) + 0x1400
     }
-    /// Country `id`'s clone.
     fn clone_of(id: usize) -> usize {
         0x10000 + id * 0x1000
     }
 }
 
-/// Two countries, each with one clone of token 5 requiring more of the
-/// archetype than the global definition.
 fn world() -> World {
     let mut world = World(vec![0; 0x14000]);
     world.array(STATE + cgame_state::COUNTRIES, 0x2000, 3);
@@ -124,9 +116,6 @@ fn amounts(hour: &Hour) -> Vec<(u32, i64)> {
         .collect()
 }
 
-/// A quiet hour publishes the held rows without reading any deployment
-/// status; a hooked write to one country's status reads that country and
-/// confirms the other by its status and clone header.
 #[test]
 fn quiet_hours_carry_and_a_written_country_is_read_again() {
     let mut world = world();
@@ -135,7 +124,6 @@ fn quiet_hours_carry_and_a_written_country_is_read_again() {
     let first = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&first), [(1, 200_001), (2, 200_002)]);
     assert!(store.quiet.is_some());
-    // Quiet: even an unreadable status is not read.
     world.word(World::country(1) + ccountry::DEPLOYMENT_MANAGER, 0);
     let quiet = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&quiet), amounts(&first));
@@ -143,15 +131,11 @@ fn quiet_hours_carry_and_a_written_country_is_read_again() {
         World::country(1) + ccountry::DEPLOYMENT_MANAGER,
         World::status(1),
     );
-    // A rebuild of country 2's clone, named through its bonus list.
     world.subunit(World::clone_of(2), 300_000);
     drop(watches.notify(Some(World::status(2)), 1));
-    // Country 1 is confirmed: an unobserved change to its clone stays carried.
     world.subunit(World::clone_of(1), 400_000);
     let written = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&written), [(1, 200_001), (2, 300_000)]);
-    // A clone appended unobserved moves country 1's header once another
-    // write ends the quiet hours: it is read again, with its earlier change.
     world.array(
         World::status(1) + cdeployment_status::LOCAL_SUBUNITS,
         World::status(1) + 0x100,
@@ -165,7 +149,6 @@ fn quiet_hours_carry_and_a_written_country_is_read_again() {
     assert!(!watches.poisoned());
 }
 
-/// A failed walk holds nothing: the next hour reads every country.
 #[test]
 fn a_failed_walk_forgets_the_store() {
     let mut world = world();

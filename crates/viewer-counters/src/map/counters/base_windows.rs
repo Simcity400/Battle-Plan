@@ -1,5 +1,3 @@
-//! Air-base, rocket-site, gun-emplacement, headquarters and facility windows, on the
-//! native map-icon pools.
 
 use super::*;
 use std::collections::HashMap;
@@ -17,10 +15,7 @@ use viewer_foundation::map::{
 
 #[derive(Clone, Default)]
 pub(super) struct PreparedBases {
-    /// The air-base, rocket-site, gun-emplacement and radar offers by id, shared by shard: a
-    /// change to one province's icon copies its shard alone.
     sites: [Shards<u32, Offer>; 4],
-    /// The strategic-location, headquarters and facility offers.
     others: Arc<Vec<Offer>>,
     placed: [Vec<Placed>; FAMILIES],
     pub(super) air_grids: BTreeMap<(usize, u32), Result<Vec<air_grid::PreparedItem>, String>>,
@@ -37,8 +32,6 @@ pub(super) enum Family {
     StrategicLocation,
 }
 impl Family {
-    /// Its index among the families laid out one a province: air base, rocket site, gun
-    /// emplacement and radar.
     fn site(self) -> Option<usize> {
         match self {
             Self::AirBase => Some(0),
@@ -58,32 +51,23 @@ impl Family {
     }
 }
 
-/// How many [`Family`] kinds there are, one pool view each.
 pub(super) const FAMILIES: usize = 7;
 
 #[derive(Default, Debug)]
 pub struct View {
     pools: [PoolView; FAMILIES],
     wings: [air_grid::View; 2],
-    /// What each family's update last wrote to each live owner's window: the same again is no
-    /// change ([`PoolView::present_kept`]).
     written: [HashMap<u32, Written>; FAMILIES],
-    /// What every family's update reads beside its owner's offer.
     reads: Option<Reads>,
-    /// What each family's windows drew, handed again while a window keeps its layout and anchor.
     painted: [Painted<u32, Option<IconAnchor>>; FAMILIES],
 }
 
-/// One window's update as last written: its slot and its owner's offer, with no wing grid.
 #[derive(Debug)]
 struct Written {
     slot: SlotId,
     state: State,
 }
 
-/// The inputs a base window's update and layout read beside its owner's offer: a change
-/// writes every window again. Of the countries a window reads only the flags; a wing grid reads
-/// more, and its window is written every frame.
 struct Reads {
     countries: Option<Arc<Countries>>,
     art: u64,
@@ -103,8 +87,6 @@ impl Reads {
         }
     }
 
-    /// Whether nothing read changed; the countries of another hour with the same flags are held
-    /// in place of these.
     fn same(&mut self, inputs: &CounterInputs<'_>, countries: Option<&Arc<Countries>>) -> bool {
         let countries = match (&mut self.countries, countries) {
             (Some(held), Some(now)) if Arc::ptr_eq(held, now) => true,
@@ -129,19 +111,16 @@ impl std::fmt::Debug for Reads {
     }
 }
 impl View {
-    /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
     pub fn set_quiet(&mut self, quiet: bool) {
         for pool in &mut self.pools {
             pool.set_quiet(quiet);
         }
     }
 
-    /// Whether a window or a wing grid's item changes on its own.
     pub fn running_visibly(&self) -> bool {
         self.wings.iter().any(air_grid::View::running) || self.pools.iter().any(PoolView::running_visibly)
     }
 
-    /// Why each family's pool laid its windows out at its last frame rather than keeping them.
     #[cfg(test)]
     pub(super) fn unkept(&self) -> [Option<&'static str>; FAMILIES] {
         std::array::from_fn(|at| self.pools[at].unkept())
@@ -162,8 +141,6 @@ impl View {
     }
 }
 
-/// The radar icon's priority: the game's per-mode priority tables leave the
-/// radar icon's entry zero in every mode, and no define sets it.
 pub(super) const RADAR_PRIORITY: i8 = 0;
 
 #[derive(Clone)]
@@ -219,26 +196,21 @@ impl PreparedBases {
         }
     }
 
-    /// Its offers alone, for a layout kept across frames: each frame places them for its own
-    /// camera ([`Self::for_camera`]).
     pub(super) fn forget_placed(&mut self) {
         self.placed = Default::default();
     }
 
-    /// How many offers it holds placed.
     #[cfg(test)]
     pub(super) fn placements(&self) -> usize {
         self.placed.iter().map(Vec::len).sum()
     }
 
-    /// The site icon `id` of a site family removed.
     pub(super) fn remove_site(&mut self, family: Family, id: u32) {
         if let Some(at) = family.site() {
             self.sites[at].remove(&id);
         }
     }
 
-    /// `laid`'s strategic-location, headquarters and facility offers, which it alone holds.
     pub(super) fn take_others(&mut self, laid: Self) {
         self.others = laid.others;
         for (placed, laid) in self.placed.iter_mut().zip(laid.placed) {
@@ -276,7 +248,6 @@ impl PreparedBases {
         });
     }
 
-    /// Semantic offers survive a camera change; all projection and paint inputs are current.
     pub(super) fn for_camera(&self, inputs: &CounterInputs<'_>) -> Self {
         let mut result = Self {
             sites: self.sites.clone(),
@@ -290,10 +261,6 @@ impl PreparedBases {
         result
     }
 
-    /// Presents every family's windows. A window that stood still and whose owner's offer is what
-    /// it last took shows what it laid out before ([`PoolView::present_kept`]); an air base or
-    /// rocket site offering a wing grid is laid out every frame. Their draws, hits and counts are
-    /// made from the windows shown, every frame.
     pub(super) fn draw(
         &self,
         inputs: &CounterInputs<'_>,
@@ -379,8 +346,6 @@ impl PreparedBases {
         for (index, ((view, written), &(family, name, kind, priority))) in
             pools.iter_mut().zip(written.iter_mut()).zip(&families).enumerate()
         {
-            // A strategic location's sprite is set only where the content
-            // defines it; otherwise the button keeps its authored sprite.
             let named = family != Family::StrategicLocation;
             for sprite in self.placed[family as usize]
                 .iter()
@@ -451,8 +416,6 @@ impl PreparedBases {
                             }
                             return Ok(());
                         }
-                        // The game's icon builds its sprite name from the hour's first
-                        // location every update and sets it on whatever window it holds.
                         let state = State {
                             air: None,
                             frame: state.frame,
@@ -504,11 +467,9 @@ impl PreparedBases {
                 (family, name, priority, placed[&drawn.owner], (drawn, generation))
             }));
         }
-        // A quiet frame ran the passes; what the windows drew before stands.
         if quiet {
             return;
         }
-        // Sort map icons by projected depth.
         layouts.sort_by(|a, b| b.3.depth.total_cmp(&a.3.depth));
         for (family, name, priority, placed, (drawn, generation)) in layouts {
             let key = layer(priority, report.base_ordinal(), 0);
@@ -532,7 +493,6 @@ impl PreparedBases {
                     )
                     .map_err(|why| why.to_string())
                 };
-                // A wing grid's items draw on their own clocks: its window is drawn every frame.
                 let drawn = if composed.parts.iter().all(Vec::is_empty) {
                     painted[family as usize]
                         .paint(
@@ -615,7 +575,6 @@ impl PreparedBases {
     }
 }
 
-/// The binders find bg_btn locally; its actual drawn footprint intercepts unit input.
 pub(super) fn record_hit(
     root: &native::Element,
     layout: &native_gui::Layout,
@@ -653,19 +612,16 @@ struct Controls<'a> {
 
 fn bind(root: &native::Element, family: Family) -> Result<Controls<'_>, String> {
     if family == Family::Radar {
-        // The radar window's one control is its efficiency icon.
         let button = root
             .find(native::Kind::Icon, RADAR_WINDOW)
             .ok_or_else(|| format!("no icon named {RADAR_WINDOW}"))?;
         return Ok(Controls { button, air: None });
     }
-    // Air-base, headquarters and facility controls use window-local lookup.
     let button = root
         .find(native::Kind::Button, "bg_btn")
         .ok_or("no button named bg_btn")?;
     let air = if family == Family::AirBase {
         let find = |kind, name: &str| {
-            // Find buttons, instant text boxes and icons in the local window.
             root.find(kind, name)
                 .ok_or_else(|| format!("no control named {name}"))
         };
@@ -689,8 +645,6 @@ fn update(
 ) -> Result<(), String> {
     let Controls { button, air } = bind(root, family)?;
     if matches!(family, Family::RocketSite | Family::GunEmplacement) {
-        // Air uses the large strategic button. Both buttons always take the
-        // frame and enabled state, including while hidden.
         let strategic = root
             .find(native::Kind::Button, "bg_strat_btn")
             .ok_or("no button named bg_strat_btn")?;
@@ -724,11 +678,8 @@ fn update(
         }
     }
     if family == Family::Radar {
-        // The game shows the icon in its default frame and writes nothing else.
         return instance.show(root, button);
     }
-    // Air-base and headquarters updates write frames; facilities and
-    // strategic locations retain them.
     if !matches!(family, Family::Facility | Family::StrategicLocation) {
         instance.set_frame(root, button, state.frame)?;
     }
@@ -899,8 +850,6 @@ mod tests {
                 inputs.camera.pose = free;
                 inputs.camera.height = 50.0;
                 assert_eq!(inputs.camera.icon_distance(anchor), 40.0);
-                // Only the free view keeps this nearby icon at the absolute-height cutoff.
-                // Province-icon mode suppression and the ordinary camera's strict cutoff remain.
                 for (pose, height, province_icons, expected) in [
                     (free, 50.0, true, 1),
                     (free, 50.0, false, 0),
@@ -977,7 +926,6 @@ mod tests {
                 let mut out = CounterFrame::default();
                 bases::radars(&inputs, &frame, &vision, &mut out).unwrap();
                 let placed = &out.native_bases.placed[Family::Radar as usize];
-                // An absolute-height gate loses this icon before the free view can show it.
                 assert_eq!(placed.len(), 1);
                 assert_eq!(
                     placed[0].anchor,
@@ -989,13 +937,11 @@ mod tests {
                     })
                 );
 
-                // Free presentation does not bypass the map mode's province-icon gate.
                 inputs.visibility.province_icons = false;
                 let mut out = CounterFrame::default();
                 bases::radars(&inputs, &frame, &vision, &mut out).unwrap();
                 assert!(out.native_bases.placed[Family::Radar as usize].is_empty());
 
-                // The game's camera still removes radar at the cutoff itself.
                 inputs.visibility.province_icons = true;
                 inputs.camera.pose = Pose::Map;
                 inputs.camera.height = 100.0;
@@ -1055,9 +1001,6 @@ mod tests {
         );
     }
 
-    /// The political-map branch of a rocket site or gun emplacement shows
-    /// only `bg_btn`; both buttons take the frame and enabled state, and the
-    /// rocket site's `rockets_box` hides. Before, neither icon was drawn.
     #[test]
     fn site_updates_show_the_plain_button_with_the_site_frame() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1101,7 +1044,6 @@ mod tests {
                 assert_eq!((control.frame, control.enabled), (Some(3), Some(false)));
             }
         }
-        // A window without the strategic button is refused by name.
         let bare = window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even }"#);
         let mut instance = Instance::construct(&bare, [800, 600], &resources).unwrap();
         let state = State {
@@ -1117,7 +1059,6 @@ mod tests {
         );
     }
 
-    /// The radar window shows its one efficiency icon in its authored frame.
     #[test]
     fn radar_update_shows_its_icon() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1146,8 +1087,6 @@ mod tests {
         );
     }
 
-    /// A strategic location sets its location's sprite on `bg_btn` and keeps
-    /// the authored frame; an undefined sprite keeps the authored one.
     #[test]
     fn strategic_location_update_sets_the_location_sprite_and_keeps_the_frame() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1424,8 +1363,6 @@ mod tests {
         assert!(!shown(&instance));
         glyph.highlighted = true;
         naval_windows::update_naval(&mut instance, &root, &glyph, 1.7, true, &resources).unwrap();
-        // Ordered frame setters reach both drawables in the frame's clock phase,
-        // including the hidden ordinary button.
         instance
             .tick_clocks(&root, &resources, Tick { time: 1.0, dt: 0.0 })
             .unwrap();

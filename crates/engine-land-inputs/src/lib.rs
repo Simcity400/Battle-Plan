@@ -1,4 +1,3 @@
-//! Native land inputs readers and their operands, layouts and synthetic tests.
 
 use engine_air_history::{cloop_history, loop_history_record_fields, loop_history_window};
 use engine_deployment::manpower_value_entry;

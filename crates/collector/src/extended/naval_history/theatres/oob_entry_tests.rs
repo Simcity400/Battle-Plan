@@ -1,7 +1,3 @@
-//! The order-of-battle copy's member and child runs against the parent's
-//! per-entry copy, frozen below as [`copy_oob_root_serial`]: equal logs and
-//! tables on healthy memory at scale and under a lasting fault, and never a
-//! harsher result under a fault that clears after its first touch.
 
 use super::*;
 use crate::extended::naval_history::naval_test_kit as kit;
@@ -12,13 +8,9 @@ use engine_native::{
 use std::cell::{Cell, RefCell};
 
 thread_local! {
-    /// Test builds only: copy each order-of-battle root with the parent's
-    /// per-entry copy ([`copy_oob_root_serial`]), the reference.
     pub(super) static SERIAL: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The parent's `copy_oob_root` (321cd92386), unchanged but for its name:
-/// each member and child entry, host identity and backlink is its own take.
 pub(super) fn copy_oob_root_serial(
     job: &mut NavalJob,
     memory: &impl engine_native::Memory,
@@ -26,11 +18,7 @@ pub(super) fn copy_oob_root_serial(
     pointer: usize,
 ) -> bool {
     let log = &mut job.log;
-    // OOB identity fields: army-group flag, motorization, country
-    // (already above), theatre/theater-group/parent/leader/provider
-    // references with target authentication for non-null pointers.
     let own = copy_oob_root_spans(log, memory, pointer);
-    // Name-only failures retain the unchanged roster prefix; its suffix is None.
     copy_theatre_name(log, memory, pointer.checked_add(corders_group::NAME), 0);
     let is_army_group = own[0].map(|start| log.bytes[start]);
     for (index, offset) in [
@@ -45,9 +33,6 @@ pub(super) fn copy_oob_root_serial(
     {
         let target = own[index + 2].and_then(|s| usize::try_from(npool_u64(log, s)).ok());
         if let Some(target) = target.filter(|&p| p != 0) {
-            // References use a vtable + handle identity, except the
-            // HQ provider: it is an embedded member whose host is
-            // authenticated below, not a referenced object itself.
             if offset != corders_group::HQ_PROVIDER {
                 let identity = nspan(log, memory, Some(target), 16, OOB_MASK);
                 if offset == corders_group::THEATRE
@@ -88,8 +73,6 @@ pub(super) fn copy_oob_root_serial(
                 );
             }
             if offset == corders_group::HQ_PROVIDER {
-                // Provider is a member pointer: host identity span
-                // plus group backlink, like member_unit.
                 if let Some(unit) =
                     target.checked_sub(engine_native::corders_group_member::HOST_OFFSET)
                 {
@@ -105,8 +88,6 @@ pub(super) fn copy_oob_root_serial(
             }
         }
     }
-    // Member vector with per-member host identity (32-byte header)
-    // and group backlink, exactly like `member_unit`.
     let Some(members_header) = own[7] else {
         return true;
     };
@@ -124,8 +105,6 @@ pub(super) fn copy_oob_root_serial(
             Some(member) => member,
             None => continue,
         };
-        // Host identity span (vtable/class/secondary/handle 32 bytes)
-        // at the embedded base, plus group backlink at the member.
         let unit = match member.checked_sub(engine_native::corders_group_member::HOST_OFFSET) {
             Some(unit) => unit,
             None => continue,
@@ -142,9 +121,6 @@ pub(super) fn copy_oob_root_serial(
             return false;
         }
     }
-    // The typed walk accepts any nonzero discriminator. The child
-    // header starts beyond an ordinary COrdersGroup's allocation,
-    // so neither it nor its entries may be read for a zero/failed flag.
     if is_army_group.is_some_and(|flag| flag != 0) {
         let children_header = match nspan(
             log,
@@ -176,8 +152,6 @@ pub(super) fn copy_oob_root_serial(
             }
         }
     }
-    // Order-membership reverse census for this root: theatre-group
-    // pointer plus target identity when non-zero.
     if job.theatres_active {
         let _reads = read_accounting::table(TableId::LandTheatreMembers);
         let theater_group = nspan(
@@ -235,8 +209,6 @@ fn child(index: usize) -> usize {
     CHILD_OBJECTS_AT + index * CHILD_STRIDE
 }
 
-/// The test kit's world with its order-of-battle root an army group of
-/// `members` divisions and `children` child groups.
 fn order_of_battle(members: usize, children: usize) -> Vec<u8> {
     const _: () =
         assert!(corders_group_member::HOST_OFFSET + corders_group_member::GROUP + 8 <= UNIT_STRIDE);
@@ -296,14 +268,8 @@ fn order_of_battle(members: usize, children: usize) -> Vec<u8> {
     bytes
 }
 
-/// The member entry that aliases another: entry 5 names a member whose
-/// group backlink is entry 40 itself (the same 8-byte key) and whose host
-/// identity covers entries 16-19.
 const ALIAS: (usize, usize) = (5, 40);
 
-/// [`order_of_battle`] with null member entries over `nulls`, duplicates
-/// (entry 11 names entry 10's member, child entry 1 names child 0) and the
-/// [`ALIAS`] entry.
 fn aliased(members: usize, children: usize, nulls: std::ops::Range<usize>) -> Vec<u8> {
     let mut bytes = nulled(members, children, nulls);
     p64(&mut bytes, entry(11), member(10) as u64);
@@ -314,8 +280,6 @@ fn aliased(members: usize, children: usize, nulls: std::ops::Range<usize>) -> Ve
     bytes
 }
 
-/// [`order_of_battle`] with null member entries over `nulls` and nothing
-/// else changed.
 fn nulled(members: usize, children: usize, nulls: std::ops::Range<usize>) -> Vec<u8> {
     let mut bytes = order_of_battle(members, children);
     for index in nulls {
@@ -324,8 +288,6 @@ fn nulled(members: usize, children: usize, nulls: std::ops::Range<usize>) -> Vec
     bytes
 }
 
-/// A healthy image whose `ranges` fault on every touch, or only on their
-/// first when `once`.
 struct Faults<'a> {
     memory: SliceMemory<'a>,
     ranges: Vec<std::ops::Range<usize>>,
@@ -359,8 +321,6 @@ impl Memory for Faults<'_> {
     }
 }
 
-/// Counts the guarded calls a live reader makes: each top-level `copy`,
-/// `copy_scattered` and `copy_records` is one.
 struct Counted<'a, M> {
     inner: &'a M,
     calls: Cell<usize>,
@@ -392,13 +352,8 @@ impl<M: Memory> Memory for Counted<'_, M> {
     }
 }
 
-/// A log's observations per exact key `(address, length)`, each key's in
-/// the order they were logged: whether it was read, its mask and bytes.
-/// The replay serves each read from its exact key's next observation, so
-/// this is what it sees; only the order across keys is free.
 type Keyed = std::collections::BTreeMap<(usize, u32), Vec<(bool, u32, Vec<u8>)>>;
 
-/// The air theatre tables as the decode leaves them.
 type Air = (
     Outcome,
     Vec<engine_native::cair_theatre::Row>,
@@ -408,8 +363,6 @@ type Air = (
     Vec<engine_native::cair_group::MemberRow>,
 );
 
-/// What one pass leaves: the decoded tables, the theatre name arena and
-/// the air tables, and the log's observations per key in their order.
 #[derive(Debug, PartialEq)]
 struct Pass {
     tables: kit::Split,
@@ -419,7 +372,6 @@ struct Pass {
 }
 
 impl Pass {
-    /// Whether this pass read any byte of `range`.
     fn reads(&self, range: &std::ops::Range<usize>) -> bool {
         self.spans
             .keys()
@@ -434,7 +386,6 @@ impl Pass {
             .count()
     }
 
-    /// Whether each table is refused (not published as rows).
     fn refused(&self) -> [bool; 9] {
         let tables = &self.tables;
         [
@@ -468,9 +419,6 @@ fn keyed(job: &NavalJob) -> Keyed {
     keyed
 }
 
-/// One pass, its copy by the batched code or the parent's per-entry copy,
-/// into the fixture's log or a fixed log of `(spans, bytes)` storage.
-/// Returns the job and whether its raw copy completed.
 fn copy(memory: &impl Memory, serial: bool, log: Option<(usize, usize)>) -> (NavalJob, bool) {
     let ctx = NavalCopyContext {
         hour: 0,
@@ -489,7 +437,6 @@ fn copy(memory: &impl Memory, serial: bool, log: Option<(usize, usize)>) -> (Nav
     (job, report.raw_ok)
 }
 
-/// One complete pass and everything its decode publishes.
 fn pass(memory: &impl Memory, serial: bool) -> Pass {
     let (job, raw_ok) = copy(memory, serial, None);
     assert!(raw_ok);
@@ -513,10 +460,6 @@ fn pass(memory: &impl Memory, serial: bool) -> Pass {
     }
 }
 
-/// The fault ranges the lasting and one-shot tests place: entries at and
-/// beside every run boundary, a fault across a boundary, every entry, host
-/// identities, backlinks, child entries and child identities, and the
-/// [`ALIAS`] keys.
 fn faults(members: usize, children: usize) -> Vec<(&'static str, std::ops::Range<usize>)> {
     let mut faults = Vec::new();
     for index in [0, 1, 2, 62, 63, 64, 65, 100, 127, 128, members - 1] {
@@ -539,16 +482,10 @@ fn faults(members: usize, children: usize) -> Vec<(&'static str, std::ops::Range
     faults
 }
 
-/// Whether a fault named `name` stops a run or a member's gather, so the
-/// batched copy counts a fallback.
 fn stops_a_batch(name: &str) -> bool {
     !matches!(name, "backlink" | "child identity")
 }
 
-/// On healthy memory, with 5,000 members (78 full runs and a partial one)
-/// and 130 children, the runs log exactly the per-entry copy's spans and
-/// publish its tables, names and air rows, in under half its guarded calls,
-/// with no fallback.
 #[test]
 fn healthy_runs_log_the_per_entry_spans_at_scale() {
     const MEMBERS: usize = 5_000;
@@ -583,9 +520,6 @@ fn healthy_runs_log_the_per_entry_spans_at_scale() {
     );
 }
 
-/// Null entries (a whole run of them), duplicate members and children, and
-/// a member whose backlink is another entry's key and whose host identity
-/// covers four entries log and publish what the per-entry copy does.
 #[test]
 fn null_duplicate_and_aliased_entries_log_the_per_entry_spans() {
     for nulls in [0..0, 64..128, 70..90] {
@@ -595,11 +529,6 @@ fn null_duplicate_and_aliased_entries_log_the_per_entry_spans() {
     }
 }
 
-/// A fault on every touch gives the per-entry copy's log and tables: each
-/// failed entry, host identity or backlink is logged as its own take logs
-/// it, and the walk goes on after it. A run or member gather that stopped
-/// early is counted. A fault on an object the fixture never reaches (in the
-/// aliased world, child 1, whose entry names child 0) fails nothing.
 #[test]
 fn a_lasting_fault_logs_the_per_entry_spans() {
     const MEMBERS: usize = 150;
@@ -616,7 +545,6 @@ fn a_lasting_fault_logs_the_per_entry_spans() {
             let serial = pass(&Faults::new(&bytes, vec![range.clone()], false), true);
             assert_eq!(batched, serial, "{name} {range:x?}");
             if !healthy.reads(&range) {
-                // Never read, so neither copy meets the fault.
                 assert_eq!(batched.failures(), healthy.failures(), "{name} {range:x?}");
                 continue;
             }
@@ -628,11 +556,6 @@ fn a_lasting_fault_logs_the_per_entry_spans() {
     }
 }
 
-/// A fault that clears after its first touch never refuses more than the
-/// per-entry copy: the batched pass logs no more failures and refuses no
-/// table the per-entry copy publishes; it may land on another key (the
-/// [`ALIAS`] key is read in another order). The batched copy, unlike the
-/// per-entry one, counts the run or member gather the fault stopped.
 #[test]
 fn a_one_shot_fault_is_never_harsher_than_the_per_entry_copy() {
     const MEMBERS: usize = 150;
@@ -662,31 +585,14 @@ fn a_one_shot_fault_is_never_harsher_than_the_per_entry_copy() {
     }
 }
 
-/// In a log of fixed storage the batched copy overflows exactly where the
-/// per-entry copy does, and otherwise logs its observations per key in
-/// their order: over every span
-/// capacity from before the order of battle to an exact fit and one over,
-/// byte capacities likewise in steps of four and around the exact fit, and
-/// the exact fit of both, on healthy memory, with a whole run of 64 null
-/// entries (eight bytes each but no visit), with 63 null entries behind a
-/// member whose host identity fails, with duplicate and aliased entries,
-/// with every entry
-/// failing (no bytes) and with every host identity failing (eight bytes
-/// for the backlink alone, where the member's copy admits 40).
 #[test]
 fn a_fixed_log_overflows_only_where_the_per_entry_copy_does() {
-    // Two runs of members and few children, so the windows below cover
-    // the whole order of battle.
     const MEMBERS: usize = 70;
     const CHILDREN: usize = 3;
     let host_faults = unit(0)..unit(MEMBERS);
     for (name, bytes, ranges) in [
         ("healthy", order_of_battle(MEMBERS, CHILDREN), Vec::new()),
         ("null run", nulled(MEMBERS, CHILDREN, 0..64), Vec::new()),
-        // Review 2's case: a run of 64 entries, the first a member whose host
-        // identity always fails and the rest null. The per-entry copy takes
-        // eight bytes for the entry and eight for the backlink before the
-        // next entry; a run would take all 512 entry bytes first.
         (
             "nulls behind a failing host",
             nulled(MEMBERS, CHILDREN, 1..64),
@@ -732,14 +638,6 @@ fn a_fixed_log_overflows_only_where_the_per_entry_copy_does() {
     }
 }
 
-/// Review 3's terminal case, with nothing after the run: an ordinary root
-/// whose 64 member entries are a member whose host identity always fails
-/// and 63 nulls, copied last (no children, no membership census) into a
-/// log whose storage holds exactly what the per-entry copy takes, 520
-/// bytes from the run's first entry. The per-entry copy completes, taking
-/// the host identity's admission (32 bytes) after only eight entry bytes;
-/// a run that took all 512 entry bytes first would overflow at it. The
-/// batched copy completes with the per-entry copy's log.
 #[test]
 fn a_terminal_run_behind_a_failing_host_completes_where_the_per_entry_copy_does() {
     let mut bytes = nulled(64, 0, 1..64);
@@ -765,8 +663,6 @@ fn a_terminal_run_behind_a_failing_host_completes_where_the_per_entry_copy_does(
     };
     let (measured, copied) = root(true, RawLog::new(1 << 12, 1 << 16));
     assert!(copied && !measured.log.overflowed);
-    // The run is the copy's last: entry 0, its failed host identity and its
-    // backlink, then the 63 null entries.
     let spans = &measured.log.spans;
     let run = spans.len() - 66;
     assert_eq!((spans[run].addr, spans[run].len), (entry(0), 8));

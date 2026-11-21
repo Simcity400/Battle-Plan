@@ -436,9 +436,6 @@ fn unknown_direct_admission_makes_later_offsets_unknown_without_removing_earlier
     );
 }
 
-/// A combat known to be unengaged is skipped before its units are looked up, so its
-/// unresolved locations cannot unsettle an unrelated direct icon; a transfer whose units the
-/// recorder dropped as stale has an empty unit row and spills nowhere.
 #[test]
 fn an_unengaged_combat_with_unresolved_units_leaves_other_icons_placed() {
     let combats = [
@@ -467,7 +464,6 @@ fn an_unengaged_combat_with_unresolved_units_leaves_other_icons_placed() {
             transfers: vec![108],
         },
     ];
-    // Combat 7's transfer kept no live unit; combat 8's unit has no recorded location.
     let units = [
         Units {
             transfer: 107,

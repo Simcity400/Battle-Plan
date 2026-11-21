@@ -1,5 +1,3 @@
-//! The agency walk before its field gathers, kept for the cost bench and
-//! the equality test: every field one guarded read.
 use super::*;
 
 pub(super) fn walk(
@@ -43,8 +41,6 @@ pub(super) fn walk_shared(
                 continue;
             };
             each(country.id, pointer);
-            // The agency-name tooltip copies the agency name verbatim for a created agency, even an
-            // empty name; name assignment writes the same bytes. Never localise it again.
             let name = Literal::read(memory, at(pointer, NAME)?)?;
             Literal::validate(memory, [&name])?;
             required_bytes = required_bytes

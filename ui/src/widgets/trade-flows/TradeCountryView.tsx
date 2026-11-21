@@ -29,21 +29,16 @@ import type { Measure, TradeCountryFact, TradeData } from './tradeData';
 import { motionOf } from '../../charts/easing.ts';
 import { useChangedState } from '../../dashboard/changedState.ts';
 
-/** Partner lists longer than this scroll in a fixed window of rows. */
 const PLAIN_ROWS = 40;
 const DIRECTIONS: readonly TradeDirection[] = ['imports', 'exports'];
 const TITLES: Record<TradeDirection, string> = { imports: 'Imports', exports: 'Exports' };
 const sameIds = (a: readonly string[], b: readonly string[]) => a === b || a.length === b.length && a.every((id, index) => id === b[index]);
 
-/** The resource key the diagram and this view share: each resource's icon and colour. */
 export function resourceLegendItems(resources: readonly ResourceInfo[], colours: ReadonlyMap<number, string>, other: string): LegendItem[] {
   return resources.map(item => ({ id: String(item.id), label: resourceName(item), color: colours.get(item.id) ?? other,
     flag: item.icon ? <img className="trade-resource-icon" src={item.icon} alt="" /> : <span className="trade-resource-icon is-missing" aria-hidden="true" /> }));
 }
 
-/** One country's whole trade: what it imported and exported, by resource and by
- * partner, at the drill's day for the widget's measure, and the same over time with
- * exports above the axis and imports below it. */
 export default function TradeCountryView({ holder, trade, resources, track, runtime, measure, from, hour, live, extent, colours, tokens, active, onPick, onContextMenu }: {
   holder: string; trade: TradeData; resources: ReadonlySet<number> | null; track: BoundTrack; runtime: WidgetRuntime; measure: Measure; from: number;
   hour: number | null; live: LiveHour | null; extent: [number, number];
@@ -66,10 +61,8 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
     resources: countryParts(country[direction], direction, 'resource', measure, from, at, known),
   }])) as Record<TradeDirection, { total: bigint | null; delivered: bigint | null; partners: CountryPart[]; resources: CountryPart[] }>,
   [country, measure, from, known]);
-  // Names are read at `hour` (the look grid's while following); the amounts at the head.
   const parts = useMemo(() => hour == null ? null : partsAt(hour), [hour, partsAt]);
 
-  // Names and flags for the partner rows on screen, dated to the day shown.
   const factHour = useCallback((fact: TradeCountryFact) => lookHour(track.branch, fact.hour, fact.firstHour)?.hour ?? fact.hour, [track.branch]);
   const facts = useMemo(() => {
     const dated = new Map<string, TradeCountryFact | null>();
@@ -83,7 +76,6 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size));
 
   const resourceInfo = useMemo(() => new Map(trade.reply.resources.map(item => [String(item.id), item])), [trade]);
-  // Whole amounts as whole numbers, else to two decimals, as the diagram's tooltips.
   const amount = useCallback((raw: bigint) => formatAmount(raw, decimals), [decimals]);
   const rowsOf = useCallback((parts: ReturnType<typeof partsAt>) => Object.fromEntries(DIRECTIONS.map(direction => {
     const side = parts[direction];
@@ -104,7 +96,6 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
   })) as Record<TradeDirection, { total: number | null; partners: DrillPart[]; byResource: DrillPart[] }>,
   [visible, facts, labels.labelAt, factHour, amount, scale, resourceInfo, colours, tokens.muted]);
   const rows = useMemo(() => parts && rowsOf(parts), [parts, rowsOf]);
-  // Following, each list's amounts and order are painted at the head.
   const liveRows = useMemo(() => live ? mapLive(live, at => rowsOf(partsAt(at))) : null, [live, rowsOf, partsAt]);
   const liveList = useMemo(() => {
     if (!liveRows) return null;
@@ -112,7 +103,6 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
     return { imports: { partners: list('imports', 'partners'), byResource: list('imports', 'byResource') }, exports: { partners: list('exports', 'partners'), byResource: list('exports', 'byResource') } };
   }, [liveRows]);
 
-  // Over time: the same measure, each deal a band in its resource's colour.
   const stacks = useMemo(() => measure === 'current' ? {
     imports: compactStack(country.imports.map(flow => contributionHistory(flow, known))),
     exports: compactStack(country.exports.map(flow => contributionHistory(flow, known))),
@@ -121,7 +111,6 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
     imports: contributionMeasureModel(country.imports, measure, from, known),
     exports: contributionMeasureModel(country.exports, measure, from, known),
   }, [country, measure, from, known]);
-  // Each resource's deals are drawn as one band in its colour.
   const bands = useMemo(() => Object.fromEntries(DIRECTIONS.map(direction => {
     const groups = bandGroups(country[direction].map(flow => flow.resource.id));
     return [direction, { groups, colors: groups.map(([first]) => colours.get(country[direction][first].resource.id) ?? tokens.muted) }];
@@ -216,7 +205,6 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
   </div>;
 }
 
-/** The texts a following country view paints at the head: each side's total and its state line. */
 export function countryTexts(trade: TradeData, holder: string, resources: ReadonlySet<number> | null, measure: Measure, from: number) {
   const country = countryTrade(trade, holder, resources);
   const known = trade.reply.known;

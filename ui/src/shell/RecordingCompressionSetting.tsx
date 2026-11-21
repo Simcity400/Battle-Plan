@@ -5,8 +5,6 @@ import { AUTO_COMPRESS_NOTE, COMPRESSION_NOTE } from '../recorder/compression';
 import type { Compression } from '../recorder/compression';
 import { errorMessage } from './errors';
 
-/** What the choice shows: the settings once read, whether they are loading or being saved, and
- * what each control changes. Auto Compress is shown only while Compression is Low. */
 export interface CompressionChoiceProps {
   settings: Pick<RecorderSettings, 'liveCompression' | 'autoCompress'> | null;
   loading: boolean;

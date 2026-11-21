@@ -1,5 +1,3 @@
-//! Naval mission icon operands: the fields the text save stores, and the stated limitations
-//! for the rest.
 mod convoy_targets;
 mod dominance_ranges;
 mod patrol_inputs;
@@ -28,7 +26,6 @@ pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     );
 }
 
-/// Bind saved patrol words through the recording's lexical and physical-country identities.
 pub fn bind_patrol_save_fields(
     frame: &DecodedFrame,
     document: &installed_content_save::SaveDocument,
@@ -37,8 +34,6 @@ pub fn bind_patrol_save_fields(
     patrol_inputs::bind(frame, document, save)
 }
 
-/// Source leaves have no text-save representation. Validate their recorded
-/// structure and getter root independently of the live visual comparison.
 fn escort_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     use replay_data::rows::{Recorded, check_tree};
     let countries = frame.complete::<tables::NavalMissionCountries>()?;
@@ -147,7 +142,6 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
                     .ok_or_else(|| {
                         invalid("retained raiding grid fields were not bound to recorded save keys")
                     })?;
-                // Active raiders' saved fields are comparable; unread means incomplete.
                 if let Some(spotting) = row.raiding_spotting {
                     eq(
                         r,
@@ -202,7 +196,6 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// Shared save projection for ordinary mission rows and demanded sibling ranges.
 fn compare_saved_row(
     row: &replay_data::rows::NavalMissionTaskForceRow,
     expected: &installed_content_save::naval_missions::TaskForce,
@@ -218,7 +211,6 @@ fn compare_saved_row(
         Some(row.underway != 0),
         expected.underway_replenishment,
     );
-    // The game omits fuel and requested at zero.
     eq(
         r,
         &format!("{label}.fuel"),
@@ -231,9 +223,6 @@ fn compare_saved_row(
         row.fuel_requested,
         expected.requested.as_ref().map_or(0, |fuel| fuel.raw),
     );
-    // The naval-mission writer emits the convoy count only when signed-positive.
-    // Omission proves nonpositive, not zero; retain a named limitation
-    // for the exact negative value the serializer loses.
     negative_convoys += usize::from(row.convoys < 0);
     eq(
         r,
@@ -255,9 +244,6 @@ fn compare_saved_row(
     (unsaved_leaders, negative_convoys)
 }
 
-/// The game registers fleet regions independently of the narrower accessible
-/// list. The save lacks this membership as well as its order. Check reference
-/// integrity only, and state that limitation rather than invent a multiset.
 fn ledger_members(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     let known: BTreeSet<_> = frame
         .complete::<tables::TaskForces>()?
@@ -527,8 +513,6 @@ mod tests {
                     ..Default::default()
                 },
             ]));
-        // The same escort occurs in both regional ledgers, so the retained
-        // patrol packet contains one distinct member with a known null target.
         *frame.tables[TableId::NavalPatrolMissionInputs.index()] =
             TableView::Complete(TableRows::NavalPatrolMissionInputs(vec![
                 replay_data::rows::NavalPatrolMissionInputRow {
@@ -572,7 +556,6 @@ mod tests {
             report.difference_lines()
         );
         assert!(report.failed_comparisons.is_empty());
-        // One convoy fewer is a difference, never waived.
         save.naval_missions
             .task_forces
             .get_mut(&escort)
@@ -692,7 +675,6 @@ mod tests {
         assert_eq!(run(row.clone(), &save).differences.len(), 1);
         row.raiding_region = row.raiding_region.map(|value| value + 1);
         assert_eq!(run(row.clone(), &save).differences.len(), 2);
-        // The inactive reader does not acquire retained fields or resolve targets.
         row.raiding_region = None;
         row.raiding_spotting = None;
         row.raiding_targets = None;

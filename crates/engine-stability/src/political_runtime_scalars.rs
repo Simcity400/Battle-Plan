@@ -1,6 +1,3 @@
-//! Six shared political-hover globals, read once each per accepted hourly pass.
-//! The caller authenticates the supported module and world/sample boundary.
-//! These are simulation operands, independent of selection or hover caches.
 use crate::{Memory, read};
 use engine_sites::Rva;
 
@@ -12,7 +9,6 @@ pub const NAMES: [&str; 6] = [
     "move_strength_threshold",
     "move_organisation_threshold",
 ];
-// Loaded globals authenticated by their installed name bytes, with warning operands read as qwords.
 pub const RVAS: [Rva; 6] = [
     Rva(0x033e_1140),
     Rva(0x033e_11d8),
@@ -45,8 +41,6 @@ impl Default for Inputs {
 }
 
 pub fn capture(memory: &impl Memory, base: usize, sample_hour: i32) -> Inputs {
-    // Each independently named leaf is attempted once. A failed leaf does not
-    // stop siblings; no retry, content default, persistent memo or game call.
     Inputs {
         sample_hour,
         values: std::array::from_fn(|index| {

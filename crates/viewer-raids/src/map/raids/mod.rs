@@ -1,41 +1,3 @@
-//! Raid map icons (map icon type 0x1D) for the viewer's chosen country.
-//!
-//! The game keeps one raid cache for the local player and rebuilds it from
-//! simulation state whenever the player changes. This module rebuilds the
-//! same cache for the chosen country from the recording, once per hour:
-//!
-//! - **Membership**: each country in slot order, active raids then ended.
-//!   A raid is ours or targets what we control. Active foreign raids need
-//!   `detected`; ended raids need us in `show_for` and an uncancelled outcome.
-//!   Ours wins when both hold.
-//! - **Offers** ([`offers`]): target statuses whose types the chosen country
-//!   may use against them.
-//! - **Classification**, per province: incoming raid, then ours, then offer;
-//!   the first registered raid binds the icon.
-//!
-//! Offers are the player cache's rows, a batch of targets evaluated per
-//! built hour and per paused frame ([`cycle`]); own and incoming raids are
-//! decided in full every hour.
-//!
-//! Rebuild state as if the chosen country had just become the player, reading
-//! its units, sources and scripts (`visible`, `available`, `show_target` and
-//! category scripts) at the shown hour. Offers use the player-cache allowed
-//! type list (u16 database indices), filled from each type's `allowed` on load,
-//! reset or player-country change. A forced membership rebuild does not
-//! re-evaluate `allowed`. For the cache's own raw country use the recorded
-//! `RaidPlayerAllowedTypes`; for another country evaluate `allowed` at the
-//! shown hour ([`offers::allowed_types`]). The country raid-status eligible-type
-//! list maintained at load, new game and database reload is separate from offers.
-//!
-//! # Presentation
-//!
-//! The content `raid_map_icon` window centres its strip frame, raid glyph and
-//! `plus_icon`. Frames are zero based: offer 0 (grey unless launchable), ours
-//! 2 or 3 when ended, incoming 4 or 5. Draw at `NMapIcons.TOP_MAP_ICON`, above
-//! victory points, counters and combats, in the political, air, navy,
-//! operatives and raids map modes only, within
-//! `NGraphics.RAID_MAP_ICON_DRAW_DISTANCE_MIN..MAX` camera height; the raids
-//! mode reaches up to `RAID_MAP_ICON_MAX_DRAW_DISTANCE_IN_RAID_MAP_MODE`.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -78,84 +40,42 @@ use viewer_foundation::map::{
 };
 use viewer_foundation::table_access::{Refusals, TokenKeys, refuse};
 
-/// The frame strip's fallback glyph when a type names no sprite.
 pub const UNKNOWN_GLYPH: &str = "GFX_raid_type_icon_unknown";
-/// Offers with differing glyphs collapse to this glyph.
 pub const OTHER_GLYPH: &str = "GFX_raid_type_icon_other_raid";
 use viewer_foundation::map::native_windows::RAID_WINDOW as WINDOW;
 const FRAME_SPRITE: &[u8] = b"GFX_on_map_raids_icons_frame_strip";
 
-/// Building template names by token literal, or why refused.
 type TemplateNames = HashMap<Box<[u8]>, Result<String, String>>;
-/// Glyph keys by catalogue type and template name.
 type GlyphKeys = HashMap<(usize, Option<String>), Arc<str>>;
 
-/// Everything static the layer draws and decides from.
 pub struct RaidAssets {
-    /// Shared immutable operands for raid, combat and world scripted triggers.
     pub trigger_content: TriggerContent,
-    /// Sprite names, including refused declarations.
     glyphs: BTreeSet<String>,
     pub catalog: Catalog,
     pub tooltip: tooltips::content::Content,
     pub priority: i8,
     pub geometry: ProvinceGeometry,
-    /// The raid path search, unless the content graph could not be built.
     pub paths: Result<paths::PathSearch, String>,
-    /// The army path search's content tables, with the graph's adjacency
-    /// rules, unless the graph could not be built.
     pub moves: Result<installed_content_unit_path::unit_path::MoveGraph, String>,
-    /// The recorded path memo's indexes, shared by every hour whose memo and
-    /// path sources are the same ([`launch::RecordedIndexes`]).
     pub(crate) recorded_indexes: launch::RecordedIndexes,
-    /// Whole-table indexes of the launch gate's source lists, shared by every
-    /// hour whose tables they read are the same ([`launch::TableIndexes`]).
     pub(crate) table_indexes: launch::TableIndexes,
-    /// `NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME`: rows evaluated per player-cache
-    /// frame ([`target_batch`]), or why it cannot be read.
     batch: Result<usize, String>,
-    /// Raid type names (the catalogue's and the refused types') and building
-    /// template names under the lexer's fold ([`TokenKeys`]), built on first
-    /// use from the content.
     type_keys: OnceLock<TokenKeys>,
-    /// Building template names by token literal, and glyph keys by (type,
-    /// template): content alone decides both, so each is found once.
     template_names: Mutex<TemplateNames>,
     glyph_keys: Mutex<GlyphKeys>,
     template_keys: OnceLock<TokenKeys>,
-    /// Air-source distances by target, shared by every hour with the same
-    /// source provinces ([`launch::SourceDistanceSets`]).
     pub(crate) source_distances: launch::SourceDistanceSets,
-    /// Each province's strategic region.
     pub regions: BTreeMap<u32, u32>,
-    /// Each template's provinces in native order, including repeated entries.
     pub region_provinces: BTreeMap<u32, Vec<u32>>,
-    /// The `NGraphics` defines of the province day/night clocks, or why they
-    /// are unread (reported once in [`Self::warnings`]).
     day_night: Result<replay_data::day_night::Defines, String>,
-    /// The combat assets' already loaded sub-unit database. Transport labels
-    /// join authenticated pool indices to this recorded content stack.
     pub transport_sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
-    /// `NDefines.NMilitary.COMBAT_MINIMUM_TIME`, hours.
     pub combat_minimum_time: i32,
-    /// Naval combat uses this signed threshold separately from the land minimum.
-    /// A missing define refuses only a reached naval check.
     pub naval_combat_min_duration: Result<i32, String>,
-    /// `NDefines.NRaids.ARMY_TRANSFER_AVOID_ENEMY`.
     pub avoid_enemy: bool,
-    /// Air-base, rocket and gun-emplacement sites of each state.
     sites: BTreeMap<(u32, Site), Vec<u32>>,
-    /// Why no site anchor is proven: a building type whose raid facts, the
-    /// site flags among them, are refused may mark any slot.
     refused_sites: Option<String>,
-    /// The equipment database, whose archetypes and categories the launch
-    /// gate reads.
     pub equipment: installed_content_core::equipment::Database,
-    /// The named equipment groups raid requirements expand.
     pub equipment_groups: installed_content_core::equipment::Groups,
-    /// Why equipment facts are unknown: an unreadable database or group prevents
-    /// finalization, and later files may add to any type or group. Only queries
-    /// that read equipment ([`Self::equipment`]) are refused.
     pub equipment_lost: Option<String>,
     pub defines: RaidDefines,
     pub warnings: Vec<installed_content_core::Diagnostic>,
@@ -207,23 +127,14 @@ impl std::fmt::Debug for RaidAssets {
     }
 }
 
-/// The defines the launch gate reads, fixed5 unless an integer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RaidDefines {
-    /// `NCountry.BASE_MAX_COMMAND_POWER`.
     pub base_max_command_power: i64,
-    /// `NNavy.NAVAL_INVASION_PRIORITY`, the convoy reservation threshold.
     pub naval_invasion_priority: i32,
-    /// `NGame.MAP_SCALE_PIXEL_TO_KM`.
     pub map_scale: i64,
-    /// `NRaids.BASE_NAVAL_COMMANDO_RAID_DISTANCE`.
     pub naval_commando_distance: i64,
-    /// `NAir.ACE_WING_SIZE` and `ACE_WING_SIZE_MAX_BONUS`.
     pub ace_wing_size: i64,
     pub ace_wing_size_max_bonus: i64,
-    /// `NMilitary.LAND_SPEED_MODIFIER`, `NNavy.NAVAL_SPEED_MODIFIER` and
-    /// `NAVAL_TRANSFER_BASE_SPEED`, the raid unit speed's scales
-    /// ([`unit_inputs::raid_unit_speed`]); `None` when one cannot be read.
     pub unit_speeds: Option<[i64; 3]>,
 }
 
@@ -271,10 +182,6 @@ impl RaidAssets {
         }
     }
 
-    /// What the prepared content refuses when a raid meets it: the
-    /// equipment database, the leader roles, the invasion days and the
-    /// tooltip content's defines, terrain and unit names. The state names
-    /// are the state reader's own.
     pub fn refusals(&self) -> Vec<String> {
         let tooltip = &self.tooltip;
         [
@@ -296,8 +203,6 @@ impl RaidAssets {
         .collect()
     }
 
-    /// Equipment database and groups, including categories and archetypes used
-    /// by the launch gate, or why they are unknown.
     pub fn equipment(
         &self,
     ) -> Result<
@@ -313,7 +218,6 @@ impl RaidAssets {
         }
     }
 
-    /// An essential equipment type's category mask, or why it is unknown.
     pub fn equipment_category(&self, name: &str) -> Result<u64, String> {
         let (equipment, _) = self.equipment()?;
         equipment
@@ -417,7 +321,6 @@ impl RaidAssets {
                 )));
             }
         }
-        // Every sprite name a type can resolve to.
         let mut wanted: BTreeSet<String> =
             [UNKNOWN_GLYPH.to_owned(), OTHER_GLYPH.to_owned()].into();
         for kind in &catalog.types {
@@ -434,7 +337,6 @@ impl RaidAssets {
                 "Character templates cannot be read ({error}); unit leaders whose visibility has a condition are undecided."
             )));
         }
-        // The document reports the state conflicts and misreads once.
         let (states, _) = product.states(defines, map)?;
         let states = states.definitions();
         let (graph, geometry) = product.graph()?;
@@ -494,7 +396,6 @@ impl RaidAssets {
                 }
             }
         }
-        // The combat window sorts in the GUI band above every priority.
         let priority =
             map_icon_priority(defines.number("NMapIcons", "TOP_MAP_ICON")?).map_err(invalid)?;
         let dlcs = product.dlcs()?;
@@ -574,7 +475,6 @@ impl RaidAssets {
         })
     }
 
-    /// Content topology shared with the game's naval mission admission.
     pub fn mission_topology(
         &self,
     ) -> Result<
@@ -595,11 +495,6 @@ impl RaidAssets {
             .unwrap_or_else(|| UNKNOWN_GLYPH.to_owned())
     }
 
-    /// The raid type a lexer token names: its spelling matched to the
-    /// content's type names under the lexer's fold (`TokenKeys`), a type the
-    /// port refuses included. A token with no recorded literal, a spelling
-    /// several types share and a name the content lacks are refused by name
-    /// ([`refused`]).
     pub fn raid_type(&self, world: &World<'_>, token: u32) -> Result<TypeToken, String> {
         let spelling = spelling(world, token, "raid type")?;
         let keys = made_once(&self.type_keys, || {
@@ -627,8 +522,6 @@ impl RaidAssets {
         ))
     }
 
-    /// The building template a lexer token names, matched as
-    /// [`Self::raid_type`] matches types; refusals are by name.
     pub fn building(&self, world: &World<'_>, token: u32) -> Result<&BuildingType, String> {
         let spelling = spelling(world, token, "building template")?;
         let known = self
@@ -640,7 +533,6 @@ impl RaidAssets {
         if let Some(known) = known {
             return known.map(|key| &self.trigger_content.buildings.types[&key]);
         }
-        // Resolved with no lock held: a second caller meanwhile resolves it too.
         let keys = made_once(&self.template_keys, || TokenKeys::new(self.trigger_content.buildings.types.keys()));
         let key = keys
             .resolve(spelling)
@@ -659,14 +551,11 @@ impl RaidAssets {
         key.map(|key| &self.trigger_content.buildings.types[&key])
     }
 
-    /// [`Self::glyph_key`] of catalogue type `index`, found once per type
-    /// and template.
     fn glyph_key_of(&self, index: usize, template: Option<&str>) -> Arc<str> {
         let key = (index, template.map(str::to_owned));
         if let Some(known) = self.glyph_keys.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&key) {
             return Arc::clone(known);
         }
-        // Found with no lock held: a second caller meanwhile finds it too.
         let glyph: Arc<str> = self.glyph_key(&self.catalog.types[index], template).into();
         self.glyph_keys
             .lock()
@@ -675,8 +564,6 @@ impl RaidAssets {
         glyph
     }
 
-    /// Resolve the province arm, province building, leader province, then state
-    /// or state-building province nearest the state centre.
     pub fn province(&self, scope: &RaidScope) -> Option<u32> {
         if scope.province != 0 {
             return Some(scope.province);
@@ -698,8 +585,6 @@ impl RaidAssets {
             .nearest_to_centre(self.trigger_content.state_provinces.get(&state)?)
     }
 
-    /// A state building stands on the first province in its state list with a
-    /// site for its type.
     pub fn anchor_province(
         &self,
         world: &World<'_>,
@@ -720,8 +605,6 @@ impl RaidAssets {
             .into_iter()
             .filter_map(|(has, site)| has.then_some(site))
             .collect();
-            // The state's runtime province list, in content order only while
-            // its membership equals the content's.
             for province in world.state_order(state).map_err(|why| why.to_string())? {
                 if wanted.iter().any(|&site| {
                     self.sites
@@ -736,10 +619,6 @@ impl RaidAssets {
     }
 }
 
-/// Raid icon priority comes from `NMapIcons.TOP_MAP_ICON`, stored in a byte
-/// and read signed. The adjacent open-details flag is never set in replay.
-/// Sprite layers order signed priorities (`sprites::layer`), so a negative
-/// priority sorts below zero.
 fn map_icon_priority(define: f64) -> Result<i8, String> {
     if define.fract() != 0.0 || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&define) {
         return Err("NDefines.NMapIcons.TOP_MAP_ICON is not an integer".into());
@@ -747,9 +626,6 @@ fn map_icon_priority(define: f64) -> Result<i8, String> {
     Ok(define as i32 as i8)
 }
 
-/// `NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME`: a missing or non-number value
-/// loads as zero, then values below one become one. An unreachable define
-/// (no `NRaids` section) remains a refusal.
 fn target_batch(defines: &installed_content_core::defines::Defines) -> Result<usize, String> {
     defines
         .int32("NRaids", "MAX_TARGETS_TO_UPDATE_PER_FRAME")
@@ -761,8 +637,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Provinces with admitted content building slots whose buckets hold an air
-/// base, rocket site, radar or gun emplacement type.
 fn sites(
     layers: &ResolvedLayers,
     map: &MapData,
@@ -807,15 +681,10 @@ fn sites(
     Ok(out)
 }
 
-/// One icon of one hour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RaidIcon {
-    /// The province its raids or offers group by, which keys its window: another group may
-    /// stand at the same province.
     pub group: u32,
-    /// Where it stands.
     pub province: u32,
-    /// Zero-based strip frame.
     pub frame: u32,
     pub enabled: bool,
     pub glyph: Option<Arc<str>>,
@@ -823,41 +692,23 @@ pub struct RaidIcon {
     pub tooltip: Option<tooltips::Key>,
 }
 
-/// What an hour's raid layer decided and what it could not.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RaidReport {
     pub icons: usize,
     pub own: usize,
     pub incoming: usize,
     pub offers: usize,
-    /// Offers drawn grey because an input their launchability needs is missing.
     pub unverified_tint: usize,
-    /// Provinces with no icon because an input is missing.
     pub withheld: usize,
     pub unanchored: usize,
-    /// Raids and target statuses whose scopes resolve to no province, giving no icon.
     pub unresolved: usize,
-    /// Wrapped byte counters: a count of 256 reads zero.
     pub wrapped: usize,
-    /// Icons with undeclared glyph sprites, retaining their window's previous sprite.
     pub missing_glyphs: usize,
-    /// Incoming raids whose type the port cannot use (the content declares
-    /// it in a refused form, or its token is refused: no literal, a
-    /// spelling several types share, a name the content lacks), drawn with
-    /// the unknown glyph where the game draws the type's own.
     pub unknown_glyphs: usize,
-    /// No icons yet: this hour's, for this branch and country, are being built.
     pub pending: bool,
-    /// Evaluating this hour's offers off the frame path failed; the offers
-    /// shown are those kept before.
     pub worker_failed: bool,
-    /// Target rows evaluated at this hour, of all rows ([`cycle::Cycle`]):
-    /// the others show their last evaluation since the reset, or nothing.
     pub cycle: (usize, usize),
-    /// Why icons were withheld or tints unverified, with counts.
     pub reasons: BTreeMap<String, usize>,
-    /// Raid type and building template tokens refused, by reason: what
-    /// depends on them is undecided ([`RaidAssets::raid_type`]).
     pub refused_tokens: Refusals,
 }
 
@@ -871,7 +722,6 @@ impl RaidReport {
         }
     }
 
-    /// Adds the counts and reasons of `other`, a report of some icons.
     fn absorb(&mut self, other: &Self) {
         for (to, from) in [
             (&mut self.icons, other.icons),
@@ -896,7 +746,6 @@ impl RaidReport {
         }
     }
 
-    /// Counts an icon whose glyph sprite no interface file declares.
     fn glyph(&mut self, assets: &RaidAssets, glyph: &str) {
         if !assets.glyphs.contains(glyph) {
             self.missing_glyphs += 1;
@@ -904,13 +753,10 @@ impl RaidReport {
         }
     }
 
-    /// Whether every target row has been evaluated at this hour.
     pub fn cycle_complete(&self) -> bool {
         self.cycle.0 == self.cycle.1
     }
 
-    /// The report's diagnostics lines: every icon drawn grey without a proved
-    /// tint or withheld, icons still being built or evaluated, and why.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if self.pending {
@@ -971,7 +817,6 @@ impl RaidReport {
     }
 }
 
-/// The spelling of a raid token, or why it is refused.
 pub fn spelling<'a>(world: &World<'a>, token: u32, what: &str) -> Result<&'a str, String> {
     let literal = world
         .token(token)
@@ -983,29 +828,20 @@ pub fn spelling<'a>(world: &World<'a>, token: u32, what: &str) -> Result<&'a str
         .ok_or_else(|| refused(format!("{what} token {token} is not spelled as text")))
 }
 
-/// What a raid type token names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeToken {
-    /// A catalogue type, by index.
     Type(usize),
-    /// A type the content declares in a form the port refuses, by index
-    /// into [`Catalog::uncertain`].
     Refused(usize),
 }
 
-/// An hour's icons for one country.
 #[derive(Clone, Debug, Default)]
 pub struct RaidIcons {
     pub icons: Vec<RaidIcon>,
     pub report: RaidReport,
-    /// The branch, hour and canonical country they were built for.
     pub built_for: Option<(replay_data::BranchId, replay_data::Hour, u32)>,
 }
 
 impl RaidIcons {
-    /// The icons the window draws at `branch`, `hour` and country `ours`
-    /// while that hour's are built: these when they are that hour's own,
-    /// else none (owner decision: never another hour's icons).
     pub fn carried(
         icons: Arc<Self>,
         branch: replay_data::BranchId,
@@ -1024,9 +860,6 @@ impl RaidIcons {
         }
     }
 
-    /// Whether these icons may draw at `branch`, `hour` for canonical
-    /// country `ours`: they were built for it, or they are the raid lane's
-    /// failure, which draws no icon.
     pub fn drawable_at(
         &self,
         branch: replay_data::BranchId,
@@ -1039,7 +872,6 @@ impl RaidIcons {
         }
     }
 
-    /// No icons for `frame`'s hour: the raid layer's inputs are missing.
     pub fn unavailable(frame: &DecodedFrame, ours: u32, reason: String) -> Self {
         let mut out = Self {
             built_for: Some((frame.branch, frame.hour, ours)),
@@ -1051,7 +883,6 @@ impl RaidIcons {
     }
 }
 
-/// A registered raid and its target.
 #[derive(Clone, Copy)]
 struct Bound<'a> {
     raid: &'a RaidRow,
@@ -1059,7 +890,6 @@ struct Bound<'a> {
     raid_type: u32,
 }
 
-/// One province entry; the counters are bytes.
 #[derive(Default)]
 struct Entry<'a> {
     own: Vec<Bound<'a>>,
@@ -1068,9 +898,6 @@ struct Entry<'a> {
     incoming_count: u8,
 }
 
-/// Builds the hour's icons for canonical country `ours` with every target
-/// evaluated at the hour: a player cache cycled until it is complete, as a
-/// paused frame ends. `paths` holds the hour's path searches.
 pub fn icons(
     assets: &RaidAssets,
     frame: &DecodedFrame,
@@ -1083,7 +910,6 @@ pub fn icons(
     };
     let layer = HourLayer::new(assets, &world, ours, paths);
     let mut cycle = cycle::Cycle::new(frame.branch, ours);
-    // A reset cache keeps no row, so its first hour always begins.
     if cycle.begin(assets, &layer.sweep).is_ok() {
         while !cycle.complete() {
             cycle.step(&layer.sweep);
@@ -1092,18 +918,12 @@ pub fn icons(
     layer.icons(&cycle, &mut IconCache::default())
 }
 
-/// Offer icons kept from hour to hour and frame to frame while what
-/// decides them holds: the province's offer (the same allocation), the
-/// lexer tokens its glyphs and anchor spell (the same complete table), and
-/// for a state building's anchor its state's province order. So only the
-/// provinces a batch changed are laid out again.
 #[derive(Default)]
 pub struct IconCache {
     tokens: Option<replay_frame::frame::ViewIdentity>,
     icons: HashMap<u32, CachedIcon>,
 }
 
-/// One province's offer icon and what laying it out added to the report.
 struct CachedIcon {
     shown: Arc<cycle::Shown>,
     order: Result<(), dashboard_text::triggers::Failure>,
@@ -1112,8 +932,6 @@ struct CachedIcon {
 }
 
 impl IconCache {
-    /// Forgets every icon unless `frame`'s lexer tokens are the complete
-    /// table the icons were laid out from.
     fn hour(&mut self, frame: &dyn replay_frame::frame::DecodedSource) {
         let table = replay_data::rows::TableId::LexicalTokens;
         let view = frame.shared(table.index());
@@ -1125,19 +943,12 @@ impl IconCache {
     }
 }
 
-/// One hour's raid layer for canonical country `ours`: its own and
-/// incoming raids, decided in full, and its offer sweep, which a
-/// [`cycle::Cycle`] steps through.
 pub struct HourLayer<'s, 'f> {
     assets: &'s RaidAssets,
     world: &'s World<'f>,
     ours: u32,
-    /// The registered raids by province and what deciding them noted, or
-    /// why none can be decided.
     membership: Result<(BTreeMap<u32, Entry<'f>>, RaidReport), String>,
     pub sweep: offers::Sweep<'s, 'f>,
-    /// Offer glyph keys by (type, building template token) at this hour,
-    /// with why the template is refused.
     glyphs: RefCell<GlyphsByToken>,
 }
 
@@ -1163,8 +974,6 @@ impl<'s, 'f> HourLayer<'s, 'f> {
         }
     }
 
-    /// The glyph key of catalogue type `index` against a target of building
-    /// template `token` (0 none), noting a refused template each time.
     fn glyph(&self, index: usize, token: u32, report: &mut RaidReport) -> Arc<str> {
         let mut glyphs = self.glyphs.borrow_mut();
         let (glyph, refused) = glyphs.entry((index, token)).or_insert_with(|| {
@@ -1184,8 +993,6 @@ impl<'s, 'f> HourLayer<'s, 'f> {
         Arc::clone(glyph)
     }
 
-    /// The hour's icons, with the offers `cycle` keeps; `cache` holds the
-    /// offer icons laid out before.
     pub fn icons(&self, cycle: &cycle::Cycle, cache: &mut IconCache) -> RaidIcons {
         let frame = self.world.frame();
         let mut out = RaidIcons {
@@ -1212,7 +1019,6 @@ impl<'s, 'f> HourLayer<'s, 'f> {
     }
 }
 
-/// Draws the hour's own and incoming raids and the offers `cycle` keeps.
 fn finish(
     layer: &HourLayer<'_, '_>,
     entries: &BTreeMap<u32, Entry<'_>>,
@@ -1282,11 +1088,6 @@ fn finish(
     out
 }
 
-/// Target country: positive building override, else location controller;
-/// then province and state controllers, resolved leader captor, and leader
-/// province controller. `Ok(None)` is an empty reference. A reference with
-/// no linked slot or an unrecorded location is `Err`: the target may belong
-/// to any country, including ours.
 pub fn target_country(world: &World<'_>, scope: &RaidScope) -> Result<Option<u32>, String> {
     installed_content_raids::raids::target::country(world.frame(), scope)?
         .map(|raw| {
@@ -1332,8 +1133,6 @@ fn membership<'a>(
                 .get(&(raid.id, raid.reference_type))
                 .ok_or("a raid has no recorded target")?;
             let own = slot == ours;
-            // A foreign raid whose target country does not resolve may be
-            // aimed at us: its icon is undecided, counted.
             let aimed = match target_country(world, &target.scope) {
                 Ok(country) => country == Some(ours),
                 Err(_) if own => false,
@@ -1366,7 +1165,6 @@ fn membership<'a>(
                 scope: &target.scope,
                 raid_type: target.raid_type,
             };
-            // Counts use wrapping bytes: 256 reads as none.
             let count = if own {
                 entry.own.push(bound);
                 &mut entry.own_count
@@ -1383,14 +1181,11 @@ fn membership<'a>(
     Ok(entries)
 }
 
-/// Default filter admits a free-targeting category, or one visible and
-/// available to us.
 pub fn category_admits(assets: &RaidAssets, world: &World<'_>, ours: u32, kind: &RaidType) -> Eval {
     let Some(name) = kind.category.as_deref() else {
         return Eval::unknown(format!("raid type {} has no category", kind.name));
     };
     let Some(category) = assets.catalog.categories.get(name) else {
-        // The database creates an empty category for an undeclared name.
         return Eval::True;
     };
     if category.free_targeting {
@@ -1412,7 +1207,6 @@ fn raid_icon(
     report: &mut RaidReport,
 ) -> Option<RaidIcon> {
     let kind = assets.raid_type(world, bound.raid_type);
-    // Incoming raids always show; ours show only when the filter admits the type.
     if !incoming {
         let admitted = match &kind {
             Ok(TypeToken::Type(index)) => {
@@ -1445,8 +1239,6 @@ fn raid_icon(
     let template = template_name(assets, world, bound.scope, report);
     let glyph: Arc<str> = match &kind {
         Ok(TypeToken::Type(index)) => assets.glyph_key(&assets.catalog.types[*index], template),
-        // The game draws the type's own glyph, which the content does not
-        // establish; the unknown glyph stands in, counted.
         other => {
             report.unknown_glyphs += 1;
             report.note([unusable_type(assets, other, "incoming")]);
@@ -1475,8 +1267,6 @@ fn raid_icon(
     })
 }
 
-/// Why a raid's type is not one the port can use: the content declares it
-/// in a form the port refuses, or its token is refused.
 fn unusable_type(assets: &RaidAssets, kind: &Result<TypeToken, String>, raid: &str) -> String {
     match kind {
         Ok(TypeToken::Refused(at)) => {
@@ -1491,8 +1281,6 @@ fn unusable_type(assets: &RaidAssets, kind: &Result<TypeToken, String>, raid: &s
     }
 }
 
-/// Building-template content key, used as a glyph suffix. A refused template
-/// has no suffix and is counted.
 fn template_name<'a>(
     assets: &'a RaidAssets,
     world: &World<'_>,
@@ -1511,7 +1299,6 @@ fn template_name<'a>(
     }
 }
 
-/// [`offer_icon`] of `shown`'s offer, kept in `cache` while its inputs hold.
 fn cached_offer_icon(
     layer: &HourLayer<'_, '_>,
     cache: &mut IconCache,
@@ -1520,7 +1307,6 @@ fn cached_offer_icon(
     report: &mut RaidReport,
 ) -> Option<RaidIcon> {
     let offer = shown.offer.as_ref()?;
-    // A state building's anchor reads its state's province order.
     let scope = &offer.anchor;
     let order = if scope.building_type != 0 && scope.building_flags & 2 != 0 {
         layer.world.state_order(scope.building_location).map(|_| ())
@@ -1567,8 +1353,6 @@ fn offer_icon(
             return None;
         }
     };
-    // Use a common glyph or the other-raid glyph. A shown target's template
-    // resolved when its type matched it.
     let mut keys = offer
         .pairs
         .iter()
@@ -1604,16 +1388,11 @@ fn offer_icon(
     })
 }
 
-/// Everything one frame of raid icons needs besides the hour's icons.
 pub struct RaidInputs<'a> {
-    /// Unit-stack slot 0 of a province.
     pub anchor: &'a dyn Fn(u32) -> Option<[f32; 3]>,
     pub camera: Camera,
-    /// The frame in device pixels, which the projection uses.
     pub viewport: [u32; 2],
-    /// Device pixels per interface pixel; see [`viewer_foundation::map::ui_scale`].
     pub ui_scale: f32,
-    /// How far the view's map mode lets raid icons reach; `None` hides them.
     pub reach: Option<RaidReach>,
 }
 
@@ -1623,8 +1402,6 @@ mod tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-/// `cell`'s value, made by a caller that finds it unmade rather than waited on while another
-/// makes it ([`std::sync::OnceLock::get_or_init`] waits); the first made is kept.
 fn made_once<T>(cell: &std::sync::OnceLock<T>, make: impl FnOnce() -> T) -> &T {
     if let Some(made) = cell.get() {
         return made;

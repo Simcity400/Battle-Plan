@@ -18,7 +18,6 @@ use std::{
 #[cfg(test)]
 use std::{sync::{Mutex, mpsc}, time::Duration};
 
-/// A layer that reads one column of each of its tables and counts its composes.
 pub struct Reads {
     tables: Vec<TableId>,
     composes: Arc<AtomicU32>,
@@ -69,7 +68,6 @@ impl Layer for Reads {
     }
 }
 
-/// A layer reading the countries that says on `dropped` which thread let it go.
 struct Probe {
     dropped: Option<Sender<Option<String>>>,
 }
@@ -116,8 +114,6 @@ impl Drop for Probe {
     }
 }
 
-/// Both maps at `hour`, in turn: a map that takes no steps would hold the ring for the other. The
-/// second may not have its tables yet: they join at a step past the hour it opened at.
 fn both(first: &mut MapSide, second: &mut MapSide, hour: i32, seen: &mut Vec<String>) {
     first.catch_up(hour).unwrap();
     note("first", first, hour, seen);
@@ -132,7 +128,6 @@ fn both(first: &mut MapSide, second: &mut MapSide, hour: i32, seen: &mut Vec<Str
     panic!("the second map did not reach hour {hour} ({seen:?})");
 }
 
-/// What a map's last frame did that resets a picture: a reset composed, or an exact seek asked.
 fn note(name: &str, side: &MapSide, hour: i32, seen: &mut Vec<String>) {
     let frame = side.last_frame();
     if frame.exact || frame.resets > 0 {
@@ -140,15 +135,10 @@ fn note(name: &str, side: &MapSide, hour: i32, seen: &mut Vec<String>) {
     }
 }
 
-/// Frames of `first`, and of `second` when it is open, until `done` holds after one, at a head the
-/// test moves as the naval layer's tests do: the hour after the first map's last applied once the
-/// playhead has built it (a step of one hour a frame), held there while either map composes.
-/// `each` runs after every frame; every frame that reset a picture is noted in `seen`.
 fn play(entry: &Entry, first: &mut MapSide, second: Option<&mut MapSide>, seen: &mut Vec<String>, done: impl FnMut(&MapSide, Option<&MapSide>) -> bool, each: impl FnMut()) {
     play_to(entry, first, second, seen, Hour::MAX, done, each);
 }
 
-/// [`play`] with the head never past `cap`.
 fn play_to(entry: &Entry, first: &mut MapSide, mut second: Option<&mut MapSide>, seen: &mut Vec<String>, cap: Hour, mut done: impl FnMut(&MapSide, Option<&MapSide>) -> bool, mut each: impl FnMut()) {
     for _ in 0..50_000_000u64 {
         let composing = first.composing() || second.as_deref().is_some_and(MapSide::composing);
@@ -176,7 +166,6 @@ fn play_to(entry: &Entry, first: &mut MapSide, mut second: Option<&mut MapSide>,
     panic!("the maps did not get there with the head at most {cap}: first at {:?}, second at {:?}, newest {:?}, preparing {}, {counters:?}; {seen:?}", first.applied(), second.as_deref().map(MapSide::applied), entry.playhead().newest(), report.preparing);
 }
 
-/// The reader an opening delivers, polled without waiting until it is there.
 fn arrived(opening: &Opening) -> std::io::Result<MapSide> {
     for _ in 0..50_000_000u64 {
         if let Some(made) = opening.poll() {
@@ -208,8 +197,6 @@ fn maps_of_one_recording_share_its_playhead_each_with_its_own_reader_and_one_clo
     let mut second = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
     for hour in 4..14 {
         both(&mut first, &mut second, hour, &mut seen);
-        // The second map's lanes are prepared on the fetchers and join at a step built after; each
-        // hour gives them a bounded while before the head moves on.
         for _ in 0..2_000_000 {
             if second.draws("reads") {
                 break;
@@ -233,10 +220,6 @@ fn maps_of_one_recording_share_its_playhead_each_with_its_own_reader_and_one_clo
     assert_eq!(Arc::strong_count(&entry), 1, "closed, the maps hold nothing of the playhead");
 }
 
-/// A reader is made on an opening's thread while the first map plays (held at a gate, so the
-/// overlap is certain), arrives, joins and composes once within the steps its tables take to join,
-/// and resets nothing of the first map. An opening let go before its reader is made has the reader
-/// dropped on its own thread, and the first map is all that holds the playhead.
 #[test]
 fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_nothing() {
     let records = 24;
@@ -244,7 +227,6 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     entry.set_capture(CaptureMode::Full);
     let (layer, first_composes) = Reads::new(&[TableId::Countries]);
     let mut first = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
-    // Playing, a table declared later joins as while playing; nothing reads the clock's hour.
     entry.playhead().play(1.0);
     entry.playhead().seek(0);
     let mut seen = Vec::new();
@@ -266,14 +248,10 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     gate.send(()).unwrap();
     let mut second = arrived(&opening).expect("the reader is made");
     assert_eq!(made_on.lock().unwrap().as_deref(), Some(OPENING), "made off the caller's thread");
-    // Declared at the hour the first map stands at: CountryLinks, new to the lanes, joins at the
-    // frames' hour; Countries, held for the first map, lands from memory at the newest step's end,
-    // at most `ring + 1` steps of one hour on. The map composes once, with both home.
     let declared = first.applied().unwrap();
     let by = declared + hourly_steps().ring as Hour + 1;
     let last = by + 2;
     assert!(last < records as Hour, "the recording holds the steps the bound allows");
-    // The head waits at `by` for the second map: nothing here races the fetchers against the frames.
     play_to(&entry, &mut first, Some(&mut second), &mut seen, by, |first, second| {
         let second = second.expect("open");
         second.draws("reads") && !second.composing() && second.applied() == first.applied()
@@ -283,7 +261,6 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     assert_eq!(first_composes.load(Ordering::Relaxed), 1, "the first map is never reset by it ({seen:?})");
     assert_eq!(first.applied(), second.applied(), "both follow the one clock");
     drop(second);
-    // The first map's own hold on the playhead: its side and its view store.
     let held = Arc::strong_count(&entry);
     let (gate, wait) = mpsc::channel::<()>();
     let (dropped, dropped_on) = mpsc::channel();
@@ -295,7 +272,6 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     .unwrap();
     drop(abandoned);
     gate.send(()).unwrap();
-    // A deadline that fails by name, not a wait: the message comes as the reader is dropped.
     let thread = dropped_on.recv_timeout(Duration::from_secs(60)).expect("the reader no longer wanted is dropped");
     assert_eq!(thread.as_deref(), Some(OPENING), "a reader no longer wanted is dropped by its opening's thread");
     assert_eq!(Arc::strong_count(&entry), held, "only the first map holds the playhead");

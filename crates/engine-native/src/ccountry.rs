@@ -1,17 +1,3 @@
-//! CCountry census, appearance and counter inputs.
-//!
-//! Appearance walks the ruling party's first leader once for its ideology and
-//! parent character ID. A failed walk up to the leader withholds the row; a
-//! null, unreadable or unauthenticated parent leaves only its ID missing.
-//! Synthetic fixtures cover both outcomes; live capture is unverified.
-//!
-//! `walk_sent_volunteers` copies ordered references, including null/stale ones,
-//! in bounded batches. Native swap-removal order matters because the counter
-//! tint stops at the first matching reference. It never follows those references
-//! or rereads division owners. Synthetic fixtures cover order, capacity demand,
-//! malformed headers and short reads; `sent_volunteers_unit_scale` is an opt-in
-//! release benchmark over owned synthetic memory. Live capture and fresh-save
-//! agreement remain unverified.
 
 use crate::{
     Memory, carmy, ccharacter, cconvoys, ccountry_leader, cgame_state,
@@ -33,254 +19,128 @@ pub use rosters::{
     counter_effect_roster_demand, counter_roster_demand, counter_roster_demand_with_pride_observer,
 };
 
-/// Country primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_4730);
-/// Country raw link id, u32, resolved through live country links.
 pub const ID: usize = 8;
-/// Display name in the client language. Capture uses [`AppearanceRow`]
-/// operands so the viewer can resolve names in its own language.
 pub const NAME: usize = 0x10;
-/// Current localized adjective string.
 pub const ADJECTIVE: usize = 0x30;
-/// Current localized definite-name string.
 pub const DEFINITE_NAME: usize = 0x50;
-/// Retained old name, adjective and definite-name strings in the client
-/// language. Name rebuilding replaces all three previous values when any
-/// changes and the idler gate passes. Saves omit them and appearance reset
-/// keeps them. An empty old string falls back to current text.
 pub const OLD_NAME: usize = 0x90;
 pub const OLD_ADJECTIVE: usize = 0xb0;
 pub const OLD_DEFINITE_NAME: usize = 0xd0;
-/// CCountry signed i64 command power /100000.
 pub const COMMAND_POWER: usize = 0x1f0;
-/// Signed fixed5 command power reserved by active allocators, including
-/// raids, attaches and leader deployment. The command-power clamp, displayed
-/// maximum and affordability gate subtract this from the modified maximum.
 pub const ALLOCATED_COMMAND_POWER: usize = 0x1f8;
-/// Political-status pointer requiring vtable and owner-backlink authentication.
 pub const POLITICAL_STATUS: usize = 0xf90;
-/// CCountry signed i64 stability /100000.
 pub const STABILITY: usize = 0x10d0;
-/// CCountry signed i64 war support /100000.
 pub const WAR_SUPPORT: usize = 0x10d8;
 
-/// Mutable surrender/collaboration recipient as a raw country link.
 pub const SURRENDER_TARGET: usize = 0xc;
-/// CCountry land-theatre pointer vector.
 pub const THEATRES: usize = 0x168;
-/// CCountry air-theatre pointer vector.
 pub const AIR_THEATRES: usize = 0x180;
-/// CCountry scripted flag-manager field.
 pub const FLAG_MANAGER: usize = 0x230;
-/// CCountry fleet pointer vector.
 pub const FLEETS: usize = 0x278;
-/// CCountry CArmy primary-pointer vector.
 pub const DIVISIONS: usize = 0x290;
-/// Ordered core-state pointers followed by the terminal offsite production pass.
 pub const WAR_OVERVIEW_CORE_STATES: usize = 0x4a8;
-/// Offsite building-status pointer for production totals.
 pub const WAR_OVERVIEW_OFFSITE: usize = 0x1350;
-/// Embedded manpower object.
 pub const MANPOWER: usize = 0x328;
-/// Stored primary RGBA float bits. The display getter may instead select
-/// an autonomy overlord's color object.
 pub const CURRENT_PRIMARY_COLOR: usize = 0x370;
-/// Stored UI RGBA float bits, loaded with content HSV modifiers and retained
-/// as the baseline. Country-colored counter plates use the selected getter.
 pub const CURRENT_UI_COLOR: usize = 0x390;
-/// Controlled-state pointer array with signed count. Controller changes
-/// remove old membership and append new membership only for states with
-/// provinces. Post-load repairs nonpositive controllers; count queries use
-/// this retained array.
 pub const CONTROLLED_STATES: usize = 0x460;
-/// CCountry inline modifier accumulator.
 pub const MODIFIER_ACCUMULATOR: usize = 0x5b8;
-/// Embedded dynamic-modifier container requiring vtable and country backlink authentication.
 pub const DYNAMIC_MODIFIERS: usize = 0xe58;
-/// CCountry CTechnologyStatus*.
 pub const TECHNOLOGY_STATUS: usize = 0xf60;
-/// CCountry CProductionStatus*.
 pub const PRODUCTION_STATUS: usize = 0xf68;
-/// CCountry deployment-manager pointer.
 pub const DEPLOYMENT_MANAGER: usize = 0xf70;
-/// Rule byte, initially one, recomputed from ideology, ideas and faction
-/// rules. It is reached only after direct war fails and matters only when
-/// both countries have nonempty enemy lists.
 pub const CAN_OCCUPY_NON_WAR: usize = 0x6b8;
-/// Civil-war link tag set on the revolter to the original country and
-/// cleared at war end. Loading can restore it.
 pub const CIVIL_WAR_LINK: usize = 0x1308;
-/// Sorted unique raw country-reference array. Loading inserts positive
-/// targets at their lower bound, serialization preserves order and war end
-/// removes the other participant. Civil-war queries walk this array.
 pub const CIVIL_WAR_TARGETS: usize = 0x12f0;
-/// CCountry CDiplomacyStatus*.
 pub const DIPLOMACY_STATUS: usize = 0xf88;
-/// Decision-state pointer requiring its owner backlink.
 pub const DECISION_STATUS: usize = 0xfa0;
-/// Program-status pointer.
 pub const PROGRAM_STATUS: usize = 0xfa8;
-/// CCountry CIntelligenceAgency*.
 pub const INTELLIGENCE_AGENCY: usize = 0xfc0;
-/// CCountry occupation-status pointer.
 pub const OCCUPATION_STATUS: usize = 0xfd0;
-/// CCountry intelligence table pointer.
 pub const INTEL_TABLE: usize = 0xfe8;
-/// CCountry scientist roster pointer.
 pub const SCIENTIST_ROSTER: usize = 0xff0;
-/// Country-character pointer, serialized only when nonnull.
 pub const CHARACTERS: usize = SCIENTIST_ROSTER;
-/// CCountry incoming diplomatic-action queue pointer.
 pub const INCOMING_ACTION_QUEUE: usize = 0xff8;
-/// Current capital, i32; its location interpretation requires domain validation.
 pub const CAPITAL: usize = 0x1018;
-/// Original-capital candidate field; current acquisition is unverified.
 pub const ORIGINAL_CAPITAL: usize = 0x101c;
-/// Embedded convoy object requiring its primary vtable.
 pub const CONVOY_STATE: usize = 0x1200;
-/// Delayed-event vector; its additional country hook is excluded from hourly capture.
 pub const DELAYED_EVENTS: usize = 0x1290;
-/// CCountry ace roster vector.
 pub const ACES: usize = 0x12d8;
-/// Full type/id ship reference for pride of the fleet.
 pub const PRIDE_OF_THE_FLEET: usize = 0x250;
-/// Owned-state pointer array maintained by state ownership changes.
 pub const OWNED_STATES: usize = 0x478;
-/// Ordered core-state roster with append and compacting removal.
 pub const CORE_STATES: usize = 0x4a8;
-/// CCountry owned-state array capacity, i32 (`cpdx_array::CAPACITY` of the `OWNED_STATES` array).
 #[cfg(test)]
 pub const OWNED_STATE_CAPACITY: usize = 0x480;
-/// Owned-state count, i32; supply serialization requires a positive count.
 pub const OWNED_STATE_COUNT: usize = 0x484;
-/// Original raw tag, selected only when positive; otherwise tag queries
-/// use the current tag. Loading can write this on any slot, including reserved.
 pub const ORIGINAL_TAG: usize = 0x130c;
-/// Ship-count candidate, i32; independent writer coverage is unknown.
 #[cfg(test)]
 pub const SHIP_COUNT: usize = 0x1330;
-/// CCountry national-focus tree pointer.
 pub const FOCUS_TREE: usize = 0x1370;
-/// CCountry CNationalFocusProgress*.
 pub const FOCUS_PROGRESS: usize = 0x1380;
-/// Peace-conference participation byte. A set byte hides that country's
-/// unit sources from map stacks.
 pub const PEACE_CONFERENCE_PARTICIPANT: usize = 0x1458;
-/// CCountry dynamic major-country byte.
 pub const DYNAMIC_MAJOR: usize = 0x145a;
-/// CCountry cosmetic-tag MSVC string.
 pub const COSMETIC_TAG: usize = 0x1488;
-/// CCountry CCountryFuelStatus*.
 pub const FUEL_STATUS: usize = 0x1580;
-/// CCountry CCountryExperienceStatus*.
 pub const EXPERIENCE_STATUS: usize = 0x1588;
-/// CCountry operation-manager pointer.
 pub const OPERATION_MANAGER: usize = 0x15a8;
-/// Active-command-ability record vector.
 pub const ACTIVE_COMMAND_ABILITIES: usize = 0x15b8;
-/// CCountry preferred CCombatTactic*.
 pub const PREFERRED_TACTIC: usize = 0x15d0;
 
-/// CCountry division-template pointer vector.
-/// Nonzero forces every owned template locked.
 pub const LOCK_ALL_TEMPLATES: usize = 0x1b4;
 pub const DIVISION_TEMPLATES: usize = 0x1b8;
-/// CCountry scripted variables object pointer.
 pub const VARIABLES: usize = 0x218;
-/// Logistics-state pointer updated daily.
 pub const LOGISTICS_STATUS: usize = 0xf98;
-/// Equipment-market pointer supplying stockpile operands.
 pub const EQUIPMENT_MARKET_STATUS: usize = 0xfb8;
-/// CCountry CCountryCollaborationStatus*.
 pub const COLLABORATION_STATUS: usize = 0xfd8;
-/// Embedded radar pool.
 pub const RADARS_POOL: usize = 0x10f8;
-/// CCountry radar-group vector, the embedded pool's own `cradars_pool::GROUPS`.
 pub const RADAR_GROUPS: usize = RADARS_POOL + cradars_pool::GROUPS;
-/// Radar pool raw owner reference resolved before its controlled-state walk.
 pub const RADARS_POOL_COUNTRY: usize = RADARS_POOL + cradars_pool::COUNTRY;
-/// Resource-state pointer requiring vtable authentication.
 pub const RESOURCES: usize = 0x11f8;
-/// CCountry nuke-stockpile array pointer.
 pub const NUKES: usize = 0x1310;
-/// CCountry volunteer-host vector.
 pub const VOLUNTEER_HOSTS: usize = 0x1428;
-/// Volunteer-tally count, u32; writer ownership is unverified.
 #[cfg(any(test, feature = "test-support"))]
 pub const VOLUNTEER_TALLY_COUNT: usize = 0x144c;
-/// Operation-token manager pointer requiring owner-backlink authentication.
 pub const OPERATION_TOKEN_MANAGER: usize = 0x15b0;
-/// CCountry delayed-event vector count u32.
 pub const DELAYED_EVENTS_COUNT: usize = 0x129c;
 
-/// CCountry graphical-culture std::string.
 pub const GRAPHICAL_CULTURE: usize = 0x1028;
-/// Graphical-culture resolver joining name and pointer.
 pub const RESOLVE_GRAPHICAL_CULTURE_RVA: Rva = Rva(0x0075_a3e0);
-/// Loaded two-dimensional graphical-culture string used by equipment icon
-/// fallback selection. Saves omit it.
 pub const GRAPHICAL_CULTURE_2D: usize = 0x1050;
-/// CCountry land-theatre vector count u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const THEATRES_COUNT: usize = 0x174;
-/// CCountry fleet capacity u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const FLEETS_CAPACITY: usize = 0x280;
-/// CCountry fleet count u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const FLEETS_COUNT: usize = 0x284;
-/// CCountry division-vector capacity u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const DIVISIONS_CAPACITY: usize = 0x298;
-/// Division count read as u32 by rosters and i32 by score.
 pub const DIVISIONS_COUNT: usize = 0x29c;
-/// CCountry railway-unit roster data pointer.
 pub const RAILWAY_UNITS: usize = 0x2a8;
-/// Railway-unit capacity, i32; negative values are refused.
 pub const RAILWAY_UNITS_CAPACITY: usize = 0x2b0;
-/// Railway-unit count, i32; negative values are refused.
 pub const RAILWAY_UNITS_COUNT: usize = 0x2b4;
-/// CCountry controlled-state count u32.
 #[cfg(test)]
 pub const CONTROLLED_STATES_COUNT: usize = 0x46c;
-/// CCountry radar-group vector count, the embedded pool's own `cradars_pool::GROUPS_COUNT`.
 #[cfg(any(test, feature = "test-support"))]
 pub const RADAR_GROUPS_COUNT: usize = RADARS_POOL + cradars_pool::GROUPS_COUNT;
-/// CCountry volunteer-host count u32.
 pub const VOLUNTEER_HOSTS_COUNT: usize = 0x1434;
-/// Name, adjective and definite-name rebuild using cosmetic-first selection.
 pub const REBUILD_LOCALIZED_NAME_RVA: Rva = Rva(0x0075_e6d0);
-/// Persistent ability-record array.
 pub const ACTIVE_ABILITIES: usize = 0x15b8;
-/// Fog-network candidate count; hourly acquisition is unverified.
 pub const FOG_NETWORK_TABLE_COUNT: usize = 0x484;
-/// Controlled-province vector used by controller-keyed border rebuilds.
 pub const CONTROLLED_PROVINCES: usize = 0x428;
-/// Signed province count used by land score.
 pub const CONTROLLED_PROVINCES_COUNT: usize = CONTROLLED_PROVINCES + 0xc;
-/// Owned-province vector used by control recovery.
 pub const OWNED_PROVINCES: usize = 0x410;
-/// Per-host tallies paired with the volunteer-host vector.
 pub const VOLUNTEER_TALLIES: usize = 0x1440;
 
-/// Signed stability addition and clamp.
 pub const ADD_STABILITY_RVA: Rva = Rva(0x0071_9f40);
-/// Signed war-support addition and clamp.
 pub const ADD_WAR_SUPPORT_RVA: Rva = Rva(0x0071_b0b0);
-/// Daily manpower, politics and command-power update.
 pub const DAILY_UPDATE_RVA: Rva = Rva(0x0072_f220);
-/// Weekly stability update completed before the full tick returns.
 pub const WEEKLY_UPDATE_RVA: Rva = Rva(0x0076_0e30);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Collector-owned hourly conservation witness requiring political identity
-    /// and ruling-party commits without another balance read. An unreadable
-    /// witness withholds coverage independently of the Countries row.
     pub politics_witness: Option<(u32, Option<u32>)>,
-    /// Raw CCountryTag link id stored by this object, which need not equal its slot.
     pub id: u32,
-    /// Validated index of this object's canonical entry in the country roster.
     pub canonical_slot: u32,
     pub tag: Text<8>,
     pub political_power_raw: Option<i64>,
@@ -289,16 +149,10 @@ pub struct Row {
     pub war_support_raw: i64,
     pub convoys_raw: Option<i64>,
     pub peace_conference_participant: u8,
-    /// Stored manpower residual added to controlled-state pools.
     pub manpower_residual: i32,
     pub border_land_doctrine_level: Option<i32>,
 }
 
-/// The fixed-offset scalars of one country the Countries row reads, with
-/// their sizes, gathered in this order in one guarded scattered copy
-/// ([`Memory::copy_scattered_prefetched`]): the political status pointer,
-/// the manpower residual, command power, stability, war support, the peace
-/// conference byte, the convoy cache validity and the identity instance.
 const GATHERED: [(usize, usize); 8] = [
     (POLITICAL_STATUS, 8),
     (MANPOWER + crate::ccountry_manpower::RESIDUAL, 4),
@@ -318,8 +172,6 @@ const GATHERED_PEACE: usize = 5;
 const GATHERED_CONVOY_VALID: usize = 6;
 const GATHERED_SURRENDER_TARGET: usize = 7;
 
-/// One country's [`GATHERED`] copy: the fields it completed, the one it
-/// faulted on, if any, and the ones after it, which it never reached.
 struct Fields {
     values: [[u8; 8]; GATHERED.len()],
     copied: usize,
@@ -346,11 +198,6 @@ impl Fields {
         Self { values, copied }
     }
 
-    /// Field `index` of the country at `pointer`, as its own guarded read
-    /// would return it: the copied value; `None` for the field the copy
-    /// faulted on, which is not read again; a read of its own for a field
-    /// after it, which the copy never reached. The address overflow is the
-    /// row's own refusal, as before.
     fn get<T: crate::memory::Raw>(
         &self,
         memory: &impl Memory,
@@ -374,15 +221,10 @@ impl Fields {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LinkRow {
-    /// Raw link id: the index in the current-world country links.
     pub id: u32,
     pub canonical_slot: u32,
 }
 
-/// The country links and roster (`cgame_state::COUNTRY_LINKS` and
-/// `COUNTRIES`), headers and slots, into `out`: what resolves a raw country id
-/// to its country. Equal copies resolve every id alike. False when any part
-/// does not read.
 pub fn copy_links_and_roster(memory: &impl Memory, game_state: usize, out: &mut Vec<u8>) -> bool {
     out.clear();
     let [Some(links), Some(roster)] =
@@ -414,7 +256,6 @@ pub fn copy_links_and_roster(memory: &impl Memory, game_state: usize, out: &mut 
     true
 }
 
-/// An authenticated country object; its current native id may be an alias.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Country {
     pub pointer: usize,
@@ -422,61 +263,35 @@ pub struct Country {
     pub id: u32,
 }
 
-/// Ideology of the ruling party's first country leader.
 const LEADER_IDEOLOGY: usize = 0x140;
-/// Ideology subtype token appended to the country-name key.
 const IDEOLOGY_TOKEN: usize = 0x10;
 
-/// Hourly appearance of the country before the getter's subject rule:
-/// stored map color and naming operands absent from other hourly tables.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AppearanceRow<T = Text<256>, G = Text<8>, I = Text<128>> {
     pub country: u32,
-    /// Fresh header only; the collector copies positive-count subject payloads.
     pub subjects: Array,
-    /// Native f32 bit patterns in component order; no float conversion.
     pub rgba: [u32; 4],
-    /// [`CURRENT_UI_COLOR`]'s f32 bit patterns in component order.
     pub ui_rgba: [u32; 4],
-    /// Empty is ordinary; a fixed caller's storage shortage fails instead of truncating.
     pub cosmetic_tag: T,
-    /// Original tag naming a dynamic country whose canonical slot reaches the
-    /// database boundary; empty otherwise.
     pub name_tag: G,
-    /// The ruling party's first country leader's ideology token; empty without one.
     pub leader_ideology: I,
-    /// That leader's CCharacter id: `None` exactly when `leader_ideology` is
-    /// empty, or when the leader's character pointer or identity is unreadable.
     pub leader_character: Option<u32>,
-    /// [`GRAPHICAL_CULTURE`] prefixing runtime unit and equipment entity names;
-    /// empty when unset.
     pub graphical_culture: T,
-    /// [`GRAPHICAL_CULTURE_2D`]; empty when unset.
     pub graphical_culture_2d: T,
-    /// Raw overlord link; a positive value selects subject naming keys and
-    /// substitutions.
     pub overlord: i32,
-    /// [`OLD_NAME`], [`OLD_ADJECTIVE`] and [`OLD_DEFINITE_NAME`], exact bytes;
-    /// `None` when one is unreadable or exceeds fixed caller storage, leaving
-    /// the rest of the row readable. Owned worker text follows its native length.
     pub old_names: Option<[T; 3]>,
-    /// Exact signed `ORIGINAL_TAG` word. Positive selects the original string even when empty;
-    /// nonpositive selects the own tag in original-tag lookup.
     pub original_tag_reference: i32,
     original_tag_is_name_tag: bool,
     pub original_tag: Option<crate::csubject_relation::Name>,
     pub original_tag_failure: Option<&'static str>,
 }
 
-/// Session inputs the naming operands need: the link-indexed tag strings and The country database's
-/// first dynamic canonical slot.
 #[derive(Clone, Copy, Debug)]
 pub struct NamingContext {
     pub tags: Array,
     pub dynamic_boundary: u32,
 }
 
-/// Reads the dynamic tag boundary for [`walk_appearance`].
 pub fn dynamic_boundary(memory: &impl Memory, base: usize) -> Option<u32> {
     let database = read::<u64>(
         memory,
@@ -489,14 +304,12 @@ pub fn dynamic_boundary(memory: &impl Memory, base: usize) -> Option<u32> {
     )
 }
 
-/// The ruling party's first country leader, as [`AppearanceRow`] records it.
 #[derive(Default)]
 struct RulingLeader<I> {
     ideology: I,
     character: Option<u32>,
 }
 
-/// Naming ruling-party root; null politics or party means absence.
 fn ruling_party(
     memory: &impl Memory,
     base: usize,
@@ -530,7 +343,6 @@ fn ruling_party(
     Ok(Some(party))
 }
 
-/// Select the first country leader only when its list count is positive.
 fn first_party_leader(
     memory: &impl Memory,
     base: usize,
@@ -560,10 +372,6 @@ fn first_party_leader(
     Ok(Some(leader))
 }
 
-/// The ruling party's first leader, or none for null politics, party or
-/// leader list. One walk yields ideology and the parent character id.
-/// Serialization retains both. A null, unreadable or unauthenticated parent
-/// withholds only the character id, independently of ideology and appearance.
 fn ruling_leader<I: crate::capture_text::Value>(
     memory: &impl Memory,
     base: usize,
@@ -589,8 +397,6 @@ fn ruling_leader<I: crate::capture_text::Value>(
     if ideology == 0 {
         return Err("country leader has no ideology");
     }
-    // Naming and serialization consume the same exact stored string length,
-    // without a chosen key-length cap.
     let ideology = I::read(memory, at(ideology, IDEOLOGY_TOKEN)?, false).map_err(|_| {
         if I::GROWING {
             "country leader ideology unreadable or invalid"
@@ -609,7 +415,6 @@ fn ruling_leader<I: crate::capture_text::Value>(
     })
 }
 
-/// Naming selects the original tag only for a dynamic canonical slot.
 fn name_tag_for_original(
     country: Country,
     naming: NamingContext,
@@ -627,9 +432,6 @@ fn name_tag_for_original(
     }
 }
 
-/// Reserved country-slot naming operands in the caller's byte arena.
-/// Raw zero selects physical slot zero directly; ordinary country readers
-/// retain their positive-only checks.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReservedNamingRow {
     pub tag: crate::csubject_relation::Name,
@@ -639,23 +441,13 @@ pub struct ReservedNamingRow {
     pub group: Option<crate::csubject_relation::Name>,
     pub overlord: i32,
     pub autonomy: Option<crate::csubject_relation::Name>,
-    /// Stored name, definite-name and adjective lengths in bits zero through
-    /// two. Rebuilding writes all three; post-load begins at slot one.
     pub built: u8,
-    /// Original-tag input without the naming generator's dynamic-slot gate.
-    /// Positive references use live raw-index tag bytes, including empty strings;
-    /// original_tag_reference distinguishes these from nonpositive absence.
     pub original_tag: Option<crate::csubject_relation::Name>,
     pub original_tag_failure: Option<&'static str>,
     pub original_tag_reference: i32,
-    /// Exact signed dynamic-country boundary operand.
     pub dynamic_tag_boundary: i32,
-    /// Exact reserved `OWNED_STATE_COUNT` getter operand; guarded failure leaves every naming
-    /// operand and original reference independently available.
     pub owned_state_count: Option<i32>,
     pub owned_state_count_failure: Option<&'static str>,
-    /// Reserved diplomacy faction word (`cdiplomacy_status::FACTION`): zero is an observed null;
-    /// other values are authenticated full CFaction references. Independent of naming reads.
     pub faction: Option<u64>,
     pub faction_failure: Option<&'static str>,
 }
@@ -666,17 +458,10 @@ pub struct ReservedNamingWalk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
-    /// Acquisition-only control, consumed and cleared in the same callback.
     pub launch_states: Option<launch_sources::ReservedOwnedStates>,
-    /// Completed same-callback scalar attempts; clear before worker conversion.
-    /// Present even when the required naming prefix refuses.
     pub visibility: Option<ReservedVisibilityObservation>,
 }
 
-/// Actual reserved-country disclosure roots. Naming and reverse relation
-/// reads share original attempts, including faults. Prepare before fallible
-/// names; launch controls own the only reserved-root and count observation.
-/// Pointers stay private and callback-local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservedVisibilityObservation {
     root: Result<Country, &'static str>,
@@ -758,7 +543,6 @@ impl ReservedVisibilityObservation {
         self.root
     }
 
-    // The original naming prefix requires identity, but not faction/backlink.
     fn naming_diplomacy(&self) -> Result<usize, &'static str> {
         self.root?;
         let pointer = self
@@ -771,8 +555,6 @@ impl ReservedVisibilityObservation {
         Ok(pointer)
     }
 
-    /// Authenticated nonnull root for receiver-owned matrix reads. This never
-    /// retries an earlier diplomacy-pointer, identity or backlink failure.
     pub fn diplomacy(&self) -> Result<usize, &'static str> {
         let pointer = self.naming_diplomacy()?;
         if pointer == 0 {
@@ -783,7 +565,6 @@ impl ReservedVisibilityObservation {
         Ok(pointer)
     }
 
-    /// Zero is an observed null faction; a nonzero value is its full handle.
     pub fn faction(&self) -> Result<u64, &'static str> {
         self.diplomacy()?;
         self.faction
@@ -800,8 +581,6 @@ struct ReservedNamingSources {
 }
 
 impl ReservedNamingSources {
-    /// None marks nonpositive absence or reuses the generator original tag.
-    /// Only a positive original excluded by the generator needs another string.
     fn original_tag_source(
         &self,
         memory: &impl Memory,
@@ -871,7 +650,6 @@ fn original_tag_strings(memory: &impl Memory, game_state: usize) -> Result<Array
         .ok_or("country original tag strings unreadable or invalid")
 }
 
-/// Positive tags index live raw tag strings without translating country aliases.
 fn original_tag_descriptor(
     memory: &impl Memory,
     tags: Array,
@@ -883,7 +661,6 @@ fn original_tag_descriptor(
     crate::msvc_string::Descriptor::read(memory, address)
 }
 
-/// Actual slot zero, never a positive raw-reference/link resolution.
 pub fn read_reserved_root(
     memory: &impl Memory,
     base: usize,
@@ -892,9 +669,6 @@ pub fn read_reserved_root(
     read_reserved_observation(memory, base, game_state).result()
 }
 
-/// One pass's actual slot-zero selection and authentication. The selected
-/// address remains private even when authentication fails; it is never replay
-/// data or permission to skip a positive object without pointer equality.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ReservedCountryObservation {
     pointer: Option<usize>,
@@ -915,7 +689,6 @@ impl ReservedCountryObservation {
         self.result
     }
 
-    /// Legacy Result-only sources prove no selected pointer on failure.
     pub(crate) fn from_result(result: Result<Country, &'static str>) -> Self {
         Self {
             pointer: result.ok().map(|country| country.pointer),
@@ -923,18 +696,11 @@ impl ReservedCountryObservation {
         }
     }
 
-    /// Compare an already selected positive pointer with this pass's actual
-    /// reserved selection. Equal authenticated objects are skipped; an equal
-    /// failed selection preserves its first error without repeating identity
-    /// reads. A different or null pointer proves nothing. The caller must keep
-    /// this observation inside its original module/state/acquisition scope.
-    /// This makes no native read and never exposes the selected address.
     pub fn physical_alias(self, pointer: usize) -> Option<Result<(), &'static str>> {
         (pointer != 0 && self.pointer == Some(pointer)).then(|| self.result.map(|_| ()))
     }
 }
 
-/// Optional capabilities only: no header, selector or identity read occurs.
 pub(crate) fn cached_reserved_observation(
     memory: &impl Memory,
     base: usize,
@@ -949,8 +715,6 @@ pub(crate) fn cached_reserved_observation(
         })
 }
 
-/// The original selecting/authentication path, retaining the exact selected
-/// pointer when a later identity read fails. It allocates and retries nothing.
 pub fn read_reserved_observation(
     memory: &impl Memory,
     base: usize,
@@ -1058,7 +822,6 @@ fn reserved_naming_sources_from_root(
             .ok_or("reserved naming object identity mismatch")
     };
     let country = root.pointer;
-    // Raw zero selects content database slot zero, even with a live game state.
     let database = engine_sites::at(base, crate::ccountry_database::SINGLETON_RVA)
         .ok_or("reserved naming address overflow")
         .and_then(pointer);
@@ -1158,7 +921,6 @@ fn reserved_naming_sources_from_root(
     let cosmetic = Descriptor::read(memory, at(country, COSMETIC_TAG)?)?;
     let party = ruling_party(memory, base, country)?;
     let (ideology, group) = if let Some(party) = party {
-        // Naming follows the ruling party's ideology-group pointer.
         let group = pointer(at(party, cpolitical_party::IDEOLOGY_GROUP)?)?;
         object(group, crate::cideology_group::VTABLE_RVA)?;
         let group = Descriptor::read(memory, at(group, crate::cideology_group::TOKEN)?)?;
@@ -1187,7 +949,6 @@ fn reserved_naming_sources_from_root(
         }
         let overlord = read::<i32>(memory, at(diplomacy, crate::cdiplomacy_status::OVERLORD)?)
             .ok_or("reserved naming overlord unreadable")?;
-        // Naming follows diplomacy, selected autonomy status and its definition.
         let status = pointer(at(
             diplomacy,
             crate::cdiplomacy_status::CURRENT_AUTONOMY_STATUS,
@@ -1236,8 +997,6 @@ fn reserved_naming_sources_from_root(
     })
 }
 
-/// Live string lengths, without reading heap payloads. The attach and idle
-/// sizing passes use the same authenticated roots as [`read_reserved_naming`].
 pub fn read_reserved_naming_demand(
     memory: &impl Memory,
     base: usize,
@@ -1245,7 +1004,6 @@ pub fn read_reserved_naming_demand(
 ) -> Result<usize, &'static str> {
     let sources = reserved_naming_sources(memory, base, game_state)?;
     let prefix = sources.demand()?;
-    // An optional getter refusal must not discard the known prefix demand.
     Ok(sources
         .original_tag_source(memory, game_state)
         .ok()
@@ -1254,10 +1012,6 @@ pub fn read_reserved_naming_demand(
         .unwrap_or(prefix))
 }
 
-/// Shared naming arena demand: reserved naming plus positive originals' bytes.
-/// Optional metadata refusals preserve
-/// the known prefix and other readable countries' demand; actual capture still
-/// records their failures independently. No payload is read during sizing.
 pub fn read_country_naming_demand(
     memory: &impl Memory,
     base: usize,
@@ -1338,8 +1092,6 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
     mut names: crate::walk::Buffer<'_, u8>,
     mut journal: Option<&mut crate::raw_country_observations::Journal>,
 ) -> ReservedNamingWalk {
-    // Observe `OWNED_STATE_COUNT` before any fallible naming work. Both success and failure belong
-    // to this one root observation; the vector consumes it below.
     let launch_states = launch_sources::ReservedOwnedStates::new(memory, base, game_state);
     let visibility = ReservedVisibilityObservation::from_root(memory, base, launch_states.root());
     let mut required_bytes = 0;
@@ -1388,8 +1140,6 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
                 used = end;
             }
         }
-        // Every established operand is owned before this optional getter is
-        // attempted. Its failure preserves those spans and byte demand.
         let original_tag = (|| {
             let Some(source) = match journal.as_deref_mut() {
                 Some(journal) => sources.original_tag_source_observed(memory, game_state, journal),
@@ -1427,13 +1177,7 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
             used = end;
             Ok::<_, &'static str>(span)
         })();
-        // Test the signed country word even for a raw-zero reserved occurrence.
-        // Reuse the authenticated prefix root; do not interpret an array header or
-        // turn unreadable bytes into absence.
         let owned_state_count = launch_states.count();
-        // Reserved-country comparison uses the stored faction pointer. Reuse the
-        // authenticated country and diplomacy roots; missing reached diplomacy
-        // is a read failure rather than a null faction.
         let faction = visibility.faction();
         Ok((
             ReservedNamingRow {
@@ -1476,8 +1220,6 @@ pub fn read_reserved_naming_observed_inner<M: Memory>(
     }
 }
 
-/// Reauthenticates a borrowed census entry before reading its appearance.
-/// The caller supplies the current callback's country census.
 #[cfg(test)]
 pub fn read_appearance(
     memory: &impl Memory,
@@ -1513,7 +1255,6 @@ fn read_appearance_observed_inner<
     {
         return Err("country appearance identity changed");
     }
-    // One read spans the primary colour and the UI colour after it.
     const _: () = assert!(CURRENT_UI_COLOR == CURRENT_PRIMARY_COLOR + 0x20);
     let bytes = read::<[u8; 48]>(memory, at(CURRENT_PRIMARY_COLOR)?)
         .ok_or("country appearance colour unreadable")?;
@@ -1527,9 +1268,6 @@ fn read_appearance_observed_inner<
             "country cosmetic tag unreadable, invalid or exceeds 256 bytes"
         }
     })?;
-    // The dynamic-slot naming gate and positive original-tag gate are
-    // independent. Loading can write any slot's original tag; these getters
-    // need not agree for recorded content.
     let original = at(ORIGINAL_TAG)
         .and_then(|address| read::<i32>(memory, address).ok_or("original tag unreadable"));
     if let Some(journal) = journal.as_deref_mut() {
@@ -1617,10 +1355,6 @@ fn read_appearance_observed_inner<
     })
 }
 
-/// Append positive `ORIGINAL_TAG` references' exact tag_string bytes to an existing naming arena,
-/// after every established appearance/subject prefix. Selection comes from each freshly
-/// authenticated AppearanceRow; no country pointer or scalar is followed again. Empty spans cover
-/// both nonpositive absence and actual positive empty strings; the signed reference separates them.
 pub fn capture_appearance_original_tags(
     memory: &impl Memory,
     game_state: usize,
@@ -1765,16 +1499,12 @@ pub fn walk_appearance_observed(
         Some(journal),
     )
 }
-/// The globals of one [`walk_appearance_carrying`] beside each
-/// country: the naming context every row's name operands read, and the
-/// country link header, whose count bounds the native ids.
 #[derive(Clone, Copy, Debug)]
 pub struct AppearanceGlobals {
     pub naming: NamingContext,
     pub links: Array,
 }
 
-/// A worker-owned appearance row.
 pub type OwnedAppearanceRow = AppearanceRow<
     crate::capture_text::Owned,
     crate::capture_text::Owned,
@@ -1782,10 +1512,6 @@ pub type OwnedAppearanceRow = AppearanceRow<
 >;
 
 impl OwnedAppearanceRow {
-    /// Overwrites this row with `held`, an earlier complete read of the same
-    /// country, reusing this row's text storage; `original_tag` keeps the
-    /// held span, which the caller places. On a refusal (text storage cannot
-    /// grow) the row is partly written and must be read instead.
     pub fn copy_held(&mut self, held: &Self) -> Result<(), &'static str> {
         fn text(
             into: &mut crate::capture_text::Owned,
@@ -1823,11 +1549,6 @@ impl OwnedAppearanceRow {
     }
 }
 
-/// [`walk_appearance_observed`], except that `carry` is offered
-/// each country, in walk order, with its row's storage first: when it fills
-/// the row from an earlier read it proved current and returns true, nothing
-/// of that country is read or journalled. Every other country is read as
-/// there.
 #[allow(clippy::type_complexity)]
 pub fn walk_appearance_carrying(
     memory: &impl Memory,
@@ -1940,10 +1661,6 @@ fn walk_appearance_carrying_inner<
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Callback-borrowed results of a complete country authentication census.
-/// Construction stays inside the engine's verified country-memory adapter;
-/// Positive aliases retain their authenticated object; proved reserved aliases
-/// have no published positive object.
 #[derive(Clone, Copy)]
 pub struct AuthenticatedRoster<'a> {
     slots: &'a [Option<Country>],
@@ -1955,29 +1672,15 @@ impl<'a> AuthenticatedRoster<'a> {
         Self { slots, arrays }
     }
 
-    /// Every country-table slot, the sentinel included: the authenticated
-    /// object, including a positive alias's canonical object. `None` means no
-    /// published positive object (null or excluded reserved alias), never proof
-    /// of a physical zero occurrence.
     pub fn slots(&self) -> &'a [Option<Country>] {
         self.slots
     }
 
-    /// The country table and link headers the census read.
     pub fn arrays(&self) -> [Array; 2] {
         self.arrays
     }
 }
 
-/// An owned copy of one callback's [`AuthenticatedRoster`], so a replay of
-/// reads recorded in the same pass can resolve countries the way the pass
-/// did, off the game thread. Capturing copies into existing capacity and
-/// never allocates; capacity grows off the game thread.
-///
-/// Lifetime: a copy serves only the module and game state it was captured
-/// for, and only the pass that captured it. Every capture or clear replaces
-/// it, and the owner clears it before each pass, so nothing carries across
-/// hours.
 #[derive(Debug, Default)]
 pub struct RosterSnapshot {
     slots: Vec<Option<Country>>,
@@ -2005,8 +1708,6 @@ impl RosterSnapshot {
         self.reserved = None;
     }
 
-    /// Copies `roster` for `base` and `game_state`, or leaves nothing and
-    /// records the demand when the capacity is short.
     pub fn capture(
         &mut self,
         roster: AuthenticatedRoster<'_>,
@@ -2023,16 +1724,12 @@ impl RosterSnapshot {
         true
     }
 
-    /// The captured roster, only for the module and game state it was
-    /// captured for.
     pub fn roster(&self, base: usize, game_state: usize) -> Option<AuthenticatedRoster<'_>> {
         self.captured
             .filter(|(module, state, _)| (*module, *state) == (base, game_state))
             .map(|(_, _, arrays)| AuthenticatedRoster::new(&self.slots, arrays))
     }
 
-    /// Independent scalar: even a short or unavailable positive census keeps
-    /// the actual slot-zero result. Install after positive capture clears us.
     #[cfg(test)]
     pub fn capture_reserved(
         &mut self,
@@ -2078,7 +1775,6 @@ impl RosterSnapshot {
             .map(|(_, _, root)| root)
     }
 
-    /// Slots the last capture needed, whether or not it fitted.
     pub fn required(&self) -> usize {
         self.required
     }
@@ -2087,7 +1783,6 @@ impl RosterSnapshot {
         self.slots.capacity()
     }
 
-    /// Off the game thread: room for `slots`. Only grows.
     pub fn reserve(&mut self, slots: usize) -> std::io::Result<()> {
         let additional = slots.saturating_sub(self.slots.len());
         crate::allocation::reserve_exact(&mut self.slots, additional)
@@ -2098,7 +1793,6 @@ impl RosterSnapshot {
     }
 }
 
-/// Allocation-free access to the country table and its reference links.
 pub struct Reader<'a, M: Memory> {
     memory: &'a M,
     countries: Array,
@@ -2113,9 +1807,6 @@ pub struct Reader<'a, M: Memory> {
 impl<'a, M: Memory> Reader<'a, M> {
     pub fn new(memory: &'a M, base: usize, game_state: usize) -> Result<Self, &'static str> {
         let authenticated = memory.authenticated_countries(base, game_state);
-        // The callback's complete census already read and validated both
-        // headers. Reuse only that scoped observation; ordinary field reads
-        // and links absent from the census still go to the supplied memory.
         let [countries, links] = if let Some(roster) = authenticated {
             roster.arrays
         } else {
@@ -2174,20 +1865,14 @@ impl<'a, M: Memory> Reader<'a, M> {
         root
     }
 
-    /// The country and link headers this reader bounds every lookup with:
-    /// the callback census's observation when reused, otherwise fresh reads.
     pub fn arrays(&self) -> [Array; 2] {
         [self.countries, self.links]
     }
 
-    /// Includes the reserved sentinel; country-table iteration starts at one.
     pub fn count(&self) -> u32 {
         self.countries.count
     }
 
-    /// The canonical country at `slot` when this pass's authenticated census
-    /// already holds it, without reading anything: the address of a later
-    /// slot a walk may hint ahead of time, never a row or an authentication.
     pub fn known(&self, slot: u32) -> Option<Country> {
         self.authenticated?
             .slots
@@ -2197,14 +1882,12 @@ impl<'a, M: Memory> Reader<'a, M> {
             .filter(|country| country.canonical_slot == slot)
     }
 
-    /// Skips null slots and authenticated aliases, publishing each object once.
     pub fn at(&self, slot: u32) -> Result<Option<Country>, &'static str> {
         Ok(self
             .read_physical_at(slot)?
             .filter(|country| country.canonical_slot == slot))
     }
 
-    /// Resolves a positive raw reference and preserves the object's native id.
     pub fn resolve(&self, raw: u32) -> Result<Country, &'static str> {
         let canonical_slot = self.canonical(raw)?;
         let country = self
@@ -2216,8 +1899,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(country)
     }
 
-    /// The canonical country of a `CCountry*` another object stores: its
-    /// native id (`+ID`) resolved, which must lead back to this object.
     pub fn of_pointer(&self, pointer: usize) -> Result<Country, &'static str> {
         if pointer == 0 {
             return Err("country pointer is null");
@@ -2241,11 +1922,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("country pointer unreadable or outside country table")
     }
 
-    /// The raw reference's link entry, separating an unlinked id from a fault.
-    /// `Ok(None)` is only a readable zero entry: an id the engine has not filed
-    /// against any country slot. An unreadable entry, an entry outside the
-    /// country table and a zero id remain errors, so a torn link table cannot be
-    /// mistaken for an absence.
     pub fn link(&self, raw: u32) -> Result<Option<u32>, &'static str> {
         if raw == 0 {
             return Err("country id is zero");
@@ -2254,9 +1930,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .links
             .element(raw, 4)
             .ok_or("country link unreadable or outside country table")?;
-        // read_at(slot) authenticated this exact link before publishing every
-        // non-null roster entry, including alias slots. A null roster slot
-        // proves nothing about its link; it retains the original native read.
         let known = self
             .authenticated
             .and_then(|roster| roster.slots.get(raw as usize))
@@ -2447,7 +2120,6 @@ fn movement_tuple(
         movement_array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS)?,
         slot,
     )?;
-    // The optional relation lookup permits an absent tuple; the required lookup does not.
     if tuple != 0 {
         movement_auth(memory, base, tuple, crate::crelation_status::VTABLE_RVA)?;
         if movement_pointer(memory, tuple, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy
@@ -2480,8 +2152,6 @@ fn movement_active_war(
     Ok(movement_field::<u8>(memory, war, crate::crelation::RETIRED)? == 0)
 }
 
-/// Current-state modifier selection from exact owner and target identities.
-/// Read current relation caches without game callbacks or daily-sliced values.
 pub fn movement_friendly(
     memory: &impl Memory,
     base: usize,
@@ -2502,8 +2172,6 @@ pub fn movement_friendly(
     if movement_active_war(memory, base, tuple)? {
         return Ok(false);
     }
-    // This branch reads its direct relation word and skips the independent
-    // war-join operand.
     if movement_pointer(memory, tuple, 0x2a0)? != 0 {
         return Ok(true);
     }
@@ -2529,7 +2197,6 @@ pub fn movement_friendly(
     if subject == 0 {
         return Ok(false);
     }
-    // Both endpoint comparisons require the expected relation token first.
     if movement_field::<u32>(memory, subject, crate::csubject_relation::TYPE_ID)?
         != crate::csubject_relation::TYPE_VALUE
     {
@@ -2548,12 +2215,6 @@ pub fn movement_friendly(
     )?)
 }
 
-/// The raw `river_crossing_factor_against` entry of `owner_raw`'s relation
-/// towards `target_raw`, which a land river crossing into a province
-/// `target_raw` controls adds to the commander's river crossing factor: the
-/// owner's diplomacy relation matrix at the target's canonical slot (slot zero
-/// for a target at or below zero, or unlinked). `None` is a null diplomacy, a
-/// null relation or an absent entry.
 pub fn river_crossing_against(
     memory: &impl Memory,
     base: usize,
@@ -2566,7 +2227,6 @@ pub fn river_crossing_against(
     river_crossing_against_with(memory, base, &countries, owner, target_raw)
 }
 
-/// [`river_crossing_against`] with the hour's reader and the resolved owner.
 pub fn river_crossing_against_with(
     memory: &impl Memory,
     base: usize,
@@ -2612,7 +2272,6 @@ pub fn river_crossing_against_with(
     Ok(value.present.then_some(value.raw))
 }
 
-/// Active-war predicate preserving self and alias exclusion.
 pub fn movement_enemy(
     memory: &impl Memory,
     base: usize,
@@ -2647,9 +2306,6 @@ fn movement_province(
     Ok(id)
 }
 
-// Capital-area selection chooses the largest owner-controlled area touching the capital state;
-// strict count comparison retains the first area on ties. It does not select
-// a capital-province pointer or replace controller equality with ownership.
 fn movement_capital_area(
     memory: &impl Memory,
     base: usize,
@@ -2701,9 +2357,6 @@ fn movement_capital_area(
     Ok(best)
 }
 
-// Bounded hash-table lookups preserve each table's stride, occupancy, key
-// and value fields. Both layouts use acquired data, mask and maximum
-// distance controls; sentinels never supply values.
 fn movement_hash_value(
     memory: &impl Memory,
     object: usize,
@@ -2761,10 +2414,6 @@ fn movement_hash_value(
     Err("movement supply hash probe did not terminate")
 }
 
-/// Passive access after the army's early-true bypass. The caller supplies
-/// the effective owner selected by its signed-positive override and the
-/// actual location's controller area. Share by owner, area and hour rather
-/// than edge. Current supply caches are consumed without refresh.
 pub fn has_core_supply_access(
     memory: &impl Memory,
     base: usize,
@@ -2778,8 +2427,6 @@ pub fn has_core_supply_access(
     has_core_supply_access_direct(memory, base, state, owner_raw, area)
 }
 
-/// Unshared native predicate for pass-final independent verification and the
-/// default reader. Never consults the optional derived-result capability.
 pub fn has_core_supply_access_direct(
     memory: &impl Memory,
     base: usize,
@@ -2807,9 +2454,7 @@ pub fn has_core_supply_access_direct(
         system.pointer,
         crate::ccountry_supply_system::COMPANION,
     )?;
-    // Visit the controller area's complete province-pointer array.
     let members = movement_array(memory, area, 0xb0)?;
-    // Resolve the strategic navy manager, then its anchor hash.
     let anchors = movement_pointer(memory, state, cgame_state::STRATEGIC_NAVY_MANAGER)?;
     for i in 0..members.count {
         let province = movement_element(memory, members, i)?;
@@ -2823,12 +2468,6 @@ pub fn has_core_supply_access_direct(
     Ok(false)
 }
 
-/// Records aliases without replacing the engine's raw country references. Link
-/// id zero is reserved; a zero mapping is unresolved and has no row. Every
-/// nonzero mapping must resolve to a non-null, validated canonical CCountry.
-/// An unreadable or invalid mapping makes the table unavailable, including
-/// beyond output capacity. Capacity limits storage, never allocates, and counts
-/// the remaining valid mappings for the next buffer size.
 pub fn walk_links(
     memory: &impl Memory,
     base: usize,
@@ -3034,10 +2673,6 @@ fn walk_observed_inner<M: Memory>(
         if tag.len == 0 {
             return Err("country tag empty");
         }
-        // The country's own scalars in one guarded scattered copy, in
-        // the order the row checks them ([`Fields::get`]): the field it
-        // faults on refuses with its own reason and is not read again,
-        // and a field after it is read alone where the row reaches it.
         let fields = Fields::gather(memory, pointer);
         let status = fields
             .get::<u64>(memory, pointer, GATHERED_STATUS)?
@@ -3198,8 +2833,6 @@ fn walk_observed_inner<M: Memory>(
             let Some(country) = original? else {
                 continue;
             };
-            // Native aliases and reserved occurrences authenticate coverage,
-            // while the row is published once.
             if slot != country.canonical_slot {
                 continue;
             }
@@ -3226,9 +2859,6 @@ fn walk_observed_inner<M: Memory>(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Ordered sent-volunteer handles. Sending or creating a deployed general
-/// army appends; return, unit deletion and daily cleanup swap-remove.
-/// Commands and deletion can change it within a day, requiring hourly capture.
 pub const SENT_VOLUNTEERS: usize = 0x310;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -3262,7 +2892,6 @@ pub fn walk_sent_volunteers_buffer(
                 .checked_add(SENT_VOLUNTEERS)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("sent volunteers vector unreadable or invalid")?;
-            // Serialization retains every ordered sent reference.
             output.ensure(
                 len.checked_add(array.count as usize)
                     .ok_or("sent volunteer demand overflow")?,
@@ -3301,19 +2930,12 @@ pub fn walk_sent_volunteers_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One position of a country's volunteer-host vector in native order.
-/// Position is part of the key: walkers visit every occurrence and loading
-/// appends without deduplication, so repeated hosts remain separate positions.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct VolunteerHostRow {
-    /// Raw CCountry link id of the country that owns the vector.
     pub country: u32,
     pub position: u32,
-    /// Raw country reference exactly as `VOLUNTEER_HOSTS` stores it, resolved by nobody here.
     pub host: u32,
-    /// Paired tally word, re-derived from the sender's armies.
     pub deployed_divisions: i32,
-    /// Effective directed Air volunteer-capacity modifier, independently unavailable.
     pub air_capacity_modifier: Option<i64>,
 }
 
@@ -3330,7 +2952,6 @@ pub fn walk_volunteer_hosts_buffer(
     walk_volunteer_hosts_with_air_buffer(memory, base, game_state, output, false)
 }
 
-/// The asynchronous worker opts into demanded relation modifier reads.
 pub fn walk_volunteer_hosts_with_air_buffer(
     memory: &impl Memory,
     base: usize,
@@ -3359,13 +2980,10 @@ pub fn walk_volunteer_hosts_with_air_buffer(
             if hosts.count != tallies.count {
                 return Err("volunteer host and tally vectors have different counts");
             }
-            // Serialization checks and writes both complete paired vectors.
             output.ensure(
                 len.checked_add(hosts.count as usize)
                     .ok_or("volunteer host demand overflow")?,
             )?;
-            // Both vectors are copied whole in bounded batches rather than
-            // one guarded read per position.
             const BATCH: usize = 64;
             let mut host_batch = [0_u32; BATCH];
             let mut tally_batch = [0_u32; BATCH];
@@ -3424,8 +3042,6 @@ pub fn walk_volunteer_hosts_with_air_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Requested-key read for one already demanded sender/host occurrence.
-/// Failure is independent of the host/tally serialization.
 fn volunteer_air_modifier(
     memory: &impl Memory,
     base: usize,
@@ -3489,47 +3105,30 @@ fn volunteer_air_modifier(
     )
 }
 
-/// Country naval and supply operands with retained controlled-state count.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CounterInputsRow {
     pub country: u32,
     pub pride_of_the_fleet: u64,
     pub owned_state_count: i32,
-    /// [`CONTROLLED_STATES`]' count.
     pub controlled_state_count: i32,
-    /// Full handle of the first division slot, zero for an empty roster or null
-    /// slot. Naval-invasion route checks use it when order and group assign none.
     pub first_division: u64,
-    /// Owned, controlled and core state spans in the caller-owned arena.
     pub state_rosters: Option<[RosterSpan; 3]>,
-    /// Army and navy leader spans in the caller-owned arena.
     pub leader_rosters: Option<[RosterSpan; 2]>,
     pub sent_expeditionaries: Option<RosterSpan>,
-    /// The optional roster inputs' own refusal; scalar operands stand.
     pub roster_reason: Option<&'static str>,
     pub neighbors: Option<RosterSpan>,
     pub mio_policies: Option<RosterSpan>,
     pub neighbor_reason: Option<&'static str>,
     pub policy_reason: Option<&'static str>,
-    /// The accumulator's ([`MODIFIER_ACCUMULATOR`]) raw entries for
-    /// [`ATTACK_MODIFIER_KEYS`], `None` for an absent key; the outer `None`
-    /// is this field's own read refusal.
     pub attack_modifiers: Option<[Option<i64>; 2]>,
-    /// The same accumulator's raw entries for [`MOVEMENT_MODIFIER_KEYS`], refused
-    /// alone.
     pub movement_modifiers: Option<[Option<i64>; MOVEMENT_MODIFIER_KEYS.len()]>,
     pub recruitment_modifiers: Option<[Option<i64>; 4]>,
-    /// Air map terms projected from the same complete raw accumulator census.
     pub air_modifiers: Option<[Option<i64>; AIR_MODIFIER_KEYS.len()]>,
-    /// Additional combat terms from the same complete accumulator copy.
     pub air_combat_modifiers: Option<[Option<i64>; AIR_COMBAT_MODIFIER_KEYS.len()]>,
-    /// Mine penalty modifier forwarded from the same complete accumulator census.
     pub mines_effect_reduction: Option<Option<i64>>,
     pub naval_detection: Option<Option<i64>>,
 }
 
-/// Detection mission factors, home defence and power projection, volunteer
-/// capacity, bomber/night/weather and carrier-night terms, then fuel consumption.
 pub const AIR_MODIFIER_KEYS: [u32; 10] = [
     crate::modifier_keys::AIR_INTERCEPT_DETECTION,
     crate::modifier_keys::AIR_SUPERIORITY_DETECTION,
@@ -3543,7 +3142,6 @@ pub const AIR_MODIFIER_KEYS: [u32; 10] = [
     crate::modifier_keys::AIR_FUEL_CONSUMPTION_FACTOR,
 ];
 
-/// Home defence and power projection already belong to AIR_MODIFIER_KEYS.
 pub const AIR_COMBAT_MODIFIER_KEYS: [u32; 7] = [
     crate::modifier_keys::AIR_SUPERIORITY_EFFICIENCY,
     crate::modifier_keys::AIR_INTERCEPT_EFFICIENCY,
@@ -3554,10 +3152,6 @@ pub const AIR_COMBAT_MODIFIER_KEYS: [u32; 7] = [
     crate::modifier_keys::AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR,
 ];
 
-/// The country terms of the movement speed (army speed, armour speed, out-of-supply
-/// and special-forces out-of-supply factors, attack speed and retreat speed) and of the
-/// attrition hover (attrition, winter and heat attrition factors), in the
-/// accumulator's ascending key order.
 pub const MOVEMENT_MODIFIER_KEYS: [u32; 10] = [
     crate::modifier_keys::ARMY_SPEED_FACTOR,
     crate::modifier_keys::ARMY_ARMOR_SPEED_FACTOR,
@@ -3571,8 +3165,6 @@ pub const MOVEMENT_MODIFIER_KEYS: [u32; 10] = [
     crate::modifier_keys::ARMY_RETREAT_SPEED_FACTOR,
 ];
 
-/// [`MOVEMENT_MODIFIER_KEYS`] and [`ATTACK_MODIFIER_KEYS`] merged in ascending order,
-/// so one census of the accumulator reads both.
 pub const RECRUITMENT_MODIFIER_KEYS: [u32; 4] = [
     crate::modifier_keys::MOBILIZATION_SPEED,
     crate::modifier_keys::CONSCRIPTION,
@@ -3580,7 +3172,6 @@ pub const RECRUITMENT_MODIFIER_KEYS: [u32; 4] = [
     crate::modifier_keys::NON_CORE_MANPOWER,
 ];
 
-/// All requested map keys, in ascending order, from one unchanged census.
 const COUNTER_MODIFIER_KEYS: [u32; MOVEMENT_MODIFIER_KEYS.len()
     + ATTACK_MODIFIER_KEYS.len()
     + AIR_MODIFIER_KEYS.len()
@@ -3623,7 +3214,6 @@ const COUNTER_MODIFIER_KEYS: [u32; MOVEMENT_MODIFIER_KEYS.len()
     crate::modifier_keys::ARMY_RETREAT_SPEED_FACTOR,
 ];
 
-/// The raw entries of `keys` (each in [`COUNTER_MODIFIER_KEYS`]) from one merged census.
 fn counter_entries<const N: usize>(
     values: &[Option<i64>; COUNTER_MODIFIER_KEYS.len()],
     keys: &[u32; N],
@@ -3636,16 +3226,11 @@ fn counter_entries<const N: usize>(
     })
 }
 
-/// `land_night_attack` (0x103) and `land_bunker_effectiveness_factor` (0x272):
-/// the country terms of the selected army's attack list (night attack for the
-/// division's owner, bunker effectiveness for the target's controller), in the
-/// accumulator's ascending key order.
 pub const ATTACK_MODIFIER_KEYS: [u32; 2] = [
     crate::modifier_keys::LAND_NIGHT_ATTACK,
     crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
 ];
 
-/// Worker-owned capture grows from the original country and child headers.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_counter_inputs_with_effect_rosters_observed<'a, M: Memory>(
     memory: &'a M,
@@ -3668,12 +3253,6 @@ pub fn walk_counter_inputs_with_effect_rosters_observed<'a, M: Memory>(
     )
 }
 
-/// A caller's offer to carry a country of
-/// [`walk_counter_inputs_carried`]: given the authenticated country
-/// and this read's roster arenas, it returns the row of an earlier complete
-/// read it proved current, with that read's rosters placed in the arenas
-/// ([`CarriedRosters::append`]) and the row's spans naming them, or `None`
-/// to have the country read.
 pub type CounterCarry<'a> = dyn for<'r, 's, 'e, 'f> FnMut(
         Country,
         &'r mut CounterRosters<'s>,
@@ -3681,11 +3260,6 @@ pub type CounterCarry<'a> = dyn for<'r, 's, 'e, 'f> FnMut(
     ) -> Option<CounterInputsRow>
     + 'a;
 
-/// [`walk_counter_inputs_with_effect_rosters_observed`], except that
-/// `carry` is offered each country in walk order once its identity (the
-/// vtable and `+ID` the walk checks before any field) is confirmed: a
-/// carried country's row stands for all of its reads. Every other country is
-/// read there, in the same order and with the same outcomes and first fault.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_counter_inputs_carried<'a, M: Memory>(
     memory: &'a M,
@@ -3760,8 +3334,6 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                 }
                 Ok(())
             };
-            // A carried country's row stands for every read below; its
-            // identity is confirmed first, as for a country read.
             let mut identified = false;
             if fits
                 && let Some(carry) = carry.as_deref_mut()
@@ -3776,9 +3348,6 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                     continue;
                 }
             }
-            // The country's fields below are independent of one another:
-            // hint their lines first so their misses overlap. Hints read
-            // nothing, so rows and the first fault are unchanged.
             let hint = |offset: usize, len| {
                 memory.prefetch(country.pointer.wrapping_add(offset), len);
             };
@@ -3862,7 +3431,6 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                     .ok_or("country counter unread row count overflow")?;
                 continue;
             }
-            // One complete accumulator census answers all requested map entries.
             let mut merged =
                 [crate::modifier_accumulator::Value::default(); COUNTER_MODIFIER_KEYS.len()];
             let merged = crate::modifier_accumulator::lookup_many(
@@ -3929,13 +3497,10 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One entry of a country's civil-war array ([`CIVIL_WAR_TARGETS`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CivilWarRow {
     pub country: u32,
-    /// Position in the array; the engine's own (sorted) order.
     pub ordinal: u32,
-    /// The raw tag reference as stored.
     pub target: u32,
 }
 
@@ -3943,10 +3508,6 @@ pub fn count_civil_wars(memory: &impl Memory, base: usize, game_state: usize) ->
     walk_civil_wars_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Every canonical country's civil-war array, in native order; countries
-/// with an empty array have no rows. A country whose entries do not all fit
-/// is counted whole from its header, as is every later one, so an empty
-/// `output` yields the live total as `unread_rows`.
 pub fn walk_civil_wars(
     memory: &impl Memory,
     base: usize,
@@ -4039,16 +3600,12 @@ fn walk_civil_wars_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Synthetic flat address space with a large authentic country table, for
-/// readers that must work well past any country count we might have chosen.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod synthetic {
     use super::*;
     use crate::memory::SliceMemory;
 
-    /// Game state sits at `START`; slots 1..=n hold one canonical country
-    /// each whose raw id equals its slot. Everything is little-endian.
     pub struct World {
         pub bytes: Vec<u8>,
         pub module: usize,
@@ -4088,7 +3645,6 @@ pub mod synthetic {
         pub fn object(&self, slot: u32) -> usize {
             self.objects + slot as usize * self.object_size
         }
-        /// Zeroed space appended after everything allocated so far.
         pub fn alloc(&mut self, size: usize) -> usize {
             let address = (START + self.bytes.len() + 0xf) & !0xf;
             self.bytes.resize(address + size - START, 0);
@@ -4103,7 +3659,6 @@ pub mod synthetic {
         pub fn u64(&mut self, address: usize, value: u64) {
             self.put(address, &value.to_le_bytes());
         }
-        /// CPdxArray header with capacity == count.
         pub fn array(&mut self, address: usize, data: usize, count: u32) {
             self.u64(address, data as u64);
             self.u32(address + 8, count);
@@ -4333,8 +3888,6 @@ mod tests {
         assert_eq!(root.physical_alias(0), None);
         assert_eq!(root.physical_alias(0x11000), None);
 
-        // A legacy error carries no selected address and cannot exempt any
-        // object. Successful legacy roots keep their existing equality law.
         let legacy = ReservedCountryObservation::from_result(Err("legacy root fault"));
         assert_eq!(legacy.physical_alias(0x11000), None);
         let legacy = ReservedCountryObservation::from_result(Ok(Country {
@@ -4375,8 +3928,6 @@ mod tests {
         ];
         assert!(!snapshot.capture(AuthenticatedRoster::new(&slots, arrays), 0, 0x1000));
         assert_eq!(snapshot.reserved_observation(0, 0x1000), None);
-        // Install the independent scalar after even a short positive capture,
-        // then prove an explicit pass clear retires both parts.
         snapshot.capture_reserved_observation(0, 0x1000, root);
         snapshot.clear();
         assert_eq!(snapshot.reserved_observation(0, 0x1000), None);
@@ -4580,8 +4131,6 @@ mod tests {
                     assert_eq!(captured.outcome, Outcome::Unavailable { reason });
                 }
                 assert_eq!(memory.attempts.get(), 1);
-                // The launch control remains independently staged and uses
-                // its held signed count, not the new visibility handoff.
                 assert_eq!(captured.launch_states.as_ref().unwrap().count(), Ok(0));
             }
         }
@@ -4881,7 +4430,7 @@ mod tests {
             &mut required,
         );
         assert_eq!(&names, b"MOD_OWN");
-        assert_eq!(rows[0].original_tag.unwrap().len, 7); // Original==own still has presence.
+        assert_eq!(rows[0].original_tag.unwrap().len, 7);
         for boundary in [1_u32, 3] {
             bytes[0xc000 + STRIDE..0xc000 + 2 * STRIDE].fill(0);
             short_string(&mut bytes, 0xc000 + STRIDE, b"");
@@ -4910,7 +4459,6 @@ mod tests {
 
     #[test]
     fn appearance_original_tag_reference_preserves_signed_word_on_byte_refusal() {
-        // appearance_fixture initializes the original string at live slot2.
         for original in [i32::MIN, -1, 0, 2, i32::MAX] {
             let mut bytes = appearance_fixture();
             put(&mut bytes, 0x3000 + ORIGINAL_TAG, &original.to_le_bytes());
@@ -5010,8 +4558,6 @@ mod tests {
         );
         assert_eq!(rows[1].original_tag.unwrap().start, 0);
         assert_eq!((used, required), (2048, 2048));
-        // A broken reserved object and a later positive country cannot erase
-        // the first positive country's already observed three-byte floor.
         put(&mut bytes, 0x11000 + ID, &1_u32.to_le_bytes());
         assert_eq!(
             read_country_naming_demand(&ReservedMemory { bytes: &bytes }, 0, 0x1000),
@@ -5158,16 +4704,12 @@ mod tests {
         );
     }
 
-    /// Inline MSVC string of at most 15 bytes.
     fn short_string(bytes: &mut [u8], at: usize, text: &[u8]) {
         put(bytes, at, text);
         put(bytes, at + 16, &(text.len() as u64).to_le_bytes());
         put(bytes, at + 24, &15_u64.to_le_bytes());
     }
 
-    /// Country 1 is dynamic, named after original tag 2 (`GER`), and its ruling
-    /// party's first leader follows `despotism` and is character 777. Country 2
-    /// has no politics.
     fn appearance_fixture() -> Vec<u8> {
         let mut bytes = movement_fixture();
         for country in [0x3000, 0x5000] {
@@ -5189,8 +4731,6 @@ mod tests {
         }
         short_string(&mut bytes, 0x3000 + GRAPHICAL_CULTURE, b"western_gfx");
         short_string(&mut bytes, 0x5000 + GRAPHICAL_CULTURE_2D, b"eastern_2d");
-        // Country 1 was renamed once; country 2's zeroed old-name headers are
-        // not valid strings.
         short_string(&mut bytes, 0x3000 + OLD_NAME, b"Old Reich");
         short_string(&mut bytes, 0x3000 + OLD_ADJECTIVE, b"");
         short_string(&mut bytes, 0x3000 + OLD_DEFINITE_NAME, b"the Old Reich");
@@ -5361,7 +4901,6 @@ mod tests {
                 .map(|names| names.map(|name| name.as_bytes().to_vec())),
             Some([b"Old Reich".to_vec(), Vec::new(), b"the Old Reich".to_vec()])
         );
-        // An invalid old-name header leaves the rest of the row.
         assert_eq!(output[1].old_names, None);
         assert_eq!(output[1].country, 2);
         assert!(output[1].graphical_culture.as_bytes().is_empty());
@@ -5371,7 +4910,6 @@ mod tests {
         assert!(output[1].name_tag.as_bytes().is_empty());
         assert!(output[1].leader_ideology.as_bytes().is_empty());
         assert_eq!(output[1].leader_character, None);
-        // A static country is named after its own tag.
         let mut static_output: Vec<AppearanceRow> = vec![AppearanceRow::default(); 2];
         walk_appearance_observed_inner(&memory, 0, 0x1000, 2, crate::walk::Buffer::Growing(&mut static_output), None);
         assert!(static_output[0].name_tag.as_bytes().is_empty());
@@ -5389,11 +4927,6 @@ mod tests {
             ),
             Ok(output[0])
         );
-        // Two more reads than without the character: its pointer and identity. The three old names
-        // add a length, capacity, terminator and payload read each, the empty one no payload; the
-        // empty 2D culture takes its length, capacity and terminator. The empty roster shares the
-        // single diplomacy read from `cdiplomacy_status::SUBJECTS` through `OVERLORD` with the
-        // overlord, without payload.
         assert_eq!(census.calls(), 34 + 11 + 3);
     }
 
@@ -5413,11 +4946,9 @@ mod tests {
         let despotism = run(&bytes).unwrap().0;
         assert_eq!(despotism.as_bytes(), b"despotism");
         assert_eq!(run(&bytes), Ok((despotism, Some(777))));
-        // A native id of zero is recorded as zero, not as missing.
         put(&mut bytes, 0xab00 + ccharacter::ID, &0_u32.to_le_bytes());
         assert_eq!(run(&bytes), Ok((despotism, Some(0))));
         put(&mut bytes, 0xab00 + ccharacter::ID, &777_u32.to_le_bytes());
-        // An unauthenticated character keeps the leader's ideology, without an id.
         let reference = 0xab00 + ccharacter::TYPE;
         put(
             &mut bytes,
@@ -5437,7 +4968,6 @@ mod tests {
             0xab00,
             &(ccharacter::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        // A null or unreadable parent pointer.
         let parent = 0xa900 + ccountry_leader::CHARACTER;
         put(&mut bytes, parent, &0_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((despotism, None)));
@@ -5445,7 +4975,6 @@ mod tests {
         assert_eq!(run(&bytes), Ok((despotism, None)));
         put(&mut bytes, parent, &0xab00_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((despotism, Some(777))));
-        // No leader: an empty list, a null ruling party, or null politics.
         let count = 0xa400 + cpolitical_party::COUNTRY_LEADER_COUNT;
         put(&mut bytes, count, &0_u32.to_le_bytes());
         assert_eq!(run(&bytes), Ok((Text::default(), None)));
@@ -5456,7 +4985,6 @@ mod tests {
         put(&mut bytes, ruling, &0xa400_u64.to_le_bytes());
         put(&mut bytes, 0x3000 + POLITICAL_STATUS, &0_u64.to_le_bytes());
         assert_eq!(run(&bytes), Ok((Text::default(), None)));
-        // The leader's own identity still refuses the row.
         put(
             &mut bytes,
             0x3000 + POLITICAL_STATUS,
@@ -5511,7 +5039,6 @@ mod tests {
             run(&bytes[..0x337f]),
             Err("country appearance colour unreadable")
         );
-        // The UI colour ends the one colour read: a block short of its last byte refuses.
         assert_eq!(
             run(&bytes[..0x3000 + CURRENT_UI_COLOR + 15]),
             Err("country appearance colour unreadable")
@@ -5610,16 +5137,13 @@ mod tests {
             &modifier_keys::RIVER_CROSSING_FACTOR_AGAINST.to_le_bytes(),
         );
         put(&mut bytes, 0xa008, &(-27_000_i64).to_le_bytes());
-        // Both references resolve the same canonical relation slot.
         assert_eq!(run(&bytes, 2), Ok(Some(-27_000)));
         assert_eq!(run(&bytes, 3), Ok(Some(-27_000)));
-        // Nonpositive and unlinked positive targets use slot zero.
         put(&mut bytes, 0x7800, &0x9000_u64.to_le_bytes());
         put(&mut bytes, 0x2100 + 3 * 4, &0_u32.to_le_bytes());
         for target in [0, u32::MAX, 3] {
             assert_eq!(run(&bytes, target), Ok(Some(-27_000)));
         }
-        // Null relation and null diplomacy mean no modifier entry.
         put(&mut bytes, 0x7800, &0_u64.to_le_bytes());
         assert_eq!(run(&bytes, 0), Ok(None));
         put(&mut bytes, 0x3000 + DIPLOMACY_STATUS, &0_u64.to_le_bytes());
@@ -5666,7 +5190,7 @@ mod tests {
         bytes[0xa049] = 0x80;
         assert_eq!(run(&bytes, 1, 3), (Ok(true), Ok(false)));
         put(&mut bytes, 0x92a0, &0_u64.to_le_bytes());
-        put(&mut bytes, 0x92b0, &1_u64.to_le_bytes()); // param4=0: ignored.
+        put(&mut bytes, 0x92b0, &1_u64.to_le_bytes());
         assert_eq!(run(&bytes, 1, 3), (Ok(false), Ok(false)));
         put(&mut bytes, 0x9288, &0xb000_u64.to_le_bytes());
         put(
@@ -5781,8 +5305,8 @@ mod tests {
         let access = |bytes: &[u8], area| {
             has_core_supply_access(&SliceMemory { base: 0, bytes }, 0, 0x1000, 1, area)
         };
-        assert_eq!(access(&bytes, 0), Ok(true)); // Both capital and actual area null.
-        assert_eq!(access(&bytes, 0x11000), Ok(true)); // Negative anchor nonzero, index zero valid.
+        assert_eq!(access(&bytes, 0), Ok(true));
+        assert_eq!(access(&bytes, 0x11000), Ok(true));
         put(&mut bytes, 0x1e008, &(-1_i32).to_le_bytes());
         assert_eq!(access(&bytes, 0x11000), Ok(false));
         put(&mut bytes, 0x1e008, &2_i32.to_le_bytes());
@@ -5825,8 +5349,6 @@ mod tests {
             }
         }
         let bytes = movement_fixture();
-        // Capital and actual area are both null: native equality precedes the
-        // null-area false branch, so memo key area zero is valid, not absent.
         assert_eq!(
             has_core_supply_access_direct(
                 &SliceMemory {
@@ -5858,7 +5380,6 @@ mod tests {
             );
             assert_eq!(memory.calls.get(), 1);
             assert_eq!(memory.reads.get() == 0, result.is_some());
-            // Independent verification must never consult even a lying hook.
             assert_eq!(
                 has_core_supply_access_direct(&memory, 0, 0x1000, 1, 0),
                 Ok(true)
@@ -5977,7 +5498,6 @@ mod tests {
         bytes[offset..offset + data.len()].copy_from_slice(data);
     }
 
-    /// One country holding `hosts` volunteer positions, at memory base 0x1000.
     fn volunteer_world(hosts: u32, tallies: u32) -> Vec<u8> {
         const BASE: usize = 0x1000;
         const COUNTRY: usize = 0x3000;
@@ -6053,14 +5573,12 @@ mod tests {
                 world.u64(data + ordinal * 8, id as u64 + 1);
             }
         }
-        // Relocate only native pointers, leaving raw division handles untouched.
         let address = world.bytes.as_ptr() as usize;
         for pointer in pointers {
             let offset = pointer - synthetic::START;
             let old = u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
             world.u64(pointer, (address + old as usize - synthetic::START) as u64);
         }
-        // SAFETY: this fixture retains every pointee and does not mutate while walking.
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let mut rows = vec![SentVolunteerRow::default(); divisions];
         ReadCounts::take_current();
@@ -6204,7 +5722,6 @@ mod tests {
 
     #[test]
     fn volunteer_positions_survive_the_batch_boundary_in_native_order() {
-        // Sixty-five positions force the batched copy past its first window.
         let bytes = volunteer_world(65, 65);
         let memory = SliceMemory {
             base: 0x1000,
@@ -6289,8 +5806,6 @@ mod tests {
             cgame_state::COUNTRY_LINKS + 12,
             &8_u32.to_le_bytes(),
         );
-        // Country slots 1 and 2 alias one object, whose current link id is 7.
-        // All three resolve to country-table slot 1; link 7 supplies its tag.
         for link in [1, 2, 7] {
             put(&mut bytes, 0x700 + link * 4, &1_u32.to_le_bytes());
         }
@@ -6300,15 +5815,12 @@ mod tests {
         put(&mut bytes, tag + 24, &15_u64.to_le_bytes());
         put(&mut bytes, 0x1000, &(VTABLE_RVA.0 as u64).to_le_bytes());
         put(&mut bytes, 0x1000 + ID, &7_u32.to_le_bytes());
-        // An unused dynamic country can legitimately have an empty display name.
         put(&mut bytes, 0x1000 + NAME + 24, &15_u64.to_le_bytes());
         put(
             &mut bytes,
             0x1000 + COMMAND_POWER,
             &4_294_967_297_i64.to_le_bytes(),
         );
-        // Values deliberately cross i32 boundaries to catch partial-width reads;
-        // the walker preserves bytes even when outside ordinary display ranges.
         put(
             &mut bytes,
             0x1000 + STABILITY,
@@ -6371,8 +5883,6 @@ mod tests {
         assert_eq!(reader.resolve(0), Err("country id is zero"));
         assert!(reader.at(3).is_err());
         assert!(reader.resolve(8).is_err());
-        // A null alias slot is absent from table iteration; its raw link still
-        // resolves through the canonical slot, without replacing native id 7.
         put(&mut bytes, 0x510, &0_u64.to_le_bytes());
         let memory = SliceMemory {
             base: 0x1000,
@@ -6488,9 +5998,6 @@ mod tests {
         );
     }
 
-    /// The country's own scalars are one guarded copy: the old walk read
-    /// each alone. A field the copy could not reach is still read alone, so a
-    /// fault keeps its old refusal and the fields before it.
     #[test]
     fn country_scalars_are_gathered_in_one_guarded_copy() {
         let bytes = countries_with_aliases();
@@ -6510,8 +6017,6 @@ mod tests {
             Outcome::Rows { len: 1 }
         );
         assert_eq!(rows, expected);
-        // A source that guards each of the eight scalars on its own, as the
-        // old walk read them.
         struct Unbatched<'a, M>(&'a M);
         impl<M: Memory> Memory for Unbatched<'_, M> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -6543,10 +6048,7 @@ mod tests {
             Outcome::Rows { len: 1 }
         );
         assert_eq!(rows, expected);
-        // Eight guarded reads became one.
         assert_eq!(alone.calls(), census.calls() + 7);
-        // A denied stability read: the copy faults there, and the row refuses
-        // with stability's own reason without reading it again.
         struct Denied<'a>(SliceMemory<'a>);
         impl Memory for Denied<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -6653,8 +6155,6 @@ mod tests {
     #[test]
     fn links_preserve_raw_aliases_and_count_rows_beyond_capacity() {
         let mut bytes = countries_with_aliases();
-        // Even an occupied sentinel entry cannot turn a raw zero reference into
-        // a country id. Other zero mappings remain absent, rather than guessed.
         put(&mut bytes, 0x700, &1_u32.to_le_bytes());
         let memory = SliceMemory {
             base: 0x1000,
@@ -6744,7 +6244,6 @@ mod tests {
             let mut rows = [LinkRow::default(); 8];
             let expected = Outcome::Unavailable { reason };
             assert_eq!(walk_links(&memory, 0, 0x1000, &mut rows), expected);
-            // Faults remain unavailable even when all storage was exhausted.
             assert_eq!(walk_links(&memory, 0, 0x1000, &mut []), expected);
         }
     }
@@ -6757,7 +6256,6 @@ mod tests {
             0x3000 + PRIDE_OF_THE_FLEET,
             &((32_u64 << 32) | 51).to_le_bytes(),
         );
-        // Country 1's roster holds two armies; only slot 0 is read.
         movement_test_array(&mut bytes, 0x3000 + DIVISIONS, 0x12000, 2);
         put(&mut bytes, 0x12000, &0x12100_u64.to_le_bytes());
         put(&mut bytes, 0x12008, &0x12200_u64.to_le_bytes());
@@ -6812,7 +6310,6 @@ mod tests {
                     owned_state_count: 3,
                     controlled_state_count: 5,
                     first_division: (7_u64 << 32) | 4,
-                    // An empty accumulator holds neither key.
                     attack_modifiers: Some([None, None]),
                     movement_modifiers: Some([None; MOVEMENT_MODIFIER_KEYS.len()]),
                     recruitment_modifiers: Some([None; 4]),
@@ -6835,7 +6332,6 @@ mod tests {
                 },
             ]
         );
-        // A null slot 0 is no fallback unit; a slot that is not an army is refused.
         put(&mut bytes, 0x12000, &0_u64.to_le_bytes());
         let memory = SliceMemory {
             base: 0,
@@ -6855,7 +6351,6 @@ mod tests {
             }
         );
         put(&mut bytes, 0x12000, &0x12100_u64.to_le_bytes());
-        // A count above its capacity is a torn header, not a count.
         put(&mut bytes, 0x3000 + OWNED_STATE_COUNT, &5_u32.to_le_bytes());
         let memory = SliceMemory {
             base: 0,
@@ -6885,8 +6380,6 @@ mod tests {
         );
     }
 
-    /// Country 1 lists raw references 9, 3 and 0x8000_0002 as stored;
-    /// country 2 none.
     fn civil_war_fixture() -> Vec<u8> {
         let mut bytes = appearance_fixture();
         movement_test_array(&mut bytes, 0x3000 + CIVIL_WAR_TARGETS, 0x9900, 3);
@@ -6928,7 +6421,6 @@ mod tests {
                 },
             ]
         );
-        // The count probe counts every entry.
         assert_eq!(
             walk_civil_wars_buffer(&memory, 0, 0x1000, crate::walk::Buffer::Count),
             Outcome::Truncated {
@@ -6936,7 +6428,6 @@ mod tests {
                 unread_rows: 3
             }
         );
-        // Empty arrays have no rows.
         assert_eq!(
             walk_civil_wars(
                 &SliceMemory {
@@ -6954,7 +6445,6 @@ mod tests {
     #[test]
     fn unreadable_civil_war_arrays_fail_the_table() {
         let mut bytes = civil_war_fixture();
-        // A count above its capacity is a torn header, not a count.
         put(
             &mut bytes,
             0x3000 + CIVIL_WAR_TARGETS + 12,

@@ -1,4 +1,3 @@
-//! Mission controls keep semantic text until the view supplies its language.
 use super::*;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use viewer_foundation::tooltip_text::{self, Tooltip};

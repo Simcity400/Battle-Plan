@@ -114,7 +114,6 @@ fn zero_group_count_and_later_refusals_remain_distinct_from_empty_native_arrays(
         unreachable!()
     };
     inputs.group_child_count = Some(0);
-    // Field serialization is unchecked; snapshots and deltas validate the row.
     assert!(encode_row(&invalid, 0, &mut Vec::new()).is_err());
     assert!(invalid.delta(None).is_err());
 }

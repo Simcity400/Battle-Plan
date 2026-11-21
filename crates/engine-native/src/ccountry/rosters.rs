@@ -1,4 +1,3 @@
-//! Stored hourly country rosters; never sort, filter or refresh them.
 
 use super::{CONTROLLED_STATES, CORE_STATES, Country, OWNED_STATES, PRIDE_OF_THE_FLEET, Reader};
 use crate::{
@@ -6,12 +5,8 @@ use crate::{
     cunit_leader, read, walk::Buffer,
 };
 
-/// Controller changes and flagged derived-state updates rebuild raw neighbor
-/// references. No hourly refresh is performed.
 pub const NEIGHBORS: usize = 0x1088;
 
-/// The MIO policy roster's refusal for a null `ccountry::PRODUCTION_STATUS` (`policies_header`):
-/// the native state of a country without production status, not a read fault.
 pub const POLICY_STATUS_NULL: &str = "MIO policy production status is null";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +61,6 @@ impl EffectRosters<'_> {
             .ok_or("country neighbor roster unreadable or invalid")?;
         add(&mut self.required.neighbors, source.count)?;
         let count = source.count as usize;
-        // Neighbor refresh retains every stored occurrence.
         self.neighbors.ensure(
             self.neighbor_len
                 .checked_add(count)
@@ -124,8 +118,6 @@ impl EffectRosters<'_> {
     }
 }
 
-/// Army and navy unit-leader pointer arrays maintained by role insertion
-/// and removal.
 const LEADERS: [usize; 2] = [0x70, 0x88];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +134,6 @@ pub struct RosterDemand {
 
 pub(super) type Spans = ([RosterSpan; 3], [RosterSpan; 2], Option<RosterSpan>);
 
-/// Raw sent-expeditionary references, in native order.
 pub const SENT_EXPEDITIONARIES: usize = 0x2f8;
 
 pub struct CounterRosters<'a> {
@@ -184,8 +175,6 @@ fn add(required: &mut usize, count: u32) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Header sums only. The country census authenticates each country, and the
-/// non-null character root must belong to it. No member pointers are read.
 pub fn counter_roster_demand(
     memory: &impl Memory,
     base: usize,
@@ -194,10 +183,6 @@ pub fn counter_roster_demand(
     counter_roster_demand_inner(memory, base, state, None)
 }
 
-/// Reuse authenticated roster controls for an independent sparse ship-name
-/// sizing hint. After each country's headers observe its full pride reference.
-/// Observer faults leave roster demand independent; the original API adds
-/// no pride reads.
 pub fn counter_roster_demand_with_pride_observer(
     memory: &impl Memory,
     base: usize,
@@ -291,8 +276,6 @@ impl CounterRosters<'_> {
         if !row_fits {
             return Err("country roster row capacity exceeded");
         }
-        // Leader and state headers bound complete original rosters; worker growth
-        // preserves their occurrence order.
         self.states.ensure(
             self.state_len
                 .checked_add(state_count)
@@ -330,7 +313,6 @@ impl CounterRosters<'_> {
                 start: self.leader_len,
                 count: source.count as usize,
             };
-            // Each page's leaders in one guarded batch; a null slot is zero.
             cpdx_array::pointer_pages(
                 memory,
                 source,
@@ -375,21 +357,15 @@ impl CounterRosters<'_> {
     }
 }
 
-/// One country's roster entries from an earlier complete read, in its row's
-/// span order: what a caller carrying the country
-/// ([`super::walk_counter_inputs_carried`]) places in this read's
-/// arenas instead of reading them.
 #[derive(Clone, Copy, Debug)]
 pub struct CarriedRosters<'a> {
     pub states: [&'a [u32]; 3],
     pub leaders: [&'a [u64]; 2],
     pub sent_expeditionaries: Option<&'a [u64]>,
     pub neighbors: &'a [u32],
-    /// `None`: the country had no production status ([`POLICY_STATUS_NULL`]).
     pub policies: Option<&'a [u32]>,
 }
 
-/// Where [`CarriedRosters::append`] placed the entries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CarriedSpans {
     pub states: [RosterSpan; 3],
@@ -399,7 +375,6 @@ pub struct CarriedSpans {
     pub policies: Option<RosterSpan>,
 }
 
-/// Room for `count` entries at `len`; the new length.
 fn room<T: Default>(buffer: &mut Buffer<'_, T>, len: usize, count: usize) -> Option<usize> {
     let end = len.checked_add(count)?;
     (buffer.ensure(end).ok()? && end <= buffer.len()).then_some(end)
@@ -416,11 +391,6 @@ fn place<T: Copy>(buffer: &mut Buffer<'_, T>, len: &mut usize, entries: &[T]) ->
 }
 
 impl CarriedRosters<'_> {
-    /// Appends the entries at the arenas' current lengths and raises each
-    /// demand by their counts, as a fresh read of the same complete rosters
-    /// would (its spans follow the same order). `None`, with no length or
-    /// demand moved, when an arena cannot hold them; the caller then reads
-    /// the country.
     pub fn append(
         &self,
         rosters: &mut CounterRosters<'_>,
@@ -591,7 +561,6 @@ mod pride_demand_tests {
                 Ok((11_u64 << 32) | 51)
             ]
         );
-        // An unauthenticated country is never offered to the observer.
         world.u32(world.object(2) + crate::ccountry::ID, 99);
         let memory = tracked(&world, None);
         handles.clear();

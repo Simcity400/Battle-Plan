@@ -1,4 +1,3 @@
-//! naval combat marker hover, normal map hover.
 use super::content::Content as StaticContent;
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
@@ -23,7 +22,6 @@ use {
     viewer_foundation::tooltip_text::{TextIcons, builtin},
 };
 
-// Localisation keys for naval combat marker hovers.
 tooltip_keys! {
     NAVAL_COMBAT_TOOLTIP_ATTACKER = "NAVAL_COMBAT_TOOLTIP_ATTACKER",
     NAVAL_COMBAT_TOOLTIP_ATTACKER_WITH_CONVOYS = "NAVAL_COMBAT_TOOLTIP_ATTACKER_WITH_CONVOYS",
@@ -54,8 +52,6 @@ fn whole<'a, T: TableSchema>(table: &Available<'a, T>, name: &str) -> Result<&'a
     }
 }
 
-// country-list equivalence testing: primary OR secondary
-// membership for the shared outcome. HQ selection uses only primary.
 fn contains(ids: &[u32], viewer: u32, links: &BTreeMap<u32, u32>) -> Result<bool, String> {
     if ids.iter().any(|raw| links.get(raw) == Some(&viewer)) {
         return Ok(true);
@@ -66,9 +62,6 @@ fn contains(ids: &[u32], viewer: u32, links: &BTreeMap<u32, u32>) -> Result<bool
     Ok(false)
 }
 
-/// first primary side containing the viewer,
-/// forward groups/members in native order, distinct task forces, then the
-/// first viewer-roster-owned force with a nonempty attached HQ.
 fn hq_count(
     detail: &NavalCombatDetailsRow,
     members: &[&NavalCombatShipRow],
@@ -129,8 +122,6 @@ fn seen(
 ) -> Result<String, String> {
     let mut text = String::new();
     for (side, value) in detail.sides.iter().enumerate() {
-        // Live convoy references,
-        // excluding state 0x10; paired-only groups and history are not walked.
         let convoys = members
             .iter()
             .filter(|row| row.side as usize == side && row.live_convoy != 0 && row.state != 0x10)
@@ -153,10 +144,8 @@ fn seen(
                 ("HQCOUNT", Argument::Int32(hq)),
             ],
         )?);
-        text.push('\n'); // the game adds a literal LF after BOTH sides.
+        text.push('\n');
     }
-    // Naval survival scores are zero for both sides, so the outcome is
-    // undecided and duration is less than a day.
     text.push_str(&land_marker_tooltips::outlook(
         icons,
         loc,
@@ -168,7 +157,6 @@ fn seen(
     Ok(text)
 }
 
-/// The naval marker hover of combat `id` for the viewing country `viewer`.
 pub fn build(
     static_content: &StaticContent,
     frame: &DecodedFrame,
@@ -276,7 +264,7 @@ pub fn build(
         )
     })();
     match result {
-        Ok(body) => text.body = body, // Native writes only delayed output.
+        Ok(body) => text.body = body,
         Err(why) => {
             text.refused.insert(format!("naval marker {id}: {why}"), 1);
         }

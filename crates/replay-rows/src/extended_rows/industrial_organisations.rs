@@ -1,5 +1,3 @@
-//! Military-industrial organisation operands. Each column changes independently:
-//! daily funds do not rewrite trait trees, tasks, variables or policies.
 use super::*;
 pub use game_model::equipment::OrganisationBonus as IndustrialOrganisationBonus;
 pub use game_model::industrial_organisations::{

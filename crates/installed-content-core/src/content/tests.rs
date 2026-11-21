@@ -21,8 +21,6 @@ fn prepared_metadata_inputs_keep_mount_order_and_archive_files_as_single_inputs(
     assert_eq!(layers.recorded_source_files().unwrap(), expected);
     let descriptor = root.join("synthetic.mod");
     let archive = root.join("synthetic.zip");
-    // The roster operation uses already-resolved layer inventories, including
-    // member names that have no physical path outside their archive.
     layers.layers[1].source = LayerSource::Archive(archive.clone());
     layers.layers[1].descriptor = Some(descriptor.clone());
     assert_eq!(
@@ -188,8 +186,6 @@ fn held_reader_central_directory_edit_is_detected_on_the_next_open() {
         .position(|bytes| bytes == 0x0201_4B50_u32.to_le_bytes())
         .unwrap();
     fs::write(&path, &bytes).unwrap();
-    // Keep a reader across both writes and admissions. The first identical-byte
-    // overwrite seeds a change reason that NTFS can coalesce for the second write.
     let reader = File::open(&path).unwrap();
     let stamp = Stamp::read(&path).unwrap();
     let timestamps = file_timestamps(&reader);
@@ -203,7 +199,6 @@ fn held_reader_central_directory_edit_is_detected_on_the_next_open() {
         b"unchanged payload"
     );
     let usn = file_usn(&reader);
-    // Change only the central name; local headers and payload stay byte-identical.
     overwrite_preserving_timestamps(&path, (central + 46) as u64, b"common/two.txt");
     assert_eq!(Stamp::read(&path).unwrap(), stamp);
     assert_eq!(file_timestamps(&reader), timestamps);
@@ -361,8 +356,6 @@ fn a_database_directory_lists_its_own_files_by_byte_name_without_recursion() {
     );
 }
 
-/// A directory lists by its loader's own raw suffix: a `txt` filter lists `footxt` as well,
-/// the `.txt` most loaders pass does not, and neither folds case.
 #[test]
 fn a_database_directory_filters_by_its_loaders_raw_suffix() {
     let root = std::env::temp_dir().join(format!(
@@ -582,7 +575,6 @@ fn older_coverage_policies_verify_their_own_roots_and_leave_newer_roots_uncovere
         cache_dir: cache,
     };
     for policy in [2, 3] {
-        // Independently reproduce each historical inventory, without today's root selector.
         let kept: Vec<_> = policy_two
             .into_iter()
             .chain(policy_three.into_iter().filter(|_| policy == 3))
@@ -637,7 +629,6 @@ fn older_coverage_policies_verify_their_own_roots_and_leave_newer_roots_uncovere
             assert!(covered(path), "current policy: {path}");
             assert_eq!(resolved.layers.read_uncovered(path).unwrap(), b"original");
             fs::write(game.join(path), b"changed uncovered bytes").unwrap();
-            // A memoized read and a fresh resolve both retain the older policy's contract.
             assert_eq!(
                 resolved.layers.read_uncovered(path).unwrap(),
                 b"changed uncovered bytes"
@@ -688,7 +679,6 @@ fn historical_coverage_reads_newer_folder_and_archive_files_with_counted_notes()
             let layers =
                 ResolvedLayers::from_folders_with_coverage_policy(&[(source, &[])], policy)
                     .unwrap();
-            // Unadapted consumers stay strict, including under the current policy.
             let error = layers.read("gfx/models/check.txt").unwrap_err();
             assert!(
                 error
@@ -696,7 +686,6 @@ fn historical_coverage_reads_newer_folder_and_archive_files_with_counted_notes()
                     .contains("this reader does not report uncovered reads")
             );
             let reads = layers.report_uncovered_reads();
-            // Probes and failed reads do not count as unverified bytes read.
             assert!(layers.has_file("gfx/posteffect_volumes.txt").unwrap());
             assert!(layers.read("gfx/fonts/missing.fnt").is_err());
             assert_eq!(layers.read("common/check.txt").unwrap(), b"covered");
@@ -820,7 +809,6 @@ fn older_coverage_policy_roots_apply_to_builtin_dlc_and_mod_layers() {
         )
         .unwrap()
     };
-    // These are the policy-3 inventories, including each layer's descriptor.
     let identity = Identity {
         game_version: "synthetic build".into(),
         exe_hash: Sha256::digest(b"synthetic executable").into(),
@@ -1157,7 +1145,6 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         )
         .is_err()
     );
-    // A visual mod mounts as the game does: the index lists its spelling, lookups stay native.
     apply_overlay(
         &mut effective,
         2,
@@ -1255,8 +1242,6 @@ fn remote_mod_ids_take_precedence_over_local_descriptor_names() {
     );
 }
 
-/// Builds a folder layer without inventorying it; `read_uncovered` never
-/// consults the covered inventory.
 fn folder_layer(id: &str, root: &Path, replace_paths: Vec<String>) -> ResolvedLayer {
     ResolvedLayer {
         content_digest: [0; 32],
@@ -1342,7 +1327,6 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
     fs::write(base.join("gfx/World/Hoi.fnt"), b"base").unwrap();
     fs::write(over.join("gfx/world/hoi.fnt"), b"over").unwrap();
 
-    // A path outside the coverage roots resolves whatever case it carries.
     assert_eq!(
         folded_path(&base, "gfx/world/hoi.fnt").unwrap(),
         Some(base.join("gfx").join("World").join("Hoi.fnt"))
@@ -1375,7 +1359,6 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
     assert_eq!(layers.read_uncovered("gfx/world/hoi.fnt").unwrap(), b"base");
     assert!(layers.uncovered_from_base("gfx/world/hoi.fnt").unwrap());
 
-    // A replacing layer hides the layers below it even when it has no file.
     let replacing = ResolvedLayers {
         layers: vec![
             folder_layer("base", &base, Vec::new()),
@@ -1404,7 +1387,6 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
     );
     assert!(!replacing.uncovered_from_base("gfx/world/hoi.fnt").unwrap());
 
-    // Covered paths go through the verifying reader, and unsafe paths fail.
     assert_eq!(
         layers
             .read_uncovered("map/provinces.bmp")
@@ -1457,7 +1439,6 @@ fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
         ],
         ..Default::default()
     };
-    // The game lists both case variants, but the override folder answers both names.
     assert_eq!(
         layers
             .descriptor_paths("gfx/particles", &[".asset"])
@@ -1480,8 +1461,6 @@ fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
             .unwrap(),
         ["gfx/particles/new/n.asset"]
     );
-    // Covered roots list too, so a coverage policy change cannot hide
-    // descriptors.
     assert!(covered("interface/w.gfx"));
     assert_eq!(
         layers.descriptor_paths("interface", &[".gfx"]).unwrap(),
@@ -1491,8 +1470,6 @@ fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The test fixture's replace paths replace a whole directory the way a
-/// descriptor's do, whatever trailing or Windows separators they carry.
 #[cfg(feature = "test-support")]
 #[test]
 fn folder_fixtures_replace_directories_as_descriptors_do() {
@@ -1534,13 +1511,10 @@ fn folder_fixtures_replace_directories_as_descriptors_do() {
             "{replace}"
         );
     }
-    // A path that could escape its layer is refused, as in a descriptor.
     assert!(ResolvedLayers::from_folders(&[(&base, &["../common"][..])]).is_err());
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A stored ZIP written byte by byte: each member's raw name (no UTF-8 flag), the high byte
-/// of its version-made-by (the host), and its contents.
 fn raw_zip(members: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
     let records: Vec<Record> = members
         .iter()
@@ -1555,7 +1529,6 @@ fn raw_zip(members: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
     zip_records(&[], &records)
 }
 
-/// An archive layer as `gather` resolves one: inventoried and hashed.
 fn archive_layer(id: &str, path: &Path, replace_paths: &[&[u8]]) -> ResolvedLayer {
     let mut layer = ResolvedLayer {
         content_digest: [0; 32],
@@ -1585,10 +1558,6 @@ fn archive_layer(id: &str, path: &Path, replace_paths: &[&[u8]]) -> ResolvedLaye
     layer
 }
 
-/// PhysFS keys and finds a ZIP member by its raw name bytes (see [`LayerPath`]): a member named `gfx/\x80.dds` opens by
-/// exactly those bytes, in load order and under `replace_path`, covered or not; the `zip`
-/// crate's code-page spelling of the name opens nothing; a FAT-made member's `\` is `/`; a
-/// non-UTF-8 request never opens a folder file.
 #[test]
 fn archive_members_keep_their_raw_name_bytes() {
     let root = std::env::temp_dir().join(format!(
@@ -1629,7 +1598,6 @@ fn archive_members_keep_their_raw_name_bytes() {
         layers.read_uncovered_path(b"gfx/\x80.dds").unwrap(),
         b"low raw"
     );
-    // Twice: the second read is the memo's.
     assert_eq!(
         layers.read_uncovered_path(b"gfx/\x80.dds").unwrap(),
         b"low raw"
@@ -1638,7 +1606,6 @@ fn archive_members_keep_their_raw_name_bytes() {
         layers.read_path(b"gfx/interface/\x81.dds").unwrap(),
         b"low covered"
     );
-    // The zip crate's CP437 spelling of 0x80 is `Ç`: no member has those bytes.
     for lossy in ["gfx/\u{C7}.dds", "gfx/\u{FFFD}.dds"] {
         let error = layers.read_uncovered(lossy).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound, "{lossy}");
@@ -1657,8 +1624,6 @@ fn archive_members_keep_their_raw_name_bytes() {
             .unwrap()
             .any(|path| path == b"gfx/interface/\x81.dds".as_slice())
     );
-    // A later layer wins by the same bytes; its `replace_path`, bytes too, hides the base's
-    // covered directory from the covered read.
     layers
         .layers
         .push(archive_layer("high", &high, &[b"gfx\\interface\\"]));
@@ -1678,10 +1643,6 @@ fn archive_members_keep_their_raw_name_bytes() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// Two records whose names differ in bytes but decode alike (`\x80` without the UTF-8 flag
-/// is CP437 `Ç`, `\xC3\x87` with it is UTF-8 `Ç`) are two members, in either order, as
-/// The byte-keyed registration and lookup described by [`LayerPath`] keep them apart:
-/// both are inventoried, hashed, listed and read, covered or not.
 #[test]
 fn records_whose_names_decode_alike_stay_apart() {
     let root = std::env::temp_dir().join(format!(
@@ -1751,11 +1712,6 @@ fn records_whose_names_decode_alike_stay_apart() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The mount fails, as the whole archive, when two records name one node (its
-/// modification time is already set, as [`physfs_zip`] registers it) or a record lies below a
-/// file; a file record named like a directory the tree made before stays a
-/// directory, which opens as no file. A deflated record inflates, and a stub before the
-/// archive shifts every offset by its prefix length.
 #[test]
 fn archive_tree_preserves_registration_rules() {
     let root = std::env::temp_dir().join(format!(
@@ -1789,7 +1745,6 @@ fn archive_tree_preserves_registration_rules() {
         ],
     );
     assert!(twice.unwrap_err().to_string().contains("two records name"));
-    // A directory record and a file record of one name are one node too.
     let both = mount(
         "both.zip",
         &[],
@@ -1827,7 +1782,6 @@ fn archive_tree_preserves_registration_rules() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A folder layer of `files` below `root`, inventoried and hashed.
 fn folder_of(id: &str, root: &Path, files: &[(&str, &[u8])]) -> ResolvedLayer {
     for (path, data) in files {
         let path = root.join(path);
@@ -1842,10 +1796,6 @@ fn folder_of(id: &str, root: &Path, files: &[(&str, &[u8])]) -> ResolvedLayer {
     layer
 }
 
-/// A record the game lists but does not open (its local header's method disagrees with its
-/// central record, as [`record_digest`] describes; or it is encrypted and the request carries
-/// no password) is passed: [`ResolvedLayers::lookup_path`] goes on to the next search-path
-/// entry, so the layer below answers, covered or not; the record is still listed.
 #[test]
 fn records_the_game_does_not_open_pass_to_the_layers_below() {
     let root = std::env::temp_dir().join(format!(
@@ -1867,7 +1817,6 @@ fn records_the_game_does_not_open_pass_to_the_layers_below() {
         &[],
         &[record(covered, b"mod a"), record(uncovered, b"mod f")],
     );
-    // Each local header says deflate where its central record says stored.
     for local in [0, 30 + covered.len() + 5] {
         bytes[local + 8] = 8;
     }
@@ -1901,10 +1850,6 @@ fn records_the_game_does_not_open_pass_to_the_layers_below() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A request is sanitized by [`sanitize`] before any layer is searched: a
-/// `\` (or `:`) fails the open, so a `\` in a record's name from a host other than FAT is a
-/// byte of that name, never a separator, covered or not; the covered index, the listings
-/// and the uncovered lookup agree, and the layer below answers the `/` spelling.
 #[test]
 fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
     let root = std::env::temp_dir().join(format!(
@@ -1947,7 +1892,6 @@ fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
         ..ResolvedLayers::default()
     };
     layers.finish().unwrap();
-    // The listing seeds the uncovered lookup; both agree with it.
     assert_eq!(
         layers.descriptor_paths("gfx/world", &[".fnt"]).unwrap(),
         ["gfx/world/c.fnt"]
@@ -1966,7 +1910,6 @@ fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
         let error = layers.read_uncovered_path(request).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
-    // A name without `/` is a file at the tree's root, never below `gfx/`.
     assert_eq!(
         layers.listed_layer_paths(b"gfx/interface/").unwrap(),
         BTreeSet::from([
@@ -1974,7 +1917,6 @@ fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
             b"gfx/interface/fat.dds".to_vec()
         ])
     );
-    // Leading and doubled separators are PhysFS's own to drop.
     assert_eq!(
         layers.read_path(b"//gfx//interface/fat.dds").unwrap(),
         b"fat"
@@ -1982,8 +1924,6 @@ fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A reviewed 7-Zip vector whose `gfx/fonts/` member names, now covered, are renamed in place to
-/// the uncovered `gfx/world/`: names are outside the `ZipCrypto` keys and the CRC.
 fn uncovered_members(vector: &[u8]) -> Vec<u8> {
     let mut bytes = vector.to_vec();
     for at in 0..bytes.len() {
@@ -1994,11 +1934,6 @@ fn uncovered_members(vector: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// Only when no node has a request's name, and the archive holds an encrypted record, the
-/// request up to its last `$` names the record and the rest is its password
-/// (see [`ResolvedLayer::archive_open`]): the traditional PKWARE keys decrypt it ([`physfs_zip`]),
-/// stored or deflated, covered (verified through its stored bytes) or not. A wrong password
-/// fails the open, which the layer below answers. The archives are 7-Zip's (`-mem=ZipCrypto`).
 #[test]
 fn a_dollar_opens_an_encrypted_record_with_its_password() {
     let root = std::env::temp_dir().join(format!(
@@ -2053,10 +1988,6 @@ fn a_dollar_opens_an_encrypted_record_with_its_password() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// Under flag 8 a password is checked against the central record's DOS time
-/// (see [`record_digest`]), which the local-header check never compares with the local
-/// header: two archives whose local bytes are identical but whose central times differ open
-/// differently, so the layer hash tells them apart, and each opens as the game opens it.
 #[test]
 fn central_password_metadata_is_part_of_an_encrypted_records_identity() {
     let root = std::env::temp_dir().join(format!(
@@ -2071,8 +2002,6 @@ fn central_password_metadata_is_part_of_an_encrypted_records_identity() {
         .windows(4)
         .position(|word| word == b"PK\x01\x02")
         .unwrap();
-    // Flag 8 in the central record only; the DOS time's high byte (offset 13) the CRC's
-    // high byte (offset 19), which the header's check byte holds, or one off it.
     let variant = |name: &str, off: u8| {
         let mut bytes = original.to_vec();
         bytes[central + 8] |= 8;
@@ -2104,10 +2033,6 @@ fn central_password_metadata_is_part_of_an_encrypted_records_identity() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A `$` request that names a plain record of an archive holding encrypted ones carries a
-/// password the plain record refuses (see [`ResolvedLayer::archive_open`]): the open fails before
-/// any verification and [`ResolvedLayers::lookup_path`] takes the layer below, covered or not.
-/// The archive is 7-Zip's: one `ZipCrypto` record, two plain ones.
 #[test]
 fn a_password_for_a_plain_record_passes_to_the_layers_below() {
     let root = std::env::temp_dir().join(format!(
@@ -2157,10 +2082,6 @@ fn a_password_for_a_plain_record_passes_to_the_layers_below() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The 7-Zip `ZipCrypto` record with flag 8 set in its central record, whose DOS time's high
-/// byte (offset 13) is the CRC's high byte (offset 19, which the header's check byte holds)
-/// when `opens`, else one off it: the password check described by [`record_digest`] opens it
-/// or not, local bytes identical.
 fn flagged_encrypted(opens: bool) -> Vec<u8> {
     let mut bytes = include_bytes!("testdata/zipcrypto_stored.zip").to_vec();
     let central = bytes
@@ -2172,10 +2093,6 @@ fn flagged_encrypted(opens: bool) -> Vec<u8> {
     bytes
 }
 
-/// A covered encrypted record whose password stops opening it after verification (its
-/// central DOS time changed, as [`record_digest`] describes) is "changed since verification", never a
-/// silent pass to the lower layer: through the archive's stamp, and through the record's
-/// digest when the stamp does not show it.
 #[test]
 fn a_password_that_stops_opening_after_verification_is_a_change() {
     let root = std::env::temp_dir().join(format!(
@@ -2209,7 +2126,6 @@ fn a_password_that_stops_opening_after_verification_is_a_change() {
         error.to_string().contains("changed since verification"),
         "{error}"
     );
-    // The same change where the stamp does not show it: the record's own digest does.
     layers.layers[1].archive_stamp = Some(Stamp::read(&archive).unwrap());
     let error = layers.read_path(request).unwrap_err();
     assert!(
@@ -2221,10 +2137,6 @@ fn a_password_that_stops_opening_after_verification_is_a_change() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The persistent hash cache keys each archive record by the digest scheme: an entry an
-/// earlier scheme wrote for an unchanged archive (here the S2 digest of an encrypted record,
-/// without its central fields) is not served, so gathering with that cache gives the same
-/// layer hash as gathering with none.
 #[test]
 fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
     let root = std::env::temp_dir().join(format!(
@@ -2259,7 +2171,6 @@ fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
         layer.hash(cache, &mut HashStats::default()).unwrap()
     };
     let fresh = layer(&mut HashCache::default());
-    // What the previous scheme cached for this very archive: the stored bytes alone.
     let mut archive = physfs_zip::Archive::open(&path).unwrap();
     let entry = archive.mount().unwrap().entries.remove(0);
     let mut earlier = Sha256::new();
@@ -2272,15 +2183,10 @@ fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
         earlier.finalize().into(),
     );
     assert_eq!(layer(&mut cache), fresh);
-    // And the cache this scheme writes serves it unchanged.
     assert_eq!(layer(&mut cache), fresh);
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The 7-Zip `ZipCrypto` record renamed (in its local and central headers, same length) to
-/// `gfx/descriptor1.gfx`: a covered record whose `$` request, `gfx/descriptor1.gfx$secret`,
-/// is uncovered, as the texture resolver's original-name candidate reaches it
-/// (the conversion described by [`sanitize`], then [`ResolvedLayer::archive_open`]).
 fn covered_encrypted_descriptor() -> Vec<u8> {
     let original = include_bytes!("testdata/zipcrypto_stored.zip");
     let (from, to): (&[u8], &[u8]) = (b"gfx/interface/e.dds", b"gfx/descriptor1.gfx");
@@ -2293,8 +2199,6 @@ fn covered_encrypted_descriptor() -> Vec<u8> {
     bytes
 }
 
-/// Layers of a folder base holding the file the `$` request would fall through to, and the
-/// archive at `path`, inventoried and hashed.
 fn password_stack(root: &Path, path: &Path) -> ResolvedLayers {
     let base = folder_of(
         "base",
@@ -2312,10 +2216,6 @@ fn password_stack(root: &Path, path: &Path) -> ResolvedLayers {
     layers
 }
 
-/// An uncovered `$` request whose record is covered, answered once and then from the memo:
-/// a payload changed after that cached read is "changed since verification" on the next
-/// read (through the archive's stamp, and through the record's digest when the stamp does
-/// not show it), never the changed bytes.
 #[test]
 fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
     let root = std::env::temp_dir().join(format!(
@@ -2336,7 +2236,6 @@ fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
             b"encrypted stored texture"
         );
     }
-    // The payload's last byte, before the central directory, flipped.
     let mut bytes = covered_encrypted_descriptor();
     let central = bytes
         .windows(4)
@@ -2360,11 +2259,6 @@ fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A covered record removed from its archive after verification, before any read, is
-/// "changed since verification" for the uncovered `$` request that names it, never a silent
-/// pass to the folder file below (through the stamp, and through the mounted records when
-/// the stamp does not show it); a memoized miss, and a memoized hit in the folder below the
-/// record, are verified the same way.
 #[test]
 fn a_password_read_of_a_removed_record_is_a_change() {
     let root = std::env::temp_dir().join(format!(
@@ -2377,10 +2271,7 @@ fn a_password_read_of_a_removed_record_is_a_change() {
     let path = root.join("encrypted.zip");
     fs::write(&path, covered_encrypted_descriptor()).unwrap();
     let mut layers = password_stack(&root, &path);
-    // A miss, memoized: the wrong password does not open the record, and no layer holds
-    // the request.
     let missing: &[u8] = b"gfx/descriptor1.gfx$other";
-    // A hit in the folder below, memoized: its password does not open the record either.
     let lower_hit: &[u8] = b"gfx/descriptor1.gfx$wrong";
     for _ in 0..2 {
         let error = layers.read_uncovered_path(missing).unwrap_err();
@@ -2418,11 +2309,6 @@ fn a_password_read_of_a_removed_record_is_a_change() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A covered folder request is verified in every layer the search reaches
-/// ([`ResolvedLayers::lookup_path`]), not only in the one that answered it when verified: a
-/// covered file that appeared above the effective one, or where no layer had one, is
-/// "changed since verification", and so is the effective file gone, never a pass to the
-/// layers below or a miss.
 #[test]
 fn a_covered_folder_file_gone_or_appearing_after_verification_is_a_change() {
     let root = std::env::temp_dir().join(format!(
@@ -2451,23 +2337,19 @@ fn a_covered_folder_file_gone_or_appearing_after_verification_is_a_change() {
         );
     };
     assert_eq!(layers.read("common/a.txt").unwrap(), b"base a");
-    // Appeared above the effective file.
     fs::write(top.join("common/a.txt"), b"top a").unwrap();
     assert_changed(layers.read("common/a.txt").unwrap_err(), "common/a.txt");
     fs::remove_file(top.join("common/a.txt")).unwrap();
     assert_eq!(layers.read("common/a.txt").unwrap(), b"base a");
-    // Appeared where no layer had one.
     let error = layers.read("common/c.txt").unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
     fs::write(base.join("common/c.txt"), b"base c").unwrap();
     assert_changed(layers.read("common/c.txt").unwrap_err(), "common/c.txt");
-    // The effective file gone.
     fs::remove_file(base.join("common/a.txt")).unwrap();
     assert_changed(layers.read("common/a.txt").unwrap_err(), "common/a.txt");
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A directory junction at `link` to `target`; making one needs no privilege.
 #[cfg(windows)]
 pub(super) fn junction(link: &Path, target: &Path) {
     let native = |path: &Path| path.components().collect::<PathBuf>();
@@ -2487,7 +2369,6 @@ pub(super) fn junction(link: &Path, target: &Path) {
     );
 }
 
-/// Files below `root`, written.
 fn write_tree(root: &Path, files: &[(&str, &[u8])]) {
     for (path, data) in files {
         let path = root.join(path);
@@ -2496,10 +2377,6 @@ fn write_tree(root: &Path, files: &[(&str, &[u8])]) {
     }
 }
 
-/// The game lists a visual mod's symbolic link as a file, whatever it names, and never enters
-/// it; a recorded layer refuses it. A mod's link to a folder is refused when it mounts, as the
-/// game lists that folder's files from a folder below the link only. Entries stand for links
-/// here, so no privilege is needed.
 #[test]
 fn a_visual_mods_symbolic_links_are_listed_as_files_and_never_entered() {
     let root = std::env::temp_dir().join(format!(
@@ -2582,9 +2459,6 @@ fn a_visual_mods_symbolic_links_are_listed_as_files_and_never_entered() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A visual mod's listed link that opens no file, such as one naming nothing, passes the read to
-/// the layers below, as the game's open does; it is no change since verification. A folder
-/// stands for it here: opening either fails.
 #[test]
 fn an_unverified_visual_mods_link_to_no_file_passes_to_the_layers_below() {
     let root = std::env::temp_dir().join(format!(
@@ -2637,7 +2511,6 @@ fn an_unverified_visual_mods_link_to_no_file_passes_to_the_layers_below() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A recorded layer still refuses a junction, which verification cannot prove the game read.
 #[cfg(windows)]
 #[test]
 fn a_recorded_folder_layer_refuses_a_junction() {
@@ -2700,7 +2573,6 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
         .chain([0])
         .collect();
     let mut short = vec![0; 32768];
-    // The volume may disable 8.3 names; the other aliases still exercise verification.
     let length =
         unsafe { GetShortPathNameW(path.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
     assert!(length > 0 && (length as usize) < short.len());
@@ -2735,7 +2607,6 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
         io::ErrorKind::InvalidData
     );
     fs::write(base.join(name), b"verified").unwrap();
-    // A new covered file above a memoized alias must not escape verification either.
     fs::write(top.join(name), b"appeared").unwrap();
     assert_eq!(
         layers.read_uncovered(&aliases[0]).unwrap_err().kind(),
@@ -2764,9 +2635,6 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The game enumerates `interface/**/*.gui` and `*.gfx` by the layers' own bytes: a ZIP
-/// member whose name is not UTF-8 is listed, ordered by its bytes, and read, as its GUI
-/// template and its sprite show; the text listing leaves it out.
 #[test]
 fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -2885,7 +2753,6 @@ fn mod_order(mods: &[(&str, &str)]) -> (io::Result<Vec<String>>, Vec<String>) {
 
 #[test]
 fn mods_mount_in_the_engines_dependency_then_path_order() {
-    // The launcher's order is ignored; equal weights sort by path bytes.
     let (order, notes) = mod_order(&[
         ("mod/b.mod", r#"name="B""#),
         ("mod/a.mod", r#"name="A" dependencies={}"#),
@@ -2893,8 +2760,6 @@ fn mods_mount_in_the_engines_dependency_then_path_order() {
     ]);
     assert_eq!(order.unwrap(), ["mod/B.mod", "mod/a.mod", "mod/b.mod"]);
     assert!(notes.is_empty());
-    // A dependency mounts below everything that needs it, through chains
-    // and diamonds; blocks append, and a name not enabled changes nothing.
     let (order, _) = mod_order(&[
         (
             "mod/a.mod",
@@ -2933,8 +2798,6 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
     );
     write("game/dlc/dlc_synthetic/common/file.txt", "DLC");
     write("user/settings.txt", "language=l_english");
-    // The launcher lists the top mod first; the engine mounts its
-    // dependency first, whatever the paths' byte order.
     write(
         "user/dlc_load.json",
         r#"{"enabled_mods":["mod/a_top.mod","mod/b_base.mod"],"disabled_dlcs":[]}"#,
@@ -2969,7 +2832,6 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
         .unwrap();
     let ids = identity.mods.iter().map(|layer| layer.id.as_str());
     assert_eq!(ids.collect::<Vec<_>>(), ["b_base.mod", "42"]);
-    // A replay resolves its recorded order, whatever the launcher says now.
     write("user/dlc_load.json", "not JSON");
     let options = ResolveOptions {
         game_dir,
@@ -2982,7 +2844,6 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
     assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"top");
     write("user/layers/base/common/file.txt", "changed");
     let changed = resolve(&identity, &options).unwrap();
-    // The top mod still supplies the file; only the changed layer is named.
     assert_eq!(changed.layers.read("common/file.txt").unwrap(), b"top");
     let names: Vec<_> = changed
         .changed
@@ -3052,7 +2913,6 @@ fn a_mod_installed_elsewhere_keeps_its_recorded_hash_and_a_changed_replace_path_
         user_dir,
         cache_dir,
     };
-    // The same files elsewhere, under the descriptor another launcher wrote for that place.
     fs::rename(root.join("user/first"), root.join("user/second")).unwrap();
     fs::remove_file(root.join("user/mod/ugc_42.mod")).unwrap();
     let moved = root.join("user/second/42");
@@ -3151,8 +3011,6 @@ fn nested_dlc_resolves_where_it_was_gathered_and_nested_mods_are_left_out() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// The game lists a mod descriptor by the byte-exact `.mod` end of its name, so a name ending
-/// otherwise is neither gathered nor found again for a recording.
 #[test]
 fn a_mod_descriptor_is_listed_by_its_exact_suffix() {
     let root = std::env::temp_dir().join(format!("hoi4_mod_suffix_{}", std::process::id()));
@@ -3251,12 +3109,6 @@ fn mod_forms_the_engine_cannot_order_are_named() {
     }
 }
 
-/// Bootstrap files open by their literal lowercase paths: a folder file in
-/// any case, an archive record by its exact bytes (see [`LayerPath`]); the main
-/// pass drops exactly those names. So an archive's `Load_Screen.gui` is no
-/// bootstrap file and is read once, in the main pass, while a folder's is opened by the
-/// bootstrap request and read again by the main pass; the same for `.gfx`. (A case-variant
-/// pair across a folder and an archive is refused when the stack resolves.)
 #[test]
 fn bootstrap_files_open_by_their_literal_paths() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -3327,8 +3179,6 @@ fn bootstrap_files_open_by_their_literal_paths() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// `has_file` finds what the texture loader can read: a covered file from the
-/// index and a mod's texture outside the coverage roots by the uncovered scan.
 #[cfg(feature = "test-support")]
 #[test]
 fn has_file_sees_covered_and_uncovered_files_the_loader_reads() {
@@ -3358,8 +3208,6 @@ fn has_file_sees_covered_and_uncovered_files_the_loader_reads() {
     assert!(!layers.has_file("gfx/designs/absent.dds").unwrap());
     assert!(!layers.has_file("common/absent.txt").unwrap());
     assert!(!layers.has_file("../escape.dds").unwrap());
-    // An archive's lookup is exact: a member asked for in another case is absent,
-    // as `read_uncovered` finds it, covered or not.
     let zip_path = root.join("assets.zip");
     fs::write(
         &zip_path,
@@ -3371,7 +3219,6 @@ fn has_file_sees_covered_and_uncovered_files_the_loader_reads() {
     .unwrap();
     let zipped = ResolvedLayers::from_folders(&[(&base, &[][..]), (&zip_path, &[][..])]).unwrap();
     assert!(covered("gfx/interface/MyTank.dds"));
-    // Covered and uncovered existence read no payload, from a folder or archive.
     LOADS.with(|loads| loads.set(0));
     for _ in 0..2 {
         assert!(layers.has_file("COMMON/Other.txt").unwrap());
@@ -3403,7 +3250,6 @@ fn has_file_sees_covered_and_uncovered_files_the_loader_reads() {
         );
     }
     fs::write(base.join("common/other.txt"), b"changed").unwrap();
-    // Presence remains the verified inventory's; loading still verifies the payload.
     assert!(layers.has_file("common/other.txt").unwrap());
     assert!(zipped.has_file("common/other.txt").unwrap());
     assert!(
@@ -3515,7 +3361,6 @@ fn has_file_case_missing_archive_member_falls_through_to_folder_without_payload_
     assert_eq!(LOADS.with(|loads| loads.get()), 0, "no bytes loaded");
     assert_eq!(layers.read_path(request).unwrap(), b"folder");
     assert_eq!(layers.read("gfx/interface/Asset.dds").unwrap(), b"archive");
-    // The font exists, but an ordinary uncovered read needs reporting opt-in.
     let loads = LOADS.with(|loads| loads.get());
     let error = layers.read_path(b"gfx/world/font.fnt").unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -3580,7 +3425,6 @@ fn has_file_replace_path_stops_fallthrough_without_payload_reads() {
 }
 
 thread_local! {
-    /// Payload reads on this thread, for tests that existence probes load no bytes.
     pub(super) static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -3964,8 +3808,6 @@ fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_pa
     fs::remove_dir_all(root).unwrap();
 }
 
-/// A stack of a recorded folder `base`, a visual mod folder `art` and a recorded folder `above`
-/// mounted over the mod, each holding its `files`.
 fn overlaid_stack(
     root: &Path,
     base: &[(&str, &[u8])],
@@ -3986,8 +3828,6 @@ fn overlaid_stack(
         .unwrap()
 }
 
-/// The recorded stack below a traced presentation stack's visual mods reports its reads to the
-/// same trace and purpose, each at the layer's index in the presentation stack.
 #[test]
 fn reads_below_the_visual_mods_keep_the_trace_purpose_and_presentation_layers() {
     use std::sync::{Arc, Mutex};
@@ -4051,8 +3891,6 @@ fn reads_below_the_visual_mods_keep_the_trace_purpose_and_presentation_layers() 
     fs::remove_dir_all(root).unwrap();
 }
 
-/// A visual mod's descriptor file that does not parse is read from the recording through the
-/// traced presentation stack's own trace and purpose.
 #[test]
 fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {
     use std::sync::{Arc, Mutex};
@@ -4065,7 +3903,6 @@ fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {
     let presentation = overlaid_stack(
         &root,
         &[("gfx/entities/a.asset", recorded)],
-        // Does not parse even when its blocks are closed.
         &[(
             "gfx/entities/a.asset",
             br#"entity = { name = "plane" zeppelin } }{ = ="#,
@@ -4098,8 +3935,6 @@ fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// A read is stamped by the store key only where its own lookup opens a listed covered file:
-/// not one below a folder coverage skips, and not one missing.
 #[test]
 fn stamped_reads_open_listed_covered_files() {
     let root = std::env::temp_dir().join(format!("stamped-reads-{}", std::process::id()));
@@ -4117,8 +3952,6 @@ fn stamped_reads_open_listed_covered_files() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// A password request is stamped by the encrypted record it opens, whose name coverage may skip
-/// where the request's spelling (`music$secret`) does not.
 #[test]
 fn a_password_request_is_stamped_by_its_records_name() {
     let root = std::env::temp_dir().join(format!(

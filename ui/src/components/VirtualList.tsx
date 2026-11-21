@@ -3,7 +3,6 @@ import type { CSSProperties, HTMLAttributes, ReactNode, RefObject } from 'react'
 import { flushSync } from 'react-dom';
 import { VirtualListIndex } from './virtualListIndex';
 
-/** Native sequential stops, rather than every programmatically focusable node. */
 function focusables(node: HTMLElement) {
   return [...node.querySelectorAll<HTMLElement>('*')].filter(target => {
     if (target.tabIndex < 0 || target.matches(':disabled, input[type="hidden"]') || target.closest('[inert]')) return false;
@@ -17,31 +16,20 @@ function focusables(node: HTMLElement) {
     return visibility !== 'hidden' && visibility !== 'collapse';
   }).sort((a, b) => (a.tabIndex || Infinity) - (b.tabIndex || Infinity));
 }
-/** Variable-height ordered rows, sharing an existing scroll surface when supplied. */
 export function VirtualList<T>({ items, itemKey, estimate, label, className, style, flowWhenFits = false, scrollRef, rowProps, isInteractive, children, offset = 0, identity, retainExpansion = true }: {
   items: readonly T[]; itemKey: (item: T) => string; estimate: number; label?: string; className?: string;
-  /** Authored root presentation; padding is measured with the row geometry. */
   style?: CSSProperties;
-  /** Keep the native flow when the complete list fits the measured viewport. */
   flowWhenFits?: boolean;
-  /** Measurements and expansion belong to this data owner. */
   identity?: unknown;
-  /** False when the consumer already controls every details element. */
   retainExpansion?: boolean;
   scrollRef: RefObject<HTMLElement | null>; offset?: number;
   rowProps?: (item: T, index: number) => HTMLAttributes<HTMLLIElement>;
-  /** Static rows keep their list positions but are not keyboard destinations.
-   * Replace items or this predicate when eligibility changes. */
   isInteractive?: (item: T, index: number) => boolean;
   children: (item: T, index: number) => ReactNode;
 }) {
   const root = useRef<HTMLOListElement>(null), nodes = useRef(new Map<string, HTMLLIElement>());
   const [scroller, setScroller] = useState<HTMLElement | null>(null);
-  // Ancestor refs attach after child layout effects. Read the actual element
-  // after each commit so the first mount and subsequent ref changes both bind.
-  // A state set to its own value just after a commit renders once more, an empty commit: each is set only when it differs.
   useEffect(() => { if (scrollRef.current !== scroller) setScroller(scrollRef.current); });
-  // The scrolled view as last measured; a render reads it, and a scroll renders only when the rows it shows change.
   const view = useRef({ top: 0, height: 400 });
   const [, setViewed] = useState(0);
   const shownRows = useRef({ start: -1, end: -1, flow: false });
@@ -49,8 +37,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const paddingShown = useRef(padding);
   const rowOffset = offset + padding.top;
   const [, update] = useState(0), [focus, setFocus] = useState<string | null>(null);
-  // Native DOM owns descendant starting points; keys retain a removed row's
-  // preceding logical neighbour even when that neighbour was never mounted.
   const sequential = useRef<{ key: string; target: HTMLElement; keys: readonly string[]; gap: number; pointer?: boolean } | null>(null);
   const [resume, setResume] = useState<string | null>(null);
   const resuming = useRef(false);
@@ -62,8 +48,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     if (!positions.has(cursor.key)) {
       const oldAt = cursor.keys.indexOf(cursor.key);
       const boundary = oldAt < 0 ? cursor.gap : oldAt;
-      // Removal leaves the starting point just after the preceding surviving node.
-      // Insertions after it stay on the forward side, including later commits.
       cursor.gap = 0;
       for (let at = boundary - 1; at >= 0; at--) {
         const previous = positions.get(cursor.keys[at]);
@@ -72,7 +56,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     }
     cursor.keys = keys;
   }, [keys, positions]);
-  // Evaluate content eligibility once per revision, never per keyboard move.
   const eligible = useMemo(() => {
     if (!isInteractive) return null;
     const positions: number[] = [];
@@ -100,9 +83,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     const mounted = previous && new Set(previous);
     const unseen = previous && expanded && new Set([...expanded].filter(at => !previous[at]));
     if (expanded && previous && (previous.length !== details.length || previous.some((node, at) => node !== details[at]))) {
-      // A mounted row can destroy or replace conditional descendants. Keep
-      // only surviving nodes' expansion, remapping their positions if needed.
-      // Unseen entries still belong to whole-row restoration awaiting content.
       const positions = new Map(details.map((details, at) => [details, at]));
       const pending = restoring.get(node);
       for (const details of previous) if (!positions.has(details)) pending?.delete(details);
@@ -118,8 +98,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     mountedDetails.set(node, details);
     if (expanded) details.forEach((details, i) => {
       if (mounted && (mounted.has(details) || !unseen?.has(i))) {
-        // Native state owns surviving and newly created details. Only saved
-        // expansions awaiting a whole-row remount's content are restored here.
         if (details.open) expanded.add(i); else expanded.delete(i);
         return;
       }
@@ -129,7 +107,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       pending.add(details); restoring.set(node, pending); details.open = open;
     });
   };
-  // The list's measured gap carried into a new index: one started without it would place every row again a commit later.
   const gapShown = useRef(0);
   const index = useMemo(() => {
     const next = new VirtualListIndex(items.length, estimate, gapShown.current);
@@ -141,10 +118,7 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const pendingFocus = useRef<{ key: string; backwards: boolean } | null>(null);
   const internalFocus = useRef(false);
   const focusFrame = useRef(0);
-  // What the geometry reads between commits: the latest rows and their index.
   const placing = useRef({ index, keys, estimate, offset, flowWhenFits });
-  /** Renders when the rows drawn no longer cover the measured view, from the view as last measured: no layout read. A
-   * view moved inside the rows drawn around it renders nothing. */
   const place = () => {
     const { index, keys, offset, flowWhenFits } = placing.current;
     const { top, height } = view.current;
@@ -157,8 +131,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   };
   const placeLatest = useRef(place);
   placeLatest.current = place;
-  // The view's geometry is read only when the page has just been laid out (as its observer reports a size) or as the
-  // reader scrolls: never in a commit or a frame, where it would lay out what was just written.
   useLayoutEffect(() => {
     const list = root.current;
     if (!list || !scroller) return;
@@ -168,8 +140,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       const rect = scroller.getBoundingClientRect(), bounds = list.getBoundingClientRect();
       const scale = rect.height / (scrollerHeight || rect.height || 1);
       const top = (rect.top - bounds.top) / scale;
-      // Absolute rows retain the authored spacing of the list's flow layout.
-      // Store it separately from row heights so expansion never adds a tail gap.
       const css = getComputedStyle(list);
       const gap = parseFloat(css.rowGap) || 0;
       const nextPadding = { top: parseFloat(css.paddingTop) || 0, right: parseFloat(css.paddingRight) || 0,
@@ -192,15 +162,12 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       if (box) scrollerHeight = box.blockSize;
       measure();
     }); size.observe(scroller); size.observe(list);
-    // Its spacing can change with its class or style and leave its size alone: measured after the next layout, which a
-    // new observation reports, rather than now.
     let laidOut: ResizeObserver | null = null;
     const afterLayout = () => {
       if (laidOut) return;
       laidOut = new ResizeObserver(() => { laidOut?.disconnect(); laidOut = null; measure(); });
       laidOut.observe(list);
     };
-    // Its own height is written in its style every time its rows change: only its class or authored spacing re-measures.
     const spacingOf = () => { const style = list.style; return `${list.className}|${style.display}|${style.padding}|${style.rowGap}|${style.gap}|${style.flexDirection}`; };
     let spaced = spacingOf();
     const spacing = typeof MutationObserver !== 'undefined' ? new MutationObserver(() => {
@@ -233,7 +200,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       if (pendingFocus.current) queueFocus(row);
     };
     list.addEventListener('toggle', toggle, true);
-    // A row may build nested details only after restoring its outer expansion.
     const contents = retainExpansion && typeof MutationObserver !== 'undefined' ? new MutationObserver(records => {
       for (const record of records) {
         const target = record.target as HTMLElement;
@@ -242,9 +208,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       }
     }) : null;
     contents?.observe(list, { childList: true, subtree: true });
-    // Native Tab can enter any mounted row of a neighbouring virtual list.
-    // Remember only the current key's default focus move; pointer and explicit
-    // focus changes keep the row they selected.
     let tabTimer = 0;
     const keyboard = (event: KeyboardEvent) => {
       clearTimeout(tabTimer);
@@ -258,13 +221,9 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
         const direction = event.shiftKey ? -1 : 1, at = positions.get(cursor.key);
         resuming.current = true;
         if (at !== undefined) {
-          // Make both logical neighbours available before the native default
-          // action. The browser retains its own starting point inside this row,
-          // including details focus scopes and partial descendant removal.
           flushSync(() => setResume(cursor.key));
           return;
         }
-        // As the browser resumes from where its starting point was removed: Tab on past it, Shift+Tab back before it.
         const next = event.shiftKey ? destination(cursor.gap - 1, direction) : destination(cursor.gap, direction);
         if (next !== null) { event.preventDefault(); seek(next, event.shiftKey); }
       }
@@ -277,8 +236,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       const target = event.target as HTMLElement;
       const row = target.closest?.<HTMLElement>('[data-virtual-key]'), key = row?.dataset.virtualKey;
       if (row && key !== undefined && nodes.current.get(key) === row) {
-        // Static content can leave BODY active while establishing the browser's
-        // next sequential starting point. Retain its row until native Tab moves.
         sequential.current = { key, target, keys, gap: positions.get(key) ?? 0, pointer: true };
         setFocus(key); setResume(null);
       } else { sequential.current = null; setFocus(null); setResume(null); }
@@ -288,8 +245,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     document.addEventListener('pointerdown', pointer, true);
     document.addEventListener('focusin', forgetExternal);
     observer.current = new ResizeObserver(entries => {
-      // Border-box observations retain subpixel layout heights independently
-      // of CSS zoom. Rounded DOM heights are only a fallback before observation.
       const changes = entries.map(entry => ({ node: entry.target as HTMLLIElement,
         height: entry.borderBoxSize?.[0]?.blockSize ?? (entry.target as HTMLLIElement).offsetHeight }));
       let changed = false;
@@ -301,8 +256,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       if (changed) update(value => value + 1);
     });
     for (const node of nodes.current.values()) observer.current.observe(node);
-    // A content revision can happen before a queued handoff's frame. Its key
-    // still names the destination even when that row's position has changed.
     const pending = pendingFocus.current;
     if (pending) {
       const node = nodes.current.get(pending.key);
@@ -332,30 +285,22 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     const neighbour = destination(resumeAt + direction, direction);
     if (neighbour !== null && !visible.includes(neighbour)) visible.push(neighbour);
   }
-  // A wholly static viewport still needs a native row control for Tab entry.
-  // Use the real first eligible row, leaving fully static lists to the browser.
   const first = destination(0, 1);
   if (first !== null && !visible.some(at => destination(at, 1) === at)) visible.push(first);
   visible.sort((a, b) => a - b);
   const focusPending = (node: HTMLElement) => {
     const pending = pendingFocus.current;
     if (!pending || node.dataset.virtualKey !== pending.key) return;
-    // Restoring details can mount their controls on a later toggle task. Wait
-    // for those toggles and retained descendants before choosing the final
-    // control; toggle and mutation listeners finish the focus handoff.
     const expanded = retainExpansion && opened.get(node.dataset.virtualKey ?? '');
     if (pending.backwards && (restoring.get(node)?.size || (expanded && expanded.has(0)
       && [...expanded].some(at => at >= node.querySelectorAll('details').length)))) return;
     const targets = focusables(node);
     pendingFocus.current = null;
-    // Seeking can unmount the origin, making relatedTarget null. DOM focus
-    // events are synchronous, so mark this handoff through its focus dispatch.
     internalFocus.current = true;
     try { (pending.backwards ? targets.at(-1) : targets[0])?.focus(); }
     finally { internalFocus.current = false; }
   };
   const queueFocus = (node: HTMLElement) => {
-    // Only the destination's restored controls can replace its focus callback.
     if (node.dataset.virtualKey !== pendingFocus.current?.key) return;
     if (focusFrame.current) cancelAnimationFrame(focusFrame.current);
     focusFrame.current = requestAnimationFrame(() => { focusFrame.current = 0; focusPending(node); });
@@ -375,8 +320,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     onFocus={event => {
       const backwards = tabDirection.current;
       if (resuming.current) {
-        // A backward native move can reach a neighbour before its conditional
-        // retained details finish mounting. Complete the usual keyed handoff.
         const row = (event.target as HTMLElement).closest<HTMLElement>('[data-virtual-key]');
         if (backwards && row && row.dataset.virtualKey !== resume && resumeAt !== undefined) {
           const previous = destination(resumeAt - 1, -1);
@@ -413,9 +356,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
         if (event.key === 'Tab') {
           const targets = focusables(event.currentTarget);
           const current = event.target as HTMLElement, position = targets.indexOf(current);
-          // Programmatically focused negative-tabindex controls also have a
-          // native starting point. Let the browser visit any stop in this row
-          // on that side before handing off to another logical row.
           const nativeInRow = position >= 0 ? event.shiftKey ? position > 0 : position < targets.length - 1
             : targets.some(target => Boolean(current.compareDocumentPosition(target)
               & (event.shiftKey ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING)));

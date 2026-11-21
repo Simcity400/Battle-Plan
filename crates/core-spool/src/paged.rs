@@ -308,7 +308,6 @@ impl PagedFile {
     }
 }
 
-// Consumer scratch pins a dense prefix; only its overflow needs associative paging.
 pub struct FlatFile {
     pages: Vec<Buffer>,
     _held: Reservation,

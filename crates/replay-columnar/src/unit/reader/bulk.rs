@@ -1,6 +1,3 @@
-//! A restore's chunks decoded straight into a table's arrays: a rows chunk's live bits and keys
-//! put at once, a number column's codes into its cells at the width the chunk needs (widened at
-//! most once a chunk), a list column's cells laid into each page at once.
 
 use super::numbers;
 use crate::{
@@ -11,7 +8,6 @@ use crate::{
 };
 use std::io;
 
-/// Each live slot of `live` in `from..to`, in order, given to `each`.
 #[inline(always)]
 fn each_live(live: &Flags, from: u32, to: u32, mut each: impl FnMut(u32)) {
     let words = live.words();
@@ -32,14 +28,12 @@ fn each_live(live: &Flags, from: u32, to: u32, mut each: impl FnMut(u32)) {
     }
 }
 
-/// The live slots of `live` in `from..to`.
 fn live_count(live: &Flags, from: u32, to: u32) -> usize {
     let mut count = 0;
     each_live(live, from, to, |_| count += 1);
     count
 }
 
-/// A key's varint, a 64-bit one read without the wide path.
 #[inline(always)]
 fn wide(bytes: &[u8], at: &mut usize) -> io::Result<u128> {
     let mut damaged = false;
@@ -58,8 +52,6 @@ fn bit(bits: &[u8], offset: u32) -> bool {
     bits[(offset / 8) as usize] >> (offset % 8) & 1 == 1
 }
 
-/// A whole rows chunk of slots `from..to`: the live bits, then each live row's key as its
-/// difference from the one before.
 pub(crate) fn rows(bytes: &[u8], from: u32, to: u32, table: &mut TableState, keys: &mut Vec<u128>) -> io::Result<()> {
     let count = to.checked_sub(from).ok_or_else(|| invalid("A restore's rows chunk ends before it starts"))?;
     let bits = bytes.get(..count.div_ceil(8) as usize).ok_or_else(|| invalid("A restore's rows end inside their bits"))?;
@@ -76,9 +68,6 @@ pub(crate) fn rows(bytes: &[u8], from: u32, to: u32, table: &mut TableState, key
     table.put_rows(from, to, bits, keys)
 }
 
-/// A rows chunk of slots `from..to` against the same chunk of its whole restore, `whole` (slots
-/// `from..whole_to`): the live bits, then each live slot whose key is not the whole one's there,
-/// as `slot gap | key's difference from the one named before`.
 pub(crate) fn changed_rows(bytes: &[u8], from: u32, to: u32, whole: &[u8], whole_to: u32, table: &mut TableState, keys: &mut Vec<u128>) -> io::Result<()> {
     let count = to.checked_sub(from).ok_or_else(|| invalid("A restore's rows chunk ends before it starts"))?;
     let bits = bytes.get(..count.div_ceil(8) as usize).ok_or_else(|| invalid("A restore's rows end inside their bits"))?;
@@ -125,7 +114,6 @@ pub(crate) fn changed_rows(bytes: &[u8], from: u32, to: u32, whole: &[u8], whole
     table.put_rows(from, to, bits, keys)
 }
 
-/// Writes `values` (by live slot of `from..to`, in order) at the cells' width `W`.
 fn scatter<const W: usize>(cells: &mut [u8], live: &Flags, from: u32, to: u32, values: &[u64]) {
     let mut values = values.iter();
     each_live(live, from, to, |slot| {
@@ -135,9 +123,6 @@ fn scatter<const W: usize>(cells: &mut [u8], live: &Flags, from: u32, to: u32, v
     });
 }
 
-/// A number, bool or text column's chunk of slots `from..to`, `bytes[..end]` (followed by at
-/// least eight readable bytes, or the chunk read a byte at a time at its end): each live cell's
-/// code, put at its slot.
 pub(crate) fn numbers(bytes: &[u8], end: usize, from: u32, to: u32, column: usize, table: &mut TableState, values: &mut Vec<u64>) -> io::Result<()> {
     let bytes = &bytes[..bytes.len().min(end + 8)];
     let kind = table.column(column).map(|held| held.kind()).ok_or_else(|| invalid("A restore names a column past its table"))?;
@@ -211,8 +196,6 @@ pub(crate) fn numbers(bytes: &[u8], end: usize, from: u32, to: u32, column: usiz
     Ok(())
 }
 
-/// A list or opaque column's chunk of slots `from..to`, `bytes[..end]`: each live cell's
-/// `length << 1 | unrecorded` and bytes, laid into its page a page at a time.
 pub(crate) fn lists(bytes: &[u8], end: usize, from: u32, to: u32, column: usize, table: &mut TableState, cells: &mut Vec<(u16, u32, u32)>) -> io::Result<()> {
     let bytes = &bytes[..end];
     let mut lists = table.lists(column).ok_or_else(|| invalid("A restore's list chunk for a column of numbers"))?;

@@ -1,17 +1,3 @@
-//! The character-scope trigger inputs the character role jobs do not read:
-//! every country-leader, advisor and scientist role's traits
-//! (CharacterRoleTraits) and each nonzero unit-leader reference with its
-//! object's operands (CharacterOperatives). Their writers (effects, commands
-//! and operative recruitment) run at any hour; see
-//! [`engine_characters::character_inputs`].
-//!
-//! Every hour the Gated job walks the roster job's admitted role census
-//! ([`super::characters::census`]) instead of the roster
-//! ([`Captured::capture_census`]); [`RoleStore`] carries each character's
-//! country-leader and advisor rows while no hooked writer touched them
-//! ([`crate::character_changes`]), and on a quiet hour carries them all
-//! without a lookup. Without an admitted census the pack walks the roster
-//! itself and the store forgets its rows.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -49,8 +35,6 @@ collector_primitives::capacity_max!(Capacities {
     bytes
 });
 impl Capacities {
-    /// From the live walk with no storage, with the three-quarters growth
-    /// rule's headroom. Never lowers.
     pub(crate) fn raise_for_demand(&mut self, demand: Demand) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.traits, rows(demand.traits, 1));
@@ -61,11 +45,9 @@ impl Capacities {
     }
 }
 
-/// Every row and value of the live roster.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Demand {
     pub traits: usize,
-    /// Trait values (token and definition) of the role trait rows.
     pub values: usize,
     pub operatives: usize,
     pub definitions: usize,
@@ -73,7 +55,6 @@ pub struct Demand {
 }
 
 impl Demand {
-    /// The live demand, from the walk with no storage.
     pub(crate) fn observe(
         memory: &impl Memory,
         base: usize,
@@ -121,14 +102,9 @@ pub struct Captured {
     operatives: CaptureRows<native::OperativeRow>,
     definitions: Arena<u32>,
     bytes: Arena<u8>,
-    /// The role store content whose CharacterRoleTraits table these buffers
-    /// hold since their latest census walk, with its result. A walk or a
-    /// failure clears it; `reset` and growth, which only appends default rows
-    /// after the held ones, keep the contents.
     held: Option<(u64, HeldTraits)>,
 }
 
-/// A held CharacterRoleTraits table's outcome and trait arena.
 #[derive(Clone, Copy, Debug)]
 struct HeldTraits {
     outcome: Outcome,
@@ -137,7 +113,6 @@ struct HeldTraits {
 }
 
 impl Captured {
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             traits: 0,
@@ -230,9 +205,6 @@ impl Captured {
         [qpc().saturating_sub(started).max(0) as u64, 0]
     }
 
-    /// The hour's walk over the roster job's admitted role census, carrying
-    /// each certified character's country-leader and advisor rows from
-    /// `store`. Without a census the roster is walked and `store` forgets.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture_census(
         &mut self,
@@ -314,7 +286,6 @@ impl Captured {
         let traits = self.held.map(|(_, traits)| traits);
         self.install(walked, walk);
         match (visited, traits) {
-            // The frame's buffers hold this hour's CharacterRoleTraits.
             (role_store::Visited::Held, Some(traits)) if walked[0] => self.restore_traits(traits),
             _ => {
                 self.held = store
@@ -327,7 +298,6 @@ impl Captured {
         [qpc().saturating_sub(started).max(0) as u64, 0]
     }
 
-    /// Which tables this hour walks; `None` marks both skipped.
     fn walked(&mut self, hour: i32, force_full: bool) -> Option<[bool; N]> {
         let walked = TABLES.map(|table| should_walk(table, hour, force_full));
         if !walked.iter().any(|&walked| walked) {
@@ -405,7 +375,6 @@ impl Captured {
                 let (kind, role) = role_key(row);
                 (u128::from(row.character) << 40) | (u128::from(kind) << 32) | u128::from(role)
             },
-            // The key holds the character, kind and role.
             |_, row, record| {
                 let traits = span(values, row.start, row.len).unwrap();
                 record.word(traits.len() as i64);
@@ -545,7 +514,6 @@ fn span<V>(values: &[V], start: usize, len: usize) -> Option<&[V]> {
     values.get(start..start.checked_add(len)?)
 }
 
-/// The end of the last value span the stored rows use.
 fn spans_end<R>(rows: &[R], span: impl Fn(&R) -> (usize, usize)) -> usize {
     rows.iter()
         .map(|row| {

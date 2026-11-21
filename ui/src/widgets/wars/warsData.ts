@@ -15,7 +15,6 @@ export type WarsView = 'gantt' | 'countries';
 export type WarsColour = 'war' | 'side';
 export type NativeSide = 'viewpoint' | 'opponent';
 
-/** The words a country name takes while it loads or where it was not recorded. */
 export const NAME_WORDS = { pending: 'Loading…', missing: 'Not recorded' };
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null;
@@ -27,7 +26,6 @@ const ordered = (ranges: readonly HourSpan[]) => ranges.every((item, index) => !
 const side = (value: unknown): value is WarSide => value === 'attacker' || value === 'defender' || value === 'viewpoint' || value === 'opponent';
 const raw = (value: unknown) => text(value) && /^-?\d+$/.test(value);
 
-/** Refuse a different or malformed contract before its dated values reach a chart. */
 export function isWarsReply(value: unknown): value is WarsReply {
   if (!object(value) || !text(value.branchId) || typeof value.available !== 'boolean'
     || !list(value.viewpoints, item => range(item) && object(item) && text(item.tag)) || !ordered(value.viewpoints as HourSpan[])
@@ -78,7 +76,6 @@ export function validateWarsReply(value: unknown): WarsReply {
 const isCasualtyRun = (run: unknown) => Array.isArray(run) && run.length === 6 && hour(run[0]) && hour(run[1]) && run[0] <= run[1]
   && run.slice(2).every(raw);
 
-/** Each war's casualties at one hour, by the id the `wars` reply gives it. */
 export function validateWarLosses(value: unknown): WarLossesReply {
   const ids = new Set<string>();
   if (!object(value) || !text(value.branchId) || !hour(value.hour) || !list(value.warnings, text)
@@ -88,7 +85,6 @@ export function validateWarLosses(value: unknown): WarLossesReply {
   return value as unknown as WarLossesReply;
 }
 
-/** The viewpoint's native groups and their contributions at one hour. */
 export function validateWarContributions(value: unknown): WarContributionsReply {
   if (!object(value) || !text(value.branchId) || !hour(value.hour) || typeof value.available !== 'boolean' || !list(value.warnings, text)
     || !list(value.contributions, group => object(group) && list(group.viewpointSide, text) && list(group.opposingSide, text)
@@ -99,14 +95,10 @@ export function validateWarContributions(value: unknown): WarContributionsReply 
   return value as unknown as WarContributionsReply;
 }
 
-/** A war's casualties in a losses reply: its run, or why there is none; undefined when the reply does not list it. */
 export function lossesOf(reply: WarLossesReply | undefined, id: string): WarCasualties | undefined {
   return reply?.wars.find(entry => entry.id === id);
 }
 
-/** The game's contributions for the war at an hour: its native group, or, while the
- * war holds several (a declaration the game lists beside the war it joins), the
- * largest group within it. */
 export function warContributions(groups: readonly WarContributionGroup[] | undefined, observation: WarObservation | null): WarContributionGroup | null {
   if (!groups || !observation) return null;
   const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((tag, index) => tag === b[index]);
@@ -122,17 +114,14 @@ export function warContributions(groups: readonly WarContributionGroup[] | undef
   return best;
 }
 
-/** Covering observations only: an old name or roster never fills an unobserved hour. */
 export function observationAt(war: WarTimeline, at: number): WarObservation | null {
   return runAt(war.observations, Math.floor(at));
 }
 
-/** Finished wars retain their final label and orientation; internal gaps stay unknown. */
 export function labelObservationAt(war: WarTimeline, at: number): WarObservation | null {
   return at > war.lastHour ? war.observations.at(-1) ?? null : observationAt(war, at);
 }
 
-/** The observed overview viewpoint, including peacetime; nothing across a gap. */
 export function viewpointAt(reply: WarsReply, at: number): string | null {
   return runAt(reply.viewpoints, Math.floor(at))?.tag ?? null;
 }
@@ -146,10 +135,8 @@ export function warsReplyState(reply: Pick<WarsReply, 'available'> | null | unde
   return error ? 'error' : !reply ? 'loading' : reply.available ? 'ready' : 'unavailable';
 }
 
-/** A war's start, telling apart wars the game names alike. */
 const startNote = (war: WarTimeline) => ` (${war.startedBy ? 'by' : 'from'} ${dayLabel(war.firstHour)})`;
 
-/** Each war's name at `at`; started wars sharing a recorded name are told apart by their start. */
 export function warNamesAt(wars: readonly WarTimeline[], at: number): Map<WarTimeline, string> {
   const names = new Map(wars.map(war => [war, labelObservationAt(war, at)?.name.text ?? NAME_WORDS.missing]));
   const counts = new Map<string, number>();
@@ -162,7 +149,6 @@ export interface PreparedParticipant {
   key: string;
   lineage: Lineage;
   identities?: CountryIdentityIndex;
-  /** First observed tag; labels resolve the country through its whole tag history. */
   tag: string;
   runs: WarParticipantRun[];
   holdings: WarParticipantRun[];
@@ -175,7 +161,6 @@ export interface WarBarInfo {
   war: WarTimeline;
   participant?: PreparedParticipant;
   run?: WarParticipantRun;
-  /** One country continuously on the same recorded side, across changes of tag. */
   holding?: WarParticipantRun;
   firstHour: number;
   lastHour: number;
@@ -214,7 +199,6 @@ export interface PreparedWars {
   countries: PreparedCountry[];
 }
 
-/** A refetch keeps expanded wars that still belong to this branch and viewpoint. */
 export function retainExpandedWars(expanded: ReadonlySet<string>, byId: ReadonlyMap<string, PreparedWar>): ReadonlySet<string> {
   if ([...expanded].every(id => byId.has(id))) return expanded;
   return new Set([...expanded].filter(id => byId.has(id)));
@@ -224,9 +208,6 @@ export function participantHoldingAt(participant: PreparedParticipant, at: numbe
   return runAt(participant.holdings, Math.floor(at));
 }
 
-/** Where the native country holding `tag` at `hour` last joined `war`, continuously
- * across its tag changes; `joinedBy` when that is only the first hour it was seen in
- * the war. Null when the holder is unidentified or not in the war then. */
 export function joinedAt(war: WarTimeline, tag: string, hour: number, identities: CountryIdentityIndex): { firstHour: number; joinedBy: boolean } | null {
   const key = identities.keyAt(tag, Math.floor(hour));
   const participant = key === null ? undefined : prepareWar(war, 0, new Lineage([]), identities).byCountry.get(key);
@@ -234,7 +215,6 @@ export function joinedAt(war: WarTimeline, tag: string, hour: number, identities
   return holding ? { firstHour: holding.firstHour, joinedBy: holding.joinedBy } : null;
 }
 
-/** The tag this country had at the hour named, including after its last war. */
 export function countryTagAt(view: PreparedParticipant | PreparedCountry, at: number): string | null {
   return view.identities ? view.identities.aliasesAt(new Set([view.key]), Math.floor(at))[0] ?? null
     : view.lineage.tagOf(view.key, Math.floor(at));
@@ -307,8 +287,6 @@ function prepareWar(war: WarTimeline, order: number, lineage: Lineage, identitie
     participants: [...byCountry.values()].sort((a, b) => a.runs[0].firstHour - b.runs[0].firstHour || compareTags(a.tag, b.tag) || compareTags(a.key, b.key)) };
 }
 
-/** Country overlap slots are reserved per war within each connected overlap
- * stretch. Playback never changes their order, and one war cannot hide another. */
 function countryView(key: string, pieces: WarBarInfo[], order: ReadonlyMap<WarTimeline, number>, lineage: Lineage, identities?: CountryIdentityIndex): PreparedCountry {
   const runPieces = new Map<WarParticipantRun, WarBarInfo[]>();
   for (const piece of pieces) {
@@ -335,8 +313,6 @@ function countryView(key: string, pieces: WarBarInfo[], order: ReadonlyMap<WarTi
   return { key, lineage, identities, tag: runs[0].tag, spans: pieces, subrows, firstHour: runs[0].firstHour };
 }
 
-/** Index membership by tag and build overlap slots once per branch reply. Work is
- * linear in output runs apart from deterministic sorts, never countries × wars. */
 export function prepareWars(reply: WarsReply, lineage = new Lineage([]), identities?: CountryIdentityIndex): PreparedWars {
   const countryNames = reply.countryNames;
   const wars = [...reply.wars].sort((a, b) => a.firstHour - b.firstHour || compareTags(a.id, b.id)).map((war, order) => prepareWar(war, order, lineage, identities));
@@ -345,7 +321,6 @@ export function prepareWars(reply: WarsReply, lineage = new Lineage([]), identit
   for (const view of wars) for (const participant of view.participants) {
     let pieces = byCountry.get(participant.key);
     if (!pieces) { pieces = []; byCountry.set(participant.key, pieces); }
-    // The Gantt and country lanes own different slot layouts.
     for (const piece of participant.pieces) pieces.push({ ...piece });
   }
   const countries = [...byCountry].map(([key, pieces]) => countryView(key, pieces, order, lineage, identities))
@@ -376,9 +351,6 @@ export function prepareWars(reply: WarsReply, lineage = new Lineage([]), identit
   return { reply, lineage, identities, identityBounds, unidentifiedHours, wars, byId: new Map(wars.map(view => [view.war.id, view])), countries, labelCatalogue };
 }
 
-/** Every hour at which the lanes either view shows change: a war starts or ends, its observation or name changes, a
- * participant joins or leaves, or a country's tag changes. The lanes at any hour are those of the last of these at or
- * before it, so a widget following the head renders only when the head passes one. */
 export function structureHours(data: PreparedWars): number[] {
   const hours = new Set<number>();
   for (const view of data.wars) {
@@ -390,7 +362,6 @@ export function structureHours(data: PreparedWars): number[] {
   return [...hours].sort((a, b) => a - b);
 }
 
-/** How many of `hours` (ascending) lie at or before `at`: the same for every hour between two of them. */
 export function structureAt(hours: readonly number[], at: number): number {
   let low = 0, high = hours.length;
   while (low < high) {
@@ -402,7 +373,6 @@ export function structureAt(hours: readonly number[], at: number): number {
 
 export type CountryResolver = (tag: string) => ReturnType<CountryLabel> & { color?: string };
 
-/** Oriented labels only when recorded; otherwise keep the native two arrays. */
 export function sideLabel(value: WarSide, observation: WarObservation | null, country: CountryResolver): string {
   if (value === 'attacker') return 'Attackers';
   if (value === 'defender') return 'Defenders';
@@ -427,7 +397,6 @@ export interface WarsLaneOptions {
   colour: WarsColour;
   palette: readonly string[];
   country: CountryResolver;
-  /** Only countries in view are resolved; lane order never depends on their names. */
   named: ReadonlySet<string>;
   sideColours?: ReadonlyMap<string, ReadonlyMap<NativeSide, string>>;
   neutral?: string;
@@ -436,7 +405,6 @@ export interface WarsLaneOptions {
 const barMap = (pieces: readonly WarBarInfo[]) => new Map(pieces.map(piece => [piece.id, piece]));
 const laneId = (...parts: string[]) => JSON.stringify(parts);
 
-/** Only the started prefix is shaped; playback never scans every country's future runs. */
 export function piecesThrough<P extends { firstHour: number }>(pieces: readonly P[], at: number): readonly P[] {
   let low = 0;
   let high = pieces.length;
@@ -453,8 +421,6 @@ function spanOf(piece: WarBarInfo, label: string, color: string | undefined, hei
     ...(piece.capitulations?.length ? { glyphShape: 'cross' as const, glyphHours: piece.capitulations } : {}) };
 }
 
-/** Shape the two views using the same prepared runs. Names, flags and colours are
- * requested only for the visible countries supplied by the timeline viewport. */
 export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptions): { lanes: TimelineLane[]; info: Map<string, WarsLaneInfo> } {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, WarsLaneInfo>();
@@ -523,7 +489,6 @@ export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptio
   return { lanes, info };
 }
 
-/** The visible lanes' current country labels, including an unoriented side's viewpoint. */
 export function laneCountries(lanes: readonly TimelineLane[], info: ReadonlyMap<string, WarsLaneInfo>, at: number): string[] {
   const tags = new Set<string>();
   for (const lane of lanes) {

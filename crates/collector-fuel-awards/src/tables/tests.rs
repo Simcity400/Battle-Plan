@@ -100,8 +100,6 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
         events[1].started.country_instance = 0;
         events[3].started.country_instance = 0;
         if hour == 25 {
-            // Native dynamic reuse can leave both pointer and count at zero. Reset precedes the
-            // next ordinary update, without a branch/gap.
             events.insert(
                 0,
                 Entry {
@@ -122,7 +120,6 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
                 panic!()
             };
             assert!(!reset.reason.is_empty());
-            // A refused day keeps no partial sums or receipts.
             assert!(reset.recipients.is_empty() && reset.own_gain_raw == 0);
             assert_eq!(reset.continuity_start_hour, Some(25));
         }
@@ -134,7 +131,6 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
         panic!()
     };
     assert!(reset.reason.is_empty());
-    // The 24 updates of hours 25 to 48, each paying the same recipient.
     assert_eq!(reset.last_hour, 48);
     assert_eq!(
         (
@@ -229,7 +225,7 @@ fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() 
     let mut previous = first;
     for (boundary, signal) in [(24, 1), (0, 1), (25, 2)] {
         let observation = tracker.observe(None, boundary, Some(signal), &[]).unwrap();
-        assert_ne!(observation.branch, previous); // repeat, backward time, load
+        assert_ne!(observation.branch, previous);
         previous = observation.branch;
         tracker.record_hour(previous, boundary).unwrap();
         windows
@@ -261,8 +257,6 @@ fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() 
         assert!(window.reason.is_empty());
         assert_eq!(window.continuity_start_hour, Some(boundary + 1));
     }
-    // The container resumes the same process from its recovered last hour;
-    // Campaign opens fresh Windows even when that next hour keeps the branch.
     let mut resumed = replay_frame::branches::BranchTracker::new();
     resumed
         .seed_recorded_branch(
@@ -333,7 +327,6 @@ fn writer_window_keeps_corrections_names_owner_and_local_refusals() {
             continue;
         }
         assert!(day.reason.is_empty());
-        // 24 updates of gains [2, -3, 4, 0] and own gain 3.
         assert_eq!(day.last_hour, 24);
         assert_eq!(day.gains_raw, [48, -72, 96, 0]);
         assert_eq!(day.own_gain_raw, 72);

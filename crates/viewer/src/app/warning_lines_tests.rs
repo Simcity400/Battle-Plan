@@ -1,5 +1,3 @@
-//! The window's limitation lines with the playhead's map open are the map's own, with no hour of
-//! today's installed: the whole list, the drawn layers' own notes in it.
 use super::{Config, MAP_LINES_LOADING, Options, Viewer};
 use crate::{
     layers::{View, recorded::record, strikes::Strikes},
@@ -45,8 +43,6 @@ fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
     assert!(!lines.iter().any(|line| line.contains("not given by the playhead's layers")), "no general line in place of the notes: {lines:?}");
 }
 
-/// A viewing country whose vision is refused withholds the overlay; the map names the refusal with
-/// its diagnostics off, from the open map alone, never only in the warnings a diagnostics frame builds.
 #[test]
 fn a_refused_vision_is_named_on_the_map_without_diagnostics() {
     use crate::layers::vision::{Content, Vision};

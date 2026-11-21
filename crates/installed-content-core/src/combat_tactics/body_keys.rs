@@ -1,47 +1,30 @@
-//! Specialized key dispatch and embedded helper objects.
 
 use super::{Node, Shaper};
 use crate::parser::native::{Field, Shape};
 
 impl Shaper<'_> {
-    /// Value readers of the static keys in KEY_READERS. The remaining
-    /// accepted keys call scalar/string/scoped-variable readers only.
     pub(super) fn body_value(&mut self, token: u32, field: &Field<'_>) -> Shape<Node> {
         let key = field.keyword();
         match (token, key.as_deref()) {
-            // Each entry sets the value slot; the closing token resolves only
-            // into the lexer.
             (0x4967 | 0x49DA | 0x49DB | 0x49DC | 0x47B9, Some(b"target")) if field.opens() => {
                 Shape::ValueList
             }
-            // An opening brace selects the state array. Entries set the value
-            // slot, while the close does not.
             (0x4363, Some(b"target")) if field.opens() => Shape::ValueList,
-            // Collections are the same embedded collection reader everywhere.
             (0x27FA | 0x474B | 0x474C | 0x40DF, Some(b"collection")) => Self::collection(field),
-            // Country entries follow the same array read.
             (0x40DF, Some(b"countries")) if field.opens() => Shape::ValueList,
-            // Read the current lexer token, preserving the reader's retained value
-            // slot. Power-balance readers use the same path.
             (0x3CBD | 0x3CBE | 0x3CCE | 0x3CCF | 0x3CC0 | 0x3CC1 | 0x3E53, Some(b"id"))
             | (0x3CBD, Some(b"range"))
             | (0x3CCE, Some(b"side")) => Shape::Current,
-            // Integer and token lists consume resolved tokens.
             (0x39CE, Some(b"regions"))
             | (0x3164, Some(b"resources"))
             | (0x4D7E | 0x4D7F, Some(b"states" | b"types" | b"exclude")) => Shape::RawList,
-            // The navy's weight map reads any key, then one fixed5 token.
             (0x3C75, Some(b"sub_unit_def_weights")) => Shape::Object(Node::ScalarFields),
-            // Idea and ignore fields are lists only when the value opens a block.
             (0x3366 | 0x4CBB, Some(b"idea" | b"ignore")) if field.opens() => Shape::RawList,
-            // Categories and slots accept a scalar or list.
             (0x37F7, Some(b"categories" | b"slots")) if field.opens() => Shape::CheckedList {
                 stores_value: false,
             },
             (0x3BE4, Some(b"building")) => self.building(field, false, 0x140491A40),
-            // Type fields reject an opening value.
             (0x39E7 | 0x3A2B, Some(b"type")) if field.opens() => Shape::Skip,
-            // Invalid comparison operators are rejected.
             (0x3E81 | 0x3F14, Some(b"compare")) if !comparison(field) => Shape::Skip,
             (0x37DC, Some(b"province")) => Shape::Object(Node::KeyReader(0x140491320)),
             (0x37DC, Some(b"building")) => self.building(field, true, 0x140491100),
@@ -53,7 +36,6 @@ impl Shaper<'_> {
             {
                 Shape::Skip
             }
-            // License conditions contain an equipment variant reference.
             (0x37B9, Some(b"equipment")) => Shape::Object(Node::KeyReader(0x1414C4850)),
             (0x2828 | 0x2938, Some(b"path")) => Shape::RawList,
             (0x2828 | 0x2938, Some(b"controller_priority")) => Shape::Object(Node::Mtth),
@@ -67,19 +49,15 @@ impl Shaper<'_> {
         }
     }
 
-    /// Bespoke loops and embedded readers with no coded-trigger token.
     pub(super) fn native_key(&mut self, address: u64, field: &Field<'_>) -> Shape<Node> {
         let key = field.keyword();
         let key = key.as_deref();
         match address {
-            // Variable triggers select an expression for an opening value,
-            // except for var/tooltip; unknown names remain scoped variables.
             0x14045AC70 if !matches!(key, Some(b"tooltip" | b"var")) && field.opens() => {
                 Shape::Expression
             }
             0x14045AC70 | 0x140456ff0 | 0x140457940 | 0x14045A7F0 | 0x14045FF80
             | 0x140491C10 | 0x140458040 | 0x1403C9110 | 0x140457BC0
-            // These own loops return for unknown keys without skipping.
             | 0x1404571a0 | 0x140457AB0 | 0x14045A250 | 0x1404A0810
             | 0x140477D70 => Shape::One,
             0x140456DB0 | 0x14045FD00 if key == Some(b"compare") && !comparison(field) => {
@@ -90,8 +68,6 @@ impl Shaper<'_> {
             0x1403CC550 => Shape::One,
             0x1403CC150 if key == Some(b"text") => Shape::RawText,
             0x1403CC150 => Shape::One,
-            // Province-building filters and equipment variant references are
-            // embedded objects, not registered trigger classes.
             0x140491320
                 if matches!(
                     key,
@@ -123,7 +99,6 @@ impl Shaper<'_> {
                 Shape::One
             }
             0x140491320 | 0x1414C4850 => Shape::Skip,
-            // The three authored collection fields.
             0x140A6A4C0 if key == Some(b"name") => Shape::ObjectIfOpen(Node::BoundLocalization),
             0x140A6A4C0 if key == Some(b"operators") && field.opens() => {
                 Shape::Statements(Node::CollectionOperator)
@@ -135,7 +110,6 @@ impl Shaper<'_> {
     }
 
     pub(super) fn collection_operator(&mut self, field: &Field<'_>) -> Shape<Node> {
-        // Bare values consume no further token; anonymous blocks use error recovery.
         if field.key.text.is_empty() {
             return if field.opens() {
                 Shape::Skip
@@ -143,8 +117,6 @@ impl Shaper<'_> {
                 Shape::One
             };
         }
-        // Only `limit` reads an AND trigger. The four bare-only operators use
-        // raw block skipping after a scan error; every other key uses error recovery.
         match field.keyword().as_deref() {
             Some(b"limit") => Shape::Body(Node::Trigger),
             Some(
@@ -158,8 +130,6 @@ impl Shaper<'_> {
     }
 
     fn collection(field: &Field<'_>) -> Shape<Node> {
-        // An opening value reads collection fields; any other value reads
-        // one token. Post-read checks do not skip.
         if field.opens() {
             Shape::Object(Node::KeyReader(0x140A6A4C0))
         } else {

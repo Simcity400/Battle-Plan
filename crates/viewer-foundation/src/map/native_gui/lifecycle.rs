@@ -1,65 +1,21 @@
-//! Retained lifecycle for each constructed GUI window. A caller owns one [`Instance`] per
-//! window identity, applies ordered calls such as [`Instance::set_position`],
-//! [`Instance::gui_show`], [`Instance::hide`] and [`Instance::set_sprite`], then ticks and
-//! lays it out. Related instances run each frame phase across all windows:
-//! [`Instance::tick_clocks`], [`Instance::tick_transitions`] in [`Registration`] order, then
-//! [`Instance::tick_draws`].
-//!
-//! The instance contains the complete constructed object graph, including inherited scrollbar
-//! parts ([`widgets::scrollbar_part`]), container scrollbars
-//! ([`widgets::Walk::content_scroll`]), named text/list scrollbars
-//! ([`widgets::Walk::named_plain`]) and fixed-window backgrounds ([`fixed::background`]). Each
-//! has its own state and [`Site`].
-//!
-//! The instance retains:
-//! - Visibility and hide bits. A guarded Show changes nothing; interaction locking is unused
-//!   by map icons.
-//! - Fades and movements for every container. Show fades and opacity writes reach child
-//!   windows; hide fades propagate when the parent does not fade. Showing and immediate or
-//!   completed hiding reach child controls and windows. Transition windows register after their
-//!   children, including drop-down headers and expanded windows, and tick in reverse
-//!   registration order.
-//! - Smoothed container scrollbar values that move content on the clock.
-//! - Drawable clocks: frame playback, cornered-tile pulses, first-draw animation time,
-//!   state-effect restarts at the first draw after a state change, and trigger-record starts.
-//!   All use [`Tick::time`] and [`Bindings::time`]. Replacing a drawable starts fresh state
-//!   ([`Runtime`]); a nonterminating clock wrap is refused where it draws.
-//! - Drawables and control writes. Failed or unchanged sprite lookups preserve the drawable;
-//!   frames, text, colours and progress values persist until overwritten. Reusing a pooled
-//!   window preserves this state.
-//!
-//! Prepared hours record [`Calls`] without an instance; presented frames apply them with
-//! [`Calls::apply`]. Background jobs never share an instance.
 
 use super::*;
 use std::{borrow::Cow, sync::Arc};
 
-/// One presented frame of the view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tick {
-    /// `Time`: the view's presentation clock in seconds, stored as f32 once per frame. Every
-    /// drawable timestamp and draw uses it; one view shares one clock across its instances.
     pub time: f32,
-    /// Seconds advanced by this frame for drawable clocks and window transitions; a new
-    /// Instance's first step may be zero.
     pub dt: f32,
 }
 
-/// An element's visibility flags, initialized from the authored `hide` bit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Shown {
-    /// Whether this element is currently visible.
     pub(super) visible: bool,
-    /// The hide guard, which keeps every show call from showing it.
     pub(super) hide: bool,
-    /// A code Hide reached it. For a plain scrollbar this hides range icons shown during
-    /// construction; only a Show allowed by its hide bit shows them again.
     pub(super) hidden_by_code: bool,
 }
 
 impl Shown {
-    /// As a layout with no lifecycle takes an element: shown unless its authored `hide` is set,
-    /// as a window its code shows leaves it.
     pub(super) fn shown_by_code(element: &Element) -> Self {
         Self {
             visible: !element.hide,
@@ -68,7 +24,6 @@ impl Shown {
         }
     }
 
-    /// Sets the visible bit unless the hide bit guards the Show. Returns whether it showed.
     pub(super) fn show(&mut self) -> bool {
         if self.hide {
             return false;
@@ -77,19 +32,16 @@ impl Shown {
         true
     }
 
-    /// Clears the visible bit.
     pub(super) fn hide(&mut self) {
         self.visible = false;
         self.hidden_by_code = true;
     }
 }
 
-/// Template milliseconds as seconds (`/ 1000.0f`).
 fn seconds(milliseconds: i32) -> f32 {
     milliseconds as f32 / 1000.0
 }
 
-/// Preserves coordinate flags and bounds, rounding percentages converted from pixels.
 fn coordinate_pixels(coordinate: &mut Coordinate, pixels: i32, parent: i32) {
     coordinate.value = if !coordinate.percent {
         pixels
@@ -110,57 +62,37 @@ fn position_pixels(position: &mut native::Position, point: [i32; 2], parent: [i3
     coordinate_pixels(&mut position.y, point[1], parent[1]);
 }
 
-/// One container's fade and movement (`container window`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Window {
-    /// The parent's size the window's positions are evaluated in.
     parent: [i32; 2],
-    /// The native size and wrapper extents last relaid out.
     size: native::Size,
     frame: Frame,
-    /// The materialized show position used to evaluate the runtime size.
     show_position: native::Position,
-    /// The saved anchored point, unchanged by later position writes.
     anchored_position: [i32; 2],
-    /// Fade state: 0 still, 1 fading in, 2 fading out.
     fade: u8,
-    /// Elapsed fade time in seconds.
     fade_elapsed: f32,
-    /// Current window opacity.
     opacity: f32,
-    /// The evaluated window position, which the movement starts from.
     current: [i32; 2],
-    /// The last supplied top-left position, where the window draws.
     position: [i32; 2],
-    /// The movement target position.
     target: [i32; 2],
-    /// Displacement from the movement start to its target, per axis.
     delta: [f32; 2],
-    /// Elapsed movement time in seconds.
     elapsed: f32,
-    /// Whether the movement has arrived at its target.
     done: bool,
-    /// Movement mode: 0 none, 1 show, 2 hide.
     mode: u8,
-    /// The running movement's easing and duration in seconds.
     kind: Animation,
     duration: f32,
-    /// Whether movement completion hides the window and its children or the window alone.
     hide_children: bool,
     hide_only: bool,
 }
 
-/// A frame-animated sprite's elapsed time, playing state and last frame written by its updater.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct FrameClock {
     elapsed: f32,
     playing: bool,
-    /// `None` while the drawable holds the frame its control or code set.
     frame: Option<i32>,
 }
 
 impl FrameClock {
-    /// Starts at zero elapsed time, stopped, with the frame supplied by its control.
     pub(super) fn new() -> Self {
         Self {
             elapsed: 0.0,
@@ -169,12 +101,6 @@ impl FrameClock {
         }
     }
 
-    /// Advances a shown drawable only when playing or configured to play on show. Duration
-    /// comes from the unsigned frame count and seconds per frame, with a minimum of 0.01
-    /// seconds. A nonlooping sprite stops at its last frame after the duration; a looping one
-    /// wraps by duration plus pause and shows frame 1 during the pause. A stopped clock
-    /// preserves the code-selected frame. Refuses a wrap whose nonpositive period or
-    /// floating-point subtraction cannot advance, because the game never leaves that loop.
     pub(super) fn update(&mut self, kind: &SpriteKind, frames: i32, dt: f32) -> Result<(), String> {
         let SpriteKind::FrameAnimated {
             seconds_per_frame,
@@ -188,8 +114,6 @@ impl FrameClock {
         if !(self.playing || play_on_show) {
             return Ok(());
         }
-        // The frame count is stored unclamped and its bits convert unsigned for clock
-        // arithmetic.
         let frame_count = frames as u32 as f32;
         let duration = (frame_count * seconds_per_frame).max(0.01);
         self.elapsed += dt;
@@ -200,8 +124,6 @@ impl FrameClock {
         }
         while self.elapsed > pause + duration {
             let next = self.elapsed - (pause + duration);
-            // No progress towards the period (it is 0 or less, or below the time's precision):
-            // Every later pass is the same or further from the exit.
             if next >= self.elapsed {
                 return Err(format!(
                     "a frame-animated sprite's time {} exceeds its wrap period {} (duration \
@@ -214,7 +136,6 @@ impl FrameClock {
             self.elapsed = next;
         }
         self.frame = Some(if self.elapsed < duration {
-            // Truncate the frame number using the f32 integer conversion.
             installed_content_core::crt::truncate_f32(self.elapsed / duration * frame_count + 1.0)
         } else {
             1
@@ -222,26 +143,21 @@ impl FrameClock {
         Ok(())
     }
 
-    /// Starts the animation by setting its playing state.
     #[cfg(test)]
     pub(super) fn play(&mut self) {
         self.playing = true;
     }
 
-    /// The frame its updater last wrote.
     #[cfg(test)]
     pub(super) fn frame(&self) -> Option<i32> {
         self.frame
     }
 
-    /// Whether the updater changes it on the next tick.
     fn runs(&self, kind: &SpriteKind) -> bool {
         matches!(*kind, SpriteKind::FrameAnimated { play_on_show, .. } if self.playing || play_on_show)
     }
 }
 
-/// `AnimationTime`: the time into the frame `frame` the drawable holds over the type's seconds
-/// per frame, clamped to `[0, 1]`, from its clock's `elapsed`.
 pub(super) fn animation_time(frame: i32, elapsed: f32, kind: &SpriteKind) -> f32 {
     let SpriteKind::FrameAnimated {
         seconds_per_frame, ..
@@ -252,16 +168,12 @@ pub(super) fn animation_time(frame: i32, elapsed: f32, kind: &SpriteKind) -> f32
     ((elapsed - (frame - 1) as f32 * seconds_per_frame) / seconds_per_frame).clamp(0.0, 1.0)
 }
 
-/// A looping cornered tile advances its pulse phase by elapsed time and rate, wraps below one,
-/// and produces a doubled triangle wave.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Pulse {
     phase: f32,
 }
 
 impl Pulse {
-    /// Advances the pulse for one frame at `rate`. Refuses an infinite phase or one so large
-    /// that subtracting one cannot change it, because wrapping would never finish.
     pub(super) fn update(&mut self, rate: f32, dt: f32) -> Result<(), String> {
         self.phase += dt * rate;
         while self.phase > 1.0 {
@@ -288,35 +200,25 @@ impl Pulse {
     }
 }
 
-/// A drawable's frame clock and its sprite's kind, as last resolved.
 #[derive(Clone, Debug, PartialEq)]
 struct Clock {
     clock: FrameClock,
     kind: SpriteKind,
 }
 
-/// The state of the drawable a control currently shows, retained until its replacement.
-/// Replacement resets the first-draw timestamp, state-effect restart, trigger records, frame
-/// playback and pulse. The new drawable inherits the previous state and marks an effect
-/// restart at its first draw. A call that preserves the drawable preserves all this state.
 #[derive(Clone, Debug, PartialEq)]
 struct Runtime {
     sprite: Vec<u8>,
     made: u32,
     clock: Option<Clock>,
     pulse: Option<Pulse>,
-    /// Why its clock or pulse hangs the game.
     hang: Option<String>,
-    /// The graphics clock at its first draw.
     first_draw: Option<f32>,
     effect: Option<StateEffect>,
-    /// The instance pair it last saw.
     triggers: Vec<(f32, u32)>,
 }
 
 impl Runtime {
-    /// The state of the drawable built from `sprite` by setter call `made`, as its constructor
-    /// leaves it.
     fn new(sprite: Vec<u8>, made: u32) -> Self {
         Self {
             sprite,
@@ -335,8 +237,6 @@ impl Runtime {
     }
 }
 
-/// A drawable a setter made: its sprite, the setter, and which of the control's successful
-/// setter calls it is (from 1).
 #[derive(Clone, Debug, PartialEq)]
 struct Made {
     sprite: Arc<[u8]>,
@@ -344,37 +244,25 @@ struct Made {
     made: u32,
 }
 
-/// A code call on a control's drawable, in the order the code makes them.
 #[derive(Clone, Debug, PartialEq)]
 enum Event {
-    /// Sprite replacement through `setter` ([`Instance::set_sprite`]).
     Sprite(Vec<u8>, SpriteSetter),
-    /// Frame assignment ([`Instance::set_frame`]).
     Frame(i32),
-    /// A normalized progress setter writes its rounded raw state.
     ProgressFloat(i32),
-    /// The code starts the drawable's animation ([`Instance::play`]).
     #[cfg(any(test, feature = "test-support"))]
     Play,
 }
 
-/// The drawable a control shows after its pending calls: [`Instance::retained`].
 #[derive(Clone, Debug, PartialEq)]
 struct Retained {
     made: Option<Made>,
-    /// Every successful setter call so far.
     count: u32,
-    /// The frame the code set on the current drawable (`None`: its own).
     frame: Option<i32>,
     progress_float: Option<i32>,
-    /// A frame assignment reached the current drawable since the last tick; it holds that frame.
     framed: bool,
-    /// An animation start reached the current drawable since the last tick; it is playing.
     played: bool,
 }
 
-/// The state effect of a drawable as last drawn: the state, the graphics clock at its last
-/// restart, and how long after it its effect keeps changing ([`Effect::settles`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct StateEffect {
     state: u32,
@@ -382,19 +270,13 @@ struct StateEffect {
     settles: Settles,
 }
 
-/// The largest clock the GUI reads: seconds of an `Instant`'s elapsed `Duration`, whose whole
-/// seconds are a `u64`. An effect settles for good only if its program's values stay finite
-/// up to it ([`Settling::limit`]), since the clock only grows while it shows.
 const LONGEST_CLOCK: f32 = u64::MAX as f32;
 
-/// Whether `settles` has settled `elapsed` seconds past its restart, at clock magnitude `clock`,
-/// for as long as the clock can run.
 fn settled(settles: &Settling, elapsed: f32, clock: f32) -> bool {
     settles.limit >= LONGEST_CLOCK && settles.reached(elapsed, clock)
 }
 
 impl super::Shading {
-    /// Whether the draw still changes on the clock at its `since`.
     pub fn changing(&self) -> bool {
         match self.settles() {
             Settles::Program(None) => self.clocked,
@@ -411,30 +293,19 @@ impl super::Shading {
     }
 }
 
-/// The related objects reached when an object's visibility changes.
 #[derive(Clone, Debug, PartialEq)]
 enum Drawables {
     None,
-    /// A plain scrollbar: its right and left buttons, track and slider, each by its own Show
-    /// and Hide; its range icons refreshed on a Show (shown where it places them, hidden
-    /// elsewhere) and hidden on a Hide.
     Scrollbar {
         parts: Vec<usize>,
         icons: Vec<(usize, bool)>,
     },
-    /// Every part by its own Show and Hide: an extended scrollbar's five.
     All(Vec<usize>),
-    /// A drop-down shows its expand button and, when previously invisible, its header.
-    /// Hiding it hides both and the expanded window, which only input opens.
     DropDown {
         expand: Option<usize>,
         expanded: Option<usize>,
         header: Option<usize>,
     },
-    /// An `instantTextBoxType`'s scrollbar: shown while the box's scrollbar-hidden flag is
-    /// clear, hidden with the box. Each text the code writes refreshes it at once
-    /// ([`Instance::set_text`]): `state` is the bar as the writes left it, `written` the text
-    /// last written through it.
     TextBox {
         bar: usize,
         flag: bool,
@@ -442,19 +313,14 @@ enum Drawables {
         scroll: f32,
         written: Option<String>,
     },
-    /// A list box's scrollbar: hidden with the box, shown only by the rows its code appends,
-    /// whose places and scrollbar [`widgets::list_box_rows`] lays out apart from the instance.
     ListBox {
         bar: usize,
     },
 }
 
-/// A container scrollbar smooths its current value toward the target, moving window content
-/// each frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Smooth {
     vertical: bool,
-    /// The bar's node and its slider's.
     bar: usize,
     slider: Option<usize>,
     state: widgets::ContainerBar,
@@ -465,7 +331,6 @@ struct Smooth {
 }
 
 impl Smooth {
-    /// Snaps and updates the track even without an observer notification.
     fn set_target(&mut self, template: &native::ExtendedScrollbar, value: i64, notify: bool) {
         self.state.value = self.state.range.snap(value);
         self.state.track_frame = widgets::track_frame(template, self.state.range, self.state.value);
@@ -478,9 +343,6 @@ impl Smooth {
         }
     }
 
-    /// Advances the current value when it differs from the target, notifying the observer. It
-    /// snaps within 0.1 or while the slider is hidden; otherwise distance and factor use
-    /// 64-bit wrapping fixed-point arithmetic with C division.
     fn update(&mut self, slider: bool) {
         if self.current == self.state.value {
             return;
@@ -496,48 +358,27 @@ impl Smooth {
     }
 }
 
-/// One object of the instance.
 #[derive(Clone, Debug)]
 struct Node {
     parent: Option<usize>,
-    /// A child of its parent (not a background or a part it holds).
     child: bool,
-    /// A part its holder shows and hides through the part's own visibility calls
-    /// (an extended scrollbar's, a drop-down's, a plain scrollbar's, a window's own
-    /// scrollbar, a text or list box's scrollbar, a `windowType`'s background), which keeps its
-    /// own visible bit; any other nested element (a background) follows its holder's.
     part: bool,
-    /// Built from another template for the node `owner` by `role` (`None`: an element of the
-    /// template).
     built: Option<(usize, Role)>,
-    /// Drawn in a button's state, including disabled greying: a child button, scrollbar knob,
-    /// extended-scrollbar increase/decrease button or drop-down expand button, excluding drag
-    /// parts and backgrounds.
     stateful: bool,
-    /// The authored `hide`, which the walk reads for a plain scrollbar's range icons.
     hide: bool,
-    /// The direct children, in declaration order.
     children: Vec<usize>,
-    /// The direct child windows, in declaration order.
     windows: Vec<usize>,
     kind: Kind,
     shown: Shown,
     window: Option<Window>,
     drawables: Drawables,
-    /// Objects shown and hidden with their window when their ownership flag is set: container
-    /// scrollbars or a fixed-window background.
     owned: Vec<(usize, bool)>,
-    /// A window's smoothed scrollbars.
     smooth: Vec<Smooth>,
-    /// What the code set on it, kept until it writes it again.
     control: Bound,
-    /// Its drawable, the one a setter made, and the calls on it since the last tick.
     made: Option<Made>,
     made_count: u32,
     events: Vec<Event>,
-    /// Whether this frame's ordered calls played the current drawable.
     played: bool,
-    /// What the game keeps on the drawable it shows ([`Runtime`]).
     runtime: Option<Runtime>,
 }
 
@@ -568,19 +409,12 @@ impl Node {
     }
 }
 
-/// A grid or overlapping list reached by a visibility call: it shows or hides every
-/// item it holds, windows its caller keeps as their own instances
-/// ([`Instance::gui_show`] on each).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Held {
     pub path: String,
     pub shown: bool,
 }
 
-/// Where an instance's windows stand in the shared transition list, ordered by instance
-/// construction. Each configured window registers once built, after its children. One
-/// Instance's registrations are contiguous and later instances follow it. Consumers tick
-/// transitions ([`Instance::tick_transitions`]) in descending registration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Registration(u64);
 
@@ -591,86 +425,49 @@ impl Registration {
     }
 }
 
-/// The frame phases run across every object before advancing: drawable clocks
-/// ([`Instance::tick_clocks`]), window transitions ([`Instance::tick_transitions`] in
-/// [`Registration`] order), then drawable draw records ([`Instance::tick_draws`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    /// Drawn, or never ticked: the next frame starts with its clocks.
     Drawn,
-    /// Its clocks ran for the frame: its transitions come next.
     Clocked,
-    /// Its transitions ran: its draw comes next.
     Moved,
 }
 
-/// One constructed window and its descendants, as the game keeps them between frames.
 #[derive(Clone, Debug)]
 pub struct Instance {
-    /// The template's root path and element count: the instance answers only its own template.
     template: String,
     count: usize,
-    /// The immutable template's authored traversal and element lookup.
     tree: Arc<Tree>,
-    /// Text boxes whose scrollbar must observe every text write in order.
     text_boxes: Vec<usize>,
-    /// Drawables whose frame clock or pulse can advance, including text-only buttons
-    /// whose current text decides whether they have a fallback drawable.
     clock_nodes: Vec<usize>,
-    /// The GUI viewport (`graphics state`).
     viewport: [i32; 2],
     nodes: Vec<Node>,
-    /// The windows the GUI lifecycle ticks (the GUI lifecycle), in registration order.
     registered: Vec<usize>,
-    /// Where its windows stand in the GUI lifecycle's list among every instance's ([`Registration`]).
     registration: Registration,
-    /// How far the frame being ticked has come ([`Phase`]).
     phase: Phase,
-    /// The graphics clock `Time` of the last tick.
     time: f32,
-    /// The step of the frame being ticked, which its transitions take.
     dt: f32,
-    /// Its next transitions run to their ends ([`Self::settle_transitions`]).
     settle: bool,
-    /// Ticked since it was made: a new instance is pending its first (`dt = 0`) tick.
     ticked: bool,
-    /// A call other than a move changed it since its last tick's draws.
     written: bool,
-    /// The frame being ticked found it idle at its clocks ([`Self::idle`]).
     idle_tick: bool,
-    /// Whether a draw that keeps the previous draw's program still changes on the clock, as the
-    /// last tick resolved it in draw order ([`Self::kept_changes`]).
     kept: bool,
     held: Vec<Held>,
-    /// The button the last pointer layout drew in Over or Down ([`Self::point`]).
     pointed: Option<super::Pointed>,
-    /// The check boxes the last pointer layout drew under the pointer.
     boxes: Vec<String>,
-    /// What [`Self::active`] answered about the window as it now stands. A call that changes the
-    /// window and each phase of a tick forget it; nothing else can change the answer, so a window
-    /// neither written nor ticked is not asked again.
     active_known: std::cell::Cell<Option<bool>>,
-    /// Counts every change of what a layout reads: each write and each tick that found it not
-    /// [idle](Self::idle). A move is none: a layout is made at the window's origin.
     revision: u64,
-    /// The last layout [`Self::layout_kept`] made and what it made it from.
     laid: std::cell::RefCell<Option<Laid>>,
 }
 
-/// A layout an instance keeps, and what it was made from: the instance's revision, its root, the
-/// caller's stamp of the resources, and whether it holds regions.
 #[derive(Clone, Debug)]
 struct Laid {
     revision: u64,
-    /// The root's address, only compared.
     root: usize,
     stamp: u64,
     regions: bool,
     layout: Result<Option<Layout>, Refusals>,
 }
 
-/// The authored parts followed by ordinary children, in `Element::nested` order without
-/// building a temporary collection for each element.
 fn nested(element: &Element) -> impl DoubleEndedIterator<Item = (&Element, bool)> {
     let backgrounds = match &element.fields {
         Fields::Container(container) => container.backgrounds.as_slice(),
@@ -702,7 +499,6 @@ fn nested(element: &Element) -> impl DoubleEndedIterator<Item = (&Element, bool)
         .chain(element.children.iter().map(|element| (element, true)))
 }
 
-/// The route's authored slot, without visiting preceding ordinary children.
 fn nested_at(element: &Element, mut slot: usize) -> &Element {
     if let Fields::Container(container) = &element.fields {
         if let Some(background) = container.backgrounds.get(slot) {
@@ -737,7 +533,6 @@ fn nested_at(element: &Element, mut slot: usize) -> &Element {
     &element.children[slot]
 }
 
-/// Every element of `root`, in pre-order over its authored parts and children.
 fn elements(root: &Element) -> Vec<(&Element, Option<usize>, bool)> {
     let mut out = Vec::new();
     let mut stack = vec![(root, None, true)];
@@ -751,8 +546,6 @@ fn elements(root: &Element) -> Vec<(&Element, Option<usize>, bool)> {
     out
 }
 
-/// Routes into the immutable template, retained without borrowing it. A copied template can
-/// still be supplied; its traversal is checked separately, as at construction.
 #[derive(Debug)]
 struct Tree {
     root: usize,
@@ -765,7 +558,6 @@ impl Tree {
     fn new(elements: &[(&Element, Option<usize>, bool)]) -> Self {
         let mut paths = HashMap::with_capacity(elements.len());
         for (index, (element, ..)) in elements.iter().enumerate() {
-            // Repeated authored paths resolve to the first occurrence, just as a walk does.
             paths.entry(element.path.clone()).or_insert(index);
         }
         Self {
@@ -827,8 +619,6 @@ impl Tree {
     }
 }
 
-/// Authored elements borrowed only for one ordered call transaction. A stream that never
-/// reaches a visibility call or a text scrollbar never builds the traversal.
 #[derive(Default)]
 struct CallElements<'a> {
     held: Option<Vec<(&'a Element, Option<usize>, bool)>>,
@@ -848,7 +638,6 @@ impl<'a> CallElements<'a> {
     }
 }
 
-/// One object of a window's construction ([`graph`]).
 struct Object<'a> {
     element: &'a Element,
     parent: Option<usize>,
@@ -857,14 +646,6 @@ struct Object<'a> {
     built: Option<(usize, Role)>,
 }
 
-/// The objects `root`'s construction builds, in the instance's node order: every element of the
-/// template in pre-order over [`Element::nested`], then, owner by owner, each object built from
-/// another template ([`Role`]), found through the walk's own lookups so that the instance and
-/// the walk hold the same objects: a plain scrollbar child's parts ([`Walk::plain`]), a
-/// container's own scrollbars and their five parts ([`Walk::content_scroll`]), a text box's and a
-/// list box's scrollbar and its parts ([`Walk::named_plain`]), a `windowType`'s background
-/// ([`fixed::background`]). A lookup the game fails on builds nothing here; the walk refuses it
-/// where it draws.
 fn graph<'a>(
     root: &'a Element,
     resources: &'a dyn Resources,
@@ -980,8 +761,6 @@ fn graph<'a>(
     objects
 }
 
-/// The current drawable or fallback ([`drawn_sprite`]); `None` when absent. A text-only button
-/// uses its text object ([`text_only`]), with the last code-written text.
 fn drawn<'a>(
     element: &'a Element,
     made: Option<&'a Made>,
@@ -1020,7 +799,6 @@ fn drawn<'a>(
     }
 }
 
-/// Only these drawable types have an updater before the window transitions.
 fn clock_candidate(element: &Element, made: Option<&Made>, resources: &dyn Resources) -> bool {
     if made.is_none()
         && element.button().is_some_and(|button| {
@@ -1042,7 +820,6 @@ fn clock_candidate(element: &Element, made: Option<&Made>, resources: &dyn Resou
     })
 }
 
-/// The technique selected for state `state`.
 fn technique(state: u32) -> &'static str {
     match state {
         2 => "Down",
@@ -1052,8 +829,6 @@ fn technique(state: u32) -> &'static str {
     }
 }
 
-/// Whether the object `index` is drawn in a button's state ([`Node::stateful`]): drawn by the
-/// walk as a button (`Walk::button`), not as a background or drag part.
 fn stateful(objects: &[Object], index: usize) -> bool {
     let object = &objects[index];
     let element = object.element;
@@ -1062,9 +837,7 @@ fn stateful(objects: &[Object], index: usize) -> bool {
     }
     let holder = object.parent.map(|up| objects[up].element);
     match object.built {
-        // A plain scrollbar's buttons and range icons (`Walk::knob_part`).
         Some((_, Role::Part(slot))) => matches!(slot, 0 | 1 | 4 | 5),
-        // A container scrollbar's increase and decrease buttons (`Walk::extended_parts`).
         Some((_, Role::Bar(_))) => holder.is_some_and(|holder| extended_button(holder, element)),
         Some(_) => false,
         None if object.child => element.kind != Kind::Checkbox,
@@ -1078,7 +851,6 @@ fn stateful(objects: &[Object], index: usize) -> bool {
     }
 }
 
-/// Whether `element` is `holder`'s increase or decrease button, an extended scrollbar's.
 fn extended_button(holder: &Element, element: &Element) -> bool {
     matches!(&holder.fields, Fields::ExtendedScrollbar(bar)
         if [&bar.increase_button, &bar.decrease_button]
@@ -1087,13 +859,6 @@ fn extended_button(holder: &Element, element: &Element) -> bool {
 }
 
 impl Instance {
-    /// Constructs `root` with no parent object. Its size and position use the GUI viewport,
-    /// the device size divided by interface scale. Additional templates resolve through
-    /// `resources` ([`graph`]). The template and its template registry remain immutable for
-    /// the instance's lifetime. Fading windows and their descendants start transparent. All
-    /// Windows and controls start hidden until shown. A `windowType` root represents a fixed
-    /// window and retains no container fade or movement. Errors describe frame-evaluation
-    /// failures.
     pub fn construct(
         root: &Element,
         viewport: [i32; 2],
@@ -1102,7 +867,6 @@ impl Instance {
         Self::construct_in(root, viewport, viewport, resources)
     }
 
-    /// As [`Self::construct`], in a parent object of `parent` pixels.
     pub fn construct_in(
         root: &Element,
         viewport: [i32; 2],
@@ -1124,15 +888,12 @@ impl Instance {
         let authored = authored_elements.len();
         let tree = Arc::new(Tree::new(&authored_elements));
         let mut nodes: Vec<Node> = Vec::with_capacity(objects.len());
-        // The content size each container's children are evaluated in, and each window's frame.
         let mut content: Vec<Option<[i32; 2]>> = Vec::with_capacity(objects.len());
         let mut frames: Vec<Option<Frame>> = Vec::with_capacity(objects.len());
         for (index, object) in objects.iter().enumerate() {
             let element = object.element;
             let (window, frame) = match element.container() {
                 Some(container) if object.built.is_none() => {
-                    // A window under a window sits in its content; one a drop-down or another
-                    // holder builds, in its position object the viewport's size.
                     let outer = match object.parent {
                         None => parent,
                         Some(up) => content[up].unwrap_or(viewport),
@@ -1179,8 +940,6 @@ impl Instance {
             };
             content.push(frame.map(|frame| frame.content_size));
             frames.push(frame);
-            // Construction leaves windows, controls and drawables hidden while preserving
-            // authored hide guards. The first `gui_show` shows the admitted children.
             let shown = Shown {
                 visible: false,
                 ..Shown::shown_by_code(element)
@@ -1202,8 +961,6 @@ impl Instance {
                 }
             }
         }
-        // What each object's show call reaches, a window's own scrollbars with their flags
-        // and smoothing, as the construction leaves them.
         let node_of = |element: &Element, among: std::ops::Range<usize>| {
             among
                 .into_iter()
@@ -1287,9 +1044,6 @@ impl Instance {
                     };
                     let places = walk.icon_places(&plain).unwrap_or([None; 2]);
                     let drawables = scrollbar(&parts, places);
-                    // Its constructor shows the range icons it places and hides the other four
-                    // parts at its end; a `windowType`'s construction shows and hides the whole
-                    // bar in that order.
                     let in_window = objects[index]
                         .parent
                         .is_some_and(|up| objects[up].element.kind == Kind::Window);
@@ -1366,9 +1120,6 @@ impl Instance {
                 _ => {}
             }
         }
-        // Build and register a drop-down's expanded window and header. They are outside the
-        // parent's ordinary child list, so inherited opacity does not reach them, but their
-        // transitions tick with every registered window.
         let built: Vec<usize> = {
             let mut nested: Vec<Vec<usize>> = vec![Vec::new(); objects.len()];
             for (index, object) in objects.iter().enumerate() {
@@ -1388,7 +1139,6 @@ impl Instance {
             post(&nested, &nodes, 0, &mut order);
             order
         };
-        // Registration: each window with a configured transition once built.
         let registered = built
             .iter()
             .copied()
@@ -1438,7 +1188,6 @@ impl Instance {
             pointed: None,
             boxes: Vec::new(),
         };
-        // Initialize each fading window and its children to zero opacity as it is built.
         for index in built {
             if objects[index]
                 .element
@@ -1451,7 +1200,6 @@ impl Instance {
         Ok(instance)
     }
 
-    /// A call other than a move changed it.
     fn wrote(&mut self) {
         self.written = true;
         self.active_known.set(None);
@@ -1470,8 +1218,6 @@ impl Instance {
         Ok(())
     }
 
-    /// The objects of `root`'s construction ([`graph`]) with `resources`, which must be the ones
-    /// the instance was built with.
     fn objects<'a>(
         &self,
         root: &'a Element,
@@ -1496,8 +1242,6 @@ impl Instance {
             }
             objects
         };
-        // A text box whose scrollbar refreshes on each write takes its texts through
-        // `set_text`, in order with the code's other calls.
         for &index in &self.text_boxes {
             let node = &self.nodes[index];
             if let Drawables::TextBox { written, .. } = &node.drawables
@@ -1514,8 +1258,6 @@ impl Instance {
         Ok(objects)
     }
 
-    /// Resolves an authored path in this instance's template. Repeated paths keep their
-    /// first occurrence; copied templates resolve against their own elements.
     pub fn element_at_path<'a>(
         &self,
         root: &'a Element,
@@ -1535,7 +1277,6 @@ impl Instance {
         element.ok_or_else(|| format!("{path} is not an element of {}", root.path))
     }
 
-    /// `element`'s index in `root`'s pre-order.
     fn index(&self, root: &Element, element: &Element) -> Result<usize, String> {
         self.check(root)?;
         let index = if self.tree.same(root) {
@@ -1551,39 +1292,28 @@ impl Instance {
         index.ok_or_else(|| format!("{} is not an element of {}", element.path, root.path))
     }
 
-    /// The GUI viewport the instance was built against.
     pub fn viewport(&self) -> [i32; 2] {
         self.viewport
     }
 
-    /// Whether the root window draws, set and cleared with its visible bit.
     pub fn drawn(&self) -> bool {
         self.nodes[0].shown.visible
     }
 
-    /// The root window's opacity.
     pub fn opacity(&self) -> f32 {
         self.nodes[0].window.map_or(1.0, |window| window.opacity)
     }
 
-    /// Where the root window's top-left draws: the last assigned position, or its
-    /// constructed place.
     pub fn position(&self) -> [i32; 2] {
         self.nodes[0]
             .window
             .map_or([0; 2], |window| window.position)
     }
 
-    /// The grids and lists the code's Show or Hide reached since the last call, in order.
     pub fn take_held(&mut self) -> Vec<Held> {
         std::mem::take(&mut self.held)
     }
 
-    /// Sets the window's top-left to `point` and stores the point in its position coordinates.
-    /// Percentage axes round half away from zero after conversion against the parent extent.
-    /// Evaluation with bounds supplies the movement's starting point. A move alone leaves the
-    /// window [`Self::idle`] and [`Self::active`] as it was: no clock, transition or draw record
-    /// of a tick reads where it stands.
     pub fn set_position(
         &mut self,
         root: &Element,
@@ -1614,7 +1344,6 @@ impl Instance {
         }
     }
 
-    /// Updates extents, backgrounds and scrolls without relaying out child geometry.
     pub fn set_size(
         &mut self,
         root: &Element,
@@ -1646,7 +1375,6 @@ impl Instance {
             .map_err(missing)?;
         let frame =
             frame_from_extent(element, container, Some(window.parent), size).map_err(missing)?;
-        // Flag zero leaves children's geometry at its constructed parent reference.
         for child in self.nodes[index].children.clone() {
             self.nodes[child]
                 .control
@@ -1694,7 +1422,6 @@ impl Instance {
         self.synchronize_scroll(root, element, resources, true)
     }
 
-    /// The content wrapper extent last laid out, after native margins.
     pub fn content_size(&self, root: &Element, element: &Element) -> Result<[i32; 2], String> {
         let index = self.index(root, element)?;
         self.nodes[index]
@@ -1703,10 +1430,6 @@ impl Instance {
             .ok_or_else(|| format!("{} is not a containerWindowType", element.path))
     }
 
-    /// Shows a window unless its hide guard is set, beginning the fade in. With a show
-    /// animation it moves to `show_position`; otherwise it stays where it is and preserves
-    /// child visibility. An existing show movement continues. A control uses its own guarded
-    /// Show.
     pub fn show(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         self.show_using(root, element, &mut CallElements::default())
     }
@@ -1744,9 +1467,6 @@ impl Instance {
         self.start_show_movement(elements, index)
     }
 
-    /// Shows a window and every admitted child control and window in order, beginning fades
-    /// throughout the subtree. A configured show movement starts when none is running. Hide
-    /// guards apply to each object. Map icons and list/grid items use this operation.
     pub fn gui_show(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         self.gui_show_using(root, element, &mut CallElements::default())
     }
@@ -1796,10 +1516,6 @@ impl Instance {
         refused
     }
 
-    /// Hides a window unless a hide movement or fade out is already running. It begins the
-    /// fade out; without an active fade or hide animation it immediately hides the window and
-    /// all children. Otherwise it moves to `hide_position` and hides the subtree when movement
-    /// or fade completes. Controls use their own Hide.
     pub fn hide(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         self.hide_using(root, element, &mut CallElements::default())
     }
@@ -1854,9 +1570,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Hides a window as [`Self::hide`] does, except that without a hide animation it
-    /// immediately hides the window alone, even during fade out. A completed hide movement
-    /// also hides only the window.
     #[cfg(any(test, feature = "test-support"))]
     pub fn hide_window(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         self.hide_window_using(root, element, &mut CallElements::default())
@@ -1898,8 +1611,6 @@ impl Instance {
         self.retarget(elements, index, target, false, true)
     }
 
-    /// Writes the hide bit, changing whether a later Show is admitted without changing current
-    /// visibility.
     pub fn set_hide_flag(
         &mut self,
         root: &Element,
@@ -1912,11 +1623,6 @@ impl Instance {
         Ok(())
     }
 
-    /// What the code sets on `element` (its text, colour, progress, ...), kept until it writes it
-    /// again. Frames go through [`Self::set_frame`]; a sprite written here is the code's next
-    /// sprite replacement call, after every call made before it ([`Self::set_sprite`]);
-    /// visibility, opacity, positions of windows and every clock are the instance's own and are
-    /// not taken from here.
     pub fn control(&mut self, root: &Element, element: &Element) -> Result<&mut Bound, String> {
         self.wrote();
         let index = self.index(root, element)?;
@@ -1924,7 +1630,6 @@ impl Instance {
         Ok(&mut self.nodes[index].control)
     }
 
-    /// Retains finalized grid adjustments for later scroll tests.
     pub fn finalize_grid(
         &mut self,
         root: &Element,
@@ -1938,7 +1643,6 @@ impl Instance {
         })
     }
 
-    /// Measures caller-resolved item positions and runtime extents.
     pub fn finalize_grid_resolved(
         &mut self,
         root: &Element,
@@ -1980,7 +1684,6 @@ impl Instance {
         Ok(finalized)
     }
 
-    /// Refreshes scrollbar flags and ranges after the code fills its grids.
     pub fn synchronize_scroll(
         &mut self,
         root: &Element,
@@ -2029,16 +1732,13 @@ impl Instance {
             bar.state.shown = fact.shown;
             bar.enabled = container.smooth_scrolling;
             if fact.shown {
-                // Clamp the target without snapping or notifying.
                 let previous = widgets::fixed(bar.state.value as f32 / 100_000.0);
                 bar.state.range = fact.range;
                 bar.state.value = fact.range.clamp(bar.state.value);
                 if fact.vertical {
-                    // The vertical branch writes the saved value again, with a notification.
                     bar.set_target(fact.bar, previous.min(fact.range.max), true);
                 }
             } else if was_shown {
-                // A hidden bar resets only its content offset; its range and target remain.
                 bar.notified = Some(0);
             }
             self.nodes[index].smooth[at] = bar;
@@ -2058,7 +1758,6 @@ impl Instance {
         Ok(())
     }
 
-    /// The kept container scrollbar range, in pixels.
     #[cfg(any(test, feature = "test-support"))]
     pub fn scroll_range(
         &self,
@@ -2079,7 +1778,6 @@ impl Instance {
             }))
     }
 
-    /// Snaps the target and notifies with the current scrollbar value.
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_scroll_target(
         &mut self,
@@ -2095,7 +1793,6 @@ impl Instance {
         })
     }
 
-    /// One increase/decrease step from the current scrollbar value.
     pub fn step_scroll(
         &mut self,
         root: &Element,
@@ -2128,7 +1825,6 @@ impl Instance {
         })
     }
 
-    /// Reads the target, snaps without notifying, then moves content immediately.
     pub fn wheel_scroll(
         &mut self,
         root: &Element,
@@ -2158,12 +1854,6 @@ impl Instance {
         })
     }
 
-    /// Moves a container's content along one axis as the wheel moves it
-    /// ([`Self::wheel_scroll`]): to the pixels `target` picks from the bar's range (its near and
-    /// far ends, which can lie below zero), clamped into it and snapped without notifying, the
-    /// content moved at once; a target of `None` leaves the bar's value as it is. Returns the
-    /// range and the offset reached, in pixels; `None` while the bar is hidden, which leaves the
-    /// content in place.
     pub fn scroll_to(
         &mut self,
         root: &Element,
@@ -2227,7 +1917,6 @@ impl Instance {
         Ok(())
     }
 
-    /// A sprite written through [`Self::control`] as the code's next setter call.
     fn flush(&mut self, index: usize) {
         let node = &mut self.nodes[index];
         if let Some(name) = node.control.sprite.take() {
@@ -2235,10 +1924,6 @@ impl Instance {
         }
     }
 
-    /// Replaces the drawable using the sprite lookup and setter after all earlier calls.
-    /// Unknown or unchanged names preserve it ([`setter_replaces`]); a replacement starts
-    /// fresh clocks and uses the setter-selected frame. Drawing, extents
-    /// ([`Self::drawable_extent`]) and clocks all use the resulting drawable.
     pub fn set_sprite(
         &mut self,
         root: &Element,
@@ -2248,8 +1933,6 @@ impl Instance {
     ) -> Result<(), String> {
         let index = self.index(root, element)?;
         let node = &self.nodes[index];
-        // An unchanged setter keeps the drawable, its frame and clocks. Avoid recording
-        // another owned name when no earlier replacement can change that comparison.
         if node.control.sprite.is_none()
             && !node
                 .events
@@ -2270,9 +1953,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Assigns the frame of `element`'s current drawable. A frame-animated sprite's updater
-    /// overwrites it only while playing; a later replacement of the drawable does not carry
-    /// the assigned frame over.
     pub fn set_frame(
         &mut self,
         root: &Element,
@@ -2287,9 +1967,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Stores the normalized progress setter's rounded state, without the
-    /// integer setter's additional upper clamp. Sprite replacements and later
-    /// integer assignments supersede it in native call order.
     pub fn set_progress_float_value(
         &mut self,
         root: &Element,
@@ -2303,11 +1980,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Writes `text` to text box `element` ([`Bound::text`]). A scrollbar refreshes
-    /// immediately in call order ([`Walk::text_refresh`]): its new range clamps the value,
-    /// places the slider, and updates flags and visibility using its own Show/Hide. If the
-    /// refresh is refused, only the text changes and drawing carries the same refusal.
-    /// `resources` are those used at construction.
     pub fn set_text(
         &mut self,
         root: &Element,
@@ -2379,8 +2051,6 @@ impl Instance {
         }
     }
 
-    /// Result-detail range override after a text write: span / newline count, in fixed point.
-    /// Changing the range clamps the slider without notifying the text object.
     pub fn set_text_scroll_lines(
         &mut self,
         root: &Element,
@@ -2405,8 +2075,6 @@ impl Instance {
         })
     }
 
-    /// Plain-text bar input and its instant text box observer. Direction is the viewer's
-    /// already signed down/up delta.
     pub fn scroll_text(
         &mut self,
         root: &Element,
@@ -2467,8 +2135,6 @@ impl Instance {
         Ok(())
     }
 
-    /// The drawable the control `index` shows after the code's calls since the last tick,
-    /// resolved in order against `resources`.
     fn retained(&self, index: usize, element: &Element, resources: &dyn Resources) -> Retained {
         let node = &self.nodes[index];
         let mut kept = Retained {
@@ -2502,8 +2168,6 @@ impl Instance {
                         kept.frame = None;
                         kept.progress_float = None;
                         kept.framed = false;
-                        // The new drawable starts stopped. A `Play` before replacement reached
-                        // the previous drawable.
                         kept.played = false;
                     }
                 }
@@ -2522,9 +2186,6 @@ impl Instance {
         kept
     }
 
-    /// Sets opacity on the window, its controls and backgrounds. With `children`, it also
-    /// reaches descendant windows. Appending a grid item synchronizes its opacity with the
-    /// grid and propagates it through the item subtree.
     pub fn set_opacity(
         &mut self,
         root: &Element,
@@ -2541,8 +2202,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Starts frame playback on the drawable left by earlier calls. A later replacement starts
-    /// stopped; a drawable without frame animation remains unchanged.
     #[cfg(any(test, feature = "test-support"))]
     pub fn play(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         self.wrote();
@@ -2552,19 +2211,15 @@ impl Instance {
         Ok(())
     }
 
-    /// Sets the visible bit and shows each owned object whose flag is set ([`Node::owned`]):
-    /// Its scrollbars or fixed-window background.
     fn show_now(&mut self, elements: &[(&Element, Option<usize>, bool)], index: usize) {
         self.nodes[index].shown.visible = true;
         for (owned, flag) in self.nodes[index].owned.clone() {
             if flag {
-                // A part's own Show never fails: only a window's frame evaluation can.
                 let _ = self.gui_show_at(elements, owned);
             }
         }
     }
 
-    /// Clears the visible bit and hides each owned object whose flag is set.
     fn hide_now(&mut self, elements: &[(&Element, Option<usize>, bool)], index: usize) {
         self.nodes[index].shown.visible = false;
         for (owned, flag) in self.nodes[index].owned.clone() {
@@ -2574,7 +2229,6 @@ impl Instance {
         }
     }
 
-    /// A control's Show, and a grid's or list's items with it.
     fn show_control(&mut self, elements: &[(&Element, Option<usize>, bool)], index: usize) {
         if !self.nodes[index].shown.show() {
             return;
@@ -2588,11 +2242,8 @@ impl Instance {
         self.show_drawables(elements, index);
     }
 
-    /// Shows the related objects in [`Drawables`], each by its own Show and hide guard.
     fn show_drawables(&mut self, elements: &[(&Element, Option<usize>, bool)], index: usize) {
         for (part, shown) in self.drawables(index, true) {
-            // A part's own Show never fails: only a window's frame evaluation can, and a
-            // drop-down's header was evaluated when the instance was built.
             let _ = if shown {
                 self.gui_show_at(elements, part)
             } else {
@@ -2601,8 +2252,6 @@ impl Instance {
         }
     }
 
-    /// Hides the related objects in [`Drawables`], including a plain scrollbar's range icons
-    /// and parts ([`Shown::hidden_by_code`]).
     fn hide_drawables(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2617,8 +2266,6 @@ impl Instance {
         refused
     }
 
-    /// The related objects reached when showing or hiding `index`, each with whether it
-    /// is shown.
     fn drawables(&self, index: usize, show: bool) -> Vec<(usize, bool)> {
         match &self.nodes[index].drawables {
             Drawables::None => Vec::new(),
@@ -2662,7 +2309,6 @@ impl Instance {
         }
     }
 
-    /// A control's Hide, and a grid's or list's items with it.
     fn hide_control(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2678,10 +2324,6 @@ impl Instance {
         self.hide_drawables(elements, index)
     }
 
-    /// Shows a fixed window unless its hide guard is set. It shows the background using its
-    /// own hide guard, then every attached child in attach order. Container fades and
-    /// Show/hide movements do not apply; explicit slide or opacity calls are unused by map
-    /// icons.
     fn fixed_show(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2700,7 +2342,6 @@ impl Instance {
         refused
     }
 
-    /// Hides a fixed window, its background and every attached child using their own Hide.
     fn fixed_hide(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2710,7 +2351,6 @@ impl Instance {
         self.hide_children(elements, index)
     }
 
-    /// Hides each child control and window using their own Hide.
     fn hide_children(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2725,8 +2365,6 @@ impl Instance {
         refused
     }
 
-    /// Sets the opacity shared by the window, controls and backgrounds, and optionally every
-    /// descendant window.
     fn write_opacity(&mut self, index: usize, opacity: f32, descendants: bool) {
         if let Some(window) = self.nodes[index].window.as_mut() {
             window.opacity = opacity;
@@ -2738,8 +2376,6 @@ impl Instance {
         }
     }
 
-    /// Begins a configured show fade for a window that is hidden or not already fading in. It
-    /// and its descendants start transparent; child windows then begin their own show fades.
     fn begin_show_fade(&mut self, elements: &[(&Element, Option<usize>, bool)], index: usize) {
         let fades = elements[index]
             .0
@@ -2762,8 +2398,6 @@ impl Instance {
         }
     }
 
-    /// Begins a configured hide fade on a visible window with opacity. A window without its
-    /// own fade propagates the request to child windows.
     fn begin_hide_fade(&mut self, elements: &[(&Element, Option<usize>, bool)], index: usize) {
         let fades = elements[index]
             .0
@@ -2783,8 +2417,6 @@ impl Instance {
         }
     }
 
-    /// The show movement `show` and `gui_show` start: the kind and time, then a retarget to the
-    /// anchored `show_position`.
     fn start_show_movement(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2806,9 +2438,6 @@ impl Instance {
         self.retarget(elements, index, target, false, false)
     }
 
-    /// Retargets a movement. A nonmoveable window first snaps to its previous target. If
-    /// already at the new target, movement completes and hiding takes effect immediately,
-    /// including children when requested; otherwise movement runs.
     fn retarget(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2847,10 +2476,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Advances a configured fade with positive duration. At endpoint opacity after the delay,
-    /// elapsed time restarts with at least a millisecond. Authored easing and the frame step
-    /// update clamped opacity recursively. Past the delay, reaching the end stops the fade; a
-    /// fade out that reaches zero hides the window and every child.
     fn update_fade(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2897,9 +2522,6 @@ impl Instance {
         Ok(())
     }
 
-    /// Moves to the target after the duration or when easing is absent. Otherwise authored
-    /// easing determines the remaining displacement, truncated per axis. A hide movement takes
-    /// Effect on the tick after arrival, with children for Hide and alone for HideWindow.
     fn update_movement(
         &mut self,
         elements: &[(&Element, Option<usize>, bool)],
@@ -2945,15 +2567,10 @@ impl Instance {
         };
         let point = [0, 1]
             .map(|axis| window.target[axis] - truncate_f32((1.0 - eased) * window.delta[axis]));
-        // Use the same position setter.
         self.window_position(element, index, point);
         Ok(())
     }
 
-    /// Whether a drawable's own shown flag is set: a control's and a part's follow
-    /// their own visible bit (their Show and Hide show and hide their drawables); a window's
-    /// backgrounds follow their holder's. A window's `HIDE` does not reach its children's
-    /// drawables.
     fn drawable_shown(&self, index: usize) -> bool {
         let node = &self.nodes[index];
         match (node.child || node.part, node.parent) {
@@ -2962,9 +2579,6 @@ impl Instance {
         }
     }
 
-    /// Whether the walk reaches `index`: it and every object above it shown. A plain scrollbar
-    /// child its own `hide` keeps from showing still draws the range icons its constructor
-    /// showed, until a code Hide hides them ([`Walk::scrollbar_child`]).
     fn reached(&self, index: usize) -> bool {
         let node = &self.nodes[index];
         let own = if node.child || node.part {
@@ -2986,8 +2600,6 @@ impl Instance {
         own && self.reached(up)
     }
 
-    /// The state a drawable uses: a disabled button 4, a checked check box 2, an unchecked one
-    /// under the pointer 3, else the pointed button's Down 2 or Over 3, else 1.
     fn state(&self, element: &Element, index: usize) -> u32 {
         let node = &self.nodes[index];
         let control = &node.control;
@@ -3017,7 +2629,6 @@ impl Instance {
         }
     }
 
-    /// The state the last pointer layout drew, whose change the next tick restarts the clock of.
     pub fn point(&mut self, pointed: Option<super::Pointed>, boxes: &[String]) {
         self.wrote();
         self.pointed = pointed;
@@ -3025,10 +2636,6 @@ impl Instance {
         self.boxes.extend_from_slice(boxes);
     }
 
-    /// One presented frame of this instance alone, as the game runs it: [`Self::tick_clocks`],
-    /// [`Self::tick_transitions`] and [`Self::tick_draws`] in turn. A caller that ticks several
-    /// instances whose Shows and Hides reach one another (a list's items, a grid's) runs each
-    /// phase across all of them before the next, as the game does ([`Phase`]).
     pub fn tick(
         &mut self,
         root: &Element,
@@ -3040,24 +2647,14 @@ impl Instance {
         self.tick_draws(root, resources)
     }
 
-    /// The next [`Self::tick_transitions`] runs every fade and movement to its end, as a window
-    /// shown long enough ago stands: a saved picture shows its windows where they settle, while
-    /// the drawables' clocks keep their own time.
     pub fn settle_transitions(&mut self) {
         self.settle = true;
     }
 
-    /// Where the instance's windows stand in the GUI lifecycle's transition list ([`Registration`]).
     pub fn registration(&self) -> Registration {
         self.registration
     }
 
-    /// The frame's first phase applies ordered drawable calls, preserving state on failed
-    /// replacement and resetting it on successful replacement ([`Runtime`]). It updates shown
-    /// smooth scrollbars, then every shown frame-animation clock and cornered-tile pulse
-    /// across all windows before any window transition ([`Self::tick_transitions`]). It starts
-    /// a new frame regardless of the preceding phase. `resources` are those used at
-    /// construction.
     pub fn tick_clocks(
         &mut self,
         root: &Element,
@@ -3106,12 +2703,9 @@ impl Instance {
         let Tick { time, dt } = tick;
         self.time = time;
         self.dt = dt;
-        // The code's calls on each drawable, in order, and which drawables a `Play` reached.
         for node in &mut self.nodes {
             node.played = false;
             if objects.is_empty() {
-                // Without sprite replacements or drawable clocks these calls need no
-                // template traversal or resource lookup, but still apply in order.
                 for event in node.events.drain(..) {
                     match event {
                         Event::Frame(frame) => {
@@ -3153,7 +2747,6 @@ impl Instance {
                 clock.clock.frame = None;
             }
             if replaced {
-                // A successful replacement resets even a hidden drawable's old clocks.
                 node.runtime = None;
                 let candidate = clock_candidate(object.element, node.made.as_ref(), resources);
                 if candidate {
@@ -3165,8 +2758,6 @@ impl Instance {
                 }
             }
         }
-        // Update each shown smooth scrollbar. A missing slider is a null read refused by the
-        // walk.
         for index in 0..self.count {
             for at in 0..self.nodes[index].smooth.len() {
                 let smooth = self.nodes[index].smooth[at];
@@ -3180,8 +2771,6 @@ impl Instance {
                 self.nodes[index].smooth[at].update(slider);
             }
         }
-        // A copied template is resolved afresh; only the retained immutable template
-        // shares the drawable kinds discovered at construction.
         let retained = self.tree.same(root);
         let clocks = if retained {
             self.clock_nodes.len()
@@ -3243,8 +2832,6 @@ impl Instance {
         Ok(())
     }
 
-    /// The runtime of `node`'s drawable, built from `sprite` by setter call `made`: its own, or,
-    /// for a drawable other than the one it kept, a new one as the constructor leaves it.
     fn runtime<'a>(current: &'a mut Option<Runtime>, sprite: &[u8], made: u32) -> &'a mut Runtime {
         if !current
             .as_ref()
@@ -3255,11 +2842,6 @@ impl Instance {
         current.as_mut().expect("set above")
     }
 
-    /// The frame's second phase follows every instance's clocks ([`Self::tick_clocks`]).
-    /// Windows run fade then movement in reverse registration order, visible or hidden. A
-    /// completed hide reaches children; reached grids and lists are held ([`Self::take_held`])
-    /// so callers hide their item instances before the next window transition
-    /// ([`Registration`]).
     pub fn tick_transitions(&mut self, root: &Element) -> Result<(), String> {
         self.check(root)?;
         self.active_known.set(None);
@@ -3285,8 +2867,6 @@ impl Instance {
             let index = self.registered[at];
             self.update_fade(&elements, index, dt)?;
             self.update_movement(&elements, index, dt)?;
-            // Settled, a movement that just ended takes its end's effect in the same step: a hide
-            // hides, with its children.
             if settle {
                 self.update_movement(&elements, index, dt)?;
             }
@@ -3295,10 +2875,6 @@ impl Instance {
         Ok(())
     }
 
-    /// The frame's last phase, once every instance's transitions have run and their hides have
-    /// reached what they hold ([`Self::tick_transitions`]): what the draw of every reached
-    /// drawable records at `Time`: its first draw, its state effect's clock, its trigger
-    /// records. `resources` are the ones it was built with.
     pub fn tick_draws(&mut self, root: &Element, resources: &dyn Resources) -> Result<(), String> {
         self.check(root)?;
         self.active_known.set(None);
@@ -3314,11 +2890,6 @@ impl Instance {
             return Ok(());
         }
         self.revision += 1;
-        // No draw reaches a hidden root window. Its child drawables' own clocks have
-        // already ticked, and transitions have run, so only the unused draw traversal
-        // can be omitted. Copied/registry-built graphs and invalid text writes still
-        // take the ordinary validation path. A root scrollbar can draw range icons
-        // despite its authored hide flag and is not covered by this shortcut.
         if !self.nodes[0].shown.visible
             && root.kind != Kind::Scrollbar
             && self.tree.same(root)
@@ -3361,14 +2932,12 @@ impl Instance {
             } else {
                 Vec::new()
             };
-            // How long its state's technique changes on the clock, from the effect itself.
             let settles = match &info.effect {
                 Ok(effect) => effect.settles(technique(state)),
                 Err(_) => Settles::Program(Some(Settling::NOW)),
             };
             let runtime = Self::runtime(&mut node.runtime, sprite, made);
             let first = *runtime.first_draw.get_or_insert(time);
-            // A marked state change restarts the clock.
             match runtime.effect.as_mut() {
                 Some(effect) if effect.state == state => effect.settles = settles,
                 _ => {
@@ -3408,20 +2977,12 @@ impl Instance {
         Ok(())
     }
 
-    /// Whether the instance's draws change on the clock. A missing technique inherits the
-    /// preceding draw's program, evaluated with the current part's restart time. A first part
-    /// or a part after externally drawn holder items has unknown inherited state and counts as
-    /// changing, as does a refused layout. A draw with no clock constants does not change
-    /// ([`super::Shading::clocked`]). A retained draw after a refused program is itself
-    /// refused and draws nothing ([`Settles::Refused`]).
     fn kept_changes(&self, root: &Element, resources: &dyn Resources) -> bool {
         let layout = match self.layout(root, resources, None) {
             Ok(Some(layout)) => layout,
             Ok(None) => return false,
             Err(_) => return true,
         };
-        // The answer of the program the last draw bound; `None` while it is not this
-        // Instance's.
         let mut bound: Option<Option<Settling>> = None;
         for (index, part) in layout.parts.iter().enumerate() {
             if layout.holders.iter().any(|holder| holder.before == index) {
@@ -3439,29 +3000,20 @@ impl Instance {
                         ) => {}
                     _ => return true,
                 },
-                // Its program record is bound, which the replay lacks: a kept draw after it is
-                // refused too and never changes.
                 Settles::Refused => bound = Some(Some(Settling::NOW)),
             }
         }
         false
     }
 
-    /// Whether a call other than a move ([`Self::set_position`]) changed it since its last tick.
     pub fn written(&self) -> bool {
         self.written
     }
 
-    /// Whether a tick would change nothing of it but its clock's `Time`, which nothing it draws
-    /// reads while it is settled ([`super::Shading::changing`]): it was ticked, no call but a move
-    /// changed it since, and it does not change on its own ([`Self::active`]). Its tick then only
-    /// stamps the frame's clock.
     pub fn idle(&self) -> bool {
         self.ticked && !self.written && !self.active()
     }
 
-    /// Whether a window of the instance is in a transition: it fades, moves, or is due to be
-    /// hidden by its ended movement.
     pub fn transitioning(&self) -> bool {
         self.registered.iter().any(|&index| {
             let node = &self.nodes[index];
@@ -3470,10 +3022,6 @@ impl Instance {
         })
     }
 
-    /// The longest transition duration among all registered windows, including drop-down
-    /// headers and expanded windows. A configured fade lasts through its delay and duration; a
-    /// configured movement lasts its show or hide animation time. Returns zero without
-    /// registered windows.
     pub fn longest_transition(&self, root: &Element) -> Result<f32, String> {
         self.check(root)?;
         let elements = self.tree.elements(root);
@@ -3506,12 +3054,6 @@ impl Instance {
             .fold(0.0, f32::max))
     }
 
-    /// Whether the next frame differs from this one without any call from the code: the first
-    /// (`dt = 0`) tick or a call's effect is pending, a window fades or moves or is due to be
-    /// hidden by its ended movement, a shown scrollbar still smooths, a shown frame-animated
-    /// sprite plays, a shown looping tile pulses, a reached sprite runs animation records, or a
-    /// reached drawable's state effect still changes on the clock (for as long as its effect
-    /// says, [`Effect::settles`]). A caller keeps presenting frames while this holds.
     pub fn active(&self) -> bool {
         if let Some(active) = self.active_known.get() {
             return active;
@@ -3538,7 +3080,6 @@ impl Instance {
                     })
                     || node.runtime.as_ref().is_some_and(|runtime| {
                         let shown = self.drawable_shown(index);
-                        // A hanging clock or pulse is the game's hang: nothing follows it.
                         (runtime.hang.is_none()
                             && shown
                             && (runtime
@@ -3557,8 +3098,6 @@ impl Instance {
                                             self.time.abs().max(effect.at.abs()),
                                         )
                                     }),
-                                    // Resolved in draw order at the tick; a refused draw
-                                    // draws nothing.
                                     Settles::Previous | Settles::Refused => false,
                                 }))
                     })
@@ -3566,11 +3105,6 @@ impl Instance {
             || self.kept
     }
 
-    /// Everything the walk reads of the instance, at each object's [`Site`]: each control's kept
-    /// writes and drawable (its pending calls resolved in order, [`Self::set_sprite`]), each
-    /// object's visibility, each window's opacity, position and smoothed scroll, each
-    /// drawable's clocks (a drawable not yet ticked as its constructor leaves them), the
-    /// graphics clock `Time` and the viewport. `resources` are the ones it was built with.
     pub fn bindings(&self, root: &Element, resources: &dyn Resources) -> Result<Bindings, String> {
         let empty = Bindings {
             viewport: Some(self.viewport),
@@ -3635,8 +3169,6 @@ impl Instance {
                 resources,
             );
             let made = kept.made.as_ref().map_or(0, |made| made.made);
-            // The runtime of the drawable the calls leave: a drawable a pending replacement
-            // makes, or one not ticked yet, as its constructor leaves it ([`Runtime`]).
             let runtime = drawable.as_ref().and_then(|(sprite, _)| {
                 node.runtime
                     .as_ref()
@@ -3669,14 +3201,11 @@ impl Instance {
                     .map(|_| Pulse::default().alpha()),
             };
             bound.hang = hang;
-            // Time since the first draw, using this frame's `Time` when that draw is yet to come.
             bound.animation_time = Some(
                 runtime
                     .and_then(|runtime| runtime.first_draw)
                     .map_or(0.0, |first| self.time - first),
             );
-            // `Time` less the restart of the state's effect, which a changed state (or a new
-            // drawable) restarts at this draw.
             let state = self.state(element, index);
             bound.effect_since = Some(match runtime.and_then(|runtime| runtime.effect) {
                 Some(effect) if effect.state == state => self.time - effect.at,
@@ -3696,9 +3225,6 @@ impl Instance {
         Ok(bindings)
     }
 
-    /// Lays the root out as the game draws it: its frame in the viewport (a root the code gives
-    /// no parent object), with every runtime input bound; `pointer` for a window that takes
-    /// input (a map icon's never does). `Ok(None)` when it draws nothing.
     pub fn layout(
         &self,
         root: &Element,
@@ -3708,7 +3234,6 @@ impl Instance {
         self.layout_with_regions(root, resources, pointer, false)
     }
 
-    /// Lay out a window and retain control geometry for hit/hover consumers.
     pub fn layout_with_regions(
         &self,
         root: &Element,
@@ -3722,7 +3247,6 @@ impl Instance {
             .map_err(|why| vec![Refusal::new(&root.path, RefusalKind::MissingInput, why)])?;
         bindings.pointer = pointer;
         bindings.regions = regions;
-        // A `windowType` root is a fixed window.
         if root.kind == Kind::Window {
             return super::fixed_window_layout(root, resources, &bindings);
         }
@@ -3732,12 +3256,6 @@ impl Instance {
         layout(root, Some(parent), resources, &bindings)
     }
 
-    /// [`Self::layout_with_regions`] without a pointer, kept: the layout made last is given again
-    /// while nothing it reads changed, which is while the instance's revision, `root` and
-    /// `stamp` stand. `stamp` names the resources, which the instance cannot see: the caller
-    /// changes it whenever they draw otherwise. An idle tick moves the clock's `Time` alone,
-    /// which a settled draw does not read ([`super::Shading::changing`]), as a kept pool window
-    /// relies on ([`crate::map::icon_windows::PoolView::present_kept`]).
     pub fn layout_kept(
         &self,
         root: &Element,
@@ -3760,9 +3278,6 @@ impl Instance {
         layout
     }
 
-    /// The queried extent of `element`'s drawable on this instance: the drawable it shows
-    /// after the code's calls ([`Self::set_sprite`]),
-    /// the one drawing takes ([`drawable_extent`]).
     pub fn drawable_extent(
         &self,
         root: &Element,
@@ -3778,7 +3293,6 @@ impl Instance {
     }
 }
 
-/// An authored position anchored using the window's orientation against its parent extent.
 fn anchored(
     window: &Element,
     container: &native::Container,
@@ -3796,38 +3310,21 @@ fn anchored(
     Ok([at[0] + anchor[0], at[1] + anchor[1]])
 }
 
-/// A map icon type's pool and live list, keyed by owning object. The owner's callback clears
-/// its icon reference on erase. All pooled windows are constructed and registered up front,
-/// start hidden, and tick each frame whether occupied or free.
-///
-/// Each frame:
-/// 1. Owners request a free slot in round-robin order ([`Pool::request`]) or erase icons whose
-///    admission gate fails ([`Pool::erase`]). Exhaustion starts asynchronous pool growth.
-/// 2. The manager walks the existing live-list extent ([`Pool::update`]). Empty or
-///    off-viewport icons are erased, returning the slot and hiding its window. The pass preserves
-///    its traversal order while compacting. Admitted icons receive their screen position and are
-///    shown if needed, then return to the caller for type-specific updates.
 pub struct Pool<K> {
     template: String,
     viewport: [i32; 2],
     growth: usize,
     slots: Vec<Slot>,
     cursor: usize,
-    /// The live list in the manager's order, with each icon's owner.
     live: Vec<(SlotId, K)>,
     owners: HashMap<K, SlotId>,
-    /// The update's original extent, whose tail survives live-prefix compaction.
     update_buffer: Vec<(SlotId, K)>,
-    /// A growth task was started by an exhausted request.
     growing: bool,
     missed: usize,
     retrying: usize,
-    /// The windows each growth completed since the last [`Pool::take_diagnostics`] built.
     grown: Vec<usize>,
     growths: u64,
-    /// The initialization each icon type applies after a new window is built.
     setup: Setup,
-    /// The refusals standing on the slots' windows ([`Pool::refuse`]).
     withheld: Withheld<SlotId>,
 }
 
@@ -3838,54 +3335,31 @@ struct Slot {
     live: Option<usize>,
 }
 
-/// Map icon types and their initial pool sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapIconPool {
-    /// Type 5, the air base icon: 0xC0.
     AirBase,
-    /// Type 13, the regional air mission icon: 0xC0.
     AirMission,
-    /// Type 6, the rocket site icon: 0x80.
     RocketSite,
-    /// Type 7, the gun emplacement icon: 0x80.
     GunEmplacement,
-    /// Type 17, the radar icon: 0x40.
     Radar,
-    /// Type 33, the strategic location icon: 0x40.
     StrategicLocation,
-    /// Type 8, the naval base icon: 0xC0.
     Base,
-    /// Type 9, the naval combat icon: 0x20.
     Combat,
-    /// Type 10, the naval combat results icon: 0x40.
     CombatResults,
-    /// Type 12, the naval mission icon: 0x40.
     Mission,
-    /// Type 2, victory-point labels: 0xA0.
     Label,
-    /// Type 14, capital labels: 0xC0.
     Capital,
-    /// Type 29, raid icons: 0x80.
     Raid,
-    /// Type 32, faction pins: 0x80.
     Ping,
-    /// Type 30, the special facility icon: 0x80.
     Facility,
-    /// Type 31, the naval headquarters icon: 0x40.
     Headquarter,
-    /// Type 11, the land combat icon: 0x80.
     LandCombat,
-    /// Type 16, the adjacency-rule (strait and canal) icon. Its initial size is not
-    /// established; 0x20 windows, grown like every pool.
     AdjacencyRule,
-    /// Type 3, a state's resource icon: 0xC0.
     Resource,
-    /// Type 20, a resistance/compliance state marker: 0x60.
     Occupation,
 }
 
 impl MapIconPool {
-    /// The windows the pool starts with.
     pub fn initial(self) -> usize {
         match self {
             Self::Label => 0xA0,
@@ -3907,30 +3381,22 @@ impl MapIconPool {
     }
 }
 
-/// A slot of a [`Pool`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SlotId(usize);
 
 impl SlotId {
-    /// The slot's place in its pool.
     pub fn index(self) -> usize {
         self.0
     }
 }
 
-/// What the manager's pass finds of a live icon, as the icon type's own virtuals decide it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
-    /// The icon is empty: erased before any transform.
     Empty,
-    /// The icon does not intersect the viewport: erased.
     Outside,
-    /// It intersects the viewport; its window's top-left goes at this screen point.
     Inside([i32; 2]),
 }
 
-/// An icon the manager's pass erased: its owner and slot, and the grids and lists the window's
-/// Hide reached ([`Held`]), whose items the caller hides.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Erased<K> {
     pub owner: K,
@@ -3938,8 +3404,6 @@ pub struct Erased<K> {
     pub held: Vec<Held>,
 }
 
-/// A live pooled icon returned after its window position and visibility have been updated, for
-/// the caller to finish its type-specific update.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pass<K> {
     pub updated: Vec<(K, SlotId)>,
@@ -3947,9 +3411,6 @@ pub struct Pass<K> {
 }
 
 impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
-    /// The pool of `kind`, its windows built from `template` in the viewport with `resources`
-    /// ([`Instance::construct`]) and hidden, each then given `setup` (the icon type's own
-    /// constructor steps).
     pub fn new(
         template: &Element,
         viewport: [i32; 2],
@@ -3978,10 +3439,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(pool)
     }
 
-    /// The windows the growth a request started builds: every request it could not grant, never
-    /// fewer than the pool's step. A view whose demand arrives at once (the first picture of a
-    /// zoomed camera asks for every icon in it) is then one growth short of its windows rather
-    /// than demand/step of them, so no frame draws itself over again that many times for them.
     fn grows_by(&self) -> usize {
         self.growth.max(self.retrying)
     }
@@ -3996,7 +3453,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             let mut instance = Instance::construct(template, self.viewport, resources)?;
             instance.hide(template, template)?;
             (self.setup)(&mut instance, template)?;
-            // The construction's Hide reached lists and grids that hold no item yet: nothing.
             instance.take_held();
             self.slots.push(Slot {
                 instance,
@@ -4006,15 +3462,10 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(())
     }
 
-    /// The slot `owner`'s live icon holds, if it has one.
     pub fn slot_of(&self, owner: &K) -> Option<SlotId> {
         self.owners.get(owner).copied()
     }
 
-    /// Returns the owner's retained icon, or the first free slot from the round-robin cursor
-    /// and appends it to the live list. The cursor advances and wraps at pool size. Exhaustion
-    /// starts growth ([`Self::tick`] completes it), returns `None`, and lets the owner retry
-    /// next frame.
     pub fn request(&mut self, owner: K) -> Option<SlotId> {
         if let Some(slot) = self.slot_of(&owner) {
             return Some(slot);
@@ -4036,9 +3487,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         None
     }
 
-    /// Frees `slot`: out of the live list by swapping the last into its place (`erase_icon`'s
-    /// compaction), the slot free, its window hidden when visible. The grids and lists that
-    /// Hide reached.
     fn free(&mut self, template: &Element, slot: SlotId) -> Result<Vec<Held>, String> {
         if let Some(at) = self.slots[slot.0].live.take() {
             let (_, owner) = self.live.swap_remove(at);
@@ -4054,8 +3502,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(entry.instance.take_held())
     }
 
-    /// Erases `owner`'s icon, returning grids and lists reached by its window Hide. Does
-    /// nothing if the owner has no icon.
     pub fn erase(&mut self, template: &Element, owner: &K) -> Result<Vec<Held>, String> {
         match self.slot_of(owner) {
             Some(slot) => self.free(template, slot),
@@ -4063,10 +3509,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         }
     }
 
-    /// Walks the existing live-list extent. `test` supplies each icon type's empty and
-    /// viewport-admission checks. Rejected icons are erased; admitted ones receive their point
-    /// and are shown when hidden. A slot moved into an erased position is reached there before
-    /// the pass continues.
     pub fn update(
         &mut self,
         template: &Element,
@@ -4076,8 +3518,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             updated: Vec::new(),
             erased: Vec::new(),
         };
-        // The array's storage as the pass reads it: erasing compacts the live prefix and leaves
-        // the entries past it in place.
         let mut buffer = std::mem::take(&mut self.update_buffer);
         buffer.clone_from(&self.live);
         for index in 0..buffer.len() {
@@ -4093,7 +3533,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
                 }
                 Admission::Inside(point) => {
                     let instance = &mut self.slots[slot.0].instance;
-                    // A window already standing at the point takes the same position values again.
                     if instance.position() != point {
                         instance.set_position(template, template, point)?;
                     }
@@ -4108,12 +3547,10 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(pass)
     }
 
-    /// The window in `slot`, in use or free (a freed window still fades and moves).
     pub fn instance(&self, slot: SlotId) -> Option<&Instance> {
         self.slots.get(slot.0).map(|entry| &entry.instance)
     }
 
-    /// The window of a live slot.
     pub fn get(&mut self, slot: SlotId) -> Option<&mut Instance> {
         self.slots
             .get_mut(slot.0)
@@ -4121,17 +3558,12 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             .map(|entry| &mut entry.instance)
     }
 
-    /// Every live icon's owner, slot and window, in the live list's order.
     pub fn live(&self) -> impl Iterator<Item = (&K, SlotId, &Instance)> {
         self.live
             .iter()
             .map(|(slot, owner)| (owner, *slot, &self.slots[slot.0].instance))
     }
 
-    /// One frame of every window of the pool, live or not (each is registered with the GUI lifecycle), in
-    /// the game's phases ([`Self::tick_clocks`], [`Self::tick_transitions`],
-    /// [`Self::tick_draws`]). A caller whose other instances the pool's Shows and Hides reach
-    /// (the items of a list or grid a window holds) runs each phase across all of them instead.
     pub fn tick(
         &mut self,
         template: &Element,
@@ -4144,12 +3576,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         self.tick_draws(template, resources)
     }
 
-    /// [`Self::tick`] of the windows in `slots` alone (ascending), each phase across them in the
-    /// pool's order, for a caller that keeps the others: a window that is not
-    /// [`Instance::active`] and was not written since its last tick does not change on a tick but
-    /// for its clock's `Time`, which its kept layout does not read. A growth that waits is
-    /// completed first, as [`Self::tick_clocks`] does, and the windows it built are appended to
-    /// `slots` and ticked with them.
     pub fn tick_slots(
         &mut self,
         template: &Element,
@@ -4181,7 +3607,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(())
     }
 
-    /// The slots, live or free, whose window changes on its own ([`Instance::active`]).
     pub fn active_slots(&self) -> impl Iterator<Item = SlotId> + '_ {
         self.slots
             .iter()
@@ -4190,11 +3615,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             .map(|(index, _)| SlotId(index))
     }
 
-    /// The frame's first phase for every window of the pool ([`Instance::tick_clocks`]); a
-    /// growth an exhausted request started is completed first. The frame on which the game's
-    /// worker task completes it is not in any recording; the earliest is the frame after the
-    /// request, which this takes, counted in [`Self::growths`] and reported by
-    /// [`Self::take_diagnostics`].
     pub fn tick_clocks(
         &mut self,
         template: &Element,
@@ -4214,11 +3634,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(())
     }
 
-    /// The frame's second phase for every window of the pool, last registered first
-    /// ([`Instance::tick_transitions`]): for a caller whose other instances none of the pool's
-    /// Windows reach. One that propagates the windows' hides to instances of its own runs
-    /// [`Self::tick_transitions_of`] per slot in [`Self::registrations`]' order among its
-    /// instances instead.
     pub fn tick_transitions(&mut self, template: &Element) -> Result<(), String> {
         for index in (0..self.slots.len()).rev() {
             self.tick_transitions_of(template, SlotId(index))?;
@@ -4226,8 +3641,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(())
     }
 
-    /// Every window of the pool, live or free, with where it stands in the GUI lifecycle's list
-    /// ([`Registration`]), in slot order (the order they were built in).
     pub fn registrations(&self) -> impl Iterator<Item = (Registration, SlotId)> + '_ {
         self.slots
             .iter()
@@ -4235,9 +3648,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             .map(|(index, slot)| (slot.instance.registration(), SlotId(index)))
     }
 
-    /// The frame's second phase for the window in `slot`, live or free
-    /// ([`Instance::tick_transitions`]); the grids and lists its ended fade or movement reached
-    /// are then in [`Self::take_held`].
     pub fn tick_transitions_of(&mut self, template: &Element, slot: SlotId) -> Result<(), String> {
         let entry = self
             .slots
@@ -4246,7 +3656,6 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         entry.instance.tick_transitions(template)
     }
 
-    /// The frame's last phase for every window of the pool ([`Instance::tick_draws`]).
     pub fn tick_draws(
         &mut self,
         template: &Element,
@@ -4258,43 +3667,32 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(())
     }
 
-    /// Whether a tick would change any window of the pool: a growth waits for it, or a window
-    /// changes on its own or was written since its last tick ([`Instance::idle`]).
     pub fn tick_due(&self) -> bool {
         self.growing || self.slots.iter().any(|slot| !slot.instance.idle())
     }
 
-    /// Whether a request of this frame went ungranted or a growth waits: its tick grows the pool.
     pub fn requests_pending(&self) -> bool {
         self.growing || self.missed > 0
     }
 
-    /// Whether any window of the pool changes on its own ([`Instance::active`]), or a growth
-    /// waits.
     pub fn active(&self) -> bool {
         self.growing || self.slots.iter().any(|slot| slot.instance.active())
     }
 
-    /// Requests not granted this frame re-ask even after its tick completes growth.
     pub fn retry(&self) -> Option<super::super::icon_windows::Retry> {
         (self.retrying != 0 || self.missed != 0).then(|| super::super::icon_windows::Retry {
             name: self.template.clone(),
             requests: self.retrying.max(self.missed),
-            // A growth builds every window the requests it could not grant asked for, so one
-            // completed growth makes that many exhausted requests disappear next frame.
             rounds: 1,
         })
     }
 
-    /// Ticks every window, occupied or free. A freed window may complete its fade or hide
-    /// movement later, hiding children and reaching list/grid items at that time.
     pub fn take_held(&mut self, slot: SlotId) -> Vec<Held> {
         self.slots
             .get_mut(slot.0)
             .map_or(Vec::new(), |entry| entry.instance.take_held())
     }
 
-    /// [`Self::take_held`] of every slot that has any, live or free, in slot order.
     #[cfg(any(test, feature = "test-support"))]
     pub fn drain_held(&mut self) -> Vec<(SlotId, Vec<Held>)> {
         self.slots
@@ -4307,14 +3705,11 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             .collect()
     }
 
-    /// How many times the pool grew.
     #[cfg(any(test, feature = "test-support"))]
     pub fn growths(&self) -> u64 {
         self.growths
     }
 
-    /// One [`DiagnosticKind::PoolGrowth`] per growth completed since the last call, for the
-    /// caller's report.
     pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
         std::mem::take(&mut self.grown)
             .into_iter()
@@ -4343,62 +3738,33 @@ impl<K> std::fmt::Debug for Pool<K> {
     }
 }
 
-/// A window attached for drawing in the current frame. The manager clears and rebuilds its
-/// graphical child list from admitted live icons whose windows are visible. Erased icons and
-/// their items are detached even while fading; their transitions still run in [`Pool::tick`]
-/// and release held items when hiding completes ([`Pool::drain_held`]).
 #[derive(Debug)]
 pub struct Visible<'a, K> {
     pub owner: &'a K,
     pub slot: SlotId,
     pub instance: &'a Instance,
-    /// Why nothing is drawn for the window, when a refused update left part of it unknown
-    /// ([`Pool::refuse`]); the icon stays in the list, as it does in the game's.
     pub withheld: Option<&'a str>,
 }
 
-/// What a refused update left unknown of a window: what a later update must write again before
-/// the window is drawn ([`Withheld`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Unknown {
-    /// The update's own calls: the window's next update whose calls are all made writes them
-    /// again (an updater that writes the same set every update).
     Update,
-    /// One part only a particular later write makes known again, named by the caller (for
-    /// example a combat icon's flipped bar, whose move only the next rotation writes again);
-    /// that write is also an update.
     Part(&'static str),
-    /// Whatever followed a call that does not apply: every such failure is structural (a call on
-    /// another template's window or element, or a window's call on a control), the same on every
-    /// update, so no later update is known to write it all again; the window stays withheld until
-    /// its windows are built again (a new pool, a new [`Withheld`]).
     UntilRebuilt,
 }
 
-/// What an update that made all its calls wrote again ([`Withheld::rewrote`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rewrote {
-    /// Its own calls: lifts [`Unknown::Update`].
     Update,
-    /// Its own calls and the named part: lifts [`Unknown::Update`] and [`Unknown::Part`] of that
-    /// name.
     Part(&'static str),
 }
 
-/// The refusal standing on one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Refused {
     why: Cow<'static, str>,
     unknown: Vec<Unknown>,
 }
 
-/// The one refusal state of windows whose update was refused, keyed by the caller's window key
-/// (a pool keeps one per slot, [`Pool::refuse`]; a consumer keeps one for the windows it
-/// constructs itself, such as grid items): a refused update (an operand its calls lack, a call
-/// that does not apply, a read of its holder refused) leaves part of the window unknown, and
-/// nothing is drawn for it until later updates write every unknown part again. The refusal is the
-/// window's: its pool slot, its membership in the grids and lists that hold it and its place stay
-/// as the game keeps them.
 #[derive(Clone, Debug)]
 pub struct Withheld<K> {
     refused: HashMap<K, Refused>,
@@ -4413,8 +3779,6 @@ impl<K> Default for Withheld<K> {
 }
 
 impl<K: Eq + std::hash::Hash> Withheld<K> {
-    /// A refused update of `key`'s window left `unknown` unknown, for `why` (the reason counted
-    /// wherever the window would draw, the latest refusal's).
     pub fn refuse(&mut self, key: K, unknown: Unknown, why: Cow<'static, str>) {
         let refused = self.refused.entry(key).or_default();
         refused.why = why;
@@ -4423,9 +3787,6 @@ impl<K: Eq + std::hash::Hash> Withheld<K> {
         }
     }
 
-    /// `part` of `key`'s window is known again without a write of the code (a transition the
-    /// caller has seen end): only that [`Unknown::Part`] is lifted, and the window is drawn once
-    /// none is left.
     pub fn known(&mut self, key: &K, part: &'static str) {
         let Some(refused) = self.refused.get_mut(key) else {
             return;
@@ -4438,8 +3799,6 @@ impl<K: Eq + std::hash::Hash> Withheld<K> {
         }
     }
 
-    /// An update of `key`'s window made all its calls and wrote `rewrote` again: the unknown
-    /// parts it covers are known again, and the window is drawn once none is left.
     pub fn rewrote(&mut self, key: &K, rewrote: Rewrote) {
         let Some(refused) = self.refused.get_mut(key) else {
             return;
@@ -4454,15 +3813,12 @@ impl<K: Eq + std::hash::Hash> Withheld<K> {
         }
     }
 
-    /// Why nothing is drawn for `key`'s window, when a refused update left part of it unknown.
     pub fn why(&self, key: &K) -> Option<&str> {
         self.refused.get(key).map(|refused| refused.why.as_ref())
     }
 }
 
 impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
-    /// The manager's visible list ([`Visible`]): every live icon whose window is visible, in the
-    /// live list's order, with the refusal standing on its window.
     pub fn visible(&self) -> impl Iterator<Item = Visible<'_, K>> {
         self.live()
             .filter(|(_, _, instance)| instance.drawn())
@@ -4474,30 +3830,24 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             })
     }
 
-    /// A refused window update ([`Withheld::refuse`]). The refusal remains with the slot,
-    /// occupied or free, because a subsequent owner reuses the retained window state.
     pub fn refuse(&mut self, slot: SlotId, unknown: Unknown, why: Cow<'static, str>) {
         self.withheld.refuse(slot, unknown, why);
     }
 
-    /// `part` of the window in `slot` is known again without a write ([`Withheld::known`]).
     pub fn known(&mut self, slot: SlotId, part: &'static str) {
         self.withheld.known(&slot, part);
     }
 
-    /// An update of the window in `slot` made all its calls ([`Withheld::rewrote`]).
     pub fn rewrote(&mut self, slot: SlotId, rewrote: Rewrote) {
         self.withheld.rewrote(&slot, rewrote);
     }
 
-    /// Why nothing is drawn for the window in `slot`, when a refusal stands on it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn withheld(&self, slot: SlotId) -> Option<&str> {
         self.withheld.why(&slot)
     }
 }
 
-/// One call of the game's code on a window instance, as a prepared hour records it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
     #[cfg(any(test, feature = "test-support"))]
@@ -4510,23 +3860,15 @@ pub enum Call {
     HideWindow,
     SetHideFlag(bool),
     SetFrame(i32),
-    /// Sprite replacement through a setter ([`Instance::set_sprite`]).
     SetSprite(Vec<u8>, SpriteSetter),
-    /// A text box's text ([`Instance::set_text`]).
     SetText(String),
     #[cfg(any(test, feature = "test-support"))]
     Play,
-    /// Window opacity assignment, optionally including children ([`Instance::set_opacity`]).
     #[cfg(any(test, feature = "test-support"))]
     SetOpacity(f32, bool),
-    /// The code's writes on the control ([`Instance::control`]): every field it sets, the frame
-    /// excepted ([`Call::SetFrame`]); a sprite it sets is its next setter call, and a text its
-    /// next text write ([`Call::SetText`]), after the other fields.
     Control(Box<Bound>),
 }
 
-/// The calls a prepared hour's code makes, by instance key and element path, in order: made
-/// without touching any instance, applied once to the presented view's instances.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Calls<K> {
     pub calls: Vec<(K, String, Call)>,
@@ -4538,10 +3880,6 @@ impl<K: Clone + Eq + std::hash::Hash> Calls<K> {
         self.calls.push((key, element.path.clone(), call));
     }
 
-    /// Makes the calls on `instances`' windows of `root` (by each call's element path), in
-    /// order, with the resources the instances were built with (a text write refreshes its
-    /// scrollbar at once, [`Instance::set_text`]). A key with no instance, or a path not in the
-    /// template, is refused by name.
     pub fn apply(
         &self,
         root: &Element,
@@ -4568,7 +3906,6 @@ impl<K: Clone + Eq + std::hash::Hash> Calls<K> {
 }
 
 impl Call {
-    /// Makes this call on its resolved element, with the instance's construction resources.
     fn apply(
         &self,
         root: &Element,
@@ -4608,8 +3945,6 @@ impl Call {
             }
             Call::Control(bound) => {
                 let control = instance.control(root, element)?;
-                // The code's own writes; the frame goes through [`Instance::set_frame`] and the rest is
-                // the instance's.
                 let Bound {
                     sprite,
                     setter,
@@ -4655,8 +3990,6 @@ impl Call {
 }
 
 impl Instance {
-    /// Applies one borrowed call stream transactionally. A failed call leaves this instance
-    /// unchanged; producers need not copy calls or put their single window in a keyed map.
     pub fn apply_calls<'a>(
         &mut self,
         root: &Element,
@@ -4828,7 +4161,6 @@ mod retained_work_tests {
                 .unwrap();
         }
         assert_eq!(authored.builds, 1);
-        // A later stream owns a new view, including when it supplies a copied template.
         let copied = root.clone();
         let mut later = CallElements::default();
         Call::GuiShow
@@ -5045,8 +4377,6 @@ mod retained_work_tests {
             expected_resources.log.borrow_mut().clear();
             actual_resources.log.borrow_mut().clear();
             let before = format!("{expected:?}");
-            // The ordinary keyed stream is an independent setter reference.
-            // Commit its staged instance only on success, as apply_calls promises.
             let mut staged = HashMap::from([((), expected.clone())]);
             let reference = Calls {
                 calls: calls
@@ -5077,7 +4407,6 @@ mod retained_work_tests {
                 format!("{actual:?}"),
                 "after calls frame {frame}"
             );
-            // Resource effects of earlier calls still run even when a later path fails.
             assert_eq!(
                 *expected_resources.log.borrow(),
                 *actual_resources.log.borrow(),
@@ -5170,7 +4499,6 @@ mod retained_work_tests {
             actual
                 .set_sprite(root, icon, name, SpriteSetter::Icon)
                 .unwrap();
-            // Record the unpruned setter, as the ordinary ordered stream did.
             expected.flush(1);
             expected.nodes[1]
                 .events
@@ -5205,7 +4533,6 @@ mod retained_work_tests {
             for instance in [&mut actual, &mut expected] {
                 match frame {
                     1 | 7 => instance.gui_show(root, root).unwrap(),
-                    // Hide only the window: the child's own frame clock keeps playing.
                     4 => instance.hide_window(root, root).unwrap(),
                     _ => {}
                 }
@@ -5215,7 +4542,6 @@ mod retained_work_tests {
                 dt: 0.125,
             };
             actual.tick(root, &resources, tick).unwrap();
-            // A copied template takes the complete validation and draw traversal.
             expected.tick(&copied, &resources, tick).unwrap();
             assert_eq!(
                 actual.bindings(root, &resources).unwrap().bound,
@@ -5234,9 +4560,6 @@ mod retained_work_tests {
 mod frame_clock_tests {
     use super::*;
 
-    /// The frame count is stored unclamped and its bits convert unsigned. With -1 one-second
-    /// frames, duration is about 4.29e9 seconds, so a nonlooping sprite still plays after a
-    /// tick at frame 1, without a cap or refusal.
     #[test]
     fn a_negative_frame_count_is_its_unsigned_bits() {
         let kind = SpriteKind::FrameAnimated {
@@ -5418,14 +4741,12 @@ mod clock_pruning_tests {
         );
         let root = gui.template("root").unwrap();
         let icon = root.path_named("icon").unwrap();
-        // One window left alone between ticks, one written the same every frame (a full tick).
         let mut idle = Instance::construct(root, [800, 600], &resources).unwrap();
         let mut written = Instance::construct(root, [800, 600], &resources).unwrap();
         for instance in [&mut idle, &mut written] {
             instance.gui_show(root, root).unwrap();
             instance.set_frame(root, icon, 2).unwrap();
         }
-        // (the window's position, idle before the frame's tick): a move alone keeps it idle.
         let frames = [
             ([10, 20], false),
             ([10, 20], true),
@@ -5452,7 +4773,6 @@ mod clock_pruning_tests {
             assert!(idle.idle(), "frame {frame}: settled after its tick");
             let full = written.layout_with_regions(root, &resources, None, true).unwrap();
             assert_eq!(idle.layout_with_regions(root, &resources, None, true).unwrap(), full, "frame {frame}");
-            // The kept layout is the full tick's, and an idle window's is not made again.
             resources.lookups.set(0);
             let kept = idle.layout_kept(root, &resources, true, 7).unwrap().map(Layout::as_drawn);
             assert_eq!(kept, full.clone().map(Layout::as_drawn), "frame {frame}: kept as it draws");
@@ -5460,7 +4780,6 @@ mod clock_pruning_tests {
                 assert_eq!(resources.lookups.get(), 0, "frame {frame}: an idle window's layout is kept");
             }
         }
-        // A write, another stamp or another root lays it out again.
         idle.set_frame(root, icon, 1).unwrap();
         idle.tick(root, &resources, Tick { time: 2.0, dt: 1.0 / 60.0 }).unwrap();
         let fresh = idle.layout_with_regions(root, &resources, None, true).unwrap();
@@ -5588,7 +4907,6 @@ mod clock_pruning_tests {
                     _ => {}
                 }
             }
-            // A copied template's updater visits every constructed drawable in native order.
             let tick = Tick {
                 time: frame as f32 * 0.125,
                 dt: 0.125,
@@ -5618,8 +4936,6 @@ mod disabled_icon_tests {
     use super::*;
     use crate::map::{native_effects::synthetic, test_support::gui::fixture};
 
-    /// An icon the code disables draws its drawable's Disable technique; one the code leaves
-    /// alone, or enables, draws Up as before.
     #[test]
     fn an_icon_the_code_disables_draws_its_disable_technique() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -5651,8 +4967,6 @@ mod disabled_icon_tests {
         assert_eq!(shading(Some(false)), disable);
     }
 
-    /// A saved picture shows a window where its opening settles: its show movement and fade run
-    /// to their ends at once, while a live frame's first tick leaves them where they start.
     #[test]
     fn settled_transitions_show_a_window_at_its_settled_place() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -5676,8 +4990,6 @@ mod disabled_icon_tests {
         assert_eq!(saved.opacity(), 1.0, "and has faded in");
     }
 
-    /// A window hidden before a saved picture is hidden in it: the settled step runs its fade and
-    /// its hide movement to their ends and takes the hide those ends make, in the same step.
     #[test]
     fn a_settled_step_completes_a_pending_hide() {
         engine_executable::executable_tables::initialize_for_tests()

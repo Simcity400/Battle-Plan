@@ -1,4 +1,3 @@
-//! Country-authenticated complete sparse regional mine vectors.
 use replay_data::{rows::NavalRegionalMineRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
@@ -23,16 +22,12 @@ impl<'a> Levels<'a> {
             links,
         )
     }
-    /// Build the same authenticated sparse lookup from selected owner rows.
     pub fn from_rows(
         rows: &'a [NavalRegionalMineRow],
         links: &'a BTreeMap<u32, u32>,
     ) -> Result<Self, String> {
         let mut navies = BTreeMap::new();
         let mut first = 0;
-        // Jump over each country's immutable sorted value range. Only its
-        // witness and final key are needed; retain borrowed values rather than
-        // allocating a second map for every regional amount.
         while first < rows.len() {
             let raw = rows[first].country;
             let end = first + rows[first..].partition_point(|row| row.country == raw);
@@ -76,8 +71,6 @@ impl<'a> Levels<'a> {
             navies,
         })
     }
-    /// A missing owner is unavailable even in a complete sparse table.
-    /// The native indexed getter has no out-of-range zero fallback.
     pub fn amount(&self, country: u32, region: u32) -> Result<i64, String> {
         let slot = self
             .links

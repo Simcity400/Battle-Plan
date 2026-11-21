@@ -53,9 +53,7 @@ try {
   const at = result as Record<string, number>;
   assert.ok(at.natural > 320, `the settings run past the clamp (${at.natural})`);
   assert.equal(at.viewport, 320);
-  // Open Battle Plan is on screen before and after scrolling.
   assert.ok(at.unscrolledTop >= 0 && at.unscrolledBottom <= 320, `footer ${at.unscrolledTop}–${at.unscrolledBottom}`);
   assert.ok(at.scrolledTop >= 0 && at.scrolledBottom <= 320, `footer ${at.scrolledTop}–${at.scrolledBottom}`);
-  // The last controls scroll into view above it.
   assert.ok(at.lastBottom <= at.scrolledTop + 0.5, `last section ends ${at.lastBottom}, footer starts ${at.scrolledTop}`);
 });

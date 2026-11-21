@@ -1,6 +1,3 @@
-//! Each job of one hour's hold: its stage, the worker that ran it, when it began and its wall.
-//! Workers log a job's span as it ends; the callback keeps the spans of the latest forced hour
-//! and of the slowest other hour for status.json, so a slow hour shows where its time went.
 use std::{
     cell::Cell,
     sync::{
@@ -10,7 +7,6 @@ use std::{
 };
 
 const CAPACITY: usize = 2 * crate::acquisition_jobs::MAX_JOBS;
-/// The callback's own thread, which runs jobs inline and helps drain the pool.
 const CALLBACK: u8 = u8::MAX;
 const OFFSET_BITS: u32 = 48;
 const OFFSET_MASK: u64 = (1 << OFFSET_BITS) - 1;
@@ -19,7 +15,6 @@ thread_local! {
     static WORKER: Cell<u8> = const { Cell::new(CALLBACK) };
 }
 
-/// Names the calling thread as pool worker `index` in the spans it logs.
 pub(crate) fn enter_worker(index: usize) {
     WORKER.set(u8::try_from(index).unwrap_or(CALLBACK - 1));
 }
@@ -27,9 +22,7 @@ pub(crate) fn enter_worker(index: usize) {
 struct Log {
     begin: AtomicI64,
     len: AtomicUsize,
-    /// The hour's [`TemplateFallback`], plus one; zero when its template walk did not fall back.
     template_fallback: AtomicU8,
-    /// Role, worker and begin offset in ticks; then the wall in ticks.
     spans: [[AtomicU64; 2]; CAPACITY],
 }
 
@@ -66,17 +59,14 @@ impl Log {
     }
 }
 
-/// The hour's hold begins at `now`; no job of an earlier hour still runs.
 pub(crate) fn begin(now: i64) {
     LOG.begin(now);
 }
 
-/// A job of `role` ran from `started` to `ended` on this thread.
 pub(crate) fn record(role: usize, started: i64, ended: i64) {
     LOG.record(role, started, ended);
 }
 
-/// A serial stage inside a long job, logged beside the jobs.
 #[derive(Clone, Copy)]
 pub(crate) enum Part {
     SettleSources,
@@ -122,12 +112,10 @@ const PARTS: [&str; 19] = [
     "variants_setup",
 ];
 
-/// `part` of the job running on this thread ran from `started` to `ended`.
 pub(crate) fn record_part(part: Part, started: i64, ended: i64) {
     LOG.record(crate::acquisition_jobs::ROLE_COUNT + part as usize, started, ended);
 }
 
-/// Why an hour's template walk ran serially although the pool offered it ranges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TemplateFallback {
     OneLane,
@@ -149,7 +137,6 @@ const FALLBACKS: [&str; 7] = [
     "a failed range's last batch held a repeated template",
 ];
 
-/// The template job's walk fell back to the serial walk this hour.
 pub(crate) fn note_template_fallback(fallback: TemplateFallback) {
     LOG.template_fallback.store(fallback as u8 + 1, Ordering::Relaxed);
 }
@@ -173,10 +160,8 @@ struct Timeline {
     hour: Option<i32>,
     held_ns: u64,
     len: usize,
-    /// Spans the log had no room for.
     dropped: usize,
     template_fallback: u8,
-    /// Role, worker and begin offset in ns; then the wall in ns.
     spans: [[u64; 2]; CAPACITY],
 }
 
@@ -207,8 +192,6 @@ impl Timeline {
         }
     }
 
-    /// Status runs under the collector's allocation guard: the snapshot is owned and sorted in
-    /// place, never copied to the heap.
     fn status(mut self) -> Option<impl serde::Serialize + use<>> {
         let len = self.len;
         self.spans[..len].sort_unstable_by_key(|span| span[0] & OFFSET_MASK);
@@ -245,11 +228,8 @@ static KEPT: Mutex<Kept> = Mutex::new(Kept {
     slowest: Timeline::EMPTY,
 });
 static SLOWEST_NS: AtomicU64 = AtomicU64::new(0);
-/// Hours whose spans were not kept because status was reading the kept ones.
 static MISSED: AtomicU64 = AtomicU64::new(0);
 
-/// At the end of the hour's hold: keep its spans when it was forced or is the slowest other
-/// hour yet. The game thread never waits for status.
 pub(crate) fn keep(hour: Option<i32>, held_ns: u64, forced: bool, ns: &dyn Fn(i64) -> u64) {
     if !forced && held_ns <= SLOWEST_NS.load(Ordering::Relaxed) {
         return;
@@ -302,7 +282,6 @@ mod tests {
         log.record(crate::acquisition_jobs::Role::Presentation as usize, 1_002, 1_004);
         let mut timeline = Box::new(Timeline::EMPTY);
         timeline.fill(&log, Some(7), 99, &|ticks| ticks as u64 * 100);
-        // Status is built and written under the collector's allocation guard.
         crate::test_support::with_allocations_denied(|| {
             serde_json::to_writer(std::io::sink(), &timeline.status()).unwrap();
         });

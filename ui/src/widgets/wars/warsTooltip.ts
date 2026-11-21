@@ -9,7 +9,6 @@ type Country = CountryLabel;
 type Day = (hour: number) => string;
 const singularSide = (label: string) => label === 'Attackers' ? 'Attacker' : label === 'Defenders' ? 'Defender' : label;
 
-/** A last observation is a bound, never an invented peace or departure date. */
 function endLabel(run: { firstHour: number; lastHour: number }, by: boolean, until: number, branchLast: number,
   gaps: readonly HourSpan[], day: Day, participant = false): string {
   const ongoing = run.lastHour >= branchLast && until >= branchLast ? "Ongoing at the recording’s end"
@@ -22,7 +21,6 @@ function endLabel(run: { firstHour: number; lastHour: number }, by: boolean, unt
   }, gaps) ?? 'Not recorded';
 }
 
-/** Exact side columns from one dated run. Unknown attribution keeps its own row. */
 export function casualtyRows(losses: WarCasualtyRun | null, sides: readonly [string, string], absent = 'Not recorded'): TooltipRow[] {
   if (!losses) return sides.map(label => ({ label: `${singularSide(label)} casualties`, value: absent, tone: 'muted' }));
   const rows: TooltipRow[] = [];
@@ -40,7 +38,6 @@ export interface WarTooltipInput {
   observation: WarObservation | null;
   losses: WarCasualtyRun | null;
   lossesPending?: boolean;
-  /** Why the war's casualties at the hour are not known, when the reply says. */
   lossesReason?: string | null;
   hour: number;
   until: number;

@@ -1,9 +1,3 @@
-//! Class-1 counter arrival: speed per departure region and duration integration
-//! over the task force's stored ordinary route
-//! (`TaskForceMapMotion.path`). The game's counter searches a fresh route
-//! first; that search's admission inputs are not recorded, so the
-//! viewer walks the stored route and searches no task-force route, including
-//! no prospective one. Arrival does not enter the task-force speed getter.
 
 use super::fresh_search::{Inputs, available};
 use game_model::movement::unit::eta_ratio;
@@ -15,11 +9,8 @@ use viewer_foundation::table_access::TokenError;
 
 const P: i64 = 100_000;
 
-/// Why no task-force route is searched: its class-1 admission (range and
-/// target access, submarine rules, hostile strength) reads unrecorded inputs.
 pub(super) const ADMISSION_UNRECORDED: &str = "task-force route admission inputs (owner navy range, theatres and nearest-base caches) are not recorded";
 
-/// The counter arrival duration over the task force's stored ordinary route.
 pub(super) fn derive(
     inputs: &Inputs<'_>,
     motion: &TaskForceMapMotionRow,
@@ -34,9 +25,6 @@ pub(super) fn derive(
     remaining(inputs, force, motion, profile, route, source_region)
 }
 
-/// The game words the whole route for the viewing country's own task force
-/// and only its next province otherwise. The stored ordinary route supplies
-/// both; the destination needs every stored province.
 fn stored_route<'m>(
     force: &TaskForceRow,
     motion: &'m TaskForceMapMotionRow,
@@ -88,7 +76,6 @@ fn speed(
         terrain.movement(region, || {
             match naval.tokens()?.name(token) {
                 Ok(name) => Ok(Some(name)),
-                // A complete reverse dictionary certifies no registered bucket.
                 Err(TokenError::Rejected | TokenError::Absent(_)) => Ok(None),
                 Err(error) => Err(error.to_string()),
             }
@@ -101,7 +88,6 @@ fn speed(
         let count = i32::try_from(ships.len())
             .map_err(|_| "fresh naval ETA ship count exceeds the native signed representation")?;
         let sum = ships.iter().try_fold(0_i64, |sum, ship| {
-            // Ship class is a raw lexer token, including signed values.
             Ok::<_, String>(sum.wrapping_add(adjustment(ship.class_id as u32)?))
         })?;
         class_mean(sum, count)
@@ -114,8 +100,6 @@ fn speed(
     ))
 }
 
-/// The fixed5 product wraps before the division; sum/count alone changes
-/// extreme operands. The zero roster does not reach a division.
 fn class_mean(sum: i64, count: i32) -> i64 {
     if count == 0 {
         return 0;
@@ -152,21 +136,17 @@ fn remaining(
         if from == to {
             continue;
         }
-        // Apply embark distance only to classes 0 and 13.
         let distance =
             inputs.content.map.distance(from, to).ok_or_else(|| {
                 format!("fresh naval ETA edge {from}->{to} distance is unavailable")
             })?;
         let speed = speed(inputs, force, fresh, source_region(from)?)?;
-        // Native returns immediately, before later edges or actual progress.
         if speed == 0 {
             return Ok(0);
         }
         if from == force.province && actual_speed.is_none() {
             actual_speed = Some(speed);
         }
-        // Native divides each leg before reaching the next speed. A later
-        // zero cannot hide an earlier signed-division overflow refusal.
         duration = duration.wrapping_add(eta_ratio(distance, speed).map_err(str::to_owned)?);
         from = to;
     }
@@ -175,8 +155,6 @@ fn remaining(
             .movement_numerator
             .require("TaskForceMapMotion.movement_numerator")?
             .ok_or("fresh naval ETA movement numerator was refused")?;
-        // The speed getter ignores destination, so the first searched edge already
-        // evaluates actual-departure speed from this fresh packet.
         let actual_speed = match actual_speed {
             Some(speed) => speed,
             None => speed(inputs, force, fresh, source_region(force.province)?)?,
@@ -345,9 +323,6 @@ mod tests {
         }
     }
 
-    /// The arrival walks the stored route: the whole route for the own task
-    /// force, the first province for another country's, each leg at its
-    /// departure region's speed, less the progress already behind it.
     #[test]
     fn arrival_walks_the_stored_route_to_the_destination_or_the_next_province() {
         let mut frame = frame();
@@ -363,11 +338,8 @@ mod tests {
         let content = content();
         let inputs = Inputs::new(&frame, &content);
         let region = |from| Ok(if from == 1 { 9 } else { 10 });
-        // Legs 400000/260000 and 600000/300000 are 153846 and 200000;
-        // progress 100000/260000 is 38461.
         assert_eq!(derive(&inputs, &motion(), true, region), Ok(315_385));
         assert_eq!(derive(&inputs, &motion(), false, region), Ok(115_385));
-        // The stored route needs a current fresh speed packet.
         let mut stale = frame.clone();
         put(
             &mut stale,
@@ -500,8 +472,6 @@ mod tests {
         tokens(&mut frame);
         let content = content();
         let inputs = Inputs::new(&frame, &content);
-        // The sea->land leg keeps 400000, not the content embark value9000000.
-        // Per-leg durations are 153846 + 200000; progress is 38461.
         assert_eq!(
             remaining(&inputs, &force(), &motion(), &fresh(700), &[2, 3], |from| {
                 Ok(if from == 1 { 9 } else { 10 })

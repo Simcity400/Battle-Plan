@@ -1,7 +1,3 @@
-//! Occupation (family 54): the occupied states at an hour ([`states::OccupiedStates`]), each with
-//! its resistance and compliance followed as live cells, its garrison and its effective law; and
-//! the occupation trend, the declared series `occupier-totals`, whose hover reads the occupiers'
-//! totals and collaboration at an hour ([`detail::OccupationDetail`]).
 
 pub mod detail;
 mod law;
@@ -21,17 +17,12 @@ use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock}};
 
 pub use law::OccupationLawInfo;
 
-/// A state's names as last shown: its custom and owner names, and the name they make.
 type Named = (Vec<u8>, Vec<u8>, Result<String, String>);
 
-/// What the occupation replies read of the recorded content, bound once per request or follow;
-/// each part says why it is missing.
 pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     laws: Result<Arc<Laws>, String>,
-    /// Read when a garrison's equipment is first checked: most hours need none.
     equipment: OnceLock<Result<Arc<Database>, String>>,
-    /// The displayed strength below which a garrison shows red.
     red: Option<i64>,
     warnings: Vec<String>,
     names: Mutex<HashMap<u32, Named>>,
@@ -75,8 +66,6 @@ impl Content {
     }
 }
 
-/// Every authored occupation law's name and icon drawn through `cat`, an icon not drawn refused on
-/// it; the law files that could not be read.
 pub fn check_laws(cat: &Catalogue) -> Result<Vec<String>, String> {
     let laws = installed_content_core::occupation_laws::read(&cat.content.layers).map_err(|why| why.to_string())?;
     if laws.warnings.is_empty() {
@@ -89,12 +78,10 @@ pub fn check_laws(cat: &Catalogue) -> Result<Vec<String>, String> {
     Ok(laws.warnings)
 }
 
-/// The game's occupied test: active resistance against a positive occupied-country reference.
 pub(super) fn occupied(row: &StateResistanceRow) -> bool {
     row.active != 0 && (row.country as i32) > 0
 }
 
-/// `raw`'s canonical slot through the hour's links.
 fn slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
     dashboard_text::metadata::link_slot(links, raw)
 }

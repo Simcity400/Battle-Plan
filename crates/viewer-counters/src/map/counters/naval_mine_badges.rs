@@ -1,4 +1,3 @@
-//! Regional mine bars and accident badges from recorded simulation state.
 use super::*;
 use replay_data::rows::AirCountryRelationRow;
 use viewer_foundation::map::{
@@ -298,8 +297,6 @@ fn positions(
     })
 }
 
-/// The regional update repositions its status row and all three unit grids
-/// before centering the content window over its strategic-region anchor.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn relayout(
     instance: &mut Instance,

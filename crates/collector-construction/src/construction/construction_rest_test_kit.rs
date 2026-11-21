@@ -88,7 +88,6 @@ pub fn fixture() -> Vec<u8> {
         COUNTRY + ccountry::COLLABORATION_STATUS,
         &(COLLAB as u64).to_le_bytes(),
     );
-    // State + template + resources.
     put(
         &mut bytes,
         STATE,
@@ -127,7 +126,6 @@ pub fn fixture() -> Vec<u8> {
     );
     put(&mut bytes, RESDATA, &1234567_i64.to_le_bytes());
     put(&mut bytes, RESDATA + 8, &55_u32.to_le_bytes());
-    // Resistance (embedded).
     let res = STATE + cstate::RESISTANCE;
     put(
         &mut bytes,
@@ -153,7 +151,6 @@ pub fn fixture() -> Vec<u8> {
     );
     put(&mut bytes, res + cresistance::COUNTRY, &1_u32.to_le_bytes());
     put(&mut bytes, res + cresistance::ACTIVE, &[1]);
-    // Production status + construction queue (1 building + 1 railway).
     put(
         &mut bytes,
         PROD,
@@ -256,7 +253,6 @@ pub fn fixture() -> Vec<u8> {
         BTARGET + cbuilding::BUILDING_STATUS,
         &(STATUS_OBJ as u64).to_le_bytes(),
     );
-    // Status object for building targets (state scope, location 1).
     put(
         &mut bytes,
         STATUS_OBJ,
@@ -287,7 +283,6 @@ pub fn fixture() -> Vec<u8> {
         STATUS_OBJ + cbuilding_status::COUNTRY,
         &1_u32.to_le_bytes(),
     );
-    // Railway fields + route.
     put(
         &mut bytes,
         RLINE + crailway_production_line::BASE_LEVEL,
@@ -321,7 +316,6 @@ pub fn fixture() -> Vec<u8> {
         RLINE + crailway_production_line::REMAINING_COST,
         &50_i64.to_le_bytes(),
     );
-    // Occupation status.
     put(
         &mut bytes,
         OCC,
@@ -362,7 +356,6 @@ pub fn fixture() -> Vec<u8> {
         LAW_OBJ + coccupation_law::NAME + msvc_string::CAPACITY,
         &15_u64.to_le_bytes(),
     );
-    // Reserve manpower (1 entry).
     put(
         &mut bytes,
         OCC + ccountry_occupation_status::ASSIGNED_MANPOWER,
@@ -376,7 +369,6 @@ pub fn fixture() -> Vec<u8> {
     );
     put(&mut bytes, RESERVE_DATA, &1_u32.to_le_bytes());
     put(&mut bytes, RESERVE_DATA + 4, &(-17_i32).to_le_bytes());
-    // Occupation robin-hood table with one entry (occupied country 1).
     put(
         &mut bytes,
         OCC + ccountry_occupation_status::OCCUPATION_DATA_TABLE,
@@ -432,7 +424,6 @@ pub fn fixture() -> Vec<u8> {
         OCC_DATA + ccountry_occupation_data::OCCUPIED_COUNTRY,
         &1_u32.to_le_bytes(),
     );
-    // Law table inside occupation data (one law, state 0).
     array(
         &mut bytes,
         OCC_DATA + ccountry_occupation_data::LAW_TABLE,
@@ -442,7 +433,6 @@ pub fn fixture() -> Vec<u8> {
     put(&mut bytes, LAW_DATA + 4, &[1]);
     put(&mut bytes, LAW_DATA + 8, &0_u32.to_le_bytes());
     put(&mut bytes, LAW_DATA + 16, &(LAW_OBJ as u64).to_le_bytes());
-    // Garrison table inside occupation data (one garrison, state 1).
     array(
         &mut bytes,
         OCC_DATA + ccountry_occupation_data::GARRISON_TABLE,
@@ -495,7 +485,6 @@ pub fn fixture() -> Vec<u8> {
     );
     put(&mut bytes, ASSIGN_DATA, &1_u32.to_le_bytes());
     put(&mut bytes, ASSIGN_DATA + 4, &90_i32.to_le_bytes());
-    // Collaboration status with no outgoing (empty, shares the walk).
     put(
         &mut bytes,
         COLLAB,

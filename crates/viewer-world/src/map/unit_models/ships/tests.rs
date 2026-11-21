@@ -44,7 +44,6 @@ fn formation_reader_keeps_native_defaults_and_last_stored_values() {
         ),
         ("last".into(), 0.6)
     );
-    // A failed numeric block is skipped, including its fields.
     assert_eq!(
         formation(b"naval_formation_scale = { naval_formation_scale = 7 } naval_formation = kept"),
         ("kept".into(), 1.0)
@@ -64,7 +63,6 @@ fn formation_reader_uses_the_crt_number_forms() {
             expected
         );
     }
-    // Quoted numbers are scanned too, and malformed exponents store nothing.
     assert_eq!(
         formation(br#"naval_formation_scale = "  -.5px" naval_formation_scale = 1e"#).1,
         -0.5
@@ -94,7 +92,6 @@ fn formation_reader_replays_lists_variables_unknowns_and_persistent_stop() {
                 && warning.contains("unknown")
                 && warning.contains("1 reader reports"))
     );
-    // Quoted keys are not keywords; mode 0 keeps a BOM in the first key.
     assert_eq!(
         formation(
             b"\xef\xbb\xbfnaval_formation_scale = 9 \
@@ -191,7 +188,6 @@ fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it()
         }),
         ..Default::default()
     };
-    // Handle order 1..4; roster order puts the battleship (bit 6) first.
     let ships = [
         row(1, 3, 1 << 8),
         row(2, 1, 1 << 39),
@@ -206,7 +202,6 @@ fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it()
             .collect::<Vec<_>>(),
         vec![(0, 3), (1, 4), (2, 1), (3, 2)]
     );
-    // A first roster ship without bits 6/22 leaves the capital slot empty.
     let ships = [row(1, 0, 1 << 8), row(2, 1, 1 << 22)];
     let slots = formation_slots(&ships.iter().collect::<Vec<_>>());
     assert_eq!(
@@ -216,7 +211,6 @@ fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it()
             .collect::<Vec<_>>(),
         vec![(1, 1)]
     );
-    // Missing counter inputs cannot establish the formation's roster order.
     let incomplete = [ShipModelRow {
         ship: 9,
         formation_flags: 1 << 7,
@@ -225,9 +219,6 @@ fn a_recorded_roster_puts_its_first_capital_in_slot_zero_and_supports_after_it()
     assert!(formation_slots(&incomplete.iter().collect::<Vec<_>>()).is_empty());
 }
 
-/// The ship models share the counter pass's mission skip: an active patrol in the region it
-/// patrols now has no formation, one outside it keeps its hulls, and unrecorded skip
-/// operands leave the formation undrawn and counted.
 #[test]
 fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
     use replay_data::{
@@ -328,7 +319,6 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
             scale: 1.0,
             ..ShipAssets::default()
         },
-        // Province 5 has content bounds, which model admission requires.
         bounds: Arc::new(BTreeMap::from([(5, [0.0, 0.0, 1.0, 1.0])])),
         registered: ["destroyer_entity".to_owned()].into(),
         ..UnitModelAssets::off(String::new())
@@ -363,16 +353,11 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
         (placed.len(), report.undecided_mission_formations)
     };
     let recorded = frame(true);
-    // Patrolling region 79 now: skipped. In region 76, where it does not patrol now: drawn.
     assert_eq!(hulls(&recorded, 79), (0, 0));
     assert_eq!(hulls(&recorded, 76), (1, 0));
-    // Without its counter inputs the skip is undecided: no formation, counted.
     assert_eq!(hulls(&frame(false), 76), (0, 1));
 }
 
-/// Independent fixture with the recorded Kotka force's 11 capitals / 49 ships.
-/// The root and support locators deliberately differ, so mis-attaching a capital
-/// cannot pass merely because a template's locators happen to coincide.
 fn kotka_formation(combat_role: u8) -> (DecodedFrame, UnitModelAssets) {
     let flags = std::iter::repeat_n(1 << 22, 3)
         .chain(std::iter::repeat_n(1 << 6, 4))
@@ -556,7 +541,7 @@ fn kotka_hulls(
 fn capital_uses_root_and_authored_animator_scale() {
     let (frame, assets) = kotka_formation(0);
     let (placed, report) = kotka_hulls(&frame, &assets, false, 0.22);
-    assert_eq!(placed.len(), 4); // A formation permits a capital and three supports.
+    assert_eq!(placed.len(), 4);
     let capital = placed.iter().find(|hull| hull.part == 0).unwrap();
     assert_eq!(capital.instance.position, capital.origin);
     assert_eq!(capital.instance.scale, 0.6 * 0.22);
@@ -574,10 +559,7 @@ fn capital_uses_root_and_authored_animator_scale() {
 
 #[test]
 fn ordinary_formations_exclude_both_combat_slots() {
-    // A below-cutoff camera must not turn the ordinary formation path into
-    // the separate combat graphics path.
     for role in [1, 2] {
-        // POL's recorded eight-submarine force at province 2333.
         let (frame, assets) = formation_fixture((3197 << 32) | 61, 2333, [1 << 39; 8], role);
         let (placed, report) = kotka_hulls(&frame, &assets, false, 0.22);
         assert!(placed.is_empty());
@@ -641,8 +623,6 @@ fn carrier_plate_only_when_another_task_force_holds_the_visual_slot() {
     let (mut frame, assets) = kotka_formation(0);
     let force = (944 << 32) | 61;
     let escort = (7 << 32) | 61;
-    // The competing task force isolates the shared visual slot from the hourly endpoint
-    // routes (which cannot establish the intervening client's frame history).
     let mut forces = rows::<tables::TaskForces>(&frame).unwrap().rows().to_vec();
     let mut other = forces[0].clone();
     other.id = escort;
@@ -705,8 +685,6 @@ fn carrier_plate_only_when_another_task_force_holds_the_visual_slot() {
         report.selection_errors.is_empty(),
         "this is native admission, not a gap"
     );
-    // Same bucket, same own priority: last own occupant wins.
-    // Reversing the order admits the CV's four hulls.
     replace_table(
         &mut frame,
         TableRows::ProvinceUnitOrder(vec![ProvinceUnitOrderRow {
@@ -744,7 +722,6 @@ fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
     let mut forces = rows::<tables::TaskForces>(&frame).unwrap().rows().to_vec();
     let mut ships = rows::<tables::Ships>(&frame).unwrap().rows().to_vec();
     let mut models = rows::<tables::ShipModels>(&frame).unwrap().rows().to_vec();
-    // Independent handles preserve each recorded roster's ordinal order.
     for (index, (other, _)) in frames.iter().enumerate() {
         forces.extend_from_slice(rows::<tables::TaskForces>(other).unwrap().rows());
         let offset = (index as u64 + 1) << 40;
@@ -822,8 +799,6 @@ fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
             .iter()
             .all(|target| target.identity == forces.last().unwrap().id)
     );
-    // One live frame's shared budget attaches just one ship; subsequent
-    // frames retain that handle and fill missing support slots natively.
     let motions = TaskForceMotions::read(&frame).unwrap();
     let missions = MissionSkips::read(&frame).unwrap();
     let sources = assets

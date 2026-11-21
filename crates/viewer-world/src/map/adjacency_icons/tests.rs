@@ -90,13 +90,11 @@ fn icons_show_in_the_navy_supply_and_resources_modes_below_the_cutoff() {
             assert_eq!(placed, 0, "{stock:?}");
         }
     }
-    // Strictly below the cutoff.
     assert_eq!(
         prepare(&icons, Stock::Supply, 1699.9).provinces().count(),
         2
     );
     assert_eq!(prepare(&icons, Stock::Supply, 1700.).provinces().count(), 0);
-    // An unreadable cutoff refuses every icon by name.
     let refused = prepare(&fixture(Err("missing".into())), Stock::Supply, 300.);
     assert_eq!(refused.provinces().count(), 0);
     assert_eq!(
@@ -137,8 +135,6 @@ fn the_icon_stands_at_the_province_position_plus_its_offset() {
     assert_ne!(expected, unshifted);
 }
 
-/// A free eye shows each icon by its own distance, however low it flies, and the icon stands at
-/// its province position plus its offset.
 #[test]
 fn a_free_eye_shows_each_icon_by_its_own_distance() {
     let icons = AdjacencyIcons::of(
@@ -150,7 +146,6 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
     );
     let world = [3001., 10., 1498.];
     let prepared = |distance: f32| {
-        // Level with the icon, `distance` south of it.
         let eye = [world[0], world[1], world[2] - distance];
         icons.prepare(&Inputs {
             anchor: &anchor,
@@ -180,8 +175,6 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
     );
 }
 
-/// Every quad of an icon stands at its anchor for a free eye to place; later pushes are screen
-/// interface again.
 #[test]
 fn an_icon_s_quads_stand_at_its_anchor() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -245,7 +238,6 @@ fn each_mode_draws_at_its_own_tables_adjacency_rule_priority() {
     priorities.set(PriorityTable::Default, PriorityIcon::AdjacencyRule, 3);
     priorities.set(PriorityTable::Resources, PriorityIcon::AdjacencyRule, -4);
     assert_eq!(priority(&priorities, &mode(Stock::StrategicNavy)), 7);
-    // The supply mode reads the default table.
     assert_eq!(priority(&priorities, &mode(Stock::Supply)), 3);
     assert_eq!(priority(&priorities, &mode(Stock::Resources)), -4);
 }

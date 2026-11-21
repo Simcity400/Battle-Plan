@@ -1,75 +1,3 @@
-//! A clearable registry of the receiver addresses a mutation observer
-//! watches, for the observers' hooks (the relation observer,
-//! the history observer, the character observer).
-//!
-//! A capture registers each receiver it certifies and takes its
-//! `(epoch, sequence)`. A hooked writer bumps the sequence of a registered
-//! receiver once, on entry, and the domain-wide revision with it. Equal
-//! values across hours prove that no observed writer touched it.
-//!
-//! The revision and the count of running writers share one word
-//! ([`WatchRegistry::state`]), on its own cache line: a writer's entry is one
-//! checked compare-and-swap (running +1, revision +1; one locked operation
-//! when uncontended, a retry per lost race) and its return one subtract
-//! (running −1), and [`WatchRegistry::quiet`] reads both at once. The same
-//! swap that would fill the running field to half its width, or take the
-//! revision past its last value, instead sets the word's sticky untrusted
-//! bit and leaves the writer uncounted. A word carrying that bit is never
-//! quiet, so the registry certifies nothing more and reports writers running
-//! to detach; a boundary that reads it refuses every clear, install and
-//! retirement, and one already past its quiet check cannot retire a table a
-//! notification may still hold (its later check sees the bit or the count).
-//! Neither field can wrap. One bump per writer
-//! suffices because no certificate or quiet token is taken while a writer
-//! runs. Take a writer W (entry E, then its write, then its return X, each
-//! sequentially consistent) and a certificate C, which loads the sequence
-//! and then requires the running count to be zero:
-//! - if E's bump precedes C's sequence load, either X precedes C's count load
-//!   (C includes the bump, and W's write happened before anything C's
-//!   capture reads after it) or W still runs there and C is refused;
-//! - if E's bump follows C's sequence load, every later certificate of that
-//!   receiver loads the bumped sequence (or is refused while W runs), so it
-//!   differs from C and the receiver is read again.
-//!
-//! Either way an equal later certificate excludes any write after the read C
-//! covers. The same holds for the revision in a quiet token, which reads the
-//! revision and the count in one load. A writer's return bumps nothing. A
-//! marking registry still marks on return (below).
-//!
-//! Registrations are dropped only together with an epoch change, so no
-//! certificate outlives a notification it could have missed:
-//! - [`WatchRegistry::boundary`] runs on the game thread in the hourly
-//!   callback, before any capture. It clears the table (on an invalidation,
-//!   or, unless [`WatchRegistry::retaining`], once dead receivers fill half
-//!   of it) or installs a larger table offered off-thread, each between two
-//!   epoch changes, and only while no notification is running (see below
-//!   for when each waits).
-//! - An epoch change makes every receiver be read afresh, so a clear or an
-//!   install waits for an invalidating hour (attach, load, gap or recovery:
-//!   the recorder's full hours), where that happens anyway. One a running
-//!   notification blocked there waits for the next invalidating hour too:
-//!   that hour's epoch already revoked every certificate, and dead
-//!   registrations only take room. Only the first table installs at once:
-//!   nothing is certified without one.
-//! - Enabling observation starts an epoch: writers ran unobserved before it.
-//!
-//! The hook path never allocates or frees. Tables are allocated off-thread
-//! ([`WatchRegistry::offer`]); a replaced table is freed off-thread
-//! ([`WatchRegistry::collect`]) once no notification can still hold it.
-//! Bounded probing refuses a registration when the table is full; the
-//! refusal is counted. Consumers either refuse the receiver or explicitly
-//! reacquire it according to their own capture contract.
-//!
-//! A [`WatchRegistry::marking`] registry also keeps one bit per slot, which a
-//! notification of a registered receiver sets on entry and again on return,
-//! beside its sequence. Its single consumer takes the bits once an hour
-//! ([`WatchRegistry::take`]), clearing every word and visiting each marked
-//! receiver, so it finds what writers touched without looking up every
-//! receiver, as a [`crate::dirty_set::DirtySet`] does for dense ids: the take
-//! certifies only when observation is on, no writer ran and the epoch held
-//! still across it, and a bit set after its word was swapped survives to the
-//! next take. A clear or an install moves the epoch, so no take spanning one
-//! certifies a receiver it could have missed.
 
 use std::{
     ptr,
@@ -79,46 +7,28 @@ use std::{
     },
 };
 
-/// Low bits of [`WatchRegistry::state`]: the writers running now.
 const RUNNING_BITS: u32 = 20;
-/// Running writers a word may count; the admission that would reach this
-/// sets [`UNTRUSTED`] instead, so the field never carries.
 const RUNNING_LIMIT: u64 = 1 << (RUNNING_BITS - 1);
-/// [`WatchRegistry::active`] once the count is untrusted: never zero, and
-/// small enough that the families' sums of several counts cannot overflow.
 const UNTRUSTED_ACTIVE: usize = usize::MAX >> 8;
-/// One running writer, and one revision, in [`WatchRegistry::state`]; the
-/// revision takes the bits between the running field and [`UNTRUSTED`].
 const RUNNING: u64 = 1;
 const REVISION: u64 = 1 << RUNNING_BITS;
 const UNTRUSTED: u64 = 1 << 63;
 const LAST_REVISION: u64 = (UNTRUSTED - 1) >> RUNNING_BITS;
 
-/// The writers running in a state word.
 const fn running(state: u64) -> u64 {
     state & (REVISION - 1)
 }
 
-/// The revision in a state word.
 const fn revision(state: u64) -> u64 {
     (state & !UNTRUSTED) >> RUNNING_BITS
 }
 
-/// The word every writer updates, alone on its cache line so that the
-/// read-mostly fields beside it (the table, the epoch and the flags each
-/// notification and certificate loads) are not invalidated by every entry
-/// and return.
 #[repr(align(64))]
 struct Hot(AtomicU64);
 
-/// Slots probed from a receiver's hash before its registration is refused.
 const PROBES: usize = 16;
-/// Every registry's refusals, since the collector loaded.
 static REFUSED_TOTAL: AtomicU64 = AtomicU64::new(0);
-/// The highest load a status read saw, as `f64` bits plus one; zero before any.
 static PEAK_LOAD: AtomicU64 = AtomicU64::new(0);
-/// Table slots per expected watch: probing stays short, and receivers that
-/// died since the last clear have room to accumulate.
 const SLOTS_PER_WATCH: usize = 4;
 const MIN_SLOTS: usize = 1024;
 
@@ -130,12 +40,10 @@ struct Slot {
 
 struct Table {
     slots: Vec<Slot>,
-    /// One bit per slot in a marking registry; empty otherwise.
     marks: Vec<AtomicU64>,
 }
 
 enum Lookup<'a> {
-    /// The receiver's slot index and sequence.
     Watched(usize, &'a AtomicU64),
     Registered(usize, &'a AtomicU64),
     Unwatched,
@@ -146,17 +54,12 @@ const MARK_BITS: usize = u64::BITS as usize;
 
 #[inline]
 fn mark_slot(word: &AtomicU64, bit: u64) {
-    // A set bit represents this notification at the SeqCst load. A later
-    // take consumes it; an earlier take leaves it clear (forcing the OR)
-    // unless another writer has already reasserted it. The running count
-    // still brackets the native writer, so a redundant locked OR adds no mark.
     if word.load(SeqCst) & bit == 0 {
         word.fetch_or(bit, SeqCst);
     }
 }
 
 impl Table {
-    /// Off the hook path; `None` when the allocation fails.
     fn new(len: usize, marking: bool) -> Option<Box<Self>> {
         debug_assert!(len.is_power_of_two());
         let mut slots = engine_allocation::vec(len).ok()?;
@@ -173,8 +76,6 @@ impl Table {
             return Lookup::Unwatched;
         }
         let mask = self.slots.len() - 1;
-        // Keep every receiver bit: dense country identities share this
-        // registry with aligned holder pointers.
         let first = crate::table_hash::slot(address as u64, self.slots.len());
         for probe in 0..PROBES.min(self.slots.len()) {
             let index = (first + probe) & mask;
@@ -200,7 +101,6 @@ impl Table {
         }
     }
 
-    /// The word and bit of slot `index`, in a marking table.
     #[inline]
     fn mark_of(&self, index: usize) -> Option<(&AtomicU64, u64)> {
         self.marks
@@ -208,7 +108,6 @@ impl Table {
             .map(|word| (word, 1 << (index % MARK_BITS)))
     }
 
-    /// Between two epoch changes, which order these stores.
     fn clear(&self) {
         for slot in &self.slots {
             slot.sequence.store(0, Relaxed);
@@ -220,37 +119,24 @@ impl Table {
     }
 }
 
-/// Frees a table no notification or capture can reach any more.
+#[doc = " Frees a table no notification or capture can reach any more."]
 unsafe fn free(table: *mut Table) {
     if !table.is_null() {
         drop(unsafe { Box::from_raw(table) });
     }
 }
 
-/// One observation domain: its watches, epoch, revision and running
-/// notifications.
 pub struct WatchRegistry {
-    /// The installed table; null until a boundary installs one.
     table: AtomicPtr<Table>,
-    /// A larger table allocated off-thread, awaiting a boundary.
     offered: AtomicPtr<Table>,
-    /// A replaced table that a notification begun before its replacement
-    /// may still hold.
     draining: AtomicPtr<Table>,
-    /// A replaced table nothing holds, awaiting [`Self::collect`].
     retired: AtomicPtr<Table>,
-    /// Slots of the installed table.
     capacity: AtomicUsize,
-    /// Slots of the largest table allocated, installed or offered.
     requested: AtomicUsize,
-    /// Registrations since the table was last cleared or installed.
     registered: AtomicUsize,
-    /// Clear once dead receivers fill half the table.
     purge: bool,
-    /// Notifications mark their receiver's slot for [`Self::take`].
     marking: bool,
     epoch: AtomicU64,
-    /// The revision (above [`RUNNING_BITS`]) and the writers running now.
     state: Hot,
     enabled: AtomicBool,
     poisoned: AtomicBool,
@@ -258,13 +144,9 @@ pub struct WatchRegistry {
     clears: AtomicU64,
     installs: AtomicU64,
     deferred: AtomicU64,
-    /// Boundaries outside an invalidation that left a wanted clear or an
-    /// offered table for the next invalidating hour.
     held: AtomicU64,
     failed_offers: AtomicU64,
-    /// Marked receivers the takes visited.
     taken: AtomicU64,
-    /// Takes that certified nothing: a writer ran or the epoch moved.
     refused_takes: AtomicU64,
 }
 
@@ -295,15 +177,10 @@ impl WatchRegistry {
         Self::with(true, false)
     }
 
-    /// Cleared only on an invalidation: every clear starts an epoch, so each
-    /// certified receiver is read afresh once. Offer a table large enough
-    /// for the receivers instead; a full one refuses registrations.
     pub const fn retaining() -> Self {
         Self::with(false, false)
     }
 
-    /// [`Self::new`] whose notifications also mark their receiver for
-    /// [`Self::take`].
     pub const fn marking() -> Self {
         Self::with(true, true)
     }
@@ -336,8 +213,6 @@ impl WatchRegistry {
 
     #[inline]
     fn table(&self) -> Option<&Table> {
-        // SAFETY: a table is freed only after a boundary replaced it and saw
-        // no notification running; captures run only after the boundary.
         unsafe { self.table.load(SeqCst).as_ref() }
     }
 
@@ -352,11 +227,6 @@ impl WatchRegistry {
         self.increment(&self.epoch);
     }
 
-    /// A writer begins (one running more and, for a writer, one revision);
-    /// whether it was counted. In the same swap, an admission that would
-    /// fill the running field to [`RUNNING_LIMIT`] or pass [`LAST_REVISION`]
-    /// sets [`UNTRUSTED`] instead and counts nothing; an untrusted word
-    /// counts nothing more.
     #[inline]
     fn admit(&self, writer: bool) -> bool {
         let mut current = self.state.0.load(Relaxed);
@@ -391,8 +261,6 @@ impl WatchRegistry {
         self.admit(true)
     }
 
-    /// A writer, or a [`Running`] guard, ends; only a counted one is
-    /// subtracted.
     #[inline]
     fn leave(&self, counted: bool) {
         if counted {
@@ -404,7 +272,6 @@ impl WatchRegistry {
         self.quiet_state().is_some()
     }
 
-    /// The state word when no writer runs and the count is trusted.
     fn quiet_state(&self) -> Option<u64> {
         let state = self.state.0.load(SeqCst);
         (running(state) == 0 && state & UNTRUSTED == 0).then_some(state)
@@ -414,8 +281,6 @@ impl WatchRegistry {
         self.enabled.load(SeqCst) && !self.poisoned.load(SeqCst)
     }
 
-    /// Hook path, allocation-free: a writer is about to change `receiver`.
-    /// Dropping the guard notifies its return.
     #[inline]
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
         let counted = self.enter();
@@ -440,9 +305,6 @@ impl WatchRegistry {
         }
     }
 
-    /// Hook path, allocation-free: a writer whose receiver cannot be named
-    /// is about to run. It starts an epoch on entry and on return, so no
-    /// certificate taken before it, or while it runs, survives it.
     #[inline]
     pub fn notify_every(&self) -> Notification<'_> {
         let counted = self.enter();
@@ -455,11 +317,6 @@ impl WatchRegistry {
         }
     }
 
-    /// Hook path, allocation-free: a writer that often leaves every receiver
-    /// unchanged is running. While the guard lives no certificate is taken
-    /// and no hour is quiet, as for a notification, but dropping it revokes
-    /// nothing; the writer notifies a receiver it did change before the
-    /// guard drops.
     pub fn running(&self) -> Running<'_> {
         Running {
             registry: self,
@@ -467,13 +324,6 @@ impl WatchRegistry {
         }
     }
 
-    /// The single consumer of a marking registry, after the hour's boundary:
-    /// clears every marked slot, visiting its receiver, and returns the epoch
-    /// they were marked in. A receiver no take visited since its
-    /// registration in that epoch was touched by no observed writer. `None`
-    /// when the registry does not mark, observation is off, no table is
-    /// installed, a writer runs (its bits stay set) or the epoch moved during
-    /// the take; nothing taken then certifies anything.
     pub fn take(&self, mut visit: impl FnMut(usize)) -> Option<u64> {
         if !self.marking || !self.observing() {
             return None;
@@ -509,13 +359,10 @@ impl WatchRegistry {
         }
     }
 
-    /// Marked receivers the takes visited, and takes that certified nothing.
     pub fn takes(&self) -> (u64, u64) {
         (self.taken.load(Relaxed), self.refused_takes.load(Relaxed))
     }
 
-    /// `(epoch, revision)` while observing with no writer running; equal
-    /// values across hours prove that no observed writer ran.
     pub fn quiet(&self) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
@@ -525,16 +372,10 @@ impl WatchRegistry {
         Some((epoch, revision(state)))
     }
 
-    /// `(epoch, sequence)` of `receiver`, registering it; `None` when it
-    /// cannot be observed. Captures only, after the hour's boundary.
     pub fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         self.register(receiver).map(|(certificate, _)| certificate)
     }
 
-    /// A registered receiver's certificate without registering, consuming
-    /// marks or changing refusal counters. A parked reader can freeze this
-    /// certificate without registering the same receiver again. Native reads
-    /// still require their ordinary boundary and certificate validation.
     pub fn observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
@@ -547,9 +388,6 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
     }
 
-    /// [`Self::sequence`] for a capture's parallel ranges: a receiver not yet watched is
-    /// registered here, so a fresh epoch's receivers register across the ranges. A full table
-    /// is left to the ordered admission, which refuses and counts the receiver once.
     pub fn range_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
@@ -567,9 +405,6 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
     }
 
-    /// Passive slot-hinted lookup. A cleared/replaced table never admits a new
-    /// receiver here, so parallel warm acquisition preserves ordered cold/full
-    /// admission and its refusal counts.
     pub fn observed_sequence_at(
         &self,
         receiver: usize,
@@ -593,10 +428,6 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), index))
     }
 
-    /// [`Self::sequence`] and the receiver's slot index. A held index skips
-    /// probing only when the current table's slot still names `receiver`.
-    /// The hint retains no table pointer; bounds, receiver, epoch and quiet
-    /// checks apply to the installed table as for an ordinary registration.
     pub fn sequence_at(&self, receiver: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
         if !self.observing() {
             return None;
@@ -625,9 +456,6 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), index))
     }
 
-    /// [`Self::sequence`], and whether this call registered `receiver`: a
-    /// writer that ran before it was not observed, even one that ran after
-    /// the capture's earlier reads.
     pub fn register(&self, receiver: usize) -> Option<((u64, u64), bool)> {
         if !self.observing() {
             return None;
@@ -649,12 +477,6 @@ impl WatchRegistry {
         (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), fresh))
     }
 
-    /// Game thread, in the hourly callback before any capture: start an
-    /// epoch when `invalidate`, then install an offered table or clear the
-    /// installed one while no notification is running. Outside an
-    /// invalidation both wait, counted as held, unless no table is installed
-    /// yet; so does one a running notification blocks.
-    /// Reports installation, clearing, deferred renewal, or no change.
     pub fn boundary(&self, invalidate: bool) -> Boundary {
         if invalidate {
             self.new_epoch();
@@ -679,15 +501,11 @@ impl WatchRegistry {
             {
                 self.deferred.fetch_add(1, Relaxed);
             }
-            // Only a missing first table retries at the next hour; the rest
-            // waits for the next invalidating hour.
             return Boundary::Deferred;
         }
-        // No notification is running, so none holds a replaced table.
         self.retire_drained();
         if self.draining.load(SeqCst).is_null() && self.retired.load(SeqCst).is_null() {
             let next = self.offered.swap(ptr::null_mut(), SeqCst);
-            // SAFETY: an offered table is owned here once swapped out.
             if let Some(len) = unsafe { next.as_ref() }.map(|table| table.slots.len()) {
                 self.new_epoch();
                 let previous = self.table.swap(next, SeqCst);
@@ -695,7 +513,6 @@ impl WatchRegistry {
                 self.capacity.store(len, Relaxed);
                 self.registered.store(0, Relaxed);
                 self.installs.fetch_add(1, Relaxed);
-                // A notification begun since the check above may hold it.
                 self.draining.store(previous, SeqCst);
                 if self.quiet_now() {
                     self.retire_drained();
@@ -704,9 +521,6 @@ impl WatchRegistry {
             }
         }
         if full || invalidate {
-            // A notification beginning during the clear either bumped its
-            // receiver before it (a certificate taken while it runs is
-            // refused) or finds it unregistered; the epoch changes both ways.
             if let Some(table) = self.table() {
                 self.new_epoch();
                 table.clear();
@@ -719,16 +533,16 @@ impl WatchRegistry {
         Boundary::Unchanged
     }
 
-    /// Install prepared growth on a worker while preserving every registered
-    /// receiver's sequence and the quiet token. Retire the old allocation for
-    /// off-lease collection. This performs no allocation and touches no native
-    /// object. Marking registries keep their existing boundary protocol.
-    ///
-    /// # Safety
-    /// The caller holds the native world's quiescent acquisition lease and
-    /// exclusively owns this registry's capture/registration side. No notifier,
-    /// certificate query, boundary or release may run during the call. Status
-    /// readers, offers and collection of an earlier retired table may run.
+    #[doc = " Install prepared growth on a worker while preserving every registered"]
+    #[doc = " receiver's sequence and the quiet token. Retire the old allocation for"]
+    #[doc = " off-lease collection. This performs no allocation and touches no native"]
+    #[doc = " object. Marking registries keep their existing boundary protocol."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The caller holds the native world's quiescent acquisition lease and"]
+    #[doc = " exclusively owns this registry's capture/registration side. No notifier,"]
+    #[doc = " certificate query, boundary or release may run during the call. Status"]
+    #[doc = " readers, offers and collection of an earlier retired table may run."]
     pub unsafe fn install_growth_quiescent(&self) -> bool {
         if self.marking
             || !self.observing()
@@ -768,9 +582,6 @@ impl WatchRegistry {
             || self.epoch.load(SeqCst) != epoch
             || self.table.load(SeqCst) != previous
         {
-            // Keep destruction off the lease, including a rejected offer. A
-            // concurrent larger offer retains its requested size; otherwise
-            // permit the same demand to prepare another table after collection.
             self.requested
                 .compare_exchange(next.slots.len(), old.slots.len(), SeqCst, SeqCst)
                 .ok();
@@ -781,14 +592,10 @@ impl WatchRegistry {
         self.table.store(offered, SeqCst);
         self.capacity.store(next.slots.len(), Relaxed);
         self.installs.fetch_add(1, Relaxed);
-        // The lease excludes every user of old slots; publication precedes
-        // making their allocation available to the off-thread collector.
         self.retired.store(previous, SeqCst);
         true
     }
 
-    /// Hand a drained table to [`Self::collect`] once the previous one is
-    /// gone. Only while no notification is running.
     fn retire_drained(&self) {
         let drained = self.draining.load(SeqCst);
         if !drained.is_null()
@@ -801,8 +608,6 @@ impl WatchRegistry {
         }
     }
 
-    /// Off the game thread: allocate a table for `watches` receivers when
-    /// the installed and offered ones are smaller. A boundary installs it.
     pub fn offer(&self, watches: usize) {
         let Some(len) = watches
             .checked_mul(SLOTS_PER_WATCH)
@@ -815,17 +620,14 @@ impl WatchRegistry {
         self.offer_slots(len);
     }
 
-    /// Prepared growth is not complete until its table is installed.
     pub fn growth_pending(&self) -> bool {
         self.requested.load(SeqCst) > self.capacity.load(Relaxed)
     }
 
-    /// Slots of the installed table.
     pub fn capacity(&self) -> usize {
         self.capacity.load(Relaxed)
     }
 
-    /// Registrations refused because every probed slot was taken.
     pub fn refused(&self) -> u64 {
         self.refused.load(Relaxed)
     }
@@ -835,7 +637,6 @@ impl WatchRegistry {
         REFUSED_TOTAL.fetch_add(1, Relaxed);
     }
 
-    /// Model a notification crossing the last install, for tests.
     #[cfg(any(test, feature = "test-support"))]
     pub fn defer_retirement(&self) {
         assert!(self.draining.load(SeqCst).is_null());
@@ -844,8 +645,6 @@ impl WatchRegistry {
         self.draining.store(previous, SeqCst);
     }
 
-    /// An enabled registry with a `len`-slot table installed (`len` a power
-    /// of two), for tests.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(len: usize) -> Self {
         let registry = Self::new();
@@ -865,22 +664,19 @@ impl WatchRegistry {
         };
         self.requested.store(len, SeqCst);
         let previous = self.offered.swap(Box::into_raw(table), SeqCst);
-        // SAFETY: an offered table was never installed; the swap owns it.
         unsafe { free(previous) };
     }
 
-    /// Off the game thread: free a replaced table nothing holds any more.
     pub fn collect(&self) {
         let retired = self.retired.swap(ptr::null_mut(), SeqCst);
-        // SAFETY: only a drained table is retired, and the swap owns it.
         unsafe { free(retired) };
     }
 
-    /// Free every table.
-    ///
-    /// # Safety
-    /// No notification or capture may run: the hooks are removed and
-    /// drained, and the acquisition pool has stopped.
+    #[doc = " Free every table."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " No notification or capture may run: the hooks are removed and"]
+    #[doc = " drained, and the acquisition pool has stopped."]
     pub unsafe fn release(&self) {
         for table in [&self.table, &self.offered, &self.draining, &self.retired] {
             unsafe { free(table.swap(ptr::null_mut(), SeqCst)) };
@@ -891,7 +687,6 @@ impl WatchRegistry {
         self.new_epoch();
     }
 
-    /// Enabling starts an epoch: writers ran unobserved while disabled.
     pub fn set_enabled(&self, enabled: bool) {
         if enabled {
             self.new_epoch();
@@ -899,7 +694,6 @@ impl WatchRegistry {
         self.enabled.store(enabled, SeqCst);
     }
 
-    /// Disable reuse for the attachment.
     pub fn poison(&self) {
         self.poisoned.store(true, SeqCst);
     }
@@ -908,12 +702,10 @@ impl WatchRegistry {
         self.poisoned.load(SeqCst)
     }
 
-    /// Registrations since the table was last cleared or installed.
     pub fn registered(&self) -> usize {
         self.registered.load(Relaxed)
     }
 
-    /// Notifications running now.
     pub fn active(&self) -> usize {
         let state = self.state.0.load(SeqCst);
         if state & UNTRUSTED != 0 {
@@ -927,40 +719,29 @@ impl WatchRegistry {
 
 impl Drop for WatchRegistry {
     fn drop(&mut self) {
-        // SAFETY: exclusive access; nothing else can reach the tables.
         unsafe { self.release() };
     }
 }
 
-/// A running writer; its drop notifies the writer's return.
 pub struct Notification<'a> {
     registry: &'a WatchRegistry,
-    /// The receiver's mark in a marking registry, set again on return.
     mark: Option<(&'a AtomicU64, u64)>,
-    /// The receiver is unknown: every certificate is revoked.
     every: bool,
-    /// The entry was counted as running (the word was trusted).
     counted: bool,
 }
 
 impl Notification<'_> {
-    /// Whether this notification found a prepared receiver slot in a marking
-    /// registry. This attributes a mark; it is not a quiet or epoch certificate.
     pub fn has_mark(&self) -> bool {
         self.mark.is_some()
     }
 }
 
-/// A writer running without a notification ([`WatchRegistry::running`]).
 pub struct Running<'a> {
     registry: &'a WatchRegistry,
     counted: bool,
 }
 
 impl Running<'_> {
-    /// A registered dependency's stamp while this guard is the only writer.
-    /// This is for a hook's before/after change proof, never native acquisition:
-    /// ordinary captures still require `sequence` and a fully quiet registry.
     pub fn dependency_stamp(&self, receiver: usize) -> Option<(u64, u64)> {
         if !self.counted || !self.registry.observing() {
             return None;
@@ -990,7 +771,6 @@ impl Drop for Running<'_> {
 impl Drop for Notification<'_> {
     #[inline]
     fn drop(&mut self) {
-        // The entry bumped the sequence and the revision (module docs).
         if let Some((word, bit)) = self.mark {
             mark_slot(word, bit);
         }
@@ -1001,13 +781,10 @@ impl Drop for Notification<'_> {
     }
 }
 
-/// Every registry's refusals since the collector loaded.
 pub fn refused_total() -> u64 {
     REFUSED_TOTAL.load(Relaxed)
 }
 
-/// The live status's certificate registries: every registry's refusals, and each named
-/// registry's load at this read, which also raises the peak.
 pub fn status<const N: usize>(named: [(&'static str, &WatchRegistry); N]) -> impl serde::Serialize {
     use collector_status::status::{map, status};
     let registries = named.map(|(name, registry)| {
@@ -1054,7 +831,6 @@ mod tests {
         collector_test_support::with_allocations_denied(|| {
             for (index, &(_, slot)) in held.iter().enumerate() {
                 let receiver = (index + 1) * 8;
-                // A sibling's slot is only a hint, never an identity proof.
                 for hint in [slot, held[(index + 1) % COUNT].1, usize::MAX] {
                     assert_eq!(
                         watches.observed_sequence_at(receiver, hint),
@@ -1176,15 +952,12 @@ mod tests {
         assert!(watches.sequence(0x1000).is_some());
     }
 
-    /// An enabled registry with a `len`-slot table installed.
     fn registry(len: usize) -> WatchRegistry {
         let registry = WatchRegistry::enabled(len);
         assert_eq!(registry.capacity.load(Relaxed), len);
         registry
     }
 
-    /// A running writer certifies nothing while it runs and, unless it
-    /// notifies, revokes nothing when it ends.
     #[test]
     fn a_running_writer_blocks_certificates_without_revoking_them() {
         let registry = registry(64);
@@ -1329,14 +1102,12 @@ mod tests {
         drop(registry.notify(8));
         assert_eq!(registry.sequence(8).map(|(_, s)| s), Some(1));
         assert_eq!(registry.sequence(16).map(|(_, s)| s), Some(0));
-        // An unregistered receiver moves only the revision.
         let quiet = registry.quiet().unwrap();
         drop(registry.notify(40));
         assert_ne!(registry.quiet(), Some(quiet));
         assert_eq!(registry.sequence(24).map(|(_, s)| s), Some(0));
     }
 
-    // regression: 338d5ef75e Hash watch registrations by the product's top bits so strided receivers all register
     #[test]
     fn strided_receivers_at_5000_countries_all_register() {
         const RECEIVERS: usize = 5_000 * 31;
@@ -1358,7 +1129,6 @@ mod tests {
         }
     }
 
-    // regression: 5ac3d6682f Fix full-suite integration regressions
     #[test]
     fn dense_country_ids_and_aligned_holders_at_5000_countries_register_without_allocating() {
         const COUNTRIES: usize = 5_000;
@@ -1389,8 +1159,6 @@ mod tests {
         assert_eq!(registry.boundary(true), Boundary::Cleared);
         assert_eq!(registry.clears.load(Relaxed), 1);
         assert_eq!(registry.registered.load(Relaxed), 0);
-        // Unregistered now: this writer's notification is not recorded,
-        // but the epoch moved, so the old certificate cannot match.
         drop(registry.notify(8));
         let fresh = registry.sequence(8).unwrap();
         assert_eq!(fresh.1, 0);
@@ -1409,8 +1177,6 @@ mod tests {
         assert!(registry.quiet().is_none());
         drop(running);
         assert_ne!(registry.sequence(8), Some(certified));
-        // The next ordinary hour keeps the new certificates: the clear waits
-        // for the next invalidating hour, whose epoch revokes them anyway.
         let fresh = registry.sequence(8).unwrap();
         registry.boundary(false);
         assert_eq!(registry.clears.load(Relaxed), 0);
@@ -1426,7 +1192,6 @@ mod tests {
         for address in (1..=33).map(|n| n * 8) {
             registry.sequence(address).unwrap();
         }
-        // An ordinary hour keeps every certificate: the clear is held.
         let certified = registry.sequence(8).unwrap();
         registry.boundary(false);
         assert_eq!(registry.clears.load(Relaxed), 0);
@@ -1456,11 +1221,6 @@ mod tests {
         assert_ne!(registry.sequence(8), Some(certified));
     }
 
-    /// A writer that began after the boundary saw no notification running
-    /// can overlap the clear. Whether its bump lands before or after the
-    /// clear zeroes its slot, a receiver registered there is refused while
-    /// it runs and certified after it ends with that bump included; its
-    /// return bumps nothing that could read as a later advance.
     #[test]
     fn a_notification_spanning_a_clear_never_advances_a_new_certificate() {
         for bumped_after_clear in [false, true] {
@@ -1470,7 +1230,6 @@ mod tests {
             let Lookup::Watched(_, slot) = table.find(8, false) else {
                 unreachable!("registered above")
             };
-            // Found its slot before the clear reached it.
             let running = (!bumped_after_clear).then(|| registry.notify(8));
             registry.new_epoch();
             table.clear();
@@ -1498,11 +1257,9 @@ mod tests {
     fn a_larger_table_is_installed_at_a_quiet_full_hour_and_freed_off_thread() {
         let registry = registry(4);
         let certified = registry.sequence(8).unwrap();
-        // Already large enough: nothing is allocated.
         registry.offer_slots(4);
         assert!(registry.offered.load(SeqCst).is_null());
         registry.offer(1_000);
-        // An ordinary hour holds it and keeps every certificate.
         assert!(!registry.boundary(false).installed());
         assert_eq!(registry.capacity.load(Relaxed), 4);
         assert_eq!(registry.held.load(Relaxed), 1);
@@ -1511,14 +1268,12 @@ mod tests {
         registry.boundary(true);
         assert_eq!(registry.capacity.load(Relaxed), 4);
         drop(running);
-        // Blocked by the running writer, it waits for the next full hour.
         assert!(!registry.boundary(false).installed());
         assert_eq!(registry.capacity.load(Relaxed), 4);
         assert!(registry.boundary(true).installed());
         assert_eq!(registry.capacity.load(Relaxed), 4096);
         assert_eq!(registry.installs.load(Relaxed), 2);
         assert_ne!(registry.sequence(8), Some(certified));
-        // Nothing ran across the swap, so the old table is retired at once.
         assert!(registry.draining.load(SeqCst).is_null());
         assert!(!registry.retired.load(SeqCst).is_null());
         registry.collect();
@@ -1605,10 +1360,6 @@ mod tests {
         }
     }
 
-    /// A writer is one bump of its receiver and of the revision, at its
-    /// entry; certificates and quiet tokens are refused until it returns,
-    /// and its return bumps nothing. The running count and the revision
-    /// share a word on its own cache line.
     #[test]
     fn a_writer_bumps_once_at_entry_and_is_refused_until_it_returns() {
         let registry = registry(64);
@@ -1624,13 +1375,10 @@ mod tests {
         assert_eq!(registry.active(), 0);
         assert_eq!(registry.sequence(8), Some((epoch, sequence + 1)));
         assert_eq!(registry.quiet(), Some((epoch, initial_revision + 2)));
-        // A running guard moves neither.
         drop(registry.running());
         assert_eq!(registry.quiet(), Some((epoch, initial_revision + 2)));
         assert_eq!(std::mem::align_of::<Hot>(), 64);
         assert_eq!(std::mem::size_of::<Hot>(), 64);
-        // The last representable revision makes the word untrusted rather
-        // than wrapping into a value an older token holds.
         registry
             .state
             .0
@@ -1642,19 +1390,11 @@ mod tests {
         assert!(registry.quiet().is_none());
     }
 
-    /// The admission that would fill the running field to its limit sets
-    /// the word's untrusted bit in the same swap and counts nothing, so the
-    /// field never carries: no interleaving of admissions can bring the
-    /// count back to zero while writers it counted still run. From then on
-    /// the word is never quiet, even once every counted writer returned:
-    /// nothing is certified, no table (installed, offered or draining) is
-    /// cleared, installed or retired, and detach sees writers running.
     #[test]
     fn the_admission_at_the_running_limit_makes_the_word_untrusted() {
         for guard in [false, true] {
             let registry = registry(64);
             registry.sequence(8).unwrap();
-            // A replaced table a stale notification may still hold.
             let draining = Box::into_raw(Table::new(64, false).unwrap());
             registry.draining.store(draining, SeqCst);
             registry
@@ -1675,13 +1415,11 @@ mod tests {
             assert_eq!(state & UNTRUSTED, UNTRUSTED);
             assert_eq!(running(state), RUNNING_LIMIT - 1, "not counted");
             assert!(registry.poisoned());
-            // Uncounted admissions and returns leave the count alone.
             drop(hold());
             drop(refused);
             assert_eq!(running(registry.state.0.load(SeqCst)), RUNNING_LIMIT - 1);
             drop(counted);
             assert_eq!(running(registry.state.0.load(SeqCst)), RUNNING_LIMIT - 2);
-            // Even a count that reads zero is never quiet again.
             registry
                 .state
                 .0
@@ -1699,8 +1437,6 @@ mod tests {
         }
     }
 
-    /// Release bench: one notification of a registered receiver (entry and
-    /// return), on one thread and on four at once.
     #[test]
     #[ignore = "release per-call notification cost; run with --release --ignored --nocapture --test-threads=1"]
     fn hook_cost_watch_registry() {
@@ -1738,7 +1474,6 @@ mod tests {
         );
     }
 
-    /// An enabled marking registry with a `len`-slot table installed.
     fn marking(len: usize) -> WatchRegistry {
         let registry = WatchRegistry::marking();
         registry.offer_slots(len);
@@ -1764,24 +1499,18 @@ mod tests {
             unreachable!("observing")
         };
         assert!(seen.is_empty());
-        // A registration says whether it was this call's.
         assert_eq!(registry.register(48).map(|(_, fresh)| fresh), Some(true));
         assert_eq!(registry.register(48).map(|(_, fresh)| fresh), Some(false));
         drop(registry.notify(16));
         drop(registry.notify(16));
-        // An unregistered receiver has no slot to mark.
         drop(registry.notify(40));
         assert_eq!(take(&registry), (Some(epoch), vec![16]));
-        // A quiet hour visits nothing and keeps the epoch.
         assert_eq!(take(&registry), (Some(epoch), vec![]));
         assert_eq!(registry.takes(), (1, 0));
-        // A running writer refuses the take and keeps its mark.
         let running = registry.notify(24);
         assert_eq!(take(&registry), (None, vec![]));
         drop(running);
         assert_eq!(take(&registry), (Some(epoch), vec![24]));
-        // A writer that begins during the take, after its word was swapped,
-        // refuses it and marks again on return for the next take.
         drop(registry.notify(8));
         let mut running = None;
         let certified = registry.take(|address| {
@@ -1792,7 +1521,6 @@ mod tests {
         assert_eq!(certified, None);
         drop(running);
         assert_eq!(take(&registry), (Some(epoch), vec![8]));
-        // An invalidation moves the epoch.
         registry.boundary(true);
         assert_ne!(take(&registry).0, Some(epoch));
     }
@@ -1913,7 +1641,6 @@ mod tests {
             .unwrap();
         let quiet = registry.quiet().unwrap();
         registry.offer(5000);
-        // SAFETY: all users of the synthetic registry are on this thread.
         crate::test_support::with_allocations_denied(|| {
             assert!(unsafe { registry.install_growth_quiescent() });
         });
@@ -1924,7 +1651,6 @@ mod tests {
             assert!(registry.sequence(0x10000 + index * 0x2000).is_some());
         }
         registry.collect();
-        // SAFETY: this test has no remaining queries or native callbacks.
         unsafe {
             registry.release();
         }
@@ -1934,7 +1660,6 @@ mod tests {
         let registry = WatchRegistry::enabled(64);
         registry.offer(5000);
         let running = registry.notify(0x1000);
-        // SAFETY: this test is the only caller; the running guard is deliberate.
         assert!(!unsafe { registry.install_growth_quiescent() });
         assert!(!registry.offered.load(SeqCst).is_null());
         drop(running);
@@ -1958,8 +1683,6 @@ mod tests {
     fn faction_goal_worker_growth_rejection_retires_off_lease_and_allows_retry() {
         let registry = WatchRegistry::enabled(64);
         let certificate = registry.sequence(0x1000).unwrap();
-        // An unpublished replacement whose probe ranges cannot accept the
-        // live receiver must not prevent preparation of the same size again.
         let rejected = Table::new(128, false).unwrap();
         for (index, slot) in rejected.slots.iter().enumerate() {
             slot.address.store(0x10000 + index * 8, SeqCst);

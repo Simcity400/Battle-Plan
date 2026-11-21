@@ -2,7 +2,6 @@
 .casualty-pairs .chart-table { flex: 1; min-height: 0; }
 .casualty-pairs .drill-host { flex: 1; min-height: 0; }
 .casualty-pairs-chart { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; }
-/* Corrections alone draw no ribbons: the shared state sits over the empty chart. */
 .casualty-pairs-chart > .widget-state { position: absolute; inset: 0; pointer-events: none; }
 .casualty-pairs .drill-main > .button { align-self: flex-start; margin: 4px 10px; }
 .casualty-pair-details { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: var(--space-3); overflow: auto; }

@@ -1,27 +1,3 @@
-//! `ProductionTotals`, `ProductionCountryTotals` and `ProductionCoverage`: what each producer
-//! made of each design for each purpose since the observation began, summed over its lines'
-//! output rows, which the collector keeps only while a line lives and one publication after.
-//!
-//! - A row counts for the first producer a link told it, through later link moves, as main's
-//!   fold. Its change adds to that producer's total what it moved since the hour before (its
-//!   cells before the hour, which the store keeps for this table): units, applied IC, and a row
-//!   that is no longer counted exactly. A row deleted without its `ended` publication lost its final
-//!   count: its total's units become a lower bound and its applied IC unknown. A total's applied
-//!   IC, once unknown, stays unknown until the observation restarts.
-//! - A row no producer was ever told for (its country no link resolves, or no country of that
-//!   slot does) and which moved makes every producer's units or applied IC unknown from that hour
-//!   (the run's coverage row); so does an hour the writer could not read its inputs. A link
-//!   telling its producer later, even in an hour the row does not move, ties it there only if it
-//!   had delivered nothing and was exact until then; otherwise it counts for nobody while it
-//!   lives.
-//! - Every row of a publication carries the observation's first hour; another one restarts every
-//!   total from the rows the table then holds.
-//! - Rocket output is read as recorded; the writer keeps what a read of it cannot say alone: a
-//!   row whose counters went back or changed without a tick or delivery, a row gone, and ticks or
-//!   deliveries of a producer that cannot be told, each from its hour.
-//!
-//! State is the tables and each live output row's producer or none, kept in the resume blob; a
-//! resume reads the producers again.
 
 use crate::{
     forces::held,
@@ -88,7 +64,6 @@ fn sub(a: i64, b: i64) -> io::Result<i64> {
     a.checked_sub(b).ok_or_else(|| invalid("A production total leaves its exact integer range"))
 }
 
-/// What one hour adds to a total.
 #[derive(Clone, Copy, Debug, Default)]
 struct Delta {
     units: i64,
@@ -98,12 +73,10 @@ struct Delta {
     unproven: i64,
 }
 
-/// A total's cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Held {
     units: i64,
     inexact: u32,
-    /// None once unknown.
     spent: Option<i64>,
     reason: u8,
     unproven: Option<i64>,
@@ -127,7 +100,6 @@ impl Held {
         })
     }
 
-    /// The total after `delta`, spelled `token` and of `archetype` where the hour tells them.
     fn apply(self, delta: Delta, token: Option<u32>, archetype: Option<u32>) -> io::Result<Self> {
         let reason = if self.reason != Total::KNOWN { self.reason } else { delta.reason };
         let known = reason == Total::KNOWN;
@@ -161,7 +133,6 @@ impl Held {
     }
 }
 
-/// One half of a producer's row: with refits, or without them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Sum {
     units: i64,
@@ -172,7 +143,6 @@ struct Sum {
 impl Sum {
     const ZERO: Self = Self { units: 0, inexact: 0, spent: Some(0) };
 
-    /// Moves a part of the sum from `old` to `new`.
     fn take(&mut self, old: &Held, new: &Held) -> io::Result<()> {
         self.units = add(self.units, sub(new.units, old.units)?)?;
         self.inexact = (self.inexact + u32::from(new.inexact > 0)).saturating_sub(u32::from(old.inexact > 0));
@@ -184,7 +154,6 @@ impl Sum {
     }
 }
 
-/// A producer's row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Country {
     all: Sum,
@@ -194,7 +163,6 @@ struct Country {
 impl Country {
     const ZERO: Self = Self { all: Sum::ZERO, without_refits: Sum::ZERO };
 
-    /// The row keyed `key` of a table whose first six columns are `columns`' sums.
     fn read(view: &TableView<'_>, key: u128, columns: &[usize]) -> Option<Self> {
         let slot = view.slot(key)?;
         Some(Self {
@@ -203,7 +171,6 @@ impl Country {
         })
     }
 
-    /// Moves the part `old` was to the part `new` is, a part of purpose `purpose`.
     fn take(&mut self, old: &Held, new: &Held, purpose: u8) -> io::Result<()> {
         self.all.take(old, new)?;
         if purpose != OutputPurpose::Refit.raw() {
@@ -224,7 +191,6 @@ impl Country {
     }
 }
 
-/// A coverage row's cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Covered {
     since: Option<i32>,
@@ -263,8 +229,6 @@ impl Covered {
     }
 }
 
-/// Rocket's rule against the read before: counters never go back, and an exact amount changes
-/// only with a new tick or delivery. (spending, units) each hold.
 fn consistent(previous: &RocketProductionOutputRow, row: &RocketProductionOutputRow) -> (bool, bool) {
     let spending = row.ticks >= previous.ticks
         && row.inexact_ticks >= previous.inexact_ticks
@@ -279,20 +243,13 @@ fn consistent(previous: &RocketProductionOutputRow, row: &RocketProductionOutput
 
 #[derive(Default)]
 pub struct Production {
-    /// A resume: the producers are read again before the next hour.
     rebuild: bool,
     producers: Producers,
-    /// Each live output row's producer, the first a link told: none for a row that delivered or
-    /// went inexact before any was, which counts for nobody while it lives.
     pins: HashMap<u128, Option<u32>>,
-    /// Live output rows no link has told yet, that have delivered nothing and are exact.
     untold: HashSet<u128>,
 }
 
 impl Production {
-    /// The output rows the hour moved, each as it is now and as it was before the hour (none for
-    /// a row the hour inserted), then each row it deleted as it was; every live row, as new,
-    /// with `whole`.
     fn moved(hour: &Hour<'_>, whole: bool) -> io::Result<Vec<(u128, Option<Output>, Option<Output>)>> {
         let table = TableId::ProductionLineOutput;
         let view = hour.table(table);
@@ -328,7 +285,6 @@ impl Production {
         let held_run = Covered::read(&out.table(TableId::ProductionCoverage), run_key);
         let mut run = held_run.unwrap_or_default();
         let since = |moved: &[(u128, Option<Output>, Option<Output>)]| moved.iter().filter_map(|(_, now, _)| now.map(|row| row.since)).min();
-        // The writer's first run in the run reads every row, as one never run before must.
         let mut restart = hour.first || held_run.is_none();
         let mut moved = Self::moved(hour, restart)?;
         match run.since {
@@ -344,7 +300,6 @@ impl Production {
             self.pins.clear();
             self.untold.clear();
         }
-        // A key deleted and inserted again in one hour is a new row.
         let mut left: HashMap<u128, Option<u32>> = HashMap::new();
         for (key, now, _) in &moved {
             if now.is_none()
@@ -356,7 +311,6 @@ impl Production {
         if hour.fresh && !hour.first {
             run.units(at);
             run.spending(at, Total::MISSED_PUBLICATION);
-            // Rows gone while the writer did not run.
             let view = hour.table(TableId::ProductionLineOutput);
             self.pins.retain(|key, _| view.slot(*key).is_some());
             self.untold.retain(|key| view.slot(*key).is_some());
@@ -424,7 +378,6 @@ impl Production {
                 _ => {}
             }
         }
-        // A link may tell a row's producer in an hour the row does not move.
         if reread && !self.untold.is_empty() {
             let view = hour.table(TableId::ProductionLineOutput);
             let told: Vec<(u128, u32)> = self
@@ -443,9 +396,6 @@ impl Production {
         self.totals(hour, out, deltas, restart, reread)
     }
 
-    /// Adds `deltas` to the totals they name and their producers' rows; with `restart` every
-    /// total starts from nothing. With `reread`, every live producer has a row and a gone one
-    /// that never produced has none.
     fn totals(&self, hour: &Hour<'_>, out: &mut Rows<'_>, deltas: HashMap<u128, Delta>, restart: bool, reread: bool) -> io::Result<()> {
         if restart {
             for table in [TableId::ProductionTotals, TableId::ProductionTypeTotals] {
@@ -454,7 +404,6 @@ impl Production {
                 }
             }
         }
-        // Each row as the hour began: the hour sets each once, after reading it.
         let country_row = |out: &Rows<'_>, country: u32| Country::read(&out.table(TableId::ProductionCountryTotals), u128::from(country), &COUNTRY);
         let type_row = |out: &Rows<'_>, key: u128| Country::read(&out.table(TableId::ProductionTypeTotals), key, &TYPE);
         let mut rows: HashMap<u32, Country> = HashMap::new();
@@ -659,8 +608,6 @@ impl Writer for Production {
         Ok(())
     }
 
-    /// Each live row's producer (0 for nobody, else the producer's id plus one), then the rows
-    /// not yet told; a resume reads the producers again.
     fn save(&self, blob: &mut Bytes) -> io::Result<()> {
         let mut pins: Vec<(u128, Option<u32>)> = self.pins.iter().map(|(&key, &pin)| (key, pin)).collect();
         pins.sort_unstable();

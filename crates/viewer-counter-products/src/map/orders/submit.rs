@@ -1,18 +1,10 @@
-//! Stored-control builder and forward loop removal. Offset fronts resubmit
-//! their smoothed points through this builder; paradrops disable intersection checks.
-//!
-//! These are graphics objects built by this viewer. No native control array,
-//! selection, clock or other client history is recorded.
 
 use super::fixed::{Point, SCALE};
 
-/// Stop accepting another point at 8192 stored controls. An insertion reaches
-/// 8191 and still appends its target, so the cap is 8192.
 const POINT_CAP: usize = 0x2000;
 
 fn squared_delta(a: Point, b: Point) -> i64 {
     let [x, z] = [a[0].wrapping_sub(b[0]), a[1].wrapping_sub(b[1])];
-    // Divide the two products separately.
     (x.wrapping_mul(x) / SCALE).wrapping_add(z.wrapping_mul(z) / SCALE)
 }
 
@@ -26,8 +18,6 @@ fn divided_step(value: i64, steps: i32) -> i64 {
     }
 }
 
-/// x86 `CVTTSS2SI` uses the signed minimum for an invalid conversion rather
-/// than Rust's saturating float conversion.
 fn truncate(value: f32) -> i32 {
     if !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         i32::MIN
@@ -36,9 +26,6 @@ fn truncate(value: f32) -> i32 {
     }
 }
 
-/// Submit points in source order. `Some` runs the offset-front intersection
-/// pass with the content's `ROOT_FRONT_MAX_INTERSECTION_TESTS_*` value;
-/// negative values mean the whole existing list, as the native reader does.
 pub(super) fn controls(points: &[Point], intersection_tests: Option<i32>) -> Vec<Point> {
     let mut controls = Vec::new();
     for &point in points {
@@ -50,8 +37,6 @@ pub(super) fn controls(points: &[Point], intersection_tests: Option<i32>) -> Vec
             controls.extend([point, point]);
             continue;
         }
-        // Base the threshold on the count before this submission, rather than its
-        // chord length or the final control count.
         let fraction = (count as i64 * 10_000_000_000 / 4_000_000).min(SCALE);
         let threshold = fraction * 300_000 / SCALE + 800;
         let steps;
@@ -61,8 +46,6 @@ pub(super) fn controls(points: &[Point], intersection_tests: Option<i32>) -> Vec
                 (squared_delta(point, last) as f32 / SCALE as f32).sqrt()
                     / (threshold as f32 / SCALE as f32).sqrt(),
             );
-            // Test the wrapping signed step count minus one, including CVTTSS2SI's
-            // exceptional minimum result.
             let insertions = steps.wrapping_sub(1);
             if insertions > 0 {
                 let step = [
@@ -97,8 +80,6 @@ fn world(point: Point) -> [f32; 2] {
     point.map(|value| value as f32 / SCALE as f32)
 }
 
-/// Closed segment intersection. Nonparallel lines meet only when both
-/// parameters are in [0,1]; no epsilon adjustment applies.
 fn intersects(a: Point, b: Point, c: Point, d: Point) -> bool {
     let (a, b, c, d) = (world(a), world(b), world(c), world(d));
     let ab = [b[0] - a[0], b[1] - a[1]];
@@ -113,9 +94,6 @@ fn intersects(a: Point, b: Point, c: Point, d: Point) -> bool {
     (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)
 }
 
-/// Forward loop removal. The first crossing removes the earlier segment's
-/// start through the later segment's end-exclusive range. Do not insert the
-/// computed crossing, reverse the list, or repeat the search after removal.
 fn remove_loop(controls: &mut Vec<Point>, threshold: i64, steps: i32, limit: i32) {
     let count = controls.len();
     if count < 3 {
@@ -143,9 +121,6 @@ fn remove_loop(controls: &mut Vec<Point>, threshold: i64, steps: i32, limit: i32
             }
         }
     }
-    // Also trim a near-closed tail. Start at control zero even when the crossing
-    // scan starts later. Test the budget after each distance test, so zero still
-    // tests the first point.
     let budget = if limit < 0 { count } else { limit as usize };
     let last = world(controls[count - 1]);
     let maximum_squared = threshold as f32 / SCALE as f32 * 1.5;
@@ -176,7 +151,6 @@ mod tests {
         let mut points = vec![p(0, 0), p(8, 8), p(0, 8), p(8, 0), p(9, 0)];
         remove_loop(&mut points, 0, 3, -1);
         assert_eq!(points, vec![p(8, 0), p(9, 0)]);
-        // The last two segments alone cannot see the older crossing.
         let mut points = vec![p(0, 0), p(8, 8), p(0, 8), p(8, 0), p(9, 0)];
         remove_loop(&mut points, 0, 3, 1);
         assert_eq!(points.len(), 5);
@@ -187,16 +161,13 @@ mod tests {
         let mut points = vec![p(0, 0), p(4, 0), p(4, 4), p(0, 4), [1, 1]];
         remove_loop(&mut points, 15_760, 1, 0);
         assert_eq!(points, vec![[1, 1]]);
-        // Parallel collinear segments are never called an intersection.
         assert!(!intersects(p(0, 0), p(4, 0), p(2, 0), p(6, 0)));
-        // Nonparallel endpoint intersections are included.
         assert!(intersects(p(0, 0), p(4, 0), p(4, 0), p(4, 4)));
     }
 
     #[test]
     fn resubmission_retains_duplicates_densifies_and_caps_the_native_list() {
         for source in [p(0, 0), p(10, 10)] {
-            // 0.3 px is below the 15760 threshold; 10 px inserts 25 steps.
             let near = [source[0] + 30_000, source[1]];
             assert_eq!(
                 controls(&[source, near], None),
@@ -227,10 +198,6 @@ mod tests {
 
     #[test]
     fn exceptional_step_count_keeps_the_wrapping_native_insertion_branch() {
-        // The third point is far enough from the penultimate control to
-        // enter the insertion branch, but its delta from the last control
-        // has a negative wrapping square. sqrt -> CVTTSS2SI(MIN), and
-        // wrapping MIN - 1 is positive; the ordinary point cap stops it.
         let target = [3_036_900_500, 0];
         let out = controls(&[[0, 0], [-SCALE, 0], target], None);
         assert_eq!(out.len(), POINT_CAP);

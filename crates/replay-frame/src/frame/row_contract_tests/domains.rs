@@ -52,7 +52,6 @@ fn land_casualty_hourly_deltas_keep_unchanged_pools_and_clear_empty_ones() {
         empty.apply::<LandCombatProgressRow>(Some(prior)).unwrap(),
         next
     );
-    // Unknown intervals must break the baseline instead of carrying casualties.
     let mut encoder = crate::frame::FrameEncoder::new();
     let mut decoder = crate::frame::FrameDecoder::new();
     for (hour, available) in [(1, true), (2, false), (3, true)] {
@@ -227,7 +226,6 @@ fn historical_research_frame_skips_changed_snapshots_and_keeps_other_tables() {
                 ))
             }
             TableId::TechnologyDefinitions => {
-                // The old index payload has the same scalar framing as today's handle.
                 let row = TechnologyDefinitionRow {
                     technology_handle: 3,
                     id: b"repeat".to_vec(),
@@ -327,8 +325,6 @@ fn deletion_witness_rejects_unsupported_or_missing_loss_cause_in_table_decoder()
         if value == 27 {
             assert!(delta.apply::<DivisionEquipmentDeletionRow>(None).is_err());
         } else {
-            // The low-level delta decodes canonical None; the table consumer
-            // rejects the resulting Loss row without its required cause.
             let decoded = delta.apply::<DivisionEquipmentDeletionRow>(None).unwrap();
             assert_eq!(decoded.cause, None);
             assert!(decoded.check_key_fields().is_err());

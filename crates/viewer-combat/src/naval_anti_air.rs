@@ -1,13 +1,8 @@
-//! Fresh anti-air value displayed by the active naval-combat window.
 use engine_executable::modifier_keys as keys;
 use replay_data::rows::NavalCombatShipRow;
 
 const ONE: i64 = 100_000;
 
-/// the game visits every live ship occurrence in the registered forward
-/// groups, without filtering member state or detection. the game uses the
-/// task force's default commander rather than the combat leader for keys
-/// 0x88/0x89. The base lookup joins the shared hourly ShipModels census.
 pub(super) fn calculate(
     combat: u64,
     side: u8,
@@ -81,7 +76,6 @@ mod tests {
             ship(2, 0, u32::MAX),
             convoy,
         ];
-        // Two eligible occurrences of 1.5, then ratio 0.5 and position 0.8.
         assert_eq!(
             calculate(7, 1, 80_000, &rows, 50_000, |_| Some(150_000)),
             Ok(120_000)
@@ -113,8 +107,6 @@ mod tests {
                 ..Default::default()
             },
         ];
-        // (1.0 + 0.2) * (1 - 0.1) = 1.08, then fleet ratio 0.5 and
-        // fresh positioning 0.8, with a truncation after each multiply.
         assert_eq!(
             calculate(7, 1, 80_000, &[row], 50_000, |_| Some(100_000)),
             Ok(43_200)

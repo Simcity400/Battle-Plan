@@ -1,0 +1,13 @@
+# 0107. Carry template rows only while all observation witnesses hold
+
+A read can carry held template rows only while the object and owner certificates and the local-definition token still match. The observer’s epoch resets before readers after a load, gap or recovery. A quiet domain exists only while observation is live and no writer is running. Deployment-reset observation comes from the local-subunit observer, and local-definition observation includes shared definitions and content reloads. An unavailable, poisoned, overlapping or invalidated witness forces a fresh read. If any required site cannot be installed, the entire family takes the fresh-read path.
+
+Select the owner or deployment holder for country configuration, and the occupation holder for garrisons. Registration and capacity growth run off-thread, using live census demand before the first capture and reported counts after it. Previously offered watch storage is admitted at the capture boundary. A writer callback updates existing slots without waiting or allocating, and contention withdraws carry. Stop and drain observations before releasing the watch table. A runtime round publishes the family under the shared census and suspension. A blocked site defers the family’s update.
+
+The callback preserves original arguments and the original result. Hold its notification until native return proves that the writer completed. A foreign unwind cannot give that proof. A custom-icon command does not name an individual template and revokes the applicable observations. A scripted addition with a known country revokes that country’s owner witness. An unresolved country or unreadable holder revokes the wider scope. For a unit-type or role rebuild, compare the affected operands to avoid revoking an actually unchanged result while keeping acquisition out during the call.
+
+## Safety decisions
+
+`Hooks::drop` releases the watch registry only after the last capture and removal and drain of every previously enabled hook. A family that never enabled its hooks can release directly. `native_notification` creates `LiveMemory` on the native calling thread and reads the receiver through guarded copies there.
+
+[Template observer](../../crates/collector/src/template_changes.rs) · [Native template writer inventory](../../crates/engine-mutations/src/template_mutations.rs)

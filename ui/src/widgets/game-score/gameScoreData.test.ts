@@ -11,7 +11,6 @@ const row = (tag: string, total: boolean): GameScoreRow => ({ tag, countryId: 1,
   army: known, navy: known, air: unknown('a registered air wing has no AirWingGameScoreStats row'), industry: known, land: known });
 const REPLY: GameScoreReply = { missing: null, warnings: [], hints: { total: 'Sort by score' }, rows: [row('ENG', true), row('GER', true), row('ITA', false)],
   multipliers: [{ part: 'total', raw: '100000', missing: null }, { part: 'air', raw: null, missing: 'NAir define was not read' }] };
-// The live cells: ENG's total 3, army 9; GER's total 7, army 1; ITA's army 1 (its total is not recorded).
 const VALUES = new Map([['ENG|total', 3], ['ENG|army', 9], ['GER|total', 7], ['GER|army', 1], ['ITA|army', 1]]);
 const score: ScoreOf = (tag, part) => VALUES.get(`${tag}|${part}`);
 

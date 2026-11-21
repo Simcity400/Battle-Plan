@@ -1,14 +1,8 @@
-# `cargo nextest run --workspace` runs every test not marked `#[ignore]`, each in
-# its own process, scheduled across all test binaries at once.
 
 [profile.default]
 fail-fast = false
-# No test holds the daily run past an hour: nextest stops it and lists it as TIMEOUT.
 slow-timeout = { period = "60s", terminate-after = 60 }
 
-# Tests that take tens of seconds start first, wherever their binary falls in
-# the run order, so none of them starts near the end: the scale tests, the
-# replay acceptance campaign and the long scans of other crates.
 [[profile.default.overrides]]
 filter = '''
 test(/5000|5_000|five_thousand/)
@@ -20,7 +14,6 @@ test(/5000|5_000|five_thousand/)
 '''
 priority = 60
 
-# The dashboard's preparation-parity tests start next.
 [[profile.default.overrides]]
 filter = 'package(dashboard)'
 priority = 50

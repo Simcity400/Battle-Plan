@@ -14,13 +14,11 @@ pub use lexical::{OperandStatus, SharedLexical};
 pub use provinces::{Province, Provinces};
 pub use rows::Rows;
 
-/// Typed operands from one supplied read; no history or native-table fallback.
 pub trait RecordedSource: Send + Sync {
     fn hour(&self) -> Hour;
     fn branch(&self) -> u64;
     fn status(&self, table: TableId) -> OperandStatus<'_>;
     fn sampled_at(&self, index: usize) -> Option<Hour>;
-    /// Optional allocation identity, never proof of acquisition or freshness.
     fn identity(&self, index: usize) -> Option<ViewIdentity>;
     fn clock_seed(&self) -> io::Result<Option<i32>>;
     fn lexical_rows(&self) -> Rows<'_, replay_data::rows::LexicalTokenRow>;
@@ -58,7 +56,6 @@ pub trait RecordedSource: Send + Sync {
     }
 }
 
-/// Decoded-only migration seam; projected evaluators must use typed capabilities.
 pub trait DecodedSource: RecordedSource + sealed::Decoded {
     fn decoded_frame(&self) -> &DecodedFrame;
 }
@@ -91,7 +88,6 @@ impl dyn DecodedSource + '_ {
         OperandStatus::of(self.view(table.index())).gap()
     }
     pub fn complete_status(&self, table: TableId) -> io::Result<()> {
-        // Legacy status gates intentionally do not validate the row layout.
         OperandStatus::of(self.view(table.index())).complete(self.hour(), table)
     }
     pub fn character_rows(&self) -> Rows<'_, replay_data::rows::CharacterRow> {

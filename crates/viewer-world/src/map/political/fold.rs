@@ -451,7 +451,6 @@ impl TerritoryFold {
                 continue;
             }
             let color = (|| -> io::Result<[u8; 3]> {
-                // An undecidable source is filled as unavailable; Relations names why.
                 let Some(source) = relations.source(slot)? else {
                     return Ok(UNAVAILABLE_COLOR);
                 };

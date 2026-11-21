@@ -8,8 +8,6 @@ use replay_frame::frame::TableView;
 
 fn land_sides_fixture() -> (DecodedFrame, Save, u64) {
     let (mut frame, mut save, ..) = super::super::fixtures::division_fixture();
-    // The unit joined under GER and has since returned to D01. Its joining
-    // owner's primary entry survives the current ownership change.
     let division = save.divisions.values_mut().next().unwrap();
     division.roster_owner = division.logical_owner.clone();
     division.expeditionary_owner = None;
@@ -37,7 +35,6 @@ fn land_sides_fixture() -> (DecodedFrame, Save, u64) {
     *frame.tables[TableId::LandCombatSides.index()] =
         TableView::Complete(TableRows::LandCombatSides(vec![LandCombatSideRow {
             combat,
-            // 102 is a resolving alias of GER, not the current owner D01.
             attacker_primary: vec![102],
             ..Default::default()
         }]));
@@ -191,7 +188,6 @@ fn missing_retained_details_report_incomplete_coverage_without_waiving_differenc
     assert!(error.to_string().contains("missing rows): [102]"));
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["NavalCombatResultDetails"], 1);
-    // Unknown coverage cannot suppress a mismatch in a readable row or an extra row.
     readable.sides[0].leader = 78;
     *frame.tables[TableId::NavalCombatResultDetails.index()] =
         TableView::Complete(TableRows::NavalCombatResultDetails(vec![
@@ -265,7 +261,6 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     let mut report = Report::default();
     land(&frame, &save, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // The class survives an omitted transfer key; its absence is compared separately.
     save.land_combats
         .get_mut(&combat)
         .unwrap()
@@ -281,7 +276,6 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     let mut report = Report::default();
     land(&frame, &save, &mut report).unwrap();
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
-    // Historical absence limits only border operands; the province still compares.
     *frame.tables[TableId::LandCombatDetails.index()] =
         TableView::Complete(TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
             combat,
@@ -299,9 +293,6 @@ fn border_marker_witnesses_compare_stored_country_state_and_event_strings() {
     );
 }
 
-/// The CAS hover's operands, recorded once in the side inputs, compare with
-/// the saved side: the anti-air cache exactly and the prevented lanes at
-/// their display step, each written only when positive.
 #[test]
 fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
     use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatSideInputs};
@@ -312,7 +303,6 @@ fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
         side.organisation_loss_count = Some(0);
     }
     details.sides[0].anti_air = Some(Decimal::parse(b"12.34567").unwrap());
-    // 2.5 shows as 2 (`|R0`); 0.75 shows as 0.
     details.sides[0].damage[4] = Some(Decimal::parse(b"2.5").unwrap());
     details.sides[0].damage[5] = Some(Decimal::parse(b"0.75").unwrap());
     save.land_combats.insert(
@@ -358,8 +348,6 @@ fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
             .display_compared
             .contains_key("LandCombatDetails.side_inputs.prevented_damage")
     );
-    // A stepped anti-air cache or a prevented lane a step off is a difference,
-    // as is a positive lane the save omits (the defender's side).
     for sides in [
         [
             LandCombatSideInputs {
@@ -394,10 +382,6 @@ fn cas_operands_compare_anti_air_exactly_and_prevented_damage_at_its_step() {
     assert!(report.differences[0].contains("prevented_damage_org positive-field presence"));
 }
 
-/// The reserve speed share is composed for every reserve and no
-/// other division, so it sits exactly on the save's reserves: a committed
-/// division holding one, or a reserve missing one without a capture
-/// refusal, is a difference; a refused share is a named limitation.
 #[test]
 fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
     use replay_data::rows::LandCombatDivisionRow;
@@ -478,7 +462,6 @@ fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
     assert_eq!(shares(&report), 0, "{:?}", report.differences);
     let report = run(&mut frame, [Some(0), Some(0)]);
     assert_eq!(shares(&report), 1, "{:?}", report.differences);
-    // A reserve whose share capture refused is a named limitation.
     let report = run(&mut frame, [None, None]);
     assert_eq!(shares(&report), 0, "{:?}", report.differences);
     assert!(
@@ -606,7 +589,6 @@ fn air_base_wing_rows_must_be_exactly_the_referenced_bases_in_the_air_censuses()
     );
     let mut report = Report::default();
     air_base_wings(&frame, &mut report).unwrap();
-    // An unreferenced base, a base absent from AirBases and a wing absent from AirWings.
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
 
@@ -655,7 +637,6 @@ fn naval_air_localized_cache_is_not_a_saved_plane_comparator() {
     assert!(differences[0].contains("plane current:"));
 }
 
-/// Each side's task forces compare with the saved `unit` list in writer order.
 #[test]
 fn naval_side_units_compare_with_the_saved_unit_list_in_order() {
     use replay_data::{rows::NavalCombatDetailsRow, rows::TableId, rows::TableRows};
@@ -720,7 +701,6 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         definition_ordinal: 0,
         remaining_days,
     };
-    // Naval commanders' timed traits; the land side's are retired.
     let commander = (4 << 32) | 4713;
     let traits = vec![timed(1, 20), timed(2, -1)];
     let tokens: TokenNames<'static> =
@@ -732,17 +712,13 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
     };
     let report = compare(commander, &traits, &tokens);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Vector order and exact signed days, never a set.
     let swapped = [timed(2, -1), timed(1, 20)];
     assert_eq!(compare(commander, &swapped, &tokens).differences.len(), 4);
-    // An unspelled token limits only its own spelling; days still compare.
     let report = compare(commander, &traits, &TokenNames::new());
     assert!(report.differences.is_empty());
     assert_eq!(report.limitations.values().flatten().count(), 2);
-    // A capture longer than the save is a count difference.
     let extra = [timed(1, 20), timed(2, -1), timed(1, 3)];
     assert_eq!(compare(commander, &extra, &tokens).differences.len(), 1);
-    // No commander carries no timed traits.
     assert_eq!(compare(0, &traits, &tokens).differences.len(), 1);
     let mut save = save;
     save.characters
@@ -778,7 +754,6 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         .unwrap()
         .clear();
     assert_eq!(compare_naval(&naval).differences.len(), 1);
-    // Historical field absence differs from a recorded empty vector.
     naval.timed_traits = Recorded::NotRecorded;
     let report = compare_naval(&naval);
     assert!(report.differences.is_empty());
@@ -869,8 +844,6 @@ fn null_naval_commander_is_independent_of_the_saved_last_leader() {
         reason,
     };
 
-    // A null current commander is independent of the retained last leader at
-    // every branch/hour. A wrong nonnull commander still differs.
     let h = frame.hour;
     for (reason, loaded, first, sample, commander, expected) in [
         (Load, Some(h), h, h, 0, "limited"),
@@ -897,7 +870,6 @@ fn null_naval_commander_is_independent_of_the_saved_last_leader() {
         );
     }
 
-    // Other fields stay exact while the current commander is null after loading.
     frame.hour = h + 1;
     set_commander(&mut frame, 0);
     save.naval_combats.get_mut(&combat).unwrap().details.day = Some(1);
@@ -1013,7 +985,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             ..Default::default()
         },
     };
-    // An ordered historical member: every conditional key is omitted.
     let row = replay_data::rows::NameOperands {
         order: 0,
         ordered: 1,
@@ -1030,7 +1001,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // A fake-intel template supplies the member's group instead.
     naming(
         &mut report,
         "fake intel",
@@ -1039,7 +1009,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert_eq!(report.differences.len(), 1);
-    // A player's name, an unordered member and a nonzero order word.
     let custom = replay_data::rows::NameOperands {
         order: -1,
         custom: b"Guards".to_vec(),
@@ -1060,8 +1029,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // A programmatic override with a set group is not shown
-    // and not recorded: the group is compared instead.
     let programmatic = replay_data::rows::NameOperands {
         programmatic: 1,
         custom: Vec::new(),
@@ -1082,8 +1049,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(report.limitations.is_empty());
-    // With a null group (the fake-intel template saves none) the game
-    // shows it, and it is compared.
     let shown = replay_data::rows::NameOperands {
         custom: b"1. Strelkovaya".to_vec(),
         group: Vec::new(),
@@ -1097,7 +1062,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Whole-roster operands share the flat rows' displayed override rule.
     let operands = replay_data::rows::NameOperands {
         order: custom.order,
         ordered: custom.ordered,
@@ -1116,9 +1080,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     assert!(operand_report.differences.is_empty());
     assert!(operand_report.limitations.is_empty());
     for (label, row, alternate) in [
-        // Not recorded where the game shows it.
         ("unrecorded", &programmatic, Some(fake)),
-        // Recorded where the game shows the group's entry.
         (
             "recorded",
             &replay_data::rows::NameOperands {
@@ -1145,7 +1107,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             report.differences
         );
     }
-    // A nonzero type's group is not read: a named limitation.
     let mut report = Report::default();
     naming(
         &mut report,
@@ -1165,7 +1126,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.limitations.len(), 1);
-    // Each operand difference and a missing block are reported, not waived.
     for (label, saved) in [
         (
             "type",
@@ -1222,12 +1182,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert_eq!(report.differences.len(), 1);
-    // A recorded member reference decides the group. One with no saved
-    // entry, of the template kind and held by none of the recording's
-    // templates at the hour, names a template deleted since: the game
-    // resolves no group, so it is compared exactly as a null group, the
-    // override shown and compared, where the division's own template would
-    // have demanded SOV_INF_01.
     let deleted = 999_u64 << 32 | 52;
     let run = |operands: Naming<'_>, templates: &NameTemplates<'_>| {
         let mut report = Report::default();
@@ -1250,8 +1204,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         report.compared_tables["name members of deleted templates"],
         1
     );
-    // A wrong override, an unshown one, or a group the game cannot hold is
-    // a difference.
     for (label, operands, field) in [
         (
             "wrong override",
@@ -1283,9 +1235,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             report.differences
         );
     }
-    // The deletion is not proved for a reference the recording still holds
-    // as a template, nor for one of another kind; and it is not decided at
-    // an hour without a current DivisionTemplates read.
     let held = NameTemplates {
         saved: &saved_templates,
         recorded: Ok(BTreeSet::from([standard, fake, deleted])),
@@ -1312,14 +1261,11 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(report.limitations.contains_key("stale"));
-    // A recorded zero reference holds no group either.
     let report = run(
         Naming::from(&shown).with_template(MemberTemplate::Recorded(0)),
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // A recording that records the references but none for this member
-    // names that, and compares no group and nothing the group decides.
     let report = run(
         Naming::from(&shown).with_template(MemberTemplate::Absent),
         &templates,
@@ -1329,11 +1275,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         report.limitations.keys().collect::<Vec<_>>(),
         [MEMBER_TEMPLATE_ABSENT]
     );
-    // A recording that does not record the reference: a load rebinds the
-    // member to the division's template, but deployment can leave the live
-    // member on an older template of its country or a deleted one. Only those
-    // groups are admitted, under a limitation naming the recording; the
-    // override then follows the recorded group.
     for (operands, admitted) in [
         (Naming::from(&shown), true),
         (
@@ -1375,7 +1316,6 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             report.limitations
         );
     }
-    // A recorded reference to a saved template is compared against it.
     let report = run(
         Naming::from(&programmatic).with_template(MemberTemplate::Recorded(fake)),
         &templates,
@@ -1499,29 +1439,20 @@ fn combat_members_take_their_recorded_template_from_the_division_status() {
         }]))
     };
     let operands = replay_data::rows::NameOperands::default();
-    // The member's recorded reference names a deleted template, which no
-    // recorded template holds: its shown override is compared exactly, under
-    // no limitation of the member template.
     *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted), Some(operands.clone()));
     let (differences, limitations) = naming_report(&frame).unwrap();
     assert_eq!(differences, Vec::<String>::new());
     assert!(!limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
     assert!(!limitations.contains_key(MEMBER_TEMPLATE_ABSENT));
-    // A status row with naming operands and no reference is a recording that
-    // does not record them, and is named so.
     *frame.tables[TableId::DivisionStatus.index()] = status(None, Some(operands.clone()));
     let (differences, limitations) = naming_report(&frame).unwrap();
     assert_eq!(differences, Vec::<String>::new());
     assert!(limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
-    // A recording that records them, whose status row for the member's
-    // division has no naming operands, holds no reference for the member: named,
-    // never the template a load rebinds.
     *frame.tables[TableId::DivisionStatus.index()] = status(None, None);
     let (differences, limitations) = naming_report(&frame).unwrap();
     assert_eq!(differences, Vec::<String>::new());
     assert!(limitations.contains_key(MEMBER_TEMPLATE_ABSENT));
     assert!(!limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
-    // A recorded template with that reference refutes the deletion.
     *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted), Some(operands.clone()));
     *frame.tables[TableId::DivisionTemplates.index()] =
         TableView::Complete(TableRows::DivisionTemplates(vec![
@@ -1531,8 +1462,6 @@ fn combat_members_take_their_recorded_template_from_the_division_status() {
             },
         ]));
     assert_eq!(naming_differences(&frame).unwrap().len(), 1);
-    // An unavailable status table fails the comparison instead of
-    // silently dropping the witness.
     *frame.tables[TableId::DivisionStatus.index()] = TableView::Unavailable {
         reason: "synthetic".into(),
     };
@@ -1578,7 +1507,6 @@ fn organisation_loss_compares_the_recorded_sum_with_the_saved_samples() {
             ..Default::default()
         }),
     };
-    // Samples whose signed 64-bit sum wraps, as the game's addition wraps.
     let samples: Vec<i64> = (0..24)
         .map(|slot| if slot == 0 { i64::MAX } else { slot })
         .collect();
@@ -1633,7 +1561,6 @@ fn organisation_loss_compares_the_recorded_sum_with_the_saved_samples() {
     let mut report = Report::default();
     land(&frame, &save, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // One saved sample off changes the sum; a short ring is reported too.
     let saved = &mut save.land_combats.get_mut(&combat).unwrap().details;
     let mut moved = samples.clone();
     moved[5] += 1;
@@ -1644,8 +1571,6 @@ fn organisation_loss_compares_the_recorded_sum_with_the_saved_samples() {
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
 
-/// ReserveModifierTrees must hold exactly the reserves' countries and only
-/// commanders a reserve selects.
 #[test]
 fn reserve_trees_name_exactly_the_reserves_sources() {
     use replay_data::{
@@ -1693,10 +1618,7 @@ fn reserve_trees_name_exactly_the_reserves_sources() {
         report.differences.len()
     };
     assert_eq!(check(&mut frame, vec![tree(0, 9), tree(1, 77)]), 0);
-    // A zero-rate commander has no row.
     assert_eq!(check(&mut frame, vec![tree(0, 9)]), 0);
-    // The roster owner of an expeditionary reserve, a committed division's
-    // owner and an unselected commander are not reserve sources.
     assert_eq!(check(&mut frame, vec![tree(0, 4)]), 1);
     assert_eq!(check(&mut frame, vec![tree(0, 5), tree(0, 9)]), 1);
     assert_eq!(check(&mut frame, vec![tree(0, 9), tree(2, 77)]), 1);

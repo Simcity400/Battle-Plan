@@ -1,4 +1,3 @@
-//! CPU expansion of particle trails into ribbon vertices.
 use super::{Instance, fail};
 use bytemuck::{Pod, Zeroable};
 use std::io;

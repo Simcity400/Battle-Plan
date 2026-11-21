@@ -1,24 +1,3 @@
-//! Chart tiles: a declared series' chart bins on the absolute grid, [`BINS`] to a tile, so a view
-//! is made of pieces addressed by (series, measure, tag, bin hours, tile index) that never change
-//! once the timeline has passed their last hour. A view's bins are whole tiles' bins: a chart that
-//! follows the head asks one new tile per [`BINS`] bins of travel and nothing else.
-//!
-//! Bins are those a view of the same bin width reads ([`crate::series::grid`]): whole numbers of
-//! one summary level's buckets, or 1 to 5 walked hours. Each tile is read with the bin before it,
-//! so its first bin knows whether the line goes on into it.
-//!
-//! On the wire the bins are typed arrays in one base64 string beside the JSON: per tag 256 flag
-//! bytes (present, starts a line, holds a break, level); then for every present bin, tag after tag,
-//! its first, last, least and greatest value, or one value for a level bin; then its five hours
-//! (first, last, last value's, least's, greatest's) less the bin's first hour, in the fewest bytes
-//! a bin's hours fit.
-//!
-//! A tile of one-hour bins carries the hourly runs instead, which an hourly view draws: per tag 256
-//! flag bytes (the hour holds a value, a run starts there, after a break, or going on from the tile
-//! before), then each run's value. Its bins are its hours.
-//!
-//! Asked with marks, each line also carries its drops per bin and how many it dropped before the
-//! tile, so a chart's marks are the tiles' bins too.
 
 use crate::{
     chart::{ChartBucket, ChartRun},
@@ -30,19 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use ts_rs::TS;
 
-/// The product a tile is asked under.
 pub const PRODUCT: &str = "series-tiles";
-/// Bins in a tile.
 pub const BINS: usize = 256;
 
 pub const PRESENT: u8 = 1;
 pub const FIRST_BREAK: u8 = 2;
 pub const HAS_BREAK: u8 = 4;
-/// Its first, last, least and greatest value are one value.
 pub const LEVEL: u8 = 8;
-/// An hourly tile's run starts at this hour.
 pub const RUN: u8 = 16;
-/// The run starting at the tile's first hour goes on from the tile before.
 pub const SEAM: u8 = 32;
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -56,16 +30,13 @@ struct Params {
     index: i64,
     #[serde(default)]
     countries: Vec<Country>,
-    /// A sub-keyed series' lines, (country, part).
     #[serde(default)]
     lines: Vec<SeriesLineAsk>,
-    /// Each country's spans its lines are drawn over.
     within: Option<Vec<(Country, Vec<Span>)>>,
     #[serde(default)]
     with_marks: bool,
 }
 
-/// A part of a tag's line the tile meets: its holder over one stretch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TilePart {
@@ -73,12 +44,10 @@ pub struct TilePart {
     pub last_hour: i32,
     pub slot: u32,
     pub country_id: u32,
-    /// The first hour of its holder's unbroken segment.
+    #[doc = " The first hour of its holder's unbroken segment."]
     pub segment_first_hour: i32,
 }
 
-/// A line's drops over a tile: per bin with any, the bin and its count; and how many it dropped on
-/// the timeline before the tile, which a mark's ordinals count from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TileMarks {
@@ -91,20 +60,19 @@ pub struct TileMarks {
 #[serde(rename_all = "camelCase")]
 pub struct TileLine {
     pub country: Country,
-    /// The part's key, for a sub-keyed series.
+    #[doc = " The part's key, for a sub-keyed series."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub part: Option<String>,
-    /// The tile's hours the tag holds no value in, with why.
+    #[doc = " The tile's hours the tag holds no value in, with why."]
     pub missing: Vec<MissingSpan>,
     pub parts: Vec<TilePart>,
-    /// Asked with marks, for a series with drops.
+    #[doc = " Asked with marks, for a series with drops."]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub marks: Option<TileMarks>,
 }
 
-/// One tile of every tag asked.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesTileReply {
@@ -115,23 +83,21 @@ pub struct SeriesTileReply {
     pub bin_hours: i64,
     #[ts(type = "number")]
     pub index: i64,
-    /// The first hour of its first bin.
+    #[doc = " The first hour of its first bin."]
     pub first_hour: i32,
-    /// Wholly before the timeline's last hour: it never changes.
+    #[doc = " Wholly before the timeline's last hour: it never changes."]
     pub immutable: bool,
-    /// The last hour of the tile the timeline reaches; none when it reaches none.
+    #[doc = " The last hour of the tile the timeline reaches; none when it reaches none."]
     pub filled: Option<i32>,
-    /// Values are raw fixed-point integers as 32-bit words, `decimals` places; else 64-bit floats.
+    #[doc = " Values are raw fixed-point integers as 32-bit words, `decimals` places; else 64-bit floats."]
     pub raw_values: bool,
-    /// Bytes of each hour: 1, 2 or 4; 0 for a tile of hourly runs.
+    #[doc = " Bytes of each hour: 1, 2 or 4; 0 for a tile of hourly runs."]
     pub hour_bytes: u8,
     pub lines: Vec<TileLine>,
-    /// The bins, base64.
+    #[doc = " The bins, base64."]
     pub bins: String,
 }
 
-/// The level a bin of `bin_hours` reads ([`replay::lanes::WALKED`] below a bucket), or why no view
-/// has such bins.
 pub fn level_of(bin_hours: i64) -> io::Result<u8> {
     if !(1..=i64::from(i32::MAX) / BINS as i64).contains(&bin_hours) {
         return Err(invalid("Invalid tile bin hours"));
@@ -149,7 +115,6 @@ pub fn level_of(bin_hours: i64) -> io::Result<u8> {
     Ok(level)
 }
 
-/// The first and last hour of tile `index` of bins of `bin_hours`, the bin before it readable.
 pub fn hours(bin_hours: i64, index: i64) -> io::Result<(i32, i32)> {
     let span = BINS as i64 * bin_hours;
     let first = index.checked_mul(span).ok_or_else(|| invalid("Invalid tile index"))?;
@@ -160,21 +125,16 @@ pub fn hours(bin_hours: i64, index: i64) -> io::Result<(i32, i32)> {
     Ok((first as i32, last as i32))
 }
 
-/// Whether a tile ending at `last` never changes on a timeline whose last hour is `timeline_last`,
-/// and the last of its hours the timeline reaches.
 pub fn closure(first: i32, last: i32, timeline_last: i32) -> (bool, Option<i32>) {
     (last < timeline_last, (first <= timeline_last).then(|| last.min(timeline_last)))
 }
 
-/// The tile `params` ask of `line`'s tags.
 pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -> io::Result<SeriesTileReply> {
     let params: Params = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
     let asks = line.asks(&params.countries, &params.lines)?;
     tile(line, branch_id, &asks, params.within.as_deref(), params.bin_hours, params.index, params.with_marks)
 }
 
-/// Tile `index` of bins of `bin_hours` of `asks`' lines, each drawn only over its tag's spans of
-/// `within` when given. A tag no country of the timeline ever holds is refused by name.
 pub fn tile(
     line: &Line<'_, '_>,
     branch_id: &str,
@@ -270,15 +230,12 @@ pub fn tile(
     })
 }
 
-/// A value as a raw 32-bit integer of `scale` that reads back bit for bit, when there is one.
 fn raw_word(value: f64, scale: f64) -> Option<i32> {
     let raw = (value * scale).round();
     let narrow = raw as i32;
     (f64::from(narrow) == raw && (f64::from(narrow) / scale).to_bits() == value.to_bits()).then_some(narrow)
 }
 
-/// Each tag's hourly runs (each within its parts, from the hour before `first`) as the wire's
-/// bytes of the tile from `first`, and whether values are raw 32-bit integers.
 pub fn encode_runs(runs: &[Vec<ChartRun>], first: i32, scale: f64) -> (Vec<u8>, bool) {
     let last = first + BINS as i32 - 1;
     let shown = || runs.iter().flatten().filter(|run| run.last_hour >= first && run.first_hour <= last);
@@ -309,8 +266,6 @@ pub fn encode_runs(runs: &[Vec<ChartRun>], first: i32, scale: f64) -> (Vec<u8>, 
     (flags, raw_values)
 }
 
-/// The runs [`encode_runs`] wrote for `tags` tags, read back: per tag (first, last, value, flags of
-/// its first hour).
 pub fn decode_runs(bytes: &[u8], tags: usize, first: i32, scale: f64, raw_values: bool) -> io::Result<Vec<Vec<(i32, i32, f64, u8)>>> {
     let flags = bytes.get(..tags * BINS).ok_or_else(|| invalid("A tile's flags are cut short"))?;
     let starts = flags.iter().filter(|&&flag| flag & RUN != 0).count();
@@ -343,7 +298,6 @@ pub fn decode_runs(bytes: &[u8], tags: usize, first: i32, scale: f64, raw_values
     Ok(out)
 }
 
-/// The bytes each hour of a bin of `bin_hours` takes.
 pub fn hour_bytes(bin_hours: i64) -> u8 {
     match bin_hours {
         ..=256 => 1,
@@ -357,8 +311,6 @@ fn level(bucket: &ChartBucket) -> bool {
     [bucket.last_value, bucket.min_value, bucket.max_value].into_iter().all(|other| other.to_bits() == value)
 }
 
-/// `buckets` (tag after tag, [`BINS`] each, from hour `first`) as the wire's bytes, whether values
-/// are raw 32-bit integers, and the bytes of each hour.
 pub fn encode(buckets: &[Option<ChartBucket>], first: i32, bin_hours: i64, scale: f64) -> (Vec<u8>, bool, u8) {
     let present: Vec<(usize, &ChartBucket)> = buckets.iter().enumerate().filter_map(|(at, bucket)| Some((at, bucket.as_ref()?))).collect();
     let raw = |value: f64| raw_word(value, scale);
@@ -395,7 +347,6 @@ pub fn encode(buckets: &[Option<ChartBucket>], first: i32, bin_hours: i64, scale
     (out, raw_values, hours)
 }
 
-/// The buckets [`encode`] wrote for `tags` tags, read back.
 pub fn decode(bytes: &[u8], tags: usize, first: i32, bin_hours: i64, scale: f64, raw_values: bool, hour_bytes: u8) -> io::Result<Vec<Option<ChartBucket>>> {
     let flags = bytes.get(..tags * BINS).ok_or_else(|| invalid("A tile's flags are cut short"))?;
     let present = flags.iter().filter(|&&flag| flag & PRESENT != 0).count();
@@ -450,7 +401,6 @@ pub fn decode(bytes: &[u8], tags: usize, first: i32, bin_hours: i64, scale: f64,
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// `bytes` as standard padded base64.
 pub fn base64(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

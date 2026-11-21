@@ -11,9 +11,7 @@ doctest = false
 
 [dependencies]
 sha2.workspace = true
-# The PNG plugin of the game's FreeImage decodes through libpng; see native.
 png.workspace = true
-# libpng's iCCP profiles are zlib streams (see native::png_colorspace).
 miniz_oxide = "0.8"
 
 [features]

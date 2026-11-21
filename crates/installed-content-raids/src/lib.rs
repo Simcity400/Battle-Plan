@@ -1,4 +1,3 @@
-//! Raid categories, types, launch operands, target/name joins and authored tooltip formulas.
 
 use installed_content_core::{
     Diagnostic, DiagnosticKind, ResolvedLayers, buildings, crt, defines, equipment, fields, fixed5,

@@ -49,10 +49,8 @@ fn a_keyed_layer_builds_once_while_its_tables_are_shared() {
             .unwrap()
     };
     let first = get(&frame(10, &shared, &a));
-    // Another table changed, the keyed one did not: the same value.
     let second = get(&frame(11, &shared, &b));
     assert!(Arc::ptr_eq(&first, &second));
-    // Equal rows in a new allocation are a miss, not a guess.
     let third = get(&frame(12, &weather(3), &b));
     assert!(!Arc::ptr_eq(&first, &third));
     assert_eq!(*third, 3);
@@ -102,7 +100,6 @@ fn a_settled_layer_keeps_one_value_while_its_content_is_unchanged() {
         layer
             .get_or_build(&frame(10, weather, &other), |projected| {
                 builds.set(builds.get() + 1);
-                // The unlisted table is not visible to the build.
                 assert!(matches!(
                     &*projected.tables[TableId::Countries.index()],
                     TableView::Unavailable { reason } if reason == NOT_AN_INPUT
@@ -116,25 +113,19 @@ fn a_settled_layer_keeps_one_value_while_its_content_is_unchanged() {
     };
     let shared = weather(3);
     let first = get(&shared);
-    // The same allocation hits without building.
     assert!(Arc::ptr_eq(&first, &get(&shared)));
     assert_eq!(builds.get(), 1);
-    // A new allocation builds, and settles on the equal value.
     let equal = weather(3);
     assert!(Arc::ptr_eq(&first, &get(&equal)));
     assert_eq!(builds.get(), 2);
-    // A changed value is a new one.
     let changed = get(&weather(2));
     assert_eq!(*changed, 2);
     assert!(!Arc::ptr_eq(&first, &changed));
-    // Each allocation got its own entry: both earlier ones still hit.
     assert!(Arc::ptr_eq(&first, &get(&shared)));
     assert!(Arc::ptr_eq(&first, &get(&equal)));
     assert_eq!(builds.get(), 3);
 }
 
-/// A settled layer of `WeatherProvinces` row counts, and how many builds
-/// it made.
 fn counting() -> (Settled<usize>, std::sync::atomic::AtomicU32) {
     (
         Settled::new(&[TableId::WeatherProvinces]),
@@ -165,8 +156,6 @@ fn a_settled_layer_settles_back_onto_an_older_value() {
     let three = settle(&layer, &builds, &weather(3));
     let two = settle(&layer, &builds, &weather(2));
     assert!(!Arc::ptr_eq(&three, &two));
-    // The latest value is two rows; a new allocation of three rows still
-    // settles on the older value.
     assert!(Arc::ptr_eq(&three, &settle(&layer, &builds, &weather(3))));
     assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
@@ -180,18 +169,14 @@ fn a_settled_layer_keeps_the_latest_value_and_those_held() {
     settle(&layer, &builds, &b);
     settle(&layer, &builds, &c);
     assert_eq!(count(), 3);
-    // `c`'s value is the latest: it hits though nothing else holds it.
     settle(&layer, &builds, &c);
     assert_eq!(count(), 3);
-    // `a`'s value is held: it hits.
     assert!(Arc::ptr_eq(&held, &settle(&layer, &builds, &a)));
     assert_eq!(count(), 3);
-    // Nothing holds `b`'s value: it builds again.
     settle(&layer, &builds, &b);
     assert_eq!(count(), 4);
 }
 
-// regression: 9501a84f48 Build Settled on Recent so one hour's tables build once
 #[test]
 fn concurrent_callers_of_one_settled_hour_share_one_build() {
     let (layer, builds) = counting();
@@ -202,8 +187,6 @@ fn concurrent_callers_of_one_settled_hour_share_one_build() {
             .map(|_| {
                 scope.spawn(|| {
                     started.wait();
-                    // The build outlasts the other callers' arrival, so
-                    // they wait on it rather than hit a finished value.
                     layer
                         .get_or_build(&frame(1, &shared, &other), |_| {
                             builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -225,7 +208,6 @@ fn distinct_values_hold_each_allocation_once_most_recent_first() {
     let (layer, builds) = counting();
     let one = settle(&layer, &builds, &weather(1));
     let two = settle(&layer, &builds, &weather(2));
-    // A second allocation of one row is a second entry for the same value.
     settle(&layer, &builds, &weather(1));
     let values = layer.recent.distinct_values();
     assert_eq!(values.len(), 2);
@@ -247,10 +229,6 @@ fn a_settled_layer_does_not_keep_failed_builds() {
     assert_eq!(*layer.get_or_build(&hour, |_| Ok::<_, ()>(5)).unwrap(), 5);
 }
 
-/// A value built over rows at the head whose reader had not declared a table it read is not kept:
-/// the discovery around it still learns the table, and the next ask, over rows that hold it, builds
-/// again. Before, the naval missions memo kept its first build of the hour, whose dominance sources
-/// refused AirCountryRelations, and every later build of that hour took it.
 #[test]
 fn a_value_built_over_an_undeclared_table_is_not_kept() {
     let recent = Recent::<u32, bool>::new();
@@ -276,7 +254,6 @@ fn recent_values_live_while_held_and_failures_are_not_kept() {
             .get_or_insert_with(key, || Ok::<_, ()>(Arc::new(key)))
             .unwrap();
     }
-    // Only key 2, the latest, is held: key 0 builds again.
     let mut built = false;
     recent
         .get_or_insert_with(0, || {
@@ -329,8 +306,6 @@ fn concurrent_callers_of_one_key_share_one_build() {
     assert!(values.iter().all(|value| Arc::ptr_eq(value, &values[0])));
 }
 
-/// A caller that never waits, asking for a key another caller is building (here its own build,
-/// where a caller that waited would wait forever), builds its own copy; the first build is kept.
 #[test]
 fn a_caller_that_never_waits_builds_its_own_copy_while_another_builds_the_key() {
     let recent = Recent::<u32, u32>::new();

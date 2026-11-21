@@ -14,7 +14,6 @@ function frames(): PrepareFrames & { run(): void } {
   return { request: run => { next = run; return 1; }, cancel: () => { next = null; }, run() { const due = next; next = null; due?.(); } };
 }
 
-/** A transport each request of which is answered by `answer(product)`, in the order asked. */
 function transport() {
   const sent: { product: string; background: boolean; answer: () => void }[] = [];
   const send = (product: string) => (_signal: AbortSignal, background: boolean) =>
@@ -83,7 +82,6 @@ test('a prepared client reads into its base\'s caches, its requests apart from w
   const lane = preparingClient(base);
   assert.equal(baseClient(lane), base);
   assert.equal(prepareGate(lane), prepareGate(base));
-  // The page is idle in this test: the lane sends at once.
   const prepared = request('prepared');
   assert.deepEqual(await loadProduct(lane, prepared, new AbortController().signal), { product: 'prepared' });
   assert.deepEqual(counted, [1], 'in flight as the lane\'s, never in the page\'s count');
@@ -91,7 +89,6 @@ test('a prepared client reads into its base\'s caches, its requests apart from w
   const again = await loadProduct(base, prepared, new AbortController().signal);
   assert.deepEqual(again, { product: 'prepared' });
   assert.deepEqual(asked, ['prepared'], 'the page reads what the lane read, asking nothing');
-  // The page busy: the lane's read waits; the page asking the same joins it and it goes at once.
   const pageBusy = busy('requests');
   const joined = request('joined');
   const waiting = loadProduct(lane, joined, new AbortController().signal);

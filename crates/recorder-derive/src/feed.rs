@@ -1,22 +1,3 @@
-//! `FeedEvents`: the event feed's typed log. Each occurrence of the feed's read (EventFeedHistory,
-//! one row per read holding its occurrences in opaque lists) becomes a row of its own, keyed by the
-//! collector's identity (generation, sequence) and living the hour of its read: its countries with
-//! the canonical slot each resolved to at that read, its cause, its script operands and scopes, the
-//! dispatch, selection or activation it continues, and a decision's proven power charge. Registry
-//! changes are not occurrences. Every title, body, option and icon is the reply's, from these
-//! operands. A read not complete is a row of its own, so its coverage is counted and named even
-//! when it read no occurrence. Two kinds the writer derives itself, never in a run's first hour: a
-//! country whose owned states fell to none since the last read, and a guarantee relation first
-//! read, unless the run's first hour already held it.
-//!
-//! State in its own tables: the cards still open (FeedOpenEvents, FeedOpenDecisions: [`open`]) and
-//! the guarantees starting after the run's first hour that RelationTuples rows hold, with how many
-//! do and the hour each was written (FeedGuarantees: a guarantee no row holds is gone for good, its
-//! start being its creation). In the resume blob only cursors and epochs
-//! (the run's first hour, the last occurrence, the last read and its generation) and the countries
-//! owning states at the last complete read of their counters, so a resume is an unbroken run even
-//! when that read was not complete at the commit. A decision opening does not survive a read that
-//! is not complete or does not follow the one before, nor any opening a new generation.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::leaf::{Reader, Writer as Bytes};
@@ -88,22 +69,16 @@ const READS: &[Read] = &[
 
 #[derive(Default)]
 pub struct Feed {
-    /// The rows living this hour, deleted the next.
     living: Vec<u128>,
     links: Links,
-    /// The last occurrence read: its generation and sequence.
     last: Option<(u64, u64)>,
-    /// The run's first hour: a guarantee starting by then is a snapshot, never an event.
     first: Option<i32>,
-    /// The countries owning states at the last complete read of their counters, and that read.
     owning: HashSet<u32>,
     counted: Option<i32>,
-    /// The next complete read of an input is read whole: an hour before it was not complete.
     counters_whole: bool,
     relations_whole: bool,
 }
 
-/// `event`'s script token: none when not captured; empty when it has no script.
 fn token<'a>(pack: &'a EventFeedHistoryRow, event: &EventFeedEvent) -> Option<&'a [u8]> {
     match event.script {
         None => Some(&[]),
@@ -112,7 +87,6 @@ fn token<'a>(pack: &'a EventFeedHistoryRow, event: &EventFeedEvent) -> Option<&'
     }
 }
 
-/// The charge key of a decision's execution or timeout effect.
 fn charge_key(event: &EventFeedEvent, token: Option<&[u8]>) -> Option<ChargeKey> {
     let timeout = match event.source {
         Source::DecisionSelected => false,
@@ -123,7 +97,6 @@ fn charge_key(event: &EventFeedEvent, token: Option<&[u8]>) -> Option<ChargeKey>
     Some((event.hour, event.actor.id, token.into(), timeout))
 }
 
-/// A row's cell as a writer sets it.
 fn cell(out: &mut Rows, field: Field<'_>) -> io::Result<Value> {
     Ok(match field {
         Field::NotRecorded => Value::Unrecorded,
@@ -164,7 +137,6 @@ impl Feed {
         Ok(())
     }
 
-    /// The read's occurrences, each a row.
     fn occurrences(&mut self, hour: &Hour<'_>, read: &Pack, open: &mut Open, ordinal: &mut u32, out: &mut Rows<'_>) -> io::Result<()> {
         let pack = &read.row;
         let names = Names::new(hour);
@@ -287,7 +259,6 @@ impl Feed {
         Ok(())
     }
 
-    /// A derived row of `kind` at `at`, the `ordinal`th of the hour.
     fn derived(&mut self, out: &mut Rows, at: i32, ordinal: &mut u32, kind: u8, fill: impl FnOnce(&mut FeedEventRow)) -> io::Result<()> {
         let mut row = FeedEventRow {
             generation: FeedEventRow::DERIVED,
@@ -322,7 +293,6 @@ impl Feed {
         self.write(out, &row)
     }
 
-    /// Countries whose owned states fell to none since the last complete read of their counters.
     fn existence(&mut self, hour: &Hour<'_>, names: Option<&Names<'_>>, before: Option<i32>, ordinal: &mut u32, out: &mut Rows) -> io::Result<()> {
         let whole = self.counters_whole || hour.fresh;
         let (counters, deleted) = match inputs::counters(hour, whole) {
@@ -369,9 +339,6 @@ impl Feed {
         Ok(())
     }
 
-    /// Guarantee relations starting after the run's first hour, each with the RelationTuples rows
-    /// holding it: written to the feed at the first read listing it uncancelled, gone when no row
-    /// holds it. A whole read counts every row; another hour adds what it moved.
     fn guarantees(&mut self, hour: &Hour<'_>, names: Option<&Names<'_>>, first: i32, ordinal: &mut u32, out: &mut Rows) -> io::Result<()> {
         let whole = self.relations_whole || hour.fresh;
         let Some(read) = inputs::guarantees(hour, whole) else {
@@ -382,7 +349,6 @@ impl Feed {
         self.relations_whole = false;
         let table = TableId::FeedGuarantees;
         let key = |(first_country, second_country, start): inputs::Guarantee| u128::from(first_country) << 64 | u128::from(second_country) << 32 | u128::from(start as u32);
-        // Each tracked guarantee as its row holds it: the hour it was written, the rows holding it.
         let row = |out: &Rows<'_>, seen: u128| {
             let tracked = out.table(table);
             tracked.slot(seen).map(|slot| (tracked.number(0, slot).map(|hour| hour as i32), tracked.number(1, slot).unwrap_or(0)))
@@ -473,7 +439,6 @@ fn get_u64(reader: &mut Reader<'_>) -> io::Result<Option<u64>> {
     })
 }
 
-/// A count read back, bounded by the bytes left.
 fn count(reader: &mut Reader<'_>, blob: &[u8]) -> io::Result<usize> {
     let count = reader.count()?;
     if count > blob.len() {
@@ -499,7 +464,6 @@ impl Writer for Feed {
         READS
     }
 
-    // Hourly: its rows live one hour.
     fn hourly(&self) -> bool {
         true
     }
@@ -531,8 +495,6 @@ impl Writer for Feed {
         self.guarantees(hour, names.as_ref(), first, &mut ordinal, out)
     }
 
-    /// Its rows living at the commit's hour: what a writer never stopped deletes next. The open
-    /// cards and guarantees are read from their tables when needed.
     fn prime(&mut self, hour: &Hour<'_>) {
         let events = hour.table(TableId::FeedEvents);
         self.living = events.rows().filter_map(|slot| events.key(slot)).collect();

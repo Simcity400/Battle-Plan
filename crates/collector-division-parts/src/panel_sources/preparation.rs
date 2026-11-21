@@ -1,5 +1,3 @@
-//! Range-owned native reads and certificates; a cold receiver registers here and is read like
-//! a changed one, and only a full table or a refusal keeps the ordered path. Row edits stay ordered.
 use super::*;
 
 #[cfg(test)]
@@ -21,22 +19,18 @@ pub(super) struct NativeReads {
     variant_indices: Map<(u64, usize), VariantObservation>,
     variants_used: usize,
     variant_refresh: Option<bool>,
-    /// The boundary's dirty held variants are read.
     dirty_read: bool,
 }
-/// A root's warm certificate with its registry slot, and its index in `roots`.
 #[derive(Default)]
 struct RootObservation {
     sequence: Option<((u64, u64), usize)>,
     read: Option<usize>,
 }
-/// A state's warm certificate with its registry slot, and its attrition read.
 #[derive(Default)]
 struct StateObservation {
     sequence: Option<((u64, u64), usize)>,
     read: Option<StateRead>,
 }
-/// A variant's certificate with its lifetime, and its index in `variants`.
 #[derive(Default)]
 struct VariantObservation {
     sequence: Option<((u64, u64), (u64, u64))>,
@@ -62,8 +56,6 @@ impl Default for RootRead {
         }
     }
 }
-/// Retained source rows are immutable between acquisitions. Every mutable
-/// borrow revokes the nested total, including capacity growth and partial reads.
 #[derive(Default)]
 pub(super) struct RootRows {
     rows: Vec<SharedDivisionPanelSourceRow>,
@@ -206,8 +198,6 @@ impl NativeReads {
         block: Option<(usize, bool)>,
     ) {
         self.membership_observation = None;
-        // A reset may retire every retained pointer. Selection observations are
-        // independently authenticated, but held row/membership hints cannot carry.
         if !store.can_settle_owned() {
             self.incomplete();
         }
@@ -255,14 +245,12 @@ impl NativeReads {
             stamp.is_some() && store.variant_observation != stamp
         }) {
             if store.variant_epoch != store.boundary.variant_epoch {
-                // A domain epoch change refreshes every held variant, each pool's here.
                 if let Some(pool) = pool {
                     for &(_, handle, pointer) in pool.variants.iter() {
                         self.capture_variant(memory, base, store, handle, pointer, false);
                     }
                 }
             } else if !std::mem::replace(&mut self.dirty_read, true) {
-                // Settlement refreshes only the boundary's dirty held variants.
                 for &pointer in &store.boundary.dirty {
                     if let Some(&handle) = store.variant_handles.get(&pointer) {
                         self.capture_variant(memory, base, store, handle, pointer, false);
@@ -302,8 +290,6 @@ impl NativeReads {
                 slot.insert(RootObservation::default())
             }
         };
-        // A cold receiver registers here; a full table keeps the ordered slow path.
-        // A slot hint never trusts a table pointer.
         let held = store.roots.get(&identity);
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = changes::register_at(receiver, hint);
@@ -337,8 +323,6 @@ impl NativeReads {
         read.certificate = certificate;
         read.ready = true;
         read.result = modifier_breakdown::source_nodes(memory, accumulator, |ordinal, node| {
-            // Staging shortage is not a native refusal. Before observing a
-            // refusal, ordinary ordered acquisition can still consume the tree.
             if engine_allocation::advisory(|| engine_allocation::reserve(&mut read.rows, 1))
                 .is_err()
             {
@@ -398,7 +382,6 @@ impl NativeReads {
             self.complete = false;
             return;
         };
-        // A held pool no writer touched since the hour's take keeps its certificate and slot.
         if let Some(held) = held.filter(|held| held.army == seed.pointer)
             && let Some(certificate) = held.certificate
             && quiet.quiet(pool, certificate.0)
@@ -648,9 +631,6 @@ impl NativeReads {
     }
 }
 
-/// The three attrition terms `cstate::movement_modifier` gives one key at a
-/// time. Its selection ignores the key and its lookup reads and validates the
-/// whole accumulator, so one selection and one full read serve all three.
 fn state_attrition(
     memory: &impl Memory,
     base: usize,

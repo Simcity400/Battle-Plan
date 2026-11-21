@@ -1,4 +1,3 @@
-//! Changed-object naval policy and work-order capture, seeded by existing worker censuses.
 pub mod bases;
 pub mod changes;
 pub mod forces;
@@ -10,8 +9,6 @@ use replay_data::rows::{TableId, TableRows};
 use replay_frame::frame::{TableInput, TableView};
 use std::sync::Arc;
 
-/// One worker's immutable table observations. A quiet observation shares the producer's exact
-/// committed allocation; no per-entity replay allocation is made each hour.
 #[derive(Clone)]
 pub struct Snapshot<const N: usize> {
     pub tables: [Result<Arc<TableRows>, &'static str>; N],

@@ -1,5 +1,3 @@
-//! Saved doctrine state in serializer order. Empty lists stay empty; optional
-//! selections and grant names retain their presence independently of bytes.
 use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

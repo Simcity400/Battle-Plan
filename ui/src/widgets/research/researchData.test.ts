@@ -23,7 +23,6 @@ test('a history reply is checked and its slots made ready to join reads to', () 
   const data = validateResearchReply(reply([entry('radio', 0, 10), entry('radar', 10, null)]));
   assert.deepEqual(data.history.slots[0].states, []);
   assert.deepEqual(data.history.slots[0].progress, []);
-  // Any number of rows: a long modded campaign is bounded only by the reply's own budget.
   assert.equal(validateResearchReply(reply(Array.from({ length: 5000 }, (_, at) => entry(`t${at}`, at * 2, at * 2 + 1)))).history.slots[0].entries.length, 5000);
   for (const bad of [
     reply([entry('radio', 0, null), entry('radar', 10, 20)]),

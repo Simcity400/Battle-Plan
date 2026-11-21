@@ -45,9 +45,6 @@ fn database(with_ocean: bool) -> TerrainDefinitions {
     }
 }
 
-/// 1 forest land, 2 sea in a region naming `Deep`, 3 sea in a region naming nothing, 4 a lake
-/// without a region, 5 land on the null terrain, 6 a province without a record, 7 land on a
-/// category whose colour does not read, 8 a lake in a deep-water region.
 fn sources_built(with_ocean: bool) -> Built {
     let database = database(with_ocean);
     let terrain = |province: u32| {
@@ -90,7 +87,6 @@ fn land_takes_its_category_and_water_its_regions_naval_terrain_or_ocean() {
     let built = sources_built(true);
     let layer = &built.layer;
     let color = |province: u32| layer.styles.get(&province).map(|style| style.color);
-    // Each component packs as the low byte of trunc(c * 255) in single precision.
     let forest = [89, 199, 85, 127];
     let deep = [2, 38, 150, 204];
     let ocean = [40, 83, 176, 204];
@@ -103,7 +99,6 @@ fn land_takes_its_category_and_water_its_regions_naval_terrain_or_ocean() {
         assert_eq!(color(refused), None);
         assert_eq!(layer.region_of[refused as usize], 0);
     }
-    // Every province is its own region.
     assert_eq!(layer.region_of, [0, 1, 2, 3, 4, 0, 0, 0, 8]);
     assert!(
         layer

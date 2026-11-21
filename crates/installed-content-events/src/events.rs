@@ -1,4 +1,3 @@
-//! Event and option tooltip content through the recorded stack.
 use crate::{
     ResolvedContent, ResolvedLayers,
     key_names::KeyNames,
@@ -26,18 +25,14 @@ pub struct Event {
     pub descriptions: Vec<Item>,
     pub picture: Vec<u8>,
     pub option_triggers: Vec<Vec<Item>>,
-    /// Any `original_recipient_only` gates the option on its read mode, even when
-    /// the boolean read refuses every value; `None` without the field.
     pub original_recipient_only: Vec<Option<bool>>,
     pub immediate: Vec<Item>,
     pub options: Vec<Vec<Item>>,
-    /// Option-name strings in the same order as `options`.
     pub option_names: Vec<Vec<u8>>,
     pub refused: Option<String>,
 }
 
 impl Event {
-    // Text and key share the last string field.
     fn title_key(item: &Item) -> &[u8] {
         crate::parser::c_string(
             item.value
@@ -76,17 +71,10 @@ impl Event {
     pub fn sole_description_key(&self) -> Result<Option<&[u8]>, String> {
         self.common_key(&self.descriptions, "description")
     }
-    /// A sole candidate bypasses its trigger. Identical candidate keys give
-    /// the same text regardless of trigger results or selection randomness.
     pub fn sole_title_key(&self) -> Result<Option<&[u8]>, String> {
         self.common_key(&self.titles, "title")
     }
 
-    /// A sole candidate bypasses its trigger. Otherwise evaluate all candidates
-    /// and fall back to the first when none pass. Differing eligible keys need
-    /// the transient selection seed. When every candidate names one key, a
-    /// trigger that cannot be decided leaves that key, with its reason kept for
-    /// text that reads what the triggers would have written.
     pub fn deterministic_title_key(
         &self,
         mut matches: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -103,7 +91,6 @@ impl Event {
         let common = self.sole_title_key().ok();
         let mut eligible = Vec::new();
         for item in &self.titles {
-            // Append each trigger block to the candidate's AND trigger in order.
             let triggers: Vec<_> = item
                 .value
                 .items()
@@ -143,12 +130,9 @@ impl Event {
     }
 }
 
-/// An event's title key: `None` for empty title text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TitleKey<'a> {
     pub key: Option<&'a [u8]>,
-    /// Why the candidates' triggers stopped short: the key stands, but the
-    /// scope state they write while evaluated is unknown.
     pub unsettled: Option<String>,
 }
 
@@ -167,8 +151,6 @@ enum Node {
     Mtth,
 }
 
-/// Namespace names compare without case. Suffixes reduce signed bytes
-/// with wrapping arithmetic and no digit validation.
 pub fn identifier_key(id: &[u8]) -> Result<Vec<u8>, String> {
     let id = crate::parser::c_string(id);
     let dot = id.iter().rposition(|byte| *byte == b'.').ok_or_else(|| {
@@ -218,9 +200,6 @@ impl Events {
     }
 }
 
-/// Event options retain order; immediate and option effect fields use the
-/// shared effect reader. Metadata is separate. Unknown descriptions remain
-/// named refusals while effect parsing retains its exact consumption.
 pub fn parse(bytes: &[u8], source: &str, names: &KeyNames) -> Events {
     read_events(bytes, names, None).selected(source)
 }
@@ -242,7 +221,7 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
     let mut lines = Vec::new();
     let read = native::read(
         bytes,
-        native::Mode::SkipMark, // Event-file lexer mode 1.
+        native::Mode::SkipMark,
         native::Top::File(Node::File),
         Some(names),
         &mut |node, field| match node {
@@ -252,13 +231,10 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                     | b"news_event"
                     | b"state_event"
                     | b"unit_leader_event"
-                    // Operative-leader events use the shared reader without subtype fields.
                     | b"operative_leader_event",
                 ) => {
                     let ordinal = lines.len();
                     lines.push(field.key.line);
-                    // Static files cannot define variables in skipped bodies;
-                    // only requested event ordinals acquire effect trees.
                     if wanted.is_some_and(|wanted| !wanted.contains(&ordinal)) {
                         return Shape::Skip;
                     }
@@ -274,7 +250,6 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                 Some(b"id") => Shape::One,
                 Some(b"title" | b"desc") if field.opens() => Shape::Object(Node::Title),
                 Some(b"title" | b"desc") => Shape::One,
-                // Immediate and after effects use the event scope mask.
                 Some(b"immediate" | b"after") => scope.map_or(Shape::Effect, Shape::EffectIn),
                 Some(b"option") => Shape::Object(Node::Option(scope)),
                 Some(b"trigger" | b"show_major") => Shape::Trigger,
@@ -295,8 +270,6 @@ fn read_events(bytes: &[u8], names: &KeyNames, wanted: Option<&BTreeSet<usize>>)
                 Some(b"trigger") => Shape::Trigger,
                 Some(b"ai_chance") => Shape::Object(Node::Mtth),
                 _ => {
-                    // Option effects use the event scope mask. Direct fields are supported;
-                    // nested value readers retain named scoped-object refusals.
                     let field = native::Field {
                         effect_scope: scope.or(field.effect_scope),
                         ..*field
@@ -337,7 +310,6 @@ fn string_field<'a>(fields: &'a [Item], key: &str) -> &'a [u8] {
 }
 
 fn option_name(fields: &[Item]) -> &[u8] {
-    // Option names use string reads, including the line-feed check.
     crate::parser::read_string(string_field(fields, "name"))
 }
 
@@ -358,8 +330,6 @@ impl EventRead {
         })?;
         let item = &mut read.items[item_index];
         let operative = item.keyword_is("operative_leader_event");
-        // Move the requested tree out of the read; cached events never retain
-        // a second copy of its effect bodies. Header-only candidates stay lazy.
         let fields =
             match std::mem::replace(&mut item.value, crate::parser::Value::Block(Vec::new())) {
                 crate::parser::Value::Block(fields) => fields,
@@ -480,7 +450,6 @@ impl EventRead {
                 continue;
             }
             let key = identifier_key(&id).unwrap_or_else(|why| {
-                // Bare IDs are legal definitions but not resolved by this tail.
                 if id.contains(&b'.') {
                     event.refused = Some(format!("{}: {why}", event.source));
                 }
@@ -499,8 +468,6 @@ impl EventRead {
     }
 }
 
-/// Only requested events acquire title/effect trees. The first lookup indexes
-/// event/option headers; subsequent ID aliases and option lookups share trees.
 pub struct LazyEvents {
     layers: EventLayers,
     cache: Mutex<Cache>,
@@ -526,7 +493,6 @@ impl Deref for EventLayers {
 struct Cache {
     index: Option<Observed<Result<Index, String>>>,
     events: BTreeMap<Vec<u8>, Observed<Result<Arc<Event>, String>>>,
-    // Retain full reads only for nested-variable files, to settle later headers.
     files: BTreeMap<ScriptPath, Observed<EventRead>>,
     trees: BTreeMap<EventRef, Observed<Result<Arc<Event>, String>>>,
 }
@@ -553,8 +519,6 @@ enum Header {
 }
 
 fn dynamic_headers(bytes: &[u8]) -> bool {
-    // A nested variable definition can change a later name or identifier.
-    // Only these files need the full native reader before the index is known.
     let tokens = native::lex(bytes, native::Mode::SkipMark).tokens;
     let mut depth = 0_usize;
     for pair in tokens.windows(2) {
@@ -571,8 +535,6 @@ fn dynamic_headers(bytes: &[u8]) -> bool {
 }
 
 fn read_headers(bytes: &[u8]) -> native::Read {
-    // Extend the existing header inventory, not the event grammar: effect
-    // bodies stay unread until a candidate event is requested.
     native::read(
         bytes,
         native::Mode::SkipMark,
@@ -644,8 +606,6 @@ impl Index {
             if let Ok(key) = identifier_key(string_field(fields, "id")) {
                 self.events.entry(key).or_default().push(reference.clone());
             }
-            // State events use a separate array; dependent-tooltip scanning
-            // visits the ordinary event array.
             if item.keyword_is("state_event") {
                 continue;
             }
@@ -655,8 +615,6 @@ impl Index {
                 .enumerate()
             {
                 let name = option_name(field.value.items().unwrap_or_default());
-                // Raw option names compare length and bytes without country or event-ID
-                // prefixes and without case folding.
                 self.options
                     .entry(name.to_vec())
                     .or_default()
@@ -674,7 +632,6 @@ impl LazyEvents {
         }
     }
 
-    /// Share the existing content owner, including its layer indexes and memos.
     pub fn from_content(content: Arc<ResolvedContent>) -> Self {
         Self {
             layers: EventLayers::Content(content),
@@ -686,14 +643,11 @@ impl LazyEvents {
         self.index_unless(cache, &AtomicBool::new(false))
     }
 
-    /// [`Self::index`], left unbuilt and unkept once `cancelled` while its files are read.
     fn index_unless(&self, cache: &mut Cache, cancelled: &AtomicBool) -> Result<(), String> {
         if cache.index.is_none() {
             let mut files = BTreeMap::new();
             let built = Observed::new(|| {
                 let mut index = Index::default();
-                // Prefetched files join before registration; duplicate event IDs
-                // retain separate references in registration order.
                 for path in self
                     .layers
                     .directory_files("events", ".txt")
@@ -759,9 +713,6 @@ impl LazyEvents {
         }
     }
 
-    /// Reads the trees of `references` not read yet. A static file is read once for them all;
-    /// `apart`, each event is walked from its bytes as its own lookup walks it, so another's body
-    /// can neither stop nor count against it.
     fn cache_trees<'a>(
         &self,
         cache: &mut Cache,
@@ -792,9 +743,6 @@ impl LazyEvents {
                 }
                 continue;
             }
-            // Static files are reader-walked only for the requested ordinals.
-            // Unrelated bodies are neither interpreted nor retained; a later
-            // novel request may walk that file again through the same reader.
             let read = Observed::new(|| {
                 let bytes = path
                     .read(&self.layers)
@@ -878,8 +826,6 @@ impl LazyEvents {
             if references.len() == 1 {
                 return Ok(event);
             }
-            // Preserve the existing ID-lookup refusal. Option lookup separately
-            // keeps every pointer in the native registration array.
             let mut event = (*event).clone();
             event.refused = Some(format!(
                 "{}: repeated event identifier {}; native registration order is not reconstructed",
@@ -893,10 +839,6 @@ impl LazyEvents {
         value
     }
 
-    /// Reads the events `ids` name, each file they lie in once and each event as its own lookup
-    /// ([`Self::get`]) reads it, so their lookups read no file and give what they would alone.
-    /// An id a lookup refuses before reading is left for it; nothing is read for no ids, and no
-    /// file once `cancelled`.
     pub fn prefetch<'i>(&self, ids: impl IntoIterator<Item = &'i [u8]>, cancelled: &AtomicBool) {
         let keys: Vec<Vec<u8>> = ids
             .into_iter()
@@ -913,7 +855,6 @@ impl LazyEvents {
         {
             let index = cache.index.as_ref().unwrap().get().as_ref().unwrap();
             for key in keys {
-                // A lookup refuses an unregistered namespace before reading any tree.
                 let registered = key
                     .iter()
                     .rposition(|byte| *byte == b'.')
@@ -937,9 +878,6 @@ impl LazyEvents {
         }
     }
 
-    /// Raw option-name candidates in registered event and option order.
-    /// The renderer skips candidates containing `event_option_tooltip` before describing.
-    /// Empty, bare, and non-normalizable event IDs do not alter this scan.
     pub fn options(&self, name: &[u8]) -> Result<Vec<(Arc<Event>, usize)>, String> {
         let name = crate::parser::c_string(name);
         let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());

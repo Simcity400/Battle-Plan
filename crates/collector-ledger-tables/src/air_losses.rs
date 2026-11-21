@@ -1,5 +1,3 @@
-//! Admitted worker drain. Each row retains a native event's own hour;
-//! projection uses only frame-owned increments and never live pointers.
 use crate::{
     clock::qpc,
     table_capture::{CaptureRows, grow_vec},

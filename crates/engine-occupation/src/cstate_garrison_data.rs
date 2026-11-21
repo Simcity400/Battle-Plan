@@ -1,33 +1,17 @@
-//! State-garrison operands retain full i64 fixed-point scalars. Assigned
-//! manpower is an embedded container: its entry-array field is not a
-//! pointer to a separate manpower pool.
 
 use engine_sites::Rva;
-/// Primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_0d78);
-/// Garrison allocation size.
 pub const SIZE: usize = 0x108;
-/// CStateGarrisonData child pointer vector.
 pub const CHILDREN: usize = 0x30;
-/// Owning state pointer.
 pub const STATE: usize = 0x50;
-/// Owning occupation-data pointer authenticated against containing table.
 pub const OCCUPATION_DATA: usize = 0x58;
-/// Serialized token-0x2eb7 byte; gameplay meaning unresolved.
 pub const SERIALIZED_FLAG_CANDIDATE: usize = 0x60;
-/// Embedded assigned-manpower container.
 pub const ASSIGNED_MANPOWER: usize = 0x68;
-/// Required manpower, signed i32.
 pub const REQUIRED_MANPOWER: usize = 0x88;
-/// CStateGarrisonData local equipment allocation pool.
 pub const LOCAL_EQUIPMENT: usize = 0x90;
-/// CStateGarrisonData required-equipment pool.
 pub const REQUIRED_EQUIPMENT: usize = 0xd0;
-/// Strength ratio, i64/100000.
 pub const STRENGTH_RATIO: usize = 0xf0;
-/// Required garrison, i64/100000.
 pub const GARRISON_REQUIRED: usize = 0xf8;
-/// Fixed-point denominator for both scalar qwords.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
 use crate::{
@@ -45,9 +29,7 @@ pub struct Row {
     pub required_manpower: i32,
     pub strength_ratio: i64,
     pub garrison_required: i64,
-    /// Stored byte indicating whether required strength is negative.
     pub serialized_flag: u8,
-    /// Owned arena span; None refuses this state's equipment only.
     pub equipment: Option<(usize, usize)>,
     pub equipment_failure: Option<&'static str>,
 }

@@ -5,7 +5,6 @@
 .decorated-division-text { display: flex; flex-direction: column; min-width: 0; line-height: var(--type-md); }
 .decorated-division-text > span { overflow: hidden; text-overflow: ellipsis; }
 .decorated-division-text .table-country { font-size: var(--type-xs); color: var(--muted); }
-/* One line: each chip shown is whole or ends in an ellipsis; a chip that does not fit at its least width wraps out of view. */
 .decorated-medals { display: inline-flex; flex-wrap: wrap; align-items: center; align-content: flex-start; gap: var(--space-1); max-width: 100%; min-width: 0; max-height: 1lh; overflow: hidden; }
 .decorated-medals > b { flex: none; font-variant-numeric: tabular-nums; font-weight: 600; margin-right: var(--space-1); }
 .decorated-medal-chip { flex: 1 1 0; min-width: 2.5em; max-width: max-content; overflow: hidden; text-overflow: ellipsis; padding: 0 var(--space-1); border-radius: var(--r-xs); background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--muted); font-size: var(--type-xs); white-space: nowrap; }

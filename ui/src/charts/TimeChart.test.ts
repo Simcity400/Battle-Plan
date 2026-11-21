@@ -10,7 +10,6 @@ import type { TooltipContent } from './tooltip';
 
 type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
 
-/** An element's style as the chart reads and writes it. */
 function styleOf() {
   const values = new Map<string, string>();
   return { getPropertyValue: (name: string) => values.get(name) ?? '', setProperty: (name: string, value: string) => { values.set(name, value); } };
@@ -64,8 +63,6 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   const host = globalThis as typeof globalThis & { __timeChartObserver?: typeof fixture };
   host.__timeChartObserver = fixture;
   const globals = new Map(['window', 'ResizeObserver', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  // Replace the hook dispatcher, frame scheduler and drawing surface only. The
-  // component's real event handlers, frame resolution and lifecycle effects run.
   const replacements: Record<string, string> = {
     '/charts/scheduler.ts': 'export const scheduler = globalThis.__timeChartObserver.scheduler;',
     '/charts/liveMotion.ts': 'export const useMotionNow = () => given => given;',
@@ -195,7 +192,6 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     props.onHover = observe('E'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['E', 37]);
     props.onHover = undefined; canvas = render(); assert.deepEqual(seen.at(-1), ['E', null], 'normal removal clears its consumer');
     props.onHover = observe('F'); canvas = render(); draw(); assert.deepEqual(seen.at(-1), ['F', 37]);
-    // A click picks at once, with no wait for a double-click; its second press never picks again.
     const picked: number[] = [];
     props.onPick = hour => { picked.push(hour); }; canvas = render(); draw();
     const press = (detail: number) => {
@@ -204,7 +200,6 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     };
     press(1); assert.deepEqual(picked, [37]);
     press(2); assert.deepEqual(picked, [37]);
-    // The drawn range reaches its consumer only when it, or the consumer, changes.
     const views: unknown[] = [];
     props.onViewChange = x => { views.push(x); }; canvas = render(); draw(); draw(); canvas = render(); draw();
     assert.deepEqual([...views], [[0, 100]]);
@@ -238,7 +233,6 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     assert.equal(fixture.shownTooltip, null, 'nor, before its reply, one shown after its key');
     fixture.heldTooltip = null;
     fixture.unmount(); assert.deepEqual(seen.at(-1), ['F', null]);
-    // An asynchronous prepared extent must settle to the exact same scale as an immediate legacy extent.
     fixture.reducedMotion = false;
     props.axes = { ...props.axes, yMin: null, yMax: null };
     let balanceExtent: [number, number] | null = null;

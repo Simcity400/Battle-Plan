@@ -1,6 +1,3 @@
-//! Daily facility observations. Only the selected building, active project,
-//! assigned scientists and the project's requested modifier keys are visited.
-//! These are dated numeric getter results, not copies of modifier source trees.
 use crate::{Memory, ccountry, cpdx_array::Array, nproject_cprogram as program, read};
 use engine_characters::{cscientist, scientist_skill_entry};
 use engine_native::{
@@ -48,9 +45,7 @@ const ONE: i64 = 100_000;
 pub struct Operand {
     pub kind: u32,
     pub scientist: u64,
-    /// A specialization or trait token; zero for aggregate sources.
     pub token: u32,
-    /// Native modifier index for country/state/trait sources, otherwise zero.
     pub key: u32,
     pub ordinal: u32,
     pub assignment: u32,
@@ -122,7 +117,6 @@ fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-/// Average health retains the native partial-level rounding and signed widths.
 pub fn health(level: i16, healthy: i16, partial: i64) -> i64 {
     if level == 0 {
         return 0;
@@ -160,8 +154,6 @@ fn skill_level(
     Ok(0)
 }
 
-/// `assignments` is the already acquired primary/support arena, not another
-/// native membership walk. Emit rolls back as an independent child on failure.
 #[allow(clippy::too_many_arguments)]
 pub fn observe(
     memory: &impl Memory,
@@ -266,7 +258,6 @@ pub fn observe(
     output(BUILDING, 0, 0, 0, 0, 0, building_factor)?;
     let supply = word::<i64>(memory, program_pointer, SUPPLY_RATIO)?;
     let minimum = global::<i64>(memory, base, MINIMUM_SUPPLY_RVA)?;
-    // Keep the getter's ordered comparisons even for a modded minimum above one.
     let supply = if supply < minimum {
         minimum
     } else {
@@ -345,7 +336,6 @@ pub fn observe(
             output(STATE, 0, 0, key, ordinal, 0, state)?;
         }
     }
-    // Resolve each assigned scientist once, and reuse its role/skill/trait arrays.
     for ordinal in 0..assignment_count {
         if specialization.is_none() && specializations.count == 0 {
             continue;
@@ -864,8 +854,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [40000, 40000]
         );
-        // A complete roster without the requested specialization supplies the
-        // getter's zero level and keeps all independent facility factors.
         memory.array(0xd000 + cscientist::SKILLS, 0xc100, 0);
         let mut missing = Vec::new();
         observe(

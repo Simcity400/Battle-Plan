@@ -66,8 +66,6 @@ fn keywords_scans_and_resource_registry_control_recovery() {
     assert!(a.always_shown);
     assert_eq!(a.tags, ["a", "b"]);
     assert_eq!(a.local_resources, [("mineral_x".into(), 200_000)]);
-    // Unknown spawn fields consume one token: the inner max is exposed
-    // and its close terminates this spawn, so max=99 is not a spawn field.
     assert_eq!(buildings.spawn_points["s"].max, 7);
     assert!(
         super::parse(b"buildings={a={local_resources_x=1}}", &KeyNames::default())
@@ -148,9 +146,6 @@ fn slot_lookup_folds_ascii_without_changing_authored_names() {
 fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // Lookup returns the first entry equal under the ASCII fold. Generated
-    // buckets precede explicit buckets, and an explicit bucket sharing a
-    // building token is discarded. These resolve to the generated `Port` bucket.
     for source in [
         b"buildings={Port={} port={} depot={}}".as_slice(),
         b"buildings={Port={} depot={}} spawn_points={port={}}",
@@ -164,8 +159,6 @@ fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
         }
         assert!(matches!(buildings.slot("depot"), Some(Slot::Bucket(_))));
     }
-    // A differing repeat of one token, spelled alike or not, is several records of which the
-    // bucket's content is unverified; so are two differing explicit buckets of one token.
     for source in [
         b"buildings={depot={}} spawn_points={Port={} port={}}".as_slice(),
         b"buildings={port={} port={show_on_map=1} depot={}}",
@@ -180,7 +173,6 @@ fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
         }
         assert!(matches!(buildings.slot("depot"), Some(Slot::Bucket(_))));
     }
-    // Only ASCII folds: these are two buckets.
     let buildings = parse("buildings={Ä={} ä={}}".as_bytes()).unwrap();
     assert!(matches!(buildings.slot("Ä"), Some(Slot::Bucket(spawn)) if spawn.name == "Ä"));
     assert!(matches!(buildings.slot("ä"), Some(Slot::Bucket(spawn)) if spawn.name == "ä"));
@@ -306,7 +298,6 @@ fn failed_bool_scan_retains_the_constructor_value() {
     assert_eq!(bunker.raid_refused, None);
     assert_eq!(bunker.tags, ["a"]);
     assert!(!bunker.air_base);
-    // Script numbers read natively: a leading zero is octal.
     assert_eq!(
         buildings.types["fort"].local_resources,
         [("mineral_x".to_owned(), 800_000)]
@@ -351,7 +342,6 @@ fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
     .unwrap();
     let flags = |name: &str| buildings.factory_flags[name];
     assert!(flags("arms").military() && !flags("arms").naval() && !flags("arms").civilian());
-    // The last value of a key in one declaration is the one read.
     assert_eq!(
         flags("mod_works"),
         FactoryFlags {
@@ -370,15 +360,12 @@ fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
         buildings.ambiguous_factory_types,
         BTreeSet::from(["odd".to_owned(), "repeat".to_owned()])
     );
-    // The game's `%i` scan stores the leading integer of a decimal.
     let decimal =
         parse(b"buildings={arms={military_production=1.5 rocket_production=2.5}}").unwrap();
     assert_eq!(decimal.factory_flags["arms"].military_production, 1);
     assert_eq!(decimal.factory_flags["arms"].rocket_production, 2);
 }
 
-/// Factory flags reach the merged content from every building file, and a
-/// type declared with different flags in two files is ambiguous.
 #[cfg(feature = "test-support")]
 #[test]
 fn factory_flags_merge_across_building_files() {
@@ -449,8 +436,6 @@ fn entity_names_and_variants_use_the_content_level_denominator() {
     assert_eq!(naval.variant_for_level(4, 10), 1);
     assert_eq!(buildings.types["workshop"].variant_for_level(20, 15), 0);
 }
-/// Bucket names are lexer tokens: redirects, building/bucket collisions, repeats and
-/// slot lookups all match under the ASCII case fold, and store the declared spelling.
 #[test]
 fn bucket_references_match_under_the_lexers_fold() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -464,16 +449,13 @@ fn bucket_references_match_under_the_lexers_fold() {
         spawn_points={shared={} Port={} shared_too={} Shared_Too={max=2}}",
     )
     .unwrap();
-    // The redirect binds to `shared` by token, and marks it a port.
     assert_eq!(
         buildings.types["port"].spawn_point.as_deref(),
         Some("shared")
     );
     assert!(buildings.spawn_points["shared"].is_port);
-    // `Port` is the `port` building's token: it is dropped, so `dock` does not redirect.
     assert!(!buildings.spawn_points.contains_key("Port"));
     assert_eq!(buildings.types["dock"].spawn_point, None);
-    // Two spellings of one bucket token, declared differently, are ambiguous.
     assert_eq!(
         buildings.types["hq"].spawn_point.as_deref(),
         Some("Shared_Too")
@@ -482,7 +464,6 @@ fn bucket_references_match_under_the_lexers_fold() {
         buildings.ambiguous_slots,
         BTreeSet::from(["Shared_Too".to_owned()])
     );
-    // A slot name reaches its bucket under the fold, the generated bucket first.
     let reached = |name| buildings.slot(name).map(|slot| slot.spawn().name.as_str());
     assert_eq!(reached("SHARED"), Some("shared"));
     assert_eq!(reached("Port"), Some("port"));
@@ -494,8 +475,6 @@ fn bucket_references_match_under_the_lexers_fold() {
     assert_eq!(reached("absent"), None);
 }
 
-/// A type declared twice differently keeps both declarations, so a consumer can refuse it
-/// even when the last declaration drops the classification the first had.
 #[test]
 fn a_differing_repeat_keeps_every_declaration() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -527,8 +506,6 @@ fn empty_replacement_files_contribute_no_buildings() {
     ] {
         assert_eq!(parse(input).unwrap(), Buildings::default());
     }
-    // Reading continues to the end of the text: an unclosed block or a scalar
-    // where a block belongs declares nothing.
     for input in [b"buildings={".as_slice(), b"buildings=not_a_block"] {
         assert!(parse(input).unwrap().types.is_empty());
     }
@@ -719,7 +696,6 @@ fn infrastructure_is_the_first_flagged_type_and_reads_its_level_cap_forms() {
     assert_eq!(buildings.types["rails"].exclusive_with, [b"canal".to_vec()]);
     let plain = &buildings.types["plain"];
     assert!(!plain.infrastructure && !plain.shares_slots && plain.group_by.is_none());
-    // A group key or excluded name that is not text is kept as stored, never dropped.
     let unheld = parse(
         b"buildings={roads={infrastructure=yes level_cap={group_by=pa\xe9ths exclusive_with={\xe9}}}}",
     )
@@ -735,7 +711,6 @@ fn infrastructure_is_the_first_flagged_type_and_reads_its_level_cap_forms() {
         parse(b"buildings={plain={}}").unwrap().infrastructure(),
         Ok(None)
     );
-    // A differing repeat that declares the flag has no proven record order.
     let repeated =
         parse(b"buildings={roads={} roads={infrastructure=yes} rails={infrastructure=yes}}")
             .unwrap();

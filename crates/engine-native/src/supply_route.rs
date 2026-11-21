@@ -1,23 +1,15 @@
-//! Selected supply-route record.
 use crate::{Memory, cpdx_array::Array, read, supply_parent_map::Map};
 use engine_sites::Rva;
 
-/// Supply-system outer-map data header: data, count and mask.
 pub const ROUTE_MAP: usize = 0xf0;
-/// Outer bucket stride 0x30, an occupied marker, the key, then the value header (`INNER_HEADER`).
 pub const OUTER_STRIDE: usize = 0x30;
 pub const INNER_HEADER: usize = 0x18;
-/// Inner bucket stride 0xa0, an occupied marker, the key, then the value (`VALUE`).
 pub const INNER_STRIDE: usize = 0xa0;
 pub const VALUE: usize = 0x10;
-/// Route province-array data and count.
 pub const PATH: usize = 0;
-/// Route source/destination, u16; `FROM` distinguishes a stored route.
 pub const FROM: usize = 0x80;
 pub const TO: usize = 0x82;
-/// A nonzero `BREAK` byte flushes and reverses the accumulated land portion.
 pub const BREAK: usize = 0x87;
-/// Static empty route returned when either map key is missing.
 pub const EMPTY_RVA: Rva = Rva(0x033e_af50);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -29,8 +21,6 @@ pub struct Row {
     pub len: usize,
 }
 
-/// Successful observations from one root walk, keyed by parent/province.
-/// Every output retains its own row and path occurrence.
 #[derive(Default)]
 pub(crate) struct Memo {
     edges: std::collections::HashMap<(u32, u32), Row>,
@@ -77,17 +67,10 @@ impl Memo {
     }
 }
 
-/// Capture only the immediate parent edge. All nodes are recorded, so consumers
-/// follow the recorded parent graph (100-iteration native limit), sharing each
-/// prefix rather than acquiring a full capital path separately for every hub.
-/// The route map of one supply root; its header is the same for every node
-/// of the walk, so it is read once.
 pub(crate) fn read_outer(memory: &impl Memory, root: usize) -> Result<Map, &'static str> {
     Map::read(memory, root + ROUTE_MAP, OUTER_STRIDE, 4)
 }
 
-/// Successful parent-to-inner-header observations under the current root.
-/// A vacant reader retains only its last-parent observation without allocation.
 #[derive(Default)]
 pub(crate) struct InnerMemo {
     parent: Option<u32>,
@@ -130,7 +113,6 @@ impl InnerMemo {
             self.map = map;
             return Ok(map);
         }
-        // Select the original outer bucket before its inner header.
         let map = match outer.find(memory, parent)? {
             Some(bucket) => Some(Map::read(memory, bucket + INNER_HEADER, INNER_STRIDE, 4)?),
             None => None,
@@ -183,7 +165,6 @@ pub(crate) fn read_edge_buffer(
         ..Row::default()
     };
     let required = if from == 0 {
-        // Native builds a synthetic naval segment when no stored route exists.
         0
     } else {
         if u32::from(from) != parent || u32::from(to) != province {
@@ -209,7 +190,6 @@ pub(crate) fn read_edge_buffer(
 mod tests {
     use super::*;
 
-    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
     fn route_memo_retains_original_edges_and_clears_each_walk() {
         let mut memo = Memo::try_with_scratch().unwrap();
@@ -234,7 +214,6 @@ mod tests {
         assert_eq!(Memo::default().allocated_bytes(), 0);
     }
 
-    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
     fn parent_memo_retains_observations_and_reauthenticates_each_walk() {
         let mut bytes = [0; 1024];

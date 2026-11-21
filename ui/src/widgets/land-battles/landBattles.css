@@ -1,4 +1,3 @@
-/* Land battle rows: built from the log kit's rows, values, tags and flags. */
 .lb-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; }
 .lb-cells { display: contents; cursor: pointer; }
 .lb-cells > * { min-width: 0; }
@@ -36,7 +35,6 @@
 .lb-result .lb-side-name { font-weight: 600; }
 .lb-won { flex: none; color: var(--muted); font-size: var(--type-xs); font-weight: 400; }
 
-/* Narrow widgets fold names into flags; the hover keeps them. */
 @container (max-width: 640px) {
   .lb-side .lb-side-name, .lb-result .lb-side-name { display: none; }
 }
@@ -44,7 +42,6 @@
   .lb-place small, .lb-won { display: none; }
 }
 
-/* The opened battle. */
 .lb-drill { display: flex; flex-direction: column; gap: var(--space-3); padding: 0 var(--space-4) var(--space-4); }
 .lb-drill-facts { margin: 0; color: var(--muted); font-size: var(--type-sm); }
 .lb-drill-sides, .lb-designs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-5); }

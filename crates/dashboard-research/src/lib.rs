@@ -1,4 +1,3 @@
-//! Research-history products over the recording's research slots and assignments.
 
 #[cfg(test)]
 #[global_allocator]

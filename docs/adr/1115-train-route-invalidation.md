@@ -1,0 +1,11 @@
+# 1115. Reuse train presentation across incremental plans
+
+The train layer separates the viewing country's route and departure plan from the rendered fleet, timetable and random stream. Ordinary playback hands presentation across plans so changing a weight does not restart the fleet. A seek or continuity reset starts presentation from empty. Hidden trains declare nothing. A perspective change instead rebuilds the plan for the selected country. The window takes that country from vision while the proof can supply it directly.
+
+The worker owns table copies and folds the queued steps before making a plan. Batches carry the newest values for each changed slot and retain the old values by key to recognize moves and deletion. The frame takes a plan once its hour has been applied, and a whole settle requires the applied hour's plan. A void step resets the worker's tables to the applied hour so a row unique to a discarded future step cannot affect a later plan. The frame reads no row for ordinary train updates and drops replaced plans on the worker.
+
+The worker keeps complete plan-read cells for SupplyNodes owned by the plan's country. Other countries contribute census cells for synthetic naval breaks. Country link and census changes can therefore alter a route outside the plan's country. A supply-only change can update weights without rebuilding every walk, while a newly weighted node does need a walk and curve. Preserved walks retain their read dependencies. Cached curves are dropped only where a changed network or a redrawn rail strip reaches the path. A refused plan has no read set to validate against and is rebuilt on change.
+
+The plan reacts to status classes in addition to row changes. A status-only batch can require publication, while sample times and truncated-row counts alone do not invalidate the plan. Decode copied opaque cells using the writer's row format. The stepped proof compares plan value, age and each batch's included steps. In particular, a worker that is behind can fold several steps into one plan, but a published plan covers every step already applied when that build began.
+
+[Train layer](../../crates/viewer-playback/src/layers/trains.rs) · [Plan maker](../../crates/viewer-playback/src/layers/trains/maker.rs) · [Store](../../crates/viewer-playback/src/layers/trains/store.rs)

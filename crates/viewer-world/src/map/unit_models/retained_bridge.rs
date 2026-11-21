@@ -1,4 +1,3 @@
-//! A lazy successful conventional census, keyed only by held input views.
 use super::*;
 use replay_data::rows::TableId;
 use viewer_foundation::map::memo::Keyed;

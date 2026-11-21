@@ -1,8 +1,6 @@
 use super::super::production_rest_test_kit as kit;
 use super::*;
 
-/// Hold the worker's staging lock until the callback has actually tried it.
-/// Release it before joining: production holders never wait for a callback.
 pub(super) fn with_store_contended<R: Send>(callback: impl FnOnce() -> R + Send) -> R {
     static WAIT: OnceLock<std::sync::Barrier> = OnceLock::new();
     fn waiting() {
@@ -150,7 +148,6 @@ fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
         }
     }
     let value = snapshot(&World(&bytes), 0, 7, kit::VARIANT, false).unwrap();
-    // The interned source keeps the value read, whatever the game writes after.
     put(&mut bytes, 0x9308, &99_000_i64.to_le_bytes());
     let state = value.definition.design.require("design").unwrap();
     assert_eq!(state.named_bonuses, [17, 7, u32::MAX, 7]);
@@ -259,13 +256,10 @@ fn cold_and_post_gap_keyframes_publish_fresh_designs_or_named_refusals() {
         for (table, value) in TABLES.into_iter().zip(captured.table_inputs(None)) {
             refused.tables[table.index()] = value;
         }
-        // The same ordinary encoder used by the spool rejects missing fields;
-        // a cold hook refusal must stay an explicit table verdict instead.
         replay_frame::frame::FrameEncoder::new()
             .encode_input(refused, true)
             .unwrap();
 
-        // Model the worker's successful three-certificate baseline handoff.
         captured.variants.baseline_admitted = true;
         captured.variants.dictionary =
             Some(Arc::new(rows::TableRows::VariantBonusSnapshots(vec![
@@ -788,8 +782,6 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
         .watched
         .contains_key(&destination);
 
-    // The rejected writer enters while the move has retired its receiver and
-    // stores only after the move has rebound it.
     let scalar_pause = Barrier::new(2);
     let scalar_args = [destination, &scalar_pause as *const Barrier as usize, 0, 0];
     let scalar = std::thread::spawn(move || {
@@ -810,8 +802,6 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
         .watched
         .contains_key(&destination);
     let before_store_missed = MISSED.swap(false, Ordering::AcqRel);
-    // Discard the move's earlier verdict/marks to prove the rejected writer
-    // still marks its rebound saved receiver after its original returns.
     repair::take(&mut Batch::empty()).unwrap();
     STORE
         .get()
@@ -833,7 +823,6 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
     {
         let store = STORE.get().unwrap().lock().unwrap();
         assert_eq!(store.batch.failure, None);
-        // Only the move's two tombstones; the rejected writer left a mark, not an event.
         assert_eq!(store.batch.events.len(), 2);
         assert!(store.batch.events.iter().all(|event| event.removed));
         assert!(repair::pending());
@@ -850,7 +839,6 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
         [changes[0].variant, changes[1].variant],
         [registry[0].id, registry[1].id]
     );
-    // The rebound receiver is read after the rejected store.
     assert_eq!(changes[2].variant, registry[1].id);
     let snapshot = changes[2].snapshot.as_ref().unwrap();
     assert_eq!(snapshot.definition.design.require("design").unwrap().highlight, 1);
@@ -1093,7 +1081,6 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
                 })
                 .collect();
             if hour == 4 {
-                // A later good occurrence must not hide an incomplete earlier one.
                 captured.rows[0].snapshot = None;
             }
             captured.outcome = Outcome::Rows { len: 2 };
@@ -1123,8 +1110,6 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
                         if Arc::ptr_eq(rows, optimized.shared_baseline(rows.table()).unwrap())));
                 }
             }
-            // The forced projection uses the existing complete materialization,
-            // while encoding still uses the same requested frame cadence.
             let full = Projection::new(&reference, 1, hour, true, &scratch);
             let expected = project(&captured, Some(&full));
             let mut next = input(hour);
@@ -1138,7 +1123,6 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
             for (table, (actual, expected)) in
                 TABLES[3..7].iter().zip(actual.into_iter().zip(expected))
             {
-                // Daily complete inputs enter the real spool's recovery cache.
                 next.tables[table.index()] = shared(actual);
                 control.tables[table.index()] = shared(expected);
             }
@@ -1352,7 +1336,6 @@ fn a_flags_row_naming_flags_its_design_holds_stays_out_of_the_table() {
     captured.outcome = Outcome::Rows { len: history.len() };
     let scratch = crate::projection::ProjectionScratch::default();
     let projection = Projection::new(&encoder, 1, 1, false, &scratch);
-    // With no starting definitions, only a row repeating its design's change before it is dropped.
     for (projection, kept) in [(Some(&projection), &[1, 3, 5][..]), (None, &[0, 1, 3, 5][..])] {
         let kept: Vec<_> = kept.iter().map(|&at: &usize| history[at].clone()).collect();
         assert!(

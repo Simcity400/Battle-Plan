@@ -1,5 +1,3 @@
-//! Flat snapshots assembled from writer-certified owner inventories. The
-//! existing overview visit lends authenticated countries and diplomacy roots.
 use collector_observers::wargoal_changes as changes;
 use engine_native::{Memory, ccountry, cwar_goal::inventory::Inputs, walk::Outcome};
 use replay_data::rows::{self, tables};
@@ -40,8 +38,6 @@ impl Captured {
             + self.targets.capacity() * size_of::<rows::WargoalTargetRow>()
             + self.justifications.capacity() * size_of::<rows::WargoalJustificationRow>()
     }
-    /// Scope the store to the complete existing census. No live pointer is
-    /// followed after this acquisition; only the flat owned rows leave it.
     pub fn visit_owners<R>(
         &mut self,
         memory: &impl Memory,
@@ -96,7 +92,6 @@ impl Captured {
                 });
                 let carry = parts.iter().all(|part| *part);
                 if !carry {
-                    // Lost observation must not select an hourly full scan.
                     if certificate.is_none() && owner.country != 0 && !force_full {
                         return Err("war-goal writer certificate unavailable");
                     }

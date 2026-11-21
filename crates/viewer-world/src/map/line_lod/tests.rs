@@ -9,7 +9,6 @@ fn map_camera(height: f32) -> Camera {
 fn the_coarse_level_starts_where_a_tolerance_is_under_the_largest_shift_a_pixel_allows() {
     let camera = map_camera(1000.0);
     let at_1080 = threshold_height(&camera, 1080);
-    // 0.5 world units over 0.3 px, through the map lens's 0.785 rad field of view.
     assert!((at_1080 - 2174.0).abs() < 0.5, "{at_1080}");
     assert!((threshold_height(&camera, 2160) - 2.0 * at_1080).abs() < 1e-2);
     let world_per_pixel = 2.0 * at_1080 * (Lens::MAP.fov_y * 0.5).tan() / 1080.0;
@@ -19,7 +18,6 @@ fn the_coarse_level_starts_where_a_tolerance_is_under_the_largest_shift_a_pixel_
     assert!(coarse(&map_camera(at_1080 + 1.0), [1920, 1080]));
     assert!(!coarse(&map_camera(at_1080 - 1.0), [1920, 1080]));
     assert!(!coarse(&map_camera(150.0), [1920, 1080]));
-    // At 2160 lines the game's highest camera, 3000, never reaches it.
     assert!(!coarse(&map_camera(3000.0), [3840, 2160]));
 }
 

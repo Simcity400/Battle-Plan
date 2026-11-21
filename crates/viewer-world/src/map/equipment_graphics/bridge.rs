@@ -1,9 +1,3 @@
-//! Replay and matching-content operands for conventional land equipment models.
-//!
-//! `legacy` implements the native candidate law. This bridge joins the complete
-//! saved variant census, each country's three recorded rosters (primary,
-//! foreign and stored best-variant candidates), upgrade bytes and
-//! runtime country references to authored equipment definitions.
 
 use replay_frame::frame::kept;
 use std::collections::BTreeMap;
@@ -32,12 +26,10 @@ pub struct Prepared<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Census {
-    /// Indexed by the complete raw definition census, including invalid rows.
     states: Vec<VariantState>,
     invalid_by_archetype: BTreeMap<String, usize>,
     invalid_unknown: Option<usize>,
     by_handle: BTreeMap<u64, usize>,
-    /// Native-order indices, including repeated variant membership.
     available: BTreeMap<(u32, u8), Vec<usize>>,
     links: BTreeMap<u32, u32>,
 }
@@ -63,32 +55,22 @@ impl Variants<'_> {
     }
 }
 
-/// A census entry a model selection read.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum CensusRead {
-    /// Whether the census could be read, or why not.
     Census,
-    /// The first definition of no known archetype.
     Unknown,
-    /// The first invalid definition of an archetype.
     Archetype(String),
-    /// A country reference's canonical slot.
     Link(u32),
-    /// A canonical slot's availability list of one kind.
     List(u32, u8),
-    /// A variant handle's entry.
     Handle(u64),
 }
 
 impl kept::Grouped for CensusRead {
-    /// The census is rebuilt whole; its entries are asked about every hour.
     fn table(&self) -> Option<replay_data::rows::TableId> {
         None
     }
 }
 
-/// Owned successful census. Only scalar joins and authored strings survive;
-/// current country, script limits and selected-model answers are never stored.
 #[derive(PartialEq)]
 pub(crate) struct Retained {
     variants: Arc<[OwnedVariant]>,
@@ -161,7 +143,6 @@ impl Retained {
         })
     }
 
-    /// Whether `read` reads the same in `other` as here.
     pub(crate) fn same_read(&self, other: &Self, read: &CensusRead) -> bool {
         fn state(census: &Retained, index: usize) -> Result<&OwnedVariant, &str> {
             match &census.data.states[index] {
@@ -243,18 +224,14 @@ impl VariantState {
     }
 }
 
-/// The stored best-variant candidate roster.
 const BEST_CANDIDATES: u8 = 2;
 
 impl<'a> Prepared<'a> {
     #[cfg(test)]
     pub(crate) fn comparison_state(&self) -> String {
-        // This census contains only integer operands and strings, no floats.
         format!("{:?}|{:?}", (0..self.variants.len()).map(|index| self.variants.get(index)).collect::<Vec<_>>(), self.data)
     }
 
-    /// The native A/B roster for the template fallback. Invalid definitions for
-    /// any required archetype make the figure unknown.
     pub(crate) fn no_pair_variants(
         &self,
         country_ref: u32,
@@ -302,7 +279,6 @@ impl<'a> Prepared<'a> {
         self.listed(country_ref, 0)
     }
 
-    /// The country's recorded best-variant candidates.
     pub(crate) fn best_candidates(
         &self,
         country_ref: u32,
@@ -331,7 +307,6 @@ impl<'a> Prepared<'a> {
         self.canonical_slot(reference)
     }
 
-    /// Only complete tables establish a complete model census.
     pub fn read(frame: &'a DecodedFrame, content: &'a Content) -> Result<Self, String> {
         let variants = complete::<tables::VariantDefinitions>(frame)?;
         let upgrades = complete::<tables::VariantUpgrades>(frame)?;
@@ -436,9 +411,6 @@ impl<'a> Prepared<'a> {
         })
     }
 
-    /// Return the displayed entity only when the recorded and authored inputs
-    /// determine one. The current `country_ref` can differ from the variant's
-    /// creator and from the roster owner used earlier to choose this model.
     pub fn resolve(
         &self,
         country_ref: u32,
@@ -497,8 +469,6 @@ impl<'a> Prepared<'a> {
                     .to_owned());
             }
         }
-        // An invalid definition of another archetype cannot reach this
-        // subunit's candidates; one of its own archetype refused above.
         let ready = |kind: u8| -> Vec<_> {
             self.data
                 .available
@@ -558,7 +528,6 @@ impl<'a> Prepared<'a> {
     }
 }
 
-/// A key's authored model operands: an earlier census's success, or derived now.
 enum Authored<'a> {
     Held(model_facts::Fact),
     Derived(EquipmentModel<'a>),
@@ -573,7 +542,6 @@ fn build_variant<'a>(
     facts: &mut model_facts::View<'a>,
 ) -> Result<legacy::Variant<'a>, String> {
     let key = content.equipment_key(tokens, row)?;
-    // Only both authored calls succeeding can bypass their original validation order.
     let authored = match facts.get(key) {
         Some(fact) => Authored::Held(fact),
         None => Authored::Derived(
@@ -583,9 +551,6 @@ fn build_variant<'a>(
         ),
     };
     let creator_reference = row.creator_link as i32;
-    // A nonpositive reference has no canonical country object. Give a
-    // negative sentinel its own slot to avoid falsely aliasing another
-    // nonpositive reference through canonical slot zero.
     let creator_slot = if creator_reference > 0 {
         *links.get(&row.creator_link).ok_or_else(|| {
             format!(
@@ -627,8 +592,6 @@ fn build_variant<'a>(
     };
     Ok(legacy::Variant {
         handle: row.id,
-        // A variant handle's low word is the reference type;
-        // the persistent object ID lives in its upper 32 bits.
         id: (row.id >> 32) as u32,
         creator_reference,
         creator_slot,
@@ -637,7 +600,6 @@ fn build_variant<'a>(
     })
 }
 
-// Borrow validated spellings from the same catalogue, never from a prior variant.
 fn held_equipment(content: &Content, fact: model_facts::Fact) -> legacy::Equipment<'_> {
     let equipment = &content.equipment_content().equipment;
     legacy::Equipment {
@@ -679,7 +641,6 @@ fn sum_upgrades(
                 row.variant
             ));
         }
-        // The game sums unsigned level bytes with wrapping i32 arithmetic.
         let sum = sums.entry(row.variant).or_default();
         *sum = sum.wrapping_add(i32::from(row.level));
     }
@@ -732,9 +693,6 @@ fn join_available(
     Ok(result)
 }
 
-/// Equipment categories check three command feature bits in the saved
-/// simulation DLC mask
-/// rather than intersecting raw DLC bits with equipment types.
 fn enabled_module_categories(dlc_mask: u32) -> u64 {
     let mut categories = 0;
     if dlc_mask & 0x10 != 0 {
@@ -920,7 +878,6 @@ mod tests {
         };
         let exists =
             |entity: &str| matches!(entity, "GER_infantry_1_entity" | "GER_infantry_3_entity");
-        // Without a selected variant, the recorded best entry decides.
         for (best, winner) in [(0, "GER_infantry_1_entity"), (1, "GER_infantry_3_entity")] {
             Arc::make_mut(&mut bridge.data)
                 .available
@@ -933,7 +890,6 @@ mod tests {
                 Some(winner)
             );
         }
-        // The division path's selected variant carries its own bonus.
         assert_eq!(
             bridge
                 .resolve_operands(10, country, subunit, Some(handle(1)), &[], exists)
@@ -941,7 +897,6 @@ mod tests {
                 .as_deref(),
             Some("GER_infantry_1_entity")
         );
-        // A roster kind past the best candidates is refused.
         let links = BTreeMap::from([(10, 1)]);
         let by_handle = BTreeMap::from([(handle(1), 0)]);
         let row = AvailableEquipmentVariantRow {

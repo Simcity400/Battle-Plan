@@ -15,8 +15,6 @@ pub(super) fn allocated_bytes(trees: &Vec<Tree>) -> usize {
             .sum::<usize>()
 }
 
-/// An equal re-read keeps the held tree, so an unchanged row stays the same
-/// allocation and compares by pointer.
 fn kept(held: Option<&Tree>, read: Option<Vec<rows::ModifierBreakdownNode>>) -> Tree {
     match (held.and_then(Option::as_ref), read) {
         (Some(held), Some(read)) if **held == read => Some(Arc::clone(held)),

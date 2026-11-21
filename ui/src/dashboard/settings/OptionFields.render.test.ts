@@ -82,10 +82,8 @@ test('a number saves as soon as it is legal, as the other settings do; partial t
     };
     const window: OptionField = { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365 };
     const axis: OptionField = { key: 'yMax', section: 'axes', label: 'Value axis to', kind: 'number', min: -1e9, max: 1e9, step: 1, default: null };
-    // A step up or a typed number saves at once.
     assert.deepEqual(type(window, 365, '366'), [366]);
     assert.deepEqual(type(axis, null, '-40'), [-40]);
-    // Not yet legal: below the least, empty or unchanged text saves nothing while typing.
     assert.deepEqual(type(window, 365, '3'), []);
     assert.deepEqual(type(axis, 10, ''), []);
     assert.deepEqual(type(axis, 10, '10'), []);

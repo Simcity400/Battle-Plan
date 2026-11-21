@@ -1,4 +1,3 @@
-# Offline parser regressions only; no game, recorder, build or benchmark is launched.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)

@@ -27,7 +27,6 @@ fn row(flags: u32, precision: i32) -> ModifierDefinitionRow {
 #[test]
 fn value_text_follows_percent_sign_colour_and_postfix_flags() {
     let loc = loc(&[("MOD_DAYS", "days"), ("YES", "Yes"), ("NO", "No")]);
-    // Bit 0: the value is a fraction shown as a percentage.
     let percent = row(PERCENT_TIMES_HUNDRED | POSITIVE_IS_GOOD, 1);
     assert_eq!(
         value_text(&percent, 5_000, 2, false, false, &NoIcons, &loc).unwrap(),
@@ -37,7 +36,6 @@ fn value_text_follows_percent_sign_colour_and_postfix_flags() {
         value_text(&percent, -5_000, 2, false, false, &NoIcons, &loc).unwrap(),
         "\u{11}R-5.0%\u{11}!"
     );
-    // Without bit 1 a positive value is bad.
     let bad = row(PERCENT_TIMES_HUNDRED, 1);
     assert_eq!(
         value_text(&bad, 5_000, 2, false, false, &NoIcons, &loc).unwrap(),
@@ -98,7 +96,6 @@ fn description_orders_by_index_and_skips_hidden_zero_and_uncategorised_entries()
             .unwrap(),
         "B Tanks: \u{11}R-10%\u{11}!\nCustom"
     );
-    // A clamped definition cannot show a negative value.
     let mut clamped = rows.clone();
     clamped[2].flags |= CLAMP;
     let definitions = Definitions {
@@ -112,7 +109,6 @@ fn description_orders_by_index_and_skips_hidden_zero_and_uncategorised_entries()
             .unwrap(),
         "Custom"
     );
-    // An unknown DLC mask refuses a gated entry rather than guessing.
     let definitions = Definitions {
         rows: &rows,
         names: Arc::new(Ok(BTreeMap::new())),
@@ -123,7 +119,6 @@ fn description_orders_by_index_and_skips_hidden_zero_and_uncategorised_entries()
             .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
             .is_err()
     );
-    // Each line takes the prefix before its name.
     let definitions = Definitions {
         rows: &rows,
         names: Arc::new(Ok(BTreeMap::new())),
@@ -166,7 +161,6 @@ fn weather_icon_requires_a_nonzero_effective_category_one_entry() {
     assert!(visible.has_category_one(&definitions).unwrap());
 }
 
-/// One modifier entry `key = value` as the file's reader returns it.
 fn entry(key: &str, value: &str) -> installed_content_core::parser::Item {
     installed_content_core::parser::Item {
         key: Some(key.as_bytes().to_vec()),
@@ -177,8 +171,6 @@ fn entry(key: &str, value: &str) -> installed_content_core::parser::Item {
     }
 }
 
-/// `custom_modifier_tooltip` keys read in order by the shared modifier
-/// reader, in its table's slot order.
 fn keys(keys: &[&str]) -> TooltipTable {
     let mut modifiers = installed_content_core::modifiers::Modifiers::default();
     for key in keys {
@@ -191,9 +183,6 @@ fn listed(table: &TooltipTable) -> Vec<&str> {
     table.keys().collect()
 }
 
-/// Only registered rows are recorded, so the table can skip indices (the
-/// native gap at 0x29A). A frame recording indices 0, 1 and 3 is
-/// admitted, its name index points at index 3, and index 3 formats.
 #[test]
 fn sparse_definition_tables_are_admitted_and_format_by_index() {
     use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
@@ -226,8 +215,6 @@ fn sparse_definition_tables_are_admitted_and_format_by_index() {
         .unwrap()
         .unwrap();
     assert_eq!(definitions.index("key_3"), Ok(Some(3)));
-    // The lexer folds a bare token before looking it up, so
-    // an authored `KEY_3` is the recorded `key_3`.
     assert_eq!(definitions.index("KEY_3"), Ok(Some(3)));
     let authored = installed_content_core::modifiers::values(&[entry("Key_3", "0.1")]);
     let (built, dropped) = Block::build(&definitions, &authored).unwrap();
@@ -246,13 +233,9 @@ fn sparse_definition_tables_are_admitted_and_format_by_index() {
 
 #[test]
 fn custom_tooltip_keys_follow_the_robin_hood_slot_order() {
-    // FNV-1a & 7: k5 -> 5, k6 and k15 -> 4. The first insert grows the
-    // shared table to eight buckets; k15 then displaces k5 to slot 6.
     let set = keys(&["k5", "k6", "k15", "k5"]);
     assert_eq!(listed(&set), ["k6", "k15", "k5"]);
-    // A copy rebuilds into 2^3 buckets from the source's slot order.
     assert_eq!(listed(&set.copied()), ["k6", "k15", "k5"]);
-    // Growth past the 0.9 load of mask 7 keeps every key once.
     let names: Vec<String> = (0..20).map(|index| format!("k{index}")).collect();
     let many = keys(&names.iter().map(String::as_str).collect::<Vec<_>>());
     let mut sorted = listed(&many);
@@ -272,7 +255,6 @@ fn custom_tooltip_keys_follow_the_robin_hood_slot_order() {
         names: Arc::new(Ok(BTreeMap::new())),
         features: None,
     };
-    // The described keys keep the source table's slot order.
     assert_eq!(
         described
             .describe(&definitions, &NoIcons, &loc, ONE, "", u32::MAX)
@@ -281,10 +263,6 @@ fn custom_tooltip_keys_follow_the_robin_hood_slot_order() {
     );
 }
 
-/// The block keeps the reader's source order: a modifier
-/// stored visibly, then in `hidden_modifier`, then visibly again takes
-/// the last value and stays hidden; visible entries are not applied
-/// before hidden ones.
 #[test]
 fn a_block_keeps_the_readers_last_value_in_source_order() {
     let rows = [ModifierDefinitionRow {
@@ -306,7 +284,6 @@ fn a_block_keeps_the_readers_last_value_in_source_order() {
     assert_eq!(block.hidden, BTreeSet::from([0]));
 }
 
-/// A frame with `definitions` modifier rows and `tokens` dictionary rows.
 fn frame(definitions: usize, tokens: usize) -> DecodedFrame {
     use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
@@ -342,8 +319,6 @@ fn frame(definitions: usize, tokens: usize) -> DecodedFrame {
     }
 }
 
-/// Rows sharing a token keep the last registration, the highest index.
-/// Tokens whose names differ only in case are inconsistent and refused by name.
 #[test]
 fn rows_sharing_a_token_keep_the_last_registration() {
     use replay_data::{rows::LexicalTokenRow, rows::TableId, rows::TableRows};
@@ -381,7 +356,6 @@ fn the_name_index_is_built_once_per_static_table_pair() {
     let first = frame(2_000, 70_000);
     let mut next = frame(1, 1);
     next.hour = 2;
-    // The next hour shares the static tables, as the decoder does.
     for table in NAME_INDEX_TABLES {
         next.tables[table.index()] = first.tables[table.index()].clone();
     }

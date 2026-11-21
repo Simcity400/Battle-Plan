@@ -10,14 +10,11 @@ export type Direction = 'sent' | 'received';
 export interface AgreementItem { variant: string | null; name: string | null; icon: string | null; missing: string | null; schedule: string;
   delivered: bigint | null; lost: bigint | null }
 
-/** One agreement (or its fuel) as the table shows it. Its values are read at `at`: the hour shown, or its last read when
- * ended. An active agreement's fuel sent and lost are its live cells; an ended one's are as last read. */
 export interface AgreementRow {
   key: string;
   terms: LeaseTerms;
   at: number;
   ended: boolean;
-  /** The chosen country's side (`from`) and the other side, by the direction asked for. */
   from: string | null;
   partner: string | null;
   giver: string | null;
@@ -32,7 +29,6 @@ const units = (raw: bigint) => fixedText(raw, FIXED5);
 const share = (raw: bigint) => `${fixedText(raw, SHARE)}%`;
 const fuelText = (raw: bigint) => fixedText(raw, FUEL_QUANTITY);
 const byVariant = (list: readonly MarketItem[]) => new Map(list.map(item => [item.variant, BigInt(item.amountRaw)]));
-/** A day the game writes as none (0 or less) is none. */
 const day = (hour: number) => hour > 0 ? hour : null;
 
 type Named = ReturnType<typeof equipmentOf>;
@@ -63,10 +59,6 @@ function rowsOf(terms: LeaseTerms, at: number, ended: boolean, own: string | nul
   return out;
 }
 
-/** Every agreement the chosen countries send (or receive) at the reply's hour, with those the branch saw end before it
- * when `showEnded` holds (from `history`); fuel terms get their own row. Matching follows each side's tag at the read.
- * An agreement whose side in that direction has no tag then may be a chosen country's: counted, never listed; one left
- * out at an hour `unrecorded` gives the choice's membership as not recorded says why (`membership`). */
 export function agreementRows(reply: MarketAt, history: LendLeaseHistoryReply | undefined, direction: Direction,
   matches: (tag: string, hour: number) => boolean, showEnded: boolean, unrecorded: (hour: number) => string | null = () => null):
   { rows: AgreementRow[]; unattributed: number; membership: string | null } {
@@ -94,11 +86,8 @@ export function agreementRows(reply: MarketAt, history: LendLeaseHistoryReply | 
   return { rows, unattributed, membership };
 }
 
-/** Fuel quantities are /32768, equipment fixed5. */
 export const amountOf = (row: Pick<AgreementRow, 'fuel'>, raw: bigint | null) => raw === null ? '—' : row.fuel ? fuelText(raw) : units(raw);
 
-/** The table's painted Delivered and Lost cells: an active agreement's fuel from its live cells (`fuelSent`, `fuelLost`),
- * every other row's first item as read. The same values object while neither the rows nor the live values change. */
 export function agreementValues(rows: readonly AgreementRow[], live: Live<LiveValues<number>>): Live<LiveValues<number>> {
   const byKey = new Map(rows.map(row => [row.key, row]));
   let made: { from: LiveValues<number>; value: LiveValues<number> } | null = null;
@@ -125,7 +114,6 @@ export function agreementValues(rows: readonly AgreementRow[], live: Live<LiveVa
   return { read, subscribe: live.subscribe };
 }
 
-/** Opens a row's drill at its read: an ended agreement stays at its last read, as no later hour's reply holds it. */
 export const openAgreement = (row: Pick<AgreementRow, 'at' | 'ended'>, breakdown: string, playing: boolean, playhead: number | null): DrillAction =>
   ({ type: 'open', breakdown, hour: row.at, playing, playhead: row.ended ? null : playhead });
 

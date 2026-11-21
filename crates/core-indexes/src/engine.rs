@@ -120,7 +120,6 @@ impl Key for StoredKey<'_, '_> {
     }
 }
 
-// Keys includes held hidden rows; out_of_view visits their keys at restore.
 pub trait Columns {
     fn out_of_view(
         &self,
@@ -178,7 +177,6 @@ impl<'a> RelationSpec<'a> {
     }
 }
 
-// Integer keys and values must use key::write_integer, whose byte order is numeric order; notice order relies on it.
 #[derive(Clone, Copy, Debug)]
 pub enum Input<'a> {
     Reread {
@@ -222,7 +220,6 @@ pub struct MembershipEvidence<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-// A cause belongs to the net membership change, rather than one input row event.
 pub enum MembershipCause<'a> {
     Changed,
     Fresh,
@@ -231,7 +228,6 @@ pub enum MembershipCause<'a> {
     Hidden(MembershipEvidence<'a>),
 }
 
-// Copy notification byte handles inside the callback; settlement can reclaim them.
 #[derive(Clone, Copy, Debug)]
 pub enum Notification<'a> {
     Membership {
@@ -534,7 +530,6 @@ impl<'a> Indexes<'a> {
         Ok(())
     }
 
-    // Apply the reader mutation first; keep Changed/Gone before-images, and reset rows before Reread.
     pub fn apply(
         &mut self,
         reader: &impl Columns,
@@ -1100,7 +1095,6 @@ impl<'a> Indexes<'a> {
         let (head, tail) = encode_outcome(other, &mut encoded);
         let joined = [u8::from(kind == Membership::Joined)];
         let parts = [Bytes::Borrowed(&joined), head, tail];
-        // Net (value, member, joined) order has no ties before joined.
         self.store.put(
             self.relations[relation].settled,
             value,
@@ -1396,7 +1390,6 @@ impl<'a> Indexes<'a> {
         Ok(())
     }
 
-    // Run maintenance after settlement so its cost is measured separately.
     pub fn maintain(&mut self) -> io::Result<bool> {
         self.readable()?;
         if self.hour.is_some() {
@@ -1527,7 +1520,6 @@ impl<'a> Indexes<'a> {
             if self.contains(dirty, key)? {
                 return Ok(());
             }
-            // Members were touched first; the reader may already have discarded the old target.
             let previous = match self.get(self.relations[relation].unresolved, key)? {
                 Some(entry) => self.decode(entry.value)?,
                 None => Outcome::Absent,

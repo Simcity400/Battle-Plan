@@ -1,4 +1,3 @@
-//! Lifecycle checks for the full-reference manager and deactivation-only release. No model renderer is constructed.
 
 use super::*;
 use installed_content_core::{mesh::Animation, mesh::EntityState, mesh::Mesh, mesh::NavalHitMissEffect};
@@ -217,8 +216,6 @@ fn last_acquire_sets_shared_geometry_release_deactivates_and_reacquire_retains_h
     assert_eq!(entity.template.clock.time, 2.0);
     assert_eq!(entity.template.clock.phase.unwrap().time, 5.0);
     assert_eq!(entity.parts[0].as_ref().unwrap().clock.time, 2.0);
-    // The phase input is the manager's age. Hidden admission in Player keeps
-    // unplayed hulls local while active entity elapsed time remains frozen.
     assert_eq!(
         entity.parts[0].as_ref().unwrap().clock.phase.unwrap().time,
         5.0
@@ -587,7 +584,6 @@ fn unordered_screen_fraction_retires_all_screen_actors_and_death_roots_keep_runn
 }
 
 #[test]
-// Animation's private channel storage requires constructing this fixture via Default.
 #[allow(clippy::field_reassign_with_default)]
 fn creation_damage_and_death_setters_precede_the_single_rendered_frame_update() {
     let mut battle = battle(COMBAT, 100);
@@ -730,8 +726,6 @@ fn creation_damage_and_death_setters_precede_the_single_rendered_frame_update() 
         "creation-frame drawing does not admit a second finish"
     );
 
-    // These zero-duration successors must finish in the frame of their setter,
-    // including the retained hull after it moves to a detached death root.
     for (time, health, expected) in [
         (1.25, 49_000, "damage_finished"),
         (1.5, 0, "death_finished"),
@@ -786,16 +780,12 @@ fn creation_damage_and_death_setters_precede_the_single_rendered_frame_update() 
 }
 
 #[test]
-// Animation's private channel storage requires constructing this fixture via Default.
 #[allow(clippy::field_reassign_with_default)]
 fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_does_not() {
     let mut battle = battle(COMBAT, 100);
     battle.offered = [true, false, false, false, true, false, false, false];
     battle.hulls = std::array::from_fn(|slot| matches!(slot, 0 | 4).then(|| target(COMBAT, slot)));
     let template = Arc::make_mut(&mut battle.rig);
-    // An animationless native state with positive exact chance repeats on each
-    // admitted finish. Two variants make accidental getter finishes observable
-    // in both the incarnation and the RNG cursor.
     template.nodes[0].clips[0].state.looping = false;
     template.nodes[0].clips[0].state.chance_weight = Some(100_000);
     let idle_variant = template.nodes[0].clips[0].clone();
@@ -817,9 +807,6 @@ fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_
     battle.locators[0] = Some("defender".to_owned());
     battle.locators[4] = Some("attacker".to_owned());
 
-    // A finite, played pdxmesh animation needs no skeletal channels for this
-    // parentless-locator witness. Keep both random branches positive so the
-    // test establishes probe admission rather than a particular RNG sequence.
     let mut animation = Animation::default();
     animation.fps = 1.0;
     animation.samples = 11;
@@ -897,8 +884,6 @@ fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_
             .phase_advances_hidden()
     );
 
-    // A later source lookup cannot replace the normal-state timing list copied
-    // into an existing hull, even though duration stays unchanged throughout.
     let mut replacement = (*hull_rig).clone();
     for clip in &mut replacement.nodes[0].clips {
         clip.state.naval_hitmiss_effects.clear();
@@ -973,9 +958,6 @@ fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_
         "impact actors do not refund hull creation budget"
     );
 
-    // Reactivation admits one successor per frame. The played defend slot is
-    // retained across its animationless successor; repeated cached visits and
-    // drawing must not admit another positive-chance no-next finish.
     visit(&mut history, &battle, 3, 0.0, &mut epoch, &mut budget);
     advance(&mut history, 7.0);
     advance(&mut history, 0.25);
@@ -1016,7 +998,6 @@ fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_
     }
 }
 
-// Hour installs replace operands, never any province's carried presentation state.
 fn province_frame_state(province: &unit_history::Province) -> String {
     let entities: Vec<_> = province
         .entities
@@ -1103,9 +1084,6 @@ fn assert_installed_history(history: &unit_history::History, expected_ids: &BTre
     );
     for record in &dense.records {
         match (&record.targets, history.targets.0.provinces.get(&record.id)) {
-            // An hour that built an equal table for a province leaves the one the record
-            // already holds, so a join is the hour's table or one equal to it, never a copy
-            // of other targets ([`unit_history::provinces::Record::install`]).
             (Some(joined), Some(targets)) => {
                 assert!(Arc::ptr_eq(joined, targets) || **joined == **targets);
                 assert!(Arc::ptr_eq(&record.province.lands, &targets.lands));
@@ -1121,7 +1099,6 @@ fn assert_installed_history(history: &unit_history::History, expected_ids: &BTre
 }
 
 #[test]
-// One finite-input driver covers sparse joins, install invariance and the complete emitted stream.
 fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() {
     use unit_history::{Target, test_support::GATES, test_support::target as unit_target};
     use viewer_foundation::{
@@ -1215,7 +1192,6 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
             sources.combats.roots = [(ids[0], geometry(10.0)), (ids[1], geometry(20.0))]
                 .into_iter()
                 .collect();
-            // Repeated Unit occurrences advance the SAME arc serially, including across provinces.
             let mut repeated = sources.candidates[0].clone();
             repeated.province = ids[1];
             repeated.ordinal = 2;
@@ -1295,7 +1271,6 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
                     .map(|candidate| candidate.province),
             );
             if hour % 3 == 0 {
-                // Independent setters must also be complete in either install order.
                 history.set_naval(sources.clone());
                 history.set_prepared(targets.clone(), installed_bounds, false);
             } else if hour % 3 == 1 {

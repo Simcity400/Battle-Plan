@@ -116,7 +116,6 @@ fn installed_live_buildings_keep_their_producer_pages_across_lookahead() {
     assert!(!rebound.bit_eq(&built.prepared));
 }
 
-// Both factory types redirect to one declared bucket, in declaration order.
 const TYPES: &[u8] = br#"
 buildings = {
     arms_factory = { spawn_point = factory_spawn show_on_map = 6 level_cap = { state_max = 20 } }
@@ -517,7 +516,6 @@ fn step(
             assert_eq!(patched.tallies, full.tallies, "hour {}", hour.hour);
             assert_eq!(patched.totals, full.totals, "hour {}", hour.hour);
             assert_eq!(patched.damage_refused, full.damage_refused);
-            // A base of this content and branch carries its harbours: only repainted ones are emitted.
             let carried = base
                 .filter(|base| base.assets == assets.id && base.observation.branch == hour.branch);
             let repainted: Vec<u32> = (assets.ordinary_slot_count()..assets.slot_count())
@@ -983,7 +981,6 @@ fn a_building_base_keeps_closed_operands_without_source_pins() {
         vision.province_fog()
     );
     drop(vision);
-    // The fixture holds the campaign view across hours.
     drop(hour);
     for view in frame.tables {
         assert!(
@@ -1351,8 +1348,6 @@ fn reference_floating(
     for (position, _) in &assets.floating {
         let id = (ordinary_slots + harbors.len()) as u32;
         let entity = (|| {
-            // The seventh field must be a positive province: the fog byte and the
-            // deployment are that province's.
             let province = position.adjacent_sea;
             if (province as i32) <= 0 {
                 return None;
@@ -1389,8 +1384,6 @@ fn reference_floating(
             }
             let mesh = assets.floating_mesh.filter(|_| deployed == Some(true))?;
             summary.placed += 1;
-            // The reserved slot has no damage states or variants: one entity definition,
-            // variant selector 0 from the default request.
             let selection = Selection {
                 admitted: true,
                 mesh,
@@ -1404,8 +1397,6 @@ fn reference_floating(
                     destroyed: false,
                     uncertain: false,
                     damaged: false,
-                    // The reserved slot receives a null template,
-                    // which grows unless its template explicitly suppresses popup growth.
                     disable_grow_animation: false,
                     instance: ModelInstance {
                         position: [position.x, position.y, position.z],
@@ -1421,7 +1412,6 @@ fn reference_floating(
         harbors.push(PreparedSlot {
             source: None,
             id,
-            // The reserved slot copies no template's distance flag.
             drawn_at_distance: Some(false),
             entity,
         });

@@ -1,16 +1,3 @@
-//! Military deployment layout uses the primary object base.
-//!
-//! It owns a secondary subobject, an equipment pool, two training qwords, the had and needed
-//! manpower containers, a maximum-manpower word and an owning-line backlink. The queued template
-//! belongs to the conveyor rather than this backlink.
-//!
-//! Serialization runs on the secondary base. Training, maximum training and
-//! maximum manpower emit only when positive; both manpower wrappers always
-//! emit. Equipment emits for a nonzero allocation, halting reason for its
-//! set flag, and distributable priority when different from one.
-//!
-//! Training remains raw signed i64 fixed5 with denominator 100,000. Zero is
-//! a stored value even when the save omits it.
 
 use crate::{
     Memory, carmy_manpower_values, cequipment_variant_pool, cpdx_array::Array, equipment_entry,
@@ -18,68 +5,39 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CMilitaryDeployment primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x29da928);
-/// CMilitaryDeployment secondary vtable.
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x29da960);
-/// CMilitaryDeployment secondary vptr offset.
 pub const SECONDARY_VTABLE: usize = 0x18;
-/// Distributable priority, signed i32, initially one; save omits one.
 pub const DISTRIBUTABLE_PRIORITY: usize = 0x08;
-/// CMilitaryDeployment embedded CEquipmentVariantPool.
 pub const EQUIPMENT_POOL: usize = 0x20;
-/// CMilitaryDeployment training, i64 fixed5.
 pub const TRAINING: usize = 0x60;
-/// CMilitaryDeployment maximum training, i64 fixed5.
 pub const MAX_TRAINING: usize = 0x68;
-/// CMilitaryDeployment available CArmyManpowerValues.
 pub const MANPOWER_HAVE: usize = 0x70;
-/// CMilitaryDeployment needed CArmyManpowerValues.
 pub const MANPOWER_NEED: usize = 0x90;
-/// CMilitaryDeployment maximum manpower, i32.
 pub const MAX_MANPOWER: usize = 0xb0;
-/// Owning deployment-line backlink, authenticated by equality with the
-/// line pointer. The queued template belongs to the conveyor.
 pub const OWNING_LINE: usize = 0xb8;
-/// CMilitaryDeployment optional halting-reason value, i32.
 pub const HALTING_REASON: usize = 0xc0;
-/// CMilitaryDeployment halting-reason `_bIsSet` byte.
 pub const HALTING_REASON_PRESENT: usize = 0xc4;
-/// CMilitaryDeployment native training denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Deployment constructor.
 pub const CONSTRUCT_RVA: Rva = Rva(0x00d4_6d40);
 
-/// The manpower container's stored side. `Have` is the first container, `Need` the second.
 pub const SIDE_HAVE: u8 = 0;
-/// Needed manpower container; the save writes it as `army_manpower_need`.
 pub const SIDE_NEED: u8 = 1;
 
-/// The deployment object's own scalars. The queued template belongs to the
-/// owning conveyor; this object only points back at its line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fields {
     pub training_raw: i64,
     pub max_training_raw: i64,
     pub max_manpower: i32,
-    /// Raw pool byte; the serializer emits zero-amount entries only when set.
     pub allow_zero_entries: u8,
-    /// Native i32 count of the pool's allocation array, which gates whether the
-    /// engine writes the equipment wrapper at all.
     pub equipment_allocations: i32,
-    /// CEquipmentDistributable priority; one is the constructor's default.
     pub distributable_priority: i32,
-    /// Raw `_bIsSet` byte of the optional halting reason.
     pub halting_reason_present: u8,
-    /// Raw halting-reason word; meaningful only when the flag byte is set.
     pub halting_reason: i32,
     pub equipment: Array,
     pub manpower: [Array; 2],
 }
 
-/// Authenticates both subobject vtables, the owning-line back pointer, the
-/// embedded pool and both manpower containers, then returns the object's
-/// scalars and its three array headers.
 pub(crate) fn read_fields(
     memory: &impl Memory,
     base: usize,
@@ -154,7 +112,6 @@ fn manpower_array(
         .ok_or("military deployment manpower array invalid")
 }
 
-/// One in-transit equipment entry of the deployment's own pool.
 pub(crate) fn equipment_entry(
     memory: &impl Memory,
     base: usize,
@@ -167,7 +124,6 @@ pub(crate) fn equipment_entry(
     equipment_entry::read(memory, base, address, ordinal)
 }
 
-/// One manpower entry: the raw source-country link and its signed count.
 pub(crate) fn manpower_entry(
     memory: &impl Memory,
     array: Array,

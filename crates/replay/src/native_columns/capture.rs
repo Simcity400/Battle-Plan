@@ -1,6 +1,3 @@
-//! Typed recording rows as the columnar writer's cells: each schema field in the wire
-//! form the row path encodes, so a native producer and a converted recording write the
-//! same columns.
 
 use replay_columnar::{
     manifest::Status,
@@ -22,10 +19,8 @@ use super::columns;
 #[path = "tests.rs"]
 mod tests;
 
-/// Row masks are u64: no schema has more fields.
 const MAX_FIELDS: usize = 64;
 
-/// One wire field, kept until the row's cells are handed over together.
 #[derive(Clone, Copy)]
 enum Entry {
     Cell(Cell<'static>),
@@ -40,17 +35,13 @@ fn at<T>(values: &[T], (start, len): (usize, usize)) -> &[T] {
     &values[start..start + len]
 }
 
-/// How [`table_hour`] hands an hour's rows to the writer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Staging {
-    /// All of them as one [`Batch`], compared with the held table a column at a time.
     #[default]
     Columns,
-    /// One row at a time ([`Hour::row`]), which writes the same sections.
     Rows,
 }
 
-/// Buffers that turn rows into cells, kept between rows and hours.
 #[derive(Default)]
 pub struct RowCells {
     staging: Staging,
@@ -73,7 +64,6 @@ impl RowCells {
         self.staging
     }
 
-    /// Adds `row` to the batch, each wire field its cell, or kept where `kept` names it.
     fn batch_row<R: RowCodec>(&mut self, row: &R, kept: u64) -> io::Result<()> {
         let batch = &mut self.batch;
         batch.key(row.key())?;
@@ -115,7 +105,6 @@ impl RowCells {
             Field::Opaque(opaque) => {
                 let start = self.bytes.len();
                 match opaque {
-                    // The cell is the payload a length prefix carries on the wire.
                     Opaque::Native(value) => value.encode_value(&mut self.bytes)?,
                     Opaque::Encoded(bytes, _) => {
                         engine_allocation::reserve(&mut self.bytes, bytes.len())?;
@@ -163,7 +152,6 @@ impl RowCells {
         })
     }
 
-    /// Hands `row` to `hour` as its wire fields' cells, or kept where `kept` names it.
     pub fn row<R: RowCodec>(&mut self, hour: &mut Hour<'_>, row: &R, kept: u64) -> io::Result<()> {
         self.entries.clear();
         self.bytes.clear();
@@ -206,7 +194,6 @@ impl RowCells {
     }
 }
 
-/// One wire field as the current batch row's cell in `column`.
 fn put(batch: &mut Batch, column: usize, field: Field<'_>) -> io::Result<()> {
     match field {
         Field::Empty => Err(invalid_static("A row field is missing")),
@@ -225,7 +212,6 @@ fn put(batch: &mut Batch, column: usize, field: Field<'_>) -> io::Result<()> {
         Field::OptionalI64(value) => batch.value(column, Cell::OptionalI64(value)),
         Field::OptionalU64(value) => batch.value(column, Cell::OptionalU64(value)),
         Field::Bytes(bytes) => batch.text(column, bytes),
-        // The cell is the payload a length prefix carries on the wire.
         Field::Opaque(Opaque::Native(value)) => {
             batch.opaque_with(column, |bytes| value.encode_value(bytes))
         }
@@ -253,19 +239,14 @@ fn put(batch: &mut Batch, column: usize, field: Field<'_>) -> io::Result<()> {
     }
 }
 
-/// What a native producer holds of one table this hour.
 pub enum TableInput<'a, R> {
-    /// Every public operand equals the accepted baseline: no rows are visited.
     Same { read: bool, sample: Sample },
-    /// A complete table's proven changes: only `rows` may differ, and `removed` are gone.
     Changes {
         rows: &'a [R],
         removed: &'a [u128],
         read: bool,
         sample: Sample,
     },
-    /// [`TableInput::Changes`] named by key: of a complete table's `rows`, only those at
-    /// `keys` may differ, and `removed` are gone.
     Keyed {
         rows: &'a [R],
         keys: &'a [u128],
@@ -273,9 +254,6 @@ pub enum TableInput<'a, R> {
         read: bool,
         sample: Sample,
     },
-    /// [`TableInput::Changes`] with each changed row beside the row its held row holds:
-    /// `pairs` names a row of `rows` and its row of `previous`, or none for a new row. A
-    /// field equal to its previous row's is kept rather than compared; `removed` are gone.
     Paired {
         rows: &'a [R],
         previous: &'a [R],
@@ -284,35 +262,27 @@ pub enum TableInput<'a, R> {
         read: bool,
         sample: Sample,
     },
-    /// Every row of a complete table, each at its place in `previous`, the rows the held
-    /// table holds: a field equal to its previous row's is kept rather than compared.
     Aligned {
         rows: &'a [R],
         previous: &'a [R],
         read: bool,
         sample: Sample,
     },
-    /// A captured walk: every row of a complete table, or the rows a partial walk read,
-    /// with `missing` rows it could not enumerate.
     Snapshot {
         rows: &'a [R],
         partial: Option<u32>,
         read: bool,
         sample: Sample,
     },
-    /// No rows this hour, for a reason the dictionary holds.
     Unavailable { reason: &'a str, read: bool, sample: Sample },
     NotRecorded { read: bool, sample: Sample },
 }
 
-/// An hour of one table: its section, if it has one, and the evidence its manifest
-/// carries. [`TableWriter::commit`] applies both once the hour is accepted.
 pub struct TableHour {
     pub prepared: Option<Prepared>,
     pub evidence: Evidence,
 }
 
-/// The section of one hour's `rows` under `coverage`.
 fn visit<R: RowCodec>(
     writer: &mut TableWriter,
     dictionary: Strings<'_>,
@@ -323,8 +293,6 @@ fn visit<R: RowCodec>(
     stage(writer, dictionary, cells, coverage, rows.len(), rows.iter().map(|row| Ok((row, None))))
 }
 
-/// The section of an hour that changed the rows at `keys` of key-ordered `rows` and
-/// removed `removed`.
 fn visit_keyed<R: RowCodec>(
     writer: &mut TableWriter,
     dictionary: Strings<'_>,
@@ -341,8 +309,6 @@ fn visit_keyed<R: RowCodec>(
     stage(writer, dictionary, cells, Coverage::Changes { removed }, keys.len(), changed)
 }
 
-/// The section of an hour's `count` rows, staged as `cells` says. A row beside the row its
-/// held row holds keeps the text, list and opaque fields equal to that row's.
 fn stage<'r, R: RowCodec + 'r>(
     writer: &mut TableWriter,
     dictionary: Strings<'_>,
@@ -381,8 +347,6 @@ fn stage<'r, R: RowCodec + 'r>(
     }
 }
 
-/// The columns a kept cell saves work in: text, lists and opaque values, which are copied and
-/// compared by their items.
 fn heavy(kinds: &[Column]) -> u64 {
     kinds
         .iter()
@@ -394,8 +358,6 @@ fn heavy(kinds: &[Column]) -> u64 {
         .fold(0, |mask, (column, _)| mask | 1 << column)
 }
 
-/// Writes one table's hour from what its producer holds. Nothing held changes until
-/// the hour commits.
 pub fn table_hour<'d, R: RowCodec>(
     writer: &mut TableWriter,
     dictionary: impl Into<Strings<'d>>,
@@ -408,7 +370,6 @@ pub fn table_hour<'d, R: RowCodec>(
         read,
         sample,
     };
-    // Changes that change no row and remove none leave the held table as it is.
     let unchanged = writer.sweep() == Sweep::Touched
         && match &input {
             TableInput::Changes { rows, removed, .. } => rows.is_empty() && removed.is_empty(),

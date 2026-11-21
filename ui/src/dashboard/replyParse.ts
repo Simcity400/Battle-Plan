@@ -1,4 +1,3 @@
-/** Replies at least this long are parsed in a worker; shorter ones cost less than the trip. */
 const OFF_THREAD_BYTES = 64 * 1024;
 
 let worker: Worker | null = null;
@@ -15,7 +14,6 @@ function parser(): Worker {
     if (event.data.error !== undefined) reply.reject(new SyntaxError(event.data.error));
     else reply.resolve(event.data.value);
   };
-  // A worker that fails fails what it holds; the next large reply starts another.
   started.onerror = event => {
     event.preventDefault();
     started.terminate();
@@ -27,13 +25,10 @@ function parser(): Worker {
   return worker = started;
 }
 
-/** `bytes` decoded and parsed as JSON: a large reply in a worker, which takes the bytes. */
 export function parseReplyBytes(bytes: ArrayBuffer | Uint8Array): Promise<unknown> {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  // Outside a browser (the unit tests) there are no workers.
   if (view.byteLength < OFF_THREAD_BYTES || typeof Worker === 'undefined') return Promise.resolve(JSON.parse(new TextDecoder().decode(view)) as unknown);
   const off = parser();
-  // Only a whole buffer can be handed over.
   const owned = (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength && view.buffer instanceof ArrayBuffer
     ? view.buffer : view.slice().buffer) as ArrayBuffer;
   const id = next++;

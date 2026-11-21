@@ -1,11 +1,3 @@
-//! Country-vector mutation boundaries for flying-aircraft map demand.
-//! Observation tells the collector which countries to reread; recording never
-//! calls these writers.
-//!
-//! Enemy and wartime-ally vectors rebuild for war creation, joining, ending,
-//! capitulation and derived-state refreshes. Constructor, appearance, subject
-//! and destruction resets clear both vectors. Reciprocal-donor links change
-//! through their add/remove operations; loading fills them at a world discontinuity.
 
 use engine_sites::Rva;
 pub struct MutationSite {
@@ -13,7 +5,6 @@ pub struct MutationSite {
     pub rva: Rva,
 }
 
-/// Receivers: a diplomacy status for the first two, a country for the rest.
 pub const MUTATIONS: [MutationSite; 4] = [
     MutationSite {
         name: "rebuild_wartime_allies",

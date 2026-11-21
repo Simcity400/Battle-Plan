@@ -377,7 +377,6 @@ fn real_border_capture_isolates_faults_and_preserves_incomplete_censuses() {
         captured.division_presentation.decode_inputs();
         assert_eq!(captured.division_presentation.outcomes()[1], stats);
     }
-    // The land membership join is independent of the controller doctrine join.
     captured
         .division_presentation
         .capture_status_fixture(&memory, &[seed()], 1);

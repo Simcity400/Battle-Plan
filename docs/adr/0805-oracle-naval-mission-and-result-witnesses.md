@@ -1,0 +1,9 @@
+# 0805. Compare naval mission saves and validate outcome provenance independently
+
+The saved mission operands and captured sibling ranges share the same projection. Escort source leaves, fleet-region ledger member lists, and their order lack save evidence. Check their recorded structure and references separately. Fuel and requested counts omit zero, while an omitted convoy count proves only a nonpositive value. Record the lost distinction when the captured value is negative. An independent spotting field of an active raider remains comparable even when another field cannot be read.
+
+The writer preserves the first nonzero source-pool occurrence. Patrol operands join by recorded lexical and physical-country identities. Multiple regional registrations of one escort share one patrol packet. A member without a live convoy has no retained cache demand, although a saved stale full target reference still compares. A live target must resolve to its exact generation in the current task-force census.
+
+The save witnesses outcomes but lacks combat provenance. Branch self-checks use creation and resolution witnesses, the fill and merge publication timestamps, and native event sequence. Same-hour emissions still update the retained timestamp in sequence. A transient strike can construct, finalize, and destroy within one call. Daily retirement may remove its result before the next capture, since no positive minimum lifetime is guaranteed. Reattachment explains a partial first interval only when event loss covers the interval between the relevant reads.
+
+[Mission projections](../../crates/recorder-oracle-naval-missions/src/naval_missions.rs) · [Patrol inputs](../../crates/recorder-oracle-naval-missions/src/naval_missions/patrol_inputs.rs) · [Result provenance](../../crates/recorder-oracle-naval-result-sources/src/naval_result_sources.rs)

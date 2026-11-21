@@ -1,6 +1,3 @@
-//! The Rust locator agrees with tools/sites.py on the executable in BATTLE_PLAN_GAME_DIR: on a
-//! layout-checked build every key verifies with checked layouts, and by witnesses every key
-//! but the vtables no constructor witnesses.
 use engine_sites::{Located, OwnedImage, layout_checked};
 use std::path::PathBuf;
 

@@ -14,20 +14,15 @@ const MODES: Record<WidgetTime['mode'], { label: string; tooltip: string }> = {
 };
 const ORDER: readonly WidgetTime['mode'][] = ['follow', 'campaign', 'pin', 'range'];
 
-/** Live, whole campaign, a pinned moment or a date range, as the widget allows.
- * Dates come from the widget's own recording, never a fixed calendar. */
 export function TimeSection({ widget, effective, reference, runtime, modes, onChange }: {
   widget: WidgetSpec; effective: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime;
   modes: readonly WidgetTime['mode'][]; onChange: (time: WidgetTime) => void;
 }) {
-  // A pinned moment or range needs a loaded campaign to take its dates from.
   const offered = ORDER.filter(mode => modes.includes(mode) && (mode === 'follow' || mode === 'campaign' || reference));
   const choose = (mode: WidgetTime['mode']) => {
     if (mode === 'follow' || mode === 'campaign') onChange({ mode });
-    // Pin the playback moment, not whatever the widget shows now (a pin or the whole campaign).
     else if (mode === 'pin') {
       const pin = pinTime({ ...effective, time: { mode: 'follow' } }, runtime.tracks, runtime.clock.getSnapshot().position);
-      // Without a loaded campaign there is no moment to hold; keep any existing pin.
       if (pin.mode === 'pin' && Object.keys(pin.windows).length) onChange(pin);
     }
     else if (reference) onChange({ mode: 'range', firstOffset: 0, lastOffset: reference.branch.lastHour - reference.branch.firstHour });

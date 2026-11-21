@@ -17,7 +17,6 @@ use std::{
     },
 };
 
-/// A row payload failed validation, rather than frame/encoder bookkeeping.
 #[derive(Debug)]
 struct RowValidationError(io::Error);
 impl std::fmt::Display for RowValidationError {
@@ -34,8 +33,6 @@ fn row_validation(error: io::Error) -> io::Error {
     }
 }
 
-/// Payload codecs attach row/column context. Their bookkeeping errors (for
-/// example replacement indices) remain encoder errors, even inside a table.
 fn row_encoding(error: io::Error) -> io::Error {
     if error.kind() != io::ErrorKind::InvalidData {
         return error;
@@ -78,14 +75,11 @@ impl Default for Baselines {
         }
     }
 }
-/// An encoded record whose baselines have not yet been committed.
 pub struct PreparedFrame {
     frame: Option<EncodedFrame>,
     source: FrameInput,
-    /// Each complete table diffed with its baseline, by index, with the rows that diff wrote.
     changed: Vec<(usize, ChangedRows)>,
     unchanged: [bool; TABLE_COUNT],
-    /// Each stored table's update bytes, which follow the frame's header in table order.
     sizes: [usize; TABLE_COUNT],
     revision: u64,
     encoder: u64,
@@ -97,13 +91,10 @@ impl PreparedFrame {
     pub fn frame(&self) -> &EncodedFrame {
         self.frame.as_ref().expect("prepared record not taken")
     }
-    /// Move the bytes to the spool without copying; retain the pending baselines.
     pub fn take_frame(&mut self) -> EncodedFrame {
         self.frame.take().expect("prepared record already taken")
     }
 
-    /// [`Self::take_frame`] holding only the updates of the tables `kept` names, with this
-    /// frame's keyframe and baselines; every other table it stores is left to the native capture.
     pub fn take_frame_keeping(
         &mut self,
         kept: impl Fn(TableId) -> bool,
@@ -136,19 +127,15 @@ impl PreparedFrame {
         Ok(EncodedFrame { bytes, ..frame })
     }
 
-    /// The input as encoded: rows rounded and refused tables rewritten.
     pub fn input(&self) -> &FrameInput {
         &self.source
     }
 
-    /// Each complete table the frame wrote as changes from its baseline, by table index in
-    /// ascending order, with the rows those changes wrote and the keys they deleted.
     pub fn changed_rows(&self) -> &[(usize, ChangedRows)] {
         &self.changed
     }
 }
 
-/// The encoder state and verdicts one frame's tables are encoded against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameContext {
     encoder: u64,
@@ -160,9 +147,6 @@ pub struct FrameContext {
     new_branch: bool,
 }
 
-/// One table's update bytes, encoded beside its frame (possibly on another
-/// thread) by [`FrameEncoder::encode_segment`]; the frame takes them in table
-/// order ([`FrameEncoder::prepare_bytes_with`]).
 pub struct TableSegment {
     context: FrameContext,
     table: TableId,
@@ -171,12 +155,10 @@ pub struct TableSegment {
     changed: Option<ChangedRows>,
 }
 
-/// What a commit no longer holds: replaced baselines and rows, and inputs it
-/// did not keep. Dropping this frees them, on whichever thread drops it.
 #[derive(Default)]
 pub struct Retired(Vec<Retiring>);
 
-#[allow(dead_code)] // Held only to be dropped.
+#[allow(dead_code)]
 enum Retiring {
     Baseline(BaselineRows),
     Input(TableInput),
@@ -184,7 +166,6 @@ enum Retiring {
 }
 
 impl Retired {
-    /// How many baselines, inputs and row sets this holds.
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -220,7 +201,6 @@ impl FrameEncoder {
     pub fn new() -> Self {
         Self::default()
     }
-    /// This encoder among every encoder of the process; a [`BaselineToken`] names it.
     pub fn identity(&self) -> u64 {
         self.identity
     }
@@ -232,9 +212,6 @@ impl FrameEncoder {
             })
     }
 
-    /// A producer may leave the reserved cadence marker in this slot instead
-    /// of cloning already validated rows. Missing/partial baselines, branch
-    /// starts and keyframes still require the ordinary complete input.
     pub fn can_carry(&self, table: TableId, branch: BranchId, hour: Hour, force: bool) -> bool {
         crate::cadence::is_staggered(table)
             && !self.needs_keyframe(branch, hour, force)
@@ -242,8 +219,6 @@ impl FrameEncoder {
             && self.state.tables[table.index()].is_some()
     }
 
-    /// A staggered table's complete baseline at a keyframe of its branch, where
-    /// [`Self::can_carry`] refuses the marker: the rows a skipped slot supplies instead.
     pub fn keyframe_carry(
         &self,
         table: TableId,
@@ -261,8 +236,6 @@ impl FrameEncoder {
         self.committed_rows(table)
     }
 
-    /// The token a comparison at `hour` names and the baseline it compares
-    /// with, when the hour follows the baseline's and needs no keyframe.
     fn token(
         &self,
         table: TableId,
@@ -270,8 +243,6 @@ impl FrameEncoder {
         hour: Hour,
         force: bool,
     ) -> Option<(BaselineToken, &BaselineRows)> {
-        // Clock payloads depend on the enclosing hour and therefore cannot be
-        // reused through a comparison with the preceding hour's complete rows.
         if table == TableId::Clock
             || self.needs_keyframe(branch, hour, force)
             || self
@@ -299,16 +270,11 @@ impl FrameEncoder {
         ))
     }
 
-    /// The latest committed complete rows of `T` and the hour that supplied
-    /// them. `None` when this encoder holds no complete baseline for `T`: never
-    /// committed, or truncated or unavailable at its last sample.
-    /// The complete rows table `table`'s baseline holds.
     pub fn committed_rows(&self, table: TableId) -> Option<&TableRows> {
         let (_, rows) = self.state.tables[table.index()].as_ref()?;
         Some(rows.as_ref())
     }
 
-    /// The branch and hour of the last committed frame.
     pub fn last_committed(&self) -> Option<(BranchId, Hour)> {
         Some((self.state.branch?, self.state.last_hour?))
     }
@@ -318,9 +284,6 @@ impl FrameEncoder {
         Some((*hour, values.as_ref().rows::<T>()?))
     }
 
-    /// Branch-local state for a producer's complete native mutation ledger.
-    /// A keyframe requires re-encoding the state, without withdrawing the
-    /// preceding committed state from a continuous observation interval.
     pub fn observed_baseline<T: TableSchema>(
         &self,
         branch: BranchId,
@@ -338,9 +301,6 @@ impl FrameEncoder {
         self.committed::<T>().map(|(_, rows)| rows)
     }
 
-    /// Replacement input for a producer with complete mutation observation.
-    /// Unlike a census comparison, the certificate covers unvisited rows of a
-    /// daily table. Keyframes still require a materialized complete state.
     pub fn observed_comparison_baseline<T: TableSchema>(
         &self,
         branch: BranchId,
@@ -352,10 +312,6 @@ impl FrameEncoder {
         Some((token, values.as_ref().rows::<T>()?))
     }
 
-    /// Borrow a complete baseline for comparison with a new native sample.
-    /// Callers must check all current acquisition/arena/uniqueness verdicts and
-    /// exact row payloads before submitting `ComparedEqual`. The borrow is used
-    /// only during conversion; no native capture or replay-row lease is retained.
     pub fn comparison_baseline<T: TableSchema>(
         &self,
         branch: BranchId,
@@ -366,8 +322,6 @@ impl FrameEncoder {
         Some((token, values.as_ref().rows::<T>()?))
     }
 
-    /// The shared complete baseline an owner-sliced table's
-    /// [`TableInput::SliceUpdate`] at `hour` would update, with its token.
     pub fn slice_baseline(
         &self,
         table: TableId,
@@ -381,7 +335,6 @@ impl FrameEncoder {
         }
     }
 
-    /// A table's committed baseline when it is shared with its producer.
     pub fn shared_baseline(&self, table: TableId) -> Option<&Arc<TableRows>> {
         match self.state.tables[table.index()].as_ref()? {
             (_, BaselineRows::Shared(rows)) => Some(rows),
@@ -389,10 +342,6 @@ impl FrameEncoder {
         }
     }
 
-    /// A certified update may materialize this baseline at an encoding
-    /// keyframe. A keyframe is not a native acquisition: continuity still
-    /// requires the same branch, the next hour and a complete shared table.
-    /// This grants no delta token and does not change keyframe encoding.
     pub fn certified_keyframe_baseline(
         &self,
         table: TableId,
@@ -429,7 +378,6 @@ impl FrameEncoder {
             values.encode_rows(output).map_err(row_encoding)?;
             return Ok(false);
         };
-        // The merge finds equal rows itself, so an unchanged table writes no change.
         let start = output.len();
         output.push(1);
         output.extend_from_slice(&baseline.to_le_bytes());
@@ -481,8 +429,6 @@ impl FrameEncoder {
         Ok(())
     }
 
-    /// Materialize an editable frame for callers that need its decoded updates.
-    /// Recording uses encode_bytes directly and never performs this decoding.
     pub fn encode(&mut self, source: DecodedFrame, force_keyframe: bool) -> io::Result<Frame> {
         self.encode_input(source.into(), force_keyframe)
     }
@@ -491,9 +437,6 @@ impl FrameEncoder {
         self.encode_bytes(source, force_keyframe)?.decode()
     }
 
-    /// Convenience for callers without an external record sink.
-    /// Collector recording uses `prepare_bytes`, writes the complete spool record,
-    /// then calls `commit` so failed writes never advance a baseline.
     pub fn encode_bytes(
         &mut self,
         source: FrameInput,
@@ -505,7 +448,6 @@ impl FrameEncoder {
         Ok(frame)
     }
 
-    /// The context a frame for `branch` and `hour` is encoded in.
     pub fn frame_context(
         &self,
         branch: BranchId,
@@ -523,9 +465,6 @@ impl FrameEncoder {
         }
     }
 
-    /// Encode one table's update as [`Self::prepare_bytes`] encodes it in
-    /// `context`'s frame. Borrows the encoder shared, so several tables of a
-    /// frame may be encoded at once on different threads.
     pub fn encode_segment(
         &self,
         context: &FrameContext,
@@ -557,9 +496,6 @@ impl FrameEncoder {
         self.prepare_bytes_with(source, force_keyframe, &mut std::array::from_fn(|_| None))
     }
 
-    /// [`Self::prepare_bytes`], taking each table's update from `segments`
-    /// where one was encoded for this frame's context and table, and encoding
-    /// the others here. The bytes are those `prepare_bytes` writes.
     pub fn prepare_bytes_with(
         &mut self,
         source: FrameInput,
@@ -569,9 +505,6 @@ impl FrameEncoder {
         self.prepare_contained(source, force_keyframe, segments, |_, error| Err(error))
     }
 
-    /// Encode normally; only a non-clock row validation error calls `refuse`.
-    /// Its returned text replaces that table with the existing Unavailable form.
-    /// Frame, baseline-token, allocation and I/O errors remain errors.
     pub fn prepare_contained(
         &mut self,
         mut source: FrameInput,
@@ -579,11 +512,6 @@ impl FrameEncoder {
         segments: &mut [Option<TableSegment>; TABLE_COUNT],
         mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
     ) -> io::Result<PreparedFrame> {
-        // Owned rows are stored at their display steps (crate::display), so
-        // the committed baseline is what decoders rebuild and a row that later
-        // drifts only below a step equals it. Encoding rounds every stepped
-        // value again, so a segment encoded from unrounded rows writes the
-        // same values.
         source.round_to_display();
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
@@ -672,8 +600,6 @@ impl FrameEncoder {
                 }
             };
             sizes[table.index()] = output.len() - table_start;
-            // Diagnostics for the columnar writer beside the rows: a recording that cannot
-            // be held is left out.
             if let Some(changed) = changed
                 && allocation::advisory(|| allocation::reserve(&mut changed_rows, 1)).is_ok()
             {
@@ -699,7 +625,6 @@ impl FrameEncoder {
         })
     }
 
-    /// One table's update; returns whether the table's baseline is unchanged.
     fn encode_table(
         &self,
         context: &FrameContext,
@@ -865,18 +790,10 @@ impl FrameEncoder {
         })
     }
 
-    /// Publish validated owning rows only after their record was fully written.
     pub fn commit(&mut self, prepared: PreparedFrame) -> io::Result<()> {
         self.commit_retiring(prepared).map(drop)
     }
 
-    /// [`Self::commit`], handing back what the baselines no longer hold
-    /// instead of freeing it here. Moving and replacing rows and handing over
-    /// shared references allocate nothing beyond the hand-back list, which is
-    /// reserved first. A slice update whose owners' row counts change rebuilds
-    /// its baseline in storage reserved before that baseline moves; slice
-    /// updates apply before every other table, so an allocation failure
-    /// leaves the other baselines as they were.
     pub fn commit_retiring(&mut self, prepared: PreparedFrame) -> io::Result<Retired> {
         if prepared.encoder != self.identity || prepared.previous_revision != self.revision {
             return Err(invalid(
@@ -897,9 +814,6 @@ impl FrameEncoder {
                 continue;
             }
             if unchanged[table.index()] {
-                // Encoding already established that this update changes no
-                // rows. Keep the shared baseline and retire the unused input
-                // below, rather than cloning/applying an identical table.
                 continue;
             }
             let Some(TableInput::SliceUpdate { update, .. }) = view.take() else {
@@ -911,7 +825,6 @@ impl FrameEncoder {
                 unreachable!("validated shared slice baseline");
             };
             if Arc::get_mut(rows).is_none() {
-                // The producer still shares the baseline: replace a copy.
                 *rows = Arc::new(rows.try_clone()?);
             }
             let update = Arc::try_unwrap(update).unwrap_or_else(|shared| (*shared).clone());

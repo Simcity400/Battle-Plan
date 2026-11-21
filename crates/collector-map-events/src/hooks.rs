@@ -1,12 +1,3 @@
-//! The map event sites and their callbacks.
-//!
-//! Each callback runs on the native thread that reaches its site, copies the
-//! event into its publication lane ([`crate::lanes`]) through guarded reads
-//! and returns to the game: no allocation, lock, game call or pointer kept
-//! past the call. A refused event marks its family's interval incomplete and
-//! is counted. Every callback that calls a native original counts itself in
-//! flight ([`active`]) so detach waits for it; one a native exception unwinds
-//! stays counted and keeps the collector loaded.
 use crate::{
     hook::{Hook, Registers, Tap},
     hook_timing::{self, Family as Timing},
@@ -29,18 +20,13 @@ const N: usize = Family::COUNT;
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: [AtomicBool; N] = [const { AtomicBool::new(false) }; N];
 static ENABLED: [AtomicBool; N] = [const { AtomicBool::new(false) }; N];
-/// Fault bits since the last seal.
 static FAULTS: [AtomicU16; N] = [const { AtomicU16::new(0) }; N];
-/// Refused events since the epoch began.
 static MISSED: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
-/// Events published since attach.
 static EVENTS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
-/// Callbacks that saw their event and rejected it, by the game's own gates.
 static REJECTED: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static STRANDED: AtomicUsize = AtomicUsize::new(0);
 static UNHOOKED: [OnceLock<&'static str>; N] = [const { OnceLock::new() }; N];
-/// Native call targets and entry trampolines.
 static FAKE_TARGET: AtomicUsize = AtomicUsize::new(0);
 static GENERAL_TARGET: AtomicUsize = AtomicUsize::new(0);
 static PARADROP_TARGET: AtomicUsize = AtomicUsize::new(0);
@@ -48,12 +34,8 @@ static SCRIPTED_REFRESH_TARGET: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static RESISTANCE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BUILDING_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// The latest read refusal of each family, packed by [`pack`]: a single
-/// atomic store on the game thread, unpacked off it for the status.
 static LAST_REFUSAL: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 
-/// A static reason's address and length in one word; zero when it does not
-/// fit (user-space addresses below 2^48, lengths below 2^16).
 fn pack(reason: &'static str) -> u64 {
     let (address, len) = (reason.as_ptr() as u64, reason.len() as u64);
     if address >> 48 != 0 || len >> 16 != 0 {
@@ -64,7 +46,6 @@ fn pack(reason: &'static str) -> u64 {
 
 fn unpack(word: u64) -> Option<&'static str> {
     (word != 0).then(|| unsafe {
-        // Only `pack` writes the word, from a `&'static str`.
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(
             (word >> 16) as *const u8,
             (word & 0xffff) as usize,
@@ -76,7 +57,6 @@ std::thread_local! {
     static UNWOUND: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Callbacks running, including ones a native exception unwound.
 pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
@@ -118,8 +98,6 @@ fn refused(family: Family, refusal: Refusal) {
     }
 }
 
-/// A callback in flight. Dropped without `returned` (a native exception
-/// unwinding through the callback), it stays counted and marks the family.
 struct Call {
     family: Family,
     returned: bool,
@@ -143,7 +121,6 @@ impl Drop for Call {
         if self.returned {
             ACTIVE.fetch_sub(1, Ordering::SeqCst);
         } else {
-            // The unwind may still be traversing this frame; keep the count.
             UNWOUND.set(true);
             STRANDED.fetch_add(1, Ordering::SeqCst);
             fault(self.family, Fault::Unwind);
@@ -156,14 +133,10 @@ fn hour(memory: &impl Memory, base: usize) -> Result<(usize, i32), &'static str>
     Ok((state, site::hour(memory, state)?))
 }
 
-/// Read the event's operands and publish it; a refusal is counted.
 fn record(
     family: Family,
     read: impl FnOnce(&LiveMemory, usize, usize) -> Result<Event, &'static str>,
 ) {
-    // The occurrence is read before any operand: a world reset or load
-    // overlapping the read leaves the event refused, never tagged with the
-    // new world.
     let world = crate::world_lifetime::generation();
     let memory = unsafe { LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
@@ -184,8 +157,6 @@ fn record(
     }
 }
 
-/// Publishes an event whose operands were read in `world`, once its payload
-/// is copied and only if the world occurrence is still `world`.
 pub(crate) fn publish_in_world(
     family: Family,
     hour: i32,
@@ -202,7 +173,6 @@ pub(crate) fn publish_in_world(
     })
 }
 
-/// An event's owned operands; variable parts are copied while writing.
 enum Event {
     Unit {
         owner: u32,
@@ -344,7 +314,6 @@ type NativeRefresh = unsafe extern "system-unwind" fn(usize, u8);
 type Native4 = unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize;
 type Native6 = unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize, usize) -> usize;
 
-/// The fake division's local intel call: record, then ask the game.
 unsafe extern "system-unwind" fn fake_reveal(unit: usize) -> usize {
     let timing = hook_timing::enter(Timing::MapEvents);
     let mut call = Call::enter(Family::FakeDivisionRevealed);
@@ -359,7 +328,6 @@ unsafe extern "system-unwind" fn fake_reveal(unit: usize) -> usize {
     result
 }
 
-/// The overrun entry: record before the gun can be captured or deleted.
 unsafe extern "system-unwind" fn railway_overrun(
     gun: usize,
     from: usize,
@@ -380,7 +348,6 @@ unsafe extern "system-unwind" fn railway_overrun(
     result
 }
 
-/// The critical branch's tap: `R13` is the bombarded province.
 unsafe extern "system-unwind" fn critical_bombardment(registers: &Registers, _tag: usize) {
     let _timing = hook_timing::enter(Timing::MapEvents);
     if enabled(Family::CriticalShoreBombardment) {
@@ -391,7 +358,6 @@ unsafe extern "system-unwind" fn critical_bombardment(registers: &Registers, _ta
     }
 }
 
-/// The scripted refresh's call site, after its name and limit gates passed.
 unsafe extern "system-unwind" fn scripted_refresh(manager: usize, refresh_all: u8) {
     let timing = hook_timing::enter(Timing::MapEvents);
     let mut call = Call::enter(Family::ScriptedMapRefresh);
@@ -406,7 +372,6 @@ unsafe extern "system-unwind" fn scripted_refresh(manager: usize, refresh_all: u
     call.returned = true;
 }
 
-/// The capture notification call; a null province shows no text.
 unsafe extern "system-unwind" fn general_captured(
     leader: usize,
     captor: usize,
@@ -434,7 +399,6 @@ unsafe extern "system-unwind" fn general_captured(
     result
 }
 
-/// The landing notification call, before its friendship and fog tests.
 unsafe extern "system-unwind" fn paradrop_landing(
     province: usize,
     country: usize,
@@ -459,7 +423,6 @@ unsafe extern "system-unwind" fn paradrop_landing(
     result
 }
 
-/// The activity execution entry, before its effects.
 unsafe extern "system-unwind" fn resistance_activity(
     resistance: usize,
     activity: usize,
@@ -483,14 +446,10 @@ unsafe extern "system-unwind" fn resistance_activity(
     result
 }
 
-/// Whether a building notification shows the game's text: its client
-/// branch and text are enabled, it has a reason and it lowered the level's
-/// health. Signed comparison, as the game's.
 pub fn building_shows(client: u8, text: u8, reason: u32, before: i64, after: i64) -> bool {
     client != 0 && text != 0 && reason != 0 && after < before
 }
 
-/// The shared building notifier's entry.
 unsafe extern "system-unwind" fn building_notification(
     building: usize,
     source: usize,
@@ -540,20 +499,19 @@ unsafe extern "system-unwind" fn building_notification(
     result
 }
 
-/// The family's installed patches.
 pub struct Hooks {
     hooks: Vec<(Family, Hook)>,
     taps: Vec<(Family, Tap)>,
 }
 
 impl Hooks {
-    /// Construct every family whose site authenticates; a family whose
-    /// site is withheld stays unavailable and the others install.
-    ///
-    /// # Safety
-    /// The memory source and base identify the authenticated executable in
-    /// this process. The caller owns these sites exclusively and must restore
-    /// them and wait for [`active`] to drain before releasing code.
+    #[doc = " Construct every family whose site authenticates; a family whose"]
+    #[doc = " site is withheld stays unavailable and the others install."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base identify the authenticated executable in"]
+    #[doc = " this process. The caller owns these sites exclusively and must restore"]
+    #[doc = " them and wait for [`active`] to drain before releasing code."]
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,
@@ -579,7 +537,6 @@ impl Hooks {
                 None
             }
         };
-        // A call site's target is its rel32 destination.
         let call_target = |site: usize, original: [u8; 16]| {
             let displacement = i32::from_le_bytes(original[1..5].try_into().unwrap());
             (site + 5).wrapping_add_signed(displacement as isize)
@@ -687,8 +644,6 @@ impl Hooks {
         Self { hooks, taps }
     }
 
-    /// Publish or restore every installed site in one publication, joining
-    /// the shared attach round when one is collecting.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             for flag in &ENABLED {

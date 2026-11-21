@@ -1,4 +1,3 @@
-//! Final-status ranges against the unchanged serial capture, including faults.
 use super::*;
 use carmy::{StatusPacket, StatusPart};
 
@@ -137,8 +136,6 @@ fn assert_same(
 #[test]
 fn status_split_distinct_divisions_and_countries_match_serial() {
     let (source, mut seeds, mut held) = distinct_status_world(129);
-    // Shared blocks cross every range boundary. A later contradictory hold
-    // cannot replace the first seed's certified observation.
     for index in [1, 63, 64, 65, 100, 128] {
         seeds[index].stat_block = seeds[0].stat_block;
         held[index] = held[0].map(|mut value| {
@@ -160,7 +157,6 @@ fn status_split_faults_preserve_first_reason_and_prepared_maxima() {
             } else {
                 seeds[index].entrenchment = None;
             }
-            // An earlier scalar error outranks a later preparation failure.
             seeds[128].primary_vtable = None;
             assert_same(&source, &seeds, Outcome::Rows { len: seeds.len() }, &[]);
         }
@@ -238,7 +234,6 @@ fn status_split_failed_part_keeps_the_first_range_reason() {
         &mut packet,
         &mut parts,
     );
-    // Restore an ordered preparation, as the callback keeps it until stitch.
     packet.prepare_holding(
         &memory,
         0,
@@ -283,8 +278,6 @@ fn status_split_nonempty_supply_origins_and_footer_faults_rebase_exactly() {
     }
     source.globals.insert(origins, rows);
     array(&mut source.bytes, A1 + supply::ORIGINS, origins, 2);
-    // A separate primary has an independent optional footer failure after
-    // earlier divisions have already retained nonempty origin ranges.
     let primary = source.bytes.len();
     let prototype = source.bytes[A1..A1 + 0x6000].to_vec();
     source.bytes.extend_from_slice(&prototype);
@@ -516,9 +509,6 @@ fn native_border_join_before_owned_stitch_keeps_exact_rows() {
     assert_eq!(actual, baseline);
 }
 
-/// The ordered settle takes each staged block's maxima from the parallel preparation and reads
-/// none of those blocks itself; carried, aliased and unstaged seeds keep their own path, and
-/// the final rows equal the unstaged serial capture's.
 #[test]
 fn staged_maxima_settle_reads_no_staged_block_and_keeps_exact_rows() {
     struct Blocks<'a> {
@@ -535,7 +525,6 @@ fn staged_maxima_settle_reads_no_staged_block_and_keeps_exact_rows() {
         }
     }
     let (memory, mut seeds, held) = distinct_status_world(65);
-    // An alias shares its block; the first seed's value stands for both.
     seeds[6].stat_block = seeds[5].stat_block;
     let outcome = Outcome::Rows { len: seeds.len() };
     for carried in [false, true] {
@@ -545,8 +534,6 @@ fn staged_maxima_settle_reads_no_staged_block_and_keeps_exact_rows() {
             vec![None; seeds.len()]
         };
         let (serial_packet, expected, _) = serial(&memory, &seeds, outcome, &held);
-        // A preparation range stages every block the held capture cannot carry; seed 9 is
-        // left to the ordered read.
         let staged_seeds: Vec<usize> = (0..seeds.len())
             .filter(|&index| index != 9 && held[index].is_none())
             .collect();

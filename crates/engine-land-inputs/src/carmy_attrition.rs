@@ -1,6 +1,3 @@
-//! Passive operands for the own-country singleton attrition hover. The counter
-//! cache is updated before acclimatization and cannot replace fresh operands.
-//! Numeric fields and formatter sources fail independently.
 
 use crate::{
     Memory, carmy, carmy_leader, ccountry, cdiplomacy_status, cequipment_variant, cgame_state,
@@ -16,7 +13,6 @@ use modifier_keys::{
     WINTER_ATTRITION, WINTER_ATTRITION_FACTOR,
 };
 
-/// Fixed getter dependencies, authenticated by the shared native key catalog.
 pub const KEYS: [u32; 10] = [
     ATTRITION,
     WINTER_ATTRITION_FACTOR,
@@ -30,38 +26,28 @@ pub const KEYS: [u32; 10] = [
     ENEMY_ATTRITION,
 ];
 
-/// Unit-upkeep attrition define.
 pub const UNIT_UPKEEP_ATTRITION_RVA: Rva = Rva(0x033e_0008);
-/// Multiplier for out-of-supply attrition.
 pub const OUT_OF_SUPPLY_ATTRITION_RVA: Rva = Rva(0x033e_3908);
-/// Supply threshold, clamped by loading to zero through ONE.
 pub const SUPPLY_THRESHOLD_RVA: Rva = Rva(0x033e_43a8);
-/// Signed divisor for stored out-of-supply days.
 pub const MAX_OUT_OF_SUPPLY_DAYS_RVA: Rva = Rva(0x033e_3844);
-/// Signed hours divisor for remaining grace.
 pub const SUPPLY_GRACE_RVA: Rva = Rva(0x033e_3678);
-/// Exercise-branch attrition define.
 pub const TRAINING_ATTRITION_RVA: Rva = Rva(0x033e_0750);
-/// Border-war attrition factor.
 pub const BORDER_WAR_ATTRITION_FACTOR_RVA: Rva = Rva(0x033e_4650);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Terrain {
     pub attrition: Field<i64>,
-    /// Original unweighted sum, before the native floor against upkeep+terrain.
     pub equipment: Field<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Supply {
-    /// Fresh out-of-supply inputs, including threshold normalization.
     pub penalty: Field<i64>,
     pub attrition_factor: Field<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thermal {
-    /// Weather-key value already scaled by fresh acclimatization.
     pub base: i64,
     pub country_factor: Field<i64>,
     pub leader_factor: Field<Option<i64>>,
@@ -82,7 +68,6 @@ impl Thermal {
 pub struct Weather {
     pub acclimatization: Field<i64>,
     pub attrition: Field<i64>,
-    /// Native factors are not queried unless the scaled base is positive.
     pub heat: Field<Option<Thermal>>,
     pub winter: Field<Option<Thermal>>,
 }
@@ -90,12 +75,10 @@ pub struct Weather {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Border {
     pub state: Field<u32>,
-    /// Raw logical-owner reference; reuse the hourly border graph in playback.
     pub country: Field<u32>,
     pub factor: Field<i64>,
 }
 
-/// Native formatter role order, independent of sorted/deduplicated tree storage.
 pub const SOURCE_COUNT: usize = 10;
 pub const UPKEEP_SOURCE: usize = 0;
 pub const STATE_SOURCE: usize = 1;
@@ -113,13 +96,10 @@ pub const COUNTRY_SOURCE: usize = 9;
 pub struct SourceRequest {
     pub accumulator: usize,
     pub key: u32,
-    /// -1 for full trees; final country multiplier uses depth 2.
     pub depth: i32,
-    /// Weather heat/winter source values use the fresh acclimatization scale.
     pub scale: i64,
 }
 
-/// Each Result is independent. Nested None means the native branch was skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inputs {
     pub province: Field<Option<u32>>,
@@ -177,8 +157,6 @@ impl Inputs {
         }
     }
 
-    /// Native ordered arithmetic. Border ratio comes from existing replay operands;
-    /// source availability never participates in the total.
     pub fn evaluate(self, border_ratio: Option<i64>) -> Field<i64> {
         if self.province?.is_none() {
             return Ok(0);
@@ -223,7 +201,6 @@ impl Inputs {
         }
         total = total.wrapping_add(self.training_attrition?.unwrap_or(0));
         if let Some(border) = self.border? {
-            // State and country authenticate the caller's existing border ratio.
             border.state?;
             border.country?;
             total = total.wrapping_add(product(
@@ -243,7 +220,6 @@ fn product(left: i64, right: i64) -> i64 {
 }
 
 fn fraction(numerator: i64, denominator: i64) -> Field<i64> {
-    // The sentinel numerator and zero divisor produce fixed5 NaN.
     if denominator == 0
         || (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
     {
@@ -292,38 +268,21 @@ fn request(accumulator: usize, key: u32, depth: i32, scale: i64) -> SourceReques
     }
 }
 
-/// Per-capture memo of the attrition reads whose result depends only on the
-/// listed key, never on the division asking. Each entry keeps the exact result
-/// the first division's read produced, failure included, so later divisions of
-/// the same country, state, province or template read nothing again and can
-/// never retry a failed operand. The caller clears it before every capture:
-/// entries are valid only inside one parked hourly boundary, where the
-/// simulation thread that writes these objects is held. `Memo::default()` is
-/// disabled: every read goes to memory, as without a memo.
 #[derive(Default)]
 pub struct Memo {
     enabled: bool,
-    /// Effective modifier lookup reads only the accumulator array and the key's
-    /// static definition: (accumulator, key) -> effective value.
     modifiers: crate::combat_sources::Map<(usize, u32), Field<i64>>,
-    /// Country resolution by raw reference.
     countries: crate::combat_sources::Map<u32, Field<ccountry::Country>>,
-    /// Mode-zero war-state query by country object.
     at_war: crate::combat_sources::Map<usize, Field<bool>>,
-    /// The roster state term by (state, roster owner).
     states: crate::combat_sources::Map<(usize, u32), Field<i64>>,
-    /// State country accumulator by (state, owner).
     state_roots: crate::combat_sources::Map<(usize, u32), Field<usize>>,
-    /// The weather manager's per-province accumulator by province id.
     weather: crate::combat_sources::Map<u32, Field<Option<usize>>>,
-    /// Special-forces composition ratio by template object.
     templates: crate::combat_sources::Map<usize, Field<i64>>,
     requests: u64,
     hits: u64,
 }
 
 impl Memo {
-    /// An active, empty memo. Storage grows on the acquiring worker.
     pub fn new() -> Self {
         Self {
             enabled: true,
@@ -331,7 +290,6 @@ impl Memo {
         }
     }
 
-    /// Forget every entry and count, keeping the storage for the next capture.
     pub fn clear(&mut self) {
         self.modifiers.clear();
         self.countries.clear();
@@ -344,8 +302,6 @@ impl Memo {
         self.hits = 0;
     }
 
-    /// Keyed reads requested since the last clear, and how many were answered
-    /// from an earlier division's read.
     pub fn counts(&self) -> (u64, u64) {
         (self.requests, self.hits)
     }
@@ -380,8 +336,6 @@ fn remember<K: Copy + Eq + std::hash::Hash, V: Copy>(
         return value;
     }
     let value = read();
-    // A refused reservation has already reported terminal allocation failure;
-    // the value itself was read exactly as without the memo.
     if crate::allocation::reserve_map(map, 1).is_ok() {
         map.insert(key, value);
     }
@@ -472,8 +426,6 @@ impl Memo {
     }
 }
 
-/// Reads one already admitted class-zero seed. Missing seed fields are never
-/// retried. The caller supplies the existing fresh exercise result.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -484,8 +436,6 @@ pub fn capture(
     capture_with_acclimatization(memory, base, game_state, seed, exercising, None)
 }
 
-/// Share the exact original fresh-factor observation, including refusal.
-/// None means unobserved; Some(Err) never authorizes another native read.
 pub fn capture_with_acclimatization(
     memory: &impl Memory,
     base: usize,
@@ -505,9 +455,6 @@ pub fn capture_with_acclimatization(
     )
 }
 
-/// [`capture_with_acclimatization`] answering keyed reads from `memo` when an
-/// earlier division of the same capture already made them. Every field is the
-/// one the unmemoized read returns; only repeated native reads are skipped.
 pub fn capture_memoized(
     memory: &impl Memory,
     base: usize,
@@ -612,7 +559,6 @@ pub fn capture_memoized(
         let roster = seed
             .roster_owner
             .ok_or("attrition roster owner unavailable")?;
-        // Every operand below follows only (state, roster owner).
         remember(
             memo.enabled,
             (&mut memo.requests, &mut memo.hits),
@@ -748,7 +694,6 @@ pub fn capture_memoized(
         let Some(state) = state else {
             return Ok(None);
         };
-        // Check active border war before the owner's ordinary war status.
         if field::<u8>(memory, state, 0x865)? == 0 {
             return Ok(None);
         }
@@ -762,7 +707,6 @@ pub fn capture_memoized(
     });
     output.country_attrition_modifier =
         country_accumulator.and_then(|root| memo.modifier(memory, base, root, ATTRITION));
-    // This formatter call is unconditional, including a zero root value.
     output.sources[COUNTRY_SOURCE] =
         country_accumulator.map(|root| Some(request(root, ATTRITION, 2, ONE)));
     output
@@ -836,8 +780,6 @@ fn terrain(
             let entry = entries
                 .element(ordinal, 16)
                 .ok_or("attrition equipment index invalid")?;
-            // Any nonzero amount, including a negative amount, contributes exactly
-            // once. Identical variants in separate entries keep separate occurrences.
             if field::<i64>(memory, entry, 8)? == 0 {
                 continue;
             }
@@ -855,8 +797,6 @@ fn terrain(
 }
 
 fn at_war(memory: &impl Memory, base: usize, country: usize) -> Field<bool> {
-    // War status tests count first, then raw relation kind; this branch does
-    // not test the retired byte.
     let diplomacy = field::<u64>(memory, country, ccountry::DIPLOMACY_STATUS)? as usize;
     identity(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
     if field::<i32>(memory, diplomacy, cdiplomacy_status::ENEMY_COUNTRY_COUNT)? != 0 {
@@ -1006,7 +946,6 @@ fn thermal(
         {
             return Err("attrition army leader reference type mismatch");
         }
-        // Weather selects the leader's weather block rather than its unit block.
         at(leader, 0x298).map(Some)
     })();
     sources[source + 2] =
@@ -1114,7 +1053,6 @@ fn supply_penalty(
 }
 
 fn template_ratio(memory: &impl Memory, base: usize, template: usize) -> Field<i64> {
-    // A null template supplies the default empty composition.
     if template == 0 {
         return Ok(0);
     }

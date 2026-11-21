@@ -1,7 +1,3 @@
-//! Change-driven occupation rows beside the existing authenticated state census.
-//! Carried entries compare writer certificates only: no hourly native dependency sweep.
-//! Country/relation source keys are shared across states, and native acquisition runs only
-//! on mutation, initial demand or an invalidating boundary. Output cloning is spool-only.
 use collector_observers::occupation_changes as changes;
 use engine_allocation as allocation;
 use engine_native::{Memory, cstate, walk::Outcome};
@@ -243,8 +239,6 @@ impl SourceCache {
         Ok(())
     }
 }
-// The hover recalculates its target, independently of the retained speeds.
-// Keep both rate trees under source certificates; playback selects the printed branch.
 fn tree_demand(key: u32) -> bool {
     key != cresistance::hover::NO_COMPLIANCE_GAIN
 }
@@ -289,7 +283,6 @@ pub(crate) struct Store {
     quiet: Option<(u64, u64)>,
     allocated: usize,
     invalidated: bool,
-    /// Renewed whenever an acquisition may publish other rows or another outcome.
     generation: u64,
 }
 #[cfg(test)]
@@ -299,7 +292,6 @@ impl Default for Store {
     }
 }
 impl Store {
-    /// A refused allocation is the collector's allocation failure.
     pub(crate) fn new() -> std::io::Result<Self> {
         Ok(Self {
             entries: Vec::new(),
@@ -321,7 +313,6 @@ impl Store {
         };
     }
     pub(crate) fn bytes(&self) -> usize {
-        // Includes older source/row versions retained by in-flight frame snapshots.
         self.allocated + self.sources.bytes.0.load(Ordering::Relaxed)
     }
     fn measure(&self) -> usize {
@@ -371,7 +362,6 @@ impl Store {
         observers.demand(sources.len().saturating_mul(9));
         let mut changed = self.invalidated;
         if self.invalidated {
-            // Failure recovery retires payloads on this worker, never at the callback join.
             self.entries.clear();
             self.sources.entries.clear();
             self.invalidated = false;
@@ -408,7 +398,6 @@ impl Store {
             self.entries.resize_with(sources.len(), Entry::default);
             changed |= previous != (self.entries.len(), self.entries.capacity());
             for (&source, entry) in sources.iter().zip(&mut self.entries) {
-                // The existing census supplies identity; certificate checks read only observer memory.
                 let held = entry.source == source
                     && entry.context == (base, state)
                     && entry.row.is_some()
@@ -451,11 +440,9 @@ impl Store {
             Err(reason) => {
                 self.used = 0;
                 self.quiet = None;
-                // Per-source certificates authenticate retained cache entries on retry.
                 Outcome::Unavailable { reason }
             }
         };
-        // Unchanged entries hold the same row allocations in the same order.
         if changed || (self.used, self.outcome) != published {
             self.generation = crate::projection::generation();
         }
@@ -469,7 +456,6 @@ impl Store {
     }
 }
 
-/// A frame retains immutable rows; neither buffer rotation nor a later writer mutates them.
 #[derive(Default)]
 pub(crate) struct Occupation {
     rows: Vec<Arc<CapturedRow>>,
@@ -478,8 +464,6 @@ pub(crate) struct Occupation {
 }
 impl Occupation {
     pub(super) fn fail(&mut self, reason: &'static str) {
-        // Keep shared payload retirement off the callback. The verdict alone
-        // prevents partially acquired rows from reaching conversion.
         self.outcome = Some(Outcome::Unavailable { reason });
         self.generation = None;
     }
@@ -516,7 +500,6 @@ impl Occupation {
             |row| row.output(),
         )
     }
-    /// [`Self::table`], or compared equal unconverted when the store republished its rows.
     pub(crate) fn input(
         &self,
         projection: Option<&mut crate::projection::Projection<'_>>,
@@ -558,7 +541,6 @@ impl CapturedRow {
             _charge: Charge::new(bytes, payload),
         }
     }
-    /// Called only by spool conversion, after acquisition has returned the persistent store.
     fn output(&self) -> rows::StateResistanceRow {
         let mut row = RowCodec::try_clone(&self.row).unwrap_or_default();
         row.modifier_sources = Recorded::Value(
@@ -578,7 +560,6 @@ impl CapturedRow {
     }
 }
 
-// Keep the owned row paired with the receivers, certificates and raw country evidence.
 #[allow(clippy::type_complexity)]
 fn capture(
     memory: &impl Memory,
@@ -607,7 +588,6 @@ fn capture(
         receivers[1] = map.receivers[0];
         receivers[2] = map.receivers[1];
         receivers[7] = map.receivers[2];
-        // The saved group key follows its retained country, independently of raw lookup.
         receivers[8] = map.receivers[3];
     }
     let certificates = certificates(observers, receivers)?;
@@ -840,7 +820,6 @@ mod tests {
             MARKER_STATE.pointer + cstate::CONTROLLER,
             1_u32.to_le_bytes(),
         );
-        // An empty authenticated state-country bucket selects the base accumulator.
         marker_put(
             &mut bytes,
             MARKER_STATE.pointer + cstate::COUNTRY_MODIFIERS,
@@ -872,7 +851,6 @@ mod tests {
             object + cresistance::COMPLIANCE,
             234_567_i64.to_le_bytes(),
         );
-        // Inactive occupied states still supply the map's retained definitions.
         marker_put(&mut bytes, object + cresistance::ACTIVE, [0]);
         marker_put(
             &mut bytes,
@@ -1050,9 +1028,6 @@ mod tests {
         assert!(Arc::ptr_eq(store.entries[0].row.as_ref().unwrap(), &held));
         assert_eq!(emitted_markers(&store), first);
 
-        // Dynamic reservation changes this retained country's id. Its existing country
-        // reset notification marks only that pointer, without touching the raw lookup
-        // countries, holder, lists or resistance operands.
         marker_put(
             &mut bytes,
             MARKER_RETAINED_COUNTRY + engine_native::ccountry::ID,
@@ -1190,7 +1165,6 @@ mod tests {
         });
         assert_eq!(emitted_markers(&store), first);
 
-        // Only the holder's core-definition membership changes; no level writer runs.
         marker_put(&mut bytes, CORE_DEFINITIONS, 0x13800_u64.to_le_bytes());
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
@@ -1279,7 +1253,6 @@ mod tests {
         assert_eq!(map_markers(&born).core_country, Some(2));
         assert_eq!(store.entries[0].receivers[8], store.entries[0].receivers[2]);
 
-        // Empty buckets keep stale pointers, which cannot preserve a destroyed group's names.
         marker_group_present(&mut bytes, false);
         drop(observer.0.notify(MARKER_HOLDER));
         acquire_markers(
@@ -1528,7 +1501,6 @@ mod tests {
         assert_ne!(written, again);
         store.forget();
         assert_ne!(acquire(&mut store, &bytes, rows), written);
-        // Without a projection the input is the converted table.
         frame.publish(&store);
         let table: replay_frame::frame::TableInput = frame.table().into();
         assert_eq!(frame.input(None), table);
@@ -1565,7 +1537,6 @@ mod tests {
         let mut ordinary = FrameEncoder::new();
         let scratch = ProjectionScratch::default();
         let mut occupation = Occupation::default();
-        // Hour 2's writer changes the row; every other hour carries it.
         for hour in 0..5 {
             if hour == 2 {
                 let at = source.pointer + cstate::RESISTANCE + cresistance::LEVEL;
@@ -1662,7 +1633,6 @@ mod tests {
             source_receivers(receivers).map(|receiver| observer.sequence(receiver).unwrap())
         });
         let epoch = observer.quiet().unwrap().0;
-        // Clearing this diplomacy changes its own exile and every hosted exile's host.
         drop(observer.0.notify(exile[3]));
         assert_eq!(observer.quiet().unwrap().0, epoch);
         assert_ne!(certificates(&observer, exile).unwrap(), before[0]);
@@ -1721,7 +1691,6 @@ mod tests {
                 cached.nodes[0].name.as_ptr()
             );
         }
-        // A new source version cannot rewrite a frame already handed to the spool.
         store.sources.entries.insert(
             (91, 42),
             Cached::shared(91, (3, 8), Some(456), vec![], vec![], &store.sources.bytes),
@@ -1851,7 +1820,6 @@ mod tests {
         ];
         crate::test_support::with_allocations_denied(|| {
             for _ in 0..8 {
-                // Other states, rotating buffers and a branch flip demand the same certified keys.
                 cache
                     .ensure(&NoReads, 0, RATE_ROOT, &reverse, (3, 7), 91)
                     .unwrap();
@@ -2161,8 +2129,6 @@ mod tests {
     #[test]
     fn occupation_country_source_cache_reuses_the_same_key_without_a_second_native_read() {
         let mut cache = SourceCache::default();
-        // A native empty source has no memory dependencies, and a second state's demand
-        // must reuse its owned snapshot. Nonempty sources use exactly the same cache key.
         cache.entries.insert(
             (91, 42),
             Cached::shared(91, (3, 7), Some(123), vec![], vec![], &cache.bytes),

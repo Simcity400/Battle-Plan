@@ -11,7 +11,6 @@ const source = { id: 'progressive', revision: '1' } as DashboardSource;
 const request = { sourceId: source.id, revision: source.revision, product: 'party-history', params: { branchId: '1' } };
 const complete = { rows: ['whole'] };
 
-/** A paged reply: each page names the next one's cursor, and the pages read so far join into one. */
 type Page = { rows: string[]; cursor: string | null };
 registerPageJoin(['synthetic-pages'], pages => ({ rows: (pages as Page[]).flatMap(page => page.rows), cursor: null }));
 const paged = (params: Record<string, unknown> = {}): ProductRequest => ({ sourceId: source.id, revision: source.revision, product: 'series-summary',
@@ -27,7 +26,6 @@ function gate<T>() {
   return { promise, resolve };
 }
 
-/** Uses real product, cache and page code; only React's dispatcher is synthetic. */
 function mount<T>(read: () => T, frame: HeldFailures | null = null) {
   type Slot = { value?: unknown; initialized?: boolean; deps?: readonly unknown[]; cleanup?: () => void };
   const slots: Slot[] = [];

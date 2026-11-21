@@ -1,6 +1,3 @@
-//! Trigger descriptions: a combat tactic's requirements describe the embedded conjunction
-//! with inversion=false, indent=0, mode=1 ([`describe`]), and the caller supplies the heading
-//! and two-level line indentation; other callers pass the game's indent and mode ([`describe_at`]).
 
 use installed_content_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
@@ -15,13 +12,8 @@ use super::{
 };
 use crate::scripted_text::{EventScope, EventScopes, Link, ScriptedText};
 
-/// Resolves a stored tactic operand through the caller's native tactic database.
 pub type TacticName<'a> = dyn Fn(&[u8]) -> Result<Vec<u8>, String> + 'a;
 
-/// Describes the loaded requirement children using the caller's World and
-/// Combat. Unknown native descriptions are refused by name; no predicate is
-/// implemented here. `phases` is the matching tactic database's phase order,
-/// since its native reader has already replaced phase operands with IDs.
 #[allow(
     clippy::too_many_arguments,
     reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
@@ -39,8 +31,6 @@ pub fn describe<'a>(
     describe_at(items, evaluator, text, localisation, scopes, phases, tactic_name, 0, 1, refusals)
 }
 
-/// [`describe`] of the conjunction at the game's `indent` and display `mode`: from indent one,
-/// two or more children go under the conjunction's own heading.
 #[allow(
     clippy::too_many_arguments,
     reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
@@ -113,8 +103,6 @@ impl<'a> Formatter<'_, '_, 'a> {
             .expand_in_session(&text, &graph, 0, self.evaluator)
     }
 
-    // The bare combat event has no carried country;
-    // a promoted country clears Combat, retaining linked scopes.
     fn graph(&self, scopes: Scopes) -> Result<EventScopes, String> {
         let mut graph = EventScopes::new(vec![EventScope::of(
             event_object(scopes.this).map_err(|why| why.to_string())?,
@@ -177,8 +165,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         Ok(text)
     }
 
-    // A conjunction flattens at indent0 or fewer than two
-    // loaded children; otherwise its header precedes child tooltips.
     fn and(
         &self,
         units: &[Unit<'_, 'a>],
@@ -211,8 +197,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         Ok(text)
     }
 
-    // Obtain own text before checking,
-    // skip checking when own text is empty, then visit descendants in mode0.
     fn body(
         &self,
         units: &[Unit<'_, 'a>],
@@ -228,8 +212,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 match unit {
                     Unit::Unknown(why) => return Err(why.clone().to_string()),
                     Unit::Chain(chain) => {
-                        // Check each limit and only
-                        // describe the first selected branch, as a conjunction.
                         for branch in chain {
                             if let Some(why) = &branch.refused {
                                 return Err(why.clone().to_string());
@@ -253,8 +235,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 return Err("keyless trigger description is not reproduced".into());
                             }
                             Child::Scripted(template) => {
-                                // A scripted trigger's own text is
-                                // empty, the template receives inversion == operand.
                                 let frame = installed_content_core::trigger_keys::frame(template);
                                 if let Some(why) = self.evaluator.enter_frame(frame) {
                                     return Err(why);
@@ -296,7 +276,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                                 if mode == 2 { 2 } else { 0 },
                             )?),
                             Child::Coded(_, name) if name == "or" => {
-                                // A disjunction includes its own check.
                                 text.push_str(&self.prefix(
                                     unit,
                                     scopes,
@@ -332,8 +311,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                                         text.push('\n');
                                     }
                                 }
-                                // Custom tooltip classes suppress descendant text
-                                // while checking still sees it.
                                 if !item.keyword_is("custom_trigger_tooltip")
                                     && !item.keyword_is("custom_override_tooltip")
                                 {
@@ -353,9 +330,6 @@ impl<'a> Formatter<'_, '_, 'a> {
             })();
             if let Err(why) = result {
                 text.truncate(start);
-                // Own text can read scoped operands before Check; an unknown
-                // limit can select a body whose TLS effects we cannot follow.
-                // Preserve later pure siblings, refuse dependent temp reads.
                 self.evaluator.taint_temps(
                     crate::triggers::Failure::from(why.clone())
                         .context(|why| format!("trigger tooltip session is uncertain: {why}")),
@@ -380,7 +354,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         indent: usize,
         mode: u8,
     ) -> Result<String, String> {
-        // Enter the context scope and format its target heading.
         let entered = self
             .evaluator
             .enter_scope(parsed, scopes)
@@ -406,7 +379,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 },
                 &[],
             )?,
-            _ if entered.this == Scope::Combat => String::new(), // The fallback carries neither state nor country.
+            _ if entered.this == Scope::Combat => String::new(),
             _ => {
                 let name = match entered.this {
                     Scope::Country(country) | Scope::CountryLeader { country, .. } => {
@@ -491,7 +464,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         }
         match name.as_str() {
             "phase" => {
-                // Use the stored ID, not authored spelling.
                 let id = installed_content_core::fixed5::decimal_i32(operand);
                 let key = if id < 0 {
                     b"PHASE_DEFAULT".as_slice()
@@ -516,8 +488,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .evaluator
                     .required(operand, item.quoted(), fixed, scopes)
                     .map_err(|why| why.to_string())?;
-                // These own methods take the greater wording only for >
-                // normally or < under inversion; equality uses the other arm.
                 let greater = item.operator
                     == if inverted {
                         Operator::Less
@@ -553,7 +523,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 self.localised(key, &[argument])
             }
             "skill" => {
-                // Format the comparison with its evaluated prefix in mode1.
                 let value = self
                     .evaluator
                     .required(operand, item.quoted(), false, scopes)
@@ -578,7 +547,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_trait" => {
-                // Try unit traits before country traits.
                 let (unit, country) = self
                     .evaluator
                     .world
@@ -586,8 +554,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .map_err(str::to_owned)?;
                 let name =
                     std::str::from_utf8(operand).map_err(|_| "trait operand is not UTF-8")?;
-                // Country localisation uses the GUI's local
-                // country, not the side currently being described.
                 let label = if let Some(spelling) = unit
                     .spellings()
                     .find(|known| known.eq_ignore_ascii_case(name))
@@ -650,7 +616,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "is_fighting_in_terrain" => {
-                // Localise the terrain's stored identifier.
                 let terrain = self.text.content().environment()?.terrain()?;
                 let index = terrain.category(operand).ok_or_else(|| {
                     format!(
@@ -669,7 +634,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_unit_type" => {
-                // Localise the stored string before scope expansion.
                 let label = self.localised(operand, &[])?;
                 self.scoped(
                     if inverted {
@@ -682,7 +646,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_combat_modifier" => {
-                // Resolve the combat modifier's display token.
                 if !operand.eq_ignore_ascii_case(b"river_crossing") {
                     return Err(format!(
                         "combat modifier {} display token is not reproduced",
@@ -700,7 +663,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_tactic" => {
-                // Tactic text uses its localised identifier.
                 let token = self
                     .evaluator
                     .world
@@ -713,7 +675,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                     .token(token)
                     .map_err(|why| why.to_string())?
                     .ok_or("tactic token has no lexical tokens literal")?;
-                let resolved = (self.tactic_name)(stored)?; // Resolve a named tactic or the null tactic.
+                let resolved = (self.tactic_name)(stored)?;
                 let label = self.localised(&resolved, &[])?;
                 self.localised(
                     if inverted {
@@ -725,7 +687,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "tag" => {
-                // Combat carries country, no unit leader.
                 if matches!(
                     scopes.this,
                     Scope::Leader(_) | Scope::CountryLeader { .. } | Scope::Character(_)
@@ -749,7 +710,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "has_volunteers" => {
-                // Same country getter and marked name as tag, without its unit-leader branch.
                 let country = self
                     .evaluator
                     .country_operand(item, scopes)
@@ -767,7 +727,6 @@ impl<'a> Formatter<'_, '_, 'a> {
                 )
             }
             "custom_trigger_tooltip" | "custom_override_tooltip" => {
-                // Render own text with empty descendants.
                 let fields = children(item);
                 let positive = field(fields, "tooltip");
                 let negative = field(fields, "not_tooltip");
@@ -778,7 +737,7 @@ impl<'a> Formatter<'_, '_, 'a> {
                 };
                 let Some(selected) = selected else {
                     return Ok(String::new());
-                }; // Empty bound localisation.
+                };
                 let key = selected
                     .value
                     .scalar()

@@ -1,6 +1,3 @@
-//! The snow upload writes the bands of rows a step changed, a run of neighbouring bands a piece,
-//! and ends with the scene holding what taking the grid whole leaves. The frame's upload is the
-//! only writer: what the worker folds reaches the scene through it and nowhere else.
 
 use super::{BAND, Changed, Made, RUN, Snow, Target};
 use crate::layers::Layer;
@@ -11,7 +8,6 @@ use viewer_foundation::map::presentation::Continuity;
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 200;
 
-/// A stand-in for the scene: its texture's bytes, and what each call wrote.
 #[derive(Default)]
 struct Counted {
     texels: Vec<u8>,
@@ -77,18 +73,15 @@ fn grid(seed: u8) -> Arc<SnowMud> {
     })
 }
 
-/// `grid` with `cells` given the texel `[value; 4]`.
 fn edited(grid: &SnowMud, cells: &[u32], value: u8) -> Arc<SnowMud> {
     let texels = grid.texels.edited(cells.iter().flat_map(|&cell| (0..4).map(move |channel| (cell as usize * 4 + channel, value))));
     Arc::new(SnowMud { texels, ..grid.clone() })
 }
 
-/// What the worker hands over with a grid: the bands where it differs from the one before.
 fn made(grid: &Arc<SnowMud>, cells: Option<&[u32]>) -> Made {
     made_at(None, grid, cells)
 }
 
-/// [`made`], stamped with the hour it is current at.
 fn made_at(stamp: Option<i32>, grid: &Arc<SnowMud>, cells: Option<&[u32]>) -> Made {
     Made { epoch: 0, stamp, grid: Ok(Some(Arc::clone(grid))), changed: cells.map_or(Changed::Unknown, |cells| Changed::of_cells(cells, WIDTH)), refused: None, marked: [0; 3], held: 0, ns: 0 }
 }
@@ -97,7 +90,6 @@ fn layer() -> Snow {
     Snow::new(Err("no content: the upload alone is tested".into()))
 }
 
-/// The layer holding `first`, sent to the scene whole.
 fn sent(first: &Arc<SnowMud>, scene: &mut Counted) -> Snow {
     let mut layer = layer();
     layer.take(made(first, None));
@@ -107,9 +99,6 @@ fn sent(first: &Arc<SnowMud>, scene: &mut Counted) -> Snow {
     layer
 }
 
-/// One cell's snow changes: the upload writes that cell's band and columns alone, not the grid,
-/// and the scene ends with the new grid. Before, every new grid was handed to the scene whole and
-/// its presentation compared, copied and wrote every page the change touched.
 #[test]
 fn snow_upload_writes_only_the_band_a_changed_cell_lies_in() {
     let first = grid(1);
@@ -130,9 +119,6 @@ fn snow_upload_writes_only_the_band_a_changed_cell_lies_in() {
     assert!(layer.uploaded());
 }
 
-/// A step that changes nothing the picture reads hands back the grid the scene holds: nothing is
-/// owed and nothing written. A grid made again with no cell changed (a snow word, a factor) is
-/// finished without a band written.
 #[test]
 fn snow_a_step_that_changes_no_cell_writes_no_band() {
     let first = grid(1);
@@ -151,9 +137,6 @@ fn snow_a_step_that_changes_no_cell_writes_no_band() {
     assert!(layer.uploaded());
 }
 
-/// With every band changed, one upload writes every band owed, a run of neighbouring bands a
-/// piece, and ends with the scene holding the grid as taking it whole would. A grid taken after it
-/// writes its own bands, and no upload is ever one indivisible write.
 #[test]
 fn snow_a_whole_change_is_written_in_runs_of_bands_and_ends_equal_to_whole() {
     let first = grid(1);
@@ -180,10 +163,6 @@ fn snow_a_whole_change_is_written_in_runs_of_bands_and_ends_equal_to_whole() {
     assert_eq!(scene.begun, 3, "a run for the composed grid, one for the change, one for the grid after it");
 }
 
-/// Two steps folded ahead, each grid with the bands where it differs from the one before it; the
-/// frame takes both in one frame (it applied both steps): the bands uploaded are the union of the
-/// two grids' bands, and the scene ends holding the second grid, as a whole write of it would.
-/// A grid ahead of the hour applied is not taken. Before, the frame took one grid a batch.
 #[test]
 fn snow_two_grids_taken_in_one_frame_upload_the_union_of_their_bands() {
     let first = grid(1);
@@ -208,8 +187,6 @@ fn snow_two_grids_taken_in_one_frame_upload_the_union_of_their_bands() {
     assert!(layer.uploaded());
 }
 
-/// Changed sets join exactly: a band's columns are the bound of both, and not knowing absorbs
-/// everything; the pieces come in runs of neighbouring changed bands, whole when not known.
 #[test]
 fn snow_changed_sets_join_and_are_written_in_runs_of_neighbouring_bands() {
     let cells = [WIDTH * 9 + 5, WIDTH * 15 + 30, 3, WIDTH * 39 + 63];
@@ -229,9 +206,6 @@ fn snow_changed_sets_join_and_are_written_in_runs_of_neighbouring_bands() {
     assert_eq!((changed.run_in(size, None), changed.bands(40)), (Some((0..40, 0..WIDTH)), 5), "not known is written whole");
 }
 
-/// Only the bands the camera shows are written: a change inside the view is written at once and a
-/// change outside it stays owed, so the layer still owes an install while the view holds one;
-/// a view across the world's seam shows the columns at both ends, and both are written.
 #[test]
 fn snow_writes_the_bands_the_camera_shows_and_owes_the_rest() {
     let shown = super::Shown { rows: 80..100, columns: [20..30, 0..0] };
@@ -257,10 +231,6 @@ fn snow_writes_the_bands_the_camera_shows_and_owes_the_rest() {
     assert!(!seam.shows(0, &(40..41)), "and not the columns between them");
 }
 
-/// Every texel the scene is shown is written by the upload, from the grid the worker handed over:
-/// taking what the worker made writes nothing, and the upload alone leaves the scene holding that
-/// grid. Before, the worker wrote the grid due next into a texture of the scene's with a queue of
-/// its own, which the frame swapped in: descheduled, it held the queue against the frame.
 #[test]
 fn snow_only_the_frames_upload_writes_what_the_worker_folded() {
     let first = grid(1);

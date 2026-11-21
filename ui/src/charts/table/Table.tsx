@@ -41,69 +41,48 @@ export type { TableTree } from './logic';
 const WINDOWING_THRESHOLD = 120;
 const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_RANKS: ReadonlyMap<string, RankChange> = new Map();
-/** How long a rank marker shows once its row moves. */
 const RANK_HOLD_MS = 2500;
 interface NaturalCell { key: string; row: string | undefined; revision: RowRevision; padding?: number }
 interface NaturalMeasurement { revision: RowRevision; width: number; padding: number }
 const NO_COLUMNS: readonly TableColumn<never>[] = [];
-/** Unchanged markers keep their state, so new row objects in the same order do not re-render the table. */
 const sameRanks = (before: ReadonlyMap<string, RankChange>, next: ReadonlyMap<string, RankChange>) => before.size === next.size
   && [...next].every(([key, change]) => { const held = before.get(key); return held?.rank === change.rank && held.delta === change.delta && held.until === change.until; });
 export interface TableProps<T> {
   label: string; rows: readonly T[]; columns: readonly TableColumn<T>[]; rowKey: (row: T) => string;
-  /** Data operands that determine every displayed cell, including failed reads and content. */
   rowRevision?: (row: T) => RowRevision;
-  /** Current recorded tag order may differ from a country's stable motion key. */
   tieKey?: (row: T) => string;
-  /** Optional grouping keeps the same row identities, geometry and exact values. */
   groupBy?: (row: T) => TableGroup;
-  /** Group header rows with a disclosure and their rows nested under them, windowed together. */
   tree?: TableTree<T>;
-  /** Rows keep the order they are given, such as the game's own order; headers offer no sorting. */
   unsorted?: boolean;
   sort: Sort; setOption?: WidgetProps['setOption'];
-  /** Content-dependent column choices encode their persisted sort token. */
   sortOptionValue?: (sort: Sort) => string;
   cellBars?: boolean; rank?: boolean; rankMarkers?: boolean; density?: 'comfortable' | 'compact';
-  /** Comfortable-density height in layout pixels; compact scales by the CSS ratio. */
   rowHeight?: number;
   onRowClick?: (row: T) => void;
   muted?: (row: T) => boolean;
   menu?: (row: T) => MenuItem[];
   tooltip?: (row: T) => TooltipContent;
-  /** The rows actually mounted; a widget asks for flags only for these countries. */
   onVisibleRows?: (rows: readonly T[]) => void;
   hoursPerSecond?: number;
-  /** Narrow tables hide prioritised columns into the row tooltip, or scroll sideways. */
   narrow?: NarrowTable;
-  /** The playhead's values of the columns that `paint`, keyed `liveKey(rowKey(row), column.key)`: read as each frame
-   * paints, so they move with no render. Their texts, bars and a sort by them come from here, not from `rows`. */
   live?: Live<LiveValues<SortValue>>;
-  /** Following, the clock rows are revealed by and each row's reveal hour: rows past the clock's hour are drawn ahead,
-   * hidden and taking no height, and each frame reveals those it reaches with the entry motion while the rows after them
-   * glide down, so rows arriving cost no render. Not with `rank`, whose numbers count every row given. */
   reveal?: { clock: RevealClock; at: (row: T) => number };
 }
 
-/** Each slot's reveal hour, the same hours ascending, and the slot of each key: what a frame reads to reveal rows. */
 interface Held { reveal: Float64Array; sorted: Float64Array; slots: ReadonlyMap<string, number> }
 
-/** How many of `sorted` are at or before `hour`. */
 function revealedThrough(sorted: Float64Array, hour: number): number {
   let low = 0, high = sorted.length;
   while (low < high) { const middle = (low + high) >> 1; if (sorted[middle] <= hour) low = middle + 1; else high = middle; }
   return low;
 }
 
-/** `[start, end)` widened over the rows next to it held ahead of `hour`: they take no height where the row they will
- * push down starts, and are drawn with it so revealing them needs no render. Rows merely unmeasured never widen it. */
 function widenOverAhead(held: Held | null, hour: number | null, start: number, end: number, count: number): [number, number] {
   if (!held || hour === null) return [start, end];
   while (start > 0 && held.reveal[start - 1] > hour) start--;
   while (end < count && held.reveal[end] > hour) end++;
   return [start, end];
 }
-/** `offsets` with the slots not revealed at `hour` taking no height; `offsets` itself when every slot is revealed. */
 function revealedOffsets(offsets: readonly number[], held: Held, hour: number): readonly number[] {
   if (revealedThrough(held.sorted, hour) === held.sorted.length) return offsets;
   const shown = [offsets[0]];
@@ -111,12 +90,9 @@ function revealedOffsets(offsets: readonly number[], held: Held, hour: number): 
   return shown;
 }
 
-/** A painted cell: its text, its bar if it draws one, and the key and column it shows. */
-/** A painted bar and tone from another live cell of the row (`barCell`), and the tone last set. */
 interface FromCell { key: string; bar: BarCell | null; element: HTMLElement; tone: string | undefined }
 interface LiveCell<T> { key: string; column: TableColumn<T>; text: TextCell; bar: BarCell | null; from: FromCell | null }
 
-/** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
 export default function Table<T>({ label, rows, columns, rowKey, rowRevision, tieKey = rowKey, groupBy, tree, unsorted = false, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
   tooltip, onVisibleRows, hoursPerSecond, narrow = 'hide', live, reveal: givenReveal }: TableProps<T>) {
@@ -151,12 +127,8 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const sortedColumn = columns.find(column => column.key === requestedSort.column && column.sortable !== false)
     ?? columns.find(column => column.sortable !== false);
   const sort = { column: sortedColumn?.key ?? '', direction: sortedColumn?.direction ?? requestedSort.direction };
-  // The row's identity (the first column) and the column it is sorted by never hide;
-  // rows kept in their given order have no sort column.
   const order = useRevision(narrow === 'hide' ? hideOrder(columns).filter(key => (unsorted || key !== sort.column) && key !== columns[0]?.key) : []);
   const [fit, setFit] = useState<{ scope: string; fit: ColumnFit }>({ scope: '', fit: FULL_FIT });
-  // Widths each column needed hold only for the same tracks and typography.
-  // The rank track takes width from the other columns too.
   const fitScope = JSON.stringify([order, widthScope, rank]);
   const columnFit = fit.scope === fitScope ? fit.fit : FULL_FIT;
   const shownColumns = useMemo(() => {
@@ -166,15 +138,12 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   }, [columns, columnFit]);
   const hiddenColumns = useMemo(() => columnFit.hidden.length
     ? columns.filter(column => columnFit.hidden.includes(column.key) && !column.inTooltip) : NO_COLUMNS as readonly TableColumn<T>[], [columns, columnFit]);
-  // A sort by a painted column orders by the live values last committed.
   const liveSort = live && !unsorted && sortedColumn && (sortedColumn.paint || sortedColumn.sortsLive) ? sortedColumn.key : null;
   const [sortedFrom, setSortedFrom] = useState<{ live: typeof live; values: LiveValues<SortValue> } | null>(null);
   const sortValues = liveSort === null ? null : sortedFrom && sortedFrom.live === live ? sortedFrom.values : live!.read();
-  // Rebuilt column objects with the same accessor (such as new labels for another column) keep the order.
   const columnValue = sortedColumn?.value;
   const sortValue = useMemo(() => sortValues && liveSort !== null ? (row: T) => sortValues.get(liveKey(rowKey(row), liveSort)) : columnValue,
     [sortValues, liveSort, rowKey, columnValue]);
-  // Groups the table holds itself: each toggled row's key and whether it is now open.
   const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
   const treeChildren = tree?.children, treeOpen = tree?.open, treeInitial = tree?.initiallyOpen, onToggle = tree?.onToggle;
   const isOpen = useCallback((row: T) => treeOpen ? treeOpen(row) : toggled.get(rowKey(row)) ?? treeInitial?.(row) ?? true,
@@ -198,19 +167,14 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item),
     item: { value: item, rank: nesting?.get(rowKey(item))?.position ?? slot + 1 } })), [ordered, rowKey, nesting]);
   const moving = useRowMotion(items, true);
-  // The rows in view at the last commit, and those in view before its change, kept mounted while
-  // they glide out until the next change. Read in render and written after a commit, so recording
-  // them renders nothing again.
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string>; departing: ReadonlySet<string> } | null>(null);
   const motionNow = useMotionNow();
   const glideMs = easeTau(tokens.motion, motionNow(hoursPerSecond), tokens.reducedMotion) * 2.5;
-  // Bars glide only while playing and without reduced motion, read when a live bar is painted.
   const barGlideMs = tokens.reducedMotion || motionNow(hoursPerSecond) === undefined ? 0 : BAR_GLIDE_MS;
   const barMotion = useRef({ reduced: tokens.reducedMotion, given: hoursPerSecond });
   barMotion.current = { reduced: tokens.reducedMotion, given: hoursPerSecond };
   const barGlide = useCallback(() => barMotion.current.reduced || motionNow(barMotion.current.given) === undefined ? 0 : BAR_GLIDE_MS, [motionNow]);
   const ordering = `${groupBy ? 'grouped/' : ''}${tree ? 'tree/' : ''}${unsorted ? 'given' : sortKey(sort)}`;
-  // Rank markers against the ranks last committed, so a new order shows them in the frame it is drawn.
   const committedRanks = useRef<{ ordering: string; ranks: ReadonlyMap<string, RankChange> }>({ ordering: '', ranks: NO_RANKS });
   const drawnRanks = useMemo(() => {
     const at = performance.now();
@@ -218,10 +182,9 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     const held = committedRanks.current;
     const next = rankChanges(held.ranks, items.map(item => item.key), at, RANK_HOLD_MS, held.ordering !== ordering);
     return { ranks: sameRanks(held.ranks, next) ? held.ranks : next, at };
-  }, [items, rank, rankMarkers, ordering]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, rank, rankMarkers, ordering]);
   const ranks = drawnRanks.ranks;
   useLayoutEffect(() => {
-    // A marker drawn here holds from when it is shown, however late its render commits.
     const shift = performance.now() - drawnRanks.at;
     let shown: Map<string, RankChange> | null = null;
     for (const [key, item] of ranks) {
@@ -230,8 +193,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       shown.set(key, { ...item, until: item.until + shift });
     }
     committedRanks.current = { ordering, ranks: shown ?? ranks };
-    // A marker whose hold ends is hidden where it is drawn, never by a commit (run 13: a commit a marker while playing);
-    // the next render leaves it out.
     let timer = 0;
     const expire = () => {
       const now = performance.now();
@@ -246,13 +207,12 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     };
     expire();
     return () => window.clearTimeout(timer);
-  }, [drawnRanks, ordering]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [drawnRanks, ordering]);
   useLayoutEffect(() => {
     const element = scroll.current;
     if (!element) return;
     if (!comfortable) return;
     const base = rowHeight != null && Number.isFinite(rowHeight) && rowHeight > 0 ? rowHeight : comfortable;
-    // The stylesheet's row heights are for 12px text, the default interface's --type-sm.
     const measuredHeight = densityRowHeight(base, density, compact / comfortable) * tableSize / 12;
     const headerHeight = Math.max(headerMinimum, tableSize * 1.5 + 6);
     const measure = () => {
@@ -273,7 +233,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     return keys;
   }, [count, items, leavingSlots]));
   const fullOffsets = useMemo(() => wrapping
-    // Heights measured at another width stand until their rows are measured again: rows never collapse onto each other meanwhile.
     ? measuredRowOffsets(slotKeys, rowMeasurements.heights, Math.max(view.rowHeight, rowMeasurements.floor), view.headerHeight)
     : rowOffsets(count, view.rowHeight, view.headerHeight), [wrapping, slotKeys, rowMeasurements, count, view.rowHeight, view.headerHeight]);
   const revealAt = revealBy?.at;
@@ -285,7 +244,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   }, [revealAt, items, slotKeys]);
   const revealHour = held && revealBy ? revealBy.clock.hour() : null;
   const revealCut = held && revealHour !== null ? revealedThrough(held.sorted, revealHour) : null;
-  // The hour matters only through the rows it reveals (`revealCut`): a render inside the same cut keeps the layout.
   const hourHeld = useRef(revealHour);
   hourHeld.current = revealHour;
   const offsets = useMemo(() => held && revealCut !== null && hourHeld.current !== null ? revealedOffsets(fullOffsets, held, hourHeld.current) : fullOffsets,
@@ -302,13 +260,9 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     }
   }, [heightScope, rowMeasurements, offsets, focusedKey, slotKeys, view.height, view.headerHeight]);
   const [start, end] = count > WINDOWING_THRESHOLD ? widenOverAhead(held, hourHeld.current, ...visibleRange(offsets, view.top, view.height), count) : [0, count];
-  // Held ahead: after each commit and each frame, each mounted row's place and reveal state (`data-reveal`, never
-  // rendered, so a render keeps a running entry) and the body's height are painted at the clock's hour.
   const body = useRef<HTMLTableSectionElement>(null);
   const revealed = useRef<{ full: readonly number[]; held: Held; header: number; cut: number; hour: number } | null>(null);
-  /** The rows' glide time for what the engine places now. */
   const rowGlide = useRef(0);
-  /** Each mounted row's slot and rank as the last render ordered them: what the commit writes into the rows. */
   const drawnSlots = useRef<ReadonlyMap<string, { slot: number; rank: number }>>(new Map());
   const enterRows = useRef(!tokens.reducedMotion);
   enterRows.current = !tokens.reducedMotion;
@@ -326,25 +280,19 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       else if (was === 'ahead') { if (enter) { row.dataset.reveal = 'in'; rowFades.enter(row); } else delete row.dataset.reveal; row.inert = false; }
     }
   }, []);
-  // Each commit, every mounted row takes its place through the engine's row glide (never a CSS transition, never a
-  // transform React writes): held ahead at the clock's hour, else at its slot. Measured corrections take theirs at once.
   rowGlide.current = measuring ? 0 : glideMs;
   useLayoutEffect(() => {
     revealed.current = held && revealCut !== null && hourHeld.current !== null
       ? { full: fullOffsets, held, header: view.headerHeight, cut: revealCut, hour: hourHeld.current } : null;
-    // Held ahead, the clock's hour places each row and marks those it has not reached, before anything reads that mark.
     if (revealed.current) paintRevealed(false);
     for (const row of body.current?.children as HTMLCollectionOf<HTMLElement> | undefined ?? []) {
       const drawn = drawnSlots.current.get(row.dataset.tableRow ?? '');
       if (!drawn) continue;
-      // A row's place in the order is written here, not rendered, so a new order renders no row (`placedRevision`).
       const index = String(drawn.slot + 2);
       if (row.getAttribute('aria-rowindex') !== index) row.setAttribute('aria-rowindex', index);
       const rankCell = row.firstElementChild;
       if (rank && !rankMarkers && rankCell?.classList.contains('table-rank') && rankCell.textContent !== String(drawn.rank)) rankCell.textContent = String(drawn.rank);
       if (!revealed.current && drawn.slot < offsets.length) rowGlides.to(row.style, offsets[drawn.slot] - view.headerHeight, rowGlide.current);
-      // A row rendered entering enters once, one rendered leaving fades out once, and one kept again turns back, drawn by the engine.
-      // A row held ahead of the clock enters when it is revealed (`paintRevealed`), not while it waits unseen.
       if (row.classList.contains('is-entering') && row.dataset.reveal !== 'ahead' && !enteredRows.has(row)) { enteredRows.add(row); rowFades.enter(row); }
       if (row.classList.contains('is-leaving')) rowFades.leave(row);
       else rowFades.stay(row);
@@ -362,8 +310,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       paintRevealed(forward && enterRows.current);
     });
   }, [revealBy, paintRevealed]);
-  // Keep previously visible DOM rows through the glide, even when their new
-  // rank is outside the viewport. The existing motion hook owns their slots.
   const previousWindow = committedWindow.current;
   const crossing = previousWindow?.items !== items ? previousWindow?.keys : undefined;
   const departing = previousWindow?.items === items ? previousWindow.departing : NO_KEYS;
@@ -392,7 +338,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const naturalRevision = useRevision([headerKeys, ...[...widthKeys].flatMap(([key, columns]) =>
     [key, columns.size, ...[...columns.values()].flatMap(revision => [revision.length, ...revision])])]);
   const mountedKeys = useRevision(mounted.map(row => row.key));
-  // A rank marker whose hold has ended is not drawn again (its row mounting, or rendering for another reason).
   const renderedAt = performance.now();
   useWhyCommit('Table', { rows, columns, live, sortedFrom, rowMeasurements, natural, fit, view, focusedKey, description, toggled, localSort, mounted: mountedKeys });
   useLayoutEffect(() => {
@@ -403,8 +348,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const visible = useMemo(() => ordered.filter((row, slot) => (slot >= start && slot < end) || rowKey(row) === focusedKey
     || (!tokens.reducedMotion && (departing.has(rowKey(row)) || crossing?.has(rowKey(row)) === true))),
     [ordered, start, end, departing, crossing, focusedKey, rowKey, tokens.reducedMotion]);
-  // Report only a changed set of mounted rows. Rebuilt columns re-sort into a new
-  // array, and a widget whose columns follow the reported rows would otherwise loop.
   const reported = useRef<{ rows: readonly T[]; callback: typeof onVisibleRows } | null>(null);
   useEffect(() => {
     const held = reported.current;
@@ -441,7 +384,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         pending.set(target, { key: cell.key, width: Math.max(pending.get(target)?.width ?? 0, width) });
       }
       if (frame) return;
-      // Readings land with the frame's data, so what they commit is taken in the same frame.
       frame = engine.next('data', () => {
         frame = null;
         const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
@@ -453,7 +395,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         if (before.scope === widthScope && widths === previous) return;
         const next = { scope: widthScope, widths };
         currentNatural.current = next;
-        // Measurements render with the next frame, a tick while playing: never a commit of their own then.
         inFrame(() => setNatural(next));
       });
     });
@@ -483,8 +424,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     for (const key of held.measurements.keys()) if (key !== undefined && !live.has(key)) held.measurements.delete(key);
   }, [moving]);
   const measuredRows = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);
-  // Measure only mounted rows. Prefix geometry uses the last measured height of
-  // each identity; new rows use the minimum until they enter the viewport.
   useLayoutEffect(() => {
     if (!wrapping || !scroll.current) return;
     const pending = new Map<Element, readonly [string, number]>();
@@ -496,14 +435,11 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         pending.set(entry.target, [element.dataset.tableRow!, entry.borderBoxSize[0]?.blockSize ?? element.offsetHeight]);
       }
       if (frame) return;
-      // Readings land with the frame's data, so what they commit is taken in the same frame.
       frame = engine.next('data', () => {
         frame = null;
         const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
         pending.clear();
         if (!readings.length) return;
-        // Only a row taller than the rows' own height moves the rows below it: a row mounting at that height, or re-observed
-        // at the height applied, commits nothing (run 13: a commit after each row arriving in every table).
         const applied = committedGeometry.current.rowMeasurements;
         if (withRowHeights(applied, readings, currentView.current.rowHeight, heightScope) === applied) return;
         inFrame(() => setRowMeasurements(before => withRowHeights(before, readings, currentView.current.rowHeight, heightScope)));
@@ -520,15 +456,12 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       if (!held.observed.has(row)) { held.observed.add(row); held.observer.observe(row); }
     }
   }, [mountedKeys, heightScope, wrapping]);
-  // A gone row's height is read by no offset: it is dropped once gone rows outnumber the rows, so a row leaving costs no commit.
   useEffect(() => {
     if (rowMeasurements.heights.size <= Math.max(64, 2 * slotKeys.length)) return;
     const live = new Set(slotKeys);
     setRowMeasurements({ ...rowMeasurements, heights: new Map([...rowMeasurements.heights].filter(([key]) => live.has(key))) });
   }, [slotKeys, rowMeasurements]);
   useEffect(() => () => hideTooltip(owner), [owner]);
-  // A scrollable tooltip this table owns takes the wheel, as the chart kits' do; the layer
-  // itself ignores the pointer. Registered natively so the page scroll can be prevented.
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;
@@ -544,11 +477,8 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     if (!tooltip && !hiddenColumns.length) return null;
     const held = tipCache.current, key = rowKey(row);
     const values = live?.read() ?? null;
-    // Every input of the combined content: the row, the widget's builder, the hidden and shown
-    // columns, the row's key, the live values and the window height that decides whether it scrolls.
     if (held?.row !== row || held.build !== tooltip || held.hidden !== hiddenColumns || held.shown !== shownColumns || held.key !== key
       || held.viewport !== viewportHeight || held.values !== values) {
-      // A hidden painted column gives its live value, as its cell would paint it.
       const hidden = values ? hiddenColumns.map(column => column.paint ? { ...column, text: (item: T) => {
         const key = liveKey(rowKey(item), column.key), value = values.get(key);
         return value == null || isMissing(value) ? null : column.paint!(value, key);
@@ -580,7 +510,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     const next = content && focusedKey !== null ? { key: focusedKey, text: tooltipText(content) } : null;
     if (description?.key !== next?.key || description?.text !== next?.text) setDescription(next);
   }, [ordered, rowKey, focusedKey, contentFor, owner, description]);
-  // Painted cells: found after each commit, written in a frame whenever the live values move, never by a render.
   const liveCells = useRef<LiveCell<T>[]>([]);
   const livePaint = useRef<((force: boolean) => void) | null>(null);
   const liveLatest = useRef({ ordered, rowKey, liveSort, sortValues,
@@ -652,10 +581,8 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     clearTip(); contextMenu.open(x, y, items);
     return true;
   };
-  /** Whether the row at `slot` shows at the clock's hour as the frame last painted it (held ahead: revealed). */
   const revealedNow = (slot: number) => { const now = revealed.current; return !now || now.held.reveal[slot] <= now.hour; };
   const focusSlot = (slot: number) => {
-    // A leaving row keeps focus while it fades, even once no row is left to move to. A row held ahead is never focused.
     if (slot < 0 || slot >= ordered.length || !revealedNow(slot)) return;
     const top = scrollToShow(offsets, slot, view.top, view.height, view.headerHeight);
     bottomAnchor.current = false;
@@ -669,7 +596,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const tracks = useMemo(() => shownColumns.map(column => ({ key: column.key, width: column.width })), [trackKeys]);
   const grid = useMemo(() => tableGrid(tracks, rank, natural.scope === widthScope ? natural.widths : new Map()),
     [tracks, rank, natural, widthScope]);
-  // Hide or restore one prioritised column per pass before paint, until the table itself fits (the scroller's padding masks a little overflow).
   useLayoutEffect(() => {
     const element = tableElement.current ?? scroll.current;
     if (!element || !order.length) return;
@@ -727,7 +653,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
               event.preventDefault(); if (!event.repeat) onRowClick(row.item.value);
             } else if (event.key === 'Escape') clearTip();
             else if (node && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
-              // Tree keys open or close a group, then step into its first row or out to its header row.
               event.preventDefault();
               if (event.key === 'ArrowRight' && opens) {
                 if (!node.open) toggle(row.item.value, true); else focusSlot(row.slot + 1);
@@ -737,7 +662,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
               }
             } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
               event.preventDefault();
-              // Only over the rows the clock has revealed.
               const step = event.key === 'ArrowDown' || event.key === 'Home' ? 1 : -1;
               const slot = shownSlot(event.key === 'Home' ? 0 : event.key === 'End' ? ordered.length - 1 : row.slot + step, step, ordered.length, revealedNow);
               if (slot != null) focusSlot(slot);
@@ -746,8 +670,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
           onPointerDown: () => { keyboardMenu.current = false; },
         };
         const isMuted = muted?.(row.item.value);
-        // Its slot and rank are written by the commit (`drawnSlots`): a row moved in the order renders again only to draw a
-        // rank marker.
         const placedRevision = rankMarkers ? [row.item.rank, row.slot] : NO_PLACE;
         const revision = [...revisions.get(row.key)!, layoutKeys, cellBars, rank, rankMarkers, ...placedRevision, change, change && marker!.until,
           barRevision, row.phase, liveColumns,
@@ -761,7 +683,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
           {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span key={marker!.until} className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
           {shownColumns.map((column, index) => {
             if (live && column.paint) {
-              // Painted from the live values in a frame; React renders the empty cell once.
               const tone = column.cellClass?.(row.item.value);
               const structureBar = column.barOf?.(row.item.value) ?? null;
               const from = structureBar === 'cell' && column.barCell ? liveKey(row.key, column.barCell.id) : undefined;
@@ -790,7 +711,6 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   </div></BarGlideMs>;
 }
 
-/** A nested row's first cell, indented by depth; a group header row carries the timeline lanes' disclosure mark. */
 function TreeCell({ level, group, count, open, children }: Pick<TreeRow, 'level' | 'group' | 'count' | 'open'> & { children: ReactNode }) {
   return <span className={`table-tree${group ? ' is-group' : ''}`} style={{ '--table-tree-depth': level - 1 } as CSSProperties}>
     {group && <svg className="table-disclosure" viewBox="-6 -6 12 12" aria-hidden="true">
@@ -798,9 +718,6 @@ function TreeCell({ level, group, count, open, children }: Pick<TreeRow, 'level'
     <span className="table-tree-content">{children}</span></span>;
 }
 
-/** Composed cells may sort by one value and draw a bar from another. */
-/** A cell's bar and tone painted from another live cell of its row (`barCell`): no bar and no tone while it has no
- * value. */
 function paintFrom<T>(from: FromCell, column: TableColumn<T>, value: SortValue | undefined) {
   const known = typeof value === 'number' && Number.isFinite(value);
   const maximum = typeof column.bar === 'number' || typeof column.bar === 'bigint' ? column.bar : 0;
@@ -813,13 +730,9 @@ function paintFrom<T>(from: FromCell, column: TableColumn<T>, value: SortValue |
 }
 
 const NO_PLACE: readonly unknown[] = [];
-/** Rows whose entry the engine has started, so a later commit never starts it again. */
 const enteredRows = new WeakSet<HTMLElement>();
 
-/** How long a bar in a table glides to a new length: the table's (`BAR_GLIDE_MS` while playing; none paused, or with
- * reduced motion). */
 const BarGlideMs = createContext(0);
-/** The bars' glide while playing, as their CSS transition was. */
 const BAR_GLIDE_MS = 300;
 
 export function CellBar({ value, maximum, children }: {

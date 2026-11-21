@@ -1,6 +1,4 @@
-//! Native world modules with no host or sibling feature dependency.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -13,7 +11,6 @@ pub mod map {
             .expect("projection identity space exhausted")
     }
 
-    /// Folds keep their state only while the campaign table stays one allocation.
     #[cfg(test)]
     pub(crate) fn test_campaign() -> replay_frame::frame::SharedView {
         replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Campaign(vec![

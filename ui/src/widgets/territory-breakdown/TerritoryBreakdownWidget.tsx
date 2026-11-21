@@ -32,8 +32,6 @@ import type { TerritoryBreakdownReply } from './types';
 
 const NO_WARNINGS: string[] = [];
 
-/** Territory by faction, country and strategic region: the followed `territory-breakdown` panel, which carries the rows
- * and is pushed only when they change; the amounts are its live cells, painted each frame with no render. */
 export default function TerritoryBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const measure = measureOf(options.measure);
@@ -46,7 +44,6 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const shownAt = useRef(breakdown.shownAt);
   shownAt.current = breakdown.shownAt;
   useShownEachFrame(runtime.clock, () => breakdown.data ? breakdown.shownAt() : null, breakdown.live);
-  // Fill grows each slice toward its amount at the view's end: the breakdown asked once at that hour.
   const fill = options.growth === 'fill';
   const end = track ? (widget.time.mode === 'range' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : track.branch.lastHour) : 0;
   const ending = useProduct<TerritoryBreakdownReply>(runtime.client, track && fill ? { sourceId: track.source.id, revision: track.source.revision,
@@ -59,10 +56,8 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groups.data, lastHour]);
   const slots = useSlotTags(runtime.client, track, active && !!resolved?.tags.some(isSlotKey));
   const tags = useMemo(() => [...new Set([...(breakdown.data?.rows ?? []), ...(fill ? ending.data?.rows ?? [] : [])].flatMap(row => row.tag === null ? [] : [row.tag]))], [breakdown.data, fill, ending.data]);
-  // Pushed, countries are named where one of them last changed, never at each push's hour.
   const named = usePushedLooksHour(runtime, widget, track, tags, active && breakdown.read === 'followed', hour);
   const looks = useCountryLooks(runtime.client, track, tags, named.hour, active, undefined, undefined, named.exact);
-  // A row names its country by tag: a country chosen by its slot is the one holding that tag at the hour.
   const selectedSlot = useCallback((tag: string, at: number) => {
     const slot = slots?.slotOf(tag, at);
     return slot != null && !!resolved?.tags.includes(countryKey(slot));
@@ -76,8 +71,6 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     }) : [], [groups.data, measure, looks, colours.colours, colours.displayNames, resolved, selectedSlot]);
   const endingItems = useMemo(() => fill && ending.data ? itemsAt(ending.data, repliedCells(ending.data).read(), end) : null, [fill, ending.data, itemsAt, end]);
   const epochs = useMemo(() => groups.data ? affiliationEpochs(groups.data) : [], [groups.data]);
-  // The amounts as the cells hold them, made again only when the cells move or a faction's membership does: the
-  // chart reads this each frame, and nothing here renders.
   const live = useMemo<Live<SunburstValues> | undefined>(() => {
     const reply = breakdown.data;
     if (!reply) return undefined;

@@ -1,18 +1,3 @@
-//! Tree instances generated from the resolved tree bitmap and content meshes.
-//!
-//! Each nonzero bitmap pixel supplies a canopy instance. Placement retains
-//! palette, terrain height/slopes, integer-degree rotation and generator order.
-//! Descriptor scale is baked into mesh positions. Camera distance to each map
-//! partition selects authored LOD; expanded side planes control admission.
-//!
-//! A generated half-resolution river mask keeps overhanging canopy off river
-//! pixels. Source bytes below 254 are marked, rows are flipped, and two-by-two
-//! blocks are averaged with integer truncation. Lit and shadow passes bind this
-//! mask at texture slot 14.
-//!
-//! Tree techniques compile from the recorded content stack. Their artwork,
-//! shading and animation come from installed content. The scene owns draw
-//! order, receiver/caster gates and post-processing.
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -40,15 +25,8 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-// ------------------------------------------------------------------ constants
 
-/// Columns of `map/terrain/Tree_season.bmp`, one per `tree_*` season block.
 pub const SEASON_COLUMNS: usize = 8;
-/// `vTreeFade` at a camera height.
-///
-/// The whole layer is blended at this alpha, so every pixel it contributes
-/// scales with it; above the content's `TREE_FADE_FAR` the engine returns before issuing a
-/// draw, which [`TreePass::draw`] reproduces by drawing nothing.
 pub fn tree_fade(defines: &MapDefines, height: f32) -> f32 {
     let [near, far] = defines.tree_fade;
     if height > far {
@@ -57,18 +35,11 @@ pub fn tree_fade(defines: &MapDefines, height: f32) -> f32 {
     1.0 - (height.max(near) - near) / (far - near)
 }
 
-/// The pdxmesh key a `map/trees.bmp` palette index names.
-///
-/// Append decimal palette index to the mapobject_ registry prefix.
 pub fn mapobject_name(index: u8) -> String {
     format!("mapobject_{index}")
 }
 
-// --------------------------------------------------------- instance generation
 
-/// One canopy instance, in the engine's own 24-byte record order: world
-/// position, rotation about Y in radians, and the terrain slope the tile is
-/// sheared onto.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct TreeInstance {
@@ -77,46 +48,34 @@ pub struct TreeInstance {
     pub slope: [f32; 2],
 }
 
-/// One partition of one palette index: the engine's frustum-cull and LOD granularity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TreeBucket {
-    /// The `map/trees.bmp` palette index, which names the mesh.
     pub palette: u8,
-    /// Tile column and row of the `MAP_SIZE >> 8` grid.
     pub tile: [u32; 2],
-    /// Integer `dimension / (dimension >> 8)` on each axis.
     pub pitch: [u32; 2],
-    /// The bucket's slice of [`TreeField::instances`].
     pub range: Range<u32>,
 }
 
 impl TreeBucket {
-    /// The tile's world-space extent in x, before any wrap offset.
     fn x_span(&self) -> (f32, f32) {
         let low = self.tile[0] * self.pitch[0];
         (low as f32, (low + self.pitch[0]) as f32)
     }
 
-    /// The tile's world-space extent in z.
     fn z_span(&self) -> (f32, f32) {
         let low = self.tile[1] * self.pitch[1];
         (low as f32, (low + self.pitch[1]) as f32)
     }
 }
 
-/// Every instance on the map, ordered so that each bucket is contiguous.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeField {
     pub instances: Vec<TreeInstance>,
     pub buckets: Vec<TreeBucket>,
-    /// Independent world units per tree-bitmap pixel on x and z.
     pub cell: [f32; 2],
-    /// Palette indices that carry at least one instance, ascending.
     pub palettes: Vec<u8>,
 }
 
-/// `map/trees.bmp` as the loader returns it: one palette index per pixel, rows
-/// top-left first.
 #[derive(Clone, Copy, Debug)]
 pub struct TreeImage<'a> {
     pub width: u32,
@@ -125,7 +84,6 @@ pub struct TreeImage<'a> {
 }
 
 impl TreeImage<'_> {
-    /// Checks the index count matches the declared dimensions.
     pub fn validate(&self) -> io::Result<()> {
         if self.width == 0 || self.height == 0 {
             return Err(invalid("the tree bitmap needs a nonzero width and height"));
@@ -145,11 +103,6 @@ impl TreeImage<'_> {
     }
 }
 
-/// Integer-degree tree rotation.
-///
-/// Reset seed per bitmap load. Advance only for nonzero pixels in north-to-south, west-to-east order.
-/// Clear the sign bit before modulo 360 and convert degrees to radians in f32. Retain rotation for
-/// shading.
 pub fn rotation_for(index: u32) -> f32 {
     let counter = 0xae66_136bu32.wrapping_add(index);
     let mut state = 0xd4b5_37a3u32.wrapping_sub(counter.wrapping_mul(0x4ad6_85b3));
@@ -162,11 +115,6 @@ pub fn rotation_for(index: u32) -> f32 {
     ((state & 0x7fff_ffff) % 360) as f32 * (std::f32::consts::PI / 180.0)
 }
 
-/// called with `(x + .5, z + .5, false)` by the tree
-/// generator: subtract the half texel, clamp the integer base to size - 2,
-/// bilinearly interpolate bytes, then multiply by 0.1. Keep that operation
-/// order, including the fractional coordinate relative to the clamped base.
-/// The bitmap loader returns north-first rows; the native sampler uses world z.
 fn tree_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     let x = (x + 0.5) - 0.5;
     let z = (z + 0.5) - 0.5;
@@ -188,20 +136,7 @@ fn tree_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     ((high - low) * fz + low) * 0.1
 }
 
-/// Generates every instance of `map/trees.bmp`.
-///
-/// For **every** non-zero pixel — there is no density roll and no sub-pixel
-/// jitter — the engine places one instance at the pixel's world position, with
-/// a half-cell brick offset on alternate rows, the terrain height under the
-/// cell centre, and the slope from the four corner heights. Rows are visited
-/// from the north; the stored row index runs the other way, from the southern
-/// edge. The north-first loop counter drives the brick offset.
-///
-/// Errors are named `InvalidData` for a bitmap or height field whose sample
-/// count does not match its dimensions.
 pub fn generate(image: &TreeImage<'_>, heights: &HeightField<'_>) -> io::Result<TreeField> {
-    // The heightmap is map-sized (`MapAssets::load` checks it), so it gives
-    // `MAP_SIZE`.
     let map = [heights.width as f32, heights.height as f32];
     image.validate()?;
     heights.validate()?;
@@ -224,9 +159,6 @@ pub fn generate(image: &TreeImage<'_>, heights: &HeightField<'_>) -> io::Result<
     let mut by_bucket: BTreeMap<(u8, u32, u32), Vec<TreeInstance>> = BTreeMap::new();
     let mut counter = 0u32;
     for k in 0..image.height as usize {
-        // `rb = treeH - 1 - k` is the stored bottom-up row, and world z is
-        // `rb * cell`; the loader already flipped the rows, so the stored row
-        // `rb` is the top-down row `k`.
         let rb = image.height as usize - 1 - k;
         let z = rb as f32 * cell[1];
         for tx in 0..width {
@@ -235,10 +167,8 @@ pub fn generate(image: &TreeImage<'_>, heights: &HeightField<'_>) -> io::Result<
                 continue;
             }
             let mut x = tx as f32 * cell[0];
-            // Tile assignment precedes the half-cell offset.
             let tile_x = (x / pitch[0] as f32) as u32;
             let tile_z = (z / pitch[1] as f32) as u32;
-            // Native addresses partitions linearly; an x remainder can enter the next row.
             let linear = tile_z * tiles[0] + tile_x;
             if linear >= tiles[0] * tiles[1] {
                 return Err(invalid(format!(
@@ -246,7 +176,6 @@ pub fn generate(image: &TreeImage<'_>, heights: &HeightField<'_>) -> io::Result<
                     tiles[0], tiles[1]
                 )));
             }
-            // Test parity with the north-first loop counter rather than the stored bottom-up row.
             if k % 2 == 1 {
                 x += half[0];
             }
@@ -302,14 +231,11 @@ pub fn generate(image: &TreeImage<'_>, heights: &HeightField<'_>) -> io::Result<
     Ok(field)
 }
 
-/// Test convenience for a plain camera distance; runtime keeps the native squared value.
 #[cfg(test)]
 pub fn lod_for_distance(lod_distances: &[f32], distance: f32, shapes: usize) -> usize {
     lod_for_squared_distance(lod_distances, distance * distance, shapes)
 }
 
-/// Square authored thresholds, stop at the first threshold greater than cached squared distance,
-/// and clamp to the shape count.
 fn lod_for_squared_distance(lod_distances: &[f32], squared: f32, shapes: usize) -> usize {
     let mut lod = 0;
     for (index, &threshold) in lod_distances.iter().enumerate() {
@@ -321,9 +247,6 @@ fn lod_for_squared_distance(lod_distances: &[f32], squared: f32, shapes: usize) 
     lod.min(shapes.saturating_sub(1))
 }
 
-/// Tile LOD uses squared distance from the eye to the nearest point of the tile's water-plane
-/// rectangle. Horizontal components are zero while the eye lies inside the tile. Water-plane
-/// height supplies the vertical component.
 #[cfg(test)]
 pub fn bucket_distance(bucket: &TreeBucket, offset: f32, camera: [f32; 3]) -> f32 {
     bucket_distance_squared(bucket, offset, camera).sqrt()
@@ -336,11 +259,9 @@ fn bucket_distance_squared(bucket: &TreeBucket, offset: f32, camera: [f32; 3]) -
     let dx = x - x.clamp(low_x, high_x);
     let dy = camera[1] - WATER_HEIGHT;
     let dz = camera[2] - camera[2].clamp(low_z, high_z);
-    // Evaluate height, x, then z, retaining squared distance.
     dy * dy + dx * dx + dz * dz
 }
 
-/// The LOD a bucket's tile draws at, from [`bucket_distance`].
 #[cfg(test)]
 pub fn bucket_lod(
     bucket: &TreeBucket,
@@ -356,18 +277,12 @@ pub fn bucket_lod(
     )
 }
 
-// --------------------------------------------------------------------- assets
 
-/// One palette index's mesh and its two textures.
 pub struct TreeMeshAssets {
-    /// The pdxmesh key, `mapobject_<index>`.
     pub name: String,
-    /// The `.mesh` path the descriptor named.
     pub path: String,
     pub lod_distances: Vec<f32>,
-    /// First admitted native material/geometry record of each LOD.
     pub lods: Vec<Option<TreeLod>>,
-    /// Descriptor scale already baked into Geometry; retained for diagnostics.
     pub scale: f32,
 }
 
@@ -377,32 +292,14 @@ pub struct TreeLod {
     pub normal: dds::Texture,
 }
 
-/// Everything the tree pass reads from installed content.
 pub struct TreeAssets {
-    /// One entry per palette index that carries an instance, ascending.
     pub meshes: Vec<(u8, TreeMeshAssets)>,
-    /// `map/terrain/Tree_tint.bmp`, 16 x 16 24-bit.
     pub tint: Rgba8Image,
-    /// `map/terrain/Tree_season.bmp`, 8 x 16 24-bit.
     pub season: Rgba8Image,
-    /// `TreeMaskTexture`, generated from `map/rivers.bmp`; see [`tree_mask`].
     pub mask: TreeMask,
 }
 
 impl TreeAssets {
-    /// Reads the descriptors, meshes and textures for the palette indices in
-    /// use, appending any limitation to `warnings`.
-    ///
-    /// `map/terrain/Tree_*.bmp` is covered content and
-    /// are hash-verified; `gfx/entities` and `gfx/models` are outside the
-    /// coverage policy , so the descriptor, the
-    /// meshes and their textures go through
-    /// [`ResolvedLayers::read_uncovered`] and are not verified. The caller
-    /// states that limitation once.
-    ///
-    /// A palette index the descriptor does not declare, or whose mesh or
-    /// texture will not decode, is reported as a warning and dropped rather
-    /// than refused: one unusable tree kind must not stop a replay opening.
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -410,7 +307,6 @@ impl TreeAssets {
         rivers: &IndexedImage,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
-        // Resolve tree definitions through the complete loaded descriptor roster.
         let roster = layers.descriptor_roster()?;
         if !roster.unreadable.is_empty() {
             warnings.push(format!(
@@ -422,9 +318,6 @@ impl TreeAssets {
         let mut meshes = Vec::new();
         let size = [rivers.width, rivers.height];
         let mut materials = super::mesh_effect::Materials::new(layers, size, decode);
-        // A tree kind the visual mods break is drawn from the recorded layers below them, its
-        // mesh, textures and admitted materials theirs, named; one neither gives is refused by
-        // name for the map's fallback.
         let below = layers.without_overlays();
         let below_roster = layers.recorded_descriptor_roster()?;
         let recorded = below.as_ref().zip(below_roster.as_deref());
@@ -457,8 +350,6 @@ impl TreeAssets {
                 missing.join(", ")
             ));
         }
-        // Load both bitmaps as texture files. Their colours are artwork, read through the
-        // presentation layers; where trees stand is recorded geometry.
         let image = |name: &str| -> io::Result<Rgba8Image> {
             let path = format!("map/terrain/{name}");
             layers.artwork(&path, |stack| {
@@ -481,25 +372,14 @@ impl TreeAssets {
     }
 }
 
-/// TreeMaskTexture, the generated river mask that clips canopy
-/// against, generated the way the engine generates it.
 pub struct TreeMask {
-    /// Half the river bitmap in each direction: 2816 x 1024 on shipped content.
     pub width: u32,
     pub height: u32,
-    /// One byte per texel, rows top-down like the bitmap it came from.
     pub data: Vec<u8>,
 }
 
-/// Not a river: `map/rivers.bmp` indices 254 (land) and 255 (sea) are the two
-/// bulk classes and everything below them is a river pixel (`map::rivers`).
 const RIVER_INDEX_LIMIT: u8 = 254;
 
-/// Builds [`TreeMask`] from `map/rivers.bmp`.
-///
-/// Generate the tree mask from river bytes below 254. Mark a full-resolution byte image, flip rows
-/// and average two-by-two blocks into half resolution with integer truncation. Block offset follows
-/// the loop below.
 pub fn tree_mask(rivers: &IndexedImage) -> io::Result<TreeMask> {
     let (width, height) = (rivers.width as usize, rivers.height as usize);
     if width < 2 || height < 2 || rivers.indices.len() != width * height {
@@ -511,13 +391,6 @@ pub fn tree_mask(rivers: &IndexedImage) -> io::Result<TreeMask> {
     }
     let (half_width, half_height) = (width / 2, height / 2);
     let mut data = vec![0u8; half_width * half_height];
-    // The filter walks EVERY source texel, not every second one: it writes the
-    // 2 x 2 window at (y, x) into the destination texel (y >> 1, x >> 1), so the
-    // four writes to a texel overwrite one another and the last one --- the
-    // window at (2m + 1, 2n + 1) --- is the one that stays. A texel therefore
-    // covers rows 2m+1..2m+2 and columns 2n+1..2n+2, one short of the aligned
-    // quad. The native reads one row and column past the end on its last pass;
-    // this clamps instead of following it out of the buffer.
     for row in 0..height - 1 {
         for column in 0..width - 1 {
             let top = row * width + column;
@@ -548,7 +421,6 @@ fn load_mesh(
     let scale = definition.scale;
     let bytes = layers.read_uncovered(&path)?;
     let decoded = mesh::read(&bytes).map_err(|error| invalid(format!("{path}: {error}")))?;
-    // Resolve the global texture index before the mesh directory.
     let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
     let index = layers.texture_index()?;
     let texture = |file: &str| -> io::Result<dds::Texture> {
@@ -584,8 +456,6 @@ fn load_mesh(
     })
 }
 
-/// Visit admitted records in source order and keep the first record of the selected LOD before
-/// loading textures.
 fn first_tree_record<'a>(
     shapes: &[&'a mesh::Shape],
     definition: &mesh::MeshDefinition,
@@ -606,45 +476,31 @@ fn first_tree_record<'a>(
 
 fn tree_definition(descriptors: &Descriptors, palette: u8) -> io::Result<&mesh::MeshDefinition> {
     let name = mapobject_name(palette);
-    // Do not consult the entity registry or its scale/clone rules.
     descriptors
         .meshes
         .get(&name)
         .ok_or_else(|| invalid(format!("content declares no pdxmesh \"{name}\"")))
 }
 
-// ------------------------------------------------------------------- geometry
 
-/// One canopy vertex, in the order `VS_INPUT_INSTANCE` declares
-/// (`tree.shader`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct TreeVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
-    /// `ta`: tangent in `xyz`, bitangent handedness in `w`.
     pub tangent: [f32; 4],
     pub uv0: [f32; 2],
-    /// `u1`: the tint row and the height jitter. A mesh LOD that declares none
-    /// fetches the next packed vertex's position.xy, or zero past the allocation.
     pub uv1: [f32; 2],
 }
 
-/// The uploaded geometry: every LOD of every tree mesh in one buffer pair, with
-/// the index range each `(palette, lod)` draws.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeGeometry {
     pub vertices: Vec<TreeVertex>,
     pub indices: Vec<u32>,
-    /// `(palette, lod)` to its slice of `indices`. Indices are absolute, so a
-    /// draw needs no base vertex.
     pub ranges: BTreeMap<(u8, usize), Range<u32>>,
-    /// `loddist` per palette index, and the number of shapes it declares.
     pub lods: BTreeMap<u8, (Vec<f32>, usize)>,
 }
 
-/// Flattens the first admitted record of every tree LOD into one buffer pair.
-/// Positions already carry the descriptor scale.
 pub fn geometry(assets: &TreeAssets) -> io::Result<TreeGeometry> {
     let mut out = TreeGeometry::default();
     for (palette, tree) in &assets.meshes {
@@ -653,7 +509,6 @@ pub fn geometry(assets: &TreeAssets) -> io::Result<TreeGeometry> {
         for (lod, selected) in tree.lods.iter().enumerate() {
             let start = out.indices.len() as u32;
             if let Some(selected) = selected {
-                // The declaration always includes UV1 at byte 48.
                 let packed = selected
                     .geometry
                     .packed(true)
@@ -678,16 +533,13 @@ pub fn geometry(assets: &TreeAssets) -> io::Result<TreeGeometry> {
     Ok(out)
 }
 
-// ------------------------------------------------------------------- the pass
 
-/// Scene-owned physical slots for the receiver's shared t2..15 bind.
 pub struct ReceiverInputs<'a> {
     pub frames: &'a [&'a [u8]],
     pub shadow_matrix: [[f32; 4]; 4],
     pub textures: [(u32, &'a wgpu::TextureView); 11],
 }
 
-/// Scene-owned slots; the tree pass supplies diffuse, normal, tint, season and mask.
 pub struct LitInputs<'a> {
     pub retained: Option<&'a RefCell<super::shader_scene::State>>,
     pub view: usize,
@@ -697,28 +549,21 @@ pub struct LitInputs<'a> {
     pub high: bool,
 }
 
-/// What one frame of the pass needs beyond its own geometry.
 #[derive(Clone, Copy)]
 pub struct TreeFrame<'a> {
     pub camera: Camera,
-    /// World x translations of the wrap copies to submit.
     pub offsets: &'a [f32],
-    /// All tree passes use the camera's expanded, outside-positive sides.
     pub planes: viewer_foundation::map::province_admission::Planes,
 }
 
-/// One `draw_indexed` of a bucket: the material slot, the canopy indices of its LOD, and the
-/// instances of the bucket.
 type Batch = (usize, Range<u32>, Range<u32>);
 
-/// The walk of the world's tree buckets a camera admitted, kept while that camera stands.
 #[derive(Default, PartialEq)]
 struct Admitted {
     key: Option<(Camera, viewer_foundation::map::province_admission::Planes, Vec<f32>)>,
     copies: Vec<Vec<Batch>>,
 }
 
-/// The GPU tree pass.
 pub struct TreePass {
     compiled_caster: super::tree_caster::Caster,
     compiled_receiver: super::tree_receiver::Receiver,
@@ -729,13 +574,9 @@ pub struct TreePass {
     null: Bound,
     tint: Bound,
     season: Bound,
-    /// `TreeMaskTexture`: the river mask this pass generates and owns, because
-    /// no other pass binds it.
     mask: Bound,
-    /// One per admitted (palette, LOD), in `materials` order.
     diffuse: Vec<Bound>,
     normal: Vec<Bound>,
-    /// The (palette, LOD) of each texture pair.
     materials: Vec<(u8, usize)>,
     vertices: Option<wgpu::Buffer>,
     indices: Option<wgpu::Buffer>,
@@ -743,17 +584,13 @@ pub struct TreePass {
     instance_bytes: Arc<[u8]>,
     geometry: TreeGeometry,
     buckets: Vec<TreeBucket>,
-    /// The batches the last camera's walk admitted, by wrap copy ([`TreePass::batches`]).
     admitted: RefCell<Admitted>,
-    /// Instances the last frame drew, for reporting.
     drawn: Cell<u32>,
     drawn_buckets: Cell<u32>,
     caster: super::shadow::CasterId,
 }
 
 impl TreePass {
-    /// How the canopy program built for `high` reads the shadow screen buffer by texel
-    /// ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self, high: bool, visit: &mut dyn FnMut(&str)) {
         if let Some((held, lit)) = &*self.compiled_lit.borrow()
             && *held == high
@@ -763,7 +600,6 @@ impl TreePass {
         }
     }
 
-    /// Builds the pipeline and uploads the tree textures.
     pub fn new(
         device: &wgpu::Device,
         samples: u32,
@@ -822,7 +658,6 @@ impl TreePass {
             )?,
             tint: rgb_texture(device, queue, "TintMap (Tree_tint.bmp)", &assets.tint)?,
             season: rgb_texture(device, queue, "SeasonMap (Tree_season.bmp)", &assets.season)?,
-            // Native A8 sampling: wgpu has no A8Unorm, so preserve RGBA(0,0,0,a).
             mask: data_texture(
                 device,
                 queue,
@@ -852,8 +687,6 @@ impl TreePass {
         })
     }
 
-    /// Uploads the canopy geometry and the instance field. Called once per
-    /// document: both depend only on content.
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -894,12 +727,10 @@ impl TreePass {
         Ok(())
     }
 
-    /// Instances the last frame drew, for reporting.
     pub fn drawn(&self) -> u32 {
         self.drawn.get()
     }
 
-    /// Buckets the last frame drew: one `draw_indexed` each, per wrap copy.
     pub fn drawn_buckets(&self) -> u32 {
         self.drawn_buckets.get()
     }
@@ -908,8 +739,6 @@ impl TreePass {
         self.caster
     }
 
-    /// Compiles the canopy pipeline frames at `high` draw with, so they compile nothing; a
-    /// failure is left for the frame to report.
     pub fn warm(&self, device: &wgpu::Device, high: bool) {
         let _ = self.compile_lit(device, high);
     }
@@ -932,7 +761,6 @@ impl TreePass {
         Ok(())
     }
 
-    /// Blends the canopy over the scene, once per visible world-wrap copy.
     pub fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1033,8 +861,6 @@ impl TreePass {
         Ok(())
     }
 
-    /// Submit `treeshadow` into the light's depth map using the same camera tile cache as lit trees and
-    /// receivers. There is no separate light-frustum cull.
     pub fn draw_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1047,7 +873,6 @@ impl TreePass {
         else {
             return Ok(());
         };
-        // There is no lit-tree fade gate. Caller shadow admission remains in scene.rs.
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.compiled_caster.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
@@ -1084,7 +909,6 @@ impl TreePass {
         Ok(())
     }
 
-    /// `treeunlit` into the screen-space shadow buffer.
     pub fn draw_unlit(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1092,7 +916,6 @@ impl TreePass {
         frame: TreeFrame<'_>,
         inputs: ReceiverInputs<'_>,
     ) -> io::Result<()> {
-        // Return above far, not at equality; alpha-zero still writes depth.
         if frame.camera.height > frame.camera.defines.tree_fade[1] {
             return Ok(());
         }
@@ -1150,9 +973,6 @@ impl TreePass {
         Ok(())
     }
 
-    /// The batches each wrap copy draws, as this camera admits them: the bucket list is the whole
-    /// world's, so it is walked once for a camera and every wrap copy, and the lit, caster and
-    /// receiver paths of that camera's frame read the walk it left.
     fn batches(&self, frame: TreeFrame<'_>, copy: usize) -> std::cell::Ref<'_, [Batch]> {
         let key = (frame.camera, frame.planes, frame.offsets.to_vec());
         if self.admitted.borrow().key.as_ref() != Some(&key) {
@@ -1173,10 +993,7 @@ impl TreePass {
         })
     }
 
-    /// One walk of the world's buckets: each admitted bucket's batch, in draw order, under the
-    /// wrap copy nearest the eye.
     fn walk(&self, frame: TreeFrame<'_>) -> Vec<Vec<Batch>> {
-        // Collect in generator order, sort, then resolve model and LOD.
         let mut rows: Vec<Vec<super::tree_order::Entry>> = vec![Vec::new(); frame.offsets.len()];
         for (index, bucket) in self.buckets.iter().enumerate() {
             let Some((selected, distance)) = nearest_visible_copy(bucket, frame) else {
@@ -1209,10 +1026,8 @@ impl TreePass {
     }
 }
 
-/// Upper bound of the terrain-height byte range scaled to world units.
 const TILE_CEILING: f32 = 25.5;
 
-/// Replace the wrap tag only on a strictly smaller distance.
 fn nearest_visible_copy(bucket: &TreeBucket, frame: TreeFrame<'_>) -> Option<(usize, f32)> {
     let mut nearest = None;
     let mut minimum = f32::MAX;
@@ -1228,7 +1043,6 @@ fn nearest_visible_copy(bucket: &TreeBucket, frame: TreeFrame<'_>) -> Option<(us
     nearest
 }
 
-/// The four side planes only; native admission has no additional ground rectangle.
 fn visible(
     bucket: &TreeBucket,
     offset: f32,
@@ -1243,7 +1057,6 @@ fn visible(
     )
 }
 
-/// Uploads a 24-bit BMP the loader expanded to RGBA.
 fn rgb_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

@@ -8,7 +8,6 @@ const WIDGETS = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.dirname(WIDGETS);
 const READS = /\buse(FactionColours|FactionDisplayNames)\(/;
 
-/** The widget's own files and the shared charts they import, followed through relative imports. */
 function sources(folder: string): string[] {
   const seen = new Set<string>();
   const visit = (file: string) => {

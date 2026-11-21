@@ -1,11 +1,3 @@
-//! Each country's name, map colour and flag as the game showed them, from the recorder's look
-//! history ([`recorder_derive::looks`]): its lifetimes give each tag's looks with their hours, a
-//! small table at each run's end what each look holds. `country-facts` gives every tag's over a
-//! whole timeline as runs, `country-styles` some tags' at one hour. Names are built at the reply
-//! in the reader's language from the recorded naming operands; flags are chosen in the recorded
-//! mod stack. Neither comes from a tag list, so mods and dynamic countries work, and a missing
-//! value stays missing rather than guessed. A reply's cost follows the looks' changes, not the
-//! campaign's hours.
 
 use super::{BranchParams, ContentOptions, LoadContext, Product, validate_tag};
 use crate::{
@@ -34,7 +26,6 @@ const NO_COLOUR: &str = "no recorded map colour";
 const NOT_A_COUNTRY: &str = "not a country at this hour";
 const UNKNOWN: &str = "the country tables are not complete at this hour";
 
-/// The chart's plain country name.
 pub fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, String> {
     names
         .name(slot)
@@ -55,9 +46,9 @@ pub struct CountryStyleParams {
 #[serde(rename_all = "camelCase")]
 pub struct CountryStyle {
     pub tag: String,
-    /// The name the game showed; null when it could not be resolved.
+    #[doc = " The name the game showed; null when it could not be resolved."]
     pub name: Option<String>,
-    /// The recorded map colour as sRGB bytes; null when not recorded this hour.
+    #[doc = " The recorded map colour as sRGB bytes; null when not recorded this hour."]
     pub color: Option<[u8; 3]>,
 }
 
@@ -71,20 +62,18 @@ pub struct CountryStyleReply {
     pub warnings: Vec<String>,
 }
 
-/// Every country's style ([`CountryStyle`]) and flag at every hour the timeline's country tables
-/// were complete, as runs, so an hour is looked up rather than asked for.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactsReply {
     pub branch_id: String,
-    /// The hours the runs answer, as `[first, last]` spans in order.
+    #[doc = " The hours the runs answer, as `[first, last]` spans in order."]
     pub known: Vec<[i32; 2]>,
-    /// Names, each once; a run holds its index.
+    #[doc = " Names, each once; a run holds its index."]
     pub names: Vec<String>,
-    /// Why part of a style is missing, each once; a run holds its index.
+    #[doc = " Why part of a style is missing, each once; a run holds its index."]
     pub reasons: Vec<String>,
-    /// Flag choices, each once; a run holds its index.
+    #[doc = " Flag choices, each once; a run holds its index."]
     pub flags: Vec<CountryFlagChoice>,
     pub countries: Vec<CountryFactRuns>,
     pub warnings: Vec<String>,
@@ -95,16 +84,15 @@ pub struct CountryFactsReply {
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactRuns {
     pub tag: String,
-    /// `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in
-    /// `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's
-    /// index in `flags`, each -1 when there is none. A tag that is not a country has a run with
-    /// no name, colour or flag and its reason.
+    #[doc = " `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in"]
+    #[doc = " `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's"]
+    #[doc = " index in `flags`, each -1 when there is none. A tag that is not a country has a run with"]
+    #[doc = " no name, colour or flag and its reason."]
     pub runs: Vec<[i32; 5]>,
 }
 
 dashboard_base::reply_warnings!(CountryStyleReply, CountryFactsReply);
 
-/// A tag's style from its look, and why part of it is missing.
 pub(crate) fn style(tag: &str, look: &Look, localisation: Option<&Localisation>) -> (CountryStyle, Option<String>) {
     let (name, unnamed) = match localisation {
         None => (None, None),
@@ -125,10 +113,8 @@ pub(crate) fn style(tag: &str, look: &Look, localisation: Option<&Localisation>)
     (CountryStyle { tag: tag.to_owned(), name, color: look.colour }, problem)
 }
 
-/// The chain of flag candidates a look's inputs give.
 fn flag_chain(tag: &str, look: &Look) -> flag_choices::Chain {
     if (look.id as i32) <= 0 {
-        // Atlas population tests the object's own country reference.
         return flag_choices::Chain { candidates: Vec::new(), refusal: Some(format!("country {} names no country object", look.id)) };
     }
     let appearance = look.flag.appearance.as_ref().map(|(cosmetic, reference, original)| flag_choices::Appearance {
@@ -142,8 +128,6 @@ fn flag_chain(tag: &str, look: &Look) -> flag_choices::Chain {
     flag_choices::Operands::of(look.id, tag.as_bytes(), appearance, look.flag.ruling, look.flag.group.as_deref()).chain()
 }
 
-/// One run's looks: each tag number's spans (its look's number, first and last hour), the hours
-/// no look is known, what each look number holds, and each tag number's tag.
 pub struct RunLooks {
     pub spans: Vec<(u32, u32, i32, i32)>,
     pub unknown: Vec<(i32, i32)>,
@@ -187,7 +171,6 @@ pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
     Ok(RunLooks { spans, unknown, looks, tags })
 }
 
-/// The names' localisation, or why there is none, with the warnings names read in it carry.
 pub(crate) fn localisation(source: &Source, content: Option<&ContentOptions>, warnings: &mut Vec<String>) -> io::Result<Option<Arc<Localisation>>> {
     let localisation = content::name_localisation(source, content);
     match (&localisation, content) {
@@ -198,7 +181,6 @@ pub(crate) fn localisation(source: &Source, content: Option<&ContentOptions>, wa
     Ok(localisation.ok())
 }
 
-/// The recorded mod stack's flag folders, or why flags cannot be chosen there.
 fn flag_folders(source: &Source, content: Option<&ContentOptions>) -> io::Result<Result<FlagFolders, String>> {
     let Some(content) = content else {
         return Ok(Err("flags cannot be chosen: Game content is not configured".to_owned()));
@@ -213,7 +195,6 @@ fn flag_folders(source: &Source, content: Option<&ContentOptions>) -> io::Result
     }
 }
 
-/// Numbers texts by first use, as a reply's dictionary.
 #[derive(Default)]
 struct Dictionary {
     numbered: HashMap<String, i32>,
@@ -232,12 +213,9 @@ impl Dictionary {
     }
 }
 
-/// Every tag's styles over `query`'s timeline ([`CountryFactsReply`]). A tag's facts are given
-/// at the first known hour, and again at every known hour they change.
 fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<CountryFactsReply> {
     let mut warnings = Vec::new();
     let localisation = localisation(source, context.content.as_ref(), &mut warnings)?;
-    // Without folders, every country's flag is the one choice naming why on each atlas.
     let folders = flag_folders(source, context.content.as_ref())?.map_err(|reason| CountryFlagChoice {
         keys: [None, None, None],
         reasons: [Some(reason.clone()), Some(reason.clone()), Some(reason)],
@@ -246,7 +224,6 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
     let mut flags: Vec<CountryFlagChoice> = Vec::new();
     let mut flag_numbers: HashMap<CountryFlagChoice, i32> = HashMap::new();
     let mut known: Vec<[i32; 2]> = Vec::new();
-    // Each tag's segments: (first, last, its fact as given), none where it is no country.
     let mut segments: HashMap<Arc<str>, Vec<(i32, i32, Option<[i32; 4]>)>> = HashMap::new();
     let mut runs_read: HashMap<u32, Arc<RunLooks>> = HashMap::new();
     let mut given: HashMap<(u32, u32, Arc<str>), [i32; 4]> = HashMap::new();
@@ -256,7 +233,6 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
             runs_read.insert(stretch.run, crate::answer::looks(source, stretch.run)?);
         }
         let run = &runs_read[&stretch.run];
-        // The stretch's known hours: all but the unknown spans.
         let mut cursor = stretch.first;
         let mut unknown: Vec<(i32, i32)> = run.unknown.iter().map(|&(a, b)| (a.max(stretch.first), b.min(stretch.last))).filter(|(a, b)| a <= b).collect();
         unknown.sort_unstable();
@@ -313,7 +289,6 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
         }
     }
     let known = joined;
-    // Numbered only when a run gives it.
     let not_a_country = [-1, -1, -2, -1];
     let mut countries: Vec<CountryFactRuns> = segments
         .into_iter()
@@ -343,7 +318,6 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                     give(cursor, not_a_country, &mut runs);
                 }
             }
-            // A tag given nothing before it was first held starts as no country, not as nothing.
             CountryFactRuns { tag: tag.to_string(), runs }
         })
         .filter(|country| !country.runs.is_empty())
@@ -469,7 +443,6 @@ impl Product for CountryStyles {
 mod tests {
     use super::*;
 
-    /// A selection of 1,500 countries, as a campaign with that many may make, is one valid request.
     #[test]
     fn a_style_request_naming_1500_countries_is_valid() {
         let params = CountryStyleParams { branch_id: "1".into(), hour: 0, tags: (0..1_500).map(|at| format!("X{at:04}")).collect() };

@@ -1,6 +1,3 @@
-//! The parts of vision reread whole, on the layer's worker from its own copies of their tables:
-//! who views, with whom, and the small censuses (the unit modifier, the air and naval defines,
-//! air base access). The frame side keeps the last one the worker made.
 
 use super::{Columns, Content};
 use crate::{
@@ -18,7 +15,6 @@ use viewer_foundation::map::{
     visibility::{AirDefines, NavalDefines},
 };
 
-/// The tables the whole parts read rows of; a change of any rereads them.
 pub(super) const READ: [TableId; 9] = [
     TableId::CountryLinks,
     TableId::Countries,
@@ -31,17 +27,12 @@ pub(super) const READ: [TableId; 9] = [
     TableId::SimulationFeatures,
 ];
 
-/// Tables the whole parts read only the status of, which the worker keeps no rows of.
 pub(super) const STATUS_ONLY: [TableId; 1] = [TableId::UnitIntel];
 
-/// Tables whose status alone moves the whole parts, besides [`READ`].
 pub(super) const STATUSES: [TableId; 4] = [TableId::UnitIntel, TableId::CountryIntel, TableId::StateVisibility, TableId::RadarCoverage];
 
-/// Tables whose refusal the whole parts name when they cannot read the hour.
 pub(super) const NAMED: [TableId; 2] = [TableId::CountryLinks, TableId::Countries];
 
-/// What the whole parts read: the worker's tables, the statuses of the tables it keeps no rows
-/// of, and how the mirrors word a refusal of the tables it names.
 pub(super) struct Source<'a> {
     pub(super) tables: &'a Tables,
     pub(super) statuses: &'a BTreeMap<TableId, Option<Status>>,
@@ -65,7 +56,6 @@ impl Source<'_> {
     }
 }
 
-/// Faction, war, subject and attache relations in canonical slots, as today's `Relations`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Relations {
     factions: Arc<BTreeMap<u32, u64>>,
@@ -92,24 +82,18 @@ impl Relations {
     }
 }
 
-/// The parts reread whole: who views, with whom, and the small censuses.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Global {
-    /// Raw country reference to canonical slot.
     pub(super) links: Arc<BTreeMap<u32, u32>>,
-    /// Canonical slot to its raw references, ascending.
     pub(super) raws: Arc<BTreeMap<u32, Vec<u32>>>,
-    /// Canonical slot to its native country ids, ascending; and to its tag.
     pub(super) natives: Arc<BTreeMap<u32, Vec<u32>>>,
     tags: Arc<BTreeMap<u32, String>>,
     pub(super) ours: u32,
     pub(super) resolution: Resolution,
-    /// The viewing country's native id that walks first, none when Countries holds none.
     pub(super) viewer: Option<u32>,
     pub(super) fog: bool,
     pub(super) undecided: Option<&'static str>,
     pub(super) relations: Result<Relations, &'static str>,
-    /// The relations with attaches, or why not: what the province bytes read.
     pub(super) fog_relations: Result<Relations, &'static str>,
     pub(super) shares: BTreeMap<u32, ()>,
     pub(super) wars: BTreeMap<u32, ()>,
@@ -118,9 +102,7 @@ pub(super) struct Global {
     pub(super) air_defines: Option<AirDefines>,
     pub(super) naval_defines: Option<NavalDefines>,
     pub(super) air_access: Option<BTreeMap<u32, ()>>,
-    /// The slots whose sources put terms on provinces, as [`Self::read_admitted`] gives them.
     admitted: Option<BTreeSet<u32>>,
-    /// Why the hour has no vision at all, by name.
     pub(super) failed: Option<String>,
 }
 
@@ -156,7 +138,6 @@ fn link(links: &BTreeMap<u32, u32>, raw: u32, what: &'static str) -> Result<u32,
 }
 
 impl Global {
-    /// No whole parts yet, refused by `reason`.
     pub(super) fn unread(reason: &str) -> Self {
         Self { failed: Some(reason.into()), ..Self::default() }
     }
@@ -170,7 +151,6 @@ impl Global {
             }
         }
         let (mut links, mut raws, mut natives, mut tags) = (BTreeMap::new(), BTreeMap::<u32, Vec<u32>>::new(), BTreeMap::<u32, Vec<u32>>::new(), BTreeMap::new());
-        // Countries whose tag's string is not named: their slot and the string's id.
         let mut unnamed = Vec::new();
         if let Some(rows) = source.complete(TableId::CountryLinks) {
             for slot in rows.rows() {
@@ -208,7 +188,6 @@ impl Global {
             let raw = if (country as i32) > 0 { country } else { observer };
             ((raw as i32) > 0).then_some(raw).and_then(|raw| global.links.get(&raw).copied())
         });
-        // A country chosen by tag that no named tag matches cannot be told from one whose tag is not named.
         if let viewer_foundation::map::perspective::Country::Tag(chosen) = &choice.country
             && let Some(&(slot, id)) = unnamed.first()
             && !global.tags.values().any(|tag| tag.eq_ignore_ascii_case(chosen))
@@ -235,8 +214,6 @@ impl Global {
         global
     }
 
-    /// What the relations decide: the relations, who shares vision and who is at war with the
-    /// viewer, the attaches, air base access, and what leaves unit sight undecided.
     fn read_relations(&mut self, source: &Source<'_>, columns: &Columns) {
         let ours = self.ours;
         self.relations = Self::relations(source, columns, &self.links);
@@ -284,7 +261,6 @@ impl Global {
         self.admitted = self.read_admitted();
     }
 
-    /// The viewer's unit modifier: its first CountryVisibility row's, zero without one.
     fn read_modifier(&mut self, source: &Source<'_>, columns: &Columns) {
         let Some(rows) = source.complete(TableId::CountryVisibility) else { return };
         self.unit_modifier = rows
@@ -294,7 +270,6 @@ impl Global {
             .unwrap_or(0);
     }
 
-    /// The air and naval defines with the simulation's feature mask, none without it.
     fn read_defines(&mut self, source: &Source<'_>, columns: &Columns, content: &Content) {
         let Ok(fog) = &content.fog else { return };
         let mask = source.complete(TableId::SimulationFeatures).and_then(|features| {
@@ -328,15 +303,11 @@ impl Global {
         Ok(Relations { factions: Arc::new(factions), wars: Arc::new(wars), subjects: Arc::new(subjects), attaches: BTreeSet::new() })
     }
 
-    /// The slots whose sources put terms on provinces: the viewer and those its relations admit;
-    /// none without relations.
     fn read_admitted(&self) -> Option<BTreeSet<u32>> {
         let relations = self.fog_relations.as_ref().ok()?;
         Some(self.natives.keys().copied().filter(|&slot| slot == self.ours || relations.allied_for_fog(slot, self.ours)).collect())
     }
 
-    /// Which part the province terms read changed from `other`, if one did: a source's terms
-    /// depend on these; relations that admit the same slots only move cutoffs and invasion sight.
     pub(super) fn moved_terms(&self, other: &Self) -> Option<usize> {
         let parts: [&dyn Fn() -> bool; 4] = [
             &|| self.links != other.links,

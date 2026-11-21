@@ -9,7 +9,6 @@ use std::{sync::Arc, time::Duration};
 
 const REASON: &str = "the collector could not read it";
 
-/// Twelve hours in which `LandCombats` is unavailable for hours 4 to 7 with [`REASON`].
 fn unavailable(name: &str) -> Units {
     record(name, 12, |at, store| {
         let reason = store.intern(REASON.as_bytes()).unwrap();
@@ -19,8 +18,6 @@ fn unavailable(name: &str) -> Units {
     })
 }
 
-/// What `read` gives once it no longer says the words are being read; the read runs on its own
-/// thread, so each look yields to it.
 fn once_read(mut read: impl FnMut() -> String) -> String {
     for _ in 0..50_000_000u64 {
         let words = read();
@@ -63,7 +60,6 @@ fn a_reason_still_unread_is_being_read_on_a_frame_and_not_read_in_time_in_a_repo
     assert_eq!(reason.words(Duration::ZERO), REASON);
 }
 
-/// Reads NavalBases' unreadable country lists, and DivisionTemplateIcons' keys alone.
 struct RowNotes;
 
 impl crate::layers::Layer for RowNotes {
@@ -125,8 +121,6 @@ fn a_tables_row_note_is_todays_whether_or_not_a_drawn_layer_reads_its_column() {
     let entry = open(units, hourly_steps()).unwrap();
     entry.set_capture(CaptureMode::Full);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(RowNotes)], View::default()).unwrap();
-    // Every table's columns are held for the view store's readers, so a note is stated in today's
-    // words even where no drawn layer reads its column.
     let unread = "Field Division template model inputs: model inputs of 1 division template were unreadable this hour; ";
     let bases = "Field Naval base access lists: 2 naval bases recorded an unreadable country list; ";
     side.anchor(4, false, 0.0, true);
@@ -184,7 +178,6 @@ fn the_lists_are_compared_by_their_lines_text_each_sides_extra_lines_named_and_t
     assert_eq!((missing, extra, matched, reordered), (lines(&["d"]), lines(&[]), 4, 2), "a line twice today is matched once at the head; two lines swapped are two out of place");
 }
 
-/// Every table unavailable: each status note of today's maker is stated.
 struct Unread;
 
 impl viewer_foundation::map::tables::Statuses for Unread {
@@ -193,9 +186,6 @@ impl viewer_foundation::map::tables::Statuses for Unread {
     }
 }
 
-/// Today's maker (`map_products::ProductHour::limitations_with`) says every line it can: the tables'
-/// notes with every row fact, then each note it adds in its order. A wording no owner names would
-/// be compared whoever is registered, so a new note cannot be added without its owner.
 #[test]
 fn every_wording_todays_limitation_maker_can_give_has_an_owner() {
     use super::Owner;

@@ -1,7 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
 
-/// The entry statics are process-wide.
 static ENTRY_TEST: Mutex<()> = Mutex::new(());
 
 fn tables() -> Vec<&'static [Caller]> {
@@ -15,9 +14,6 @@ fn tables() -> Vec<&'static [Caller]> {
     tables
 }
 
-/// Every caller the engine lists is one replay route, each route but the
-/// two without a caller is named by exactly one call site, and a site's
-/// return addresses are distinct.
 #[test]
 fn every_native_caller_is_exactly_one_replay_route() {
     let mut named = BTreeMap::new();
@@ -60,7 +56,6 @@ fn a_caller_outside_its_list_is_counted_and_names_no_route() {
         EventFeedRoute::DeclareWarEffect
     );
     assert_eq!(UNCLASSIFIED.load(Ordering::Relaxed), before);
-    // The CALL itself, not its return, and another site's caller.
     assert_eq!(
         route(&native::DIPLOMACY_CALLERS, 0x1_4000_0000 + 0x0036_c949),
         EventFeedRoute::None
@@ -77,12 +72,9 @@ fn byte_operands_set_one_bit_each_from_their_low_byte() {
     assert_eq!(flags(&[]), 0);
     assert_eq!(flags(&[1, 0]), 1);
     assert_eq!(flags(&[0, 0xff]), 2);
-    // Only the native byte counts: a register's upper bits are not the value.
     assert_eq!(flags(&[0x100, 0x1_0000_0001]), 2);
 }
 
-/// Nested operations name their enclosing one, keep the nearest conference,
-/// and restore the enclosing context on return and on unwind.
 #[test]
 fn nested_operations_restore_their_enclosing_context_on_return_and_unwind() {
     assert_eq!(inside(), EventFeedCause::default());
@@ -145,9 +137,6 @@ unsafe extern "system-unwind" fn witness(
     a ^ h
 }
 
-/// A join names its route by the native caller and keeps the reason and
-/// expansion the game passed while its original runs; an unreadable ally
-/// stays unrecorded. RAX returns unchanged and the context is restored.
 #[test]
 fn a_join_runs_its_original_inside_its_route_and_operands() {
     let _globals = crate::event_feed_observer::test_globals();
@@ -198,7 +187,6 @@ fn entry_shims_unwind_to_the_native_return_with_the_original_stack() {
     };
     for entry in CALLBACKS {
         let entry = entry as *const () as usize;
-        // MOV R10,RSP; SUB RSP,0x58: the prologue ends after these two instructions.
         let first = unsafe { std::slice::from_raw_parts(entry as *const u8, 7) };
         assert_eq!(first, &[0x49, 0x89, 0xe2, 0x48, 0x83, 0xec, 0x58]);
         let pc = entry as u64 + 7;

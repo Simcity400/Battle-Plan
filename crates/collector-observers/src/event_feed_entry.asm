@@ -1,8 +1,3 @@
-# x64 MSVC CALL bridges. Both native targets have void return.
-# WAR RCX=status,RDX=candidate; ANNEX RCX=db,RDX=list,R8=scope,R9=0.
-# Native callers use no stack arguments or returned flags. Copy every volatile
-# integer/XMM output so post-observation cannot change the original's registers.
-# Emitted unwind metadata and native ABI/CET/CFG require linked validation.
 
 .text
 .globl event_stub_start
@@ -17,7 +12,6 @@ event_stub_start:
 .endef
 .seh_proc \name
 \name:
-    # Entry RSP=S-8. Home32+Frame224+alignment8 = 264 bytes.
     sub rsp, 264
     .seh_stackalloc 264
     .seh_endprologue
@@ -41,13 +35,10 @@ event_stub_start:
     mov dword ptr [rsp+32+176], \site
     mov qword ptr [rsp+32+180], 0
     mov dword ptr [rsp+32+188], 0
-    # Rust borrows the complete Frame. Only its MaybeUninit ticket may remain
-    # uninitialized; generation is a plain integer even on refused observation.
     mov qword ptr [rsp+32+208], 0
     mov rax, qword ptr [rip+{targets}+\site*8]
     mov [rsp+32+216], rax
 
-    # One checked attempt; contention/saturation retains, never retries/wraps.
     mov rax, qword ptr [rip+{flight}]
     test rax, rax
     js .Levent_refused\@
@@ -65,15 +56,12 @@ event_stub_start:
     lea rcx, [rsp+32]
     call {guard}
 
-    # C++ native finally never decrements; every abnormal exit skips this.
     cmp dword ptr [rsp+32+180], 0
     je .Levent_outputs\@
     mov rax, qword ptr [rip+{flight}]
     btr rax, 63
     test rax, rax
     je .Levent_owned_anomaly\@
-    # This invocation owns one contribution. No external reset/decrement may
-    # exist; legitimate sibling releases cannot reduce low63 below this one.
     lock dec qword ptr [rip+{flight}]
     jmp .Levent_outputs\@
 .Levent_owned_anomaly\@:
@@ -100,9 +88,6 @@ event_stub_start:
 EVENT_ENTRY event_war_entry, 0
 EVENT_ENTRY event_annex_entry, 1
 
-# C++ calls this one helper once, even when observation refused or faulted.
-# RBX holds only our frame; original's real args/XMM are restored before CALL.
-# A native escape unwinds this real frame to the C++ native-finally guard.
 .p2align 4
 .globl hoi4_event_forward
 .def hoi4_event_forward
@@ -131,7 +116,6 @@ hoi4_event_forward:
     movdqu xmm5, [rbx+160]
     mov rax, [rbx+56]
     call qword ptr [rbx+216]
-    # Preserve actual original outputs before any injected callback runs.
     mov [rbx+8], rcx
     mov [rbx+16], rdx
     mov [rbx+24], r8

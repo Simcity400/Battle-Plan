@@ -1,5 +1,3 @@
-//! A recorded campaign for the layers' tests: real tables written hour by hour into units in
-//! memory, read by a playhead as the window's would be.
 
 use crate::playhead_host::{Frame, MapSide, units};
 use playhead::{
@@ -59,17 +57,14 @@ impl Pages for Recording {
     }
 }
 
-/// The index of `table`'s column `field` in the recording's schema.
 pub fn column(table: TableId, field: &str) -> usize {
     (0..64).find(|&column| table.field_name(column) == Some(field)).unwrap()
 }
 
-/// `hours` hours from game hour 0 in one run, each written by `campaign`, as a playhead's units.
 pub fn record(name: &str, hours: u32, campaign: impl FnMut(u32, &mut Store)) -> units::Units {
     record_naming(name, hours, &[], campaign)
 }
 
-/// [`record`] with `texts` appended at hour 0, the dictionary ids 0 on that a text cell names.
 pub fn record_naming(name: &str, hours: u32, texts: &[&[u8]], mut campaign: impl FnMut(u32, &mut Store)) -> units::Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
@@ -89,13 +84,10 @@ pub fn record_naming(name: &str, hours: u32, texts: &[&[u8]], mut campaign: impl
     units::Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(kinds) }
 }
 
-/// Frames at the newest step built until `done` holds, yielding between frames that take nothing.
 pub fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &Frame) -> bool) {
     frames_until_named(side, |_| "what the test waits for".into(), done);
 }
 
-/// [`frames_until`], its failure naming what it waited for as `what` words it from the map side.
-/// Before each frame the playhead's reads have their turn ([`reads_landed`]).
 pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String, mut done: impl FnMut(&MapSide, &Frame) -> bool) {
     for _ in 0..50_000_000u64 {
         reads_landed(side);
@@ -111,14 +103,6 @@ pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String,
     panic!("the map side never reached {}: {}", what(side), seen(side));
 }
 
-/// The playhead's reads have their turn before the head moves on: once every declaration made (a
-/// map composed, a view shown again, a mode changed) has reached the stepper and no table is still
-/// being read from the file for it (`joins_open`), a frame may move the head. A table new to the
-/// playhead is read on another thread, and a head driven to the newest step every frame with no
-/// frame's time between them would otherwise pass hours, or the whole recording, before it lands:
-/// in a window a frame takes 16 ms and the read lands within a few. Makes no frame, so a frame a
-/// test looks for is never taken here. Returns at once when nothing is outstanding; fails by name
-/// with the playhead's counters when they never land.
 pub fn reads_landed(side: &MapSide) {
     let playhead = side.entry().playhead();
     for _ in 0..50_000_000u64 {
@@ -132,8 +116,6 @@ pub fn reads_landed(side: &MapSide) {
     panic!("the tables declared (declaration {declared}) were never read and landed: {counters:?}; {}", seen(side));
 }
 
-/// What a wait saw last: the map's hour, the playhead's newest and a compose, and each layer's
-/// carried and published with the hour the last frame showed of it.
 pub fn seen(side: &MapSide) -> String {
     let frame = side.last_frame();
     let layers: Vec<String> = side.parts().map_or_else(Vec::new, |(_, layers)| {
@@ -142,11 +124,6 @@ pub fn seen(side: &MapSide) -> String {
     format!("applied {:?}, newest {:?}, composing {}; {layers:?}", side.applied(), side.entry().playhead().newest(), side.composing())
 }
 
-/// Frames until the step applying `hour` is taken; a frame takes every step built by then, so it
-/// may pass `hour` by the ring's few steps, which a campaign's events are spaced beyond.
-/// The settles held ([`MapSide::hold_settles`]) released at the hour applied, the head held there
-/// so no step comes: the frame after settles every mark carried, to the last entity. Returns the
-/// frames it took. Fails by name.
 pub fn released_unit_by_unit(side: &mut MapSide, settles: crate::playhead_host::SettlesHeld) -> u64 {
     let carried = |side: &MapSide| side.parts().map_or(Vec::new(), |(_, layers)| layers.iter().map(|layer| layer.carried().entities).collect::<Vec<_>>());
     assert!(carried(side).iter().any(|&entities| entities > 0), "with the settles held, the steps' marks are carried: {}", seen(side));

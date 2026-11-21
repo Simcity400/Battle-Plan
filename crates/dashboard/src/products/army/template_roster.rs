@@ -1,7 +1,3 @@
-//! A country's division templates, its garrison and staff configuration and its HQ groups at an
-//! hour, as plain sections: a rows-at-an-hour product ([`AtHour`]), requested for an hour and
-//! followed as a panel at the head. Roster ownership, never deployed membership, selects
-//! definitions and groups.
 use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
 use crate::{
@@ -32,9 +28,6 @@ const TABLES: &[TableId] = &[
     TableId::LexicalTokens,
 ];
 
-/// Read whole: the roster's owners, every template a reference may name, every country's
-/// configuration row (an unresolvable one before the country's breaks its section), every HQ
-/// group's owner, and the tokens the sections spell.
 const WHOLE: [TableId; 6] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -64,12 +57,10 @@ pub struct TemplateRosterReply {
 
 dashboard_base::reply_warnings!(TemplateRosterReply);
 
-/// `raw`'s canonical slot by `links`, in key order; none when no link names it.
 fn slot_of(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
     links.binary_search_by_key(&raw, |link| link.id).ok().map(|at| links[at].canonical_slot)
 }
 
-/// The templates and HQ groups of `slot`, and the templates its configuration names.
 fn owned(held: &DecodedFrame, slot: u32) -> (BTreeSet<u64>, BTreeSet<u64>) {
     let (mut templates, mut groups) = (BTreeSet::new(), BTreeSet::new());
     let Ok(links) = held.complete::<tables::CountryLinks>() else { return (templates, groups) };
@@ -92,7 +83,6 @@ fn owned(held: &DecodedFrame, slot: u32) -> (BTreeSet<u64>, BTreeSet<u64>) {
     (templates, groups)
 }
 
-/// The templates the held settings and HQ contexts name: parents and HQ targets.
 fn named(held: &DecodedFrame) -> BTreeSet<u64> {
     let mut out = BTreeSet::new();
     if let Ok(rows) = held.complete::<tables::DivisionTemplateIcons>() {
@@ -128,8 +118,6 @@ impl AtHour for TemplateRoster {
         TABLES.to_vec()
     }
 
-    /// The whole tables first; then the country's templates, the ones its configuration names and
-    /// its HQ groups' inputs; then the templates those settings and contexts name.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -168,8 +156,6 @@ impl AtHour for TemplateRoster {
     }
 }
 
-/// The roster of the country in canonical slot `slot` in `frame`: its sections and the warnings of
-/// what could not be read, in the reader's language `loc`.
 fn sections(frame: &dyn DecodedSource, slot: u32, loc: &Localisation, cancelled: &AtomicBool) -> io::Result<(Vec<String>, Vec<String>)> {
     frame.complete::<tables::Countries>()?;
     let links = frame.complete::<tables::CountryLinks>()?;
@@ -205,7 +191,6 @@ fn sections(frame: &dyn DecodedSource, slot: u32, loc: &Localisation, cancelled:
                     }
                 }
             }
-            // A template whose owner is unresolved may be this country's.
             if selected.is_empty() && !unresolved {
                 append("Template roster", Ok(template_facts::Rendered::text("No division templates.")));
             }

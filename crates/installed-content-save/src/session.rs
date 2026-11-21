@@ -1,13 +1,3 @@
-//! Saved session state: the game speed word and the world-threat source vector.
-//!
-//! The game-state writer emits the speed word unconditionally, and the reader
-//! restores it from the same key, so `speed` is the saved counterpart of the
-//! recorded clock speed.
-//!
-//! World threat saves only its ordered source vector. Neither the manager total
-//! nor the per-country aggregate cache is written; both are rebuilt on load.
-//! Each source writes all three fixed-point qwords unconditionally, the date
-//! and the reason. Both country references are omitted when nonpositive.
 
 use std::io;
 
@@ -16,28 +6,20 @@ use installed_content_core::parser::Item;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Absent only from a malformed save; the writer always emits it.
     pub speed: Option<i32>,
-    /// The whole `threat` block. An absent block is not an empty source vector.
     pub threat_sources: Option<Vec<ThreatSource>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreatSource {
-    /// Saved vector position, which the engine also uses as the row identity.
     pub ordinal: u32,
-    /// Country tag; a nonpositive raw reference is omitted entirely.
     pub tag: Option<Vec<u8>>,
-    /// The second country reference, saved under `target`.
     pub target: Option<Vec<u8>>,
     pub threat: Decimal,
     pub final_threat: Decimal,
     pub daily: Decimal,
     pub date: GameDate,
-    /// Omitted only by the checksum writer, which the oracle never reads.
     pub label: Option<Vec<u8>>,
-    /// Every other key found in the entry, so an unmodelled field is reported
-    /// rather than silently dropped.
     pub extra_keys: Vec<Vec<u8>>,
 }
 
@@ -90,8 +72,6 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
     })
 }
 
-/// The engine writes the speed index as a plain integer; a `yes`/`no` spelling
-/// would be a different field and is a parse error rather than 0 or 1.
 fn integer_word(bytes: &[u8]) -> io::Result<i32> {
     if matches!(bytes, b"yes" | b"no") {
         return Err(invalid("saved speed is a boolean, not an integer index"));

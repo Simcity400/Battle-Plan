@@ -14,6 +14,5 @@ export const definition = {
   description: 'One division’s recorded career and awards, newest first.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
-  // The automatic subject is the top of these countries; the dashboard's by default.
   defaultCountries: { kind: 'selected' }, minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 10 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -1,12 +1,7 @@
-//! Comparing two drawn overlays quad for quad, with the presentation clock set aside: the
-//! overlay's own gate (`BATTLE_PLAN_VIEWER_CHECK_OVERLAY=1`) draws the overlay on screen and the same
-//! hour laid out afresh, and names the first quad that differs.
 
 use std::sync::Arc;
 use viewer_foundation::map::sprites::{Batch, Quad};
 
-/// `batch` with the frame's clock set aside: each draw's `Time` constant and its time since its
-/// state's restart, which only a program that has not settled reads.
 pub(crate) fn clockless(batch: &Batch) -> Vec<Quad> {
     use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
     let mut quads = batch.quads.clone();
@@ -24,7 +19,6 @@ pub(crate) fn clockless(batch: &Batch) -> Vec<Quad> {
     quads
 }
 
-/// The first quad that differs, named by the window part that drew it.
 pub(crate) fn first_difference(laid: &[Quad], fresh: &[Quad]) -> Option<String> {
     let name = |quad: &Quad| {
         quad.exact
@@ -48,21 +42,11 @@ pub(crate) fn first_difference(laid: &[Quad], fresh: &[Quad]) -> Option<String> 
     })
 }
 
-/// Which of the layers' products moved between two layouts, named; none where both were made with
-/// the same products.
-///
-/// A map layer publishes its own product of an hour (its stacks, its combat markers, its bases),
-/// and a layout made with one product is a layout of a different picture from one made with
-/// another: its combats, stacks and gaps are that product's. The gate compares a painting with a
-/// layout made afresh now, so a product published in between would be reported as a difference of
-/// layouts, which it is not.
 pub(crate) fn layers_moved(painting: [usize; 6], fresh: [usize; 6]) -> Option<String> {
     let moved = viewer_counters::map::counters::layers_moved(painting, fresh);
     (!moved.is_empty()).then(|| moved.join(", "))
 }
 
-/// Where two reports of one draw first differ, by the line of their pretty debug: the field that
-/// moved, not just that one did.
 pub(crate) fn first_report_difference(what: &str, laid: &impl std::fmt::Debug, fresh: &impl std::fmt::Debug) -> String {
     let (laid, fresh) = (format!("{laid:#?}"), format!("{fresh:#?}"));
     let mut lines = laid.lines().zip(fresh.lines()).enumerate().skip_while(|(_, (a, b))| a == b);
@@ -72,8 +56,6 @@ pub(crate) fn first_report_difference(what: &str, laid: &impl std::fmt::Debug, f
     }
 }
 
-/// The field a pretty debug's line `at` sits in: each enclosing line that opens a field or a
-/// value, outermost first.
 fn enclosing(debug: &str, at: usize) -> String {
     let lines: Vec<&str> = debug.lines().take(at + 1).collect();
     let mut path: Vec<&str> = Vec::new();
@@ -93,8 +75,6 @@ fn indent(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
-/// What differs between two quads of the same window part, field by field: which of the two
-/// layouts' state moved, not just that it did.
 fn differing_fields(laid: &Quad, fresh: &Quad) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     let mut note = |name: &str, differs: bool| {
@@ -171,9 +151,6 @@ mod tests {
         }
     }
 
-    /// A layer publishing another product of the hour between the painting and the gate's own
-    /// layout is named, so the gate never reports that product's own combats and stacks as a
-    /// difference of layouts.
     #[test]
     fn the_gate_names_the_layers_whose_product_moved_under_it() {
         assert_eq!(layers_moved([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]), None);

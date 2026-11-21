@@ -1,4 +1,3 @@
-//! Immutable ribbon content and concrete draw records shared by counter/raid producers and world.
 use crate::map::unit_pose::PLANE_UNRECORDED;
 use crate::{
     errors::invalid,
@@ -12,11 +11,8 @@ use installed_content_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io};
 pub const MAPARROWS: &str = "gfx/maparrows/maparrows.txt";
 pub const GROUP_SECTION_TYPE_NAME: &str = "ag_child_defence_line";
-/// The arrow type every trade-route line draws with.
 pub const TRADE_ROUTE_TYPE_NAME: &str = "traderoute";
 
-/// The stride is 32 bytes. XYZ and UV4 are written; bytes 12 through 15 are skipped by the
-/// declaration and do not supply POSITION.w.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -25,7 +21,6 @@ pub struct Vertex {
     pub uv: [f32; 4],
 }
 
-/// Scene calls : mode0 before entities, then mode3 and mode1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
     Shadow,
@@ -44,7 +39,6 @@ impl Mode {
     }
 
     pub fn lighting(self) -> f32 {
-        // Modes 1/2 zero both shadow and normal factors.
         if matches!(self, Self::Late | Self::Shadow) {
             0.0
         } else {
@@ -53,8 +47,6 @@ impl Mode {
     }
 }
 
-/// Keep each content refusal separate: an inactive/earlier-false branch
-/// reaches none of the later defines. Operands belong to the recorded content.
 #[derive(Debug)]
 pub struct ExecutionDefines {
     pub naval_days: Result<i32, String>,
@@ -82,8 +74,6 @@ impl ExecutionDefines {
     }
 }
 
-/// Both ribbons of an army-group child use the parent's callback result.
-/// Inactive construction is also the generic arrow/raid constructor state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionState {
     pub active: bool,
@@ -91,8 +81,6 @@ pub struct ExecutionState {
 }
 
 impl ExecutionState {
-    /// The exact f32 epsilon. Inner execution FX remains active even when unmet
-    /// prerequisites stop texture movement.
     pub fn shader_terms(self, authored_speed: f32, outer: bool) -> [f32; 2] {
         let speed = if authored_speed.abs() <= f32::from_bits(0x38d1_b717)
             || self.active && !self.prerequisites
@@ -105,31 +93,20 @@ impl ExecutionState {
     }
 }
 
-// ------------------------------------------------------------------ defines
 
-/// The `NDefines.NGraphics` values the plan geometry and text read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OrderDefines {
     pub order_move: Smoothing,
     pub order_front: Smoothing,
     pub root_front: Smoothing,
     pub snapped_off_front: Smoothing,
-    /// `ROOT_FRONT_OFFSET`, fixed5.
     pub root_front_offset: i64,
-    /// Content budgets for the local control-list pruning of an offset
-    /// bound order and an unbound front, respectively.
     pub root_front_max_intersection_tests_order: i32,
     pub root_front_max_intersection_tests_front: i32,
-    /// `ORDER_FRONT_MAX_OFFSETS`.
     pub max_offsets: u8,
-    /// `ARROW_EXT_TEXT_POINTS_LIMIT`.
     pub ext_text_points_limit: i32,
-    /// `VIRTUAL_BATTLEPLANS_COLOR`.
     pub virtual_color: [f32; 4],
-    /// `ALLIED_BATTLEPLANS_COLOR`, the ordinary foreign-owner callback tint.
     pub allied_color: [f32; 4],
-    /// `ARROW_PARADROP_HEIGHT_TO_LEN` and `ARROW_PARADROP_HEIGHT_MAX`, the
-    /// paradrop arc's lift per unit of length and its ceiling.
     pub paradrop_height_to_len: f32,
     pub paradrop_height_max: f32,
 }
@@ -187,19 +164,12 @@ impl OrderDefines {
     }
 }
 
-// ------------------------------------------------------------- the arrow types
 
-/// One content-resolved `arrowType` block. Text defaults are the constructor
-/// values.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrowType {
     pub name: String,
-    /// Definition-instance bucket index, assigned in file order and consumed
-    /// in ascending order.
     pub declaration_index: usize,
-    /// Exact authored technique, retained for the compiled effect selection.
     pub shader_technique: String,
-    /// Ordinary/late and shadow admission flags.
     pub draw_last: bool,
     pub draw_shadows: bool,
     pub masks: Vec<String>,
@@ -208,7 +178,6 @@ pub struct ArrowType {
     pub secondary_body_uv_scale: f32,
     pub mask_inner: [f32; 3],
     pub mask_outer: [f32; 3],
-    /// `body_width = { start end }`, world units.
     pub body_width: [f32; 2],
     pub head_length: f32,
     pub texture_loop: f32,
@@ -218,12 +187,8 @@ pub struct ArrowType {
     pub global_scale_min_size: f32,
     pub global_scale_max_points: f32,
     pub texture_anim_speed: f32,
-    /// `culling_direction`: integer teeth side for which the texture is authored.
-    /// When the arrow's stored side differs, flip texture v with culling offset 1.
     pub culling_direction: i32,
-    /// `text_size`: label font size.
     pub text_size: f32,
-    /// `text_offset`: added to the label's start along the arrow.
     pub text_offset: f32,
 }
 
@@ -258,8 +223,6 @@ impl Default for ArrowType {
 }
 
 impl ArrowType {
-    /// A linear ramp from `global_scale_min_size` to 1 over
-    /// `global_scale_max_points` controls.
     pub fn global_scale(&self, points: usize) -> f32 {
         if self.global_scale_max_points <= 1.0 {
             return 1.0;
@@ -269,17 +232,11 @@ impl ArrowType {
     }
 }
 
-/// The parsed `gfx/maparrows/maparrows.txt`: the army-group palette, every
-/// `arrowType` and the `arrowText` font.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArrowTypes {
     pub types: BTreeMap<String, ArrowType>,
-    /// The `colors = { leader_group = { r g b a } ... }` list at the head of the
-    /// file, which is the army and army-group colour palette.
     pub leader_colors: Vec<[f32; 4]>,
-    /// `arrowText = { font = ... }`, the label font.
     pub text_font: Option<String>,
-    /// `arrowText = { technique = ... }`, selected independently of country names.
     pub text_technique: String,
 }
 
@@ -288,7 +245,6 @@ impl ArrowTypes {
         self.types.get(name)
     }
 
-    /// Parses the file. `symbolType` and buttons are not drawn by this layer.
     pub fn parse(bytes: &[u8]) -> io::Result<Self> {
         let document = parser::parse(bytes)?;
         let mut out = Self {
@@ -344,7 +300,6 @@ impl ArrowTypes {
                     b"technique" => {
                         arrow.shader_technique = scalar.unwrap_or_default();
                     }
-                    // Read the admission boolean; failure keeps the byte.
                     b"draw_last" => {
                         arrow.draw_last = entry
                             .value
@@ -353,7 +308,6 @@ impl ArrowTypes {
                             .unwrap_or(arrow.draw_last);
                     }
                     b"texture_masks" => arrow.masks = strings(&entry.value),
-                    // Read shadow admission with the same boolean reader; default true.
                     b"draw_shadows" => {
                         arrow.draw_shadows = entry
                             .value
@@ -410,7 +364,6 @@ impl ArrowTypes {
                 arrow.secondary_body_uv_scale = arrow.body_uv_scale;
             }
             if !arrow.name.is_empty() {
-                // The first definition of a name wins.
                 out.types.entry(arrow.name.clone()).or_insert(arrow);
             }
         }
@@ -421,7 +374,6 @@ impl ArrowTypes {
     }
 }
 
-/// The last `arrowText` block's `font`.
 fn text_font(document: &parser::Document) -> Option<String> {
     document
         .get_all("arrowText")
@@ -435,9 +387,6 @@ fn text_font(document: &parser::Document) -> Option<String> {
         .last()
 }
 
-/// The `arrowText` font name, for the icon loader, which loads every font the
-/// map draws. An unreadable file names none here; [`OrderAssets::load`]
-/// reports that failure itself.
 pub fn arrow_text_font(layers: &ResolvedLayers) -> io::Result<Option<String>> {
     let Ok(bytes) = layers.read_uncovered(MAPARROWS) else {
         return Ok(None);
@@ -472,144 +421,85 @@ fn floats(value: &Value) -> Option<Vec<f32>> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct OrderVertex {
     pub position: [f32; 3],
-    /// `uv_isHead_variant`: `u` along, `v` across, `z` head flag, `w` variant.
     pub uv_head_variant: [f32; 4],
 }
 
-/// One order's draw: its arrow type, its colour and its slice of the buffers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderDraw {
-    /// Air map controls share this manager, independently of battle-plan switches.
     pub air_mode: bool,
     pub arrow_type: String,
     pub texture_choice: usize,
     pub color: [f32; 4],
-    /// The curve's own length in world units, which the no-head shader's fade
-    /// arithmetic is measured in.
     pub total_length: f32,
-    /// World units one unit of `uv.x` covers.
     pub uv_to_length: f32,
-    /// Culling offset: 1 when the type declares a culling direction and the
-    /// arrow's stored teeth side differs from it.
     pub culling_offset: f32,
-    /// The type's definition bucket, which the draw visits in ascending order.
     pub declaration_index: usize,
-    /// Comparator width: larger widths draw first in a bucket.
     pub width: f32,
     pub label: Option<usize>,
     pub native_strips: Vec<std::ops::Range<u32>>,
     pub bounds: [[f32; 3]; 2],
-    /// Secondary colour of the inner pass and the two outer-pass colours,
-    /// loaded from the arrow and initialized when the arrow is created.
     pub secondary_color: [f32; 4],
     pub outer_color: [f32; 4],
-    /// Viewer-derived state for this hour. Child ribbons share the parent
-    /// callback; generic raid arrows retain their constructor state.
     pub execution: ExecutionState,
-    /// The plan family a viewer can hide; child sections take their parent's.
     pub kind: dashboard_core::protocol::PlanKind,
 }
 
-/// One drawn trade-route line: its layer and the convoy client it draws for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TradeRouteLine {
-    /// The line's layer, in the game's collection order.
     pub layer: u8,
-    /// Its route's `TradeRoutes` key (country, class, other).
     pub route: (u32, u8, u32),
-    /// Its convoy client's handle; 0 for a resource origin or grouped market contracts.
     pub client: u32,
 }
 
-/// A stored control of a drawn trade-route line, `[x, y, z, radius]` in world space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TradeRouteSample {
     pub at: [f32; 4],
     pub line: u32,
 }
 
-/// Every order of one hour, in one buffer pair, and the plan labels.
 #[derive(Clone, Debug, Default)]
 pub struct OrderField {
     pub vertices: Vec<OrderVertex>,
     pub native_vertices: Vec<Vertex>,
     pub draws: Vec<OrderDraw>,
-    /// Trade-route stored control samples, each with its world-space picking radius and line.
     pub trade_route_hovers: Vec<TradeRouteSample>,
-    /// The trade-route lines drawn, in draw order: what a sample's `line` indexes.
     pub trade_route_lines: Vec<TradeRouteLine>,
-    /// The name labels, drawn by a `mapname` pass after the ribbons.
     pub labels: Placements,
-    /// The raid arrows' flying units ([`super::raid_arrows`]), which the
-    /// unit model layer draws.
     pub raid_units: Vec<crate::map::unit_pose::UnitPlacement>,
-    /// What the raid units measured with, which the field keeps for the hours after it.
     pub held: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    /// What the hour held and what was drawn, for the report.
     pub report: OrderReport,
 }
 
-/// What one hour's orders came to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrderReport {
-    /// Orders the hour records, over every country.
     pub recorded: usize,
-    /// Orders belonging to the countries this perspective draws.
     pub ours: usize,
-    /// Orders drawn, one ribbon each.
     pub drawn: usize,
-    /// Army-group child ribbons and labels, separate from the order count.
     pub child_sections_drawn: usize,
     pub child_labels_drawn: usize,
-    /// Orders the engine draws no arrow for: the garrison areas, invasions
-    /// with no path, paradrops without a source or target, and fronts whose
-    /// recorded span is empty or one the native destroys ([`front_pairs`]).
     pub no_arrow: usize,
-    /// Orders whose geometry has fewer than two controls.
     pub too_short: usize,
-    /// Per classification, how many were drawn.
     pub per_kind: BTreeMap<&'static str, usize>,
-    /// Per classification, how many the hour records over every country.
     pub per_kind_recorded: BTreeMap<&'static str, usize>,
-    /// Offensive lines drawn along their snapped borders.
     pub snapped: usize,
-    /// Fronts drawn with an overlap offset.
     pub offset_fronts: usize,
-    /// Labels placed, and orders whose label fitted no variant.
     pub labels: usize,
     pub labels_unfitted: usize,
-    /// Labels refused because a variant the layout reached cannot be
-    /// localised or holds a control map text does not draw, by that reason.
     pub labels_refused: BTreeMap<String, usize>,
-    /// Labels whose extended transport-count operands are unavailable.
     pub transports_omitted: usize,
-    /// What was refused rather than guessed, and how often.
     pub refused: BTreeMap<&'static str, usize>,
-    /// Named missing facts/content of the sea search, counted once per order.
     pub invasion_refused: BTreeMap<String, usize>,
-    /// Active orders whose reached execution inputs are unknown. The ribbon
-    /// and its children are withheld; unknown never means native false.
     pub execution_refused: BTreeMap<String, usize>,
-    /// Unknown allied-country admission, counted per physical occurrence.
     pub allied_refused: BTreeMap<String, usize>,
-    /// Why nothing could be drawn, when the content lacks an input.
     pub unavailable: Option<String>,
-    /// Unbound centroid curves only: maximum/mean distance from a path
-    /// centroid to the nearest control, in thousandths of a world unit.
     pub control_gap_max_milli: u32,
     pub control_gap_mean_milli: u32,
-    /// The raid arrows drawn in this field and what they could not draw
-    /// ([`super::raid_arrows`]).
     pub raid_arrows: RaidArrowReport,
-    /// The trade-route lines' warning-area lines, drawn in this field's arrow manager.
     pub trade_routes: Vec<String>,
-    /// Air map arrows sharing the same type buckets.
     pub air_orders: Vec<String>,
 }
 
 impl OrderReport {
-    /// The warning-area lines: why the plan is not drawn, and each refusal
-    /// with its count. Empty when every order of the view was drawn.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(why) = &self.unavailable {
@@ -662,22 +552,15 @@ impl OrderReport {
         out
     }
 }
-/// What one hour's raid arrows came to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RaidArrowReport {
-    /// The viewing country's non-ended raids, one arrow each natively.
     pub raids: usize,
     pub drawn: usize,
-    /// Arrows the default raid filter hides.
     pub filtered: usize,
-    /// Arrows the game draws nothing for: no path, or no controls.
     pub empty: usize,
-    /// Launched arrows drawn without their unit, and why.
     pub units_missing: usize,
     pub units_reason: Option<String>,
-    /// What was refused rather than guessed, and how often.
     pub refused: BTreeMap<String, usize>,
-    /// Why no arrow could be decided at all.
     pub unavailable: Option<String>,
 }
 
@@ -686,7 +569,6 @@ impl RaidArrowReport {
         *self.refused.entry(reason.into()).or_default() += 1;
     }
 
-    /// The warning-area lines; empty when every arrow and unit was drawn.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(why) = &self.unavailable {
@@ -705,35 +587,25 @@ impl RaidArrowReport {
         out
     }
 }
-// --------------------------------------------------------------------- assets
 
-/// The arrow types, the mask/pattern pages this layer uploads and the
-/// `NDefines.NGraphics` values the geometry reads.
 #[derive(Debug)]
 pub struct OrderAssets {
     pub types: ArrowTypes,
-    /// Separate assigned/unassigned texture choices for each arrow type.
     pub pages: BTreeMap<(String, usize), ArrowPage>,
     pub defines: OrderDefines,
-    /// Simulation defines used only by reached active execution branches.
     pub execution: ExecutionDefines,
-    /// The raid arrows' defines ([`super::raid_arrows`]), or why they
-    /// cannot be read; the battle plan does not need them.
     pub raid_defines: Result<installed_content_raids::raids::RaidGraphicsDefines, String>,
     pub radar: Result<SymbolPage, String>,
     pub air_range: Result<SymbolPage, String>,
     pub air_transfer: Result<SymbolPage, String>,
 }
 
-/// One map symbol definition and its runtime texture, through the recorded content stack.
 #[derive(Debug)]
 pub struct SymbolPage {
     pub technique: String,
     pub size: f32,
     pub texture: dds::Texture,
-    /// Own, allied and selected colours.
     pub colors: [[f32; 4]; 3],
-    /// Fixed5 angular step per presentation frame.
     pub rotation: i64,
 }
 
@@ -881,8 +753,6 @@ impl SymbolPage {
     }
 }
 
-/// One texture choice. Authored internal variants use vTextureVariantScale;
-/// assigned/unassigned masks are separate resources, not stacked variants.
 #[derive(Debug)]
 pub struct ArrowPage {
     pub mask: dds::Texture,
@@ -890,9 +760,6 @@ pub struct ArrowPage {
     pub variants: u32,
 }
 
-/// Every arrow type the battle plan can select; the raid arrows' types
-/// ([`installed_content_raids::raids::RaidArrowKind::arrow_type`]) and the trade-route lines' type
-/// ([`TRADE_ROUTE_TYPE_NAME`]) are uploaded with them.
 pub const DRAWN_ARROW_TYPES: &[&str] = &[
     "defence_line",
     "ag_defence_line_no_child",
@@ -914,13 +781,6 @@ pub const DRAWN_ARROW_TYPES: &[&str] = &[
 ];
 
 impl OrderAssets {
-    /// `gfx/maparrows` is outside content coverage, so its files and textures
-    /// are read unverified, like the tree meshes and rail strip.
-    ///
-    /// `defines` are the recorded defines, whose operands the plans execute with, and the
-    /// graphics defines, which the arrows' shapes and colours read, each value falling back to
-    /// the recorded one ([`ResolvedLayers::graphics_define`]). A texture page the visual mods
-    /// break is read from the recorded layers below them ([`ResolvedLayers::artwork_item`]).
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -940,7 +800,6 @@ impl OrderAssets {
             .chain(std::iter::once(&TRADE_ROUTE_TYPE_NAME))
         {
             let Some(arrow) = types.get(name) else {
-                // Named for the map's fallback, which compares it with the recording's.
                 layers.note_refused(format!("arrowType {name}"));
                 warnings.push((installed_content_core::DiagnosticKind::Refused, if *name == TRADE_ROUTE_TYPE_NAME {
                     format!("{MAPARROWS} declares no arrowType {name}; trade-route lines are not drawn.")
@@ -1047,9 +906,6 @@ fn page(
     })
 }
 
-/// Native route picker: compare stored samples to the point on the normalized pointer ray
-/// whose eye-distance equals the sample's eye-distance, including equality at the radius. The
-/// lines hit, each once, in draw order.
 pub fn trade_route_hit(samples: &[TradeRouteSample], eye: [f32; 3], ray: [f32; 3], width: f32) -> Vec<u32> {
     let mut hit: Vec<u32> = samples
         .iter()
@@ -1086,11 +942,9 @@ mod trade_hover_tests {
             samples.iter().map(|&(at, line)| TradeRouteSample { at, line }).collect::<Vec<_>>()
         };
         assert_eq!(trade_route_hit(&at(&[([0., 0., 10., 0.], 0)]), eye, ray, 100.), [0]);
-        // A continuous line joining these samples crosses the ray, but no stored sample hits.
         assert!(trade_route_hit(&at(&[([-10., 0., 10., 1.], 0), ([10., 0., 10., 1.], 0)]), eye, ray, 100.).is_empty());
         assert_eq!(trade_route_hit(&at(&[([0., 0., -10., 20.], 0)]), eye, ray, 100.), [0]);
         assert!(trade_route_hit(&at(&[([0., 0., -10., 19.99], 0)]), eye, ray, 100.).is_empty());
-        // Every line hit, each once, in draw order, whatever order its samples were stored in.
         let crossing = at(&[([0., 0., 10., 1.], 4), ([0., 0., 11., 1.], 2), ([0., 0., 12., 1.], 4), ([5., 0., 10., 1.], 3)]);
         assert_eq!(trade_route_hit(&crossing, eye, ray, 100.), [2, 4]);
     }

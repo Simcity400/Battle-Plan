@@ -1,46 +1,3 @@
-//! Own singleton attrition child: the counter's division attrition calculation
-//! uses caller mode zero and prepends `ATTRITION_TOTAL` to its per-source lines.
-//!
-//! The total is the one the counter itself shows, `DivisionStatus.attrition_value`, stored by the
-//! hourly division update from the same calculation (zero while the game state's player-input byte
-//! is clear). The attrition-presence predicate compares it with the threshold for the counter's
-//! attrition glyph. The game's hover evaluates the total afresh, so a term that changes after the
-//! hourly update (acclimatization, a modifier) shows there first.
-//!
-//! The lines follow the game in its order, each derived exactly from the
-//! recording and its content where its operands are recorded:
-//! - upkeep: `ATTRITION_UPKEEP` when nonzero. Its value
-//!   `P(max(0, 1 + owner 0x54), UNIT_UPKEEP_ATTRITION)` with the
-//!   positive expeditionary owner, else the roster owner, is the product
-//!   the attrition-presence predicate compares with, which DivisionStatus
-//!   records as `attrition_threshold`;
-//! - terrain: for a unit with a positive ordinary route count and a clear
-//!   strategic-redeployment byte on a valid terrain (zero only
-//!   for the installed null terrain), `ATTRITION_TERRAIN` with the terrain's
-//!   name and
-//!   upkeep plus the getter's `attrition` (0x4F) of its common modifier
-//!   when that sum is nonzero;
-//! - training: `TRAINING_ATTRITION` for an exercising unit
-//!   (DivisionStatus.exercising) with a
-//!   route count below one;
-//! - border war: for a state whose border war is active
-//!   (StateFlags.border_conflict_active),
-//!   `BORDER_WAR_HEADER` and `BORDER_WAR_ATTRITION`, the enemy share
-//!   for the state and logical owner in mode zero, scaled by
-//!   `BORDER_WAR_ATTRITION_FACTOR`;
-//! - supply: `ATTRITION_SUPPLY` with the out-of-supply severity
-//!   normalized by the army attrition supply threshold, scaled by the
-//!   country's and the selected commander block's out-of-supply factors,
-//!   times the out-of-supply attrition define, when nonzero
-//!   ([`viewer_foundation::movement_timing::HourTerms::attrition_supply`]);
-//!   a positive special-forces factor needs the template's special-forces
-//!   share, which is refused by name;
-//! - a moving unit's weather, heat and winter lines are absent when its
-//!   province's recorded weather attrition entry is zero and its heat and
-//!   winter entries scaled by acclimatization are not positive.
-//!
-//! Held variant and country/state lines use the same certified shared operands
-//! as the division panel. Missing roots or labels refuse only the reached line.
 
 use super::*;
 use replay_derive::modifier_registry::Registry;
@@ -53,18 +10,12 @@ use viewer_foundation::map::counter_inputs::SCALE as ONE;
 
 use viewer_foundation::map::division_panel as panel;
 
-/// What the lines read beyond the frame.
 struct Lookups<'b> {
     content: &'b Content,
-    /// A province's one-based terrain ordinal (its database index); zero is the null terrain.
     terrain: &'b dyn Fn(u32) -> Result<i32, String>,
-    /// The border war's enemy share in mode zero, for a raw country link
-    /// and a state id.
     border: &'b dyn Fn(u32, u32) -> Result<i64, String>,
 }
 
-/// Attrition returns zero and writes nothing when the unit has neither a route province (the first
-/// province of a positive ordinary route) nor a location.
 fn located(context: &Context<'_>, id: u64) -> Result<bool, String> {
     if context.division(id)?.province != 0 {
         return Ok(true);
@@ -80,8 +31,6 @@ fn located(context: &Context<'_>, id: u64) -> Result<bool, String> {
         .ok_or_else(|| "the attrition route province is among the route's unrecorded hops".into())
 }
 
-/// The attrition province: the first province of a positive route,
-/// else the location.
 fn selected_province(context: &Context<'_>, id: u64) -> Result<u32, String> {
     let movement = context.movement(id)?;
     if movement.path_total as i32 > 0 {
@@ -96,7 +45,6 @@ fn selected_province(context: &Context<'_>, id: u64) -> Result<u32, String> {
     Ok(context.division(id)?.province)
 }
 
-/// The province's state (its state link); zero without one.
 fn province_state(context: &Context<'_>, province: u32) -> Result<u32, String> {
     let rows = context
         .frame
@@ -110,7 +58,6 @@ fn province_state(context: &Context<'_>, province: u32) -> Result<u32, String> {
 fn fragment(context: &Context<'_>, out: &mut Tooltip, label: &str, text: Result<String, String>) {
     match text.and_then(|text| displayable(context.icons, text)) {
         Ok(text) if !text.is_empty() => {
-            // Ensure the existing text ends with a newline before each line.
             ensure_newlines(&mut out.title, 1);
             out.title.push_str(&text);
         }
@@ -119,9 +66,6 @@ fn fragment(context: &Context<'_>, out: &mut Tooltip, label: &str, text: Result<
     }
 }
 
-/// The coloured percent formatter: the fixed5
-/// product with a hundred, `+` at zero too, red when positive, green when
-/// negative, yellow at zero.
 fn coloured_percent(value: i64, precision: i32) -> String {
     let scaled = value.wrapping_mul(10_000_000) / ONE;
     let colour = match scaled.signum() {
@@ -134,8 +78,6 @@ fn coloured_percent(value: i64, precision: i32) -> String {
     format!("\u{11}{colour}{sign}{number}%\u{11}!")
 }
 
-/// The coloured percent formatter's supply line: `ATTRITION_SUPPLY` with
-/// the line value at two decimals, absent when the severity is zero.
 fn supply(
     context: &Context<'_>,
     lookups: &Result<&Lookups<'_>, String>,
@@ -169,16 +111,12 @@ fn supply(
     }
 }
 
-/// Whether a moving unit's province weather writes any line: a nonzero
-/// effective attrition entry, or a heat or winter entry that is positive
-/// once scaled by the unit's acclimatization factor.
 fn weather_lines(context: &Context<'_>, id: u64, province: u32) -> Result<bool, String> {
     let rows = context
         .frame
         .complete::<tables::WeatherProvinces>()
         .map_err(|e| e.to_string())?;
     let Ok(at) = rows.binary_search_by_key(&province, |row| row.id) else {
-        // A province without a weather record has no weather modifier.
         return Ok(false);
     };
     let modifiers = rows[at]
@@ -236,7 +174,6 @@ fn terrain(
             .ok_or_else(|| {
                 format!("terrain ordinal {ordinal} is outside the content's terrain database")
             })?;
-        // Sum the common modifier's accumulator, key 0x4F.
         let attrition = match terrain.attrition {
             None => 0,
             Some(raw) => {
@@ -261,7 +198,6 @@ fn terrain(
                     )
                 });
             fragment(context, out, "attrition terrain", text);
-            // The equipment line follows inside the same branch when nonzero.
             let equipment = (|| {
                 let lookups = lookups.as_ref().map_err(Clone::clone)?;
                 panel::held_bonus(context.frame, id, (lookups.terrain)(province)? as u32)
@@ -363,8 +299,6 @@ fn lines(context: &Context<'_>, lookups: Result<&Lookups<'_>, String>, id: u64, 
             -1,
         ),
     );
-    // The moving-state, weather, heat and winter blocks run for a moving unit
-    // whose logical owner is at war (mode 0).
     match (&moving, &province) {
         (Ok(false), _) => (),
         (Ok(true), Ok(province)) => {
@@ -589,7 +523,6 @@ fn border(
     );
 }
 
-/// `ATTRITION_TOTAL` with the counter's cached total, before the lines.
 fn total(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     let total = context
         .status(id)
@@ -603,7 +536,6 @@ fn total(context: &Context<'_>, id: u64, out: &mut Tooltip) {
         .and_then(|text| displayable(context.icons, text));
     match total {
         Ok(mut header) => {
-            // The game starts the line body on a new line before prepending the total.
             if !out.title.is_empty() && !out.title.starts_with('\n') {
                 ensure_newlines(&mut header, 1);
             }
@@ -611,7 +543,6 @@ fn total(context: &Context<'_>, id: u64, out: &mut Tooltip) {
         }
         Err(reason) => refuse(out, "attrition total", reason),
     }
-    // Trim completed tooltip text with its four whitespace bytes.
     out.title = out.title.trim_matches(['\n', '\t', '\r', ' ']).to_owned();
 }
 

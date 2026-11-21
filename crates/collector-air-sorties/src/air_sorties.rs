@@ -1,13 +1,3 @@
-//! Stored operands of the flying-aircraft map's count and admission.
-//!
-//! The game draws a count it recomputes on demand, so its stored
-//! inputs are recorded for the registered missions only: each mission's own
-//! operands, its base's containers for the wing's effective country and that
-//! country's volunteer hosts, the regional and country modifiers, and the
-//! host-base operands, and the console efficiency overrides. Everything the
-//! stored-count alternative would replace lives here. Missions are read in gathered batches, each pool definition and
-//! each country's volunteer hosts once, the weather manager once, and every
-//! other operand once per sorted key.
 
 use engine_allocation as allocation;
 use engine_map_air::{
@@ -32,11 +22,7 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 
-/// Shares authenticated region objects already reached by sortie acquisition.
-/// A successful miss is distinct from an unreadable lookup.
 pub trait RegionObserver {
-    /// A certified native console vector, independent of any map or tooltip evaluation.
-    /// Missing support is explicit unknown and never guessed empty.
     fn detection_overrides(
         &mut self,
         _emit: &mut dyn FnMut(u32, i64) -> Result<(), &'static str>,
@@ -63,7 +49,6 @@ pub struct Capacities {
     pub reached: usize,
     pub rows: usize,
     pub keys: usize,
-    /// One country's volunteer-host vector.
     pub hosts: usize,
 }
 
@@ -99,7 +84,6 @@ impl Capacities {
 #[derive(Clone, Copy, Default)]
 struct Mission {
     wing: u64,
-    /// The embedded CAirMission and the wing's pool, acquisition context.
     pointer: usize,
     pool: usize,
     air_base: u64,
@@ -123,7 +107,6 @@ enum Scope {
     CountryRegion,
 }
 
-/// One operand to read, with the acquisition pointers it needs.
 #[derive(Clone, Copy, Default)]
 struct Key {
     scope: Scope,
@@ -132,7 +115,6 @@ struct Key {
     region: u32,
     kind: i32,
     stateful: bool,
-    /// A container key for an effective country, whose fuel the law reads.
     fuel: bool,
     object: usize,
     country: usize,
@@ -144,8 +126,6 @@ impl Key {
     }
 }
 
-/// Headers read once per hour (weather), per base (containers) or per
-/// country (its region map); keys arrive grouped by base and country.
 #[derive(Default)]
 struct Cached {
     weather_manager: Option<Result<usize, &'static str>>,
@@ -154,7 +134,6 @@ struct Cached {
     region_map: Option<(usize, map_air_country_region_modifier::CountryMap)>,
 }
 
-/// Worker rows that grow before publication.
 struct Rows<T> {
     rows: Vec<T>,
     len: usize,
@@ -200,7 +179,6 @@ impl<T: Default> Rows<T> {
 
 pub struct Sorties {
     outcome: Outcome,
-    /// The Static metadata's own outcome when it was not read.
     metadata_outcome: Outcome,
     missions: Rows<Mission>,
     reached: Rows<u32>,
@@ -209,10 +187,7 @@ pub struct Sorties {
     special: Rows<AirSortieSpecialBaseRow>,
     metadata: Option<AirSortieModifierMetadataRow>,
     keys: Rows<Key>,
-    /// Mission indices, sorted by pool and then by effective country.
     order: Vec<u32>,
-    /// One country's volunteer hosts, then their slots; `hosts_required` is
-    /// the longest vector seen and `hosts_short` the countries it cut off.
     hosts: Vec<u32>,
     hosts_required: usize,
     hosts_short: usize,
@@ -255,7 +230,6 @@ impl Sorties {
         self.hosts_short = 0;
     }
 
-    /// `metadata` is the Static metadata's outcome, which is off-slot on most hours.
     pub fn fail(&mut self, outcome: Outcome, metadata: Outcome) {
         self.reset();
         self.outcome = outcome;
@@ -291,7 +265,6 @@ impl Sorties {
         grow_vec(&mut self.hosts, capacity.hosts);
     }
 
-    /// The four hourly tables share one outcome; metadata is Static.
     pub fn outcomes(&self) -> [Outcome; 5] {
         let metadata = match &self.metadata {
             Some(_) => Outcome::Rows { len: 1 },
@@ -306,8 +279,6 @@ impl Sorties {
         ]
     }
 
-    /// `registered` are the registered wings, `witnesses` the probed bases
-    /// sorted by handle. Any unreadable operand fails every sortie table.
     pub fn capture<'a>(
         &mut self,
         memory: &impl Memory,
@@ -439,7 +410,6 @@ impl Sorties {
         self.definitions(memory, base)?;
         self.queue_keys(memory, &countries, witnesses)?;
         let keys = &mut self.keys.rows[..self.keys.len];
-        // A fuel key sorts first, so a deduplicated container keeps its fuel.
         keys.sort_unstable_by_key(|key| (key.order(), !key.fuel));
         let mut cached = Cached::default();
         let mut previous = None;
@@ -468,8 +438,6 @@ impl Sorties {
         Ok(())
     }
 
-    /// A held night marker is acquired only for the original sampled regions
-    /// demanded by nonzero disruption. The ordinary updated path reads none.
     fn patrol_night(
         &mut self,
         memory: &impl Memory,
@@ -511,8 +479,6 @@ impl Sorties {
         }
     }
 
-    /// Every console override, in slot order after the keyed modifiers. The
-    /// filler keeps one entry per slot, so a repeat is refused.
     fn overrides(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let first = self.modifiers.len;
         native::efficiency_overrides_fallible(memory, base, |slot, raw| {
@@ -560,8 +526,6 @@ impl Sorties {
         Ok(())
     }
 
-    /// Mission operands in gathered batches, then the reached IDs. A mission
-    /// whose IDs do not fit is dropped and counted short.
     fn read_missions(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let missions = &mut self.missions.rows[..self.missions.len];
         let mut spotting = native::patrol::SpottingFactors::default();
@@ -621,8 +585,6 @@ impl Sorties {
                 let Some(output) = self.reached.rows.get_mut(start..start + ids) else {
                     continue;
                 };
-                // The region's provinces are appended in roster order,
-                // and the scenario draws index into that order.
                 native::read_reached(memory, mission.operands.reached, output)?;
                 self.reached.len += ids;
                 (mission.reached_start, mission.reached_len) = (start, ids);
@@ -634,7 +596,6 @@ impl Sorties {
         Ok(())
     }
 
-    /// Each distinct pool's definition flags, read once.
     fn definitions(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let missions = &mut self.missions.rows[..self.missions.len];
         let order = &mut self.order[..missions.len()];
@@ -642,8 +603,6 @@ impl Sorties {
             *slot = index as u32;
         }
         order.sort_unstable_by_key(|&index| missions[index as usize].pool);
-        // The distinct pools in pool order, gathered up to the first a copy
-        // or identity stopped at; that pool and the rest read as before.
         let mut start = 0;
         while start < order.len() {
             let mut pools = [0_usize; native::DEFINITION_BATCH];
@@ -679,9 +638,6 @@ impl Sorties {
         Ok(())
     }
 
-    /// Queue every mission's operand keys, resolving each effective country
-    /// and reading its volunteer hosts once. A mission whose pool base does
-    /// not resolve flies nowhere and needs none; the viewer reports it.
     fn queue_keys<M: Memory>(
         &mut self,
         memory: &M,
@@ -722,7 +678,6 @@ impl Sorties {
                 self.hosts_short += 1;
             } else {
                 for index in 0..count {
-                    // A zero or unlinked host names no country and so no container.
                     let host = self.hosts[index];
                     if host != 0
                         && let Some(slot) = countries.link(host)?
@@ -759,7 +714,6 @@ impl Sorties {
                 })?;
                 let region = mission.region.unwrap_or(0);
                 if mission.region.is_some() {
-                    // Region zero would select unsupported weather record zero.
                     if region == 0 {
                         return Err("air mission region 0 has no supported weather record");
                     }
@@ -769,7 +723,6 @@ impl Sorties {
                         ..Key::default()
                     })?;
                 }
-                // Country terms apply only for a positive effective tag.
                 if (effective as i32) > 0 {
                     self.keys.push(Key {
                         scope: Scope::Country,
@@ -809,7 +762,6 @@ impl Sorties {
     ) -> Result<(), &'static str> {
         let raw = match key.scope {
             Scope::Container => {
-                // Container keys arrive grouped by base.
                 let containers = match cached.containers {
                     Some((air_base, containers)) if air_base == key.base => containers,
                     _ => {
@@ -852,7 +804,6 @@ impl Sorties {
                             .map(i32::from);
                 } else if !key.stateful
                     && key.kind != 2
-                    // A stale host omits only its wings; the viewer names them.
                     && let Some(host) =
                         map_air_carrier_operands::read(memory, base, key.object, key.base)?
                 {
@@ -919,7 +870,6 @@ impl Sorties {
         Ok(())
     }
 
-    /// Mission inputs, base countries, modifiers, special bases and metadata.
     pub fn tables(&self) -> [TableView; 5] {
         let metadata = match (&self.metadata, self.metadata_outcome) {
             (Some(row), _) => table::<tables::AirSortieModifierMetadata, _>(

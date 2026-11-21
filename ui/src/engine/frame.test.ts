@@ -5,7 +5,6 @@ import type { EngineFrame } from './frame.ts';
 import { Tween } from './tween.ts';
 import { approach } from '../charts/easing.ts';
 
-/** An engine whose frames run when the test says, at the times it gives. */
 function manual() {
   let asked: ((now: number) => void) | null = null;
   const engine = new FrameEngine({ request: run => { asked = run; } });

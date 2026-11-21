@@ -1,12 +1,3 @@
-//! Particle descriptors resolved by name, as the game resolves them.
-//!
-//! An entity event names a `pdxparticle` object; its `type` names a `particle`
-//! block. Gameplay registers startup interface files, then the remaining
-//! `interface` and `gfx` descriptors. Particle blocks register by their
-//! `name` from every `gfx/particles/**/*.asset`; no filename is derived from
-//! an identifier. The last registered object of an exact name wins;
-//! duplicate particle block names have unsettled precedence and are refused.
-//! Descriptors outside the coverage roots are read unverified.
 
 use sha2::Digest;
 use std::{collections::BTreeMap, io};
@@ -18,8 +9,6 @@ use crate::{
     script_files::ScriptPath,
 };
 
-/// Startup interface files load first and are excluded from the ordinary
-/// walk. These paths are fixed loader inputs.
 const STARTUP_GFX: [&str; 3] = [
     "interface/load_screen.gfx",
     "interface/load_screen_font.gfx",
@@ -40,14 +29,10 @@ pub(crate) fn object_file_order(
             .into_iter()
             .filter(|path| !STARTUP_GFX.iter().any(|startup| path == startup)),
     );
-    // Load these after GUI initialization, preserving files before
-    // subdirectories and bytewise traversal within each level.
     files.extend(crate::defines::load_order("gfx/", "gfx", gfx));
     files
 }
 
-/// Shader-facing subsystem metadata. Runtime particles retain this identity;
-/// sharing a texture does not imply sharing a technique or constant packet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderDescriptor {
     pub texture: String,
@@ -57,25 +42,19 @@ pub struct RenderDescriptor {
     pub billboard: bool,
     pub local_space: bool,
     pub sort: Sort,
-    /// Reverses `sort` to smallest key first; the game reads it for nothing else.
     pub invert: bool,
 }
 
-/// The key a subsystem's `sort` reorders its particle storage by, a pass each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sort {
     #[default]
     None,
-    /// Along the camera's look direction.
     Depth,
-    /// Squared distance from the camera.
     Distance,
     Age,
 }
 
 impl Sort {
-    /// Assignments apply in order, lowercased; the game reports any other value and keeps the
-    /// previous one.
     fn read(fields: &[parser::Item]) -> Self {
         fields
             .iter()
@@ -98,16 +77,12 @@ impl Sort {
 
 impl RenderDescriptor {
     pub fn read(fields: &[parser::Item]) -> io::Result<Self> {
-        // Both strings start empty and x/y start at 1. Reads store signed
-        // x/y and truncate the texture and shader paths to 255/63 bytes.
         let mut out = Self {
             texture: String::new(),
             shader: String::new(),
             tiles: [1; 2],
-            // Both render flags start false.
             trail: parser::read_bool_field(fields, "trail", false),
             local_space: parser::read_bool_field(fields, "local_space", false),
-            // Only a value equal to the C string `yes` stores true.
             billboard: fields
                 .iter()
                 .filter(|item| item.keyword_is("billboard"))
@@ -135,7 +110,6 @@ impl RenderDescriptor {
                     }
                     Some(b"x" | b"y") => {
                         let index = usize::from(item.key.as_deref() == Some(b"y"));
-                        // Use the integer prefix scanner for signed tile counts.
                         out.tiles[index] =
                             crt::scan_i32(text(&item.value, "particle texture tiles")?.as_bytes())
                                 .stored()
@@ -156,7 +130,6 @@ impl RenderDescriptor {
         Ok(out)
     }
 
-    /// Append Trail before NoBillboard; the source is always particle.lua.
     pub fn technique(&self) -> String {
         format!(
             "{}{}{}",
@@ -167,33 +140,21 @@ impl RenderDescriptor {
     }
 }
 
-/// One `particle` block an entity event resolves to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Particle {
-    /// Effective `.asset` path holding the block, by its bytes.
     pub path: ScriptPath,
-    /// The block's `name`, which selects it inside that file.
     pub name: String,
-    /// The `pdxparticle` object's `scale`.
     pub scale: f32,
-    /// Store the registration ordinal before parsing the descriptor.
     pub registration: usize,
 }
 
-/// Every `pdxparticle` object and every named `particle` block of the stack,
-/// and the `gfx/**/*.asset` entity files, listed in one walk of `gfx`. An
-/// object or block the viewer cannot read keeps its name and why, so only
-/// what resolves through it is refused.
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
-    /// Object name to (`type`, `scale`), or why it cannot be read.
     objects: BTreeMap<String, Result<(String, f32), String>>,
     ordinals: BTreeMap<String, usize>,
     registrations: usize,
-    /// Particle block name to its file, or why it cannot be used.
     files: BTreeMap<String, Result<ScriptPath, String>>,
     assets: Vec<ScriptPath>,
-    /// Files and blocks too broken to name an object or particle in, each with why.
     refused: Vec<String>,
 }
 
@@ -208,7 +169,6 @@ impl Catalog {
             .cloned()
             .collect();
         let gfx = object_file_order(&interface, &gfx);
-        // A listed file that cannot be read is refused by path; only what it declares is missing.
         for path in gfx {
             let bytes = match path.read_uncovered(layers) {
                 Ok(bytes) => bytes,
@@ -217,7 +177,6 @@ impl Catalog {
                     continue;
                 }
             };
-            // Sprite files never declare objects; skip parsing them. The keyword folds case.
             if bytes
                 .windows(11)
                 .any(|word| word.eq_ignore_ascii_case(b"pdxparticle"))
@@ -225,7 +184,6 @@ impl Catalog {
                 out.add_objects(&bytes, &path);
             }
         }
-        // Folder lookup ignores case, so distinct listed spellings can register identical blocks.
         let mut opened = std::collections::BTreeSet::new();
         for path in &out.assets.clone() {
             let lower = path.as_bytes().to_ascii_lowercase();
@@ -247,12 +205,10 @@ impl Catalog {
         Ok(out)
     }
 
-    /// Files and blocks too broken to name what they declare, each with why.
     pub fn refused(&self) -> &[String] {
         &self.refused
     }
 
-    /// Every effective `gfx/**/*.asset`, in (layer, path) order.
     pub fn assets(&self) -> &[ScriptPath] {
         &self.assets
     }
@@ -271,7 +227,6 @@ impl Catalog {
                 }
             };
             for value in keyword_values(objects, "pdxparticle") {
-                // Registration allocates an ordinal for every object, a duplicate included.
                 let ordinal = self.registrations;
                 self.registrations += 1;
                 let Ok(fields) = block(value, "pdxparticle") else {
@@ -303,8 +258,6 @@ impl Catalog {
                     Ok((kind.to_owned(), scale))
                 };
                 let read = read().map_err(|error| format!("{path}: pdxparticle {name}: {error}"));
-                // Objects prepend to their name bucket, so lookup returns the latest
-                // exact match.
                 self.objects.insert(name.to_owned(), read);
                 self.ordinals.insert(name.to_owned(), ordinal);
             }
@@ -348,8 +301,6 @@ impl Catalog {
         }
     }
 
-    /// The particle block a `pdxparticle` object names, refused by name when
-    /// either link is missing or cannot be read.
     pub fn resolve(&self, object: &str) -> io::Result<Particle> {
         let (kind, scale) = self
             .objects
@@ -384,14 +335,11 @@ impl Catalog {
         self.files.insert(kind.into(), Ok(ScriptPath::from(path)));
     }
 
-    /// Every object name, for loaders that resolve all of them.
     pub fn objects(&self) -> impl Iterator<Item = &str> {
         self.objects.keys().map(String::as_str)
     }
 }
 
-/// Every value under the keyword `key`, as the graphics file reader dispatches an object's
-/// fields: in any ASCII case, never under a quoted key.
 fn keyword_values<'a>(
     items: &'a [parser::Item],
     key: &'a str,
@@ -406,14 +354,12 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
     let mut total = 0usize;
     for value in all(fields, b"subsystem") {
         let fields = block(value, "particle subsystem")?;
-        // Hidden subsystems have zero capacity before runtime construction.
         let hidden = parser::read_bool_field(fields, "hide", false);
         let count = if hidden {
             0
         } else {
             subsystem_capacity(fields)?
         };
-        // Each recursive level adds its parent count times the child capacity.
         let contribution = capacity(fields)?
             .checked_add(1)
             .and_then(|children| count.checked_mul(children))
@@ -426,9 +372,7 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
     Ok(total)
 }
 
-/// A visible subsystem's own `max_amount`, scanned as an int32 prefix.
 pub fn subsystem_capacity(fields: &[parser::Item]) -> io::Result<usize> {
-    // Visible subsystems require an authored capacity; no default is set.
     let value = text(
         require(fields, "max_amount", "particle capacity")?,
         "max_amount",
@@ -528,8 +472,6 @@ mod tests {
             .map(|block| capacity(block.items().unwrap()).unwrap())
             .collect();
         assert_eq!(capacities, [44, 0]);
-        // A block without a capacity, or an object of scale 0, is refused by name; the rest of
-        // the catalogue still loads and keeps its registration order.
         catalog.add_objects(
             b"objectTypes={pdxparticle={name=uses_bad type=bad} pdxparticle={name=uses_small type=small} pdxparticle={name=zero type=small scale=0}}",
             &"fixture".into(),
@@ -638,8 +580,6 @@ mod tests {
         );
     }
 
-    /// Object declarations dispatch by keyword as the graphics file reader does: in any ASCII
-    /// case, never under a quoted key; the identifiers they name stay exact.
     #[test]
     fn objects_dispatch_by_keyword_and_keep_exact_identifiers() {
         let mut catalog = Catalog::default();
@@ -709,7 +649,6 @@ mod tests {
         assert_eq!(replaced.registration, 2);
         assert_eq!(catalog.resolve("other").unwrap().registration, 3);
         assert_eq!(catalog.resolve("Drops").unwrap().registration, 4);
-        // A second block of the name has unsettled precedence: what names it is refused.
         catalog.add_particles(
             b"particle = { name = unrelated_id }",
             &"gfx/particles/b.asset".into(),

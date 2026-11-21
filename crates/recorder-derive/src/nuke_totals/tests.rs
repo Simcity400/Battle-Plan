@@ -6,10 +6,8 @@ use crate::{
 use replay_columnar::{manifest::Status, store::Store};
 use replay_data::rows::CountryRow;
 
-/// Raw amounts of whole bombs and a part.
 const ONE: i64 = 100_000_000;
 
-/// One hour: the live countries, the Nukes rows (country, type, amount, ready) and Nukes' status.
 fn feed(store: &mut Store, hour: i32, countries: &[u32], nukes: &[(u32, u32, i64, i32)], status: Status) {
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     let countries: Vec<CountryRow> = countries.iter().map(|&id| CountryRow { id, canonical_slot: id, ..Default::default() }).collect();
@@ -38,10 +36,6 @@ const HOURS: &Hours = &[
     (&[1, 2, 4], &[(1, 0, 3 * ONE + ONE / 2, 1), (1, 1, 4 * ONE, 1), (4, 0, i64::MIN, 0), (5, 0, ONE, 0)], Status::Complete),
 ];
 
-/// A country's total adds each type's whole bombs as the top bar shows them (a part truncated, an
-/// amount past the finite range its sentinel); a live country without a stockpile holds a recorded
-/// zero, a country no longer live loses its row, a country with a stockpile but no Countries row
-/// keeps one, and Nukes not read in full withholds the table by name.
 #[test]
 fn a_countrys_total_adds_its_types_as_the_top_bar_does_and_a_country_without_one_holds_zero() {
     let mut store = store();
@@ -60,8 +54,6 @@ fn a_countrys_total_adds_its_types_as_the_top_bar_does_and_a_country_without_one
     }
 }
 
-/// A Nukes cell not recorded leaves its country's total and ready not recorded, never a sum
-/// without it; once recorded again the total returns.
 #[test]
 fn a_stock_cell_not_recorded_leaves_its_countrys_total_not_recorded() {
     let mut store = store();
@@ -79,7 +71,6 @@ fn a_stock_cell_not_recorded_leaves_its_countrys_total_not_recorded() {
     assert_eq!(totals(&store, 1), Some(vec![Some(3), Some(3)]));
 }
 
-/// A resume reads Nukes and Countries whole: every hour after it equals a run that never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let run = |resume: Option<usize>| {

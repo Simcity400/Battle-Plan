@@ -1,4 +1,3 @@
-//! Membership writers include inline assignment, deletion-only removal and root/parent repair.
 pub use crate::advisor_mutations::MutationSite;
 use engine_sites::Rva;
 
@@ -6,7 +5,6 @@ use engine_sites::Rva;
 pub enum Receiver {
     Group,
     Order,
-    /// Append CALL whose first argument is the order's embedded assigned-member vector.
     AssignedMembersCall,
     Every,
 }

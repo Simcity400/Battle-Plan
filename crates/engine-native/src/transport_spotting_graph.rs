@@ -1,8 +1,3 @@
-//! Independent selected-transport words borrowed from the original stat selector.
-//!
-//! Transport weight and detection, and visibility, each read their own pair of stat-block words.
-//! The caller owns the original unit stat-block selector and stat-definition authentication. Failed
-//! selectors are never retried. Copied numbers do not establish carrier or air-region lifetime.
 
 use crate::{Memory, read};
 
@@ -17,15 +12,10 @@ pub struct TaskForceStats {
 }
 
 impl TaskForceStats {
-    /// Consumes the original same-pass authenticated stat pointer result.
-    /// Every numerical field has one independent attempt; a field-local fault
-    /// cannot withhold another word or turn it into a default value.
     pub fn capture(memory: &impl Memory, original: Fact<usize>) -> Self {
         Self::capture_with_visibility(memory, original, true)
     }
 
-    /// Contributor detection reaches only the detection words; the receiver
-    /// visibility query may remain unreached.
     pub fn capture_detection(memory: &impl Memory, original: Fact<usize>) -> Self {
         Self::capture_with_visibility(memory, original, false)
     }
@@ -61,8 +51,6 @@ impl TaskForceStats {
     }
 }
 
-/// Stored transport-air inputs from one authenticated wing. The current
-/// mission word is distinct from the enabled mask.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AirMissionWords {
     pub wing: u64,
@@ -83,8 +71,6 @@ impl AirMissionWords {
         Self::capture_observed(memory, base, original, |_, _, _, _| {})
     }
 
-    /// Loans the original wing and stat selector (including failure) while
-    /// this exact invocation still owns their authenticated native lifetime.
     pub fn capture_observed(
         memory: &impl Memory,
         base: usize,
@@ -144,7 +130,6 @@ fn word<T: crate::memory::Raw>(memory: &impl Memory, pointer: usize, offset: usi
         .ok_or("transport original air mission word unreadable")
 }
 
-/// Single original mission-stat selector; only -1 selects fallback.
 fn mission_stats(memory: &impl Memory, wing: usize, kind: u32) -> Fact<usize> {
     if !kind.is_power_of_two() || kind as i32 <= 0 {
         return Err("transport original air current mission is not one positive bit");

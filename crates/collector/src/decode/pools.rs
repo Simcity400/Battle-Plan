@@ -6,19 +6,13 @@ use super::{
 };
 use std::sync::Mutex;
 
-/// The payloads a family's pool keeps once no backlog holds frames: the number it returns to,
-/// never a limit. A miss hands out an empty job, which grows as it reads.
 pub(super) const JOB_POOL_STEADY: usize = 3;
 
-/// The payloads a pool keeps now: the steady count, and one more for each frame a backlog
-/// holds beyond the frames' own steady count.
 fn keep() -> usize {
     let shared = crate::sampling::SHARED.load(std::sync::atomic::Ordering::Acquire);
     let backlog = if shared.is_null() {
         0
     } else {
-        // SAFETY: the loader publishes SHARED before the decode worker runs and clears it only
-        // after joining it.
         unsafe { &*shared }
             .frames
             .live()
@@ -27,8 +21,6 @@ fn keep() -> usize {
     JOB_POOL_STEADY + backlog
 }
 
-/// Keeps a released payload while the pool holds fewer than [`keep`], and frees what it holds
-/// beyond that once a backlog clears. The decode worker's, never the game thread's.
 fn retain<J>(pool: &mut Vec<J>, job: J) {
     let keep = keep();
     if pool.len() < keep && engine_allocation::reserve(pool, 1).is_ok() {
@@ -60,7 +52,6 @@ pub(super) static INTEL_JOB_POOL: Mutex<Vec<IntelJob>> = Mutex::new(Vec::new());
 pub(super) static WEATHER_JOB_POOL: Mutex<Vec<WeatherJob>> = Mutex::new(Vec::new());
 pub(super) static CAPITULATION_JOB_POOL: Mutex<Vec<CapitulationJob>> = Mutex::new(Vec::new());
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_relations_job() -> RelationsJob {
     if let Ok(mut pool) = RELATIONS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -70,7 +61,6 @@ pub fn acquire_relations_job() -> RelationsJob {
     RelationsJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_relations_job(job: RelationsJob) {
     defer_payload(RetiredPayload::Relations(job));
 }
@@ -98,7 +88,6 @@ pub(super) fn release_relations_job(mut job: RelationsJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_characters_job(part: usize) -> CharactersJob {
     if let Ok(mut pool) = CHARACTERS_JOB_POOL.try_lock()
         && let Some(job) = pool[part].pop()
@@ -108,7 +97,6 @@ pub fn acquire_characters_job(part: usize) -> CharactersJob {
     CharactersJob::vacant(part)
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_characters_job(job: CharactersJob) {
     defer_payload(RetiredPayload::Characters(job));
 }
@@ -141,7 +129,6 @@ pub(super) fn release_characters_job(mut job: CharactersJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_projects_job() -> ProjectsJob {
     if let Ok(mut pool) = PROJECTS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -151,7 +138,6 @@ pub fn acquire_projects_job() -> ProjectsJob {
     ProjectsJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_projects_job(job: ProjectsJob) {
     defer_payload(RetiredPayload::Projects(job));
 }
@@ -189,12 +175,10 @@ fn pop_job<J: Default>(pool: &Mutex<Vec<J>>) -> J {
     J::default()
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_lexical_job() -> LexicalJob {
     pop_job(&LEXICAL_JOB_POOL)
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_lexical_job(job: LexicalJob) {
     defer_payload(RetiredPayload::Lexical(job));
 }
@@ -213,12 +197,10 @@ pub(super) fn release_lexical_job(mut job: LexicalJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_divisions_job() -> DivisionsJob {
     pop_job(&DIVISIONS_JOB_POOL)
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_divisions_job(job: DivisionsJob) {
     defer_payload(RetiredPayload::Divisions(job));
 }
@@ -245,7 +227,6 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
     }
 }
 
-/// Exclusive sizing-thread growth of idle jobs after live name demand grows.
 pub(crate) fn presize_air_wing_names() {
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
         for job in pool.iter_mut() {
@@ -256,12 +237,10 @@ pub(crate) fn presize_air_wing_names() {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_air_wing_job() -> AirWingJob {
     pop_job(&AIR_WING_JOB_POOL)
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_air_wing_job(job: AirWingJob) {
     defer_payload(RetiredPayload::AirWing(job));
 }
@@ -292,12 +271,10 @@ pub(super) fn release_air_wing_job(mut job: AirWingJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_air_stats_job() -> AirStatsJob {
     pop_job(&AIR_STATS_JOB_POOL)
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_air_stats_job(job: AirStatsJob) {
     defer_payload(RetiredPayload::AirStats(job));
 }
@@ -325,7 +302,6 @@ pub(super) fn release_air_stats_job(mut job: AirStatsJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_naval_job() -> NavalJob {
     if let Ok(mut pool) = NAVAL_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -335,7 +311,6 @@ pub fn acquire_naval_job() -> NavalJob {
     NavalJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_naval_job(job: NavalJob) {
     defer_payload(RetiredPayload::Naval(job));
 }
@@ -364,7 +339,6 @@ pub(super) fn release_naval_job(mut job: NavalJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_players_job() -> PlayersJob {
     if let Ok(mut pool) = PLAYERS_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -374,7 +348,6 @@ pub fn acquire_players_job() -> PlayersJob {
     PlayersJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_players_job(job: PlayersJob) {
     defer_payload(RetiredPayload::Players(job));
 }
@@ -402,7 +375,6 @@ pub(super) fn release_players_job(mut job: PlayersJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_session_job() -> SessionJob {
     if let Ok(mut pool) = SESSION_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -412,7 +384,6 @@ pub fn acquire_session_job() -> SessionJob {
     SessionJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_session_job(job: SessionJob) {
     defer_payload(RetiredPayload::Session(job));
 }
@@ -440,7 +411,6 @@ pub(super) fn release_session_job(mut job: SessionJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_production_rest_job() -> ProductionRestJob {
     if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -450,7 +420,6 @@ pub fn acquire_production_rest_job() -> ProductionRestJob {
     ProductionRestJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_production_rest_job(job: ProductionRestJob) {
     defer_payload(RetiredPayload::ProductionRest(job));
 }
@@ -469,9 +438,6 @@ pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
             return;
         }
     }
-    // Compile sealed source/control metadata at retirement, after any required
-    // decode. Production decoding does not modify captured bytes. Reusing a
-    // successful plan avoids recompiling it on every returned job.
     job.log.prepare_read_plan();
     if crate::allocation::failed() {
         return;
@@ -486,7 +452,6 @@ pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_construction_rest_job() -> ConstructionRestJob {
     if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -496,7 +461,6 @@ pub fn acquire_construction_rest_job() -> ConstructionRestJob {
     ConstructionRestJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_construction_rest_job(job: ConstructionRestJob) {
     defer_payload(RetiredPayload::ConstructionRest(job));
 }
@@ -525,7 +489,6 @@ pub(super) fn release_construction_rest_job(mut job: ConstructionRestJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_economy_rest_job() -> EconomyRestJob {
     if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -535,7 +498,6 @@ pub fn acquire_economy_rest_job() -> EconomyRestJob {
     EconomyRestJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_economy_rest_job(job: EconomyRestJob) {
     defer_payload(RetiredPayload::EconomyRest(job));
 }
@@ -563,7 +525,6 @@ pub(super) fn release_economy_rest_job(mut job: EconomyRestJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_air_bases_job() -> AirBasesJob {
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -573,7 +534,6 @@ pub fn acquire_air_bases_job() -> AirBasesJob {
     AirBasesJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_air_bases_job(job: AirBasesJob) {
     defer_payload(RetiredPayload::AirBases(job));
 }
@@ -602,7 +562,6 @@ pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_supremacy_job() -> SupremacyJob {
     if let Ok(mut pool) = SUPREMACY_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -612,7 +571,6 @@ pub fn acquire_supremacy_job() -> SupremacyJob {
     SupremacyJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_supremacy_job(job: SupremacyJob) {
     defer_payload(RetiredPayload::Supremacy(job));
 }
@@ -640,7 +598,6 @@ pub(super) fn release_supremacy_job(mut job: SupremacyJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_sunk_job() -> SunkJob {
     if let Ok(mut pool) = SUNK_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -650,7 +607,6 @@ pub fn acquire_sunk_job() -> SunkJob {
     SunkJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_sunk_job(job: SunkJob) {
     defer_payload(RetiredPayload::Sunk(job));
 }
@@ -678,7 +634,6 @@ pub(super) fn release_sunk_job(mut job: SunkJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_radar_job() -> RadarJob {
     if let Ok(mut pool) = RADAR_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -688,7 +643,6 @@ pub fn acquire_radar_job() -> RadarJob {
     RadarJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_radar_job(job: RadarJob) {
     defer_payload(RetiredPayload::Radar(job));
 }
@@ -716,7 +670,6 @@ pub(super) fn release_radar_job(mut job: RadarJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_intel_job() -> IntelJob {
     if let Ok(mut pool) = INTEL_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -726,7 +679,6 @@ pub fn acquire_intel_job() -> IntelJob {
     IntelJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_intel_job(job: IntelJob) {
     defer_payload(RetiredPayload::Intel(job));
 }
@@ -754,7 +706,6 @@ pub(super) fn release_intel_job(mut job: IntelJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_weather_job() -> WeatherJob {
     if let Ok(mut pool) = WEATHER_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -764,8 +715,6 @@ pub fn acquire_weather_job() -> WeatherJob {
     WeatherJob::default()
 }
 
-/// Sizing thread: live map dimension changes must size pooled boundaries before
-/// the new branch's first hourly copy, as attachment sizing does for new jobs.
 pub(crate) fn presize_weather_jobs() {
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
         for job in pool.iter_mut().filter(|job| job.grow_for_next()) {
@@ -774,7 +723,6 @@ pub(crate) fn presize_weather_jobs() {
     }
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_weather_job(job: WeatherJob) {
     defer_payload(RetiredPayload::Weather(job));
 }
@@ -802,7 +750,6 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
     }
 }
 
-/// Take reusable storage, or return an empty job, which grows as it reads, on a pool miss.
 pub fn acquire_capitulation_job() -> CapitulationJob {
     if let Ok(mut pool) = CAPITULATION_JOB_POOL.try_lock()
         && let Some(job) = pool.pop()
@@ -812,7 +759,6 @@ pub fn acquire_capitulation_job() -> CapitulationJob {
     CapitulationJob::default()
 }
 
-/// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_capitulation_job(job: CapitulationJob) {
     defer_payload(RetiredPayload::Capitulation(job));
 }
@@ -840,10 +786,6 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
     }
 }
 
-/// Sizing thread: presize pooled raw-copy jobs whose country census follows the
-/// registry, after a larger registry was observed (for example a save loaded
-/// after attaching at the main menu). A capture only `try_lock`s these
-/// pools, so a concurrent capture takes a fresh job instead of waiting.
 pub fn presize_country_pools() {
     presize_pool(
         &AIR_WING_JOB_POOL,
@@ -877,7 +819,6 @@ pub fn presize_country_pools() {
     );
 }
 
-/// New modifier hints also reach jobs prepared before the campaign loaded.
 pub(crate) fn presize_advisor_pools() {
     let jobs = match CHARACTERS_JOB_POOL.lock() {
         Ok(mut pool) => std::mem::take(&mut pool[2]),

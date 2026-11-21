@@ -39,13 +39,11 @@ impl CharacterContent {
         let mut notes = Vec::new();
         let catalogue = (|| {
             let templates = advisor_templates?.clone();
-            // Full role/name/portrait projections differ from leader_templates' visibility inputs.
             let (catalogue, warnings) = installed_content_core::characters::read(layers, templates)
                 .map_err(|why| why.to_string())?;
             notes.extend(warnings.into_iter().map(|(_, why)| why));
             Ok::<_, String>(catalogue)
         })();
-        // Full description bodies/skills differ from the evaluator's registration-only traits.
         let unit_leaders = installed_content_core::unit_leader::Leaders::<String>::load(layers, &|name| {
             environment
                 .terrain()
@@ -72,8 +70,6 @@ impl CharacterContent {
         let mio_traits = crate::effect_description::joined(mio_traits)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
-        // Load all naming families into one database, including codenames.
-        // The four common/units/ naming directories differ from name_lists' common/names/.
         let name_groups = crate::effect_description::joined(name_groups)
             .inspect(|db| notes.extend(db.warnings.iter().map(|(_, why)| why.clone())))
             .map_err(|why| why.to_string());

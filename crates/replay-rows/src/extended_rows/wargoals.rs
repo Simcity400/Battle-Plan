@@ -1,11 +1,3 @@
-//! Complete per-country war-goal inventory and native timed justifications.
-//!
-//! CountryWargoals enumerates the serializable roster, including goals already
-//! attached to wars. WargoalTargets kind 3 is the separate unused-goal roster;
-//! only that roster establishes availability. Expiry dates do not remove rows.
-//! Empty complete tables establish absence; unavailable tables establish none.
-//! Terms and authored duration rules resolve through the recorded content stack.
-//! These operands alone do not establish justify/declare action eligibility.
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +36,6 @@ typed_codec!(WargoalJustificationRow, 64, |r| (r.country as u128) << 32 | r.ordi
  |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (actor): U32, 1 => (recipient): U32, 2 => (goal_type): U32, 3 => (total_cost_raw): I64, 4 => (daily_cost_raw): I64, 5 => (progress_raw): I64, 6 => (start): I32, 7 => (end): I32, 8 => (pay_upfront): U8, 9 => (threat_raw): I64 }, |_r| Ok(()));
 
-/// One target occurrence. Kinds: 0 goal states, 1 liberation countries,
-/// 2 puppet countries, 3 unused goal handles, 4 justification selected states.
-/// `goal` is the containing object's native ordinal (zero for kind 3);
-/// `ordinal` is its native target position. State IDs and country references
-/// occupy the low 32 bits; unused handles retain their complete 64 bits.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WargoalTargetRow {
@@ -70,9 +57,6 @@ typed_codec!(WargoalTargetRow, 104,
 
 impl WargoalJustificationRow {
     pub const INVALID_HOUR: i32 = 43_791_240;
-    /// Native completion display: a stored end wins; otherwise the remaining
-    /// fixed-point cost is divided by its daily rate and rounded half away
-    /// from zero. This does not advance the stored progress or promise payment.
     pub fn completion_hour(&self, hour: i32) -> i32 {
         if self.end != Self::INVALID_HOUR {
             return self.end;
@@ -96,8 +80,6 @@ impl WargoalJustificationRow {
 }
 
 impl CountryWargoalRow {
-    /// The native expiry test and save writer share their initial-year gate. Preserve the raw
-    /// date in the row even when this serializer projection is absent.
     pub fn serialized_expiry(&self) -> Option<i32> {
         const CALENDAR_ORIGIN: i32 = 43_800_000;
         const LAST_OMITTED_DAY_HOUR: i32 = 17_519;

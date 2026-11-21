@@ -1,0 +1,9 @@
+# Keep agency presence, naming, and operative limits separate
+
+Authenticate the agency from the selected country's existing census and check its owner backlink. Its presence does not prove creation. Keep the created byte as observed because the display uses it to select the stored name or its own fallback. A created agency's name is its exact stored literal, including empty text, so looking it up again can change what the game displayed. Save gates still apply in comparisons, independently of live admission.
+
+The scalar rows, upgrade entries, captured operatives, active roster, and cryptology retain separate observations. A persisted but unidentified field initialized beside the admission ceiling remains raw. It has no established relationship to the number of free operative slots. The actual admission rule requires count below its own ceiling unless the override is set. Captured operatives preserve the qualified reference and optional resolved raw owner. An absent resolution differs from an unreadable owner.
+
+One guarded block normally supplies the fields of an agency. If it cannot be read whole, make the established smaller reads and preserve their first failure. A failed speculative next-link read is retried only when its original visit demands the link. The paired reference and batched fixtures check ordering, fixed capacity and text edges, sparse or aliased slots, and both lasting and transient faults. They give each reader its own one-shot fault so one run cannot consume the other's fault. The real-address cost fixture owns the arena and keeps it allocated and unchanged for the full lifetime of its `LiveMemory` reader. Check stored name lengths and terminators before reporting demand or publishing a row.
+
+[Agency reader](../../crates/engine-native/src/cintelligence_agency.rs) · [Per-field reference](../../crates/engine-native/src/cintelligence_agency_cost_baseline.rs)

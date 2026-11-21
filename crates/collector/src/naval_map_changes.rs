@@ -1,9 +1,3 @@
-//! Shared writer owner for country naval map state. Mine slices and standing
-//! report vectors have separate domains; decay cannot dirty report captures.
-//! Native entry observers use bounded metadata and never walk or allocate.
-//! A third domain keys each navy's mission ledgers and registered-mission set
-//! ([`engine_mutations::navy_ledger_mutations`]): registration, removal, the
-//! forwarded reset and the navy lifecycle writers move its certificate.
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 use engine_mutations::navy_ledger_mutations::MUTATIONS as LEDGER_WRITERS;
 use engine_native::{Memory, naval_mine_inputs as mines};
@@ -21,7 +15,6 @@ static METADATA_FAILED: AtomicBool = AtomicBool::new(false);
 static METADATA_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static LOCAL_ENABLED: AtomicBool = AtomicBool::new(false);
 static RESET_ENABLED: AtomicBool = AtomicBool::new(false);
-/// Both ledger writers are patched and published.
 static LEDGER_ENABLED: AtomicBool = AtomicBool::new(false);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 const SITES: usize =
@@ -44,7 +37,6 @@ static PREPARATION: Mutex<Preparation> = Mutex::new(Preparation {
     ledger_offer: 0,
 });
 
-// Keys that collide share invalidations; they can never hide a writer.
 fn life_key(navy: usize) -> usize {
     (navy.rotate_left(17) & !1).max(2)
 }
@@ -59,7 +51,6 @@ fn lifecycle_receiver(index: usize, receiver: usize) -> usize {
     }
 }
 
-/// Existing asynchronous navy worker, once before visiting its receivers.
 pub(crate) fn prepare(demand: usize) {
     if !LOCAL_ENABLED.load(Ordering::Acquire) || !RESET_ENABLED.load(Ordering::Acquire) {
         return;
@@ -119,8 +110,6 @@ pub(crate) fn mine_slice(navy: usize, part: usize) -> Option<(u64, u64)> {
 pub(crate) fn accident_token(navy: usize) -> Option<(u64, u64)> {
     ACCIDENTS.sequence(navy)
 }
-/// `(epoch, sequence)` of a navy's ledgers and registered-mission set, registering it; `None`
-/// while unobserved.
 #[cfg(not(test))]
 pub(crate) fn ledger_token(navy: usize) -> Option<(u64, u64)> {
     LEDGERS.sequence(navy)
@@ -151,7 +140,6 @@ fn report_sites() -> impl Iterator<Item = (&'static str, Rva)> {
 
 pub(crate) struct Hooks {
     hooks: Vec<Hook>,
-    /// Both ledger writers are among `hooks`.
     ledgers: bool,
 }
 fn observation_enabled() {
@@ -191,7 +179,6 @@ impl Hooks {
         if cfg!(feature = "mission_changes") {
             let descriptors = mines::WRITERS.into_iter().chain(report_sites());
             for (index, (name, rva)) in descriptors.enumerate() {
-                // The world-input family owns this entry and forwards it.
                 if index == 5 {
                     continue;
                 }
@@ -207,7 +194,6 @@ impl Hooks {
                 hooks.push(hook);
             }
         }
-        // A withheld ledger entry leaves both unpatched: every ledger is then read hourly.
         let mut located = [(0, [0; 16]); LEDGER_SITES];
         let ledgers = cfg!(feature = "navy_ledger_changes")
             && LEDGER_WRITERS.iter().zip(&mut located).all(|(site, slot)| {
@@ -271,7 +257,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // The enclosing family disabled and drained all native notifications.
         crate::world_input_changes::navy_reset_forwarder(None);
         LOCAL_ENABLED.store(false, Ordering::Release);
         LEDGER_ENABLED.store(false, Ordering::Release);
@@ -307,7 +292,6 @@ unsafe fn original(index: usize, a: usize, b: usize, c: usize, d: usize) -> usiz
 fn event_slice(index: usize, navy: usize, second: usize) -> Option<usize> {
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     {
-        // The event's own native receiver is live for the original call.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let count = mines::event_count(&memory, navy)?;
         if index == 2 {
@@ -333,8 +317,6 @@ fn event_slice(index: usize, navy: usize, second: usize) -> Option<usize> {
 
 unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
-    // This guard begins before reading event metadata, so even a refused
-    // metadata leaf cannot let a concurrent worker certify a native write.
     let _running = MINES.running();
     let part = event_slice(index, a, b);
     if part.is_none() {
@@ -352,7 +334,6 @@ unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usi
     let _ledger = LEDGERS.notify(navy);
     timing.original(|| unsafe { original(index, a, b, c, d) })
 }
-/// Registration or removal (navy, mission[, region]) writes the navy's ledgers and set.
 unsafe fn ledger(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     LEDGER_CALLS[index].fetch_add(1, Ordering::Relaxed);
@@ -362,7 +343,6 @@ unsafe fn ledger(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize 
         timing.original(|| unsafe { native(a, b, c, d) })
     })
 }
-/// `navy`'s ledger write, notified across `write`.
 fn ledger_write(ledgers: &WatchRegistry, navy: usize, write: impl FnOnce() -> usize) -> usize {
     let _mark = ledgers.notify(navy);
     write()
@@ -441,8 +421,6 @@ mod tests {
         drop(active);
         assert_ne!(mines.sequence(life_key(navy)), life);
     }
-    /// A ledger write moves its navy's ledger certificate, which no capture can take while the
-    /// write runs; another navy keeps its certificate.
     #[test]
     fn a_ledger_write_moves_only_its_navys_certificate_across_the_write() {
         let ledgers = WatchRegistry::retaining();

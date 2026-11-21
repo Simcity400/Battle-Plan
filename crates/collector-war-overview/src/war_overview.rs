@@ -1,14 +1,3 @@
-//! Missing native overview operands, hourly in their own WarOverview job,
-//! beside Slow.
-//! Native order is explicit in keys; all growth/conversion is off-thread.
-//!
-//! The owned war occurrences and their goals are carried from the frame's
-//! latest complete walk ([`native::walk_cached_with_owners`]) while
-//! the war domain's token ([`war_changes`]) and every owner's goal sequence
-//! ([`wargoal_changes::goal_sequence`]) equal those taken after that walk. A
-//! war's goal list grows only through the hooked goal consumer, which names
-//! the goal's actor, always an endpoint and so an owner of the war; goal
-//! creation, reading and destruction name their actor too.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use collector_observers::{war_changes, war_changes::Changes as _, wargoal_changes};
 use engine_native::{
@@ -67,11 +56,9 @@ pub struct Captured {
     participation: Option<[std::sync::Arc<rows::TableRows>; 3]>,
     participation_outcomes: [Outcome; 3],
     literal: Option<(usize, [u8; cwar_relation::NAME_PREFIX_LEN])>,
-    /// What certifies [`native::DiscoveryCache`]'s held walk.
     certificates: Option<Certificates>,
 }
 
-/// The war token and each owner's goal sequence taken after a held walk.
 struct Certificates {
     war: (u64, u64),
     owners: Vec<(u32, (u64, u64))>,
@@ -175,8 +162,6 @@ impl Captured {
         if force_full {
             self.discovery.invalidate();
         }
-        // Taken before the walk, so an unchanged token after it proves no
-        // writer ran during it.
         let war = war_changes::Observer.quiet();
         let goals = wargoal_changes::goals_quiet();
         let held = self.certificates.take();

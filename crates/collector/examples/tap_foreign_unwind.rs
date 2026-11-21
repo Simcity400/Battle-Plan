@@ -1,5 +1,3 @@
-//! Parent-run oracle for actual foreign exceptions through the production Tap.
-//! Requires its system-unwind observer API; a non-unwind callback is not cast.
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("this oracle requires Windows x64 MSVC");
 
@@ -62,7 +60,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         (*probe).active += 1;
     }
     let _active = Active(probe);
-    // Exact production layout: DTO128 + saved flags8 + nonvolatiles64 + CALL8.
     let native_rsp = registers as *const Registers as usize + 208;
     unsafe {
         (*probe).seen_rsp = native_rsp;
@@ -85,7 +82,6 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         if let Some(raise) = (*probe).raise {
             raise();
         }
-        // This observable write also prevents a tail-call-only Rust frame.
         (*probe).exited += 1;
     }
 }
@@ -114,7 +110,7 @@ impl Native {
             operations.push([code.len() as u8, register << 4]);
         }
         code.extend([0x48, 0x83, 0xec, 0x28]);
-        operations.push([code.len() as u8, 0x42]); // UWOP_ALLOC_SMALL:40.
+        operations.push([code.len() as u8, 0x42]);
         let mut unwind = vec![1, code.len() as u8, operations.len() as u8, 0];
         for operation in operations.into_iter().rev() {
             unwind.extend(operation);
@@ -132,10 +128,8 @@ impl Native {
             ]);
             code.extend(value.to_le_bytes());
         }
-        // Record actual native RSP immediately before the patched site.
         code.extend([0x48, 0x89, 0x61, offset_of!(Probe, expected_rsp) as u8]);
         let site = page as usize + code.len();
-        // Authored, stack-independent MOV+MOV span; no incoming interior edge.
         code.extend([0x48, 0x8b, 0x41, 0x08, 0x48, 0x8b, 0x11]);
         code.extend([0x48, 0xff, 0x41, offset_of!(Probe, continued) as u8]);
         code.extend([0x48, 0x83, 0xc4, 0x28]);
@@ -187,7 +181,6 @@ impl Native {
 }
 impl Drop for Native {
     fn drop(&mut self) {
-        // Never free a still-registered synthetic native frame.
         assert!(unsafe { RtlDeleteFunctionTable(self.table) });
         assert_ne!(unsafe { VirtualFree(self.page, 0, MEM_RELEASE) }, 0);
     }
@@ -221,7 +214,6 @@ fn main() {
     );
     assert!(hook::Hook::set_enabled_batch(&mut [tap.publication_hook()], true).unwrap());
     let drivers = native_probe::Probe::load();
-    // This registered authored native frame accepts RCX as its Probe pointer.
     let entry: Entry = unsafe { std::mem::transmute(native.page) };
     for case in drivers.cases() {
         let name = case.name;
@@ -256,8 +248,6 @@ fn main() {
             "PASS {name}: native handler, Rust cleanup, generated caller, nonvolatiles, RSP, continuation"
         );
     }
-    // Rust cleanup does not prove Windows has finished traversing the bridge.
-    // The two escaping calls deliberately retain their production flights.
     assert!(!hook::Hook::set_enabled_batch(&mut [tap.publication_hook()], false).unwrap());
     assert_eq!(unsafe { *(native.site as *const u8) }, 0xe8);
     drop(tap);

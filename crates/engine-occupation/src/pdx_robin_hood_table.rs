@@ -1,14 +1,7 @@
-//! Robin-hood table used by occupation status, laws and garrisons.
-//! Bucket extent combines the stored span input and maximum probe distance,
-//! independently of live entry count.
 
-/// Bucket-array pointer.
 pub const DATA: usize = 0x00;
-/// Live u32 entry count.
 pub const SIZE: usize = 0x08;
-/// Stored u32 bucket-span input.
 pub const CAPACITY_OR_MASK: usize = 0x0c;
-/// Maximum u8 probe distance.
 pub const MAX_DISTANCE: usize = 0x10;
 const COUNTRY_KEY_HASH_MULTIPLIER: u32 = 0x045d_9f3b;
 
@@ -20,8 +13,6 @@ pub(crate) struct Entry {
     pub value: usize,
 }
 
-/// One native key lookup. Only the probed buckets establish membership; an empty
-/// bucket's retained key or value is never followed.
 pub(crate) fn find(
     memory: &impl Memory,
     address: usize,
@@ -80,8 +71,6 @@ pub(crate) fn find(
     Ok(None)
 }
 
-/// Visits the native occupied buckets once. Empty buckets may retain stale
-/// pointers; those pointers are never followed. No heap storage or retry occurs.
 pub(crate) fn visit(
     memory: &impl Memory,
     address: usize,
@@ -200,7 +189,6 @@ mod tests {
         bytes[..8].copy_from_slice(&0x1040_u64.to_le_bytes());
         bytes[8..12].copy_from_slice(&1_u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&2_u32.to_le_bytes());
-        // Empty bucket retains a stale pointer and key; neither is admitted.
         bytes[0x48..0x50].fill(0xff);
         bytes[0x50..0x58].fill(0xff);
         bytes[0x5c] = 1;

@@ -1,5 +1,3 @@
-//! How the writer reads each input table: one function per table, so a reshaped input is a
-//! change here alone.
 
 use crate::framework::{Hour, columns};
 use replay_columnar::store::TableView;
@@ -17,12 +15,10 @@ pub(super) const COUNTRY_SLOT: [usize; 1] = columns::<CountryRow, 1>(["canonical
 pub(super) const LINK_SLOT: [usize; 1] = columns::<CountryLinkRow, 1>(["canonical_slot"]);
 pub(super) const CONVOY_COUNT: [usize; 1] = columns::<SunkConvoyRow, 1>(["convoys"]);
 
-/// A Countries or CountryLinks row: its raw id and canonical slot.
 pub(super) fn slotted(view: &TableView<'_>, slot: u32, column: usize) -> Option<(u32, u32)> {
     Some((view.key(slot)? as u32, view.number(column, slot)? as u32))
 }
 
-/// The entries SunkShips holds; none without its row.
 pub(super) fn sunk_ships(hour: &Hour<'_>) -> io::Result<Vec<SunkShipEntry>> {
     let view = hour.table(TableId::SunkShips);
     let Some(slot) = view.rows().next() else { return Ok(Vec::new()) };
@@ -31,7 +27,6 @@ pub(super) fn sunk_ships(hour: &Hour<'_>) -> io::Result<Vec<SunkShipEntry>> {
     Ok(SunkShipsRow::from_wire_fields(key, u64::MAX, &mut |column| replay_frame::frame::field(&view, slot, column, format))?.entries)
 }
 
-/// A SunkConvoys row: its key, killer, owner and count.
 pub(super) fn convoy(view: &TableView<'_>, slot: u32) -> io::Result<(u128, u32, u32, i32)> {
     let key = view.key(slot).ok_or_else(|| invalid(format!("SunkConvoys slot {slot} holds no row")))?;
     let count = view.number(CONVOY_COUNT[0], slot).ok_or_else(|| invalid(format!("SunkConvoys slot {slot} does not hold its count")))?;

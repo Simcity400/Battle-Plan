@@ -1,12 +1,3 @@
-//! Combat/result operands at retained-result fill and merge calls.
-//!
-//! Creation registers a new result or chooses an existing province result before
-//! the call. Both receive RCX=result and RDX=complete combat; results do not retain
-//! the source reference afterward. Temporary strikes keep an invalid reference.
-//! Already-emitted combats, ineligible sides and sides without qualifying outcomes
-//! skip both calls, so the observer appends no outcome event. Identity assignment
-//! requires the main thread; fill and merge check the game-state thread guard.
-//! Ordinary hourly finalization and coordinated strikes can both reach these sites.
 
 use engine_sites::Rva;
 use crate::{
@@ -17,35 +8,26 @@ use crate::{
 pub struct Site {
     pub name: &'static str,
     pub rva: Rva,
-    /// Bytes the hook owns at the site.
     pub span: usize,
 }
 
-/// Five-byte fill call after result identity assignment. No branch target
-/// lies inside the patched call; preserve the original frame.
 pub const NEW: Site = Site {
     name: "naval_result_new",
     rva: Rva(0x0166_1510),
     span: 16,
 };
 
-/// Five-byte merge call with the existing result in RCX, returning to the
-/// original epilogue. It owns only the 13 bytes before the next function.
 pub const MERGE: Site = Site {
     name: "naval_result_merge",
     rva: Rva(0x0166_1613),
     span: 13,
 };
 
-/// Original CALL targets; never invoke a relocated mid-function continuation.
 pub const TARGETS: [Rva; 2] = [
     cnaval_combat_results::FILL_FROM_COMBAT_RVA,
     cnaval_combat_results::MERGE_RVA,
 ];
 
-/// Combat constructor entry: RCX is the complete object, RAX the same object.
-/// Its first relocated instruction spills RBX to caller home space. An entry
-/// observer can pass the return PC in RDX while preserving RCX.
 pub const CONSTRUCTOR: Site = Site {
     name: "naval_combat_constructor",
     rva: Rva(0x0165_e980),
@@ -63,10 +45,6 @@ pub enum BirthKind {
     Loaded,
 }
 
-/// Direct constructor callers. Fresh persistent combats register after
-/// construction; save loading restores a reference rather than creating a birth.
-/// Temporary unit, convoy and port strikes resolve, finalize and destroy in one
-/// call without registering the complete object's reference subobject.
 pub const CONSTRUCTOR_CALLERS: [Rva; 8] = [
     Rva(0x00c0_b22d),
     Rva(0x00c0_b3ad),
@@ -99,8 +77,6 @@ pub struct Inputs {
     pub naval_strike: bool,
 }
 
-/// Raw game hour copied into retained results. Combat day and duration fields
-/// are counters, distinct from absolute birth, so construction uses the live clock.
 pub fn creation_hour(memory: &impl Memory, base: usize) -> Result<i32, &'static str> {
     let state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     if state == 0 {
@@ -109,10 +85,6 @@ pub fn creation_hour(memory: &impl Memory, base: usize) -> Result<i32, &'static 
     field(memory, state, cgame_state::CURRENT_HOUR)
 }
 
-/// Storage demand from active combat slots and every registered wing,
-/// without walking a roster or buckets. Including all wings covers mission
-/// changes and coordinated port strikes. Population is distinct from event count:
-/// one wing can emit several targets. Observed demand and live headroom cover bursts.
 pub fn population(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
     let state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
     if state == 0 {
@@ -132,8 +104,6 @@ pub fn population(memory: &impl Memory, base: usize) -> Result<usize, &'static s
         .ok_or("naval source emitter population overflow")
 }
 
-/// Read after the original fill/merge returns. All operands are scalar,
-/// guarded and allocation-free; no engine function is called.
 pub fn read_inputs(
     memory: &impl Memory,
     base: usize,
@@ -154,12 +124,10 @@ pub fn read_inputs(
     }
     let invalid = global::<u64>(memory, base, creference_registry::INVALID_REFERENCE_RVA)?;
     let result_reference = field::<u64>(memory, result, cnaval_combat_results::HANDLE)?;
-    // Identity registration writes the complete result's reference field.
     if !boolean(memory, result, 0x10)? || result_reference == invalid {
         return Err("naval source result reference is unregistered");
     }
     let combat_reference = field::<u64>(memory, combat, cnaval_combat::HANDLE)?;
-    // The same identity writer selects the complete combat's reference subobject.
     let registered = boolean(memory, combat, 0x20)?;
     if registered == (combat_reference == invalid) {
         return Err("naval source combat reference registration mismatch");
@@ -240,7 +208,6 @@ mod tests {
     const RESULT: usize = 0x1000;
     const COMBAT: usize = 0x2000;
     const STATE: usize = 0x3000;
-    // Synthetic nonzero sentinel and references, never sampled native values.
     const INVALID: u64 = 0xfabc_0123_4567_89de;
     const RESULT_ID: u64 = 0xffff_8000_0000_1234;
     const COMBAT_ID: u64 = 0xff00_8000_0000_4321;
@@ -419,8 +386,6 @@ mod tests {
     fn population_counts_wings_and_combats_without_roster_reads() {
         let mut bytes = population_fixture();
         assert_eq!(population(&bytes, BASE), Ok(10_000));
-        // Every wing counts, even without reading its mission or plane count.
-        // A null type-specific registry is the native successful empty case.
         bytes.put(
             BASE + creference_registry::LOW_ROOTS_RVA.0 + cair_wing::TYPE as usize * 8,
             &0u64.to_le_bytes(),

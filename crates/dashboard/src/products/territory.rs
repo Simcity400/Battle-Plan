@@ -1,8 +1,3 @@
-//! Territory at an hour, as rows: each country's share of every country's territory by one measure
-//! (`territory-share`, from the recorder's `TerritoryTotals`), and territory grouped by holder and
-//! the recorded stack's strategic regions (`territory-breakdown`, from its `TerritoryRegionTotals`). Lines
-//! over time and the race are the declared `territory` series; faction sums are [`super::factions`].
-//! A country is named by the tag holding its slot at the hour, through the one identity rule.
 
 use super::LoadContext;
 use crate::{
@@ -25,7 +20,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The declared territory series' measure names, in its columns' order.
 pub const MEASURES: [&str; 12] = [
     "ownedStates",
     "controlledStates",
@@ -41,7 +35,6 @@ pub const MEASURES: [&str; 12] = [
     "occupiedArea",
 ];
 
-/// `row`'s cell of measure `at` ([`MEASURES`]).
 pub(crate) fn cell(row: &TerritoryTotalRow, at: usize) -> Option<i64> {
     let cell = match at {
         0 => &row.owned_states,
@@ -63,7 +56,6 @@ pub(crate) fn cell(row: &TerritoryTotalRow, at: usize) -> Option<i64> {
     }
 }
 
-/// Each canonical slot's holder at `hour`: (tag, raw country id).
 pub fn slot_tags(holders: &Holders, hour: i32) -> HashMap<u32, (&str, u32)> {
     let mut out = HashMap::new();
     for (tag, runs) in &holders.tags {
@@ -87,11 +79,10 @@ pub struct TerritoryShare;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerritoryShareParams {
     pub branch_id: String,
-    /// A declared territory measure.
+    #[doc = " A declared territory measure."]
     pub measure: String,
 }
 
-/// A country holding some of the measure at the hour; how much is the live cell (slot, `value`).
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -100,27 +91,21 @@ pub struct TerritoryShareEntry {
     pub slot: u32,
 }
 
-/// Every country holding some of the measure at the hour, greatest first, and the world's: the whole a share is of.
-/// The amounts move with the head, so they are live cells: each entry's (slot, `value`), the world's (`world`,
-/// `total`) and, where `unnamed`, the part slots no tag holds (`world`, `unnamed`); the panel carries who and in
-/// what order, and is pushed when that changes.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryShareReply {
     pub measure: String,
     pub entries: Vec<TerritoryShareEntry>,
-    /// Some is held by slots no tag holds at the hour: in the rest of the world, named by no country.
+    #[doc = " Some is held by slots no tag holds at the hour: in the rest of the world, named by no country."]
     pub unnamed: bool,
-    /// Why the whole is not known, never a smaller sum.
+    #[doc = " Why the whole is not known, never a smaller sum."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(TerritoryShareReply, TerritoryBreakdownReply);
 
-/// The share of `rows` at an hour by measure `at`: the world row is the whole, never a country. Names the amounts as
-/// cells of `live`.
 pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, at: usize, live: &Cells) -> TerritoryShareReply {
     let (mut entries, mut unnamed, mut world) = (Vec::new(), Vec::new(), None);
     for row in rows {
@@ -210,12 +195,8 @@ impl AtHour for TerritoryShare {
 
 pub struct TerritoryBreakdown;
 
-/// What a breakdown measures a holding in, as its params name it, and its column of
-/// TerritoryRegionTotals within a rule's ([`RULES`]).
 pub const BREAKDOWN_MEASURES: [(&str, usize); 4] = [("states", 3), ("provinces", 0), ("victoryPoints", 1), ("area", 2)];
-/// The rules a holding is credited by, in TerritoryRegionTotals' column order.
 pub const RULES: [&str; 2] = ["controlled", "owned"];
-/// TerritoryRegionTotals' columns of one rule.
 const RULE_COLUMNS: usize = 5;
 const STATES: usize = 3;
 
@@ -224,9 +205,9 @@ const STATES: usize = 3;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerritoryBreakdownParams {
     pub branch_id: String,
-    /// `states`, `provinces`, `victoryPoints` or `area`.
+    #[doc = " `states`, `provinces`, `victoryPoints` or `area`."]
     pub measure: String,
-    /// `controlled` or `owned`.
+    #[doc = " `controlled` or `owned`."]
     pub rule: String,
 }
 
@@ -236,14 +217,10 @@ pub struct TerritoryBreakdownParams {
 pub struct TerritoryRegion {
     pub id: u32,
     pub name: Option<String>,
-    /// Why it has no name.
+    #[doc = " Why it has no name."]
     pub missing: Option<String>,
 }
 
-/// One holder's territory in one region. A holder is a country's canonical slot (named by the tag
-/// holding it, none where no tag does) or no country at all (`slot` none); a region is none where
-/// no single strategic region claims the provinces. How much it holds is the live cell (`key`,
-/// `value`), and of states over (`key`, `denominator`): an exact fraction of whole states.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -254,9 +231,6 @@ pub struct TerritoryRegionRow {
     pub region: Option<u32>,
 }
 
-/// Territory by holder and strategic region at an hour, by one measure and rule: which rows there
-/// are and their names, never their amounts, which are live cells; a panel is pushed when the rows
-/// change.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -265,15 +239,13 @@ pub struct TerritoryBreakdownReply {
     pub rule: String,
     pub regions: Vec<TerritoryRegion>,
     pub rows: Vec<TerritoryRegionRow>,
-    /// Why the rows are not known at this hour.
+    #[doc = " Why the rows are not known at this hour."]
     pub missing: Option<String>,
-    /// Why area by region is not known: the recording's facts hold no province areas.
+    #[doc = " Why area by region is not known: the recording's facts hold no province areas."]
     pub area_reason: Option<String>,
     pub warnings: Vec<String>,
 }
 
-/// Each province's land area in map cells, from the recording's own facts pack read as the territory writer reads
-/// it (fact-only, the raster counted as it streams), once per open recording at its first use; or why not.
 #[derive(Default)]
 struct HeldAreas(Option<Result<Arc<Vec<i64>>, String>>);
 
@@ -294,14 +266,11 @@ fn province_areas(source: &Source) -> Result<Arc<Vec<i64>>, String> {
         .clone()
 }
 
-/// What a breakdown reads of the recording beside its rows: the stack's region names, and why area
-/// is not known where it asks for area.
 pub struct BreakdownContent {
     regions: Result<RegionNames, String>,
     area_reason: Option<String>,
 }
 
-/// The recorded stack's strategic regions' names, by id, and what reading them noted.
 #[derive(Default)]
 struct RegionNames {
     names: Vec<TerritoryRegion>,
@@ -341,15 +310,12 @@ impl RegionNames {
     }
 }
 
-/// `params`' column of TerritoryRegionTotals: its rule's first column and the measure's place there.
 fn breakdown_column(params: &TerritoryBreakdownParams) -> Option<usize> {
     let rule = RULES.iter().position(|rule| *rule == params.rule)?;
     let (_, measure) = BREAKDOWN_MEASURES.iter().find(|(name, _)| *name == params.measure)?;
     Some(rule * RULE_COLUMNS + measure)
 }
 
-/// The rows of `rows` at an hour, slots named by `tags`: each holding's amount in `column` of
-/// TerritoryRegionTotals named as a cell of `live`, and of states its denominator beside it.
 pub fn breakdown(rows: &[TerritoryRegionTotalRow], tags: &HashMap<u32, (&str, u32)>, column: usize, live: &Cells) -> Vec<TerritoryRegionRow> {
     rows.iter()
         .map(|row| {
@@ -458,9 +424,6 @@ mod tests {
         assert!(share(&rows[..1], &tags, 1, &Cells::default()).missing.is_some(), "no world row, no whole");
     }
 
-    /// A breakdown's rows are who holds land in which region, never how much: each amount is a
-    /// live cell of TerritoryRegionTotals in the asked rule's column, states with their
-    /// denominator beside them, so a panel differs only when the rows do.
     #[test]
     fn breakdown_rows_carry_no_amount_and_name_each_as_a_live_cell() {
         const NO_COUNTRY: u32 = TerritoryRegionTotalRow::NO_COUNTRY;

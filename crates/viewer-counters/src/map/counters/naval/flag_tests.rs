@@ -44,12 +44,10 @@ fn task_force_flags_distinguish_coarse_sea_and_detailed_port() {
             ..Default::default()
         };
         let first = unit(&force, 7, 0);
-        // Neither a partial-intel flag nor port flags depend on visibility or strength.
         let second = NavalUnit {
             sight: Sight::Partial,
             ..unit(&force, 7, 0)
         };
-        // The column's coarse choice decides an at-sea plate's flag; a port item is never coarse.
         for coarse in [false, true] {
             let sea = context.flotilla(&[&first, &second], false, coarse);
             assert_eq!(sea.flag_owner, Some(if coarse { 7 } else { detailed }));
@@ -77,19 +75,16 @@ fn mixed_port_flag_uses_lowest_owner_strength_then_native_reference_order() {
     let b = unit(&other, 8, 70);
     let reinforcement = unit(&first, 2, 50);
     assert_eq!(port_flag_owner(&[&a, &b], true), Some(2));
-    // Combine all task forces of each owner, even partially visible ones.
     let reinforcement = NavalUnit {
         sight: Sight::Partial,
         ..reinforcement
     };
     assert_eq!(port_flag_owner(&[&a, &b, &reinforcement], true), Some(8));
     let tied = unit(&other, 8, 40);
-    // Raw owner 20 sorts before 30, though its canonical slot sorts after 2.
     assert_eq!(port_flag_owner(&[&a, &tied], true), Some(8));
     assert_eq!(port_flag_owner(&[&tied, &a], true), Some(8));
     assert_eq!(port_flag_owner(&[&a, &b], false), None);
     assert_eq!(port_flag_owner(&[&a, &a], false), Some(99));
-    // Native comparison is signed and sums wrap like its ADD instructions.
     let negative = unit(&other, 8, -1);
     assert_eq!(port_flag_owner(&[&a, &negative], true), Some(8));
 }
@@ -109,9 +104,6 @@ fn unavailable_mixed_port_flags_are_counted_and_reported() {
     );
 }
 
-/// The counter pass drops an active patrol in the region it patrols now and keeps one
-/// outside it, in combat, or whose skip is decided otherwise; an undecided one is refused
-/// and listed.
 #[test]
 fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
     use {
@@ -131,8 +123,6 @@ fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
     assert_eq!(sea(0, Some(79), &MissionSkips::default()), naval_members::Sea::Refused(naval_members::SKIP_UNRECORDED));
 }
 
-/// A reset group's number keeps its raw bits through `frame update`'s `int`: `0xFFFFFFFF` is -1,
-/// not a refusal; a numbered group's is its place.
 #[test]
 fn a_reset_ideology_number_reaches_set_frame_as_its_bits() {
     assert_eq!(set_frame_argument(0xFFFF_FFFF), -1);

@@ -1,4 +1,3 @@
-//! Recorded combat modifier naming shared by combat hovers and selected-unit attack text.
 
 pub const BM_LEADER_BONUS: &str = "BM_LEADER_BONUS";
 pub const BM_COUNTRY_BONUS: &str = "BM_COUNTRY_BONUS";
@@ -31,7 +30,6 @@ pub const BM_TERRAIN: &str = "BM_TERRAIN";
 pub const BM_WEATHER: &str = "BM_WEATHER";
 pub const BM_NIGHT_MODIFIER: &str = "BM_NIGHT_MODIFIER";
 
-/// The complete modifier-name dispatch, in recorded order.
 const MODIFIER_NAMES: [&str; 30] = [
     BM_LEADER_BONUS,
     BM_COUNTRY_BONUS,
@@ -65,8 +63,6 @@ const MODIFIER_NAMES: [&str; 30] = [
     BM_NIGHT_MODIFIER,
 ];
 
-/// Modifier-name dispatch shared by the combat hover
-/// and the selected army's attack list.
 pub fn modifier_name_key(id: u32) -> Result<&'static str, String> {
     MODIFIER_NAMES
         .get(id as usize)

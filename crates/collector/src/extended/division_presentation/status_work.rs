@@ -1,9 +1,6 @@
-//! The same reserved ranges acquire independent preparation leaves first,
-//! then finish native status and name their divisions after ordered shared
-//! admission has published.
 use super::*;
 
-#[allow(clippy::large_enum_variant)] // Reserved work cells retain their inline range storage.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StatusWork {
     Preparation {
         store: Option<Arc<super::super::attack_stats::ArmyStatStore>>,

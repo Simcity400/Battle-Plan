@@ -1,4 +1,3 @@
-//! Character operands and names shared by their native effect descriptions.
 
 use super::*;
 use crate::character_scope::{Tables, UnitLeader};
@@ -6,7 +5,6 @@ use replay_data::rows::{
     CharacterRow, CountryCharacterRow, LexicalTokenRow, UnitLeaderRow, tables,
 };
 
-/// Characters rows lent to the descriptions hold every field.
 const CHARACTER: u64 = tables::Characters::ID.full_mask();
 const LEADER_LINK: u64 = mask::<UnitLeaderRow>(&["character_id"]);
 const LEADER_NAME: u64 = mask::<UnitLeaderRow>(&["inherited_text_b"]);
@@ -26,8 +24,6 @@ pub(super) use content::CharacterContent;
 mod tests;
 
 impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
-    // Executable localisation names must exist in the recorded content stack.
-    // Authored name keys keep each native caller's ordinary raw-key fallback.
     pub(super) fn char_native_text(
         &self,
         key: &[u8],
@@ -65,12 +61,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.complete::<T>(mask)
     }
 
-    /// Characters, each row holding every field.
     fn character_rows(&self) -> Result<Rowset<'f, CharacterRow>, String> {
         self.complete::<tables::Characters>(CHARACTER)
     }
 
-    /// The Characters row of `id`, holding every field.
     fn character_row(&self, id: u32) -> Result<Option<Cow<'f, CharacterRow>>, String> {
         keyed(&self.character_rows()?, u128::from(id))
     }
@@ -79,8 +73,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.complete::<tables::UnitLeaders>(mask)
     }
 
-    // A unit-leader scope carries the leader's character reference,
-    // rather than the leader itself.
     pub(super) fn effect_character(
         &self,
         scope: Scope,
@@ -102,9 +94,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.character_row(id)
     }
 
-    // Try the evaluated scope, named lookup, then the current character.
-    // Named lookup selects the country's first active character of the token,
-    // then searches the retired roster.
     pub(super) fn effect_character_target(
         &self,
         operand: Option<&[u8]>,
@@ -123,8 +112,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
                     Some(country)
                 }
-                // Choose a ROOT with a positive state-owner tag,
-                // but require that scope's own country to be positive.
                 Scope::State(state) if state != NULL_STATE && state != 0 => {
                     let world = self.context.world()?;
                     let state = world
@@ -194,9 +181,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.effect_character(scopes.this)
     }
 
-    // Copy the stored character name verbatim, without a token fallback.
-    // Nonempty text without its original key follows the shared recording-language
-    // rule rather than being relocalised heuristically.
     pub(super) fn effect_character_name(&self, row: &CharacterRow) -> Result<String, String> {
         crate::scripted_text::stored_text(
             self.context.localisation,
@@ -206,7 +190,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Use the character's direct role, else its reference role.
     pub(super) fn effect_unit_leader(
         &self,
         scopes: Scopes,
@@ -231,8 +214,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // A registry-only role joins text rows by the full reference,
-    // without inventing a direct character association.
     pub(super) fn effect_resolved_leader_name(
         &self,
         leader: UnitLeader<'f>,
@@ -240,8 +221,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match leader {
             UnitLeader::Direct(row) => self.effect_leader_name((&*row).into()),
             UnitLeader::Referenced(row) => {
-                // Format 98 retains the referenced role's own name bytes;
-                // older recordings may join an exact direct handle.
                 if let replay_data::rows::Recorded::Value(Some(name)) = &row.name {
                     return crate::scripted_text::stored_text(
                         self.context.localisation,
@@ -268,8 +247,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
-    // Substitute NAME and COUNTRYDEF, then expand before the explicit LF.
-    // A missing operand character falls back to the current character.
     pub(in crate::effect_description) fn character_set_nationality(
         &self,
         item: &Item,
@@ -303,8 +280,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Use the character's country for COUNTRY and its name for NAME.
-    // Do not expand the containing scope.
     pub(in crate::effect_description) fn character_retire(
         &self,
         scopes: Scopes,
@@ -336,9 +311,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Accept army-leader categories below 2. Copy the leader name for NAME
-    // and the definite country name for COUNTRY_NAME_DEF, without LF or expansion.
-    // The block reads country, not target, and requires a positive country.
     pub(in crate::effect_description) fn character_capture_by(
         &self,
         item: &Item,
@@ -374,9 +346,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Require an operative ability caster and a positive country.
-    // Use the leader name, codename and country adjective for the arguments;
-    // only the containing text expands.
     pub(in crate::effect_description) fn character_add_nationality(
         &self,
         item: &Item,
@@ -406,8 +375,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    // Format 98 retains the selected codename operands. The shared name
-    // catalogue formats them without selecting or reserving another name.
     pub(super) fn effect_operative_codename(
         &self,
         leader: &UnitLeader<'f>,
@@ -424,8 +391,6 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if name.kind != 2 {
             return Err(format!("{field} has naming kind {}, expected 2", name.kind));
         }
-        // The reader retains custom bytes only on the native stored-name
-        // branch, including a programmatic override with a null group.
         if !name.custom.is_empty() {
             if name.programmatic != 0 {
                 return crate::scripted_text::stored_text(

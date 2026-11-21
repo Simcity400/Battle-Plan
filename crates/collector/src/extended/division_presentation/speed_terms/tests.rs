@@ -17,8 +17,6 @@ struct World {
 impl World {
     fn new(countries: usize) -> Self {
         let mut world = Self {
-            // River lookup reads the final country's nullable diplomacy pointer,
-            // which lies beyond this fixture's tightly packed counter blocks.
             bytes: vec![
                 0;
                 COUNTRY
@@ -160,7 +158,6 @@ fn shared_unit_speed_history_follows_hourly_marks_across_pooled_frames() {
     assert_eq!(a.counts[2], [0, 4, 0]);
     assert_eq!(a.entries[0].entry, Some(Some(-20_000)));
     assert!(a.held.epoch.is_none());
-    // A changed epoch never certifies the old read.
     world.value(1, 30_000);
     b.capture_holding(&store, |c| entries(c, &world, vec![], 2));
     assert_eq!(b.counts[2], [4, 0, 0]);
@@ -170,7 +167,6 @@ fn shared_unit_speed_history_follows_hourly_marks_across_pooled_frames() {
 #[test]
 fn deferred_unit_speed_entries_keep_owned_values_and_refusals() {
     for countries in [0, 1, 7, 512] {
-        // No movers still needs a valid native country table (sentinel plus a slot).
         let mut world = World::new(countries.max(1));
         let changes = changes();
         let mut capture = SpeedTerms { changes, ..SpeedTerms::default() };
@@ -180,7 +176,6 @@ fn deferred_unit_speed_entries_keep_owned_values_and_refusals() {
             world.value(1, -70_000);
         }
         if countries > 1 {
-            // One failed value does not withdraw that country's other key.
             world.fault = Some(COUNTRY + 2 * BLOCK + 0x708);
         }
         capture.entries.clear();
@@ -192,8 +187,6 @@ fn deferred_unit_speed_entries_keep_owned_values_and_refusals() {
             }), Outcome::Rows { len: countries * 2 });
         }
         assert!(capture.entries.is_empty(), "acquisition assembles no unit-speed rows");
-        // Settlement has neither a borrowed Memory nor a native fallback. The
-        // game can change or disappear without affecting the frozen observation.
         drop(world);
         assert_eq!(capture.settle_entries(), Outcome::Rows { len: countries * 2 });
         assert_eq!(capture.counts[2], [(countries * 2 - usize::from(countries > 1)) as u64, 0, u64::from(countries > 1)]);
@@ -238,7 +231,6 @@ fn deferred_unit_speed_loan_forgets_dropped_unwound_and_invalidated_baselines() 
         ..Default::default()
     };
     capture.held.epoch = Some(10);
-    // A caught decode panic can leave storage alive after consuming the flag.
     capture.settle_pending = false;
     capture.reset();
     assert_eq!(owned::Loan::take().unwrap().epoch, None);
@@ -260,8 +252,6 @@ fn discarded_frame_without_army_store_returns_unit_speed_loan() {
     let mut pass = frame.take_speed_terms();
     pass.capture(&Owned, 0, 0, sources());
     frame.restore_speed_terms(pass);
-    // The common frame-return hook must release the speed loan independently
-    // of whether ordered presentation ever lent an army-stat store.
     assert!(frame.take_settled_store().is_none());
     let mut next = super::super::Captured::vacant();
     let mut pass = next.take_speed_terms();
@@ -366,7 +356,6 @@ fn inactive_and_early_return_movers_read_no_combat_lists() {
     let seeds: Vec<_> = (1..=5_000)
         .map(|division| DivisionSeed {
             division,
-            // Even unreadable combat fields must not be read outside the branch.
             ..DivisionSeed::default()
         })
         .collect();
@@ -393,7 +382,7 @@ fn transfer_demands_no_land_families_but_shared_land_keys_remain() {
         capture.capture_states(&world, 0, GAME),
         Outcome::Rows { len: 0 }
     );
-    assert_eq!(capture.counts[0][2], 1); // Only the land mover's missing province.
+    assert_eq!(capture.counts[0][2], 1);
     assert_eq!(
         capture.capture_access(&world, 0, GAME),
         Outcome::Rows { len: 0 }
@@ -548,7 +537,6 @@ fn transfer_branch_prepares_without_any_readable_land_state_or_template() {
     assert_eq!(capture.counts[..4], [[0; 3]; 4]);
 }
 
-/// One synthetic attacking combat with a 0.2 movement word.
 fn attacking_mover(world: &mut World) -> DivisionSeed {
     use engine_native::{cland_combat as combat, cland_combatant as side};
     const COMBAT: usize = 0x22000;
@@ -611,7 +599,7 @@ fn later_province_refusal_preserves_established_land_and_combat_demand() {
     assert_eq!(
         capture.capture_states(&world, 0, GAME),
         Outcome::Rows { len: 0 }
-    ); // No location state.
+    );
     assert_eq!(capture.counts[0][2], 0);
     assert_eq!(
         capture.capture_access(&world, 0, GAME),
@@ -635,7 +623,7 @@ fn later_province_refusal_preserves_established_land_and_combat_demand() {
         Outcome::Rows { len: 1 }
     );
     assert_eq!(capture.rivers[0].controller, 1);
-    assert!(capture.counts[3][2] >= 1); // The later edge is counted independently.
+    assert!(capture.counts[3][2] >= 1);
     capture.capture_combat(&world, 0, &[seed]).unwrap();
     assert_eq!(capture.combat, [(1, Some(Some(20_000)))]);
 }
@@ -727,8 +715,6 @@ fn transfer_partial_route_keeps_readable_prefix_and_suffix_regions_without_roste
     let world = World::new(1);
     capture.prepare_land_demand(&world, 0, GAME).unwrap();
     assert_eq!(capture.movers[0].land, Ok(false));
-    // The reported transfer A -> B -> C case: C's facts refuse, while A
-    // and B already establish two source-region demands. Exercise the caller too.
     capture.movers[0].route = Ok((0, 2));
     capture.route = vec![Ok(2), Ok(3)];
     capture.provinces[2].1 = Err("later province facts refused");
@@ -737,8 +723,6 @@ fn transfer_partial_route_keeps_readable_prefix_and_suffix_regions_without_roste
         Outcome::Rows { len: 0 }
     );
     assert_eq!(capture.transport_demand, [(1, 16), (1, 32)]);
-    // These synthetic region pointers have no authenticated region identity.
-    // Their local refusals cannot remove the established source demand.
 }
 
 #[test]
@@ -760,11 +744,11 @@ fn river_demand_is_only_inside_native_crossing_kinds_and_survives_later_refusal(
         });
         let needed = usize::from((1..=3).contains(&kind));
         assert_eq!(result, Outcome::Rows { len: needed });
-        assert_eq!(capture.rivers.len(), needed); // Shared owner/controller is not duplicated.
+        assert_eq!(capture.rivers.len(), needed);
         if needed != 0 {
             assert_eq!(capture.rivers[0].entry, Some(None));
         }
-        assert_eq!(capture.counts[3][2], 2); // One later-edge refusal per mover.
+        assert_eq!(capture.counts[3][2], 2);
     }
 }
 
@@ -772,7 +756,6 @@ fn river_demand_is_only_inside_native_crossing_kinds_and_survives_later_refusal(
 fn river_and_combat_skip_unselected_branches() {
     let mut world = World::new(8);
     let seed = attacking_mover(&mut world);
-    // A second, unreadable combat must never be demanded after the first match.
     let list = u64::from_le_bytes(seed.combat.unwrap()[..8].try_into().unwrap()) as usize;
     world.u64(list + 8, u64::MAX);
     let mut seed = seed;
@@ -788,7 +771,6 @@ fn river_and_combat_skip_unselected_branches() {
     assert_eq!(capture.combat, [(1, Some(Some(20_000)))]);
     assert!(!world.reads.borrow().contains(&(list + 8)));
     world.reads.borrow_mut().clear();
-    // A defending division reads side membership, but not the combat movement word.
     seed.pointer += 1;
     header[8..12].copy_from_slice(&1_u32.to_le_bytes());
     header[12..].copy_from_slice(&1_u32.to_le_bytes());
@@ -888,7 +870,7 @@ fn known_sea_transport_demand_does_not_require_transfer_membership() {
         append_transport_demand(&mut demand, &path, &provinces, &mover),
         Ok(1)
     );
-    assert_eq!(demand, [(1, 16)]); // Later land/land edge still refuses its unknown branch.
+    assert_eq!(demand, [(1, 16)]);
     capture.movers = vec![Mover {
         route: Ok((0, 1)),
         ..mover
@@ -1075,10 +1057,8 @@ fn river_refusals_have_one_owner_across_preparation_and_capture() {
         }),
         Outcome::Rows { len: 1 }
     );
-    assert_eq!(capture.rivers[0].entry, Some(None)); // Readable null diplomacy, not another refusal.
+    assert_eq!(capture.rivers[0].entry, Some(None));
     assert_eq!(capture.counts[3][2], 2);
-    // A failed common gate is counted during preparation, without another
-    // mover census or an additional charge when river acquisition skips it.
     capture.counts[3][2] = 0;
     capture.movers[0].location = Err("location refused");
     capture.prepare_land_demand(&world, 0, GAME).unwrap();
@@ -1102,7 +1082,6 @@ fn country_entry_scratch_is_reused_and_one_failed_key_keeps_healthy_entries() {
     entries(&mut capture, &world, owners, 1);
     assert_eq!(capture.observed_entries.wanted.as_ptr(), keys);
     assert_eq!(capture.observed_entries.values.as_ptr(), values);
-    // The selected key's value fails; another key's known absence stays usable.
     world.fault = Some(COUNTRY + BLOCK + 0x708);
     entries(&mut capture, &world, vec![1], 1);
     assert_eq!(capture.entries[0].entry, None);
@@ -1200,7 +1179,6 @@ fn speed_term_projection_keeps_frame_bytes_for_quiet_changes_and_refusals() {
                     };
                 }
                 7 => {
-                    // Keep duplicate-key refusal ahead of malformed truncation.
                     capture.outcomes = [Outcome::Truncated {
                         len: 2,
                         unread_rows: 0,
@@ -1242,25 +1220,15 @@ const HOSTILITY_ARRAY: usize = 0x30000;
 const HOSTILITY_PROVINCE: usize = 0x31000;
 const HOSTILITY_ARMY: usize = 0x40000;
 const HOSTILITY_IDS: u32 = 6;
-/// Each army's route and logical owner.
 const HOSTILITY_ARMIES: [(&[u32], u32); 9] = [
-    // Ends where no country controls.
     (&[1, 3], 2),
-    // Country 2 is at war with 1.
     (&[4], 1),
-    // An empty province slot.
     (&[2], 1),
-    // A province whose definition names another.
     (&[5], 3),
-    // Country 1 is at war with 3.
     (&[3, 1], 3),
-    // Country 1 is at peace with 2.
     (&[1], 2),
-    // Past the province array.
     (&[7], 1),
-    // Its own controller.
     (&[4], 2),
-    // The pair (2, 1) again.
     (&[4], 1),
 ];
 
@@ -1325,7 +1293,6 @@ fn hostility_world() -> World {
     world
 }
 
-/// Each army's shared verdict, from the census's route copy and owner.
 fn shared_hostility(
     memory: &impl Memory,
     hostility: &mut Hostility,
@@ -1345,9 +1312,6 @@ fn shared_hostility(
         .collect()
 }
 
-/// The shared hostility verdict is `carmy::movement_attacking`'s for every
-/// mover, and each destination and pair is read once. With a fault at every
-/// byte either reads, the one observable distinction, peaceful or not, matches.
 #[test]
 fn shared_hostility_matches_each_movers_own_attacking_read() {
     let mut world = hostility_world();
@@ -1380,7 +1344,6 @@ fn shared_hostility_matches_each_movers_own_attacking_read() {
         ]
     );
     assert_eq!(shared, alone(&world));
-    // Destinations 1 to 4 and four pairs; failed reads are not kept.
     assert_eq!((hostility.destinations.len(), hostility.pairs.len()), (4, 4));
     let touched: std::collections::BTreeSet<usize> = world.reads.take().into_iter().collect();
     assert!(touched.len() > HOSTILITY_ARMIES.len() * 4);
@@ -1398,8 +1361,6 @@ fn shared_hostility_matches_each_movers_own_attacking_read() {
     }
 }
 
-/// The world with a fault at `fault` that, as a guard page does, fails only
-/// the first read covering it.
 struct OneShot<'a> {
     world: &'a World,
     fault: usize,
@@ -1416,8 +1377,6 @@ impl Memory for OneShot<'_> {
     }
 }
 
-/// A transient failure belongs to the mover whose read met it: movers sharing
-/// its destination or pair read again and keep their own verdicts.
 #[test]
 fn a_one_shot_fault_changes_only_the_mover_that_met_it() {
     let world = hostility_world();

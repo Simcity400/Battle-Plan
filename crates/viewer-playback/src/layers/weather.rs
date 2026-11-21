@@ -1,10 +1,3 @@
-//! The weather layer: per strategic weather region the particle kind its flags select (light rain,
-//! heavy rain, snow, blizzard or sandstorm, the first set), the values today's weather field
-//! derives from WeatherRegions. The particles in view are laid out from these per camera.
-//!
-//! A region the table does not hold has no kind; an unavailable, unrecorded or gap table holds
-//! no region, as today.
-
 use super::{Carried, Settling, Dirty, Gpu, Inputs, Layer, Num, View};
 use crate::playhead_host::mirror::{Mirror, Mirrors};
 use playhead::Step;
@@ -12,7 +5,6 @@ use replay_columnar::manifest::Status;
 use replay_data::rows::TableId;
 use std::{collections::BTreeMap, io, sync::Arc};
 
-/// No kind: the region is absent or no flag is set.
 pub const NONE: u8 = u8::MAX;
 
 #[derive(Clone, Copy)]
@@ -20,32 +12,23 @@ struct Columns {
     flags: [Num<u8>; 5],
 }
 
-/// The rows the table holds at the head: none when unavailable, not recorded or in a gap.
 fn held(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| matches!(mirror.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
 pub struct Weather {
     columns: Option<Columns>,
-    /// Per region id: its kind's index in today's order, or [`NONE`].
     kinds: Vec<u8>,
     regions: Dirty,
-    /// Whether the table's rows were usable when last settled, and its status as last seen.
     usable: bool,
     status: Option<Status>,
     frame: u64,
     marked: u64,
-    /// The branch the recording's hours are on, and the hour last installed with the camera it
-    /// was laid out for: the particles' seeds and continuity follow the hour, as today's do.
     branch: replay_data::BranchId,
     installed: Option<(replay_data::Hour, bool)>,
-    /// A settle changed a region's kind since the last install. The effects pass keeps every
-    /// particle of a region whose kind is unchanged, so an hour that turns no region's weather
-    /// needs no install at all.
     kinds_changed: bool,
     hour: Option<replay_data::Hour>,
     view: Option<(viewer_foundation::map::camera::Placement, [u32; 2])>,
-    /// The field the install hands the effects pass, made on the side's thread ([`Layer::stage`]).
     staged: Option<viewer_world::map::weather_effects::Field>,
 }
 
@@ -58,7 +41,6 @@ impl Weather {
         Self { columns: self.columns, branch: self.branch, ..Self::new() }
     }
 
-    /// The field the weather effects install: every region's kind at the hour on screen.
     pub fn field(&self) -> io::Result<viewer_world::map::weather_effects::Field> {
         let mut kinds = map_display_data::copy_index::CopyIndex::default();
         for (id, kind) in self.kinds() {
@@ -67,7 +49,6 @@ impl Weather {
         Ok(viewer_world::map::weather_effects::Field { branch: self.branch, hour: self.hour.unwrap_or(0), kinds })
     }
 
-    /// Every region with a kind, ascending: today's field's index.
     pub fn kinds(&self) -> BTreeMap<u32, usize> {
         self.kinds.iter().enumerate().filter(|&(_, &kind)| kind != NONE).map(|(id, &kind)| (id as u32, usize::from(kind))).collect()
     }
@@ -124,7 +105,6 @@ impl Weather {
     }
 }
 
-/// The weather layer of a loaded recording.
 pub fn for_document(document: &crate::document::Document) -> Box<dyn Layer> {
     Box::new(Weather { branch: document.playback.branch(), ..Weather::new() })
 }
@@ -200,8 +180,6 @@ impl Layer for Weather {
         Ok(())
     }
 
-    /// Every region's kind at the hour on screen, indexed as the effects pass reads it: made here,
-    /// on the side's thread, so the install lays the particles out and writes alone.
     fn stage(&mut self) -> io::Result<()> {
         if self.uploaded() {
             return Ok(());
@@ -229,11 +207,6 @@ impl Layer for Weather {
         Ok(())
     }
 
-    /// The pass holds every region's kind and keeps the particles of a region whose kind did not
-    /// turn, so it is owed an install only once a settle has turned one: an hour that changed no
-    /// region's weather is installed again neither here nor in the pass, which compared the two
-    /// fields and gave the whole install back. Before an hour is read nothing is owed, as nothing
-    /// was before.
     fn uploaded(&self) -> bool {
         self.view.is_none() || self.hour.is_none() || (self.regions.len() == 0 && self.installed.is_some() && !self.kinds_changed)
     }

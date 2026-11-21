@@ -1,4 +1,3 @@
-//! Multi-hour name and complete ordinary formation-record proof.
 use super::*;
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
@@ -9,7 +8,6 @@ use reference::Reference;
 fn fixture(step: usize) -> (DecodedFrame, UnitModelAssets) {
     let (mut frame, mut assets) = formation_fixture(123, 5, [1 << 8; 12], 0);
     frame.hour = 60_828_000 + [0, 0, 5, 1, 33, -4][step % 6];
-    // Equal-number distinct frames must not retain a selected-name fact either.
     frame.branch = if step.is_multiple_of(7) { 2 } else { 1 };
     for (i, table) in frame.tables.iter_mut().enumerate() {
         if matches!(&**table, TableView::Unavailable { .. }) {
@@ -145,7 +143,6 @@ fn fixture(step: usize) -> (DecodedFrame, UnitModelAssets) {
     }
     replace_table(&mut frame, TableRows::TaskForces(forces));
     if step == 39 {
-        // Country sizing is supplied by the fixture, not capped by the pass.
         let ids: Vec<u32> = [100, 200].into_iter().chain(201..5199).collect();
         assert_eq!(ids.len(), 5000);
         replace_table(
@@ -365,7 +362,6 @@ fn names(
     dlcs: &[&str],
     reference: bool,
 ) -> NameTrace {
-    // A separate owner keeps tracing from prewarming the preparation inputs.
     equipment_graphics::test_support::with_world(frame, dlcs, |limits| {
         let terrain = BTreeMap::new();
         let localisation = Localisation::default();
@@ -491,7 +487,6 @@ fn naval_name_pass_multihour_world_owner_limits_and_every_record_match_direct() 
             } else {
                 Vec::new()
             };
-            // Each preparation starts with independent, cold Hour/World/limits inputs.
             let result = equipment_graphics::test_support::with_world(&frame, &dlcs, |limits| {
                 let terrain = BTreeMap::new();
                 let localisation = Localisation::default();

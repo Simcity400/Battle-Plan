@@ -1,5 +1,3 @@
-//! Transport counts, reached only by a long Full paradrop label or an active
-//! execution prerequisite. Current-frame joins stay lazy.
 
 use std::cell::OnceCell;
 use viewer_foundation::map::air_range;
@@ -16,8 +14,6 @@ use {
     viewer_foundation::map::air_transport_content::AirTransportContent,
 };
 
-/// Borrowed for one orders build. Construction admits no replay tables;
-/// registry witnesses are indexed only if a transfer or region gate asks.
 pub(super) struct Context<'a> {
     frame: &'a DecodedFrame,
     content: Option<AirTransportContent<'a>>,
@@ -46,7 +42,6 @@ impl<'a> Context<'a> {
         order: &ArmyOrderRow,
         group: Option<&OrdersGroupRow>,
     ) -> Result<transport_counts::AcceptedTotals, String> {
-        // The stored source province is signed. A missing source reaches nothing else.
         if (order.paradrop_target as i32) < 1 {
             return Ok(transport_counts::AcceptedTotals::default());
         }
@@ -69,7 +64,6 @@ impl<'a> Context<'a> {
         if source.state == 0 {
             return Ok(transport_counts::AcceptedTotals::default());
         }
-        // Use the shared air-base manager with ordinary kind zero.
         let base = self
             .frame
             .complete::<tables::AirBases>()
@@ -100,9 +94,6 @@ impl<'a> Context<'a> {
             return Ok(transport_counts::AcceptedTotals::default());
         }
         let destination = order.path.first().copied().unwrap_or(0);
-        // With no content the only successful pool gate is the authenticated
-        // null subtype, which skips range. Every real subtype refuses content
-        // before this unused distance can affect a count.
         let distance = if (destination as i32) > 0 {
             self.content.as_ref().map_or(0, |content| {
                 transport_counts::distance(content.geometry, source.id, destination)
@@ -110,7 +101,6 @@ impl<'a> Context<'a> {
         } else {
             0
         };
-        // Invalid province IDs use reserved slot zero, which has no region.
         let valid_destination = (destination as i32) > 0
             && self
                 .content
@@ -121,8 +111,6 @@ impl<'a> Context<'a> {
             .as_ref()
             .filter(|_| valid_destination)
             .and_then(|content| content.target_region(destination));
-        // Without content a region may exist. Earlier nontransport gates
-        // can still prove zero; an eligible wing requires the range content.
         let has_region = valid_destination && (self.content.is_none() || region.is_some());
         let sources = Sources {
             context: self,
@@ -172,8 +160,6 @@ impl<'a> Context<'a> {
     }
 
     fn wing_range(&self, wing: &AirWingRow) -> Result<i64, String> {
-        // Sources::slot cannot return a gap, so admit the complete link
-        // table at this reached range branch before calling the shared law.
         self.frame
             .complete::<tables::CountryLinks>()
             .map_err(error)?;
@@ -189,8 +175,6 @@ impl<'a> Context<'a> {
         )
     }
 
-    /// Resolve the base host before reading its task force. The witness
-    /// distinguishes a registry miss from an absent roster row.
     fn host_force(&self, base: u64, host: u64) -> Result<Option<&TaskForceRow>, String> {
         if host == 0 {
             return Ok(None);
@@ -254,7 +238,6 @@ impl transport_counts::Sources for Sources<'_, '_> {
     }
 
     fn region_admits(&self, wing: &AirWingRow) -> Result<bool, String> {
-        // Native restriction code5: a null/stale containing-pool base.
         if wing.air_base == 0 {
             return Ok(false);
         }

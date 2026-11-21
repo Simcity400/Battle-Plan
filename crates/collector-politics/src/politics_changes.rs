@@ -1,6 +1,3 @@
-//! Native power mutations and government commits. Writer/caller descriptors
-//! live in engine_events::politics_sites. No balance fall is turned into a spend.
-//! Hooks never select countries by player/human/AI status.
 use engine_sites::Rva;
 use crate::{
     hook::{Hook, Registers, Tap},
@@ -26,25 +23,18 @@ use std::{
 };
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
-/// The election update's on_action call returns here.
 const ELECTION_ON_ACTION_RETURN: Rva = Rva(0xbfb8ce);
-/// The daily relation and party boost cost calls return here with RDX the cost output.
+#[doc = " The daily relation and party boost cost calls return here with RDX the cost output."]
 const DAILY_RELATION_COST_RETURN: Rva = Rva(0xbfcf03);
 const MIO_RESEARCH_COST_RETURN: Rva = Rva(0xed4fb9);
 const MIO_PRODUCTION_COST_RETURN: Rva = Rva(0xed4fd2);
-/// The ability activation's cost getter call returns here.
 const ABILITY_ACTIVATION_COST_RETURN: Rva = Rva(0x7320f8);
-/// The nested ability allocator and release refund calls.
 const NESTED_ABILITY_RETURNS: [Rva; 4] =
     [Rva(0x71b405), Rva(0x71b9a9), Rva(0x732467), Rva(0x732c4f)];
-/// The leader's embedded allocator call that takes the deployment charge.
 const LEADER_DEPLOYMENT_RETURN: Rva = Rva(0xc71212);
-/// The daily update's political cost getter call, the getter's one income caller.
 const DAILY_COST_RETURN: Rva = Rva(0xbfb952);
-/// The scripted diplomacy action's handler, compared with the action's vtable slot.
+#[doc = " The scripted diplomacy action's handler, compared with the action's vtable slot."]
 const SCRIPTED_DIPLOMACY_HANDLER: Rva = Rva(0xb03bc0);
-/// Every key callers and handlers are classified by: each must be located, so an address that
-/// maps to no key is truly another one.
 const CLASSIFIED: [Rva; 16] = [
     native::DAILY_PP_CALLER,
     native::DAILY_CP_CALLER,
@@ -78,11 +68,9 @@ pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
-// Published pointers remain stable when the owning vector grows.
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
-// 11: thread registrations beyond the dedicated lanes, 12: refused shared appends.
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 const FAILURE_NAMES: [&str; 41] = [
     "ideology identity unreadable",
@@ -177,7 +165,6 @@ impl Identity {
         identity
     }
 }
-/// Expanded worker observation; native detours construct only raw records.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Event {
     pub kind: Kind,
@@ -203,7 +190,6 @@ pub struct Event {
     pub actor_country: Option<u32>,
 }
 
-// Compact native words only. Conversion to replay identities/rows is worker-only.
 #[derive(Clone, Copy, Default)]
 struct Record {
     country: u32,
@@ -330,9 +316,6 @@ impl Record {
     }
 }
 
-// Single-producer lanes. Publication releases a complete record; the worker
-// releases the consumed index only after copying it. A record a lane has no room
-// for goes to its generation's spill; nothing is overwritten or refused for room.
 struct Lane {
     slots: Box<[UnsafeCell<Record>]>,
     bytes: Box<[UnsafeCell<u8>]>,
@@ -375,20 +358,12 @@ impl Lane {
 struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
-    // Threads registering after every lane is taken publish here, so a
-    // generation never loses an interval to its writer count.
     shared: SharedLane<Record>,
-    /// Records no lane had room for, or whose literals pass the key stride, each with its own
-    /// key bytes, pushed lock-free where they are written.
     pushed: SpillStack<(Record, Vec<u8>)>,
-    /// Taken from `pushed`, sorted by sequence and merged at the drain; hooks never lock it.
     spill: Mutex<Vec<(Record, Vec<u8>)>>,
     registered: AtomicUsize,
     entries: usize,
     key_stride: usize,
-    // Observed power writes are interval facts. A closed
-    // generation has no publishers; stale callback pointers follow
-    // next. Cursor/consumed stay local, with a stable native sequence offset.
     publishers: AtomicUsize,
     next: AtomicUsize,
     base_cursor: AtomicU64,
@@ -424,7 +399,6 @@ impl Log {
     ) -> io::Result<Self> {
         let entries = entries.max(1);
         let keys = keys.max(1);
-        // Sized like one more thread's lane, then from observed shared demand.
         let shared = SharedLane::new(entries.div_ceil(lanes.max(1)).max(shared), keys)?;
         let mut storage = allocation::vec(lanes)?;
         for n in 0..lanes {
@@ -461,8 +435,6 @@ impl Log {
     fn consumed_frontier(&self) -> u64 {
         self.base_cursor.load(Ordering::Acquire) + self.consumed.load(Ordering::Acquire)
     }
-    /// Drain side: every spilled record, sorted by sequence, the pushed ones taken in. A
-    /// refused allocation loses the taken records by name.
     fn held(&self) -> std::sync::MutexGuard<'_, Vec<(Record, Vec<u8>)>> {
         let mut spill = self
             .spill
@@ -500,8 +472,6 @@ fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
                     failed("politics sealed staging successor absent");
                     return None;
                 }
-                // Closure follows all old publications. Helpers and the
-                // boundary store the same immutable offset, never a cursor.
                 let next = unsafe { &*next };
                 next.base_cursor.store(log.frontier(), Ordering::Release);
                 log = next;
@@ -537,8 +507,6 @@ fn lane_index(log: &Log) -> Option<usize> {
                 .map_or(0, |lane| lane as *const Lane as usize),
         ));
         if index >= log.lanes.len() {
-            // This thread publishes through the shared lane; growth offers
-            // a dedicated lane to the next generation.
             REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
             COUNTERS[11].fetch_add(1, Ordering::Relaxed);
             None
@@ -552,7 +520,6 @@ fn cached_lane(log: &Log) -> Option<&Lane> {
     LANE.with(|cached| {
         let (pointer, serial, _, lane) = cached.get();
         if pointer == log as *const Log as usize && serial == log.serial && lane != 0 {
-            // Logs/lanes stay allocated until hooks and all observers quiesce.
             return Some(unsafe { &*(lane as *const Lane) });
         }
         lane_index(log).map(|index| &log.lanes[index])
@@ -582,7 +549,6 @@ impl Drop for Call {
         });
     }
 }
-/// Before publishing any staging or enabling observers in a new DLL session.
 pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
     let epoch = previous
         .checked_add(1)
@@ -616,7 +582,6 @@ fn base() -> usize {
     BASE.load(Ordering::Relaxed)
 }
 
-/// Whether a getter's return address is the daily update's cost call.
 fn daily_cost_caller(caller: Option<u64>) -> bool {
     caller.is_some_and(|caller| engine_sites::at(base(), DAILY_COST_RETURN) == Some(caller as usize))
 }
@@ -624,7 +589,6 @@ fn read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
     engine_native::read::<T>(&memory(), address)
 }
 fn operand_memory() -> native::NativeOperands {
-    // SAFETY: callers below read only the supported synchronous native operands.
     unsafe { native::NativeOperands::new() }
 }
 #[inline(always)]
@@ -649,16 +613,12 @@ fn log() -> Option<&'static Log> {
         Some(unsafe { &*pointer })
     }
 }
-/// Off-thread only. Larger staging is offered to an hourly handoff; old
-/// generations remain alive until callbacks and capture workers quiesce.
 pub fn resize(entries: usize, keys: usize) {
     engine_allocation::advisory(|| resize_storage(entries, keys));
 }
 
 fn resize_storage(entries: usize, keys: usize) {
     if resize_checked(entries, keys).is_err() {
-        // Checked helpers stop admission and write the preopened terminal witness.
-        // Keep all previously published storage alive until observer quiescence.
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
         invalidate();
     }
@@ -669,10 +629,8 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let offered = OFFERED.load(Ordering::Acquire) as *const Log;
     let offered = (!offered.is_null()).then(|| unsafe { &*offered });
-    // The boundary clears an offer only after publishing it as current.
     let current = log();
     let sources = [current, offered];
-    // Match lane rounding so small roster changes do not retire identical rings.
     let entries = entries
         .max(
             sources
@@ -750,23 +708,21 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// Off-thread retry from observed lane/key pressure, independent of registry
-/// growth. Existing logs remain alive for admitted readers and callbacks.
 pub fn prepare() {
     if let Some(log) = log() {
         resize(log.entries, log.key_stride);
     }
 }
-/// Release staging after disabled hooks and all callback/capture workers are
-/// quiescent. No published log reference may survive this call.
-///
-/// # Safety
-/// The caller has disabled hooks, checked their executable ranges and ACTIVE,
-/// and joined all workers that can call drain/resize/status.
+#[doc = " Release staging after disabled hooks and all callback/capture workers are"]
+#[doc = " quiescent. No published log reference may survive this call."]
+#[doc = ""]
+#[doc = " # Safety"]
+#[doc = " The caller has disabled hooks, checked their executable ranges and ACTIVE,"]
+#[doc = " and joined all workers that can call drain/resize/status."]
 pub unsafe fn release() {
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
-        return; // Retain every published log; never panic or free live storage.
+        return;
     }
     LOG.store(0, Ordering::Release);
     OFFERED.store(0, Ordering::Release);
@@ -780,7 +736,7 @@ pub unsafe fn release() {
         .fill(None);
 }
 #[inline(always)]
-#[allow(clippy::too_many_arguments)] // Fixed native writer operands, no replay row.
+#[allow(clippy::too_many_arguments)]
 fn power_record(
     owner: native::Owner,
     currency: PowerCurrency,
@@ -813,7 +769,7 @@ fn power_record(
     raw
 }
 #[inline(always)]
-#[allow(clippy::too_many_arguments)] // Fixed native writer operands.
+#[allow(clippy::too_many_arguments)]
 fn power(
     owner: native::Owner,
     currency: PowerCurrency,
@@ -952,8 +908,6 @@ fn append_raw(log: &Log, record: Record, keys: [native::Literal; 3], memory: &im
         None => append_raw_shared(log, record, keys, memory),
     }
 }
-/// A thread without a dedicated lane in this generation. The record takes
-/// its log-wide sequence exactly as a lane record does.
 fn append_raw_shared(
     log: &Log,
     mut record: Record,
@@ -966,30 +920,24 @@ fn append_raw_shared(
         return;
     }
     let Some(mut slot) = log.shared.try_reserve() else {
-        // The refusal sizes the next generation's shared lane; the record spills.
         COUNTERS[12].fetch_add(1, Ordering::Relaxed);
         spill(log, record, keys, memory);
         return;
     };
     if copy_keys(&mut keys, slot.stride(), slot.bytes(), memory).is_err() {
-        return; // The dropped reservation publishes void.
+        return;
     }
     record.sequence =
         log.base_cursor.load(Ordering::Acquire) + log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
     record.keys = keys.map(|key| [key.address as u32, key.len as u32]);
     slot.publish(record);
 }
-/// The key bytes a record's literals take.
 fn key_bytes(keys: &[native::Literal; 3]) -> usize {
     keys.iter()
         .map(|key| key.len)
         .fold(0, usize::saturating_add)
 }
 
-/// A record no lane has room for, or whose literals pass the key stride: it gets storage of
-/// its own on the generation's lock-free spill, keeping its exact key bytes, and takes its
-/// sequence only after that storage is held and the keys are copied. Only a refused
-/// allocation gives it up, as the named staging allocation failure.
 #[cold]
 fn spill(log: &Log, record: Record, mut keys: [native::Literal; 3], memory: &impl Memory) {
     COUNTERS[1].fetch_add(1, Ordering::Relaxed);
@@ -1015,8 +963,6 @@ fn spill(log: &Log, record: Record, mut keys: [native::Literal; 3], memory: &imp
     spilled.push();
 }
 
-/// Copies each literal into this record's key span, rebasing it there.
-/// A literal past `u32::MAX` bytes is dropped and its demand retained.
 #[inline(always)]
 fn copy_keys(
     keys: &mut [native::Literal; 3],
@@ -1072,7 +1018,6 @@ fn append_raw_to_lane(
     mut keys: [native::Literal; 3],
     memory: &impl Memory,
 ) {
-    // Only the thread that registered this lane accesses write.
     let cursor = unsafe { *lane.write.get() };
     let demand = cursor
         .wrapping_sub(lane.consumed.load(Ordering::Acquire))
@@ -1083,7 +1028,6 @@ fn append_raw_to_lane(
         )
         .saturating_add(1);
     if demand > lane.slots.len() as u64 {
-        // Spilled records still count toward this interval's demand, which sizes the next lane.
         lane.spilled.fetch_add(1, Ordering::Release);
         lane.required_entries.fetch_max(
             (demand as usize).max(lane.slots.len().saturating_mul(2)),
@@ -1131,8 +1075,6 @@ pub struct Handoff {
     lanes: usize,
     shared_rejected: u64,
 }
-/// Exchange the interval's upper ring index, without copying
-/// events, scanning countries, resolving identities or touching replay rows.
 pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native::walk::Buffer::Growing(cursors))
 }
@@ -1143,9 +1085,6 @@ fn handoff_buffer(
         return Err("politics hooks unavailable");
     }
     let log = log().ok_or("politics staging unavailable")?;
-    // A publisher lease closes the seal/publication race, independently of
-    // native calls beginning after ACTIVE's quiet observation. Their emitters
-    // follow the prepared successor instead of waiting or losing records.
     if ACTIVE.load(Ordering::SeqCst) != 0 {
         return handoff_from_buffer(log, cursors);
     }
@@ -1211,7 +1150,6 @@ impl Handoff {
         let log = unsafe { &*(self.log as *const Log) };
         self.cursor.wrapping_sub(log.consumed_frontier()) as usize
     }
-    /// Key bytes for every pending record: a stride each, and the spilled records' own.
     pub fn key_capacity(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         let spilled = log
@@ -1276,7 +1214,6 @@ fn drain_from(log: &Log, output: &mut [Event], bytes: &mut [u8]) -> Result<Drain
         bytes,
     )
 }
-/// Where the drain's next record comes from.
 #[derive(Clone, Copy)]
 enum Source {
     Lane(usize),
@@ -1284,7 +1221,6 @@ enum Source {
     Spill,
 }
 
-/// The sealed interval: its epoch, log-wide frontier and shared refusals.
 #[derive(Clone, Copy)]
 struct Bound {
     epoch: u64,
@@ -1300,9 +1236,6 @@ fn drain_until(
 ) -> Result<Drained, &'static str> {
     let Bound { epoch, cursor, .. } = bound;
     let first = log.consumed_frontier();
-    // Shared records in log-wide order. One at or below the consumed
-    // frontier belongs to a withdrawn interval; one past the sealed frontier
-    // belongs to the next interval.
     let shared = log
         .shared
         .published(|record| record.sequence)
@@ -1314,7 +1247,6 @@ fn drain_until(
             }
         }
     };
-    // Hooks never lock the held spill, so the drain merges from it in place.
     let mut spilled = log.held();
     if log.consumed_epoch.swap(epoch, Ordering::AcqRel) != epoch
         || epoch != EPOCH.load(Ordering::Acquire)
@@ -1350,7 +1282,6 @@ fn drain_until(
             lane.consumed.load(Ordering::Acquire)
         })
         .map_err(|_| "politics drain lane storage allocation failed")?;
-    // Worker-only merge by global sequence preserves native cross-thread order.
     while copied < output.len() {
         let next = log
             .lanes
@@ -1374,8 +1305,6 @@ fn drain_until(
         let Some((n, sequence)) = next else {
             break;
         };
-        // A concurrently reserved but not yet published earlier sequence
-        // stays pending. Never emit a later record ahead of that hole.
         if sequence != first + copied as u64 + 1 {
             break;
         }
@@ -1466,8 +1395,6 @@ struct Context {
     identity: Identity,
     government: GovernmentCause,
 }
-// Original native calls can unwind through a shim into a native handler.
-// Restore thread-local provenance and withdraw the incomplete interval there.
 struct ScopeRestore {
     context: Context,
     daily: Option<native::Owner>,
@@ -1515,7 +1442,6 @@ fn observed_owner(value: Result<native::Owner, &'static str>) -> Option<native::
 fn balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
     observed_balance(&memory(), owner, currency)
 }
-/// Political and command power writers consume these exact stored balances.
 #[inline(always)]
 fn operand_balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
     observed_balance(&operand_memory(), owner, currency)
@@ -1548,8 +1474,6 @@ fn observed_balance(
     }
 }
 
-/// Flush a parent's own commits before entering a child writer/signal. After
-/// the child, the parent's baseline resumes at the child's resulting balance.
 fn flush(force: bool) {
     let Some(mut pending) = PENDING.get() else {
         return;
@@ -1662,20 +1586,11 @@ fn caller_cause(caller: Option<Rva>) -> PowerCause {
 }
 
 const ENTRY_COUNT: usize = 39;
-/// [`entry_sites`] index of the targeted decision scope, whose selection
-/// tap stages for the event feed's targeted selection detour.
 const TARGETED_DECISION_ENTRY: usize = 21;
-/// [`entry_sites`] index of the set-political-power effect, after every
-/// scope.
 const SET_POWER_ENTRY: usize = 38;
-/// A set-political-power effect's original ran another power writer, whose
-/// own record already published: its delta and this one's can't be ordered.
 const SET_POWER_NESTED: &str = "set political power nested another power writer";
-/// The commit tap fired with no open set-power effect frame.
 const SET_POWER_NO_FRAME: &str = "set political power commit outside its effect";
 
-/// What the set-political-power commit tap saw before its store: the owner,
-/// its balance, the raw evaluated target and the context identity.
 #[derive(Clone, Copy)]
 struct SetPower {
     owner: native::Owner,
@@ -1684,19 +1599,9 @@ struct SetPower {
     identity: Identity,
 }
 std::thread_local! {
-    /// The innermost open set-power effect's witness slot, a pointer to its
-    /// own stack local, or null. Nesting lives on the native call stack:
-    /// each effect saves and restores its parent, so there is no cap and no
-    /// allocation. The tap writes it synchronously on the same thread while
-    /// the frame is live.
     static SET_POWER_FRAME: Cell<*mut Option<SetPower>> = const { Cell::new(std::ptr::null_mut()) };
-    /// Power records this thread published: a set-power effect whose
-    /// original changed it nested another writer.
     static POWER_RECORDS: Cell<u64> = const { Cell::new(0) };
 }
-/// The fields a set-political-power witness publishes once its effect
-/// returned: the stored balance after, and the requested amount from the
-/// raw target, which the floor may have clamped.
 fn set_power_published(witness: SetPower, stored: i64) -> (i64, i64, i64) {
     (
         witness.before,
@@ -1704,14 +1609,7 @@ fn set_power_published(witness: SetPower, stored: i64) -> (i64, i64, i64) {
         witness.raw.wrapping_sub(witness.before),
     )
 }
-/// The set-political-power effect's entry. Its evaluated store and the
-/// conditional floor store both complete before its original returns; the
-/// commit tap inside only staged its operands. They publish here with the
-/// stored balance, under one event-feed writer flight, unless another power
-/// writer ran inside the original.
 unsafe fn set_power(a: usize, b: usize, c: usize, d: usize, fifth: usize) -> usize {
-    /// Restores the parent frame however the effect exits, so the tap never
-    /// writes through a freed stack slot after an unwind.
     struct Frame(*mut Option<SetPower>);
     impl Drop for Frame {
         fn drop(&mut self) {
@@ -1727,14 +1625,11 @@ unsafe fn set_power(a: usize, b: usize, c: usize, d: usize, fifth: usize) -> usi
     let _frame = Frame(SET_POWER_FRAME.replace(&mut staged as *mut _));
     let records = POWER_RECORDS.get();
     let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
-    // Restore the parent frame before publishing, so the tap of any nested
-    // effect a publisher triggers cannot target this returned slot.
     drop(_frame);
     if let Some(witness) = staged
         && ENABLED.load(Ordering::Acquire)
     {
         if POWER_RECORDS.get() != records {
-            // Another power writer ran inside: the deltas cannot be ordered.
             failed(SET_POWER_NESTED);
         } else if let Some(stored) = balance(witness.owner, PowerCurrency::Political) {
             let (before, after, requested) = set_power_published(witness, stored);
@@ -1755,22 +1650,11 @@ unsafe fn set_power(a: usize, b: usize, c: usize, d: usize, fifth: usize) -> usi
     flight.returned();
     result
 }
-/// [`entry_sites`] index of country appearance reset.
 const RESET_COUNTRY_ENTRY: usize = 3;
-/// [`entry_sites`] index of the daily politics update, the first
-/// scope.
 const POLITICS_DAILY_ENTRY: usize = 10;
-/// [`entry_sites`] indices of national focus selection and
-/// cancellation scopes, whose progress argument the country input
-/// family's focus rows follow ([`crate::country_input_changes`]).
 const FOCUS_ENTRY: usize = 36;
 const FOCUS_REFUND_ENTRY: usize = 37;
 
-/// Hook path: the political status family's notifications for an entry this
-/// family patches on its behalf ([`engine_mutations::political_status_mutations`]),
-/// with `receiver` its first argument: the country for
-/// `country appearance reset`, the `CPoliticalStatus` for the daily update,
-/// whose guard compares the status's last election after the original.
 fn forwarded_status(
     index: usize,
     receiver: usize,
@@ -1783,8 +1667,6 @@ fn forwarded_status(
     }
 }
 static ORIGINAL: [AtomicUsize; ENTRY_COUNT] = [const { AtomicUsize::new(0) }; ENTRY_COUNT];
-/// The politics scope entries, in [`native::SCOPES`] order from entry 10:
-/// the detour dispatches on the entry index, never on the scope's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scope {
     PoliticsDaily,
@@ -1847,7 +1729,6 @@ const SCOPE_ORDER: [Scope; native::SCOPES.len()] = [
     Scope::FocusRefund,
 ];
 impl Scope {
-    /// The event feed operation the scope starts, if any.
     fn provenance(self) -> Option<crate::war_provenance::PoliticsScope> {
         use crate::war_provenance::PoliticsScope;
         Some(match self {
@@ -1881,9 +1762,6 @@ pub fn entry_sites() -> Vec<native::HookSite> {
     .collect()
 }
 
-// Five native integer/pointer args, plus collector-only site and caller. The
-// stack shim retains the real return address and copies arg5 before allocating
-// its own shadow/argument area. Full native RAX is returned, including AL.
 macro_rules! entry {
     ($name:ident, $index:literal) => {
         core::arch::global_asm!(
@@ -2041,8 +1919,6 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
     };
     identity.keys[2] = context.identity.keys[2];
     match scope {
-        // P: command idea pointer (replace's new idea after it), definition key inside the idea.
-        // Both payment operations of a replace retain Replace provenance.
         Scope::AddIdea | Scope::RemoveIdea | Scope::ReplaceIdea => {
             let offset = if scope == Scope::ReplaceIdea {
                 0x38
@@ -2058,7 +1934,6 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 _ => PowerAction::Replace,
             };
         }
-        // The native reference retains its {type,id} and slot.
         Scope::HireAdvisor | Scope::ReplaceAdvisor => {
             let offset = if scope == Scope::HireAdvisor {
                 0x28
@@ -2084,9 +1959,6 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 PowerAction::Replace
             };
         }
-        // Targeted-decision handling receives status, selector, definition; The command passes its
-        // selector words and its definition. Both target handlers retain their original
-        // definition/selector args.
         Scope::Decision | Scope::TargetedDecision | Scope::DecisionTimeout => {
             let decision = if scope == Scope::TargetedDecision {
                 c
@@ -2107,7 +1979,6 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 } else {
                     c
                 };
-                // Target matching compares the selector's two target words against the instance's.
                 let target = at(selector, 8).and_then(item_read::<i32>);
                 if let Some(target) = target {
                     if target > 0 {
@@ -2123,12 +1994,9 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 }
             }
         }
-        // P: base action type; subclass target layouts differ, so no unproved generic target
-        // offset. Scripted template and key.
         Scope::Diplomacy | Scope::ScriptedDiplomacy => {
             identity.set(0, at(a, 8).and_then(item_read::<u32>));
             identity.action = PowerAction::Execute;
-            // The receiver resolves its own raw target.
             identity.set(
                 2,
                 at(a, 0x1c).and_then(item_read::<u32>).filter(|id| *id != 0),
@@ -2204,8 +2072,6 @@ fn government_context(scope: Scope, caller: Option<Rva>, mut context: Context) -
         Scope::PeaceForceGovernment => GovernmentCause::PeaceForceGovernment,
         Scope::SubjectGovernment => GovernmentCause::SubjectGovernment,
         Scope::ConsoleGovernment | Scope::ConsoleSubject => GovernmentCause::Console,
-        // The election update invokes on_election synchronously. Other notifications
-        // are new scopes and inherit no election/coup provenance.
         Scope::OnAction => {
             context.government = if caller == Some(ELECTION_ON_ACTION_RETURN) {
                 GovernmentCause::ElectionOnAction
@@ -2319,7 +2185,7 @@ fn daily(owner: native::Owner, gross: i64, cost: i64, net: i64) {
     );
 }
 
-#[allow(clippy::too_many_arguments)] // Native args plus shim-only provenance.
+#[allow(clippy::too_many_arguments)]
 unsafe extern "system-unwind" fn entry_body(
     a: usize,
     b: usize,
@@ -2331,20 +2197,10 @@ unsafe extern "system-unwind" fn entry_body(
     native_rbp: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    // A country reset publishes its empty delayed-event queue before the
-    // original resets it, and no event-feed callback follows its stores:
-    // an event-feed writer flight spans that publication through the
-    // original's return, so no baseline sample certifies across it. An
-    // abnormal exit retains it, as a script flight does.
     if index == SET_POWER_ENTRY {
         return unsafe { set_power(a, b, c, d, fifth) };
     }
     if index == TARGETED_DECISION_ENTRY {
-        // The event feed's targeted selection detour: its selection tap
-        // stages inside, and the committed result publishes after. Its
-        // provenance scope is entered here, not in `entry_forward`, so it
-        // outlives the publication: the result carries the TargetedDecision
-        // cause, not the parent route.
         let _provenance = crate::war_provenance::politics(
             crate::war_provenance::PoliticsScope::TargetedDecision,
             caller,
@@ -2361,7 +2217,7 @@ unsafe extern "system-unwind" fn entry_body(
     }
     result
 }
-#[allow(clippy::too_many_arguments)] // Native args plus shim-only provenance.
+#[allow(clippy::too_many_arguments)]
 unsafe fn entry_forward(
     a: usize,
     b: usize,
@@ -2374,15 +2230,10 @@ unsafe fn entry_forward(
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::PoliticsCapture);
     let _active = Call::enter();
-    // Covers the original in flight, whether or not this family records;
-    // dropped after it returns.
     let _status = forwarded_status(index, a);
     if index == RESET_COUNTRY_ENTRY {
         crate::event_feed_observer::reset_delayed_country(a);
     }
-    // Country appearance reset rewrites every country input field of its
-    // country, and focus selection and cancellation its focus rows
-    // ([`crate::country_input_changes`]).
     let _inputs = {
         use crate::country_input_changes::{Forward, forwarded};
         match index {
@@ -2391,13 +2242,8 @@ unsafe fn entry_forward(
             _ => None,
         }
     };
-    // It also clears the country's naval hover tree ([`crate::naval_tree_changes`]).
     let _naval = (index == RESET_COUNTRY_ENTRY).then(|| crate::naval_tree_changes::forwarded(1, a));
-    // The event feed's operations: how the wars and territory changes inside
-    // these scopes began ([`crate::war_provenance::politics`]).
     let scope = index.checked_sub(10).map(|scope| SCOPE_ORDER[scope]);
-    // The targeted decision's scope is entered by `entry_body`, around its
-    // event-feed publication too; entering it again here would nest it.
     let _provenance = scope
         .filter(|_| index != TARGETED_DECISION_ENTRY)
         .and_then(Scope::provenance)
@@ -2425,7 +2271,6 @@ unsafe fn entry_forward(
         return result;
     }
     let scope = SCOPE_ORDER[index - 10];
-    // The context ScopeRestore took a moment ago: nothing set it since.
     let previous = restore.context;
     let mut context = context_identity(scope, a, b, c, previous);
     context = government_context(scope, caller, context);
@@ -2433,8 +2278,6 @@ unsafe fn entry_forward(
         DAILY_HOUR.set(operand_hour());
     }
     CONTEXT.set(context);
-    // These native entries already own their patches. Forward their actual
-    // executions independently of whether any currency payment is emitted.
     match scope {
         Scope::Decision
             if caller != Some(engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA) =>
@@ -2456,8 +2299,6 @@ unsafe fn entry_forward(
     }
     let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
     if let Some(owner) = DAILY.get() {
-        // Only these exact native returns guarantee RDX is the live cost output.
-        // Other nested commands in the daily scope have unrelated second arguments.
         match scope {
             Scope::ImproveRelationDaily | Scope::BoostPartyDaily
                 if caller == Some(DAILY_RELATION_COST_RETURN) =>
@@ -2481,8 +2322,6 @@ unsafe fn entry_forward(
             _ => {}
         }
     }
-    // The ability activation caller supplies the activation charge.
-    // Availability, AI and UI callers of the same getter are unrelated.
     if scope == Scope::AbilityCost
         && caller == Some(ABILITY_ACTIVATION_COST_RETURN)
         && let Some(mut pending) = PENDING.get()
@@ -2556,7 +2395,6 @@ fn mio_identity_with(memory: &impl Memory, organisation: usize) -> Identity {
     );
     identity
 }
-// The active record is alive at the native anniversary payment.
 #[inline(always)]
 fn upkeep_identity(record: usize) -> Identity {
     upkeep_identity_with(&operand_memory(), record)
@@ -2613,8 +2451,6 @@ pub fn bench_upkeep_identity(record: usize) -> Identity {
     upkeep_identity(record)
 }
 
-/// `context` is the thread's current politics context, which nothing in
-/// this function sets before its original runs ([`government`] only reads it).
 unsafe fn writer(
     timing: &crate::hook_timing::Span,
     original: NativeFunction,
@@ -2675,8 +2511,6 @@ unsafe fn writer(
         }
     });
     let mut identity = context.identity;
-    // The nested ability allocator and release refund
-    // belong to their observed parent, not an outer command.
     if caller.is_some_and(|caller| NESTED_ABILITY_RETURNS.contains(&caller))
         && let Some(parent) =
             previous.filter(|parent| owner.is_some_and(|owner| parent.owner.same_owner(owner)))
@@ -2687,8 +2521,6 @@ unsafe fn writer(
     let requested = match index {
         0 | 1 => Some(b as i64),
         2 => before.map(i64::wrapping_neg),
-        // Reset assigns the configured starting command power; only the
-        // observed effective reset is known here.
         3 => None,
         4 => {
             if native_daily {
@@ -2705,7 +2537,6 @@ unsafe fn writer(
         9 if fifth as u8 != 0 && d as i64 > 0 => Some((d as i64).wrapping_neg()),
         _ => None,
     };
-    // The leader's embedded allocator receives the deployment charge.
     if caller == Some(LEADER_DEPLOYMENT_RETURN)
         && let Some(leader) = b.checked_sub(0x1078)
     {
@@ -2836,9 +2667,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             if let Some(owner) = owner
                 && let Some(before) = balance(owner, PowerCurrency::Political)
             {
-                // The evaluated store and its floor follow this tap: stage
-                // its operands for the enclosing effect, which publishes the
-                // stored balance once it returned.
                 let witness = SetPower {
                     owner,
                     before,
@@ -2849,8 +2677,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                 if frame.is_null() {
                     failed(SET_POWER_NO_FRAME);
                 } else {
-                    // Synchronous, same thread, while the effect frame is
-                    // live: its own slot takes this set's operands.
                     unsafe { *frame = Some(witness) };
                 }
             }
@@ -2909,8 +2735,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             Some(GovernmentCause::ResetSetup),
         ),
         5 => {
-            // Bypassing the party loop leaves ZF clear. Exhaustion/empty
-            // leaves ZF set and started from a null party.
             if registers.flags & (1 << 6) != 0 {
                 if let Some(party) = at(
                     registers.r14,
@@ -2933,8 +2757,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             }
         }
         6 => {
-            // Restrict this on-demand getter observation to its daily
-            // caller. Tooltip/trigger evaluations are not income applications.
             if !daily_cost_caller(at(registers.rbp, 0x358).and_then(operand::<u64>)) {
                 return;
             }
@@ -2964,7 +2786,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             }
         }
         7 => {
-            // Only the daily caller supplies an applied income observation.
             if !daily_cost_caller(at(registers.rbp, 0x358).and_then(operand::<u64>)) {
                 return;
             }
@@ -2996,7 +2817,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
     }
 }
 
-/// Refusals by name since attach, for the collector's live status.
 pub fn refusals() -> impl serde::Serialize {
     let staging_failures = COUNTERS[10].load(Ordering::Relaxed);
     crate::status::status!({
@@ -3048,7 +2868,6 @@ struct Conservation {
     counts: [u64; 2],
     amounts: [i128; 2],
     absolute_amounts: [u128; 2],
-    // The existing diagnostic sample retains the first eight of each currency.
     examples: [Option<ConservationExample>; 16],
 }
 static CONSERVATION: Mutex<Conservation> = Mutex::new(Conservation {
@@ -3106,10 +2925,10 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(memory: &impl Memory, base: usize, runtime_enabled: bool) -> Self {
         RUNTIME_ENABLED.store(runtime_enabled, Ordering::Relaxed);
         if !runtime_enabled {
@@ -3219,8 +3038,6 @@ impl Hooks {
             return Ok(false);
         }
         ENABLED.store(enabled && !self.entries.is_empty(), Ordering::SeqCst);
-        // The political status family observes country appearance reset and the
-        // daily politics update through these patches ([`forwarded_status`]).
         crate::political_status_changes::set_forward(enabled && !self.entries.is_empty());
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::Politics,
@@ -3258,12 +3075,6 @@ static STAGING_TEST: Mutex<()> = Mutex::new(());
 thread_local! {
     static STAGING_OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-/// Serialises tests that publish staging or read the observation epoch and
-/// makes this thread the epoch's owner. As with the naval, air-loss and
-/// bombing observers, another test's hourly path (`lost_observer_interval`)
-/// then cannot move the epoch under a politics test. A failing test releases
-/// the lock poisoned; later tests set their own staging, so the poison is
-/// ignored and one failure stays one failure.
 #[cfg(any(test, feature = "test-support"))]
 pub struct StagingTest {
     _serial: std::sync::MutexGuard<'static, ()>,
@@ -3282,7 +3093,6 @@ impl Drop for StagingTest {
         STAGING_OWNER.set(false);
     }
 }
-/// Owns offline lanes while exercising production publication and handoff.
 #[cfg(any(test, feature = "test-support"))]
 pub struct StagingFixture(Log);
 #[cfg(any(test, feature = "test-support"))]
@@ -3347,8 +3157,6 @@ pub fn bench_observe(event: Event) {
     append_record(fixture_record(&event), event.identity.keys);
 }
 
-/// The timed burst uses the same narrow constructors as the detours, rather
-/// than decoding/copying the worker's expanded Event on the simulation thread.
 #[cfg(any(test, feature = "test-support"))]
 pub fn bench_daily_country(country: u32, receivers: &[usize]) {
     let owner = native::Owner {
@@ -3429,8 +3237,6 @@ pub fn bench_daily_country(country: u32, receivers: &[usize]) {
     });
 }
 
-/// Two production daily tap bodies, including exact caller/owner reads. The
-/// fixture supplies owned native layouts; no native function is executed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn bench_daily_taps(status: usize, modifier_frame: usize, rate_frame: usize) {
     let mut registers: Registers = unsafe { std::mem::zeroed() };
@@ -3872,7 +3678,6 @@ mod tests {
         assert!(grown.lanes[2].slots.len() >= 33);
         assert_eq!(grown.lanes[3].slots.len(), 4);
         let mut output = [Event::default(); 33];
-        // Every record of the burst is kept: the lane's room, then its spill.
         assert_eq!(drain_from(&log, &mut output, &mut []).unwrap().copied, 33);
         assert!(log.held().is_empty());
         append_lane(&log, 2, Event::default(), &memory);
@@ -3880,7 +3685,6 @@ mod tests {
         for _ in 0..33 {
             append_lane(&grown, 2, Event::default(), &memory);
         }
-        // Growth admits the whole burst without another refused interval.
         assert_eq!(drain_from(&grown, &mut output, &mut []).unwrap().copied, 33);
     }
 
@@ -4063,7 +3867,6 @@ mod tests {
         });
         assert_eq!(fresh.base_cursor.load(Ordering::Acquire), 2);
         assert_eq!(fresh.cursor.load(Ordering::Acquire), 1);
-        // Complete the boundary after the stale emitter has already published.
         fresh.base_cursor.store(old.frontier(), Ordering::Release);
         let mut output = [Event::default(); 3];
         let drained = drain_from(&old, &mut output, &mut []).unwrap();
@@ -4329,7 +4132,6 @@ mod tests {
         );
         assert_eq!(drain_from(&log, &mut output, &mut bytes).unwrap().copied, 1);
         assert_eq!(output[0].country, 5002);
-        // Past the lane's room: the third spills, and all three drain in order across short drains.
         for country in 6001..=6003 {
             append_to(
                 &log,
@@ -4563,8 +4365,6 @@ mod tests {
         ORIGINAL[index].store(previous, Ordering::Release);
     }
 
-    /// Each entry's scope is the native scope of that index, and only the
-    /// event feed's seven scopes start an operation.
     #[test]
     fn set_power_publishes_its_stored_balance_and_raw_request_after_the_effect() {
         let witness = SetPower {
@@ -4578,12 +4378,10 @@ mod tests {
             raw: -500 * 100_000,
             identity: Identity::default(),
         };
-        // The floor stored zero; the request stays the raw target's delta.
         assert_eq!(
             set_power_published(witness, 0),
             (100 * 100_000, 0, -600 * 100_000)
         );
-        // An unclamped target publishes the stored balance it left.
         let witness = SetPower {
             raw: 150 * 100_000,
             ..witness
@@ -4597,7 +4395,6 @@ mod tests {
     #[test]
     fn targeted_selection_publishes_inside_its_targeted_decision_scope() {
         let _guard = staging_test();
-        // Politics provenance scopes are entered only once a base is known.
         crate::war_provenance::base_for_test(1);
         ORIGINAL[TARGETED_DECISION_ENTRY]
             .store(shim_fixture as *const () as usize, Ordering::Release);
@@ -4605,14 +4402,11 @@ mod tests {
             unsafe { std::mem::transmute(callbacks()[TARGETED_DECISION_ENTRY]) };
         let _ = crate::script_event_observer::take_selection_cause();
         assert_eq!(unsafe { callback(1, 2, 3, 4, 0) }, 10);
-        // The cause in force at publication is the targeted decision's, not
-        // the parent route's.
         let cause = crate::script_event_observer::take_selection_cause().unwrap();
         assert_eq!(
             cause.route,
             replay_data::event_feed_rows::EventFeedRoute::TargetedDecision
         );
-        // Outside the entry, its scope is gone.
         assert_ne!(
             crate::war_provenance::inside().route,
             replay_data::event_feed_rows::EventFeedRoute::TargetedDecision
@@ -4635,7 +4429,6 @@ mod tests {
         for (index, site) in sites.iter().enumerate() {
             assert!(sites[..index].iter().all(|other| other.rva != site.rva));
         }
-        // The commit tap stays installed, inside the entry it now stages for.
         assert!(
             TAPS.iter()
                 .any(|tap| tap.rva == native::SET_POLITICAL_POWER.rva)
@@ -4721,7 +4514,6 @@ mod tests {
                 });
             }
         });
-        // Two threads own the lanes; three publish through the shared lane.
         assert_eq!(log.registered.load(Ordering::Acquire), 5);
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
@@ -4746,7 +4538,6 @@ mod tests {
             let key = event.identity.keys[0];
             assert_eq!(&bytes[key.address..key.address + key.len], b"shared");
         }
-        // Every shared slot is free again for the next interval.
         assert!(log.shared.published(|r| r.sequence).unwrap().is_empty());
         assert!(log.shared.try_reserve().is_some());
         REQUIRED_LANES.store(required, Ordering::Relaxed);
@@ -4768,7 +4559,6 @@ mod tests {
             record.sequence = log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
             slot.publish(record);
         };
-        // Reserved first, published last: reservation order is not log order.
         let early = log.shared.try_reserve().unwrap();
         let late = log.shared.try_reserve().unwrap();
         shared(late, 1);
@@ -4796,7 +4586,6 @@ mod tests {
             &memory,
         );
         let mut output = [Event::default(); 4];
-        // Sequence 3 is taken but unpublished: nothing after it is emitted.
         let drain = drain_from(&log, &mut output, &mut []).unwrap();
         assert_eq!((drain.copied, drain.pending), (2, 4));
         assert_eq!([output[0].country, output[1].country], [1, 2]);
@@ -4840,7 +4629,6 @@ mod tests {
             ),
             Err("politics observation restarted")
         );
-        // Only the record past the withdrawn frontier remains.
         let pending = log.shared.published(|r| r.sequence).unwrap();
         assert_eq!(pending.iter().map(|&(s, _)| s).collect::<Vec<_>>(), [2]);
         let drain = drain_from(&log, &mut output, &mut []).unwrap();
@@ -4875,7 +4663,6 @@ mod tests {
             native::Literal::default(),
             native::Literal::default(),
         ];
-        // The shared lane is full: the record spills.
         append_raw_shared(
             log,
             Record::default(),
@@ -4885,8 +4672,6 @@ mod tests {
         assert_eq!(COUNTERS[12].load(Ordering::Relaxed), full + 1);
         assert_eq!(log.held().len(), 1);
         assert_eq!(COUNTERS[10].load(Ordering::Relaxed), failures);
-        // A spill the allocator refuses is the named staging allocation failure: its key bytes
-        // need storage.
         crate::test_support::with_allocations_denied(|| {
             append_raw_shared(log, Record::default(), named, &memory);
         });
@@ -4907,9 +4692,6 @@ mod tests {
         clear_staging();
     }
 
-    /// A burst past a lane's room within one sizing pass, and a literal past the key stride:
-    /// every record is kept in order with its key bytes. On the base the burst past the room
-    /// was a counted refusal that withdrew the interval, and the long literal was dropped.
     #[test]
     fn a_burst_past_the_ring_keeps_every_event_in_order_with_its_keys() {
         let _guard = staging_test();
@@ -4953,8 +4735,6 @@ mod tests {
         assert!(log.held().is_empty());
     }
 
-    /// A burst past a lane's room completes while the drain holds its spilled records, and
-    /// every record comes back in order with its key bytes.
     #[test]
     fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_event_in_order() {
         let _guard = staging_test();
@@ -4968,7 +4748,6 @@ mod tests {
             base: 0x1000,
             bytes: &source,
         };
-        // The drain's spilled records stay held through the whole burst.
         let consumer = log.spill.lock().unwrap();
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {

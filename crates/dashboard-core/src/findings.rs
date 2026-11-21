@@ -1,4 +1,3 @@
-//! Content diagnostics: what a reader or product check found, by kind.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
@@ -11,9 +10,7 @@ pub enum Kind {
     Ambiguous,
     Fallback,
     Warning,
-    /// Content behavior matching the game.
     Content,
-    /// A recording supplies the operands; aggregated once per product/reason.
     Offline,
 }
 
@@ -40,7 +37,6 @@ pub struct Finding {
     pub line: Option<u32>,
     pub subject: String,
     pub message: String,
-    /// Inventory details are outside the diagnostic's diff identity.
     pub count: Option<usize>,
     pub examples: Vec<String>,
     aggregate_reason: Option<String>,
@@ -76,7 +72,6 @@ impl Finding {
         Self::new(kind.into(), subject, message)
     }
 
-    /// The reason findings are counted together under, when they are.
     pub fn aggregate_reason(&self) -> Option<&str> {
         self.aggregate_reason.as_deref()
     }

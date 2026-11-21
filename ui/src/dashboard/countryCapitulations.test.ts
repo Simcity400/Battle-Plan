@@ -17,7 +17,6 @@ test('a native-dated event in a provisional inventory is visibly approximate and
 });
 
 test('capitulations use the drawn native holder, exact event coverage and dated membership', () => {
-  // The selected identity renamed old -> new. A later reuse of old is excluded.
   const countries = [
     { tag: 'old', identities: [span(10, 12)], segments: [span(10, 20)], membership: null },
     { tag: 'new', identities: [span(13, 20)], segments: [span(13, 20)], membership: [span(15, 20)] },
@@ -41,7 +40,6 @@ test('capitulations use the drawn native holder, exact event coverage and dated 
 });
 
 test('a country chosen by slot takes the capitulations of each tag it held while it did, never another holder’s', () => {
-  // Slot 5 is GER until 19, then DEU; from 20 GER is slot 9's.
   const histories = [
     { tag: 'GER', identities: [{ firstHour: 0, lastHour: 19, slot: 5, countryId: 50 }, { firstHour: 20, lastHour: 40, slot: 9, countryId: 90 }] },
     { tag: 'DEU', identities: [{ firstHour: 20, lastHour: 40, slot: 5, countryId: 50 }] },

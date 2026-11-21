@@ -15,11 +15,8 @@ const LAST = 105_541;
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 const base64 = (bytes: Uint8Array) => { let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary); };
 
-/** Drops of tag `tag` in absolute bin `bin` of `binHours`: a few, irregularly. */
 const dropsAt = (tag: number, bin: number) => (bin * 7 + tag * 3) % 11 < 3 ? 1 + (bin + tag) % 3 : 0;
 
-/** A tile with marks of `tags`: every bin present, its four values varying as a busy line's do, drops as `dropsAt`
- * says, `before` their sum before it. */
 function marked(tags: readonly string[], binHours: number, index: number): SeriesTileReply {
   const first = index * TILE_BINS * binHours, last = first + TILE_BINS * binHours - 1;
   const count = tags.length * TILE_BINS, bytes = new Uint8Array(count * (1 + 16 + 5)), words = new DataView(bytes.buffer);
@@ -48,7 +45,6 @@ function following(head: number, days: number, width = 600): TileViewport {
 const key = (cluster: MarkCluster) => `${cluster.firstHour}:${cluster.lastHour}:${cluster.count}:${cluster.firstOrdinal}`;
 
 test('bins group into cells on the absolute grid: drops summed, the first drop ordinal kept, hours from the first such bin to the last', () => {
-  // Bins of 12 hours, cells of 3: hours 0-35, 36-71, ...
   const drops: [number, number, bigint][] = [[0, 2, 0n], [24, 1, 2n], [36, 4, 3n], [96, 1, 7n], [108, 2, 8n], [132, 1, 10n]];
   assert.deepEqual(cellClusters(drops, 12, 3), [
     { firstHour: 0, lastHour: 35, firstOrdinal: '0', count: '3', bins: [[11, 2], [35, 1]] },
@@ -75,7 +71,6 @@ test('a scroll keeps every past cluster, a zoom regroups, and the ordinals are t
   view.setView(following(30_000, 365));
   await settle();
   const before = view.current!.get('GER')!.marks!;
-  // Two weeks on: the view has scrolled; every cluster of both views that both hold is the same.
   view.setView(following(30_336, 365));
   await settle();
   const after = view.current!.get('GER')!.marks!;
@@ -83,13 +78,11 @@ test('a scroll keeps every past cluster, a zoom regroups, and the ordinals are t
   const shared = before.clusters.filter(cluster => cluster.firstHour >= after.from && cluster.lastHour <= 30_000);
   assert.ok(shared.length > 10);
   for (const cluster of shared) assert.ok(held.has(key(cluster)), `${key(cluster)} kept through the scroll`);
-  // Each cluster's ordinal is its first drop's: the drops of every bin before it.
   const binHours = binHoursOf(8760, 600);
   for (const cluster of after.clusters.slice(0, 20)) {
     let sum = 0; for (let bin = 0; bin < cluster.firstHour / binHours; bin++) sum += dropsAt(0, bin);
     assert.equal(cluster.firstOrdinal, String(sum));
   }
-  // A zoom out to two years at the same bins' level makes cells of other hours.
   view.setView(following(30_336, 730));
   await settle();
   const zoomed = view.current!.get('GER')!.marks!;
@@ -105,7 +98,6 @@ test('the head inside a cell shows the drops of the bins it has passed, and the 
   assert.deepEqual(shownClusters(summary, 50).map(key), ['0:35:3:0', '36:47:4:3']);
   assert.deepEqual(shownClusters(summary, 71).map(key), ['0:35:3:0', '36:71:6:3']);
   assert.equal(shownClusters(summary, 50), shownClusters(summary, 52), 'made again only when the head passes a bin with drops');
-  // Not tiled: every cluster, as today.
   assert.equal(shownClusters({ ...summary, tiles: undefined }, 10).length, 2);
 });
 
@@ -138,7 +130,6 @@ test('following at 1,440 h/s with spend ticks on: a cluster once drawn never cha
   console.log(`following with 18-pixel cells at 1,440 h/s: ${initial} tiles to open, then ${moving} requests; ${checked} drawn clusters unchanged across frames, ${inside} head-cell clusters seen growing; ${renders} renders`);
 });
 
-/** A canvas context whose calls do nothing: what is measured is the painter's own work. */
 function inert(): CanvasRenderingContext2D {
   const nothing = () => {};
   const ctx: Record<string, unknown> = {};
@@ -171,7 +162,6 @@ test('a frame of eight lines and their spend ticks, clipped at a moving head, co
     }
     perFrame = Math.min(perFrame, (performance.now() - started) / frames);
   }
-  // The ticks alone: what spend ticks add to a frame of lines.
   let ticksOnly = Infinity;
   for (let batch = 0; batch < 5; batch++) {
     const started = performance.now();

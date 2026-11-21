@@ -1,4 +1,3 @@
-//! Passive finalization and inspection use the same codecs as the collector.
 
 use replay_data::identity::IdentityCodec;
 use std::{
@@ -49,15 +48,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 
-/// Why a Battle Plan Recorder session does not record a load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The campaign does not record automatically, and Record was not pressed for it.
     Off,
-    /// The load belongs in another recording: its campaign's own folder, or a new file.
     Elsewhere,
-    /// The recorder settings could not be read or updated, so neither whether
-    /// the campaign records nor its folder is known.
     Settings,
 }
 
@@ -80,16 +74,11 @@ impl Refusal {
     }
 }
 
-/// A load a Battle Plan Recorder session left out of its recordings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Omission {
     pub campaign: String,
-    /// The collector's load signal; `None` for hours whose load no clock
-    /// witness identified.
     pub load: Option<i64>,
-    /// Hours it recorded.
     pub hours: u64,
-    /// Why; `None` when it was never admitted (never asked about, or unidentified).
     pub refusal: Option<Refusal>,
 }
 
@@ -173,7 +162,6 @@ fn json_temporary(path: &Path) -> Result<(PathBuf, fs::File)> {
 
 type Result<T> = std::result::Result<T, String>;
 
-/// Run `work` packing rows at Low, unless a packing job already chose their compression.
 pub fn with_packing<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
     if replay::packing::Packing::active() {
         return work();
@@ -186,7 +174,6 @@ pub fn with_packing<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
 
 const ALLOCATION_GAP_REASON: &str = "collector allocation failed";
 
-/// A prepared identity record means no collector failure was published.
 pub fn read_failure_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
     Ok(read_failure_witnesses(session_dir)?.first().copied())
 }
@@ -405,12 +392,8 @@ pub fn segment_paths(directory: &Path) -> Result<Vec<(u32, PathBuf)>> {
     Ok(paths)
 }
 
-/// By campaign, whether an hour of a recording's first blocks held more than one human: the
-/// revision read, the blocks it held and the answer. A recording that holds that revision
-/// holds those blocks unchanged, so only its later ones are read.
 static ROSTERS: std::sync::Mutex<BTreeMap<Vec<u8>, (Revision, usize, bool)>> = std::sync::Mutex::new(BTreeMap::new());
 
-/// Whether an hour of `replay`, the recording at `path`, held more than one human.
 fn roster(replay: &Replay, path: &Path) -> Result<bool> {
     let key = replay.campaign_id.to_ascii_lowercase();
     let known = ROSTERS
@@ -432,28 +415,17 @@ fn roster(replay: &Replay, path: &Path) -> Result<bool> {
     Ok(multiplayer)
 }
 
-/// The row spool segments of a campaign folder, oldest first.
 fn spool_segments(campaign_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(segment_paths(campaign_dir)?.into_iter().map(|(_, path)| path).collect())
 }
 
-/// The loads a Battle Plan Recorder session admitted, by campaign and the collector's
-/// load signal: the only hours the session publishes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Admissions {
     pub loads: BTreeMap<String, BTreeSet<i64>>,
-    /// Loads refused, with why: kept to report what was left out, never to
-    /// decide what is published.
     pub refused: BTreeMap<(String, i64), Refusal>,
 }
 
-/// A Battle Plan Recorder session's admission record in its folder: each admitted
-/// campaign and load signal with the folder the session publishes into, and
-/// each refused load with why, rewritten atomically as each load is decided.
 pub const ADMISSIONS_FILE: &str = "admitted.json";
-/// In the session's `bin` folder, written before the collector starts: it
-/// marks a Battle Plan Recorder session, so a missing admission record publishes
-/// nothing rather than everything.
 pub const ADMISSION_MARKER: &str = "recorder.json";
 
 impl Admissions {
@@ -477,8 +449,6 @@ impl Admissions {
         serde_json::json!({ "loads": loads, "refused": refused })
     }
 
-    /// Admit a load: it is on disk before this returns, so a crash or an
-    /// unfinished session still publishes it, and nothing else.
     pub fn admit(
         &mut self,
         session_dir: &Path,
@@ -496,8 +466,6 @@ impl Admissions {
         Ok(())
     }
 
-    /// Note why a load was refused, for reporting. It is never published
-    /// either way; a failed write only loses the reason.
     pub fn refuse(
         &mut self,
         session_dir: &Path,
@@ -510,7 +478,6 @@ impl Admissions {
         write_json(&session_dir.join(ADMISSIONS_FILE), &self.to_json(target))
     }
 
-    /// A left-out load as reported: refused with its reason, or never admitted.
     fn omission(&self, campaign: &str, load: Option<i64>, hours: u64) -> Omission {
         Omission {
             campaign: campaign.to_owned(),
@@ -521,8 +488,6 @@ impl Admissions {
     }
 }
 
-/// Start a Battle Plan Recorder session's admission record, with no load admitted,
-/// then its marker. Call before the collector starts.
 pub fn begin_admissions(session_dir: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(session_dir.join("bin")).map_err(|error| failure(session_dir, error))?;
     write_json(
@@ -535,10 +500,6 @@ pub fn begin_admissions(session_dir: &Path, target: &Path) -> Result<()> {
     )
 }
 
-/// The loads a session admitted. `None`: not a Battle Plan Recorder session (the
-/// command line), so every load publishes as it always has. A Battle Plan Recorder
-/// session whose record is missing or unreadable refuses finalization, so
-/// nothing is published.
 pub fn session_admissions(session_dir: &Path) -> Result<Option<Admissions>> {
     if !session_dir.join("bin").join(ADMISSION_MARKER).is_file() {
         return Ok(None);
@@ -580,34 +541,24 @@ pub fn session_admissions(session_dir: &Path) -> Result<Option<Admissions>> {
     Ok(Some(admissions))
 }
 
-/// What one finalization published and left out.
 #[derive(Debug, Default)]
 pub struct Finalized {
     pub replays: Vec<PathBuf>,
     pub saved_campaigns: BTreeSet<String>,
     pub failed_campaigns: BTreeSet<String>,
-    /// Unsaved recordings written.
     pub unsaved: Vec<PathBuf>,
-    /// Campaigns that could not be published.
     pub errors: Vec<String>,
-    /// Loads a Battle Plan Recorder session left out, with their hours and why.
     pub omitted: Vec<Omission>,
-    /// Recordings saved under their old name because renaming failed.
     pub unrenamed: Vec<String>,
 }
 
-/// How a save names recordings.
 #[derive(Clone, Copy)]
 pub struct Naming<'a> {
-    /// The recording's own localisation; without it countries are named by tag.
     pub localisation: Option<&'a Localisation>,
-    /// The recorder settings that keep the names users chose.
     pub settings: &'a Path,
-    /// The country-name refusal of each actual save, including a successful name clearing it.
     pub report: Option<&'a (dyn Fn(Option<&str>) + Sync)>,
 }
 
-/// A session's failure witness, refusing a failed capture without one.
 fn session_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
     let witness = read_failure_witness(session_dir)?;
     if witness.is_none()
@@ -626,13 +577,10 @@ fn session_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
     Ok(witness)
 }
 
-/// What a session's save does with one of its campaigns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destination {
     Recording,
-    /// The unsaved recording, which the next session continues and Save publishes.
     Unsaved,
-    /// Left in the session folder as it is.
     Neither,
 }
 
@@ -657,7 +605,6 @@ fn revision_of(value: &Value) -> Option<Revision> {
     })
 }
 
-/// The capture writers' settings: the recorder's compression.
 fn block_settings() -> replay::columnar_file::Settings {
     RecorderSettings::load()
         .map(|settings| settings.compression)
@@ -665,7 +612,6 @@ fn block_settings() -> replay::columnar_file::Settings {
         .block_settings()
 }
 
-/// The name a save gives a recording of these contents.
 fn recording_stem(replay: &Replay, naming: Naming<'_>, multiplayer: bool) -> Result<String> {
     let _phase = replay::packing::Packing::phase(replay::packing::Phase::Publication);
     let name = crate::recording_name::recording_name(replay, naming.localisation, multiplayer)
@@ -676,7 +622,6 @@ fn recording_stem(replay: &Replay, naming: Naming<'_>, multiplayer: bool) -> Res
     Ok(name.stem())
 }
 
-/// Whether a save keeps the name of the recording it continues: its contents give it, or the user chose it.
 fn keeps_name(
     recording: &Path,
     stem: &str,
@@ -705,7 +650,6 @@ fn admitted_branch(
     admitted.is_none_or(|admitted| signal.is_none_or(|signal| admitted.contains(&signal)))
 }
 
-/// The branch tracker after the committed history, for a branch whose start records were torn.
 fn failure_tracker(
     campaign: &[u8; 36],
     segments: &[(u32, Recovery<Recovered>)],
@@ -722,7 +666,6 @@ fn failure_tracker(
     {
         return spool.tracker_for(found).map_err(|error| error.to_string());
     }
-    // Checkpoints moved the session's earlier hours from the spool into the saved recording.
     let recorded = held
         .map(|path| {
             held_recording(path)?
@@ -820,7 +763,6 @@ fn failure_tracker(
     Ok(tracker)
 }
 
-/// The load signal of `branch`'s last saved frame, read from its last block alone.
 fn held_signal(recording: &Replay, branch: BranchId) -> Result<Option<i64>> {
     let Some(block) = recording
         .index
@@ -858,14 +800,12 @@ fn held_signal(recording: &Replay, branch: BranchId) -> Result<Option<i64>> {
     Ok(signal)
 }
 
-/// A saved recording of the campaign: checkpoints may have moved committed records into it.
 #[derive(Clone, Copy)]
 struct Held<'a> {
     recording: &'a Replay,
     path: &'a Path,
 }
 
-/// `uncommitted` is the witnessed range only when it names this campaign.
 fn apply_failure_witness(
     segments: &mut [(u32, Recovery<Recovered>)],
     witness: &TerminalWitness,
@@ -900,10 +840,8 @@ fn apply_failure_witness(
     Ok(())
 }
 
-/// No spool segment holds this number: a failure-only segment has no file.
 const FAILURE_SEGMENT: u32 = u32::MAX;
 
-/// Append only lost hours a checkpoint does not already hold.
 fn failure_segment(
     held: Held<'_>,
     witness: &TerminalWitness,
@@ -921,7 +859,6 @@ fn failure_segment(
     else {
         return Ok(None);
     };
-    // An earlier save already added this failure: its outcome and every lost hour are recorded.
     let partial = ControlRecord::Partial {
         session: session.id,
         reason: ALLOCATION_GAP_REASON.into(),
@@ -983,7 +920,6 @@ fn failure_segment(
         return Ok(None);
     }
     let [(number, mut recovery)] = segment;
-    // A new branch follows the session directly: its context branch has no keyframe here.
     if matches!(inserted.first(), Some(Recovered::BranchStart(_))) {
         recovery.records.truncate(1);
     }
@@ -991,7 +927,6 @@ fn failure_segment(
     Ok(Some((number, recovery)))
 }
 
-/// The records a failure adds after the committed prefix, and whether it derives a branch.
 fn failure_records(
     segments: &[(u32, Recovery<Recovered>)],
     witness: &TerminalWitness,
@@ -1031,7 +966,6 @@ fn failure_observation(
             .and_then(|branch| branch.id.checked_add(1))
             == expected
     {
-        // A continuous clock with the next witnessed branch proves native invalidation.
         tracker.world_changed();
         observation = tracker
             .observe(None, hour, signal, &[])
@@ -1163,7 +1097,6 @@ fn failure_records_inner(
                 .any(|gap| gap.branch == current.id)
         });
     }
-    // The last committed hour of each branch, in the spool or saved by a checkpoint.
     let committed_hour = |branch: BranchId| {
         segments
             .iter()
@@ -1289,7 +1222,6 @@ fn failure_records_inner(
             .and_then(load_marker);
     }
     let mut tracker: Option<BranchTracker> = None;
-    // The admitted range precedes the attempt that failed: resolve it first.
     let mut range_start = None;
     let mut range_gap = None;
     if let Some(range) = uncommitted {
@@ -1352,7 +1284,6 @@ fn failure_records_inner(
         if committed_hour(range.branch).is_some_and(|hour| hour >= range.first_hour) {
             return Err("uncommitted range overlaps or precedes a committed frame".into());
         }
-        // Hours a committed gap already accounts for lead the range, never follow it.
         let gaps = recorded_gaps(Some(range.branch), Hour::MAX);
         while let Some(first) = first_hour
             && let Some(covering) = gaps
@@ -1477,7 +1408,6 @@ fn failure_records_inner(
         if let Some(expected) = witness.load_signal.and_then(load_marker)
             && current_signal != Some(expected)
         {
-            // A context record can commit before the new branch's first clock.
             let first_clock_failed = !current_observed
                 && current_signal.is_none()
                 && current_branch.as_ref().is_some_and(|branch| {
@@ -1555,7 +1485,6 @@ fn failure_records_inner(
         }
         partial_exists = true;
     }
-    // The range and the attempt on one branch become one gap when they touch.
     if range_gap.is_none() {
         range_start = None;
     }
@@ -1780,7 +1709,6 @@ fn failure_segment_ranges(
     Ok(Some(segment))
 }
 
-/// A recording read through its file, holding only its metadata.
 fn held_recording(path: &Path) -> Result<Replay> {
     Replay::open_newest(path).map_err(|error| failure(path, error))
 }
@@ -1836,8 +1764,6 @@ fn print_script_events(branch: BranchId, state: &replay_data::event_feed_rows::S
     }
 }
 
-/// Print one interval row's owner refusal markers; returns its delayed and
-/// decision refusal counts.
 fn print_owner_refusals(
     branch: BranchId,
     row: &replay_data::event_feed_rows::EventFeedHistoryRow,
@@ -1873,8 +1799,6 @@ fn print_owner_refusals(
     counts
 }
 
-/// How each capture the recording holds ended short of its collector finishing it, one line per
-/// capture stop in record order.
 fn stop_lines(replay: &Replay) -> Vec<String> {
     replay
         .stops
@@ -2070,7 +1994,6 @@ pub fn inspect(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Every recorded map event, and each family's intervals by coverage.
 fn print_map_events(path: &Path, replay: &Replay) -> Result<()> {
     use replay_data::{rows::MapEventFamily, rows::MapEventPayload, rows::TableId, rows::tables};
     let selected = [TableId::MapEvents];
@@ -2175,9 +2098,6 @@ fn print_map_events(path: &Path, replay: &Replay) -> Result<()> {
     Ok(())
 }
 
-/// `recorder inspect <replay> --characters <substring> --hour <h> --branch <id>`:
-/// the recorded Characters rows at that frame whose token or name contains
-/// the substring, with their template columns.
 pub fn inspect_characters(path: &Path, needle: &str, hour: Hour, branch: BranchId) -> Result<()> {
     let replay = held_recording(path)?;
     let frame = match replay
@@ -2200,9 +2120,6 @@ pub fn inspect_characters(path: &Path, needle: &str, hour: Hour, branch: BranchI
     Ok(())
 }
 
-/// One line per Characters row whose token or name contains `needle`, in id
-/// order. `template_tag` is shown with its literal from the frame's
-/// LexicalTokens when that table is complete and holds the token.
 fn character_lines(frame: &DecodedFrame, needle: &[u8]) -> Result<Vec<String>> {
     if needle.is_empty() {
         return Err("--characters needs a nonempty substring".into());
@@ -2330,7 +2247,6 @@ struct Issue {
     reason: String,
 }
 
-/// What became of a table in one recorded hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UpdateKind {
     Snapshot,
@@ -2341,11 +2257,9 @@ enum UpdateKind {
     NotRecorded,
 }
 
-/// How a recording's tables fared hour by hour, as `inspect` reports it.
 struct Summary {
     totals: Vec<u64>,
     table_times: [Vec<u64>; TABLE_COUNT],
-    /// Hours whose recording keeps which tables were read but not their times.
     untimed_hours: u64,
     states: [[u64; 5]; TABLE_COUNT],
     max_pool: u64,
@@ -2370,7 +2284,6 @@ impl Default for Summary {
 }
 
 impl Summary {
-    /// One recorded hour: what its facts did to each table, and the frame they built.
     fn observe(
         &mut self,
         recorded: &replay_frame::frame::RecordedFrame,
@@ -2466,7 +2379,6 @@ impl Summary {
         )?;
         for table in TableId::ALL {
             let i = table.index();
-            // Every hour counts each table but one its capture mode leaves out: no row, not zeros.
             if self.states[i].iter().all(|&count| count == 0) {
                 continue;
             }
@@ -2480,8 +2392,6 @@ impl Summary {
         Ok(())
     }
 
-    /// A table's read p50, p95 and maximum in milliseconds over the hours whose read times are
-    /// recorded; a recording keeping no table times reports them not recorded.
     fn read_times(&mut self, table: TableId) -> String {
         let times = &mut self.table_times[table.index()];
         if times.is_empty() {
@@ -2527,7 +2437,6 @@ impl Throughput {
     }
 }
 
-// A None marks a branch or gap boundary in a recovered spool's record stream.
 fn print_throughput<'a>(
     sessions: &[SessionStart],
     controls: impl Iterator<Item = Option<&'a ControlRecord>>,

@@ -1,6 +1,3 @@
-//! Scientist trait names and modifiers through the recorded content stack.
-//! Each token is read once; repeated tokens in the same or a later file
-//! are reported and skipped. Fields retain their individual reader rules.
 
 use crate::{
     ResolvedLayers,
@@ -22,18 +19,13 @@ use std::{
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScientistTrait {
     pub token: String,
-    /// Uses the token's text when this is empty.
     pub name: Option<String>,
-    /// Read by the shared modifier reader.
     pub modifiers: Modifiers,
-    /// Name-only consumers do not depend on modifier projection failures.
     pub name_refusal: Option<String>,
     pub refusal: Option<String>,
 }
 
 impl ScientistTrait {
-    /// Nonempty custom name, else the definition token's text.
-    /// The caller localizes this key without expanding it.
     pub fn display_key(&self) -> Result<&str, String> {
         if let Some(why) = &self.name_refusal {
             return Err(why.clone());
@@ -60,7 +52,6 @@ fn key(token: &Token) -> String {
 }
 
 impl ScientistTraits {
-    /// Lexer-token identity, folded when registered, with first definition.
     pub fn get(&self, token: &str) -> Result<Option<&ScientistTrait>, String> {
         let token = Token::c_str(token.as_bytes());
         if let Some(gap) = self.coverage.before_first(&key(&token)) {
@@ -101,17 +92,13 @@ fn parse(input: &[u8], names: &KeyNames, earlier: &BTreeSet<Token>) -> TraitFile
                         entries += 1;
                         Shape::Object(Node::Trait)
                     } else {
-                        // Duplicate error's block skip.
                         Shape::Skip
                     }
                 }
                 Node::Trait => match field.keyword().as_deref() {
-                    // Name and icon each read one string.
                     Some(b"name" | b"icon") => Shape::One,
-                    // Specialization reads token IDs to the closing token whatever the value.
                     Some(b"specialization") => Shape::List,
                     Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Modifier)),
-                    // Available reads a conjunction body.
                     Some(b"available") => Shape::Trigger,
                     _ => Shape::Skip,
                 },

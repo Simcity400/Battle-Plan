@@ -1,6 +1,3 @@
-//! Faction template display names through the recorded content stack.
-//! When the faction's own name is empty, its nullable template supplies
-//! bound localisation. The template token is not a name fallback.
 
 use crate::{
     ResolvedLayers, combat_tactics,
@@ -22,10 +19,7 @@ use std::{collections::BTreeMap, io};
 #[derive(Debug, Default)]
 pub struct Catalog {
     definitions: BTreeMap<Token, BoundLocalization>,
-    /// Each template's sprite name, the last definition's.
     icons: BTreeMap<Token, Vec<u8>>,
-    /// Definitions merge field by field, so the last file setting each
-    /// field decides it; one that leaves it unset decides nothing.
     names: Coverage,
     icon_sources: Coverage,
     pub warnings: Vec<String>,
@@ -39,7 +33,6 @@ impl Catalog {
         }
         Ok(self.definitions.get(&token))
     }
-    /// The template's sprite name; None when no definition sets one.
     pub fn icon(&self, token: &str) -> Result<Option<&[u8]>, String> {
         let token = Token::c_str(token.as_bytes());
         if let Some(why) = self.icon_sources.unknown(&identity(&token)) {
@@ -84,7 +77,6 @@ fn parse_top(bytes: &[u8], names: &KeyNames, top: Node) -> native::Read {
     let registry = |key: &[u8]| modifiers::registered(key, Some(names));
     let mut undecided = Vec::new();
     let mut triggers = combat_tactics::Shaper::new(Some(names));
-    // Lexer mode 0 reads through EOF. Repeated tokens reuse existing templates.
     native::read(
         bytes,
         native::Mode::KeepMark,
@@ -99,13 +91,12 @@ fn parse_top(bytes: &[u8], names: &KeyNames, top: Node) -> native::Read {
                 Some(b"icon" | b"can_leader_join_other_factions" | b"manifest") => Shape::One,
                 Some(b"color") => Shape::Color,
                 Some(b"visible" | b"available") => Shape::Trigger,
-                Some(b"default_rules") => Shape::List, // dynamic-token list read.
+                Some(b"default_rules") => Shape::List,
                 Some(b"goals") => Shape::Statements(Node::UniformGoal),
                 _ => Shape::Skip,
             },
             Node::UniformGoal if field.opens() => Shape::Object(Node::Goal),
             Node::UniformGoal => Shape::One,
-            // Goal consumption matters even when only the template name is projected.
             Node::Goal => match field.keyword().as_deref() {
                 Some(b"name" | b"description") => {
                     effect_keys::bound_localization_shape(field).map(|()| Node::Goal)
@@ -124,7 +115,6 @@ fn parse_top(bytes: &[u8], names: &KeyNames, top: Node) -> native::Read {
                 Some(b"ratio_progress") => Shape::ObjectOrSkip(Node::Ratio),
                 _ => Shape::Skip,
             },
-            // Ratio progress uses its field loop rather than a balanced tree.
             Node::Ratio => match field.keyword().as_deref() {
                 Some(b"min" | b"max" | b"total_amount" | b"completed_amount") => Shape::One,
                 Some(b"total_amount_custom_tooltip" | b"completed_amount_custom_tooltip") => {
@@ -146,8 +136,6 @@ fn parse_top(bytes: &[u8], names: &KeyNames, top: Node) -> native::Read {
                 Shape::One
             }
             Node::MinMax => Shape::Skip,
-            // Raw values and anonymous blocks are reported; assignments create
-            // and read progress-section objects.
             Node::Sections if field.key.text.is_empty() => Shape::Skip,
             Node::Sections => Shape::Object(Node::Section),
             Node::Section => match field.keyword().as_deref() {
@@ -197,7 +185,6 @@ fn apply(catalogue: &mut Catalog, items: &[Item]) {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let names = layers.key_names()?;
     let mut result = Catalog::default();
-    // Template definitions merge in file and layer order.
     for path in script_files::paths(layers, "common/factions/templates/", Some(".txt"))? {
         result.names.next_file();
         result.icon_sources.next_file();
@@ -398,7 +385,6 @@ mod tests {
             assert!(why.contains("b.txt"), "{why}");
             assert!(why.contains("synthetic_prefix"), "{why}");
         }
-        // A later name leaves the icon to the unread suffix; a later icon decides it.
         for token in ["kept", "uncertain", "absent"] {
             let why = db.icon(token).unwrap_err();
             assert!(why.contains("b.txt"), "{why}");

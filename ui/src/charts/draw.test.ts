@@ -57,6 +57,5 @@ test('a span of days is one day\'s label within a day, else its first and last d
   assert.equal(spanLabel(at(1941, 1, 3), at(1941, 1, 9, 24)), '3–9 Jan 1941');
   assert.equal(spanLabel(at(1941, 2, 28), at(1941, 3, 3)), '28 Feb – 3 Mar 1941');
   assert.equal(spanLabel(at(1940, 12, 30), at(1941, 1, 2)), '30 Dec 1940 – 2 Jan 1941');
-  // Hours with no calendar date keep their hour labels.
   assert.equal(spanLabel(5, 101), `${dayLabel(5)} – ${dayLabel(101)}`);
 });

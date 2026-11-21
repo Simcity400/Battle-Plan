@@ -1,4 +1,3 @@
-//! Frame encoding, reconstruction and branch continuity, without recording I/O.
 
 pub mod branches;
 pub mod cpu;

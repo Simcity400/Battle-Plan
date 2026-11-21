@@ -9,7 +9,6 @@ const MOTOR: usize = GROUP + corders_group::MOTORIZATION_LEVEL;
 const HEADER: usize = GROUP + carmy_group::MEMBER_DATA;
 const MASK: u32 = 0x1C0;
 
-// NavalJob's private capture state requires constructing this fixture via Default.
 #[allow(clippy::field_reassign_with_default)]
 fn request(count: i32) -> OrdersRequest {
     let mut payload = naval_history::NavalJob::default();
@@ -40,7 +39,6 @@ fn request(count: i32) -> OrdersRequest {
 }
 
 fn inspect_return(mut request: OrdersRequest, bytes: usize, spans: usize, count: i32) {
-    // The callback performs this same take before restoring the capture packs.
     let payload = request.group_source.take().unwrap();
     assert_eq!(payload.log.bytes.as_ptr() as usize, bytes);
     assert_eq!(payload.log.spans.as_ptr() as usize, spans);
@@ -55,7 +53,6 @@ fn inspect_return(mut request: OrdersRequest, bytes: usize, spans: usize, count:
     assert!(ordinary.copy(HEADER, &mut header));
     assert_eq!(&header[12..16], &count.to_le_bytes());
     drop(ordinary);
-    // No retained loan remains for Request Drop to retire after normal return.
     assert!(request.group_source.is_none());
 }
 
@@ -94,8 +91,6 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
             assert!(source.copy(FLAG, &mut flag));
             assert_eq!(flag, [1]);
             if mode == 2 {
-                // Unwinding must drop the borrowed reader before completing
-                // the request, so its ordinary decode can rebuild/reset it.
                 panic!("synthetic ChildFronts failure with an active OOB reader");
             }
             drop(source);
@@ -109,7 +104,6 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
         let payload = loan(pending.as_ref().unwrap());
         let bytes = payload.log.bytes.as_ptr() as usize;
         let spans = payload.log.spans.as_ptr() as usize;
-        // SAFETY: this executor reads only the request's owned Rust bytes.
         let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
         let completed = pool.finish(ticket).unwrap();
         if mode == 2 {
@@ -133,7 +127,6 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
     let payload = loan(pending.as_ref().unwrap());
     let bytes = payload.log.bytes.as_ptr() as usize;
     let spans = payload.log.spans.as_ptr() as usize;
-    // SAFETY: the request owns all inputs and shutdown cancels it before run.
     let ticket = unsafe { pool.submit(&mut pending) }.unwrap();
     pool.shutdown().unwrap();
     let completed = pool.finish(ticket).unwrap();
@@ -153,7 +146,6 @@ fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
     let payload = loan(pending.as_ref().unwrap());
     let bytes = payload.log.bytes.as_ptr() as usize;
     let spans = payload.log.spans.as_ptr() as usize;
-    // SAFETY: stopped admission retains the owned request without executing it.
     assert_eq!(
         unsafe { pool.submit(&mut pending) },
         Err(SubmitError::Stopped)
@@ -165,9 +157,6 @@ fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
     inspect_return(request, bytes, spans, 9);
 }
 
-/// A ChildFronts pass that demands no army-group operand allocates nothing,
-/// so a joining thread may run it while it is still queued; the role, which
-/// sizes the reserved slots, stays worker-only for a pass that does.
 #[test]
 fn a_child_fronts_pass_without_group_demand_is_not_worker_only() {
     let job = Job::ChildFronts(request(1));
@@ -181,9 +170,6 @@ fn a_child_fronts_pass_without_group_demand_is_not_worker_only() {
     inspect_job(job, bytes, spans, 1);
 }
 
-/// The readiness scheduler returns a stitched request to the existing parked
-/// cells while Naval is pending, then dispatches ChildFronts with the same
-/// loan. Neither the extra parking handoff nor failure may copy or lose it.
 #[test]
 fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_refusal() {
     for mode in 0..3 {
@@ -204,7 +190,6 @@ fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_r
         let bytes = payload.log.bytes.as_ptr() as usize;
         let spans = payload.log.spans.as_ptr() as usize;
         let mut job = Some(Job::OrdersStitch(orders));
-        // SAFETY: the batch drains every admitted request before this test ends.
         let stitch = unsafe { batch.submit(&mut job).unwrap() };
         batch.wait_ready(|batch| batch.is_complete(stitch).then_some(()));
         assert!(matches!(
@@ -221,7 +206,6 @@ fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_r
             base: 0,
             fronts: orders.plans.take_fronts(),
         }));
-        // SAFETY: as above. Fronts owns no order request or Naval loan.
         let fronts = unsafe { batch.submit(&mut front).unwrap() };
         let mut retained = Some(Job::ChildFronts(orders));
         let parked = batch.park(&mut retained).unwrap();
@@ -237,7 +221,6 @@ fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_r
         if mode == 2 {
             pool.shutdown().unwrap();
         }
-        // SAFETY: as above.
         let completion = match unsafe { batch.submit(&mut child) } {
             Ok(ticket) => {
                 batch.wait_ready(|batch| batch.is_complete(ticket).then_some(()));

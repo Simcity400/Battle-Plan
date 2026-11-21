@@ -1,4 +1,3 @@
-//! Bounded opt-in tail diagnostics; no allocation or locking in acquisition.
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 const LIMIT: usize = 512;
 const WIDTH: usize = 11;

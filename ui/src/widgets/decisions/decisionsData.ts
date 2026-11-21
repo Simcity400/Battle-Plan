@@ -10,16 +10,10 @@ import type { EventFeedItem, EventFeedKind, ScriptCurrency, ScriptEdge, ScriptOc
 
 export const NAME_UNAVAILABLE = 'Decision name not recorded';
 
-/** The name as plain words, every gap written out. */
 export const decisionText = (card: DecisionCard) => plainScripted(decisionName(card));
 
-/** Where a decision stands as the reads by the playback hour show it. `taken`:
- * selected with no timer, activation or end recorded. `unknown`: running when a
- * break in the recording began, so its end may not be recorded. */
 export type DecisionStatus = 'active' | 'taken' | 'completed' | 'cancelled' | 'timedOut' | 'removed' | 'unknown';
 
-/** The Status toggles and filter chips. Taken decisions are listed with Completed,
- * a decision whose end is unknown with Active. */
 export const STATUS_CHOICES = [
   { value: 'active', label: 'Active' },
   { value: 'completed', label: 'Completed', hint: 'Includes decisions taken at once.' },
@@ -46,7 +40,6 @@ const STATUS_LABELS: Record<DecisionStatus, string> = { active: 'Active', taken:
 export interface DecisionCard {
   occurrence: ScriptOccurrence;
   item: EventFeedItem | null;
-  /** The country that took it, and the target of a targeted decision. */
   country: string | null;
   target: string | null;
 }
@@ -56,35 +49,28 @@ export interface DecisionAt {
   hour: number;
   edges: ScriptEdge[];
   status: DecisionStatus;
-  /** Its selection or activation, when recorded. */
   start: ScriptEdge | null;
   end: ScriptEdge | null;
-  /** The latest recorded duration and the hour it counts from. */
   timer: { days: number; from: number } | null;
   pause: RecordingBreak | null;
 }
 
-/** The kinds that open a decision's row, and those continuing it. */
 export const OPENERS: readonly EventFeedKind[] = ['decisionSelected', 'decisionActivated'];
 export const CONTINUING: readonly EventFeedKind[] = ['decisionActivated', 'decisionDurationChanged', 'decisionRemovalEffect', 'decisionCancellationEffect',
   'decisionCompletionEffect', 'decisionTimeoutEffect', 'decisionCompleted', 'decisionCancelled', 'decisionTimedOut', 'decisionRemoved'];
 
-/** A page row's decision; null for a row the list does not show. */
 export function decisionCard(occurrence: ScriptOccurrence | null): DecisionCard | null {
   if (!occurrence) return null;
   const [country, target] = occurrence.edges[0].row.participants ?? [null, null];
   return { occurrence, item: occurrenceItem(occurrence), country, target: target !== country ? target : null };
 }
 
-/** A row of a `decisions` page, dated by the date selected; a row whose selection was not recorded is its own. */
 export function decisionRow(reply: LogReplyRow): LogRow<DecisionCard | null> {
   const card = decisionCard(occurrenceOf(reply));
   const first = card?.occurrence.edges[0].row;
   return { key: reply.key, id: card?.occurrence.id ?? reply.key, hour: first?.hour ?? reply.hour, revealedHour: first?.readHour ?? reply.hour, by: false, item: card };
 }
 
-/** A row at the hour shown, matched to the chosen countries. It stays at its selection date while its status changes in
- * place; `statuses` keeps only rows whose status is chosen. */
 export function decisionAt(row: LogRow<DecisionCard | null>, hour: number, breaks: readonly RecordingBreak[], statuses: ReadonlySet<string>,
   country: ((tag: string, hour: number) => boolean) | null): LogRow<DecisionAt> | null {
   const card = row.item;
@@ -111,14 +97,12 @@ export const statusLabel = (at: DecisionAt) => STATUS_LABELS[at.status];
 export const statusTone = (at: DecisionAt): 'accent' | 'positive' | 'neutral' =>
   at.status === 'active' ? 'accent' : at.status === 'completed' ? 'positive' : 'neutral';
 
-/** Whole days left on a running timer at the playback date; null without one or once it has run. */
 export function daysLeft(at: DecisionAt): number | null {
   if (at.status !== 'active' || !at.timer) return null;
   const left = Math.ceil((at.timer.from + at.timer.days * 24 - at.hour) / 24);
   return left > 0 ? left : null;
 }
 
-/** The muted line under the name: how it started, ran or ended. */
 export function lifecycleLine(at: DecisionAt): string {
   const started = at.start ? `${at.start.row.kind === 'decisionActivated' ? 'Activated' : 'Selected'} ${dayOf(at.start.row.hour)}` : null;
   const after = (verb: string) => {
@@ -143,8 +127,6 @@ export function lifecycleLine(at: DecisionAt): string {
 
 const UNITS: Record<ScriptCurrency, string> = { politicalPower: 'PP', commandPower: 'CP' };
 
-/** What the decision is proven to have cost, as Political power spending writes
- * amounts ("−50 PP"); null when no payment is proven. */
 export function costText(at: DecisionAt): string | null {
   const proven = at.edges.filter(edge => edge.costs !== null);
   if (!proven.length) return null;
@@ -162,8 +144,6 @@ export function decisionDescription(at: DecisionAt, name: (tag: string) => strin
   return `${country}, ${decisionText(at.card)}, ${statusLabel(at).toLowerCase()}, ${lifecycleLine(at)}, cost ${costText(at) ?? 'not recorded'}`;
 }
 
-/** Name, country, every recorded step with its date, timer, cost and the
- * effects that ran, with the authored description last. */
 export function decisionTooltip(at: DecisionAt, name: (tag: string) => string): TooltipContent[] {
   const { card } = at;
   const rows: TooltipRow[] = [{ label: 'Country', value: card.country === null ? 'Not identified' : name(card.country) }];
@@ -185,14 +165,11 @@ export function decisionTooltip(at: DecisionAt, name: (tag: string) => string): 
   return [{ title: decisionText(card), icon: card.item?.icon ?? undefined, rows }];
 }
 
-/** The menu's dates: when it was selected and when it ended. */
 export const decisionJumps = (at: DecisionAt): number[] => [...new Set([at.card.occurrence.edges[0].row.hour, at.end?.row.hour]
   .filter((hour): hour is number => hour !== undefined))];
 
-/** Rows that count as running for the header's "N active". */
 export const activeCount = (rows: readonly LogRow<DecisionAt>[]) => rows.filter(row => row.item.status === 'active').length;
 
-/** Names the content could not resolve, by Content identity, counted once per row. */
 export function decisionDiagnostics(cards: readonly DecisionCard[]): string[] {
   const names = new Map<string, number>();
   for (const card of cards) {

@@ -1,5 +1,3 @@
-//! Reader values only: typed Debug views sort hash containers before formatting.
-//! Ordered sequences retain their order; no parsing or sorting of Debug text.
 
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -151,8 +149,6 @@ impl Writer {
     }
 }
 
-// Literal path substitution across formatter chunks, with bounded buffering.
-// Hash ordering is handled by typed views, never by this text writer.
 struct Normalized<'a, W> {
     output: W,
     prefixes: &'a [String],

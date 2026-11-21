@@ -1,34 +1,3 @@
-//! Exact comparison of complete hourly tables with the encoder's baselines,
-//! after conversion and merging and before encoding.
-//!
-//! On its full path the encoder validates a complete hourly table, compares
-//! it with the baseline, encodes the differing rows and drops the rows it does
-//! not keep, all on the spool thread. This stage compares first, on the spool
-//! thread and its conversion helpers together, each taking the next listed
-//! table:
-//!
-//! - every row equal to its baseline position: `ComparedEqual`;
-//! - every key at its baseline position and at most three quarters of the
-//!   rows differing: `ComparedChanges` holding only the differing rows;
-//! - anything else (a membership change, denser changes, a baseline that
-//!   refuses row updates, an allocation failure): the complete table.
-//!
-//! The encoder writes the same bytes for each form
-//! ([`replay_frame::frame::FrameEncoder::prepare_bytes`]): a row equal to its
-//! baseline writes nothing on the full path, and a replacement writes exactly
-//! the change the full path's merge writes for that row. Its baseline then
-//! holds the current rows, as on the full path; only a differing row whose
-//! recorded fields are all equal (no codec writes such a row) could leave the
-//! two baselines apart, and only in what no frame records, so later frames
-//! stay equal too. The spool is therefore unchanged. Only complete tables with
-//! a baseline for exactly this hour are compared, so keyframes, new branches,
-//! gaps and restarted spools keep the full path; the encoder checks every
-//! token again. Unchanged converted rows are dropped by the thread that
-//! compared them.
-//!
-//! Replacing most rows costs the encoder more than its full path, so a table
-//! found densely changed is left complete for the next [`DENSE_RETRY_HOURS`]
-//! hours before it is compared again.
 
 use crate::spool_phases::{HELPER, Phase, SPOOL};
 use replay_data::{
@@ -42,8 +11,6 @@ use std::sync::{
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 
-/// The frame the encoder writes next: its branch and hour, and whether it
-/// restarts the spool, which makes every table a snapshot.
 #[derive(Clone, Copy)]
 pub(crate) struct Target {
     pub(crate) branch: BranchId,
@@ -51,23 +18,16 @@ pub(crate) struct Target {
     pub(crate) restarting: bool,
 }
 
-/// Hours a densely changed table stays complete before it is compared again.
 pub(crate) const DENSE_RETRY_HOURS: i64 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
-    /// Not a complete sampled table.
     Skipped,
-    /// No baseline for this hour.
     NoBaseline,
     Equal,
     Changes(usize),
-    /// Compared but left complete: a membership change, a refused row
-    /// update or an allocation failure.
     Kept,
-    /// More than three quarters of the rows differ; left complete.
     Dense,
-    /// Densely changed within the last `DENSE_RETRY_HOURS`; not compared.
     Deferred,
 }
 
@@ -75,18 +35,12 @@ type Compare = fn(&FrameEncoder, Target, &mut TableInput, &mut Vec<usize>, &Atom
 
 macro_rules! compared_tables {
     ($($table:ident),+ $(,)?) => {
-        /// Every recorded hourly table but Clock, whose row depends on the enclosing
-        /// hour, and MapEvents, whose one row is the interval ending at the
-        /// frame's hour and so never equals the preceding hour's baseline,
-        /// roughly in descending full-path cost so the threads finish
-        /// together. Other cadences reach the encoder as shared or carried rows.
         pub(crate) const TABLES: [TableId; [$(stringify!($table)),+].len()] = [$(TableId::$table),+];
         const COMPARE: [Compare; TABLES.len()] = [$(compare::<tables::$table>),+];
     };
 }
 
 compared_tables!(
-    // Owner-approved daily slot-12 training progress uses the ordinary carried-table path.
     VariantChanges,
     VariantBonusSnapshots,
     DesignCountryModifiers,
@@ -381,7 +335,6 @@ compared_tables!(
     WorldTension,
 );
 
-/// The hour each table was last found densely changed, and in tests each table's decisions.
 pub(crate) struct Counters {
     #[cfg(test)]
     tables: [[AtomicU64; 6]; TABLES.len()],
@@ -427,7 +380,6 @@ impl Counters {
         self.tables[index][counter].load(Ordering::Relaxed)
     }
 
-    /// (equal, changes, kept, dense, deferred) decisions of one listed table.
     pub(crate) fn decisions(&self, table: TableId) -> [u64; 5] {
         let index = TABLES.iter().position(|listed| *listed == table).unwrap();
         [EQUAL, CHANGES, KEPT, DENSE, DEFERRED].map(|counter| self.load(index, counter))
@@ -435,14 +387,11 @@ impl Counters {
 }
 
 fn vacant() -> TableInput {
-    // An empty reason allocates nothing; every slot is refilled before encoding.
     TableInput::Sampled(TableView::Unavailable {
         reason: String::new(),
     })
 }
 
-/// Compare the listed tables of `source` with `encoder`'s baselines, on this
-/// thread and, if present, the helper.
 pub(crate) fn compare_frame(
     encoder: &FrameEncoder,
     target: Target,
@@ -518,7 +467,6 @@ fn compare<T: TableSchema>(
     let TableInput::Sampled(TableView::Complete(rows)) = &*input else {
         return Outcome::Skipped;
     };
-    // A mistyped table reaches the encoder unchanged, which refuses it.
     let Some(current) = rows.rows::<T>() else {
         return Outcome::Skipped;
     };
@@ -537,7 +485,6 @@ fn compare<T: TableSchema>(
     let dense = current.len() / 4 * 3 + current.len() % 4 * 3 / 4;
     indices.clear();
     for (index, (row, previous)) in current.iter().zip(baseline).enumerate() {
-        // Equal rows have equal keys; a differing row must keep its key.
         if row == previous {
             continue;
         }
@@ -554,7 +501,6 @@ fn compare<T: TableSchema>(
         indices.push(index);
     }
     if indices.is_empty() {
-        // The full path writes Unchanged and keeps the baseline rows.
         *input = TableInput::ComparedEqual(token);
         return Outcome::Equal;
     }
@@ -604,11 +550,6 @@ mod tests {
             assert!(!seen[table.index()], "{table:?} listed twice");
             seen[table.index()] = true;
         }
-        // Retired tables are absent from current frames and never compared.
-        // Clock and MapEvents rows name the frame's own hour (MapEvents'
-        // interval ends at it), so neither can equal the preceding hour's
-        // baseline; comparing MapEvents would only ever find it dense.
-        // The collector never acquires a derived table.
         let current = replay_data::format::FormatVersion::CURRENT.version();
         let misplaced: Vec<(TableId, bool)> = TableId::ALL
             .into_iter()
@@ -622,7 +563,6 @@ mod tests {
                 (seen[table.index()] != expected).then_some((table, expected))
             })
             .collect();
-        // Each entry is a table and whether it should be listed.
         assert_eq!(misplaced, []);
     }
 
@@ -660,8 +600,6 @@ mod tests {
                     .collect(),
             ))
             .into();
-        // Sliced routes bypass the hourly comparison catalog, retaining every new column
-        // through the encoder's ordinary baseline beside the compared hourly tables.
         frame.tables[TableId::TradeRoutes.index()] = TableView::Complete(TableRows::TradeRoutes(
             states
                 .iter()
@@ -682,8 +620,6 @@ mod tests {
         frame
     }
 
-    /// Each hour's frame encodes to the bytes of the uncompared frame, and
-    /// only the differing rows reach the encoder.
     #[test]
     fn compared_frames_encode_the_bytes_of_complete_frames() {
         let pool = [
@@ -728,8 +664,6 @@ mod tests {
                 );
                 let states = &input.tables[TableId::States.index()];
                 match hour {
-                    // First hour, membership changes, dense changes, the hours
-                    // after them and a restart keep the full path.
                     0 | 5..=10 => assert!(
                         matches!(states, TableInput::Sampled(TableView::Complete(_))),
                         "{hour}"
@@ -765,8 +699,6 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
-            // Hours 1 and 4 equal, 2 and 3 changed, 5 and 6 kept for their
-            // membership, 7 dense (every row differs) and 8 and 9 deferred.
             assert_eq!(counters.decisions(TableId::States), [2, 2, 2, 1, 2]);
         }
     }
@@ -799,7 +731,6 @@ mod tests {
             );
             assert_eq!(input.tables[TableId::States.index()], other, "{index}");
         }
-        // Another branch has no baseline for this hour.
         let mut input = frame(1, rows.clone());
         compare_frame(
             &encoder,

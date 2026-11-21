@@ -1,9 +1,3 @@
-//! Lifetime-owned raw payload, observer store and index capacity accounting.
-//!
-//! Charges move with their allocations, so idle, callback-owned, queued,
-//! decoding and retired storage is counted once without ownership-event or
-//! per-read instrumentation. Constructors, growth and index preparation run
-//! off the game thread; dropping an empty fallback charge does no work.
 
 use std::mem::size_of;
 use std::sync::Mutex;
@@ -82,9 +76,6 @@ impl Tracker {
             .snapshot
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        // Count allocation owners at the same checkpoints as their vector
-        // charges. Moving or reusing a charge does not create another owner;
-        // an empty logical shape still counts while its capacity is retained.
         match (previous.index_vectors != 0, next.index_vectors != 0) {
             (false, true) => snapshot.allocated_index_owners += 1,
             (true, false) => snapshot.allocated_index_owners -= 1,
@@ -106,9 +97,6 @@ impl Tracker {
 
 static TRACKER: Tracker = Tracker::new();
 
-/// A non-cloneable accounting owner, not an allocation or a data wrapper.
-/// Moving it transfers the charge unchanged; replacement and destruction
-/// release only this owner's prior capacity. Keep it beside the owned vectors.
 #[derive(Debug)]
 pub struct Charge {
     tracker: &'static Tracker,
@@ -147,13 +135,11 @@ impl Drop for Charge {
     }
 }
 
-/// Element capacity, including unused reserved elements; not allocator rounding.
 pub fn vector_bytes<T>(values: &Vec<T>) -> u64 {
     values.capacity() as u64 * size_of::<T>() as u64
 }
 
 pub fn diagnostics() -> impl serde::Serialize {
-    // Copy the tracker counters while its lock is held.
     let snapshot = TRACKER.snapshot();
     let current = snapshot.current;
     crate::status::status!({

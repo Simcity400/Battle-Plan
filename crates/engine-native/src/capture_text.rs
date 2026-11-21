@@ -1,4 +1,3 @@
-//! Fixed callback strings and worker-owned exact native string bytes.
 use crate::{Memory, msvc_string, raw_country_observations as raw, read};
 
 pub trait Value: Default + Clone + std::fmt::Debug + PartialEq + Eq {
@@ -11,7 +10,6 @@ pub trait Value: Default + Clone + std::fmt::Debug + PartialEq + Eq {
         Ok(self.clone())
     }
     fn read(memory: &impl Memory, address: usize, prefetched: bool) -> Result<Self, &'static str>;
-    /// A value holding exactly `bytes`, copied out of memory earlier.
     fn from_image(bytes: &[u8]) -> Result<Self, &'static str>;
     fn read_prepared(&mut self, memory: &impl Memory, address: usize) -> Result<(), &'static str> {
         *self = Self::read(memory, address, false)?;
@@ -107,8 +105,6 @@ impl Owned {
         self.len = bytes.len();
         Ok(())
     }
-    /// Advisory sizing keeps the same read protocol and faults, but its
-    /// allocation failure must not stop actual capture admission.
     pub(crate) fn read_hint(
         memory: &impl Memory,
         address: usize,
@@ -175,8 +171,6 @@ impl Owned {
             return Err("string terminator unreadable or invalid");
         }
         let mut value = Self::default();
-        // String consumers use exact stored lengths. Grow only after successful
-        // payload chunks, preserving the original terminator gate.
         msvc_string::copy_with_policy::<TERMINAL>(
             memory,
             source,

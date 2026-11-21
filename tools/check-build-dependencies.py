@@ -85,8 +85,6 @@ def check(normal, all_targets):
             path = path_to(normal, name, {"replay"})
             if path:
                 failures.append(" -> ".join(path) + ": capture helpers must not pull in recording I/O")
-    # The map viewer's native GUI code reaches the dashboard only through the game-window
-    # crate, so editing the viewer rebuilds no other product.
     viewer, windows = "viewer-foundation", "dashboard-game-window"
     for name in sorted(normal):
         if name.startswith("dashboard") and name not in {windows, "dashboard"}:

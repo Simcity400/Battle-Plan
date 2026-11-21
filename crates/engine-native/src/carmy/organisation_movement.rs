@@ -1,8 +1,6 @@
-//! Exact organisation operands only where ordinary movement takes its penalty.
 use super::*;
 use engine_sites::Rva;
 
-/// The loaded low-organisation attack threshold, fixed5.
 pub const LOW_ORGANISATION_FOR_ATTACK_RVA: Rva = Rva(0x033e_0898);
 
 fn below_threshold(current: i64, maximum: i64, threshold: i64) -> Result<bool, &'static str> {
@@ -14,10 +12,6 @@ fn below_threshold(current: i64, maximum: i64, threshold: i64) -> Result<bool, &
     Ok(share < threshold)
 }
 
-/// Whether the first speed query or a later non-self edge reaches ordinary land speed, and how many
-/// unreadable route positions were seen before that proof. An unreadable edge
-/// never cancels a later readable proof. Sea-to-land invasion itineraries use
-/// their fixed landing speed instead of ordinary land speed.
 pub fn land_speed_demand(
     location: Result<(u32, u8), &'static str>,
     path: impl IntoIterator<Item = Result<(u32, u8), &'static str>>,
@@ -61,9 +55,6 @@ pub fn land_speed_demand(
     (failure.map_or(Ok(false), Err), refused)
 }
 
-/// Successful geography facts shared only inside this quiescent pass. A full
-/// memo takes the ordinary reads; native faults are never retained, so a
-/// transient failure cannot withhold another division's readable operands.
 pub(super) struct OrganisationMemo {
     identities: crate::carmy_leader::PassTable<Result<(u32, usize), &'static str>>,
     flags: crate::carmy_leader::PassTable<Result<u8, &'static str>>,
@@ -72,7 +63,6 @@ pub(super) struct OrganisationMemo {
 
 impl OrganisationMemo {
     pub(super) fn new(units: usize) -> std::io::Result<Self> {
-        // This storage only saves reads; failure must not make capture terminal.
         crate::allocation::advisory(|| {
             Ok(Self {
                 identities: crate::carmy_leader::PassTable::try_with_capacity(units)?,
@@ -100,9 +90,6 @@ impl OrganisationMemo {
         self.identities.allocated_bytes() + self.flags.allocated_bytes()
     }
 
-    /// Authenticate before applying the route's expected id, then demand its
-    /// terrain flags. Reuse the id already acquired for authentication, never
-    /// state/controller/region fields or source gaps.
     fn province(
         &mut self,
         memory: &impl Memory,
@@ -150,8 +137,6 @@ impl OrganisationMemo {
         Ok((id, flags))
     }
 
-    /// A route position authenticates its province once, rather than repeating
-    /// movement_route_province's authentication in the following branch read.
     fn route(
         &mut self,
         memory: &impl Memory,
@@ -191,10 +176,6 @@ impl OrganisationMemo {
 }
 
 impl StatusPacket {
-    /// Reuses the census's exact current organisation and the status pass's
-    /// certified maxima. Reads the live threshold once, and the destination's
-    /// war relation only for movers below it. A failed field stays independent
-    /// of the rest of DivisionStatus.
     pub fn capture_movement_organisation(
         &mut self,
         memory: &impl Memory,
@@ -236,7 +217,6 @@ impl StatusPacket {
                         )
                     }),
                 );
-                // Keep a proven pair available while counting independent route faults.
                 refused += route_refused.saturating_sub(u64::from(ordinary.is_err()));
                 if !ordinary? {
                     return Ok(None);
@@ -304,7 +284,6 @@ mod tests {
     #[test]
     fn movement_organisation_gate_preserves_subdisplay_values_and_native_threshold() {
         assert!(below_threshold(924_554, 3_640_000, 30_000).unwrap());
-        // Display rounding would put this mover below the threshold.
         assert!(!below_threshold(300_009, 1_000_009, 30_000).unwrap());
         assert!(below_threshold(300_000, 1_000_009, 30_000).unwrap());
         for sentinel in [i64::MIN, i64::MIN + 1, i64::MAX] {
@@ -348,8 +327,6 @@ mod tests {
             land_speed_demand(land(1), [Err("unproved")]),
             (Err("unproved"), 1)
         );
-        // A low-organisation pair is retained for the later ordinary edge,
-        // so neutral 7 km/h becomes 1.4 km/h at the zero-org factor.
         let (ordinary, _) = land_speed_demand(land(1), [sea(2), land(3), land(4)]);
         assert!(ordinary.unwrap() && below_threshold(0, 1_000_000, 30_000).unwrap());
         let speed = PreparedNormalSpeed {

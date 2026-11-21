@@ -1,5 +1,3 @@
-//! The naval layer's line: its sea regions' attributes against today's political part of the same
-//! hour (its `strategic_attributes` and the naval warning), and against itself composed anew.
 
 use super::Compared;
 use crate::{
@@ -39,14 +37,10 @@ fn differ(compared: &mut Compared, names: [&str; 2], ours: (&BTreeMap<u32, Attri
     }
 }
 
-/// Today's attributes come from its political part at the default mode and the layer's
-/// perspective; when that part is refused for another reason, from its naval read itself.
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = naval(layer);
     let hour = document.hour()?;
     let mut compared = Compared::default();
-    // The fill that carries these attributes is the political layer's, drawn at the default map
-    // mode alone: at another mode the layer declares nothing and today draws nothing either.
     if !layer.drawn() {
         compared.entries = 1;
         compared.notes = json!({"drawn": false});

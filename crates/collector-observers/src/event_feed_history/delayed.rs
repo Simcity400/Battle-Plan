@@ -1,4 +1,3 @@
-//! Native pointer certificates are acquisition-only. Replay uses compact IDs.
 use super::*;
 use engine_events::event_feed_sites::CountryIdentity;
 use engine_events::{event_feed_sites::provenance::World, script_event_registry as native};
@@ -10,24 +9,17 @@ pub(super) struct Slot {
     pub id: u32,
     pub country: u32,
 }
-/// One census owner, keyed by its canonical census slot.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Country {
     pub pointer: usize,
     pub id: u32,
-    /// Its baseline completed.
     pub ready: bool,
-    /// Its refusal marker is published for this loss epoch: a later refusal
-    /// emits nothing. A completed baseline, a native reset or a loss
-    /// re-arms it.
     pub refused: bool,
 }
 #[derive(Default)]
 pub(super) struct Index {
     slots: Vec<Slot>,
     pub(super) countries: Vec<Country>,
-    /// The world these labels belong to. An observation loss keeps it, so a
-    /// later timer of the same world never reuses an earlier timer's label.
     generation: Option<u64>,
     invalidated: bool,
     revoked: bool,
@@ -43,26 +35,21 @@ impl Index {
     pub fn capacity(&self) -> usize {
         (self.slots.len() / 2).max(self.countries.len())
     }
-    /// Whether `insert` would find the pointer index full; `prepare` must
-    /// grow it first.
     fn needs_room(&self) -> bool {
         self.live >= self.slots.len() / 2
     }
     pub fn covers(&self, other: &Self) -> bool {
         self.slots.len() >= other.slots.len() && self.countries.len() >= other.countries.len()
     }
-    /// Every certificate retires at the next boundary; the labels do not.
     pub fn invalidate(&mut self) {
         self.invalidated = true;
     }
     pub fn revoke_retained(&mut self) {
-        // Revocation retires certificates off-thread and keeps duplicate refusals suppressed.
         self.revoked = true;
     }
     pub fn reset(&mut self, generation: u64) {
         let world = self.generation != Some(generation);
         if world || self.invalidated || self.revoked {
-            // The next census visit recovers what this retires.
             super::recovery_needed();
         }
         if world || self.invalidated {
@@ -78,7 +65,6 @@ impl Index {
             }
             self.live = 0;
         }
-        // Only a new world restarts its labels.
         if world {
             self.generation = Some(generation);
             self.next = 1;
@@ -156,8 +142,6 @@ impl Index {
             return Ok(self.slots[index].id);
         }
         self.demand = self.demand.max(self.live.saturating_add(1));
-        // Prepared storage maintains an empty suffix for every probe chain.
-        // Bursts request growth off-thread rather than filling the table.
         if self.live >= self.slots.len() / 2 {
             return Err("delayed-event pointer index needs prepared storage");
         }
@@ -176,9 +160,6 @@ impl Index {
     fn remove(&mut self, pointer: usize) -> Option<Slot> {
         let index = self.search(pointer).0?;
         let slot = self.slots[index];
-        // Close only this probe chain. Tombstones would accumulate across a
-        // campaign and make later callbacks search historical capacity even
-        // when every timer has retired. No census or maintenance scan is needed.
         let mask = self.slots.len() - 1;
         let mut hole = index;
         let mut next = (hole + 1) & mask;
@@ -275,8 +256,6 @@ impl Store {
         };
         self.script_known(memory, base, generation, hour, fact)
     }
-    /// A native delayed-event retirement. `pass` is the authenticated
-    /// iteration owner and the world its pass was anchored in.
     #[allow(
         clippy::too_many_arguments,
         reason = "Retirement forwards the native iteration facts with the existing world and publication certificate."
@@ -293,16 +272,12 @@ impl Store {
     ) -> Result<(), &'static str> {
         self.observation(generation)?;
         let Some(slot) = self.delayed.remove(pointer) else {
-            // A destroy outside a pass may free any object.
             let Some((owner, anchored)) = pass else {
                 return Ok(());
             };
             if anchored != generation {
                 return Err(UNCERTIFIED_RETIREMENT);
             }
-            // The pass owner's own queue never had this timer certified, so
-            // only that owner's retained queue is unknown. Its census slot
-            // comes from the same resolution; no native queue is read.
             let (record, identity) = world.country_record(owner)?;
             let slot = record.canonical_slot as usize;
             let entry = self.delayed.countries.get_mut(slot);
@@ -312,7 +287,6 @@ impl Store {
                         return Err(CERTIFIED_RETIREMENT_MISSING);
                     }
                 }
-                // Not yet visited: the next census still attempts it.
                 Some(entry) => {
                     *entry = Country {
                         pointer: owner,
@@ -320,8 +294,6 @@ impl Store {
                         ..Country::default()
                     };
                 }
-                // Beyond the prepared census table, which only its census
-                // visit grows: refused without a record.
                 None => {}
             }
             let hour = world.hour()?;
@@ -351,11 +323,6 @@ impl Store {
         }
         self.script_known(memory, base, generation, world.hour()?, fact)
     }
-    /// Refuse one owner's retained delayed queue: its marker carries the
-    /// reason, and every other owner, registry and the interval keep their
-    /// certificates. Once per owner and
-    /// loss epoch: a repeat is only counted. `slot`'s entry, when it is this
-    /// owner's, records the refusal.
     #[allow(
         clippy::too_many_arguments,
         reason = "The refused owner, its census slot and the reason travel with the publication operands."
@@ -394,7 +361,6 @@ impl Store {
         marker.target = owner;
         self.script_text(memory, base, generation, hour, marker, reason)
     }
-    /// Retry uncertified owners at each census boundary.
     pub(crate) fn recover_delayed(
         &mut self,
         memory: &impl Memory,
@@ -417,12 +383,9 @@ impl Store {
         if seen.is_some_and(|seen| seen.ready) {
             return;
         }
-        // A census slot past the prepared table grows it; only a failed
-        // allocation leaves the slot unrecorded.
         let recorded = slot < self.delayed.countries.len()
             || self.prepare_delayed(slot.saturating_add(1)).is_ok();
         if recorded {
-            // Keep a repeated refusal suppressed until a baseline succeeds.
             self.delayed.countries[slot] = Country {
                 pointer: country.pointer,
                 id: country.id,
@@ -430,8 +393,6 @@ impl Store {
                 refused: seen.is_some_and(|seen| seen.refused),
             };
         }
-        // Country's pointer/id/vtable came from this existing census. Read
-        // only its surrender target; no second traversal.
         let identity = || {
             let instance = country
                 .pointer
@@ -446,12 +407,10 @@ impl Store {
         };
         let mut named = None;
         let result = self.owner_scope(super::OwnerRegistry::Delayed, |store| {
-            // The sample's cut precedes even the surrender target.
             let cut = store.sample()?;
             let owner = identity()?;
             named = Some(owner);
             if !recorded {
-                // Raise the census table's demand; retried at the next visit.
                 store.delayed.demand = store.delayed.demand.max(slot.saturating_add(1));
                 return Err("delayed-event census table allocation failed");
             }
@@ -470,9 +429,6 @@ impl Store {
         if self.preparing_owner {
             return;
         }
-        // A sample crossed before it read the surrender target still refuses
-        // its owner by name, as the decision half does: the word is read
-        // after the sample and certifies nothing.
         if named.is_none() && refusal.retry {
             named = identity().ok();
         }
@@ -489,15 +445,12 @@ impl Store {
                     !refusal.counted,
                 );
             }
-            // Crossed, and its surrender target unreadable: retried, unnamed.
             None if refusal.retry => {}
-            // A refusal must name its owner.
             None => {
                 self.reject(refusal.reason);
             }
         }
         if refusal.retry {
-            // Even a repeated refusal keeps the next walk coming.
             super::recovery_needed();
         }
     }
@@ -519,7 +472,6 @@ impl Store {
         if self.registry_state != Some(state) {
             return Err("delayed-event census world certificate differs");
         }
-        // Every queue read the certificate rests on follows `cut`.
         let array = native::delayed_array(memory, country.pointer)?;
         if array.count == 0 {
             Self::certifies(cut)?;
@@ -556,7 +508,6 @@ impl Store {
                 *country = Country::default();
             }
         }
-        // A native reset gives the owner a new queue to baseline.
         super::recovery_needed();
     }
     pub(super) fn prepared_delayed_demand(
@@ -721,28 +672,21 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(index.insert(0x1000, owner.id).unwrap(), 1);
             index.countries[..2].copy_from_slice(&[certified, attempted]);
-            // An observation overlap retires every certificate. The prepared
-            // handoff before the next boundary must keep that distinction.
             index.invalidate();
             index.install(&mut spare);
             index.reset(1);
             assert_eq!(index.live, 0);
             assert!(index.search(0x1000).0.is_none());
             assert!(index.countries.iter().all(|country| country.pointer == 0));
-            // The game may free the first timer unobserved and reuse its
-            // address for another one: that timer must get a new label.
             assert_eq!(index.insert(0x1000, owner.id).unwrap(), 2);
             assert_eq!(index.insert(0x2000, owner.id).unwrap(), 3);
-            // A boundary without a loss carries the certificates.
             index.reset(1);
             assert_eq!(index.insert(0x1000, owner.id).unwrap(), 2);
-            // Revocation keeps the existing refusal marker and compact label sequence.
             index.countries[..2].copy_from_slice(&[certified, attempted]);
             index.revoke_retained();
             index.reset(1);
             assert_eq!(index.countries[0].pointer, 0);
             assert_eq!(index.countries[1].pointer, attempted.pointer);
-            // A revocation is no new loss epoch for the refused attempt.
             assert!(!index.countries[1].ready && index.countries[1].refused);
             assert_eq!(index.insert(0x2000, owner.id).unwrap(), 4);
             index.reset(2);

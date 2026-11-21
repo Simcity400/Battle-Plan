@@ -1,14 +1,9 @@
-//! Sum mapped modifiers in authored order; the warning displays the
-//! complement. Counterplay uses slot 3, skips slot 6, and uses the smaller
-//! output endpoint.
 
 use installed_content_localisation::localisation::Argument as Arg;
 use installed_content_localisation::localisation::Localisation;
 use installed_content_raids::{raids::tooltips::Formula, raids::tooltips::Modifier};
 use viewer_foundation::tooltip_text::{ensure_newlines, localise};
 
-/// Use two distinct truncating divisions, then clamp endpoints. Combining
-/// the divisions changes the last decimal places.
 pub fn mapped(m: &Modifier, raw: i64) -> Result<i64, String> {
     let denominator = m.reference.wrapping_sub(m.start_reference);
     let numerator = raw
@@ -89,8 +84,6 @@ pub fn evaluate(
 }
 
 fn effect(loc: &Localisation, value: i64, thresholds: [i64; 2]) -> Result<String, String> {
-    // Thresholds are percentage points; pass the original fixed5 fraction
-    // as the argument, separate from the scaled comparison operand.
     let percent = value.wrapping_mul(10_000_000) / 100_000;
     let key = if percent < thresholds[0] {
         "RAID_SUCCESS_MODIFIER_VALUE_BAD"
@@ -99,7 +92,6 @@ fn effect(loc: &Localisation, value: i64, thresholds: [i64; 2]) -> Result<String
     } else {
         "RAID_SUCCESS_MODIFIER_VALUE_GOOD"
     };
-    // Bind VAL including its trailing NUL.
     localise(loc, key, &[("VAL", Arg::Fixed5(value))])
 }
 
@@ -120,7 +112,6 @@ fn counterplay_text(
         }
     };
     let key = choose("_counterplay", "_improvement");
-    // Log a missing improvement key and return empty text.
     let mut out = if loc.get(&key).is_some() {
         localise(loc, &key, &[])?
     } else {
@@ -129,7 +120,6 @@ fn counterplay_text(
     let negative = |value: i64| value.wrapping_mul(-100_000) / 100_000;
     let maximum = negative(m.weight.min(m.start_weight));
     let value = negative(value);
-    // Use the raw endpoint belonging to the smaller mapped value.
     let endpoint = if m.weight <= m.start_weight {
         m.reference
     } else {
@@ -147,7 +137,6 @@ fn counterplay_text(
     };
     let value = effect(loc, value, thresholds)?;
     let maximum = effect(loc, maximum, thresholds)?;
-    // Bind VALUE (the source key uses VAL), MAX and SOURCE.
     let mut args = vec![("VALUE", Arg::Text(&value)), ("MAX", Arg::Text(&maximum))];
     let key = if source.is_empty() {
         "tooltip_raid_modifier_effect_improvement_no_source"
@@ -185,7 +174,7 @@ mod tests {
         assert_eq!(mapped(&m, 50_000), Ok(5_000));
         assert_eq!(mapped(&m, 100_001), Ok(30_000));
         m.reference = 30_000;
-        assert_eq!(mapped(&m, 1), Ok(-20_000)); // first division truncates to zero.
+        assert_eq!(mapped(&m, 1), Ok(-20_000));
         m.reference = 0;
         assert_eq!(mapped(&m, 1), Ok(30_000));
         m.reference = -100_000;

@@ -1,8 +1,3 @@
-//! PartyLeaders rows carried between hours per country
-//! ([`super::LeaderStore`], [`crate::party_leader_changes`]): quiet hours read
-//! no party, leader or character and publish the same rows; a hooked party
-//! or character write re-reads only its country; an invalidation re-reads
-//! every country.
 use super::*;
 use crate::party_leader_changes::{Counts, Pair, Watches};
 use engine_native::{
@@ -11,8 +6,6 @@ use engine_native::{
 };
 use std::cell::RefCell;
 
-/// Each country's objects lie in its own 0x2000-byte region: the country at its own region, its
-/// status after it and its parties, leaders and characters above both.
 const REGION: usize = 0x2000;
 const COUNTRIES: usize = 2;
 
@@ -20,14 +13,11 @@ fn word(bytes: &mut [u8], at: usize, value: u64) {
     bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-/// The party, leader and character of country `index`.
 fn objects(index: usize) -> (usize, usize, usize) {
     let at = index * REGION;
     (at + 0x1500, at + 0x1800, at + 0x1a00)
 }
 
-/// Each country: one party (ideology 7) whose one leader (id 12) has a
-/// character (id 91 + index) listing it under role key -7.
 fn world() -> Vec<u8> {
     let mut bytes = vec![0_u8; COUNTRIES * REGION];
     for index in 0..COUNTRIES {
@@ -100,7 +90,6 @@ fn world() -> Vec<u8> {
     bytes
 }
 
-/// Every guarded call's first address.
 struct Calls<'a> {
     bytes: &'a [u8],
     calls: RefCell<Vec<usize>>,
@@ -119,7 +108,6 @@ impl Memory for Calls<'_> {
 struct Hour {
     rows: Vec<LeaderRow>,
     counts: Counts,
-    /// Reads of any party, leader, character or leader map.
     detail_reads: usize,
 }
 
@@ -215,7 +203,6 @@ fn a_hooked_party_or_character_write_rereads_only_its_country() {
     let domains = Domains::new();
     let mut store = LeaderStore::new();
     first_hour(&bytes, &mut store, &domains);
-    // A leader replaced in country 2's party: the detour names the party.
     let (party, leader, _) = objects(1);
     let notification = domains.parties.notify(party, 1);
     word(&mut bytes, leader + ccountry_leader::LEADER_ID, 13);
@@ -224,7 +211,6 @@ fn a_hooked_party_or_character_write_rereads_only_its_country() {
     let changed = hour(&bytes, &mut store, &domains);
     assert_eq!((changed.counts.read, changed.counts.reused), (1, 1));
     assert_eq!(changed.rows[1].leader_id, 13);
-    // A role-map write on country 1's leader's character.
     domains.boundary(false);
     let (_, _, character) = objects(0);
     let notification = domains.characters.notify(Some(character), 2);

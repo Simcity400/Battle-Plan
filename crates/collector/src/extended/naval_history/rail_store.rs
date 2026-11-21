@@ -1,32 +1,3 @@
-//! RailCooldowns rows with their building and selection inputs, indexed
-//! levels and RailEdges rows held between hours per batch of
-//! [`PROVINCE_BATCH`] rail slots ([`crate::rail_changes`]).
-//!
-//! Each hour first takes the rail domain's marked provinces
-//! ([`crate::dirty_set::DirtySet::take`]) and reads the manager's cooldown
-//! list. A batch is published from the held outputs of its last read,
-//! without reading any of its slots, provinces, infos or buildings, only
-//! when all of these hold: the take returned the epoch of the held complete
-//! walk; no marked province lies in the batch; the manager, rail table and
-//! province table headers are those of the held walk; and the batch's last
-//! read held every info it found. The daily countdown marks [`COUNTDOWN`]:
-//! every province on the held list and on this hour's list (duplicates
-//! included) is then marked, since the countdown writes the info of each
-//! occurrence. Outside
-//! a countdown the two lists may differ only in marked provinces; any other
-//! difference is an unobserved write.
-//!
-//! Every other batch is read: each info's identity, cooldown and pair
-//! header are gathered, and an unmarked info whose gathered location is
-//! that of its held read is carried without reading its pairs, levels or
-//! building. An unmarked info that changed, or that a whole held batch had
-//! and this read did not find, is an unobserved write: the rest of the walk
-//! reads afresh. A read batch replaces its held outputs.
-//!
-//! The store follows the Late job's loan. A walk that does not complete, a
-//! refused take or a failed hold keeps nothing for the next hour, which
-//! then reads every batch. Allocation is advisory: an info whose outputs
-//! cannot be held leaves its batch to be read next hour.
 use crate::rail_changes::{COUNTDOWN, Changes, Counts};
 use engine_allocation as allocation;
 use engine_railways::{
@@ -38,7 +9,6 @@ use engine_railways::{
 
 const BATCH: u32 = PROVINCE_BATCH as u32;
 
-/// `row` with its selected level span starting at `first`.
 fn rebased(mut row: RailwayBuildingRow, first: usize) -> RailwayBuildingRow {
     if let Some(selection) = row.selection.as_mut()
         && let Ok(span) = selection.levels.as_mut()
@@ -48,25 +18,19 @@ fn rebased(mut row: RailwayBuildingRow, first: usize) -> RailwayBuildingRow {
     row
 }
 
-/// One batch's held outputs, in slot order.
 #[derive(Default)]
 struct Batch {
-    /// The batch's last read held every info it found.
     whole: bool,
-    /// Some info of the batch being read was not planned.
     unplanned: bool,
     locations: Vec<RailLocation>,
     cooldowns: Vec<info::Row>,
-    /// Each info's end in `edges`.
     edge_ends: Vec<usize>,
     edges: Vec<rail_neighbor::Row>,
-    /// Each selected level span starts within `levels`.
     buildings: Vec<RailwayBuildingRow>,
     levels: Vec<i32>,
 }
 
 impl Batch {
-    /// Empty and whole, ready to hold a read.
     fn reset(&mut self) {
         self.whole = true;
         self.unplanned = false;
@@ -78,7 +42,6 @@ impl Batch {
         self.levels.clear();
     }
 
-    /// Holds nothing that certifies anything.
     fn forget(&mut self) {
         self.reset();
         self.whole = false;
@@ -111,9 +74,6 @@ impl Batch {
         }
     }
 
-    /// Holds one info's outputs after those already held; `false` when the
-    /// storage could not grow or the info does not follow them in slot
-    /// order, which only withholds the batch's certificate.
     fn hold(&mut self, location: RailLocation, outputs: &InfoOutputs<'_>) -> bool {
         if self
             .locations
@@ -167,47 +127,33 @@ impl Batch {
     }
 }
 
-/// One planned info of the batch being read: its location and, when it may
-/// be carried, its index in the held batch.
 #[derive(Clone, Copy)]
 struct Plan {
     location: RailLocation,
     held: Option<usize>,
 }
 
-/// Outputs of the latest complete walk per batch, and the walk being made.
 #[derive(Default)]
 pub(crate) struct RailStore {
-    /// The take epoch of the held walk; `None` holds nothing.
     epoch: Option<u64>,
     header: Option<RailHeader>,
-    /// The cooldown list read with the held walk, sorted.
     list: Vec<u32>,
     listed: bool,
-    /// Indexed by batch.
     batches: Vec<Batch>,
 
-    // The walk being made.
     take: Option<u64>,
     tables: Option<RailHeader>,
-    /// This hour's cooldown list, sorted.
     list_now: Vec<u32>,
     listed_now: bool,
-    /// Provinces marked this hour, sorted.
     marked: Vec<u32>,
-    /// Held batches may be carried.
     observing: bool,
-    /// A read batch could not be held: keep nothing.
     lost: bool,
-    /// The batch being read and its planned infos.
     batch: usize,
     scratch: Batch,
     plans: Vec<Plan>,
     counts: Counts,
 
-    /// Allocated bytes as of the last finish, for the game thread.
     bytes: usize,
-    /// Set on the game thread; the next walk drops every held output.
     forgotten: bool,
 }
 
@@ -216,13 +162,10 @@ impl RailStore {
         Self::default()
     }
 
-    /// Nothing held certifies anything: the next walk reads afresh.
-    /// Allocation-free for the game thread.
     pub(crate) fn forget(&mut self) {
         self.forgotten = true;
     }
 
-    /// As of the last finish, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
     }
@@ -255,14 +198,11 @@ impl RailStore {
         self.marked.binary_search(&province).is_ok()
     }
 
-    /// An unmarked info or list changed: a write no hook saw.
     fn unmarked(&mut self) {
         self.observing = false;
     }
 }
 
-/// Whether `held` and `now` (sorted, duplicates kept) list each province
-/// equally often, but for marked ones.
 fn lists_agree(held: &[u32], now: &[u32], marked: &[u32]) -> bool {
     let (mut held, mut now) = (held, now);
     loop {
@@ -282,15 +222,11 @@ fn lists_agree(held: &[u32], now: &[u32], marked: &[u32]) -> bool {
     }
 }
 
-/// One walk's view of the store and the observation that certifies reuse.
 pub(crate) struct RailReuse<'a> {
     store: &'a mut RailStore,
 }
 
 impl<'a> RailReuse<'a> {
-    /// Takes the hour's marks (the domain's single consumer) and reads the
-    /// manager's cooldown list with `read_list`, before the walk reads any
-    /// slot.
     pub(crate) fn begin(
         store: &'a mut RailStore,
         changes: &dyn Changes,
@@ -305,7 +241,6 @@ impl<'a> RailReuse<'a> {
         store.batch = 0;
         store.scratch.reset();
         store.plans.clear();
-        // Room for one batch's plans, so planning never allocates.
         let _ = allocation::advisory(|| allocation::reserve(&mut store.plans, PROVINCE_BATCH));
         store.marked.clear();
         let (mut countdown, mut lost) = (false, false);
@@ -337,10 +272,6 @@ impl<'a> RailReuse<'a> {
             && store.listed_now
             && !lost;
         if store.observing && countdown {
-            // The countdown wrote the info of every occurrence on the list
-            // it walked, which is the held list with this hour's marked
-            // pushes; those it kept are on this hour's list. A negative id
-            // names no slot the walk can bound.
             let RailStore {
                 list,
                 list_now,
@@ -367,13 +298,9 @@ impl<'a> RailReuse<'a> {
         Self { store }
     }
 
-    /// Ends the walk: `complete` when the cooldown, edge and building tables
-    /// were each read or carried whole.
     pub(crate) fn finish(self, complete: bool) {
         let store = self.store;
         let slots = store.tables.map(|header| header.rail.count as usize);
-        // A completed walk sizes the bitmap even when nothing certifies it:
-        // the first bitmap is offered only once a walk has counted the slots.
         let walked = complete && slots.is_some();
         let held = walked && !store.lost && store.take.is_some();
         if held {
@@ -442,13 +369,10 @@ impl RailCarry for RailReuse<'_> {
         store.counts.carried_batches += 1;
     }
 
-    /// Plans an info of a batch being read, after its identity, cooldown and
-    /// pair header were gathered and before any of its outputs are read.
     fn plan(&mut self, location: &RailLocation) -> (usize, bool) {
         let store = &mut *self.store;
         let token = store.plans.len();
         if token == store.plans.capacity() {
-            // Unplanned: read afresh and held for nothing.
             store.scratch.whole = false;
             store.scratch.unplanned = true;
             return (usize::MAX, false);
@@ -465,7 +389,6 @@ impl RailCarry for RailReuse<'_> {
                 {
                     held = Some(index)
                 }
-                // Changed, or new where the held read found every info.
                 Some((Some(_), _)) | Some((None, true)) => store.unmarked(),
                 _ => {}
             }
@@ -522,8 +445,6 @@ impl RailCarry for RailReuse<'_> {
     fn read_batch(&mut self) {
         let store = &mut *self.store;
         store.counts.read_batches += 1;
-        // An unmarked info a whole held batch had and this read did not
-        // find: a destruction no hook saw.
         let mut vanished = false;
         if store.observing
             && !store.scratch.unplanned

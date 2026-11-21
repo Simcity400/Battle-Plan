@@ -1,5 +1,3 @@
-//! Ambient actor admission, placement and lifetime. The frame's library also
-//! carries the transient province effect entities ([`super::strike_effects`]).
 use installed_content_core::{ResolvedLayers, ambient};
 use installed_content_image::IndexedImage;
 use installed_content_image::native::Decode;
@@ -19,7 +17,6 @@ pub struct FrameAssets {
     pub library: ModelLibrary,
     pub field: ModelField,
     pub presentation: Presentation,
-    /// The nuclear impact effect entities in `library`.
     pub strikes: strike_effects::Assets,
 }
 
@@ -43,7 +40,6 @@ struct Active {
     last: Option<f32>,
 }
 
-///Presentation starts at observation; no recorded native process clock or RNG.
 #[derive(Clone, Default)]
 pub struct Presentation {
     placements: Vec<Placement>,
@@ -142,7 +138,6 @@ impl FrameAssets {
                 names.push(kind.entity.clone());
             }
         }
-        // The province effect entities share the frame's library and pass.
         names.extend(
             strike_effects::Assets::names()
                 .into_iter()
@@ -207,7 +202,6 @@ impl FrameAssets {
 }
 
 fn instance(kind: &ambient::AmbientObjectType, object: &ambient::AmbientObject) -> ModelInstance {
-    // Convert degrees by dividing by 360 then multiplying by TAU; rotate around negative Y.
     ModelInstance {
         position: object.position,
         rotation: object.rotation[1] / 360. * f32::from_bits(0x40c90fdb),
@@ -221,8 +215,6 @@ fn instance(kind: &ambient::AmbientObjectType, object: &ambient::AmbientObject) 
     }
 }
 
-/// The game: 4x4 quarter-map boxes, extended one quarter outside each outer edge.
-/// The game assigns the first inclusive box containing the authored position.
 fn buckets([width, height]: [u32; 2]) -> Vec<[[f32; 3]; 2]> {
     let dx = (width / 4) as f32;
     let dz = (height / 4) as f32;
@@ -256,7 +248,6 @@ fn buckets([width, height]: [u32; 2]) -> Vec<[[f32; 3]; 2]> {
 fn contains([low, high]: [[f32; 3]; 2], p: [f32; 3]) -> bool {
     (0..3).all(|i| low[i] <= p[i] && p[i] <= high[i])
 }
-/// Sea-clamped nearest height sample, bottom-up and without wrapping.
 fn height(image: &IndexedImage, [x, _, z]: [f32; 3]) -> f32 {
     let x = ((x + 0.5) as i32).clamp(0, image.width as i32 - 1) as usize;
     let z = ((z + 0.5) as i32).clamp(0, image.height as i32 - 1) as usize;
@@ -271,7 +262,6 @@ impl Presentation {
         size: [u32; 2],
         time: f32,
     ) -> Vec<(usize, ModelInstance)> {
-        // The bucket's own box against each active map view's expanded sides.
         let admission = Admission::new(camera, size);
         let visible: Vec<_> = self
             .bounds
@@ -289,7 +279,6 @@ impl Presentation {
             self.last = None;
         }
         self.last = Some(time);
-        // The game visits the sixteen bucket banks, then the always-queued list.
         for bucket in (0..self.bounds.len())
             .map(Some)
             .chain(std::iter::once(None))
@@ -304,7 +293,6 @@ impl Presentation {
                 .filter(|(_, p)| p.bucket == bucket)
             {
                 let kind = &self.kinds[placement.kind];
-                // The game's comparison is counter>max, not an active-count ceiling.
                 if self.active.iter().any(|a| a.placement == index)
                     || (kind.max_visible > 0 && self.counters[placement.kind] > kind.max_visible)
                 {
@@ -320,7 +308,6 @@ impl Presentation {
                 });
             }
         }
-        // The game first captures the clock, then subtracts elapsed process time.
         let mut i = 0;
         while i < self.active.len() {
             let a = &mut self.active[i];
@@ -457,17 +444,17 @@ fn ambient_admission_expiry_and_recreation_preserve_native_order() {
         |rows: Vec<(usize, ModelInstance)>| rows.into_iter().map(|(s, _)| s).collect::<Vec<_>>();
     assert_eq!(slots(p.advance(10., &visible)), [1, 2, 0]);
     let old_epoch = p.active[0].epoch;
-    visible[0] = false; //Leaving a bucket does not destroy its live actor.
+    visible[0] = false;
     assert_eq!(slots(p.advance(11., &visible)), [1, 2, 0]);
-    assert_eq!(slots(p.advance(12., &visible)), [0, 2]); //last-slot replacement
+    assert_eq!(slots(p.advance(12., &visible)), [0, 2]);
     assert_eq!(p.counters, [0, 1, 0]);
     visible[0] = true;
-    assert_eq!(slots(p.advance(20., &visible)), [0, 2, 1]); //first tick subtracts zero
+    assert_eq!(slots(p.advance(20., &visible)), [0, 2, 1]);
     assert_ne!(p.active[2].epoch, old_epoch);
     assert_eq!(p.counters, [0, 0, 0]);
-    assert_eq!(slots(p.advance(1., &visible)), [1, 2, 0]); //seek starts a fresh presentation
+    assert_eq!(slots(p.advance(1., &visible)), [1, 2, 0]);
     p.active.retain(|a| a.placement != 1);
-    p.counters[1] = 2; //The signed native counter comparison deliberately stays >.
+    p.counters[1] = 2;
     assert_eq!(slots(p.advance(1., &visible)), [2, 0]);
 }
 
@@ -556,7 +543,6 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
         )
     };
     let still = entity_animation::DEFAULT_STATE;
-    // Animated neighbours, each drawing its variant from its own stream.
     let neighbours: Vec<_> = (9..17)
         .map(|identity| {
             let mut neighbour = placed("animated", identity, entity_animation::AMBIENT_IDLE);
@@ -571,7 +557,6 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
         placed("zero", 4, still),
     ];
     all.extend(neighbours.iter().copied());
-    // Each frame's sound events, from the pass's own event list.
     let sounds_at = |pass: &mut super::models::ModelPass, time: f32| {
         pass.animate(time, None, &[0.]);
         let mut names = super::sound_events::Names::default();
@@ -591,7 +576,6 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
     };
     let mut pass = super::models::ModelPass::new(&library, "map frame");
     pass.update_placed(all.clone(), 256.);
-    // The same neighbours alone, stepped in lock-step with the full pass.
     let mut alone = super::models::ModelPass::new(&library, "map frame");
     alone.update_placed(neighbours.clone(), 256.);
     let neighbour_keys: Vec<_> = neighbours
@@ -618,8 +602,6 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
         };
         with.sort_by(order);
         without.sort_by(order);
-        // The other actors animate and draw their variants exactly as they
-        // would without the still ones: each player keeps its own stream.
         assert_eq!(with, without, "at {time}");
         drawn.extend(with.into_iter().map(|sound| sound.0));
         for key in &neighbour_keys {
@@ -632,16 +614,12 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
         sounds
     };
     compare(&mut pass, 20.);
-    // Each still actor has entered its default state on a player of its own,
-    // so its animation runs; the one refused does not.
     for (slot, instance) in &all[..4] {
         let refused = instance.animation_identity == 3;
         assert_eq!(pass.player(*slot, instance).is_some(), !refused);
     }
     let sounds = compare(&mut pass, 20.5);
     let effects: Vec<_> = sounds.iter().map(|sound| sound.0.as_str()).collect();
-    // A single variant is entered whatever its chance; a later event waits
-    // for its time.
     assert_eq!(effects[..2], ["amb_wind", "amb_zero"]);
     assert!(
         effects[2..]
@@ -653,8 +631,6 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
     assert_eq!(sounds[0].1, [1., 0., 0.]);
     assert!((sounds[0].2 - 0.5).abs() < 1e-3, "{}", sounds[0].2);
     let wind = sounds[0].3;
-    // Several default-state variants are drawn by a stream the recording does
-    // not hold: refused by name and counted, never guessed.
     assert_eq!(pass.default_state_refusals.len(), 1);
     let (refusal, count) = pass.default_state_refusals.iter().next().unwrap();
     assert!(
@@ -671,10 +647,7 @@ fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
         .find(|sound| sound.0 == "amb_late")
         .expect("the timed event fires five seconds after the actor appeared");
     assert!((late.2 - 1.0).abs() < 1e-3, "{}", late.2);
-    // A trigger-once loop stays presented under the same key, so its sound
-    // plays on rather than ending and starting again.
     let still_wind = sounds.iter().find(|sound| sound.0 == "amb_wind").unwrap();
     assert_eq!(still_wind.3, wind);
-    // The neighbours drew both variants between them.
     assert_eq!(drawn.len(), 2, "{drawn:?}");
 }

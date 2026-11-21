@@ -3,7 +3,6 @@ use crate::{Emitter, Frame, Group, Listener, Mix};
 use installed_content_core::test_support::Stack;
 use installed_content_sound::wav::{decode, encode_pcm16};
 
-/// A constant half-scale stereo tone of `frames` frames.
 fn tone(frames: usize) -> Vec<u8> {
     encode_pcm16(RATE, 2, &vec![16_384; frames * 2])
 }
@@ -42,7 +41,6 @@ impl Fixture {
         }
     }
 
-    /// Applies a frame and loads what it asked for, as the loader thread would.
     fn frame(&mut self, frame: Frame) {
         self.engine.frame(&frame);
         self.load();
@@ -62,7 +60,6 @@ impl Fixture {
         }
     }
 
-    /// `callbacks` mixer callbacks of output.
     fn render(&mut self, callbacks: usize) -> Vec<i16> {
         let mut out = vec![0i16; callbacks * CALLBACK_FRAMES * 2];
         self.engine.render(&mut out);
@@ -141,7 +138,6 @@ const ASSETS: &str = r#"
     category = { name = Air soundeffects = { wind } }
 "#;
 
-/// The 16-bit sample of the half-scale tone at a voice's volume.
 fn level(volume: f32) -> i16 {
     scale(16_384, step(volume)) as i16
 }
@@ -151,12 +147,8 @@ fn a_fired_event_plays_its_sound_at_the_integer_chain_gain() {
     let mut fixture = Fixture::new("audio_fired", ASSETS);
     fixture.frame(frame(vec![emitter(1, "shot", [0.0; 3], 0.0)]));
     let out = fixture.render(1);
-    // Effect 0.8 times sound 0.5 is 6554 steps of 1/16384; the first
-    // callback has no earlier gain to ramp from.
     assert_eq!(step(0.8 * 0.5), 6_554);
     assert!(out.iter().all(|value| *value == 6_554), "{:?}", &out[..4]);
-    // A missing effect is refused by name and noted once, however many
-    // emitters and frames name it.
     fixture.frame(frame(vec![emitter(2, "absent", [0.0; 3], 0.0)]));
     fixture.frame(frame(vec![
         emitter(2, "absent", [0.0; 3], 0.1),
@@ -168,8 +160,6 @@ fn a_fired_event_plays_its_sound_at_the_integer_chain_gain() {
     );
 }
 
-/// A gain change ramps across the next callback: frame k takes the old step
-/// plus k/1024 of the change, truncated.
 #[test]
 fn volumes_clamp_and_a_mute_ramps_down_across_one_callback() {
     let mut fixture = Fixture::new("audio_clamp", ASSETS);
@@ -212,7 +202,6 @@ fn a_reset_ends_voices_and_does_not_count_present_events_as_fired() {
     fixture.frame(reset);
     assert!(!fixture.engine.active());
     assert!(fixture.render(1).iter().all(|value| *value == 0));
-    // A later firing of the same event plays again.
     fixture.frame(frame(vec![emitter(2, "shot", [0.0; 3], 0.0)]));
     assert!(!fixture.engine.active(), "an equal age is the same firing");
     fixture.frame(frame(vec![emitter(2, "shot", [0.0; 3], 0.5)]));
@@ -223,12 +212,10 @@ fn a_reset_ends_voices_and_does_not_count_present_events_as_fired() {
 #[test]
 fn falloff_attenuates_pans_and_stops_beyond_twice_the_maximum() {
     let mut fixture = Fixture::new("audio_falloff", ASSETS);
-    // Linear: 20 units is halfway between 10 and 30, and fully right.
     fixture.frame(frame(vec![emitter(1, "near_shot", [20.0, 0.0, 0.0], 0.0)]));
     let out = fixture.render(1);
     assert_eq!(out[0], 0);
     assert_eq!(out[1], level(0.5 * 0.5));
-    // Moving beyond 60 units stops it.
     fixture.frame(frame(vec![emitter(1, "near_shot", [61.0, 0.0, 0.0], 0.01)]));
     fixture.render(1);
     assert!(!fixture.engine.active());
@@ -245,20 +232,16 @@ fn falloff_attenuates_pans_and_stops_beyond_twice_the_maximum() {
         height_scale: 0.5,
         ..near
     };
-    // The vertical offset counts at half: 350 up is 175 away, 450 up is 225.
     assert!(!falloff_gain(&flat, [0.0; 3], [0.0, 350.0, 0.0]).1);
     assert!(falloff_gain(&flat, [0.0; 3], [0.0, 450.0, 0.0]).1);
 }
 
-/// A fired start out of range still draws, creating no voice.
 #[test]
 fn a_fired_start_out_of_range_draws_but_creates_no_voice() {
     let mut fixture = Fixture::new("audio_out_of_range", ASSETS);
     fixture.frame(frame(vec![emitter(1, "far_shot", [100.0, 0.0, 0.0], 0.0)]));
     assert_eq!(fixture.voices(), 0);
-    // The sound draw; the volume offset is drawn only for a created voice.
     assert_eq!(fixture.engine.random.count, 1);
-    // In range it draws the sound and its volume.
     fixture.frame(frame(vec![emitter(2, "far_shot", [0.0; 3], 0.0)]));
     assert_eq!(fixture.voices(), 1);
     assert_eq!(fixture.engine.random.count, 3);
@@ -304,8 +287,6 @@ fn a_departed_loop_stops_while_a_departed_one_shot_finishes() {
     assert!(fixture.render(1)[0] > 0);
 }
 
-/// An instance has a slot per `polyphony` voice when the effect has that
-/// many sounds, else one; a start fills every slot with a different sound.
 #[test]
 fn polyphony_fills_a_slot_per_voice_with_different_sounds() {
     let mut fixture = Fixture::new("audio_polyphony", ASSETS);
@@ -323,13 +304,10 @@ fn polyphony_fills_a_slot_per_voice_with_different_sounds() {
         .collect();
     chosen.sort();
     assert_eq!(chosen, [0, 1]);
-    // Three voices of two sounds: one slot.
     assert_eq!(instances[1].slots.len(), 1);
     assert_eq!(fixture.voices(), 3);
 }
 
-/// Only 32 voices mix per callback, the highest sound priority times gain
-/// first; the rest advance silently.
 #[test]
 fn only_the_32_highest_priority_voices_mix() {
     let mut fixture = Fixture::new("audio_priority", ASSETS);
@@ -340,7 +318,6 @@ fn only_the_32_highest_priority_voices_mix() {
     let quiet = i32::from(level(0.01 * 0.5));
     assert_eq!(fixture.voices(), 40);
     assert_eq!(i32::from(fixture.render(1)[0]), 32 * quiet);
-    // A higher-priority voice takes a place from the others.
     emitters.push(emitter(41, "urgent", [0.0; 3], 0.0));
     let mut next = frame(emitters);
     for emitter in &mut next.emitters[..40] {
@@ -370,8 +347,6 @@ fn the_mixer_has_248_effect_voices() {
     assert_eq!(without, [249, 250]);
 }
 
-/// A fade moves the volume by the frame's share of the fade time in
-/// absolute terms: a voice at 0.5 is in after half its fade-in.
 #[test]
 fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
     let mut fixture = Fixture::new("audio_fades", ASSETS);
@@ -403,8 +378,6 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
     }
     fixture.frame(first.clone());
     assert_eq!(volume(&fixture, 1), (0.5, State::Playing));
-    // The second instance drew its sound and then its delay, after the
-    // first's sound; its slot counts the delay down by frame from its start.
     let mut random = Random::new(7);
     random.word();
     random.word();
@@ -412,7 +385,6 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
     let mut waited = 0.75f32;
     let mut age = 0.5;
     while waited < delay {
-        // The delayed voice sits at its full volume.
         assert_eq!(
             volume(&fixture, 2),
             (0.5, State::Delayed),
@@ -425,12 +397,9 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
         fixture.frame(first.clone());
         waited += 0.25;
     }
-    // The delay is over: it plays at its volume without fading in.
     assert_eq!(volume(&fixture, 2), (0.5, State::Playing));
 }
 
-/// At another rate the mixer steps a float position and keeps only the
-/// whole frames passed at the end of each callback.
 #[test]
 fn a_voice_at_another_rate_loses_its_fraction_each_callback() {
     let mut fixture = Fixture::new("audio_rate", ASSETS);
@@ -452,7 +421,6 @@ fn a_voice_at_another_rate_loses_its_fraction_each_callback() {
     );
 }
 
-/// A compressor works on the mixer's integer sums.
 #[test]
 fn the_compressor_reduces_levels_above_its_threshold() {
     let mut dynamics = Dynamics::new(Compressor {
@@ -462,7 +430,6 @@ fn the_compressor_reduces_levels_above_its_threshold() {
     });
     let mut loud = vec![16_384i32; 64];
     dynamics.process(&mut loud);
-    // Half scale is about 6 dB over the threshold, compressed 4:1.
     let level = 20.0 * 0.5f32.log10();
     let expected = 16_384.0 * 10f32.powf((-12.0 - level) * 0.75 / 20.0);
     assert!((loud[63] as f32 - expected).abs() < 2.0, "{}", loud[63]);
@@ -472,8 +439,6 @@ fn the_compressor_reduces_levels_above_its_threshold() {
     assert_eq!(quiet[0], 3_000);
 }
 
-/// A category's compressor runs only for callbacks something mixed into
-/// the category, so its envelope holds while the category is silent.
 #[test]
 fn a_category_compressor_holds_while_nothing_mixes_into_it() {
     let assets = r#"
@@ -487,7 +452,6 @@ fn a_category_compressor_holds_while_nothing_mixes_into_it() {
     fixture.render(1);
     let envelope = fixture.engine.categories[0].as_ref().unwrap().envelope;
     assert!(envelope[0] > 0.0);
-    // The 100-frame blip ended in the first callback.
     fixture.render(4);
     assert_eq!(
         fixture.engine.categories[0].as_ref().unwrap().envelope,
@@ -495,7 +459,6 @@ fn a_category_compressor_holds_while_nothing_mixes_into_it() {
     );
 }
 
-/// Positive weights are walked in order; without one the pick falls back.
 #[test]
 fn the_weighted_pick_walks_positive_weights_and_falls_back() {
     let half = 1u32 << 30;
@@ -545,8 +508,6 @@ fn music_mixes_first_through_the_master_compressor_and_survives_a_reset() {
     sender.send(Ok(vec![16_384; 4_000])).unwrap();
     fixture.engine.provide_track(0, Some(stream));
     let out = fixture.render(1);
-    // Music gain: master 1 x dev_master 1 x music 0.5 x track 0.5, then the
-    // master compressor's -6 dB postgain.
     let mixed = scale(16_384, step(1.0 * 0.5 * 0.5));
     let postgain = 10f32.powf(-6.0 / 20.0);
     assert_eq!(i32::from(out[0]), truncate(mixed as f32 * postgain));
@@ -566,9 +527,6 @@ fn music_mixes_first_through_the_master_compressor_and_survives_a_reset() {
     );
 }
 
-/// A sample that fails to load never plays: voices waiting for it end,
-/// later starts create no voice and are named and counted, and a
-/// `max_audible` place goes back once no voice holds it.
 #[test]
 fn a_sample_that_fails_to_load_refuses_its_starts() {
     let assets = r#"
@@ -605,8 +563,6 @@ fn a_sample_that_fails_to_load_refuses_its_starts() {
     assert_eq!(fixture.voices(), 0);
 }
 
-/// Under the default `silent` overflow, an instance whose sound finished
-/// gives its place up, so a later instance still sounding is heard.
 #[test]
 fn a_silent_place_goes_to_an_instance_that_can_still_play() {
     let assets = r#"
@@ -616,14 +572,12 @@ fn a_silent_place_goes_to_an_instance_that_can_still_play() {
     let mut fixture = Fixture::new("audio_silent_slot", assets);
     fixture.frame(frame(vec![emitter(1, "one", [0.0; 3], 0.0)]));
     fixture.render(22);
-    // The second firing is held silent while the first holds the place.
     fixture.frame(frame(vec![
         emitter(1, "one", [0.0; 3], 0.5),
         emitter(2, "one", [0.0; 3], 0.0),
     ]));
     assert!(fixture.engine.instances[1].over);
     fixture.render(25);
-    // The first has finished but its event is still present.
     fixture.frame(frame(vec![
         emitter(1, "one", [0.0; 3], 1.1),
         emitter(2, "one", [0.0; 3], 0.6),
@@ -634,8 +588,6 @@ fn a_silent_place_goes_to_an_instance_that_can_still_play() {
     assert_eq!(fixture.engine.audible, [1]);
 }
 
-/// A restarting emitter (battle ambience) starts its one-shot sound again
-/// once it ends, while it stays present; an ordinary one-shot does not.
 #[test]
 fn a_restarting_emitter_plays_again_when_its_sound_ends() {
     let mut fixture = Fixture::new("audio_restart", ASSETS);
@@ -643,7 +595,6 @@ fn a_restarting_emitter_plays_again_when_its_sound_ends() {
     battle.restart = true;
     let shot = emitter(2, "shot", [0.0; 3], 0.0);
     fixture.frame(frame(vec![battle.clone(), shot.clone()]));
-    // Both one-second voices end.
     fixture.render(44);
     fixture.frame(frame(vec![battle, shot]));
     let counts: Vec<_> = fixture
@@ -661,10 +612,6 @@ impl Fixture {
     }
 }
 
-/// Two slots over a weight-one and a weight-zero sound: the first slot takes
-/// the weighted sound and zeroes it, leaving no positive weight, so the
-/// second falls back to the game's uniform pick over every sound, which may
-/// be the sound already playing.
 #[test]
 fn a_draw_without_positive_weights_picks_uniformly_over_every_sound() {
     let assets = r#"
@@ -688,8 +635,6 @@ fn a_draw_without_positive_weights_picks_uniformly_over_every_sound() {
     assert_eq!(chosen, [0, uniform(second, 2)]);
 }
 
-/// Voices past the 32 mix nothing, so their category's compressor holds
-/// as it does for a callback nothing mixed into the category.
 #[test]
 fn a_voice_past_the_32_leaves_its_category_compressor_holding() {
     let assets = r#"
@@ -715,8 +660,6 @@ fn a_voice_past_the_32_leaves_its_category_compressor_holding() {
     );
 }
 
-/// A track that ends draws the next song in the same callback, and the
-/// player asks for its stream at once rather than at the next map frame.
 #[test]
 fn a_track_that_ends_draws_the_next_song_in_its_callback() {
     let mut fixture = Fixture::new("audio_music_handoff", ASSETS);
@@ -758,7 +701,6 @@ fn a_track_that_ends_draws_the_next_song_in_its_callback() {
         .prime_music(std::time::Duration::from_secs(1));
     assert!(!fixture.engine.music_waiting(), "the first samples are in");
     fixture.render(1);
-    // No frame came between: the callback drew the next song.
     assert_eq!(fixture.engine.music_draws(), 2);
     assert!(fixture.engine.music_playing().is_some());
     assert!(matches!(fixture.engine.take_wanted()[..], [Load::Track(_)]));

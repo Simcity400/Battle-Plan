@@ -1,19 +1,3 @@
-//! `ProducedValues`: each producer's running totals as equipment produced counts them, lines and
-//! Rocket output together, for every type, for each archetype and for an archetype it has no row
-//! of, from the Production writer's tables, RocketProductionOutput and VariantDefinitions.
-//!
-//! - A total is the producer's ProductionCountryTotals row (every type) or its ProductionTypeTotals
-//!   row of the archetype (none: zero), unknown while the run's lines coverage says so, plus its
-//!   Rocket designs of the archetype (VariantDefinitions types them), unknown while RocketProductionOutput
-//!   is not read or its coverage says so. A units count with an inexact part is unknown, never a
-//!   lower bound.
-//! - An archetype's total, and the rest's, is unknown while designs whose type was not recorded hold
-//!   anything: lines of [`Row::NO_ARCHETYPE`], or Rocket designs no definition types.
-//! - The clock row holds where the totals count from and production's latest read: the hour
-//!   ProductionLineOutput was sampled, or, where the recording marks no sample, the hour the world's
-//!   totals by type changed.
-//!
-//! State is the tables: an empty blob, and a resume recomputes every producer.
 
 use crate::{
     forces::held,
@@ -44,13 +28,11 @@ const READS: &[Read] = &[
     Read { table: TableId::ProductionCoverage, columns: Columns::Every, watch: Watch::Changed, required: true },
     Read { table: TableId::RocketProductionOutput, columns: Columns::These(&ROCKET), watch: Watch::EveryRead, required: false },
     Read { table: TableId::VariantDefinitions, columns: Columns::These(&ARCHETYPE), watch: Watch::Changed, required: false },
-    // Its reads date the totals.
     Read { table: TableId::ProductionLineOutput, columns: Columns::These(&[]), watch: Watch::EveryRead, required: false },
 ];
 
 const TABLES: &[Output] = &[Output::State(TableId::ProducedValues)];
 
-/// What a total holds: a value, or why it is not known (a [`Row`] reason).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Amount {
     Known(i128),
@@ -58,7 +40,6 @@ pub enum Amount {
 }
 
 impl Amount {
-    /// Unknown where either is, with the first one's reason.
     pub fn plus(self, other: Self) -> Self {
         match (self, other) {
             (Self::Known(a), Self::Known(b)) => a.checked_add(b).map_or(Self::Unknown(Row::OUT_OF_RANGE), Self::Known),
@@ -67,7 +48,6 @@ impl Amount {
     }
 }
 
-/// What a total counts: units or applied IC, with refits or without; in the row's column order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Count {
     Units,
@@ -84,7 +64,6 @@ impl Count {
     }
 }
 
-/// A totals row's cells: a producer's ProductionCountryTotals row, or one of its ProductionTypeTotals rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub units: i64,
@@ -96,7 +75,6 @@ pub struct Totals {
 }
 
 impl Totals {
-    /// From a reader's numbers of the six totals columns: a units count not recorded counts as inexact.
     pub fn of(number: impl Fn(usize) -> Option<i64>) -> Self {
         let (units, units_without_refits) = (number(0), number(3));
         Self {
@@ -121,7 +99,6 @@ impl Totals {
     }
 }
 
-/// One Rocket design's row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RocketRow {
     pub units: i64,
@@ -139,7 +116,6 @@ impl RocketRow {
     }
 }
 
-/// A ProductionCoverage row's cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Covered {
     pub observation: Option<i32>,
@@ -155,7 +131,6 @@ impl Covered {
     }
 }
 
-/// A [`Total`] reason code as a [`Row`] reason.
 pub fn reason(code: u8) -> u8 {
     match code {
         Total::NOT_RECORDED => Row::NOT_RECORDED,
@@ -167,7 +142,6 @@ pub fn reason(code: u8) -> u8 {
     }
 }
 
-/// Which of a producer's rows a total is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
     Whole,
@@ -185,23 +159,18 @@ impl Part {
     }
 }
 
-/// What a producer's rows hold at one hour, and the run's.
 #[derive(Clone, Debug, Default)]
 pub struct Producer {
     pub country: Totals,
-    /// Its ProductionTypeTotals rows by archetype token.
     pub types: BTreeMap<u32, Totals>,
-    /// Its Rocket designs: archetype token (0 where no definition types it) and row.
     pub rocket: Vec<(u32, RocketRow)>,
     pub own_rocket: Option<Covered>,
 }
 
-/// What every producer's totals read of the run.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Run {
     pub lines: Option<Covered>,
     pub rocket: Option<Covered>,
-    /// RocketProductionOutput was read and holds its world row.
     pub rocket_world: bool,
 }
 
@@ -209,7 +178,6 @@ fn covered(rows: &[Option<Covered>], count: Count, hour: i32) -> Option<u8> {
     rows.iter().flatten().find_map(|row| row.unknown(count, hour))
 }
 
-/// A producer's total of `part` at `hour`: never a partial sum, never zero where a part is not known.
 pub fn total(producer: &Producer, run: &Run, part: Part, count: Count, hour: i32) -> Amount {
     let untyped = producer.types.get(&TypeTotal::NO_ARCHETYPE).map(|row| row.amount(count));
     let vetoed = untyped.is_some_and(|amount| amount != Amount::Known(0));
@@ -226,7 +194,6 @@ pub fn total(producer: &Producer, run: &Run, part: Part, count: Count, hour: i32
     lines.plus(rocket(producer, run, part, count, hour))
 }
 
-/// A producer's Rocket output of `part`: designs no definition types could be of any archetype.
 fn rocket(producer: &Producer, run: &Run, part: Part, count: Count, hour: i32) -> Amount {
     if !run.rocket_world {
         return Amount::Unknown(Row::ROCKET_TABLE_UNAVAILABLE);
@@ -253,7 +220,6 @@ fn rocket(producer: &Producer, run: &Run, part: Part, count: Count, hour: i32) -
     sum
 }
 
-/// A total's two cells.
 fn cells_of(amount: Amount) -> [Value; 2] {
     match amount {
         Amount::Known(value) => match i64::try_from(value) {
@@ -264,14 +230,12 @@ fn cells_of(amount: Amount) -> [Value; 2] {
     }
 }
 
-/// A producer's row of `part` at `hour`.
 pub fn row(producer: &Producer, run: &Run, part: Part, hour: i32) -> Vec<Value> {
     let mut cells: Vec<Value> = Count::ALL.iter().flat_map(|&count| cells_of(total(producer, run, part, count, hour))).collect();
     cells.extend([Value::OptionalI32(None), Value::OptionalI32(None)]);
     cells
 }
 
-/// Every part a producer has a row of.
 pub fn parts(producer: &Producer) -> BTreeSet<u32> {
     let mut out: BTreeSet<u32> = producer.types.keys().copied().collect();
     out.extend(producer.rocket.iter().map(|(token, _)| *token));
@@ -302,9 +266,7 @@ fn later(a: Option<i32>, b: Option<i32>) -> Option<i32> {
 
 #[derive(Default)]
 pub struct ProducedValues {
-    /// A resume: every producer is recomputed before the next hour.
     rebuild: bool,
-    /// Whether RocketProductionOutput's world row was held when last written.
     rocket_world: Option<bool>,
 }
 
@@ -319,7 +281,6 @@ impl ProducedValues {
         }
     }
 
-    /// The clock row: where the totals count from, and production's latest read.
     fn clock(hour: &Hour<'_>, out: &mut Rows<'_>, run: &Run) {
         let key = Row::clock();
         let mine = out.table(TableId::ProducedValues);
@@ -339,7 +300,6 @@ impl ProducedValues {
         out.set(TableId::ProducedValues, key, cells);
     }
 
-    /// The producers whose rows the hour may have moved; none for every producer.
     fn moved(hour: &Hour<'_>) -> Option<BTreeSet<u32>> {
         let coverage = TableId::ProductionCoverage;
         let run_keys = [coverage_key(Coverage::RUN, Coverage::LINES), coverage_key(Coverage::RUN, Coverage::ROCKET)];
@@ -372,7 +332,6 @@ impl ProducedValues {
         Some(owners)
     }
 
-    /// What `owners` (every producer when none) hold at the hour: one pass over each production table's live rows.
     fn producers(hour: &Hour<'_>, owners: Option<&BTreeSet<u32>>) -> HashMap<u32, Producer> {
         let wanted = |owner: u32| owners.is_none_or(|owners| owners.contains(&owner));
         let mut out: HashMap<u32, Producer> = HashMap::new();
@@ -444,7 +403,6 @@ impl Writer for ProducedValues {
         self.rebuild = false;
         self.rocket_world = Some(run.rocket_world);
         let producers = Self::producers(hour, owners.as_ref());
-        // A producer's rows the hour no longer holds (a producer gone, a part lost) follow only a deletion.
         let lost = owners.is_none() || [TableId::ProductionCountryTotals, TableId::ProductionTypeTotals, TableId::RocketProductionOutput].iter().any(|&table| hour.deleted_keys(table).next().is_some());
         for key in if lost { held(out, TableId::ProducedValues) } else { Vec::new() } {
             let (owner, archetype) = ((key >> 32) as u32, key as u32);

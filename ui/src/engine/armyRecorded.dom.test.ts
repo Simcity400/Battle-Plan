@@ -3,8 +3,6 @@ import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 import { playWindow, RECORDED_FIXTURE, recordedPage } from '../test-support/recordedDriver.ts';
 
-// On the 13-year recording's own replies (BATTLE_PLAN_RECORDED_REPLIES): Army's 1,440 h/s window, played as the app played it.
-// Replays are not yet deterministic, so only what holds in any replay is asserted; the rest is reported.
 test('Army at 1,440 h/s on the recorded replies: Land battles binds its rows into pooled boxes and React renders no battle row', async t => {
   await withNativePage('army-recorded', RECORDED_FIXTURE, native => native.stage('army', async () => {
     const act = await recordedPage(native);

@@ -1,4 +1,3 @@
-//! Effect selection and native draw inputs carried from GUI layout to sorted GPU submission.
 use super::{library, vertices::Declaration};
 use crate::map::native_gui;
 use std::sync::Arc;
@@ -10,8 +9,6 @@ pub struct Part {
     pub offset: [f32; 2],
 }
 
-/// A technique's sampler-slot count: one past the highest common or pixel sampler index.
-/// An undeclared technique has no sampler slots.
 fn sampler_slots(effect: &Effect) -> usize {
     let source = &effect.asset.source;
     if source.technique(&effect.technique).is_none() {
@@ -27,36 +24,21 @@ fn sampler_slots(effect: &Effect) -> usize {
         .unwrap_or(0)
 }
 
-/// How a draw's records are submitted: its topology and the order of the quad's corners
-/// (`points`: 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left, y up) in its records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Order {
     Strip([usize; 4]),
     List([usize; 6]),
 }
 
-/// Sprites, progress bars, masked flags and overlays, and text-sprite quads share a strip
-/// ordered bottom-left, top-left, bottom-right, top-right.
 const SPRITE_STRIP: Order = Order::Strip([3, 0, 2, 1]);
-/// Plain tiles use bottom-left, top-left, top-right, bottom-right as a strip. Its triangles
-/// follow the game's left-top-right, then top-right-bottom order, rather than a filled quad.
 const TILE_STRIP: Order = Order::Strip([3, 0, 1, 2]);
-/// Inline icons use a four-record strip: top-left, top-right, bottom-left, bottom-right.
 const INLINE_STRIP: Order = Order::Strip([0, 1, 3, 2]);
-/// Glyphs, nine-slice bake backgrounds and cornered tiles use triangle lists, six records
-/// per quad.
 const QUAD_LIST: Order = Order::List([3, 0, 2, 1, 2, 0]);
 const CORNERED_LIST: Order = Order::List([3, 0, 1, 1, 2, 3]);
 
-/// Byte offsets of `Time` and `AnimationTime` in sprite constants (`b0`, bound to both
-/// stages), after the world matrix (64 bytes), `Color` (16) and texture offsets (16).
 pub const SPRITE_TIME: u32 = 96;
 pub const SPRITE_ANIMATION_TIME: u32 = 100;
 
-/// The GUI viewport for a target of `size` device pixels at `ui_scale` device pixels per
-/// GUI pixel, truncating each scaled extent. The settings' `min_gui` clamp is already in
-/// `ui_scale`, resolved through `installed_content_settings::settings::Display::interface_to_frame`, so it
-/// applies once. Fonts and callers' GUI layouts use this same viewport.
 pub fn gui_viewport(size: [u32; 2], ui_scale: f32) -> [u32; 2] {
     let inverse = 1.0 / ui_scale;
     size.map(|extent| (extent as f32 * inverse) as u32)
@@ -88,34 +70,16 @@ pub struct Quad {
     pub path: String,
     pub effect: Effect,
     pub declaration: Declaration,
-    /// Original native positions and UVs, before the world/projection matrix.
     pub vertices: Vec<u8>,
     pub stride: usize,
     pub source_draws: u64,
-    /// Native buffer zero, including the world matrix; projection is applied at upload. Its
-    /// length is what the native binding shows a shader ([`Allocation::visible`]), of which only
-    /// the first [`Quad::known`] bytes are written by the draw; the rest is uninitialised in the
-    /// game.
     pub constants: Vec<f32>,
-    /// Bytes of [`Quad::constants`] the draw writes before upload, from byte 0. The whole
-    /// allocation is uploaded and a pooled binding exposes its remaining slot bytes too.
-    /// Reading unwritten bytes is refused by name where the draw is submitted.
     pub known: u32,
-    /// Text and masked flags bind vertex constants only; sprites, progress bars and tiles
-    /// bind both stages.
     pub pixel_constants: bool,
-    /// Only actual native binds; an absent entry retains the previous binding.
     pub textures: Vec<(u32, Option<usize>)>,
-    /// Other native constant buffers: slot, the whole allocation, and the byte ranges the draw
-    /// writes (the rest is uninitialised in the game).
     pub extra_constants: Vec<(u32, Vec<f32>, Vec<std::ops::Range<u32>>)>,
-    /// A viewport explicitly written to a text part's font, also used by its inline quads.
-    /// Other draws use the GUI viewport; bakes project through their target.
     pub font_viewport: Option<[i32; 2]>,
-    /// The native topology the records are drawn as ([`Order`]).
     pub topology: eframe::wgpu::PrimitiveTopology,
-    /// Use the renderer's default blend state for a bake background: blending off and all
-    /// channels written. Other draws use their technique's blend state.
     pub default_blend: bool,
     pub bake: Option<Arc<Bake>>,
 }
@@ -127,10 +91,6 @@ pub struct Bake {
 }
 
 impl Quad {
-    /// Buffer zero with a 2D projection over `viewport`, in column-major HLSL storage.
-    /// On-screen draws use the GUI viewport; bakes use their target. Each scale divides 2
-    /// by the integer extent, followed by the -1, +1 translation. Text can instead use an
-    /// explicitly written font viewport ([`Quad::font_viewport`]).
     pub fn projected_constants(&self, viewport: [u32; 2]) -> Vec<f32> {
         let mut constants = self.constants.clone();
         let matrix = Matrix::from_cols_array(constants[..16].try_into().unwrap());
@@ -245,8 +205,6 @@ pub fn line_chart(
     Ok(())
 }
 
-/// Preserve the native vertex ABI. In particular, shaders may inspect local POSITION, COLOR1
-/// or any byte of c0 regardless of the names they give their declarations.
 pub fn emit(
     part: &native_gui::Part,
     origin: [i32; 2],
@@ -282,8 +240,6 @@ fn emit_inner(
         Some(native) => (&native.original, native.scale, native.offset),
         None => (&part.kind, 1., [0.; 2]),
     };
-    // These wrappers preserve the original local geometry and parent transform while
-    // adding the native texture/buffer binds around an ordinary sprite draw.
     if let PartKind::Animated(animated) = kind {
         let mut plain = part.clone();
         let replacement = PartKind::Sprite {
@@ -297,7 +253,6 @@ fn emit_inner(
         if let Some(native) = &mut plain.native {
             native.original = replacement;
         }
-        // The caller's set only: the variant keeps the library's globals itself.
         let mut defines = effect
             .asset
             .caller()
@@ -313,8 +268,6 @@ fn emit_inner(
             asset: effect.asset.variant(defines),
             technique: animated.technique.into(),
         };
-        // Bind animation records only when the animated technique has sampler slots.
-        // Otherwise draw the ordinary sprite, including its masking.
         if sampler_slots(&variant) == 0 {
             let ordinary = PartKind::Sprite {
                 sprite: animated.sprite.clone(),
@@ -352,9 +305,6 @@ fn emit_inner(
         emit_inner(&plain, origin, sheets, batch, join_text)?;
         for quad in &mut batch.quads[start..] {
             let draw = Arc::make_mut(quad.exact.as_mut().unwrap().native.as_mut().unwrap());
-            // Two 80-byte records are uploaded to b1 of both stages. Each record's first
-            // 48 bytes are zeroed; an active record contributes its written ranges.
-            // The shader sees the pooled slot beyond the 160 uploaded bytes.
             let mut constants = vec![0.; ANIMATION_RECORDS.visible as usize / 4];
             let mut known = vec![0..48, 80..128];
             for slot in 1..=4 {
@@ -392,7 +342,6 @@ fn emit_inner(
     {
         let baked = bake_draws(bake, &part.path, sheets)?;
         let mut plain = part.clone();
-        // The target is supplied at upload, so no source sprite texture is required.
         let replacement = PartKind::Cell {
             texture: sprites::NO_TEXTURE,
             masking: None,
@@ -414,7 +363,6 @@ fn emit_inner(
         }
         return Ok(());
     }
-    // Compilation happens at sorted submission, which refuses and counts only that draw.
     let declared = effect.asset.source.technique(&effect.technique).is_some();
     if !declared && matches!(part.kind, PartKind::Sprite { masked: true, .. }) {
         return Err(refusal(
@@ -446,8 +394,6 @@ fn emit_inner(
         })
     };
     let uv = |[u0, v0, u1, v1]: [f32; 4]| [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
-    // After the 16-float world matrix: `Color`, the offsets, then `Time` and `AnimationTime`
-    // ([`SPRITE_TIME`], [`SPRITE_ANIMATION_TIME`]).
     let sprite_tail = |offsets: [f32; 4]| {
         let mut tail = [0.; 10];
         tail[..4].copy_from_slice(&part.color);
@@ -478,7 +424,6 @@ fn emit_inner(
         let mut constants = Vec::with_capacity(allocation.visible as usize / 4);
         constants.extend_from_slice(&world.to_cols_array());
         constants.extend_from_slice(tail);
-        // What the draw writes, then the rest of the native allocation, unwritten.
         let known = (constants.len() * 4) as u32;
         debug_assert!(known <= allocation.upload, "{known} > {allocation:?}");
         constants.resize(allocation.visible as usize / 4, 0.);
@@ -557,7 +502,6 @@ fn emit_inner(
                     native_gui::lossy(sprite)
                 ))
             })?;
-            // Circular geometry binds b0 to the vertex stage only.
             let mut vertices = Vec::new();
             let rim = |angle: f32| [angle.cos(), angle.sin()];
             let mut previous = rim(*rotation);
@@ -587,8 +531,6 @@ fn emit_inner(
                     translation(*centre, 0.),
                     &[],
                     None,
-                    // Bind at most two textures, limited by the technique's sampler-slot count.
-                    // An undeclared technique has none.
                     [(0, Some(a.texture)), (1, Some(b.texture))]
                         .into_iter()
                         .take(sampler_slots(effect))
@@ -740,7 +682,6 @@ fn emit_inner(
                     } else if part.shading.clocked {
                         TILE_STRIP
                     } else {
-                        // A masked shield's overlay uses the sprite strip.
                         SPRITE_STRIP
                     },
                 );
@@ -765,7 +706,6 @@ fn emit_inner(
                 points(local, 1.),
                 uv([0., 0., 1., 1.]),
                 translation(*native_origin, -1.),
-                // `FlagCoords` followed by 16 zero bytes: all 96 bytes are written.
                 &[
                     flag_coords[0],
                     flag_coords[1],
@@ -874,10 +814,6 @@ fn native_projection(
     }
 }
 
-/// Constant-buffer sizes: `upload` is the allocation copied by the draw, and `visible`
-/// is the extent exposed to the shader. Pooled buffers occupy ring slots rounded to
-/// 256 bytes; bytes after the upload retain earlier slot contents. Unpooled bindings
-/// expose only their allocation, and reads past it return zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Allocation {
     pub upload: u32,
@@ -900,23 +836,8 @@ impl Allocation {
     }
 }
 
-/// Animation records use a pooled b1 allocation of two 80-byte records.
 pub const ANIMATION_RECORDS: Allocation = Allocation::pooled(0xA0);
 
-/// The b0 allocation for a draw of `kind`. Each draw writes a prefix ([`Quad::known`]);
-/// remaining visible bytes are unwritten:
-/// - sprites, bound textures, plain tiles and text-sprite quads: 112 uploaded bytes,
-///   pooled to 256 visible, with 104 written including both clocks;
-/// - cornered tiles and shield overlays: 112 unpooled bytes, 104 written; overlay clocks
-///   are zero ([`native_gui::Shading::clocked`]);
-/// - progress bars: 112 unpooled bytes, 100 written for matrix, colours and fill;
-/// - masked flags: all 96 unpooled bytes written for matrix, flag coordinates and a
-///   16-byte zero tail;
-/// - text and inline quads: all 80 unpooled bytes; inline quads retain the text's binding,
-///   which their payload repeats, and bake backgrounds zero the full block first;
-/// - circular progress bars: a 64-byte unpooled matrix.
-///
-/// Animation records use b1 with separate known ranges in [`Quad::extra_constants`].
 fn constant_allocation(kind: &native_gui::PartKind, clocked: bool) -> Allocation {
     use native_gui::PartKind;
     match kind {
@@ -930,8 +851,6 @@ fn constant_allocation(kind: &native_gui::PartKind, clocked: bool) -> Allocation
     }
 }
 
-/// Bake backgrounds and glyphs use Text with white modulation and a y-up projection.
-/// Backgrounds use the renderer's default blend; glyphs use the Text technique's blend.
 fn bake_draws(
     bake: &native_gui::text_sprites::TextBake,
     path: &str,
@@ -962,8 +881,6 @@ fn bake_draws(
             let draw = Arc::make_mut(quad.exact.as_mut().unwrap().native.as_mut().unwrap());
             draw.default_blend = default_blend;
             if default_blend {
-                // The nine-slice background is one triangle list, with [`QUAD_LIST`] for
-                // each piece emitted as an inline strip.
                 let Order::List(list) = QUAD_LIST else {
                     unreachable!()
                 };
@@ -979,8 +896,6 @@ fn bake_draws(
                     .collect();
                 draw.topology = eframe::wgpu::PrimitiveTopology::TriangleList;
             }
-            // The bake projection runs from zero to its height with depth zero to one.
-            // Preserve positive local y and z.
             draw.constants[13] = -(bake.size[1] as f32);
             for vertex in draw.vertices.chunks_exact_mut(draw.stride) {
                 let y = f32::from_le_bytes(vertex[4..8].try_into().unwrap()) + bake.size[1] as f32;
@@ -1008,8 +923,6 @@ fn bake_draws(
     }
     let mut start = [0, 0];
     for &end in &bake.frame_ends {
-        // Inline icons draw while the frame's glyph buffer is built; grouped glyph
-        // submission follows, so overlapping glyphs draw last.
         for (source, rect, uv) in &bake.inline[start[1]..end[1]] {
             append(
                 PartKind::Inline {
@@ -1122,7 +1035,6 @@ fn append_vertices(
     topology
 }
 
-// Column-major native matrix storage; keep scalar f32 operations, without SIMD reassociation.
 #[derive(Clone, Copy)]
 struct Matrix([f32; 16]);
 impl Matrix {

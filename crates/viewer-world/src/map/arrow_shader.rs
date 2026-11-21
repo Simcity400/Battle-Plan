@@ -1,4 +1,3 @@
-//! Arrow draw: native b3, declaration and forced raster.
 use eframe::wgpu;
 use installed_content_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
@@ -9,8 +8,6 @@ use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::map::ribbon_content::{Mode, Vertex};
 
-/// Copy the light view-projection into the initialized block, then fill common lighting and time
-/// values. Camera and inverse fields retain their existing contents.
 pub fn shadow_constants(scene: &[u8], matrix: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = super::tree_caster::constants(matrix);
     for range in [
@@ -51,7 +48,6 @@ pub fn load(
     library.load(path.as_bytes(), &defines).map_err(fail)
 }
 
-/// Retain the authored depth descriptor; late passes replace the stencil reference and masks.
 fn late_depth(mut state: DepthStencilState, late: bool) -> DepthStencilState {
     if late {
         state.stencil_ref = 2;
@@ -61,8 +57,6 @@ fn late_depth(mut state: DepthStencilState, late: bool) -> DepthStencilState {
     state
 }
 
-/// The pixel slot battle plans, raids, trade routes and map symbols bind the shadow screen
-/// buffer to.
 pub const SHADOW_SLOT: u32 = 2;
 
 pub struct Arrow {
@@ -71,7 +65,6 @@ pub struct Arrow {
     reference: u32,
     block: u32,
     written: u32,
-    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
     pub texel_reads: Option<String>,
 }
 
@@ -85,7 +78,6 @@ impl Arrow {
         depth: wgpu::TextureFormat,
         mode: Mode,
     ) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
             Self::build(
                 device, effect, technique, samples, format, depth, mode, false,
@@ -93,8 +85,6 @@ impl Arrow {
         })
     }
 
-    /// Symbols share the authored map-arrow effects, with their own vertex
-    /// declaration and constant block.
     pub fn symbol(
         device: &wgpu::Device,
         effect: &Arc<Effect>,
@@ -117,7 +107,6 @@ impl Arrow {
         })
     }
 
-    // Pipeline identity includes each authored technique, target format and draw mode operand.
     #[allow(clippy::too_many_arguments)]
     fn build(
         device: &wgpu::Device,
@@ -172,7 +161,6 @@ impl Arrow {
             cull_mode: 0,
             ..Default::default()
         };
-        // Bind topology4 (triangle strip).
         pass.primitive = gpu::primitive(&raster, wgpu::PrimitiveTopology::TriangleStrip).0;
         let (depth, reference) = gpu::depth_stencil(
             &late_depth(effect.source.depth_stencil(technique), mode == Mode::Late),
@@ -184,13 +172,11 @@ impl Arrow {
             .get_pass(device, &selection, &state, &pass)
             .map_err(refuse)?;
         if mode == Mode::Shadow {
-            // Explicitly zero ShadowFadeFactor/FOWFadeFactor.
             super::shader_constants::both(&pipeline, 0, 416, &[0..348, 352..408])
                 .map_err(refuse)?;
         } else {
             super::shader_constants::scene(&pipeline).map_err(refuse)?;
         }
-        // allocates128; writes116 bytes.
         let (block, size, written) = if symbol { (4, 48, 48) } else { (3, 128, 116) };
         super::shader_constants::both(&pipeline, block, size, std::slice::from_ref(&(0..written)))
             .map_err(refuse)?;
@@ -219,7 +205,6 @@ impl Arrow {
         arrow: &[u8],
         textures: &BTreeMap<u32, wgpu::TextureView>,
     ) -> io::Result<gpu::Bindings> {
-        // Bind PS-only b2. binds b0/b3 to both stages.
         self.pipeline
             .bindings(
                 arena,

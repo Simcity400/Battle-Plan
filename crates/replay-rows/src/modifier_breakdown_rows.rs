@@ -7,9 +7,6 @@ opaque_value!(Option<Vec<ModifierBreakdownNode>>);
 opaque_value!(Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>);
 opaque_value!(Vec<Vec<u8>>);
 
-/// Retired: the reserve reinforcement hover's country (kind 0) or selected
-/// commander (kind 1/2) reserve-rate tree. Kept for older recordings' framing.
-/// Country owners are raw links; commander owners are full handles.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReserveModifierBreakdownRow {
@@ -26,17 +23,6 @@ typed_codec!(ReserveModifierBreakdownRow, 72, |row| (row.kind as u128) << 64 | r
    check_tree(&row.nodes)
 });
 
-/// The reinforcement-rate sources a reserve's chance arm prints: a country's
-/// (`kind` 0, `owner` its raw reference) or a contextual commander's selected
-/// unit modifier (`kind` the division's `leader_modifier_kind`, 1 or 2;
-/// `owner` the division's commander handle). `nodes` is the printed tree of
-/// key 0xFB ([`printed_tree`]); `name` is the commander's display name, read
-/// only when its root is nonzero, the one case the game prints the commander
-/// line. A commander whose root is zero has no row. `nodes` is `None` when
-/// that source's read was refused at capture (counted in collector status
-/// `land_reserve_speed`); the other rows keep theirs. Display bytes are native
-/// stored text in the recording language. Rows exist only for the owners of
-/// the hour's reserves.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReserveModifierTreeRow {
@@ -60,12 +46,6 @@ typed_codec!(ReserveModifierTreeRow, 72, |row| (row.kind as u128) << 64 | row.ow
    }
 });
 
-/// The tree a depth -1 modifier breakdown prints from `nodes` (a complete
-/// preorder): the root, every nonzero leaf with its display bytes and the
-/// interior nodes above them, interior nodes without bytes. A root whose
-/// children all pruned keeps one zero child, so it stays interior and prints
-/// nothing, as the native walk does; a childless root keeps its own value
-/// and bytes.
 pub fn printed_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<Vec<ModifierBreakdownNode>> {
     check_tree(nodes)?;
     let mut output = Vec::new();
@@ -101,7 +81,6 @@ fn copy_printed(
         output.truncate(start);
         return Ok(false);
     }
-    // Only an original leaf prints; interior nodes keep no display bytes.
     let name = if node.children == 0 && node.value != 0 {
         engine_allocation::copy_vec(&node.name)?
     } else {
@@ -115,17 +94,6 @@ fn copy_printed(
     Ok(true)
 }
 
-/// One power-balance record's (`PowerBalances.ordinal`) static-modifier sources: the complete
-/// source roster in array order, every occurrence and empty sources included, by `static modifier`
-/// script name. The cached description tree is built from these alone by rebuilds and additions, so
-/// playback derives it with the content's static modifiers ([`crate::power_balance_derive`]).
-///
-/// `daily` and `weekly` are the native cached trees for keys 0x98/0x99 read
-/// as witnesses: every row of recordings made before playback derived them,
-/// and only the rows a diagnostic `breakdown_witness` collector build sampled
-/// since. Empty means not read; current production writers leave both
-/// empty. `recorder derived` compares each witness with the derivation;
-/// consumers never display them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerBalanceModifierBreakdownRow {
@@ -137,7 +105,6 @@ pub struct PowerBalanceModifierBreakdownRow {
 typed_codec!(PowerBalanceModifierBreakdownRow, 32, |row| row.record as u128,
 |key| Self { record: key as u32, ..Default::default() },
 { 0 => (sources): Opaque, 1 => (daily): Opaque, 2 => (weekly): Opaque }, |row| {
-   // A witness is a complete tree; both are read together or not at all.
    if row.daily.is_empty() != row.weekly.is_empty() {
        return Err(invalid("power balance witness trees are read together"));
    }
@@ -148,7 +115,6 @@ typed_codec!(PowerBalanceModifierBreakdownRow, 32, |row| row.record as u128,
    check_tree(&row.weekly)
 });
 
-/// A single complete preorder tree, without a chosen size/depth limit.
 pub fn check_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<()> {
     let mut pending = 1_usize;
     for node in nodes {
@@ -165,10 +131,6 @@ pub fn check_tree(nodes: &[ModifierBreakdownNode]) -> io::Result<()> {
     Ok(())
 }
 
-/// A source occurrence. `battle_slot == u32::MAX` is a side source; otherwise
-/// it joins NavalCombatShips by combat/side/slot. Source scope/index identify
-/// the selected adjuster occurrence. Order restores traversal order after
-/// accumulator/key identity sorting.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalModifierUse {
@@ -189,17 +151,6 @@ value_struct!(NavalModifierUse {
 });
 opaque_value!(Vec<NavalModifierUse>);
 
-/// Retired: the naval combat hovers' modifier trees. Kept for older
-/// recordings' framing.
-///
-/// One tree per stable native accumulator identity and key. A repeated
-/// source or combat adds a small use, not another tree. The node field has
-/// its own delta bit, so unchanged trees carry across hours when uses change.
-/// Nodes preserve depth -1 preorder after zero-subtree pruning; the root
-/// value survives because convoy escape reads it.
-/// Names are native display bytes and require the recording language when
-/// shown; the viewer formats contributions through its modifier definitions.
-/// The runtime accumulator identity and tree have no text-save counterpart.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalModifierBreakdownRow {
@@ -219,12 +170,6 @@ typed_codec!(NavalModifierBreakdownRow, 96,
     check_tree(&row.nodes)
 });
 
-/// One key's tree of a naval hover source ([`NavalModifierTreeRow`]): the preorder the
-/// modifier-breakdown formatter walks at depth -1 for that key, pruned to the root, the nonzero
-/// leaves and the interior nodes above them. The root keeps its value (convoy escape and the side
-/// sums read it); a root whose native children all pruned keeps one zero child, so it stays
-/// interior and prints nothing, as the native walk does. Only leaves keep their display bytes; a
-/// key whose root is zero and prints nothing is absent.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalModifierKeyTree {
@@ -237,14 +182,6 @@ value_struct!(NavalModifierKeyTree {
 });
 opaque_value!(Vec<NavalModifierKeyTree>);
 
-/// The hover trees of one naval modifier source accumulator: the side sources used for
-/// positioning, screening and convoy escape, and the ship sources used for ship escape
-/// and carrier sortie, each for every key in [`crate::naval_trees::KEYS`] that prints or
-/// has a nonzero root. `kind` and `owner`/`sub` name the source by recorded identities
-/// ([`crate::naval_trees`]), so a combat, side or ship reaches its trees by joining what
-/// it already records. Rows exist only for sources a live combat reaches this hour; a
-/// reached source without a row prints nothing and has a zero root for every key. Display
-/// bytes are native stored text in the recording language.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalModifierTreeRow {
@@ -259,14 +196,6 @@ typed_codec!(NavalModifierTreeRow, 104,
 { 0 => (trees): Opaque },
 |row| check_naval_trees(row.kind, &row.trees));
 
-/// Diagnostic oracle rows (collector feature `naval_tree_oracle`): the fresh
-/// native trees of one source occurrence of a live combat, read at the hour
-/// through the source's own accumulator. `battle_slot` is `u32::MAX` for a
-/// side source, whose `ordinal` is its [`crate::naval_trees::SideSource`];
-/// a ship source's `ordinal` is its position in
-/// `NavalCombatShips.weapon_context.sources`. `kind`/`owner`/`sub` are the
-/// identity the capture filed the source's [`NavalModifierTreeRow`] under.
-/// Production builds take no sample and record the table empty.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalModifierTreeSampleRow {
@@ -289,8 +218,6 @@ typed_codec!(NavalModifierTreeSampleRow, 120,
     check_naval_trees(row.kind, &row.trees)
 });
 
-/// Known kind, strictly ascending keys, and one complete nonempty preorder
-/// tree per key.
 fn check_naval_trees(kind: u8, trees: &[NavalModifierKeyTree]) -> io::Result<()> {
     if crate::naval_trees::Kind::from_u8(kind).is_none() {
         return Err(invalid("unknown naval modifier source kind"));
@@ -309,11 +236,6 @@ fn check_naval_trees(kind: u8, trees: &[NavalModifierKeyTree]) -> io::Result<()>
     Ok(())
 }
 
-/// One fresh attrition formatter tree per native accumulator/key. The ordered
-/// per-division uses, depth and scaling are in ArmyAttritionInputs.sources.
-/// None is a counted root-local capture failure; it leaves other trees and all
-/// independent scalar terms available. Native display names require the
-/// recording language; runtime identities have no text-save counterpart.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AttritionModifierBreakdownRow {
@@ -333,8 +255,6 @@ typed_codec!(AttritionModifierBreakdownRow, 96,
 mod balance_tests {
     use super::*;
 
-    /// Production rows carry sources alone; a witness carries both complete
-    /// trees, as every row of older recordings does.
     #[test]
     fn witness_trees_are_both_complete_or_both_absent() {
         let row = |daily: Vec<ModifierBreakdownNode>, weekly: Vec<ModifierBreakdownNode>| {
@@ -407,9 +327,6 @@ mod printed_tests {
         }
     }
 
-    /// The printed tree keeps the root, the nonzero leaves with their bytes
-    /// and the interiors above them, and prints exactly what the full tree
-    /// prints at depth -1.
     #[test]
     fn printed_trees_keep_what_a_depth_minus_one_breakdown_prints() {
         let full = [
@@ -431,8 +348,6 @@ mod printed_tests {
                 node(0, -1_000, b"Nested"),
             ]
         );
-        // A root whose children all prune keeps one zero child; a childless
-        // root keeps its value and bytes.
         assert_eq!(
             printed_tree(&[node(1, 3, b"root"), node(0, 0, b"zero")]).unwrap(),
             [node(1, 3, b""), node(0, 0, b"")]

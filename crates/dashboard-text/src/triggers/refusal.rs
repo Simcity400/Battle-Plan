@@ -1,9 +1,7 @@
-//! Refusal provenance belongs to the failing accessor, never its callers.
 use super::Store;
 use replay_data::rows::TableId;
 use std::{cell::RefCell, collections::BTreeSet, fmt};
 
-/// The unavailable operand. Global tables have no country/state scope.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Identity {
@@ -15,7 +13,6 @@ pub enum Identity {
     Unsupported(String),
 }
 
-/// An error's message can gain context without changing its source identities.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Failure {
@@ -29,8 +26,6 @@ thread_local! {
     static RESOLUTIONS: RefCell<Vec<BTreeSet<Identity>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Resolution failures are observable even if a filter discards its None.
-/// Lazy indexes retain these observations separately from speculative errors.
 fn record_resolutions(identities: &BTreeSet<Identity>) {
     record(identities);
     RESOLUTIONS.with(|captures| {
@@ -58,7 +53,6 @@ pub(crate) fn resolutions<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Identity>)
     (value, failures)
 }
 
-/// A cached value must not lose failed joins that were filtered while building it.
 #[derive(Clone, Debug)]
 pub(crate) struct Resolved<T> {
     value: T,
@@ -76,9 +70,6 @@ impl<T> Resolved<T> {
     }
 }
 
-/// Referenced positive keys cannot become an authenticated absence merely
-/// because the caller filters None. Literal nulls and membership searches use
-/// their own semantics; only an actual referenced-key lookup uses this primitive.
 pub(crate) fn reference<T>(
     value: Option<T>,
     positive: bool,
@@ -99,8 +90,6 @@ pub(crate) fn missing_reference(table: TableId, scope: Option<Store>) -> Failure
     )
 }
 
-/// A known member proves presence; absence is authenticated only by a complete
-/// source. Call this on every read, including reads through a warmed name index.
 pub(crate) fn membership(found: bool, complete: bool, missing: impl FnOnce() -> Failure) -> bool {
     if !found && !complete {
         missing().resolution_failed();
@@ -120,7 +109,6 @@ fn record(identities: &BTreeSet<Identity>) {
 }
 
 impl Failure {
-    /// Called only by the accessor whose own read found missing input.
     pub(crate) fn input(
         table: TableId,
         field: impl Into<String>,
@@ -146,7 +134,6 @@ impl Failure {
         }
     }
 
-    /// Join Boolean/alias errors without reconstructing identities from text.
     pub fn merge(failures: impl IntoIterator<Item = Self>) -> Self {
         let mut identities = BTreeSet::new();
         let mut messages = Vec::new();
@@ -160,19 +147,14 @@ impl Failure {
         }
     }
 
-    /// A cached error retains its original sources; reading it replays them.
     pub(crate) fn reached(&self) {
         record(&self.identities);
     }
 
-    /// The resolver, rather than its caller, owns the failed raw-reference read.
     pub(crate) fn resolution_failed(&self) {
         record_resolutions(&self.identities);
     }
 
-    /// Evaluating an unknown result consumes its source even when Boolean
-    /// logic subsequently masks it. Tests still demand replay by the accessor,
-    /// so this final safety net cannot hide a missed cached-error read.
     pub(crate) fn consumed(&self) {
         #[cfg(test)]
         assert_reached(self);
@@ -197,9 +179,6 @@ impl Failure {
 
 #[cfg(test)]
 impl Failure {
-    /// Whether a source of this failure is the input `name` spells by its identifiers, as
-    /// `Table`, `Table.field`, either followed by ` (Store)`; a shorter spelling names every
-    /// longer one. Messages are in plain words, so tests name an input by its identity.
     pub(crate) fn names(&self, name: &str) -> bool {
         self.identities.iter().any(|identity| {
             let Identity::Input {
@@ -277,8 +256,6 @@ impl PartialEq<String> for Failure {
     }
 }
 
-/// Source recording is independent of how errors are wrapped or masked by
-/// Boolean logic. The guard also restores the outer callback on unwinding.
 pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
     CAPTURES.with(|captures| captures.borrow_mut().push(BTreeSet::new()));
     struct Pop;
@@ -300,9 +277,6 @@ pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
     )
 }
 
-/// Test guard at semantic consumption points, before Boolean masking can hide
-/// an error. Merely constructing, wrapping or retaining a lazy failure is not
-/// consumption. Repeated identities already reached by this callback are safe.
 #[cfg(test)]
 pub(crate) fn assert_reached(failure: &Failure) {
     if DEFERRED.with(|depth| depth.get()) != 0 {
@@ -319,8 +293,6 @@ pub(crate) fn assert_reached(failure: &Failure) {
     });
 }
 
-/// All raw replay table reads in the evaluator use this accessor, so a failed
-/// table acquisition cannot be reattributed to whichever callback asked for it.
 pub(crate) trait FrameInputs {
     fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure>;
 }
@@ -330,8 +302,6 @@ pub(crate) fn input_error(table: TableId, why: std::io::Error) -> Failure {
     failure.resolution_failed();
     failure
 }
-/// `T` when complete, each row holding the fields `mask` names, as
-/// [`FrameInputs::trigger_table`] reads it of any frame's tables.
 pub(crate) fn complete_table<F, T>(
     frame: &F,
     mask: u64,
@@ -367,7 +337,6 @@ impl FrameInputs for dyn replay_frame::frame::DecodedSource + '_ {
     }
 }
 
-/// Read an optional captured operand at its source, before adding any caller context.
 pub(crate) fn optional<'a, T>(
     value: &'a replay_data::rows::Recorded<Option<T>>,
     table: TableId,
@@ -382,8 +351,6 @@ pub(crate) fn optional<'a, T>(
         .ok_or_else(|| Failure::input(table, field, scope, format!("{name}: not captured")))
 }
 
-/// An input in plain words for a reason a user reads: what its table holds, the field read and
-/// whose store, never their identifiers.
 fn subject(table: TableId, field: &str, scope: Option<Store>) -> String {
     let mut out = table.words();
     if !field.is_empty() {
@@ -405,8 +372,6 @@ fn subject(table: TableId, field: &str, scope: Option<Store>) -> String {
     out
 }
 
-/// Build a lazy cached value without claiming errors in unused entries. The
-/// accessor replays the retained typed failure if the caller reaches it.
 pub(crate) fn deferred<T>(run: impl FnOnce() -> T) -> T {
     DEFERRED.with(|depth| depth.set(depth.get() + 1));
     struct Resume;
@@ -419,8 +384,6 @@ pub(crate) fn deferred<T>(run: impl FnOnce() -> T) -> T {
     run()
 }
 
-/// The evaluator's typed refused-token context. Display-only callers retain
-/// the public String helper; no input identities cross that presentation boundary.
 pub(crate) fn refused(reason: impl Into<Failure>) -> Failure {
     reason
         .into()
@@ -500,7 +463,6 @@ mod tests {
             );
         });
         assert_eq!(failures.len(), 1);
-        // The content reader's String-facing dispatch remains inferable.
         let _: installed_content_core::trigger_keys::Dispatched<(), ()> =
             installed_content_core::trigger_keys::dispatch(
                 installed_content_core::trigger_keys::Key {

@@ -1,4 +1,3 @@
-//! military save comparisons and recorded consistency checks.
 use recorder_oracle_combat_details::combat_details;
 #[cfg(test)]
 use recorder_oracle_support::fixtures;

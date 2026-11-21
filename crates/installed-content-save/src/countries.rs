@@ -1,4 +1,3 @@
-//! Full saved country emissions, projected only after a witnessed physical join.
 
 use std::{collections::BTreeMap, io, slice};
 
@@ -6,15 +5,12 @@ use installed_content_core::{parser, parser::Document, parser::Item, parser::Val
 
 use super::{GameDate, Save, block, field, invalid, required_block, required_bytes};
 
-/// Actual object identity supplied by the authenticated physical country census.
-/// A positive physical occurrence of the reserved pointer remains Reserved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActualCountry {
     Reserved,
     Canonical(u32),
 }
 
-/// One expected native emission; tags alone never establish this identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CountryEmissionIdentity {
     pub physical_slot: u32,
@@ -23,15 +19,12 @@ pub struct CountryEmissionIdentity {
     pub tag: Vec<u8>,
 }
 
-/// Saved facts for an emission admitted by the complete physical/payload gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedCountryEmission {
     pub identity: CountryEmissionIdentity,
-    /// Outer intel object presence, distinct from its omitted count-zero list.
     pub intel_present: bool,
 }
 
-/// The one owning save tree remains alive while its typed projection is compared.
 #[derive(Debug)]
 pub struct SaveDocument {
     document: Document,
@@ -77,8 +70,6 @@ impl SaveDocument {
         &self.version
     }
 
-    /// Original root syntax for independent comparisons beyond the typed save.
-    /// Country aliases still require the authenticated projection below.
     pub fn items(&self) -> &[Item] {
         &self.document.items
     }
@@ -87,8 +78,6 @@ impl SaveDocument {
         required_block(&self.document.items, b"countries")
     }
 
-    /// One syntax block per actual country after every physical occurrence is
-    /// authenticated and repeated emissions are compared structurally.
     pub fn representative_country_items(
         &self,
         layout: &[CountryEmissionIdentity],
@@ -102,7 +91,6 @@ impl SaveDocument {
             .collect())
     }
 
-    /// Standalone parsing retains every existing strict duplicate check.
     pub fn parse(&self) -> io::Result<Save> {
         super::parse_items(
             &self.document.items,
@@ -149,7 +137,6 @@ impl SaveDocument {
         )
     }
 
-    /// This is a syntax query, never permission to deduplicate equal tags.
     pub fn has_repeated_country_tags(&self) -> io::Result<bool> {
         let mut seen = std::collections::BTreeSet::new();
         for item in self.original_country_items()? {
@@ -162,8 +149,6 @@ impl SaveDocument {
         Ok(false)
     }
 
-    /// The caller must derive the layout from this frame's authenticated full
-    /// physical census. Every saved occurrence is joined before any grouping.
     pub fn project<'a>(
         &'a self,
         layout: &'a [CountryEmissionIdentity],
@@ -229,7 +214,6 @@ impl SaveDocument {
     }
 }
 
-/// Private fields prevent a caller from supplying an arbitrary country subset.
 #[derive(Debug)]
 pub struct CountryProjection<'a> {
     document: &'a SaveDocument,
@@ -293,8 +277,6 @@ fn country_tag(item: &Item) -> io::Result<&[u8]> {
         .ok_or_else(|| invalid("country has no tag"))
 }
 
-// Structural equality decides acceptance. This walk runs only on a failure
-// and supplies a useful path without a second normalization/comparison model.
 fn first_difference(first: &Item, next: &Item) -> String {
     if first.key != next.key {
         return "country.key".into();

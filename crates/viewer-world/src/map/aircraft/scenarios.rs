@@ -1,5 +1,3 @@
-//! Simulation-dependent regional scenario laws.
-//! Random choices and presentation time belong to the viewer.
 
 use replay_data::rows::Recorded;
 
@@ -18,32 +16,22 @@ pub(super) struct ScenarioWing<'a> {
     pub side: usize,
 }
 
-/// The missile bombing scenario kind (`missile_1_bombing`).
 pub(super) const MISSILE_KIND: u8 = 15;
-/// The mission bit whose base-equipment wings launch from their base when
-/// the other side has aircraft in the region.
 const LAUNCH_MISSION: u32 = 1 << 17;
-/// The pool-definition AIR_FLAGS bit whose base-equipment wings launch from
-/// their base without a flight.
 const LAUNCH_DEFINITION: u64 = 1 << 33;
 
-/// What a launch record does when its entity finishes: nothing for a bit-17
-/// mission's, the missile explosion in its mission's region for a
-/// launch-flagged definition's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum LaunchKind {
     Mission,
     Definition,
 }
 
-/// A base-equipment wing that starts a launch effect at its base.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LaunchRequest<'a> {
     pub wing: ScenarioWing<'a>,
     pub kind: LaunchKind,
 }
 
-/// Bombers, fighters, base equipment, transports, scouts.
 #[derive(Default)]
 pub(super) struct RegionGroups<'a> {
     pub arrays: [[Vec<ScenarioWing<'a>>; 5]; 2],
@@ -51,14 +39,11 @@ pub(super) struct RegionGroups<'a> {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ScenarioDraw<'a> {
-    /// One target/outcome choice per selected wing or wing-pair batch.
     pub batch: usize,
-    /// Native scenario side zero; for kinds 12/18 this is the fighter.
     pub attacker: ScenarioWing<'a>,
     pub defender: Option<ScenarioWing<'a>>,
     pub kind: u8,
     pub outcome: u8,
-    /// None leaves the native reached/region/naval-patrol choice to placement.
     pub province: Option<u32>,
 }
 
@@ -76,7 +61,6 @@ struct Scheduler<'a, 's> {
     draws: Vec<ScenarioDraw<'a>>,
     next_batch: usize,
     fighters_uncertain: bool,
-    /// The wings that start launch effects, in the scheduler's order.
     launches: Vec<LaunchRequest<'a>>,
 }
 
@@ -94,7 +78,6 @@ impl<'a> Scheduler<'a, '_> {
         }
     }
 
-    /// Count exact kind and outcome before the complete batch.
     fn open(&self, kind: u8, outcome: u8, limit: usize) -> bool {
         self.caps
             .counts
@@ -163,15 +146,6 @@ impl<'a> Scheduler<'a, '_> {
         }
     }
 
-    /// One side's base-equipment wings, in random order: each yields
-    /// `max(1, count / MISSILES_DIVISION_FACTOR)` launch effects at its base
-    /// or missile bombing scenarios to its target. The kind's limit is
-    /// checked before each wing, so a wing's batch can exceed it, and
-    /// reaching it ends the side. A bit-17 mission launches only while the
-    /// other side holds aircraft in the region; a launch-definition wing
-    /// launches unconditionally. A base holds one live launch record, which
-    /// the wing's first launch decides for all of its count, so each
-    /// launching wing is one request ([`super::launches`]).
     fn missiles(&mut self, wings: &mut Vec<ScenarioWing<'a>>, opposed: bool) {
         let family = match self.defines.missile {
             Ok(family) => family,
@@ -218,7 +192,6 @@ impl<'a> Scheduler<'a, '_> {
                         defender: None,
                         kind: MISSILE_KIND,
                         outcome: 0,
-                        // A zero target leaves placement its region draw.
                         province: (target != 0).then_some(target as u32),
                     },
                     1,
@@ -256,7 +229,6 @@ impl<'a> Scheduler<'a, '_> {
             } else {
                 (None, 0)
             };
-            // The game: A patrol singles count wings, including this one.
             if !triple
                 && if side == 0 && !naval {
                     before < family.single as usize
@@ -293,7 +265,6 @@ impl<'a> Scheduler<'a, '_> {
     fn bombers(&mut self, wings: &mut Vec<ScenarioWing<'a>>) {
         while !wings.is_empty() {
             let wing = take(wings, self.random);
-            // Both independent bomber branches read the wing's own plane count.
             let planes = wing.wing.planes;
             if planes <= 0 {
                 continue;
@@ -326,7 +297,6 @@ impl<'a> Scheduler<'a, '_> {
         }
     }
 
-    /// One weighted CAS draw, then random eligible wings.
     fn divert_cas(&mut self, bombers: &mut Vec<ScenarioWing<'a>>) -> bool {
         let mut candidates = Vec::new();
         let mut weighted = 0i64;
@@ -338,7 +308,6 @@ impl<'a> Scheduler<'a, '_> {
             let Some(planes) = self.planes(wing) else {
                 return false;
             };
-            // This eligibility division does not floor positive counts to one.
             if planes / self.defines.bomber.factor < self.defines.bomber_single {
                 continue;
             }
@@ -364,7 +333,6 @@ impl<'a> Scheduler<'a, '_> {
                 break;
             }
             let wing = take(&mut candidates, self.random);
-            // Native erase preserves order and removes every matching mission.
             bombers.retain(|candidate| !std::ptr::eq(candidate.inputs, wing.inputs));
             self.emit(
                 ScenarioDraw {
@@ -398,8 +366,6 @@ impl<'a> Scheduler<'a, '_> {
                 break;
             }
             let wing = take(wings, self.random);
-            // Fighters stay in
-            // their array; the same wing may escort several opposing batches.
             let fighter = fighters[self.random.next() as usize % fighters.len()];
             let Some(planes) = self.planes(&wing) else {
                 continue;
@@ -426,8 +392,6 @@ impl<'a> Scheduler<'a, '_> {
     ) {
         let family = self.defines.dogfight;
         while !a.is_empty() && !b.is_empty() {
-            // Swap before the single gate, truncate only after it. On a gate
-            // failure native retains the nominal arrays for the transport arm.
             let attacker = swap_selected(a, self.random);
             let defender = swap_selected(b, self.random);
             let Some(a_planes) = self.planes(&attacker) else {
@@ -445,7 +409,6 @@ impl<'a> Scheduler<'a, '_> {
             let a_units = family.sizing.units(a_planes);
             let b_units = family.sizing.units(b_planes);
             let triple = a_units >= family.sizing.triple && b_units >= family.sizing.triple;
-            // Counts include the selected wings, before decrement.
             if !triple && (a.len() < family.single as usize || b.len() < family.single as usize) {
                 break;
             }
@@ -489,8 +452,6 @@ fn take<T: Copy>(wings: &mut Vec<T>, random: &mut Random) -> T {
     wings.swap_remove(random.next() as usize % wings.len())
 }
 
-/// The native selected element is replaced by the final element before its
-/// nominal count changes. Retain that order on a failed dogfight single gate.
 fn swap_selected<T: Copy>(wings: &mut [T], random: &mut Random) -> T {
     let index = random.next() as usize % wings.len();
     let selected = wings[index];
@@ -503,14 +464,12 @@ fn cas_ratio(weighted: i64, planes: i32) -> i64 {
     if denominator == 0 {
         return 0;
     }
-    // Native fixed-point sentinel check precedes the multiply.
     if (weighted as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
         return 0xffff_ffff;
     }
     weighted.wrapping_mul(100_000) / denominator
 }
 
-/// The game: CAS takes precedence; fire threshold precedes carpet.
 fn bomber_kind(wing: &AirWingRow, units: i32, defines: FlightDefines) -> Result<u8, &'static str> {
     let triple = u8::from(units >= defines.bomber.triple);
     if wing.mission_mask & 0x202 != 0 {
@@ -533,8 +492,6 @@ fn bomber_kind(wing: &AirWingRow, units: i32, defines: FlightDefines) -> Result<
     Ok(6 + triple)
 }
 
-/// Window-zero fighter-loss tolerance, with native signed
-/// multiplication overflow and division toward zero.
 fn dogfight_outcome(a: i64, b: i64) -> u8 {
     if a.wrapping_mul(110_000) / 100_000 < b {
         2
@@ -545,8 +502,6 @@ fn dogfight_outcome(a: i64, b: i64) -> u8 {
     }
 }
 
-/// A region's scenario draws and the launch effects its base-equipment wings
-/// start at their bases.
 pub(super) struct Generated<'a> {
     pub draws: Vec<ScenarioDraw<'a>>,
     pub launches: Vec<LaunchRequest<'a>>,
@@ -564,8 +519,6 @@ pub(super) fn generate<'a>(
     diagnostics: &mut Vec<String>,
     naval: &NavalSelector<'a, '_>,
 ) -> Generated<'a> {
-    // A bit-17 launch reads the other side's initial bomber, fighter,
-    // base-equipment and transport arrays.
     let present = groups
         .arrays
         .each_ref()
@@ -602,8 +555,6 @@ pub(super) fn generate<'a>(
     scheduler.stepped(&mut scouts, defines.scout, [2, 3], true);
     scheduler.missiles(&mut missiles_a, present[1]);
     scheduler.missiles(&mut missiles_b, present[0]);
-    // The four initial bomber/fighter arrays alone select training or these
-    // arms. Scouts, base equipment and transports do not block training.
     if bombers_a.is_empty() && fighters_a.is_empty() {
         scheduler.fighters(&mut fighters_b, 1);
         scheduler.bombers(&mut bombers_b);
@@ -621,7 +572,6 @@ pub(super) fn generate<'a>(
                 u8::from(b_damage < a_damage) + 1,
             );
         }
-        // A missing fighter array jumps straight to the transport arm.
         if bombers_b.is_empty() || !fighters_a.is_empty() {
             if !bombers_b.is_empty() && scheduler.divert_cas(&mut bombers_b) {
                 scheduler.opposed(
@@ -641,8 +591,6 @@ pub(super) fn generate<'a>(
         scheduler.diagnostics.push(format!(
             "region {region} opposing aircraft scenarios omitted: {reason}"
         ));
-        // Their residual fighter arrays depend on the missing outcomes and
-        // cannot safely admit dependent transport pairing.
         return scheduler.generated();
     }
     if scheduler.fighters_uncertain {
@@ -651,7 +599,6 @@ pub(super) fn generate<'a>(
         ));
         return scheduler.generated();
     }
-    // Transport admission uses the arrays left by dogfights.
     if transports_a.is_empty() && fighters_a.is_empty() {
         scheduler.stepped(&mut transports_b, defines.transport, [19, 20], false);
     } else if transports_b.is_empty() && fighters_b.is_empty() {
@@ -771,7 +718,6 @@ mod tests {
             province: Some(41),
             ..Default::default()
         };
-        // 25 missiles at a factor of 10 are two scenarios; 5 still one.
         let rockets = [wing(1, 25), wing(2, 5)];
         let target = AirMissionInputRow {
             last_target_province: 77,
@@ -790,8 +736,6 @@ mod tests {
             .collect();
         let (draws, diagnostics) = run(groups, defines, Ok([0; 8]));
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        // The limit is checked before each wing, so the second wing's
-        // batch can pass it; each draw is its own scenario at the target.
         let missiles: Vec<_> = draws
             .iter()
             .filter(|draw| draw.kind == MISSILE_KIND)
@@ -800,9 +744,6 @@ mod tests {
         assert!(missiles.iter().all(|draw| draw.province == Some(77)));
         let batches: BTreeSet<_> = missiles.iter().map(|draw| draw.batch).collect();
         assert_eq!(batches.len(), 3);
-        // Reaching the limit ends the side before the next wing. The first
-        // wing is the scheduler's first draw: 25 missiles are two
-        // scenarios, 5 are one.
         let first_units = [2, 1][Random::new(37).next() as usize % 2];
         for (limit, expected) in [
             (1, first_units),
@@ -828,7 +769,6 @@ mod tests {
                 "limit {limit}"
             );
         }
-        // Missing missile defines omit only the base-equipment wings, by name.
         let mut refused = defines;
         refused.missile = Err("NDefines.NAirGfx.MISSILES_DIVISION_FACTOR is zero");
         let mut groups = RegionGroups::default();
@@ -844,8 +784,6 @@ mod tests {
                 "region 7 omits 2 base-equipment wings' missile scenarios and launch effects: NDefines.NAirGfx.MISSILES_DIVISION_FACTOR is zero"
             ]
         );
-        // A launch definition starts one launch effect at its base, never a
-        // flight; a bit-17 mission only while the other side has aircraft.
         let launch = AirMissionInputRow {
             last_target_province: 77,
             definition_map_flags: AIR_MISSION_BASE_EQUIPMENT_FLAGS,
@@ -891,8 +829,6 @@ mod tests {
             BTreeSet::from([(1, LaunchKind::Definition)])
         );
         assert!(alone.draws.iter().all(|draw| draw.kind != MISSILE_KIND));
-        // One request per launching wing, whatever its count: the base's
-        // record decides every unit.
         assert_eq!(
             launches(&generate_with(true)),
             BTreeSet::from([(1, LaunchKind::Definition), (3, LaunchKind::Mission)])
@@ -932,9 +868,6 @@ mod tests {
                 .map(|draw| draw.attacker.wing.id)
                 .collect::<Vec<_>>()
         };
-        // Without missile wings the stream is untouched; a missile wing's
-        // selection takes one draw ahead of the bombers, as the game's order
-        // does.
         let taken = |skip: usize| {
             let mut random = Random::new(37);
             for _ in 0..skip {
@@ -976,7 +909,7 @@ mod tests {
         groups.arrays[1][1].push(participant(&fighter, &input, &base, 1));
         let (draws, diagnostics) = run(groups, defines(), Ok([20, 10, 0, 1, 2, 0, 0, 0]));
         assert!(diagnostics.is_empty());
-        assert_eq!(draws.len(), 3); // One whole 3-unit batch passes a cap of one.
+        assert_eq!(draws.len(), 3);
         assert!(
             draws
                 .iter()
@@ -1145,7 +1078,6 @@ mod tests {
             .collect();
         let (draws, diagnostics) = run(groups, defines(), Err("old format"));
         assert!(diagnostics.is_empty());
-        // Seed37 visits plain3, capped plain1, then fire2.
         assert_eq!(
             draws.iter().map(|draw| draw.kind).collect::<Vec<_>>(),
             [6, 10]
@@ -1193,7 +1125,6 @@ mod tests {
             .iter()
             .map(|wing| participant(wing, &input, &base, 0))
             .collect();
-        // Seed37 picks entry zero first; the naval unit gate ends the loop.
         let (draws, diagnostics) = run(groups, defines, Err("old format"));
         assert!(diagnostics.is_empty());
         assert!(draws.is_empty());
@@ -1204,7 +1135,6 @@ mod tests {
             .iter()
             .map(|wing| participant(wing, &input, &base, 0))
             .collect();
-        // The normal A gate sees two wings, so its zero batch continues.
         let (draws, _) = run(groups, defines, Err("old format"));
         assert_eq!(draws.len(), 1);
         assert_eq!((draws[0].kind, draws[0].attacker.wing.id), (1, 2));

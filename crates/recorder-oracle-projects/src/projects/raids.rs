@@ -69,31 +69,19 @@ pub(super) fn compare_raid_countries(
     Ok(())
 }
 
-/// A per-raid reader's census rule over a raid's phase, outcome and end hour
-/// at the frame's hour, as the reader applies it to the live raid.
 type RaidRule = fn(&engine_native::raid_speed_inputs::Raid, i32) -> bool;
 
-/// RaidSpeedInputs' census: [`engine_native::raid_speed_inputs::live`].
 fn raid_flying(raid: &engine_native::raid_speed_inputs::Raid, hour: i32) -> bool {
     engine_native::raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
 }
 
-/// A saved raid's end hour: the engine hour of its `end_date`, written from
-/// the same stored end-hour word the readers record as `end_hour`
-/// ([`saved::Raid::end_date`]).
 fn saved_end_hour(raid: &saved::Raid) -> io::Result<Option<i32>> {
     raid.end_date.map(|date| date.engine_hour()).transpose()
 }
 
-/// Saved raids by full reference.
 type SavedRaids<'a> = BTreeMap<u64, &'a saved::Raid>;
-/// The saved raids a per-raid reader records, with their end hours.
 type RaidCensus<'a> = BTreeMap<u64, (&'a saved::Raid, Option<i32>)>;
 
-/// Every saved raid by full reference, and the ones a per-raid reader must
-/// have recorded at the frame's hour by its `rule`, with their end hours.
-/// The frame's hour is the save's (`matching_hour`), the current engine hour
-/// the reader tests the live raid against.
 fn raid_census(
     pack: &saved::Pack,
     hour: i32,
@@ -126,10 +114,6 @@ fn raid_census(
     Ok((raids, expected))
 }
 
-/// A recorded per-raid row against the census ([`raid_census`]): `None`, with
-/// the difference reported, when the census holds no such raid. The saved
-/// raid's phase, outcome (when the table records it) and end hour are
-/// compared with the row's.
 #[allow(clippy::too_many_arguments)]
 fn census_member<'a>(
     report: &mut Report,
@@ -159,41 +143,12 @@ fn census_member<'a>(
     Some(saved)
 }
 
-/// RaidEquipment against each saved raid's `equipment` pool and `nukes`.
-/// The pool writer writes the entries in pool order and omits zero amounts unless
-/// `allow_zero_entries`; the raid writer omits the whole pool when the gate finds it
-/// empty and `nukes` when zero.
-///
-/// Membership is checked both ways: every saved raid the reader's rule
-/// ([`engine_native::raid_equipment::recorded`]: phases 1 to 3, or flying) admits at
-/// the frame's hour needs a row, and every row needs such a saved raid.
-///
-/// The pool writer does not write the pool's per-archetype totals. Every pool
-/// operation the raid functions call moves a total by its entry's change:
-/// variant addition (from raid equipment allocation, and through pool
-/// subtraction and variant subtraction), pool addition and pool clearing.
-/// Loading assigns each entry and moves the total by the difference.
-/// Quantity scaling, which rounds totals and entries separately,
-/// has no raid caller. So each total is compared exactly with the sum of its
-/// archetype's saved amounts, the archetype of a variant being its
-/// `VariantDefinitions.archetype_token`, as for StockpileArchetypes.
-///
-/// Each of those operations clamps the total and the entry separately to
-/// `+-0x53E2D620FB40` (`L`): a row whose recorded total, a contributing saved
-/// entry or the saved sum reaches the bound is a limitation. The one case
-/// the comparison cannot see is a clamp that later unwound: adding `3/4 L`
-/// to two variants of one archetype clamps the total at `L`, and removing
-/// one leaves a native total of `1/4 L` beside saved entries summing to
-/// `3/4 L`, with no current value at the bound. That needs the pool to have
-/// held at least `L` (about 9.2e8 units) of one archetype at some point, so
-/// in a real save it would only ever surface as a reported difference.
 pub(super) fn compare_raid_equipment(
     frame: &DecodedFrame,
     pack: &saved::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
     let (raids, expected) = raid_census(pack, frame.hour, engine_native::raid_equipment::recorded)?;
-    // Without the definitions no total is derived; the entries still compare.
     let archetype_of: Option<BTreeMap<u64, u32>> = complete::<tables::VariantDefinitions>(frame)
         .ok()
         .map(|rows| {
@@ -295,9 +250,6 @@ pub(super) fn compare_raid_equipment(
     Ok(())
 }
 
-/// One raid's recorded archetype totals against the sums of its saved
-/// amounts by archetype ([`compare_raid_equipment`]). Returns the totals
-/// compared.
 fn compare_raid_archetype_totals(
     row: &replay_data::rows::RaidEquipmentRow,
     saved: &[installed_content_save::production::Equipment],
@@ -305,9 +257,7 @@ fn compare_raid_archetype_totals(
     label: &str,
     report: &mut Report,
 ) -> usize {
-    /// Each pool operation clamps a total and an entry to this bound.
     const LIMIT: i128 = 0x53e2_d620_fb40;
-    // Per archetype: the saved sum, and whether an entry sits at the bound.
     let mut expected: BTreeMap<u32, (i128, bool)> = BTreeMap::new();
     for entry in saved {
         let Some(&archetype) = archetype_of.get(&entry.variant) else {
@@ -332,10 +282,6 @@ fn compare_raid_archetype_totals(
         }
         let total_at_bound = i128::from(total).abs() >= LIMIT;
         match expected.remove(&archetype) {
-            // A saved sum at or past the bound: the native total is clamped
-            // to L, so a sum of exactly L can hide a clamp that later unwound
-            // (3/4 L added to two variants, 1/4 L removed from each: entries
-            // sum to L, native total 1/2 L).
             Some((sum, entry_at_bound)) if total_at_bound || entry_at_bound || sum.abs() >= LIMIT => {
                 report.limitation(
                     "this raid pool archetype's recorded total, a contributing saved entry or their saved sum reaches the bound variant addition clamps a total and an entry to separately; the clamped total depends on the unsaved order of operations",
@@ -356,7 +302,6 @@ fn compare_raid_archetype_totals(
                 compared += 1;
                 report.difference(field, total, "no saved variant of this archetype");
             }
-            // An archetype whose entries are zero keeps its zero total.
             None => {}
         }
     }
@@ -366,9 +311,6 @@ fn compare_raid_archetype_totals(
     compared
 }
 
-/// RaidTooltipOperands against the saved non-ended raids: per-raid ordinals,
-/// both reference witnesses, and saved army and wing scalars and name bytes.
-/// The other families are runtime operands the save omits, reported as limitations.
 pub fn compare_raid_tooltip_operands(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -423,8 +365,6 @@ pub fn compare_raid_tooltip_operands(
             continue;
         }
         if row.kind == SOURCE_CACHED_NAME {
-            // The save writes the ship's naming operands, never its retained
-            // display text; matched native hovers witness it.
             if row.key == u32::MAX {
                 report.limitation(
                     "raid source ship retained display name is a runtime cache the save omits",
@@ -494,11 +434,6 @@ pub fn compare_raid_tooltip_operands(
     Ok(())
 }
 
-/// The game selects the wing only when its army fails resolution. The save
-/// writes handles, not resolution, so require the recorded NAME witnesses.
-/// The game writes the unit's stored name outside checksum
-/// mode. The game escapes quotes and backslashes: compare
-/// decoded bytes, including the final chunk's zero padding.
 fn compare_raid_wing_names(
     rows: &[replay_data::rows::RaidTooltipOperandRow],
     expected: &RaidCensus<'_>,
@@ -649,12 +584,6 @@ fn compare_raid_wing_names(
     Ok(())
 }
 
-/// RaidSpeedInputs' census against the saved raids, both ways: every saved
-/// raid the reader's rule ([`engine_native::raid_speed_inputs::live`]: phase 4, or
-/// ended, not cancelled, at most an hour before the frame's hour) admits needs
-/// a row, and every row needs such a saved raid; each row's phase, outcome and
-/// end hour are the saved raid's. The speed operands themselves are live
-/// getter inputs the raid writer does not save.
 pub(super) fn compare_raid_speed_inputs(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -689,9 +618,6 @@ pub(super) fn compare_raid_speed_inputs(
     Ok(())
 }
 
-/// `RaidPlayerAllowedTypes` has no save counterpart: the player raid cache
-/// is interface state that rebuilds on load and when the player changes. Only its shape is checked:
-/// one cache at most.
 pub(super) fn compare_raid_player(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     let rows = complete::<tables::RaidPlayerAllowedTypes>(frame)?;
     if rows.len() > 1 {
@@ -751,7 +677,6 @@ pub(super) fn compare_raids(
             row.outcome,
             saved.outcome,
         );
-        // The save writes a show_for entry only for a positive country handle.
         if row.show_for.iter().any(|&raw| raw as i32 <= 0) {
             report.limitation(
                 "the save writes no show_for entry without a country; those entries are not compared",
@@ -821,14 +746,12 @@ pub(super) fn compare_raids(
             row.air_wing,
             saved.air_wing.unwrap_or(0),
         );
-        // The raid writer writes `prep_time` only when nonzero.
         equal(
             report,
             format!("{label}.preparation_hours"),
             row.preparation_hours,
             saved.preparation_hours,
         );
-        // The raid writer writes `distance` as the exact raw / 100000 when nonzero.
         match row.travelled {
             Some(travelled) => equal(
                 report,
@@ -856,10 +779,6 @@ pub(super) fn compare_raids(
     Ok(())
 }
 
-/// The source's building reference against the saved `raid_source.building`:
-/// The writer emits it only when the building-reference test passes (a type
-/// other than 0x4c17, and a location other than -1 or a positive country),
-/// with the type token's literal as `template` and the location.
 fn compare_source_building(
     report: &mut Report,
     label: &str,
@@ -902,10 +821,6 @@ fn compare_source_building(
     }
 }
 
-/// One recorded scope against the saved `target` block:
-/// It contains `province`, `state`, `leader`,
-/// `leader_province` and `building`, whose `template` is the
-/// building's lexer token and whose `location` is its stored building location.
 pub(super) fn compare_scope(
     report: &mut Report,
     label: &str,
@@ -952,9 +867,6 @@ pub(super) fn compare_scope(
         saved.building_location,
     );
     if scope.building_type != 0 {
-        // The game writes a province location when bit 0 is
-        // set, else location -1 and the country when the override is
-        // positive, else a state location. Only those branches fix bit 0.
         let province = scope.building_flags & engine_native::cbuilding_status::PROVINCE_FLAG != 0;
         let wrong = match saved.building_location {
             Some(-1) => province,
@@ -978,7 +890,6 @@ pub(super) fn compare_scope(
     }
 }
 
-/// `RaidTargets` against the saved `type`, `target` and `detected` fields.
 pub(super) fn compare_raid_targets(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -1040,7 +951,6 @@ pub(super) fn compare_raid_targets(
     Ok(())
 }
 
-/// `RaidCooldowns` against each parent's saved `target_cooldowns`, in order.
 pub(super) fn compare_raid_cooldowns(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -1093,7 +1003,6 @@ pub(super) fn compare_raid_cooldowns(
     Ok(())
 }
 
-/// `RaidTargetStatuses` against `raids.targets`, in order.
 pub(super) fn compare_raid_target_statuses(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -1105,7 +1014,6 @@ pub(super) fn compare_raid_target_statuses(
         .as_ref()
         .ok_or_else(|| invalid("save lacks raids.targets; absence does not certify no targets"))?;
     let rows = complete::<tables::RaidTargetStatuses>(frame)?;
-    // The native ordinal is the row key and the saved entry's position.
     let mut seen = BTreeSet::new();
     for row in rows {
         if !seen.insert(row.ordinal) {
@@ -1153,13 +1061,11 @@ pub(super) fn compare_raid_target_statuses(
     Ok(())
 }
 
-/// The content graph and geometry the raid path search runs on.
 pub type RaidGraph = (
     installed_content_core::province_graph::ProvinceGraph,
     installed_content_core::province_geometry::ProvinceGeometry,
 );
 
-/// Session memo entries are checked against their dispatcher's content search, not the save.
 pub fn compare_raid_paths(
     frame: &DecodedFrame,
     (graph, geometry): &RaidGraph,

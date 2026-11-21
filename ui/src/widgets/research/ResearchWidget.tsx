@@ -52,19 +52,16 @@ const NO_TOKENS: readonly string[] = [];
 const NO_COVERAGE: ResearchCoverage[] = [];
 const NO_LANES: ResearchLane[] = [];
 const NO_LOOKS: ReadonlyMap<string, ResearchFolderLook> = new Map();
-/** An opened breakdown: the assignment and the hour it was opened at, which its slots are read at. */
 type Breakdown = { slotIndex: number; entry: ResearchEntry; hour: number };
 type Tip = (content: () => TooltipContent, key: string, x: number, y: number) => void;
 type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpProps>;
 const laneInteractive = (item: ResearchItem) => item.kind !== 'opened' && item.kind !== 'closed';
 const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.databaseIndex : null;
 
-/** A technology's picture, or the flask when content has none. */
 function Art({ icon, className }: { icon: string | undefined; className: string }) {
   return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
-/** Hover and keyboard focus show the same tooltip. */
 function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
   return {
     onPointerMove: (event: { clientX: number; clientY: number }) => tip(content, key, event.clientX, event.clientY),
@@ -74,7 +71,6 @@ function tipProps(tip: Tip, untip: () => void, key: string, content: () => Toolt
   };
 }
 
-/** One row of a slot's lane. A completion opens its breakdown; the gaps and the opening are read-only. */
 function LaneRow({ item, slots, text, dimmed, tip, untip, jump, onOpen }: {
   item: ResearchItem; slots: readonly ResearchSlotHistory[]; text: ResearchText;
   dimmed: (token: string, databaseIndex?: number | null) => boolean;
@@ -92,8 +88,6 @@ function LaneRow({ item, slots, text, dimmed, tip, untip, jump, onOpen }: {
     {...jump(item.hour)}><Art icon={text.icon(token)} className="research-cell-art" /><span className="research-cell-name">{name}</span><small>{date}</small></button>;
 }
 
-/** Live or pinned: what the slot is doing at the hour shown, under its lane, from the slots' latest read and the
- * whole history at that read's hour. Its progress and saved days are painted (`data-research-slot`). */
 function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }: {
   lane: ResearchLane; history: ResearchData['history']; now: ResearchSlotsAt | undefined; text: ResearchText;
   tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
@@ -129,7 +123,6 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
   </>;
   const tips = tipProps(tip, untip, `now:${slot.index}`, content);
   return entry
-    // Jump goes to the earliest joined assignment, including earlier slots.
     ? <button type="button" className="research-now-cell" data-research-slot={slot.index} aria-label={`${name}, researching in slot ${slot.index + 1}, show time breakdown`} {...tips}
       {...jump(() => { const slots = researchAt(history, latest.current?.hour ?? now.hour); const at = slots.find(owner => owner.index === slot.index);
         return at ? researchJourney(slots, at, entry).firstHour : null; })}
@@ -137,7 +130,6 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
     : <div className="research-now-cell" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching in slot ${slot.index + 1}`} {...tips}>{body}</div>;
 }
 
-/** The folders a filter shows: up to four colour dots and a short label. */
 function FolderTrigger({ folders, chosen }: { folders: readonly ResearchFolderLook[]; chosen: ReadonlySet<string> }) {
   const picked = folders.filter(folder => chosen.has(folder.key));
   const shown = (picked.length ? picked : folders).slice(0, 4);
@@ -173,7 +165,6 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const slots = useMemo(() => data && hour !== undefined ? researchAt(data.history, hour) : null, [data, hour]);
   const coverage = useMemo(() => data && hour !== undefined ? coverageAt(data.history.coverage, hour) : NO_COVERAGE, [data, hour]);
   const lanes = useMemo(() => data && hour !== undefined ? researchLanesAt(data.history, hour) : NO_LANES, [data, hour]);
-  // Colours follow the country's whole history, so they hold through playback.
   const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : NO_LOOKS, [data, categories]);
   const folders = useMemo(() => researchFolderList(looks), [looks]);
   const chosenTokens = useMemo(() => contentSet(options.folders), [options.folders]);
@@ -195,8 +186,6 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
         coverageAt(data.history.coverage, requested)).filter(includeRow).map(row => row.key);
     },
   } : undefined);
-  // Every technology the country's history names, asked once with the history: a completion or an assignment the
-  // clock reaches while playing asks nothing.
   const imageTokens = useMemo(() => data ? [...new Set(historyTokens(data.history).map(use => typeof use === 'string' ? use : use[0]))] : NO_TOKENS, [data]);
   const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
   const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data, recorded);
@@ -269,8 +258,6 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   </section>;
 }
 
-/** One column per slot, oldest at the top. A slot that opened during the
- * recording starts at the row the other columns had reached by then. */
 function ResearchColumns({ lanes, slots, hour, moment, now, latest, text, dimmed, tip, untip, jump, onOpen, data }: {
   lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; hour: number; moment: boolean; now: ResearchSlotsAt | undefined;
   latest: { current: ResearchSlotsAt | undefined }; text: ResearchText;
@@ -295,7 +282,6 @@ function ResearchColumns({ lanes, slots, hour, moment, now, latest, text, dimmed
   </div>;
 }
 
-/** Every completed technology as one table row; the recording's gaps keep their place while sorted by date. */
 function ResearchList({ rows, text, looks, sort, density, narrow, setOption, menu, onOpen }: {
   rows: ResearchRow[]; text: ResearchText;
   looks: ResearchFolderLooks; sort: { column: string; direction: 'ascending' | 'descending' };

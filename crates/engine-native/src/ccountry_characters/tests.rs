@@ -26,7 +26,6 @@ fn vector(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     p32(bytes, at + 8, count);
     p32(bytes, at + 12, count);
 }
-/// MSVC std::string: inline up to 15 bytes, else a terminated heap buffer.
 fn string(bytes: &mut [u8], at: usize, value: &[u8], heap: usize) {
     if value.len() <= 15 {
         bytes[at..at + value.len()].copy_from_slice(value);
@@ -41,8 +40,6 @@ fn string(bytes: &mut [u8], at: usize, value: &[u8], heap: usize) {
     p64(bytes, at + 16, value.len() as u64);
 }
 
-/// Country 1 has two appointed advisors (a heap idea token and an inline
-/// one); country 2 has one. The third advisor is country 2's army chief.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x8000];
     vector(&mut bytes, GS + cgame_state::COUNTRIES, COUNTRIES, 3);
@@ -284,8 +281,6 @@ fn available_advisor_walk_header_demand_and_selected_slices_follow_countries() {
     assert_eq!(rows[COUNT - 1].country, COUNT as u32);
     assert_eq!(rows[COUNT - 1].character, COUNT as u32 * 2);
     assert_eq!(result.bytes_len, COUNT * 4);
-    // A walk of selected countries reads exactly their pools, each equal to
-    // the whole walk's: 24 slices by country id cover the census once.
     let identity = |row: &Row, text: &[u8]| {
         (
             row.country,
@@ -361,15 +356,12 @@ fn a_missing_character_object_or_empty_list_has_no_rows() {
 #[test]
 fn unauthenticated_objects_and_short_reads_fail_the_table() {
     for (address, value) in [
-        // Another class at the root, or an object owned by another country.
         (OBJ1, 1_u64),
         (OBJ2 + OWNER, C1 as u64),
-        // A null or foreign advisor, a null or foreign character.
         (ARRAY1 + 8, 0),
         (ADVISORS[1], 7),
         (ADVISORS[1] + cadvisor::CHARACTER, 0),
         (CHARACTERS[2].0, 7),
-        // An unreadable pointer array and an unreadable advisor.
         (OBJ1 + APPOINTED_ADVISORS, 0x9_0000),
         (ARRAY2, 0x9_0000),
     ] {
@@ -382,7 +374,6 @@ fn unauthenticated_objects_and_short_reads_fail_the_table() {
         );
         assert_eq!((result.bytes_len, result.required_bytes), (0, 0));
     }
-    // A zero character id and a missing heap terminator.
     let mut bytes = fixture();
     p32(&mut bytes, CHARACTERS[0].0 + ccharacter::ID, 0);
     assert!(matches!(
@@ -395,7 +386,6 @@ fn unauthenticated_objects_and_short_reads_fail_the_table() {
         run(&bytes, 4, 256).0.outcome,
         Outcome::Unavailable { .. }
     ));
-    // A count beyond the array's capacity is invalid, not empty.
     let mut bytes = fixture();
     p32(&mut bytes, OBJ2 + APPOINTED_ADVISORS + 12, 5);
     assert!(matches!(
@@ -421,8 +411,6 @@ fn a_declared_string_length_alone_never_sizes_growth() {
             self.memory.copy(address, destination)
         }
     }
-    // The first idea token declares 1 MiB on a far heap buffer whose
-    // terminator is readable.
     let declared = 1 << 20;
     let far = 0x10000;
     let mut bytes = fixture();
@@ -443,7 +431,6 @@ fn a_declared_string_length_alone_never_sizes_growth() {
         let mut arena = vec![0; 8];
         walk(&memory, 0, GS, &mut output, &mut arena)
     };
-    // Unreadable payload: the walk fails rather than asking for 1 MiB.
     let result = run(far..far + declared);
     assert!(
         matches!(result.outcome, Outcome::Unavailable { .. }),
@@ -451,7 +438,6 @@ fn a_declared_string_length_alone_never_sizes_growth() {
     );
 }
 
-/// Country 1 holds three active records (one null) and country 2 none.
 const ACTIVE1: usize = 0x4a00;
 fn active_fixture() -> Vec<u8> {
     let mut bytes = fixture();
@@ -463,7 +449,6 @@ fn active_fixture() -> Vec<u8> {
         ACTIVE1 + 2 * ACTIVE_RECORD_STRIDE,
         CHARACTERS[0].0 as u64,
     );
-    // The record's status booleans are not part of the row.
     bytes[ACTIVE1 + 8..ACTIVE1 + 12].copy_from_slice(&[1, 0, 1, 0]);
     bytes
 }
@@ -474,8 +459,6 @@ fn run_active(bytes: &[u8], rows: usize) -> (Outcome, Vec<ActiveRow>) {
     (outcome, output)
 }
 
-/// Country 2 retired character 1482 (an empty active array); country 1
-/// retired none.
 const RETIRED2: usize = 0x4b00;
 fn retired_fixture() -> Vec<u8> {
     let mut bytes = active_fixture();
@@ -510,7 +493,6 @@ fn retired_records_walk_beside_the_active_ones() {
             character: Some(1482)
         }
     );
-    // The count probe counts each table on its own.
     let outcomes = count_records(
         &SliceMemory {
             base: 0,
@@ -551,7 +533,6 @@ fn an_unreadable_retired_array_fails_only_its_table() {
     );
     assert_eq!(active_outcome, Outcome::Rows { len: 3 });
     assert!(matches!(retired_outcome, Outcome::Unavailable { .. }));
-    // An unauthenticated object fails both.
     let mut bytes = retired_fixture();
     p64(&mut bytes, OBJ2, 1);
     let outcomes = walk_records(
@@ -571,12 +552,9 @@ fn an_unreadable_retired_array_fails_only_its_table() {
     );
 }
 
-/// A later failure of the shared country pass does not replace a table's
-/// own earlier one.
 #[test]
 fn a_table_keeps_its_own_first_failure_before_a_shared_one() {
     let mut bytes = retired_fixture();
-    // Country 1's retired array is invalid, then country 2's object.
     vector(&mut bytes, OBJ1 + RETIRED_CHARACTERS, RETIRED2, 1);
     p32(&mut bytes, OBJ1 + RETIRED_CHARACTERS + 12, 5);
     p64(&mut bytes, OBJ2, 1);
@@ -676,7 +654,6 @@ fn unauthenticated_active_records_fail_the_table() {
             "{address:#x}: {outcome:?}"
         );
     }
-    // A count beyond the array's capacity is invalid, not empty.
     let mut bytes = active_fixture();
     p32(&mut bytes, OBJ1 + ACTIVE_CHARACTERS + 12, 5);
     assert!(matches!(
@@ -685,7 +662,6 @@ fn unauthenticated_active_records_fail_the_table() {
     ));
 }
 
-/// Counts guarded calls: one per copy and one per scattered batch.
 struct Guarded<'a> {
     bytes: &'a [u8],
     guards: std::cell::Cell<usize>,
@@ -720,7 +696,6 @@ impl Memory for Guarded<'_> {
     }
 }
 
-/// Country 1 holds 30 active records naming the three characters in turn.
 fn many_active_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     vector(&mut bytes, OBJ1 + ACTIVE_CHARACTERS, ACTIVE1, 30);
@@ -734,8 +709,6 @@ fn many_active_fixture() -> Vec<u8> {
     bytes
 }
 
-/// A page of records costs one guarded batch of their characters' identity
-/// headers, where a read per record took one guarded call each (30 here).
 #[test]
 fn a_page_of_active_records_reads_its_characters_in_one_guarded_batch() {
     let bytes = many_active_fixture();
@@ -760,8 +733,6 @@ fn a_page_of_active_records_reads_its_characters_in_one_guarded_batch() {
     assert!(guards < 30, "{guards} guarded calls");
 }
 
-/// The first faulty record in native order decides the table's reason, as
-/// with a read per record.
 #[test]
 fn the_first_faulty_active_record_decides_the_reason() {
     let unreadable = 0x9_0000_u64;

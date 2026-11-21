@@ -64,9 +64,6 @@ fn design_discount_oracle_compares_every_record_and_refuses_missing_demanded_own
     );
 }
 
-/// A frame of the line output self-check: whether it read the lines'
-/// slot, its ProductionLineOutput rows `(line, variant, organisation, units)`
-/// with their census lines, and its history slots.
 fn output_frame(
     hour: i32,
     read: bool,
@@ -83,7 +80,6 @@ fn output_frame(
         .map(Into::into),
     };
     if read {
-        // The collector marks every table of the production slot's walk read.
         let slot = replay_data::cadence::cadence(TableId::ProductionLines);
         for table in TableId::ALL {
             if replay_data::cadence::cadence(table) == slot {
@@ -133,7 +129,6 @@ fn output_frame(
     frame
 }
 
-/// One branch of `frames` as a replay, for the checks that walk it.
 fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
     use replay::spool::Record;
     use replay_data::{
@@ -178,8 +173,6 @@ fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
     ];
     let mut encoder = FrameEncoder::new();
     for mut frame in frames {
-        // Only the checked tables are recorded; the singletons hold
-        // their one row.
         for table in TableId::ALL {
             if !LINE_OUTPUT_TABLES.contains(&table) {
                 *frame.tables[table.index()] = TableView::Unavailable {
@@ -201,9 +194,6 @@ fn output_replay(frames: Vec<DecodedFrame>) -> Replay {
     Replay::from_records(b"campaign".to_vec(), &[records]).unwrap()
 }
 
-/// With the table empty at the compared hour, because the branch's last
-/// line ended and its final rows were dropped at the next publication, the
-/// earlier publications are still self-checked against their census.
 #[test]
 fn line_output_census_is_checked_after_the_last_line_ended() {
     const ORG: u64 = (5 << 32) | 79;
@@ -222,7 +212,6 @@ fn line_output_census_is_checked_after_the_last_line_ended() {
         }
         let frames = vec![
             output_frame(100, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]),
-            // Line 2's final publication: it ended.
             ended,
             output_frame(148, true, &[], &[(ORG, TANK, 10)]),
         ];
@@ -238,7 +227,6 @@ fn line_output_census_is_checked_after_the_last_line_ended() {
         report.compared_tables["ProductionLineOutput census self-check"],
         1
     );
-    // The ended line's row left a census that still holds the line.
     let report = run(true);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(
@@ -246,7 +234,6 @@ fn line_output_census_is_checked_after_the_last_line_ended() {
         "{:?}",
         report.differences
     );
-    // A branch that never published a row has nothing to check.
     let frames = vec![
         output_frame(100, true, &[], &[(ORG, TANK, 10)]),
         output_frame(124, true, &[], &[(ORG, TANK, 10)]),
@@ -287,7 +274,6 @@ fn line_output_country_uses_saved_producer_and_resolved_raw_reference() {
         tag: b"DES".to_vec(),
         ..Default::default()
     };
-    // CountryLinks resolves raw 5001 to producer slot 5.
     let links = BTreeMap::from([(5001, &producer), (6, &designer)]);
     let line = (1_u64 << 32) | 56;
     let row = ProductionLineOutputRow {
@@ -330,7 +316,6 @@ fn line_output_country_uses_saved_producer_and_resolved_raw_reference() {
     result.unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains(".country"));
-    // A live row whose line the save does not hold.
     let (result, report) = run(vec![
         row.clone(),
         ProductionLineOutputRow {
@@ -438,7 +423,6 @@ fn organisations_compare_order_key_texts_owner_and_history_units() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["IndustrialOrganisations"], 2);
     assert_eq!(report.compared_tables["IndustrialOrganisationHistory"], 1);
-    // Units, order, key, texts and an unsaved history slot all differ.
     let mut changed = rows;
     changed[0].ordinal = 1;
     changed[0].icon = b"GFX_idea_b".to_vec();
@@ -526,7 +510,6 @@ military_deployment_conveyor={
 }
 }"#;
 
-/// One saved queue plus the captured rows that should match it exactly.
 type DeploymentContext = (
     production::Pack,
     Vec<CountryRow>,
@@ -683,7 +666,6 @@ fn equipment_rosters_compare_in_saved_order_and_absent_foreign_is_empty() {
     let report = run(vec![row(0, 0, 5061), row(0, 1, 5061)]).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["AvailableEquipmentVariants"], 2);
-    // A different variant, and a foreign entry the save does not hold.
     let report = run(vec![row(0, 0, 5061), row(0, 1, 90), row(1, 0, 90)]).unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert!(run(vec![row(0, 1, 5061)]).is_err());
@@ -734,11 +716,7 @@ fn licences_and_the_deployment_queue_compare_exactly_against_a_real_save_shape()
     assert_eq!(report.compared_tables["ProductionLicenses"], 2);
     assert_eq!(report.compared_tables["ProductionLicenseRecords"], 1);
     assert_eq!(report.compared_tables["DeploymentConveyors"], 1);
-    // Only the trained line's two words reach the decimal comparator; the
-    // untrained line's omitted words are compared against zero instead.
     assert_eq!(report.scalar_checks, 2);
-    // Both deployment gaps are now recorded and compared, so neither
-    // limitation may remain for this queue.
     assert!(
         !report
             .limitations
@@ -776,18 +754,13 @@ fn changed_words_missing_rows_and_unresolved_roles_are_all_reported() {
     );
     let mut report = Report::default();
     compare_licenses(&frame, &saved, &links, &mut report).unwrap();
-    // One licence short: the count differs and the retained entry matches.
     assert_eq!(report.differences.len(), 1);
-    // An empty licence-record table against one saved record: count only.
     let mut report = Report::default();
     compare_license_records(&frame, &saved, &links, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     let tokens: TokenNames<'_> = TokenNames::new();
     let mut report = Report::default();
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
-    // name, amount, max_training, name_order, a changed manpower count and
-    // a zero-amount entry the save still carries, plus the untrained line
-    // whose omitted training no longer reads as zero.
     assert_eq!(report.differences.len(), 7, "{:?}", report.differences);
     assert!(
         report
@@ -797,8 +770,6 @@ fn changed_words_missing_rows_and_unresolved_roles_are_all_reported() {
     );
 }
 
-/// Every licence-record field must be able to fail on its own; a comparator
-/// that only counted rows would pass this with the wrong values.
 #[test]
 fn every_licence_record_field_can_differ_on_its_own() {
     let (saved, countries, ..) = deployment_context();
@@ -843,8 +814,6 @@ fn every_licence_record_field_can_differ_on_its_own() {
         );
         let mut report = Report::default();
         let result = compare_license_records(&frame, &saved, &links, &mut report);
-        // A zero giver has no country tag at all, which is an error, not a
-        // silent pass; every other change is exactly one difference.
         if name == "giver" {
             assert!(result.is_err(), "{name}");
         } else {
@@ -871,15 +840,11 @@ fn every_licence_record_field_can_differ_on_its_own() {
     assert_eq!(report.compared_tables["ProductionLicenseRecords"], 1);
 }
 
-/// The game omits the order word only when it is zero, so a nonzero
-/// captured order against an omitted saved one is a real difference.
 #[test]
 fn an_omitted_name_order_is_compared_against_zero_not_waived() {
     let (saved, countries, conveyors, mut lines, manpower, equipment) = deployment_context();
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
     let tokens: TokenNames<'_> = [(11_u32, b"armor".as_slice())].into_iter().collect();
-    // The untrained line's saved division_name carries an override and no
-    // order word, and the captured row already holds zero.
     assert_eq!(lines[0].name_order, 0);
     lines[0].name_order = -1;
     let frame = deployment_frame(
@@ -925,9 +890,6 @@ fn deployment_child_rows_without_a_captured_line_are_differences() {
     assert!(report.differences[1].contains("DeploymentManpower line"));
 }
 
-/// Gated exile and flagged custom-name emission: present values compare
-/// exactly, omitted values prove empty/clear, and any mismatch is a real
-/// difference rather than a printed limitation.
 #[test]
 fn exile_tag_present_and_omitted_compare_with_gated_emission() {
     const SAVE: &[u8] = br#"countries={
@@ -1000,7 +962,6 @@ military_deployment_conveyor={
     let mut report = Report::default();
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Present saved tag against an omitted captured reference is a difference.
     let mut missing = conveyors.clone();
     missing[0].exile_country = None;
     let frame = deployment_frame(
@@ -1015,7 +976,6 @@ military_deployment_conveyor={
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("government_in_exile_tag"));
-    // Omitted saved tag against a present captured reference is a difference.
     let mut extra = conveyors;
     extra[1].exile_country = Some(10);
     let frame = deployment_frame(
@@ -1032,9 +992,6 @@ military_deployment_conveyor={
     assert!(report.differences[0].contains("government_in_exile_tag"));
 }
 
-/// Custom names keep raw bytes plus both flag bytes: the string is gated on
-/// nonzero length, 0x3936 on the set flag (saved as
-/// override_set_programmatically), and 0x38e2 omits when set.
 #[test]
 fn custom_name_and_programmatic_flags_compare_with_flagged_emission() {
     const SAVE: &[u8] = br#"countries={
@@ -1119,7 +1076,6 @@ military_deployment_conveyor={
     let mut report = Report::default();
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Omitted saved override against present captured bytes is a difference.
     let mut extra = lines.clone();
     extra[1].custom_name = b"Other".to_vec();
     let frame = deployment_frame(
@@ -1134,8 +1090,6 @@ military_deployment_conveyor={
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains(".override"));
-    // Present saved override against empty captured bytes is a difference
-    // (presence plus content, both under the same override label).
     let mut missing = lines.clone();
     missing[0].custom_name.clear();
     let frame = deployment_frame(
@@ -1155,7 +1109,6 @@ military_deployment_conveyor={
             .iter()
             .all(|text| text.contains(".override"))
     );
-    // Present programmatic flag against a clear captured flag is a difference.
     let mut cleared = lines.clone();
     cleared[0].custom_flag_b = 0;
     let frame = deployment_frame(
@@ -1170,7 +1123,6 @@ military_deployment_conveyor={
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("override_set_programmatically"));
-    // Omitted programmatic flag against a set captured flag is a difference.
     let mut set = lines.clone();
     set[1].custom_flag_b = 1;
     let frame = deployment_frame(
@@ -1185,7 +1137,6 @@ military_deployment_conveyor={
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("override_set_programmatically"));
-    // A clear flag without its `no` field is a real difference.
     let mut cleared_a = lines;
     cleared_a[0].custom_flag_a = 0;
     let frame = deployment_frame(
@@ -1291,8 +1242,6 @@ fn zero_preserving_pool_checks_full_handles_and_zero_membership() {
     .unwrap();
     assert!(report.differences.is_empty());
     assert!(report.limitations.is_empty());
-    // Keyed alignment reports the one missing entry once instead of
-    // shifting every later position into a variant and an amount difference.
     let mut report = Report::default();
     compare_pool([(0, 70, i64::MIN)], &saved, "pool", &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -1301,8 +1250,6 @@ fn zero_preserving_pool_checks_full_handles_and_zero_membership() {
 
 #[test]
 fn removed_entries_do_not_shift_later_banks_into_false_differences() {
-    // One removed entry used to inflate every following position into two
-    // differences; only the removal and the real amount change remain.
     let saved = pool(
         b"equipment={id={id=1 type=70} amount=1}
           equipment={id={id=3 type=70} amount=3}
@@ -1370,7 +1317,6 @@ fn base_line_compares_omitted_zero_and_signed_fixed5_without_narrowing() {
     )
     .unwrap();
     let expected = production::parse_line_base(&doc.items).unwrap();
-    // The saved produced progress has no recorded counterpart: it is retired.
     assert!(expected.produced.is_some());
     let mut actual = ProductionLineRow {
         handle: 0xffff_ffff_0000_0038,
@@ -1411,7 +1357,6 @@ fn efficiency_averages_the_saved_prefix_clamped_by_the_recorded_maximum() {
     let mut report = Report::default();
     compare_efficiency(&actual, expected, "line", &mut report);
     assert!(report.differences.is_empty());
-    // A maximum below the active factories clamps the average.
     actual.max_factories = 2;
     actual.efficiency_raw = (103 << 15) / 2;
     compare_efficiency(&actual, expected, "line", &mut report);
@@ -1419,13 +1364,11 @@ fn efficiency_averages_the_saved_prefix_clamped_by_the_recorded_maximum() {
     actual.efficiency_raw += 1;
     compare_efficiency(&actual, expected, "line", &mut report);
     assert_eq!(report.differences.len(), 1);
-    // More factories than saved entries is a difference, not a guess.
     actual.max_factories = 5;
     let mut short = expected.clone();
     short.base.active_factories = Some(5);
     compare_efficiency(&actual, &short, "line", &mut report);
     assert_eq!(report.differences.len(), 2);
-    // No active factories: zero, whatever the array holds.
     short.base.active_factories = None;
     actual.efficiency_raw = 0;
     compare_efficiency(&actual, &short, "line", &mut report);
@@ -1484,7 +1427,6 @@ fn modifier_oracle_compares_every_saved_factory_occurrence_and_keeps_runtime_ope
             .keys()
             .any(|reason| reason.contains("MIO cache/dirty state"))
     );
-    // Inactive entries, repeats and native order are compared, not the average.
     for factories in [
         vec![53 << 15],
         vec![53 << 15, 10 << 15, -(1 << 15), 10 << 15],
@@ -1508,7 +1450,6 @@ fn modifier_oracle_compares_every_saved_factory_occurrence_and_keeps_runtime_ope
     }]);
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("active_factories"));
-    // The save omits is_converting when the control is clear.
     let report = check(vec![ProductionLineModifiersRow {
         converting: replay_data::rows::Recorded::Value(true),
         ..row.clone()
@@ -1670,10 +1611,6 @@ fn lexical_writers_keep_exact_bytes_and_scope_unproved_nul_literals() {
     assert_eq!(report.differences.len(), 1);
 }
 
-/// The archetype comes from the content: the type itself when it is an
-/// archetype, else its `archetype`, else its parent's. A type the content
-/// declares twice is the later declaration, reset and read again when
-/// names match under the lexer's fold.
 #[test]
 fn variant_archetypes_follow_the_content_equipment_types() {
     let (equipment, _) = installed_content_core::equipment::fixture::load(&[(
@@ -1728,16 +1665,10 @@ fn variant_archetypes_follow_the_content_equipment_types() {
         4
     );
     assert!(report.limitations.is_empty(), "{:?}", report.limitations);
-    // A wrong archetype and a type the content lacks.
     let report = run(vec![(3, 2), (5, 1)]);
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 }
 
-/// Variants the live #63 recording (LR63B_O1, hour 60827795) held,
-/// with their recorded equipment and archetype literals: their types
-/// exist only as `duplicate_archetypes` copies of the vanilla airframe
-/// and chassis types (content trimmed to the expansion's fields). The
-/// oracle found each "absent from the content" before the expansion.
 #[test]
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1773,7 +1704,6 @@ light_tank_destroyer_chassis = { archetype = light_tank_chassis type = { armor a
         b"light_tank_destroyer_chassis_1",
     ];
     let tokens: TokenNames<'static> = (1..).zip(literals).collect();
-    // (variant, equipment token, archetype token) as recorded.
     let rows = [
         (5_896_990_097_478, 2, 1),
         (5_905_580_032_070, 3, 1),
@@ -1809,7 +1739,6 @@ light_tank_destroyer_chassis = { archetype = light_tank_chassis type = { armor a
         report.compared_tables["VariantDefinitions.archetype_token"],
         4
     );
-    // A copy recorded under its source archetype is still a difference.
     *frame.tables[TableId::VariantDefinitions.index()] =
         TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
             id: 5_896_990_097_478,
@@ -2530,8 +2459,6 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
     mios::compare(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["IndustrialOrganisationDetails"], 1);
-    // The save omits the policy-cost modifier: a failed read is a difference,
-    // and a successful design-context read of the same key must agree.
     let policies = |cost_modifier_raw: Option<i64>| {
         TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
             IndustrialOrganisationPoliciesRow {
@@ -2546,8 +2473,6 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
             },
         ]))
     };
-    // Raw reference 12 is an alias of the same country: its design reads
-    // resolve to it and are compared too.
     let aliased = BTreeMap::from([(11, &country), (12, &country)]);
     let design = |reads: &[(u32, i64, u8)]| {
         TableView::Complete(TableRows::DesignCountryModifiers(

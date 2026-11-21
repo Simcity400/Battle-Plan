@@ -1,18 +1,3 @@
-//! The map text layer: the viewing country's floating text and critical bombardment explosions
-//! from the recorded map events, made by today's maker ([`Prepared::read`]) and handed to the scene
-//! in order, each interval once.
-//!
-//! The frame thread takes each step's interval as that step left it, from a copy of its own of the
-//! one row stepped with each step (the map's mirror has every step of the frame applied before
-//! the layers apply any), and, for an interval with
-//! no event, makes it in place: there is nothing to decide. An interval holding events goes to the
-//! layer's own worker ([`worker`]); the worker holds the tables the events' context and the
-//! viewer's sight read, stepped to the end of the interval's own step, and makes it there: events
-//! that read a province's fog read that hour's, never the hour the vision layer settled at. The frame presents finished intervals in order, a frame or two after their step.
-//!
-//! MapEvents is one row rewritten every hour, not a log: a step hands over its last hour's
-//! interval only. A step of one hour presents every interval in turn; a longer step presents its
-//! last hour's, and the scene's consumer names the intervals in between as a discontinuity.
 
 #[cfg(test)]
 mod tests;
@@ -50,8 +35,6 @@ use viewer_world::map::{
     strike_effects::Impacts,
 };
 
-/// The tables today's maker reads: the interval first (from the map's mirror), then what its
-/// context reads for an event (the worker's own, stepped with the map).
 pub const TABLES: [TableId; 12] = [
     TableId::MapEvents,
     TableId::CountryLinks,
@@ -67,8 +50,6 @@ pub const TABLES: [TableId; 12] = [
     TableId::Subjects,
 ];
 
-/// The tables the worker steps: the events' context, and what the viewer's sight of a province
-/// reads at the interval's own hour.
 fn worker_tables() -> Vec<TableId> {
     let mut tables: Vec<TableId> = TABLES[1..].iter().chain(VISION_TABLES).copied().collect();
     tables.sort_unstable();
@@ -76,8 +57,6 @@ fn worker_tables() -> Vec<TableId> {
     tables
 }
 
-/// What today's maker takes besides the rows: the building types, the localisation, where a
-/// province's explosion stands, and the fog content a province's sight is derived with.
 pub trait Source: Send + Sync {
     fn text(&self) -> &events::Content;
     fn localisation(&self) -> &Localisation;
@@ -103,7 +82,6 @@ impl Source for crate::document::Content {
     }
 }
 
-/// What the layer hands the scene, in order: an hour's interval, or why the hour has none.
 #[derive(Clone, Debug)]
 pub enum Presented {
     Hour { at: (BranchId, Hour), seek: bool, prepared: Arc<Prepared> },
@@ -124,7 +102,6 @@ impl Presented {
         }
     }
 
-    /// The interval as the display operand compares it, or the reason the hour has none.
     pub fn shown(&self) -> Result<map_display_data::MapText, &str> {
         match self {
             Self::Hour { prepared, .. } => Ok(prepared.display()),
@@ -133,26 +110,20 @@ impl Presented {
     }
 }
 
-/// A step the head took whose interval is still to hand on: its hour, whether it was sought, and
-/// the interval as the step left it (none in a gap).
 #[derive(Clone, Debug)]
 struct Due {
     hour: Hour,
     seek: bool,
     interval: Option<SharedView>,
-    /// The playhead's seek of its step.
     epoch: u64,
 }
 
-/// An interval in presentation order: made, or on the worker under its serial and its seek.
 #[derive(Debug)]
 enum Slot {
     Ready(Presented),
     Pending { serial: u64, epoch: u64 },
 }
 
-/// How long an unlimited settle (a compose, the proof's and the stepped harness's settles) waits for
-/// the worker's intervals before it names the wait.
 const WAIT: Duration = Duration::from_secs(120);
 
 const GAP: &str = "map text presented hour is unavailable: the hour is a gap in the recording";
@@ -160,33 +131,19 @@ const GAP: &str = "map text presented hour is unavailable: the hour is a gap in 
 pub struct MapText {
     source: Arc<dyn Source>,
     branch: BranchId,
-    /// MapEvents' column kinds, once declared.
     kinds: Vec<Kind>,
     due: VecDeque<Due>,
-    /// The last hour applied (a compose's head): every interval through it is due or handed on.
     applied: Option<Hour>,
-    /// The playhead's seek of the steps applied.
     epoch: u64,
-    /// MapEvents' one row as the steps applied so far left it: the map's mirror stands at the
-    /// frame's last step when the host has the layer apply each of a frame's steps.
     own: Mirrors,
-    /// MapEvents' status as last taken: a change of it alone is a new interval.
     status: Option<Option<Status>>,
-    /// The newest interval made with every one before it: the head's once nothing is pending.
     last: Option<Presented>,
-    /// Made or on the worker, not yet handed to the scene, in order.
     queue: VecDeque<Slot>,
-    /// The hour of the interval last handed to the scene.
     presented: Option<Hour>,
     order: Vec<(u128, u32)>,
     frame: u64,
-    /// The playhead it was attached to, and the context tables the worker steps (declared at
-    /// once, so they come with the next seek's reset) until the worker takes them; why not, when
-    /// they could not be declared.
     rows: Mutex<Option<(Arc<Entry>, Option<Result<Stepped, String>>)>>,
     worker: Option<worker::Worker>,
-    /// Steps that brought a new interval; intervals made in place (none holding an event);
-    /// intervals made on the worker.
     marked: [u64; 3],
 }
 
@@ -212,7 +169,6 @@ impl MapText {
         }
     }
 
-    /// Reads the events' context from `entry`'s playhead from now on, through tables of its own.
     pub fn attach(&self, entry: Arc<Entry>) {
         let stepped = Stepped::new(&entry, &worker_tables()).map_err(|error| format!("map text context: its tables cannot be declared: {error}"));
         *self.rows.lock().unwrap_or_else(PoisonError::into_inner) = Some((entry, Some(stepped)));
@@ -231,12 +187,10 @@ impl MapText {
         fresh
     }
 
-    /// The interval made at the head; none before the first.
     pub fn product(&self) -> Option<&Presented> {
         self.last.as_ref()
     }
 
-    /// The intervals made and not yet handed to the scene, in order, up to the first on the worker.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending(&self) -> Vec<&Presented> {
         self.queue
@@ -248,25 +202,20 @@ impl MapText {
             .collect()
     }
 
-    /// Whether intervals are on the worker.
     #[cfg(any(test, feature = "test-support"))]
     pub fn waiting(&self) -> bool {
         self.queue.iter().any(|slot| matches!(slot, Slot::Pending { .. }))
     }
 
-    /// Its worker's liveness, for a test that drops the layer.
     #[cfg(any(test, feature = "test-support"))]
     pub fn worker_alive(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
         self.worker.as_ref().map(worker::Worker::alive)
     }
 
-    /// Steps that brought a new interval; intervals made in place, none holding an event;
-    /// intervals made on the worker.
     pub fn marked(&self) -> [u64; 3] {
         self.marked
     }
 
-    /// The interval's rows as the step left them, as today's frame reader makes them: one row.
     fn view(&mut self, mirror: &Mirror) -> SharedView {
         let (made, _) = view::make(TableId::MapEvents, mirror, (&self.kinds, u64::MAX), false, &mut self.order);
         let sampled = if matches!(made, TableView::Complete(_)) { mirror.sampled() } else { None };
@@ -278,8 +227,6 @@ impl MapText {
         self.due.push_back(Due { hour, seek, interval, epoch: self.epoch });
     }
 
-    /// The worker, started once: with the context tables when attached, refusing them by name
-    /// otherwise.
     fn worker(&mut self) -> io::Result<&mut worker::Worker> {
         if self.worker.is_none() {
             let stepped = self.rows.lock().unwrap_or_else(PoisonError::into_inner).as_mut().and_then(|(_, stepped)| stepped.take());
@@ -289,9 +236,6 @@ impl MapText {
         Ok(self.worker.as_mut().expect("started"))
     }
 
-    /// One due interval handed on: made in place when the hour has none or it holds no event,
-    /// otherwise sent to the worker for the vision of the interval's own hour (its viewer and its
-    /// fog), which the worker derives from that hour's rows.
     fn hand_on(&mut self, due: Due, vision: Option<&Vision>) -> io::Result<()> {
         let at = (self.branch, due.hour);
         let seek = due.seek;
@@ -319,15 +263,10 @@ impl MapText {
         Ok(())
     }
 
-    /// The playhead's entry the context is read from, when attached.
     fn entry(&self) -> Option<Arc<crate::playhead_host::Entry>> {
         self.rows.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(entry, _)| Arc::clone(entry))
     }
 
-    /// The worker's finished intervals put in their places, and those of a seek since superseded
-    /// let go unmade; with `wait`, until none is pending. Waiting holds the frame, so it stands the
-    /// head: context tables declared since the seek (a layer composed anew) land past the head while
-    /// the clock plays, and are read at it instead.
     fn take(&mut self, wait: Option<Duration>) -> io::Result<()> {
         let entry = self.entry();
         if let Some(worker) = &mut self.worker {
@@ -367,8 +306,6 @@ impl MapText {
     }
 }
 
-/// The provinces an interval's events read the viewer's sight of; none when it holds no event or
-/// cannot be read (today's maker then names why, with no event to decide).
 fn read_provinces(frame: &DecodedFrame) -> Option<Vec<u32>> {
     let rows = viewer_foundation::table_access::rows::<tables::MapEvents>(frame).ok()?;
     let events: Vec<_> = rows.rows().iter().flat_map(|row| &row.events).collect();
@@ -387,13 +324,11 @@ fn read_provinces(frame: &DecodedFrame) -> Option<Vec<u32>> {
     )
 }
 
-/// An interval made at the head against another product: 0 or 1 differing, the difference described.
 pub fn differ(ours: Option<&Presented>, theirs: Result<Option<map_display_data::MapText>, String>) -> (u64, Option<String>) {
     let ours = ours.map(Presented::shown).transpose().map_err(str::to_owned);
     if ours == theirs { (0, None) } else { (1, Some(format!("{ours:?} against {theirs:?}"))) }
 }
 
-/// Whether a step changed the table: its rows, cells or status.
 fn touched(changes: &Changes) -> bool {
     changes.reset() || changes.renumber().is_some() || !changes.deleted().is_empty() || !changes.inserted().is_empty() || changes.columns().iter().any(|written| !written.is_empty())
 }
@@ -423,8 +358,6 @@ impl Layer for MapText {
         self.compose_with(mirrors, &Upstream::new(&[]))
     }
 
-    /// The head's interval, sought, made before it returns (on the worker when it holds events);
-    /// what was queued before the reset is dropped.
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         self.queue.clear();
         self.due.clear();
@@ -449,8 +382,6 @@ impl Layer for MapText {
         self.apply_with(step, mirrors, &Upstream::new(&[]));
     }
 
-    /// A step that changed the interval takes it as that step left it: one row, from the layer's
-    /// own copy stepped with each step (the map's mirror stands at the frame's last step).
     fn apply_with(&mut self, step: &Step, mirrors: &Mirrors, _upstream: &Upstream<'_>) {
         if self.kinds.is_empty() {
             return;
@@ -486,11 +417,9 @@ impl Layer for MapText {
         self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
-    /// Hands on the due intervals within the settling, then joins the worker's within its budget.
     fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         self.frame += 1;
         let entry = self.entry();
-        // A seek since superseded abandoned these intervals' steps: no rows decide them.
         if let Some(newest) = entry.as_ref().map(|entry| entry.playhead().epoch()) {
             self.due.retain(|due| due.epoch >= newest);
         }
@@ -499,25 +428,18 @@ impl Layer for MapText {
             let due = self.due.pop_front().expect("not empty");
             self.hand_on(due, vision)?;
         }
-        // The worker's context steps through every hour whose interval is handed on: its reader
-        // holds the playhead's steps until then.
         let through = self.due.front().map_or(self.applied.map(|hour| (hour, self.epoch)), |due| Some((due.hour - 1, due.epoch)));
         if let Some((hour, epoch)) = through
             && (entry.is_some() || self.worker.is_some())
         {
             self.worker()?.through(hour, epoch);
         }
-        // Out of the step's budget, the intervals it holds stay pending and the step after joins
-        // them; only a settle that waits however long it takes is refused by name.
         match self.take(Some(settling.waiting(WAIT))) {
             Err(error) if settling.strict() => Err(error),
             _ => Ok(()),
         }
     }
 
-    /// The finished intervals in order through the scene's own input, up to the first still on the
-    /// worker; the impacts are the strikes layer's. Its continuity is the consumer's, from the hour
-    /// and whether it was sought.
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         self.take(None)?;
         let content = gpu.content;
@@ -537,8 +459,6 @@ impl Layer for MapText {
         Carried { entities: self.due.len() }
     }
 
-    /// While the worker holds an interval: the hour of the newest made before it, or presented
-    /// last; current once it holds none.
     fn published(&self) -> Published {
         let Some(first) = self.queue.iter().position(|slot| matches!(slot, Slot::Pending { .. })) else { return Published::Current };
         let before = self

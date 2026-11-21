@@ -1,4 +1,3 @@
-//! Visibility projection of industrial organisation templates from the content stack.
 use crate::{
     ResolvedLayers,
     key_names::KeyNames,
@@ -34,7 +33,6 @@ pub struct Database {
     pub notes: Vec<String>,
     refusals: BTreeMap<Vec<u8>, String>,
     unread: Vec<String>,
-    /// Each template's place in creation order, the order the include pass visits.
     created: BTreeMap<Vec<u8>, usize>,
 }
 
@@ -58,13 +56,11 @@ impl Database {
         let read = native::read(
             bytes,
             native::Mode::KeepMark,
-            // The file loop stops on either a closing brace or the end of text.
             native::Top::Persistent(Reader::File),
             Some(names),
             &mut |reader, field| match reader {
                 Reader::File => {
                     let name = field.key.c_str().to_ascii_lowercase();
-                    // Startup keeps the first token and skips duplicate bodies.
                     if seen.insert(name.clone()) {
                         current = Some(name);
                         Shape::Object(Reader::Template)
@@ -80,24 +76,24 @@ impl Database {
                 }
                 Reader::Template => {
                     if field.key.is_keyword("visible") {
-                        Shape::Trigger // Visibility conditions use country scope.
+                        Shape::Trigger
                     } else if field.key.is_keyword("include") {
-                        Shape::One // Included template token.
+                        Shape::One
                     } else if field.key.is_keyword("delete_included_values") {
-                        Shape::List // Fields whose inherited values are deleted.
+                        Shape::List
                     } else if field.key.is_keyword("name") {
-                        Shape::One // Display name.
+                        Shape::One
                     } else if field.key.is_keyword("initial_trait") {
-                        Shape::Object(Reader::InitialTrait) // Initial trait display fields.
+                        Shape::Object(Reader::InitialTrait)
                     } else {
-                        Shape::SkipIfOpen // Other template fields do not decide visibility.
+                        Shape::SkipIfOpen
                     }
                 }
                 Reader::InitialTrait => {
                     if field.key.is_keyword("name") {
-                        Shape::One // Initial trait name.
+                        Shape::One
                     } else if field.key.is_keyword("delete_included_values") {
-                        Shape::List // Deleted inherited initial trait fields.
+                        Shape::List
                     } else {
                         Shape::SkipIfOpen
                     }
@@ -107,7 +103,6 @@ impl Database {
         self.notes.extend(duplicate_notes);
         for (item, notes) in read.items.into_iter().zip(read.item_misreads) {
             let name = c_string(item.key.as_deref().unwrap_or_default()).to_ascii_lowercase();
-            // Skipped entries remain in the tree; keep the first definition.
             if self.templates.contains_key(&name) || self.refusals.contains_key(&name) {
                 continue;
             }
@@ -222,10 +217,6 @@ impl Database {
         })
     }
 
-    /// The name and initial trait name after the include pass. The pass visits
-    /// templates once in creation order, copying an include as it stands then:
-    /// one created later has not inherited anything yet. Nonempty local values
-    /// stay, and the copied initial trait is reparented to the child.
     pub fn display_fields(&self, token: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
         let name = token.to_ascii_lowercase();
         let template = self.template(&name)?;
@@ -244,7 +235,6 @@ impl Database {
                 self.display_fields(include)?
             }
             Ok(parent) => (parent.name.clone(), parent.initial_trait_name.clone()),
-            // The pass skips an include that names no template.
             Err(_) if self.unread.is_empty() && !self.refusals.contains_key(include) => {
                 return Ok(local);
             }
@@ -281,13 +271,10 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
             *note = format!("{path}: {note}");
         }
     }
-    // Policies load after organisation templates.
     database.policies = read_policies(layers, names, &mut database.notes)?;
     Ok(database)
 }
 
-/// The policies alone, as [`read`] reads them after the organisations, each file's notes added
-/// to `notes` by path. Policies read nothing of the organisations.
 pub fn read_policies(
     layers: &ResolvedLayers,
     names: &KeyNames,

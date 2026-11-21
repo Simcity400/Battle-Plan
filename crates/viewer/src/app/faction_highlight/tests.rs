@@ -142,7 +142,6 @@ fn a_failed_upload_does_not_mark_the_hover_installed() {
         lane.update(key(), |_| panic!("completed job"), plan, &dropper)
             .is_some()
     );
-    // The caller only acknowledges a successful GPU upload.
     assert!(
         lane.update(
             key(),

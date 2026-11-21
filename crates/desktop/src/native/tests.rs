@@ -176,7 +176,6 @@ fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
     host.set_folders(&config);
     let inner = host.shared.lock().unwrap();
     assert_eq!(inner.folders.as_ref(), Some(&config));
-    // No viewer runs, so nothing is queued for one.
     assert!(inner.pending.actions.is_empty());
 }
 
@@ -190,7 +189,6 @@ fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
     host.set_display(MapAction::FrameLimit { hz: Some(120.0) });
     host.set_display(MapAction::FrameLimit { hz: Some(60.0) });
     let inner = host.shared.lock().unwrap();
-    // Nothing runs yet, so nothing is queued; the latest of each kind is kept, numbered, instead.
     assert!(inner.pending.actions.is_empty());
     assert_eq!(
         format!("{:?}", inner.display),
@@ -203,7 +201,6 @@ fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
             ]
         )
     );
-    // A pop-out host shows the campaign map and reports through its owner.
     assert!(inner.pending.campaign_map);
     assert!(
         inner
@@ -232,7 +229,6 @@ fn moving_the_view_never_starts_a_viewer() {
     };
     host.set_bounds(bounds).unwrap();
     let inner = host.shared.lock().unwrap();
-    // No viewer runs and none is started; the next one started takes the bounds at launch.
     assert!(inner.map.is_none());
     assert!(!inner.status.running);
     assert_eq!(inner.bounds, Some(bounds));
@@ -249,7 +245,6 @@ fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
         MapAction::UiScale { scale: None },
         MapAction::FrameLimit { hz: None },
     ];
-    // Sent before this launch began, so its read has them or the game's newer settings.
     host.set_display(MapAction::Vsync { enabled: false });
     host.set_display(MapAction::UiScale { scale: Some(1.5) });
     host.set_display(MapAction::FrameLimit { hz: Some(60.0) });
@@ -259,7 +254,6 @@ fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
         debug(&launch_display(read.clone(), &inner.display, since))
     };
     assert_eq!(launch(), debug(&read));
-    // VSync and the frame rate limit changed after the read, before the child was installed.
     host.set_display(MapAction::Vsync { enabled: false });
     host.set_display(MapAction::FrameLimit { hz: Some(120.0) });
     assert_eq!(
@@ -297,7 +291,6 @@ fn a_waiting_controller_message_is_sent_even_while_hidden() {
     let mut pending = Pending::default();
     assert!(!pending.can_send(true));
     pending.gamepad = Some(GamepadMessage::Release);
-    // A release must reach a hidden viewer too.
     assert!(pending.can_send(false));
     let commands = pending.take_commands(false);
     assert!(commands.iter().any(|command| matches!(
@@ -335,7 +328,6 @@ fn only_the_latest_camera_mode_waits_for_the_viewer() {
             _ => None,
         })
         .collect();
-    // The latest mode keeps the latest overlay choice with it.
     assert_eq!(queued, [Some((CameraMode::Fly, true)), None]);
 }
 
@@ -356,8 +348,6 @@ fn the_status_carries_the_camera_mode_for_the_interface() {
     );
 }
 
-/// Stepping through many planes queues only the last choice, beside the camera mode, so
-/// the action queue never fills.
 #[test]
 fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
     use dashboard::protocol::{CameraMode, MapAction};

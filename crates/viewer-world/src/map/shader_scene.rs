@@ -1,4 +1,3 @@
-//! CPU shadows of native IA bindings for missing-program transitions.
 use eframe::wgpu;
 use shader_pipeline::{gpu, stream, vertices::NativeBuffer};
 use std::sync::MutexGuard;
@@ -9,8 +8,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The native commands of a compiled world producer, before a later null
-/// technique retains them. Physical binds are independent of reflected usage.
 pub struct Program {
     selection: shader_pipeline::library::Selection,
     layouts: Vec<gpu::VertexLayout>,
@@ -20,19 +17,16 @@ pub struct Program {
 }
 
 impl Program {
-    /// The technique it draws with.
     #[cfg(test)]
     pub fn selection(&self) -> &shader_pipeline::library::Selection {
         &self.selection
     }
 
-    /// The vertex layouts it draws with.
     #[cfg(test)]
     pub fn layouts(&self) -> &[gpu::VertexLayout] {
         &self.layouts
     }
 
-    /// The state it draws with.
     #[cfg(test)]
     pub fn state(&self) -> &gpu::State {
         &self.state
@@ -98,7 +92,6 @@ impl Program {
         }
     }
 
-    /// The sampler this program binds with a texture at `key`.
     pub fn sampler(&self, key: u32) -> Option<&installed_content_core::pdxshader::program::Sampler> {
         self.state.samplers.get(&key)
     }
@@ -143,16 +136,12 @@ impl Program {
     }
 }
 
-/// A native vertex allocation of `size` bytes: its written prefix and the sorted, disjoint
-/// known ranges within it.
 pub struct Partial {
     pub bytes: Vec<u8>,
     pub size: u64,
     pub known: Vec<Range<u64>>,
 }
 
-/// D3D11 binds a vertex buffer by handle, so a ring's NO_OVERWRITE append after a bind is
-/// what a later draw through that bind reads.
 #[derive(Clone)]
 enum Bytes {
     Complete(Arc<[u8]>),
@@ -199,7 +188,6 @@ impl State {
         self.vertices = previous.vertices.clone();
     }
 
-    /// A complete allocation, every byte known.
     pub fn bind_vertex(&mut self, slot: u32, stride: u64, bytes: Arc<[u8]>) {
         self.stream.bind_vertex_stride(slot, stride);
         self.vertices.insert(
@@ -239,8 +227,6 @@ impl State {
         self.prepare_with(arena, label, template, vertices, instances, None, None)
     }
 
-    /// Prepared geometry and a preceding pass are scoped to the caller's current view.
-    /// Native handles still bind and publish normally, even when uploads are reused.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_with(
         &mut self,
@@ -257,7 +243,6 @@ impl State {
         )
     }
 
-    /// A particle selection can retain a successful resolution; all native reads remain serial.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_with_cache(
         &mut self,
@@ -313,7 +298,6 @@ impl State {
         .map_err(io::Error::other)
     }
 
-    /// Freeze initialized ranges as well as bindings, before a later NO_OVERWRITE append.
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Self {
         let mut snapshot = Self::default();

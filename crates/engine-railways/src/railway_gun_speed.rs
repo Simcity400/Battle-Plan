@@ -1,9 +1,3 @@
-//! On-demand equipment speed for a railway gun's first ordinary route edge.
-//!
-//! Stat 0x3E is reduced from current variant inputs, without reading the variant's cached speed
-//! stat. The direct bonus list already holds selected equipment bonuses; no research or country
-//! bonus census is inferred. Collections retain order and first-match semantics. Reads are fixed
-//! for callbacks or growing for workers; unreadable inputs refuse the ETA.
 
 use engine_sites::Rva;
 use crate::{
@@ -12,41 +6,28 @@ use crate::{
     equipment_module_entry, equipment_upgrade_entry, fixed5, modifier_entry, read, walk::Buffer,
 };
 
-/// Lexer token for maximum-speed stat 0x3E. The caller must admit it
-/// through the existing fixed-layout token check.
 pub use crate::cpdx_lexer::MAXIMUM_SPEED_TOKEN;
 const SPEED_STAT: u32 = 0x3e;
 
-// The type's dense stat slots.
 const TYPE_STATS: usize = 0x148;
-// The variant's direct bonus list, a pointer array.
 const DIRECT_BONUSES: usize = 0xd0;
-// The variant's named handles select production entries of `NAMED_STRIDE`, each with its handle.
 const NAMED_HANDLES: usize = 0xe8;
 const NAMED_BONUSES: usize = 0x178;
 const NAMED_STRIDE: usize = 0xc8;
 const NAMED_HANDLE: usize = 0xc0;
-// Embedded equipment bonuses start at one of two places; their entry arrays follow their headers.
 const SPECIFIC_VTABLE_RVA: Rva = Rva(0x0279_69f0);
 const BONUS_VTABLE_RVA: Rva = Rva(0x0279_6998);
 const NAMED_VTABLE_RVA: Rva = Rva(0x029e_cff8);
-// The industrial-organisation trait bonus embedded in the variant.
 const MIO_BONUS: usize = 0x490;
 const MIO_VTABLE_RVA: Rva = Rva(0x0279_6c00);
-// Upgrade and module stat groups are embedded in the variant.
 const GROUP_VTABLE_RVA: Rva = Rva(0x029b_5d78);
 const STATS_VTABLE_RVA: Rva = Rva(0x0279_6940);
 
-/// Reused caller-owned storage for selected named-bonus pointers. All
-/// handles are collected before any selected stat array is read. Fixed
-/// shortages report the raw count; workers grow from the original header.
 pub struct NamedBonuses<'a> {
     pub pointers: Buffer<'a, usize>,
     pub required: usize,
 }
 
-/// Initial caller-arena demand from the authenticated variant's own header.
-/// Admission uses the raw handle count, before native filtering or matching.
 pub fn named_bonus_demand(memory: &impl Memory, variant: usize) -> Result<usize, &'static str> {
     Ok(array(memory, variant, NAMED_HANDLES, 4)?.count as usize)
 }
@@ -60,7 +41,6 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    // Average first, then apply the multiplicative factor for stat 0x3E.
     fn speed(self) -> Result<i64, &'static str> {
         let average = if self.average_count > 0 {
             fixed5::fraction(self.average, i64::from(self.average_count) * fixed5::SCALE)?
@@ -127,8 +107,6 @@ fn element(source: Array, ordinal: u32, stride: usize) -> Result<usize, &'static
         .ok_or("railway speed array element outside bounds")
 }
 
-// These native equipment-stat and MIO scans are linear, not modifier
-// accumulator binary searches. A matching zero remains present.
 fn first_value(memory: &impl Memory, source: Array, key: u32) -> Result<Option<i64>, &'static str> {
     for ordinal in 0..source.count {
         let entry = element(source, ordinal, modifier_entry::STRIDE)?;
@@ -165,7 +143,6 @@ fn country(
     if raw != 0 {
         return countries.resolve(raw).map(|country| country.pointer);
     }
-    // A zero country reference selects slot zero without reading a link.
     let pointer = pointer(memory, element(countries.arrays()[0], 0, 8)?, 0)?;
     authenticate(memory, base, pointer, ccountry::VTABLE_RVA)?;
     if field::<u32>(memory, pointer, ccountry::ID)? != 0 {
@@ -183,7 +160,6 @@ fn collect_named(
 ) -> Result<usize, &'static str> {
     let handles = array(memory, variant, NAMED_HANDLES, 4)?;
     scratch.required = scratch.required.max(handles.count as usize);
-    // Collect every variant named handle before reading selected stats.
     scratch.pointers.ensure(handles.count as usize)?;
     if handles.count == 0 {
         return Ok(0);
@@ -192,7 +168,6 @@ fn collect_named(
         return Err("railway speed named bonus capacity insufficient");
     }
     let countries = ccountry::Reader::new(memory, base, game_state)?;
-    // Resolve the creator before the optional origin override.
     let mut owner = country(
         memory,
         base,
@@ -224,8 +199,6 @@ fn collect_named(
     Ok(len)
 }
 
-// Visit additive, multiplicative, then averaged arrays. Scale each
-// selected value before the wrapping merge into the accumulator.
 fn group(
     memory: &impl Memory,
     base: usize,
@@ -252,11 +225,6 @@ fn group(
     Ok(())
 }
 
-/// Rebuild only stat0x3E from the authenticated live variant and its current
-/// selected inputs. The caller has resolved the exact railway-gun reference
-/// and authenticated this variant's full reference and primary vtable,
-/// and must have verified [`MAXIMUM_SPEED_TOKEN`] in its fixed-layout report.
-/// The named-pointer arena grows only in the worker Buffer mode.
 pub fn variant_speed(
     memory: &impl Memory,
     base: usize,

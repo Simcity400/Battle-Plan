@@ -66,9 +66,6 @@ fn air_superiority_inherited_state_is_independent_between_revisions() {
     assert!(other.state::<Vec<String>>().lock().unwrap().is_empty());
 }
 
-/// A request under folders the user has just left finishing while one under the new folders
-/// runs: each reply reports, and is kept by, its own folders' read set, and the old one's
-/// diagnostics never rebind what the new one reads.
 #[test]
 fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -88,7 +85,6 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
             .iter()
             .any(|line| line.contains("gfx/custom/icon.dds"))
     };
-    // Each request holds its folders' content while it runs.
     let held_old = source.content(&old.options).unwrap();
     let held_new = source.content(&new.options).unwrap();
     let (_, mut own) = installed_content_core::content::diagnostics::capture(|| {
@@ -100,8 +96,6 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     assert!(!uncovered(&old_lines));
     assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
     assert!(Arc::ptr_eq(&source.bound_content(&new.options).unwrap(), &held_new));
-    // A read under the old folders meanwhile reuses their held content, and the new request's
-    // reads still share its own.
     assert!(Arc::ptr_eq(&source.content(&old.options).unwrap(), &held_old));
     assert!(Arc::ptr_eq(&source.content(&new.options).unwrap(), &held_new));
     source.content(&old.options).unwrap();
@@ -116,8 +110,6 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The recording's own presentation is mounted once per content, so what artwork keeps by its
-/// mount lasts across requests; other folders' content gets a mount of its own.
 #[test]
 fn the_recordings_own_presentation_is_mounted_once_per_content() {
     engine_executable::executable_tables::initialize_for_tests()

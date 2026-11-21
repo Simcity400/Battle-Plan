@@ -1,18 +1,3 @@
-//! Hourly combat-window and marker operands. One bounded census feeds the
-//! independent tables. Rows and arenas grow from their original counts on the
-//! acquisition worker before publication; projection stays on the spool.
-//!
-//! The pass holds the simulation thread, so the walk reuses what it has read
-//! in the pass instead of reading it again: the census's authenticated
-//! participants (`cland_combat::Members`) serve the commander, detail and unit
-//! readers; each side's commander is selected once for the detail and tactic
-//! readers (`cland_combat::Commanders`); a combat's divisions' army and stat block
-//! fields are gathered in two calls (`combat_sources::Images`) for their four
-//! readers and modifier member; and the division readers share per-source
-//! results (`combat_sources::Sources`). Each reader meets a shared value, or
-//! its failure, where it would have read it; the tests' reference walk
-//! (`reference_walk`, test-only copies of `visit` and `detail`) shares none of
-//! it and must publish the same.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
@@ -45,20 +30,13 @@ use std::sync::{
 static RESERVE_SHARES: AtomicU64 = AtomicU64::new(0);
 static REFUSED_SHARES: AtomicU64 = AtomicU64::new(0);
 static FIRST_SHARE_REFUSAL: OnceLock<&'static str> = OnceLock::new();
-/// Refused optional side inputs of captured LandCombatDetails rows (the
-/// skill hover's next level, the learning floor, the leader block).
 static REFUSED_SIDE_INPUTS: AtomicU64 = AtomicU64::new(0);
-/// ReserveModifierTrees rows refused at capture, and the first reason.
 static REFUSED_TREES: AtomicU64 = AtomicU64::new(0);
 static FIRST_TREE_REFUSAL: OnceLock<&'static str> = OnceLock::new();
-/// Reserve trees carried and read.
 static RESERVE_TREE_COUNTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static FIRST_SIDE_INPUT_REFUSAL: OnceLock<&'static str> = OnceLock::new();
 
 pub const N: usize = 6;
-/// LandCombatDivisionModifiers projects the members the modifier side rows'
-/// pass captured: it has no capture or read accounting of its own, and its
-/// outcome follows theirs and the members' demand ([`Captured::outcomes`]).
 pub const TABLES: [TableId; N] = [
     TableId::LandCombatDetails,
     TableId::LandCombatDivisions,
@@ -82,14 +60,9 @@ pub struct Capacities {
     modifiers: usize,
     width_terms: usize,
     exile_tags: usize,
-    /// Name bytes: player names and each pass's group keys.
     division_names: usize,
-    /// Pass-scoped naming memo sizes (template handles, group pointers).
     name_templates: usize,
     name_groups: usize,
-    /// Every detail list is sized from its live vectors' demand: all token
-    /// bytes, commander assigned/timed/learning traits and air-support counts
-    /// (committed and reserve handles use `rosters`).
     commander_traits: usize,
     detail_text: usize,
     timed_traits: usize,
@@ -120,8 +93,6 @@ collector_primitives::capacity_max!(Capacities {
     learning_traits,
 });
 impl Capacities {
-    /// Before attach and on the spool's sizing thread, from the live combat census
-    /// and the shared count-only detail walk. Capture keeps its growth fallback.
     pub fn raise_for_live_details(&mut self, demand: cland_combat::DetailDemand) {
         for (capacity, required) in [
             (&mut self.combats, demand.rows),
@@ -142,11 +113,6 @@ impl Capacities {
         }
     }
 
-    /// Presize from the live country registry. Each exile list holds at most
-    /// one tag per country slot (the reader refuses longer ones), so twice the
-    /// slot count always fits one committed division's cores and occupiers.
-    /// The naming memos are caches sized to the same scale; misses only cost
-    /// reads.
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.exile_tags, crate::country_scale::rows(slots, 2));
         crate::country_scale::raise(&mut self.name_templates, slots.saturating_mul(4));
@@ -170,12 +136,8 @@ struct Division {
     exile: Option<carmy_combat_inputs::ExileRow>,
     context: carmy_combat_inputs::ContextRow,
     width_start: usize,
-    /// A reserve's share or why it was refused; `None` for a
-    /// committed division, whose entry has no reinforcement hover.
     reserve_speed: Option<Result<i64, &'static str>>,
     reserve_observation: Option<usize>,
-    /// The hour's division rows publish exactly this member's division values
-    /// ([`Captured::join_members`]), so its row stores no copy of them.
     joined: bool,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -186,8 +148,6 @@ struct ModifierSide {
     start: usize,
     len: usize,
 }
-/// One combat's side country sets, with the indicator and flag words read
-/// with its modifier context.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct CombatSides {
     sets: cland_combat::CountrySetsRow,
@@ -211,8 +171,6 @@ impl Progress {
             (Some(reason), _) | (_, Outcome::Unavailable { reason }) => {
                 Outcome::Unavailable { reason }
             }
-            // The parent count is combats, not divisions or modifier sides. Do
-            // not label an unknown dependent census as a counted prefix.
             (_, Outcome::Truncated { .. }) => Outcome::Unavailable {
                 reason: "land combat detail source census truncated",
             },
@@ -227,7 +185,6 @@ impl Progress {
         }
     }
 }
-/// Where one division sits in its combat, and where its exile tags start.
 #[derive(Clone, Copy)]
 struct Placement {
     pointer: usize,
@@ -238,8 +195,6 @@ struct Placement {
     role: u8,
     exile_start: usize,
 }
-/// One division's successful native reads, before admission. Its term
-/// prefixes are in the walk's [`Scratch`].
 struct Acquired {
     stats: carmy_combat_inputs::Row,
     exile: carmy_combat_inputs::Exile,
@@ -252,13 +207,10 @@ enum ReserveSpeed {
     Observed(usize),
 }
 
-/// Per-division and per-combat reader storage grows from original headers and
-/// is reused by the walk. Readers write only the prefix they return.
 #[derive(Default)]
 struct Scratch {
     widths: Vec<carmy_combat_inputs::WidthTerm>,
     modifiers: Vec<carmy_combat_inputs::Modifier>,
-    /// A reserve's movement-speed operands while its share is composed.
     reinforcement: reserve_speed::Scratch,
     observations: reserve_speed::Observations,
     defer_speed: bool,
@@ -272,7 +224,6 @@ impl Scratch {
     }
 }
 
-/// One division's stats, exile and context rows, and a reserve's speed share.
 type DivisionRead = (
     carmy_combat_inputs::Row,
     carmy_combat_inputs::Exile,
@@ -280,17 +231,12 @@ type DivisionRead = (
     Option<Result<ReserveSpeed, &'static str>>,
 );
 
-/// Where one division's reads write their variable-length results: the
-/// naming memo and name arena, and the exile tags past the arena's length.
 struct DivisionOutputs<'r, 'n> {
     name_groups: &'r mut engine_native::cname_group_member::GroupKeys,
     names: &'r mut engine_native::cname_group_member::Names<'n>,
     exile_tags: engine_native::walk::Buffer<'r, u32>,
 }
 
-/// One division's readers in the walk's order, through `memory` (the
-/// division's image, engine_native::combat_sources), into `scratch`. `countries` is
-/// the combat's one country reader.
 #[allow(clippy::too_many_arguments)]
 fn read_division<M: Memory, C: Memory>(
     memory: &M,
@@ -314,7 +260,6 @@ fn read_division<M: Memory, C: Memory>(
         outputs.names,
     )?;
     let countries = countries.as_ref().map_err(|reason| *reason)?;
-    // Exile frames apply to committed entries only.
     let exile = match role {
         1 => carmy_combat_inputs::capture_exile_buffer(
             memory,
@@ -333,15 +278,6 @@ fn read_division<M: Memory, C: Memory>(
         handle,
         engine_native::walk::Buffer::Growing(&mut scratch.widths),
     )?;
-    // A reserve entry's hover shows its reinforcement chance, whose
-    // speed arm is the clamped reinforcement share: base speed times the
-    // movement factor over the live SLOWEST_SPEED, less one, clamped to [0, 2]. Its operands
-    // drift hourly (weather, supply, acclimatization, air), but the clamped
-    // share is all the hover takes from them, so the collector composes it
-    // here and records that one value, as DivisionStatus records the
-    // camouflage category selected with the live define instead of
-    // every acclimatization weight. A failed read or an unported form
-    // refuses only this share; the division and its table stay.
     let reserve_speed = (role == 2).then(|| {
         if scratch.defer_speed {
             scratch
@@ -375,18 +311,12 @@ fn read_division<M: Memory, C: Memory>(
 
 struct Destination<'a> {
     sources: &'a mut Sources,
-    /// This combat's commander selections, shared by its readers.
     commanders: cland_combat::Commanders,
-    /// The pass's leader-only commander reads, shared by its combats.
     leaders: &'a mut cland_combat::Leaders,
-    /// This combat's division images.
     images: &'a mut Images,
     scratch: &'a mut Scratch,
     name_groups: &'a mut engine_native::cname_group_member::GroupKeys,
     names: engine_native::cname_group_member::Names<'a>,
-    /// Tests only: read as main's readers read, sharing nothing between
-    /// readers (no census members, selections, pass shares or division
-    /// image) nor between divisions (no shared sources).
     #[cfg(test)]
     reference: bool,
     details: &'a mut Vec<Detail>,
@@ -395,7 +325,6 @@ struct Destination<'a> {
     combat_sides: &'a mut Vec<CombatSides>,
     country_tags: &'a mut Vec<u32>,
     country_tags_progress: Progress,
-    /// Nodes one country set can hold: the live country count plus tag 0.
     country_set_limit: Result<usize, &'static str>,
     rosters: &'a mut Vec<u64>,
     commander_traits: &'a mut Vec<cland_combat::CommanderTrait>,
@@ -404,8 +333,6 @@ struct Destination<'a> {
     air_counts: &'a mut Vec<i32>,
     learning_traits: &'a mut Vec<cland_combat::CommanderLearningTrait>,
     unit_scratch: &'a mut Vec<usize>,
-    /// Stored entries of committed details, and every entry read; the
-    /// participant counts live in `arenas[0]`.
     detail_used: cland_combat::DetailCounts,
     detail_required: cland_combat::DetailCounts,
     members: &'a mut Vec<ModifierMember>,
@@ -419,10 +346,6 @@ struct Destination<'a> {
     ticks: [u64; N],
 }
 impl Destination<'_> {
-    /// Retains one division whose native reads all succeeded, or counts it
-    /// out. A name or exile list that has no room this hour omits the whole
-    /// division (the table reports it as unread) and its demand is
-    /// counted so the spool grows the arena for the next hour.
     fn admit(&mut self, at: Placement, acquired: Acquired) {
         let Acquired {
             stats,
@@ -446,9 +369,6 @@ impl Destination<'_> {
         let (Some(naming), Some(exile)) = (stats.naming, exile) else {
             return;
         };
-        // Every prefix was read successfully above. Grow from those exact
-        // counts and retain it now, without retrying native reads or
-        // dropping the containing division.
         if !grow_vec(self.width_terms, start + count) {
             return;
         }
@@ -456,7 +376,6 @@ impl Destination<'_> {
         self.width_terms[start..start + count].copy_from_slice(&scratch.widths[..count]);
         self.width_progress.len += count;
         self.exile_progress.len += exile_len;
-        // The player's name was written uncommitted at the arena's length.
         debug_assert!(naming.custom.1 == 0 || naming.custom.0 == self.names.len);
         self.names.len += naming.custom.1;
         let (reserve_speed, reserve_observation) = match reserve_speed {
@@ -493,10 +412,7 @@ impl Destination<'_> {
         if crate::allocation::failed() {
             return;
         }
-        // Selections are the combat's own.
         self.commanders = cland_combat::Commanders::default();
-        // The census has already retained every participant in this combat;
-        // its counts bound the division destination without another read.
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         if !grow_vec(self.divisions, self.progress[1].required + bound) {
@@ -505,16 +421,12 @@ impl Destination<'_> {
         if !grow_vec(self.sides, self.progress[2].required.saturating_add(2)) {
             return;
         }
-        // A side's committed and reserve lists are subsets of its full
-        // participants, so the larger census count bounds the role scratch.
         if !grow_vec(
             self.unit_scratch,
             (source.attackers.count.max(source.defenders.count)) as usize,
         ) {
             return;
         }
-        // One country reader per combat serves every division's contextual
-        // owner lookup and exile operands; no division rebuilds it.
         let countries = engine_native::ccountry::Reader::new(memory, base, state);
         {
             let started = qpc();
@@ -549,9 +461,6 @@ impl Destination<'_> {
             }
             self.ticks[2] += elapsed(started);
         }
-        // Every division's army and stat block fields, two gathers for the
-        // combat, for its four readers and its modifier member. Lent while
-        // the visitor borrows `self`.
         let mut images = std::mem::take(self.images);
         if self.progress[1].failure.is_none() || self.progress[2].failure.is_none() {
             let _reads = crate::read_accounting::table(TABLES[1]);
@@ -577,7 +486,6 @@ impl Destination<'_> {
         {
             let started = qpc();
             let before = self.ticks[1] + self.ticks[2];
-            // Moved out for the visitor's borrow of the destination; no allocation.
             let mut owned = std::mem::take(self.unit_scratch);
             let result = cland_combat::visit_units(
                 memory,
@@ -601,8 +509,6 @@ impl Destination<'_> {
                         let started = qpc();
                         self.progress[1].required += 1;
                         if self.progress[1].failure.is_none() {
-                            // Exile tags grow from their original list headers
-                            // and commit only with the containing division.
                             let exile_start = self.exile_progress.len;
                             let result = read_division(
                                 divisional,
@@ -683,8 +589,6 @@ impl Destination<'_> {
         }
         *self.images = images;
     }
-    /// The country sets with the marker's indicator and flag words, which
-    /// `read_country_sets` reads itself.
     fn combat_sides(&mut self, memory: &impl Memory, base: usize, source: cland_combat::Source) {
         self.progress[3].required += 1;
         if self.progress[3].failure.is_some() {
@@ -800,8 +704,6 @@ impl Destination<'_> {
                     }
                 }
                 row.stored_terrain_name.start += text;
-                // These identifiers use the MSVC string reader. Like the other
-                // tokens, their spans are relative to the text slice.
                 if let Some(border) = &mut row.border_war {
                     for side in &mut border.sides {
                         side.win_event.start += text;
@@ -858,7 +760,6 @@ impl Destination<'_> {
                 if !grow_vec(self.members, self.arenas[1].len + 1)
                     || !grow_vec(self.modifiers, self.arenas[2].len + count)
                 {
-                    // Omit the whole side during projection, never its last entries.
                     self.sides[side].len = usize::MAX;
                     return;
                 }
@@ -896,7 +797,6 @@ impl Destination<'_> {
     }
 }
 
-/// A combat member's division values as its own reads hold them.
 pub struct MemberReads<'a> {
     pub naming: engine_native::cname_group_member::Inputs,
     pub custom: &'a [u8],
@@ -925,36 +825,24 @@ pub struct Captured {
     timed_traits: Arena<cland_combat::CommanderTimedTrait>,
     air_counts: Arena<i32>,
     learning_traits: Arena<cland_combat::CommanderLearningTrait>,
-    /// One side's committed and reserve pointers while roles are visited;
-    /// grown on the acquisition worker from the census's participant counts.
     unit_scratch: Vec<usize>,
     census: Vec<cland_combat::Row>,
     census_participants: Vec<u64>,
-    /// Each census participant's pointer, beside its handle.
     census_pointers: Vec<usize>,
     required_census: usize,
     required_census_participants: usize,
-    /// Per-pass shared division sources; cleared before each pass.
     sources: Sources,
-    /// Each combat's division images, storage reused.
     images: Images,
-    /// Reader storage reused across divisions and passes.
     scratch: Scratch,
-    /// ReserveModifierTrees, in key order, and its outcome.
     reserve_trees: Vec<ReserveModifierTreeRow>,
     reserve_outcome: Outcome,
-    /// Trees carried across passes, in source order.
     held_reserve_trees: HeldReserveTrees,
-    /// Tests only: held trees the last pass examined to find its carries.
     #[cfg(test)]
     reserve_carry_probes: usize,
-    /// Tests only: the reference walk (see `Destination`).
     #[cfg(test)]
     reference: bool,
 }
 
-/// Where a leader holds the accumulator its unit modifier (kind 1) and its
-/// separate-HQ modifier (kind 2) select, as the land combat context reads them.
 const COMMANDER_UNIT_ACCUMULATOR: usize = engine_native::carmy_leader::MOVEMENT_MODIFIER
     + engine_native::carmy_leader::MODIFIER_ACCUMULATOR;
 const COMMANDER_HQ_ACCUMULATOR: usize = engine_native::carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER
@@ -964,9 +852,6 @@ const RESERVE_TREES_UNCAPTURED: Outcome = Outcome::Unavailable {
     reason: "reserve modifier trees not captured",
 };
 
-/// One reserve source to read: its row identity, the accumulator (and, for
-/// a commander, the leader) it names and the country or leader whose tree
-/// writers certify it.
 struct ReserveSource {
     kind: u8,
     owner: u64,
@@ -975,8 +860,6 @@ struct ReserveSource {
     leader: Option<usize>,
 }
 
-/// A tree carried while its receiver's certificate holds, under the row
-/// identity it was read for.
 struct HeldReserveTree {
     kind: u8,
     owner: u64,
@@ -986,10 +869,6 @@ struct HeldReserveTree {
     nodes: Vec<replay_data::rows::ModifierBreakdownNode>,
 }
 
-/// The previous pass's held trees. A pass keeps them in its source order,
-/// sorted and unique by (kind, owner), and the next pass visits its own
-/// sorted sources once, so one forward cursor finds every carry: a pass
-/// examines each held tree at most once and stops at most once per source.
 #[derive(Default)]
 struct HeldReserveTrees {
     entries: Vec<HeldReserveTree>,
@@ -1006,9 +885,6 @@ impl HeldReserveTrees {
         }
     }
 
-    /// The tree held for `source` when it was read under the same
-    /// certificate, receiver and accumulator; each held tree is taken once.
-    /// Sources must arrive in ascending (kind, owner) order.
     fn take(
         &mut self,
         source: &ReserveSource,
@@ -1036,7 +912,6 @@ impl HeldReserveTrees {
     }
 }
 
-/// The commander's display name.
 fn leader_name(memory: &impl Memory, leader: usize) -> Result<Vec<u8>, &'static str> {
     let mut name = Vec::new();
     let mut used = 0;
@@ -1072,7 +947,6 @@ impl Captured {
             self.learning_traits.first => c.learning_traits,
         }
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             combats: 0,
@@ -1230,8 +1104,6 @@ impl Captured {
         self.width_terms.grow(&mut c.width_terms);
         self.exile_tags.grow(&mut c.exile_tags);
         self.division_names.grow(&mut c.division_names);
-        // The memo tables are caches: they are rebuilt only when the country
-        // scale raised their size, never from a pass's demand.
         let current = self.name_cache.capacities();
         let sized = [c.name_templates, c.name_groups].map(|n| n.checked_next_power_of_two());
         if sized
@@ -1278,8 +1150,6 @@ impl Captured {
             );
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
-        // Naming and leader memos never outlive the pass that authenticated
-        // them.
         self.name_cache.reset();
         self.leaders.clear();
         let started = qpc();
@@ -1332,7 +1202,6 @@ impl Captured {
             &mut self.census_participants,
             &mut self.census_pointers,
             |source, members| {
-                // Tests only: the reference walk (`reference_walk`).
                 #[cfg(test)]
                 if destination.reference {
                     return destination.visit_reference(memory, base, state, source, members);
@@ -1435,15 +1304,10 @@ impl Captured {
         self.leaders.allocated_bytes()
     }
 
-    /// Reserve arithmetic and diagnostics use only captured operands. Keep
-    /// `pending_owned` until completion so a reset forgets an unfinished store.
-    /// Each admitted member's division, in member order.
     pub fn member_divisions(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
         let len = self.divisions.outcome.len().min(self.divisions.rows.len());
         self.divisions.rows[..len].iter().map(|row| row.stats.division)
     }
-    /// Marks each member whose division values `published` finds in the hour's division rows,
-    /// exactly as the member read them; the others keep their own copy.
     pub fn join_members(&mut self, mut published: impl FnMut(&MemberReads<'_>) -> bool) {
         let names = &self.division_names.first;
         let span = |(start, len): (usize, usize)| names.get(start..start.checked_add(len)?);
@@ -1488,12 +1352,6 @@ impl Captured {
         }
         self.pending_owned = false;
     }
-    /// ReserveModifierTrees for this pass's reserves: each reserve's country
-    /// (its positive expeditionary owner, else its roster owner) and, when it
-    /// selects a contextual leader modifier, that commander's selected unit
-    /// modifier, each read once. A commander whose 0xFB root is zero prints no
-    /// line and has no row; a nonzero one keeps the leader's display name. A
-    /// source whose read fails is that row's refusal; the others stand.
     fn capture_reserve_trees(
         &mut self,
         memory: &impl Memory,
@@ -1517,7 +1375,6 @@ impl Captured {
         changes: &impl naval_tree_changes::Changes,
     ) -> Result<Outcome, &'static str> {
         const ALLOCATION: &str = "collector allocation failed";
-        // A truncated census keeps the sources of the reserves it read.
         let (len, unread) = match self.divisions.outcome {
             Outcome::Rows { len } => (len, 0),
             Outcome::Truncated { len, unread_rows } => (len, unread_rows),
@@ -1528,8 +1385,6 @@ impl Captured {
             .rows
             .get(..len)
             .ok_or("reserve modifier tree division census outside its rows")?;
-        // The walk's context already selected each reserve's country and
-        // contextual leader accumulator; the trees read from those.
         let mut sources: Vec<ReserveSource> = Vec::new();
         for row in divisions.iter().filter(|row| row.role == 2) {
             sources.try_reserve(2).map_err(|_| ALLOCATION)?;
@@ -1545,8 +1400,6 @@ impl Captured {
             });
             let kind = row.context.leader_modifier_kind;
             if kind != 0 {
-                // Kind 1 selects the leader's unit modifier, kind 2 its
-                // separate-HQ one; the accumulator lies inside the leader.
                 let offset = if kind == 1 {
                     COMMANDER_UNIT_ACCUMULATOR
                 } else {
@@ -1574,8 +1427,6 @@ impl Captured {
         kept.try_reserve(sources.len()).map_err(|_| ALLOCATION)?;
         let mut counts = [0_u64; 2];
         for source in sources {
-            // Only the trees the naval tree writers' hooks cover carry: the
-            // country tree and the commander's unit modifier.
             let certificate = if source.kind < 2 && source.accumulator != 0 {
                 changes.sequence(source.receiver)
             } else {
@@ -1661,8 +1512,6 @@ impl Captured {
             }
         })
     }
-    /// Adds this pass's composed and refused reserve shares of its captured
-    /// division rows to the status.
     fn count_reserve_shares(&self) {
         let len = match self.divisions.outcome {
             Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
@@ -1682,8 +1531,6 @@ impl Captured {
         RESERVE_SHARES.fetch_add(computed, Ordering::Relaxed);
         REFUSED_SHARES.fetch_add(refused, Ordering::Relaxed);
     }
-    /// Adds this pass's refused optional side inputs of its captured detail
-    /// rows to the status.
     fn count_side_input_refusals(&self) {
         let len = match self.details.outcome {
             Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
@@ -1714,18 +1561,12 @@ impl Captured {
             self.reserve_outcome,
         ]
     }
-    /// The modifier sides read this pass, each with its members, or none.
     fn read_sides(&self) -> Option<&[ModifierSide]> {
         match self.sides.outcome {
             Outcome::Rows { len } | Outcome::Truncated { len, .. } => self.sides.rows.get(..len),
             Outcome::Unavailable { .. } => None,
         }
     }
-    /// LandCombatDivisionModifiers: a row a member of each read side. Every
-    /// visited member counts toward the members' demand before any refusal,
-    /// so the members of sides left unread, or omitted when their member
-    /// allocation failed, are counted missing; unread sides without members
-    /// leave nothing missing.
     fn members_outcome(&self) -> Outcome {
         match self.sides.outcome {
             Outcome::Unavailable { reason } => return Outcome::Unavailable { reason },
@@ -1763,10 +1604,6 @@ impl Captured {
             country_weight_present: context.country_weight_present,
         }
     }
-    /// A side's hover inputs from its owned operands: the CAS counters, the
-    /// skill progress from the leader experience ratio, the leader block's
-    /// keys, the description token, the timed traits and the learning rows
-    /// shown by the leader display. The row's conversion rounds them to their steps.
     fn side_inputs(&self, s: &cland_combat::SideDetails) -> LandCombatSideInputs {
         let text = |start: usize, len: usize| {
             allocation::owned_vec(allocation::copy_vec(
@@ -1776,7 +1613,6 @@ impl Captured {
         let timed = &self.timed_traits.first
             [s.timed_traits_start..s.timed_traits_start + s.timed_traits_len];
         LandCombatSideInputs {
-            // The air-support hover's operands: the stored anti-air cache and the prevented lanes.
             anti_air_attack: s.anti_air_attack,
             prevented_damage: [s.damage[4], s.damage[5]],
             skill_progress: skill_progress(
@@ -1784,8 +1620,6 @@ impl Captured {
                 s.next_skill,
                 s.side_input_refusals[0].is_some(),
             ),
-            // A side without a selected commander read no block: its keys are
-            // the defaults the hover never shows; a refused read is unknown.
             skill_modifiers: s
                 .skill_modifiers
                 .or(s.side_input_refusals[2].is_none().then_some([0; 2])),
@@ -1800,10 +1634,6 @@ impl Captured {
                     remaining_days: t.remaining_days,
                 }
             }))),
-            // Leader learning display shows an entry, in vector order, only when its
-            // ratio is strictly greater than the live floor; without the
-            // floor which rows show is unknown. A side without a selected
-            // commander has no rows.
             learning_traits: match s.learning_threshold {
                 Some(threshold) => Some(allocation::owned_vec(allocation::collect_vec(
                     self.learning_traits.first[s.learning_traits.range()]
@@ -1826,7 +1656,6 @@ impl Captured {
     }
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
-        // The published member rows, where they are in key order.
         let member_key = |row: &Division| (row.combat, row.side, row.ordinal);
         let members = match outcomes[1] {
             Outcome::Rows { len } => self.divisions.rows.get(..len).filter(|rows| {
@@ -1898,13 +1727,11 @@ impl Captured {
                             air_counts: allocation::owned_vec(allocation::copy_vec(
                                 &self.air_counts.first[s.air_counts.range()],
                             )),
-                            // The CAS operands are the side inputs'.
                             anti_air_attack: RetiredKept::default(),
                             air_kills: s.air_kills,
                             damage: [s.damage[0], s.damage[1]],
                             ground_damage: RetiredNested::default(),
                             prevented_damage: RetiredKept::default(),
-                            // Combat sample aggregation reads only the samples' sum.
                             organisation_loss_sum: LandCombatSideDetails::loss_sum(
                                 &s.organisation_loss,
                             ),
@@ -1942,7 +1769,6 @@ impl Captured {
             }),
             table::<tables::LandCombatDivisions, _>(outcomes[1], &self.divisions.rows, |r| {
                 let s = r.stats;
-                // Admitted rows always carry their naming spans.
                 let naming = s.naming.unwrap_or_default();
                 let name = |(start, len): (usize, usize)| {
                     allocation::owned_vec(allocation::copy_vec(
@@ -2052,9 +1878,6 @@ impl Captured {
                     defender_secondary: set(3),
                 }
             }),
-            // Members in key order: sides are read in combat order, each
-            // side's members in ordinal order (the projection sorts anyway).
-            // A member keeps its division unless a published member row names it.
             match (outcomes[4], self.read_sides()) {
                 (Outcome::Unavailable { reason }, _) => unavailable(reason),
                 (outcome, Some(sides)) => table_iter::<tables::LandCombatDivisionModifiers, _>(
@@ -2096,11 +1919,6 @@ impl Captured {
         ]
     }
 }
-/// Leader experience and portrait learning displays use the same fixed5
-/// ratio: multiply experience and the requirement by 100000, divide using
-/// signed truncation, and wrap the experience multiplication. Return
-/// `0xFFFFFFFF` for a zero requirement or any of the three sentinel
-/// experience words selected by the unsigned wrapping range check.
 pub(super) fn experience_ratio(experience: i64, required: i32) -> i64 {
     let denominator = i64::from(required) * 100_000;
     if denominator == 0
@@ -2108,15 +1926,9 @@ pub(super) fn experience_ratio(experience: i64, required: i32) -> i64 {
     {
         return 0xffff_ffff;
     }
-    // A nonzero multiple of 100000 cannot overflow the division.
     experience.wrapping_mul(100_000) / denominator
 }
 
-/// The skill hover's progress: [`experience_ratio`] over the next level's
-/// requirement, or no progress when the next skill level lookup found no level or an
-/// invalid one (the hover's LEADER_SKILL_AT_CAP arm). A side without a
-/// selected commander read no level; one whose read was `refused` has its
-/// progress unknown.
 pub(super) fn skill_progress(
     experience: i64,
     next: Option<engine_native::naval_commander_inputs::SkillDefinition>,
@@ -2132,7 +1944,6 @@ pub(super) fn skill_progress(
     }
 }
 
-/// Spool-thread portrait projection shared by hourly land and naval contexts.
 pub fn commander_presentation(
     p: &engine_native::naval_commander_inputs::Presentation,
 ) -> replay_data::rows::CombatCommanderPresentation {
@@ -2188,12 +1999,6 @@ fn elapsed(start: i64) -> u64 {
 #[cfg(test)]
 mod tests;
 
-/// The whole land combat family over a synthetic combat world, walked as the
-/// recorder walks it and as the reference walk (main's reads, nothing
-/// shared): the census, window operands, details, tactic registry and
-/// context, modifier sides and every division reader run on total memory
-/// (any address from 0x1_0000 reads, as zero unless written) with the module
-/// at base 0.
 #[cfg(any(test, feature = "test-support"))]
 mod family;
 

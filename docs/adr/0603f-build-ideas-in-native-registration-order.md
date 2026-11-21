@@ -1,0 +1,13 @@
+# Build ideas in native registration order
+
+Load idea tags before ideas into one database. Both loaders can declare categories and ideas, but only the tags loader reads slot ledger overrides. Load names at their recorded point in database construction and use a fresh lexer and variable table for each file. Read conditions and effects by their key and scope so token consumption remains intact. This presentation layer cannot evaluate live conditions or effects.
+
+Categories append even when a name repeats. Resolve each category by exact name, then its slots and character seats in array order. Keep each seat separately, including repeated seats of one kind. Bare lexer keywords select category types and ledger readers. A quoted or unrecognized type replaces the stored type with absence. Ledger values either set or combine flags; an unexpected value is reported and its open block is skipped. An unsuccessful scalar conversion retains the stored value.
+
+Create new groups when no existing group is eligible for reread. A new occurrence that registers under an existing name appends its ideas and leaves that group's flags in place. In an ideas file, a bare eligible group name reopens its group. The reread updates the group's flags and rebuilds matching idea tokens in place under their new spelling. Matching folds ASCII case. Unmatched tokens append. Every idea gets the final group flags. Ordinals start after the database's null entry, but a reopened group assigns positions within that group. The position is part of the generated name seed. Resolve laws in their stored order.
+
+The current content defines which newly read groups hold officer corps advisor templates. These produce character advisor records instead of ideas and preserve per-entry slot overrides and authored identity. A reopened group follows the idea reader even when its name is in the officer list. Idea artwork tries the token sprite, the authored picture sprite, its holder-specific variant and the fallback in order. Without a recorded holder, later candidates that depend on the holder remain undecidable.
+
+A native reader that stops short leaves an unknown suffix. A stop within a group can leave its earlier entries unsettled because the rest of the group may change their flags. A later reread of the same held object can settle an earlier gap. Appending a duplicate or a same-token entry in a different group cannot rule out a hidden first match. Refuse a lookup only when the incomplete path could change its answer, and keep the responsible file and reason.
+
+[Idea reader](../../crates/installed-content-core/src/ideas.rs) · [Name load points](../../crates/installed-content-core/src/key_names.rs)

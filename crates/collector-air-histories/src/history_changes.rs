@@ -1,11 +1,3 @@
-//! Allocation-free notifications from the native writers of the country air
-//! histories AirNavalPatrolHistories records ([`engine_air_history::air_history_mutations`]).
-//! A detour only notifies the shared watch registry ([`WatchRegistry`]),
-//! counts its writer site and calls the original; it never changes game
-//! behaviour. Receivers are strategic air objects and histories the collector
-//! registered; a notification never infers an owner. Anything unobserved
-//! (disabled, poisoned, a refused registration, an epoch change) makes the
-//! collector read afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -24,13 +16,8 @@ static SCENARIO_REFUSALS: [AtomicU64; engine_air_history::air_kamikaze::SCENARIO
     [const { AtomicU64::new(0) }; engine_air_history::air_kamikaze::SCENARIO_REFUSALS.len()];
 static MENU_REFUSALS: [AtomicU64; engine_air_history::menu_history::REFUSALS.len()] =
     [const { AtomicU64::new(0) }; engine_air_history::menu_history::REFUSALS.len()];
-/// Hours that copied every held history afresh, by cause: an invalidation,
-/// a larger watch table, or the hour before failing or being dropped.
 static RESTARTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
-/// One observation domain: the watched receivers and each writer site's
-/// calls. Its table is cleared only on an invalidation: a clear starts an
-/// epoch, after which every held history would be copied again in one hour.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; 2],
@@ -50,25 +37,17 @@ impl Watches {
         }
     }
 
-    /// Hook path, allocation-free: a writer of `site` ([`MUTATIONS`] index)
-    /// is about to change `receiver`. Dropping the guard notifies its return.
     pub fn notify(&self, receiver: usize, site: usize) -> Notification<'_> {
         let notification = self.registry.notify(receiver);
-        // Counted while the notification runs, so a site certificate taken
-        // with no writer running holds every call begun before it.
         self.calls[site].fetch_add(1, Ordering::SeqCst);
         notification
     }
 
-    /// Off the game thread: room for `receivers`, and for every receiver
-    /// registered since the last clear, as a table a quarter full.
     fn offer(&self, receivers: usize) {
         self.registry
             .offer(receivers.max(self.registry.registered()));
     }
 
-    /// An enabled domain with a table for `slots` country slots and
-    /// `regions` strategic regions installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(slots: usize, regions: usize) -> Self {
         let watches = Self::new();
@@ -78,8 +57,6 @@ impl Watches {
         watches
     }
 
-    /// Grow as the spool does from an hour's `receivers`, installing a
-    /// larger table at the next boundary.
     #[cfg(any(test, feature = "test-support"))]
     pub fn grow(&self, receivers: usize) {
         self.offer(receivers);
@@ -93,29 +70,18 @@ impl Watches {
     }
 }
 
-/// Receivers to size the watches for: every country slot's air object and
-/// a history in each of the content's `regions`. The table is kept a quarter
-/// full, so it also holds the adds receiver of every history that exists.
 fn watches_for(slots: usize, regions: usize) -> usize {
     slots.saturating_mul(regions.saturating_add(1))
 }
 
-/// The receiver an add to `region` of the country air object `air` notifies
-/// beside `air` itself. Its high bits are never set in a user-mode address,
-/// so it names no object; regions that share the low 16 bits share it, which
-/// only rereads more.
 pub fn touch_key(air: usize, region: u32) -> usize {
     air ^ (((region as usize & 0xffff) + 1) << 48)
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything. Counts the hour when it will copy every held history afresh.
 pub fn boundary(invalidate: bool) {
     let installed = WATCHES.registry.boundary(invalidate).installed();
     let cause = if invalidate {
@@ -123,7 +89,6 @@ pub fn boundary(invalidate: bool) {
     } else if installed {
         Some(1)
     } else {
-        // The last hour's jobs joined, so nothing else holds the opening.
         crate::air_histories::opening().withdrawn().then_some(2)
     };
     if let Some(cause) = cause.filter(|_| cfg!(feature = "history_changes")) {
@@ -131,37 +96,21 @@ pub fn boundary(invalidate: bool) {
     }
 }
 
-/// Off the game thread: size the watches for `slots` country slots and the
-/// content's live strategic-region count, before the hooks are installed
-/// and whenever either grows. With fixed, readable rosters, visiting more of
-/// the known regions then installs no larger table; a roster that grows,
-/// an unreadable roster or dead receivers accumulating can still install
-/// one, which restarts the epoch and copies every held history afresh.
 pub fn presize(slots: usize, regions: usize) {
     WATCHES.offer(watches_for(slots, regions));
 }
 
-/// Off the game thread: size the watches for an hour's `receivers`, every
-/// country air object and a history in each wanted region.
 pub fn observe(receivers: usize) {
     WATCHES.offer(receivers);
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes {
-    /// `(epoch, revision)` when observation is live and no writer is running;
-    /// equal values across hours prove no history changed.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of one receiver, registering it; `None` when it
-    /// cannot be observed.
     fn sequence(&self, receiver: usize) -> Option<(u64, u64)>;
-    /// `(epoch, calls)` of one writer site ([`MUTATIONS`] index); equal
-    /// values across hours prove none of its receivers changed.
     fn site(&self, index: usize) -> Option<(u64, u64)>;
 }
 
@@ -175,12 +124,10 @@ impl Changes for Watches {
     fn site(&self, index: usize) -> Option<(u64, u64)> {
         let (epoch, _) = self.registry.quiet()?;
         let calls = self.calls[index].load(Ordering::SeqCst);
-        // A writer begun before this load and still running is refused.
         (self.registry.quiet()?.0 == epoch).then_some((epoch, calls))
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
@@ -194,7 +141,6 @@ impl Changes for Observer {
     }
 }
 
-/// Nothing observed: every history is read afresh.
 pub struct Unobserved;
 impl Changes for Unobserved {
     fn quiet(&self) -> Option<(u64, u64)> {
@@ -208,7 +154,6 @@ impl Changes for Unobserved {
     }
 }
 
-/// One capture's work.
 pub fn record(counts: &crate::air_histories::Counts) {
     for (target, value) in READS.iter().zip([
         counts.reused,
@@ -241,12 +186,12 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "history_changes") {
@@ -276,10 +221,6 @@ impl Hooks {
         if !enabled {
             WATCHES.registry.set_enabled(false);
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "native hook state change failed")?
         {
@@ -296,9 +237,6 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
@@ -306,13 +244,11 @@ impl Drop for Hooks {
 unsafe extern "system" fn region_history(air: usize, region: i32) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::HistoryChanges);
     let _notification = WATCHES.notify(air, 0);
-    // The getter takes the history table's index, the region slot captures read.
     let _region = WATCHES.registry.notify(touch_key(air, region as u32));
     let original: unsafe extern "system" fn(usize, i32) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(air, region) })
 }
-/// The receiver is the embedded history storage; the history itself is registered.
 unsafe extern "system" fn advance(windows: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::HistoryChanges);
     let _notification = WATCHES.notify(windows.wrapping_sub(8), 1);
@@ -335,13 +271,10 @@ mod tests {
         assert_eq!(watches.site(1), None);
         drop(running);
         assert_eq!(watches.site(1), Some((before.0, before.1 + 1)));
-        // A clear starts an epoch: no site certificate survives it.
         watches.registry.boundary(true);
         assert_ne!(watches.site(1).unwrap().0, before.0);
     }
 
-    /// Release: air history construction for 1,500 registered strategic-air receivers
-    /// through the detour, minus the native call.
     #[test]
     #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
     fn hook_cost_history_changes() {

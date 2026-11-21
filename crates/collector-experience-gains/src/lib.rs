@@ -1,4 +1,3 @@
-//! Experience gain capture: the order-independent observer that sums concurrent native experience writers into live-sized lock-free tables, and its hourly table pack (`tables`). The host installs the hooks, drains at the hourly boundary and assembles the tables.
 
 use collector_hooks::hook;
 use collector_lifetime::world_lifetime;

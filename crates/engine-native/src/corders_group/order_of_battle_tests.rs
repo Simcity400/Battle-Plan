@@ -39,8 +39,6 @@ fn division(bytes: &mut [u8], at: usize, id: u32, group: usize) {
     p64(bytes, at + carmy::ORDERS_GROUP, group as u64);
 }
 
-/// One army group with two divisions of its own and one child army that
-/// holds the third division, so every vector and backlink is exercised.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x9000];
     p64(&mut bytes, THEATRE_PTR, ctheatre::VTABLE_RVA.0 as u64);
@@ -80,7 +78,6 @@ fn fixture() -> Vec<u8> {
     );
     p64(&mut bytes, LEADER_PTR + 8, handle(279, 4713));
 
-    // Army group 431: child vector holds army 57, no units of its own.
     p64(&mut bytes, GROUP, carmy_group::VTABLE_RVA.0 as u64);
     p64(&mut bytes, GROUP + HANDLE, handle(431, REFERENCE_TYPE));
     bytes[GROUP + IS_ARMY_GROUP] = 1;
@@ -92,7 +89,6 @@ fn fixture() -> Vec<u8> {
     vector(&mut bytes, GROUP + carmy_group::MEMBER_DATA, CHILDREN, 1);
     p64(&mut bytes, CHILDREN, ARMY as u64);
 
-    // Army 57: two members, a leader, an HQ provider and the group parent.
     p64(&mut bytes, ARMY, VTABLE_RVA.0 as u64);
     p64(&mut bytes, ARMY + HANDLE, handle(57, REFERENCE_TYPE));
     p32(&mut bytes, ARMY + COUNTRY, 7);
@@ -253,8 +249,6 @@ fn identity_membership_and_child_vectors_keep_native_order_and_null_pointers() {
             name_known: false,
         }
     );
-    // The army group has no leader, no HQ provider and no parent; those
-    // null pointers stay zero instead of failing or being invented.
     assert_eq!(
         groups[1],
         GroupRow {
@@ -302,15 +296,11 @@ fn identity_membership_and_child_vectors_keep_native_order_and_null_pointers() {
 #[test]
 fn a_member_that_is_not_an_authenticated_unit_fails_every_table() {
     let mut bytes = fixture();
-    // A member pointing at something that is not a CArmy host cannot be
-    // resolved; no row is invented for it.
     p64(&mut bytes, MEMBERS, (D3 + 1) as u64);
     let (walk, ..) = run(&bytes, [4, 4, 4]);
     assert!(matches!(walk.members, Outcome::Unavailable { .. }));
     assert!(matches!(walk.groups, Outcome::Unavailable { .. }));
 
-    // The paired army vtables cannot turn a nonzero class word into a
-    // class-zero formation member.
     let mut bytes = fixture();
     p32(&mut bytes, D2 + 8, 13);
     let (walk, ..) = run(&bytes, [4, 4, 4]);
@@ -322,7 +312,6 @@ fn a_member_that_is_not_an_authenticated_unit_fails_every_table() {
     );
     assert!(matches!(walk.groups, Outcome::Unavailable { .. }));
 
-    // A member whose host does not point back at this group is refused too.
     let mut bytes = fixture();
     p64(&mut bytes, D2 + carmy::ORDERS_GROUP, GROUP as u64);
     let (walk, ..) = run(&bytes, [4, 4, 4]);
@@ -333,7 +322,6 @@ fn a_member_that_is_not_an_authenticated_unit_fails_every_table() {
         }
     );
 
-    // A null member slot is a failure, not a silently skipped row.
     let mut bytes = fixture();
     p64(&mut bytes, MEMBERS + 8, 0);
     let (walk, ..) = run(&bytes, [4, 4, 4]);
@@ -348,7 +336,6 @@ fn a_member_that_is_not_an_authenticated_unit_fails_every_table() {
 #[test]
 fn theatre_ordinals_follow_raw_roster_order_and_preserve_absence() {
     let mut bytes = fixture();
-    // Two ordinary groups, with the native roster opposite census order.
     bytes[GROUP + IS_ARMY_GROUP] = 0;
     p64(&mut bytes, GROUP, VTABLE_RVA.0 as u64);
     p64(&mut bytes, ARMY + PARENT, 0);
@@ -384,13 +371,6 @@ fn theatre_ordinals_follow_raw_roster_order_and_preserve_absence() {
     assert_eq!(groups[0].theatre_ordinal, None);
 }
 
-/// The root-order walk over pointer chains gives the original pointer-sorted
-/// walk's result: the same ordinal for every group when it succeeds, the
-/// same reason when it fails, for random censuses with omitted, foreign,
-/// wrong-subtype, unknown, null and duplicate roster entries, unreadable
-/// and invalid rosters, and repeated census pointers. On success both
-/// read the same spans; only how often a theatre with omitted groups is
-/// walked again may differ, and such a walk changes nothing.
 #[test]
 fn root_order_theatre_ordinals_match_the_sorted_walk() {
     struct Counted<'a> {
@@ -419,7 +399,6 @@ fn root_order_theatre_ordinals_match_the_sorted_walk() {
         let theatres = 1 + random(6);
         let count = random(24);
         let faulty = case % 3 != 0;
-        // Group pointers far from every theatre, in random order.
         let mut scratch: Vec<RosterEntry> = (0..count)
             .map(|root| RosterEntry {
                 pointer: 0x40_0000 + random(1 << 16) * 0x40,
@@ -469,9 +448,7 @@ fn root_order_theatre_ordinals_match_the_sorted_walk() {
                 }
                 if faulty && random(10) == 0 {
                     match random(2) {
-                        // Unreadable: data beyond the image.
                         0 => p64(&mut bytes, header, 0x7fff_0000),
-                        // Invalid: count above capacity.
                         _ => {
                             p32(&mut bytes, header + 8, 0);
                             p32(&mut bytes, header + 12, list.len().max(1) as u32);
@@ -551,8 +528,6 @@ fn theatre_rosters_reject_wrong_subtype_backlink_duplicates_and_unknown_roots() 
     }
     let mut bytes = fixture();
     p64(&mut bytes, ARMY + THEATRE, 0);
-    // The army-group roster is still discovered through GROUP, but its
-    // extra entry cannot claim an unrelated group's null backlink.
     vector(
         &mut bytes,
         THEATRE_PTR + ctheatre::ARMY_GROUP_DATA,
@@ -584,7 +559,6 @@ fn theatre_rosters_reject_wrong_subtype_backlink_duplicates_and_unknown_roots() 
         }
     );
 
-    // An otherwise unrepresented roster subtype must still be checked.
     let mut bytes = fixture();
     bytes[GROUP + IS_ARMY_GROUP] = 0;
     p64(&mut bytes, GROUP, VTABLE_RVA.0 as u64);
@@ -679,7 +653,6 @@ fn referenced_objects_are_authenticated_and_primary_country_is_retained() {
             "{offset:#x}"
         );
     }
-    // A parent that is not flagged as an army group is refused.
     let mut bytes = fixture();
     bytes[GROUP + IS_ARMY_GROUP] = 0;
     let (walk, ..) = run(&bytes, [4, 4, 4]);
@@ -689,7 +662,6 @@ fn referenced_objects_are_authenticated_and_primary_country_is_retained() {
             reason: "orders group parent is not an army group"
         }
     );
-    // The country is owned by the authenticated source census.
     let mut bytes = fixture();
     p32(&mut bytes, ARMY + COUNTRY, 9);
     let (walk, groups, ..) = run(&bytes, [4, 4, 4]);

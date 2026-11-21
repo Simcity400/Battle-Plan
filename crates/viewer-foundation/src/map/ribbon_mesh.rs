@@ -1,4 +1,3 @@
-//! Generic ribbon emission, allocation and ordered composition for both producers.
 use super::{
     province_map::HeightField,
     ribbon_content::*,
@@ -16,14 +15,10 @@ pub fn sort_draws(draws: &mut [OrderDraw]) {
     });
 }
 
-/// Append `more`'s ribbons after `field`'s in the shared arrow manager's
-/// draw order. Raid and battle-plan arrows use the same manager, so a
-/// definition bucket holds both. Labels and the report stay `field`'s.
 pub fn append(field: &OrderField, more: &OrderField) -> OrderField {
     append_kept(field, |_| true, more)
 }
 
-/// [`append`] onto a field the caller owns, in place.
 pub fn append_into(mut out: OrderField, more: &OrderField) -> OrderField {
     let base = out.native_vertices.len() as u32;
     out.vertices.extend_from_slice(&more.vertices);
@@ -38,7 +33,6 @@ pub fn append_into(mut out: OrderField, more: &OrderField) -> OrderField {
     out
 }
 
-/// [`append`] of only the ribbons of `field` that `keep` admits, copying each source once.
 pub fn append_kept(
     field: &OrderField,
     keep: impl Fn(&OrderDraw) -> bool,
@@ -74,7 +68,6 @@ pub fn append_kept(
     }
 }
 
-/// `more`'s draws after `draws`, their strips moved past `base` native vertices, in draw order.
 fn append_draws(draws: &mut Vec<OrderDraw>, base: u32, more: &OrderField) {
     draws.extend(more.draws.iter().map(|draw| {
         OrderDraw {
@@ -106,9 +99,6 @@ pub fn span(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
 }
 
-/// Smooth the fixed controls once and emit one pair per smoothed control up
-/// to the head root, adding no samples between them, then the head.
-/// Return the new draw's index.
 pub fn emit(
     field: &mut OrderField,
     arrow: &ArrowType,
@@ -133,7 +123,6 @@ pub fn emit(
     if total <= 0.0 {
         return None;
     }
-    // Geometry follows head_length, independently of shader technique.
     let has_head = arrow.head_length > 0.0;
     let head_length = if has_head {
         arrow.head_length * scale
@@ -141,7 +130,6 @@ pub fn emit(
         0.0
     };
     let body_end = total - head_length;
-    // A nonzero texture loop replaces the total-length divisor.
     let uv_to_length = if arrow.texture_loop != 0.0 {
         arrow.texture_loop
     } else {
@@ -163,8 +151,6 @@ pub fn emit(
         } else {
             normal(&points, index)
         };
-        // At the head cut, keep this control's distance for width and U, even
-        // though the pair moves back to the head root.
         let half = (arrow.body_width[0]
             + (arrow.body_width[1] - arrow.body_width[0]) * (along / total))
             * scale;
@@ -185,7 +171,6 @@ pub fn emit(
         }
     }
     let mut bounds = native::bounds(&field.vertices[base as usize..]);
-    // A head always cuts the body: the last control lies at `total`.
     if let Some((root, root_normal, half)) = head_root {
         let last = base as usize + (pairs as usize - 1) * 2;
         let edge = [
@@ -224,8 +209,6 @@ pub fn emit(
         uv_to_length,
         culling_offset: 0.0,
         declaration_index: arrow.declaration_index,
-        // Use the larger body start/end width; the constructor's zero highlight
-        // term leaves nothing else in the deselected view.
         width: arrow.body_width[0].max(arrow.body_width[1]),
         label: None,
         native_strips,
@@ -238,8 +221,6 @@ pub fn emit(
     Some(field.draws.len() - 1)
 }
 
-/// The head's base uses the body's 3D cross-slope; its tip extends from the
-/// root by the authored head length towards the end.
 #[allow(clippy::too_many_arguments)]
 fn emit_head(
     field: &mut OrderField,
@@ -258,7 +239,6 @@ fn emit_head(
             height(x, z, control)
         });
     }
-    // Correct the root cross-slope after updating the bounds.
     let bounds = native::bounds(&field.vertices[base as usize..]);
     let delta = std::array::from_fn::<_, 3, _>(|axis| edge[0][axis] - edge[1][axis]);
     let span = delta.iter().map(|value| value * value).sum::<f32>().sqrt();
@@ -284,7 +264,6 @@ fn push_pair(
     height: &dyn Fn(f32, f32) -> f32,
 ) {
     let half = width * 0.5;
-    // The positive perpendicular edge carries v=0; the opposite edge v=1.
     for (side, v) in [(1.0f32, 0.0f32), (-1.0, 1.0)] {
         let x = point[0] + nx * half * side;
         let z = point[1] + nz * half * side;

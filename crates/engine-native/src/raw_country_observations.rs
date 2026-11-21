@@ -1,8 +1,3 @@
-//! Callback-local authority for the exact signed raw country operand.
-//! Nonzero raw words index live tags; zero uses the database. Arithmetic
-//! country lookup is independent of tag spelling. Original attempts,
-//! including failures and policy-limited string prefixes, survive family
-//! output refusal. No pointer or live control is replay data.
 
 use crate::{cpdx_array::Array, msvc_string, walk::Outcome};
 use std::mem::size_of;
@@ -44,7 +39,6 @@ pub struct TextAttempt {
     pub source: Attempt<usize>,
     pub terminator: Attempt<u8>,
     pub payload: Attempt<Span>,
-    /// A bounded Text policy rejection is completable; native faults are final.
     pub policy_limited: bool,
     pub failure: Option<&'static str>,
 }
@@ -218,7 +212,6 @@ impl Journal {
         self.occurrence(Occurrence::Link { raw, result });
         self.required.links = self.required.links.max((raw as usize).saturating_add(1));
         self.grow_links((raw as usize).saturating_add(1));
-        // A refused growth has already refused the journal.
         if let Some(slot) = self.links.get_mut(raw as usize)
             && slot.is_none()
         {
@@ -232,8 +225,6 @@ impl Journal {
             self.refuse("raw country link allocation failed");
         }
     }
-    /// Admit storage BEFORE the original native attempt; failure poisons later
-    /// publication but never suppresses or repeats the established reader.
     pub fn begin_text(&mut self, raw: i32, source: Source, address: usize) -> Option<usize> {
         self.occurrence(Occurrence::Text {
             raw,

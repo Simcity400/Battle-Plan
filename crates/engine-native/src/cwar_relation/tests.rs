@@ -104,7 +104,6 @@ fn fixture() -> Vec<u8> {
                 at + crelation_status::DIPLOMACY_STATUS,
                 DIPLOMACY[owner] as u64,
             );
-            // Matrix slot one deliberately uses alias4 as its raw target.
             p32(
                 &mut bytes,
                 at + crelation_status::TARGET_COUNTRY,
@@ -178,7 +177,6 @@ fn count(bytes: &[u8]) -> Outcome {
     walk_from(&SliceMemory { base: 0, bytes }, &SliceMemory { base: 0, bytes }, 0, GS, crate::walk::Buffer::Count, &mut crelation_status::Resolver::default(), None, None)
 }
 
-/// The count-only probe for `capacity` 0, growing rows otherwise.
 fn rows_or_count(rows: &mut Vec<Row>, capacity: usize) -> crate::walk::Buffer<'_, Row> {
     if capacity == 0 {
         crate::walk::Buffer::Count
@@ -261,7 +259,6 @@ impl Memory for CountedMemory<'_> {
 
 fn reader<'a, M: Memory>(memory: &'a M) -> Reader<'a, M> {
     let countries = ccountry::Reader::new(memory, 0, GS).unwrap();
-    // Test-only storage; production readers borrow the frame's resolver.
     let resolver = Box::leak(Box::new(crelation_status::Resolver::default()));
     resolver.begin(&countries);
     resolver.grow().unwrap();
@@ -293,8 +290,6 @@ impl<'a> ObservedMemory<'a> {
     }
 }
 
-// Use the trait's scalar record implementation while retaining each exact
-// observation and the caller's gather boundaries in these pure fixtures.
 struct ObservedFields<'a, 'b>(&'a ObservedMemory<'b>);
 
 impl Memory for ObservedFields<'_, '_> {
@@ -328,8 +323,6 @@ impl Memory for ObservedMemory<'_> {
     }
 }
 
-// Frozen pre-snapshot membership logic. Keep semantic validation independent
-// of scan_occurrence, including its complete batch-prefix observation order.
 fn original_owned_occurrence(
     memory: &impl Memory,
     root: usize,
@@ -425,8 +418,6 @@ fn owned_split_keeps_native_id_alias_cached_and_routes_only_payload_to_source() 
         blocked: alias..alias + 4,
         ..ObservedMemory::new(&bytes)
     };
-    // Raw 7 is outside the five-slot roster. Its seeded byte observation,
-    // not authenticated_countries alone, makes the old resolution succeed.
     let roster_only = cache.roster_view(&country_source);
     assert!(
         ccountry::Reader::new(&roster_only, 0, GS)
@@ -446,9 +437,6 @@ fn owned_split_keeps_native_id_alias_cached_and_routes_only_payload_to_source() 
         Outcome::Rows { len: 2 }
     );
     assert!(rows[..2].iter().all(|row| row.first_country == 7));
-    // If payload reads accidentally pass through the country view, this
-    // source sees their misses. Country resolution itself needs no native
-    // read, including the raw-id alias that roster_view cannot supply.
     assert!(country_source.reads.borrow().is_empty());
     assert!(!payload.reads.borrow().is_empty());
     assert!(
@@ -685,7 +673,6 @@ fn owned_snapshot_complete_walk_matches_serial_rows_errors_and_aliases() {
     variants.push(bytes);
     for bytes in variants {
         let mut scratch = OwnedSnapshotScratch::with_capacity(5);
-        // The first pass grows the snapshot as it goes, so its later queries already hit.
         let memory = SliceMemory {
             base: 0,
             bytes: &stable,
@@ -819,9 +806,6 @@ fn owned_snapshot_grows_under_root_pressure_and_resets_keep_storage_honest() {
     assert_eq!(scratch.stats.hits, 0);
     assert_eq!(scratch.stats.installed, 0);
     assert!(scratch.words.is_empty());
-    // Demand only controls off-thread storage. It cannot impose a source
-    // cap, and a demand no allocation can satisfy is refused as out of
-    // memory while the existing (still correct) storage is kept.
     let before = scratch.capacity();
     scratch.stats.required_words = usize::MAX;
     scratch.stats.required_cells = usize::MAX;
@@ -830,7 +814,6 @@ fn owned_snapshot_grows_under_root_pressure_and_resets_keep_storage_honest() {
         std::io::ErrorKind::OutOfMemory
     );
     assert_eq!(scratch.capacity(), before);
-    // Observed demand beyond any former fixed budget is honoured exactly.
     scratch.stats.required_words = 70_000;
     scratch.stats.required_cells = 280_000;
     scratch.grow(2).unwrap();
@@ -900,8 +883,6 @@ fn owned_snapshot_current_header_guard_rejects_changed_or_malformed_geometry() {
         bytes: &bytes,
     };
     let mut changed = bytes.clone();
-    // A valid capacity-only change must reach exact-header comparison,
-    // unlike count > capacity, which retains the original parse error.
     p32(&mut changed, 0x120 + crate::cpdx_array::CAPACITY, 3);
     let changed_memory = SliceMemory {
         base: 0,
@@ -1089,7 +1070,6 @@ fn owned_status_reuse_keeps_both_owner_orders_and_exact_remaining_reads() {
             1
         );
 
-        // A new walk must reauthenticate statuses even with the same keys.
         let mut changed = bytes.clone();
         p64(&mut changed, status(0, 2), 0);
         let memory = SliceMemory {
@@ -1174,8 +1154,6 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
     walker.ownership = Some(&mut scratch);
     assert!(walker.relation(WAR1, first).unwrap().is_some());
 
-    // Both raw references resolve to the same canonical country. Changing
-    // the source word must still miss the previously authenticated graph.
     let mut changed = bytes.clone();
     p32(&mut changed, WAR1 + crelation::FIRST_COUNTRY, 1);
     let mut memory = ObservedMemory::new(&changed);
@@ -1187,8 +1165,6 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
         Err("relation status vtable mismatch")
     );
 
-    // A matching status result cannot bypass the existing exact owned
-    // header guard, including a geometrically valid capacity-only change.
     let mut changed = bytes.clone();
     p32(
         &mut changed,
@@ -1223,7 +1199,6 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
         let allocated = walker.ownership.as_ref().unwrap().allocated_bytes();
         memory.reads.borrow_mut().clear();
         assert_eq!(walker.relation(WAR1, first), Ok(expected));
-        // The first query grew and snapshotted owned(0)'s three words; owned(1) holds one and is scanned.
         let mut reads = expected_warmed_war1_reads();
         reads.retain(|&(address, _)| {
             address != DIPLOMACY[0] + cdiplomacy_status::RELATIONS
@@ -1301,13 +1276,10 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
     impl OwnedStatus {
         fn new(bytes: &[u8], offset: usize) -> Self {
             assert!(offset + 0x300 <= PAGE);
-            // SAFETY: this fixture owns one writable, non-executable page.
             let page = unsafe { VirtualAlloc(std::ptr::null_mut(), PAGE, 0x3000, READWRITE) };
             assert!(!page.is_null());
             let owned_status = Self { page, offset };
             let source = &bytes[status(0, 2)..status(0, 2) + 0x300];
-            // SAFETY: source is a complete immutable fixture prefix and the
-            // destination is disjoint, writable owned storage.
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     source.as_ptr(),
@@ -1324,7 +1296,6 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
 
         fn protect(&self, protection: u32) -> u32 {
             let mut previous = 0;
-            // SAFETY: changes only this fixture's one owned page.
             assert_ne!(
                 unsafe { VirtualProtect(self.page, PAGE, protection, &mut previous) },
                 0
@@ -1335,7 +1306,6 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
 
     impl Drop for OwnedStatus {
         fn drop(&mut self) {
-            // SAFETY: releases only this fixture's complete allocation.
             unsafe { VirtualFree(self.page, 0, 0x8000) };
         }
     }
@@ -1365,8 +1335,6 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
                 }
                 return copied;
             }
-            // The first status authenticated completely. Fail the second
-            // status before any original ownership-header read is reached.
             if address == status(1, 1) {
                 return false;
             }
@@ -1378,8 +1346,6 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
         }
     }
 
-    // Both 16-byte headers are covered, including each one's possible
-    // cache-line crossing. Hinting must not consume even the future guard.
     for offset in [0, 0x10, 0x28] {
         for protection in [NOACCESS, READWRITE | GUARD] {
             let mut bytes = fixture();
@@ -1388,8 +1354,6 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
             let memory = ArmedStatusMemory {
                 bytes: &bytes,
                 status: &owned_status,
-                // SAFETY: foreign requests here go only to this fixture's
-                // owned readable or deliberately protected status storage.
                 live: unsafe { crate::memory::LiveMemory::new() },
                 protection,
                 armed: Cell::new(false),
@@ -1644,7 +1608,6 @@ fn pair_gather_keeps_semantic_errors_ahead_of_later_faults() {
         ),
     ] {
         let mut bytes = fixture();
-        // Four-byte replacements must not also change their adjacent field.
         if invalid == WAR2 + crelation::FIRST_COUNTRY
             || invalid == status(0, 3) + crelation_status::TARGET_COUNTRY
         {
@@ -1710,7 +1673,6 @@ fn fixed_gathers_leave_gaps_and_nonemitting_rows_unread() {
 
 #[test]
 fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
-    // A raw alias far above the former 512-cell direct map.
     const FAR: usize = 20_000;
     let mut bytes = fixture();
     const EXPANDED_LINKS: usize = 0x20000;
@@ -1742,7 +1704,6 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     assert_eq!(memory.guards.get() - start, 7);
     assert_eq!(dense.resolve(1), Ok(first));
     assert_eq!(memory.guards.get() - start, 7);
-    // The alias has its own cell: it is validated once and never evicts 1.
     assert_eq!(dense.resolve(FAR as u32), Ok(first));
     assert_eq!(memory.guards.get() - start, 14);
     assert_eq!(dense.resolve(1), Ok(first));
@@ -1759,15 +1720,12 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     assert_eq!(dense.resolve(0), Err("country id is zero"));
     assert_eq!(dense.resolve(1), Ok(first));
     assert_eq!(memory.guards.get() - start, 14);
-    assert_eq!(first.id, 4); // Authentication never substitutes the queried alias.
+    assert_eq!(first.id, 4);
     let start = memory.guards.get();
     assert_eq!(dense.diplomacy(first), Ok(DIPLOMACY[0]));
     assert_eq!(dense.diplomacy(first), Ok(DIPLOMACY[0]));
     assert_eq!(memory.guards.get() - start, 3);
 
-    // Storage shorter than the live headers is never a refusal: uncovered
-    // ids and slots keep the original uncached validators, and the walk
-    // reports the observed headers for off-thread growth.
     let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
     let resolver = Box::leak(Box::new(crelation_status::Resolver::with_capacity(2)));
     resolver.begin(&countries);
@@ -1810,7 +1768,6 @@ fn successful_authentication_is_local_and_failed_authentication_is_never_cached(
     let mut first_reader = reader(&memory);
     let country = first_reader.resolve(4).unwrap();
     memory.blocked.set(COUNTRY[0] + ccountry::ID);
-    // A changing address space is outside this cache's stability contract.
     assert_eq!(first_reader.resolve(4), Ok(country));
     assert_eq!(reader(&memory).resolve(4), Err("country id unreadable"));
     for _ in 0..2 {
@@ -1981,9 +1938,6 @@ fn owned_census_preserves_aliases_native_values_and_truncation() {
     assert_eq!(walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Growing(&mut rows), &mut crelation_status::Resolver::default(), None, None), Outcome::Rows { len: 2 });
     let mut scratch = prepared_snapshot(3, 8);
     for (pass, matrix_counts) in [[3, 2, 2], [4, 3, 3]].into_iter().enumerate() {
-        // The direct walk reads seven matrix headers. The owned walk adds
-        // three: each war's status graph is validated only on its first
-        // visit, and the shared first owner's matrix header is reused.
         let reads = memory.reads.borrow();
         for (owner, count) in matrix_counts.into_iter().enumerate() {
             assert_eq!(
@@ -1995,8 +1949,6 @@ fn owned_census_preserves_aliases_native_values_and_truncation() {
                     .count(),
                 count
             );
-            // Both walks retain the outer census header and every
-            // diplomacy-owned membership header on both war visits.
             assert_eq!(
                 reads
                     .iter()
@@ -2095,7 +2047,7 @@ fn missing_duplicate_and_disagreeing_links_are_unavailable_even_at_capacity() {
         );
     }
     let mut bytes = fixture();
-    p32(&mut bytes, WAR2 + crelation::SECOND_COUNTRY, 1); // Alias of first, not another country.
+    p32(&mut bytes, WAR2 + crelation::SECOND_COUNTRY, 1);
     assert_eq!(
         count(&bytes),
         Outcome::Unavailable {
@@ -2144,7 +2096,6 @@ fn owned_prefetch_keeps_earlier_semantic_errors_before_later_faults() {
     }
 }
 
-/// Bump-allocated synthetic address space for census-scale fixtures.
 struct Space {
     bytes: Vec<u8>,
 }
@@ -2166,8 +2117,6 @@ impl Space {
     }
 }
 
-/// `countries` canonical countries in slots 1..=countries; country 1 is at
-/// war with every other (country 1 first).
 struct Census {
     bytes: Vec<u8>,
     rows: Vec<Row>,
@@ -2179,8 +2128,6 @@ fn war_census(countries: usize) -> Census {
     };
     let census = space.alloc((countries + 1) * 8);
     let links = space.alloc((countries + 1) * 4);
-    // 24-byte cells: vtable and id, then a later country's diplomacy
-    // pointer (0xf88 = 165 * 24 + 16), so objects overlap without clashing.
     let objects = space.alloc(24 * (countries + 2 + ccountry::DIPLOMACY_STATUS / 24));
     let country = |slot: usize| objects + 24 * slot;
     let mut pointers = vec![u64::MAX];
@@ -2318,7 +2265,6 @@ fn war_census(countries: usize) -> Census {
     }
 }
 
-// regression: 74a0f0fa8c Follow original engine demand without chosen content limits
 #[test]
 fn cold_storage_grows_and_needs_no_rescans() {
     const COUNTRIES: usize = 41;

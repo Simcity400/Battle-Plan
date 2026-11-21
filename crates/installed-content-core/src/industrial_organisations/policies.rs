@@ -1,4 +1,3 @@
-//! Policy names and modifiers in their stored order.
 
 use crate::{
     key_names::KeyNames,
@@ -15,13 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Policy {
     pub token: Vec<u8>,
     pub name: Vec<u8>,
-    /// The authored `icon` sprite name; empty when the policy names none.
     pub icon: Vec<u8>,
-    /// The `visible` condition, evaluated for the organisation: a policy whose condition does
-    /// not hold is not shown. Empty when none is declared (always shown).
     pub visible: Vec<Item>,
-    /// The `available` condition, evaluated for the organisation: a shown policy whose
-    /// condition does not hold cannot be chosen. Empty when none is declared (always available).
     pub available: Vec<Item>,
     pub groups: Vec<(Vec<u8>, Vec<Bonus>)>,
     pub organisation_modifiers: modifiers::Modifiers,
@@ -64,7 +58,6 @@ impl Catalog {
             &mut |reader, field| match reader {
                 Reader::File => {
                     let name = field.key.c_str().to_ascii_lowercase();
-                    // Repeated definitions are skipped, including those in later files.
                     if seen.insert(name.clone()) {
                         current = Some(name);
                         Shape::Object(Reader::Policy)
@@ -83,16 +76,15 @@ impl Catalog {
                     Some(b"on_add" | b"on_remove") => Shape::Effect,
                     Some(b"ai_will_do") => native::mean_time_to_happen(field),
                     Some(b"equipment_bonus" | b"production_bonus") => {
-                        Shape::Object(Reader::Groups) // Equipment and production share one group map.
+                        Shape::Object(Reader::Groups)
                     }
                     Some(b"organization_modifier") => {
                         Shape::Object(Reader::Modifier(modifiers::Node::Modifier))
                     }
-                    _ => Shape::Skip, // Unknown fields are reported and skipped.
+                    _ => Shape::Skip,
                 },
                 Reader::Groups => Shape::Object(Reader::Bonus),
                 Reader::Bonus => {
-                    // The bonus reader consumes each accepted stat once.
                     if field.keyword().is_some_and(|name| {
                         crate::equipment::stat_index(&name).is_some()
                             || std::str::from_utf8(&name)
@@ -145,7 +137,6 @@ impl Catalog {
                 } else if field.keyword_is("icon") {
                     policy.icon = field.value.read_string().unwrap_or_default().to_vec();
                 } else if field.keyword_is("visible") {
-                    // Repeated blocks are one conjunction.
                     policy
                         .visible
                         .extend_from_slice(field.value.items().unwrap_or_default());
@@ -162,8 +153,6 @@ impl Catalog {
                 {
                     for group in field.value.items().unwrap_or_default() {
                         let token = c_string(group.key.as_deref().unwrap_or_default()).to_vec();
-                        // Groups compare unsigned folded-FNV hash, then folded bytes;
-                        // an existing group retains its first value, not a merged block.
                         let key = (
                             crate::decisions::seed_component(&token) as u32,
                             token.to_ascii_lowercase(),
@@ -276,7 +265,6 @@ mod tests {
                 .iter()
                 .any(|why| why.contains("MIO policy bad") && why.contains("count: 1"))
         );
-        // The icon and the window conditions are retained, repeated blocks joined.
         let mut catalog = Catalog::default();
         catalog
             .read_file(

@@ -164,7 +164,6 @@ fn witnessed_repeats_keep_all_emissions_and_all_typed_country_packs() {
         )
     );
 
-    // Every other full-Save projection agrees with ordinary unique parsing.
     let unique = document(&format!("RES={{{body}}}"), "").parse().unwrap();
     projected.country_emissions = None;
     projected.country_naval_launch = unique.country_naval_launch.clone();

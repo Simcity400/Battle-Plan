@@ -145,7 +145,6 @@ fn tooltip_projection_preserves_targeted_modifier_boundaries_and_order() {
     append(&mut database, b"category={sample={targeted_modifier={tag=BBB political_power_gain=0.1} targeted_modifier={tag=ROOT political_power_gain=0.2}}}",
         "synthetic/decisions.txt", &[b"category".to_vec()].into(), &KeyNames::default());
     let decision = database.decision(b"sample").unwrap().unwrap();
-    // Walk each static modifier separately rather than one merged body.
     assert_eq!(decision.targeted_modifier.len(), 2);
     assert_eq!(
         decision.targeted_modifier[0][0].value.scalar(),

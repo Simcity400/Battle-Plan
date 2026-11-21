@@ -1,11 +1,7 @@
-//! Each table's conversion time on a thread that armed the clock: the spool
-//! and its helpers while they convert packs. Elsewhere [`timed`] only runs the
-//! conversion. A table converted inside another's timing counts toward the outer.
 
 use replay_data::rows::{TABLE_COUNT, TableId};
 use std::cell::{Cell, RefCell};
 
-/// 0: disarmed; 1: armed, between tables; 2: inside a timed table.
 const DISARMED: u8 = 0;
 const ARMED: u8 = 1;
 const TIMING: u8 = 2;
@@ -15,8 +11,6 @@ thread_local! {
     static TABLE_NS: RefCell<[u64; TABLE_COUNT]> = const { RefCell::new([0; TABLE_COUNT]) };
 }
 
-/// Runs `convert`, charging its time to `table` when this thread is armed and
-/// no other table's timing encloses it.
 #[inline]
 pub fn timed<R>(table: TableId, convert: impl FnOnce() -> R) -> R {
     if STATE.get() != ARMED {
@@ -34,19 +28,15 @@ pub fn timed<R>(table: TableId, convert: impl FnOnce() -> R) -> R {
     output
 }
 
-/// This thread's clock, armed until dropped.
 #[must_use = "the clock is disarmed when dropped"]
 pub struct Armed(std::marker::PhantomData<*const ()>);
 
-/// Arms this thread's clock with every table at zero.
 pub fn arm() -> Armed {
     TABLE_NS.with_borrow_mut(|tables| *tables = [0; TABLE_COUNT]);
     STATE.set(ARMED);
     Armed(std::marker::PhantomData)
 }
 
-/// Adds the tables this thread timed since arming or the last drain into
-/// `into`, and returns their sum.
 pub fn drain(into: &mut [u64; TABLE_COUNT]) -> u64 {
     TABLE_NS.with_borrow_mut(|tables| {
         let mut sum = 0u64;

@@ -1,4 +1,3 @@
-//! Native production readers and their operands, layouts and synthetic tests.
 
 use engine_dlc::dlc_feature_state;
 use engine_executable::modifier_keys;

@@ -9,7 +9,6 @@ const partners = (): LendLeasePartnersReply => ({
   totals: [[[10, 29, '300000'], [30, 39, '100000'], [50, 99, '100000']], [[10, 99, '0']]],
   partners: [
     { slot: 8, tags: [{ firstHour: 10, lastHour: 99, tag: 'FRA' }], values: [[[10, 29, '100000'], [30, 39, '100000'], [50, 99, '100000']], [[10, 99, '0']]] },
-    // Its row left at hour 30: held at zero after.
     { slot: 4, tags: [{ firstHour: 20, lastHour: 99, tag: 'ITA' }], values: [[[20, 29, '200000'], [30, 39, '0'], [50, 99, '0']], [[20, 99, '0']]] },
   ],
 });

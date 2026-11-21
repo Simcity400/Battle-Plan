@@ -6,7 +6,6 @@ pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
     job.install_wings(&mut wings);
 }
 
-/// The wing census, not installed.
 pub(crate) fn wing_census(memory: &impl Memory) -> crate::extended::air::AirWingJob {
     let mut wings = crate::extended::air::AirWingJob::fixture();
     let context = crate::extended::air::AirWingCopyContext {
@@ -80,7 +79,6 @@ pub(crate) fn fixture() -> Vec<u8> {
     p32(&mut bytes, LTAB + 8, 1);
     p64(&mut bytes, C0, ccountry::VTABLE_RVA.0 as u64);
     p32(&mut bytes, C0 + ccountry::ID, 1);
-    // A valid empty wing census is different from a missing manager.
     p64(
         &mut bytes,
         GAME_STATE + engine_native::cgame_state::STRATEGIC_AIR_MANAGER,
@@ -97,7 +95,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         0x41000,
         3,
     );
-    // Land theatres: one theatre, one group named "AB", two members.
     header(&mut bytes, C0 + ccountry::THEATRES, 0x36000, 1);
     p64(&mut bytes, 0x36000, THEATRE as u64);
     header(&mut bytes, C0 + ccountry::AIR_THEATRES, 0x36100, 0);
@@ -123,7 +120,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         (1u64 << 32) | ctheater_group::REFERENCE_TYPE as u64,
     );
     p64(&mut bytes, GROUP + ctheater_group::THEATRE, THEATRE as u64);
-    // Inline name "AB" (len 2, capacity 15, terminator).
     bytes[GROUP + ctheater_group::NAME..GROUP + ctheater_group::NAME + 2].copy_from_slice(b"AB");
     p64(&mut bytes, GROUP + ctheater_group::NAME + 16, 2);
     p64(&mut bytes, GROUP + ctheater_group::NAME + 24, 15);
@@ -151,8 +147,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         );
         p64(&mut bytes, member + corders_group::THEATRE, THEATRE as u64);
     }
-    // OOB registry with one group (same MEMBER1 group for simplicity,
-    // plus dedicated OOB group with member + child).
     const HANDLE: u64 = (u32::MAX as u64) << 32 | corders_group::REFERENCE_TYPE as u64;
     p64(
         &mut bytes,
@@ -191,7 +185,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         1,
     );
     p64(&mut bytes, OOB_MEMBERS, OOB_MEMBER as u64);
-    // Member host (division) with backlink.
     p64(&mut bytes, OOB_UNIT, carmy::VTABLE_RVA.0 as u64);
     p64(
         &mut bytes,
@@ -239,8 +232,6 @@ pub(crate) struct Split {
 
 fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
     let mut captured = Captured::with_capacities(capacity);
-    // Typed reference: theatre walk + OOB via roots, single pass (no
-    // double-read). Mirrors the game thread's capture order.
     let first = engine_native::ctheatre::walk(
         memory,
         BASE,
@@ -259,7 +250,6 @@ fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
     captured.land.outcome = first.land;
     captured.land_groups.outcome = first.land_groups;
     captured.land_members.outcome = first.land_members;
-    // OOB via registry roots.
     let mut roots = vec![engine_native::corders_group::Root::default(); 8];
     let roots_outcome = engine_native::corders_group::walk_roots(memory, BASE, &mut roots);
     let roots_len = roots_outcome.len();
@@ -316,9 +306,6 @@ pub(crate) fn decoded(captured: &Captured) -> Split {
     }
 }
 
-/// The same pass given the original registry census, as the Naval job is:
-/// copy/decode preserve either its complete roots or its terminal verdict.
-/// An attempted census records no second registry observation.
 fn assert_census_roots_decode_the_same(
     memory: &impl Memory,
     capacity: &Capacities,
@@ -359,8 +346,6 @@ pub(crate) fn split(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) 
     split
 }
 
-/// [`split`] without the census-roots pass, for tests that count the
-/// copy's reads.
 pub(crate) fn split_registry(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
     let ctx = NavalCopyContext {
         hour: 0,
@@ -524,8 +509,6 @@ pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
     assert_eq!(split.oob_children, direct.oob_children, "oob children rows");
 }
 
-/// Decode-worker assertion against pooled buffers (same module, so
-/// private rows are visible).
 pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
     assert_eq!(captured.land.outcome, direct.land_outcome, "land outcome");
     assert_eq!(
@@ -758,7 +741,6 @@ fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
             assert!(!reads.contains(&(CHILDREN, 8)), "{name}");
             assert!(!reads.contains(&(CHILD, 16)), "{name}");
             assert!(!reads.contains(&(0x7fff0000, 8)), "{name}");
-            // Skipping the subclass walk must not skip the later reverse census.
             assert_eq!(
                 reads
                     .iter()
@@ -773,8 +755,6 @@ fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
         }
         assert!(!reads.contains(&(OOB_MEMBER, 16)), "{name}");
         if provider {
-            // The provider field is taken with the root's other own
-            // fields, then its host identity and backlink.
             let field = reads
                 .iter()
                 .position(|&read| read == (OOB_GROUP + corders_group::HQ_PROVIDER, 8));
@@ -805,17 +785,9 @@ fn naval_oob_copy_reads_only_typed_child_and_provider_dependencies() {
     }
 }
 thread_local! {
-    /// Test builds only: take each order-of-battle root's own fields one
-    /// by one, as before the gathered copy, for the reference log.
     pub(crate) static OOB_PER_FIELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Each order-of-battle root's own one-entry spans are taken in one
-/// guarded copy. With every reference in use, and a fault at every byte
-/// of the root's fields and of what they reference, the log holds exactly
-/// the spans, bytes and failures of taking each field on its own, and it
-/// decodes, with the registry and with the census roots, to the typed
-/// walk's tables.
 #[test]
 fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     use engine_native::{corders_group, corders_group_member};
@@ -842,7 +814,6 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
     }
     const LEADER: usize = 0x68000;
     let mut bytes = fixture();
-    // An army group that is its own parent, with no children.
     p64(
         &mut bytes,
         OOB_GROUP,
@@ -924,9 +895,6 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
         let direct = direct(&memory);
         let (gathered, report, _) = split(&memory);
         assert!(report.raw_ok, "fault {fault:x?}");
-        // The typed reference walks the order of battle only over a
-        // complete registry census; where that fails, the decode reports
-        // the failure instead, with or without the gathered copy.
         let mut roots = vec![corders_group::Root::default(); 8];
         if matches!(
             corders_group::walk_roots(&memory, BASE, &mut roots),
@@ -948,7 +916,5 @@ fn oob_root_fields_in_one_copy_log_the_per_field_spans() {
             assert_eq!(gathered.oob_groups_outcome, Outcome::Rows { len: 1 });
         }
     }
-    // Through the plain slice every span is still one copy; the gathered
-    // copy's saving is in guarded calls, which the bench counts.
     assert_eq!(copies[0], copies[1]);
 }

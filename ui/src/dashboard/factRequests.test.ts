@@ -6,10 +6,6 @@ import type { FactClock, FactPlan, FactRead, NameAt } from './countryFacts';
 import type { DashboardClient, ProductRequest } from './client';
 import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 
-/** Reads that finish when the test's clock passes their end, counted, with a clock
- * whose waits run as it advances. Like the desktop, at most `limit` requests are
- * taken at once (a further one is rejected at once; `limit` may change) and a
- * cancelled request frees its place at once. `others` holds places other widgets use. */
 function clockedReads(duration: number, limit = Infinity) {
   let now = 0;
   const waiting: { at: number; done: () => void }[] = [];
@@ -27,13 +23,11 @@ function clockedReads(duration: number, limit = Infinity) {
       await new Promise<void>(done => {
         const entry = { at: now + duration, done };
         waiting.push(entry);
-        // A cancelled request frees its place at once.
         signal.addEventListener('abort', () => { waiting.splice(waiting.indexOf(entry), 1); stats.active--; done(); }, { once: true });
       });
       if (signal.aborted) { stats.cancelled++; return; }
       stats.active--;
       stats.completed++;
-      // The recording has no fact for a country named "NONE".
       onChunk(hour, tags, new Map(tags.filter(tag => tag !== 'NONE').map(tag => [tag, `name of ${tag}`])));
     }
   };
@@ -43,7 +37,6 @@ function clockedReads(duration: number, limit = Infinity) {
   };
   const settle = async () => { for (let turn = 0; turn < 8; turn++) await Promise.resolve(); };
   const advance = async (to: number) => {
-    // Every read and wait due by `to`, in time order.
     for (;;) {
       const next = Math.min(...waiting.map(item => item.at), ...timers.map(item => item.at));
       if (!(next <= to)) break;
@@ -76,8 +69,6 @@ test('a retained exact dated queue visits demand once instead of rebuilding it a
   assert.equal(requests.running, 0); assert.equal(store.size, 5000);
   assert.deepEqual(stats.hours, Array.from({ length: 5000 }, (_, hour) => [hour, hour]).flat());
   assert.ok(stats.asked.every((tags, index) => JSON.stringify(tags) === JSON.stringify(index % 2 ? ['NONE'] : ['A', 'B'])));
-  // Count actual store lookups rather than machine-dependent wall time. One
-  // admission scan and one queue-drain check per pair suffice for unchanged demand.
   assert.ok(answeredChecks <= wanted.length * 2, `Unchanged demand was rechecked ${answeredChecks} times`);
   const result = requests.pickRead(wanted);
   assert.equal(result.size, wanted.length);
@@ -108,8 +99,6 @@ test('configuration failures are kept while wanted and pruned when playback leav
     done(plan[0][0], plan[0][1], null, false);
   }, () => {});
   const past: NameAt[] = [];
-  // Ten years of monthly looks with unconfigured folders, plus several countries
-  // requested at different label hours. Failures never accumulate behind playback.
   for (let hour = 100; hour < 100 + 10 * 365 * 24; hour += 30 * 24) {
     const wanted = [{ hour, tag: 'opaque,"tag' }, { hour: 90, tag: 'old line' }];
     requests.want(wanted, 64, 64);
@@ -174,20 +163,17 @@ test('a top-N last place alternating every 50 ms never cancels reads taking 120 
   let changes = 0;
   const requests = new FactRequests(store, read, () => changes++, clock);
   const top = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
-  // Tenth place changes between X and Y every 50 ms for half a second.
   for (let step = 0; step < 10; step++) {
     await advance(step * 50);
     requests.want(at([...top, step % 2 ? 'Y' : 'X']), 64, 64);
   }
   await advance(1000);
   assert.equal(stats.cancelled, 0);
-  // The first ten, then Y alone: nobody is asked for twice.
   assert.deepEqual(stats.asked, [[...top, 'X'], ['Y']]);
   assert.equal(stats.completed, 2);
   assert.equal(changes, 2);
   for (const tag of [...top, 'X', 'Y']) assert.equal(store.get(100, tag), `name of ${tag}`, tag);
   assert.equal(requests.pending.size, 0);
-  // Asked again once read, nothing is requested.
   assert.equal(requests.want(at(top), 64, 64), 0);
 });
 
@@ -229,7 +215,6 @@ test('only a completed read decides a fact: one its answer lacks is missing; a f
   await advance(100);
   assert.equal(store.pickRead(at(['A', 'NONE'])).get(nameKey(100, 'NONE')), null);
   assert.equal(store.get(100, 'A'), 'name of A');
-  // A read that keeps failing is never read with nothing, however often it fails.
   const failing = new HourStore<string>(8);
   const clocked = clockedReads(50, 0);
   const tries = new FactRequests(failing, clocked.read, () => {}, clocked.clock);
@@ -237,12 +222,10 @@ test('only a completed read decides a fact: one its answer lacks is missing; a f
   await clocked.advance(60_000);
   assert.equal(failing.answered(100, 'A'), false);
   assert.ok(clocked.stats.rejected > 3, `${clocked.stats.rejected} tries`);
-  // Waits double, up to the most.
   assert.deepEqual([1, 2, 3, 10].map(retryDelay), [250, 500, 1000, RETRY_MOST_MS]);
 });
 
 test('a look asked while other widgets hold every request is read once they free one, never cached as missing', async () => {
-  // Other widgets hold all 64 of the desktop's requests for the first 3 s.
   const { read, stats, advance, clock, desk } = clockedReads(100, 64);
   desk.others = 64;
   const store = new HourStore<string>(8);
@@ -250,7 +233,6 @@ test('a look asked while other widgets hold every request is read once they free
   requests.want(at(['GER']), 64, 64);
   await advance(2900);
   assert.ok(stats.rejected >= 3, `${stats.rejected} rejections`);
-  // Still loading, not missing: the look shown before stays.
   assert.equal(store.answered(100, 'GER'), false);
   assert.equal(store.pickRead(at(['GER'])).has(nameKey(100, 'GER')), false);
   desk.others = 0;
@@ -270,7 +252,6 @@ test('a failing read is tried again at once on a new attempt, and not at all onc
   assert.equal(stats.started, before + 1);
   await advance(100);
   assert.equal(store.get(100, 'A'), 'name of A');
-  // Another hour wanted: the failing one is not asked for again.
   desk.limit = 0;
   requests.want([{ hour: 200, tag: 'B' }], 64, 64);
   await advance(200);
@@ -292,13 +273,12 @@ test('configuration errors stay failures; refusals for want of room can be retri
     return chunks;
   };
   assert.deepEqual(await outcome(new Error('Choose the game and user folders in Settings first')), [[null, false]]);
-  // Every refusal for want of room, as its producer words it: nothing decided, tried again.
   for (const refusal of [
     ...TRANSIENT_ERRORS,
-    CAPACITY_REACHED, // the data service
-    `${CAPACITY_REACHED}. Retry this view.`, // the desktop's and the browser bridge's admission
-    NATIVE_QUEUE_FULL, // the desktop's pipe to the native service
-    `${MAP_CONTROLS_BUSY}; try again`, // the desktop's map controls
+    CAPACITY_REACHED,
+    `${CAPACITY_REACHED}. Retry this view.`,
+    NATIVE_QUEUE_FULL,
+    `${MAP_CONTROLS_BUSY}; try again`,
   ]) assert.deepEqual(await outcome(new Error(refusal)), [[null, true]], refusal);
   assert.deepEqual(await outcome(new TypeError('Failed to fetch')), [[null, true]]);
 });
@@ -341,7 +321,6 @@ test('a read the desktop’s full request queue refused stays wanted and is read
   };
   const settle = async () => { for (let turn = 0; turn < 8; turn++) await Promise.resolve(); };
   const advance = async (to: number) => {
-    // Every wait due by `to`, in time order, including those a retry sets.
     await settle();
     for (let timer = timers.find(item => item.at <= to); timer; timer = timers.find(item => item.at <= to)) {
       for (const item of timers) if (item.at < timer.at) timer = item;
@@ -353,7 +332,6 @@ test('a read the desktop’s full request queue refused stays wanted and is read
     now = to;
     await settle();
   };
-  // The desktop's queue to the native service is full until `full` is cleared.
   const desk = { full: true, asked: 0 };
   const client = {
     product: async (request: { sourceId: string; revision: string; product: string }) => {
@@ -370,18 +348,15 @@ test('a read the desktop’s full request queue refused stays wanted and is read
   const requests = new FactRequests(store, read, () => changes++, clock);
   requests.want(at(['GER']), 64, 64);
   await advance(1000);
-  // Refused, never cached as missing: still loading, and asked again after each wait.
   assert.ok(desk.asked >= 2, `${desk.asked} asks`);
   assert.equal(store.answered(100, 'GER'), false);
   assert.equal(store.pickRead(at(['GER'])).has(nameKey(100, 'GER')), false);
-  assert.ok(changes > 0); // Failure is exposed as unknown, so consumers redraw.
+  assert.ok(changes > 0);
   const failedChanges = changes;
-  // Room again: the next wait reads it.
   desk.full = false;
   await advance(1000 + RETRY_MOST_MS);
   assert.equal(store.get(100, 'GER'), 'flag of GER');
   assert.equal(changes, failedChanges + 1);
-  // A new attempt (`retry`) reads at once too, without waiting.
   const later = new HourStore<string>(8);
   const again = new FactRequests(later, read, () => {}, clock);
   desk.full = true;
@@ -392,7 +367,6 @@ test('a read the desktop’s full request queue refused stays wanted and is read
   assert.equal(again.retry(), 1);
   await settle();
   assert.equal(later.get(100, 'GER'), 'flag of GER');
-  // The reply lacked FRA: a completed read, so it is read with nothing.
   assert.equal(later.pickRead(at(['FRA'])).get(nameKey(100, 'FRA')), null);
   again.cancel();
   requests.cancel();
@@ -444,8 +418,6 @@ test('five thousand sorting names drain in bounded chunks with at most two reads
 });
 
 test('sweeping a tooltip across 40 hours keeps at most two reads going, cancels the hours left behind and reads the last one', async () => {
-  // Reads take 120 ms and the desktop takes at most 64 at once; the pointer moves an
-  // hour every 10 ms, and names and flags each ask per hour (two chunks an hour).
   const { read, stats, advance, clock } = clockedReads(120, 64);
   const store = new HourStore<string>(64);
   const requests = new FactRequests(store, read, () => {}, clock);
@@ -455,20 +427,17 @@ test('sweeping a tooltip across 40 hours keeps at most two reads going, cancels 
     requests.want(hourOf(step), 64, 1);
     assert.ok(requests.running <= MAX_READING, `${requests.running} reads at step ${step}`);
   }
-  // The pointer stops on the last hour; no render follows, yet it is read.
   await advance(2000);
   assert.ok(stats.most <= MAX_READING, `${stats.most} at once`);
   assert.equal(stats.rejected, 0);
   assert.ok(stats.cancelled > 0);
   assert.equal(store.get(139, 'GER'), 'name of GER');
   assert.equal(store.get(139, 'ITA'), 'name of ITA');
-  // Hours left behind were not read to the end.
   assert.ok(stats.completed <= 4, `${stats.completed} completed`);
   assert.equal(requests.running, 0);
 });
 
 test('a read the desktop rejects is tried again while still wanted', async () => {
-  // A desktop taking one request at a time rejects the second chunk at first.
   const { read, stats, advance, clock } = clockedReads(50, 1);
   const store = new HourStore<string>(8);
   const requests = new FactRequests(store, read, () => {}, clock);
@@ -483,7 +452,6 @@ test('a batched store reads everything queued in one request, keeps it while a c
   const reads: { plan: FactPlan; signal: AbortSignal; answer: () => void }[] = [];
   const read: FactRead<string> = (plan, signal, onChunk) => new Promise<void>(resolve => {
     reads.push({ plan, signal, answer: () => {
-      // The reply could not read hour 3: that chunk fails without retrying.
       for (const [hour, tags] of plan) onChunk(hour, tags, hour === 3 ? null : new Map(tags.map(tag => [tag, `${tag} at ${hour}`])), false);
       resolve();
     } });
@@ -492,7 +460,6 @@ test('a batched store reads everything queued in one request, keeps it while a c
   const days = Array.from({ length: 800 }, (_, hour) => ['A', 'B'].map(tag => ({ hour, tag }))).flat();
   assert.equal(requests.want(days, Infinity, Infinity, 'time', true), 1);
   assert.equal(reads[0].plan.length, 800);
-  // A day joining while the first read goes on is read on its own, never restarting the first.
   const later = [...days.slice(2), { hour: 800, tag: 'A' }];
   assert.equal(requests.want(later, Infinity, Infinity, 'time', true), 1);
   assert.deepEqual(reads[1].plan, [[800, ['A']]]);
@@ -503,7 +470,6 @@ test('a batched store reads everything queued in one request, keeps it while a c
   const found = requests.pickRead(later);
   assert.equal(found.get(nameKey(799, 'B')), 'B at 799'); assert.equal(found.get(nameKey(800, 'A')), 'A at 800');
   assert.equal(found.get(nameKey(3, 'A')), FAILED_FACT);
-  // Answered, nothing is asked again; a read none of whose hours is wanted is cancelled.
   assert.equal(requests.want(later, Infinity, Infinity, 'time', true), 0);
   assert.equal(reads.length, 2);
   requests.want([{ hour: 900, tag: 'A' }], Infinity, Infinity, 'time', true);
@@ -531,10 +497,8 @@ test('a reply after its read was cancelled is ignored, and chunks a read never t
   const first = [{ hour: 1, tag: 'A' }, { hour: 2, tag: 'A' }];
   requests.want(first, Infinity, Infinity, 'time', true);
   requests.want([{ hour: 3, tag: 'A' }], Infinity, Infinity, 'time', true);
-  // The cancelled read answers anyway: nothing is recorded.
   tells[0](1, ['A'], new Map([['A', 'late']]));
   assert.equal(requests.pickRead([{ hour: 1, tag: 'A' }]).size, 0);
-  // A read that tells its first chunk and ends fails the rest, to be tried again.
   tells[1](3, ['A'], new Map([['A', 'A at 3']]));
   requests.want([{ hour: 3, tag: 'A' }, { hour: 4, tag: 'A' }, { hour: 5, tag: 'A' }], Infinity, Infinity, 'time', true);
   tells[2](4, ['A'], new Map([['A', 'A at 4']]));
@@ -558,7 +522,6 @@ test('a chunk answered in part keeps its answers and fails only its unanswered c
   const found = requests.pickRead(wanted);
   assert.equal(found.get(nameKey(7, 'A')), 'A here');
   assert.equal(found.get(nameKey(7, 'B')), FAILED_FACT);
-  // The failure was not one to retry by itself: nothing more is asked.
   assert.equal(requests.want(wanted, Infinity, Infinity, 'time', true), 0);
 });
 

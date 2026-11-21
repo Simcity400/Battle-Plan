@@ -36,8 +36,6 @@ const data = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, las
       buildingToken: null, buildingId: null, state: null, points: [[11, tag === 'A' ? 11 : 13, tag === 'A' ? '200000' : '100000'] as [number, number, string]] })),
   ] as Leaf[]).map(partOf), regions: [], buildings: [], warnings: [] });
 
-// Only these components' hooks retain state between SSR draws. The real reducer,
-// holder joins, numeric owners, callbacks and Pin producer remain under test.
 const hooks = `const state = () => globalThis.__airDrill;
   const cell = init => { const s = state(), i = s.cursor++; return s.hooks[i] ??= init(); };
   export const useEffect = () => {};
@@ -225,8 +223,6 @@ test('actual cause producer keeps exact negative rows, positive geometry and nat
     };
     const render = () => {
       state.cursor = 0; state.parts = undefined; state.history = undefined; state.datePicker = undefined;
-      // These target hooks are mocked above, so inspect its actual reset button
-      // before the normal SSR renderer expands the child chart/parts adapters.
       const element = Drill(props); state.reset = findReset(element);
       return renderToStaticMarkup(element);
     };

@@ -1,7 +1,3 @@
-//! The engine's ray test against a drawn unit model's root mesh. A mesh with a collision mesh is
-//! tested by its triangles in the entity's own space. Any other is tested by its world bounds:
-//! the box around its posed skeleton joints when it has a skeleton, else the box around its
-//! drawable sub-meshes, scaled by the instance and moved to its place but never turned.
 use crate::map::{
     models::{ModelInstance, ModelMesh},
     unit_history::LandFigure,
@@ -9,20 +5,15 @@ use crate::map::{
 use installed_content_core::{ResolvedLayers, mesh};
 use std::sync::Arc;
 
-/// An executable constant: the triangle test's least determinant magnitude.
 const PARALLEL: f32 = 1e-4;
 
-/// One mesh's pick source, scaled into the entity's own space.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     Triangles { positions: Vec<[f32; 3]>, indices: Vec<u16> },
-    /// The box around its drawable sub-meshes, for an entity without a posed skeleton.
     Bounds { min: [f32; 3], max: [f32; 3] },
 }
 
 impl Shape {
-    /// The shape of `model`, read through `layers`; refused by name when its mesh does not read
-    /// or holds nothing to test.
     pub fn of(layers: &ResolvedLayers, model: &ModelMesh) -> Result<Arc<Self>, String> {
         if model.path.is_empty() {
             return Err(format!("unit model {} has no mesh to test", model.name));
@@ -44,8 +35,6 @@ impl Shape {
         }
     }
 
-    /// The box around every drawable sub-mesh's `[aabb]`, as the importer gathers a mesh type's
-    /// static bounds.
     fn bounds(decoded: &mesh::Mesh, scale: f32) -> Option<Self> {
         let mut boxes = decoded
             .shapes
@@ -63,8 +52,6 @@ impl Shape {
         Some(Self::Bounds { min: min.map(|v| v * scale), max: max.map(|v| v * scale) })
     }
 
-    /// The furthest this shape reaches from the entity's root at unit scale, however it is turned;
-    /// `None` for a box, which a posed skeleton's joints may take the place of.
     pub fn reach(&self) -> Option<f32> {
         match self {
             Self::Triangles { positions, .. } => Some(positions.iter().map(|&p| dot(p, p)).fold(0.0, f32::max).sqrt()),
@@ -72,10 +59,6 @@ impl Shape {
         }
     }
 
-    /// Whether the ray from `origin` along `direction` (world space) meets this shape drawn at
-    /// `instance`. `joints` is where the frame poses the entity's skeleton joints, in its own
-    /// space ([`crate::map::models::ModelPass::root_joints`]); a skeleton's box takes the place
-    /// of the static one.
     pub fn hit(&self, instance: ModelInstance, joints: &[[f32; 3]], origin: [f32; 3], direction: [f32; 3]) -> bool {
         match self {
             Self::Triangles { positions, indices } => triangles(positions, indices, instance, origin, direction),
@@ -96,17 +79,9 @@ impl Shape {
     }
 }
 
-/// The map cells figures are filed under are as near this many world units wide as the map's
-/// width divides into.
 const CELL: f32 = 8.0;
-/// A ray or a figure that would cross more cells than this is tested against, or tested by,
-/// everything.
 const MOST_CELLS: i64 = 4096;
 
-/// One frame's land figures as the picker meets them. A figure whose shape has a reach is filed
-/// under the map cells within that reach of its root; the rest are tested by every ray. A ray tests
-/// the figures filed where its line passes through their heights, in the figures' own order, so it
-/// meets exactly what testing every figure meets.
 pub struct Figures {
     stamp: u64,
     library: usize,
@@ -114,17 +89,12 @@ pub struct Figures {
     figures: Vec<LandFigure>,
     columns: i64,
     cell: f32,
-    /// By (column, row), the column taken around the map's width.
     filed: Vec<((i64, i64), u32)>,
     loose: Vec<u32>,
-    /// The lowest and highest any filed figure reaches.
     heights: [f32; 2],
 }
 
 impl Figures {
-    /// The figures of the land stamp `stamp` (`unit_history::History::land_stamp`), kept in `slot`
-    /// while the stamp, the model library and the map's width hold, so every pick between two
-    /// changes reads one build. `build` reads the figures and `reach` answers a mesh's shape reach.
     pub fn current<'a>(
         slot: &'a mut Option<Self>,
         stamp: u64,
@@ -174,7 +144,6 @@ impl Figures {
         self.figures.is_empty()
     }
 
-    /// The figures the ray from `eye` along `ray` may meet, in the figures' order.
     pub fn along(&self, eye: [f32; 3], ray: [f32; 3]) -> Vec<&LandFigure> {
         match self.indices(eye, ray) {
             Some(indices) => indices.into_iter().map(|index| &self.figures[index as usize]).collect(),
@@ -230,8 +199,6 @@ impl Figures {
     }
 }
 
-/// As the engine: the ray taken into the entity's space, a two-sided inclusive test, and a
-/// triangle behind the origin still counts.
 fn triangles(positions: &[[f32; 3]], indices: &[u16], instance: ModelInstance, origin: [f32; 3], direction: [f32; 3]) -> bool {
     let Some(inverse) = crate::map::entity_animation::world_transform(instance).inverse() else {
         return false;
@@ -261,8 +228,6 @@ fn triangles(positions: &[[f32; 3]], indices: &[u16], instance: ModelInstance, o
     })
 }
 
-/// The engine's slab test of a world box: the ray meets it when the entry lies before the exit,
-/// the exit lies ahead of the origin and the entry before the float maximum.
 fn slab(min: [f32; 3], max: [f32; 3], origin: [f32; 3], direction: [f32; 3]) -> bool {
     let inverse = direction.map(|v| 1.0 / v);
     let span = |axis: usize| {

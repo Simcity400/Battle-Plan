@@ -93,7 +93,6 @@ fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overfl
         catalogue.scripted_content().unwrap(),
         2,
     );
-    // Each promotion appends a GER PREV node, ending at the original SOV scope.
     let unknown = EventScopes::new(vec![EventScope {
         prev: Link::Unknown,
         ..EventScope::of(EventObject::Country(1))
@@ -291,7 +290,6 @@ fn player_text_uses_recorded_perspective_and_reserved_zero() {
             text.expand("[Player.GetTag]/[ROOT.GetTag]").as_deref(),
             Ok(expected)
         );
-        // A view that chose SOV (slot 2) is an observer of SOV, whoever the client views.
         let chosen = ScriptedText::new(&f, &catalogue.localisation, content, 1).viewing(2);
         assert_eq!(chosen.expand("[Player.GetTag]/[ROOT.GetTag]").as_deref(), Ok("SOV/GER"));
         assert_eq!(chosen.for_root(2).expand("[Player.GetTag]").as_deref(), Ok("SOV"));
@@ -377,8 +375,6 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_fast_paths() {
             .as_deref(),
         Ok("C|B|B|A|||A")
     );
-    // The default scope draws 54/60; a promoted object uses the second
-    // constructor hash lane of 424242, drawing 57/60.
     assert_eq!(
         text.expand("[Promoted]|[SOV.Promoted]").as_deref(),
         Ok("A|B")
@@ -392,8 +388,6 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_fast_paths() {
         random_seed_refusal: Some("decision random-count is unrecorded"),
         ..EventScope::of(EventObject::Country(1))
     }]);
-    // A sole member returns before seed/weights are read; an explicit
-    // seed takes precedence over the default lanes.
     assert_eq!(
         text.expand_in("[Default]", &missing),
         Err("[Default]: scripted localisation Default: decision random-count is unrecorded".into())
@@ -403,8 +397,6 @@ fn random_lists_use_raw_fixed5_seed_scope_identity_and_fast_paths() {
             .as_deref(),
         Ok("B|A|||A")
     );
-    // An event-scoped invocation preserves its lanes,
-    // while an object promotion constructs a known seed from 424242.
     assert_eq!(
         text.expand_in("[Promoted]", &missing),
         Err(
@@ -436,7 +428,6 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
             military_levels: i32::MAX,
             naval_levels: i32::MAX,
             civilian_levels: 9,
-            // Fixed5 totals are independent of the group heads.
             military_total_raw: i64::MIN,
             naval_total_raw: i64::MAX,
             civilian_total_raw: -100_000,
@@ -450,8 +441,6 @@ fn recorded_factory_counts_wrap_convert_and_drive_a_seeded_pick() {
         evaluator.scoped_value(b"num_of_controlled_factories", scopes),
         Ok(700_000)
     );
-    // (MAX + MAX + 9) wraps to 7; raw 700000 + slot 2*31 draws
-    // 152552670, %60 = 30: subtract 30 then 10 to choose B.
     assert_eq!(text.expand("[Pick]").as_deref(), Ok("B"));
     drop(text);
     set::<tables::CountryFactories>(&mut f, Vec::new());
@@ -495,7 +484,6 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
                 .map(|item| item.value.items().unwrap().to_vec())
                 .collect(),
         };
-    // (10 + 1 + 2) * (2 * 0.5) = 13, despite both false conditions.
     assert_eq!(evaluator.localisation_weight(&member("modifier = { always = no add = 1 factor = 2 } modifier = { always = no add = 2 factor = 0.5 }"), scopes), Ok(13));
     assert_eq!(
         evaluator.localisation_weight(
@@ -564,8 +552,6 @@ fn seeded_random_lists_use_canonical_slots_across_five_thousand_countries() {
             other => panic!("unexpected selection at slot {slot}: {other}"),
         }] += 1;
     }
-    // Independently worked hashes of raw seed 700000 + slot*31,
-    // modulo 60, split at 30 and 40. Raw country ids are deliberately distinct.
     assert_eq!(counts, [2_494, 802, 1_704]);
 }
 
@@ -665,8 +651,6 @@ fn first_party_leaders_and_custom_party_names_use_the_real_localiser() {
         rendered(&catalogue, &f, "FOLD").unwrap(),
         "Mod Leader|The Leader Party"
     );
-    // A group the content spells in another case: the leader's lexer lookup
-    // folds it, the party's name comparison does not.
     let mut parties = f.complete::<tables::PoliticalParties>().unwrap().to_vec();
     parties[0].token = b"Fascism".to_vec();
     set::<tables::PoliticalParties>(&mut f, parties.clone());
@@ -763,7 +747,6 @@ fn genders_manpower_and_agency_preserve_empty_and_wrapping_rules() {
             })
             .to_vec(),
     );
-    // Every country holds an agency object: without a row the name is unknown.
     assert!(
         rendered(&catalogue, &f, "TEST")
             .unwrap_err()
@@ -775,13 +758,11 @@ fn genders_manpower_and_agency_preserve_empty_and_wrapping_rules() {
         created,
         ..Default::default()
     };
-    // Not created: the localisation key, whatever name is already stored.
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"Abwehr", 0)]);
     assert_eq!(
         rendered(&catalogue, &f, "TEST").unwrap(),
         "F-subject|f-object|f-object|f-possessive|F-reflexive|-2147483647|No agency"
     );
-    // Created: the stored bytes, empty included, never localised again.
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"", 1)]);
     assert!(rendered(&catalogue, &f, "TEST").unwrap().ends_with("647|"));
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"AGENCY_NAME", 1)]);
@@ -790,7 +771,6 @@ fn genders_manpower_and_agency_preserve_empty_and_wrapping_rules() {
             .unwrap()
             .ends_with("|AGENCY_NAME")
     );
-    // A controlled state without provinces may be missing from the array.
     set::<tables::Provinces>(
         &mut f,
         vec![ProvinceRow {
@@ -828,15 +808,12 @@ fn stored_text_needs_the_recording_language() {
         error.contains("stored in german") && error.contains("viewer's language is english"),
         "{error}"
     );
-    // Empty text and keys the viewer localises are the same in every language.
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"", 1)]);
     assert_eq!(rendered(&catalogue, &f, "TEST").unwrap(), "");
     set::<tables::IntelligenceAgencies>(&mut f, vec![agency(b"Abwehr", 0)]);
     assert_eq!(rendered(&catalogue, &f, "TEST").unwrap(), "No agency");
 }
 
-/// A character's stored name is text the game stored in the recording's language without its
-/// key: shown to a viewer in that language and refused in another, as every stored text is.
 #[test]
 fn stored_character_names_need_the_recording_language() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -901,7 +878,6 @@ fn old_names_copy_the_retained_caches_or_the_current_name() {
     let mut appearance = f.complete::<tables::CountryAppearance>().unwrap().to_vec();
     appearance[0].old_name = Some(b"Weimar Republic".to_vec());
     appearance[0].old_definite_name = Some(b"the Weimar Republic".to_vec());
-    // An empty cache takes the current text, here in the viewer's language.
     appearance[0].old_adjective = Some(Vec::new());
     set::<tables::CountryAppearance>(&mut f, appearance.clone());
     assert_eq!(
@@ -1021,7 +997,6 @@ fn state_names_prefer_the_stored_custom_and_owner_names_to_the_template() {
     );
     let mut f = frame();
     assert_eq!(rendered(&catalogue, &f, "TEST").unwrap(), "A state");
-    // The owner name, then the custom name, take precedence as stored.
     let mut states = f.complete::<tables::States>().unwrap().to_vec();
     states[0].owner_name = "Niederösterreich".into();
     set::<tables::States>(&mut f, states.clone());
@@ -1083,9 +1058,6 @@ fn balance_names_selection_change_binding_and_icon_direction() {
     );
 }
 
-/// The description is derived from the record's recorded sources and the
-/// content's static modifiers ([`replay_derive::power_balance_derive`]): rows
-/// without witness trees describe it, and a witness tree never changes it.
 #[test]
 fn balance_modifier_description_derives_from_sources_and_localised_static_keys() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1158,7 +1130,6 @@ fn balance_modifier_description_derives_from_sources_and_localised_static_keys()
         rendered(&catalogue, &f, "TEST").unwrap(),
         "Source: +1.23%\nSource: -2.34%\n"
     );
-    // A witness the derivation disagrees with is never shown.
     let witness = vec![
         ModifierBreakdownNode {
             children: 1,
@@ -1209,7 +1180,6 @@ fn character_pronouns_and_literal_names_differ_from_party_display_names() {
         ),
     );
     let mut f = frame();
-    // Unknown enum values take the non-female branch, exactly like gender 1.
     let mut characters = f.complete::<tables::Characters>().unwrap().to_vec();
     characters[0].gender = u32::MAX;
     set::<tables::Characters>(&mut f, characters.clone());
@@ -1242,7 +1212,6 @@ fn promoted_entry_binds_this_and_preserves_root_and_from() {
     assert_eq!(rendered(&catalogue, &frame(), "TEST").unwrap(), "pass|pass");
 }
 
-/// GER (slot 1), SOV (2) and ENG (3), each owning a state.
 fn raid_frame() -> DecodedFrame {
     let mut f = frame();
     let countries = [(100, 1, "GER"), (200, 2, "SOV"), (300, 3, "ENG")];
@@ -1276,8 +1245,6 @@ fn raid_frame() -> DecodedFrame {
             })
             .collect(),
     );
-    // Every store the collector walks has a row: the global store and
-    // each country's, all empty.
     set::<tables::ScriptVariables>(
         &mut f,
         std::iter::once((0, 0))
@@ -1293,8 +1260,6 @@ fn raid_frame() -> DecodedFrame {
     f
 }
 
-/// A viewer (GER), a raiding country (SOV) and its target (ENG): the raid's
-/// scope is SOV with FROM a default scope of ENG.
 #[test]
 fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1318,8 +1283,6 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
         EventScope::of(EventObject::Country(3)),
     ]);
     let expand = |text_: &str, scopes: &EventScopes| text.expand_in(text_, scopes);
-    // Each keyword moves the active scope; each bracket starts
-    // again from the caller's.
     assert_eq!(
         expand(
             "[THIS.GetTag] [ROOT.GetTag] [FROM.GetTag] [FROM.ROOT.GetTag] [ROOT.FROM.PREV.GetTag] [PREV.GetTag]",
@@ -1328,20 +1291,15 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
         .as_deref(),
         Ok("SOV SOV ENG ENG ENG SOV")
     );
-    // Entries see the active scope, not the viewer: in place, after a
-    // keyword, and bound as THIS with PREV the active scope.
     assert_eq!(
         expand("[Side] [FROM.Target] [ENG.Named]", &raid).as_deref(),
         Ok("yes yes yes")
     );
     assert_eq!(text.expand("[Side]").as_deref(), Ok("no"));
-    // An entry's own brackets expand in the scope it was evaluated in,
-    // not the caller's.
     assert_eq!(
         expand("[Echo] [FROM.Echo] [ENG.Echo]", &raid).as_deref(),
         Ok("SOV/SOV/SOV ENG/ENG/ENG ENG/SOV/SOV")
     );
-    // A scope whose own links the caller does not know stops a chain.
     let nested = EventScopes::new(vec![
         EventScope {
             this: EventObject::Country(2),
@@ -1381,10 +1339,6 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
     assert!(refused.contains("ROOT is not known"), "{refused}");
 }
 
-/// Scopes the caller cannot fully describe refuse only what reads them: an
-/// unknown link only in a condition that reads it (`always` reads none),
-/// a state or character scope's missing country only where a lookup would
-/// search it, and a unit leader only through its character.
 #[test]
 fn unknown_scope_parts_refuse_only_where_they_are_read() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1448,7 +1402,6 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
     );
     let refused = text.expand_in("[RootToo]", &sov).unwrap_err();
     assert!(refused.contains("ROOT is not known"), "{refused}");
-    // The caller's script variables stay set for the whole expansion.
     assert_eq!(text.expand_in("[Targeted]", &sov).as_deref(), Ok("no"));
     let targeted = EventScopes {
         variables: ScopeVariables {
@@ -1462,23 +1415,18 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
             .as_deref(),
         Ok("yes yes")
     );
-    // A state scope holds no country, so a number goes on to a state id.
     let state = unknown(EventObject::State(64));
     assert_eq!(
         text.expand_in("[THIS.64.GetID]", &state).as_deref(),
         Ok("64")
     );
     assert!(text.expand_in("[THIS.rommel.GetID]", &state).is_ok());
-    // A unit leader's scope reads as its character.
     let leader = unknown(EventObject::UnitLeader(9 << 32 | 3));
     assert_eq!(
         text.expand_in("[THIS.GetName] [THIS.64.GetID]", &leader)
             .as_deref(),
         Ok("Erwin Rommel 64")
     );
-    // A promoted country is bound with clearing, so it carries no
-    // character and a character trigger is false whatever its PREV,
-    // since it reads THIS alone.
     assert_eq!(text.expand_in("[SOV.Choice]", &sov).as_deref(), Ok("no"));
     assert_eq!(
         text.expand_in("[THIS.Holder]", &leader).as_deref(),
@@ -1488,8 +1436,6 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
         .expand_in("[THIS.GetName]", &unknown(EventObject::Province(5)))
         .unwrap_err();
     assert!(refused.contains("province 5"), "{refused}");
-    // A unit leader's scope holds no country, so a number is a state ID
-    // without the character inventory.
     *f.tables[TableId::Characters.index()] = TableView::Unavailable {
         reason: "test gap".into(),
     };
@@ -1500,11 +1446,6 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
     );
 }
 
-/// A promoted character is THIS in a character scope: without
-/// a unit leader `tag` compares the character's own country and `skill` is
-/// 0; `has_trait` of a name no trait database holds is false; a country
-/// trigger is false there (its scope mask rejects a character scope),
-/// so no alternative passes.
 #[test]
 fn promoted_character_entry_evaluates_in_a_character_scope() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1609,8 +1550,6 @@ fn ability_text_promotes_character_but_keeps_country_for_named_lookup_and_entrie
         country: 1,
         leader: 9 << 32 | 3,
     })]);
-    // ROOT/FROM/PREV copy the same full scope, but text selects the
-    // character object first. Character lookup still searches its country.
     assert_eq!(
         text.expand_in(
             "[ROOT.GetName]/[FROM.GetName]/[PREV.GetName]/[ROOT.peer.GetName]",

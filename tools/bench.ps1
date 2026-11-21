@@ -101,14 +101,10 @@ param(
     [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
     [string]$LockOwner,
     [int]$AttachTimeoutSeconds = 300,
-    # Default: keys posted, clicks borrow the foreground briefly (the UI needs real clicks),
-    # PrintWindow screenshots, game pushed behind the previous window afterwards.
     [switch]$Foreground,
-    [switch]$Background,  # compatibility no-op
-    [switch]$PostedClicks,  # experimental: posted mouse messages instead of the brief foreground borrow
-    # Both choices use smoke.ps1's background-only Load menu.
+    [switch]$Background,
+    [switch]$PostedClicks,
     [ValidateSet('menu', 'auto')][string]$ReloadMode = 'auto',
-    # Rebuild results.md and the cost tables from an existing Out\results.jsonl without driving the game.
     [switch]$SummarizeOnly
 )
 
@@ -163,7 +159,6 @@ $buildNames = @('cargo', 'rustc', 'lld-link', 'clippy-driver', 'link', 'cl')
 $lock = [IO.Path]::GetFullPath($GameLock)
 if (-not $SummarizeOnly -and (-not $LockOwner -or -not (Test-Path -LiteralPath (Join-Path $lock 'owner')) -or [IO.File]::ReadAllText((Join-Path $lock 'owner')).Trim() -cne $LockOwner)) { throw "Supply the exact LockOwner token from your game-lock acquisition: $lock" }
 
-# Reuse the smoke driver's read-only clock reader and guarded input helper.
 . (Join-Path $scriptDir 'game-clock.ps1')
 $clockRecorder = if ($SummarizeOnly) { $null } else { Resolve-ClockRecorder $ClockDirectory }
 $driverSource = Get-Content -LiteralPath $smoke -Encoding UTF8 -Raw
@@ -174,9 +169,6 @@ foreach ($definition in [regex]::Matches($driverSource, "(?s)Add-Type -TypeDefin
 if (-not ('Hoi4ProbeInput' -as [type])) { throw 'Could not load the smoke driver helper classes.' }
 [void][Hoi4ProbeInput]::SetProcessDPIAware()
 
-# Input shim: while attached (smoke Launch injects it), the game's user32 import thunks answer from this
-# mapping so a posted click lands with the cursor, button state and focus the UI polls, with no foreground
-# borrow. An absent mapping falls back to the brief foreground borrow.
 $script:ShimMapping = 'Local\hoi4_inputshim_v1'
 $script:ShimMagic = [uint32]0x4D485348
 function Open-InputShim {
@@ -187,7 +179,6 @@ function Open-InputShim {
 }
 function Close-InputShim($shim) { if ($shim) { $shim.View.Dispose(); $shim.Map.Dispose() } }
 function Invoke-ShimClick($shim, [int]$screenX, [int]$screenY) {
-    # flags: bit0 cursor override, bit1 focus override, bit2 left down. Offsets 12 flags, 16/20 cursor, 24 hwnd.
     $origin = New-Object Hoi4ProbeInput+Point
     if (-not [Hoi4ProbeInput]::ClientToScreen($script:window, [ref]$origin)) { throw 'Cannot locate the game client area.' }
     $logical = [Hoi4ProbeInput]::LogicalPoint($script:window, $screenX - $origin.X, $screenY - $origin.Y)
@@ -205,15 +196,12 @@ function Invoke-ShimClick($shim, [int]$screenX, [int]$screenY) {
 function Write-Json([string]$path, $value) { [IO.File]::WriteAllText($path, ($value | ConvertTo-Json -Depth 20), $utf8) }
 function Log([string]$text) { Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $text) }
 
-# ---- game process, window, clock -------------------------------------------
 $script:game = $null; $script:window = [IntPtr]::Zero; $script:reader = $null; $script:rect = $null
-# Every recorder and detach process this run started.
 $script:recorders = New-Object Collections.ArrayList
-# A game launched straight into the save that has not run yet; the next reload uses it as it is.
 $script:freshLaunch = $false
 function Start-SaveLaunch {
     $extra = @('-start_save=' + [string]$spec.save)
-    if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }   # e.g. -debug_smooth=no
+    if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }
     & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory (Split-Path -Parent $clockRecorder) -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
 }
 function Connect-Game {
@@ -232,11 +220,8 @@ function Connect-Game {
     }
     $script:game = $games[0]
     if ($script:game.Path -ine $GameExe) { throw "Running game is not the pinned executable: $($script:game.Path)" }
-    # Smaller-machine screens: confine the game (and the collector inside it) to these logical CPUs.
     if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY })) { $script:game.ProcessorAffinity = [IntPtr][Convert]::ToInt64($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }), 16); Log "game affinity $($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }))" }
-    # Other sessions' Normal-priority work yields to the benchmarked processes on their cores.
     if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY })) { $script:game.PriorityClass = [Diagnostics.ProcessPriorityClass]$(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }); Log "game priority $($(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }))" }
-    # The window appears some seconds after launch; wait for it and for a readable rectangle.
     $limit = [DateTime]::UtcNow.AddSeconds(300); $r = New-Object Hoi4ProbeInput+Rect
     do {
         $script:game.Refresh(); if ($script:game.HasExited) { throw 'The game exited during startup.' }
@@ -261,8 +246,6 @@ function Read-Clock([int]$timeoutSeconds = 10) {
     throw 'No stable authenticated game clock.'
 }
 function Invoke-Focused([scriptblock]$block) {
-    # Other sessions' windows take the foreground back at any moment; the driver then sends
-    # nothing, so a refused input is retried.
     for ($attempt = 1; ; $attempt++) {
         if ([Hoi4ProbeInput]::IsIconic($script:window)) { [void][Hoi4ProbeInput]::ShowWindow($script:window, 9) }
         $previous = [Hoi4ProbeInput]::AcquireTargetFocus($script:window, [uint32]$script:game.Id)
@@ -276,7 +259,6 @@ function Invoke-Focused([scriptblock]$block) {
     }
 }
 function Get-ClientPoint($point) {
-    # Outer-window coordinates (the calibration) to client coordinates for posted messages.
     $client = New-Object Hoi4ProbeInput+Rect; $origin = New-Object Hoi4ProbeInput+Point
     if (-not [Hoi4ProbeInput]::GetClientRect($script:window, [ref]$client) -or -not [Hoi4ProbeInput]::ClientToScreen($script:window, [ref]$origin)) { throw 'Cannot locate the game client area.' }
     @(($script:rect.Left + [int]$point[0]) - $origin.X, ($script:rect.Top + [int]$point[1]) - $origin.Y)
@@ -285,7 +267,6 @@ function Send-Key([uint16]$vk) {
     if ($Background) { [Hoi4ProbeInput]::PostKey($script:window, $vk); Start-Sleep -Milliseconds 60; return }
     Invoke-Focused { [Hoi4ProbeInput]::KeyPress($script:window, [uint32]$script:game.Id, $vk) }
 }
-# Posted mouse messages carry client coordinates in the window's DPI-virtualised space.
 function Get-LogicalClient($point) {
     $origin = New-Object Hoi4ProbeInput+Point
     if (-not [Hoi4ProbeInput]::ClientToScreen($script:window, [ref]$origin)) { throw 'Cannot locate the game client area.' }
@@ -301,9 +282,6 @@ function Send-Click($point) {
     if ($Background) {
         $shim = Open-InputShim
         if ($shim) { try { Invoke-ShimClick $shim $x $y } finally { Close-InputShim $shim }; return }
-        # No shim attached: borrow the foreground for the click only. Another window can take
-        # focus back mid-borrow while someone works on the PC; the driver then refuses to send,
-        # so retry those clicks.
         for ($attempt = 1; ; $attempt++) {
             $flash = [Hoi4ProbeInput]::AcquireTargetFocus($script:window, [uint32]$script:game.Id)
             try { Start-Sleep -Milliseconds 120; [Hoi4ProbeInput]::Click($script:window, [uint32]$script:game.Id, $x, $y); return }
@@ -328,8 +306,6 @@ function Send-Move($point) {
 }
 function Take-Screenshot([string]$path) { try { $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Screenshot -GameId $script:game.Id -Out $path -Foreground:(-not $Background) } catch { Log "screenshot failed: $($_.Exception.Message)" } }
 function Set-Paused([bool]$paused) {
-    # A loaded game can take seconds to act on a posted key; wait for each press to land
-    # before sending another, so presses never cancel each other out.
     for ($attempt = 0; $attempt -lt 8; $attempt++) {
         $clock = Read-Clock
         if ($clock.paused -eq [int]$paused) { return $clock }
@@ -344,9 +320,6 @@ function Set-Paused([bool]$paused) {
     throw "Pause state did not become $paused."
 }
 function Set-Speed([int]$speed) {
-    # The game's speed shortcuts (numpad + and -), one press at a time as
-    # Set-Paused does: a clicked speed button can keep stepping while the
-    # game still treats it as held, past any speed below the maximum.
     for ($attempt = 0; $attempt -lt 10; $attempt++) {
         $clock = Read-Clock
         if ($clock.speed -eq $speed) { return }
@@ -367,15 +340,9 @@ function Assert-Identity($clock, $identity) {
 }
 function Get-BuildProcesses { @(Get-Process -Name $buildNames -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName }) }
 
-# ---- other processes' CPU ----------------------------------------------------------
-# Telemetry only, never a contamination verdict: every process except the game, the recorders,
-# this script and the System/Idle accounting entries is sampled for its total CPU time, and the
-# window notes when they used more than $OtherCpuMachineShare of all logical cores or any one of
-# them more than $OtherCpuProcessCores of a core.
 $OtherCpuMachineShare = 0.08
 $OtherCpuProcessCores = 1.0
 $OtherCpuExcluded = @('the game', 'recorder', 'Idle', 'System')
-# Every process's CPU seconds, keyed by id and start time (so a reused id is another process).
 function Get-OtherCpuSnapshot {
     $snapshot = @{}
     foreach ($process in (Get-Process -ErrorAction SilentlyContinue)) {
@@ -383,13 +350,11 @@ function Get-OtherCpuSnapshot {
         try {
             $cpu = $process.TotalProcessorTime.TotalSeconds
             $started = $process.StartTime.ToUniversalTime().Ticks
-        } catch { continue }   # protected processes deny their times; they cannot be measured
+        } catch { continue }
         $snapshot['{0}:{1}' -f $process.Id, $started] = [pscustomobject]@{ name = $process.ProcessName; id = $process.Id; cpu = [double]$cpu; started = [int64]$started }
     }
     $snapshot
 }
-# A window's tally: each process's CPU at its first and latest sample. A process that started
-# after the window began counts from zero; one that exited keeps its latest sample.
 function New-OtherCpu([hashtable]$snapshot, [int64]$windowStartTicks) {
     $tally = @{ window_start = $windowStartTicks; processes = @{} }
     Update-OtherCpu $tally $snapshot
@@ -404,8 +369,6 @@ function Update-OtherCpu([hashtable]$tally, [hashtable]$snapshot) {
         $tally.processes[$key] = [pscustomobject]@{ name = $sample.name; id = $sample.id; first = $first; last = $sample.cpu }
     }
 }
-# The window's other load: other processes' share of the machine, the busiest of them, and
-# the thresholds they passed (reported in other_cpu; they don't fail the screen).
 function Measure-OtherCpu([hashtable]$tally, [double]$elapsedSeconds, [int]$cores) {
     $used = @(@(foreach ($entry in $tally.processes.Values) {
         $seconds = [math]::Max(0.0, $entry.last - $entry.first)
@@ -439,7 +402,6 @@ function Get-MemorySample($attached) {
     [ordered]@{ game_private = [int64]$script:game.PrivateMemorySize64; game_working_set = [int64]$script:game.WorkingSet64; recorder_private = (Get-RecorderPrivate $attached) }
 }
 
-# ---- reload ------------------------------------------------------------------
 function Invoke-Reload([string]$runDir, [bool]$attached = $false, [bool]$reference = $false) {
     Complete-Pending
     $fresh=$script:freshLaunch; $script:freshLaunch=$false
@@ -463,17 +425,13 @@ function Invoke-Reload([string]$runDir, [bool]$attached = $false, [bool]$referen
     return $reload.Clock
 }
 
-# ---- recorder attach / detach ------------------------------------------------
 function Convert-Win32Path([string]$path) {
-    # The recorder reports canonical \\?\ paths; PowerShell 5.1 cmdlets cannot join them.
     if ($path.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { return '\\' + $path.Substring(8) }
     if ($path.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) { return $path.Substring(4) }
     return $path
 }
 function Read-Status([string]$path) {
     for ($attempt = 0; $attempt -lt 8; $attempt++) {
-        # Share delete: the collector replaces status.json atomically every second,
-        # and a reader without delete sharing makes that replacement fail.
         try {
             $stream = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
             try { $text = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8).ReadToEnd() } finally { $stream.Dispose() }
@@ -482,9 +440,6 @@ function Read-Status([string]$path) {
     }
     return $null
 }
-# Collector cost per game hour between two status snapshots. Game hours are the
-# hourly hook's exact calls; hook rows are each family's estimated collector time
-# and its calls that waited at the capture gate.
 function Get-HookCost($before, $after) {
     if (-not $before.hook_timing -or -not $after.hook_timing) { return $null }
     $hours = [double]$after.hook_timing.families.hourly.calls - [double]$before.hook_timing.families.hourly.calls
@@ -496,8 +451,6 @@ function Get-HookCost($before, $after) {
         if (-not $b) { continue }
         $detour = & $delta $a.estimated_detour_ns $b.estimated_detour_ns
         $original = & $delta $a.estimated_original_ns $b.estimated_original_ns
-        # Diagnostic only: approximately net of the sampled spans' own timer reads, which unsampled
-        # calls never make; not a bound, so the raw detour stays the conservative cost.
         $net = & $delta $a.approximate_net_detour_ns $b.approximate_net_detour_ns
         $families[$property.Name] = [ordered]@{
             kind = $a.kind
@@ -508,8 +461,6 @@ function Get-HookCost($before, $after) {
             capture_waits_per_hour = $(if ($null -ne $a.capture_waits -and $null -ne $b.capture_waits) { [math]::Round((& $delta $a.capture_waits $b.capture_waits) / $hours, 2) } else { $null })
         }
     }
-    # A game thread's wait at the capture gate, while a capture reads beside the game, lies
-    # outside every family's detour; a capture held on the game thread lies inside the hourly one.
     $capture = $(if ($before.capture -and $after.capture) { $after.capture } else { $null })
     $perHour = { param($a, $b, $scale) $d = & $delta $a $b; if ($null -ne $d) { [math]::Round($d / $hours / $scale, 3) } else { $null } }
     $gateWait = $(if ($capture) { & $perHour $capture.writer_wait_ns $before.capture.writer_wait_ns 1e6 } else { $null })
@@ -531,16 +482,8 @@ function Get-HookCost($before, $after) {
         }
     }
     $total = $(if ($cpuBefore -and $cpuAfter) { & $delta $cpuAfter.collector_total.cycle_ns $cpuBefore.collector_total.cycle_ns } else { $null })
-    # collector_total sums every registered thread, the capture thread among them once it has a role.
     $captureThread = @(@($cpuAfter.threads) | Where-Object { $_.role -eq 'capture' }).Count -gt 0
     $process = $(if ($cpuBefore.process -and $cpuAfter.process) { & $delta $cpuAfter.process.cycle_ns $cpuBefore.process.cycle_ns } else { $null })
-    # In-run direct cost: the game thread's time in the recorder (the hourly
-    # pause, every in-tick hook and each wait at the capture gate) against the
-    # game's own hourly update, both timed in this run, so contention that slows
-    # both leaves the ratio steady. The gate waits of hooks the update reaches
-    # are also inside its original time, as their detours are.
-    # It leaves out indirect costs (the game's own code running slower beside
-    # the recorder), which only a paired no-recorder screen measures.
     $native = $(if ($families.Contains('hourly')) { $families['hourly'].original_ms_per_hour } else { $null })
     $direct = 0.0; $directNet = $null
     foreach ($entry in $families.GetEnumerator()) {
@@ -551,8 +494,6 @@ function Get-HookCost($before, $after) {
     return [ordered]@{
         game_hours = $hours
         direct_ms_per_hour = [math]::Round($direct, 3)
-        # Diagnostic: the same, approximately net of sampled spans' timer reads (null for a
-        # collector without them). Not a bound; direct_ms_per_hour is the conservative cost.
         direct_approximate_net_ms_per_hour = $(if ($null -ne $directNet) { [math]::Round($directNet, 3) } else { $null })
         native_ms_per_hour = $native
         direct_fraction_of_native = $(if ($native) { [math]::Round($direct / [double]$native, 4) } else { $null })
@@ -560,7 +501,6 @@ function Get-HookCost($before, $after) {
         captures = $captures
         thread_cpu_ms_per_hour = $threads
         collector_cpu_ms_per_hour = $(if ($null -ne $total) { [math]::Round($total / $hours / 1e6, 3) } else { $null })
-        # False for a collector whose capture thread has no CPU role: its beside captures are then not in collector_cpu_ms_per_hour.
         collector_cpu_includes_capture_thread = $(if ($null -ne $total) { $captureThread } else { $null })
         process_cpu_ms_per_hour = $(if ($null -ne $process) { [math]::Round($process / $hours / 1e6, 3) } else { $null })
     }
@@ -586,7 +526,6 @@ function Start-Candidate($candidate, [string]$runDir) {
     } finally {
         $env:BATTLE_PLAN_WORKER_SAMPLER = $previousSampler
     }
-    # Windows PowerShell reports ExitCode only if the process handle was opened before the exit.
     $null = $process.Handle
     [void]$script:recorders.Add($process)
     if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY })) { try { $process.ProcessorAffinity = [IntPtr][Convert]::ToInt64($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }), 16) } catch { Log "recorder affinity not set: $($_.Exception.Message)" } }
@@ -618,7 +557,6 @@ function Start-Candidate($candidate, [string]$runDir) {
         $script:game.Refresh()
         if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 1) { throw 'collector.dll is not loaded after attach.' }
     } catch {
-        # Never leave a half-attached recorder behind: request a detach and wait for it.
         Log "attach failed ($($_.Exception.Message)); requesting detach"
         try { $null = Stop-Candidate $attached $runDir } catch { Log "detach after failed attach also failed: $($_.Exception.Message)" }
         throw
@@ -630,13 +568,10 @@ function Test-CollectorLoaded {
     $script:game.Refresh()
     try { return @($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0 } catch { return $true }
 }
-# Length of the collector's step log ('progress' in its session directory), or $null when it
-# cannot be read. The collector appends a line per attach and detach step.
 function Get-ProgressLength($attached) {
     $session = $null
     if ($attached.active -and $attached.active.session_dir) { $session = Convert-Win32Path ([string]$attached.active.session_dir) }
     elseif ($attached.recording) {
-        # A failed attach may not have published active.json: take the newest session.
         $sessions = Join-Path $attached.recording 'sessions'
         $newest = Get-ChildItem -LiteralPath $sessions -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
         if ($newest) { $session = $newest.FullName }
@@ -646,9 +581,6 @@ function Get-ProgressLength($attached) {
     if ($log) { return [int64]$log.Length }
     return $null
 }
-# Wait for collector.dll to leave the game after a detach request. While the collector's step log
-# can be read, it may go $StallSeconds without a step; never longer than $LimitSeconds in total.
-# Returns $null once unloaded (or the game exited), else why the wait ended.
 function Wait-CollectorUnload {
     param(
         [scriptblock]$Loaded, [scriptblock]$ProgressLength, [scriptblock]$Exited,
@@ -658,7 +590,6 @@ function Wait-CollectorUnload {
     $start = & $Now; $lastStep = $start; $length = & $ProgressLength
     while (& $Loaded) {
         if (& $Exited) { return $null }
-        # PowerShell names are case-insensitive: $at, not $now, beside the $Now parameter.
         $at = & $Now
         $current = & $ProgressLength
         if ($current -ne $length) { $length = $current; $lastStep = $at }
@@ -673,7 +604,6 @@ function Update-RecorderPeak($attached) {
     if ($null -ne $private -and $private -gt $attached.recorder_private_peak_detach) { $attached.recorder_private_peak_detach = [int64]$private }
 }
 function Begin-Stop($attached, [string]$runDir) {
-    # Return after unload; Complete-Pending awaits finalization before the next reload.
     if ($attached.PSObject.Properties['detach'] -and $attached.detach) { return }
     $recorderExe = Join-Path $attached.frozen 'recorder.exe'
     $detach = Start-Process -FilePath $recorderExe -ArgumentList @('detach', '--out', ('"' + $attached.recording + '"')) -WorkingDirectory $attached.frozen -WindowStyle Hidden -PassThru `
@@ -685,7 +615,7 @@ function Begin-Stop($attached, [string]$runDir) {
     $limit = [DateTime]::UtcNow.AddSeconds(900)
     while (Test-CollectorLoaded) {
         Update-RecorderPeak $attached
-        if ($detach.HasExited -or $attached.process.HasExited) { break }   # Complete-Stop reports the outcome
+        if ($detach.HasExited -or $attached.process.HasExited) { break }
         if ([DateTime]::UtcNow -gt $limit) { throw 'collector.dll did not unload within 15 minutes of the detach request.' }
         Start-Sleep -Milliseconds 250
     }
@@ -693,7 +623,6 @@ function Begin-Stop($attached, [string]$runDir) {
 function Stop-Candidate($attached, [string]$runDir) {
     Begin-Stop $attached $runDir
     $detach = $attached.detach
-    # Finalization runs in the recorder controller; follow its memory until it exits.
     $exitLimit = $null
     while (-not ($detach.HasExited -and $attached.process.HasExited)) {
         Update-RecorderPeak $attached
@@ -702,17 +631,12 @@ function Stop-Candidate($attached, [string]$runDir) {
         Start-Sleep -Milliseconds 250
     }
     $detach.WaitForExit(); $attached.process.WaitForExit()
-    # The recorder can exit (a readiness timeout, a failed detach command) while the collector
-    # is still detaching: wait for the unload while it takes steps.
     $why = Wait-CollectorUnload -Loaded { Test-CollectorLoaded } -ProgressLength { Get-ProgressLength $attached } `
         -Exited { $script:game.HasExited }
     $script:game.Refresh()
     if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw "collector.dll remains loaded after detach ($why)." }
-    # DIAGNOSTIC ONLY: hook restoration/unload above is still mandatory.
-    # Intentionally empty/discarded output is never a successful recording.
     if ($attached.diagnostic) {
         if ($detach.ExitCode -ne 0) { throw "Diagnostic detach command failed: exit $($detach.ExitCode)." }
-        # The recorder returns 1 for invalid output; other exits are not that refusal.
         if ($attached.process.ExitCode -notin @(0, 1)) { throw "Diagnostic recorder exited abnormally: $($attached.process.ExitCode)." }
         return [ordered]@{ diagnostic_only = $true; recording_valid = $false;
             detach_exit = $detach.ExitCode; recorder_exit = $attached.process.ExitCode }
@@ -751,7 +675,6 @@ function Start-Ladder($candidate, [string]$runDir) {
     }
     if ($spec.PSObject.Properties['param_hex_ranges'] -and $spec.param_hex_ranges) { $config.param_hex_ranges = @($spec.param_hex_ranges) }
     $configPath = Join-Path $runDir 'ladder.json'
-    # The hook installer can lose a race with a thread that exits during the attach; retry with fresh events.
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $config.detach_event = ('Local\hoi4_ladder_' + [Guid]::NewGuid().ToString('N').Substring(0, 12))
         Write-Json $configPath $config
@@ -853,7 +776,6 @@ function Get-SizeSummary([string]$runDir) {
     if ($size.spool_bytes -le 0 -or $size.replay_bytes -le 0) { throw 'Finalization summary reports zero bytes.' }
     if ($deferred) {
         if (-not $ready -or $ready.save_ready -ne $true) { throw 'Deferred statistics lack a durable save-ready status.' }
-        # Known evidence hours need not cover the recording: never turn unavailable ratios into zero.
         $size.summary_scope = 'known evidence; full capture statistics deferred to offline inspection'
         [IO.File]::WriteAllText((Join-Path $runDir 'tables.json'), '[]', $utf8)
     } else {
@@ -868,32 +790,25 @@ function Get-SizeSummary([string]$runDir) {
     $size
 }
 
-# ---- timed screen --------------------------------------------------------------
 function Invoke-PlanConsole {
-    # The plan's console lines, e.g. "observe", after each reload and before any recorder attaches.
     if (-not ($spec.PSObject.Properties['console'] -and $spec.console)) { return }
     foreach ($line in @($spec.console)) {
         Log "console: $line"
-        # The console ignores posted keys, so these always borrow the foreground.
         $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Console -GameId $script:game.Id -Text ([string]$line) -Foreground
     }
 }
-# Menu widgets need foreground input that stays focused between clicks, as in smoke.ps1.
 function Send-MenuInput([hashtable]$extra) {
     $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -UserDirectory $userPath -GameId $script:game.Id -Foreground -KeepForeground @extra
 }
 function Save-Game($clock) {
     $name = $(if ($spec.PSObject.Properties['save_name'] -and $spec.save_name) { [string]$spec.save_name } else { "BENCH_H$($clock.hour)" })
-    # The game adds the extension itself.
     if ($name -match '\.hoi4$') { $name = $name.Substring(0, $name.Length - 5) }
     if (-not $name -or $name -ne [IO.Path]::GetFileName($name) -or $name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { throw "save_name must be a plain file name: $name" }
     $path = Join-Path (Join-Path $userPath 'save games') ($name + '.hoi4')
     if (Test-Path -LiteralPath $path) { throw "The plan's save already exists: $path" }
     $paused = Set-Paused $true
-    # Only the confirmed-paused stretch is left out; running time either side still counts.
     $pausedAt = [Diagnostics.Stopwatch]::GetTimestamp()
     Log "Saving at hour $($paused.hour) as $name."
-    # The menu keeps the game focused; hand the foreground back before resuming.
     $previous = [Hoi4ProbeInput]::AcquireTargetFocus($script:window, [uint32]$script:game.Id)
     try {
         foreach ($widget in 'menu', 'save_menu', 'save_name') {
@@ -905,7 +820,6 @@ function Save-Game($clock) {
         Send-MenuInput @{ Action = 'Text'; Text = $name }
         $point = $ui.save_confirm
         Send-MenuInput @{ Action = 'Click'; X = [int]$point[0]; Y = [int]$point[1] }
-        # The game holds the file open until it is complete.
         $limit = [DateTime]::UtcNow.AddSeconds(120); $complete = $false
         do {
             Start-Sleep -Milliseconds 250
@@ -937,18 +851,13 @@ function Invoke-Screen($attached, [string]$runDir) {
     $log = [IO.StreamWriter]::new((Join-Path $runDir 'samples.jsonl'), $false, $utf8)
     $contaminants = @{}
     $first = $null; $last = $null; $firstQpc = 0L; $lastQpc = 0L; $valid = 0; $missing = 0
-    # The game process's CPU time at the first and latest valid samples: its CPU per game hour
-    # counts only time it ran, so other sessions' load moves it far less than the hour rate.
     $firstCpuMs = 0.0; $lastCpuMs = 0.0
     $gameCpuMs = { $script:game.Refresh(); $script:game.TotalProcessorTime.TotalMilliseconds }
-    # Page faults of the game process (soft faults included), read at the first sample and after the window.
     $gameFaults = { try { [int64](Get-CimInstance Win32_Process -Filter "ProcessId=$($script:game.Id)" -ErrorAction Stop).PageFaults } catch { $null } }
     $firstFaults = $null
-    # The game's CPU, kernel time and faults during a plan save, left out like the save's pause.
     $saveCpuMs = 0.0; $saveKernelMs = 0.0; $saveFaults = 0L
     $gameKernelMs = { $script:game.PrivilegedProcessorTime.TotalMilliseconds }
     $firstKernelMs = 0.0; $lastKernelMs = 0.0
-    # Memory once per second, keyed by game hour so screens compare at matched hours.
     $memoryStart = Get-MemorySample $attached
     $memorySeries = New-Object Collections.ArrayList
     [void]$memorySeries.Add(@([int64]$identity.hour, $memoryStart.game_private))
@@ -956,16 +865,13 @@ function Invoke-Screen($attached, [string]$runDir) {
     $recorderPeak = $(if ($null -ne $memoryStart.recorder_private) { $memoryStart.recorder_private } else { 0L })
     $otherCpu = New-OtherCpu (Get-OtherCpuSnapshot) ([DateTime]::UtcNow.Ticks)
     $nextOtherCpu = $null
-    # External profilers key their recording windows on this line.
     Log 'Timed window started.'
     $null = Set-Paused $false
     $startQpc = [Diagnostics.Stopwatch]::GetTimestamp()
     $frequency = [double]$script:reader.Frequency
     $nextGuard = $startQpc
     $nextMemory = $startQpc + [int64]$frequency
-    # Other processes' CPU every 5 s: an exited process keeps its latest sample.
     $nextOtherCpu = $startQpc + 5 * [int64]$frequency
-    # With "status_every_s", the recorder's cumulative pause counters along the window.
     $statusEvery = $(if ($attached -and $spec.PSObject.Properties['status_every_s'] -and $spec.status_every_s) { [double]$spec.status_every_s } else { 0 })
     $statusSeries = $(if ($statusEvery -gt 0) { [IO.StreamWriter]::new((Join-Path $runDir 'status_series.jsonl'), $false, $utf8) } else { $null })
     $nextStatus = $startQpc
@@ -973,7 +879,6 @@ function Invoke-Screen($attached, [string]$runDir) {
     $savedTo = $null; $pausedTicks = 0L
     $stopReason = 'duration_limit'
     try {
-        # Active time: a plan save's pause counts toward neither the duration nor the samples.
         while (([Diagnostics.Stopwatch]::GetTimestamp() - $pausedTicks - $startQpc) / $frequency -lt $seconds) {
             if ($null -ne $last -and ([int64]$last.hour - [int64]$first.hour) -ge $maxHours) { $stopReason = 'max_hours'; break }
             $qpcNow = [Diagnostics.Stopwatch]::GetTimestamp()
@@ -1100,13 +1005,10 @@ function Invoke-Screen($attached, [string]$runDir) {
     return $result
 }
 
-# ---- main loop -----------------------------------------------------------------
 $resultsPath = Join-Path $Out 'results.jsonl'
 $rows = @()
 if ($SummarizeOnly) {
     $rows = @(Get-Content -LiteralPath $resultsPath -Encoding UTF8 | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
-    # Recompute each screen's collector cost from its status snapshots, so
-    # earlier results gain the fields this script derives now.
     foreach ($row in $rows) {
         if (-not ($row.PSObject.Properties['status_delta'] -and $row.status_delta)) { continue }
         $beforePath = Join-Path $row.run_dir 'status_before.json'; $afterPath = Join-Path $row.run_dir 'status_after.json'
@@ -1127,7 +1029,6 @@ function Save-Row($row) {
     [IO.File]::AppendAllText($resultsPath, (($row | ConvertTo-Json -Depth 20 -Compress) + "`n"), $utf8)
     [void]$rowDicts.Add($row)
 }
-# Unloaded recorder waiting to finish finalization before the next reload.
 $script:pending = $null
 function Complete-Pending {
     $p = $script:pending
@@ -1165,17 +1066,14 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
         $runDir = Join-Path $Out ("r{0:d2}_{1:d2}_{2}" -f $rep, $index, $name)
         $null = New-Item -ItemType Directory -Force -Path $runDir
         $row = [ordered]@{ name = $name; repeat = $rep; frozen = $candidate.frozen; run_dir = $runDir; started_utc = [DateTime]::UtcNow.ToString('o'); passed = $false }
-        # Only the mode the plan asked for: an omitted one is the recorder's own, not named here.
         $row.capture_mode = $(if ($candidate.PSObject.Properties['capture_mode']) { [string]$candidate.capture_mode } else { $null })
         if ($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic) {
             $row.diagnostic_only = $true; $row.recording_valid = $false; $row.performance_screen_clean = $false
         }
         $attached = $null; $ladder = $null
-        # Keep the shared lock fresh: other lanes treat a lock untouched for 90 minutes as stale.
         try { (Get-Item -LiteralPath $lock).LastWriteTime = Get-Date } catch { Log "could not refresh the game lock time: $($_.Exception.Message)" }
         try {
             Log "=== $name (repeat $rep) ==="
-            # Reload first, then attach; every candidate starts without a warmup.
             if ($candidate.PSObject.Properties['ladder'] -and $candidate.ladder) {
                 $null = Invoke-Reload $runDir $false
                 Complete-Pending
@@ -1223,15 +1121,12 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
 }
 Complete-Pending
 if ($script:reader) { $script:reader.Dispose(); $script:reader=$null }
-# Exact per-hour metrics decode each finalized replay; run them after the game work.
 foreach ($row in $rowDicts) {
     if ($row.Contains('diagnostic_only') -and $row.diagnostic_only) { continue }
     if (-not $row.frozen -or -not $row.Contains('size') -or -not $row.size -or $row.Contains('exact')) { continue }
     try {
         $row.exact = Get-ExactMetrics ([pscustomobject]@{ recording = $row.recording }) $row.run_dir ([int]$row.first_hour) ([int]$row.last_hour)
         Write-Json (Join-Path $row.run_dir 'result.json') $row
-        # The finalized replay carries everything the benchmark reads; a raw spool is
-        # gigabytes per screen, so drop it unless the plan keeps spools.
         if (-not ($spec.PSObject.Properties['keep_spools'] -and $spec.keep_spools)) {
             Get-ChildItem -LiteralPath $row.recording -Recurse -Filter 'spool.*.h4s' -File -ErrorAction SilentlyContinue | Remove-Item -Force
         }
@@ -1252,7 +1147,6 @@ $table = foreach ($r in $rows) {
     $exactText = if ($r.PSObject.Properties['exact'] -and $r.exact) { "{0}/{1}/{2}" -f $r.exact.callback_mean_ms, $r.exact.callback_p50_ms, $r.exact.callback_p95_ms } else { '' }
     $deltaCallback = if ($r.PSObject.Properties['status_delta'] -and $r.status_delta) { $r.status_delta.callback_mean_ms } elseif ($r.PSObject.Properties['ladder'] -and $r.ladder) { "{0} (p95 {1})" -f $r.ladder.own_mean_ms, $r.ladder.own_p95_ms } else { '' }
     $deltaTick = if ($r.PSObject.Properties['status_delta'] -and $r.status_delta) { $r.status_delta.native_tick_mean_ms } elseif ($r.PSObject.Properties['ladder'] -and $r.ladder) { "{0} (p95 {1})" -f $r.ladder.tick_mean_ms, $r.ladder.tick_p95_ms } else { '' }
-    # Live rows hold ordered dictionaries and summarized rows objects; dot access reads both.
     $cost = if ($r.PSObject.Properties['status_delta'] -and $r.status_delta) { $r.status_delta.collector_cost } else { $null }
     $directText = if ($cost -and $null -ne $cost.direct_fraction_of_native) { '{0:n2} ({1:p1})' -f $cost.direct_ms_per_hour, [double]$cost.direct_fraction_of_native } else { '' }
     $cpuText = if ($cost -and $null -ne $cost.collector_cpu_ms_per_hour) { '{0:n1}{1}' -f $cost.collector_cpu_ms_per_hour, $(if ($cost.collector_cpu_includes_capture_thread -eq $false) { ' (without capture thread)' } else { '' }) } else { '' }
@@ -1268,7 +1162,6 @@ $md = @("# Benchmark $(Split-Path -Leaf $Out)", '', "Save $($spec.save) (SHA256 
     '| candidate | rep | h/s | % same-run baseline | extra ms/game-hour | % historical reference | callback own/mean ms | native tick mean ms | direct ms/game-hour (of native) | recorder CPU ms/game-hour | captures held/beside per game-hour | exact callback mean/p50/p95 ms | elapsed s | stop reason | contaminated | error |',
     '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|') + $table
 
-# ---- per-candidate summary ---------------------------------------------------
 function Get-Interval($values) {
     $list = @($values | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
     if ($list.Count -eq 0) { return $null }
@@ -1285,7 +1178,6 @@ function Format-Interval($interval, [string]$format) {
     ("$format +/- $($format -replace '\{0', '{1')" -f $interval.mean, $interval.half)
 }
 function Get-SeriesValue($series, [int64]$hour) {
-    # Linear interpolation between the samples around the hour; null outside the series.
     $below = $null; $above = $null
     foreach ($point in $series) {
         $h = [int64]$point[0]
@@ -1335,10 +1227,8 @@ foreach ($candidate in @($spec.candidates | Where-Object { $_.frozen })) {
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.replay_bytes_per_hour })) '{0:n0}'),
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.finalize_s })) '{0:n2}'),
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.stop_to_save_ready_s })) '{0:n2}')))
-    # Tables: mean bytes per recorded hour and read times across this candidate's screens.
     $byTable = @{}
     foreach ($r in $screens) {
-        # Windows PowerShell emits a top-level JSON array as one object; foreach enumerates it.
         foreach ($t in (Get-Content -LiteralPath (Join-Path $r.run_dir 'tables.json') -Raw | ConvertFrom-Json)) {
             if (-not $byTable.ContainsKey($t.table)) { $byTable[$t.table] = New-Object Collections.ArrayList }
             [void]$byTable[$t.table].Add([pscustomobject]@{ per_hour = [double]$t.raw_bytes / [double]$r.size.hours; p95 = [double]$t.read_p95_ms; max = [double]$t.read_max_ms; snapshots = [int64]$t.snapshots; deltas = [int64]$t.deltas; unchanged = [int64]$t.unchanged })

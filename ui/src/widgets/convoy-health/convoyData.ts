@@ -41,8 +41,6 @@ const within = (spans: Spans, hour: number) => {
   return low < spans.length && spans[low].firstHour <= hour;
 };
 
-/** Calendar days over `extent`, each read at its last recorded hour; a day the
- * recording missed whole has no read (a gap). */
 export function dayPeriods(extent: readonly [number, number], gaps: Spans): HeatPeriod[] {
   const periods: HeatPeriod[] = [];
   for (let start = Math.floor(extent[0] / DAY) * DAY; start <= extent[1]; start += DAY) {
@@ -59,14 +57,12 @@ export function dayPeriods(extent: readonly [number, number], gaps: Spans): Heat
   return periods;
 }
 
-/** The run holding `hour`. */
 export function runAt(runs: readonly ConvoyRun[], hour: number): ConvoyRun | null {
   let low = 0, high = runs.length;
   while (low < high) { const middle = (low + high) >> 1; if (runs[middle][1] < hour) low = middle + 1; else high = middle; }
   return low < runs.length && runs[low][0] <= hour ? runs[low] : null;
 }
 
-/** The country run holding `hour`. */
 function countryRunAt(runs: readonly ConvoyCountry[], hour: number): ConvoyCountry | null {
   let low = 0, high = runs.length;
   while (low < high) { const middle = (low + high) >> 1; if (runs[middle].lastHour < hour) low = middle + 1; else high = middle; }
@@ -75,35 +71,25 @@ function countryRunAt(runs: readonly ConvoyCountry[], hour: number): ConvoyCount
 
 const valueAt = (runs: readonly ConvoyRun[] | undefined, hour: number) => runs ? runAt(runs, hour)?.[2] ?? null : null;
 
-/** Whether table `index` (regional, deals, clients) was read at `hour`. */
 export const tableKnown = (reply: ConvoyHealthReply, index: number, hour: number) => within(reply.known[index] ?? [], hour);
 
-/** The tag a country cell names at `hour`; null where none is recorded or no tag holds it. */
 export const countryAt = (runs: readonly ConvoyCountry[], hour: number) => countryRunAt(runs, hour)?.tag ?? null;
 
-/** A fixed-point share as a percent with two decimals, truncated as the game shows it. */
 export const percent = (raw: number, scale: number) => `${(Math.trunc(raw * 10000 / scale) / 100).toFixed(2)}%`;
 
 export interface ConvoyFact { label: string; value: string; detail?: string }
 export interface CountryName { name: string; nameFailure?: Error; nameDetail?: string }
 export type CountryNameAt = (tag: string | null, hour: number) => CountryName;
 
-/** One heat row: what it shows, and its value at each period's read. */
 export interface ConvoyRow {
   id: string;
   label: string;
   nameDetail?: string;
   kind: 'region' | 'deal' | 'lease';
-  /** Fixed5 efficiency at a read; null where none was read. */
   valueAt: (hour: number) => number | null;
-  /** Unknown at a read: the row's table was not read then, or (for lend-lease receipts) no
-   * numeric efficiency is recorded. */
   unknownAt: (hour: number) => boolean;
-  /** The facts at a read, in a fixed order of labels; empty when nothing was read. */
   facts: (hour: number) => ConvoyFact[];
-  /** Every label `facts` can give, in order. */
   labels: readonly string[];
-  /** The row's own history for its drill: percentages, or convoy counts. */
   lines: { label: string; runs: readonly ConvoyRun[] }[];
   unit: 'percent' | 'count';
 }
@@ -113,11 +99,8 @@ const convoysFact = (convoys: readonly (readonly ConvoyRun[])[], hour: number): 
   return assigned === null && required === null ? [] : [{ label: 'Convoys assigned', value: `${assigned ?? '—'} of ${required ?? '—'}` }];
 };
 
-/** The latest country a row names, at the last hour of its run: the date its name is read at. */
 const latest = (runs: readonly ConvoyCountry[]) => { const run = runs.at(-1); return run ? { tag: run.tag, hour: run.lastHour } : { tag: null, hour: 0 }; };
 
-/** Each country a row names, dated to the last hour of each run naming it: the dates the widget
- * asks names for, so no other date is looked up. */
 export function labelDates(reply: ConvoyHealthReply): NameAt[] {
   const wanted: NameAt[] = [];
   for (const runs of [...reply.deals.map(deal => deal.exporter), ...reply.leases.map(lease => lease.giver)])
@@ -125,7 +108,6 @@ export function labelDates(reply: ConvoyHealthReply): NameAt[] {
   return wanted;
 }
 
-/** The country a row names at `hour`, named as it was at the end of its run there. */
 const datedCountry = (runs: readonly ConvoyCountry[], hour: number, names: CountryNameAt) => {
   const run = countryRunAt(runs, hour);
   return run ? names(run.tag, run.lastHour) : null;
@@ -163,7 +145,6 @@ export function convoyRows(reply: ConvoyHealthReply, names: CountryNameAt): Conv
     const country = names(giver.tag, giver.hour);
     return { id: `lease:${lease.handle}`, kind: 'lease' as const,
       ...(country.nameFailure ? { nameDetail: country.nameFailure.message } : {}), label: `Lend-lease from ${country.name}`,
-      // Every recorded client has a route flag, even while its giver is not named.
       valueAt: () => null, unknownAt: hour => runAt(lease.bad, hour) !== null || !tableKnown(reply, 2, hour),
       lines: [{ label: 'Convoys assigned', runs: lease.convoys[0] ?? [] }, { label: 'Convoys required', runs: lease.convoys[1] ?? [] }], unit: 'count' as const,
       labels: ['Efficiency', 'Route', 'Convoys assigned'],
@@ -174,10 +155,6 @@ export function convoyRows(reply: ConvoyHealthReply, names: CountryNameAt): Conv
   return [...deals, ...leases];
 }
 
-/** The heat rows over `periods`: each period's cell is its read's share, blank where nothing was
- * read, hatched where it is not recorded (lend-lease, or the table not read). The most active rows
- * over the whole span (most days with a cell) come first, at most `count`; the order never moves
- * with the playhead. */
 export function heatRows(rows: readonly ConvoyRow[], periods: readonly HeatPeriod[], color: string, count: number, scale: number): HeatRow[] {
   const cells = rows.map(row => {
     let active = 0;
@@ -196,7 +173,6 @@ export function heatRows(rows: readonly ConvoyRow[], periods: readonly HeatPerio
     .filter(entry => entry.active > 0).map(entry => ({ id: entry.row.id, label: entry.row.label, cells: entry.cells }));
 }
 
-/** What a hovered day's tooltip says of a row: its facts, or why there are none. */
 export function factsOrReason(row: ConvoyRow | undefined, period: HeatPeriod | null, reply: ConvoyHealthReply): { facts: ConvoyFact[]; reason: string | null } {
   const read = period?.readHour ?? null;
   if (read === null) return { facts: [], reason: 'Not recorded' };

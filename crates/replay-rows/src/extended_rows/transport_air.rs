@@ -1,6 +1,3 @@
-//! Value types of the retired TransportAirRegions table
-//! ([`super::RESERVED_SPLIT_TABLES`]): wire tombstones that keep the table's
-//! framing. Nothing reads or writes them.
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -8,8 +5,6 @@ use super::*;
 pub struct TransportAirRegion {
     pub region: u32,
     pub count: Option<i32>,
-    /// Stored order, including repeated wings and null pointers. A reached
-    /// null dereference refuses the query; no entry is dropped.
     pub missions: Option<Vec<Option<TransportAirMission>>>,
 }
 value_struct!(TransportAirRegion {
@@ -25,7 +20,6 @@ pub struct TransportAirMission {
     pub disruption: Option<i64>,
     pub detection_13: Option<i64>,
     pub detection_14: Option<i64>,
-    /// Raw air-normalization producer graph. None refuses a reached producer.
     pub normalization: Option<TransportAirNormalization>,
 }
 value_struct!(TransportAirMission {

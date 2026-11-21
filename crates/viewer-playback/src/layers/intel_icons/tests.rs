@@ -18,8 +18,6 @@ const RECORDING: Recording = Recording { branch: 3 };
 const HOURS: u32 = 400;
 const LAST: replay_data::Hour = HOURS as replay_data::Hour - 1;
 
-/// What the content's icons read here: the links from the start, the human controllers learned; it
-/// names the rows it saw and the thread it ran on.
 struct Count;
 
 impl Evaluate for Count {
@@ -32,7 +30,6 @@ impl Evaluate for Count {
     }
 }
 
-/// Two links and one human controller from hour 0; a third link from hour 300.
 fn campaign(at: u32, store: &mut Store) {
     complete(store, at, &[TableId::Countries, TableId::CountryLinks, TableId::Provinces, TableId::States, TableId::HumanControllers]);
     match at {
@@ -56,22 +53,18 @@ fn layer(side: &MapSide) -> &Icons {
 
 fn side(name: &str) -> MapSide {
     let entry = open(units(record(HOURS, campaign), name), quick()).unwrap();
-    // The window's cadence: a reader made rows when it says it is ready.
     let icons = Icons::new(Arc::new(Count), Pace::Ready);
     let mut side = MapSide::new(entry, vec![Box::new(icons)], operatives()).unwrap();
-    // The branch an open map takes from its recording, which its rows are stamped with.
     side.set_branch(RECORDING.branch);
     side
 }
 
-/// The layer's state, for a failure's message.
 fn state(side: &MapSide) -> String {
     let layer = layer(side);
     let open = layer.open.as_ref().map(|open| (open.busy, open.handed, open.seen.as_ref().map(|seen| seen.hour), open.reader.frame().map(|frame| frame.hour)));
     format!("icons {:?}, applied {:?}, open (busy, handed, seen, rows, error) {open:?}, tables {:?}, {:?}", layer.icons().map(|(_, hour)| hour), layer.applied, layer.tables(), layer.stats())
 }
 
-/// Frames at `hour`, every layer settled whole, until `done` holds of the layer.
 fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl Fn(&Icons) -> bool) {
     let until = Instant::now() + Duration::from_secs(60);
     loop {
@@ -87,14 +80,11 @@ fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl Fn(&Ic
     }
 }
 
-/// Seeks to `hour` once the rows have declared every table their reader names (a table declared
-/// while the head is held joins only past it), and frames there until the icons are of the hour.
 fn icons_at(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
     sought(side, hour);
     at(side, hour, what, |layer| layer.icons().is_some_and(|(_, at)| *at == hour));
 }
 
-/// Opens the reader at `hour`, learns the tables the content reads, and gives the icons of `hour`.
 fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
     sought(side, hour);
     at(side, hour, "the reader opens", Icons::is_open);
@@ -104,8 +94,6 @@ fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
     icons_at(side, hour, "the icons of the hour");
 }
 
-/// Plays on from `from`, a step of at most four hours a frame, every layer settled whole after
-/// each frame that applied one, until `each` returns true.
 fn play(side: &mut MapSide, from: replay_data::Hour, what: &str, mut each: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
     side.entry().playhead().play(4.0);
     let mut applied = from;
@@ -126,7 +114,6 @@ fn play(side: &mut MapSide, from: replay_data::Hour, what: &str, mut each: impl 
     panic!("{what}: play never reached what the test waits for (applied {applied})");
 }
 
-/// What the icons say they read, and the hour of their rows.
 fn read(side: &MapSide) -> Option<(String, i32)> {
     let (icons, hour) = layer(side).icons()?;
     Some((icons.report.reasons.keys().next()?.clone(), *hour))
@@ -179,10 +166,6 @@ fn in_another_map_mode_it_declares_nothing_and_holds_nothing_and_opens_again_wit
     assert!(stats.loading >= 1);
 }
 
-/// A run that drives the head and settles whole at each step (a stepped run, the proof) gets the
-/// icons of each hour applied, the layer's reader saying itself that it is ready for the hour's
-/// rows. On the readiness commit the whole settle waited for rows its reader had never said it was
-/// ready for, and the run stopped at its second hour.
 #[test]
 fn a_whole_settle_at_each_step_gets_the_icons_of_each_hour_with_no_one_else_marking_the_reader_ready() {
     let mut side = side("intel icons stepped whole");

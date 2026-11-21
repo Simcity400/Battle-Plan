@@ -33,7 +33,6 @@ fn ready() -> Store {
     store
 }
 
-/// Production-style seal with all storage prepared off-lease.
 fn seal_hour(store: &mut Store, hour: i32) -> Prepared {
     store
         .prepare_boundary::<LiveMemory>(boundary(hour), None)
@@ -53,7 +52,6 @@ fn seal_hour(store: &mut Store, hour: i32) -> Prepared {
     output.prepare_pack().unwrap()
 }
 
-/// Forty seals: hour 8 discarded, hour 31 in flight, the rest accepted.
 fn backlog(batched: bool) -> (Store, Vec<Prepared>) {
     let mut store = ready();
     let packs: Vec<_> = (1..=40).map(|hour| seal_hour(&mut store, hour)).collect();
@@ -94,7 +92,6 @@ fn a_write_behind_backlog_seals_every_hour_without_a_receipt_cap() {
         store.detach_losses(),
         Err("Event feed output receipt remains uncertain")
     );
-    // The discarded hour's event is published again; the one in flight is not.
     let next = seal_hour(&mut store, 41);
     assert_eq!(next.row().coverage, EventFeedCoverage::Unavailable);
     let hours: Vec<_> = next.row().events.iter().map(|event| event.hour).collect();
@@ -130,7 +127,6 @@ fn repeated_unknown_and_in_flight_receipts_change_nothing() {
     assert_eq!(store.publications, [publication]);
     store.acknowledged(publication);
     assert_eq!(store.unacknowledged(), 0);
-    // A late discard of a written publication, and receipts nothing sealed.
     store.discarded(publication);
     store.receipts(&[(publication + 1000, Some(false)), (u64::MAX, Some(true))]);
     let losses = store.detach_losses().unwrap();

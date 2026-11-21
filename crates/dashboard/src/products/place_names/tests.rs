@@ -7,8 +7,6 @@ fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
-/// GER (raw 9001, slot 7, original tag ORI) owns state 64 and its provinces 17, 18 and 19;
-/// province 18 is renamed; state 65 carries a custom name.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(0));
     set::<tables::CountryAppearance>(
@@ -55,7 +53,6 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
     let mut input = records(1, (100..=110).map(frame).collect());
     let replay::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
     session.identity = identity;
-    // A recording carries the game facts it is read with: the upgrade adds them from the folder.
     let saved = std::env::temp_dir().join(format!("place-names-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&saved).unwrap();
     let path = saved.join("synthetic.battleplan");
@@ -74,7 +71,6 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
     let states: Vec<Option<&str>> = reply.states.iter().map(|state| state.name.as_deref()).collect();
     assert_eq!(states, [Some("Mod state"), Some("Custom state"), None]);
     assert_eq!(reply.states[2].missing.as_deref(), Some("Not in this recording: state 66 at this hour"));
-    // Many hours in one request are read through one seeker: each named as its hour alone names it.
     let asked = [(18, 101), (17, 103), (19, 103), (18, 107), (17, 110)];
     let together = named(&source, &load, &asked, &[(64, 102), (65, 109)]);
     for (at, &(province, hour)) in asked.iter().enumerate() {

@@ -1,6 +1,3 @@
-//! Naval mission admission topology and the quantised sea-distance matrix.
-//! Content comes from the shared province graph; port links use
-//! ProvinceRow.port_sea, never nearest-sea guesses.
 use crate::{province_geometry::ProvinceGeometry, province_graph::ProvinceGraph};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -8,12 +5,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub struct RegionEdge {
     pub to: u32,
     pub unrestricted: bool,
-    /// None is a sea-crossing record with a null rule, which admits.
     pub rules: Vec<Option<String>>,
 }
 
-/// Build region neighbours in province/neighbour order. Only sea-to-sea
-/// edges set the unrestricted byte or append rule records.
 pub fn region_edges(
     graph: &ProvinceGraph,
     geometry: &ProvinceGeometry,
@@ -64,8 +58,6 @@ pub fn region_edges(
         .collect()
 }
 
-/// Mark a neighbour visited before testing its rule, even when it fails.
-/// An undecided admission cannot safely be retried from another edge.
 pub fn region_reaches(
     edges: &BTreeMap<u32, Vec<RegionEdge>>,
     sea: &BTreeSet<u32>,
@@ -106,8 +98,6 @@ pub fn region_reaches(
     Ok(false)
 }
 
-/// Load-static source rows. One relaxation per base, shared by every task
-/// force using it; no task-force x province path searches.
 pub struct Distances {
     ports: BTreeMap<u32, u32>,
     indexed: Vec<u32>,
@@ -115,8 +105,6 @@ pub struct Distances {
 }
 impl Distances {
     pub fn new(geometry: &ProvinceGeometry, ports: &BTreeMap<u32, u32>) -> Self {
-        // Index valid definitions in province-id order when their port sea is
-        // nonzero or their land/lake flags are both clear.
         let indexed = geometry
             .centroids
             .keys()
@@ -133,8 +121,6 @@ impl Distances {
             rows: BTreeMap::new(),
         }
     }
-    /// Substitute land/lake port seas first; a missing port uses the wrapped
-    /// centroid distance over the original pair.
     pub fn distance(
         &mut self,
         graph: &ProvinceGraph,
@@ -155,8 +141,6 @@ impl Distances {
         self.mapped_distance(graph, geometry, source, target)
     }
 
-    /// Read the raw matrix for stored nearest-base IDs. Do not project ports
-    /// or fall back to centroid distance, including ID zero.
     pub fn mapped_distance(
         &mut self,
         graph: &ProvinceGraph,
@@ -167,9 +151,6 @@ impl Distances {
         if from == to {
             return Ok(0);
         }
-        // Narrow the map's lookup to signed i16. Negative slots use the unmapped
-        // sentinel; a wrapped positive slot aliases that earlier matrix row.
-        // The signed storage width determines this limit.
         let index = |id| {
             self.indexed
                 .binary_search(&id)
@@ -202,13 +183,8 @@ impl Distances {
         while let Some(from) = queue.pop_front() {
             let distance = distances[&from];
             let neighbours = graph.edges.get(&from).map(Vec::as_slice).unwrap_or(&[]);
-            // Narrow the neighbour count to signed i16 before the loop: negative
-            // counts visit nothing; wrapped positive counts visit only the
-            // corresponding prefix.
             let count = (neighbours.len() as i16).max(0) as usize;
             for &(to, raw) in &neighbours[..count] {
-                // Unindexed lakes and land without sea access are not relaxation
-                // vertices, even if the province graph links them.
                 if self.indexed.binary_search(&to).is_err() {
                     continue;
                 }
@@ -227,7 +203,6 @@ impl Distances {
                         graph.unavailable_reason(from, to)
                     )
                 })? as i32;
-                // A negative narrowed edge can make the relaxation unbounded.
                 if raw < 0 {
                     return Err(format!(
                         "naval distance edge {from}/{to} has negative narrowed distance {raw}"
@@ -240,7 +215,6 @@ impl Distances {
                 }
             }
         }
-        // The game stores distance in unsigned 16-bit whole fixed5 units.
         Ok(distances
             .into_iter()
             .map(|(id, value)| (id, i64::from((value / 100_000) as u16) * 100_000))
@@ -273,8 +247,6 @@ mod tests {
             distances.mapped_distance(&graph, &geometry, 3, 2),
             Ok(300_000)
         );
-        // Current home logic falls back to centroids for a land province
-        // without a port; stored-nearest logic uses the unmapped sentinel.
         assert!(distances.distance(&graph, &geometry, 4, 2).unwrap() < 6_553_500_000);
         assert_eq!(
             distances.mapped_distance(&graph, &geometry, 4, 2),

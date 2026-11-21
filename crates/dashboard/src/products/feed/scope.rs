@@ -1,10 +1,3 @@
-//! The feed's rows by the countries they name: a request's country scope (each tag over the hours
-//! it counts) kept on the server, so a page and its counts hold only the rows naming a country of
-//! the scope, and a sparse group answers from its own rows instead of the list paging through the
-//! campaign to find them. A row names up to three countries (actor, target, an ally joining with
-//! it) and the log counts its rows by actor alone, so a scope reads an index of every row's
-//! countries: built from one pass over each run's log, warmed at open on a thread of its own
-//! ([`warm`]) or else the first time a scope asks for that run, and kept while the recording is open.
 
 use super::{EventFeedKind, FeedEvent, FeedPageParams, LOG, Paged, invalid, logs, row::{Columns, Slot}};
 use crate::{
@@ -24,25 +17,17 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-/// A role that names no country, or one no link and holder witnessed.
 const NONE: u32 = u32::MAX;
 
-/// A row of the feed's log as a scope reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Entry {
-    /// The hour the log inserted it: it orders and bins the row.
     pub hour: i32,
-    /// The hour its countries are matched at, where the feed's own filter matches them: the hour
-    /// the row is shown at; for a country that ceased to exist, the last hour it was named.
     pub at: i32,
     pub key: u128,
     pub facet: u128,
-    /// Its countries' canonical slots: actor, target, ally.
     pub slots: [u32; 3],
 }
 
-/// `event`, inserted at `hour` under `key` and counted by `facet`, as a scope reads it: its
-/// countries as [`super::present`] names them and the hour that names them.
 pub(crate) fn entry(hour: i32, key: u128, facet: u128, event: &FeedEvent, names: &Names) -> Entry {
     let slot = |slot: Slot| match slot {
         Slot::Of(slot) => slot,
@@ -56,14 +41,11 @@ pub(crate) fn entry(hour: i32, key: u128, facet: u128, event: &FeedEvent, names:
     if EventFeedKind::of_code(event.code) == Some(EventFeedKind::CeasedToExist) {
         return Entry { hour, at: event.dated.unwrap_or(event.read_hour), key, facet, slots: [actor, NONE, NONE] };
     }
-    // A guarantee is shown at its start where both countries held the tags they held at its read.
     let start = event.dated.unwrap_or(event.read_hour);
     let exact = [actor, target].iter().all(|&slot| names.slot_tag(slot, start).is_some() && names.slot_tag(slot, start) == names.slot_tag(slot, event.read_hour));
     Entry { hour, at: if exact { start } else { event.read_hour }, key, facet, slots: [actor, target, NONE] }
 }
 
-/// A request's country scope as canonical slots: each slot over the hours it held a tag of the
-/// scope while that tag counted.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Scope(HashMap<u32, Vec<(i32, i32)>>);
 
@@ -83,13 +65,11 @@ impl Scope {
         Self(slots)
     }
 
-    /// Whether one of `entry`'s countries is in the scope at the hour it is matched at.
     pub fn admits(&self, entry: &Entry) -> bool {
         entry.slots.iter().any(|slot| self.0.get(slot).is_some_and(|spans| spans.iter().any(|&(first, last)| first <= entry.at && entry.at <= last)))
     }
 }
 
-/// The rows of each run's entries that `patterns` ask for and `scope` admits, by hour then key.
 pub(crate) fn matched<'i>(index: &'i [(u32, Arc<Vec<Entry>>)], patterns: &[Pattern], scope: &Scope) -> Vec<(u32, &'i Entry)> {
     let mut out: Vec<(u32, &Entry)> = Vec::new();
     for (run, entries) in index {
@@ -105,8 +85,6 @@ pub(crate) fn matched<'i>(index: &'i [(u32, Arc<Vec<Entry>>)], patterns: &[Patte
     out
 }
 
-/// The ordinals of a page of `matched` (by hour) from `cursor` within `from..=to`, as
-/// [`log::Reader::page`] counts them: (base, first, end, last).
 pub(crate) fn window(matched: &[(u32, &Entry)], from: i32, to: i32, cursor: u64, size: u32) -> (u64, u64, u64, u64) {
     let base = matched.partition_point(|(_, entry)| entry.hour < from) as u64;
     let last = matched.partition_point(|(_, entry)| entry.hour <= to) as u64;
@@ -114,8 +92,6 @@ pub(crate) fn window(matched: &[(u32, &Entry)], from: i32, to: i32, cursor: u64,
     (base, first, first.saturating_add(u64::from(size)).min(last), last)
 }
 
-/// `matched`'s rows before `first` and per bin of `bin_hours` on the absolute grid from the bin
-/// holding `first`, through `last`: one group's counts, as [`log::Reader::counts`] gives them.
 pub(crate) fn count(matched: &[(u32, &Entry)], first: i32, last: i32, bin_hours: i64) -> io::Result<Counts> {
     if bin_hours < 1 || (bin_hours >= bucket_hours(0) && bin_hours % bucket_hours(0) != 0) {
         return Err(invalid("A log's bins are 1 to 5 hours or whole six-hour buckets"));
@@ -133,17 +109,13 @@ pub(crate) fn count(matched: &[(u32, &Entry)], first: i32, last: i32, bin_hours:
     Ok(Counts { before, bins: bins.into_iter().collect() })
 }
 
-/// Each run's entries, behind a slot held while they are read: a request asking during the pass
-/// waits for it instead of passing over the log again.
 #[derive(Default)]
 struct Index(HashMap<u32, Arc<Mutex<Option<Arc<Vec<Entry>>>>>>);
 
-/// Forgets every run's entries: the next scope reads them cold.
 pub(crate) fn forget(source: &Source) {
     *source.state::<Index>().lock().unwrap_or_else(PoisonError::into_inner) = Index::default();
 }
 
-/// Run `run`'s entries, read once in one pass over its log and kept.
 fn entries(source: &Source, reader: &Reader<'_, '_>, names: &Names, run: u32) -> io::Result<Arc<Vec<Entry>>> {
     let slot = Arc::clone(source.state::<Index>().lock().unwrap_or_else(PoisonError::into_inner).0.entry(run).or_default());
     let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -163,9 +135,6 @@ fn entries(source: &Source, reader: &Reader<'_, '_>, names: &Names, run: u32) ->
     Ok(made)
 }
 
-/// Reads every run of `branch`'s timeline into the index on `source`, the head's run first, as the
-/// first scope would: the open warms it on a thread of its own, so a scope asked after waits on no
-/// pass and one asked during it waits for that run's pass instead of making its own.
 pub(crate) fn warm(source: &Source, branch: u64) -> io::Result<()> {
     let query = crate::answer::query(source, branch)?;
     let reader = Reader::new(&query, declared()?)?;
@@ -182,7 +151,6 @@ pub(crate) fn warm(source: &Source, branch: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// The runs whose entries are kept on `source`, ascending.
 #[cfg(test)]
 pub(crate) fn kept(source: &Source) -> Vec<u32> {
     let index = source.state::<Index>();
@@ -192,8 +160,6 @@ pub(crate) fn kept(source: &Source) -> Vec<u32> {
     runs
 }
 
-/// What a scope reads over the timeline's first hour through `to`: the patterns `facets` ask
-/// for, the entries of each run they reach, and the scope's slots.
 fn scoped(source: &Source, query: &Query<'_>, reader: &Reader<'_, '_>, facets: &[FacetFilter], scope: &[MembershipRun], to: i32) -> io::Result<(Vec<Pattern>, Vec<(u32, Arc<Vec<Entry>>)>, Scope)> {
     if facets.iter().any(|filter| !filter.countries.is_empty()) {
         return Err(invalid("A country scope is not asked with a filter by tags"));
@@ -211,8 +177,6 @@ fn declared() -> io::Result<&'static dashboard_declare::Log> {
     dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))
 }
 
-/// A page of the feed's rows `scope` admits: [`super::page`]'s page, its ordinals counting the
-/// admitted rows only.
 pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams, scope: &[MembershipRun]) -> io::Result<(log::Page, Vec<Paged>, Vec<MissingSpan>)> {
     let log = declared()?;
     let reader = Reader::new(query, log)?;
@@ -252,7 +216,6 @@ pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams, 
     Ok((page, rows, logs::missing(query, log, from, to)?))
 }
 
-/// The feed's rows `scope` admits, counted as `log-counts` counts a log: one line, no tag.
 pub(crate) fn counts(source: &Source, query: &Query<'_>, facets: &[FacetFilter], scope: &[MembershipRun], from: i32, to: i32, bin_hours: i64) -> io::Result<Counts> {
     let reader = Reader::new(query, declared()?)?;
     let (patterns, index, scope) = scoped(source, query, &reader, facets, scope, to)?;

@@ -1,4 +1,3 @@
-//! Recorded country colour sources shared by political fill and counters.
 use super::tables::{Available, rows};
 use crate::errors::invalid;
 use installed_content_core::map::MapData;
@@ -21,29 +20,16 @@ pub fn active_subject(row: &SubjectRow, hour: Hour) -> bool {
     row.cancel == 0 && (row.end_hour <= row.start_hour || hour < row.end_hour)
 }
 
-/// Resolve colour inheritance for each country this hour, retaining named unknown operands.
-///
-/// Follow the current autonomy state while its content definition enables `use_overlord_color`,
-/// taking the active `Subjects` row's overlord at each step. Autonomy score and ratio do not enter
-/// the colour selection.
 #[derive(Clone, Debug, Default)]
 pub struct Inheritance {
-    /// Subject slot to the overlord slot whose colours it takes.
     pub inherited: BTreeMap<u32, u32>,
-    /// Slots whose colour source the hour cannot decide, with the missing operand.
     pub undecided: BTreeMap<u32, String>,
-    /// Slots with a current autonomy status (an `Autonomy` row).
     pub with_status: BTreeSet<u32>,
-    /// Slots an active `Subjects` row names as a subject.
     pub subjects: BTreeSet<u32>,
-    /// A slot without an `Autonomy` row is undecided while the table is incomplete, since it may hold
-    /// a current status. `None` means an absent row is a known null status.
     pub absent: Option<String>,
 }
 
 impl Inheritance {
-    /// Use the current autonomy colour source, following overlords to the end of the chain. Err names
-    /// the missing operand for a reached country.
     pub fn source(&self, slot: u32) -> Result<u32, String> {
         let mut source = slot;
         let mut visited = BTreeSet::new();
@@ -72,8 +58,6 @@ impl Inheritance {
 }
 
 impl Inheritance {
-    /// [`Self::source`], telling a source the hour cannot decide (`None`) from inheritance that
-    /// loops, which no hour can hold.
     pub fn known_source(&self, slot: u32) -> io::Result<Option<u32>> {
         let mut source = slot;
         let mut visited = BTreeSet::new();
@@ -94,14 +78,11 @@ impl Inheritance {
     }
 }
 
-/// This hour's [`Inheritance`].
 pub fn inheritance(
     map: &MapData,
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
 ) -> io::Result<Inheritance> {
-    // Subjects.state stores the relation's initial definition. Colour uses the current autonomy
-    // status, which changes independently during normal autonomy transitions.
     let autonomy = rows::<tables::Autonomy>(frame)?;
     let mut states = BTreeMap::new();
     for row in autonomy.rows() {
@@ -176,7 +157,6 @@ pub fn inheritance(
     Ok(result)
 }
 
-/// Why an incomplete table's missing row is no evidence; `None` when the table is complete.
 fn table_gap<T: replay_data::rows::TableSchema>(
     table: &Available<'_, T>,
     name: &str,

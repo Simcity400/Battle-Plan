@@ -534,7 +534,6 @@ fn fixture() -> Vec<u8> {
         TASK + ctask_force::SECONDARY_BASE,
         ctask_force::SECONDARY_VTABLE_RVA.0 as u64,
     );
-    // The task force uses the ship id space. Its complete handle is retained.
     put64(&mut bytes, TASK + cunit::HANDLE, (11_u64 << 32) | 51);
     put64(&mut bytes, TASK + ctask_force::FLEET, FLEET as u64);
     put32(&mut bytes, TASK + cunit::ROSTER_OWNER, 1);
@@ -692,8 +691,6 @@ fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
     );
 }
 
-/// A task force whose roster owner is another country than its fleet's is
-/// recorded with its own owners, and its ships with it.
 #[test]
 fn foreign_task_force_is_recorded_with_its_own_owners() {
     const FOREIGN: usize = 0x5000;
@@ -733,9 +730,6 @@ fn foreign_task_force_is_recorded_with_its_own_owners() {
     );
 }
 
-/// The census reads each ship, its vtable included, in one guarded call and
-/// its task force's ship roster a page of pointers per call, where it read
-/// each pointer, vtable and field block in a call of its own.
 #[test]
 fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_per_call() {
     let calls = |bytes: &[u8], ships: crate::walk::Buffer<'_, cship::Row>| {
@@ -772,9 +766,6 @@ fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_pe
     let (_, no_roster) = calls(&empty, crate::walk::Buffer::Count);
     assert_eq!(roster_only - no_roster, 1, "one call per roster page");
 
-    // The vtable still decides before the fields: a wrong or unreadable
-    // vtable is a vtable mismatch, an unreadable field after it fails the
-    // ship's fields.
     struct Faulting<'a> {
         bytes: &'a [u8],
         fault: usize,
@@ -811,7 +802,6 @@ fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_pe
 #[test]
 fn the_naval_count_probe_counts_each_table_and_reads_no_omitted_ship_body() {
     let mut bytes = fixture();
-    // Body fields of an omitted ship must not be read.
     put64(&mut bytes, SHIP2, 0);
     assert_eq!(
         count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS),
@@ -1015,7 +1005,6 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
         (7, 12, 116)
     );
 
-    // A region outside its registered slot and a foreign mission vtable both fail.
     put64(&mut bytes, REGIONS + 16, 0);
     let memory = SliceMemory {
         base: 0,
@@ -1124,7 +1113,6 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
         assert_eq!(actual, prefix);
         assert_eq!(&owned[..6], b"Guard\0");
     }
-    // A corrupt header is local to this suffix and counts no growth demand.
     put64(&mut bytes, name + 24, 1);
     let mut names = Names {
         bytes: crate::walk::Buffer::Count,
@@ -1182,9 +1170,6 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
     );
 }
 
-/// The fleet walk visits a task force before it reads the counter row, which checks the
-/// mission too; with the counter buffer exhausted the mission collector still authenticates
-/// every mission it observes.
 #[test]
 fn missions_are_authenticated_by_the_counter_walk_and_the_mission_collector() {
     use crate::cnaval_mission as mission;
@@ -1219,7 +1204,6 @@ fn missions_are_authenticated_by_the_counter_walk_and_the_mission_collector() {
         run(&bytes),
         (Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 })
     );
-    // The counter walk and the mission collector each authenticate the mission.
     let mismatch = Outcome::Unavailable {
         reason: "naval mission identity mismatch",
     };
@@ -1708,7 +1692,6 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
     }
 }
 
-/// One census occurrence's objects in a [`census_world`] slot, for faults.
 #[derive(Clone, Default)]
 struct CensusObjects {
     fleets: Vec<usize>,
@@ -1726,11 +1709,6 @@ fn world_alloc(bytes: &mut Vec<u8>, len: usize) -> usize {
     at
 }
 
-/// `count` country slots, every seventh empty; slot `s` has `s % 3` fleets,
-/// fleet `f` has `(s + f) % 3` task forces and task force `t` has
-/// `(s + f + t) % 4 + (s % 11 == 0) as usize * 70` ships, so runs of ships
-/// cross task forces, fleets and countries and some task forces alone fill
-/// more than a run. Some fleets are named or based at the shared province.
 fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
     let countries = WORLD_HEAP;
     let links = countries + (count + 1) * 8;
@@ -1843,8 +1821,6 @@ fn census_world(count: usize) -> (Vec<u8>, Vec<CensusObjects>) {
     (bytes, objects)
 }
 
-/// The world's bytes; reads touching `fault` fail always, or only the first
-/// in time when `once`.
 struct CensusMemory<'a> {
     bytes: &'a [u8],
     fault: Option<usize>,
@@ -1870,7 +1846,6 @@ impl Memory for CensusMemory<'_> {
     }
 }
 
-/// What a census walk leaves: outcomes, rows, names and visits.
 #[derive(Debug, PartialEq)]
 struct Walked {
     capture: Capture,
@@ -1885,7 +1860,6 @@ fn census_walk(memory: &impl Memory, batched: bool) -> Walked {
     census_walk_in(memory, batched, false)
 }
 
-/// [`census_walk`] as the count-only probe when `count`, growing otherwise.
 fn census_walk_in(memory: &impl Memory, batched: bool, count: bool) -> Walked {
     let mut fleets = Vec::new();
     let mut tasks = Vec::new();
@@ -1929,10 +1903,6 @@ fn buffer_of<T>(rows: &mut Vec<T>, count: bool) -> crate::walk::Buffer<'_, T> {
     }
 }
 
-/// The reads to fault: the province array header and the shared province,
-/// a fleet's vtable and home base, a task force's handle and ship roster,
-/// and ships' vtables, handles, scalars and parents, in runs of several
-/// task forces and inside a task force longer than a run.
 fn census_faults(objects: &[CensusObjects]) -> Vec<usize> {
     let ship = |slot: usize, index: usize| objects[slot].ships[index];
     vec![
@@ -1959,10 +1929,6 @@ fn census_faults(objects: &[CensusObjects]) -> Vec<usize> {
     ]
 }
 
-/// A lasting fault anywhere gives the per-ship walk's result, and a fault
-/// that clears after its first touch never refuses or withholds more than
-/// the per-ship walk does: the batch's per-ship fallback reads the ship
-/// again.
 #[test]
 fn batched_ship_census_keeps_lasting_faults_and_is_never_harsher_under_one_touch_faults() {
     let (bytes, objects) = census_world(40);
@@ -2027,14 +1993,9 @@ fn batched_ship_census_keeps_lasting_faults_and_is_never_harsher_under_one_touch
     }
 }
 
-/// A walk-ending failure after ships were queued: the batched census still
-/// reads, emits and visits the queued ships before it, as the per-ship walk
-/// visited them, with a full run and a pending tail before the failure.
 #[test]
 fn ships_queued_before_a_walk_ending_failure_are_visited_as_the_per_ship_walk_visits_them() {
     let (bytes, objects) = census_world(40);
-    // Slot 11's task forces fill a run and leave a tail; slot 13's fleet
-    // fails the walk after them.
     for fault in [
         objects[8].fleets[0],
         objects[13].fleets[0],
@@ -2053,8 +2014,6 @@ fn ships_queued_before_a_walk_ending_failure_are_visited_as_the_per_ship_walk_vi
     }
 }
 
-/// The count-only probe gives the per-ship walk's outcomes, with their unread
-/// rows, and stores nothing.
 #[test]
 fn batched_count_census_equals_the_per_ship_count() {
     let (bytes, _) = census_world(40);
@@ -2078,8 +2037,6 @@ fn batched_count_census_equals_the_per_ship_count() {
     assert!(serial.ships.is_empty());
 }
 
-/// The census's memory, recording the first address of every scattered
-/// copy: a ship read alone after its run's copy stopped early.
 struct Scattered<'a> {
     inner: CensusMemory<'a>,
     first: std::cell::RefCell<Vec<usize>>,
@@ -2112,10 +2069,6 @@ impl Memory for Scattered<'_> {
     }
 }
 
-/// After a run's copy stops at a ship, each of the run's remaining eligible
-/// ships is read alone at most once: under a lasting fault only the failing
-/// ship (the Ships table then stops, and no later ship is read or visited),
-/// under a fault that clears every remaining ship of that run, once.
 #[test]
 fn a_short_run_reads_each_remaining_ship_alone_at_most_once() {
     let (bytes, objects) = census_world(40);
@@ -2149,7 +2102,6 @@ fn a_short_run_reads_each_remaining_ship_alone_at_most_once() {
         assert_eq!(alone.first(), Some(&failing));
         let position = ships.iter().position(|&ship| ship == failing).unwrap();
         if once {
-            // The rest of the failing ship's run, each once, nothing after it.
             assert!(alone.len() <= SHIP_RUN);
             assert!(alone.iter().all(|at| {
                 let index = ships.iter().position(|ship| ship == at).unwrap();

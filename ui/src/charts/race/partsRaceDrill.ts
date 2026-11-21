@@ -9,7 +9,6 @@ import type { CountryIdentityRun } from '../../generated/dashboard';
 import type { CountryPartsData, CountryPartsSelection } from './countryPartsDrillData';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 
-// Native part keys are nonempty, so this internal residual cannot collide with one.
 export const UNATTRIBUTED_PART = { id: '', label: 'Other' };
 
 export interface NativePartsRaceReply extends PartsRaceReply {
@@ -24,7 +23,6 @@ export function validateNativePartsRaceReply(value: unknown): NativePartsRaceRep
 
 export const nativePartsRaceNumbers = (reply: NativePartsRaceReply): NativePartsRaceReply => ({ ...partsRaceNumbers(reply), series: reply.series });
 
-/** The existing country-parts binding clips this census to one native holder. */
 export function partsRaceDrillData(model: PartsRaceModel, histories: NativePartsRaceReply['series'],
   tooltip: CountryPartsData['tooltip']): CountryPartsData {
   return { histories, warnings: model.reply.warnings,
@@ -37,7 +35,6 @@ export function partsRaceDrillData(model: PartsRaceModel, histories: NativeParts
     tooltip };
 }
 
-/** Supplied drawn candidates are authoritative, including an empty selection. */
 export function partsRaceDrillActors(tag: string | undefined, choices: readonly string[] | undefined,
   fallback: () => string | null): readonly string[] {
   if (choices !== undefined) return [...new Set(choices)];
@@ -57,7 +54,6 @@ export type PartsRaceDrillAction = DrillAction
   | { type: 'choose'; key: string; tag: string; hour: number };
 export type NativePartsRaceDrillAction = PartsRaceDrillAction & { selection?: CountryPartsSelection; owner?: unknown; pickOwner?: unknown };
 
-/** Waiting for an actor pins the clicked hour; stale chooser input cannot reopen it. */
 export function reducePartsRaceDrill(state: PartsRaceDrillState, action: NativePartsRaceDrillAction): PartsRaceDrillState {
   if (action.type === 'actors') return { ...CLOSED, follow: false, hour: Math.floor(action.hour),
     choices: { key: action.key, tags: action.tags }, ...(action.owner ? { owner: action.owner } : {}),
@@ -74,8 +70,6 @@ export function reducePartsRaceDrill(state: PartsRaceDrillState, action: NativeP
     ...(action.type !== 'close' && (action.owner ?? state.owner) ? { owner: action.owner ?? state.owner } : {}) };
 }
 
-/** Stack identified amounts and the exact remainder; a missing total stays a gap.
- * A null classification contributes nothing identified, never a guessed native zero. */
 export function partsRaceDrillBands(model: PartsRaceModel, tag: string, membership: readonly Span[] | null, range: Span): Run[][] {
   return Array.from({ length: model.reply.parts.length + 1 }, (_, index) => {
     const runs: Run[] = [];
@@ -91,7 +85,6 @@ export function partsRaceDrillBands(model: PartsRaceModel, tag: string, membersh
   });
 }
 
-/** Pin the selected country and, when a day was picked, its branch-relative moment. */
 export function pinPartsRace(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, tag: string,
   hour: number, follow: boolean, label: string): WidgetSpec {
   const pinned = pinnedBreakdown(source, { id: 'breakdown', label }, track.id);

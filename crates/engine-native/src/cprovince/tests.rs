@@ -51,7 +51,6 @@ impl Memory for TracedMemory<'_> {
         destination: &mut [u8],
     ) -> usize {
         self.guards.set(self.guards.get() + 1);
-        // Count this gather once while exercising Memory's scalar default.
         struct Scalar<'a, 'b>(&'a TracedMemory<'b>);
         impl Memory for Scalar<'_, '_> {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -62,9 +61,6 @@ impl Memory for TracedMemory<'_> {
     }
 }
 
-/// Installs the definition and shared terrain the movement operand stage
-/// reads. The building vector stays the empty header the zeroed fixture
-/// already holds.
 fn put_movement(bytes: &mut [u8], province: usize, id: u32, definition: usize, terrain: usize) {
     use crate::{cterrain_type, province_definition as definition_layout};
     put(
@@ -169,8 +165,6 @@ fn province_names_fixture() -> Vec<u8> {
             &15_u64.to_le_bytes(),
         );
     }
-    // Province 1 is empty; province 2 has an inline literal with embedded
-    // NUL/non-UTF8, province 3 uses heap storage. No display conversion.
     let inline = 0x1200 + NAME_OVERRIDE;
     put(&mut bytes, inline, &[b'A', 0, 255, 0]);
     put(&mut bytes, inline + 16, &3_u64.to_le_bytes());
@@ -220,8 +214,6 @@ fn name_census_is_sparse_lossless_and_grows_from_any_starting_storage() {
 #[test]
 fn names_require_a_real_census_even_when_no_overrides_exist() {
     let mut bytes = province_names_fixture();
-    // Keep the authenticated, unnamed first province, removing both named
-    // slots. This is a legitimate complete empty sparse name table.
     put(&mut bytes, 0x310, &0_u64.to_le_bytes());
     put(&mut bytes, 0x318, &0_u64.to_le_bytes());
     let outcome = |bytes: &[u8]| {
@@ -294,7 +286,6 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
                 controller: u32::MAX - index as u32 - 1,
                 victory_points: 0,
                 fort_positive: 0,
-                // A land province with no owner area; the fixture has none.
                 move_gate: u8::from((index + 1) % 4 == 1) * Row::MOVE_NULL_OWNER_AREA,
                 port_sea: 0,
                 fort_bunker: None,
@@ -304,9 +295,6 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
             }
         );
     }
-    // Two root guards, two province-field guards, one state-field guard,
-    // and two movement gathers per batch (the building vector and gate
-    // words, then the definition's flags and port).
     assert_eq!(memory.guards.get(), 9);
     assert_eq!(
         memory
@@ -339,7 +327,6 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
 fn batching_preserves_holes_and_earlier_errors_before_later_prefetch_faults() {
     let mut bytes = many_provinces(67);
     put(&mut bytes, 0x300 + 2 * 8, &0_u64.to_le_bytes());
-    // The first state semantic error still wins over a later prefetched body fault.
     put(&mut bytes, 0x12000 + cstate::ID, &0_u32.to_le_bytes());
     let memory = TracedMemory {
         bytes: &bytes,
@@ -354,7 +341,6 @@ fn batching_preserves_holes_and_earlier_errors_before_later_prefetch_faults() {
         }
     );
 
-    // The first province semantic error wins over a later unreadable root.
     put(&mut bytes, 0x1000 + ID, &99_u32.to_le_bytes());
     let memory = TracedMemory {
         bytes: &bytes,
@@ -422,8 +408,6 @@ fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached(
     assert_eq!(cache.resolve(&memory, 0, first), Ok((1, u32::MAX)));
     assert_eq!(cache.resolve(&memory, 0, second), Ok((2, u32::MAX - 1)));
     assert_eq!(memory.owner_reads.get(), 2);
-    // A new walk observes the live failure, and a failed first observation
-    // leaves no successful entry behind for the following retry.
     let mut cache = StateCache::new(2048).unwrap();
     memory.fail.set(true);
     assert_eq!(
@@ -468,7 +452,6 @@ fn state_cache_retains_collisions_beyond_the_former_probe_limit() {
             Ok(((pointer >> 12) as u32, 123))
         );
     }
-    // Every collision keeps its original authenticated observation.
     assert_eq!(memory.0.get(), pointers.len());
 }
 
@@ -567,7 +550,6 @@ struct FaultMemory<'a> {
 impl Memory for FaultMemory<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         if address < self.blocked.end && address + destination.len() > self.blocked.start {
-            // A guarded copy may partially fill its failed destination.
             destination[0] = 0xff;
             return false;
         }
@@ -585,7 +567,6 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
     for blocked in [
         0x1408..0x1438,
         0x143c..0x14a4,
-        // The border-conflict set size and the two area pointers (both area pointers) are now read.
         0x14a8..0x14b0,
         0x1a08..0x1a58,
         0x1a5c..0x1ac8,
@@ -635,8 +616,6 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
     }
 }
 
-/// Both area pointers arrive with the movement gather, in row order, with
-/// the province and its definition; the owner area still decides the gate.
 #[test]
 fn the_walk_gathers_both_area_pointers_with_the_movement_fields() {
     let mut bytes = provinces();
@@ -670,7 +649,6 @@ fn the_walk_gathers_both_area_pointers_with_the_movement_fields() {
         ]
     );
     assert_eq!(capture.rows[0].move_gate & Row::MOVE_NULL_OWNER_AREA, 0);
-    // The walk labels nothing; the collector's area step does.
     assert_eq!(capture.rows[0].controller_area, None);
 }
 
@@ -711,7 +689,6 @@ fn current_victory_points_preserve_signed_word_and_transition_to_zero() {
         put(&mut bytes, 0x400 + VICTORY_POINTS, &value.to_le_bytes());
         let memory = FaultMemory {
             bytes: &bytes,
-            // A native i64 load would include this unrelated next dword.
             blocked: 0x400 + 0x1000 + VICTORY_POINTS + 4..0x400 + 0x1000 + VICTORY_POINTS + 8,
         };
         assert_eq!(
@@ -841,8 +818,6 @@ fn address_overflow_keeps_the_original_field_and_semantic_precedence() {
 #[test]
 fn movement_operands_sum_native_forts() {
     use crate::{cbuilding, cbuilding_template};
-    // Province 1 carries two buildings sharing one template, so the fort
-    // sum is the native signed healthy-level product, not a count.
     let build = |first: i16, second: i16, weight: i32| {
         let mut bytes = provinces();
         bytes.resize(0x4000, 0);
@@ -888,7 +863,6 @@ fn movement_operands_sum_native_forts() {
             Outcome::Rows { len: 2 }
         );
         assert_eq!(rows[0].fort_positive, fort_positive);
-        // The second province has no buildings at all.
         assert_eq!(rows[1].fort_positive, 0);
     }
 }
@@ -1102,7 +1076,6 @@ fn ownership_comes_from_the_state_and_raw_controller_zero_is_preserved() {
         }
     );
 }
-// Frozen pre-record-gather acquisition, independent of the dense branch.
 fn scattered_reference_read(
     batch: &mut ProvinceBatch,
     memory: &impl Memory,
@@ -1126,8 +1099,6 @@ fn scattered_reference_read(
         .copy_scattered(addresses, &mut destinations)
         .min(batch.len);
 
-    // Only rows that fit may have their bodies read. Null holes use no row
-    // capacity; roots beyond capacity remain checked for honest truncation.
     let mut remaining = capacity;
     let enabled: [bool; BATCH_ROWS] = std::array::from_fn(|slot| {
         if slot >= batch.pointer_count || batch.pointer(slot) == 0 || remaining == 0 {
@@ -1261,8 +1232,6 @@ fn scattered_reference_walk(
     }
 }
 
-/// The fixture bytes at base 0x1000, plus the one reference-registry root
-/// cell the conflict walk reads from the module image.
 struct ConflictMemory {
     bytes: Vec<u8>,
     root: [u8; 8],
@@ -1285,10 +1254,6 @@ impl Memory for ConflictMemory {
     }
 }
 
-/// Province 2 of `many_provinces(3)` holds one border-war combat whose
-/// defending side fights for a group at border war (handle id 57) and whose
-/// attacking side names a group that is not (id 58). Offsets are fixture
-/// offsets; the memory base is 0x1000.
 fn conflict_fixture() -> ConflictMemory {
     use crate::{
         cland_border_war_combat, cland_border_war_combatant, cland_combat, corders_group,
@@ -1299,7 +1264,6 @@ fn conflict_fixture() -> ConflictMemory {
     bytes.resize(0x1c000, 0);
     let at = |offset: usize| (offset + 0x1000) as u64;
     let province = 0x1200;
-    // Province 2's definition: 0xa100. A land province with an owner area.
     put(
         &mut bytes,
         0xa100 + province_definition::PORT_SEA,
@@ -1332,7 +1296,6 @@ fn conflict_fixture() -> ConflictMemory {
         combat,
         &(cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
-    // One registry with eight buckets (overflow 5, sentinel at 13).
     let (table, entries) = (0x1a000, 0x1a100);
     put(
         &mut bytes,
@@ -1432,11 +1395,8 @@ fn border_conflicts_admit_only_resolved_groups_at_border_war() {
 #[test]
 fn a_broken_conflict_set_fails_its_table_without_the_provinces() {
     for (offset, value) in [
-        // The set claims two combats but links one.
         (0x1200 + BORDER_CONFLICT_NONZERO_QWORD, 2_u64),
-        // The head is not its sentinel.
         (0x10000 + crate::msvc_tree_node::NIL, 0),
-        // The node holds something other than a land combat.
         (0x10100, 0),
     ] {
         let mut memory = conflict_fixture();
@@ -1456,7 +1416,6 @@ fn a_broken_conflict_set_fails_its_table_without_the_provinces() {
             "{offset:#x}"
         );
     }
-    // A reference that resolves to nothing admits nobody.
     let mut memory = conflict_fixture();
     memory.root = [0; 8];
     let (_, walk, _, conflicts, _) = conflict_walk(&memory, 2, 2);
@@ -1502,8 +1461,6 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
         ]
     );
 
-    // Requested slot 1 claims ID 2. Its observed-ID backlink remains an
-    // independent gate, even though slot 1 and its index are already owned.
     for (alias, blocked, reason) in [
         (false, None, "unit geometry province differs from census"),
         (true, None, "unit geometry province identity mismatch"),
@@ -1541,8 +1498,6 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
         assert_eq!(packet.required_capacities().provinces, 2);
     }
 
-    // A successful route lookup of slot zero cannot relax the stricter
-    // endpoint rule when the completed identity is reused.
     let mut bytes = many_provinces(2);
     put(&mut bytes, 0x300, &0x2000_u64.to_le_bytes());
     put(&mut bytes, 0x1000 + ID, &0_u32.to_le_bytes());
@@ -1557,7 +1512,6 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
     assert_eq!(memory.reads.borrow().len(), reads);
 }
 
-/// A later pass of the world answers a held id unread, even after memory changed; others read it.
 #[test]
 fn held_province_ids_answer_a_later_pass_of_their_world_without_a_read() {
     let mut packet = GeometryPacket::with_capacities(GeometryCapacities {
@@ -1571,7 +1525,6 @@ fn held_province_ids_answer_a_later_pass_of_their_world_without_a_read() {
     assert_eq!(packet.acquire_province_id(&memory, 0x2000), Ok(1));
     assert_eq!(packet.held_counts(), [0, 1]);
 
-    // The province now claims id 2, whose census slot names another province.
     let mut bytes = many_provinces(2);
     put(&mut bytes, 0x1000 + ID, &2_u32.to_le_bytes());
     let memory = dense_trace(&bytes, None);
@@ -1630,7 +1583,6 @@ fn dense_records_match_scattered_walk_windows_faults_and_state_order() {
         for capacity in [count, count + 1] {
             compare_dense_walk(&bytes, None, capacity);
         }
-        // First/last-byte failure at every root, exact field and state read.
         let trace = dense_trace(&bytes, None);
         let _ = scattered_reference_walk(&trace, 0, 0x1000, &mut vec![Row::default(); count]);
         for &(address, width) in trace.reads.borrow().iter() {
@@ -1648,11 +1600,9 @@ fn dense_records_match_scattered_walk_windows_faults_and_state_order() {
         compare_dense_walk(&bytes, None, capacity);
         compare_dense_walk(&bytes, Some(0x1300 + 65 * 8), capacity);
     }
-    // A current state error still wins over a later prefetched field fault.
     let mut bytes = many_provinces(65);
     put(&mut bytes, 0x12000 + cstate::ID, &0_u32.to_le_bytes());
     compare_dense_walk(&bytes, Some(0x2200 + VICTORY_POINTS), 65);
-    // Current state authentication still occurs before the first VP error.
     let mut bytes = many_provinces(2);
     put(&mut bytes, 0x12000, &0_u64.to_le_bytes());
     compare_dense_walk(&bytes, Some(0x2000 + VICTORY_POINTS), 2);
@@ -1738,8 +1688,6 @@ fn dense_records_preserve_invalid_source_prefix_without_retry() {
                 destination.copy_from_slice(&(self.pointer as u64).to_le_bytes());
                 return true;
             }
-            // Permit this synthetic first field so a following overflow
-            // must fail without retrying or skipping its earlier read.
             if address == self.pointer && destination.len() == 8 {
                 destination.copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
                 return true;
@@ -1774,8 +1722,6 @@ fn dense_records_preserve_invalid_source_prefix_without_retry() {
         );
         assert_eq!(*current.reads.borrow(), *reference.reads.borrow());
     }
-    // Directly exercise an invalid root extent; Array::from_header rejects
-    // this in a full walk, while the helper still preserves its prefix.
     let current = AddressMemory {
         pointer: 0x2000,
         reads: std::cell::RefCell::new(Vec::new()),
@@ -1959,7 +1905,6 @@ fn default_geometry_has_no_chosen_province_or_neighbour_population() {
     );
 }
 
-/// The territory epochs of the carry tests' hours.
 const TAKE: Option<[u64; 2]> = Some([3, 4]);
 
 fn carrying() -> Capture {
@@ -1990,8 +1935,6 @@ fn slice(bytes: &[u8]) -> SliceMemory<'_> {
     }
 }
 
-/// The capture equals a full walk of the same memory: rows, area pointers,
-/// conflict rows and their groups.
 fn assert_full_read(capture: &Capture, memory: &impl Memory, len: usize) {
     let mut full = Capture::with_capacity(0, 0, 0);
     assert_eq!(full.walk(memory, 0, 0x1000), Outcome::Rows { len });
@@ -2004,14 +1947,10 @@ fn assert_full_read(capture: &Capture, memory: &impl Memory, len: usize) {
     assert_eq!(capture.groups[..groups], full.groups[..groups]);
 }
 
-/// Fixture offset of province `id` in `many_provinces`.
 fn province_at(id: usize) -> usize {
     0x1000 + (id - 1) * 0x200
 }
 
-/// `many_provinces(67)` with province 3 fortified (one healthy level of a
-/// weight-one template), stateless and controlled by country 7, and
-/// provinces 10 and 11 in state 90, 30 and 31 in state 91.
 fn carry_fixture() -> Vec<u8> {
     use crate::{cbuilding, cbuilding_template};
     let mut bytes = many_provinces(67);
@@ -2071,9 +2010,6 @@ fn traced(bytes: &[u8]) -> TracedMemory<'_> {
     }
 }
 
-/// A quiet hour reads the province table and, for the fortified province,
-/// the state link `fort_bunker` follows; no other province field. It
-/// publishes exactly what a full walk of the same memory reads.
 #[test]
 fn a_quiet_hour_reads_no_carried_province_and_equals_a_full_read() {
     let bytes = carry_fixture();
@@ -2125,10 +2061,6 @@ fn modifier_take(capture: &mut Capture, take: Option<u64>) {
     *capture.province_store.as_mut().unwrap().modifier_marks_mut().1 = take;
 }
 
-/// An hour whose modifier take returns the epoch the held bunker terms were
-/// read under, with the same country links and roster, keeps the fortified
-/// province's term and reads only the table and both country headers; a moved
-/// or refused take reads it again.
 #[test]
 fn a_certified_bunker_term_is_kept_until_its_modifier_take_moves() {
     let bytes = carry_fixture();
@@ -2159,14 +2091,11 @@ fn a_certified_bunker_term_is_kept_until_its_modifier_take_moves() {
         let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
         assert_eq!((counts.carried, counts.refreshed), (67, 1));
     }
-    // A refused take certifies nothing: the next hour reads the term again.
     modifier_take(&mut capture, Some(2));
     assert_eq!(carry_hour(&mut capture, &memory, TAKE).1.refreshed, 1);
     modifier_take(&mut capture, Some(2));
     assert_eq!(carry_hour(&mut capture, &memory, TAKE).1.refreshed, 0);
     assert_full_read(&capture, &memory, 67);
-    // A walk that fails before reading a province consumed the hour's marks:
-    // it holds nothing, and the next hour reads every province and term.
     let mut headless = bytes.clone();
     put(&mut headless, cgame_state::PROVINCES, &[0; 16]);
     mark(&mut capture, &[], &[90]);
@@ -2182,9 +2111,6 @@ fn a_certified_bunker_term_is_kept_until_its_modifier_take_moves() {
     assert_full_read(&capture, &memory, 67);
 }
 
-/// Marked provinces are read: directly, through the state their held row
-/// links (an owner change), through a reset state whose list no longer
-/// names them, and a province whose slot moved; the rest is carried.
 #[test]
 fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
     let mut bytes = carry_fixture();
@@ -2193,8 +2119,6 @@ fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
         carry_hour(&mut capture, &slice(&bytes), TAKE).0,
         Outcome::Rows { len: 67 }
     );
-    // Province 5's controller, state 90's owner, state 91 reset (its
-    // provinces unlinked) and province 4 moved with new victory points.
     put(
         &mut bytes,
         province_at(5) + CONTROLLER,
@@ -2219,14 +2143,11 @@ fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
     assert_eq!((capture.rows[29].state, capture.rows[29].owner), (0, 0));
     assert_eq!(capture.rows[3].victory_points, 12);
     assert_full_read(&capture, &memory, 67);
-    // The marks were consumed; the next hour carries the new rows.
     let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert_eq!((counts.read, counts.carried), (0, 67));
     assert_full_read(&capture, &memory, 67);
 }
 
-/// A province in a border conflict is read with its groups every hour, so
-/// a group that joins the border war unmarked is published at once.
 #[test]
 fn conflicted_provinces_and_their_groups_are_read_every_hour() {
     let mut memory = conflict_fixture();
@@ -2248,8 +2169,6 @@ fn conflicted_provinces_and_their_groups_are_read_every_hour() {
     assert_full_read(&capture, &memory, 3);
 }
 
-/// A walk that fails, or a take that refused or moved, holds nothing: the
-/// next hour reads every province.
 #[test]
 fn a_failed_walk_or_an_uncertified_take_holds_nothing() {
     let good = carry_fixture();
@@ -2257,7 +2176,6 @@ fn a_failed_walk_or_an_uncertified_take_holds_nothing() {
     let memory = slice(&good);
     let mut capture = carrying();
     carry_hour(&mut capture, &memory, TAKE);
-    // Province 10 marked and no longer a province: the walk fails.
     put(&mut bytes, province_at(10), &0_u64.to_le_bytes());
     mark(&mut capture, &[10], &[]);
     assert_eq!(
@@ -2269,26 +2187,21 @@ fn a_failed_walk_or_an_uncertified_take_holds_nothing() {
     assert!(!capture.province_store.as_ref().unwrap().holds());
     let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert!(counts.full && counts.read == 67);
-    // A refused take reads everything and holds nothing.
     let (_, counts) = carry_hour(&mut capture, &memory, None);
     assert!(counts.full);
     assert!(!capture.province_store.as_ref().unwrap().holds());
     let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert!(counts.full);
-    // A moved epoch reads everything and holds the new one.
     let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]));
     assert!(counts.full);
     let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]));
     assert_eq!(counts.carried, 67);
-    // A requested refresh reads everything once.
     capture.province_store.as_mut().unwrap().force_full = true;
     let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]));
     assert!(counts.full);
     assert_full_read(&capture, &memory, 67);
 }
 
-/// The area pointers of carried rows come from the store; the area step
-/// reads again those it compares, into the capture and the store.
 #[test]
 fn carried_rows_read_their_area_pointers_again_on_request() {
     let mut bytes = carry_fixture();
@@ -2307,13 +2220,10 @@ fn carried_rows_read_their_area_pointers_again_on_request() {
         .unwrap();
     assert_eq!(capture.areas[4].controller, 0x18000);
     assert_full_read(&capture, &memory, 67);
-    // The store holds the fresh pointers for the next carried hour.
     carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(capture.areas[4].controller, 0x18000);
 }
 
-/// The movement speed's province facts come from the authenticated province of
-/// the array slot with that id; the definition's land bit decides sea.
 #[test]
 fn movement_province_reads_state_controller_area_region_and_sea() {
     const BASE: usize = 0x1000;
@@ -2386,7 +2296,6 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
         .unwrap();
         assert_eq!(facts.strategic_region, Ok(0x5300));
     }
-    // An empty slot, or one past the array, refuses.
     assert_eq!(read(&bytes, 1), Err("movement province identity mismatch"));
     assert_eq!(
         read(&bytes, 3),
@@ -2398,9 +2307,6 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
 
 const MOVEMENT_BASE: usize = 0x1000;
 
-/// Provinces for the batched movement reader, across a batch boundary: every
-/// tenth id from 3 on is a hole, from 4 a wrong vtable, from 5 a wrong id and
-/// from 6 a null definition, and the last two ids lie past the array.
 fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
     const ARRAY: usize = 0x2000;
     const COUNT: u32 = 80;
@@ -2449,8 +2355,6 @@ fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
     (bytes, provinces, (0..COUNT).collect())
 }
 
-/// Faults every read covering `fault`, or only the first as a guard page
-/// does, and notes each byte read.
 struct MovementFaults<'a> {
     bytes: &'a [u8],
     fault: Option<usize>,
@@ -2508,8 +2412,6 @@ fn movement_alone(memory: &impl Memory, provinces: Array, ids: &[u32]) -> Moveme
         .collect()
 }
 
-/// Batched movement provinces equal one `movement_province` per id, with no
-/// fault and with a persistent fault at every byte either reader touches.
 #[test]
 fn batched_movement_provinces_equal_each_province_read_alone() {
     let (bytes, provinces, ids) = movement_world();
@@ -2553,8 +2455,6 @@ fn batched_movement_provinces_equal_each_province_read_alone() {
     }
 }
 
-/// A one-shot fault refuses nothing the per-province walk does not: each field
-/// is its fault-free value or the walk's own outcome under that same fault.
 #[test]
 fn batched_movement_provinces_one_shot_faults_refuse_no_more() {
     fn fields(outcome: MovementOutcome) -> Vec<[Result<u64, &'static str>; 5]> {

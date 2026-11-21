@@ -257,7 +257,6 @@ test('a stack without a total retains named percentages and signed extrema witho
 test('a dense stack draws a column only over the hours every part was recorded', () => {
   const part = (firstHour: number, lastHour: number, value: number) => stackSummary({ firstHour, lastHour, firstValue: value, lastValue: value,
     lastValueHour: lastHour, minHour: firstHour, minValue: value, maxHour: firstHour, maxValue: value, firstBreak: false, hasBreak: false });
-  // A recorded only at 0–9 and B only at 20–29: no hour of the column holds both.
   assert.deepEqual(summaryStack([part(0, 9, 10), part(20, 29, 5)]).model.hours, []);
   const overlap = summaryStack([part(0, 19, 10), part(10, 29, 5)]);
   const drawn = overlap.model.hours.filter((_, index) => overlap.model.bounds[index]);
@@ -382,7 +381,6 @@ test('a frame that cannot place a value draws that column as its placed dots, ne
 });
 
 test('a tooltip of bins\' values names the days the bins span, never one hour of them; one-hour bins name the hour\'s day', () => {
-  // A summary's extremes are known to its 6- or 96-hour bucket only: a bin's value is dated by the bin, not by an hour in it.
   const DAY = 24, from = 43_800_000 + 400 * DAY;
   const bin = (first: number, last: number): ChartBucket => ({ firstHour: first, lastHour: last, firstValue: 1, lastValue: 2, lastValueHour: first,
     minHour: first, minValue: 1, maxHour: first, maxValue: 2, firstBreak: false, hasBreak: false });
@@ -392,7 +390,6 @@ test('a tooltip of bins\' values names the days the bins span, never one hour of
   assert.equal(binAt(wide, from - 1), null);
   assert.equal(binsLabel(hovered, [binAt(wide, hovered)]), spanLabel(from + 96, from + 96 + 95));
   assert.notEqual(binsLabel(hovered, [binAt(wide, hovered)]), dayLabel(hovered));
-  // Lines cut to their own hours: the days of every line's bin, together.
   assert.equal(binsLabel(hovered, [bin(from + 100, from + 150), null, bin(from + 96, from + 120)]), spanLabel(from + 96, from + 150));
   assert.equal(binsLabel(hovered, [bin(hovered, hovered), null]), dayLabel(hovered));
   assert.equal(binsLabel(hovered, []), dayLabel(hovered));

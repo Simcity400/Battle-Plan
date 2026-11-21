@@ -1,4 +1,3 @@
-//! Immutable executable metadata, each table located by its content and verified on its own.
 
 pub mod auxiliary;
 pub mod commands;
@@ -22,38 +21,26 @@ use std::io;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-/// One build's tables. Each set is kept for the process's lifetime, so a view of it is
-/// `'static`; a process holds a set per build it has met, never more.
 pub type Tables = &'static ExecutableTables;
 
-/// Every set of tables this process has decoded or been given, one per build.
 static REGISTRY: Mutex<Vec<Tables>> = Mutex::new(Vec::new());
-/// The live installed game's tables, for a process that works on it alone (the collector, the
-/// recorder and its tools): read where no recording's tables are in scope.
 static PROCESS: OnceLock<Tables> = OnceLock::new();
 static TEST_INITIALIZATION: OnceLock<Result<Tables, String>> = OnceLock::new();
 
-/// The tables in scope on this thread: the recording's whose work this is ([`scope`]), or the
-/// installed game's in a process that works on it alone.
 pub fn current() -> Option<Tables> {
     job_priority::context()
         .and_then(|context| context.downcast_ref::<ExecutableTables>())
         .or_else(|| PROCESS.get().copied())
 }
 
-/// Runs `work` with `tables` in scope on this thread and every thread it starts with
-/// `job_priority`'s `JobPriority` or `Caller`; `None` leaves no recording's tables in scope.
 pub fn scope<T>(tables: Option<Tables>, work: impl FnOnce() -> T) -> T {
     job_priority::with_context(tables.map(|tables| tables as job_priority::Context), work)
 }
 
-/// Puts `tables` in scope on the calling thread from now on, for a tool that works on one
-/// recording alone.
 pub fn enter(tables: Option<Tables>) {
     job_priority::set_context(tables.map(|tables| tables as job_priority::Context));
 }
 
-/// A view of each build's tables, made once per build that is in scope when it is read.
 pub struct RuntimeTable<T: 'static> {
     views: Mutex<Vec<(usize, &'static Verified<T>)>>,
     initialize: fn() -> Verified<T>,
@@ -79,7 +66,6 @@ impl<T: Send + Sync + 'static> RuntimeTable<T> {
         let view = match found {
             Some(view) => view,
             None => {
-                // Made unlocked: a view may read others.
                 let made: &'static Verified<T> = Box::leak(Box::new((self.initialize)()));
                 let mut views = self.views.lock().unwrap_or_else(|error| error.into_inner());
                 match views.iter().find(|(tables, _)| *tables == key) {
@@ -95,8 +81,6 @@ impl<T: Send + Sync + 'static> RuntimeTable<T> {
     }
 }
 
-/// Reaching a withheld view stops its caller with the withheld reason, which the
-/// content and product boundaries report by name.
 impl<T: Send + Sync + 'static> std::ops::Deref for RuntimeTable<T> {
     type Target = T;
 
@@ -105,19 +89,16 @@ impl<T: Send + Sync + 'static> std::ops::Deref for RuntimeTable<T> {
     }
 }
 
-/// A table its caller cannot go on without; a withheld one stops the caller with its reason.
 pub fn required<'a, T>(table: Result<&'a T, &Withheld>) -> &'a T {
     table.unwrap_or_else(|withheld| panic!("{withheld}"))
 }
 
-/// One part of the published auxiliary tables, or why it or the tables are withheld.
 pub fn auxiliary_part<T>(
     select: impl FnOnce(&'static auxiliary::AuxiliaryTables) -> &'static Verified<T>,
 ) -> Result<&'static T, &'static Withheld> {
     select(get().auxiliary.as_ref()?).as_ref()
 }
 
-/// One field of a published table, as a view's initializer.
 pub fn view<T: 'static, U: ?Sized + 'static>(
     table: impl FnOnce(&'static ExecutableTables) -> &'static Verified<T>,
     field: impl FnOnce(&'static T) -> &'static U,
@@ -127,7 +108,6 @@ pub fn view<T: 'static, U: ?Sized + 'static>(
 
 pub struct ExecutableTables {
     identity: ExecutableIdentity,
-    /// The executable's own version text.
     pub version: Verified<String>,
     pub keywords: Verified<keywords::KeywordTables>,
     pub registries: Verified<registries::RegistryTables>,
@@ -147,12 +127,10 @@ impl ExecutableTables {
         self.identity.recognised()
     }
 
-    /// Plain-language warning when this release does not recognise the build.
     pub fn build_warning(&self) -> Option<String> {
         self.identity.warning(self.version.as_deref().ok())
     }
 
-    /// Every table, or part of one, that failed its own check.
     pub fn withheld(&self) -> impl Iterator<Item = &Withheld> {
         [
             self.version.as_ref().err(),
@@ -173,7 +151,6 @@ impl ExecutableTables {
         )
     }
 
-    /// Each table's build-independent content digest, or why it is withheld.
     pub fn content_digests(&self) -> [(&'static str, Verified<[u8; 32]>); 7] {
         fn digest<T>(table: &Verified<T>, of: fn(&T) -> [u8; 32]) -> Verified<[u8; 32]> {
             table.as_ref().map(of).map_err(Clone::clone)
@@ -189,7 +166,6 @@ impl ExecutableTables {
         ]
     }
 
-    /// The build warning followed by each withheld table, for display.
     pub fn warnings(&self) -> Vec<String> {
         self.build_warning()
             .into_iter()
@@ -198,15 +174,10 @@ impl ExecutableTables {
     }
 }
 
-/// Reads the installation a process works on alone (the collector, the recorder and its tools)
-/// and makes its tables the process's ([`current`]); each table that fails is withheld by name.
-/// Only an unreadable executable is an error. Playback never calls it: a recording's tables are
-/// its own ([`initialize_recorded`]).
 pub fn initialize(game_dir: &Path) -> io::Result<Tables> {
     initialize_from(&game_dir.join("hoi4.exe"), game_dir)
 }
 
-/// Uses the directory containing the selected executable for shipped documentation.
 pub fn initialize_executable(exe_path: &Path) -> io::Result<Tables> {
     let game_dir = exe_path.parent().ok_or_else(|| {
         io::Error::new(
@@ -233,7 +204,6 @@ fn initialize_from(exe_path: &Path, game_dir: &Path) -> io::Result<Tables> {
     Ok(*PROCESS.get_or_init(|| tables))
 }
 
-/// `tables` kept for the process, or the same build's set kept before.
 fn register(tables: ExecutableTables) -> Tables {
     let mut registry = REGISTRY.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(kept) = registry.iter().find(|kept| {
@@ -254,7 +224,6 @@ const NUMERIC: &str = "numeric property table";
 const COMMANDS: &str = "player command table";
 const FOLDING: &str = "diacritic folding table";
 
-/// Decodes every table from one executable; tables without a shared input run in parallel.
 pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> ExecutableTables {
     let image = PeImage::parse(bytes).map_err(|error| Withheld::new("executable image", error));
     let Ok(image) = &image else {
@@ -290,8 +259,6 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
                         auxiliary::AuxiliaryTables::decode(image, keywords)
                     })
                 });
-                // Consumers match recognised-build identities and token ids, so every identity
-                // must have its counterpart and the keyword ids must be the pinned ones.
                 let registries = table(REGISTRIES, || {
                     keywords.fixed_ids()?;
                     let registries = registries::RegistryTables::decode(image, keywords)?;
@@ -323,14 +290,12 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
     })
 }
 
-/// The source of the registries' recognised-build identity table, from the recognised build.
 pub fn registry_identities_source(bytes: Vec<u8>) -> io::Result<String> {
     let image = PeImage::parse(bytes)?;
     let keywords = keywords::KeywordTables::decode(&image)?;
     registries::pinned_source(&image, &keywords)
 }
 
-/// A decoder's result; a panic on an unexpected image withholds its table like any failure.
 fn table<T>(name: &'static str, decode: impl FnOnce() -> io::Result<T>) -> Verified<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) {
         Ok(result) => result.map_err(|error| Withheld::new(name, error)),
@@ -349,8 +314,6 @@ fn stopped(name: &'static str) -> Withheld {
     Withheld::new(name, "its decoder stopped on an unexpected image")
 }
 
-/// The tables in scope ([`current`]). With none in scope every table is withheld for that reason,
-/// so the work reaching them is refused by name as for a recording that carries none.
 pub fn get() -> Tables {
     current().unwrap_or_else(|| {
         debug_assert!(false, "no recording's tables are in scope for this work");
@@ -358,7 +321,6 @@ pub fn get() -> Tables {
     })
 }
 
-/// Every table withheld because no recording's tables are in scope.
 fn unscoped() -> Tables {
     static UNSCOPED: OnceLock<ExecutableTables> = OnceLock::new();
     UNSCOPED.get_or_init(|| {
@@ -383,16 +345,12 @@ pub fn is_initialized() -> bool {
     current().is_some()
 }
 
-/// The tables in scope as a recording carries them, so its playback reads no installed
-/// executable ([`recorded`]).
 pub fn recorded_facts() -> Result<Vec<u8>, String> {
     current()
         .map(recorded::encode)
         .ok_or_else(|| "the game's executable tables were not loaded".to_owned())
 }
 
-/// [`recorded_facts`] of the executable at `path` and its installation's documentation, which
-/// must be the executable whose SHA-256 is `recorded`; decoded apart from every kept set.
 pub fn recorded_facts_from(path: &Path, recorded: [u8; 32]) -> Result<Vec<u8>, String> {
     let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let identity = ExecutableIdentity::of(&bytes);
@@ -406,9 +364,6 @@ pub fn recorded_facts_from(path: &Path, recorded: [u8; 32]) -> Result<Vec<u8>, S
     Ok(recorded::encode(&decode(identity, bytes, game_dir)))
 }
 
-/// The installed game's tables, for reading what that game reads now (the user's own
-/// `settings.txt`), never a recording: kept with every other build's, the executable read again
-/// only once its size or last write changes, and never made the process's.
 pub fn installed(game_dir: &Path) -> io::Result<Tables> {
     type Stamp = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
     static READ: Mutex<Vec<(Stamp, Tables)>> = Mutex::new(Vec::new());
@@ -426,8 +381,6 @@ pub fn installed(game_dir: &Path) -> io::Result<Tables> {
     Ok(tables)
 }
 
-/// `work` with the tables in scope, or with none the installed game's at `game_dir`
-/// ([`installed`]): what that game reads now, read outside any recording's work.
 pub fn or_installed<T>(game_dir: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     if current().is_some() {
         return work();
@@ -441,8 +394,6 @@ pub fn or_installed<T>(game_dir: &Path, work: impl FnOnce() -> io::Result<T>) ->
     scope(Some(tables), work)
 }
 
-/// The tables a recording carries, kept with every other build's: work on that recording reads
-/// them in its [`scope`].
 pub fn initialize_recorded(bytes: &[u8]) -> io::Result<Tables> {
     static DECODED: Mutex<Vec<([u8; 32], Tables)>> = Mutex::new(Vec::new());
     let digest: [u8; 32] = Sha256::digest(bytes).into();
@@ -455,7 +406,6 @@ pub fn initialize_recorded(bytes: &[u8]) -> io::Result<Tables> {
     Ok(tables)
 }
 
-/// The published keyword table, or why it is withheld.
 pub fn keywords() -> io::Result<&'static keywords::KeywordTables> {
     get().keywords.as_ref().map_err(io::Error::from)
 }
@@ -480,12 +430,10 @@ pub fn commands() -> io::Result<&'static commands::CommandTables> {
     get().commands.as_ref().map_err(io::Error::from)
 }
 
-/// The find box's code point to ASCII character folding, or why it is withheld.
 pub fn folding() -> io::Result<&'static folding::FoldingTable> {
     get().folding.as_ref().map_err(io::Error::from)
 }
 
-/// Explicit installation opt-in for dependent crate tests, which need every table.
 pub fn initialize_for_tests() -> io::Result<Tables> {
     let game_dir = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).ok_or_else(|| {
         io::Error::new(
@@ -505,7 +453,6 @@ pub fn initialize_for_tests() -> io::Result<Tables> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Runtime names remain valid for the process lifetime of the published tables.
 pub fn leak_string(value: impl Into<String>) -> &'static str {
     Box::leak(value.into().into_boxed_str())
 }
@@ -592,7 +539,6 @@ mod runtime_table_tests {
     use super::RuntimeTable;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // A view is kept per recording's tables, so each test works inside one scope.
     fn in_scope(work: impl FnOnce()) {
         super::scope(Some(super::unscoped()), work);
     }

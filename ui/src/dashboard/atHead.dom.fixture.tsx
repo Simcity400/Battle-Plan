@@ -1,5 +1,3 @@
-/** The widgets that read the hour at the head, mounted in a real browser on a playing clock: what renders and
- * what is asked of the service while the hour moves. */
 import { Profiler } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -20,7 +18,6 @@ import { useCountriesAt } from './useCountriesAt.ts';
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 async function settle() { for (let i = 0; i < 6; i++) await frame(); }
 
-/** Hours at which the faction is renamed and Germany's identity changes. */
 const RENAMED = 5000;
 const LAST = 100_000;
 
@@ -38,7 +35,6 @@ const GROUPS = { branchId: '1', warnings: [], humans: [], wars: [], warStarts: [
 const FACTS = { branchId: '1', known: [[0, LAST]], names: ['Germany', 'German Reich'], reasons: [], flags: [], warnings: [],
   countries: [{ tag: 'GER', runs: [[0, 0, 0x336699, -1, -1], [RENAMED, 1, 0x336699, -1, -1]] }] };
 
-/** GER is slot 0 throughout; the catalogue names it as at hour 0. */
 const IDENTITIES = { branchId: '1', countries: [{ tag: 'GER', identities: [{ firstHour: 0, lastHour: LAST, slot: 0, countryId: 0 }], unresolved: [] }] };
 
 const client = {
@@ -77,7 +73,6 @@ function Fallback({ on }: { on: boolean }) {
 const host = document.body.appendChild(document.createElement('div'));
 const root = createRoot(host);
 
-/** A lane timeline's names as `useCountriesAt` gives them, its caller holding the hour its lanes last changed at. */
 function Lanes({ held }: { held: number }) {
   const { country } = useCountriesAt(client, track, ['GER'], held, true, ['GER'], undefined, undefined, { clock, on: true, hour: sameHour });
   return <span data-lanes>{country('GER').name}</span>;
@@ -90,7 +85,6 @@ const bySlot = { ...faction, id: 'by-slot', countries: { kind: 'selected' } } as
 const countryHost = document.body.appendChild(document.createElement('div'));
 const countryRoot = createRoot(countryHost);
 
-/** A strip of its own on a clock in the game's calendar (from January 1936), for its date picker. */
 const JANUARY_1936 = 1936 * 12;
 const calendarClock = new PlaybackController();
 const calendarFirst = firstHourOfMonth(JANUARY_1936), calendarLast = firstHourOfMonth(JANUARY_1936 + 120);
@@ -102,7 +96,6 @@ const popover = () => document.querySelector('.date-time-popover:popover-open');
 const button = (selector: string) => { const found = document.querySelector<HTMLButtonElement>(selector); if (!found) throw new Error(`no ${selector}`); return found; };
 
 export const fixture = {
-  /** Every caller mounted at `hour`, paused, with the country timeline read. */
   async mount(hour: number) {
     askTimeline(client, { sourceId: 'lease', revision: 'r1', branchId: '1', content: 0 }, source, hour);
     clock.seek(hour);
@@ -118,8 +111,6 @@ export const fixture = {
     </>);
     await settle();
   },
-  /** Plays at `speed` for `frames` frames, then pauses: the frames whose hour changed, the renders and requests
-   * between the first and last of them, and each hour-changing frame's painted date. */
   async play(speed: number, frames: number) {
     clock.setSpeed(speed);
     clock.setPlaying(true);
@@ -143,15 +134,12 @@ export const fixture = {
     return { changes, from, to, elapsed, renders: during, requests, dates: new Set(dates).size,
       chip: document.querySelector('.dash-widget-country')?.textContent ?? '', identity: document.querySelector('[data-identity="1"]')?.textContent ?? '' };
   },
-  /** One seek while paused: the renders it caused. */
   async seek(hour: number) {
     const before = { ...renders };
     clock.seek(hour);
     await settle();
     return Object.fromEntries(Object.keys(renders).map(id => [id, (renders[id] ?? 0) - (before[id] ?? 0)]));
   },
-  /** A widget header chip for GER picked by tag, one for the dashboard country chosen by slot, and a lane timeline's
-   * names held at hour `held`. */
   async mountCountries(held: number) {
     countryRoot.render(<>
       <span data-chip="tag">{counted('tagChip', <CountryChip widget={byTag} runtime={runtime} active />)}</span>
@@ -163,20 +151,17 @@ export const fixture = {
   countries: () => ({ tag: document.querySelector('[data-chip="tag"] .dash-widget-country')?.textContent ?? '',
     slot: document.querySelector('[data-chip="slot"] .dash-widget-country')?.textContent ?? '',
     lanes: document.querySelector('[data-lanes]')?.textContent ?? '' }),
-  /** The calendar's strip mounted at the first hour of the month `month` months after January 1936, paused. */
   async mountCalendar(month: number) {
     calendarClock.seek(firstHourOfMonth(JANUARY_1936 + month));
     calendarRoot.render(counted('calendar', <PlaybackStrip clock={calendarClock} tracks={[calendarTrack]} alignment="calendar" defaultRoleId="calendar" />));
     await settle();
   },
-  /** Opens or closes the date picker. */
   async toggleCalendar() {
     const trigger = calendarHost.querySelector<HTMLButtonElement>('.header-date .date-time-trigger');
     if (!trigger) throw new Error('no date picker');
     trigger.click();
     await settle();
   },
-  /** What the open calendar shows, and the clock's head: each as month, day and time. */
   calendar() {
     const body = popover();
     const selected = body?.querySelectorAll('[role="gridcell"][aria-selected="true"]') ?? [];
@@ -186,8 +171,6 @@ export const fixture = {
       time: body?.querySelector('.calendar-time .select-trigger > span')?.textContent ?? '',
       head: { month: `${monthNames[date.month - 1]} ${date.year}`, day: date.day, hour: date.hour } };
   },
-  /** Plays the calendar's clock at `speed` for `frames` frames, then pauses: the calendar renders, the hours, and each
-   * hour-changing frame's highlighted day against the head's. */
   async playCalendar(speed: number, frames: number) {
     calendarClock.setSpeed(speed);
     calendarClock.setPlaying(true);
@@ -208,14 +191,12 @@ export const fixture = {
     await settle();
     return { renders: during, changes: seen.length, from: gameDate(from), to: gameDate(to), seen };
   },
-  /** Starts the calendar's clock and leaves it playing for `frames` frames; `pauseCalendar` stops it. */
   async startCalendar(speed: number, frames: number) {
     calendarClock.setSpeed(speed);
     calendarClock.setPlaying(true);
     for (let at = 0; at < frames; at++) await frame();
   },
   async pauseCalendar() { calendarClock.setPlaying(false); await settle(); },
-  /** The user pages to the next month, or picks a day. */
   async nextMonth() { button('.date-time-popover:popover-open [aria-label="Next month"]').click(); await settle(); },
   async pickDay(day: number) { button(`.date-time-popover:popover-open [data-day="${day}"]`).click(); await settle(); },
 };

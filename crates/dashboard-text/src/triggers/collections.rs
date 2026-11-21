@@ -1,4 +1,3 @@
-//! Collection representative selection uses the shared evaluator.
 use super::{Evaluator, Scope, Scopes};
 use crate::triggers::Failure;
 use installed_content_core::{
@@ -8,8 +7,6 @@ use installed_content_core::{
 use replay_data::rows::{TableSchema, tables};
 
 impl Evaluator<'_, '_> {
-    /// A collection effect's representative is the first terminal
-    /// scope, in source/operator order.
     pub(crate) fn collection_representative(
         &self,
         collection: &Collection,
@@ -27,9 +24,9 @@ impl Evaluator<'_, '_> {
                 _ => return Err("game:scope collection object is not supported".into()),
             },
             Input::Countries { possible } => {
-                let slots = world.country_slots()?; // Physical country-array order.
+                let slots = world.country_slots()?;
                 if *possible && !slots.contains(&0) {
-                    source.push(Scope::Country(0)); // The native possible-country vector includes its null slot.
+                    source.push(Scope::Country(0));
                 }
                 for slot in slots {
                     if *possible || world.exists(slot)? {
@@ -38,7 +35,6 @@ impl Evaluator<'_, '_> {
                 }
             }
             Input::States => {
-                // State-array order, skips index zero.
                 source.extend(
                     world
                         .state_ids()?
@@ -62,7 +58,6 @@ impl Evaluator<'_, '_> {
                             .unwrap_or(0)
                     };
                     let state = |id: i32| {
-                        // Completeness is checked whatever the id, as before.
                         let present = world.state_exists(id as u32)?;
                         if id > 0 && present {
                             Ok::<_, Failure>(Scope::State(id as u32))
@@ -94,8 +89,6 @@ impl Evaluator<'_, '_> {
             }
         }
         let mut representative = None;
-        // The native top-level source loop continues after the first result;
-        // the output slot is written only once.
         for target in source {
             let selected = self.collection_path(caller, target, &collection.operators)?;
             if representative.is_none() {
@@ -123,7 +116,6 @@ impl Evaluator<'_, '_> {
             };
         }
         let Scope::Country(country) = target else {
-            // Country operators log and return false on a state.
             return Ok(None);
         };
         let world = self.world();
@@ -157,7 +149,7 @@ impl Evaluator<'_, '_> {
                         rows.push((row.ordinal, row.country));
                     }
                 }
-                rows.sort_by_key(|row| row.0); // Stored faction-member order.
+                rows.sort_by_key(|row| row.0);
                 for (_, country) in rows {
                     targets.push(Scope::Country(slot(country)?));
                 }
@@ -174,7 +166,6 @@ impl Evaluator<'_, '_> {
                 }
             }
             Operator::CountryAndSubjects => {
-                // Try the country before even reading its subjects.
                 let intermediate = self.collection_scope(caller, target, false)?;
                 if let Some(found) = self.collection_path(intermediate, target, tail)? {
                     return Ok(Some(found));
@@ -192,7 +183,7 @@ impl Evaluator<'_, '_> {
                         )
                     })?
                 {
-                    targets.push(Scope::Country(if raw == 0 { 0 } else { slot(raw as u32)? })); // Stored subject references.
+                    targets.push(Scope::Country(if raw == 0 { 0 } else { slot(raw as u32)? }));
                 }
             }
             Operator::Limit(_) => unreachable!(),
@@ -200,7 +191,7 @@ impl Evaluator<'_, '_> {
         for next in targets {
             let intermediate = self.collection_scope(caller, target, false)?;
             if let Some(found) = self.collection_path(intermediate, next, tail)? {
-                return Ok(Some(found)); // Stop at the first successful path.
+                return Ok(Some(found));
             }
         }
         Ok(None)

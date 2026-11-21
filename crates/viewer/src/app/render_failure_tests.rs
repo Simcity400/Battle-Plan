@@ -1,4 +1,3 @@
-//! Actual viewer draw/capture failure presentation, using a synthetic Scene fixture.
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
 use viewer_foundation::map::camera::Placement;
@@ -96,14 +95,9 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
     });
 }
 
-/// A shown document whose content names an undeclared distant battle effect
-/// silences every battle, and the drawn map's warnings name why. The map
-/// draws its document while the viewer holds it apart, so the warning must
-/// come from the drawn document.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()> {
-    // No device opens; the owner still claims the audio.
     viewer_audio::System::silent();
     let mut fixture = Fixture::load("viewer-battle-silence")?;
     let content = viewer_audio::Content::new(Default::default(), None).with_battles(
@@ -188,7 +182,6 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     )?;
     let mut viewer = Viewer::create(
         Config::default(),
-        // The injected post-chain failure is reachable only with colour grading enabled.
         Options {
             postfx: true,
             ..Options::default()
@@ -269,8 +262,6 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     assert_eq!(state.hour, Some(target.hour));
     assert_eq!(state.sequence, state.requested_sequence);
 
-    // Recover to the real decided hour, then refuse an unwritable output in the
-    // existing capture path. A rendered frame is not an export success.
     target.hour = fixture.input.hour;
     target.sequence += 1;
     target.seek_sequence = Some(target.sequence);
@@ -297,9 +288,6 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     Ok(())
 }
 
-/// A map retired (as a resize past the resource budget does, freeing its window texture) and
-/// shown again on a new scene registers that scene's target, though the new scene's first target
-/// has the generation the freed one had.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
@@ -349,7 +337,6 @@ fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
         "{:?}",
         viewer.map_state(&target)
     );
-    // The new scene reached the freed target's generation and still registered its own.
     assert_eq!(viewer.scene.as_ref().unwrap().generation(), shown);
     assert!(viewer.scene_target.texture.is_some());
     Ok(())

@@ -1,8 +1,3 @@
-//! CLoopHistory layout and air-statistics channel schema.
-//!
-//! The 24 named channels are a subset of the 89-field history record.
-//! Values remain signed i64; display divisors do not justify narrowing or
-//! rounding recorded values.
 
 use crate::{
     Memory,
@@ -14,7 +9,6 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// One region-table slot pointer, gathered for a whole batch of slots.
 const SLOT_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -23,33 +17,21 @@ const SLOT_FIELD: [RecordField; 1] = [RecordField {
 const SLOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SLOT_FIELD, 8).expect("valid record layout");
 
-/// CLoopHistory primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a4_c388);
-/// Embedded history queue, followed by its three window pointers.
 pub const QUEUE: usize = 0x08;
-/// CLoopHistory daily window pointer.
 pub const DAILY_WINDOW: usize = 0x10;
-/// Records in the daily window.
 pub use engine_executable::native_values::air_history::DAILY_WINDOW_CAPACITY;
-/// The third history window advances when the twelve-record second window wraps.
 pub const WINDOW: usize = 0x20;
-/// History self-reference pointer, required to equal its object.
 pub const SELF_REFERENCE: usize = 0x28;
-/// History roll-up mode, signed i32: zero sums wrapped records,
-/// one keeps the latest record.
 pub const ROLL_UP: usize = 0x30;
-/// History field-count u32; air schema requires 89 fields.
 pub const FIELD_COUNT: usize = 0x34;
 
-/// A country's current annual-ring air-statistics bucket in one air region.
-/// This ring advances after twelve thirty-day buckets, not calendar years.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
     pub region: u32,
     pub year_slot: u32,
     pub year_window_wrapped: u8,
-    /// Native i64 values, in `air_stats::CHANNELS` order, without display scaling.
     pub channels: [i64; 24],
 }
 
@@ -63,10 +45,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads every allocated region's current annual-ring bucket for each country.
-/// An unallocated country air manager, history table or region slot is absent.
-/// A malformed allocated object makes the table unavailable. Capacity bounds
-/// row storage; remaining allocated histories are counted without field reads.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -102,9 +80,6 @@ fn walk_inner(
 ) -> Result<(usize, u32), &'static str> {
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
-    // The region-indexed history table is a contiguous pointer vector. One
-    // guarded round per batch replaces one read per region slot; each slot is
-    // still decoded in order, and the first unreadable slot keeps its position.
     const BATCH: usize = 64;
     let mut slots = [0_usize; BATCH];
     let mut slot_bytes = [0_u8; BATCH * 8];
@@ -181,8 +156,6 @@ fn read_current(
     let capacity = field::<u32>(memory, window, loop_history_window::CAPACITY)?;
     let year_slot = field::<u32>(memory, window, loop_history_window::CURRENT_SLOT)?;
     let year_window_wrapped = field::<u8>(memory, window, loop_history_window::WRAPPED)?;
-    // Existing air histories remain intact. The original signed ring
-    // capacity supplies its bound, without a five-slot gate.
     if capacity as i32 <= 0
         || records.count != capacity
         || year_slot >= capacity
@@ -216,8 +189,6 @@ fn read_current(
     })
 }
 
-/// Nine exact contiguous spans cover the 24 recorded channels. One guarded
-/// scatter copy avoids 24 SEH entries while leaving all other channels unread.
 fn read_channels(memory: &impl Memory, values: Array) -> Result<[i64; 24], &'static str> {
     let mut head = [0_u8; 32];
     let mut bombers = [0_u8; 8];
@@ -317,65 +288,36 @@ fn array(
         .ok_or("air history array unreadable or invalid")
 }
 
-/// Air-statistics semantics attached to a history instance.
 pub mod air_stats {
-    /// Air-statistics field count 89.
     pub use engine_executable::native_values::air_history::FIELD_COUNT;
-    /// Non-building air-statistics display divisor.
     pub const DISPLAY_DIVISOR: i64 = 100_000;
-    /// Building-bombing display divisor for fields zero and 41.
     pub const BUILDINGS_BOMBED_DISPLAY_DIVISOR: i64 = 1_000;
 
-    /// CLoopHistory air field 0, our buildings bombed.
     pub const OUR_BUILDINGS_BOMBED: usize = 0;
-    /// CLoopHistory air field 1, our troops bombed.
     pub const OUR_TROOPS_BOMBED: usize = 1;
-    /// CLoopHistory air field 2, our ships bombed.
     pub const OUR_SHIPS_BOMBED: usize = 2;
-    /// CLoopHistory air field 3, our fighters lost.
     pub const OUR_FIGHTERS_LOST: usize = 3;
-    /// CLoopHistory air field 10, our bombers lost.
     pub const OUR_BOMBERS_LOST: usize = 10;
-    /// Air history field 17: friendly close-air-support aircraft lost.
     pub const OUR_CAS_LOST: usize = 17;
-    /// CLoopHistory air field 24, our transports lost.
     pub const OUR_TRANSPORTS_LOST: usize = 24;
-    /// CLoopHistory air field 36, our trains lost.
     pub const OUR_TRAINS_LOST: usize = 36;
-    /// CLoopHistory air field 37, our trucks lost.
     pub const OUR_TRUCKS_LOST: usize = 37;
-    /// CLoopHistory air field 38, our railway guns lost.
     pub const OUR_RAILWAY_GUNS_LOST: usize = 38;
-    /// CLoopHistory air field 39, our bombers disrupted.
     pub const OUR_BOMBERS_DISRUPTED: usize = 39;
-    /// CLoopHistory air field 40, our missiles lost.
     pub const OUR_MISSILES_LOST: usize = 40;
-    /// CLoopHistory air field 41, enemy buildings bombed.
     pub const ENEMY_BUILDINGS_BOMBED: usize = 41;
-    /// CLoopHistory air field 42, enemy troops bombed.
     pub const ENEMY_TROOPS_BOMBED: usize = 42;
-    /// CLoopHistory air field 43, enemy ships sunk.
     pub const ENEMY_SHIPS_SUNK: usize = 43;
-    /// CLoopHistory air field 44, enemy fighters lost.
     pub const ENEMY_FIGHTERS_LOST: usize = 44;
-    /// CLoopHistory air field 51, enemy bombers lost.
     pub const ENEMY_BOMBERS_LOST: usize = 51;
-    /// Air history field 58: enemy close-air-support aircraft lost.
     pub const ENEMY_CAS_LOST: usize = 58;
-    /// CLoopHistory air field 65, enemy transports lost.
     pub const ENEMY_TRANSPORTS_LOST: usize = 65;
-    /// CLoopHistory air field 77, enemy trains lost.
     pub const ENEMY_TRAINS_LOST: usize = 77;
-    /// CLoopHistory air field 78, enemy trucks lost.
     pub const ENEMY_TRUCKS_LOST: usize = 78;
-    /// CLoopHistory air field 79, enemy railway guns lost.
     pub const ENEMY_RAILWAY_GUNS_LOST: usize = 79;
-    /// CLoopHistory air field 80, enemy bombers disrupted.
     pub const ENEMY_BOMBERS_DISRUPTED: usize = 80;
-    /// CLoopHistory air field 81, enemy missiles lost.
     pub const ENEMY_MISSILES_LOST: usize = 81;
 
-    /// Stored air-history channel ordering.
     pub const CHANNELS: [usize; 24] = [
         OUR_BUILDINGS_BOMBED,
         OUR_TROOPS_BOMBED,
@@ -506,7 +448,6 @@ mod tests {
         let mut f = Fixture::new();
         f.bytes(VALUES, &i64::MIN.to_le_bytes());
         f.bytes(VALUES + 81 * 8, &i64::MAX.to_le_bytes());
-        // An unrecorded channel need not be readable.
         f.0.remove(&(VALUES + 4 * 8));
         let mut output = vec![Row::default(); 2];
         assert_eq!(walk(&f, BASE, GAME, &mut output), Outcome::Rows { len: 1 });
@@ -530,9 +471,6 @@ mod tests {
         }
     }
 
-    /// The region-indexed slots are gathered per batch. An unreadable slot in
-    /// the middle of that batch must keep its own reason and stop the walk
-    /// there, rather than skipping to the live slot staged after it.
     #[test]
     fn a_mid_batch_history_slot_fault_keeps_its_reason_and_stops_the_walk() {
         let mut f = Fixture::new();

@@ -1,5 +1,3 @@
-//! CAirBase is shared by state and host bases.
-//! Country-indexed containers differ from the dense registration list.
 
 use crate::{
     Memory, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,
@@ -25,8 +23,6 @@ pub use carrier_capture::{
 pub use reuse::{HeldBase, RegistrationReuse, WalkedBase};
 pub use state_summary::{state_country_order, state_country_order_demand};
 
-/// Metadata-only projection of one accepted registered pool. The caller supplies
-/// this pass's copied pool header; no wing, fuel getter or UI state is read.
 #[allow(clippy::too_many_arguments)]
 pub fn state_pool_inputs<M: Memory>(
     memory: &M,
@@ -60,9 +56,6 @@ pub fn state_pool_inputs<M: Memory>(
     })
 }
 
-/// Off-thread host-name storage hint for one independently authenticated base
-/// row. A fresh reference resolver is scoped to this hint only; capture must
-/// read/authenticate its own source again and never substitute these bytes.
 pub fn carrier_host_name_demand(
     memory: &impl Memory,
     image: usize,
@@ -72,43 +65,24 @@ pub fn carrier_host_name_demand(
     carrier::host_name_demand(memory, image, source, &mut resolver)
 }
 
-/// Air-base vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_50a0);
-/// Air-base allocation size.
 pub const SIZE: usize = 0x90;
-/// Reference type value checked against the low handle word.
 pub const TYPE: u32 = 65;
-/// Full handle containing u32 type and id.
 pub const HANDLE: usize = 0x08;
-/// Direct incoming-wing pointer vector, with append and swap-remove order.
 pub const INCOMING_WINGS: usize = 0x18;
-/// Country-ordinal container-pointer vector; a nonnull slot grants access.
 pub const COUNTRY_CONTAINERS: usize = 0x30;
-/// Country-container count, u32, bounding resolved ordinals.
 pub const COUNTRY_CONTAINERS_COUNT: usize = 0x3c;
-/// Dense registered-container vector data, appended on creation.
 pub const REGISTERED_CONTAINERS: usize = 0x48;
-/// CAirBase host paired-u32 reference, including carrier CShip handle; AddCarrierAirBase writes it per RE_NON_STATE_AIR_BASE.
 pub const HOST_REFERENCE: usize = 0x60;
-/// CState pointer, null for host bases.
 pub const STATE: usize = 0x68;
-/// Province pointer or null; do not invent host locations.
 pub const PROVINCE: usize = 0x70;
-/// Capacity, i32, used by signed division.
 pub const CAPACITY: usize = 0x78;
-/// Signed base kind, i32, set by construction; dispatch branches on zero, one and two.
 pub const KIND: usize = 0x7c;
-/// Container allocation and indexing path.
 pub const CREATE_COUNTRY_CONTAINER_RVA: Rva = Rva(0x00ca_8ca0);
-/// Pool registration resolving the owner ordinal and appending to its container.
 pub const REGISTER_POOL_RVA: Rva = Rva(0x00ca_9250);
-/// Pool erasure scanning the country's registered vector.
 pub const ERASE_POOL_RVA: Rva = Rva(0x00cc_0700);
-/// Pool batch width for the stored wing vector.
 const BATCH: usize = 64;
-/// Wing identity span.
 const WING_RECORD_BYTES: usize = 40;
-/// Exactly the identity span the registration rows need from one wing.
 const WING_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -123,9 +97,7 @@ const WING_FIELDS: [RecordField; 2] = [
 ];
 const WING_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&WING_FIELDS, WING_RECORD_BYTES).expect("valid record layout");
-/// Pool spans containing the primary vtable and wing-vector controls.
 const POOL_RECORD_BYTES: usize = 24;
-/// Exactly the vtable and wing-vector header the registration walk needs from one pool.
 const POOL_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -140,8 +112,6 @@ const POOL_FIELDS: [RecordField; 2] = [
 ];
 const POOL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POOL_FIELDS, POOL_RECORD_BYTES).expect("valid record layout");
-/// One country-container slot pointer. State and host constructors size
-/// this vector to the full country-slot count; read it in strided chunks.
 const CONTAINER_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
@@ -150,32 +120,19 @@ const CONTAINER_FIELD: [RecordField; 1] = [RecordField {
 const CONTAINER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&CONTAINER_FIELD, 8).expect("valid record layout");
 
-/// Containers a base's dense list may name for the walk to read only their
-/// slot words ([`dense_plan`]); a longer list takes the full slot scan. A
-/// bound on this shortcut only, never on what a walk records.
 pub const DENSE_BOUND: usize = 64;
 
-/// Why a base takes the full slot scan instead of its dense list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum DenseRefusal {
-    /// The dense header (`REGISTERED_CONTAINERS`) or its entries did not read or are invalid.
     Header = 0,
-    /// The list names more containers than the slot vector has slots.
     LongerThanSlots = 1,
-    /// More than [`DENSE_BOUND`] listed containers.
     OverBound = 2,
-    /// A null entry, or a container listed twice.
     Entry = 3,
-    /// A listed container's identity or span did not read or authenticate.
     Container = 4,
-    /// A listed container's country names no country slot.
     Country = 5,
-    /// A listed container's slot lies beyond the slot vector.
     SlotRange = 6,
-    /// Two listed containers name one slot.
     SharedSlot = 7,
-    /// A listed container is not at the slot its country names.
     Stale = 8,
 }
 
@@ -208,32 +165,17 @@ impl DenseRefusal {
     }
 }
 
-/// One listed container and the `COUNTRY_CONTAINERS` slot it occupies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DenseEntry {
     pub slot: u32,
     pub container: usize,
 }
 
-/// How the registration walk finds each base's occupied container slots.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SlotMode {
-    /// Read only the slot words a base's dense list names ([`dense_plan`]);
-    /// a base whose list does not prove its slots reads every chunk.
     pub dense: bool,
 }
 
-/// The occupied slots of one base's country-container vector from its dense registered-container
-/// list, sorted by slot, when the list proves them; every other slot is then null.
-///
-/// At run time only container creation (which stores the new container at its country's canonical
-/// slot and appends it to `REGISTERED_CONTAINERS`) and country-access removal (which nulls the slot
-/// and erases every occurrence from `REGISTERED_CONTAINERS`) write the slots; the save reader
-/// rebuilds both. So the listed containers are the occupied slots, each at the slot its own country
-/// reference names in the country link table. Each listed container's identity and span are the
-/// exact reads the slot loop makes, its slot comes from that link entry, and its slot word must
-/// hold it. Any other result refuses, and the base takes the full scan, whose outcome and reasons
-/// are the original walk's.
 pub fn dense_plan(
     memory: &impl Memory,
     image: usize,
@@ -283,8 +225,6 @@ pub fn dense_plan(
             return Err(Refusal::Container);
         }
         let country = u32::from_le_bytes(span[..4].try_into().unwrap());
-        // Container creation files a zero id at slot zero and any other id at
-        // its link entry, which is zero for an id not yet linked.
         let slot = if country == 0 {
             0
         } else {
@@ -318,14 +258,11 @@ pub fn dense_plan(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native reference, without pointer-derived generations.
     pub id: u64,
     pub state: Option<u32>,
     pub province: Option<u32>,
-    /// Native reference bytes, including the shared null reference.
     pub host: u64,
     pub capacity: i32,
-    /// Zero is the ordinary aircraft base. Preserve other native kinds.
     pub kind: i32,
 }
 
@@ -333,11 +270,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads all three state-indexed kinds and stateless base membership once. State slots may be
-/// null; the stateless vector is dense and its nulls are failures. Occupancy is
-/// derived from the captured wing roster, and building levels from Buildings,
-/// so neither source is walked again here. Duplicate handles are checked after
-/// capture. Capacity omits whole rows and counts every remaining nonnull slot.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -386,7 +318,6 @@ pub fn walk_buffer(
                     }
                     return Err("stateless air base roster contains null base");
                 }
-                // Carrier-base creation inserts into the stateless vector.
                 output.ensure(len.checked_add(1).ok_or("air base row count overflow")?)?;
                 if len == output.len() {
                     unread_rows = unread_rows
@@ -445,7 +376,6 @@ impl<M: Memory> Reader<'_, M> {
 
     fn row(&self, pointer: usize, state_slot: Option<u32>) -> Result<Row, &'static str> {
         let mut identity = [0; 16];
-        // Exact consecutive fields: host/state/province/capacity/kind.
         let mut data = [0; 32];
         let complete = self.memory.copy_scattered(
             [pointer, pointer.checked_add(HOST_REFERENCE).unwrap_or(0)],
@@ -536,9 +466,6 @@ impl<M: Memory> Reader<'_, M> {
         if let Some(carrier) = carrier.as_deref_mut() {
             carrier.indexed_header(containers.count);
         }
-        // A base whose dense list proves its occupied slots reads none of its
-        // slot vector beyond the plan's slot words: the listed containers are
-        // the occupied slots, every other one is null ([`dense_plan`]).
         let planned = slots
             .dense
             .then(|| {
@@ -557,11 +484,6 @@ impl<M: Memory> Reader<'_, M> {
             state.dense_bases += 1;
         }
         state.last_plan = planned;
-        // Pool and wing pointers with their fixed fields are gathered in
-        // 64-row batches instead of one guarded read per object; every pool
-        // and wing is still validated and staged in native pool then wing
-        // order with its own copied prefix, so rows and single-fault reasons
-        // keep their positions.
         let expected_pool = engine_sites::at(self.base, cair_wing_pool::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         let expected_primary = engine_sites::at(self.base, cair_wing::VTABLE_RVA)
@@ -579,19 +501,11 @@ impl<M: Memory> Reader<'_, M> {
             plan,
         } = &mut state.scratch;
         let mut next_planned = 0;
-        // The country-slot vector is copied in strided 64-slot chunks, one
-        // guarded round each, matching the raw acquisition's chunk takes; a
-        // planned base's chunk is laid out from its plan instead. Each
-        // container is still completed before the next copied slot is
-        // examined, and the first uncopied slot fails at its own position, so
-        // a later pointer fault cannot hide an earlier container failure or
-        // its staged demand.
         let mut chunk_first = 0;
         while chunk_first < containers.count {
             let chunk = ((containers.count - chunk_first) as usize).min(BATCH);
             let copied = match planned {
                 Some(len) => {
-                    // A chunk naming no listed container is null throughout.
                     let end = chunk_first + chunk as u32;
                     let first = next_planned;
                     while plan[..len]
@@ -636,14 +550,10 @@ impl<M: Memory> Reader<'_, M> {
                         .unwrap(),
                 ))
                 .map_err(|_| "air base container pointer unreadable or address overflow")?;
-                // A null slot means no access. An absent container is measured absence
-                // rather than a torn read.
                 if container == 0 {
                     continue;
                 }
                 self.vtable(container, ccountry_air_container::VTABLE_RVA)?;
-                // One span holds the country reference, the capacity word the country-pool
-                // registration gate tests and the fuel scalars the carrier observer records.
                 let mut span = [0u8; CONTAINER_SPAN];
                 if !container
                     .checked_add(ccountry_air_container::COUNTRY)
@@ -653,18 +563,7 @@ impl<M: Memory> Reader<'_, M> {
                 }
                 let country = u32::from_le_bytes(span[..4].try_into().unwrap());
                 let (capacity_raw, fuel) = container_span_words(&span);
-                // Container creation installs the container at the ordinal its
-                // own country reference resolves to, so the two must still
-                // agree. At reserved slot zero the callers short-circuit an id
-                // of zero to that ordinal without consulting the link table, so
-                // the reference there must be zero or not yet linked; one that
-                // does resolve names a country whose own slot is positive and
-                // cannot be filed here. The raw reference is recorded as stored
-                // on every accepted path.
                 if slot == 0 {
-                    // Only a readable zero link entry is an unlinked id; an
-                    // unreadable or out-of-range entry stays a fault rather than
-                    // being folded into an accept here.
                     if country != 0 && countries.link(country)?.is_some() {
                         return Err(
                             "air base container at the reserved slot is linked to a country slot",
@@ -852,13 +751,9 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Bytes from the container's country reference to the end of its allocated fuel word, the end of
-/// the 0xF8-byte container, read as one span: the country, the capacity word, and the fuel demand
-/// and allocation the carrier observer records.
 pub const CONTAINER_SPAN: usize =
     ccountry_air_container::FUEL_ALLOCATED_RAW + 8 - ccountry_air_container::COUNTRY;
 
-/// The capacity word and both fuel scalars of one container span.
 pub fn container_span_words(span: &[u8; CONTAINER_SPAN]) -> (i64, ContainerFuel) {
     let word = |offset: usize| {
         let at = offset - ccountry_air_container::COUNTRY;
@@ -873,54 +768,33 @@ pub fn container_span_words(span: &[u8; CONTAINER_SPAN]) -> (i64, ContainerFuel)
     )
 }
 
-/// One country's registered pool membership at one base, in native order.
-///
-/// `slot` is the indexed-container ordinal used by creation and access
-/// checks. Authenticate the container's country reference against it; do
-/// not retain that reference here. Flatten wings in pool order without
-/// recording pool boundaries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistrationRow {
-    /// Full native CAirBase handle (`HANDLE`).
     pub base: u64,
     pub slot: u32,
-    /// Container capacity word; admission requires a positive value.
     pub capacity_raw: i64,
     pub wings_start: usize,
     pub wings_len: usize,
 }
 
-/// Caller-owned storage for the registration walk. Allocation is off-thread.
 pub struct RegistrationBuffers<'a> {
     pub registrations: &'a mut [RegistrationRow],
     pub wings: &'a mut [u64],
-    /// Dense per-walk resolution cache indexed by raw country link id. Size it
-    /// to [`RegistrationWalk::required_links`] off the game thread; ids beyond
-    /// a shorter slice (including an empty one) resolve uncached with the same
-    /// reads and results, so a small cache never refuses or changes a row.
     pub resolved: &'a mut [ResolvedLink],
 }
 
-/// One dense resolver cell. `None` is an id not yet resolved in this walk.
 pub type ResolvedLink = Option<ccountry::Country>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegistrationWalk {
     pub outcome: Outcome,
     pub wings_len: usize,
-    /// Full native wing demand, including whole rows omitted for space.
     pub required_wings: usize,
-    /// Live `CGameState` country-link count: the resolver length at which
-    /// every raw id this walk can resolve is cached. Zero before the country
-    /// headers were read.
     pub required_links: usize,
-    /// Off-hour optional carrier storage floors from this same complete walk.
     pub required_bases: usize,
     pub required_indexed: usize,
     pub required_pools: usize,
-    /// Bases whose dense list proved their occupied slots ([`SlotMode`]).
     pub dense_bases: usize,
-    /// State bases whose earlier output was appended ([`RegistrationReuse`]).
     pub reused_bases: usize,
 }
 
@@ -934,15 +808,11 @@ struct RegistrationState {
     required_pools: usize,
     dense_bases: usize,
     reused_bases: usize,
-    /// The slot count and plan length of the base last begun.
     last_slots: u32,
     last_plan: Option<usize>,
     scratch: RegistrationScratch,
 }
 
-/// Reused only within this walk. Each pointer block is fully copied before
-/// parsing, and record prefixes are checked before decoding. Shorter batches
-/// never consume old tails, so these buffers need initialization only once.
 struct RegistrationScratch {
     container_bytes: [u8; BATCH * 8],
     pool_pointers: [usize; BATCH],
@@ -951,7 +821,6 @@ struct RegistrationScratch {
     wing_pointers: [usize; BATCH],
     wing_records: [u8; BATCH * WING_RECORD_BYTES],
     wing_pointer_bytes: [u8; BATCH * 8],
-    /// The current base's listed containers ([`dense_plan`]).
     plan: [DenseEntry; DENSE_BOUND],
 }
 
@@ -970,15 +839,6 @@ impl Default for RegistrationScratch {
     }
 }
 
-/// A dense cache of raw-reference resolutions, local to one walk.
-///
-/// Every air container names one of the same country targets, so the walk would
-/// otherwise re-resolve each reference once per container. A successful resolve
-/// implies `raw < links.count`, so a cache of the live link count holds every
-/// resolvable id without collisions. Its cells are cleared when the walk starts,
-/// so it reuses successful authentication only while the hourly world is
-/// stable; it cannot detect a later mutation or a newly unreadable field within
-/// this walk. Ids outside the caller's slice run the original validator.
 struct Resolver<'a> {
     cells: &'a mut [ResolvedLink],
 }
@@ -1001,16 +861,6 @@ impl Resolver<'_> {
     }
 }
 
-/// Read every air base's per-country registered pool membership.
-///
-/// The four AirBases roots let registration rows join by handle. Displayed
-/// wings use indexed registration; assigning a pool's base can precede a
-/// registration refusal. An AirWings base reference cannot replace membership.
-///
-/// A null container means no access and emits no row. Null counted pools or
-/// wings, bad vtables, zero wing handles and invalid vector headers refuse
-/// the table. Capacity omits whole container rows, releases staged wings and
-/// reports full remaining demand.
 pub fn walk_registrations<M: Memory>(
     memory: &M,
     base: usize,
@@ -1020,12 +870,6 @@ pub fn walk_registrations<M: Memory>(
     walk_registrations_planned(memory, base, game_state, buffers, SlotMode::default(), None)
 }
 
-/// [`walk_registrations`] finding each base's occupied slots as `slots`
-/// says. A base its dense list proves reads only its listed containers' slot
-/// words; the rows, wings and outcome are those of the full scan. With
-/// `reuse`, a state base whose subtree it says this memory holds as an earlier
-/// walk read it appends that walk's output instead of walking it again
-/// ([`RegistrationReuse`]), and each state base walked is reported to it.
 pub fn walk_registrations_planned<M: Memory>(
     memory: &M,
     base: usize,
@@ -1037,11 +881,6 @@ pub fn walk_registrations_planned<M: Memory>(
     walk_registrations_inner::<M, M>(memory, base, game_state, buffers, &[], None, slots, reuse)
 }
 
-/// Feeds the fixed optional observer at the existing read/authentication
-/// points. `base_rows` is the accepted AirBases prefix in original traversal
-/// order from this exact sample, never carried rows or a sorted copy. Only the
-/// O(1) matching row join permits host-name reads. All optional source reads
-/// use the observer's distinct Memory, which is owned-only on a decoder.
 pub fn walk_registrations_with_carrier<M: Memory, O: Memory>(
     memory: &M,
     base: usize,
@@ -1062,10 +901,6 @@ pub fn walk_registrations_with_carrier<M: Memory, O: Memory>(
     )
 }
 
-/// [`walk_registrations_with_carrier`] finding each base's occupied slots as
-/// `slots` says, appending earlier outputs `reuse` offers
-/// ([`walk_registrations_planned`]). The observer sees the same containers in
-/// the same order; it observes no state base.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_registrations_with_carrier_planned<M: Memory, O: Memory>(
     memory: &M,
@@ -1147,8 +982,6 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
                     return Err("nonnull air base has null handle");
                 }
                 let source = base_rows.get(base_ordinal).copied();
-                // Four u32-count roots cannot overflow the pinned 64-bit
-                // address space. This adds no failure to the original walk.
                 base_ordinal += 1;
                 if let Some(carrier) = carrier.as_deref_mut() {
                     carrier.begin_base(pointer, handle, !indexed);
@@ -1157,8 +990,6 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
                     }
                 }
                 let observed = RegistrationBase { handle, pointer };
-                // A state base's output depends on its subtree and the
-                // country tables alone; the carrier observes none of it.
                 let Some(reuse) = reuse.as_deref_mut().filter(|_| indexed) else {
                     reader.registration(
                         observed,
@@ -1240,10 +1071,6 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
     }
 }
 
-/// Presize optional fuel storage before mid-game attach's first callback.
-/// The original registration walk authenticates every member even with empty
-/// output. Existing passive fuel readers also measure optional raw
-/// requests; the hint retains no payload and calls no game getter.
 pub fn carrier_demand(
     memory: &impl Memory,
     base: usize,
@@ -1290,9 +1117,6 @@ fn carrier_demand_inner(
         forecasts: fuel_memos,
         ..Default::default()
     };
-    // The complete original membership authenticated these stateless roots.
-    // Dense counts retain repeated occurrences; retained names use the same
-    // cached-name helper as capture. These hints copy no country/name payload.
     let extras = (|| {
         let reader = Reader { memory, base };
         let manager = reader.pointer(state, cgame_state::STRATEGIC_AIR_MANAGER)?;

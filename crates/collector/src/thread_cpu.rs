@@ -1,5 +1,3 @@
-//! CPU time of the collector's own threads, read when status is built. The
-//! cumulative counters let a status diff measure contention with the game.
 use crate::status::{sequence, status};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use windows_sys::Win32::{
@@ -15,8 +13,6 @@ unsafe extern "system" {
     fn QueryProcessCycleTime(process: HANDLE, cycles: *mut u64) -> i32;
 }
 
-/// Collector threads that register themselves; decode and acquisition
-/// workers already publish their ids.
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
     Runtime,
@@ -29,7 +25,7 @@ pub(crate) enum Role {
     #[cfg(feature = "worker_sampler")]
     Sampler,
 }
-const REGISTERED_ROLES: usize = NAMED - 1; // Decode publishes its id separately.
+const REGISTERED_ROLES: usize = NAMED - 1;
 static REGISTERED: [AtomicU32; REGISTERED_ROLES] = [const { AtomicU32::new(0) }; REGISTERED_ROLES];
 #[cfg(feature = "worker_sampler")]
 static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
@@ -37,9 +33,6 @@ static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
 #[cfg(feature = "worker_sampler")]
 static DECODE_CREATION: AtomicU64 = AtomicU64::new(0);
 
-/// Declared first on a sampled thread: later locals release their locks before
-/// this guard joins the sampler on every return or unwind. Never use it on the
-/// sampler itself or on the game thread, whose callback has a separate gate.
 #[cfg(feature = "worker_sampler")]
 pub(crate) struct StopOnThreadExit;
 #[cfg(feature = "worker_sampler")]
@@ -49,13 +42,11 @@ impl Drop for StopOnThreadExit {
     }
 }
 
-/// The spool's conversion helpers' ids by index; 0 where none started.
 static HELPERS: [AtomicU32; MAX_HELPERS] = [const { AtomicU32::new(0) }; MAX_HELPERS];
 #[cfg(feature = "worker_sampler")]
 static HELPER_CREATION: [AtomicU64; MAX_HELPERS] = [const { AtomicU64::new(0) }; MAX_HELPERS];
 const MAX_HELPERS: usize = crate::pack_conversion::MAX_HELPERS;
 
-/// Register the spool's conversion helper `index`, which published its id.
 pub(crate) fn register_helper(index: usize, id: u32) {
     let Some(slot) = HELPERS.get(index) else {
         return;
@@ -65,13 +56,11 @@ pub(crate) fn register_helper(index: usize, id: u32) {
     slot.store(id, Ordering::Release);
 }
 
-/// The registered conversion helpers' ids by index; 0 where none started.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn helpers() -> impl Iterator<Item = u32> {
     HELPERS.iter().map(|id| id.load(Ordering::Acquire))
 }
 
-/// Conversion helper `index`'s creation time, if `id` is still it.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
     let registered = HELPERS.get(index)?;
@@ -82,12 +71,10 @@ pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-/// Call first on the registering thread.
 pub(crate) fn register(role: Role) {
     register_id(role, unsafe { GetCurrentThreadId() });
 }
 
-/// Register a thread that published its id to its owner.
 pub(crate) fn register_id(role: Role, id: u32) {
     #[cfg(feature = "worker_sampler")]
     REGISTERED_CREATION[role as usize]
@@ -95,8 +82,6 @@ pub(crate) fn register_id(role: Role, id: u32) {
     REGISTERED[role as usize].store(id, Ordering::Release);
 }
 
-/// Capture identity at registration, before a delayed sampler discovery can
-/// open an unrelated thread that has reused an exited collector thread's id.
 #[cfg(feature = "worker_sampler")]
 fn registered_creation_time(id: u32) -> Option<u64> {
     if id == 0 {
@@ -114,7 +99,6 @@ fn registered_creation_time(id: u32) -> Option<u64> {
         .filter(|created| *created != 0)
 }
 
-/// Called by the decode worker before it publishes its id with Release.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn register_decode() {
     DECODE_CREATION.store(
@@ -123,8 +107,6 @@ pub(crate) fn register_decode() {
     );
 }
 
-/// The sampler refuses a named target whose registration identity is unavailable
-/// or differs from the creation time of its freshly opened thread handle.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
     if id == 0 {
@@ -163,8 +145,6 @@ const NAMED: usize = BASE_NAMED;
 const NAMED: usize = BASE_NAMED + 1;
 const THREADS: usize = NAMED + MAX_HELPERS + crate::acquisition::MAX_WORKERS;
 
-/// The creation time first seen for an id; a later thread reusing that id
-/// after ours exited is not reported as ours.
 struct Identity {
     id: AtomicU32,
     created: AtomicU64,
@@ -187,7 +167,6 @@ impl Identity {
     }
 }
 
-/// Cycles from QueryThreadCycleTime; user and kernel in 100 ns units.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Times {
     cycles: u64,
@@ -220,7 +199,6 @@ const ZERO: FILETIME = FILETIME {
     dwHighDateTime: 0,
 };
 
-/// Creation time and counters of a live or retained thread object.
 fn read_thread(id: u32) -> Option<(u64, Times)> {
     if id == 0 {
         return None;
@@ -362,8 +340,6 @@ macro_rules! named_threads {
     };
 }
 
-/// Snapshot sampling targets without allocation, excluding sampler, priority control, the
-/// frame builder and the capture thread, which the sampler has no role for.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn registered() -> impl Iterator<Item = (&'static str, u32)> {
     named_threads!()
@@ -372,7 +348,6 @@ pub(crate) fn registered() -> impl Iterator<Item = (&'static str, u32)> {
         .filter(|(role, _)| !matches!(*role, "frame_priority" | "frame_builder" | "capture"))
 }
 
-/// status.json `collector_thread_cpu`. `acquisition` lists the worker ids.
 pub(crate) fn status(acquisition: &[u32]) -> impl serde::Serialize + use<> {
     let named = named_threads!();
     let workers = acquisition
@@ -412,7 +387,6 @@ mod tests {
         assert!(identity.admit(41, 1000));
         assert!(identity.admit(41, 1000));
         assert!(!identity.admit(41, 2000));
-        // A newly registered id replaces the old identity.
         assert!(identity.admit(42, 3000));
         assert!(identity.admit(42, 3000));
     }

@@ -1,6 +1,3 @@
-//! The Peace writer's resume blob: its tag numbers, the first hour each tag existed, the previous
-//! complete read, and each open or waiting conference with its "before". Maps are written in key
-//! order, so equal states write equal blobs.
 
 use super::{Conference, Countries, Government, Peace, Snapshot, Tag, Wars, invalid};
 use replay_columnar::leaf::{Reader, Writer as Bytes};
@@ -64,7 +61,6 @@ fn read_optional_bytes(reader: &mut Reader<'_>) -> io::Result<Option<Box<[u8]>>>
     })
 }
 
-/// A count no larger than the blob could hold.
 fn count(reader: &mut Reader<'_>, blob: usize) -> io::Result<usize> {
     let count = reader.count()?;
     if count > blob {

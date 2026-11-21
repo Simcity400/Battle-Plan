@@ -1,4 +1,3 @@
-//! Per-song reuse certified by the trigger input observer.
 use dashboard_text::triggers::{Evaluator, Scope, Scopes, World, inputs};
 use installed_content_core::parser::Item;
 use replay_frame::frame::DecodedFrame;
@@ -51,7 +50,6 @@ struct Entry {
     songs: Vec<Option<Arc<Evaluation>>>,
 }
 
-// Each pipeline owns one immutable full content context; serves rejects another allocation.
 pub struct Memo {
     entries: Mutex<VecDeque<Arc<Entry>>>,
     capacity: usize,
@@ -87,7 +85,6 @@ impl Memo {
                 })
                 .cloned()
         });
-        // Reread answers belong to this call only, never another hour.
         let mut rereads = HashMap::new();
         let evaluator = Evaluator::new(world, None);
         let scopes = Scopes::of(Scope::Country(country));
@@ -114,7 +111,6 @@ impl Memo {
                         inputs::Key::ClockSeed => {
                             Some(inputs::digest(&dashboard_text::scripted_text::clock_seed(frame)))
                         }
-                        // Unfamiliar keys miss; Inputs confirms table identities itself.
                         inputs::Key::Table(_)
                         | inputs::Key::Fields(..)
                         | inputs::Key::Names(_)
@@ -127,7 +123,6 @@ impl Memo {
                 #[cfg(any(test, feature = "test-support"))]
                 self.evaluations
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // The read certifies one outcome, including its refusal.
                 let (value, inputs) = inputs::capture(frame, || {
                     Outcome::evaluate(
                         &content.music.tracks[song.track].name,

@@ -110,7 +110,6 @@ impl Budget {
             bytes,
         })
     }
-    // Disk charges survive handles: files still occupy space after a writer closes.
     pub fn grow_disk(&self, bytes: u64) -> io::Result<()> {
         self.charge(bytes)
     }

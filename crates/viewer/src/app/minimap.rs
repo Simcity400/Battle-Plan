@@ -1,9 +1,3 @@
-//! The minimap and the find view over a map view, drawn with the picker and sharing its pointer:
-//! the minimap's slide, its world picture's press, drag and wheel, its ping mode, and the find
-//! view's focus and results.
-//!
-//! A ping placed in ping mode, on the minimap or on the map, is a game command: the replay
-//! disarms the mode as the game does and posts nothing.
 
 use super::Viewer;
 use crate::document::Document;
@@ -21,28 +15,19 @@ use viewer_foundation::map::{
 };
 use viewer_playback::cursors::MapCursor;
 
-/// The runtime DLC bit of the feature the map's ping mode and its cursors need.
 const PING_DLC: u32 = 0x8;
 
 #[derive(Default)]
 pub struct MinimapState {
     pub view: minimap::Minimap,
     pub slide: Slide,
-    /// The armed ping button.
     armed: Armed,
-    /// A press on the world picture is held: the pointer moves the camera's target.
     dragging: bool,
-    /// A press on the map placed a ping: its release is no click.
     swallow: bool,
-    /// Ping mode as this frame's keys and armed button give it.
     ping: Option<bool>,
-    /// The world picture as last drawn: `x, y, w, h` in interface pixels.
     image: Option<[i32; 4]>,
-    /// The animation clock the last draw read, which a toggle starts its slide at.
     now: f32,
-    /// The recording's runtime DLC mask at the head, kept while its rows load.
     dlc: Option<u32>,
-    /// Why parts of the minimap are not shown.
     pub refused: BTreeMap<String, usize>,
 }
 
@@ -55,13 +40,11 @@ impl MinimapState {
         self.slide.sliding() || self.view.pointing() || self.view.active()
     }
 
-    /// Arms the offensive or the defensive ping, as its button does.
     pub fn arm(&mut self, offensive: bool) {
         self.armed = Some(offensive);
     }
 }
 
-/// A localised string, or `None` with the reason in `refused` when the localisation cannot give it.
 fn text(localisation: &Localisation, key: &str, refused: &mut BTreeMap<String, usize>) -> Option<String> {
     localisation
         .localise(key.as_bytes())
@@ -78,7 +61,6 @@ fn topmost(controls: &[Placed], at: [f32; 2]) -> Option<&PickerControl> {
 }
 
 impl Viewer {
-    /// Flips the minimap open or closed, sliding by its defines.
     pub(super) fn toggle_minimap(&mut self, document: &Document) {
         if let Ok(defines) = &document.minimap_defines {
             let state = &mut self.picker.minimap;
@@ -86,7 +68,6 @@ impl Viewer {
         }
     }
 
-    /// The ping cursor the map shows: in ping mode, with the feature that owns pings.
     pub(crate) fn ping_cursor(&self) -> Option<MapCursor> {
         let state = &self.picker.minimap;
         let owned = state.dlc.is_some_and(|mask| mask & PING_DLC != 0);
@@ -98,12 +79,6 @@ impl Viewer {
         })
     }
 
-    /// The minimap's and the find view's share of the frame's pointer, before the camera moves.
-    /// A press on the world picture outside ping mode moves the camera's target there and holds
-    /// it to the pointer until released; in ping mode it places a ping. The wheel over the
-    /// picture zooms about the target, then moves it to the pointer; over the results it scrolls
-    /// them. A press on the bare map in ping mode places a ping and is no click: `true` while
-    /// the frame's map clicks are to be dropped. Then the find view's asked move.
     #[allow(
         clippy::too_many_arguments,
         reason = "one frame's view, pointer and clock, as the picker's draw takes them"
@@ -218,8 +193,6 @@ impl Viewer {
         dropped
     }
 
-    /// Draws the minimap and, while open, the find view over the picker's frame, their controls
-    /// after the picker's.
     #[allow(
         clippy::too_many_arguments,
         reason = "one frame's view, pointer and clock, as the picker's draw takes them"
@@ -345,7 +318,6 @@ impl Viewer {
         self.picker.find.window_refused = refused;
     }
 
-    /// The minimap's and the find view's refusal lines, each under its own name.
     pub(super) fn map_window_warnings(&self) -> Vec<String> {
         let lines = |surface: &str, refused: &BTreeMap<String, usize>| {
             refused
@@ -361,7 +333,6 @@ impl Viewer {
         out
     }
 
-    /// The animation clock the minimap and the find view last drew at.
     pub(super) fn picker_now(&self) -> f32 {
         self.picker.minimap.now
     }

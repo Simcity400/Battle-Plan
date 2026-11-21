@@ -2,7 +2,6 @@ use super::*;
 use crate::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
-/// A pass-sized naming context for tests.
 struct NameArena {
     groups: crate::cname_group_member::GroupKeys,
     bytes: Vec<u8>,
@@ -41,8 +40,6 @@ impl NameArena {
     }
 }
 
-/// The pre-hoist call shape: builds the country reader over the same
-/// memory, immediately before the division reads, as the pass does.
 fn capture_context_at(
     memory: &impl Memory,
     base: usize,
@@ -124,8 +121,6 @@ impl<M: Memory> Memory for Observed<'_, M> {
     }
 }
 
-// The scalar order before batching. Unchanged dependency helpers stay shared
-// so the differential covers their interleaving with both new leaf groups.
 fn scalar_stats(
     memory: &impl Memory,
     base: usize,
@@ -259,7 +254,6 @@ fn stats_scatter_matches_scalar_first_values_and_every_fault() {
                 (0x1000 + DIRECTION_GROUP, 4),
                 (0x2000 + csub_unit_definition::AIR_FLAGS, 8)
             ],
-            // The commander's group identity and leader word.
             vec![(0xe000, 16), (0xe000 + crate::corders_group::LEADER, 8)],
         ]
     );
@@ -310,7 +304,6 @@ fn stats_preserve_identity_module_overflow_order_and_later_address_failure() {
         assert_eq!(*actual.reads.borrow(), [(0x1000, 8)]);
         assert!(actual.scatters.borrow().is_empty());
     }
-    // An unreadable armour span fails before the group read.
     let stat = usize::MAX - 0x2a0;
     source.u64(0x1138, stat as u64);
     source.u64(stat, csub_unit_definition::VTABLE_RVA.0 as u64);
@@ -497,7 +490,6 @@ fn fixture(count: u32) -> Vec<u8> {
     put(0x1000, carmy::VTABLE_RVA.0 as u64);
     put(0x1018, 0x1234_0000_0033);
     put(0x1138, 0x2000);
-    // The division's name member: order i32::MAX and a one-byte custom name.
     put(0x1340, 0x3800);
     put(0x3800, crate::cname_group_member::VTABLE_RVA.0 as u64);
     put(0x3880, i32::MAX as u64);
@@ -547,8 +539,6 @@ fn preserves_signed_values_order_and_raw_maximum_with_bounded_copy_cost() {
         }
     );
     assert_eq!(modifiers[1].id, 2);
-    // Four identity words, one thirteen-span scatter, one 0xAA name-member
-    // copy and four modifier copies: 22 observations, 446 bytes.
     assert_eq!(memory.copies.get(), 22);
     assert_eq!(memory.bytes.get(), 446);
 }
@@ -826,9 +816,6 @@ fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
     .unwrap();
     assert_eq!(second, first);
     assert_eq!(terms, first_terms);
-    // Within the pass the country census, the metadata, the defines and
-    // the template's width terms are shared; the division's own identity,
-    // owners, stat block, base speed and template pointer are read again.
     assert_eq!(memory.copies.get() - before.0, 17);
 
     memory.u64(0xa008, 170);
@@ -851,7 +838,6 @@ fn context_modifier_reuse_is_shared_only_within_the_current_pass() {
         }
     );
 
-    // A different address never aliases the previous country observation.
     memory.array(0xe000, 0xe100, 1);
     memory.put(0xe100, &0x10f_u32.to_le_bytes());
     memory.u64(0xe108, 999);
@@ -878,8 +864,6 @@ fn context_modifier_census_fails_at_its_read_and_on_a_malformed_suffix() {
         assert!(context_modifiers(&observed, address).is_err());
         assert_eq!(observed.reads.borrow().len(), ordinal + 1);
     }
-    // The selected values are already in the first chunk. A malformed
-    // unselected suffix must still fail.
     source.array(address, 0x20000, 65);
     for (index, key) in CONTEXT_MODIFIER_KEYS
         .into_iter()
@@ -904,7 +888,6 @@ fn context_modifier_census_fails_at_its_read_and_on_a_malformed_suffix() {
 #[test]
 fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
     let mut memory = context_fixture();
-    // A committed division on an exile template (origin 2) of tag 1.
     memory.put(0xb000 + TEMPLATE_COUNTRY, &1_i32.to_le_bytes());
     memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &2_i32.to_le_bytes());
     memory.u64(0x1000 + cunit::LOCATION, 0x7000);
@@ -928,8 +911,6 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
         }))
     );
     assert_eq!(tags, [1, 2, 2]);
-    // Longer than the country table, up to a count that would have
-    // reserved gigabytes: refused before any entry is read.
     for count in [3, i32::MAX as u32] {
         memory.array(0x7800 + crate::cstate::CORES, 0x7c00, count);
         let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
@@ -938,11 +919,8 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
             capture_exile(&memory, &countries, 0x1000, &mut vec![0; 8]),
             Err("exile country list exceeds the live country count")
         );
-        // Template, operands, location, state and the list header only.
         assert_eq!(memory.copies.get() - before, 5);
     }
-    // Only origin two is exiled. Other values, including values outside the
-    // known range, read no further operands.
     for origin in [0, 1, 3, 7, -1, i32::MIN, i32::MAX] {
         memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &origin.to_le_bytes());
         let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
@@ -952,7 +930,6 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
             Ok(Exile::Absent),
             "origin {origin}"
         );
-        // Template pointer and operands only.
         assert_eq!(memory.copies.get() - before, 2, "origin {origin}");
     }
 }
@@ -1008,10 +985,6 @@ fn worker_exile_arena_keeps_country_lists_and_later_growth_without_truncation() 
     }
 }
 
-/// An exiled division's country resolves before diplomacy access in the
-/// game. A resolution or read fault fails that division rather than yielding
-/// an empty occupier set. This fixture's exile country differs from its
-/// ordinary owner, which resolves.
 #[test]
 fn exile_country_faults_fail_the_division_with_their_reason() {
     let mut memory = context_fixture();
@@ -1024,13 +997,11 @@ fn exile_country_faults_fail_the_division_with_their_reason() {
         capture_exile(&memory, &countries, 0x1000, &mut vec![0; 4]),
         Ok(Exile::Row(_))
     ));
-    // A tag outside the link table.
     memory.put(0xb000 + TEMPLATE_COUNTRY, &5_i32.to_le_bytes());
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
     let unlinked = capture_exile(&memory, &countries, 0x1000, &mut vec![0; 4]);
     assert_eq!(unlinked, countries.resolve(5).map(|_| Exile::Absent));
     assert!(unlinked.is_err());
-    // The exile country's diplomacy status unreadable, then null.
     memory.put(0xb000 + TEMPLATE_COUNTRY, &1_i32.to_le_bytes());
     memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0);
     let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
@@ -1113,9 +1084,6 @@ fn width_context_selects_authenticated_leader_raw_modifiers() {
     );
 }
 
-/// Synthetic scale benchmark over guarded in-process reads (LiveMemory's
-/// SEH copies against heap objects laid out like the native graph). It
-/// measures reader cost only, never live gameplay speed.
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 mod scale {
     use super::*;
@@ -1167,8 +1135,6 @@ mod scale {
             self.u64(address + 16, text.len() as u64);
         }
 
-        /// `templates` distinct division templates share the divisions
-        /// round-robin; the registry keeps a load factor of at most one half.
         pub(super) fn new(count: usize, template_count: usize) -> Self {
             let capacity = (template_count * 2).next_power_of_two().max(1024);
             let overflow = capacity.trailing_zeros() as usize + 2;
@@ -1223,7 +1189,6 @@ mod scale {
                 world.u64(group, (base + name::GROUP_VTABLE_RVA.0) as u64);
                 world.string(group + name::GROUP_KEY, format!("GRP_{n}").as_bytes(), 0);
             }
-            // A valid robin-hood reference table holding every template.
             world.u64(base + registry::LOW_ROOTS_RVA.0 + 52 * 8, table as u64);
             world.u64(table + registry::ENTRIES, entries as u64);
             world.put(
@@ -1291,7 +1256,6 @@ mod scale {
                 world.u64(stat, (base + csub_unit_definition::VTABLE_RVA.0) as u64);
                 world.u64(stat + ARMOUR, 5 << 20);
                 world.u64(member, (base + name::VTABLE_RVA.0) as u64);
-                // Odd multiples of 13 have no template, so a null group.
                 if i % 26 != 13 {
                     world.u64(
                         member + name::TEMPLATE_REFERENCE,
@@ -1301,8 +1265,6 @@ mod scale {
                 world.put(member + name::ORDER, &(i as i32 + 1).to_le_bytes());
                 world.put(member + name::FLAG_A, &[1, u8::from(i % 13 == 0)]);
                 world.u64(member + name::OVERRIDE_NAME + 24, 15);
-                // Custom names use inline and heap storage. Programmatic copies retain
-                // generated text, selected only when the name group is null.
                 if i % 20 == 0 || i % 13 == 0 {
                     world.string(member + name::OVERRIDE_NAME, b"Guards", 0);
                 } else if i % 97 == 0 {
@@ -1348,7 +1310,6 @@ mod scale {
         }
     }
 
-    /// Naming operands with their text, as the replay row projects them.
     #[derive(Debug, PartialEq, Eq)]
     struct Plain {
         kind: i32,
@@ -1359,9 +1320,6 @@ mod scale {
         group: crate::msvc_string::Text<256>,
     }
 
-    /// The pre-batching naming reader: one guarded read per field, the
-    /// full registry walk and the group identity on every division; like
-    /// the original, only the key text is reused within a pass.
     fn reference_naming(
         memory: &impl Memory,
         base: usize,
@@ -1415,7 +1373,6 @@ mod scale {
                     };
                 }
             }
-            // A null name group selects programmatic stored text.
             if null && programmatic != 0 {
                 let (source, len, _, _) = name::custom(memory, base, member)?;
                 row.custom.len = len;
@@ -1425,7 +1382,6 @@ mod scale {
         Ok(row)
     }
 
-    /// One pass's naming context, as the collector owns it.
     struct Pass {
         groups: name::GroupKeys,
         bytes: Vec<u8>,
@@ -1460,8 +1416,6 @@ mod scale {
         }
     }
 
-    /// Every division of one pass, committing each player's name as the
-    /// collector does on admission. Returns the named divisions.
     fn pass(memory: &impl Memory, world: &World, context: &mut Pass) -> usize {
         context.groups.reset();
         let mut names = name::Names {
@@ -1488,8 +1442,6 @@ mod scale {
         named
     }
 
-    /// Every division's naming text, read with `context` over two passes
-    /// so the second runs on stale, generation-stamped memo entries.
     fn read_all(live: &impl Memory, world: &World, context: &mut Pass) -> Vec<Plain> {
         let mut rows = Vec::new();
         for _ in 0..2 {
@@ -1526,7 +1478,6 @@ mod scale {
     fn batched_naming_matches_the_per_field_reader_over_guarded_memory() {
         for templates in [64, 500] {
             let world = World::new(2_000, templates);
-            // SAFETY: the synthetic graph is immutable, owned storage.
             let live = unsafe { crate::memory::LiveMemory::new() };
             let mut keys = Default::default();
             let expected: Vec<_> = world
@@ -1537,9 +1488,6 @@ mod scale {
                     reference_naming(&live, world.base(), member, &mut keys).unwrap()
                 })
                 .collect();
-            // An unbounded memo, the collector's default sizing and a
-            // memo of one slot per table, which is full after the first
-            // template: all three name every division alike.
             for (templates, groups) in [(world.armies.len(), 1024), (1 << 16, 1 << 16), (1, 1)] {
                 let mut context = Pass::with(&world, templates, groups);
                 assert_eq!(
@@ -1557,17 +1505,13 @@ mod scale {
                     _ => 3,
                 }] += 1;
             }
-            // Historical, custom (inline and heap) and programmatic
-            // members, with a group and with a null one.
             assert!(kinds.iter().all(|count| *count > 0), "{kinds:?}");
         }
     }
 
     #[test]
     fn a_key_that_does_not_fit_is_counted_once_per_pass() {
-        // Divisions 1 to 3 are historical members of the one template.
         let world = World::new(4, 1);
-        // SAFETY: the synthetic graph is immutable, owned storage.
         let live = unsafe { crate::memory::LiveMemory::new() };
         let mut groups = name::GroupKeys::with_capacity(4, 4);
         for pass in 0..2 {
@@ -1585,7 +1529,6 @@ mod scale {
                     "pass {pass}"
                 );
             }
-            // "GRP_0": five bytes, however many divisions share it.
             assert_eq!((names.len, names.required), (0, 5), "pass {pass}");
         }
     }
@@ -1593,7 +1536,6 @@ mod scale {
     #[test]
     fn a_second_division_of_a_template_costs_only_the_member_copy() {
         let world = World::new(3, 1);
-        // SAFETY: the synthetic graph is immutable, owned storage.
         let counted = Counted {
             inner: unsafe { crate::memory::LiveMemory::new() },
             calls: Cell::new(0),
@@ -1606,7 +1548,6 @@ mod scale {
             required: 0,
         };
         let mut costs = Vec::new();
-        // Divisions 1 and 2 are historical members of the one template.
         for &(army, _) in &world.armies[1..] {
             let member = read::<u64>(&counted, army + NAME_GROUP_MEMBER).unwrap() as usize;
             let before = counted.calls.get();
@@ -1633,16 +1574,11 @@ mod scale {
                 .armies
                 .iter()
                 .map(|&(army, _)| {
-                    // SAFETY: the synthetic graph is immutable, owned storage.
                     let live = unsafe { crate::memory::LiveMemory::new() };
                     read::<u64>(&live, army + NAME_GROUP_MEMBER).unwrap() as usize
                 })
                 .collect();
             let context = std::cell::RefCell::new(Pass::new(&world));
-            // Three passes over the same graph: the whole stats/name read,
-            // the batched name read alone and the per-field name reader.
-            // Timing runs through the counting adapter, which forwards
-            // every copy to LiveMemory's guarded entries.
             type Run<'a> = (
                 &'a str,
                 &'a dyn Fn(&Counted<crate::memory::LiveMemory>) -> usize,
@@ -1685,7 +1621,6 @@ mod scale {
                 }),
             ];
             for (label, run) in runs {
-                // SAFETY: the synthetic graph is immutable, owned storage.
                 let counted = Counted {
                     inner: unsafe { crate::memory::LiveMemory::new() },
                     calls: Cell::new(0),

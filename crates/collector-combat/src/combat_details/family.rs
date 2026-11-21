@@ -16,13 +16,9 @@ const GAME: usize = 0x4000_0000;
 struct World {
     pages: HashMap<usize, Box<[u8; PAGE]>>,
     next: usize,
-    /// Guarded calls, as the recorder's live reader counts them.
     calls: AtomicUsize,
-    /// Byte ranges whose reads fail.
     poisoned: Vec<(usize, usize)>,
-    /// Every guarded span, when logging.
     log: std::sync::Mutex<Option<Vec<(usize, usize)>>>,
-    /// Every guarded call's first address, when logging calls.
     call_log: std::sync::Mutex<Option<Vec<usize>>>,
 }
 
@@ -49,7 +45,6 @@ impl World {
         self.next += size.next_multiple_of(64);
         at
     }
-    /// A CPdxArray header: data, capacity, count.
     fn array(&mut self, at: usize, data: usize, count: u32) {
         self.u64(at, data as u64);
         self.u32(at + 8, count);
@@ -60,7 +55,6 @@ impl World {
         self.u64(at, vtable as u64);
         at
     }
-    /// An inline MSVC string.
     fn text(&mut self, at: usize, text: &[u8]) {
         assert!(text.len() <= 15);
         self.put(at, text);
@@ -89,7 +83,6 @@ impl World {
         if let Some(log) = self.log.lock().unwrap().as_mut() {
             log.push((address, output.len()));
         }
-        // A process's first pages fault: a null object's field fails.
         if address < 0x1_0000
             || self
                 .poisoned
@@ -143,7 +136,6 @@ impl Memory for World {
         }
         M
     }
-    /// One guarded call, as the recorder's live gather makes one.
     fn copy_records(
         &self,
         sources: engine_native::memory::RecordSources<'_>,
@@ -174,8 +166,6 @@ impl Memory for World {
     }
 }
 
-/// The Ordinary job's country roster over `world`: an authenticated
-/// census, as the callback prepares it.
 #[cfg(test)]
 fn roster(world: &World) -> engine_native::country_memory::Cache {
     let mut cache = engine_native::country_memory::Cache::try_with_capacity(
@@ -187,7 +177,6 @@ fn roster(world: &World) -> engine_native::country_memory::Cache {
     cache
 }
 
-/// The fixture behind the recorder's read accounting.
 #[cfg(test)]
 struct Shared<'a>(&'a World);
 
@@ -220,8 +209,6 @@ type Rostered<'a> = engine_native::country_memory::CountryMemory<
     false,
 >;
 
-/// Guarded calls per table, attributed as the recorder attributes them,
-/// over the authenticated roster.
 #[cfg(test)]
 fn per_table(
     world: &World,
@@ -241,7 +228,6 @@ fn per_table(
 struct Shape {
     countries: u32,
     combats: usize,
-    /// Divisions per combat, both sides.
     divisions: usize,
     owners: usize,
     templates: usize,
@@ -250,7 +236,6 @@ struct Shape {
     relations: usize,
     transports: usize,
     tactics: u32,
-    /// Army leaders; every fourth division, from the second, has one.
     leaders: usize,
 }
 
@@ -288,18 +273,14 @@ impl Shape {
     }
 }
 
-/// A built world and what the variants break.
 struct Built {
     world: World,
-    /// The CReferencedDivisionTemplate objects, registered by handle.
     #[cfg(test)]
     templates: Vec<usize>,
     #[cfg(test)]
     combats: Vec<usize>,
-    /// Army pointers per combat, attackers first.
     #[cfg(test)]
     armies: Vec<Vec<usize>>,
-    /// Attacker and defender CLandCombatant per combat.
     #[cfg(test)]
     sides: Vec<[usize; 2]>,
 }
@@ -307,7 +288,6 @@ struct Built {
 fn world(shape: &Shape) -> Built {
     let mut w = World::default();
     let slots = shape.countries as usize + 1;
-    // Module data: definitions, defines and singletons.
     let table = w.alloc(0x78 * 0x300);
     w.u64(modifier_definition::TABLE_RVA.0, table as u64);
     for key in [0x2b_usize, 0x5e, 0x17f, 0x1e9, 0xfb, 0x10f] {
@@ -320,7 +300,6 @@ fn world(shape: &Shape) -> Built {
     w.u64(cbuilding_database::SINGLETON_RVA.0, database as u64);
     let definition = w.alloc(0x400);
     w.u64(database + 0x3b0, definition as u64);
-    // The tactic database: its null entry and `tactics` definitions.
     let tactics = w.alloc(0x100);
     w.u64(ccombat_tactic::DATABASE_RVA.0, tactics as u64);
     let entries = w.alloc((shape.tactics as usize + 1) * 8);
@@ -340,7 +319,6 @@ fn world(shape: &Shape) -> Built {
         GAME + engine_land_inputs::country_tactic_unlocks::DOCTRINE_SYSTEM,
         doctrine as u64,
     );
-    // Countries.
     let countries = w.alloc(slots * 8);
     let links = w.alloc(slots * 4);
     w.array(GAME + cgame_state::COUNTRIES, countries, slots as u32);
@@ -381,8 +359,6 @@ fn world(shape: &Shape) -> Built {
             country as u64,
         );
         diplomacies.push(diplomacy);
-        // Every third owner is at war with the next owner: its enemy list's
-        // count supplies the air test's at-war answer.
         let next = 1 + ((owner + 1) % shape.owners) * (slots - 1) / shape.owners;
         let tags = w.alloc(8);
         w.u32(tags, slot as u32);
@@ -439,7 +415,6 @@ fn world(shape: &Shape) -> Built {
             w.u64(row + target as usize * 8, tuple as u64);
         }
     }
-    // Weather: two strategic regions with records.
     let weather = w.object(0x100, cweather_manager::VTABLE_RVA.0);
     w.u64(GAME + cgame_state::WEATHER_MANAGER, weather as u64);
     let records = w.alloc(sweather_per_region::STRIDE * 2);
@@ -455,7 +430,6 @@ fn world(shape: &Shape) -> Built {
         w.u32(region + 0x60, id + 1);
         regions.push(region);
     }
-    // Sub-units and templates.
     let subunits: Vec<usize> = (0..6)
         .map(|index| {
             let unit = w.object(0x600, csub_unit_definition::VTABLE_RVA.0);
@@ -479,7 +453,6 @@ fn world(shape: &Shape) -> Built {
             }
             w.array(t + 0xc0, terms, count as u32);
             w.u64(t + template::PRIORITY_UNIT, subunits[index % 6] as u64);
-            // Every other template is an exile template of an owner.
             if index % 2 == 0 {
                 w.u32(t + inputs::TEMPLATE_ORIGIN_TYPE, 2);
                 w.u32(t + inputs::TEMPLATE_COUNTRY, owners[index % owners.len()]);
@@ -488,8 +461,6 @@ fn world(shape: &Shape) -> Built {
         })
         .collect();
     register_templates(&mut w, &templates);
-    // Three naming groups the templates share, so several divisions'
-    // generated names store one group key between them.
     let name_groups: Vec<usize> = (0..3)
         .map(|index| {
             let group = w.object(0x40, engine_native::cname_group_member::GROUP_VTABLE_RVA.0);
@@ -506,7 +477,6 @@ fn world(shape: &Shape) -> Built {
             name_groups[index % name_groups.len()] as u64,
         );
     }
-    // States, terrain and provinces, registered by id.
     let states: Vec<usize> = (0..shape.states)
         .map(|index| {
             let state = w.object(0x1000, cstate::VTABLE_RVA.0);
@@ -568,9 +538,7 @@ fn world(shape: &Shape) -> Built {
             province
         })
         .collect();
-    // Army leaders with their orders groups, resolved by reference.
     let groups = leaders(&mut w, shape.leaders, owners[0]);
-    // Divisions.
     let total = shape.combats * shape.divisions;
     let mut armies = Vec::new();
     for index in 0..total {
@@ -592,9 +560,6 @@ fn world(shape: &Shape) -> Built {
         let owner = owners[index % owners.len()];
         w.u32(army + cunit::ROSTER_OWNER, owner);
         w.u32(army + cunit::LOGICAL_OWNER, owner);
-        // Three naming shapes: a type-zero name from the template's shared
-        // group, a player's custom name, and a generated name of nonzero
-        // type (which reads nothing further).
         let name = w.alloc(0x100);
         w.u64(army + inputs::NAME_GROUP_MEMBER, name as u64);
         w.u64(name, engine_native::cname_group_member::VTABLE_RVA.0 as u64);
@@ -641,7 +606,6 @@ fn world(shape: &Shape) -> Built {
         }
         armies.push(army);
     }
-    // Combats: a naval combat first, which the land census skips.
     let registry = w.alloc((shape.combats + 1) * 8);
     w.array(
         GAME + cgame_state::COMBATS + 8,
@@ -689,7 +653,6 @@ fn world(shape: &Shape) -> Built {
                 w.u64(list + ordinal * 8, unit as u64);
             }
             w.array(side + cland_combatant::UNITS, list, units.len() as u32);
-            // Committed first, then one reserve, the rest unassigned.
             let committed = units.len().div_ceil(2);
             let reserves = usize::from(units.len() > committed);
             w.array(side + cland_combatant::COMMITTED, list, committed as u32);
@@ -720,14 +683,8 @@ fn world(shape: &Shape) -> Built {
     }
 }
 
-/// `count` category-2 army leaders (no formation), each in its own orders
-/// group, resolvable through the high reference root. Returns the groups.
-/// Registers the templates by their handle in the reference registry's
-/// root for their type, one bucket each at its home slot.
 fn register_templates(w: &mut World, templates: &[usize]) {
     use engine_native::{creference_registry as registry, reference_bucket as bucket};
-    // At least twice the templates in buckets, a power of two: the
-    // header's overflow distance is the exponent plus two.
     let buckets = (templates.len() * 2).next_power_of_two().max(8);
     let (mask, overflow) = (buckets as u32 - 1, buckets.trailing_zeros() as u8 + 2);
     let table = w.alloc(0x40);
@@ -744,9 +701,6 @@ fn register_templates(w: &mut World, templates: &[usize]) {
         entries + (mask as usize + 1 + overflow as usize) * bucket::STRIDE + bucket::DISTANCE,
         &[bucket::TERMINAL_DISTANCE],
     );
-    // Robin Hood insertion, as the registry keeps its buckets: a probe
-    // stops at a bucket whose distance is below its own, so an entry
-    // displaced from home takes the slot of any closer-to-home entry.
     let mut buckets: Vec<Option<(u64, usize, u32)>> =
         vec![None; mask as usize + 1 + overflow as usize];
     for &t in templates {
@@ -783,9 +737,6 @@ fn register_templates(w: &mut World, templates: &[usize]) {
     }
 }
 
-/// Divisions sharing group keys store each key once, as the reference
-/// walk does: with a name arena too small for every name, both publish
-/// the same rows, outcomes and demand, and after growth both keep all.
 #[test]
 #[cfg(test)]
 fn shared_naming_keys_and_custom_names_match_the_reference_under_pressure() {
@@ -800,8 +751,6 @@ fn shared_naming_keys_and_custom_names_match_the_reference_under_pressure() {
             },
         );
     }
-    // A naming group whose key cannot be read fails the same division in
-    // both walks.
     let mut built = world(&shape);
     let group = built
         .world
@@ -835,7 +784,6 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
     }
     w.array(skills + 0xe8 + 2 * 0x18, levels, 5);
     let preferred = w.object(0x100, cnull_combat_tactic::VTABLE_RVA.0);
-    // One bucket per leader in a 64-slot table, without collisions.
     let (mask, overflow) = (63_u32, 8_u8);
     let table = w.alloc(0x40);
     let entries = w.alloc((mask as usize + 1 + overflow as usize + 1) * bucket::STRIDE);
@@ -871,12 +819,10 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
             leader + cunit_leader::NAME,
             format!("leader {id}").as_bytes(),
         );
-        // The raw saved name the detail and division commander read.
         w.text(
             leader + cunit_leader::TOKEN,
             format!("LEADER_{id}").as_bytes(),
         );
-        // An empty inline description token.
         w.u64(leader + cunit_leader::DESCRIPTION_TOKEN + 24, 15);
         for offset in [
             carmy_leader::MOVEMENT_MODIFIER,
@@ -907,7 +853,6 @@ fn leaders(w: &mut World, count: usize, country: u32) -> Vec<usize> {
     groups
 }
 
-/// Large enough for every fixture here, so nothing truncates.
 fn roomy() -> Capacities {
     Capacities {
         divisions: 8192,
@@ -994,8 +939,6 @@ pub(super) fn allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnc
     disarm();
 }
 
-/// Everything a walk publishes: tables, outcomes, and the demand of every
-/// arena and census.
 #[derive(Debug, PartialEq)]
 #[cfg(test)]
 struct Observed {
@@ -1046,7 +989,6 @@ fn run(world: &impl Memory, c: Capacities) -> Observed {
     observe(&captured)
 }
 
-/// One walk as main's readers read: nothing shared (see `Destination`).
 #[cfg(test)]
 fn run_reference(world: &impl Memory, c: Capacities) -> Observed {
     let mut captured = Captured::with_capacities(&c);
@@ -1083,8 +1025,6 @@ fn deferred_reserve_arithmetic_preserves_rows_refusals_and_native_read_order() {
     }
 }
 
-/// The walk and the reference walk publish the same, with and without
-/// the authenticated roster: every table, outcome, failure and demand.
 #[cfg(test)]
 fn assert_equivalent_with(world: &World, c: Capacities) -> Observed {
     let cache = roster(world);
@@ -1112,9 +1052,6 @@ fn assert_equivalent(world: &World) -> Observed {
     assert_equivalent_with(world, roomy())
 }
 
-/// Every failure is the reference walk's: a read that fails at a chosen
-/// ordinal of the reference walk publishes the tables, outcomes and
-/// demand the reference walk publishes.
 #[test]
 #[cfg(test)]
 fn walk_fails_as_the_reference_walk() {
@@ -1147,10 +1084,6 @@ fn rows(view: &TableView) -> usize {
     }
 }
 
-/// Every table complete and identical to the reference walk's, with
-/// shared owners, templates, states, provinces and regions, leaders,
-/// transport divisions, a naval combat the census skips and a tactic
-/// registry.
 #[test]
 #[cfg(test)]
 fn family_walk_publishes_the_reference_tables() {
@@ -1166,15 +1099,12 @@ fn family_walk_publishes_the_reference_tables() {
     assert_eq!(rows(&one.tables[0]), shape.combats);
     assert_eq!(rows(&one.tables[1]), shape.combats * shape.divisions);
     assert_eq!(rows(&one.tables[2]), shape.combats * 2);
-    // LandCombatDivisionModifiers holds a row a member.
     assert_eq!(rows(&one.tables[4]), shape.combats * shape.divisions);
     let TableView::Complete(replay_data::rows::TableRows::LandCombatDivisions(divisions)) =
         &one.tables[1]
     else {
         unreachable!()
     };
-    // Commanded divisions keep their commander handle, and only a reserve carries a speed share,
-    // composed or refused. Unjoined members keep their own values.
     let commanded = divisions.iter().filter(|row| row.commander != 0).count();
     assert!(
         divisions
@@ -1188,9 +1118,6 @@ fn family_walk_publishes_the_reference_tables() {
             .count()
     );
     assert!(divisions.iter().any(|row| !row.width_terms.is_empty()));
-    // Each reserve's country prints its reinforcement-rate tree (here a
-    // childless root of 7), read once however many reserves it has; a
-    // commander row exists only for a nonzero root and keeps its name.
     let TableView::Complete(replay_data::rows::TableRows::ReserveModifierTrees(trees)) =
         &one.tables[5]
     else {
@@ -1219,11 +1146,8 @@ fn family_walk_publishes_the_reference_tables() {
             .filter(|row| row.kind != 0)
             .all(|row| row.nodes.as_ref().is_some_and(|nodes| nodes[0].value != 0))
     );
-    // Committed divisions on exile templates carry their exile operands;
-    // every division carries its generated name.
     assert!(divisions.iter().any(|row| row.exile.is_some()));
     assert!(divisions.iter().any(|row| row.exile.is_none()));
-    // Group, custom and generated names all occur.
     fn naming(row: &replay_data::rows::LandCombatDivisionRow) -> &replay_data::rows::NameOperands {
         &row.own.as_ref().unwrap().naming
     }
@@ -1252,7 +1176,6 @@ fn family_walk_publishes_the_reference_tables() {
         unreachable!()
     };
     assert!(members.iter().any(|member| !member.entries.is_empty()));
-    // One row a member, keyed as its LandCombatDivisions row.
     assert_eq!(
         members
             .iter()
@@ -1273,7 +1196,6 @@ fn reason(outcome: Outcome) -> &'static str {
     }
 }
 
-/// Guarded division failures keep the earliest combat's reason.
 #[test]
 #[cfg(test)]
 fn earliest_guarded_failure_wins() {
@@ -1287,7 +1209,6 @@ fn earliest_guarded_failure_wins() {
         let stats = built.world.get_u64(army + cunit::STAT_BLOCK) as usize;
         built.world.u64(stats, 0x1234);
     };
-    // Each failure alone, to show the reasons differ.
     let mut built = world(&shape);
     stat_block(&mut built, 3);
     let first = reason(assert_equivalent(&built.world).outcomes[1]);
@@ -1310,8 +1231,6 @@ fn earliest_guarded_failure_wins() {
     }
 }
 
-/// A failure that replaces earlier ones (a combat's unit list) keeps the
-/// latest combat's reason, also over an earlier or later guarded failure.
 #[test]
 #[cfg(test)]
 fn latest_overwriting_failure_wins() {
@@ -1335,7 +1254,6 @@ fn latest_overwriting_failure_wins() {
         let mut built = world(&shape);
         duplicate(&mut built, duplicated);
         overlap(&mut built, overlapped);
-        // A guarded division failure between them never replaces one.
         let army = built.armies[3][0];
         built.world.poison(army + cunit::STAT_BLOCK, 8);
         let observed = assert_equivalent(&built.world);
@@ -1344,19 +1262,14 @@ fn latest_overwriting_failure_wins() {
     }
 }
 
-/// A division read failure fails the division table alone and a detail
-/// failure the detail table alone, whichever combat each is in, as the
-/// reference walk publishes them.
 #[test]
 #[cfg(test)]
 fn division_and_detail_failures_stay_in_their_tables() {
     let shape = Shape::small();
-    // The name member is in the division's army image.
     let division = |built: &mut Built, combat: usize| {
         let army = built.armies[combat][0];
         built.world.poison(army + inputs::NAME_GROUP_MEMBER, 8);
     };
-    // The stored terrain is read only by detail(): point it at the combat.
     let detail = |built: &mut Built, combat: usize| {
         let object = built.combats[combat];
         built
@@ -1376,8 +1289,6 @@ fn division_and_detail_failures_stay_in_their_tables() {
     }
 }
 
-/// A census that fails at a later combat stops the walk there; an
-/// earlier division failure still names the division table.
 #[test]
 #[cfg(test)]
 fn census_failure_stops_the_walk_at_its_combat() {
@@ -1394,8 +1305,6 @@ fn census_failure_stops_the_walk_at_its_combat() {
     assert_ne!(reason(observed.outcomes[1]), census);
 }
 
-/// Small initial row storage grows before the first publication and preserves
-/// the unshared reference walk's rows, faults and demand.
 #[test]
 #[cfg(test)]
 fn worker_rows_match_the_reference_without_a_truncated_first_hour() {
@@ -1426,7 +1335,6 @@ fn worker_rows_match_the_reference_without_a_truncated_first_hour() {
     );
 }
 
-/// Every leader a combat's army points to.
 #[cfg(test)]
 fn army_leaders(built: &Built) -> Vec<usize> {
     let mut leaders = Vec::new();
@@ -1566,9 +1474,6 @@ fn border_war_hooks_reference_relocates_after_neighbouring_heap_text() {
     border_war_hooks_after_neighbouring_text(true);
 }
 
-/// A selected commander's stored name and token use ordinary MSVC strings
-/// of any length, empty included. A long name grows the land-detail text arena
-/// during its original read and publishes whole, as the reference walk does.
 #[test]
 #[cfg(test)]
 fn selected_commander_texts_keep_native_length_and_grow() {
@@ -1585,7 +1490,6 @@ fn selected_commander_texts_keep_native_length_and_grow() {
         built.world.u64(leader + TOKEN, heap as u64);
         built.world.u64(leader + TOKEN + 16, long.len() as u64);
         built.world.u64(leader + TOKEN + 24, long.len() as u64);
-        // An empty heap description.
         built.world.u64(leader + DESCRIPTION_TOKEN, empty as u64);
         built.world.u64(leader + DESCRIPTION_TOKEN + 16, 0);
         built.world.u64(leader + DESCRIPTION_TOKEN + 24, 31);
@@ -1624,7 +1528,6 @@ fn selected_commander_texts_keep_native_length_and_grow() {
             .all(|side| side.commander_name_token == long)
     );
 
-    // An empty name is a valid text, not a failure.
     for &leader in &leaders {
         built.world.u64(leader + TOKEN, 0);
         built.world.text(leader + TOKEN, b"");
@@ -1643,18 +1546,9 @@ fn selected_commander_texts_keep_native_length_and_grow() {
     );
 }
 
-/// The live rate on the run3 save: 44,741 guarded calls in 0.96 ms.
 #[cfg(test)]
 const LIVE_NS_PER_CALL: f64 = 21.5;
 
-/// Guarded calls per pass for the whole land combat family (census,
-/// details, divisions and modifiers) over the authenticated roster, as
-/// the Ordinary job reads, at 153, 1,000, 3,000, 5,000, 10,000 and 50,000 divisions in
-/// combat: the reference walk (main's reads, nothing shared) and the
-/// walk. A gather (`copy_records`) or scatter is one guarded call, as
-/// live. The estimate uses run3's 21.5 ns per guarded call; the
-/// fixture's own time is its slow sparse memory, not the game's. Run in
-/// release with `--ignored --nocapture`.
 #[test]
 #[ignore]
 #[cfg(test)]
@@ -1676,7 +1570,6 @@ fn family_cost_at_scale() {
         let view = &cache.roster_view(w);
         let mut capacities = Capacities::default();
         let mut walk = Captured::with_capacities(&capacities);
-        // Grow to the census and warm storage, as a running recorder has.
         for _ in 0..3 {
             pass(&mut walk, view);
             walk.grow(&mut capacities);
@@ -1755,11 +1648,6 @@ fn family_cost_at_scale() {
     }
 }
 
-/// One walk's guarded calls by stage over `memory` (the roster view of
-/// `w`). Each stage runs in the walk's order with the walk's shares and
-/// counts as the difference from the stages before it; the division
-/// readers (with their commanders) and the modifier members are what the
-/// divisions and modifiers tables (`tables`) count beyond those stages.
 #[cfg(test)]
 fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static str, u64)> {
     use engine_native::land_tactic_inputs as tactic;
@@ -1841,10 +1729,6 @@ fn stages(w: &World, memory: &impl Memory, tables: [u64; N]) -> Vec<(&'static st
     ]
 }
 
-/// One walk's guarded calls by the object each call reads first: the
-/// divisions' own armies and stat blocks, the combats and their sides,
-/// module and game-state words, and every other object (countries,
-/// provinces, states, templates, leaders, participant lists).
 #[cfg(test)]
 fn calls_by_object(
     built: &Built,

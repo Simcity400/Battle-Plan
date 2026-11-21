@@ -1,4 +1,3 @@
-//! CFleet layout; task-force vector entries are complete CTaskForce pointers.
 
 use engine_sites::Rva;
 use crate::{
@@ -10,34 +9,20 @@ use crate::{
     walk::Outcome,
 };
 
-/// CFleet primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_f3d8);
-/// CFleet reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
-/// CFleet reference type.
 pub const HANDLE_TYPE: u32 = 61;
-/// CFleet owner CCountry pointer.
 pub const OWNER: usize = 0xa8;
-/// Fleet leader reference.
 pub const LEADER: usize = 0xb0;
-/// Stored fleet MSVC name, filled during creation and saved directly.
 pub const NAME: usize = 0xe0;
-/// CFleet task-force pointer array.
 pub const TASK_FORCES: usize = 0xb8;
-/// CFleet task-force array capacity, u32.
 #[cfg(any(test, feature = "test-support"))]
 pub const TASK_FORCE_CAPACITY: usize = 0xc0;
-/// CFleet task-force array count, u32.
 pub const TASK_FORCE_COUNT: usize = 0xc4;
-/// CFleet home-base CProvince pointer.
 pub const HOME_BASE: usize = 0xd8;
-/// CFleet mission CStrategicRegion pointer array.
 pub const MISSION_REGIONS: usize = 0x48;
-/// CFleet mission region count i32.
 pub const MISSION_REGION_COUNT: usize = 0x54;
-/// Fleet embedded colour object.
 pub const COLOR: usize = 0x110;
-/// RGBA f32 components inside the colour, copied into the port counter.
 pub const COLOR_COMPONENTS: usize = 0x120;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +46,6 @@ pub struct Capture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimedCapture {
     pub capture: Capture,
-    /// Caller clock ticks for fleets/root traversal, task forces and ships.
-    /// These add to the elapsed walk; clock/loop overhead stays in the total.
     pub read_ticks: [u64; 3],
 }
 
@@ -100,7 +83,6 @@ impl<'a, R: Default> Output<'a, R> {
         Ok(true)
     }
 
-    /// Whether a later row may still be emitted: no failure, and room or growth.
     fn may_take(&self) -> bool {
         self.error.is_none() && (self.rows.is_growing() || self.len < self.rows.len())
     }
@@ -129,12 +111,6 @@ impl<'a, R: Default> Output<'a, R> {
     }
 }
 
-/// Descends each canonical country's fleet/task-force/ship graph once. Empty
-/// rosters are valid. Only root and relationship failures invalidate the whole
-/// graph; a table's unreadable body fields remain that table's failure. Full
-/// buffers stop body reads while the traversal counts omitted rows and reads
-/// the roster metadata needed by the other tables. No sorting or allocation
-/// occurs here; duplicate native handles are rejected during frame encoding.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -162,11 +138,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Capture {
     .capture
 }
 
-/// Measures the three tables without repeating the shared graph traversal.
-/// The caller supplies a monotonic clock; each ship vector is timed as a batch.
-/// Clock boundaries name the following phase: fleets/shared roots = 0,
-/// task forces = 1, ships = 2. Every completed phase returns to 0, including
-/// failures; the final boundary also names 0.
 pub fn walk_timed(
     memory: &impl Memory,
     base: usize,
@@ -188,11 +159,6 @@ pub fn walk_timed(
     )
 }
 
-/// Shares authenticated emitted ship rows with independent state extensions.
-/// A visitor receives the transient ship pointer, never a replay identity. Its
-/// errors stay in its own table. A truncated or unavailable Ships outcome must
-/// invalidate any dependent census, even if a visited prefix was readable.
-/// Visitor cost is included in ship ticks; the caller attributes it separately.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_timed_with(
     memory: &impl Memory,
@@ -218,16 +184,10 @@ pub fn walk_timed_with(
     )
 }
 
-/// Ships of a roster page the serial census hints ahead of the one it reads.
 const SHIP_HINTS: usize = 8;
 
-/// Ships (and ship-table failures) the census reads in one guarded batch.
 const SHIP_RUN: usize = 64;
 
-/// A fleet's census fields, gathered in one guarded call per fleet and served
-/// to the census's reads of it: vtable, handle, owner, leader, task-force
-/// roster, home base and name. A field the gather could not copy is read
-/// alone, as the per-field walk reads it.
 const FLEET_FIELDS: [(usize, usize); 7] = [
     (0, 8),
     (HANDLE, 8),
@@ -238,9 +198,6 @@ const FLEET_FIELDS: [(usize, usize); 7] = [
     (NAME, crate::msvc_string::STRIDE),
 ];
 
-/// A task force's census fields, gathered the same way: its identity
-/// (vtables, handle, fleet), its TaskForces row (combat references, owners,
-/// location, ordinary route count, mission) and its ship roster.
 const TASK_CENSUS_FIELDS: [(usize, usize); 10] = [
     (0, 8),
     (ctask_force::SECONDARY_BASE, 8),
@@ -254,8 +211,6 @@ const TASK_CENSUS_FIELDS: [(usize, usize); 10] = [
     (ctask_force::MISSION, 4),
 ];
 
-/// One census occurrence on the Ships table, in census order: a ship to read
-/// and emit, or a failure that stops the table there.
 #[derive(Clone, Copy)]
 enum Pending {
     Ship {
@@ -267,15 +222,6 @@ enum Pending {
     Failure(&'static str),
 }
 
-/// The census's pending Ships occurrences, across task forces, fleets and
-/// countries. The ships' census fields are read in one guarded
-/// `copy_records` per run (its sixteen-row hints overlap their misses); the
-/// rows are then checked and emitted, and the failures applied, in census
-/// order, so a healthy census emits what the per-ship walk emits. A run whose
-/// copy stops early reads its remaining ships once more one at a time
-/// ([`cship::read_row`]), which gives the per-ship walk's failure for a
-/// lasting fault; a fault that clears may let a ship through that the
-/// per-ship walk refused, never the reverse.
 struct ShipRun {
     pending: [Pending; SHIP_RUN],
     len: usize,
@@ -293,7 +239,6 @@ impl ShipRun {
         }
     }
 
-    /// Queue `entry`, reading the run first when it is full.
     fn push(
         &mut self,
         entry: Pending,
@@ -309,8 +254,6 @@ impl ShipRun {
         self.len += 1;
     }
 
-    /// Read the run's ships in one guarded copy, then emit them and apply its
-    /// failures in census order.
     fn flush(
         &mut self,
         memory: &impl Memory,
@@ -325,7 +268,6 @@ impl ShipRun {
                 count += 1;
             }
         }
-        // Nothing is read for a table that can take no row.
         let complete = if count != 0 && ships.may_take() {
             memory.copy_records(
                 crate::memory::RecordSources::Pointers(&self.pointers[..count]),
@@ -367,7 +309,6 @@ impl ShipRun {
                             task,
                             task_id,
                         ),
-                        // The batch stopped before this ship: read it alone.
                         _ => {
                             fell_back = true;
                             cship::read_row(memory, base, ship, task, task_id)
@@ -391,9 +332,6 @@ impl ShipRun {
     }
 }
 
-/// Worker-only storage follows each original fleet/task/ship observation. Fleet serialization
-/// traverses TASK_FORCES through its data and count; no chosen population ceiling and no second
-/// native capture is needed after growth.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_timed_with_names(
     memory: &impl Memory,
@@ -448,8 +386,6 @@ fn walk_named(
     )
 }
 
-/// Shares the core census's authenticated selecting objects with an independent settings
-/// observer. Its own refusals never change Fleets, TaskForces or Ships.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_timed_with_management(
     memory: &impl Memory,
@@ -501,8 +437,6 @@ fn walk_named_observed(
     };
     let start = now(0);
     let mut read_ticks = [0_u64; 3];
-    // The census reads the selected fleet's and task force's fields from one
-    // gather each (batched walks only); ships are read in runs from `source`.
     let source = memory;
     let fleet_view = cship::SwitchedObject::new(source, FLEET_FIELDS);
     let view = cship::SwitchedObject::new(&fleet_view, TASK_CENSUS_FIELDS);
@@ -577,8 +511,6 @@ fn walk_named_observed(
                             ..Default::default()
                         };
                         if let Some(arena) = names.as_deref_mut() {
-                            // Compare both handle words with the live invalid-reference object
-                            // before retaining the leader.
                             row.leader =
                                 read::<u64>(memory, at(LEADER)?).zip(invalid_reference).map(
                                     |(reference, invalid)| {
@@ -627,8 +559,6 @@ fn walk_named_observed(
                         Err(reason) => {
                             task_output.error.get_or_insert(reason);
                             if batched {
-                                // The Ships table stops here, after the
-                                // ships queued before this task force.
                                 let ship_start = now(2);
                                 run.push(
                                     Pending::Failure(reason),
@@ -651,18 +581,12 @@ fn walk_named_observed(
                             .checked_add(ctask_force::SHIPS)
                             .and_then(|p| Array::read(memory, p, 8))
                             .ok_or("ship roster unreadable or invalid")?;
-                        // The roster's pointers a page per guarded call; each
-                        // ship is read in roster order after its page, with
-                        // cache hints (no reads) for the ships SHIP_HINTS
-                        // ahead of it in the page, so their misses overlap.
                         crate::cpdx_array::pointer_pages(
                             memory,
                             ship_roster,
                             ROSTER_POINTER,
                             |first, page| {
                                 if batched {
-                                    // Each ship joins the run in roster
-                                    // order, hinted now and read with it.
                                     for (index, &ship) in page.iter().enumerate() {
                                         if ship == 0 {
                                             return Err(ROSTER_POINTER);
@@ -734,9 +658,6 @@ fn walk_named_observed(
         }
         Ok((fleet_output.finish(), task_output.finish()))
     })();
-    // The ships still queued, including those queued before a failure that
-    // ended the walk, are read, emitted and visited (seeding their consumers)
-    // as the per-ship walk did before it reached that failure.
     let ship_start = now(2);
     run.flush(source, base, &mut ship_output, &mut visit);
     read_ticks[2] = read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
@@ -805,8 +726,6 @@ pub(crate) fn province(
     Ok(id)
 }
 
-/// Fleet marker colour bits, mission-region count and ordered task-force
-/// roster in the caller's handle arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CounterRow {
     pub id: u64,
@@ -820,13 +739,10 @@ pub struct CounterRow {
 pub struct CounterWalk {
     pub fleets: Outcome,
     pub task_forces: Outcome,
-    /// Roster handles written, and handles the complete census needs.
     pub roster_len: usize,
     pub roster_required: usize,
 }
 
-/// A task force found by [`visit_task_forces`], already authenticated, with its fleet (whose
-/// pointer the task force's fleet the walk checked equal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskForceVisit {
     pub country: ccountry::Country,
@@ -838,7 +754,6 @@ pub struct TaskForceVisit {
     pub kind: u32,
 }
 
-/// An authenticated fleet followed by its task forces in roster order.
 pub enum Visit {
     Fleet {
         country: ccountry::Country,
@@ -849,11 +764,6 @@ pub enum Visit {
     TaskForce(TaskForceVisit, u32),
 }
 
-/// Visits every task force of every canonical country's fleets (`ccountry::FLEETS`, `TASK_FORCES`),
-/// in country, fleet and roster order. Each fleet's vtable, handle and owner and each task force's
-/// vtables, handle and parent fleet are checked, as `walk_counter_inputs` checks them, before its
-/// kind is trusted. The callback receives each fleet (including empty fleets), then its task forces
-/// with their roster indices.
 pub fn visit_task_forces<M: Memory>(
     memory: &M,
     base: usize,
@@ -863,8 +773,6 @@ pub fn visit_task_forces<M: Memory>(
     visit_task_forces_inner(memory, base, countries, true, |_| (), visit)
 }
 
-/// Use the same authenticated roster for cached fuel. Leader and mission
-/// body faults do not withhold a cache whose getter never reads them.
 pub fn visit_fuel_task_forces<M: Memory>(
     memory: &M,
     base: usize,
@@ -874,8 +782,6 @@ pub fn visit_fuel_task_forces<M: Memory>(
     visit_task_forces_inner(memory, base, countries, false, |_| (), visit)
 }
 
-/// `select` receives each task-force pointer once its identity authenticated, before its visit;
-/// a gather there must not serve the identity, whose faults keep their refusal.
 fn visit_task_forces_inner<M: Memory>(
     memory: &M,
     base: usize,
@@ -933,7 +839,6 @@ fn visit_task_forces_inner<M: Memory>(
                 if fleet == 0 {
                     return Err("fleet roster pointer unreadable or null");
                 }
-                // Preserve the named overflow error before copy_records reports a short prefix.
                 fleet
                     .checked_add(TASK_FORCES)
                     .ok_or("fleet address overflow")?;
@@ -944,7 +849,6 @@ fn visit_task_forces_inner<M: Memory>(
                     &mut bytes,
                 );
                 let value = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-                // Interpret the gathered prefix in the established authentication order.
                 if copied < 1 || value(0) != fleet_vtable {
                     return Err("fleet vtable mismatch");
                 }
@@ -977,7 +881,6 @@ fn visit_task_forces_inner<M: Memory>(
                     if task == 0 {
                         return Err("task force pointer unreadable or null");
                     }
-                    // Preserve the named overflow error before copy_records reports a short prefix.
                     task.checked_add(if body_fields {
                         ctask_force::MISSION
                     } else {
@@ -1027,10 +930,6 @@ fn visit_task_forces_inner<M: Memory>(
                     "task force pointer unreadable or null",
                     |first, page| {
                         for (offset, &task) in page.iter().enumerate() {
-                            // Cache hints (no reads) for the next task force's
-                            // identity and, in the counter walk, the fields its
-                            // readers gather (`ctask_force::TASK_FIELDS`), while
-                            // this one is read.
                             if let Some(&next) = page.get(offset + 1) {
                                 crate::prefetch::fields(next, task_layout.fields());
                                 if body_fields {
@@ -1053,10 +952,6 @@ fn visit_task_forces_inner<M: Memory>(
     Ok(())
 }
 
-/// Descends each canonical country's fleets and task forces once, with the same authentication as
-/// [`walk_timed_with`], and reads only the counter operands. A fleet whose roster does not fit is
-/// omitted whole; task-force rows are independent of it. `visit` receives every authenticated
-/// task force's pointer and handle, for censuses that share this walk.
 pub fn walk_counter_inputs(
     memory: &impl Memory,
     base: usize,
@@ -1077,10 +972,6 @@ pub fn walk_counter_inputs(
     )
 }
 
-/// The same walk with an optional cached-name arena paired with task-force
-/// rows. Acquire names after the counter prefix succeeds; name faults or
-/// short arenas retain the row and all prefix fields. Preserve visitor
-/// order and the no-name read trace.
 pub fn walk_counter_inputs_with_names(
     memory: &impl Memory,
     base: usize,
@@ -1104,10 +995,6 @@ pub fn walk_counter_inputs_with_names(
     )
 }
 
-/// The established walk adds independent name and supply suffixes after
-/// the primary task prefix succeeds. Without arenas, reads and visitor
-/// ordering are unchanged. Suffix refusal cannot change counter, motion
-/// or mission censuses.
 pub fn walk_counter_inputs_with_tooltips(
     memory: &impl Memory,
     base: usize,
@@ -1132,7 +1019,6 @@ pub fn walk_counter_inputs_with_tooltips(
     )
 }
 
-// Keep each row/loan/arena lifetime independent, as in the original tuple.
 type PortCounterBuffers<'rows, 'names, 'bytes, 'supply, 'origins, 'port, 'sources, M> = (
     crate::walk::Buffer<'rows, ctask_force::CounterRow>,
     Option<&'names mut crate::cname_group_member::Names<'bytes>>,
@@ -1147,10 +1033,6 @@ type PortCounterInputs<'rows, 'names, 'bytes, 'supply, 'origins, 'port, 'sources
     Option<&'port mut ctask_force::port_mission::Collector<'sources, M>>,
 );
 
-/// Optional political port operands after the admitted prefix/name/supply.
-/// Every older entry point supplies None, preserving its reads and ordering.
-/// The port collector owns independent prepared arenas and pass-local answers;
-/// a refused port group cannot change any prior field or the task-force census.
 pub fn walk_counter_inputs_with_port<M: Memory>(
     memory: &M,
     base: usize,
@@ -1172,8 +1054,6 @@ pub fn walk_counter_inputs_with_port<M: Memory>(
     )
 }
 
-/// Counters grow rows and ordered rosters from the original array header
-/// without a population cap.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_counter_inputs_with_port_observed<M: Memory>(
     memory: &M,
@@ -1199,9 +1079,6 @@ pub fn walk_counter_inputs_with_port_observed<M: Memory>(
     )
 }
 
-/// Brackets the original fleet-region header with the borrower's opaque token;
-/// its observer can certify the header and payload without reacquiring the header.
-/// `select` receives each task-force pointer once its identity authenticated.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_counter_inputs_with_port_and_fleet_observed<M: Memory, T>(
     memory: &M,
@@ -1307,7 +1184,6 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
                                 .ok()
                                 .flatten();
                                 if let Some((start, len)) = row.name {
-                                    // copy_string proved this span is inside the arena.
                                     names.len = start + len;
                                 }
                             }
@@ -1347,7 +1223,6 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
                     (index + 1 == task_count).then_some((task.fleet, task.fleet_handle))
                 }
             };
-            // Preserve main's task authentication before fleet counter operand failures.
             if let Some((fleet, id)) = finished.filter(|_| keep) {
                 let at = |offset| fleet.checked_add(offset).ok_or("fleet address overflow");
                 let colour = read::<[u8; 16]>(memory, at(COLOR_COMPONENTS)?)
@@ -1390,8 +1265,6 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
 #[cfg(test)]
 mod tests;
 
-/// A changed fleet's already-observed region vector, acquired only under its
-/// writer certificate inside the existing authenticated census.
 pub fn read_mission_regions(
     memory: &impl Memory,
     base: usize,

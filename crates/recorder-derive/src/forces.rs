@@ -1,5 +1,3 @@
-//! What the force writers ([`crate::air_force`], [`crate::navy`]) share: the canonical slot a
-//! raw country id's link names, the live countries' slots, and reading their inputs' cells.
 
 use crate::framework::{Columns, Hour, Rows, Value};
 use replay_columnar::store::TableView;
@@ -13,7 +11,6 @@ pub(crate) fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The links' canonical slots by raw country id, and every live country's slot.
 #[derive(Default)]
 pub(crate) struct Owners {
     links: HashMap<u32, u32>,
@@ -36,7 +33,6 @@ impl Owners {
         self.countries.extend(countries.rows().filter_map(|slot| countries.number(0, slot)).map(|canonical| canonical as u32));
     }
 
-    /// The slot `raw` counts for: none for the null id or one no link resolves.
     pub fn slot(&self, raw: u32) -> Option<u32> {
         (raw != 0).then(|| self.links.get(&raw).copied()).flatten()
     }
@@ -46,29 +42,23 @@ impl Owners {
     }
 }
 
-/// Whether the hour moved a link's slot.
 pub(crate) fn links_moved(hour: &Hour<'_>) -> bool {
     hour.wrote(TableId::CountryLinks, Columns::These(&[0]))
 }
 
-/// Whether the hour moved a live country's slot, or a country came or went.
 pub(crate) fn countries_moved(hour: &Hour<'_>) -> bool {
     hour.wrote(TableId::Countries, Columns::These(&[0]))
 }
 
-/// A sum as a cell: not recorded when it leaves i64.
 pub(crate) fn exact(value: i128) -> Value {
     i64::try_from(value).map_or(Value::Unrecorded, Value::I64)
 }
 
-/// The keys the writer's own `table` holds.
 pub(crate) fn held(out: &Rows<'_>, table: TableId) -> Vec<u128> {
     let view = out.table(table);
     view.rows().filter_map(|slot| view.key(slot)).collect()
 }
 
-/// Forgets every row the writer's own log `table` listed as the hour began, by runs of ordinals:
-/// a log whose rows live until the writer's next hour.
 pub(crate) fn forget_listed(hour: &Hour<'_>, out: &mut Rows<'_>, table: TableId) {
     let Some((_, listed)) = hour.listed(table) else { return };
     let mut run: Option<(u64, u64)> = None;
@@ -87,8 +77,6 @@ pub(crate) fn forget_listed(hour: &Hour<'_>, out: &mut Rows<'_>, table: TableId)
     }
 }
 
-/// Writes the rows of the writer's own `table` at `keys` as `row` gives them, deleting those it
-/// gives none of that the table holds; with `all`, every row the table holds is among them.
 pub(crate) fn write(out: &mut Rows<'_>, table: TableId, keys: impl IntoIterator<Item = u128>, all: bool, mut row: impl FnMut(u128) -> Option<Vec<Value>>) {
     let mut keys: Vec<u128> = keys.into_iter().collect();
     if all {
@@ -105,7 +93,6 @@ pub(crate) fn write(out: &mut Rows<'_>, table: TableId, keys: impl IntoIterator<
     }
 }
 
-/// The slots of `table`'s rows the hour wrote one of `columns` of, or inserted, ascending.
 pub(crate) fn written(hour: &Hour<'_>, table: TableId, columns: &'static [usize]) -> Vec<u32> {
     let mut slots = hour.written_rows(table, Columns::These(columns));
     slots.sort_unstable();
@@ -113,7 +100,6 @@ pub(crate) fn written(hour: &Hour<'_>, table: TableId, columns: &'static [usize]
     slots
 }
 
-/// The numeric cell of `column` at `slot`, which the row's codec requires recorded.
 pub(crate) fn number(view: &TableView<'_>, table: TableId, column: usize, slot: u32) -> io::Result<i64> {
     view.number(column, slot)
         .ok_or_else(|| invalid(format!("{table:?}.{} is not recorded and its row cannot say so", table.field_name(column).unwrap_or("?"))))
@@ -150,15 +136,10 @@ pub(crate) mod testing {
         }
     }
 
-    /// A store holding every table of the schema.
     pub fn store() -> Store {
         Store::new(TableId::ALL.iter().map(|table| table.schema().iter().map(|&kind| column(kind)).collect()).collect(), vec![false; TABLE_COUNT])
     }
 
-    /// Makes `table` hold exactly `rows` as of this hour, with `status`: rows it no longer holds
-    /// deleted, new ones inserted, every numeric, text and opaque cell offered, a cell the row
-    /// does not record unrecorded, each text among the strings the hour adds. The caller settles
-    /// the hour.
     pub fn put<R: RowCodec>(store: &mut Store, hour: i32, table: TableId, rows: &[R], status: Status) {
         let index = table.index();
         store.status(index, status, true, Some(hour), true).unwrap();
@@ -238,7 +219,6 @@ pub(crate) mod testing {
         }
     }
 
-    /// Every row of `table`: its key and its cells as read.
     pub fn rows(store: &Store, table: TableId) -> Vec<(u128, Vec<String>)> {
         let view = store.view(table.index());
         let mut rows: Vec<(u128, Vec<String>)> = view
@@ -249,7 +229,6 @@ pub(crate) mod testing {
         rows
     }
 
-    /// `table`'s row `key`: each cell's number, none where it is not recorded.
     pub fn cells(store: &Store, table: TableId, key: u128) -> Option<Vec<Option<i64>>> {
         let view = store.view(table.index());
         let slot = view.slot(key)?;

@@ -9,7 +9,6 @@ fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
-/// Raw 101 (and 11) of slot 7, tag MOD; every other table complete and empty.
 fn frame() -> DecodedFrame {
     let mut frame = DecodedFrame { branch: 1, hour: 1, metrics: Metrics::default(), tables: std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])).into()) };
     set::<tables::Countries>(&mut frame, vec![CountryRow { id: 101, canonical_slot: 7, tag: b"MOD".to_vec(), ..Default::default() }]);
@@ -45,7 +44,6 @@ fn a_refit_shows_its_hourly_progress_as_a_live_amount_and_its_daily_line_apart()
     set::<tables::Ships>(&mut frame, vec![ShipRow { id: ship, task_force: task, ..Default::default() }]);
     set::<tables::NavalRefitShips>(&mut frame, vec![NavalRefitShipRow { ship, line }]);
     set::<tables::NavalRefitProgress>(&mut frame, vec![NavalRefitProgressRow { line, progress_raw: 123_456 }]);
-    // The daily line metadata may not be read yet, or not available: the hourly progress still shows.
     for production in [TableView::Complete(TableRows::ProductionLines(vec![])), TableView::Unavailable { reason: "synthetic production fault".into() }] {
         *frame.tables[TableId::ProductionLines.index()] = production;
         let cells = Cells::default();
@@ -57,7 +55,6 @@ fn a_refit_shows_its_hourly_progress_as_a_live_amount_and_its_daily_line_apart()
         assert!(metadata.text.contains("cost: Unavailable"));
     }
     *frame.tables[TableId::ProductionLines.index()] = TableView::Complete(TableRows::ProductionLines(vec![ProductionLineRow { handle: line, cost_raw: 234_567, active_factories: 2, ..Default::default() }]));
-    // A line the hourly progress no longer holds is not shown, whatever the daily metadata says.
     set::<tables::NavalRefitProgress>(&mut frame, vec![NavalRefitProgressRow { line: line + 1, progress_raw: 1 }]);
     let reply = project(&frame, 7, None, &Cells::default()).unwrap();
     assert!(!lines(&reply).any(|item| item.text.starts_with("Ship 4 refit") || item.text.starts_with("Last recorded target:")));

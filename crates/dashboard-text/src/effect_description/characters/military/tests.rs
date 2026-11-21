@@ -125,7 +125,6 @@ fn rendered(fixture: &Fixture, body: &str, expected: &str, character: bool) {
     assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
 }
 
-// Role templates share the selected character reader; keep every category's wrapper.
 #[test]
 fn add_military_commander_roles() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -152,7 +151,6 @@ fn add_military_commander_roles() {
     }
 }
 
-// Authored military names remain literal; skills and traits are execution-only.
 #[test]
 fn create_military_leaders() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -195,7 +193,6 @@ fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
     );
 }
 
-// Operative creation with a recruitment bypass.
 #[test]
 fn create_operative_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -215,7 +212,6 @@ fn create_operative_leader() {
     );
 }
 
-// A held scalar token uses plain outer localisation.
 #[test]
 fn show_unit_leaders_tooltip() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -256,7 +252,6 @@ fn show_unit_leaders_tooltip() {
     );
 }
 
-// Promotion and demotion require their matching leader categories.
 #[test]
 fn promote_and_demote_leader_category_gates() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -284,7 +279,6 @@ fn promote_and_demote_leader_category_gates() {
     }
 }
 
-// Select a runtime character ID or the current character.
 #[test]
 fn remove_unit_leader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -321,7 +315,6 @@ fn remove_operative_refuses_codename_by_class_and_field() {
     )]));
 }
 
-// Use both stored operative names without scope expansion or LF.
 #[test]
 fn remove_operative_uses_format98_codename() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -349,7 +342,6 @@ fn remove_operative_uses_format98_codename() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Use the referenced leader name and append LF.
 #[test]
 fn show_unit_leaders_uses_format98_referenced_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -389,7 +381,6 @@ fn show_unit_leaders_uses_format98_referenced_name() {
     assert_eq!(out.refusals, BTreeMap::from([("synthetic effect show_unit_leaders_tooltip: key show_unit_leaders_tooltip: character 7 referenced unit leader name not recorded".into(), 1)]));
 }
 
-// Exact yes selects the character-scope role.
 #[test]
 fn remove_unit_leader_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -409,7 +400,6 @@ fn remove_unit_leader_role() {
     );
 }
 
-// Read a character selector only outside character scopes.
 #[test]
 fn remove_military_role_respects_its_scope_dependent_reader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -453,7 +443,6 @@ fn remove_operative_role_uses_skill_specific_title_then_fallback() {
     );
 }
 
-// The describer gates only on Army existence.
 #[test]
 fn add_divisional_commander_xp() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -497,8 +486,6 @@ fn add_unit_medal_is_empty_without_army() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// All three Army consumers share the formatter and distinguish old fields
-// from failed captures.
 #[test]
 fn army_name_consumers_share_names_and_field_level_compatibility() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -531,7 +518,7 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
         *fixture.frame.tables[TableId::DivisionStatus.index()] =
             TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
                 division: unit,
-                name: Recorded::NotRecorded, // Test the older naming field independently.
+                name: Recorded::NotRecorded,
                 naming,
                 ..Default::default()
             }]));
@@ -726,7 +713,6 @@ fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal()
     )]));
 }
 
-// Resolve the selected character without drawing a trait.
 #[test]
 fn add_random_valid_trait_from_unit() {
     engine_executable::executable_tables::initialize_for_tests()

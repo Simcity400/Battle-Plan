@@ -1,15 +1,3 @@
-//! `StockByVariant`: each canonical slot's stock of each design, the sum of the Stockpiles list
-//! positions of the slot's raw countries holding it (fixed5), and how many positions hold it. The
-//! recorded table is keyed by list position, so a design's stock over time is this table's, not a
-//! recorded row's. A row lives while some position holds the design, at zero too.
-//!
-//! What is not known is not recorded, never zero: every cell while some Stockpiles row's country
-//! no link resolves (any slot may be missing that row), and a sum that leaves i64. While Stockpiles
-//! is not complete the table is unavailable by the framework's default, its rows as they were.
-//!
-//! State is the table: a read adds each changed position's difference, its earlier cells handed
-//! by the framework ([`Watch::Dropped`]), to the sums the table holds; only sums past i64 are held
-//! apart. A fresh hour, a resume, a change of links or a country without one rebuilds every sum.
 
 use crate::{
     forces::{self, Owners},
@@ -30,7 +18,6 @@ const READS: &[Read] = &[
     Read { table: TableId::Stockpiles, columns: Columns::These(&STOCK), watch: Watch::Dropped, required: true },
 ];
 
-/// A list position as the sums count it: its raw country, design and amount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Position {
     country: u32,
@@ -44,16 +31,12 @@ fn key(slot: u32, variant: u64) -> u128 {
 
 #[derive(Default)]
 pub struct Stockpile {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     owners: Owners,
-    /// Stockpiles rows whose country no link resolves.
     unlinked: u64,
-    /// Sums past i64, exactly, by key: their cells are not recorded.
     wide: HashMap<u128, i128>,
 }
 
-/// The Stockpiles row at `slot` of the store as the hour left it.
 fn position(hour: &Hour<'_>, slot: u32) -> io::Result<Position> {
     let view = hour.table(TableId::Stockpiles);
     let key = view.key(slot).ok_or_else(|| forces::invalid(format!("Stockpiles slot {slot} holds no row")))?;
@@ -64,7 +47,6 @@ fn position(hour: &Hour<'_>, slot: u32) -> io::Result<Position> {
     })
 }
 
-/// A kept Stockpiles cell's number.
 fn kept(cell: &Kept) -> io::Result<u64> {
     match cell {
         Kept::Number(bits) => Ok(*bits),
@@ -73,7 +55,6 @@ fn kept(cell: &Kept) -> io::Result<u64> {
 }
 
 impl Stockpile {
-    /// Every sum again from the tables as they stand.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         self.owners.read_links(hour);
         self.unlinked = 0;
@@ -98,7 +79,6 @@ impl Stockpile {
         Ok(())
     }
 
-    /// Adds the hour's changed positions' differences to the sums; false when it must rebuild.
     fn apply(&mut self, hour: &Hour<'_>, out: &mut Rows<'_>) -> io::Result<bool> {
         let changes = hour.changes(TableId::Stockpiles);
         if changes.whole || forces::links_moved(hour) {
@@ -146,7 +126,6 @@ impl Stockpile {
         if unlinked != 0 || self.unlinked != 0 {
             return Ok(unlinked == self.unlinked && unlinked != 0 && moved.is_empty());
         }
-        // Every sum is settled before any row is set: a row it cannot read rebuilds the hour whole.
         let mut sums: Vec<(u128, i128, i64)> = Vec::with_capacity(moved.len());
         {
             let view = out.table(TableId::StockByVariant);
@@ -214,7 +193,6 @@ impl Writer for Stockpile {
         Ok(())
     }
 
-    /// Nothing but the table: a resume rebuilds every sum from it.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

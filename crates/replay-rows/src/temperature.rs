@@ -1,41 +1,13 @@
-//! Province temperatures replayed from recorded inputs and the recorded content stack, with no
-//! memory access: the signed fixed5 committed temperature of each province weather record, which
-//! the province tooltip and the save serializer read.
-//!
-//! Each hour that the weather update finds both suspension gates clear, it adds a synchronized
-//! 31-bit random integer to the manager's seed and runs one pass over a rotating window: from the
-//! manager's cursor, `provinces_per_update` consecutive slots, wrapping at the province count, of
-//! which the active ones update ([`Simulation::update`]). For each, the temperature pass moves its
-//! working drift by a hash of its id and the seed, clamps it to `max_temperature_change` and stages
-//! the committed temperature plus the drift, resetting a drift that pushes further outside the
-//! date's weather-period range; the threaded smoothing pass then moves the staged temperature and
-//! the drift toward the averages of the active neighbours' committed temperature and committed
-//! drift. Only after every staging job joined does the commit pass copy the staged temperature and
-//! working drift into the committed temperature and drift for each province that had an active
-//! neighbour, so the staging order is irrelevant and every thread count gives the same result.
-//!
-//! The seed is the only input of an hour the content cannot supply; a recording stores it
-//! with the state of every province at an anchor hour ([`State`]), from which playback
-//! steps forward. Every function preserves the game's integer arithmetic: 64-bit wrapping
-//! products and sums, truncating division, the fixed-point division guard that stores
-//! `0xFFFFFFFF`, and the date functions' 32-bit arithmetic.
-
 use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::rows::{
     ProvinceTemperature, Recorded, TemperaturePass, TemperatureRecord, WeatherProvinceRow,
 };
 
-/// The WeatherProvinces rows a derivation reads, by position in key order: each row's id and
-/// temperature words, and the first row's temperature pass. Decoded rows read as they are; a
-/// columnar walk's read from its columns.
 pub trait ProvinceRows {
     fn len(&self) -> usize;
-    /// The id and temperature words of the row at `at`; None past the rows.
     fn row(&self, at: usize) -> Result<Option<(u32, ProvinceTemperature)>, String>;
-    /// The position of the row with id `id`.
     fn find(&self, id: u32) -> Option<usize>;
-    /// The first row's temperature pass; None without rows.
     fn pass(&self) -> Result<Option<Cow<'_, Recorded<Option<TemperaturePass>>>>, String>;
 }
 
@@ -57,9 +29,7 @@ impl ProvinceRows for [WeatherProvinceRow] {
     }
 }
 
-/// `fixed5` scale.
 pub const SCALE: i64 = 100_000;
-/// What the native fixed-point division stores when its guard refuses the numerator.
 const REFUSED: i64 = 0xffff_ffff;
 #[cfg(test)]
 use weather_period::HOURS_PER_YEAR;
@@ -68,13 +38,10 @@ pub use weather_period::{
     normalize_to_year_one, period_date, set_day_of_month_zero_based, set_month_zero_based,
 };
 
-/// The division guard excludes the three sentinel numerator words.
 fn divisible(numerator: i64) -> bool {
     (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
-/// Average active neighbours' words with guarded fixed5 division of their sum by the
-/// active count scaled to fixed5; `active` is positive.
 pub fn average(sum: i64, active: i32) -> i64 {
     let denominator = i64::from(active).wrapping_mul(SCALE);
     if denominator == 0 || !divisible(sum) {
@@ -84,9 +51,6 @@ pub fn average(sum: i64, active: i32) -> i64 {
     }
 }
 
-/// The reciprocal of an active neighbour count: `(m, shift)` with `m = ceil(2^shift / count)`
-/// and `shift = 31 + ceil(log2 count)`, which divides any magnitude below 2^31 exactly
-/// (Granlund and Montgomery); (0, 0) for none.
 fn reciprocal(count: u32) -> (u64, u32) {
     if count == 0 {
         return (0, 0);
@@ -96,9 +60,6 @@ fn reciprocal(count: u32) -> (u64, u32) {
     ((((1_u128 << shift) + count - 1) / count) as u64, shift)
 }
 
-/// [`average`] of `sum` over `active` neighbours, by `active`'s [`reciprocal`] where the sum is
-/// below 2^31 in magnitude, which is then exact: the fixed5 scale cancels without wrapping and
-/// no guarded word is that small.
 fn average_by(sum: i64, active: i32, (m, shift): (u64, u32)) -> i64 {
     let magnitude = sum.unsigned_abs();
     if m == 0 || magnitude >= 1 << 31 {
@@ -108,65 +69,42 @@ fn average_by(sum: i64, active: i32, (m, shift): (u64, u32)) -> i64 {
     if sum < 0 { -quotient } else { quotient }
 }
 
-/// Add the fixed5-scaled difference toward the neighbours' average to a staged
-/// temperature or working drift.
 pub fn smooth(value: i64, target: i64, factor: i64) -> i64 {
     (target.wrapping_sub(value).wrapping_mul(factor) / SCALE).wrapping_add(value)
 }
 
-/// One `terrain_modifiers` `temperature` entry (`weather terrain modifier`, stride `0x18`): the
-/// terrain's database index and the fixed5 degrees added to both bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerrainModifier {
     pub terrain: i32,
     pub value: i64,
 }
 
-/// Settings loaded from `common/weather.txt`, every value zero when the file leaves it unset
-/// (manager construction clears every setting).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
-    /// `temperature_variation`.
     pub variation: i64,
-    /// `max_temperature_change`.
     pub max_change: i64,
-    /// `temperature_neighbor_smoothing`.
     pub smoothing: i64,
-    /// `temperature_change_neighbor_smoothing`.
     pub change_smoothing: i64,
-    /// `provinces_per_update`.
     pub provinces_per_update: i32,
-    /// The `temperature` kind's terrain modifiers in loaded order.
     pub terrain: Vec<TerrainModifier>,
 }
 
-/// Initialization inputs for one province slot of the weather array.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Province {
-    /// A positive id whose definition exists and has pixels.
     pub active: bool,
-    /// The slot of every neighbour record of the definition, in order.
     pub neighbours: Vec<u32>,
-    /// The province's strategic region id, `None` for a null region.
     pub region: Option<u32>,
-    /// The definition terrain's database index, `None` for -1; an error names what the content
-    /// cannot settle, refused only when the province reaches the terrain lookup.
     pub terrain: Result<Option<i32>, String>,
 }
 
-/// Every content fact the hourly pass reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Content {
-    /// By weather slot, the province id.
     pub provinces: Vec<Province>,
-    /// Each strategic region's periods in template order, or why the content cannot settle them.
     pub periods: BTreeMap<u32, Result<Vec<Period>, String>>,
     pub settings: Settings,
 }
 
 impl Content {
-    /// The period the temperature pass finds for `slot` at native date `hour`; `None` where it
-    /// returns before touching the record: a null strategic region or no period.
     pub fn period(&self, slot: u32, hour: i32) -> Result<Option<&Period>, String> {
         let province = self
             .provinces
@@ -186,7 +124,6 @@ impl Content {
         }
     }
 
-    /// The sums of the active neighbours' words for smoothing, and their count.
     pub fn neighbour_sums(&self, slot: u32, states: &[State]) -> Result<(i64, i64, i32), String> {
         let (mut temperatures, mut drifts, mut active) = (0_i64, 0_i64, 0_i32);
         for &neighbour in &self.provinces[slot as usize].neighbours {
@@ -206,21 +143,14 @@ impl Content {
     }
 }
 
-/// The simulation words of one province record that the pass reads and writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct State {
-    /// The committed temperature.
     pub temperature: i64,
-    /// The committed drift neighbours average.
     pub drift: i64,
-    /// The staged temperature.
     pub staged: i64,
-    /// The working drift.
     pub working: i64,
 }
 
-/// The integer hash used by temperature drift and the raw-mud roll: hash the wrapped sum
-/// of `id`, `pass` and `seed` to a value in `0..100000`.
 pub fn roll(input: u32) -> i32 {
     let a = input.wrapping_mul(0x7eb8_da44);
     let a = ((a >> 8) ^ a).wrapping_add(0x10d8_365e);
@@ -235,8 +165,6 @@ pub fn roll(input: u32) -> i32 {
     ((((c >> 8) ^ c) & 0x7fff_ffff) % 100_000) as i32
 }
 
-/// How many slots, from `cursor` and wrapping, the update [`window`] lists visits, and the
-/// cursor it leaves, without listing them.
 pub fn window_span(cursor: i32, window: i32, count: i32) -> Result<(i32, i32), &'static str> {
     if cursor < 0 {
         return Err("weather update cursor negative");
@@ -252,7 +180,6 @@ pub fn window_span(cursor: i32, window: i32, count: i32) -> Result<(i32, i32), &
 }
 
 fn window_capacity(width: i32, count: usize) -> usize {
-    // The first native signed decrement wraps at i32::MIN.
     if width == i32::MIN {
         count
     } else {
@@ -260,10 +187,6 @@ fn window_capacity(width: i32, count: usize) -> usize {
     }
 }
 
-/// The slots an update starting at `cursor` visits, and the cursor it leaves, following the
-/// manager's rotating cursor: `window` slots (at least one), wrapping to zero at the count and
-/// stopping early on returning to the start. A cursor at or past the count visits nothing and
-/// stays; a negative one would index before the array and is refused.
 pub fn window(cursor: i32, window: i32, count: i32) -> Result<(Vec<u32>, i32), &'static str> {
     if cursor < 0 {
         return Err("weather update cursor negative");
@@ -291,9 +214,6 @@ pub fn window(cursor: i32, window: i32, count: i32) -> Result<(Vec<u32>, i32), &
     Ok((slots, next))
 }
 
-/// The recorded witness that a derived hour equals the read one: the wrapping sum of every
-/// slot's [`province_witness`], slots numbered from zero, so a changed slot moves it by its own
-/// two terms alone.
 pub fn witness(temperatures: impl IntoIterator<Item = i64>) -> u64 {
     temperatures
         .into_iter()
@@ -303,19 +223,16 @@ pub fn witness(temperatures: impl IntoIterator<Item = i64>) -> u64 {
         })
 }
 
-/// One slot's term of [`witness`]: for each slot, a bijection of its temperature's bits.
 pub const fn province_witness(slot: u32, temperature: i64) -> u64 {
     mix(mix((slot as u64).wrapping_add(0x9e37_79b9_7f4a_7c15)) ^ temperature as u64)
 }
 
-/// SplitMix64's finaliser, a bijection of 64-bit words.
 const fn mix(mut word: u64) -> u64 {
     word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     word ^ (word >> 31)
 }
 
-/// Every province record's simulation words at one hour, and the update cursor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Simulation {
     pub hour: i32,
@@ -324,7 +241,6 @@ pub struct Simulation {
 }
 
 impl Simulation {
-    /// The words the slots hold at `hour`, read or recorded.
     pub fn new(hour: i32, cursor: i32, states: Vec<State>) -> Self {
         Self {
             hour,
@@ -333,19 +249,14 @@ impl Simulation {
         }
     }
 
-    /// The [`witness`] of the words held.
     pub fn witness(&self) -> u64 {
         witness(self.states.iter().map(|state| state.temperature))
     }
 
-    /// The next hour: the weather pass runs with the seed after its increment, or, for
-    /// `None`, an hour whose suspended manager updated nothing.
     pub fn advance(&mut self, content: &Content, seed: Option<u32>) -> Result<(), String> {
         self.advance_with(content, seed, &mut Vec::new(), None, &mut None)
     }
 
-    /// [`Self::advance`] through `pass`, staging in `staged`, recording committed temperature
-    /// edits in `changed` and moving `witness`, where held, by every slot whose temperature changed.
     fn advance_with<P: Pass + ?Sized>(
         &mut self,
         pass: &P,
@@ -365,7 +276,6 @@ impl Simulation {
         Ok(())
     }
 
-    /// One ordinary update (the manager's pass flag clear, pass index zero) at native date `hour`.
     pub fn update(&mut self, content: &Content, hour: i32, seed: u32) -> Result<(), String> {
         self.update_changed(content, hour, seed, None)
     }
@@ -405,7 +315,6 @@ impl Simulation {
         staged
             .try_reserve(span as usize)
             .map_err(|error| format!("weather temperature pass: {error}"))?;
-        // update_passes collects the active slots of the window, from the cursor and wrapping.
         let mut slot = self.cursor as u32;
         for _ in 0..span {
             if pass.active(slot) {
@@ -424,7 +333,6 @@ impl Simulation {
                 slot = 0;
             }
         }
-        // Commit temperatures only after every staging job joined.
         for &(slot, mut state, commit) in staged.iter() {
             if commit {
                 state.temperature = state.staged;
@@ -451,9 +359,6 @@ impl Simulation {
     }
 }
 
-/// Temperature drift and neighbour smoothing for one slot from the committed words of the hour
-/// before: its bounds where a period holds it, and its active neighbours' sums and count;
-/// whether the record's commit flag is set.
 fn stage(
     settings: &Settings,
     mut state: State,
@@ -462,7 +367,6 @@ fn stage(
     (bounds, (temperatures, drifts, active), divisor): Staging,
 ) -> (State, bool) {
     if let Some((minimum, maximum)) = bounds {
-        // id + pass index (zero) + seed, in 32-bit arithmetic.
         let roll = i64::from(roll(slot.wrapping_add(seed)));
         let step = (roll - 50_000).wrapping_mul(settings.variation) / SCALE;
         state.working = state.working.wrapping_add(step.wrapping_mul(2));
@@ -482,11 +386,9 @@ fn stage(
         }
         state.staged = temperature;
     }
-    // Smoothing clears the commit flag and sets it only when an active neighbour exists.
     if active <= 0 {
         return (state, false);
     }
-    // Both averages divide by the active count times 100000, each behind its own guard.
     state.staged = smooth(
         state.staged,
         average_by(temperatures, active, divisor),
@@ -500,7 +402,6 @@ fn stage(
     (state, true)
 }
 
-/// A period's bounds, both moved by the terrain modifier `shift`.
 fn shifted(period: &Period, shift: Option<i64>) -> (i64, i64) {
     match shift {
         Some(value) => (
@@ -511,20 +412,13 @@ fn shifted(period: &Period, shift: Option<i64>) -> (i64, i64) {
     }
 }
 
-/// A slot's bounds where a period holds it, its active neighbours' sums and count, and that
-/// count's reciprocal where known ((0, 0) otherwise).
 pub type Staging = (Option<(i64, i64)>, (i64, i64, i32), (u64, u32));
 
-/// What the hourly pass reads of one slot: [`Content`] itself, or its [`Planned`] layout.
 pub trait Pass {
     fn content(&self) -> &Content;
 
-    /// Whether `slot`, inside the content, is an active province.
     fn active(&self, slot: u32) -> bool;
 
-    /// What staging active `slot` at native date `hour` (period date `date`) reads, or the
-    /// first refusal it meets: of its period, its terrain where a period holds it, then its
-    /// neighbours.
     fn slot(&self, slot: u32, hour: i32, date: i32, states: &[State])
     -> Result<Staging, String>;
 }
@@ -560,41 +454,30 @@ impl Pass for Content {
     }
 }
 
-/// No region: the pass returns before the record.
 const NO_REGION: u32 = u32::MAX;
 
-/// The terrain modifier a slot's bounds move by.
 #[derive(Clone, Copy, Debug)]
 enum Shift {
     None,
     By(i64),
-    /// The content cannot settle the slot's terrain.
     Refused,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Slot {
     active: bool,
-    /// A neighbour lies outside the weather array.
     broken: bool,
-    /// The slot's region's index in [`Plan::periods`], or [`NO_REGION`].
     region: u32,
     shift: Shift,
-    /// Its active neighbours: [`Plan::neighbours`]`[first..end]`, and their count's
-    /// [`reciprocal`].
     first: u32,
     end: u32,
     divisor: (u64, u32),
 }
 
-/// A [`Content`] laid out for the hourly pass, found once: each slot's activity, region periods,
-/// terrain modifier and active neighbours. Its refusals are the content's own, found again from
-/// it where met.
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
     slots: Vec<Slot>,
     neighbours: Vec<u32>,
-    /// Each region's periods in template order, by index; None where the content refuses them.
     periods: Vec<Option<Vec<Period>>>,
 }
 
@@ -666,7 +549,6 @@ impl Plan {
         }
     }
 
-    /// The bytes it holds.
     pub fn bytes(&self) -> usize {
         self.slots.capacity() * size_of::<Slot>()
             + self.neighbours.capacity() * size_of::<u32>()
@@ -680,7 +562,6 @@ impl Plan {
     }
 }
 
-/// A content and the [`Plan`] made of it.
 #[derive(Clone, Copy)]
 pub struct Planned<'a> {
     content: &'a Content,
@@ -688,14 +569,12 @@ pub struct Planned<'a> {
 }
 
 impl<'a> Planned<'a> {
-    /// `plan` must be [`Plan::new`] of `content`.
     pub fn new(content: &'a Content, plan: &'a Plan) -> Self {
         debug_assert_eq!(content.provinces.len(), plan.slots.len());
         Self { content, plan }
     }
 }
 
-/// The refusal `result` gives: the content's own, where the plan met one.
 fn refusal<T>(result: Result<T, String>) -> String {
     match result {
         Err(reason) => reason,
@@ -753,31 +632,22 @@ impl Pass for Planned<'_> {
     }
 }
 
-/// Every province record's words at a frame's hour, as its WeatherProvinces rows establish
-/// them, keeping the last derivation so that the next hour of the same anchor steps once.
-/// Holding is opt-in and follows the owner's live frames, not a separate cache limit.
 #[derive(Debug, Default)]
 pub struct Memo {
     hold: bool,
     branch: u64,
-    /// The anchor hour and cursor of the kept pass.
     anchor: Option<(i32, i32)>,
     anchored: Vec<State>,
-    /// The kept pass's hour entries, from the anchor, that every held derivation agrees with.
     consumed: Vec<Option<u32>>,
     simulation: Option<Simulation>,
-    /// Derivations of the kept pass, at most one per hour; always empty unless holding.
     held: Vec<Simulation>,
     changed: Vec<(u32, i64, i64)>,
     incremental: bool,
-    /// The window an update stages, kept between hours.
     staged: Vec<(u32, State, bool)>,
-    /// The kept derivation's witness once found; each update then moves it by the slots it changed.
     witness: Option<u64>,
 }
 
 impl Memo {
-    /// Reserves the native update window before any committed edit can be appended.
     pub fn reserve_changes(&mut self, content: &Content) -> std::io::Result<()> {
         let count = window_capacity(
             content.settings.provinces_per_update,
@@ -797,13 +667,11 @@ impl Memo {
             + self.staged.capacity() * size_of::<(u32, State, bool)>()
     }
 
-    /// Holds `simulation` as the kept derivation, whose witness is then found afresh.
     fn keep(&mut self, simulation: Option<Simulation>) {
         self.simulation = simulation;
         self.witness = None;
     }
 
-    /// The owner must trim held derivations to its live frames with [`Self::retain_held`].
     pub fn holding() -> Self {
         Self {
             hold: true,
@@ -811,11 +679,6 @@ impl Memo {
         }
     }
 
-    /// Every slot's words at the frame's hour. Formats 93 to 101 recorded each temperature at
-    /// its hour, which this returns with no other word. From format 102 the rows hold the words
-    /// at the frame's anchor and slot zero the pass since; the derivation
-    /// steps through every recorded hour with the content and must reproduce the [`witness`] of
-    /// the temperatures the collector read at the frame's hour ([`crate::rows::TemperaturePass`]).
     pub fn states(
         &mut self,
         branch: u64,
@@ -826,7 +689,6 @@ impl Memo {
         self.states_changed(branch, hour, rows, content, None)
     }
 
-    /// `changed` certifies exactly the changed/deleted keys since this memo's last successful hour.
     pub fn states_changed<P: Pass + ?Sized, R: ProvinceRows + ?Sized>(
         &mut self,
         branch: u64,
@@ -946,7 +808,6 @@ impl Memo {
             self.held.clear();
             self.anchored = anchored.unwrap_or_default();
         }
-        // Derivations past the shared seed prefix cannot certify this frame.
         let agreed = self
             .consumed
             .iter()
@@ -965,7 +826,6 @@ impl Memo {
         {
             self.keep(None);
         }
-        // Resume only from the shared prefix, never from a later hour.
         let reach = pass.hours.len();
         let kept = self
             .simulation
@@ -1037,12 +897,10 @@ impl Memo {
         Ok(&simulation.states)
     }
 
-    /// Committed temperature edits from the preceding successful hour; None after any root reset.
     pub fn changes(&self) -> Option<&[(u32, i64, i64)]> {
         self.incremental.then_some(&self.changed)
     }
 
-    /// Trims held derivations by branch and hour without discarding the last simulation.
     pub fn retain_held(&mut self, mut alive: impl FnMut(u64, i32) -> bool) {
         let branch = self.branch;
         self.held.retain(|held| alive(branch, held.hour));
@@ -1059,7 +917,6 @@ impl Memo {
             .sum()
     }
 
-    /// The kept derivation, at the hour of the last successful call.
     pub fn simulation(&self) -> Option<&Simulation> {
         self.simulation.as_ref()
     }

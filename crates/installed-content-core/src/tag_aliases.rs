@@ -1,16 +1,3 @@
-//! `common/country_tag_aliases`: the tag alias database, read in two passes.
-//!
-//! 1. Names: each top-level key interns its name and creates an entry.
-//!    A name another file already holds, or one repeated in the same file,
-//!    is reported and its block skipped, so the first definition in file
-//!    order stays. Bodies are skipped during this pass.
-//! 2. Bodies: every file again, each entry read by its key reader
-//!    ([`read_file`]).
-//!
-//! A tag alias names a country chosen at run time from its targets and
-//! triggers; `dashboard::triggers` resolves it over the recorded hour.
-//! A name the port cannot hold, or a file whose reading it cannot follow,
-//! is kept as a named gap.
 
 use crate::{
     ResolvedLayers,
@@ -28,47 +15,25 @@ use std::{
     io,
 };
 
-/// One alias as its key reader leaves it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TagAlias {
-    /// `original_tag`: the last country-specifier text read.
     pub original_tag: Option<Vec<u8>>,
-    /// How many `original_tag` assignments the body makes: each updates
-    /// one specifier, whose state across assignments (an alias pointer
-    /// kept past a country) the port does not replay.
     pub original_tag_assignments: usize,
-    /// `targets` (a string list) and `country`/`state` target elements, in order.
     pub targets: Vec<Vec<u8>>,
-    /// `variable`, `event_target` or `global_event_target`: the scoped
-    /// variable that decides the alias alone, with the key that set it.
     pub variable: Option<(VariableKey, Vec<u8>)>,
-    /// `fallback`: the fallback scoped variable.
     pub fallback: Option<Vec<u8>>,
-    /// Every other key: a conjunction child, read in country scope.
     pub limit: Triggers,
-    /// `country_score`: its mean-time fields as the reader keeps them.
-    /// It decides only when it contains at least one `modifier`.
     pub score: Option<Triggers>,
-    /// Target members the port does not follow (`target_array`,
-    /// `target_trigger`, `target_root_trigger`, `targets_dynamic`,
-    /// `target_non_existing`, `state_target`), by name.
     pub unported: Vec<String>,
-    /// Whether any target member was read, which with no original tag
-    /// and no variable decides the check of every country.
     pub targets_read: bool,
-    /// Why the body cannot be taken as the game reads it: its file's
-    /// reading could not be followed through it.
     pub refused: Option<String>,
 }
 
 impl TagAlias {
-    /// No original tag, no target member and no variable, so every
-    /// country slot is a candidate.
     pub fn checks_all(&self) -> bool {
         self.original_tag.is_none() && !self.targets_read && self.variable.is_none()
     }
 
-    /// The score decides (a `country_score` with a `modifier`).
     pub fn scored(&self) -> Option<&Triggers> {
         self.score
             .as_ref()
@@ -76,30 +41,20 @@ impl TagAlias {
     }
 }
 
-/// The key that set an alias's scoped variable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VariableKey {
-    /// `variable`: the value read as an operand.
     Variable,
-    /// `event_target`: a saved event target by name.
     EventTarget,
-    /// `global_event_target`: a global saved event target by name.
     GlobalEventTarget,
 }
 
-/// Every alias, and the files whose names cannot all be held, each with its
-/// cause.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TagAliases {
-    /// The first definition of each name by file order, keyed by the name
-    /// folded as the lexer folds it: the database is indexed by the name's
-    /// token, with the name as first read.
     pub entries: BTreeMap<Vec<u8>, (String, TagAlias)>,
     pub unknown: Vec<String>,
 }
 
 impl TagAliases {
-    /// The alias a text names, found by its token (without ASCII case).
     pub fn get(&self, text: &str) -> Option<&TagAlias> {
         self.entries
             .get(&text.as_bytes().to_ascii_lowercase())
@@ -107,20 +62,15 @@ impl TagAliases {
     }
 }
 
-/// Which reader a field goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
     Top,
-    /// An alias entry.
     Alias,
-    /// A trigger body's field, as the combat-tactic reader dispatches it.
     Trigger(TriggerNode),
 }
 
-/// The key reader of an alias block, trying target members first.
 fn alias_field(shaper: &mut combat_tactics::Shaper<'_>, field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
-        // Read a string list.
         Some(b"targets") => Shape::List,
         Some(
             b"target_array"
@@ -138,18 +88,11 @@ fn alias_field(shaper: &mut combat_tactics::Shaper<'_>, field: &Field<'_>) -> Sh
         Some(b"target_trigger" | b"target_root_trigger") => {
             Shape::Body(Node::Trigger(TriggerNode::Trigger))
         }
-        // Read mean-time fields.
         Some(b"country_score") => Shape::Object(Node::Trigger(TriggerNode::Mtth)),
         _ => shaper.shape(TriggerNode::Trigger, field).map(Node::Trigger),
     }
 }
 
-/// One file's aliases in order, and where its names cannot be held.
-/// The name pass skips each body; the body pass reads each entry. In
-/// each pass a name an earlier file gave, or this pass already met in
-/// this file, is reported as a duplicate and its block skipped, reading
-/// and defining nothing. A body the port cannot follow the reading
-/// through, and every later one, is refused by name.
 fn read_file(
     input: &[u8],
     earlier: &BTreeMap<Vec<u8>, (String, TagAlias)>,
@@ -173,7 +116,6 @@ fn read_file(
         },
     );
     let unsettled = bodies.unsettled.map(|unsettled| unsettled.to_string());
-    // The body being read where the reading stopped is partial.
     let complete = match unsettled {
         Some(_) => bodies.items.len().saturating_sub(1),
         None => bodies.items.len(),
@@ -197,16 +139,12 @@ fn read_file(
     for item in &names.items {
         let name = match item.key_str() {
             Ok(name) => name.to_owned(),
-            // An alias name the port cannot hold: no tag the port reads can
-            // equal it, but the lookup through it cannot be followed.
             Err(refused) => {
                 stop.get_or_insert_with(|| format!("an alias name is {refused}"));
                 continue;
             }
         };
         let folded = name.as_bytes().to_ascii_lowercase();
-        // A name the body pass did not reach keeps the default body, unless
-        // the reading stopped before it.
         let alias = match (read.get(&folded), &unsettled) {
             (Some(alias), _) => alias.clone(),
             (None, Some(why)) => TagAlias {
@@ -220,9 +158,6 @@ fn read_file(
     (aliases, stop)
 }
 
-/// Whether a name another file already gave (`earlier`) or this pass
-/// already met in this file (`seen`) is a duplicate: the name's token,
-/// without case.
 fn duplicate(
     seen: &mut BTreeSet<Vec<u8>>,
     field: &Field<'_>,
@@ -232,9 +167,7 @@ fn duplicate(
     earlier(&name) || !seen.insert(name)
 }
 
-/// The name pass over one file.
 fn name_pass(input: &[u8], earlier: &dyn Fn(&[u8]) -> bool) -> native::Read {
-    // The name pass constructs the lexer in mode 0.
     let mut seen = BTreeSet::new();
     native::read(
         input,
@@ -251,7 +184,6 @@ fn name_pass(input: &[u8], earlier: &dyn Fn(&[u8]) -> bool) -> native::Read {
     )
 }
 
-/// An alias's fields as its reader keeps them.
 fn alias(item: &Item) -> TagAlias {
     let mut out = TagAlias::default();
     let text = |item: &Item| item.value.scalar().unwrap_or_default().to_vec();
@@ -290,8 +222,6 @@ fn alias(item: &Item) -> TagAlias {
                 out.original_tag = Some(text(field));
                 out.original_tag_assignments += 1;
             }
-            // Every block reads into the one mean-time object, appending
-            // its modifiers.
             b"country_score" => out
                 .score
                 .get_or_insert_with(Vec::new)
@@ -304,8 +234,6 @@ fn alias(item: &Item) -> TagAlias {
 
 const FOLDER: &str = "common/country_tag_aliases/";
 
-/// Every alias name of the content stack's name pass, folded: the names
-/// the scope step finds by token once the pass has run, before ideologies.
 pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut names = BTreeSet::new();
     for path in script_files::paths(layers, FOLDER, Some(".txt"))? {
@@ -319,8 +247,6 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     Ok(names)
 }
 
-/// The aliases of the content stack, listing the directory's own `.txt`
-/// files through [`script_files::paths`].
 pub fn read(layers: &ResolvedLayers) -> io::Result<TagAliases> {
     layers.recorded_product("tag aliases", 1, &[], read_aliases).map(|aliases| aliases.as_ref().clone())
 }
@@ -339,15 +265,11 @@ fn read_aliases(layers: &ResolvedLayers) -> io::Result<TagAliases> {
     ))
 }
 
-/// Both passes over `files` (path and text), in file order, the bodies
-/// read against `names`.
 pub fn parse(files: &[(&str, &[u8])], names: &KeyNames) -> TagAliases {
     let mut aliases = TagAliases::default();
     for (path, bytes) in files {
         let (read, stop) = read_file(bytes, &aliases.entries, names);
         for (name, alias) in read {
-            // "Duplicate database id": a name another file or this one
-            // already gave, by token, is skipped.
             aliases
                 .entries
                 .entry(name.as_bytes().to_ascii_lowercase())
@@ -393,9 +315,6 @@ mod tests {
         assert!(aliases.unknown.is_empty());
     }
 
-    /// The reader's keys: targets and target elements, the variable, the
-    /// fallback, a score that decides only with a modifier, and every other
-    /// key a trigger. A first definition stays, found by its token, without case.
     #[test]
     fn the_key_reader_keeps_each_member() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -435,9 +354,6 @@ mod tests {
         assert_eq!(aliases.get("ARR").unwrap().unported, ["target_array"]);
     }
 
-    /// Every `country_score` block reads into the one mean-time object:
-    /// a later block without a modifier keeps the earlier modifiers,
-    /// and the score still decides.
     #[test]
     fn repeated_scores_join_one_mean_time() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -451,9 +367,6 @@ mod tests {
         assert!(score.last().unwrap().keyword_is("base"));
     }
 
-    /// A body the reading cannot be followed through is refused by name, as
-    /// is every later one, whose names the name pass still gives; earlier
-    /// bodies stand.
     #[test]
     fn an_unsettled_body_refuses_it_and_the_later_ones() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -470,9 +383,6 @@ mod tests {
         }
     }
 
-    /// A duplicate's block is skipped before it is read, so its `@`
-    /// definitions never reach later aliases; a name an earlier file
-    /// gave is skipped too.
     #[test]
     fn a_duplicate_body_is_skipped_unread() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -496,7 +406,6 @@ mod tests {
         assert!(aliases.unknown.is_empty(), "{:?}", aliases.unknown);
     }
 
-    /// An alias name that is not UTF-8 is a named gap, never dropped.
     #[test]
     fn an_alias_name_that_is_not_text_is_a_gap() {
         engine_executable::executable_tables::initialize_for_tests()

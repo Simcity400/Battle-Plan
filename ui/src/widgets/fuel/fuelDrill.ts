@@ -6,14 +6,12 @@ import type { Span } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
 import type { FuelAwardPart, FuelReadAt } from '../../generated/dashboard';
 
-/** The read a detail is of: the tag asked, the read's hour and the native country it named then. */
 export interface FuelBasis { branchId: string; tag: string; hour: number; country: number; countryInstance: number }
 
 const int = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
 export const isBasis = (value: unknown, branch: string): value is FuelBasis => object(value) && value.branchId === branch && typeof value.tag === 'string'
   && value.tag.length > 0 && int(value.hour) && int(value.country) && value.country >= 0 && int(value.countryInstance) && value.countryInstance >= 0;
 
-/** The basis of a read whose applied day or demand pack a detail reads; none before its instance is known. */
 export function readBasis(branchId: string, tag: string, read: Pick<FuelReadAt, 'readHour' | 'country' | 'countryInstance'> | null | undefined): FuelBasis | null {
   return read && read.readHour !== null && read.countryInstance !== null
     ? { branchId, tag, hour: read.readHour, country: read.country, countryInstance: read.countryInstance } : null;
@@ -23,7 +21,6 @@ export interface FuelRecipientSelection { campaign: string; branch: string; cons
 
 export const fuelRecipientToken = (selection: FuelRecipientSelection) => setToken(JSON.stringify(selection));
 
-/** A recipient chosen in this campaign and branch, or none. */
 export function readFuelRecipient(token: unknown, campaign: string, branch: string): FuelRecipientSelection | null {
   if (typeof token !== 'string' || !token) return null;
   try {
@@ -38,14 +35,12 @@ export function selectFuelRecipient(campaign: string, basis: FuelBasis, part: Fu
   return { campaign, branch: basis.branchId, consumer: part.kind, basis, key: part.key, name: part.recordedName };
 }
 
-/** A recipient chosen for this country: picked on it, or on a tag the same pick's country spans name. */
 export function fuelRecipientFor<T extends { campaign: string; branch: string; basis: FuelBasis }>(selection: T | null | undefined, campaign: string, branch: string,
   tag: string, aliases?: ReadonlyMap<string, readonly Span[]>): T | null {
   return selection?.campaign === campaign && selection.branch === branch && selection.basis.branchId === branch
     && (selection.basis.tag === tag && !aliases || !!runAt(aliases?.get(selection.basis.tag) ?? [], selection.basis.hour) && !!aliases?.get(tag)?.length) ? selection : null;
 }
 
-/** A held recipient belongs to a read of the same native country and instance. */
 export const sameFuelActor = (basis: FuelBasis, read: Pick<FuelReadAt, 'country' | 'countryInstance'> | null | undefined) =>
   read?.country === basis.country && read.countryInstance === basis.countryInstance;
 
@@ -59,14 +54,12 @@ export function readFuelExtent(token: unknown, campaign: string, branch: string)
   } catch { return null; }
 }
 
-/** A held main view opens at the hour drawn; Follow uses the real clock. */
 export function fuelOpen(breakdown: string, hour: number, playing: boolean, follows: boolean, playhead: number | null): DrillAction {
   return { type: 'open', breakdown, hour, playing, playhead: follows ? playhead : null };
 }
 export const fuelMoment = (drill: DrillState, saved: boolean, shownHour: number, clockHour: number | null) =>
   saved && drill.breakdown === null ? Math.floor(shownHour) : drillHour(drill, clockHour);
 
-/** The windows of a detail history the chart's view and the moment reach. */
 export function detailWindows(extent: readonly [number, number], visible: readonly [number, number], hour: number | null, detailHours: number): number[] {
   const from = Math.max(extent[0], visible[0]), to = Math.min(extent[1], visible[1]);
   const wanted = new Set<number>();
@@ -75,7 +68,6 @@ export function detailWindows(extent: readonly [number, number], visible: readon
   return [...wanted].sort((a, b) => a - b);
 }
 
-/** Runs of several windows as one list: a read a window repeats from the one before keeps its longest span. */
 export function joinedRuns<T extends { firstHour: number; lastHour: number }>(windows: readonly (readonly T[])[]): T[] {
   const runs = new Map<number, T>();
   for (const list of windows) for (const run of list) {

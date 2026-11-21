@@ -19,8 +19,6 @@ mod reply {
         StateResistanceRow { state, country, active, level, compliance: level / 10, speed: -7, compliance_speed: 3, ..Default::default() }
     }
 
-    /// GER (raw 1) occupies POL's states 10 and 11; raw 9 is an alias of POL. State 12 is not occupied, and state 99's
-    /// resistance names no States row. State 10's garrison, read with no equipment operand rows, is derived at 62,500.
     fn frame() -> DecodedFrame {
         let mut frame = DecodedFrame { branch: 1, hour: 500, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
         let mut set = |table: TableId, rows: TableRows| *frame.tables[table.index()] = TableView::Complete(rows);
@@ -97,8 +95,6 @@ mod reply {
         assert!(json["kinds"].as_array().unwrap().iter().any(|kind| kind["id"] == "assignedManpower" && kind["op"] == "sum"));
     }
 
-    /// A strength the recorder could not derive says why by its row's reason, and one whose table is not read says the
-    /// table's reason; neither names a cell, so nothing paints a zero.
     #[test]
     fn a_garrison_strength_not_derived_says_why_and_names_no_cell() {
         let ten = |frame: &DecodedFrame| {

@@ -1,7 +1,3 @@
-//! The game's recruitment, manpower pool, election and exile rules, and the `country-people`
-//! reply they make for one country at an hour. Deployed army, navy and air manpower are the
-//! recorder's own sums (`CountryDeployedManpower`); everything else is read from the hour's
-//! recorded rows. Totals use the recorded controlled-state order.
 
 use dashboard_base::products::Country;
 use super::{
@@ -69,7 +65,7 @@ pub struct PeopleExile {
 pub struct PeopleReply {
     pub branch_id: String,
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub hour: i32,
     pub read_hour: Option<i32>,
@@ -94,8 +90,6 @@ fn fact(label: &str, value: Option<impl ToString>, unit: &str) -> PeopleFact {
     PeopleFact { label: label.into(), value: value.map(|v| v.to_string()), unit: unit.into() }
 }
 
-/// Country target is the effective conscription entry times its factor; the applied ratio is
-/// stored at one hundred times that fixed5 fraction.
 pub fn recruitment_target(conscription: i64, factor: i64) -> i64 {
     factor.wrapping_add(100_000).wrapping_mul(conscription).wrapping_div(100_000).max(0)
 }
@@ -118,7 +112,6 @@ pub struct RecruitmentDefines {
     pub noncore_max: i64,
 }
 
-/// The recorded content's recruitment defines, with named refusals; no default is invented.
 pub fn content_defines(layers: &installed_content_core::ResolvedLayers) -> Result<RecruitmentDefines, String> {
     let held = layers.derived::<OnceLock<Result<RecruitmentDefines, String>>>();
     held.get_or_init(|| {
@@ -135,7 +128,6 @@ pub fn content_defines(layers: &installed_content_core::ResolvedLayers) -> Resul
     .clone()
 }
 
-/// The fixed-point getter maps its three non-finite words to its invalid result.
 pub fn applied_fraction(raw: i64) -> i64 {
     if finite_fixed64(raw) { raw.wrapping_mul(100_000) / 10_000_000 } else { 0xffff_ffff }
 }
@@ -150,9 +142,6 @@ pub fn state_recruitment(applied: i64, values: [i64; 4], core: bool, noncore: i6
     value.clamp(0, 100_000)
 }
 
-/// The engine's month operation preserves the day offset, so a shorter destination month can
-/// overflow into the following month. Dates and month arithmetic keep signed native wrapping,
-/// including years before the epoch.
 pub fn election_date(last: i32, interval: i32) -> i32 {
     use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
     fn parts(hour: i32) -> (i32, i32, i32) {
@@ -200,8 +189,6 @@ pub fn election_date(last: i32, interval: i32) -> i32 {
     hour.wrapping_add(shifted.wrapping_sub(days).wrapping_mul(24))
 }
 
-/// The next scheduled election from its three recorded operands: the independent cache for
-/// exceptional initializers, otherwise the native calendar step from the last election.
 pub fn next_election(last: i32, interval: Option<i32>, cache: Option<Option<i32>>) -> Option<i32> {
     if engine_native::cpolitical_status::needs_election_cache(last) {
         cache.flatten()
@@ -214,43 +201,29 @@ pub fn next_election_date(row: &replay_data::rows::PoliticsRow) -> Option<i32> {
     next_election(row.last_election, recorded(&row.election_interval), recorded(&row.next_election_cache))
 }
 
-/// One controlled state's manpower operands, as the pool and its recruitment read them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateOperands {
     pub available: i32,
     pub locked: Option<i32>,
     pub total: Option<i32>,
-    /// Local manpower, local non-core manpower, recruitment add and recruitment factor; none
-    /// where StateResourceInputs holds no row for the state or any is unread.
     pub resources: Option<[i64; 4]>,
-    /// Whether the country cores the state; none where StateCores holds no row for it.
     pub core: Option<bool>,
 }
 
-/// The deployed manpower labels, in [`Operands::deployed`]'s order.
 pub const DEPLOYED: [&str; 5] = ["Deployed army", "Deployed navy", "Required navy crews", "Deployed air force", "Deployed exile air force"];
 
-/// One country's manpower operands at an hour: everything its manpower view reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Operands {
     pub residual: i32,
-    /// Each controlled state in recorded order, none where States holds no row for it; none
-    /// where the controlled-state roster or States is unavailable.
     pub states: Option<Vec<(u32, Option<StateOperands>)>>,
-    /// The applied recruitment ratio, raw.
     pub applied: Option<i64>,
-    /// The hour the country's recruitment inputs were read.
     pub read_hour: Option<i32>,
-    /// Effective mobilisation speed, conscription, conscription factor and non-core manpower.
     pub effective: Option<[i64; 4]>,
-    /// Deployed army, navy, required navy crews, air force and exile air force ([`DEPLOYED`]).
     pub deployed: [Option<i32>; 5],
 }
 
-/// The modifiers [`Operands::effective`] holds, in its order.
 pub const RECRUITMENT_MODIFIERS: [&str; 4] = ["mobilization_speed", "conscription", "conscription_factor", "non_core_manpower"];
 
-/// A country's manpower view: its facts, controlled states, recruitment read and warnings.
 pub struct ManpowerView {
     pub facts: Vec<PeopleFact>,
     pub states: Vec<PeopleState>,
@@ -258,7 +231,6 @@ pub struct ManpowerView {
     pub warnings: Vec<String>,
 }
 
-/// The manpower view of `operands`, with the recorded content's recruitment defines.
 pub fn manpower_view(operands: &Operands, defines: Option<RecruitmentDefines>) -> ManpowerView {
     let mut view = ManpowerView { facts: Vec::new(), states: Vec::new(), read_hour: operands.read_hour, warnings: Vec::new() };
     let mut available = Some(operands.residual);
@@ -335,7 +307,6 @@ pub fn manpower_view(operands: &Operands, defines: Option<RecruitmentDefines>) -
     view
 }
 
-/// The election facts of a schedule, and the warning a refused part of it gives.
 pub fn politics_view(allowed: Option<bool>, interval: Option<i32>, next: Option<i32>) -> (Vec<PeopleFact>, Option<String>) {
     let facts = vec![
         fact("Elections", allowed.map(|value| if value { "Allowed" } else { "Not held" }), "text"),
@@ -346,8 +317,6 @@ pub fn politics_view(allowed: Option<bool>, interval: Option<i32>, next: Option<
     (facts, refused.then(|| "1 refused election details: Politics operands unavailable".into()))
 }
 
-/// The warnings of exile cards: a refused host for the country itself, each refused field's
-/// count, and the cards whose deployed air crews are unknown.
 pub fn exile_warnings(host_refused: bool, exiles: &[PeopleExile], refusals: [u32; 5]) -> Vec<String> {
     let mut warnings = Vec::new();
     if host_refused {
@@ -365,8 +334,6 @@ pub fn exile_warnings(host_refused: bool, exiles: &[PeopleExile], refusals: [u32
     warnings
 }
 
-/// The hour's raw country references: canonical slots through the links, tags through the
-/// countries.
 pub(crate) struct Links<'a> {
     links: &'a [CountryLinkRow],
     tags: BTreeMap<u32, &'a [u8]>,
@@ -383,7 +350,6 @@ impl<'a> Links<'a> {
         self.links.binary_search_by_key(&raw, |link| link.id).ok().map(|at| self.links[at].canonical_slot)
     }
 
-    /// Whether two raw references name one country.
     pub(crate) fn equal(&self, first: u32, second: u32) -> bool {
         first == second || (first != 0 && second != 0 && self.slot(first).is_some_and(|slot| self.slot(second) == Some(slot)))
     }
@@ -397,29 +363,19 @@ impl<'a> Links<'a> {
     }
 }
 
-/// The tables [`exiles`] reads.
 pub const EXILE_TABLES: [TableId; 5] = [TableId::Countries, TableId::CountryLinks, TableId::CountryStabilityInputs, TableId::SliceReads, TableId::CountryDeployedManpower];
 
-/// Every government in exile the hour shows, as the exile cards show them: a positive recorded
-/// host is an exile, a nonpositive one is not, and an unrecorded host stays unknown (counted
-/// first in the refusals). `include` chooses rows by the raw exile and raw host references. The
-/// refusals count, in order: unrecorded hosts, then the included exiles' missing legitimacy,
-/// manpower, manpower cap and leader resources. An exile's deployed air crews are the recorder's
-/// sum of the wings flying for it in exile.
 pub fn exiles(frame: &DecodedFrame, include: impl Fn(u32, u32) -> bool) -> (Vec<PeopleExile>, [u32; 5]) {
     let (rows, refusals) = exile_rows(frame, include);
     (rows.into_iter().map(|row| row.exile).collect(), refusals)
 }
 
-/// A government in exile and the rows its numbers are read from: its raw country id (its stability
-/// inputs' key) and its canonical slot (its deployed manpower's key), none without a link.
 pub struct ExileAt {
     pub country: u32,
     pub slot: Option<u32>,
     pub exile: PeopleExile,
 }
 
-/// [`exiles`], each with the keys of its rows.
 pub fn exile_rows(frame: &DecodedFrame, include: impl Fn(u32, u32) -> bool) -> (Vec<ExileAt>, [u32; 5]) {
     let mut refusals = [0_u32; 5];
     let mut out = Vec::new();
@@ -468,7 +424,6 @@ pub fn exile_rows(frame: &DecodedFrame, include: impl Fn(u32, u32) -> bool) -> (
     (out, refusals)
 }
 
-/// The country's manpower operands in `frame`; `same` tells the country's raw references.
 fn operands(frame: &DecodedFrame, residual: i32, slot: u32, same: impl Fn(u32) -> bool) -> Operands {
     let counters = frame.complete::<tables::CountryCounterInputs>().ok().and_then(|rows| rows.iter().find(|row| same(row.country)));
     let state_rows = frame.complete::<tables::States>().ok();
@@ -532,7 +487,6 @@ fn operands(frame: &DecodedFrame, residual: i32, slot: u32, same: impl Fn(u32) -
     }
 }
 
-/// The raw ids naming `owner` at the hour: its own and every other its slot's links hold.
 fn aliases(frame: &DecodedFrame, owner: Owner) -> BTreeSet<u32> {
     let mut out = BTreeSet::from([owner.id]);
     if let Ok(links) = frame.complete::<tables::CountryLinks>() {
@@ -541,7 +495,6 @@ fn aliases(frame: &DecodedFrame, owner: Owner) -> BTreeSet<u32> {
     out
 }
 
-/// The tables a country-people reply reads.
 pub const PEOPLE_TABLES: [TableId; 13] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -558,8 +511,6 @@ pub const PEOPLE_TABLES: [TableId; 13] = [
     TableId::CountryDeployedManpower,
 ];
 
-/// One country's people at `frame`'s hour: its manpower, its election schedule and the exiles it
-/// is or hosts.
 pub fn read(frame: &DecodedFrame, branch_id: &str, asked: &dashboard_base::products::Country, tag: &str, owner: Owner, defines: Option<RecruitmentDefines>) -> io::Result<PeopleReply> {
     let links = Links::new(frame)?;
     let countries = frame.complete::<tables::Countries>()?;
@@ -570,7 +521,6 @@ pub fn read(frame: &DecodedFrame, branch_id: &str, asked: &dashboard_base::produ
     let same = |raw: u32| links.equal(raw, owner.id);
     let manpower = manpower_view(&operands(frame, country.manpower_residual, owner.slot, same), defines);
     let politics = frame.complete::<tables::Politics>().ok().and_then(|rows| rows.iter().find(|row| same(row.country)));
-    // The game's daily politics, elections included, skip a country owning no states.
     let exists = frame.complete::<tables::CountryCounterInputs>().ok().and_then(|rows| rows.iter().find(|row| same(row.country))).map(|row| row.owned_state_count > 0);
     let allowed = politics.and_then(|row| match (recorded(&row.has_elections)?, exists) {
         (false, _) | (true, Some(false)) => Some(false),
@@ -603,10 +553,8 @@ pub fn read(frame: &DecodedFrame, branch_id: &str, asked: &dashboard_base::produ
     })
 }
 
-/// `country-people`: one country's people at an hour.
 pub struct CountryPeople;
 
-/// The recruitment defines of the content the request binds, or why there are none.
 pub struct PeopleContext {
     defines: Result<RecruitmentDefines, String>,
 }
@@ -637,9 +585,6 @@ impl AtHour for CountryPeople {
         PEOPLE_TABLES.to_vec()
     }
 
-    /// The small whole tables first; then the country's own rows by its raw ids and slot (its counters, politics
-    /// and deployed sums, and those of the exiles it is or hosts); then the states its roster names, and the modifier
-    /// definitions only where its recruitment modifiers are recorded.
     fn reads(_: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {

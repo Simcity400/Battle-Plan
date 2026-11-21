@@ -1,6 +1,3 @@
-//! Dynamic modifier descriptions from `common/dynamic_modifiers`.
-//! Direct files use lexer mode 0; each exact-name definition is prepended
-//! to its bucket.
 
 use crate::{
     ResolvedLayers,
@@ -15,14 +12,9 @@ use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dynamic {
-    /// The definition identity is retained when `icon` changes.
     pub name: String,
-    /// The constant modifier.
     pub modifiers: modifiers::Modifiers,
-    /// Scoped modifier token and operand pairs; repeats append and retain
-    /// separate description lines.
     pub scoped_modifiers: Vec<(String, Vec<u8>)>,
-    /// `icon`, the last one authored; empty when none is.
     pub icon: Vec<u8>,
 }
 
@@ -36,7 +28,6 @@ pub struct Database {
 
 impl Database {
     pub fn find(&self, name: &str) -> Result<Option<&Dynamic>, String> {
-        // Stored definition identities compare exact bytes without case folding.
         let name = parser::text(parser::c_string(name.as_bytes())).map_err(|e| e.to_string())?;
         if let Some(reason) = self.refused.get(name) {
             return Err(reason.clone());
@@ -58,8 +49,6 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-// Values containing only `-+0123456789.` (including empty text) use the
-// constant modifier. Other values are scoped operands.
 fn constant(text: &[u8]) -> bool {
     parser::c_string(text)
         .iter()
@@ -91,8 +80,6 @@ fn parse_with_notes(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Dynamic>,
                     modifiers::shape(modifiers::Node::Modifier, field, &registry, &mut undecided)
                         .map(Node::Modifier)
                 }
-                // The scoped branch asks by the key token directly, so a
-                // quoted key cannot resolve here.
                 _ if field.keyword().is_none() => Shape::Skip,
                 _ => match registry(&field.key.text) {
                     Some(true) => Shape::One,

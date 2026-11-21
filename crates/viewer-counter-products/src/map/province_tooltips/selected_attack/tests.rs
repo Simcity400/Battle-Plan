@@ -80,20 +80,15 @@ fn modifier_lines_print_the_first_value_coloured_by_sign() {
         "Terrain: \u{11}R-10.00%\u{11}!"
     );
     assert_eq!(modifier_text("Night", 2_500), "Night: \u{11}G+2.50%\u{11}!");
-    // Enemy air superiority prints its zero first value in red.
     assert_eq!(modifier_text("Air", 0), "Air: \u{11}R0.00%\u{11}!");
 }
 
-/// What one run asked for: each representative's strait or attack list.
 #[derive(Default)]
 struct Asked {
     straits: Vec<u64>,
     attacks: Vec<(u64, u32, u32)>,
 }
 
-/// Members 1 and 3 share template 10 and member 2 has template 20, all in
-/// province 5. Template 10's list holds a terrain and a night entry; template
-/// 20's refuses its fort entry.
 fn run(route: Fact<Vec<u32>>, blocked: bool) -> (Tooltip, Asked) {
     let mut out = Tooltip::default();
     let asked = RefCell::new(Asked::default());
@@ -141,10 +136,6 @@ fn run(route: Fact<Vec<u32>>, blocked: bool) -> (Tooltip, Asked) {
     (out, asked.into_inner())
 }
 
-/// A retained route lists each representative's attack modifiers against
-/// its last move: the heading and every entry for a nonempty list, the
-/// heading gate and the entry's refusal for a list it cannot decide. The
-/// previous viewer added nothing for a route.
 #[test]
 fn a_retained_route_lists_each_representatives_attack_modifiers() {
     let (out, asked) = run(Ok(vec![4, 6]), true);
@@ -161,7 +152,6 @@ fn a_retained_route_lists_each_representatives_attack_modifiers() {
             "province selected attack heading gate: the native modifier-list count is unavailable",
         ]
     );
-    // A one-province route attacks from the shared province.
     let (_, asked) = run(Ok(vec![6]), false);
     assert_eq!(asked.attacks, [(1, 5, 6), (2, 5, 6)]);
 }
@@ -204,7 +194,6 @@ fn gated_lists_and_different_sources_add_nothing() {
     );
     assert!(out.title.is_empty());
     assert!(out.refused.is_empty());
-    // An outer gate that returns before the list adds no heading.
     let mut out = Tooltip::default();
     attack_slot(
         &mut out,

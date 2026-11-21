@@ -1,26 +1,3 @@
-//! The viewing country's raid offers, evaluated a batch of targets at a
-//! time as the game's player cache evaluates them.
-//!
-//! Keep one row per target status, at the same index, holding shown and
-//! launchable bits. A rebuild frame after each executed command (at least
-//! every hour) marks all rows pending. Each frame evaluates up to
-//! `NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME` pending rows from a rolling cursor,
-//! wrapping and advancing by the batch size. Other rows retain their previous
-//! bits. The target array only grows, so each row retains one target for the session.
-//!
-//! A [`Cycle`] is that cache for one viewing country since a reset: each
-//! hour begins as a rebuild frame ([`Cycle::begin`]) and each step evaluates
-//! one batch at that hour ([`Cycle::step`]). An hour begins once: a paused
-//! hour executes no command, so its rows evaluated stay evaluated. A row not evaluated since the
-//! reset shows nothing. The cursor's native position is one client's frame
-//! history, which no recording holds; a cycle starts at row 0. Each kept row
-//! holds its target's scope, and an hour whose row holds another target, or
-//! whose table lost rows, cannot continue the cycle: it must start again.
-//! A step may evaluate rows on several threads; the result equals evaluation
-//! in row order ([`Sweep::evaluate`]).
-//!
-//! Keep each province offer with its rows and rebuild it only when a step
-//! evaluates one of them; other provinces' counts stay unchanged.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -36,62 +13,41 @@ use super::{
     script::Eval,
 };
 
-/// Rows per shared chunk: a step changes a few chunks, and a copy of the
-/// cycle shares the rest.
 const CHUNK: usize = 64;
 
-/// One player cache row.
 #[derive(Clone, Debug)]
 struct Row {
     scope: RaidScope,
-    /// Province in which the offer is counted.
     province: Option<u32>,
-    /// Its last evaluation and the hour it was made at, since the reset.
     kept: Option<Arc<(Hour, Evaluation)>>,
-    /// The content searches that evaluation read: the row keeps them for its next.
     held: Box<[Held]>,
 }
 
-/// One province's rows and what their kept evaluations show.
 #[derive(Clone, Debug, Default)]
 pub struct Shown {
-    /// Its rows, ascending.
     rows: Vec<usize>,
-    /// Why its undecided rows are undecided, in row order.
     pub reasons: Vec<String>,
-    /// Some row is undecided: the province is withheld.
     pub withheld: bool,
-    /// A byte counter wrapped past 255.
     pub wrapped: bool,
     pub offer: Option<Province>,
 }
 
-/// The player cache for one viewing country since a reset.
 #[derive(Clone, Debug)]
 pub struct Cycle {
     branch: BranchId,
     ours: u32,
-    /// The next row to evaluate.
     cursor: usize,
-    /// Rows still to evaluate at this hour.
     pending: usize,
-    /// The hour whose rebuild frame marked the rows pending.
     begun: Option<Hour>,
-    /// Per-row cached state, stored in chunks.
     rows: Vec<Arc<Vec<Row>>>,
     len: usize,
-    /// Each target province's rows and offer.
     provinces: BTreeMap<u32, Arc<Shown>>,
-    /// Rows whose scope resolves to no province.
     unresolved: usize,
-    /// Why this hour's offers are withheld.
     withheld: Vec<String>,
-    /// Why the cycle started again, until every row is evaluated since.
     restarted: Option<String>,
 }
 
 impl Cycle {
-    /// A reset cache: no row evaluated.
     pub fn new(branch: BranchId, ours: u32) -> Self {
         Self {
             branch,
@@ -108,8 +64,6 @@ impl Cycle {
         }
     }
 
-    /// A reset cache that replaces one whose rows no longer hold their
-    /// targets, for `reason`.
     pub fn restarted(branch: BranchId, ours: u32, reason: String) -> Self {
         Self {
             restarted: Some(reason),
@@ -117,7 +71,6 @@ impl Cycle {
         }
     }
 
-    /// Why the cycle started again, until every row is evaluated since.
     pub fn restart(&self) -> Option<&str> {
         self.restarted.as_deref()
     }
@@ -138,14 +91,9 @@ impl Cycle {
         &mut Arc::make_mut(&mut self.rows[at / CHUNK])[at % CHUNK]
     }
 
-    /// The rebuild frame of `sweep`'s hour: new target statuses get rows and
-    /// every row is pending. The hour already begun keeps its pending rows
-    /// unless new targets came. `Err` when a kept row holds another target or
-    /// rows went away since: the cycle must start again at this hour.
     pub fn begin(&mut self, assets: &RaidAssets, sweep: &Sweep<'_, '_>) -> Result<(), String> {
         self.withheld.clone_from(&sweep.withheld);
         if !self.withheld.is_empty() {
-            // Nothing can be evaluated; the rows wait for a complete hour.
             self.pending = 0;
             self.begun = None;
             return Ok(());
@@ -172,7 +120,6 @@ impl Cycle {
             }
             let province = assets.province(&target.scope);
             match province {
-                // A row not yet evaluated leaves the province's offer as it is.
                 Some(province) => Arc::make_mut(self.provinces.entry(province).or_default())
                     .rows
                     .push(self.len),
@@ -195,8 +142,6 @@ impl Cycle {
         Ok(())
     }
 
-    /// Evaluate the next `min(pending, sweep.batch)` rows from the cursor
-    /// at `sweep`'s hour.
     pub fn step(&mut self, sweep: &Sweep<'_, '_>) {
         if self.pending == 0 {
             return;
@@ -226,17 +171,14 @@ impl Cycle {
         }
     }
 
-    /// Whether every row has been evaluated at this hour.
     pub fn complete(&self) -> bool {
         self.pending == 0
     }
 
-    /// Rows evaluated at this hour, of all rows.
     pub fn progress(&self) -> (usize, usize) {
         (self.len - self.pending, self.len)
     }
 
-    /// A cycle with a row still pending, standing for any incomplete one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending(branch: BranchId, ours: u32) -> Self {
         Self {
@@ -245,29 +187,23 @@ impl Cycle {
         }
     }
 
-    /// Row `at`'s kept evaluation and its hour.
     #[cfg(test)]
     pub fn kept(&self, at: usize) -> Option<&Arc<(Hour, Evaluation)>> {
         self.row(at).kept.as_ref()
     }
 
-    /// Each target province's rows and offer.
     pub fn provinces(&self) -> &BTreeMap<u32, Arc<Shown>> {
         &self.provinces
     }
 
-    /// Rows whose scope resolves to no province.
     pub fn unresolved(&self) -> usize {
         self.unresolved
     }
 
-    /// Why this hour's offers are withheld; empty when they are not.
     pub fn withheld(&self) -> &[String] {
         &self.withheld
     }
 
-    /// What `rows`, one province's in ascending order, show: its shown and
-    /// launchable counts, anchor and glyph pairs.
     fn shown(&self, rows: Vec<usize>) -> Shown {
         let mut entry = Accumulator::default();
         let mut reasons = Vec::new();
@@ -326,7 +262,6 @@ impl Cycle {
         }
     }
 
-    /// The offers the kept rows show, as a full evaluation reports them.
     #[cfg(test)]
     pub fn offers(&self) -> super::offers::Offers {
         let mut out = super::offers::Offers {

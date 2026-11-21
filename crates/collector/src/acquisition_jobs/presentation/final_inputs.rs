@@ -1,7 +1,5 @@
 use super::*;
 
-/// The source packs return on the callback; the remaining character jobs
-/// contribute only raw-owner verdicts, not native operands to FinalInputs.
 pub(crate) struct FinalInputsDispatch {
     executor: Weak<acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
@@ -44,8 +42,6 @@ impl FinalInputsDispatch {
         state.seen |= 1 << part;
         state.failed |= !matches!(report, Ok(Report::Characters(report)) if report.raw_ok && !report.plan_failed);
     }
-    /// The complete owned source packs and every Late/history admission are
-    /// installed before this call. No merely-ready prefix lends those packs.
     pub(crate) fn arm(
         &self,
         request: crate::extended::FinalInputsRequest,

@@ -1,4 +1,3 @@
-//! Arrow allocation, strip order and camera admission.
 use crate::map::ribbon_content::{ArrowType, OrderDraw, OrderVertex};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,7 +22,6 @@ pub struct View {
 }
 
 fn offsets(bounds: [[f32; 3]; 2], width: f32, planes: &Planes) -> Vec<f32> {
-    // Create at most one seam box, negative-X branch first.
     let seam = if bounds[0][0] < 0. {
         Some(width)
     } else if bounds[1][0] > width {
@@ -51,15 +49,12 @@ pub fn plans<'a>(
             if matches!(mode, Mode::Shadow | Mode::Main) {
                 seen.clear();
             }
-            // Reset seen in modes 0/2; modes 3/1 retain it. View 0 never consults seen;
-            // later views skip anything submitted by an earlier view.
             let views = wraps
                 .iter()
                 .enumerate()
                 .map(|(view, wrap)| {
                     let mut camera = camera;
                     camera.center[0] -= wrap;
-                    // Read this view's margin-expanded side planes.
                     let planes = side_planes(camera, viewport);
                     let mut result = View::default();
                     let mut base = 0;
@@ -83,8 +78,6 @@ pub fn plans<'a>(
                             if inner || outer {
                                 seen.insert(index);
                             }
-                            // Collect one label per admitted arrow, only in the inner-mask loop,
-                            // with stack capacity 0x200.
                             if mode != Mode::Shadow
                                 && inner
                                 && result.labels.len() < 0x200
@@ -130,7 +123,6 @@ pub fn vertices(
     let head_count = if head { 4 } else { 0 };
     let body = source.len() - head_count;
     let actual = controls * 2 + head_count;
-    // Allocate the next 512-byte boundary, even when already aligned.
     let capacity = (actual / 512 + 1) * 512;
     let mut vertices = Vec::with_capacity(capacity);
     let convert = |v: &OrderVertex| Vertex {
@@ -139,13 +131,10 @@ pub fn vertices(
         uv: v.uv_head_variant,
     };
     vertices.extend(source[body..].iter().rev().map(convert));
-    // Duplicate the head-root pair for the remaining controls.
     for _ in body / 2..controls {
         vertices.extend(source[body - 2..body].iter().rev().map(convert));
     }
     vertices.extend(source[..body].iter().rev().map(convert));
-    // Pad allocation slack with the last record. A single strip's draw uses
-    // the buffer length; split strips use the actual arrow length.
     vertices.resize(capacity, *vertices.last().expect("two controls"));
     let strips = if head {
         vec![0..4, 3..actual as u32]
@@ -218,7 +207,6 @@ mod tests {
             offsets([[-2., 0., 0.], [2., 1., 1.]], 100., &near_right),
             [100.]
         );
-        // Contact is admitted, unlike a box entirely beyond the plane.
         assert!(admits_box([[90., 0., 0.]; 2], 0., &near_right));
         assert!(!admits_box([[89., 0., 0.]; 2], 0., &near_right));
     }
@@ -294,7 +282,6 @@ mod tests {
             Some(&hidden)
         });
         for view in &plan[&Mode::Main] {
-            //Even a bucket with no mask writes is admitted for its stencil clear.
             assert_eq!(view.buckets.len(), 1);
             assert!(view.labels.is_empty());
         }

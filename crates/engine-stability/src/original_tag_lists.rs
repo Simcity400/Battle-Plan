@@ -1,13 +1,6 @@
-//! Stored countries-for-original-tag cache, independent of country-array order.
-//! Initialization includes every country occurrence and slot zero; later original-tag
-//! changes remove and append members. Canonical bucket selection copies ordered raw
-//! IDs, then appends a positive original raw reference unconditionally. Preserve
-//! every stored member without resolution, filtering or deduplication. These vectors
-//! have no text-save field.
 
 use crate::{Memory, cpdx_array::Array, read};
 
-/// Game-state nested country-reference CPdxArray, indexed by canonical slot.
 pub const BUCKETS: usize = 0x988;
 pub const BUCKET_CAPACITY: &str = "original-tag bucket arena capacity exceeded";
 pub const MEMBER_CAPACITY: &str = "original-tag member arena capacity exceeded";
@@ -27,8 +20,6 @@ impl Demand {
     }
 }
 
-/// One owned span in the member arena. Temporary native selection controls
-/// serve only this capture and are cleared before returning to the caller.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Bucket {
     pub start: usize,
@@ -40,11 +31,7 @@ pub struct Bucket {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
-    /// Ok proves every outer bucket and all of its members were copied.
-    /// Err withholds this entire field, even if some arena bytes were written.
     pub len: Result<usize, &'static str>,
-    /// Complete header demand on capacity refusal; known minima on native
-    /// failure. These hints never imply recorded emptiness or availability.
     pub demand: Demand,
 }
 
@@ -102,8 +89,6 @@ fn scan(
     Ok((address, outer_header))
 }
 
-/// Header-only sizing outside the callback. A failed or changed selection
-/// supplies no complete demand. No member payload, game call or heap is used.
 pub fn demand(memory: &impl Memory, state: usize) -> Result<Demand, &'static str> {
     let mut demand = Demand::default();
     scan(memory, state, &mut demand, |_, bucket| {
@@ -112,10 +97,6 @@ pub fn demand(memory: &impl Memory, state: usize) -> Result<Demand, &'static str
     Ok(demand)
 }
 
-/// Capture into separate caller-owned arenas without allocation. All bucket
-/// headers are counted before testing either arena's capacity or copying any
-/// members. Neither a capacity refusal nor a fault retries a native payload.
-/// The caller commits spans only on Ok and can retain unrelated naming data.
 pub fn capture(
     memory: &impl Memory,
     state: usize,

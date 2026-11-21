@@ -1,5 +1,3 @@
-//! Serde helpers for maps whose keys JSON object keys cannot represent: retained-row tuples
-//! and hash-backed continuation state persist as plain pair arrays or in key order.
 
 use serde::{Deserialize, Serialize};
 pub fn serialize<'a, S, M, K: Serialize + 'a, V: Serialize + 'a>(
@@ -22,8 +20,6 @@ where
     serializer.collect_seq(entries.into_iter().map(|(_, key, value)| (key, value)))
 }
 pub use serialize as ordered_pairs;
-// Persist hash-backed continuation state in key order without changing its
-// runtime lookup representation or copying the retained values.
 pub fn ordered_entries<K: Ord, V, H>(map: &std::collections::HashMap<K, V, H>) -> Vec<(&K, &V)> {
     let mut entries: Vec<_> = map.iter().collect();
     entries.sort_unstable_by_key(|(key, _)| *key);
@@ -90,7 +86,6 @@ where
         .into_iter()
         .collect())
 }
-/// The same ordered pairs for a map shared between snapshots.
 pub mod shared {
     use std::{collections::HashMap, hash::Hash, sync::Arc};
     pub fn serialize<S, K, V>(map: &Arc<HashMap<K, V>>, serializer: S) -> Result<S::Ok, S::Error>

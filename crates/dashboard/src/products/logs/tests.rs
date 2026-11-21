@@ -6,12 +6,10 @@ use replay_frame::frame::{DecodedFrame, TableView};
 use std::sync::Arc;
 
 const FIRST: i32 = 100;
-/// The market's log is not read through this hour, and read whole after it.
 const UNREAD: i32 = 119;
 const LAST: i32 = 140;
 const WHY: &str = "The market was not read";
 
-/// An event every fourth hour once the log is read.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     *frame.tables[TableId::MarketEvents.index()] = if hour <= UNREAD {
@@ -46,9 +44,6 @@ fn counts(source: &Source, from: i32) -> LogCountsReply {
     LogCounts::load(source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
 }
 
-/// A log whose table was unavailable for a stretch says so, with the recording's reason, in both
-/// replies: its rows are those of the hours it was read, and the hours it was not are missing,
-/// never a stretch of no rows. A range wholly read is missing nothing.
 #[test]
 fn a_log_unavailable_for_a_stretch_is_missing_there_with_its_reason_in_pages_and_counts() {
     let source = opened();
@@ -62,8 +57,6 @@ fn a_log_unavailable_for_a_stretch_is_missing_there_with_its_reason_in_pages_and
     assert!(counts(&source, UNREAD + 1).missing.is_empty());
 }
 
-/// A country scope is kept only by a log whose rows a scope reads (the feed's); any other log
-/// refuses it by name rather than counting rows the scope would not keep.
 #[test]
 fn a_scope_on_a_log_no_scope_reads_is_refused_by_name() {
     let source = opened();

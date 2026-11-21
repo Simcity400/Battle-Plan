@@ -172,7 +172,6 @@ test('a battle log over a block holds each battle\'s states, each shown from its
   const battle = (id: string, start: number, end: number | null, sunk: number | null): BattleRow => ({ id, place: { name: null, hour: start },
     start: { hour: start, bound: 'exact' }, end: end === null ? null : { hour: end, bound: 'exact' }, sides: sides(sunk),
     winner: end === null ? { unknown: 'Result not recorded' } : { side: 0 } });
-  // x: under way from 90, ended and won at 112; y: from 105, its losses read 1 then 2 from 108, then not read from 115.
   const rowsAt = (hour: number) => [hour < 112 ? battle('x', 90, null, 1) : battle('x', 90, 112, 1),
     ...hour >= 105 ? [battle('y', 105, null, hour >= 115 ? null : hour >= 108 ? 2 : 1)] : []];
   const hours = [100, 105, 108, 112, 115];
@@ -186,7 +185,6 @@ test('a battle log over a block holds each battle\'s states, each shown from its
   const painted = battleStateRows(hours, rowsAt, true, item => battleState(item, true));
   assert.equal(painted.filter(item => item.item.id === 'y').length, 2, 'losses painted between changes: a state only when they stop being known');
   assert.ok(painted.every(item => item.id === item.item.id), 'a battle\'s states share its id: the log draws them as one row');
-  // Read whole only at the first hour, then each battle at its own changes: the same states, a read per change.
   const reads: string[] = [];
   const own = new Map([[105, ['y']], [108, ['y']], [112, ['x']], [115, ['y']]]);
   const byBattle = battleStateRows(hours, at => { reads.push(`*@${at}`); return rowsAt(at); }, true, undefined, at => own.get(at) ?? [],
@@ -202,7 +200,6 @@ test('a battle log over a block holds each battle\'s states, each shown from its
 test('a battle list draws ahead only through the windows held without a gap from the hour\'s, through the next window at most', () => {
   const windows = [{ firstHour: 100, lastHour: 130 }, { firstHour: 131, lastHour: 160 }, { firstHour: 161, lastHour: 190 }];
   assert.equal(heldWindowsEnd(windows, new Set([0]), 120), 131);
-  // The next block then begins at most two windows on, in a window asked with this one (`battleWindows`).
   assert.equal(heldWindowsEnd(windows, new Set([0, 1, 2]), 120), 161, 'never past the window after the hour\'s');
   assert.equal(heldWindowsEnd(windows, new Set([0, 1, 2]), 140), 191);
   assert.equal(heldWindowsEnd(windows, new Set([0, 2]), 120), 131, 'a window not held ends what may be drawn');
@@ -214,7 +211,6 @@ test('the rows at the head are replayed once an hour however many rows ask, and 
   const replayed: number[] = [];
   const rowsAt = heldAtHour((hour: number) => { replayed.push(hour); return [{ id: `a${hour}` }, { id: `b${hour}` }] as unknown as BattleRow[]; });
   const first = rowsAt(10);
-  // A render's rows, each row's tooltip and the frame's painter at one head hour.
   for (let row = 0; row < 50; row++) assert.equal(rowsAt(10), first);
   assert.deepEqual(replayed, [10], 'one replay for the hour');
   assert.notEqual(rowsAt(11), first);

@@ -52,8 +52,6 @@ fn immutable_sources_match_copying_scratch_and_pending_through_refusals_and_fata
             let world = std::array::from_fn(|_| std::array::from_fn(|_| f32::from_bits(next())));
             let userdata = (!next().is_multiple_of(3))
                 .then(|| std::array::from_fn(|_| f32::from_bits(next())));
-            // Independent byte reference: exact matrix/payload ranges, with a PS
-            // snapshot only when this descriptor actually supplies userdata.
             reference.bytes[..64].copy_from_slice(bytemuck::bytes_of(&world));
             if let Some(data) = userdata {
                 reference.bytes[64..96].copy_from_slice(bytemuck::bytes_of(&data));
@@ -70,7 +68,6 @@ fn immutable_sources_match_copying_scratch_and_pending_through_refusals_and_fata
                 (reference.bytes, reference.pixel) = before;
                 bank.restore(checkpoint);
             } else if outcome == 3 && descriptor > 32 {
-                // A fatal prefix keeps current scratch but suppresses invocation-end Pending.
                 bank.sync(&mut actual);
                 assert_eq!(actual.bytes, reference.bytes);
                 assert_eq!(actual.pixel, reference.pixel);
@@ -103,7 +100,6 @@ fn immutable_sources_match_copying_scratch_and_pending_through_refusals_and_fata
                 expected_grid |= buffers[5].is_some();
                 let mask = buffers.iter().enumerate().fold(0, |mask, (slot, bytes)| mask | if bytes.is_some() { 1 << slot } else { 0 });
                 masked.constants_mask(mask, view, &bank, instance, 0);
-                // No GPU is needed to resolve source operands; unused views are inert.
                 for (slot, expected) in expected_slots.iter().enumerate() {
                     let expected = expected.as_deref();
                     let observed = masked.sources[slot].map(|source| match source {

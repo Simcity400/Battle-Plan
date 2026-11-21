@@ -65,7 +65,6 @@ struct Mailbox {
 }
 pub(super) struct SpoolHistory(Arc<Mutex<Mailbox>>);
 impl SpoolHistory {
-    /// `owned` holds every frame's capture sequence ([`crate::frame_fence`]).
     pub(super) fn poll<'a>(
         &self,
         processor: &mut Processor,
@@ -78,7 +77,6 @@ impl SpoolHistory {
         self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
     }
 
-    /// Whether a refresh request poll failed since the last call; a busy mailbox defers it.
     pub(super) fn take_refresh_failure(&self) -> bool {
         self.0
             .try_lock()
@@ -195,7 +193,6 @@ pub(super) struct HistoryWorker {
     thread_id: u32,
 }
 impl HistoryWorker {
-    /// With `refresh`, this thread also accepts `recorder refresh` requests, calling it for each.
     pub(super) fn start(
         session: PathBuf,
         replay_directory: PathBuf,
@@ -238,7 +235,6 @@ impl HistoryWorker {
                         crate::allocation::observe(&error);
                     }
                     if let Some(accept) = refresh {
-                        // Refresh polling belonged to the spool's status phase.
                         let _status = crate::allocation::enter(crate::allocation::Phase::Status);
                         if let Err(error) = refresh_requests.poll(&session, accept) {
                             crate::allocation::observe(&error);
@@ -1097,7 +1093,6 @@ mod tests {
         use super::super::REFRESH_REQUESTS;
         let root = root();
         let requests = root.join(REFRESH_REQUESTS);
-        // Requests the worker cannot read reach the spool's status warning.
         fs::write(&requests, "not a folder").unwrap();
         static ACCEPTED: AtomicU32 = AtomicU32::new(0);
         let (mut worker, handoff) = HistoryWorker::start(
@@ -1118,7 +1113,6 @@ mod tests {
         fs::write(requests.join("token-9.tmp"), "token-9").unwrap();
         fs::rename(requests.join("token-9.tmp"), &request).unwrap();
         let started = Instant::now();
-        // Removal is the last step of an accepted request.
         while request.exists() {
             assert!(started.elapsed() < crate::TEST_HANG_GUARD);
             std::thread::sleep(Duration::from_millis(1));
@@ -1226,7 +1220,6 @@ mod tests {
             settings: &settings,
             report: None,
         };
-        // Both frames are in the campaign's journal, which the session's end writes and saves.
         processor.detach().unwrap();
         let ended = recorder_replay::replay_io::finalize_session_ahead(
             &live,
@@ -1305,7 +1298,6 @@ mod tests {
         let settings = root.join("settings.json");
         let earlier = root.join("sessions/1");
         let live = root.join("sessions/2");
-        // An ended session's journal is written to its end and its recording saved.
         let save = |folder: &Path| {
             let naming = replay_io::Naming {
                 localisation: None,

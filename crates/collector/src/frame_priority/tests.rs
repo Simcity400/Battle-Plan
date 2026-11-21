@@ -9,7 +9,6 @@ fn fixture(high: bool) -> Arc<Pipeline> {
             pipeline.publish();
         }
     }
-    // These synthetic handles reach only mock setters, never native priority changes.
     pipeline.register(Role::Decode);
     pipeline
 }
@@ -86,7 +85,6 @@ fn every_final_read_registration_and_syscall_race_retries_off_callback() {
             let mut budget = Budget::default();
             apply(&pipeline, &mut budget, 0, &native);
             assert!(fired.load(Ordering::SeqCst), "{boundary:?}");
-            // Reconciliation runs without another callback refresh, even after the final desired read.
             apply(&pipeline, &mut budget, 0, &native);
             assert_eq!(
                 native.load(Ordering::SeqCst),
@@ -321,7 +319,6 @@ fn the_owned_reconciler_starts_boost_disabled_and_joins_without_targets() {
     let mut worker = Reconciler::start(pipeline.clone()).unwrap();
     assert_ne!(worker.thread_id(), 0);
     let mut disabled = 0;
-    // SAFETY: this handle belongs to the test's own reconciler and remains joined below.
     let valid = unsafe {
         windows_sys::Win32::System::Threading::GetThreadPriorityBoost(
             worker.thread.as_ref().unwrap().as_raw_handle() as _,
@@ -344,7 +341,6 @@ fn a_delayed_announcer_cannot_hide_a_later_real_change() {
     change(&pipeline, false);
     let mut budget = Budget::default();
     apply(&pipeline, &mut budget, 0, &AtomicU32::new(0));
-    // A resumes after B's completed correction, publishing its stale pressure but never writing priority.
     pipeline.announced.swap(old, Ordering::SeqCst);
     pipeline.notify();
     apply(&pipeline, &mut budget, 0, &AtomicU32::new(0));
@@ -379,17 +375,13 @@ fn availability_counts_every_published_frame_and_each_claim() {
 
 #[test]
 fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
-    // (logical processor, core, CPU-set id): two cores with two hyper-threads each.
     let cores = Cores::from_sets(&[(0, 0, 256), (1, 0, 257), (2, 1, 258), (3, 1, 259)]).unwrap();
     assert_eq!(away_sets(Some(&cores), Some(0)), Some(&[258, 259][..]));
-    // The game on the second hyper-thread still keeps readers off its sibling.
     assert_eq!(away_sets(Some(&cores), Some(1)), Some(&[258, 259][..]));
     assert_eq!(away_sets(Some(&cores), Some(3)), Some(&[256, 257][..]));
-    // An unplaced processor, several groups or an unread topology leave the thread unconfined.
     assert_eq!(away_sets(Some(&cores), Some(4)), None);
     assert_eq!(away_sets(Some(&cores), None), None);
     assert_eq!(away_sets(None, Some(0)), None);
-    // One physical core leaves nowhere else to run.
     let single = Cores::from_sets(&[(0, 0, 256), (1, 0, 257)]).unwrap();
     assert_eq!(away_sets(Some(&single), Some(1)), None);
     assert!(Cores::from_sets(&[]).is_none());

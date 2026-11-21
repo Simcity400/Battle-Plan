@@ -1,15 +1,8 @@
-//! Physical game-state country-array occurrences for alias `checks_all`.
-//! Resolution walks physical order through the live count, considers each
-//! pointer's own positive raw ID, and retains the first passing candidate or
-//! first tied score. Canonical Countries rows do not retain order or repeated
-//! pointers. Reserved slot zero uses reserved naming's pointer/vtable/ID-zero
-//! identity.
 
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
-    /// Only Ok proves every physical occurrence was authenticated and copied.
     pub len: Result<usize, &'static str>,
     pub required: usize,
 }
@@ -32,17 +25,12 @@ fn unchanged(memory: &impl Memory, address: usize, expected: [u8; 16]) -> Result
     }
 }
 
-/// Header-only capacity hint outside the callback; no country payload is
-/// acquired and a complete hint never implies a usable recorded roster.
 pub fn demand(memory: &impl Memory, _base: usize, state: usize) -> Result<usize, &'static str> {
     let (address, bytes, array) = header(memory, state)?;
     unchanged(memory, address, bytes)?;
     Ok(array.count as usize)
 }
 
-/// No native calls; the storage grows to the roster's count. A native failure
-/// withholds the whole field; the caller must commit the scalar arena only on
-/// Ok. Aliases are not filtered.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -98,9 +86,6 @@ fn capture_buffer(
                     })
                     .filter(|pointer| *pointer != 0)
                     .ok_or("country-array roster pointer unreadable or null")?;
-                // A physical alias of Country0 is a proved occurrence, even
-                // though positive-only country reference resolution rejects
-                // its raw ID. A missing census entry alone proves no zero.
                 if Some(pointer) == reserved {
                     output[slot as usize] = 0;
                     continue;

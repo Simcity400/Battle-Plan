@@ -1,7 +1,3 @@
-//! The hourly railway-gun counter inputs against the same-hour tables and the save.
-//!
-//! Province membership of every gun is checked with the other mixed occupants
-//! in [`super::counters`]; this compares each gun's own operands.
 
 use super::*;
 
@@ -26,9 +22,6 @@ pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     });
 }
 
-/// The transport rows are in key order and cover exactly the positive logical
-/// owners of guns that stand on or route through a province; which regions
-/// those provinces lie in is map content the frame does not hold.
 fn owner_transport(frame: &DecodedFrame) -> io::Result<usize> {
     let rows = frame.complete::<tables::OwnerTransportSpeeds>()?;
     let owners: BTreeSet<u32> = frame
@@ -105,7 +98,6 @@ fn compare_fresh(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     Ok(())
 }
 
-/// Joins every gun's references to the same hour's complete censuses.
 fn validate(frame: &DecodedFrame) -> io::Result<usize> {
     let guns = frame.complete::<tables::RailwayGunCounterInputs>()?;
     let countries = country_context(frame)?;
@@ -174,7 +166,6 @@ fn validate(frame: &DecodedFrame) -> io::Result<usize> {
                 row.combat_role, row.combat_province, row.combat_count
             ));
         }
-        // The first combat's attacker is the walk's first hit; with one combat the two agree.
         if row.attacking > 1
             || (row.combat_role == 1 && row.attacking == 0)
             || (row.combat_count == 0 && row.attacking != 0)
@@ -240,8 +231,6 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 &saved.name,
             ),
             replay_data::rows::Recorded::Value(Some(name)) => {
-                // The railway-gun writer delegates to the unit writer,
-                // which gates the name on stored length.
                 let label = format!("{label}.name");
                 let name = (!name.is_empty()).then(|| super::serialized_text(report, &label, name));
                 check(report, &label, name, saved.name.as_deref());
@@ -264,8 +253,6 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 saved.expeditionary_owner.as_deref(),
             ),
         ] {
-            // The unit writer drops signed-nonpositive expeditionary tags; only
-            // an exact raw zero is proved by omission.
             if field == "expeditionary_owner" && (raw as i32) < 0 {
                 report.limitation(
                     "the save omits signed-nonpositive expeditionary country references; the raw bits need paused-memory verification",
@@ -293,8 +280,6 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             row.ordinary_path.as_slice(),
             saved.path.as_slice(),
         );
-        // The unit save writer emits the movement target as support_attack
-        // when nonnull, and the alternate route as full_path when nonempty.
         check(
             report,
             &format!("{label}.target"),
@@ -313,8 +298,6 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             row.strategic_redeployment != 0,
             saved.strategic_redeployment,
         );
-        // The railway-gun writer delegates to the unit writer,
-        // which writes the exile flag only when nonzero.
         check(
             report,
             &format!("{label}.exiled truth"),
@@ -365,12 +348,6 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             Some(row.current_strength),
             Some(&saved.strength),
         );
-        // A gun's saved `combat` list is its own reference array: the railway-gun
-        // writer emits it when its count is nonzero. The reference-presence
-        // test uses that same count. The unit writer never saves the unit
-        // combat vector that `combat_count` holds, so that has no saved
-        // counterpart for a gun. The writer emits exactly the stored count,
-        // making it the saved list's length.
         check(
             report,
             &format!("{label}.reference_entry_count"),
@@ -413,7 +390,6 @@ mod tests {
             name: replay_data::rows::Recorded::Value(Some(Vec::new())),
             withdrawal: replay_data::rows::Recorded::Value(Some(0)),
             queued_actions: replay_data::rows::Recorded::Value(Some(0)),
-            // Native route cells are raw; nothing here requires known provinces.
             alternate_path: vec![u32::MAX],
             ..Default::default()
         }
@@ -499,7 +475,6 @@ mod tests {
                     .contains(expected)
             );
         }
-        // Owners with different region sets are both covered.
         let mut two = fixture();
         let mut other = gun();
         other.gun = GUN + (1 << 32);
@@ -593,7 +568,6 @@ mod tests {
             assert!(found[0].contains("target"));
             assert!(found[1].contains("alternate_path"));
         }
-        // The writer omits a null target and an empty route.
         let idle = with(|row| row.alternate_path.clear());
         assert!(differences(&idle, routed(None, vec![])).is_empty());
     }
@@ -826,7 +800,6 @@ mod tests {
             .len(),
             1
         );
-        // The genuine unit group and fresh profile are captured even while idle.
         let idle_refusal = run(RailwayGunCounterInputRow {
             ordinary_path: vec![],
             fresh: Recorded::Value(None),
@@ -893,8 +866,6 @@ mod tests {
         );
     }
 
-    /// W2: a spawned gun supporting two combats saves both in its reference
-    /// array while its unit combat vector stays empty.
     #[test]
     fn saved_combats_are_the_reference_entries_not_the_unit_combat_vector() {
         let (_, mut save, _, _) = super::super::fixtures::fixture();

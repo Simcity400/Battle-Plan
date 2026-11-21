@@ -1,15 +1,3 @@
-//! `map/railways.txt`: the static rail network.
-//!
-//! The loader reads one token stream through the script lexer, not by line:
-//! a level, a province count and that many province ids, each resolved and
-//! converted to a signed integer, then the next segment from the token after
-//! them. A line whose count exceeds its ids takes the next line's first
-//! tokens as its own, and the segments after it are read from there.
-//!
-//! The file is the *authored* network only. A campaign's railways change as
-//! they are built and captured; the replay carries `RailwayConstruction` rows
-//! but no table of the network as it stands at an hour, so a viewer drawing
-//! this file is drawing 1936's rails at any hour. The caller states that.
 
 use std::io;
 
@@ -20,27 +8,18 @@ use crate::{
     parser::native::{self, Reader},
 };
 
-/// One authored rail segment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Railway {
-    /// The level token converted to a signed integer.
     pub level: i32,
-    /// The ordered province path the rails run through, at least two.
     pub provinces: Vec<i32>,
 }
 
-/// Advances and resolves the token; at the end of the text the advance
-/// fails and the token is the last one read.
 fn next(reader: &mut Reader) -> (bool, i32) {
     let read = reader.advance();
     reader.current = reader.resolve(reader.current.clone());
     (read, decimal_i32(&reader.current.text))
 }
 
-/// Parses `map/railways.txt`: a segment starts at every token the advance
-/// reads, and only its level read ends the loop at the end of the text, so
-/// a segment cut short repeats the last token. Paths of at least two
-/// provinces are added; shorter paths are discarded.
 pub fn parse(input: &[u8]) -> Vec<Railway> {
     let mut reader = Reader::new(native::lex(input, native::Mode::KeepMark));
     let mut out = Vec::new();
@@ -58,8 +37,6 @@ pub fn parse(input: &[u8]) -> Vec<Railway> {
     out
 }
 
-/// Reads `map/railways.txt` from the resolved layers; a missing file adds
-/// no railways.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Vec<Railway>> {
     match layers.read("map/railways.txt") {
         Ok(bytes) => Ok(parse(&bytes)),
@@ -87,9 +64,6 @@ mod tests {
         assert_eq!(parse(b"2 3\n10 # x\n 20\n30").len(), 1);
     }
 
-    /// A segment's count can exceed the ids on its line: the next line's
-    /// level is then taken as a province, and reading continues from the
-    /// following token. At the end of the text the last token is read again.
     #[test]
     fn a_short_segment_takes_the_next_line_tokens() {
         let rails = parse(b"2 3 10 20\n4 2 5 6\n");

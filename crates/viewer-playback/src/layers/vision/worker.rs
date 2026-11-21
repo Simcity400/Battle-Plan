@@ -1,14 +1,3 @@
-//! The province fold and the whole parts on the vision layer's own worker, fed the steps
-//! themselves: ahead of the head as the host offers them, or when the frame applies them. The
-//! worker keeps its own copies of the tables it reads and their standing, made whole from the
-//! mirrors at a compose and kept from each step's change sets alone ([`Table::step`]); it folds a
-//! step, rereads the whole parts when their tables moved, and makes a product stamped with the
-//! step's last hour: the changed province bytes, the invasion sight, the gap, the controllers, and
-//! the whole parts and notes when they changed. Of steps queued that the frame has applied already,
-//! only the last makes one. The frame side takes a product once it has applied its hour, never
-//! before ([`Fed`]); nothing on the frame waits for it, except an unlimited settle (compose, the
-//! proof).
-
 use super::{
     Columns, Content, Notes,
     fold::Fold,
@@ -36,8 +25,6 @@ use std::{
 };
 use viewer_foundation::map::perspective::Choice;
 
-/// The statuses of the tables the whole parts keep no rows of, and how the mirrors word the
-/// refusal of the tables they name.
 #[derive(Default, PartialEq)]
 struct Beside {
     statuses: BTreeMap<TableId, Option<Status>>,
@@ -54,23 +41,14 @@ impl Beside {
 }
 
 enum Job {
-    /// The kept tables whole from the mirrors, the standing of those read for their status alone,
-    /// and every kept table's status as the layer reacts to it.
-    /// Its first product is current at `stamp` (none: the compose's) and answers the `answers`th
-    /// restart.
     Reset { epoch: u64, tables: Box<Tables>, status_only: Vec<(TableId, Standing)>, kinds: BTreeMap<TableId, Option<Status>>, columns: Columns, choice: Choice, stamp: Option<Hour>, answers: u64 },
     Step { epoch: u64, step: Arc<Step> },
 }
 
-/// What the worker made of the steps it folded through the hour it is stamped with (none: the
-/// compose's).
 struct Made {
     epoch: u64,
     stamp: Option<Hour>,
-    /// The perspective changes it has taken in.
     answers: u64,
-    /// Every province's byte after a rebuild, or the ones whose byte changed; and whether
-    /// anything else may have changed (the sight, the gap, a rebuild).
     whole: Option<(Vec<u32>, Vec<u8>)>,
     bytes: Vec<(u32, u8)>,
     all: bool,
@@ -80,36 +58,25 @@ struct Made {
     spent: [u64; 4],
     held: usize,
     worker_ns: u64,
-    /// The whole parts, when they changed (or the worker is fresh).
     global: Option<Global>,
     rebuilds: [u64; 4],
-    /// Provinces whose controller's canonical slot changed, with it; none where no row holds one.
     controllers: Vec<(u32, Option<u32>)>,
-    /// The limitation notes, when they changed (or the worker is fresh).
     notes: Option<Notes>,
 }
 
-/// The visibility gap of fog content that did not load.
 const NO_FOG_CONTENT: &str = "fog content (topology or NIntel defines) failed to load";
 
 struct Work {
     fold: Fold,
     tables: Tables,
-    /// The tables read for their status alone, and every kept table's status as the layer reacts
-    /// to it (a truncated table's missing count aside).
     status_only: Vec<(TableId, Standing)>,
     kinds: BTreeMap<TableId, Option<Status>>,
     global: Global,
     choice: Choice,
     beside: Beside,
-    /// The whole parts' tables, statuses or perspective moved: they are reread before the fold.
     reread: bool,
-    /// Terms made again since the last made, by the part of the whole parts that moved: links,
-    /// countries, viewer, admitted slots.
     rebuilds: [u64; 4],
-    /// The fold's marks and spent time as last handed back.
     reported: ([u64; 2], [u64; 4]),
-    /// Per province: its controller's canonical slot; the provinces to read again, or all.
     controllers: BTreeMap<u32, u32>,
     controllers_dirty: BTreeSet<u32>,
     controllers_all: bool,
@@ -120,9 +87,7 @@ struct Work {
     gap: Option<&'static str>,
     sources: u64,
     notes: Notes,
-    /// In a gap: every table unrecorded until the next step names it, and everything folded again then.
     in_gap: bool,
-    /// The last hour of the newest step folded; the restarts answered.
     stamp: Option<Hour>,
     answered: u64,
 }
@@ -157,10 +122,6 @@ impl Work {
         }
     }
 
-    /// One step from its change sets, as the frame side once copied it: each kept table's cells
-    /// into the worker's copy and the fold, then the statuses that moved, then what the whole
-    /// parts read beside. A gap step leaves every table unrecorded; the step after it folds
-    /// everything again.
     fn step(&mut self, step: &Step) {
         self.frame += 1;
         self.stamp = self.stamp.max(Some(step.last()));
@@ -215,7 +176,6 @@ impl Work {
         }
     }
 
-    /// In a gap nothing is folded: the product is what the last one showed.
     fn unchanged(&self, epoch: u64) -> Made {
         Made {
             epoch,
@@ -237,8 +197,6 @@ impl Work {
         }
     }
 
-    /// The whole parts reread from the worker's tables; what their change moves marked, as the
-    /// frame side once did. The new parts when they changed or the worker is fresh.
     fn reread(&mut self, content: &Content) -> Option<Global> {
         if !mem::take(&mut self.reread) {
             return None;
@@ -265,7 +223,6 @@ impl Work {
         changed
     }
 
-    /// The marked provinces' controllers read again; those whose slot changed.
     fn settle_controllers(&mut self) -> Vec<(u32, Option<u32>)> {
         let ids: Vec<u32> = if mem::take(&mut self.controllers_all) {
             let mut ids: BTreeSet<u32> = self.controllers.keys().copied().collect();
@@ -294,7 +251,6 @@ impl Work {
         changed
     }
 
-    /// The limitation notes of the whole parts and the gap, in today's words.
     fn notes(&self, content: &Content, gap: Option<&'static str>) -> Notes {
         use viewer_foundation::map::tables::{Limitations, Perspective};
         let global = &self.global;
@@ -387,12 +343,10 @@ impl Work {
     }
 }
 
-/// The tables and columns the fold reads, from the layer's handles.
 fn shapes(columns: &Columns) -> Vec<Shape> {
     use TableId as T;
     let shape = Shape::new;
     vec![
-        // The whole parts' tables; Countries is also whether the derive's input is whole.
         shape(T::CountryLinks, &[columns.link_slot.column], &[]),
         shape(T::Countries, &[columns.country_slot.column], &[]).with_texts(&[columns.country_tag.column]),
         shape(T::LocalPlayer, &[columns.player_country.column, columns.player_observer.column], &[]),
@@ -420,8 +374,6 @@ fn shapes(columns: &Columns) -> Vec<Shape> {
     ]
 }
 
-/// The next job is a step of `epoch` the frame has applied already, or a reset: what the worker
-/// folded so far needs no product of its own.
 fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     match next {
         Some(Job::Reset { .. }) => true,
@@ -462,9 +414,6 @@ fn run(content: Arc<Content>, jobs: Receiver<Job>, made: Sender<Made>, due: Due)
     }
 }
 
-/// The frame side of the fold: the steps handed to the worker and the products it made, taken
-/// once their hour is applied; what the last taken showed, and the changes published to the
-/// layers that read vision.
 pub(super) struct Folder {
     content: Arc<Content>,
     jobs: Option<Sender<Job>>,
@@ -472,10 +421,7 @@ pub(super) struct Folder {
     shapes: Vec<Shape>,
     epoch: u64,
     fed: Fed<Made>,
-    /// The steps handed past the hour the mirrors stand at, for a restart to hand again.
     kept: VecDeque<Arc<Step>>,
-    /// Restarts asked (a perspective change), the newest answer arrived and the newest taken, and
-    /// the hour shown when the newest was asked: until it is taken, what is shown is that hour's.
     asked: u64,
     arrived: u64,
     answered: u64,
@@ -485,21 +431,15 @@ pub(super) struct Folder {
     bytes: Vec<u8>,
     sight: BTreeMap<u64, u32>,
     gap: Option<&'static str>,
-    /// What changed for the layers that read vision, until the host clears it: provinces whose
-    /// byte or controller changed, units whose sight changed, intel lanes by target, or
-    /// everything (the viewer, the relations, whether a fog is drawn, the modifier, a rebuild).
     pub(super) changed: crate::layers::Changed,
     marked: [u64; 2],
     spent: [u64; 4],
     worker_held: usize,
     worker_ns: u64,
     worker_runs: u64,
-    /// The whole parts the worker last made, not yet taken by the layer.
     global: Option<Global>,
     rebuilds: [u64; 4],
-    /// Controllers the worker found changed, not yet taken by the layer.
     controllers: Vec<(u32, Option<u32>)>,
-    /// The limitation notes the worker last made.
     notes: Notes,
 }
 
@@ -535,8 +475,6 @@ impl Folder {
         }
     }
 
-    /// The worker's inputs made whole from the mirrors, at a compose: what it held is dropped by
-    /// epoch, and its thread made on first use.
     pub(super) fn reset(&mut self, mirrors: &Mirrors, columns: &Columns, choice: &Choice) {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
@@ -558,7 +496,6 @@ impl Folder {
         self.start(mirrors, columns, choice, None);
     }
 
-    /// The worker started from the mirrors: its first product current at `stamp`.
     fn start(&self, mirrors: &Mirrors, columns: &Columns, choice: &Choice, stamp: Option<Hour>) {
         let tables = Box::new(Tables::from_mirrors(mirrors, &self.shapes));
         let status_only = global::STATUS_ONLY.iter().filter_map(|&table| Some((table, Standing::of(mirrors.get(table)?)))).collect();
@@ -568,10 +505,6 @@ impl Folder {
         }
     }
 
-    /// The perspective changed: the worker, which may have folded steps past the hour applied,
-    /// starts over from the mirrors at that hour with the new perspective, and is handed again the
-    /// steps it had past it. What it made before is dropped; until its first product is taken, the
-    /// hour shown before is shown. Before the first compose, the compose carries the perspective.
     pub(super) fn restart(&mut self, mirrors: &Mirrors, columns: &Columns, choice: &Choice) {
         if self.jobs.is_none() {
             return;
@@ -590,17 +523,12 @@ impl Folder {
         }
     }
 
-    /// The steps handed past the hour applied are void (the playhead rebuilt them for a new pace):
-    /// the worker starts over from the mirrors at that hour, as at a perspective change, and is
-    /// handed the steps from there again.
     pub(super) fn void(&mut self, mirrors: &Mirrors, columns: &Columns, choice: &Choice) {
         self.kept.clear();
         self.fed.void();
         self.restart(mirrors, columns, choice);
     }
 
-    /// Steps for the worker, in order: those not handed before go to it, and those past the hour
-    /// the mirrors stand at are kept until applied.
     pub(super) fn hand(&mut self, steps: &[Arc<Step>]) {
         let Some(jobs) = &self.jobs else { return };
         let through = self.fed.through();
@@ -612,7 +540,6 @@ impl Folder {
         }
     }
 
-    /// The frame applied `step`: the worker's product for its hour is due.
     pub(super) fn applied(&mut self, step: &Step) {
         self.fed.applied(step);
         while self.kept.front().is_some_and(|kept| kept.last() <= step.last()) {
@@ -620,19 +547,14 @@ impl Folder {
         }
     }
 
-    /// Everything a dependent reads of vision may have changed.
     pub(super) fn touch_all(&mut self) {
         self.changed.everything();
     }
 
-    /// One entity of `kind` changed for the layers that read vision.
     pub(super) fn mark(&mut self, kind: &'static str, id: u64) {
         self.changed.mark(kind, id);
     }
 
-    /// Receives what the worker made and takes what is due: the products of the hours applied.
-    /// With `wait`, until the product of the last hour applied and the answer to every restart
-    /// asked have arrived.
     pub(super) fn exchange(&mut self, wait: bool) {
         if let Some(receive) = &self.made {
             loop {
@@ -662,7 +584,6 @@ impl Folder {
                 held[id as usize] = true;
                 values[id as usize] = byte;
             }
-            // Even a whole publish names the provinces it moved, so a reader of bytes need not reread every one.
             for id in 0..largest.max(self.held.len()) {
                 let before = self.held.get(id).copied().unwrap_or(false).then(|| self.bytes[id]);
                 let after = held.get(id).copied().unwrap_or(false).then(|| values[id]);
@@ -709,17 +630,14 @@ impl Folder {
         self.worker_runs += 1;
     }
 
-    /// The controllers the worker found changed since the layer last took them.
     pub(super) fn take_controllers(&mut self) -> Vec<(u32, Option<u32>)> {
         mem::take(&mut self.controllers)
     }
 
-    /// The whole parts the worker made since the layer last took them.
     pub(super) fn take_global(&mut self) -> Option<Global> {
         self.global.take()
     }
 
-    /// Every term made again, by the part of the whole parts that moved.
     pub(super) fn rebuilds(&self) -> [u64; 4] {
         self.rebuilds
     }
@@ -731,7 +649,6 @@ impl Folder {
         self.gap
     }
 
-    /// The limitation notes the worker last made.
     pub(super) fn notes(&self) -> &Notes {
         &self.notes
     }
@@ -740,8 +657,6 @@ impl Folder {
         self.present.iter().map(|&id| (id, self.bytes[id as usize])).collect()
     }
 
-    /// The provinces it holds a byte of and every byte by province id, copied as arrays: what
-    /// [`Self::province_bytes`] makes, made elsewhere.
     pub(super) fn bytes_copy(&self) -> (Vec<u32>, Vec<u8>) {
         (self.present.clone(), self.bytes.clone())
     }
@@ -750,12 +665,10 @@ impl Folder {
         self.sight.clone()
     }
 
-    /// A unit's sight province, where it takes intel from another than its own.
     pub(super) fn sight_of(&self, unit: u64) -> Option<u32> {
         self.sight.get(&unit).copied()
     }
 
-    /// A province's byte; none where the fold holds none.
     pub(super) fn province_byte(&self, province: u32) -> Option<u8> {
         self.held.get(province as usize).copied().unwrap_or(false).then(|| self.bytes[province as usize])
     }
@@ -764,7 +677,6 @@ impl Folder {
         if self.held.get(province as usize).copied().unwrap_or(false) { self.bytes[province as usize] } else { u8::MAX }
     }
 
-    /// Provinces refolded and sources made again, on the worker, since the layer was made.
     pub(super) fn marked(&self) -> [u64; 2] {
         self.marked
     }
@@ -773,19 +685,14 @@ impl Folder {
         self.spent
     }
 
-    /// Nanoseconds on the worker, and its folds, since the layer was made.
     pub(super) fn worker(&self) -> (u64, u64) {
         (self.worker_ns, self.worker_runs)
     }
 
-    /// A perspective change's restart is not taken yet: what is shown is the viewer's before it.
     pub(super) fn restarting(&self) -> bool {
         self.answered < self.asked
     }
 
-    /// What vision has published: current once the product of the last hour applied is taken;
-    /// otherwise the hour of the newest taken, or while a restart is unanswered, the hour shown
-    /// when it was asked.
     pub(super) fn published(&self) -> Published {
         if self.answered < self.asked {
             return self.asked_at.map_or(Published::Nothing, Published::At);
@@ -811,15 +718,10 @@ mod tests {
     use replay_data::rows::TableId;
     use viewer_foundation::map::perspective::{Choice, Country};
 
-    /// A country's tag whose string the recording does not name: the viewing country's line names
-    /// that, and a country chosen by a tag no named tag matches refuses the vision by name. On
-    /// `8abb44618d` the tag read as empty: the line read "Viewing country : …" and the chosen
-    /// country was told absent, as if the recording held no such tag.
     #[test]
     fn a_tag_whose_string_is_not_named_is_refused_by_name_not_read_as_empty() {
         let content = p6_tests::vision_content();
         let mut checked = false;
-        // `play` stops at its last hour having seen four steps of four hours: 16, not before.
         p6_tests::play(p6_tests::vision_world(), Box::new(Vision::new(p6_tests::vision_content())), 16, |_, mirrors, layer| {
             if std::mem::replace(&mut checked, true) {
                 return;

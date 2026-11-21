@@ -1,0 +1,9 @@
+# 1109-C. Reproduce fixed-window construction and attachment order
+
+Fixed windows serve as list rows and nested window types. A maximum-resolution axis uses the root viewport less the stored extent. Root positions use the viewport and child positions use the enclosing window, with list rows then moved to their retained row position. The background is built first at the window's size and supplies the row's measured extent when present. Background lookup uses the last matching child of the window, then its direct parent template. An invalid reached template refuses construction.
+
+Factories construct the entries of each kind in a fixed sequence, including entries that never attach. They read the last case-folded declaration under a name, so the declared list's entry and the found type can differ. The button and icon factories honor that found type's concrete class. Other factories require their expected class. Order-list attachment and typed lookups use independent priority lists. Array lookups keep the first match, map lookups the last, and nested-window lookup uses the original bytes. Drop-downs are constructed but absent from the attachment list. Construction failures count even for unattached objects. Drawing failures count only when the object is reached by drawing.
+
+The background is a distinct built object that can also be built again through its named child entry. Fixed windows draw through one viewport-based position object, inherit clipping and have no fade of their own. The multi-sprite factory builds a standard button from the type's sprite, font and position using its default geometry and frame. A constructed scrollbar stays hidden until the lifecycle writes its state. A text box bakes with a text-sprite type found under its own name, preserves text alignment, and keeps its authored text when the replay has no write for it.
+
+[Fixed-window construction and layout](../../crates/viewer-foundation/src/map/native_gui/fixed.rs)

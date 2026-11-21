@@ -74,7 +74,6 @@ function search(query: string): SettingsTarget[] {
   });
 }
 
-/** The row a target names, by id or by the label text a settings row shows. */
 function findTarget(root: HTMLElement, target: SettingsTarget): HTMLElement | null {
   if (target.id) return root.querySelector<HTMLElement>(`#${CSS.escape(target.id)}`);
   const labels = root.querySelectorAll<HTMLElement>('.folder-field-title, .map-option-row > span:first-child, .map-visual-mods > summary, .settings-row-text > strong');
@@ -84,7 +83,6 @@ function findTarget(root: HTMLElement, target: SettingsTarget): HTMLElement | nu
   return label?.closest<HTMLElement>('.folder-setting-row, .compact-folder-form, .map-option-row, .map-visual-mods, .settings-row') ?? null;
 }
 
-/** The sidebar while Settings is open: back, search, then the sections. */
 export function SettingsNav({ section, icons, onBack, onSection, onTarget, disabled }: {
   section: SettingsSection; icons: SidebarIconStyles; onBack: () => void; onSection: (section: SettingsSection) => void; onTarget: (target: SettingsTarget) => void; disabled?: boolean;
 }) {
@@ -150,7 +148,6 @@ export default function Settings({ section, target, onTargetShown, appearance, l
 }) {
   const page = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<ThemeDraft | null>(null);
-  // Unsaved new themes have no id, so each one counts as its own editing session.
   const [newSession, setNewSession] = useState(0);
   const editTheme = (draft: ThemeDraft) => { setEditor(draft); if (draft.id === null) setNewSession(session => session + 1); };
   const details = settingsSections.find(item => item.id === section)!;
@@ -158,13 +155,11 @@ export default function Settings({ section, target, onTargetShown, appearance, l
   useEffect(() => { if (section !== 'appearance') setEditor(null); }, [section]);
   useEffect(() => {
     if (!target || target.section !== section) return;
-    // Map graphics arrive asynchronously; look for the row for a short while.
     let attempts = 0;
     let timer: ReturnType<typeof setTimeout>;
     const reveal = () => {
       const element = page.current && findTarget(page.current, target);
       if (!element) { if (++attempts < 20) timer = setTimeout(reveal, 80); else onTargetShown(); return; }
-      // Advanced map parts sit in folded sections; open the one holding the target.
       const folded = element.closest('details');
       if (folded) folded.open = true;
       element.scrollIntoView({ block: 'center', behavior: appearance.resolved.reducedMotion ? 'auto' : 'smooth' });
@@ -178,7 +173,6 @@ export default function Settings({ section, target, onTargetShown, appearance, l
   }, [target, section, onTargetShown, appearance.resolved.reducedMotion]);
   const saveTheme = (draft: ThemeDraft): string | null => {
     const id = draft.id ?? newThemeId();
-    // A new theme past the limit is refused here, rather than dropped when next loaded.
     if (!appearance.settings.custom.some(item => item.id === id) && appearance.settings.custom.length >= MAX_CUSTOM_THEMES)
       return `You can keep up to ${MAX_CUSTOM_THEMES} custom themes. Delete one first.`;
     const others = [...BUILT_IN_THEMES, ...appearance.settings.custom].filter(theme => theme.id !== id).map(theme => theme.name);
@@ -221,9 +215,6 @@ export default function Settings({ section, target, onTargetShown, appearance, l
   </div>;
 }
 
-/** Restores the built-in analytics pages and every page's layout; a second click confirms.
- * Without `onReset` the pages and layouts are already the defaults, so there is no button;
- * null while that is still being worked out. */
 function ResetPages({ onReset }: { onReset?: (() => void) | null }) {
   const [confirming, setConfirming] = useState(false);
   useEffect(() => {

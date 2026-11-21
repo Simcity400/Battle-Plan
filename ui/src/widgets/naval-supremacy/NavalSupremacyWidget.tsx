@@ -29,8 +29,6 @@ import './navalSupremacy.css';
 
 const LABELS: Record<Control, string> = { friendly: 'Friendly control', enemy: 'Enemy control', neither: 'Contested' };
 
-/** Each sea region's naval control day by day from one country's point of view, by the game's own
- * control rule: the windows of days the view shows are asked, and following, the next ahead; never the campaign. */
 export default function NavalSupremacyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -43,12 +41,11 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const window = track && resolveWindow(widget, track, runtime.tracks, following ? position : runtime.clock.getHour());
   const extent: [number, number] | null = track && window ? windowExtent(track, window) : null;
   const moment = extent && extent[0] <= extent[1] ? extent[1] : null;
-  // The cursor moves with the clock each frame; the window's end moves by whole months.
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
-  const shown = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1]) : [], [extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const wanted = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1], following) : [], [extent?.[0], extent?.[1], following]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shown = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1]) : [], [extent?.[0], extent?.[1]]);
+  const wanted = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1], following) : [], [extent?.[0], extent?.[1], following]);
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
   const held = useProductWindows(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'naval-supremacy',
     params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } }), wanted, active, validateSupremacy, track?.source);
@@ -57,8 +54,8 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const complete = shown.length > 0 && shown.every(index => held.data.has(index));
   const data = useMemo(() => complete ? mergeSupremacy(new Map(shown.map(index => [index, held.data.get(index)!]))) : null, [complete, shown, held.data]);
   const chosen = contentSet(options.regions).map(contentKey);
-  const regions = useMemo(() => data ? data.regions.filter(region => !chosen.length || chosen.includes(region.id)) : [], [data, JSON.stringify(chosen)]); // eslint-disable-line react-hooks/exhaustive-deps
-  const days = useMemo(() => data && extent ? supremacyDays(data, extent) : [], [data, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const regions = useMemo(() => data ? data.regions.filter(region => !chosen.length || chosen.includes(region.id)) : [], [data, JSON.stringify(chosen)]);
+  const days = useMemo(() => data && extent ? supremacyDays(data, extent) : [], [data, extent?.[0], extent?.[1]]);
   const looks = useCountryLooks(runtime.client, track, tag && moment !== null ? [tag] : [], moment ?? 0, active);
   const colour = useCountryColours(tag ? [tag] : [], looks.color, tokens, looks);
   const viewer = tag && moment !== null ? looks.name(tag, moment) : 'No country selected';

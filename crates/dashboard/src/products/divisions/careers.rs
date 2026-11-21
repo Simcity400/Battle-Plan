@@ -1,12 +1,3 @@
-//! Division careers at an hour: every division's medal total, awards, experience and kill
-//! counter (the ranking), and one division's recorded career and awards (the service record),
-//! both rows-at-an-hour products ([`AtHour`]).
-//!
-//! The medal total is the history summary's recorded amount, never a sum of award entries. The
-//! kill counter is the game's career counter; battles won or fought are not recorded per division
-//! and are not derived. Experience is the stored experience normalised by the division's current
-//! manpower, its level from the content's experience defines. Entries keep their native list
-//! order and repeats. Intelligence copies of divisions are left out.
 
 use dashboard_base::products::Country;
 use super::{Content, Countries, Refusals, attributed, find, token_key};
@@ -29,7 +20,6 @@ use std::{collections::BTreeMap, io};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// What every career reply reads.
 const TABLES: [TableId; 9] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -50,11 +40,10 @@ pub struct DivisionRecord;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionCareersParams {
     pub branch_id: String,
-    /// The countries whose divisions rank; none ranks every country's.
+    #[doc = " The countries whose divisions rank; none ranks every country's."]
     pub countries: Option<Vec<Country>>,
 }
 
-/// A medal the ranking names, by its content key.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +52,6 @@ pub struct CareerMedal {
     pub name: Option<String>,
 }
 
-/// A template the ranking names.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -73,31 +61,29 @@ pub struct CareerTemplate {
     pub icon: Option<String>,
 }
 
-/// How many award entries a division holds of one medal.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerAward {
-    /// Index into the reply's medals.
+    #[doc = " Index into the reply's medals."]
     pub medal: usize,
     pub count: u32,
 }
 
-/// What every division's career shows in the ranking.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerFacts {
-    /// The recorded medal total; none when the history was not read.
+    #[doc = " The recorded medal total; none when the history was not read."]
     pub medals: Option<i32>,
     pub awards: Vec<CareerAward>,
     pub history_missing: Option<String>,
-    /// Manpower-normalised experience, fixed-point with five decimals.
+    #[doc = " Manpower-normalised experience, fixed-point with five decimals."]
     pub experience_raw: Option<String>,
-    /// Zero-based experience level, and the level's in-game name.
+    #[doc = " Zero-based experience level, and the level's in-game name."]
     pub level: Option<i32>,
     pub level_name: Option<String>,
-    /// The game's career kill counter.
+    #[doc = " The game's career kill counter."]
     pub kills: Option<i32>,
 }
 
@@ -120,7 +106,7 @@ pub struct DivisionCareersReply {
     pub divisions: Vec<CareerRow>,
     pub medals: Vec<CareerMedal>,
     pub templates: Vec<CareerTemplate>,
-    /// Why divisions are unknown at this hour, when they are.
+    #[doc = " Why divisions are unknown at this hour, when they are."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -132,23 +118,22 @@ dashboard_base::reply_warnings!(DivisionCareersReply);
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionRecordParams {
     pub branch_id: String,
-    /// The division's full native handle.
+    #[doc = " The division's full native handle."]
     pub division: String,
 }
 
-/// One recorded career entry or award.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RecordEntry {
     pub award: bool,
     pub ordinal: u32,
-    /// The entry's game date.
+    #[doc = " The entry's game date."]
     pub hour: i32,
     pub description: Option<String>,
     pub description_missing: Option<String>,
     pub provinces: Vec<u32>,
-    /// The awarded medal, by index into the reply's medals.
+    #[doc = " The awarded medal, by index into the reply's medals."]
     pub medal: Option<usize>,
 }
 
@@ -157,7 +142,7 @@ pub struct RecordEntry {
 #[serde(rename_all = "camelCase")]
 pub struct DivisionRecordReply {
     pub division: String,
-    /// The division is not in service at this hour.
+    #[doc = " The division is not in service at this hour."]
     pub absent: bool,
     pub tag: Option<String>,
     pub template: Option<CareerTemplate>,
@@ -212,7 +197,6 @@ impl AtHour for DivisionCareers {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        // The asked tags' slots at the hour, by the one identity rule.
         let slots = params.countries.as_ref().map(|tags| {
             tags.iter()
                 .filter_map(|tag| match at.holders.at(tag, at.hour).map(|run| run.holder) {
@@ -256,7 +240,6 @@ impl AtHour for DivisionRecord {
         tables
     }
 
-    /// The division's own rows and its history; the shared tables its names read whole.
     fn reads(params: &Self::Params, _owner: Option<super::super::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         if step != 0 {
             let template = held.complete::<tables::Divisions>().ok().and_then(|rows| find(Some(rows), division(params), |row| row.id)).map(|row| row.template);
@@ -298,7 +281,6 @@ fn division(params: &DivisionRecordParams) -> u64 {
     params.division.parse().unwrap_or(0)
 }
 
-/// Medals named once per reply, in first-seen order.
 #[derive(Default)]
 struct MedalIndex {
     medals: Vec<CareerMedal>,
@@ -325,13 +307,11 @@ impl MedalIndex {
     }
 }
 
-/// A division's history rows, summary first, in native order.
 fn history_of(rows: &[SharedDivisionHistoryRow], division: u64) -> &[SharedDivisionHistoryRow] {
     let start = rows.partition_point(|row| row.division < division);
     &rows[start..start + rows[start..].partition_point(|row| row.division == division)]
 }
 
-/// The experience defines' levels, read once per reply.
 struct Levels {
     experience: Result<installed_content_core::unit_leader::DivisionExperience, String>,
     names: BTreeMap<i32, Option<String>>,
@@ -413,7 +393,6 @@ fn manpower_of(frame: &DecodedFrame, division: u64) -> Option<i32> {
     Some(row.manpower.iter().fold(0i32, |sum, part| sum.wrapping_add(part.amount)))
 }
 
-/// Every division's career facts, for the countries in `slots` (every country's when none).
 fn careers(frame: &DecodedFrame, slots: Option<&[u32]>, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DivisionCareersReply> {
     let mut reply = DivisionCareersReply { divisions: Vec::new(), medals: Vec::new(), templates: Vec::new(), missing: None, warnings: Vec::new() };
     let divisions = match frame.complete::<tables::Divisions>() {
@@ -456,7 +435,6 @@ fn careers(frame: &DecodedFrame, slots: Option<&[u32]>, at: &At<'_, Content>, re
     Ok(reply)
 }
 
-/// One division's header facts and recorded entries.
 fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &mut Refusals) -> io::Result<DivisionRecordReply> {
     let mut reply = DivisionRecordReply {
         division: division.to_string(),
@@ -493,7 +471,6 @@ fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &
         for entry in history.iter().filter(|row| row.list != DivisionHistoryRow::SUMMARY) {
             let award = entry.list == DivisionHistoryRow::AWARDS;
             if award && entry.medal_enabled == 0 {
-                // A retained empty award slot is known absence, not an entry.
                 continue;
             }
             let medal = if award { entry.medal_token.and_then(|token| facts.medals.index(frame, token, content, refusals)) } else { None };
@@ -510,7 +487,6 @@ fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &
     Ok(reply)
 }
 
-/// A province's name as the career shows it: its primary display name, else its state's.
 fn province_name(frame: &DecodedFrame, text: &dashboard_text::scripted_text::ScriptedText<'_>, province: u32) -> Result<String, String> {
     if let Some(name) = text.province_display_name_primary(province)? {
         return catalogue::plain_text(&name);
@@ -520,7 +496,6 @@ fn province_name(frame: &DecodedFrame, text: &dashboard_text::scripted_text::Scr
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
 }
 
-/// A career entry in the game's own wording.
 fn describe(frame: &DecodedFrame, entry: &DivisionHistoryRow, content: &Content, countries: &Countries<'_>) -> Result<String, String> {
     let cat = content.cat.as_ref().map_err(|_| "Entry descriptions need the recorded content stack".to_owned())?;
     let loc = &cat.localisation;

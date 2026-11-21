@@ -28,7 +28,6 @@ fn scientist_pack() -> characters_saved::Pack {
 fn scientist_frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
         branch: 1,
-        // Every project table is current at the programs' daily slot.
         hour: replay_data::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
         tables: std::array::from_fn(|index| {
             TableView::Complete(TableRows::empty(TableId::ALL[index]))
@@ -145,7 +144,6 @@ fn a_matching_scientist_roster_compares_counts_tokens_and_levels() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["Scientists"], 1);
     assert_eq!(report.compared_tables["ScientistSkills"], 2);
-    // The naval record's omitted level proves only a nonpositive value.
     assert!(
         report
             .limitations
@@ -262,7 +260,6 @@ fn count_token_and_level_disagreements_are_each_reported() {
                 else {
                     unreachable!()
                 };
-                // A positive experience where the writer omitted the field.
                 rows[0].experience_raw = 5;
             },
             "experience",
@@ -274,7 +271,6 @@ fn count_token_and_level_disagreements_are_each_reported() {
                 else {
                     unreachable!()
                 };
-                // Zero is the engine's own "no country", which the save omits.
                 rows[0].country = 0;
             },
             "roster country",
@@ -290,11 +286,8 @@ fn count_token_and_level_disagreements_are_each_reported() {
 
 #[test]
 fn a_saved_scientist_with_a_country_must_be_recorded_and_an_extra_row_is_reported() {
-    // Character 266 has no saved country, so no roster row is required.
     let report = run_scientists(&scientist_frame());
     assert!(report.differences.is_empty());
-    // Recording it anyway is compared against its saved character, which
-    // has no country tag at all.
     let mut frame = scientist_frame();
     let TableView::Complete(TableRows::Scientists(rows)) =
         &mut *frame.tables[TableId::Scientists.index()]
@@ -372,7 +365,6 @@ fn an_unresolved_roster_country_reference_fails_the_group_instead_of_comparing()
 fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let mut frame = DecodedFrame {
         branch: 1,
-        // Every project table is current at the programs' daily slot.
         hour: replay_data::cadence::refresh_slot(TableId::ProjectPrograms).unwrap() as i32,
         tables: std::array::from_fn(|index| {
             TableView::Complete(TableRows::empty(TableId::ALL[index]))
@@ -427,7 +419,6 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             building_country: 0,
         },
     }]));
-    // The prepared raid's pool, which is empty in the save.
     *frame.tables[TableId::RaidEquipment.index()] =
         TableView::Complete(TableRows::RaidEquipment(vec![
             replay_data::rows::RaidEquipmentRow {
@@ -478,8 +469,6 @@ fn raid_fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     (frame, pack, country)
 }
 
-/// Every RaidTargets field the save carries is compared: a changed target
-/// arm, raid type or detected byte has to show as a difference.
 #[test]
 fn raid_target_fields_are_compared_against_the_saved_target_block() {
     let (frame, pack, country) = raid_fixture();
@@ -501,16 +490,11 @@ fn raid_target_fields_are_compared_against_the_saved_target_block() {
     assert!(mutate(&|row| row.scope.province = 7)[0].contains("province"));
     assert!(mutate(&|row| row.scope.leader_province = 7)[0].contains("leader_province"));
     assert!(mutate(&|row| row.scope.leader_reference = 7)[0].contains("leader"));
-    // An unchanged row is silent, so the assertions above cannot pass by
-    // comparing nothing at all.
     let mut report = Report::default();
     compare(&frame, &pack, &countries, &BTreeMap::new(), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
-/// An ended raid appends its target's country to `show_for` even when the
-/// target has none; the save writer writes only positive country handles, so
-/// those entries are skipped as it skips them and the rest compared in order.
 #[test]
 fn raid_show_for_skips_the_entries_without_a_country_as_the_save_does() {
     let (frame, mut pack, country) = raid_fixture();
@@ -540,8 +524,6 @@ fn raid_show_for_skips_the_entries_without_a_country_as_the_save_does() {
     assert!(run(vec![0]).differences[0].contains("show_for"));
 }
 
-/// The travelled distance compares exactly with the saved `distance`
-/// (raw / 100000); an absent one is zero, and an unread one is named.
 #[test]
 fn raids_compare_the_travelled_distance_with_the_saved_one() {
     let (frame, pack, country) = raid_fixture();
@@ -559,7 +541,6 @@ fn raids_compare_the_travelled_distance_with_the_saved_one() {
         report
     };
     assert!(run(Some(2_210_000)).differences.is_empty());
-    // The saved prep_time is compared exactly.
     let mut prepared = frame.clone();
     let TableView::Complete(TableRows::Raids(rows)) = &mut *prepared.tables[TableId::Raids.index()]
     else {
@@ -585,9 +566,6 @@ fn raids_compare_the_travelled_distance_with_the_saved_one() {
     );
 }
 
-/// A building source compares its template and location with the saved
-/// `raid_source.building` (the live save's supply node 7301); an unset
-/// reference needs none saved.
 #[test]
 fn a_building_source_compares_template_and_location() {
     let (mut frame, mut pack, country) = raid_fixture();
@@ -846,9 +824,6 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
     assert_eq!(isolated.differences.len(), 2, "{:?}", isolated.differences);
 }
 
-/// A complete but empty RaidEquipment beside a saved prepared raid with
-/// equipment and nukes is a difference: the census is checked from the
-/// save's side too, not only from the recorded rows.
 #[test]
 fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
     let (mut frame, mut pack, _) = raid_fixture();
@@ -869,12 +844,6 @@ fn raid_equipment_needs_a_row_for_every_saved_recorded_raid() {
     assert!(report.differences[0].contains("absent from replay"));
 }
 
-/// RaidEquipment and RaidSpeedInputs derive their censuses from the saved
-/// phase, outcome and `end_date` by the readers' rules: prepared raids
-/// only in RaidEquipment, raids in progress in both, and an ended, not
-/// cancelled raid in both while its end hour is at most an hour before the
-/// frame's. A missing row and a row for a raid outside the census are each
-/// a difference, as is a recorded end hour other than the saved one.
 #[test]
 fn raid_censuses_follow_the_readers_rules_over_the_saved_raids() {
     use installed_content_save::{GameDate, SavedDate};
@@ -961,8 +930,6 @@ fn raid_censuses_follow_the_readers_rules_over_the_saved_raids() {
     }
 }
 
-/// The raid pool's visible entries and nuke count compare with the saved
-/// `equipment` pool and `nukes`.
 #[test]
 fn raid_equipment_compares_the_saved_pool_and_nukes() {
     use replay_data::rows::RaidEquipmentRow;
@@ -991,7 +958,6 @@ fn raid_equipment_compares_the_saved_pool_and_nukes() {
         compare_raid_equipment(frame, &pack, &mut report).unwrap();
         report.differences
     };
-    // A hidden zero entry is not saved.
     assert!(run(&mut frame, vec![500_000, 0], 1).is_empty());
     assert!(run(&mut frame, vec![500_001], 1)[0].contains("amount"));
     assert!(run(&mut frame, vec![500_000], 0)[0].contains("nukes"));
@@ -999,11 +965,8 @@ fn raid_equipment_compares_the_saved_pool_and_nukes() {
 
 const RIFLE: u64 = (41 << 32) | 70;
 const TRUCK: u64 = (42 << 32) | 70;
-/// Variant addition's clamp bound `L`, raw.
 const BOUND: i64 = 0x53e2_d620_fb40;
 
-/// The prepared fixture raid with a saved pool of `items` (variant, save
-/// literal), both variants of archetype 0x3309 when `definitions`.
 fn totals_fixture(items: &[(u64, &str)], definitions: bool) -> (DecodedFrame, saved::Pack) {
     use installed_content_save::{
         Decimal,
@@ -1036,7 +999,6 @@ fn totals_fixture(items: &[(u64, &str)], definitions: bool) -> (DecodedFrame, sa
     (frame, pack)
 }
 
-/// The fixture raid's RaidEquipment row with `items` and `totals`.
 fn run_totals(
     frame: &DecodedFrame,
     pack: &saved::Pack,
@@ -1062,10 +1024,6 @@ fn run_totals(
     report
 }
 
-/// A raid pool's archetype total is its saved amounts summed by the
-/// variants' VariantDefinitions archetype, exactly; a zero total needs no
-/// saved variant. A saved variant without a definition row, or an
-/// incomplete VariantDefinitions, leaves the totals a limitation.
 #[test]
 fn raid_equipment_totals_match_the_saved_sums_by_archetype() {
     let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
@@ -1073,7 +1031,6 @@ fn raid_equipment_totals_match_the_saved_sums_by_archetype() {
     let report = run_totals(&frame, &pack, &items, &[(0x3309, 700_000), (0x330a, 0)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["RaidEquipment.archetype_amounts"], 1);
-    // Without a definition the totals are a limitation, not compared.
     let (mut frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], false);
     let report = run_totals(&frame, &pack, &items, &[(0x3309, 1)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1096,11 +1053,6 @@ fn raid_equipment_totals_match_the_saved_sums_by_archetype() {
     );
 }
 
-/// Away from the clamp bound every disagreement is a difference: a wrong
-/// total, a nonzero total without a saved variant, a missing total and a
-/// repeated archetype. So is the one case the comparison cannot see, a
-/// clamp that later unwound (3/4 L added to two variants, the first
-/// removed: native total 1/4 L beside saved entries of 3/4 L).
 #[test]
 fn raid_equipment_totals_that_disagree_away_from_the_bound_are_differences() {
     let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
@@ -1124,9 +1076,6 @@ fn raid_equipment_totals_that_disagree_away_from_the_bound_are_differences() {
     assert_eq!(unwound.differences.len(), 1, "{:?}", unwound.differences);
 }
 
-/// A total, a contributing saved entry or the saved sum at the clamp
-/// bound leaves the total uncompared, with the stated limitation and no
-/// difference.
 #[test]
 fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
     let at_bound = |report: &Report| {
@@ -1145,7 +1094,6 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
                 .any(|reason| reason.contains("reaches the bound"))
         );
     };
-    // A saved entry at the bound; the recorded total is not.
     let (frame, pack) = totals_fixture(&[(RIFLE, "922337202"), (TRUCK, "2")], true);
     at_bound(&run_totals(
         &frame,
@@ -1153,21 +1101,16 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
         &[(RIFLE, BOUND), (TRUCK, 200_000)],
         &[(0x3309, 1)],
     ));
-    // The recorded total at either bound, the entries below it.
     let (frame, pack) = totals_fixture(&[(RIFLE, "5"), (TRUCK, "2")], true);
     let items = [(RIFLE, 500_000), (TRUCK, 200_000)];
     at_bound(&run_totals(&frame, &pack, &items, &[(0x3309, BOUND)]));
     at_bound(&run_totals(&frame, &pack, &items, &[(0x3309, -BOUND)]));
-    // A total at the bound with no saved variant of its archetype.
     at_bound(&run_totals(
         &frame,
         &pack,
         &items,
         &[(0x3309, 700_000), (0x330a, BOUND)],
     ));
-    // Entries below the bound whose sum is exactly +L or -L: 3/4 L added
-    // to two variants, then 1/4 L removed from each, leaves entries of
-    // 1/2 L summing to L beside a native total of 1/2 L.
     let half = BOUND / 2;
     for (saved, entry) in [("461168601", half), ("-461168601", -half)] {
         let (frame, pack) = totals_fixture(&[(RIFLE, saved), (TRUCK, saved)], true);
@@ -1179,7 +1122,6 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
             &[(0x3309, entry)],
         ));
     }
-    // Entries below the bound whose sum passes it.
     let (frame, pack) = totals_fixture(&[(RIFLE, "600000000"), (TRUCK, "600000000")], true);
     at_bound(&run_totals(
         &frame,
@@ -1189,9 +1131,6 @@ fn raid_equipment_totals_at_the_clamp_bound_are_a_limitation() {
     ));
 }
 
-/// Bit 0 of a building's status flags is checked where the writer's
-/// branch fixes it: location -1 needs it clear, a province or state
-/// location with a positive country override needs it set.
 #[test]
 fn building_flags_follow_the_saved_reference_branch() {
     let tokens: TokenNames<'static> = BTreeMap::from([(9, b"bunker".as_slice())]);
@@ -1218,19 +1157,14 @@ fn building_flags_follow_the_saved_reference_branch() {
         );
         report.differences.len()
     };
-    // Province and state references without an override agree either way.
     assert_eq!(check(1, 0, 7), 0);
     assert_eq!(check(2, 0, 7), 0);
-    // A positive override is saved with location -1 unless bit 0 is set.
     assert_eq!(check(1, 5, 7), 0);
     assert_eq!(check(2, 5, 7), 1);
     assert_eq!(check(2, 5, -1), 0);
     assert_eq!(check(3, 5, -1), 1);
 }
 
-/// Target statuses join on their native ordinal, the saved entry's
-/// position: a shifted ordinal is two membership differences, not a
-/// silent comparison with whatever entry happens to be at that index.
 #[test]
 fn raid_target_statuses_join_on_their_native_ordinal() {
     let (mut frame, pack, country) = raid_fixture();
@@ -1908,8 +1842,6 @@ fn staggered_off_hours_skips_projects_and_prints_refresh_hour() {
         &mut report,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Only the daily programs and breakthroughs are stale off their slot;
-    // Projects and ProjectHistory are read every hour.
     let (_, stale) = report
         .limitations
         .iter()

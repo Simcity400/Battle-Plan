@@ -1,8 +1,6 @@
 use super::*;
 use crate::crelation_status::bench::{Arena, Counting, report};
 
-/// The row reader keeps the stored signed route length, owners and
-/// mission of each task force.
 #[test]
 fn a_task_force_row_keeps_its_signed_route_count() {
     let mut arena = Arena::new(0x10_0000);
@@ -37,8 +35,6 @@ fn a_task_force_row_keeps_its_signed_route_count() {
     }
 }
 
-/// Two task forces per country, at sea with no port location, each read
-/// through the row reader whose scattered copy now carries the route count.
 #[test]
 #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
 fn bench_task_force_route_count() {

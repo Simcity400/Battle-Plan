@@ -1,10 +1,7 @@
-//! Optional battle-plan transport inputs from one quiescent wing census.
-//! Source failures stay local to the field; no result survives this pass.
 
 use crate::{Memory, allocation, cair_wing_pool, csub_unit_definition as definition, read};
 use std::{io, mem::size_of};
 
-/// Complete raid reference stored on the primary wing.
 pub const RAID_REFERENCE: usize = 0xa2c;
 const TRANSPORT: u32 = 1 << 20;
 
@@ -35,9 +32,6 @@ impl<T> Default for Slot<T> {
     }
 }
 
-/// The caller creates/grows this storage off-thread and charges its actual
-/// vector capacities. At most one distinct optional key per admitted map row
-/// belongs to each arena; half-full tables retain failed observations too.
 #[derive(Debug, Default)]
 pub struct Scratch {
     pools: Vec<Slot<Pool>>,
@@ -48,8 +42,6 @@ pub struct Scratch {
 }
 
 impl Scratch {
-    /// Constructor fallback follows `allocation::owned_vec`: allocation
-    /// failure stops capture unless the caller is preparing an advisory hint.
     pub fn owned(map_capacity: usize) -> Self {
         match Self::with_capacity(map_capacity) {
             Ok(scratch) => scratch,
@@ -66,7 +58,6 @@ impl Scratch {
         Ok(scratch)
     }
 
-    /// Checked off-thread growth; never called by a native reader.
     pub fn grow(&mut self, map_capacity: usize) -> io::Result<()> {
         let slots = slot_count(map_capacity).ok_or_else(allocation::oom)?;
         fn grow<T>(values: &mut Vec<Slot<T>>, slots: usize) -> io::Result<()> {
@@ -100,8 +91,6 @@ impl Scratch {
         self.reset_metadata();
     }
 
-    /// Idle owners reset diagnostics only. `Pass::new` always clears the
-    /// private observations before the next independent acquisition.
     pub fn reset_metadata(&mut self) {
         self.required_map_capacity = 0;
         self.failures = 0;
@@ -121,8 +110,6 @@ fn slot_count(map_capacity: usize) -> Option<usize> {
     map_capacity.checked_mul(2)?.checked_next_power_of_two()
 }
 
-/// An empty slot is reserved before the reader runs. Occupancy and probes
-/// are bounded by allocated slots; no observed failure can be evicted.
 fn memo<T: Copy>(
     values: &mut [Slot<T>],
     count: &mut usize,
@@ -151,7 +138,6 @@ fn memo<T: Copy>(
     None
 }
 
-/// Fixed base and database/header observations belong to this invocation.
 pub struct Pass<'a> {
     base: usize,
     capacity: usize,
@@ -179,8 +165,6 @@ impl<'a> Pass<'a> {
         }
     }
 
-    /// Worker-only growth preserves every already-observed optional key,
-    /// including failed observations, rather than rereading earlier wings.
     pub fn ensure_capacity(&mut self, required: usize) -> io::Result<()> {
         if required <= self.capacity && self.scratch.fits(required) {
             return Ok(());
@@ -212,8 +196,6 @@ impl<'a> Pass<'a> {
         Ok(())
     }
 
-    /// Returns the already authenticated raid pointer (zero for an observed
-    /// unresolved/null reference), so another worker consumer need not resolve it again.
     pub fn capture(
         &mut self,
         memory: &impl Memory,

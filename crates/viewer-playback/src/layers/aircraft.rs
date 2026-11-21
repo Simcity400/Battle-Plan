@@ -1,15 +1,3 @@
-//! Aircraft in flight: each region's mission scenarios, training patrols and base launch effects for
-//! the viewing country, as today's plan generates them ([`AircraftPlan::make`]). Which wings fly
-//! joins the whole air war (visit order, group caps, target scans over many tables), each region's
-//! scenarios are drawn from one random sequence over its wings in order, and launch records are
-//! shared across regions: so the plan is made whole on the layer's worker, from the shared rows at
-//! the head at the step that changes a table it reads, once the plan before is made, or when the
-//! pools its models' scripts decided decide otherwise ([`Build::stands`]). What does not change is
-//! kept: each (variant, country)'s model by what choosing it read ([`KeptModels`]), and a scenario
-//! whose placement reads the same as the build before's ([`Kept`]). It is drawn below the map
-//! objects' camera cutoff and declares nothing above it. Of what the viewer sees the plan reads
-//! only the viewing country, resolved from the same rows as today's vision resolves it, so no vision
-//! is made. Each plan the layer takes goes to the scene's aircraft pass.
 
 use super::rebuilt::{Build, Seen, Whole};
 use crate::document::Content;
@@ -25,11 +13,7 @@ use viewer_world::map::{
     equipment_graphics::{Decided, LimitValues, Limits},
 };
 
-/// The tables today's plan is known to read, declared from the start: a table read beyond them is
-/// still learned as the builder reads it, and the worker's reader declares it. Each group by why
-/// the plan reads it.
 pub const TABLES: &[TableId] = &[
-    // The plan before any script: wings, missions, patrols, carriers and the countries at war.
     TableId::AirWings,
     TableId::WingEquipment,
     TableId::AirRegionalMissions,
@@ -49,9 +33,7 @@ pub const TABLES: &[TableId] = &[
     TableId::VolunteerHosts,
     TableId::SimulationFeatures,
     TableId::VariantDefinitions,
-    // The viewing country, when the perspective follows the recorded player.
     TableId::LocalPlayer,
-    // The base registry and the sortie sources: which bases fly what, with which modifiers.
     TableId::AirReferenceWitnesses,
     TableId::AirBases,
     TableId::AirMissionInputs,
@@ -59,7 +41,6 @@ pub const TABLES: &[TableId] = &[
     TableId::AirSortieModifiers,
     TableId::AirSortieSpecialBases,
     TableId::AirSortieModifierMetadata,
-    // A mission's targets in reach: battles, divisions on the move, states and their buildings.
     TableId::States,
     TableId::StateBuildings,
     TableId::ProvinceBuildings,
@@ -70,8 +51,6 @@ pub const TABLES: &[TableId] = &[
     TableId::NavalCombats,
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
-    // A wing's model, chosen by the content's scripts: the countries' politics, factions, subjects,
-    // appearance and scripted values.
     TableId::Politics,
     TableId::PoliticalParties,
     TableId::Factions,
@@ -89,8 +68,6 @@ pub const TABLES: &[TableId] = &[
 pub type Aircraft = Whole<Flights>;
 
 impl Aircraft {
-    /// The aircraft's limitation notes in today's words, from the tables' `statuses` at the head;
-    /// none while hidden.
     pub fn notes(&self, statuses: &dyn viewer_foundation::map::tables::Statuses) -> Vec<String> {
         if !self.drawn() {
             return Vec::new();
@@ -100,14 +77,11 @@ impl Aircraft {
         out.into_lines()
     }
 
-    /// The unit models' line today's window gives for the aircraft: the shown plan's refusal.
     pub fn warning(&self) -> Option<String> {
         self.refusal().filter(|_| self.shows()).map(|why| format!("aircraft: {why}"))
     }
 }
 
-/// One plan, the pools its models' scripts decided (what it read beyond the rows), and what its
-/// models kept and chose. It reads as its plan.
 pub struct Flown {
     pub plan: AircraftPlan,
     decided: Decided,
@@ -122,15 +96,12 @@ impl std::ops::Deref for Flown {
     }
 }
 
-/// Today's aircraft plan builder over the recording's content, and what its worker keeps from one
-/// build to the next: the scenarios' placements and the models.
 pub struct Flights {
     content: Arc<Content>,
     kept: Mutex<(Kept, KeptModels)>,
 }
 
 impl Flights {
-    /// The plan of `frame` for the viewer of `choice`, keeping from `kept` what reads the same.
     fn make(&self, frame: &DecodedFrame, choice: &viewer_foundation::map::perspective::Choice, (kept, models): &mut (Kept, KeptModels)) -> io::Result<Flown> {
         let content = &*self.content;
         let hour = crate::document::Hour::new(content, frame, 0.0);
@@ -158,7 +129,6 @@ impl Flights {
 impl Build for Flights {
     type Product = Flown;
 
-    /// The limits its models' scripts decide may compare dates.
     fn hourly(&self) -> bool {
         true
     }
@@ -176,9 +146,6 @@ impl Build for Flights {
         self.make(frame, choice, &mut Default::default())
     }
 
-    /// The rows are the same, so the plan is the same while every pool its models' limits decided
-    /// decides the same at the new hour; never a plan with a diagnostic, whose words may name the
-    /// hour it was made at.
     fn stands(&self, flown: &Flown, frame: &DecodedFrame, _: &Seen) -> bool {
         if flown.counts()[2] > 0 {
             return false;
@@ -222,17 +189,10 @@ fn drawn(flights: &Flights, view: &super::View) -> bool {
     view.camera.is_none_or(|camera| camera.height < flights.content.map_defines.map_objects_cutoff)
 }
 
-/// The aircraft layer over `content`, reading the rows at the head at the step that changes a table
-/// it reads (and ten times a second at most when steps move only the hour); `timed` as
-/// [`Whole::new`].
 pub fn new(content: Arc<Content>, timed: bool) -> io::Result<Aircraft> {
     Whole::new("aircraft", Flights { content, kept: Mutex::default() }, drawn, |flown| flown.plan.bytes(), TABLES, timed)
 }
 
-/// What the aircraft's worker measured for the paced report: builds, how many a second and how much
-/// of a core with the rows it found the shown plan stands at, what a build is made of (the maker's
-/// parts; the rest is the layer's own reads before the maker), how far behind the head the rows of
-/// each build were, and the shown plan's size.
 pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Aircraft>())) else { return serde_json::Value::Null };
     let builds = layer.rebuilt().builds();

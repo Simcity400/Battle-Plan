@@ -1,5 +1,3 @@
-//! The base grid's inputs, preserving its registered roster and first-fit
-//! grouping. Each optional fragment retains its own missing-operand reason.
 use super::super::{CounterInputs, tables};
 use super::*;
 use installed_content_localisation::localisation::Argument;
@@ -62,8 +60,6 @@ impl<'a> Census<'a> {
     ) -> Result<Vec<PreparedItem>, String> {
         self.bases(inputs, &[base], viewer)
     }
-    /// All bases append to one wrapper before first-fit grouping. Repeated
-    /// registrations remain repeated, including across carrier bases.
     pub fn bases(
         &self,
         inputs: &CounterInputs<'_>,
@@ -86,7 +82,6 @@ impl<'a> Census<'a> {
         if roster.is_empty() {
             return Ok(Vec::new());
         }
-        // Access is the presence of the indexed container, independently of capacity.
         let wings = self
             .frame
             .complete::<tables::AirWings>()
@@ -116,7 +111,6 @@ impl<'a> Census<'a> {
                 .ok()
                 .map(|at| &wings[at])
             else {
-                // Native registry resolution drops stale occurrences.
                 continue;
             };
             let primary = self
@@ -214,7 +208,6 @@ impl<'a> Census<'a> {
                 group,
             });
         }
-        // The base wrapper constructs and rebinds with selected-individual splitting off.
         items(prepared, false)
             .into_iter()
             .map(|item| {
@@ -307,8 +300,6 @@ impl<'a> Census<'a> {
     }
 }
 
-/// The grid visits every ship in each member's roster, rather than the
-/// first carrier used by hovered range overlays.
 fn carrier_bases(ships: &super::super::naval::ShipInputs<'_>, members: &[u64]) -> Vec<u64> {
     members
         .iter()
@@ -329,7 +320,6 @@ struct Values<'a> {
     no_region: Option<bool>,
     action: Option<i32>,
 }
-/// The one production fold used by grid preparation and rendering.
 struct Summary {
     action: Option<i32>,
     markers: [Option<bool>; 4],
@@ -640,11 +630,11 @@ mod tests {
     fn production_fold_keeps_mixed_actions_training_stop_and_attached_coverage() {
         let training = AirWingRow {
             mission_mask: 0x800,
-            map_flags: Some(0b0111).into(), // Stop known true; coverage known false.
+            map_flags: Some(0b0111).into(),
             ..Default::default()
         };
         let ordinary = AirWingRow {
-            map_flags: Some(0b1101).into(), // Stop known false; coverage known true.
+            map_flags: Some(0b1101).into(),
             ..Default::default()
         };
         let a = values(&training);

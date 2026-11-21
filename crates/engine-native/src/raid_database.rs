@@ -1,30 +1,15 @@
-//! Raid-definition database used by country-raid selection, distinct from the raid-system object.
 
 use engine_sites::Rva;
-/// Raid-definition database global pointer, required to be nonnull.
 pub const SINGLETON_RVA: Rva = Rva(0x033d_d448);
-/// Raid-definition pointer-array data.
 pub const DEFINITIONS: usize = 0xb0;
-/// Raid-definition signed i32 count.
 pub const DEFINITIONS_COUNT: usize = 0xbc;
-/// Raid-type definition primary vtable.
 pub const TYPE_VTABLE_RVA: Rva = Rva(0x029b_e3f8);
-/// Raid type definition's lexer token.
 pub const TYPE_TOKEN: usize = 0x08;
-/// A raid type's `essential_equipment` map, passed to stockpile requirement checking.
 pub const ESSENTIAL_EQUIPMENT: usize = 0xa40;
-/// Its `additional_equipment` map.
 pub const ADDITIONAL_EQUIPMENT: usize = 0xa28;
-/// An equipment map node's equipment-type key, read from `node[4]` by
-/// requirement checking.
 pub const NODE_EQUIPMENT: usize = 0x20;
-/// An equipment map node's i32 amount, compared from `node[5]` by requirement
-/// checking.
 pub const NODE_AMOUNT: usize = 0x28;
 
-/// Visits, in order, every node of the equipment map (an MSVC `std::map`: its head and count; a
-/// node's left, parent and right links and its nil byte) at `at`, after passing its count to
-/// `counted`. A read that fails, or a null object, is `unreadable`; a malformed tree fails by name.
 pub fn equipment_map(
     memory: &impl crate::Memory,
     at: usize,

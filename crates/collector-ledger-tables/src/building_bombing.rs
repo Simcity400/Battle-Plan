@@ -1,4 +1,3 @@
-//! Worker drain of owned damage events; conversion never follows game pointers.
 use crate::{
     clock::qpc,
     table_capture::{CaptureRows, grow_vec},

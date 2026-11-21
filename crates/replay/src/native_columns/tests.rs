@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 const READ: Sample = Sample::FromReadBit;
 
-/// One table's writer beside the reader state a walker builds from its sections.
 struct Table1<R> {
     writer: TableWriter,
     reader: Table,
@@ -21,7 +20,6 @@ struct Table1<R> {
     strings: walk::Dictionary,
     cells: RowCells,
     hour: i32,
-    /// The last hour's section.
     section: Option<Vec<u8>>,
     _rows: std::marker::PhantomData<R>,
 }
@@ -46,7 +44,6 @@ impl<R: RowCodec + Fields> Table1<R> {
         }
     }
 
-    /// Writes and commits one hour, applying its section as a walker would.
     fn hour(&mut self, input: TableInput<'_, R>) -> Option<Changes> {
         self.hour += 1;
         let hour = table_hour(
@@ -82,7 +79,6 @@ impl<R: RowCodec + Fields> Table1<R> {
         applied
     }
 
-    /// The reader holds exactly `rows`, each cell its wire field.
     fn holds(&self, rows: &[R]) {
         assert_eq!(self.reader.live().count(), rows.len());
         for row in rows {
@@ -103,7 +99,6 @@ impl<R: RowCodec + Fields> Table1<R> {
                     Field::Opaque(_) | Field::U32List(_) | Field::U64List(_) => {
                         assert!(recorded);
                         field.encode(&mut wire).unwrap();
-                        // The wire carries a length or count before the payload.
                         let payload = &wire[4..];
                         match cell {
                             Cell::Opaque(bytes) => assert_eq!(bytes, payload),
@@ -194,7 +189,6 @@ fn ship_hours_land_in_the_walkers_columns() {
         .unwrap();
     assert_eq!(changes.inserted.len(), 2);
     table.holds(&first);
-    // Proven changes: a stepped value, a newly recorded cell and a new ship.
     let changed = [
         ship(7, 200_001, Some(2).into(), Some(b"Ark".as_slice())),
         ship(9, 5, Recorded::NotRecorded, Some(b"New".as_slice())),
@@ -210,7 +204,6 @@ fn ship_hours_land_in_the_walkers_columns() {
     assert_eq!(changes.changed.len(), 1);
     assert_eq!(changes.inserted.len(), 1);
     table.holds(&[changed[0].clone(), first[1].clone(), changed[1].clone()]);
-    // A census without ship 7 deletes it.
     let census = [first[1].clone(), ship(9, 5, Recorded::NotRecorded, None)];
     let changes = table
         .hour(TableInput::Snapshot {
@@ -222,7 +215,6 @@ fn ship_hours_land_in_the_walkers_columns() {
         .unwrap();
     assert_eq!(changes.deleted.len(), 1);
     table.holds(&census);
-    // No rows this hour: nothing written, nothing held changes.
     assert!(
         table
             .hour(TableInput::Unavailable {
@@ -243,7 +235,6 @@ fn ship_hours_land_in_the_walkers_columns() {
             .is_none()
     );
     assert_eq!(table.writer.acquisition().last_read, Some(3));
-    // A partial walk changes what it read and keeps the rest.
     let read = [ship(8, 7, Some(4).into(), None)];
     let changes = table
         .hour(TableInput::Snapshot {
@@ -290,12 +281,9 @@ fn shared_history_rows_keep_their_strings_and_lists() {
         .unwrap();
     assert_eq!(changes.changed.len(), 1);
     table.holds(&renamed);
-    // Each distinct string is appended once: the reason, both names, the empty custom
-    // name, then the new name.
     assert_eq!(table.strings.len(), 5);
 }
 
-/// One table's hours staged by column and one row at a time, side by side.
 struct Both<R> {
     columns: Table1<R>,
     rows: Table1<R>,
@@ -309,7 +297,6 @@ impl<R: RowCodec + Fields> Both<R> {
         }
     }
 
-    /// One hour through both: the same section, strings and restart.
     fn hour<'r>(&mut self, input: impl Fn() -> TableInput<'r, R>) -> Option<Changes>
     where
         R: 'r,
@@ -343,7 +330,6 @@ fn staging_by_column_writes_what_staging_a_row_at_a_time_writes() {
     ];
     ships.hour(|| snapshot(&first));
     assert!(ships.hour(|| snapshot(&first)).is_none());
-    // A stepped value, a cell recorded again and an opaque cell gone, in the held order.
     let second = [
         ship(7, 200_001, Some(2).into(), None),
         ship(8, 0, Some(4).into(), None),
@@ -390,7 +376,6 @@ fn staging_by_column_writes_what_staging_a_row_at_a_time_writes() {
     assert!(histories.hour(|| snapshot(&first)).is_none());
     let renamed = [row(1, b"Renamed", &[3, 1, 4]), first[1].clone()];
     histories.hour(|| snapshot(&renamed)).unwrap();
-    // A delta's rows by key: one changed, one new.
     let all = [renamed[0].clone(), row(2, b"Second", &[9]), row(3, b"Third", &[1])];
     let keys = [RowCodec::key(&all[1]), RowCodec::key(&all[2])];
     histories.hour(|| TableInput::Keyed {
@@ -404,9 +389,6 @@ fn staging_by_column_writes_what_staging_a_row_at_a_time_writes() {
     assert!(histories.hour(|| snapshot(&all)).is_none());
 }
 
-/// Changes of no row, named or not, are the held rows again: nothing written and no hour
-/// begun, as for the same rows. A writer sweeping every column stages them and writes the
-/// same.
 #[test]
 fn changes_of_no_row_begin_no_hour() {
     let mut touched = Table1::<ShipRow>::new();
@@ -440,11 +422,6 @@ fn changes_of_no_row_begin_no_hour() {
     assert_eq!(touched.writer.restart().unwrap(), swept.writer.restart().unwrap());
 }
 
-/// A table's hour refused part way while reading the run's strings, as tables written side by
-/// side do, is written again interning: staged by column or a row at a time, the refused writer
-/// writes what one never refused writes, as does one sweeping every column. A delta naming a row
-/// it does not carry ends the hour once the rows before it are staged; a name the run has not
-/// used ends it wherever it comes.
 #[test]
 fn an_hour_written_again_after_a_refusal_writes_what_it_would_have() {
     let row = |division: u64, amount: i32, name: &[u8]| {

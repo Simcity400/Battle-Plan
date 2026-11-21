@@ -1,7 +1,3 @@
-/// Select from a division's entries offered in native order: the first strictly
-/// greatest weight above zero. It starts from zero and replaces its winner only
-/// on a strictly greater weight, so ties keep the first and a list whose
-/// weights are all zero or negative has none.
 #[derive(Clone, Copy, Debug)]
 pub struct Strongest<C> {
     winner: Option<(C, i64)>,
@@ -24,23 +20,15 @@ impl<C: Copy> Strongest<C> {
         }
     }
 
-    /// The winning entry's category and weight.
     pub fn winner(&self) -> Option<(C, i64)> {
         self.winner
     }
 }
 
-/// The division shows the winning category's camouflage unless its weight is
-/// below `maximum * show_at / 100000`, using a wrapping signed multiply and
-/// division truncating toward zero.
 pub fn shows(weight: i64, maximum: i64, show_at: i64) -> bool {
     weight >= maximum.wrapping_mul(show_at) / 100_000
 }
 
-/// Movement availability once [`Strongest`]'s winner is the active category: the winning weight's
-/// share of the maximum behind the native guard (a zero maximum, or a weight of `i64::MIN`, `MIN +
-/// 1` or `MAX`, stores `0xFFFFFFFF`), times the category's factor, clamped to `[0, 1]` and taken
-/// from one. A negative product is one. Products wrap and divisions truncate toward zero.
 pub fn movement_factor(weight: i64, maximum: i64, category_factor: i64) -> i64 {
     const ONE: i64 = 100_000;
     let guarded = (weight as u64).wrapping_add(0x7fff_ffff_ffff_fffe) > 0xffff_ffff_ffff_fffc;
@@ -57,9 +45,6 @@ pub fn movement_factor(weight: i64, maximum: i64, category_factor: i64) -> i64 {
     }
 }
 
-/// The division's camouflage category: the entry [`Strongest`] selects when its
-/// weight [`shows`], otherwise none. A caller holding category pointers still
-/// treats a null winner as none before testing the threshold.
 pub fn camouflage<C: Copy>(
     entries: impl IntoIterator<Item = (C, i64)>,
     maximum: i64,
@@ -81,10 +66,8 @@ mod tests {
     fn movement_factor_follows_the_native_guard_and_clamp() {
         assert_eq!(movement_factor(50, 100, 50_000), 75_000);
         assert_eq!(movement_factor(100, 100, 100_000), 0);
-        // Beyond one clamps; a negative product is one.
         assert_eq!(movement_factor(300, 100, 100_000), 0);
         assert_eq!(movement_factor(50, 100, -50_000), 100_000);
-        // A zero maximum or a guarded weight stores 0xFFFFFFFF before scaling.
         assert_eq!(movement_factor(50, 0, 1), 100_000 - 42_949);
         assert_eq!(movement_factor(i64::MAX, 100, 1), 100_000 - 42_949);
         assert_eq!(movement_factor(i64::MIN + 1, 100, 0), 100_000);
@@ -100,14 +83,11 @@ mod tests {
 
     #[test]
     fn the_first_strict_positive_maximum_wins_and_must_reach_the_threshold() {
-        // Ties keep the first; zero and negative weights never win.
         assert_eq!(strongest(&[0, 5, 9, 9, -3]), Some((2, 9)));
         assert_eq!(strongest(&[0, -1, i64::MIN]), None);
         assert_eq!(strongest(&[]), None);
-        // Half of a maximum of 100 is 50; 49.99999 is below it.
         assert!(shows(5_000_000, 10_000_000, 50_000));
         assert!(!shows(4_999_999, 10_000_000, 50_000));
-        // The product wraps and the quotient truncates toward zero.
         assert!(shows(-1, -150_001, 1));
         assert!(!shows(-2, -150_001, 1));
         assert!(shows(0, i64::MAX, 2));
@@ -119,7 +99,6 @@ mod tests {
         assert_eq!(camouflage([(1, 74)], 100, 75_000), None);
         assert_eq!(camouflage([(1, 0), (2, -5)], 0, 0), None);
         assert_eq!(camouflage::<u32>([], 0, 0), None);
-        // A later, weaker entry above the threshold cannot win.
         assert_eq!(
             camouflage([(1, 10), (2, 90), (3, 80)], 100, 75_000),
             Some(2)

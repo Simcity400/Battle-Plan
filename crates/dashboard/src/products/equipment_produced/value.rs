@@ -1,12 +1,7 @@
-//! What one producer delivered at one hour, from the Production writer's rows as they stood then:
-//! units or applied IC, with refits or without, of every type or of chosen types, lines and Rocket
-//! output together. The same rule serves a line over hours and a ranking at one hour. No recording
-//! is read here.
 
 use super::{ProducedCount, ProducedUnknown};
 use replay_data::rows::ProductionTotalRow;
 
-/// What a total holds at an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Amount {
     Known(i128),
@@ -14,7 +9,6 @@ pub enum Amount {
 }
 
 impl Amount {
-    /// Unknown where either is, with the first one's reason.
     pub fn plus(self, other: Self) -> Self {
         match (self, other) {
             (Self::Known(a), Self::Known(b)) => a.checked_add(b).map_or(Self::Unknown(ProducedUnknown::SpendingUnavailable), Self::Known),
@@ -38,15 +32,12 @@ impl Amount {
     }
 }
 
-/// What a value counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Choice {
     pub count: ProducedCount,
     pub refits: bool,
 }
 
-/// A totals row's cells: a producer's ProductionCountryTotals row, or one of its
-/// ProductionTypeTotals rows. A units count with inexact parts is a lower bound.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub units: i64,
@@ -76,7 +67,6 @@ fn spent(value: Option<i64>, reason: ProducedUnknown) -> Amount {
     value.map_or(Amount::Unknown(reason), |value| Amount::Known(i128::from(value)))
 }
 
-/// One design's ProductionTotals row for one purpose.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DesignRow {
     pub purpose: u8,
@@ -86,7 +76,6 @@ pub struct DesignRow {
     pub spent_reason: u8,
 }
 
-/// One Rocket design's RocketProductionOutput row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RocketRow {
     pub units: i64,
@@ -104,7 +93,6 @@ impl RocketRow {
     }
 }
 
-/// A ProductionCoverage row's cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Coverage {
     pub observation: Option<i32>,
@@ -114,7 +102,6 @@ pub struct Coverage {
 }
 
 impl Coverage {
-    /// Why `count` is not known at `hour`, when the row says so.
     fn unknown(&self, count: ProducedCount, hour: i32) -> Option<ProducedUnknown> {
         let from = match count {
             ProducedCount::Units => self.units_unknown_from,
@@ -124,7 +111,6 @@ impl Coverage {
     }
 }
 
-/// A [`ProductionTotalRow`] reason code as a reply names it.
 pub fn reason(code: u8) -> ProducedUnknown {
     match code {
         ProductionTotalRow::NOT_RECORDED => ProducedUnknown::NotRecorded,
@@ -136,31 +122,22 @@ pub fn reason(code: u8) -> ProducedUnknown {
     }
 }
 
-/// Whether a Rocket design counts toward the types asked: a set of types is the ProducedValues writer's now, and
-/// only the whole-branch reference counts one here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counted {
     Yes,
     #[cfg(test)]
     No,
-    /// Its type was not recorded: it could be of any type.
     #[cfg(test)]
     NotKnown,
 }
 
-/// What a producer's rows hold at one hour.
 #[derive(Clone, Copy, Debug)]
 pub struct Cells<'a> {
-    /// Its ProductionCountryTotals row; none where not shown.
     pub country: Option<Totals>,
-    /// The run's coverage of production lines and of Rocket output, and its own Rocket coverage.
     pub lines: Option<Coverage>,
     pub rocket_run: Option<Coverage>,
     pub rocket_own: Option<Coverage>,
-    /// Every type, or the asked types' rows (none where it has no row of one) and its row of
-    /// designs whose type was not recorded, unless that is asked too.
     pub types: Option<TypeCells<'a>>,
-    /// Whether RocketProductionOutput's world row is shown: the table was read.
     pub rocket_world: bool,
     pub rocket: &'a [(Counted, Option<RocketRow>)],
 }
@@ -168,17 +145,13 @@ pub struct Cells<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct TypeCells<'a> {
     pub asked: &'a [Option<Totals>],
-    /// Designs whose type was not recorded, when not asked: any of them could be of an asked type.
     pub untyped: Option<Option<Totals>>,
 }
 
-/// The coverage of a source at an hour: its own reason first, then the run's.
 fn covered(rows: &[Option<Coverage>], count: ProducedCount, hour: i32) -> Option<ProducedUnknown> {
     rows.iter().flatten().find_map(|row| row.unknown(count, hour))
 }
 
-/// What the producer delivered by `hour`, counted as `choice` says: never a partial sum, never
-/// zero where a row says it is not known.
 pub fn value(cells: &Cells<'_>, hour: i32, choice: Choice) -> Amount {
     let Some(country) = cells.country else {
         return Amount::Unknown(ProducedUnknown::NotRecorded);
@@ -202,7 +175,6 @@ pub fn value(cells: &Cells<'_>, hour: i32, choice: Choice) -> Amount {
     lines.plus(rocket(cells, hour, choice.count))
 }
 
-/// The producer's Rocket output counted toward the asked types.
 pub fn rocket(cells: &Cells<'_>, hour: i32, count: ProducedCount) -> Amount {
     if !cells.rocket_world {
         return Amount::Unknown(ProducedUnknown::RocketTableUnavailable);
@@ -227,8 +199,6 @@ pub fn rocket(cells: &Cells<'_>, hour: i32, count: ProducedCount) -> Amount {
     sum
 }
 
-/// One design's total by `hour`: its purposes' rows summed (refits only when asked), zero without
-/// a row; none of the producer's rows shown, or its coverage, leave it unknown.
 pub fn design(country: bool, lines: Option<Coverage>, rows: &[DesignRow], hour: i32, choice: Choice) -> Amount {
     if !country {
         return Amount::Unknown(ProducedUnknown::NotRecorded);
@@ -247,7 +217,6 @@ pub fn design(country: bool, lines: Option<Coverage>, rows: &[DesignRow], hour: 
     sum
 }
 
-/// One Rocket design's total by `hour`.
 pub fn rocket_design(world: bool, coverage: [Option<Coverage>; 2], row: Option<RocketRow>, hour: i32, count: ProducedCount) -> Amount {
     if !world {
         return Amount::Unknown(ProducedUnknown::RocketTableUnavailable);
@@ -284,7 +253,6 @@ mod tests {
         assert_eq!(value(&cells(Some(zero), &[]), 5, UNITS), Amount::Known(7));
         let holding = TypeCells { untyped: Some(Some(totals(2, Some(0)))), ..typed };
         assert_eq!(value(&cells(Some(holding), &[]), 5, UNITS), Amount::Unknown(Why::TypeNotRecorded));
-        // Every type reads the country row; asking the untyped designs themselves sums them like any type.
         assert_eq!(value(&cells(None, &[]), 5, IC), Amount::Known(500));
         let untyped_asked = TypeCells { asked: &asked[..1], untyped: None };
         assert_eq!(value(&cells(Some(untyped_asked), &[]), 5, UNITS), Amount::Known(4));

@@ -1,7 +1,3 @@
-//! Counter unit-type icons from `DivisionTemplateIcons`.
-//!
-//! Plain strings and integers select a resolved sprite name and frame. The GUI's
-//! type child supplies placement; the runtime-selected icon replaces its placeholder.
 
 use crate::errors::examples;
 use crate::image_rgba::rgba8;
@@ -18,43 +14,28 @@ use installed_content_core::{ResolvedLayers, gui::native::resources, gui::native
 use installed_content_gfx::{gfx::SpriteSet, gfx::SpriteType};
 use installed_content_image::{Rgba8Image, dds, native::Decode};
 
-/// Synthetic counter frame used by the naming and hover fixtures.
 #[cfg(any(test, feature = "test-support"))]
 pub const FRAME_SIZE: [u32; 2] = [30, 12];
 
-/// The counter sprite's pictorial frame, the silhouette the game draws by default.
 pub const PICTORIAL_FRAME: u32 = 0;
 
-/// Counter option selecting the NATO frame.
 pub const NATO_FRAME: u32 = 1;
 
-/// The prefix every sub-unit counter sprite starts with.
 pub const UNIT_PREFIX: &str = "GFX_unit_";
-/// The suffix that marks the small, on-map, white-silhouette variant.
 pub const UNIT_SUFFIX: &str = "_icon_medium_white";
-/// The prefix of a custom division-template icon.
 pub const CUSTOM_PREFIX: &str = "GFX_div_templ_";
-/// The suffix of the counter-sized custom icon; `_large` is the division-designer one.
 pub const CUSTOM_SUFFIX: &str = "_small";
 
-/// What the counter draws in its `type` slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeIcon {
-    /// The `GFX_...` name to resolve through `interface/*.gfx`.
     pub sprite: String,
-    /// The zero-based frame of that sprite.
     pub frame: u32,
 }
 
-/// Sub-unit icon names use the recorded priority sub-unit name verbatim.
-/// The authored model sprite field does not select this counter sprite.
 pub fn unit_sprite(priority_unit_name: &str) -> String {
     format!("{UNIT_PREFIX}{priority_unit_name}{UNIT_SUFFIX}")
 }
 
-/// Custom icon indices are narrowed to signed sixteen bits. Negative values
-/// mean no custom icon; nonnegative values form a zero-based decimal sprite
-/// name with [`CUSTOM_PREFIX`] and [`CUSTOM_SUFFIX`].
 pub fn custom_icon_index(custom_icon: i32) -> Option<u16> {
     let narrowed = custom_icon as i16;
     if narrowed < 0 {
@@ -63,13 +44,10 @@ pub fn custom_icon_index(custom_icon: i32) -> Option<u16> {
     Some(narrowed as u16)
 }
 
-/// The sprite name of a custom division icon.
 pub fn custom_sprite(index: u16) -> String {
     format!("{CUSTOM_PREFIX}{index}{CUSTOM_SUFFIX}")
 }
 
-/// NATO custom-icon selection requires the enabled counter option and
-/// the template's applicable custom-index rule.
 pub fn counter_custom_icon(custom_icon: i32, custom_icon_nato: u8, nato_counters: bool) -> i32 {
     if nato_counters && custom_icon_nato == 0 {
         -1
@@ -78,9 +56,6 @@ pub fn counter_custom_icon(custom_icon: i32, custom_icon_nato: u8, nato_counters
     }
 }
 
-/// Select a custom icon only when its narrowed index is nonnegative and its
-/// sprite is declared. Otherwise use the priority sub-unit sprite and the
-/// requested pictorial or NATO frame.
 pub fn type_icon(
     priority_unit_name: &str,
     custom_icon: i32,
@@ -106,7 +81,6 @@ pub fn type_icon(
     }
 }
 
-/// Hidden counters use the no-intel sprite resolved through content.
 pub fn no_intel_icon(nato_counters: bool) -> TypeIcon {
     TypeIcon {
         sprite: crate::map::templates::NO_INTEL_SPRITE.to_owned(),
@@ -118,29 +92,12 @@ pub fn no_intel_icon(nato_counters: bool) -> TypeIcon {
     }
 }
 
-/// Every counter unit-type frame the shipped `.gfx` declares, packed onto one page.
-///
-/// The counter's `type` child names a placeholder sprite, so the engine picks the real one by
-/// code and the icon layer cannot pre-load "the sprites the layout names" the way it does for
-/// every other child. The `_icon_medium_white` strips and `GFX_div_templ_<n>_small` icons
-/// share one page so their batch does not switch textures between counters.
-///
-/// The set is read from `interface/**/*.gfx`, not from a hardcoded list, so a mod that declares a
-/// new unit's counter icon is packed with the rest. Block-compressed files are decoded first.
 pub struct TypeAtlas {
-    /// Page id in `MapIcons::images`.
     pub texture: usize,
     pub size: [u32; 2],
-    /// Per-frame texel rectangle and native floating-point drawable size.
     cells: Vec<([f32; 4], [f32; 2])>,
-    /// `GFX_...` name and zero-based frame, to the cell holding it.
     index: BTreeMap<(String, u32), u32>,
-    /// Loaded source texture dimensions and frame grid before atlas packing.
-    /// Hit testing uses these independently of the queried integer frame extent.
     source_dimensions: BTreeMap<String, ([u32; 2], [i32; 2])>,
-    /// Every counter-icon name declared by content, including unpacked and refused
-    /// ones, for [`type_icon`]'s selection. A selected refused icon has no cell and
-    /// is withheld rather than replaced.
     declared: BTreeSet<String>,
 }
 
@@ -177,33 +134,26 @@ impl TypeAtlas {
         }
     }
 
-    /// Sprite identities for diagnostic dumps of the rendered atlas quads.
     pub fn entries(&self) -> impl Iterator<Item = (&(String, u32), &u32)> {
         self.index.iter()
     }
 
-    /// The selected sprite's native loaded frame operands, before packing its cells.
     pub fn source_dimensions(&self, name: &str) -> Option<([u32; 2], [i32; 2])> {
         self.source_dimensions.get(name).copied()
     }
 
-    /// The cell one [`TypeIcon`] resolves to, or `None` when nothing declares it.
     pub fn cell(&self, icon: &TypeIcon) -> Option<u32> {
         let key = (icon.sprite.clone(), icon.frame);
         self.index
             .get(&key)
-            // A sprite declared with one frame has no NATO frame; fall back to its only one
-            // rather than drawing nothing.
             .or_else(|| self.index.get(&(icon.sprite.clone(), PICTORIAL_FRAME)))
             .copied()
     }
 
-    /// Whether the content declares the counter-icon sprite `name` (packed or not).
     pub fn declares(&self, name: &str) -> bool {
         self.declared.contains(name)
     }
 
-    /// The atlas rectangle of a cell, in normalised texture coordinates.
     pub fn uv(&self, cell: u32) -> [f32; 4] {
         let rect = self.cells[cell as usize].0;
         [
@@ -214,12 +164,10 @@ impl TypeAtlas {
         ]
     }
 
-    /// Multiply the loaded size by 1/frame count.
     pub fn frame_size(&self, cell: u32) -> [f32; 2] {
         self.cells[cell as usize].1
     }
 
-    /// Frames packed, for reporting.
     pub fn len(&self) -> usize {
         self.index.len()
     }
@@ -228,14 +176,12 @@ impl TypeAtlas {
         self.index.is_empty()
     }
 
-    /// Whether a sprite name is one of the two counter-icon families.
     pub fn wanted(name: &str) -> bool {
         if name.ends_with(UNIT_SUFFIX) {
             return true;
         }
         name.strip_prefix(CUSTOM_PREFIX)
             .and_then(|rest| rest.strip_suffix(CUSTOM_SUFFIX))
-            // The game generates canonical decimal names.
             .is_some_and(|digits| {
                 digits
                     .parse::<u16>()
@@ -245,9 +191,6 @@ impl TypeAtlas {
             })
     }
 
-    /// Every counter-icon name whose latest declaration exists, drawable or refused
-    /// (the game test
-    /// only the registry's presence), and each refused one with why.
     fn declared(sprites: &SpriteSet) -> (BTreeSet<String>, Vec<String>) {
         let mut declared: BTreeSet<String> = sprites
             .iter()
@@ -265,7 +208,6 @@ impl TypeAtlas {
         (declared, refused)
     }
 
-    /// Packs every declared counter icon onto one page, and reports what it could not pack.
     pub fn load(
         layers: &ResolvedLayers,
         sprites: &SpriteSet,
@@ -302,8 +244,6 @@ impl TypeAtlas {
                     .push(sprite.name.clone());
                 continue;
             };
-            // Read the client's force_pow2_textures; a frame the visual mods break is the
-            // recording's own, named.
             let texture = decoded.entry(path.to_owned()).or_insert_with(|| {
                 resources::stack_texture_or_recorded(
                     layers,
@@ -358,8 +298,6 @@ impl TypeAtlas {
                 ([texture.width, texture.height], plain.grid()),
             );
         }
-        // Use loaded texture dimensions and block-rounded compressed extents,
-        // rather than the logical header dimensions, for the frame grid.
         let sheets = source_dimensions.len() as u32;
         let columns = (sheets as f64).sqrt().ceil().max(1.) as u32;
         let rows = sheets.div_ceil(columns).max(1);
@@ -389,8 +327,6 @@ impl TypeAtlas {
                 pixels[to..to + span].copy_from_slice(&source[from..from + span]);
             }
             let plain = sprite.facts.kind.plain().unwrap();
-            // Swap
-            // the grid axes for direction one and advance V.
             let frame_size = resources::frame_geometry(plain, dimensions);
             for frame in 0..sprite.frames {
                 let offset = match plain.frame_direction {
@@ -773,7 +709,6 @@ mod tests {
 
     #[test]
     fn the_sprite_is_keyed_on_the_sub_unit_name_and_not_its_sprite_field() {
-        // Each sub-unit name selects its own glyph regardless of its sprite field.
         assert_eq!(
             unit_sprite("mountaineers"),
             "GFX_unit_mountaineers_icon_medium_white"
@@ -788,7 +723,6 @@ mod tests {
         );
     }
 
-    /// Every name counts as declared.
     fn all(_: &str) -> bool {
         true
     }
@@ -801,7 +735,6 @@ mod tests {
         let nato = type_icon("infantry", -1, true, &all);
         assert_eq!(nato.sprite, plain.sprite);
         assert_eq!(nato.frame, NATO_FRAME);
-        // The hidden counter's literal takes the same second frame.
         assert_eq!(no_intel_icon(false).frame, PICTORIAL_FRAME);
         assert_eq!(no_intel_icon(true).frame, NATO_FRAME);
         assert_eq!(
@@ -815,25 +748,19 @@ mod tests {
         let icon = type_icon("infantry", 0, false, &all);
         assert_eq!(icon.sprite, "GFX_div_templ_0_small");
         assert_eq!(icon.frame, PICTORIAL_FRAME);
-        // custom_template_121.dds is the last one vanilla ships.
         assert_eq!(
             type_icon("infantry", 121, false, &all).sprite,
             "GFX_div_templ_121_small"
         );
-        // With NATO counters on and the flag clear, the custom icon is dropped altogether and
-        // the counter takes the sub-unit's NATO symbol.
         let dropped = counter_custom_icon(0, 0, true);
         assert_eq!(dropped, -1);
         let dropped = type_icon("infantry", dropped, true, &all);
         assert_eq!(dropped.sprite, "GFX_unit_infantry_icon_medium_white");
         assert_eq!(dropped.frame, NATO_FRAME);
-        // With the flag set the picture survives, and its frame is the hardcoded one.
         let kept = type_icon("infantry", counter_custom_icon(0, 1, true), true, &all);
         assert_eq!(kept.sprite, "GFX_div_templ_0_small");
         assert_eq!(kept.frame, PICTORIAL_FRAME);
-        // NATO counters off: the flag does nothing, and the index is not narrowed here.
         assert_eq!(counter_custom_icon(0x10000, 0, false), 0x10000);
-        // A template with no custom icon falls through to its sub-unit.
         assert_eq!(
             type_icon("infantry", -1, false, &all).sprite,
             "GFX_unit_infantry_icon_medium_white"
@@ -842,9 +769,6 @@ mod tests {
 
     #[test]
     fn an_undeclared_custom_icon_falls_through_to_the_sub_unit_sprite() {
-        // Return false when the registry lacks the
-        // name, and the game goes on to the sub-unit's sprite, with
-        // the NATO frame when the option is on.
         let declared = |name: &str| name != "GFX_div_templ_7_small";
         let icon = type_icon("infantry", 7, true, &declared);
         assert_eq!(icon.sprite, "GFX_unit_infantry_icon_medium_white");
@@ -855,9 +779,6 @@ mod tests {
         );
     }
 
-    /// A refused custom icon is still in the registry, so the selection takes it (only presence
-    /// is tested) and the counter draws no type icon, with the reason in the warnings; it never
-    /// falls back to the sub-unit sprite.
     #[test]
     fn a_refused_custom_icon_is_selected_and_withheld() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -889,16 +810,12 @@ mod tests {
 
     #[test]
     fn the_custom_index_is_zero_based_and_narrowed_to_sixteen_signed_bits() {
-        // The game rejects only a negative operand.
         assert_eq!(custom_icon_index(-1), None);
         assert_eq!(custom_icon_index(0), Some(0));
         assert_eq!(custom_icon_index(121), Some(121));
-        // 0x10000 narrows to 0, which is icon 0 and not icon 65536.
         assert_eq!(custom_icon_index(0x10000), Some(0));
         assert_eq!(custom_icon_index(0x1007f), Some(127));
-        // 0x8000 narrows to i16::MIN, which the native guard rejects.
         assert_eq!(custom_icon_index(0x8000), None);
-        // i32::MIN narrows to 0, so it is icon 0; -0x8000 narrows to i16::MIN and is rejected.
         assert_eq!(custom_icon_index(i32::MIN), Some(0));
         assert_eq!(custom_icon_index(-0x8000), None);
     }

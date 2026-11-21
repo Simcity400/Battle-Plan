@@ -1,24 +1,3 @@
-//! `MilitaryAid`: each live country's sent volunteers and expeditionaries, resolved against the
-//! live divisions, by sender, host and channel. A volunteer's host is its division's logical
-//! owner; an expeditionary's is its division's roster owner, and its division's owner (positive
-//! expeditionary owner, else roster owner) must be the sender. Null and non-live references are
-//! skipped, as the game skips them; repeats count. Tallies are the game's own VolunteerHosts
-//! vector of each sender: the first count listed for each host, a row for each host listed.
-//!
-//! What is not known is not recorded, never zero: a sender's channel is read whole or not at all.
-//! Its volunteers are not known while two of its raw ids hold lists or a list's ordinals are not
-//! contiguous from zero, or a listed division's logical owner no link resolves; its
-//! expeditionaries while it has no counters row, or two, or no list recorded, or a listed
-//! division's roster owner no link resolves or its owner is another country; its tallies while
-//! VolunteerHosts is not complete, two of its raw ids hold vectors, or a host no link resolves is
-//! listed. Such a channel holds one row of host [`TagHolderRow::NONE`], its count not recorded,
-//! and no pair rows. A list whose sender no link resolves, and which is not known to be empty,
-//! makes the channel's row of sender and host [`TagHolderRow::NONE`]: some aid has no sender to be
-//! counted for.
-//!
-//! State: each raw sender's volunteer rows and host vector, each live country's listed references
-//! and the rows it holds, rebuilt from the tables at a fresh hour, a resume, a change of links or
-//! country slots, or VolunteerHosts becoming or ceasing to be complete.
 
 use crate::{
     deployed::{COUNTERS, Identity, VOLUNTEER, invalid, number, row},
@@ -58,7 +37,6 @@ const READS: &[Read] = &[
     read(TableId::VolunteerHosts, &HOST, false),
 ];
 
-/// A channel's divisions by host slot; none when it cannot be read whole.
 type Channel = Option<BTreeMap<u32, i64>>;
 
 fn key(sender: u32, host: u32, channel: u8) -> u128 {
@@ -67,28 +45,18 @@ fn key(sender: u32, host: u32, channel: u8) -> u128 {
 
 #[derive(Default)]
 pub struct Aid {
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     identity: Identity,
-    /// Each raw sender's volunteer rows by ordinal.
     volunteers: HashMap<u32, BTreeMap<u32, u64>>,
-    /// Each raw sender's VolunteerHosts vector by position: the raw host and its count. Empty
-    /// while VolunteerHosts is not complete.
     hosts: HashMap<u32, BTreeMap<u32, (u32, i32)>>,
-    /// VolunteerHosts was complete when the rows were last written.
     tallied: bool,
-    /// Each live country's listed references.
     references: HashMap<u32, Vec<u64>>,
-    /// The countries whose lists name each division.
     users: HashMap<u64, Vec<u32>>,
-    /// The hosts of each (sender, channel)'s rows the table holds.
     held: HashMap<(u32, u8), Vec<u32>>,
-    /// Each channel's raw senders no link resolves whose list is not known to be empty.
     orphans: [HashSet<u32>; 3],
 }
 
 impl Aid {
-    /// Division `id`'s row, when live.
     fn division(hour: &Hour<'_>, id: u64) -> io::Result<Option<DivisionRow>> {
         if id == 0 {
             return Ok(None);
@@ -97,8 +65,6 @@ impl Aid {
         view.slot(u128::from(id)).map(|at| row(&view, at, &DIVISION)).transpose()
     }
 
-    /// The expeditionaries listed by raw sender `raw`'s counters row: none without the row, or
-    /// without the list.
     fn expeditionaries(hour: &Hour<'_>, raw: u32) -> io::Result<Option<Option<Vec<u64>>>> {
         let view = hour.table(TableId::CountryCounterInputs);
         let Some(at) = view.slot(u128::from(raw)) else { return Ok(None) };
@@ -109,7 +75,6 @@ impl Aid {
         }))
     }
 
-    /// Country `slot`'s volunteers by host, and the references they read.
     fn volunteers(&self, hour: &Hour<'_>, slot: u32, references: &mut Vec<u64>) -> io::Result<Channel> {
         let mut lists = self.identity.aliases(slot).iter().filter_map(|raw| self.volunteers.get(raw)).filter(|list| !list.is_empty());
         let Some(list) = lists.next() else { return Ok(Some(BTreeMap::new())) };
@@ -126,7 +91,6 @@ impl Aid {
         Ok(Some(hosts))
     }
 
-    /// Country `slot`'s expeditionaries by host, and the references they read.
     fn expeditionary(&self, hour: &Hour<'_>, slot: u32, references: &mut Vec<u64>) -> io::Result<Channel> {
         let mut rows = Vec::new();
         for &raw in self.identity.aliases(slot) {
@@ -148,7 +112,6 @@ impl Aid {
         Ok(Some(hosts))
     }
 
-    /// Country `slot`'s tallies by host: the first count its one vector lists for each host.
     fn tallies(&self, slot: u32) -> Channel {
         if !self.tallied {
             return None;
@@ -165,8 +128,6 @@ impl Aid {
         Some(hosts)
     }
 
-    /// Writes country `slot`'s rows as the tables hold them now, its references indexed; a slot
-    /// that is no live country's loses its rows.
     fn sender(&mut self, hour: &Hour<'_>, slot: u32, out: &mut Rows) -> io::Result<()> {
         for id in self.references.remove(&slot).unwrap_or_default() {
             if let Some(users) = self.users.get_mut(&id) {
@@ -200,7 +161,6 @@ impl Aid {
         Ok(())
     }
 
-    /// Makes (`sender`, `channel`)'s rows those of `rows`' hosts, with their counts.
     fn replace(&mut self, sender: u32, channel: u8, rows: Vec<(u32, Value)>, out: &mut Rows) {
         let held = self.held.remove(&(sender, channel)).unwrap_or_default();
         for host in held {
@@ -217,7 +177,6 @@ impl Aid {
         }
     }
 
-    /// Whether raw sender `raw`, no link resolves, hides aid in `channel`.
     fn orphan(&self, hour: &Hour<'_>, raw: u32, channel: u8) -> io::Result<bool> {
         Ok(match channel {
             MilitaryAidRow::VOLUNTEERS => self.volunteers.get(&raw).is_some_and(|list| !list.is_empty()),
@@ -229,7 +188,6 @@ impl Aid {
         })
     }
 
-    /// `raw`'s slot when a link resolves it; else notes whether it hides aid in `channel`.
     fn note(&mut self, hour: &Hour<'_>, raw: u32, channel: u8) -> io::Result<Option<u32>> {
         if let Some(slot) = self.identity.resolve(raw) {
             return Ok(Some(slot));
@@ -243,7 +201,6 @@ impl Aid {
         Ok(None)
     }
 
-    /// The channel-wide row of senders no link resolves, as the orphans stand.
     fn orphan_rows(&mut self, out: &mut Rows) {
         for channel in CHANNELS {
             let rows = if self.orphans[usize::from(channel)].is_empty() { Vec::new() } else { vec![(NONE, Value::Unrecorded)] };
@@ -251,7 +208,6 @@ impl Aid {
         }
     }
 
-    /// Records VolunteerHosts row `slot` in its sender's vector; its raw sender.
     fn host(&mut self, view: &TableView<'_>, slot: u32) -> Option<u32> {
         let found = view.key(slot)?;
         let (host, count) = (number(view, HOST[0], slot)?, number(view, HOST[1], slot)?);
@@ -260,7 +216,6 @@ impl Aid {
         Some(raw)
     }
 
-    /// Every row again from the tables as they stand.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         *self = Self { identity: Identity::read(hour), tallied: hour.complete(TableId::VolunteerHosts), ..Self::default() };
         let table = out.table(TableId::MilitaryAid);
@@ -299,7 +254,6 @@ impl Aid {
         Ok(())
     }
 
-    /// Writes the senders whose lists or listed divisions the hour changed.
     fn apply(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         let mut senders = HashSet::new();
         let divisions = hour.table(TableId::Divisions);
@@ -390,7 +344,6 @@ impl Writer for Aid {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every row from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

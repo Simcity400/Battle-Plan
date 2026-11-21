@@ -1,4 +1,3 @@
-//! Air range symbols from the selected wings' current range and pool bases.
 use super::radar_symbols::{Centers, Field, Symbol};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -9,16 +8,12 @@ use viewer_foundation::map::{
     province_map::HeightField,
 };
 
-/// The game's range-group scratch array has 128 entries. Equal origins and
-/// ranges share an entry; any empty wing makes that entry use the empty colour.
 const GROUPS: usize = 128;
 type Sample = ([i32; 2], i64, bool);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RangeField {
     pub ranges: Field,
-    /// The transient bases reached by range preparation. This is distinct
-    /// from the retained base references that select gold icon frames.
     pub highlighted_bases: Vec<u64>,
 }
 impl std::ops::Deref for RangeField {
@@ -60,8 +55,6 @@ impl Fields {
             .unwrap_or(&self.selected)
     }
 
-    /// A hovered task-force source visits every member in its stored order,
-    /// taking each member's first carrier. All bases share the range scratch.
     pub fn carrier_ranges(&self, forces: &[u64]) -> RangeField {
         let mut groups = Vec::new();
         let mut field = RangeField::default();
@@ -116,8 +109,6 @@ impl Fields {
     }
 }
 
-/// Hovered base ranges replace selected-wing ranges only when at least one
-/// group was admitted. Pool order, including repeated handles, is retained.
 pub fn read_fields(
     frame: &DecodedFrame,
     viewer: u32,
@@ -201,7 +192,6 @@ pub fn read_fields(
 }
 
 impl Fields {
-    // These borrowed scene inputs share the caller's range preparation and refusal order.
     #[allow(clippy::too_many_arguments)]
     fn read_carriers(
         &mut self,
@@ -341,7 +331,6 @@ fn group(groups: &mut Vec<([i32; 2], i64, bool)>, origin: [i32; 2], range: i64, 
     }
 }
 
-// Keep the selected/fixed-base gates and lazy source owners explicit at this boundary.
 #[allow(clippy::too_many_arguments)]
 fn read_at(
     frame: &DecodedFrame,

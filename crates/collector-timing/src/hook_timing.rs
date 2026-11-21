@@ -1,31 +1,3 @@
-//! Live cost of every hook family: exact call counts and sampled wall time
-//! inside collector code, with each original timed separately.
-//!
-//! A hooked thread claims one cache-aligned slot on its first call and is the
-//! only writer of that slot, so an unsampled call costs a thread-local index,
-//! one plain counter store and a mask test. Every `period`-th call per thread
-//! and family (always that thread's first) reads the time-stamp counter at
-//! entry, around each original the collector invokes, and at exit. Threads
-//! beyond `OWNED_SLOTS` share one slot through atomic increments. Every span
-//! also holds its thread's allocation phase at `Hook` and restores the outer
-//! phase when it drops, so a refusal inside a hook names the hook. Nothing here
-//! reads native memory, allocates, locks or changes native execution; status
-//! converts ticks to nanoseconds with a frequency calibrated against QPC. The
-//! one wait is the capture gate's ([`crate::capture_gate`]): every call passes
-//! it before its span begins, and stops there only while a capture reads beside
-//! the game and its family is not exempt.
-//!
-//! A sampled call's span also contains the timer's own reads (the entry and
-//! exit reads and the two around each timed original), which unsampled calls
-//! never make. Scaling sampled time by calls per sampled call charges that
-//! cost to every call. [`start`] estimates it once from the fastest of many
-//! empty spans timed through the production span path. Every sampled call
-//! records that estimate, capped at its own detour, beside its raw detour.
-//! The estimate is approximate, not a bound: no rule here proves a later
-//! span's timer cost is at least it, so subtracting it may also remove some
-//! collector work. The raw estimates therefore stay the conservative
-//! figures; status publishes the subtraction only as `approximate_*` fields
-//! beside them, for diagnosis.
 use crate::status::{map, status};
 use std::{
     arch::x86_64::{_mm_lfence, _rdtsc},
@@ -34,176 +6,90 @@ use std::{
     sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
 };
 
-/// Owned slots before later threads share the atomic slot.
 const OWNED_SLOTS: usize = 64;
 const SHARED_SLOT: usize = OWNED_SLOTS;
 const SLOT_COUNT: usize = OWNED_SLOTS + 1;
-/// One call in 64 per thread and family is timed.
 const DEFAULT_PERIOD_LOG2: u32 = 6;
 
-/// Hook families, each one owner of installed entry or interior sites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
-    /// Hourly update (`sampling::tick`); the original is the native hourly
-    /// tick, including every nested between-tick detour.
     Hourly,
-    /// Equipment and division writers: land damage, aircraft losses, deletion,
-    /// queueing and merging, plus 13 further sites.
     EquipmentDestruction,
-    /// Land combat finalization, dispatch and destruction, border wars, the
-    /// leader call relays and the wipe pre-observer.
     LandEvents,
-    /// Six portrait holder writers.
     PortraitChanges,
-    /// Opinion writes, relation reset and reading, and relation construction.
     OpinionChanges,
-    /// Construction speed, progress, completion and reset sites.
     ConstructionIc,
-    /// Production credit, delivery and rocket advance through the shared
-    /// before/returned stub.
     LineOutput,
-    /// Combat-log manager pruning.
     CombatLogPrune,
-    /// Eleven advisor/character sites and eight character role-row writers:
-    /// leader modifiers, destruction, map insertion and creation; advisor
-    /// modifiers; leader ideology; character names and identity repair.
     AdvisorChanges,
-    /// Diplomacy link rebuild, reset, removal and insertion.
     RelationChanges,
-    /// Air-history construction and cursor advance.
     HistoryChanges,
-    /// Ten script flag manager writers covering values, duration, loading,
-    /// expiry, clearing, assignment, construction, release and destruction.
     FlagChanges,
-    /// Strategic operative daily propaganda append and reset.
     PropagandaChanges,
     IntelSources,
     NetworkAuxiliary,
-    /// Seven building/status writers and the nudge-mode entry, which poisons reuse.
     BuildingChanges,
-    /// Fourteen available- and appointed-advisor and advisor-token writers.
     AdvisorPoolChanges,
-    /// Eleven party leader vector writers.
     PartyLeaderChanges,
-    /// Four script variable store writers, three clear callsites and eight
-    /// seed-changing context ends.
     VariableChanges,
-    /// Political party names and construction.
     PartyChanges,
-    /// Six air wing equipment pool writers and two subtraction callsites.
     WingChanges,
-    /// Roster append and clear, and six scientist role and trait writers.
     RosterChanges,
-    /// Seven political status writers and two popularity callsites.
     PoliticalStatusChanges,
-    /// Air mission registration and unregistration.
     MissionChanges,
-    /// Six rail-info writers and railway manager construction, destruction and loading.
     RailChanges,
-    /// Twelve province and state writers.
     TerritoryChanges,
-    /// The division active-stat block writer.
     ArmyStatChanges,
-    /// Stability, research, focus, project, appearance and counter writers
-    /// of the country-input mutation descriptors.
     CountryInputChanges,
-    /// Twelve raid state and building-override writers.
     RaidChanges,
-    /// Country modifier recalculation and appearance reset, leader modifier
-    /// recalculation and HQ scaling, and leader construction, copying and destruction.
     NavalTreeChanges,
-    /// Naval repair/refit policy taps and lifecycle method detours.
     NavalManagementChanges,
-    /// Twenty-three unit leader writers, including eight component setters.
     UnitLeaderChanges,
-    /// Eight role census writers.
     CensusChanges,
-    /// Six orders-group leader, HQ provider and training writers.
     OrdersGroupChanges,
     OrderMembershipChanges,
-    /// Province name effects, navy access setter and reset, world tension
-    /// total, and dynamic modifier addition, renewal, removal and daily update.
     WorldInputChanges,
-    /// Doctrine receiver notifications, occurrence callbacks and gain-store taps.
     DoctrineChanges,
-    /// The retained air-combat record updater.
     AirRecordChanges,
-    /// Local sub-unit creation, definition rebuilding, runtime clearing and
-    /// default initialization, and two shared definition writers.
     LocalSubunitChanges,
-    /// Division template name-key data assignments, reader and destructor.
     TemplateChanges,
-    /// Ship equipment recalculation, refit, experience modifiers, carrier air
-    /// base creation and destruction, medal modifiers, task-force doctrine
-    /// trees and weather region modifiers.
     ShipModelChanges,
-    /// Province occupant append from unit relocation and occupant removal.
     ProvinceUnitChanges,
-    /// Province combat append and removal.
     ProvinceCombatChanges,
-    /// Four air base registration writers and five wing pool writers.
     AirBaseCarryChanges,
-    /// Six interior experience taps.
     ExperienceGains,
-    /// Interior fuel taps: update entry and settle, land, naval, air and reset.
     FuelAwards,
-    /// Operation completion.
     OperationOutcomes,
-    /// Power writers and scope entries, including daily politics and relation improvement.
     PoliticsCapture,
-    /// Interior political-power taps.
     PoliticsCaptureTaps,
-    /// Logistics balance write calls and history changes.
     LogisticsBalance,
-    /// Peace finalizer pre-observer.
     PeaceSettlements,
-    /// Naval result creation, merge and construction.
     NavalResultSources,
-    /// Own and credited air loss bookkeeping calls through the pre/post stub.
     AirLosses,
-    /// Building damage through the before/after stub.
     BuildingBombing,
-    /// Nuclear impact, notification and unit damage entries.
     NuclearStrikes,
-    /// War and annexation call bridges (before/returned).
     EventFeed,
-    /// The event feed's eight provenance entry detours
-    /// ([event-feed provenance entries](../../engine-events/src/event_feed_sites.rs)).
     EventFeedProvenance,
-    /// Map event entry and call detours and the critical bombardment tap.
     MapEvents,
-    /// World reset and construction taps and the deletion pre-observer.
     WorldLifetime,
-    /// Equipment design writers and ordered publication/removal snapshots.
     VariantChanges,
-    /// Stored faction goal structure, progress and status writers.
     FactionGoals,
     FactionCompanions,
     FactionResourceRebuild,
     FactionRefreshPhases,
-    /// Dedicated international market and lend-lease writers.
     MarketChanges,
-    /// Bilateral war contribution writers, first-credit capture and delivery histories.
     WarParticipation,
-    /// The per-frame command batch, around every command it runs.
     CommandBatch,
     PlayerCommands,
 }
 pub const FAMILY_COUNT: usize = Family::PlayerCommands as usize + 1;
-// Each family has a capture gate slot of its own.
 const _: () = assert!(FAMILY_COUNT <= crate::capture_gate::SLOTS);
 
-/// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// A Rust detour calls the original; that call is timed and excluded.
     Detour,
-    /// An observer runs before native instructions continue; no original.
     Tap,
-    /// Entry and return halves around an original invoked by ASM or C++;
-    /// both halves are timed, the original between them is not.
     Split,
-    /// Detours whose originals are timed, plus pre-observers without one.
     Mixed,
 }
 impl Kind {
@@ -291,7 +177,6 @@ impl Family {
         Self::CommandBatch,
         Self::PlayerCommands,
     ];
-    /// The status key; families with their own status reuse that key.
     pub fn name(self) -> &'static str {
         match self {
             Self::PlayerCommands => "player_commands",
@@ -435,7 +320,6 @@ impl Family {
             }
         }
     }
-    /// The hourly boundary runs once per game hour, so every call is timed.
     fn period_log2(self) -> u32 {
         match self {
             Self::Hourly | Self::MarketChanges => 0,
@@ -447,7 +331,6 @@ impl Family {
     }
 }
 
-/// One family's cumulative counters in one slot. Ticks are TSC ticks.
 struct Counters {
     calls: AtomicU64,
     sampled: AtomicU64,
@@ -456,7 +339,6 @@ struct Counters {
     returns: AtomicU64,
     returns_sampled: AtomicU64,
     returns_detour: AtomicU64,
-    /// The timer's own ticks inside `detour` and `returns_detour`.
     overhead: AtomicU64,
     returns_overhead: AtomicU64,
 }
@@ -563,7 +445,6 @@ fn forced() -> bool {
     #[cfg(not(any(test, feature = "test-support")))]
     false
 }
-/// Tests: time every call on this thread while the guard lives.
 #[cfg(any(test, feature = "test-support"))]
 pub fn sample_all() -> impl Drop {
     struct Restore;
@@ -575,7 +456,6 @@ pub fn sample_all() -> impl Drop {
     SAMPLE_ALL.set(true);
     Restore
 }
-/// Tests: process-wide totals of one family.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug)]
 pub struct Counts {
@@ -602,7 +482,6 @@ fn bump(counter: &AtomicU64, shared: bool, amount: u64) -> u64 {
     if shared {
         counter.fetch_add(amount, Ordering::Relaxed)
     } else {
-        // The owning thread is this counter's only writer.
         let value = counter.load(Ordering::Relaxed);
         counter.store(value.wrapping_add(amount), Ordering::Relaxed);
         value
@@ -611,7 +490,6 @@ fn bump(counter: &AtomicU64, shared: bool, amount: u64) -> u64 {
 
 #[inline(always)]
 fn now() -> u64 {
-    // LFENCE keeps the read after the instructions it closes.
     unsafe {
         _mm_lfence();
         _rdtsc()
@@ -637,8 +515,6 @@ fn claim_current() -> usize {
 #[repr(align(64))]
 struct CallSlot<const SITES: usize>([AtomicU64; SITES]);
 
-/// Diagnostic calls, using the timer's existing thread ownership. Not a writer
-/// revision or an acquisition fence: consumers must not certify reads with it.
 pub struct CallCounters<const SITES: usize> {
     slots: [CallSlot<SITES>; SLOT_COUNT],
 }
@@ -661,7 +537,6 @@ impl<const SITES: usize> CallCounters<SITES> {
     fn increment_at(&self, slot: usize, site: usize) {
         bump(&self.slots[slot].0[site], slot == SHARED_SLOT, 1);
     }
-    /// Exact after writers join; concurrent status reads are not one atomic cut.
     pub fn total(&self, site: usize) -> u64 {
         let claimed = TABLE.claimed.load(Ordering::Relaxed).min(OWNED_SLOTS);
         self.slots[..claimed]
@@ -673,39 +548,30 @@ impl<const SITES: usize> CallCounters<SITES> {
     }
 }
 
-/// Start a callback's span before any other collector work in it.
 #[inline(always)]
 pub fn enter(family: Family) -> Span {
     TABLE.enter(current_slot(), family, false)
 }
-/// Start the return half of a split family; it counts no new call.
 #[inline(always)]
 pub fn enter_return(family: Family) -> Span {
     TABLE.enter(current_slot(), family, true)
 }
-/// The `Hook` allocation phase alone, for a hook's collector work outside its
-/// span; restored when dropped.
 #[inline(always)]
 pub fn label() -> collector_memory::terminal::Scope {
     collector_memory::terminal::enter(collector_memory::terminal::Phase::Hook)
 }
 
-/// A callback's timing scope. Dropping it records a sampled call.
 pub struct Span {
     counters: &'static Counters,
     shared: bool,
     returning: bool,
-    /// Zero when this call is not sampled.
     start: u64,
     original: Cell<u64>,
-    /// Originals timed in this span, each adding its timer reads.
     originals: Cell<u32>,
     _phase: collector_memory::terminal::Scope,
-    /// Owned slots have one writer: the span stays on its thread.
     _thread: PhantomData<*const ()>,
 }
 impl Span {
-    /// Run the native original, timing it apart from the detour when sampled.
     #[inline(always)]
     pub fn original<T>(&self, original: impl FnOnce() -> T) -> T {
         if self.start == 0 {
@@ -747,16 +613,11 @@ impl Drop for Span {
     }
 }
 
-/// The timer's ticks in a sampled span that timed `originals` originals:
-/// an empty span's, and each original's two reads. Zero until [`start`]'s
-/// calibration has published both values.
 fn overhead_ticks(originals: u32) -> u64 {
     let [empty, per_original] = overhead_pair();
     empty.saturating_add(per_original.saturating_mul(u64::from(originals)))
 }
 
-/// `[empty span, per timed original]` behind one acquire of [`CALIBRATED`]:
-/// both published values, or both zero.
 fn overhead_pair() -> [u64; 2] {
     if !CALIBRATED.load(Ordering::Acquire) {
         return [0; 2];
@@ -766,18 +627,10 @@ fn overhead_pair() -> [u64; 2] {
         .map(|ticks| ticks.load(Ordering::Relaxed))
 }
 
-/// Timer ticks inside a sampled span: `[empty span, per timed original]`,
-/// written once, before [`CALIBRATED`].
 static OVERHEAD: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-/// Both [`OVERHEAD`] values are published (release after both stores).
 static CALIBRATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Empty spans measured per calibration case.
 const OVERHEAD_SAMPLES: usize = 512;
 
-/// Estimate the timer's own ticks in a sampled span, through the production
-/// span and record path into a private counter: the fastest empty span, and
-/// the fastest span that times one empty original less the former. The
-/// minimum errs toward subtracting less.
 fn calibrate_overhead() {
     static CALIBRATION: Counters = Counters::new();
     let mut samples = [[0_u64; OVERHEAD_SAMPLES]; 2];
@@ -809,8 +662,6 @@ fn calibrate_overhead() {
     CALIBRATED.store(true, Ordering::Release);
 }
 
-/// Sums over slots. Estimates scale each slot's sampled ticks by its own
-/// calls per sampled call before summing.
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 struct Totals {
     calls: u64,
@@ -822,7 +673,6 @@ struct Totals {
     overhead: u64,
     estimated_detour: u128,
     estimated_original: u128,
-    /// The timer's share of `estimated_detour`.
     estimated_overhead: u128,
 }
 impl Totals {
@@ -858,7 +708,6 @@ impl Totals {
     }
 }
 
-/// Sampled ticks times calls per sampled call; zero before the first sample.
 fn scale(ticks: u64, calls: u64, sampled: u64) -> u128 {
     if sampled == 0 {
         return 0;
@@ -874,7 +723,6 @@ fn nanoseconds(ticks: u128, hz: Option<u64>) -> Option<u64> {
 static ORIGIN_TSC: AtomicU64 = AtomicU64::new(0);
 static ORIGIN_QPC: AtomicI64 = AtomicI64::new(0);
 
-/// Fix the calibration origin; the first call wins. Call before hooks exist.
 pub fn start() {
     let (tsc, qpc) = (now(), crate::clock::qpc());
     if ORIGIN_QPC
@@ -886,7 +734,6 @@ pub fn start() {
     }
 }
 
-/// TSC ticks per second over the interval since `start`.
 pub fn tsc_hz() -> Option<u64> {
     let mut frequency = 0;
     if unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) }
@@ -901,7 +748,6 @@ pub fn tsc_hz() -> Option<u64> {
     calibrate(origin, (now(), crate::clock::qpc()), frequency)
 }
 
-/// At least 10 ms of QPC keeps the TSC/QPC read skew below one part in 10^5.
 fn calibrate(origin: (u64, i64), now: (u64, i64), qpc_frequency: i64) -> Option<u64> {
     let qpc_frequency = u64::try_from(qpc_frequency).ok().filter(|f| *f != 0)?;
     if origin.1 == 0 {
@@ -915,7 +761,6 @@ fn calibrate(origin: (u64, i64), now: (u64, i64), qpc_frequency: i64) -> Option<
     u64::try_from(u128::from(tsc) * u128::from(qpc_frequency) / u128::from(qpc)).ok()
 }
 
-/// Ticks to nanoseconds with the current calibration.
 pub fn ticks_to_ns(ticks: u64, hz: Option<u64>) -> Option<u64> {
     nanoseconds(u128::from(ticks), hz)
 }
@@ -971,7 +816,6 @@ fn status_from(
     })
 }
 
-/// Cumulative per-family counters for status.json `hook_timing`.
 pub fn status() -> impl serde::Serialize {
     start();
     status_from(
@@ -1062,12 +906,10 @@ mod tests {
         for _ in 0..1000 {
             drop(table.enter(0, Family::ExperienceGains, false));
         }
-        // An unclaimed slot is not summed.
         assert_eq!(table.totals()[Family::ExperienceGains as usize].calls, 0);
         assert_eq!(table.claim(), 0);
         let totals = table.totals()[Family::ExperienceGains as usize];
         assert_eq!(totals.calls, 1000);
-        // Calls 0, 64, ..., 960.
         assert_eq!(totals.sampled, 16);
         assert_eq!(totals.returns, 0);
         let other = table.totals()[Family::PortraitChanges as usize];
@@ -1104,7 +946,6 @@ mod tests {
         assert!(totals.original >= 200_000, "{totals:?}");
         assert!(totals.detour >= 20_000, "{totals:?}");
         assert!(totals.detour < totals.original, "{totals:?}");
-        // An unsampled call runs its original without timing it.
         let span = table.enter(0, Family::PortraitChanges, false);
         assert_eq!(span.original(|| 9), 9);
         drop(span);
@@ -1172,10 +1013,8 @@ mod tests {
             counters.detour.store(detour, Ordering::Relaxed);
             counters.original.store(original, Ordering::Relaxed);
         };
-        // 640 calls, 10 sampled at 100 ticks each; 3 calls, 1 sampled at 50.
         set(0, 640, 10, 1000, 4000);
         set(1, 3, 1, 50, 20);
-        // The shared slot also contributes: 128 calls, 2 sampled, 30 ticks.
         set(SHARED_SLOT, 128, 2, 30, 0);
         let totals = table.totals()[Family::OpinionChanges as usize];
         assert_eq!(totals.calls, 771);
@@ -1184,7 +1023,6 @@ mod tests {
         assert_eq!(totals.original, 4020);
         assert_eq!(totals.estimated_detour, 64_000 + 150 + 1920);
         assert_eq!(totals.estimated_original, 256_000 + 60);
-        // An in-flight first call (counted, not yet recorded) adds nothing.
         assert_eq!(scale(0, 1, 0), 0);
     }
 
@@ -1219,13 +1057,9 @@ mod tests {
         assert_eq!(status["shared_slot_threads"], 2);
     }
 
-    /// The timer's own ticks are measured once and recorded beside each
-    /// sampled detour, never more than the detour, so the net estimate
-    /// removes an approximation of what an unsampled call never pays.
     #[test]
     fn sampled_spans_record_their_timer_overhead_and_estimates_net_it_out() {
         start();
-        // Another test's first `start` may still be calibrating.
         let calibrating = std::time::Instant::now();
         while !CALIBRATED.load(Ordering::Acquire) {
             assert!(calibrating.elapsed() < std::time::Duration::from_secs(10));
@@ -1244,7 +1078,6 @@ mod tests {
         let totals = table.totals()[Family::PortraitChanges as usize];
         assert_eq!(totals.overhead, empty + per_original);
         assert!(totals.detour >= 50_000 && totals.detour > totals.overhead);
-        // An empty sampled span records at most its own detour as overhead.
         for _ in 0..63 {
             drop(table.enter(0, Family::PortraitChanges, false));
         }
@@ -1253,7 +1086,6 @@ mod tests {
         assert_eq!((after.calls, after.sampled), (65, 2));
         let empty_detour = after.detour - totals.detour;
         assert_eq!(after.overhead - totals.overhead, empty.min(empty_detour));
-        // Scaled like the detour: (overhead / sampled) per call.
         assert_eq!(
             after.estimated_overhead,
             scale(after.overhead, after.calls, after.sampled)
@@ -1264,7 +1096,6 @@ mod tests {
     #[test]
     fn calibration_needs_a_qpc_interval_and_scales_ticks() {
         assert_eq!(calibrate((0, 0), (5, 100), 10_000_000), None);
-        // 10 ms at 10 MHz QPC is the minimum interval.
         assert_eq!(calibrate((1000, 1), (1000, 99_000), 10_000_000), None);
         assert_eq!(
             calibrate((1000, 1), (30_001_000, 100_001), 10_000_000),

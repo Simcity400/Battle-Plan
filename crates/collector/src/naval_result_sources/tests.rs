@@ -90,7 +90,6 @@ unsafe extern "system-unwind" fn original_constructor(pointer: usize) -> usize {
 }
 static GATE: std::sync::LazyLock<std::sync::Barrier> =
     std::sync::LazyLock::new(|| std::sync::Barrier::new(2));
-/// Holds its caller inside the original until the test has met it twice.
 unsafe extern "system-unwind" fn gated_result(result: usize, combat: usize) -> usize {
     GATE.wait();
     GATE.wait();
@@ -136,7 +135,6 @@ pub(crate) fn setup(capacity: usize, base: usize) {
         Ordering::Release,
     );
 }
-/// The drain's store with every pushed event folded.
 fn folded() -> std::sync::MutexGuard<'static, Store> {
     let mut current = store().lock().unwrap();
     current.fold();
@@ -203,8 +201,6 @@ fn reattached_source_ids_continue_retained_history_and_survive_branch_boundaries
     let mut output = vec![Entry::default(); 2];
     assert_eq!(drain(&mut output).unwrap(), 1);
     assert_eq!(output[0].id, 41);
-    // A load/campaign clock transition still drops interval witnesses/events,
-    // but it cannot rewind the sequence a resumed branch already contains.
     boundary(clock(12, 2));
     boundary(clock(13, 2));
     world.hour(13);
@@ -214,8 +210,6 @@ fn reattached_source_ids_continue_retained_history_and_survive_branch_boundaries
     assert_eq!(drain(&mut output).unwrap(), 1);
     assert_eq!(output[0].id, 42);
     let retained = output[0].id;
-    // The new DLL attachment starts with an empty store, then restores the
-    // exact replay maximum before its first boundary or constructor hook.
     setup(2, world.base());
     ENABLED.store(false, Ordering::SeqCst);
     restore_sequence(retained).unwrap();
@@ -270,8 +264,6 @@ fn actual_new_merge_transient_and_skipped_sources() {
     assert!(output[2].merged && output[2].transient);
     assert_eq!(output[2].combat, u64::MAX);
     assert_eq!(output[2].combat_created_hour, Some(11));
-    // Eligibility/previously-emitted exits reach neither CALL.
-    // Construction alone cannot publish a result, including a skipped strike.
     unsafe {
         constructor(world.combat(), world.base() + 0xc0bf4c);
     }
@@ -350,7 +342,6 @@ fn a_held_drain_never_blocks_or_loses_a_callback_and_detach_publishes_nothing() 
         fill(world.result(), world.combat());
         fill(world.result(), world.combat());
     }
-    // Short storage grows to the whole interval.
     assert_eq!(drain(&mut vec![Entry::default(); 1]), Ok(2));
     assert!(EVENT_DEMAND.load(Ordering::Relaxed) >= 2);
     let call = Call::enter(0);
@@ -490,7 +481,6 @@ fn lost_interval_recovers_partial_then_complete_without_resetting_ids() {
     unsafe { fill(world.result(), world.combat()) };
     assert_eq!(drain(&mut output).unwrap(), 1);
     assert_eq!(output[0].id, 2);
-    // Storage that cannot grow is discovered at the next hourly boundary.
     unsafe { fill(world.result(), world.combat()) };
     crate::test_support::with_allocations_denied(|| unsafe {
         fill(world.result(), world.combat())
@@ -715,8 +705,6 @@ unsafe extern "system-unwind" {
 }
 #[test]
 fn constructor_relocation_and_sentinel_restore_exactly() {
-    // Publishing the patch suspends every thread and changes a code page
-    // other patching tests share.
     let _family = crate::hook::FAMILY_TEST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -743,8 +731,6 @@ fn constructor_relocation_and_sentinel_restore_exactly() {
     );
 }
 
-/// The lead builds the independently authored C++ DLL outside the source tree.
-/// No Rust catch_unwind boundary is crossed by its native exception.
 #[test]
 #[ignore = "requires BATTLE_PLAN_NAVAL_UNWIND_PROBE pointing to the synthetic C++ probe DLL"]
 fn native_foreign_unwind_probe() {
@@ -831,8 +817,6 @@ fn native_foreign_unwind_probe() {
 #[test]
 fn constructor_shim_return_pc_and_callback_unwind_metadata() {
     let _observation = Observation::new();
-    // Classify this real return PC as the native load factory, which records
-    // no birth and requires no memory operands. A lost RDX poisons observation.
     let base = naval_constructor_test_return as *const () as usize - 0xc0dc19;
     setup(1, base);
     assert_eq!(unsafe { naval_constructor_test_caller(0x1234) }, 0x1234);

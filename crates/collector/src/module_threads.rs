@@ -1,5 +1,3 @@
-//! The live threads of this process that started inside a module, which an unload of the module
-//! must leave none of.
 
 use std::{ffi::c_void, ops::Range};
 use windows_sys::Win32::{
@@ -23,8 +21,6 @@ use windows_sys::Win32::{
     },
 };
 
-// ThreadQuerySetWin32StartAddress (9) writes the address the thread was created to run.
-// https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationthread
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtQueryInformationThread(
@@ -37,8 +33,6 @@ unsafe extern "system" {
 }
 const THREAD_START_ADDRESS: u32 = 9;
 
-/// Every live thread of this process but the calling one whose start address lies in the image
-/// loaded at `module`; why not, when a thread cannot be told.
 pub(crate) fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
     let image = image(module);
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -71,11 +65,8 @@ pub(crate) fn started_in(module: HMODULE) -> Result<Vec<u32>, String> {
     listed.map(|()| found)
 }
 
-/// The addresses the image loaded at `module` spans.
 fn image(module: HMODULE) -> Range<usize> {
     let base = module as usize;
-    // SAFETY: a loaded image's headers stay mapped while it is loaded, which the caller's being
-    // in it or holding it guarantees.
     let size = unsafe {
         let dos = std::ptr::read_unaligned(base as *const IMAGE_DOS_HEADER);
         let nt =
@@ -85,12 +76,10 @@ fn image(module: HMODULE) -> Range<usize> {
     base..base + size
 }
 
-/// Whether thread `id` is alive and started in `image`.
 fn runs_from(id: u32, image: &Range<usize>) -> Result<bool, String> {
     let thread = unsafe { OpenThread(THREAD_QUERY_INFORMATION | THREAD_SYNCHRONIZE, 0, id) };
     if thread.is_null() {
         return match unsafe { GetLastError() } {
-            // Gone since the snapshot.
             ERROR_INVALID_PARAMETER => Ok(false),
             error => Err(format!("thread {id} could not be opened (error {error})")),
         };
@@ -121,8 +110,6 @@ fn runs_from(id: u32, image: &Range<usize>) -> Result<bool, String> {
     told
 }
 
-/// What a zero-timeout wait on thread `id` that returned `wait` says of it: alive or gone, or
-/// why it cannot tell, `error` being the error a failed wait left.
 fn alive(id: u32, wait: WAIT_EVENT, error: u32) -> Result<bool, String> {
     match wait {
         WAIT_OBJECT_0 => Ok(false),
@@ -137,8 +124,6 @@ mod tests {
     use super::*;
     use windows_sys::Win32::Foundation::WAIT_ABANDONED;
 
-    /// Only a signalled thread is gone; a wait that failed, or returned anything else, tells
-    /// nothing, and the image stays loaded.
     #[test]
     fn only_a_signalled_wait_is_a_thread_gone() {
         assert_eq!(alive(7, WAIT_OBJECT_0, 0), Ok(false));

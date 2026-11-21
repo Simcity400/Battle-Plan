@@ -1,4 +1,3 @@
-//! Native resources readers and their operands, layouts and synthetic tests.
 
 #[cfg(test)]
 use engine_native::crelation_status;

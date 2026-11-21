@@ -1,5 +1,3 @@
-//! The viewer's province queues of floating map text, fed by the recorded
-//! map events rather than native UI objects.
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::{
@@ -17,12 +15,9 @@ use viewer_foundation::map::{
     native_resources::GuiResources, native_text, province_map::HeightField, province_schedule,
 };
 
-/// A recorded event the viewer admitted for its viewing country, with its
-/// localised text. Never recorded itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Popup {
     pub sequence: u64,
-    /// The recorded event's family, which a viewer can hide.
     pub family: replay_data::rows::MapEventFamily,
     pub province: u32,
     pub style: Style,
@@ -38,10 +33,8 @@ struct Object {
 }
 
 impl Object {
-    // Every producer gives its text this lifetime.
     const LIMIT: f32 = 6.0;
 
-    /// The native ordered comparisons, including negative authored speeds.
     fn step(&mut self, speed: f32) {
         let next = self.phase + speed;
         self.phase = next.clamp(0.0, Self::LIMIT);
@@ -55,7 +48,6 @@ impl Object {
         for _ in 0..count {
             let before = self.phase;
             self.step(speed);
-            // A zero/negative or sub-ULP speed must not replay an arbitrarily long idle gap.
             if !self.alive() || self.phase == before {
                 break;
             }
@@ -100,8 +92,6 @@ impl Province {
         }
         self.active.retain(Object::alive);
         for object in &mut self.queue {
-            // New events are first observed on this presentation boundary. Catch-up
-            // ticks before their admission age older objects, never these births.
             object
                 .ready_at
                 .get_or_insert(current.max(previous.saturating_add(1)));
@@ -113,7 +103,6 @@ impl Province {
                 break;
             }
             let mut object = self.queue.pop_front().expect("queue front");
-            // One pre-promotion step plus every active step from its promotion.
             object.step_many(speed(object.event.style), current - promotion + 2);
             if object.alive() {
                 self.active.push(object);
@@ -128,8 +117,6 @@ struct LoadedStyle {
     font: Option<Arc<native_text::Font>>,
 }
 
-/// One map view's presentation. It shares the existing province schedule and animation_time;
-/// it neither samples another clock nor stores native client presentation state.
 pub struct Player {
     renderer: Result<draw::Renderer, String>,
     styles: BTreeMap<Style, Result<LoadedStyle, String>>,
@@ -144,7 +131,6 @@ pub struct Player {
 }
 
 impl Player {
-    /// Compiles the world text's program now, so the first frame with text compiles nothing.
     pub fn warm(&self) {
         if let Ok(renderer) = &self.renderer {
             renderer.warm();
@@ -200,18 +186,12 @@ impl Player {
         self.schedule = schedule.clone();
     }
 
-    /// A seek/load/perspective change starts new local players. Continuous hour transitions
-    /// preserve active events; their old simulation identities are never dereferenced.
     pub fn reset(&mut self) {
         self.provinces.clear();
         self.clock = None;
         self.warnings.clear();
     }
 
-    /// Queue admitted popups at their provinces, each presented once by the
-    /// events consumer ([`super::events::Consumer`]). `anchor` gives a province's
-    /// first unit-stack anchor; `heights` is the map's height field and
-    /// `gui` resolves inline icons.
     pub fn enqueue(
         &mut self,
         anchor: impl Fn(u32) -> Option<[f32; 3]>,
@@ -221,7 +201,6 @@ impl Player {
     ) {
         let schedule = self.schedule.lock().unwrap();
         for event in events {
-            // The text is created only on a province this view schedules.
             if !schedule.dirty(event.province) {
                 continue;
             }
@@ -317,7 +296,7 @@ impl Player {
                                         },
                                     ),
                                 );
-                                break; // Native lookup stops at the first available candidate.
+                                break;
                             } else if gui.registry().sprite(&name).is_some() {
                                 icon_refusal = Some(format!(
                                     "inline sprite {:?} is registered but its metadata was not prepared",
@@ -348,9 +327,6 @@ impl Player {
         }
     }
 
-    /// A fixed 60 Hz presentation step derived entirely from the animation
-    /// time. The recording client's own phase is not claimed. A dump's
-    /// same-time settling never advances a popup.
     pub fn advance(
         &mut self,
         camera: Camera,
@@ -393,7 +369,6 @@ impl Player {
             let Some(update) = update else {
                 continue;
             };
-            // The game's camera height, or a free eye's distance to the province's texts.
             let height = objects
                 .active
                 .iter()
@@ -418,10 +393,6 @@ impl Player {
             .retain(|_, province| !province.queue.is_empty() || !province.active.is_empty());
     }
 
-    /// Draws the active texts for `camera`. A free eye shows each as standing at its origin, as
-    /// it shows map icons ([`free_icons`]): at the screen size the game's camera gives it at
-    /// [`FREE_SIZE_SHARE`] of its cutoff, shrinking gently with distance, fading out before its
-    /// cutoff and fading as a whole when `ground` hides its origin from the eye.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -439,7 +410,7 @@ impl Player {
         let camera_view = camera;
         self.retained.inherit(caller);
         let retained = &mut self.retained;
-        draw::bind_depth(retained); // The native empty pass also binds the graphics context's depth target.
+        draw::bind_depth(retained);
         let (right, up) = camera.world_text_axes();
         let camera = draw::Camera {
             right,
@@ -450,11 +421,8 @@ impl Player {
             .provinces
             .values()
             .flat_map(|province| &province.active)
-            // A hidden kind keeps its queue, phase and lifetime; it only goes undrawn.
             .filter(|object| shown(object.event.family))
             .collect();
-        // The draw groups objects by type bucket, keeping province and
-        // activation order within a bucket.
         objects.sort_by_key(|object| {
             self.styles[&object.event.style]
                 .as_ref()
@@ -523,7 +491,6 @@ impl Player {
             })();
             if let Err(reason) = result {
                 *self.warnings.entry(reason).or_default() += 1;
-                // Unknown reached font/layout/style cannot certify later retained native draws.
                 retained.stream.forget_program();
                 retained.stream.forget_texture(
                     0,
@@ -546,12 +513,8 @@ impl Player {
     }
 }
 
-/// The share of a text's cutoff at which the game's camera gives it the screen size a free eye
-/// keeps.
 pub const FREE_SIZE_SHARE: f32 = 0.5;
 
-/// How a free eye shows a text standing at `origin` whose kind is cut off at `cutoff`: its reach
-/// ([`draw::Animation::reach`]) and opacity. The game's camera shows it as the game does.
 fn free_look(
     camera: &Camera,
     origin: [f32; 3],
@@ -570,9 +533,6 @@ fn free_look(
     (distance / reference * shrink, fade * sight)
 }
 
-/// The popup's height: x and z rounded by adding .5 and truncating, each
-/// index clamped, the raw byte scaled by .1 and clamped to sea level. It is
-/// not the route sampler.
 fn popup_height(heights: HeightField<'_>, x: f32, z: f32) -> f32 {
     let column =
         installed_content_core::crt::truncate_f32(x + 0.5).clamp(0, heights.width as i32 - 1) as usize;
@@ -629,7 +589,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(1, 5.0), (2, 4.5), (3, 1.0)]
         );
-        province.advance(9, 9, |_| 0.5); // a dump's same-time warmup
+        province.advance(9, 9, |_| 0.5);
         assert_eq!(province.active[2].phase, 1.0);
         province.advance(9, 19, |_| 0.5);
         assert!(province.active.is_empty());
@@ -645,7 +605,7 @@ mod tests {
         assert_eq!(clock.advance(1.0), Some((0, 1)));
         assert_eq!(clock.advance(1.0), Some((1, 1)));
         assert_eq!(clock.advance(1.01), Some((1, 1)));
-        assert_eq!(clock.advance(1.005), None); // rewind inside the same60Hz bin
+        assert_eq!(clock.advance(1.005), None);
         assert_eq!(clock.advance(f32::MAX), None);
         assert_eq!(clock.advance(f32::NAN), None);
     }
@@ -687,11 +647,8 @@ mod tests {
             .on(MapSize::TEST, MapDefines::test())
         };
         let origin = [1300.0, 10.0, 1000.0];
-        // The game's camera draws the text as the game does.
         let map = Placement::map([1300.0, 1000.0], 200.0).on(MapSize::TEST, MapDefines::test());
         assert_eq!(free_look(&map, origin, 500.0, None), (1.0, 1.0));
-        // A free eye at the reference distance (half the cutoff) draws it at the game's size, but
-        // for the gentle shrink with distance; twice as far, twice as large in the world.
         let at = |distance: f32| camera([1300.0 - distance, 10.0, 1000.0], origin);
         let (reach, opacity) = free_look(&at(250.0), origin, 500.0, None);
         let (shrink, _) = free_icons::distance_look(250.0, 500.0, 1100.0);
@@ -703,10 +660,8 @@ mod tests {
             (near_reach - 0.4 * near_shrink).abs() < 1e-4,
             "{near_reach}"
         );
-        // Fading out before the cutoff, gone at it.
         assert!(free_look(&at(460.0), origin, 500.0, None).1 < 1.0);
         assert_eq!(free_look(&at(500.0), origin, 500.0, None).1, 0.0);
-        // A ridge between the eye and the text hides it whole.
         let (width, rows) = (MapSize::TEST.width, MapSize::TEST.height);
         let mut values = vec![95u8; (width * rows) as usize];
         for bottom in 0..rows {

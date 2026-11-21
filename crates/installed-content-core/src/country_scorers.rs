@@ -1,4 +1,3 @@
-//! Country scorer definitions loaded from `common/scorers/country`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,8 +15,6 @@ use crate::{
     triggers::Triggers,
 };
 
-/// Script targets keep arrays and explicit targets separately, so their
-/// authored interleaving does not determine selection order.
 #[derive(Clone, Debug, Default)]
 pub struct ScriptTargets {
     pub arrays: Vec<Vec<u8>>,
@@ -64,7 +61,6 @@ impl Database {
         }
     }
 
-    /// The first definition stays; a duplicate's body is skipped.
     pub fn read_file(&mut self, input: &[u8], names: &KeyNames) {
         let mut seen: BTreeSet<Vec<u8>> = self.entries.keys().cloned().collect();
         let mut shaper = Shaper::new(Some(names));
@@ -153,8 +149,6 @@ fn entry(item: &Item) -> Entry {
     out
 }
 
-/// A `targets` block's fields as targeted decisions read them, for other script objects that
-/// select targets the same way (scripted map modes).
 pub fn script_targets(fields: &[Item]) -> ScriptTargets {
     let mut out = Entry::default();
     read_fields(fields, &mut out);

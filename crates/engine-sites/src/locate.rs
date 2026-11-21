@@ -6,49 +6,34 @@ use crate::{Code, ORIGINAL, Rva};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// A function the reference build holds a key in: the .pdata range (or, without unwind data,
-/// the extent) its fingerprint covers, and how to reach it when its fingerprint is not unique.
 pub(crate) struct Function {
     pub reference: u32,
     pub len: u32,
     pub head: u64,
     pub hash: u64,
     pub masks: (u32, u32),
-    /// Bytes after the function that hooks at keys near its end keep as their original, with
-    /// their own fingerprint: padding, or the next function's start with its fields masked.
     pub tail: u32,
     pub tail_hash: u64,
     pub tail_masks: (u32, u32),
     pub pdata: bool,
-    /// Unique in every known build: found by enumerating .pdata. Others only through edges.
     pub root: bool,
     pub edges: (u32, u32),
 }
 
-/// A reference to a function or global from located code: a rel32 or RIP-relative field whose
-/// target is the end offset plus the field, or a vtable slot.
 pub(crate) enum Edge {
     Field { from: u16, field: u32, end: u32 },
     Slot { vtable: u16, slot: u16 },
-    /// A chained .pdata fragment `delta` bytes after the start of the range before it.
     After { function: u16, delta: u32 },
 }
 
-/// A vtable by RTTI: the hash of its type name and its subobject offset. Its slot count and the
-/// functions that construct its class witness the class's layout on unchecked builds.
 pub(crate) struct Vtable {
     pub name: u64,
     pub offset: u32,
     pub slots: u16,
     pub witnesses: (u32, u32),
-    /// The witnesses are out-of-line constructors or destructors: a change vetoes every layout.
-    /// Otherwise one larger function witnesses this class alone.
     pub veto: bool,
 }
 
-/// A masked operand of a located function whose target in the reference build is known. It must
-/// reach the same part here: the function's expected bytes are its fingerprint plus these
-/// resolved relocations.
 pub(crate) struct Check {
     pub function: u16,
     pub field: u32,
@@ -60,9 +45,7 @@ pub(crate) enum Target {
     Function(u16),
     Data(u16),
     Vtable(u16),
-    /// An image-relative field (jump-table entry or displacement) at this offset of its own function.
     Internal(u32),
-    /// A continuation at this offset inside another function.
     Inside(u16, u32),
 }
 
@@ -73,7 +56,6 @@ pub(crate) enum Section {
     Data,
 }
 
-/// A global reached through operands of located code.
 pub(crate) struct Data {
     pub section: Section,
     pub edges: (u32, u32),
@@ -143,7 +125,6 @@ fn vtable_name(index: u16) -> &'static str {
         .map_or("a class", |k| k.name)
 }
 
-/// Counts for the attach report.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Summary {
     pub functions: usize,
@@ -158,22 +139,16 @@ pub struct Summary {
     pub elapsed: Duration,
 }
 
-/// Every key of the reference build located in one executable image.
 pub struct Located {
     base: usize,
-    /// SHA-256 of the executable file this table was located from, when located from a file.
     identity: Option<[u8; 32]>,
     functions: Vec<Result<u32, Reason>>,
     vtables: Vec<Result<u32, Reason>>,
     data: Vec<Result<u32, Reason>>,
-    /// Located functions by live start, for reverse lookups: (live start, live end, index).
     by_live: Vec<(u32, u32, u16)>,
-    /// Located vtables and globals as (live RVA, key), sorted, for reverse lookups.
     globals: Vec<(u32, u32)>,
-    /// Verified bytes at each code key, by key index.
     originals: Vec<([u8; ORIGINAL], u8)>,
     layout: Result<(), Reason>,
-    /// "<site> withheld: <reason>" for each withheld key, by key index.
     messages: Vec<Option<String>>,
     summary: Summary,
 }
@@ -183,16 +158,12 @@ fn slice<'a>(table: &'a [u32], (start, count): (u32, u32)) -> &'a [u32] {
 }
 
 impl Located {
-    /// Locate every key in `image`. One pass enumerates .pdata and fingerprints only ranges with
-    /// a wanted length; RTTI is read in two passes over .rdata. `layout_checked` says whether
-    /// this source's struct layouts were checked against this executable ([`crate::layout_checked`]).
     pub fn locate(image: &Image<'_>, layout_checked: bool) -> Self {
         let started = Instant::now();
         let pdata = pdata(image);
         let ends: HashMap<u32, u32> = pdata.iter().copied().collect();
         let mut functions: Vec<Result<u32, Reason>> = vec![Err(Reason::Unreached); FUNCTIONS.len()];
 
-        // Unique fingerprints, found by enumerating unwound functions of each wanted length.
         let mut wanted: HashMap<u32, Vec<u16>> = HashMap::new();
         for (index, f) in FUNCTIONS.iter().enumerate() {
             if f.root {
@@ -223,9 +194,7 @@ impl Located {
             }
         }
 
-        // A vtable whose slot count differs is withheld on every build, before any slot is followed.
         let mut vtables = rtti(image);
-        // Operands are checked against the vtable RTTI identifies, even when its shape withholds it.
         let by_rtti = vtables.clone();
         for (index, v) in VTABLES.iter().enumerate() {
             if let Ok(table) = vtables[index]
@@ -235,8 +204,6 @@ impl Located {
             }
         }
 
-        // A reference counts only where the expected code is. A function whose operand checks
-        // fail is no evidence for anything: it is withheld and everything is reached again.
         let roots = functions;
         let mut banned: Vec<Option<Reason>> = vec![None; FUNCTIONS.len()];
         let field = |from: u16, at: u32, end: u32, functions: &[Result<u32, Reason>]| -> Option<u32> {
@@ -297,8 +264,6 @@ impl Located {
                 }
             }
 
-            // Every edge into a function reached through edges must agree with where it was found,
-            // including edges that only became followable after it was placed.
             let mut failed = false;
             for (index, f) in FUNCTIONS.iter().enumerate() {
                 let Ok(start) = functions[index] else { continue };
@@ -372,8 +337,6 @@ impl Located {
             }
         };
 
-        // Layouts: on a build this source was not checked against, every class the collector
-        // authenticates must keep its constructors.
         let mut layout = Ok(());
         if !layout_checked {
             for (index, v) in VTABLES.iter().enumerate() {
@@ -481,12 +444,10 @@ impl Located {
         self.identity = Some(sha256);
     }
 
-    /// The module base this image was located at.
     pub fn base(&self) -> usize {
         self.base
     }
 
-    /// Every withheld key with its name and reason.
     pub fn withheld(&self) -> impl Iterator<Item = (Rva, Withheld)> + '_ {
         KEYS.iter().filter_map(|k| {
             self.why(k)
@@ -494,8 +455,6 @@ impl Located {
         })
     }
 
-    /// Located keys whose live position differs from their position in the reference build, with
-    /// that live RVA. On the reference build itself there are none.
     pub fn moved(&self) -> impl Iterator<Item = (Rva, u32)> + '_ {
         KEYS.iter().filter_map(|k| {
             let live = match k.kind {
@@ -507,7 +466,6 @@ impl Located {
         })
     }
 
-    /// Why a key is withheld, if it is.
     pub fn withheld_key(&self, key: Rva) -> Option<Withheld> {
         match crate::locate::key(key) {
             Some(k) => self.why(k).map(|reason| Withheld::new(k.name, reason.text())),
@@ -540,7 +498,6 @@ impl Located {
                     Kind::Data(d) => self.data[d as usize].ok(),
                 }
             }
-            // A position inside a located function, such as a return address after a key.
             None => {
                 let i = FUNCTIONS.partition_point(|f| f.reference <= rva).checked_sub(1);
                 match i {
@@ -586,15 +543,11 @@ impl Located {
         })
     }
 
-    /// Whether struct layouts hold on this build: checked against it, or witnessed by every
-    /// authenticated class's unchanged constructors.
     pub fn layouts(&self) -> Verified<()> {
         self.layout
             .map_err(|reason| Withheld::new("struct layouts", reason.text()))
     }
 
-    /// Why a key is withheld, as text that lives as long as this table. A position inside a
-    /// generated function that is not itself a key shares the message of its function's first key.
     pub fn message(&self, key: Rva) -> Option<&str> {
         let i = index(key).or_else(|| {
             let rva = u32::try_from(key.0).ok()?;
@@ -625,7 +578,6 @@ impl Located {
     }
 }
 
-/// Why an operand check fails: its target is withheld, or the operand reaches somewhere else.
 fn reached(target: Result<u32, Reason>, operand: Option<u32>) -> Option<Reason> {
     match target {
         Err(_) => Some(Reason::Dependent),
@@ -633,7 +585,6 @@ fn reached(target: Result<u32, Reason>, operand: Option<u32>) -> Option<Reason> 
     }
 }
 
-/// .pdata ranges as (begin, end), sorted.
 fn pdata(image: &Image<'_>) -> Vec<(u32, u32)> {
     let Some((_, bytes)) = image.section(b".pdata") else { return Vec::new() };
     let mut out: Vec<(u32, u32)> = bytes
@@ -652,8 +603,6 @@ fn pdata(image: &Image<'_>) -> Vec<(u32, u32)> {
     out
 }
 
-/// Each generated vtable's live RVA by RTTI: a complete object locator whose type name and
-/// offset match, then the one vtable whose meta slot points at it.
 fn rtti(image: &Image<'_>) -> Vec<Result<u32, Reason>> {
     let mut want: HashMap<(u64, u32), u16> = HashMap::with_capacity(VTABLES.len());
     for (i, v) in VTABLES.iter().enumerate() {
@@ -695,7 +644,6 @@ fn rtti(image: &Image<'_>) -> Vec<Result<u32, Reason>> {
     out
 }
 
-/// Slots of the vtable at `table`: pointers into .text, up to the next object locator.
 fn slot_count(image: &Image<'_>, table: u32) -> u32 {
     let mut n = 0;
     while let Some(target) = image.pointer(table + 8 * n) {

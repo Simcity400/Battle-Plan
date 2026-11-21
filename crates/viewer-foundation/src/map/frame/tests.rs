@@ -64,7 +64,6 @@ fn the_reference_hour_reproduces_the_report_sun_and_moon() {
     let direction = day_night.hour_sun_dir();
     assert_eq!(direction[0], 0.75);
     assert_eq!(direction[1], 0.0);
-    // The independent terminator fit is within its 0.2-degree precision.
     assert!((direction[2] - -0.0282).abs() < 4e-3, "{direction:?}");
     assert!((direction[3] - 0.99960).abs() < 1e-3, "{direction:?}");
 }
@@ -103,8 +102,6 @@ fn the_hour_fraction_wraps_the_way_the_engine_does() {
 
 #[test]
 fn the_shadow_fade_follows_the_camera_past_the_cutoff() {
-    // Fade stays flat below its start, falls linearly, and reaches zero above the cutoff.
-    // The fixtures cover both sides of the fade.
     assert_eq!(shadow_fade_factor(&MapDefines::test(), 50.178), 1.0);
     assert_eq!(shadow_fade_factor(&MapDefines::test(), 163.934), 1.0);
     assert_eq!(shadow_fade_factor(&MapDefines::test(), 350.0), 1.0);
@@ -181,15 +178,8 @@ fn the_constant_buffer_matches_the_reference_frame() {
     assert!((look[2] - 0.099282).abs() < 1e-5, "{look:?}");
 }
 
-/// Frame-constant numeric regression for one hour and camera.
-///
-/// The fixture includes every field, including the `(1, 0, 0.98, 0.973)` gradient distance and
-/// outline settings for strategic layer 1 and country layer 2, respectively.
 #[test]
 fn the_capture_frame_constants_are_reproduced() {
-    // `vCamPos` is the eye. The camera model offsets it from its ground centre by height and tilt;
-    // the fixture therefore uses centre (3011.74, 1570.27) and height 263.493.
-    // View-projection values retain the fixture precision.
     let camera = super::Camera {
         center: [3011.74, 1570.27],
         height: 263.493,
@@ -205,8 +195,6 @@ fn the_capture_frame_constants_are_reproduced() {
         false,
     )
     .expect("valid reference camera");
-    // The fixture stores six significant figures, so the tolerance is absolute near zero and relative
-    // for world-space fields.
     let close = |left: f32, right: f32, name: &str| {
         let slack = 1e-3 + 1e-5 * right.abs();
         assert!((left - right).abs() <= slack, "{name}: {left} != {right}");
@@ -248,9 +236,6 @@ fn the_capture_frame_constants_are_reproduced() {
             "vCamLookAtDir",
         );
     }
-    // `vFoWOpacity` 0 with no fog, `FoWTime` the engine's animation clock
-    // (0 here, for the reason that field's own documentation gives),
-    // `SnowMudFade` 1 and `MaxGameSpeed` 1.
     assert_eq!(
         constants.fow_opacity_time_snow_mud_day_night,
         [0.0, 0.0, 1.0, 1.0]
@@ -261,8 +246,6 @@ fn the_capture_frame_constants_are_reproduced() {
         "DayNight hour",
     );
     close(constants.day_night_hour_sun_dir[1], 0.0, "sun direction y");
-    // The 0.0585195 fixture follows from the integer weather target, approximate trigonometry and
-    // renderer normalization.
     assert!((constants.day_night_hour_sun_dir[2] - 0.058_519_5).abs() < 1e-7);
     all(
         constants.ambient_pos_x_shadow_fade,
@@ -294,7 +277,6 @@ fn the_capture_frame_constants_are_reproduced() {
     );
     assert_eq!(constants.gb_texture_height_sun_specular[0], 1024.0);
     assert_eq!(constants.gb_texture_height_sun_specular[1], 1.0);
-    // `FOWFadeFactor` with fog on: 0.152116 at this camera and 0.9993 at height 50.1225.
     close(
         fow_fade_factor(&MapDefines::test(), 263.493, true),
         0.152_116,
@@ -317,7 +299,6 @@ fn the_sun_direction_normalizes_the_simulation_target() {
         let hour = day * 24;
         let [x, y, z] = seasonal_direction(hour);
         assert_eq!(x, 0.0);
-        // Squaring the rounded f32 components adds another rounding step.
         assert!((y * y + z * z - 1.0).abs() <= 3.0 * f32::EPSILON);
     }
 }
@@ -342,28 +323,22 @@ fn game_speeds(seconds: &str) -> Result<GameSpeeds, String> {
     GameSpeeds::load(&defines)
 }
 
-/// Each replay rate takes the slowest game speed whose hours are short enough for it; only the
-/// fastest speed hides the cycle, and a pause always shows it.
 #[test]
 fn the_cycle_shows_below_the_games_fastest_speed_and_while_paused() {
     let speeds = game_speeds("2.0, 0.5, 0.2, 0.1, 0.0").unwrap();
     assert_eq!(speeds, GameSpeeds::test());
-    // The game's `f32` 0.2 and 0.1 are a little over, so 5 and 10 h/s are just past their speeds.
     let rates = [0.25, 0.5, 1.0, 2.0, 4.0, 4.99, 5.0, 9.99, 10.0, 24.0, 1440.0];
     let levels = rates.map(|rate| speeds.level(rate));
     assert_eq!(levels, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4]);
     assert!(speeds.shows_cycle(true, 9.99));
     assert!(!speeds.shows_cycle(true, 24.0));
     assert!(speeds.shows_cycle(false, 1440.0));
-    // A mod's own speeds move the line.
     let slow = game_speeds("2.0, 0.5, 0.2, 0.01, 0.0").unwrap();
     assert!(slow.shows_cycle(true, 24.0));
     let unbounded = game_speeds("2.0, 0.5, 0.2, 0.0, 0.0").unwrap();
     assert!(unbounded.shows_cycle(true, 1440.0));
 }
 
-/// As the game loads them: padded with 0 to five, cut to five, and a speed of zero or less
-/// unbounded; only a table it cannot read as numbers is refused, by name.
 #[test]
 fn speeds_load_as_the_game_resizes_them() {
     let short = game_speeds("2.0, 0.5").unwrap();
@@ -377,7 +352,6 @@ fn speeds_load_as_the_game_resizes_them() {
     assert!(error.contains("NDefines.NGame.GAME_SPEED_SECONDS"), "{error}");
 }
 
-/// While hidden the strength eases out at the game's frame rate, as the sun direction does.
 #[test]
 fn a_hidden_cycle_fades_out_rather_than_snapping() {
     let mut clock = DayNightPlayback::default();
@@ -389,9 +363,6 @@ fn a_hidden_cycle_fades_out_rather_than_snapping() {
     assert_eq!(clock.update(30, hidden, 1.0, 1.0).strength, 0.0);
 }
 
-/// The speeds come from the recorded mod stack's defines: a mod that slows the game's fourth
-/// speed moves the replay rate where the cycle hides, and a mod value the game cannot read as a
-/// number is refused by name, never replaced by another table.
 #[test]
 fn a_mods_game_speeds_move_where_the_cycle_hides() {
     use installed_content_core::ResolvedLayers;

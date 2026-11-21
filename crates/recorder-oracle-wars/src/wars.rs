@@ -1,4 +1,3 @@
-//! Ordered goal references joined to goal objects.
 mod participation;
 #[cfg(test)]
 mod tests;

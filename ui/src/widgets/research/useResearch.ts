@@ -15,7 +15,6 @@ import type { RefObject } from 'react';
 import { researchFolderList, researchFolderLooks, validateResearchReply, validateResearchSlots } from './researchData';
 import type { ResearchUse } from './researchData';
 
-/** Assignment definitions, deduplicated by token and template index, and the tokens slot reads name. */
 export function historyTokens(history: ResearchHistory): ResearchUse[] {
   const tokens = new Set<string>(), definitions = new Map<string, Set<number>>();
   for (const slot of history.slots) {
@@ -25,25 +24,18 @@ export function historyTokens(history: ResearchHistory): ResearchUse[] {
   return [...tokens, ...[...definitions].flatMap(([token, indices]) => [...indices].map(index => [token, index] as const))];
 }
 
-/** The widget's track and country. */
 export function researchTarget(widget: WidgetSpec, runtime: WidgetRuntime) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   return { track, tag };
 }
 
-/** The country's whole research history on the branch: one request for the recording, branch and country,
- * shared by every research widget showing it; never asked again as playback moves. */
 export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const { track, tag } = researchTarget(widget, runtime);
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   return { track, tag, ...useProduct<ResearchData>(runtime.client, request, active, validateResearchReply, track?.source) };
 }
 
-/** What each slot holds at the hour shown: pushed at the head while following, only when a read changes it (a render
- * only when `structure` of it changes), asked for the hour when pinned or hovered. Its numbers are painted under
- * `root` with no render: each frame while followed, progress from the slots' live cells and days left counted down
- * at the head; `shown` hears the hour they are of. `data.hour` is the hour the reply is shown for. */
 export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, structure: (reply: ResearchSlotsReply) => string,
   root: RefObject<HTMLElement | null>, hoverHour: number | null = null) {
   const { tag, track } = researchTarget(widget, runtime);
@@ -65,8 +57,6 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
   return { ...now, root: attach, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };
 }
 
-/** The folder filter's choices: the folders this country's research shows, in
- * the content's order. */
 export function useResearchChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data } = useResearchReply(widget, runtime, true);
   const { categories } = useChartTokens();

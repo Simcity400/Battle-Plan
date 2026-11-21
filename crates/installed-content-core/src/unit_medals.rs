@@ -1,4 +1,3 @@
-//! Medal definitions in recorded content load order, including duplicate identities.
 use crate::{
     ResolvedLayers,
     key_names::KeyNames,
@@ -129,7 +128,6 @@ impl Medals {
             return Err(why.clone());
         }
         self.definitions
-            // The native database reserves ordinal zero for its null object.
             .get(
                 ordinal
                     .checked_sub(1)

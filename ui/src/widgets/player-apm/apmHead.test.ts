@@ -46,10 +46,8 @@ test('the followed clock reads its seconds exactly, an unclassified playing time
 });
 
 test("the graph's legend names each holder as at the hour shown while it follows the head, never as at the campaign's end", () => {
-  // The branch's series, asked over the whole branch, carry each holder's last hour: the campaign's end for Germany.
   const rows = [{ id: 'GER@1', tag: 'GER', hour: 100_000 }, { id: 'ETH@2', tag: 'ETH', hour: 3_000 }, { id: 'user:ab', tag: null, hour: 100_000 }];
   assert.deepEqual(apmHolders(rows, null), [{ key: 'GER@1', tag: 'GER', hour: 100_000 }, { key: 'ETH@2', tag: 'ETH', hour: 3_000 }]);
-  // At the head in 1936 (hour 2,000): Germany is named there; a holder whose series ended earlier at its own last hour.
   assert.deepEqual(apmHolders(rows, 2_000), [{ key: 'GER@1', tag: 'GER', hour: 2_000 }, { key: 'ETH@2', tag: 'ETH', hour: 2_000 }]);
   assert.deepEqual(apmHolders(rows, 50_000), [{ key: 'GER@1', tag: 'GER', hour: 50_000 }, { key: 'ETH@2', tag: 'ETH', hour: 3_000 }]);
 });

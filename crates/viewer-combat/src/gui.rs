@@ -1,4 +1,3 @@
-//! Retained combat windows and code-added entries through the native GUI walk.
 use super::{Drawn, ScrollTarget, Selection, TooltipHit, Values, binding::Bindings};
 use installed_content_core::{crt::truncate_f32, gui::native::Element, gui::native::Kind};
 use std::{
@@ -15,13 +14,10 @@ use viewer_foundation::map::{
     native_windows::NativeWindows,
 };
 
-/// Recorded flag keys resolved for this presentation, over the native draw resources.
 pub trait CombatResources: Resources + native_gui::Sheets {
-    /// The version of the art its flags load into: it moves as art arrives.
     fn art_version(&self) -> u64;
     fn flag_index(&self, key: &str) -> Result<i32, String>;
     fn flag_texture(&self, key: &str, small: bool) -> Option<native_gui::Texture>;
-    /// The sounds `button` plays, from its sprite's declaration and the GUI's defaults.
     fn button_sounds(
         &self,
         button: &installed_content_core::gui::native::Button,
@@ -40,12 +36,8 @@ pub struct Windows {
     root: Option<Retained>,
     popup: Option<Retained>,
     pending: Vec<ScrollAction>,
-    /// Where the tactics popup drew last frame: the pointer over it is not the window's.
     popup_rect: Option<[f32; 4]>,
-    /// Where the window and each of its windows and controls drew last frame.
     root_areas: Vec<[f32; 4]>,
-    /// Its windows' fades and movements run to their ends each frame: a saved picture's, given
-    /// with every draw.
     settled: bool,
 }
 
@@ -54,20 +46,14 @@ pub(crate) struct Retained {
     pub(crate) instance: Instance,
     entries: BTreeMap<String, Retained>,
     pending: Vec<ScrollAction>,
-    /// Its fades and movements run to their ends when it ticks ([`Windows::settled`]).
     settled: bool,
-    /// The art version its last bind saw: a draw that binds at a newer one binds the whole window
-    /// again, its entries with it, at the same generation, since art arriving can change any flag.
     bound_art: Option<u64>,
     prepared_generation: Option<u64>,
     places: BTreeMap<String, Vec<(usize, [i32; 2])>>,
     bind_refused: BTreeMap<String, usize>,
     bind_failed: bool,
     pointer: PointerState,
-    /// Each placed item's window rectangle as last laid out, by key, in draw order.
     item_rects: Vec<(String, [f32; 4], usize, Option<native_gui::Clip>)>,
-    /// Where each item was placed: its key, holder, place and its own root region, which a
-    /// scroll before routing places again.
     item_places: Vec<(String, usize, [i32; 2], Region)>,
 }
 
@@ -82,7 +68,6 @@ pub(crate) struct Row<'a> {
     pub(crate) key: String,
     pub(crate) template: &'a str,
     pub(crate) values: &'a Values,
-    /// Runtime size and optional explicit pixels; None pixels use authored grid slots.
     pub(crate) explicit: Option<(Option<[f32; 2]>, [f32; 2])>,
 }
 
@@ -112,12 +97,8 @@ pub(crate) struct Prepared {
     pub(crate) layout: Layout,
     pub(crate) items: Vec<Vec<Part>>,
     pub(crate) hovers: Vec<Hover>,
-    /// Each placed grid entry's root region in window coordinates: its group path and row key.
     pub(crate) entries: Vec<(String, String, Region)>,
-    /// The sound effects the window's and its items' button state changes play this frame.
     pub(crate) sounds: Vec<Played>,
-    /// The controls clicked this frame, in order: an item's by its row key, the window's own by
-    /// `None`, with each click's [`pointer::Step::order`].
     pub(crate) clicks: Vec<(Option<String>, String, usize)>,
 }
 
@@ -220,13 +201,10 @@ pub(crate) fn ensure<'a>(
 }
 
 impl Retained {
-    /// Whether the window draws differently next frame without a call from the code: an animation
-    /// of its own, or a pointer state still settling.
     pub(crate) fn active(&self) -> bool {
         self.instance.active() || self.pointer.changing() || self.entries.values().any(Self::active)
     }
 
-    /// The control the last draw drew for the pointer: an item's, drawn above the window, first.
     pub(crate) fn highlighted(&self) -> Option<&str> {
         self.entries
             .values()
@@ -234,14 +212,10 @@ impl Retained {
             .or_else(|| self.pointer.highlighted())
     }
 
-    /// Whether the primary button holds a button of the window or of an item.
     pub(crate) fn holding(&self) -> bool {
         self.pointer.holding() || self.entries.values().any(Self::holding)
     }
 
-    /// Ends one pointer step on `layout`: an item drawn over the window's hovered button takes
-    /// the pointer instead (`covered`), and a press that took a button lays out again to draw
-    /// Down. The layout to draw, and whether an item covered the window.
     fn settle(
         &mut self,
         root: &Element,
@@ -250,8 +224,6 @@ impl Retained {
         mut layout: Layout,
         item_under: Option<usize>,
     ) -> Option<(Layout, bool)> {
-        // The item covers the topmost control under the pointer, check boxes included, drawn
-        // before the item's own holder.
         let covered = item_under.is_some_and(|holder| {
             layout.target.as_ref().is_none_or(|target| {
                 layout
@@ -275,7 +247,6 @@ impl Retained {
         Some((layout, covered))
     }
 
-    /// Whether a pointer state of the window or an item still changes on the clock.
     pub(crate) fn pointing(&self) -> bool {
         self.pointer.changing() || self.entries.values().any(Self::pointing)
     }
@@ -315,11 +286,9 @@ impl Retained {
         refused: &mut BTreeMap<String, usize>,
     ) -> Option<[i32; 2]> {
         self.bound_art = Some(resources.art_version());
-        // Bound again, its own rows are bound again at its next draw too, at every depth.
         self.prepared_generation = None;
         apply(&mut self.instance, root, values, resources, refused);
         let mut size = size?.map(truncate_f32);
-        // Escaping entries grow by the bound escape bar's queried height.
         if ["escape_icon_left", "escape_icon_right"]
             .iter()
             .any(|key| values.get(*key).is_some_and(|widget| !widget.hidden))
@@ -355,7 +324,6 @@ impl Retained {
                 {
                     bound.offset = Some([offset, 0]);
                 }
-                // The native updater explicitly centres these controls after its flag-0 resize.
                 for key in [
                     "bar_str",
                     "bar_org",
@@ -592,8 +560,6 @@ impl Retained {
                                     if placement != Some(GridPlacement::AutomaticNaval) {
                                         return Ok(finalized);
                                     }
-                                    // the game uses automatic slots for sunk entries but
-                                    // the game resizes each to its sprite before finalize.
                                     let rectangles: Vec<_> = finalized
                                         .items
                                         .iter()
@@ -683,7 +649,6 @@ impl Retained {
                             }
                         }
                     } else if let Some(place) = grid.position_type() {
-                        // The code sets each window it places here to the position's place.
                         let at = holder.position.unwrap_or(place.position);
                         rows.iter().map(|(row_index, _, _)| (*row_index, at)).collect()
                     } else {
@@ -735,7 +700,6 @@ impl Retained {
                         );
                     }
                 }
-                // Land refill finalizes, then synchronizes including hidden children.
                 for parent in synchronized {
                     if let Some(container) = root.path_named(&parent)
                         && let Err(why) = self
@@ -801,7 +765,6 @@ impl Retained {
                 gui_windows::count_refused(refused, &self.name, &why);
             }
         }
-        // A scroll this frame moved the items: they route where it placed them.
         if scrolled
             && !self.item_places.is_empty()
             && let Some(fresh) = laid(&self.instance, root, resources, refused, false, None)
@@ -819,8 +782,6 @@ impl Retained {
                 })
                 .collect();
         }
-        // Each button change goes, where it happened, to the control holding the press until its
-        // release; otherwise to the window, unless an item drawn over its control takes it.
         let mut holder = if self.pointer.holding() {
             Some(Owner::Window)
         } else {
@@ -829,7 +790,6 @@ impl Retained {
                 .find(|(_, entry)| entry.holding())
                 .map(|(key, _)| Owner::Entry(key.clone()))
         };
-        // The item each button change went to; `None` for the window.
         let mut routed: Vec<Option<String>> = Vec::new();
         let mut sounds = Vec::new();
         let mut pointer = None;
@@ -864,7 +824,6 @@ impl Retained {
                 };
                 routed.push(to);
             }
-            // The last place: the held control's alone, else the window's or the item's over it.
             held_by_item = match &holder {
                 Some(Owner::Entry(key)) if input.held => Some(key.clone()),
                 _ => None,
@@ -882,7 +841,6 @@ impl Retained {
             };
             pointer = Some(self.pointer.begin(&mut self.instance, step));
         }
-        // Input precedes one smoothing tick in input processing.
         if advance && self.settled {
             self.instance.settle_transitions();
         }
@@ -905,7 +863,6 @@ impl Retained {
             covered = under;
             sounds.extend(button_sounds(root, &self.pointer, resources));
         }
-        // The item the last place reaches.
         let place_to =
             held_by_item.or_else(|| item_under.map(|(key, _)| key).filter(|_| covered));
         let mut clicks: Vec<(Option<String>, String, usize)> = self
@@ -983,7 +940,6 @@ impl Retained {
                         if place_to.as_ref() != Some(&key) {
                             item.place = None;
                         }
-                        // Every change reaches the item in order; one it did not take, from away.
                         for (button, to) in item.buttons.iter_mut().zip(&routed) {
                             if to.as_ref() != Some(&key) {
                                 button.place = None;
@@ -1019,7 +975,6 @@ impl Retained {
                     holder.place_parts(*place, prepared.layout.composed_parts(&prepared.items)),
                 );
                 if let Some(order) = hover_order {
-                    // Native holder placement also moves nested hovers, without comparing their text.
                     let regions: Vec<_> = prepared
                         .hovers
                         .iter()
@@ -1039,12 +994,9 @@ impl Retained {
                 }
             }
         }
-        // Collision targets follow graphical attach order, including grid items
-        // before later siblings.
         hovered.sort_by_key(|hit| hit.order);
         self.item_rects = item_rects;
         self.item_places = item_places;
-        // The window's and its items' changes, as the button changes came.
         sounds.sort_by_key(|sound| sound.order);
         clicks.sort_by_key(|(_, _, order)| *order);
         Some(Prepared {
@@ -1058,14 +1010,12 @@ impl Retained {
     }
 }
 
-/// Who takes a pointer step: the window itself or one of its items.
 #[derive(Clone, PartialEq)]
 enum Owner {
     Window,
     Entry(String),
 }
 
-/// The topmost item drawn at `place`, within its rectangle and its clip, by key and holder.
 fn item_at(
     rects: &[(String, [f32; 4], usize, Option<native_gui::Clip>)],
     place: pointer::Place,
@@ -1083,7 +1033,6 @@ fn item_at(
         .map(|(key, _, holder, _)| (key.clone(), *holder))
 }
 
-/// Each of the window's own controls clicked: its path, the rectangle it drew and the order.
 fn clicked_at(
     prepared: &Prepared,
     origin: [i32; 2],
@@ -1103,7 +1052,6 @@ fn clicked_at(
     }
 }
 
-/// The sound effects `pointer`'s state changes this frame play, by each button of `root`.
 fn button_sounds(
     root: &Element,
     pointer: &PointerState,
@@ -1119,7 +1067,6 @@ fn button_sounds(
         .collect()
 }
 
-/// `root`'s element at `path`, nested ones included.
 fn element_at<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
     let mut stack = vec![root];
     std::iter::from_fn(|| {
@@ -1130,7 +1077,6 @@ fn element_at<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
     .find(|element| element.path == path)
 }
 
-/// The click sound of `root`'s button at `path`, with that path, which keys its retained click.
 pub(crate) fn click_sound(
     root: &Element,
     path: &str,
@@ -1163,7 +1109,6 @@ fn laid(
     }
 }
 
-/// the game selects each assigned-trait entry's template.
 pub(super) fn entry_template<'a>(
     widget: &'a super::Widget,
     index: usize,
@@ -1235,7 +1180,6 @@ fn hidden_path(root: &Element, path: &str, values: &Values) -> bool {
     false
 }
 
-// Native name lookup folds ASCII case (ASCII case folding); Values keep their producer keys.
 fn bound_values<'r, 'v>(
     root: &'r Element,
     values: &'v Values,
@@ -1268,7 +1212,6 @@ fn apply(
                 .is_some_and(|button| !button.font.is_empty())
             || widget.is_some_and(|widget| widget.text.is_some())
         {
-            // Window updates own dynamic text; absent values never expose authored examples.
             if let Ok(bound) = instance.control(root, element) {
                 bound.resolved_flags = widget.is_some_and(|widget| widget.text.is_some());
             }
@@ -1299,8 +1242,6 @@ fn apply(
             .and_then(|widget| widget.sprite.as_deref())
             .map(str::as_bytes)
             .or(authored);
-        // the game calls drawable replacement only
-        // after the tactic picture path exists. A native no-op keeps its clocks too.
         if !widget.is_some_and(|widget| widget.retain_sprite)
             && let Some(sprite) = sprite
         {
@@ -1314,7 +1255,6 @@ fn apply(
             }
         }
         let Some(widget) = widget else {
-            // Removing a bound field restores its authored presentation instead of retaining an old hour.
             if let Err(why) = instance.set_hide_flag(root, element, element.hide) {
                 count(refused, &path, why);
             }
@@ -1475,7 +1415,6 @@ pub(crate) fn region_rect(region: &Region, origin: [i32; 2]) -> Option<[f32; 4]>
     ])
 }
 
-// GUI reloading binds these native templates.
 pub(super) fn window_name(selection: Selection) -> &'static str {
     match selection {
         Selection::Land(_) => "landcombatview",
@@ -1489,11 +1428,7 @@ pub(super) fn window_name(selection: Selection) -> &'static str {
 
 fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hover> {
     let indexed = bound_values(root, values);
-    // Grid items forward their provider through the entry container.
-    // Children with their own handler keep it.
     let provider = values.get("").filter(|widget| widget.hover_owned);
-    // instant-text hit testing rejects the constructor's
-    // always-transparent bit, even with a handler.
     let mut transparent = BTreeSet::new();
     let mut anchors = BTreeMap::new();
     let mut pending = vec![root];
@@ -1539,7 +1474,6 @@ fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hov
                 text: widget.tooltip.clone(),
                 description: widget.tooltip_description.clone(),
                 shortcut: widget.tooltip_shortcut.clone(),
-                // A producer's anchor replaces the authored one, as the game sets it after.
                 anchor: match (widget.tooltip_anchor, anchors.get(region.path.as_str())) {
                     (super::TooltipAnchor::Pointer, Some(&authored)) => {
                         super::TooltipAnchor::Authored(authored)
@@ -1564,13 +1498,11 @@ impl Windows {
             || self.popup.as_ref().is_some_and(Retained::active)
     }
 
-    /// Whether the primary button holds a button of the window or its popup.
     pub(super) fn holding(&self) -> bool {
         self.root.as_ref().is_some_and(Retained::holding)
             || self.popup.as_ref().is_some_and(Retained::holding)
     }
 
-    /// The control the last draw drew for the pointer: the popup's, drawn above, first.
     pub(super) fn highlighted(&self) -> Option<&str> {
         self.popup
             .as_ref()
@@ -1614,7 +1546,6 @@ impl Windows {
         let mut drawn = Drawn::default();
         let popup_rect = self.popup_rect.take();
         let root_areas = std::mem::take(&mut self.root_areas);
-        // A press the window or its popup holds, or lands on, keeps the pointer from the other.
         let holder = if self.popup.as_ref().is_some_and(Retained::holding) {
             Some(true)
         } else {
@@ -1659,12 +1590,10 @@ impl Windows {
             .partition(|action| !action.target.popup);
         retained.pending.extend(actions);
         self.pending = popup_actions;
-        // The window stands where its show movement has brought it, moved by the drag.
         let dragged = |at: [i32; 2]| [0, 1].map(|axis| at[axis].wrapping_add(truncate_f32(offset[axis])));
         let origin = dragged(retained.instance.position());
         let mut groups = Vec::new();
         if matches!(selection, Selection::Land(_)) {
-            // combat selection and list refill preserve producer membership order.
             for side in 0..4 {
                 let path = format!(
                     "{}_window/{}_window/list",
@@ -1726,8 +1655,6 @@ impl Windows {
                 .map(|input| input.local(origin.map(|value| value as f32))),
             &mut drawn.refused,
         ) {
-            // The pointer was read where the last frame drew the window; this frame draws it where
-            // the tick moved it.
             clicked_at(&prepared, origin, &mut drawn.clicks);
             let origin = dragged(retained.instance.position());
             drawn.sounds.extend(prepared.sounds.iter().cloned());
@@ -1779,7 +1706,6 @@ impl Windows {
             };
             retained.settled = self.settled;
             retained.pending.append(&mut self.pending);
-            // The possible-tactics popup sits ten pixels right of the combat window.
             let position = *tactics_position
                 .get_or_insert([drawn.rect[0] + drawn.rect[2] + 10.0, drawn.rect[1]]);
             let origin = position.map(truncate_f32);
@@ -1867,7 +1793,6 @@ fn naval_row(index: usize, row: &super::binding::NavalEntry) -> Row<'_> {
     Row {
         naval_layout: Some(row.layout),
         key: index.to_string(),
-        // Sunk and live ship icons share this template.
         template: "navalcombat_ship_entry",
         values: &row.values,
         explicit: Some((row.offset, row.size)),
@@ -1905,7 +1830,6 @@ pub(crate) fn append_hovers(target: &mut Vec<TooltipHit>, hovers: Vec<Hover>, or
     }));
 }
 
-/// An authored anchor on screen: absolute, or from the control's unclipped top-left.
 fn resolved(anchor: super::TooltipAnchor, region: &Region, origin: [i32; 2]) -> super::TooltipAnchor {
     let super::TooltipAnchor::Authored(authored) = anchor else {
         return anchor;

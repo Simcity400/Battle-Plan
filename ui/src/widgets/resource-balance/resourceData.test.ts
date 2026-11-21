@@ -11,7 +11,6 @@ const pools = (id: number, produced: string, production = '-300000', subjects = 
   availableRaw: produced, afterProjectsRaw: produced, productionRaw: production,
 });
 
-/** The live cells of `held` pools, as a reply's `live` gives them. */
 const cells = (...held: ResourcePools[]) => valuesOf(new Map(held.flatMap(item => POOL_CELLS.map(([column, field]) =>
   [liveKey(String(item.id), column), Number(item[field])] as const))), 'No live row has this key');
 
@@ -73,7 +72,6 @@ test('a breakdown parts the balance as the game adds it: supply, needs, and the 
   assert.equal(demand.total, balance.demand);
 });
 
-/** Each deal's delivery as its live cell. */
 const delivered = valuesOf(new Map([[liveKey('6', 'delivered'), 100000], [liveKey('7', 'delivered'), -250000]]), 'Not recorded at this hour');
 
 test('a deal list sums every deal, those off screen too, and scales bars by the widest magnitude; one not known leaves the total unknown', () => {

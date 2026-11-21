@@ -1,5 +1,4 @@
 import type { Failure } from '../../dashboard/queryError';
-/** Country races share presentation; a widget supplies only its recorded values. */
 import type { RaceItem } from './race';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { Run } from '../series';
@@ -13,11 +12,9 @@ export interface CountryRaceLooks {
   nameFailure?: (tag: string, hour?: number) => Failure | undefined;
   color: (tag: string, hour?: number) => string;
   flag?: (tag: string) => string | undefined;
-  /** Explicit native-country presence; generic entities leave this absent. */
   countryFlag?: (tag: string, hour?: number) => CountryFlagLook | undefined;
 }
 
-/** Full part inventories opt into compact storage at the actual chart boundary. */
 export function countryRaceStack(bands: readonly (readonly Run[])[], compact = false): StackModel | CompactStackModel {
   return compact ? compactStack(bands) : buildStack(bands);
 }
@@ -27,7 +24,6 @@ export function forEachCountryRaceSegment(stack: StackModel | CompactStackModel,
     segment => visit(held ? heldStackSegment(segment) : segment));
   else countryRaceSegments(stack, from, to, hoursPerPixel, held).forEach(visit);
 }
-/** The same pieces joined into one per unbroken stretch (`forEachJoinedSegment`). */
 export function forEachJoinedCountryRaceSegment(stack: StackModel | CompactStackModel, from: number, to: number, hoursPerPixel: number,
   held: boolean, visit: (segment: StackSegment) => void): void {
   forEachJoinedSegment(piece => forEachCountryRaceSegment(stack, from, to, hoursPerPixel, held, piece), visit);
@@ -37,50 +33,36 @@ export function countryRaceStackExtent(stack: StackModel | CompactStackModel, fr
   return 'bands' in stack ? compactStackExtent(stack, from, to) : stackExtent(stack, from, to);
 }
 
-/** A part's key entry; its value text, or a `LiveText` painting it at the head. */
 export interface CountryRacePart { id: string; label: string; color?: string; value?: import('react').ReactNode }
 export interface CountryRaceEntry {
   tag: string; value: number; label: string; stretch: number | string | null;
-  /** Animation identity; the dated tag still owns content and interactions. */
   entityKey?: string; hour?: number;
-  /** Hatching included in an unsplit total, clamped inside its positive count. */
   hatched?: number;
-  /** A secondary amount drawn inside the total, without adding to it. */
   inset?: number;
   parts?: readonly { id: string; value: number; hatched?: number; hatchInside?: boolean; color?: string }[];
 }
-/** A race's entries at the head, read as the chart draws: the race follows them without rendering. */
 export interface LiveRaceEntries {
-  /** The entries ranked at the hour shown now (each with its `hour`); the same array while they are unchanged. */
   entries(): readonly CountryRaceEntry[];
-  /** The hour they are at. */
   hour(): number;
-  /** Lets the source wake the chart when its entries move between clock frames (a pushed answer); returns how to stop. */
   bind(wake: () => void): () => void;
 }
 
 export interface CountryRaceLine {
   tag: string; runs: readonly Run[];
-  /** Distinguishes several measures of the same country; tag remains its opaque identity. */
   id?: string; measure?: string;
-  /** Fixed measure looks bypass country names and colours (for a level and ceiling). */
   color?: string; area?: boolean; dash?: readonly number[]; endDot?: boolean; muted?: boolean;
-  /** Exact recorded text, independent of the plotting number; a suffix (its value) is never shortened. */
   endLabel?: (hour: number, name: string) => string | { text: string; suffix: string };
 }
 
-/** A supplied read dates country looks and Jump to; picks keep the displayed hour. */
 export function countryRaceReadHour(tag: string, moment: number, hours?: ReadonlyMap<string, number>,
   readHour?: (tag: string | null, hour: number) => number | null): number | null {
   return readHour ? readHour(tag, moment) : hours ? hours.get(tag) ?? null : moment;
 }
 
-/** A single country is picked directly; several lines need a country selector. */
 export function countryRacePickTag(view: string, lines: readonly CountryRaceLine[], mixTag?: string): string | null {
   return view === 'mix' ? mixTag ?? null : lines.length === 1 ? lines[0].tag : null;
 }
 
-/** Content order selects palette positions, so renamed types keep their colour. */
 export function partColours(parts: readonly CountryRacePart[], palette: readonly string[], catalogue?: ReadonlyMap<string, string>): Map<string, string> {
   return new Map(parts.map((part, index) => [part.id, part.color ?? catalogue?.get(part.id) ?? palette[index % Math.max(1, palette.length)]]));
 }
@@ -90,11 +72,9 @@ const insideHatch = (value: number, hatched: number) => value > 0 ? Math.min(Mat
 export const countryRaceItems = (entries: readonly CountryRaceEntry[], colours: ReadonlyMap<string, string>, country: (tag: string) => string,
   missingColour: string, exact = true): RaceItem[] => entries.map(entry => countryRaceItem(entry, colours, country, missingColour, exact));
 
-/** One entry's race item: `countryRaceItems` of one. */
 export function countryRaceItem(entry: CountryRaceEntry, colours: ReadonlyMap<string, string>, country: (tag: string) => string,
   missingColour: string, exact = true): RaceItem {
   return ({ key: entry.entityKey ?? entry.tag, tag: entry.tag, hour: entry.hour, value: entry.value, label: entry.label,
-    // Null prevents amount easing; the race still eases rows to their ranks.
     stretch: exact ? null : entry.stretch,
     ...(entry.inset !== undefined ? { inset: { value: entry.inset, color: country(entry.tag) } } : {}),
     segments: entry.parts?.map(part => {
@@ -106,14 +86,12 @@ export function countryRaceItem(entry: CountryRaceEntry, colours: ReadonlyMap<st
   });
 }
 
-/** Keyboard stops use only changes; stack boundary stops remain opt-in. */
 export function countryRaceHours(lines: readonly CountryRaceLine[]): number[] {
   return [...new Set(lines.flatMap(line => line.runs.map(run => run.firstHour)))].sort((a, b) => a - b);
 }
 
 export interface CountryRaceEnd { id: string; color: string; value: number; text: string; suffix?: string; muted?: boolean }
 
-/** End labels stay on the last recorded point, including a view ending in a gap. */
 export function countryRaceEnds(lines: readonly CountryRaceLine[], from: number, to: number, until: number | null,
   name: (tag: string, hour?: number) => string, colour: (tag: string, hour?: number) => string,
   format: (value: number) => string): CountryRaceEnd[] {
@@ -130,18 +108,15 @@ export function countryRaceEnds(lines: readonly CountryRaceLine[], from: number,
   });
 }
 
-/** Related tooltip countries are named at the same hovered hour; tags stay opaque. */
 export function countryRaceTooltipTags(hour: number, tags: readonly string[], related?: (hour: number, tags: readonly string[]) => readonly string[]): string[] {
   return [...new Set([...tags, ...(related?.(hour, tags) ?? [])])];
 }
 
-/** Thin geometry on the drawing grid; held bands are the default for new races. */
 export function countryRaceSegments(stack: StackModel, from: number, to: number, hoursPerPixel: number, held = true): StackSegment[] {
   const segments = stackedSegments(stack, from, to, hoursPerPixel / 2);
   return held ? segments.map(heldStackSegment) : segments;
 }
 
-/** The shared stack's exact samples expanded into held bands rather than ramps. */
 export function heldStackSegment(segment: StackSegment): StackSegment {
   const hours: number[] = [];
   const bands = segment.bands.map(() => ({ low: [] as number[], high: [] as number[] }));
@@ -156,7 +131,6 @@ export function heldStackSegment(segment: StackSegment): StackSegment {
   return { ...segment, hours, bands };
 }
 
-/** A race's accessible label at the hour it shows: a dated label is read at that hour, never at the hour it rendered. */
 export function raceLabelAt(label: string | ((hour: number) => string) | undefined, hour: number): string | undefined {
   return typeof label === 'function' ? label(hour) : label;
 }

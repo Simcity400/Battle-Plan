@@ -2,7 +2,6 @@ import type { ChartBucket } from './chartSummary.ts';
 
 type Bucket = ChartBucket & { absoluteTotal?: string };
 
-/** A summary as the dashboard sends it: its buckets as the columns `chartSummaryFrom` reads. */
 export function wireSummary<S extends { buckets: readonly (Bucket | null)[] }>(summary: S) {
   const skip: number[] = [], hours: number[] = [], values: number[] = [], flags: number[] = [], totals: string[] = [];
   let gap = 0, previous: number | null = null;
@@ -19,7 +18,6 @@ export function wireSummary<S extends { buckets: readonly (Bucket | null)[] }>(s
   return { ...summary, buckets: { slots: summary.buckets.length, skip, hours, values, flags, totals } };
 }
 
-/** `value` with every summary in it (an object with a `width` and an array of `buckets`) as the dashboard sends it. */
 export function wireSummaries<T>(value: T): T {
   if (Array.isArray(value)) return value.map(wireSummaries) as T;
   if (!value || typeof value !== 'object') return value;

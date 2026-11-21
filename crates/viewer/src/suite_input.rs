@@ -1,19 +1,3 @@
-//! The acceptance suite's input channel (tools/e2e). Off unless `BATTLE_PLAN_E2E_INPUT` names a loopback
-//! address, which only the suite's own profile sets; it has no UI and is never on for users.
-//! The suite also fixes exported maps' animation clock (`BATTLE_PLAN_E2E_CAPTURE_CLOCK`, seconds), so
-//! its pictures repeat exactly; without the variable an export draws the live animation.
-//!
-//! The suite runs the app on a desktop of its own, where the windowing library sees no cursor
-//! over the window, so real pointer input cannot reach the map there. Instead the suite sends one
-//! JSON line per event and they join egui's raw input, where the windowing library's translated
-//! events arrive: everything after (hit-tests, hover, camera, Fly and Walk) runs as for a user.
-//! Only the windowing library's own translation is untested.
-//!
-//! Lines, with points in the window's client pixels:
-//! `{"move":[x,y]}`, `{"wheel":lines}` (where the pointer last moved, as a wheel turns where the
-//! cursor rests), `{"button":"primary|middle|secondary","at":[x,y],"pressed":b}`, and
-//! `{"key":"ArrowRight","pressed":b}` (an egui key name), and `{"ctrl":b,"shift":b,"alt":b}`, the
-//! modifiers held from then on.
 
 use eframe::egui;
 use serde::Deserialize;
@@ -36,16 +20,11 @@ enum Line {
     Modifiers { ctrl: bool, shift: bool, alt: bool },
 }
 
-/// Lines received and not yet given to egui.
 static PENDING: Mutex<Vec<Line>> = Mutex::new(Vec::new());
-/// Whether this process serves the suite: decided once, from the variable.
 static ENABLED: OnceLock<bool> = OnceLock::new();
-/// Whether the suite has sent input: from then on the window has the focus a user's would.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-/// The modifiers the suite holds down.
 static HELD: Mutex<egui::Modifiers> = Mutex::new(egui::Modifiers::NONE);
 
-/// The animation clock a map export draws at, when the suite fixes one.
 pub(crate) fn capture_clock() -> Option<f32> {
     static CLOCK: OnceLock<Option<f32>> = OnceLock::new();
     *CLOCK.get_or_init(|| std::env::var("BATTLE_PLAN_E2E_CAPTURE_CLOCK").or_else(|_| std::env::var("HOI4_E2E_CAPTURE_CLOCK")).ok()?.parse().ok())
@@ -60,12 +39,10 @@ fn enabled() -> bool {
             eprintln!("BATTLE_PLAN_E2E_INPUT {address}: not an address, ignored");
             return false;
         };
-        // Loopback only: the channel never listens beyond this machine.
         if !address.ip().is_loopback() {
             eprintln!("BATTLE_PLAN_E2E_INPUT {address}: not a loopback address, ignored");
             return false;
         }
-        // Another viewer of the same app may hold the address; only one serves the suite.
         let Ok(listener) = TcpListener::bind(address) else {
             return false;
         };
@@ -85,7 +62,6 @@ fn enabled() -> bool {
     })
 }
 
-/// Appends the suite's events to this frame's raw input, as egui's own event types.
 pub(crate) fn apply(ctx: &egui::Context, input: &mut egui::RawInput) {
     if !enabled() {
         return;
@@ -107,8 +83,6 @@ pub(crate) fn apply(ctx: &egui::Context, input: &mut egui::RawInput) {
         }
     }
     drop(held);
-    // A window a user types into and points at keeps its focus between their inputs, so held keys
-    // and captured input last until released.
     if ACTIVE.load(Ordering::Relaxed) {
         input.focused = true;
     }

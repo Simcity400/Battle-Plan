@@ -195,7 +195,6 @@ fn party(bytes: &mut [u8], index: u32, token: &[u8]) {
         pointer + cpolitical_party::POPULARITY,
         (-(1_i64 << 40) + i64::from(index)).to_le_bytes(),
     );
-    // As constructed: the owner's tag, the default name and empty keys.
     put(
         bytes,
         pointer + cpolitical_party::TAG,
@@ -216,7 +215,6 @@ fn party(bytes: &mut [u8], index: u32, token: &[u8]) {
 #[test]
 fn native_roster_count_and_precision_survive_without_vanilla_projection() {
     let mut bytes = fixture();
-    // Capacity seven with five live records catches the old reversed words.
     array(&mut bytes, STATUS + PARTIES, 0x3800, 7, 5);
     let tokens = [b"a?".as_slice(), b"b!", b"c/", b"d+", &[0xff, 0, 0x81]];
     for (index, token) in tokens.iter().enumerate() {
@@ -257,7 +255,6 @@ fn renamed_party_keys_are_copied_exactly_and_count_toward_the_arena() {
     array(&mut bytes, STATUS + PARTIES, 0x3800, 2, 2);
     party(&mut bytes, 0, b"x");
     party(&mut bytes, 1, b"y");
-    // Renaming clears the default-name flag; the long key is on the heap.
     let long = b"AAA_mod_party_long_key";
     put(&mut bytes, 0x4000 + cpolitical_party::NAME_DEFAULT, [0]);
     inline(
@@ -329,7 +326,6 @@ fn authenticated_empty_and_unreadable_state_are_distinct_per_table() {
         reader.ideas(&mut Vec::new(), &mut Vec::new()).outcome,
         Outcome::Rows { len: 0 }
     );
-    // A byte other than 0 or 1 is true, as the elections predicate tests it.
     put(&mut bytes, STATUS + ELECTIONS_ALLOWED, [2]);
     let memory = SliceMemory {
         base: COUNTRY_POINTER,
@@ -420,8 +416,6 @@ fn active_idea_secondary_base_and_heap_tokens_are_copied_exactly() {
 const LEADERS: [usize; 3] = [0x6100, 0x6300, 0x6500];
 const CHARACTERS: [(usize, u32); 2] = [(0x6800, 1482), (0x6900, 1451)];
 
-/// Party 0 (id 0) leads with character 1482 and then a null parent;
-/// party 1 (id 11) has one leader, character 1451, whose id is 7.
 fn leader_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     array(&mut bytes, STATUS + PARTIES, 0x3800, 2, 2);
@@ -505,7 +499,6 @@ fn leader_fixture() -> Vec<u8> {
         put(&mut bytes, node + 0x20, key.to_le_bytes());
         put(&mut bytes, node + 0x28, (leader as u64).to_le_bytes());
     }
-    // The first role is the second map node; the word at 0x140 is deliberately unrelated.
     put(&mut bytes, LEADERS[0] + 0x140, 999_u64.to_le_bytes());
     put(
         &mut bytes,
@@ -553,7 +546,6 @@ fn party_leaders_keep_party_and_vector_order_null_parents_and_ids() {
             row(11, 0, Some(1451), 7),
         ]
     );
-    // Empty vectors and an empty roster have no rows.
     let mut bytes = leader_fixture();
     array(
         &mut bytes,
@@ -596,16 +588,13 @@ fn the_party_leader_count_probe_counts_the_live_total_without_reading_a_leader()
 #[test]
 fn unauthenticated_party_leaders_fail_the_table() {
     for (address, value) in [
-        // A null leader, a foreign leader, a foreign character.
         (0x6008, 0_u64),
         (LEADERS[2], 7),
         (CHARACTERS[1].0, 7),
-        // Missing/duplicate role pointers, reversed keys, and a foreign map link.
         (0x7040 + 0x28, 0x7300),
         (0x7080 + 0x28, LEADERS[0] as u64),
         (0x7080 + 0x20, 6),
         (0x7080 + 8, 0x9_0000),
-        // A foreign party and an unreadable leader vector.
         (0x4100, 7),
         (0x4000 + cpolitical_party::COUNTRY_LEADERS, 0x9_0000),
     ] {

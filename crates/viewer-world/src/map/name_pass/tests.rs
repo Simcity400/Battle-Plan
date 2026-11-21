@@ -23,21 +23,15 @@ fn members(ids: &[u32]) -> BTreeSet<u32> {
 
 #[test]
 fn pixel_neighbours_wrap_in_x_and_stop_at_the_poles() {
-    // Three columns, two rows: 1 2 3 / 1 4 3.
     let ids = [1, 2, 3, 1, 4, 3];
     let graph = ProvinceGraph::build(3, 2, &ids, &[]).unwrap();
-    // Column 2 wraps onto column 0, so 3 and 1 are neighbours.
     assert_eq!(graph.components(&members(&[1, 3])), vec![vec![1, 3]]);
-    // 2 and 4 touch vertically; 2 and 3 touch horizontally.
     assert_eq!(graph.components(&members(&[2, 4])), vec![vec![2, 4]]);
     assert_eq!(graph.components(&members(&[2, 3])), vec![vec![2, 3]]);
 }
 
-/// A four-province crossing joins its diagonal; province zero has no neighbours.
 #[test]
 fn raster_records_include_the_four_province_diagonal() {
-    // Rows north first: 1 2 / 3 4 with a sea column; 2 and 3 meet only
-    // at the crossing.
     let ids = [1, 2, 9, 3, 4, 9];
     let graph = ProvinceGraph::build(3, 2, &ids, &[]).unwrap();
     assert_eq!(graph.components(&members(&[2, 3])), vec![vec![2, 3]]);
@@ -48,31 +42,23 @@ fn raster_records_include_the_four_province_diagonal() {
 
 #[test]
 fn separated_islands_split_until_a_sea_link_joins_them() {
-    // 1 0 2 0: two provinces with sea on both sides of each, the way
-    // Denmark's islands sit. The trailing sea column absorbs the x wrap.
     let ids = [1, 0, 2, 0, 1, 0, 2, 0];
     let graph = ProvinceGraph::build(4, 2, &ids, &[]).unwrap();
     assert_eq!(graph.components(&members(&[1, 2])), vec![vec![1], vec![2]]);
     let linked = ProvinceGraph::build(4, 2, &ids, &[link(1, 2, SEA_CROSSING)]).unwrap();
     assert_eq!(linked.components(&members(&[1, 2])), vec![vec![1, 2]]);
-    // A strait row with an empty type column counts too.
     let rule = ProvinceGraph::build(4, 2, &ids, &[link(1, 2, 0)]).unwrap();
     assert_eq!(rule.components(&members(&[1, 2])), vec![vec![1, 2]]);
-    // An `impassable` row is a neighbour record too, which the walk
-    // follows (BlackICE's 4391;12526).
     let impassable = ProvinceGraph::build(4, 2, &ids, &[link(1, 2, IMPASSABLE)]).unwrap();
     assert_eq!(impassable.components(&members(&[1, 2])), vec![vec![1, 2]]);
 }
 
 #[test]
 fn a_component_needs_a_path_inside_the_member_set() {
-    // 1 2 3 in a row, with the wrap disabled by a fourth column of zeros.
     let ids = [1, 2, 3, 0];
     let graph = ProvinceGraph::build(4, 1, &ids, &[]).unwrap();
-    // 1 and 3 only touch through 2, which is not a member here.
     assert_eq!(graph.components(&members(&[1, 3])), vec![vec![1], vec![3]]);
     assert_eq!(graph.components(&members(&[1, 2, 3])), vec![vec![1, 2, 3]]);
-    // The order is by smallest member, so a headless render is stable.
     assert_eq!(
         graph.components(&members(&[3, 1])),
         vec![vec![1], vec![3]],
@@ -101,7 +87,6 @@ fn the_height_sample_interpolates_half_pixel_centres_before_water_clamping() {
     assert!((height_at(&heightmap, 1.0, 0.0) - 11.125).abs() < 1e-5);
 }
 
-/// A synthetic placed name of `glyphs` glyphs at world `(x, z)`.
 fn world_name(key: String, x: f32, z: f32, glyphs: usize, wrapped: bool) -> WorldName {
     let mut corners = Vec::new();
     let mut uvs = Vec::new();
@@ -130,7 +115,6 @@ fn world_name(key: String, x: f32, z: f32, glyphs: usize, wrapped: bool) -> Worl
     }
 }
 
-/// 15,000 country names on a grid across the whole map.
 fn many_names(count: usize) -> Placements {
     let columns = 150;
     Placements {
@@ -188,8 +172,6 @@ fn labels_follow_arrow_admission_and_preserve_page_runs() {
         },
         u64::MAX,
     );
-    // Arrow admission owns the view and order, even when glyph bounds
-    // lie outside the camera and the name has a wrapped country box.
     let draws = arrow_draws(&names, &[(2, 1), (0, 0)]);
     assert_eq!(
         draws
@@ -332,13 +314,11 @@ fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
     assert_eq!(chunks.len(), 1);
     assert_eq!(names.len(), 30);
     assert_eq!(chunks[0].len(), 30 * 12 * 6);
-    // The names tile the chunk in placement order.
     assert!(
         names
             .windows(2)
             .all(|pair| pair[0].vertices.end == pair[1].vertices.start)
     );
-    // A small device limit splits between names, never inside one.
     let limit = 72 * 2 + 50;
     let (chunks, names) = static_names(&placements, limit);
     assert_eq!(chunks.len(), 15);
@@ -370,7 +350,6 @@ fn the_fade_settles_at_the_content_cutoff_and_takes_one_second() {
     assert_eq!(half, LayerFade(0.5));
     let settled = half.step(at(310.0), 0.5);
     assert_eq!(settled, LayerFade(1.0));
-    // A negative delta never walks backwards.
     assert_eq!(settled.step(at(310.0), -1.0), settled);
 }
 
@@ -487,10 +466,7 @@ fn named_areas_change_with_control_and_nothing_else() {
     let areas =
         |controllers| NameAreas::read(&map, &localisation, &name_frame(controllers), None).unwrap();
     assert_eq!(areas([100, 100]), areas([100, 100]));
-    // SOV takes province 2: both countries' areas change.
     assert_ne!(areas([100, 100]), areas([100, 101]));
-    // In the factions mode, GER and SOV in one faction form one area under its name; a
-    // country outside every faction keeps its own.
     let both = GroupLabels {
         groups: BTreeMap::from([
             (0, (9, Ok("Axis".to_owned()))),
@@ -522,8 +498,6 @@ fn named_areas_change_with_control_and_nothing_else() {
             .collect::<Vec<_>>(),
         [("GER", false), ("group 9", true)]
     );
-    // Group tables the recording lacks withhold the mode's names, saying why, rather than
-    // writing the countries'.
     let refused = NameAreas::read(
         &map,
         &localisation,
@@ -536,7 +510,6 @@ fn named_areas_change_with_control_and_nothing_else() {
         refused.warnings,
         ["The map mode's group names are refused: no factions"]
     );
-    // In the players mode, a country no player holds carries no name.
     let player = GroupLabels {
         groups: BTreeMap::from([(1, (1, Ok("Player".to_owned())))]),
         others_named: false,
@@ -596,7 +569,6 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
         _ => Err("unnamed".to_owned()),
     })
     .unwrap();
-    // A state with no province on the map has no area.
     let named: Vec<_> = states
         .countries
         .iter()
@@ -609,7 +581,6 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
             ("state 8", Err("unnamed".to_owned()), BTreeSet::from([2])),
         ]
     );
-    // An unnamed state carries no name rather than a tag.
     assert!(states.countries.iter().all(|area| area.faction));
     let localisation = Localisation::default();
     let far = NameAreas::read(&map, &localisation, &frame, None).unwrap();
@@ -686,7 +657,6 @@ fn strategic_hover_admits_one_connected_area_across_font_pages_and_wrapped_copie
     let mut second = first.clone();
     second.key = "synthetic inland".into();
     second.strategic_provinces = Some(Arc::from([3]));
-    // A disconnected component of the same region has the same name but a separate draw.
     let mut disconnected = first.clone();
     disconnected.strategic_provinces = Some(Arc::from([4, 5]));
     let ordinary = world_name("synthetic country".into(), 100.0, 1000.0, 1, false);
@@ -763,7 +733,6 @@ fn strategic_hover_admits_one_connected_area_across_font_pages_and_wrapped_copie
         )
         .is_empty()
     );
-    // No generation/placement rebuild when only the local pointer changes.
     assert_eq!(
         names
             .iter()
@@ -804,8 +773,8 @@ fn strategic_region_switch_resets_the_fade_only_on_the_hover_path() {
 #[test]
 fn dense_components_equal_the_lookup_walk() {
     let ids = [
-        1, 1, 2, 2, 0, 5, 5, 9, //
-        1, 3, 3, 2, 0, 5, 12, 9, //
+        1, 1, 2, 2, 0, 5, 5, 9,
+        1, 3, 3, 2, 0, 5, 12, 9,
         40, 40, 3, 0, 0, 0, 12, 12,
     ];
     let rows = [link(40, 5, SEA_CROSSING)];

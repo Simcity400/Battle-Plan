@@ -26,10 +26,8 @@ test('the raid tally of a group says when it has no count at all, and hands the 
   });
   try {
     const render = () => renderToStaticMarkup(createElement(module.default, props('campaign', BRANCH.lastHour)));
-    // No human player in the campaign: no country to count, said so, never a race of zeros.
     assert.match(render(), /This group has no members in this campaign\./);
     assert.equal(state.view, undefined);
-    // A human player who raided: the race gets its count.
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour }] });
     render();
     const view = state.view as CountryRaceViewProps | undefined;

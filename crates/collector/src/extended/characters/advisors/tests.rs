@@ -91,8 +91,6 @@ fn advisor_modifier_sizing_survives_an_unreadable_political_census() {
 fn assert_fresh(cache: &Section, bytes: &[u8]) {
     for entry in &cache.current.entries {
         for row in &cache.current.rows[entry.rows.clone()] {
-            // Definition-only reads retain the end of their slot bytes even
-            // though the independently captured modifier span is unrecorded.
             assert_eq!(row.modifier_start, row.slot_start + row.slot_len);
             assert!(row.modifier_start >= entry.bytes.start);
         }
@@ -109,7 +107,6 @@ fn assert_fresh(cache: &Section, bytes: &[u8]) {
     assert_eq!(cache.result.outcome, direct.outcome);
     assert_eq!(cache.result.bytes_len, direct.bytes_len);
     assert_eq!(cache.result.required_bytes, direct.required_bytes);
-    // Both hourly suffixes are compared by the complete outer-cache tests.
     let definition = |row: &cadvisor::Row| cadvisor::Row {
         modifier_start: 0,
         modifier_len: 0,
@@ -232,7 +229,6 @@ fn fresh_modifier_cache_changes_without_an_advisor_mutation_hook() {
     assert_eq!(cache.counts.planned, 2);
     assert_outer_fresh(&cache, &bytes);
     let mut captured = Captured::with_capacities(&fixture_capacities());
-    // Projection consumes owned bytes after the native objects disappear.
     bytes.fill(0);
     cache.decode(&mut captured);
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
@@ -425,7 +421,6 @@ fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
         if matches!(cache.result.outcome, Outcome::Unavailable { .. }) {
             assert!(cache.sections.iter().all(|section| !section.valid));
         } else {
-            // Appended tooltip faults do not invalidate observed definitions.
             assert!(cache.sections.iter().all(|section| section.valid));
             let mut captured = Captured::with_capacities(&fixture_capacities());
             cache.decode(&mut captured);
@@ -471,8 +466,6 @@ fn planned_country_prefix_survives_later_control_change_and_fault() {
             CHARACTERS[0] + ccharacter::COUNTRY,
             99_u32.to_le_bytes(),
         );
-        // A changed, readable color byte stops the equality control without
-        // invalidating the map. The alternate case partially copies and fails.
         bytes[sentinel - ADDRESS + engine_native::msvc_tree_node::COLOR] ^= 1;
         let source = WaveMemory::new(&bytes, fault.then_some(sentinel));
         cache.capture(&source, context(), &observer, None);
@@ -563,8 +556,6 @@ fn planned_duplicate_characters_keep_each_country_observation() {
         assert_eq!(source.next.get(), 3);
         assert_eq!(*source.reads.borrow(), expected_reads);
 
-        // A separate observation sequence gives the ordinary reader the
-        // same three distinct values; an address-keyed oracle would hide bugs.
         let direct_source = Countries::new(&bytes, countries);
         let mut direct = Captured::with_capacities(&fixture_capacities());
         let expected = walk_family(
@@ -673,7 +664,6 @@ fn unchanged_roles_skip_payload_reads_but_country_stays_current() {
         (3, 0, 1)
     );
     assert_eq!(cache.current.rows[0].country, 99);
-    // Decode uses only owned bytes, even after all source storage disappears.
     bytes.fill(0);
     let mut output = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut output);
@@ -697,7 +687,6 @@ fn same_count_replacement_and_larger_strings_refresh_only_the_affected_character
     cache.capture(&kit::memory(&bytes), context(), &observer);
     assert_fresh(&cache, &bytes);
     assert_eq!((cache.counts.read, cache.counts.reused), (1, 2));
-    // Epoch invalidation forces all entries fresh, including empty maps.
     observer.epoch += 1;
     cache.capture(&kit::memory(&bytes), context(), &observer);
     assert_fresh(&cache, &bytes);
@@ -784,8 +773,6 @@ fn tooltip_keys_stay_fresh_under_definition_reuse() {
     assert_outer_fresh(&cache, &bytes);
 }
 
-/// `count` historical characters with one advisor role each; every role
-/// shares one numeric cache (`numeric`) and one tooltip key set (`tooltip`).
 struct ManyAdvisors {
     bytes: Vec<u8>,
     first_character: usize,
@@ -833,7 +820,6 @@ fn many_advisors(count: usize) -> ManyAdvisors {
         let character = alloc(&mut bytes, 0x120);
         let head = alloc(&mut bytes, 32);
         let entry = alloc(&mut bytes, character_advisor_node::SIZE);
-        // The header after the table pointer contains data/count/mask and its final overflow byte.
         let role = alloc(&mut bytes, cadvisor::TOOLTIP_KEYS + 8 + 17);
         if index == 0 {
             first_character = character;
@@ -903,7 +889,6 @@ fn many_advisors(count: usize) -> ManyAdvisors {
     }
 }
 
-/// Counts reads overlapping fixture `ranges` and serves every read.
 struct Counting<'a> {
     bytes: &'a [u8],
     ranges: Vec<std::ops::Range<usize>>,
@@ -937,7 +922,6 @@ impl Memory for Counting<'_> {
     }
 }
 
-/// The published modifier cache of the fixture's first advisor role.
 fn first_role_entries(cache: &Cache) -> Vec<replay_data::rows::CachedModifier> {
     let mut captured = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut captured);
@@ -954,7 +938,6 @@ fn first_role_entries(cache: &Cache) -> Vec<replay_data::rows::CachedModifier> {
         .clone()
 }
 
-/// The section fixture with a two-entry numeric cache on its first role.
 fn two_entry_cache() -> (Vec<u8>, std::ops::Range<usize>) {
     use super::super::tests::array;
     let mut bytes = super::super::tests::section_fixture();
@@ -984,7 +967,6 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     WATCHES.enable(64);
     let (mut bytes, data) = two_entry_cache();
     let role = kit::ADV_ROLE;
-    // The role's accumulator header, entries and tooltip key table.
     let watched = || {
         vec![
             role + cadvisor::MODIFIER_ENTRIES..role + cadvisor::MODIFIER_ENTRIES + 16,
@@ -995,7 +977,6 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     let observer = Observer::new();
     let mut cache = cache_for(&bytes);
     cache.modifiers.roles = RoleObservation::with(&WATCHES);
-    // The first hour reads and holds every role.
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     let roles = cache.result.outcome.len() as u64;
     assert!(roles >= 1);
@@ -1008,7 +989,6 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     );
     assert_outer_fresh(&cache, &bytes);
     cache.prepare();
-    // A quiet hour carries every role without reading its cache or keys.
     let quiet = Counting::new(&bytes, watched());
     cache.capture(&quiet, context(), &observer, None);
     assert_eq!(quiet.reads(), 0, "a carried role is not read");
@@ -1021,13 +1001,9 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     );
     assert_outer_fresh(&cache, &bytes);
     assert_eq!(first_role_entries(&cache), [entry(7, -5), entry(8, 9)]);
-    // No native writer changes the cache outside the hooked rebuild, so a
-    // write no hook saw stays unread: the held entries are published.
     put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(first_role_entries(&cache), [entry(7, -5), entry(8, 9)]);
-    // A trait-addition effect rebuilds the cache through the hooked
-    // advisor modifier rebuild on the role's character: that role alone is read afresh.
     drop(WATCHES.notify(
         Some(ADDRESS + CHARACTERS[0]),
         engine_mutations::character_role_mutations::ADVISOR_MODIFIERS,
@@ -1039,7 +1015,6 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     assert_eq!(cache.modifiers.role_counts.reused, roles - 1);
     assert_outer_fresh(&cache, &bytes);
     assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
-    // A load, gap or recovery starts an epoch: every role is read.
     WATCHES.boundary(true);
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(

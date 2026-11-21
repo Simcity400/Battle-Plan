@@ -1,4 +1,3 @@
-//! Navy mode's region control, access and supremacy explanation.
 use super::{Arg, Context, Tooltip};
 use replay_data::{rows::NavalSupremacyRow, rows::tables};
 use viewer_foundation::map::naval_region_control::Snapshot;
@@ -227,7 +226,6 @@ pub(super) fn append(
     }
 }
 
-/// The region's naval terrain category, else the ocean category.
 fn terrain_category<'c>(
     content: &'c super::counter_content::Content,
     region: &installed_content_regions::regions::StrategicRegion,
@@ -242,8 +240,6 @@ fn terrain_category<'c>(
     Ok(&terrain.categories[index])
 }
 
-/// The observed country's regional dominance: the supremacy snapshot, the control (0 contested,
-/// 1 friendly, 2 enemy) and the region's minimum supremacy, which the share's enemy side floors at.
 pub fn region_dominance<'f>(
     content: &super::counter_content::Content,
     frame: &'f replay_frame::frame::DecodedFrame,
@@ -261,7 +257,6 @@ pub fn region_dominance<'f>(
     Ok((snapshot, control, minimum))
 }
 
-/// What the region's dominance texts read: the content, the hour and the viewing country.
 struct Region<'a> {
     content: &'a super::counter_content::Content,
     frame: &'a replay_frame::frame::DecodedFrame,
@@ -286,8 +281,6 @@ impl Context<'_> {
     }
 }
 
-/// The region's dominance hover the naval region view's bars give: its dominance text, then its
-/// ratio list ([`dominance_parts`]).
 pub fn dominance_hover(
     content: &super::counter_content::Content,
     frame: &replay_frame::frame::DecodedFrame,
@@ -303,11 +296,6 @@ pub fn dominance_hover(
     Ok(text)
 }
 
-/// The region's dominance text and its ratio list, which the strategic region's hover and the
-/// naval region view's bars share: the viewing country's current dominance and its building and
-/// live sources; then the region's minimum and each country's current dominance in roster order,
-/// each named by `marked` from its raw reference and canonical slot (its flag, tag and definite
-/// name).
 pub fn dominance_parts(
     content: &super::counter_content::Content,
     frame: &replay_frame::frame::DecodedFrame,
@@ -325,14 +313,11 @@ pub fn dominance_parts(
     ensure_newlines(&mut text, 1);
     text.push_str(&building_text(&reads, region, &row)?);
     text.push_str(&source_text(&reads, region, sources)?);
-    // The game never fills the dominance object's headquarters value or places in this build.
     let loc = |key: &str, args: &[(&str, Arg<'_>)]| reads.loc(key, args);
     let ratios = ratios(loc, &snapshot.rows, links, minimum, defines.ratio.clone()?, marked)?;
     Ok((text, ratios))
 }
 
-/// A sea province's strategic region hover in the default mode: the viewing country's dominance
-/// text, and the ratio list in the delayed text.
 pub(super) fn default_region(
     context: &Context<'_>,
     sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
@@ -360,7 +345,6 @@ pub(super) fn default_region(
     }
 }
 
-/// The viewing country's entry in a region's dominance roster, the null entry when it has none.
 fn own_row(
     rows: &[&NavalSupremacyRow],
     links: &std::collections::BTreeMap<u32, u32>,
@@ -375,7 +359,6 @@ fn own_row(
     Ok(own.cloned().unwrap_or_default())
 }
 
-/// The region's minimum dominance, then each country's current dominance in roster order.
 fn ratios(
     loc: impl Fn(&str, &[(&str, Arg<'_>)]) -> Result<String, String>,
     rows: &[&NavalSupremacyRow],
@@ -408,9 +391,6 @@ fn ratios(
     Ok(text)
 }
 
-/// The region's stored state vector is built by unique state identity from
-/// member provinces. Building status rows preserve the active aggregate
-/// vector and its signed total levels, including provincial building types.
 fn building_counts(
     context: &Region<'_>,
     region: u32,
@@ -468,8 +448,6 @@ fn building_counts(
     })
 }
 
-/// The levels of `viewer`'s active buildings in `states` by kind (naval base, air base, radar),
-/// a building's country matched as the dominance roster's is.
 fn count_levels(
     buildings: &[replay_data::rows::BuildingRow],
     states: std::collections::BTreeSet<u32>,
@@ -758,7 +736,6 @@ mod tests {
         let names = |raw: u32, slot: u32| Ok(format!("C{raw}/{slot}"));
         assert_eq!(ratios(localise, &[&later, &first], &links, 0, 50_000, names).unwrap(), "min 0\n\nratios\nC2/12 7\nC1/11 3\n");
         assert_eq!(ratios(localise, &[], &links, 0, 50_000, names).unwrap(), "min 0");
-        // The reserved Country0 holds entries under raw zero, which CountryLinks never lists.
         let reserved = row(0, 2, 100_000);
         assert_eq!(
             ratios(localise, &[&later, &first, &reserved], &links, 0, 50_000, names).unwrap(),

@@ -1,7 +1,3 @@
-//! Baseline from the existing doctrine-status census. Prepared receiver marks
-//! select terminal-state reads on the parked Slow worker. Grant expiry anchors
-//! and effective-gain store operands retain their native witnesses.
-//! Spool conversion follows no pointers and shares quiet replay allocations.
 use collector_observers::doctrine_changes::{self as changes, Domain};
 use engine_allocation as a;
 use engine_land_inputs::{country_tactic_unlocks, doctrine_state as n};
@@ -183,8 +179,6 @@ impl<R: RowCodec> Rows<R> {
         Ok(())
     }
     fn prepare_baseline(&mut self) -> Result<()> {
-        // Baseline or structural insertion only. One spare per steady frame keeps
-        // ordinary hand-offs allocation-free; a frame past them takes a new one.
         self.prepare_capacity(self.rows.len())
     }
     fn prepare_capacity(&mut self, count: usize) -> Result<()> {
@@ -225,7 +219,6 @@ impl<R: RowCodec> Rows<R> {
                 Action::Remove(key) => self.remove(key)?,
             }
         }
-        // Spool-only preparation of the recycled event vector.
         alloc(a::reserve(actions, self.rows.len()))?;
         Ok(())
     }
@@ -442,7 +435,6 @@ impl Frame {
                 shared.failed.store(true, Ordering::Release);
             }
             self.refusal = reason;
-            // Spool path: recycle any partially handed-off events after a refusal.
             self.pending.country_rows.clear();
             self.pending.folder_rows.clear();
             self.pending.track_rows.clear();
@@ -500,7 +492,6 @@ pub struct Store {
     registrations_dirty: bool,
     nested_bytes: usize,
     text: Vec<u8>,
-    /// Made by the first capture after each baseline, so a new store allocates nothing.
     projection: Option<a::SharedBox<SharedProjection>>,
     country_rows: Rows<DoctrineCountryRow>,
     folder_rows: Rows<DoctrineFolderRow>,
@@ -559,8 +550,6 @@ impl Store {
         for (i, &domain) in DOMAINS.iter().enumerate() {
             stamps[i] = changes::token(domain).ok_or("doctrine writers are not observed")?;
         }
-        // Lost observation or a failed conversion rebuilds the baseline at the
-        // next capture instead of refusing every hour until a forced refresh.
         let marked_loss = changes::take_lost();
         let lost = self.failed
             || self
@@ -569,8 +558,6 @@ impl Store {
                 .is_some_and(|projection| projection.failed.load(Ordering::Acquire))
             || marked_loss;
         if full || lost || !self.ready || root != self.root {
-            // Baseline/relocation only. The root is the same header already
-            // read and authenticated by CountryTacticUnlocks, including empty slots.
             *self = Self::default();
             self.root = root;
             self.base = base;
@@ -628,7 +615,6 @@ impl Store {
                 return Err("doctrine writer overlapped capture");
             }
         }
-        // Made on the first capture and on each baseline; a refusal is the allocation failure.
         if self.projection.is_none() {
             self.projection = Some(alloc(a::shared(SharedProjection::default()))?);
         }
@@ -723,8 +709,6 @@ impl Store {
         Ok(())
     }
     fn refresh_marked(&mut self, memory: &impl Memory, base: usize) -> Result<()> {
-        // Parent membership is settled before any child mark. A retired child
-        // no longer in the owned maps is never dereferenced.
         for domain in changes::REFRESH_DOMAINS {
             let mut result = Ok(());
             changes::take(domain, |pointer| {
@@ -778,8 +762,6 @@ impl Store {
             Domain::Gains => self.refresh_gains(memory, base, pointer)?,
             Domain::Bank | Domain::Progress => {
                 if let Some(location) = self.tracks.get(&pointer).copied() {
-                    // Parent marks settle folder/track membership before these
-                    // narrow scalar reads; the writer tokens bracket capture.
                     let index = self.track_rows.indices
                         [&key3(location.slot, location.folder, location.ordinal)];
                     let mut row = self.track_rows.rows[index].clone();
@@ -1158,9 +1140,9 @@ impl Store {
     }
 }
 
-/// The host retains this mutex until native callbacks have quiesced.
-/// # Safety
-/// `context` is the registered live mutex, owned for the entire observer lifetime.
+#[doc = " The host retains this mutex until native callbacks have quiesced."]
+#[doc = " # Safety"]
+#[doc = " `context` is the registered live mutex, owned for the entire observer lifetime."]
 pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
     if domain == Domain::GrantExpiry {
         changes::defer_expiry(pointer);
@@ -1174,8 +1156,6 @@ pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
         let base = store.base;
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let result = if domain == Domain::Status && store.ready && !store.failed {
-            // Grant snapshots retain their expiry anchors. Costs, folders and
-            // equipment publish only terminal rows, selected by the worker mark.
             match store.owners.get(&pointer).copied() {
                 Some(slot) => store.refresh_grants(&memory, base, slot, false),
                 None => Err("doctrine status receiver unavailable"),
@@ -1189,20 +1169,14 @@ pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
     }
 }
 
-/// Cost rows contain only terminal inventory values, not occurrence history.
-/// The cost-add and consumption writers select the same Slow-worker snapshot.
-/// # Safety
-/// Uses the retained context and quiescence contract of `observe`.
+#[doc = " # Safety"]
+#[doc = " Uses the retained context and quiescence contract of `observe`."]
 pub unsafe fn observe_cost_consumption(_context: usize, pointer: usize, _folder: usize) {
     changes::mark(Domain::Costs, pointer);
 }
 
-/// Retain the exact pre-store operand without acquiring the doctrine Store.
-/// Slow applies the last operand before terminal receiver refreshes, so a later
-/// track reset or parent retirement still supersedes it. No later native read
-/// is assumed equivalent to the EFFECTIVE_DAILY store occurrence.
-/// # Safety
-/// The context follows the same lifetime contract as `observe`.
+#[doc = " # Safety"]
+#[doc = " The context follows the same lifetime contract as `observe`."]
 pub unsafe fn observe_gain(_context: usize, pointer: usize, value: i64) {
     changes::defer_gain(pointer, value);
 }
@@ -1481,7 +1455,6 @@ mod tests {
             }
         }
         changes::enabled(true);
-        // A ready store's first capture made its projection.
         let mut store = Store {
             ready: true,
             root: (0, 0),
@@ -1709,7 +1682,6 @@ mod tests {
                 engine_native::Memory::copy(self.0, address, output)
             }
         }
-        // Marks and prepared scalar callbacks do not need the held Store mutex.
         let store_mutex = Mutex::new(store);
         let context = &store_mutex as *const Mutex<Store> as usize;
         let mut store = store_mutex.lock().unwrap();
@@ -1729,7 +1701,6 @@ mod tests {
             unreachable!()
         };
         assert_eq!(rows[0].effective_daily_mastery, 87_500);
-        // A later selected track refresh supersedes the pending gain operand.
         collector_test_support::with_allocations_denied(|| {
             unsafe { observe_gain(context, 0x300, -1) };
             for _ in 0..8 {
@@ -1750,11 +1721,8 @@ mod tests {
         store
             .observe(&NoReads, 0, Domain::GrantExpiry, status)
             .unwrap();
-        // Cost writers coalesce to the terminal native inventory, including
-        // removal and compaction after an intervening append.
         memory.word(0x500 + n::COST_USES, 1);
         collector_test_support::with_allocations_denied(|| {
-            // A removed folder operand is not needed for terminal cost rows.
             unsafe { observe_cost_consumption(context, status, usize::MAX) };
         });
         memory.array(status + n::COSTS, 0x500, 2);
@@ -1808,8 +1776,6 @@ mod tests {
         };
         assert_eq!(grants[0].days_at(store.countries[0].expiry_events), 4);
 
-        // Settle a preceding expiry before anchoring an appended grant, then
-        // apply only subsequent expiry counts to the new row.
         unsafe { observe(context, Domain::GrantExpiry, status) };
         memory.array(status + n::GRANTS, 0x600, 2);
         memory.word(0x600 + n::GRANT_DAYS, 3);

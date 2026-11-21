@@ -1,12 +1,9 @@
-//! Shared frame-only naval operands.
 pub use replay_derive::naval_mine_levels::*;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
-/// The runtime DLC bit ("Man the Guns") behind the game's naval mine feature.
 pub const FEATURE: u32 = 1 << 4;
 
-/// Whether the recorded DLC mask carries the naval mine feature.
 pub fn enabled(frame: &DecodedFrame) -> Result<bool, String> {
     match frame.complete::<tables::SimulationFeatures>() {
         Ok([features]) => Ok(features.dlc_mask & FEATURE != 0),

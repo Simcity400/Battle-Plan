@@ -1,4 +1,3 @@
-/** A synthetic matrix in the production kit and styles, at a chosen card size. */
 import { createRoot } from 'react-dom/client';
 import HeatMatrix from './HeatMatrix';
 import type { MatrixAxisItem, MatrixCell } from './matrix';
@@ -25,7 +24,6 @@ export const fixture = {
       onSelect={(row, column) => { selected = [row, column]; }} onVisible={(rows, columns) => { visible = { rows, columns }; }} />);
     await settle();
   },
-  /** The same number of countries, other ones, without a remount. */
   async replace(count: number) {
     const axis = items(count).map(item => ({ ...item, id: `other ${item.id}` }));
     root.render(<HeatMatrix key={mounts} label="Synthetic opinions" rows={axis} columns={axis} cell={cell} revision={`other:${count}`} active

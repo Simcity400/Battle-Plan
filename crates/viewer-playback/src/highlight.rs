@@ -1,20 +1,15 @@
-//! The picture a faction highlight is built over, as the frame's window took it.
 
 use crate::layers::political::Political;
 use map_display_data::{landscape::Regions, province_field, value_index::ValueIndex};
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_world::map::demilitarized::Zone;
 
-/// The political layer's picture, copied on the frame, or the mode fills layer's fill and zone.
 #[derive(Clone)]
 pub enum Over<P> {
     Layer(P),
     Mode(Arc<Regions>, map_display_data::retained::Retained<Zone>),
 }
 
-/// The political layer's picture, copied on the frame for a highlight built off it: the fill
-/// keys the border classes read and the demilitarised states, empty while the layer refuses the
-/// hour as its own fill is.
 #[derive(Default)]
 pub struct Picture {
     country_of: Arc<Vec<u32>>,
@@ -40,7 +35,6 @@ impl Picture {
         }
     }
 
-    /// The regions and demilitarised zone the scene's border plans are made from.
     pub fn regions_and_zone(&self, map: &installed_content_core::map::MapData) -> (Regions, Zone) {
         let field = |values: &Arc<Vec<u32>>| province_field::ProvinceField(Arc::new(province_field::Storage::Dense(Arc::clone(values))));
         let regions = Regions {

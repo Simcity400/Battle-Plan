@@ -2,8 +2,6 @@ import { categoricalPalette, nudgeApart } from '../charts/palette.ts';
 import { parseColor, toHex } from '../shell/appearance/color.ts';
 import type { CountryStyle } from '../generated/dashboard';
 
-/** Recorded map colours, with the chart's optional appearance adjustment. Missing
- * colours take the palette, exactly as the country balance charts do. */
 export function countryLineColours(tags: readonly string[], styles: ReadonlyMap<string, Pick<CountryStyle, 'color'>>, surface: string, fixed: boolean): Map<string, string> {
   const palette = categoricalPalette(surface);
   const raw = tags.map((tag, index) => {
@@ -14,9 +12,6 @@ export function countryLineColours(tags: readonly string[], styles: ReadonlyMap<
   return new Map(tags.map((tag, index) => [tag, toHex(colours[index])]));
 }
 
-/** Names the countries [`countryLineColours`] draws in a palette colour because no
- * map colour was recorded, so a palette colour is never taken for a country's own.
- * Null until the styles have answered, and when every country has its colour. */
 export function uncolouredWarning(tags: readonly string[], styles: ReadonlyMap<string, CountryStyle>, answered: boolean): string | null {
   const uncoloured = answered ? tags.filter(tag => !styles.get(tag)?.color) : [];
   return uncoloured.length ? `No map colour was recorded for ${uncoloured.join(', ')}; shown in a palette colour.` : null;

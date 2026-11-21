@@ -1,8 +1,3 @@
-//! Fresh counter queries over hourly simulation inputs, never the client's
-//! hover/path cache. Route admission is the shared native `unit_path` search.
-//! A division's searched route is timed as its arrival estimate
-//! ([`replay_derive::eta_derive::estimate_route`]); a railway gun's duration uses its
-//! own fresh speed operands ([`super::railway`]).
 
 use super::MovementContent;
 use engine_railways::crailway_manager::fresh_inputs;
@@ -17,9 +12,6 @@ use std::sync::OnceLock;
 use viewer_foundation::map::movement_reads::Moves;
 use viewer_foundation::movement_timing::{HourTerms, operands};
 
-/// Immutable row indexes for one hour. Each domain retains its own refusal;
-/// constructing the adapter cannot make a failed rail domain deny a route
-/// which takes only transport edges.
 pub(super) struct Inputs<'a> {
     pub(super) frame: &'a DecodedFrame,
     pub(super) hour: i32,
@@ -133,7 +125,6 @@ impl<'a> Inputs<'a> {
             )
             .map_err(str::to_owned)
         } else {
-            // Only a complete rail-info census certifies native no-info.
             Ok(0)
         }
     }
@@ -158,8 +149,6 @@ impl<'a> Inputs<'a> {
 
 impl viewer_foundation::map::movement_reads::CounterFacts for Inputs<'_> {
     fn rail_connected(&self, from: u32, to: u32) -> Fact<bool> {
-        // Return before railway nodes unless both endpoints are land, then prove
-        // both nodes before either selected building.
         for province in [from, to] {
             if self
                 .content
@@ -210,9 +199,6 @@ impl viewer_foundation::map::movement_reads::CounterFacts for Inputs<'_> {
             .ok_or_else(|| "fresh ETA railway orders group was refused".into())
     }
 
-    // Class-1 admission (range and target access, submarine rules and hostile
-    // strength) is reached only
-    // by a task-force search, which the viewer never runs.
     fn naval_access(&self, _: &Moves<'_, '_>, _: u64, _: u32) -> Fact<bool> {
         Err(super::task_force::ADMISSION_UNRECORDED.into())
     }
@@ -236,10 +222,6 @@ impl<'a> Inputs<'a> {
         .ok_or_else(|| format!("fresh ETA division {handle:#x} has no DivisionMovement row"))
     }
 
-    /// A division counter cache miss: search a new route to `target`, then
-    /// integrate duration over that route as an estimate. A
-    /// failed admission/search is distinguishable from missing facts: native
-    /// false yields Ok(empty), missing simulation inputs yield Err.
     pub(super) fn derive_to(
         &self,
         moves: &Moves<'_, '_>,
@@ -261,7 +243,6 @@ impl<'a> Inputs<'a> {
                 class: Default::default(),
             },
         )?;
-        // A nonpositive route count never asks for speed or actual progress.
         let duration = if route.is_empty() {
             Ok(0)
         } else {
@@ -354,9 +335,6 @@ mod tests {
         }
     }
 
-    /// The prospective preview keeps the native route search and times the
-    /// searched route as the division's estimate: distance over its recorded
-    /// base speed, with no fresh speed profile.
     #[test]
     fn idle_explicit_target_times_the_searched_route_at_the_edge_speed() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -379,7 +357,6 @@ mod tests {
             ),
             (4, ProvinceTerrain { flags: 1, index: 2 }, vec![]),
         ]);
-        // Neutral recorded speed terms: the edge speed is the base speed.
         content.land = Ok(viewer_foundation::movement_timing::LandSpeedContent {
             terrain_movement: vec![0, 0],
             regions: Default::default(),
@@ -415,10 +392,8 @@ mod tests {
                 None,
                 Err("the division's base speed is not recorded".to_owned()),
             ),
-            // 50000 over 200000 per hour is a quarter hour.
             (Some(200_000), Ok(25_000)),
         ] {
-            // An idle division's panel gives no speed; this one's own read is kept.
             put(
                 &mut frame,
                 TableRows::DivisionMovement(vec![DivisionMovementRow {
@@ -431,10 +406,8 @@ mod tests {
             let cells = Cells::default();
             let moves = Moves::for_counter(&world, assets.movement_reads(), &cells, &inputs);
             let preview = inputs.derive_to(&moves, 7, 4, false).unwrap();
-            // A known route survives a refused duration.
             assert_eq!(preview.route, [4]);
             assert_eq!(preview.duration, expected);
-            // The empty route needs no speed at all.
             let same = inputs.derive_to(&moves, 7, 3, false).unwrap();
             assert!(same.route.is_empty());
             assert_eq!(same.duration, Ok(0));
@@ -543,8 +516,6 @@ mod tests {
         );
     }
 
-    /// Task-force admission inputs are not recorded, so a reached class-1
-    /// fact refuses by name instead of admitting or denying an edge.
     #[test]
     fn task_force_admission_facts_refuse_by_name() {
         use viewer_foundation::map::movement_reads::CounterFacts;
@@ -576,7 +547,6 @@ mod tests {
             Inputs::new(&frame, &content).directed_rail_percentage(1, 2),
             Ok(0)
         );
-        // Edges and health become required only after the cooldown gate opens.
         *frame.tables[TableId::RailCooldowns.index()] =
             TableView::Complete(TableRows::RailCooldowns(vec![RailCooldownRow {
                 province: 1,

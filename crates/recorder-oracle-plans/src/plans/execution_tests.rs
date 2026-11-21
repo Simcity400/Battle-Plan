@@ -63,7 +63,6 @@ fn route_truth_is_independent_of_raw_nonboolean_witness_and_type3_progress() {
         engine_native::corder_instance::TYPE_PARADROP,
     ] {
         let (mut frame, mut saved, row) = fixture(kind);
-        // A saved nonzero time is still outside the type4 capture demand when route_is_ok is zero.
         saved
             .plans
             .orders

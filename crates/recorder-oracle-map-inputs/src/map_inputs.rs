@@ -1,4 +1,3 @@
-//! Saved operands for the three hourly map input tables.
 use super::*;
 
 mod reserved_launch;
@@ -565,10 +564,6 @@ pub fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
     Ok(())
 }
 
-/// The country writer emits original_tag iff its signed reference is positive; it passes
-/// that exact reference to the raw-indexed live tag-string lookup.
-/// The signed reference selects original bytes, including actual empty strings;
-/// nonpositive references certify saved omission without inventing zero.
 fn original_tag(
     row: &replay_data::rows::CountryAppearanceRow,
     saved: &save::Country,
@@ -628,12 +623,6 @@ fn original_tag(
     );
 }
 
-/// The ruling party's first saved `country_leader` against the recorded leader
-/// ideology and character. The country save writer writes `politics`
-/// unconditionally; the politics save writer omits `ruling_party` for a
-/// null party, and the party writer lists its leaders in vector order, the
-/// first being the game's. A null parent character is saved as `{0, 0}`
-/// and recorded as missing.
 fn ruling_leader(
     save: &Save,
     tag: &[u8],
@@ -714,9 +703,6 @@ fn armies(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// pool maximum selection starts from entry zero and replaces only on strictly greater signed
-/// quantity. Do not sum duplicates, filter nonpositive values, or use max_by_key
-/// (whose tie behavior selects the last entry).
 fn selected_variant(pool: &save::production::Pool) -> Option<u64> {
     let mut selected = None;
     for entry in &pool.equipment {
@@ -726,9 +712,6 @@ fn selected_variant(pool: &save::production::Pool) -> Option<u64> {
             selected = Some(entry);
         }
     }
-    // the pool writer retains negative entries, but omits zeros unless allow_zero_entries
-    // is enabled. Hidden zeros can beat every negative or make an empty saved
-    // list nonempty natively. Never turn those cases into an invented variant0.
     if pool.allow_zero_entries == Some(true) || selected.is_some_and(|entry| entry.amount.raw >= 0)
     {
         Some(selected.map_or(0, |entry| entry.variant))
@@ -867,8 +850,6 @@ fn ship_tooltip_suffixes(row: &replay_data::rows::ShipModelRow, save: &Save, r: 
             );
         }
     }
-    // The saved registry is fresh at the oracle hour. A carried daily
-    // VariantDefinitions/Modules row cannot certify this current tuple.
     let Some(variants) = &save.production.variants else {
         r.difference(
             &hull_label,
@@ -902,7 +883,6 @@ fn ship_tooltip_suffixes(row: &replay_data::rows::ShipModelRow, save: &Save, r: 
         );
     }
     if let Some(sum) = hull.upgrade_level_sum {
-        // upgrade refresh resets then adds every upgrade byte, with i32 wrap.
         let saved_sum = expected
             .upgrades
             .as_deref()
@@ -973,7 +953,6 @@ mod tests {
         let mut report = Report::default();
         ship_tooltip_suffixes(&row, &saved, &mut report);
         assert_eq!(report.differences.len(), 3);
-        // Zero omission is compared, not inferred from daily rows or a names token.
         let doc = installed_content_core::parser::parse(b"equipments={type={id={id=3 type=70}}}").unwrap();
         saved.production = save::production::parse(&doc.items).unwrap();
         row.hull_variant = Recorded::Value(Some(HullVariantInputs {
@@ -1093,7 +1072,6 @@ mod tests {
                 country: 101,
                 cosmetic_tag: b"GER_cosmetic".to_vec(),
                 red: u32::MAX,
-                // The game omits original_tag for the observed zero reference.
                 original_tag_reference: Recorded::Value(Some(0)),
                 ..Default::default()
             }]));
@@ -1109,12 +1087,10 @@ mod tests {
                 ship,
                 variant: (3_u64 << 32) | 70,
                 counter: Some(Default::default()),
-                // This fixture compares the original map fields and saved pool.
                 hull_variant: Recorded::NotRecorded,
                 ..Default::default()
             }]));
         let mut report = Report::default();
-        // Count historical fields once, even when multiple consumers demand them.
         report.record_tables(&frame);
         compare(&frame, &saved, &mut report);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1123,7 +1099,6 @@ mod tests {
             "{:?}",
             report.failed_comparisons
         );
-        // The retired shared movement packet is no longer compared.
         assert_eq!(
             report.compared_tables.len(),
             4,
@@ -1259,7 +1234,6 @@ mod tests {
                     country: 101,
                     leader_ideology: ideology.to_vec(),
                     leader_character: character,
-                    // The saved country has no emitted original_tag.
                     original_tag_reference: Recorded::Value(Some(0)),
                     ..Default::default()
                 }]));
@@ -1274,7 +1248,6 @@ mod tests {
             "{:?}",
             report.failed_comparisons
         );
-        // A missing character, another character or leader, and a zero id all differ.
         for (ideology, character) in [
             (b"nazism".as_slice(), None),
             (b"nazism", Some(1801)),
@@ -1285,7 +1258,6 @@ mod tests {
             let report = run(&mut frame, &saved, ideology, character);
             assert!(!report.differences.is_empty(), "{ideology:?} {character:?}");
         }
-        // A saved null parent reference is recorded as missing.
         politics(&mut saved)
             .leaders
             .get_mut(b"fascism".as_slice())
@@ -1301,8 +1273,6 @@ mod tests {
                 .differences
                 .is_empty()
         );
-        // A ruling party without saved leaders has none; one without a party
-        // block cannot be compared.
         politics(&mut saved)
             .leaders
             .insert(b"fascism".to_vec(), Vec::new());
@@ -1310,7 +1280,6 @@ mod tests {
         politics(&mut saved).leaders.clear();
         let report = run(&mut frame, &saved, b"", None);
         assert!(report.failed_comparisons["CountryAppearance"].contains("not a saved party"));
-        // Politics is written unconditionally, so its absence is refused.
         saved
             .governance
             .countries

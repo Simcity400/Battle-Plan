@@ -1,14 +1,9 @@
-//! The game's particle sort: each frame, after the update, every enabled runtime whose
-//! subsystem names a `sort` makes one compare-exchange pass over its own storage against the
-//! main camera, culled or hidden runtimes too. The order persists, so it converges over frames.
 use super::{LiveParticle, Simulation};
 use installed_content_core::particles::{RenderDescriptor, Sort};
 use viewer_foundation::map::camera::Camera;
 
-/// The pass gap, by a runtime's phase.
 const GAPS: [usize; 6] = [1, 4, 1, 16, 1, 64];
 
-/// The one camera a frame sorts against; seam copies have no eye of their own.
 #[derive(Clone, Copy)]
 pub(super) struct Eye {
     position: [f32; 3],
@@ -24,7 +19,6 @@ impl Eye {
     }
 }
 
-/// A runtime's sort and where its gap cycle stands.
 #[derive(Clone)]
 pub(super) struct Order {
     sort: Sort,
@@ -33,7 +27,6 @@ pub(super) struct Order {
 }
 
 impl Order {
-    /// A new runtime's first pass takes the second gap, four.
     pub fn new(render: &RenderDescriptor) -> Self {
         Self {
             sort: render.sort,
@@ -42,10 +35,6 @@ impl Order {
         }
     }
 
-    /// Two half passes at the phase's gap: `j` meets `j + gap` in the first half of each block
-    /// of twice the gap, from 0 and then from the gap. A block must end strictly before the
-    /// storage does, so the last particle is never compared. Largest key first unless
-    /// inverted; a tie never swaps.
     fn pass(&mut self, particles: &mut [LiveParticle], eye: Eye) {
         let count = particles.len();
         if self.sort == Sort::None || count == 0 {
@@ -113,7 +102,6 @@ mod tests {
         forward: [0., 0., 1.],
     };
 
-    /// A runtime as the game creates it.
     fn order(sort: Sort, invert: bool) -> Order {
         Order::new(&RenderDescriptor {
             sort,
@@ -122,7 +110,6 @@ mod tests {
         })
     }
 
-    /// A runtime whose next pass takes gap 1.
     fn at_gap_one(sort: Sort, invert: bool) -> Order {
         Order {
             phase: 0,
@@ -134,11 +121,8 @@ mod tests {
     fn one_frame_is_one_gap_pass_and_the_last_particle_is_never_compared() {
         let mut storage = particles(&[1., 2., 3., 4., 5., 6.]);
         let mut depth = order(Sort::Depth, false);
-        // A new runtime starts at gap 4, which needs a block of eight.
         depth.pass(&mut storage, EYE);
         assert_eq!(depths(&storage), [1., 2., 3., 4., 5., 6.]);
-        // Gap 1 meets (0,1) and (2,3), then (1,2) and (3,4); the block (4,5) would end at the
-        // storage's end.
         depth.pass(&mut storage, EYE);
         assert_eq!(depths(&storage), [2., 4., 1., 5., 3., 6.]);
         for _ in 0..12 {
@@ -155,7 +139,6 @@ mod tests {
         let mut storage = particles(&[3., -1., 2., 2., -4.]);
         at_gap_one(Sort::Distance, false).pass(&mut storage, EYE);
         assert_eq!(depths(&storage), [3., 2., -1., 2., -4.]);
-        // Age is the negated depth here: oldest first.
         let mut storage = particles(&[3., -1., 2., 2., -4.]);
         at_gap_one(Sort::Age, false).pass(&mut storage, EYE);
         assert_eq!(depths(&storage), [-1., 2., 3., 2., -4.]);

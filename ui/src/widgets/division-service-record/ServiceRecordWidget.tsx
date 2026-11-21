@@ -19,7 +19,6 @@ import { OPTIONS } from './definition';
 import RecordView from './RecordView';
 
 export default function ServiceRecordWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  // The record itself is followed; the countries a group names are resolved at the fallback's clock.
   const playback = useFallbackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
@@ -34,7 +33,6 @@ export default function ServiceRecordWidget({ widget, runtime, active, onDiagnos
   return <RecordView {...record} division={division} />;
 }
 
-/** The first division of the widget's countries on Most decorated divisions at its default sort. */
 function TopDivisionRecord({ widget, ...record }: Omit<ComponentProps<typeof RecordView>, 'division' | 'caption' | 'widget'> & { widget: WidgetSpec }) {
   const { runtime, hour, active } = record;
   const track = runtime.tracks.find(t => t.id === record.trackId);

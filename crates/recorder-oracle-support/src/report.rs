@@ -16,10 +16,6 @@ fn contained_refusal(reason: &str) -> bool {
     reason.contains("spool validation failed: ") || reason.contains("hook family ")
 }
 
-/// The tables a comparison group compares, when its name says so: a group
-/// named after one table, optionally with a family prefix ("economy
-/// CountryFuel"), or one of the named multi-table groups. Other groups name
-/// no tables and are always compared.
 pub fn group_tables(name: &str) -> Vec<TableId> {
     let last = name.rsplit(' ').next().unwrap_or(name);
     match last {
@@ -53,16 +49,10 @@ pub fn group_tables(name: &str) -> Vec<TableId> {
     }
 }
 
-/// Whether the hour of `metrics` read `table`: the collector marks every table it read in the
-/// hour it read it, whichever table its walk's time was charged to.
 pub fn daily_read(metrics: &replay_frame::frame::Metrics, table: TableId) -> bool {
     metrics.table_ns[table.index()] != 0
 }
 
-/// Per daily table, the last hour at or before `hour` on `branch` whose frame
-/// read it ([`daily_read`]). Blocks are read newest first with every daily
-/// table selected, and the scan stops once every daily table has a read hour
-/// (a branch starts with a full read).
 pub fn last_read_hours(
     replay: &Replay,
     branch: BranchId,
@@ -109,7 +99,6 @@ pub fn last_read_hours(
     Ok(last)
 }
 
-/// Tables outside the current recording contract have no acquisition to compare.
 pub fn retired_table(table: TableId) -> bool {
     replay_data::format::FormatVersion::CURRENT
         .table_refusal(table)
@@ -128,7 +117,6 @@ pub fn recorded_table_counts(frame: &DecodedFrame) -> BTreeMap<TableId, Result<u
         .collect()
 }
 
-/// [`Report::load_hour`] for `hour` on `branch`.
 pub fn is_load_hour(branch: &replay_frame::branches::BranchStart, hour: Hour) -> bool {
     branch.reason == replay_frame::branches::BranchReason::LoadSignal
         && branch.loaded_hour == Some(hour)
@@ -137,35 +125,15 @@ pub fn is_load_hour(branch: &replay_frame::branches::BranchStart, hour: Hour) ->
 
 #[derive(Debug, Default)]
 pub struct Report {
-    /// Admitted whole-save occurrences, preserving physical order and repeats.
-    /// Ordinary country censuses use only their authenticated canonical owners.
     pub country_emissions: Option<Vec<installed_content_save::SavedCountryEmission>>,
     pub canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
-    /// Queried at output time, after all content-dependent comparisons.
     pub content_reads: Option<installed_content_core::content::UncoveredReads>,
-    /// Positive game-thread costs identify refresh groups actually walked,
-    /// including forced branch/keyframe refreshes outside their usual slot.
-    /// A reconstructed snapshot alone is not proof: it may contain cached rows.
-    /// CountryIntel's walk is left out: it can move off its slot alone, so it
-    /// proves only itself ([`Report::intel_walked`]).
     pub observed_refresh: Vec<replay_data::cadence::Cadence>,
-    /// CountryIntel's own walk was measured at the compared hour.
     pub intel_walked: bool,
-    /// A daily table other than CountryIntel was walked off its slot: this
-    /// hour was a forced full walk (branch start, load, gap or refresh).
     pub forced_full: bool,
-    /// The compared hour.
     pub hour: Hour,
-    /// The compared hour is both the loaded and the first sampled hour of an
-    /// observed in-game load, never inferred from refresh costs, a session
-    /// start or an hour discontinuity.
     pub load_hour: bool,
-    /// Per table, the last hour at or before the compared hour whose frame
-    /// read it (`last_read_hours`). When set, a daily table not read at the
-    /// compared hour is carried, not compared (`attempt`).
     pub read_hours: Option<BTreeMap<TableId, Hour>>,
-    /// Comparison groups skipped because their daily tables were carried from
-    /// an earlier read, with that read's hour.
     pub carried: BTreeMap<String, Option<Hour>>,
     pub countries: usize,
     pub provinces: usize,
@@ -185,28 +153,20 @@ pub struct Report {
     pub army_orders: usize,
     pub scalar_checks: usize,
     pub differences: Vec<String>,
-    /// The comparison group each difference belongs to, in lockstep with
-    /// `differences`, so every group can print all of its own rows.
     pub difference_owners: Vec<String>,
     pub limitations: BTreeMap<String, Vec<String>>,
     pub excluded_states: BTreeSet<u32>,
     pub membership_skips: BTreeMap<String, usize>,
     pub compared_tables: BTreeMap<String, usize>,
     pub recorded_tables: BTreeMap<TableId, Result<usize, String>>,
-    /// Tables the recording's capture mode leaves out by design.
     pub not_recorded: BTreeSet<TableId>,
-    /// A validated pending publication, never an assumed empty table.
     pub deferred_tables: BTreeMap<TableId, String>,
     pub failed_comparisons: BTreeMap<String, String>,
     pub difference_groups: BTreeMap<String, usize>,
     pub active_comparison: Option<String>,
-    /// One line per allocation counter: recorded value, saved value and gap.
     pub boundary_witness: Vec<String>,
-    /// The explicit verdict on whether the save was taken at the sampled tick.
     pub boundary_verdict: Option<String>,
-    /// The compared session's sample boundary, printed with the witness.
     pub sample_boundary: Option<SampleBoundary>,
-    /// Each column compared at display precision, with that precision.
     pub display_compared: BTreeMap<String, String>,
 }
 
@@ -227,8 +187,6 @@ impl Report {
         });
     }
 
-    /// Return owned iteration storage so comparisons may mutate the report
-    /// while borrowing the save. Without admission, retain the strict full census.
     pub fn canonical_countries<'a, T>(
         &self,
         countries: &'a BTreeMap<Vec<u8>, T>,
@@ -298,8 +256,6 @@ impl Report {
         }
     }
 
-    /// Record one reason a comparison group is incomplete. Reasons for one
-    /// group accumulate, so a later refusal never hides an earlier one.
     pub fn incomplete(&mut self, group: impl Into<String>, reason: impl Into<String>) {
         let reason = reason.into();
         match self.failed_comparisons.entry(group.into()) {
@@ -314,13 +270,6 @@ impl Report {
         }
     }
 
-    /// At a non-full hour, a group whose tables are all daily and none was
-    /// read at this hour compares rows carried from an earlier read against
-    /// the save's current values: it is skipped and reported with the last
-    /// read hour (`Some` of the latest one among its tables). Hourly, static
-    /// and sliced tables, and groups that do not name their tables, are
-    /// always compared; sliced comparisons select the owners read at this
-    /// hour themselves.
     pub fn carried_group(&self, name: &str) -> Option<Option<Hour>> {
         let read_hours = self.read_hours.as_ref()?;
         if self.full_refresh() {
@@ -343,14 +292,6 @@ impl Report {
         })
     }
 
-    /// Whether a daily table was read at the compared hour. Its slot's walk
-    /// is always taken, except CountryIntel's: a held shared buffer moves it
-    /// to a later hour, and that retry is recorded as its measured cost
-    /// (`sampling::exported_table_ticks`). So CountryIntel is read at an hour
-    /// only when its own walk was measured there (or the hour is a full
-    /// refresh), whatever the other tables of its slot (IntelNetworks,
-    /// LogisticsEquipment) did; they are read on their slot hour or when their
-    /// walk was measured.
     pub fn read_at_hour(&self, table: TableId) -> bool {
         if table == TableId::CountryIntel {
             return self.full_refresh() || self.intel_walked;
@@ -358,8 +299,6 @@ impl Report {
         self.full_refresh() || self.refresh_is_current(table, self.hour)
     }
 
-    /// A sliced table compared only for the owners read at this hour: the
-    /// others are carried, not compared, since their oldest read.
     pub fn carried_owners(&mut self, table: TableId, oldest: Option<Hour>) {
         if self.read_hours.is_some() {
             self.carried
@@ -418,16 +357,6 @@ impl Report {
             .filter(|table| !frame.recorded(*table))
             .collect();
         self.observed_refresh.clear();
-        // Every daily table is walked off its slot only on a forced full hour,
-        // except CountryIntel, whose walk moves to the next hour when its
-        // shared buffer is held (`daily_intel::Loan::borrow`). The frame has
-        // no explicit full-refresh flag, so this is inferred from the tables
-        // marked read: a full hour none of whose off-slot daily tables is
-        // marked read (a cancelled job at detach, say) is not recognised: its
-        // off-slice rowless
-        // owners are then left uncompared, and with read hours supplied its
-        // off-slot daily groups are reported carried, rather than compared
-        // wrongly.
         self.forced_full = TableId::ALL.into_iter().any(|table| {
             table != TableId::CountryIntel
                 && frame.metrics.table_ns[table.index()] != 0
@@ -479,8 +408,6 @@ impl Report {
         }
     }
 
-    /// Static tables never go stale; a forced full walk (measured work on any
-    /// table of the same cadence family) counts as current.
     pub fn refresh_is_current(&self, table: TableId, hour: Hour) -> bool {
         let cadence = replay_data::cadence::cadence(table);
         matches!(cadence, replay_data::cadence::Cadence::Static)
@@ -488,15 +415,10 @@ impl Report {
             || self.observed_refresh.contains(&cadence)
     }
 
-    /// A forced full walk (branch start, load, gap or requested refresh), as
-    /// `record_tables` saw it.
     pub fn full_refresh(&self) -> bool {
         self.forced_full
     }
 
-    /// Whether a packet was read at the oracle hour. Current packets were
-    /// read with their hourly host row; a historical stamp naming another hour
-    /// is a `{label}.sample_hour` difference and the packet is not compared.
     pub fn packet_fresh(
         &mut self,
         label: &str,
@@ -536,10 +458,6 @@ impl Report {
         ));
     }
 
-    /// Every difference is printed, grouped by its comparison, with a count
-    /// line per group. The former hard hundred-line cap silently dropped whole
-    /// groups, including ones whose only difference it hid, which left them
-    /// undiagnosable from the report alone. There is no cap now.
     pub fn difference_lines(&self) -> Vec<String> {
         if self.differences.is_empty() {
             return Vec::new();
@@ -580,7 +498,6 @@ impl Report {
         match field.require(name) {
             Ok(value) => Some(value),
             Err(reason) => {
-                // Whole-frame comparisons already count every absent field in record_tables.
                 if self.recorded_tables.is_empty() {
                     self.limitation(&reason, subject);
                 }
@@ -654,9 +571,6 @@ impl Report {
         }
     }
 
-    /// The saved exact value of `column` as the recording stores it: rounded
-    /// to the column's display step when the recording keeps that column at
-    /// display precision, which the report then names.
     pub fn displayed(&mut self, column: &str, step: Step, saved: i64) -> i64 {
         if !self.display_compared.contains_key(column) {
             self.display_compared
@@ -665,8 +579,6 @@ impl Report {
         step.round(saved)
     }
 
-    /// [`Self::scalar`] for a column stored at a display step: the save's
-    /// exact value is rounded with the same step before comparing.
     pub fn scalar_displayed(
         &mut self,
         tag: &str,
@@ -687,9 +599,6 @@ impl Report {
         );
     }
 
-    /// [`Self::scalar_displayed`] for a column whose precision is no fixed
-    /// step: `round` stores the save's exact value as the recording does, and
-    /// `precision` names it in the report.
     #[allow(clippy::too_many_arguments)]
     pub fn scalar_displayed_by(
         &mut self,
@@ -717,7 +626,6 @@ impl Report {
         }
     }
 
-    /// The columns compared at display precision and their precision.
     pub fn display_precision_lines(&self) -> Vec<String> {
         if self.display_compared.is_empty() {
             return Vec::new();
@@ -760,8 +668,6 @@ impl Report {
         }
     }
 
-    /// Carried groups are not failures: at a non-full hour only the tables
-    /// read at that hour are compared, and the rest are listed after this line.
     pub fn coverage_line(&self) -> String {
         let mut line = format!(
             "Comparison status for recorded-format coverage: {}; {} table availability issues; {} failed or skipped comparison groups; {} groups with membership exclusions",

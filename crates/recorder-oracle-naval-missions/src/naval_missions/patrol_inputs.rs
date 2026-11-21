@@ -1,4 +1,3 @@
-//! Independent saved words of every distinct actual regional ledger member.
 use super::*;
 use installed_content_save::{SaveDocument, naval_missions::PatrolMissionFields};
 use replay_data::rows::NavalPatrolMissionInputRow;
@@ -35,7 +34,6 @@ pub(super) fn bind(
         Ok(Some(layout)) => document.project(&layout)?.mission_patrol_inputs(patrol)?,
         _ => document.mission_patrol_inputs(patrol)?,
     });
-    // No retained cache read is demanded for a member without a live convoy.
     if rows
         .iter()
         .any(|row| row.radar_cache.is_some() || row.air_cache.is_some())
@@ -72,7 +70,6 @@ fn saved_words(
     if target == 0 {
         eq(r, &format!("{label}.null target liveness"), live, 0);
     }
-    // Liveness never suppresses comparison of a stored stale full reference.
     if target != 0 || convoy {
         eq(
             r,
@@ -141,9 +138,6 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::
             continue;
         };
         let target = saved_words(row, expected, convoy, r)?;
-        // The simulation setter takes a task force and registers its spotter
-        // backlink. Every live target therefore belongs to the complete current
-        // task-force census; a stale generation cannot match another identity.
         eq(
             r,
             &format!("{label}.target_live current task-force census"),
@@ -347,7 +341,6 @@ mod tests {
         let mut report = Report::default();
         compare(&frame, &save, &mut report).unwrap();
         assert!(report.differences.is_empty());
-        // A different full generation cannot certify the stored target's life.
         *frame.tables[TableId::TaskForces.index()] =
             TableView::Complete(TableRows::TaskForces(vec![
                 TaskForceRow {

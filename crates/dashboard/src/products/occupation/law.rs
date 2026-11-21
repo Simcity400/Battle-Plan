@@ -1,5 +1,3 @@
-//! The laws the reply's states hold, named and iconed from the recorded content; the law itself is
-//! resolved by [`dashboard_text::occupation_law`].
 
 use crate::catalogue::{self, Catalogue, View};
 pub(super) use dashboard_text::occupation_law::{GroupLaw, LawInputs, admitted, law_for};
@@ -8,7 +6,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// A law the reply's states hold: its name and icon from the recorded content.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +16,6 @@ pub struct OccupationLawInfo {
     pub missing: Option<String>,
 }
 
-/// A law's icon drawn through `cat`: its declaration's sprite at its authored frame.
 fn icon(cat: &Catalogue, laws: &Laws, token: &str) -> Result<String, String> {
     let law = laws.find(token)?.ok_or_else(|| "Occupation law has no content declaration".to_owned())?;
     let sprite = cat.sprites.find(&law.sprite)?.ok_or_else(|| "Occupation-law sprite not in the recorded content stack".to_owned())?;
@@ -28,7 +24,6 @@ fn icon(cat: &Catalogue, laws: &Laws, token: &str) -> Result<String, String> {
     catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, frame, 32).map_err(|error| error.to_string())
 }
 
-/// A law's name (the token localised) and icon; an icon not drawn says why.
 pub(super) fn info(cat: Result<&Catalogue, &str>, laws: Result<&Laws, &str>, token: &str) -> OccupationLawInfo {
     let name = cat.ok().and_then(|cat| cat.localised(token, View::Plain));
     let icon = match (cat, laws) {

@@ -143,8 +143,6 @@ fn finalized_resident_conferences_use_their_earlier_publication_after_queue_clea
     }
     *hours[1].tables[TableId::PeaceSettlements.index()] =
         TableView::Complete(TableRows::PeaceSettlements(vec![row(100)]));
-    // Queue cleanup runs first, then advances/finalizes the remaining first entry.
-    // Its finalizer can already be published while that ID remains resident.
     for at in [101, 104] {
         let priors: Vec<_> = hours.iter().filter(|frame| frame.hour < at).collect();
         let mut report = Report::default();
@@ -160,7 +158,6 @@ fn finalized_resident_conferences_use_their_earlier_publication_after_queue_clea
             1
         );
     }
-    // A missing event must still fail, however long the object stayed resident.
     *hours[1].tables[TableId::PeaceSettlements.index()] =
         TableView::Complete(TableRows::PeaceSettlements(vec![]));
     let priors: Vec<_> = hours.iter().collect();
@@ -273,7 +270,6 @@ fn previously_published_events_keep_their_busy_span_and_failure_checks() {
     let mut report = Report::default();
     compare_settlements_after(&frame(105), recorded_hours(&priors), &saved, &mut report).unwrap();
     assert!(report.differences.is_empty());
-    // The old publication cannot excuse a new event outside the current span.
     let mut current = frame(105);
     *current.tables[TableId::PeaceSettlements.index()] =
         TableView::Complete(TableRows::PeaceSettlements(vec![row(100)]));
@@ -411,7 +407,6 @@ fn busy_drain_span_matches_long_delays_and_keeps_every_conference_in_the_census(
             reason: replay_data::rows::PEACE_DRAIN_BUSY.into(),
         };
     }
-    // A second conference appears only inside the span, not at either end.
     let mut second = row(102);
     second.conference = Some((4_u64 << 32) | 7);
     second.sequence = 2;
@@ -550,7 +545,6 @@ fn busy_drain_span_never_bridges_an_unrecorded_hour_or_another_branch() {
     );
 }
 
-/// One branch of `frames` as a real replay, so `compare_recorded_settlements` seeks it.
 fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
     use replay::spool::Record;
     use replay_data::{
@@ -596,7 +590,6 @@ fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
     ];
     let mut encoder = FrameEncoder::new();
     for mut frame in frames {
-        // The oracle reads only peace tables from earlier frames; singletons hold one row.
         for table in TableId::ALL {
             if !matches!(
                 table,
@@ -627,7 +620,6 @@ fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
 #[test]
 fn recorded_settlements_refuse_an_in_branch_gap_and_note_the_branch_start() {
     let saved = empty_settlement_save();
-    // Hour 102 is never recorded inside branch 1, which starts at hour 100.
     let replay = settlement_replay(vec![frame(100), frame(101), frame(103)]);
     let error = compare_recorded_settlements(&replay, &frame(103), &saved, &mut Report::default())
         .unwrap_err();
@@ -637,7 +629,6 @@ fn recorded_settlements_refuse_an_in_branch_gap_and_note_the_branch_start() {
             .contains("previous hourly PeaceBids sample unavailable"),
         "{error}"
     );
-    // At the branch's first hour nothing precedes it: a stated limitation, not an error.
     let mut report = Report::default();
     compare_recorded_settlements(&replay, &frame(100), &saved, &mut report).unwrap();
     assert!(
@@ -649,9 +640,6 @@ fn recorded_settlements_refuse_an_in_branch_gap_and_note_the_branch_start() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
-/// A conference resident before a recorded event loss and gone after it
-/// needs no finalizer capture across the loss; without the loss, or with
-/// one on another branch or between other reads, it still does.
 #[test]
 fn recorded_event_loss_stops_finalizer_completeness_crossing_it() {
     use replay::spool::ControlRecord;
@@ -906,7 +894,6 @@ fn retained_state_and_subject_outcomes_are_checked_and_destroyed_actions_are_nam
         overlord: 1002,
         subject: 1003,
     });
-    // A later conference's subject recipient is the one a completed save retains.
     *frame.tables[TableId::PeaceSettlements.index()] =
         TableView::Complete(TableRows::PeaceSettlements(vec![
             first.clone(),

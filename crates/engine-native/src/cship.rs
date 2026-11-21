@@ -1,5 +1,3 @@
-//! Ship fields relative to the primary pointer. Strength, organisation and
-//! experience retain signed i64 values through setters and serialization.
 
 use crate::{
     Memory, cequipment_type, cequipment_variant, cequipment_variant_pool, cname_group_member,
@@ -21,71 +19,34 @@ pub use gathered::{
 pub use hull_variant::{HullVariantInputs, read_hull_variant};
 pub use naval_power::{NavalPowerCache, read_naval_power};
 
-/// CShip primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_4888);
-/// CShip reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
-/// CShip reference type 51.
 pub const HANDLE_TYPE: u32 = 51;
-/// Stored signed acquired crew, independent of equipment demand.
 pub const ACQUIRED_MANPOWER: usize = 0x808;
-/// Sunk-convoy tally, signed i32, serialized with negative values intact.
 pub const SUNK_CONVOYS: usize = 0x3c;
-/// Embedded equipment-variant pool used by model selection.
 pub const EQUIPMENT_POOL: usize = 0x40;
-/// CShip class-database id, i32.
 pub const CLASS_DATABASE_ID: usize = 0x88;
-/// Embedded subunit definition. Copy construction installs the ordinary
-/// definition vtable even when the source is the null singleton. Copy
-/// assignment preserves its name and index.
 pub const SUBUNIT_DEFINITION: usize = 0x80;
-/// Signed definition index used by composition. Refit, deployment and loading
-/// copy the definition pair unchanged; serialization writes its token only.
 pub const SUBUNIT_INDEX: usize = SUBUNIT_DEFINITION + crate::csub_unit_definition::DATABASE_INDEX;
-/// Definition-token string.
 pub const DEFINITION: usize = 0x98;
-/// Category enum read as u32.
 pub const CATEGORY: usize = 0xe0;
-/// Fallback hull sprite MSVC string.
 pub const FALLBACK_SPRITE: usize = 0xe8;
-/// Category flags selecting formation from bits 8, 7 and 39.
 pub const FORMATION_FLAGS: usize = 0x628;
-/// Definition-valid byte tested before the variant entity ladder.
 pub const DEFINITION_VALID: usize = 0x90;
-/// Signed fixed5 HP maximum clamped against full strength.
 pub const MAXIMUM_STRENGTH: usize = 0x308;
-/// Signed fixed5 base organisation combined with effective modifiers.
 pub const BASE_ORGANISATION: usize = 0x300;
-/// Nullable CAirBase pointer.
 pub const CARRIER_AIR_BASE: usize = 0x730;
-/// Signed fixed5 anti-air base combined with effective modifiers for fresh
-/// naval-window totals.
 pub const ANTI_AIR_BASE: usize = 0x218;
-/// Entity model number, i32, converted as a signed decimal.
 pub const MODEL_NUMBER: usize = 0x810;
-/// Name-group member pointer. Naming returns its retained cache without
-/// refreshing. Serialization writes naming operands without updating the cache;
-/// a saved generated name cannot independently validate live cache freshness.
 pub const NAME_MEMBER: usize = 0x818;
-/// Inline fixed-reader sprite storage. Worker-owned text grows from the
-/// original descriptor when its complete payload needs more room.
 pub const MODEL_TEXT_CAPACITY: usize = 256;
-/// CShip signed i64 strength.
 pub const STRENGTH: usize = 0x6f8;
-/// CShip signed i64 organisation.
 pub const ORGANISATION: usize = 0x700;
-/// CShip signed i64 experience.
 pub const EXPERIENCE: usize = 0x708;
-/// CShip CTaskForce pointer.
 pub const TASK_FORCE: usize = 0x728;
-/// CShip allocation size.
 pub const SIZE: usize = 0x938;
-/// Ship constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c8_65b0);
-/// Shared type-0x33 unit-ID high-water counter, signed i32, serialized as
-/// `unit` and restored on load. Divisions share this type with ships.
 pub const NEXT_ID_RVA: Rva = Rva(0x030f_f228);
-/// Scalar fixed5 scale for signed i64 serialization.
 pub const FIXED_SCALE: i64 = 100_000;
 
 fn name_member(
@@ -114,11 +75,6 @@ fn name_member(
         .ok_or("ship cached name member pointer unreadable or null")
 }
 
-/// Copies the exact current peaceful or combat ship-name cache. The selected full reference and
-/// primary vtable are authenticated before following the name member (`NAME_MEMBER`); the existing
-/// NameGroupMember reader owns string guards and arena demand. Its successful span is uncommitted,
-/// including a valid empty cache. No generator, combat snapshot, runtime type gate or callback
-/// allocation is used.
 pub fn cached_name(
     memory: &impl Memory,
     base: usize,
@@ -130,8 +86,6 @@ pub fn cached_name(
     cname_group_member::cached_name(memory, base, member, names)
 }
 
-/// Worker-only copy of the retained name-group member cache (`cname_group_member::CACHED_NAME`).
-/// Growth continues from the original descriptor without retrying validation.
 pub fn cached_name_growing(
     memory: &impl Memory,
     base: usize,
@@ -145,8 +99,6 @@ pub fn cached_name_growing(
     cname_group_member::cached_name_growing(memory, base, member, bytes, len, required)
 }
 
-/// Same full-reference/member/cache guards as [`cached_name`], with no heap
-/// text payload copy. Used only for an off-hour sparse pride-name byte hint.
 pub fn cached_name_demand(
     memory: &impl Memory,
     base: usize,
@@ -161,10 +113,8 @@ pub fn cached_name_demand(
 pub struct Row {
     pub name: Option<cname_group_member::Span>,
     pub naming: Option<NamingOperands>,
-    /// Full native reference, type in the low u32 and id in the high u32.
     pub id: u64,
     pub task_force: u64,
-    /// Native fixed5 current hit points, not a normalized strength percentage.
     pub strength: i64,
     pub organisation: i64,
     pub experience: i64,
@@ -173,7 +123,6 @@ pub struct Row {
     pub class_id: i32,
     pub acquired_manpower: Option<i32>,
     pub required_manpower: Option<i32>,
-    /// Position in the task force's ship vector (`ctask_force::SHIPS`) before any replay key sorting.
     pub roster_ordinal: u32,
 }
 
@@ -191,21 +140,14 @@ pub struct ModelRow {
     pub maximum_strength: i64,
     pub anti_air_base: i64,
     pub maximum_organisation: i64,
-    /// Existing maximum-organisation observation; no independent native read.
     pub has_criticals: Option<u32>,
-    /// Independently certified carrier-base subtype; absent for non-carriers.
     pub air_capacity_kind: Option<u32>,
     pub positive_equipment_flags: u64,
-    /// Independent guarded suffix; None never invalidates the model prefix.
     pub subunit_index: Option<i32>,
-    /// Current selected-variant tuple; acquired independently after max-org.
     pub hull_variant: Option<HullVariantInputs>,
-    /// Independently certified current design dominance operands.
     pub naval_power: Option<[i64; 5]>,
 }
 
-/// Inline fixed-reader text or a complete worker-owned native string payload.
-/// The inline capacity remains a fixture/callback bound, not a worker limit.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ModelText {
     pub bytes: [u8; MODEL_TEXT_CAPACITY],
@@ -253,11 +195,6 @@ impl ModelText {
     }
 }
 
-/// Completed equipment-definition observations within one stopped capture:
-/// every completed definition it reached, keyed by its exact (module,
-/// definition, token) gather, because ships of one task force alternate hull
-/// definitions. Reset before each capture; variant and ship observations
-/// remain independent.
 #[derive(Default)]
 pub struct ModelMemo {
     hulls: crate::combat_sources::Map<HullKey, ModelHull>,
@@ -265,14 +202,11 @@ pub struct ModelMemo {
 }
 
 impl ModelMemo {
-    /// Forget every observation (and every native pointer key) for the next
-    /// capture, keeping its storage.
     pub fn reset(&mut self) {
         self.hulls.clear();
         self.hull_variant.reset();
     }
 
-    /// Retained memo storage, excluding text payloads already counted by rows.
     pub fn allocated_bytes(&self) -> usize {
         self.hulls.capacity() * std::mem::size_of::<(HullKey, ModelHull)>()
             + self
@@ -287,9 +221,6 @@ impl ModelMemo {
         self.hulls.get(&key)
     }
 
-    /// Only a complete successful observation is kept. Storage grows per
-    /// reached definition; an allocation failure (already terminal for the
-    /// capture) only forgoes the reuse.
     fn remember_hull(&mut self, hull: ModelHull) {
         if crate::allocation::reserve_map(&mut self.hulls, 1).is_ok() {
             self.hulls.insert(hull.key, hull);
@@ -297,7 +228,6 @@ impl ModelMemo {
     }
 }
 
-/// Module base, equipment definition pointer and its embedded token.
 type HullKey = (usize, usize, [u8; 4]);
 
 struct ModelHull {
@@ -306,9 +236,6 @@ struct ModelHull {
     native_null: bool,
 }
 
-/// Read the model inputs from an existing authenticated ship census. Identity
-/// and the task-force backlink are checked again for this independent table.
-/// The caller owns the current source census and row capacity.
 pub fn read_model(
     memory: &impl Memory,
     base: usize,
@@ -319,9 +246,6 @@ pub fn read_model(
     read_model_with_selection(memory, base, pointer, source, memo).map(|(row, _)| row)
 }
 
-/// Callback-local selected address and its completed authenticated observation.
-/// Never retain this source past the current stopped census, store it in model
-/// rows, or serialize it. Its private fields are minted only on model success.
 pub struct SelectedModelVariant {
     pointer: usize,
     handle: u64,
@@ -329,11 +253,6 @@ pub struct SelectedModelVariant {
     token: [u8; 4],
 }
 
-/// The original model reader with a transient selected-variant companion.
-/// Ordinary definitions keep their reads, memo admission and first failure.
-/// A registered variant's actual null CType singleton is separately admitted;
-/// empty selected pools retain variant0 and have no companion.
-/// Optional tuple acquisition belongs after the original maximum-org success.
 pub fn read_model_with_selection<M: Memory>(
     memory: &M,
     base: usize,
@@ -454,10 +373,6 @@ fn read_model_observed_inner(
             .ok()
             .filter(|pointer| *pointer != 0)
             .ok_or("ship model equipment definition pointer invalid")?;
-        // CEquipmentType clones can share tokens. Match the actual definition
-        // from this variant's fresh authenticated gather, not its token alone.
-        // The stopped capture owns this complete successful observation; no
-        // failed identity, descriptor, terminator or payload enters the memo.
         if let Some(hull) = memo.hull((base, definition, token)) {
             if hull.native_null && row.variant >> 32 == 0 {
                 return Err("ship model equipment definition identity mismatch");
@@ -505,12 +420,6 @@ fn read_model_observed_inner(
     Ok((row, selected_variant))
 }
 
-/// Read the composition index after `read_model` and the original maximum-org
-/// capture have succeeded for this same admitted ship/census observation.
-/// The embedded vtable/token authenticate the copied definition independently;
-/// null definitions retain their ordinary vtable, token165 and known index0.
-/// At most two guarded fixed spans (12+4 bytes) are read. This optional suffix
-/// must not consume the original model walk's read budget or retry a failure.
 pub fn read_model_subunit_index(
     memory: &impl Memory,
     base: usize,
@@ -535,8 +444,6 @@ pub fn read_model_subunit_index(
     read(memory, index).ok_or("ship subunit index unreadable")
 }
 
-/// Four unconditional counter observations. No value predicate lies between
-/// them; the completed prefix retains each diagnostic.
 fn read_model_counters(
     memory: &impl Memory,
     pointer: usize,
@@ -555,8 +462,6 @@ fn read_model_counters(
         Some(anti_air_at),
     ] = addresses
     else {
-        // Decide before copying: a later address overflow must not suppress a
-        // readable earlier field or replace its possible read-failure reason.
         let at = |offset| {
             pointer
                 .checked_add(offset)
@@ -600,8 +505,6 @@ fn read_model_counters(
 fn model_text(memory: &impl Memory, address: usize) -> Result<ModelText, &'static str> {
     let descriptor = Descriptor::read(memory, address)?;
     if descriptor.len > MODEL_TEXT_CAPACITY {
-        // The retained sprite descriptor sizes its payload from the original
-        // observation rather than a collector text ceiling.
         let mut bytes = Vec::new();
         descriptor.copy_buffer(memory, &mut crate::walk::Buffer::Growing(&mut bytes), 0)?;
         bytes.truncate(descriptor.len);
@@ -650,8 +553,6 @@ fn transport_carrier_base(
     Ok(Some(handle))
 }
 
-/// Cache hints for the census fields [`read_row`] copies from the ship at
-/// `pointer`, ahead of that read: no read, no fault, no value.
 pub(crate) fn prefetch_row(pointer: usize) {
     for (offset, len) in [
         (0, 16),
@@ -665,10 +566,6 @@ pub(crate) fn prefetch_row(pointer: usize) {
     }
 }
 
-/// The census fields of [`read_row`] as one record per ship, in its read
-/// order: vtable, handle, strength/organisation/experience, category, sunk
-/// convoys, class and parent task force. A run of ships is read with one
-/// guarded `copy_records` over their pointers ([`crate::cfleet`]).
 pub(crate) const ROW_FIELDS: [crate::memory::RecordField; 7] = {
     use crate::memory::RecordField;
     [
@@ -709,14 +606,10 @@ pub(crate) const ROW_FIELDS: [crate::memory::RecordField; 7] = {
         },
     ]
 };
-/// Bytes of one [`ROW_FIELDS`] record.
 pub(crate) const ROW_STRIDE: usize = 64;
 pub(crate) const ROW_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
 
-/// A ship row from a complete [`ROW_FIELDS`] record, with [`read_row`]'s
-/// checks after its guarded copy completed every field: the vtable first,
-/// then the handle, then the parent task force.
 pub(crate) fn decode_row(
     record: &[u8],
     expected_vtable: u64,
@@ -780,14 +673,11 @@ pub(crate) fn read_row(
         Some(parent_at),
     ] = addresses
     else {
-        // An overflowing field keeps the vtable check ahead of it.
         if read::<u64>(memory, pointer) != Some(expected as u64) {
             return Err("ship vtable mismatch");
         }
         return Err("ship address overflow");
     };
-    // The vtable and the fields in one guarded call; the vtable decides
-    // first, as when it was read alone.
     let mut vtable = [0; 8];
     let mut identity = [0; 8];
     let mut scalars = [0; 24];
@@ -848,32 +738,17 @@ pub(crate) fn read_row(
 #[cfg(test)]
 mod tests;
 
-/// Per-capture memos for complete shared contributions. Ships from a task force
-/// are consecutive in the census, so fixed last-source slots need no allocation
-/// or hash lookup. Fresh ship/location/fleet selectors choose every slot. Replace
-/// this memo at every hourly capture; none of these mutable game values may be
-/// reused beyond that callback. Failed or partial contributions are never stored.
 #[derive(Default)]
 pub struct OrganisationMemo {
     last: Option<(usize, [i64; 4])>,
-    /// (game, task roster owner) -> the country Reader::resolve authenticated.
     owner: Option<(usize, u32, usize)>,
     country: Option<(usize, [i64; 4])>,
-    /// Country -> its pride-of-the-fleet ship handle (`ccountry::PRIDE_OF_THE_FLEET`).
     pride: Recent<usize, [u8; 8], RECENT>,
     support: Option<(usize, [i64; 4])>,
-    /// HQ influence character reference -> its commander's four role terms,
-    /// `None` for an influence ship modifier calculation skips: task forces of
-    /// a fleet share their headquarters.
     influences: Recent<u64, Option<[i64; 4]>, 16>,
-    /// Province definition -> its terrain.
     terrain: Recent<usize, usize, RECENT>,
-    /// The latest location and its province definition, fixed for a province.
     location: Option<(usize, usize)>,
-    /// Terrain lookup's ocean fallback, content resolved once per capture.
     ocean: Option<usize>,
-    /// A task force's ships alternate classes and subunits, so these keep
-    /// the recent selectors rather than the last one.
     terrain_class: Recent<(usize, u32), [i64; 4], RECENT>,
     fleet: Option<(usize, Option<usize>, [i64; 4])>,
     leader_class: Recent<(usize, u32), [i64; 4], RECENT>,
@@ -881,92 +756,64 @@ pub struct OrganisationMemo {
     weather: Option<OrganisationWeather>,
     definitions: crate::modifier_definition::DefinitionMemo,
     own: Option<(usize, OrganisationOperands)>,
-    /// Current metadata for each presence mask of the maximum's four keys.
     modifier_guards: [Option<u16>; 1 << ORGANISATION_KEYS.len()],
 }
 
-/// Recent selectors an [`OrganisationMemo`] keeps.
 const RECENT: usize = 8;
 
 impl OrganisationMemo {
-    /// The ship-owned operands of the latest successful maximum read.
     pub fn organisation_operands(&self, ship: usize) -> Option<OrganisationOperands> {
         self.own
             .filter(|&(pointer, _)| pointer == ship)
             .map(|(_, operands)| operands)
     }
 
-    /// Serve `task`'s doctrine contribution from an earlier hour's complete
-    /// observation that a certificate keeps: the next ship of `task` reads no
-    /// doctrine tree.
     pub fn hold_doctrine(&mut self, task: usize, contribution: [i64; 4]) {
         self.last = Some((task, contribution));
     }
 
-    /// Serve `country`'s modifier-tree terms (`ccountry::MODIFIER_ACCUMULATOR`, its four ship
-    /// modifier keys) from an earlier hour's complete observation that a certificate keeps: the
-    /// next ship or task force of that country reads no accumulator for them.
     pub fn hold_country(&mut self, country: usize, terms: [i64; 4]) {
         self.country = Some((country, terms));
     }
 
-    /// The latest country this capture observed and its modifier-tree terms.
     pub fn country_terms(&self) -> Option<(usize, [i64; 4])> {
         self.country
     }
 
-    /// `task`'s doctrine contribution this capture observed, if complete.
     pub fn doctrine(&self, task: usize) -> Option<[i64; 4]> {
         self.last
             .filter(|&(observed, _)| observed == task)
             .map(|(_, contribution)| contribution)
     }
 
-    /// Serve the location terms of `weather`'s task force from an earlier
-    /// hour's complete observation that a certificate keeps; the reader
-    /// still compares its sources (game, task force, country, location and
-    /// province definition) with the ship's.
     pub fn hold_weather(&mut self, weather: OrganisationWeather) {
         self.weather = Some(weather);
     }
 
-    /// The latest location terms this capture observed, if complete.
     pub fn weather(&self) -> Option<OrganisationWeather> {
         self.weather
     }
 
-    /// Serve `location`'s province definition and terrain from an earlier
-    /// hour: neither changes for a province.
     pub fn hold_location(&mut self, location: usize, definition: usize, terrain: usize) {
         self.location = Some((location, definition));
         self.terrain.insert(definition, terrain);
     }
 
-    /// `location`'s province definition and terrain this capture observed.
     pub fn location_source(&self, location: usize) -> Option<(usize, usize)> {
         let (_, definition) = self.location.filter(|&(held, _)| held == location)?;
         Some((definition, self.terrain.get(&definition)?))
     }
 
-    /// Serve `fleet`'s leader and the leader's tree terms from an earlier
-    /// hour that the leader binding and tree certificates keep.
     pub fn hold_fleet(&mut self, fleet: usize, leader: Option<usize>, terms: [i64; 4]) {
         self.fleet = Some((fleet, leader, terms));
     }
 
-    /// `fleet`'s leader and its tree terms this capture observed.
     pub fn fleet_source(&self, fleet: usize) -> Option<(Option<usize>, [i64; 4])> {
         self.fleet
             .filter(|&(held, _, _)| held == fleet)
             .map(|(_, leader, terms)| (leader, terms))
     }
 
-    /// The task-force terms ship modifier calculation combined into this
-    /// capture's latest maximum for `task`, read for one of its ships: its
-    /// owner's country terms and pride ship, doctrine, terrain and location
-    /// weather, fleet leader and HQ support. `None` unless every one is
-    /// `task`'s. A ship whose own inputs and class selectors are unchanged has
-    /// an unchanged maximum while these are equal.
     pub fn task_terms(&self, task: &TaskForceFields) -> Option<TaskTerms> {
         let owner = self.owner.filter(|&(_, id, _)| id == task.roster_owner)?;
         let country = self.country.filter(|&(country, _)| country == owner.2)?.1;
@@ -989,18 +836,11 @@ impl OrganisationMemo {
         })
     }
 
-    /// The country the latest ship's task force named, as resolved.
     pub fn country(&self) -> Option<usize> {
         self.owner.map(|(_, _, country)| country)
     }
 }
 
-/// Ship-owned operands the organisation maximum reaches, carried only under
-/// the ship and medal-store certificate (`ship_model_mutations`).
-/// Selectors remain absent when their native branch did not read them.
-/// Modifier values stay raw, with current effective metadata applied on
-/// recompute. Only the DLC-set command writes the active modifier mask, and
-/// it then always reaches the observed world reset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrganisationOperands {
     ship: usize,
@@ -1015,22 +855,15 @@ pub struct OrganisationOperands {
 }
 
 impl OrganisationOperands {
-    /// A moved certificate requires fresh critical-entry observations even
-    /// when the gathered header and the ship's other fields compare equal.
     pub fn has_criticals(&self) -> bool {
         self.criticals.count != 0
     }
 
-    /// Two bits per native key: absent, disabled, enabled, or clamped.
-    /// Whole-row carry must compare each present key's current metadata.
     pub fn modifier_guard(&self) -> u16 {
         self.modifier_guard
     }
 }
 
-/// Compare a carried ship's modifier eligibility and clamp metadata, once
-/// per native key-presence mask in a capture. No absent key is read. The
-/// effective-value lookup uses these flags, including the active DLC mask.
 pub fn organisation_modifier_guard_matches(
     memory: &impl Memory,
     base: usize,
@@ -1063,8 +896,6 @@ pub fn organisation_modifier_guard_matches(
     Ok(current == guard)
 }
 
-/// A task force's ship modifier terms in one capture
-/// ([`OrganisationMemo::task_terms`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskTerms {
     owner: (usize, u32, usize),
@@ -1077,14 +908,10 @@ pub struct TaskTerms {
 }
 
 impl TaskTerms {
-    /// The fleet leader whose class rows select the commander-class term.
     pub fn leader(&self) -> Option<usize> {
         self.fleet.1
     }
 
-    /// Which terms differ from `other`'s, one bit each: owner (1), country
-    /// (2), pride ship (4), doctrine (8), location (16), fleet leader (32)
-    /// and HQ support (64). Diagnostics.
     pub fn differences(&self, other: &Self) -> u8 {
         [
             self.owner != other.owner,
@@ -1101,13 +928,6 @@ impl TaskTerms {
     }
 }
 
-/// Ship modifier calculation's region, province and task terms are shared by ships at the same
-/// location. The ship's own weather factor (`gathered::WEATHER_FACTOR`) is deliberately outside
-/// this packet. Sources are game, task, country, location and province-definition pointers; this
-/// complete observation expires with the existing per-capture memo unless a certificate keeps it
-/// ([`OrganisationMemo::hold_weather`]). `region_at` and `province_at` are the weather region and
-/// province clock records whose accumulators (the region record's modifier and the clock's night
-/// factor) it read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrganisationWeather {
     sources: [usize; 5],
@@ -1119,19 +939,14 @@ pub struct OrganisationWeather {
 }
 
 impl OrganisationWeather {
-    /// The task force it was read for.
     pub fn task(&self) -> usize {
         self.sources[1]
     }
 
-    /// The weather region record (an element of the weather manager's region array), whose
-    /// accumulator weather updating rebuilds.
     pub fn region(&self) -> usize {
         self.region_at
     }
 
-    /// The province clock record's applied night factor, which day/night updating compares before
-    /// rewriting the night factor.
     pub fn night_factor(&self) -> usize {
         self.province_at.saturating_add(0x268)
     }
@@ -1149,8 +964,6 @@ fn read_organisation_weather(
     })
 }
 
-/// [`read_organisation_weather`] with the ship's factor read by `factor` at
-/// its place in the walk ([`read_task_terms`] has no ship and reads none).
 fn read_organisation_weather_with(
     memory: &impl Memory,
     base: usize,
@@ -1179,8 +992,6 @@ fn read_organisation_weather_with(
         .element(region, 0x160)
         .ok_or("ship organisation weather region missing")?;
     let region_at = region;
-    // Keep this per-ship observation before the country/region/province terms,
-    // exactly where the original walk observes it; a failed packet is not kept.
     let factor = factor()?;
     let country_adjustment = effective_scalar(
         memory,
@@ -1215,10 +1026,6 @@ fn read_organisation_weather_with(
     ))
 }
 
-/// Two unconditional native fields with the original scalar observation order.
-/// Invalid geometry falls back before any copy, retaining an earlier source
-/// failure rather than replacing it with a later null/overflow diagnostic.
-/// A located global or vtable, refused as a null module would be.
 fn organisation_global(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key)
         .filter(|_| base != 0)
@@ -1250,8 +1057,6 @@ fn organisation_pair<const A: usize, const B: usize>(
     Ok((first, second))
 }
 
-/// Task-force doctrine-tree contribution. Zero skips the immutable name
-/// dictionary; nonzero terms retain both keys.
 fn doctrine_contribution(
     memory: &impl Memory,
     base: usize,
@@ -1281,8 +1086,6 @@ fn doctrine_contribution(
     }
     let mut node = ptr(head, 0)?;
     let mut previous = None;
-    // Task-force construction initializes the map size; traversal follows
-    // successors to the original sentinel.
     let count = field::<u64>(memory, task, 0x648)?;
     let mut visited = 0_u64;
     loop {
@@ -1360,14 +1163,6 @@ fn doctrine_contribution(
     Ok(total)
 }
 
-/// The task-force ship modifier terms ([`OrganisationMemo::task_terms`]) read
-/// without a ship: the task force's owner and its country's terms and pride
-/// ship, its doctrine contribution, its location's terrain and weather, its
-/// fleet leader and its HQ support, each read and kept in `memo` exactly as
-/// [`read_maximum_organisation_memo`] reads and keeps it for the task force's
-/// first ship (served from `memo` when kept), so a ship of `task` read later
-/// finds them there. `task` is the task force a ship named, gathered. None when
-/// a term is missing; an error fails nothing a ship's read would not.
 pub fn read_task_terms(
     memory: &impl Memory,
     base: usize,
@@ -1509,9 +1304,6 @@ pub fn read_task_terms(
     Ok(memo.task_terms(task))
 }
 
-/// An HQ influence's four navy-skill terms (ship modifier support), `None` for
-/// one it skips: an unresolved character or leader, or a leader that is not a
-/// navy commander.
 fn influence_terms(
     memory: &impl Memory,
     base: usize,
@@ -1559,10 +1351,6 @@ fn influence_terms(
     Ok(Some(v))
 }
 
-/// Derive the native fixed5 organisation maximum from all ship modifier
-/// sources. Four keys share one source traversal; the fourth is critical-effect
-/// scaling. No native function is invoked. Arrays/trees and pointer arithmetic
-/// are bounded.
 pub fn read_maximum_organisation_memo(
     memory: &impl Memory,
     base: usize,
@@ -1573,8 +1361,6 @@ pub fn read_maximum_organisation_memo(
     read_organisation_observation(memory, base, ship, memo)
 }
 
-/// Observe sources in the original reader's order, retaining ship-owned
-/// operands only after the complete maximum succeeds.
 fn read_organisation_observation(
     memory: &impl Memory,
     base: usize,
@@ -1616,8 +1402,6 @@ fn read_organisation_observation(
     )?;
     let game = u64::from_le_bytes(game) as usize;
     let country_id = u32::from_le_bytes(country_id);
-    // Every ship of a task force names the same roster owner; resolving it
-    // again within the stopped capture would authenticate the same object.
     let country = match memo.owner {
         Some((source, owner, country)) if source == game && owner == country_id => country,
         _ => {
@@ -1654,8 +1438,6 @@ fn read_organisation_observation(
     let experience = ptr(ship, 0x8f8)?;
     let medals =
         organisation_modifier_observation(memory, base, add(experience, 0x1b0)?, definitions)?;
-    // The doctrine tree belongs to the task force; every ship of it adds the
-    // same contribution, so it is walked once per task force.
     let doctrine = match memo.last {
         Some((memo_task, value)) if memo_task == task => value,
         _ => {
@@ -1685,10 +1467,6 @@ fn read_organisation_observation(
                 definition
             }
         };
-        // Ship modifier calculation selects terrain from the province
-        // definition; terrain-class adjustment adds only the ship's class. Both
-        // sources are shared until the stopped callback returns, including the
-        // complete ocean fallback scan.
         let terrain = match memo.terrain.get(&definition) {
             Some(terrain) => terrain,
             None => {
@@ -1727,8 +1505,6 @@ fn read_organisation_observation(
         None
     };
     let fleet = ptr(task, ctask_force::FLEET)?;
-    // Resolve the current task's fleet leader before reuse. The base fleet-
-    // leader contribution has no ship operand.
     let (leader, fleet_values) = match memo.fleet {
         Some((source, leader, value)) if source == fleet => (leader, value),
         _ => {
@@ -1766,8 +1542,6 @@ fn read_organisation_observation(
     };
     let criticals = array(ship, 0x918, 16)?;
     let critical = read_organisation_criticals(memory, base, criticals, definitions)?;
-    // Each recursive key contribution includes its own unscaled criticals
-    // and maximum support.
     let support = match memo.support {
         Some((memo_task, value)) if memo_task == task => value,
         _ => {
@@ -1837,19 +1611,12 @@ fn read_organisation_observation(
         critical,
         definitions,
     )?;
-    // The base organisation field keeps the reader's original reach, after
-    // both critical-entry passes. Only a complete read supplies a packet.
     operands.base_organisation = field(memory, ship, BASE_ORGANISATION)?;
     let maximum = organisation_maximum(operands.base_organisation, modifiers);
     memo.own = Some((ship, operands));
     Ok(maximum)
 }
 
-/// Recompute a certified ship's maximum from this hour's task-force terms.
-/// The caller proves the packet's ship identity and ship/medal certificate
-/// before calling. The terrain-class, leader-subunit and critical
-/// pointees remain hourly reads; only the owned selectors and raw arrays
-/// are served. A newly reached selector needs the original reader.
 pub fn read_maximum_organisation_from_terms(
     memory: &impl Memory,
     base: usize,
@@ -1980,8 +1747,6 @@ fn read_organisation_criticals(
     Ok(critical)
 }
 
-/// The ship modifier source additions, weather scaling, recursive critical
-/// scaling and support, shared by the full reader and certified recompute.
 fn combine_organisation(
     memory: &impl Memory,
     base: usize,
@@ -2024,8 +1789,6 @@ fn combine_organisation(
         .wrapping_add(critical[3])
         .wrapping_add(terms.support[3])
         .wrapping_add(100000);
-    // Each entry truncates before summing, as the game does; its counts
-    // and pointed modifier values are observed again on this second pass.
     for index in 0..operands.criticals.count {
         let entry = operands
             .criticals
@@ -2051,12 +1814,6 @@ fn combine_organisation(
     }))
 }
 
-/// Capture the four organisation-modifier operands with one full direct
-/// census when needed. Hooks and present-key metadata retain the original
-/// navy-organisation, navy-organisation-factor, maximum-organisation and
-/// critical-effect-factor order. Direct raw values are reused only within
-/// this stopped-callback invocation. Compute one effective accumulator
-/// scalar with the metadata memo.
 fn effective_scalar(
     memory: &impl Memory,
     base: usize,
@@ -2129,8 +1886,6 @@ fn organisation_modifier_observation(
             Some(result) => result?,
             None => {
                 if !captured {
-                    // The current census validates every entry, including its
-                    // unused suffix, before reusing these raw values.
                     lookup_many_at(memory, address, &SORTED_KEYS, &mut direct)?;
                     captured = true;
                 }
@@ -2157,8 +1912,6 @@ fn organisation_modifier_observation(
     })
 }
 
-/// Signed wrapping maximum-organisation arithmetic. The minimum 100 is
-/// fixed5, representing 0.001 organisation.
 pub fn organisation_maximum(base: i64, modifiers: [i64; 3]) -> i64 {
     (modifiers[1]
         .wrapping_add(modifiers[2])
@@ -2192,7 +1945,6 @@ mod cached_name_tests {
         word(&mut bytes, SHIP + HANDLE, FULL_HANDLE);
         word(&mut bytes, SHIP + NAME_MEMBER, MEMBER as u64);
         word(&mut bytes, MEMBER, cname_group_member::VTABLE_RVA.0 as u64);
-        // Generator/runtime naming types are outside the retained getter.
         bytes[MEMBER + cname_group_member::TYPE..MEMBER + cname_group_member::TYPE + 4]
             .copy_from_slice(&i32::MIN.to_le_bytes());
         let string = MEMBER + cname_group_member::CACHED_NAME;

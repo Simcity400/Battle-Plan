@@ -139,7 +139,6 @@ fn three_authored_sources_use_actual_creator_actor_without_role_inference() {
         image.q(STACK + 0x4a8, BASE + return_rva);
         let pending = war_before(&image, BASE, frame()).unwrap();
         image.attach();
-        // The operation's hour remains its before-CALL value even if drain is later.
         image.d(STATE + cgame_state::CURRENT_HOUR, 60828520);
         let event = war_returned(&image, BASE, pending).unwrap();
         assert_eq!(event.source, expected);
@@ -187,7 +186,7 @@ fn same_hour_pair_repeated_operations_have_no_pointer_or_pair_deduplication() {
         events.push(war_returned(&image, BASE, pending).unwrap());
     }
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0], events[1]); // Sequence assignment belongs to the ledger.
+    assert_eq!(events[0], events[1]);
 }
 
 #[test]
@@ -456,7 +455,6 @@ mod provenance_sites {
             for caller in entry.callers {
                 let at = BASE + caller.return_rva.0;
                 assert_eq!(route(BASE, entry.callers, at), Some(caller.route));
-                // The CALL instruction itself is not a return address.
                 assert_eq!(route(BASE, entry.callers, at - 5), None);
             }
         }
@@ -480,7 +478,6 @@ mod provenance_sites {
         let world = World::new(&image, BASE).unwrap();
         assert_eq!(world.hour(), Ok(60828400));
         assert_eq!(world.country_object(ACTOR).unwrap().instance, 0xbbbb);
-        // Slot 3 aliases the target: its object is canonical for reference 2 only.
         assert_eq!(world.country(3).unwrap().id, 2);
         assert_eq!(world.diplomacy_owner(0x31000).unwrap().reference, 2);
         assert_eq!(
@@ -490,7 +487,6 @@ mod provenance_sites {
                 .map(|country| country.id),
             [1, 2]
         );
-        // A conference names its winner and loser.
         image.q(CONFERENCE, BASE + peace_conference::VTABLE_RVA.0);
         image.q(CONFERENCE + peace_conference::REFERENCE, 0x7_0000_0031);
         image.d(CONFERENCE + provenance::MAIN_LOSER, 2);
@@ -504,7 +500,6 @@ mod provenance_sites {
             world.conference(CONFERENCE).err(),
             Some("event feed conference reference is null")
         );
-        // Other objects fail their vtables.
         assert!(world.war_endpoints(CONFERENCE).is_err());
         assert!(world.country_object(CANDIDATE).is_err());
         image.q(PROVINCE_STATE, BASE + cstate::VTABLE_RVA.0);

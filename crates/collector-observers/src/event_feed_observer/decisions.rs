@@ -1,4 +1,3 @@
-//! Sparse decision writers use the event feed's existing ownership and receipts.
 use super::*;
 use replay_data::event_feed_rows::decisions::{DecisionChange, Operation};
 fn access(
@@ -225,10 +224,6 @@ pub fn ignored(country: usize, token: usize, ignored: bool) {
         )
     });
 }
-/// What a committed flag store publishes, from its staged pre-store flags:
-/// the ignore flag now and whether removal is requested. `None` when the
-/// store changed nothing: the ignore flag already had its value, or removal
-/// was already requested.
 pub(crate) fn committed_flags(
     ignored: Option<(bool, bool)>,
     removed: Option<bool>,
@@ -238,10 +233,6 @@ pub(crate) fn committed_flags(
     }
     Some((ignored.map(|(_, now)| now), removed.is_some()))
 }
-/// A committed ignore or removal-request store, after the enclosing native
-/// writer returned. Suppression follows the flags its latch staged before
-/// the store, never the bytes already written: `ignored` is the flag
-/// before and after, `removed` whether it was already requested.
 pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: Option<bool>) {
     let Some((ignored, removed)) = committed_flags(ignored, removed) else {
         return;
@@ -304,9 +295,6 @@ pub fn activated(status: usize, pointer: usize, container: u8, state: i32, days:
     recorded
 }
 
-/// A real result store supplies both the retained delta and its feed
-/// occurrence. An uncertified owner's exact member keeps its occurrence and
-/// refuses only that owner; `false` when no attribution can be trusted.
 pub fn write_result(
     pointer: usize,
     state: Option<i32>,
@@ -330,7 +318,6 @@ pub fn write_result(
     recorded
 }
 
-/// Reuse the politics family's selected writer operands, without native reads.
 pub fn political_balance(pointer: usize, reference: u32, instance: u32, before: i64, after: i64) {
     if SHARED.load(Ordering::SeqCst).is_null() {
         return;

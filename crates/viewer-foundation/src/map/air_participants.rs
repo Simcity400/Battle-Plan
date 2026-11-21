@@ -1,17 +1,9 @@
-//! Country traversal for native flying-aircraft admission.
-//!
-//! The input vectors are simulation state in native order. The viewer owns
-//! the two presentation rosters and preserves the first raw reference for
-//! each canonical country within each roster. The two rosters are independent:
-//! a country can occur in both, just as it can in the native arrays.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
 
-/// Native country vectors. Map keys are canonical country slots; entries and
-/// vector elements are raw country references from the recording.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CountryRelations {
     pub reciprocal_donors: Vec<u32>,
@@ -19,17 +11,11 @@ pub struct CountryRelations {
     pub enemies: Vec<u32>,
 }
 
-/// A country's native vectors by canonical slot; a country without any has
-/// empty ones.
 pub trait CountryVectors {
-    /// All three vectors: the viewing country's and its volunteer hosts'.
     fn vectors(&self, slot: u32) -> io::Result<CountryRelations>;
-    /// Only the reciprocal donors, into `donors`: every other country the
-    /// arrays reach uses no other vector.
     fn donors(&self, slot: u32, donors: &mut Vec<u32>) -> io::Result<()>;
 }
 
-/// The two native country arrays, before regional air wings are traversed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AirParticipants {
     pub a: Vec<u32>,
@@ -48,8 +34,6 @@ fn canonical(raw: u32, links: &BTreeMap<u32, u32>) -> io::Result<u32> {
     })
 }
 
-/// One array being built, with the raw references and nonzero canonical
-/// slots it already holds, so each append is a set lookup.
 #[derive(Default)]
 struct Roster {
     list: Vec<u32>,
@@ -59,9 +43,6 @@ struct Roster {
 
 fn append_unique(roster: &mut Roster, raw: u32, links: &BTreeMap<u32, u32>) -> io::Result<()> {
     let slot = canonical(raw, links)?;
-    // The native comparison admits raw equality, or canonical equality when
-    // both references are nonzero. In particular, zero is not an alias of a
-    // nonzero reference even if a corrupt link maps that reference to zero.
     if roster.raws.contains(&raw) || (raw != 0 && roster.slots.contains(&slot)) {
         return Ok(());
     }
@@ -88,20 +69,6 @@ fn append_country_and_donors(
     Ok(())
 }
 
-/// Rebuild the ordered arrays used by for a viewing country.
-///
-/// `ours` is the viewing country's canonical slot, not a raw country
-/// reference. It may not itself appear as a key in `CountryLinks`.
-///
-/// `outgoing_volunteer_hosts` is that country's `VolunteerHosts` vector in
-/// position order, including repeated hosts. It is intentionally not an
-/// incoming donor query. `relations` gives a canonical slot's vectors: all
-/// three for `ours` and each host, only the donors for the other countries
-/// reached. `links` maps every nonzero raw country reference to its
-/// canonical slot.
-///
-/// The viewer scans its own wings first, then array A and then array B for
-/// each region. This function returns only A and B; it does not add `ours`.
 pub fn ordered_participants(
     ours: u32,
     relations: &impl CountryVectors,
@@ -193,7 +160,7 @@ mod tests {
         relations.insert(
             10,
             CountryRelations {
-                reciprocal_donors: vec![16], // Host donors are not traversed.
+                reciprocal_donors: vec![16],
                 wartime_allies: vec![11],
                 enemies: vec![13],
             },
@@ -202,7 +169,7 @@ mod tests {
             11,
             CountryRelations {
                 reciprocal_donors: vec![12],
-                wartime_allies: vec![17], // There is no ally-of-ally recursion.
+                wartime_allies: vec![17],
                 ..Default::default()
             },
         );
@@ -263,7 +230,6 @@ mod tests {
             (31, 4),
             (32, 3),
         ]);
-        // A broken canonical-zero link still does not alias a raw zero.
         aliases.insert(40, 0);
         relations.get_mut(&1).unwrap().reciprocal_donors.push(40);
 

@@ -1,4 +1,3 @@
-//! Land combat icons.
 
 use super::*;
 use viewer_foundation::engagement_history::Provenance;
@@ -12,10 +11,8 @@ use {
     viewer_foundation::land_combat_math::side_scores,
 };
 
-/// The `NDefines` the land combat marker reads besides its priority.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LandCombatDefines {
-    /// `NGraphics.LAND_COMBAT_{WINNING,LOSING,BALANCED}_COLOR`.
     pub colors: [[f32; 4]; 3],
     pub scores: ScoreDefines,
 }
@@ -42,7 +39,6 @@ impl LandCombatDefines {
         })
     }
 
-    /// The shipped values, for tests only.
     #[cfg(any(test, feature = "test-support"))]
     pub const VANILLA: Self = Self {
         colors: [
@@ -54,8 +50,6 @@ impl LandCombatDefines {
     };
 }
 
-/// Tint a seen combat by the viewer's side estimate against the
-/// other side's, with a ten-percent band either way.
 pub(super) fn combat_tint(
     mut scores: [i64; 2],
     defending: bool,
@@ -73,9 +67,6 @@ pub(super) fn combat_tint(
     }
 }
 
-/// The progress box localises `COMBAT_ICON_PROGRESS` with `VAL` as a fixed-point
-/// argument. A key the content lacks keeps its own bytes; text layout retains
-/// colour runs and inline icons.
 fn progress_text(
     localisation: &installed_content_localisation::localisation::Localisation,
     value: i64,
@@ -92,36 +83,20 @@ fn progress_text(
         .map_err(|refusal| refusal.to_string())
 }
 
-/// Keep a land combat's icon only while both sides' country lists are non-empty.
-/// Without the side row, the icon's existence is unknown.
 const NO_SIDE_ROW: &str =
     "icon omitted (it exists only while both sides' country lists are non-empty)";
 
-/// Combatant flag bits the game shows the bombardment child for, on either side.
 const BOMBARDMENT: u32 = (1 << 11) | (1 << 12);
 
-/// One land combat's marker for the hour's viewing country. Nothing here moves
-/// with the camera; [`land_combats`] only places and draws it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LandMarker {
     pub id: u64,
     pub(super) province: u32,
-    /// The first attacker with a map entity: its province and stack kind.
-    /// `None` keeps both anchors on the defender.
     pub(super) attacker: Option<(u32, u32)>,
-    /// Whether the viewer has intelligence on the combat.
     pub seen: bool,
-    /// Progress percentage on the fixed-point scale: fraction times one hundred.
-    /// An unavailable fraction retains the question mark.
     pub(super) progress: Option<i64>,
-    /// The plate and wedge colour; `None` for a seen combat whose survival
-    /// estimate is unknown, which draws neither.
     pub(super) tint: Option<[f32; 4]>,
-    /// The zero-based frame of the frame child: set by a seen combat's
-    /// indicator byte, kept by an unseen one ([`icon_frames`]); `None`
-    /// draws the frame child's authored initial frame, with its history reason counted.
     pub frame: Option<u32>,
-    /// The bombardment child, for a seen combat.
     pub(super) bombardment: bool,
 }
 
@@ -132,24 +107,20 @@ impl LandMarker {
 }
 
 impl HourTables {
-    /// The hour's land combat markers, their gaps and limitations.
     pub fn land_markers(&self) -> &LandMarkers {
         &self.land_combats
     }
 }
 
-/// Undecided combat icons or parts of them: cause, then the combats it affects.
 pub type Gaps = BTreeMap<String, BTreeSet<u64>>;
 
 fn gap(gaps: &mut Gaps, cause: String, combat: u64) {
     gaps.entry(cause).or_default().insert(combat);
 }
 
-/// How a table holds its rows this hour, for the wording of a row it lacks.
 #[derive(Clone, Copy, Debug)]
 pub enum Held<'a> {
     Complete,
-    /// With the rows the walk did not reach.
     Truncated(u32),
     Unavailable(&'a str),
     NotRecorded(replay_data::scope::CaptureMode),
@@ -166,7 +137,6 @@ impl<'a> Held<'a> {
     }
 }
 
-/// How a table held as `held` lacks the row for `key` this hour.
 pub fn missing_of(held: Held<'_>, name: &str, key: impl std::fmt::Display) -> String {
     match held {
         Held::Complete => format!("the {name} table has no row for {key}"),
@@ -182,7 +152,6 @@ pub fn missing_of(held: Held<'_>, name: &str, key: impl std::fmt::Display) -> St
     }
 }
 
-/// Why a table held as `held` is not whole this hour, if it is not.
 pub fn whole_of(held: Held<'_>, name: &str) -> Option<String> {
     match held {
         Held::Complete => None,
@@ -192,7 +161,6 @@ pub fn whole_of(held: Held<'_>, name: &str) -> Option<String> {
     }
 }
 
-/// One `LandCombats` row's values.
 #[derive(Clone, Copy, Debug)]
 pub struct CombatFields<'a> {
     pub id: u64,
@@ -201,7 +169,6 @@ pub struct CombatFields<'a> {
     pub defenders: &'a [u64],
 }
 
-/// One `LandCombatSides` row's values.
 #[derive(Clone, Debug, Default)]
 pub struct SideFields {
     pub indicator: u8,
@@ -223,7 +190,6 @@ impl SideFields {
     }
 }
 
-/// How the tables the survival estimate reads are held, for its gaps' wording.
 #[derive(Clone, Copy, Debug)]
 pub struct TintHeld<'a> {
     pub details: Held<'a>,
@@ -232,8 +198,6 @@ pub struct TintHeld<'a> {
     pub members: Held<'a>,
 }
 
-/// The plate and wedge colour from the survival estimate (`None` without the combat's detail
-/// row), or the operand it lacks by the table that lacks it.
 pub fn marker_tint(
     scores: Option<Result<[i64; 2], ScoreGap>>,
     defending: bool,
@@ -269,22 +233,17 @@ pub fn marker_tint(
     }
 }
 
-/// What one combat's marker reads besides its own row.
 pub trait MarkerJoins {
-    /// Its sides row, or how the sides table lacks it.
     fn sides(&self, combat: u64) -> Result<SideFields, String>;
     fn first_attacker(&self, attackers: &[u64]) -> Result<Option<(u32, u32)>, &'static str>;
     fn flag(&self, combat: u64) -> Engaged;
     fn kept(&self, combat: u64) -> Kept;
     fn defending(&self, sides: &SideFields) -> Result<bool, SharingUnknown>;
     fn tint(&self, combat: &CombatFields<'_>, defending: bool) -> (Option<[f32; 4]>, Option<String>);
-    /// The attacker's progress, or the first ordered member with no `Divisions` row.
     fn progress(&self, combat: &CombatFields<'_>) -> Result<i64, u64>;
-    /// How `Divisions` lacks `division`.
     fn missing_division(&self, division: u64) -> String;
 }
 
-/// One combat's marker, when it has one, and the gaps and limitations it is named in.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MarkerOutcome {
     pub marker: Option<LandMarker>,
@@ -292,29 +251,23 @@ pub struct MarkerOutcome {
     pub limits: Vec<String>,
 }
 
-/// One land combat's marker for the viewing country, decided from values.
 pub fn land_marker(combat: CombatFields<'_>, joins: &impl MarkerJoins) -> MarkerOutcome {
     let marker = (|| {
         let sides = joins
             .sides(combat.id)
             .map_err(|missing| format!("{NO_SIDE_ROW}: {missing}"))?;
-        // The game erases (or never takes) the icon of a combat
-        // with an empty side: the game shows nothing, as here.
         if sides.attacker_primary.is_empty() || sides.defender_primary.is_empty() {
             return Ok(None);
         }
         let attacker = joins
             .first_attacker(combat.attackers)
             .map_err(|reason| format!("icon omitted: {reason}"))?;
-        // The game branches on the cached engaged flag; the unseen
-        // branch leaves the frame child as the last seen hour set it.
         let seen = match joins.flag(combat.id) {
             Engaged::Yes => true,
             Engaged::No => false,
             Engaged::Ambiguous(cause) => {
                 return Err(format!("icon omitted: {}", cause.reason()));
             }
-            // Either cause: the samples keep no finer one.
             Engaged::Unknown => {
                 return Err(
                     "icon omitted: engaged flag unknown (no refresh seen since the branch joined a running game or skipped hours, or an input the test reads is unrecorded)"
@@ -350,8 +303,6 @@ pub fn land_marker(combat: CombatFields<'_>, joins: &impl MarkerJoins) -> Marker
                 province: combat.province,
                 attacker,
                 seen,
-                // Pass the side's fraction times 100 as
-                // fixed point, `VAL` of COMBAT_ICON_PROGRESS.
                 progress: joins.progress(&combat).ok().map(|attacker| {
                     let side = if defending {
                         FIXED - attacker
@@ -372,9 +323,6 @@ pub fn land_marker(combat: CombatFields<'_>, joins: &impl MarkerJoins) -> Marker
         Ok(None) => {}
         Ok(Some((marker, tint_gap))) => {
             if marker.seen {
-                // Sum every ordered member's organisation:
-                // the percentage is unknown exactly when a member is
-                // unrecorded.
                 if let Err(division) = joins.progress(&combat) {
                     out.gaps.push(format!(
                         "percentage shows '?' (progress): {}",
@@ -396,7 +344,6 @@ pub fn land_marker(combat: CombatFields<'_>, joins: &impl MarkerJoins) -> Marker
     out
 }
 
-/// Today's joins: the hour's rows.
 struct HourJoins<'a, R> {
     vision: &'a Vision,
     resolve: &'a R,
@@ -463,22 +410,14 @@ impl<R: Fn(u32) -> Option<u32>> MarkerJoins for HourJoins<'_, R> {
     }
 }
 
-/// This hour's land markers, why any combat has none or draws one without
-/// an undecided part, and the limitations of the values they were drawn
-/// with, each naming its combats.
 #[derive(Debug, Default)]
 pub struct LandMarkers {
     pub markers: Vec<LandMarker>,
     pub gaps: Gaps,
-    /// Per limitation, the land combats whose value it applies to.
     pub limits: Gaps,
 }
 
 impl LandMarkers {
-    /// `engaged` is this hour's flag per combat and where it came from
-    /// ([`viewer_foundation::engagement_history::combats`]); `kept` what each live icon keeps
-    /// for its frame ([`viewer_foundation::engagement_history::kept_frames`]); `movement`
-    /// holds each division's derived stack kind.
     pub(super) fn read(
         frame: &DecodedFrame,
         vision: &Vision,
@@ -489,16 +428,12 @@ impl LandMarkers {
         defines: &LandCombatDefines,
     ) -> io::Result<Self> {
         let divisions = rows::<tables::Divisions>(frame)?;
-        // Current organisation is the Divisions row's.
         let conditions = conditions(frame)?;
         let provinces: BTreeMap<_, _> = divisions
             .rows()
             .iter()
             .map(|row| (row.id, row.province))
             .collect();
-        // Each recorded division's map entity bit and its
-        // stack kind; only a kind rebuilt from content is the unit's native
-        // kind ([`super::land::Movements`]).
         let kinds: BTreeMap<_, _> = rows::<tables::DivisionMovement>(frame)?
             .rows()
             .iter()
@@ -526,7 +461,6 @@ impl LandMarkers {
         let resolve = |raw: u32| links.get(&raw).copied();
         let mut out = Self::default();
         let combats = rows::<tables::LandCombats>(frame)?.rows();
-        // A load-rebuilt flag is kept, and named as such for every combat.
         if let Some(limit) = provenance.limitation()
             && !combats.is_empty()
         {
@@ -574,9 +508,6 @@ impl LandMarkers {
     }
 }
 
-/// Point the icon using the first participant attacker's display province
-/// and recorded-route stack kind. Missing movement or geometry leaves its
-/// direction unavailable.
 pub(super) fn first_attacker(
     attackers: &[u64],
     provinces: &BTreeMap<u64, u32>,
@@ -604,9 +535,6 @@ pub(super) fn first_attacker(
     Ok(None)
 }
 
-/// Combat direction uses the first participant attacker and the defender anchor.
-/// Start with both anchors at the combat province's defending slot, then replace
-/// the attacker anchor when the referenced unit and its current stack kind resolve.
 pub(super) fn combat_direction(
     inputs: &CounterInputs<'_>,
     province: u32,
@@ -620,9 +548,6 @@ pub(super) fn combat_direction(
     Ok(combat_midpoint(inputs.camera.map.x(), defender, attacker))
 }
 
-/// The defender and attacker anchors [`combat_direction`] reads from the
-/// content's unit stacks, or which one the content lacks. Without a mapped
-/// attacker both are the defender's, as the game seeds them.
 pub(super) fn combat_anchors(
     anchor: impl Fn(u32, u32) -> Option<[f32; 3]>,
     province: u32,
@@ -648,11 +573,6 @@ pub(super) fn combat_anchors(
     Ok((defender, attacker))
 }
 
-/// The midpoint of the two anchors and the wedge angle, with the attacker's x
-/// read on the wrapped map **near the defender**. `unwrap_x(reference, x)`
-/// moves `x`; passing the defender as the value moved the defender onto the
-/// attacker's copy and left the midpoint on the defender's own x. Reference 03
-/// put the Danzig bubble 42 device pixels east of the midpoint that way.
 pub(super) fn combat_midpoint(
     width: f32,
     defender: [f32; 3],
@@ -668,30 +588,10 @@ pub(super) fn combat_midpoint(
         (attacker[1] + defender[1]) * 0.5,
         (attacker[2] + defender[2]) * 0.5,
     ];
-    // Apply the direction angle to the icon's rotation scalar.
     let angle = (attacker[0] - defender[0]).atan2(-(attacker[2] - defender[2]));
     (midpoint, angle)
 }
 
-/// Offers the hour's land combats to the persistent native windows ([`land_windows`]).
-///
-/// The game binds `bg_btn`, `battle_indicator_direction`, `air_superiority_icon`,
-/// `mapicon_land_combat_frame`, `mapicon_land_combat_bombardment` and
-/// `combat_progress` by name, then drives them:
-///
-/// * **Unseen**: the wedge, air icon and bombardment child hide, the plate is white,
-///   the text keeps its `?` and the frame child retains the last seen hour's frame
-///   through the engaged index ([`icon_frames`]), or the authored initial frame
-///   where history is unknown, with the reason counted per combat.
-/// * **Seen**: plate and wedge take the winning, losing or balanced colour; the
-///   text shows the viewer's side; the frame child shows frame 1 or 2 by the
-///   combat's indicator byte; the bombardment child shows when either side's
-///   flags carry bits 11 or 12. The air icon replaces the text and frame only
-///   in air map mode.
-///
-/// The game appends `'_'` and the province's terrain key to the background button's
-/// authored sprite name and uses that sprite when declared; otherwise it keeps
-/// the authored name.
 pub(super) fn land_combats(
     inputs: &CounterInputs<'_>,
     markers: &LandMarkers,
@@ -711,7 +611,6 @@ pub(super) fn land_combats(
             .or_default()
             .extend(combats);
     }
-    // The raids map mode clears land combat icons with the other province icons.
     if !inputs.visibility.province_icons || !inputs.shows(inputs.content.defines.land_combat_cutoff)
     {
         return Ok(());
@@ -735,7 +634,6 @@ pub(super) fn land_combats(
         ) else {
             continue;
         };
-        // Write "?" when unseen.
         let text = match marker.progress {
             Some(value) => progress_text(inputs.localisation, value),
             None => Ok("?".to_owned()),
@@ -794,9 +692,6 @@ mod tests {
         }
     }
 
-    /// One seen combat 62: attackers 1 and 2, whose map entities are
-    /// recorded null, and defender 3. `divisions` are the recorded Divisions
-    /// rows; every recorded one has a status row.
     fn land_frame(divisions: &[u64]) -> DecodedFrame {
         let mut frame = frame();
         *frame.tables[TableId::LandCombats.index()] =
@@ -835,7 +730,6 @@ mod tests {
                     })
                     .collect(),
             ));
-        // The maxima the early damage estimate reads are the panel's.
         *frame.tables[TableId::DivisionPanelStats.index()] =
             TableView::Complete(TableRows::DivisionPanelStats(
                 divisions
@@ -868,7 +762,6 @@ mod tests {
         let engaged = (BTreeMap::from([(62, Engaged::Yes)]), Provenance::Indexed);
         let markers = LandMarkers::read(
             frame,
-            // The viewer attacks: its side is proven without relations.
             &Vision::sharing(5, []),
             &links,
             &engaged,
@@ -887,10 +780,6 @@ mod tests {
             .collect()
     }
 
-    /// The progress box localises COMBAT_ICON_PROGRESS with `VAL` as a
-    /// fixed-point argument, so the content's own
-    /// format and text around it show; a key the content lacks is drawn as
-    /// its bytes, not as a number.
     #[test]
     fn the_progress_box_localises_its_fixed_point_value() {
         let localisation: installed_content_localisation::localisation::Localisation =
@@ -898,7 +787,6 @@ mod tests {
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value.to_owned()))
                 .collect();
-        // 0.4567 of the fight: VAL 45.67 in fixed point, one decimal shown.
         let value = 4_567_000;
         assert_eq!(
             progress_text(&localisation, value).as_deref(),
@@ -911,9 +799,6 @@ mod tests {
         );
     }
 
-    /// A seen marker names each undecided part's own cause and its combat:
-    /// the unrecorded member behind the percentage, and the missing details
-    /// row behind the plate and wedge, each with how its table lacks it.
     #[test]
     fn land_gaps_name_the_combat_and_each_part_s_own_cause() {
         let frame = land_frame(&[1, 3]);
@@ -932,12 +817,6 @@ mod tests {
         );
     }
 
-    /// With a details row, the estimate's gap names the participant without
-    /// its Divisions row, the committed unit early damage needs, and a
-    /// committed unit without the maximum hit points the game reads, each
-    /// by the table that lacks it. A participant's missing DivisionStatus
-    /// row alone leaves the estimate whole: the game sums current
-    /// organisation only.
     #[test]
     fn a_missing_survival_estimate_names_its_operand() {
         let mut frame = land_frame(&[1, 2, 3]);
@@ -1001,7 +880,6 @@ mod tests {
         else {
             unreachable!()
         };
-        // Participant 2 is not committed: its maxima are never read.
         panels.retain(|row| row.division != 2);
         assert_eq!(causes(&land_gaps(&frame)), []);
         let TableView::Complete(TableRows::DivisionPanelStats(panels)) =
@@ -1019,7 +897,6 @@ mod tests {
         );
     }
 
-    /// A combat with no marker names its combat and why.
     #[test]
     fn an_omitted_land_icon_names_its_combat() {
         let mut frame = land_frame(&[1, 2, 3]);
@@ -1036,8 +913,6 @@ mod tests {
         );
     }
 
-    /// Read both anchors from the content's unit stacks; content
-    /// that places neither slot refuses the icon by province, never a guess.
     #[test]
     fn combat_anchors_refuse_by_province_and_slot() {
         let anchors = BTreeMap::from([

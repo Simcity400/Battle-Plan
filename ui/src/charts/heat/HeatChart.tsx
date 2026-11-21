@@ -26,31 +26,20 @@ import './heat.css';
 export interface HeatChartProps {
   label: string; rows: readonly HeatRow[]; periods: readonly HeatPeriod[];
   tail?: HeatTail;
-  /** A column read as each frame draws (the head's, from followed values): drawn over the cells it
-   * covers with no render, and drawn again when it changes. */
   liveTail?: Live<HeatTail | null>;
-  /** Full campaign labels, when playback changes the row inventory. */
   labelCatalogue?: readonly string[];
   extent: Range; playhead: number | null; branchStart: number;
-  /** Where the playhead is now, read as each frame draws: the playhead moves without a render. */
   liveHead?: LiveHead;
   afterPlayhead?: boolean; legend?: readonly { id?: string; label: string; color?: string }[];
   look: HeatLook; active: boolean; revision: unknown; hoursPerSecond?: number;
-  /** Hours whose cells are still loading: a light band, with no cells there yet. */
   loading?: readonly Span[];
   tooltip: (row: HeatRow, period: HeatPeriod | null, hour: number) => TooltipContent | null;
   onContextMenu?: (hour: number, x: number, y: number) => void;
-  /** A click on the plot, or Enter/Space on the keyboard row, picks that row at that
-   * period, such as to open its breakdown. Without it the plot picks nothing. */
   onPick?: (row: HeatRow, period: HeatPeriod | null, hour: number) => void;
-  /** Stable source/selection token for picks; a change cancels a pending one. */
   pickOwner?: unknown;
-  /** The hours in view and the plot's width in pixels, as they change. */
   onSummaryView?: TimeChartProps['onSummaryView'];
 }
 
-/** Content-neutral heat strip on the kit's time surface. Labels, axes, zoom,
- * pan, backing pixels, keyboard hover and tooltip ownership are shared. */
 export default function HeatChart(props: HeatChartProps) {
   const tokens = useChartTokens();
   const surface = useRef<HTMLDivElement>(null);
@@ -102,7 +91,6 @@ export default function HeatChart(props: HeatChartProps) {
     const loaded = (event: FontFaceSetLoadEvent) => {
       if (!loadedFontFamily(event, families)) return;
       labelCache.current.labels.clear(); labelCache.current.fitted.clear(); invalidateGeometry(measure);
-      // Font metrics can change while the clamped label column keeps the same width.
       setViewport(previous => ({ ...previous }));
     };
     document.fonts?.addEventListener('loadingdone', loaded);
@@ -190,7 +178,6 @@ export default function HeatChart(props: HeatChartProps) {
       });
     } }];
   }, [visible, periods, history, historyLast, props.tail, props.liveTail, props.look, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
-  // The live column's changes wake the chart as the head's moves do.
   const liveHead = useMemo<LiveHead | undefined>(() => {
     const head = props.liveHead, tail = props.liveTail;
     if (!head || !tail) return head;
@@ -202,7 +189,6 @@ export default function HeatChart(props: HeatChartProps) {
       const column = periodAt(periods, hour);
       return props.rows[index] ? props.tooltip(props.rows[index], column == null ? null : periods[column], hour) : null;
     } }), [visible, labelWidth, props.rows, periods, props.tooltip, window.first, window.offset, window.rowHeight, top, hoverRow]);
-  // TimeChart owns the fixed date axis; align its row labels with the scrolled cells.
   const overlay = (ctx: CanvasRenderingContext2D, frame: Parameters<ChartLayer['draw']>[1], tokens: Parameters<ChartLayer['draw']>[2]) => {
     ctx.save(); ctx.beginPath(); ctx.rect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight); ctx.clip();
     ctx.clearRect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight);
@@ -233,7 +219,6 @@ export default function HeatChart(props: HeatChartProps) {
           padding={{ top, bottom }} rows={rows} layers={layers} overlay={overlay} {...navigation}
           active={props.active} revision={props.revision} onContextMenu={props.onContextMenu} onSummaryView={props.onSummaryView}
           pickOwner={props.pickOwner} onPick={props.onPick ? hour => {
-            // The row under the pointer, or the keyboard's row, as the tooltip reads it.
             const row = props.rows[keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length)];
             const column = periodAt(periods, hour);
             if (row) props.onPick!(row, column == null ? null : periods[column], hour);

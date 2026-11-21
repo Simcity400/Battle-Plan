@@ -1,7 +1,6 @@
 use super::*;
 opaque_value!(Option<Option<u32>>);
 
-/// The cache's ordered fixed5 entries.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CachedModifier {
@@ -43,9 +42,6 @@ pub struct OperativeEffectModifier {
 value_struct!(OperativeEffectModifier { key: u32, value: i64, sources: Option<[std::sync::Arc<Vec<ModifierBreakdownNode>>; 3]> });
 opaque_value!(Option<std::sync::Arc<[Vec<u64>; 5]>>);
 
-/// One control-trade influence entry: the influencing country's raw
-/// reference and its fixed5 influence, saved under
-/// `trade_influence_modifier_of_buyers`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TradeInfluence {
@@ -58,9 +54,6 @@ value_struct!(TradeInfluence {
 });
 opaque_value!(Vec<TradeInfluence>);
 
-/// One diplomatic-pressure entry: the pressuring country's raw reference
-/// and the raw Q15 acceptance and tension words, saved as `opinion` and
-/// `tension` under `diplomatic_pressure_from_countries`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DiplomaticPressure {
@@ -75,13 +68,6 @@ value_struct!(DiplomaticPressure {
 });
 opaque_value!(Vec<DiplomaticPressure>);
 
-/// One operation requirement record. An equipment requirement names its
-/// equipment type's archetype by lexer token and is saved as
-/// `<archetype>=<amount>`; the civilian-factory requirement has no type
-/// (`equipment` and `archetype` zero) and is saved as
-/// `civilian_factories={ amount days }` with its amount truncated to whole
-/// factories. `days` is saved only for the factory requirement, and
-/// `uses_time` (the raw uses-preparation-time byte) never.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OperationRequirement {
@@ -100,9 +86,6 @@ value_struct!(OperationRequirement {
 });
 opaque_value!(Vec<OperationRequirement>);
 
-/// One equipment pool variant entry: the full variant reference, the lexer
-/// token of its equipment type's archetype and its fixed5 amount, in pool
-/// order. The save writes the variant and amount.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OperationEquipment {
@@ -117,8 +100,6 @@ value_struct!(OperationEquipment {
 });
 opaque_value!(Vec<OperationEquipment>);
 
-/// One equipment pool archetype total: the archetype's lexer token and the
-/// stored fixed5 total, in native order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OperationEquipmentTotal {
@@ -131,7 +112,6 @@ value_struct!(OperationEquipmentTotal {
 });
 opaque_value!(Vec<OperationEquipmentTotal>);
 
-/// Source of the retained scientist role's nonempty visible conjunction.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ScientistTemplateOrigin {
@@ -153,8 +133,6 @@ pub struct AgencyBufferedOffer {
 value_struct!(AgencyBufferedOffer { definition: u32, country: u32, state: Option<u32>, duration: Option<i32> });
 opaque_value!(Vec<AgencyBufferedOffer>);
 
-/// A raw buffered reference and the state getter result at this sample. A stale
-/// or null reference is None; a resolved operation with no state is Some(0).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AgencyBufferedOperation {

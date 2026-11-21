@@ -1,13 +1,3 @@
-//! The province bytes of the viewing country, as today's `visibility::derive` makes them, kept as
-//! ordered terms per province. Every source the derive walks (a controlled province, an occupied
-//! state, a division, a task force, a radar group, the volunteer theatres and hosts, the stationed
-//! units of a foreign theatre) puts its terms on the provinces it reaches, each under the place
-//! the derive reaches it (country, phase, row, index). A province's byte is its terms applied in
-//! that order; terms that depend on controllers or intel cutoffs read them when the province is
-//! folded, so a change of a controller or of a cutoff refolds only the provinces that read it.
-//!
-//! A refusal (a link the hour lacks, a table not whole, a capture refused) is kept at the place
-//! the derive meets it; the first in the derive's order is the visibility gap, by today's name.
 
 use super::{Columns, Content, Global};
 use crate::layers::owned::{Delta as Changes, Table as Mirror, Tables as Mirrors, complete, opaque, owner_rows, u32s};
@@ -19,8 +9,6 @@ use replay_data::rows::{Recorded, ReservedCountryIntelSample, ReservedReverseVis
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use viewer_foundation::map::perspective::{active_war, intel_fraction, map_cutoff, map_intel_subject, network_term, saturate};
 
-/// Where the derive reaches a term or a refusal: the country walked (the viewer first, then by
-/// canonical slot and native id), the phase, the row and the index inside it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Order {
     foreign: bool,
@@ -35,7 +23,6 @@ struct Order {
 #[derive(Clone, Copy, Debug)]
 enum Action {
     Set,
-    /// A neighbour's byte from a reveal or a task force at `from`.
     Stamp { from: u32, base: i32 },
     Network { raw_country: u32, state: u32 },
     Radar { raw_country: u32 },
@@ -60,8 +47,6 @@ enum Source {
     Stationed,
 }
 
-/// The derive's stages: before it (content and relations), its inputs and groups, its walk, the
-/// invasion sight after it.
 const BEFORE: u8 = 0;
 const INPUTS: u8 = 1;
 const WALK: u8 = 2;
@@ -77,7 +62,6 @@ enum Owner {
     Tables,
 }
 
-/// The input groups of the derive in its order, for the refusals before its walk.
 mod group {
     pub const COUNTRIES: u8 = 0;
     pub const PROVINCES: u8 = 1;
@@ -116,7 +100,6 @@ fn at(group: u8, key: u128) -> Order {
     Order { phase: group, a: (key >> 64) as u64, b: key as u64, ..Order::default() }
 }
 
-/// What a fold reads, borrowed for one settle.
 struct Reads<'a> {
     content: &'a Content,
     global: &'a Global,
@@ -134,7 +117,6 @@ impl Reads<'_> {
         Ok(a == b || (a != 0 && b != 0 && self.slot(a)? == self.slot(b)?))
     }
 
-    /// The canonical slot of a nonzero reference; none for zero.
     fn owned(&self, raw: u32) -> Result<Option<u32>, &'static str> {
         if raw == 0 { Ok(None) } else { self.global.links.get(&raw).copied().map(Some).ok_or("visibility country link") }
     }
@@ -312,7 +294,6 @@ impl Reads<'_> {
         self.provinces.and_then(Mirror::head).unwrap_or(0)
     }
 
-    /// Today's `Rebuild::cutoff` for two raw references.
     fn cutoff(&self, raw_a: u32, raw_b: u32, zero_rows: &[(u32, i64)]) -> Result<i32, &'static str> {
         let Ok(fog) = &self.content.fog else { return Err("fog content (topology or NIntel defines) failed to load") };
         let cutoffs = &fog.defines.map_cutoffs;
@@ -340,22 +321,16 @@ impl Reads<'_> {
 }
 
 
-/// The province terms and what keeps them.
 #[derive(Default)]
 pub(super) struct Fold {
-    /// Per province id: its terms in the derive's order, and its byte.
     terms: Vec<Vec<Term>>,
     bytes: Vec<u8>,
-    /// Provinces the Provinces table holds, and the same by id.
     present: BTreeSet<u32>,
     held: Vec<bool>,
-    /// Per source: where its terms are.
     sources: HashMap<Source, Vec<(u32, Order)>>,
     source_dirty: Vec<Source>,
     source_marked: HashSet<Source>,
     province_dirty: Dirty,
-    /// Per province: its controller's slot (none for zero), state; per slot its provinces; per
-    /// state its provinces; per fleet its task forces; the units the stationed source read.
     controller_of: HashMap<u32, Option<u32>>,
     state_of: HashMap<u32, u32>,
     controlled: BTreeMap<u32, BTreeSet<u32>>,
@@ -364,28 +339,20 @@ pub(super) struct Fold {
     task_fleet: HashMap<u64, u64>,
     host_slots: BTreeSet<u32>,
     stationed_units: HashSet<u64>,
-    /// Per raw pair: its cutoff, and the provinces whose fold read it; per province, its pairs.
     cutoffs: HashMap<(u32, u32), (Result<i32, &'static str>, HashSet<u32>)>,
     pairs: HashMap<u32, Vec<(u32, u32)>>,
     cutoffs_stale: bool,
-    /// The zero country's inputs changed: its lane and the pairs with a zero side are read again.
     zero_stale: bool,
     spent: [u64; 4],
-    /// CountryIntel rows written since the cutoffs were last read: raw owner and target slot.
     intel_changed: Vec<(u32, u32)>,
-    /// CountryIntel's owner-zero lane, by target.
     zero_rows: Vec<(u32, i64)>,
-    /// Divisions at sea: the land province an invasion takes its intel from, or why not.
     sea: BTreeMap<u64, Result<Option<u32>, &'static str>>,
     sea_dirty: BTreeSet<u64>,
-    /// Refusals at the place the derive meets them, and each owner's.
     errors: BTreeMap<ErrorKey, &'static str>,
     owned: HashMap<Owner, Vec<ErrorKey>>,
     rebuild: bool,
     since: Option<u64>,
     marked: u64,
-    /// Provinces whose byte its settles changed (kind "province"), and everything when anything
-    /// else may have, until the host clears it.
     pub(super) changed: crate::layers::Changed,
 }
 
@@ -395,8 +362,6 @@ impl Fold {
         self.since.get_or_insert(frame);
     }
 
-    /// Something read whole changed that does not move a term's source: the cutoffs are read
-    /// again.
     pub(super) fn global_changed(&mut self, frame: u64, relations: bool) {
         self.cutoffs_stale = true;
         if relations {
@@ -415,18 +380,15 @@ impl Fold {
     }
 
 
-    /// A province's byte as folded, zero for one the Provinces table does not hold.
     pub(super) fn byte_of(&self, province: u32) -> u8 {
         self.bytes.get(province as usize).copied().unwrap_or(0)
     }
 
-    /// Publishes that something other than a province's byte may have changed.
     pub(super) fn touch_all(&mut self) {
         self.changed.everything();
     }
 
 
-    /// The first refusal in the derive's order, by today's name.
     pub(super) fn gap(&self, content: &Content) -> Option<&'static str> {
         if content.fog.is_err() {
             return Some("fog content (topology or NIntel defines) failed to load");
@@ -434,7 +396,6 @@ impl Fold {
         self.errors.values().next().copied()
     }
 
-    /// Every province the Provinces table holds, with its byte.
     pub(super) fn province_bytes(&self) -> BTreeMap<u32, u8> {
         self.present.iter().map(|&id| (id, self.bytes.get(id as usize).copied().unwrap_or(0))).collect()
     }
@@ -469,8 +430,6 @@ impl Fold {
         }
     }
 
-    /// A table read whole turned partial or back: the sources that read it are made again, and
-    /// the refusals of tables not whole read again; the count marked.
     pub(super) fn status_changed(&mut self, table: TableId, mirror: &Mirror, frame: u64) -> u64 {
         if self.rebuild {
             return 0;
@@ -538,7 +497,6 @@ impl Fold {
         marked
     }
 
-    /// Marks the sources a step touched; the count marked.
     pub(super) fn apply(&mut self, table: TableId, changes: &Changes, mirror: &Mirror, columns: &Columns, frame: u64) -> u64 {
         if self.rebuild {
             return 0;
@@ -561,7 +519,6 @@ impl Fold {
                 for key in keys(changes, &[columns.controller.column, columns.province_state.column]) {
                     marked += self.mark_source(Source::Controlled(key as u32));
                 }
-                // An invasion's sight reads the controller of the province it lands in.
                 if controllers {
                     self.sea_dirty.extend(self.sea.keys().copied());
                 }
@@ -635,7 +592,6 @@ impl Fold {
         marked
     }
 
-    /// Everything dropped, every source and province marked.
     fn start_over(&mut self, reads: &Reads<'_>, frame: u64) {
         let (kept_marked, changed, spent) = (self.marked, std::mem::take(&mut self.changed), self.spent);
         *self = Self { marked: kept_marked, changed, spent, ..Self::default() };
@@ -678,7 +634,6 @@ impl Fold {
         self.tables_errors(reads);
     }
 
-    /// The refusals of tables not whole and of the viewer missing from Countries.
     fn tables_errors(&mut self, reads: &Reads<'_>) {
         let mut errors = Vec::new();
         for (group, table, name) in [
@@ -716,7 +671,6 @@ impl Fold {
         self.set_errors(Owner::Tables, errors);
     }
 
-    /// The countries walked for slot `country`: (place, native id), none when not admitted.
     fn walked(global: &Global, country: u32) -> Vec<(Order, u32)> {
         let Ok(relations) = &global.fog_relations else { return Vec::new() };
         if country == global.ours {
@@ -728,7 +682,6 @@ impl Fold {
         global.natives.get(&country).into_iter().flatten().map(|&native| (Order { foreign: true, slot: country, native, ..Order::default() }, native)).collect()
     }
 
-    /// A reveal's terms: the province set, then its land neighbours stamped.
     fn reveal(content: &Content, province: u32, base: i32, order: Order, out: &mut Vec<(u32, Order, Action)>) {
         out.push((province, order, Action::Set));
         Self::neighbors(content, province, base, Order { sub: order.sub + 1, ..order }, out);
@@ -742,7 +695,6 @@ impl Fold {
         }
     }
 
-    /// A source's terms and refusals, read from the mirrors.
     fn generate(&mut self, source: Source, reads: &Reads<'_>, frame: u64) -> (Vec<(u32, Order, Action)>, Vec<(ErrorKey, &'static str)>) {
         let (content, global, columns, mirrors) = (reads.content, reads.global, reads.columns, reads.mirrors);
         let mut terms = Vec::new();
@@ -770,7 +722,6 @@ impl Fold {
                     if old.is_some_and(|old| self.host_slots.contains(&old)) || slot.is_some_and(|new| self.host_slots.contains(&new)) {
                         self.mark_source(Source::Hosts);
                     }
-                    // The neighbours' stamps from this province and its own read its controller.
                     self.mark_province(id, frame);
                     for &next in content.neighbors(id).into_iter().flatten() {
                         self.mark_province(next, frame);
@@ -933,8 +884,6 @@ impl Fold {
         (terms, errors)
     }
 
-    /// The volunteer theatres' sources: the viewer's own areas, or the foreign theatres that
-    /// station its units.
     fn theatres(&mut self, source: Source, reads: &Reads<'_>, terms: &mut Vec<(u32, Order, Action)>, errors: &mut Vec<(ErrorKey, &'static str)>) {
         let (content, global, columns, mirrors) = (reads.content, reads.global, reads.columns, reads.mirrors);
         let Some(theatres) = complete(mirrors, TableId::LandTheatres) else { return };
@@ -946,7 +895,6 @@ impl Fold {
             })
             .collect();
         rows.sort_unstable();
-        // The groups' refusals: an owner for every theatre, a volunteer country where one is set.
         let mut owners = BTreeMap::new();
         for &(id, _, owner, _, volunteers) in &rows {
             match reads.owned(owner) {
@@ -1001,7 +949,6 @@ impl Fold {
                 by_theatre.entry((key >> 32) as u64).or_default().push((key as u32, slot));
             }
         }
-        // Per foreign slot not admitted, its theatre of the least ordinal holding our volunteers.
         let mut chosen: BTreeMap<u32, (u32, u64)> = BTreeMap::new();
         for &(id, _, _, ordinal, volunteers) in &rows {
             let Some(Some(country)) = owners.get(&id) else { continue };
@@ -1047,7 +994,6 @@ impl Fold {
         }
     }
 
-    /// Puts `source`'s new terms in place of its old ones, marking the provinces either touches.
     fn regenerate(&mut self, source: Source, reads: &Reads<'_>, frame: u64) {
         let (terms, errors) = self.generate(source, reads, frame);
         for (province, order) in self.sources.remove(&source).unwrap_or_default() {
@@ -1077,7 +1023,6 @@ impl Fold {
         self.set_errors(Owner::Source(source), errors);
     }
 
-    /// One province's byte, its terms applied in order; the first refusal is kept.
     fn refold(&mut self, province: u32, reads: &Reads<'_>) {
         for pair in self.pairs.remove(&province).unwrap_or_default() {
             if let Some((_, readers)) = self.cutoffs.get_mut(&pair) {
@@ -1175,9 +1120,6 @@ impl Fold {
         value
     }
 
-    /// Every cutoff read again; the provinces that read one that changed are marked.
-    /// The cutoffs of the pairs `which` names read again; the provinces that read one that changed
-    /// are marked. The zero country's lane is read again first when its rows may have moved.
     fn reread_cutoffs(&mut self, reads: &Reads<'_>, frame: u64, which: impl Fn(u32, u32) -> bool) {
         if which(0, 0) {
             self.zero_rows = complete(reads.mirrors, TableId::CountryIntel)
@@ -1199,7 +1141,6 @@ impl Fold {
         }
     }
 
-    /// One division at sea: the land province it takes intel from, or why not.
     fn settle_sea(&mut self, division: u64, reads: &Reads<'_>) {
         let columns = reads.columns;
         let (Some(divisions), Some(moves)) = (complete(reads.mirrors, TableId::Divisions), complete(reads.mirrors, TableId::DivisionMovement)) else {
@@ -1236,12 +1177,10 @@ impl Fold {
             Err(reason) => vec![((INVASION, Order { a: division, sub: 2, ..Order::default() }), reason)],
             Ok(_) => Vec::new(),
         };
-        // A sight that moved is published by the frame side, which compares the sight it takes in.
         self.sea.insert(division, sight);
         self.set_errors(Owner::Sea(division), errors);
     }
 
-    /// Sources, then provinces, then divisions at sea, within the settling; the rest carried.
     pub(super) fn settle(&mut self, content: &Content, global: &Global, columns: &Columns, mirrors: &Mirrors, frame: u64) {
         let reads = Reads { content, global, columns, mirrors, provinces: mirrors.get(TableId::Provinces) };
         if self.rebuild {
@@ -1297,7 +1236,6 @@ impl Fold {
         }
     }
 
-    /// Nanoseconds its settles spent, by part: cutoffs, sources, provinces, divisions at sea.
     pub(super) fn spent(&self) -> [u64; 4] {
         self.spent
     }

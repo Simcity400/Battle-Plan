@@ -1,4 +1,3 @@
-//! Capture failure notification and native allocation hook installation.
 
 pub(crate) use crate::terminal::*;
 use std::io;

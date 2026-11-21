@@ -1,4 +1,3 @@
-//! CFaction's native identity, literal name, template, colour and ordered country membership.
 
 use engine_sites::Rva;
 use crate::{
@@ -8,63 +7,32 @@ use crate::{
     walk::Outcome,
 };
 
-/// CFaction primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_2b58);
 
-/// CFaction packed reference (low u32 type, high u32 id).
 pub const REFERENCE: usize = 0x08;
-/// Normal faction creation uses reference type 88; this is not a
-/// handle-admission whitelist.
 pub const REFERENCE_TYPE: u32 = 88;
-/// CFaction own MSVC name string.
 pub const NAME: usize = 0x18;
-/// Faction member pointer-vector data; first member is leader.
 pub const MEMBERS: usize = 0x58;
-/// CFaction signed member capacity.
 pub const MEMBER_CAPACITY: usize = 0x60;
-/// CFaction signed member count.
 pub const MEMBER_COUNT: usize = 0x64;
-/// Nullable faction template pointer. Nonnull templates save their lexer
-/// identifier; display evaluates template localisation only for an empty
-/// literal faction name.
 pub const NAME_FALLBACK_HOLDER: usize = 0x568;
-/// The same pointer under the name the save gives it.
 pub const TEMPLATE: usize = NAME_FALLBACK_HOLDER;
-/// Faction colour is an embedded colour object with four f32 RGBA components (`COLOR_COMPONENTS`).
-/// Construction defaults each to 1.0 and copies the selected source components. Serialization
-/// truncates RGB components after scaling by 255; alpha is emitted only when it differs from 1.0.
 pub const COLOR: usize = 0x9d0;
-/// Offset of the first of the four f32 components inside `CColor`.
 pub const COLOR_COMPONENTS: usize = 0x10;
-/// Colour primary vtable.
 pub const COLOR_VTABLE_RVA: Rva = Rva(0x0279_6208);
-/// Colour-override byte: clear for the leader country's colour, set for
-/// template or explicit colour. Saved raw after colour and before ideology.
 pub const COLOR_OVERRIDDEN: usize = 0x9c0;
-/// Faction icon MSVC sprite key, saved unconditionally. Theatre pins
-/// append the miniature suffix for their icon.
 pub const ICON: usize = 0x548;
-/// CFaction embedded `CFactionTheaterManager`.
 pub const THEATER_MANAGER: usize = 0x9f8;
 
-/// Embedded faction upgrade-status object.
 pub const UPGRADE_STATUS: usize = 0x838;
-/// Upgrade-status advisor-slot array: a signed count and 0x1A8-byte slots. Each slot starts with a
-/// nullable advisor pointer. Idea predicates compare non-null advisor idea tokens. Departing
-/// advisors clear the slot; serialization retains every slot and emits its character token only
-/// when occupied.
 pub const ADVISOR_SLOTS: usize = UPGRADE_STATUS + 0x98;
-/// Advisor slot stride.
 pub const ADVISOR_SLOT_STRIDE: usize = 0x1a8;
 
-/// Retained totals used by the faction screen, refreshed by their own writers.
 pub const POWER_PROJECTION_TOTAL: usize = 0x818;
 pub const INFLUENCE_TOTAL: usize = 0x820;
 pub const EXTRACTED_RESOURCES: usize = 0x910;
 pub const VARIABLES: usize = 0xa40;
-/// Shared manpower contribution array, with raw country tags and signed values.
 pub const MANPOWER_POOL: usize = 0x8f0;
-/// Faction research and manpower feature unlock bytes.
 pub const RESEARCH_UNLOCKED: usize = 0xa38;
 #[cfg(any(test, feature = "test-support"))]
 pub const MANPOWER_UNLOCKED: usize = 0xa39;
@@ -75,8 +43,6 @@ pub struct ManpowerContribution {
     pub value: i32,
 }
 
-/// Retain every native contribution, including nonpositive values and repeated
-/// tags. The save's positive-value filter belongs to comparison, not capture.
 pub fn manpower_into(
     memory: &impl Memory,
     base: usize,
@@ -111,14 +77,10 @@ pub fn manpower_into(
     Ok(())
 }
 
-/// One occupied advisor slot of a faction, in native slot order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AdvisorRow {
-    /// The faction's full native reference.
     pub faction: u64,
-    /// The slot's position; empty slots have no row, so ordinals may skip.
     pub ordinal: u32,
-    /// The advisor's idea token (`cadvisor::IDEA_TOKEN`) in the caller's arena.
     pub token_start: usize,
     pub token_len: usize,
 }
@@ -127,7 +89,6 @@ pub fn count_advisors(memory: &impl Memory, base: usize, game_state: usize) -> N
     walk_advisors_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Worker storage grows from the original native headers before publication.
 pub fn walk_advisors(
     memory: &impl Memory,
     base: usize,
@@ -232,25 +193,18 @@ pub fn walk_advisors_buffer(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native reference: low u32 type, high u32 id.
     pub id: u64,
-    /// Exact literal-name bytes in the caller's arena; an empty literal is valid.
     pub name_start: usize,
     pub name_len: usize,
-    /// The template's lexer token (`cfaction_template::IDENTIFIER_TOKEN`); None for no template.
     pub template_token: Option<u32>,
-    /// The faction colour's four `CColor` components (r, g, b, a) as raw f32 bits.
     pub color: [u32; 4],
-    /// The raw colour-override byte.
     pub color_overridden: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameWalk {
     pub outcome: Outcome,
-    /// Bytes actually copied for the returned rows.
     pub bytes_len: usize,
-    /// Sum of native literal lengths, including rows omitted for either capacity.
     pub required_bytes: usize,
 }
 
@@ -258,11 +212,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Copies current literal names into preallocated storage, without an engine call
-/// or allocation. Names are never shortened or converted lossily. Template-bound
-/// localisation and the separately updated display cache are not literal names.
-/// Capacity failures omit whole rows; required_bytes lets the spool thread grow
-/// the arena. All live pointer slots and string headers remain checked.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -289,9 +238,6 @@ fn walk_buffer(
     walk_buffer_with(memory, base, game_state, output, names, |_, _| {}).0
 }
 
-/// Worker acquisition sharing each faction's authenticated pointer and full
-/// handle with demanded companions. The boolean certifies the complete identity
-/// roster independently of names. No companion must repeat this native census.
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,
@@ -321,7 +267,6 @@ fn walk_buffer_with(
     let mut roster_complete = false;
     let result = (|| {
         let roster = cfaction_system::roster(memory, base, game_state)?;
-        // Faction creation grows the autonomous roster from its live count.
         output.ensure(roster.count as usize)?;
         let mut len = 0_usize;
         let mut bytes_len = 0_usize;
@@ -334,9 +279,6 @@ fn walk_buffer_with(
                 Err(reason) => return Err(name_failure.unwrap_or(reason)),
             };
             visit(pointer, id);
-            // A failed name/presentation does not hide independently readable
-            // companions of this or later authenticated factions. Preserve the
-            // first name failure and finish only the identity census.
             if name_failure.is_some() {
                 continue;
             }
@@ -416,15 +358,10 @@ pub(crate) fn identity(
     if id == 0 {
         return Err("non-null faction has null handle");
     }
-    // The vtable/handle and autonomous roster authenticate these fields, not
-    // independent membership in the native reference registry.
     Ok(id)
 }
 
-/// The whole `CColor`: its vtable and the four components.
 const COLOR_BYTES: usize = COLOR_COMPONENTS + 16;
-/// Where the colour and the override byte land in a packed presentation record (the
-/// template pointer is first).
 const RECORD_COLOR: usize = 8;
 const RECORD_OVERRIDDEN: usize = RECORD_COLOR + COLOR_BYTES;
 const RECORD_BYTES: usize = RECORD_OVERRIDDEN + 1;
@@ -447,20 +384,14 @@ const PRESENTATION_FIELDS: [RecordField; 3] = [
 ];
 const PRESENTATION: RecordLayout<'static> =
     RecordLayout::new(&PRESENTATION_FIELDS, RECORD_BYTES).expect("valid presentation layout");
-/// A template's vtable and identifier token, read as one span.
 const TEMPLATE_BYTES: usize = cfaction_template::IDENTIFIER_TOKEN + 4;
 
-/// A faction's template token, colour components and override byte: one guarded record
-/// copy per faction, and one more span per faction with a template. The template is
-/// authenticated by `CFactionTemplate`'s vtable and the colour by `CColor`'s; any failure
-/// fails the walk rather than guessing.
 fn presentation(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
 ) -> Result<(Option<u32>, [u32; 4], u8), &'static str> {
     let mut record = [0_u8; RECORD_BYTES];
-    // `copy_records` counts completed fields, so a whole record is every field.
     if memory.copy_records(
         RecordSources::Pointers(&[pointer]),
         &PRESENTATION,
@@ -563,8 +494,6 @@ mod advisor_tests {
         p64(bytes, at + 16, value.len() as u64);
     }
 
-    /// Faction 1 has three slots: an advisor, an empty slot and another
-    /// advisor; faction 2 has none.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x7000];
         p64(&mut bytes, GS + cgame_state::FACTION_SYSTEM, SYSTEM as u64);
@@ -634,7 +563,6 @@ mod advisor_tests {
             }
         );
         assert_eq!(walk.required_bytes, 12 + LONG.len());
-        // No factions, or no slots: no rows.
         let mut bytes = fixture();
         array(&mut bytes, FACTIONS[0].0 + ADVISOR_SLOTS, 0, 0);
         assert_eq!(run(&bytes, 4, 64).0.outcome, Outcome::Rows { len: 0 });

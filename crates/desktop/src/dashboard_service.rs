@@ -1,6 +1,3 @@
-//! Host-direct dashboard queries through the shared data library.
-//! The map renders on threads of its own; dashboard reads do not start it, and a map that stops
-//! leaves them working.
 
 use dashboard::{
     QueryError,
@@ -56,7 +53,6 @@ impl Requests {
             return Err(CANCELLED.into());
         }
         if self.pending.len() >= MAX_PENDING {
-            // Starts with the service's own refusal, so the frontend tries it again.
             return Err(format!(
                 "{}. Retry this view.",
                 dashboard::transport::CAPACITY_REACHED
@@ -82,8 +78,6 @@ impl Requests {
 pub struct DashboardService {
     requests: Mutex<Requests>,
     runtime: Mutex<Option<Arc<dashboard::Service>>>,
-    /// The folders and unverified-content choice content was last configured with, and what
-    /// would bind content that is still unbound.
     configured: Mutex<
         Option<(
             (std::path::PathBuf, std::path::PathBuf, bool),
@@ -92,11 +86,8 @@ pub struct DashboardService {
     >,
 }
 
-/// Why configured content is unbound, and so what binds it again without a new Apply. A
-/// recording's executable tables are its own, so no installed executable is read here.
 #[derive(PartialEq)]
 enum Unbound {
-    /// The folders were unavailable: they bind once they are back.
     Folders,
 }
 
@@ -146,7 +137,6 @@ impl DashboardService {
                 }
         });
         if stale {
-            // Recording-only products remain available when content refuses.
             let unbound = match runtime.configure_content(&config, allow_unverified) {
                 Err(error) => {
                     eprintln!("Dashboard content unavailable: {error}");
@@ -207,8 +197,6 @@ impl DashboardService {
     }
 }
 
-/// The host's saved content preferences with this run's command-line folder
-/// overrides, and whether unverified content is allowed.
 pub(crate) fn host_config() -> Result<(dashboard::Config, bool), String> {
     let mut config = dashboard::Config::load().map_err(|error| error.to_string())?;
     let mut allow_unverified = false;
@@ -225,7 +213,6 @@ pub(crate) fn host_config() -> Result<(dashboard::Config, bool), String> {
     Ok((config, allow_unverified))
 }
 
-/// The effective game and user folders, as the folder settings show them.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentFolders {
@@ -253,8 +240,6 @@ pub async fn content_folders() -> Result<ContentFolders, String> {
     .map_err(|error| error.to_string())?
 }
 
-/// Saves folders that name a usable installation, then reconfigures the host's
-/// data runtime and sends them to a running native viewer.
 #[tauri::command]
 pub async fn set_content_folders(
     window: WebviewWindow,
@@ -277,7 +262,6 @@ pub async fn set_content_folders(
     })
     .await
     .map_err(|error| error.to_string())??;
-    // Unchanged folders bind again too: an installation that was unavailable may be back.
     *service
         .configured
         .lock()
@@ -290,8 +274,6 @@ pub async fn set_content_folders(
     Ok(ContentFolders::of(&config))
 }
 
-/// Only bounded fragment assembly runs on the native reader. Completed replies
-/// move to their awaiting command.
 pub fn receive_data(app: &AppHandle, event: DataEvent) {
     let service = app.state::<DashboardService>();
     let mut requests = service
@@ -334,8 +316,6 @@ pub fn receive_data(app: &AppHandle, event: DataEvent) {
                     }
                 }
             } else {
-                // This includes an abandoned source-open receiver. The native
-                // Cancel rolls back a lease created before its response arrived.
                 cancel = Some(id);
             }
         }
@@ -385,7 +365,6 @@ async fn request(
     {
         return Err(CANCELLED.into());
     }
-    // The frontend parses the JSON once; the host only checked its framing.
     Ok(Response::new(json.into_bytes()))
 }
 
@@ -398,8 +377,6 @@ pub async fn dashboard_open_source(
     request_id: String,
 ) -> Result<Response, QueryError> {
     let path = crate::replay_path(&path)?;
-    // Upgraded before its revision is read, so the open names the recording as it now is. Both
-    // touch the file, so both run off the thread that pumps the map's window.
     let runtime = service.runtime(window.app_handle())?;
     let read = path.clone();
     let revision = tauri::async_runtime::spawn_blocking(move || {
@@ -432,7 +409,6 @@ pub async fn dashboard_product(
     request_id: String,
 ) -> Result<Response, QueryError> {
     query.validate()?;
-    // A followed query is answered where the map's playheads are, in this process too.
     request(
         &window,
         &host,
@@ -472,7 +448,6 @@ pub async fn dashboard_history_choice(
 }
 
 #[tauri::command]
-// Tauri injects window/state separately from the command's wire arguments.
 #[allow(clippy::too_many_arguments)]
 pub async fn dashboard_map_settings(
     window: WebviewWindow,
@@ -501,9 +476,6 @@ pub async fn dashboard_map_settings(
         },
     )
     .await;
-    // The map keeps its own copy of the preferences this host saves. A reply that fails after
-    // the save (or a save that failed) still has the map read the file again, which costs
-    // nothing when it did not change.
     if saving {
         host.map_settings_saved();
         window
@@ -529,7 +501,6 @@ pub fn dashboard_release_source(
     source_id: String,
 ) -> Result<(), String> {
     let runtime = service.runtime(window.app_handle())?;
-    // Its follows go with it.
     if let Ok(source) = runtime.source(&source_id) {
         let close = ProductRequest {
             source_id: source_id.clone(),
@@ -560,7 +531,6 @@ mod tests {
                 .starts_with(dashboard::transport::CAPACITY_REACHED)
         );
         assert!(dashboard::transport::transient_error(&refusal));
-        // The desktop's other refusals are not for want of room.
         assert!(!dashboard::transport::transient_error(CANCELLED));
         drop(receivers);
         requests.pending.remove("read-0");

@@ -4,22 +4,14 @@ import type { HourSpan, SeriesDrop, SeriesRun } from '../generated/dashboard';
 import { type FollowedAnswer, rowKey, rowName } from './follow/message.ts';
 import type { TileReply } from './tiles/tile';
 
-/** A line of a sub-keyed series: its owner's tag and the part (the rest of the row's key, as the service names it:
- * a variant, a resource, a region). */
 export interface SeriesKey { tag: string; part: string }
 
-/** One text per key, where a tile, a summary and a legend row are kept. */
 export const keyId = (key: SeriesKey) => `${key.tag}\u0000${key.part}`;
 
-/** A key's value at a read hour, as `series-state` answers a `{tag, part, hour}` read. */
 export interface KeyedState { tag: string; part: string; hour: number; run: SeriesRun | null; drop: SeriesDrop | null; missing: string | null }
 export interface KeyedStates { branchId: string; decimals: number; states: readonly KeyedState[] }
 
-/** A part an owner held in a span (`series-parts`): its key, the content id its key holds (a token or text id the
- * reader names), and the first and last hours it held a row. */
 export interface SeriesPart { part: string; id: string | null; firstHour: number; lastHour: number }
-/** An owner's parts in a span, the hours its line has no holder with why, and the bits of a row key below its owner
- * (a followed row's part is its key's low `partBits` bits). */
 export interface SeriesParts { tag: string; parts: readonly SeriesPart[]; missing: readonly { firstHour: number; lastHour: number; reason: string }[]; partBits: number }
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
@@ -39,7 +31,6 @@ export function validateKeyedStates(value: unknown): KeyedStates {
   return { ...(value as unknown as KeyedStates), states };
 }
 
-/** A `series-parts` reply asked for `tag` alone. */
 export function validateSeriesParts(value: unknown, tag: string): SeriesParts {
   const owner = object(value) && Array.isArray(value.owners) && value.owners.length === 1 ? value.owners[0] : undefined;
   if (!object(value) || !Number.isInteger(value.partBits) || (value.partBits as number) < 1 || (value.partBits as number) > 127
@@ -54,8 +45,6 @@ export function validateSeriesParts(value: unknown, tag: string): SeriesParts {
   return { tag, parts, missing: owner.missing as SeriesParts['missing'], partBits: value.partBits as number };
 }
 
-/** A tile request's lines for `keys` and the spans each tag's lines are drawn over: the service draws a tag's parts
- * over one set of spans, so keys of one tag asking different spans are refused. */
 export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Record<string, readonly HourSpan[]>> | undefined) {
   const lines = keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part }));
   if (!within) return { lines };
@@ -69,8 +58,6 @@ export function keyedTileParams(keys: readonly SeriesKey[], within: Readonly<Rec
   return { lines, within: Object.entries(byTag).map(([tag, spans]) => [countryFromKey(tag), spans]) };
 }
 
-/** The row of `key` in a followed answer of its owners' parts (rows named by tag, keyed by the whole row key), or -1
- * when the head holds no row of it. */
 export function followedRow(answer: FollowedAnswer | undefined, key: SeriesKey, partBits: number): number {
   if (!answer || answer.kind === 'notRecorded') return -1;
   const mask = (1n << BigInt(partBits)) - 1n, part = BigInt(key.part);
@@ -80,8 +67,6 @@ export function followedRow(answer: FollowedAnswer | undefined, key: SeriesKey, 
   return -1;
 }
 
-/** A tile reply for `keys` (in the order asked) with each line named by its key's id, as the tile view keeps lines;
- * a reply whose lines are not the keys asked is refused. */
 export function keyedTileReply(reply: TileReply & { lines: readonly { country: CountryRef; part?: unknown }[] }, keys: readonly SeriesKey[]): TileReply {
   if (!object(reply) || !Array.isArray(reply.lines) || reply.lines.length !== keys.length
     || !reply.lines.every((line, at) => object(line) && countryKey(line.country) === keys[at].tag && (line as { part?: unknown }).part === keys[at].part))
@@ -89,7 +74,6 @@ export function keyedTileReply(reply: TileReply & { lines: readonly { country: C
   return { ...reply, lines: reply.lines.map((line, at) => ({ ...line, country: keyId(keys[at]) })) } as TileReply;
 }
 
-/** A key's exact runs and drops among the hours read, and why each read hour without a value has none. */
 export interface ReachedKeyLine { key: SeriesKey; runs: SeriesRun[]; drops: SeriesDrop[]; missing: Map<number, string> }
 
 export function reachedKeyLines(keys: readonly SeriesKey[], states: KeyedStates | undefined): ReachedKeyLine[] {

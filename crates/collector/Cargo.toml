@@ -16,206 +16,66 @@ acquisition_profile = ["engine-native/acquisition_profile", "collector-memory/ac
 default = ["order_membership_changes", "politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "faction_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "province_combat_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "raid_intel_changes"]
 politics_capture = ["collector-politics/politics_capture"]
 advisor_changes = []
-# Bounded per-section wall/cycle measurements for diagnosing slow captures.
 advisor_profile = ["advisor_changes"]
-# Bounded per-hour slow-callback phase and thread-cycle diagnostics.
 callback_profile = ["collector-fuel-awards/callback_profile"]
-# Diagnostic: thread cycles per spool, helper and sizing step; off by default.
 phase_cpu = []
-# Diagnostic in-process CPU instruction sampling; off by default.
 worker_sampler = []
-# Live smoke only: a `columnar.fail` file in a campaign's directory fails its next journal
-# append once.
 columnar-fault-injection = []
-# A/B, off by default: try-only help, four attempts and half the first predicted
-# remainder in cumulative decaying-maximum costs; awaited prediction uses its mean.
 executor_join_help = []
-# Diagnostic oracle, off by default: also record the native values playback derives a breakdown
-# from inputs (the power-balance description trees) for the hour's sampled slice, for
-# `recorder derived` to compare with the derivation.
 breakdown_witness = ["collector-governance/breakdown_witness"]
-# Verification only, off in the product: convert ScriptVariables both ways every hour and count
-# and name their differences in status.json's `conversion_check`.
 conversion_check = ["collector-intel/conversion_check"]
-# Diagnostic checked-allocation injection; absent from normal builds.
 alloc-fault-injection = ["engine-air-history/alloc-fault-injection", "engine-allocation/alloc-fault-injection", "engine-characters/alloc-fault-injection", "engine-decisions/alloc-fault-injection", "engine-deployment/alloc-fault-injection", "engine-dlc/alloc-fault-injection", "engine-events/alloc-fault-injection", "engine-fixed-layout/alloc-fault-injection", "engine-fuel/alloc-fault-injection", "engine-intelligence/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-map-air/alloc-fault-injection", "engine-mutations/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-naval-history/alloc-fault-injection", "engine-occupation/alloc-fault-injection", "engine-peace/alloc-fault-injection", "engine-production/alloc-fault-injection", "engine-raid-inputs/alloc-fault-injection", "engine-railways/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-resources/alloc-fault-injection", "engine-scripts/alloc-fault-injection", "engine-stability/alloc-fault-injection", "engine-visibility/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
-# Parent-run synthetic exception oracle; its native DLL is built separately.
 tap-foreign-probe = ["collector-observers/tap-foreign-probe"]
 portrait_changes = []
-# Re-read AirCountryRelations only for countries whose vectors a native writer touched.
 relation_changes = ["collector-air-relations/relation_changes"]
-# Re-read air histories only where a native writer touched them.
 history_changes = ["collector-air-histories/history_changes"]
-# Relation opinion writer hooks: observed relations refreshes read only the statuses a writer changed.
 opinion_changes = ["collector-observers/opinion_changes"]
-# Carry a character's CharacterRoleTraits country-leader and advisor rows, and its advisor roles'
-# modifier caches and tooltip keys, until a native writer touches it; the role sites share the
-# advisor family's patches.
 character_changes = ["advisor_changes", "collector-observers/character_changes"]
-# Carry a ScriptFlags scope's rows until a native writer touches its flag manager.
 flag_changes = ["collector-intel/flag_changes"]
-# Carry a state's or province's building rows until a native writer touches its building status.
 building_changes = ["collector-construction/building_changes"]
-# Carry a country's AvailableAdvisors rows until a native writer touches its pool or a listed
-# advisor's character, and the AdvisorTokens table until a writer touches it; character
-# certificates come from `character_changes`.
 advisor_pool_changes = ["character_changes", "collector-observers/advisor_pool_changes"]
-# Publish the latest complete HiredAdvisors walk over an hour no appointed-list, pool, character or
-# roster writer ran (the advisor-pool family observes the appointed lists).
 appointment_changes = ["advisor_pool_changes", "roster_changes", "collector-advisors/appointment_changes"]
-# Publish the latest complete CountryCharacters and CountryRetiredCharacters walk over an hour no
-# pool (the advisor-pool family observes every record writer), character or roster writer ran.
 character_record_changes = ["advisor_pool_changes", "roster_changes", "collector-advisors/character_record_changes"]
-# Carry a country's PartyLeaders rows until a native writer touches one of its parties or a listed
-# leader's character; character certificates come from `character_changes`.
 party_leader_changes = ["character_changes", "collector-governance/party_leader_changes"]
-# Carry a ScriptVariables store's entries and keys until a native writer touches it; its seed is
-# read every hour.
 variable_changes = ["collector-intel/variable_changes"]
-# Carry a country's PoliticalParties rows (popularity and the ruling flag are read every hour)
-# until a native writer touches one of its parties or its party list changes, and its ActiveIdeas
-# rows until its idea list changes.
 party_changes = ["collector-governance/party_changes"]
-# Carry an air wing's WingEquipment rows until a native writer touches its equipment pool.
 wing_changes = ["collector-observers/wing_changes"]
-# Observe the character roster arrays and scientist roles: Characters and the role census, and
-# ScriptFlags' scope walk, carry a quiet roster hour; CharacterRoleTraits carries its scientist
-# rows over a quiet scientist hour. Needs the advisor and advisor-pool families' forwarders.
 roster_changes = ["collector-observers/roster_changes"]
-# Observe capitals, elections, ruling parties, party and idea arrays and popularity: the Politics
-# walk carries Politics, PoliticalParties, ActiveIdeas and PartyLeaders over a quiet hour. Needs
-# the politics capture family's forwarder.
 political_status_changes = ["collector-observers/political_status_changes"]
-# Carry a country's AirRegionalMissions registrations until a native writer registers or
-# unregisters one of its missions; its headers and the wing census are read every hour.
 mission_changes = []
-# Publish a batch of 64 rail slots (RailCooldowns rows with their building and selection inputs,
-# indexed levels and RailEdges rows) from its last complete read until a native writer marks one
-# of its provinces; the daily countdown marks every province on the cooldown list, which is read
-# every hour.
 rail_changes = ["collector-observers/rail_changes"]
-# Carry a state's States row and a province's Provinces row until a native writer marks its state
-# or province (manpower, StateFlags and BorderConflicts are read every hour).
 territory_changes = ["collector-observers/territory_changes"]
-# NavalMissionLedgers reads no region ledger header of a navy whose registered-mission set is empty
-# (every ledger writer writes the set in the same call); the sets are read every hour.
 navy_ledger_changes = []
-# AirBaseRegistrations reads a base's country-container vector only at the slot words of the
-# containers its dense list names (both lists are written in the same call); a read base's
-# containers, pools, wings, capacity and fuel are read every hour.
 air_base_changes = []
-# A state air base's AirBaseRegistrations subtree is carried from its latest fresh read while no
-# hooked writer of its containers, pools or wings (engine_mutations::air_base_mutations) touched its handle;
-# its container countries' links are resolved every hour. Its AirBases row and the manager's state
-# base slots are carried the same way under capacity refresh, the state base creators and destruction.
-# The capacity setter and base destructor are the raid and ship model families' patches; entering the
-# map editor is the building family's.
 air_base_carry_changes = ["raid_changes", "ship_model_changes", "building_changes", "collector-observers/air_base_carry_changes"]
-# Carry a division's DivisionStatus.attack_stats (its stat block's attack operands) until
-# The active-stat writer rewrites the stat block (the army and stat block are read every hour).
 army_stat_changes = ["collector-division-parts/army_stat_changes"]
-# Serve a ship's own ShipModels inputs (fixed fields, pool entries, heap fallback sprite,
-# experience and medal-store modifiers) from its held read until a hooked writer touches the ship,
-# its medal store or its carrier base (task forces, locations, countries, weather and variants are
-# read every hour).
 ship_model_changes = ["collector-ship-models/ship_model_changes"]
-# CountryStabilityInputs/Lines and the research tables read, beside their daily slice, only the
-# countries a native writer of their rows marked since the previous hour (the politics, political
-# status, party leader, character role, roster, relation, territory, raid, opinion and advisor pool
-# families forward the writers they patch); a country no writer marked keeps the rows of its last
-# read until its slice.
 country_input_changes = ["collector-observers/country_input_changes"]
-# AirRegionCombat reads a regional air-combat holder only where the air-combat record updater
-# wrote it (its records from the previous capture's hour on) and carries the others.
 air_record_changes = ["collector-air-records/air_record_changes"]
-# ResearchTechnologies (and its TechnologyDefinitions) reads, beside its daily slice, the countries a
-# writer of a technology's level, classifier, researched membership or applied bonuses marked; the
-# country input family's hooks mark them. Without it every country is read every hour.
 technology_changes = ["country_input_changes", "collector-observers/technology_changes"]
-# Focus and CompletedFocuses read every country owning a state after the daily tick and, in between, the countries
-# a national focus writer marked; the country input family's hooks mark them. Without it every
-# country is read every hour.
 focus_changes = ["country_input_changes", "collector-observers/focus_changes"]
-# Projects and ProjectHistory read every country owning a state after the daily tick and, in between, the
-# countries a special project writer marked; the country input family's hooks mark them. Without it
-# every country is read every hour.
 projects_changes = ["country_input_changes", "collector-observers/projects_changes"]
-# WeatherProvinces reads, in an ordinary hour, only the province records the native hourly pass
-# visited (the weather pass's window from the update cursor, provinces_per_update wide) and
-# carries the rest; the weather writers outside that window (reseed, reset, console, load) are
-# counted by the country input family's hooks, and any of them, a jump of the cursor or a gap reads
-# every record. Without it every record is read every hour.
 weather_changes = ["country_input_changes", "collector-observers/weather_changes"]
-# CountryAppearance reads, beside its daily slice, the countries a writer of their appearance fields
-# marked (the cosmetic tag, colour copy, graphical culture, localized name and subject writers, and
-# the forwarded country and diplomacy resets, ruling party, party leader and character role
-# writers); the country input family's hooks mark them. Without it every country is read every hour.
 appearance_changes = ["country_input_changes", "collector-observers/appearance_changes"]
-# CountryCounterInputs reads, beside its daily slice, the countries a writer of their counter inputs
-# marked (the modifier rebuild, the war body, division rosters, unit leaders, neighbours, MIO
-# policies, and the forwarded resets, wartime allies, relation slots, state owners and controllers,
-# cores and character pools); the country input family's hooks mark them. Without it every country
-# is read every hour.
 counter_changes = ["country_input_changes", "collector-observers/counter_changes"]
-# CountryVisibility carries an unmarked country's raw accumulator entry under the country input
-# family's modifier-rebuild and forwarded country-reset marks, beside its daily sampled slice.
-# The live definition and eligibility metadata still apply every hour. Without it every country is read.
 visibility_changes = ["country_input_changes", "collector-observers/visibility_changes", "collector-visibility/visibility_changes"]
-# Diagnostic, off by default: record the native attack operands of another slice of divisions each
-# hour (DivisionStatus.attack, the stat block's entries plus the live terrains' adjusters) for the
-# recorder's derivation check.
 attack_witness = ["collector-division-parts/attack_witness"]
-# Read a raid state input owner (state or country) within the hour a native writer marks it, beside
-# its daily slice; every unobserved hour reads every owner. Needs the building family's forwarder.
 raid_changes = ["collector-observers/raid_changes"]
-# Carry a country's and a commander's naval hover tree (NavalModifierTrees) until a native writer
-# rebuilds it; every other reached source tree is read each hour a live naval combat reaches it.
 naval_tree_changes = ["collector-observers/naval_tree_changes"]
-# Diagnostic oracle, off by default: also read every reached naval hover source tree afresh and
-# record it per occurrence in NavalModifierTreeSamples, for `recorder derived`.
 naval_tree_oracle = ["collector-observers/naval_tree_oracle"]
-# RaidIntelInputs answers a country's CRYPTO_STRENGTH and INTELLIGENCE_AGENCY_DEFENSE raw values
-# from its held read, skipping the accumulator entries copy, while its accumulator header and its
-# naval tree country certificate (modifier recalculation, country appearance reset) are the held
-# read's. Without it every country's accumulator is copied every hour.
 raid_intel_changes = ["naval_tree_changes", "collector-projects/raid_intel_changes"]
-# Read ProvinceNames, NavalRegionAccess, the world tension tables and DynamicModifiers every hour,
-# publishing a table (a country, for DynamicModifiers) none of its native writers touched from its
-# held read.
 world_input_changes = ["collector-observers/world_input_changes"]
-# Carry a province's ProvinceUnitOrder lists until the hooked append or erase marks it.
 province_unit_changes = []
-# Carry a commander's retreat bans (DivisionRetreatBans) until a writer of its modifier blocks
-# runs; the naval tree family's commander patches forward those writers.
 retreat_ban_changes = ["naval_tree_changes", "collector-observers/retreat_ban_changes"]
-# Label each province's controller and owner areas and record each controller area's
-# representative and contacts, reading again only the areas of provinces a territory writer marked
-# (or that changed area), the areas they left and their neighbours' areas.
 area_changes = ["collector-observers/area_changes"]
-# Carry a province's Provinces row until a territory writer marks the province or its held state
-# (or the building family forwards a write at it); provinces in a border conflict and the
-# fort_bunker operand of fortified provinces are read every hour.
 province_changes = ["collector-observers/province_changes"]
 province_combat_changes = ["collector-observers/province_combat_changes"]
-# Carry a country's CountryLocalSubunits rows until a native writer touches its local sub-unit
-# clones or their requirements.
 local_subunit_changes = ["collector-model-inputs/local_subunit_changes"]
-# Carry a division template's fallback name key, the one DivisionTemplates field the hourly icon
-# walk does not read for every template, until a native writer touches the template.
 template_changes = []
-# Carry faction goal and companion state under their writer certificates.
 faction_changes = []
-# Carry WarRelations between hours, reading only each war's casualty counters, while no forwarded
-# writer of the war set or its fixed fields ran.
 war_changes = ["collector-observers/war_changes"]
-# Carry UnitLeaders rows on quiet roster hours, reading only the leaders a hooked writer touched.
-# The naval tree family forwards the leader constructors and destructor.
 unit_leader_changes = ["roster_changes", "naval_tree_changes", "collector-observers/unit_leader_changes"]
-# Keep the roster job's role census without gathering it while no hooked or forwarded writer of a
-# gathered field ran. The advisor and roster families forward their sites.
 census_changes = ["advisor_changes", "roster_changes", "collector-observers/census_changes"]
-# Carry each unit leader's UnitLeaderTraits rows while no writer of its trait vector ran, reading only
-# the leaders the naval tree family's forwarded modifier recalculation tail or lifetime sites touched.
 unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_leader_trait_changes"]
 
 [dependencies]
@@ -321,7 +181,6 @@ required-features = ["tap-foreign-probe"]
 [dev-dependencies]
 engine-equipment.workspace = true
 collector-naval-management = { workspace = true, features = ["test-support"] }
-# Saves spools the collector writes, as the recorder does.
 recorder-replay.workspace = true
 syn = { version = "2.0.119", features = ["full", "visit"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }

@@ -1,4 +1,3 @@
-//! Character and persistent-ability comparisons against native text serialization.
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
 use installed_content_core::{leader_traits::LeaderTraits, parser::c_string};
@@ -53,8 +52,6 @@ fn trait_token_value(
         .get(&(id as u32))
         .is_some_and(|literal| literal.contains(&0))
     {
-        // Token text is sent to the concrete text stream. Its handling
-        // of an interior NUL in the saved token is unproved.
         report.limitation(
             "trait lexer literal contains an interior NUL; the text stream's projection is unproved, so this token spelling is unverified",
             label,
@@ -65,7 +62,6 @@ fn trait_token_value(
 }
 
 fn text_value(report: &mut Report, label: &str, actual: &[u8], expected: &[u8]) {
-    // Text writing consumes c_str; bytes after the first NUL are not saved.
     equal(report, label, c_string(actual), expected);
     if c_string(actual).len() != actual.len() {
         report.limitation(
@@ -99,23 +95,12 @@ fn membership<T: std::fmt::Debug>(report: &mut Report, table: &str, key: T, pres
     report.difference(format!("{table} {key:?} membership"), present, !present);
 }
 
-/// What the save's character roster is compared as, when it holds characters
-/// loading destroys ([`saved::Character::survives_load`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SavedRoster {
-    /// The frame's memory wrote the save and holds every saved character.
     Written { unloadable: usize },
-    /// The frame's memory loaded the save, which destroyed them.
     Loaded { unloadable: usize },
 }
 
-/// Fits the saved roster, which every character-keyed comparison reads, to
-/// the memory the frame sampled. At a load hour that memory loaded the save.
-/// At any other hour it either wrote the save, holding every unloadable
-/// character, or loaded it, holding none of them and its later characters
-/// one roster position earlier for each destroyed before them; the frame's
-/// Characters table tells which. A frame holding some of them is compared
-/// as written, so each one it lacks is a difference.
 pub fn fit_saved_roster(
     frame: &DecodedFrame,
     manager: &mut saved::Manager,
@@ -170,8 +155,6 @@ pub fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut complete = true;
-    // Every table of the family is hourly (replay_data::cadence), so each is
-    // read at the oracle hour.
     if let Some(manager) = &pack.manager {
         complete &= report.attempt("Characters", |report| {
             compare_characters(frame, manager, links, tokens, report)
@@ -264,8 +247,6 @@ fn compare_characters(
             country(row.country, links)?,
             expected.country.as_deref(),
         );
-        // Frozen row names use the recorded fields. The writer emits
-        // row.token as name, and resolves name_token_id separately for the saved token.
         optional_text(
             report,
             &format!("{label}.name"),
@@ -279,8 +260,6 @@ fn compare_characters(
             row.name_token_id,
             &expected.token,
         );
-        // The game: enum 1 -> male, 2 -> female, every other value ->
-        // undefined. Compare the writer's projection without changing storage.
         let gender: &[u8] = match row.gender {
             1 => b"male",
             2 => b"female",
@@ -295,8 +274,6 @@ fn compare_characters(
                 "missing serialized gender",
             );
         }
-        // The character writer emits `template` exactly when its template pointer
-        // is set, using the lexer literal of the template's tag.
         match (row.template_present != 0, &expected.template) {
             (false, None) => {}
             (true, Some(template)) => token_value(
@@ -363,8 +340,6 @@ fn compare_country_leader_roles(
             character.country_leaders.len(),
         );
         count += actual.min(character.country_leaders.len());
-        // The game writes roles in signed map order. The game changes the
-        // current ideology without rekeying that map; the save retains the ideology.
         if actual != character.country_leaders.len() {
             report.limitation(
                 "current leader ideologies cannot be joined while the signed role-map census differs",
@@ -506,7 +481,6 @@ fn compare_advisors(
     Ok(())
 }
 
-/// The game rebuilds the advisor's keys from the current trait key sets.
 fn compare_advisor_tooltip_keys(
     row: &replay_data::rows::AdvisorRoleRow,
     keys: &[Vec<u8>],
@@ -565,7 +539,6 @@ fn compare_advisor_tooltip_keys(
     report.compared("AdvisorRoles.tooltip_keys (content membership)", keys.len());
 }
 
-/// Signed map order is the serializer's role order.
 pub fn leader_role_keys(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, Vec<i32>>> {
     let mut keys = BTreeMap::<u64, Vec<i32>>::new();
     for row in complete::<tables::CountryLeaderRoles>(frame)? {
@@ -579,28 +552,6 @@ pub fn leader_role_keys(frame: &DecodedFrame) -> io::Result<BTreeMap<u64, Vec<i3
     Ok(keys)
 }
 
-/// Each recorded role trait array against the role's saved `traits`, in
-/// order, the membership built from the save and the role tables alone:
-/// The character save writer writes the country-leader roles
-/// (traits by token) and the advisor roles
-/// (traits by name) in their maps' order, so the
-/// saved role at a position is the recorded CountryLeaderRoles key
-/// (ascending, signed: the map's comparator) or AdvisorRoles
-/// ordinal at that position; the scientist (by
-/// token) is joined directly. The saved ideology is the stored ideology,
-/// which `set_country_leader_ideology` rewrites without moving
-/// the role in the map, so it is not the join. Every writer omits `traits`
-/// for an empty array, which has no row.
-///
-/// A token's literal is not always its trait's name.
-/// Trait initialization copies the definition's key, which
-/// the advisor writer saves, and sets its token to
-/// the token lookup of that key. The lexer finds an existing
-/// token case-insensitively and keeps the literal it was first given
-/// during insertion, so a key spelled differently
-/// elsewhere earlier saves differently by name than by token. An advisor
-/// trait is therefore named by the content's definition at its recorded
-/// ordinal, whose key must be its token's under the lexer's rule.
 fn compare_role_traits(
     frame: &DecodedFrame,
     manager: &saved::Manager,
@@ -618,7 +569,6 @@ fn compare_role_traits(
     let mut unnamed = Vec::new();
     let mut compared = 0;
     for (&id, character) in &manager.characters {
-        // (kind, role) -> the saved trait names, for every nonempty saved array.
         let mut expected = BTreeMap::<(u8, u32), &[Vec<u8>]>::new();
         let keys = leader_keys.remove(&id).unwrap_or_default();
         if keys.len() == character.country_leaders.len() {
@@ -628,8 +578,6 @@ fn compare_role_traits(
                 }
             }
         } else {
-            // Without the positions the saved arrays are joined to none; the
-            // recorded ones then show as extra and the saved ones as missing.
             for role in &character.country_leaders {
                 if !role.traits.is_empty() {
                     report.difference(
@@ -704,7 +652,6 @@ fn compare_role_traits(
             compared += 1;
             report.scalar_checks += 1;
             let saved: Vec<&[u8]> = saved.iter().map(Vec::as_slice).collect();
-            // Compared as bytes; the text is for the report only.
             if names != saved {
                 let text = |names: &[&[u8]]| {
                     names
@@ -741,12 +688,8 @@ fn compare_role_traits(
     Ok(())
 }
 
-/// Why a role's traits cannot be named for the comparison.
 enum Unnamed {
-    /// The recording or the content cannot say: a limitation.
     Limitation(String),
-    /// The content's key at the recorded ordinal does not make the recorded
-    /// token: the recording and the content disagree.
     Difference {
         ordinal: u32,
         token: String,
@@ -759,12 +702,6 @@ impl From<String> for Unnamed {
     }
 }
 
-/// An advisor role's saved traits: each definition's
-/// key, found in the content at the recorded
-/// ordinal. The key must give the recorded token: token 0 for an
-/// empty key or one beginning with a digit or `-`, which the lexer refuses;
-/// otherwise the token whose literal equals it ignoring ASCII
-/// case.
 fn advisor_trait_names<'a>(
     row: &replay_data::rows::CharacterRoleTraitRow,
     tokens: &TokenNames<'_>,
@@ -813,11 +750,6 @@ fn advisor_trait_names<'a>(
     Ok(names)
 }
 
-/// Each recorded unit-leader reference against the character's saved
-/// `operative` (the character save writer writes it when either word
-/// is nonzero, so a row exists exactly for a saved reference). The resolved
-/// leader's operands are the unit leader's own, which the save keeps with the
-/// intelligence agency's operatives, not with the character.
 fn compare_operatives(
     frame: &DecodedFrame,
     manager: &saved::Manager,
@@ -849,9 +781,6 @@ fn compare_operatives(
     Ok(())
 }
 
-/// Operative names are saved with agency/recruitment entries, rather than
-/// character-manager roles. The save always writes the embedded codename;
-/// it follows the same omission rules as division_name.
 pub fn compare_codenames(
     frame: &DecodedFrame,
     pack: &installed_content_save::intel::Pack,
@@ -1028,7 +957,6 @@ fn compare_leaders(
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<BTreeSet<u64>> {
-    // `None`: listed on several rosters, whose load order the save does not keep.
     let mut rostered = BTreeMap::<u64, Option<&[u8]>>::new();
     for (tag, statuses) in rosters {
         for status in statuses {
@@ -1112,7 +1040,6 @@ fn compare_leaders(
             Some(row.experience),
             Some(&expected.experience),
         );
-        // The army-leader writer writes `captured=yes` only for a set army leader byte.
         if row.kind == engine_native::cunit_leader::KIND_ARMY {
             equal(
                 report,
@@ -1127,7 +1054,6 @@ fn compare_leaders(
                 "no army leader byte",
             );
         }
-        // The exile-country reference is saved only when positive.
         if let Some(&exile_country) = report.recorded(
             &row.exile_country,
             "UnitLeaders.exile_country",
@@ -1148,8 +1074,6 @@ fn compare_leaders(
                 report.limitation("nonpositive exile-country references are omitted by the game; only the absent-tag predicate is certified", format!("{label}.exile_country"));
             }
         }
-        // The leader's owner is not saved. Loading sets it, to that country, only when
-        // a country's active roster lists the saved leader's own character.
         let owner = country(row.owner, links)?;
         match rostered.get(&expected.character) {
             Some(Some(tag)) => equal(report, format!("{label}.owner"), owner, Some(*tag)),
@@ -1213,8 +1137,6 @@ fn compare_traits(
             continue;
         };
         count += 1;
-        // The token writer formats reserved token 0x167 as fixed15 even in a trait
-        // position. Its dictionary spelling is not the serialized value.
         if row.token_id == engine_native::cpdx_lexer::FIXED15_TOKEN as i32 {
             formatted_tokens.push(key);
         } else {

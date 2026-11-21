@@ -1,5 +1,3 @@
-//! GPU resources for compiled game techniques. Inputs are native register bytes and vertex
-//! semantics, so changing an effect's uniform names never changes what the engine uploads.
 
 use super::{Buffer, Compiled};
 use installed_content_core::content::diagnostics::{self, Diagnostics};
@@ -30,18 +28,9 @@ mod uploads;
 #[cfg(any(test, feature = "test-support"))]
 pub use uploads::FrozenBufferWrites;
 
-/// Bytes a differential write compares and writes as one block. Smaller finds more unchanged
-/// bytes; larger issues fewer writes. A GUI draw's constant block is 256 bytes or less.
 const BLOCK: usize = 256;
-/// Unchanged blocks one write crosses rather than splitting in two.
 const BRIDGE: usize = 4;
 
-/// The spans of `fresh` a buffer holding `held` does not hold, offset by `start`, compared in
-/// [`BLOCK`] units and bridging runs of up to [`BRIDGE`] unchanged blocks so one changed window
-/// is one write. `fresh` and `held` are the same length.
-///
-/// This is how a pass writes only what changed: a frame that stages what the last one staged
-/// writes nothing, and one in which a window moved writes that window's constants alone.
 pub fn unheld(start: usize, fresh: &[u8], held: &[u8]) -> Vec<std::ops::Range<usize>> {
     let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
     let mut at = 0;
@@ -74,7 +63,6 @@ mod unheld_tests {
             super::unheld(0, &fresh, &held),
             vec![super::BLOCK..super::BLOCK * 2]
         );
-        // One write bridges up to BRIDGE unchanged blocks; a longer run is two writes.
         fresh[super::BLOCK * 6] = 1;
         assert_eq!(
             super::unheld(0, &fresh, &held),
@@ -87,7 +75,6 @@ mod unheld_tests {
             super::unheld(8, &apart, &held),
             vec![8..super::BLOCK + 8, super::BLOCK * 11 + 8..super::BLOCK * 12 + 8]
         );
-        // A tail shorter than a block is compared and written whole.
         let short = vec![0_u8; 3];
         assert!(super::unheld(0, &short, &short).is_empty());
         assert_eq!(super::unheld(4, &[1, 0, 0], &short), vec![4..7]);
@@ -118,50 +105,31 @@ impl std::ops::Deref for TextureBinding {
     }
 }
 
-/// One user's pipeline: a device's shared [`Core`] and the bind groups this user's own arena made.
 pub struct Pipeline {
     core: Arc<Core>,
     topology: wgpu::PrimitiveTopology,
-    /// Stamped with this user's arena frames, so users of one core never prune each other's.
     groups: Arc<Mutex<Groups>>,
-    /// Shader-filtered variants by native binding mask, made for this user; `None` while one
-    /// builds elsewhere ([`Pipeline::start_variant`]).
     variants: Arc<Mutex<HashMap<u32, Option<Cached>>>>,
 }
 
-/// What a pipeline is on its device: the compiled program, its layouts and samplers. Every user
-/// on the device with the same key draws with one core ([`Cache`]).
 pub struct Core {
     _source: Arc<Source>,
     batch: Option<Arc<batch::Program>>,
-    /// Each constant binding the draw reads one row of per instance, ascending, and its row
-    /// stride; empty when the pass draws no instance rows.
     rows: Vec<(u32, u32)>,
-    /// The vertex stream the draw reads from storage per instance, no longer a vertex buffer.
     stream: Option<usize>,
     pub pipeline: wgpu::RenderPipeline,
     label: String,
     null_cube: Option<wgpu::TextureView>,
-    /// Constant and texture layouts; the samplers are fixed per pipeline.
     layouts: [wgpu::BindGroupLayout; 2],
     samplers: wgpu::BindGroup,
-    /// Ascending binding order, the order of the constant group's dynamic offsets.
     buffers: Vec<Buffer>,
     textures: Vec<(u32, super::TextureKind)>,
-    /// Texture bindings with a filtering image/sampler pair.
     filtered: Vec<u32>,
     fallback: Option<Fallback>,
     packed_inputs: [super::vertices::Packing; 4],
-    /// What the pipeline leaves unwritten of its pass's depth-stencil attachment, as a render
-    /// bundle drawing with it declares it.
     read_only: ReadOnly,
 }
 
-/// What a pipeline leaves unwritten of its pass's depth-stencil attachment, by wgpu's own rule
-/// ([`wgpu::DepthStencilState::is_depth_read_only`], [`wgpu::DepthStencilState::is_stencil_read_only`]).
-/// A render bundle declares read-only what none of its pipelines writes, so it executes in every
-/// pass its draws could be drawn in directly: a pass reading an aspect only takes a bundle that
-/// reads it only, and a pipeline writing it is refused there either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadOnly {
     pub depth: bool,
@@ -169,10 +137,8 @@ pub struct ReadOnly {
 }
 
 impl ReadOnly {
-    /// Nothing written.
     pub const ALL: Self = Self { depth: true, stencil: true };
 
-    /// What a pipeline made for `pass` leaves unwritten.
     pub fn of(pass: &Pass) -> Self {
         pass.depth_stencil.as_ref().map_or(Self::ALL, |state| Self {
             depth: state.is_depth_read_only(),
@@ -180,12 +146,10 @@ impl ReadOnly {
         })
     }
 
-    /// Unwritten by both.
     pub fn and(self, other: Self) -> Self {
         Self { depth: self.depth && other.depth, stencil: self.stencil && other.stencil }
     }
 
-    /// A bundle's depth-stencil attachment of `format`, declared so.
     pub fn bundle(self, format: wgpu::TextureFormat) -> wgpu::RenderBundleDepthStencil {
         wgpu::RenderBundleDepthStencil { format, depth_read_only: self.depth, stencil_read_only: self.stencil }
     }
@@ -199,7 +163,6 @@ impl std::ops::Deref for Pipeline {
 }
 
 impl Pipeline {
-    /// A new user of `core`, with bind groups of its own.
     fn over(core: Arc<Core>, topology: wgpu::PrimitiveTopology) -> Self {
         Self {
             core,
@@ -210,7 +173,6 @@ impl Pipeline {
     }
 }
 
-/// Float formats are known only when views are bound; keep variants by native binding mask.
 struct Fallback {
     gui: bool,
     compiled: Compiled,
@@ -220,16 +182,12 @@ struct Fallback {
     pass: Pass,
 }
 
-/// Bind groups by resource identity: constants per arena buffer, textures per view list.
-/// An entry unused for a whole frame is dropped, releasing the resources it holds.
 #[derive(Default)]
 struct Groups {
     frame: u64,
     constants: Vec<(Vec<wgpu::Buffer>, wgpu::BindGroup, GroupStamp)>,
     batch_constants: Vec<(Vec<wgpu::Buffer>, wgpu::BindGroup, GroupStamp)>,
-    /// By the hash of the views, so a hit clones none of them.
     textures: HashMap<u64, Vec<(Vec<wgpu::TextureView>, wgpu::BindGroup, GroupStamp)>>,
-    /// The last texture entry used: consecutive draws usually share a material.
     last: Option<(u64, usize)>,
     clock: Arc<GroupClock>,
 }
@@ -257,7 +215,6 @@ pub struct Draw {
     count: u32,
 }
 
-/// Owned vertex layouts allow any pass ABI, including separate and instanced buffers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VertexLayout {
     pub stride: u64,
@@ -265,8 +222,6 @@ pub struct VertexLayout {
     pub attributes: Vec<wgpu::VertexAttribute>,
 }
 
-/// Complete immutable pass state, part of the device cache key. Dynamic viewport/scissor,
-/// stencil reference and blend constants remain the caller's render-pass commands.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Pass {
     pub vertices: Vec<VertexLayout>,
@@ -274,17 +229,11 @@ pub struct Pass {
     pub depth_stencil: Option<wgpu::DepthStencilState>,
     pub multisample: wgpu::MultisampleState,
     pub targets: Vec<Option<wgpu::ColorTargetState>>,
-    /// The constant bindings whose block the draw reads one of per instance, by
-    /// `binding(slot, stage)`. Zero draws each instance's blocks as its own draw; a program that
-    /// cannot take them per instance is refused by name and keeps the plain pipeline.
     pub instanced: u32,
-    /// The vertex stream, the last one, the draw reads one slab of per instance, read from
-    /// storage instead of fetched. It is no longer a vertex buffer the caller binds.
     pub stream: Option<usize>,
 }
 
 impl Pass {
-    /// Tightly packed 32-bit input helper. Map callers can provide their native layouts directly.
     pub fn packed(
         compiled: &Compiled,
         state: &State,
@@ -344,12 +293,8 @@ impl Pass {
     }
 }
 
-/// The bytes of a draw's rows block ([`BindingProgram::rows_block`]), which it selects with a
-/// dynamic offset and which must stand at the device's uniform offset alignment.
 pub const ROWS_BYTES: usize = batch_shader::ROWS_BYTES;
 
-/// Every `binding(slot, stage)` of a constant buffer or texture is below these: D3D11's
-/// registers over both stages, which compilation enforces.
 pub const CONSTANT_BINDINGS: usize = 2 * super::BUFFER_SLOTS as usize;
 pub const TEXTURE_BINDINGS: usize = 2 * super::SAMPLER_SLOTS as usize;
 const BUFFERS: usize = CONSTANT_BINDINGS + 1;
@@ -364,13 +309,11 @@ pub struct Bindings {
     proof: Vec<(u32, Vec<u8>)>,
 }
 impl Bindings {
-    /// Logical staged bytes (including physical zero tails) and offsets, for exactness proofs.
     #[cfg(any(test, feature = "test-support"))]
     pub fn preparation_proof(&self) -> (&[(u32, Vec<u8>)], &[u32]) {
         (&self.proof, &self.offsets[..self.count])
     }
 
-    /// Same pipeline and texture/sampler groups, independent of uploaded constants.
     #[cfg(any(test, feature = "test-support"))]
     pub fn same_resources(&self, other: &Self) -> bool {
         let (a, b) = (self.resources.get(), other.resources.get());
@@ -381,12 +324,9 @@ impl Bindings {
         self.bind_after(pass, None);
     }
 
-    /// Bind after `previous` of the same pipeline in the same pass, setting only the
-    /// groups that differ. Each set merges all of a group's resources into the pass.
     pub fn bind_after(&self, pass: &mut wgpu::RenderPass<'_>, previous: Option<&Self>) {
         let resources = self.resources.get();
         let before = previous.map(|previous| previous.resources.get());
-        // The bound views may select a shader-filtered variant of the caller's pipeline.
         if before.is_none_or(|previous| previous.pipeline != resources.pipeline) {
             crate::gpu::stats::pipeline();
             pass.set_pipeline(&resources.pipeline);
@@ -407,13 +347,10 @@ impl Bindings {
         }
     }
 
-    /// What the pipeline these bindings set leaves unwritten of its pass's depth and stencil.
     pub fn read_only(&self) -> ReadOnly {
         self.resources.get().read_only
     }
 
-    /// [`Self::bind_after`] into a render bundle, counting nothing (a bundle's commands are
-    /// counted where it is executed); returns the pipeline and the bind group sets it made.
     pub fn bundle_after<'a>(
         &'a self,
         bundle: &mut wgpu::RenderBundleEncoder<'a>,
@@ -466,9 +403,6 @@ mod session;
 pub use session::{BindingSession, BindingSessionStorage};
 use session::{GroupClock, GroupResources, GroupStamp, ResolvedGroups, ResourceHandle};
 
-/// Immutable resources of an actually successful bind, including a shader-filtered variant.
-/// This is not native retained state: callers still perform their ordered checks, fallbacks
-/// and binds. Only identical resource identities may reuse it; every constant is restaged.
 #[derive(Clone)]
 pub struct BindingProgram {
     pipeline: wgpu::RenderPipeline,
@@ -479,9 +413,7 @@ pub struct BindingProgram {
     texture_slots: Vec<u32>,
     hash: u64,
     buffers: Vec<Buffer>,
-    /// Each constant binding the draw reads one row of per instance, and its row stride.
     rows: Vec<(u32, u32)>,
-    /// The instanced vertex stream's words and each instance's first vertex in them.
     stream: Option<[wgpu::Buffer; 2]>,
     layouts: [wgpu::BindGroupLayout; 2],
     groups: Arc<Mutex<Groups>>,
@@ -489,13 +421,10 @@ pub struct BindingProgram {
 }
 
 impl BindingProgram {
-    /// The effective pipeline, not necessarily the pipeline originally requested.
     pub fn pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipeline
     }
 
-    /// Read-only fixture access: prove the exact successful program and recover
-    /// the actual constant buffer bound by this draw, within its own owner.
     #[cfg(any(test, feature = "test-support"))]
     pub fn constant_buffer_for_tests(&self, bindings: &Bindings) -> Option<wgpu::Buffer> {
         let actual = bindings.resources.get();
@@ -506,8 +435,6 @@ impl BindingProgram {
             .groups
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        // A captured texture group may have retired. Prove the actual live group's
-        // complete view list, not equality with the capture's obsolete group handle.
         if !groups
             .textures
             .values()
@@ -529,18 +456,14 @@ impl BindingProgram {
         self.texture_slots.iter().copied().zip(&self.views)
     }
 
-    /// Reflected physical sizes and conservative reads in dynamic-offset order.
     pub fn constant_reads(&self) -> &[Buffer] {
         &self.buffers
     }
 
-    /// Each constant binding the draw reads one row of per instance, ascending, and its row
-    /// stride; empty when the pass reads none per instance.
     pub fn instanced_rows(&self) -> &[(u32, u32)] {
         &self.rows
     }
 
-    /// The row stride of `binding`, when the draw reads one row of it per instance.
     fn row_stride(&self, binding: u32) -> Option<u32> {
         self.rows
             .iter()
@@ -548,8 +471,6 @@ impl BindingProgram {
             .map(|(_, stride)| *stride)
     }
 
-    /// Stage all constants through the ordinary frame arena, with its unchanged allocation,
-    /// deduplication and failure order. Resource groups keep the pipeline's normal retirement.
     pub fn bind_with<'a>(
         &self,
         arena: &Arena,
@@ -587,9 +508,6 @@ impl BindingProgram {
         })
     }
 
-    /// Bindings of constants a caller placed in a buffer it keeps and writes itself, as the arena
-    /// places them: each read's bytes at its offset, zero-filled to the read's declared size.
-    /// `blocks` gives each read's bytes and offset in [`Self::constant_reads`] order.
     pub fn bind_buffer(
         &self,
         arena: &Arena,
@@ -626,9 +544,6 @@ impl BindingProgram {
         })
     }
 
-    /// The bytes of a draw's rows block: the base row of each binding it reads per instance, and
-    /// of its instanced stream's bases. `rows` gives each in [`Self::instanced_rows`] order, the
-    /// stream's last when the pass reads one.
     pub fn rows_block(&self, rows: &[u32]) -> Result<[u8; batch::ROWS_BYTES], String> {
         let wanted = self.rows.len() + usize::from(self.stream.is_some());
         if rows.len() != wanted {
@@ -650,10 +565,6 @@ impl BindingProgram {
         Ok(block)
     }
 
-    /// Bindings of a draw whose per-instance rows stand in `buffer`: `blocks` gives each read of
-    /// [`Self::constant_reads`] its bytes and offset, as [`Self::bind_buffer`] takes them, and
-    /// `rows` the offset of the draw's own rows block there. A read taken per instance keeps its
-    /// bytes for the proof; its offset is the whole array's and is never bound dynamically.
     pub fn bind_rows(
         &self,
         arena: &Arena,
@@ -736,8 +647,6 @@ impl BindingProgram {
                                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                                         buffer: &source,
                                         offset: 0,
-                                        // A row's array is bound whole; the instance index picks
-                                        // the row from the base the draw's rows block gives.
                                         size: self
                                             .row_stride(spec.binding)
                                             .is_none()
@@ -829,8 +738,6 @@ impl BindingProgram {
     }
 }
 
-/// Resolved native state after applying this draw's binds. Program selection, blend selection
-/// and each sampler bind are independent, especially for the null-fallback technique.
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
     pub samplers: BTreeMap<u32, Sampler>,
@@ -890,8 +797,6 @@ pub(crate) fn sampler_key(sampler: &Sampler) -> [u32; 10] {
     ]
 }
 
-/// The bound samplers a pipeline is built from: those its program reads, or every one when the
-/// program is not compiled. The others cannot change the pipeline.
 fn read_samplers<'a>(
     state: &'a State,
     reads: Option<&'a Compiled>,
@@ -919,7 +824,6 @@ impl PipelineKey {
             && self.samplers == other.samplers
     }
 
-    /// Hash of the key a lookup would build, from borrowed parts.
     fn hash(
         gui: bool,
         effect: uuid::Uuid,
@@ -962,11 +866,8 @@ impl PipelineKey {
 
 pub type Cached = Result<Arc<Pipeline>, String>;
 
-/// GUI pipeline and texture-variant builds under way on their threads. Nothing waits on them:
-/// a frame draws what is ready and the next one picks up what has been built since.
 static BUILDING: Mutex<usize> = Mutex::new(0);
 
-/// Counts one build under way until dropped.
 pub(crate) struct Building(());
 
 impl Building {
@@ -976,7 +877,6 @@ impl Building {
     }
 }
 
-/// How many GUI pipeline and texture-variant builds are under way.
 pub fn builds_under_way() -> usize {
     *BUILDING.lock().unwrap_or_else(|error| error.into_inner())
 }
@@ -987,7 +887,6 @@ impl Drop for Building {
     }
 }
 
-/// Compare only sampler slots the compiled program reads.
 pub(crate) fn same_packed(cached: &State, state: &State, reads: Option<&Compiled>) -> bool {
     cached.blend == state.blend
         && cached.write_mask == state.write_mask
@@ -1002,28 +901,18 @@ type PackedKey = (
     wgpu::PrimitiveTopology,
 );
 
-/// Every device's pipeline cores by [`PipelineKey`], held weakly: a cache that misses takes a core
-/// another user on its device already holds, so N map views compile each pipeline once, and the
-/// last user lets it go. Failures are not shared; each cache keeps its own. A core is made
-/// outside the lock, so a lookup never waits on another thread's build; only a user asking for
-/// the core under way waits for it.
 struct DeviceCores(Mutex<Vec<DeviceEntry>>, Condvar);
 
 struct DeviceEntry {
     device: wgpu::Device,
     cores: HashMap<u64, Vec<(PipelineKey, std::sync::Weak<Core>, Diagnostics)>>,
-    /// Cores being made, by hash.
     building: Vec<(u64, PipelineKey)>,
 }
 
 static DEVICE_CORES: DeviceCores = DeviceCores(Mutex::new(Vec::new()), Condvar::new());
 
-/// Why [`DeviceCores::get_or_create`] handed over no core.
 enum NotMade {
-    /// Making it failed, by name; the caller keeps the failure.
     Failed(String),
-    /// Another thread is making it and the caller does not wait: the thread that draws the
-    /// frames draws without it this frame, and keeps nothing.
     Building,
 }
 
@@ -1192,7 +1081,6 @@ impl Source {
     }
 }
 
-/// Takes a core under way off its device's list when its making ends, however it ends.
 struct Making<'a> {
     cores: &'a DeviceCores,
     device: &'a wgpu::Device,
@@ -1222,8 +1110,6 @@ impl DeviceCores {
         self.0.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The live core on `device` that `matches`, taken while it is still held, without making
-    /// one.
     fn held(
         &self,
         device: &wgpu::Device,
@@ -1245,9 +1131,6 @@ impl DeviceCores {
             })
     }
 
-    /// The live core on `device` that `matches`, else the one `create` makes, recorded under
-    /// `key`. Users asking at once for one under way wait for it, so it is made once; a user
-    /// that does not `wait` is told it is being built and draws without it.
     fn get_or_create(
         &self,
         device: &wgpu::Device,
@@ -1333,14 +1216,10 @@ impl DeviceCores {
     }
 }
 
-/// Device-scoped pipelines, including validation failures, keyed by effect, technique, sampler
-/// state and the complete pass. One cache belongs to one device. A hit clones no key. A miss
-/// shares the device's core when any user holds one ([`DeviceCores`]), with bind groups its own.
 #[derive(Default)]
 pub struct Cache {
     pub(crate) gui: bool,
     sources: Vec<Arc<Source>>,
-    /// Packed passes derive their complete vertex layout only on a state-cache miss.
     packed: HashMap<PackedKey, Vec<(State, Cached, Diagnostics)>>,
     entries: HashMap<u64, Vec<(PipelineKey, Cached, Diagnostics)>>,
     pub refused: BTreeMap<String, u64>,
@@ -1348,8 +1227,6 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Release cache-held bindings after encoding; submitted commands keep their
-    /// own handles. This lets the owner bound its retained texture uploads.
     pub fn release_bind_groups(&self) {
         for result in self
             .entries
@@ -1383,8 +1260,6 @@ impl Cache {
             .sum()
     }
 
-    /// The packed pipeline of `selection` drawing the caller's `topology`; each topology
-    /// is its own pipeline.
     pub fn get(
         &mut self,
         device: &wgpu::Device,
@@ -1414,7 +1289,6 @@ impl Cache {
         result
     }
 
-    /// Find and credit a held packed pipeline without building it.
     pub fn find_packed(
         &mut self,
         selection: &super::library::Selection,
@@ -1444,7 +1318,6 @@ impl Cache {
         Some(result.clone())
     }
 
-    /// What [`Self::get`] makes on a miss, with what making it observed, kept by no cache.
     pub fn build_packed(
         &mut self,
         device: &wgpu::Device,
@@ -1462,7 +1335,6 @@ impl Cache {
         })
     }
 
-    /// Keeps a [`Self::build_packed`] result made elsewhere, as [`Self::get`] keeps its own.
     pub fn adopt_packed(
         &mut self,
         selection: &super::library::Selection,
@@ -1490,8 +1362,6 @@ impl Cache {
         }
     }
 
-    /// Whether [`Self::get`] finds this draw's pipeline without compiling a program or building a
-    /// pipeline: made here, or held on its device, which this cache then holds too.
     pub fn ready(
         &mut self,
         device: &wgpu::Device,
@@ -1519,7 +1389,6 @@ impl Cache {
         }
         let compiled = match compiled {
             None => return false,
-            // A failed compile is found, not built.
             Some(Err(_)) => return true,
             Some(Ok(compiled)) => compiled,
         };
@@ -1679,13 +1548,11 @@ impl Cache {
                             Ok(Arc::new(core))
                         })
                     },
-                    // The thread that draws the frames never waits for another thread's build.
                     !crate::gpu::stats::on_window_thread(),
                 );
                 diagnostics.credit();
                 let result = match made {
                     Ok(core) => Ok(Arc::new(Pipeline::over(core, topology))),
-                    // Kept by no cache: the core is on its way and a later frame finds it.
                     Err(NotMade::Building) => {
                         let reason = format!(
                             "effect {:?}, technique {:?}: its pipeline is being built on another thread",
@@ -1714,7 +1581,6 @@ impl Cache {
 }
 
 impl Pipeline {
-    /// The filtered bindings whose bound view cannot be filtered on `device`.
     fn unfilterable<'a>(
         &self,
         device: &wgpu::Device,
@@ -1759,8 +1625,6 @@ impl Pipeline {
         })
     }
 
-    /// Whether binding these textures draws with a variant this pipeline has not made; if so its
-    /// build starts on a thread of its own, unless one is under way.
     pub fn start_variant<'a>(
         self: &Arc<Self>,
         device: &wgpu::Device,
@@ -1787,7 +1651,6 @@ impl Pipeline {
         let (pipeline, device, building) = (Arc::clone(self), device.clone(), Building::start());
         let build = move || {
             let _building = building;
-            // A build that panicked is refused by name, so its draws never wait for it.
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 pipeline.make_variant(&device, mask)
             }))
@@ -1802,7 +1665,6 @@ impl Pipeline {
             .name("pipeline variant builds".into())
             .spawn(job_priority::carry(build))
         {
-            // With no thread to build on, the draw is refused by name, never built here.
             self.variants
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -2006,7 +1868,6 @@ impl Core {
         let dynamic = device
             .limits()
             .max_dynamic_uniform_buffers_per_pipeline_layout;
-        // A row's array is bound whole; the rows block the draw selects takes one dynamic offset.
         let offsets = buffers.len() - rows.len() + usize::from(!rows.is_empty());
         if offsets > dynamic as usize {
             return Err(format!(
@@ -2061,7 +1922,7 @@ impl Core {
                 } else {
                     wgpu::MipmapFilterMode::Nearest
                 },
-                anisotropy_clamp: if anisotropic { 16 } else { 1 }, // Authored MaxAnisotropy is ignored; anisotropic filtering uses 16.
+                anisotropy_clamp: if anisotropic { 16 } else { 1 },
                 lod_min_clamp: fact.min_lod.max(0) as f32,
                 lod_max_clamp: fact.max_lod.max(0) as f32,
                 border_color: Some(wgpu::SamplerBorderColor::TransparentBlack),
@@ -2265,8 +2126,6 @@ impl Core {
 }
 
 impl Pipeline {
-    /// Resources are keyed by `binding(slot, stage)`: native vertex/pixel slots are independent.
-    /// Slots without an upload must be supplied by the caller's retained bind state.
     pub fn prepare(
         &self,
         arena: &Arena,
@@ -2282,7 +2141,6 @@ impl Pipeline {
         )
     }
 
-    /// Packed geometry with borrowed resource lookups, without building per-draw maps.
     pub(crate) fn prepare_with<'a>(
         &'a self,
         arena: &Arena,
@@ -2300,9 +2158,6 @@ impl Pipeline {
         })
     }
 
-    /// Bind arbitrary native register bytes and texture views. Caller supplies vertex/index
-    /// buffers and draw commands; no GUI geometry, buffer names or matrix ABI is imposed.
-    /// The bytes are staged in `arena`; the bindings are valid until its next reset.
     pub fn bindings(
         &self,
         arena: &Arena,
@@ -2316,14 +2171,6 @@ impl Pipeline {
         )
     }
 
-    /// Bindings over constant blocks the caller keeps in a buffer of its own: made once and
-    /// valid while that buffer and these views live, so a pass whose constants and views change
-    /// only when its targets or its settings do records its draw with them on every frame,
-    /// staging nothing and looking nothing up. `blocks` gives, by `binding(slot, stage)`, where
-    /// that binding's block stands in `buffer` and the bytes the caller wrote there; the buffer
-    /// must hold the binding's whole physical size at that offset, zero past those bytes (the
-    /// native programs read past a block as zero), and the offset must stand at the device's
-    /// uniform offset alignment.
     pub fn kept_bindings<'a>(
         &'a self,
         device: &wgpu::Device,
@@ -2433,7 +2280,6 @@ impl Pipeline {
         })
     }
 
-    /// `bindings` with the caller's lookups by `binding(slot, stage)`.
     pub fn bind_with<'a>(
         &'a self,
         arena: &Arena,
@@ -2444,9 +2290,6 @@ impl Pipeline {
             .map(|(bindings, _)| bindings)
     }
 
-    /// Capture only a successful effective pipeline and its immutable resources. The caller
-    /// must verify selection and resource identities before reusing the returned program.
-    /// Constant bytes and arena offsets are never retained across draws.
     pub fn bind_program_with<'a>(
         &'a self,
         arena: &Arena,
@@ -2467,7 +2310,6 @@ impl Pipeline {
         view: &'a wgpu::TextureView,
         plain: bool,
     ) -> &'a wgpu::TextureView {
-        // Sampling a native two-dimensional SRV through TextureCube returns zero.
         if let Some(zero) = &self.null_cube
             && self
                 .textures
@@ -2483,32 +2325,18 @@ impl Pipeline {
         }
     }
 
-    /// What this compiled pass reads of each constant buffer it binds, in the order of the
-    /// constant group's dynamic offsets: the physical size and the byte ranges the compiled
-    /// programs read after dead-code elimination ([`Buffer::reads`]). A caller that draws the
-    /// pass only while its inputs change keys on exactly these bytes.
     pub fn constant_reads(&self) -> &[Buffer] {
         &self.core.buffers
     }
 
-    /// The texture slots this compiled pass samples, after dead-code elimination: a slot the
-    /// caller binds that is not here is read by no program of the pass.
     pub fn sampled_slots(&self) -> impl Iterator<Item = u32> + '_ {
         self.core.textures.iter().map(|(slot, _)| *slot)
     }
 
-    /// Whether the pass took the rewrites its [`Pass::instanced`] and [`Pass::stream`] asked
-    /// for; a program that could not take them keeps its plain pipeline, refused by name on the
-    /// standard error where it was translated.
     pub fn reads_per_instance(&self) -> bool {
         !self.rows.is_empty() || self.stream.is_some()
     }
 
-    /// The program of a pass that reads its rows per instance: its pipeline, textures and
-    /// samplers, without staging any constants. The caller binds its own buffer
-    /// ([`BindingProgram::bind_rows`]), where the rows stand. `stream` is the instanced vertex
-    /// stream's words and each instance's first vertex in them, which a pass that reads a stream
-    /// per instance ([`Pass::stream`]) must be given.
     pub fn rows_program<'a>(
         &self,
         arena: &Arena,
@@ -2516,8 +2344,6 @@ impl Pipeline {
         stream: Option<[wgpu::Buffer; 2]>,
     ) -> Result<BindingProgram, String> {
         let device = arena.device();
-        // A texture no sampler of this device can filter draws through the variant built for it,
-        // as a staged bind does.
         if self.fallback.is_some() {
             let mask = self.unfilterable(device, &textures);
             if mask != 0 {
@@ -2625,7 +2451,6 @@ impl Pipeline {
         if !self.rows.is_empty() || self.stream.is_some() {
             return Err("this pass reads its rows per instance and binds its own buffer".into());
         }
-        // Compilation refuses registers past D3D11's, so both lists fit their arrays.
         let mut blocks: [(&[u8], u64); BUFFERS] = [(&[], 0); BUFFERS];
         for (block, buffer) in blocks.iter_mut().zip(&self.buffers) {
             let data = constants(buffer.binding).ok_or_else(|| {
@@ -2773,8 +2598,6 @@ impl Pipeline {
         ))
     }
 
-    /// Check a physical native allocation whose initialized bytes are only partly known.
-    /// Consumers call this before `bindings`; slots absent from the program need no bytes.
     pub fn check_initialized(
         &self,
         binding: u32,
@@ -2795,15 +2618,12 @@ impl Pipeline {
         self.draw_after(pass, draw, None);
     }
 
-    /// Draw after another packed submission in the same pass, without redundant binds.
-    /// Callers forget the previous draw whenever any other path changes render state.
     pub fn draw_after(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         draw: &Draw,
         previous: Option<&Draw>,
     ) {
-        // A null blend-factor pointer gives D3D11's all-ones blend constant.
         if previous.is_none() {
             crate::gpu::stats::state();
             pass.set_blend_constant(wgpu::Color::WHITE);
@@ -2823,16 +2643,11 @@ impl Pipeline {
     }
 }
 
-/// Held while a device on the process's instance is made or let go: the main map and a pop-out
-/// start and stop on threads of their own, once each, so they take turns. Never held while another
-/// lock is taken.
 pub fn device_lifecycle() -> std::sync::MutexGuard<'static, ()> {
     static LIFECYCLE: Mutex<()> = Mutex::new(());
     LIFECYCLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Cache entries that hold a device, let go under [`device_lifecycle`] once the cache's own lock
-/// is released: declared before that lock is taken, it drops after it.
 pub struct Retired<T>(pub Vec<T>);
 
 impl<T> Drop for Retired<T> {
@@ -2844,10 +2659,6 @@ impl<T> Drop for Retired<T> {
     }
 }
 
-/// The process's one wgpu instance, which every device it makes comes from. wgpu tells devices
-/// apart by an id each instance numbers in a registry of its own, and the device-keyed caches here
-/// and in the map compare devices by it: a device from a second instance can take the id of one
-/// from the first, and be handed that device's pipelines, layouts and views.
 pub fn instance() -> wgpu::Instance {
     static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
     INSTANCE
@@ -2855,7 +2666,6 @@ pub fn instance() -> wgpu::Instance {
         .clone()
 }
 
-/// DX11 reads explicit null SRVs as zero; WebGPU zero-initialises resources.
 pub(crate) fn null_texture(device: &wgpu::Device, kind: super::TextureKind) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("native null texture"),
@@ -2885,7 +2695,6 @@ pub(crate) fn null_texture(device: &wgpu::Device, kind: super::TextureKind) -> w
     })
 }
 
-/// Validation and out-of-memory errors while creating a GPU object, as a named failure.
 pub fn scoped<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, String> {
     let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -2896,7 +2705,6 @@ pub fn scoped<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T,
     }
 }
 
-/// Native blend descriptor defaults and lowering.
 pub fn blend(
     program: &Program,
     technique: &Technique,
@@ -2952,12 +2760,9 @@ pub fn blend(
     };
     let enabled = state.enable;
     let mask = wgpu::ColorWrites::from_bits_truncate(state.write_mask);
-    // Native defaults ONE/ZERO/ADD form a sentinel: even an explicitly authored sentinel
-    // inherits the colour equation. This includes SRC_ALPHA on the alpha channel.
     if blend.alpha == wgpu::BlendComponent::REPLACE {
         blend.alpha = blend.color;
     }
-    // D3D ignores factors for MIN/MAX; wgpu requires One explicitly.
     for component in [&mut blend.color, &mut blend.alpha] {
         if matches!(
             component.operation,
@@ -2970,11 +2775,6 @@ pub fn blend(
     Ok((enabled.then_some(blend), mask))
 }
 
-/// Native depth-stencil lowering. Comparisons and stencil operations both use the authored
-/// index plus one in D3D11 order, anything else the first. The front-face stencil state applies
-/// to both faces and the masks are their low bytes. D3D11's depth bias is rasterizer state but
-/// wgpu's is depth state, so it comes from
-/// `rasterizer`. The stencil reference is the caller's dynamic `set_stencil_reference`.
 pub fn depth_stencil(
     state: &DepthStencilState,
     rasterizer: &RasterizerState,
@@ -3029,7 +2829,6 @@ pub fn depth_stencil(
     };
     let descriptor = wgpu::DepthStencilState {
         format,
-        // A disabled depth test neither tests nor writes.
         depth_write_enabled: Some(state.depth_enable && state.depth_write_mask == 1),
         depth_compare: Some(if state.depth_enable {
             compare(state.depth_function)
@@ -3046,10 +2845,6 @@ pub fn depth_stencil(
     (descriptor, state.stencil_ref)
 }
 
-/// Native rasterizer lowering: only `fill_solid` fills, cull mode follows the authored index,
-/// winding is authored, and depth clipping is always on. Multisample
-/// and line antialiasing come from the renderer, not the authored value. The second value is
-/// the authored scissor enable; the rectangle is the caller's dynamic `set_scissor_rect`.
 pub fn primitive(
     state: &RasterizerState,
     topology: wgpu::PrimitiveTopology,

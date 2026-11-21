@@ -20,7 +20,6 @@ const REPLY: ArmySizeReply = {
 
 test('Army size validates capabilities alongside the shared history shape', () => {
   assert.equal(validateArmySizeReply(REPLY), REPLY);
-  // The service names each line by its country; the widget keys it by that country's key.
   const asked = { ...REPLY, series: [...REPLY.series, { ...REPLY.series[0], tag: undefined, country: 5 }, { ...REPLY.series[0], tag: undefined, country: '5' }]
     .map(({ tag, ...series }) => tag === undefined ? series : { ...series, country: tag }) };
   assert.deepEqual(validateArmySizeReply(asked).series.map(series => series.tag), ['opaque tag', countryKey(5), '5'], 'a slot and a mod tag spelled as its number stay apart');

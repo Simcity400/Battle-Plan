@@ -1,18 +1,3 @@
-//! The game's map mode picker (`MapmodesInterface_Ingame`) and its configuration windows,
-//! hosted through the same retained native GUI walk as the combat windows.
-//!
-//! The caller decides what each button holds; this module binds the authored window to it,
-//! lays it out bottom right as the game does and reports where each control landed.
-//!
-//! - `4_button_mapmode` shows when the recording owns the feature that adds the fourth large
-//!   button, `3_button_mapmode` otherwise.
-//! - Each picker slot is a button pair: `mapmode_button_<n>` while its mode is not shown and
-//!   `mapmode_button_<n>_s` while it is. Large buttons take the slot's frame of the large sprite
-//!   strips; small ones the mode's frame of the small strips, or a scripted mode's own
-//!   `GFX_mapmode_buttons_(de)selected_small_<name>` sprite.
-//! - The toggles bind their authored buttons; a toggle the caller cannot apply is disabled.
-//! - `WindowWithAllMapModes_Standalone` lists every mode for `mapmodes_all`; right-clicking a
-//!   configurable slot opens `WindowWithMapModeSlots` with `WindowWithAllMapModes` beside it.
 
 use super::{
     Drawn, HoverText, Values, Widget,
@@ -23,14 +8,10 @@ use super::{
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::map::native_gui::{self, lifecycle, pointer::Input};
 
-/// The picker's root window.
 pub const PICKER_WINDOW: &str = "MapmodesInterface_Ingame";
-/// The window listing every mode for `mapmodes_all`.
 pub const ALL_MODES_WINDOW: &str = "WindowWithAllMapModes_Standalone";
-/// The configurable slots and the list beside them while one is reassigned.
 pub const SLOTS_WINDOW: &str = "WindowWithMapModeSlots";
 pub const ASSIGN_WINDOW: &str = "WindowWithAllMapModes";
-/// Every template the picker draws, for the GUI resource inventory.
 pub const TEMPLATES: &[&[u8]] = &[
     b"MapmodesInterface_Ingame",
     b"ConfigurableMapModeSlot",
@@ -40,25 +21,17 @@ pub const TEMPLATES: &[&[u8]] = &[
     b"WindowWithAllMapModes_Standalone",
 ];
 
-/// One mode as a button or list entry shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModeButton {
-    /// The protocol token the caller selects with.
     pub token: String,
-    /// The frame of the large and small button strips: the picker mode's number; `None` for
-    /// a scripted mode, which has its own sprites.
     pub frame: Option<u32>,
-    /// A scripted mode's sprite name suffix.
     pub sprite_name: Option<String>,
-    /// Why the mode cannot be chosen: its button and entry show disabled with this reason.
     pub unavailable: Option<String>,
-    /// The localised name the lists show.
     pub name: String,
     pub tooltip: String,
     pub description: String,
 }
 
-/// A toggle's state; `None` disables the button.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Toggles {
     pub day_night: Option<bool>,
@@ -69,7 +42,6 @@ pub struct Toggles {
     pub radar: Option<bool>,
 }
 
-/// The toggle buttons by authored name.
 pub const TOGGLES: [&str; 6] = [
     "day_night_toggle",
     "player_counters_toggle",
@@ -93,26 +65,18 @@ impl Toggles {
     }
 }
 
-/// Which list window is open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Open {
     #[default]
     None,
-    /// The `mapmodes_all` list.
     All,
-    /// Reassigning this configurable slot.
     Assign(usize),
 }
 
-/// What the picker shows this frame.
 pub struct State<'a> {
-    /// Whether the fourth large button exists.
     pub four_buttons: bool,
-    /// The mode of each slot, in slot order.
     pub slots: &'a [ModeButton],
-    /// The first slot the user can reassign; earlier ones are fixed.
     pub configurable_from: usize,
-    /// Every mode the lists offer, in the game's order.
     pub modes: &'a [ModeButton],
     pub selected: &'a str,
     pub toggles: Toggles,
@@ -123,38 +87,26 @@ pub struct State<'a> {
     pub default_tooltip: &'a str,
 }
 
-/// A clickable control and where it landed, in interface pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
-    /// A picker slot's button.
     Slot(usize),
     All,
     Toggle(&'static str),
-    /// An entry of the open list: its mode token.
     Entry(String),
-    /// A slot entry of the configuration window.
     SlotEntry(usize),
     Default,
-    /// `open_find_view_button`: opens or closes the find view.
     FindView,
-    /// A control of the minimap window.
     Minimap(super::minimap::Control),
-    /// A control of the find view.
     Find(super::find_view::Control),
-    /// The window background: absorbs clicks without an action.
     Window,
 }
 
-/// A drawn control: its rectangle, and the alpha test its sprite asks for within it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Placed {
     pub rect: [f32; 4],
     pub control: Control,
-    /// `transparencecheck`'s hit and the window origin its points are taken from.
     alpha: Option<std::sync::Arc<(native_gui::HitGeometry, [f32; 2])>>,
-    /// Its button's path and click sound, which a right-click plays too.
     pub click: Option<(String, Vec<u8>)>,
-    /// Disabled: it takes the pointer but acts on no click.
     pub disabled: bool,
 }
 
@@ -169,8 +121,6 @@ impl Placed {
         }
     }
 
-    /// `region` of the window at `origin`, testing its sprite's alpha where it asks to; `None`
-    /// when its sprite passes the pointer through.
     pub(crate) fn region(
         rect: [f32; 4],
         control: Control,
@@ -196,7 +146,6 @@ impl Placed {
         })
     }
 
-    /// Whether the control takes the pointer at `at`, as its native hit test does.
     pub fn contains(&self, at: [f32; 2]) -> bool {
         viewer_foundation::map::gui_resources::contains(self.rect, at)
             && self.alpha.as_ref().is_none_or(|alpha| {
@@ -206,17 +155,14 @@ impl Placed {
     }
 }
 
-/// One frame of the picker: its quads and tooltips, and its controls in paint order.
 #[derive(Clone)]
 pub struct PickerDrawn {
     pub drawn: Drawn,
     pub controls: Vec<Placed>,
-    /// The controls clicked this frame, with each click's order among the frame's button changes.
     pub clicked: Vec<(Control, usize)>,
 }
 
 impl PickerDrawn {
-    /// This picture to draw again, its sounds and clicks spent ([`Drawn::again`]).
     fn again(&self) -> Self {
         Self {
             drawn: self.drawn.again(),
@@ -225,7 +171,6 @@ impl PickerDrawn {
         }
     }
 
-    /// The topmost control under `point`.
     pub fn control_at(&self, point: [f32; 2]) -> Option<&Control> {
         self.controls
             .iter()
@@ -235,7 +180,6 @@ impl PickerDrawn {
     }
 }
 
-/// The picker's retained windows; a new content or viewport rebuilds them.
 #[derive(Default)]
 pub struct Picker {
     built: Option<(
@@ -245,33 +189,25 @@ pub struct Picker {
     root: Option<Retained>,
     list: Option<Retained>,
     slots: Option<Retained>,
-    /// Bumps when what the windows show changes, so they bind again.
     generation: u64,
     last: Option<u64>,
     root_generation: Option<u64>,
     values: Values,
     controls: BTreeMap<String, Control>,
-    /// The open lists' window rectangles as last drawn.
     above: Vec<[f32; 4]>,
-    /// Each window's controls as last drawn, bottom first.
     owners: Vec<(Part, Placed)>,
-    /// What the last draw drew and what it drew it for: a frame asking for the same picture of a
-    /// picker in which nothing animates takes this copy instead of laying it out again.
     held: Option<(Shown, PickerDrawn)>,
 }
 
-/// What a drawn picker was drawn for; the same again is the same picture.
 #[derive(Clone, Copy, PartialEq)]
 struct Shown {
     fingerprint: u64,
     viewport: [i32; 2],
     hovers: bool,
     advance: bool,
-    /// Where the pointer stood, which decides what draws hovered.
     place: Option<native_gui::pointer::Place>,
 }
 
-/// One of the picker's windows, which share the primary button.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Part {
     Root,
@@ -291,8 +227,6 @@ fn button_name(button: usize, selected: bool) -> String {
     )
 }
 
-/// The picker button a slot occupies: the first three or four slots are the large buttons,
-/// the rest follow the small ones from the fifth button on.
 pub fn button_of_slot(slot: usize, four_buttons: bool) -> Option<usize> {
     match slot {
         0..=2 => Some(slot),
@@ -301,11 +235,9 @@ pub fn button_of_slot(slot: usize, four_buttons: bool) -> Option<usize> {
     }
 }
 
-/// Authored buttons per layout.
 const BUTTONS: usize = 12;
 
 impl Picker {
-    /// Whether the primary button holds one of the picker's buttons.
     pub fn holding(&self) -> bool {
         [&self.list, &self.slots, &self.root]
             .into_iter()
@@ -313,7 +245,6 @@ impl Picker {
             .any(Retained::holding)
     }
 
-    /// The control the last draw drew for the pointer: an open list's, drawn above, first.
     pub fn highlighted(&self) -> Option<&str> {
         [&self.list, &self.slots, &self.root]
             .into_iter()
@@ -321,7 +252,6 @@ impl Picker {
             .find_map(Retained::highlighted)
     }
 
-    /// Whether a button the pointer holds still changes on the clock.
     pub fn pointing(&self) -> bool {
         [&self.root, &self.list, &self.slots]
             .into_iter()
@@ -329,7 +259,6 @@ impl Picker {
             .any(Retained::pointing)
     }
 
-    /// Whether a window of the picker draws differently next frame without a call from the code.
     fn animating(&self) -> bool {
         [&self.root, &self.list, &self.slots]
             .into_iter()
@@ -352,7 +281,6 @@ impl Picker {
         self.root_generation = Some(self.generation);
     }
 
-    /// Lays out and draws the picker for `state`; `fingerprint` changes whenever `state` does.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -388,8 +316,6 @@ impl Picker {
             advance,
             place: input.as_ref().and_then(|input| input.place),
         };
-        // A picker whose values did not change, in which nothing animates and whose pointer stood
-        // where it stood with its button still, draws the picture it drew last frame.
         let still = input
             .as_ref()
             .is_none_or(|input| input.buttons.is_empty() && !input.held);
@@ -419,7 +345,6 @@ impl Picker {
         };
         let root = gui::template(&windows, PICKER_WINDOW).map_err(super::invalid)?;
         self.refresh_values(state, root);
-        // A press one window holds, or lands on, keeps the pointer from the others until released.
         let holder = [
             (Part::Root, &self.root),
             (Part::Slots, &self.slots),
@@ -441,7 +366,6 @@ impl Picker {
                 .as_ref()
                 .map(|input| input.shared(holder, owner, me))
         };
-        // The lists draw above the picker: the pointer over one last frame is not the root's.
         let above = std::mem::take(&mut self.above);
         let root_input = shared(Part::Root).map(|input| {
             input.filter(|at| {
@@ -510,7 +434,6 @@ impl Picker {
         }
         let root_controls = out.controls.len();
         let mut slot_controls = root_controls;
-        // The lists draw above the picker.
         match state.open {
             Open::None => {
                 self.list = None;
@@ -622,14 +545,11 @@ fn layout_name(four_buttons: bool) -> &'static str {
     }
 }
 
-/// A control's first authored shortcut.
 fn authored_shortcut(root: &installed_content_core::gui::native::Element, path: &str) -> Option<String> {
     let shortcut = root.path_named(path)?.button()?.shortcuts.first()?;
     std::str::from_utf8(shortcut).ok().map(str::to_owned)
 }
 
-/// Every picker control's first authored shortcut, slots by their slot: what the picker's
-/// keys select.
 pub fn shortcuts(
     content: &super::content::Content,
     extent: [f32; 2],
@@ -641,7 +561,6 @@ pub fn shortcuts(
     Ok(shortcuts_in(root, four_buttons, slots))
 }
 
-/// [`shortcuts`] of the picker's template.
 fn shortcuts_in(
     root: &installed_content_core::gui::native::Element,
     four_buttons: bool,
@@ -671,7 +590,6 @@ fn shortcuts_in(
     out
 }
 
-/// Binds every slot button pair, the layout choice and the toggles.
 fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::Element) -> Values {
     let mut values = Values::new();
     let layout = layout_name(state.four_buttons);
@@ -777,7 +695,6 @@ fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::
             name.to_owned(),
             Widget {
                 enabled: Some(state.is_some()),
-                // A toggle shows its second frame while on.
                 frame: Some(u32::from(state == Some(true))),
                 ..Default::default()
             },
@@ -859,7 +776,6 @@ fn draw_list(
     input: Option<Input>,
     out: &mut PickerDrawn,
 ) -> io::Result<()> {
-    // The list grows a row for each scripted mode, upward, as the game grows the window.
     let scripted = state
         .modes
         .iter()
@@ -878,7 +794,6 @@ fn draw_list(
             .is_some_and(|held| held.token == mode.token),
         None => mode.token == state.selected,
     };
-    // An entry names the shortcut of the slot that holds its mode.
     let picker = gui::template(windows, PICKER_WINDOW).map_err(super::invalid)?;
     let layout = layout_name(state.four_buttons);
     let slot_shortcut = |mode: &ModeButton| {
@@ -965,7 +880,6 @@ fn draw_slots(
                     ..Default::default()
                 },
             );
-            // The slot being reassigned shows pressed.
             values.insert(
                 "bg".to_owned(),
                 Widget {
@@ -1017,9 +931,6 @@ fn draw_slots(
     )
 }
 
-/// A mode list window grown by `rows` entries: its `slots` grid takes no scrollbar and grows
-/// downward past its authored height, so the window gains `rows` slot heights and moves up by
-/// the same, its bottom edge staying where it was.
 fn grown(
     root: &installed_content_core::gui::native::Element,
     rows: usize,
@@ -1163,7 +1074,6 @@ mod tests {
     fn slots_take_the_large_buttons_then_the_small_ones() {
         assert_eq!(button_of_slot(0, false), Some(0));
         assert_eq!(button_of_slot(3, true), Some(3));
-        // Without the fourth large button, its slot has no button.
         assert_eq!(button_of_slot(3, false), None);
         assert_eq!(button_of_slot(4, false), Some(4));
         assert_eq!(button_of_slot(10, true), Some(10));
@@ -1173,7 +1083,6 @@ mod tests {
     fn the_topmost_control_under_the_pointer_takes_the_click() {
         let drawn = PickerDrawn {
             drawn: Drawn::default(),
-            // Paint order: the window, then a button over it.
             controls: vec![
                 Placed::new([0.0, 0.0, 100.0, 50.0], Control::Window),
                 Placed::new([10.0, 10.0, 20.0, 20.0], Control::Slot(1)),
@@ -1182,7 +1091,6 @@ mod tests {
         };
         assert_eq!(drawn.control_at([15.0, 15.0]), Some(&Control::Slot(1)));
         assert_eq!(drawn.control_at([60.0, 15.0]), Some(&Control::Window));
-        // A rectangle's far edges are outside it.
         assert_eq!(drawn.control_at([30.0, 15.0]), Some(&Control::Window));
         assert_eq!(drawn.control_at([100.0, 15.0]), None);
     }
@@ -1210,7 +1118,6 @@ mod tests {
             all_tooltip: "",
             default_tooltip: "",
         };
-        // The button keeps its authored enabled state.
         assert!(
             picker_values(&state, root)
                 .get("open_find_view_button")
@@ -1243,7 +1150,6 @@ mod tests {
         let authored = native_gui::container_frame(root, viewport).unwrap();
         assert_eq!(grown(root, 0).unwrap(), *root);
         let grown = native_gui::container_frame(&grown(root, 3).unwrap(), viewport).unwrap();
-        // Three 22-pixel rows more, the bottom edge where it was.
         assert_eq!(grown.size[1], authored.size[1] + 66);
         assert_eq!(grown.at[1], authored.at[1] - 66);
         assert_eq!(
@@ -1274,7 +1180,6 @@ mod tests {
             tooltip: String::new(),
             description: String::new(),
         };
-        // The game's default slots put navy (mode 2) before air (mode 1).
         let slots = [
             mode("default", 0),
             mode("navy", 2),
@@ -1342,9 +1247,7 @@ mod tests {
         assert_eq!(frame(0, true), Some(0));
         assert_eq!(frame(1, false), Some(2));
         assert_eq!(frame(2, false), Some(1));
-        // Without a fourth large button the fourth slot is unused.
         assert!(values[&format!("{}/{}", layout_name(false), button_name(3, false))].hidden);
-        // A mode no recording can draw shows disabled, its tooltip giving the reason.
         assert_eq!(frame(0, false), Some(0));
         let mut unavailable = slots.clone();
         unavailable[1].unavailable = Some("Not available".to_owned());

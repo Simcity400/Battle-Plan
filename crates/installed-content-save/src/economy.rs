@@ -1,4 +1,3 @@
-//! Literal economy and supply state carried by a text save.
 
 use std::{collections::BTreeMap, io};
 pub mod market;
@@ -12,9 +11,7 @@ use installed_content_core::{parser::Item, parser::Value};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub countries: BTreeMap<Vec<u8>, Country>,
-    /// Preserves absence of the supply root independently of empty country systems.
     pub supply: Option<BTreeMap<Vec<u8>, Supply>>,
-    /// The whole equipment market may be absent; this is not an empty census.
     pub purchases: Option<BTreeMap<u64, Purchase>>,
     pub market_terms: Option<Vec<market::Terms>>,
 }
@@ -23,89 +20,50 @@ pub struct Pack {
 pub struct Country {
     pub market: Option<market::CountryMarket>,
     pub fuel: Option<Fuel>,
-    /// Missing status is distinct from a present status whose gains are zero.
     pub experience: Option<Experience>,
-    /// None preserves an absent resources object; an empty export list is distinct.
     pub exports: Option<Vec<ResourceExchange>>,
-    /// The resource pools of the same object; `None` with it.
     pub pools: Option<ResourcePools>,
-    /// None when the country writes no `logistics` block.
     pub logistics: Option<Logistics>,
-    /// The country's outgoing lend-lease exchanges under `resources.lend_lease`,
-    /// in save order; None preserves an absent resources object.
     pub lend_lease: Option<Vec<LendLease>>,
 }
 
-/// One saved lend-lease exchange of its giver.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LendLease {
     pub terms: Option<market::LeaseTerms>,
-    /// The exchange's full typed reference (low u32 type, high u32 id).
     pub id: u64,
     pub receiver: Vec<u8>,
-    /// The convoy client's two efficiency factors: `efficiency` and
-    /// `efficiency_due_to_lost_convoys`.
     pub efficiency: Decimal,
     pub efficiency_due_to_lost_convoys: Decimal,
-    /// The convoy client's `request`: its convoy requirement before the naval-dominance
-    /// route cost reduction.
     pub request: Option<i32>,
     pub convoys: ConvoyCounts,
-    /// The exchange's `total_delivered` equipment pool.
     pub delivered: super::production::Pool,
-    /// The exchange's `equipment_sunk` pool.
     pub sunk: super::production::Pool,
 }
 
-/// One saved resource pool: each nonzero fixed5 amount in resource index
-/// order, keyed by its token, with zero amounts omitted. The content loader
-/// appends a repeated declaration as another resource, so a name can repeat;
-/// every occurrence is kept in written order.
 pub type ResourcePool = Vec<(Vec<u8>, Decimal)>;
 
-/// The resource pools emitted by the country resources writer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResourcePools {
-    /// The `produced` pool.
     pub produced: ResourcePool,
-    /// The `transfer_overlord_subject` pool.
     pub transfer_overlord_subject: ResourcePool,
-    /// The `imported` pool.
     pub imported: ResourcePool,
-    /// `to_use`: three unkeyed pools backed by a Fenwick tree. The writer
-    /// emits prefix(i) - prefix(i - 1) for odd i and the pool itself for
-    /// even i, so the saved entries are the first pool, the second less
-    /// the first, and the third.
     pub to_use: [ResourcePool; 3],
-    /// The `to_export` pool.
     pub to_export: ResourcePool,
-    /// The `base_export` pool.
     pub base_export: ResourcePool,
-    /// The `exported` pool.
     pub exported: ResourcePool,
 }
 
-/// A saved `logistics` block. The writer includes its `history` only for
-/// a country that is not AI-controlled, so an AI-controlled country's
-/// block is empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Logistics {
     Empty,
-    /// Each series the writer emits (a field count above zero), by index.
     History(BTreeMap<u32, LoopHistory>),
 }
 
-/// One saved loop history: `history_queue` with its daily, twelve-record
-/// and third windows in order, written as `0`, `1` and `2`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoopHistory {
     pub windows: [LoopWindow; 3],
 }
 
-/// One saved history window: its capacity, current slot and wrapped flag,
-/// then `data`, every record's values in record
-/// order (fixed5, five trimmed decimals). The writer omits `data` when every
-/// value is zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoopWindow {
     pub max_elements: i32,
@@ -115,9 +73,6 @@ pub struct LoopWindow {
 }
 
 impl LoopWindow {
-    /// The raw values of the record at `slot`, each record holding `fields`
-    /// values. Omitted data is every value zero; data that does not hold
-    /// `max_elements` records of `fields` values is refused.
     pub fn record(&self, slot: usize, fields: usize) -> io::Result<Vec<i64>> {
         let records = usize::try_from(self.max_elements)
             .map_err(|_| invalid("save logistics window has a negative capacity"))?;
@@ -139,9 +94,6 @@ impl LoopWindow {
     }
 }
 
-/// Exact native signed /32768 values. The writer omits the first eight fields
-/// exactly when zero; presence is retained so only the comparator applies
-/// that proven rule. The training divisor is always emitted, including zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Experience {
     pub army_raw: Option<i64>,
@@ -152,19 +104,16 @@ pub struct Experience {
     pub navy_daily_training_raw: Option<i64>,
     pub air_raw: Option<i64>,
     pub air_daily_raw: Option<i64>,
-    /// Smoothed native training denominator, not a current integer army count.
     pub armies_for_training_raw: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceExchange {
     pub id: u64,
-    /// The enclosing country owns the export; receiver is its explicit saved recipient.
     pub receiver: Option<Vec<u8>>,
     pub resource: Option<Vec<u8>>,
     pub efficiency: Decimal,
     pub efficiency_due_to_lost_convoys: Decimal,
-    /// The convoy client's `request`.
     pub request: Option<i32>,
     pub delivered: Decimal,
     pub required_cic: i32,
@@ -172,16 +121,12 @@ pub struct ResourceExchange {
     pub convoys: ConvoyCounts,
 }
 
-/// A convoy client's saved `convoys_subscriber`: `convoys` assigned and `total` required.
-/// The client writer emits the block exactly when the required count is not zero, so an
-/// absent block is zero assigned and zero required.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConvoyCounts {
     pub assigned: i32,
     pub required: i32,
 }
 
-/// The `convoys_subscriber` of a convoy client's fields.
 pub(super) fn convoy_counts(fields: &[Item]) -> io::Result<ConvoyCounts> {
     let Some(value) = field(fields, b"convoys_subscriber")? else {
         return Ok(ConvoyCounts::default());
@@ -193,16 +138,11 @@ pub(super) fn convoy_counts(fields: &[Item]) -> io::Result<ConvoyCounts> {
     })
 }
 
-/// A market contract's saved `convoy_client`, under its `delivery_route_handler`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContractClient {
-    /// The client's full typed reference (low u32 type, high u32 id).
     pub id: u64,
-    /// The client's two efficiency factors: `efficiency` and
-    /// `efficiency_due_to_lost_convoys`.
     pub efficiency: Decimal,
     pub efficiency_due_to_lost_convoys: Decimal,
-    /// The client's `request`.
     pub request: Option<i32>,
     pub convoys: ConvoyCounts,
 }
@@ -214,7 +154,6 @@ pub struct Purchase {
     pub buyer: Vec<u8>,
     pub speed: i32,
     pub client: ContractClient,
-    /// The route handler's own accumulated `efficiency`.
     pub route_efficiency_sum: Decimal,
     pub route_days: i32,
     pub factory_cic_progress: Decimal,
@@ -225,21 +164,16 @@ pub struct Purchase {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Supply {
-    /// Present system with omitted child collections is empty: the writer
-    /// emits each collection precisely when its count != 0.
     pub motorization: Vec<Motorization>,
     pub disrupted: Vec<Disrupted>,
     pub foreign_homebases: Vec<ForeignHomebase>,
     pub temp_nodes: Vec<TemporaryNode>,
 }
 
-/// `temp_nodes`, emitted in array order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TemporaryNode {
-    /// Repeated provinces stay separate: lookup selects the first match.
     pub ordinal: u32,
     pub province: i32,
-    /// Base status is saved as Boolean truth.
     pub base: bool,
 }
 
@@ -255,7 +189,6 @@ pub struct Motorization {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Disrupted {
-    /// Signed save spelling preserves the full native u32 words.
     pub province: i32,
     pub node_type: i32,
     pub value: Decimal,
@@ -263,7 +196,6 @@ pub struct Disrupted {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForeignHomebase {
-    /// Position is significant; repeated provinces must remain separate.
     pub ordinal: u32,
     pub province: u32,
     pub inner_province: u32,
@@ -274,36 +206,25 @@ pub struct ForeignHomebase {
     pub hours: Decimal,
     pub decay: Decimal,
     pub base: bool,
-    /// The source string is serialized as `add`. The text
-    /// writer emits even an empty string, stopping at its first NUL byte.
     pub source: Vec<u8>,
 }
 
-/// One saved `fuel_status`, in the fuel writer's fixed order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fuel {
-    /// Decimal spelling of a native /32768 quantity, not raw /100000 fuel.
     pub current: FuelQuantity,
-    /// Decimal spelling of a native /32768 quantity, not raw /100000 fuel.
     pub maximum: FuelQuantity,
-    /// Native signed /100000 modifier values.
     pub gain: Decimal,
     pub cost: Decimal,
     pub gain_per_oil: Decimal,
     pub gain_from_states: Decimal,
-    /// Native /32768 quantities written through the same fixed15 formatter.
     pub lend_lease_gain: FuelQuantity,
     pub lend_lease_consumption: FuelQuantity,
-    /// Consumer entries in array order; each saved index is its position.
     pub consumers: Vec<FuelConsumer>,
     pub history_index: i32,
     pub remaining_hours: i32,
-    /// The pending entry (index -1), then the ring entries in slot order.
     pub history: Vec<FuelHistory>,
 }
 
-/// One `fuel_consumer_data` block; the writer's `index` is the entry's
-/// array position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FuelConsumer {
     pub index: u32,
@@ -312,11 +233,8 @@ pub struct FuelConsumer {
     pub requested: Decimal,
 }
 
-/// One `history` block. Fuel, consumed and other are
-/// /32768 quantities; gain and the three-value lists are /100000.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FuelHistory {
-    /// -1 for the pending entry, otherwise the ring slot.
     pub index: i32,
     pub fuel: FuelQuantity,
     pub consumed: FuelQuantity,
@@ -326,15 +244,9 @@ pub struct FuelHistory {
     pub received: [Decimal; FUEL_CONSUMER_VALUES],
 }
 
-/// History ring entries written after the pending entry: the writer loops
-/// over exactly 24 slots whatever the ring's own header holds.
 pub const FUEL_HISTORY_RING: usize = 24;
-/// Values per history list; the list writer always writes three.
 pub const FUEL_CONSUMER_VALUES: usize = 3;
 
-/// Save text numerator over 100000. This is deliberately wider than i64:
-/// formatting an i64 /32768 quantity can exceed i64 in decimal fixed5 units.
-/// It is not a reconstruction of the native /32768 value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FuelQuantity {
     pub decimal_numerator: i128,
@@ -388,9 +300,6 @@ impl FuelQuantity {
         })
     }
 
-    /// The formatter truncates abs(raw)*100000/32768 then emits its
-    /// original sign. The ratio exceeds one, so every valid output has one
-    /// exact preimage. Re-encoding rejects non-native decimal spellings.
     pub fn raw(&self) -> io::Result<i64> {
         let magnitude = self
             .decimal_numerator
@@ -436,8 +345,6 @@ fn fixed15(items: &[Item], key: &[u8]) -> io::Result<Option<i64>> {
         .transpose()
 }
 
-/// A block's items in the order a native writer emits them. Every key must be
-/// the one the writer puts at that position; nothing is looked up out of order.
 struct Sequence<'a> {
     items: std::iter::Peekable<std::slice::Iter<'a, Item>>,
     block: &'static str,
@@ -501,12 +408,6 @@ impl<'a> Sequence<'a> {
     }
 }
 
-/// The fuel writer emits fuel, max_fuel,
-/// fuel_gain, fuel_cost, fuel_gain_per_oil, fuel_gain_from_states and the two
-/// lend-lease quantities, one `fuel_consumer_data` per consumer entry with its
-/// position as index, history_index, remaining_hours, the pending `history`
-/// (index -1) and FUEL_HISTORY_RING ring entries in slot order. Any other
-/// sequence is refused rather than reinterpreted.
 fn parse_fuel(items: &[Item]) -> io::Result<Fuel> {
     let mut fields = Sequence::new(items, "fuel_status");
     let current = fields.quantity("fuel")?;
@@ -582,7 +483,6 @@ fn parse_fuel(items: &[Item]) -> io::Result<Fuel> {
     })
 }
 
-/// One fuel-history list: exactly three anonymous /100000 values.
 fn consumer_values(value: &Value) -> io::Result<[Decimal; FUEL_CONSUMER_VALUES]> {
     let items = block(value)?;
     if items.len() != FUEL_CONSUMER_VALUES || items.iter().any(|item| item.key.is_some()) {
@@ -597,9 +497,6 @@ fn consumer_values(value: &Value) -> io::Result<[Decimal; FUEL_CONSUMER_VALUES]>
     Ok(values.try_into().expect("three values"))
 }
 
-/// The logistics writer saves `history` with one block per series in index
-/// order, keyed by the index; each holds a `history_queue`. Any other
-/// layout is refused.
 fn parse_logistics(items: &[Item]) -> io::Result<Logistics> {
     let mut fields = Sequence::new(items, "logistics");
     if items.is_empty() {
@@ -745,7 +642,6 @@ fn parse_supply(items: &[Item]) -> io::Result<Supply> {
             supply.temp_nodes.push(TemporaryNode {
                 ordinal: u32::try_from(ordinal)
                     .map_err(|_| invalid("temporary supply node ordinal exceeds u32"))?,
-                // The temporary-node writer always emits province/base, including zero/no.
                 province: required_integer(fields, b"province")?,
                 base: boolean(
                     field(fields, b"base")?
@@ -909,7 +805,6 @@ fn parse_exports(resources: Option<&[Item]>) -> io::Result<Option<Vec<ResourceEx
         .filter(|entry| entry.key.as_deref() == Some(b"export"))
     {
         let fields = block(&entry.value)?;
-        // The exchange writer saves these fields without scalar omission.
         exports.push(ResourceExchange {
             id: typed_handle(
                 field(fields, b"id")?.ok_or_else(|| invalid("resource exchange lacks id"))?,

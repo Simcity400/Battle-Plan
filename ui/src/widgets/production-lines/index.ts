@@ -3,7 +3,6 @@ import type { WidgetSpec } from '../../dashboard/model';
 import ProductionLinesWidget, { useProductionLines } from './ProductionLinesWidget';
 import { productionLineLabel, productionLineToken } from './productionData';
 
-/** The settings' choices: the country's lines (named at the end of the branch) and the breakdown's factors. */
 function useLineChoices(widget: WidgetSpec, runtime: WidgetRuntime) {
   const { data, track } = useProductionLines(widget, runtime, true);
   return {

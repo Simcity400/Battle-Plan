@@ -1,30 +1,3 @@
-//! Allocation-free observation of the civilian-factory output every construction
-//! line consumes each day ([`engine_production::construction_ic_sites`]), which the game keeps
-//! nowhere: `produced` holds only the progress toward a building's next level, and
-//! a repair keeps its progress on the building. A detour only records and calls the
-//! original; it never changes game behaviour and calls no game function.
-//!
-//! A building line spends the value its speed getter returns to one call site in
-//! its advance; the detour on the getter records it only for that return address,
-//! with whether the line was repairing, its CIC bank draw, and whether it is linked
-//! to another country's line. A railway line spends the amount its advance passes
-//! to the segment-progress function first; a second call in the same advance
-//! carries an overdrawn amount to the next segment and is not new output. The
-//! railway advance's detour marks its line on the thread, so the segment detour
-//! knows whose output it is.
-//!
-//! Every clocked hourly boundary joins the worker that grows its owned frame
-//! from the original pending burst ([`drain`]); the spool totals it per
-//! branch (`extended::construction_ic`). Producer storage follows the original
-//! native construction queues and route counts at attach and input cadence,
-//! plus complete attempted bursts. After its owned drain, the empty boundary
-//! installs prepared storage; retired storage is released off-thread.
-//! The detours run on the simulation thread (the daily production pass is serial);
-//! the log is multi-producer safe anyway, and the railway pairing is per thread.
-//!
-//! A site that cannot be located or detoured leaves the family uninstalled: the collector still attaches and
-//! ConstructionLineOutput is unavailable with the reason (`unhooked` in
-//! `status.json`).
 pub use crate::output_log::Drained;
 use crate::{
     opinion_changes::Padded,
@@ -93,12 +66,9 @@ static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
-/// The spend and native completion trampolines.
 static INSTALLED: [AtomicBool; 7] = [const { AtomicBool::new(false) }; 7];
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
-/// The module base the RVAs are relative to.
 static BASE: AtomicUsize = AtomicUsize::new(0);
-/// Live return addresses of the spend, completion and linked completion calls.
 static RETURNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 const RETURN_KEYS: [(Rva, &str); 3] = [
     (BUILDING_SPEND_RETURN, "construction spend caller withheld"),
@@ -106,7 +76,6 @@ const RETURN_KEYS: [(Rva, &str); 3] = [
     (LINKED_COMPLETE_RETURN, "construction linked completion caller withheld"),
 ];
 
-/// Callers are matched by live return address; a withheld one refuses the family.
 fn bind_returns(base: usize) -> Result<(), &'static str> {
     for (slot, (key, withheld)) in RETURNS.iter().zip(RETURN_KEYS) {
         let address = engine_sites::resolve(base, key).map_err(|_| withheld)?;
@@ -114,24 +83,16 @@ fn bind_returns(base: usize) -> Result<(), &'static str> {
     }
     Ok(())
 }
-/// The next entry the hourly drain hands over; only the callback moves it.
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
-/// Why the hooks are not installed, when they are not.
 static REFUSED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 static REFUSAL_PENDING: AtomicBool = AtomicBool::new(false);
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-/// `[building spends, other speed reads, railway advances, railway spends,
-/// railway carries, entries, inexact entries, drains, entries handed over,
-/// intervals given up for entry storage, unobserved drains, refused operand reads,
-/// unread identities]`.
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 
 pub fn capacity() -> usize {
     OBSERVATION.capacity.load(Ordering::Acquire)
 }
 
-/// Loader/sizing thread: two native passes cover the bounded hourly handoff,
-/// independently of country count. Rejected bursts retain their whole demand.
 pub fn presize(events: usize) {
     engine_allocation::advisory(|| presize_storage(events));
 }
@@ -161,7 +122,6 @@ fn presize_storage(events: usize) {
     }
 }
 
-/// Parked hourly boundary, after its owned drain: no allocation or freeing.
 pub fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
@@ -185,7 +145,6 @@ pub fn install_offered() {
     }
 }
 
-/// Off-thread only: the replaced producer was empty and writer-free.
 pub fn collect() {
     if let Ok(mut swap) = LOG_SWAP.lock() {
         drop(swap.retired.take());
@@ -193,8 +152,6 @@ pub fn collect() {
 }
 
 fn log() -> Option<&'static Storage> {
-    // SAFETY: writers hold OBSERVATION.enter(). The sole worker drain finishes
-    // before the same parked hourly boundary can install a replacement.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 
@@ -210,47 +167,30 @@ const ROUTE_FIRST: u16 = 256;
 const ROUTE_LAST: u16 = 512;
 const HAS_IDENTITY: u16 = 1024;
 
-/// One construction spend, railway carry or native completion decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
-    /// The line's CID, the construction tables' `id`.
     pub line: u64,
     pub identity: Option<engine_production::construction_ic_sites::Identity>,
-    /// Later segment call in the same advance; never new factory spending.
     pub carry: bool,
-    /// The progress the day added (fixed5): the factories' output plus `bank`.
     pub amount: i64,
-    /// Of it, drawn from the country's CIC bank.
     pub bank: i64,
     pub railway: bool,
-    /// Spent on repairing the building, not on new levels.
     pub repair: bool,
-    /// Under the instant-construction cheat: the amount is not factory output.
-    /// A repair under it is not instant; it draws no bank.
     pub instant: bool,
-    /// A building line linked to another country's: its speed includes the
-    /// partner's factories.
     pub partner: Option<u64>,
-    /// A native daily or linked-line completion, independent of spending.
     pub completion: Option<replay_data::rows::ConstructionCompletion>,
-    /// The secondary receiver completed inside its primary's advance; its share
-    /// stays unknown even if the primary spend preceded this observation.
     pub linked_completion: bool,
-    /// Signed quantity cleared on completion, never spending.
     pub count_reset: Option<i32>,
 }
 
 thread_local! {
-    /// The railway line advancing on this thread; zero until its first spend.
     static RAILWAY_LINE: Cell<(usize, u32)> = const { Cell::new((0, 0)) };
 }
 
-/// A hook state change or a lapped writer: no drain can continue across it.
 pub fn invalidate() {
     OBSERVATION.invalidate();
 }
 
-/// Buildings use their copied speed; railways supply the segment call's amount.
 fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     let base = BASE.load(Ordering::Relaxed);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -262,9 +202,7 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
                 return;
             }
         };
-    // The speed getter returns the receiver's stored speed at the filtered site.
     let amount = if railway { amount } else { operands.speed };
-    // An ordinary railway speed can equal the instant amount: read the path's own gate.
     let cheat = if railway {
         let instant = match operands.identity {
             Some(identity) => engine_production::construction_ic_sites::railway_instant_owned(
@@ -291,14 +229,8 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         refuse("construction output railway instant amount unsupported");
         return;
     }
-    // The cheat leaves repairs at ordinary speed but skips their reserved bank withdrawal.
     let unwithdrawn = cheat && !railway && operands.repair;
     let instant = cheat && !unwithdrawn;
-    // Building speed is stored unclamped after an optional assertion and
-    // added signed to progress. Industrial modifiers alone clamp; the final
-    // infrastructure product and speed+bank sum can still be signed. Bank
-    // reservation is >=0. Railway spend requires speed>0; carry is gated
-    // by RBX>=0. A nonnegative speed below its bank is not that sum.
     if (railway && amount < 0)
         || operands.bank < 0
         || (!carry && !instant && amount >= 0 && operands.bank > amount)
@@ -306,8 +238,6 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         refuse("construction output amount or CIC bank draw unsupported");
         return;
     }
-    // Instant construction raises new-building progress to max(cost, speed).
-    // Undo the game's wrapping speed-plus-bank sum to remove the unspent draw.
     let amount = if instant && !railway {
         amount.max(operands.cost)
     } else if unwithdrawn {
@@ -342,8 +272,6 @@ fn refuse(reason: &'static str) {
     invalidate();
 }
 
-/// After the getter returned to its advance, its stored speed is the spend.
-/// Other callers do not read observation operands.
 fn observe_building(line: usize, caller: usize) {
     if caller != RETURNS[0].load(Ordering::Relaxed) {
         COUNTERS[1].fetch_add(1, Ordering::Relaxed);
@@ -417,8 +345,6 @@ fn append_completion(
     });
 }
 
-/// After a segment-progress call with `amount`, inside the advance of the
-/// thread's railway line (if any): its first call is the spend, later ones carry.
 fn observe_segment(amount: i64) {
     let (line, calls) = RAILWAY_LINE.get();
     if line == 0 {
@@ -434,7 +360,6 @@ fn observe_segment(amount: i64) {
     }
 }
 
-/// Store an entry, guarded by [`Log::enter`], in its ring slot or the spill.
 fn append(entry: Entry) {
     COUNTERS[5].fetch_add(1, Ordering::Relaxed);
     if entry.identity.is_none() {
@@ -480,7 +405,6 @@ fn append(entry: Entry) {
     }
     slot.partner
         .store(entry.partner.unwrap_or(0), Ordering::SeqCst);
-    // Completion entries use this slot for the native hour, never IC.
     slot.amount.store(
         entry.completion.map_or_else(
             || entry.count_reset.map_or(entry.amount, i64::from),
@@ -536,8 +460,6 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-/// Joined acquisition worker only: reserve the original complete pending burst
-/// before advancing its consumed frontier; the producer is never reread.
 pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     let log = log();
     OBSERVATION.drain(
@@ -569,8 +491,6 @@ fn unavailable() -> Option<&'static str> {
 
 mod demand;
 
-/// Attach/input-demand cadence, off-thread: census native pass storage and
-/// retain independent sizing failures without withdrawing current coverage.
 pub fn presize_from_live(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
     demand::presize(memory, base)
 }
@@ -618,13 +538,13 @@ pub const SITES: [&Site; 7] = [
     &BUILDING_RESET,
 ];
 impl Hooks {
-    /// The runtime's build gate admitted this family. Installation failure leaves
-    /// the output table unavailable; site order preserves paired observation.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family. Installation failure leaves"]
+    #[doc = " the output table unavailable; site order preserves paired observation."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let _ = presize_from_live(memory, base);
         install_offered();
@@ -669,7 +589,6 @@ impl Drop for Hooks {
         if ACTIVE.load(Ordering::SeqCst) != 0 {
             return;
         }
-        // Runtime removes the family and joins drains before releasing it.
         unsafe { ManuallyDrop::drop(&mut self.shared) };
         LOG.store(ptr::null_mut(), Ordering::SeqCst);
         OBSERVATION.capacity.store(0, Ordering::Release);
@@ -694,16 +613,11 @@ unsafe extern "system-unwind" fn building_reset(line: usize) {
     timing.original(|| unsafe { original(line) });
 }
 
-// The speed getter takes two integer arguments, so R8 is free: its entry copies
-// its return address (the game's call site) there and jumps to the Rust body,
-// which returns to the game itself. The entry touches no stack.
 #[unsafe(naked)]
 unsafe extern "system" fn speed_entry() {
     core::arch::naked_asm!("mov r8, qword ptr [rsp]", "jmp {body}", body = sym speed);
 }
 
-// The completion predicate takes only RCX and returns AL. RDX retains the
-// game's return address without touching the stack; the body passes AL through.
 #[unsafe(naked)]
 unsafe extern "system" fn building_complete_entry() {
     core::arch::naked_asm!("mov rdx, qword ptr [rsp]", "jmp {body}", body = sym building_complete);
@@ -732,9 +646,6 @@ unsafe extern "system" fn railway_complete(line: usize, caller: usize) -> u8 {
     result
 }
 
-// Linked-line removal takes RCX/RDX; R8 retains the native return address.
-// The receiver must be observed before the original deletes it. Other removal
-// callers perform no operand reads and emit no completion.
 #[unsafe(naked)]
 unsafe extern "system" fn linked_complete_entry() {
     core::arch::naked_asm!("mov r8, qword ptr [rsp]", "jmp {body}", body = sym linked_complete);
@@ -748,7 +659,6 @@ unsafe extern "system" fn linked_complete(status: usize, line: usize, caller: us
     timing.original(|| unsafe { original(status, line) });
 }
 
-// Every argument is passed through unchanged and every result returned.
 unsafe extern "system" fn speed(line: usize, out: usize, caller: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::ConstructionIc);
     let _call = OBSERVATION.enter();
@@ -785,7 +695,6 @@ unsafe extern "system" fn railway_progress(
     completed
 }
 
-/// Tests that touch the process-wide observation state take this first.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -793,8 +702,6 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Observation on (true) or off, with RVAs relative to `base` and the drain at
-/// the current cursor. Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn observe_for_test(enabled: bool, base: usize) {
     if enabled {
@@ -864,10 +771,8 @@ mod tests {
     fn completion_entries_keep_native_date_and_do_not_become_output() {
         let _lock = test_lock();
         observe_for_test(true, 0);
-        // Neither a false result nor another caller may read this null line.
         observe_completion(0, COMPLETE_RETURN.0, 0, false);
         observe_completion(0, COMPLETE_RETURN.0 + 1, 1, false);
-        // A command/hourly removal may never become a linked completion.
         observe_linked_completion(0, 0, LINKED_COMPLETE_RETURN.0 + 1);
         for cancelled in [false, true] {
             append(Entry {
@@ -907,9 +812,6 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// Owned memory standing in for the globals the detours read (the game state,
-    /// the instant flag and the invalid reference), placed so each is at its RVA
-    /// from `base`; vtables are only compared as values.
     struct Image {
         bytes: Vec<u64>,
         owner: Option<Owner>,
@@ -934,8 +836,6 @@ mod tests {
         }
     }
 
-    /// A railway line's production status, its country `id`, and the game state
-    /// viewing `playing`, whose links file countries 5 and 7 together.
     struct Owner {
         status: Vec<u64>,
         country: Vec<u64>,
@@ -987,7 +887,6 @@ mod tests {
         }
     }
 
-    /// A live line image; owner pointers are absent unless [`Line::owned_by`] sets them.
     struct Line {
         line: Vec<u64>,
         _route: Vec<u32>,
@@ -1075,9 +974,6 @@ mod tests {
         image.base() + BUILDING_SPEND_RETURN.0
     }
 
-    /// A building line's spend is the speed its advance reads; the repair rate's
-    /// and the production screen's reads are not spends. Repair, the bank draw
-    /// and a link are recorded with it.
     #[test]
     fn a_building_spend_is_the_speed_read_at_its_advance() {
         let _lock = test_lock();
@@ -1088,10 +984,8 @@ mod tests {
         let mut idle = Line::new(&image, false, 0x13_0000_003b, 0, 0, false);
         observe_speed(&mut building, 1_850_000, spend_site(&image));
         observe_speed(&mut building, 1_850_000, 0x1234);
-        // Other callers do not even read the receiver.
         observe_building(usize::MAX, spend_site(&image) + 1);
         observe_speed(&mut repairing, 900_000, spend_site(&image));
-        // A matching advance counts even when it adds no output.
         observe_speed(&mut idle, 0, spend_site(&image));
         let (result, entries) = drained(8);
         assert!(result.unwrap().complete());
@@ -1123,8 +1017,6 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// A railway's spend is its advance's first segment call; the carry to the
-    /// next segment is not output, and a call outside an advance is nobody's.
     #[test]
     fn a_railway_spend_is_the_first_segment_call_of_its_advance() {
         let _lock = test_lock();
@@ -1160,7 +1052,6 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// Under instant construction every spend is recorded as such, even of zero.
     #[test]
     fn instant_construction_is_marked_not_factory_output() {
         let _lock = test_lock();
@@ -1198,7 +1089,6 @@ mod tests {
                 ..Entry::default()
             }]
         );
-        // A draw above the speed is not a speed and bank sum, cheat or not.
         observe_speed(&mut repairing, 10_000, spend_site(&image));
         assert!(drained(2).0.is_err());
         observe_for_test(false, 0);
@@ -1301,7 +1191,6 @@ mod tests {
             if unreadable {
                 observe_building(usize::MAX, spend_site(&image));
             } else {
-                // A zero speed must not hide a positive bank draw.
                 observe_speed(&mut building, 0, spend_site(&image));
             }
             assert!(drained(1).0.is_err());
@@ -1323,7 +1212,6 @@ mod tests {
         let mut building = Line::new(&image, false, 0x35_0000_003b, 0, 0, false);
         observe_speed(&mut building, -25, spend_site(&image));
         building.line[CIC_BANK_DRAW / 8] = 1;
-        // Native ADD: MAX factory speed plus one bank unit becomes MIN.
         observe_speed(&mut building, i64::MIN, spend_site(&image));
         let (result, entries) = drained(4);
         assert!(result.unwrap().complete());
@@ -1345,7 +1233,6 @@ mod tests {
         observe_for_test(true, image.base());
         let owner = Owner::new(&mut image, 5, 5);
         let rail = Line::new(&image, true, 0x32_0000_1269, 0, 0, false).owned_by(&owner);
-        // Speed < 1: the production advance makes no progress call.
         RAILWAY_LINE.set((rail.address(), 0));
         RAILWAY_LINE.set((0, 0));
         assert!(drained(8).1.is_empty());
@@ -1368,7 +1255,6 @@ mod tests {
         let mut image = Image::new();
         image.set_instant(true);
         observe_for_test(true, image.base());
-        // Another country than the viewing one: the flag does not apply.
         let owner = Owner::new(&mut image, 6, 5);
         let rail = Line::new(&image, true, 0x35_0000_1269, 50_000, 0, false).owned_by(&owner);
         RAILWAY_LINE.set((rail.address(), 0));
@@ -1387,8 +1273,6 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// An ordinary speed or carry equal to the instant amount stays factory output
-    /// with its bank draw; the path, not the amount, decides.
     #[test]
     fn an_ordinary_railway_spend_equal_to_the_instant_amount_keeps_its_bank_draw() {
         let _lock = test_lock();
@@ -1415,7 +1299,6 @@ mod tests {
                 ]
             );
         }
-        // On the instant path the game passes exactly the instant amount.
         let player = Owner::new(&mut image, 7, 5);
         let rail = Line::new(&image, true, 0x38_0000_1269, 50_000, 0, false).owned_by(&player);
         let refused = COUNTERS[11].load(Ordering::Relaxed);
@@ -1427,9 +1310,6 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// Release-only incremental game-thread cost: guarded owned-line/global reads,
-    /// TLS, ACTIVE, atomic appends, the full drain and empty hourly drains.
-    /// No native detour/trampoline or game simulation is timed.
     #[test]
     #[ignore = "synthetic release cost; run alone with --nocapture"]
     fn construction_ic_scale() {
@@ -1513,8 +1393,6 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// An active writer defers every entry; short storage grows; a burst past
-    /// the log is handed over whole; disabled hooks hand over nothing.
     #[test]
     fn drains_defer_restart_and_refuse_as_the_line_output_log_does() {
         let _lock = test_lock();

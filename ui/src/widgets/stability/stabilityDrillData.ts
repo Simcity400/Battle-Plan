@@ -12,7 +12,6 @@ export interface StabilityPick {
   tag: string | null; measure: Measure;
 }
 
-/** Actor and measure come only from the curves witnessed in the drawn frame. */
 export function pickStabilityLine(lines: readonly StabilityLine[], hour: number, context?: ChartPick,
   preferred: Measure = 'stability'): StabilityPick | null {
   if (!context?.frame) return null;
@@ -31,8 +30,6 @@ export function chooseStabilityActor(pick: StabilityPick, tag: string | null): S
   return { ...pick, tag, measure: lines.find(line => line.measure === pick.measure)?.measure ?? lines[0].measure };
 }
 
-/** A campaign, saved pin or range has its own moment. Only a Follow widget's
- * initial open can inherit playback; an overlap stays held until its choice. */
 export function stabilityPickAction(pick: StabilityPick, open: boolean, time: WidgetTime['mode'], playing: boolean,
   playhead: number | null): DrillAction {
   return open ? { type: 'pick', hour: pick.hour } : { type: 'open', breakdown: 'parts', hour: pick.hour,
@@ -40,7 +37,6 @@ export function stabilityPickAction(pick: StabilityPick, open: boolean, time: Wi
     playhead: pick.tag !== null && time === 'follow' ? playhead : null };
 }
 
-/** Pin uses the chosen actor and raw branch hour, independent of axis alignment. */
 export function pinStabilityDrill(widget: WidgetSpec, breakdown: Breakdown, trackId: string, firstHour: number,
   tag: string, hour: number, following: boolean): WidgetSpec {
   return pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [tag] }, time: following ? { mode: 'follow' }

@@ -99,7 +99,6 @@ fn independent_fuel_offers_preserve_pending_entry_and_name_growth() {
     assert_eq!(capacities(), (16, 16));
     assert_eq!(offered(), 0);
     assert!(CURRENT.lock().unwrap().retired.is_some());
-    // The next boundary retires the consumed predecessor; the spool frees it.
     crate::test_support::with_allocations_denied(install_offered);
     assert!(CURRENT.lock().unwrap().retired.is_none());
     assert!(!DISPOSED.load(Ordering::Acquire).is_null());
@@ -211,14 +210,12 @@ fn a_spill_never_waits_for_the_drain_and_a_burst_keeps_every_receipt_and_name_in
     let buffer = Buffer::new(1, 2, Default::default()).unwrap();
     let mut memory = Memory(vec![0; 0x400]);
     name(&mut memory, b"long");
-    // The drain's spilled receipts stay held through the whole burst.
     let consumer = spill.held.lock().unwrap();
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         let (log, spill, buffer, memory) = (&log, &spill, &buffer, &memory);
         scope.spawn(move || {
             for amount in 1..=50 {
-                // The first fits the buffer; every later one, and every name, spills.
                 let stored = (amount > 1).then(|| native::stored_name(memory, 0x100, 2).unwrap());
                 let entry = Entry {
                     amount,
@@ -316,7 +313,6 @@ fn a_burst_past_the_buffer_is_handed_over_whole_and_only_failed_storage_withhold
     assert_eq!(output[2].amount, 2);
     assert_eq!(buffer.entries_required.load(Ordering::Relaxed), 3);
     assert_eq!(COUNTERS[10].load(Ordering::Relaxed), overflow_before);
-    // Storage that cannot be allocated withholds the whole interval.
     spill.release();
     assert!(append_buffer(&log, &spill, &buffer, burst[0], None, &memory));
     crate::test_support::with_allocations_denied(|| {
@@ -329,8 +325,6 @@ fn a_burst_past_the_buffer_is_handed_over_whole_and_only_failed_storage_withhold
     assert_eq!(spill.lost.load(Ordering::Acquire), u64::MAX);
 }
 
-/// Receipts that come before any buffer is installed wait in the spill, and
-/// the first buffer installs over them.
 #[test]
 fn receipts_before_the_first_buffer_are_handed_over_after_it_installs() {
     let _guard = EXCLUSIVE
@@ -395,10 +389,6 @@ fn started(root: u64) -> Pending {
     }
 }
 
-/// A root's location is taken by its own invocation's later calls only while
-/// the root stands: in the current world, hour and log epoch, and not
-/// refused (by a reset of its status, a nested award or a lost receipt). A
-/// refused or stale root is read afresh.
 #[test]
 fn only_a_standing_root_lends_its_location() {
     let _guard = EXCLUSIVE
@@ -782,7 +772,6 @@ fn publication_between_empty_check_and_seal_survives_growth_and_collection() {
     let epoch = LOG.epoch.load(Ordering::SeqCst);
     {
         let mut domains = CURRENT.lock().unwrap();
-        // install_offered observed quiet/empty before this native publication.
         assert!(append(
             &LOG.enter(),
             Entry {
@@ -860,7 +849,6 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
     ));
     drop(lease);
     let epoch = log.epoch.load(Ordering::SeqCst);
-    // The boundary initializes the same frontier after the stale publisher.
     assert!(successor(&old).is_some());
     let mut entries = Vec::new();
     let (drained, _, _) = handover_buffers(
@@ -878,19 +866,12 @@ fn stale_publisher_can_fill_successor_before_the_boundary_publishes_it() {
     assert_eq!(log.epoch.load(Ordering::SeqCst), epoch);
 }
 
-/// A named callback adds its bytes to the attempts before it raises the name
-/// demand; a drain can consume earlier bytes in between. A nameless receipt
-/// in that gap still raises the demand to every attempted byte, so the named
-/// callback's late raise against the advanced consumption cannot lower what
-/// sizing reads.
 #[test]
 fn a_nameless_receipt_refreshes_name_demand_for_a_named_callback_in_flight() {
     let _guard = EXCLUSIVE.lock().unwrap();
     release().unwrap();
     offer(4, 0);
     install_offered();
-    // Ten bytes consumed-pending, then a named callback's ten more bytes,
-    // added but not yet raised.
     NAME_ATTEMPTS.store(20, Ordering::SeqCst);
     NAME_DEMAND.store(10, Ordering::Release);
     assert!(append(
@@ -901,7 +882,6 @@ fn a_nameless_receipt_refreshes_name_demand_for_a_named_callback_in_flight() {
     ));
     assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 20);
     assert_eq!(NAME_ATTEMPTS.load(Ordering::SeqCst), 20);
-    // The drain then consumes ten bytes and the named callback raises 20 - 10.
     NAME_CONSUMED.store(10, Ordering::Relaxed);
     raise(
         &NAME_DEMAND,
@@ -956,10 +936,6 @@ fn concurrent_callbacks_and_short_drains_keep_all_receipts_and_name_bytes() {
             });
         }
         loop {
-            // Whether every writer had returned BEFORE this drain: only then
-            // does an empty drain prove nothing is left. Checking after it
-            // let a writer append its last entries between the two and end
-            // the loop with them unread.
             let finished = done.load(Ordering::Acquire) == 8;
             let (drained, _, _) = drain(&mut output, &mut names).unwrap();
             if finished && drained.copied == 0 {
@@ -1009,7 +985,6 @@ fn spool_sizing_and_capacity_reads_never_refuse_the_hourly_drain_or_growth() {
         COUNTERS[6].load(Ordering::Relaxed),
         DRAIN_REFUSALS.load(Ordering::Relaxed),
     );
-    // The spool holds its sizing lock across the whole parked boundary.
     let spool = SIZING.lock().unwrap();
     LOG.enabled.store(true, Ordering::SeqCst);
     let mut entries = vec![Entry::default(); 2];
@@ -1069,7 +1044,6 @@ fn unsealable_boundary_keeps_or_supersedes_the_prepared_offer_without_a_lock() {
     let prepared = OFFERED.load(Ordering::Acquire);
     {
         let mut domains = CURRENT.lock().unwrap();
-        // A publisher still inside the live buffer prevents sealing.
         let live = domains.current.as_ref().unwrap();
         live.publishers.fetch_add(1, Ordering::AcqRel);
         crate::test_support::with_allocations_denied(|| install_prepared(&mut domains));
@@ -1078,7 +1052,6 @@ fn unsealable_boundary_keeps_or_supersedes_the_prepared_offer_without_a_lock() {
         let live = domains.current.as_ref().unwrap();
         live.publishers.fetch_sub(1, Ordering::AcqRel);
     }
-    // Sizing replaced the offer while the boundary held an older one.
     let older = Box::new(Buffer::with_stride(1, 0, 0, Default::default()).unwrap());
     crate::test_support::with_allocations_denied(|| return_offer(older));
     assert_eq!(OFFERED.load(Ordering::Acquire), prepared);
@@ -1090,9 +1063,6 @@ fn unsealable_boundary_keeps_or_supersedes_the_prepared_offer_without_a_lock() {
     release().unwrap();
 }
 
-/// Release: fuel update's begin and end taps for 1,500 countries through the
-/// observer against a synthetic native world, the reset tap, and a recipient
-/// receipt's recording (its unit reads are not modelled).
 #[test]
 #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
 fn hook_cost_fuel_awards() {
@@ -1135,7 +1105,6 @@ fn hook_cost_fuel_awards() {
         let object = OBJECTS + country * OBJECT;
         word(TABLE + country * 8, (at + object) as u64);
         word(object, (base + ccountry::VTABLE_RVA.0) as u64);
-        // Id and instance both `country`.
         word(
             object + ccountry::ID,
             ((country as u64) << 32) | country as u64,
@@ -1207,8 +1176,6 @@ fn hook_cost_fuel_awards() {
     release().unwrap();
 }
 
-/// A root's located country is taken only in the world generation and
-/// recording hour it was located in.
 #[test]
 fn a_root_from_before_an_hourly_boundary_is_never_taken() {
     let _guard = EXCLUSIVE

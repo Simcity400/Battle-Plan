@@ -1,19 +1,12 @@
-//! Recorded portrait selection shared by character views. Asset resolution
-//! remains in PoliticsContent, also shared with ideas and ruling parties.
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum RecordedPortrait {
-    /// The recorded holder selected a content portrait of this kind/identity.
     Entry { kind: u32, identity: Vec<u8> },
-    /// Native runtime generation is needed; its inputs are not recorded.
     Generated,
-    /// The recording cannot establish the requested portrait holder.
     Unrecorded,
 }
 
-/// Select the requested portrait role/size, else the first entry of that size.
-/// Unset entries require runtime generation.
 pub fn recorded_portrait(
     holders: Option<&[replay_data::rows::CharacterPortraitRow]>,
     id: u32,
@@ -23,8 +16,6 @@ pub fn recorded_portrait(
     recorded_portrait_in(holders.map(replay_frame::frame::Rowset::Decoded), id, role, size)
 }
 
-/// [`recorded_portrait`] of any frame's portraits, a walk's views among them; a holder whose
-/// row cannot be built is one the hour does not hold.
 pub fn recorded_portrait_in(
     holders: Option<replay_frame::frame::Rowset<'_, replay_data::rows::CharacterPortraitRow>>,
     id: u32,

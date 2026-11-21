@@ -1,4 +1,3 @@
-//! Synthetic GUI fixtures shared by foundation and feature tests.
 
 use crate::map::{
     native_effects::synthetic,
@@ -11,23 +10,16 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::time::Duration;
 
-/// The GUI viewport every test window is read and built in.
 pub const VIEWPORT: [i32; 2] = [1920, 1080];
 
-/// Synthetic sheets, one texture each, progress bars by type size, and one monospace font
-/// for every name, with the game's own effect models.
 pub struct Fixture {
     pub sheets: BTreeMap<Vec<u8>, SpriteSheet>,
     progress: BTreeMap<Vec<u8>, ([i32; 2], SpriteSheet)>,
     font: crate::map::native_text::Font,
     localisation: installed_content_localisation::localisation::Localisation,
     text_colors: native::fonts::TextColors,
-    /// Missing sheets may name a session-registered text sprite; looking it up refuses.
     pub session_sprites: bool,
-    /// Sheets that are `frameAnimatedSpriteType`s, looping and playing on show, by their
-    /// seconds per frame.
     pub animated: BTreeMap<Vec<u8>, f32>,
-    /// Sheets whose texture the resources refuse, by kind and why.
     pub(crate) refused: BTreeMap<Vec<u8>, (native_gui::RefusalKind, String)>,
 }
 
@@ -256,18 +248,8 @@ pub const SYNTHETIC_NAVY_GUI: &str = r#"guiTypes = {
     }
 }"#;
 
-/// Concurrent WARP devices in one process can fault. The viewer shares one device per
-/// process; GPU tests take this lock before requesting an adapter to prevent overlapping
-/// test devices.
 pub(crate) static GPU_TESTS: Mutex<()> = Mutex::new(());
 
-/// Several WARP devices used at once in one process fault inside `d3d10warp.dll` (probed
-/// 2026-09-26: 5 of 6 runs with three concurrent devices, 0 of 6 with one device shared by three
-/// threads). The viewer creates one device per process, so only tests need this.
-///
-/// The one-device-at-a-time guard every GPU test in the crate takes before its adapter
-/// ([`GPU_TESTS`]): each harness takes it here, the crate's other
-/// GPU tests through here too, so no second device exists while another test runs.
 pub fn serial() -> MutexGuard<'static, ()> {
     GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner())
 }
@@ -303,7 +285,6 @@ pub fn test_put(frame: &mut replay_frame::frame::DecodedFrame, rows: replay_data
     frame.tables[index] = replay_frame::frame::TableView::Complete(rows).into();
 }
 
-/// Every table complete: `sample`'s rows, else none, or one default row for a singleton.
 pub fn complete_frame(
     hour: i32,
     sample: impl Fn(replay_data::rows::TableId) -> Option<replay_data::rows::TableRows>,
@@ -320,7 +301,6 @@ pub fn complete_frame(
     frame
 }
 
-/// A small campaign whose countries, units, battles and bases refer to each other.
 pub fn put_sample_campaign(frame: &mut replay_frame::frame::DecodedFrame) {
     use replay_data::rows::*;
     let country = |slot: u32, tag: &[u8]| CountryRow {
@@ -612,7 +592,6 @@ pub fn put_sample_campaign(frame: &mut replay_frame::frame::DecodedFrame) {
     );
 }
 
-/// `frame` as a Map recording decodes it.
 pub fn map_scoped(
     mut frame: replay_frame::frame::DecodedFrame,
 ) -> replay_frame::frame::DecodedFrame {
@@ -630,7 +609,6 @@ pub fn map_scoped(
     frame
 }
 
-/// Runs `read`, failing with every table it read that `frame` does not record, `allowed` aside.
 pub fn assert_reads_recorded<T>(
     frame: &replay_frame::frame::DecodedFrame,
     allowed: &[replay_data::rows::TableId],
@@ -656,9 +634,6 @@ pub fn assert_reads_recorded<T>(
 
 pub mod allegiance;
 
-/// How long a test waits on another thread before failing instead of hanging.
-/// Only a hang guard, never a timing check: a full build saturates every core,
-/// and a below-normal-priority worker can then be starved for many seconds.
 pub const TEST_HANG_GUARD: Duration = Duration::from_secs(120);
 
 pub mod gpu;
@@ -671,7 +646,6 @@ pub mod image;
 pub mod localisation;
 pub mod unit_types;
 
-/// The same ordered equipment documents consumed by model and counter fixtures.
 pub fn equipment_from_documents(documents: &[&[u8]]) -> installed_content_core::equipment::Database {
     let paths: Vec<String> = (0..documents.len())
         .map(|index| format!("common/units/equipment/{index:03}.txt"))

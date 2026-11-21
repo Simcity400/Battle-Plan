@@ -1,4 +1,3 @@
-//! Hourly land combat losses, sharing the existing land-combat census.
 use crate::{
     spooling::table_iter,
     table_capture::{Arena, CaptureRows, grow_vec},
@@ -10,13 +9,9 @@ use replay_data::{
 use replay_frame::frame::TableView;
 use std::{mem::size_of, sync::Mutex};
 
-// Acquisition, not spool state: every rotating frame sees the most recent
-// complete daily values. Each payload owns its resolved rows before resuming.
 #[derive(Default)]
 struct DailyObservers {
-    /// In visit order, which the next hour's walk repeats.
     rows: Vec<replay_data::rows::CombatLogObserverRow>,
-    /// `rows` indices by semantic key; the keys are unique.
     sorted: Vec<u32>,
     charge: crate::raw_memory::Charge,
 }
@@ -27,8 +22,6 @@ impl DailyObservers {
         self.sorted.clear();
     }
 
-    /// The held row with `row`'s semantic key: first the one after the
-    /// previous match, as the walk repeats last hour's order, else by key.
     fn find(
         &self,
         row: &replay_data::rows::CombatLogObserverRow,
@@ -54,8 +47,6 @@ impl DailyObservers {
 }
 static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 
-/// Tests that read daily observers hold this, so a parallel test's census is
-/// never their carry and each starts, as an attachment does, holding none.
 #[cfg(test)]
 pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -77,7 +68,6 @@ pub struct Capacities {
 
 collector_primitives::capacity_max!(Capacities { rows, variants });
 impl Capacities {
-    /// Live headers size the side pools outside the shared capacity mutex.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -107,8 +97,6 @@ impl Capacities {
 }
 
 pub struct Captured {
-    /// The combats' full handles, in census order; playback derives their
-    /// progress and direction from LandCombats, Divisions and DivisionMovement.
     rows: CaptureRows<u64>,
     losses: Vec<[engine_land_inputs::cstats_observer::LossSpan; 2]>,
     equipment: Arena<engine_land_inputs::cstats_observer::LossEntry>,
@@ -118,11 +106,9 @@ pub struct Captured {
     failure: Option<&'static str>,
     observers: Vec<replay_data::rows::CombatLogObserverRow>,
     observer_failure: Option<&'static str>,
-    /// The observer projection's sort scratch, kept with this frame across hours.
     observer_scratch: std::sync::Mutex<collector_combat_log::observer_projection::Scratch>,
     daily_refresh: bool,
     daily_previous: Option<DailyObservers>,
-    /// The held row after this hour's latest match ([`DailyObservers::find`]).
     observer_cursor: usize,
 }
 
@@ -188,15 +174,11 @@ impl Captured {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_mut()
         {
-            // Revoke before dispatch, even if this worker is rejected. Retain
-            // the allocation for the next native acquisition to reuse.
             previous.clear();
         }
     }
 
     pub fn begin(&mut self) {
-        // World acquisitions finish before the hourly original resumes. Taking
-        // the preceding census also makes an abandoned acquisition lose its carry.
         let previous = DAILY_OBSERVERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -243,8 +225,6 @@ impl Captured {
                 .len
                 .checked_add(1)
                 .ok_or("land loss row demand overflow")?;
-            // Worker-only World acquisition owns the full combat-side pools.
-            // Grow from these original LossPlan headers before reading entries.
             engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
             engine_native::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;
             engine_native::walk::Buffer::Growing(&mut self.equipment.first)

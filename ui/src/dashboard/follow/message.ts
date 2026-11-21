@@ -1,17 +1,11 @@
 import { decode } from '@msgpack/msgpack';
 
-/** A step's message of followed answers (`crates/dashboard-follow/src/answer.rs`), read once: the
- * numbers stay where they arrived, read through one set of typed views over the whole message,
- * which every answer in it shares (each section starts on an eight-byte boundary). */
 
 const RESET = 1;
 const NO_REASON = 0xffff_ffff;
 
-/** A cell's state: a value, an optional number without one, not recorded, or no row (its row's
- * reason says why). Never shown as zero unless it is a value. */
 export const CELL = { value: 0, missing: 1, unrecorded: 2, noRow: 3 } as const;
 
-/** Typed views over one message. */
 export interface MessageViews {
   u8: Uint8Array;
   u16: Uint16Array;
@@ -22,38 +16,29 @@ export interface MessageViews {
 }
 
 export interface FollowedRows {
-  /** Every row asked, rows appended since the push before, or a live query's rows that changed since the push before
-   * (laid over the rows held, by key). */
   kind: 'rows' | 'log' | 'changed';
   rows: number;
   columns: number;
   views: MessageViews;
-  /** Where its sections start in `views`: keys' low halves in `u64` (the high halves follow),
-   * cells row by row in `i64`, a log's insert hours in `i32` (-1 for rows), cell states in
-   * `u8`, each row's reason and each row's name (a series' tag), indexes into its texts, in `u32`. */
   keys: number;
   values: number;
   hours: number;
   states: number;
   reasons: number;
   names: number;
-  /** Where each text starts in `views.u8` (its u32 length first): decoded only when read ([`rowReason`]). */
   texts: Uint32Array;
   decoded: (string | undefined)[];
 }
 
 export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
 
-/** A panel at the head (`crates/dashboard-follow/src/panel.rs`): the product's reply or its recorded refusal. */
 export interface FollowedPanel {
   data?: unknown;
   refused: string | null;
 }
 
-/** `FEN1`: the first four bytes of the notice that pushed answers stopped (`crates/dashboard-follow/src/push.rs`, `failure`). */
 const FAILURE_MAGIC = 0x314e4546;
 
-/** Why pushed answers stopped, when `bytes` is the notice that they did. */
 export function followFailure(bytes: ArrayBuffer | Uint8Array): string | null {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   if (view.byteLength < 4 || new DataView(view.buffer, view.byteOffset, 4).getUint32(0, true) !== FAILURE_MAGIC) return null;
@@ -62,10 +47,8 @@ export function followFailure(bytes: ArrayBuffer | Uint8Array): string | null {
 
 export interface FollowedMessage {
   limited?: Map<number, number>;
-  /** The follow (one playhead's) that sent it. */
   route: number;
   hour: number;
-  /** The settled answers after a seek: logs start again. */
   reset: boolean;
   seek: number; clock: number;
   answers: { id: number; hour: number; answer: FollowedAnswer; span?: [number, number] }[];
@@ -84,7 +67,6 @@ function texts(views: MessageViews, data: DataView, at: number, count: number): 
   return [out, aligned(at)];
 }
 
-/** Where each of `count` texts starts, and the end past them. */
 function textStarts(data: DataView, at: number, count: number, end: number): [Uint32Array, number] {
   const starts = new Uint32Array(count);
   for (let i = 0; i < count; i++) {
@@ -154,8 +136,6 @@ export function wireKind(bytes: ArrayBuffer | Uint8Array): number {
   return v.byteLength < 4 ? 0 : new DataView(v.buffer, v.byteOffset, 4).getUint32(0, true);
 }
 
-/** `bytes` read as a followed message; bytes not starting on an eight-byte boundary are copied
- * once so the views can lie over them. */
 export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage {
   const { views, data, byteLength } = viewsOf(bytes);
   if (byteLength < 24 || data.getUint32(0, true) !== DATED_FOLLOW) throw new Error('Not a followed message.');
@@ -176,39 +156,30 @@ export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage 
   return message;
 }
 
-/** Cell `at` (row by row)'s state. */
 export const cellState = (answer: FollowedRows, at: number): number => answer.views.u8[answer.states + at]!;
 
-/** Cell `at`'s raw value. */
 export const cellValue = (answer: FollowedRows, at: number): bigint => answer.views.i64[answer.values + at]!;
 
-/** Cell `at` as a number when it is a safe integer, read without making a big integer; null
- * when only [`cellValue`] holds it. */
 export function cellNumber(answer: FollowedRows, at: number): number | null {
   const word = (answer.values + at) * 2, high = answer.views.i32[word + 1]!;
   return high >= -0x200000 && high < 0x200000 ? high * 0x1_0000_0000 + (answer.views.i32[word]! >>> 0) : null;
 }
 
-/** Row `row`'s reason, if it has one. */
 export function rowReason(answer: FollowedRows, row: number): string | null {
   const at = answer.views.u32[answer.reasons + row]!;
   return at === NO_REASON ? null : textAt(answer, at);
 }
 
-/** Row `row`'s name (a series' tag), if it has one. */
 export function rowName(answer: FollowedRows, row: number): string | null {
   const at = answer.views.u32[answer.names + row]!;
   return at === NO_REASON ? null : textAt(answer, at);
 }
 
-/** Row `row`'s key. */
 export const rowKey = (answer: FollowedRows, row: number): bigint =>
   (answer.views.u64[answer.keys + answer.rows + row]! << 64n) | answer.views.u64[answer.keys + row]!;
 
-/** A log's row `row`: the hour it was inserted. */
 export const rowHour = (answer: FollowedRows, row: number): number | null => answer.hours < 0 ? null : answer.views.i32[answer.hours + row]!;
 
-/** The rows' keys in order: what a table's structure is. */
 export function rowKeys(answer: FollowedAnswer | undefined): string {
   if (!answer || answer.kind === 'notRecorded') return '';
   let out = '';

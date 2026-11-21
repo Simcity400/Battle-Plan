@@ -1,18 +1,3 @@
-//! Music tracks, song lists and the user's enabled music stations.
-//!
-//! Every `.asset` file below `music/` declares tracks, `music = { name file
-//! volume }`, its `file` relative to the asset's folder; the first track of a
-//! name, by its first 63 bytes, is kept and a song names it whole. Every
-//! `.txt` file below `music/` is a song list: its
-//! `music_station = "..."` names the station of the songs that follow it in
-//! that file, and each `music = { song = ... chance = { ... } }` offers a
-//! track with a weighted chance. The chance block is a mean-time body: a
-//! `factor` base (one when absent) and `modifier` blocks whose triggers are
-//! read with the load point's names and kept as data for evaluation against
-//! the recording. Both kinds of file load in the recursive load order.
-//!
-//! The player chooses among the songs of the stations the user enabled in
-//! `playlists/settings.txt` of the user folder.
 
 use crate::{ResolvedLayers, defines, parser, sound::Notes, sound::registered};
 use installed_content_core::parser::native::{self, Shape};
@@ -28,10 +13,8 @@ pub struct Track {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Song {
-    /// Index into [`Music::tracks`].
     pub track: usize,
     pub station: String,
-    /// The `chance` block's fields: a mean-time body.
     pub chance: Vec<parser::Item>,
     pub source: String,
 }
@@ -52,7 +35,6 @@ impl Music {
             let bytes = file.read_uncovered(layers)?;
             let path = file.text();
             match parser::parse(&bytes) {
-                // Track paths need a UTF-8 folder, but the asset filename need not be UTF-8.
                 Ok(document) => music.declare_tracks(&document, &path, file.folder_text()),
                 Err(error) => music
                     .notes
@@ -90,8 +72,6 @@ impl Music {
                 self.notes.note(format!("{path}: refused scalar music"));
                 continue;
             };
-            // Every field the reader does not model, or a modelled one that
-            // is not a scalar, is refused by name and counted.
             for field in fields {
                 let key = String::from_utf8_lossy(field.key.as_deref().unwrap_or_default());
                 let known = ["name", "file", "volume"]
@@ -170,7 +150,6 @@ impl Music {
             File,
             Music,
             Chance,
-            /// An unknown song-list field's block, kept whole to be refused.
             Unknown,
         }
         let read = native::read(
@@ -198,8 +177,6 @@ impl Music {
                 "{path}: songs after an unsettled read are unknown ({cause})"
             ));
         }
-        // Fields the reader skips or refuses (unknown keys among them) are
-        // named and counted.
         for misread in &read.misreads {
             self.notes.note(format!("{path}: {misread}"));
         }
@@ -263,8 +240,6 @@ impl Music {
     }
 }
 
-/// The music stations the user enabled (`playlists/settings.txt`'s
-/// `enabled`), in file order; `None` when the file is absent.
 pub fn enabled_stations(user: &Path) -> io::Result<Option<Vec<String>>> {
     enabled_stations_with(user, |path| std::fs::read(path))
 }
@@ -363,7 +338,6 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
                 "{expected}: {notes:?}"
             );
         }
-        // Fields the song-list reader does not know are named and counted.
         for expected in [
             "music/_songs.txt: refused song-list field tempo",
             "music/_songs.txt: refused top-level playlist_order",
@@ -375,8 +349,6 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
         }
     }
 
-    /// A field the track reader does not model, or a block where it reads a
-    /// scalar, is refused by name and counted rather than dropped.
     #[test]
     fn unmodelled_track_fields_are_refused_by_name() {
         engine_tables();
@@ -482,8 +454,6 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
         );
     }
 
-    /// The game keeps a track's name in 64 bytes: a longer one is added and found by its first 63
-    /// bytes, so a song naming it whole misses and a second name sharing them repeats.
     #[test]
     fn a_track_name_is_added_and_found_by_its_first_63_bytes() {
         engine_tables();
@@ -527,7 +497,6 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
     }
 }
 
-/// Reads the installation's song lists and decodes one track. Set `BATTLE_PLAN_GAME_DIR`.
 #[cfg(test)]
 #[test]
 #[ignore = "reads the installation named by BATTLE_PLAN_GAME_DIR"]
@@ -550,7 +519,6 @@ fn installed_music_resolves_and_decodes() {
         pcm.frames()
     );
     assert!(pcm.frames() > 0);
-    // Streamed packet by packet, the same track gives the same samples.
     let mut stream = crate::ogg::open(layers.read_uncovered(&first.path).unwrap()).unwrap();
     let mut streamed = Vec::new();
     while let Some(packet) = stream.decode_next().unwrap() {

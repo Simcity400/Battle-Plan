@@ -1,14 +1,3 @@
-//! `CountryExperienceDaily`: at each daily read of CountryExperience, each country's army, navy
-//! and air experience banked less the read exactly 24 hours earlier, and the sum of its hourly
-//! gross gains over the 24 hours ending at the read, keyed by raw country id. A gain counts only
-//! hours whose country has exactly one CountryExperienceGains row holding a complete interval;
-//! any other hour, or CountryExperienceGains not complete, starts the country's window again.
-//! A row is written at a read of CountryExperience, the hour its sample hour names. A run's first
-//! hour, and an hour after one the writer did not run, start every window again and write every
-//! country's row, nothing recorded unless that hour read CountryExperience.
-//!
-//! State is a 24-hour window per country (its banked reads and its runs of equal hourly gains),
-//! kept in the resume blob; the index of gains rows by country is rebuilt from the table.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
 use replay_columnar::leaf::{Reader, Writer as Bytes};
@@ -22,7 +11,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The hours a change and a gain span.
 pub const DAY_HOURS: i32 = 24;
 
 const BANKED: [usize; 3] = columns::<CountryExperienceRow, 3>(["army_raw", "navy_raw", "air_raw"]);
@@ -43,38 +31,29 @@ const READS: &[Read] = &[
     },
 ];
 
-/// Army, navy and air.
 type Amounts = [i64; 3];
 
-/// One country's window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Country {
-    /// Banked reads within the last 24 hours, oldest first.
     reads: VecDeque<(i32, Amounts)>,
-    /// Runs of equal hourly gains, by first hour, oldest first; the last holds to the hour.
     runs: VecDeque<(i32, Amounts)>,
 }
 
 #[derive(Default)]
 pub struct Experience {
     countries: HashMap<u32, Country>,
-    /// Each raw country's CountryExperienceGains instances.
     instances: HashMap<u32, Vec<u32>>,
-    /// The index is to be read whole from the table: a resume.
     stale: bool,
-    /// CountryExperienceGains was complete at the hour before.
     gains: bool,
     last: Option<i32>,
 }
 
-/// Drops the runs wholly before `first`, the first hour of the window.
 fn trim(runs: &mut VecDeque<(i32, Amounts)>, first: i32) {
     while runs.get(1).is_some_and(|(start, _)| *start <= first) {
         runs.pop_front();
     }
 }
 
-/// The gains of the 24 hours ending at `hour`; none unless every one of them is held.
 fn gained(runs: &mut VecDeque<(i32, Amounts)>, hour: i32) -> Option<[i128; 3]> {
     let first = hour - (DAY_HOURS - 1);
     trim(runs, first);
@@ -93,7 +72,6 @@ fn gained(runs: &mut VecDeque<(i32, Amounts)>, hour: i32) -> Option<[i128; 3]> {
     Some(sum)
 }
 
-/// Banked at `hour` less the read exactly a day before; none without that read.
 fn changed(reads: &VecDeque<(i32, Amounts)>, hour: i32, banked: Amounts) -> Option<[i128; 3]> {
     let (_, before) = reads.iter().find(|(at, _)| *at == hour - DAY_HOURS)?;
     Some(std::array::from_fn(|at| i128::from(banked[at]) - i128::from(before[at])))
@@ -114,7 +92,6 @@ fn cells(change: Option<[i128; 3]>, gain: Option<[i128; 3]>) -> Vec<Value> {
 }
 
 impl Experience {
-    /// Indexes every live CountryExperienceGains row by its raw country.
     fn index(&mut self, hour: &Hour<'_>) {
         self.instances.clear();
         let table = hour.table(TableId::CountryExperienceGains);
@@ -124,7 +101,6 @@ impl Experience {
         self.stale = false;
     }
 
-    /// Moves the hour's inserted and deleted gains rows in the index; the countries they name.
     fn reindex(&mut self, hour: &Hour<'_>, touched: &mut Vec<u32>) {
         let table = hour.table(TableId::CountryExperienceGains);
         for key in hour.deleted_keys(TableId::CountryExperienceGains) {
@@ -146,7 +122,6 @@ impl Experience {
         }
     }
 
-    /// `country`'s gains this hour: its one gains row's, when that holds a complete interval.
     fn gain(&self, hour: &Hour<'_>, country: u32) -> Option<Amounts> {
         let [instance] = self.instances.get(&country)?.as_slice() else { return None };
         let table = hour.table(TableId::CountryExperienceGains);
@@ -157,7 +132,6 @@ impl Experience {
         Some([table.number(GAINS[0], slot)?, table.number(GAINS[1], slot)?, table.number(GAINS[2], slot)?])
     }
 
-    /// Carries `country`'s gains run on to `hour`.
     fn step(&mut self, hour: &Hour<'_>, country: u32) {
         let value = self.gain(hour, country);
         let held = self.countries.entry(country).or_default();
@@ -190,7 +164,6 @@ impl Writer for Experience {
         READS
     }
 
-    // Hourly: a trailing 24-hour window, started again after an hour it did not run.
     fn hourly(&self) -> bool {
         true
     }
@@ -265,7 +238,6 @@ impl Writer for Experience {
         Ok(())
     }
 
-    /// The last hour, whether gains were complete, then each country's window by raw id.
     fn save(&self, blob: &mut Bytes) -> io::Result<()> {
         match self.last {
             Some(last) => {
@@ -346,16 +318,12 @@ mod tests {
         writers
     }
 
-    /// One country's hour: banked experience when CountryExperience is read, its gains row
-    /// (complete or not) when it has one; gains not complete at all when `None`. Banked cells not
-    /// `stamped` are written with no read bit, the sample hour unmoved.
     struct At {
         banked: Option<i64>,
         gain: Option<Option<(i64, bool)>>,
         stamped: bool,
     }
 
-    /// Hour `hour` of country 7, then the writer.
     fn hour(store: &mut Store, writers: &mut Writers, hour: i32, at: &At) {
         let appends: &[&[u8]] = if hour == 0 { &[b"not read"] } else { &[] };
         store.begin_hour(hour, appends).unwrap();
@@ -389,8 +357,6 @@ mod tests {
         store.end_hour(&mut Discard).unwrap();
     }
 
-    /// Country 7 read daily at hours 0, 24 and 48, banking 100 more each day; gaining 10 an hour,
-    /// 20 from hour 10, its interval incomplete at hour 30.
     fn day(hour: i32) -> At {
         let banked = (hour % DAY_HOURS == 0).then_some(1_000 + 100 * i64::from(hour / DAY_HOURS));
         let gain = match hour {
@@ -447,8 +413,6 @@ mod tests {
         assert_eq!(row(&store).army_gain, Known(20 * 24), "a full day after the gap counts again");
     }
 
-    /// A read is the hour CountryExperience's sample hour names, as the collector stamps every
-    /// table it reads: banked cells written at an hour no read stamps write no daily row.
     #[test]
     fn banked_cells_written_at_an_hour_no_read_stamps_write_no_daily_row() {
         let (mut store, mut writers) = (testing::store(), writers());

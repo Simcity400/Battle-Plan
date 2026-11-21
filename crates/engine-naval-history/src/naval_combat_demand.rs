@@ -1,7 +1,3 @@
-//! Off-thread bounds for the hourly naval combat details from live source
-//! headers, without copying payloads: the combat registry, each naval combat's
-//! sides, groups, members and their arenas, planes, wings and dense bases.
-//! A torn hint is dropped; hints never supply recorded values.
 
 use engine_sites::Rva;
 use crate::{Memory, cpdx_array::Array, read};
@@ -41,7 +37,6 @@ pub struct Demand {
     pub dense_wings: usize,
     pub weapon_sources: usize,
     pub weapon_terms: usize,
-    /// Maximum group scratch needed by any one combat.
     pub groups: usize,
     pub planes: usize,
     pub commanders: usize,
@@ -83,9 +78,6 @@ fn insert(set: &mut HashSet<usize>, address: usize) -> Result<bool, &'static str
     Ok(set.insert(address))
 }
 
-// Every selecting array header observed by the source visitor is checked
-// again before accepting this hint. Hint allocations never call the collector's
-// terminal allocation callback.
 struct Headers<'a, M> {
     memory: &'a M,
     observed: RefCell<Vec<(usize, [u8; 16])>>,
@@ -118,8 +110,6 @@ impl<M: Memory> Headers<'_, M> {
     }
 }
 
-/// A conservative bound at this observation; repeated member occurrences
-/// reserve again. A torn hint is dropped.
 pub fn demand(
     memory: &impl Memory,
     base: usize,
@@ -302,7 +292,6 @@ fn count_planes(
     planes: Array,
     demand: &mut Demand,
 ) -> Result<(), &'static str> {
-    // Group counts and each plane's two wing arrays retain their independent stored extents.
     add(&mut demand.planes, planes.count as usize)?;
     for index in 0..planes.count {
         let plane = element(memory, planes, index)?;
@@ -341,7 +330,6 @@ fn count_planes(
     Ok(())
 }
 
-/// Aircraft counting walks every dense occurrence; repeats may reserve a base more than once.
 fn count_base(
     memory: &impl Memory,
     base: usize,
@@ -394,9 +382,7 @@ mod tests {
             if address == modifier_definition::TABLE_RVA.0 && output.len() == 8 {
                 bytes[..8].copy_from_slice(&0x3000_0000_u64.to_le_bytes());
             } else if (0x3000_0000..0x3004_0000).contains(&address) {
-                // All requested metadata enables the raw value unchanged.
             } else if address == 0x100 && output.len() == 16 {
-                // Empty aggregate entry array.
             } else if address == 0x118 && output.len() == 16 {
                 let visits = self.visits.get();
                 self.visits.set(visits + 1);

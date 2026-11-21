@@ -188,7 +188,6 @@ fn faction_member_account_demand_is_one_selected_account() {
     let selected = 2;
     let address = accounts + selected * STRIDE;
     bytes[address..address + STRIDE].copy_from_slice(&initial[ACCOUNT..ACCOUNT + STRIDE]);
-    // Every other account can be unreadable; no census of them is attempted.
     let memory = Counted {
         bytes: &bytes,
         fault: accounts,

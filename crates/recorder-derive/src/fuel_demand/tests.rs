@@ -37,7 +37,6 @@ fn known(cell: &Recorded<i64>) -> Option<i64> {
     }
 }
 
-/// Each row as (country, [native, known, positive] by army, air, navy, and the three reasons).
 fn totals(run: &Run) -> Vec<(u32, [Option<i64>; 9], [String; 3])> {
     run.rows::<FuelDemandTotalRow>(TableId::FuelDemandTotals)
         .iter()
@@ -60,8 +59,6 @@ fn totals(run: &Run) -> Vec<(u32, [Option<i64>; 9], [String; 3])> {
         .collect()
 }
 
-/// GER (10) has two divisions, one of negative rate, and a task force whose rate was not read;
-/// ITA (20) has no pack recorded.
 fn demanded() -> Edits {
     let mut edits = Edits::default();
     edits
@@ -76,10 +73,6 @@ fn demanded() -> Edits {
 const UNREAD: &str = "fuel current cached-unit rate unavailable";
 const NO_PACK: &str = "Individual current fuel consumption was not recorded";
 
-/// The game's family sum projected over a day beside the widened known and positive sums; a
-/// family with a part not read is not recorded with why, the others stay known; a country without
-/// a pack is not recorded at all, never zero; a changed part moves its country; a gone country
-/// loses its row; parts not complete make every pack not known until they return.
 #[test]
 fn fuel_demand_totals_sum_each_family_as_the_game_and_widened() {
     let mut run = Run::new(writers, INPUTS);
@@ -108,8 +101,6 @@ fn fuel_demand_totals_sum_each_family_as_the_game_and_widened() {
     assert_eq!(totals(&run)[0].1[0], Some(45_600), "the parts are whole again");
 }
 
-/// A pack carrying its own read hour is not known at a read that did not rewrite it, whatever its
-/// parts; a read that changes no row's cells sets none.
 #[test]
 fn a_stamped_pack_a_read_left_is_not_known_and_a_read_moving_nothing_sets_nothing() {
     fn noted() -> Vec<Box<dyn Writer>> {
@@ -136,8 +127,6 @@ fn a_stamped_pack_a_read_left_is_not_known_and_a_read_moving_nothing_sets_nothin
     assert_eq!(totals(&run).iter().map(|row| row.2.clone()).collect::<Vec<_>>(), [[mismatch.clone(), mismatch.clone(), mismatch.clone()], [mismatch.clone(), mismatch.clone(), mismatch]]);
 }
 
-/// A read of CountryFuel, stamped with its hour as the collector stamps every table it reads, that
-/// changes only a country's demand pack moves its row, and a stamped pack the read left is not known.
 #[test]
 fn a_read_that_changes_only_a_demand_pack_moves_it_and_leaves_an_older_stamped_pack_unknown() {
     let stamped = |at: i32| Recorded::Value(FuelDemandRead { hour: FuelDemandHour::Stamped(at), ..FuelDemandRead::default() });
@@ -159,7 +148,6 @@ fn a_read_that_changes_only_a_demand_pack_moves_it_and_leaves_an_older_stamped_p
     );
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes.
 #[test]
 fn a_resumed_fuel_demand_writer_writes_the_table_of_one_never_stopped() {
     let mut unbroken = Run::new(writers, INPUTS);

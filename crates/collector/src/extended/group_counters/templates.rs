@@ -1,4 +1,3 @@
-//! HQ template context carried under its group and deployment-holder writers.
 use crate::template_changes::Changes;
 use engine_native::{Memory, corders_group::Root, template_hq_context as native};
 use replay_data::rows::{HqDeployment, HqEquipment, HqRequirement, TemplateHqContext};
@@ -185,8 +184,6 @@ impl Store {
                 return Err("headquarters context writer certificate unavailable");
             }
             entry.certificate = before;
-            // Resolve only the holder pointer before taking its certificate;
-            // every scalar and pool is copied inside both certificates.
             let certified_header = native::header(memory, base, root)?;
             if certified_header.holder != holder {
                 entry.attempted = false;
@@ -368,8 +365,6 @@ mod tests {
                 .map(Entry::allocated_bytes)
                 .sum::<usize>()
         );
-        // Unreadable and unauthenticated new holders keep their attempted
-        // identity. Neither failure triggers another hourly native read.
         for holder in [0x6000, 0x2000, 0x1234_5678_9abc_def0] {
             put(&mut memory.0, 0x1000 + native::HOLDER, holder as u64);
             drop(watches.notify(0x1000, 44));

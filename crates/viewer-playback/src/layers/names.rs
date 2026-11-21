@@ -1,32 +1,3 @@
-//! The world-space country names: per canonical country slot the map provinces it controls, its tag
-//! and its name in the reader's language, and each connected area's placed name. A province
-//! changing hands re-places only the two countries' areas; a country's name is built again only
-//! when its naming operands change.
-//!
-//! Everything is derived on the layer's own worker, fed the steps themselves: ahead of the head as
-//! the host offers them, or when the frame applies them. The worker keeps its own copies of the
-//! seven tables it reads, made whole from the mirrors at a compose and kept from each step's change
-//! sets alone; it settles a step whole, places the areas it changed on its placement threads, and
-//! makes a product stamped with the step's last hour: the areas changed, or every area after a
-//! restart. The frame side takes a product once it has applied its hour, never before, and writes
-//! the areas it changed to the scene, each alone.
-//!
-//! **A name is placed only where a name is drawn.** The country names draw at or above the
-//! content's `DRAW_COUNTRY_NAMES_CUTOFF` ([`Atlas::names_cutoff`], the height the far name layer
-//! fades in at), so below it the worker folds the hours and keeps the areas it changed as marks
-//! and places none of them: zoomed in, 2.3 MB a second was written to the GPU for no name on
-//! screen. The marks are placed as soon as the camera is sent to a height where names draw — the
-//! zoom's own ease, which takes longer than the placing — so the first frame that draws them
-//! draws them placed.
-//!
-//! Which names a map mode writes is today's rule ([`Atlas::name_layers`]: far and near, from the
-//! stock modes and the mod stack's scripted ones). A mode that writes each country's own name far
-//! out and nothing near draws the worker's names above; a mode that writes none draws nothing and
-//! declares nothing; any other (factions, players, states, strategic regions, a mode's own) writes
-//! names over areas that are not the countries', made whole from rows at the head by today's
-//! builder on the fill layer's cadence ([`ModeNames`]). A mode the mod stack does not declare is
-//! refused by name. A mode change drops what the old mode drew at once. Provinces, CountryLinks and
-//! Countries not wholly recorded draw no country names, as today.
 
 use super::{
     Carried, Settling, Dirty, Due, Fed, Gpu, Inputs, Layer, Num, Published, Text, View,
@@ -78,7 +49,6 @@ struct Columns {
 }
 
 impl Columns {
-    /// What the worker keeps of each table it reads.
     fn shapes(&self) -> Vec<Shape> {
         use TableId as T;
         vec![
@@ -96,31 +66,20 @@ impl Columns {
 const CORE: [TableId; 3] = [TableId::Provinces, TableId::CountryLinks, TableId::Countries];
 const NAMING: [TableId; 4] = [TableId::CountryAppearance, TableId::Politics, TableId::PoliticalParties, TableId::Autonomy];
 
-/// One country's area: the provinces it controls, its tag and name, and each connected area with its
-/// placed name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Area {
     pub members: BTreeSet<u32>,
-    /// The tag of its last Countries row; none without one, which draws nothing.
     pub tag: Option<String>,
     pub text: Result<String, String>,
     pub placed: Vec<(Vec<u32>, Option<Arc<WorldName>>)>,
-    /// The tag and text `placed` was placed with.
     placed_as: Option<(String, String)>,
 }
 
-/// Where the upload writes: the scene's country names held by area, or a test's stand-in.
 trait Target {
-    /// The generation of the names held by area; none when the scene holds none so.
     fn keyed(&self) -> Option<u64>;
-    /// Every name dropped: names then held by area, none yet.
     fn begin(&mut self, generation: u64);
-    /// One area's names written alone (none: dropped).
     fn set(&mut self, generation: u64, slot: u32, names: &[&WorldName]) -> io::Result<()>;
-    /// Whole placements (far and near) given their glyph buffers, as the hour's install gives
-    /// today's: the scene draws no placements with names it did not prepare.
     fn install(&mut self, placements: &Placements) -> io::Result<()>;
-    /// Whether the scene's glyph buffers hold `placements` now.
     fn holds(&self, placements: &Placements) -> bool;
 }
 
@@ -150,7 +109,6 @@ impl Target for OnScene<'_, '_> {
     }
 }
 
-/// What a status changes for the naming operands: rows complete, rows in part, or none.
 fn class(status: Status) -> u8 {
     match status {
         Status::Complete => 0,
@@ -163,8 +121,6 @@ fn rows(table: Option<&Table>) -> Option<&Table> {
     table.filter(|table| matches!(table.status(), Some(Status::Complete | Status::Truncated { .. })))
 }
 
-/// The bytes of a text cell (none for a missing or unrecorded one), or why there are none: its
-/// string is not named, which refuses what reads it by name, as the mirror's read did.
 fn bytes<'t>(table: &'t Table, column: Text, slot: u32, what: &str) -> Result<&'t [u8], String> {
     match table.named_text(column, slot) {
         Ok(Cell::Value(bytes)) => Ok(bytes),
@@ -173,24 +129,14 @@ fn bytes<'t>(table: &'t Table, column: Text, slot: u32, what: &str) -> Result<&'
     }
 }
 
-/// What the names are placed over: the map's provinces, their adjacency, the font and the reader's
-/// language.
 pub trait Atlas: Send + Sync {
-    /// The map's province ids, ascending.
     fn provinces(&self) -> Vec<u32>;
     fn localisation(&self) -> Arc<Localisation>;
-    /// `members` split into connected areas, as today's grouping walks them.
     fn components(&self, members: &BTreeSet<u32>) -> Vec<Vec<u32>>;
-    /// One connected area's placed name, or none where no line fits.
     fn place(&self, tag: &str, text: &str, component: &[u32]) -> Option<WorldName>;
-    /// Whose names `mode` writes far out and close in, by today's rule; none for a mode the mod
-    /// stack does not declare.
     fn name_layers(&self, mode: &MapMode) -> Option<NameLayers>;
-    /// The camera height the country names draw at, the content's `DRAW_COUNTRY_NAMES_CUTOFF`.
     fn names_cutoff(&self) -> f32;
-    /// Today's names of `mode` over a frame of rows, made whole.
     fn mode_names(&self, frame: &DecodedFrame, mode: &MapMode) -> io::Result<Arc<Placements>>;
-    /// The recording's executable tables, in scope for a build from rows.
     fn executable(&self) -> Option<Executable>;
 }
 
@@ -229,18 +175,13 @@ impl Atlas for Content {
     }
 }
 
-/// What a map mode's names are made from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
-    /// Each country's own name far out and nothing near: the worker's, fed ahead.
     Countries,
-    /// Names over areas that are not the countries' own (or near ones): today's, made whole.
     Whole,
-    /// No names.
     Nothing,
 }
 
-/// Today's rule for `mode`, or why the mode is refused.
 fn kind(atlas: &dyn Atlas, mode: &MapMode) -> Result<Kind, String> {
     let layers = atlas.name_layers(mode).ok_or_else(|| format!("map mode {} is not declared by the recording's mod stack", mode.token()))?;
     Ok(match (layers.far, layers.near) {
@@ -250,8 +191,6 @@ fn kind(atlas: &dyn Atlas, mode: &MapMode) -> Result<Kind, String> {
     })
 }
 
-/// The names of a mode whose areas are not the countries' own: today's builder over the rows at
-/// the head, as the fill layer makes that mode's fill.
 pub struct ModeNames {
     atlas: Arc<dyn Atlas>,
     mode: Mutex<MapMode>,
@@ -287,26 +226,20 @@ fn placement_bytes(placements: &Arc<Placements>) -> usize {
     placements.country.iter().map(|name| name.key.capacity() + name.text.capacity() + name.pages.capacity() * 8 + name.corners.capacity() * 12 + name.uvs.capacity() * 16 + 96).sum()
 }
 
-/// Placements that draw nothing: what the window is handed when a mode change drops the old
-/// mode's names, a generation of its own so the scene lets go of what it held.
 fn nothing() -> Arc<Placements> {
     Arc::new(Placements { generation: next_generation(), ..Placements::default() })
 }
 
-/// The placement threads under the worker: a step's areas are placed at once.
 const PLACERS: usize = 2;
 
-/// One area's placement: everything it reads, owned.
 struct Placing {
     slot: u32,
     tag: String,
     shown: String,
     members: BTreeSet<u32>,
-    /// Names placed before with the same tag and text, by component.
     kept: Vec<(Vec<u32>, Option<Arc<WorldName>>)>,
 }
 
-/// An area's placed names, and the time it took.
 struct Placed {
     slot: u32,
     tag: String,
@@ -315,7 +248,6 @@ struct Placed {
     ns: u64,
 }
 
-/// The placement threads: the worker hands them a step's areas and waits for every one.
 struct Placers {
     queue: Arc<(Mutex<(VecDeque<Placing>, bool)>, Condvar)>,
     done: mpsc::Receiver<Placed>,
@@ -338,7 +270,6 @@ impl Placers {
         Self { queue, done, threads }
     }
 
-    /// Every area of `jobs` placed, on the threads (here when there are none).
     fn place(&self, atlas: &dyn Atlas, jobs: Vec<Placing>) -> Vec<Placed> {
         if self.threads.is_empty() {
             return jobs.into_iter().map(|job| placing(atlas, job)).collect();
@@ -359,7 +290,6 @@ fn placing(atlas: &dyn Atlas, job: Placing) -> Placed {
     Placed { slot: job.slot, tag: job.tag, shown: job.shown, placed, ns: started.elapsed().as_nanos() as u64 }
 }
 
-/// One placement thread: takes areas until the worker stops.
 fn place_jobs(queue: &(Mutex<(VecDeque<Placing>, bool)>, Condvar), atlas: &dyn Atlas, sender: &mpsc::Sender<Placed>) {
     let (lock, wake) = queue;
     loop {
@@ -392,7 +322,6 @@ impl Drop for Placers {
     }
 }
 
-/// One area's connected areas and their names; a component in `kept` keeps its name.
 fn place_area(atlas: &dyn Atlas, tag: &str, shown: &str, members: &BTreeSet<u32>, kept: Vec<(Vec<u32>, Option<Arc<WorldName>>)>) -> Vec<(Vec<u32>, Option<Arc<WorldName>>)> {
     let mut kept: HashMap<Vec<u32>, Option<Arc<WorldName>>> = kept.into_iter().collect();
     atlas
@@ -408,9 +337,6 @@ fn place_area(atlas: &dyn Atlas, tag: &str, shown: &str, members: &BTreeSet<u32>
         .collect()
 }
 
-/// The frames from the step that changed an area to its names in the layer, in buckets of 1 (the
-/// frame that applied it), 2, 3-4, 5-8, 9-16, 17-32 and more; the worker's time per area, also in
-/// buckets of under 1 ms, 1-4, 4-16, 16-33 and more; and the most areas one product placed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Latency {
     pub buckets: [u64; 7],
@@ -422,16 +348,12 @@ pub struct Latency {
     pub in_flight_peak: u64,
 }
 
-/// What the worker derives from its tables: the old frame side's state, settled whole each step.
 struct Model {
     content: Arc<dyn Atlas>,
-    /// The map's province ids, ascending.
     defined: Vec<u32>,
     columns: Columns,
     tables: Tables,
-    /// Why nothing is drawn: a core table not wholly recorded, or not settled yet.
     refused: Option<String>,
-    /// Per province id: its area's slot plus one, or 0.
     slot_of: Vec<u32>,
     links: HashMap<u32, u32>,
     natives: BTreeSet<(u32, u32)>,
@@ -440,45 +362,31 @@ struct Model {
     areas: BTreeMap<u32, Area>,
     provinces: Dirty,
     operand_slots: Dirty,
-    /// Areas to place again.
     places: BTreeSet<u32>,
-    /// Areas changed and not placed, because no name is drawn at the camera.
     kept_marks: u64,
-    /// Per province id its raw controller, and each raw controller's provinces.
     controller_of: Vec<u32>,
     by_controller: HashMap<u32, BTreeSet<u32>>,
     link_raws: BTreeSet<u32>,
     country_natives: BTreeSet<u32>,
     every_operand: bool,
-    /// Every area's name again (a country row changed, or every operand was read again).
     texts_dirty: bool,
-    /// Slots whose operands changed: the areas whose names reach them are named again.
     changed_operands: BTreeSet<u32>,
-    /// Areas new since their names were resolved.
     text_slots: BTreeSet<u32>,
     statuses: HashMap<usize, Status>,
     frame: u64,
-    /// Provinces, countries named and areas re-placed since the last product.
     marked: [usize; 3],
-    /// Areas whose names, tag or placement changed since the last product; every area after a
-    /// restart.
     touched: BTreeSet<u32>,
     whole: bool,
-    /// The last hour of the newest step folded (none: the compose's).
     stamp: Option<Hour>,
 }
 
-/// What the worker made of the steps it folded through `stamp`.
 struct Made {
     epoch: u64,
     stamp: Option<Hour>,
-    /// Every area (a restart: the scene is sent everything again), or the areas changed, none for
-    /// an area gone.
     whole: bool,
     areas: Vec<(u32, Option<Area>)>,
     refused: Option<String>,
     marked: [usize; 3],
-    /// Each area placed: its nanoseconds.
     placed: Vec<u64>,
     held: usize,
 }
@@ -518,7 +426,6 @@ impl Model {
         }
     }
 
-    /// Why the core tables cannot be drawn from, in today's words; none when they can.
     fn core(&self) -> Option<String> {
         for table in CORE {
             let Some(held) = self.tables.get(table) else { return Some(format!("{table:?} is not read yet")) };
@@ -554,12 +461,10 @@ impl Model {
         self.every_operand = true;
     }
 
-    /// An area whose names changed: in the next product.
     fn owe(&mut self, slot: u32) {
         self.touched.insert(slot);
     }
 
-    /// A raw link changed: the provinces it controls, and every name that follows it or failed.
     fn settle_link(&mut self, raw: u32) {
         let new = self.tables.get(TableId::CountryLinks).and_then(|links| links.number(self.columns.link_slot, links.slot(u128::from(raw))?).value());
         let old = match new {
@@ -576,8 +481,6 @@ impl Model {
         self.mark_followers(&[old, new]);
     }
 
-    /// Every country whose operands name one of `slots` as overlord, or failed: they read links and
-    /// overlords' tags.
     fn mark_followers(&mut self, slots: &[Option<u32>]) {
         let wanted: Vec<u32> = slots.iter().flatten().copied().collect();
         let marked: Vec<u32> = self.operands.iter().filter(|(_, operands)| operands.as_ref().map_or(true, |operands| operands.overlord.is_some_and(|overlord| wanted.contains(&overlord)))).map(|(&slot, _)| slot).collect();
@@ -631,7 +534,6 @@ impl Model {
         }
     }
 
-    /// The canonical slot's country: its last Countries row, the highest native id.
     fn by_slot(&self, slot: u32) -> Option<u32> {
         self.natives.range((slot, 0)..=(slot, u32::MAX)).next_back().map(|&(_, native)| native)
     }
@@ -642,7 +544,6 @@ impl Model {
         bytes(countries, self.columns.tag, row, "country tag").map(<[u8]>::to_vec)
     }
 
-    /// A positive country's naming operands, through today's resolver's value core.
     fn operands_of(&self, native: u32) -> Result<Operands, String> {
         let own = self.country_tag(native)?;
         naming_operands(&TableRows { model: self }, native, &own)
@@ -702,8 +603,6 @@ impl Model {
         }
     }
 
-    /// The names again of the areas whose operands, or whose overlords' operands, changed (every
-    /// area's after a country change); an area whose tag or name changed re-places.
     fn settle_texts(&mut self) {
         let all = std::mem::take(&mut self.texts_dirty);
         let changed = std::mem::take(&mut self.changed_operands);
@@ -747,9 +646,6 @@ impl Model {
         }
     }
 
-    /// One area's placement to ask of the placers, unless it has nothing to place: an area with no
-    /// province is gone, one without a tag draws nothing. A component placed before with the same
-    /// tag and text keeps its name.
     fn placing(&mut self, slot: u32) -> Option<Placing> {
         self.marked[2] += 1;
         let area = self.areas.get(&slot)?;
@@ -773,9 +669,6 @@ impl Model {
         Some(Placing { slot, tag, shown, members: area.members.clone(), kept })
     }
 
-    /// Everything the steps marked settled whole, and, where a name is drawn (`placing`), the
-    /// areas it changed placed on `placers`; each area's placement time. Where none is drawn the
-    /// areas changed stay marked, to be placed when the camera is sent to a height that draws them.
     fn settle(&mut self, placers: &Placers, placing: bool) -> Vec<u64> {
         self.frame += 1;
         match self.core() {
@@ -838,7 +731,6 @@ impl Model {
         times
     }
 
-    /// A step's change sets into the worker's tables, marking what they touched.
     fn step(&mut self, step: &Step) {
         self.stamp = self.stamp.max(Some(step.last()));
         if step.gap() {
@@ -894,7 +786,6 @@ impl Model {
         }
     }
 
-    /// What it settled since the last product.
     fn made(&mut self, epoch: u64, placed: Vec<u64>) -> Made {
         let whole = std::mem::take(&mut self.whole);
         let touched = std::mem::take(&mut self.touched);
@@ -925,13 +816,11 @@ fn area_bytes(area: &Area) -> usize {
         + 96
 }
 
-/// The naming tables as the worker holds them.
 struct TableRows<'a> {
     model: &'a Model,
 }
 
 impl TableRows<'_> {
-    /// `table`'s row keyed `key`, when the table holds rows.
     fn row(&self, table: TableId, key: u128) -> Option<(&Table, u32)> {
         let held = rows(self.model.tables.get(table))?;
         Some((held, held.slot(key)?))
@@ -981,19 +870,11 @@ impl NamingRows for TableRows<'_> {
 }
 
 enum Job {
-    /// The tables whole from the mirrors: the model made anew, its product stamped `stamp` (the
-    /// hour applied when it starts over; none at a compose), placed where `placing` says a name is
-    /// drawn — the product a compose waits for is the first picture after a seek, so the answer
-    /// comes with the reset rather than in a message after it.
     Reset { epoch: u64, tables: Box<Tables>, columns: Columns, stamp: Option<Hour>, placing: bool },
     Step { epoch: u64, step: Arc<Step> },
-    /// Whether a name is drawn at the camera now: false keeps the areas it changes as marks and
-    /// places none, true places every mark it holds at its next settle.
     Placing(bool),
 }
 
-/// The next job is a step of `epoch` the frame has applied already, or a reset: the step folded
-/// before it needs no product of its own.
 fn superseded(next: Option<&Job>, epoch: u64, due: &Due) -> bool {
     match next {
         Some(Job::Reset { .. }) => true,
@@ -1006,8 +887,6 @@ fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Ma
     let placers = Placers::new(&content);
     let mut model: Option<Model> = None;
     let mut epoch = 0;
-    // Whether a name is drawn at the camera: every reset carries the layer's answer, and a camera
-    // that crosses the cutoff sends it ([`Job::Placing`]).
     let mut placing = true;
     while let Ok(job) = jobs.recv() {
         let mut queue: VecDeque<Job> = std::iter::once(job).chain(jobs.try_iter()).collect();
@@ -1029,7 +908,6 @@ fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Ma
                 }
                 Job::Placing(drawn) => {
                     placing = drawn;
-                    // Sent to a height where names draw: the marks it kept are placed now.
                     if !drawn || model.is_none() {
                         continue;
                     }
@@ -1048,50 +926,30 @@ fn run(content: Arc<dyn Atlas>, jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Ma
 pub struct Names {
     content: Arc<dyn Atlas>,
     columns: Option<Columns>,
-    /// Why nothing is drawn: a core table not wholly recorded, or not composed yet.
     refused: Option<String>,
-    /// The areas of the newest product taken.
     areas: BTreeMap<u32, Area>,
-    /// The placement warnings of those areas, made when an install hands them over and kept until
-    /// an area changes: a walk of every area for the few the hour moved.
     warned: Option<Vec<String>>,
     jobs: Option<mpsc::Sender<Job>>,
     made: Option<mpsc::Receiver<Made>>,
     epoch: u64,
-    /// The steps handed to the worker and its products, each taken once its hour is applied.
     fed: Fed<Made>,
-    /// Each hour applied and not yet shown, with its frame: how late a product is taken.
     applied_at: VecDeque<(Hour, u64)>,
     latency: Latency,
     worker_held: usize,
-    /// What the window draws: the warnings, and the generation of the names the scene holds by
-    /// area, made again once stale; that generation, none until the scene holds them; the areas
-    /// whose names it does not hold yet, oldest change first.
     drawn: Arc<Placements>,
     drawn_stale: bool,
     sent: Option<u64>,
     unsent: VecDeque<u32>,
     unsent_held: HashSet<u32>,
     frame: u64,
-    /// Provinces, countries named and areas re-placed the steps marked.
     marked: [usize; 3],
-    /// What the view's mode draws, and the mode.
     kind: Kind,
     mode: MapMode,
-    /// The country names wanted again from the mirrors at the view's change (a mode change back to
-    /// them): started there when the mirrors hold their tables, else by the compose that brings them.
     restart: bool,
-    /// Whether a country name is drawn at the camera the view last placed, as the worker was last
-    /// told: nothing is placed where none is drawn.
     placing: bool,
-    /// The names of a mode whose areas are not the countries', made whole; none outside the window.
     modes: Option<Whole<ModeNames>>,
-    /// The product of `modes` taken, and its placements until the upload has given them their
-    /// glyph buffers: only then is the window handed them.
     whole_shown: Option<Arc<Built<Arc<Placements>>>>,
     whole_pending: Option<Arc<Placements>>,
-    /// The steps handed past the hour applied, and the epoch of the last applied: a restart from
-    /// the mirrors hands them again (the host hands a step once).
     kept: VecDeque<Arc<Step>>,
     last_epoch: u64,
 }
@@ -1102,7 +960,6 @@ impl Names {
             kind: Kind::Countries,
             mode: MapMode::default(),
             restart: false,
-            // Nothing is known of the camera before a frame places it: names are placed until it says.
             placing: true,
             modes: None,
             whole_shown: None,
@@ -1131,8 +988,6 @@ impl Names {
         }
     }
 
-    /// The layer the window draws: a mode whose names are not the countries' own builds them from
-    /// the rows of `entry`.
     pub fn in_window(mut self, entry: Arc<Entry>, recording: Recording) -> io::Result<Self> {
         let build = ModeNames { atlas: Arc::clone(&self.content), mode: Mutex::new(MapMode::default()) };
         let tables: Vec<TableId> = CORE.into_iter().chain(NAMING).collect();
@@ -1142,8 +997,6 @@ impl Names {
     }
 
     pub fn fresh(&self) -> Self {
-        // The camera's answer too: a layer composed anew is this layer at this view, and what it
-        // places is compared with what this one placed (the proof's reference).
         Self { columns: self.columns, placing: self.placing, ..Self::new(Arc::clone(&self.content)) }
     }
 
@@ -1155,14 +1008,11 @@ impl Names {
         }
     }
 
-    /// The names the window is handed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn shown(&self) -> &Arc<Placements> {
         &self.drawn
     }
 
-    /// What the view's mode drew before is dropped at once: the window is handed nothing until the
-    /// new mode's first product, and the country names' products made before are let go.
     fn leave(&mut self) {
         (self.areas, self.unsent, self.unsent_held, self.applied_at) = Default::default();
         self.warned = None;
@@ -1172,7 +1022,6 @@ impl Names {
         (self.whole_shown, self.whole_pending) = (None, None);
     }
 
-    /// The worker started from the mirrors at the hour they stand at, its products from then on.
     fn start(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let columns = self.columns.expect("the names layer is declared before it starts");
         if self.jobs.is_none() {
@@ -1202,7 +1051,6 @@ impl Names {
         Ok(())
     }
 
-    /// The newest product of the mode's names taken, for the upload to prepare and hand on.
     fn take_whole(&mut self) {
         let Some(built) = self.modes.as_ref().and_then(Whole::product) else { return };
         if self.whole_shown.as_ref().is_some_and(|shown| Arc::ptr_eq(shown, built)) {
@@ -1215,15 +1063,10 @@ impl Names {
         self.whole_shown = Some(Arc::clone(built));
     }
 
-    /// What the view's mode owes the scene, written to `target`: the country names an area at a
-    /// time; a mode's whole names given their glyph buffers in one piece, and only then handed to
-    /// the window; nothing where the mode writes none.
     fn push_any(&mut self, target: &mut dyn Target) -> io::Result<()> {
         match self.kind {
             Kind::Countries => self.push(target),
             Kind::Whole => {
-                // The scene no longer holds the names the window is handed (a new scene, or another
-                // install since): they are given again before the window draws them.
                 if self.whole_pending.is_none() && !target.holds(&self.drawn) {
                     self.whole_pending = Some(Arc::clone(&self.drawn));
                 }
@@ -1251,25 +1094,20 @@ impl Names {
         self.latency
     }
 
-    /// The newest hour its worker has made a product of, as received on the frame.
     #[cfg(any(test, feature = "test-support"))]
     pub fn made_through(&self) -> Option<Hour> {
         self.fed.made_through()
     }
 
-    /// The names as today's placement lays them out: areas in slot order, each connected area's
-    /// name in component order, then the warnings.
     pub fn placements(&self) -> Placements {
         let country = self.areas.keys().flat_map(|&slot| self.names_of(slot)).cloned().collect();
         Placements { country, warnings: self.warnings(), ..Placements::default() }
     }
 
-    /// The names one area draws, in component order: none without a tag.
     fn names_of(&self, slot: u32) -> Vec<&WorldName> {
         self.areas.get(&slot).filter(|area| area.tag.is_some()).map_or_else(Vec::new, |area| area.placed.iter().filter_map(|(_, name)| name.as_deref()).collect())
     }
 
-    /// Today's placement warnings, walked once for the areas as they stand.
     fn warnings_held(&mut self) -> Vec<String> {
         match &self.warned {
             Some(warnings) => warnings.clone(),
@@ -1277,7 +1115,6 @@ impl Names {
         }
     }
 
-    /// Today's placement warnings: areas named by their tag, then components left unplaced.
     fn warnings(&self) -> Vec<String> {
         let (mut unnamed, mut unplaced) = (Vec::new(), Vec::new());
         for area in self.areas.values() {
@@ -1294,7 +1131,6 @@ impl Names {
         name_pass::placement_warnings(&unnamed, &[], unplaced)
     }
 
-    /// An area whose names changed: owed to the scene.
     fn owe(&mut self, slot: u32) {
         (self.drawn_stale, self.warned) = (true, None);
         if self.unsent_held.insert(slot) {
@@ -1302,8 +1138,6 @@ impl Names {
         }
     }
 
-    /// The names the scene holds made the layer's, oldest change first. A scene that no longer
-    /// holds what was sent (another placement drew there) is sent every area again.
     fn push(&mut self, target: &mut dyn Target) -> io::Result<()> {
         if self.sent.is_some() && target.keyed() != self.sent {
             self.sent = None;
@@ -1334,8 +1168,6 @@ impl Names {
         Ok(())
     }
 
-    /// Receives what the worker made and takes every product due, in order. With `wait`, until the
-    /// product of the last hour applied has arrived.
     fn exchange(&mut self, wait: bool) {
         if let Some(receive) = &self.made {
             loop {
@@ -1353,7 +1185,6 @@ impl Names {
         }
     }
 
-    /// A product: its areas made the layer's and owed to the scene; a whole one is sent again whole.
     fn take(&mut self, made: Made) {
         if made.whole {
             self.areas = made.areas.into_iter().filter_map(|(slot, area)| Some((slot, area?))).collect();
@@ -1407,7 +1238,6 @@ impl Names {
         }
     }
 
-    /// Entries of `self` that differ from `other`'s, and the first described.
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -1438,10 +1268,6 @@ impl Layer for Names {
         "names"
     }
 
-    /// Whether a name is drawn at the camera, told to the worker here: below the content's cutoff
-    /// no country name is drawn, so the worker keeps the areas it changes as marks and places
-    /// none. The zoom's own ease is what places them: a camera sent to a height that draws names
-    /// places every mark while it rises, and it rises for longer than the placing takes.
     fn placed(&mut self, view: &crate::layers::View) -> Option<u64> {
         let cutoff = self.content.names_cutoff();
         let drawn = view.camera.is_none() || view.camera_height >= cutoff || view.target.is_some_and(|target| target.height >= cutoff);
@@ -1454,7 +1280,6 @@ impl Layer for Names {
         Some(0)
     }
 
-    /// The side's view store, for the mode names its window builds from rows.
     fn views(&mut self, store: &crate::playhead_host::views::Store) -> io::Result<()> {
         match &mut self.modes {
             Some(modes) => modes.views(store),
@@ -1471,7 +1296,6 @@ impl Layer for Names {
         let kind = match kind {
             Ok(kind) => kind,
             Err(why) => {
-                // Shown again, the layer is made anew from the mirrors: it missed the steps meanwhile.
                 self.leave();
                 self.kind = Kind::Nothing;
                 return Err(refuse(why));
@@ -1509,8 +1333,6 @@ impl Layer for Names {
         Ok(())
     }
 
-    /// The worker started from the mirrors: its tables made whole here, off the frame thread, and
-    /// its first product (every area, placed) waited for. At a mode of whole names, those anew.
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         match self.kind {
             Kind::Countries => {
@@ -1533,8 +1355,6 @@ impl Layer for Names {
         }
     }
 
-    /// Back at the country names from another mode, the worker starts over from the mirrors at the
-    /// hour applied, when they hold its tables; otherwise the compose that brings them starts it.
     fn viewed(&mut self, _view: &View, mirrors: &Mirrors) {
         if self.restart && self.kind == Kind::Countries && CORE.into_iter().chain(NAMING).all(|table| mirrors.get(table).is_some()) {
             self.restart = false;
@@ -1565,8 +1385,6 @@ impl Layer for Names {
         self.kind == Kind::Countries
     }
 
-    /// The worker starts over from the mirrors at the hour applied, as at a seek, keeping the
-    /// names it shows until its product there arrives.
     fn void_ahead(&mut self, mirrors: &Mirrors, _kept: Option<Hour>) {
         let (Some(columns), Some(jobs)) = (self.columns, &self.jobs) else { return };
         if self.kind != Kind::Countries || !CORE.into_iter().chain(NAMING).all(|table| mirrors.get(table).is_some()) {
@@ -1605,9 +1423,6 @@ impl Layer for Names {
         Ok(())
     }
 
-    /// The areas whose name, tag or placement changed written to the scene, each alone. Products
-    /// that arrived since the settle are taken first, so one made this frame is drawn this frame.
-    /// The names of another mode the window draws as today's, from what it is handed.
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         if self.kind == Kind::Countries {
             self.exchange(false);
@@ -1640,7 +1455,6 @@ impl Layer for Names {
     }
 
     fn carried(&self) -> Carried {
-        // Everything is derived and placed on the worker: published, not carried.
         Carried::default()
     }
 
@@ -1666,7 +1480,6 @@ impl Layer for Names {
     }
 }
 
-/// The placements the window draws while the names layer draws them.
 pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<Arc<Placements>> {
     if !side.draws("names") {
         return None;
@@ -1675,8 +1488,6 @@ pub fn drawn(side: &crate::playhead_host::MapSide) -> Option<Arc<Placements>> {
     Some(Arc::clone(&layer.drawn))
 }
 
-/// The placement worker's figures for the paced report: its time an area, the most areas one step
-/// placed, and the frames from an area's change to its names in the layer.
 pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Names>())) else { return serde_json::Value::Null };
     let latency = layer.latency;

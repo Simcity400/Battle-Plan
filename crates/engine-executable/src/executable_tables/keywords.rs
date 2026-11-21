@@ -1,4 +1,3 @@
-//! Immutable keyword identities and fixed modifier names, located by code shape.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -16,9 +15,7 @@ use sha2::{Digest, Sha256};
 use super::{leak_string, pe::PeImage, verify_digest};
 
 const MODIFIER_ALTERNATIVES: usize = 4;
-/// `mov edx, [rax]; lea rcx, [rip + keyword]`, between the name and the registration call.
 const KEYWORD_SHAPE: &[u8] = &[0x8b, 0x10, 0x48, 0x8d, 0x0d];
-/// `mov ecx, [rax]; call`, after the modifier index is placed in EDX.
 const MODIFIER_SHAPE: &[u8] = &[0x8b, 0x08, 0xe8];
 const CALL: u8 = 0xe8;
 
@@ -29,20 +26,15 @@ pub const MODIFIERS_DIGEST: &str =
 
 #[derive(Debug)]
 pub struct KeywordTables {
-    /// Original spellings in increasing token order.
     pub names: Vec<(u32, &'static str)>,
-    /// Effective fixed modifier names in modifier-index order.
     pub modifier_names: Vec<&'static str>,
     folded: HashMap<Vec<u8>, (u32, &'static str)>,
-    /// Why token ids named in code do not hold for this build, if they do not.
     pub(super) fixed_keywords: Result<(), String>,
-    /// Why modifier indices named in code do not hold for this build, if they do not.
     pub(super) fixed_modifiers: Result<(), String>,
     pub(super) content: [u8; 32],
 }
 
 impl KeywordTables {
-    /// SHA-256 of this table's build-independent content, comparable across builds.
     pub fn content_digest(&self) -> [u8; 32] {
         self.content
     }
@@ -93,7 +85,6 @@ impl KeywordTables {
         })
     }
 
-    /// The table a recording carries ([`super::recorded`]), with its folded lookup rebuilt.
     pub(super) fn recorded(
         names: Vec<(u32, &'static str)>,
         modifier_names: Vec<&'static str>,
@@ -138,7 +129,6 @@ impl KeywordTables {
         self.by_id(id)
     }
 
-    /// Modifier names whose indices match the ones this release names in code.
     pub fn fixed_modifiers(&self) -> io::Result<&[&'static str]> {
         self.fixed_modifiers
             .as_ref()
@@ -146,7 +136,6 @@ impl KeywordTables {
             .map_err(|reason| unpinned("modifier indices", reason))
     }
 
-    /// Whether the token ids this release names in code hold for this build.
     pub fn fixed_ids(&self) -> io::Result<()> {
         self.fixed_keywords
             .as_ref()
@@ -154,7 +143,6 @@ impl KeywordTables {
             .map_err(|reason| unpinned("token ids", reason))
     }
 
-    /// The name of a token id this release names in code.
     pub fn fixed_token(&self, id: u32) -> io::Result<&'static str> {
         self.fixed_keywords
             .as_ref()
@@ -167,7 +155,6 @@ impl KeywordTables {
         })
     }
 
-    /// Keywords use ASCII case identity and text before the first NUL.
     pub fn static_keyword(&self, word: &[u8]) -> Option<(u32, &'static str)> {
         let end = word
             .iter()
@@ -199,7 +186,6 @@ fn unlocated(table: &str, reason: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("{table}: {reason}"))
 }
 
-/// An initializer and the callees its registrations use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Located {
     function: (u32, u32),
@@ -207,7 +193,6 @@ struct Located {
     registration: u32,
 }
 
-/// The target of the `call rel32` at `code[at]`, which lies at `site`.
 fn call_target(code: &[u8], at: usize, site: u32) -> Option<u32> {
     let relative = i32::from_le_bytes(code.get(at + 1..at + 5)?.try_into().ok()?);
     u32::try_from(i64::from(site) + 5 + i64::from(relative)).ok()
@@ -234,8 +219,6 @@ fn only<K>(table: &str, shape: &str, groups: HashMap<K, usize>) -> io::Result<(K
     }
 }
 
-/// Every `call token; lea r8, [rip + name]; mov edx, [rax]; lea rcx, [rip + keyword];
-/// call registration`, grouped by function and callees, must form one group.
 fn locate_keywords(image: &PeImage) -> io::Result<(Located, usize)> {
     let mut groups = HashMap::new();
     for (start, code) in executable_code(image)? {
@@ -267,8 +250,6 @@ fn locate_keywords(image: &PeImage) -> io::Result<(Located, usize)> {
     only("keywords", "the keyword registration shape", groups)
 }
 
-/// Every `xor edx, edx` or `mov edx, imm32` followed by `mov ecx, [rax]; call registration`
-/// in a function that also calls the token initializer, other than the keyword initializer.
 fn locate_modifiers(image: &PeImage, keywords: Located) -> io::Result<(Located, usize)> {
     let mut groups = HashMap::<_, usize>::new();
     for (start, code) in executable_code(image)? {
@@ -308,7 +289,6 @@ fn locate_modifiers(image: &PeImage, keywords: Located) -> io::Result<(Located, 
     only("modifiers", "the modifier registration shape", candidates)
 }
 
-/// The token initializer stores EDX at RCX and returns RCX, so `[rax]` after it is the id.
 fn verify_token_initializer(image: &PeImage, rva: u32) -> io::Result<()> {
     let bytes = image.bytes(rva, 16)?;
     let mut decoder =
@@ -523,7 +503,6 @@ fn read_keywords(
                 _ => {}
             }
         } else {
-            // Values in flight: the id in EDX, the initialized token behind RAX, the name in R8.
             let mut live = Vec::new();
             if source.is_some() || argument_ready {
                 live.push(Register::RDX);
@@ -550,7 +529,6 @@ fn read_keywords(
     Ok(rows)
 }
 
-/// Whether `instruction` branches, writes one of `live` or, with `memory` live, writes memory.
 fn interferes(
     info: &mut InstructionInfoFactory,
     instruction: &Instruction,
@@ -575,7 +553,6 @@ fn interferes(
     }) || (memory && details.used_memory().iter().any(|used| written(used.access())))
 }
 
-/// The modifier index `instruction` puts in EDX: `mov edx, imm32` or `xor edx, edx`.
 fn modifier_index(instruction: &Instruction) -> Option<u32> {
     if instruction.op0_kind() != OpKind::Register || instruction.op0_register() != Register::EDX {
         return None;
@@ -587,7 +564,6 @@ fn modifier_index(instruction: &Instruction) -> Option<u32> {
     }
 }
 
-/// Stack-relative addresses held in registers and in stack slots, as offsets from RSP.
 #[derive(Clone, Default)]
 struct Frame {
     registers: Vec<(Register, i64)>,
@@ -682,8 +658,6 @@ impl Frame {
     }
 }
 
-/// Whether `instruction` may write the four bytes at stack offset `slot`: any write it makes
-/// overlaps them or has an address that is not stack-relative.
 fn writes_slot(info: &mut InstructionInfoFactory, instruction: &Instruction, slot: i64) -> bool {
     info.info(instruction).used_memory().iter().any(|used| {
         let written = matches!(
@@ -701,7 +675,6 @@ fn writes_slot(info: &mut InstructionInfoFactory, instruction: &Instruction, slo
     })
 }
 
-/// Sorts into token order; ids and case-folded names must each be unique.
 fn validate_keywords(mut rows: Vec<(u32, String)>) -> io::Result<Vec<(u32, String)>> {
     if rows.is_empty() {
         return Err(unlocated("keywords", "the initializer registers nothing"));
@@ -709,7 +682,6 @@ fn validate_keywords(mut rows: Vec<(u32, String)>) -> io::Result<Vec<(u32, Strin
     rows.sort_unstable_by_key(|(id, _)| *id);
     let mut folded = HashSet::with_capacity(rows.len());
     for (occurrence, (id, name)) in rows.iter().enumerate() {
-        // Graphic ASCII keeps the canonical rows unambiguous.
         if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(invalid(
                 "keywords",
@@ -770,7 +742,6 @@ fn read_modifiers(
             }
             argument_ready = true;
         } else if let Some(index) = modifier_index(instruction) {
-            // EDX holds the token id until it is initialized, then the index until registration.
             if source.is_some() || (initialized.is_some() && key.is_some()) {
                 return Err(invalid(
                     "modifiers",
@@ -796,7 +767,6 @@ fn read_modifiers(
                             "reused token initialization",
                         ));
                     }
-                    // The initializer stores the token where RCX points; nothing may write there.
                     token_slot = Some(tracked.register(Register::RCX).ok_or_else(|| {
                         invalid(
                             "modifiers",
@@ -848,14 +818,12 @@ fn read_modifiers(
                 _ => key = None,
             }
         } else {
-            // Values in flight: the token in EDX, then behind RAX, then in ECX; the index in EDX.
             let mut live = Vec::new();
             if source.is_some() || (initialized.is_some() && key.is_some()) {
                 live.push(Register::RDX);
             }
             let token_in_memory = initialized.is_some() && !argument_ready;
             if token_in_memory {
-                // The slot is a stack offset, so the stack pointer must stay put too.
                 live.extend([Register::RAX, Register::RSP]);
             }
             if argument_ready {
@@ -882,7 +850,6 @@ fn read_modifiers(
     Ok(assignments)
 }
 
-/// Names each effective index, which must run densely from zero with distinct tokens.
 fn resolve_modifiers(
     keywords: &[(u32, String)],
     effective: &BTreeMap<u32, u32>,
@@ -979,14 +946,11 @@ fn reduce_modifier_groups(assignments: &[ModifierAssignment]) -> io::Result<BTre
                 "conditional registrations disagree",
             ));
         }
-        // Each alternative reaches the same continuation. Later groups replace earlier names.
         effective.insert(first.key, first.token);
     }
     Ok(effective)
 }
 
-/// Whether the token ids and fixed modifier indices this release's code names hold for these
-/// rows, and the rows' build-independent digest.
 fn fixed_ids(
     names: &[(u32, String)],
     modifiers: &[(u32, String)],
@@ -998,7 +962,6 @@ fn fixed_ids(
     let fixed_modifiers = verify_digest("modifiers", modifier_rows.as_bytes(), MODIFIERS_DIGEST)
         .map_err(|error| error.to_string())
         .and_then(|()| {
-            // The pinned digest fixes the count; the gap constant must agree with it.
             if modifiers.len() == crate::build::FIXED_MODIFIER_GAP as usize {
                 Ok(())
             } else {
@@ -1010,7 +973,6 @@ fn fixed_ids(
         });
     let mut content = Sha256::new();
     content.update(keyword_rows.as_bytes());
-    // Rows are never empty, so a blank line separates the two lists.
     content.update(b"\n");
     content.update(modifier_rows.as_bytes());
     (fixed_keywords, fixed_modifiers, content.finalize().into())

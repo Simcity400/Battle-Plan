@@ -3,6 +3,5 @@
 .faction-pooled-caption > .segmented { margin-left: auto; padding: 2px; }
 .faction-pooled-caption > .segmented > button { height: 22px; padding: 0 9px; font-size: var(--type-sm); }
 .faction-pooled .resource-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Narrow cards keep flags and values; names give way to the tooltip. */
 .pooled-history { display: flex; flex-direction: column; height: 100%; min-height: 200px; }
 .faction-pooled .resource-bars > li[role='button'] { cursor: pointer; }

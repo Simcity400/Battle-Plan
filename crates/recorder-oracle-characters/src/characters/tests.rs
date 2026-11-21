@@ -421,7 +421,6 @@ fn operative_name_and_codename_native_absence_is_named_separately() {
     );
 }
 
-/// The country-leader traits of one `common/country_leader` file.
 fn leader_traits(text: &str) -> LeaderTraits {
     let root = std::env::temp_dir().join(format!(
         "oracle_leader_traits_{}_{:?}",
@@ -441,9 +440,6 @@ fn leader_traits(text: &str) -> LeaderTraits {
 fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let character = handle(73, u32::MAX);
     let leader = handle(4713, u32::MAX);
-    // Exercise all persistent tables on their shared refresh slot. The
-    // cadence-specific test below explicitly supplies an off-slot hour.
-    // Save hours are one-based; slot 21 is text-save hour 22.
     let date = GameDate::parse(b"1936.1.1.22").unwrap();
     let mut frame = DecodedFrame {
         branch: 1,
@@ -572,7 +568,6 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
 
 #[test]
 fn character_tables_are_compared_at_every_hour() {
-    // compare needs no freshness gate while the family is hourly.
     for table in [
         TableId::Characters,
         TableId::CountryLeaderRoles,
@@ -685,9 +680,6 @@ fn leader_oracle_checks_full_backlinks_and_independent_traits() {
     );
 }
 
-/// Each role's trait tokens compare, by name, with the role's saved
-/// `traits` (a country-leader role joined by its ideology literal), and
-/// the operative reference with the saved `operative`.
 #[test]
 fn role_traits_and_operative_references_compare_with_the_save() {
     use replay_data::{rows::CharacterOperativeRow, rows::CharacterRoleTraitRow as Row};
@@ -776,7 +768,6 @@ fn role_traits_and_operative_references_compare_with_the_save() {
     compare(&frame, &pack, &links, &tokens, Ok(&traits), &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CharacterRoleTraits"], 3);
-    // A different trait, a missing role and a different reference.
     let TableView::Complete(TableRows::CharacterRoleTraits(rows)) =
         &mut *frame.tables[TableId::CharacterRoleTraits.index()]
     else {
@@ -795,12 +786,6 @@ fn role_traits_and_operative_references_compare_with_the_save() {
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 }
 
-/// An advisor trait saves its definition's key, not its token's literal:
-/// the token can have been made earlier from another spelling of the key
-/// (in vanilla, `SWI_FASCIST` in an AI strategy before the `SWI_fascist`
-/// trait). The key at the recorded ordinal is compared; one that cannot
-/// have made the token is a difference, content that cannot say a
-/// limitation, and a key the lexer refuses makes token 0.
 #[test]
 fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
     use replay_data::rows::CharacterRoleTraitRow as Row;
@@ -852,12 +837,9 @@ fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
     let report = run(&frame, Ok(&traits));
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CharacterRoleTraits"], 1);
-    // Without the content the traits are not named.
     let report = run(&frame, NO_TRAITS);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CharacterRoleTraits"], 0);
-    // A key that cannot have made the recorded token, and a refused key
-    // with a nonzero token.
     for (tokens, definitions) in [(vec![31, 0], vec![2, 3]), (vec![30, 31], vec![2, 3])] {
         set(&mut frame, tokens, definitions);
         let differences = run(&frame, Ok(&traits)).differences;
@@ -866,8 +848,6 @@ fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
             "{differences:?}"
         );
     }
-    // A wrong ordinal whose key does make the token still differs from
-    // the save, and one the content lacks is not named.
     set(&mut frame, vec![31, 0], vec![1, 3]);
     assert_eq!(run(&frame, Ok(&traits)).differences.len(), 1);
     set(&mut frame, vec![30, 0], vec![2, 9]);
@@ -876,9 +856,6 @@ fn advisor_traits_compare_by_the_content_key_at_their_ordinal() {
     assert_eq!(report.compared_tables["CharacterRoleTraits"], 0);
 }
 
-/// The saved country-leader role is joined by its map position, not by
-/// the recorded rows: a deleted leader row is a missing array, an extra
-/// one an extra array, and trait names compare as bytes.
 #[test]
 fn missing_extra_and_byte_different_role_traits_are_differences() {
     use replay_data::rows::CharacterRoleTraitRow as Row;
@@ -892,7 +869,6 @@ fn missing_extra_and_byte_different_role_traits_are_differences() {
         .characters
         .get_mut(&character)
         .unwrap();
-    // The saved ideology is not the join: a rewritten one still matches.
     saved.country_leaders = vec![saved::CountryLeader {
         ideology: b"rewritten".to_vec(),
         id: None,
@@ -932,7 +908,6 @@ fn missing_extra_and_byte_different_role_traits_are_differences() {
     };
     set(&mut frame, vec![leader.clone()]);
     assert!(run(&frame, b"\xff").is_empty());
-    // Distinct invalid bytes that read as the same replacement text.
     assert_eq!(run(&frame, b"\xfe").len(), 1);
     set(&mut frame, Vec::new());
     let missing = run(&frame, b"\xff");
@@ -958,8 +933,6 @@ fn missing_extra_and_byte_different_role_traits_are_differences() {
     );
 }
 
-/// The template's tag compares with the saved `template`; a template on
-/// one side only is a difference.
 #[test]
 fn character_template_tag_compares_with_the_saved_template() {
     let (frame, mut pack, country) = fixture();
@@ -1019,8 +992,6 @@ fn character_template_tag_compares_with_the_saved_template() {
     assert!(run(&absent, &pack).differences.is_empty());
 }
 
-/// The owner compares with the country whose saved active roster lists the
-/// character; an army leader's captured byte with `captured=yes`.
 #[test]
 fn leader_owner_and_captured_byte_compare_with_the_save() {
     let (frame, mut pack, country) = fixture();
@@ -1050,8 +1021,6 @@ fn leader_owner_and_captured_byte_compare_with_the_save() {
     let unowned = edit(&|row| row.owner = 0);
     let other = run(&unowned, &pack);
     assert!(other.len() == 1 && other[0].contains("owner"), "{other:?}");
-    // Loading sets the owner only for a character on a country's active
-    // roster; the character's own `country=` never sets it.
     let owners = |frame: &DecodedFrame, pack: &saved::Pack| {
         let mut report = Report::default();
         compare_leaders(
@@ -1117,7 +1086,6 @@ fn leader_owner_and_captured_byte_compare_with_the_save() {
             .keys()
             .any(|reason| reason.contains("several countries' rosters"))
     );
-    // A navy leader has no captured byte.
     let navy = run(&edit(&|row| row.captured = 1), &pack);
     assert!(navy.len() == 1 && navy[0].contains("captured"), "{navy:?}");
     let captured = edit(&|row| {
@@ -1318,8 +1286,6 @@ fn reserved_trait_formatter_fails_traits_after_independent_leader_comparison() {
     else {
         unreachable!()
     };
-    // Character token values use the quoted string path, so this
-    // native id still denotes the ordinary dictionary spelling there.
     rows[0].name_token_id = 0x167;
     let TableView::Complete(TableRows::UnitLeaderTraits(rows)) =
         &mut *frame.tables[TableId::UnitLeaderTraits.index()]
@@ -1375,7 +1341,6 @@ fn missing_dictionary_keeps_position_census_and_raw_value_comparisons() {
         .find(|(reason, _)| reason.contains("lexer literal is not recorded"))
         .unwrap()
         .1;
-    // Character token and template tag, assigned trait and independent training.
     assert_eq!(missing_names.len(), 4);
     let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *frame.tables[TableId::UnitLeaders.index()]
@@ -1537,8 +1502,6 @@ fn experience_factor_oracle_compares_repeated_override_positions_and_raw_values(
     assert!(report.differences[0].contains("experience"));
 }
 
-/// Two characters no country lists, saved without a name like a total
-/// conversion's unrecruited advisors, around one a country lists.
 const UNNAMED_ROSTER: &[u8] =
     br#"countries={ANT={characters={character_status={character={id=2 type=73} advisor=yes}}}}
 character_manager={historical={
@@ -1602,19 +1565,16 @@ fn a_saved_character_no_country_lists_is_compared_as_the_memory_that_wrote_or_lo
         (roster, report.differences)
     };
     let written = [(1, 0), (2, 1), (3, 2)];
-    // The memory that wrote the save holds both, each with no country.
     assert_eq!(
         run(&written, false),
         (Some(SavedRoster::Written { unloadable: 2 }), Vec::new())
     );
-    // Loading the save destroyed both (the Millennium Dawn session).
     for load_hour in [false, true] {
         assert_eq!(
             run(&[(2, 0)], load_hour),
             (Some(SavedRoster::Loaded { unloadable: 2 }), Vec::new())
         );
     }
-    // A frame lacking one of them names it.
     assert_eq!(
         run(&[(1, 0), (2, 1)], false),
         (
@@ -1625,7 +1585,6 @@ fn a_saved_character_no_country_lists_is_compared_as_the_memory_that_wrote_or_lo
             )]
         )
     );
-    // At a load hour a frame holding them holds characters the game destroyed.
     let (roster, differences) = run(&written, true);
     assert_eq!(roster, Some(SavedRoster::Loaded { unloadable: 2 }));
     assert_eq!(

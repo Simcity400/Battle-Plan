@@ -13,7 +13,6 @@ use replay_data::{
 use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
 
-/// Tags held by slots of the same number, each country's raw id its slot, over `first..=last`.
 fn holders(tags: &[(&str, u32)], first: i32, last: i32) -> Holders {
     Holders::new(
         tags.iter().map(|&(tag, slot)| (tag.to_owned(), vec![HolderRun { first, last, holder: Holder::Found { slot, id: slot }, starts_segment: true }])).collect::<BTreeMap<_, _>>(),
@@ -21,9 +20,6 @@ fn holders(tags: &[(&str, u32)], first: i32, last: i32) -> Holders {
     )
 }
 
-/// Country 1 at war with each of `enemies` (raw ids, linked to slots of the same number), every
-/// relation instigated by 1 from hour 90, owned by both ends; 1 the local player and the naming
-/// rule's viewpoint; every country a major with its score read.
 fn at_war(enemies: &[u32]) -> State {
     let mut state = State::default();
     for (ordinal, &enemy) in enemies.iter().enumerate() {
@@ -39,7 +35,6 @@ fn at_war(enemies: &[u32]) -> State {
     state
 }
 
-/// What the viewpoint observes in `state` at `hour`, its groups named Not recorded.
 fn seen(state: &State, held: &Holders, hour: i32) -> Result<(Viewed, Vec<walk::Observed>), String> {
     let names = SlotNames::new(held);
     let link = |raw: u32| Some(raw);
@@ -76,7 +71,6 @@ fn a_wars_losses_sum_each_side_and_count_a_countrys_unknown_losses_once_at_their
     let membership = |a: u32, b: u32, oriented: bool| WarRelationMembership { key: WarRelationKey::new((a, a), (b, b), 90), oriented, first_hour: 100, last_hour: 110 };
     let (ab, ac, ad) = (membership(1, 2, true), membership(1, 3, true), membership(1, 4, false));
     assert_eq!(losses(&[(&ab, Some([10, 20, 5, 1])), (&ac, Some([30, 40, 7, 2]))]), Some([40, 7, 60, 3]));
-    // Not oriented: the key's first country is on the opposing side.
     assert_eq!(losses(&[(&ad, Some([10, 20, 5, 1]))]), Some([20, 1, 10, 5]));
     assert_eq!(losses(&[(&ab, Some([10, 20, 5, 1])), (&ac, None)]), None, "a lifetime not known leaves the war's casualties not known, never a smaller sum");
     assert_eq!(losses(&[]), Some([0; 4]));
@@ -132,8 +126,6 @@ fn a_walk_carries_a_war_through_a_join_and_a_capitulation_and_a_gap_starts_anoth
     assert_eq!(reply.viewpoints.iter().map(|run| (run.tag.as_str(), run.first_hour, run.last_hour)).collect::<Vec<_>>(), vec![("ONE", 100, 104), ("ONE", 107, 108)]);
 }
 
-/// The fixture hour with directional ledgers between ONE and each enemy, and TWO's delivery to
-/// THREE.
 fn participation() -> replay_frame::frame::DecodedFrame {
     let mut frame = recorded(100);
     let ledgers = [(2, 0, 100_000), (2, 1, 100_000), (3, 0, 200_000), (3, 1, 300_000)]
@@ -186,9 +178,6 @@ fn contributions_without_their_histories_name_why_instead_of_counting_zero() {
     assert_eq!(group.reason.as_deref(), Some("no content"));
 }
 
-/// Hours 100..=130: ONE's owned relation 0 holds a first goal each side (its instigator's type
-/// token 7, then 8 from 110) and a later goal of token 9; token 8 reads `puppet`, then `other`
-/// from 120; state 5's owner name is `Alpha`, then `Beta` from 115.
 fn naming_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, Some(1_000));
     let goal = |side: u32, ordinal: u32, token: u32| rows::WarRelationGoalRow { owner: 1, side, ordinal, resolved: 1, type_token: token, state_count: 1, first_state: 5, ..Default::default() };
@@ -243,7 +232,6 @@ fn a_countrys_naming_operands_at_an_hour_are_its_holders_look_with_every_overlor
     let ops = |tag: &str, overlord: Option<u32>| Ok(Operands::from_parts(overlord, [tag, "", "", "", "", ""].map(str::to_owned)));
     let look = |slot: u32, chain: Vec<(u32, Result<Operands, String>)>| Look { slot, id: slot, chain, ..Default::default() };
     let looks = RunLooks {
-        // TWO is a subject of ONE from 110; THREE's holder is slot 9 by its look, not the slot the hour resolves.
         spans: vec![(1, 10, 100, 130), (2, 20, 100, 109), (2, 21, 110, 130), (3, 30, 100, 130)],
         unknown: vec![(131, 140)],
         looks: HashMap::from([

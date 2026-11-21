@@ -25,10 +25,6 @@ use viewer_foundation::{
     map::perspective::Country,
 };
 
-/// The hand-built campaign: countries 1 to 3 (raw reference = slot), the client playing 1.
-/// Combat 100 (1 against 2) from hour 2; combat 101 (3 against 2) from hour 4; 1 and 3 share a
-/// faction from hour 8, which by itself refreshes nothing; a unit joins 101's attackers at hour 10,
-/// which does; combat 100 ends at hour 12 and combat 102 (2 against 1) takes its slot at hour 14.
 fn hour_rows(hour: Hour) -> Vec<TableRows> {
     let links = (1..=3).map(|id| CountryLinkRow { id, canonical_slot: id }).collect();
     let countries = (1..=3).map(|id| CountryRow { id, canonical_slot: id, tag: NAMES[id as usize - 1].to_vec(), ..Default::default() }).collect();
@@ -58,10 +54,8 @@ fn hour_rows(hour: Hour) -> Vec<TableRows> {
     ]
 }
 
-/// The countries' tags, named as the recording's first strings.
 const NAMES: [&[u8]; 3] = [b"C1", b"C2", b"C3"];
 
-/// Tables the folds read that stay empty and whole.
 const EMPTY: [TableId; 9] = [
     TableId::Players,
     TableId::HumanControllers,
@@ -74,7 +68,6 @@ const EMPTY: [TableId; 9] = [
     TableId::TaskForces,
 ];
 
-/// `rows` written over the store's rows of `T`, by key: `held` is each key's slot.
 fn write<T: TableSchema>(store: &mut Store, rows: &[T::Row], held: &mut BTreeMap<u128, u32>) {
     let mut changes = store.table(T::ID.index()).unwrap();
     let keys: Vec<u128> = rows.iter().map(RowCodec::key).collect();
@@ -164,7 +157,6 @@ fn frame(branch: u64, hour: Hour) -> DecodedFrame {
     frame
 }
 
-/// Runs of hours 0 to 19 and 30 to 41: the hours between are a gap.
 const RUNS: [(Hour, u32); 2] = [(0, 20), (30, 12)];
 
 fn covered(history: &History) -> Vec<(u64, String)> {
@@ -224,10 +216,6 @@ fn a_perspective_change_folds_again_for_the_new_viewer_as_today() {
     assert_ne!(covered(&lanes), covered(&recorded), "another viewer's flags are its own fold");
 }
 
-/// Each timeline of a recording loaded back in time folds its own pieces into its branch: the
-/// forked one reads its parent's hours to the fork and its own after, never the parent's past it,
-/// and the parent's timeline its own hours alone. Each timeline's index is its own, shared by
-/// whoever asks for it.
 #[test]
 fn each_timeline_of_a_recording_loaded_back_in_time_folds_only_its_own_pieces() {
     use crate::playhead_host::units::{
@@ -254,9 +242,6 @@ fn each_timeline_of_a_recording_loaded_back_in_time_folds_only_its_own_pieces() 
     assert!(!Arc::ptr_eq(&forked, &parent), "timeline 1 has an index of its own");
 }
 
-/// A recording of format 97 holds each naval commander's inputs as that format wrote them, before
-/// their timed traits: the engaged index's lane reads NavalCombatDetails.sides at the recording's
-/// own format, the timed traits not recorded and every field after them as written.
 #[test]
 fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
     use crate::lane_rows::{Kept, Table};
@@ -270,7 +255,6 @@ fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
     let commander = NavalCommanderInputs { commander: 0x1234_5678_9abc_def0, name: vec![0xff, 0, 8], ..Default::default() };
     let side = NavalCombatSideDetails { commander_inputs: Some(commander.clone()), engaged: 1, units: vec![4, u64::MAX, 2], ..Default::default() };
     let row = NavalCombatDetailsRow { combat: 7, sides: [side.clone(), side], ..Default::default() };
-    // The commander's last four bytes are its empty timed traits, which format 97 did not write.
     let mut needle = Vec::new();
     commander.encode(&mut needle).unwrap();
     let old_commander = &needle[..needle.len() - 4];

@@ -1,4 +1,3 @@
-//! CEquipmentUpgradesInstance, embedded in the equipment variant (`cequipment_variant::UPGRADES`).
 
 use engine_sites::Rva;
 use crate::{
@@ -9,28 +8,18 @@ use crate::{
     walk::Outcome,
 };
 
-/// CEquipmentUpgradesInstance primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0283_f1b0);
-/// CEquipmentUpgradesInstance entry vector data.
 pub const ENTRIES: usize = 0x08;
 
-/// `definition_token` names the upgrade. Its authored name and token come
-/// from the same content key; capture records the token.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub variant: u64,
     pub source_ordinal: u32,
     pub definition_token: i32,
-    /// Authenticated current-visit definition, never a replay identity.
     pub definition_pointer: usize,
     pub level: u8,
 }
 
-/// Reads the full native upgrade identity and byte level. Pointer values and
-/// entry padding never escape into replay fields.
-/// `variants` must be the same complete registry census used for variant
-/// definitions. Missing source tables cannot be represented by a shorter slice.
-/// Destinations grow after bounded payload reads; callers must permit allocation.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -244,7 +233,6 @@ mod tests {
             Outcome::Rows { len: COUNT }
         );
         assert_eq!((rows[64].source_ordinal, rows[64].level), (64, 64));
-        // Header, then entries and definitions per 64-entry batch.
         let counts = (census.calls(), census.spans(), census.bytes());
         assert_eq!(counts, (5, 1 + COUNT * 2, 24 + COUNT * 21));
         for initial in [0, 64] {
@@ -271,7 +259,6 @@ mod tests {
     #[test]
     fn upgrade_resolves_definition_and_native_byte_without_padding_or_name() {
         let mut bytes = fixture();
-        // The name header is content: a corrupt one no longer denies the row.
         bytes[0x218..0x238].fill(0xff);
         let mut rows = vec![Row::default(); 1];
         assert_eq!(

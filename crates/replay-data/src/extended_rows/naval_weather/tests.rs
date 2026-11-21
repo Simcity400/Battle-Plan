@@ -232,14 +232,12 @@ fn updated_clocks_store_nothing_that_changes_with_the_hour() {
         ..held.clone()
     };
     assert_eq!(updated.clock.state(4), Ok(ClockState::Updated));
-    // Resuming the update clears the held words and sets the source.
     let delta = updated.delta(Some(&held)).unwrap().unwrap();
     assert_eq!(delta.mask, (1 << 6) | (1 << 7) | (1 << 9));
     assert_eq!(
         WeatherProvinceRow::apply_delta(&delta, Some(held)).unwrap(),
         updated
     );
-    // The next updated hour is the same row.
     assert_eq!(updated.delta(Some(&updated)).unwrap(), None);
     let mut bytes = Vec::new();
     updated.encode_fields(&mut bytes).unwrap();
@@ -259,8 +257,6 @@ fn malformed_clocks_and_an_updated_slot_zero_are_refused() {
     assert!(slot_zero.clock.state(0).is_err());
     assert_eq!(slot_zero.clock.state(1), Ok(ClockState::Updated));
     assert_eq!(WeatherProvinceRow::default().clock, DayNightClock::UPDATED);
-    // Source words other than updated (0) and held (1), and updated rows
-    // carrying clock words, are not canonical.
     for (source, hour, night) in [(2, 0, 0), (0, 1, 0), (0, 0, 1)] {
         let clock = DayNightClock {
             local_hour: Recorded::Value(hour),
@@ -302,7 +298,6 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     };
     let mut bytes = Vec::new();
     row.encode_fields(&mut bytes).unwrap();
-    // The format-101 layout is the current one's first nine fields.
     let mut scan = Decoder::new(&bytes);
     for kind in &WeatherProvinceRow::SCHEMA[..9] {
         kind.decode(&mut scan).unwrap();
@@ -313,7 +308,6 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
     assert_eq!(decoded.not_recorded_fields(), 0b1111111 << 9);
-    // Its temperature is the one the record held at the row's hour.
     assert_eq!(
         decoded.temperature.record(),
         Ok(TemperatureRecord::AtHour(0))
@@ -442,7 +436,6 @@ fn temperature_words_store_staged_offsets_and_refuse_partial_records() {
     };
     let anchored = ProvinceTemperature::anchored(state);
     assert_eq!(anchored.record(), Ok(TemperatureRecord::Anchored(state)));
-    // A committed record's staged words equal its committed ones: zero offsets.
     let row = WeatherProvinceRow {
         temperature: anchored,
         ..Default::default()
@@ -491,7 +484,6 @@ fn the_temperature_pass_rides_slot_zero_with_its_witness_last_before_the_modifie
     };
     let mut fields = Vec::new();
     row.encode_fields(&mut fields).unwrap();
-    // The pass ends with its witness; the province's modifier entries follow it.
     let mut tail = Vec::new();
     crate::rows::NativeValue::field(&row.modifiers)
         .encode(&mut tail)
@@ -507,7 +499,6 @@ fn the_temperature_pass_rides_slot_zero_with_its_witness_last_before_the_modifie
         decoded.temperature_pass,
         Recorded::Value(Some(pass.clone()))
     );
-    // Older formats hold a checksum in the same bytes: the pass decodes whole, with no witness.
     let mut older = Decoder::new(&fields);
     older.format = crate::rows::compatibility::PROVINCE_WITNESS_FORMAT - 1;
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut older).unwrap();
@@ -519,7 +510,6 @@ fn the_temperature_pass_rides_slot_zero_with_its_witness_last_before_the_modifie
         }))
     );
     assert_eq!(decoded.modifiers, row.modifiers);
-    // No writer stores a pass without its witness.
     let unwitnessed = WeatherProvinceRow {
         temperature_pass: Recorded::Value(Some(TemperaturePass::default())),
         ..Default::default()
@@ -527,7 +517,6 @@ fn the_temperature_pass_rides_slot_zero_with_its_witness_last_before_the_modifie
     assert!(unwitnessed.encode_fields(&mut Vec::new()).is_err());
 }
 
-/// A checkpoint keeps an older pass's absent witness, so its temperatures still refuse by name.
 #[test]
 fn checkpoints_keep_an_older_pass_without_its_witness() {
     use crate::checkpoint::values::CheckpointValue;
@@ -561,7 +550,6 @@ fn checkpoints_keep_an_older_pass_without_its_witness() {
     assert!(reason.contains("predates the province temperature witness"), "{reason}");
 }
 
-/// A province's accumulator round-trips every entry and answers a key by search.
 #[test]
 fn a_province_accumulator_keeps_every_entry() {
     let modifiers = ProvinceWeatherModifiers {
@@ -594,8 +582,6 @@ fn a_province_accumulator_keeps_every_entry() {
     assert_eq!(modifiers.get(0x50), None);
 }
 
-/// A province's static modifier list round-trips in the game's order with its days; an
-/// empty list and a refused read stay distinct.
 #[test]
 fn a_province_static_modifier_list_keeps_order_days_and_refusal() {
     let list = ProvinceStaticModifiers {
@@ -630,9 +616,6 @@ fn a_province_static_modifier_list_keeps_order_days_and_refusal() {
     }
 }
 
-/// An accumulator holds each key once, positive and ascending: a duplicate key, whose
-/// wrong value a map would silently drop, an unordered key a search would miss and a
-/// zero key are refused when the row is checked, encoded or diffed.
 #[test]
 fn a_province_accumulator_with_duplicate_unordered_or_zero_keys_is_refused() {
     let entry = |key, value| ProvinceModifierEntry { key, value };

@@ -1,10 +1,7 @@
-//! Stable occurrence labels from the encoder's complete baseline, not values.
-//! No native reads or process-global identity cache are involved.
 use replay_data::rows::CombatLogObserverRow;
 
 type Occurrence = (u64, bool, u8, u64, u64);
 
-/// Sort scratch its owner keeps across hours, so a steady hour allocates only its rows.
 #[derive(Default)]
 pub struct Scratch {
     before: Vec<(Occurrence, u64)>,
@@ -27,7 +24,6 @@ pub fn project(
     project_with(current, previous, &mut Scratch::default())
 }
 
-/// Sorts move small (occurrence, label) and (occurrence, index) pairs, never whole rows.
 pub fn project_with(
     current: &[CombatLogObserverRow],
     previous: &[CombatLogObserverRow],
@@ -59,9 +55,6 @@ pub fn project_with(
     placed.clear();
     engine_allocation::reserve(placed, current.len())
         .map_err(|_| "combat log observer row allocation failed")?;
-    // Labels are scoped by full combat/side in the row key. A table-wide high
-    // water mark makes new labels independent of which collection grew. No
-    // packing steals bits from either native array index or a full handle.
     let mut next = previous
         .iter()
         .map(|row| row.ordinal)
@@ -70,7 +63,6 @@ pub fn project_with(
             last.checked_add(1)
                 .ok_or("combat log observer label overflow")
         })?;
-    // New occurrences take labels in occurrence order; both lists are in it.
     let mut held = before.iter().peekable();
     for (rank, &(key, index)) in order.iter().enumerate() {
         while held.next_if(|&&(earlier, _)| earlier < key).is_some() {}
@@ -86,7 +78,6 @@ pub fn project_with(
         };
         placed.push((rows[index].key(), rank, index));
     }
-    // Key order, occurrence order among equal keys, then moved into place by cycles.
     placed.sort_unstable_by_key(|&(key, rank, _)| (key, rank));
     for start in 0..rows.len() {
         if placed[start].2 == usize::MAX {

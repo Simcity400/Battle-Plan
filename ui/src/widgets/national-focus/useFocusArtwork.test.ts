@@ -16,7 +16,6 @@ function focusHooks() {
   const same = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   return {
     begin() { cursor = 0; },
-    // As React's memo for a fake that renders every component each time: the component itself.
     memo<T>(component: T) { return component; },
     useState(initial?: unknown) {
       const index = cursor++;
@@ -111,7 +110,6 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     assert.ok(failedTitle.titleFailure instanceof RefusedError);
     assert.ok(result.warnings.includes('Synthetic description refusal'));
     assert.equal(failedTitle.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', 'a failed title retains its successful image');
-    // A content revision explicitly retries the refused title and clears old artwork.
     contentRevision(client).observe({ game: 'retry-game', user: 'retry-user', contentReady: true });
     render(); hooks.commit(); await settle();
     calls.splice(0, 2);
@@ -293,7 +291,6 @@ test('a continuous focus is read from its own database, never from a national fo
       } }) });
     }) } as unknown as DashboardClient;
     const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
-    // One id names a completed national focus and the active continuous focus at the same hour.
     const wanted = [{ tag: 'shared', hour: 10 }];
     const staticText: readonly Artwork[] = [{ token: 'shared', name: 'Static national title', description: null, baseDurationDays: 10, icon: null }];
     const noDetails: readonly NameAt[] = [];
@@ -447,7 +444,6 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusShown.content;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
-    // As the real hook: an answered description joins the row's read; a released or pending one is absent.
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted) => {
       const fixture = globalThis.__focusShown; fixture.detailsWanted = detailsWanted;
       return { warnings: [], details: fixture.details, read: new Map(wanted.map(({ tag, hour }) => {
@@ -485,7 +481,6 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     const render = () => { hooks.begin(); const tree = elements(Widget(props)); hooks.commit(); return tree; };
     const paragraphs = (tree: Element[]) => tree.filter(element => element.type === 'p').map(element => element.props.children);
     const toggle = (open: boolean) => { render().find(element => element.props.className === 'focus-details')!.props.onToggle!({ currentTarget: { open } }); };
-    // The store releases a closed row's reading; the fixture mirrors that by forgetting its answer.
     const close = () => { toggle(false); fixture.details.delete(key); };
 
     toggle(true);
@@ -521,7 +516,6 @@ test('repeated completions of one focus read at one hour open and close independ
   host.__focusRepeated = fixture;
   const replacements: Record<string, string> = {
     '/components/VirtualList.tsx': 'export const VirtualList = ({ items, rowProps, children }) => items.map((item, index) => ({ type: "li", props: { ...rowProps?.(item, index), children: children(item, index) } }));',
-    // Completions the recording began with have no dates: both are read at the segment's first hour.
     '/dashboard/products.ts': `export const useProduct = () => ({ data: {
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'repeatable', completedByHour: null }, { ordinal: 1, token: 'repeatable', completedByHour: null }] } }], progress: [] },

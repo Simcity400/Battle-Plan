@@ -1,6 +1,3 @@
-//! The window's own hovers, as its tooltip builder makes them from recorded rows. A hover whose
-//! input the recording lacks is withheld by name so no authored seed stands in. The state name has a hover only in the game's debug mode, so its authored one
-//! stands; so do the mud and snow icons', which the game lets an authored tooltip replace.
 use super::{loc, paths_named, province::Facts};
 use crate::binding::Bindings;
 use crate::modifier_text::{Block, Definitions};
@@ -19,18 +16,13 @@ const WITHHELD: &[(&str, &str)] = &[
     ("shared_slot_count", "state view shared slots hover: its modifier breakdown is not recorded"),
 ];
 
-/// What the game puts between the names its province weather record joins.
 const NAME_SEPARATOR: &str = " & ";
 
-/// The attrition modifiers whose positive value adds the peacetime note.
 const ATTRITION: [u32; 5] = {
     use engine_executable::modifier_keys::*;
     [WINTER_ATTRITION, WINTER_ATTRITION_FACTOR, HEAT_ATTRITION, HEAT_ATTRITION_FACTOR, ATTRITION]
 };
 
-/// The province weather record's display name, as its modifier rebuild joins it: the temperature
-/// range's static modifier's name, then each present static modifier's, the separator coming
-/// only after a name that left the text non-empty.
 fn joined_names(names: impl IntoIterator<Item = String>) -> String {
     let mut joined = String::new();
     for name in names {
@@ -42,9 +34,6 @@ fn joined_names(names: impl IntoIterator<Item = String>) -> String {
     joined
 }
 
-/// The names the province weather record joins: its temperature range's static modifier (none
-/// outside every range, empty for a modifier the content does not define), then its present
-/// static modifiers in list order, each localised from its script name.
 fn weather_names(content: &super::Content, frame: &DecodedFrame, rows: &[replay_data::rows::WeatherProvinceRow], row: &replay_data::rows::WeatherProvinceRow) -> Result<Vec<String>, String> {
     let ranges = content.assets.temperature.as_ref().map_err(Clone::clone)?;
     let temperature = super::hour_temperature(content, frame, rows, row.id)?;
@@ -73,7 +62,6 @@ fn modifier_name(entry: &replay_data::rows::ProvinceStaticModifier) -> Result<&s
     std::str::from_utf8(&entry.name).map_err(|_| format!("static modifier {} is not named in UTF-8", String::from_utf8_lossy(&entry.name)))
 }
 
-/// Whether a block adds attrition, which the game notes applies only while its controller is at war.
 fn adds_attrition(block: &Block, definitions: &Definitions<'_>) -> Result<bool, String> {
     for key in ATTRITION {
         if block.value(definitions, key).map_err(|e| e.to_string())? > 0 {
@@ -83,12 +71,10 @@ fn adds_attrition(block: &Block, definitions: &Definitions<'_>) -> Result<bool, 
     Ok(false)
 }
 
-/// The peacetime attrition note, in the game's colour.
 fn peacetime(content: &super::Content) -> Result<String, String> {
     Ok(format!("\u{11}g{}\u{11}!", loc(content, "WEATHER_PEACETIME", &[])?))
 }
 
-/// Tops a non-empty text up to `count` trailing newlines.
 fn trailing_newlines(text: &mut String, count: usize) {
     if text.is_empty() {
         return;
@@ -101,9 +87,6 @@ fn definitions<'f>(content: &super::Content, frame: &'f DecodedFrame) -> Result<
     Definitions::read(frame, &content.modifier_names).map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
-/// The temperature icon's hover: the weather record's display name, and its modifier
-/// accumulator delayed, with the peacetime note when it adds attrition. `None` without a weather
-/// record, where the game builds none; empty for an accumulator without an eligible entry.
 fn temperature(content: &super::Content, frame: &DecodedFrame, province: u32) -> Result<Option<(String, String)>, String> {
     let rows = frame.complete::<tables::WeatherProvinces>().map_err(|e| e.to_string())?;
     let Ok(at) = rows.binary_search_by_key(&province, |row| row.id) else {
@@ -132,8 +115,6 @@ fn temperature(content: &super::Content, frame: &DecodedFrame, province: u32) ->
     Ok(Some((main, delayed)))
 }
 
-/// A custom province icon's hover: its static modifier's name, the days it has left while it
-/// expires, and its own modifiers; the peacetime note delayed when they add attrition.
 fn custom_icon(content: &super::Content, definitions: &Definitions<'_>, name: &str, days: i32) -> Result<(String, String), String> {
     let mut main = loc(content, "HEADER", &[("KEY", Argument::Text(&loc(content, name, &[])?))])?;
     if days > 0 {
@@ -156,8 +137,6 @@ fn custom_icon(content: &super::Content, definitions: &Definitions<'_>, name: &s
     Ok((main, delayed))
 }
 
-/// The hovers of the custom icons the province's present static modifiers show. Where the list
-/// does not read, the icons themselves are withheld.
 fn custom_icons(content: &super::Content, frame: &DecodedFrame, root: &native::Element, out: &mut Bindings, province: u32) {
     let icons = super::province::custom_icons(root);
     let Ok(rows) = frame.complete::<tables::WeatherProvinces>() else { return };
@@ -180,12 +159,10 @@ fn custom_icons(content: &super::Content, frame: &DecodedFrame, root: &native::E
     }
 }
 
-/// The weather flags in the order the game names them and sums their static modifiers.
 fn weather_flags(row: &replay_data::rows::WeatherRegionRow) -> [u8; 6] {
     [row.light_rain, row.heavy_rain, row.snow, row.blizzard, row.sandstorm, row.arctic_water]
 }
 
-/// The names of the region's weather, joined, or the no-weather name when none is set.
 fn region_weather_name(content: &super::Content, flags: [u8; 6]) -> Result<String, String> {
     let mut names = Vec::new();
     for (set, key) in flags.into_iter().zip(crate::naval_environment::WEATHER_MODIFIERS) {
@@ -199,8 +176,6 @@ fn region_weather_name(content: &super::Content, flags: [u8; 6]) -> Result<Strin
     Ok(names.join(", "))
 }
 
-/// Adds `other` to the sum. A block with custom tooltip keys or a child is refused, as the order
-/// the game's merged key set lists them in is not ported.
 pub(super) fn add_block(sum: &mut crate::modifier_text::Block, other: crate::modifier_text::Block, name: &str) -> Result<(), String> {
     if !other.custom_tooltips.is_empty() || other.added {
         return Err(format!("static modifier {name} holds custom tooltips or a child, whose merged order is not ported"));
@@ -213,10 +188,6 @@ pub(super) fn add_block(sum: &mut crate::modifier_text::Block, other: crate::mod
     Ok(())
 }
 
-/// The region weather icon's hover: its weather's names, and the region's weather modifiers in
-/// the delayed text, summed as the game rebuilds them from the weather flags' static modifiers
-/// and the region's active custom modifiers. `None` without a region weather record, where the
-/// game builds none.
 fn region_weather(content: &super::Content, frame: &DecodedFrame, province: u32) -> Result<Option<(String, String)>, String> {
     let region = *content.region_of.get(&province).ok_or_else(|| format!("province {province} has no strategic region"))?;
     let rows = frame.complete::<tables::WeatherRegions>().map_err(|e| e.to_string())?;
@@ -264,8 +235,6 @@ fn region_weather(content: &super::Content, frame: &DecodedFrame, province: u32)
     Ok(Some((main, delayed)))
 }
 
-/// The province line's hover: its controller, and whether it holds the province against the
-/// state's owner.
 fn province(content: &super::Content, frame: &DecodedFrame, facts: &Facts) -> Result<String, String> {
     let controller = facts.slot(facts.province.controller)?;
     let key = if facts.slot(facts.state.owner)? == controller { "STATE_PROVINCE_DESC" } else { "STATE_PROVINCE_OCCUPIED_DESC" };
@@ -273,8 +242,6 @@ fn province(content: &super::Content, frame: &DecodedFrame, facts: &Facts) -> Re
     loc(content, key, &[("CONTROLLER", Argument::Text(&names.name(controller)?))])
 }
 
-/// The energy text's hover: no intel without full visibility of the controller, else its factory
-/// energy usage, which the recording does not hold.
 fn energy(content: &super::Content, sees: Result<bool, SharingUnknown>) -> Result<String, String> {
     match sees {
         Ok(false) => loc(content, "PRODUCTION_NO_INTEL_ON_POWER", &[]),
@@ -283,7 +250,6 @@ fn energy(content: &super::Content, sees: Result<bool, SharingUnknown>) -> Resul
     }
 }
 
-/// The ground snow heading's key for the province's effective snow, if it is in either range.
 fn snow_key(snow: i64, permanent: i64, maximum: i64, [medium, high]: [[i64; 2]; 2]) -> Option<&'static str> {
     let snow = snow.wrapping_add(permanent).min(maximum);
     if medium[0] <= snow && snow < medium[1] {
@@ -295,8 +261,6 @@ fn snow_key(snow: i64, permanent: i64, maximum: i64, [medium, high]: [[i64; 2]; 
     }
 }
 
-/// A weather icon's hover: its heading, and the province's weather modifiers in the delayed text.
-/// `None` when the province has no weather record, where the game builds none.
 fn weather(content: &super::Content, frame: &DecodedFrame, province: u32, heading: impl FnOnce(&replay_data::rows::WeatherProvinceRow) -> Result<Option<&'static str>, String>) -> Result<Option<(String, String)>, String> {
     let rows = frame.complete::<tables::WeatherProvinces>().map_err(|e| e.to_string())?;
     let Ok(at) = rows.binary_search_by_key(&province, |row| row.id) else {
@@ -367,7 +331,6 @@ pub(super) fn bind(
     withhold(out, root);
 }
 
-/// A hover the game builds and keeps; `None` where it builds none and an authored one stands.
 fn owned(out: &mut Bindings, root: &native::Element, name: &str, text: &Result<Option<(String, String)>, String>) {
     for path in paths_named(root, name) {
         match text {
@@ -381,7 +344,6 @@ fn owned(out: &mut Bindings, root: &native::Element, name: &str, text: &Result<O
     }
 }
 
-/// Withholds every hover the game builds that is not bound, each counted once.
 pub(super) fn withhold(out: &mut Bindings, root: &native::Element) {
     for (name, why) in WITHHELD {
         let paths = paths_named(root, name);
@@ -404,8 +366,6 @@ fn hover(out: &mut Bindings, root: &native::Element, name: &str, text: Result<St
     }
 }
 
-/// A hover the game builds and then lets an authored tooltip replace, as its builder reports it
-/// unhandled: the text stands unless the content authors one.
 fn replaceable(out: &mut Bindings, root: &native::Element, name: &str, text: Result<Option<(String, String)>, String>) {
     for path in paths_named(root, name) {
         match &text {
@@ -438,7 +398,6 @@ mod tests {
         let icon = &out.values["moved/shared_slot_count"];
         assert!(icon.hover_owned && icon.tooltip.is_none());
         assert!(out.values["manpower"].hover_owned);
-        // The state name keeps its authored hover, as the game builds one only in debug mode.
         assert!(!out.values.contains_key("state_name"));
         assert_eq!(out.refused().len(), 2, "{:?}", out.refused());
     }
@@ -460,9 +419,7 @@ mod tests {
         let names = |names: &[&str]| joined_names(names.iter().map(|name| (*name).to_owned()));
         assert_eq!(names(&[]), "");
         assert_eq!(names(&["Very cold", "Flooded"]), "Very cold & Flooded");
-        // No temperature range name: the first static modifier opens the text.
         assert_eq!(names(&["", "Flooded", "Mined"]), "Flooded & Mined");
-        // An empty name after text still takes its separator.
         assert_eq!(names(&["Hot", "", "Mined"]), "Hot &  & Mined");
     }
 
@@ -483,7 +440,6 @@ mod tests {
     fn attrition_counts_through_the_getter() {
         use engine_executable::modifier_keys::{ATTRITION as PLAIN, HEAT_ATTRITION, WINTER_ATTRITION};
         let row = |index, flags, feature_selector| replay_data::rows::ModifierDefinitionRow { index, token: index, flags, feature_selector, ..Default::default() };
-        // Heat attrition clamps to [0, 1]; winter attrition is gated by a feature the mask lacks.
         let rows = [row(PLAIN, 0, 0), row(WINTER_ATTRITION, 0, 2), row(HEAT_ATTRITION, 1 << 4, 0)];
         let definitions = Definitions::from_parts(&rows, &[], Some(1));
         let block = |values: &[(u32, i64)]| Block { values: values.iter().copied().collect(), ..Block::default() };

@@ -1,20 +1,3 @@
-//! One country identity's equipment losses, from the equipment-loss writer's tables: a tree of
-//! cause, equipment type and exact design, each leaf a running total.
-//!
-//! - `equipment-losses` answers a window: each leaf's total at the chart's bins (the declared
-//!   `equipment-losses` series' summaries) and exactly at the hours asked, the sunk ships the
-//!   `ship-losses` log listed, and the coverage the writer recorded (the drain's reasons, the
-//!   records not read, ended lend-lease exchanges, Combat Log land coverage). It never names the
-//!   playhead: a followed view asks it for the whole branch and paints the head's values from
-//!   `equipment-loss-head`.
-//! - `equipment-loss-head` (rows at an hour) names each leaf's total as a live cell, so the
-//!   head's totals are painted from followed cells, never pushed.
-//!
-//! Causes and land modes are main's: destruction mode takes every drain cause, ships, convoys and
-//! lend-lease; Combat Log mode takes the log's reasons and recovered equipment, the air causes,
-//! and the two mixed causes where the recorded content proves a design land or air (stockpile
-//! fractions: air or naval). A source no row names holds no leaves; a cause the content refuses
-//! (the Combat Log's retention) is unknown by name.
 
 pub mod content;
 mod coverage;
@@ -48,9 +31,7 @@ use ts_rs::TS;
 
 pub use coverage::{Coverage, CoverageSpan, DestructionCoverageSpan, UnknownReason, UnknownSpan};
 
-/// Units per equipment of every amount (fixed5).
 pub const AMOUNT_SCALE: i64 = 100_000;
-/// The declared series the chart reads.
 pub const SERIES: &str = "equipment-losses";
 const TOTAL: usize = 0;
 
@@ -63,7 +44,6 @@ pub enum LandSource {
     CombatLog,
 }
 
-/// A country identity (canonical slot and raw id) the reply is about.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -80,26 +60,23 @@ pub struct LossesParams {
     pub country: Country,
     #[serde(default)]
     pub land_source: LandSource,
-    /// The identity; the country's holder at `to` when none.
+    #[doc = " The identity; the country's holder at `to` when none."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
     pub identity: Option<LossCountry>,
     pub from: i32,
     pub to: i32,
     pub width: u32,
-    /// Hours whose totals are read exactly.
+    #[doc = " Hours whose totals are read exactly."]
     #[serde(default)]
     pub reads: Vec<i32>,
 }
 
-/// Where a cause's amounts come from.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", tag = "kind", content = "reason")]
 pub enum LossSource {
-    /// A Combat Log reason (0 to 3) of land equipment.
     CombatLog(u8),
-    /// Land equipment recovered after combat.
     Recovered,
     SunkShips,
     SunkConvoys,
@@ -108,7 +85,6 @@ pub enum LossSource {
     Destruction(#[cfg_attr(any(test, feature = "export-types"), ts(type = "EquipmentDestructionCause"))] Cause),
 }
 
-/// A destruction cause as replies name it: the recording's own name of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cause(pub EquipmentDestructionCause);
 
@@ -136,7 +112,6 @@ fn destruction_cause_typescript() -> String {
 }
 
 impl LossSource {
-    /// The source a totals row's `source` code names; none for a code no source holds.
     pub fn of(code: u8) -> Option<Self> {
         match code {
             0..=3 => Some(Self::CombatLog(code)),
@@ -164,7 +139,6 @@ impl LossSource {
         matches!(self, Self::Destruction(Cause(EquipmentDestructionCause::Unknown | EquipmentDestructionCause::ScriptedStockpileFraction)))
     }
 
-    /// The causes a land mode shows, in order.
     pub fn shown(land: LandSource) -> Vec<Self> {
         let mut sources: BTreeSet<Self> = [Self::SunkShips, Self::SunkConvoys, Self::LendLeaseSunk, Self::LendLeaseSent].into();
         let combat_log = land == LandSource::CombatLog;
@@ -177,7 +151,6 @@ impl LossSource {
     }
 }
 
-/// A cause's writer domain; mixed or unrecognised callers are Other.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -188,8 +161,6 @@ pub enum LossDomain {
     Other,
 }
 
-/// A cause's localisation: the key, its text without colour codes (may hold the game's `$NAME$`
-/// placeholders), and the text when it needs no substitution.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -206,14 +177,14 @@ pub struct LossCause {
     pub source: LossSource,
     pub domain: LossDomain,
     pub name: LossName,
-    /// The Combat Log's attrition column, for reasons 1 to 3.
+    #[doc = " The Combat Log's attrition column, for reasons 1 to 3."]
     pub group: Option<LossName>,
-    /// False for recovered equipment and lend-lease sent.
+    #[doc = " False for recovered equipment and lend-lease sent."]
     pub loss: bool,
-    /// Why the amounts are unknown throughout; then no leaves.
+    #[doc = " Why the amounts are unknown throughout; then no leaves."]
     pub unknown: Option<String>,
     pub unknown_spans: Vec<UnknownSpan>,
-    /// Sunk ships' leaves are made from [`LossesReply::ships`] at the hour shown.
+    #[doc = " Sunk ships' leaves are made from [`LossesReply::ships`] at the hour shown."]
     pub leaves: Vec<LossLeaf>,
 }
 
@@ -221,11 +192,11 @@ pub struct LossCause {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossLeaf {
-    /// Index into [`LossesReply::designs`]; null when the record names none.
+    #[doc = " Index into [`LossesReply::designs`]; null when the record names none."]
     pub design: Option<u32>,
-    /// The totals row's key, the live cell `equipment-loss-head` names it by.
+    #[doc = " The totals row's key, the live cell `equipment-loss-head` names it by."]
     pub key: String,
-    /// The running total at the end of each bin it changed in, and at each exact hour.
+    #[doc = " The running total at the end of each bin it changed in, and at each exact hour."]
     pub points: Vec<LossPoint>,
     pub lower_bound_from: Option<i32>,
 }
@@ -235,7 +206,7 @@ pub struct LossLeaf {
 #[serde(rename_all = "camelCase")]
 pub struct LossPoint {
     pub hour: i32,
-    /// Exact decimal, in [`LossesReply::amount_scale`] units.
+    #[doc = " Exact decimal, in [`LossesReply::amount_scale`] units."]
     pub total_raw: String,
 }
 
@@ -259,9 +230,6 @@ pub struct LossDesign {
     pub archetype_name: Option<String>,
 }
 
-/// A sunk ship as the `ship-losses` log listed it: the read that listed it so often first, its
-/// sinking hour and design. The most `count` of a signature over the reads up to an hour is how
-/// many such ships the country lost.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -285,17 +253,17 @@ pub struct LossesReply {
     pub causes: Vec<LossCause>,
     pub designs: Vec<LossDesign>,
     pub ships: Vec<ShipListing>,
-    /// Combat Log land coverage; empty in destruction mode.
+    #[doc = " Combat Log land coverage; empty in destruction mode."]
     pub coverage: Vec<CoverageSpan>,
     pub destruction_coverage: Vec<DestructionCoverageSpan>,
     pub destruction_counted_from: Option<i32>,
     pub retained_months: Option<i32>,
-    /// The window and bins the points were read on, and the hours read exactly.
+    #[doc = " The window and bins the points were read on, and the hours read exactly."]
     pub from: i32,
     pub to: i32,
     pub width: u32,
     pub exact_hours: Vec<i32>,
-    /// The first hour of each stretch after hours the timeline does not hold, where totals restart.
+    #[doc = " The first hour of each stretch after hours the timeline does not hold, where totals restart."]
     pub restarts: Vec<i32>,
     pub warnings: Vec<String>,
 }
@@ -306,7 +274,6 @@ impl ReplyWarnings for LossesReply {
     }
 }
 
-/// The totals table's keys of one identity: every source and design.
 pub fn identity_range(slot: u32, id: u32) -> (u128, u128) {
     let low = u128::from(slot) << 73 | u128::from(id) << 41;
     (low, low | ((1u128 << 41) - 1))
@@ -318,7 +285,6 @@ fn coverage_key(slot: u32, id: u32) -> u128 {
 
 const RUN_KEY: u128 = (EquipmentLossCoverageRow::RUN as u128) << 32 | EquipmentLossCoverageRow::RUN as u128;
 
-/// A leaf's source and design from its totals key.
 pub fn leaf_of(key: u128) -> Option<(LossSource, Option<u32>)> {
     let source = LossSource::of((key >> 33) as u8)?;
     let variant = ((key >> 32) & 1 == 1).then_some(key as u32);
@@ -332,8 +298,6 @@ fn known<T: Copy>(value: Recorded<T>) -> Option<T> {
     }
 }
 
-/// The identity the reply reads: the one asked, when it held the tag in the window, else the
-/// tag's holder at `to`.
 fn identity(query: &Query<'_>, params: &LossesParams) -> io::Result<LossCountry> {
     let runs = query.holders.within(&params.country, params.from, params.to);
     if let Some(asked) = params.identity {
@@ -353,15 +317,12 @@ fn identity(query: &Query<'_>, params: &LossesParams) -> io::Result<LossCountry>
     }
 }
 
-/// One leaf's totals across the window, as read.
 #[derive(Default)]
 struct Leaf {
     points: BTreeMap<i32, Option<i64>>,
     incomplete_from: Option<i32>,
 }
 
-/// Bin ends, then exact reads over them: a bin's first value at its first hour and its last at
-/// its last hour, where they differ from the value before; a value not recorded ends nothing.
 pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i64, from: i32, to: i32) -> Vec<(i32, i64)> {
     let mut out: Vec<(i32, i64)> = Vec::new();
     for (at, bin) in bins.iter().enumerate() {
@@ -384,12 +345,8 @@ fn ship_log() -> io::Result<&'static dashboard_declare::Log> {
     dashboard_declare::LOGS.iter().find(|log| log.table == TableId::ShipLosses).ok_or_else(|| io::Error::other("The ship-losses log is not declared"))
 }
 
-/// A sunk ship's listing as read: its signature, the read's hour, its sinking hour, design handle
-/// and count.
 type Listed = (String, i32, i32, u64, u32);
 
-/// The ships the `ship-losses` log listed for `who` from `first` through `last` of run `run`: only
-/// the six-hour buckets its slot's counts name are read.
 fn ships(reader: &dashboard_query::log::Reader<'_, '_>, run: u32, who: LossCountry, first: i32, last: i32) -> io::Result<Vec<Listed>> {
     use dashboard_query::log::{Cell as Logged, Pattern, facet_shift};
     let six = replay_columnar::summary::bucket_hours(0);
@@ -421,19 +378,15 @@ fn ships(reader: &dashboard_query::log::Reader<'_, '_>, run: u32, who: LossCount
     Ok(out)
 }
 
-/// A totals row's key.
 fn total_key(row: &EquipmentLossTotalRow) -> u128 {
     identity_range(row.slot, row.country).0 | u128::from(row.source) << 33 | row.variant.map_or(0, |variant| 1 << 32 | u128::from(variant))
 }
 
-/// The identity's totals at `hour`, by key, each not recorded or its value; none when the table
-/// is not complete at the hour.
 fn totals_at(query: &Query<'_>, hour: i32, (low, high): (u128, u128)) -> io::Result<Option<BTreeMap<u128, (Option<i64>, Option<i32>)>>> {
     let frame = at_hour::frame(query, hour, &[Read { table: TableId::EquipmentLossTotals, keys: Keys::Range(low, high) }], "Equipment losses")?;
     Ok(frame.complete::<tables::EquipmentLossTotals>().ok().map(|rows| rows.iter().map(|row| (total_key(row), (known(row.total), row.incomplete_from))).collect()))
 }
 
-/// The window's reply.
 pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancelled: &AtomicBool) -> io::Result<LossesReply> {
     let who = identity(query, params)?;
     let (from, to) = (params.from.max(query.timeline.first), params.to.min(query.timeline.last));
@@ -455,8 +408,6 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
     reads.dedup();
     let (lowest, highest) = (reads.first().map_or(from, |&first| first.min(from)), reads.last().map_or(to, |&last| last.max(to)));
     let (level, bin_hours) = dashboard_query::series::grid(i64::from(to) - i64::from(from) + 1, params.width.max(1));
-    // Ships from every listing of the timeline, each dated at its sinking; coverage from the run's start, so a span or a
-    // reason begun before the window still holds in it.
     for stretch in query.timeline.within(query.timeline.first, query.timeline.last) {
         crate::metadata::check_cancel(cancelled)?;
         listed.extend(ships(&reader, stretch.run, who, stretch.first, stretch.last)?);
@@ -685,8 +636,6 @@ impl Product for EquipmentLosses {
     }
 }
 
-/// `equipment-loss-head`'s parameters: the tag, and the identity the widget shows when it chose
-/// one.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -698,7 +647,6 @@ pub struct LossHeadParams {
     pub identity: Option<LossCountry>,
 }
 
-/// The leaves the identity holds at the hour; each one's total is the live cell `(key, "total")`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]

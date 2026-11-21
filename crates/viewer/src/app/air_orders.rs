@@ -1,5 +1,3 @@
-//! Right-clicks with the viewer's air wings selected, answered as the game answers an observer:
-//! the orders' sounds and the attached-wing confirmation, never an order.
 
 use super::{Document, MapHit, Viewer};
 use eframe::egui;
@@ -11,18 +9,13 @@ use viewer_counters::map::{
 };
 use viewer_foundation::map::native_gui::pointer::Input;
 
-/// The map icon a right button change came over, named as the frame on screen showed it, so a
-/// draw between the press, the release and its answer renames nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Under {
-    /// An air base button: its province and the kind of base it shows.
     AirBase { province: u32, kind: i32 },
-    /// Any other icon.
     Icon,
 }
 
 impl Under {
-    /// `hit`, resolved against `report`, the counters' report it was resolved in.
     pub(super) fn of(hit: MapHit, report: &CounterReport) -> Self {
         match hit {
             MapHit::Base(index) => report.air_base_hits.get(&index).map_or(Self::Icon, |&(province, kind)| Self::AirBase { province, kind }),
@@ -33,19 +26,15 @@ impl Under {
 
 #[derive(Default)]
 pub(super) struct AirOrders {
-    /// What a held right press went down on, on the map and off every window.
     pressed: Option<Option<Under>>,
     confirmation: Confirmation,
     open: bool,
-    /// The open pop-up's controls as last drawn.
     controls: Vec<([f32; 4], Control)>,
-    /// What the last order could not decide, and what the pop-up refused, by name.
     refused: BTreeMap<String, usize>,
     drawn_refused: BTreeMap<String, usize>,
 }
 
 impl AirOrders {
-    /// Whether the open pop-up covers `at`.
     pub(super) fn over(&self, at: [f32; 2]) -> bool {
         self.open && self.controls.iter().any(|(rect, _)| viewer_foundation::map::gui_resources::contains(*rect, at))
     }
@@ -54,8 +43,6 @@ impl AirOrders {
         self.open && self.confirmation.holding()
     }
 
-    /// A right button change at a point on the map off every window, `under` there: what a
-    /// release orders on when its press went down on the map too.
     pub(super) fn secondary(&mut self, pressed: bool, free: bool, under: Option<Under>) -> Option<Option<Under>> {
         if pressed {
             self.pressed = free.then_some(under);
@@ -70,12 +57,10 @@ impl AirOrders {
         }
     }
 
-    /// The button let go without a release on the map.
     pub(super) fn release(&mut self) {
         self.pressed = None;
     }
 
-    /// An order's answer: what it could not decide, and whether the pop-up opens.
     pub(super) fn answered(&mut self, response: Response) {
         self.refused = response.refused.into_iter().map(|reason| (reason, 1)).collect();
         self.open |= response.confirmation;
@@ -90,8 +75,6 @@ impl AirOrders {
 }
 
 impl Viewer {
-    /// The answer to a right release at `point`, whose press went down on `under`, over the rows
-    /// of the hour it was made at.
     #[allow(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
     pub(super) fn air_order(&mut self, document: &Document, point: [f32; 2], under: Option<Under>, order: usize, shift: bool, pick: impl FnOnce([f32; 2]) -> Option<u32>, ctx: &egui::Context) {
         let wings = Arc::clone(self.air_selection.wings());
@@ -108,7 +91,6 @@ impl Viewer {
         self.click(document, super::held_clicks::Click::AirOrder { region, wings, shift, order }, None, ctx);
     }
 
-    /// The open pop-up's keys: an authored shortcut presses its button.
     pub(super) fn confirmation_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
         if !self.air_orders.open {
             return;
@@ -129,7 +111,6 @@ impl Viewer {
         }
     }
 
-    /// The open pop-up, drawn read-only; none while closed.
     pub(super) fn draw_confirmation(&mut self, document: &Document, extent: [f32; 2], time: f32, input: Option<Input>) -> Option<ConfirmationDrawn> {
         let orders = &mut self.air_orders;
         if !orders.open {
@@ -156,7 +137,6 @@ impl Viewer {
         }
     }
 
-    /// A pop-up button clicked: the order it confirms is never posted, so it closes.
     pub(super) fn confirmation_click(&mut self, control: Control) {
         if control != Control::Window {
             self.air_orders.open = false;
@@ -185,15 +165,12 @@ mod tests {
         assert_eq!(orders.secondary(false, true, Some(Under::Icon)), None, "only an air base takes the order");
         orders.secondary(true, true, None);
         assert_eq!(orders.secondary(false, true, None), Some(None));
-        // A press over a window, or a release over one, orders nothing.
         orders.secondary(true, false, None);
         assert_eq!(orders.secondary(false, true, None), None);
         orders.secondary(true, true, None);
         assert_eq!(orders.secondary(false, false, None), None);
     }
 
-    /// A new hour drawn between the press and the release numbers the bases afresh: the base is
-    /// named by what the frame on screen showed at each, never by its place in a draw's list.
     #[test]
     fn a_draw_between_the_press_and_the_release_renames_no_air_base() {
         let report = |bases: &[(usize, u32)]| CounterReport { air_base_hits: bases.iter().map(|&(index, province)| (index, (province, 1))).collect(), ..CounterReport::default() };

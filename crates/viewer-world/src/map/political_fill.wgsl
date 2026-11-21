@@ -1,4 +1,3 @@
-// Integer coordinates, row-major buckets and ordered early exit.
 struct Params {
     width: u32, height: u32, columns: u32, rows: u32,
     stride: u32, packed_ids: u32, count: u32, dispatch_stride: u32,
@@ -141,7 +140,6 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
                         let attr = regions[neighbour].attributes;
                         opacity += regions[neighbour].fx & 255u;
                         pulse += select(0u, 255u, (regions[neighbour].fx & 256u) != 0u);
-                        // accumulates control and contested as bytes.
                         fx = (fx + vec2<u32>(attr & 255u, (attr >> 8u) & 255u)) & vec2<u32>(255u);
                         if (attr & (1u << 24u)) != 0u { gradient += (attr >> 16u) & 255u; has_gradient = true; }
                     }
@@ -158,7 +156,6 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
         a = (alpha[region.alpha_offset + squared / 4u] >> ((squared & 3u) * 8u)) & 255u;
     }
     if (region.attributes & (1u << 24u)) != 0u { a = (region.attributes >> 16u) & 255u; }
-    // The map mode's fill factor widens or narrows the colour band below the outline bytes.
     if a < 239u {
         let band = i32(f32(255u - a) * (1.0 - bitcast<f32>(region.fill)));
         a = u32(clamp(i32(a) - band, 0, 255));

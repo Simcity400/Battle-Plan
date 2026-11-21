@@ -1,5 +1,3 @@
-//! Navy regional dominance source arithmetic over raw recorded operands.
-//! Local selection and the client's evaluated interface are never inputs.
 
 const SCALE: i64 = 100_000;
 const REFUSED: i64 = 0xffff_ffff;
@@ -15,7 +13,6 @@ fn fraction(numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-/// Content-defined weights, all in native fixed5 units.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Defines {
     pub range_neutral: i64,
@@ -51,8 +48,6 @@ impl Defines {
     }
 }
 
-/// Current selected design's operands: definition weight, range, speed,
-/// classification-selected carrier size and the heavy attack statistic.
 pub fn ship_power(raw: [i64; 5], defines: Defines) -> i64 {
     let [weight, range, speed, carrier, attack] = raw;
     let range_divisor = defines.range_neutral.wrapping_mul(200_000) / SCALE;
@@ -70,8 +65,6 @@ pub fn ship_power(raw: [i64; 5], defines: Defines) -> i64 {
         / SCALE
 }
 
-/// Strike-force contribution depends on the accessible-list count, including
-/// every stored occurrence; it has no extra lower clamp for modded decay.
 pub fn strike_effect(power: i64, accessible_regions: i32, defines: Defines) -> i64 {
     let power = power.wrapping_mul(defines.strike_force_fraction) / SCALE;
     let decay = i64::from(accessible_regions.wrapping_sub(1))
@@ -81,7 +74,6 @@ pub fn strike_effect(power: i64, accessible_regions: i32, defines: Defines) -> i
     SCALE.wrapping_sub(decay).wrapping_mul(power) / SCALE
 }
 
-/// Counts use signed wrapping sums before their content coefficients.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BuildingCounts {
     pub naval_base: i32,
@@ -99,8 +91,6 @@ impl BuildingCounts {
     }
 }
 
-/// Target folding orders air bases, radar, then naval bases. Display's
-/// independent multiplier ordering belongs to its own text branch.
 pub fn building_factor(modifiers: [i64; 3]) -> i64 {
     let [naval, air, radar] = modifiers;
     naval.wrapping_add(SCALE).wrapping_mul(
@@ -120,8 +110,6 @@ pub struct Sources {
     pub target: i64,
 }
 
-/// The caller supplies ledger occurrences in their retained order. Enemy
-/// strike effects multiply raider power before the source law's final bound.
 pub fn sources(
     patrol: i64,
     friendly_strike: i64,

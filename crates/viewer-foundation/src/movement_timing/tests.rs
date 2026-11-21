@@ -13,7 +13,6 @@ use replay_frame::{frame::Metrics, frame::TableView};
 use std::cell::Cell;
 
 const DIVISION: u64 = 7;
-/// A base speed whose expected pair is arithmetic at movement scale 1.0.
 const SPEED: i64 = 700_000;
 const LAND: ProvinceTerrain = ProvinceTerrain { flags: 1, index: 1 };
 const UNRECORDED: &str = "the division's base speed is not recorded";
@@ -30,7 +29,6 @@ fn content(map: MovementMap) -> MovementContent {
             maximum_level: 0,
         }),
         task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
-        // One terrain category without its own movement; no province has a region.
         land: Ok(LandSpeedContent {
             terrain_movement: vec![0],
             regions: BTreeMap::new(),
@@ -39,7 +37,6 @@ fn content(map: MovementMap) -> MovementContent {
     }
 }
 
-/// The edge speed of `base` with no term but `organisation`.
 fn plain_speed(base: i64, organisation: Option<i64>, defines: &Defines) -> i64 {
     let edge = |_: u32, _: u32| Ok(eta_derive::EdgeTerm::Normal(Default::default()));
     eta_derive::edge_speed(
@@ -58,17 +55,14 @@ fn plain_speed(base: i64, organisation: Option<i64>, defines: &Defines) -> i64 {
     .unwrap()
 }
 
-/// A status row whose speed terms are all neutral on the one terrain category.
 fn status_row(division: u64) -> DivisionStatusRow {
     test_support::neutral_status(division, 1)
 }
 
-/// The shared rows every estimate reads, for country 1.
 fn world(frame: &mut DecodedFrame) {
     test_support::neutral_world(frame, 1);
 }
 
-/// Land provinces 1, 2 and 3 with the route edges 1-2 (350000) and 2-3 (700000).
 fn two_leg_map() -> MovementMap {
     let edge = |to, distance| Neighbour {
         to,
@@ -82,7 +76,6 @@ fn two_leg_map() -> MovementMap {
     ])
 }
 
-/// Every table unavailable: an estimate reads no weather or speed-graph row.
 fn frame() -> DecodedFrame {
     DecodedFrame {
         branch: 1,
@@ -112,8 +105,6 @@ fn moving() -> DivisionMovementRow {
     }
 }
 
-/// `division`'s panel row: `speed` its stat block's maximum speed, and a maximum organisation
-/// of 10.
 fn panel(division: u64, speed: Option<i64>) -> DivisionPanelStatsRow {
     let mut panel = DivisionPanelStatsRow {
         division,
@@ -124,7 +115,6 @@ fn panel(division: u64, speed: Option<i64>) -> DivisionPanelStatsRow {
     panel
 }
 
-/// Stateless, uncontrolled provinces `ids`: no infrastructure term, no hostile move.
 fn provinces(ids: impl IntoIterator<Item = u32>) -> TableRows {
     TableRows::Provinces(
         ids.into_iter()
@@ -136,7 +126,6 @@ fn provinces(ids: impl IntoIterator<Item = u32>) -> TableRows {
     )
 }
 
-/// One division at province 1 on the two-leg route 2, 3 with `base_speed`.
 fn hour(base_speed: Option<i64>) -> DecodedFrame {
     let mut frame = frame();
     put(&mut frame, provinces(1..=3));
@@ -163,9 +152,6 @@ fn hour(base_speed: Option<i64>) -> DecodedFrame {
     frame
 }
 
-/// A busy hour: `provinces` land provinces with no authored neighbours, so
-/// every hop takes the native 100000 fallback, and `divisions` movers each
-/// on a `legs`-hop route at the same base speed.
 fn busy_hour(count: u32, divisions: u64, legs: usize) -> (DecodedFrame, MovementMap) {
     let provinces_count = count;
     let mut frame = frame();
@@ -235,23 +221,18 @@ fn an_hour_without_movement_has_no_estimate_and_no_refusal() {
     );
 }
 
-/// Without an infrastructure term or a hostile move, the estimate is the remaining route
-/// distance over the edge speed of the base speed: this hour holds no weather, state or
-/// speed-graph rows.
 #[test]
 fn an_estimate_is_the_remaining_route_distance_over_the_edge_speed() {
     let map = content(two_leg_map());
     for (base, speed) in [(SPEED, SPEED), (350_000, 350_000), (1, 100_000)] {
         assert_eq!(plain_speed(base, None, &map.defines), speed);
         let etas = Etas::read(&hour(Some(base).into()), Some(&map)).unwrap();
-        // Legs 350000 and 700000, less the 175000 numerator already moved.
         let leg = |distance: i64| distance * 100_000 / speed;
         let progress = leg(175_000);
         let next = leg(350_000) - progress;
         let destination = leg(350_000) + leg(700_000) - progress;
         assert_eq!(etas.get(DIVISION), Some((next, destination)), "{base}");
         assert_eq!(etas.estimate(DIVISION), Ok((next, destination)));
-        // Progress divides the numerator by the first edge's content distance.
         assert_eq!(etas.progress(DIVISION), Ok(50_000));
         assert_eq!(
             etas.report(),
@@ -267,8 +248,6 @@ fn an_estimate_is_the_remaining_route_distance_over_the_edge_speed() {
     assert_eq!(super::arrival(&etas, DIVISION, false), Ok(25_000));
 }
 
-/// A recording older than the base speed keeps progress and refuses only
-/// the estimate, by the replay estimate's own name.
 #[test]
 fn older_recordings_refuse_estimates_by_name_but_keep_progress() {
     let map = content(two_leg_map());
@@ -292,7 +271,6 @@ fn older_recordings_refuse_estimates_by_name_but_keep_progress() {
 
 #[test]
 fn missing_location_content_or_geometry_refuse_by_name() {
-    // No census row: neither progress nor estimate.
     let map = content(two_leg_map());
     let mut frame = hour(Some(SPEED));
     put(&mut frame, TableRows::Divisions(vec![]));
@@ -301,8 +279,6 @@ fn missing_location_content_or_geometry_refuse_by_name() {
     assert_eq!(etas.progress(DIVISION), Err(NO_LOCATION));
     assert_eq!(etas.report().progress_refused, 1);
 
-    // A province absent from the content map is missing geometry, never the
-    // null terrain or an ordinary land province.
     let partial = content(MovementMap::from_parts(&[(1, LAND, Vec::new())]));
     let etas = Etas::read(&hour(Some(SPEED)), Some(&partial)).unwrap();
     assert_eq!(
@@ -314,8 +290,6 @@ fn missing_location_content_or_geometry_refuse_by_name() {
         Err("eta_derive::division_progress refuses its recorded route with the content map")
     );
 
-    // Content that failed to load refuses every moving division, but a
-    // division without a route still stands at progress zero.
     let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
@@ -353,14 +327,12 @@ fn the_cache_holds_the_hours_in_flight_and_the_latest() {
             })
             .expect("the build cannot fail")
     };
-    // A worker builds the hours ahead and holds them; the window then arrives at them.
     let ahead: Vec<_> = (1..=3).map(fill).collect();
     assert_eq!(built.get(), 3);
     fill(1);
     fill(2);
     assert_eq!(built.get(), 3, "the look-ahead must still be cached");
     drop(ahead);
-    // Nothing holds hour 1 once hour 4 is the latest: it derives again.
     fill(4);
     fill(4);
     assert_eq!(built.get(), 4);
@@ -368,9 +340,6 @@ fn the_cache_holds_the_hours_in_flight_and_the_latest() {
     assert_eq!(built.get(), 5, "hour 1 should have gone");
 }
 
-/// Each division's route made alone ([`DivisionRoutes::route_of`] with [`estimate_one`]) equals
-/// the hour's whole routes, for a moving division with and without a recorded speed and a standing
-/// one, over two hours so the second takes its kept placement.
 #[test]
 fn a_division_s_route_made_alone_equals_the_whole_hour_s() {
     use crate::map::counter_move::{DivisionRoutes, RouteMemo};
@@ -401,8 +370,6 @@ fn a_division_s_route_made_alone_equals_the_whole_hour_s() {
     }
 }
 
-/// Exercise a large synthetic hour without tying correctness to the speed
-/// or load of the machine running the test.
 #[test]
 fn a_busy_hour_estimates_every_route() {
     let (frame, map) = busy_hour(130, 10, 30);
@@ -411,12 +378,9 @@ fn a_busy_hour_estimates_every_route() {
     assert_eq!(etas.report().estimated, 10);
     assert_eq!(etas.report().refused_total(), 0);
     assert_eq!(etas.report().progress_refused, 0);
-    // Thirty known non-neighbour hops at the native 100000 distance, each
-    // truncated to 14285 at speed 700000.
     assert_eq!(etas.get(0).map(|pair| pair.1), Some(30 * 14_285));
 }
 
-/// Province 3's state has infrastructure -0.5, so the second leg runs at half speed.
 #[test]
 fn each_leg_takes_the_recorded_infrastructure_of_its_destination_state() {
     let map = content(two_leg_map());
@@ -433,7 +397,6 @@ fn each_leg_takes_the_recorded_infrastructure_of_its_destination_state() {
                 .collect(),
         ),
     );
-    // Without the States table the term is unknown and the estimate refuses by name.
     let etas = Etas::read(&frame, Some(&map)).unwrap();
     assert!(etas.estimate(DIVISION).unwrap_err().contains("States"));
     put(
@@ -445,9 +408,7 @@ fn each_leg_takes_the_recorded_infrastructure_of_its_destination_state() {
         }]),
     );
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    // 0.5 h and 2 h less 0.25 h of progress (base speed alone gave 0.25 h and 1.25 h).
     assert_eq!(etas.estimate(DIVISION), Ok((25_000, 225_000)));
-    // A province absent from the hour's Provinces refuses by name.
     put(&mut frame, provinces(1..=2));
     let etas = Etas::read(&frame, Some(&map)).unwrap();
     assert_eq!(
@@ -456,9 +417,6 @@ fn each_leg_takes_the_recorded_infrastructure_of_its_destination_state() {
     );
 }
 
-/// A division at 10% organisation moving into a province its owner's enemy controls
-/// moves at 1 + (1 - 0.1 / 0.3) * -0.8 of its speed; the same move into a friendly or
-/// neutral province does not slow.
 #[test]
 fn a_low_organisation_hostile_move_slows_by_the_native_factor() {
     let mut map = content(two_leg_map());
@@ -524,7 +482,6 @@ fn a_low_organisation_hostile_move_slows_by_the_native_factor() {
         }]),
     );
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    // Factor 1 - 2/3 * 0.8 = 0.46667 (fixed5 46667): speed 326669.
     let speed = plain_speed(SPEED, Some(46_667), &map.defines);
     assert_eq!(speed, 326_669);
     let leg = |distance: i64| distance * 100_000 / speed;
@@ -538,7 +495,6 @@ fn a_low_organisation_hostile_move_slows_by_the_native_factor() {
     );
 }
 
-/// Display-equal organisation words can give different movement penalties.
 #[test]
 fn movement_timing_uses_conditional_exact_organisation_and_names_refusals() {
     let mut map = content(two_leg_map());
@@ -628,7 +584,6 @@ fn movement_timing_uses_conditional_exact_organisation_and_names_refusals() {
                 .contains("organisation")
         );
     }
-    // The native gate certifies no factor even if display rounding crossed its threshold.
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
@@ -643,14 +598,9 @@ fn movement_timing_uses_conditional_exact_organisation_and_names_refusals() {
     );
 }
 
-/// The recorded terms move every edge: country army speed -0.25, a forest edge whose
-/// stat-block movement is -0.5, days out of supply and a quarter tank of fuel; a
-/// strategically redeploying division whose redeployment inputs were not read refuses
-/// by name.
 #[test]
 fn recorded_speed_terms_move_each_edge() {
     let mut map = content(two_leg_map());
-    // Province 3 is terrain 2, whose own adjuster adds -0.1.
     map.map = MovementMap::from_parts(&[
         (
             1,
@@ -717,11 +667,9 @@ fn recorded_speed_terms_move_each_edge() {
         }]),
     );
     let mut row = moving();
-    // A full tank: capacity 10 * 96.
     row.fuel = Recorded::Value(Some(96_000_000));
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    // Edge into 2: 7 * 0.75 = 5.25 km/h; into 3: 7 * (0.75 - 0.6) = 1.05 km/h.
     let leg = |distance: i64, speed: i64| distance * 100_000 / speed;
     let progress = leg(175_000, 525_000);
     let next = leg(350_000, 525_000) - progress;
@@ -729,12 +677,10 @@ fn recorded_speed_terms_move_each_edge() {
         etas.estimate(DIVISION),
         Ok((next, next + leg(700_000, 105_000)))
     );
-    // A quarter tank: fuel factor (1 - 0.4) * 0.25 + 0.4 = 0.55.
     row.fuel = Recorded::Value(Some(24_000_000));
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     let fueled = Etas::read(&frame, Some(&map)).unwrap();
     let first = 525_000 * 55_000 / 100_000;
-    // The second edge floors at 1 km/h.
     let second = 100_000;
     let progress = leg(175_000, first);
     let next = leg(350_000, first) - progress;
@@ -742,8 +688,6 @@ fn recorded_speed_terms_move_each_edge() {
         fueled.estimate(DIVISION),
         Ok((next, next + leg(700_000, second)))
     );
-    // A strategically redeploying division whose redeployment inputs were not read
-    // refuses by name.
     row.strategic_redeployment = 1;
     row.strategic_action = Recorded::Value(replay_data::rows::StrategicAction::Unreached);
     put(&mut frame, TableRows::DivisionMovement(vec![row]));
@@ -756,9 +700,6 @@ fn recorded_speed_terms_move_each_edge() {
     );
 }
 
-/// Enemy air superiority over the location's strategic region slows an owner in a war
-/// relation: the owner's recorded pair and movement impact, scaled by the air speed
-/// define. Outside a war relation the same scores add nothing.
 #[test]
 fn enemy_air_superiority_slows_an_owner_at_war() {
     let mut map = content(two_leg_map());
@@ -800,7 +741,6 @@ fn enemy_air_superiority_slows_an_owner_at_war() {
             ..Default::default()
         }]),
     );
-    // Three quarters enemy superiority at impact -0.4, scaled by 0.5: -0.15.
     put(
         &mut frame,
         TableRows::RaidAirScores(vec![replay_data::rows::RaidAirScoreRow {
@@ -840,16 +780,12 @@ fn enemy_air_superiority_slows_an_owner_at_war() {
     );
 }
 
-/// The expected pair of the two-leg route at edge speeds `first` (1 -> 2) and `second`
-/// (2 -> 3), less the 175000 numerator already moved at the first.
 fn two_legs(first: i64, second: i64) -> Result<(i64, i64), &'static str> {
     let leg = |distance: i64, speed: i64| distance * 100_000 / speed;
     let next = leg(350_000, first) - leg(175_000, first);
     Ok((next, next + leg(700_000, second)))
 }
 
-/// Country 1, at war with country 2 when `war`, and country 2 controlling the route's
-/// destination, province 3.
 fn hostile_destination(frame: &mut DecodedFrame, war: bool) {
     put(
         frame,
@@ -890,9 +826,6 @@ fn hostile_destination(frame: &mut DecodedFrame, war: bool) {
     );
 }
 
-/// The country's attack speed factor (+0.5) speeds only a hostile move: one whose
-/// recorded route ends at a province controlled by a country its owner is at war with.
-/// The division is at full organisation, so the low-organisation slowdown stays out.
 #[test]
 fn attack_speed_applies_only_to_a_hostile_route() {
     let mut map = content(two_leg_map());
@@ -901,7 +834,6 @@ fn attack_speed_applies_only_to_a_hostile_route() {
         penalty: -80_000,
     });
     let mut frame = hour(Some(SPEED));
-    // Full organisation: the low-organisation hostile slowdown does not apply.
     put(
         &mut frame,
         TableRows::Divisions(vec![DivisionRow {
@@ -939,8 +871,6 @@ fn attack_speed_applies_only_to_a_hostile_route() {
     assert_eq!(hostile.estimate(DIVISION), two_legs(fast, fast));
 }
 
-/// The location's province weather speed entry (-0.2) is scaled by the division's
-/// acclimatization factor (0.5) before it joins the common modifier.
 #[test]
 fn location_weather_is_scaled_by_acclimatization() {
     let map = content(two_leg_map());
@@ -970,8 +900,6 @@ fn location_weather_is_scaled_by_acclimatization() {
     assert_eq!(etas.estimate(DIVISION), two_legs(slowed, slowed));
 }
 
-/// The division in orders group 5, whose commander has terrain movement `terrain`, and
-/// whose selected commander block holds `modifiers`.
 fn commanded(frame: &mut DecodedFrame, terrain: Vec<i64>, modifiers: [Option<i64>; 5]) {
     put(
         frame,
@@ -1009,7 +937,6 @@ fn commanded(frame: &mut DecodedFrame, terrain: Vec<i64>, modifiers: [Option<i64
     );
 }
 
-/// The two-leg route with a river (kind 2) on the edge 2-3.
 fn river_map() -> MovementMap {
     MovementMap::from_parts(&[
         (
@@ -1051,8 +978,6 @@ fn river_map() -> MovementMap {
     ])
 }
 
-/// Across a river (kind 2, -0.3), the commander block's river crossing factor (+0.5)
-/// scales the crossing term: 1 + 1.5 * -0.3 = 0.55 on the crossing edge, 0.7 without it.
 #[test]
 fn the_commander_river_factor_scales_a_crossing() {
     let mut map = content(river_map());
@@ -1076,28 +1001,20 @@ fn the_commander_river_factor_scales_a_crossing() {
     );
 }
 
-/// The commander's terrain movement is read at the destination's terrain index; an
-/// index past the vector's end takes its first entry, as the game's lookup does.
 #[test]
 fn commander_terrain_falls_back_to_the_first_entry() {
     let map = content(two_leg_map());
     let mut frame = hour(Some(SPEED));
-    // Terrain index 1 is in range: its own entry, -0.2.
     commanded(&mut frame, vec![0, -20_000], [None; 5]);
     let in_range = Etas::read(&frame, Some(&map)).unwrap();
     let slowed = SPEED * 80_000 / 100_000;
     assert_eq!(in_range.estimate(DIVISION), two_legs(slowed, slowed));
-    // A one-entry vector: index 1 is past its end and takes entry 0, -0.1.
     commanded(&mut frame, vec![-10_000], [None; 5]);
     let fallback = Etas::read(&frame, Some(&map)).unwrap();
     let slowed = SPEED * 90_000 / 100_000;
     assert_eq!(fallback.estimate(DIVISION), two_legs(slowed, slowed));
 }
 
-/// Under a supply-days define of zero, a division with no days out of supply still has
-/// a nonzero out-of-supply severity (zero over zero is the game's sentinel), and that
-/// severity reads received supply recorded only at its display step: refused by name,
-/// never computed from the stepped value.
 #[test]
 fn a_zero_supply_days_define_refuses_by_name() {
     let map = content(two_leg_map());
@@ -1136,11 +1053,6 @@ fn a_zero_supply_days_define_refuses_by_name() {
     );
 }
 
-/// A strategic redeployment no disable-redeployment modifier blocks moves at the larger
-/// of the road speed (over the destination state's railway infrastructure) and the rail
-/// speed (over the departure province's directed railway percentage), times the outer
-/// scale, without the common modifier. A blocked one moves at the ordinary speed; one
-/// whose redeployment inputs were withheld refuses by name.
 #[test]
 fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
     use replay_data::{
@@ -1154,7 +1066,6 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
         maximum_level: 5,
     });
     let mut frame = hour(Some(SPEED));
-    // Province 3 lies in state 9, whose railway infrastructure is half its maximum.
     put(
         &mut frame,
         TableRows::Provinces(
@@ -1175,7 +1086,6 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
             ..Default::default()
         }]),
     );
-    // Province 1 has a healthy level-5 railway to 2; province 2 has no rail info.
     put(
         &mut frame,
         TableRows::RailCooldowns(vec![RailCooldownRow {
@@ -1206,14 +1116,11 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
     ));
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    // 1 -> 2: max(5 + 0 * 10, 10 + 1 * 25) = 35 km/h. 2 -> 3: max(5 + 0.5 * 10, 10 + 0)
-    // = 10 km/h.
     assert_eq!(etas.estimate(DIVISION), two_legs(3_500_000, 1_000_000));
     assert_eq!(
         restricted_estimate(&frame, &map),
         two_legs(3_500_000, 1_000_000).map_err(str::to_owned)
     );
-    // The road and rail speeds never read the stat block's base speed.
     let unspeeded = |frame: &mut DecodedFrame, row: &DivisionMovementRow| {
         put(frame, TableRows::DivisionMovement(vec![row.clone()]));
         put(frame, TableRows::DivisionPanelStats(vec![panel(DIVISION, None)]));
@@ -1228,7 +1135,6 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
         unspeeded(&mut frame, &row),
         two_legs(3_500_000, 1_000_000).map_err(str::to_owned)
     );
-    // A disable-redeployment modifier blocks the rail: the ordinary speed applies.
     row.strategic_action =
         Recorded::Value(StrategicAction::Available(StrategicRedeploymentInputs {
             country_modifier: 1,
@@ -1251,9 +1157,6 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
     );
 }
 
-/// The estimate on `frame` with every table but the mover's own and those the speed terms
-/// read ([`replay_derive::eta_derive::frame_terms::TABLES`]) unavailable, as the derivation
-/// checker's selected decoder leaves them.
 fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i64, i64), String> {
     use replay_data::rows::TableId;
     let mut restricted = frame.clone();
@@ -1272,7 +1175,6 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
         .map_err(str::to_owned)
 }
 
-/// Sub-units `light_armor` (type `armor`), `marine` (special forces) and `infantry`.
 fn sub_unit_database() -> std::sync::Arc<installed_content_core::unit_leader::SubUnits> {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
@@ -1284,15 +1186,10 @@ fn sub_unit_database() -> std::sync::Arc<installed_content_core::unit_leader::Su
     std::sync::Arc::new(units)
 }
 
-/// Lexical tokens naming `light_armor`, `marine` and `infantry`, above every modifier
-/// definition token the neutral world installs.
 const ARMOUR: u32 = 900_001;
 const MARINE: u32 = 900_002;
 const INFANTRY: u32 = 900_003;
 
-/// The division's template 0x42, whose priority sub-unit is `priority` and whose
-/// composition is `units` of (token, count), with the sub-unit names added to the
-/// hour's lexical tokens.
 fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
     put(
         frame,
@@ -1331,10 +1228,6 @@ fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
     put(frame, TableRows::LexicalTokens(tokens));
 }
 
-/// The out-of-supply severity's special-forces factor applies at the template's
-/// special-forces share: 3 marines and 1 infantry give 0.75, so a -0.5 factor adds
-/// -0.375 to the multiplier, as a -0.375 country out-of-supply factor would; a template
-/// without special forces takes none of it.
 #[test]
 fn the_special_forces_factor_applies_at_the_template_share() {
     let mut map = content(two_leg_map());
@@ -1355,7 +1248,6 @@ fn the_special_forces_factor_applies_at_the_template_share() {
             ..Default::default()
         }]),
     );
-    // Ten days out of supply at half the received supply, without grace.
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
@@ -1393,7 +1285,6 @@ fn the_special_forces_factor_applies_at_the_template_share() {
         .estimate(DIVISION)
         .map_err(str::to_owned);
     assert_eq!(special, country);
-    // A composition unreadable when recorded refuses the estimate by name.
     let unreadable = |frame: &mut DecodedFrame| {
         let mut rows = frame
             .complete::<replay_data::rows::tables::DivisionTemplateIcons>()
@@ -1417,7 +1308,6 @@ fn the_special_forces_factor_applies_at_the_template_share() {
         "{reason:?}"
     );
     assert_eq!(restricted_estimate(&frame, &map), special);
-    // Without special forces the factor adds nothing.
     template(&mut frame, b"infantry", &[(INFANTRY, 4)]);
     factors(&mut frame, None, Some(-50_000));
     let none = Etas::read(&frame, Some(&map))
@@ -1433,9 +1323,6 @@ fn the_special_forces_factor_applies_at_the_template_share() {
     assert_ne!(none, special);
 }
 
-/// A division with a commander whose priority sub-unit is of type `armor` takes the
-/// country's armour speed (+0.2); without a commander, or with another priority
-/// sub-unit, it takes none.
 #[test]
 fn an_armoured_priority_sub_unit_with_a_commander_takes_the_armour_speed() {
     let mut map = content(two_leg_map());
@@ -1599,8 +1486,6 @@ fn deployed_panel_width_uses_effective_template_and_both_context_factors() {
     }
 }
 
-/// Land provinces 1 and 2 and province 3 on `third` terrain, with the two-leg route's
-/// edges.
 fn two_leg_map_to(third: ProvinceTerrain) -> MovementMap {
     let edge = |to, distance| Neighbour {
         to,
@@ -1614,10 +1499,6 @@ fn two_leg_map_to(third: ProvinceTerrain) -> MovementMap {
     ])
 }
 
-/// A naval transfer moves every edge, and a land division every edge to or from the sea,
-/// at its logical owner's recorded transport speed in the edge's source strategic region
-/// times the content's transport scale, without the common modifier. An edge whose
-/// region's speed was not recorded, or was refused, refuses by name.
 #[test]
 fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
     use replay_data::rows::OwnerTransportSpeedRow;
@@ -1629,7 +1510,6 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
         ..Default::default()
     });
     let mut frame = hour(Some(SPEED));
-    // The logical owner 4 is not the roster owner 1.
     put(
         &mut frame,
         TableRows::Divisions(vec![DivisionRow {
@@ -1640,8 +1520,6 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
             ..Default::default()
         }]),
     );
-    // Both owners are linked, and the logical owner is in no war relation, so a normal
-    // edge's enemy air step adds nothing.
     put(
         &mut frame,
         TableRows::CountryLinks(vec![
@@ -1677,13 +1555,10 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
     let mut row = moving();
     row.naval_transfer = 1;
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
-    // From region 70: 8 * 0.5 = 4 km/h; from region 71: 4 * 0.5 = 2 km/h.
     assert_eq!(
         restricted_estimate(&frame, &map),
         Ok(two_legs(400_000, 200_000).unwrap())
     );
-    // Transfers never inspect the land status, template, weather, supply or
-    // withdrawal inputs, even when those independent captures are unavailable.
     let mut transfer = frame.clone();
     let mut transfer_row = row.clone();
     transfer_row.withdrawal = Recorded::Value(None);
@@ -1702,7 +1577,6 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
         restricted_estimate(&transfer, &map),
         Ok(two_legs(400_000, 200_000).unwrap())
     );
-    // Nor do they read the stat block's base speed.
     {
         let mut unspeeded = frame.clone();
         put(
@@ -1720,8 +1594,6 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
             .unwrap_err()
             .contains("transport speed was refused")
     );
-    // Without a transfer, the land edge 1 -> 2 moves at the normal speed and the edge
-    // 2 -> 3 into the sea at the transport speed in region 71.
     speeds(&mut frame, Some(400_000));
     map.map = two_leg_map_to(ProvinceTerrain { flags: 0, index: 1 });
     row.naval_transfer = 0;
@@ -1737,11 +1609,6 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
     );
 }
 
-/// A division in combat that is not withdrawing starts its common modifier at the land
-/// combat movement base instead of one: the combat movement define (0.33) plus its first
-/// land combat's movement modifier (-0.13), so 7 km/h moves at 1.4 km/h; at a naval
-/// combat it starts at zero and moves at the 1 km/h floor. A withdrawing division keeps
-/// the one, and a refused combat operand refuses by name.
 #[test]
 fn a_division_in_combat_starts_at_the_combat_movement_base() {
     let mut map = content(two_leg_map());
@@ -1775,7 +1642,6 @@ fn a_division_in_combat_starts_at_the_combat_movement_base() {
             .unwrap_err()
             .contains("combat movement operand was refused")
     );
-    // Withdrawing: the one stays, and the withdrawal define (-0.5) applies.
     combat(&mut frame, Some(Some(-13_000)));
     row.withdrawal = Recorded::Value(Some(1));
     put(&mut frame, TableRows::DivisionMovement(vec![row]));
@@ -1785,16 +1651,11 @@ fn a_division_in_combat_starts_at_the_combat_movement_base() {
     );
 }
 
-/// The location state's modifier block selected for the roster owner adds its army
-/// speed (-0.2) and, by the owner's recorded relation to the state's controller, its
-/// controller army speed (+0.1, friendly) or its enemy army speed (-0.3, enemy): 0.9 or
-/// 0.5 of the speed. A location without its state's row refuses by name.
 #[test]
 fn the_location_state_adds_its_speed_entries() {
     use replay_data::{rows::MovementStateTermRow, rows::StateMovementTerms};
     let map = content(two_leg_map());
     let mut frame = hour(Some(SPEED));
-    // The location, province 1, lies in state 9.
     put(
         &mut frame,
         TableRows::Provinces(
@@ -1847,13 +1708,9 @@ fn the_location_state_adds_its_speed_entries() {
     );
 }
 
-/// The owner country's entries for the template's movement priority sub-unit speed keys
-/// add in native order with repeats: keys a, b, a with entries +0.1, none and +0.1 give
-/// 1.2 of the speed. A key without its country row refuses by name.
 #[test]
 fn the_priority_sub_unit_and_category_entries_add_with_repeats() {
     use replay_data::{rows::CountryUnitSpeedEntryRow, rows::DivisionTemplateIconRow};
-    // Any modifier index the hour defines can be a sub-unit's or category's key.
     let (a, b) = (
         engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
         engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
@@ -1899,9 +1756,6 @@ fn the_priority_sub_unit_and_category_entries_add_with_repeats() {
     );
 }
 
-/// A division whose owner lacks core supply access at its location adds the content's
-/// noncore supply speed (-0.5), its air form (-0.25) when air-supplied; the recorded
-/// bypass, or exile, adds none. A refused access refuses by name.
 #[test]
 fn an_owner_without_core_supply_access_adds_the_noncore_supply_speed() {
     use replay_data::rows::CoreSupplyAccessRow;
@@ -1964,10 +1818,6 @@ fn an_owner_without_core_supply_access_adds_the_noncore_supply_speed() {
     );
 }
 
-/// Across a river (kind 2, -0.3), the owner's relation towards the destination's
-/// controller (country 2) adds its river crossing factor against that country (+0.5):
-/// 1 + 1.5 * -0.3 = 0.55 on the crossing edge, 0.7 without an entry. A crossing without
-/// its relation's row refuses by name.
 #[test]
 fn a_relations_river_crossing_factor_scales_a_crossing() {
     use replay_data::rows::RiverRelationRow;
@@ -2139,9 +1989,6 @@ fn lake_departure_keeps_later_ordinary_land_speed_and_exact_organisation() {
     map.land.as_mut().unwrap().regions.insert(1, 70);
     let mut frame = hour(Some(SPEED));
     hostile_destination(&mut frame, true);
-    // The later ordinary edge reads air at the actual lake location. Its
-    // owner is at war and that location has region 70, so supply the neutral
-    // pair rather than leaving a genuinely reached table unavailable.
     put(
         &mut frame,
         TableRows::RaidAirScores(vec![replay_data::rows::RaidAirScoreRow {
@@ -2195,8 +2042,6 @@ fn actual_first_self_speed_is_kept_when_the_itinerary_omits_its_distance() {
     map.defines.transport_scale = 100_000;
     map.land.as_mut().unwrap().regions.insert(1, 70);
     let mut frame = hour(Some(SPEED));
-    // Region 70 is needed for the sea leg, so ordinary first-speed air
-    // admission also needs the owner's war state. Peace skips air scores.
     put(&mut frame, TableRows::WarRelations(vec![]));
     assert!(
         frame
@@ -2221,7 +2066,6 @@ fn actual_first_self_speed_is_kept_when_the_itinerary_omits_its_distance() {
     let terms = replay_derive::eta_derive::frame_terms::FrameTerms::new(&frame);
     let speed = terms
         .with_route_terms(&division, &movement, &[3], &map, &map.defines, |terms| {
-            // A neutral common modifier is still required by the actual first A -> A speed.
             Ok(terms.modifier)
         })
         .unwrap();
@@ -2267,7 +2111,6 @@ fn noncore_supply_uses_only_the_selected_ground_or_air_define() {
             restricted_estimate(&frame, &map),
             Ok(two_legs(speed, speed).unwrap())
         );
-        // An available unselected define cannot conceal a refused selected one.
         map.defines.noncore_supply.swap(0, 1);
         let name = if air { "air noncore" } else { "ground noncore" };
         assert!(
@@ -2295,7 +2138,6 @@ fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals
             scenarios.push((frame, true));
         }
     }
-    // Equal hours differ by branch, so a cache key without the branch would show.
     assert_ne!(
         Etas::read(&scenarios[0].0, Some(&map)).unwrap().by_division,
         Etas::read(&scenarios[4].0, Some(&map)).unwrap().by_division
@@ -2331,7 +2173,6 @@ fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals
     scenarios.push((malformed, false));
     for (frame, use_content) in scenarios {
         let movement = use_content.then_some(&map);
-        // This reference bypasses both caches and the ticket gate.
         let expected = Etas::read(&frame, movement);
         let ticket = WorkerEtas::default();
         for _ in 0..2 {

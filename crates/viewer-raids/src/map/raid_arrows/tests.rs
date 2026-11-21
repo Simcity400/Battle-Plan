@@ -9,8 +9,6 @@ fn the_colour_is_active_in_flight_preparing_before_and_undecided_when_prepared()
     assert_eq!(color(5, &defines), Some(defines.active_color));
     assert_eq!(color(1, &defines), Some(defines.preparing_color));
     assert_eq!(color(2, &defines), Some(defines.preparing_color));
-    // READY is decided only in phase 3, from execution inputs absent
-    // from this fixture.
     assert_eq!(color(3, &defines), None);
 }
 
@@ -44,11 +42,8 @@ fn path_points_add_handles_anchors_and_admitted_crossings() {
             [32.5, 0.0, 0.0]
         ]
     );
-    // Without midpoints the crossing is left out.
     let plain = path_points(&[1, 2, 3], 1000.0, false, &anchors, &crossing).unwrap();
     assert_eq!(plain.len(), 5);
-    // A hop that is not a neighbour is skipped, and the first hop's handle
-    // goes with it; the next hop is tried from the same province.
     let skipped = |from: u32, to: u32| match (from, to) {
         (1, 3) => Some(None),
         _ => None,
@@ -58,7 +53,6 @@ fn path_points_add_handles_anchors_and_admitted_crossings() {
         points,
         [[10.0, 0.0, 0.0], [30.0, 0.0, 0.0], [35.0, 0.0, 0.0]]
     );
-    // Across the seam each point follows the one before.
     let seam = path_points(&[7, 8], 1000.0, true, &anchors, &crossing).unwrap();
     assert_eq!(
         seam,
@@ -92,7 +86,6 @@ fn the_path_spline_keeps_the_ends_and_samples_each_inner_segment() {
         controls,
         [[0, 0], [1_000_000, 0], [1_500_000, 0], [3_000_000, 0]]
     );
-    // No subdivisions: the ends only.
     let bare = PathArrowDefines {
         subdivisions: 0,
         ..spline
@@ -119,18 +112,14 @@ fn speed_defines() -> SpeedDefines {
 fn the_raid_unit_speed_takes_each_native_branch() {
     let defines = speed_defines();
     let none = SpeedInputs::default();
-    // Convoys: NAVAL_SPEED_MODIFIER * NAVAL_TRANSFER_BASE_SPEED, then the
-    // raid multiplier and the type's 1.5.
     assert_eq!(
         raid_unit_speed(SpeedBranch::Convoys, &none, 150_000, &defines),
         75_000
     );
-    // Transport planes: the best stat, first on ties, times the land modifier.
     let transports = SpeedInputs {
         transport_speeds: vec![300_000, 500_000, 500_000, 400_000],
         ..SpeedInputs::default()
     };
-    // The recorded fallback flag: 100000, unscaled.
     let fallback = SpeedInputs {
         transport_fallback: 1,
         ..transports.clone()
@@ -143,14 +132,10 @@ fn the_raid_unit_speed_takes_each_native_branch() {
         raid_unit_speed(SpeedBranch::TransportPlanes, &transports, 100_000, &defines),
         25_000
     );
-    // None at all: 100000, unscaled by the land modifier.
     assert_eq!(
         raid_unit_speed(SpeedBranch::TransportPlanes, &none, 100_000, &defines),
         10_000
     );
-    // A wing with a live ace: scale min(100 planes / 50, 1.5) = 1.5, so
-    // 0.1 * 1.5 * 1.2 = 0.18, plus the country's 0.05 while the ace type
-    // has the key: 1.23 * 6.0 * 0.5 * 0.1.
     let wing = SpeedInputs {
         wing_max_speed: Some(600_000),
         ace_alive: Some(1),
@@ -173,7 +158,6 @@ fn the_raid_unit_speed_takes_each_native_branch() {
         raid_unit_speed(SpeedBranch::Unit, &dead, 100_000, &defines),
         30_000
     );
-    // The wing wins over the army; the army alone; neither is still.
     let army = SpeedInputs {
         army_max_speed: Some(400_000),
         ..SpeedInputs::default()
@@ -192,26 +176,21 @@ fn the_raid_unit_speed_takes_each_native_branch() {
 
 #[test]
 fn the_hours_floor_elapsed_and_ceil_remaining() {
-    // 1.0 map units at 0.3 an hour, at launch: 0 flown, 4 to go.
     assert_eq!(elapsed_hours(0, 30_000), 0);
     assert_eq!(remaining_hours(100_000, 0, 30_000), 4);
     assert_eq!(phase_progress(0, 4), 0);
     assert_eq!(next_hour_progress(0, 4), 25_000);
-    // Two hours in.
     assert_eq!(elapsed_hours(60_000, 30_000), 2);
     assert_eq!(remaining_hours(100_000, 60_000, 30_000), 2);
     assert_eq!(phase_progress(2, 2), 50_000);
     assert_eq!(next_hour_progress(2, 2), 75_000);
-    // Overflown: ceil(-0.67) is 0.
     assert_eq!(remaining_hours(100_000, 120_000, 30_000), 0);
-    // A still unit: the 0xFFFFFFFF sentinel's floor and ceiling.
     assert_eq!(elapsed_hours(60_000, 0), 42_949);
     assert_eq!(remaining_hours(100_000, 60_000, 0), 42_950);
     assert_eq!(phase_progress(0, 0), 0);
     assert_eq!(next_hour_progress(0, 0), 0);
 }
 
-/// A frame holding only `RaidSpeedInputs`, or without it.
 fn speed_frame(rows: Option<Vec<replay_data::rows::RaidSpeedInputRow>>) -> DecodedFrame {
     use replay_data::{rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::TableView};
@@ -253,7 +232,6 @@ fn plane_inputs_read_the_travelled_distance_and_the_raids_speed_row() {
     let (travelled, inputs) = plane_inputs(&speed_frame(Some(vec![row.clone()])), &raid).unwrap();
     assert_eq!(travelled, 60_000);
     assert_eq!(inputs.wing_max_speed, Some(600_000));
-    // A present, dead ace adds nothing; an absent one is `None`.
     assert_eq!(inputs.ace_alive, Some(0));
     let absent = replay_data::rows::RaidSpeedInputRow {
         ace_present: 0,
@@ -265,8 +243,6 @@ fn plane_inputs_read_the_travelled_distance_and_the_raids_speed_row() {
             .ace_alive,
         None
     );
-    // An older recording has no distance; a withheld table or a missing row
-    // is refused by name.
     let old = RaidRow {
         travelled: None,
         ..raid.clone()
@@ -277,9 +253,6 @@ fn plane_inputs_read_the_travelled_distance_and_the_raids_speed_row() {
     assert!(plane_inputs(&speed_frame(Some(Vec::new())), &raid).is_err());
 }
 
-/// A living ace's country terms are CountryCommandPower's at the same frame,
-/// joined by the row's owner and wing-country slots; without that table or
-/// its row they are refused, not zero.
 #[test]
 fn a_living_aces_country_terms_join_country_command_power() {
     use replay_data::{rows::CountryCommandPowerRow, rows::TableId, rows::TableRows};
@@ -325,7 +298,6 @@ fn a_living_aces_country_terms_join_country_command_power() {
         (inputs.ace_effectiveness, inputs.ace_bonuses),
         (20_000, 5_000)
     );
-    // A dead ace records no countries and needs no row.
     let dead = replay_data::rows::RaidSpeedInputRow {
         ace_alive: 0,
         ace_owner: None,
@@ -340,14 +312,10 @@ fn a_living_aces_country_terms_join_country_command_power() {
 
 #[test]
 fn an_ended_raids_unit_leaves_with_its_first_phase_5_update() {
-    // Phase 4 always shows; the hour's progress lerps to the next hour's.
     assert!(unit_shown(4, 0, 0.0));
     assert!((movement_progress(4, 0.5, 0.75, 0.5) - 0.625).abs() < 1e-6);
-    // Phase 5 sets the progress to exactly 1, past the 0.999 cut-off.
     assert_eq!(movement_progress(5, 0.5, 0.75, 0.3), 1.0);
     assert!(!unit_shown(5, 1, movement_progress(5, 0.5, 0.75, 0.3)));
-    // Only the frame still holding the last phase-4 progress shows it, and
-    // never for a cancelled raid.
     assert!(unit_shown(5, 1, 0.998));
     assert!(!unit_shown(5, 1, 0.999));
     assert!(!unit_shown(5, 5, 0.5));
@@ -357,8 +325,6 @@ fn an_ended_raids_unit_leaves_with_its_first_phase_5_update() {
 #[test]
 fn a_wing_ace_with_an_unresolved_wing_scales_by_one() {
     let defines = speed_defines();
-    // 0.1 key-2 bonus, scale 1 (wing unresolved), effectiveness 0: factor
-    // 1.1, no type bonus: 1.1 * 6.0 = 6.6, * 0.5 land, * 0.1 raid = 0.33.
     let inputs = SpeedInputs {
         wing_max_speed: Some(600_000),
         ace_alive: Some(1),
@@ -403,18 +369,15 @@ fn the_speed_branch_follows_the_essential_categories() {
 
 #[test]
 fn the_callback_height_samples_the_fixed_point_bilinearly() {
-    // 2 x 2 heights, bottom row first in world z.
     let values = [10u8, 20, 30, 40];
     let field = HeightField {
         width: 2,
         height: 2,
         values: &values,
     };
-    // Row 1 of the bitmap is world z 0.
     assert_eq!(field.fixed_height(0, 0, 2), 3.0);
     assert!((field.fixed_height(50_000, 0, 2) - 3.5).abs() < 1e-6);
     assert!((field.fixed_height(50_000, 50_000, 2) - 2.5).abs() < 1e-6);
-    // x wraps once by the map width before it clamps.
     assert_eq!(field.fixed_height(-100_000, 0, 2), 4.0);
 }
 
@@ -427,7 +390,6 @@ fn the_pool_meets_both_lists_in_whole_units_and_nukes() {
         additional_nukes: 1,
         ..RaidType::default()
     };
-    // Archetype tokens 40 and 41 spell the two archetypes.
     let token = |token: u32| -> Result<String, String> {
         Ok(match token {
             40 => "transport_plane",
@@ -440,14 +402,10 @@ fn the_pool_meets_both_lists_in_whole_units_and_nukes() {
         archetype_totals: vec![(40, transports), (41, 10_000_000)],
         nukes,
     };
-    // Exactly enough: five transports and a hundred infantry equipment.
     assert_eq!(pool_meets(&kind, &pool(500_000, 1), &token), Ok(true));
-    // 4.99999 transports are four: short by one whole transport.
     assert_eq!(pool_meets(&kind, &pool(499_999, 1), &token), Ok(false));
     assert_eq!(pool_meets(&kind, &pool(400_000, 1), &token), Ok(false));
-    // The additional list's nuke.
     assert_eq!(pool_meets(&kind, &pool(500_000, 0), &token), Ok(false));
-    // The essential list's nukes are checked on their own.
     let essential_nuke = RaidType {
         nukes: 2,
         ..kind.clone()
@@ -460,8 +418,6 @@ fn the_pool_meets_both_lists_in_whole_units_and_nukes() {
         pool_meets(&essential_nuke, &pool(500_000, 2), &token),
         Ok(true)
     );
-    // An archetype without a total holds none; the first of two entries
-    // answers, as the native scan stops there.
     let missing = RaidPool {
         archetype_totals: vec![(41, 10_000_000)],
         nukes: 1,
@@ -472,7 +428,6 @@ fn the_pool_meets_both_lists_in_whole_units_and_nukes() {
         nukes: 1,
     };
     assert_eq!(pool_meets(&kind, &twice, &token), Ok(true));
-    // A token the content cannot spell is refused.
     let odd = RaidPool {
         archetype_totals: vec![(9, 1)],
         nukes: 1,
@@ -480,7 +435,6 @@ fn the_pool_meets_both_lists_in_whole_units_and_nukes() {
     assert!(pool_meets(&kind, &odd, &token).is_err());
 }
 
-/// A frame holding only `RaidEquipment`, or without it.
 fn pool_frame(rows: Option<Vec<replay_data::rows::RaidEquipmentRow>>) -> DecodedFrame {
     use replay_data::{rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::TableView};
@@ -506,8 +460,6 @@ fn the_pool_is_the_raids_recorded_row_or_refused_by_name() {
         phase: 3,
         ..RaidRow::default()
     };
-    // The variant items, a null one among them, are not what the check
-    // reads: the archetype totals are.
     let row = replay_data::rows::RaidEquipmentRow {
         id: 7,
         reference_type: 3,
@@ -584,7 +536,6 @@ fn the_unit_entity_follows_the_native_ladder() {
             &declared,
         )
     };
-    // The tag first, then the culture, then the bare name.
     assert_eq!(
         choose(&model(Some("truck_entity"), None, None), &[], None),
         UnitEntity::Entity("ENG_truck_entity".into())
@@ -601,7 +552,6 @@ fn the_unit_entity_follows_the_native_ladder() {
         ),
         UnitEntity::Entity("fallback_entity".into())
     );
-    // The category picks the first primary variant that has it.
     let primary = [(10, 0x40), (11, 0x10_0000), (12, 0x10_0000)];
     assert_eq!(
         choose(
@@ -611,7 +561,6 @@ fn the_unit_entity_follows_the_native_ladder() {
         ),
         UnitEntity::Designer(11)
     );
-    // Without a variant of it, the names are tried.
     assert_eq!(
         choose(
             &model(Some("ship_entity"), None, Some("air_transport")),
@@ -620,7 +569,6 @@ fn the_unit_entity_follows_the_native_ladder() {
         ),
         UnitEntity::Entity("western_european_gfx_ship_entity".into())
     );
-    // Nothing named: the wing, else nothing.
     assert_eq!(
         choose(&model(None, None, None), &[], Some(7)),
         UnitEntity::WingEquipment(7)
@@ -629,7 +577,6 @@ fn the_unit_entity_follows_the_native_ladder() {
         choose(&model(None, None, None), &[], None),
         UnitEntity::None
     );
-    // An unknown category has mask zero, so no designer model.
     assert_eq!(
         choose(&model(None, None, Some("zeppelins")), &[], None),
         UnitEntity::None
@@ -640,7 +587,6 @@ fn the_unit_entity_follows_the_native_ladder() {
 fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_the_dlc() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    // An empty type sprite is filled from its archetype.
     let (content, _) = installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
@@ -682,15 +628,10 @@ fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_t
         asked.set(true);
         Ok(None)
     };
-    // With the DLC, the declared designer result wins. A set saved model
-    // supplies that result; the stub represents any result.
-    // `unit_models::tests::aircraft_designer` exercises the resolver.
     assert_eq!(
         resolve(&variant("designer_c47_entity"), 0x100, &pool),
         Ok(Some("pool_c47_entity".into()))
     );
-    // An undeclared or absent result goes on to the saved model, then the
-    // aircraft ladder.
     assert_eq!(
         resolve(&variant("designer_c47_entity"), 0x100, &undeclared_pool),
         Ok(Some("designer_c47_entity".into()))
@@ -699,7 +640,6 @@ fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_t
         resolve(&variant(""), 0x100, &none),
         Ok(Some("ENG_transport_plane_entity".into()))
     );
-    // Without the DLC, do not query the designer model.
     assert_eq!(
         resolve(&variant("designer_c47_entity"), 0, &untouched),
         Ok(Some("designer_c47_entity".into()))
@@ -709,7 +649,6 @@ fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_t
         Ok(Some("ENG_transport_plane_entity".into()))
     );
     assert!(!asked.get());
-    // What the pools cannot decide is refused with their reason.
     let failing = || Err("a stored value is missing".to_owned());
     assert!(resolve(&variant(""), 0x100, &failing).is_err());
     let undeclared = |_: &str| false;
@@ -725,16 +664,12 @@ fn the_designer_model_follows_resolve_aircraft_designer_model_with_and_without_t
         ),
         Ok(None)
     );
-    // A type the content lacks is refused by name.
     assert_eq!(
         designer_entity(&variant(""), "glider", &content, "ENG", 0, &none, &declared),
         Err("equipment glider is not in the content".to_owned())
     );
 }
 
-/// The building arm of `RaidSource`: a null type token (`0x4c17`) or a
-/// location of -1 is no building; otherwise the recorded type, location
-/// and country, as stored.
 #[test]
 fn a_building_source_reads_the_recorded_building_arm() {
     let mut raid = RaidRow::default();

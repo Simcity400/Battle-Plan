@@ -1,0 +1,15 @@
+# 0505. Preserve appearance choices through rendering and migration
+
+The shell applies saved appearance before React renders to avoid a first frame in the default theme. Component styles follow the shared design styles. Changes apply immediately, and canvas charts are notified to read their computed theme tokens again. Tables use the interface size so they match adjacent charts. Diagnostics keep a separate default. Backdrop image bytes are shared through IndexedDB and the preferences retain image IDs. An imported image can select itself only if no later backdrop choice took place, including reselecting the original image.
+
+Older flat palettes become built-in defaults or custom themes when read. The split opacity settings preserve the prior sidebar and top bar appearance. A theme variant can select the mode it supports, with missing roles derived from the chosen canvas and accent. Import accepts VS Code theme files with comments and trailing commas while preserving commas inside strings. A generated name keeps its copy suffix and stays within the saved length limit.
+
+Icon overrides are stored by sidebar item or widget kind. A missing part uses the default and a kind is retained even when its widget is absent. Uploaded artwork is rasterized to a small square PNG. MIME is supplied for an SVG when the file does not provide it. Only the newest choice for an icon can land. A closed picker restores focus to the opening control, or the widget settings button when its icon cannot take focus, if the user has not moved focus elsewhere.
+
+Artwork uses data URLs where the desktop content policy allows them. Larger backdrop images are downscaled and re-encoded at import, and an IndexedDB write is acknowledged only when its transaction commits. Theme ramps use perceptual colour math. An out-of-gamut colour is brought into sRGB by reducing chroma to retain its lightness and hue. The colour picker retains the previous hue when a grey is written from outside it. Missing glyphs fall through to the default font stack, and discovery shares one session request including a denial of Local Font Access.
+
+The sidebar keeps the chosen width separately from the width that currently fits. Session-only state is kept separately from appearance preferences. Native pointer listeners account for portalled content during sidebar peek. Opening Settings first can load the dashboard's widget definitions for the default-layout check without putting that work on startup's critical path.
+
+The Analytics navigation opens its page actions from the keyboard as well as a pointer. Reordering targets the slot before a page, with a final slot after all pages. Sidebar shortcuts leave editing controls available to the user. Settings search opens a folded area before scrolling to the target.
+
+[Appearance](../../ui/src/shell/appearance/useAppearance.ts), [Saved settings](../../ui/src/shell/appearance/settings.ts), [Theme import](../../ui/src/shell/appearance/themeFile.ts), [Icon choices](../../ui/src/shell/appearance/IconStyleMenu.tsx), [Desktop shell](../../ui/src/shell/App.tsx)

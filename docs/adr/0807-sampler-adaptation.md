@@ -1,0 +1,9 @@
+# 0807. Preserve bound texture sampling where renderer APIs differ
+
+The sampler adaptation runs on translated WGSL after parsing and validation of authored code. The active program's texture dimension controls addressing. A retained sampler can have come from a different dimension. Use native GPU sampling where the renderer can express the behavior. Preserve original coordinate derivatives for mirrored sampling because folding coordinates before taking derivatives would select a different mip across the mirror seam.
+
+For a mirror-once texel offset or an unfilterable texture, a shader can address the necessary taps explicitly. Match D3D's gather ordering and its rules for applying offsets before addressing at each mip. Border reads are transparent black. Reproduce isotropic filtering using the integer texel footprint and the selected mip, or the two adjacent mips and fraction when linear mip filtering applies. Apply native sampler LOD bounds and bias even for an explicit shader LOD, and scale explicit gradients for bias. Device-specific derivative and filtering precision remains implementation-dependent. An anisotropic mirror-once footprint cannot be reproduced by a single folded lookup and is refused where the operation would change.
+
+Normalized-coordinate sampling alone does not depend on the source texture's texel count. Texture queries, gathers, offsets and integer-addressed reads do. A stage the analysis cannot inspect, or a texture value it cannot trace to its declaration, is treated conservatively when deciding whether downscaling can preserve the draw. Test reference footprints away from interpolation ties and exact texel boundaries where an oracle otherwise depends on device rounding.
+
+[Sampling adaptation](../../crates/shader-pipeline/src/sampling.rs) · [Texel-dependence analysis](../../crates/shader-pipeline/src/texel.rs) · [Sampler tests](../../crates/shader-pipeline/src/tests/samplers.rs)

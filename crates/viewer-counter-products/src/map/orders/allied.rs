@@ -1,9 +1,3 @@
-//! Viewer-owned allied-plan admission.
-//!
-//! The allied-plan switch is local UI state. It enables a physical country
-//! array walk after the viewing country; same-country/alias identity or the
-//! sent-volunteer/theatre-host predicate admits each occurrence. The latter
-//! is distinct from the relation's co-belligerent cache.
 
 use std::{
     cell::LazyCell,
@@ -16,8 +10,6 @@ use replay_data::{
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
-/// Inputs read only when the viewer enables allied plans. LandTheatres and
-/// CountryLinks are already dependencies of the ordinary plan walk.
 pub(crate) const TABLES: &[TableId] = &[
     TableId::ReservedCountryNaming,
     TableId::FactionMembers,
@@ -29,10 +21,7 @@ pub(crate) const TABLES: &[TableId] = &[
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Selection {
-    /// Canonical slots in native walk order. Repeated allied occurrences are
-    /// retained: each rebuild advances the plan's shared overlap counters.
     pub countries: Vec<u32>,
-    /// Unknown admission is withheld, while independently known plans remain.
     pub refused: BTreeMap<String, usize>,
 }
 
@@ -70,8 +59,6 @@ impl Selection {
         let zero = LazyCell::new(|| zero_visibility(frame, links, ours, || factions.lookup(ours)));
         let hosts = LazyCell::new(|| volunteer_hosts(frame, links, ours));
         let zero_theatres = LazyCell::new(|| reserved_theatres(frame));
-        // After returning the viewing country, set the cursor to 1.
-        // The recorded physical array retains aliases, order and slot zero.
         for &raw in roster.iter().skip(1) {
             if raw == 0 {
                 if ours != 0 {
@@ -90,12 +77,9 @@ impl Selection {
                 out.refuse("allied-plan country occurrence missing from CountryLinks");
                 continue;
             };
-            // Native suppresses exact raw identity or nonzero canonical identity.
             if target == ours {
                 continue;
             }
-            // Native rejects active war before faction, then reaches subjects
-            // only when the nonnull same-faction shortcut did not succeed.
             let shared = (|| {
                 if wars.matches(ours, target)? {
                     return Ok(false);
@@ -115,9 +99,6 @@ impl Selection {
                 out.countries.push(target);
                 continue;
             }
-            // Require a signed-positive target, a nonempty raw sent list and a matching
-            // volunteer theatre. Even null or stale sent references satisfy the count;
-            // no division join is needed.
             let volunteer = if raw as i32 > 0 {
                 hosts
                     .as_ref()
@@ -331,8 +312,6 @@ fn zero_subject(row: &CountryCounterInputRow) -> Result<bool, String> {
         (None, None) => Ok(false),
         (Some(kind), None) if kind != engine_executable::native_values::subject_relation::TYPE_VALUE => Ok(false),
         (Some(kind), Some(parties)) if kind == engine_executable::native_values::subject_relation::TYPE_VALUE => {
-            // Status0 target is raw zero: both native match predicates skip
-            // canonical comparison and test exact zero on their own party.
             if parties.contains(&Some(0)) {
                 Ok(true)
             } else if parties.iter().all(Option::is_some) {

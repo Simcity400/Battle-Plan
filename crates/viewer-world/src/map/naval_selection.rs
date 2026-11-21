@@ -1,4 +1,3 @@
-//! Navy selection feedback derives from this view's fleets and task forces.
 use super::{air_assignment, map_mode};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -31,8 +30,6 @@ impl Colors {
         })
     }
 }
-/// The game's naval fraction counts valid province occurrences, rather than
-/// pixels or the runtime region's deduplicated province vector.
 pub fn naval_fraction(
     members: &[u32],
     geometry: &installed_content_core::province_geometry::ProvinceGeometry,
@@ -53,7 +50,6 @@ pub fn naval_fraction(
     i64::from(sea).wrapping_mul(10_000_000_000) / (i64::from(total) * 100_000)
 }
 
-/// Prepared once with the recorded map content, including mod templates.
 pub fn eligible_regions(
     regions: &BTreeMap<u32, Vec<u32>>,
     geometry: &installed_content_core::province_geometry::ProvinceGeometry,
@@ -73,8 +69,6 @@ pub struct Field {
     pub refused: BTreeMap<String, usize>,
 }
 
-/// Every repeated registration increments the numerator. Empty selected sources
-/// do not contribute to the denominator; ratios above one clamp before blending.
 fn stripe(count: i32, sources: i32) -> [u8; 4] {
     let ratio = (count as f32 / sources as f32).clamp(0.0, 1.0);
     let component = |start: f32, end: f32| {
@@ -381,7 +375,6 @@ mod tests {
             Ok(colors),
         );
         assert!(product.refused.is_empty());
-        // Two nonempty sources: TF1 and fleet40; repeated fleet region1 clamps.
         assert_eq!(product.assignment.provinces[&10], stripe(3, 2));
         assert_eq!(product.assignment.provinces[&20], stripe(1, 2));
         assert_eq!(product.assignment.provinces[&30], stripe(1, 2));
@@ -405,7 +398,6 @@ mod tests {
             product.styles[&5].color[3],
             map_mode::pack([0.0, 0.0, 0.0, colors.fade])[3]
         );
-        // Selecting a task force alone never acts as selection of its fleet.
         let task = read(&frame, 1, &selected, &[], &regions, &eligible, Ok(colors));
         assert!(!task.assignment.provinces.contains_key(&20));
         assert_eq!(
@@ -466,7 +458,7 @@ mod tests {
         members.push(3);
         assert_eq!(naval_fraction(&members, &geometry), 990);
         assert!(!eligible_regions(&BTreeMap::from([(1, members.clone())]), &geometry).contains(&1));
-        members.extend([99, 99]); // Undefined template references never enter either count.
+        members.extend([99, 99]);
         assert_eq!(naval_fraction(&members, &geometry), 990);
         assert_eq!(naval_fraction(&[1, 1, 2, 3], &geometry), 50_000);
         assert_eq!(naval_fraction(&[], &geometry), 0);

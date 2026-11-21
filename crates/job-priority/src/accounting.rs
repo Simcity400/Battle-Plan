@@ -1,4 +1,3 @@
-//! Optional exclusive CPU ownership for synchronous helpers, without recording dependencies.
 
 use std::{any::Any, sync::OnceLock};
 

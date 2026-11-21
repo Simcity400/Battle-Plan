@@ -1,5 +1,3 @@
-//! Ordered current naval repair selection: one rule over the operands it looks up
-//! ([`Operands`]), read from a recorded frame ([`Sources`]) or from a columnar walk.
 use crate::visibility::{AccessLinks, Relations};
 use replay_data::rows::{
     NavalBaseRow, NavalRepairBaseRow, NavalRepairQueueRow, ProvinceRow, ShipModelRow, ShipRow,
@@ -12,19 +10,15 @@ use std::{borrow::Cow, collections::BTreeMap};
 pub struct Capacity {
     pub used: i32,
     pub level: i32,
-    /// Native text colour control, absent for the ordinary authored colour.
     pub colour: Option<char>,
 }
 
-/// One selected queue occurrence; repeated full ship handles remain separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectedRepair {
     pub ordinal: u32,
     pub ship: u64,
 }
 
-/// Country-list membership accepts raw equality (including zero) and nonzero
-/// aliases of the same canonical country. Missing alias evidence stays unknown.
 pub fn country_list_contains(
     list: &[u32],
     raw: u32,
@@ -52,26 +46,21 @@ pub fn country_list_contains(
     }
 }
 
-/// A looked-up table that was not complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unavailable;
 
-/// A queued ship's selection operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedShip {
     pub task_force: u64,
     pub strength: i64,
 }
 
-/// A task force's selection operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedForce {
     pub roster_owner: u32,
     pub province: u32,
 }
 
-/// A ship model's selection operands: its design, its stored HP maximum when its counter was
-/// recorded, and its critical-damage predicate when recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedModel {
     pub variant: u64,
@@ -79,23 +68,18 @@ pub struct QueuedModel {
     pub has_criticals: Option<u32>,
 }
 
-/// What the selection looks up, each lookup refusing only where a branch reaches it.
 pub trait Operands {
     type Queue<'q>: Iterator<Item = (u32, u64)>
     where
         Self: 'q;
 
-    /// The repair allocation of the base at `province`; None where it has none.
     fn allocation(&self, province: u32) -> Result<Option<i32>, Unavailable>;
-    /// The queue at `province` in queue order, as (ordinal, ship), and its length.
     fn queue(&self, province: u32) -> Result<(Self::Queue<'_>, usize), Unavailable>;
     fn ship(&self, id: u64) -> Result<Option<QueuedShip>, Unavailable>;
     fn force(&self, id: u64) -> Result<Option<QueuedForce>, Unavailable>;
     fn model(&self, ship: u64) -> Result<Option<QueuedModel>, Unavailable>;
     fn controller(&self, province: u32) -> Result<Option<u32>, Unavailable>;
-    /// The canonical slot raw country `raw` links to.
     fn slot_of(&self, raw: u32) -> Option<u32>;
-    /// Whether `owner` may repair at a base `controller` controls.
     fn port(&self, owner: u32, controller: u32) -> Result<bool, &'static str>;
 }
 
@@ -118,7 +102,6 @@ pub fn capacity<O: Operands + ?Sized>(
     })
 }
 
-/// Assigned mode preserves occurrence order and does not demand an unused suffix.
 pub fn selected<O: Operands + ?Sized>(
     operands: &O,
     base: &NavalBaseRow,
@@ -188,7 +171,6 @@ fn traverse<O: Operands + ?Sized>(
         let maximum = model
             .maximum_strength
             .ok_or("txt_capacity: queued ship HP maximum unavailable")?;
-        // The game's maximum: the model's stored maximum, at least 100 (0.001 HP).
         if ship_operands.strength >= maximum.max(100) {
             match model.has_criticals {
                 Some(0) => continue,
@@ -217,7 +199,6 @@ fn traverse<O: Operands + ?Sized>(
     Ok((eligible, length))
 }
 
-/// The operands as a recorded frame's complete sorted tables hold them, borrowed once.
 pub struct Sources<'a> {
     allocations: Option<&'a [NavalRepairBaseRow]>,
     queues: Option<&'a [NavalRepairQueueRow]>,
@@ -329,7 +310,6 @@ impl Operands for Sources<'_> {
     }
 }
 
-/// A model row's selection operands.
 pub fn model_operands(row: &ShipModelRow) -> QueuedModel {
     QueuedModel {
         variant: row.variant,

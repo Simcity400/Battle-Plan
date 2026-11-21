@@ -1,12 +1,3 @@
-//! A country's production lines running at an hour, as the game's production tab lists them
-//! (`production-lines-at`): a rows-at-an-hour product, asked for an hour and followed as a panel
-//! at the head. The reply is the lines in the asked order with their names and art; the numbers
-//! that move as the lines run (factories, efficiency, speed, cost, units made) are live cells, so
-//! the panel is pushed only when which lines run, their order or their names change.
-//!
-//! A request reads the owner's lines by key: the run's index of line lives ([`super::RunLines`])
-//! gives the handles whose producing country links to the owner at the hour, so no other
-//! country's lines or output rows are built.
 
 use dashboard_base::products::Country;
 use super::{
@@ -32,7 +23,6 @@ use ts_rs::TS;
 
 pub struct ProductionLinesAt;
 
-/// The order lines are listed in: the game's queue, most factories assigned, or most IC a day.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -49,25 +39,23 @@ pub enum LineOrder {
 pub struct ProductionLinesAtParams {
     pub branch_id: String,
     pub country: Country,
-    /// The game's queue order when absent.
+    #[doc = " The game's queue order when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub order: Option<LineOrder>,
 }
 
-/// One output row of a line at the hour; its units made are in the line's `output` cell.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutputPartNow {
     pub variant: String,
-    /// The organisation's reference; "0" for none.
+    #[doc = r#" The organisation's reference; "0" for none."#]
     pub mio: String,
-    /// False when a tick could not be counted: the line's total is then not known.
+    #[doc = " False when a tick could not be counted: the line's total is then not known."]
     pub exact: bool,
 }
 
-/// A line's output rows at the hour.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -77,10 +65,6 @@ pub struct OutputNow {
     pub whole_life: bool,
 }
 
-/// One line running at the hour. Its live cells, keyed by `handle`: `active` and `requested`
-/// factories, `efficiency` (Q15, 100% is 3276800), `speed` and `cost` (fixed5 IC; units a week are
-/// `speed × 700000 ÷ cost`, truncated) and `output` (units made since `output.sinceHour`, the sum
-/// of its rows).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -91,7 +75,7 @@ pub struct LineNow {
     pub mio: String,
     pub max_factories: i32,
     pub priority: i32,
-    /// Its output rows; null where they are not recorded at the hour.
+    #[doc = " Its output rows; null where they are not recorded at the hour."]
     pub output: Option<OutputNow>,
 }
 
@@ -102,11 +86,11 @@ pub struct ProductionLinesAtReply {
     pub branch_id: String,
     pub tag: String,
     pub decimals: u8,
-    /// The country's lines in the asked order; empty with `missing` where they are not known.
+    #[doc = " The country's lines in the asked order; empty with `missing` where they are not known."]
     pub lines: Vec<LineNow>,
-    /// Why the lines are not known at the hour, when they are not: never shown as none.
+    #[doc = " Why the lines are not known at the hour, when they are not: never shown as none."]
     pub missing: Option<String>,
-    /// Why the lines' output is not known at the hour, when it is not.
+    #[doc = " Why the lines' output is not known at the hour, when it is not."]
     pub output_missing: Option<String>,
     pub variants: Vec<VariantName>,
     pub organisations: Vec<OrganisationName>,
@@ -116,13 +100,11 @@ pub struct ProductionLinesAtReply {
 
 dashboard_base::reply_warnings!(ProductionLinesAtReply);
 
-/// What a reply reads beyond its frame: the recorded content, and the source's production index.
 pub struct LinesContext {
     naming: names::Context,
     index: ProductionIndex,
 }
 
-/// The owner's lines in `held`, in the game's queue order.
 fn owned<'a>(held: &'a DecodedFrame, owner: Owner) -> io::Result<Vec<&'a ProductionLineRow>> {
     let links = held.complete::<tables::CountryLinks>()?;
     let mut lines: Vec<_> = held.complete::<tables::ProductionLines>()?.iter().filter(|line| link_slot(links, line.country) == Some(owner.slot)).collect();
@@ -130,7 +112,6 @@ fn owned<'a>(held: &'a DecodedFrame, owner: Owner) -> io::Result<Vec<&'a Product
     Ok(lines)
 }
 
-/// The owner's lines in `order`; ties keep the queue's.
 fn ordered<'a>(mut lines: Vec<&'a ProductionLineRow>, order: LineOrder) -> Vec<&'a ProductionLineRow> {
     match order {
         LineOrder::Game => {}
@@ -244,9 +225,6 @@ impl AtHour for ProductionLinesAt {
         (Self::reads_in(params, owner, stage, held, at), i32::MAX)
     }
 
-    /// The countries whole; the owner's lines and their output rows (by key through the run's
-    /// index where it is read, else whole); the definitions and organisations they name; the
-    /// tokens and states naming asks of.
     fn reads_in(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {

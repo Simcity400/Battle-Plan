@@ -1,13 +1,9 @@
-//! A viewing-country switch timed in the perf map log (`BATTLE_PLAN_PERF_MAP_LOG`): where it began (a
-//! Ctrl+click here, or the host's options), each frame's parts not yet the new country's, and its
-//! first changed and settled frames, judged as the `--viewpoint-switch` harness judges them.
 use super::Viewer;
 use super::playback_cost::viewpoint::{Target, seen};
 use crate::playhead_host::CaughtUp;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-/// A switch traced for longer than this is given up and marked so.
 const GIVE_UP: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
@@ -21,13 +17,10 @@ struct Switch {
     target: Target,
     started: Instant,
     first_changed: bool,
-    /// The step whose compose was last marked.
     composed: Option<u64>,
 }
 
 impl Viewer {
-    /// The viewing country asked to become `slot`, from `from`; a switch to the slot already traced
-    /// goes on.
     pub(super) fn trace_switch(&mut self, slot: u32, tag: &str, from: &'static str) {
         if !crate::perf_log::enabled() {
             return;
@@ -39,7 +32,6 @@ impl Viewer {
         self.switch_trace.switch = Some(Switch { target: Target { slot, tag: tag.to_owned() }, started: Instant::now(), first_changed: false, composed: None });
     }
 
-    /// After a frame: what of the traced switch it shows.
     pub(super) fn trace_switch_frame(&mut self) {
         let Some(switch) = self.switch_trace.switch.as_ref() else {
             return;

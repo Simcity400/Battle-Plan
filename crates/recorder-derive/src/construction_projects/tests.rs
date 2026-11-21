@@ -61,9 +61,6 @@ fn step(run: &mut Run, hour: &mut i32, edits: &Edits) {
     *hour += 1;
 }
 
-/// A project as ((line, end, end reason, end hour, known at), (built, its rises, repaired, its
-/// rises, added new, added repair, possible, unaccounted new, unaccounted repair), (remaining,
-/// output reason, construction output)).
 type Shown = (
     (u64, u8, u8, Option<i32>, Option<i32>),
     (i64, Vec<(i32, u32)>, i64, Vec<(i32, u32)>, i64, i64, i64, i64, i64),
@@ -101,8 +98,6 @@ fn projects(run: &Run) -> Vec<Shown> {
         .collect()
 }
 
-/// Line 1 builds at state 100 (two levels queued), line 2 at state 200 (one), whose output is
-/// published; the run's first read.
 fn queued() -> Edits {
     let mut edits = Edits::default();
     edits
@@ -114,12 +109,10 @@ fn queued() -> Edits {
     edits
 }
 
-/// Runs the first test's timeline from hour `hour` up to hour `until`, exclusive.
 fn timeline(run: &mut Run, hour: &mut i32, until: i32) {
     landed(run, hour, until, &[]);
 }
 
-/// [`timeline`], the tables `unstamped` names landing with no sample hour.
 fn landed(run: &mut Run, hour: &mut i32, until: i32, unstamped: &[TableId]) {
     let script: [(i32, fn(&mut Edits)); 4] = [
         (0, |edits| *edits = queued()),
@@ -148,10 +141,6 @@ fn landed(run: &mut Run, hour: &mut i32, until: i32, unstamped: &[TableId]) {
     idle(run, hour, until);
 }
 
-/// A line's new levels are the count's fall, no more than its building's daily rises, dated by
-/// the rise; a gone line takes a provisional ending that its final output settles (a completion
-/// observed before), or that stays unknown when no final output is published; a settled row is
-/// written a last time, then deleted.
 #[test]
 fn construction_projects_claim_levels_and_settle_endings_from_the_final_output() {
     let mut run = Run::new(writers, INPUTS);
@@ -192,8 +181,6 @@ fn construction_projects_claim_levels_and_settle_endings_from_the_final_output()
     assert!(run.rows::<ConstructionLineEndRow>(TableId::ConstructionLineEnds).is_empty(), "an end is logged for its hour alone");
 }
 
-/// A queue read is the hour its sample hour names, as the collector stamps every table it reads:
-/// queue cells written at an hour no read stamps list no line from the queue.
 #[test]
 fn queue_cells_written_at_an_hour_no_read_stamps_list_no_line_from_the_queue() {
     let mut run = Run::new(writers, INPUTS);
@@ -204,9 +191,6 @@ fn queue_cells_written_at_an_hour_no_read_stamps_list_no_line_from_the_queue() {
     assert!(rows.iter().all(|row| row.census_read.is_none() && row.output_alone), "no queue was read: {rows:?}");
 }
 
-/// Two open lines at one building claim nothing (shared); a stretch with an hour not seen whole
-/// claims nothing (lost); in either, what the counts lost is unaccounted. Rises beyond what a
-/// clear stretch's count fell are possible levels.
 #[test]
 fn shared_and_lost_stretches_claim_nothing() {
     let mut run = Run::new(writers, INPUTS);
@@ -239,8 +223,6 @@ fn shared_and_lost_stretches_claim_nothing() {
     assert_eq!((shown[2].1.0, shown[2].1.6, shown[2].1.7, shown[2].1.8), (0, 1, 1, 0), "lost: the count's fall is unaccounted");
 }
 
-/// Output naming a line no queue read listed makes a project of it; its final publication
-/// settles its ending at once.
 #[test]
 fn an_output_alone_line_is_a_project_settled_by_its_final_output() {
     let mut run = Run::new(writers, INPUTS);
@@ -256,8 +238,6 @@ fn an_output_alone_line_is_a_project_settled_by_its_final_output() {
     assert_eq!((row.end, row.end_hour, row.end_known_at, row.construction_raw), (P::FINISHED, Some(0), Some(0), Recorded::Value(40)));
 }
 
-/// Repairs count apart from new levels, each dated by its daily rise; damage while listed adds
-/// repair work, never new levels; a read that repaired nothing dates nothing.
 #[test]
 fn repairs_count_apart_from_new_levels_dated_by_their_rises() {
     let mut run = Run::new(writers, INPUTS);
@@ -277,8 +257,6 @@ fn repairs_count_apart_from_new_levels_dated_by_their_rises() {
     assert_eq!(projects(&run)[0].1, (0, vec![], 1, vec![], 0, 2, 0, 0, 0), "the damage at 30 is repair work added");
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes:
-/// the building changes since the last read outlive the stop.
 #[test]
 fn a_resumed_construction_projects_writer_writes_the_table_of_one_never_stopped() {
     let mut unbroken = Run::new(writers, INPUTS);

@@ -1,23 +1,3 @@
-//! Land-model camouflage from recorded acclimatization and matching content.
-//!
-//! The game selects the first strictly greatest positive category weight,
-//! compares it with maximum * `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`, rejects
-//! the current province's `forbid_camo_when`, then the game evaluates the
-//! ordered `change_camo_when` conditions against the current province and its
-//! state's share (`ACCLIMATIZATION_CAMO_SHOW_WHEN_IN_STATE`). The game tries
-//! the resulting `<entity>_<condition>` and keeps the base if it is absent.
-//!
-//! A recording's DivisionStatus holds the category the first two steps keep
-//! (`camouflage`), decided at capture with the live define, as a Map
-//! recording's DivisionModelInputs does. Recordings before
-//! it hold every entry and the maximum, and the same port
-//! ([`game_model::acclimatization::camouflage`]) decides here with the
-//! content's define.
-//!
-//! A condition is literal `snow` (the executable keyword, effective snow
-//! positive) or a terrain name compared with the province's authored terrain.
-//! Effective snow is the weather record's
-//! `min(permanent + current, snow_gain_max)`, all three recorded.
 
 use std::{collections::BTreeMap, io, sync::OnceLock};
 
@@ -32,7 +12,6 @@ use crate::map::unit_models::ModelStatus;
 use viewer_foundation::map::tables::{Available, core, rows, rows_fields};
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
 
-/// The only condition that is not a terrain name.
 const SNOW: &str = "snow";
 
 #[derive(Debug, Default)]
@@ -44,7 +23,6 @@ struct Category {
 #[derive(Debug, Default)]
 pub struct Content {
     categories: BTreeMap<String, Category>,
-    /// The category keys by the lexer's token identity.
     category_tokens: TokenKeys,
     show_at: i64,
     show_in_state: i64,
@@ -67,8 +45,6 @@ impl Content {
         )
     }
 
-    /// Each set of categories equal under the lexer's fold, which a
-    /// recorded status names at once and so refuses.
     pub fn refusals(&self) -> impl Iterator<Item = String> + '_ {
         self.category_tokens.ambiguous().map(|keys| {
             format!(
@@ -118,9 +94,6 @@ impl Content {
         })
     }
 
-    /// The token of the category the game keeps for a division before
-    /// its province conditions; `None` shows no camouflage. An unreadable
-    /// acclimatization is an error, never a false test.
     fn category(&self, status: ModelStatus<'_>) -> io::Result<Option<u32>> {
         let status = match status {
             ModelStatus::Status(status) => status,
@@ -134,8 +107,6 @@ impl Content {
         match &status.camouflage {
             Recorded::Value(Some(camouflage)) => Ok(camouflage.category),
             Recorded::Value(None) => Err(invalid("division camouflage is unavailable this hour")),
-            // Older recordings: every entry and the maximum, which is None
-            // when the division's acclimatization was unreadable that hour.
             Recorded::NotRecorded => {
                 let maximum = status
                     .acclimatization_maximum
@@ -152,9 +123,6 @@ impl Content {
         }
     }
 
-    /// The suffix for one division at one province. `state_provinces` holds
-    /// every member of the province's state, the province included; empty when
-    /// it has no state. `matches` decides one condition at one province.
     fn suffix<'a, 's>(
         &'a self,
         status: impl Into<ModelStatus<'s>>,
@@ -166,8 +134,6 @@ impl Content {
         let Some(token) = self.category(status.into())? else {
             return Ok(None);
         };
-        // The division records the category by token: its spelling names the
-        // authored category equal to it under the lexer's fold.
         let spelling = tokens
             .name(token)
             .map_err(|reason| invalid(format!("acclimatization category: {reason}")))?;
@@ -209,7 +175,6 @@ impl Content {
     }
 }
 
-/// The game does not replace a valid base with a nonexistent seasonal model.
 pub fn entity(base: &str, suffix: Option<&str>, exists: impl Fn(&str) -> bool) -> String {
     if let Some(suffix) = suffix.filter(|suffix| !suffix.is_empty()) {
         let candidate = format!("{base}_{suffix}");
@@ -220,21 +185,14 @@ pub fn entity(base: &str, suffix: Option<&str>, exists: impl Fn(&str) -> bool) -
     base.to_owned()
 }
 
-/// The fields a kept camouflage reads of each table it reads ([`kept`]).
 pub(crate) struct Fields {
-    /// A province's state, and which provinces there are.
     pub state: u64,
-    /// A province's current and permanent snow.
     pub snow: u64,
-    /// The snow ceiling of the first weather region.
     pub ceiling: u64,
-    /// What a status row says of the division's camouflage.
     pub status: u64,
-    /// What a witness row says of it.
     pub witness: u64,
 }
 
-/// [`Fields`], by the recording's own column names.
 pub(crate) fn fields() -> &'static Fields {
     fn mask(table: TableId, names: &[&str]) -> u64 {
         let mask = (0..table.schema().len())
@@ -264,13 +222,10 @@ pub(crate) fn fields() -> &'static Fields {
     })
 }
 
-/// Each state's provinces, in Provinces' order: what a condition the province does not meet is
-/// tested on. Made from a whole Provinces, so it is kept while no province changes state.
 #[derive(Debug, Default)]
 pub struct StateMembers(BTreeMap<u32, Vec<u32>>);
 
 impl StateMembers {
-    /// Notes its read for a kept answer: every province's state, and which provinces there are.
     pub fn read(provinces: &[ProvinceRow]) -> Self {
         kept::note_table(TableId::Provinces, fields().state);
         let mut members: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
@@ -285,32 +240,21 @@ impl StateMembers {
     }
 }
 
-/// One hour's camouflage operands, each looked up alone in the frame's rows (ascending by
-/// province, the weather a dense array by province). The division's own status row and its
-/// state's members come from the caller. Every row a camouflage reads is noted for a kept
-/// answer ([`kept`]).
 pub struct Context<'a> {
     provinces: &'a [ProvinceRow],
-    /// The dense prefix of the native weather array and the native count,
-    /// which bounds the getter even when the capture was truncated.
     weather: &'a [WeatherProvinceRow],
-    /// `snow_gain_max`; `None` without a weather region row.
     ceiling: Option<i64>,
     weather_count: Option<usize>,
     terrain: &'a BTreeMap<u32, String>,
 }
 
 impl<'a> Context<'a> {
-    /// No operands, for a reader that never asks for camouflage (the ships).
     pub fn none(terrain: &'a BTreeMap<u32, String>) -> Self {
         Self { provinces: &[], weather: &[], ceiling: None, weather_count: None, terrain }
     }
 
-    /// `terrain` is each province's authored terrain, column seven of the
-    /// matching province definitions.
     pub fn read(frame: &'a DecodedFrame, terrain: &'a BTreeMap<u32, String>) -> io::Result<Self> {
         let provinces = core::<tables::Provinces>(frame)?;
-        // Named: the rows at the head hold the snow columns alone for this reader.
         let weather = rows_fields::<tables::WeatherProvinces>(frame, fields().snow)?;
         let weather_count = match &weather {
             Available::Complete(rows) => Some(rows.len()),
@@ -343,7 +287,6 @@ impl<'a> Context<'a> {
         })
     }
 
-    /// The hour's provinces, which [`StateMembers::read`] groups.
     pub fn provinces(&self) -> &'a [ProvinceRow] {
         self.provinces
     }
@@ -355,8 +298,6 @@ impl<'a> Context<'a> {
             .map(|at| &self.provinces[at])
     }
 
-    /// The suffix for one division at its drawn province, `members` its state's provinces. A
-    /// missing operand is an error, never a false test.
     pub fn suffix<'b>(
         &self,
         content: &'b Content,
@@ -385,10 +326,7 @@ impl<'a> Context<'a> {
         }
         if condition == SNOW {
             let Some(row) = self.weather.get(province as usize) else {
-                // Which rows there are decides this.
                 kept::note_table(TableId::WeatherProvinces, u64::MAX);
-                // An ID outside the weather province census returns no snow
-                // before either snow operand is read.
                 if self
                     .weather_count
                     .is_some_and(|count| province as usize >= count)
@@ -434,7 +372,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A row of a recording before `camouflage`: every entry and the maximum.
     fn status(entries: &[(u32, i64)], maximum: i64) -> DivisionStatusRow {
         DivisionStatusRow {
             acclimatization_maximum: Some(maximum),
@@ -447,7 +384,6 @@ mod tests {
         }
     }
 
-    /// A current row: the category the capture kept, if any.
     fn recorded(category: Option<u32>) -> DivisionStatusRow {
         DivisionStatusRow {
             camouflage: Recorded::Value(Some(DivisionCamouflage { category })),
@@ -466,7 +402,6 @@ mod tests {
                     token: 2,
                     literal: b"hot".to_vec(),
                 },
-                // A spelling that differs from its authored key in ASCII case.
                 replay_data::rows::LexicalTokenRow {
                     token: 3,
                     literal: b"COLD".to_vec(),
@@ -499,7 +434,6 @@ mod tests {
                 .to_string(),
             "acclimatization category: token 9 is not in lexical tokens"
         );
-        // Two authored categories equal under the fold are refused by name.
         let ambiguous = Content::parse(
             br#"
             cold = { change_camo_when = { snow } }
@@ -522,7 +456,6 @@ mod tests {
     fn the_first_strict_maximum_must_reach_the_show_threshold() {
         let content = content();
         let snowy = |_: u32, condition: &str| Ok(condition == SNOW);
-        // Ties keep the first; 75% of the maximum is the threshold.
         let row = status(&[(1, 75), (2, 75)], 100);
         assert_eq!(
             content.suffix(&row, tokens(), 1, &[], snowy).unwrap(),
@@ -538,8 +471,6 @@ mod tests {
         );
         let unknown = status(&[(9, 90)], 100);
         assert!(content.suffix(&unknown, tokens(), 1, &[], snowy).is_err());
-        // An unreadable acclimatization is never a false test, in either
-        // form, even without entries.
         for unread in [
             DivisionStatusRow {
                 acclimatization_maximum: None,
@@ -556,8 +487,6 @@ mod tests {
         ] {
             assert!(content.suffix(&unread, tokens(), 1, &[], snowy).is_err());
         }
-        // A recorded camouflage is the capture's decision: no category shows
-        // nothing, and the province conditions still apply to a category.
         assert_eq!(
             content
                 .suffix(&recorded(None), tokens(), 1, &[], snowy)
@@ -573,10 +502,6 @@ mod tests {
         );
     }
 
-    /// A recording's camouflage, decided at capture by the shared port,
-    /// draws exactly what the older rows' entries and maximum draw, for
-    /// synthetic divisions with ties, zero, negative and below-threshold
-    /// weights.
     #[test]
     fn a_recorded_camouflage_draws_what_the_entries_drew() {
         let content = content();
@@ -632,7 +557,6 @@ mod tests {
             content.suffix(&row, tokens(), 1, &[1, 2], terrain).unwrap(),
             None
         );
-        // Province 4 is not desert, but half its state is: 50% >= 50%.
         assert_eq!(
             content.suffix(&row, tokens(), 4, &[4, 2], terrain).unwrap(),
             Some("desert")

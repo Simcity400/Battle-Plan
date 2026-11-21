@@ -1,9 +1,3 @@
-//! Intel network coverage (family 64): every country's intel network in every other at an hour, as
-//! the game's own retained coverage and strength caches hold them (rows at an hour of the daily
-//! network summaries; the caches can be stale against the state rows, and are shown as kept). The
-//! reply is the structure: the countries present and which directed pairs hold a network. Each
-//! pair's five summary values are live cells; a pair's history is the declared `intel-networks`
-//! series, read key by key.
 
 use crate::{
     Source,
@@ -23,7 +17,6 @@ use ts_rs::TS;
 
 const TABLES: [TableId; 3] = [TableId::IntelNetworkSummaries, IDENTITY[0], IDENTITY[1]];
 
-/// The summary columns each pair's live cells read, by the names the widget gives them.
 pub const FIELDS: [(&str, &str); 5] = [
     ("coveredControlled", "covered_controlled_states"),
     ("coveredCore", "covered_core_states"),
@@ -41,8 +34,6 @@ pub struct IntelCoverageParams {
     pub branch_id: String,
 }
 
-/// A directed pair with a network at the hour. Its values are the live cells of the row
-/// `<owner id>:<target id>`, columns as [`FIELDS`] names them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -55,13 +46,13 @@ pub struct IntelNetwork {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IntelCoverageReply {
-    /// Every country present at the hour (a slot the identity names), by tag: a pair of them
-    /// without a network has none, where the summaries are known.
+    #[doc = " Every country present at the hour (a slot the identity names), by tag: a pair of them"]
+    #[doc = " without a network has none, where the summaries are known."]
     pub countries: Vec<Country>,
-    /// By owner, then target id.
+    #[doc = " By owner, then target id."]
     pub networks: Vec<IntelNetwork>,
-    /// The summaries' read hour the rows hold (they are taken daily); it moves daily, so a widget
-    /// renders nothing for it.
+    #[doc = " The summaries' read hour the rows hold (they are taken daily); it moves daily, so a widget"]
+    #[doc = " renders nothing for it."]
     pub read_hour: Option<i32>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
@@ -69,7 +60,6 @@ pub struct IntelCoverageReply {
 
 dashboard_base::reply_warnings!(IntelCoverageReply);
 
-/// The hour's networks, each pair's summary values named as live cells.
 fn networks(frame: &DecodedFrame, tags: &Tags, live: &Cells) -> io::Result<Vec<IntelNetwork>> {
     let mut columns = Vec::with_capacity(FIELDS.len());
     for (name, field) in FIELDS {

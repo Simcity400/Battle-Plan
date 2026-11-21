@@ -1,12 +1,3 @@
-//! `AirRegionActivity`: each strategic region's air scores of every owner summed, and those sums
-//! at the end of every earlier day of the run, so the sum of a region's daily sums over any span
-//! is two reads of one row. The air superiority timeline ranks its most active regions by the
-//! sum over its days of each day's composed side scores, which these sums bound from above.
-//!
-//! A day's sum is the one at its last hour the writer saw. A row is written only where its sums
-//! change: the days between two writes each ended at the earlier write's sums, which the later
-//! write adds to its totals once a day. State is the tables and each score row's part of its
-//! region's sums; a fresh hour or a resume reads the scores whole.
 
 use crate::{
     forces::{invalid, written},
@@ -19,7 +10,6 @@ use std::{
     io,
 };
 
-/// Hours of a game day.
 pub const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 
 const SCORES: [usize; 2] = columns::<RaidAirScoreRow, 2>(["friendly", "enemy"]);
@@ -27,7 +17,6 @@ const OWN: [usize; 5] = columns::<AirRegionActivityRow, 5>(["day", "friendly", "
 
 const READS: &[Read] = &[Read { table: TableId::RaidAirScores, columns: Columns::These(&SCORES), watch: Watch::Changed, required: true }];
 
-/// A region's row: the day its sums were read in, the sums, and the totals of the days before.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Activity {
     pub day: i32,
@@ -38,33 +27,28 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// The totals of the days before `day`, each earlier day ended at this row's sums.
     pub fn before(&self, day: i32) -> (i128, i128) {
         let days = i128::from(day.saturating_sub(self.day).max(0));
         (i128::from(self.friendly_total) + i128::from(self.friendly) * days, i128::from(self.enemy_total) + i128::from(self.enemy) * days)
     }
 
-    /// The totals through `day`, whose sums so far are this row's.
     pub fn through(&self, day: i32) -> (i128, i128) {
         let (friendly, enemy) = self.before(day);
         (friendly + i128::from(self.friendly), enemy + i128::from(self.enemy))
     }
 
-    /// The row read in `day` with sums `friendly` and `enemy`, after this one.
     fn next(&self, day: i32, friendly: i64, enemy: i64) -> io::Result<Self> {
         let (friendly_total, enemy_total) = self.before(day);
         let narrow = |total: i128| i64::try_from(total).map_err(|_| invalid("A region's summed air scores pass a 64-bit total"));
         Ok(Self { day, friendly, enemy, friendly_total: narrow(friendly_total)?, enemy_total: narrow(enemy_total)? })
     }
 
-    /// The row at `slot` of an AirRegionActivity view.
     pub fn read(view: &TableView<'_>, slot: u32) -> Option<Self> {
         let number = |column: usize| view.number(OWN[column], slot);
         Some(Self { day: i32::try_from(number(0)?).ok()?, friendly: number(1)?, enemy: number(2)?, friendly_total: number(3)?, enemy_total: number(4)? })
     }
 }
 
-/// A score row's part of its region's sums: its region and its scores, a negative one as zero.
 fn part(view: &TableView<'_>, slot: u32) -> io::Result<(u128, u32, i64, i64)> {
     let key = view.key(slot).ok_or_else(|| invalid(format!("RaidAirScores slot {slot} holds no row")))?;
     let score = |column: usize| {
@@ -75,9 +59,7 @@ fn part(view: &TableView<'_>, slot: u32) -> io::Result<(u128, u32, i64, i64)> {
 
 #[derive(Default)]
 pub struct AirRegionActivity {
-    /// The writer must read the scores whole before its next hour: a resume.
     rebuild: bool,
-    /// Each score row's region and part, by its key.
     parts: HashMap<u128, (u32, i64, i64)>,
     sums: HashMap<u32, (i64, i64)>,
     dirty: HashSet<u32>,
@@ -177,7 +159,6 @@ impl Writer for AirRegionActivity {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume reads the scores whole.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }

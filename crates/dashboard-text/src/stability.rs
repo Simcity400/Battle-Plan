@@ -1,4 +1,3 @@
-//! Displayed country stability, war support and command power from recorded inputs.
 
 use replay_data::rows::CountryCommandPowerRow;
 
@@ -7,9 +6,6 @@ pub use replay_data::country_stability::{
     stability, war_support,
 };
 
-/// The CountryCommandPower row of the country at canonical `slot` in the
-/// same frame (the stability row's native country ID mapped through
-/// CountryLinks); `None` when the table is not complete or has no row.
 pub fn command_power(
     decoded: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
@@ -32,7 +28,6 @@ pub fn command_power(
     )
 }
 
-/// [`command_power`] of any frame's tables, its row holding the fields `mask` names.
 pub fn command_power_in(
     frame: replay_frame::frame::HourFrame<'_>,
     slot: u32,

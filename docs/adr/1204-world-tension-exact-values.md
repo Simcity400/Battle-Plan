@@ -1,0 +1,11 @@
+# 1204. Keep world tension values separate from chart summaries
+
+The tension panel supplies readings for the current hour, the declared series supply history tiles, and threat events supply their dated observations. The panel and the contributions use different fixed-point scales carried in the reply. The share display apportions the game's capped tension over a positive sum of contributions in integer arithmetic. The contribution display can exceed the cap and show negative values. Other includes contributors excluded from the displayed layers, including unidentified holders. Its key contains NUL, which country tags cannot contain.
+
+Plot summaries estimate intervals from the contribution, tension and sum lines. Their endpoint ratios and conservative extrema describe chart geometry. Exact amounts and shares come from the panel cells, and a missing required cell leaves an unknown value. Summary identity is stable for the same three lines, so repeated reads within a frame reuse the stack. A country retains its series across rank changes and fixed colours use tag order. The vertical range includes 0–100 percent and extends as needed to show the data.
+
+The live chart uses pushed head cells with tiled history. Ordinary views render when the displayed layer structure changes. The breakdown renders for changes to its full contributor list and keeps label reads stable while that list holds. Names and flags are resolved at the latest structural change. Values beside the chart paint from the head and report their actual hour. The plot's callback ref keeps its identity across renders to avoid a detach and reattach triggering another commit.
+
+Event markers use the recorded creation hour. Grouped markers rank and sum amounts from the events' first readings, while a value at a chosen hour uses the latest applicable observation. Distinct events with equal creation hour, first read and cause keep service order so their identities remain stable across replies. Version 1 and 2 widget options still migrate, and unknown display modes use the stacked view.
+
+[Tension data](../../ui/src/widgets/world-tension/tensionData.ts) · [Chart](../../ui/src/widgets/world-tension/TensionChart.tsx) · [Widget](../../ui/src/widgets/world-tension/WorldTensionWidget.tsx)

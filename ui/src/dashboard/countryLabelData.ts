@@ -18,7 +18,6 @@ export function flagReadMetadata(read: FlagValue | undefined): Readonly<{ flag?:
 const countryLabel = (name: NameValue, flag: FlagValue | undefined): CountryLabelValue => ({
   ...nameReadMetadata(nameReadFrom(name, true)), ...flagReadMetadata(flag),
 });
-// A country no read was made for yet is pending, never "not known": that is for a read that found none.
 const pending = countryLabel(undefined, undefined);
 const pendingLabel: CountryLabel = () => pending;
 interface LabelNode { readonly next: Map<string, WeakMap<CountryLabelValue, LabelNode>>; label?: CountryLabel }

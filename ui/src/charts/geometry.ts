@@ -4,7 +4,6 @@ type GeometryRead = () => (() => void);
 const pending = new Set<GeometryRead>();
 let queued = false;
 
-/** Resize, font and data invalidations share a read phase before any layout writes. */
 export function invalidateGeometry(read: GeometryRead): void {
   pending.add(read);
   if (queued) return;

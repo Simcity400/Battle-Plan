@@ -1,5 +1,3 @@
-//! Operation presentation through the recorded content stack.
-//! The readers consume every field; only names and authored sprites are projected.
 
 use crate::{
     Diagnostic, DiagnosticKind, ResolvedLayers,
@@ -23,14 +21,12 @@ pub struct Operation {
     pub name: String,
     pub description: String,
     pub sprite: String,
-    /// Agency operative assignment portrait.
     pub map_icon: String,
 }
 
 #[derive(Default)]
 pub struct Intelligence {
     pub operations: BTreeMap<String, Operation>,
-    /// An uncertain stream can register an earlier token, so no lookup guesses.
     pub operation_refusals: Vec<String>,
     pub notes: Vec<Diagnostic>,
     pub warnings: Vec<String>,
@@ -75,7 +71,6 @@ fn token(item: &Item) -> io::Result<String> {
         .map_err(|why| invalid(format!("intelligence definition name: {why} (count: 1)")))
 }
 
-/// Script targets delegate variable-array fields to a separate reader.
 fn targets(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
         Some(b"targets") => Shape::List,
@@ -91,8 +86,6 @@ fn targets(field: &Field<'_>) -> Shape<Node> {
     }
 }
 
-/// Operation fields and their nested readers.
-/// Unknown keywords are reported and skipped.
 fn operation_field(field: &Field<'_>) -> Shape<Node> {
     match field.keyword().as_deref() {
         Some(
@@ -139,8 +132,6 @@ fn operation_field(field: &Field<'_>) -> Shape<Node> {
     }
 }
 
-/// A token already read in this file or an earlier file is reported
-/// and its body skipped. The first registered definition wins.
 pub fn parse_operations(
     input: &[u8],
     names: &KeyNames,
@@ -159,7 +150,6 @@ fn parse_operations_with_notes(
     let read = native::read(
         input,
         native::Mode::KeepMark,
-        // The operation loop stops at a closing brace or the end of text.
         native::Top::Persistent(Node::File),
         Some(names),
         &mut |node, field| match node {
@@ -202,8 +192,6 @@ fn parse_operations_with_notes(
             continue;
         };
         let token = token(&item).map_err(|why| note_refusal(notes, why))?;
-        // A skipped duplicate retains a tree placeholder, not a
-        // registered operation.
         if !projected.insert(token.to_ascii_lowercase()) {
             continue;
         }
@@ -219,7 +207,6 @@ fn parse_operations_with_notes(
             } else if field.keyword_is("icon") {
                 operation.sprite = string(field).map_err(|why| note_refusal(notes, why))?;
             } else if field.keyword_is("map_icon") {
-                // The map icon is stored independently of the portrait icon.
                 operation.map_icon = string(field).map_err(|why| note_refusal(notes, why))?;
             }
         }
@@ -270,7 +257,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Intelligence> {
     Ok(result)
 }
 
-/// An operation token's name and text icon.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationToken {
     pub token: String,
@@ -304,8 +290,6 @@ enum TokenNode {
     Token,
 }
 
-/// The first token is registered and a duplicate body is skipped;
-/// its accepted fields use a mode-0 lexer.
 pub fn parse_operation_tokens(
     input: &[u8],
     names: &KeyNames,
@@ -396,7 +380,6 @@ pub fn read_operation_tokens(layers: &ResolvedLayers) -> io::Result<OperationTok
     Ok(result)
 }
 
-/// An operation phase's sprites: its `icon` and its `map_icon`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationPhase {
     pub token: String,
@@ -405,8 +388,6 @@ pub struct OperationPhase {
 }
 
 impl OperationPhase {
-    /// The sprite the Operatives map draws for the phase: its `map_icon`, or its `icon`, which
-    /// the game copies into an empty map sprite once the phases are loaded.
     pub fn map_sprite(&self) -> &str {
         if self.map_icon.is_empty() {
             &self.icon
@@ -416,11 +397,9 @@ impl OperationPhase {
     }
 }
 
-/// The operation phase definitions of `common/operation_phases/`, keyed by lowered token.
 #[derive(Default)]
 pub struct OperationPhases {
     pub definitions: BTreeMap<String, OperationPhase>,
-    /// A file whose reading stops can register an earlier token, so no lookup guesses.
     pub refusals: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -444,8 +423,6 @@ enum PhaseNode {
     Phase,
 }
 
-/// The first definition of a token is registered and a later body skipped. Only the two
-/// sprite fields are projected; every other field is passed over without being read.
 pub fn parse_operation_phases(
     input: &[u8],
     names: &KeyNames,
@@ -529,8 +506,6 @@ pub fn read_operation_phases(layers: &ResolvedLayers) -> io::Result<OperationPha
     Ok(result)
 }
 
-/// An agency upgrade's authored identifier is its localisation key;
-/// the reader has no name override.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgencyUpgrade {
     pub token: String,
@@ -597,8 +572,6 @@ enum UpgradeNode {
 
 type UpgradeBranches = Vec<(String, Vec<AgencyUpgrade>)>;
 
-/// Branches load until the end of text. A repeated upgrade in the same
-/// branch is reconstructed; the loader keeps the first global pointer.
 fn parse_agency_upgrades(
     input: &[u8],
     names: &KeyNames,
@@ -613,7 +586,6 @@ fn parse_agency_upgrades(
         &mut |node, field| match node {
             UpgradeNode::File => Shape::Object(UpgradeNode::Branch),
             UpgradeNode::Branch => Shape::Object(UpgradeNode::Upgrade),
-            // Agency upgrade fields.
             UpgradeNode::Upgrade => match field.keyword().as_deref() {
                 Some(b"frame" | b"picture" | b"sound") => Shape::One,
                 Some(b"available" | b"visible") => Shape::Trigger,
@@ -624,7 +596,6 @@ fn parse_agency_upgrades(
                 Some(b"level") => Shape::Object(UpgradeNode::Level),
                 _ => Shape::Skip,
             },
-            // Upgrade-level fields.
             UpgradeNode::Level => match field.keyword().as_deref() {
                 Some(b"modifier") => {
                     Shape::Object(UpgradeNode::Modifier(modifiers::Node::Modifier))
@@ -1118,8 +1089,6 @@ mod tests {
         std::fs::remove_dir_all(cleanup_root).unwrap();
     }
 
-    /// Read-only common/ syntax audit; every KeyNames dependency is below common/.
-    /// Artwork, localisation and full recording-stack verification are not audited.
     #[test]
     #[ignore = "requires the installed game and Workshop corpus"]
     fn intelligence_installed_content_readers() {

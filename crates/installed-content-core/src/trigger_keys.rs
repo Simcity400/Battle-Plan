@@ -1,7 +1,3 @@
-//! Trigger dispatch checks registered classes before scopes, content counts and
-//! scripted triggers. Bare names use ASCII case identity; quoted and numeric
-//! keys do not enter keyword lookup. Immutable registries come from the verified
-//! executable, while authored names come from the resolved content stack.
 
 use engine_executable::executable_tables::{RuntimeTable, view};
 use std::collections::{BTreeMap, BTreeSet};
@@ -478,13 +474,11 @@ pub enum CountKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountTriggerNames {
     pub buildings: BTreeSet<Vec<u8>>,
-    /// Each building name's `provincial` class; `None` when declarations disagree.
     pub provincial: BTreeMap<Vec<u8>, Option<bool>>,
     pub ideologies: BTreeSet<Vec<u8>>,
     pub ideology_types: BTreeSet<Vec<u8>>,
     pub ideologies_gap: Option<String>,
     pub resources: BTreeSet<Vec<u8>>,
-    /// A resource file whose reading stops short, which could declare any other name.
     pub resources_gap: Option<String>,
 }
 
@@ -562,7 +556,6 @@ impl CountTriggerNames {
     pub fn is_building(&self, text: &[u8]) -> bool {
         self.buildings.contains(&text.to_ascii_lowercase())
     }
-    /// Whether a building type is provincial; `None` when unknown or ambiguous.
     pub fn is_provincial(&self, text: &[u8]) -> Option<bool> {
         self.provincial
             .get(&text.to_ascii_lowercase())
@@ -640,7 +633,6 @@ pub fn dispatch<C, T>(
     dispatch_with_error(key, scope, count, scripted)
 }
 
-/// Runtime consumers carry their source errors through dispatch unchanged.
 pub fn dispatch_with_error<C, T, E>(
     key: Key<'_>,
     scope: impl FnOnce(&[u8], bool) -> ScopeStep<E>,
@@ -851,7 +843,6 @@ mod tests {
             unknown.starts_with("whether technocracy names an ideology group is unknown: common/ideologies/b.txt is unknown from line 3"),
             "{unknown}"
         );
-        // A resource file that stops short could declare any name a building does not take.
         let stopped = Resources::stopped(vec![steel], "common/resources/b.txt", "line 2");
         let names = CountTriggerNames::new(&buildings, &ideologies, &stopped);
         assert_eq!(names.count_kind(b"steel"), Ok(Some(CountKind::Resource)));

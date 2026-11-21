@@ -1,10 +1,6 @@
-//! Serialized GPU device and pixel-readback fixtures.
 use crate::map::{gpu_contract::device_descriptor, test_support::serial as test_support_serial};
 use std::sync::MutexGuard;
 
-/// A device on the viewer's own descriptor, with the crate's one-device-at-a-time guard
-/// ([`crate::map::test_support::serial`]) taken before the adapter: hold the guard for as
-/// long as the device is used.
 pub fn device() -> (
     MutexGuard<'static, ()>,
     eframe::wgpu::Device,
@@ -30,7 +26,6 @@ pub fn render_with(
     render_sized(device, queue, [16, 16], draw)
 }
 
-/// Draws into a cleared RGBA8 target of `size` pixels and reads it back, rows packed.
 pub fn render_sized(
     device: &eframe::wgpu::Device,
     queue: &eframe::wgpu::Queue,

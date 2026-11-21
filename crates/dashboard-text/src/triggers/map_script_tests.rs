@@ -289,13 +289,11 @@ fn map_scripts_state_callbacks_keep_holes_fractional_population_and_recorded_val
             eval.scoped_value(b"global.states^0", scope),
             eval.encode(Scope::State(1))
         );
-        // Native global state enumeration includes holes and uses extent, not row count.
         assert_eq!(
             eval.scoped_value(b"global.states^78", scope),
             eval.encode(Scope::State(79))
         );
         assert_eq!(eval.scoped_value(b"global.states^79", scope), Ok(0));
-        // A hole is a known null state: converting or decoding it refuses nothing.
         let hole = eval.encode(Scope::State(79)).unwrap();
         let (states, failures) = crate::triggers::refusal::capture(|| {
             (
@@ -341,7 +339,6 @@ fn map_scripts_state_targets_filter_in_initiator_scope_and_deduplicate() {
             eval.evaluate(&items("state = 64"), Scopes::of(Scope::State(64))),
             Eval::True
         );
-        // Map-mode target blocks use the tree reader, not the trigger grammar.
         let fields = installed_content_core::parser::parse(
             b"targets = { 65 64 65 } target_root_trigger = { tag = GER } target_trigger = { tag = GER FROM = { state = 64 } } targets_dynamic = yes state_target = yes",
         ).unwrap();
@@ -412,7 +409,6 @@ fn map_scripts_target_selection_shares_temps_across_root_arrays_and_filters() {
             eval.script_target_candidates(&countries, caller),
             Ok(vec![1])
         );
-        // A rejected candidate's writes remain available to the next filter.
         let accumulated = selection(
             "target_root_trigger = { set_temp_variable = { t = 0 } } target_array = owned_states target_trigger = { add_to_temp_variable = { t = 1 } check_variable = { t = 2 } }",
         );
@@ -420,7 +416,6 @@ fn map_scripts_target_selection_shares_temps_across_root_arrays_and_filters() {
             eval.script_state_target_candidates(&accumulated, caller),
             Ok(vec![65])
         );
-        // Separate selections start fresh, including after an early error.
         let mut refused = selection("targets = { 64 }");
         refused.unported.push("unavailable selector".into());
         assert!(
@@ -432,7 +427,6 @@ fn map_scripts_target_selection_shares_temps_across_root_arrays_and_filters() {
             eval.script_state_target_candidates(&fresh, caller),
             Ok(vec![64])
         );
-        // The marker remains unsupported on the country-selection path.
         let country_marker = selection("state_target = yes targets = { GER }");
         assert!(
             eval.script_target_candidates(&country_marker, caller)
@@ -493,9 +487,7 @@ fn map_scripts_state_targets_skip_accepted_duplicates_but_retry_rejections() {
         };
         for (candidates, comparison, visits) in [
             ("targets = { 64 64 65 }", "t < 3", 2),
-            // A rejected first visit to 64 does not suppress its successful retry.
             ("targets = { 64 64 65 }", "t > 1", 3),
-            // Accepted membership is shared across arrays and the explicit tail.
             (
                 "target_array = owned_states target_array = owned_states targets = { 64 65 }",
                 "t < 3",
@@ -513,7 +505,6 @@ fn map_scripts_state_targets_skip_accepted_duplicates_but_retry_rejections() {
                 "{candidates}, {comparison}"
             );
         }
-        // Country selection keeps evaluating duplicate candidates before deduplicating.
         let countries = selection("targets = { GER GER SOV }", "t < 3");
         assert_eq!(
             eval.script_target_candidates(&countries, caller),
@@ -627,7 +618,6 @@ fn map_scripts_tech_sharing_uses_the_certified_country_roster_not_global_members
             Ok(false)
         );
     });
-    // An absent token means nonmembership only after the roster is certified.
     with_world(&f, "", Err("none"), |world| {
         assert_eq!(
             Evaluator::new(world, None).in_tech_sharing_group(1, b"uninterned_group"),

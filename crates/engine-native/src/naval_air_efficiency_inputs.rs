@@ -1,6 +1,3 @@
-//! Raw naval-air sortie operands and ordered wing category-kill inputs.
-//! These readers evaluate no efficiency, maximum organisation, fighter bonus or
-//! kill aggregation.
 use crate::{Memory, cnaval_combatant::field, cpdx_array::Array};
 use engine_sites::Rva;
 
@@ -12,25 +9,18 @@ pub struct Modifier {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Source selection:0 no active wings,1 absent base,2 absent host,3 carrier.
     pub source: u8,
     pub pool_type_flags: u64,
     pub mission: i32,
     pub container_present: u8,
     pub base_crowding: i64,
     pub night: i64,
-    /// Country night key23, combat weather key22, province weather key22.
     pub modifiers: [Modifier; 3],
-    /// Keys 0x22, 0x23, 0x24, 0x1B6 ([`METADATA_KEYS`]): raw metadata flags
-    /// and feature selector.
     pub modifier_metadata: [[u32; 2]; 4],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
 }
 
-/// Weather and night keys, followed by screening sortie keys. Their raw
-/// flags and feature selectors come from the global definition table regardless
-/// of accumulator presence, so these definition rows are read unconditionally.
 pub const METADATA_KEYS: [u32; 4] = [
     crate::modifier_keys::CARRIER_TRAFFIC,
     crate::modifier_keys::CARRIER_NIGHT_TRAFFIC,
@@ -42,7 +32,6 @@ pub const METADATA_KEYS: [u32; 4] = [
 pub struct WingKill {
     pub wing: u64,
     pub index: u32,
-    /// Equipment-category bitmask, distinct from a pointer or handle.
     pub category: u64,
     pub count: i32,
 }
@@ -121,8 +110,6 @@ fn modifier(memory: &impl Memory, address: usize, key: u32) -> Result<Modifier, 
     })
 }
 
-/// The caller authenticates its combat census. Recheck plane/group/combat
-/// identity here; live object resolution and all source reads remain bounded.
 pub fn read(
     memory: &impl Memory,
     base: usize,
@@ -165,8 +152,6 @@ pub fn read(
     auth(memory, base, task, crate::ctask_force::VTABLE_RVA)?;
     let country_id = field::<u32>(memory, task, crate::cunit::ROSTER_OWNER)?;
     row.mission = field(memory, task, 0x4ec)?;
-    // The mission selects the authored sortie ratio. Matching content supplies
-    // the ratio table and initial/default sortie defines.
     let side = ptr(memory, group, crate::cfex_group::SIDE)?;
     auth(memory, base, side, crate::cnaval_combatant::VTABLE_RVA)?;
     if ptr(memory, side, crate::cnaval_combatant::COMBAT)? != combat {
@@ -260,8 +245,6 @@ pub fn read(
     Ok(row)
 }
 
-/// Preserves each active wing's native category order. The GUI aggregates
-/// equal categories afterwards. Preflight every count before writing any row.
 pub fn append_kills(
     memory: &impl Memory,
     base: usize,
@@ -288,8 +271,6 @@ fn capture_kills_buffer(
 ) -> Result<[usize; 2], &'static str> {
     auth(memory, base, plane, crate::cfex_air::VTABLE_RVA)?;
     let wings = array(memory, plane, 0x40, 8)?;
-    // Visit every active wing and category-vector occurrence, retaining repeats.
-    // Grow scratch only after a guarded header.
     let mut sources = Vec::new();
     let mut required = 0usize;
     for index in 0..wings.count {
@@ -303,7 +284,6 @@ fn capture_kills_buffer(
                 crate::allocation::reserve_exact(&mut sources, wings.count as usize)
                     .map_err(|_| "collector allocation failed")?;
             }
-            // One source at most per wing, covered by the batch reservation.
             sources.push((reference, kills));
         }
     }

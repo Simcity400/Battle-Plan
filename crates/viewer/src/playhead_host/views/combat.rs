@@ -1,11 +1,3 @@
-//! The proof tool's line for the combat readers (`--combat`): the combat window's read (land,
-//! naval, retained naval result and air region), the selector, the land and naval marker
-//! tooltips, the division panel, the terrain and infrastructure hovers and the raid tooltip, each
-//! over its own rows at the head, learning its tables by reading, against the same leaf over
-//! today's frame of the hour. Timed (`--timing`), each reads at four a second as a hover does: the
-//! window open on the hour's largest land battle, every hover on it, and the frame thread's time
-//! for the asks and the reads they make. The window's read is the map side's in the app, so it is
-//! timed apart, over rows of its own.
 
 use super::super::views::{AtHead, Need, Pace, Reader as ViewReader, Views};
 use crate::{app::combat_rows::CombatRows, document::Document, playhead_host::Entry};
@@ -29,7 +21,6 @@ const LIMIT: Duration = Duration::from_secs(120);
 
 const READERS: [&str; 8] = ["window", "selector", "land_marker", "naval_marker", "division_panel", "terrain", "infrastructure", "raid"];
 
-/// What a reader is read for at an hour, from today's frame.
 #[derive(Clone, Debug, Default)]
 struct Targets {
     land: Vec<(u64, u32)>,
@@ -69,7 +60,6 @@ impl Targets {
     }
 }
 
-/// One reader's leaf over `frame` for each target, as text.
 fn outputs(name: &str, document: &Document, frame: &Arc<DecodedFrame>, targets: &Targets, ours: u32, vision: &viewer_foundation::map::perspective::Vision) -> Vec<String> {
     let content = &document.combat;
     match name {
@@ -100,41 +90,28 @@ struct Reader {
     tables: Vec<TableId>,
 }
 
-/// The window and hovers as the app holds them while timed, and what they measured.
 struct Timing {
     rows: CombatRows,
     window: Window,
-    /// The window's rows, and each read's nanoseconds: the map side's work in the app, not the frame's.
     window_rows: AtHead,
     window_reads: Vec<u64>,
-    /// The tables the battle is chosen from: in the app a click chooses it, so it is not timed.
     battle: AtHead,
-    /// The battle's combat, province and first division, and the frame's first naval combat.
     targets: Option<(u64, u32, Option<u64>, Option<u64>)>,
-    /// The land counter's tooltip the division panel extends: one, as a held hover keeps it.
     base: Arc<Tooltip>,
-    /// Per frame, the frame thread's nanoseconds for every ask and what it took in: wall, and its
-    /// own cycles (which time preempted does not accrue).
     frames: Vec<(u64, u64)>,
-    /// Per reader of [`TIMED`], its wall nanoseconds and cycles on the frame thread each frame.
     each: [Vec<(u64, u64)>; 6],
-    /// The cycle counter's rate, cycles a second.
     hz: f64,
-    /// Per frame with a model, how many hours the window's contents are behind the head shown.
     behind: Vec<f64>,
-    /// Frames with the window open and nothing to show yet.
     loading: u64,
 }
 
 pub(crate) const TIMED: [&str; 6] = ["window", "land_marker", "naval_marker", "division_panel", "terrain", "infrastructure"];
 
-/// The stepper's own time a step, taken by a reader of no table that takes every step.
 pub(crate) struct StepTimer {
     _entry: Arc<Entry>,
     reader: playhead::Reader,
     consumer: playhead::Consumer,
     steps: Vec<Arc<playhead::Step>>,
-    /// Each step's stepper wall nanoseconds, and the last step's sequence taken.
     ns: Vec<u64>,
     last: Option<u64>,
 }
@@ -147,7 +124,6 @@ impl StepTimer {
         Ok(Self { _entry: Arc::clone(entry), reader, consumer, steps: Vec::new(), ns: Vec::new(), last: None })
     }
 
-    /// Takes the steps up to `head`; resets (a seek's) are left out, as their time is the seek's.
     pub(crate) fn frame(&mut self, head: Hour) {
         self.steps.clear();
         self.consumer.take(head, &mut self.steps);
@@ -176,17 +152,12 @@ pub(crate) struct Line {
     views: Views,
     readers: Vec<Reader>,
     timing: Timing,
-    /// The readers asked while timed, of [`TIMED`].
     timed: Vec<&'static str>,
-    /// The largest land battle the window is open on while timed: its id, the hours it was open
-    /// from and to, and its divisions when opened.
     battles: Vec<(u64, Hour, Hour, usize)>,
     totals: BTreeMap<String, (u64, u64, u64)>,
 }
 
 impl Line {
-    /// The readers on `entry`'s playhead; `learned` names tables each reader starts with, one
-    /// `reader: Table` a line (what an earlier run learned), so a timed run starts warm.
     pub(crate) fn open(views: Views, timed: &[&'static str], learned: Option<&str>, timing: bool, hz: f64) -> io::Result<Self> {
         let mut known: BTreeMap<&str, Vec<TableId>> = BTreeMap::new();
         if let Some(file) = learned {
@@ -197,7 +168,6 @@ impl Line {
                 known.entry(name).or_default().push(table);
             }
         }
-        // Timed, the compare readers declare nothing: the playhead steps only what the timed readers read.
         let readers = READERS.iter().map(|&name| {
             let tables = if timing { Vec::new() } else { known.get(name).cloned().unwrap_or_default() };
             Reader { name, reader: views.reader_at(name, &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), Pace::Step), tables }
@@ -215,7 +185,6 @@ impl Line {
         Ok(Self { views, readers, timing, timed: timed.to_vec(), battles: Vec::new(), totals: BTreeMap::new() })
     }
 
-    /// Every reader's leaf over its rows at `hour` against the same over today's frame of the hour.
     pub(crate) fn compare(&mut self, document: &Document, hour: Hour, why: &str, out: &mut impl Write) -> io::Result<()> {
         let today: Arc<DecodedFrame> = match document.playback.replay().seek_selected(document.playback.branch(), hour, None)? {
             SeekResult::Frame(frame) => Arc::new(*frame),
@@ -227,8 +196,6 @@ impl Line {
         let mut declared = false;
         for at in 0..self.readers.len() {
             let name = self.readers[at].name;
-            // The tables the leaf reads over today's frame are declared first, so a reader does not
-            // learn one table a sample; discovery at the head names what that misses.
             let (wanted, reads) = view_reads::record(|| outputs(name, document, &today, &targets, ours, &vision));
             let read: Vec<TableId> = TableId::ALL.into_iter().filter(|table| !today.tables[table.index()].is_not_selected() && reads.iter().any(|identity| identity.is(&today.tables[table.index()]))).collect();
             if self.learn(at, &read) {
@@ -237,7 +204,6 @@ impl Line {
                 self.note(format!("{name}:declared"), (0, 0, None), hour, why, notes, out)?;
                 continue;
             }
-            // Tables declared since join at a step past this head: compared from a later sample.
             if self.readers[at].reader.frame().is_none() {
                 self.note(format!("{name}:loading"), (0, 0, None), hour, why, json!({}), out)?;
                 continue;
@@ -255,7 +221,6 @@ impl Line {
             }
             let differing = wanted.iter().zip(&got).filter(|(wanted, got)| wanted != got).count() + wanted.len().abs_diff(got.len());
             let first = wanted.iter().zip(&got).find(|(wanted, got)| wanted != got).map(|(wanted, got)| super::proof::first_difference(wanted, got));
-            // A reader that differs names the tables it read that differ from today's, row by row.
             let tables: Vec<Value> = if differing == 0 {
                 Vec::new()
             } else {
@@ -269,7 +234,6 @@ impl Line {
         Ok(())
     }
 
-    /// Declares `tables` to reader `at`; true when one was new to it.
     fn learn(&mut self, at: usize, tables: &[TableId]) -> bool {
         let reader = &mut self.readers[at];
         let before = reader.tables.len();
@@ -295,11 +259,6 @@ impl Line {
         self.totals.iter().filter(|(name, _)| !name.contains(':')).map(|(_, (_, differing, _))| differing).sum()
     }
 
-    /// One timed frame at `head` (the hour the map shows), as the app makes it: the window open on
-    /// the largest land battle, read over its rows as the map side reads it; the land marker hover
-    /// on that battle and the naval one on the first naval combat, each asked of its worker; the
-    /// division panel of the battle's first division, the terrain and infrastructure hovers of its
-    /// province, on the frame thread over their rows.
     pub(crate) fn frame(&mut self, document: &Document, head: Hour) {
         let Ok(vision) = document.hour().and_then(|hour| hour.vision(&Choice::default())).map(Arc::new) else { return };
         let ours = vision.ours();
@@ -319,7 +278,6 @@ impl Line {
             }
         }
         timing.battle.end_frame();
-        // The window's read, as the map side makes it in the app: not the frame thread's.
         if timing.targets.is_some()
             && self.timed.contains(&TIMED[0])
             && let Some(frame) = timing.window_rows.frame(at)
@@ -378,9 +336,6 @@ impl Line {
         drop(timing.window.take_retired());
     }
 
-    /// What was compared; per reader the tables it learned and what holding them costs; timed,
-    /// each reader's reads on the frame thread, how far behind the head they were, and the frame
-    /// thread's time a frame for all of them.
     pub(crate) fn summary(&self, distribution: fn(Vec<f64>) -> Value) -> Value {
         let held = self.views.held();
         let bytes = |list: &[(TableId, usize)], tables: &[TableId]| list.iter().filter(|(table, _)| tables.contains(table)).map(|(_, bytes)| bytes).sum::<usize>();
@@ -416,8 +371,6 @@ impl Line {
     }
 }
 
-/// The land battle the window stays open on: `held` while the frame still holds it, else the one
-/// with the most divisions, opened at `head`.
 fn largest(frame: &DecodedFrame, held: Option<(u64, Hour, Hour, usize)>, head: Hour) -> Option<(u64, Hour, Hour, usize)> {
     let combats = frame.complete::<tables::LandCombats>().ok()?;
     if let Some(held) = held
@@ -428,8 +381,6 @@ fn largest(frame: &DecodedFrame, held: Option<(u64, Hour, Hour, usize)>, head: H
     combats.iter().max_by_key(|row| (row.attackers.len() + row.defenders.len(), row.id)).map(|row| (row.id, head, head, row.attackers.len() + row.defenders.len()))
 }
 
-/// The window, hovers and panel on land battle `id`: its province, and the first of its
-/// divisions; the naval readers on the frame's first naval combat.
 fn targets_at(frame: &DecodedFrame, id: u64) -> Targets {
     let mut targets = Targets::default();
     if let Ok(rows) = frame.complete::<tables::LandCombats>()
@@ -446,7 +397,6 @@ fn targets_at(frame: &DecodedFrame, id: u64) -> Targets {
     targets
 }
 
-/// The reader's frame at `hour`; none when its rows are already past it.
 fn at_hour(reader: &ViewReader, hour: Hour) -> io::Result<Option<Arc<DecodedFrame>>> {
     match reader.wait(|frame| frame.hour >= hour, LIMIT) {
         Ok(frame) => Ok((frame.hour == hour).then_some(frame)),

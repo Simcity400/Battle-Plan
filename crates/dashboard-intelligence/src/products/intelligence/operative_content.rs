@@ -1,6 +1,3 @@
-//! What an operative row shows of the recorded content, by the game's own keys and arithmetic: its
-//! saved name, its portrait, its skill level and progress, and its assignment's name, icon,
-//! remaining days and progress. Art is drawn from the shown content and kept, drawn once each.
 
 use crate::Source;
 use dashboard_base::{
@@ -23,29 +20,22 @@ use std::{
 
 pub use super::placements::{CAPTURED, MISSION, OPERATION};
 
-/// The other assignments as the game numbers them.
 pub const COOLDOWN: u32 = 1;
 pub const DISBANDED: u32 = 2;
 pub const KILLED: u32 = 5;
 
-/// The character role and category an operative's portrait and link are read under.
 const OPERATIVE_ROLE: u32 = 4;
 pub const OPERATIVE_CATEGORY: i32 = 3;
 
-/// Art an operative row shows: the portrait the recording selected, or an assignment's sprite (a
-/// mission's text icon strip at its frame, or an operation's map icon).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Art {
     Portrait(RecordedPortrait),
     Icon { mission: bool, name: String, frame: u32 },
-    /// An operation definition's own sprite, as the espionage log shows its type.
     Sprite(String),
 }
 
-/// A text, or why it is not shown.
 pub type Shown = Result<String, String>;
 
-/// An operative's saved name: none and not missing when the game saved it empty.
 pub struct Name {
     pub name: Option<String>,
     pub unnamed: bool,
@@ -55,7 +45,6 @@ pub struct Name {
 #[derive(Debug, Default, PartialEq)]
 pub struct Experience {
     pub text: Option<String>,
-    /// The progress to the next level, as the game divides it: 1 is a whole level, never clamped.
     pub ratio: Option<f64>,
     pub missing: Option<String>,
 }
@@ -64,7 +53,6 @@ pub struct Experience {
 pub struct Assignment {
     pub name: Option<String>,
     pub duration: Option<String>,
-    /// The game's fraction, never clamped.
     pub progress: Option<f64>,
     pub missing: Option<String>,
     pub icon: Option<Art>,
@@ -80,10 +68,8 @@ pub struct OperativeContent {
     drawn: Mutex<BTreeMap<Art, Shown>>,
 }
 
-/// The content of the binding last asked, kept for the source.
 type Kept = Option<(usize, Arc<OperativeContent>)>;
 
-/// The operative content of `load`'s binding, made once for it; why there is none.
 pub fn content(source: &Source, load: &LoadContext) -> Result<Arc<OperativeContent>, String> {
     let options = load.content().map_err(|error| error.to_string())?;
     let politics = politics_content::politics_content(source, options).map_err(|error| error.to_string())?;
@@ -115,8 +101,6 @@ impl OperativeContent {
         Ok(Self { catalogue, politics, skills: leaders.skills, operations, capture_days, warnings, drawn: Mutex::default() })
     }
 
-    /// Every name and icon an assignment can show, each refused by name where the content cannot
-    /// give it: the missions, the cooldowns and every operation the content defines.
     pub fn check(&self) -> Vec<(String, String)> {
         let mut shown: Vec<(String, Assignment)> = (0..=8).map(|variant| (format!("mission {variant}"), self.mission(variant))).collect();
         shown.extend([2, 3].map(|kind| (format!("cooldown {kind}"), self.cooldown_name(kind))));
@@ -134,7 +118,6 @@ impl OperativeContent {
         &self.catalogue.localisation
     }
 
-    /// `art` drawn as an artwork URL, once for the content.
     pub fn draw(&self, art: &Art) -> Shown {
         if let Some(drawn) = self.drawn.lock().unwrap_or_else(|error| error.into_inner()).get(art) {
             return drawn.clone();
@@ -148,7 +131,6 @@ impl OperativeContent {
         drawn
     }
 
-    /// The large operative portrait the recording selected for `character`.
     pub fn portrait(&self, character: Option<u32>, portraits: Option<&[CharacterPortraitRow]>) -> Result<Art, String> {
         let Some(character) = character else {
             return Err("No recorded operative-to-character portrait link; the operative's own portrait path is not recorded".into());
@@ -163,9 +145,6 @@ impl OperativeContent {
         experience(self.localisation(), &self.skills, skill, raw)
     }
 
-    /// What the agency's status line shows for `row` at `now`: the assignment's name and icon, and
-    /// a captivity's or cooldown's remaining days and progress. `operation` is the token of the
-    /// operation the row works in; `capturer` the capturer's name.
     pub fn assignment(&self, row: &OperativeMembershipRow, now: i32, operation: Option<&str>, capturer: Option<&str>) -> Assignment {
         match row.assignment {
             CAPTURED => self.captured(row.captured_hour, now, capturer),
@@ -243,13 +222,10 @@ impl OperativeContent {
         value
     }
 
-    /// Every operation the content defines, by token.
     pub fn operation_tokens(&self) -> impl Iterator<Item = &str> {
         self.operations.operations.keys().map(String::as_str)
     }
 
-    /// An operation type as the espionage log shows it: its stored name key localised, with no
-    /// token fallback, and its definition's sprite; each missing with why.
     pub fn operation_type(&self, token: &str) -> (Shown, Result<Art, String>) {
         match self.operations.operation(token) {
             Ok(Some(metadata)) => (
@@ -270,7 +246,6 @@ impl OperativeContent {
             Ok(None) => return Assignment { missing: Some(format!("Recorded content does not define operation {token}.")), ..Assignment::default() },
             Err(reason) => return Assignment { missing: Some(reason), ..Assignment::default() },
         };
-        // An operation's name localises its stored name key, with no token fallback.
         let mut value = named(catalogue::localised_with(self.localisation(), &metadata.name, &[], View::Plain));
         value.icon = (!metadata.map_icon.is_empty()).then(|| Art::Icon { mission: false, name: metadata.map_icon.clone(), frame: 0 });
         value
@@ -291,7 +266,6 @@ fn named(name: Shown) -> Assignment {
     }
 }
 
-/// A mission's text icon strip at `frame`, or an operation's map icon.
 fn icon_png(catalogue: &Catalogue, mission: bool, name: &str, frame: u32) -> Shown {
     let context = if mission { format!("Mission text icon {name}") } else { format!("Operative icon {name}") };
     let sprite = if mission { catalogue::text_icon_sprite(&catalogue.sprites, name) } else { catalogue::created_gui_sprite(&catalogue.sprites, name) }
@@ -303,7 +277,6 @@ fn icon_png(catalogue: &Catalogue, mission: bool, name: &str, frame: u32) -> Sho
     })
 }
 
-/// An operation definition's sprite, its first frame.
 fn sprite_png(catalogue: &Catalogue, name: &str) -> Shown {
     let context = format!("Operation icon {name}");
     let sprite = catalogue.sprites.lookup(name).map_err(|error| format!("{context}: {error}"))?;
@@ -311,7 +284,6 @@ fn sprite_png(catalogue: &Catalogue, name: &str) -> Shown {
     catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 96).map_err(|error| format!("{context}: {error}"))
 }
 
-/// The saved name through the plain localiser; a key the content lacks keeps its bytes.
 pub fn name(localisation: Option<&Localisation>, row: &OperativeMembershipRow) -> Name {
     let bytes = match &row.name {
         Recorded::Value(bytes) => bytes,
@@ -324,7 +296,6 @@ pub fn name(localisation: Option<&Localisation>, row: &OperativeMembershipRow) -
     }
 }
 
-/// A cooldown's kind and dates; none outside a cooldown.
 pub fn cooldown(row: &OperativeMembershipRow) -> Result<Option<(u32, i32, i32)>, String> {
     if row.assignment != COOLDOWN {
         return Ok(None);
@@ -338,7 +309,6 @@ pub fn cooldown(row: &OperativeMembershipRow) -> Result<Option<(u32, i32, i32)>,
     }
 }
 
-/// Whether a mission is set: the target kind dispatches variants 1 to 8; none or 0 is no mission.
 pub fn mission_variant(variant: Option<u32>) -> Result<bool, String> {
     match variant {
         None | Some(0) => Ok(false),
@@ -347,8 +317,6 @@ pub fn mission_variant(variant: Option<u32>) -> Result<bool, String> {
     }
 }
 
-/// Days are rounded before subtracting; elapsed is clamped at zero and the whole at one, in wrapping
-/// signed arithmetic, then divided as f32.
 pub fn capture_progress(captured_hour: i32, now: i32, duration: i32) -> (i32, f32) {
     let captured_day = captured_hour.wrapping_sub(HOUR_EPOCH) / 24;
     let now_day = now.wrapping_sub(HOUR_EPOCH) / 24;
@@ -358,7 +326,6 @@ pub fn capture_progress(captured_hour: i32, now: i32, duration: i32) -> (i32, f3
     (remaining, elapsed as f32 / denominator as f32)
 }
 
-/// A cooldown's remaining days, by signed hour arithmetic and truncation.
 pub fn cooldown_remaining(kind: u32, end: i32, now: i32) -> i32 {
     if kind == 0 {
         return 0;
@@ -377,7 +344,6 @@ pub fn cooldown_progress(kind: u32, start: i32, end: i32, now: i32) -> (i32, f32
     (remaining, elapsed as f32 / duration as f32)
 }
 
-/// The mission localisation interface keys, by the game's discriminator.
 fn mission_key(variant: u32) -> Option<&'static str> {
     Some(match variant {
         0 => "OPERATIVE_MISSION_NO_MISSION",
@@ -393,8 +359,6 @@ fn mission_key(variant: u32) -> Option<&'static str> {
     })
 }
 
-/// Progress to the next level in Fixed5: signed multiply wraps and division truncates; the
-/// sentinel for no cost or an out-of-range value stands as the game keeps it.
 pub fn native_progress(raw: i64, cost: i32) -> i64 {
     let denominator = i64::from(cost) * 100_000;
     if denominator != 0 && (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
@@ -404,8 +368,6 @@ pub fn native_progress(raw: i64, cost: i32) -> i64 {
     }
 }
 
-/// The skill line: the next level's cost of category 3, the progress as Fixed5, and the
-/// localised text with or without progress at the cap.
 pub fn experience(localisation: &Localisation, skills: &Skills, skill: Option<i32>, raw: i64) -> Experience {
     let Some(skill) = skill else {
         return Experience { missing: Some("The operative's native skill definition was not recorded.".into()), ..Experience::default() };

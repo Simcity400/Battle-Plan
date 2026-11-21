@@ -28,7 +28,6 @@ import type { MeasureParts, PartValues } from './measureParts';
 import { drawnItems } from './measureParts.ts';
 import type { PartsHead } from './PartFollows';
 
-/** The parts of one country over time, as tiles: each part's summary read as the chart draws. */
 class PartLines {
   readonly lines = new Map<string, { read: () => ChartSummary | undefined; subscribe: (wake: () => void) => () => void; onView: TimeChartProps['onSummaryView'] }>();
   private wakes = new Set<() => void>();
@@ -38,8 +37,6 @@ class PartLines {
   subscribe = (wake: () => void) => { this.wakes.add(wake); return () => { this.wakes.delete(wake); }; };
 }
 
-/** One part measure's tiles for `tag`, held in `lines` under its id; its head bin drawn at the followed value, and why it
- * holds no value in view told to `unrecorded`. */
 function PartTile({ client, track, family, tag, id, active, live, lines, head, unrecorded }: { client: DashboardClient; track: BoundTrack; family: Record<string, unknown>;
   tag: string; id: string; active: boolean; live: boolean; lines: PartLines; head: (() => number | null) | null;
   unrecorded: (id: string, reason: string | null | undefined) => void }) {
@@ -58,32 +55,24 @@ function PartTile({ client, track, family, tag, id, active, live, lines, head, u
 export interface PartsBreakdownProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   parts: MeasureParts;
-  /** The country broken down, as the chart and the list name it. */
   tag: string; name: string;
   extent: [number, number]; playhead: number | null;
-  /** The hour the parts list shows when the head is not followed. */
   hour: number;
-  /** Following the head: the parts' followed values (`head`, for `[tag]`). */
   head: PartsHead | null;
-  /** The parts at `hour` where the head is not followed. */
   values: PartValues | undefined;
-  /** What the total is called, and its value at the hour shown where it is not the parts' sum. */
   totalLabel: string; total?: number | null;
   format: (value: number) => string;
   error?: unknown; onRetry?: () => void;
-  /** Opened at an hour picked on the chart. */
   onPick?: (hour: number) => void;
 }
 
-/** One country's parts stacked over time (each part's tiles, drawn as they land without a render), with the parts at
- * the hour shown listed: painted from the followed values while the head is followed. */
 export default function PartsBreakdown({ runtime, track, active, options, parts, tag, name, extent, playhead, hour, head, values,
   totalLabel, total, format, error, onRetry, onPick }: PartsBreakdownProps) {
   const tokens = useChartTokens();
   const shown = useShownHour();
   const following = head !== null;
   const lines = useMemo(() => new PartLines(), []);
-  const span = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const span = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const keyedFamily = parts.kind === 'keyed' ? parts.family as unknown as Record<string, unknown> : null;
   const held = useSeriesParts(runtime.client, track.source, track.branch.id, keyedFamily, keyedFamily ? tag : null, keyedFamily ? span : null, active);
   const keys = useMemo(() => keyedFamily ? (held.data?.parts ?? []).map(part => ({ tag, part: part.part })) : [], [keyedFamily, held.data, tag]);
@@ -93,7 +82,6 @@ export default function PartsBreakdown({ runtime, track, active, options, parts,
   const items = useMemo(() => parts.kind === 'measures' ? drawnItems(parts.items).map(item => ({ id: item.id, label: item.label }))
     : keys.map(key => ({ id: key.part, label: parts.name(key.part) })), [parts, keys]);
   const colours = useMemo(() => partColours(items, tokens.categories), [items, tokens.categories]);
-  // Each part measure's reason, while it holds no value in view: the chart is not recorded when every part's is.
   const [partReasons, setPartReasons] = useState<ReadonlyMap<string, string>>(new Map());
   const partUnrecorded = useCallback((id: string, reason: string | null | undefined) => setPartReasons(before => {
     if ((before.get(id) ?? null) === (reason ?? null)) return before;
@@ -111,7 +99,7 @@ export default function PartsBreakdown({ runtime, track, active, options, parts,
       out.push(summary);
     }
     return out.length && out.every(summary => summary.buckets.length === out[0].buckets.length) ? out : null;
-  }, [items, parts.kind, lines, keyed.summaryOf, tag]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, parts.kind, lines, keyed.summaryOf, tag]);
   const stacked = useRef<{ summaries: readonly ChartSummary[]; stack: ReturnType<typeof summaryStack> } | null>(null);
   const stackOf = useCallback(() => {
     const now = summaries();
@@ -136,7 +124,7 @@ export default function PartsBreakdown({ runtime, track, active, options, parts,
       const end = Math.min(x[1], until ?? x[1]);
       return stack && end >= x[0] ? compactStackExtent(stack.model, x[0], end) : null;
     },
-  }], [stackOf, colourList.join('|'), until]); // eslint-disable-line react-hooks/exhaustive-deps
+  }], [stackOf, colourList.join('|'), until]);
   const data = useMemo<ChartData>(() => ({ revision: () => summaries() ?? [], subscribe: wake => {
     const stops = [lines.subscribe(wake), keyed.subscribe(wake)];
     return () => { for (const stop of stops) stop(); };
@@ -168,7 +156,6 @@ export default function PartsBreakdown({ runtime, track, active, options, parts,
     }, subscribe: head.subscribe };
   }, [head, headValues, rowsOf, format, runtime.clock, offset, shown]);
   useEffect(() => { if (!head) shown(values ? hour : null); }, [head, values, hour, shown]);
-  // A part's tiles draw their head bin at its followed value.
   const partHead = useCallback((id: string) => head ? () => head.values([tag]).get(tag)?.get(id) ?? null : null, [head, tag]);
   const atHour = rowsOf(values);
   const sum = total !== undefined ? total : atHour.every(part => part.value !== null) && values ? atHour.reduce((all, part) => all + part.value!, 0) : null;

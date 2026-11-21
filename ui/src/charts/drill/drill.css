@@ -1,4 +1,3 @@
-/* The drill-down: a slide inside the widget, or a panel beside it. */
 .drill-host { position: relative; flex: 1; min-height: 0; height: 100%; overflow: hidden; }
 .drill-face { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; transition: transform var(--t) var(--ease), opacity var(--t) var(--ease); }
 .drill-main { transform: translateX(0); }

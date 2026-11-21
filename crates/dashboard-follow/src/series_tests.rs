@@ -1,5 +1,3 @@
-//! A followed series answers at the head what `series-state` answers for the same hour: computed
-//! columns and an owner's parts, on a recording written by the recorder's own writer.
 
 use crate::{Answer, Identity, Query, State, answer_at};
 use dashboard_declare::{Carry, Column, Key, Measure, Series};
@@ -117,7 +115,6 @@ fn query() -> dashboard_query::Query<'static> {
     dashboard_query::Query { replay: replay(), timeline: Arc::new(timeline), holders: Arc::new(holders) }
 }
 
-/// CountryRow's `political_power_raw` and `command_power_raw`, as the schema numbers them.
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 
@@ -141,7 +138,6 @@ static NEGATED: Series = Series {
     drops: false,
 };
 
-/// CountryResources' `special_total` and `production_demand`, as the schema numbers them.
 const SPECIAL_TOTAL: usize = 4;
 const PRODUCTION_DEMAND: usize = 5;
 
@@ -149,7 +145,6 @@ fn surplus(cells: &dyn Cells, slot: u32) -> Option<i64> {
     cells.number(SPECIAL_TOTAL, slot)?.checked_add(cells.number(PRODUCTION_DEMAND, slot)?)
 }
 
-/// A computed column of an owner's parts no declaration summarizes: each resource's surplus.
 static RESOURCE_SURPLUS: Series = Series {
     kind: "test-surplus",
     table: TableId::CountryResources,
@@ -166,7 +161,6 @@ static RESOURCE_SURPLUS: Series = Series {
     drops: false,
 };
 
-/// A lane of `query`'s table holding its columns, sought to `from`.
 fn lane(pages: &Arc<dyn Pages>, query: &Query, columns: Vec<usize>, from: i32) -> Lane {
     let mut lane = Lane::new(Arc::clone(pages), 0, query.table(), &columns, false).unwrap();
     lane.seek(from).unwrap();
@@ -174,7 +168,6 @@ fn lane(pages: &Arc<dyn Pages>, query: &Query, columns: Vec<usize>, from: i32) -
     lane
 }
 
-/// An answer's rows: (key, value when it holds one, name).
 fn rows(answer: &Answer) -> Vec<(u128, Option<i64>, String)> {
     (0..answer.keys.len()).map(|row| (answer.keys[row], (answer.states[row] == State::Value).then_some(answer.values[row]), answer.name(row).unwrap_or_default().to_owned())).collect()
 }
@@ -183,8 +176,6 @@ fn value(state: &SeriesState) -> Option<i64> {
     state.run.as_ref().map(|run| run.value_raw.parse().unwrap())
 }
 
-/// A computed column followed at the head, stepped hour by hour across a block's edge, a country
-/// coming into being and hours its input is not recorded, equals `series-state` at every step.
 #[test]
 fn a_followed_computed_column_equals_series_state_at_every_step() {
     assert_eq!(dashboard_declare::field(TableId::Countries, "political_power_raw").unwrap(), POWER);
@@ -218,9 +209,6 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
     assert!(valued > 200 && unrecorded > 4, "{valued} values and {unrecorded} hours not recorded compared");
 }
 
-/// An owner's parts followed at the head (all, or its top two by a computed column) equal
-/// `series-state` of every part, and of the top parts, at every step, across a part coming and
-/// going.
 #[test]
 fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
     let state = query();

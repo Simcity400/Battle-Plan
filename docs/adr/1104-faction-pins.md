@@ -1,0 +1,9 @@
+# 1104. Admit faction pins through the shared province schedule
+
+Use the theatre's first region to own its pin. An absent or invalid first region or a row beyond the native signed-byte lookup is ineligible. If another theatre also lists that first region, the byte-map choice is absent from the recording, so withhold it rather than guessing between theatres. Compare hidden-country references against both a raw tag and canonical slots, and name unresolved links that could affect the result. The political, air and navy map modes show these pins. Fog, distance and the existence of armies do not gate them.
+
+Prepare camera-independent candidates first. A presented frame offers their owners only while the first region has a province in the shared update schedule. An off-camera province cleared in this frame's rotating phase is still considered listed for the current region call. Request another presentation when needed to erase that final owner, even if the camera is still. Selection may retain a listed owner but cannot add a clean province outside camera admission.
+
+The region icon uses the seam-unwrapped arithmetic mean of its province icons, with its first province as seam reference and height from terrain. The theatre icon takes the arithmetic mean of the region positions in their recorded order without another seam adjustment. It does not enter the counter grouping pass. Retain the native window resources and its zero priority. Depth gives the order for pool requests and paint, with nearer pins on top. Use the recorded theatre country count and emblem, and append the content's miniature suffix. A refused button hit shape also withholds its drawing so a visible pin cannot silently pass clicks to icons beneath it. Hover owns the union of theatre regions and clears it when the pointer leaves.
+
+[Faction pin preparation and drawing](../../crates/viewer-counters/src/map/counters/faction_pings.rs)

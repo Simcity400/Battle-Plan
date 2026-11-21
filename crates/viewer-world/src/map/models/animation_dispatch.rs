@@ -1,5 +1,3 @@
-//! Native-only animation calls retained in source order and grouped by player.
-//! Palette consumers keep the general path; this layout never holds borrowed players.
 
 use super::{ModelField, ModelGroup, ModelInstance, Rig, entity_animation};
 use std::{
@@ -13,7 +11,6 @@ type Key = (usize, u32, u32);
 #[derive(Default)]
 pub(super) struct Dispatch {
     layout: Option<Layout>,
-    /// The actors the last animation made a player for.
     created: Vec<Key>,
 }
 
@@ -174,9 +171,6 @@ impl Layout {
 }
 
 impl Dispatch {
-    /// Returns false without changing presentation state if real palettes are needed.
-    /// Exact validation covers placements, direct field installs and redirected rigs;
-    /// time, transforms, clocks, defaults and group visibility are always read live.
     #[allow(clippy::too_many_arguments)]
     pub fn animate(
         &mut self,
@@ -268,8 +262,6 @@ impl Dispatch {
         }
         let run_span;
         {
-            // Keys are sorted in both stores. Only this frame's borrow bindings are
-            // temporary; occurrence lists and event packet capacities stay retained.
             let mut tasks = layout.tasks.iter_mut().peekable();
             let mut bound: Vec<_> = players
                 .iter_mut()
@@ -347,7 +339,6 @@ impl Dispatch {
         true
     }
 
-    /// The actors the last animation made a player for.
     pub fn created(&self) -> &[Key] {
         &self.created
     }

@@ -1,9 +1,3 @@
-//! `viewer --viewpoint-switch <replay> --hour H --out <dir> --countries TAG,TAG,... [--rounds N]
-//! [--play-switches N] [--play-speed HOURS_PER_SECOND] [--hour-steps N] [--refresh-hz HZ]
-//! [--settle-frames N] [--timeout S]`: opens the recording at hour H, switches the viewing country
-//! through the countries in turn ([`crate::app::playback_cost::viewpoint`]), held at H and then while
-//! playing, and writes each switch's time to its first changed frame and to its settled frame, with
-//! the part that settled last, to `<dir>/report.json`.
 use super::{CAPTURES, SEED_CACHE, copy_tree, hash, invalid, lock};
 use crate::Options;
 use serde_json::json;
@@ -89,8 +83,6 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         Some(seed) => Some(copy_tree(Path::new(&seed), &output.join("cache"))?),
         None => None,
     };
-    // Isolation is set before any viewer worker exists: the map settings, the content caches and
-    // the shader cache all live under `--out`.
     unsafe {
         std::env::set_var("LOCALAPPDATA", local);
         std::env::set_var("APPDATA", roaming);

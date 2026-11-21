@@ -1,12 +1,3 @@
-//! Native mission-effective aircraft count of the flying map scenarios:
-//! Sortie efficiency is applied to the recorded wing operands.
-//! Products keep the native low 64 bits and every fixed5 division truncates
-//! toward zero before the next factor. A console efficiency override
-//! recorded hourly replaces the efficiency law.
-//!
-//! The simulation's stored mission efficiency and aircraft count
-//! are not this value: they refresh only past period, capacity and host-combat
-//! gates during the previous hourly update, with the base's carrier status.
 
 use std::{collections::BTreeMap, io};
 
@@ -72,22 +63,14 @@ pub fn empty_menu_efficiency(
         .wrapping_add(get(AirSortieModifierRow::COUNTRY, 0)))
 }
 
-/// Content defines of the count law and of mine-laying admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SortieDefines {
-    /// NAir.MISSION_EFFICIENCY_MULT_AT_LACK_OF_FUEL, unclamped.
     pub fuel_penalty_raw: i64,
-    /// NAir.MISSILE_LAUNCHER_SLOTS: the game stores 0
-    /// for a missing or non-number value and its loader raises it to 1.
     pub missile_launcher_slots: i32,
-    /// NNavy.CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO, indexed by task-force stance.
     pub carrier_stance_ratios: Vec<i64>,
-    /// NNavy.NAVAL_MINES_IN_REGION_MAX; its loader
-    /// raises a value below one to one.
     pub mine_maximum_raw: i64,
 }
 
-/// Key 0x11's runtime definition and the DLC mask its gate reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ModifierMetadata {
     flags: u32,
@@ -97,8 +80,6 @@ struct ModifierMetadata {
 }
 
 impl ModifierMetadata {
-    /// An entry counts only with its feature enabled; flag 0x10
-    /// clamps it to [0, 1].
     fn effective(self, raw: i64) -> i64 {
         let enabled = self.feature_selector == 0
             || (self.callback_kind == 1 && self.feature_selector & self.feature_flags != 0);
@@ -125,13 +106,9 @@ struct EfficiencyInputs {
     coverage: i64,
     penalty: i64,
     mission_mask: u32,
-    /// Capacity and supply of the mission country's container.
     mission: Container,
-    /// Fuel of the effective country's container.
     effective: Container,
-    /// Weather, country and fleet-leader entries, already effective.
     modifier: i64,
-    /// Present only with a mission region.
     country_region: Option<i64>,
     fuel_penalty: i64,
 }
@@ -141,8 +118,6 @@ fn fixed_mul(left: i64, right: i64) -> i64 {
     left.wrapping_mul(right) / ONE
 }
 
-/// Full fuel without a demand, and for the three extreme
-/// allocations the native code special-cases.
 fn fuel_ratio(container: Container) -> i64 {
     if container.fuel_demand <= 0
         || matches!(container.fuel_allocated, i64::MAX | i64::MIN)
@@ -180,28 +155,17 @@ fn sortie_efficiency(input: &EfficiencyInputs) -> i64 {
     value.clamp(0, ONE)
 }
 
-/// Base-kind branches selected by the air base's kind field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Base {
-    /// Kind 1: a state base's launcher level or the content define.
     Rocket(i64),
-    /// Kind 2 always counts one.
     Gun,
-    /// A host base's stance ratio, applied after rounding.
     Ordinary { stance_ratio: Option<i64> },
 }
 
-/// The caller reads the low 32 bits as a signed count.
 fn scenario_plane_count(base: Base, wing_planes: i32, efficiency: i64) -> i32 {
     match base {
         Base::Gun => 1,
         Base::Rocket(slots) => {
-            // The sign-extended slots times the efficiency,
-            // wrapping. A product with a remainder is rounded up in fixed5:
-            // the quotient plus one when positive, multiplied back by 100000
-            // (wrapping), and the result divided again
-            // before its low 32 bits are compared as a signed value.
-            // The multiply-back can overflow, so the steps do not cancel.
             let mut raw = slots.wrapping_mul(efficiency);
             if raw % ONE != 0 {
                 raw = (raw / ONE + i64::from(raw > 0)).wrapping_mul(ONE);
@@ -210,7 +174,6 @@ fn scenario_plane_count(base: Base, wing_planes: i32, efficiency: i64) -> i32 {
         }
         Base::Ordinary { stance_ratio } => {
             let raw = i64::from(wing_planes).wrapping_mul(efficiency);
-            // The game rounds half away from zero into an int before the stance product.
             let rounded = if raw < 0 {
                 raw.wrapping_sub(ONE / 2) / ONE
             } else {
@@ -222,7 +185,6 @@ fn scenario_plane_count(base: Base, wing_planes: i32, efficiency: i64) -> i32 {
     }
 }
 
-/// The recorded console override replaces the whole law, without a clamp.
 pub fn efficiency_override(
     modifiers: &BTreeMap<(u8, u32, u32), i64>,
     (effective_raw, effective_slot): (u32, u32),
@@ -237,7 +199,6 @@ pub fn efficiency_override(
         .copied()
 }
 
-/// This hour's recorded sortie operands, joined by their keys.
 pub struct SortieSources<'a> {
     missions: BTreeMap<u64, &'a AirMissionInputRow>,
     containers: BTreeMap<(u64, u32), &'a AirSortieBaseCountryRow>,
@@ -247,7 +208,6 @@ pub struct SortieSources<'a> {
 }
 
 impl<'a> SortieSources<'a> {
-    /// `Err` names the incomplete table.
     pub fn read(frame: &'a DecodedFrame) -> io::Result<Result<Self, &'static str>> {
         let (Some(missions), Some(containers), Some(modifiers), Some(special), Some([metadata])) = (
             complete::<tables::AirMissionInputs>(frame)?,
@@ -259,7 +219,6 @@ impl<'a> SortieSources<'a> {
             return Ok(Err("complete same-hour sortie operands are required"));
         };
         let feature_flags = if metadata.feature_selector != 0 && metadata.callback_kind == 1 {
-            // The feature-flags getter reads the active DLC mask.
             match complete::<tables::SimulationFeatures>(frame)? {
                 Some([features]) => features.dlc_mask,
                 _ => return Ok(Err("the sortie modifier gate needs the DLC mask")),
@@ -329,9 +288,6 @@ impl<'a> SortieSources<'a> {
         Ok((raw, self.metadata.effective(raw)))
     }
 
-    /// Host admission: a stateless base's task force in combat admits
-    /// only a mask with bit 0 or 2 whose mission region is the task force
-    /// location's region. `Err` names a missing or unsupported operand.
     pub fn host_admits(&self, wing: &AirWingRow, base: &AirBaseRow) -> Result<bool, &'static str> {
         if base.state.is_some() {
             return Ok(true);
@@ -350,8 +306,6 @@ impl<'a> SortieSources<'a> {
             || (wing.mission_mask & 5 != 0 && wing.mission_region == host.task_force_region))
     }
 
-    /// A missing row is a null or all-zero container. `fuel` refuses a row
-    /// recorded without it, which only an effective country's carries.
     fn container(&self, base: u64, country: u32, fuel: bool) -> Result<Container, &'static str> {
         let Some(row) = self.containers.get(&(base, country)) else {
             return Ok(Container::default());
@@ -378,9 +332,6 @@ impl<'a> SortieSources<'a> {
         )
     }
 
-    /// The wing's scenario plane count from its pool base. `mission_slot` is
-    /// the resolved mission country; `effective` the wing's raw effective tag
-    /// and its slot. `Err` names a missing operand.
     pub fn count(
         &self,
         wing: &AirWingRow,
@@ -414,7 +365,6 @@ impl<'a> SortieSources<'a> {
             }
         };
         let efficiency = match arm {
-            // The gun arm ignores the efficiency.
             Base::Gun => 0,
             _ => self.efficiency(
                 wing,
@@ -428,8 +378,6 @@ impl<'a> SortieSources<'a> {
         Ok(scenario_plane_count(arm, wing.planes, efficiency))
     }
 
-    /// The regional mission hover's base and country joins, without its zero-plane
-    /// contribution shortcut: an individual wing still needs its actual efficiency.
     pub fn wing_efficiency(
         &self,
         wing: &AirWingRow,
@@ -453,7 +401,6 @@ impl<'a> SortieSources<'a> {
         self.efficiency(wing, input, base, mission.slot, effective, fuel_penalty)
     }
 
-    /// Sortie efficiency with the ordinary land-base and mission parameters.
     pub fn efficiency(
         &self,
         wing: &AirWingRow,
@@ -486,8 +433,6 @@ impl<'a> SortieSources<'a> {
                 .map_or(0, |row| row.leader_modifier_raw);
             modifier = modifier.wrapping_add(self.metadata.effective(leader));
         }
-        // The game applies the country-region term whenever the mission has
-        // a region, resolving any tag; only positive tags are recorded.
         let country_region = match wing.mission_region {
             None => None,
             Some(_) if !positive => {

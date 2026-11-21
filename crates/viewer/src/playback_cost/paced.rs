@@ -1,28 +1,22 @@
 use super::distribution;
 use serde_json::{Value, json};
 
-/// Microseconds after the first frame's start at which frame `index` is due.
 pub(crate) fn due_us(index: u64, refresh_hz: f64) -> f64 {
     index as f64 * 1e6 / refresh_hz
 }
 
-/// A frame reached after its due time starts at once, late; the first frame's start is the clock's zero.
 pub(crate) fn late_start(index: u64, due_us: f64, reached_us: f64) -> bool {
     index > 0 && reached_us > due_us
 }
 
-/// The head `elapsed_s` seconds after `from` at `speed` hours a second, held at the branch's last hour.
 pub(crate) fn head(from: i32, speed: f64, elapsed_s: f64, last: i32) -> f64 {
     (f64::from(from) + elapsed_s * speed).min(f64::from(last))
 }
 
-/// The hour a paced run sought back to `back` plays on to: `seconds` at its speed, or the branch's
-/// last hour if that comes first, since the head stops there.
 pub(crate) fn seek_back_end(back: i32, speed: f64, seconds: f64, last: i32) -> f64 {
     (f64::from(back) + seconds * speed).min(f64::from(last))
 }
 
-/// The head's whole hour and the fraction past it.
 pub(crate) fn split(head: f64) -> (i32, f64) {
     let hour = head.floor();
     (hour as i32, head - hour)
@@ -38,49 +32,29 @@ pub(crate) struct Frame {
     pub start_us: f64,
     pub work_us: f64,
     pub gpu_wait_us: f64,
-    /// Between this frame's start and the one before it; none for the first.
     pub interval_us: Option<f64>,
-    /// Waiting for a swap chain image; none without a window.
     pub acquire_us: Option<f64>,
     pub thread_us: Option<f64>,
     pub head_hour: f64,
-    /// The hour the frame drew everything at: its own head
-    /// ([`viewer_foundation::map::frame_head`]).
     pub drawn_hour: Option<i32>,
-    /// The oldest hour the map's layers show, every layer counted; with no map of layers, the
-    /// hour drawn. Never the frame's own head, which stands wherever the hours it has reached put
-    /// it: this is what the products' lateness is measured from. The overlay is not one of them:
-    /// playing, the layers alone are the picture's hour, and how far the overlay stands behind
-    /// them is reported on its own ([`Self::overlay_behind_hours`]).
     pub oldest_hour: Option<i32>,
-    /// The hour the overlay drawn stands at; none until the frame holds one.
     pub overlay_hour: Option<i32>,
-    /// The publication the frame drew ([`crate::playhead_host::Frame::made`]); none without a map.
     pub made: Option<u64>,
     pub late_start: bool,
     pub new_hour: bool,
 }
 
 impl Frame {
-    /// The head less the oldest hour on screen.
     pub(crate) fn lag_hours(&self) -> Option<f64> {
         self.oldest_hour
             .map(|oldest| self.head_hour - f64::from(oldest))
     }
 
-    /// The clock's head less the hour the frame drew at: the head's own delay, which the steering
-    /// takes on while a publication is late and gives back after ([`viewer_foundation::map::frame_head`]).
     pub(crate) fn clock_lag_hours(&self) -> Option<f64> {
         self.drawn_hour
             .map(|drawn| self.head_hour - f64::from(drawn))
     }
 
-    /// The hours the overlay drawn stands behind the hour the layers drew; none before the frame
-    /// holds an overlay or draws an hour. Negative never: the overlay shown is never of a later
-    /// hour than the layers while playing, and the figure says so when it is.
-    /// How late the state on screen is: the hours it stands behind the head, in milliseconds of
-    /// the run's playback. Negative while a publication prepared ahead of the head is drawn
-    /// before the head reaches its hour.
     pub(crate) fn late_ms(&self, speed: f64) -> Option<f64> {
         self.lag_hours().filter(|_| speed > 0.0).map(|hours| hours / speed * 1e3)
     }
@@ -92,8 +66,6 @@ impl Frame {
     }
 }
 
-/// The paced run over the frames after warm-up (those before the first drawn hour). `end_us`
-/// is when the head reached the run's end.
 pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64, speed: f64) -> Value {
     let interval = 1e6 / refresh_hz;
     let warmup = frames
@@ -108,7 +80,6 @@ pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64, speed: f64
         .collect::<Option<Vec<_>>>()
         .unwrap_or_default();
     let late_starts = (warmup.max(1)..frames.len()).filter(|&k| frames[k].late_start);
-    // A late start the frame before explains by its own work and GPU wait; the rest is the harness's.
     let unexplained = late_starts
         .clone()
         .filter(|&k| {
@@ -123,8 +94,6 @@ pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64, speed: f64
         .filter(|pair| pair[0].overlay_hour.is_some() && pair[1].overlay_hour.is_some())
         .filter(|pair| pair[0].overlay_hour != pair[1].overlay_hour)
         .count();
-    // One entry a publication the measured frames drew, in order: which it was and the oldest hour
-    // it put on screen. A publication no frame drew is not one a watcher saw.
     let mut publications: Vec<(u64, Option<i32>)> = Vec::new();
     for frame in measured.iter() {
         match frame.made {
@@ -234,12 +203,10 @@ mod tests {
 
     #[test]
     fn a_run_sought_back_near_the_branch_end_ends_past_its_seek_where_the_head_can_reach() {
-        // The branch ends at 1000; the playhead shows whole hours, the run's own clock fractions.
         for (back, speed, ends) in [(990, 60.0, 1000.0), (999, 0.75, 1000.0), (900, 2.5, 905.0), (900, 0.3, 900.6), (998, 0.75, 999.5)] {
             let target = seek_back_end(back, speed, 2.0, 1000);
             assert!((target - ends).abs() < 1e-9, "{back} at {speed}: {target}");
             assert!(target > f64::from(back), "{back} at {speed}: the run plays on past its seek");
-            // Every frame up to the one whose head stands at the branch end.
             let frames = (f64::from(1000 - back) / speed * 60.0).ceil() as u32;
             for whole in [false, true] {
                 let reached = (0..=frames).map(|frame| head(back, speed, f64::from(frame) / 60.0, 1000)).map(|head| if whole { head.floor() } else { head });
@@ -277,10 +244,8 @@ mod tests {
             frame(66_667.0, 5_000.0, Some(150), 196.0),
             frame(83_333.0, 5_000.0, Some(190), 220.0),
         ];
-        // Frame 3 started late because frame 2 ran past its due time.
         frames[3].due_us = 50_000.0;
         frames[3].late_start = true;
-        // Frame 4 started late though frame 3's work ended before its due time: the harness's own.
         frames[4].due_us = 70_000.0;
         frames[4].start_us = 72_000.0;
         frames[4].late_start = true;
@@ -303,16 +268,11 @@ mod tests {
         assert_eq!(report["lag_hours"]["p50"], 38.0);
         assert_eq!(report["work_us"]["max"], 30_000.0);
         assert_eq!(report["thread_us"]["max"], 15_000.0);
-        // 110 at 33.3 ms, 150 at 72, 190 at 83.3, the run's end at 100.
         assert!((report["longest_without_a_new_hour_ms"].as_f64().unwrap() - 38.667).abs() < 1e-9);
         let per_second = report["shown_hours_per_second"].as_f64().unwrap();
         assert!((per_second - 3.0 / 0.066_667).abs() < 1e-6);
     }
 
-    /// The lag is the head less the oldest hour the layers show, every layer counted; the window
-    /// clock's lag, which leaves them out, is kept beside it. How far the overlay stands behind the
-    /// hour the layers drew is its own figure, in hours and in milliseconds at the run's speed, and
-    /// is no part of the lag: playing, the layers alone are the picture's hour.
     #[test]
     fn the_lag_counts_the_layers_and_the_overlays_hours_behind_them_are_reported_apart() {
         let mut frames = vec![frame(0.0, 1.0, Some(100), 110.0), frame(16_667.0, 1.0, Some(110), 120.0)];

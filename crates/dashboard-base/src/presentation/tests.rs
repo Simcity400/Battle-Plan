@@ -1,6 +1,3 @@
-//! One presentation per source: catalogues and artwork follow the source's own visual mods, a
-//! change rebinds them, recorded facts (declarations, text, scripts) never follow, and art the
-//! mods cannot supply is drawn from the recording and named on the reply that drew it.
 
 use super::*;
 use crate::{
@@ -13,7 +10,6 @@ use installed_content_core::content::visual::Choice;
 use installed_content_image::Rgba8Image;
 use std::{path::Path, sync::Arc};
 
-/// A one-pixel PNG of `rgba`.
 fn png(rgba: [u8; 4]) -> Vec<u8> {
     dashboard_text::catalogue::texture_tests::png_bytes(&Rgba8Image {
         width: 1,
@@ -32,7 +28,6 @@ fn write(root: &Path, path: &str, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// A synthetic game (its user folder inside) and, beside it, the folder installed mods live in.
 struct Machine {
     root: std::path::PathBuf,
     mods: std::path::PathBuf,
@@ -45,9 +40,6 @@ impl Drop for Machine {
     }
 }
 
-/// A recording over a synthetic game whose `GFX_icon` is red, whose `GFX_hidden` is drawn from
-/// `gfx/hidden/hidden.png`, with recorded text and a recorded script, and a user folder that
-/// installs the folder mod `Art` (a blue icon, its own text and a script of its own).
 fn machine(name: &str) -> (Machine, Source, ContentOptions) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -77,7 +69,6 @@ fn machine(name: &str) -> (Machine, Source, ContentOptions) {
         "\u{feff}l_english:\n NAME:0 \"Recorded\"\n".as_bytes(),
     );
     write(&root, "common/scripted/a.txt", b"recorded");
-    // What politics content reads of the defines.
     write(
         &root,
         "common/defines/00_fixture.lua",
@@ -98,7 +89,6 @@ fn machine(name: &str) -> (Machine, Source, ContentOptions) {
     (Machine { root, mods }, source, context.content.unwrap())
 }
 
-/// Installs a folder mod named `name` through the user descriptor `file`.
 fn install(root: &Path, file: &str, name: &str, folder: &Path) {
     write(
         root,
@@ -118,10 +108,6 @@ fn choice(id: &str, name: &str) -> Choice {
     }
 }
 
-/// Preparation reads the recording's own catalogue and requests showing visual mods the shown
-/// one; a cache built from a catalogue keeps an entry for each, so alternating between them
-/// loads each once instead of displacing the other's. Without a visual mod both read the
-/// recording's catalogue and share one entry.
 #[test]
 fn preparation_and_requests_showing_visual_mods_keep_their_own_cache_entries() {
     use crate::products::politics_content::politics_content;
@@ -153,8 +139,6 @@ fn preparation_and_requests_showing_visual_mods_keep_their_own_cache_entries() {
     }
 }
 
-/// Under visual mods the GUI registry is read ahead strictly, as a flag's shield reads it, so the
-/// first shield reads no interface file again.
 #[test]
 fn the_gui_registry_is_read_ahead_in_the_mode_shields_read_it() {
     let (_machine, source, mut options) = machine("read_ahead_guis");
@@ -173,9 +157,6 @@ fn the_gui_registry_is_read_ahead_in_the_mode_shields_read_it() {
     assert_eq!(catalogue.content_loads(), loads);
 }
 
-/// Shows `selected` on `source`, as the service does from its campaign's settings, and admits
-/// the next request of content under it (`options`, as the service admits a request, its mount
-/// resolved at its entry).
 fn present(source: &Source, options: &mut ContentOptions, selected: &[Choice]) -> bool {
     let changed = bind(source, options, selected);
     *options = source
@@ -184,8 +165,6 @@ fn present(source: &Source, options: &mut ContentOptions, selected: &[Choice]) -
     changed
 }
 
-/// Shows `selected` on `source` with no request admitted yet, so nothing has mounted it; then
-/// `options` is a request admitted under it whose entry has not resolved its mount.
 fn bind(source: &Source, options: &mut ContentOptions, selected: &[Choice]) -> bool {
     let presentation = Presentation::current(
         &options.options,
@@ -202,12 +181,10 @@ fn bind(source: &Source, options: &mut ContentOptions, selected: &[Choice]) -> b
     changed
 }
 
-/// What cancels work nobody cancels.
 fn never() -> Arc<dyn crate::presentation::Cancel> {
     Arc::new(std::sync::atomic::AtomicBool::new(false))
 }
 
-/// The presentation the source's current binding has mounted, if any work has needed it.
 fn mounted(source: &Source) -> Option<Presentation> {
     source
         .binding()?
@@ -216,8 +193,6 @@ fn mounted(source: &Source) -> Option<Presentation> {
         .map(|presented| presented.presentation.clone())
 }
 
-/// The colour of `key`'s first frame as a widget draws it, and the line its reply carries for
-/// what it drew in the recording's style.
 fn drawn(catalogue: &Catalogue, key: &str) -> ([u8; 4], Option<String>) {
     let (image, own) = dashboard_text::catalogue::capture(|| {
         let sprite = catalogue.sprites.find(key).unwrap().unwrap();
@@ -238,9 +213,6 @@ fn text(layers: &installed_content_core::ResolvedLayers, path: &str) -> String {
     std::str::from_utf8(&layers.read(path).unwrap()).unwrap().to_owned()
 }
 
-/// Two sources over the same recording: each draws its own campaign's visual mods, and neither
-/// leaks into the other. Artwork follows the mods; text and scripts are recorded facts, so the
-/// mod's own text and script are never read, not even by the presentation stack.
 #[test]
 fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
     let (machine, styled, mut options) = machine("two_sources");
@@ -252,7 +224,6 @@ fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
         &mut options,
         &[choice("mod/art.mod", "Art")]
     ));
-    // The plain source is bound to the folders with no visual mod.
     present(&plain, &mut plain_options, &[]);
     assert!(plain_options.presentation.identity().is_empty());
     let shown = catalogue::catalogue(&styled, &options).unwrap();
@@ -269,7 +240,6 @@ fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
         recorded.presentation_localisation().unwrap().get("NAME"),
         Some("Recorded")
     );
-    // Recorded facts read the recorded stack, with or without the presentation.
     assert_eq!(
         text(&shown.content.layers, "common/scripted/a.txt"),
         "recorded"
@@ -278,7 +248,6 @@ fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
         text(shown.content.layers.presentation(), "common/scripted/a.txt"),
         "recorded"
     );
-    // A selection that mounts in full adds no line to a reply: it reads as the recording's own.
     let mut warnings = Vec::new();
     styled.append_presentation_warnings(&mut warnings, Some(&options));
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -287,8 +256,6 @@ fn each_source_shows_its_own_visual_mods_and_recorded_facts_stay_recorded() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-/// A selection changed, reordered, updated or removed: the same mods in another order are one
-/// identity, and every other change rebinds the catalogue, so its artwork is the mods' now.
 #[test]
 fn selection_changes_updates_and_removals_rebind_the_catalogue() {
     let (machine, source, mut options) = machine("changes");
@@ -302,7 +269,6 @@ fn selection_changes_updates_and_removals_rebind_the_catalogue() {
     assert!(present(&source, &mut options, &both));
     let first = catalogue::catalogue(&source, &options).unwrap();
     assert_eq!(drawn(&first, "GFX_icon").0, BLUE);
-    // Reordered: the engine decides mount order, so nothing changes.
     assert!(!present(
         &source,
         &mut options,
@@ -312,17 +278,14 @@ fn selection_changes_updates_and_removals_rebind_the_catalogue() {
         &first,
         &catalogue::catalogue(&source, &options).unwrap()
     ));
-    // Changed: one mod fewer is another presentation.
     assert!(present(&source, &mut options, &both[..1]));
     let changed = catalogue::catalogue(&source, &options).unwrap();
     assert!(!Arc::ptr_eq(&first, &changed));
-    // Updated: the mod's icon is now green, which its revision sees.
     write(&machine.mods, "art/gfx/icon.png", &png(GREEN));
     write(&machine.mods, "art/gfx/icon2.png", &png(GREEN));
     assert!(present(&source, &mut options, &both[..1]));
     let updated = catalogue::catalogue(&source, &options).unwrap();
     assert_eq!(drawn(&updated, "GFX_icon").0, GREEN);
-    // Removed: the mod is named as not shown and the recording's icon is drawn.
     std::fs::remove_file(machine.root.join("user/mod/art.mod")).unwrap();
     assert!(present(&source, &mut options, &both[..1]));
     let removed = catalogue::catalogue(&source, &options).unwrap();
@@ -337,9 +300,6 @@ fn selection_changes_updates_and_removals_rebind_the_catalogue() {
     );
 }
 
-/// An archive mod's artwork shows, and a file its `replace_path` hides that it does not supply
-/// is drawn from the recording, named on the reply that drew it and on each reply that reuses
-/// the kept image, never on another widget's.
 #[test]
 fn archive_mods_show_and_what_they_hide_is_drawn_from_the_recording_by_name() {
     use installed_content_core::test_support::{Record, zip_records};
@@ -388,7 +348,6 @@ fn archive_mods_show_and_what_they_hide_is_drawn_from_the_recording_by_name() {
         "{line}"
     );
     assert!(line.contains("sprite GFX_hidden"), "{line}");
-    // The kept image names it again; a widget drawing only what the mods supply names nothing.
     assert_eq!(
         drawn(&catalogue, "GFX_hidden").1.as_deref(),
         Some(line.as_str())
@@ -396,8 +355,6 @@ fn archive_mods_show_and_what_they_hide_is_drawn_from_the_recording_by_name() {
     assert_eq!(drawn(&catalogue, "GFX_icon").1, None);
 }
 
-/// Work done ahead of a request never binds a presentation a request has replaced, and one a
-/// late request asks for is mounted for it alone.
 #[test]
 fn late_work_never_binds_a_replaced_presentation() {
     let (_machine, source, mut options) = machine("late");
@@ -414,19 +371,15 @@ fn late_work_never_binds_a_replaced_presentation() {
             .unwrap()
             .unwrap()
     ));
-    // The selection is cleared while work admitted under the old one is still running.
     assert!(present(&source, &mut options, &[]));
     assert!(
         catalogue::bound_catalogue(&source, &shown).is_none(),
         "a read-ahead of the old presentation binds nothing"
     );
-    // The new selection shows no visual mod, so read-ahead of it binds the recording's own
-    // catalogue, in a slot of its own: the old presentation's, which a request bound, stays.
     let ahead = catalogue::bound_catalogue(&source, &options)
         .unwrap()
         .unwrap();
     assert_eq!(ahead.presentation, Presentation::default());
-    // A late request of the old presentation draws it for itself alone.
     let late = catalogue::catalogue(&source, &shown).unwrap();
     assert_eq!(late.presentation, *shown.presentation.identity());
     assert_eq!(drawn(&late, "GFX_icon").0, BLUE);
@@ -446,9 +399,6 @@ fn late_work_never_binds_a_replaced_presentation() {
     assert_eq!(mounted(&source), None);
 }
 
-/// Prepared families whose stored payloads hold artwork read the recording's while visual mods
-/// are shown, from a catalogue of their own that never displaces the shown one. Reading it
-/// credits nothing; the replies of those families name it themselves.
 #[test]
 fn prepared_artwork_is_the_recordings_and_named() {
     let (_machine, source, mut options) = machine("prepared");
@@ -481,8 +431,6 @@ fn prepared_artwork_is_the_recordings_and_named() {
     ));
 }
 
-/// A sprite the visual mods redeclare is a recorded fact's and is never read: it is drawn as the
-/// recording declares it, with nothing to name, though the mods' declaration would draw.
 #[test]
 fn a_redeclared_sprite_is_not_read_and_the_recordings_own_declaration_is_drawn() {
     let (machine, source, mut options) = machine("redeclared");
@@ -515,8 +463,6 @@ fn a_redeclared_sprite_is_not_read_and_the_recordings_own_declaration_is_drawn()
     assert_eq!(drawn(&catalogue, "GFX_icon"), (RED, None));
 }
 
-/// A sprite whose art the visual mods replace with art that does not load is drawn from the
-/// recording's own art, and named.
 #[test]
 fn a_sprite_the_mods_art_cannot_draw_falls_back_to_the_recordings_art() {
     let (machine, source, mut options) = machine("broken_art");
@@ -534,9 +480,6 @@ fn a_sprite_the_mods_art_cannot_draw_falls_back_to_the_recordings_art() {
     assert!(line.unwrap().contains("sprite GFX_icon ("));
 }
 
-/// Recorded content a shared cache loaded while visual mods were shown keeps no note of them:
-/// the load credits nothing, so once the selection is cleared a reply reading what was kept
-/// names nothing either.
 #[test]
 fn recorded_content_kept_under_visual_mods_names_nothing_once_they_are_cleared() {
     let (_machine, source, mut options) = machine("stored_cleared");
@@ -561,8 +504,6 @@ fn recorded_content_kept_under_visual_mods_names_nothing_once_they_are_cleared()
     assert_eq!(read(&options), None, "nor does a later reply reading it");
 }
 
-/// What a selection shows depends on the recording's own mods too, so two recordings with the
-/// same selection share a presentation only when they also share those mods.
 #[test]
 fn a_selections_identity_depends_on_the_recordings_own_mods() {
     let (_machine, source, options) = machine("recorded_mods");
@@ -587,8 +528,6 @@ fn a_selections_identity_depends_on_the_recordings_own_mods() {
     );
 }
 
-/// A portrait kept from an earlier request names what its draw fell back on again on every
-/// later request, not only the first.
 #[test]
 fn a_memoised_portrait_names_its_fallback_on_every_request() {
     let (machine, source, mut options) = machine("portrait_memo");
@@ -621,9 +560,6 @@ fn a_memoised_portrait_names_its_fallback_on_every_request() {
     );
 }
 
-/// A request carries the presentation it was admitted under, by value, onto every thread it
-/// starts: art a worker draws while the selection changes is still the admitted one's, never
-/// the source's new one, and nothing of it is kept as the source's.
 #[test]
 fn work_on_any_thread_draws_the_presentation_its_request_was_admitted_under() {
     let (_machine, source, mut options) = machine("worker");
@@ -637,7 +573,6 @@ fn work_on_any_thread_draws_the_presentation_its_request_was_admitted_under() {
         let (selected, selection_changed) = std::sync::mpsc::channel();
         let (worker_source, worker_admitted) = (&source, &admitted);
         let worker = scope.spawn(move || {
-            // The worker starts drawing only once the selection has changed under it.
             selection_changed.recv().unwrap();
             let catalogue = catalogue::catalogue(worker_source, worker_admitted).unwrap();
             let colour = drawn(&catalogue, "GFX_icon").0;
@@ -655,7 +590,6 @@ fn work_on_any_thread_draws_the_presentation_its_request_was_admitted_under() {
         catalogue::binding(&admitted).2,
         *admitted.presentation.identity()
     );
-    // The source shows its new selection, and the admitted one is not its binding's.
     assert_eq!(source.presentation(), Presentation::default());
     assert_ne!(
         mounted(&source),
@@ -671,11 +605,6 @@ fn work_on_any_thread_draws_the_presentation_its_request_was_admitted_under() {
     );
 }
 
-/// A reply admitted under one presentation and finished after the selection changed many times
-/// names what its own presentation could not show, from the mount it was admitted with, never the
-/// source's current one: a refused selection says why however often the selection moves on, and
-/// a healthy one never borrows a later selection's refusal. Nothing of it is looked up in the
-/// source, so no number of switches loses it.
 #[test]
 fn a_reply_names_the_presentation_it_was_admitted_under() {
     let (machine, source, mut options) = machine("admitted_notes");
@@ -705,8 +634,6 @@ fn a_reply_names_the_presentation_it_was_admitted_under() {
             catalogue::catalogue(&source, options).unwrap();
         }
     };
-    // A healthy selection draws its art and, after five switches through refused ones, still
-    // names nothing.
     assert!(present(
         &source,
         &mut options,
@@ -723,7 +650,6 @@ fn a_reply_names_the_presentation_it_was_admitted_under() {
     );
     switch_five_times(&mut options);
     assert!(notes(&healthy).is_empty(), "{:?}", notes(&healthy));
-    // Admitted under Art and drawing only after the five switches, it still draws Art.
     assert!(present(
         &source,
         &mut options,
@@ -739,8 +665,6 @@ fn a_reply_names_the_presentation_it_was_admitted_under() {
         .0,
         BLUE
     );
-    // A selection that cannot be shown (its mod is no longer installed) draws the recording's
-    // art, and its reply says why, however often the selection moves on.
     assert!(present(
         &source,
         &mut options,
@@ -759,14 +683,10 @@ fn a_reply_names_the_presentation_it_was_admitted_under() {
             .any(|line| line.contains("Gone") && line.contains("not shown")),
         "{refused:?}"
     );
-    // Work that reads no content is admitted without a mount and names nothing.
     let idle = source.admit(crate::source::Work::Recorded).unwrap();
     assert!(notes(&idle).is_empty());
 }
 
-/// A folder and visual mod change is one swap of the source's binding: work admitted while the
-/// configuration changes over and over always holds one binding's folders with that binding's
-/// mods, never one's folders with another's.
 #[test]
 fn admission_never_mixes_one_bindings_folders_with_anothers_mods() {
     let (_machine, source, options) = machine("mixed");
@@ -783,7 +703,6 @@ fn admission_never_mixes_one_bindings_folders_with_anothers_mods() {
     std::thread::scope(|scope| {
         scope.spawn(|| {
             for round in 0..2000 {
-                // Folders and mods change together.
                 if round % 2 == 0 {
                     source.bind(Some((&options.options, true)), art.clone());
                 } else {
@@ -810,9 +729,6 @@ fn admission_never_mixes_one_bindings_folders_with_anothers_mods() {
     });
 }
 
-/// A slow mount of one binding blocks no admission: neither recording-only work on it nor work
-/// on a new binding waits for it, and work on the slow binding that is cancelled stops waiting.
-/// A mount whose computation is cancelled leaves the cell empty, and the next work computes it.
 #[test]
 fn a_slow_mount_blocks_no_admission_and_a_cancelled_one_is_retried() {
     use crate::presentation::Cancel;
@@ -833,7 +749,6 @@ fn a_slow_mount_blocks_no_admission_and_a_cancelled_one_is_retried() {
                 .get_or_mount(computer.flag(), || {
                     computing.wait();
                     finish.wait();
-                    // Cancelled while it computed: nothing is mounted.
                     Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "cancelled",
@@ -841,8 +756,6 @@ fn a_slow_mount_blocks_no_admission_and_a_cancelled_one_is_retried() {
                 })
         });
         computing.wait();
-        // While A's mount is computed: recording-only work is admitted at once, a new binding
-        // is admitted at once, and a cancelled waiter on A stops waiting.
         assert!(source.admit(crate::source::Work::Recorded).is_some());
         assert!(present(&source, &mut options, &[]));
         assert!(
@@ -863,7 +776,6 @@ fn a_slow_mount_blocks_no_admission_and_a_cancelled_one_is_retried() {
         finish.wait();
         assert!(first.join().unwrap().is_err());
     });
-    // The next work on A's binding computes its mount at its entry.
     assert!(slow.presentation.held().is_none());
     source.resolve(&mut slow);
     let mount = source.presented_for(&slow).unwrap();
@@ -871,10 +783,6 @@ fn a_slow_mount_blocks_no_admission_and_a_cancelled_one_is_retried() {
     assert!(slow.presentation.held().is_some());
 }
 
-/// What a content reply names comes from its admission alone: work that reads no art, or reads
-/// art kept from an earlier request (a flag context, a focus evaluator, a prepared answer), names
-/// its own presentation all the same, and every art read draws the admitted mount, however the
-/// selection has moved on.
 #[test]
 fn every_content_reply_names_and_draws_its_admitted_mount() {
     let (machine, source, mut options) = machine("admitted_mount");
@@ -886,7 +794,6 @@ fn every_content_reply_names_and_draws_its_admitted_mount() {
         source.append_presentation_warnings(&mut warnings, Some(options));
         warnings
     };
-    // An uninstalled selection names why it is not shown before any art is read.
     assert!(present(
         &source,
         &mut options,
@@ -904,7 +811,6 @@ fn every_content_reply_names_and_draws_its_admitted_mount() {
         "{:?}",
         notes(&gone)
     );
-    // Every art read of the admitted work draws the mount it was admitted with.
     let mounted = source.presented_for(&gone).unwrap();
     assert!(Arc::ptr_eq(&mounted, &gone.presentation.held().unwrap()));
     assert!(Arc::ptr_eq(&mounted, &source.presented_for(&gone).unwrap()));
@@ -914,8 +820,6 @@ fn every_content_reply_names_and_draws_its_admitted_mount() {
     );
 }
 
-/// Work done ahead of requests is cancelled by its binding's retirement: a read-ahead computing a
-/// binding's mount sees its cancellation the moment the binding is swapped out, and stops.
 #[test]
 fn a_read_ahead_mid_mount_is_cancelled_by_a_binding_swap() {
     let (_machine, source, mut options) = machine("ahead_cancel");
@@ -941,7 +845,6 @@ fn a_read_ahead_mid_mount_is_cancelled_by_a_binding_swap() {
                 .get_or_mount(ahead.presentation.cancel(), || {
                     computing.wait();
                     swapped.wait();
-                    // What `visual::apply` watches between mounts.
                     assert!(
                         ahead
                             .presentation
@@ -961,7 +864,6 @@ fn a_read_ahead_mid_mount_is_cancelled_by_a_binding_swap() {
         assert!(read_ahead.join().unwrap().is_err());
     });
     assert!(ahead.presentation.held().is_none(), "nothing mounted");
-    // Requests admitted with their own cancellation are not cancelled by the swap.
     assert!(
         !options
             .presentation
@@ -970,10 +872,6 @@ fn a_read_ahead_mid_mount_is_cancelled_by_a_binding_swap() {
     );
 }
 
-/// A rebind whose configuration changed between deriving and installing derives again from the
-/// newest configuration and installs that; it never drops the change or installs the stale one.
-/// A configuration of no content unbinds the source the same way, and racing a configure it is
-/// the newest of the two that stays installed.
 #[test]
 fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     use crate::presentation::{Config, rebind};
@@ -987,7 +885,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     .unwrap();
     let mut elsewhere = options.options.clone();
     elsewhere.user_dir = elsewhere.user_dir.join("elsewhere");
-    // The configuration: the folders, if any, and the selection saved for the campaign.
     type Settings = Option<(installed_content_core::ResolveOptions, Presentation)>;
     let run = |config: &Config<Settings>, change: Option<Box<dyn Fn(&Config<Settings>) + '_>>| {
         let derived = std::sync::atomic::AtomicUsize::new(0);
@@ -995,7 +892,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
             config,
             &std::sync::atomic::AtomicBool::new(false),
             |settings: &Settings| {
-                // The first derivation pauses while another writer changes the configuration.
                 if derived.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
                     && let Some(change) = &change
                 {
@@ -1022,7 +918,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
             binding.options.user_dir == folders.user_dir && binding.presentation == *presentation
         })
     };
-    // A map settings save races the rebind: the newer selection wins.
     let config = Config::new(Some((options.options.clone(), Presentation::default())));
     let retried = run(
         &config,
@@ -1034,7 +929,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     );
     assert_eq!(retried, 2, "the stale derivation is redone");
     assert!(shows(&options.options, &art));
-    // A folder change races it: the newer folders win, with their own selection.
     let retried = run(
         &config,
         Some(Box::new(|config: &Config<Settings>| {
@@ -1045,7 +939,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     );
     assert_eq!(retried, 2);
     assert!(shows(&elsewhere, &Presentation::default()));
-    // Unconfiguring races a configure: the newer, unconfigured, wins and the source is unbound.
     let retried = run(
         &config,
         Some(Box::new(|config: &Config<Settings>| {
@@ -1054,7 +947,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     );
     assert_eq!(retried, 2);
     assert!(source.binding().is_none());
-    // And a configure racing the unconfigure: the newer, configured, wins.
     let retried = run(
         &config,
         Some(Box::new(|config: &Config<Settings>| {
@@ -1063,7 +955,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     );
     assert_eq!(retried, 2);
     assert!(shows(&options.options, &art));
-    // A cancelled rebind stops.
     assert_eq!(
         rebind(
             &config,
@@ -1077,9 +968,6 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
     );
 }
 
-/// A rebind paused across shutdown installs nothing: closing the configuration is its last
-/// change, the paused rebind stops instead of deriving again, and so does every later one, so
-/// the source shutdown unbound stays unbound.
 #[test]
 fn a_rebind_paused_across_shutdown_installs_nothing() {
     use crate::presentation::{Config, rebind};
@@ -1099,8 +987,6 @@ fn a_rebind_paused_across_shutdown_installs_nothing() {
         &never,
         |folders| {
             derived.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            // Shutdown runs while this derivation is paused: it closes the configuration and
-            // unbinds the source.
             config.close();
             source.bind(None, Presentation::default());
             Ok(folders.clone())
@@ -1115,7 +1001,6 @@ fn a_rebind_paused_across_shutdown_installs_nothing() {
         "a closed configuration is not derived again"
     );
     assert!(source.binding().is_none(), "the stale derivation is not installed");
-    // A rebind starting after shutdown stops before deriving anything.
     let error = rebind(
         &config,
         &never,
@@ -1129,8 +1014,6 @@ fn a_rebind_paused_across_shutdown_installs_nothing() {
     assert!(source.binding().is_none());
 }
 
-/// A catalogue request waiting for the binding's mount another request computes stops when it
-/// is cancelled: it waits on the binding's cell, never on a catalogue cache lock.
 #[test]
 fn a_catalogue_waiter_is_cancelled_while_another_request_mounts() {
     let (_machine, source, mut options) = machine("catalogue_waiter");
@@ -1159,8 +1042,6 @@ fn a_catalogue_waiter_is_cancelled_while_another_request_mounts() {
                 })
         });
         computing.wait();
-        // The waiter waits at its entry, where its mount is resolved, never at a catalogue's
-        // cache; cancelled, it reads nothing.
         let waiting = scope.spawn(|| {
             let mut waiter = waiter.clone();
             source.resolve(&mut waiter);
@@ -1177,8 +1058,6 @@ fn a_catalogue_waiter_is_cancelled_while_another_request_mounts() {
     });
 }
 
-/// Preparation is recorded-only work: under a selected visual mod it reads the recording's own
-/// catalogue and artwork, and never mounts the binding's visual mods.
 #[test]
 fn preparation_never_mounts_the_selected_visual_mods() {
     let (_machine, source, mut options) = machine("preparation");

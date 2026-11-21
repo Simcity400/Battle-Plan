@@ -1,22 +1,14 @@
-//! The engine's fixed5 (`x 100000`) vector arithmetic the battle-plan
-//! geometry is built in. Truncating signed division and the per-product
-//! truncation order are kept, because they decide ties and signs near zero.
 
-/// One fixed5 world unit.
 pub const SCALE: i64 = 100_000;
 
-/// A fixed5 `(x, z)` map point.
 pub type Point = [i64; 2];
 
-/// A smoothing define pair: `*_SMOOTHNESS` (fixed5) and `*_SMOOTHEN_PASSES`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Smoothing {
     pub smoothness: i64,
     pub passes: u32,
 }
 
-/// Floor integer square root, then signed fixed5 division. The zero vector
-/// stays zero; a zero length after the root gives 0xFFFFFFFF lanes.
 pub fn normalize([x, z]: Point) -> Point {
     if x == 0 && z == 0 {
         return [0, 0];
@@ -40,7 +32,6 @@ pub fn normalize([x, z]: Point) -> Point {
     })
 }
 
-/// Divide a vector by `count` fixed5 units, truncating each component.
 pub fn divide([x, z]: Point, count: i64) -> Point {
     let denominator = count * SCALE;
     if denominator == 0 {
@@ -49,15 +40,10 @@ pub fn divide([x, z]: Point, count: i64) -> Point {
     [x, z].map(|value| value.wrapping_mul(SCALE) / denominator)
 }
 
-/// The vertical cross-product component for inputs with zero vertical lanes.
-/// Divide each product by 100000 before subtracting.
 pub fn cross_y(a: Point, b: Point) -> i64 {
     a[1] * b[0] / SCALE - a[0] * b[1] / SCALE
 }
 
-/// Rotate by 0x26598 (157080, a quarter turn) using the fixed5 polynomial
-/// sine, truncating both products before combining. At 157080 the sine is
-/// 100453, so this is not an exact quarter turn.
 pub fn rotate_quarter([x, z]: Point) -> Point {
     let sine = fixed_sine(157_080);
     let cosine = fixed_sine(314_160);
@@ -67,7 +53,6 @@ pub fn rotate_quarter([x, z]: Point) -> Point {
     ]
 }
 
-/// Fixed5 polynomial sine.
 fn fixed_sine(radians: i64) -> i64 {
     let phase = radians.rem_euclid(628_319);
     let mut x = if phase > 314_159 {
@@ -84,12 +69,10 @@ fn fixed_sine(radians: i64) -> i64 {
     if phase > 314_159 { -sine } else { sine }
 }
 
-/// Round half away from zero.
 pub fn round(value: i64) -> i64 {
     (value + if value < 0 { -50_000 } else { 50_000 }) / SCALE
 }
 
-/// Move every interior point towards the midpoint of its old neighbours.
 pub fn smooth(points: &mut [Point], smoothness: i64) {
     if points.len() < 3 {
         return;
@@ -104,8 +87,6 @@ pub fn smooth(points: &mut [Point], smoothness: i64) {
     }
 }
 
-/// Insert a midpoint at each odd index using a fixed5 half-scale product of
-/// the component difference, with wrapping multiplication and truncating division.
 pub fn subdivide(points: &mut Vec<Point>) {
     if points.len() < 2 {
         return;
@@ -124,8 +105,6 @@ pub fn subdivide(points: &mut Vec<Point>) {
     *points = out;
 }
 
-/// Smooth once, then repeat `passes` times: subdivide when `subdivided`,
-/// then smooth. Centroid paths always subdivide; border chains use the flag.
 pub fn curve(points: &mut Vec<Point>, smoothing: Smoothing, subdivided: bool) {
     smooth(points, smoothing.smoothness);
     for _ in 0..smoothing.passes {
@@ -192,7 +171,6 @@ mod tests {
 
     #[test]
     fn the_cross_lane_sign_decides_the_side() {
-        // Tangent east, move north: y of east x north.
         assert!(cross_y([SCALE, 0], [0, SCALE]) < 0);
         assert!(cross_y([0, SCALE], [SCALE, 0]) > 0);
     }

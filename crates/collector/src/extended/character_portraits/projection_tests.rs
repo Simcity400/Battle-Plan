@@ -40,8 +40,6 @@ fn retained_portrait_order_keeps_frame_bytes() {
                 }
                 3 => capture.parts[0].arena.first[0].identity.bytes[0] ^= 1,
                 4 => {
-                    // Same total, different share sizes: the old permutation
-                    // cannot be reused just because its length still matches.
                     capture.parts[1].rows.rows[10] = capture.parts[0].rows.rows[9];
                     capture.parts[1].rows.rows[10].portraits = [0, 0];
                     capture.parts[0].rows.outcome = Outcome::Rows { len: 9 };
@@ -73,8 +71,6 @@ fn retained_portrait_order_keeps_frame_bytes() {
             if hour < 8 && let Some(previous) = allocation {
                 assert_eq!(current, previous, "merge scratch must not grow each hour");
             }
-            // The malformed larger row count at hour 8 is new growth demand,
-            // not a repeated fixed-size hour; its count refusal still stands.
             allocation = Some(current);
             drop(storage);
             if !force && matches!(hour, 1 | 2) {
@@ -86,8 +82,6 @@ fn retained_portrait_order_keeps_frame_bytes() {
                 7 => unavailable("fixture refusal"),
                 8 => unavailable("walker row count exceeds allocated buffer"),
                 _ => {
-                    // Independent full merge, without retained ordinals or
-                    // projection, to detect stale/missing share occurrences.
                     let mut rows = Vec::new();
                     for part in &capture.parts {
                         for row in &part.rows.rows[..part.rows.outcome.len()] {

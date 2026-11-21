@@ -1,4 +1,3 @@
-//! Aggregate reader operations, enabled only by the CPU measurement harness.
 use crate::rows::{TABLE_COUNT, TableId};
 pub use replay_rows::measurement::*;
 

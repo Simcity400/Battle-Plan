@@ -25,8 +25,6 @@ import LiveText, { liveTexts } from '../../charts/LiveText';
 import type { Live } from '../../charts/live';
 import type { BalanceHistory } from '../../generated/dashboard';
 
-/** The balance's in-game name in strong text, then its state in a muted line, as
- * Ruling party heads its chart. The key shows on hover; members when it is shared. */
 export function BalanceHeadline({ name, token, detail, members }: { name: string; token: string; detail: ReactNode; members?: string }) {
   return <div className="balance-headline">
     <strong data-tooltip={contentTitleHint(token)}>{name}</strong>
@@ -34,29 +32,21 @@ export function BalanceHeadline({ name, token, detail, members }: { name: string
   </div>;
 }
 
-/** The members' names at the hour, as the header's tooltip lists a shared balance. */
 export const membersText = (names: readonly string[] | null) => names && names.length > 1 ? `Members: ${names.join(', ')}` : undefined;
 
 export interface BalanceViewProps {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean;
   subject: BalanceSubject; names: BalanceNames;
-  /** The balance shown, and the one the game shows the country at `at`. */
   balance: BalanceHistory; gameShown: string | null;
   countryName: string;
-  /** The hour the header and lanes describe, and the last hour drawn (Live cuts later ones). */
   at: number; limit: number;
   extent: readonly [number, number]; playhead: number | null;
-  /** While following, the head now and the clock's frames: the playhead, the line, the bars and the header's value move
-   * with it each frame, between renders; `limitAt` is the last hour drawn at a head. */
   liveHead?: Live<number>;
   limitAt?: (hour: number) => number;
   playback: { mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
-  /** Hours not recorded. */
   unknown: readonly Span[];
-  /** Members of each balance at `at`, where the hour's details have loaded. */
   membersOf: (token: string) => readonly string[] | null;
   pickOwner: unknown;
-  /** Saves another balance to show; absent where the widget cannot save one. */
   onChoose?: (token: string) => void;
   onPick?: (hour: number) => void;
 }
@@ -64,14 +54,11 @@ export interface BalanceViewProps {
 const WORDS = { since: (hour: number) => `Active since ${dayLabel(hour)}`, before: (hour: number) => `Held before ${dayLabel(hour)}`,
   ended: (hour: number) => `Ended ${dayLabel(hour)}`, endedBy: (hour: number) => `Ended by ${dayLabel(hour)}`, lastSeen: (hour: number) => `Last recorded ${dayLabel(hour)}` };
 
-/** One country's balance: the header line, the value over its lifetime on the authored
- * ranges' gridlines, and one lane per balance the country had. */
 export default function BalanceCountryView({ runtime, track, active, subject, names, balance, gameShown, countryName, at, limit, extent, playhead, playback,
   unknown, membersOf, pickOwner, onChoose, onPick, liveHead, limitAt }: BalanceViewProps) {
   const viewport = useViewportHeight();
   const menu = useContextMenu('Chart actions');
   const name = balanceName(balance, names) ?? BALANCE_UNAVAILABLE;
-  // The header's state moves daily with the value: painted at the head each frame while following, never rendered for.
   const detail = useMemo(() => liveHead && limitAt ? liveTexts(runtime.clock, () => Math.floor(Math.max(extent[0], Math.min(extent[1], liveHead.read()))),
     hour => new Map([['detail', statusText(balanceStatusAt(balance, hour, limitAt(hour), unknown), balance, names)]])) : null,
   [liveHead, limitAt, runtime.clock, extent, balance, unknown, names]);
@@ -82,7 +69,6 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, tokens, state) => { drawLine(ctx, frame, tokens, runs, tokens.text, { until: state.playhead ?? undefined }); },
   }], [runs]);
-  // Following, the bars run to the full extent and the timeline stops them at the head each frame.
   const lanes = useMemo(() => balanceLanes(subject, names, limit, liveHead ? extent[1] : limit), [subject, names, limit, liveHead, extent]);
   const timelineLanes = useMemo<TimelineLane[]>(() => lanes.map(lane => {
     const label = lane.name ?? BALANCE_UNAVAILABLE;
@@ -111,7 +97,6 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
     const held = span ?? lanes.find(entry => entry.token === lane.id)?.spans.filter(entry => entry.firstHour <= at).at(-1) ?? null;
     const rows: TooltipRow[] = [];
     if (held) {
-      // Bounds as the lane says them: a start or end next to unrecorded hours is not a date.
       const gaps = unknown;
       const start = startUnseen(held.firstHour, track.branch.firstHour, gaps) ? `held before ${dayLabel(held.firstHour)}` : `since ${dayLabel(held.firstHour)}`;
       const state = held.lastHour >= limit ? null : runState([held], Math.max(at, held.lastHour + 1), gaps);

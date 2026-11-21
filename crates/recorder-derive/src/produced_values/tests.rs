@@ -33,10 +33,8 @@ fn every_type_is_the_country_row_and_rocket_output_an_archetype_its_rows_and_des
     assert_eq!(total(&producer, &RUN, Part::Whole, Count::Ic, 5), Amount::Known(550));
     assert_eq!(total(&producer, &RUN, Part::Archetype(INFANTRY), Count::Units, 5), Amount::Known(8));
     assert_eq!(total(&producer, &RUN, Part::Archetype(ARTILLERY), Count::Ic, 5), Amount::Known(210));
-    // An archetype it has no row of counts as the rest: nothing.
     assert_eq!(total(&producer, &RUN, Part::Rest, Count::Units, 5), Amount::Known(0));
     assert_eq!(parts(&producer).into_iter().collect::<Vec<_>>(), vec![INFANTRY, ARTILLERY]);
-    // A set of archetypes sums to every type when it holds them all.
     let set = [INFANTRY, ARTILLERY].map(|token| total(&producer, &RUN, Part::Archetype(token), Count::Units, 5));
     assert_eq!(set[0].plus(set[1]), total(&producer, &RUN, Part::Whole, Count::Units, 5));
 }
@@ -100,7 +98,6 @@ fn fill<R: RowCodec>(store: &mut Store, hour: i32, table: TableId, rows: &[R]) {
     }
 }
 
-/// Country 10 (slot 1) delivering through one line of an infantry design, `units` so far.
 fn feed(store: &mut Store, hour: i32, units: Option<i64>) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     fill(store, hour, TableId::Countries, &[CountryRow { id: 10, canonical_slot: 1, ..Default::default() }]);
@@ -116,8 +113,6 @@ fn feed(store: &mut Store, hour: i32, units: Option<i64>) {
     store.settle();
 }
 
-/// The writer after Production over hours of one line: every type, the archetype and the rest per producer, the
-/// clock dating them by production's reads.
 #[test]
 fn a_producers_rows_follow_production_and_the_clock_dates_them() {
     let mut store = store();

@@ -40,7 +40,6 @@ pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::cata
         ("history/states/second.txt", "state = { id = 65 name = SECOND provinces = { 2 } }"),
     ]);
     std::fs::create_dir_all(folder.0.join("map/logs")).unwrap();
-    // The excluded folder exercises diagnostics contributed by reached lazy reads.
     let bitmap = |bits: u16, pixels: &[u8]| {
         let mut bytes = vec![0; 54];
         bytes[..2].copy_from_slice(b"BM");
@@ -130,8 +129,6 @@ fn scripted_political_and_always_titles_leave_geography_unread() {
             .all(|line| !line.contains("map/logs/"))
     );
 
-    // Restoring the unavailable file before its first reached use must succeed.
-    // An eager read would already have cached its failure while expanding titles.
     std::fs::write(&path, bitmap).unwrap();
     assert_eq!(
         text.expand("[ROOT.64.Neighbors]").as_deref(),
@@ -148,7 +145,6 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    // A reply's reads are reported from its own diagnostics scope.
     let ((warnings, cached), _) = installed_content_core::content::diagnostics::capture(|| {
         assert_eq!(
             text.expand("[ROOT.64.Neighbors]").as_deref(),
@@ -205,7 +201,6 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     for name in ["provinces.bmp", "terrain.bmp", "rivers.bmp"] {
         std::fs::remove_file(folder.0.join("map/logs").join(name)).unwrap();
     }
-    // A later reply reusing the cached reads reports the same reads.
     let (reused, _) = installed_content_core::content::diagnostics::capture(|| {
         let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
         assert_eq!(

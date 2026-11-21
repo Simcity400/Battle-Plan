@@ -1,9 +1,3 @@
-//! Characters rows carried by the roster job ([`super::carry::Carry`]) over
-//! the census test world: hours run copy, decode, template and carry rebuild,
-//! then recycle, as the pipeline does. The quiet roster hours
-//! ([`super::quiet`]) run the same hours with a roster domain of their own,
-//! and carry UnitLeaders rows with a leader domain of their own
-//! ([`super::unit_carry`]).
 
 use super::carry::Carry;
 use super::census_tests::{self, GAME_STATE, MODULE, World, capacities, context};
@@ -15,7 +9,6 @@ use crate::roster_changes::{Counts, Isolated, Roster as RosterDomain};
 use crate::unit_leader_changes::{Changes as LeaderChanges, Watches as LeaderWatches};
 use std::cell::Cell;
 
-/// Counts reads touching a carried span (gender) of any character object.
 struct Names<'a> {
     world: &'a World,
     characters: usize,
@@ -47,7 +40,6 @@ struct Hour {
     reused: u64,
     read: u64,
     name_reads: usize,
-    /// The roster job's prepared program served the hour.
     planned: bool,
 }
 
@@ -78,7 +70,6 @@ fn hour(job: &mut CharactersJob, world: &World) -> Hour {
     }
 }
 
-/// The typed roster walk's Characters table.
 fn expected(world: &World) -> TableView {
     let mut captured = Captured::with_capacities(&capacities());
     let results = walk_family(
@@ -103,8 +94,6 @@ fn job(watches: &'static Watches) -> CharactersJob {
     job
 }
 
-/// Runs hours until the carried set holds every character and the prepared
-/// program omits their names.
 fn settle(job: &mut CharactersJob, world: &World) {
     for _ in 0..4 {
         hour(job, world);
@@ -118,7 +107,6 @@ fn quiet_hours_read_no_character_name_and_publish_the_roster_walk_rows() {
     let world = world();
     WATCHES.enable(world.characters);
     let mut job = job(&WATCHES);
-    // The first hour reads and holds every row; later hours carry them.
     let first = hour(&mut job, &world);
     assert_eq!(first.characters, expected(&world));
     assert!(first.name_reads > 0);
@@ -153,8 +141,6 @@ fn quiet_hours_recertify_the_carried_set_without_a_lookup() {
         assert_eq!(quiet.characters, expected(&world));
         assert!(quiet.planned);
     }
-    // An observed rename: every held character is certified again and the
-    // renamed one read; quiet hours follow once the set settles.
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
     drop(DOMAIN.watches.notify(
         Some(World::character(7)),
@@ -169,7 +155,6 @@ fn quiet_hours_recertify_the_carried_set_without_a_lookup() {
     let quiet = hour(&mut job, &world);
     assert_eq!(DOMAIN.lookups(), 0);
     assert_eq!(quiet.characters, expected(&world));
-    // A load, gap or recovery certifies every character afresh.
     DOMAIN.watches.boundary(true);
     let reloaded = hour(&mut job, &world);
     assert!(DOMAIN.lookups() >= characters);
@@ -185,7 +170,6 @@ fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
     WATCHES.enable(world.characters);
     let mut job = job(&WATCHES);
     settle(&mut job, &world);
-    // set_character_name on character 7, observed by its hooked setter.
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
     drop(WATCHES.notify(
         Some(World::character(7)),
@@ -197,7 +181,6 @@ fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
         (renamed.reused, renamed.read),
         (world.characters as u64 - 1, 1)
     );
-    // A load, gap or recovery: nothing carries across it.
     WATCHES.boundary(true);
     let reloaded = hour(&mut job, &world);
     assert_eq!(reloaded.characters, expected(&world));
@@ -205,8 +188,6 @@ fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
     assert!(reloaded.name_reads > 0);
 }
 
-/// Counts the reads a quiet roster hour does not make: the roster's pointer pages and each
-/// character's identity span (vtable, reference type and id).
 struct Walk<'a> {
     world: &'a World,
     pages: Cell<usize>,
@@ -246,20 +227,15 @@ impl Memory for Walk<'_> {
     }
 }
 
-/// One roster-job hour: what it published and what it read.
 struct RosterHour {
     captured: Captured,
     portraits: Option<Vec<ccharacter_manager::PortraitIdentity>>,
-    /// Occurrences, historical length and generation.
     roles: Option<(Vec<census::Occurrence>, usize, u64)>,
     counts: Counts,
     pages: usize,
     identities: usize,
-    /// Reads of unit leader objects.
     leaders: usize,
-    /// Reads of the role census's gathered fields.
     census: usize,
-    /// The job's prepared program served the hour's reads.
     planned: bool,
 }
 
@@ -273,8 +249,6 @@ impl RosterHour {
     }
 }
 
-/// A role hour of the roster job, run as `hour` runs it, keeping the
-/// censuses it loans.
 fn roster_hour(job: &mut CharactersJob, world: &World) -> RosterHour {
     let memory = Walk {
         world,
@@ -330,22 +304,16 @@ fn roster_job(watches: &'static Watches, domain: &'static dyn RosterDomain) -> C
     job
 }
 
-/// The typed roster walk's Characters and UnitLeaders over `world`.
 fn walked(world: &World) -> Captured {
     census_tests::typed(world, 0)
 }
 
-/// Runs hours until the roster job carries every character.
 fn settle_roster(job: &mut CharactersJob, world: &World) {
     for _ in 0..4 {
         roster_hour(job, world);
     }
 }
 
-/// A quiet roster hour publishes exactly what the full pass publishes over
-/// the same memory (Characters and UnitLeaders rows and arenas, the portrait
-/// census and the role census with its generation) and reads no roster
-/// pointer page and no character identity, where the full pass reads both.
 #[test]
 fn quiet_roster_hours_publish_the_full_pass_without_walking_the_roster() {
     let _globals = crate::extended::characters::test_globals();
@@ -356,7 +324,6 @@ fn quiet_roster_hours_publish_the_full_pass_without_walking_the_roster() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     let mut quiet = roster_job(&WATCHES, &DOMAIN);
-    // A job whose domain is never observed always runs the full pass.
     let mut full = roster_job(&WATCHES, &NEVER);
     let first = roster_hour(&mut quiet, &world);
     assert!(first.counts.read && !first.counts.quiet);
@@ -387,10 +354,6 @@ fn quiet_roster_hours_publish_the_full_pass_without_walking_the_roster() {
     assert!(!DOMAIN.poisoned());
 }
 
-/// A quiet roster hour whose role census and carry are those of the job's
-/// latest quiet decode publishes that decode's Characters rows again,
-/// without rebuilding them from the carry: here the carry is emptied under
-/// the same version, so a rebuild would find no held row.
 #[test]
 fn a_settled_quiet_hour_republishes_its_characters_rows() {
     let _globals = crate::extended::characters::test_globals();
@@ -414,9 +377,6 @@ fn a_settled_quiet_hour_republishes_its_characters_rows() {
     characters_test_kit::assert_matches_direct(&captured, &walked(&world));
 }
 
-/// A roster write (an appended character here), a writer running at the
-/// hour, a load or a full hour reads the roster again; the hour after is
-/// quiet.
 #[test]
 fn a_roster_write_reads_the_roster_again() {
     let _globals = crate::extended::characters::test_globals();
@@ -429,7 +389,6 @@ fn a_roster_write_reads_the_roster_again() {
     let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     assert!(roster_hour(&mut job, &world).counts.quiet);
-    // Character creation and registration appends character 200 to the roster.
     world.roster = Some((0..201).collect());
     DOMAIN.write();
     let pushed = roster_hour(&mut job, &world);
@@ -440,18 +399,15 @@ fn a_roster_write_reads_the_roster_again() {
     assert!(quiet.counts.quiet);
     assert_eq!((quiet.pages, quiet.identities), (0, 0));
     characters_test_kit::assert_matches_direct(&quiet.captured, &walked(&world));
-    // A writer running at the hour gives no token.
     let running = DOMAIN.registry.notify(0);
     assert!(roster_hour(&mut job, &world).counts.read);
     drop(running);
     assert!(roster_hour(&mut job, &world).counts.read);
     assert!(roster_hour(&mut job, &world).counts.quiet);
-    // A load, gap or recovery starts an epoch.
     DOMAIN.registry.boundary(true);
     let reloaded = roster_hour(&mut job, &world);
     assert!(reloaded.counts.read && reloaded.pages > 0);
     assert!(roster_hour(&mut job, &world).counts.quiet);
-    // A full hour reads the roster too.
     let full = CharactersCopyContext {
         force_full: true,
         ..context(PART_MASKS[0])
@@ -460,14 +416,6 @@ fn a_roster_write_reads_the_roster_again() {
     assert!(job.roster.counts().read);
 }
 
-/// Unit leaders change at any hour without a notification: a quiet hour
-/// still reads every one afresh, through its prepared program. A changed
-/// value no read depends on (an exile country) is published by a completed
-/// program; a changed byte that selects later reads (a name header, whose
-/// length and storage select the payload reads) stops the program there and
-/// the pass continues from that read; a changed role census (a character's
-/// country) changes the census's generation, so the pass reads one by one
-/// and prepares the next program. Every hour equals the full pass.
 #[test]
 fn quiet_roster_hours_read_every_unit_leader_afresh() {
     let _globals = crate::extended::characters::test_globals();
@@ -499,7 +447,6 @@ fn quiet_roster_hours_read_every_unit_leader_afresh() {
     let next = roster_hour(&mut job, &world);
     assert!(next.counts.quiet && next.planned);
     characters_test_kit::assert_matches_direct(&next.captured, &walked(&world));
-    // Character 9 moves to country 77: the role census differs.
     let generation = next.roles.as_ref().map(|roles| roles.2);
     world.patch(
         World::character(9) + ccharacter::COUNTRY,
@@ -515,10 +462,6 @@ fn quiet_roster_hours_read_every_unit_leader_afresh() {
     assert!(!DOMAIN.poisoned());
 }
 
-/// A settled quiet roster hour gathers its role census and runs its
-/// unit-leader program: two guarded calls at 40 and 120 countries,
-/// however many unit leaders there are, where reading the leaders one by
-/// one takes several calls each. It publishes the full pass's tables.
 #[test]
 fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
     let _globals = crate::extended::characters::test_globals();
@@ -550,10 +493,6 @@ fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
     }
 }
 
-/// A unit-leader read that fails inside the program fails the hour at that
-/// read, exactly as a quiet hour without a program reads and fails it: both
-/// publish the same tables. The failed hour prepares no program; once the
-/// fault is gone, the next hour prepares one and the hour after runs it.
 #[test]
 fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
     let _globals = crate::extended::characters::test_globals();
@@ -571,7 +510,6 @@ fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
     world
         .faults
         .push(World::unit(9).unwrap() + cunit_leader::EXILE_COUNTRY);
-    // Without its program, the second job reads the leaders one by one.
     unplanned.log.invalidate_read_plan();
     unplanned.prepare_read_plans();
     let read = roster_hour(&mut unplanned, &world);
@@ -591,8 +529,6 @@ fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
     characters_test_kit::assert_matches_direct(&repaired.captured, &walked(&world));
 }
 
-/// A renamed character's certificate is revoked: that hour reads the roster
-/// and the name afresh; the next is quiet again.
 #[test]
 fn a_renamed_character_reads_the_roster_again() {
     let _globals = crate::extended::characters::test_globals();
@@ -604,7 +540,6 @@ fn a_renamed_character_reads_the_roster_again() {
     let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     assert!(roster_hour(&mut job, &world).counts.quiet);
-    // set_character_name on character 7, observed by its hooked setter.
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
     drop(WATCHES.notify(
         Some(World::character(7)),
@@ -620,7 +555,6 @@ fn a_renamed_character_reads_the_roster_again() {
     assert!(!DOMAIN.poisoned());
 }
 
-/// A leader domain that counts its per-leader lookups.
 struct LeaderLookups {
     watches: LeaderWatches,
     lookups: std::sync::atomic::AtomicU64,
@@ -650,7 +584,6 @@ impl LeaderChanges for LeaderLookups {
     }
 }
 
-/// A roster job whose quiet hours carry UnitLeaders rows under `leaders`.
 fn unit_job(
     watches: &'static Watches,
     domain: &'static dyn RosterDomain,
@@ -661,17 +594,12 @@ fn unit_job(
     job
 }
 
-/// The world's unit leaders: every fourth character's.
 fn leaders(world: &World) -> u64 {
     (0..world.characters)
         .filter(|&index| World::unit(index).is_some())
         .count() as u64
 }
 
-/// A quiet hour after one that held every leader reads no unit leader and
-/// publishes the full pass's UnitLeaders rows; while no hooked writer runs
-/// it looks up no leader's certificate either. A writer's notification
-/// makes the next hour look up every one.
 #[test]
 fn quiet_hours_read_no_unchanged_unit_leader() {
     let _globals = crate::extended::characters::test_globals();
@@ -704,8 +632,6 @@ fn quiet_hours_read_no_unchanged_unit_leader() {
     assert_eq!((counts.reused, counts.read), (leaders(&world) - 1, 1));
 }
 
-/// A hooked writer's leader is read the next quiet hour, which publishes its
-/// new row; the others stay carried.
 #[test]
 fn a_notified_leader_is_read_again() {
     let _globals = crate::extended::characters::test_globals();
@@ -732,7 +658,6 @@ fn a_notified_leader_is_read_again() {
     assert!(!LEADERS.poisoned());
 }
 
-/// A roster job whose role census is kept under `census`.
 fn census_job(
     watches: &'static Watches,
     domain: &'static dyn RosterDomain,
@@ -743,10 +668,6 @@ fn census_job(
     job
 }
 
-/// Once a gather admitted the census under the census domain's token, a
-/// role hour with the same token and occurrences keeps it, gathering no
-/// field, with its generation, and publishes the full pass's rows. A census
-/// writer makes the next hour gather it again.
 #[test]
 fn quiet_hours_keep_the_role_census_without_gathering_it() {
     let _globals = crate::extended::characters::test_globals();
@@ -778,8 +699,6 @@ fn quiet_hours_keep_the_role_census_without_gathering_it() {
     );
 }
 
-/// The traits job of a role hour over `loan`, run as the pipeline runs it;
-/// its UnitLeaderTraits table and its reads of unit leader objects.
 fn trait_hour(
     job: &mut CharactersJob,
     world: &World,
@@ -805,20 +724,16 @@ fn trait_hour(
     (captured.tables()[4].clone(), memory.leaders.get())
 }
 
-/// A traits job whose leaders' rows are carried under `leaders`, and the
-/// role census it borrows.
 fn trait_job(leaders: &'static LeaderWatches, world: &World) -> (CharactersJob, CharactersJob) {
     let mut job = CharactersJob::new_part(3);
     job.trait_carry = TraitCarry::with(leaders, leader_carry::TRAITS);
     (job, census_tests::roster(world))
 }
 
-/// The typed walk's UnitLeaderTraits.
 fn traits_walked(world: &World) -> TableView {
     census_tests::typed(world, 3).tables()[4].clone()
 }
 
-/// Leader `index`'s first assigned trait now names leader `other`'s.
 fn swap_trait(world: &mut World, index: usize, other: usize) {
     let mut definition = [0; 8];
     assert!(world.copy(census_tests::TRAITS + other * 0x40, &mut definition));
@@ -827,10 +742,6 @@ fn swap_trait(world: &mut World, index: usize, other: usize) {
         .push((census_tests::TRAITS + index * 0x40, definition.to_vec()));
 }
 
-/// Once the traits job held every leader's rows, an hour reads no unit
-/// leader and publishes the typed walk's rows. A forwarded writer that left
-/// the vector unchanged (the recalculation tail) makes only its leader be
-/// read again; one that changed it publishes the new rows.
 #[test]
 fn unchanged_leaders_carry_their_traits_without_reading_them() {
     let _globals = crate::extended::characters::test_globals();
@@ -863,8 +774,6 @@ fn unchanged_leaders_carry_their_traits_without_reading_them() {
     assert!(!LEADERS.poisoned());
 }
 
-/// A roster hour decoded into `frame`, which keeps its buffers between hours
-/// as a pipeline frame does; its Characters and UnitLeaders tables.
 fn roster_hour_into(
     job: &mut CharactersJob,
     world: &World,
@@ -872,7 +781,6 @@ fn roster_hour_into(
 ) -> (TableView, TableView) {
     let report = copy_characters(world, context(PART_MASKS[0]), job, Roles::Gather);
     assert!(report.raw_ok && !report.plan_failed);
-    // The pipeline grows every frame between hours.
     frame.grow(&mut capacities());
     frame.reset();
     frame.decode_characters_payload(MODULE, job, &mut [0; N]);
@@ -886,11 +794,6 @@ fn roster_hour_into(
     (tables[0].clone(), tables[3].clone())
 }
 
-/// A frame whose buffers hold a quiet hour's Characters and UnitLeaders
-/// tables publishes them again, without rewriting them, while the next
-/// quiet hour's keys are theirs and every leader it reads afresh equals its
-/// held row (a marker planted in the buffers survives); a changed leader
-/// rewrites the UnitLeaders table from the walk.
 #[test]
 fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     let _globals = crate::extended::characters::test_globals();
@@ -912,8 +815,6 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     const MARK: u32 = 0x5eed;
     frame.characters.rows.rows[0].country = MARK;
     frame.units.rows.rows[0].native.owner = MARK;
-    // A notified leader whose row did not change is read and equals its
-    // held row.
     drop(LEADERS.notify(World::unit(9).unwrap(), 0));
     roster_hour_into(&mut job, &world, &mut frame);
     assert_eq!(job.unit_carry.counts().read, 1);
@@ -925,7 +826,6 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
         frame.units.rows.rows[0].native.owner, MARK,
         "rows republished in place"
     );
-    // A changed leader: the walk rewrites the table.
     world.patches.push((
         World::unit(5).unwrap() + cunit_leader::OWNER,
         7_u32.to_le_bytes().to_vec(),
@@ -933,7 +833,6 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     drop(LEADERS.notify(World::unit(5).unwrap(), 13));
     let (_, units) = roster_hour_into(&mut job, &world, &mut frame);
     assert_eq!(units, walked(&world).tables()[3]);
-    // A fresh frame holds nothing and decodes the same tables.
     let (characters, units) = roster_hour_into(
         &mut job,
         &world,
@@ -943,8 +842,6 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     assert_eq!(units, walked(&world).tables()[3]);
 }
 
-/// Notified leaders read afresh in roster order, the first with less
-/// training than the next, republish the held frame unchanged.
 #[test]
 fn fresh_leader_reads_grow_for_later_training() {
     let _globals = crate::extended::characters::test_globals();
@@ -967,8 +864,6 @@ fn fresh_leader_reads_grow_for_later_training() {
         roster_hour_into(&mut job, &world, &mut frame);
     }
     assert!(frame.held.units.is_some());
-    // The next fresh leader's text fits, but only a prefix of its training
-    // fits in the scratch buffer left by the first leader.
     let expected = walked(&world).tables();
     assert_eq!(frame.tables()[3], expected[3]);
     const MARK: u32 = 0x5eed;
@@ -1002,7 +897,6 @@ fn quiet_leader_comparison_preserves_training_refusals() {
         roster_hour_into(&mut job, &world, &mut frame);
     }
     let leader = World::unit(5).unwrap();
-    // Refuse the factors after the progress entries have already been copied.
     world.patch(
         leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native::cpdx_array::COUNT,
         &3_u32.to_le_bytes(),
@@ -1039,7 +933,6 @@ fn leader_carry_rejects_mismatched_trait_spans() {
     };
     let certify = |carry: &mut TraitCarry| {
         carry.begin_hour();
-        // Notified, so the hour reads the leader afresh.
         drop(LEADERS.notify(0x1000, 0));
         assert!(!carry.certify(1, 1, || std::iter::once((0, 0x1000, 7))));
     };
@@ -1063,8 +956,6 @@ fn leader_carry_rejects_mismatched_trait_spans() {
     assert!(!carry.held_equals(0, &[row], b"x"));
 }
 
-/// The traits job of a role hour decoded into `frame`, which keeps its
-/// buffers between hours as a pipeline frame does.
 fn trait_hour_into(
     job: &mut CharactersJob,
     world: &World,
@@ -1085,10 +976,6 @@ fn trait_hour_into(
     frame.tables()[4].clone()
 }
 
-/// A frame whose buffers hold a traits job's table publishes it again
-/// without rewriting it while the table key is the carry's and every leader
-/// read afresh projects its held rows (a planted marker survives, also after
-/// an unchanged leader is read again); a changed vector rewrites the table.
 #[test]
 fn a_frame_publishes_its_held_traits_without_rewriting_them() {
     let _globals = crate::extended::characters::test_globals();

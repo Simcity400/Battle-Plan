@@ -1,8 +1,6 @@
 use super::*;
 use std::cell::Cell;
 
-/// Every printable ASCII character 7 wide and 14 tall, the space 4 wide, `.` 3 wide; `AV`
-/// kerns by -2.
 struct Mono;
 
 impl Glyphs for Mono {
@@ -52,7 +50,6 @@ fn laid(text: &str, limits: Limits) -> (String, Vec<i32>) {
     (laid.text.iter().collect(), laid.widths)
 }
 
-/// The game distinguishes an empty parsed icon name from the nonempty frame selector |1.
 #[test]
 fn empty_inline_icon_name_skips_even_a_defined_empty_stem() {
     let calls = Cell::new(0);
@@ -94,38 +91,27 @@ fn empty_inline_icon_name_skips_even_a_defined_empty_stem() {
     assert_eq!(calls.get(), 1);
 }
 
-/// Words move to the next line whole, a line's width drops only the last space's advance,
-/// and a single word wider than the box breaks inside it.
 #[test]
 fn lines_break_as_the_game_breaks_them() {
-    // "ab cd" is 7+7+4+7+7: "cd" does not fit in 25.
     assert_eq!(laid("ab cd", limits(25)), ("ab \ncd".into(), vec![14, 14]));
-    // Two spaces: only the last one's advance is dropped from the width.
     assert_eq!(
         laid("ab  cd", limits(26)),
         ("ab  \ncd".into(), vec![18, 14])
     );
-    // One word: broken where the next glyph would reach the limit.
     assert_eq!(laid("abcd", limits(15)), ("ab\ncd".into(), vec![14, 14]));
-    // A glyph wider than the box first makes an empty line.
     assert_eq!(laid("a", limits(5)), ("\na".into(), vec![0, 7]));
-    // The border narrows the limit on both sides.
     let mut bordered = limits(29);
     bordered.border = [2, 0];
     assert_eq!(laid("ab cd", bordered).1, vec![14, 14]);
-    // A line feed ends a line; kerning applies within a line.
     assert_eq!(laid("AV\nx", limits(100)), ("AV\nx".into(), vec![12, 7]));
 }
 
-/// Tooltip prewrap preserves literal leading spaces after soft line feeds.
-/// Hard line feeds and formatting prefixes retain their own text.
 #[test]
 fn tooltip_soft_wrap_preserves_literal_leading_spaces() {
     let indent = Limits {
         preserve_indent: true,
         ..limits(25)
     };
-    // A pending word moves with the indent; a longer word also breaks within itself.
     assert_eq!(laid(" ab cd", indent), (" ab \n cd".into(), vec![18, 18]));
     assert_eq!(
         laid(" ab cdef", indent),
@@ -135,7 +121,6 @@ fn tooltip_soft_wrap_preserves_literal_leading_spaces() {
         laid(" ab cd\nxy", indent),
         (" ab \n cd\nxy".into(), vec![18, 18, 14])
     );
-    // The helper starts after LF only; it neither skips a colour control nor a tab.
     assert_eq!(
         laid(&format!("{COLOR}R ab cd"), indent),
         (format!("{COLOR}R ab \ncd"), vec![18, 14])
@@ -144,20 +129,16 @@ fn tooltip_soft_wrap_preserves_literal_leading_spaces() {
         laid("\t ab cd", indent),
         ("\t ab \ncd".into(), vec![18, 14])
     );
-    // Two spaces reach width 8 exactly: the helper must stop copying them.
     assert_eq!(
         laid("  x", Limits { width: 8, ..indent }),
         (" \n  \nx".into(), vec![0, 4, 7])
     );
-    // The ordinary layout leaves continuation indentation disabled.
     assert_eq!(
         laid(" ab cd", limits(25)),
         (" ab \ncd".into(), vec![18, 14])
     );
 }
 
-/// Read the space through the normal descriptor lookup: its `?`
-/// fallback supplies the advance, or a missing descriptor leaves advance zero.
 #[test]
 fn tooltip_indent_uses_space_descriptor_fallback() {
     struct MissingSpace(bool);
@@ -195,8 +176,6 @@ fn tooltip_indent_uses_space_descriptor_fallback() {
     }
 }
 
-/// A single-line box stops at the first overflow or line feed; `truncate` ends it with three
-/// dots that fit where the last characters were.
 #[test]
 fn cut_text_ends_with_three_dots() {
     let cut = |text: &str, width: i32| {
@@ -220,20 +199,13 @@ fn cut_text_ends_with_three_dots() {
         .unwrap();
         (laid.text.iter().collect::<String>(), laid.truncated)
     };
-    // "abcdef" in 30: "abcd" fits (28); 2 left, three dots need 12: "cd" become dots.
     assert_eq!(cut("abcdef", 30), ("ab...".into(), true));
-    // A line feed cuts a single-line box; two codepoints take no dots.
     assert_eq!(cut("ab\ncd", 100), ("ab".into(), true));
     assert_eq!(cut("abc\ncd", 100), ("abc...".into(), true));
     assert_eq!(cut("abc", 100), ("abc".into(), false));
-    // Two codepoints or fewer get no dots.
     assert_eq!(cut("abc", 15), ("ab".into(), true));
 }
 
-/// Special sequences take no break and the widths the game gives them; icons are their
-/// texture's width over their frames, found as `GFX_` and the stem or the bare stem; under
-/// `icons_add_height` an icon raises its line to its texture's height; a zero frame count
-/// divides by zero.
 #[test]
 fn special_sequences_have_their_widths() {
     let sprite = |name: &[u8]| (name == b"flag_x").then_some(([60, 30], 3));
@@ -260,8 +232,6 @@ fn special_sequences_have_their_widths() {
     );
 }
 
-/// `GFX_` and the stem, then the bare stem; the suffix's
-/// frame index.
 #[test]
 fn icon_names_split_at_the_first_bar() {
     assert_eq!(
@@ -276,7 +246,6 @@ fn icon_names_split_at_the_first_bar() {
     assert_eq!(icon_lookup("a").1, None);
 }
 
-/// Kerning looks the original codepoint up, not its fallback's.
 #[test]
 fn kerning_reads_the_original_codepoint() {
     struct Kerned;
@@ -300,7 +269,6 @@ fn kerning_reads_the_original_codepoint() {
     assert_eq!(laid.widths, vec![7 + 7 - 3]);
 }
 
-/// The draw's colour stack, and glyphs placed from the pen, kerning and offsets.
 #[test]
 fn the_draw_colours_and_places_glyphs() {
     let chars: Vec<char> = format!("a{COLOR}Rb{COLOR}Gc{COLOR}!d{COLOR}!e\nAV")
@@ -334,17 +302,12 @@ fn the_draw_colours_and_places_glyphs() {
     assert_eq!(glyph(0), ('a', [100, 11], grey));
     assert_eq!(glyph(1).2, [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(glyph(2).2, [0.0, 1.0, 0.0, 1.0]);
-    // `!` pops back to red, then (one left) pushes the text's own.
     assert_eq!(glyph(3).2, [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(glyph(4).2, grey);
-    // The second line: down by its height, the pen restarted, `V` kerned.
     assert_eq!(glyph(5).1, [100, 25]);
     assert_eq!(glyph(6).1, [105, 25]);
 }
 
-/// An icon's frame quad : the texture's width over its frames by its height,
-/// the frame's `u` span clamped above at 1 and not below; a flag 10 by 7 five below the
-/// glyph line, 12 on; an undefined icon takes nothing; currency reads uninitialised memory.
 #[test]
 fn icons_and_flags_draw_where_the_font_puts_them() {
     let sprite = |name: &[u8]| (name == b"GFX_x").then_some(([30, 20], 3));
@@ -379,7 +342,6 @@ fn icons_and_flags_draw_where_the_font_puts_them() {
             uv: [2.0 * third, 0.0, (3.0 * third).min(1.0), 1.0],
         }
     );
-    // An empty suffix is frame -1, not clamped.
     assert!(matches!(&pieces[1], Piece::Icon { at, uv, .. }
         if at[0] == 110 && uv[0] == -third && uv[2] == 0.0));
     assert_eq!(

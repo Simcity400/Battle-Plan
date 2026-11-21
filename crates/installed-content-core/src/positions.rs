@@ -1,16 +1,9 @@
-//! World positions for unit stacks and buildings.
-//!
-//! `map/unitstacks.txt` and `map/buildings.txt` are semicolon lists, not
-//! Clausewitz text. Coordinates are game world space: x right, y height, z
-//! into the map, the same space `pdxmap.shader` places its meshes in.
 
 use std::io;
 
-/// One anchor on the map for a stack of units of one kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UnitStack {
     pub province: u32,
-    /// Engine stack kind; the file writes it as a number.
     pub kind: u32,
     pub x: f32,
     pub y: f32,
@@ -19,19 +12,14 @@ pub struct UnitStack {
     pub scale: f32,
 }
 
-/// One authored building slot inside a state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuildingPosition {
-    /// The `i32` the loader's `strtol` stores, as its bits.
     pub state: u32,
-    /// Building type name, such as `arms_factory` or `naval_base_spawn`.
     pub kind: String,
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub rotation: f32,
-    /// `0` where the file declares no adjacent sea province; the `i32` the
-    /// loader's `strtol` stores, as its bits.
     pub adjacent_sea: u32,
 }
 
@@ -39,7 +27,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Splits a positions file into its non-empty lines with one-based numbers.
 fn lines(input: &[u8], what: &str) -> io::Result<Vec<(usize, Vec<String>)>> {
     let input = input.strip_prefix(b"\xef\xbb\xbf").unwrap_or(input);
     let text = std::str::from_utf8(input).map_err(|_| invalid(format!("{what} is not UTF-8")))?;
@@ -93,7 +80,6 @@ fn float(fields: &[String], index: usize, what: &str, line: usize, name: &str) -
     Ok(parsed)
 }
 
-/// Reads `map/unitstacks.txt`: `province;type;x;y;z;rotation;scale`.
 pub fn parse_unit_stacks(input: &[u8]) -> io::Result<Vec<UnitStack>> {
     let what = "unitstacks.txt";
     let mut stacks = Vec::new();
@@ -117,11 +103,6 @@ pub fn parse_unit_stacks(input: &[u8]) -> io::Result<Vec<UnitStack>> {
     Ok(stacks)
 }
 
-/// The longest floating-point prefix of a semicolon-delimited field,
-/// 0 when none is. The scan's grammar is `%f`'s ([`crate::crt::scan_f32`]),
-/// which refuses prefixes that the field conversion backs off from
-/// (`1e`, `0x`, `infin`, `nan(`). Only those back-offs can shorten the
-/// field's own scan, so at most two scans decide it.
 fn strtof(field: &[u8]) -> f32 {
     let text = crate::parser::c_string(field);
     if let Some(value) = crate::crt::scan_f32(text) {
@@ -157,9 +138,7 @@ fn strtof(field: &[u8]) -> f32 {
             at += 1 + fraction;
         }
         match (whole + fraction > 0, hexadecimal) {
-            // An exponent marker without a digit: the mantissa before it.
             (true, _) => start + at,
-            // `0x` without a digit: its `0`.
             (false, true) => start + 1,
             (false, false) => return 0.0,
         }
@@ -167,8 +146,6 @@ fn strtof(field: &[u8]) -> f32 {
     crate::crt::scan_f32(&text[..end]).unwrap_or(0.0)
 }
 
-/// `strtol(text, _, 10)` of the text from a field's start: the white space,
-/// sign and digits it reads, through [`crate::fixed5::decimal_i32`].
 fn strtol(text: &[u8]) -> i32 {
     let space = text
         .iter()
@@ -182,16 +159,6 @@ fn strtol(text: &[u8]) -> i32 {
     crate::fixed5::decimal_i32(&text[..space + sign + digits])
 }
 
-/// Reads `map/buildings.txt`: split the file at every `\n`, each line at
-/// every `;`, and read only lines of exactly seven fields,
-/// `state;type;x;y;z;rotation;adjacent_sea`; any other is skipped. `state`
-/// and `adjacent_sea` scan a signed decimal prefix from the field's start,
-/// without bounding the scan to the field: `0 # comment` is 0, and an empty
-/// last field reads on into the next line. Coordinates take the longest
-/// floating-point prefix. Nothing is trimmed and no byte-order mark is skipped.
-///
-/// Errors: a type name that is not UTF-8, and a coordinate that is not
-/// finite, which the reader cannot place.
 pub fn parse_buildings(input: &[u8]) -> io::Result<Vec<BuildingPosition>> {
     let what = "buildings.txt";
     let mut buildings = Vec::new();
@@ -238,12 +205,9 @@ pub fn parse_buildings(input: &[u8]) -> io::Result<Vec<BuildingPosition>> {
     Ok(buildings)
 }
 
-/// One authored weather anchor of `map/weatherpositions.txt`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherPosition {
-    /// One-based line number, for the loader's reports.
     pub line: usize,
-    /// The `i32` the loader's `strtol` stores.
     pub region: i32,
     pub x: f32,
     pub y: f32,
@@ -251,12 +215,6 @@ pub struct WeatherPosition {
     pub small: bool,
 }
 
-/// Reads `map/weatherpositions.txt` as the loader does: split the file at every `\n`, skip
-/// empty lines, cut each line at its first `\r` and read only lines of exactly five
-/// `;`-separated fields, `region;x;y;z;size`. The region is the signed decimal prefix of its
-/// field and each coordinate the longest floating-point prefix of its own, 0 when none is.
-/// The anchor is small when its size, lowercased and trimmed of white space, starts with
-/// `small`. Every other line is skipped and returned as its one-based number and field count.
 pub fn parse_weather_positions(input: &[u8]) -> (Vec<WeatherPosition>, Vec<(usize, usize)>) {
     let mut anchors = Vec::new();
     let mut skipped = Vec::new();
@@ -288,13 +246,10 @@ pub fn parse_weather_positions(input: &[u8]) -> (Vec<WeatherPosition>, Vec<(usiz
     (anchors, skipped)
 }
 
-/// Reads `map/unitstacks.txt` from the resolved layers.
 pub fn read_unit_stacks(layers: &crate::ResolvedLayers) -> io::Result<Vec<UnitStack>> {
     parse_unit_stacks(&layers.read("map/unitstacks.txt")?)
 }
 
-/// Reads `map/buildings.txt` from the resolved layers; a missing file
-/// places no buildings.
 pub fn read_buildings(layers: &crate::ResolvedLayers) -> io::Result<Vec<BuildingPosition>> {
     match layers.read("map/buildings.txt") {
         Ok(bytes) => parse_buildings(&bytes),
@@ -371,9 +326,6 @@ mod tests {
         assert!(parse_buildings(b"1;a;inf;2;3;4;0").is_err());
     }
 
-    /// A trailing comment leaves a numeric prefix unchanged. A line of
-    /// other than seven fields is skipped, including a comment line; an
-    /// integer scan is not bounded by its `;` or line.
     #[test]
     fn buildings_read_as_the_loader_reads_them() {
         let buildings = parse_buildings(
@@ -387,8 +339,6 @@ mod tests {
         .unwrap();
         assert_eq!(buildings.len(), 3);
         assert_eq!(buildings[0].adjacent_sea, 4321);
-        // `strtof` backs off to the longest float; an empty or unreadable
-        // field is 0. The empty last field's scan reads on into the next line.
         let b = &buildings[1];
         assert_eq!((b.x, b.y, b.z, b.rotation), (1.0, 0.0, 0.0, 16.0));
         assert_eq!(b.adjacent_sea, -3i32 as u32);
@@ -398,8 +348,6 @@ mod tests {
         );
     }
 
-    /// The back-off agrees with trying every prefix from the longest, and a
-    /// field of nothing but white space, however long, is one pass to 0.
     #[test]
     fn coordinates_back_off_to_the_longest_float_prefix_in_one_pass() {
         let every_prefix = |field: &[u8]| {
@@ -448,8 +396,6 @@ mod tests {
         assert_eq!((buildings[0].x, buildings[0].y), (0.0, 2.0));
     }
 
-    /// Size folds case and white space and only its prefix counts; a line of another field
-    /// count is skipped by number, a CRLF blank line included, and the rest still load.
     #[test]
     fn weather_positions_read_as_the_loader_reads_them() {
         let (anchors, skipped) = parse_weather_positions(

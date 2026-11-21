@@ -24,8 +24,6 @@ fn stat(selector: u32, value_raw: i64) -> UnitBonusStat {
     }
 }
 
-/// An effect's entry with an exact and a category target, then a doctrine
-/// reward's entry with no targets and no label.
 fn rows() -> Vec<CountryUnitBonusRow> {
     vec![
         CountryUnitBonusRow {
@@ -45,7 +43,6 @@ fn rows() -> Vec<CountryUnitBonusRow> {
                         category_token: 62,
                         add: 1,
                         display_as_percentage: 0,
-                        // The writer omits the zero amount.
                         stats: vec![stat(3, 10_000), stat(3, 0)],
                     }],
                 },
@@ -69,8 +66,6 @@ fn rows() -> Vec<CountryUnitBonusRow> {
     ]
 }
 
-/// The same list as the save writes it, with the saved-but-unrecorded
-/// requirement, adjuster, terrain and presentation members.
 fn saved(list: &str) -> Vec<UnitBonus> {
     let name = |selector: usize| installed_content_core::equipment::stat_metadata()[selector].0;
     let text = format!(
@@ -112,7 +107,6 @@ fn run(rows: Vec<CountryUnitBonusRow>, list: &str, hour: i32) -> Report {
     report
 }
 
-/// The slot hour of the daily read.
 const SLOT: i32 = 24 * 1_000 + 22;
 
 #[test]
@@ -139,8 +133,6 @@ fn a_differing_stat_an_extra_entry_and_source_omissions_are_named_differences() 
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("unit_modifiers.entries"));
 
-    // The save omits `id` for the none token and `localization_key` when the
-    // label is empty; a recorded id or an empty label disagrees.
     let mut sources = rows();
     sources[0].source_id = DOCTRINE;
     sources[0].label.clear();

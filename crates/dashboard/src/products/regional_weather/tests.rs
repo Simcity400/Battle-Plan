@@ -2,13 +2,8 @@ use super::*;
 
 const DAY: i32 = DAY_HOURS;
 
-/// A day is sampled at its last hour WeatherRegions was known and dated by the latest read at or
-/// before it; a day it was never known in is not sampled. Days fold into whole-day columns, a
-/// flag counts the sampled days it was set, a value keeps its lowest, exact sum and highest, and
-/// conditions count the days observed and the days observed clear apart from days not read.
 #[test]
 fn days_are_sampled_at_their_last_known_hour_and_fold_into_whole_day_columns() {
-    // Day 3 was not known; day 2 was known only until its 10th hour.
     let known = [(0, 0, 2 * DAY + 10), (0, 4 * DAY, 5 * DAY - 1)];
     let reads = [(0, 0), (DAY + 5, DAY + 5), (2 * DAY + 5, 2 * DAY + 5), (4 * DAY + 5, 4 * DAY + 5)];
     let days = days(0, 5 * DAY - 1, &known, &reads);
@@ -34,9 +29,6 @@ fn days_are_sampled_at_their_last_known_hour_and_fold_into_whole_day_columns() {
     assert_eq!(wide.regions[0].measures[0].values.as_ref().unwrap()[0], Some(["-3".to_owned(), "2".to_owned(), "5".to_owned()]));
 }
 
-/// A modifier is copied from the row where its witness is recorded (a missing value under a
-/// witness is the game's zero), and absent where the witness is not; a region's temperature is
-/// none when it has no provinces or any province has no state.
 #[test]
 fn modifiers_follow_their_witness_and_a_mean_needs_every_province() {
     let mut row = WeatherRegionRow { id: 7, air_detection: Recorded::Value(Some(None)), map_modifiers_known: Recorded::Value(false), naval_detection: Recorded::Value(Some(4)), air_defence: Recorded::NotRecorded, ..Default::default() };

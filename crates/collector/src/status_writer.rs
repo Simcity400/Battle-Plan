@@ -1,4 +1,3 @@
-//! Coalesced checked status snapshots with reusable byte buffers.
 use crate::allocation;
 use std::{
     io,
@@ -162,7 +161,6 @@ fn measure(pending: &mut Pending) -> io::Result<()> {
 }
 pub(crate) fn measure_bytes(bytes: &mut Vec<u8>, directories: &[PathBuf]) -> io::Result<()> {
     let value = spool_bytes(directories)?;
-    // Comma, key, maximum u64 decimal digits, and the closing brace.
     engine_allocation::reserve(bytes, 1 + b"\"spool_bytes\":".len() + 20 + 1)?;
     if bytes.last() != Some(&b'}') {
         return Err(io::ErrorKind::InvalidData.into());
@@ -312,9 +310,6 @@ mod tests {
         sync::{Arc, mpsc},
     };
 
-    /// Releases a stalled fake write when dropped, so a failing assertion
-    /// unwinds without hanging the writer's join. Declared after the writer,
-    /// it drops first.
     struct Release(mpsc::Sender<()>);
     impl Drop for Release {
         fn drop(&mut self) {
@@ -322,9 +317,6 @@ mod tests {
         }
     }
 
-    /// A fake write whose first call reports that it entered, then stalls
-    /// until released: the release guard sends, or drops its sender on
-    /// unwinding. Every call records what it wrote.
     #[allow(clippy::type_complexity)]
     fn stalling(
         entered: mpsc::Sender<()>,
@@ -347,9 +339,6 @@ mod tests {
         }
     }
 
-    /// While a write is stuck, the spool thread's hand-overs return at once
-    /// (on another thread, observed with a timeout), and the snapshots
-    /// coalesce to the latest per path.
     #[test]
     fn a_stalled_write_never_blocks_publish_and_writes_the_latest_snapshot() {
         let (entered_tx, entered) = mpsc::channel();
@@ -394,8 +383,6 @@ mod tests {
         );
     }
 
-    /// The spool thread ending early (an error return drops its handle) never
-    /// waits for a stuck write; the loader's `finish` does, later.
     #[test]
     fn dropping_the_spool_handle_never_waits_for_a_stuck_write() {
         let (entered_tx, entered) = mpsc::channel();
@@ -411,7 +398,6 @@ mod tests {
         entered
             .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the write stalls");
-        // Only now, with the write stuck, does the spool side end early.
         let (done_tx, done) = mpsc::channel();
         std::thread::spawn(move || {
             spool
@@ -427,8 +413,6 @@ mod tests {
         assert_eq!(written.lock().unwrap().len(), 2);
     }
 
-    /// A write refused by a reader (sharing violation 32) is retried in the
-    /// background, while the writer keeps running, and reported.
     #[test]
     fn a_refused_write_is_retried_in_the_background_and_reported() {
         let (wrote_tx, wrote) = mpsc::channel();
@@ -449,8 +433,6 @@ mod tests {
         handle
             .publish(Path::new("status.json"), json!({ "hour": 1 }))
             .unwrap();
-        // The retry succeeded while the writer was running; finishing only
-        // lets its counters settle before they are read.
         wrote
             .recv_timeout(crate::TEST_HANG_GUARD)
             .expect("the retry succeeds");
@@ -460,8 +442,6 @@ mod tests {
         assert!(error == "status write failed", "{error}");
     }
 
-    /// A newer snapshot published while a write is failing supersedes it: the
-    /// failed one is not retried.
     #[test]
     fn a_newer_snapshot_supersedes_a_failed_write() {
         let (entered_tx, entered) = mpsc::channel();
@@ -479,7 +459,6 @@ mod tests {
                 .unwrap()
                 .push(serde_json::from_slice(value).unwrap());
             if first {
-                // Fail only after the test has published the newer snapshot.
                 let _ = entered_tx.lock().unwrap().send(());
                 let _ = proceed.lock().unwrap().recv_timeout(crate::TEST_HANG_GUARD);
                 return Err(io::Error::from_raw_os_error(32));
@@ -507,8 +486,6 @@ mod tests {
         );
     }
 
-    /// `publish_measured` reports the `spool.*` bytes of its directories,
-    /// measured on the writer thread.
     #[test]
     fn measured_snapshots_carry_their_spool_bytes() {
         let directory = std::env::temp_dir().join(format!(

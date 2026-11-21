@@ -1,16 +1,3 @@
-// The real replies of a run, recorded for widget tests (`ui/src/test-support/recorded.ts` serves them): every product
-// reply and every followed message the app's page receives, taken in the page as they arrive, with marks naming what the
-// sweep was doing. Nothing is installed in the app unless a run asks for it, so the app pays nothing otherwise.
-//
-// The file is gzipped JSON lines. Its first line names what made it: the tables the app's service was built with (the
-// format: `crates/replay-data/src/rows/registry.golden` at the app's revision), the app's revision, the recording.
-// Then, in the order the page received them:
-//   {t:'open', at, ms, head, args, ok, reply}       the recording opened (its reply is the source the widgets are bound to)
-//   {t:'product', at, ms, head, args, ok, reply}    a product reply (`args.query` is the request; `ok` false: `reply` is
-//                                                   the refusal), cancelled requests included: their replies still came
-//   {t:'follow', at, head, bytes}   a followed message, base64, in pull order
-//   {t:'mark', at, head, label, ...}                what the sweep did (`page`, `play`, `pause`), with the page's layout
-// `at` is milliseconds since the page's time origin, `head` the clock's hour on the timeline control then.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, readFileSync } from 'node:fs';
@@ -19,18 +6,14 @@ import { createGzip } from 'node:zlib';
 
 export const KIND = 'battle-plan recorded replies';
 export const VERSION = 3;
-/** The tables of the recording format, listed by the test that holds them equal to the code. */
 export const FORMAT_FILE = 'crates/replay-data/src/rows/registry.golden';
-/** Characters of entries the page hands over a take. */
 const TAKE_BUDGET = 1 << 20;
 
-/** The format's lines (Windows line endings or not) and their digest. */
 export function formatOf(text) {
   const lines = text.split(/\r?\n/).filter(line => line.length);
   return { lines, digest: createHash('sha256').update(lines.join('\n')).digest('hex') };
 }
 
-/** Installed in the page: records the host's IPC replies and the dated payloads captured in the pull worker. */
 export const CAPTURE = `(() => {
   if (window.__replies) return true;
   const held = [];
@@ -64,14 +47,12 @@ export const CAPTURE = `(() => {
   const base64 = buffer => {
     const bytes = new Uint8Array(buffer);
     let out = '';
-    // In pieces: an argument list as long as a message would overflow the stack.
     const piece = 32768;
     for (let at = 0; at < bytes.length; at += piece) out += String.fromCharCode.apply(null, bytes.subarray(at, at + piece));
     return btoa(out);
   };
   window.__replies = {
     mark(entry) { held.push({ t: 'mark', at: performance.now(), head: head(), ...entry }); },
-    // At most \`budget\` characters a call, a long entry in pieces: no one message of the debugger grows with a reply.
     take(budget) {
       if (captureError) throw new Error(captureError);
       const parts = [];
@@ -96,7 +77,6 @@ export const CAPTURE = `(() => {
   return true;
 })()`;
 
-/** Installed through the debugger only during a reply capture, before the worker starts reading. */
 function capturePulls() {
   let followed;
   const read = Response.prototype.arrayBuffer;
@@ -124,7 +104,6 @@ function capturePulls() {
   };
 }
 
-/** The page's layout as a page shows it: the grid's size and each widget's place, so a fixture lays it out alike. */
 const LAYOUT = `(() => {
   const grid = document.querySelector('.dash-grid');
   const scroll = document.querySelector('.dash-grid-scroll');
@@ -133,7 +112,6 @@ const LAYOUT = `(() => {
     widgets: [...document.querySelectorAll('article.dash-widget')].map(a => ({ id: a.dataset.widget, kind: [...a.classList].find(c => c.startsWith('kind-'))?.slice(5) ?? null, ...box(a) })) };
 })()`;
 
-/** The source revision of the app the page belongs to: named, or from the build record Boat leaves beside its executable. */
 export function appRevision(pid, named) {
   if (named) return named;
   const exe = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(pid)}).Path`], { encoding: 'utf8' }).trim();
@@ -144,17 +122,14 @@ export function appRevision(pid, named) {
   return revision;
 }
 
-/** The format the app at `revision` was built with, read from the repository. */
 export function formatAt(revision, root) {
   return formatOf(execFileSync('git', ['-C', root, 'show', `${revision}:${FORMAT_FILE}`], { encoding: 'utf8', maxBuffer: 64 << 20 }));
 }
 
 export class ReplyRecorder {
-  /** Starts recording `app`'s page into `file`. */
   static async start(app, file, { pid, revision, root }) {
     const app_revision = appRevision(pid, revision);
     const format = formatAt(app_revision, root);
-    // A page that dies or reloads loses what it held and its capture: said at once, by name.
     app.on('Inspector.targetCrashed', () => console.error('recording replies: the page crashed'));
     app.on('Inspector.detached', ({ reason }) => console.error(`recording replies: the debugger was detached: ${reason}`));
     app.on('Page.frameNavigated', ({ frame }) => { if (!frame.parentId) console.error(`recording replies: the page navigated to ${frame.url}; its capture is gone`); });
@@ -191,7 +166,6 @@ export class ReplyRecorder {
     this.counts = { open: 0, product: 0, follow: 0, mark: 0 };
     this.queue = Promise.resolve();
     this.partial = '';
-    // Drained as it goes: the page never holds more than a second of what it received.
     this.timer = setInterval(() => { void this.take().catch(() => {}); }, 1000);
   }
 
@@ -199,7 +173,6 @@ export class ReplyRecorder {
     return new Promise(resolve => { if (this.gzip.write(`${JSON.stringify(entry)}\n`)) resolve(); else this.gzip.once('drain', resolve); });
   }
 
-  /** Moves what the page holds into the file, one take at a time; replies parsed, so the file is one JSON value a line. */
   take() {
     const run = this.queue.then(async () => {
       if (this.failed) throw this.failed;
@@ -211,7 +184,7 @@ export class ReplyRecorder {
           const entry = JSON.parse(this.partial);
           this.partial = '';
           if (typeof entry.reply === 'string') {
-            try { entry.reply = JSON.parse(entry.reply); } catch { /* a text reply stays text */ }
+            try { entry.reply = JSON.parse(entry.reply); } catch {   }
           }
           this.counts[entry.t] = (this.counts[entry.t] ?? 0) + 1;
           await this.line(entry);
@@ -223,7 +196,6 @@ export class ReplyRecorder {
     return run;
   }
 
-  /** A mark of what the sweep does now, with the page's layout. */
   async mark(label, extra = {}) {
     const layout = await this.app.evaluate(LAYOUT);
     await this.app.evaluate(`window.__replies.mark(${JSON.stringify({ label, ...extra, layout })})`);

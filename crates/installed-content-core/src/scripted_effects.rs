@@ -1,4 +1,3 @@
-//! Scripted-effect names at their own load point, before any effect body.
 
 use crate::{
     ResolvedLayers,
@@ -18,7 +17,6 @@ pub struct ScriptedEffects {
 }
 
 impl ScriptedEffects {
-    /// Body pass: only names registered by the name pass bind templates.
     pub fn read_file(&mut self, bytes: &[u8], names: &crate::key_names::KeyNames) {
         let read = native::read(
             bytes,
@@ -32,7 +30,7 @@ impl ScriptedEffects {
                 {
                     Shape::Effect
                 } else {
-                    Shape::One // A mismatch skips no body.
+                    Shape::One
                 }
             },
         );
@@ -53,13 +51,12 @@ impl ScriptedEffects {
             };
             let existing = self.bodies.entry(name).or_insert_with(|| Ok(Vec::new()));
             match (&mut *existing, body) {
-                (Ok(existing), Ok(body)) => existing.extend(body), // Effect bodies append.
+                (Ok(existing), Ok(body)) => existing.extend(body),
                 (_, Err(why)) => *existing = Err(why),
                 (Err(_), Ok(_)) => {}
             }
         }
         if let Some(why) = read.unsettled {
-            // An unread suffix can append to any registered template.
             for name in &names.scripted_effects {
                 self.bodies.insert(name.clone(), Err(why.to_string()));
             }
@@ -89,9 +86,6 @@ pub fn read(
     Ok(result)
 }
 
-/// Name pass: the directory's own `.txt` files, values skipped without
-/// defining variables. Effect lookup finds the name by token hash and
-/// requires a template registered by this pass.
 pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut names = BTreeSet::new();
     for path in crate::script_files::paths(layers, "common/scripted_effects/", Some(".txt"))? {
@@ -100,7 +94,6 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     Ok(names)
 }
 
-/// The name pass over one file, using the same reader as the body readers.
 pub fn file_names(bytes: &[u8]) -> BTreeSet<Vec<u8>> {
     native::read(
         bytes,

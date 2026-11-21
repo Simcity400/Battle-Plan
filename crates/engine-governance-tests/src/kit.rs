@@ -1,4 +1,3 @@
-//! Synthetic country world and guarded-call census, shared by both crates.
 #![allow(dead_code)]
 use engine_focus::cnational_focus_progress as focus;
 use engine_native::{Memory, ccountry, cgame_state, modifier_definition};
@@ -21,7 +20,6 @@ pub const SLOT: usize = 0x1a00;
 pub const TECH: usize = 0x2000;
 pub const TEMPLATE: usize = 0x3000;
 pub const FOCUS: usize = 0x6000;
-// Keep country selection fields separate from pointed-to status and slots.
 const _: () = {
     assert!(ccountry::FOCUS_PROGRESS + 8 <= STATUS);
     assert!(STATUS + status::COUNTRY + 8 <= SLOTS);
@@ -244,8 +242,6 @@ pub struct Call {
     pub reader: &'static str,
     pub kind: &'static str,
 }
-/// Named witnesses derived from the shared registry's thread-local counts.
-/// Baselines isolate each acquisition without resetting other fixtures.
 pub struct FallbackCounts {
     before: Cell<[u64; 12]>,
 }
@@ -321,8 +317,6 @@ impl<'a, M: Memory> Trace<'a, M> {
     pub fn count(&self) -> usize {
         self.calls.borrow().len()
     }
-    /// A one-shot adapter fault encountered only by speculative record gathers.
-    /// The serial reference never encounters it, so its rows must stay available.
     pub fn gather_fault(source: &'a M, reader: &'static str, address: usize) -> Self {
         let mut trace = Self::fault(source, reader, address, true);
         trace.gather_only = true;
@@ -381,8 +375,6 @@ impl<M: Memory> Memory for Trace<'_, M> {
         out: &mut [u8],
     ) -> usize {
         self.call("copy_records");
-        // A field-only adapter enumerates operands without counting each as
-        // another guard, matching LiveMemory's single guarded entry.
         struct Fields<'a, 'b, M>(&'a Trace<'b, M>);
         impl<M: Memory> Memory for Fields<'_, '_, M> {
             fn copy(&self, at: usize, out: &mut [u8]) -> bool {

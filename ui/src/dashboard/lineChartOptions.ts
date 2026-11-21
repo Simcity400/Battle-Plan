@@ -1,7 +1,6 @@
 import { AFTER_PLAYHEAD_OPTION } from './options.ts';
 import type { OptionField } from './options';
 
-/** Playback and axes shared by country line charts. */
 export const LINE_TIME_OPTIONS: readonly OptionField[] = [
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
     choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },

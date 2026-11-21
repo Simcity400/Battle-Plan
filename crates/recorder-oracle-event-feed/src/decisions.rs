@@ -1,4 +1,3 @@
-//! Retained decisions are compared at the save hour, independently of census age.
 use installed_content_save::{SaveDocument, governance as saved};
 use super::script_events::{Owner, uncertified};
 use recorder_oracle_support::{
@@ -118,8 +117,6 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let countries = country_items(document, frame)?;
-    // Only an unnamed country fails the whole group; each owner's saved
-    // status is read on its own, so one unreadable owner hides no other.
     let saved = countries
         .into_iter()
         .map(|item| {
@@ -160,8 +157,6 @@ pub(super) fn compare(
     Ok(())
 }
 
-/// Every certified owner is compared; uncertified owners are listed by reason
-/// and an owner whose saved operands cannot be read is refused alone.
 pub(super) fn compare_owners(
     owners: &[Owner<'_>],
     saved: &BTreeMap<&[u8], io::Result<Option<saved::Decisions>>>,

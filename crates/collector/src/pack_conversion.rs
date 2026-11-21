@@ -1,8 +1,3 @@
-//! Each pack's and table's conversion time on the spool thread and its
-//! helpers (one hour's, the session's sums, and the costliest of an hour whose
-//! spool frame ran over budget), and from them the next hour's [`Plan`]: the
-//! order in which the threads take the movable packs and how many helpers
-//! take them.
 
 use crate::extended::{
     HELPER_PACKS, PACK_NAMES,
@@ -14,8 +9,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const PACKS: usize = PACK_NAMES.len();
 const TOP: usize = 4;
 
-/// The packs with a helper marker, which any one thread may convert; the
-/// others are the spool thread's.
 pub(crate) const MOVABLE: usize = {
     let mut count = 0;
     let mut pack = 0;
@@ -40,14 +33,11 @@ const MOVABLE_PACKS: [u8; MOVABLE] = {
     }
     order
 };
-/// A helper beyond one per movable pack would find nothing to take.
 pub(crate) const MAX_HELPERS: usize = MOVABLE;
-/// The spool thread, then helper `n` as thread `n + 1`.
 pub(crate) const MAX_THREADS: usize = MAX_HELPERS + 1;
 pub(crate) const SPOOL: usize = 0;
 const _: () = assert!(PACKS <= u8::MAX as usize + 1 && MAX_THREADS <= u8::MAX as usize);
 
-/// A converting thread's name in the status: `spool`, or `helper_<n>` from 1.
 #[derive(Clone, Copy)]
 struct ThreadName(usize);
 
@@ -64,9 +54,6 @@ fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// One hour's split of the movable packs: the order the threads take them in,
-/// longest measured first, and how many helpers take them with the spool
-/// thread.
 #[derive(Clone, Copy)]
 pub(crate) struct Plan {
     order: [u8; MOVABLE],
@@ -74,12 +61,6 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    /// The plan for `pool` helpers from each pack's latest measured cost.
-    /// Unmeasured packs go first, in `PACK_NAMES` order, and while any movable
-    /// pack is unmeasured every helper takes part. Otherwise the threads are
-    /// as many as the work over its largest pack, up to the pool: no count of
-    /// threads finishes before the largest pack, and fewer would leave the
-    /// even share above it.
     pub(crate) fn new(estimates: &[Option<u64>; PACKS], pool: usize) -> Self {
         let mut order = MOVABLE_PACKS;
         order.sort_unstable_by_key(|&pack| {
@@ -103,7 +84,6 @@ impl Plan {
         Self { order, helpers }
     }
 
-    /// The helpers that take packs this hour; the first also converts the map tables.
     pub(crate) fn helpers(&self) -> usize {
         self.helpers
     }
@@ -116,43 +96,31 @@ impl Plan {
     }
 }
 
-/// One hour's movable packs, handed out one at a time in the plan's order:
-/// each pack to exactly one thread, so a pack is never converted twice or by
-/// two threads at once.
 pub(crate) struct Queue<'a> {
     order: &'a [u8],
     next: AtomicUsize,
 }
 
 impl Queue<'_> {
-    /// The next pack's index in `PACK_NAMES`; None once every pack was taken.
     pub(crate) fn take(&self) -> Option<usize> {
         let at = self.next.fetch_add(1, Ordering::Relaxed);
         self.order.get(at).map(|&pack| usize::from(pack))
     }
 }
 
-/// One thread's conversion times in ns for one hour, or, merged, the hour's.
 pub(crate) struct HourCosts {
-    /// The thread that fills these costs.
     thread: u8,
-    /// None: the pack was not converted this hour.
     packs: [Option<u64>; PACKS],
-    /// The thread that converted each converted pack.
     by: [u8; PACKS],
-    /// The part of each pack's time that its tables' own timings account for.
     split: [u64; PACKS],
     tables: [u64; TABLE_COUNT],
-    /// Each thread's wall over its share, waits for the game's tick included.
     threads: [Option<u64>; MAX_THREADS],
-    /// ScriptVariables' conversion, when the spool's comparison state converted it.
     pub(crate) script_variables: Option<VariableWork>,
 }
 
 impl HourCosts {
     pub(crate) const EMPTY: Self = Self::of(SPOOL);
 
-    /// Costs `thread` fills.
     pub(crate) const fn of(thread: usize) -> Self {
         Self {
             thread: thread as u8,
@@ -165,7 +133,6 @@ impl HourCosts {
         }
     }
 
-    /// A cursor over the packs in `PACK_NAMES` order.
     pub(crate) fn packs(&mut self) -> Packs<'_> {
         Packs {
             costs: self,
@@ -173,20 +140,16 @@ impl HourCosts {
         }
     }
 
-    /// This thread's wall over its share since `started`.
     pub(crate) fn thread(&mut self, started: std::time::Instant) {
         self.threads[usize::from(self.thread)] = Some(elapsed_ns(started));
     }
 
-    /// Pack `pack` converted since `started`, its tables those this thread timed since.
     pub(crate) fn converted(&mut self, pack: usize, started: std::time::Instant) {
         self.packs[pack] = Some(elapsed_ns(started));
         self.by[pack] = self.thread;
         self.split[pack] = collector_projection::table_clock::drain(&mut self.tables);
     }
 
-    /// Takes in what another thread converted this hour. Each pack is
-    /// converted by one thread, so the order of merging changes nothing.
     pub(crate) fn merge(&mut self, other: &Self) {
         for pack in 0..PACKS {
             if other.packs[pack].is_some() {
@@ -208,7 +171,6 @@ impl HourCosts {
         }
     }
 
-    /// Each pack's cost and the thread that converted it, if converted.
     #[cfg(test)]
     pub(crate) fn converted_by(&self) -> impl Iterator<Item = Option<(u64, usize)>> + '_ {
         self.packs
@@ -217,14 +179,12 @@ impl HourCosts {
             .map(|(ns, by)| ns.map(|ns| (ns, usize::from(*by))))
     }
 
-    /// Each thread's wall, if it converted this hour.
     #[cfg(test)]
     pub(crate) fn walls(&self) -> impl Iterator<Item = Option<u64>> + '_ {
         self.threads.iter().copied()
     }
 }
 
-/// The next pack of an hour's conversion, skipped or converted.
 pub(crate) struct Packs<'a> {
     costs: &'a mut HourCosts,
     next: usize,
@@ -235,7 +195,6 @@ impl Packs<'_> {
         self.next += 1;
     }
 
-    /// The pack converted since `started`, its tables those this thread timed since.
     pub(crate) fn converted(&mut self, started: std::time::Instant) {
         self.costs.converted(self.next, started);
         self.next += 1;
@@ -263,19 +222,15 @@ impl Total {
     }
 }
 
-/// One hour's conversion: each thread's wall and the packs it converted, and
-/// the costliest packs and tables.
 #[derive(Clone, Copy)]
 pub(crate) struct HourTop {
     threads: [Option<u64>; MAX_THREADS],
-    /// The thread that converted each pack; None: not converted.
     by: [Option<u8>; PACKS],
     packs: [(usize, u64); TOP],
     tables: [(TableId, u64); TOP],
     script_variables: Option<VariableWork>,
 }
 
-/// The `TOP` largest of `costs`, largest first; empty slots hold zero.
 fn top<K: Copy>(empty: K, costs: impl Iterator<Item = (K, u64)>) -> [(K, u64); TOP] {
     let mut top = [(empty, 0); TOP];
     for (key, ns) in costs {
@@ -323,7 +278,6 @@ impl HourTop {
     }
 }
 
-/// The session's conversion times, fixed in size, and each pack's latest cost.
 pub(crate) struct Conversion {
     hours: u64,
     threads: [Total; MAX_THREADS],
@@ -331,11 +285,8 @@ pub(crate) struct Conversion {
     split: [u64; PACKS],
     tables: [Total; TABLE_COUNT],
     script_variables: VariableTotals,
-    /// Each pack's cost the last hour that converted it.
     estimates: [Option<u64>; PACKS],
-    /// The latest hour that converted, for the status.
     last: Option<HourTop>,
-    /// The latest hour's conversion, until its spool frame ends.
     latest: Option<HourTop>,
 }
 
@@ -356,7 +307,6 @@ impl Default for Conversion {
 }
 
 impl Conversion {
-    /// Adds an hour; one that converted no pack is not counted.
     pub(crate) fn record(&mut self, hour: &HourCosts) {
         if hour.packs.iter().all(Option::is_none) {
             self.latest = None;
@@ -405,17 +355,14 @@ impl Conversion {
         self.latest = Some(top);
     }
 
-    /// The next hour's plan for `pool` helpers.
     pub(crate) fn plan(&self, pool: usize) -> Plan {
         Plan::new(&self.estimates, pool)
     }
 
-    /// The latest hour's costliest, once: a frame that converted nothing finds none.
     pub(crate) fn take_latest(&mut self) -> Option<HourTop> {
         self.latest.take()
     }
 
-    /// `script_variables_conversion` in status.json.
     pub(crate) fn script_variables_status(&self) -> impl serde::Serialize + '_ {
         self.script_variables.status()
     }
@@ -473,7 +420,6 @@ mod tests {
         PACK_NAMES.iter().position(|pack| *pack == name).unwrap()
     }
 
-    /// An hour whose packs `packs` converted on the threads named with them.
     fn hour(
         packs: &[(&str, u64, usize)],
         tables: &[(TableId, u64)],
@@ -637,7 +583,6 @@ mod tests {
         );
     }
 
-    /// The packs on the first helper lane before conversion followed measured costs.
     const LANE_ZERO: [&str; 25] = [
         "air",
         "army_icon_inputs",
@@ -666,9 +611,6 @@ mod tests {
         "naval_mission_inputs",
     ];
 
-    /// The wall when each thread takes the queue's next pack as it frees,
-    /// with the spool thread starting after its own packs: what the queue
-    /// does when every pack costs what was measured.
     fn queued_wall(plan: &Plan, costs: &[u64; PACKS]) -> u64 {
         let threads = plan.helpers() + 1;
         let mut free_at = [0_u64; MAX_THREADS];

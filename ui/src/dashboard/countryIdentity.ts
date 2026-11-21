@@ -28,8 +28,6 @@ export function validCountryIdentityHistories(value: unknown): value is CountryI
 type IdentityHistory = { tag: string; identities: readonly CountryIdentityRun[] };
 type KeyRun = Span & { key: string };
 
-/** Overlay two already joined replies. Exact evidence replaces rough evidence
- * for its tag and native slot at its recorded hours, across rough aliases. */
 export function overlayCountryIdentities(rough: readonly CountryIdentityHistory[], exact: readonly CountryIdentityHistory[]): CountryIdentityHistory[] {
   if (!validCountryIdentityHistories(rough) || !validCountryIdentityHistories(exact)) throw new Error('The recorded country identity history is malformed.');
   const byTag = new Map(exact.map(history => [history.tag, history.identities]));
@@ -73,7 +71,6 @@ export function overlayCountryIdentities(rough: readonly CountryIdentityHistory[
   return [...result].map(([tag, identities]) => ({ tag, identities }));
 }
 
-/** One index of the native catalogue; missing hours never acquire a holder. */
 export class CountryIdentityIndex {
   readonly changeHours: ReadonlyArray<number>;
   private readonly byTag = new Map<string, KeyRun[]>();
@@ -111,8 +108,6 @@ export class CountryIdentityIndex {
     return runAt(this.byTag.get(tag) ?? [], hour)?.key ?? null;
   }
 
-  /** Manual picks include every native holder ever recorded under each literal tag; a country chosen by its slot
-   * ([`countryKey`]) is every native holder in that slot. */
   selected(chosen: readonly string[]): ReadonlySet<string> {
     let keys = this.choices.get(chosen);
     if (!keys) {
@@ -128,14 +123,12 @@ export class CountryIdentityIndex {
     return keys;
   }
 
-  /** Smart groups count identities only inside their own dated memberships. */
   keysDuring(memberships: readonly MembershipRun[]): ReadonlySet<string> {
     const keys = new Set<string>();
     for (const member of memberships) for (const run of this.runsDuring(member)) keys.add(run.key);
     return keys;
   }
 
-  /** Each native holder proved on these memberships, with the first hour it was. */
   firstHoursDuring(memberships: readonly MembershipRun[]): ReadonlyMap<string, number> {
     const first = new Map<string, number>();
     for (const member of memberships) for (const run of this.runsDuring(member)) {
@@ -170,8 +163,6 @@ export class CountryIdentityIndex {
     return [...tags].sort((a, b) => this.order.get(a)! - this.order.get(b)!);
   }
 
-  /** Every tag the native country recorded as `tag` in `slot` held, with when; null when
-   * that tag and slot were held by more than one native country (or by none). */
   holderAliases(tag: string, slot: number): MembershipRun[] | null {
     const keys = new Set((this.byTag.get(tag) ?? []).map(run => run.key)
       .filter(key => (JSON.parse(key) as [number, number])[0] === slot));
@@ -195,7 +186,6 @@ export function countryIdentityIndex(histories: readonly IdentityHistory[]): Cou
   return index;
 }
 
-/** Manual tags select all their native holders, including earlier aliases. */
 export function countryAliasesAt(histories: readonly IdentityHistory[], chosen: readonly string[], hour: number): string[] {
   const index = countryIdentityIndex(histories);
   return index.aliasesAt(index.selected(chosen), hour);
@@ -203,13 +193,11 @@ export function countryAliasesAt(histories: readonly IdentityHistory[], chosen: 
 
 export interface CountryDrillHistory { tag: string; identities?: readonly CountryIdentityRun[]; segments?: readonly Span[] }
 
-/** The history of `key` ([`countryKey`]): a tag's own, or the tag a slot's country held at `hour`. */
 export function historyAt<H extends { tag: string; identities?: readonly CountryIdentityRun[] }>(histories: readonly H[], key: string, hour: number): H | undefined {
   const slot = countryFromKey(key);
   return typeof slot === 'number' ? histories.find(history => runAt(history.identities ?? [], hour)?.slot === slot) : histories.find(history => history.tag === key);
 }
 
-/** A breakdown stays with the native country selected at its origin date. */
 export function countryDrillSpans(histories: readonly CountryDrillHistory[], tag: string, originHour: number): ReadonlyMap<string, readonly Span[]> {
   const origin = historyAt(histories, tag, originHour);
   const identity = runAt(origin?.identities ?? [], originHour);
@@ -222,7 +210,6 @@ export function countryDrillSpans(histories: readonly CountryDrillHistory[], tag
     (history.identities ?? []).filter(identity => countryIdentityKey(identity) === key)] as const));
 }
 
-/** Look up cached selected-identity spans without rebuilding its history. */
 export function countryDrillTagAt(byTag: ReadonlyMap<string, readonly Span[]>, hour: number): string | null {
   let found: string | null = null;
   for (const [tag, spans] of byTag) {

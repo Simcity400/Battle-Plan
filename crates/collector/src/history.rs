@@ -1,4 +1,3 @@
-//! Prepare exact prior branch history before installing the hourly hook.
 
 use crate::spooling::campaign_name;
 use replay::{campaign::Replay, columnar_frames::Pool, recording_files};
@@ -47,13 +46,10 @@ pub struct PreparedCampaigns {
     event_feed_generation: Option<u64>,
     event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
     map_events: (u64, u64),
-    /// Recorded without their history: the recorder leaves their loads out.
     without_history: BTreeSet<String>,
 }
 
 impl PreparedCampaigns {
-    /// Record a campaign without its history: the recorder leaves its loads out, so whatever its
-    /// history holds, even an unreadable one, cannot stop the others recording.
     pub fn without_history(&mut self, id: &str) {
         let key = id.to_ascii_lowercase();
         self.entries.remove(&key);
@@ -65,11 +61,8 @@ impl PreparedCampaigns {
         session: &SessionStart,
         mut progress: impl FnMut(&str) -> io::Result<()>,
     ) -> io::Result<Self> {
-        // Each recording by the campaign its header names, whatever its file name.
         let mut paths = recordings(directory)?;
         let mut entries = BTreeMap::new();
-        // An unsaved recording holds its saved one and more: it is the history, found as a save
-        // finds it. One that is ambiguous leaves neither guessed to be.
         for (campaign, unsaved) in recording_files::unsaved_recordings(directory)? {
             let id = campaign_name(&campaign)?;
             let saved = paths
@@ -95,8 +88,6 @@ impl PreparedCampaigns {
         let mut event_feed_generation = None;
         let mut event_feed_counts = replay_data::event_feed_rows::EventFeedCounts::default();
         let mut map_events = (0, 0);
-        // Threads of the load's own, joined when it returns: rayon's global ones would outlive
-        // the collector's unload and run in its freed image.
         let pool = if paths.is_empty() {
             None
         } else {
@@ -140,7 +131,6 @@ impl PreparedCampaigns {
             }
             let key = id.to_ascii_lowercase();
             if entries.contains_key(&key) {
-                // Neither recording is guessed to be the campaign's.
                 entries.insert(
                     key,
                     Err("the replay folder holds more than one recording of this campaign".into()),
@@ -169,7 +159,6 @@ impl PreparedCampaigns {
         session: &SessionStart,
         pool: Option<Arc<Pool>>,
     ) -> io::Result<Prepared> {
-        // The file only grows by later revisions, so the one opened stays readable as it was.
         let lease = lease(path)?;
         let mut replay = Replay::open_newest(path)?;
         replay.set_pool(pool);
@@ -194,9 +183,6 @@ impl PreparedCampaigns {
             .iter()
             .find(|old| old.id == session.id)
             .cloned();
-        // The callback has not verified the in-memory content roster yet. Seed
-        // a resumed process using its old metadata, then compare the actual new
-        // observation before consuming this prepared tracker.
         let tracker = history.tracker_for(previous_session.as_ref().unwrap_or(session))?;
         Ok(Prepared {
             campaign_id: history.campaign_id,
@@ -215,7 +201,6 @@ impl PreparedCampaigns {
         })
     }
 
-    /// Let go of a prepared campaign's history file while the recorder saves it.
     #[cfg(test)]
     pub fn release(&mut self, id: &str) {
         if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
@@ -230,7 +215,6 @@ impl PreparedCampaigns {
         file
     }
 
-    /// Hold a prepared campaign's history file again, as the recorder saved it.
     #[cfg(test)]
     pub fn retake(&mut self, id: &str, file: Option<File>) {
         if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
@@ -238,8 +222,6 @@ impl PreparedCampaigns {
         }
     }
 
-    /// The file that holds a campaign's history now: its unsaved recording, else its saved one
-    /// found by its header.
     #[cfg(test)]
     pub fn history_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
         match recording_files::unsaved_recording(&self.directory, id.as_bytes())? {
@@ -268,7 +250,6 @@ impl PreparedCampaigns {
         self.naval_result_sequence
     }
 
-    /// Air loss and building damage maxima, including retained partial prefixes.
     pub fn event_ledger_sequences(&self) -> [Option<u64>; 4] {
         self.event_ledger_sequences
     }
@@ -277,8 +258,6 @@ impl PreparedCampaigns {
         self.completion_sequence
     }
 
-    /// The latest map event epoch and the last sequence number any recorded
-    /// interval reached, so a new session continues both.
     pub fn map_events(&self) -> (u64, u64) {
         self.map_events
     }
@@ -340,7 +319,6 @@ impl PreparedCampaigns {
     }
 }
 
-/// The recordings directly in a folder, by the campaign their header names.
 fn recordings(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(folder)? {
@@ -349,8 +327,6 @@ fn recordings(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
         if !entry.file_type()?.is_file() || !recording_files::is_recording(&path) {
             continue;
         }
-        // One that cannot be read may be any campaign's: preparation fails. One no revision
-        // verifies in is the campaign its name gives, whose history alone then fails, by name.
         let id = match recording_files::campaign_of(&path) {
             Ok(id) => id,
             Err(error) => match recording_files::uncommitted(&path) {
@@ -384,7 +360,6 @@ const EVENT_LEDGERS: [TableId; 4] = [
 ];
 const EVENT_FEED: [TableId; 1] = [TableId::EventFeedHistory];
 
-/// Whether preparing a campaign's history reads `table` back from its recording's rows.
 pub(crate) fn reads(table: TableId) -> bool {
     [
         &COMPLETIONS[..],
@@ -398,7 +373,6 @@ pub(crate) fn reads(table: TableId) -> bool {
     .any(|tables| tables.contains(&table))
 }
 
-/// The collector owns a resident history snapshot; append and rollback never change that snapshot.
 pub(crate) fn lease(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
@@ -462,7 +436,6 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
                     replay_frame::frame::TableView::Unavailable { .. }
                     | replay_frame::frame::TableView::NotRecorded { .. } => continue,
                 };
-                // Every observed row carries the epoch, including refused census intervals.
                 macro_rules! maximum {
                     ($ty:ident) => {
                         for row in rows.rows::<replay_data::rows::tables::$ty>().unwrap() {

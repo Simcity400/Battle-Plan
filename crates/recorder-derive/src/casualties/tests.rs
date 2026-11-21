@@ -7,9 +7,6 @@ use replay_columnar::store::Store;
 use replay_data::rows::{CasualtyTotalRow, CountryLinkRow, CountryRow};
 use std::collections::BTreeMap;
 
-/// One hour of the inputs: countries (raw id, slot), links (raw id, slot), relations (first,
-/// second, start, counters as the game orders them: first's and second's casualties, then their
-/// unknown-attacker counters) and WarRelations' status.
 #[derive(Clone)]
 struct World {
     countries: Vec<(u32, u32)>,
@@ -57,7 +54,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// Each hour's tables, the writer saved and taken up again after hour `resume`.
 fn run(hours: &[World], resume: Option<usize>) -> Vec<[Vec<(u128, Vec<String>)>; 2]> {
     let mut store = store();
     let mut writers = writers();
@@ -75,7 +71,6 @@ fn run(hours: &[World], resume: Option<usize>) -> Vec<[Vec<(u128, Vec<String>)>;
     seen
 }
 
-/// A country's dealt, taken, unknown and partial.
 fn totals(store: &Store, (slot, id): Identity) -> Option<Vec<Option<i64>>> {
     cells(store, TableId::CasualtyTotals, holders::key((slot, id)))
 }
@@ -92,8 +87,6 @@ fn known(values: [i64; 4]) -> Option<Vec<Option<i64>>> {
     Some(values.into_iter().map(Some).collect())
 }
 
-/// Every lifetime a reply finds up to the hour, as the old never-deleted table held it: a live
-/// row's counters and 1, an ended one's last row's counters and 0.
 #[derive(Default)]
 struct Lifetimes(BTreeMap<u128, (Vec<Option<i64>>, i64)>);
 
@@ -112,10 +105,6 @@ impl Lifetimes {
     }
 }
 
-/// A lifetime's row goes the hour WarRelations no longer lists it, its last counters ending it, and
-/// a country's totals sum every lifetime, turned by identity whatever the order the game lists a
-/// pair in; a new lifetime of the same pair is a row of its own. A reply reading each row's last
-/// counters finds what the never-deleted table held.
 #[test]
 fn casualty_totals_sum_every_lifetime_and_keep_ended_ones() {
     let hours = [
@@ -156,9 +145,6 @@ fn casualty_totals_sum_every_lifetime_and_keep_ended_ones() {
     }
 }
 
-/// The unknown-attacker total starts only from a zero baseline, adds the increment every spanning
-/// relation agrees on (one read again unchanged agreeing on none), takes a new relation whose
-/// counter is at most that increment, and once lost stays lost.
 #[test]
 fn an_unknown_total_needs_a_zero_baseline_and_agreeing_increments() {
     let hours = [
@@ -185,8 +171,6 @@ fn an_unknown_total_needs_a_zero_baseline_and_agreeing_increments() {
     }
 }
 
-/// A gap loses every unknown total; a lifetime the last read before it listed and the first after
-/// it does not makes both its countries partial, and nobody else.
 #[test]
 fn a_gap_loses_unknown_totals_and_marks_lost_lifetimes_partial() {
     let mut hours = vec![
@@ -213,8 +197,6 @@ fn a_gap_loses_unknown_totals_and_marks_lost_lifetimes_partial() {
     assert_eq!(found.of(A, C, 0), Some(vec![Some(1), Some(1), Some(0), Some(0), Some(0)]), "the last read before the gap");
 }
 
-/// A relation whose country resolves to no identity withholds both tables that hour, and the
-/// next hour is after a gap; a country remapped to another identity starts new lifetimes.
 #[test]
 fn an_unresolved_relation_withholds_the_hour_and_a_new_identity_starts_new_lifetimes() {
     let mut hours = vec![
@@ -248,8 +230,6 @@ fn an_unresolved_relation_withholds_the_hour_and_a_new_identity_starts_new_lifet
     assert_eq!(totals(&store, B), Some(vec![Some(5), Some(5), None, Some(0)]));
 }
 
-/// A resume reads the live lifetimes and the sums back: every hour after it equals a run that
-/// never stopped.
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let mut hours = vec![

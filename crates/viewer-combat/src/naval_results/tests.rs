@@ -46,7 +46,7 @@ fn aircraft_classify_by_archetype_and_admit_survivors_and_losses_independently()
         ..Default::default()
     };
     let (groups, refused) = classify(&side, &|plane| match plane.variant {
-        1 | 2 => Ok(9), // Two recorded variants share their effective archetype.
+        1 | 2 => Ok(9),
         3 => Ok(11),
         4 => panic!("nonpositive counts must not demand content"),
         _ => Err("modded archetype is unresolved".into()),
@@ -164,7 +164,6 @@ fn survivor_representatives_use_country_aliases_ic_strength_and_convoys_not_prid
         !ship_before(&b, &a, &order),
         "equal-IC convoys keep order despite strength"
     );
-    // The native comparator has only a left-viewer branch, so both answers can be true.
     let canonical_lower = ship(6, 20, 100_000, 100_000, 0, 0);
     assert!(ship_before(&a, &canonical_lower, &order));
     assert!(ship_before(&canonical_lower, &a, &order));
@@ -281,7 +280,7 @@ fn joint_priorities_truncate_before_accumulation_and_promote_the_best_aircraft()
         current_planes: 9,
         ..Default::default()
     };
-    assert_eq!(priority_planes(&[&plane]), -1); // trunc(1.5) * 9, negated / 5.
+    assert_eq!(priority_planes(&[&plane]), -1);
     let mut entries = vec![
         (-9, false, "ship-a"),
         (-8, false, "ship-b"),

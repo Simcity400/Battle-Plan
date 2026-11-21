@@ -32,7 +32,6 @@ const REPLY: IdeaHistoryReply = {
 };
 
 test('a mod category is offered with its own name, and one the mod removed is gone', () => {
-  // The content a mod's stack gives: a base category replaced away, a new one added.
   const modded: CategoryInfo[] = [
     { token: 'mod_council', name: 'Council', kind: null, hidden: false, politicsTab: true, slots: [{ token: 'mod_seat', name: 'Seat', character: false, seats: 1, laws: ['mod_open'] }] },
     { token: 'mod_hidden', name: null, kind: null, hidden: true, politicsTab: true, slots: [{ token: 'x', name: null, character: false, seats: 1, laws: [] }] },
@@ -40,7 +39,6 @@ test('a mod category is offered with its own name, and one the mod removed is go
   ];
   assert.deepEqual(timelineCategories(modded).map(category => category.token), ['mod_council']);
   assert.equal(chosenCategory(modded, '')?.token, 'mod_council');
-  // A saved vanilla category the mod removed is not offered; the widget says so rather than guessing.
   assert.equal(chosenCategory(modded, 'government'), null);
   const reply = { ...REPLY, categories: modded, spans: [{ token: 'mod_open', firstHour: 0, lastHour: 10, slot: null, character: null }], ideas: [idea('mod_open', 'mod_seat', 'mod_council')] };
   const lanes = lanesFor(reply, modded[0], { laws: 'both', holders: 'both' });
@@ -60,7 +58,6 @@ test('law slots shade by escalation and advisor seats take the first free seat',
     ['economy', 'Economy Law', 2], ['political_advisor#0', 'Political Advisor', 2], ['political_advisor#1', 'Political Advisor', 1],
   ]);
   assert.deepEqual(lanes[0].spans.map(span => [span.label, span.shade]), [['Idea name unavailable', 0], ['War Economy', 1]]);
-  // Schacht leaves at 300, so Speer (from 320) takes his seat while Todt keeps the second.
   assert.deepEqual(lanes[1].spans.map(span => span.id), ['schacht:10', 'speer:320']);
   assert.deepEqual(lanes[2].spans.map(span => span.id), ['todt:50']);
   const icons = lanesFor(REPLY, GOVERNMENT, { laws: 'icons', holders: 'name' });
@@ -92,7 +89,6 @@ test('timeline layout: lanes by row, spans cover their last observed day, bars s
   assert.equal(laneAt(AXIS_HEIGHT - 1, 3), null);
   assert.equal(laneAt(AXIS_HEIGHT + ROW_HEIGHT * 1.5, 3), 1);
   assert.equal(laneAt(AXIS_HEIGHT + ROW_HEIGHT * 3, 3), null);
-  // Taller lanes (a painted lane's own height).
   assert.equal(laneAt(AXIS_HEIGHT + 54 * 1.5, 3, 54), 1);
   assert.equal(laneAt(AXIS_HEIGHT + 54 * 3, 3, 54), null);
   const spans = [{ id: 'a', firstHour: 10, lastHour: 20, label: 'A' }];
@@ -176,7 +172,6 @@ test('an advisor whose details resolve later stays in its seat', () => {
     spans: [
       { token: 'a', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 1, token: 'A', name: 'A' } },
       { token: 'b', firstHour: 11, lastHour: 30, slot: 'political_advisor', character: { id: 2, token: '', name: 'B' } },
-      // Only B's script token resolving: a new span, the same appointment.
       { token: 'b', firstHour: 31, lastHour: 40, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
     ],
     ideas: [idea('a', 'political_advisor'), idea('b', 'political_advisor')],
@@ -190,7 +185,6 @@ test('a newcomer starting the same hour never takes the seat a continuing holder
     spans: [
       { token: 'b', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 2, token: '', name: 'B' } },
       { token: 'c', firstHour: 10, lastHour: 20, slot: 'political_advisor', character: { id: 3, token: 'C', name: 'C' } },
-      // At 21 C leaves, A arrives (listed first), and B's token resolves.
       { token: 'a', firstHour: 21, lastHour: 40, slot: 'political_advisor', character: { id: 1, token: 'A', name: 'A' } },
       { token: 'b', firstHour: 21, lastHour: 40, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
     ],

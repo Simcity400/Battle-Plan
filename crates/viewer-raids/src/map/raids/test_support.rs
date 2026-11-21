@@ -1,4 +1,3 @@
-//! Synthetic raid inputs shared with host composition tests.
 use super::*;
 use installed_content_raids::{raids::RaidCategory, raids::RaidType as Kind, raids::TargetType};
 use replay_data::{
@@ -13,8 +12,6 @@ pub fn parse(source: &str) -> Vec<installed_content_core::parser::Item> {
         .items
 }
 
-/// The count trigger names of the assets' buildings, as the document
-/// hands the combat tactics' settled names over (Document::load).
 pub fn set_counts(assets: &mut RaidAssets) {
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);
@@ -37,7 +34,6 @@ pub fn kind(name: &str, target: TargetType) -> Kind {
     }
 }
 
-/// Provinces 1..=4 in state 10 (1, 2) and state 20 (3, 4), in a 4 x 1 map.
 pub fn assets() -> RaidAssets {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -110,8 +106,6 @@ pub fn unnamed_assets() -> RaidAssets {
     }
 }
 
-/// CountryCommandPower rows for `slots`: nothing allocated, both capacity
-/// modifiers and both ace country modifiers registered at zero.
 pub fn registered_command_power(
     slots: impl IntoIterator<Item = u32>,
 ) -> Vec<replay_data::rows::CountryCommandPowerRow> {
@@ -128,7 +122,6 @@ pub fn registered_command_power(
         .collect()
 }
 
-/// A RaidCountryInputs row whose two launch modifiers are registered at zero.
 pub fn registered_launch_inputs() -> replay_data::rows::RaidCountryInputRow {
     replay_data::rows::RaidCountryInputRow {
         air_range_factor: Some(0),
@@ -141,8 +134,6 @@ pub fn put<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
 }
 
-/// Keep the authenticated faction-membership getter coherent with this
-/// fixture's roster. Positive member rows cannot certify country zero's getter.
 pub fn reserved_faction(frame: &mut DecodedFrame, faction: u64) {
     let mut rows = frame
         .complete::<tables::ReservedCountryNaming>()
@@ -165,7 +156,6 @@ pub fn status(ordinal: u32, province: u32) -> RaidTargetStatusRow {
     }
 }
 
-/// Slots 0 (GER, raw 10) and 1 (ENG, raw 11); GER controls state 10, ENG 20.
 pub fn frame() -> DecodedFrame {
     let mut frame = reach::test_support::frame();
     put::<tables::LexicalTokens>(
@@ -203,8 +193,6 @@ pub fn frame() -> DecodedFrame {
     frame
 }
 
-/// The ordinary-country variant: raw GER 10 resolves to positive slot 2,
-/// while the native reserved zero object has no naming singleton here.
 pub fn positive_frame() -> DecodedFrame {
     let mut frame = frame();
     put::<tables::ReservedCountryNaming>(&mut frame, Vec::new());
@@ -257,7 +245,6 @@ pub fn target(id: u32, province: u32, detected: u8) -> RaidTargetRow {
     }
 }
 
-/// Provinces 1..=4 in a row, every edge 50000; 1 and 2 are sea, 3 and 4 land.
 pub fn path_assets() -> RaidAssets {
     let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
     for id in 1..=4_u32 {

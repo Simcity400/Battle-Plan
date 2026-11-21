@@ -1,19 +1,11 @@
-/** A rows-at-an-hour product's live cells (`crates/dashboard-follow/src/live.rs`): the numbers it shows that move with
- * the playhead, never in its reply. The reply's `live` names each cell by the row and column its structure shows it in,
- * and a small formula over recorded cells (a value, a sum, a difference or a ratio, times a scale), the cells grouped
- * as followed queries. A request's reply carries each group's values at its hour; a panel's names the follow id each
- * group is pushed under, its answers landing in a `CellGroup` the store holds. Either way the widget reads one
- * `Live<LiveValues<number>>` keyed `liveKey(row, column)`. */
 import { liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
 import type { FollowedAnswer } from './message';
 
-/** The bit of every follow id a panel's host takes for a group of its cells. */
 export const CELLS = 0x8000_0000;
 export const isCellsId = (id: number) => id >= CELLS;
 
-/** Why a cell is missing; the service's request path says the same. */
 export const NOT_READ = 'Not read yet';
 export const NO_VALUE = 'No value';
 export const NOT_RECORDED = 'Not recorded at this hour';
@@ -21,17 +13,13 @@ export const ZERO_DIVISOR = 'Its divisor is zero at this hour';
 
 export type LiveOp = 'value' | 'sum' | 'difference' | 'ratio';
 export interface LiveKind { id: string; op: LiveOp; scale: number }
-/** One followed query of the cells: these keys of a table, each read in these columns; its values at the asked hour,
- * the id it is followed under, or why it is not. */
 export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; follow?: number; seedHour?: number; unavailable?: string }
-/** Per cell, flat: its row, its kind, its sources' count, then each source's group, row and column. */
 export interface LiveSection { groups: LiveGroupSpec[]; rows: string[]; kinds: LiveKind[]; cells: number[] }
 
 const OPS = new Set<LiveOp>(['value', 'sum', 'difference', 'ratio']);
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
-/** A reply's `live`, checked whole; null when the reply names no live cells. */
 export function liveSection(reply: unknown): LiveSection | null {
   const live = reply && typeof reply === 'object' ? (reply as { live?: unknown }).live : undefined;
   if (live === undefined || live === null) return null;
@@ -66,23 +54,19 @@ export function liveSection(reply: unknown): LiveSection | null {
 
 const sections = new WeakMap<object, LiveSection | null>();
 
-/** [`liveSection`] of a reply, checked once per reply object. */
 export function sectionOf(reply: unknown): LiveSection | null {
   if (!reply || typeof reply !== 'object') return null;
   if (!sections.has(reply)) sections.set(reply, liveSection(reply));
   return sections.get(reply)!;
 }
 
-/** Where a cell's source is read: a number, or undefined with `missing` saying why. */
 export interface GroupValues {
   get(row: number, column: number): number | undefined;
   missing(row: number, column: number): string;
 }
 
-/** A group whose every cell is missing for one reason. */
 const missingGroup = (reason: string): GroupValues => ({ get: () => undefined, missing: () => reason });
 
-/** A group's values as a request's reply carries them, row by row. */
 function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
   const width = spec.columns.length;
   return {
@@ -91,7 +75,6 @@ function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]):
   };
 }
 
-/** One exact seed or one decoded snapshot of the group's cells. */
 export class CellGroup implements GroupValues {
   seek?: number;
   start: number | null = null;
@@ -105,13 +88,11 @@ export class CellGroup implements GroupValues {
     this.seeded = valuedGroup(spec, spec.values);
   }
 
-  /** The hour its cells are current through: the newest message of its timeline; null before its first answer. */
   private confirmed: number | null = null;
   private lane?: { hour: number };
   get through(): number | null { return this.confirmed === null ? null : Math.max(this.confirmed, this.lane?.hour ?? -Infinity); }
   set through(hour: number | null) { this.confirmed = hour; }
   follow(lane?: { hour: number }) { this.confirmed = this.through; this.lane = lane; }
-  /** The follow its answers come from, kept for the panel that names it after its first answer. */
   route: number | null = null;
   private width = 0;
   private values = new Float64Array(0);
@@ -155,7 +136,6 @@ export class CellGroup implements GroupValues {
 interface Index { byKey: Map<string, number> }
 const indexes = new WeakMap<LiveSection, Index>();
 
-/** Each cell's start in `cells` by its key. */
 function indexOf(section: LiveSection): Index {
   let index = indexes.get(section);
   if (!index) {
@@ -167,7 +147,6 @@ function indexOf(section: LiveSection): Index {
   return index;
 }
 
-/** The cells of `section` read from `groups` (one per section group, in order). */
 export function sectionValues(section: LiveSection, groups: readonly GroupValues[]): LiveValues<number> {
   const { byKey } = indexOf(section);
   const { cells, kinds } = section;
@@ -199,7 +178,6 @@ export function sectionValues(section: LiveSection, groups: readonly GroupValues
   };
 }
 
-/** The groups of `section`: its values, the store's group for each followed id (`group`), or missing for its reason. */
 export function sectionGroups(section: LiveSection, group: (id: number) => GroupValues | undefined): GroupValues[] {
   return section.groups.map(spec => spec.values && spec.follow === undefined ? valuedGroup(spec, spec.values)
     : spec.follow !== undefined ? group(spec.follow) ?? missingGroup(NOT_READ)
@@ -212,7 +190,6 @@ const NO_CELLS = noValues(NONE);
 const still = (values: LiveValues<number>): Live<LiveValues<number>> => ({ read: () => values, subscribe: () => () => {} });
 const STILL = still(NO_CELLS);
 
-/** A request's reply's cells, which never move. */
 export function repliedCells(reply: unknown): Live<LiveValues<number>> {
   try {
     const section = sectionOf(reply);
@@ -222,11 +199,8 @@ export function repliedCells(reply: unknown): Live<LiveValues<number>> {
   }
 }
 
-/** `live` read as before, `report` told as each read paints: how a widget reports the hour it shows. */
 export function reporting<T>(live: Live<T>, report: () => void): Live<T> {
   return { read: () => { report(); return live.read(); }, subscribe: live.subscribe };
 }
 
-/** The reason a live cell has when its table was read but holds no row of its key (the follow layer's `NO_ROW`): for a
- * sparse table whose missing row means zero, the one missing reason that is a value. */
 export const NO_ROW = 'No live row has this key';

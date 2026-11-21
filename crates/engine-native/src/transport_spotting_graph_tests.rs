@@ -180,7 +180,7 @@ fn air_original_selector_is_loaned_once_and_stat_faults_remain_independent() {
     let mission = original.mission_pointer;
     let selector = wing + 0x968 + 0x18 + 1;
     let stats = wing + 0x390;
-    memory.put(selector, &[255]); // Native -1 selects the default stat object.
+    memory.put(selector, &[255]);
     memory.put(mission + 0xe0, &(-7_i32).to_le_bytes());
     memory.put(mission + 0xa8, &i64::MAX.to_le_bytes());
     memory.put(stats + 0x13 * 8, &i64::MIN.to_le_bytes());

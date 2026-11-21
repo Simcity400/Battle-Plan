@@ -1,13 +1,8 @@
-//! CNavalRegionDominance, owned by the strategic region (`cstrategic_region::NAVAL_DOMINANCE`).
 
 use engine_sites::Rva;
-/// CNavalRegionDominance primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a0_1090);
-/// CNavalRegionDominance owning CStrategicRegion pointer.
 pub const REGION: usize = 0x08;
-/// CNavalRegionDominance country/value entry array.
 pub const ENTRIES: usize = 0x40;
-/// CNavalRegionDominance signed entry count.
 pub const ENTRY_COUNT: usize = 0x4c;
 
 use crate::{
@@ -15,11 +10,9 @@ use crate::{
     naval_dominance_entry as entry, read, read_slice, walk::Outcome,
 };
 
-/// The engine's cached daily supremacy values, sampled without recomputation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub region: u32,
-    /// Strategic-region roster ordinal, assigned from its original slot.
     pub region_slot: u32,
     pub country: u32,
     pub current: i64,
@@ -40,9 +33,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads the authoritative region roster and each completed sorted value array.
-/// Country references retain their raw engine bits. The spool validates unique
-/// row identities off-thread; capacity never changes or allocates on this path.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -143,7 +133,6 @@ fn walk_inner(
             .checked_add(ENTRIES)
             .and_then(|address| Array::read(memory, address, entry::STRIDE))
             .ok_or("naval supremacy values vector unreadable or invalid")?;
-        // Visit every original dominance entry at stride 0x50.
         output.ensure(
             len.checked_add(entries.count as usize)
                 .ok_or("naval supremacy row count overflow")?,

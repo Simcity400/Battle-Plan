@@ -32,7 +32,6 @@ test('both axis modes size the canvas backing from the laid-out window, never it
     const style = { top: '', height: '' } as CSSStyleDeclaration;
     const canvas = {
       style, width: 300, height: 150,
-      // The canvas fills its view; an auto-width absolute view would collapse.
       get clientWidth() { return view.width === '100%' ? parentWidth : sticky ? parentWidth : 0; },
       get clientHeight() { return parseFloat(style.height) || 150; },
       getBoundingClientRect() { return { width: this.clientWidth * zoom, height: this.clientHeight * zoom } as DOMRect; },
@@ -64,7 +63,6 @@ test('1,000 lifetimes retain sharp 40px lanes at every scroll position', () => {
     assert.ok(window.end - window.first <= 46, `${top}: only visible and overscan lanes`);
     const size = backingSize({ layoutWidth: 800, layoutHeight: window.height, rectWidth: 1200, rectHeight: window.height * 1.5, devicePixelRatio: 2 });
     assert.equal(size.scaleY, 3, 'Size zoom and DPI keep 120 raster pixels per lane');
-    // The drawing's translation preserves the old lane positions exactly.
     const lane = laneAt(top + 300, 1000)!;
     assert.ok(lane >= window.first && lane < window.end);
     const local = toLocal(600, (top + 300 - window.top) * 1.5, { left: 0, top: 0, width: 1200, height: window.height * 1.5 }, 800, window.height);
@@ -86,7 +84,6 @@ test('scrolling lays out only the lanes in view and keeps keyboard stops for eve
   assert.equal(computed, shown.length);
   assert.ok(computed < 47);
   assert.equal(spanAt(lanes[500].spans, 124)?.id, 'span-500');
-  // Moving the keyboard to an off-screen lane still visits each read, then reveals it.
   assert.deepEqual(laneStops(lanes[999].spans, 100, 200, null).map(stop => stop.hour), [100, 124]);
   const end = laneWindow(1000, 39432, 600);
   assert.equal(end.end, 1000);

@@ -39,7 +39,6 @@ import type { OperationDetail, OperationFilter, OperationItem } from './espionag
 import { useEspionageTypes, useEspionageTypeTokens } from './useEspionageTypes';
 import './espionageLog.css';
 
-/** A section's state in one line under its heading: what it is waiting on, refused or found none of. */
 function SectionNote({ text, detail, failure, retry, loading }: { text?: string; detail?: string | null; failure?: Failure; retry?: () => void; loading?: boolean }) {
   if (failure) return <span className="espionage-note is-error" data-tooltip={failure.message}>{failureText(failure, text ?? 'Couldn’t load operations.')}
     {retry && <button type="button" className="button small" onClick={retry}>Retry</button>}</span>;
@@ -54,10 +53,6 @@ const COLUMNS = 'var(--space-6) minmax(0, 1fr)';
 const METER_COLUMNS = 'var(--space-6) minmax(0, 2fr) minmax(0, 1fr)';
 const UNKNOWN: CountryLabelValue = { name: 'Unknown country' };
 
-/** Every espionage operation the recording holds, by the game's rules: those under way at the hour shown (a pushed panel whose meters are
- * painted from each push, rendering only when an operation starts, ends, launches or changes order), every completed one through it (the
- * declared log of completions, paged and cut at the head) and every one that left the census without completing (Operations' lifetimes
- * with no completion row, cut at the head). */
 export default function EspionageLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = logSettings(options);
@@ -72,7 +67,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
@@ -99,8 +93,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     ? latest.current?.operations.find(operation => operation.id === item.id)?.state ?? item.state : item.state, []);
   useEffect(() => { if (latest.current) paintOperations(root.current, latest.current); });
 
-  // Completions: by type through the log's facet; by country through it too where one role of countries given by tag is asked, else on
-  // the rows held.
   const tagged = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
   const serverRole = tagged && role !== 'either' ? role : null;
   const facets = useMemo<FacetFilter[]>(() => [...(tokens ? [{ name: 'operation', values: tokens, countries: [] }] : []),
@@ -113,12 +105,10 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const pageFilter = useMemo(() => needsGroups && !serverRole ? { ...filter, types: null, from: null } : null, [needsGroups, serverRole, filter]);
   const pages = useMemo(() => filteredPages(log.pages, pageFilter), [log.pages, pageFilter]);
 
-  // Ended without completing: the whole span asked once, cut at the head where it follows.
   const endedTo = live || widget.time.mode === 'campaign' ? lastHour : pinned ?? lastHour;
   const ended = useProduct<EspionageEndedReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-ended',
     params: { branchId: track.branch.id, from, to: endedTo } } : null, active, validateEnded, track?.source);
   const offset = track?.axisOffset ?? 0;
-  // Following, the ended list renders a block at once: the rows through the block's end, hidden until the clock reaches them.
   const endedHours = useMemo(() => ended.data ? ended.data.operations.map(operation => operation.byHour).reverse() : [], [ended.data]);
   const endedEnd = useCallback((clockHour: number) => {
     const { hoursPerSecond, playing } = runtime.clock.getSnapshot();
@@ -130,8 +120,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const reveal = useRevealClock(runtime.clock, live, trackHour);
   const endedList = useMemo(() => match.ready ? endedRows(ended.data, live ? endedShown : null, filter) : NO_ROWS, [ended.data, live, endedShown, filter, match.ready]);
 
-  // Names and flags at each row's hour, for the rows drawn.
-  // The list laid out again draws its rows as new objects: only rows naming other countries are news.
   const [visible, onVisible] = useDistinctState<readonly LogRow<OperationItem>[]>(NO_ROWS, sameCountryRows);
   const wanted = useMemo(() => {
     const seen = new Map<string, { hour: number; tag: string }>();
@@ -143,7 +131,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const label = useCallback((value: Country | null, at: number): CountryLabelValue => !value ? UNKNOWN : !value.tag ? { name: `Country ${value.id}` } : labelAt(at)(value.tag), [labelAt]);
 
-  // The tooltip's operatives and first sighting: read for the row reached, at its read.
   const [tipRow, setTipRow] = useState<LogRow<OperationItem> | null>(null);
   const [detail, setDetail] = useState<{ key: string; value: OperationDetail } | null>(null);
   const detailHour = tipRow ? tipRow.item.kind === 'ended' ? tipRow.item.lastSeen : tipRow.item.kind === 'completed' ? tipRow.hour : hour : null;
@@ -213,8 +200,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     const next = toggleContentSet(types, value, Number.MAX_SAFE_INTEGER);
     if (next !== null) setOption?.('types', next);
   };
-  // One list after the controls (main's shape), its three sections headed groups within it: each reads at the card's
-  // height by scrolling to it, never squeezed beside the others.
   const underWaySection: LogListSection<OperationItem> = head.error ? { key: 'under-way', label: 'Under way', months: false, rows: NO_ROWS, note: <SectionNote failure={head.error} retry={head.retry} /> }
     : !head.data ? { key: 'under-way', label: 'Under way', months: false, rows: NO_ROWS,
       note: head.read === 'off' ? <SectionNote text="This time is outside the recording." /> : <SectionNote text="Loading operations…" loading /> }

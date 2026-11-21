@@ -1,4 +1,3 @@
-//! Hourly counter inputs projected from the shared authenticated division census.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_native::{Memory, carmy, cequipment_variant_pool::DivisionSource, walk::Outcome};
 use replay_data::{rows::ArmyIconInputRow, rows::TableId, rows::tables};
@@ -28,9 +27,6 @@ impl Capacities {
 
 pub struct Captured {
     rows: CaptureRows<carmy::IconInputsRow>,
-    /// This hour's rows were captured by their own job, right after the
-    /// division sources joined; the Late capture keeps them, and its worker
-    /// ticks.
     early: Option<u64>,
 }
 impl Captured {
@@ -38,8 +34,6 @@ impl Captured {
         self.rows.fail(Outcome::Unavailable { reason });
     }
 
-    /// Rows the ArmyIcons job captured are this hour's: the Late capture
-    /// keeps them ([`Self::take_early`]) and a Late failure leaves them.
     pub fn set_early(&mut self, ticks: u64) {
         self.early = Some(ticks);
     }
@@ -48,14 +42,12 @@ impl Captured {
         self.early.take()
     }
 
-    /// A Late failure fails rows that job owns.
     pub fn fail_late(&mut self, reason: &'static str) {
         if self.early.take().is_none() {
             self.fail_capture(reason);
         }
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0 })
     }
@@ -286,8 +278,6 @@ mod tests {
                 reason: "army icon source seed absent"
             }
         );
-        // A later missing seed cannot precede the first row's private payload
-        // failure, here a field the census gather could not read.
         let missing = SliceMemory {
             base: 0,
             bytes: &[],

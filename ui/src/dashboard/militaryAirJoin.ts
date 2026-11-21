@@ -1,27 +1,16 @@
-/** The air ledger's windows joined into the ledger a widget shows (`crates/dashboard/src/products/air_ledger/reference.rs`,
- * `join`, proves the windows joined from the first counted equal to the whole-branch reply they replaced): spans and the
- * service's top N memberships laid end to end, each part's totals carried on from the windows before it, names and notes
- * once each. A join appends each window as it lands, its cost that window's, never the windows already held. */
 import type { HourSpan, MilitaryAirCountry, MilitaryAirName, MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
 import { WINDOW_HOURS, windowsOf } from './heldWindows.ts';
 import { keepLedgerTotals, ledgerTotals, openingTotals } from './militaryAirLedger.ts';
 import type { LedgerTotal, MilitaryAirLedger } from './militaryAirLedger';
 
-/** How far a widget's ledger reaches: the hour it shows (a race of totals: its window, which carries the totals before
- * it, and following the next), or its whole span (a view over the span, a breakdown with its final values, a drill
- * opening at once). */
 export type LedgerReach = 'shown' | 'end';
 
-/** The windows a widget showing `shown` of `start..=end` wants: the window shown and, following, the next ahead, never
- * past the span; or, reaching the end, every window of the span. */
 export function ledgerWindows(start: number, end: number, shown: number, reach: LedgerReach, following: boolean): number[] {
   if (reach === 'end') return windowsOf(start, end);
   const at = Math.min(end, Math.max(start, shown));
   return windowsOf(at, following ? Math.min(end, at + WINDOW_HOURS) : at);
 }
 
-/** `span` after `spans`, joined to the last where it meets or overlaps it: a window's hours reaching back to where they
- * began overlap the windows before. */
 function pushJoined(spans: HourSpan[], span: HourSpan) {
   const last = spans[spans.length - 1];
   if (last && span.firstHour <= last.lastHour + 1) spans[spans.length - 1] = { firstHour: Math.min(last.firstHour, span.firstHour), lastHour: Math.max(last.lastHour, span.lastHour) };
@@ -29,7 +18,6 @@ function pushJoined(spans: HourSpan[], span: HourSpan) {
 }
 
 const compareText = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-/** None before any value, as the service orders its parts. */
 function compareOptional<T extends string | number | boolean>(a: T | null, b: T | null): number {
   if (a === b) return 0;
   if (a === null) return -1;
@@ -41,9 +29,7 @@ const comparePart = (a: MilitaryAirPart, b: MilitaryAirPart) => compareOptional(
   || compareOptional(a.buildingToken, b.buildingToken) || compareOptional(a.buildingId, b.buildingId) || compareOptional(a.state, b.state);
 const partKey = (part: MilitaryAirPart) => JSON.stringify([part.tag, part.identity, part.dealt, part.cause, part.opponentKnown, part.buildingToken, part.buildingId, part.state]);
 
-/** A total of at most fifteen digits, which a number holds exactly. */
 const SAFE_TOTAL = /^-?\d{1,15}$/;
-/** `total` carried on by `base`, exactly. */
 function carried(base: string, total: string): string {
   if (base === '0') return total;
   if (SAFE_TOTAL.test(base) && SAFE_TOTAL.test(total)) {
@@ -53,10 +39,7 @@ function carried(base: string, total: string): string {
   return String(BigInt(base) + BigInt(total));
 }
 
-/** Consecutive windows from `first`, joined as each is appended. The arrays it hands out grow in place as later windows
- * join; a ledger it gave stays right for the hours it covered. */
 export class LedgerJoin {
-  /** The last window joined; the one before `first` while none is. */
   last: number;
   private head: MilitaryAirReply | null = null;
   private tail: MilitaryAirReply | null = null;
@@ -69,13 +52,10 @@ export class LedgerJoin {
   private readonly notes = new Map<string, number>();
   private readonly warnings: string[] = [];
   private readonly warned = new Set<string>();
-  /** Each holder identity's totals (null: the unattributed), the first what the first window carried in. */
   private readonly totals = new Map<string | null, LedgerTotal[]>();
   private given: MilitaryAirLedger | null = null;
 
-  /** What names the windows' request. */
   readonly key: string;
-  /** The window the join starts with. */
   readonly first: number;
 
   constructor(key: string, first: number) {
@@ -84,7 +64,6 @@ export class LedgerJoin {
     this.last = first - 1;
   }
 
-  /** The window to append next. */
   get next() { return this.last + 1; }
 
   append(window: MilitaryAirReply) {
@@ -136,7 +115,6 @@ export class LedgerJoin {
     for (const warning of window.warnings) if (!this.warned.has(warning)) { this.warned.add(warning); this.warnings.push(warning); }
   }
 
-  /** The windows joined so far; none before one with hours is. */
   ledger(): MilitaryAirLedger | null {
     if (this.given || !this.head || !this.tail) return this.given;
     const head = this.head;
@@ -156,7 +134,6 @@ export class LedgerJoin {
   }
 }
 
-/** `windows`, consecutive and ascending, joined. */
 export function joinMilitaryAir(windows: readonly MilitaryAirReply[]): MilitaryAirLedger | null {
   const join = new LedgerJoin('', windows[0]?.window ?? 0);
   for (const window of windows) join.append(window);

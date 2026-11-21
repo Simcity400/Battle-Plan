@@ -1,4 +1,3 @@
-//! Values and arithmetic shared by native acquisition and recorded playback.
 
 pub mod acclimatization;
 pub mod air_participants;

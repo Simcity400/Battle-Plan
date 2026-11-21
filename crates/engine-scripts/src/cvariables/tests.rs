@@ -173,7 +173,6 @@ fn holes_probe_overflow_and_literal_bytes_preserve_exact_values() {
     node(&mut bytes, 2, 2, b"", i64::MIN);
     node(&mut bytes, 7, 7, b"\xff\0x", -100_001);
     node(&mut bytes, 8, 7, b"long_variable_key_bytes", i64::MAX);
-    // A plausible stale string in an unoccupied slot must not create a row.
     let stale = 0x200 + variable_hash_node::STRIDE;
     bytes[stale + variable_hash_node::KEY..stale + variable_hash_node::KEY + 3]
         .copy_from_slice(b"old");
@@ -312,7 +311,6 @@ fn scoped_walk_keeps_alias_identity_literal_keys_and_authenticated_empty_scopes(
             required_bytes: 6
         }
     );
-    // The characters' stores are embedded; 45's is the empty sentinel.
     assert_eq!(
         scopes.iter().map(|row| row.scope).collect::<Vec<_>>(),
         [
@@ -423,8 +421,6 @@ fn scope_fixture() -> Vec<u8> {
             (BASE + container + 0x100) as u64,
         );
     }
-    // Two historical characters: 44 with one variable, 45 with the empty sentinel. Their stores are
-    // embedded, not pointed to.
     let container = 0x8000 + ccharacter::VARIABLES;
     let mut block = fixture(1);
     node(&mut block, 0, 0, b"c", 300_000);
@@ -528,17 +524,12 @@ fn scoped_seed_failure_preserves_entries_and_distinguishes_unknown_from_zero() {
     assert_eq!(names, [b'g', b'g', 0xff, 0, b'x', b'c']);
 }
 
-/// Capture cost at scale (run with `--ignored --nocapture`): every
-/// country with ten variables, 1,000 states with two each, and no or ten
-/// characters per country, one in ten holding a variable, the rest the
-/// empty sentinel.
 #[test]
 #[ignore = "bench"]
 fn bench_script_variable_scopes() {
     use crate::ccountry::synthetic::World;
     const MODULE: usize = 0x4000_0000;
     const STATES: u32 = 1_000;
-    // One store of `count` short keys, two buckets per key.
     fn store(world: &mut World, container: usize, count: u32, seed: u32) {
         world.u64(container, (MODULE + VTABLE_RVA.0) as u64);
         world.u32(container + SEED, seed);
@@ -633,8 +624,6 @@ fn bench_script_variable_scopes() {
     }
 }
 
-/// Records each guarded call's first address and refuses spans covering
-/// `denied`.
 struct Calls<'a> {
     bytes: &'a [u8],
     denied: Option<usize>,
@@ -714,11 +703,8 @@ fn scope_words_and_character_identity_share_one_read_with_sequential_verdicts() 
     };
     let (outcome, _, memory) = walk(None);
     assert_eq!(outcome, Outcome::Rows { len: 5 });
-    // Character 45's empty store: identity, vtable, header and seed in one
-    // read. Character 44 adds its end sentinel and one node block.
     assert_eq!(memory.within(0x9000, 0x1000), 1);
     assert_eq!(memory.within(0x8000, 0x1000), 3);
-    // A pointed-to store: its words in one read, then sentinel and block.
     assert_eq!(memory.within(0xb000, 0x1000), 3);
     let character = 0x9000 + ccharacter::VARIABLES;
     for (denied, reason) in [
@@ -729,7 +715,6 @@ fn scope_words_and_character_identity_share_one_read_with_sequential_verdicts() 
     ] {
         assert_eq!(walk(Some(BASE + denied)).0, Outcome::Unavailable { reason });
     }
-    // An unreadable seed stays unknown without hiding the scope's entries.
     for (container, scope) in [(character, 4), (0xb000, 1)] {
         let (outcome, scopes, _) = walk(Some(BASE + container + SEED));
         assert_eq!(outcome, Outcome::Rows { len: 5 });

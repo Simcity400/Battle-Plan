@@ -19,7 +19,6 @@ fn step(hour: i32, set: &[(usize, i64)]) -> Step {
     Step { hour, cells: Some(row(set)) }
 }
 
-/// A census building line of country 7 first read at hour 90, with its run and counts.
 fn census(factories: i64, remaining: i64, built: i64, repaired: i64, more: &[(usize, i64)]) -> Vec<(usize, i64)> {
     let mut set = vec![
         (col::KIND, i64::from(P::BUILDING)),
@@ -73,9 +72,6 @@ fn the_column_numbers_are_the_schemas() {
 
 #[test]
 fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
-    // Shown from the window's first hour 100 with one level built before it; a level built and dated
-    // at 120 (rise at 117), a run change at 144, a repair counted undated at 168 (no rise list),
-    // hidden 170-179 (a gap), then gone at 192 and settled finished at 189.
     let steps = vec![
         step(100, &census(2, 2, 1, 0, &[])),
         step(120, &census(2, 1, 2, 0, &[(col::OUTPUT_SINCE, 60), (col::OBSERVED_SINCE_CREATION, 0), (col::OUTPUT_REASON, 0), (col::CONSTRUCTION_RAW, 500), (col::REPAIR_RAW, 0)])),
@@ -117,7 +113,6 @@ fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
     );
     let end = project.end.as_ref().unwrap();
     assert_eq!((end.kind, end.hour, end.known_at, end.unknown), (EndKind::Finished, Some(189), 192, None));
-    // No output before the table lists it; a linked stretch is not known, never zero.
     assert_eq!(project.outputs.len(), 3);
     assert_eq!((project.outputs[0].from, project.outputs[0].to, project.outputs[0].construction_raw.as_deref()), (120, 167, Some("500")));
     assert!(project.outputs[0].before_observation);
@@ -152,12 +147,9 @@ fn an_output_alone_line_keeps_its_origin_and_an_unresolved_owner_is_left_out() {
 
 #[test]
 fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_unknown() {
-    // Read from the hour before the holding (49): 400 then belongs to the earlier holder.
     let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50);
     assert_eq!(first, [(60, Some(50)), (80, Some(50))]);
-    // A key born inside the holding counts from zero; at a run's first hour nothing is held before.
     assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50), [(55, Some(30))]);
-    // Two identities' holdings sum; past an unrecorded total the leaf is not known.
     let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 90);
     assert_eq!(second, [(90, Some(20)), (95, None)]);
     let steps = totals([first, second].concat());
@@ -168,7 +160,6 @@ fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_un
 #[test]
 fn spend_keys_name_one_identity_and_their_leaf() {
     let (low, high) = identity_keys(3, 41);
-    // A railway repaired from a state past 24 bits to state 300; and a building line of type 300.
     let wide = (1u32 << 24) + 12;
     let railway = ConstructionSpendRow { slot: 3, country: 41, repair: true, railway: true, building_type: TagHolderRow::NONE, state: wide, to_state: 300, ..Default::default() }.key();
     let building = ConstructionSpendRow { slot: 3, country: 41, building_type: 300, state: u32::MAX - 1, to_state: TagHolderRow::NONE, ..Default::default() }.key();
@@ -197,8 +188,6 @@ fn a_line_works_on_its_kinds_leaves_and_lacks_only_output_it_had() {
     assert_eq!(leaf_keys(&railway), [leaf_of(spent)], "a railway's project and its spending are one leaf");
 }
 
-/// The end the writer logs gives the line the index read from the final row before: kind, place,
-/// work, observation and output, the same rule.
 #[test]
 fn a_logged_end_is_the_line_its_final_row_was() {
     use replay_data::rows::{ConstructionLineEndRow, Recorded};
@@ -260,8 +249,6 @@ mod recorded {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    /// GER over 100..=110 with the queues held available (or not) at every hour; no hour charges
-    /// them a walk's time, so no hour stamps them read, as the journal door lands them.
     fn recording(available: bool) -> Source {
         let frames = (100..=110)
             .map(|hour| {

@@ -1,4 +1,3 @@
-//! Content demand prepared before attachment, outside every capture callback.
 use installed_content_core::ResolvedLayers;
 use installed_content_core::scripted_map_modes::LayerType;
 use std::{collections::BTreeSet, io};
@@ -13,7 +12,6 @@ fn reaches_sharing(
             return true;
         }
         let key = item.key.as_deref().unwrap_or_default();
-        // A parameterized trigger key can select this trigger after substitution.
         if key.contains(&b'$') {
             return true;
         }
@@ -98,13 +96,8 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
                 continue;
             }
             if let Some(text) = localisation.get(&key) {
-                // Substitutions may assemble a bracket property from several keys.
-                // If substitution fails, follow the authored keys below so it
-                // does not hide otherwise reachable alternatives.
                 let expanded = localisation.localise(key.as_bytes()).ok();
                 let text = expanded.as_deref().unwrap_or(text);
-                // Follow localiser substitutions and every bracket property that
-                // could dispatch a defined_text alternative. Cycles add no work.
                 let mut rest = text;
                 while let Some(at) = rest.find('$') {
                     rest = &rest[at + 1..];
@@ -253,13 +246,11 @@ mod tests {
             "scripted_map_modes={mod_mode={top={type=state_controller targets={targets={8 3 8}}}}}",
         )
         .unwrap();
-        // An unused key alone does not demand a state read.
         std::fs::write(root.join("localisation/mod_l_english.yml"),
             "\u{feff}l_english:\n mod_mode_tooltip:0 \"Plain\"\n unused:0 \"[State.GetCapitalVictoryPointName]\"\n").unwrap();
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         assert_eq!(read(&layers, "english").unwrap()["victory_point"], false);
         assert_eq!(read(&layers, "english").unwrap()["sharing_roster"], false);
-        // The property can be bare and assembled by the localiser.
         std::fs::write(root.join("localisation/mod_l_english.yml"),
             "\u{feff}l_english:\n mod_mode_tooltip:0 \"[$city_property$]\"\n city_property:0 \"GetCapitalVictoryPointName\"\n").unwrap();
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();

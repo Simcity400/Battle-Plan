@@ -1,26 +1,3 @@
-//! The naval hovers' source trees: which source accumulators a live combat
-//! reaches, the recorded identity each is filed under, and the modifier
-//! breakdown tree walked for it.
-//!
-//! - Side positioning, screening and convoy escape visit the first primary
-//!   country's modifier accumulator, the combat region's weather modifier
-//!   (omitted when no live region is found), province terrain's
-//!   terrain type modifier and a commander's movement accumulator, in that order.
-//!   An empty side (no units) reaches no source.
-//!
-//! - Escaping ships (state 8) and carriers with a linked air group format the
-//!   tree at each ordered source's accumulator (scopes 0-15 of
-//!   [`naval_ship_modifier_inputs::visit_sources`]).
-//!
-//! Both pass depth -1 to modifier formatting, which prints every nonzero leaf: a node with children
-//! prints only its children's text (the root is read only when its child count is zero), and a leaf
-//! prints the modifier's display bytes with its effective value. Every reached tree is read for all
-//! [`KEYS`]; a node's values come from one sorted-entry lookup and only nonzero leaves read their
-//! display bytes. No game function is called.
-//!
-//! [`ship_owner`] and [`side_owner`] are the one join both the collector and
-//! playback (`replay_data::naval_trees`) use, so a recorded combat finds its trees
-//! without a runtime address.
 use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cfex_air, cfex_member, cnaval_combat, cnaval_combatant, cpdx_array::Array,
@@ -28,34 +5,20 @@ use crate::{
     naval_ship_modifier_inputs, read,
 };
 
-/// The native side and ship hover keys, sorted for one effective modifier
-/// lookup per node: carrier sortie, retreat speeds, positioning, the
-/// early-defender penalty, the screening correction and fighter sortie, and the
-/// torpedo cooldown factor the port strike readiness reads through the same
-/// country, doctrine, commander, class and support sources.
 pub use engine_executable::native_values::naval_modifiers::KEYS;
 
-/// The country's modifier accumulator, the country tree (`naval_tree_mutations` writers).
 pub const COUNTRY_TREE: usize = 0x5b8;
-/// The commander's movement accumulator, the commander tree (`naval_tree_mutations` writers).
 pub const COMMANDER_TREE: usize = 0x418;
 
 pub use game_model::naval_modifier_trees::{Kind, SideSource, Owner, ship_owner, side_owner};
 
-/// One reached source occurrence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Request {
-    /// The accumulator walked by modifier breakdown formatting.
     pub accumulator: usize,
-    /// The CCountry or CUnitLeader whose hooked writers certify a carried
-    /// kind's accumulator; zero for every other kind.
     pub receiver: usize,
     pub kind: u8,
     pub owner: u64,
     pub sub: u32,
-    /// The occurrence: combat, side, battle slot (`u32::MAX` for a side
-    /// source), the source's ordinal ([`SideSource`] or its position in the
-    /// ship's recorded sources) and the ship source's scope.
     pub combat: u64,
     pub side: u8,
     pub battle_slot: u32,
@@ -82,10 +45,6 @@ fn field<T: crate::memory::Raw>(
     read(memory, at(pointer, offset)?).ok_or("naval tree field unreadable")
 }
 
-/// Every source this hour's live combats reach, in combat order: each live
-/// side's [`SideSource`]s, then the sources of each escaping ship and each
-/// carrier host of a linked air group. Members are grouped by combat in the
-/// combat census's order; `sources` is the same pass's source arena.
 #[allow(
     clippy::too_many_arguments,
     reason = "the request census consumes separately owned native input slices"
@@ -183,8 +142,6 @@ pub fn enumerate(
                 ) else {
                     continue;
                 };
-                // visit_sources passes the country's and the leader's CModifier objects, whose
-                // accumulators lie inside them.
                 let receiver = match kind {
                     Kind::Country => source.accumulator.wrapping_sub(COUNTRY_TREE),
                     Kind::Commander => source.accumulator.wrapping_sub(COMMANDER_TREE),
@@ -211,8 +168,6 @@ pub fn enumerate(
     Ok(())
 }
 
-/// A forward air group linked to a live carrier member (the carrier tooltip's
-/// carrier branch): drawable, not evacuated, and naming its host's slot.
 fn linked_air(plane: &cfex_air::Row) -> bool {
     plane.source == 0
         && plane.group_index != u32::MAX
@@ -222,7 +177,6 @@ fn linked_air(plane: &cfex_air::Row) -> bool {
         && plane.carrier_slot >= 0
 }
 
-/// Side hover sources for both sides of one combat.
 fn side_requests(
     memory: &impl Memory,
     base: usize,
@@ -264,18 +218,13 @@ fn side_requests(
     let weather = field::<u64>(memory, game_state, crate::cgame_state::WEATHER_MANAGER)? as usize;
     let regions = Array::read(memory, at(weather, 0x40)?, 0x160)
         .ok_or("naval side tree weather region array invalid")?;
-    // Weather region lookup returns null outside the live region array; side
-    // hovers simply omit that optional weather source.
     let region_at = regions.element(region, 0x160);
     let terrain = naval_ship_modifier_inputs::terrain(memory, base, definition)?;
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     for (index, &side) in sides.iter().enumerate() {
-        // Both native description paths skip every root for an empty side.
         if field::<i32>(memory, side, 0x48)? == 0 {
             continue;
         }
-        // The combatant's country list head; the first node's first word is the raw country
-        // reference side hovers resolve.
         let head = field::<u64>(memory, side, 0x38)? as usize;
         let link: u32 = field(memory, head, 0)?;
         let country = countries.resolve(link)?;
@@ -326,9 +275,6 @@ fn side_requests(
     Ok(())
 }
 
-/// One preorder node: its native child count, its display span in the
-/// caller's text arena (leaves with a nonzero value only) and its effective
-/// value for each of [`KEYS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RawNode<const N: usize = { KEYS.len() }> {
     pub children: u32,
@@ -345,7 +291,6 @@ impl<const N: usize> Default for RawNode<N> {
     }
 }
 
-/// The definition operands of [`KEYS`], read once per capture.
 #[derive(Clone, Copy, Debug)]
 pub struct Definitions<const N: usize = { KEYS.len() }> {
     keys: [u32; N],
@@ -358,8 +303,6 @@ impl Definitions {
     }
 }
 impl<const N: usize> Definitions<N> {
-    /// The demanded sorted keys only. Unrelated modifiers and their nonzero
-    /// leaf names are never read for a narrower consumer.
     pub fn requested(
         memory: &impl Memory,
         base: usize,
@@ -376,7 +319,6 @@ impl<const N: usize> Definitions<N> {
     }
 }
 
-/// One frame of the explicit walk: the node, its children and the next one.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Frame {
     address: usize,
@@ -384,10 +326,6 @@ pub struct Frame {
     next: u32,
 }
 
-/// Appends the tree at `root` to `nodes` and the display bytes of its nonzero
-/// leaves to `text`, in modifier formatting preorder, with no depth or node
-/// limit. Only an ancestor cycle or a null child is invalid; repeated siblings
-/// are separate native occurrences. Worker-only: the arenas grow.
 pub fn capture_tree<const N: usize>(
     memory: &impl Memory,
     root: usize,
@@ -433,8 +371,6 @@ pub fn capture_tree<const N: usize>(
     }
 }
 
-/// A hover gated by its effective root does not read children or labels when
-/// that root is zero. An empty span proves the hover's sources are absent.
 pub fn capture_nonzero_tree<const N: usize>(
     memory: &impl Memory,
     root: usize,
@@ -472,8 +408,6 @@ fn capture_node<const N: usize>(
             *value = operands.effective(raw.raw);
         }
     }
-    // With depth -1, modifier formatting prints only nonzero leaf values; an
-    // interior node and an all-zero leaf never need display bytes.
     let name = if children.count == 0 && values.iter().any(|&value| value != 0) {
         let mut used = text.len();
         let span = msvc_string::append(memory, at(address, 0x48)?, text, &mut used)?;
@@ -555,14 +489,9 @@ mod tests {
         );
     }
 
-    /// A two-level tree: the root's children are walked in order, each node
-    /// takes all nine values in one lookup, and only nonzero leaves read
-    /// their display bytes.
     #[test]
     fn capture_walks_preorder_and_names_only_nonzero_leaves() {
         use crate::memory::SliceMemory;
-        // Accumulators: root at 0x100 (two children), leaf A at 0x210, leaf B at 0x310. A child
-        // pointer is the CModifier; its accumulator lies inside it.
         let mut bytes = vec![0_u8; 0x4000];
         let put = |bytes: &mut Vec<u8>, at: usize, value: &[u8]| {
             bytes[at..at + value.len()].copy_from_slice(value);
@@ -574,12 +503,10 @@ mod tests {
             out[12..16].copy_from_slice(&count.to_le_bytes());
             out
         };
-        // Root: no entries, children array at 0x800.
         put(&mut bytes, 0x100, &header(0, 0));
         put(&mut bytes, 0x118, &header(0x800, 2));
         put(&mut bytes, 0x800, &0x200_u64.to_le_bytes());
         put(&mut bytes, 0x808, &0x300_u64.to_le_bytes());
-        // Leaf A: positioning 0.05 (entry array at 0x900); name "Alpha".
         put(&mut bytes, 0x210, &header(0x900, 1));
         put(&mut bytes, 0x228, &header(0, 0));
         put(&mut bytes, 0x900, &modifier_keys::POSITIONING.to_le_bytes());
@@ -587,7 +514,6 @@ mod tests {
         put(&mut bytes, 0x210 + 0x48, b"Alpha");
         put(&mut bytes, 0x210 + 0x48 + 0x10, &5_u64.to_le_bytes());
         put(&mut bytes, 0x210 + 0x48 + 0x18, &15_u64.to_le_bytes());
-        // Leaf B: no entries; its name is never read.
         put(&mut bytes, 0x310, &header(0, 0));
         put(&mut bytes, 0x328, &header(0, 0));
         let memory = SliceMemory {
@@ -617,7 +543,6 @@ mod tests {
         assert_eq!(nodes[1].values[positioning], 5_000);
         assert_eq!(&text[nodes[1].name[0]..][..nodes[1].name[1]], b"Alpha");
         assert_eq!(nodes[2].name[1], 0);
-        // A narrow consumer does not read unrelated nonzero leaf labels.
         let narrow = Definitions {
             keys: [modifier_keys::CONVOY_ESCORT_EFFICIENCY],
             operands: [modifier_definition::Operands::default()],
@@ -635,7 +560,6 @@ mod tests {
         assert_eq!(narrow_nodes.len(), 3);
         assert!(narrow_nodes.iter().all(|node| node.values == [0]));
         assert!(narrow_text.is_empty());
-        // A child that points back at an ancestor is refused.
         put(&mut bytes, 0x808, &0xf0_u64.to_le_bytes());
         let memory = SliceMemory {
             base: 0,

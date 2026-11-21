@@ -1,25 +1,3 @@
-//! An archive layer using the PhysFS 3.0 ZIP archiver's rules (`physfs_archiver_zip.cpp`),
-//! mounting and reading the central directory's own records. Members stay keyed by their
-//! name bytes; decoding names would merge members whose bytes differ.
-//!
-//! Mounting starts with a backward scan for the end-of-central-directory record.
-//! Parsing first tries the Zip64 locator 20 bytes before it, then enters
-//! every central record in the directory tree, creating missing ancestors and using
-//! the record's name bytes. Any failure fails the whole mount; there is no partial archive.
-//!
-//! Opening ([`Mounted::lookup`] then [`Archive::read`]) finds the node by exactly
-//! the requested bytes. Only when none exists, an archive holding an encrypted record
-//! splits a request at its last `$`, treating the suffix as a password.
-//! The node must not be a directory; opening checks its local header against its
-//! central record. Traditional PKWARE keys decrypt an encrypted record's 12-byte header to
-//! the check byte; a plain record opens only without a password.
-//! An open that fails is no error: lookup goes on to the next search-path entry.
-//!
-//! Reading leaves stored data as it stands; every other method uses raw deflate
-//! with window bits -15 and synchronous flushing, up to the central record's
-//! uncompressed size. The CRC is not checked.
-//!
-//! Seeks past the end succeed; a read past it fails. Reads return all requested bytes or fail.
 
 use std::{
     collections::BTreeMap,
@@ -41,28 +19,13 @@ const END_SIGNATURE: u32 = 0x0605_4B50;
 const ZIP64_LOCATOR_SIGNATURE: u32 = 0x0706_4B50;
 const ZIP64_END_SIGNATURE: u32 = 0x0606_4B50;
 
-/// One parsed central-directory record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Entry {
-    /// The key its tree node has: the record's name bytes as they stand (no code page, and not
-    /// the Info-ZIP Unicode path extra field), a trailing `/` removed, ending at the first NUL
-    /// (the tree stores and compares a C string), `\` made `/` only when the version-made-by
-    /// host byte is 0 (FAT). Empty for the root.
     pub name: LayerPath,
-    /// Whether its tree node is a directory: a name that ended in `/`, or a node the tree made
-    /// first as an ancestor of an earlier record, which a later file record of
-    /// that name does not change. Opening a directory fails with a not-a-file error.
     pub directory: bool,
-    /// A host that makes symbolic links (any but 0, 1, 2, 4, 6, 11, 13,
-    /// 14, 15, 18), a nonzero uncompressed size and a Unix link mode in the external
-    /// attributes' high half. Never set for a directory name.
     pub symlink: bool,
-    /// The uncompressed size, which is what a read returns.
     pub size: u64,
-    /// The DOS date and time, whose time's high byte checks an encrypted header when the record
-    /// has a data descriptor (flag 8).
     time: u32,
-    /// The local header's offset, the data before the archive (`data_start`) added.
     local: u64,
     version_needed: u16,
     flags: u16,
@@ -71,7 +34,6 @@ pub(super) struct Entry {
     compressed: u64,
 }
 
-/// An open archive file.
 pub(super) struct Archive {
     io: Cursor,
 }
@@ -91,21 +53,16 @@ impl Archive {
         })
     }
 
-    /// The archive as the game mounts it; an error names why the game's mount fails.
     pub(super) fn mount(&mut self) -> io::Result<Mounted> {
         let directory = self.end_of_central_directory()?;
         let mut tree = Tree::default();
         let mut entries = Vec::new();
         self.io.seek(directory.offset);
-        // Read one record after another, however many the end record counts;
-        // each read moves forward, so a count the file does not hold ends at its end.
         let mut index = 0_u64;
         while index < directory.count {
             entries.push(self.load_entry(directory.zip64, directory.data_start, &mut tree)?);
             index += 1;
         }
-        // Mark the archive as holding encryption when any record's
-        // flag 1 is set.
         let crypto = entries.iter().any(|entry| entry.flags & 1 != 0);
         let mut nodes: BTreeMap<LayerPath, Option<usize>> =
             tree.nodes.into_keys().map(|name| (name, None)).collect();
@@ -121,13 +78,11 @@ impl Archive {
         })
     }
 
-    /// Native open admission: local header and password, with no payload read.
     pub(super) fn opens(&mut self, entry: &Entry, password: Option<&[u8]>) -> io::Result<bool> {
         self.open_entry(entry, password)
             .map(|opened| opened.is_some())
     }
 
-    /// The mounted lookup and its opening headers, without reading any payload.
     pub(super) fn index(&mut self, mounted: Mounted) -> io::Result<Index> {
         let mut openings = BTreeMap::new();
         for entry in &mounted.entries {
@@ -178,10 +133,6 @@ impl Archive {
         }))
     }
 
-    /// Opens and reads a file record of this archive's [`Mounted`] as the game does, with the
-    /// password [`Mounted::lookup`] split off the request: `None` when the game's open fails
-    /// (its search goes on to the next layer); an error for a read that comes up short, which
-    /// the replay refuses.
     pub(super) fn read(
         &mut self,
         entry: &Entry,
@@ -243,8 +194,6 @@ impl Archive {
         })
     }
 
-    /// Where the record's data starts, or `None` when its local header does not agree
-    /// with its central record or the file ends inside it. Such a broken record fails to open.
     fn local_data(&mut self, entry: &Entry) -> io::Result<Option<u64>> {
         let io = &mut self.io;
         if entry.local.checked_add(30).is_none_or(|end| end > io.len) {
@@ -271,10 +220,6 @@ impl Archive {
         )))
     }
 
-    /// The bytes a record occupies as stored: its local header, name, extra field and
-    /// compressed data (the lengths its local header and central record give), as far as the
-    /// file holds them. With [`Entry::opening`], what names a record the game does not open
-    /// without a password.
     pub(super) fn stored(&mut self, entry: &Entry) -> io::Result<Vec<u8>> {
         let len = self.io.len;
         let start = entry.local.min(len);
@@ -295,7 +240,6 @@ impl Archive {
         self.io.bytes(end - start)
     }
 
-    /// Read the end record and locate the central directory, including any prefix bytes.
     fn end_of_central_directory(&mut self) -> io::Result<Directory> {
         let len = self.io.len;
         let Some(pos) = self.io.find_end()? else {
@@ -340,8 +284,6 @@ impl Archive {
         })
     }
 
-    /// Read the locator 20 bytes before the end record: `None` when no locator is there
-    /// (not Zip64).
     fn zip64(&mut self, locator: Option<u64>) -> io::Result<Option<Directory>> {
         let Some(locator) = locator else {
             return Err(unmounted(
@@ -393,8 +335,6 @@ impl Archive {
         }))
     }
 
-    /// Find the Zip64 end record at the offset the locator names, else 56 or 84
-    /// bytes before the locator, else the last signature in the (at most 256 KiB) before it.
     fn find_zip64_end(&mut self, locator: u64, offset: u64) -> io::Result<u64> {
         if locator == 0 {
             return Err(unmounted(
@@ -430,7 +370,6 @@ impl Archive {
         ))
     }
 
-    /// Read the record at the cursor and leave it at the next record.
     fn load_entry(&mut self, zip64: bool, data_start: u64, tree: &mut Tree) -> io::Result<Entry> {
         let io = &mut self.io;
         if io.u32()? != CENTRAL_SIGNATURE {
@@ -440,8 +379,6 @@ impl Archive {
         let version_needed = io.u16()?;
         let flags = io.u16()?;
         let method = io.u16()?;
-        // The DOS time `mktime` makes the node's modification time: never 0 (a DOS date is
-        // 1980 or later), which is how a node already entered is told (below).
         let time = io.u32()?;
         let crc = io.u32()?;
         let mut compressed = u64::from(io.u32()?);
@@ -481,8 +418,6 @@ impl Archive {
         let mut pos = io.pos;
         let mut remaining = extra_length;
         if zip64 && (offset == 0xFFFF_FFFF || compressed == 0xFFFF_FFFF || size == 0xFFFF_FFFF) {
-            // The Zip64 extra field (id 1) holds, in this order, each of the three that is
-            // `0xFFFFFFFF`, and nothing else; the remaining length is a `u16` that wraps.
             loop {
                 if remaining <= 4 {
                     return Err(unmounted(format!(
@@ -542,12 +477,6 @@ impl Archive {
 }
 
 impl Entry {
-    /// The central record's fields that decide whether and how the game opens and decodes the
-    /// record, beyond its stored bytes: the version needed, method, CRC and both sizes, which
-    /// opening checks the local header against (the method also choosing
-    /// inflation, the sizes bounding it); the flags (1 encryption, 8 which byte checks a
-    /// password); the DOS time, whose high byte checks a password under flag 8 and which
-    /// no local field is compared with.
     pub(super) fn opening(&self) -> Vec<u8> {
         [
             &self.version_needed.to_le_bytes()[..],
@@ -562,15 +491,10 @@ impl Entry {
     }
 }
 
-/// A mounted archive: its records and its directory tree.
 #[derive(Clone, Debug)]
 pub(super) struct Mounted {
-    /// Every central-directory record, in its order.
     pub entries: Vec<Entry>,
-    /// Every tree node: `None` a directory (the root, a directory record, an ancestor the tree
-    /// made), else the file record it is.
     nodes: BTreeMap<LayerPath, Option<usize>>,
-    /// Whether any record is encrypted (the archive's `has_crypto`).
     crypto: bool,
 }
 
@@ -595,7 +519,6 @@ impl Opening {
     }
 }
 
-/// Native open admission from the inventory, with no filesystem or payload reads.
 #[derive(Clone, Debug)]
 pub(super) struct Index {
     pub mounted: Mounted,
@@ -615,9 +538,6 @@ impl Index {
 }
 
 impl Mounted {
-    /// Look up a sanitized request, returning its file record and password.
-    /// Return `None` when it names no node or a directory; the `$` split is tried only when no node
-    /// has the request's name.
     pub(super) fn lookup<'a>(&'a self, request: &'a [u8]) -> Option<(&'a Entry, Option<&'a [u8]>)> {
         let (name, password) = match self.nodes.get(request) {
             Some(_) => (request, None),
@@ -632,7 +552,6 @@ impl Mounted {
     }
 }
 
-/// The traditional PKWARE keys.
 struct Keys([u32; 3]);
 
 impl Keys {
@@ -653,7 +572,6 @@ impl Keys {
         self.0[2] = crc_step(self.0[2], (self.0[1] >> 24) as u8);
     }
 
-    /// One byte decrypted, the keys updated with the plain byte.
     fn decrypt(&mut self, byte: u8) -> u8 {
         let key = (self.0[2] & 0xFFFF) | 2;
         let plain = byte ^ ((key * (key ^ 1)) >> 8) as u8;
@@ -668,7 +586,6 @@ impl Keys {
     }
 }
 
-/// One byte of the reflected CRC-32 (polynomial `0xEDB88320`), no inversion.
 fn crc_step(crc: u32, byte: u8) -> u32 {
     let mut value = (crc ^ u32::from(byte)) & 0xFF;
     for _ in 0..8 {
@@ -681,18 +598,14 @@ fn crc_step(crc: u32, byte: u8) -> u32 {
     value ^ (crc >> 8)
 }
 
-/// Where the central directory is.
 struct Directory {
     zip64: bool,
-    /// Bytes before the archive proper (a self-extractor's stub), added to every offset.
     data_start: u64,
     offset: u64,
     count: u64,
 }
 
-/// The mount's directory tree, by node name (the root is the empty name, a directory).
 struct Tree {
-    /// Whether each node is a directory, and whether a record has entered it.
     nodes: BTreeMap<LayerPath, (bool, bool)>,
 }
 
@@ -705,10 +618,6 @@ impl Default for Tree {
 }
 
 impl Tree {
-    /// Add a record's name and check for duplicates, returning whether the node is a directory. A new node's missing ancestors are made
-    /// directories, each the name up to its last `/`; an existing ancestor that is a file,
-    /// or a node a record has entered already (its modification time is set),
-    /// fails the mount as corrupt.
     fn add(&mut self, name: &[u8], directory: bool) -> io::Result<bool> {
         if !self.nodes.contains_key(name) {
             let mut missing = vec![(name.to_vec(), directory)];
@@ -747,13 +656,10 @@ impl Tree {
     }
 }
 
-/// The archive file, read as PhysFS's native I/O reads it.
 struct Cursor {
     file: BufReader<File>,
     len: u64,
-    /// Where the next read starts.
     pos: u64,
-    /// Where `file` stands.
     at: u64,
     evidence: Option<ReadEvidence>,
 }
@@ -763,7 +669,6 @@ impl Cursor {
         self.pos = pos;
     }
 
-    /// `n` bytes from the cursor, all or a failure.
     fn bytes(&mut self, n: u64) -> io::Result<Vec<u8>> {
         if self.pos.checked_add(n).is_none_or(|end| end > self.len) {
             return Err(past_end());
@@ -818,10 +723,6 @@ impl Cursor {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    /// Find the end record's signature, scanning back from the end through
-    /// 256-byte windows that overlap by 4, as far as 65557 bytes, with its quirks kept: a
-    /// window's first byte is never a match (`i > 0`), and a window clamped to the file's start
-    /// is completed by the previous window's first 4 bytes.
     fn find_end(&mut self) -> io::Result<Option<u64>> {
         let len = self.len as i64;
         if len < 1 {
@@ -860,9 +761,6 @@ impl Cursor {
         Ok(None)
     }
 
-    /// Decode a member with raw deflate over at most `compressed` bytes of input,
-    /// read 16 KiB at a time, until
-    /// `size` bytes are out or the stream stops.
     fn inflate(
         &mut self,
         compressed: u64,
@@ -910,17 +808,14 @@ impl Cursor {
     }
 }
 
-/// A read past the file's end, which fails the game's mount or open.
 fn past_end() -> io::Error {
     invalid("the game's read runs past the archive's end, which fails its mount or open")
 }
 
-/// The game's mount of the archive fails.
 fn unmounted(why: impl std::fmt::Display) -> io::Error {
     invalid(format!("the game does not mount this archive: {why}"))
 }
 
-/// The game's read of the member returns fewer bytes than its size.
 fn short(why: &str) -> io::Error {
     invalid(format!("the game reads this archive member short ({why})"))
 }

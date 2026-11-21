@@ -1,13 +1,3 @@
-//! `politics-state`: every government in exile, or every balance of power the game stores, at one
-//! hour, read from that hour's rows. Balances keep the game's stored record order: a country's
-//! current balance is the first record listing it, which needs the whole membership resolved.
-//! Names and range bounds resolve through the recording's content stack; a name that cannot
-//! resolve leaves its numbers exact. A record's weekly-change sources derive from its recorded
-//! static-modifier roster, kept apart from the members' recorded contributions.
-//!
-//! The numbers that move with the playhead are live cells, never in the reply: an exile's
-//! legitimacy (percent), manpower, manpower cap, army leaders, deployed air crews and the hour its
-//! resources were read, by its raw id; a record's value (fixed5), by its ordinal.
 
 use super::token;
 use crate::{
@@ -52,20 +42,17 @@ pub struct BalanceSide {
     pub name: Option<String>,
 }
 
-/// An authored range, its inclusive fixed5 bounds as decimal strings.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceRange {
     pub token: String,
     pub name: Option<String>,
-    /// Fixed5 bounds; null where the recorded content does not establish them.
+    #[doc = " Fixed5 bounds; null where the recorded content does not establish them."]
     pub min: Option<String>,
     pub max: Option<String>,
 }
 
-/// A record member's recorded contribution: the effective daily and weekly values (fixed5
-/// decimal strings), null where the record holds none.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -75,8 +62,6 @@ pub struct BalanceMember {
     pub weekly: Option<String>,
 }
 
-/// One static-modifier source of a record's drift, in roster order, with its effective daily
-/// and weekly values (fixed5 decimal strings).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -87,8 +72,6 @@ pub struct BalanceSource {
     pub weekly: String,
 }
 
-/// One stored balance record at the hour, in stored order. Its stored fixed5 value, from -100000
-/// to 100000, is the live cell (`ordinal`, `value`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -98,17 +81,16 @@ pub struct BalanceRecord {
     pub name: Option<String>,
     pub left: BalanceSide,
     pub right: BalanceSide,
-    /// The side it is moving toward, when the record names one.
+    #[doc = " The side it is moving toward, when the record names one."]
     pub trending: Option<BalanceSide>,
     pub range: Option<BalanceRange>,
-    /// Every authored range in authored order; empty when content refuses.
+    #[doc = " Every authored range in authored order; empty when content refuses."]
     pub ranges: Vec<BalanceRange>,
     pub members: Vec<BalanceMember>,
-    /// The drift's sources; null when they cannot be derived.
+    #[doc = " The drift's sources; null when they cannot be derived."]
     pub sources: Option<Vec<BalanceSource>>,
 }
 
-/// The record the game shows for a country: the first record listing it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -117,7 +99,6 @@ pub struct CurrentBalance {
     pub record: u32,
 }
 
-/// What a view cannot show, named and counted.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -127,8 +108,6 @@ pub struct PoliticsUnavailable {
     pub count: u32,
 }
 
-/// A government in exile at the hour: `id` (its raw country id) is the row of its live cells
-/// `legitimacy`, `manpower`, `cap`, `leaders`, `deployedAir` and `readHour`.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -146,7 +125,7 @@ pub struct PoliticsStateReply {
     pub view: PoliticsView,
     pub exiles: Vec<StateExile>,
     pub balances: Vec<BalanceRecord>,
-    /// Null when the membership cannot say which record each country shows.
+    #[doc = " Null when the membership cannot say which record each country shows."]
     pub current: Option<Vec<CurrentBalance>>,
     pub unavailable: Vec<PoliticsUnavailable>,
     pub warnings: Vec<String>,
@@ -165,7 +144,6 @@ impl PoliticsStateReply {
     }
 }
 
-/// The tables the balances view reads at its hour.
 pub const BALANCE_TABLES: [TableId; 8] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -179,7 +157,6 @@ pub const BALANCE_TABLES: [TableId; 8] = [
 
 pub struct PoliticsState;
 
-/// The content catalogue the balances view names through, or why there is none.
 pub struct PoliticsContext {
     catalogue: Option<Result<Arc<Catalogue>, String>>,
 }
@@ -221,7 +198,6 @@ impl AtHour for PoliticsState {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        // Only the balances view names content; the context is the same for both views.
         let catalogue = load.content().and_then(|content| catalogue::catalogue(source, content)).map_err(|error| error.to_string());
         Ok(PoliticsContext { catalogue: Some(catalogue) })
     }
@@ -235,7 +211,6 @@ impl AtHour for PoliticsState {
     }
 }
 
-/// The view `params` asks of `frame`, its moving numbers named in `live`.
 pub fn read(frame: &DecodedFrame, params: &PoliticsStateParams, catalogue: Option<Result<&Catalogue, &String>>, live: &Cells) -> io::Result<PoliticsStateReply> {
     let mut reply = PoliticsStateReply {
         branch_id: params.branch_id.clone(),
@@ -256,7 +231,6 @@ pub fn read(frame: &DecodedFrame, params: &PoliticsStateParams, catalogue: Optio
     Ok(reply)
 }
 
-/// A column of a table, by its schema name.
 fn column(table: TableId, name: &str) -> io::Result<usize> {
     dashboard_declare::field(table, name)
 }
@@ -292,7 +266,6 @@ fn exiles(frame: &DecodedFrame, reply: &mut PoliticsStateReply, live: &Cells) {
     for row in rows {
         let id = row.country.to_string();
         let at = |column| Cell { table: inputs, column, key: u128::from(row.country) };
-        // Legitimacy is a fixed5 percentage.
         live.value(&id, "legitimacy", at(legitimacy), 1e-5);
         live.value(&id, "manpower", at(manpower), 1.0);
         live.value(&id, "cap", at(cap), 1.0);
@@ -305,8 +278,6 @@ fn exiles(frame: &DecodedFrame, reply: &mut PoliticsStateReply, live: &Cells) {
     }
 }
 
-/// A content name localised plainly. Text that needs scripted localisation in a scope this view
-/// cannot reproduce is refused, not shown raw.
 fn name(catalogue: Option<&Catalogue>, key: &str, label: &str, reply: &mut PoliticsStateReply) -> Option<String> {
     if key.is_empty() {
         return None;
@@ -365,7 +336,6 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
     }
     let breakdowns = frame.complete::<tables::PowerBalanceModifierBreakdowns>().ok();
     let registry = replay_derive::modifier_registry::Registry::from_frame(frame);
-    // The game's current balance needs the whole membership resolved.
     let mut unresolved = 0_u32;
     let mut current = BTreeMap::<u32, u32>::new();
     for member in members {
@@ -399,8 +369,6 @@ fn balances(frame: &DecodedFrame, catalogue: Option<Result<&Catalogue, &String>>
             reply.refuse("balance ranges", format!("balance {balance} is not declared by the recorded content"), 1);
         }
         let active = token(&record.active_range);
-        // The authored range the recorded id names, where it names exactly one; otherwise its
-        // bounds stay unknown and the record's other facts stand.
         let authored = content.map(|database| database.range(&record.balance, &record.active_range));
         if let Some(Err(reason)) = &authored {
             reply.refuse("balance ranges", reason.clone(), 1);
@@ -492,9 +460,6 @@ fn member_row(row: &replay_data::rows::PowerBalanceMemberRow) -> engine_power_ba
     }
 }
 
-/// The record's drift sources as the game's breakdown lists them: one leaf per nonempty source in
-/// roster order, its effective daily and weekly values. A source the content stack does not
-/// declare, or an entry the recorded registry cannot name, refuses the whole list by name.
 fn drift_sources(
     catalogue: &Catalogue,
     statics: &installed_content_core::static_modifiers::Descriptions,

@@ -1,5 +1,3 @@
-//! Hourly all-country coverage counts, accumulated during division core projection.
-//! Native reads and accumulation time belong to the shared Divisions read group.
 
 use crate::{division_census::Census, spooling::table, table_capture::CaptureRows};
 use engine_native::walk::Outcome;

@@ -1,4 +1,3 @@
-//! Selected-attack building flags and integer-scan behavior.
 use super::*;
 
 #[test]

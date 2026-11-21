@@ -1,29 +1,3 @@
-//! The game's sound-effect instances and mixer, without a device.
-//!
-//! Each map emitter (an entity event that names a sound effect) owns one
-//! scoped instance while the event is present. The instance follows the
-//! game's per-frame update: its falloff gain from the listener, start and
-//! loop restart, the out-of-range stop at twice the falloff's maximum
-//! distance, the `max_audible` count and the stereo balance of `is3d`
-//! effects. An instance has one slot per `polyphony` voice; starting fills
-//! every free slot, drawing a weighted sound, then its delay and playback
-//! rate and, for a voice it creates, its volume. Voices live in the mixer's
-//! 256 slots, the first eight its own (music); a start finding none free
-//! creates no voice.
-//!
-//! The mixer renders 1,024 frames per device callback in the game's 16-bit
-//! integer arithmetic: each voice's gain is the category volume, the master
-//! and group volumes, its falloff gain and its volume, in steps of 1/16384,
-//! split by its balance, and ramps from the last callback's across the
-//! callback. Only the 32 voices with the highest sound priority times gain
-//! mix (music first); the rest advance silently. Voices of a category with
-//! an enabled compressor mix into that category's buffer, which is
-//! compressed when anything mixed into it; then the sum, music included,
-//! goes through the master compressor and is clamped to 16 bits.
-//!
-//! The viewer splits the game's single effects volume into its Units, Combat
-//! and Interface groups by the emitter's producer; each defaults to the game's
-//! effects volume.
 
 use crate::{Frame, Group, Listener, Mix};
 use installed_content_sound::sound::{
@@ -32,23 +6,14 @@ use installed_content_sound::sound::{
 use installed_content_sound::wav::Pcm;
 use std::{collections::HashMap, sync::Arc};
 
-/// The mixer's sample rate; compressor time constants use it too.
 pub const RATE: u32 = 44_100;
-/// Frames the mixer renders per device callback.
 pub const CALLBACK_FRAMES: usize = crate::sdl::MIXER_FRAMES;
-/// The mixer's voice slots; the first [`RESERVED_VOICES`] are its own.
 const VOICE_SLOTS: usize = 256;
 const RESERVED_VOICES: usize = 8;
-/// Voices mixed per callback; the rest advance silently.
 const MIXED_VOICES: usize = 32;
-/// The mixer's unity gain step.
 const UNITY: i32 = 16_384;
-/// An event first seen at most this long after it fired starts its sound.
-/// Older events (a recreated entity mid-state) only keep their loops.
 const FIRED_WINDOW: f32 = 0.1;
 
-/// A sound's samples as the game's loader converts them: interleaved
-/// 16-bit stereo at [`RATE`].
 #[derive(Debug)]
 pub struct Samples {
     pub data: Vec<i16>,
@@ -66,24 +31,16 @@ impl Samples {
     }
 }
 
-/// One content stack's audio definitions.
 #[derive(Debug)]
 pub struct Content {
     pub catalog: Catalog,
-    /// `None` when the content's sound defines are unreadable: no category
-    /// takes the ambient or voice volume.
     pub defines: Option<Defines>,
     height_category: Option<usize>,
     voice_category: Option<usize>,
     pub music: installed_content_sound::music::Music,
-    /// The user's enabled music stations; `None` enables every station.
     pub stations: Option<Vec<String>>,
-    /// `NGame.MUSIC_PLAYER_RECENTLY_PLAYED_SIZE`.
     pub recently_played: usize,
-    /// `NSound`'s battle ambience defines; `None` when unreadable, which
-    /// leaves battles silent.
     pub battle: Option<installed_content_sound::combat_sounds::BattleDefines>,
-    /// The battle ambience layers of `sound/combat_sounds`.
     pub layers: installed_content_sound::combat_sounds::Layers,
 }
 
@@ -108,7 +65,6 @@ impl Content {
         }
     }
 
-    /// Adds the battle ambience definitions.
     pub fn with_battles(
         mut self,
         battle: Option<installed_content_sound::combat_sounds::BattleDefines>,
@@ -119,7 +75,6 @@ impl Content {
         self
     }
 
-    /// Adds the music the player draws from.
     pub fn with_music(
         mut self,
         music: installed_content_sound::music::Music,
@@ -132,7 +87,6 @@ impl Content {
         self
     }
 
-    /// Whether the user enabled `song`'s station.
     pub fn enabled(&self, song: usize) -> bool {
         let station = &self.music.songs[song].station;
         self.stations
@@ -141,25 +95,17 @@ impl Content {
     }
 }
 
-/// A sample file the engine asks the loader for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Load {
-    /// A WAVE sound of [`Catalog::sounds`].
     Sound(usize),
-    /// An Ogg music track of [`installed_content_sound::music::Music::tracks`].
     Track(usize),
 }
 
-/// The step each draw moves the counter through the seed.
 const RANDOM_COUNTER_STEP: u32 = 0x4ad6_85b3;
-/// The mix's offset after its first shift.
 const RANDOM_MIX_OFFSET: u32 = 0x68e3_1da4;
-/// The mix's multipliers after its second and third shifts.
 const RANDOM_MIX_MULTIPLIERS: [u32; 2] = [0x1b56_c4e9, 0x92d6_8ca2];
-/// A draw's scale to [0, 1).
 const RANDOM_SCALE: f32 = 1.0 / 2_147_483_648.0;
 
-/// The game's audio hash generator: a counter mixed with a seed.
 #[derive(Clone, Debug)]
 pub struct Random {
     seed: u32,
@@ -171,7 +117,6 @@ impl Random {
         Self { seed, count: 0 }
     }
 
-    /// The next 31-bit draw.
     pub fn word(&mut self) -> u32 {
         let mut x = self
             .seed
@@ -183,14 +128,11 @@ impl Random {
         (x ^ (x >> 8)) & 0x7fff_ffff
     }
 
-    /// A draw in [0, 1) as the mixer scales it.
     pub fn fraction(&mut self) -> f32 {
         self.word() as f32 * RANDOM_SCALE
     }
 }
 
-/// The game's weighted pick: a draw over the positive weights' sum walks
-/// them in order. Without a positive weight it returns `fallback`.
 pub fn weighted(weights: &[i64], word: u32, fallback: Option<usize>) -> Option<usize> {
     let total: i64 = weights.iter().filter(|weight| **weight > 0).sum();
     if total == 0 {
@@ -209,13 +151,10 @@ pub fn weighted(weights: &[i64], word: u32, fallback: Option<usize>) -> Option<u
     fallback
 }
 
-/// The uniform pick a weighted sound draw falls back to.
 fn uniform(word: u32, count: usize) -> usize {
     (f64::from(word) * f64::from(RANDOM_SCALE) * count as f64) as usize
 }
 
-/// The falloff gain at `emitter` and whether it is beyond twice the
-/// maximum distance, where an instance stops.
 pub fn falloff_gain(falloff: &Falloff, listener: [f32; 3], emitter: [f32; 3]) -> (f32, bool) {
     let dx = emitter[0] - listener[0];
     let mut dy = emitter[1] - listener[1];
@@ -240,8 +179,6 @@ pub fn falloff_gain(falloff: &Falloff, listener: [f32; 3], emitter: [f32; 3]) ->
     (gain, false)
 }
 
-/// The stereo position of a positional effect: the listener's right axis
-/// against the normalised direction to the emitter, from -1 (left) to 1.
 pub fn balance(listener: &Listener, emitter: [f32; 3]) -> f32 {
     let d = [
         emitter[0] - listener.position[0],
@@ -257,8 +194,6 @@ pub fn balance(listener: &Listener, emitter: [f32; 3]) -> f32 {
     pan.clamp(-1.0, 1.0)
 }
 
-/// The processor's float-to-integer truncation: out of range is the
-/// integer indefinite value.
 fn truncate(value: f32) -> i32 {
     if !(-2_147_483_648.0..2_147_483_648.0).contains(&value) {
         i32::MIN
@@ -267,7 +202,6 @@ fn truncate(value: f32) -> i32 {
     }
 }
 
-/// Rounds half away from zero, as the mixer rounds its gain steps.
 fn round(value: f32) -> i32 {
     truncate(if value < 0.0 {
         value - 0.5
@@ -276,12 +210,10 @@ fn round(value: f32) -> i32 {
     })
 }
 
-/// A voice's gain step: `gain` in steps of 1/16384, clamped to [0, unity].
 fn step(gain: f32) -> i32 {
     round(gain * UNITY as f32).clamp(0, UNITY)
 }
 
-/// Splits a gain step by balance: the far side loses the pan's share.
 fn sides(gain: i32, pan: f32) -> [i32; 2] {
     if pan == 0.0 {
         return [gain, gain];
@@ -295,17 +227,14 @@ fn sides(gain: i32, pan: f32) -> [i32; 2] {
     [round(left * gain), round(right * gain)]
 }
 
-/// Frame `frame` of `frames`' gain on the ramp from `old` to `new`.
 pub fn ramp(old: i32, new: i32, frame: usize, frames: usize) -> i32 {
     old + (frame as i32 * (new - old)) / frames as i32
 }
 
-/// A 16-bit sample at a gain step, truncated toward zero.
 pub fn scale(sample: i16, gain: i32) -> i32 {
     (i32::from(sample) * gain) / UNITY
 }
 
-/// A compressor's state in the mixer's integer domain; see [`Compressor`].
 #[derive(Clone, Debug)]
 struct Dynamics {
     settings: Compressor,
@@ -316,12 +245,10 @@ struct Dynamics {
     envelope: [f32; 2],
 }
 
-/// The level's floor and scale from 16-bit steps.
 const LEVEL_SCALE: f32 = 1.0 / 32_768.0;
 
 impl Dynamics {
     fn new(settings: Compressor) -> Self {
-        // One-pole coefficients at the mixer rate; a zero time follows the input.
         let coefficient = |time: f32| {
             if time == 0.0 {
                 0.0
@@ -339,8 +266,6 @@ impl Dynamics {
         }
     }
 
-    /// Processes interleaved stereo sums in place. The level is detected
-    /// after the pregain; the gain reduction and postgain apply to the sums.
     fn process(&mut self, buffer: &mut [i32]) {
         if !self.settings.enabled {
             return;
@@ -378,7 +303,6 @@ impl Dynamics {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
-    /// Waiting out its slot's delay.
     Delayed,
     Playing,
     FadingIn,
@@ -388,27 +312,18 @@ enum State {
 
 #[derive(Debug)]
 struct Voice {
-    /// Tells this voice from a later one in the same mixer slot.
     id: u64,
     sound: usize,
-    /// `None` until the loader provides the samples; the voice waits.
     samples: Option<Arc<Samples>>,
-    /// Frames into the samples.
     cursor: usize,
     rate: f32,
-    /// The volume a fade reaches: the effect volume with its offset, times
-    /// the sound's volume.
     target: f32,
     volume: f32,
-    /// The fade's seconds.
     fade: f32,
     state: State,
-    /// The sample loops by itself.
     looping: bool,
-    /// The instance's falloff gain, clamped to [0, 1]; zero while held silent.
     gain: f32,
     pan: f32,
-    /// The last callback's gain step and balance; `None` before the first.
     previous: Option<(i32, f32)>,
     category: Option<usize>,
     group: Group,
@@ -416,7 +331,6 @@ struct Voice {
 }
 
 impl Voice {
-    /// Fades out over `fade` seconds, or stops at once without one.
     fn stop(&mut self, fade: f32) {
         self.looping = false;
         self.fade = fade;
@@ -435,22 +349,17 @@ impl Voice {
     }
 }
 
-/// A voice's mixer slot and id.
 type Handle = (usize, u64);
 
-/// The live voice `handle` names.
 fn live(voices: &mut [Option<Voice>], handle: Handle) -> Option<&mut Voice> {
     voices[handle.0]
         .as_mut()
         .filter(|voice| voice.id == handle.1)
 }
 
-/// One of an instance's `polyphony` slots.
 #[derive(Clone, Copy, Debug, Default)]
 struct Slot {
-    /// The voice's mixer slot and id.
     voice: Option<Handle>,
-    /// The choice it last played.
     choice: Option<usize>,
     delay: f32,
     rate: f32,
@@ -463,23 +372,16 @@ struct Instance {
     group: Group,
     position: [f32; 3],
     age: f32,
-    /// A start was requested: the event fired.
     pending: bool,
-    /// Starts again whenever no voice plays ([`crate::Emitter::restart`]).
     restart: bool,
     slots: Vec<Slot>,
-    /// Slots holding a voice.
     count: usize,
-    /// Over the effect's `max_audible`: not counted, held silent.
     over: bool,
 }
 
-/// One started voice, for diagnostics.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Started {
-    /// Seconds of mixed audio before the start.
     pub at: f64,
-    /// The presented recorded hour.
     pub hour: Option<i32>,
     pub effect: String,
     pub sound: String,
@@ -492,27 +394,19 @@ pub struct Engine {
     samples: Vec<Option<Arc<Samples>>>,
     wanted: Vec<Load>,
     requested: Vec<bool>,
-    /// Sounds whose samples failed to load: their voices are not created.
     failed: Vec<bool>,
-    /// Effect names entity events used that no asset declares, noted once each.
     missing: std::collections::BTreeSet<Arc<str>>,
     player: crate::music::Player,
-    /// The last frame's song chances, which a song drawn when a track ends
-    /// in a callback uses, as the game's next update would.
     chances: Option<Arc<crate::music::Chances>>,
     music_dynamics: Option<Dynamics>,
-    /// Mixed-audio seconds at each sound's last use.
     last_used: Vec<f64>,
-    /// In creation order, as the game updates them.
     instances: Vec<Instance>,
     voices: Vec<Option<Voice>>,
     next_voice: u64,
-    /// Counted instances per effect, against its `max_audible`.
     audible: Vec<i32>,
     listener: Listener,
     mix: Mix,
     hour: Option<i32>,
-    /// The last frame's emitter count, for the log.
     emitters: usize,
     random: Random,
     categories: Vec<Option<Dynamics>>,
@@ -520,8 +414,6 @@ pub struct Engine {
     pub notes: Notes,
     pub log: Option<Vec<Started>>,
     time: f64,
-    /// Per category, then music: a callback's buffer and whether anything
-    /// mixed into it.
     buses: Vec<(Vec<i32>, bool)>,
 }
 
@@ -560,8 +452,6 @@ impl Engine {
         self.content.as_ref()
     }
 
-    /// Replaces the content; every instance and voice of the old one ends, and
-    /// the notes about it go with it.
     pub fn set_content(&mut self, content: Option<Arc<Content>>) {
         self.notes = Notes::default();
         self.player.failures.clear();
@@ -594,7 +484,6 @@ impl Engine {
             .and_then(|content| content.catalog.music_compressor)
             .map(Dynamics::new);
         self.player.stop();
-        // The history numbers the old content's songs; only the same song list keeps it.
         let same_songs = match (&self.content, &content) {
             (Some(old), Some(new)) => {
                 Arc::ptr_eq(old, new)
@@ -609,15 +498,12 @@ impl Engine {
         self.content = content;
     }
 
-    /// Sounds a started or prefetched instance needs, each asked for once,
-    /// and the music track the player drew.
     pub fn take_wanted(&mut self) -> Vec<Load> {
         let mut wanted = std::mem::take(&mut self.wanted);
         wanted.extend(self.player.take_wanted().map(Load::Track));
         wanted
     }
 
-    /// Draws the next song when none plays.
     fn draw_song(&mut self, content: &Content) {
         if let Some(name) = self.player.update(
             &content.music,
@@ -636,28 +522,22 @@ impl Engine {
         }
     }
 
-    /// How many songs the player has drawn.
     pub fn music_draws(&self) -> u64 {
         self.player.draws()
     }
 
-    /// Whether the player drew a track it is still waiting to stream.
     pub fn music_waiting(&self) -> bool {
         self.player.waiting()
     }
 
-    /// Waits up to `limit` for the playing track's first decoded samples, as
-    /// the game's player opens its next track before mixing on.
     pub fn prime_music(&mut self, limit: std::time::Duration) {
         self.player.prime(limit);
     }
 
-    /// A music track's stream, or `None` when it is unreadable.
     pub fn provide_track(&mut self, track: usize, stream: Option<crate::music::TrackStream>) {
         self.player.provide(track, stream);
     }
 
-    /// The music track playing or loading.
     pub fn music_playing(&self) -> Option<usize> {
         self.player.playing()
     }
@@ -681,13 +561,10 @@ impl Engine {
         }
     }
 
-    /// Whether `sound`'s samples are decoded and held.
     pub fn loaded(&self, sound: usize) -> bool {
         self.samples.get(sound).is_some_and(Option::is_some)
     }
 
-    /// Drops decoded samples no voice holds and none used for `retain`
-    /// seconds of mixed audio; a later start loads them again.
     pub fn evict(&mut self, retain: f64) {
         for (sound, slot) in self.samples.iter_mut().enumerate() {
             if let Some(samples) = slot
@@ -712,13 +589,11 @@ impl Engine {
         }
     }
 
-    /// Ends every sound and the music, as an ownership change does.
     pub fn silence(&mut self) {
         self.player.stop();
         self.silence_effects();
     }
 
-    /// Ends every sound effect at once, as a seek does; music plays on.
     fn silence_effects(&mut self) {
         let effects = self.audible.len();
         self.instances.clear();
@@ -726,7 +601,6 @@ impl Engine {
         self.audible = vec![0; effects];
     }
 
-    /// The last frame's hour and emitters, the instances and the sounding voices.
     pub fn census(&self) -> (Option<i32>, usize, usize, usize) {
         let voices = self
             .voices
@@ -737,7 +611,6 @@ impl Engine {
         (self.hour, self.emitters, self.instances.len(), voices)
     }
 
-    /// Whether anything still sounds or waits to.
     pub fn active(&self) -> bool {
         self.voices
             .iter()
@@ -745,12 +618,10 @@ impl Engine {
             .any(|voice| voice.state != State::Stopped)
     }
 
-    /// Applies volumes and mute between frames; the next callback uses them.
     pub fn set_mix(&mut self, mix: Mix) {
         self.mix = mix;
     }
 
-    /// Applies one presented frame's emitters, listener and volumes.
     pub fn frame(&mut self, frame: &Frame) {
         self.listener = frame.listener;
         self.mix = frame.mix;
@@ -760,7 +631,6 @@ impl Engine {
             return;
         };
         if frame.reset {
-            // A discontinuity ends what was sounding; loops of present events restart.
             self.silence_effects();
         }
         self.chances = frame.music.clone();
@@ -789,13 +659,10 @@ impl Engine {
             let definition = &content.catalog.effects[effect];
             if let Some(&at) = index.get(&emitter.key) {
                 let instance = &mut self.instances[at];
-                // An interface sound is present for its frame alone: its key again is a new
-                // start, which stops the earlier one (a button's click).
                 if emitter.group == Group::Interface {
                     stopped.push(at);
                 } else if instance.effect == effect {
                     present[at] = true;
-                    // The event's age falling back means it fired again.
                     if emitter.age + 1e-3 < instance.age && !definition.looping {
                         instance.pending = true;
                     }
@@ -841,8 +708,6 @@ impl Engine {
             present[at] = false;
             stopping[at] = true;
         }
-        // Departed instances leave in order; the rest keep theirs. An interface sound is the
-        // game's unscoped instance: it stays until its voices end.
         let mut kept = Vec::with_capacity(self.instances.len() + created.len());
         for ((instance, present), stopping) in std::mem::take(&mut self.instances)
             .into_iter()
@@ -875,8 +740,6 @@ impl Engine {
         self.update(&content, frame.elapsed.max(0.0));
     }
 
-    /// A departed event: its one-shot voices finish; its loops stop with
-    /// their fade.
     fn retire(&mut self, instance: Instance, content: &Content) {
         let effect = &content.catalog.effects[instance.effect];
         if instance.count > 0 && !instance.over {
@@ -891,7 +754,6 @@ impl Engine {
         }
     }
 
-    /// The per-frame update: voice fades, then each instance in order.
     fn update(&mut self, content: &Content, elapsed: f32) {
         for voice in self.voices.iter_mut().flatten() {
             let step = elapsed / voice.fade;
@@ -973,8 +835,6 @@ impl Engine {
             if instance.count == 0 {
                 continue;
             }
-            // `silent` overflow: an instance out of earshot gives up its
-            // place; one in earshot takes a free place back.
             if effect.max_audible >= 0 && effect.overflow == Overflow::Silent {
                 if !instance.over && gain <= 0.0 {
                     self.audible[instance.effect] -= 1;
@@ -1013,8 +873,6 @@ impl Engine {
         self.instances = instances;
     }
 
-    /// Fills `instance`'s free slots, as the game's start does. Out of range
-    /// a fired start still draws but creates no voice.
     fn start(&mut self, instance: &mut Instance, content: &Content, in_range: bool) {
         let pending = instance.pending;
         instance.pending = false;
@@ -1089,7 +947,6 @@ impl Engine {
             let sound = effect.choices[choice].sound;
             self.want(sound);
             if self.failed[sound] {
-                // A sample that failed to load creates no voice.
                 self.notes.note(format!(
                     "Sound {} of effect {} failed to load; start refused",
                     content.catalog.sounds[sound].name, effect.name
@@ -1144,7 +1001,6 @@ impl Engine {
                 cursor: 0,
                 rate: slot.rate,
                 target,
-                // A fading-in voice rises from silence.
                 volume: if state == State::FadingIn {
                     0.0
                 } else {
@@ -1166,7 +1022,6 @@ impl Engine {
         }
     }
 
-    /// A category's volume, by the game's volume settings and the camera.
     fn category_volume(&self, content: &Content, category: Option<usize>) -> f32 {
         let Some(category) = category else {
             return 1.0;
@@ -1184,8 +1039,6 @@ impl Engine {
         }
     }
 
-    /// Mixes interleaved 16-bit stereo at [`RATE`] into `out`, one
-    /// [`CALLBACK_FRAMES`] callback at a time.
     pub fn render(&mut self, out: &mut [i16]) {
         for chunk in out.chunks_mut(CALLBACK_FRAMES * 2) {
             self.callback(chunk);
@@ -1214,7 +1067,6 @@ impl Engine {
             .collect();
         let music_bus = self.buses.len() - 1;
         let mut mixed = 0usize;
-        // Music, in the mixer's own slots, mixes first.
         if let Some(volume) = self.player.volume() {
             let gain = step(1.0 * (master * self.mix.music) * volume);
             let buffer = match self
@@ -1234,14 +1086,10 @@ impl Engine {
             for failure in self.player.failures.drain(..) {
                 self.notes.note(format!("Unreadable music {failure}"));
             }
-            // A track that ended draws the next song at once; it mixes from
-            // the next callback, as the game's next update starts it.
             if self.player.playing().is_none() {
                 self.draw_song(&content);
             }
         }
-        // Effect voices with a gain or a gain to ramp down from, the highest
-        // priority first; ties go to the later slot.
         let mut listed = Vec::new();
         for (at, voice) in self.voices.iter_mut().enumerate().skip(RESERVED_VOICES) {
             let Some(voice) = voice else { continue };
@@ -1281,14 +1129,11 @@ impl Engine {
                     .as_ref()
                     .is_some_and(|d| d.settings.enabled)
             });
-            // A category counts as mixed into by every voice within the 32,
-            // whatever its gain, and by none past them.
             let buffer = if compressed && counted {
                 let category = voice.category.expect("checked above");
                 self.buses[category].1 = true;
                 &mut self.buses[category].0
             } else if compressed {
-                // Past the 32 the voice only advances: nothing reaches a buffer.
                 &mut self.buses[voice.category.expect("checked above")].0
             } else {
                 &mut main
@@ -1334,8 +1179,6 @@ impl Engine {
     }
 }
 
-/// A voice not mixed this callback advances a callback's frames at its
-/// natural rate, wrapping when it loops and stopping at its end otherwise.
 fn advance(voice: &mut Voice, frames: usize) {
     let length = voice.samples.as_ref().map_or(0, |samples| samples.frames());
     if length == 0 {
@@ -1361,11 +1204,6 @@ fn advance(voice: &mut Voice, frames: usize) {
     }
 }
 
-/// Mixes one callback of `voice` into `buffer`, ramping each side's gain
-/// step from `old` to `new` by frame. At its natural rate the samples add
-/// frame for frame; otherwise the mixer steps a float position from the
-/// cursor at the voice's rate, interpolating linearly, and keeps only the
-/// whole frames passed when the callback ends.
 fn mix_voice(voice: &mut Voice, buffer: &mut [i32], old: [i32; 2], new: [i32; 2]) {
     let samples = Arc::clone(
         voice
@@ -1395,7 +1233,6 @@ fn mix_voice(voice: &mut Voice, buffer: &mut [i32], old: [i32; 2], new: [i32; 2]
             voice.cursor += take;
             frame += take;
         } else {
-            // Frames to the sample's end at this rate, in the callback's room.
             let needed = truncate((remaining as f32 / voice.rate).ceil()).wrapping_mul(2);
             let count = needed.min(((frames - frame) * 2) as i32) / 2;
             if count <= 0 {

@@ -1,10 +1,3 @@
-//! What the trade-route lines read of an hour's rows, table by table and column by column
-//! ([`viewer_world::map::trade_routes::build`]), apart from the convoys assigned to each line,
-//! which are read on their own ([`TradeRouteRead::assigned_same`]): the lines and their geometry
-//! stand while every table's other columns read the same, whatever else in those tables changed,
-//! and the convoys they carry are then made again from the lines alone. ConvoyClients and
-//! ResourceOrigins move their convoys assigned in most steps and the rest of what the lines read
-//! in few.
 
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, ViewIdentity};
@@ -12,7 +5,6 @@ use std::sync::Arc;
 use viewer_foundation::table_access::{self, Available};
 use viewer_world::map::trade_routes::{ClientFields, OriginFields, RegionalFields, RouteFields};
 
-/// The tables the lines read.
 pub const TABLES: [TableId; 8] = [
     TableId::ResourceOrigins,
     TableId::ConvoyClients,
@@ -24,8 +16,6 @@ pub const TABLES: [TableId; 8] = [
     TableId::ResourceExchanges,
 ];
 
-/// Each of [`TABLES`]' view, the columns the lines' geometry reads of it (or why it cannot be
-/// read), and the convoys assigned in its rows' order, which only the lines' counts read.
 #[derive(Clone, Default)]
 pub struct TradeRouteRead(Vec<Read>);
 
@@ -37,17 +27,14 @@ struct Read {
 }
 
 impl TradeRouteRead {
-    /// `table`'s convoys assigned, in row order; empty for one that assigns none.
     pub fn assigned_of(&self, table: TableId) -> &[i32] {
         TABLES.iter().position(|&held| held == table).and_then(|at| self.0.get(at)).map_or(&[], |read| &read.assigned)
     }
 
-    /// Whether both read the same convoys assigned, line for line.
     pub fn assigned_same(&self, other: &Self) -> bool {
         self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(mine, theirs)| Arc::ptr_eq(&mine.assigned, &theirs.assigned) || mine.assigned == theirs.assigned)
     }
 
-    /// What `frame` reads; a table whose view is the one `before` read is not read again.
     pub fn of(frame: &DecodedFrame, before: Option<&Self>) -> Self {
         Self(
             TABLES
@@ -64,7 +51,6 @@ impl TradeRouteRead {
         )
     }
 
-    /// Whether the lines read the same of both.
     pub fn same(&self, other: &Self) -> bool {
         if self.0.len() != other.0.len() {
             return false;
@@ -79,8 +65,6 @@ impl TradeRouteRead {
     }
 }
 
-/// The columns the lines read of `table`'s rows, in row order, each row's fields one word apiece
-/// (a list or text by its length, then its items).
 fn columns(frame: &DecodedFrame, table: TableId) -> Result<Vec<u64>, String> {
     let complete = |error: std::io::Error| error.to_string();
     let optional = |value: Option<u32>| value.map_or(u64::MAX, u64::from);
@@ -149,9 +133,6 @@ fn columns(frame: &DecodedFrame, table: TableId) -> Result<Vec<u64>, String> {
     Ok(out)
 }
 
-/// The convoys assigned in `table`'s rows, in row order; empty for a table whose rows assign
-/// none, and for rows that cannot be read (the lines are then built whole by [`columns`]'s own
-/// refusal).
 fn assigned(frame: &DecodedFrame, table: TableId) -> Vec<i32> {
     match table {
         TableId::ResourceOrigins => frame.complete::<tables::ResourceOrigins>().map(|rows| rows.iter().map(OriginFields::convoys_assigned).collect()).unwrap_or_default(),
@@ -183,12 +164,6 @@ mod tests {
         ConvoyClientRow { handle: 9, category: 2, owner: 1, other: 2, route_class: 1, route_country: 2, route_other: 1, convoys_assigned, convoys_required, ..Default::default() }
     }
 
-    /// A ConvoyClients row changing in a column the lines do not read reads the same, so the lines
-    /// and convoys stand; one the convoys alone read (the convoys assigned) leaves the lines
-    /// standing and the convoys made again from them; the lines' own columns leave neither. A
-    /// table whose view is the same allocation is not read again. On the base the lines were made
-    /// again whenever any of their eight tables was made anew, in most steps: nine tenths of the
-    /// unit models' job, and the convoys assigned moved in nearly every one of them.
     #[test]
     fn the_lines_stand_while_the_columns_they_read_read_the_same() {
         let first = frame(vec![client(1, 1)]);

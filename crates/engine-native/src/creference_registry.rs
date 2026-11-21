@@ -1,40 +1,21 @@
-//! Reference registry used by deployment handles and order-group roots.
-//! There is no generation word. Growth publishes mask before slots pointer,
-//! requiring a quiescent boundary.
 
 use engine_sites::Rva;
-/// Low-type reference-table array RVA.
 pub const LOW_ROOTS_RVA: Rva = Rva(0x034f_fc00);
-/// Engine mid-type reference-table root RVA.
 pub const MID_ROOT_RVA: Rva = Rva(0x034f_fbf8);
-/// Engine high-type reference-table root RVA.
 pub const HIGH_ROOT_RVA: Rva = Rva(0x034f_fbf0);
-/// Engine low-type root count.
 pub const LOW_ROOT_COUNT: u32 = 100;
-/// Engine mid-type cutoff.
 pub const MID_TYPE_LIMIT: u32 = 0x1269;
-/// Engine static-empty bucket RVA.
 pub const STATIC_EMPTY_RVA: Rva = Rva(0x0313_5f98);
-/// Reference registry entries pointer.
 pub const ENTRIES: usize = 0x08;
-/// Reference registry u32 count.
 pub const COUNT: usize = 0x10;
-/// Reference registry u32 bucket mask.
 pub const MASK: usize = 0x14;
-/// Reference registry overflow-distance u8.
 #[cfg(any(test, feature = "test-support"))]
 pub const OVERFLOW_DISTANCE: usize = 0x18;
-/// Reference registry factory allocation size.
 pub const SIZE: usize = 0x20;
-/// Reference registry bucket hash multiplier, wrapping u64.
 pub const HASH_MULTIPLIER: u64 = 0x4963_1a45;
-/// Reference registry minimum growth exponent.
 pub const MINIMUM_EXPONENT: u32 = 3;
-/// Reference registry maximum growth exponent.
 pub const MAXIMUM_EXPONENT: u32 = 30;
 
-/// Passive bounded reference lookup. Null root or absent key supplies
-/// `None`; unreadable or invalid headers remain errors.
 pub fn resolve(
     memory: &impl crate::Memory,
     base: usize,
@@ -50,9 +31,6 @@ pub fn resolve(
     probe(memory, header, handle)
 }
 
-/// Live entry count in the selected registry with resolution's header checks.
-/// Low roots are type-specific; middle/high roots share several types.
-/// Insertion increments the count and erasure decrements it, without a bucket walk.
 pub fn entry_count(
     memory: &impl crate::Memory,
     base: usize,
@@ -71,8 +49,6 @@ pub struct Header {
     terminal: u32,
 }
 
-/// One fixed-base quiescent pass. Unlike the occupant's small successful
-/// header cache, this retains null and failed roots too, without eviction.
 pub struct ScopedResolver {
     base: usize,
     headers: [Option<Result<Option<Header>, &'static str>>; LOW_ROOT_COUNT as usize + 2],
@@ -111,10 +87,6 @@ impl ScopedResolver {
         }
     }
 
-    /// The first bucket a [`Self::resolve`] of `handle` reads, and the
-    /// header it reads it under: `None` when the resolve reads no bucket (a
-    /// zero handle, a null root or a probe that ends at once), so it misses.
-    /// The header is read as `resolve` reads it, once a pass.
     pub fn first_cell(
         &mut self,
         memory: &impl crate::Memory,
@@ -140,8 +112,6 @@ impl ScopedResolver {
         Ok(first_cell(header, handle)?.map(|cell| (header, cell)))
     }
 
-    /// [`Self::resolve`] of `handle` from its [`Self::first_cell`]'s bytes,
-    /// copied with other handles' first buckets; later buckets are read.
     pub fn resolve_gathered(
         &self,
         memory: &impl crate::Memory,
@@ -153,8 +123,6 @@ impl ScopedResolver {
     }
 }
 
-/// Province occupant lookups share successful structural observations only
-/// within one quiescent walk. Unit identities and buckets are never retained.
 #[derive(Default)]
 pub struct HeaderResolver {
     headers: [Option<(usize, Header)>; 4],
@@ -162,8 +130,6 @@ pub struct HeaderResolver {
 }
 
 impl HeaderResolver {
-    /// Whether a [`Self::resolve`] of `handle` would take a header this
-    /// resolver already read, without reading anything.
     pub fn holds(&self, base: usize, handle: u64) -> bool {
         handle != 0
             && root_address(base, handle)
@@ -283,15 +249,11 @@ fn probe(
     probe_with(memory, header, handle, None)
 }
 
-/// The first probe index of `handle` under `header`.
 fn first_index(header: Header, handle: u64) -> u32 {
-    // Engine hashes type-high/id-low, the reverse of the stored handle words.
     let hash = handle.rotate_left(32).wrapping_mul(HASH_MULTIPLIER);
     ((hash >> 32) as u32 ^ hash as u32) & header.mask
 }
 
-/// The bucket [`probe`] reads first, with its checks in their order; `None`
-/// when the probe ends before reading one.
 fn first_cell(header: Header, handle: u64) -> Result<Option<usize>, &'static str> {
     let index = first_index(header, handle);
     if index == header.terminal {
@@ -307,7 +269,6 @@ fn first_cell(header: Header, handle: u64) -> Result<Option<usize>, &'static str
         .ok_or("reference bucket overflow")
 }
 
-/// [`probe`], taking the first bucket's bytes when already copied.
 fn probe_with(
     memory: &impl crate::Memory,
     header: Header,
@@ -358,15 +319,9 @@ fn probe_with(
     }
     Ok(found)
 }
-/// Dynamic reference-type base added to the type counter.
 #[cfg(any(test, feature = "test-support"))]
 pub const DYNAMIC_TYPE_BASE: u32 = 0x1268;
-/// Minted-ID counter, u32, incremented on minting and serialized unsigned
-/// as `debug_current_ref_id`.
 pub const ID_COUNTER_RVA: Rva = Rva(0x034f_ff20);
-/// Default/invalid packed handle: low u32 type and high u32 ID. New reference
-/// objects and fields initialize from it; absent front bindings compare both
-/// words against it. It is not a counter and never advances.
 pub const INVALID_REFERENCE_RVA: Rva = Rva(0x033e_b2a0);
 
 #[cfg(any(test, feature = "test-support"))]
@@ -446,9 +401,9 @@ pub(crate) mod tests {
             (54, 4),
             (100, 4),
             (MID_TYPE_LIMIT, 4),
-            (101, 1), // Same mid-type root, a different full handle.
+            (101, 1),
             (53, 1),
-            (55, 4), // Fifth distinct root replaces the oldest header.
+            (55, 4),
             (53, 4),
         ] {
             census.reset();
@@ -515,8 +470,6 @@ pub(crate) mod tests {
         assert_eq!(resolve(&memory, 0, handle), Ok(None));
         let index = Fixture::index(handle);
         memory.entry(index, 1, handle ^ (1 << 32), 0x9999);
-        // The second cell's distance is below the probe distance. Its stale
-        // key/pointer are not live, even when the bytes happen to match.
         memory.entry(index + 1, 1, handle, 0x8888);
         assert_eq!(resolve(&memory, 0, handle), Ok(None));
         memory.put(Fixture::root(53), &0_u64.to_le_bytes());
@@ -651,8 +604,6 @@ pub(crate) mod tests {
             Outcome::Unavailable { .. }
         ));
     }
-    /// Divisions may carry dynamic reference types, including 4713, rather
-    /// than only type 51. Admission must retain the full dynamic reference.
     #[test]
     fn province_roster_accepts_dynamic_reference_type_divisions() {
         use crate::{cprovince as p, walk::Outcome};

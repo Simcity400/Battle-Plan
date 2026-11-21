@@ -125,8 +125,6 @@ fn game_score_land_uses_state_owner_omissions_and_refuses_unknown_membership() {
     other.tag = b"BBB".to_vec();
     saved.countries.insert(other.tag.clone(), other);
     saved.states.get_mut(&1).unwrap().controller = Some(b"BBB".to_vec());
-    // Province 1 omits its controller and defaults to the state's owner;
-    // province 2 has an explicit controller in the shared fixture.
     inputs(
         &mut frame,
         vec![

@@ -6,7 +6,6 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { governmentEventRows } from './governmentData';
 import type { LedgerGovernment } from './partyTypes';
 
-/** One page of a picked mark cluster's events; every page stays reachable without holding the others. */
 export default function PartyEventList({ events, total, offset, pageSize, onClose, onPrevious, onNext }: {
   events: readonly EventBadge[]; total: number; offset: number; pageSize: number; onClose: () => void; onPrevious: () => void; onNext: () => void;
 }) {
@@ -22,7 +21,6 @@ export default function PartyEventList({ events, total, offset, pageSize, onClos
   </div>;
 }
 
-/** A picked cluster's recorded government changes with their execution causes, each a jump to its hour. */
 export function GovernmentChangeList({ rows, name, runtime, trackId, openMenu }: {
   rows: readonly LedgerGovernment[]; name: (token: string) => string; runtime: WidgetRuntime; trackId: string;
   openMenu: Parameters<typeof rowJumpProps>[3];

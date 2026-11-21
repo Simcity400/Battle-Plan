@@ -1,8 +1,3 @@
-//! Cross-ship effects, separate from ordinary state particle events.
-//!
-//! Copy the normal attack/defend list once; impact events
-//! compare their times with the current clip phase, even after damage. Target
-//! choices and actor clocks belong to this viewer, never to the recording.
 
 use std::sync::Arc;
 
@@ -16,7 +11,6 @@ use {
     crate::map::models::PaletteJoint,
 };
 
-/// Immutable inputs shared with the hull's existing model-library entry.
 pub struct Info {
     pub rig: Arc<Rig>,
     pub palette: Arc<Vec<PaletteJoint>>,
@@ -26,8 +20,6 @@ pub struct Info {
 
 impl Info {
     pub fn new(rig: Arc<Rig>, palette: Arc<Vec<PaletteJoint>>, normal_state: &str) -> Self {
-        // The game walks compiled states by hash and returns the first match,
-        // independently of the animation player's weighted variant choice.
         let timings = rig.nodes.first().map_or_else(
             || Err("naval impact hull has no root actor".to_owned()),
             |root| {
@@ -54,7 +46,6 @@ impl Info {
     }
 }
 
-/// One retained source hull. Damage changes its player, not its copied list.
 pub struct Tracker {
     info: Arc<Info>,
     player: Player,
@@ -76,14 +67,10 @@ impl Tracker {
         }
     }
 
-    /// Advance retained callback/phase history without visible events or
-    /// automatic successors, using the renderer's same hidden-actor path.
     pub fn advance_hidden(&mut self, clock: &Clock) {
         self.player.advance_hidden(&self.info.rig, clock);
     }
 
-    /// Called after the normal first request has initialized the player.
-    /// A played animation at phase zero still advances while hidden.
     #[cfg(test)]
     pub fn phase_advances_hidden(&self) -> bool {
         self.player.phase_advances_hidden(&self.info.rig)
@@ -94,8 +81,6 @@ impl Tracker {
         self.player.root_entry()
     }
 
-    /// Keep the private player synchronized with active rendering, without
-    /// consuming the source hull's last cached-province probe phase.
     pub fn sample(&mut self, instance: ModelInstance, clock: &Clock) {
         self.events.clear();
         self.player.evaluate_clock(
@@ -108,9 +93,6 @@ impl Tracker {
         self.actors = mesh_pose::actors(&self.info.rig, Some(&self.player), false);
     }
 
-    /// A cached province visit applies pending setters and reads the phase
-    /// already advanced by History, without another automatic finish.
-    /// A phase wrap does not synthesize the events skipped across its boundary.
     pub fn probe(&mut self, clock: &Clock) -> Result<usize, String> {
         self.advance_hidden(clock);
         self.actors = mesh_pose::actors(&self.info.rig, Some(&self.player), false);
@@ -135,17 +117,12 @@ impl Tracker {
     }
 }
 
-/// Only actual hull actors are supplied. Native slot status 3 excludes a hull
-/// even if its retiring actor is still drawn elsewhere.
 pub struct TargetView<'a> {
     pub status: u8,
     pub instance: ModelInstance,
     pub tracker: &'a Tracker,
 }
 
-/// Choose among the opposite side's surviving actors in slot
-/// order, then choose its hit/miss locator and a registered big effect.
-/// The history supplies the new effect's incarnation and animation seed.
 pub fn choose(
     targets: &[TargetView<'_>],
     effects: &[Vec<Option<(usize, u32)>>; 4],
@@ -167,12 +144,9 @@ pub fn choose(
         .as_ref()
         .map_err(Clone::clone)?;
     if locators.is_empty() {
-        // Native does not fall back from a missing hit to a miss, or vice versa.
         return Ok(None);
     }
     let locator = &locators[(random() & 0x7fff_ffff) as usize % locators.len()];
-    // The small lists are registered but this call always uses hit-big (0)
-    // or miss-big (2), independently of the hull class and authored kind.
     let effects = &effects[branch * 2];
     if effects.is_empty() {
         return Err(format!(
@@ -181,8 +155,6 @@ pub fn choose(
         ));
     }
     let effect = (random() & 0x7fff_ffff) as usize % effects.len();
-    // Retain registered-list cardinality even when baking an entry failed.
-    // Choosing that entry refuses this actor rather than choosing another.
     let (mesh, animation) = effects[effect].ok_or_else(|| {
         format!(
             "naval impact {}-big effect entry {effect} is unavailable",
@@ -193,9 +165,6 @@ pub fn choose(
     Ok(Some((mesh, effect_instance(matrix, root_scale, animation))))
 }
 
-/// Native cleanup subtracts the stored double birth timestamp
-/// before comparing the raw float duration. Impact birth timestamps are ten
-/// seconds ahead of creation time; detached hull roots store creation time.
 pub fn expired(now: f64, birth: f64, death_time: f32) -> bool {
     f64::from(death_time) < now - birth
 }
@@ -217,7 +186,6 @@ fn state_hash(name: &str) -> u32 {
 
 fn target_index(count: usize, random: &mut impl FnMut() -> u32) -> Option<usize> {
     (count != 0).then(|| {
-        // Random modulo n+2 then clamp: the final candidate has three tickets.
         ((random() & 0x7fff_ffff) as usize % (count + 2)).min(count - 1)
     })
 }
@@ -229,8 +197,6 @@ fn contiguous_locators(rig: &Rig, prefix: &str) -> Result<Vec<String>, String> {
         .and_then(|root| root.native.as_ref())
         .ok_or("naval impact hull has no native root source")?;
     let mut names = Vec::new();
-    // The game starts at 1 and stops at the first missing name. Successful
-    // iterations are bounded by the finite locator/joint names in this rig.
     for number in 1.. {
         let name = format!("{prefix}{number}");
         if mesh_pose::lookup(source, &name, LookupMode::Naval).is_none() {
@@ -241,8 +207,6 @@ fn contiguous_locators(rig: &Rig, prefix: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-/// Shared root-actor locator resolution. The
-/// caller has evaluated the player and passes its current native actor poses.
 pub(super) fn locator_matrix(
     rig: &Rig,
     actors: &[Actor],
@@ -261,8 +225,6 @@ pub(super) fn locator_matrix(
     let actor = actors
         .first()
         .ok_or("naval combat actor has no evaluated native actor")?;
-    // Parentless raw locators need no palette. A reached parent/joint must
-    // retain a failed or uninitialized palette refusal, never root fallback.
     let local = match binding {
         Binding::Locator(locator) if locator.parent.is_none() => binding.local(Ok(None))?,
         _ => binding.local(
@@ -309,7 +271,6 @@ fn matrix(transform: Transform) -> Matrix {
 }
 
 fn effect_instance(matrix: Matrix, root_scale: f32, animation: u32) -> ModelInstance {
-    // The game scales the basis again and leaves world translation unchanged.
     ModelInstance {
         position: matrix[3][..3].try_into().unwrap(),
         scale: 1.0,
@@ -317,8 +278,6 @@ fn effect_instance(matrix: Matrix, root_scale: f32, animation: u32) -> ModelInst
         native_basis: std::array::from_fn(|axis| {
             std::array::from_fn(|component| matrix[axis][component] * root_scale)
         }),
-        // The factory uses the definition's default state,
-        // which the caller resolved from this effect's baked rig.
         animation,
         ..ModelInstance::default()
     }

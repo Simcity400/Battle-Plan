@@ -1,16 +1,3 @@
-//! Equipment produced (family 43): what countries' production lines and Rocket sites delivered,
-//! in units of chosen equipment types or in applied factory IC, as a running total or per day, week
-//! or month, from the Production writer's rows (ProductionCountryTotals, ProductionTypeTotals,
-//! ProductionTotals, ProductionCoverage) and RocketProductionOutput as recorded.
-//!
-//! `equipment-produced` gives each asked country's values over one window of hours (chosen tags, or the top N
-//! ranked once at one hour, the view's last or the cursor), read from the ProducedValues writer's running totals
-//! through the series layer's window measure, so a widget asks the windows it shows and the next ahead, never the
-//! campaign; `equipment-produced-types` lists every type produced and the one delivered
-//! most; `equipment-produced-country` gives one country's every design in units and IC, for its
-//! breakdown over time; `equipment-produced-at` gives its designs at one hour, for a tooltip and the
-//! breakdown's table. A day, a week or a month is the running total less the total that long before, inside
-//! one holder's stretch and one observation; anything not known is said so with why, never zero.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -55,59 +42,43 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// What the values count.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedCount {
-    /// Units delivered: whole numbers.
     #[default]
     Units,
-    /// Applied factory IC, fixed5: one currency, so every type adds up.
     Ic,
 }
 
-/// Which window a value counts.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedMeasure {
-    /// Since the observation began.
     Total,
-    /// The day (24 hours) before.
     Day,
-    /// The seven days before.
     Week,
-    /// Since the same moment of the month before.
     Month,
 }
 
-/// Why a value is not known.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedUnknown {
-    /// The producer's totals row is not shown: the writer did not run, or the table was not read.
     NotRecorded,
-    /// A line's count left a delivery out, or a line went without its final count.
     UnitsInexact,
     SpendingUnavailable,
     LostOutput,
     MissedPublication,
-    /// Designs whose type was not recorded hold something: they could be of a type counted.
     TypeNotRecorded,
-    /// The window reaches before the holder's stretch: no read of it that long before.
     WindowIncomplete,
-    /// The observation began again inside the window: its totals count from another hour.
     ObservationRestarted,
     RocketTableUnavailable,
     RocketInputInexact,
     RocketOwnerUnreadable,
-    /// Past what a reply's numbers carry exactly.
     OutOfRange,
 }
 
-/// Why one run of a series holds no value.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -116,27 +87,24 @@ pub struct ProducedGap {
     pub reason: ProducedUnknown,
 }
 
-/// Values over hours: run `i` holds `values[i]` from `firstHours[i]` through `lastHours[i]`.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedSeries {
     pub first_hours: Vec<i32>,
     pub last_hours: Vec<i32>,
-    /// Raw values (fixed5 for IC); null is not known, never a partial sum.
+    #[doc = " Raw values (fixed5 for IC); null is not known, never a partial sum."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number | null>"))]
     pub values: Vec<Option<i64>>,
-    /// Why each run without a value is not known.
+    #[doc = " Why each run without a value is not known."]
     pub unknown: Vec<ProducedGap>,
-    /// Runs starting another holder's or stretch's totals: nothing is measured across them.
+    #[doc = " Runs starting another holder's or stretch's totals: nothing is measured across them."]
     pub breaks: Vec<u32>,
 }
 
-/// The largest magnitude a reply's numbers carry exactly (JavaScript's safe integers).
 const MAX_EXACT: i128 = (1 << 53) - 1;
 
 impl ProducedSeries {
-    /// `pieces` appended as runs; the first starts afresh when `breaks`.
     fn append(&mut self, pieces: &[Piece<Amount>], breaks: bool) {
         for (index, &(first, last, amount)) in pieces.iter().enumerate() {
             let (value, reason) = match amount {
@@ -168,8 +136,6 @@ impl ProducedSeries {
     }
 }
 
-/// An equipment type as replies name it: its key (the content's archetype, `:` and the recorded
-/// spelling where content does not resolve it, or [`UNRECORDED_TYPE`]), localised name and arm.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -179,7 +145,6 @@ pub struct ProducedType {
     pub domain: Option<Domain>,
 }
 
-/// The type of designs whose type was not recorded: they could be of any type.
 pub const UNRECORDED_TYPE: &str = ":unrecorded";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -187,35 +152,34 @@ pub const UNRECORDED_TYPE: &str = ":unrecorded";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EquipmentProducedParams {
     pub branch_id: String,
-    /// Chosen countries; none with a top N.
+    #[doc = " Chosen countries; none with a top N."]
     #[serde(default)]
     pub countries: Vec<Country>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
-    /// The hour a top N is ranked at: the view's last hour, or the cursor.
+    #[doc = " The hour a top N is ranked at: the view's last hour, or the cursor."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub rank_hour: Option<i32>,
     pub count: ProducedCount,
     pub measure: ProducedMeasure,
-    /// Type keys counted together; none counts every type.
+    #[doc = " Type keys counted together; none counts every type."]
     #[serde(default)]
     pub types: Vec<String>,
-    /// Count what ship refit lines deliver.
+    #[doc = " Count what ship refit lines deliver."]
     pub refits: bool,
-    /// The window of hours asked ([`super::windows`]).
+    #[doc = " The window of hours asked ([`super::windows`])."]
     pub window: u32,
 }
 
-/// One country's values over the window.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedLine {
-    /// The country asked, or a ranked country's tag.
+    #[doc = " The country asked, or a ranked country's tag."]
     pub country: Country,
-    /// The tag it goes by at the window's last hour.
+    #[doc = " The tag it goes by at the window's last hour."]
     pub tag: String,
     pub identities: Vec<CountryIdentityRun>,
     pub series: ProducedSeries,
@@ -228,21 +192,21 @@ pub struct EquipmentProducedReply {
     pub branch_id: String,
     pub count: ProducedCount,
     pub measure: ProducedMeasure,
-    /// Fixed-point decimals of every value: 0 for units, 5 for IC.
+    #[doc = " Fixed-point decimals of every value: 0 for units, 5 for IC."]
     pub decimals: u8,
     pub types: Vec<String>,
-    /// For a top N, the hour it was ranked at; its lines are then in rank order, greatest first,
-    /// only countries that delivered something.
+    #[doc = " For a top N, the hour it was ranked at; its lines are then in rank order, greatest first,"]
+    #[doc = " only countries that delivered something."]
     pub rank_hour: Option<i32>,
     pub window: u32,
-    /// The hours the window holds of the timeline; first past last where it holds none.
+    #[doc = " The hours the window holds of the timeline; first past last where it holds none."]
     pub first_hour: i32,
     pub last_hour: i32,
     pub lines: Vec<ProducedLine>,
-    /// Hours production lines' output was read in the window, ascending, whichever lines are shown: a value is
-    /// as of the latest read.
+    #[doc = " Hours production lines' output was read in the window, ascending, whichever lines are shown: a value is"]
+    #[doc = " as of the latest read."]
     pub reads: Vec<i32>,
-    /// The hour each observation counting over the window began, the first maybe before it.
+    #[doc = " The hour each observation counting over the window began, the first maybe before it."]
     pub observations: Vec<i32>,
     pub warnings: Vec<String>,
 }
@@ -260,11 +224,11 @@ pub struct ProducedTypesParams {
 #[serde(rename_all = "camelCase")]
 pub struct ProducedTypesReply {
     pub branch_id: String,
-    /// Every type any country produced in the branch, in the equipment database's order, the
-    /// ones content does not resolve last.
+    #[doc = " Every type any country produced in the branch, in the equipment database's order, the"]
+    #[doc = " ones content does not resolve last."]
     pub types: Vec<ProducedType>,
-    /// The type with the most units delivered, every country together, at each run's end: the
-    /// widget's type until one is chosen. Null when nothing was.
+    #[doc = " The type with the most units delivered, every country together, at each run's end: the"]
+    #[doc = " widget's type until one is chosen. Null when nothing was."]
     pub most_delivered: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -280,7 +244,6 @@ pub struct ProducedCountryParams {
     pub refits: bool,
 }
 
-/// One design a country produced, over the branch.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -290,7 +253,7 @@ pub struct ProducedModel {
     pub type_key: String,
     pub type_name: Option<String>,
     pub domain: Option<Domain>,
-    /// False when the design's type was not recorded: it could be of any type.
+    #[doc = " False when the design's type was not recorded: it could be of any type."]
     pub type_recorded: bool,
     pub names: Vec<StockVariantName>,
     pub series: ProducedSeries,
@@ -302,14 +265,14 @@ pub struct ProducedModel {
 pub struct ProducedCountryReply {
     pub branch_id: String,
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub count: ProducedCount,
     pub measure: ProducedMeasure,
     pub decimals: u8,
     pub identities: Vec<CountryIdentityRun>,
     pub models: Vec<ProducedModel>,
-    /// Every design together, lines and Rocket output: exact however it splits.
+    #[doc = " Every design together, lines and Rocket output: exact however it splits."]
     pub total: ProducedSeries,
     pub reads: Vec<i32>,
     pub observations: Vec<i32>,
@@ -327,7 +290,6 @@ pub struct ProducedAtParams {
     pub refits: bool,
 }
 
-/// A value at one hour (fixed5 for IC), or why it is not known.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -337,7 +299,6 @@ pub struct ProducedAmount {
     pub reason: Option<ProducedUnknown>,
 }
 
-/// One design a country delivered something of, or does not know, at one hour.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -348,7 +309,7 @@ pub struct ProducedModelAt {
     pub type_name: Option<String>,
     pub domain: Option<Domain>,
     pub type_recorded: bool,
-    /// The design's name as recorded at the hour; null where not known.
+    #[doc = " The design's name as recorded at the hour; null where not known."]
     pub name: Option<String>,
     pub units: ProducedAmount,
     pub ic: ProducedAmount,
@@ -360,25 +321,24 @@ pub struct ProducedModelAt {
 pub struct ProducedAtReply {
     pub branch_id: String,
     pub tag: String,
-    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
     pub hour: i32,
     pub measure: ProducedMeasure,
-    /// The country's production totals are recorded at the hour: a design it has no row of is zero.
+    #[doc = " The country's production totals are recorded at the hour: a design it has no row of is zero."]
     pub recorded: bool,
     pub models: Vec<ProducedModelAt>,
-    /// Every design's IC together.
+    #[doc = " Every design's IC together."]
     pub ic_total: ProducedAmount,
-    /// When the running totals began counting, as of the hour.
+    #[doc = " When the running totals began counting, as of the hour."]
     pub observation: Option<i32>,
-    /// The latest read of production lines' output at or before the hour.
+    #[doc = " The latest read of production lines' output at or before the hour."]
     pub read: Option<i32>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(EquipmentProducedReply, ProducedTypesReply, ProducedCountryReply, ProducedAtReply);
 
-/// The hours `tag`'s holders held it.
 fn identities(query: &Query<'_>, tag: &Country) -> Vec<CountryIdentityRun> {
     query.holders.runs(tag).iter().filter_map(|run| match run.holder {
         Holder::Found { slot, id } => Some(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
@@ -394,7 +354,6 @@ const DESIGN_COLUMNS: [&str; 5] = ["units", "inexact_rows", "spent", "spent_reas
 const RUN: u128 = ProductionCoverageRow::RUN as u128;
 const WORLD: u128 = ProductionTypeTotalRow::WORLD as u128;
 
-/// The coverage rows a producer's values read: its own Rocket row, the run's lines and Rocket rows.
 fn coverage_keys(id: u32) -> [u128; 3] {
     let id = u128::from(id);
     [id << 8 | u128::from(ProductionCoverageRow::ROCKET), RUN << 8 | u128::from(ProductionCoverageRow::LINES), RUN << 8 | u128::from(ProductionCoverageRow::ROCKET)]
@@ -404,7 +363,6 @@ fn rocket_designs(id: u32) -> (u128, u128) {
     (u128::from(id) << 64 | 1, u128::from(id) << 64 | u128::from(u64::MAX))
 }
 
-/// A row's cells as one of the value rules reads them, from any reader's numbers.
 fn totals(number: impl Fn(usize) -> Option<i64>) -> Totals {
     let (units, units_without_refits) = (number(0), number(3));
     Totals {
@@ -427,8 +385,6 @@ fn rocket_row(number: impl Fn(usize) -> Option<i64>) -> RocketRow {
     RocketRow { units: units.unwrap_or(0), units_exact: units.is_some() && number(1) == Some(1), spent: number(2).unwrap_or(0) }
 }
 
-/// Every hour of `first..=last` at which any track's row changes (a track is one key's steps), in
-/// order and the first hour always, with each track's cells then: none where its row is not shown.
 fn sweep<'r>(tracks: &[&'r [Step]], first: i32, last: i32, mut each: impl FnMut(i32, &[Option<&'r [Cell]>])) {
     let mut next = vec![0usize; tracks.len()];
     let mut cells: Vec<Option<&'r [Cell]>> = vec![None; tracks.len()];
@@ -449,11 +405,9 @@ fn sweep<'r>(tracks: &[&'r [Step]], first: i32, last: i32, mut each: impl FnMut(
     }
 }
 
-/// A run's equipment types, by archetype token.
 #[derive(Clone, Debug)]
 struct Typed {
     kind: ProducedType,
-    /// Its place in the equipment database; none where content does not resolve it.
     order: Option<usize>,
 }
 
@@ -476,7 +430,6 @@ fn typed(content: &Content, spelling: Option<&str>, notes: &mut BTreeSet<String>
     }
 }
 
-/// Each run of the timeline once, with the last hour the timeline holds of it.
 fn runs(query: &Query<'_>) -> BTreeMap<u32, (i32, i32)> {
     let mut out: BTreeMap<u32, (i32, i32)> = BTreeMap::new();
     for stretch in &query.timeline.stretches {
@@ -487,7 +440,6 @@ fn runs(query: &Query<'_>) -> BTreeMap<u32, (i32, i32)> {
     out
 }
 
-/// The texts of lexer `tokens` as run `run` holds them at `hour`, read afresh.
 #[cfg(test)]
 fn spellings(query: &Query<'_>, run: u32, hour: i32, tokens: &[u128]) -> io::Result<HashMap<u32, String>> {
     if tokens.is_empty() {
@@ -504,19 +456,15 @@ fn spellings(query: &Query<'_>, run: u32, hour: i32, tokens: &[u128]) -> io::Res
         .collect())
 }
 
-/// Every run's archetype tokens the world's type rows held while the timeline held the run, typed.
 fn branch_types(source: &Source, query: &Query<'_>, content: &Content, notes: &mut BTreeSet<String>) -> io::Result<BTreeMap<u32, BTreeMap<u32, Typed>>> {
     let every: BTreeSet<u32> = runs(query).into_keys().collect();
     run_types(source, query, content, &every, notes)
 }
 
-/// The archetype tokens of the runs `wanted` the world's type rows held while the timeline held each, typed: the
-/// world's keys found in the run's lifetimes kept at open, their texts in the recording's spellings kept once read.
 fn run_types(source: &Source, query: &Query<'_>, content: &Content, wanted: &BTreeSet<u32>, notes: &mut BTreeSet<String>) -> io::Result<BTreeMap<u32, BTreeMap<u32, Typed>>> {
     let mut out = BTreeMap::new();
     for (run, (first, last)) in runs(query).into_iter().filter(|(run, _)| wanted.contains(run)) {
         let lives = crate::answer::lifetimes(source, run, TableId::ProductionTypeTotals)?;
-        // Lifetimes ascend by key and the world's country is the greatest: its keys are the last.
         let world = &lives[lives.partition_point(|&(key, ..)| key >> 32 < WORLD)..];
         let tokens: BTreeSet<u32> = world.iter().filter(|&&(_, born, ends)| born <= i64::from(last) && ends >= i64::from(first)).map(|(key, ..)| *key as u32).collect();
         let asked: BTreeSet<u32> = tokens.iter().copied().filter(|&token| token != ProductionTypeTotalRow::NO_ARCHETYPE).collect();
@@ -537,7 +485,6 @@ fn run_types(source: &Source, query: &Query<'_>, content: &Content, wanted: &BTr
     Ok(out)
 }
 
-/// The branch's types in the equipment database's order, unresolved ones last by key.
 fn ordered(types: &BTreeMap<u32, BTreeMap<u32, Typed>>) -> Vec<Typed> {
     let mut by_key: BTreeMap<String, Typed> = BTreeMap::new();
     for typed in types.values().flat_map(BTreeMap::values) {
@@ -552,7 +499,6 @@ fn number<'c>(read: &'c Read, cells: Option<&'c [Cell]>) -> impl Fn(usize) -> Op
     move |column| cells.and_then(|cells| read.number(cells, column))
 }
 
-/// Read hours and observation starts of the spans read, each stretch's reads found once.
 #[derive(Default)]
 struct Dated {
     reads: BTreeSet<i32>,
@@ -561,7 +507,6 @@ struct Dated {
 }
 
 impl Dated {
-    /// `span`'s reads of production's output, kept for the reply.
     fn reads(&mut self, query: &Query<'_>, span: &Span) -> io::Result<Vec<i32>> {
         let Some(stretch) = query.timeline.at(span.first).copied() else {
             return Ok(Vec::new());
@@ -580,10 +525,6 @@ impl Dated {
     }
 }
 
-/// The hours production's output was read in run `run` from `first` through `last`: the table's own read hours,
-/// or, where the recording marks none (its page entries name no sample hour for it), the hours the world's totals
-/// by type changed, which a read that delivered anything anywhere moves. A read at which nothing at all was
-/// delivered is then missing, so a window starting there is not known: never a window counted wrong.
 fn reads_in(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<i32>> {
     let span = Span { run, first, last, id: 0, breaks: false };
     let reads = spending::reads_of(query, &span, TableId::ProductionLineOutput)?;
@@ -595,7 +536,6 @@ fn reads_in(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Ve
     Ok(hours.into_iter().collect())
 }
 
-/// One snapshot's cells of `columns`, by row key.
 fn snapshot(query: &Query<'_>, run: u32, table: TableId, hour: i32, names: &[&str], keys: Keys<'_>) -> io::Result<Option<HashMap<u128, Vec<Option<i64>>>>> {
     let columns = names.iter().map(|name| dashboard_declare::field(table, name)).collect::<io::Result<Vec<_>>>()?;
     let read = cost::storage(|| lanes::at_keys(query.replay.recording(), run, table, hour, Some(&columns), keys))?;
@@ -613,7 +553,6 @@ fn decimals(count: ProducedCount) -> u8 {
     }
 }
 
-/// The hour a window ending at `hour` starts at; none for a running total.
 fn back_of(measure: ProducedMeasure) -> Option<fn(i32) -> Option<i32>> {
     match measure {
         ProducedMeasure::Total => None,
@@ -623,7 +562,6 @@ fn back_of(measure: ProducedMeasure) -> Option<fn(i32) -> Option<i32>> {
     }
 }
 
-/// The declared measure a count reads.
 fn produced_measure(count: ProducedCount, refits: bool) -> &'static str {
     match (count, refits) {
         (ProducedCount::Units, true) => "units",
@@ -633,7 +571,6 @@ fn produced_measure(count: ProducedCount, refits: bool) -> &'static str {
     }
 }
 
-/// A [`ProducedValueRow`] reason as a reply names it.
 fn unknown_of(code: u8) -> ProducedUnknown {
     match code {
         ProducedValueRow::UNITS_INEXACT => ProducedUnknown::UnitsInexact,
@@ -660,12 +597,10 @@ fn amount_of_total(value: Result<i64, Gap>) -> Amount {
     }
 }
 
-/// A line's runs as a reply's series.
 fn series_of(runs: &[TotalRun]) -> ProducedSeries {
     let mut series = ProducedSeries::default();
     let mut at = 0;
     while at < runs.len() {
-        // A part's runs together: the first of a part that is not the tag's first starts afresh.
         let end = runs[at + 1..].iter().position(|run| run.opens).map_or(runs.len(), |offset| at + 1 + offset);
         let pieces: Vec<Piece<Amount>> = runs[at..end].iter().map(|run| (run.first, run.last, amount_of_total(run.value))).collect();
         series.append(&pieces, runs[at].opens);
@@ -674,7 +609,6 @@ fn series_of(runs: &[TotalRun]) -> ProducedSeries {
     series
 }
 
-/// The archetype tokens each run holds of the asked type keys; every type: its whole row.
 fn asked_parts(types: &BTreeMap<u32, BTreeMap<u32, Typed>>, asked: &[String]) -> BTreeMap<u32, Vec<u128>> {
     types
         .iter()
@@ -688,13 +622,10 @@ fn asked_parts(types: &BTreeMap<u32, BTreeMap<u32, Typed>>, asked: &[String]) ->
         .collect()
 }
 
-/// Window `params.window` of the asked countries' values ([`super::windows`]), cut to the timeline.
 fn reply(source: &Source, query: &Query<'_>, params: &EquipmentProducedParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<EquipmentProducedReply> {
     window_reply(source, query, params, super::windows::within(query, params.window)?, context, cancelled)
 }
 
-/// The asked countries' values over `first..=last`, read from ProducedValues over those hours and the window
-/// before them; the reads and observation starts there.
 fn window_reply(source: &Source, query: &Query<'_>, params: &EquipmentProducedParams, (first, last): (i32, i32), context: &LoadContext, cancelled: &AtomicBool) -> io::Result<EquipmentProducedReply> {
     let mut warnings = Vec::new();
     let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
@@ -702,7 +633,6 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &EquipmentProducedPa
     let line = dashboard_query::series::Line::new(query, series, measure)?;
     let back = back_of(params.measure);
     let back: Option<&dyn Fn(i32) -> Option<i32>> = back.as_ref().map(|back| back as &dyn Fn(i32) -> Option<i32>);
-    // The runs whose types a request names: the window's, and the one a top N is ranked in.
     let mut met: BTreeSet<u32> = query.timeline.within(first, last).map(|stretch| stretch.run).collect();
     if let (Some(_), Some(hour)) = (params.top, params.rank_hour) {
         met.extend(query.timeline.at(hour).map(|stretch| stretch.run));
@@ -753,8 +683,6 @@ fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams,
     let types = branch_types(source, query, &content, &mut notes)?;
     let column = if params.refits { "units" } else { "units_without_refits" };
     let mut delivered: HashMap<String, i128> = HashMap::new();
-    // A type is listed once anything of it was delivered or IC put into it (or that is not known), every
-    // country together at a run's end: a line set up that delivered nothing yet names no type.
     let mut produced: BTreeSet<String> = BTreeSet::new();
     for (run, (_, last)) in runs(query) {
         let Some(rows) = snapshot(query, run, TableId::ProductionTypeTotals, last, &[column, "units", "spent"], Keys::Range(WORLD << 32, WORLD << 32 | u128::from(u32::MAX)))? else { continue };
@@ -786,7 +714,6 @@ fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams,
     })
 }
 
-/// What one span reads of a producer for its designs.
 struct DesignRows {
     span: Span,
     country: Read,
@@ -810,8 +737,6 @@ impl DesignRows {
         })
     }
 
-    /// Each design to name: a line design with the archetype token its totals last recorded (0 for
-    /// none), a Rocket design with none.
     fn named(&self) -> BTreeMap<u64, u32> {
         let mut out = BTreeMap::new();
         for (key, steps) in &self.designs.history.keys {
@@ -832,16 +757,13 @@ impl DesignRows {
     }
 }
 
-/// A design's identity: Rocket or a line's, and its handle.
 type DesignKey = (bool, u64);
 
-/// One span's every design and all of them together, as running totals of one count.
 struct DesignValues {
     designs: BTreeMap<DesignKey, Vec<Piece<measure::Counted>>>,
     total: Vec<Piece<measure::Counted>>,
 }
 
-/// A line design's purpose rows from any reader's numbers (units, inexact rows, spent, reason).
 fn design_row(purpose: u8, read: impl Fn(usize) -> Option<i64>) -> DesignRow {
     let units = read(0);
     DesignRow {
@@ -859,7 +781,6 @@ fn design_values(rows: &DesignRows, designs: &BTreeSet<DesignKey>, choice: Choic
     let mut tracks = vec![rows.country.steps(id)];
     tracks.extend(coverage_keys(span.id).map(|key| rows.coverage.steps(key)));
     tracks.push(rows.world.steps(0));
-    // Each design's tracks: a line design's purpose rows, or a Rocket design's row.
     let mut purpose_of: Vec<u8> = vec![0; tracks.len()];
     let mut owned: Vec<(DesignKey, std::ops::Range<usize>)> = Vec::with_capacity(designs.len());
     for &(rocket, variant) in designs {
@@ -918,12 +839,10 @@ fn design_values(rows: &DesignRows, designs: &BTreeSet<DesignKey>, choice: Choic
     }
 }
 
-/// A design as replies name it, before its names are read.
 fn unnamed(key: DesignKey) -> spending::Design {
     spending::Design { type_key: format!("{}variant/{}", spending::UNRESOLVED_MARK, key.1), name: None, domain: None, names: Vec::new() }
 }
 
-/// Whether a design's type was recorded: one it was not is keyed by its handle.
 fn type_recorded(design: &spending::Design) -> bool {
     !design.type_key.starts_with(&format!("{}variant/", spending::UNRESOLVED_MARK))
 }
@@ -994,19 +913,15 @@ fn country_reply(source: &Source, query: &Query<'_>, params: &ProducedCountryPar
     Ok(reply)
 }
 
-/// A producer's every design at one hour, in both counts.
 struct DesignsAt {
-    /// The hour read.
     hour: i32,
     country: bool,
     lines: Option<Coverage>,
     rocket: [Option<Coverage>; 2],
     world: bool,
     observation: (Option<i32>, Option<i32>),
-    /// Line designs' purpose rows, and Rocket designs' rows.
     designs: BTreeMap<DesignKey, Vec<DesignRow>>,
     rockets: BTreeMap<u64, RocketRow>,
-    /// Each line design's archetype token as its totals recorded it (0 for none).
     archetypes: BTreeMap<u64, u32>,
 }
 
@@ -1091,8 +1006,6 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
     let Holder::Found { id, .. } = run.holder else {
         return Ok(reply);
     };
-    // Values are as of production's latest read; a window's start is the read that long before it, the same
-    // holder's in the same stretch.
     let first = stretch.first.max(run.first);
     let reads = reads_in(query, stretch.run, first, hour)?;
     let Some(read) = measure::read_at(&reads, hour) else {
@@ -1140,8 +1053,6 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
             ic: amount_of(ic),
         });
     }
-    // Lines and Rocket output together are the country's; a design without a row is zero only
-    // where the country's row says so.
     let country = |held: &DesignsAt| -> Amount {
         if !held.country {
             return Amount::Unknown(ProducedUnknown::NotRecorded);
@@ -1319,8 +1230,6 @@ mod tests {
         assert_eq!(series.breaks, vec![2]);
     }
 
-    /// A campaign of GER (raw 9001 and 11, slot 7) delivering one unit a day from `FIRST`, and ITA (9002, slot 8)
-    /// one every twelve hours from a hundred hours on; no Rocket site delivers.
     fn two_producers(name: &str, first: i32, last: i32) -> Source {
         let frames = (first..=last)
             .map(|hour| {
@@ -1340,8 +1249,6 @@ mod tests {
                     rows.push(output(2, 9002, i64::from((hour - first - 100) / 12)));
                 }
                 *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(rows));
-                // No Rocket site delivers: the read holds only its complete world scope (country and design zero, zero
-                // amounts), which proves no Rocket output, so the Production writer covers it and every line is the lines' own.
                 let world = RocketProductionOutputRow { since_hour: first, exact: true, units_exact: true, ..Default::default() };
                 *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Complete(TableRows::RocketProductionOutput(vec![world]));
                 frame.metrics.table_ns[TableId::RocketProductionOutput.index()] = 1;
@@ -1366,7 +1273,6 @@ mod tests {
         }
     }
 
-    /// `next`'s runs appended to `series`, as the widget joins the windows it holds.
     fn join(series: &mut ProducedSeries, next: &ProducedSeries) {
         for run in 0..next.first_hours.len() {
             let amount = match next.values[run] {
@@ -1396,7 +1302,6 @@ mod tests {
         let reply = reply(&source, &query, &asked, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
         assert!(reply.lines.is_empty(), "no day of production has passed at the first hour: nothing ranks");
         assert_eq!((reply.first_hour, reply.last_hour), (FIRST, LAST), "the window is cut to the timeline");
-        // The fixture stamps no read, so the reads are the hours its rows changed: each day's.
         assert_eq!(reply.reads, (FIRST..=LAST).step_by(24).collect::<Vec<_>>(), "production was read: the widget says a day is not known yet, never that production is not in the recording");
     }
 
@@ -1422,9 +1327,6 @@ mod tests {
         }
     }
 
-    /// The windowed reply, its windows joined as the widget joins them, equals the whole-branch reply it replaced:
-    /// every line's runs, gaps and breaks, its reads and its observations, for chosen countries and a top N, every
-    /// measure, both counts, every type and a set of types.
     #[test]
     fn windows_joined_equal_the_whole_branch_reply() {
         const FIRST: i32 = 1_000;
@@ -1443,7 +1345,6 @@ mod tests {
                         let mut joined = vec![ProducedSeries::default(); whole.lines.len()];
                         let (mut reads, mut observations) = (BTreeSet::new(), BTreeSet::new());
                         let mut hour = query.timeline.first;
-                        // Windows of 70 hours: a window starts mid-day and its first read's window reaches before it.
                         while hour <= query.timeline.last {
                             let last = (hour + 69).min(query.timeline.last);
                             let part = window_reply(&source, &query, &asked, (hour, last), &context, &running).unwrap();

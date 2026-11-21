@@ -1,4 +1,3 @@
-//! CBuildingProductionLine with its CBuilding pointer.
 
 use crate::{
     Memory, cbuilding, cbuilding_status, ccountry, cgeneral_production_line, cpdx_array::Array,
@@ -6,23 +5,13 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Building-production-line primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_8268);
 
-/// Railway-gun repair-line vtable. It has no construction table, so skip
-/// it while retaining the surrounding queue ordinals.
 pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: Rva = Rva(0x029f_8938);
 
-/// Reference-object type value.
 pub const REFERENCE_TYPE_ID: u32 = 59;
-/// CBuilding pointer requiring authentication.
 pub const BUILDING: usize = 0x78;
-/// Repair levels remaining, i32: total level minus healthy level; zero for new construction.
 pub const REPAIR_LEVELS_REMAINING: usize = 0x80;
-/// Linked-line u64 reference, type in the low u32 and id in the high u32.
-/// Unlinked lines use the invalid-reference sentinel. A resolving pair shares
-/// progress: the non-primary side returns early while the primary writes
-/// produced progress to both and includes its partner's factories in speed.
 pub const LINKED_LINE: usize = 0x98;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -104,9 +93,6 @@ impl Census {
     }
 }
 
-/// Visits the mixed construction vector once, preserving its shared queue
-/// ordinals across building and railway lines. Each family has its own outcome;
-/// a corrupt shared country/manager/census invalidates both families.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -141,8 +127,6 @@ pub fn walk_buffer(
     let mut required_route_len = 0_usize;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        // Map roots are required by building targets only. A broken map root
-        // does not invalidate the independently readable railway queue.
         let locations = cbuilding_status::Locations::new(memory, game_state);
         let building_vtable =
             engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;

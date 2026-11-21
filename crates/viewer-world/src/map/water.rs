@@ -1,10 +1,8 @@
-//! Water technique selection and compiled pipeline cache.
 use viewer_foundation::map::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu;
 use std::{cell::RefCell, io, sync::Arc};
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
 
-/// Separate linear sea-bed target bound at t5.
 pub struct WaterPass {
     compiled: RefCell<Option<(String, Result<super::water_shader::Water, String>)>>,
     effect: Arc<shader_pipeline::library::Effect>,
@@ -28,7 +26,6 @@ impl WaterPass {
             format,
         }
     }
-    /// Whether the water this frame drew reads the snow/mud texture, so snow can show on it.
     pub fn shows_snow_mud(&self) -> bool {
         self.compiled
             .borrow()
@@ -36,8 +33,6 @@ impl WaterPass {
             .is_some_and(|(_, water)| water.as_ref().is_ok_and(|water| water.reads_snow_mud))
     }
 
-    /// The sea bed the water these settings draw samples, compiled now so the targets are made
-    /// for it before the sea bed is drawn; half size for water that cannot be drawn.
     pub fn sea_bed(&self, device: &wgpu::Device, high: bool, refractions: bool) -> SeaBed {
         self.compile(device, super::water_shader::technique(high, refractions));
         self.compiled
@@ -47,8 +42,6 @@ impl WaterPass {
             .map_or(SeaBed::Half, |water| water.sea_bed.0)
     }
 
-    /// How the water last compiled reads the shadow screen buffer by texel
-    /// ([`super::shadow::texel_reads`]).
     pub fn texel_reads(&self, visit: &mut dyn FnMut(&str)) {
         if let Some((_, Ok(water))) = &*self.compiled.borrow()
             && let Some(reads) = &water.texel_reads
@@ -57,7 +50,6 @@ impl WaterPass {
         }
     }
 
-    /// Why the water last compiled does not sample the half-size sea bed.
     pub fn sea_bed_refusal(&self) -> Option<String> {
         self.compiled
             .borrow()
@@ -66,7 +58,6 @@ impl WaterPass {
             .and_then(|water| water.sea_bed.1.clone())
     }
 
-    /// Compiles the pipeline frames with these settings draw with, so they compile nothing.
     pub fn warm(&self, device: &wgpu::Device, high: bool, refractions: bool) {
         self.compile(device, super::water_shader::technique(high, refractions));
     }

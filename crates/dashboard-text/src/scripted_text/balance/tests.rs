@@ -166,7 +166,6 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
     let effects = installed_content_core::parser::parse(b"custom_effect_tooltip=ACTIVATION")
         .unwrap()
         .items;
-    // This bounded first assertion fails safely on the old head, before recursion.
     let why = text
         .active_range_effects(&effects, &mut Vec::new(), 1, "guard", &scopes)
         .unwrap_err();
@@ -207,8 +206,6 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
         catalogue.scripted_content().unwrap(),
         1,
     );
-    // The entry's cursor remains in the carried arena when the effect appends a
-    // fresh graph. Its repeated effective context must be recognized immediately.
     let why = text.expand("[BalanceEntry]").unwrap_err();
     assert!(why.contains("cyclic entry invocation"), "{why}");
 }
@@ -399,8 +396,6 @@ fn active_range_effect_refusals_are_named_and_counted() {
         description(&catalogue, &frame, "GetActiveRangeDeactivationEffect").unwrap(),
         ""
     );
-    // The bound-localisation reader accepts a localization_key block;
-    // it is independent of the unsupported formatter callback.
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={custom_effect_tooltip={localization_key=KEY}}}}",
     ));

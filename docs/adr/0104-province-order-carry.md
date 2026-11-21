@@ -1,0 +1,11 @@
+# Share the latest certified province occupant walk across frames
+
+The acquisition job borrows one store across all recycled frames. It holds the complete last walk's epoch, province array header, slot pointers, mixed and naval counts, ordered handles, and land visits. Take the hour's marks before the reads they certify. A carry requires the same observation epoch, array header and every slot pointer. The slot check detects an unobserved replacement even if it keeps the same province id. Only marked provinces need new occupant records and lanes. Unmarked provinces reuse their held rows and arena ranges. Erasing and reappending an occupant can change the list even at the same count, so a writer's mark requires a new read. The merge retains province order and replaces the previous complete store once.
+
+During a walk, reuse division operands only from this hour's complete authenticated division census. A class-zero army seed must have matching primary and secondary identities, its own full nonzero handle and a location from the same gather. The census roster witnesses its registry join. A pointer appearing with contradictory operands is read normally, as are all occupants when the census or its lookup index is unavailable. For an output buffer with no row slots, the native walk can count the unit-order header demand without acquiring the unit bodies.
+
+A listed walk's first native refusal remains the reported result. It cannot promote a partial carry. Failure to store a required list or row falls back to the complete native walk. Failure after taking marks cannot keep the old witness because those marks have already been consumed. A failed worker makes the partial rows inaccessible and forgets the store before another frame borrows it. Original outcome and arena pressure remain available for off-thread sizing. Allocation and measured storage belong to the worker. The game-thread side can invalidate without allocating and read the byte count from the last finished acquisition. A frame whose buffers are out uses a zero-capacity placeholder until its original request returns.
+
+The live-memory parity benchmark holds the synthetic heap throughout every walk and writes none of its bytes while a walk is active.
+
+[Province unit order](../../crates/collector/src/extended/province_unit_order.rs)

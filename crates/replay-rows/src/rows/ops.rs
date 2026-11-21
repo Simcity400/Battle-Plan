@@ -1,11 +1,7 @@
-//! One table's typed operations as plain function pointers. A descriptor's static is built in
-//! the crate that declares it ([`crate::row_ops`]), so every generic operation on its row type
-//! compiles there; the registry calls each once per table and never instantiates them itself.
 use super::*;
 use crate::checkpoint::endpoint::{self, Edit};
 use std::{fmt, ops::Range};
 
-/// What a recorded table's row type implements, so a descriptor can be built for it.
 pub trait TableRow:
     RowCodec + crate::checkpoint::rows::Row + Fields + fmt::Debug + 'static
 {
@@ -15,8 +11,6 @@ impl<
 > TableRow for R
 {
 }
-/// A table's rows' operations, each over the whole table: one indirect call per table and
-/// operation, the loop over rows and fields inside.
 pub struct RowOps<R: 'static> {
     pub decode: fn(usize, &mut Decoder<'_>) -> io::Result<Vec<R>>,
     pub from_wire:
@@ -150,7 +144,6 @@ where
     };
 }
 
-/// `Table => Row` pairs, each a [`RowOps`] static named as its table; the rows' types are in scope.
 #[macro_export]
 macro_rules! row_ops {
     ($($table:ident => $row:ident),+ $(,)?) => {

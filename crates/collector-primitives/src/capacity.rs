@@ -36,7 +36,6 @@ macro_rules! capacity_max {
     ($name:ident { $($field:ident $({ $($nested:tt)* })?),* $(,)? }) => {
         impl $crate::capacity::CapacityMax for $name {
             fn merge_max(&mut self, other: Self) {
-                // Newly added collector capacity dimensions must not silently miss the merge.
                 let Self { $($field: _,)* } = other;
                 $($crate::capacity_max!(@merge self.$field, other.$field $(, { $($nested)* })?);)*
             }

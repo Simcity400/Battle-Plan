@@ -60,7 +60,6 @@ impl<R: Default + Copy> OwnedFogJob<R> {
     pub fn grow_for_next(&self) -> bool {
         self.row_limit > self.rows.len() || self.province_limit > self.provinces.len()
     }
-    /// Called only during worker-side recycling.
     pub fn grow(&mut self) {
         if self.row_limit > self.rows.len()
             && resize(&mut self.rows, self.row_limit, R::default()).is_err()
@@ -145,8 +144,6 @@ fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext
             
         });
     if !symbols_trusted {
-        // A writer overlapping the complete census revokes its carried
-        // symbol values. Coverage keeps its existing independent outcome.
         for row in &mut job.rows[..result.outcome.len()] {
             row.symbol = None;
         }
@@ -173,7 +170,6 @@ fn acquire_intel(
     job.acquired = true;
 }
 
-/// Worker-only acquisition; each original native header can enlarge owned storage.
 pub(crate) fn copy_radar_refresh(
     memory: &impl Memory,
     ctx: RadarCopyContext,
@@ -193,7 +189,6 @@ pub(crate) fn copy_radar_refresh(
     }
 }
 
-/// The caller retains the primary division census until acquisition returns.
 pub(crate) fn copy_intel_refresh_with_divisions(
     memory: &impl Memory,
     ctx: IntelCopyContext,
@@ -236,9 +231,6 @@ impl Captured {
         }
     }
 
-    /// Complete an accepted worker failure after the sibling capture has
-    /// finished. The reservation gate prevented any synchronous retry; no
-    /// owned payload from this failed acquisition may subsequently be decoded.
     pub(crate) fn fail_radar_capture(&mut self, reason: &'static str) {
         self.radar.outcome = if self.active[0] {
             Outcome::Unavailable { reason }

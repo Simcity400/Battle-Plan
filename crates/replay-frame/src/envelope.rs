@@ -1,12 +1,9 @@
-//! Shared spool envelope; filesystem I/O belongs to replay.
 
 use replay_data::{FORMAT_VERSION, codec::invalid_static};
 use std::io;
 
 pub const RECORD_MAGIC: [u8; 4] = *b"H4SV";
-/// Magic, version, payload length and payload CRC, little endian.
 pub const RECORD_HEADER_BYTES: usize = 4 + 2 + 4 + 4;
-/// Shared decoder allocation bound for spool records and replay blocks.
 pub const MAX_RECORD_BYTES: usize = 1 << 30;
 
 pub fn seal_record(mut out: Vec<u8>) -> io::Result<Vec<u8>> {

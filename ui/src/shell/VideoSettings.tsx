@@ -11,10 +11,8 @@ const VSYNC = 'VSync';
 const FRAME_LIMIT = 'Frame rate limit';
 const INTERFACE_SCALE = 'Interface scale';
 const MAP_UI_SCALE = 'Map UI scale';
-/** Option row labels, in order; settings search reveals rows by these. */
 export const VIDEO_OPTION_LABELS = [VSYNC, FRAME_LIMIT, INTERFACE_SCALE, MAP_UI_SCALE];
 const MATCH_GAME = 'match';
-/** The frame rate limits the maps accept (`MAP_FRAME_LIMIT_RANGE`). */
 const MIN_FRAME_LIMIT = 1;
 const MAX_FRAME_LIMIT = 1000;
 
@@ -36,7 +34,6 @@ export function useVideoSettings(enabled: boolean, userFolder?: string) {
     draft, error, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
     dirty: !!draft && !sameDisplay(draft, reply?.settings),
     canReset: !!reply?.gameSettings,
-    /** The display settings already are the game's own, so reverting would change nothing. */
     atGame: !!reply?.gameSettings && sameDisplay(draft, reply.gameSettings),
     update: (value: Partial<VideoOptions>) => { if (draft) setDraft({ ...draft, ...value, useGameSettings: false }); },
     reset: () => { if (reply?.gameSettings) setDraft(reply.gameSettings); },
@@ -60,7 +57,6 @@ export default function VideoControls({ video, busy }: { video: ReturnType<typeo
       {desktopAvailable ? <span className="frame-limit-field"><input type="number" min={MIN_FRAME_LIMIT} max={MAX_FRAME_LIMIT} step={1} placeholder="Off" aria-label={FRAME_LIMIT} disabled={!enabled || !video.draft}
         value={video.draft?.mapFrameLimit ?? ''}
         onChange={event => {
-          // Cleared means no limit, as the setting starts.
           const hz = event.currentTarget.value === '' ? null : Math.round(Number(event.currentTarget.value));
           if (hz === null || (hz >= MIN_FRAME_LIMIT && hz <= MAX_FRAME_LIMIT)) video.update({ mapFrameLimit: hz });
         }} /><small>frames a second</small></span>

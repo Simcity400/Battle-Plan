@@ -1,6 +1,4 @@
-//! Game content layers, identity hashes, and Rust parsers for the viewer.
 
-/// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -94,33 +92,21 @@ pub use content::{
     resolve_cancellable,
 };
 
-/// Severity assigned where a content reader creates a diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DiagnosticKind {
-    /// Text the tree parser cannot parse.
     ParseFailure,
-    /// The native reader reports a field and continues.
     Misread,
-    /// Reading stops before the rest of a file can be determined.
     Unsettled,
-    /// The port does not model this form.
     Unsupported,
-    /// A definition or lookup cannot be used.
     Refused,
-    /// Several definitions leave the intended result uncertain.
     Ambiguous,
-    /// Presentation substitutes for unavailable content.
     Fallback,
-    /// The game logs an error and continues.
     Logged,
-    /// Another content note that does not prevent its use.
     Warning,
 }
 
-/// A diagnostic's producer-assigned kind and unchanged message.
 pub type Diagnostic = (DiagnosticKind, String);
 
-/// How a consumer takes a producer's diagnostic.
 pub trait DiagnosticMessage: Sized {
     fn from_diagnostic(note: Diagnostic) -> Self;
 }

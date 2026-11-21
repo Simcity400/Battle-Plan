@@ -1,16 +1,3 @@
-//! The corpus's content stacks: vanilla, then each installed mod on its own,
-//! each gathered as a new recording gathers its content
-//! (`installed_content_core::content::gather`): vanilla, every installed DLC, then the mod
-//! with the installed mods its descriptor depends on, in the engine's mount
-//! order.
-//!
-//! `gather` reads the launcher's `dlc_load.json`, `settings.txt` and the
-//! descriptors under `mod/` from a user folder, so each stack gets a scratch
-//! user folder holding exactly those: the mod's descriptor and its installed
-//! dependencies' descriptors, every DLC enabled, and the real folder's game
-//! language. A Workshop item's descriptor is the item's `descriptor.mod` with
-//! its folder as `path` and its item ID as `remote_file_id`, as the launcher
-//! writes it (`ugc_<id>.mod`). The installed folders are only read.
 
 use std::{
     collections::BTreeSet,
@@ -24,34 +11,23 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// One installed mod the corpus can run on its own.
 #[derive(Clone, Debug)]
 pub struct Candidate {
-    /// The stack's name in reports: the Workshop item ID, or `local-<stem>`
-    /// for a descriptor in the user folder's `mod` directory.
     pub id: String,
-    /// The descriptor's `name`, which dependencies name.
     pub name: String,
-    /// The descriptor file as `mod/<file>` in the scratch user folder.
     pub file: String,
-    /// The descriptor's text as the launcher would leave it in `mod/`.
     pub descriptor: String,
-    /// Display names of the mods it depends on.
     pub dependencies: Vec<String>,
 }
 
-/// A stack the corpus runs, or could not build, and why.
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub id: String,
     pub name: String,
-    /// The mod and the installed dependencies it mounts, by candidate index.
     pub mods: Vec<usize>,
-    /// Dependencies not mounted, by name and why.
     pub skipped: Vec<String>,
 }
 
-/// A descriptor the corpus cannot use, and why.
 pub struct Unusable {
     pub path: String,
     pub why: String,
@@ -66,9 +42,6 @@ impl Unusable {
     }
 }
 
-/// Every installed mod: each Workshop item under `workshop` with a
-/// `descriptor.mod`, then each descriptor in `user/mod` whose content is not
-/// such an item.
 pub fn candidates(
     user: &Path,
     workshop: Option<&Path>,
@@ -150,11 +123,6 @@ pub fn candidates(
     Ok((found, refused))
 }
 
-/// Each candidate's stack: the candidate and, through its descriptor's
-/// `dependencies`, every installed mod it names, found by display name. A
-/// dependency no installed mod or several installed mods carry is not
-/// mounted and is named; the engine leaves a dependency it has not enabled
-/// out of the order.
 pub fn plans(candidates: &[Candidate]) -> Vec<Plan> {
     candidates
         .iter()
@@ -192,9 +160,6 @@ pub fn plans(candidates: &[Candidate]) -> Vec<Plan> {
         .collect()
 }
 
-/// Writes the scratch user folder for `mods` and returns it: `settings.txt`
-/// with the real folder's language, `dlc_load.json` enabling `mods` with no
-/// DLC disabled, and each mod's descriptor under `mod/`.
 pub fn user_folder(
     root: &Path,
     language: &str,
@@ -225,19 +190,12 @@ pub fn user_folder(
     Ok(root.to_path_buf())
 }
 
-/// The real user folder's game language, written back as `gather` reads it
-/// from `settings.txt`.
 pub fn language(user: &Path) -> io::Result<String> {
     installed_content_settings::settings::read_keys(user)?
         .language()
         .ok_or_else(|| io::Error::other("settings.txt names no game language"))
 }
 
-/// A descriptor as the launcher leaves it in `mod/`: every top-level field
-/// but `path` and `archive`, in order, then `folder` as `path` and, for a
-/// Workshop item without one, its `remote_file_id`. Also its `name` and
-/// `dependencies`. The fields are rewritten from the parsed descriptor, and
-/// the result must parse back to the same fields.
 fn launcher_descriptor(
     descriptor: &Path,
     folder: &Path,
@@ -300,9 +258,6 @@ fn launcher_descriptor(
     Ok((text, name, dependencies))
 }
 
-/// One descriptor item as text the tree parser reads back: keys, operators
-/// and scalars as authored, a quoted one quoted with `"` and `\` escaped
-/// and a bare one bare.
 fn render(item: &parser::Item, out: &mut Vec<u8>) {
     let quoted = |bytes: &[u8], out: &mut Vec<u8>| {
         out.push(b'"');
@@ -359,9 +314,6 @@ fn sorted_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
 mod tests {
     use super::*;
 
-    /// A Workshop item's descriptor as the launcher writes it: its stale
-    /// `path` replaced by the item folder and its ID added; a local
-    /// descriptor pointing at an item is that item, not another stack.
     #[test]
     fn workshop_items_become_launcher_descriptors_with_their_dependencies() {
         let root = std::env::temp_dir().join(format!(
@@ -398,7 +350,6 @@ mod tests {
         assert!(refused.is_empty());
         let ids: Vec<_> = candidates.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["10", "20", "local-local"]);
-        // Same-line and multiline fields: every field but `path` kept.
         assert_eq!(
             candidates[0].descriptor,
             format!(
@@ -421,8 +372,6 @@ mod tests {
                 .descriptor
                 .contains("remote_file_id=\"20\"\nremote_file_id")
         );
-        // Bare list entries stay bare and quoted ones quoted, so the
-        // rewrite parses back to the same fields and the stack is kept.
         assert!(candidates[1].descriptor.starts_with(
             "name=\"Sub\"\ndependencies={ Base \"Absent\" }\ntags={ Balance \"Map\" }\n"
         ));

@@ -40,8 +40,6 @@ fn a_months_witness_reads_its_own_arrays_run_of_the_hours_rows() {
     assert_eq!(witness(&month(1, 0, 300), Some(400), array_rows(&rows, (9, 1, 0)), &[], &[200, 300]), witness(&month(1, 0, 300), Some(400), &rows, &[], &[200, 300]), "the array's run witnesses a month as all the hour's rows do");
 }
 
-/// A reply holds the one measure the chart draws, or every part of the month its drill shows; a
-/// request naming no view asks the manpower chart.
 #[test]
 fn a_view_holds_the_measure_drawn_or_every_part_of_one_month() {
     use super::{ArmyLossesParams, LossView};

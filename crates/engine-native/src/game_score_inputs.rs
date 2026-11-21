@@ -1,8 +1,3 @@
-//! Current end-screen operands, independent of cached hourly country scores.
-//! Army score reads the signed division-roster size; navy score sums signed
-//! task-vector sizes with i32 wrapping; air score visits every site, pool and
-//! wing occurrence. Caller-owned buffers grow off the callback and failures
-//! leave each score component independently unknown.
 
 use crate::{
     Memory, cair_base, cair_wing, cair_wing_pool, ccountry, cfleet,
@@ -64,7 +59,6 @@ impl Default for FleetCount {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CountryCapture {
     pub outcome: Outcome,
-    /// Current-read prefix for diagnostics even when a later identity fails.
     pub country_len: usize,
     pub fleet_len: usize,
     pub fleet_required: usize,
@@ -98,7 +92,6 @@ fn vtable(
     Ok(())
 }
 
-/// Ordinary's worker grows from the original country and fleet headers.
 pub fn walk_country_inputs(
     memory: &impl Memory,
     base: usize,
@@ -178,8 +171,6 @@ fn walk_country_inputs_buffer(
                 fleet_required = fleet_required
                     .checked_add(roster.count as usize)
                     .ok_or("game score fleet demand overflow")?;
-                // Navy score sums each original fleet's signed task count.
-                // Capacity cannot omit that observation.
                 if !fleets.ensure(
                     fleet_len
                         .checked_add(roster.count as usize)
@@ -237,8 +228,6 @@ fn walk_country_inputs_buffer(
     }
 }
 
-/// The native country catalogue may hold an object in its normally-null
-/// sentinel slot. Preserve its raw ID rather than applying reference gates.
 pub fn read_slot_zero(
     memory: &impl Memory,
     base: usize,
@@ -322,8 +311,6 @@ fn add_demand(target: &mut usize, count: u32, reason: &'static str) -> Result<()
     Ok(())
 }
 
-/// Off-thread sizing only. Keep every healthy catalogue/header observation
-/// after independent failures; none certifies a settled-hour recording row.
 pub fn arena_demand(
     memory: &impl Memory,
     base: usize,
@@ -505,7 +492,6 @@ pub fn arena_demand(
 }
 
 const FLEET_BATCH: usize = 64;
-/// A fleet's identity (vtable and handle) and its task-force count.
 const FLEET_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -521,11 +507,6 @@ const FLEET_FIELDS: [RecordField; 2] = [
 const FLEET_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&FLEET_FIELDS, 20).expect("valid fleet layout");
 
-/// Fleets `first..first + output.len()` of one roster, as
-/// [`read_fleet_count`] reads each after its pointer: the pointers in one
-/// read and the identities and counts in one gather, which resumes after a
-/// fleet that stops it; that fleet is read alone, so every fleet keeps the
-/// result and failure of its own reads.
 fn read_fleet_batch(
     memory: &impl Memory,
     base: usize,
@@ -594,8 +575,6 @@ fn read_fleet_batch(
     }
 }
 
-/// Navy reads each fleet's task-force array count (`cfleet::TASK_FORCE_COUNT`), without following
-/// tasks.
 pub fn read_fleet_count(
     memory: &impl Memory,
     base: usize,
@@ -707,8 +686,6 @@ pub fn read_first_sites_buffer(
 }
 
 const SITE_BATCH: usize = 64;
-/// A site's identity and its country-container vector header (data, capacity
-/// and the count the access gate bounds by).
 const SITE_FIELDS: [RecordField; 2] = [
     RecordField {
         source_offset: 0,
@@ -731,12 +708,6 @@ const ACCESS_FIELD: [RecordField; 1] = [RecordField {
 const ACCESS_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ACCESS_FIELD, 8).expect("valid air-site access layout");
 
-/// Sites `first..first + output.len()` of one first-site roster, as
-/// [`read_air_site`] reads each after its pointer: the pointers in one read,
-/// the identities and container headers in one gather and the access words in
-/// another. A site the batch could not read whole is read alone from the
-/// first such site, so every site keeps the result and failure of its own
-/// reads.
 fn read_site_batch(
     memory: &impl Memory,
     base: usize,
@@ -772,8 +743,6 @@ fn read_site_batch(
     for (pointer, word) in pointers.iter_mut().zip(raw[..count * 8].chunks_exact(8)) {
         *pointer = u64::from_le_bytes(word.try_into().unwrap()) as usize;
     }
-    // Gathered whole: the rows before the first that stops a gather; that
-    // row is read alone and the gather resumes after it.
     let mut records = [0_u8; SITE_BATCH * 32];
     let mut gathered = [false; SITE_BATCH];
     let mut start = 0;
@@ -788,7 +757,6 @@ fn read_site_batch(
         start += whole + 1;
     }
     let expected = engine_sites::at(base, cair_base::VTABLE_RVA);
-    // Sites whose access word is read, with its address.
     let mut access_rows = [0_usize; SITE_BATCH];
     let mut access_at = [0_usize; SITE_BATCH];
     let mut accesses = 0;
@@ -844,7 +812,6 @@ fn read_site_batch(
                     access_rows[accesses] = index;
                     access_at[accesses] = at;
                     accesses += 1;
-                    // Set from the access gather below.
                     Err("game score air-site access unreadable")
                 }
                 Err(error) => Err(error),
@@ -864,7 +831,6 @@ fn read_site_batch(
         start += copied + 1;
     }
     for (entry, &index) in access_rows[..accesses].iter().enumerate() {
-        // A word that stopped its gather fails alone exactly as it did.
         let value = if read_words[entry] {
             Some(u64::from_le_bytes(
                 words[entry * 8..entry * 8 + 8].try_into().unwrap(),
@@ -878,7 +844,6 @@ fn read_site_batch(
     }
 }
 
-/// The access gate tests signed bounds and a nonnull container, not capacity.
 pub fn read_air_site(
     memory: &impl Memory,
     base: usize,
@@ -952,8 +917,6 @@ impl Default for WingRow {
     }
 }
 
-/// Air score requests the single-mission score channel. Plane count comes
-/// from the same authenticated air-wing acquisition.
 pub fn read_wing(memory: &impl Memory, pointer: usize, row: &cair_wing::ScoreLeaf) -> WingRow {
     let index = cair_wing::mission_stat_index(memory, pointer, 1);
     let stat_raw = index
@@ -987,17 +950,11 @@ pub struct Multipliers {
     pub land_raw: Result<i64, &'static str>,
 }
 
-/// NDefines.NCountry.COUNTRY_SCORE_MULTIPLIER, fixed5.
 pub const COUNTRY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_1f00);
-/// NDefines.NCountry.ARMY_SCORE_MULTIPLIER, fixed5.
 pub const ARMY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_1f98);
-/// NDefines.NCountry.NAVY_SCORE_MULTIPLIER, fixed5.
 pub const NAVY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_2038);
-/// NDefines.NCountry.AIR_SCORE_MULTIPLIER, fixed5.
 pub const AIR_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_20c8);
-/// NDefines.NCountry.INDUSTRY_SCORE_MULTIPLIER, fixed5.
 pub const INDUSTRY_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_2158);
-/// NDefines.NCountry.PROVINCE_SCORE_MULTIPLIER, fixed5.
 pub const PROVINCE_SCORE_MULTIPLIER_RVA: Rva = Rva(0x033e_21f8);
 
 fn global(
@@ -1011,7 +968,6 @@ fn global(
         .ok_or(error)
 }
 
-/// Content-loaded fixed5 score globals; read each independently.
 pub fn read_multipliers(memory: &impl Memory, base: usize) -> Multipliers {
     Multipliers {
         total_raw: global(

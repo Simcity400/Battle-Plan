@@ -1,10 +1,3 @@
-//! Where a country's air wings fly at an hour: per strategic region, the planes each mission
-//! counts and the wings registered there ([`AirMissionsAt`]), and one region's wings
-//! ([`AirMissionWingsAt`]). Both are rows-at-an-hour products. The region rows are the owner's
-//! `AirMissionCounts` rows (key range of its canonical slot): their structure is the regions and
-//! which missions each records; the counts are live cells, a mission the region does not record
-//! named by no cell, never a zero. The air theatres the widget filters by are the owner's theatres
-//! with the mission regions of their member wings at the hour.
 
 use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
@@ -42,7 +35,6 @@ use replay_data::rows::AirRegionalMissionRow;
 #[cfg(test)]
 mod tests;
 
-/// Native mission-bit localisation keys, looked up in the recorded content stack.
 const MISSION_KEYS: [&str; MISSIONS] = [
     "AIRWING_MISSION_TYPE_AIR_SUPERIORITY",
     "AIRWING_MISSION_TYPE_CAS",
@@ -84,8 +76,6 @@ pub struct AirMissionWingsParams {
     pub region: u32,
 }
 
-/// A mission column: its bit, its name in the game's language and the mission strip frame the
-/// game draws for it.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -95,21 +85,18 @@ pub struct AirMissionChoice {
     pub icon: Option<SpriteFrame>,
 }
 
-/// A region the owner has wings registered in; its live cells are (`region`, `wings`) and
-/// (`region`, `m<bit>`) for each mission it records.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionRegion {
     pub region: String,
     pub name: Option<String>,
-    /// Why the name is not shown, without one.
+    #[doc = " Why the name is not shown, without one."]
     pub missing: Option<String>,
-    /// The mission bits the region records: a wing of its registrations flies them.
+    #[doc = " The mission bits the region records: a wing of its registrations flies them."]
     pub missions: Vec<String>,
 }
 
-/// One of the owner's air theatres and the mission regions of its member wings.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -123,21 +110,20 @@ pub struct AirMissionTheatre {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionsReply {
-    /// The hour of the registrations' read the rows hold; none when not known.
+    #[doc = " The hour of the registrations' read the rows hold; none when not known."]
     pub read_hour: Option<i32>,
-    /// Why the missions are not shown at the hour, when they are not.
+    #[doc = " Why the missions are not shown at the hour, when they are not."]
     pub missing: Option<String>,
-    /// The missions any region records, in bit order.
+    #[doc = " The missions any region records, in bit order."]
     pub missions: Vec<AirMissionChoice>,
     pub regions: Vec<AirMissionRegion>,
-    /// The owner's theatres, in the game's order; none where membership is not known.
+    #[doc = " The owner's theatres, in the game's order; none where membership is not known."]
     pub theatres: Option<Vec<AirMissionTheatre>>,
-    /// Why the theatres are not known at the hour.
+    #[doc = " Why the theatres are not known at the hour."]
     pub theatres_missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
-/// A wing in the region; its planes are the live cell (`id`, `planes`).
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -148,9 +134,9 @@ pub struct AirMissionWing {
     #[cfg_attr(any(test, feature = "export-types"), ts(rename = "type"))]
     pub aircraft_type: Option<String>,
     pub missions: Vec<String>,
-    /// Raw fixed5 decimal text: 100,000 is one.
+    #[doc = " Raw fixed5 decimal text: 100,000 is one."]
     pub efficiency: Option<String>,
-    /// Why a field above is not shown.
+    #[doc = " Why a field above is not shown."]
     pub refusals: Vec<String>,
 }
 
@@ -161,19 +147,17 @@ pub struct AirMissionWingsReply {
     pub read_hour: Option<i32>,
     pub region: u32,
     pub wings: Vec<AirMissionWing>,
-    /// Why the region's wings are not shown at the hour, when they are not.
+    #[doc = " Why the region's wings are not shown at the hour, when they are not."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(AirMissionsReply, AirMissionWingsReply);
 
-/// The recorded content a reply names with, made once per request or follow.
 pub struct Names {
     catalogue: Result<Arc<Catalogue>, String>,
     regions: Result<BTreeMap<u32, Result<String, String>>, String>,
     missions: Vec<Result<String, String>>,
-    /// The mission strip's sprite, and the recording's own when it differs.
     strip: Result<(String, Option<String>), String>,
     warnings: Vec<String>,
 }
@@ -202,9 +186,6 @@ fn names(source: &Source, load: &LoadContext) -> Names {
     Names { catalogue: cat, regions, missions, strip, warnings }
 }
 
-/// The mission strip the regional map's mission entry draws, through the catalogue the reply
-/// shows, with the recording's own where it chooses another: mission bit `b` is the strip's
-/// one-based frame `b + 1`, drawn as zero-based frame `b`.
 fn mission_strip(cat: &Catalogue) -> Result<(String, Option<String>), String> {
     let Some(recorded) = cat.recorded() else {
         return strip_in(cat).map(|key| (key, None));
@@ -229,7 +210,6 @@ fn strip_in(cat: &Catalogue) -> Result<String, String> {
     sprites::icon_key(cat, &button.sprite)
 }
 
-/// A region's name, or why it is not shown.
 fn region_name(names: &Names, region: u32) -> (Option<String>, Option<String>) {
     match names.regions.as_ref().map(|regions| regions.get(&region)) {
         Ok(Some(Ok(name))) => (Some(name.clone()), None),
@@ -239,7 +219,6 @@ fn region_name(names: &Names, region: u32) -> (Option<String>, Option<String>) {
     }
 }
 
-/// A stored name in the recording's language, or why it is not shown.
 pub(crate) fn stored_in(cat: &Result<Arc<Catalogue>, String>, bytes: &[u8], what: &str) -> Result<String, String> {
     let cat = cat.as_ref().map_err(Clone::clone)?;
     dashboard_text::scripted_text::stored_text(&cat.localisation, &cat.recorded_language, bytes, what).and_then(|text| catalogue::plain_text(&text))
@@ -249,7 +228,6 @@ fn stored(names: &Names, bytes: &[u8], what: &str) -> Result<String, String> {
     stored_in(&names.catalogue, bytes, what)
 }
 
-/// Each mission bit's cell of a counts row.
 pub(crate) fn mission_cells(row: &AirMissionCountRow) -> [Recorded<i32>; MISSIONS] {
     [
         row.mission_0, row.mission_1, row.mission_2, row.mission_3, row.mission_4, row.mission_5, row.mission_6, row.mission_7, row.mission_8,
@@ -261,7 +239,6 @@ fn column(table: TableId, name: &str) -> io::Result<usize> {
     dashboard_declare::field(table, name)
 }
 
-/// The owner's regions at the counts' hour, each region's counts named in `live`.
 pub(crate) fn reply(
     counts: io::Result<&[AirMissionCountRow]>,
     slot: u32,
@@ -326,12 +303,10 @@ pub(crate) fn reply(
     Ok(AirMissionsReply { read_hour, missing, missions, regions, theatres, theatres_missing, warnings })
 }
 
-/// The canonical slot each raw country id links to.
 fn slots_of(rows: &[CountryLinkRow]) -> BTreeMap<u32, u32> {
     rows.iter().map(|row| (row.id, row.canonical_slot)).collect()
 }
 
-/// The wings of the theatres `slot` owns: the members whose group is in one of them.
 fn owned_members<'a>(
     theatres: &'a [AirTheatreRow],
     groups: &[AirTheatreGroupRow],
@@ -359,9 +334,6 @@ fn owned_members<'a>(
     Ok((owned, held))
 }
 
-/// The owner's theatres and their member wings' mission regions. Complete tables prove an empty
-/// theatre; a member whose group or wing is not recorded refuses the whole membership rather than
-/// leave a partial list that looks complete.
 pub(crate) fn theatres(
     theatres: &[AirTheatreRow],
     groups: &[AirTheatreGroupRow],
@@ -390,11 +362,8 @@ pub(crate) fn theatres(
         .collect())
 }
 
-/// The theatre tables a reply naming the owner's theatres reads whole, before [`theatre_wings`].
 pub(crate) const THEATRE_TABLES: [TableId; 4] = [TableId::AirTheatres, TableId::AirTheatreGroups, TableId::AirTheatreMembers, TableId::CountryLinks];
 
-/// The read of the wings of `slot`'s theatre members, once `held` has [`THEATRE_TABLES`]; none
-/// when there are none or the tables are not complete.
 pub(crate) fn theatre_wings(held: &DecodedFrame, slot: u32) -> Option<Read> {
     let (Ok(theatres), Ok(groups), Ok(members), Ok(links)) = (
         held.complete::<tables::AirTheatres>(),
@@ -410,7 +379,6 @@ pub(crate) fn theatre_wings(held: &DecodedFrame, slot: u32) -> Option<Read> {
     }
 }
 
-/// `slot`'s theatres at `frame`'s hour, named in the recording's language through `cat`.
 pub(crate) fn theatres_at(frame: &DecodedFrame, slot: u32, cat: &Result<Arc<Catalogue>, String>) -> Result<Vec<AirMissionTheatre>, String> {
     let read = || -> io::Result<_> {
         Ok((
@@ -467,8 +435,6 @@ impl AtHour for AirMissionsAt {
         ]
     }
 
-    /// The owner's counts (its slot's key range), the registrations' read hour (no row), the
-    /// theatre tables; then the wings of the owner's theatre members alone.
     fn reads(_params: &Self::Params, owner: Option<super::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -498,8 +464,6 @@ impl AtHour for AirMissionsAt {
     }
 }
 
-/// The owner's wings registered in `region`, each once, in registration order, from the raw rows:
-/// what `AirMissionWings` holds.
 #[cfg(test)]
 pub(crate) fn region_wings<'a>(registrations: &[AirRegionalMissionRow], wings: &'a [AirWingRow], links: &BTreeMap<u32, u32>, slot: u32, region: u32) -> Result<Vec<&'a AirWingRow>, String> {
     let (_, rosters) = replay_derive::air_mission_counts::regional_counts(registrations, wings, slot, |raw| canonical(raw, links))?;
@@ -507,7 +471,6 @@ pub(crate) fn region_wings<'a>(registrations: &[AirRegionalMissionRow], wings: &
     Ok(rosters.get(&region).into_iter().flatten().copied().filter(|wing| seen.insert(wing.id)).collect())
 }
 
-/// The tables a wing's efficiency reads, whole.
 const SORTIE_TABLES: [TableId; 8] = [
     TableId::AirSortieModifiers,
     TableId::AirSortieBaseCountries,
@@ -519,13 +482,11 @@ const SORTIE_TABLES: [TableId; 8] = [
     TableId::VolunteerHosts,
 ];
 
-/// The `AirMissionWings` keys of the owner's `region`.
 fn region_range(slot: u32, region: u32) -> (u128, u128) {
     let low = u128::from(slot) << 96 | u128::from(region) << 64;
     (low, low | u128::from(u64::MAX))
 }
 
-/// The wings `AirMissionWings` holds in the owner's `region`, in registration order, or why not.
 pub(crate) fn wings_in(frame: &DecodedFrame, slot: u32, region: u32) -> Result<Vec<&AirWingRow>, String> {
     let registered = frame.complete::<tables::AirMissionWings>().map_err(|error| error.to_string())?;
     let wings = frame.complete::<tables::AirWings>().map_err(|error| error.to_string())?;
@@ -565,10 +526,6 @@ impl AtHour for AirMissionWingsAt {
         tables
     }
 
-    /// Two steps, each read in parallel: the region's `AirMissionWings` rows, the registrations' read hour (no row),
-    /// the links and the sortie tables whole; then the region's wings, their sortie operands and the provinces of every
-    /// registered air base, by key. With no wing in the region the wings are read with no key, so the region is known
-    /// empty, never unread.
     fn reads(params: &Self::Params, owner: Option<super::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -615,7 +572,6 @@ impl AtHour for AirMissionWingsAt {
     }
 }
 
-/// Each selected wing's name, aircraft, missions and efficiency, its planes named in `live`.
 fn wings_reply(frame: &DecodedFrame, selected: &[&AirWingRow], names: &Names, live: &Cells, reply: &mut AirMissionWingsReply) -> io::Result<()> {
     let planes = column(TableId::AirWings, "planes")?;
     let links = frame.complete::<tables::CountryLinks>().map(slots_of).map_err(|error| error.to_string());

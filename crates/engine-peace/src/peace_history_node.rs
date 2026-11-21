@@ -1,11 +1,7 @@
-//! Country-keyed history node used by the peace conference. This is an MSVC tree node without a
-//! vtable, not a game object.
 
 use crate::{Memory, cpdx_array::Array, msvc_tree_node, read};
 
-/// Serialized raw country history key.
 pub const COUNTRY: usize = 0x20;
-/// Ordered owning turn-pointer array, freed with history.
 pub const TURNS: usize = 0x28;
 
 pub struct Node {

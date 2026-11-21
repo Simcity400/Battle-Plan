@@ -1,4 +1,3 @@
-//! Command dispatch checks stay with the CLI host.
 use crate::test_support::replay;
 use replay::spool::Record;
 use replay_data::rows::TableId;
@@ -53,8 +52,6 @@ fn sizes_route_through_the_cli() {
     assert!(crate::recording::command(vec!["sizes".into()]).is_err());
 }
 
-/// `recompress <replay> --level N` compresses the recording where it lies, says so again for one
-/// already at the level, and refuses a level that is no number.
 #[test]
 fn recompress_routes_through_the_cli() {
     let directory = std::env::temp_dir().join(format!("recorder-recompress-cli-{}", std::process::id()));

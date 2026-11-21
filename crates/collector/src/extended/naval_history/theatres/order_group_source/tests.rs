@@ -16,7 +16,6 @@ fn staged(own_flag: Option<u8>) -> NavalJob {
         log: RawLog::new(16, 256),
         ..Default::default()
     };
-    // Independent parent checks surround the root's own batch.
     take(&mut job.log, FLAG, &[1], 1);
     match own_flag {
         Some(flag) => take(&mut job.log, FLAG, &[flag], 1),
@@ -42,7 +41,6 @@ fn own_flag_success_or_fault_is_independent_of_parent_occurrences_and_cursors() 
         if let Some(own) = own {
             assert_eq!(byte, [own]);
         }
-        // Inspecting the own batch did not consume its ordinary raw cursor.
         assert_eq!(source.recorded.copy(FLAG, &mut byte), own.is_some());
         if let Some(own) = own {
             assert_eq!(byte, [own]);
@@ -82,7 +80,6 @@ fn ambiguous_anchor_or_wrong_predecessor_refuses_without_a_scan() {
     for _ in 0..3 {
         assert!(source.recorded.copy(MOTOR, &mut [0]));
     }
-    // The repeated tail links to itself, never to the unique-key sentinel.
     assert!(source.recorded.unique_observation(MOTOR, 1).is_none());
     assert!(!source.copy(FLAG, &mut [0]));
     drop(source);

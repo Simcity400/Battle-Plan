@@ -1,9 +1,7 @@
-//! Authored sub-unit key reads shared by counters and model content.
 use crate::invalid;
 use installed_content_core::{ResolvedLayers, parser};
 use std::{collections::BTreeSet, io};
 
-/// Every authored sub-unit key in the sub-unit database's files, once each.
 pub fn subunit_keys(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
     for path in installed_content_core::unit_leader::sub_unit_files(layers)? {

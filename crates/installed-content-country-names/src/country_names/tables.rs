@@ -1,5 +1,3 @@
-//! The naming operands read from any frame's tables ([`Tables`]), a walk's views among them:
-//! each row built of the fields the names read alone, found by its key.
 
 use super::{CountryNames, NamingAppearance, NamingRows, Operands, naming_operands, text, underscore};
 use crate::localisation::Localisation;
@@ -37,7 +35,6 @@ const ORIGINAL: u64 = mask::<CountryAppearanceRow>(&["original_tag", "original_t
 const RESERVED_ORIGINAL: u64 =
     mask::<ReservedCountryNamingRow>(&["tag", "original_tag", "original_tag_reference"]);
 
-/// [`super::original_or_own_tag`] of any frame's tables, a walk's views among them.
 pub fn original_or_own_tag<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<String, String> {
     if slot == 0 {
         let rows = frame
@@ -91,8 +88,6 @@ pub fn original_or_own_tag<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<S
     super::original_tag(&country, &row).map(str::to_owned)
 }
 
-/// `T`'s rows the hour holds, a truncated table's read ones among them, and whether it is
-/// complete, as [`super::partial`] reads them.
 fn partial<T: TableSchema, F: Tables + ?Sized>(
     frame: &F,
     fields: u64,
@@ -103,7 +98,6 @@ fn partial<T: TableSchema, F: Tables + ?Sized>(
     )
 }
 
-/// The row of `rows` keyed `key`; a row that cannot be built refuses as its error says.
 fn get<'f, R: replay_data::rows::RowCodec>(
     rows: Option<Rowset<'f, R>>,
     key: u128,
@@ -114,7 +108,6 @@ fn get<'f, R: replay_data::rows::RowCodec>(
     }
 }
 
-/// The last Countries row holding canonical `slot`, as a reverse search finds it.
 fn by_slot<'f>(
     countries: Rowset<'f, CountryRow>,
     slot: u32,
@@ -153,7 +146,6 @@ fn links<F: Tables + ?Sized>(frame: &F) -> Result<Rowset<'_, CountryLinkRow>, St
         .map_err(|why| format!("country links is unavailable this hour: {why}"))
 }
 
-/// [`super::reserved_zero`] of any frame's tables.
 fn reserved_zero<F: Tables + ?Sized>(frame: &F) -> Result<Operands, String> {
     let row = reserved_row(frame)?;
     let tag = if row.name_tag.is_empty() {
@@ -207,7 +199,6 @@ fn reserved_zero<F: Tables + ?Sized>(frame: &F) -> Result<Operands, String> {
     })
 }
 
-/// [`super::country_operands`] of any frame's tables.
 fn country_operands<F: Tables + ?Sized>(
     frame: &F,
     countries: Rowset<'_, CountryRow>,
@@ -225,7 +216,6 @@ fn country_operands<F: Tables + ?Sized>(
     naming_operands(&rows, country.id, &country.tag)
 }
 
-/// The naming tables of any frame, each with whether it is wholly recorded.
 struct FrameRows<'f, 'l> {
     countries: Rowset<'f, CountryRow>,
     links: &'l Result<Rowset<'f, CountryLinkRow>, String>,
@@ -274,8 +264,6 @@ impl NamingRows for FrameRows<'_, '_> {
 }
 
 impl<'a> CountryNames<'a> {
-    /// [`Self::read_selected`] of any frame's tables, a walk's views among them: only the rows
-    /// the requested slots and their overlords reach are built.
     pub fn read_selected_tables<F: Tables + ?Sized>(
         frame: &F,
         localisation: &'a Localisation,

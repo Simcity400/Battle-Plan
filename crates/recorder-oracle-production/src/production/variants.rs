@@ -21,7 +21,6 @@ pub(super) fn compare_variants(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // Tier-4 slot3; cadence table is the single source of truth.
     if !report.refresh_is_current(replay_data::rows::TableId::VariantDefinitions, frame.hour) {
         for table in [
             replay_data::rows::TableId::VariantDefinitions,
@@ -65,15 +64,6 @@ pub(super) fn compare_variants(
     }
 }
 
-/// `VariantDefinitions.archetype_token` against the content: the save does
-/// not write a variant's archetype, but its equipment type's archetype
-/// (as the equipment database leaves it: the type
-/// itself when it is an archetype, else its `archetype`, else its parent's)
-/// is a fact of the recorded content stack. The type is found by name
-/// without case (`type-name lookup`), and the archetype matches the
-/// recorded literal under the lexer's token fold (A-Z).
-/// Content is static within a session, so every recorded row is compared,
-/// not only rows read at the frame's hour.
 pub fn compare_variant_archetypes(
     frame: &DecodedFrame,
     equipment: &installed_content_core::equipment::Database,
@@ -186,7 +176,6 @@ fn compare_variant_definitions(
             "VariantDefinitions.version",
             format!("{label}.version"),
         ) {
-            // The game omits precisely zero and zero-extends every other byte.
             equal(
                 report,
                 format!("{label}.version"),
@@ -213,7 +202,6 @@ fn compare_variant_definitions(
                 report,
             )?;
         }
-        // The writer omits an unset explicit model; presence compares too.
         name_field(
             report,
             &format!("{label}.override_model"),

@@ -1,7 +1,3 @@
-//! WingEquipment rows carried between hours per air wing
-//! ([`super::WingStore`], [`crate::wing_changes`]): quiet hours read no pool,
-//! entry or variant and publish the same rows; a hooked write re-reads only
-//! its wing; an invalidation re-reads every wing.
 use super::*;
 use crate::wing_changes::{Counts, Watches};
 use engine_mutations::{
@@ -11,8 +7,6 @@ use engine_mutations::{
 use engine_native::{cequipment_variant, cequipment_variant_pool, memory::SliceMemory};
 use std::cell::RefCell;
 
-/// Each wing's objects lie in its own 0x800-byte region: the wing first, then its entries and its
-/// variant.
 const REGION: usize = 0x800;
 const WINGS: usize = 3;
 
@@ -32,7 +26,6 @@ fn set_amount(bytes: &mut [u8], index: usize, ordinal: usize, amount: i64) {
     );
 }
 
-/// Each wing: two entries of its own variant (id index + 1).
 fn world() -> Vec<u8> {
     let mut bytes = vec![0; WINGS * REGION];
     for index in 0..WINGS {
@@ -63,7 +56,6 @@ fn world() -> Vec<u8> {
             variant,
             &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
-        // The reference type word, then the variant id.
         put(
             &mut bytes,
             variant + cequipment_variant::TYPE,
@@ -82,7 +74,6 @@ fn world() -> Vec<u8> {
     bytes
 }
 
-/// Every guarded call's first address.
 struct Calls<'a> {
     bytes: &'a [u8],
     calls: RefCell<Vec<usize>>,
@@ -101,12 +92,9 @@ impl Memory for Calls<'_> {
 struct Hour {
     rows: Vec<rows::WingEquipmentRow>,
     counts: Counts,
-    /// Guarded reads of any pool, entry or variant.
     reads: usize,
 }
 
-/// One pass over every wing, as the air pass makes it; `ids` are the
-/// wings' AirWings row ids.
 fn walk(
     bytes: &[u8],
     store: &mut WingStore,
@@ -123,8 +111,6 @@ fn walk(
     }
 }
 
-/// [`walk`]'s pass up to its settlement, before the census concludes:
-/// the rows, whether every wing was complete and the guarded reads.
 fn settle(
     bytes: &[u8],
     store: &mut WingStore,
@@ -179,8 +165,6 @@ fn settle_selected(
 
 const IDS: [u64; WINGS] = [7, 8, 9];
 
-/// The first hour reads and holds every wing; this is what the old
-/// behaviour does every hour.
 fn first_hour(bytes: &[u8], store: &mut WingStore, watches: &Watches) -> Hour {
     let first = walk(bytes, store, watches, IDS);
     assert_eq!(first.rows.len(), 6);
@@ -197,8 +181,6 @@ fn first_hour(bytes: &[u8], store: &mut WingStore, watches: &Watches) -> Hour {
     first
 }
 
-/// A part's store counts the rows its pass holds once it settles, so a
-/// census that fails before concluding still reports them.
 #[test]
 fn a_settled_store_counts_its_held_rows_before_the_census_concludes() {
     let bytes = world();
@@ -240,8 +222,6 @@ fn a_hooked_write_rereads_only_its_wing() {
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
-    // Aircraft loss writer on the second wing: the equipment-destruction family's
-    // detour notifies its pool.
     let notification = watches.kill(wing(1));
     set_amount(&mut bytes, 1, 0, 5);
     drop(notification);
@@ -251,7 +231,6 @@ fn a_hooked_write_rereads_only_its_wing() {
     let mut expected = first.rows.clone();
     expected[2].amount_raw = 5;
     assert_eq!(hour.rows, expected);
-    // The re-read wing is carried again from the next quiet hour.
     watches.boundary(false);
     let quiet = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 3));
@@ -264,7 +243,6 @@ fn a_split_notifies_both_wings() {
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     first_hour(&bytes, &mut store, &watches);
-    // A plane transfer moves aircraft from the first wing to the third.
     let site = MUTATIONS
         .iter()
         .position(|(site, _)| site.name == "move_airplanes")
@@ -289,18 +267,14 @@ fn an_invalidating_hour_or_a_new_wing_id_rereads() {
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
-    // Load, gap or recovery.
     watches.boundary(true);
     let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
     assert_eq!(hour.rows, first.rows);
-    // A wing with another id at the same address is read afresh, and its
-    // rows carry the current id.
     watches.boundary(false);
     let renamed = walk(&bytes, &mut store, &watches, [7, 18, 9]);
     assert_eq!((renamed.counts.read, renamed.counts.reused), (1, 2));
     assert!(renamed.rows[2..4].iter().all(|row| row.wing == 18));
-    // A forgotten store (a failed job) reads every wing.
     watches.boundary(false);
     store.forget();
     let forgotten = walk(&bytes, &mut store, &watches, IDS);
@@ -309,9 +283,6 @@ fn an_invalidating_hour_or_a_new_wing_id_rereads() {
 
 #[test]
 fn an_unobserved_write_is_carried_stale() {
-    // Guards the premise of the family: only hooked writers move a
-    // certificate, so a missed writer would be carried until an
-    // invalidation, which is why every writer site is hooked.
     let mut bytes = world();
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
@@ -328,7 +299,6 @@ fn a_failed_pass_holds_nothing() {
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     first_hour(&bytes, &mut store, &watches);
-    // The second wing is notified and its pool no longer authenticates.
     let [pool, _] = pools(Receiver::Wing, wing(1), 0);
     drop(watches.notify(pool, 0));
     let mut broken = bytes.clone();
@@ -336,7 +306,6 @@ fn a_failed_pass_holds_nothing() {
     watches.boundary(false);
     let failed = walk(&broken, &mut store, &watches, IDS);
     assert_eq!(failed.counts.reused, 2);
-    // The incomplete pass certifies nothing afterwards.
     set_amount(&mut bytes, 0, 0, 5);
     watches.boundary(false);
     let hour = walk(&bytes, &mut store, &watches, IDS);
@@ -354,8 +323,6 @@ fn the_registered_pool_is_the_wings_equipment_pool() {
 
 #[test]
 fn every_wing_writer_but_kill_airplanes_is_a_wing_site() {
-    // Aircraft loss writer has one patch, the equipment-destruction
-    // family's, which notifies this family instead.
     assert!(
         MUTATIONS
             .iter()
@@ -374,8 +341,6 @@ fn every_wing_writer_but_kill_airplanes_is_a_wing_site() {
 #[test]
 fn without_the_kill_airplanes_detour_nothing_is_carried() {
     let mut bytes = world();
-    // The equipment-destruction family is not installed or not enabled:
-    // aircraft loss writer writes go unobserved.
     let watches = Watches::with_kills(16, false);
     let mut store = WingStore::new();
     for _ in 0..3 {
@@ -383,13 +348,10 @@ fn without_the_kill_airplanes_detour_nothing_is_carried() {
         assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
         watches.boundary(false);
     }
-    // An unobserved loss is read, never carried stale.
     set_amount(&mut bytes, 0, 0, 9);
     let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
     assert_eq!(hour.rows[0].amount_raw, 9);
-    // Once the detour is live the domain starts a new epoch: the first hour
-    // reads afresh, the next carries.
     watches.boundary(false);
     watches.observe_kills(true);
     let first = walk(&bytes, &mut store, &watches, IDS);
@@ -397,7 +359,6 @@ fn without_the_kill_airplanes_detour_nothing_is_carried() {
     watches.boundary(false);
     let quiet = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 3));
-    // Disabling the detour stops certification at once.
     watches.observe_kills(false);
     watches.boundary(false);
     let after = walk(&bytes, &mut store, &watches, IDS);
@@ -434,12 +395,10 @@ fn changed_new_removed_reordered_and_refused_wings_match_fresh_rows() {
     };
     capture(&bytes, &[(0, 7), (1, 8)], 2);
     capture(&bytes, &[(0, 7), (1, 8)], 0);
-    // One new wing, a withdrawal, and a different census order.
     capture(&bytes, &[(2, 9), (0, 7)], 1);
     drop(watches.notify(wing(0) + cair_wing::EQUIPMENT_POOL, 0));
     set_amount(&mut bytes, 0, 1, -123);
     capture(&bytes, &[(0, 7), (2, 9)], 1);
-    // Entry-count changes must repack held ranges without changing ordinals.
     put(
         &mut bytes,
         wing(0) + cair_wing::EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
@@ -454,7 +413,6 @@ fn changed_new_removed_reordered_and_refused_wings_match_fresh_rows() {
     );
     drop(watches.notify(wing(2) + cair_wing::EQUIPMENT_POOL, 0));
     capture(&bytes, &[(2, 9), (0, 7)], 1);
-    // An incomplete census certifies no survivors, even if their bytes match.
     capture(&bytes, &[(0, 7)], 1);
     capture(&bytes, &[], 0);
     capture(&bytes, &[(0, 7)], 1);

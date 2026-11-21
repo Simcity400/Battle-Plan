@@ -1,23 +1,12 @@
-//! CNavalUnitTransfer resolved from combat participant handles; no event hook
-//! is installed.
 
 use engine_sites::Rva;
-/// CNavalUnitTransfer vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029e_a3a0);
-/// CNavalUnitTransfer packed reference handle u64.
 pub const HANDLE: usize = 0x08;
-/// Signed combat-reference count. Nonzero selects combat action nine
-/// and prevents transfer; save and load retain the vector. Omission means
-/// zero count.
 pub const ACTION_STATUS: usize = 0x24;
-/// CNavalUnitTransfer unit-handle array.
 pub const UNITS: usize = 0x38;
-/// CNavalUnitTransfer target province id u32.
 pub const TARGET_PROVINCE: usize = 0x50;
-/// Source province id u32.
 #[cfg(test)]
 pub const SOURCE_PROVINCE: usize = 0x54;
-/// CNavalUnitTransfer constructor.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00e9_3e70);
 
 use crate::{
@@ -36,9 +25,6 @@ pub enum Transfer {
     },
 }
 
-/// Transport status uses the original unit's naval-transfer selector, then the signed combat
-/// reference count. The count is saved with token 0x2916. The railway counter consumes only
-/// presence and status. Refusal retains identity; never retry an original selector failure.
 pub fn transfer(
     memory: &impl Memory,
     base: usize,
@@ -73,23 +59,14 @@ fn transfer_field(pointer: usize, offset: usize) -> Result<usize, &'static str> 
         .ok_or("selected transport original pointer null or overflow")
 }
 
-/// Base transport speed i64.
 pub const BASE_SPEED_RVA: Rva = Rva(0x033e_3150);
-/// Static modifier-set singleton.
 const MODIFIER_SET_RVA: Rva = Rva(0x033d_e590);
-/// Transport-penalty static-modifier pointer, gated before composition.
 const TRANSPORT_MODIFIER: usize = 0xf8;
-/// Maximum regional operand total i64.
 const MAXIMUM_TOTAL_RVA: Rva = Rva(0x033e_1d68);
-/// Minimum intel advantage subtracted before surplus reduction.
 const MINIMUM_INTEL_RVA: Rva = Rva(0x033e_1000);
-/// Maximum intel advantage i64.
 const MAXIMUM_INTEL_RVA: Rva = Rva(0x033e_1088);
-/// Intel-advantage reduction scale; its product rounds before range division.
 const INTEL_REDUCTION_RVA: Rva = Rva(0x033e_2200);
-/// Naval transport speed token.
 const SPEED_TOKEN: u32 = crate::modifier_keys::NAVAL_SPEED_FACTOR;
-/// Country transport reduction token.
 const REDUCTION_TOKEN: u32 = crate::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION;
 const P: i64 = 100_000;
 
@@ -165,8 +142,6 @@ fn intel(
     Ok(p)
 }
 
-/// Third reciprocal-difference lane. A missing target lane contributes
-/// zero; unreadable or out-of-bounds positive country references fail.
 fn intel_lane(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -200,7 +175,6 @@ fn totals<M: Memory>(
     owner: ccountry::Country,
     region: u32,
 ) -> Result<(i64, i64), &'static str> {
-    // Acquire the owner's intel object before visiting enemies.
     let owner_intel = intel(memory, base, owner)?;
     let relations = diplomacy(memory, base, owner)?;
     let root = at(relations, cdiplomacy_status::ENEMY_COUNTRIES)?;
@@ -256,7 +230,6 @@ fn reduction_fraction(
     maximum_intel: i64,
     intel_reduction: i64,
 ) -> Result<i64, &'static str> {
-    // Ordered native clamp also preserves the behavior of a negative define.
     let bounded = if total < 0 {
         0
     } else if total > maximum {
@@ -293,7 +266,6 @@ fn composed_inputs<M: Memory>(
     region: u32,
 ) -> Result<ComposedInputs, &'static str> {
     let flags = global::<u32>(memory, base, modifier_definition::TRADE_FEATURE_FLAGS_RVA)?;
-    // Feature 0x13 tests exactly DLC bit 4.
     if flags & (1 << 4) == 0 {
         return Ok(ComposedInputs::Zero);
     }
@@ -307,8 +279,6 @@ fn composed_inputs<M: Memory>(
     if value::<u64>(memory, definition, 0)? != key(base, cstatic_modifier::VTABLE_RVA)? as u64 {
         return Err("transport modifier identity mismatch");
     }
-    // Authenticate the owner's navy after DLC/static-definition gates, even with no enemies. The
-    // owner's regional operand is not reached.
     cstrategic_navy_manager::navy(memory, base, state, owner)?;
     let (total, mean) = totals(memory, base, state, countries, owner, region)?;
     let maximum = global::<i64>(memory, base, MAXIMUM_TOTAL_RVA)?;
@@ -331,7 +301,6 @@ fn composed_inputs<M: Memory>(
     } else {
         0
     };
-    // The intel defines participate only after the initial nonzero fraction.
     let (minimum, upper, scale) = if first_fraction != 0 {
         let minimum = global::<i64>(memory, base, MINIMUM_INTEL_RVA)?;
         if mean.wrapping_sub(minimum) > 0 {
@@ -362,8 +331,6 @@ fn composed_inputs<M: Memory>(
             let category = read::<u32>(memory, category_at)
                 .map(i64::from)
                 .ok_or("transport modifier category unreadable")?;
-            // Both category-filter stages use mask 0xffffffff, initialized by the
-            // temporary accumulator constructor.
             if category == 0 {
                 ComposedInputs::Zero
             } else {
@@ -410,14 +377,10 @@ fn weather_modifier(
         .effective
     } else {
         0
-    }; // Out-of-range regions yield no weather modifier.
+    };
     Ok(result)
 }
 
-/// Passive transport-speed operands for a country and strategic region.
-/// Return raw fixed5 speed before the caller multiplier. Only current
-/// callback inputs are read: no getter calls, allocation or cache refresh.
-/// Optional task-force and diagnostic contexts remain null.
 pub fn movement_speed(
     memory: &impl Memory,
     base: usize,
@@ -428,8 +391,6 @@ pub fn movement_speed(
     movement_speed_inputs(memory, base, state, owner, region).map(SpeedInputs::evaluate)
 }
 
-/// Final transport arithmetic has no native demand. Its operands can travel
-/// with an owned movement packet while all conditional acquisition stays parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpeedInputs {
     speed: i64,
@@ -464,8 +425,6 @@ impl SpeedInputs {
     }
 }
 
-/// The same native reads and first refusal as movement_speed, without its
-/// final wrapping additions and fixed-point multiplication.
 pub fn movement_speed_inputs(
     memory: &impl Memory,
     base: usize,
@@ -491,7 +450,6 @@ pub fn movement_speed_inputs(
     {
         return Err("transport region identity mismatch");
     }
-    // Read base speed before both additive factors.
     let speed = global::<i64>(memory, base, BASE_SPEED_RVA)?;
     let weather = weather_modifier(memory, base, state, region_id)?;
     let composed = composed_inputs(memory, base, state, country, &countries, region_id)?;

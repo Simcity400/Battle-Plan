@@ -1,15 +1,9 @@
-//! The arithmetic of one producer's spending runs: a key's history steps as pieces covering a span,
-//! pieces of two sources joined hour by hour, and the reasons a value is not known. No recording is
-//! read here.
 
 use super::ProductionSpendingUnknown;
 use replay_data::rows::ProductionTotalRow;
 
-/// A value from `first` through `last`, both inclusive.
 pub(crate) type Piece<T> = (i32, i32, T);
 
-/// `steps` (each a value from its hour until the next step) as pieces covering `first..=last`,
-/// `absent` before the first step; equal neighbours are one piece.
 pub(crate) fn pieces<T: Clone + PartialEq>(steps: impl IntoIterator<Item = (i32, T)>, first: i32, last: i32, absent: T) -> Vec<Piece<T>> {
     let mut out: Vec<Piece<T>> = vec![(first, last, absent)];
     for (hour, value) in steps {
@@ -38,8 +32,6 @@ pub(crate) fn pieces<T: Clone + PartialEq>(steps: impl IntoIterator<Item = (i32,
     out
 }
 
-/// `a` and `b`, two piece lists covering the same span, joined by `join` at every hour; equal
-/// neighbours are one piece.
 pub(crate) fn zip<A, B, C: PartialEq>(a: &[Piece<A>], b: &[Piece<B>], mut join: impl FnMut(&A, &B) -> C) -> Vec<Piece<C>> {
     let mut out: Vec<Piece<C>> = Vec::with_capacity(a.len().max(b.len()));
     let (mut i, mut j) = (0, 0);
@@ -62,7 +54,6 @@ pub(crate) fn zip<A, B, C: PartialEq>(a: &[Piece<A>], b: &[Piece<B>], mut join: 
     out
 }
 
-/// What a spending total holds at an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Amount {
     Known(i128),
@@ -70,7 +61,6 @@ pub(crate) enum Amount {
 }
 
 impl Amount {
-    /// The sum of two amounts: unknown where either is, with the first one's reason.
     pub(crate) fn plus(self, other: Self) -> Self {
         match (self, other) {
             (Self::Known(a), Self::Known(b)) => a.checked_add(b).map_or(Self::Unknown(ProductionSpendingUnknown::SpendingUnavailable), Self::Known),
@@ -79,11 +69,8 @@ impl Amount {
     }
 }
 
-/// Whether the producer's own rows can be read at an hour: its country row shown, and nothing its
-/// source's coverage says is unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Context {
-    /// The country totals row is not shown: the writer did not run, or the table was not read.
     NotShown,
     Unknown(ProductionSpendingUnknown),
     Known,
@@ -98,7 +85,6 @@ impl Context {
         }
     }
 
-    /// A row's amount under this context: no row is zero, a cell not recorded is unknown for `reason`.
     pub(crate) fn amount(self, row: Option<Option<i64>>, reason: ProductionSpendingUnknown) -> Amount {
         match self {
             Self::NotShown => Amount::Unknown(ProductionSpendingUnknown::NotRecorded),
@@ -112,7 +98,6 @@ impl Context {
     }
 }
 
-/// A [`ProductionTotalRow`] or coverage reason code as the reply names it.
 pub(crate) fn reason(code: u8) -> ProductionSpendingUnknown {
     match code {
         ProductionTotalRow::NOT_RECORDED => ProductionSpendingUnknown::NotRecorded,
@@ -124,8 +109,6 @@ pub(crate) fn reason(code: u8) -> ProductionSpendingUnknown {
     }
 }
 
-/// A coverage row's cells: where its observation began, the first hour its spending is unknown
-/// from, and why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Coverage {
     pub observation: Option<i32>,
@@ -133,8 +116,6 @@ pub(crate) struct Coverage {
     pub reason: u8,
 }
 
-/// Pieces of a coverage row (none where it is not shown) as the reason spending is unknown at each
-/// hour: from its `unknown_from` hour on, while the row holds it.
 pub(crate) fn unknown_pieces(rows: &[Piece<Option<Coverage>>]) -> Vec<Piece<Option<ProductionSpendingUnknown>>> {
     let mut out: Vec<Piece<Option<ProductionSpendingUnknown>>> = Vec::new();
     let mut push = |first: i32, last: i32, value: Option<ProductionSpendingUnknown>| match out.last_mut() {
@@ -155,13 +136,10 @@ pub(crate) fn unknown_pieces(rows: &[Piece<Option<Coverage>>]) -> Vec<Piece<Opti
     out
 }
 
-/// Two reasons a source is unknown joined: the first's where it has one.
 pub(crate) fn either(a: &Option<ProductionSpendingUnknown>, b: &Option<ProductionSpendingUnknown>) -> Option<ProductionSpendingUnknown> {
     a.or(*b)
 }
 
-/// The union of `spans` (each sorted or not) as sorted, disjoint pieces of `true` over
-/// `first..=last`, `false` elsewhere.
 pub(crate) fn union(mut spans: Vec<(i32, i32)>, first: i32, last: i32) -> Vec<Piece<bool>> {
     spans.sort_unstable();
     let mut held: Vec<(i32, i32)> = Vec::new();
@@ -190,7 +168,6 @@ pub(crate) fn union(mut spans: Vec<(i32, i32)>, first: i32, last: i32) -> Vec<Pi
     out
 }
 
-/// The latest of the sorted `reads` at or before `hour`.
 pub(crate) fn read_at(reads: &[i32], hour: i32) -> Option<i32> {
     let at = reads.partition_point(|&read| read <= hour);
     at.checked_sub(1).map(|at| reads[at])
@@ -204,9 +181,7 @@ mod tests {
     #[test]
     fn steps_become_pieces_over_the_span_with_the_absent_value_before_the_first() {
         assert_eq!(pieces([(15, Some(3)), (18, Some(3)), (20, None)], 10, 30, None), vec![(10, 14, None), (15, 19, Some(3)), (20, 30, None)]);
-        // A step at the span's first hour replaces the absent value; steps past the span are left out.
         assert_eq!(pieces([(10, 1), (12, 2), (40, 3)], 10, 20, 0), vec![(10, 11, 1), (12, 20, 2)]);
-        // A step back to the value before joins the pieces.
         assert_eq!(pieces([(10, 1), (10, 0)], 10, 12, 0), vec![(10, 12, 0)]);
     }
 
@@ -234,7 +209,6 @@ mod tests {
         assert_eq!(Amount::Known(2).plus(Amount::Known(3)), Amount::Known(5));
         assert_eq!(Amount::Known(2).plus(Amount::Unknown(Why::RocketTableUnavailable)), Amount::Unknown(Why::RocketTableUnavailable));
         assert_eq!(Amount::Unknown(Why::NotRecorded).plus(Amount::Unknown(Why::LostOutput)), Amount::Unknown(Why::NotRecorded));
-        // Coverage holding a later hour than its piece's end is known throughout the piece.
         let later = unknown_pieces(&[(0, 9, Some(Coverage { observation: None, unknown_from: Some(30), reason: 0 })), (10, 40, None)]);
         assert_eq!(later, vec![(0, 40, None)]);
     }

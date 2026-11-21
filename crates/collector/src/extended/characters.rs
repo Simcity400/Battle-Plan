@@ -1,5 +1,3 @@
-//! Persistent character state. Native walks use pooled rows and literal-byte
-//! arenas; sorting, duplicate checks and owned replay strings run off-thread.
 
 use engine_allocation::{copy_vec, owned_vec, reserve, reserve_exact};
 pub(crate) mod advisors;
@@ -59,7 +57,6 @@ pub struct Capacities {
 collector_primitives::capacity_max!(Capacities { rows, bytes });
 
 impl Capacities {
-    /// Off-thread live unit/trait demand, independent of country count.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,
@@ -69,9 +66,6 @@ impl Capacities {
         demand::presize(self, memory, base, state)
     }
 
-    /// Characters keeps one row per roster occurrence and both names and the
-    /// template file of each (`ccharacter::demand`), so the live roster sizes
-    /// the first full hour rather than a vanilla count.
     pub(crate) fn raise_for_characters(&mut self, demand: ccharacter::Demand) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(demand.rows, 1));
@@ -151,42 +145,20 @@ pub struct Captured {
     units: Buffer<LeaderRow>,
     traits: Buffer<cunit_leader::TraitRow>,
     training_outcome: Outcome,
-    /// Tables acquired by independent raw jobs, including terminal failures.
-    /// The typed walk handles only the remaining tables; the decode worker
-    /// merges successful parts before publication. Preserved across reset
-    /// and cleared per part after decode.
     pub(crate) raw_active: [bool; N],
     fallback_jobs: [Option<Box<CharactersJob>>; PARTS],
-    /// The key of the latest decode's Characters rows when it came from a
-    /// quiet roster hour ([`quiet::rows_key`]).
     quiet_rows: Option<quiet::RowsKey>,
-    /// What the Characters and UnitLeaders buffers hold since their latest
-    /// publication ([`Held`]).
     held: Held,
 }
 
-/// The quiet roster hour tables a frame's buffers hold, so a later quiet
-/// hour with the same key publishes them without rewriting. Buffers are
-/// written only by a walk (`install_family`) or a republication, and each
-/// clears the key of what it wrote. `reset` and growth, which only appends
-/// default rows after the held ones (`grow_vec`), keep their contents.
 #[derive(Clone, Copy, Debug, Default)]
 struct Held {
-    /// The quiet roster hour key of the Characters rows ([`quiet::RowsKey`]).
     characters: Option<quiet::RowsKey>,
-    /// The leader carry's table key of the UnitLeaders rows
-    /// ([`leader_carry::LeaderCarry::table_key`]), with their result.
     units: Option<((u64, u64), ReadResult)>,
-    /// The trait carry's table key of the UnitLeaderTraits rows, with their
-    /// result.
     traits: Option<((u64, u64), ReadResult)>,
-    /// The advisor cache's content version of the AdvisorRoles rows
-    /// ([`advisors::Cache::decode`]), with their result.
     advisors: Option<(u64, ReadResult)>,
 }
 
-/// Disjoint table owners. Part zero supplies the current portrait census;
-/// role and trait acquisition can run concurrently on the same stopped world.
 pub(crate) const PART_MASKS: [[bool; N]; 4] = [
     [true, false, false, true, false, true],
     [false, true, false, false, false, false],
@@ -223,8 +195,6 @@ impl Captured {
             || replay_data::cadence::Cadence::Daily(replay_data::cadence::COMMANDER_PROGRESS_SLOT)
                 .is_refresh(hour)
         {
-            // Revoke before dispatch: a rejected worker cannot leave a prior
-            // world's or day's samples available to the next off-slot hour.
             daily_experience::STORE
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -273,7 +243,6 @@ impl Captured {
         }
     }
 
-    /// Allocation-free placeholder while the final-input worker owns storage.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -337,7 +306,6 @@ impl Captured {
         std::array::from_fn(|index| family_active[index] && !self.raw_active[index])
     }
 
-    /// The scheduled persistent tables share one current roster.
     #[cfg(test)]
     pub fn capture(
         &mut self,
@@ -370,8 +338,6 @@ impl Captured {
         ticks
     }
 
-    /// Worker fallback uses the same original-observation acquisition and
-    /// owned decode as the role jobs. Only tables without a raw owner run.
     pub(crate) fn capture_growing(
         &mut self,
         memory: &impl Memory,
@@ -423,7 +389,6 @@ impl Captured {
         ]
     }
 
-    /// Called only by the spool thread after the buffer has left the callback.
     pub fn tables(&self) -> [TableView; N] {
         self.convert_tables(
             |view| view,
@@ -668,7 +633,6 @@ impl Captured {
                 }
             }
         }
-        // Scalar truncation means the missing leaders' progress is unknown too.
         let outcome = match self.units.rows.outcome {
             Outcome::Truncated { unread_rows, .. } => Outcome::Truncated {
                 len: output.len(),
@@ -710,7 +674,6 @@ impl Captured {
     }
 }
 
-/// A pointer occurring twice names no single held read, so all its entries go.
 pub(crate) fn sort_dropping_repeated<T>(entries: &mut Vec<T>, pointer: impl Fn(&T) -> usize) {
     entries.sort_unstable_by_key(&pointer);
     let mut index = 0;
@@ -738,16 +701,6 @@ fn character_ranges_valid(row: &ccharacter::Row, bytes: &[u8]) -> bool {
         && valid(bytes, row.template_file_start, row.template_file_len)
 }
 
-/// Template identities an earlier hour read, keyed by character id and
-/// guarded by the character's current template pointer in the name token
-/// span every character view copies each hour. Only a
-/// character's build and a save load write that pointer, and a template's
-/// tag, file, line and generated byte are written before any character holds
-/// it, so an unchanged pointer keeps its identity; a changed or new pointer
-/// is read again. A full hour, or another module or game state, reads every
-/// template again. The owning job's copy and its decode consult the same
-/// state: only the decode worker rebuilds it, from the rows it produced, and
-/// a change moves `generation`, which keys the prepared read program.
 #[derive(Debug, Default)]
 pub(crate) struct TemplateCache {
     scope: (usize, usize),
@@ -766,8 +719,6 @@ struct TemplateEntry {
 }
 
 impl TemplateCache {
-    /// Before a copy: forget every identity on a full hour or a new scope.
-    /// Clearing keeps the allocation, so the game thread never allocates.
     fn begin(&mut self, base: usize, game_state: usize, force_full: bool) {
         if force_full || self.scope != (base, game_state) {
             if !self.entries.is_empty() || self.scope != (base, game_state) {
@@ -779,7 +730,6 @@ impl TemplateCache {
         }
     }
 
-    /// The identity read for this character's template at this pointer.
     fn known(&self, id: u32, pointer: usize) -> Option<ccharacter_template::Known<'_>> {
         let index = self
             .entries
@@ -792,9 +742,6 @@ impl TemplateCache {
         })
     }
 
-    /// Decode worker only: the identities of a complete Characters read. Any
-    /// other outcome forgets them all. An id held by more than one pointer is
-    /// left out, so every occurrence reads its own template again.
     fn rebuild(&mut self, outcome: Outcome, rows: &[ccharacter::Row], bytes: &[u8]) {
         let rows = match outcome {
             Outcome::Rows { len } => rows.get(..len),
@@ -811,7 +758,6 @@ impl TemplateCache {
                 rows.iter()
                     .filter(|row| row.template != 0 && character_ranges_valid(row, bytes)),
             );
-            // Preserve the original first occurrence when identities repeat.
             present.sort_unstable_by_key(|row| (row.id, *row as *const ccharacter::Row as usize));
             let Some(file_bytes) = present
                 .iter()
@@ -908,9 +854,6 @@ impl From<active_ability_record::TokenWalk> for ReadResult {
     }
 }
 
-/// Aggregates exact native counts across owners, each walk filling a growing
-/// suffix. After a walk leaves rows unread, later owners contribute counts only
-/// and no later row fills a hole in the prefix.
 struct Batch<'a, R> {
     rows: engine_native::walk::Buffer<'a, R>,
     bytes: engine_native::walk::Buffer<'a, u8>,
@@ -1037,16 +980,12 @@ impl<'a, R> Batch<'a, R> {
     }
 }
 
-/// What a growing walk stored from its starts: its rows, its bytes, and the
-/// bytes it needed.
 pub(super) struct Stored {
     pub(super) rows: usize,
     pub(super) bytes_len: usize,
     pub(super) required_bytes: usize,
 }
 
-/// A batch whose walks store every row they read in growing storage, so it
-/// never leaves a row unread.
 struct GrowingBatch<'a, R> {
     rows: &'a mut Vec<R>,
     bytes: &'a mut Vec<u8>,
@@ -1078,8 +1017,6 @@ impl<'a, R> GrowingBatch<'a, R> {
         }
     }
 
-    /// One walk from the batch's row and byte lengths; its byte offsets are
-    /// relative to its start until `relocate` moves them.
     fn append(
         &mut self,
         walk: impl FnOnce(&mut Vec<R>, usize, &mut Vec<u8>, usize) -> Result<Stored, &'static str>,
@@ -1198,7 +1135,6 @@ impl Family<'_> {
             || self.traits.active()
     }
 
-    /// Domains a character view must copy: names, leader map, unit, advisors.
     fn required(&self) -> [bool; 4] {
         [
             self.characters.active(),
@@ -1231,9 +1167,6 @@ impl Family<'_> {
         self.advisors.append_tooltips(memory, 0, self.advisors.len);
     }
 
-    /// Every table's rows for one roster occurrence. `templates` holds the
-    /// template identities the decoding job's copy relied on; the live walk
-    /// has none and reads every template.
     #[allow(clippy::too_many_arguments)]
     fn visit<M: Memory>(
         &mut self,
@@ -1253,8 +1186,6 @@ impl Family<'_> {
                         .characters
                         .and_then(|carry| carry.carried_row(character.pointer, character.id))
                     {
-                        // The held row with this hour's identity, country and
-                        // roster position.
                         Some((held, text)) => leader_carry::held_rows(
                             &[ccharacter::Row {
                                 id: character.id,
@@ -1357,9 +1288,6 @@ impl Family<'_> {
             );
             return;
         }
-        // Reuse the authenticated scalar header on the normal path. The
-        // trait vector retains independent availability when scalar capacity
-        // or a skill/text fault requires reading only the parent's identity.
         let identity = if traits.active() {
             Some(if units.len > previous_len {
                 Ok(units.rows[previous_len].native.id)
@@ -1408,8 +1336,6 @@ fn walk_family<M: Memory>(
     )
 }
 
-/// `walk_family`, with Characters rows of `carry`'s carried characters
-/// supplied from their held reads.
 fn walk_family_carrying<M: Memory>(
     memory: &M,
     base: usize,
@@ -1427,7 +1353,6 @@ fn walk_family_carrying<M: Memory>(
         }
         let roster = ccharacter_manager::Roster::read(memory, base, game_state)?;
         let mut cursor = roster.cursor();
-        // Capture and owned decoding retain the same fixed-page protocol.
         let mut page = ccharacter_manager::ViewPage::default();
         while family.alive() {
             let next = loop {
@@ -1463,11 +1388,6 @@ fn walk_family_carrying<M: Memory>(
     family.results()
 }
 
-/// `walk_family` over the occurrences a census-loaned acquisition visited.
-/// Each view holds the same authenticated fields `View::read` would copy;
-/// omitted occurrences produce no rows and read nothing in the typed walk.
-/// The census holds no character names: Characters rows come only from the
-/// carry, on a quiet roster hour ([`quiet`]), which carries every one.
 fn walk_census<M: Memory>(
     memory: &M,
     base: usize,
@@ -1508,8 +1428,6 @@ fn walk_census<M: Memory>(
     family.results()
 }
 
-/// A traits job's decode: whether every leader it read afresh projects the
-/// rows it holds, so its buffers' table is this hour's.
 fn fresh_traits_unchanged(job: &CharactersJob) -> bool {
     let carry = &job.trait_carry;
     let mut vectors = job.traits.vectors.iter().enumerate();
@@ -1543,7 +1461,6 @@ fn fresh_traits_unchanged(job: &CharactersJob) -> bool {
     vectors.next().is_none()
 }
 
-/// The rows a walk takes from held reads rather than memory.
 #[derive(Clone, Copy, Default)]
 struct Carried<'a> {
     characters: Option<&'a carry::Carry>,
@@ -1580,7 +1497,6 @@ fn unit_identity(
     Ok(u32::from_le_bytes(reference[4..].try_into().unwrap()))
 }
 
-/// One unit leader's row, its bytes stored from the walk's start.
 struct UnitRead {
     row: LeaderRow,
     bytes_len: usize,
@@ -1588,7 +1504,6 @@ struct UnitRead {
 }
 
 impl UnitRead {
-    /// Stores the row at `at`, growing `rows` to hold it.
     fn store(self, rows: &mut Vec<LeaderRow>, at: usize) -> Result<Stored, &'static str> {
         engine_native::walk::grow(rows, at + 1)?;
         rows[at] = self.row;
@@ -1600,8 +1515,6 @@ impl UnitRead {
     }
 }
 
-/// One unit leader, its bytes stored from `from` in storage that grows to
-/// hold them.
 fn read_unit_selected(
     memory: &impl Memory,
     base: usize,
@@ -1693,7 +1606,6 @@ fn read_unit_selected(
     Ok(UnitRead {
         row: LeaderRow {
             native,
-            // The token is saved as name; the display name is a separate unsaved string.
             text_a_start: text.name_len,
             text_a_len: text.token_len,
             text_b_start: 0,
@@ -1711,7 +1623,6 @@ fn read_unit_selected(
     })
 }
 
-/// Appends one 16-byte training entry, or names why it was not stored.
 fn training_entry(
     bytes: &mut Vec<u8>,
     from: usize,
@@ -1879,7 +1790,6 @@ fn tooltip_ranges_valid(mut bytes: &[u8]) -> bool {
     true
 }
 
-/// Used only after `view` validates every range for this table.
 fn owned(bytes: &[u8], start: usize, len: usize) -> Vec<u8> {
     owned_vec(copy_vec(&bytes[start..start + len]))
 }
@@ -1938,32 +1848,7 @@ pub(super) fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> Act
     }
 }
 
-// ===========================================================================
-// Raw-copy split for hourly Characters/UnitLeaders and scheduled roles and
-// traits. ActiveAbilities is its own hourly pool pack
-// (`super::active_abilities`).
-//
-// The game thread copies raw bytes only: the manager census, the per-entry
-// view spans, heap string payloads by header length, role-map nodes with
-// batched gathers, and unit/trait nesting. Trait definitions are
-// owned once per successful current-pass observation.
-// The FIFO decode worker replays `walk_family` against the
-// recorded spans and projects owned trait occurrences into the typed arenas.
-// Native field values, order, truncation and failure precedence are retained.
-//
-// Read-set rules the mirror follows (repeated address/length observations
-// retain their order, including failed reads):
-// - reads served locally by `ccharacter::View` need no log entry beyond the
-//   seven view spans themselves;
-// - trait row and byte capacities bound the acquired prefix; other tables
-//   record a superset and truncate against the pooled buffers during replay;
-// - on any failed span the mirror aborts that sub-path exactly where the
-//   typed walk would fail it, and failed batch flags (`Dead`) skip later
-//   sub-copies exactly where `Batch::append` would skip the typed walk;
-// - shared view bytes are parsed from the current copy only.
-// ===========================================================================
 
-/// Fault-attribution bits, one per family table in `TABLES` order.
 const MASK_CHARACTERS: u32 = 0x01;
 const MASK_LEADERS: u32 = 0x02;
 const MASK_ADVISORS: u32 = 0x04;
@@ -1973,14 +1858,8 @@ const MASK_TRAINING: u32 = 0x20;
 const MASK_ALL: u32 = 0x3f;
 const MASK_COUNTRY: u32 = MASK_CHARACTERS | MASK_LEADERS | MASK_ADVISORS;
 const MASK_UNIT_LINK: u32 = MASK_UNITS | MASK_TRAITS;
-/// Identity-fallback spans feed only the trait vector: the units outcome is
-/// already decided when the typed fallback runs. The overlapping identity
-/// span itself already attributes units through `MASK_UNIT_LINK`.
 const MASK_TRAIT_FALLBACK: u32 = MASK_TRAITS;
 
-/// View span offsets, lengths and fault masks in `View::read` order:
-/// identity, country, name token id and template pointer, name/token headers,
-/// leader map head, unit leader pointer, advisor map head, gender.
 const VIEW_OFFSETS: [usize; 8] = [
     0,
     ccharacter::COUNTRY,
@@ -2003,8 +1882,6 @@ const VIEW_MASKS: [u32; 8] = [
     MASK_CHARACTERS,
 ];
 
-/// Roster pointer pages are read in 32-entry chunks, exactly like the typed
-/// cursor, so the replay requests the identical page spans.
 const ROSTER_PAGE: u32 = 32;
 
 mod traits;
@@ -2013,15 +1890,10 @@ use traits::*;
 mod owned_copy;
 pub(crate) use owned_copy::*;
 
-/// How one character job relates to this callback's role census.
 #[derive(Clone, Copy)]
 pub(crate) enum Roles<C> {
-    /// Walk the roster independently.
     Independent,
-    /// The roster job also gathers the role census for this hour's role jobs.
     Gather,
-    /// A role job borrows the roster job's census; without an admitted
-    /// census it walks the roster independently.
     Borrow(C),
 }
 
@@ -2035,18 +1907,12 @@ impl Roles<engine_allocation::SharedBox<census::RoleCensus>> {
     }
 }
 
-/// Raw acquisition of the current scheduled family with exclusively owned jobs.
-/// Copies one current payload and returns its acquisition costs. Staging grows
-/// before each next native observation; when it cannot, the caller takes the
-/// existing typed fallback and enqueues no payload.
 pub(crate) fn copy_characters(
     memory: &impl Memory,
     ctx: CharactersCopyContext,
     job: &mut CharactersJob,
     roles: Roles<&census::RoleCensus>,
 ) -> CharactersCopyReport {
-    // One roster acquisition owns the shared daily XP carry until it ends.
-    // Raw payloads own the supplying bytes, so later decodes never consult it.
     let mut daily = ctx.active[3].then(|| {
         daily_experience::STORE
             .lock()
@@ -2070,7 +1936,6 @@ pub(crate) fn copy_characters(
         }
         job.experience.finish(report.raw_ok && !job.log.fault[3]);
         std::mem::swap(&mut job.experience, &mut **held);
-        // Keep the generation even after returning the shared storage.
         job.experience.generation = held.generation;
     }
     job.update_census_charge();
@@ -2095,8 +1960,6 @@ fn copy_characters_inner(
         };
     }
     let started = qpc();
-    // The roster domain's token, before any registration or read of the
-    // roster job's pass ([`quiet`]).
     let roster_token = if job.part == 0 {
         job.roster.token()
     } else {
@@ -2114,12 +1977,10 @@ fn copy_characters_inner(
         cache.capture(memory, ctx, &crate::advisor_changes::Observer, loaned);
         crate::advisor_changes::record(cache.counts);
     } else if job.advisor_dynamic.is_some() {
-        // The feature-gated section reader keeps its independent roster walk.
         copy_advisor_sections(memory, ctx, job);
     } else if let Some(census) =
         loaned.filter(|_| job.leader_cache.is_some() && ctx.active == PART_MASKS[1])
     {
-        // CountryLeaderRoles from the census, carrying certified characters.
         let _reads = read_accounting::table(TableId::CountryLeaderRoles);
         job.clear();
         job.active = ctx.active;
@@ -2142,7 +2003,6 @@ fn copy_characters_inner(
     } else if let Some(census) = loaned.filter(|_| census_part(ctx.active)) {
         copy_census(memory, ctx, job, census);
     } else if job.part == 0 && roster_part(ctx.active) {
-        // The roster job's hourly pass, quiet while the roster stands still.
         quiet::capture(
             memory,
             ctx,
@@ -2159,7 +2019,6 @@ fn copy_characters_inner(
     if !job.leader_cached
         && let Some(cache) = job.leader_cache.as_mut()
     {
-        // A pass without the census leaves nothing certified.
         cache.forget();
     }
     let plan_failed = job.requires_no_retry();
@@ -2222,7 +2081,6 @@ impl Captured {
         }
     }
 
-    /// Failure is local to the tables owned by this acquisition job.
     pub(crate) fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         let active = self.begin_capture(hour, force_full);
         self.fail_character_tables(active, reason);
@@ -2270,8 +2128,6 @@ impl Captured {
         Ok(())
     }
 
-    /// Complete a failed persistent-character job after its typed walks were
-    /// gated.
     #[cfg(test)]
     pub(crate) fn fail_characters_capture(&mut self, active: [bool; N], reason: &'static str) {
         self.active = active;
@@ -2303,11 +2159,6 @@ impl Captured {
         self.raw_active = [false; N];
     }
 
-    /// Decode worker, after `decode_characters_payload`: the job keeps the
-    /// template identities of the Characters rows it produced for its next
-    /// copy (`TemplateCache`). A job that did not read Characters keeps its own.
-    /// It also holds a quiet hour's UnitLeaders rows ([`leader_carry`]),
-    /// and names them for this frame's buffers.
     pub(crate) fn remember_templates(&mut self, job: &mut CharactersJob) {
         job.unit_carry.rebuild(
             self.units.rows.outcome,
@@ -2317,7 +2168,6 @@ impl Captured {
                 .first
                 .get(..self.units.bytes.len)
                 .unwrap_or(&[]),
-            // One row per fresh leader.
             |rest| rest.first().map(|row| (1, row.native.id)),
         );
         if job.active[4] {
@@ -2337,8 +2187,6 @@ impl Captured {
                 });
         }
         if job.active[3] {
-            // A full refresh reads current rows without rebuilding the quiet
-            // carry. Its old layout cannot identify the newly read training.
             self.held.units = job
                 .unit_carry
                 .table_key(quiet::census_generation(job))
@@ -2365,7 +2213,6 @@ impl Captured {
                 .first
                 .get(..self.traits.bytes.len)
                 .unwrap_or(&[]),
-            // Each fresh leader's acquired vector, in visit order.
             |_| {
                 vectors.next().and_then(|vector| match vector.outcome {
                     Outcome::Rows { len } => Some((len, vector.leader)),
@@ -2390,8 +2237,6 @@ impl Captured {
             .first
             .get(..self.characters.bytes.len)
             .unwrap_or(&[]);
-        // Rows a quiet decode published again from the job's held copy are
-        // the rows its templates were last rebuilt from.
         if !job.published.matches(self.quiet_rows) {
             job.templates.rebuild(
                 self.characters.rows.outcome,
@@ -2425,10 +2270,6 @@ impl Captured {
         job.carry_charge.set(carried(job));
     }
 
-    /// Decode-worker interpretation of a raw refresh payload into the pooled
-    /// typed rows. Outcomes, arena bytes and counts match the typed walk
-    /// using recorded spans and owned trait observations. Clears its raw gate
-    /// so the next capture starts clean.
     pub(crate) fn decode_characters_payload(
         &mut self,
         base: usize,
@@ -2525,7 +2366,6 @@ impl Captured {
             }
             let result = advisors.result();
             self.advisors.primary(result);
-            // The section walk rewrote the AdvisorRoles buffers.
             self.held.advisors = None;
             advisors::record_modifiers(&self.advisors.rows.rows[..result.outcome.len()]);
             self.raw_active[2] = false;
@@ -2547,8 +2387,6 @@ impl Captured {
             Ok::<_, &'static str>(())
         })()
         .err();
-        // The worker counted each acquired roster/name/template occurrence;
-        // decode reserves those original observations before the fixed Batch.
         fn reserve_payload<R: Default>(
             buffer: &mut Buffer<R>,
             demand: AdvisorDemand,
@@ -2560,8 +2398,6 @@ impl Captured {
             engine_native::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
             Ok(())
         }
-        // A quiet hour whose rows the job already published takes a copy of
-        // them; only the other tables are decoded.
         let quiet_rows = quiet::rows_key(base, job);
         let republish = job.published.matches(quiet_rows);
         let decoded: [bool; N] =
@@ -2578,9 +2414,6 @@ impl Captured {
             None
         };
         let recorded = crate::raw::Recorded::build(&job.log);
-        // A quiet hour that decodes only UnitLeaders, whose buffers hold the
-        // table its held leaders make and whose fresh reads all equal their
-        // held rows, publishes the buffers as they are.
         let held_units = self
             .held
             .units
@@ -2598,8 +2431,6 @@ impl Captured {
                     .is_ok_and(|recorded| quiet::fresh_leaders_unchanged(recorded, base, job))
             })
             .map(|(_, result)| result);
-        // Likewise a traits job whose buffers hold its held leaders' table and
-        // whose fresh vectors all equal their held rows.
         let held_traits = self
             .held
             .traits
@@ -2667,7 +2498,6 @@ impl Captured {
         };
         self.install_carried_family(decoded, results, held_units.is_some());
         if republish {
-            // A frame that published these rows last still holds them.
             let result = if self.held.characters == quiet_rows {
                 job.published.result()
             } else {
@@ -2692,9 +2522,6 @@ impl Captured {
     }
 }
 
-/// Tests that run a character acquisition hold this, so a parallel test
-/// cannot move the shared state mid-test, and each starts from a fresh
-/// attachment's roster and demand hints, daily XP samples and latest census.
 #[cfg(test)]
 pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2712,9 +2539,6 @@ pub(crate) fn test_globals() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod character_target_hint_tests;
 
-/// Shared synthetic address space for the characters copy/decode split
-/// harness: role maps with leader/advisor nodes, heap and inline strings,
-/// skill definitions, army and navy kinds, and a third navy character.
 #[cfg(test)]
 pub(crate) mod characters_test_kit;
 

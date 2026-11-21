@@ -23,7 +23,6 @@ import type { StockCount, StockRow } from './stockpileView';
 import { useStockpileArtwork } from './useStockpileArtwork';
 import type { EquipmentStockpileReply } from './types';
 
-/** Two lines a row: the type, and its models. */
 const ROW_HEIGHT = 40;
 const NOT_RECORDED = 'Not recorded';
 
@@ -32,8 +31,6 @@ const COUNTS: readonly { value: StockCount; label: string; tooltip: string }[] =
   { value: 'ic', label: 'IC', tooltip: 'Output as the IC its lines put in a day; stock and surplus have no IC value' },
 ];
 
-/** Each painted cell of `rows`, keyed `liveKey(group key, column)`: the surplus, stock and output as exact raws, the
- * models line as its text; a value not known is absent, read as missing. */
 export function paintedCells(rows: readonly StockRow[]): Map<string, SortValue> {
   const cells = new Map<string, SortValue>();
   for (const row of rows) {
@@ -46,10 +43,6 @@ export function paintedCells(rows: readonly StockRow[]): Map<string, SortValue> 
   return cells;
 }
 
-/** One country's stockpile at an hour: every equipment type with anything then, led by the game's surplus or
- * shortage (shortages first), with its models and output a day; for an AI-controlled country, for which the game
- * computes none, what it holds. Which rows show and their names render; the surplus, stock, output and the models line are painted from the live cells each frame. Rows open the
- * type's breakdown; the rest of the types are counted, not listed. */
 export default function StockpileTable({ data, hour, at, live, shownAt, included, count, setCount, narrow, active, runtime, track, widget, viewport, onDiagnostics, onPick }: {
   data: EquipmentStockpileReply; hour: number; at: (values: LiveValues<number>) => EquipmentStockpileReply | undefined;
   live: Live<LiveValues<number>>; shownAt: () => number | null;
@@ -71,7 +64,6 @@ export default function StockpileTable({ data, hour, at, live, shownAt, included
   const make = useRef(at);
   make.current = at;
   const derived = useRef<Map<string, StockRow>>(new Map());
-  // The rows the live cells make, as the render's rows are made from its view; read again only when they move.
   const painted = useMemo(() => mapLive(reporting(live, () => shown(shownNow.current())), values => {
     const view = make.current(values);
     if (!view) return valuesOf(new Map<string, SortValue>(), NOT_RECORDED);

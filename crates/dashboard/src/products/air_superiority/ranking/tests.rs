@@ -11,7 +11,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 const TAGS: [(&str, u32); 4] = [("ENG", 1), ("FRA", 2), ("GER", 3), ("USA", 4)];
 const DAYS: usize = 12;
 const LAST: i32 = DAYS as i32 * DAY - 1;
-/// FRA takes faction 7's lead inside day 5.
 const HANDOVER: i32 = 5 * DAY + 12;
 const REGIONS: [u32; 4] = [1, 2, 3, 4];
 
@@ -19,7 +18,6 @@ fn run(tag: &str, first_hour: i32, last_hour: i32) -> Run {
     Run { tag: tag.into(), first_hour, last_hour }
 }
 
-/// ENG leads faction 7 with FRA until the handover, FRA after; both fight GER; USA is at peace.
 fn index() -> AirIndex {
     let groups = Groups {
         factions: [(7, FactionHistory { first_hour: 0, members: vec![run("ENG", 0, LAST), run("FRA", 0, LAST)], leaders: vec![run("ENG", 0, HANDOVER - 1), run("FRA", HANDOVER, LAST)], incomplete: vec![] })].into(),
@@ -42,9 +40,6 @@ fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRo
     RaidAirScoreRow { country, region, friendly, enemy, ..Default::default() }
 }
 
-/// Each day's rows, the same all day: ENG's one big day in region 1; GER's small days in region 2;
-/// FRA's 5,000 a day in region 3 (its leader's read until the handover, its own after) and ENG's 10
-/// on day 0; USA's 1,100 in region 4 on the last day. ENG, GER and USA hold a zero row in region 9.
 fn world() -> Vec<Vec<RaidAirScoreRow>> {
     (0..DAYS as i32)
         .map(|day| {
@@ -66,7 +61,6 @@ fn world() -> Vec<Vec<RaidAirScoreRow>> {
         .collect()
 }
 
-/// Chosen theatre 1 holds regions 1 to 3 through day 5, region 4 after.
 fn member(day: usize) -> HashSet<u32> {
     if day <= 5 { [1, 2, 3].into() } else { [4].into() }
 }
@@ -88,11 +82,8 @@ fn reads(world: &[Vec<RaidAirScoreRow>]) -> Vec<Option<DayRead>> {
         .collect()
 }
 
-/// The derived tables as their writers leave them for this world: at an hour of day `d`, a row
-/// holds day `d`'s values and the sum of the days before.
 struct Tables {
     world: Vec<Vec<RaidAirScoreRow>>,
-    /// The sides view's composed activity, by day and region.
     activity: Vec<HashMap<u32, i64>>,
 }
 
@@ -160,10 +151,6 @@ fn params(mode: AirMode, viewpoint: Option<&str>, country: bool, sides: &[&str],
     }
 }
 
-/// In every mode, each region's sum read from the derived tables equals its sum of main's daily
-/// composition from the raw rows, so the rankings are equal: the sides view, chosen sides, a side's
-/// viewpoint across its leader's handover inside a day, a country's viewpoint, each with and
-/// without a chosen theatre whose regions change.
 #[test]
 fn each_modes_ranking_from_the_tables_equals_the_ranking_composed_from_the_rows() {
     let world = world();
@@ -206,8 +193,6 @@ fn each_modes_ranking_from_the_tables_equals_the_ranking_composed_from_the_rows(
     }
 }
 
-/// A piece cut inside a day leaves that day to the piece after it; the view's last day counts only
-/// once over.
 #[test]
 fn a_view_is_cut_where_its_reads_change_and_each_day_counts_once() {
     let stretches = [Stretch { run: 0, first: 0, last: 100, join: Join::Start }, Stretch { run: 1, first: 101, last: 130, join: Join::Break }];

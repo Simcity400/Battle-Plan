@@ -65,7 +65,6 @@ pub(crate) struct State {
     pub shift: bool,
     pub control: bool,
     pub initial_side: bool,
-    /// The latest daily pass that visited the viewer, at the hour read.
     pub pass: Result<Option<i32>, String>,
 }
 

@@ -1,7 +1,3 @@
-//! The Logistics screen's surplus or deficit and counted stock per equipment
-//! archetype (CLogisticsStatus series 16 and 15, current daily record), for
-//! each country the game computes them for. Daily, in the first slot after
-//! the daily update that writes them.
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
 use engine_land_inputs::clogistics_status as native;
 use engine_native::{Memory, walk::Outcome};
@@ -44,7 +40,6 @@ impl Captured {
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { rows: 0 })
     }

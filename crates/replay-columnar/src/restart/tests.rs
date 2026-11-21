@@ -76,7 +76,6 @@ fn a_restart_reads_back_the_same_rows_and_acquisition() {
     assert!(restored.view.is_empty());
 }
 
-/// A restart keeps which cells the recording did not record.
 #[test]
 fn a_restart_keeps_unrecorded_cells() {
     let mut held = table();
@@ -87,8 +86,6 @@ fn a_restart_keeps_unrecorded_cells() {
     assert!(!restored.table.recorded(1, 2) && restored.table.recorded(1, 0));
 }
 
-/// Two truncated tables holding the same rows but having read different ones restart to
-/// their own views; a view is a truncated table's alone and names live rows only.
 #[test]
 fn a_truncated_restart_keeps_which_rows_its_view_read() {
     let held = table();
@@ -125,8 +122,6 @@ fn damaged_restarts_are_refused() {
     );
 }
 
-/// A restart keeps a table's last complete read: its view sampled at the read, its rows at an
-/// earlier read's hour, or the read apart from rows a partial read changed since.
 #[test]
 fn a_restart_keeps_the_last_complete_read() {
     let held = table();

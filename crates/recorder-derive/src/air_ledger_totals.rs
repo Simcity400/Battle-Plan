@@ -1,13 +1,3 @@
-//! `AirLossTotals` and `BombingTotals`: the air ledger's running totals through each hour of the
-//! run, so a reply over a window of hours carries every holder's totals since the first hour
-//! without reading the events before it. Each counts the rows its log appended at the reads both
-//! the log and CountryLinks were available (the reads the air ledger folds), each side under the
-//! identity its raw country resolved to at that read ([`Holders`]): aircraft losses by region and
-//! native cause, each side split by whether the opposite country resolved; building damage by
-//! aircraft (the air-mission and air-naval callers) by caller, dealt by the attacker and taken by
-//! the victim. A total past 64 bits is not recorded from then on.
-//!
-//! State is the tables; the holders are read again at a fresh hour or when links or holders change.
 
 use crate::{
     deployed::invalid,
@@ -40,12 +30,10 @@ const BOMBING_READS: &[Read] = &[
     Read { table: TableId::TagHolders, columns: Columns::Every, watch: Watch::Changed, required: false },
 ];
 
-/// The ledger's rule for a read: complete, or read in part.
 fn available(status: Status) -> bool {
     matches!(status, Status::Complete | Status::Truncated { .. })
 }
 
-/// What one hour adds to a table's rows: by key, each total column's sum and the most hours late.
 struct Added<const N: usize> {
     rows: BTreeMap<u128, ([i128; N], i32)>,
 }
@@ -61,8 +49,6 @@ impl<const N: usize> Added<N> {
         *most = (*most).max(late);
     }
 
-    /// Each row with the hour's sums added to what it holds; a total that leaves 64 bits, or was
-    /// not recorded, is not recorded.
     fn land(self, table: TableId, out: &mut Rows<'_>) {
         for (key, (sums, late)) in self.rows {
             let (totals, held_late) = {
@@ -83,12 +69,10 @@ impl<const N: usize> Added<N> {
     }
 }
 
-/// A number cell of a log's row; refused when not recorded.
 fn cell(view: &TableView<'_>, column: usize, slot: u32, table: TableId) -> io::Result<i64> {
     view.number(column, slot).ok_or_else(|| invalid(format!("{table:?} holds an event whose cells are not recorded")))
 }
 
-/// An optional number cell of a log's row: none when missing; refused when not recorded.
 fn optional(view: &TableView<'_>, column: usize, slot: u32, table: TableId) -> io::Result<Option<u32>> {
     match view.value(column, slot) {
         Held::Missing => Ok(None),
@@ -97,12 +81,10 @@ fn optional(view: &TableView<'_>, column: usize, slot: u32, table: TableId) -> i
     }
 }
 
-/// The hours a read at `hour` came after an event of `game_hour`.
 fn late(hour: i32, game_hour: i64) -> i32 {
     i64::from(hour).saturating_sub(game_hour).clamp(0, i64::from(i32::MAX)) as i32
 }
 
-/// The holders, read again when the hour is fresh or moved links or holders.
 fn holders<'h>(held: &'h mut Option<Holders>, hour: &Hour<'_>) -> &'h Holders {
     if hour.fresh || Holders::changed(hour) {
         *held = None;
@@ -110,7 +92,6 @@ fn holders<'h>(held: &'h mut Option<Holders>, hour: &Hour<'_>) -> &'h Holders {
     held.get_or_insert_with(|| Holders::read(hour))
 }
 
-/// The rows `log` appended this hour, when the hour counts them: the log and the links available.
 fn counted<'a>(hour: &Hour<'a>, log: TableId) -> Option<(TableView<'a>, Vec<u32>)> {
     let rows = hour.appended(log);
     if rows.is_empty() || !available(hour.status(log)) || !available(hour.status(TableId::CountryLinks)) {
@@ -147,7 +128,6 @@ impl Writer for AirLossTotals {
 
     fn hour(&mut self, hour: &Hour<'_>, out: &mut Rows) -> io::Result<()> {
         const TABLE: TableId = TableId::AirLossEvents;
-        // The totals count only the reads the ledger counts: an unread log adds nothing to them.
         out.status(TableId::AirLossTotals, Status::Complete);
         let holders = holders(&mut self.holders, hour);
         let Some((view, slots)) = counted(hour, TABLE) else { return Ok(()) };

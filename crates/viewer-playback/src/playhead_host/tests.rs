@@ -70,8 +70,6 @@ impl Pages for Recording {
     }
 }
 
-/// `tables` tables of [`KINDS`] over `hours` hours from game hour 0, each hour's changes of each
-/// table made by `hour` (hour `n` names string `n`); every table's state after every hour.
 fn record(tables: usize, hours: u32, hour: impl FnMut(u32, usize, &mut Store)) -> (Arc<Recording>, Vec<Vec<TableState>>) {
     record_with(Writing::at(3), tables, hours, hour)
 }
@@ -104,9 +102,6 @@ fn record_with(settings: Writing, tables: usize, hours: u32, mut hour: impl FnMu
     (Arc::new(Recording { bytes: memory.bytes, runs: vec![run], kinds }), states)
 }
 
-/// Every kind of cell a mirror keeps: numbers, a missing optional, unrecorded cells, text, lists,
-/// rows inserted and deleted, a slot freed and taken by another row, and a stretch the table is
-/// not recorded.
 fn eventful(at: u32, table: usize, store: &mut Store) {
     let status = if (300..310).contains(&at) {
         Status::NotRecorded
@@ -160,7 +155,6 @@ fn eventful(at: u32, table: usize, store: &mut Store) {
     }
 }
 
-/// The mirror's cells against the lane's, every live row and column; the first difference.
 fn differ(mirror: &Mirror, cells: &TableState, columns: &[usize]) -> Option<String> {
     let slots = (cells.slots() as usize).max(mirror.slots());
     for slot in 0..slots as u32 {
@@ -248,31 +242,21 @@ fn a_mirror_from_a_reset_equals_the_lane_and_stays_equal_over_steps() {
     }
 }
 
-/// A test layer: the sum of column 0 of table 0 over live rows, kept per row from the mirror, and
-/// its composes counted; its compose waits for the gate when one is given.
 struct Sum {
     column: Option<Num<i32>>,
     second: bool,
-    /// Refused while the camera is high.
     refuse_high: bool,
-    /// Declares nothing while the camera is high.
     hide_high: bool,
-    /// The head of every mirror it settled from.
     read: Vec<Option<i32>>,
-    /// The camera heights of the views it was told of.
     viewed: Vec<f32>,
     values: Vec<Option<i64>>,
     dirty: Dirty,
     composes: Arc<Mutex<u32>>,
     gate: Option<Arc<Mutex<mpsc::Receiver<()>>>>,
-    /// Told when a compose begins, before it waits for the gate.
     entered: Option<mpsc::Sender<()>>,
-    /// Held in its first settle until the test releases it, telling it when that settle began.
     settle_gate: Option<Arc<Mutex<mpsc::Receiver<()>>>>,
     settling: Option<mpsc::Sender<()>>,
-    /// Its settle stops the side by name once released.
     settle_stops: bool,
-    /// Its first settle at this hour times out, as a catch-up past its bound does.
     times_out_at: Option<i32>,
     frame: u64,
 }
@@ -282,20 +266,17 @@ impl Sum {
         Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, settle_gate: None, settling: None, settle_stops: false, times_out_at: None, frame: 0 }
     }
 
-    /// Composes only when the test sends on the gate it returns.
     fn gated(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>) {
         let (release, gate) = mpsc::channel();
         (Self { gate: Some(Arc::new(Mutex::new(gate))), ..Self::new(composes) }, release)
     }
 
-    /// Settles only while the test lets it: its first settle says it began and waits to be released.
     fn held_settle(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>, mpsc::Receiver<()>) {
         let (release, gate) = mpsc::channel();
         let (settling, began) = mpsc::channel();
         (Self { settle_gate: Some(Arc::new(Mutex::new(gate))), settling: Some(settling), ..Self::new(composes) }, release, began)
     }
 
-    /// Its settle says it began, waits to be released and then refuses: the side stops in its step.
     fn settle_stops(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>, mpsc::Receiver<()>) {
         let (layer, release, began) = Self::held_settle(composes);
         (Self { settle_stops: true, ..layer }, release, began)
@@ -408,7 +389,6 @@ impl Layer for Sum {
     }
 }
 
-/// Every row of every table writes its column 0 each hour.
 fn busy(at: u32, table: usize, store: &mut Store) {
     store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
     let mut changes = store.table(table).unwrap();
@@ -430,7 +410,6 @@ fn units(recording: Arc<Recording>, name: &str) -> Units {
     Units { name: name.to_owned(), pages, timeline, kinds }
 }
 
-/// `recording` as a revision read whole: its pages and column kinds.
 fn read_whole(recording: Arc<Recording>) -> super::units::Read {
     let kinds = Arc::new(recording.kinds.clone());
     let pages: Arc<dyn Pages> = recording;
@@ -457,7 +436,6 @@ fn callers_asking_for_one_recordings_units_at_once_share_one_build() {
         })
     };
     building.recv().unwrap();
-    // Asked while the first build runs: it waits for that build, never builds beside it.
     let second = {
         let (recording, builds) = (Arc::clone(&recording), Arc::clone(&builds));
         std::thread::spawn(move || {
@@ -474,12 +452,10 @@ fn callers_asking_for_one_recordings_units_at_once_share_one_build() {
     assert!(Arc::ptr_eq(&first.pages, &second.pages), "and read the same pages");
 }
 
-/// Four hours a step, a frame a second.
 fn quick() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
-/// Frames at the newest step built until `done` holds, yielding between frames that take nothing.
 fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &super::Frame) -> bool) {
     for _ in 0..50_000_000u64 {
         crate::layers::recorded::reads_landed(side);
@@ -604,8 +580,6 @@ fn a_hook_in_the_slot_runs_on_every_step_until_removed() {
     assert!(seen.lock().unwrap().len() <= count + 4, "a removed hook runs no more once the ring's steps are built");
 }
 
-/// A slot freed past twice the live rows by a margin, at a block the writer restores whole: the
-/// block's end packs the live rows to slots 0 to live - 1, and the mirror remaps itself to them.
 #[test]
 fn a_renumber_at_a_packed_block_end_remaps_the_mirror() {
     let settings = Writing { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..Writing::at(3) };
@@ -652,8 +626,6 @@ fn a_renumber_at_a_packed_block_end_remaps_the_mirror() {
     assert_eq!(renumbered, 1);
 }
 
-/// The same packing with rows 0 to 4 left where they were: the renumber moves the five rows past
-/// them alone, and the mirror equals the lane's cells, keys and index as a remap of every row.
 #[test]
 fn a_renumber_moves_only_the_rows_past_the_first_freed_slot() {
     let settings = Writing { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..Writing::at(3) };
@@ -695,9 +667,6 @@ fn a_renumber_moves_only_the_rows_past_the_first_freed_slot() {
     assert_eq!(renumbered, 1);
 }
 
-/// A recording of format 141 lacks Divisions.theatre, added at format 142: a mirror of every
-/// Divisions column holds the rest as written and no theatre, which reads not recorded at the reset
-/// and after each step, never as a zero.
 #[test]
 fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
     use playhead::pages::{Span, WorldPages};
@@ -708,7 +677,6 @@ fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
     use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
     let table = TableId::Divisions;
     let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];
-    // The second division is born at hour 20, so a step inserts a row.
     let (bytes, _) = fixtures::written_at(CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &[(1, 0, 1)], &[table], |synthetic, _, ordinal| {
         let rows = &divisions[..if ordinal < 20 { 1 } else { 2 }];
         synthetic.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
@@ -737,8 +705,6 @@ fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
     assert_eq!(read(&mirror), [row(&divisions[0]), row(&divisions[1])], "after the steps");
 }
 
-/// Hours between two pieces are a gap: every table reads as not recorded there, never as its
-/// last rows, and the next piece's reset makes them recorded again.
 #[test]
 fn a_gap_step_shows_every_table_not_recorded_until_the_next_piece() {
     let (recording, _) = record(2, BLOCK, busy);
@@ -770,9 +736,6 @@ fn a_gap_step_shows_every_table_not_recorded_until_the_next_piece() {
     assert!(gap > 0, "a gap step was taken");
 }
 
-/// An upstream layer (twice a column) and a dependent (the upstream's value plus one), stepped
-/// together with budgets that starve both: the dependent never settles from a half-settled
-/// upstream, and whenever both are whole it equals the dependent composed from scratch.
 #[test]
 fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
     struct Twice {
@@ -918,15 +881,12 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
         assert_eq!(plus.settled_from_half, 0, "the dependent never settles from a half-settled upstream");
         (twice.dirty.len() == 0 && plus.dirty.len() == 0).then(|| assert_eq!(plus.values, Plus::from(twice), "stepwise equals composed"))
     };
-    // A settle runs to its last entity, so a frame that applies a step leaves both layers whole:
-    // every one of these frames is checked, and none is allowed to be half settled.
     for _ in 0..12 {
         frames_until(&mut side, |side, frame| frame.steps > 0 && !side.composing());
         assert!(check(&side).is_some(), "the frame that applied a step left both layers whole");
     }
 }
 
-/// A slower page anchor is a seek at the current head, and the steps after it are an hour each.
 #[test]
 fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
     use dashboard_follow::registry::Anchor;
@@ -937,7 +897,6 @@ fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
     let anchor = Anchor { hour: 0, position: 0., timestamps: None, playing: true, speed: 1440., frame_rate: 60., seek: 1, sought: true };
     entry.follow_anchor(anchor);
     while rx.recv().unwrap().1 < 24 {}
-    // The follow host's playhead is its own, never the map's: the page clock alone paces it.
     let epoch = entry.playhead().epoch();
     entry.follow_anchor(Anchor { hour: 5, position: 5., speed: 60., sought: false, ..anchor });
     let slower = entry.playhead().epoch();
@@ -953,9 +912,6 @@ fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
     assert_eq!(rx.recv().unwrap(), (false, 9));
 }
 
-/// A second anchor of an hour makes no second seek; and the clock answers a pause, a speed and a
-/// seek the moment the frame anchors them, no step taken at all, so the rate the simulation holds
-/// never delays the clock's own answer.
 #[test]
 fn two_anchors_of_the_same_hour_make_one_seek() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1051,15 +1007,9 @@ fn a_layer_shown_again_never_reads_a_mirror_its_tables_left() {
         stepped += frame.steps;
         stepped >= 6
     });
-    // The side's mirrors hold every table of the recording for its makers, so a table no drawn
-    // layer declares stays there; what the layer must not do is read it before it composes again,
-    // which the reads below are the test of.
     let shown = entry.playhead().newest().unwrap();
     let before = sum_layer(&side, 0).read.len();
     side.set_view(View::default()).unwrap();
-    // Its table left the lanes while hidden: shown again, it is read from the file and lands at the
-    // hour the frames are at, which the frames give its read the turn to reach before they move on
-    // (`reads_landed`); the layer composes with its rows then, and reads nothing before.
     let last = 4 * BLOCK as i32 - 1;
     frames_until(&mut side, |side, frame| (frame.steps > 0 && !side.composing() && sum_layer(side, 0).read.len() > before + 2) || frame.applied == Some(last));
     let read = &sum_layer(&side, 0).read[before..];
@@ -1095,8 +1045,6 @@ fn a_table_two_layers_share_stays_current_when_one_stops_declaring_it() {
     assert_eq!(differ(mirror, &states[0][head as usize], &[0]), None, "the shared table stays current");
 }
 
-/// The stepped harness's frames, one hour and several apart, across a block end: each is reached
-/// (a step ends on every hour) and the mirror equals the recording there.
 #[test]
 fn stepped_frames_reach_every_hour_across_a_block_end() {
     let (recording, states) = record(1, 2 * BLOCK, busy);
@@ -1114,9 +1062,6 @@ fn stepped_frames_reach_every_hour_across_a_block_end() {
     }
 }
 
-/// An upstream that publishes one id a frame and carries work for its first frames, and a
-/// dependent that reads what it published only in `settle_with`: held while the upstream carries,
-/// it must still see every id once it settles.
 #[test]
 fn a_held_dependent_sees_every_change_published_while_it_was_held() {
     struct Publisher {
@@ -1203,8 +1148,6 @@ fn a_held_dependent_sees_every_change_published_while_it_was_held() {
     assert_eq!(seen, &(1..=published).collect::<Vec<u64>>(), "every id published, the held frames' included");
 }
 
-/// Frames at `head` until the mirror and the layer are exactly at it, never showing a later hour
-/// and never dropping the old picture meanwhile; the frames it took.
 fn frames_to_exact(side: &mut MapSide, head: i32, states: &[TableState]) -> usize {
     let before = side.parts().unwrap().0.get(table(0)).and_then(|mirror| mirror.head()).unwrap();
     for frames in 1..=200_000 {
@@ -1228,8 +1171,6 @@ fn frames_to_exact(side: &mut MapSide, head: i32, states: &[TableState]) -> usiz
     panic!("hour {head} was never shown exactly");
 }
 
-/// Played at 1,440 hours a second (24-hour steps), paused inside a step the playhead has built
-/// past: the map comes to exactly the paused hour, and so do one hour forward and back.
 #[test]
 fn a_pause_inside_a_step_and_single_hours_while_paused_show_exactly_that_hour() {
     let (recording, states) = record(1, 2 * BLOCK, busy);
@@ -1257,8 +1198,6 @@ fn a_pause_inside_a_step_and_single_hours_while_paused_show_exactly_that_hour() 
     frames_to_exact(&mut side, paused, &states[0]);
 }
 
-/// Keys in the shapes the recording's keyed tables use: small ids, (country, region),
-/// (combat, side, ordinal), (group, wing) with 64-bit ids, and (country, region, level, index).
 fn real_key_shapes() -> Vec<u128> {
     let mut keys: Vec<u128> = (1..=13_000).collect();
     keys.extend((0..1_500u128).flat_map(|country| (0..40u128).map(move |region| country << 32 | region)));
@@ -1270,8 +1209,6 @@ fn real_key_shapes() -> Vec<u128> {
     keys
 }
 
-/// Times `slot()` over a keyed mirror of every shape (run by name with --nocapture to read it);
-/// asserts only that every key is found and an absent one is not.
 #[test]
 fn mirror_slot_lookup_time_over_real_key_shapes() {
     let keys = real_key_shapes();
@@ -1312,8 +1249,6 @@ fn mirror_slot_lookup_time_over_real_key_shapes() {
     eprintln!("slot(): {ns:.1} ns a lookup over {} keys", keys.len());
 }
 
-/// The key shapes hashed into a table of their size: no bucket of the low bits holds a long
-/// chain, and the top seven bits (the table's control byte) take most of their values.
 #[test]
 fn real_key_shapes_do_not_collide_into_long_chains() {
     use std::hash::BuildHasher;
@@ -1334,7 +1269,6 @@ fn real_key_shapes_do_not_collide_into_long_chains() {
 }
 
 
-/// A layer that declares no table (it reads rows of its own, or only layers before it).
 struct Tableless {
     composed: u32,
 }
@@ -1365,8 +1299,6 @@ impl Layer for Tableless {
     }
 }
 
-/// A map joining a playhead another map has anchored gets its tables by joins, not a reset: a
-/// layer of it that declares no table has nothing to wait for and is drawn.
 #[test]
 fn a_layer_without_tables_on_a_map_joining_an_anchored_playhead_is_drawn() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1389,9 +1321,6 @@ fn a_layer_without_tables_on_a_map_joining_an_anchored_playhead_is_drawn() {
     panic!("the joining map's layer without tables was never drawn");
 }
 
-/// Two maps of one playhead, the second composing for as long as the test holds its compose: the
-/// composing map still takes the steps (into those it applies after the swap), so the first map
-/// steps on far past what the step buffer holds.
 #[test]
 fn a_map_composing_does_not_hold_the_steps_of_another_map() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1431,8 +1360,6 @@ fn a_map_composing_does_not_hold_the_steps_of_another_map() {
     assert!(reached >= from + 100, "the first map stepped from {from} only to {reached} while the second composed");
 }
 
-/// A layer whose worker makes the product of a step one settle after it is handed it (a worker
-/// that keeps up): it carries nothing on the frame thread and says the hour its product shows.
 struct Worked {
     next: Option<i32>,
     sent: Option<i32>,
@@ -1483,10 +1410,6 @@ fn worked(side: &MapSide) -> &Worked {
     side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<Worked>()).unwrap()
 }
 
-/// Playing, a layer whose worker holds the newest step: the map is drawn at the hour the worker's
-/// product shows (never the newer hour applied), and that hour keeps up with the head. Each frame
-/// takes one step (the worker holds it: the map is at the step before), and a frame after it with
-/// no step takes the worker's product back (the map is at the head): two known states a step.
 #[test]
 fn a_map_with_a_worker_layer_is_drawn_at_its_shown_hour_and_keeps_up_while_playing() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1515,8 +1438,6 @@ fn a_map_with_a_worker_layer_is_drawn_at_its_shown_hour_and_keeps_up_while_playi
     assert!(side.last_frame().drawn > first, "the drawn hour advances");
 }
 
-/// A layer drawing a product of rows at the head made on its worker: it says the hour those rows
-/// stand at, `behind` hours before the hour applied.
 struct Made {
     applied: Option<i32>,
     behind: Arc<std::sync::atomic::AtomicI32>,
@@ -1554,9 +1475,6 @@ impl Layer for Made {
     }
 }
 
-/// The window clock's drawn hour leaves a layer of rows at the head out; the oldest hour on screen
-/// counts it while it is behind (rows of an older step), and does not once its rows stand at the
-/// hour applied (no step since changed them).
 #[test]
 fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behind() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1583,12 +1501,9 @@ fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behi
     }
 }
 
-/// A layer whose product is made from rows at the head: its settle joins the product of the hour
-/// applied while the settling still has budget, and keeps the one it has when it has none.
 struct Joined {
     applied: Option<i32>,
     made: Option<i32>,
-    /// Settles that found no budget left.
     ran_out: u32,
 }
 
@@ -1634,9 +1549,6 @@ fn joined(side: &MapSide) -> &Joined {
     side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<Joined>()).unwrap()
 }
 
-/// A step the head stands still for joins the products made from rows at the head: the picture it
-/// leaves stands whole at the hour applied, and the rows follow that hour rather than the head the
-/// step was given. Steps merged into one leave the same picture as the steps taken one by one.
 #[test]
 fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_hour() {
     let made = |name: &str| {
@@ -1649,8 +1561,6 @@ fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_
         frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
         (side, entry)
     };
-    // The frame that takes, one the head stands still for: it waits for the products its layers
-    // owe (a playing frame waits for none, and its picture may stand a publication behind).
     let taking = |side: &mut MapSide, head: replay_data::Hour| {
         for _ in 0..50_000_000u64 {
             let frame = side.frame_still(head).unwrap();
@@ -1662,7 +1572,6 @@ fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_
         panic!("no frame took the steps built to hour {head}");
     };
     let (mut side, entry) = made("joined one by one");
-    // The frames that brought it to its first picture play, and wait for nothing.
     let ran_out = joined(&side).ran_out;
     let mut one_by_one = Vec::new();
     for _ in 0..8 {
@@ -1680,7 +1589,6 @@ fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_
     }
     assert_eq!(joined(&side).ran_out, ran_out, "every step the head stood still for waited for the product of its hour");
 
-    // The ring holds three steps: a frame whose head they all reached takes them as one.
     let (mut merged, entry) = made("joined merged");
     let head = merged.applied().unwrap() + 12;
     for _ in 0..50_000_000u64 {
@@ -1696,8 +1604,6 @@ fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_
     assert_eq!(sum_of(merged.parts().unwrap().0.get(table(0)).unwrap(), Num::of(table(0), 0)), last.2, "and the same mirror");
 }
 
-/// A dependent of a layer whose worker holds work in every frame settles every frame: the worker's
-/// work is not carried, so the dependent reads the upstream's published product.
 #[test]
 fn a_dependent_settles_every_frame_while_its_upstream_worker_holds_work() {
     struct Follower {
@@ -1736,8 +1642,6 @@ fn a_dependent_settles_every_frame_while_its_upstream_worker_holds_work() {
     entry.playhead().seek(0);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let follower = |side: &MapSide| side.parts().unwrap().1[1].any().downcast_ref::<Follower>().unwrap().settles;
-    // Each frame that applies a step, whatever the steps the playhead has built by then: the
-    // upstream hands that step to its worker and the dependent settles in the same frame.
     for _ in 0..20 {
         let before = follower(&side);
         let mut frames = 0;
@@ -1750,8 +1654,6 @@ fn a_dependent_settles_every_frame_while_its_upstream_worker_holds_work() {
     }
 }
 
-/// Held at an hour, the map is drawn at it only once every layer shows it: a worker layer still
-/// making the head's product keeps the map at its older hour until it is published.
 #[test]
 fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1776,8 +1678,6 @@ fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
     assert_eq!(frame.drawn, Some(head), "drawn at the head once the worker shows it");
 }
 
-/// A layer that reads no table: its compose meets another layer's (it says it started and waits,
-/// at most a minute, for the other to say so) and checks that the layer it reads composed first.
 struct Meeting {
     name: &'static str,
     after: Option<&'static str>,
@@ -1829,10 +1729,6 @@ impl Layer for Meeting {
     }
 }
 
-/// At a reset, two layers that read nothing of one another compose at the same time: each waits
-/// in its compose for the other to start. A layer reading one of them composes after it. Before,
-/// the host's one worker composed every layer one after another, so the first waited a minute for
-/// the second and was refused by name.
 #[test]
 fn layers_that_read_nothing_of_one_another_compose_at_once_and_a_dependent_after_its_upstream() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1857,11 +1753,6 @@ fn layers_that_read_nothing_of_one_another_compose_at_once_and_a_dependent_after
     assert!(at("u") < at("d"), "the dependent composed after its upstream: {composed:?}");
 }
 
-/// A seek while a reset composes supersedes it: that compose is discarded when it comes back,
-/// never swapped in, and the newer seek's reset composes and is swapped in instead. No frame shows
-/// an hour of the first seek. The newer seek comes once the first compose is inside the layer's
-/// compose, so both composes run it. Before, the first compose was swapped in and shown, then the
-/// second composed after it.
 #[test]
 fn a_second_seek_during_a_compose_discards_the_first() {
     let (recording, states) = record(1, BLOCK + 200, busy);
@@ -1901,13 +1792,11 @@ fn a_second_seek_during_a_compose_discards_the_first() {
     assert_eq!(differ(mirror, &states[0][head as usize], &[0]), None);
 }
 
-/// A reader that draws nothing: it declares no table and takes the steps.
 fn bare_consumer(entry: &super::Entry) -> playhead::Consumer {
     let reader = entry.playhead().declare(Vec::new(), None).unwrap();
     entry.playhead().consumer(reader)
 }
 
-/// Takes the steps `head` reaches until a reset is among them, a minute at most.
 fn take_reset(consumer: &mut playhead::Consumer, head: i32) {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut taken: Vec<Arc<Step>> = Vec::new();
@@ -1922,17 +1811,12 @@ fn take_reset(consumer: &mut playhead::Consumer, head: i32) {
     }
 }
 
-/// The shared clock is not held at the seek to `hour`: it runs on from it.
 fn runs_from(entry: &super::Entry, hour: i32, held_by: &str) {
     assert_eq!(entry.playhead().holding(), None, "the clock is held at the seek by {held_by}");
     let later = Instant::now() + Duration::from_secs(10);
     assert!(entry.playhead().head(later) > hour, "the head stays at {hour}, held by {held_by}");
 }
 
-/// A map with no GPU, which never uploads, takes a seek's reset and composes it for as long as the
-/// test holds the compose: the shared clock runs from the take, not from the map's picture. Its
-/// swap shows the hour sought, the steps since left for the next frame. Before, the map's consumer
-/// held the clock at the hour sought until the compose was swapped in.
 #[test]
 fn a_map_that_never_uploads_holds_no_clock_while_it_composes() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1948,10 +1832,6 @@ fn a_map_that_never_uploads_holds_no_clock_while_it_composes() {
     assert_eq!(side.applied(), Some(100), "the swap shows the picture composed for the hour sought");
 }
 
-/// A map that is never drawn (a hidden window, a map widget scrolled out of view) beside a reader
-/// that draws nothing (a dashboard's): the reader's take of the reset starts the clock. Before,
-/// the hidden map's consumer held the clock until a frame of its own showed the reset, which never
-/// came.
 #[test]
 fn a_hidden_map_holds_no_clock_for_a_reader_beside_it() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1965,9 +1845,6 @@ fn a_hidden_map_holds_no_clock_for_a_reader_beside_it() {
     drop(hidden);
 }
 
-/// A map whose every layer is refused draws nothing: beside a reader that draws nothing, the
-/// reader's take starts the clock, and the map's own frames take the reset with nothing to compose.
-/// Before, the refused map's consumer held the clock until a frame of its own showed the reset.
 #[test]
 fn a_map_with_every_layer_refused_holds_no_clock() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -1985,11 +1862,6 @@ fn a_map_with_every_layer_refused_holds_no_clock() {
     assert!(!side.composing(), "nothing to compose");
 }
 
-/// Two maps on one playhead: the clock is the app's, one for both, and a seek moves both. Each
-/// composes the reset on its own; the second for as long as the test holds it. The clock runs from
-/// the first take of the reset, and the first map shows the hour sought at its swap and plays on
-/// while the second still composes, its old picture on screen meanwhile. Before, the clock stayed
-/// at the hour sought until the first map's swap, though both had taken the reset.
 #[test]
 fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhead() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -2000,7 +1872,6 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
     entry.playhead().play(4.0);
     entry.playhead().seek(100);
     let deadline = Instant::now() + Duration::from_secs(120);
-    // One head a round, so both maps take the reset in the same round, before either swaps.
     loop {
         let head = entry.playhead().newest().unwrap_or(0);
         let (one, other) = (first.frame(head).unwrap(), second.frame(head).unwrap());
@@ -2025,11 +1896,6 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
     release.send(()).unwrap();
 }
 
-/// The dashboard's follow host beside a map: the host's driver takes the reset, which starts the
-/// clock, and steps on past the map while the map's frames are held. The map, let go, shows
-/// exactly the hour it reaches. Before, the map's consumer held the clock until a frame of the map
-/// showed the reset; and while a map drew only its frames advanced the playhead, so stepping, and
-/// the followed values with it, stopped a ring's size past the held map's last frame.
 #[test]
 fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
     let (recording, states) = record(1, 2 * BLOCK, busy);
@@ -2048,7 +1914,6 @@ fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
     }
     runs_from(&entry, 100, "the map beside the follow host");
     frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= 100) && !side.composing());
-    // The map's frames are held from here.
     let last = side.last_frame().head;
     let past = last + 4 * (settings.ring as i32 + 2);
     while entry.playhead().newest().is_none_or(|newest| newest < past) {
@@ -2065,36 +1930,27 @@ fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
     drop(side);
 }
 
-/// What the test lets a fed worker do: every job, or this many more.
 type Permits = Arc<(Mutex<Option<u32>>, std::sync::Condvar)>;
 
-/// A job for [`Ahead`]'s worker.
 enum Fold {
     Reset { epoch: u64, values: Vec<Option<i32>> },
     Step { epoch: u64, step: Arc<Step> },
 }
 
-/// A product of [`Ahead`]'s worker: its compose's epoch, the hour it is current at (none: the
-/// compose's) and the sum of column 0 over live rows there.
 type Summed = (u64, Option<i32>, i64);
 
-/// A layer fed the steps ahead: its worker keeps column 0 of table 0 per slot from the steps' change
-/// sets alone and makes, for each step, the sum over live rows, stamped with the step's last hour
-/// and its compose's epoch. Each job waits for a permit the test gives.
 struct Ahead {
     fed: crate::layers::Fed<Summed>,
     epoch: u64,
     jobs: Option<mpsc::Sender<Fold>>,
     made: Option<mpsc::Receiver<Summed>>,
     permits: Permits,
-    /// The product shown, and the newest hour of any product received, taken or not.
     shown: Option<Summed>,
     made_through: Option<i32>,
     changed: crate::layers::Changed,
 }
 
 impl Ahead {
-    /// With `permits` jobs allowed its worker (none: every job).
     fn new(permits: Option<u32>) -> (Self, Permits) {
         let permits: Permits = Arc::new((Mutex::new(permits), std::sync::Condvar::new()));
         (Self { fed: crate::layers::Fed::default(), epoch: 0, jobs: None, made: None, permits: Arc::clone(&permits), shown: None, made_through: None, changed: crate::layers::Changed::default() }, permits)
@@ -2142,8 +1998,6 @@ impl Ahead {
         }
     }
 
-    /// Takes in what the worker made, with `wait` until the product of the hour applied arrived,
-    /// and shows what is due.
     fn exchange(&mut self, wait: bool) {
         if let Some(receive) = &self.made {
             loop {
@@ -2167,7 +2021,6 @@ impl Ahead {
     }
 }
 
-/// Lets `permits` jobs more run on a fed worker; none: every job from now on.
 fn permit(permits: &Permits, more: Option<u32>) {
     let (held, wake) = &**permits;
     let mut left = held.lock().unwrap();
@@ -2250,8 +2103,6 @@ impl Layer for Ahead {
     }
 }
 
-/// A layer reading [`Ahead`]: per frame, the last hour of the step it applied in it (if any) and
-/// the hours [`Ahead`] published as changed when it settled.
 struct Hears {
     stepped: Option<i32>,
     heard: Vec<(Option<i32>, Vec<u64>)>,
@@ -2297,8 +2148,6 @@ fn ahead(side: &MapSide) -> &Ahead {
     side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<Ahead>()).unwrap()
 }
 
-/// A map drawing [`Ahead`] (and [`Hears`] after it), its worker allowed `permits` jobs (none: every
-/// one), played from hour 0 on a running clock and composed; the frames' heads are the test's.
 fn ahead_side(name: &str, permits: Option<u32>) -> (MapSide, Arc<super::Entry>, Permits) {
     let (recording, _) = record(1, BLOCK, busy);
     let entry = open(units(recording, name), quick()).unwrap();
@@ -2310,8 +2159,6 @@ fn ahead_side(name: &str, permits: Option<u32>) -> (MapSide, Arc<super::Entry>, 
     (side, entry, permits)
 }
 
-/// Frames at the hour applied (taking no step) until [`Ahead`]'s worker has made the product of
-/// `hour`: the frames hand it the steps the playhead built past the head.
 fn made_ahead(side: &mut MapSide, hour: i32) {
     for _ in 0..50_000_000u64 {
         let applied = side.applied().unwrap();
@@ -2324,7 +2171,6 @@ fn made_ahead(side: &mut MapSide, hour: i32) {
     panic!("the worker never made the product of hour {hour}");
 }
 
-/// Frames at `hour` until [`Ahead`] shows it.
 fn until_current(side: &mut MapSide, hour: i32) {
     for _ in 0..50_000_000u64 {
         side.frame(hour).unwrap();
@@ -2336,15 +2182,10 @@ fn until_current(side: &mut MapSide, hour: i32) {
     panic!("the layer never showed hour {hour}");
 }
 
-/// The sum of column 0 over table 0's live rows in the map's mirror now.
 fn mirrored(side: &MapSide) -> i64 {
     sum_of(side.parts().unwrap().0.get(table(0)).unwrap(), Num::of(table(0), 0))
 }
 
-/// Playing at a step a frame, a layer fed the steps ahead shows, in the frame that applies a step,
-/// its worker's product of that step's hour: current, the map drawn at the hour applied, and equal
-/// to the mirror there. Before, the layer handed the step to its worker in that frame and showed
-/// the step before (the map a step behind the head).
 #[test]
 fn a_step_made_ahead_is_shown_current_in_the_frame_that_applies_it() {
     let (mut side, _entry, _permits) = ahead_side("ahead current", None);
@@ -2360,9 +2201,6 @@ fn a_step_made_ahead_is_shown_current_in_the_frame_that_applies_it() {
     }
 }
 
-/// With its worker held, a fed layer shows the newest hour its worker made and never a later one,
-/// and the frame does not wait for it: products made ahead are shown only at their hour, and a step
-/// the worker has not folded leaves the layer at the hour before, with the frame's record saying so.
 #[test]
 fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one_ahead() {
     let (mut side, entry, permits) = ahead_side("ahead held", Some(1));
@@ -2381,7 +2219,6 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
     assert_eq!(frame.drawn, Some(from + 4));
     let frame = side.frame(from + 8).unwrap();
     assert_eq!((frame.drawn, frame.layers[0].ready_at_hour), (Some(from + 8), Some(true)));
-    // The worker is held until the permit below: a frame that waited for it would never return.
     let frame = side.frame(from + 12).unwrap();
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(frame.layers[0].ready_at_hour, Some(false), "the step to {} is not folded", from + 12);
@@ -2394,10 +2231,6 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
     assert_eq!(ahead(&side).shown.map(|(_, hour, sum)| (hour, sum)), Some((Some(from + 12), mirrored(&side))));
 }
 
-/// What the proof tool samples: a layer whose worker holds a newer step than the product it has
-/// published is named as behind at the hour asked, whatever its settles carry, and is named no
-/// longer once its product of that hour arrives. Sampling it before then compares the layer's
-/// arrays of an older hour with today's of this one.
 #[test]
 fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
     let (mut side, entry, permits) = ahead_side("ahead behind", Some(1));
@@ -2425,7 +2258,6 @@ fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
     assert!(crate::comparison::behind_at(&side, from + 12).is_empty(), "its product of the hour arrived");
 }
 
-/// Two steps taken in one frame show the second's product, made ahead.
 #[test]
 fn two_steps_taken_in_one_frame_show_the_seconds_product() {
     let (mut side, _entry, _permits) = ahead_side("ahead two", None);
@@ -2438,8 +2270,6 @@ fn two_steps_taken_in_one_frame_show_the_seconds_product() {
     assert_eq!(frame.drawn, Some(from + 8));
 }
 
-/// A seek while products made ahead wait for their hours shows none of them: after the seek's
-/// compose, every product shown is of that compose, and current at the hour applied.
 #[test]
 fn a_seek_shows_none_of_the_products_made_ahead_before_it() {
     let (mut side, entry, _permits) = ahead_side("ahead seek", None);
@@ -2460,8 +2290,6 @@ fn a_seek_shows_none_of_the_products_made_ahead_before_it() {
     }
 }
 
-/// A dependent hears what a fed layer changed for a step in the frame that applies the step, not
-/// a frame later.
 #[test]
 fn a_dependent_hears_a_fed_layers_change_in_the_frame_of_its_step() {
     let (mut side, _entry, _permits) = ahead_side("ahead heard", None);
@@ -2476,8 +2304,6 @@ fn a_dependent_hears_a_fed_layers_change_in_the_frame_of_its_step() {
     }
 }
 
-/// A layer that counts its declarations; with `takes`, it takes a moved camera itself, its
-/// declaration deciding only whether the camera is below a height of 100.
 struct Camera {
     name: &'static str,
     takes: bool,
@@ -2513,11 +2339,6 @@ impl Layer for Camera {
     }
 }
 
-/// The camera moving with nothing else of the view changing declares no layer that takes the
-/// placement itself, and only again alone the one that reads the camera in its inputs; a camera
-/// crossing what a layer's declaration decides, or another change of the view, declares the view
-/// whole. Before, every frame the camera moved ran every layer's inputs, and what they did there (a
-/// layer marking everything to make again) at a held hour.
 #[test]
 fn a_moved_camera_declares_again_only_what_the_camera_decides() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -2538,21 +2359,12 @@ fn a_moved_camera_declares_again_only_what_the_camera_decides() {
     assert_eq!(counts(), (3, 4), "another change of the view declares it whole");
 }
 
-/// The map side on a thread of its own ([`super::side::SideThread`]): the frame's window, the
-/// view it asks for, and a stepped frame's picture.
-/// A layer whose settle joins a product its own worker makes, asked at the step's apply. Its worker
-/// cannot answer until every other such worker in the test has a job too (`together`), so a step
-/// that asked them one after another, each inside its own settle, joins neither. It asks for a step
-/// that changed the column it reads and for nothing else.
 struct Maker {
     name: &'static str,
-    /// The table it reads column 0 of; none until it has declared.
     column: Option<usize>,
-    /// The hour of the newest step that wrote the column it reads.
     moved: Option<i32>,
     jobs: mpsc::Sender<i32>,
     made: mpsc::Receiver<i32>,
-    /// Jobs it asked for, those not answered yet, and the hour of the product it holds.
     asks: Arc<AtomicU32>,
     out: usize,
     product: Option<i32>,
@@ -2560,7 +2372,6 @@ struct Maker {
 }
 
 impl Maker {
-    /// `name`'s layer, its worker waiting on `together` for every other maker's first job.
     fn new(name: &'static str, together: &Arc<std::sync::Barrier>) -> Self {
         let (jobs, taken) = mpsc::channel::<i32>();
         let (answers, made) = mpsc::channel::<i32>();
@@ -2656,10 +2467,6 @@ fn maker_of(side: &MapSide, name: &str) -> (u32, Option<i32>) {
     (layer.asks.load(Ordering::SeqCst), layer.product)
 }
 
-/// Two layers whose settles join a product their own workers make: both are asked at the step's
-/// apply, so both workers hold a job at once and each answers. Neither worker can answer its first
-/// job until the other has one, so a step that asked a maker inside its own settle, the settles one
-/// after another, would join neither.
 #[test]
 fn makers_asked_at_the_applies_build_side_by_side_within_one_step() {
     let (recording, _) = record(2, BLOCK, busy);
@@ -2675,13 +2482,9 @@ fn makers_asked_at_the_applies_build_side_by_side_within_one_step() {
     assert!(first.1.is_some() && second.1.is_some(), "each maker's product joined a step: {first:?}, {second:?}");
 }
 
-/// A step that changed nothing a maker reads asks it nothing: its worker is handed a job only for a
-/// step that wrote the column it reads.
 #[test]
 fn a_step_that_changes_nothing_a_maker_reads_asks_it_nothing() {
     let quiet = |at: u32, table: usize, store: &mut Store| {
-        // The second table is written at the first hour alone: no step after it moves what the
-        // second maker reads.
         if table == 0 || at == 0 {
             busy(at, table, store);
         } else {
@@ -2713,17 +2516,14 @@ mod side_thread {
         time::{Duration, Instant},
     };
 
-    /// A side on its own thread over one busy table, drawing `layer`.
     fn side(name: &str, layer: Box<dyn Layer>) -> SideThread {
         let (recording, _) = record(1, 8, busy);
         let entry = open(units(recording, name), quick()).unwrap();
         let side = SideThread::new(MapSide::new(entry, vec![layer], View::default()).unwrap()).unwrap();
-        // Unanchored, its playhead decodes nothing and no step ever reaches a layer.
         side.anchor(0, false, 1.0, true);
         side
     }
 
-    /// Windows until `done` holds, or panics after `limit`.
     fn windows_until(side: &mut SideThread, limit: Duration, what: &str, mut done: impl FnMut(&mut SideThread) -> bool) {
         let deadline = Instant::now() + limit;
         while !done(side) {
@@ -2741,9 +2541,6 @@ mod side_thread {
         let (layer, release, began) = Sum::held_settle(&composes);
         let mut side = side("window never waits", Box::new(layer));
         side.ask(View::default(), Head::Paced(7), None, None);
-        // The side's thread is inside a settle, holding the side. Windows until it says it has
-        // begun: the release of a window is its signal to prepare the next step, and the first
-        // step is the reset's compose rather than a settle.
         let settling = Instant::now() + Duration::from_secs(120);
         while began.try_recv().is_err() {
             if let Some(mut window) = side.window() {
@@ -2752,15 +2549,10 @@ mod side_thread {
             assert!(Instant::now() < settling, "the layer settles within 120 s");
             std::thread::yield_now();
         }
-        // Held, every ask for the window is refused, and refused without taking the side: the
-        // window is asked for with `try_lock`, which tells the frame what it missed the side for
-        // instead of waiting. A window that waited would never come back: nothing releases the
-        // settle until below.
         for _ in 0..100 {
             assert!(side.window().is_none(), "no window while the side's thread holds the side");
             assert!(side.products().missed.is_some(), "the frame is told what the side's thread was doing, rather than waiting for it");
         }
-        // Released, the side comes back and the frame after it has its window.
         for _ in 0..64 {
             let _ = release.send(());
         }
@@ -2777,15 +2569,12 @@ mod side_thread {
         side.ask(View::default(), Head::Paced(4), None, None);
         windows_until(&mut side, Duration::from_secs(120), "the first picture", |side| side.applied() == Some(4));
         side.ask(high.clone(), Head::Paced(6), None, None);
-        // The products say the view once a window has taken them, which is the view the frame draws.
         windows_until(&mut side, Duration::from_secs(120), "the view asked is taken", |side| side.view().camera_height == 4.0);
         let heights = side.with_side(|side| side.parts().unwrap().1[0].any().downcast_ref::<Sum>().unwrap().viewed.clone());
         assert!(heights.contains(&4.0), "the camera the view asked for reached the layer: {heights:?}");
         assert_eq!(side.view().camera_height, 4.0, "and the products say the view its picture stands at");
     }
 
-    /// A map that is still opening says its branch before its first window, so a map opened for a
-    /// branch the clock has left is let go before it takes an anchor. Before, it said none.
     #[test]
     fn a_side_says_its_branch_before_its_first_window() {
         let (recording, _) = record(1, 8, busy);
@@ -2795,8 +2584,6 @@ mod side_thread {
         assert_eq!(SideThread::new(side).unwrap().branch(), Some(5));
     }
 
-    /// The side stops inside the step a stepped frame waits for: the frame is told, by name, and
-    /// does not wait on for a picture no thread will make.
     #[test]
     fn a_stepped_frame_is_told_when_the_side_stops_in_its_step() {
         let composes = Arc::new(Mutex::new(0));
@@ -2810,39 +2597,28 @@ mod side_thread {
         assert!(why.contains("the test layer settles no further"), "named by the layer that stopped it: {why}");
     }
 
-    /// Nothing will stand the picture at the hour a frame waits for: it refuses by name within its
-    /// bound, saying what it waited for, instead of waiting for ever. The refusal is the capture's
-    /// that waited: the side goes on, and the frames after it take their windows.
     #[test]
     fn a_stepped_frame_refuses_by_name_rather_than_wait_for_a_picture_nothing_will_make() {
         let composes = Arc::new(Mutex::new(0));
         let mut side = side("stepped bound", Box::new(Sum { times_out_at: Some(6), ..Sum::new(&composes) }));
         side.ask(View::default(), Head::Stepped(3), None, None);
         drop(side.stepped_window(3).expect("the picture of the hour asked"));
-        // The side's thread has nothing to prepare: the ask it reads stands at the hour it answered.
         let short = (Duration::from_millis(20), Duration::from_millis(200));
         assert!(side.whole_at(6, short.0, short.1).is_none(), "no window for an hour nothing stands at");
         let why = side.take_refusal().expect("refused by name");
         assert!(why.contains("hour 6") && why.contains("Stepped(3)") && why.contains("whole at Some(3)"), "says what it waited for: {why}");
         assert!(side.failure().is_none(), "the side does not stop for a capture's refusal");
         drop(side.stepped_window(3).expect("the side still answers the frames after"));
-        // The side's own catch-up to hour 6 times out: that ask is refused, and the side goes on.
         side.ask(View::default(), Head::Stepped(6), None, None);
         assert!(side.stepped_window(6).is_none(), "no window for an hour not made whole");
         let why = side.take_refusal().expect("refused by name");
         assert!(why.contains("times out once"), "says why: {why}");
         assert!(side.failure().is_none(), "the side does not stop for a capture's refusal");
-        // A new ask at the refused hour is prepared afresh, never answered with the refusal before.
         side.ask(View::default(), Head::Stepped(6), None, None);
         drop(side.stepped_window(6).expect("the refused hour asked again is made whole"));
         assert!(side.take_refusal().is_none());
     }
 
-    /// A seek taken while the side catches up to a stepped frame's hour: the rows at the head are
-    /// driven again for the seek in force, so a product made from the rows of that hour can still
-    /// be made. Driven once before the steps, the seek left that drive stale and the rows then
-    /// followed the hour this map shows, which only the catching-up thread advances and which it
-    /// cannot advance until those rows stand: a picture that could never become whole.
     #[test]
     fn a_seek_while_catching_up_leaves_the_rows_driven_at_the_stepped_hour() {
         let composes = Arc::new(Mutex::new(0));
@@ -2852,8 +2628,6 @@ mod side_thread {
         began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles within its catch-up in 120 s");
         let before = side.entry().playhead().epoch();
         side.entry().anchor(2, false, 1.0, true);
-        // The seek abandons the ring and takes its epoch where it is asked for, so it is in force
-        // before the settle is released.
         assert_ne!(side.entry().playhead().epoch(), before, "the seek is in force");
         let _ = release.send(());
         let mut window = side.stepped_window(6).expect("the picture of the hour asked");
@@ -2874,8 +2648,6 @@ mod side_thread {
             assert_eq!(side.applied(), Some(hour), "every step to the hour is applied");
             assert_eq!(side.last_frame().drawn, Some(hour), "and every layer shows it");
         }
-        // A second saved frame at the same hour with another view is another picture. Before, the
-        // picture of the first view answered it.
         let high = View { camera_height: 4.0, ..View::default() };
         side.ask(high, Head::Stepped(6), None, None);
         let mut window = side.stepped_window(6).expect("the picture of the view asked");

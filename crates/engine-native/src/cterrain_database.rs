@@ -1,23 +1,11 @@
-//! CTerrainDatabase graphics lookup used by the city predicate.
-//! Graphics records and simulation terrain types occupy different arrays.
 
 use engine_sites::Rva;
-/// CTerrainDatabase singleton pointer.
 pub const SINGLETON_RVA: Rva = Rva(0x033d_d4f0);
-/// CTerrainDatabase CTerrainGraphics pointer array.
 pub const GRAPHICS: usize = 0x70;
-/// Terrain database constructor; initializes separate graphics and simulation null records.
 pub const CONSTRUCT_RVA: Rva = Rva(0x00b2_8610);
-/// Terrain database pointer array, its null object first: terrain-or-ocean lookup and the terrain
-/// predicate pass `TYPES` with name lookup to hashed-name lookup, which returns `array[index + 1]`.
 pub const TYPES: usize = 0x40;
-/// A terrain's own unit adjuster (`TYPE_ADJUSTER`, initialized during construction) and its attack,
-/// added to a stat block's entry.
 pub const TYPE_ADJUSTER: usize = 0x168;
 
-/// Every live terrain's database index (its terrain type's) and own adjuster attack, in array order
-/// from slot 1, each type and adjuster authenticated. The attack-list witness reads it; nothing
-/// published derives from it.
 pub fn terrain_attacks(
     memory: &impl crate::Memory,
     base: usize,

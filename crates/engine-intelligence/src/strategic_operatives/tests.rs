@@ -1,7 +1,6 @@
 use super::*;
 use crate::ccountry::synthetic::World;
 
-/// Slots of a map with mask 1: two buckets and an overflow of three.
 const MAP_SLOTS: usize = 5;
 
 struct Fixture {
@@ -13,7 +12,6 @@ struct Fixture {
     pressure: usize,
 }
 
-/// A two-bucket map header at `map` over `data`, with its end sentinel.
 fn map(world: &mut World, map: usize, data: usize, count: i32, stride: usize) {
     world.u64(map + operation_token_map::TABLE, data as u64);
     world.u32(map + operation_token_map::COUNT, count as u32);
@@ -22,7 +20,6 @@ fn map(world: &mut World, map: usize, data: usize, count: i32, stride: usize) {
     world.put(data + MAP_SLOTS * stride + ENTRY_PROBE, &[u8::MAX]);
 }
 
-/// One occupied slot: its hash, probe distance, key and value words.
 fn entry(world: &mut World, slot: usize, hash: u32, probe: u8, country: u32, words: &[i64]) {
     world.u32(slot + ENTRY_HASH, hash);
     world.put(slot + ENTRY_PROBE, &[probe]);
@@ -32,9 +29,6 @@ fn entry(world: &mut World, slot: usize, hash: u32, probe: u8, country: u32, wor
     }
 }
 
-/// Three countries; slots 1 and 2 hold strategic operatives and slot 3 a
-/// null entry. Country 1's object holds two control-trade entries and one
-/// diplomatic-pressure entry; country 2's maps are both static and empty.
 fn fixture() -> Fixture {
     let mut world = World::new(0, 3, 0x10);
     let manager = world.alloc(0x40);
@@ -64,7 +58,6 @@ fn fixture() -> Fixture {
         TRADE_STRIDE,
     );
     entry(&mut world, trade, 0, 1, 2, &[250_000]);
-    // Displaced one slot from its home bucket; a zero value is kept.
     entry(&mut world, trade + TRADE_STRIDE, 2, 2, 3, &[0]);
     map(
         &mut world,
@@ -81,7 +74,6 @@ fn fixture() -> Fixture {
         2,
         &[32_768, -16_384],
     );
-    // Static empty storage is never read.
     world.u64(
         second + strategic::TRADE_INFLUENCE + operation_token_map::TABLE,
         0xdead_0000,
@@ -291,7 +283,6 @@ fn object_and_map_refusals_are_named() {
         },
         "strategic operative map sentinel inside census",
     );
-    // A key that resolves to no country refuses the walk.
     let mut fixture = fixture();
     fixture.world.u32(fixture.trade + ENTRY_COUNTRY, 9);
     assert!(matches!(refusal(&fixture), Outcome::Unavailable { .. }));

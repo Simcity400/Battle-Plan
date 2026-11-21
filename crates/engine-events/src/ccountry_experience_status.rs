@@ -1,38 +1,20 @@
-//! Country experience state. All nine scalar channels use signed i64 fixed15.
-//! Updates change totals and daily accumulators; the daily pass updates the
-//! training divisor and resets the daily accumulators.
 
 use crate::{Memory, ccountry, read, walk::Outcome};
 use engine_sites::Rva;
 
-/// Experience-state primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a2_34f0);
-/// Owning country pointer.
 pub const COUNTRY: usize = 0x08;
-/// Army experience, i64 fixed15, updated with a clamp.
 pub const ARMY: usize = 0x10;
-/// Army daily non-training gain, i64 fixed15.
 pub const ARMY_DAILY: usize = 0x18;
-/// Army daily training gain, i64 fixed15.
 pub const ARMY_DAILY_TRAINING: usize = 0x20;
-/// Navy experience, i64 fixed15, updated with a clamp.
 pub const NAVY: usize = 0x28;
-/// Navy daily non-training gain, i64 fixed15.
 pub const NAVY_DAILY: usize = 0x30;
-/// Navy daily training gain, i64 fixed15.
 pub const NAVY_DAILY_TRAINING: usize = 0x38;
-/// Air experience, i64 fixed15, updated with a clamp.
 pub const AIR: usize = 0x40;
-/// Air daily gain, i64 fixed15.
 pub const AIR_DAILY: usize = 0x48;
-/// Smoothed army-count training divisor, i64 fixed15, approaching scaled division count.
 pub const ARMIES_FOR_TRAINING: usize = 0x50;
-/// Fixed15 denominator.
 pub const SCALE: i64 = 32_768;
 
-/// Exact native fixed15 channels, including the distinct army/navy training
-/// accumulators. Native save formatting truncates magnitude to five decimal
-/// places; capture preserves the raw values.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
@@ -47,8 +29,6 @@ pub struct Row {
     pub armies_for_training_raw: i64,
 }
 
-/// Reads one row per authenticated canonical country. Capacity limits storage;
-/// unreadable status objects never become an invented zero-experience row.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -108,8 +88,6 @@ fn read_country(
         .and_then(|p| usize::try_from(p).ok())
         .filter(|&p| p != 0)
         .ok_or("experience status pointer unreadable or null")?;
-    // Header and all nine scalars form one contiguous range, with no padding or
-    // unrequested field. One guarded copy avoids nine per-scalar read calls.
     let mut bytes = [0; ARMIES_FOR_TRAINING + 8];
     if !memory.copy(status, &mut bytes) {
         return Err("experience status scalar block unreadable");

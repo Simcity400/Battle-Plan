@@ -10,9 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-# Dev tool (playback build): the lane's and the playhead's bench.
 bench = ["dep:serde_json"]
-# Other crates' tests: waiting on a step the playhead builds.
 test-support = []
 
 [dependencies]

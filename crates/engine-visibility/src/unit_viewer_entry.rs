@@ -1,8 +1,3 @@
-//! Per-viewer unit visibility-level entries. Upsert selects by viewer country ordinal, resets the
-//! accumulator and stores the signed level byte. Updates advance the accumulator by a per-class
-//! rate, decrement level after the threshold and swap-remove entries below one. The stored value
-//! depends on tick history rather than the current hour positions, so it is recorded instead of
-//! derived.
 
 use crate::{
     Memory, carmy, ccountry, cfleet,
@@ -14,66 +9,34 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Viewer-entry stride.
 pub const STRIDE: usize = 24;
-/// Viewer entries copied per guarded read of one unit's vector.
 const ENTRY_BATCH: usize = 32;
-/// Shared-census divisions whose first entry blocks are read in one guarded
-/// scatter.
 const GROUP: usize = 16;
-/// Unit viewer-level entry country key, u32; intel lookup compares this key against the resolver's
-/// ordinal.
 pub const VIEWER: usize = 0x00;
-/// Decay accumulator, i64, incremented by a per-class rate and reset by upsert.
 #[cfg(test)]
 pub const TIMER: usize = 0x08;
-/// Signed level byte, decremented during decay.
 pub const LEVEL: usize = 0x10;
 
-/// One viewer entry in stored array order. `ordinal` is part of the key:
-/// expired entries are removed by copying the tail over them, and the
-/// serializer writes the resulting complete array order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CUnit handle (`cunit::HANDLE`): type in the low 32 bits, id in the high 32 bits.
     pub unit: u64,
     pub ordinal: u32,
-    /// Stored viewer key: the country's ordinal in `cgame_state::COUNTRIES`, not a link id.
     pub viewer: u32,
-    /// Native signed level byte; nonpositive entries are recorded, not dropped.
     pub level: i8,
 }
 
-/// One pointer in the native division roster, including counted nulls. The
-/// canonical country slot preserves native country/roster ordering independently
-/// of the capacity and private fields of the Divisions projection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionSource {
     pub pointer: usize,
     pub canonical: u32,
 }
 
-/// A complete callback-owned pointer census; this consumer authenticates only
-/// its own primary identity, handle and viewer vector. Unrelated division field
-/// failures must never be placed in `outcome`.
 #[derive(Debug, Clone, Copy)]
 pub struct DivisionSources<'a> {
     pub entries: &'a [DivisionSource],
     pub outcome: Outcome,
 }
 
-/// Reads the per-viewer level array of every division, task force and railway
-/// gun reachable from the canonical country rosters.
-///
-/// The roots are exactly the ones the Divisions, TaskForces and
-/// RailwayGunCounterInputs tables use (each country's division, fleet task-force
-/// and railway-gun rosters), so a unit produces at most one set of rows and its
-/// handle joins those tables without a bridge. A null pointer inside a counted
-/// roster, a failed vtable, a zero handle, an out-of-bounds vector header or an
-/// unreadable entry block refuses the whole table: the engine's own walks
-/// dereference these unconditionally, so a hole is a torn read rather than a
-/// state. Capacity omits whole entries and reports the remaining demand. Nothing
-/// here allocates, retries or calls the engine.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>) -> Outcome {
     walk_with_divisions_buffer(memory, base, game_state, Buffer::Growing(output), None)
 }
@@ -153,7 +116,6 @@ pub fn walk_with_divisions_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One roster's two refusal reasons, so a fault names the vector it came from.
 #[derive(Clone, Copy)]
 struct Roster {
     header: &'static str,
@@ -210,7 +172,6 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    /// Every counted slot of one pointer vector; a null slot is a refusal.
     fn members(
         &self,
         owner: usize,
@@ -270,10 +231,6 @@ impl<M: Memory> Reader<'_, M> {
                 &LAYOUT,
                 &mut bytes,
             );
-            // Each authenticated division's first entry block, hinted here
-            // from the gathered headers so their misses overlap, then read
-            // sixteen divisions to a scatter ([`Self::first_blocks`]) and
-            // served to `unit_fields` at each division's turn.
             let expected = engine_sites::at(self.base, carmy::VTABLE_RVA).map(|v| v as u64);
             for record in bytes[..(completed / 3).min(chunk.len()) * 32].chunks_exact(32) {
                 if Some(u64::from_le_bytes(record[..8].try_into().unwrap())) != expected {
@@ -316,11 +273,6 @@ impl<M: Memory> Reader<'_, M> {
         Ok(())
     }
 
-    /// The first entry block of each division of one group whose gathered
-    /// `records` (vtable, handle, header; `completed` fields of them) admit
-    /// one, read in one guarded scatter into `blocks`: each division's block
-    /// length when its block read. A block that did not read is read again
-    /// by [`Self::unit_fields`] at its turn, as the serial walk reads it.
     fn first_blocks(
         &self,
         records: &[u8],
@@ -362,8 +314,6 @@ impl<M: Memory> Reader<'_, M> {
         let mut primary = [0; 8];
         let mut handle = [0; 8];
         let mut header = [0; 16];
-        // One guarded gather of the vtable, the reference handle and the vector
-        // header: no intervening CUnit bytes are copied.
         let complete = self.memory.copy_scattered(
             [0, cunit::HANDLE, cunit::VIEWER_DATA]
                 .map(|offset| unit.checked_add(offset).unwrap_or(0)),
@@ -399,7 +349,6 @@ impl<M: Memory> Reader<'_, M> {
         }
         let viewers =
             Array::from_header(header, STRIDE).ok_or("unit viewer vector header invalid")?;
-        // Unit-intel queries consume every stored viewer entry.
         output.ensure(
             counter
                 .len

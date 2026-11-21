@@ -1,21 +1,3 @@
-//! `ArmyTotals` and `ArmyMix`: each country's land army by canonical slot, every total counted
-//! for a division's owner (its positive expeditionary owner, else its roster owner) and for its
-//! host (its roster owner). Divisions count; strength sums current hit points (fixed5); manpower
-//! sums each division's contributors as the game's dwords wrap; battalions sum each division's
-//! template sub-units (token zero is the null definition and counts nothing), kept by token in
-//! `ArmyMix`.
-//!
-//! What is not known is not recorded, never zero: while some division of an attribution has an
-//! owner no link resolves, every country's cells of that attribution; while a counted division's
-//! hit points are not a finite, non-negative value, its country's strength; while
-//! DivisionLandInputs is not complete or a division has no row there, manpower; while
-//! DivisionTemplateIcons is not complete or a division's template is unreadable, battalions, and
-//! that side's `ArmyMix` rows are deleted. Every live country's slot has a row, so a country
-//! with no division holds a recorded zero.
-//!
-//! State is the tables: each hour applies the divisions the hour changed, and counts again the
-//! divisions of a template whose composition it changed; a fresh hour, a resume, or a change of
-//! links or country slots rebuilds every total from the current tables.
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::{
@@ -37,7 +19,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// Divisions' columns a total reads: roster, expeditionary owner, template, hit points.
 const DIVISION_COLUMNS: u64 = 1 << 0 | 1 << 2 | 1 << 4 | 1 << 5;
 const DIVISION_READ: &[usize] = &[0, 2, 4, 5];
 
@@ -74,20 +55,15 @@ const READS: &[Read] = &[
     },
 ];
 
-/// Owner, then host.
 const SIDES: usize = 2;
 
-/// A division as the totals count it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Division {
-    /// Raw country ids: owner, host.
     raw: [u32; SIDES],
     template: u64,
-    /// Fixed5; none when not a finite, non-negative value.
     hit_points: Option<i64>,
 }
 
-/// One country's totals of one attribution.
 #[derive(Clone, Debug, Default)]
 struct Side {
     divisions: i64,
@@ -96,16 +72,12 @@ struct Side {
     manpower: i128,
     bad_manpower: i64,
     battalions: i128,
-    /// Divisions whose composition is unknown.
     unknown_composition: i64,
-    /// Battalions by sub-unit token.
     mix: HashMap<u32, i64>,
 }
 
-/// A template's sub-units by token; none when unreadable.
 type Composition = Option<Vec<(u32, i64)>>;
 
-/// The columns the writer reads by name.
 #[derive(Clone, Copy)]
 struct Fields {
     manpower: usize,
@@ -131,27 +103,19 @@ impl Fields {
 #[derive(Default)]
 pub struct Army {
     fields: Option<Fields>,
-    /// The writer must read every input whole before its next hour: a resume.
     rebuild: bool,
     links: HashMap<u32, u32>,
-    /// Every live country's canonical slot.
     countries: HashSet<u32>,
     divisions: HashMap<u64, Division>,
-    /// Each division's manpower; none while DivisionLandInputs is not complete.
     manpower: Option<HashMap<u64, i32>>,
-    /// Each template's composition; none while DivisionTemplateIcons is not complete.
     templates: Option<HashMap<u64, Composition>>,
     sides: HashMap<(u32, usize), Side>,
-    /// Divisions of each attribution whose owner no link resolves.
     unresolved: [i64; SIDES],
-    /// The rows the tables hold: totals by slot, mix tokens by slot and side.
     held_totals: HashSet<u32>,
     held_mix: HashMap<(u32, usize), HashSet<u32>>,
-    /// The sides whose battalions by token the hour moved.
     mix_dirty: HashSet<(u32, usize)>,
 }
 
-/// The slots of `table`'s rows the hour wrote one of `columns` of, or inserted, ascending.
 fn written(hour: &Hour<'_>, table: TableId, columns: &'static [usize]) -> Vec<u32> {
     let mut slots = hour.written_rows(table, Columns::These(columns));
     slots.sort_unstable();
@@ -159,7 +123,6 @@ fn written(hour: &Hour<'_>, table: TableId, columns: &'static [usize]) -> Vec<u3
     slots
 }
 
-/// `table`'s row in `slot`, its fields `mask` names, as the row decoder reads them.
 fn row<R: RowCodec>(hour: &Hour<'_>, table: TableId, slot: u32, mask: u64) -> io::Result<R> {
     let held = hour.table(table);
     let key = held.key(slot).ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))?;
@@ -211,7 +174,6 @@ impl Army {
         Ok(fields)
     }
 
-    /// Adds (`sign` 1) or removes (-1) `division`'s part of every total, marking the slots it moves.
     fn count(&mut self, id: u64, division: &Division, sign: i64, dirty: &mut HashSet<u32>) {
         let manpower = self.manpower.as_ref().and_then(|held| held.get(&id).copied());
         let composition = self
@@ -254,7 +216,6 @@ impl Army {
         }
     }
 
-    /// Every total again from the tables as they stand, and the rows the derived tables hold.
     fn rebuild(&mut self, hour: &Hour<'_>, out: &Rows<'_>, fields: Fields) -> io::Result<()> {
         self.links.clear();
         let links = hour.table(TableId::CountryLinks);
@@ -318,8 +279,6 @@ impl Army {
         Ok(())
     }
 
-    /// The templates whose composition the hour moved, each division of one counted again with
-    /// its new composition.
     fn recompose(&mut self, hour: &Hour<'_>, fields: Fields, dirty: &mut HashSet<u32>) -> io::Result<()> {
         let Some(templates) = &self.templates else { return Ok(()) };
         let changes = hour.changes(TableId::DivisionTemplateIcons);
@@ -360,7 +319,6 @@ impl Army {
         Ok(())
     }
 
-    /// Template `template` holds `composition`; none when it has no row.
     fn set_template(&mut self, template: u64, composition: Option<Composition>) {
         if let Some(templates) = &mut self.templates {
             match composition {
@@ -370,7 +328,6 @@ impl Army {
         }
     }
 
-    /// Applies the divisions and manpower the hour changed; false when it must rebuild instead.
     fn apply(&mut self, hour: &Hour<'_>, fields: Fields, dirty: &mut HashSet<u32>) -> io::Result<bool> {
         let manpower_mask = 1 << fields.manpower;
         if hour.wrote(TableId::CountryLinks, Columns::These(&[0]))
@@ -411,13 +368,11 @@ impl Army {
                 amounts.push((row.division, Some(manpower(&row))));
             }
         }
-        // A division whose manpower moved is taken out and counted again with its new amount.
         for &(id, _) in &amounts {
             if let Some(&held) = self.divisions.get(&id) {
                 edited.entry(id).or_insert((Some(held), Some(held)));
             }
         }
-        // A division whose hit points alone moved moves its sides' strength alone.
         let moved_amounts: HashSet<u64> = amounts.iter().map(|&(id, _)| id).collect();
         edited.retain(|&id, (old, new)| {
             let (Some(before), Some(after)) = (*old, *new) else { return true };
@@ -473,7 +428,6 @@ impl Army {
         Ok(true)
     }
 
-    /// The cells of `slot`'s totals row.
     fn totals(&self, slot: u32) -> Vec<Value> {
         let mut cells = vec![Value::Unrecorded; 8];
         for at in 0..SIDES {
@@ -500,7 +454,6 @@ impl Army {
         cells
     }
 
-    /// Writes the rows of `dirty` slots, and deletes the rows of slots no longer counted.
     fn write(&mut self, dirty: HashSet<u32>, all_mix: bool, out: &mut Rows) {
         let mix_dirty = std::mem::take(&mut self.mix_dirty);
         for slot in dirty {
@@ -594,7 +547,6 @@ impl Writer for Army {
         Ok(())
     }
 
-    /// Nothing but the tables: a resume rebuilds every total from them.
     fn save(&self, _blob: &mut Bytes) -> io::Result<()> {
         Ok(())
     }
@@ -650,17 +602,14 @@ mod tests {
     fn what_is_not_known_is_not_recorded_never_zero() {
         let mut army = army();
         let mut dirty = HashSet::new();
-        // A division whose hit points are not a finite value, and none of whose manpower is read.
         army.count(1, &division(10, 20, None), 1, &mut dirty);
         let owner = army.totals(1);
         assert_eq!(owner[0], Value::I64(1));
         assert_eq!(owner[1], Value::Unrecorded, "strength with an unreadable division");
         assert_eq!(owner[6], Value::Unrecorded, "manpower of a division with no land inputs");
-        // An owner no link resolves makes every country's owner cells unknown, its host side known.
         army.count(2, &division(99, 20, Some(1)), 1, &mut dirty);
         assert!(army.totals(3)[..2].iter().all(|cell| *cell == Value::Unrecorded) && army.totals(3)[4] == Value::Unrecorded);
         assert_eq!(army.totals(3)[2], Value::I64(0), "host divisions stay known");
-        // Without the templates table, battalions are unknown.
         army.templates = None;
         assert_eq!(army.totals(2)[5], Value::Unrecorded);
     }
@@ -676,8 +625,6 @@ mod tests {
         assert_eq!(composition(&unreadable), None);
     }
 
-    /// A template no division names sets nothing; a template recomposed counts again its own
-    /// divisions alone, ITA's 51, not GER's; and both leave the tables a rebuild writes.
     #[test]
     fn a_template_recomposed_counts_again_its_own_divisions_alone() {
         use crate::{
@@ -722,7 +669,6 @@ mod tests {
         assert_eq!(army_battalions(&run, 2), Some(51 * 4), "ITA's divisions of template 8 hold four battalions each");
     }
 
-    /// Slot `slot`'s owner battalions.
     fn army_battalions(run: &crate::deployed::tests::Run, slot: u32) -> Option<i64> {
         crate::forces::testing::cells(&run.store, TableId::ArmyTotals, u128::from(slot)).and_then(|cells| cells[4])
     }

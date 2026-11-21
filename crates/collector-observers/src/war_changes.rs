@@ -1,30 +1,3 @@
-//! The war domain: a quiet token over every native writer of the set and the
-//! fixed fields WarRelations records ([`crate::acquisition_wars`]), which
-//! other families patch and forward here. The domain registers no receiver:
-//! the Wars job compares the token it took before its latest complete walk
-//! with the hour's, and equal tokens prove that no observed writer ran in
-//! between ([`WatchRegistry::quiet`]).
-//!
-//! Forwarded sites ([`Site`]) cover relation replacement, the only writer of a status's war pointer
-//! and a war's place in both endpoints' owned (`cdiplomacy_status::OWNED_RELATIONS`), sub- and
-//! serializable relation vectors. Its only caller is linked relation replacement, reached by
-//! war-link application and clearing for declaration, joining, civil war, load and ending a war.
-//! Fifteen typed relation slot replacements also insert owned relations, moving other relations and
-//! a war's place in the same vectors. Instigator and defender setters are the only run-time writers
-//! of the first-was-instigator byte (`cwar_relation::FIRST_WAS_INSTIGATOR`) after linking. Relation
-//! status reset, construction and save reading, and diplomacy reset are forwarded too. The resets
-//! reach a war only through relation replacement: redundant for the war set, they name every
-//! relation change at its source.
-//!
-//! Other recorded fields (endpoints, start and end hours, cancel and retired bytes) are written
-//! only during construction, by two initializers and by save reading before the war is linked.
-//! Linking requires a zero cancel byte; there is no later writer. A linked war is destroyed only
-//! inside relation replacement, after it leaves every vector. Hourly combat settlement rewrites the
-//! casualty counters, which are read every hour.
-//!
-//! The domain observes only while every forwarding family's patches are
-//! enabled ([`Forwarder`]); anything unobserved (disabled, poisoned, an epoch
-//! change, a running writer) yields no token, and the walk reads afresh.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -32,15 +5,10 @@ static WARS: WatchRegistry = WatchRegistry::new();
 pub type ParticipationObserver = fn(Site, usize, usize);
 static PARTICIPATION: AtomicUsize = AtomicUsize::new(0);
 
-/// The participation owner installs this before admitting capture and removes
-/// it before releasing its state. Shared hook owners retain their callbacks
-/// through native quiescence. Notifications never allocate or wait.
 pub fn observe_participation(observer: Option<ParticipationObserver>) {
     PARTICIPATION.store(observer.map_or(0, |f| f as usize), Ordering::SeqCst);
 }
 
-/// Names the exact status or diplomacy root on both sides of its writer,
-/// while the enclosing war-domain notification excludes acquisition.
 pub struct ParticipationChange {
     observer: Option<ParticipationObserver>,
     site: Site,
@@ -72,16 +40,10 @@ impl Drop for ParticipationChange {
     }
 }
 
-/// The families whose patches forward here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Forwarder {
-    /// [`crate::country_input_changes`]: relation replacement, instigator setting,
-    /// defender setting.
     CountryInputs,
-    /// [`crate::opinion_changes`]: the status reset, constructor and save
-    /// reader and the typed relation slot replacements.
     Opinions,
-    /// [`crate::relation_changes`]: diplomacy reset.
     Relations,
 }
 
@@ -93,7 +55,6 @@ impl Forwarder {
 static FORWARDERS: [AtomicBool; Forwarder::ALL.len()] =
     [const { AtomicBool::new(false) }; Forwarder::ALL.len()];
 
-/// The forwarded writers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Site {
     ReplaceRelation,
@@ -121,11 +82,8 @@ impl Site {
 }
 
 static CALLS: [AtomicU64; Site::ALL.len()] = [const { AtomicU64::new(0) }; Site::ALL.len()];
-/// Quiet and read hours.
 static READS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
-/// Hook path, allocation-free: a forwarded writer is about to run. Dropping
-/// the guard notifies its return.
 pub fn forwarded(site: Site) -> Option<Notification<'static>> {
     if !cfg!(feature = "war_changes") {
         return None;
@@ -134,8 +92,6 @@ pub fn forwarded(site: Site) -> Option<Notification<'static>> {
     Some(WARS.notify(0))
 }
 
-/// A forwarding family's patches were enabled or disabled; the domain
-/// observes only while every one is enabled, and enabling starts an epoch.
 pub fn forwarder(family: Forwarder, enabled: bool) {
     FORWARDERS[family as usize].store(enabled, Ordering::SeqCst);
     let all = FORWARDERS
@@ -144,14 +100,10 @@ pub fn forwarder(family: Forwarder, enabled: bool) {
     WARS.set_enabled(cfg!(feature = "war_changes") && all);
 }
 
-/// What the Wars job sees of the domain.
 pub trait Changes: Sync {
-    /// The domain's token: `(epoch, revision)` while observed and no
-    /// forwarded writer runs.
     fn quiet(&self) -> Option<(u64, u64)>;
 }
 
-/// The forwarded writers' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
@@ -159,23 +111,16 @@ impl Changes for Observer {
     }
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WARS.boundary(invalidate);
 }
 
-/// One Wars capture's use of the domain.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// The held rows were published with fresh casualties, walking nothing.
     pub quiet: bool,
-    /// The walk ran.
     pub read: bool,
 }
 
-/// Publishes one Wars capture's counts.
 pub fn record(counts: &Counts) {
     for (target, value) in READS
         .iter()
@@ -226,8 +171,6 @@ mod tests {
         assert_eq!(CALLS[Site::StatusLoad as usize].load(Ordering::Relaxed), 2);
     }
 
-    /// The domain needs every forwarder, and each forwarded writer moves the
-    /// token at its entry and refuses it until its return.
     #[cfg(feature = "war_changes")]
     #[test]
     fn every_forwarder_enables_and_each_forwarded_call_moves_the_token() {

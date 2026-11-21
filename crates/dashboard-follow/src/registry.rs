@@ -1,9 +1,3 @@
-//! The service's follows: requests `follow {id, branchId, query}`, `unfollow {id}` and the clock's
-//! anchors, each answered at once. Follow is available or not, per query: a playhead must exist
-//! for the recording and timeline ([`Playheads`], the viewer's host), and its files must hold the
-//! query's table; otherwise the reply says why and no reader is made. Follows are kept across a
-//! seek (a reset message settles them), are per timeline and clock mapping (a track's anchor), and
-//! go when their recording closes. A `panel` query shows a panel the caller builds.
 
 use crate::{
     Follow,
@@ -21,7 +15,6 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
-/// The clock's anchors as the UI sends them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Anchor {
     pub seek: u32,
@@ -31,18 +24,13 @@ pub struct Anchor {
     pub timestamps: Option<(f64, f64)>,
     pub playing: bool,
     pub speed: f64,
-    /// The hour was sought (not only played or paused at).
     pub sought: bool,
 }
 
-/// One playhead's follows, made by its host.
 pub trait Hosted: Send + Sync {
     fn follow(&self) -> &Follow;
-    /// Why the playhead's files do not hold `table`, if they do not.
     fn lacks(&self, table: usize) -> Option<String>;
-    /// The UI's clock moved: the host anchors the playhead (unless a drawn map already does).
     fn anchor(&self, anchor: Anchor);
-    /// Shows `panel` as `id`: its data pushed when it differs; or why this host shows none.
     fn panel(&self, id: u32, panel: Box<dyn Panel>) -> Result<(), String> {
         let _ = (id, panel);
         Err("This playhead shows no panels".into())
@@ -50,11 +38,7 @@ pub trait Hosted: Send + Sync {
     fn unpanel(&self, _id: u32) {}
 }
 
-/// Where playheads come from: the viewer's host.
 pub trait Playheads: Send + Sync {
-    /// The playhead of the recording at `path`, timeline `branch`, for a track whose game hour is
-    /// the UI clock's plus `clock`, with its follows; or why there is none. Each mapping of one
-    /// timeline has its own: two tracks showing it at different hours each follow their own.
     fn open(&self, path: &Path, branch: u64, clock: i32) -> Result<Arc<dyn Hosted>, String>;
 }
 
@@ -77,8 +61,6 @@ impl Followed {
     }
 }
 
-/// A panel's follow query built: none when the query is no panel the caller knows; why not when it is
-/// one it cannot show.
 pub type PanelOf<'a> = dyn FnOnce(&Value) -> Option<Result<Box<dyn Panel>, String>> + 'a;
 
 pub struct Registry {
@@ -92,8 +74,6 @@ fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
 
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
-/// This process's registry: the viewer installs its playheads once; until then, and in any other
-/// process, every follow is not available.
 pub fn install(playheads: Arc<dyn Playheads>) -> bool {
     REGISTRY.set(Registry::new(Some(playheads))).is_ok()
 }
@@ -102,7 +82,6 @@ pub fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| Registry::new(None))
 }
 
-/// The products the registry answers.
 pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-close"];
 
 fn unavailable(reason: impl Into<String>) -> Value {
@@ -114,13 +93,10 @@ impl Registry {
         Self { playheads, followed: Mutex::default() }
     }
 
-    /// The reply data to `product` for the recording at `path`; `identity` is the query layer's
-    /// of the timeline the request names, and `panel` builds a panel's query.
     pub fn answer(&self, path: &Path, product: &str, params: &Value, identity: impl FnOnce(u64) -> io::Result<Identity>, panel: Box<PanelOf<'_>>) -> io::Result<Value> {
         self.answer_heads(path, product, params, identity, panel, Box::new(|_| None))
     }
 
-    /// As [`Self::answer`], `head` building a head value's query ([`crate::head`]).
     pub fn answer_heads(&self, path: &Path, product: &str, params: &Value, identity: impl FnOnce(u64) -> io::Result<Identity>, panel: Box<PanelOf<'_>>,
         head: Box<HeadOf<'_>>) -> io::Result<Value> {
         match product {
@@ -206,7 +182,6 @@ impl Registry {
         }
     }
 
-    /// The recording at `path` closed: its follows go.
     pub fn close(&self, path: &Path) {
         let gone: Vec<(u32, Followed)> = {
             let mut followed = lock(&self.followed);
@@ -218,7 +193,6 @@ impl Registry {
         }
     }
 
-    /// Ids followed now.
     pub fn followed(&self) -> usize {
         lock(&self.followed).len()
     }
@@ -232,7 +206,6 @@ fn id(params: &Value) -> io::Result<u32> {
     Ok(id)
 }
 
-/// The game hour at UI clock zero for this track.
 fn clock(params: &Value) -> io::Result<i32> {
     params["clock"].as_i64().and_then(|clock| i32::try_from(clock).ok()).ok_or_else(|| crate::invalid("A follow request's clock is not an hour"))
 }
@@ -241,7 +214,6 @@ fn branch(params: &Value) -> io::Result<u64> {
     params.get("branchId").and_then(Value::as_str).and_then(|id| id.parse().ok()).ok_or_else(|| crate::invalid("A follow request names no branch"))
 }
 
-/// Why `kinds`' recording's files lack `table`: what a host's `lacks` says by name.
 pub fn lacking(table: usize, held: bool) -> Option<String> {
     (!held).then(|| format!("{} is not in this playhead's files (a derived table, until format 12)", table_name(table)))
 }

@@ -1,7 +1,5 @@
 use super::*;
 
-/// Sites of the strategic-air subsystem's first list in stored order.
-/// Repeated bases remain repeated: each occurrence contributes to score.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GameScoreAirSite {
@@ -17,8 +15,6 @@ impl GameScoreAirSite {
 value_struct!(GameScoreAirSite { base: u64, access: u8, error: Vec<u8> });
 opaque_value!(Vec<GameScoreAirSite>);
 
-/// Every country-fleet occurrence in roster order. Score adds stored
-/// signed task-force counts with i32 wrapping; this is not a ship census.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GameScoreFleetCount {
@@ -29,12 +25,6 @@ pub struct GameScoreFleetCount {
 value_struct!(GameScoreFleetCount { fleet: u64, task_forces: Option<i32>, error: Vec<u8> });
 opaque_value!(Vec<GameScoreFleetCount>);
 
-/// Hourly score operands for every canonical country's raw reference.
-/// Army and Land retain stored counts, including stale/reset headers. Navy
-/// retains ordered count witnesses above. Air distinguishes an unreadable
-/// subsystem, a known null pointer and a present subsystem whose ordered
-/// first-site list may be empty. Each failed scalar/list read has its own
-/// named diagnostic; zero is known.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryGameScoreInputRow {
@@ -93,11 +83,6 @@ row_codec!(CountryGameScoreInputRow, 32, |row| row.country as u128, |key| { coun
   6 => air_state: U8, 7 => air_error: Bytes, 8 => first_sites: Opaque, 9 => fleets: Opaque },
 |row| row.check());
 
-/// Hourly fields for every wing in the shared wing census, without score
-/// or access admission filters. Game score joins ordered base registrations.
-/// It reads stored plane count and stat 0x33 using the signed mission
-/// selector, widened while retaining its signed-byte range. Full wing
-/// handles are retained. Each failed operand is independently unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirWingGameScoreStatsRow {
@@ -122,10 +107,6 @@ row_codec!(AirWingGameScoreStatsRow, 64, |row| row.id as u128, |key| { id: key a
     Ok(())
 });
 
-/// One hourly singleton with six effective signed fixed5 NCountry defines:
-/// COUNTRY/ARMY/NAVY/AIR/INDUSTRY/PROVINCE_SCORE_MULTIPLIER. Each is read
-/// independently; no defaults are inferred from vanilla content. Part
-/// multipliers precede the total multiplier.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GameScoreMultiplierRow {

@@ -1,5 +1,3 @@
-//! The cryptology walk before its field gathers, kept for the cost bench
-//! and the equality test: every field one guarded read.
 use super::*;
 
 pub(super) fn walk(
@@ -65,9 +63,6 @@ fn walk_inner(
                 .ok_or("cryptology row address overflow")?;
             let mut row = read_state(memory, base, at)?;
             let target = countries.resolve(row.target_country)?;
-            // The engine maintains one state per canonical target. The set
-            // answers in O(1); its exact fallback uses the unpublished owner
-            // word as scratch until this owner's walk finishes.
             let slot = target.canonical_slot;
             let earlier = &output[owner_start..len];
             if seen.insert(slot, || {

@@ -9,16 +9,12 @@ pub struct Scores {
     pub sunk_ships: i64,
     pub sunk_convoys: i64,
     pub casualties: i64,
-    /// Runtime score, distinct from the signed integer casualty counter.
-    /// The save writer omits this component.
     pub unknown_casualties: i64,
     pub lend_lease_sent: i64,
     pub lend_lease_received: i64,
 }
 
 impl Scores {
-    /// Native score addition wraps before its final nonnegative clamp. The
-    /// casualty-free projection excludes both casualty components.
     pub fn total(self, exclude_casualties: bool) -> i64 {
         let mut total = [
             self.lend_lease_received,
@@ -38,9 +34,6 @@ impl Scores {
         total.max(0)
     }
 
-    /// Native side aggregation sums ordinary fields and keeps the greatest
-    /// unknown-casualty contribution. Captured-province membership is not
-    /// unioned by the score projection.
     pub fn add(&mut self, other: Self) {
         macro_rules! sum { ($($field:ident),* $(,)?) => { $(self.$field = self.$field.wrapping_add(other.$field);)* }; }
         sum!(
@@ -57,8 +50,6 @@ impl Scores {
         self.unknown_casualties = self.unknown_casualties.max(other.unknown_casualties);
     }
 }
-/// Stored bilateral delivery histories. Playback selects the displayed side.
-/// Fuel remains fixed5 here; the projection truncates only after side summation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeliveryHistory {
     pub industry_sent: i64,

@@ -1,15 +1,8 @@
-//! The runs of [`super::append_entries`] against the parent's per-entry walk
-//! ([`super::serial_reference`]): equal on healthy memory and under a lasting
-//! fault at every byte either reads, and never harsher under a fault that
-//! clears after its first touch. Arrays cross the run boundary twice (three
-//! runs), with duplicate pointers, shared air-hit variants and inline and
-//! heap hit names.
 use super::*;
 use crate::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 const BASE: usize = 0x1_4000_0000;
-/// Three runs: the first, a middle and a short last one.
 const COUNT: u32 = 2 * ENTRY_RUN as u32 + 12;
 const ARRAY: usize = 0x1000;
 const OBJECTS: usize = 0x4000;
@@ -24,8 +17,6 @@ enum Mode {
     Once,
 }
 
-/// The world's bytes, recording every read; reads overlapping `fault` fail
-/// every time, or only the first in time.
 struct World<'a> {
     bytes: &'a [u8],
     fault: Option<(usize, Mode)>,
@@ -43,13 +34,10 @@ impl<'a> World<'a> {
         }
     }
 
-    /// The same bytes and fault, with its own reads and its one-shot fault
-    /// unspent: a second walk meets the fault as the first did.
     fn fresh(&self) -> Self {
         Self::new(self.bytes, self.fault)
     }
 
-    /// Every byte a read touched.
     fn touched(&self) -> Vec<usize> {
         let mut bytes: Vec<usize> = self
             .reads
@@ -86,8 +74,6 @@ fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
     bytes[at..at + value.len()].copy_from_slice(value);
 }
 
-/// An MSVC string header at `at` holding `text`: inline up to 15 bytes,
-/// otherwise on the heap at `heap`, each with its terminator.
 fn string(bytes: &mut [u8], at: usize, text: &[u8], heap: usize) {
     if text.len() <= 15 {
         put(bytes, at, text);
@@ -109,8 +95,6 @@ fn array() -> Array {
     }
 }
 
-/// The objects entry `index` of a pointer array leads to: every seventh
-/// repeats the previous entry's object.
 fn object(index: usize) -> usize {
     let index = if index % 7 == 6 { index - 1 } else { index };
     OBJECTS + index * OBJECT
@@ -201,13 +185,9 @@ fn damage_world() -> Vec<u8> {
     bytes
 }
 
-/// The parent's reader of an entry, and the runs' reader of one.
 type ReadFn<T> = fn(&World<'_>, usize, usize) -> Result<T, &'static str>;
 type EntryReadFn<T> = fn(&EntryMemory<'_, World<'_>>, usize, usize) -> Result<T, &'static str>;
 
-/// What one append leaves: its result or error, the length, and every arena
-/// row (owned rows, including those pushed before a failure; and a slice
-/// arena, including rows written past the unchanged length).
 type Appended<T> = (
     Result<[usize; 2], &'static str>,
     usize,
@@ -216,11 +196,6 @@ type Appended<T> = (
     Vec<T>,
 );
 
-/// Appends through the runs (`batched`) or the parent's walk, into an owned
-/// arena and into a slice arena already holding one sentinel row. The slice
-/// walk reads its own [`World::fresh`] copy, so a fault met only once fails
-/// both walks alike instead of being spent by the first; `memory` records
-/// the owned walk's reads, which are the slice walk's too.
 fn append<T: Clone + Default>(
     memory: &World<'_>,
     batched: bool,
@@ -281,7 +256,6 @@ fn append<T: Clone + Default>(
     (result, owned_length, owned, slice_length, slice)
 }
 
-/// The three entry kinds: (world, stride, object fields, parent reader, run reader).
 fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
@@ -301,7 +275,6 @@ fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
     let mut faults: Vec<usize> = serial_touched.into_iter().chain(runs_touched).collect();
     faults.sort_unstable();
     faults.dedup();
-    // Every run is reached: faults fall in the first, middle and last runs.
     let run_bytes = ENTRY_RUN * stride;
     for run in 0..3 {
         assert!(faults.contains(&(ARRAY + run * run_bytes)), "run {run}");
@@ -321,8 +294,6 @@ fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
     }
 }
 
-/// The same faults met only once: the runs never refuse or withhold more than
-/// the parent's walk.
 fn check_once<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
@@ -350,10 +321,7 @@ fn check_once<T: Clone + Default + PartialEq + std::fmt::Debug>(
         };
         let (runs, reference) = (once(true), once(false));
         match reference.0 {
-            // Where the walk completes, so do the runs, with its rows.
             Ok(_) => assert_eq!(runs, reference, "one-touch fault at {fault:#x}"),
-            // Where it refuses, the runs refuse as it does or complete
-            // with the healthy rows.
             Err(_) => assert!(
                 runs.0.is_err() || runs == healthy,
                 "one-touch fault at {fault:#x}: {:?}",
@@ -406,7 +374,6 @@ fn damage_entry(
     crate::cfex_damage_entry::read(memory, base, entry)
 }
 
-/// Naval hits: pointer slots, every record span, inline and heap names.
 #[test]
 fn naval_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     check(
@@ -418,8 +385,6 @@ fn naval_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     );
 }
 
-/// Air hits: pointer slots, the record, the shared variants' identity and
-/// handle.
 #[test]
 fn air_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     check(
@@ -431,7 +396,6 @@ fn air_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     );
 }
 
-/// Damage entries: the strided element runs, the gaps between fields included.
 #[test]
 fn damage_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     check(

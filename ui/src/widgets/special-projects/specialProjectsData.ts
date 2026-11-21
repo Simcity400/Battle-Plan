@@ -18,8 +18,6 @@ const date = (value: unknown) => object(value) && integer(value.hour) && typeof 
 const span = (value: unknown) => object(value) && integer(value.firstHour) && integer(value.lastHour) && value.firstHour <= value.lastHour;
 const STATES = ['running', 'paused', 'cancelled', 'completed', 'unknown'];
 
-/** Validate references as well as scalars: a corrupt payload cannot turn unknown scientists or absent hours into
- * someone else's data. */
 export function validateSpecialProjectsReply(input: unknown): SpecialProjectsReply {
   const bad = () => { throw new Error('Invalid special-projects reply'); };
   if (!object(input) || typeof input.branchId !== 'string' || typeof input.tag !== 'string' || !nullableString(input.unavailable)
@@ -60,8 +58,6 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
 export const projectDate = (date: ProjectDate) => `${date.exact ? '' : 'by '}${dayLabel(date.hour)}`;
 export const observedAt = (data: SpecialProjectsReply, hour: number) => runAt(data.available, hour) !== null;
 
-/** The countries a selection asks for, each with the hours it is chosen: a tag another country takes later is shown
- * only over its chosen holders' hours (each reply holds every holder of its tag; the views clip to these). */
 export function projectCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, first: number, last: number) {
   const requested = worldRequestTags(selection, fallback, groups, last);
   const match = countryMatch(selection, fallback, groups, last);
@@ -88,7 +84,6 @@ export function projectHistoryExtent(first: number, last: number, playhead: numb
   return [first, Math.max(first + 1, grow && playhead !== null ? playhead : last + 1)];
 }
 
-/** The hour a country's heading is named at: its holder's at `hour`, never a later occupant's of its tag. */
 export function projectCountryHour(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[]): number | null {
   const runs = membership ? clipToSpans(data.identities, membership) : data.identities;
   let low = 0, high = runs.length;
@@ -106,7 +101,6 @@ export function projectHeading(id: string, label: CountryLabelValue, message: st
   } }, spans: [], heading: true };
 }
 
-/** The scientist as rows name them; the last-assignment date belongs in the tooltip. */
 export const scientistName = (data: SpecialProjectsReply, info: ProjectPresentation) => {
   const scientist = data.people[info.scientist];
   return scientist.name ?? (scientist.assigned === false ? 'No scientist assigned' : 'Scientist unknown');
@@ -126,7 +120,6 @@ export function historyCard(data: SpecialProjectsReply, id: string, hour: number
   return project && run ? { project, run, info: data.presentations[run.presentation] } : null;
 }
 
-/** A project the recording first saw already complete: its completion is only bounded by that first read. */
 export const completedWhenFirstRecorded = (project: ProjectEpisode, run: SpecialProjectRun) =>
   !!run.completion && !run.completion.exact && run.completion.hour === project.runs[0].firstHour;
 
@@ -134,9 +127,6 @@ export interface CurrentProjects { running: ProjectCard[]; completed: ProjectCar
 
 const byName = (a: ProjectCard, b: ProjectCard) => a.info.name.localeCompare(b.info.name) || (a.project.id < b.project.id ? -1 : a.project.id > b.project.id ? 1 : 0);
 
-/** The projects at one hour, as Current lists them: running (and paused or unknown) closest to completion first,
- * completed newest first, those already complete when first recorded apart, then cancelled. A missing hour never
- * carries an older observation; a future completion is never exposed. */
 export function currentProjects(data: SpecialProjectsReply, hour: number): CurrentProjects {
   const groups: CurrentProjects = { running: [], completed: [], earlier: [], cancelled: [] };
   if (!observedAt(data, hour)) return groups;
@@ -155,8 +145,6 @@ export function currentProjects(data: SpecialProjectsReply, hour: number): Curre
   return groups;
 }
 
-/** What Current shows at `hour` apart from the numbers its painter moves (progress, iterations): which projects in
- * which section and order, their names, scientists, states and dates. Playing renders only when it changes. */
 export function currentKey(data: SpecialProjectsReply, hour: number): string {
   if (!observedAt(data, hour)) return 'unobserved';
   const { running, completed, earlier, cancelled } = currentProjects(data, hour);
@@ -166,8 +154,6 @@ export function currentKey(data: SpecialProjectsReply, hour: number): string {
     part(cancelled, card => `${card.run.cancellation!.hour}\u0001${card.run.progress}`)].join('\u0003');
 }
 
-/** The numbers a running card shows at `hour`, painted each frame: its progress and iteration count; null where the
- * hour holds no run of it. */
 export function projectStructure(reply: SpecialProjectsReply, hour: number) {
   return JSON.stringify([currentKey(reply, hour), reply.unavailable, reply.warnings]);
 }
@@ -177,22 +163,14 @@ export function runningValues(project: ProjectEpisode, hour: number): { progress
   return run ? { progress: `${run.progress}%`, fill: Math.max(0, run.progress) / 100, iterations: iterationCount(run.iterations) } : null;
 }
 
-/** The latest of a folded group's bounds, so "completed by" holds for every member. */
 export const earlierBound = (cards: readonly ProjectCard[]) => cards.reduce((bound, card) => Math.max(bound, card.run.completion!.hour), -Infinity);
 
 export interface ProjectHistory {
   lanes: TimelineLane[];
-  /** Projects that ended before the shown range, or before the recording saw them run: one closing line counts them. */
   completed: number; cancelled: number;
-  /** The latest of their end bounds; null when there are none. */
   by: number | null;
 }
 
-/** One lane per project started by `hour`, in start order. A bar splits at every recorded progress step, labelled
- * with its percent and, while running, shaded deeper as progress rises; equal consecutive reads join and missing
- * intervals stay gaps. The completed end is the game's history date, not the later read. Projects that ended before
- * `from` get no lane. `live` keeps each project's bars past `hour` (a chart following the head cuts them there each
- * frame); otherwise they end at `hour`. Ends and completions are those known by `hour`. */
 export function projectHistory(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[], from = -Infinity, live = false): ProjectHistory {
   const history: ProjectHistory = { lanes: [], completed: 0, cancelled: 0, by: null };
   const order: { start: number; name: string; id: string; lane: TimelineLane }[] = [];
@@ -221,7 +199,6 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
       continue;
     }
     if (completion && spans.length) {
-      // Only the stretch holding the completion date is marked, never the edge before a gap.
       const end = spans.find(span => span.firstHour <= completion.hour && completion.hour === span.lastHour + 1);
       if (end) end.endLabel = '✓';
     }
@@ -233,8 +210,6 @@ export function projectHistory(data: SpecialProjectsReply, hour: number, members
   return history;
 }
 
-/** What History shows at `hour` apart from where its bars end, which the chart moves each frame: the projects started,
- * each one's name and scientist, and the ends known. Playing renders only when it changes. */
 export function historyKey(data: SpecialProjectsReply, hour: number, membership?: readonly HourSpan[]): string {
   const parts: string[] = [];
   for (const project of data.projects) {
@@ -244,15 +219,12 @@ export function historyKey(data: SpecialProjectsReply, hour: number, membership?
   return parts.join('\u0002');
 }
 
-/** The closing line for projects that ended before the shown range, or null. */
 export function closedLane(id: string, history: ProjectHistory): TimelineLane | null {
   if (history.by === null) return null;
   const parts = [history.completed ? `${usNumber.format(history.completed)} completed` : '', history.cancelled ? `${usNumber.format(history.cancelled)} cancelled` : ''];
   return { id, label: `${parts.filter(Boolean).join(', ')} by ${dayLabel(history.by)}`, compact: true, spans: [] };
 }
 
-/** Details the rows leave out: type, last-assignment date, bounded dates and the game's own iteration text. "By"
- * appears here, never in a row's plain date. */
 export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard): TooltipContent {
   const { project, run, info } = card;
   const rows = [{ label: 'Scientist', value: scientistName(data, info) }];
@@ -266,7 +238,6 @@ export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard): T
     ...(text ? { description: text } : {}) };
 }
 
-/** The hovered observation, bounded by both the playhead and the drawn span. */
 export function historyTooltip(data: SpecialProjectsReply, id: string, span: TimelineSpan | null, hour: number, playhead: number, membership?: readonly HourSpan[]): TooltipContent | null {
   const project = data.projects.find(project => project.id === id);
   if (!project) return null;
@@ -275,14 +246,12 @@ export function historyTooltip(data: SpecialProjectsReply, id: string, span: Tim
   const target = Math.min(hour, playhead, span?.lastHour ?? Infinity);
   const run = span && runAt(runs, target);
   if (!run) {
-    // Past a finished bar the project is recorded as completed or cancelled, not missing.
     const ended = !span ? runAt(runs, Math.min(hour, playhead)) : null;
     if (ended && (ended.completion || ended.cancellation)) return projectTooltip(data, { project, run: ended, info: data.presentations[ended.presentation] });
   }
   if (!run) return { title: latest ? data.presentations[latest.presentation].name : 'Special project', rows: [{ label: 'Started', value: projectDate(project.start) }], note: 'This project was not recorded at this hour.' };
   const tip = projectTooltip(data, { project, run, info: data.presentations[run.presentation] });
   const rows = [...tip.rows];
-  // The span's observed end is separate from the value at the hovered read.
   if (span.positive && latest?.completion && !run.completion) rows.push({ label: 'Completed', value: projectDate(latest.completion) });
   if (latest?.cancellation && !run.cancellation) rows.push({ label: 'Cancelled', value: projectDate(latest.cancellation) });
   return { ...tip, rows };

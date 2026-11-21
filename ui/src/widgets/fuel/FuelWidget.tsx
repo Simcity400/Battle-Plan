@@ -67,13 +67,10 @@ const DAY_HOURS = 24;
 const DETAIL_HOURS = 720;
 const NO_PAINT = () => {};
 
-/** A frame whose values are the tank's raw units: lines drawn from raw summaries land where fuel amounts would. */
 function rawFrame(frame: PlotFrame, scale: number): PlotFrame {
   return { ...frame, y: [frame.y[0] * scale, frame.y[1] * scale], toY: value => frame.toY(value / scale), valueAt: py => frame.valueAt(py) * scale };
 }
 
-/** Each country's fuel against its capacity over time, with each day's gain and burn; at a moment, the day's gain or burn
- * by source or consumer, a consumer's recipients, and every current consumer with its daily rate. */
 export default function FuelWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const [storedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [drillOwner, setDrillOwner] = useState<object>();
@@ -102,7 +99,6 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
   const headFollowed = fuelHead && (!showCapacity || capacityHead);
-  // A breakdown following playback is a pushed panel: the clock is read by render only while it stands still.
   const playing = usePlaybackMotion(runtime.clock) !== undefined;
   const drillOnClock = saved ? following && storedDrill.breakdown === null || storedDrill.breakdown !== null && storedDrill.follow
     : storedDrill.breakdown !== null && storedDrill.follow;
@@ -157,7 +153,6 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     return tags.flatMap(tag => [...showCapacity ? [line(() => capacity.lineOf(tag), colourOf(tag, 'capacity'), true, false)] : [],
       line(() => fuel.lineOf(tag), colourOf(tag, 'fuel'), false, single && options.areaFill !== false)]);
   }, [tags, showCapacity, capacity.lineOf, fuel.lineOf, colourOf, single, options.areaFill, until]);
-  // The gain and burn strip reads the day series' tiles as it draws; with no bar it writes why (`stripNote`).
   const gainFailure = gain.error?.message ?? null, burnFailure = burn.error?.message ?? null;
   const strip = useMemo<ChartStrip | undefined>(() => {
     if (!withStrip || !tags[0]) return undefined;
@@ -177,7 +172,6 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       draw: (ctx, frame, chartTokens, state) => {
         const drawn = current();
         const note = stripNote(drawn.bars, lines(drawn.gain, gain.notRecorded, gainFailure), lines(drawn.burn, burn.notRecorded, burnFailure));
-        // A note stands for a strip with no bars: its empty baseline would cross the words.
         if (!note) drawn.strip.draw(ctx, frame, chartTokens, state);
         if (!note || !frame.strip) return;
         ctx.save();
@@ -194,7 +188,6 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const chartData = useMemo<ChartData>(() => ({ revision: () => [fuel.revision(), capacity.revision(), gain.revision(), burn.revision()],
     subscribe: listener => { const stops = [fuel.subscribe(listener), capacity.subscribe(listener), gain.subscribe(listener), burn.subscribe(listener)];
       return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
-  // A hovered day is asked once per country for its tooltip.
   const hoverRequests = useMemo(() => track && hoverHour !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: Math.floor(hoverHour) } })) : [], [track, hoverHour, tags, saved]);
   const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
@@ -203,7 +196,6 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const menu = useContextMenu('Fuel actions');
   const anchor = useRef<HTMLDivElement>(null);
 
-  // The drill: the breakdown chosen, the moment, the country and what is picked within it.
   const pickScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tags, options.show, extent]);
   const pickOwner = useMemo(() => ({ scope: pickScope }), [pickScope]);
   const drill = drillOwner === undefined || drillOwner === pickOwner ? storedDrill : CLOSED;

@@ -1,8 +1,3 @@
-//! Lend-lease balance: the game's cumulative lend-lease histories at an hour
-//! (`WarLendLeaseHistories`, one row per country and partner with any history, keyed by raw
-//! country ids), summed per canonical slot: every country's totals, or one country's record of
-//! each partner. A country on the war rosters (`WarOwnedRelations`) with no row has sent and
-//! received nothing; one off the rosters has no recorded history, which is not zero.
 use dashboard_base::products::validate_country;
 use dashboard_base::products::Country;
 use super::super::LoadContext;
@@ -20,7 +15,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// Fixed-point denominator of every amount.
 pub const SCALE: u32 = 100_000;
 
 pub struct LendLeaseBalance;
@@ -30,20 +24,18 @@ pub struct LendLeaseBalance;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LendLeaseBalanceParams {
     pub branch_id: String,
-    /// One country's partners; every country's totals when absent.
+    #[doc = " One country's partners; every country's totals when absent."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub holder: Option<Country>,
 }
 
-/// One country's (or partner's) cumulative totals: industry sent, fuel sent, industry received,
-/// fuel received.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseRow {
     pub slot: u32,
-    /// The tag its slot's country holds at the hour; null where the recorded countries name none.
+    #[doc = " The tag its slot's country holds at the hour; null where the recorded countries name none."]
     pub tag: Option<String>,
     pub values: [String; 4],
 }
@@ -54,17 +46,16 @@ pub struct LendLeaseRow {
 pub struct LendLeaseBalanceReply {
     pub holder: Option<String>,
     pub scale: u32,
-    /// Every country with a history or on the rosters, or the holder's partners with a history;
-    /// in slot order.
+    #[doc = " Every country with a history or on the rosters, or the holder's partners with a history;"]
+    #[doc = " in slot order."]
     pub rows: Vec<LendLeaseRow>,
-    /// Why the histories are not known at the hour.
+    #[doc = " Why the histories are not known at the hour."]
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(LendLeaseBalanceReply);
 
-/// Raw country ids to canonical slots, and each slot's tag, as the hour's countries name them.
 struct Slots {
     links: BTreeMap<u32, u32>,
     tags: BTreeMap<u32, String>,

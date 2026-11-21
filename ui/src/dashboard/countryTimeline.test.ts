@@ -8,8 +8,6 @@ import type { FactSpec } from './countryFacts';
 import type { CountryFactsReply, CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 
-/** GER named Germany, then German Reich from 15 under another flag, losing its colour at 35; D01 a
- * country from 32, drawn as GER was first. */
 const REPLY: CountryFactsReply = {
   branchId: '1', known: [[10, 20], [30, 40]], names: ['Germany', 'German Reich'], reasons: ['not a country at this hour', 'no recorded map colour'],
   flags: [{ keys: ['GER_democratic', 'GER_democratic', null], reasons: [null, null, 'flag artwork unavailable in the recorded content'] },
@@ -21,10 +19,8 @@ const REPLY: CountryFactsReply = {
   warnings: ['content'],
 };
 
-/** A `country-facts` reply to `request`, as the client gives it. */
 const replyTo = (request: ProductRequest, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
 
-/** A client answering `country-facts` with `reply`, counting what it is asked. */
 function facts(reply: CountryFactsReply = REPLY) {
   const asked: unknown[] = [];
   const client = {
@@ -49,17 +45,13 @@ test('a held timeline answers every hour it holds, as country-styles would, and 
   assert.equal(at(15, ['GER'])?.get('GER')?.name, 'German Reich');
   assert.deepEqual(at(36, ['GER'])?.get('GER'),
     { tag: 'GER', name: 'German Reich', color: null, warnings: ['content', 'GER: no recorded map colour'] });
-  // Not yet a country, then one; a tag never a country is not one either. Each style carries only its own reason.
   assert.deepEqual(at(31, ['D01', 'ENG'])?.get('D01'), { tag: 'D01', name: null, color: null,
     warnings: ['content', 'D01: not a country at this hour'] });
   assert.deepEqual(at(31, ['D01', 'ENG'])?.get('ENG')?.warnings, ['content', 'ENG: not a country at this hour']);
   assert.equal(at(32, ['D01'])?.get('D01')?.name, 'Germany');
-  // An hour no known span holds is asked for.
   for (const hour of [9, 21, 29, 41]) assert.equal(at(hour, ['GER']), undefined, String(hour));
   assert.equal(asked.length, 1, 'the timeline is read once');
-  // A spec's lookup leaves out what its reply's extract leaves out.
   assert.deepEqual([...heldFacts(style => style.name)(heldTimeline(client, source)!, 31, ['GER', 'D01'])!], [['GER', 'German Reich']]);
-  // Without the recording there is nothing to read it from.
   assert.equal(heldStyles(client, source, undefined, 12, ['GER']), undefined);
   forgetTimelines(client, 'timeline');
   assert.equal(at(12, ['GER']), undefined, 'a forgotten timeline is read again');
@@ -134,7 +126,6 @@ test('a timeline still being read survives forgetting what settled, and another 
   assert.equal(heldStyles(client, source, recording, 12, ['GER'])?.get('GER')?.name, 'Germany');
   assert.equal(heldStyles(client, { ...source, content: 1 }, recording, 12, ['GER']), undefined, 'new content is read anew');
   assert.equal(asked, 2);
-  // The new content's timeline replaced the old one, whose answers are not held any more.
   replies.shift()!();
   await settle();
   assert.equal(heldStyles(client, { ...source, content: 1 }, recording, 12, ['GER'])?.get('GER')?.name, 'Germany');
@@ -218,7 +209,6 @@ test('a held timeline gives each country its packed map colour, one object per c
   const colour = colourOf(timeline, 0x336699);
   assert.deepEqual(colour, { color: [0x33, 0x66, 0x99] });
   assert.equal(colourOf(timeline, 0x336699), colour, 'every country and hour drawn in a colour shares it');
-  // A forgotten timeline takes its colours with it.
   forgetTimelines(client, 'timeline');
   heldStyles(client, source, recording, 12, ['GER']);
   await settle();

@@ -23,7 +23,6 @@ fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
     };
     side.damage_history[0][0] = 4_100_000;
     side.damage_history[0][1] = 32_200_000;
-    // The native fifth weapon pair sums index 4 across every target box.
     side.damage_history[0][4] = 4_000_000;
     side.damage_history[1][4] = 2_500_000;
     let opponent = NavalCombatSideDetails {
@@ -193,8 +192,6 @@ fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
         .unwrap(),
         "TOTAL 10.00;\nBOX;\nTYPES;[ 1.00 0.10][ 2.00 0.20][ 3.00 0.30]\n"
     );
-    // A missing localisation shows the key itself, while an
-    // empty authored localisation stays empty: neither drops the type row.
     assert!(
         flag_description(
             &side,
@@ -226,8 +223,6 @@ fn torpedo_hover_reports_damage_history_not_current_attack_counter() {
         original_health: 30_000_000,
         ..Default::default()
     };
-    // The game reads the historical matrix's torpedo column,
-    // independently of current active-member attack summary.
     assert_eq!(
         weapon_description(&side, &opponent, 2, None, &NoIcons, &loc).unwrap(),
         "180\nRatio 0.60\nScreens 180"
@@ -284,7 +279,6 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         weapon_description(&side, &opponent, 0, Some(&invalid), &NoIcons, &loc),
         Err("NNavy piercing threshold arrays differ or have fewer than two entries".into())
     );
-    // Unreadable arrays refuse only this explanation, by name; torpedoes need none.
     let mut unread = defines.clone();
     unread.piercing = Err("missing NDefines.NNavy.NAVY_PIERCING_THRESHOLDS".into());
     assert!(
@@ -346,9 +340,6 @@ fn positioning_loc() -> Localisation {
     loc
 }
 
-/// The positioning hover lists the side's country, terrain and commander
-/// trees of key 0x1B2 after the base line, and the opposing commander's 0x5A
-/// tree for an early defender; without recorded trees it refuses by name.
 #[test]
 fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
     use replay_data::naval_trees::Kind;
@@ -413,8 +404,6 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
         .tooltip
         .clone()
         .expect("positioning hover");
-    // The defender's own commander (77) supplies 0x1B2 nothing; the opposing
-    // commander (66) supplies nothing for 0x5A, so only these lines print.
     let text = format!("{tooltip:?}");
     assert!(text.contains("Positioning"), "{text}");
     assert!(text.contains("Base"), "{text}");
@@ -439,7 +428,6 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
     );
     assert!(text.contains("Naval doctrine"), "{text}");
     assert!(text.contains("Superior tactician"), "{text}");
-    // The attacker's early-defender key reads the defender's commander.
     assert!(text.contains("Ambusher"), "{text}");
     let missing = crate::naval_trees::Sources::from_parts(
         Err("the naval source trees are not available this hour (NavalModifierTrees: not recorded at format 101)".into()),
@@ -475,8 +463,6 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
     );
 }
 
-/// The screen-box description reaches the country's 0x1B3 lines only on its correction
-/// branch; the carrier box and the other screen-box paths add none.
 #[test]
 fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
     use replay_data::naval_trees::Kind;
@@ -516,8 +502,6 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
             carrier, census, &screening, 42, side, &opposing, &trees, &NoIcons, &loc,
         )
     };
-    // A zero uncorrected result with a country and no eligible submarine,
-    // or an applied country bonus, takes the 0x1B3 branch.
     for text in [
         correction(false, &census, screening(0, false), &side).unwrap(),
         correction(false, &submarines, screening(60_000, true), &side).unwrap(),
@@ -525,8 +509,6 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
         assert!(text.contains("Screening doctrine"), "{text}");
         assert!(text.ends_with('\n'), "{text}");
     }
-    // The carrier box has no correction section; the other screen-box
-    // paths never reach it.
     assert_eq!(
         correction(true, &census, screening(0, false), &side),
         Ok(String::new())
@@ -543,7 +525,6 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
         correction(false, &census, screening(0, false), &empty),
         Ok(String::new())
     );
-    // Without recorded trees the reached branch refuses by name.
     let missing = crate::naval_trees::Sources::from_parts(
         Err("NavalModifierTrees not recorded".into()),
         &definitions,
@@ -639,8 +620,6 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     };
-    // submarine classification does not depend on the carrier
-    // predicate's value. Complete combat rows suffice when Models is absent.
     let (census, screening, _) = screening_inputs(
         42,
         0,
@@ -719,8 +698,6 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
             "Carriers \u{11}H0\u{11}!, convoys \u{11}H0\u{11}!, required \u{11}H0\u{11}!, capitals \u{11}H0\u{11}!.\n\n",
             "Carrier Group bonuses:\nSortie efficiency: \u{11}G+10%\u{11}!\nRetreat speed: \u{11}G+20.0%\u{11}!").into(), vec![])
     );
-    // The lazy requirement still refuses a member whose carrier predicate
-    // really needs its recorded equipment flags, and any incomplete census.
     let mut unknown = ships[0].clone();
     unknown.formation_flags = 0;
     assert_eq!(

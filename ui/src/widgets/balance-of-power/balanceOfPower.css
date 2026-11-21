@@ -5,7 +5,6 @@
 .balance-drill { height: auto; padding: 0; gap: var(--space-3); }
 .balance-chart { flex: 1; min-height: 120px; }
 .balance-lanes { flex: none; min-height: 0; overflow: auto; }
-/* The header line, as Ruling party heads its chart: a strong name, then a muted detail. */
 .balance-headline { display: flex; flex-direction: column; min-width: 0; padding: 0 var(--space-3); }
 .balance-drill .balance-headline { padding: 0; }
 .balance-headline strong { font-size: var(--type-lg); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

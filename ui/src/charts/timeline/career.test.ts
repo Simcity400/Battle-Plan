@@ -26,7 +26,6 @@ test('dated icons retain their actual date and row through campaign zoom and Liv
   assert.equal(laneStops([marker], 100.5, 200, null).length, 0);
   assert.equal(laneStops([marker], 0, 200, 100).length, 0);
   assert.equal(laneStops([marker], 0, 200, 101)[0].hour, 100);
-  // Keyboard without a stop and label hover both use this held-span fallback.
   assert.equal(spanAt([marker], 100), null);
   const holder = { ...span('holder', 90, 110), glyphShape: 'cross' as const, glyphHours: [100] };
   assert.equal(spanAt([marker, holder], 100), holder);

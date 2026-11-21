@@ -1,26 +1,3 @@
-//! Saved counterparts of the format-24 naval and country counter operands.
-//!
-//! The country writer emits `pride_of_the_fleet={ id type }` only for a non-null
-//! reference. The fleet writer saves `color`, each ordered `task_force`, and
-//! `strategic_region` ids only for a positive count. The task-force writer saves
-//! `repair_parent` only when it resolves. The mission writer emits `is_in_regions`
-//! only when its byte is nonzero and `navy_engagement_rule` unconditionally. It
-//! writes `bombardment_region` only for a non-null region, `spotting_region` as
-//! the current region's id only when that pointer is non-null, and
-//! `accessible_regions` as region ids in array order with repeats only when
-//! the copied id list is non-empty. The task-force writer also saves
-//! `detached_activity` as 1 repairing, 2 moving_to_refit, 3 refitting, 4 reinforcing
-//! (omitted for 0), and `repair_last_mission` only when nonzero. The attached
-//! naval-HQ array becomes a `naval_headquarter` block with one reference per
-//! entry only when it is nonempty. Absence is retained so the oracle can apply
-//! those rules. The country writer saves the division roster first in `units`,
-//! in order; a null slot would dereference null, so every slot is written.
-//!
-//! Each country's `strategic_navy` keeps its `naval_transport` blocks. The
-//! transfer writer saves a `unit` reference for each unit handle that is
-//! nonzero and resolves to a unit, in vector order. It also writes the source
-//! `province` unconditionally and every `combat` reference in order when the
-//! signed count is nonzero.
 
 use std::{collections::BTreeMap, io};
 
@@ -30,40 +7,29 @@ use super::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
-    /// Every saved country tag, with its pride reference when written.
     pub prides: BTreeMap<Vec<u8>, Option<u64>>,
-    /// Sent-volunteer references, including raw null references and native order.
     pub sent_volunteers: BTreeMap<Vec<u8>, Vec<u64>>,
     pub sent_expeditionaries: BTreeMap<Vec<u8>, Vec<u64>>,
-    /// The first saved `division` of each country with one: roster slot 0.
     pub first_divisions: BTreeMap<Vec<u8>, u64>,
-    /// The country writer saves every division in roster order.
     pub division_orders: BTreeMap<Vec<u8>, Vec<u64>>,
-    /// The country writer saves fleets in roster order, empty when units is omitted.
     pub fleet_orders: BTreeMap<Vec<u8>, Vec<u64>>,
     pub fleets: BTreeMap<u64, Fleet>,
     pub task_forces: BTreeMap<u64, TaskForce>,
-    /// Every saved naval transfer's `unit` references, in writer order, by transfer handle.
     pub naval_transfers: BTreeMap<u64, Vec<u64>>,
     pub naval_transfer_inputs: BTreeMap<u64, NavalTransfer>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NavalTransfer {
-    /// Mandatory native scalar; omission stays absent for exact comparison.
     pub source: Option<u32>,
-    /// Count retains the exact signed list-count operand for nonnegative values.
     pub combat: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fleet {
     pub owner: Vec<u8>,
-    /// The literal `color` list; omission stays distinct from an empty list.
     pub color: Option<Vec<i64>>,
-    /// Saved `strategic_region` identities in writer order, when the list was written.
     pub strategic_regions: Option<Vec<u32>>,
-    /// Saved `task_force` ids in writer order.
     pub task_forces: Vec<u64>,
 }
 
@@ -73,22 +39,14 @@ pub struct TaskForce {
     pub is_in_regions: Option<bool>,
     pub engagement_rule: Option<i32>,
     pub bombardment_region: Option<u32>,
-    /// `spotting_region`, the mission's current region id; omitted for none.
     pub spotting_region: Option<u32>,
-    /// `accessible_regions` in writer order, repeats kept; omitted for an empty list.
     pub accessible_regions: Option<Vec<u32>>,
     pub repair_parent: Option<u64>,
     pub detached_activity: Option<Vec<u8>>,
     pub repair_last_mission: Option<i32>,
-    /// The `naval_headquarter` block's entry count; zero when it is omitted.
     pub attached_headquarters: usize,
-    /// The task-force writer emits every full reference as repeated
-    /// `spotters`, in native order, including stored null references.
     pub spotters: Vec<u64>,
-    /// The mission writer emits the target when either raw reference half is nonzero;
-    /// resolution is deliberately not a serialization condition.
     pub strike_force_target: Option<u64>,
-    /// Ordered unkeyed `target_ship_types` strings.
     pub target_ship_types: Vec<Vec<u8>>,
 }
 

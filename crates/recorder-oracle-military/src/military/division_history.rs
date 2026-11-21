@@ -1,4 +1,3 @@
-//! Saved division history and medal operands, preserving both native list orders.
 use super::*;
 use recorder_oracle_support::support::{country_context, equal, serialized_text};
 use replay_data::rows::DivisionHistoryRow;
@@ -9,7 +8,6 @@ pub(super) fn compare(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    // A save with no serialized histories supplies no history operands.
     if !save
         .divisions
         .values()
@@ -190,8 +188,6 @@ mod tests {
     use replay_frame::frame::TableView;
     use std::sync::Arc;
 
-    /// The game grows its latest career entry's provinces in place: a recording that kept the
-    /// entry as first written differs from the save.
     #[test]
     fn a_latest_career_entry_short_of_a_province_the_game_added_in_place_is_named() {
         let (mut frame, mut saved, ..) = crate::fixtures::fixture();

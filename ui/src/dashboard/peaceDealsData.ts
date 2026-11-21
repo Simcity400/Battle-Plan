@@ -2,9 +2,7 @@ import { countryIdentityKey } from './countryIdentity.ts';
 import { formatDateTime } from './calendar.ts';
 import type { PeaceDeal, PeaceDealsReply, PeaceTransferGraph, PeaceTransferredState } from '../generated/dashboard';
 
-/** Where a captured action's name holds the name of its country (`nameCountry`). */
 export const NAME_COUNTRY = '{COUNTRY}';
-/** An action's name with its country's name in place; with no country name, the game's label without it. */
 export const peaceActionLabel = (name: string, country: string | null): string => !name.includes(NAME_COUNTRY) ? name
   : country != null ? name.replaceAll(NAME_COUNTRY, country) : name.replaceAll(NAME_COUNTRY, '').replace(/\s+/g, ' ').trim();
 
@@ -31,8 +29,6 @@ function change(v: unknown): boolean {
     default: return false;
   }
 }
-/** Each released state's own former owner and the released holder. A bridge built
- * before these were recorded sends neither; one without the other is malformed. */
 function releasedStates(v: Record<string, unknown>): boolean {
   if (v.toCountry === undefined && v.transfers === undefined) return true;
   if (!country(v.toCountry) || (v.toCountry as { tag: unknown }).tag !== v.country || !Array.isArray(v.transfers)) return false;
@@ -42,12 +38,9 @@ function releasedStates(v: Record<string, unknown>): boolean {
 }
 const country = (v: unknown) => object(v) && unsigned(v.slot) && unsigned(v.countryId) && text(v.tag) && integer(v.hour);
 const item = (v: unknown) => object(v) && bool(v.derived) && dates(v.dates) && nullable(v.winner, text) && action(v.action) && change(v.change);
-// `released` is absent from replies of a bridge built before it was recorded.
 const state = (v: unknown) => object(v) && unsigned(v.state) && dates(v.dates) && country(v.fromCountry) && country(v.toCountry) && nullable(v.victoryPoints, decimal) && nullable(v.victoryPointsReadHour, integer)
   && (v.released === undefined || bool(v.released));
 
-/** Match the product's ordered checked i64 fold. An intermediate overflow stays
- * unknown even when a later signed term would bring the final sum back in range. */
 export function checkedPeaceVictoryPoints(states: Iterable<Pick<PeaceTransferredState, 'victoryPoints'>>): bigint | null {
   const minimum = -(1n << 63n);
   const maximum = (1n << 63n) - 1n;
@@ -62,7 +55,6 @@ export function checkedPeaceVictoryPoints(states: Iterable<Pick<PeaceTransferred
   return total;
 }
 
-/** Validate endpoints and whole-link sums in one pass; unknown VPs remain null. */
 function graph(v: unknown): v is PeaceTransferGraph {
   if (!object(v) || !Array.isArray(v.nodes) || !Array.isArray(v.links)) return false;
   const nodes = new Map<string, { side: string; key: string }>();
@@ -92,7 +84,6 @@ function captured(v: unknown): boolean {
     && list(v.subjects, s => object(s) && bool(s.derived) && unsigned(s.overlord) && unsigned(s.subject) && nullable(s.overlordTag, text) && nullable(s.subjectTag, text));
 }
 
-/** Both peace widgets share one validated branch reply. */
 export function validatePeaceDealsReply(data: unknown): PeaceDealsReply {
   const observations = new Set(['recordedConference', 'conferenceNotRecorded', 'conferenceUnknown']);
   const unobserved = object(data) ? data.unobserved : null;
@@ -112,14 +103,12 @@ export function validatePeaceDealsReply(data: unknown): PeaceDealsReply {
   return reply;
 }
 
-/** Date of the completed outcome, else the conference's first observation. */
 export function peaceDealHour(deal: PeaceDeal): number {
   if (deal.captured) return deal.captured.hour;
   let hour = deal.endHour ?? deal.firstFinalizedHour ?? deal.firstObservedHour;
   for (const item of deal.items) hour = Math.max(hour, item.dates.afterHour);
   return hour;
 }
-/** The observation that supplied this outcome can be later than its event date. */
 type PeaceObservationTiming = { captureObservedHour?: number | null; captureUnavailableHour?: number | null };
 export function peaceDealKnownAt(deal: PeaceDeal & PeaceObservationTiming): number {
   const hour = Math.max(peaceDealHour(deal), deal.captureObservedHour ?? -Infinity);
@@ -128,7 +117,6 @@ export function peaceDealKnownAt(deal: PeaceDeal & PeaceObservationTiming): numb
 }
 export const peaceWarName = (deal: PeaceDeal) => deal.warName ?? 'War name not recorded';
 export const peaceCaptureLabel = (deal: Pick<PeaceDeal, 'captureUnavailable'> & PeaceObservationTiming, hour = Infinity) => deal.captureUnavailable == null || (deal.captureUnavailableHour ?? -Infinity) > hour ? null : 'Outcomes not recorded';
-/** Earlier sampled fallback evidence remains usable before a later failed hook. */
 export function peaceDealAt(deal: PeaceDeal & PeaceObservationTiming, hour: number): PeaceDeal {
   return deal.captureUnavailable != null && (deal.captureUnavailableHour ?? -Infinity) > hour
     ? { ...deal, captureUnavailable: null, limitations: deal.limitations.filter(reason => reason !== deal.captureUnavailable) } : deal;

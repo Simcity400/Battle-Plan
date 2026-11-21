@@ -1,0 +1,19 @@
+# 0105. Give each captured hour stable frame ownership
+
+The callback takes the newest free frame so it tends to reuse warm storage. If none is free, it grows the pool while the spool is making progress. The frame builder prepares the next frame and a spare off the game thread. A stalled spool stops growth and an hour without a free frame is recorded as lost. On recovery, the pool frees excess frames with a one-frame gap between the grow and shrink thresholds to avoid alternating between the two as the spool catches up.
+
+Frame slots live in doubling segments and keep their index for the life of the pool. The callback and frame builder can both publish a segment. The losing allocation was never published and can be dropped after the comparison. An installed segment remains mapped until the pool drops. Its decode and ready queues link slot indices through separate links held by the slots themselves. Producers append without allocating or waiting for a consumer, while consumers serialize on the queue tail. A consumer can see an empty result while the newest append is still linking.
+
+A slot may move from vacant to held before a frame is installed. Publishing it free changes its state before incrementing the free count. Taking a slot first reserves the count, then claims the slot with a state compare-and-swap. A return can either acquire a new age stamp or preserve the old one when it restores a lease. Only the holder may fill the decode job, publish the frame's byte gauge, or relinquish the frame. Reusing a slot advances its generation. The pool converts installed frames back to their boxes while the holder gives them up, or on teardown after callback quiescence and the spool join.
+
+The single capture assigns a sequence before acquiring rows. It publishes that sequence into a held slot and advances the published sequence when the capture exits. A captured fence waits for every capture through its sequence to finish acquisition and, if it published a frame, return that frame from downstream. Recycling clears the slot sequence. Captures that start after the fence and captures that exit without a frame cannot hold it open.
+
+Sizing, the frame builder, and the spool change allocation capacities under one lock on collector-owned threads. On guard drop the writer chooses the inactive slot, waits for its readers to leave, copies the capacities, and publishes the slot. A callback reads without the writer lock. It pins the current index, validates the index again, copies only the pinned current slot, and unpins it after copying. Those steps keep readers away from concurrent writes to the inactive slot and allow a retry only after publication changed the observed index.
+
+The status gauge reports installed, free, and in-flight frames and memory. Slot allocation bytes include embedded decode jobs, and the frame byte gauge is the latest measured size. Timing and count fields distinguish callback growth, prepared frames, and loss during stalls.
+
+## Safety contract
+
+`FramePool::job` grants mutable access only to the caller's held index. Ownership of the slot excludes every other thread from touching its decode job for the duration of that borrow.
+
+[Capacity publication](../../crates/collector/src/frame_capacities.rs) · [Frame fence](../../crates/collector/src/frame_fence.rs) · [Frame pool](../../crates/collector/src/frame_pool.rs)

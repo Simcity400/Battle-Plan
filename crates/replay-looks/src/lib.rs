@@ -1,4 +1,3 @@
-//! Recorded country appearance and naming operands, shared by capture and playback.
 
 use installed_content_country_names::country_names::Operands;
 use replay_data::rows::Recorded;
@@ -8,9 +7,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// A country's flag inputs, as recorded: its appearance's cosmetic tag and original tag (with
-/// the reference choosing it), its ruling party and that party's ideology group token. A part
-/// it has no row of is None.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FlagInputs {
     pub appearance: Option<(Vec<u8>, Recorded<Option<i32>>, Recorded<Option<Vec<u8>>>)>,
@@ -18,13 +14,11 @@ pub struct FlagInputs {
     pub group: Option<Vec<u8>>,
 }
 
-/// What a tag shows at an hour: its holder, colour, naming chain and flag inputs.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Look {
     pub slot: u32,
     pub id: u32,
     pub colour: Option<[u8; 3]>,
-    /// The naming operands of the holder's slot and every overlord its name reaches, in order.
     pub chain: Vec<(u32, Result<Operands, String>)>,
     pub built: Option<u8>,
     pub flag: FlagInputs,

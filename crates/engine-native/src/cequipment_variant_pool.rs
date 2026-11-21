@@ -1,7 +1,3 @@
-//! CEquipmentVariantPool, shared by stockpiles, convoys, deployment and upgrades.
-//!
-//! Amounts are native signed i64 fixed point. The serializer omits zero
-//! entries unless ALLOW_ZERO is set. Array order can matter to consumers.
 
 use engine_sites::Rva;
 use crate::{
@@ -15,19 +11,12 @@ use crate::{
 
 pub use equipment_entry::Row;
 
-/// CEquipmentVariantPool primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x27c6ec8);
-/// Equipment-pool archetype-allocation array, initialized before the variant array (`ITEMS`).
 pub const ALLOCATIONS: usize = 0x08;
-/// CEquipmentVariantPool row array pointer.
 pub const ITEMS: usize = 0x20;
-/// CEquipmentVariantPool row capacity, i32.
 pub const CAPACITY: usize = 0x28;
-/// CEquipmentVariantPool row count, i32.
 pub const COUNT: usize = 0x2c;
-/// CEquipmentVariantPool allocator slot.
 pub const ALLOCATOR: usize = 0x30;
-/// CEquipmentVariantPool allow-zero byte.
 pub const ALLOW_ZERO: usize = 0x38;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +27,6 @@ pub struct StockpileRow {
     pub amount_raw: i64,
 }
 
-/// A source from the authenticated division census, not an independent roster.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionSource {
     pub pointer: usize,
@@ -57,9 +45,6 @@ pub struct DivisionRow {
     pub amount_raw: i64,
 }
 
-/// Authenticate a genuine CEquipmentVariantPool and return its variant array. CArmy embeds this
-/// object (`carmy::EQUIPMENT_POOL`) and so does CProductionStatus; their familiar item-array
-/// pointers are not the pool's primary address.
 pub fn entries(
     memory: &impl Memory,
     module_base: usize,
@@ -68,11 +53,6 @@ pub fn entries(
     authenticated_array(memory, module_base, pool, ITEMS, equipment_entry::STRIDE)
 }
 
-/// Select the first pool entry with the largest signed i64 amount, keeping
-/// the first on ties. This is an embedded-pool selection, not a reference at
-/// the pool primary address. Empty pools and winning null pointers return zero.
-/// Positive entries authenticate their flag union; the caller authenticates
-/// the selected target even when its winning amount is nonpositive.
 pub fn model_selection(
     memory: &impl Memory,
     module_base: usize,
@@ -81,8 +61,6 @@ pub fn model_selection(
     model_selection_observed(memory, module_base, pool, &mut 0)
 }
 
-/// Loan exact flags reached by model selection, including a positive
-/// flag-22 early return usable by transport after a later model failure.
 pub fn model_selection_observed(
     memory: &impl Memory,
     module_base: usize,
@@ -110,8 +88,6 @@ fn model_selection_entries(
     let header = read::<[u8; 16]>(memory, header_at).ok_or("equipment pool array unreadable")?;
     let array = Array::from_header(header, equipment_entry::STRIDE)
         .ok_or("equipment pool array invalid")?;
-    // Walk the complete signed count. Scratch is a repeated window with no
-    // aggregate pool population limit.
     const BATCH: usize = 64;
     let mut bytes = [0; BATCH * equipment_entry::STRIDE];
     let mut selected = 0;
@@ -127,9 +103,6 @@ fn model_selection_entries(
         if !crate::read_slice(memory, address, copied) {
             return Err("equipment model pool entries unreadable");
         }
-        // Each owned entry advances the hint cursor once. The four-entry
-        // window stays inside this successfully copied chunk; no future
-        // identity or flags are loaded ahead of their native entry order.
         let mut hints = copied.chunks_exact(equipment_entry::STRIDE);
         let mut hinting = hints
             .by_ref()
@@ -178,8 +151,6 @@ fn transport_variant_flags(
     read(memory, at).ok_or("ship equipment flags unreadable")
 }
 
-/// Advisory targets from one owned equipment occurrence. Rejecting a target
-/// only ends lookahead; its original identity/flags reads decide the result.
 #[inline]
 fn hint_model_variant(entry: &[u8], mut hint: impl FnMut(usize, usize)) -> bool {
     if i64::from_le_bytes(entry[8..16].try_into().unwrap()) <= 0 {
@@ -205,8 +176,6 @@ fn hint_model_variant(entry: &[u8], mut hint: impl FnMut(usize, usize)) -> bool 
     true
 }
 
-/// The first array stores allocation rows rather than variant/amount pairs.
-/// Its count and identity are independent of the second array.
 pub fn allocation_entries(
     memory: &impl Memory,
     module_base: usize,
@@ -240,8 +209,6 @@ fn authenticated_array(
     Array::read(memory, header, stride).ok_or("equipment pool array invalid or unreadable")
 }
 
-/// Preserve every live pool entry, including amounts omitted by the native
-/// serializer's allow-zero policy. No allocation, sorting or rescaling occurs.
 pub fn walk(memory: &impl Memory, module_base: usize, pool: usize, output: &mut [Row]) -> Outcome {
     match entries(memory, module_base, pool) {
         Ok(array) => equipment_entry::walk(memory, module_base, array, output),
@@ -310,8 +277,6 @@ pub fn walk_stockpiles_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Worker-only capture grows from each original authenticated pool header,
-/// then continues entries without rereading it or omitting a capacity prefix.
 pub fn walk_divisions(
     memory: &impl Memory,
     module_base: usize,
@@ -329,8 +294,6 @@ pub fn count_divisions(
     walk_divisions_buffer(memory, module_base, divisions, |_| true, Buffer::Count)
 }
 
-/// Filtered worker capture grows from original pool headers.
-/// Rejected census entries acquire no operands.
 pub fn walk_divisions_where(
     memory: &impl Memory,
     module_base: usize,
@@ -355,16 +318,10 @@ fn walk_divisions_buffer(
     mut output: Buffer<'_, DivisionRow>,
 ) -> Outcome {
     let result = (|| {
-        // A division's bank entries are contiguous and each names one variant.
-        // Both stages gather a batch at a time instead of two guarded copies
-        // per entry; every entry is still decoded and authenticated in native
-        // order with its own copied prefix, so each reason keeps its position.
         const BATCH: usize = 64;
         let mut addresses = [0_usize; BATCH];
         let mut entry_bytes = [0_u8; BATCH * equipment_entry::STRIDE];
         let mut identities = [0_u8; BATCH * 16];
-        // Relocated once for the whole walk, but still reported at the entry
-        // whose identity would have computed it, so its precedence is intact.
         let relocated = engine_sites::at(module_base, cequipment_variant::VTABLE_RVA);
         let mut len = 0usize;
         let mut unread_rows = 0_u32;
@@ -464,13 +421,11 @@ fn walk_divisions_buffer(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// One bank entry: its variant reference and native amount, in native order.
 const ENTRY_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
     len: equipment_entry::STRIDE,
 }];
-/// One variant's vtable and full handle, the exact bytes `identity` reads.
 const IDENTITY_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,

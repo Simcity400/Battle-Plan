@@ -1,8 +1,3 @@
-//! Current naval-combat surface detection from shared simulation operands.
-//!
-//! This does not bind the positioning widget. The caller must supply complete
-//! tables where needed. Carrier aircraft counts must be derived from the game's
-//! dense air-base containers, not its separately indexed registration table.
 
 use super::{keyed::Keyed, naval_environment::modifier_default_leader};
 use engine_executable::modifier_keys as keys;
@@ -11,15 +6,6 @@ use std::collections::BTreeMap;
 
 const ONE: i64 = 100_000;
 
-/// carrier air bonus. The native carrier predicate includes both the
-/// ship's current formation flags and flags in its positive equipment pool;
-/// ShipModels supplies both current values without a duplicate combat copy.
-/// Air-base aircraft counting walks dense containers. AirBaseRegistrations
-/// comes from the separately indexed registration array; a
-/// duplicate country ordinal can remain in the dense vector after the indexed
-/// slot is overwritten. The caller supplies counts derived from complete dense
-/// occurrence rows and complete AirWings. An absent base key is unknown, whereas
-/// an explicit dense row with no wings has a known zero count.
 fn carrier_air_bonus(
     member: &NavalCombatShipRow,
     model: &ShipModelRow,
@@ -35,9 +21,6 @@ fn carrier_air_bonus(
     }
     let count = *dense_counts?.get(&member.weapon_context.air_base)?;
     let capacity = i64::from(member.weapon_context.air_base_maximum) * ONE;
-    // the game does signed integer division and clamps the fixed-point fill.
-    // Its preceding count*100000 overflow guard is unreachable for an i32
-    // count; the later 64-bit numerator can wrap for anomalously huge counts.
     let fill = i64::from(count)
         .wrapping_mul(10_000_000_000)
         .wrapping_div(capacity)
@@ -45,9 +28,6 @@ fn carrier_air_bonus(
     Some(fill.wrapping_mul(member.weapon_context.air_detection_base) / ONE)
 }
 
-/// ship surface detection. Its commander=0 modifier call uses
-/// the fleet default leader (scopes 31/32), not the combat side's selected
-/// leader (scopes 9/10).
 fn ship_surface_detection(
     member: &NavalCombatShipRow,
     model: &ShipModelRow,
@@ -64,12 +44,6 @@ fn ship_surface_detection(
     )
 }
 
-/// the game sums current surface detection from the forward groups'
-/// live ships in one combat side. Source-1 historical/retired members and
-/// paired-only members do not participate, and state bits 2, 4 and 5 veto a
-/// member. `models` is the binding's shared ShipModels lookup, `None` for an
-/// incomplete table; `dense_counts=None` means a missing or incomplete
-/// dense-base/AirWings census.
 pub(super) fn sum_active_surface_detection(
     members: &[&NavalCombatShipRow],
     models: Option<Keyed<'_, ShipModelRow>>,

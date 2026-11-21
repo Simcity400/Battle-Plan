@@ -1,4 +1,3 @@
-//! Native saved-target selectors over fresh caller scopes.
 use super::{Scope, Scopes, eval::Evaluator};
 use crate::scope::{RecordedScopes, valid_saved_target};
 use crate::triggers::Failure;
@@ -68,8 +67,6 @@ impl Selected {
         })
     }
 }
-/// Select a saved target for context, variable storage, text or a
-/// country selector.
 pub(crate) fn select(r: &Row, reader: Reader) -> Selected {
     if !valid_saved_target(r) {
         return Selected::Missing;
@@ -93,7 +90,6 @@ pub(crate) fn select(r: &Row, reader: Reader) -> Selected {
         return Selected::Country(r.country);
     }
     if r.live & Row::CHARACTER != 0 {
-        // Variable storage uses the character, not its unit leader.
         return if variable {
             Selected::Character(r.character)
         } else {
@@ -104,7 +100,6 @@ pub(crate) fn select(r: &Row, reader: Reader) -> Selected {
             }
         };
     }
-    // Each reader's native priority over the remaining kinds.
     let kinds: &[u16] = match reader {
         Reader::Variable => &[
             Row::INDUSTRIAL_ORGANISATION,
@@ -136,7 +131,6 @@ pub(crate) fn select(r: &Row, reader: Reader) -> Selected {
     } else if variable {
         Selected::Missing
     } else {
-        // No setter: contexts retain caller THIS; text keeps its object.
         Selected::Caller
     }
 }

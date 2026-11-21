@@ -1,13 +1,3 @@
-//! Each country's stability, war support and maximum command power inputs
-//! and its modifier tree lines with their proven sources
-//! (`engine_stability::country_stability`). The `stability` sliced family: each hour
-//! reads the hour's country slice, every country on a full hour, a country
-//! new to the census or whose last read was not published, and every country
-//! a hooked writer marked since the previous hour
-//! ([`crate::country_input_changes`]); a quiet country costs no read until
-//! its slice. It runs in its own pool
-//! job of the first burst, the Stability job, beside Slow; the family's store
-//! is loaned with that job.
 use crate::{
     clock::qpc,
     country_input_changes::{self as changes, Changes, Table},
@@ -52,7 +42,6 @@ collector_primitives::capacity_max!(Capacities {
     demand { inputs, lines, bytes, children, candidates, values },
 });
 impl Capacities {
-    /// One input row per country slot. Native line/text demand is independent.
     pub fn raise_for_countries(&mut self, slots: usize) {
         let inputs = crate::country_scale::rows(slots, 1);
         self.inputs = self.inputs.max(inputs);
@@ -80,17 +69,11 @@ pub struct Captured {
     lines: CaptureRows<native::LineRow>,
     bytes: Arena<u8>,
     scratch: native::Scratch,
-    /// Shared static observations, invalidated before every hourly attempt.
     memo: native::Memo,
-    /// Which countries this hour's rows cover.
     selection: SliceSelection,
-    /// This hour's marked countries.
     changed: Changed,
-    /// Tracked keys, resolved once per modifier definition table header.
     keys: Option<native::Keys>,
-    /// The globals every input row of this read carries.
     context: Option<native::Context>,
-    /// This capture's inputs/setup, children, candidates and pairing/emission.
     phase_ticks: [u64; 4],
 }
 
@@ -103,7 +86,6 @@ impl Captured {
         self.selection.reset(hour, force_full);
         self.phase_ticks = [0; 4];
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self {
             inputs: CaptureRows::new(0),
@@ -159,7 +141,6 @@ impl Captured {
         self.bytes.grow(&mut capacity.bytes);
     }
 
-    /// The countries whose rows this frame's read replaced.
     pub fn selection(&self) -> &SliceSelection {
         &self.selection
     }
@@ -168,14 +149,11 @@ impl Captured {
         self.phase_ticks
     }
 
-    /// Start a frame's selection at its hour; the job resets it again.
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
         self.phase_ticks = [0; 4];
     }
 
-    /// Reads this hour's countries, as the hooks' marks select them
-    /// ([`Self::capture_changed`]).
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -196,10 +174,6 @@ impl Captured {
         )
     }
 
-    /// Reads this hour's countries. Without a store (the inline fallback)
-    /// only the hour's slice is read; with one, also the countries new to the
-    /// census or whose read was not published and those `changes` marked,
-    /// or every country when its take certifies nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_changed(
         &mut self,
@@ -243,7 +217,6 @@ impl Captured {
         changes: &dyn Changes,
         timing: &mut native::WalkTiming,
     ) -> Result<(), &'static str> {
-        // The first failure stands: a failed check is not retried by resolving again.
         let cached = match self.keys {
             Some(keys) => keys.current(memory, base)?.then_some(keys),
             None => None,
@@ -264,9 +237,6 @@ impl Captured {
         self.changed.reset();
         let mut ids = None;
         if let Some(fingerprints) = fingerprints.as_deref_mut() {
-            // The census scan reads no country's stability: a constant print
-            // finds new and unpublished countries; the hooks' marks find
-            // changed ones.
             let started = qpc();
             let mut census = true;
             let mut bound = 0_usize;
@@ -283,8 +253,6 @@ impl Captured {
             fingerprints.finish_scan();
             if census {
                 self.selection.finish_census(fingerprints);
-                // Every native id indexes the link table: its count bounds
-                // the ids a writer can mark, dynamic countries included.
                 ids = Some(bound.max(countries.arrays()[1].count as usize));
             }
             slicing::select_changed(
@@ -328,8 +296,6 @@ impl Captured {
                 self.bytes.len,
                 timing,
             );
-            // Count failed speculative batches even when the serial fallback
-            // refuses this country, before propagating that original reason.
             let fallbacks = self.scratch.batch_fallbacks();
             if fallbacks != 0 {
                 BATCH_FALLBACKS.fetch_add(fallbacks, Ordering::Relaxed);
@@ -383,7 +349,6 @@ impl Captured {
 
     pub fn tables(&self) -> [TableView; N] {
         let Some(context) = self.context.as_ref() else {
-            // The read failed or was skipped before it reached any country.
             return self.outcomes().map(|outcome| match outcome {
                 Outcome::Unavailable { reason } => unavailable(reason),
                 _ => unavailable("stability rows without their read's globals"),
@@ -497,7 +462,6 @@ fn kind(kind: native::Kind) -> u8 {
     }
 }
 
-/// Sums two row outcomes; the unread counts add.
 fn combine(total: Outcome, next: Outcome) -> Result<Outcome, &'static str> {
     let unread = |outcome| match outcome {
         Outcome::Truncated { unread_rows, .. } => unread_rows,
@@ -529,8 +493,6 @@ mod tests {
         use engine_stability::{cmodifier, cworld_threat};
         use std::{cell::Cell, collections::BTreeMap};
 
-        // Independently authored, zero-initialized sparse synthetic memory.
-        // Empty rosters/accumulators keep this about capture's error fold.
         struct World {
             bytes: BTreeMap<usize, u8>,
             fault: Cell<Option<usize>>,
@@ -606,12 +568,11 @@ mod tests {
         memory.word(0x5000, IDEA as u64);
         memory.word(IDEA, (BASE + cidea::VTABLE_RVA.0) as u64);
         memory.word(COUNTRY + native::AIR_STATISTICS, STATS as u64);
-        memory.word(STATS + 0x10, RING as u64); // empty interception ring
+        memory.word(STATS + 0x10, RING as u64);
         memory.word(STATE + cgame_state::WORLD_THREAT, WORLD as u64);
         memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA.0) as u64);
         memory.word(BASE + native::STATIC_DATABASE_RVA.0, 0x28060);
         let mut captured = Captured::with_capacities(&Capacities::default());
-        // Bypass name resolution with an explicitly empty synthetic table.
         captured.keys = Some(native::Keys {
             keys: [None; native::TRACKED],
             table: Array { data: 0, count: 0 },
@@ -645,8 +606,6 @@ mod tests {
         assert_eq!(count(), before + 1);
         assert_eq!(captured.scratch.batch_fallbacks(), 1);
 
-        // A different country reuses refused-country scratch. Its inputs fail
-        // before Observed exists, so the previous count must not be folded.
         const NEXT_COUNTRY: usize = 0x40000;
         memory.word(0x3008, NEXT_COUNTRY as u64);
         memory.word(NEXT_COUNTRY, (BASE + ccountry::VTABLE_RVA.0) as u64);
@@ -739,7 +698,6 @@ mod tests {
             ..Default::default()
         };
         captured.lines.outcome = Outcome::Rows { len: 2 };
-        // No context: the read never reached the countries.
         assert!(matches!(
             captured.tables()[1],
             TableView::Unavailable { .. }

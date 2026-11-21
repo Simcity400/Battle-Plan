@@ -56,7 +56,6 @@ impl Content {
         let actual = self.read(memo, frame).unwrap();
         assert_eq!(reference.state_of, actual.state_of);
         reference.extents.assert_same_bits(&actual.extents);
-        // Compare the downstream grouping membership and anchor bytes as well.
         let icons = |geometry: &Geometry| {
             self.bounds
                 .keys()
@@ -118,7 +117,6 @@ fn geography_memo_preserves_geometry_across_hours_reordering_duplicates_and_seek
     assert_eq!(a.state_of, [(1, 7), (2, 7), (3, 8)].into());
     assert!(a.extents.state_is_huge(7));
     assert!(a.extents.region_is_huge(20));
-    // Unrelated hourly columns change and each frame has a fresh table allocation.
     for hour in 101..111 {
         let mut next = frame(hour, &[(1, 7), (2, 7), (3, 8), (4, 0)]);
         if let TableView::Complete(TableRows::Provinces(rows)) =
@@ -133,8 +131,6 @@ fn geography_memo_preserves_geometry_across_hours_reordering_duplicates_and_seek
     let changed = content.compare(&memo, &frame(111, &[(1, 9), (2, 7), (3, 8), (4, 0)]));
     assert!(!Arc::ptr_eq(&a, &changed));
     assert!(!changed.extents.state_is_huge(7));
-    // Zero is skipped rather than deleting a preceding duplicate assignment;
-    // positive duplicates retain the last write, exactly as the original loop.
     let duplicates = [(1, 7), (2, 7), (1, 9), (1, 0), (3, 8), (4, 0)];
     let b = content.compare(&memo, &frame(112, &duplicates));
     assert_eq!(b.state_of.get(&1), Some(&9));
@@ -147,7 +143,6 @@ fn geography_memo_preserves_geometry_across_hours_reordering_duplicates_and_seek
     seek.hour = 3;
     let d = content.compare(&memo, &seek);
     assert!(Arc::ptr_eq(&a, &d));
-    // Earlier hour-products remain immutable while later hours use another map.
     assert_eq!(a.state_of.get(&1), Some(&7));
 }
 
@@ -223,8 +218,6 @@ fn geography_content_keys_retain_allocations_and_exact_scalar_bits() {
     let next = content.compare(&memo, &frame);
     assert!(!Arc::ptr_eq(&previous, &next));
     previous = next;
-    // Both signed zeros have identical comparisons, but the retained output must
-    // still carry the exact scalar bits. Nonfinite content also remains bit-exact.
     for limit in [0.0, -0.0, f32::INFINITY, f32::from_bits(0x7fc0_0001)] {
         content.defines.state_huge = limit;
         let next = content.compare(&memo, &frame);
@@ -259,8 +252,6 @@ fn geography_memo_is_bounded_and_concurrent_requests_share_one_build() {
             .collect::<Vec<_>>()
     });
     assert!(reads.iter().all(|read| Arc::ptr_eq(&reads[0], read)));
-    // The memo retains eight recent keys, not every hour/branch seen. Keeping an
-    // old hour-product alive does not keep its key resident after eviction.
     for state in 20..28 {
         let next = content.compare(&memo, &frame(state as i32, &[(1, state)]));
         assert!(!Arc::ptr_eq(&reads[0], &next));

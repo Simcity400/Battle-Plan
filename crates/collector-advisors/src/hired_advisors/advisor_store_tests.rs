@@ -1,8 +1,3 @@
-//! AvailableAdvisors pools and the AdvisorTokens table carried between hours
-//! ([`super::AdvisorStore`], [`crate::advisor_pool_changes`]): quiet hours
-//! read no advisor, character, idea or bucket and publish the same rows; a
-//! hooked pool or character write re-reads only its pool; an invalidation
-//! re-reads everything.
 use super::advisor_store::{PoolReuse, TokenReuse};
 use super::*;
 use crate::advisor_pool_changes::{Counts, Pair, Watches};
@@ -14,13 +9,10 @@ use std::cell::RefCell;
 
 const BASE: usize = 0x0001_4000_0000;
 const GAME: usize = 0x1000;
-/// Advisors, characters, their strings and the token buckets lie at or
-/// above this address; countries, pools and the manager below it.
 const DETAIL: usize = 0x8000;
 const POOLS: [usize; 2] = [0x5000, 0x5400];
 const MANAGER: usize = 0x6000;
 const BUCKETS: usize = 0xe000;
-/// Hours in a day: each country's pool is read at one of them.
 const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 
 fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
@@ -32,7 +24,6 @@ fn p64(bytes: &mut [u8], at: usize, value: u64) {
 fn p32(bytes: &mut [u8], at: usize, value: u32) {
     put(bytes, at, &value.to_le_bytes());
 }
-/// An inline MSVC string of at most 15 bytes.
 fn string(bytes: &mut [u8], at: usize, value: &[u8]) {
     bytes[at..at + 32].fill(0);
     put(bytes, at, value);
@@ -40,14 +31,11 @@ fn string(bytes: &mut [u8], at: usize, value: &[u8]) {
     p64(bytes, at + 24, 15);
 }
 
-/// The CAdvisor of country `country`'s advisor `ordinal`, and its character.
 fn advisor(country: usize, ordinal: usize) -> (usize, usize) {
     let advisor = DETAIL + country * 0x1000 + ordinal * 0x200;
     (advisor, advisor + 0x100)
 }
 
-/// Two countries with two available advisors each, and a three-key token
-/// set (buckets 1, 4 and 8 of eight, maximum probe 1).
 fn world() -> Vec<u8> {
     let mut bytes = vec![0; 0x10000];
     for (offset, data) in [
@@ -132,7 +120,6 @@ fn world() -> Vec<u8> {
     bytes
 }
 
-/// Every guarded call's first address.
 struct Calls<'a> {
     bytes: &'a [u8],
     calls: RefCell<Vec<usize>>,
@@ -156,12 +143,10 @@ struct Hour {
     detail_reads: usize,
 }
 
-/// A walk of every pool, always at hour 0 of the day.
 fn hour(bytes: &[u8], store: &mut AdvisorStore, changes: &Pair<'_>) -> Hour {
     hour_at(bytes, store, changes, 0, &|_| true)
 }
 
-/// A walk at `at` of the pools of the countries `select` admits.
 fn hour_at(
     bytes: &[u8],
     store: &mut AdvisorStore,
@@ -261,7 +246,6 @@ fn a_hooked_pool_write_rereads_only_its_pool() {
     let domains = Domains::new();
     let mut store = AdvisorStore::new();
     let first = first_hour(&bytes, &mut store, &domains);
-    // Retire country 2's second advisor: the detour names its pool.
     let notification = domains.pools.notify(Some(POOLS[1]), 3);
     p32(
         &mut bytes,
@@ -274,7 +258,6 @@ fn a_hooked_pool_write_rereads_only_its_pool() {
     assert_eq!((changed.pools.read, changed.pools.reused), (1, 1));
     assert_eq!(changed.available.0, Outcome::Rows { len: 3 });
     assert_eq!(changed.available.1[..2], first.available.1[..2]);
-    // The token table was not touched.
     assert_eq!((changed.table.read, changed.table.reused), (0, 1));
 }
 
@@ -284,7 +267,6 @@ fn a_character_write_rereads_only_the_pool_listing_it() {
     let domains = Domains::new();
     let mut store = AdvisorStore::new();
     first_hour(&bytes, &mut store, &domains);
-    // set_idea on country 1's first advisor notifies its character.
     let (role, character) = advisor(0, 0);
     let notification = domains.characters.notify(Some(character), 0);
     string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"changed");
@@ -318,26 +300,19 @@ fn a_hooked_token_write_or_an_invalidation_rereads_the_table() {
     assert_eq!((changed.table.read, changed.table.reused), (1, 0));
     assert_eq!((changed.pools.read, changed.pools.reused), (0, 2));
     assert!(changed.tokens.2.windows(6).any(|key| key == b"d_idea"));
-    // A load, gap or recovery re-reads every pool and the table.
     domains.boundary(true);
     let reloaded = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((reloaded.pools.read, reloaded.table.read), (2, 1));
-    // remove_advisor_role names no pool and revokes every certificate.
     domains.boundary(false);
     drop(domains.pools.notify(None, 5));
     let unnamed = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((unnamed.pools.read, unnamed.table.read), (2, 1));
-    // A forgotten store (a failed Slow job) carries nothing.
     domains.boundary(false);
     store.forget();
     let forgotten = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((forgotten.pools.read, forgotten.table.read), (2, 1));
 }
 
-/// Each hour of the day holds its own walk: a pool read at its country's
-/// slice hour is carried a day later, after the other hours' walks, when no
-/// hooked writer touched it (one held walk would have been replaced by the
-/// hour before's, so the pool would be read afresh every day).
 #[test]
 fn a_pool_read_at_its_slice_is_carried_a_day_later() {
     let bytes = world();
@@ -347,7 +322,6 @@ fn a_pool_read_at_its_slice_is_carried_a_day_later() {
     let mut day = Vec::new();
     for at in 0..DAY {
         let walked = hour_at(&bytes, &mut store, &domains.pair(), at, &slice(at));
-        // Countries 1 and 2 are read at hours 1 and 2, nobody else's pool.
         let read = usize::from(at == 1 || at == 2);
         assert_eq!(walked.available.0, Outcome::Rows { len: 2 * read });
         assert_eq!((walked.pools.read, walked.pools.reused), (read as u64, 0));

@@ -1,5 +1,3 @@
-//! CDecisionStatus state containers. Array headers use a pointer,
-//! u32 capacity and u32 count.
 
 use engine_sites::Rva;
 use crate::{
@@ -10,35 +8,22 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// CDecisionStatus primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0286_8760);
-/// CDecisionStatus owner CCountry pointer.
 pub const COUNTRY: usize = 0x08;
-/// CDecisionStatus decisions-taken array.
 pub const DECISIONS_TAKEN: usize = 0x40;
-/// CDecisionStatus re-enable CDecisionCooldown pointer array.
 pub const RE_ENABLE: usize = 0x58;
-/// CDecisionStatus removal CDecisionCooldown pointer array.
 pub const REMOVE: usize = 0x70;
-/// CDecisionStatus active CTimedDecision pointer array.
 pub const ACTIVE_TIMED: usize = 0xa0;
-/// CDecisionStatus active CTargetedDecision pointer array; native serializer token 0x3856 names it active_targeted_decision.
 pub const TARGETED: usize = 0xe8;
-/// CDecisionStatus active timed CTargetedDecision pointer array; native serializer token 0x39de names it active_targeted_timed_decision.
 pub const TARGETED_TIMED: usize = 0x100;
-/// Ordered random-count records, with 0x18-byte entries.
 pub const RANDOM_ITEMS: usize = 0x148;
 pub const RANDOM_ITEM_STRIDE: usize = 0x18;
-/// Random-count item primary vtable.
 pub const RANDOM_ITEM_VTABLE_RVA: Rva = Rva(0x0286_8710);
-/// Random-count item definition pointer and signed seed/target words.
 pub const RANDOM_ITEM_DEFINITION: usize = 0x08;
 pub const RANDOM_ITEM_SEED: usize = 0x10;
 pub const RANDOM_ITEM_TARGET: usize = 0x14;
-/// Timed/targeted/cooldown array stride for eight-byte pointers.
 pub const RECORD_POINTER_STRIDE: usize = 8;
 
-/// Current-state container identity; lifecycle values remain native signed i32.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Container {
@@ -52,7 +37,6 @@ pub enum Container {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
-    /// Native bucket count only; no completion events are inferred from it.
     pub taken: u32,
     pub re_enable: u32,
     pub remove: u32,
@@ -64,18 +48,14 @@ pub struct Counts {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub container: Container,
-    /// Position within the source vector, not a stable engine identity.
     pub ordinal: u32,
     pub token_start: usize,
     pub token_len: usize,
     pub days: i32,
-    /// Present for Timed, TargetedTimed and Targeted; absent for cooldown rows.
     pub lifecycle: i32,
-    /// Present only for targeted rows. The native two slots are retained below.
     pub target_kind: TargetKind,
     pub country_target: u32,
     pub numeric_target: u32,
-    /// Native bool byte, present only for targeted rows.
     pub ignore: u8,
     pub description_seed: Option<Option<i32>>,
 }
@@ -107,8 +87,6 @@ pub fn count_random_items(memory: &impl Memory, base: usize, state: usize) -> Ra
     walk_random_items_with(memory, base, state, Buffer::Count, Buffer::Count)
 }
 
-/// Worker acquisition grows from each original array header, preserving
-/// stored order and duplicate entries.
 pub fn walk_random_items(
     memory: &impl Memory,
     base: usize,
@@ -263,7 +241,6 @@ fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
-    /// None when authentication or any source header failed.
     pub counts: Option<Counts>,
     pub bytes_len: usize,
     pub required_bytes: usize,
@@ -273,12 +250,6 @@ pub fn count(memory: &impl Memory, base: usize, country: usize) -> Walk {
     walk_buffer(memory, base, country, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Reads all current decision-state vectors for an already-rostered country.
-/// Authenticates the country, status backlink, record and definition vtables.
-/// A proved empty vector remains empty; missing status is unavailable. No
-/// historical completion hooks, view state, allocations or retries are used.
-/// Insufficient row/token storage omits whole rows and reports their count;
-/// required_bytes includes every valid token so storage can grow off-thread.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -508,8 +479,6 @@ fn walk_inner(
     })
 }
 
-// Select the first matching definition name/hash and target. Definition
-// hashes are derived from their tokens and are not recorded.
 fn description_seed(
     memory: &impl Memory,
     base: usize,
@@ -558,7 +527,6 @@ fn description_seed(
     Ok(None)
 }
 
-/// Decision-status hourly update runs after joined country stages.
 pub const HOURLY_UPDATE_RVA: Rva = Rva(0x0077_7e30);
 
 #[cfg(test)]

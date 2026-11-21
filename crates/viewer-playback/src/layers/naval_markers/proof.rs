@@ -1,7 +1,3 @@
-//! The naval markers layer's line of the proof tool (`playback_cost::proof`): made from the
-//! loaded recording and the engaged index; its hour part compared with today's naval icon
-//! decisions of the same hour (today's index folded over the same hours) and with itself composed
-//! anew.
 
 use super::{NavalMarkers, Shore};
 use crate::{document::Document, layers::{Layer, Upstream, engagements::Index}, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -27,14 +23,11 @@ fn note(compared: &mut Compared, what: String) {
     compared.first.get_or_insert(what);
 }
 
-/// The entries one hour part holds: each icon or omission, each placement cause, each result,
-/// and the live, undecided and gated sets.
 fn entries(values: &NavalMarkerValues) -> u64 {
     let combats = values.combats.as_ref().map_or(0, |combats| combats.icons.len() + combats.placement.len() + combats.undecided.len() + 2);
     (combats + values.results.facts.len() + values.results.provinces.len() + 3) as u64
 }
 
-/// Each part of `a` against `b`'s, the first difference described.
 fn compare(compared: &mut Compared, a: &NavalMarkerValues, b: &NavalMarkerValues, what: &str) {
     compared.entries += entries(a).max(entries(b));
     match (&a.combats, &b.combats) {

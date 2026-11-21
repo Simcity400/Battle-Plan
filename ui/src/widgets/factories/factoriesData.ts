@@ -1,11 +1,7 @@
-/** The Factories widget's data: which declared count a race ranks (`country-factories`: a count mode over a set of
- * the game's three factory groups), and one country's parts at an hour (`factory-parts`) as rows. Every value is a
- * whole number of factories as the game shows it. */
 import type { TooltipRow } from '../../charts/tooltip';
 import type { MeasureParts } from '../../charts/race/measureParts';
 import type { FactoryGroupsReply, FactoryPartValue, FactoryPartsReply } from '../../generated/dashboard';
 
-/** How a group's factories are counted. */
 export const COUNT_MODES = [
   { value: 'free', label: 'Available', hint: 'Built less damaged, consumer goods, trade, national projects, licences, market contracts and factories given away' },
   { value: 'built', label: 'Built', hint: 'The game’s Total: every factory counted, damaged ones included' },
@@ -13,7 +9,6 @@ export const COUNT_MODES = [
 ] as const;
 export type CountMode = typeof COUNT_MODES[number]['value'];
 
-/** The game's three recalculated factory groups; a mod's factory buildings count in them through their flags. */
 export const FACTORY_GROUPS = [
   { value: 'military', label: 'Military factories', bit: 1 },
   { value: 'naval', label: 'Naval dockyards', bit: 2 },
@@ -22,30 +17,23 @@ export const FACTORY_GROUPS = [
 
 export const countMode = (value: unknown): CountMode => COUNT_MODES.find(mode => mode.value === value)?.value ?? 'free';
 
-/** The declared measure counting `mode` over `groups` (every group when none is chosen): `<mode><mask>`. */
 export function factoryMeasure(mode: CountMode, groups: readonly string[]): string {
   const mask = FACTORY_GROUPS.reduce((sum, group) => sum | (groups.includes(group.value) ? group.bit : 0), 0);
   return `${mode}${mask || 7}`;
 }
 
-/** A group as the recorded content names it: its building types' names (a type the content does not name, by that
- * reason), or the game's group where the content names none. */
 export function groupName(key: string, names: FactoryGroupsReply | undefined): string {
   const group = names?.groups.find(held => held.key === key);
   if (group?.buildings.length) return group.buildings.map(building => building.name ?? 'Building name unavailable').join(' · ');
   return FACTORY_GROUPS.find(held => held.value === key)?.label ?? key;
 }
 
-/** The groups a count covers, as the settings choose them, named by the content. */
 export const typeChoices = (names?: FactoryGroupsReply) => FACTORY_GROUPS.map(group => ({ value: group.value, label: groupName(group.value, names) }));
 
-/** The chosen groups (every group when none is chosen), in the game's order. */
 export const chosenGroups = (groups: readonly string[]) => FACTORY_GROUPS.filter(group => !groups.length || groups.includes(group.value));
 
-/** A count's parts: each chosen group's count under `mode`, a declared measure of its own. They add to the count. */
 export function factoryParts(mode: CountMode, groups: readonly string[], names: FactoryGroupsReply | undefined): MeasureParts {
   const chosen = chosenGroups(groups);
-  // Built factories include the damaged ones, hatched inside each group's bar as the game counts them.
   const damaged = mode === 'built' ? chosen.map(group => ({ id: `damaged:${group.value}`, label: `Damaged ${groupName(group.value, names)}`, hatchOf: group.value,
     measure: { kind: 'country-factories', measure: `damaged${group.bit}` } })) : [];
   return { kind: 'measures', label: 'Factory types', decimals: 0, items: [...chosen.map(group => ({ id: group.value,
@@ -80,7 +68,6 @@ const PART_LABELS: Readonly<Record<string, string>> = {
   licenseImports: 'Licence imports', tradeImports: 'Trade imports',
 };
 
-/** A group's count under `mode` from its parts, as the declared count reads them. */
 export function groupCount(parts: readonly FactoryPartValue[], group: string, mode: CountMode): number | null {
   const get = (part: string) => parts.find(held => held.group === group && held.part === part)?.value;
   const total = get('total');
@@ -92,7 +79,6 @@ export function groupCount(parts: readonly FactoryPartValue[], group: string, mo
   return ['consumerGoods', 'contractPayments', 'specialProjects', 'licenseImports', 'tradeImports'].reduce((left, part) => left - (get(part) ?? 0), shown);
 }
 
-/** One country's parts as rows: each chosen group's count under `mode` first, then every part it recorded. */
 export function partRows(reply: FactoryPartsReply, groups: readonly string[], mode: CountMode): TooltipRow[] {
   if (reply.missing !== null) return [{ label: 'Not recorded', value: reply.missing, tone: 'muted' }];
   const shown = FACTORY_GROUPS.filter(group => !groups.length || groups.includes(group.value));

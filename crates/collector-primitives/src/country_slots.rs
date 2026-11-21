@@ -1,23 +1,16 @@
-//! Shared country-census floors and monotonic capture capacity arithmetic.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Largest registry observed this attachment, for raw-copy jobs whose pools
-/// live outside the frame. Only rises.
 static SLOTS_HINT: AtomicUsize = AtomicUsize::new(0);
 
-/// Record an observed registry size for job pools sized later.
 pub fn note_slots(slots: usize) {
     SLOTS_HINT.fetch_max(slots, Ordering::Relaxed);
 }
 
-/// Country census rows a raw-copy job needs for the largest observed registry.
 pub fn census_rows(minimum: usize) -> usize {
     rows(SLOTS_HINT.load(Ordering::Relaxed), 1).max(minimum)
 }
 
-/// Off the game thread: reserve a census vector for the observed registry.
-/// Returns whether the allocation grew.
 pub fn reserve_census<T>(census: &mut Vec<T>) -> bool {
     engine_allocation::advisory(|| reserve_rows(census, census_rows(0)))
 }
@@ -29,8 +22,6 @@ fn reserve_rows<T>(census: &mut Vec<T>, target: usize) -> bool {
     engine_allocation::reserve_exact(census, target - census.len()).is_ok()
 }
 
-/// Rows for `per_country` rows per slot, with a third of headroom so the
-/// three-quarters growth rule does not double a fresh buffer on its first hour.
 pub fn rows(slots: usize, per_country: usize) -> usize {
     slots
         .saturating_mul(per_country)
@@ -38,7 +29,6 @@ pub fn rows(slots: usize, per_country: usize) -> usize {
         .div_ceil(3)
 }
 
-/// Raise `capacity` to at least `required`; never lowers it.
 pub fn raise(capacity: &mut usize, required: usize) {
     *capacity = (*capacity).max(required);
 }

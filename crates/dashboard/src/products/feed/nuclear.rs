@@ -1,7 +1,3 @@
-//! The feed's nuclear strikes: each strike of the declared `nuclear-strikes` log in a span, its
-//! launcher and the target state's owner named at the impact by the writer's rule (a reference's
-//! link, guarded by the recorded id), its type by the game's token, and what the impact did before
-//! the authored `on_nuke_drop` effects. A part with a refusal is not totalled.
 
 use super::{EventFeedItem, EventFeedKind, EventFeedRow, EventFeedStrike, Names, Notices, invalid};
 use crate::products::{
@@ -22,14 +18,10 @@ use replay_data::{
 };
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
-/// The declared log of the strikes.
 pub(crate) const LOG: &str = "nuclear-strikes";
 
-/// A full building level's health.
 const LEVEL_HEALTH: f64 = 10_000_000.0;
-/// War support is a fixed5 fraction; the game shows it in percent.
 const WAR_SUPPORT_PERCENT: f64 = 1_000.0;
-/// Equipment pools hold fixed5 quantities.
 const EQUIPMENT_UNIT: f64 = 100_000.0;
 
 fn part_name(part: NuclearStrikePart) -> &'static str {
@@ -41,8 +33,6 @@ fn part_name(part: NuclearStrikePart) -> &'static str {
     }
 }
 
-/// The tooltip's totals; a part with a refusal is not totalled, as what it lists is not
-/// everything the impact did.
 pub(crate) fn detail(strike: &NuclearStrikeRow) -> EventFeedStrike {
     let complete = |part| strike.complete(part);
     EventFeedStrike {
@@ -51,7 +41,6 @@ pub(crate) fn detail(strike: &NuclearStrikeRow) -> EventFeedStrike {
         building_levels: complete(NuclearStrikePart::Buildings).then(|| strike.buildings.iter().map(|building| building.amount_raw as f64).sum::<f64>() / LEVEL_HEALTH),
         war_support: complete(NuclearStrikePart::WarSupport).then(|| strike.war_support.iter().map(|change| change.after_raw as f64 - change.before_raw as f64).sum::<f64>() / WAR_SUPPORT_PERCENT),
         units: complete(NuclearStrikePart::Units).then_some(strike.units.len() as u32),
-        // Divisions and railway guns lose manpower; wings lose their crews.
         manpower_lost: (complete(NuclearStrikePart::Units) && complete(NuclearStrikePart::Equipment)).then(|| {
             let units = strike.units.iter().map(|unit| unit.manpower_before as f64 - unit.manpower_after as f64);
             let crews = strike.wings.iter().map(|wing| wing.manpower_before as f64 - wing.manpower_after as f64);
@@ -62,7 +51,6 @@ pub(crate) fn detail(strike: &NuclearStrikeRow) -> EventFeedStrike {
     }
 }
 
-/// An opaque cell decoded whole.
 fn opaque<T: Value>(cell: &Cell, column: &str) -> io::Result<T> {
     match cell {
         Cell::List(bytes) => {
@@ -82,7 +70,6 @@ fn number(cell: &Cell, column: &str) -> io::Result<i64> {
     }
 }
 
-/// The columns of the log's rows, by name.
 pub(crate) struct Columns(BTreeMap<&'static str, usize>);
 
 impl Columns {
@@ -94,7 +81,6 @@ impl Columns {
         self.0.get(name).and_then(|&at| row.cells.get(at)).ok_or_else(|| invalid(format!("The nuclear strikes log has no column {name}")))
     }
 
-    /// A logged row as the strike it records; a cell not recorded refuses the row.
     pub(crate) fn strike(&self, row: &Row) -> io::Result<NuclearStrikeRow> {
         let id = u64::try_from(row.key).map_err(|_| invalid("A nuclear strike's id is out of range"))?;
         let unsigned = |name: &str| number(self.cell(row, name)?, name).and_then(|value| u32::try_from(value).map_err(|_| invalid(format!("{} is out of range", TableId::NuclearStrikes.field_words(name)))));
@@ -117,8 +103,6 @@ impl Columns {
     }
 }
 
-/// `country`'s tag at `hour` by the writer's rule: its reference's link, guarded by the id the
-/// collector recorded; none for the reserved country or a reference no link witnessed.
 pub(crate) fn tag(links: &RunLinks, names: &Names, country: EventFeedCountry, hour: i32) -> Option<String> {
     if country.reference as i32 <= 0 {
         return None;
@@ -130,7 +114,6 @@ pub(crate) fn tag(links: &RunLinks, names: &Names, country: EventFeedCountry, ho
     names.slot_tag(slot, hour).map(str::to_owned)
 }
 
-/// The strike's row: dated at its impact, read at the log row's hour.
 pub(crate) fn row(strike: &NuclearStrikeRow, read_hour: i32, participants: [Option<String>; 2], item: Option<EventFeedItem>) -> EventFeedRow {
     let kind = EventFeedKind::NuclearStrike;
     EventFeedRow {
@@ -150,8 +133,6 @@ pub(crate) fn row(strike: &NuclearStrikeRow, read_hour: i32, participants: [Opti
     }
 }
 
-/// Each nuclear type's item: the game's token for it as recorded at the timeline's end, named
-/// through `localise`; none for a type the game names no token for.
 fn items(query: &Query<'_>, types: &[u32], localise: &dyn Fn(&str) -> Option<String>, notices: &mut Notices) -> BTreeMap<u32, EventFeedItem> {
     let tokens: Vec<(u32, u32)> = types.iter().filter_map(|&ordinal| nuclear_arsenal::type_token(ordinal).map(|token| (ordinal, token))).collect();
     let mut out = BTreeMap::new();
@@ -172,7 +153,6 @@ fn items(query: &Query<'_>, types: &[u32], localise: &dyn Fn(&str) -> Option<Str
     out
 }
 
-/// The strikes of `from..=to` as feed rows, from the declared log; what could not be named noted.
 pub(crate) fn strike_rows(query: &Query<'_>, from: i32, to: i32, localise: &dyn Fn(&str) -> Option<String>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<EventFeedRow>> {
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The nuclear strikes log is not declared"))?;
     let reader = Reader::new(query, declared)?;

@@ -1,5 +1,3 @@
-//! Stored organisation operands acquired from the existing authenticated census.
-//! Content definitions are resolved offline; no native getters are called.
 use crate::{Memory, allocation, cpdx_array::Array, read};
 use engine_native::{cgame_date, msvc_tree_node::Cursor};
 use engine_scripts::{cflag_manager, cscript_flag, cvariables};
@@ -122,8 +120,6 @@ pub fn capture_policies(
     capture_policies_selected(memory, base, status, output, true)
 }
 
-/// Policy cost/cooldown effects can write directly. Always read their scalar span
-/// from this daily visit; the certificate covers only identity/name/context/score.
 pub fn capture_policies_selected(
     memory: &impl Memory,
     base: usize,
@@ -181,10 +177,6 @@ pub fn capture_policies_selected(
     }
     Ok(())
 }
-/// The effective policy-cost modifier of a country the caller has
-/// authenticated: the owner's term of every attach quote. Feature eligibility
-/// and the definition's clamp apply as the game's getter applies them; an
-/// absent entry is zero.
 pub fn policy_cost_modifier(
     memory: &impl Memory,
     base: usize,
@@ -198,8 +190,6 @@ pub fn policy_cost_modifier(
     )
 }
 
-/// The caller has authenticated this organisation in its country's roster.
-/// The caller owns scratch across all MIOs; no per-object temporary arenas.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -220,7 +210,6 @@ pub fn capture(
         Freshness::ALL,
     )
 }
-/// Domains whose certificates did not stand, or whose sample is being verified.
 #[derive(Clone, Copy)]
 pub struct Freshness {
     pub rosters: bool,
@@ -247,8 +236,6 @@ pub fn capture_selected(
 ) -> Result<(), &'static str> {
     row.organisation = organisation;
     row.country = country;
-    // Effects can assign these operands directly, bypassing adjustment helpers.
-    // Read every scalar inside the existing daily census; only rosters/stores carry.
     let mut bases = [0_u8; SIZE_COST_FACTOR + 8 - RESEARCH_BONUS];
     let mut daily = [0_u8; UPGRADES + 1 - FUNDS];
     let mut cursor = [0_u8; 4];

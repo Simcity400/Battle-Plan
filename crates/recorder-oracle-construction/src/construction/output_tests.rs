@@ -67,8 +67,6 @@ fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> De
     }
     frame
 }
-/// Every table of the construction slot marked read, as the collector marks a walk of it, or
-/// none, as at an hour that carried them; an hourly table read either way.
 fn construction_walk(frame: &mut DecodedFrame, read: bool) {
     let slot = replay_data::cadence::cadence(TableId::ConstructionLineOutput);
     frame.metrics.table_ns.fill(0);
@@ -159,8 +157,6 @@ fn checked(frames: &[DecodedFrame]) -> Report {
         check.observe(f, &mut report).unwrap();
     }
     check.finish(&mut report, frames.last().map_or(0, |f| f.hour));
-    // The current encoder requires every current field; historical suffix
-    // absence is exercised on decoded rows and by replay's prefix fixtures.
     if frames.iter().any(|frame| {
         super::complete::<tables::ConstructionLineOutput>(frame)
             .unwrap()
@@ -204,7 +200,6 @@ fn a_branch_whose_last_line_retired_still_checks_its_earlier_publications() {
         unreachable!()
     };
     rows[0].amount = 2;
-    // The line completed and its final publication retired: the compared hour has no rows.
     for table in [
         TableId::ConstructionLineOutput,
         TableId::BuildingConstruction,
@@ -286,8 +281,6 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
     );
     assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
     let original = frames.clone();
-    // Ownership transfer resets the count before the game can lower
-    // shared levels. Independent script growth can also surround the reset.
     for level in [0, 1, 3] {
         for completed in [0, 1] {
             let mut frames = original.clone();
@@ -322,8 +315,6 @@ fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
                 output(&mut bad[1]).construction_raw += extra;
                 assert_eq!(checked(&bad).differences.len(), 1);
             }
-            // Readable historical prefixes still check exact native progress
-            // and cost debits, including completion followed by a reset.
             for f in &mut frames {
                 output(f).count_reset = replay_data::rows::Recorded::NotRecorded;
             }
@@ -406,8 +397,6 @@ fn new_building_completions_and_railway_progress_pass_and_wrong_amount_fails() {
 
 #[test]
 fn script_target_growth_does_not_spend_the_waiting_lines_ic() {
-    // A focus reward adds two levels while the queue has zero factories and
-    // unchanged progress; an independent gift can also accompany paid work.
     for amount in [0, 350, 1_000_350, 2_000_350] {
         let progress = if amount == 0 { 0 } else { 350 };
         let mut frames = [
@@ -433,7 +422,6 @@ fn script_target_growth_does_not_spend_the_waiting_lines_ic() {
             report.compared_tables["ConstructionLineOutput external target growth bounds"],
             usize::from(amount < 2_000_350)
         );
-        // A fractional missing debit and an extra whole level remain defects.
         output(&mut frames[1]).construction_raw += 1;
         assert_eq!(checked(&frames).differences.len(), 1);
         if amount >= 1_000_000 {
@@ -444,8 +432,6 @@ fn script_target_growth_does_not_spend_the_waiting_lines_ic() {
         assert_eq!(checked(&frames).differences.len(), 1);
     }
 }
-/// The output is read in the hours the recording marks it read: a slot read and a forced
-/// refresh off the slot; an hour that carried it is no read, though another table was read then.
 #[test]
 fn output_reads_are_the_hours_the_recording_marks_it_read() {
     let slot = slot();
@@ -501,7 +487,6 @@ fn a_linked_secondary_mirrors_progress_without_a_spend() {
         queue.push(BuildingConstructionRow {
             id: 2,
             country: 9,
-            // The province operand is unused by this state target.
             target_location: 44,
             ..queue[0].clone()
         });
@@ -559,7 +544,6 @@ fn add_railway(frame: &mut DecodedFrame, route: Vec<u32>) {
 fn railway_overlap_in_either_read_excludes_a_shared_progress_gain() {
     for reads in [&[0][..], &[1][..], &[0, 1][..]] {
         let mut frames = [frame(100, 0, 0, 1, true), frame(124, 0, 200, 1, true)];
-        // Reversed order and another country's queue still share progress.
         for &read in reads {
             add_railway(&mut frames[read], vec![10, 9, 8]);
         }
@@ -572,7 +556,6 @@ fn railway_overlap_in_either_read_excludes_a_shared_progress_gain() {
         );
     }
 }
-/// Idle lines can reach full progress from segment progress no queued line paid for.
 #[test]
 fn railway_progress_without_a_spend_advance_is_not_this_lines_output() {
     let mut frames = [frame(100, 0, 0, 1, true), frame(124, 0, 1_000_000, 1, true)];
@@ -587,7 +570,6 @@ fn railway_progress_without_a_spend_advance_is_not_this_lines_output() {
             .count(),
         1
     );
-    // A spend advance that recorded nothing is still a defect.
     output(&mut frames[1]).ticks = 1;
     assert_eq!(checked(&frames).differences.len(), 1);
 }
@@ -685,7 +667,6 @@ fn native_completion_self_check_refuses_live_or_future_outcomes() {
         hour: 120,
         cancelled: true,
     }));
-    // Still in queue: its outcome, and the queued line's missing live row.
     assert_eq!(checked(&[f.clone()]).differences.len(), 2);
     *f.tables[TableId::RailwayConstruction.index()] =
         TableView::Complete(TableRows::RailwayConstruction(Vec::new()));
@@ -767,9 +748,6 @@ fn checked_at(frames: &[DecodedFrame], compared: Hour) -> Report {
 
 #[test]
 fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_rise() {
-    // Progress 900,000 plus 200,350 spent completes one level (cost
-    // 1,000,000) and leaves 100,350; a queue edit adds one to the count in
-    // the same window, so it stays at 2.
     let mut frames = [
         frame(100, 0, 900_000, 1, false),
         frame(124, 200_350, 100_350, 2, false),
@@ -783,8 +761,6 @@ fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_
         report.compared_tables["ConstructionLineOutput completions beside count additions"],
         1
     );
-    // Nothing witnesses the addition, so the line must be published by the
-    // compared hour's own read, whose count the save comparison certifies.
     let report = checked_at(&frames, 148);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("unwitnessed count addition 100..124"));
@@ -797,8 +773,6 @@ fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_
     };
     rows.clear();
     output(&mut ended[2]).ended = true;
-    // A line that ended before the compared hour is in neither the read nor
-    // the save, which keeps no deleted line: its count cannot be certified.
     let report = checked(&ended);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(
@@ -818,8 +792,6 @@ fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_
             .iter()
             .any(|difference| difference.contains("unwitnessed count addition 100..124"))
     );
-    // A later window still checks the count: a stale count that a fresh
-    // read lowers without a completion is an unexplained decrease.
     let mut later = frames.to_vec();
     later.push(frame(148, 200_350, 100_350, 2, false));
     set_amount(&mut later[2], 1);
@@ -831,11 +803,9 @@ fn a_completion_beside_a_count_addition_is_its_exact_cost_debit_under_the_level_
     );
     set_amount(&mut later[2], 2);
     assert!(checked(&later).differences.is_empty());
-    // One raw unit more spent is not an integral cost debit.
     output(&mut frames[1]).construction_raw += 1;
     assert_eq!(checked(&frames).differences.len(), 1);
     output(&mut frames[1]).construction_raw -= 1;
-    // Without a level rise the debit is unexplained.
     let mut flat = frames.clone();
     let TableView::Complete(TableRows::StateBuildings(rows)) =
         &mut *flat[1].tables[TableId::StateBuildings.index()]
@@ -854,9 +824,6 @@ fn slot() -> i32 {
     }
 }
 
-/// The 9b session: a count addition between two slot reads, then a full
-/// refresh off the slot whose read publishes the line live. That read
-/// certifies the count.
 #[test]
 fn a_refreshed_compared_hour_off_the_slot_certifies_a_count_addition_by_its_own_read() {
     let compared = 144 + slot() + 7;
@@ -881,8 +848,6 @@ fn a_refreshed_compared_hour_off_the_slot_certifies_a_count_addition_by_its_own_
     assert_eq!(report.compared_tables["ConstructionLineOutput"], 2);
 }
 
-/// A forced read of the construction slot dates every table it read in the
-/// branch scan of last reads.
 #[test]
 fn a_forced_construction_read_dates_its_tables_last_read() {
     let compared = 144 + slot() + 7;
@@ -903,8 +868,6 @@ fn a_forced_construction_read_dates_its_tables_last_read() {
 
 #[test]
 fn a_completion_beside_a_net_count_rise_is_inferred_and_certified_the_same_way() {
-    // One level completes while queue edits add two, so the count rises
-    // from 2 to 3.
     let mut frames = [
         frame(100, 0, 900_000, 1, false),
         frame(124, 200_350, 100_350, 2, false),
@@ -918,13 +881,10 @@ fn a_completion_beside_a_net_count_rise_is_inferred_and_certified_the_same_way()
         1
     );
     assert_eq!(checked_at(&frames, 148).differences.len(), 1);
-    // Two cost debits beside one level do not explain the rise: like any
-    // count rise the comparator cannot model, it is not a progress comparator.
     output(&mut frames[1]).construction_raw += 1_000_000;
     let report = checked(&frames);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["ConstructionLineOutput"], 0);
-    // Two levels make them two completions.
     let TableView::Complete(TableRows::StateBuildings(rows)) =
         &mut *frames[1].tables[TableId::StateBuildings.index()]
     else {
@@ -935,7 +895,6 @@ fn a_completion_beside_a_net_count_rise_is_inferred_and_certified_the_same_way()
     let report = checked(&frames);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
-    // A rise with no debit is not a progress comparator.
     let mut rise = [
         frame(100, 0, 900_000, 1, false),
         frame(124, 50, 900_050, 1, false),
@@ -959,8 +918,6 @@ fn no_count_addition_is_inferred_beside_a_count_reset_or_an_ownership_transfer()
         set_amount(&mut frames[1], 2);
         frames
     };
-    // A witnessed count reset beside an unchanged count is a difference;
-    // the completion is not reinterpreted as an addition.
     let mut frames = base();
     for (index, f) in frames.iter_mut().enumerate() {
         output(f).count_reset = replay_data::rows::Recorded::Value(index as i64);
@@ -968,13 +925,10 @@ fn no_count_addition_is_inferred_beside_a_count_reset_or_an_ownership_transfer()
     let report = checked(&frames);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("count_reset"));
-    // Beside a count rise it stays outside the comparator.
     set_amount(&mut frames[1], 3);
     let report = checked(&frames);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["ConstructionLineOutput"], 0);
-    // An ownership transfer of the target state takes the game's reset, so
-    // a debit beside an unchanged count stays unexplained.
     let mut frames = base();
     for (index, f) in frames.iter_mut().enumerate() {
         let TableView::Complete(TableRows::BuildingConstruction(rows)) =

@@ -21,24 +21,20 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
         TableId::DivisionHistory,
         TableId::DivisionPanelStats,
         TableId::DivisionLandInputs,
-        // A Map recording's land figures.
         TableId::DivisionModelInputs,
         TableId::MapEvents,
         TableId::NuclearStrikes,
         TableId::TaskForceMapMotion,
-        // The Operatives map mode's native icon inputs.
         TableId::OperativeMissions,
         TableId::StrategicOperatives,
         TableId::AgencyOperationBuffers,
         TableId::Operations,
         TableId::CountryStabilityInputs,
-        // Movement inputs remain selected beside resources and trade routes.
         TableId::MovementStateTerms,
         TableId::CoreSupplyAccess,
         TableId::CountryUnitSpeedEntries,
         TableId::RiverRelations,
         TableId::DivisionTransportSpeeds,
-        // The resources map mode and the trade routes.
         TableId::ConvoyClients,
         TableId::CountryOilFactors,
         TableId::RegionalConvoyEfficiency,
@@ -48,20 +44,16 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
         TableId::StateTemporaryResources,
         TableId::StrategicRegionWeights,
         TableId::TradeRoutes,
-        // The model picker's unit order and the state view's building inputs.
         TableId::LandUnitOrder,
         TableId::StateBuildingInputs,
     ] {
         assert!(selected.contains(&table));
     }
-    // The deployed division XP view normalizes stored XP with the already recorded
-    // complete manpower contributors; the career view needs its retained entries.
     assert!(selected.contains(&TableId::DivisionHistory));
     assert!(selected.contains(&TableId::DivisionLandInputs));
     assert!(selected.len() < TableId::ALL.len());
 }
 
-// Dev-only source census. Follow Rust modules rather than filename conventions.
 #[derive(Default)]
 struct Census {
     reads: BTreeMap<String, BTreeSet<String>>,
@@ -146,8 +138,6 @@ struct Scan<'a> {
     path: PathBuf,
     module_dir: PathBuf,
     function: String,
-    // Helpers' TableId catalogs describe unrelated families, not frame reads.
-    // Their typed schemas identify inputs. Viewer IDs also declare selections.
     ids: bool,
     aliases: BTreeMap<String, String>,
 }
@@ -165,8 +155,6 @@ impl Scan<'_> {
     }
 
     fn tokens(&mut self, tokens: TokenStream) {
-        // Macro operands may be bare schemas, e.g. rows!(Countries). Literals
-        // and comments cannot invent reads. Macro definitions are scanned too.
         for token in tokens {
             match token {
                 TokenTree::Ident(ident) => self.record(&ident.to_string()),
@@ -351,7 +339,6 @@ fn names() -> BTreeSet<String> {
 
 #[test]
 fn production_selection_covers_map_and_shared_recorded_input_readers() {
-    // A test built on Boat runs here: the run-time variable names this checkout.
     let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
         .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
     let root = manifest.parent().unwrap();

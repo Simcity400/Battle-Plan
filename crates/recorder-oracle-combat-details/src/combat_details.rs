@@ -1,4 +1,3 @@
-//! Combat save coverage is narrower than the tick-refreshed presentation.
 use super::*;
 
 pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
@@ -21,10 +20,6 @@ pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::ReserveModifierTrees, |r| reserve_trees(frame, r));
 }
 
-/// `ReserveModifierTrees` holds exactly the sources the hour's reserves name:
-/// each reserve's country (positive expeditionary owner, else roster owner),
-/// and a commander under its leader modifier kind only where one is selected.
-/// The trees and names are runtime caches no save serializes.
 fn reserve_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::ReserveModifierTrees>()?;
     let owners: std::collections::BTreeMap<u64, (u32, u32)> = frame
@@ -82,11 +77,6 @@ fn reserve_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     Ok(())
 }
 
-/// `NavalModifierTrees` holds only sources this hour's live combats reach:
-/// each live side's modifier sources and the recorded sources (scopes
-/// 0-15) of each escaping live ship and each carrier member a linked air
-/// group names. The trees themselves are runtime caches no save serializes;
-/// `recorder derived` checks them against the naval_tree_oracle samples.
 fn naval_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     use replay_data::{naval_trees, naval_trees::SideSource};
     let rows = frame.complete::<tables::NavalModifierTrees>()?;
@@ -151,9 +141,6 @@ fn naval_trees(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     Ok(())
 }
 
-/// `NavalCombatAirBaseWingHandles` joins: exactly the bases the hour's naval combats reference
-/// (active forward planes drawing on a base or host, and live ships' carrier bases) have rows,
-/// and every base and wing is in the air censuses. The save keeps no dense container order.
 fn air_base_wings(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::NavalCombatAirBaseWingHandles>()?;
     let bases: BTreeSet<u64> = frame
@@ -214,10 +201,6 @@ fn air_base_wings(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
     Ok(())
 }
 
-/// One row per saved land combat. The save serializes neither country set of a
-/// side, nor the indicator byte or flag words. The sets accumulate joining
-/// logical owners and survive ownership transfers, so the save's current owners
-/// cannot certify membership. Compare the census and resolve primary references.
 fn sides(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatSides>()?;
     let countries = country_context(frame)?;
@@ -263,7 +246,6 @@ fn equal<T: PartialEq + std::fmt::Debug>(
     }
 }
 
-// Text serialization consumes c_str; retain raw suffixes in the recording.
 fn text_projection<'a>(r: &mut Report, label: &str, value: &'a [u8]) -> &'a [u8] {
     let prefix = installed_content_core::parser::c_string(value);
     if prefix.len() < value.len() {
@@ -284,8 +266,6 @@ fn optional_text_value(r: &mut Report, label: &str, actual: &[u8], saved: Option
     let projected = text_projection(r, label, actual);
     equal(r, label, (!actual.is_empty()).then_some(projected), saved);
 }
-// The native serializer emits these scalar fields only when strictly positive.
-// Absence proves <=0, not an exact zero, so keep the distinction explicit.
 fn positive_decimal(r: &mut Report, label: &str, actual: i64, saved: Option<&Decimal>) {
     match saved {
         Some(saved) => equal(r, label, actual, saved.raw),
@@ -303,7 +283,6 @@ struct CommanderSaveView<'a> {
     category: Option<i32>,
     skill: i32,
     experience: Option<i64>,
-    /// The leader's stored name token, which the save writes as `name`.
     name_token: Option<&'a [u8]>,
     traits: &'a [replay_data::rows::LandCombatCommanderTrait],
 }
@@ -410,9 +389,6 @@ fn naval_commander_values(
     Ok(())
 }
 
-/// Each saved formation's handle, keyed by its leader handle. The game
-/// writes `leader` exactly when the commander pointer is set; army groups carry
-/// no leader and never match a side commander.
 fn formations(save: &Save) -> io::Result<BTreeMap<u64, u64>> {
     let mut formations = BTreeMap::new();
     let countries = save
@@ -434,8 +410,6 @@ fn formations(save: &Save) -> io::Result<BTreeMap<u64, u64>> {
     Ok(formations)
 }
 
-/// The commander's active formation reference against
-/// the saved group that names it as leader, the reverse pointer.
 fn formation(
     r: &mut Report,
     label: &str,
@@ -456,9 +430,6 @@ fn formation(
     }
 }
 
-/// Naval commanders' timed traits against `traits_to_remove` (0x3969), which the timed-trait writer
-/// writes in vector order as each trait's token and signed remaining days, omitting an empty
-/// vector. The saved leader's presence is `commander_values`' comparison.
 fn timed_traits(
     r: &mut Report,
     label: &str,
@@ -504,12 +475,6 @@ fn timed_traits(
     }
 }
 
-/// A land side's hover inputs against its saved combatant: the stored
-/// anti-air (`anti_air_attack`) and the prevented lanes (`str/org` prevented
-/// damage), which the serializer writes only when strictly
-/// positive, the lanes at their display step; and the commander's timed traits in vector
-/// order. The skill progress, offence and defence, description token and
-/// shown learning rows have no saved counterpart (a limitation in `land`).
 fn land_side_inputs(
     r: &mut Report,
     label: &str,
@@ -575,7 +540,6 @@ fn timed_trait_tokens<'a>(frame: &'a DecodedFrame, r: &mut Report, needed: bool)
 fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDetails>()?;
     let formations = formations(save)?;
-    // Only timed traits need the dictionary; its absence limits them alone.
     let timed = rows.iter().any(|row| {
         matches!(&row.side_inputs, replay_data::rows::Recorded::Value(sides)
             if sides.iter().any(|side| !side.timed_traits.is_empty()))
@@ -611,7 +575,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 if border.transfer_state > 1 {
                     r.limitation("the game saves change_state_after_war as boolean; the magnitude of an unusual nonzero byte is unsaved", format!("{label} border transfer byte"));
                 }
-                // The save writes combat_width unconditionally, even at zero.
                 if let Some(width) = r.recorded(
                     &border.combat_width,
                     "LandBorderWarInputs.combat_width",
@@ -682,8 +645,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     reference: actual.commander,
                     category: Some(actual.commander_category),
                     skill: actual.commander_skill,
-                    // The side records the commander's skill progress, the
-                    // ratio its hover prints, not the raw experience.
                     experience: None,
                     name_token: Some(&actual.commander_name_token),
                     traits: &actual.traits,
@@ -732,9 +693,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     false,
                 ),
             }
-            // The recorded air strength and organisation lanes; the ground
-            // lanes are retired, and the prevented lanes are the side
-            // inputs'.
             for ((key, &actual), saved) in save::combat_details::LAND_DAMAGE_KEYS
                 .iter()
                 .zip(&actual.damage)
@@ -754,8 +712,6 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 side.organisation_loss_count,
             );
             if actual.organisation_loss_count >= 24 {
-                // The row records the samples' qword sum, the one figure
-                // The loss calculation takes from them; the save holds all 24.
                 equal(
                     r,
                     format!("{label} org_loss_summary samples"),
@@ -785,11 +741,9 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
 
 fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDivisions>()?;
-    // Each division's name member template reference, recorded with the division's status.
     let statuses = frame.complete::<tables::DivisionStatus>()?;
     let references = MemberTemplates::new(statuses);
     let templates = NameTemplates::new(frame, save, r, references.any())?;
-    // A member's naming is its own copy or its division's DivisionStatus row's.
     let values = replay_data::rows::land_combat_member_values(
         rows,
         frame.complete::<tables::DivisionPanelStats>().unwrap_or(&[]),
@@ -832,10 +786,6 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             return Err(invalid("saved division is both committed and reserve"));
         }
         equal(r, format!("{label} role"), row.role, role);
-        // The collector composes a reserve speed share for every
-        // reserve and no other division, so the share is present exactly
-        // where the save lists the division among its side's reserves; its
-        // value is a live input the save does not hold.
         if row.reinforcement_speed.is_none() && role == 2 {
             r.limitation(
                 "A reserve's speed share was refused at capture (an operand unreadable or a movement-speed form the port does not follow; collector status land_reserve_speed), so its reinforcement chance is unknown",
@@ -897,7 +847,6 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     Ok(())
 }
 
-/// Borrowed naming operands shared by combat and whole-roster comparisons.
 pub struct Naming<'a> {
     pub kind: i32,
     pub order: i32,
@@ -905,36 +854,25 @@ pub struct Naming<'a> {
     pub programmatic: u8,
     pub custom: &'a [u8],
     pub group: &'a [u8],
-    /// The member's own template reference.
     pub template: MemberTemplate,
 }
 
 impl<'a> Naming<'a> {
-    /// These operands with the member's template reference.
     pub fn with_template(mut self, template: MemberTemplate) -> Self {
         self.template = template;
         self
     }
 }
 
-/// What the recording holds of a name member's own template reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemberTemplate {
-    /// The recorded reference, zero for none.
     Recorded(u64),
-    /// The recording does not record member references: it was made before every recording
-    /// carried them.
     NotInRecording,
-    /// The recording records them, but the hour's DivisionStatus holds none for this division:
-    /// no row, or a row without naming operands.
     Absent,
 }
 
-/// The hour's recorded name member template references, by division.
 pub struct MemberTemplates {
     references: BTreeMap<u64, u64>,
-    /// Whether the recording records them: a collector that does records one in every
-    /// DivisionStatus row with naming operands.
     recorded: bool,
 }
 
@@ -958,7 +896,6 @@ impl MemberTemplates {
         }
     }
 
-    /// Whether any reference is recorded.
     pub fn any(&self) -> bool {
         !self.references.is_empty()
     }
@@ -972,18 +909,12 @@ impl MemberTemplates {
     }
 }
 
-/// The templates a name member's group is resolved against.
 pub struct NameTemplates<'a> {
-    /// The save's templates by full reference.
     pub saved: &'a BTreeMap<u64, save::DivisionTemplate>,
-    /// Every template reference the recording's DivisionTemplates holds at
-    /// this hour, or why it holds no current read.
     pub recorded: Result<BTreeSet<u64>, &'static str>,
 }
 
 impl<'a> NameTemplates<'a> {
-    /// The save's templates, with the recording's own at this hour when a
-    /// recorded member reference may need them to prove a deletion.
     pub fn new(
         frame: &DecodedFrame,
         save: &'a Save,
@@ -1013,9 +944,6 @@ impl<'a> NameTemplates<'a> {
 const MEMBER_TEMPLATE_NOT_IN_RECORDING: &str = "this recording does not record the name member's template reference (it was made before every recording carried it). Deployment copies its line's name member into the new division, template reference included, so a live member can name an older template of its country, or one deleted since (no group); the save does not store that reference and a load rebinds it to the division's template. For such a recording alone, a recorded group that differs from that template's is only checked to be no group or the group of a saved template of the same country";
 const MEMBER_TEMPLATE_ABSENT: &str = "no name member template reference is recorded for the member's division at this hour (it has no DivisionStatus row with naming operands), so its name group is not compared";
 
-/// The group a type-zero member's generator resolves, as the save writes a
-/// template's `division_names_group` (only for a set group): `Some(None)`
-/// for no group, `None` when a difference or limitation was reported instead.
 fn member_group<'t>(
     r: &mut Report,
     label: &str,
@@ -1024,8 +952,6 @@ fn member_group<'t>(
     unit: &save::Division,
     templates: &NameTemplates<'t>,
 ) -> Option<Option<&'t [u8]>> {
-    // A load rebinds the member to the fake-intel template when set, else
-    // the standard one; that stands in only where the recording lacks the reference.
     let rebound = unit.alternate_template.or(unit.template);
     let reference = match reference {
         MemberTemplate::Recorded(reference) => reference,
@@ -1043,11 +969,6 @@ fn member_group<'t>(
     if let Some(saved) = templates.saved.get(&reference) {
         return Some(saved.names_group.as_deref());
     }
-    // The member can still name a template deleted since, which the game's
-    // reference registry no longer resolves, so it holds no group. That is
-    // proved only for a reference of the template kind (the type word of the
-    // division's own template) that none of the recording's templates holds
-    // at this hour.
     let kind = rebound
         .or_else(|| templates.saved.keys().next().copied())
         .map(|template| template as u32);
@@ -1079,8 +1000,6 @@ fn member_group<'t>(
     }
 }
 
-/// [`member_group`] for a recording without the member's reference: the template a load rebinds
-/// stands in, and a differing recorded group is held only to the groups the member could name.
 fn rebound_group<'t>(
     r: &mut Report,
     label: &str,
@@ -1136,11 +1055,6 @@ impl<'a> From<&'a replay_data::rows::NameOperands> for Naming<'a> {
     }
 }
 
-/// The army writer saves the name member as `division_name` through
-/// the name writer, whose emission rules fix what each omitted key proves: `type` is
-/// always written, `name_order` only when nonzero, `is_name_ordered` (as `no`)
-/// only when the ordered flag is clear, `override` only for a nonempty string and
-/// `override_set_programmatically` only when the programmatic flag is set.
 pub fn naming<'a>(
     r: &mut Report,
     label: &str,
@@ -1172,8 +1086,6 @@ pub fn naming<'a>(
         row.programmatic != 0,
         saved.programmatic.unwrap_or(false),
     );
-    // Only a type-zero member's generator resolves its template's group: to
-    // decide whether a programmatic override shows, and for its group key.
     let group = if row.kind == 0 && (row.programmatic != 0 || row.custom.is_empty()) {
         match member_group(r, label, row.template, row.group, unit, templates) {
             Some(group) => group,
@@ -1182,8 +1094,6 @@ pub fn naming<'a>(
     } else {
         None
     };
-    // The game shows the stored name when the programmatic flag is clear, or set
-    // for a type-zero member whose group is null.
     if row.programmatic == 0
         || (row.kind == 0 && group.is_none())
         || (row.kind == 2 && !row.custom.is_empty())
@@ -1201,11 +1111,8 @@ pub fn naming<'a>(
             label,
         );
     } else {
-        // The group is set: the game shows its entry, not the stored text.
         equal(r, format!("{label} override"), row.custom, b"".as_slice());
     }
-    // The capture reads the group of a type-zero member whose stored name
-    // is not shown.
     if row.kind != 0 || !row.custom.is_empty() {
         return;
     }
@@ -1241,9 +1148,7 @@ fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
 
 fn division_modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDivisionModifiers>()?;
-    // A row's division is its own, or its LandCombatDivisions row's of the same key.
     let divisions = frame.complete::<tables::LandCombatDivisions>().unwrap_or(&[]);
-    // Rows by combat and side; each saved member has one.
     let mut counts = BTreeMap::new();
     for row in rows {
         let saved = save
@@ -1421,7 +1326,6 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                     true,
                 ),
             }
-            // The game inserts only positive, canonically distinct roster owners.
             let mut seen = BTreeSet::new();
             if actual
                 .summary
@@ -1436,7 +1340,6 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             if let Some(commander) = &actual.commander_inputs {
                 naval_commander_values(r, &format!("{label} commander"), commander, save, &tokens)?;
             }
-            // The game writes every entry of the side's unit array, in order.
             equal(
                 r,
                 format!("{label} units"),
@@ -1509,9 +1412,6 @@ fn naval(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
                 }
             }
             if let Some(leader) = saved.details.leaders[side] {
-                // A nonnull selection updates the retained last leader. A null
-                // current selection leaves it unchanged, so the save cannot
-                // establish the current commander in that case.
                 if actual.commander == 0 && leader != 0 {
                     r.limitation(
                         "Naval current commander is null: the save retains the last nonnull leader independently; selection can remain null at any hour",
@@ -1896,9 +1796,6 @@ fn plane_values(
     b: &save::combat_details::NavalPlane,
     links: &BTreeMap<u32, &CountryRow>,
 ) -> io::Result<()> {
-    // The game creates these two localized presentation caches.
-    // The viewer derives them in its language from air-base and wing inputs;
-    // the save's frozen recording-language bytes are not a row comparator.
     equal(
         r,
         format!("{label} group/index"),

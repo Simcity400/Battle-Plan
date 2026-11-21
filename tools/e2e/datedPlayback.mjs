@@ -1,12 +1,9 @@
-// Generic dated dashboard playback verdicts. The sweep supplies visible placements and
-// their declared surfaces. No product or widget kind is interpreted here.
 import { MAX_PLAYBACK_AGE_HOURS, playbackPace } from './verdicts.mjs';
 
 const p95 = values => values.length ? values.toSorted((a, b) => a - b)[Math.ceil(values.length * .95) - 1] : null;
 const gaps = times => times.slice(1).map((at, i) => at - times[i]);
 const rate = times => times.length < 2 ? null : 1000 * (times.length - 1) / (times.at(-1) - times[0]);
 const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-/** Two frames at 60 Hz: the worker's own presentation of a new anchor. */
 const WORKER_GRACE_MS = 34;
 export const CANONICAL_INPUTS = Object.freeze(['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause']);
 
@@ -44,11 +41,8 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       const r = hidden.has(id) ? undefined : pictures.get(id);
       return Number.isFinite(r?.hour) && r.hour > Math.floor(pin ?? head);
     };
-    // The worker has WORKER_GRACE_MS to present a new anchor. After that every check applies.
     if (!workerApplied && at - anchor.at <= WORKER_GRACE_MS) continue;
     const visible = new Set(shown.map(([id]) => id));
-    // A seek can briefly unmount every canvas before the held position remounts. Do not
-    // make that transition frame the baseline for the input's presented placement set.
     if (initial === null && visible.size > 0) initial = visible;
     if (initial === null) continue;
     for (const id of states.keys()) if (!visible.has(id)) states.delete(id);

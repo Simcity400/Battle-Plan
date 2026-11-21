@@ -1,0 +1,9 @@
+# 1110. Tie render reuse and overlay diagnostics to published frames
+
+A render pass can reuse a target when it has the exact same described inputs. Its key includes the bytes the compiled programs read, the contents of bound textures and targets, and the draw list. Only the read ranges of each constant buffer participate. A read past the provided block represents device-supplied zero bytes. An input that cannot be described leaves the key unformed, forces the pass to draw, and supplies a named reason. Named sections identify which input changed when two formed keys differ.
+
+A key becomes the target's held key when the frame that drew it reaches the queue. An abandoned frame leaves the previous target and key paired. Replacing or losing a target invalidates its held key, so a resize can require a draw even when other inputs repeat. Key buffers are recycled between frames.
+
+Overlay change diagnostics are opt-in because they walk every window in each painting. The comparison uses stable window keys and recognizes appearance, departure, content, ordering and movement independently. Changes in depth or opacity are counted separately from content because their visible effect depends on overlap. Motion uses the track from the preceding painting, which was available to display frames during the interval. A plate can stop carrying a track when it reaches its destination and still have shown motion on the way there. A world-point change without a prior track is a discrete move, with a separate count when the content also changes. The diagnostics report totals and counts by pool, while keeping anchored quads outside the window comparison. The first painting reports all its windows as new and belongs to warm-up.
+
+[Pass keys](../../crates/viewer-foundation/src/map/pass_key.rs) · [Overlay change counts](../../crates/viewer-foundation/src/map/overlay_count.rs)

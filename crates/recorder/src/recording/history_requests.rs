@@ -56,7 +56,6 @@ fn publish_with(
             file.sync_all()
         })
         .map_err(ReplaceError::Unrenamed)?;
-    // A classic replace is refused while a delete-sharing reader holds the old file.
     replace(&temporary, path)
 }
 
@@ -105,7 +104,6 @@ impl HistoryRequest {
             format!("{} {action} {subject}", request.token).as_bytes(),
             replace,
         );
-        // Renamed before its flush failed, it may still be lent: return it too.
         if loan && !matches!(published, Err(ReplaceError::Unrenamed(_))) {
             pending.insert(key, request.clone());
         }
@@ -113,7 +111,6 @@ impl HistoryRequest {
         Ok(request)
     }
 
-    /// The loan of `campaign` still to be returned.
     pub(super) fn lent(session: &Path, campaign: &str) -> Option<Self> {
         super::locked(loans())
             .get(&(session.join("history-requests"), campaign.to_owned()))

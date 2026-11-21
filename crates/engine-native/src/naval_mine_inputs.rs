@@ -1,18 +1,12 @@
-//! Passive regional mine operands and the writers that certify their carry.
 use crate::{Memory, cgame_state, cpdx_array::Array, read, read_slice, walk::Buffer};
 use engine_sites::Rva;
 use std::ops::Range;
 
-/// Strategic navy's raw fixed5 regional mine vector, indexed by region id.
 pub const REGIONAL_MINES: usize = 0xc8;
-/// The simulation spreads peace-time decay over this many clock hours.
 pub const DECAY_SLICES: usize = 24;
-/// Native clock origin used before the signed remainder selecting a slice.
 pub const DECAY_CLOCK_ORIGIN: i32 = 43_800_000;
-/// Persistent navy interface receiver's displacement from its primary object.
 pub const PERSISTENT_RECEIVER: usize = 8;
 
-/// Sole point writers, native sliced decay, and complete lifecycle writers.
 pub const WRITERS: [(&str, Rva); 7] = [
     ("mine region addition", Rva(0x00f1_2dc0)),
     ("mine index addition", Rva(0x00f1_2e00)),
@@ -23,15 +17,12 @@ pub const WRITERS: [(&str, Rva); 7] = [
     ("navy persistent load", Rva(0x00f2_0280)),
 ];
 
-/// The caller supplies a navy authenticated by the current physical census.
-/// The header is acquired first/on-lifecycle-change, under its certificate.
 pub fn header(memory: &impl Memory, navy: usize) -> Result<Array, &'static str> {
     navy.checked_add(REGIONAL_MINES)
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("regional mine header unreadable or invalid")
 }
 
-/// A native decay slice; the last slices may be empty for short vectors.
 pub fn slice(count: u32, part: usize) -> Option<Range<u32>> {
     if part >= DECAY_SLICES {
         return None;
@@ -41,12 +32,10 @@ pub fn slice(count: u32, part: usize) -> Option<Range<u32>> {
     Some(start..start.saturating_add(width).min(count))
 }
 
-/// Which native slice owns an individual valid region index.
 pub fn region_slice(count: u32, region: u32) -> Option<usize> {
     (region < count).then(|| (region / count.div_ceil(DECAY_SLICES as u32)) as usize)
 }
 
-/// Event-only bounded metadata. It never reads a mine cell or walks a vector.
 pub fn event_count(memory: &impl Memory, navy: usize) -> Option<u32> {
     let count: i32 = read(
         memory,
@@ -55,7 +44,6 @@ pub fn event_count(memory: &impl Memory, navy: usize) -> Option<u32> {
     u32::try_from(count).ok()
 }
 
-/// Event-only decay slice selection. A negative native remainder is refused.
 pub fn event_decay_slice(memory: &impl Memory, base: usize) -> Option<usize> {
     let state = usize::try_from(read::<u64>(
         memory,
@@ -66,8 +54,6 @@ pub fn event_decay_slice(memory: &impl Memory, base: usize) -> Option<usize> {
     usize::try_from(hour.wrapping_sub(DECAY_CLOCK_ORIGIN) % DECAY_SLICES as i32).ok()
 }
 
-/// First/changed native slice only. Zeros remain represented by its complete
-/// slice certificate; nonzero signed values retain their region indices.
 pub fn capture_slice(
     memory: &impl Memory,
     source: Array,

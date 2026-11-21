@@ -24,7 +24,6 @@ fn array(bytes: &mut [u8], at: usize, data: usize, values: &[u64]) {
         p64(bytes, data + index * 8, *value);
     }
 }
-/// The owned-relation vector of owner index `owner`.
 fn own(bytes: &mut [u8], owner: usize, relations: &[usize]) {
     let relations: Vec<u64> = relations.iter().map(|&r| r as u64).collect();
     array(
@@ -34,7 +33,6 @@ fn own(bytes: &mut [u8], owner: usize, relations: &[usize]) {
         &relations,
     );
 }
-/// Status object for owner slot `owner`, target slot `target`.
 fn status(owner: usize, target: usize) -> usize {
     0x10000 + owner * 0x4000 + target * 0x1000
 }
@@ -45,7 +43,6 @@ fn serializable_data(owner: usize, target: usize) -> usize {
     0x2800 + owner * 0x80 + target * 0x20
 }
 
-/// Three countries in slots 1..3, each with a complete four-slot matrix.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0_u8; 0x24000];
     array(
@@ -104,7 +101,6 @@ fn fixture() -> Vec<u8> {
                 &[],
             );
         }
-        // Slot zero is the reserved sentinel; the walk never reaches it.
         p32(&mut bytes, status(owner, 0) + TARGET_COUNTRY, 1);
     }
     bytes
@@ -192,7 +188,6 @@ fn co_belligerents_read_each_candidate_byte_in_both_vectors() {
         Ok((2, 2))
     );
     assert_eq!(slots[..2], [2, 3]);
-    // A byte left zero in either vector is not inferred from membership.
     bytes[status(0, 3) + CO_BELLIGERENT] = 0;
     let memory = self::memory(&bytes);
     let countries = ccountry::Reader::new(&memory, BASE, GS).unwrap();
@@ -212,8 +207,6 @@ fn co_belligerents_read_each_candidate_byte_in_both_vectors() {
 
 fn co_inputs_fixture() -> Vec<u8> {
     let mut bytes = fixture();
-    // Raw links can alias canonical country slots; matrix targets retain the
-    // constructor's resolved raw link.
     links_vector(
         &mut bytes,
         GS + cgame_state::COUNTRY_LINKS,
@@ -330,8 +323,6 @@ impl Memory for ReverseTrace<'_> {
 }
 
 fn reverse_source(memory: &impl Memory) -> ReservedVisibilitySource {
-    // Names deliberately have no content-database root. Completed private
-    // scalars survive that refusal; required prefix publication stays refused.
     let mut naming = ccountry::read_reserved_naming_observed_inner(memory, BASE, GS, crate::walk::Buffer::Count, None);
     assert!(matches!(naming.outcome, Outcome::Unavailable { .. }));
     let observed = naming.visibility.take().unwrap();
@@ -375,8 +366,6 @@ fn observed_forward_keeps_the_original_order_values_and_read_faults() {
         assert_eq!(*new.calls.borrow(), *old.calls.borrow());
         assert_eq!(new.attempts.get(), old.attempts.get());
         if fault.is_none() {
-            // Established native control/independent operand order, before any wartime-ally or
-            // enemy candidate walk; these spans are not a derived trace.
             assert_eq!(
                 &new.calls.borrow()[..12],
                 &[
@@ -835,8 +824,6 @@ fn co_inputs_keep_directed_native_truth_aliases_and_exact_capacity_demand() {
         }
     );
     assert_eq!(slots, [0, 2, 3, 99]);
-    // An enemy candidate's stored byte wins over vector membership or an
-    // active/retired war interpretation. A later sample retains no old set.
     bytes[status(0, 2) + CO_BELLIGERENT] = 0;
     let result = co_inputs(&bytes, &mut slots);
     assert_eq!((result.targets, result.required_targets), (Ok(2), 2));
@@ -845,8 +832,6 @@ fn co_inputs_keep_directed_native_truth_aliases_and_exact_capacity_demand() {
     bytes[status(0, 3) + CO_BELLIGERENT] = 0;
     let result = co_inputs(&bytes, &mut slots);
     assert_eq!((result.targets, result.required_targets), (Ok(0), 0));
-    // Another owner's empty vectors are a complete empty directed cache;
-    // the reverse of this owner's formerly set relation is never invented.
     bytes[status(0, 2) + CO_BELLIGERENT] = 0x80;
     p32(&mut bytes, status(1, 0) + TARGET_COUNTRY, 0);
     let memory = memory(&bytes);
@@ -885,8 +870,6 @@ fn co_inputs_read_slot_zero_even_when_the_candidate_vectors_are_empty() {
     assert_eq!(slots, [0, 99]);
 }
 
-/// A refused exact span would succeed if retried. This catches a hidden
-/// retry turning a failed operand into a later successful sample.
 struct FailCoReadOnce<'a> {
     memory: SliceMemory<'a>,
     at: usize,
@@ -1026,7 +1009,6 @@ fn co_inputs_refuse_each_operand_once_without_erasing_the_independent_result() {
 fn co_inputs_authenticate_the_target_slot_and_refuse_unsupported_native_width() {
     let mut bytes = co_inputs_fixture();
     let mut slots = vec![99_u32; 4];
-    // A nonzero alias is never accepted for the reserved target zero.
     p32(&mut bytes, status(0, 0) + TARGET_COUNTRY, 4);
     assert_eq!(
         co_inputs(&bytes, &mut slots),
@@ -1053,9 +1035,6 @@ fn co_inputs_authenticate_the_target_slot_and_refuse_unsupported_native_width() 
                 .all(|&slot| slot == 0)
         );
     }
-    // The native canonical domain is u16, not a fixed vanilla census.
-    // A reader header can name a larger slot, but this cache domain refuses
-    // it explicitly rather than indexing past the deduplication bitmap.
     links_vector(
         &mut bytes,
         DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES,
@@ -1088,8 +1067,6 @@ fn co_demand_reads_only_native_headers_and_keeps_other_countries_bounds() {
     };
     assert_eq!(co_belligerent_demand(&memory, BASE, country(0)), Ok(8));
     assert_eq!(memory.attempts.get(), 0);
-    // A bad optional header is an error, never a successful zero hint. The
-    // per-country API leaves the two other valid countries' bounds usable.
     p32(
         &mut bytes,
         DIPLOMACY[0] + cdiplomacy_status::WARTIME_ALLIES + 12,
@@ -1142,7 +1119,7 @@ fn native_empty_and_zero_only_co_candidates_need_no_positive_headers() {
             0x3700,
             &[],
         );
-        p64(&mut bytes, matrix_data(0), 0); // Slot0 is outside this suffix fold.
+        p64(&mut bytes, matrix_data(0), 0);
         p32(&mut bytes, GS + cgame_state::COUNTRIES + 12, 0);
         p32(&mut bytes, GS + cgame_state::COUNTRY_LINKS + 12, 0);
         let memory = memory(&bytes);
@@ -1174,7 +1151,7 @@ fn native_alias_zero_is_skipped_but_positive_status_target_remains_binding() {
     );
     p32(&mut bytes, 0x3100 + 2 * 4, 0);
     p64(&mut bytes, matrix_data(0), 0);
-    p64(&mut bytes, status(0, 2), 0); // This alias must not reach slot2 status.
+    p64(&mut bytes, status(0, 2), 0);
     bytes[status(0, 3) + CO_BELLIGERENT] = 0x7f;
     let mut memo = ccountry::NativeReferenceMemo::try_with_capacity(0, 4).unwrap();
     memo.reset(BASE, GS);
@@ -1186,13 +1163,10 @@ fn native_alias_zero_is_skipped_but_positive_status_target_remains_binding() {
         Ok((1, 1))
     );
     assert_eq!(slots, [3]);
-    // The count probe's demand is an upper bound: repeats are not deduplicated.
     assert_eq!(
         co_belligerents_native_buffer(&memory, BASE, &countries, country(0), crate::walk::Buffer::Count),
         Ok((0, 3))
     );
-    // Positive matrix-slot target validation cannot accept raw0 or a raw
-    // alias selecting zero, even when the stored co-belligerent byte is true.
     for raw in [0, 2] {
         p32(&mut bytes, status(0, 3) + TARGET_COUNTRY, raw);
         let memory = self::memory(&bytes);
@@ -1205,11 +1179,8 @@ fn native_alias_zero_is_skipped_but_positive_status_target_remains_binding() {
     }
 }
 
-/// A named way to corrupt one synthetic byte span before a walk.
 type Case<'a> = (&'a str, &'a dyn Fn(&mut Vec<u8>));
 
-/// An observed walk without storage, one that records the baseline and
-/// one that replays it (no writes observed) must agree; returns the first.
 fn run(bytes: &[u8]) -> (Walk, Vec<OpinionRow>, Vec<TupleRow>) {
     let (mut resolver, mut baseline) = (Resolver::default(), Baseline::default());
     let passes: Vec<_> = (0..3)
@@ -1248,7 +1219,6 @@ fn run(bytes: &[u8]) -> (Walk, Vec<OpinionRow>, Vec<TupleRow>) {
 #[test]
 fn links_come_from_owned_relations_without_walking_the_matrix() {
     let mut bytes = fixture();
-    // An attache of country 1 in country 3: 3's status toward 1 holds the attache link.
     relation(
         &mut bytes,
         RELATION[0],
@@ -1257,7 +1227,6 @@ fn links_come_from_owned_relations_without_walking_the_matrix() {
         1,
         3,
     );
-    // An unrelated guarantee in the same vectors is skipped.
     relation(
         &mut bytes,
         RELATION[1],
@@ -1275,7 +1244,6 @@ fn links_come_from_owned_relations_without_walking_the_matrix() {
         );
     }
     p64(&mut bytes, status(2, 1) + ATTACHE_LINK, RELATION[0] as u64);
-    // A slot set in a status no owned relation names is never visited.
     p64(&mut bytes, status(1, 3) + AIR_BASE_ACCESS, 1);
     let mut rows = vec![LinkRow::default(); 4];
     let mut resolver = Resolver::default();
@@ -1304,8 +1272,6 @@ fn links_come_from_owned_relations_without_walking_the_matrix() {
     ));
 }
 
-/// Two relations naming one pair give one row carrying both bits, and the
-/// walk reuses the caller's resolver storage without reallocating it.
 #[test]
 fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
     let mut bytes = fixture();
@@ -1356,7 +1322,6 @@ fn a_pair_named_twice_is_one_row_and_the_walk_reuses_its_scratch() {
         );
         assert_eq!((resolver.references.as_ptr(), resolver.capacity()), storage);
     }
-    // A full output counts the pair once per naming relation: an upper bound.
     assert_eq!(
         link_count(&bytes, &mut resolver),
         Outcome::Truncated {
@@ -1370,7 +1335,6 @@ fn link_rows(bytes: &[u8], rows: &mut Vec<LinkRow>, resolver: &mut Resolver) -> 
     link_rows_into(bytes, crate::walk::Buffer::Growing(rows), resolver)
 }
 
-/// The count-only probe of the links.
 fn link_count(bytes: &[u8], resolver: &mut Resolver) -> Outcome {
     link_rows_into(bytes, crate::walk::Buffer::Count, resolver)
 }
@@ -1415,7 +1379,6 @@ fn transport_subject_fixture() -> Vec<u8> {
         1,
         2,
     );
-    // Neither retired nor deliberately future dates change current subject-relation truth.
     bytes[RELATION[0] + crelation::RETIRED] = 255;
     p32(&mut bytes, RELATION[0] + crelation::START_HOUR, 500);
     p32(&mut bytes, RELATION[0] + crelation::END_HOUR, 501);
@@ -1491,8 +1454,6 @@ fn transport_subject_only_fault_refuses_coverage_without_erasing_original_tables
     let mut rows = vec![LinkRow::default(); 8];
     let walk = transport_links(&memory(&bytes), &mut rows);
     assert_eq!(walk.links, Outcome::Rows { len: 4 });
-    // The composed current-hour pass captures each positive owner's ordered
-    // enemy vector, independently of the subject-only status fault.
     assert_eq!(walk.wars, Outcome::Rows { len: 3 });
     assert_eq!(
         (
@@ -1531,8 +1492,6 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
         RELATION[1] as u64,
     );
     let mut rows = vec![LinkRow::default(); 8];
-    // A subject pointer that stays unreadable refuses the shared suffix
-    // once, and the military access row keeps that refusal.
     let persistent = StarlessFault {
         memory: memory(&bytes),
         at: status(0, 2) + SUBJECT_RELATION,
@@ -1546,9 +1505,6 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
         rows[1].transport_subject,
         Some(Err("transport subject pointer unreadable"))
     );
-    // A one-shot fault meets the candidates' gather, which the walk reads
-    // again candidate by candidate: the suffix is read once more and
-    // nothing is refused.
     let trace = ReverseTrace::new(&bytes, Some(status(0, 2) + SUBJECT_RELATION));
     assert_eq!(
         transport_links(&trace, &mut rows).links,
@@ -1557,9 +1513,6 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
     assert_eq!(rows[1].links, LINK_MILITARY_ACCESS);
     assert!(rows[1].transport_subject.unwrap().is_ok());
     assert_eq!(trace.reads(status(0, 2) + SUBJECT_RELATION), 2);
-    // A one-shot fault of the status's link fields meets the candidates'
-    // gather, which the walk reads again candidate by candidate: nothing is
-    // refused. One that persists refuses the pass as the serial walk does.
     let trace = ReverseTrace::new(&bytes, Some(status(0, 2) + AIR_BASE_ACCESS));
     assert_eq!(
         transport_links(&trace, &mut rows).links,
@@ -1577,7 +1530,6 @@ fn transport_subject_merge_keeps_original_link_faults_and_failed_suffix_is_not_r
     );
 }
 
-/// The fixture failing every read that covers `at`.
 struct StarlessFault<'a> {
     memory: SliceMemory<'a>,
     at: usize,
@@ -1598,7 +1550,6 @@ fn links_vector(bytes: &mut [u8], at: usize, data: usize, values: &[u32]) {
     }
 }
 
-/// Countries 1 and 2 fight country 3; country 1 gave 2 military access.
 fn war_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     relation(
@@ -1664,9 +1615,6 @@ fn row(country: u32, rule: u8) -> WarRow {
     }
 }
 
-/// Without a civil-war link or a retired war relation the enemy vectors
-/// are derived by the reader and never read; the rule byte is recorded
-/// wherever it is nonzero.
 #[test]
 fn war_rows_record_the_rule_and_leave_enemy_sets_to_derivation() {
     let bytes = war_fixture();
@@ -1675,7 +1623,6 @@ fn war_rows_record_the_rule_and_leave_enemy_sets_to_derivation() {
     assert_eq!(walk.wars, Outcome::Rows { len: 2 });
     assert_eq!((walk.countries_len, walk.required_countries), (0, 0));
     assert_eq!(wars[..2], [row(1, 1), row(3, 0x80)]);
-    // The access relation's slot is the link row's military access bit.
     let mut rows = vec![LinkRow::default(); 2];
     assert_eq!(
         link_rows(&bytes, &mut rows, &mut Resolver::default()),
@@ -1684,7 +1631,6 @@ fn war_rows_record_the_rule_and_leave_enemy_sets_to_derivation() {
     assert_eq!(rows[0].links, LINK_MILITARY_ACCESS);
 }
 
-/// A civil-war revolter's vector is read as stored, even with a zero rule.
 #[test]
 fn a_civil_war_revolter_has_its_enemy_vector_read() {
     let mut bytes = war_fixture();
@@ -1713,8 +1659,6 @@ fn a_civil_war_revolter_has_its_enemy_vector_read() {
     assert_eq!(countries[..2], [3, 9]);
 }
 
-/// An owned war relation whose retired byte is set could linger in a side
-/// list, so its owner's vector is read.
 #[test]
 fn a_retired_war_relation_makes_its_owner_read_the_vector() {
     let mut bytes = war_fixture();
@@ -1745,7 +1689,6 @@ fn a_retired_war_relation_makes_its_owner_read_the_vector() {
         }
     );
     assert_eq!(countries[..2], [1, 2]);
-    // An active war relation alone changes nothing.
     bytes[RELATION[1] + crelation::RETIRED] = 0;
     let (walk, wars, _) = walk_wars(&bytes);
     assert_eq!(walk.countries_len, 0);
@@ -1755,8 +1698,6 @@ fn a_retired_war_relation_makes_its_owner_read_the_vector() {
 #[test]
 fn access_and_docking_slots_come_from_their_owned_relations() {
     let mut bytes = fixture();
-    // Docking rights of 1 at 3: 1's status toward 3 holds the docking-rights link. Military access
-    // offered by 1 to 3: 3's status toward 1 holds the military-access link.
     relation(
         &mut bytes,
         RELATION[0],
@@ -1820,7 +1761,6 @@ fn only_nonzero_opinions_and_serializable_relations_become_rows() {
     let mut bytes = fixture();
     p32(&mut bytes, status(0, 2) + OPINION, (-100_i32) as u32);
     p32(&mut bytes, status(1, 3) + OPINION, 60);
-    // Slot zero is never serialized even with a nonzero opinion.
     p32(&mut bytes, status(2, 0) + OPINION, 7);
     relation(
         &mut bytes,
@@ -1906,7 +1846,6 @@ fn only_nonzero_opinions_and_serializable_relations_become_rows() {
 #[test]
 fn war_and_subject_elements_are_skipped_but_still_consume_their_ordinal() {
     let mut bytes = fixture();
-    // Native vector order: war, guarantee, subject, market access.
     relation(
         &mut bytes,
         RELATION[0],
@@ -1971,7 +1910,6 @@ fn war_and_subject_elements_are_skipped_but_still_consume_their_ordinal() {
             (cmarket_access_rights_relation::TYPE, 3),
         ]
     );
-    // A skipped class is still authenticated: a contradictory type fails.
     let mut broken = bytes.clone();
     p32(&mut broken, RELATION[0] + crelation::TYPE_ID, 1);
     assert_eq!(
@@ -2061,14 +1999,12 @@ fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
                 p64(bytes, 0x3400 + 2 * 0x40, 0);
             },
         ),
-        // The owned vector names a relation its status does not serialize.
         (
             "owned and serializable relations disagree",
             &|bytes: &mut Vec<u8>| {
                 array(bytes, status(0, 3) + SERIALIZABLE_RELATIONS, 0, &[]);
             },
         ),
-        // The status serializes a relation the owned vector does not name.
         (
             "owned and serializable relations disagree",
             &|bytes: &mut Vec<u8>| {
@@ -2086,7 +2022,6 @@ fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
         let mut bytes = valid.clone();
         break_it(&mut bytes);
         let (result, opinions, _) = run(&bytes);
-        // Owned-vector failures refuse tuples alone: opinions never read it.
         if reason.starts_with("owned ") {
             assert_eq!(
                 (result.opinions, opinions),
@@ -2098,7 +2033,6 @@ fn changed_headers_null_slots_and_bad_identities_are_named_failures() {
         }
         assert_eq!(result.tuples, Outcome::Unavailable { reason });
     }
-    // The owned vector is read only for tuples.
     let mut bytes = valid.clone();
     p64(&mut bytes, 0x3400 + 2 * 0x40, 0);
     let mut opinions = vec![OpinionRow::default(); 4];
@@ -2143,8 +2077,6 @@ fn unclassified_and_contradictory_relation_identities_are_refused() {
             "relation type word differs from its class",
             &|bytes: &mut Vec<u8>| p32(bytes, RELATION[0] + crelation::TYPE_ID, 1),
         ),
-        // A second relation in the same status whose first endpoint is
-        // another country.
         (
             "serializable relation is not owned by its first endpoint",
             &|bytes: &mut Vec<u8>| {
@@ -2194,8 +2126,6 @@ fn a_truncated_address_space_never_yields_a_partial_success() {
     }
 }
 
-/// One observed opinion walk; returns the outcome, its rows and the bytes
-/// it read.
 fn observed(
     bytes: &[u8],
     baseline: &mut Baseline,
@@ -2205,7 +2135,6 @@ fn observed(
     observed_slice(bytes, baseline, token, marks, &|_| true)
 }
 
-/// `observed` for the owners `select` names.
 fn observed_slice(
     bytes: &[u8],
     baseline: &mut Baseline,
@@ -2239,9 +2168,6 @@ fn observed_slice(
     )
 }
 
-/// A walk that observed every opinion write since the baseline replays
-/// it, reading only the marked statuses; a new observation, a refused
-/// walk or a mark that is not a recorded status reads every status.
 #[test]
 fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     let mut bytes = fixture();
@@ -2257,9 +2183,6 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
         status: status(owner, target),
         diplomacy: DIPLOMACY[owner],
     };
-    // Unrecorded (no storage yet), sized (the owners' rows get storage;
-    // the two owners without rows already fit and are recorded), recording
-    // the third, then replaying all three.
     let cold = observed(&bytes, &mut baseline, token, &[]);
     let sized = observed(&bytes, &mut baseline, token, &[]);
     let recording = observed(&bytes, &mut baseline, token, &[]);
@@ -2270,20 +2193,14 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     assert_eq!((replay.0, &replay.1), (cold.0, &cold.1));
     assert_eq!(cold.1, [row(2, 2, 5)]);
     assert_eq!(baseline.valid_owners(), 3);
-    // No pointer page and no status: against the cold walk, which reads
-    // every owner in full, nine statuses of 16 bytes and their nine
-    // pointers are not read.
     assert!(replay.2 + 9 * (16 + 8) <= cold.2, "{replay:?} {cold:?}");
     assert!(replay.2 < recording.2, "{replay:?} {recording:?}");
     assert_eq!(baseline.counts().reused_owners - reused, 3);
-    // Unmarked statuses are not read: an unobserved write stays unseen,
-    // exactly what a missed writer would do.
     let mut unobserved = bytes.clone();
     p32(&mut unobserved, status(0, 3) + OPINION, 9);
     p64(&mut unobserved, status(2, 1), 0);
     assert_eq!(observed(&unobserved, &mut baseline, token, &[]).1, cold.1);
     baseline.reserve_marks(3).unwrap();
-    // A marked status is re-read: inserted, changed and removed rows.
     let mut written = bytes.clone();
     p32(&mut written, status(0, 3) + OPINION, 9);
     p32(&mut written, status(2, 1) + OPINION, (-4_i32) as u32);
@@ -2295,7 +2212,6 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     let (_, rows, _) = observed(&written, &mut baseline, token, &[mark(1, 2)]);
     assert_eq!(rows, [row(1, 3, 9), row(3, 1, -4)]);
     assert_eq!(baseline.counts().marks, 4);
-    // An owner whose matrix moved is read in full, unmarked writes included.
     let mut moved = written.clone();
     let copy = 0x3300;
     let entries: Vec<u64> = (0..4).map(|t| status(1, t) as u64).collect();
@@ -2308,8 +2224,6 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     p32(&mut moved, status(1, 1) + OPINION, 6);
     let (_, rows, _) = observed(&moved, &mut baseline, token, &[]);
     assert_eq!(rows, [row(1, 3, 9), row(2, 1, 6), row(3, 1, -4)]);
-    // A mark that is not the matrix's status at its slot refuses the
-    // observation: every status is read, so the vtable fault is seen.
     let mut stray = moved.clone();
     let fake = 0x20000;
     stray[fake..fake + 0x400].copy_from_slice(&moved[status(0, 2)..status(0, 2) + 0x400]);
@@ -2330,8 +2244,6 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
         }
     );
     assert_eq!(baseline.counts().refused_observations, 1);
-    // The refused walk forgot every owner: with the fault gone, the next
-    // walk reads everything (and so sees the unmarked write).
     p32(&mut moved, status(2, 3) + OPINION, 2);
     let (_, rows, read) = observed(&moved, &mut baseline, token, &[]);
     assert_eq!(
@@ -2339,16 +2251,12 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
         [row(1, 3, 9), row(2, 1, 6), row(3, 1, -4), row(3, 3, 2)]
     );
     assert_eq!(read, cold.2);
-    // A new observation (a load, gap or unobserved interval) reads everything.
     p32(&mut moved, status(0, 1) + OPINION, 1);
     assert_eq!(observed(&moved, &mut baseline, token, &[]).1.len(), 4);
     assert_eq!(observed(&moved, &mut baseline, (1, 2), &[]).1.len(), 5);
-    // A walk that panics midway leaves no baseline behind: the next walk
-    // reads every status, the unmarked write included.
     struct Panicking<'a>(SliceMemory<'a>);
     impl Memory for Panicking<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            // The third owner's diplomacy: two owners are visited by then.
             let third = DIPLOMACY[2]..DIPLOMACY[2] + 0x100;
             assert!(!third.contains(&address), "fault injected mid-walk");
             self.0.copy(address, output)
@@ -2381,9 +2289,7 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     p32(&mut moved, status(2, 2) + OPINION, 8);
     let (_, rows, _) = observed(&moved, &mut baseline, (1, 2), &[]);
     assert!(rows.contains(&row(3, 2, 8)), "{rows:?}");
-    // No observation reads every owner in full without recording.
     let _ = fresh;
-    // Tuple-only walks leave the baseline alone.
     let mut tuples = vec![TupleRow::default(); 4];
     walk_with(
         &memory(&moved),
@@ -2400,7 +2306,6 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     let incremental = baseline.counts().incremental_walks;
     observed(&moved, &mut baseline, (1, 2), &[]);
     assert_eq!(baseline.counts().incremental_walks, incremental + 1);
-    // A replay grows short storage as the full walk does.
     let mut short = vec![OpinionRow::default(); 2];
     let result = walk_with(
         &memory(&moved),
@@ -2421,10 +2326,6 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     assert_eq!(baseline.counts().incremental_walks, incremental + 2);
 }
 
-/// Under slices, an unselected owner keeps its rows and its marks until
-/// its own slice; each observed slice walk equals an unobserved walk of
-/// the same slice. An owner whose marks overflow is read in full at its
-/// next slice.
 #[test]
 fn sliced_observed_walks_keep_other_owners_marks_for_their_slice() {
     let mut bytes = fixture();
@@ -2440,16 +2341,12 @@ fn sliced_observed_walks_keep_other_owners_marks_for_their_slice() {
     }
     assert_eq!(baseline.valid_owners(), 3);
     baseline.reserve_marks(2).unwrap();
-    // Owner IDs are 1, 2, 3 (fixture owners 0, 1, 2).
     let only = |id: u32| move |owner: u32| owner == id;
     let unobserved = |bytes: &[u8], id: u32| {
         observed_slice(bytes, &mut Baseline::default(), token, &[], &only(id)).1
     };
     p32(&mut bytes, status(0, 3) + OPINION, 9);
     p32(&mut bytes, status(2, 1) + OPINION, (-4_i32) as u32);
-    // Owner 1's slice: its mark applies; owner 3's waits. (Each owner's
-    // first nonzero opinion has no row storage yet, so it is read in full
-    // at its next slice.)
     let (_, rows, _) = observed_slice(
         &bytes,
         &mut baseline,
@@ -2459,14 +2356,10 @@ fn sliced_observed_walks_keep_other_owners_marks_for_their_slice() {
     );
     assert_eq!(rows, unobserved(&bytes, 1));
     assert_eq!(baseline.counts().marks, 1);
-    // Owner 3's slice later: its pending mark applies without a new one.
     let (_, rows, _) = observed_slice(&bytes, &mut baseline, token, &[], &only(3));
     assert_eq!(rows, unobserved(&bytes, 3));
     assert!(rows.iter().any(|row| row.opinion == -4), "{rows:?}");
     assert_eq!(baseline.counts().marks, 2);
-    // Marks beyond acquired matrix/observed burst storage invalidate once;
-    // the next slice reads it in
-    // full, unmarked writes included.
     let invalidated = baseline.counts().invalidated_owners;
     let flood = vec![mark(1, 3); 128];
     observed_slice(&bytes, &mut baseline, token, &flood, &only(1));
@@ -2478,8 +2371,6 @@ fn sliced_observed_walks_keep_other_owners_marks_for_their_slice() {
     assert_eq!(baseline.counts().read_owners, before + 1);
 }
 
-/// `take` and `updates` grow separately: when only `take` grew, marks
-/// beyond `updates` read their owners in full instead of overrunning it.
 #[test]
 fn marks_beyond_either_buffer_read_their_owners_in_full() {
     let mut bytes = fixture();
@@ -2503,8 +2394,6 @@ fn marks_beyond_either_buffer_read_their_owners_in_full() {
     assert_eq!(baseline.counts().invalidated_owners, invalidated + 3);
 }
 
-/// Only relations the owner is the first endpoint of name its statuses;
-/// one it receives, or with a null second endpoint, names none.
 #[test]
 fn received_relations_and_null_endpoints_name_no_status() {
     let mut bytes = fixture();
@@ -2538,15 +2427,12 @@ fn received_relations_and_null_endpoints_name_no_status() {
     let result = walk(&counting, BASE, GS, &mut Vec::new(), &mut tuples, [false, true]);
     assert_eq!(result.tuples, Outcome::Rows { len: 1 });
     assert_eq!((tuples[0].owner_country, tuples[0].target_country), (2, 1));
-    // A tuple-only pass reads the one status it needs, not the matrix.
     let mut opinions = vec![OpinionRow::default(); 4];
     let both = Counting::new(&slice);
     walk(&both, BASE, GS, &mut opinions, &mut tuples, [true; 2]);
     assert!(counting.take()[2] < both.take()[2]);
 }
 
-/// The walk this pass replaced: every status of every matrix, four spans
-/// each. Kept as the reference its rows must equal.
 mod dense {
     use super::super::*;
 
@@ -2651,14 +2537,7 @@ mod dense {
     }
 }
 
-/// A world of `countries` countries computed on demand, so its matrix
-/// statuses need no fixture bytes. Every country is
 
-/// the first endpoint of three relations with its next neighbours (plus a
-/// second relation in the same status for every fifth country), cycling
-/// through serialized, war and subject classes; relations are owned by both
-/// endpoints. Some countries have an alias id that relations, targets and
-/// first endpoints use, and about one pair in 37 has an opinion.
 mod world {
     use super::super::*;
     use crate::{
@@ -2702,7 +2581,6 @@ mod world {
 
     pub struct World {
         countries: usize,
-        /// Opinion writes happen once a day (`next_day`).
         day: std::cell::Cell<u32>,
     }
 
@@ -2715,8 +2593,6 @@ mod world {
             }
         }
 
-        /// About one status in 211 changes its opinion by three, which
-        /// inserts, changes and removes rows.
         fn written(owner: usize, target: usize) -> bool {
             (owner * 131 + target * 7).is_multiple_of(211)
         }
@@ -2725,8 +2601,6 @@ mod world {
             self.day.set(self.day.get() + 1);
         }
 
-        /// Every status a writer changed today, as a hook would mark it: with the owning diplomacy
-        /// the detour reads (`DIPLOMACY_STATUS`).
         pub fn marks(&self) -> Vec<Mark> {
             let mut marks = Vec::new();
             for owner in 1..self.slots() {
@@ -2742,7 +2616,6 @@ mod world {
             marks
         }
 
-        /// Matrix slots, including the reserved slot zero.
         fn slots(&self) -> usize {
             self.countries + 1
         }
@@ -2763,15 +2636,12 @@ mod world {
             (country - 1 + step) % self.countries + 1
         }
 
-        /// Relation ids: `(first - 1) * NEIGHBOURS + step - 1` for the
-        /// neighbour relations, then one extra per fifth country.
         fn extra(&self, first: usize) -> Option<usize> {
             first
                 .is_multiple_of(5)
                 .then(|| self.countries * NEIGHBOURS + first / 5 - 1)
         }
 
-        /// `(first, second, class)` of a relation.
         fn relation(&self, id: usize) -> (usize, usize, usize) {
             if id < self.countries * NEIGHBOURS {
                 let first = id / NEIGHBOURS + 1;
@@ -2797,7 +2667,6 @@ mod world {
             }
         }
 
-        /// Relations naming `country`: the ones it receives, then its own.
         fn owned(&self, country: usize, output: &mut [usize; 16]) -> usize {
             let mut len = 0;
             for step in 1..=NEIGHBOURS {
@@ -2832,7 +2701,6 @@ mod world {
             base + if written { 3 } else { 0 }
         }
 
-        /// Writes the part of one object's fields that overlaps `output`.
         fn object(&self, address: usize, object: usize, output: &mut [u8]) {
             let offset = address - object;
             let end = offset + output.len();
@@ -2986,7 +2854,6 @@ mod world {
 
     impl Memory for World {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            // The walks' hot reads: whole status fields and pointer pages.
             if address >= STATUSES {
                 let (pair, offset) = (
                     (address - STATUSES) / OBJECT_SIZE,
@@ -3054,8 +2921,6 @@ mod world {
     }
 }
 
-/// Guarded calls as the live memory issues them (one per copy, scattered
-/// batch and record gather), with the bytes and cache lines they touch.
 struct Counting<'a, M> {
     inner: Lines<'a, M>,
     calls: std::cell::Cell<usize>,
@@ -3130,19 +2995,11 @@ impl<M: Memory> Memory for Counting<'_, M> {
     }
 }
 
-/// Rows of the dense reference and of observed, sliced days: after a day
-/// of opinion writes (about one status in 211 changes, inserting,
-/// changing and removing rows) is observed, each hour's slice walk equals
-/// an unobserved walk of the same slice, and the day's slices hold exactly
-/// the dense rows, and an observed hour reads a small share of what a full
-/// walk reads.
 #[test]
 fn sliced_observed_days_equal_the_dense_walk() {
     let countries = 120;
     let world = world::World::new(countries);
     let memory = Counting::new(&world);
-    // Bounds from the world's shape: every neighbour pair can hold an
-    // opinion and at most two tuples.
     let opinions_len = countries * countries / 30 + 64;
     let tuples_len = countries * 4;
     let rows = || {
@@ -3176,8 +3033,6 @@ fn sliced_observed_days_equal_the_dense_walk() {
         );
         (result, output, memory.take())
     };
-    // Warm up: storage, the owners' row storage, then every owner read
-    // and recorded in full.
     let mut baseline = Baseline::default();
     let mut load_cost = [0; 3];
     for _ in 0..3 {
@@ -3185,7 +3040,6 @@ fn sliced_observed_days_equal_the_dense_walk() {
         baseline.grow().unwrap();
     }
     assert_eq!(baseline.valid_owners(), countries);
-    // A day of opinion writes, observed at the next hour.
     world.next_day();
     let marks = world.marks();
     assert!(!marks.is_empty());
@@ -3213,7 +3067,6 @@ fn sliced_observed_days_equal_the_dense_walk() {
         hours.push(cost);
     }
     assert!(baseline.counts().marks as usize >= marks.len() / 2);
-    // The day's slices hold exactly the dense walk's rows of that day.
     let mut expected = rows();
     let dense = dense::walk(
         &memory,
@@ -3228,13 +3081,10 @@ fn sliced_observed_days_equal_the_dense_walk() {
     dense_opinions.sort_by_key(|row| (row.owner_country, row.target_country));
     assert_eq!(opinions, dense_opinions, "{countries}");
     assert_eq!(tuples.len(), dense.tuples.len(), "{countries}");
-    // An observed hour reads a small share of what a full walk reads.
     let worst = hours.iter().max_by_key(|cost| cost[2]).expect("24 hours");
     assert!(worst[2] * 8 < load_cost[2], "{worst:?} {load_cost:?}");
 }
 
-/// One object per region, so a synthetic world only stores the bytes the
-/// walks read.
 #[derive(Default)]
 struct Sparse(std::collections::BTreeMap<usize, Vec<u8>>);
 
@@ -3248,7 +3098,6 @@ impl Sparse {
     fn p64(&mut self, object: usize, len: usize, at: usize, value: u64) {
         self.object(object, len)[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
-    /// A PDX array header at `object + at` over new data at `data`.
     fn array(&mut self, object: usize, len: usize, at: usize, data: usize, values: &[u64]) {
         self.p64(object, len, at, data as u64);
         self.p32(object, len, at + 8, values.len() as u32);
@@ -3275,26 +3124,19 @@ impl Memory for Sparse {
     }
 }
 
-/// A hub country (slot 1) with military access and docking rights toward
-/// each of `partners` countries, in two differently shuffled orders, and
-/// each partner owning its two relations with the hub.
 fn star(partners: usize) -> Sparse {
-    // The walk reads the diplomacy status, the occupation rule and the civil-war link.
     const COUNTRY: usize = ccountry::CIVIL_WAR_LINK + 4;
     const DIPLOMACY: usize = cdiplomacy_status::COUNTRY + 8;
     const STATUS: usize = AIR_BASE_ACCESS + 8;
-    // The owned-relation read reaches the retired byte.
     const RELATION: usize = crelation::RETIRED + 1;
     let slots = partners + 2;
     let country = |slot: usize| 0x100_0000 + slot * 0x1000;
     let diplomacy = |slot: usize| 0x1000_0000 + slot * 0x1000;
     let matrix = |slot: usize| 0x2000_0000 + slot * 0x1_0000;
     let owned = |slot: usize| 0x4000_0000 + slot * 0x2_0000;
-    // The status of `owner` toward `target`; one of them is the hub.
     let status = |owner: usize, target: usize| {
         0x8000_0000 + (owner.max(target) * 2 + usize::from(owner == 1)) * 0x1000
     };
-    // Relation `class` (0 military access, 1 docking rights) with a partner.
     let relation = |partner: usize, class: usize| 0x1_0000_0000 + (partner * 2 + class) * 0x100;
     let mut world = Sparse::default();
     let mut table = vec![u64::MAX];
@@ -3318,7 +3160,6 @@ fn star(partners: usize) -> Sparse {
             (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
         );
         world.p64(root, DIPLOMACY, cdiplomacy_status::COUNTRY, object as u64);
-        // Only the hub's statuses and those toward the hub are set.
         let row: Vec<u64> = (0..slots)
             .map(|target| {
                 if (slot == 1) != (target == 1) {
@@ -3331,7 +3172,6 @@ fn star(partners: usize) -> Sparse {
         let at = cdiplomacy_status::RELATIONS;
         world.array(root, DIPLOMACY, at, matrix(slot), &row);
         let relations: Vec<u64> = if slot == 1 {
-            // Every partner twice, each class in its own shuffled order.
             let order = |index: usize, step: usize| partner(index * step % partners);
             (0..partners)
                 .map(|index| relation(order(index, 7919), 0) as u64)
@@ -3370,7 +3210,6 @@ fn star(partners: usize) -> Sparse {
 #[test]
 fn reverse_military_presence_reads_the_whole_qword_without_following_the_pointer() {
     let mut bytes = reverse_fixture();
-    // The low byte is zero. A byte reader would incorrectly report absence.
     let military_pointer = 1_u64 << 32;
     p64(
         &mut bytes,
@@ -3933,8 +3772,6 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
         p32(&mut bytes, links + slot * 4, slot as u32);
         p32(&mut bytes, COUNTRIES[index] + ccountry::ID, slot as u32);
         let data = matrices + index * (HIGH_SLOT + 1) * 8;
-        // Native eagerly constructs every pointer cell; unselected fillers
-        // still need nonnull controls when a selected target shares their page.
         for slot in 0..=HIGH_SLOT {
             p64(&mut bytes, data + slot * 8, status(index, 0) as u64);
         }
@@ -4009,7 +3846,6 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
         0x3600,
         &[HIGH_SLOT as u64],
     );
-    // Candidate vectors contain native signed dwords, not qwords.
     p32(&mut bytes, 0x3600, HIGH_SLOT as u32);
     bytes[status(0, 3) + CO_BELLIGERENT] = 1;
     let source = memory(&bytes);
@@ -4024,7 +3860,6 @@ fn signed_country_slots_above_u16_reach_links_tuples_and_co_belligerents() {
     assert_eq!(co[0], HIGH_SLOT as u32);
 }
 
-/// Forwards every read and logs the addresses of each guarded call.
 struct CallLog<'a> {
     memory: SliceMemory<'a>,
     calls: std::cell::RefCell<Vec<Vec<usize>>>,
@@ -4059,8 +3894,6 @@ impl Memory for CallLog<'_> {
     }
 }
 
-/// A candidate's status identity, target and co-belligerent byte sit on four lines of one object;
-/// they are copied in one guarded call, where the separate reads took four.
 #[test]
 fn a_co_candidates_status_fields_are_copied_in_one_guarded_call() {
     let bytes = co_inputs_fixture();
@@ -4085,7 +3918,6 @@ fn a_co_candidates_status_fields_are_copied_in_one_guarded_call() {
     }
 }
 
-/// The fixture's reads and hints, in order: `(true, address)` for a hint.
 struct Hints<'a> {
     memory: SliceMemory<'a>,
     log: std::cell::RefCell<Vec<(bool, usize)>>,
@@ -4100,9 +3932,6 @@ impl Memory for Hints<'_> {
     }
 }
 
-/// Each owner's enemy vector header and first owned-relation pointers are
-/// hinted with its batch, before the owner's pass reads them; the walk's
-/// reads and rows are those of an unhinted walk.
 #[test]
 fn owners_enemy_headers_and_owned_pointers_are_hinted_before_their_reads() {
     let bytes = transport_subject_fixture();
@@ -4127,7 +3956,6 @@ fn owners_enemy_headers_and_owned_pointers_are_hinted_before_their_reads() {
     }
 }
 
-/// [`ReverseTrace`]'s reads and one-shot fault, with the hints counted.
 struct HintedTrace<'a> {
     trace: ReverseTrace<'a>,
     hints: std::cell::Cell<usize>,
@@ -4141,10 +3969,6 @@ impl Memory for HintedTrace<'_> {
     }
 }
 
-/// The batch hints change no read: the hinted walk makes exactly the reads,
-/// in order and with their lengths, of the same walk over a memory that
-/// ignores hints, and meets a one-shot fault of an owned-relation vector or
-/// an enemy vector header at the same read with the same rows and outcome.
 #[test]
 fn relation_hints_leave_every_read_and_a_one_shot_fault_unchanged() {
     let bytes = transport_subject_fixture();
@@ -4173,9 +3997,6 @@ fn relation_hints_leave_every_read_and_a_one_shot_fault_unchanged() {
     }
 }
 
-/// `memory` with every candidate cell gather refused (the only gather of
-/// eight-byte records): the walk reads each candidate itself, as the serial
-/// walk does.
 struct SerialCandidates<'a, M>(&'a M);
 impl<M: Memory> Memory for SerialCandidates<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -4194,8 +4015,6 @@ impl<M: Memory> Memory for SerialCandidates<'_, M> {
     }
 }
 
-/// [`star`] failing every read covering an address in `persistent`, and the
-/// first covering each in `once`.
 struct StarFaults<'a> {
     world: &'a Sparse,
     persistent: Vec<usize>,
@@ -4228,8 +4047,6 @@ fn star_links(memory: &impl Memory, partners: usize) -> (Outcome, Vec<LinkRow>) 
     (outcome, rows)
 }
 
-/// [`star_links`] through the transport pass, which also reads each
-/// candidate's subject pointer and every owner's ordered enemies.
 fn star_transport(
     memory: &impl Memory,
     partners: usize,
@@ -4254,7 +4071,6 @@ fn star_transport(
     (walk, rows, wars, countries)
 }
 
-/// The hub's matrix cell toward `target` and its status toward it in [`star`].
 fn star_cell(target: usize) -> usize {
     0x2000_0000 + 0x1_0000 + target * 8
 }
@@ -4262,8 +4078,6 @@ fn star_status(target: usize) -> usize {
     0x8000_0000 + (target * 2 + 1) * 0x1000
 }
 
-/// The gathered candidates give the serial walk's rows and outcome on
-/// healthy memory.
 #[test]
 fn gathered_relation_candidates_equal_the_serial_walk() {
     for partners in [3, 70] {
@@ -4279,16 +4093,12 @@ fn gathered_relation_candidates_equal_the_serial_walk() {
             serially(|| star_transport(&world, partners)),
             "{partners}"
         );
-        // A refused gather is read again candidate by candidate, once, and
-        // gives the same rows.
         let before = crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks);
         assert_eq!(star_links(&SerialCandidates(&world), partners), serial);
         assert!(crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks) > before);
     }
 }
 
-/// A fault that persists gives the serial walk's outcome: a candidate's
-/// matrix cell or its status.
 #[test]
 fn a_persistent_candidate_fault_gives_the_serial_result() {
     let partners = 200;
@@ -4301,7 +4111,6 @@ fn a_persistent_candidate_fault_gives_the_serial_result() {
         };
         let before = crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks);
         let gathered = star_links(&faults(), partners);
-        // The batch met the fault and was read again candidate by candidate.
         assert!(
             crate::batch_fallback::count(crate::batch_fallback::Batch::RelationLinks) > before,
             "{at:#x}"
@@ -4315,9 +4124,6 @@ fn a_persistent_candidate_fault_gives_the_serial_result() {
     }
 }
 
-/// A one-shot fault of a candidate's cell or status refuses no more than
-/// the serial walk: the failed gather is read again candidate by candidate,
-/// once, and every row is published.
 #[test]
 fn a_one_shot_candidate_fault_refuses_no_more_than_the_serial_walk() {
     let partners = 200;

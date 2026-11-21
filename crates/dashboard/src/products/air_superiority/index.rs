@@ -1,7 +1,3 @@
-//! A timeline's air sides, made once when the recording opens: sides change only where the groups
-//! or a tag's holder do, so the timeline is cut at every such hour and each stretch assigned once.
-//! Side keys need the whole timeline's group history (its anchors), which is why no writer makes
-//! them as it records.
 
 use super::assignment::{self, AssignedSide, FactionHistory, GroupIndex, Groups, Identity, Run, SideAnchors, WarRun};
 use crate::{Source, products::groups::CountryGroupReply};
@@ -13,20 +9,16 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-/// One stretch of hours with the same sides.
 pub struct Epoch {
     pub first: i32,
     pub last: i32,
-    /// The tags held then.
     pub present: Arc<BTreeSet<String>>,
-    /// None where the groups are not known then.
     pub sides: Option<Arc<Vec<AssignedSide>>>,
 }
 
 pub struct AirIndex {
     pub groups: Groups,
     pub anchors: SideAnchors,
-    /// In hour order, apart.
     pub epochs: Vec<Epoch>,
 }
 
@@ -36,8 +28,6 @@ impl AirIndex {
         self.epochs.get(at).filter(|epoch| epoch.first <= hour)
     }
 
-    /// Where a side's colour is read: the country and hour of its historical anchor, when it has
-    /// one and that country held the tag then.
     pub fn anchor(&self, side: &AssignedSide) -> Option<(String, i32)> {
         let (tag, hour) = if let Some(identity) = side.key.strip_prefix("w:") {
             self.anchors.country_reads.get(identity)?
@@ -48,7 +38,6 @@ impl AirIndex {
     }
 }
 
-/// The group histories of `reply` and the holders of `query`, as the assignment reads them.
 pub fn groups_of(reply: &CountryGroupReply, query: &Query<'_>) -> Groups {
     let runs = |runs: &[crate::products::groups::MembershipRun]| runs.iter().map(|run| Run { tag: run.tag.clone(), first_hour: run.first_hour, last_hour: run.last_hour }).collect();
     let spans = |spans: &[crate::span::HourSpan]| spans.iter().map(|span| (span.first_hour, span.last_hour)).collect();
@@ -79,8 +68,6 @@ pub fn groups_of(reply: &CountryGroupReply, query: &Query<'_>) -> Groups {
     Groups { factions, wars, unobserved_factions: spans(&reply.unobserved.factions), unobserved_wars: spans(&reply.unobserved.wars), identities }
 }
 
-/// The hours a timeline from `first` through `last` is cut at: where a group run or a tag's
-/// holder starts or ends.
 fn boundaries(groups: &Groups, first: i32, last: i32) -> Vec<i32> {
     let mut cuts = BTreeSet::from([first]);
     let mut span = |a: i32, b: i32| {
@@ -113,7 +100,6 @@ fn boundaries(groups: &Groups, first: i32, last: i32) -> Vec<i32> {
     cuts.into_iter().collect()
 }
 
-/// `groups`' sides at every stretch from `first` through `last`.
 pub fn build(groups: Groups, first: i32, last: i32) -> AirIndex {
     let anchors = assignment::historical_anchors(&groups);
     let index = GroupIndex::new(&groups);
@@ -142,8 +128,6 @@ pub fn build(groups: Groups, first: i32, last: i32) -> AirIndex {
 #[derive(Default)]
 struct Held(HashMap<u64, Arc<AirIndex>>);
 
-/// Timeline `branch`'s air sides, made on first use (the recording's open makes them) and kept
-/// while the recording is open.
 pub fn index(source: &Source, branch: u64) -> io::Result<Arc<AirIndex>> {
     let state = source.state::<Held>();
     if let Some(found) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&branch) {

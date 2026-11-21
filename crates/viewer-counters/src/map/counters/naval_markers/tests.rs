@@ -4,9 +4,6 @@ use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::engaged::Ambiguity;
 use viewer_foundation::engagement_history::Provenance;
 
-/// Both colour modes of the convoy addition's background : the allegiance
-/// colour, or the first country's UI colour, OTHER for no country, and a named refusal for a
-/// country without one or an unresolved reference.
 #[test]
 fn the_convoy_addition_takes_the_counter_colour_mode() {
     let tints = allegiance::Tints::VANILLA;
@@ -30,7 +27,6 @@ fn the_convoy_addition_takes_the_counter_colour_mode() {
     assert_eq!(color(allegiance, Some(Ok(3))), Ok(tints.enemy));
     assert_eq!(color(allegiance, None), Ok(tints.enemy));
     assert_eq!(color(country, Some(Ok(3))), Ok([0.5, 0.25, 0.125, 1.0]));
-    // A subject that takes its overlord's colours.
     assert_eq!(color(country, Some(Ok(4))), Ok([0.5, 0.25, 0.125, 1.0]));
     assert_eq!(color(country, None), Ok(tints.other));
     assert!(
@@ -41,14 +37,9 @@ fn the_convoy_addition_takes_the_counter_colour_mode() {
     assert!(color(country, Some(Err(77))).unwrap_err().contains("77"));
 }
 
-/// With equal combat and result priorities, a result icon drawn after a naval combat icon
-/// takes the next free ordinal: every layer key of the result sorts after every key of the
-/// combat icon, grid items included, so the result never interleaves with it.
 #[test]
 fn a_result_icon_takes_an_ordinal_past_the_combat_icons() {
     let priority = 5;
-    // One land combat marker, then a naval combat icon, which draws its window and its grid
-    // items as one icon.
     let mut report = CounterReport {
         land_combats: 1,
         ..Default::default()
@@ -64,8 +55,6 @@ fn a_result_icon_takes_an_ordinal_past_the_combat_icons() {
     assert_eq!(report.combat_ordinal(), 3);
 }
 
-/// The combat pass runs strictly below the content's own cutoff: just under it, not at it
-/// or above it, whatever value the content sets.
 #[test]
 fn the_combat_pass_runs_strictly_below_the_contents_cutoff() {
     let mut defines = CounterDefines::VANILLA;
@@ -73,19 +62,16 @@ fn the_combat_pass_runs_strictly_below_the_contents_cutoff() {
     assert!(combat_pass(cutoff - 0.5, &defines));
     assert!(!combat_pass(cutoff, &defines));
     assert!(!combat_pass(cutoff + 0.5, &defines));
-    // A mod's lower cutoff moves the boundary with it.
     defines.naval_combat_cutoff = 400.0;
     assert!(combat_pass(399.5, &defines));
     assert!(!combat_pass(400.0, &defines));
     assert!(!combat_pass(cutoff - 0.5, &defines));
 }
 
-/// The viewer is slot 1, raw references resolve to themselves below 100.
 fn with_context<T>(test: impl FnOnce(&MarkerContext<'_>) -> T) -> T {
     let vision = Vision::sharing(1, []);
     let owner = |raw: u32| (raw < 100).then_some(raw);
     let flags = CombatFlags::default();
-    // The grid tiles' operands, which these tests do not reach.
     let frame = DecodedFrame {
         branch: 1,
         hour: 1,
@@ -140,8 +126,6 @@ fn detail(attackers: &[u32], defenders: &[u32]) -> NavalCombatDetailsRow {
     row
 }
 
-/// Only a forward-group member's task force counts for the HQ frame. A member
-/// outside those groups (`group_index` `u32::MAX`) does not count.
 #[test]
 fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
     let force = replay_data::rows::TaskForceRow {
@@ -149,12 +133,10 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
         roster_owner: 1,
         ..Default::default()
     };
-    // Task force 31 is the viewer's too, without an attached HQ.
     let bare = replay_data::rows::TaskForceRow {
         id: 31,
         ..force.clone()
     };
-    // Task force 32 is one whose counter inputs the hour lacks.
     let forces = BTreeMap::from([
         (30, Ok((&force, 1))),
         (31, Ok((&bare, 0))),
@@ -187,12 +169,8 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
         };
         assert_eq!(frame(&[member(7, 0, 0)]), Ok(true));
         assert_eq!(frame(&[member(7, u32::MAX, 0)]), Ok(false));
-        // A retained member and another combat's member are not this combat's forward members.
         assert_eq!(frame(&[member(7, 0, 1)]), Ok(false));
         assert_eq!(frame(&[member(8, 0, 0)]), Ok(false));
-        // Any qualifying task force shows the frame, whatever the order: an unresolved
-        // member (ship 21 has no task force here) leaves it undecided, named, only when no
-        // other member is known to qualify.
         let unknown = NavalCombatShipRow {
             ship: 21,
             ..member(7, 0, 0)
@@ -216,7 +194,6 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
             frame(&[uninputs]),
             Err("the TaskForceCounterInputs table has no row for task force 32".to_owned())
         );
-        // A side country that does not resolve leaves the side, and so the frame, undecided.
         let unresolved = detail(&[500], &[1]);
         assert_eq!(
             hq_frame(
@@ -228,7 +205,6 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
             ),
             Err("side 0 country 500 has no CountryLinks row".to_owned())
         );
-        // The attacker is tried first: the viewer on neither side has no frame.
         let neither = detail(&[5], &[6]);
         assert_eq!(
             hq_frame(
@@ -243,8 +219,6 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
     });
 }
 
-/// A direct icon a province P lists for a combat standing in H is bound to H and rotates,
-/// even after a spillover call in P deduplicates onto it; a spillover-only icon does not.
 #[test]
 fn a_direct_icon_bound_elsewhere_rotates_and_a_spillover_does_not() {
     let combats = [
@@ -259,8 +233,6 @@ fn a_direct_icon_bound_elsewhere_rotates_and_a_spillover_does_not() {
             registry_ordinal: 1,
         },
     ];
-    // Sea province 10 lists combat 8, which stands in 12; combat 9's transfer has a unit in
-    // 10, and combat 8's has one there too.
     let direct = [Direct {
         province: 10,
         combats: vec![8],
@@ -311,7 +283,6 @@ fn a_direct_icon_bound_elsewhere_rotates_and_a_spillover_does_not() {
     assert_eq!(icons.len(), 2);
     let (bound, spilled) = (&icons[0], &icons[1]);
     assert_eq!((bound.combat, bound.anchor_province), (8, 12));
-    // The spillover call deduplicated onto the direct icon, moving only its ordinal.
     assert_eq!(bound.ordinal, Some(1));
     assert!(rotates(12, bound));
     assert!(!rotates(11, spilled));
@@ -341,7 +312,6 @@ fn a_direct_icon_bound_elsewhere_rotates_and_a_spillover_does_not() {
             frame: FrameSource::Spillover,
         })
     );
-    // A spillover needs no engagement answer of its own; a rotating icon does, and names why.
     let unknown = Err("the NavalCombatShips table is unavailable (x)");
     assert_eq!(
         decide(false, Engaged::Unknown, unknown, None).map(|d| d.variant),
@@ -356,8 +326,6 @@ fn a_direct_icon_bound_elsewhere_rotates_and_a_spillover_does_not() {
         decide(true, Engaged::Yes, unknown, None),
         Err("convoy variant undecided: the NavalCombatShips table is unavailable (x)".to_owned())
     );
-    // An unengaged rotating icon keeps the index's carried frame, or the index's reason;
-    // a combat the index holds no icon for is undecided.
     for (kept, variant) in [(Some(Kept::Frame(1)), 1), (Some(Kept::Fresh), 0), (None, 0)] {
         assert_eq!(
             decide(true, Engaged::No, unknown, kept),
@@ -370,7 +338,6 @@ fn a_direct_icon_bound_elsewhere_rotates_and_a_spillover_does_not() {
     }
 }
 
-/// The size counts engaged entries of every class in the combat province's vector.
 #[test]
 fn the_progress_size_counts_engaged_land_and_naval_entries_alike() {
     let row = NavalProvinceCombatRow {
@@ -382,7 +349,6 @@ fn the_progress_size_counts_engaged_land_and_naval_entries_alike() {
             NavalProvinceCombatRow::BORDER_WAR,
         ],
     };
-    // The naval flags answer the naval entry, the land flags the land and border-war ones.
     let flags = |naval: Engaged, land: Engaged, border: Engaged| CombatFlags {
         naval: BTreeMap::from([(1, naval)]),
         land: BTreeMap::from([(2, land), (3, border)]),
@@ -390,21 +356,17 @@ fn the_progress_size_counts_engaged_land_and_naval_entries_alike() {
     };
     use Engaged::*;
     let size = |flags: CombatFlags| two_engaged(&flags, 10, Some(&row), true).ok();
-    // An engaged land combat beside the naval one takes the small widget.
     assert_eq!(size(flags(Yes, Yes, No)), Some(true));
     assert_eq!(size(flags(Yes, No, No)), Some(false));
     assert_eq!(size(flags(No, Yes, Yes)), Some(true));
-    // An undecided entry decides nothing once two are engaged, and matters otherwise.
     assert_eq!(size(flags(Yes, Yes, Unknown)), Some(true));
     let ambiguous = Ambiguous(Ambiguity::Scope);
     assert_eq!(size(flags(Yes, ambiguous, No)), None);
     assert_eq!(size(flags(No, Unknown, No)), Some(false));
-    // A combat the flags do not hold is unknown, and says which vector.
     assert_eq!(
         two_engaged(&CombatFlags::default(), 10, Some(&row), true),
         Err("an engaged flag in province 10's combat vector is undecided".to_owned())
     );
-    // An absent row is an empty vector only in a complete table.
     let all = flags(Yes, Yes, Yes);
     assert_eq!(two_engaged(&all, 10, None, true), Ok(false));
     assert!(
@@ -413,11 +375,6 @@ fn the_progress_size_counts_engaged_land_and_naval_entries_alike() {
     );
 }
 
-/// One hour at unit scale: `ships` ships two to a task force (none with an attached HQ, so
-/// every HQ frame walks its whole side), `divisions` divisions, and `combats` naval combats of
-/// four ships a side in sea provinces, each with a transfer of two divisions standing in
-/// other sea provinces and a retained result the viewer (1) fought on side 0. With `combats`
-/// 0 the hour holds no naval combat.
 fn scale_frame(ships: u64, divisions: u64, combats: u64) -> DecodedFrame {
     use replay_data::{
         rows::DivisionRow, rows::NavalCombatRow, rows::NavalCombatTransferRow,
@@ -572,7 +529,6 @@ fn scale_frame(ships: u64, divisions: u64, combats: u64) -> DecodedFrame {
     frame
 }
 
-/// Every combat engaged, every province a sea.
 fn scale_flags(frame: &DecodedFrame) -> CombatFlags {
     CombatFlags {
         naval: rows::<tables::NavalCombats>(frame)
@@ -585,7 +541,6 @@ fn scale_flags(frame: &DecodedFrame) -> CombatFlags {
     }
 }
 
-/// Flags the engaged index answered (no load-rebuilt limitation).
 fn indexed() -> CombatFlags {
     CombatFlags {
         land_provenance: Provenance::Indexed,
@@ -598,15 +553,10 @@ fn scale_kind(_: u32) -> Option<ProvinceKind> {
     Some(ProvinceKind::Sea)
 }
 
-/// Every province anchored.
 fn scale_anchor(province: u32) -> Option<[f32; 3]> {
     Some([province as f32, 0.0, 0.0])
 }
 
-/// 20,000 ships in 10,000 task forces beside 50,000 divisions with 1,500 naval combats, and
-/// twice all of it: every decision no camera moves is made once for the hour, keying only
-/// the units the combats name, and gives what the whole censuses give; a camera's rebuild
-/// only looks the decisions up. An hour without naval combat decides nothing.
 #[test]
 fn unit_scale_hours_decide_the_naval_icons_once() {
     use replay_data::{rows::TableRows, rows::TaskForceCounterInputRow};
@@ -619,7 +569,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
     };
     for (ships, divisions, combats) in [(20_000, 50_000, 1_500), (40_000, 100_000, 3_000)] {
         let mut frame = scale_frame(ships, divisions, combats);
-        // The viewer's task force 0 (ship 0, combat 1's side 0) carries a naval HQ.
         *frame.tables[replay_data::rows::TableId::TaskForceCounterInputs.index()] =
             replay_frame::frame::TableView::Complete(TableRows::TaskForceCounterInputs(
                 (0..ships / 2)
@@ -643,8 +592,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
         .unwrap();
         let decided = started.elapsed();
         let placed = hour.combats.as_ref().unwrap();
-        // Each combat's direct icon and its two transferred divisions' spillovers, all
-        // decided.
         let icons: Vec<&Icon> = placed
             .icons
             .iter()
@@ -658,7 +605,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
             "combat 1's three icons"
         );
         assert!(icons.iter().all(|icon| icon.hq == Ok(icon.combat == 1)));
-        // The whole-census maps give the same frames.
         let members = rows::<tables::NavalCombatShips>(&frame).unwrap().rows();
         let task_forces = rows::<tables::TaskForces>(&frame).unwrap().rows();
         let ship_forces: BTreeMap<u64, u64> = rows::<tables::Ships>(&frame)
@@ -682,7 +628,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
             by_combat.entry(member.combat).or_default().push(member);
         }
         let details = rows::<tables::NavalCombatDetails>(&frame).unwrap().rows();
-        // As the draw joins them: the details row of the combat the icon names, in the hour drawn.
         let details_of: BTreeMap<u64, &NavalCombatDetailsRow> = details.iter().map(|row| (row.combat, row)).collect();
         for icon in &icons {
             let whole = hq_frame(
@@ -700,7 +645,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
             let facts: Vec<ResultFacts> = visible.iter().map(|id| hour.results.facts[id]).collect();
             matches!(result_presentation(&facts, visible.len()), Ok((_, 1)))
         }));
-        // A camera's rebuild with every icon on screen: its lookups alone.
         let started = Instant::now();
         let mut framed = 0;
         for icon in &icons {
@@ -714,7 +658,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
             }
         }
         let rebuild = started.elapsed();
-        // Combat 1's direct icon; its two spillovers do not rotate.
         assert_eq!(framed, 1);
         println!(
             "{ships} ships, {} task forces, {divisions} divisions, {combats} naval combats: \
@@ -724,8 +667,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
             icons.len(),
             rebuild.as_secs_f64() * 1e3
         );
-        // Without a naval combat nothing is decided; a vector naming a combat the census
-        // lacks is still counted.
         let mut quiet = scale_frame(ships, divisions, 0);
         let started = Instant::now();
         let hour = NavalMarkerTables::read(
@@ -780,12 +721,6 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
     }
 }
 
-/// Main's naval pass named every icon it omitted or left undecided by cause and combat; this
-/// pass's producer does too, from the hour's own tables: a province without its Standstill
-/// anchor, a combat whose details row is missing, a census table the hour does not hold
-/// whole, an undecided engaged flag, a province naming a combat the census lacks, and a
-/// combat window that does not resolve. Each reaches the combat gap lines the window, the map details
-/// and the dump print, and each omitted icon is counted.
 #[test]
 fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
     use replay_data::rows::TableId;
@@ -797,7 +732,6 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
         owner: &owner,
     };
     let lines = |frame: &DecodedFrame, flags: &CombatFlags, refused: Option<&str>| {
-        // Province 1000, combat 1's own, has no anchor.
         let anchor = |province: u32| (province != 1_000).then_some([0.0; 3]);
         let hour =
             NavalMarkerTables::read(frame, viewer, flags, &BTreeMap::new(), &scale_kind, &anchor)
@@ -825,8 +759,6 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
             1
         )
     );
-    // The omitted icon keeps its identity for the presented frame: its owner, that it
-    // rotates, and that its place is undecided.
     let anchor = |province: u32| (province != 1_000).then_some([0.0; 3]);
     let hour = NavalMarkerTables::read(
         &frame,
@@ -857,8 +789,6 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
                 .to_owned(),
         }]
     );
-    // A combat window that does not resolve omits every placed icon: two direct and four
-    // spillover ones.
     assert_eq!(
         lines(&frame, &flags, Some(&unconstructed("x"))),
         (
@@ -870,9 +800,6 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
             6
         )
     );
-    // Combat 2's engaged flag is unknown. With a transfer that stops the spillover pass,
-    // which commits no spillover icon and leaves every sea stack's order unknown; without
-    // one, only its rotating direct icon is omitted.
     let unknown = CombatFlags {
         naval: BTreeMap::from([(1, Engaged::Yes)]),
         ..indexed()
@@ -904,7 +831,6 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
                 .to_owned()
         )
     );
-    // A truncated member census leaves every engaged rotating icon's variant undecided.
     let members = rows::<tables::NavalCombatShips>(&frame)
         .unwrap()
         .rows()
@@ -920,9 +846,6 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
                 .to_owned()
         )
     );
-    // Combat 2's details row is missing: its direct call is omitted, named by province, and
-    // an icon the view keeps for it is omitted with no place (S5 B): it rotates, the call
-    // being its own province's.
     let details = rows::<tables::NavalCombatDetails>(&frame).unwrap().rows()[..1].to_vec();
     *frame.tables[TableId::NavalCombatDetails.index()] =
         TableView::Complete(replay_data::rows::TableRows::NavalCombatDetails(details));
@@ -962,13 +885,8 @@ fn every_omitted_naval_icon_reaches_the_diagnostics_by_cause_and_combat() {
     assert_eq!(undecided, [(2, 1001, true, true)]);
 }
 
-/// Build from every result its icon holds: the sprite and frame change with
-/// which results those are, and a province's list is undecided while the result tables are
-/// not whole.
 #[test]
 fn the_result_presentation_follows_the_results_it_holds() {
-    // The viewer is admitted to both and fights on side 0; it won the first, a convoy
-    // battle, and lost the second, a plain one.
     let fact = |subtype, winning_side, losing_side| ResultFacts {
         lists: [Some(true), Some(false), Some(true)],
         subtype,
@@ -978,23 +896,18 @@ fn the_result_presentation_follows_the_results_it_holds() {
         ..Default::default()
     };
     let (won, lost) = (fact(true, 1, 2), fact(false, 2, 1));
-    // Both: one of two convoy battles is a plain majority, and mixed outcomes are 2.
     assert_eq!(
         result_presentation(&[won, lost], 2),
         Ok((NAVAL_RESULT_SPRITES[2], 2))
     );
-    // The first alone is a convoy battle won.
     assert_eq!(
         result_presentation(&[won], 1),
         Ok((NAVAL_RESULT_SPRITES[3], 1))
     );
-    // The second reference expired: one convoy battle out of two held references
-    // is not a majority because expired references remain in the denominator.
     assert_eq!(
         result_presentation(&[won], 2),
         Ok((NAVAL_RESULT_SPRITES[2], 1))
     );
-    // None resolving: every test holds vacuously.
     assert_eq!(
         result_presentation(&[], 1),
         Ok((NAVAL_RESULT_SPRITES[0], 2))
@@ -1008,9 +921,6 @@ fn the_result_presentation_follows_the_results_it_holds() {
     assert!(tables(Some("incomplete")).visible(10).is_err());
 }
 
-/// Main's intent (#113): a shown result the view cannot place is counted by reason, not
-/// dropped. A content without a usable result window omits every province whose visible
-/// results the hour holds or cannot decide; a hidden one is not counted.
 #[test]
 fn a_refused_result_window_counts_every_shown_icon() {
     let seen = convoy_result_for_test();

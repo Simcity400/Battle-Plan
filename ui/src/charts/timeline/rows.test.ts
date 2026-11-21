@@ -75,7 +75,6 @@ test('a positioned event mark never backfills unknown hours and is reachable by 
   assert.deepEqual(laneStops([event], 0, 200, null).map(stop => stop.hour), [10, 60]);
   assert.deepEqual(laneStops([event], 20, 50, null).map(stop => stop.hour), [20]);
   assert.deepEqual(laneStops([event], 0, 200, 59).map(stop => stop.hour), [10]);
-  // Existing start glyphs keep the same bar stop.
   assert.deepEqual(barGlyphHours({ ...span('leader'), glyph: '★' }, null), [10]);
 });
 

@@ -11,10 +11,8 @@ test('the store keeps only its most recently used hours and hands out only what 
   const store = new HourStore<string>(2);
   store.record(1, ['GER', 'ITA'], found([['GER', 'German Reich']]));
   store.record(2, ['GER'], found([['GER', 'Germany']]));
-  // A country whose reply lacked it is answered, with no value, and not asked again.
   assert.equal(store.answered(1, 'ITA'), true);
   assert.equal(store.get(1, 'ITA'), undefined);
-  // Using hour 1 makes hour 2 the oldest, so a third hour drops hour 2.
   store.touch([1]);
   store.record(3, ['GER'], found([['GER', 'Third Reich']]));
   assert.equal(store.size, 2);
@@ -26,14 +24,12 @@ test('the store keeps only its most recently used hours and hands out only what 
 });
 
 test('following playback with a tooltip open holds a bounded number of hours', () => {
-  // 500 reads with 32 partners each: without a bound this is 16,000 values.
   const store = new HourStore<string>(64);
   const tags = Array.from({ length: 32 }, (_, index) => `T${index}`);
   for (let hour = 0; hour < 500; hour++) store.record(hour, tags, new Map(tags.map(tag => [tag, `${tag}@${hour}`])));
   assert.equal(store.size, 64);
   assert.equal(store.get(499, 'T0'), 'T0@499');
   assert.equal(store.get(435, 'T0'), undefined);
-  // Only the current tooltip's values are handed out, however many are held.
   assert.equal(store.pick(tags.map(tag => ({ hour: 499, tag }))).size, 32);
 });
 
@@ -42,11 +38,9 @@ test('hours once wanted together stay held when fewer are wanted, the oldest dro
   const hours = Array.from({ length: 10 }, (_, hour) => hour);
   store.want(hours);
   for (const hour of hours) store.record(hour, ['GER'], found([['GER', `GER@${hour}`]]));
-  // A timeline whose playhead moves back wants its first hour alone, and keeps the rest.
   store.want([0]);
   assert.equal(store.size, 10);
   assert.deepEqual(planRequests(store, hours.map(hour => ({ hour, tag: 'GER' })), Infinity, 64), []);
-  // Beyond the ten hours wanted together, the least recently used unwanted hour goes.
   store.record(10, ['GER'], found([['GER', 'GER@10']]));
   assert.equal(store.size, 11);
   store.record(11, ['GER'], found([['GER', 'GER@11']]));
@@ -72,7 +66,6 @@ test('artwork list order loads the first rows before earlier dated entries witho
   store.record(30, ['Z'], found([['Z', 'visible title']]));
   assert.deepEqual(planRequests(store, wanted, Infinity, 2, 'wanted'),
     [[30, ['B', 'A']], [10, ['old completion']]]);
-  // Priority does not change which hours a bounded caller admits.
   assert.deepEqual(planRequests(store, wanted, 1, 2, 'wanted'), [[10, ['old completion']]]);
   const reversed = [...wanted].reverse();
   assert.equal(factsKey('track', wanted), factsKey('track', reversed));
@@ -80,8 +73,6 @@ test('artwork list order loads the first rows before earlier dated entries witho
 });
 
 test('wanting more hours than the cap keeps them all, so requests stop once each is answered', () => {
-  // As the hook runs: pin what is wanted, plan, record every reply at once, and
-  // render again with the same wanted list, until nothing is left to ask.
   const store = new HourStore<string>(64);
   const wanted = Array.from({ length: 100 }, (_, hour) => ({ hour, tag: 'GER' }));
   let requests = 0;
@@ -93,12 +84,9 @@ test('wanting more hours than the cap keeps them all, so requests stop once each
   }
   assert.equal(requests, 100);
   assert.equal(store.pick(wanted).size, 100);
-  // Other hours come and go around the wanted ones without dropping any of them; as many are
-  // kept as were once wanted together.
   for (let hour = 1000; hour < 1200; hour++) store.record(hour, ['ITA'], new Map([['ITA', 'x']]));
   assert.equal(planRequests(store, wanted, Infinity, 64).length, 0);
   assert.equal(store.size, 200);
-  // Once no longer wanted, the extra hours are dropped down to the hundred once wanted.
   store.want([]);
   assert.equal(store.size, 100);
 });
@@ -115,18 +103,14 @@ test('per-hour reads go around the shared product cache, so they never evict wid
   const spec: FactSpec<string> = { product: 'country-styles', perRequest: 64, params: (branchId, hour, tags) => ({ branchId, hour, tags }),
     extract: data => new Map(((data as { names: { tags: string[] } }).names.tags).map(tag => [tag, `${tag}!`])) };
   const seen: [number, number | null][] = [];
-  // Far more hours than the shared cache holds (128).
   const plan = Array.from({ length: 300 }, (_, hour) => [hour, ['GER']] as const);
   await readFacts(client, { sourceId: 's', revision: 'v', branchId: '1' }, spec, [...plan, [-1, ['GER']]], new AbortController().signal,
     (hour, _tags, values) => seen.push([hour, values ? values.size : null]));
   assert.equal(calls.get('country-styles'), 301);
-  // An error is a failed read, never an answered empty result.
   assert.deepEqual(seen.at(-1), [-1, null]);
   assert.deepEqual(seen[0], [0, 1]);
-  // The branch history is still cached: asking again makes no second round trip.
   await loadProduct(client, history, new AbortController().signal);
   assert.equal(calls.get('resource-balance'), 1);
-  // Nor are the per-hour replies cached: the same hour is read again.
   await readFacts(client, { sourceId: 's', revision: 'v', branchId: '1' }, spec, [[0, ['GER']]], new AbortController().signal, () => {});
   assert.equal(calls.get('country-styles'), 302);
 });

@@ -38,8 +38,6 @@ fn params() -> details::FactionDetailParams {
     details::FactionDetailParams { branch_id: "1".into(), faction: FACTION.to_string(), viewpoint: None }
 }
 
-/// The faction's own lists alone, each goal named once however often it is listed, its progress
-/// a live cell keyed by the goal's row; another faction's goals are never read as its.
 #[test]
 fn a_factions_goal_lists_name_each_goal_once_and_follow_progress_by_its_own_rows() {
     let frame = goal_frame(vec![
@@ -70,8 +68,6 @@ fn a_factions_goal_lists_name_each_goal_once_and_follow_progress_by_its_own_rows
     assert_eq!(live.values(&frame)[0], [CellValue::Number(25_000), CellValue::Number(50_000)]);
 }
 
-/// Lists whose ordinals skip are not known, never shown short; nor are lists of an hour whose
-/// status row is missing.
 #[test]
 fn goal_lists_that_skip_an_ordinal_or_lack_their_status_are_not_known() {
     let mut reply = details::blank(&params());
@@ -92,9 +88,6 @@ fn goal_lists_that_skip_an_ordinal_or_lack_their_status_are_not_known() {
     assert!(reply.goal_reason.unwrap().contains("writer not observed"));
 }
 
-/// Each contribution is its own row, a country listed twice kept twice, named by the hour's
-/// holder of its slot (country zero by its reserved naming), the total their sum; one whose
-/// country no link resolves is still listed, unnamed and said.
 #[test]
 fn manpower_contributions_are_each_occurrence_named_by_the_hours_holder_and_summed() {
     let mut frame = frame();
@@ -115,7 +108,6 @@ fn manpower_contributions_are_each_occurrence_named_by_the_hours_holder_and_summ
     let json = live.json(&values.into_iter().map(dashboard_follow::live::GroupState::Values).collect::<Vec<_>>());
     assert_eq!(json["rows"], serde_json::json!(["manpower:0", "manpower:1", "manpower:2", "manpower:3", details::FACTION_ROW]));
     assert!(json["kinds"].as_array().unwrap().iter().any(|kind| kind["op"] == "sum"), "the total is the sum of every occurrence");
-    // A skipped ordinal: the list is not known whole, so none is shown.
     set(&mut frame, TableId::FactionManpower, TableRows::FactionManpower(vec![row(0, 7, 1000), row(2, 7, 30)]));
     let mut reply = details::blank(&params());
     let cells = Cells::default();
@@ -124,8 +116,6 @@ fn manpower_contributions_are_each_occurrence_named_by_the_hours_holder_and_summ
     assert!(cells.finish().is_empty());
 }
 
-/// A selection held on joins its runs; a break of the timeline, or hours it was not shown,
-/// start a segment, and a changed selection a run of its own.
 #[test]
 fn a_lane_joins_a_held_selection_and_starts_a_segment_at_a_break_or_a_gap() {
     let mut lane = history::Lane::default();
@@ -135,9 +125,6 @@ fn a_lane_joins_a_held_selection_and_starts_a_segment_at_a_break_or_a_gap() {
     assert_eq!(lane.runs, [(10, 29, 5, true), (30, 39, 6, false), (40, 49, 6, true), (60, 69, 6, true)]);
 }
 
-/// A goal's completion effect is described in the scope of the faction's leader (its member at
-/// order zero) at the hour; a goal that authors none has no text and no reason; a faction with
-/// no leader then says why; a goal the content lacks is refused by name.
 #[test]
 fn a_goals_completion_reward_is_described_for_the_factions_leader_and_said_missing_by_name() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();

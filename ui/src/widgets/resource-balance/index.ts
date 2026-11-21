@@ -6,7 +6,6 @@ import { useProduct } from '../../dashboard/products';
 import ResourceBalanceWidget from './ResourceBalanceWidget';
 import { RESOURCE_BALANCE, resourceName, validateResourceBalance } from './resourceData';
 
-/** The recording's resources at the branch's last hour, one choice per token. */
 function useResourceChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0];

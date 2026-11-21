@@ -1,21 +1,13 @@
-//! Owned wargoals, retaining the diplomacy roster's native daily-stale expiry.
-//!
-//! Creation, script removal, consumption, reset and daily expiry mutate the
-//! roster. Loading restores it. This reader computes no expiry.
 
 use engine_sites::Rva;
 use crate::{
     Memory, ccountry, cdiplomacy_status, cpdx_array, cpdx_array::Array, cstate, read, walk::Outcome,
 };
 
-/// CWarGoal primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_9250);
-/// Recipient raw country reference and type pointer in the embedded goal data.
 pub const RECIPIENT: usize = 0x3c;
 pub const GOAL_TYPE: usize = 0x40;
-/// Declared definition token used for lookup and serialization.
 pub const TYPE_TOKEN: usize = 0x08;
-/// Claimed-state pointer array; timed creation can retain null for an invalid state ID.
 pub const STATES: usize = 0x48;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +44,6 @@ fn field<T: crate::memory::Raw>(
         .ok_or("owned wargoal field unreadable or address overflow")
 }
 
-/// Rows and claimed states grow from the live roster and claimed-state headers;
-/// no incomplete goal is published.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

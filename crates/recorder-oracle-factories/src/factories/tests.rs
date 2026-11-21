@@ -2,7 +2,6 @@ use super::*;
 use replay_data::{rows::CountryFactoriesRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::Metrics, frame::TableView};
 
-/// GER controls state 1 and occupies ITA's state 2; ITA owns state 3.
 fn save(ger: &str, ita: &str) -> Save {
     installed_content_save::parse(
         format!(
@@ -39,7 +38,6 @@ fn row(country: u32, levels: [i32; 3]) -> CountryFactoriesRow {
         military_levels: levels[0],
         naval_levels: levels[1],
         civilian_levels: levels[2],
-        // Totals are not compared.
         civilian_total_raw: -1,
         consumer_goods: -1,
         ..Default::default()
@@ -263,7 +261,6 @@ fn controlled_and_offsite_levels_compare_per_group() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let saved = save(CLEAN, CLEAN);
-    // GER: state 1 and occupied state 2 plus two offsite arms levels.
     let rows = vec![row(5, [1 + 2, 3, 5 + 2]), row(6, [1, 0, 1])];
     let report = run(&saved, &content(""), rows.clone()).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -286,7 +283,6 @@ fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
         "refresh=0 production={ dirty=yes }",
     ] {
         let report = run(&save(ger, CLEAN), &content(""), rows()).unwrap();
-        // Only ITA is compared, and its wrong levels are a difference.
         assert_eq!(report.compared_tables["CountryFactories"], 1, "{ger}");
         assert_eq!(report.differences.len(), 2, "{ger}");
         assert!(
@@ -296,7 +292,6 @@ fn pending_recalculations_and_ambiguous_types_are_listed_not_compared() {
                 .any(|reason| reason.contains("recalculation pending"))
         );
     }
-    // `both` declared again with other flags reaches only ITA.
     let report = run(
         &save(CLEAN, CLEAN),
         &content("both={general_production=1}"),

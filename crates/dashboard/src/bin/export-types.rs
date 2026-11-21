@@ -1,7 +1,6 @@
 use std::{env, fs, io, path::PathBuf};
 
 fn main() -> io::Result<()> {
-    // A Boat-built exporter carries the VM's source path, so `--out` names this worktree's contract file.
     let mut path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/generated/dashboard.ts");
     let mut check = false;

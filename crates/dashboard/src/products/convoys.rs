@@ -1,13 +1,3 @@
-//! Convoy health (family `convoys`): one country's convoy efficiency in each sea region, the trade
-//! efficiency of each resource deal it imports, and the lend-lease it receives by sea, as runs of
-//! the recorded cells over the hours asked.
-//!
-//! - Regional efficiency is keyed by country above region: the holder's key range.
-//! - Deals and convoy clients are keyed by handle with their country in a column. Each run's index
-//!   ([`run_convoys`], read once per run) says which handles named which country over which
-//!   hours; a reply reads only those keys' history, cut to those hours.
-//! - A region or deal not read is not shown: never 100% and never zero. Lend-lease clients record
-//!   their route's bad flag and convoys, but no numeric efficiency: that is never invented.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -33,9 +23,7 @@ use std::{
 use ts_rs::TS;
 
 pub const KEY: &str = "convoy-health";
-/// Fixed-point denominator of every efficiency.
 const SCALE: u32 = 100_000;
-/// The convoy client category of a lend-lease shipment.
 const LEND_LEASE: i64 = 4;
 
 const REGION_EFFICIENCY: usize = 0;
@@ -53,10 +41,8 @@ const CLIENT_BAD: usize = 6;
 const CLIENT_ASSIGNED: usize = 7;
 const CLIENT_REQUIRED: usize = 8;
 
-/// The rows one run names one country in: by country, each key with the hours it named it.
 pub type Owned = HashMap<u32, Vec<(u128, i32, i32)>>;
 
-/// One run's deals by importer and by exporter, and lend-lease convoy clients by receiver.
 #[derive(Default)]
 pub struct RunConvoys {
     pub(crate) deals: Owned,
@@ -65,7 +51,6 @@ pub struct RunConvoys {
 }
 
 impl RunConvoys {
-    /// The deals naming raw country `country` as importer or exporter at `hour`, ascending, each once.
     pub(crate) fn deals_at(&self, country: u32, hour: i32) -> Vec<u128> {
         let mut out: Vec<u128> = [&self.deals, &self.exports]
             .into_iter()
@@ -79,12 +64,10 @@ impl RunConvoys {
     }
 }
 
-/// A lend-lease client's receiver; none for any other category.
 fn lease_receiver(cells: &dyn Cells, slot: u32) -> Option<i64> {
     (cells.number(CLIENT_CATEGORY, slot)? == LEND_LEASE).then(|| cells.number(CLIENT_OTHER, slot)).flatten()
 }
 
-/// Runs of a country column by key, grouped by the country they name.
 pub(crate) fn owned(runs: impl IntoIterator<Item = (u128, read::Runs)>) -> Owned {
     let mut out = Owned::new();
     for (key, runs) in runs {
@@ -100,8 +83,6 @@ pub(crate) fn owned(runs: impl IntoIterator<Item = (u128, read::Runs)>) -> Owned
     out
 }
 
-/// Run `run`'s deals by importer and lend-lease clients by receiver, from one walk of each
-/// table's country column over the whole run.
 pub fn run_convoys(recording: &Recording, run: u32) -> io::Result<RunConvoys> {
     let held = recording.run(run)?;
     let (first, last) = (held.first_hour, held.first_hour + held.ordinals as i32 - 1);
@@ -128,16 +109,15 @@ pub struct ConvoyHealth;
 pub struct ConvoyHealthParams {
     pub branch_id: String,
     pub view: ConvoyView,
-    /// The one country shown.
+    #[doc = " The one country shown."]
     pub country: Country,
-    /// The hours read; the whole timeline when not given.
+    #[doc = " The hours read; the whole timeline when not given."]
     #[serde(default)]
     pub from: Option<i32>,
     #[serde(default)]
     pub to: Option<i32>,
 }
 
-/// A country named in a row over consecutive hours; none where no tag holds it then.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -152,10 +132,10 @@ pub struct ConvoyCountry {
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyRegion {
     pub region: u32,
-    /// The region's in-game name; null with why where the content does not name it.
+    #[doc = " The region's in-game name; null with why where the content does not name it."]
     pub name: Option<String>,
     pub missing: Option<String>,
-    /// Fixed5 efficiency: first hour, last hour, value.
+    #[doc = " Fixed5 efficiency: first hour, last hour, value."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub efficiency: Vec<(i32, i32, i64)>,
 }
@@ -164,19 +144,19 @@ pub struct ConvoyRegion {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyDeal {
-    /// The exchange's native handle, hexadecimal.
+    #[doc = " The exchange's native handle, hexadecimal."]
     pub id: String,
     pub exporter: Vec<ConvoyCountry>,
-    /// The resource's native index.
+    #[doc = " The resource's native index."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub resource: Vec<(i32, i32, i64)>,
-    /// The fixed5 efficiency product, truncated toward zero as the game compares it.
+    #[doc = " The fixed5 efficiency product, truncated toward zero as the game compares it."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub efficiency: Vec<(i32, i32, i64)>,
-    /// Its two fixed5 factors.
+    #[doc = " Its two fixed5 factors."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, number]>>"))]
     pub factors: Vec<Vec<(i32, i32, i64)>>,
-    /// Convoys assigned and required.
+    #[doc = " Convoys assigned and required."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, number]>>"))]
     pub convoys: Vec<Vec<(i32, i32, i64)>>,
 }
@@ -185,13 +165,13 @@ pub struct ConvoyDeal {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyLease {
-    /// The client's native handle.
+    #[doc = " The client's native handle."]
     pub handle: String,
     pub giver: Vec<ConvoyCountry>,
-    /// 1 while its route draws as bad.
+    #[doc = " 1 while its route draws as bad."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub bad: Vec<(i32, i32, i64)>,
-    /// Convoys assigned and required.
+    #[doc = " Convoys assigned and required."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, number]>>"))]
     pub convoys: Vec<Vec<(i32, i32, i64)>>,
 }
@@ -214,13 +194,13 @@ pub struct ConvoyHealthReply {
     pub tag: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Fixed-point denominator of every efficiency.
+    #[doc = " Fixed-point denominator of every efficiency."]
     pub scale: u32,
-    /// Hours each table the view reads was read and available (regional efficiency; resource
-    /// deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,
-    /// not absent; an hour read but refused holds no rows and is not known.
+    #[doc = " Hours each table the view reads was read and available (regional efficiency; resource"]
+    #[doc = " deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,"]
+    #[doc = " not absent; an hour read but refused holds no rows and is not known."]
     pub known: Vec<Vec<HourSpan>>,
-    /// Hours the tag had no country, or the recording holds none: nothing is known of it there.
+    #[doc = " Hours the tag had no country, or the recording holds none: nothing is known of it there."]
     pub unheld: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
     pub deals: Vec<ConvoyDeal>,
@@ -231,7 +211,6 @@ pub struct ConvoyHealthReply {
 
 dashboard_base::reply_warnings!(ConvoyHealthReply);
 
-/// A number cell's runs from a history column, cut to `spans` (sorted, not overlapping).
 pub(crate) fn numbers(runs: &[(i32, i32, Option<Cell>)], spans: &[(i32, i32)]) -> Vec<(i32, i32, i64)> {
     let mut out = Vec::new();
     for &(first, last, cell) in runs {
@@ -253,8 +232,6 @@ fn push(out: &mut Vec<(i32, i32, i64)>, run: (i32, i32, i64)) {
     }
 }
 
-/// One key's steps as runs of one value made from its cells; none where the row is not shown or
-/// `value` gives none.
 pub(crate) fn steps_runs(steps: &[lanes::Step], to: i32, value: impl Fn(&[Cell]) -> Option<i64>) -> Vec<(i32, i32, Option<Cell>)> {
     let mut runs: Vec<(i32, i32, Option<Cell>)> = Vec::new();
     for (index, step) in steps.iter().enumerate() {
@@ -268,12 +245,10 @@ pub(crate) fn steps_runs(steps: &[lanes::Step], to: i32, value: impl Fn(&[Cell])
     runs
 }
 
-/// The efficiency product of two fixed5 factors, widened and truncated toward zero.
 pub(crate) fn product(a: i64, b: i64) -> Option<i64> {
     i64::try_from(i128::from(a) * i128::from(b) / i128::from(SCALE)).ok()
 }
 
-/// What a history's column `column` holds at a step's cells.
 fn at(history: &History, column: usize) -> Option<usize> {
     history.columns.binary_search(&column).ok()
 }
@@ -285,7 +260,6 @@ fn number(cells: &[Cell], at: Option<usize>) -> Option<i64> {
     }
 }
 
-/// Country cells' runs named by tag at each hour.
 fn countries(runs: &[(i32, i32, i64)], names: &Names, links: &RunLinks, out: &mut Vec<ConvoyCountry>) {
     for &(first, last, raw) in runs {
         let Ok(raw) = u32::try_from(raw) else { continue };
@@ -299,8 +273,6 @@ fn countries(runs: &[(i32, i32, i64)], names: &Names, links: &RunLinks, out: &mu
     }
 }
 
-/// Rows of `owned`'s `country` meeting `first..=last`: each key with the hours it named the
-/// country there, ascending by key.
 pub(crate) fn rows_of(owned: &Owned, country: u32, first: i32, last: i32) -> BTreeMap<u128, Vec<(i32, i32)>> {
     let mut out: BTreeMap<u128, Vec<(i32, i32)>> = BTreeMap::new();
     for &(key, a, b) in owned.get(&country).map(Vec::as_slice).unwrap_or_default() {
@@ -312,7 +284,6 @@ pub(crate) fn rows_of(owned: &Owned, country: u32, first: i32, last: i32) -> BTr
     out
 }
 
-/// What the reply gathers per row over every stretch.
 #[derive(Default)]
 struct Gathered {
     regions: BTreeMap<u32, Vec<(i32, i32, i64)>>,
@@ -337,7 +308,6 @@ fn lease(key: u128) -> ConvoyLease {
     ConvoyLease { handle: (key as u32).to_string(), giver: Vec::new(), bad: Vec::new(), convoys: vec![Vec::new(), Vec::new()] }
 }
 
-/// Adds the deals of `history` (keys of `rows`, each cut to its hours).
 fn gather_deals(gathered: &mut Gathered, history: &History, rows: &BTreeMap<u128, Vec<(i32, i32)>>, names: &Names, links: &RunLinks) {
     let (exporter, resource, a, b, assigned, required) =
         (at(history, DEAL_EXPORTER), at(history, DEAL_RESOURCE), at(history, DEAL_FACTOR_A), at(history, DEAL_FACTOR_B), at(history, DEAL_ASSIGNED), at(history, DEAL_REQUIRED));
@@ -357,7 +327,6 @@ fn gather_deals(gathered: &mut Gathered, history: &History, rows: &BTreeMap<u128
     }
 }
 
-/// Adds the lend-lease clients of `history` (keys of `rows`, each cut to its hours).
 fn gather_leases(gathered: &mut Gathered, history: &History, rows: &BTreeMap<u128, Vec<(i32, i32)>>, names: &Names, links: &RunLinks) {
     let (owner, bad, assigned, required) = (at(history, CLIENT_OWNER), at(history, CLIENT_BAD), at(history, CLIENT_ASSIGNED), at(history, CLIENT_REQUIRED));
     for (key, steps) in &history.keys {
@@ -375,7 +344,6 @@ fn spans(runs: Vec<(i32, i32)>) -> impl Iterator<Item = HourSpan> {
     runs.into_iter().map(|(first_hour, last_hour)| HourSpan { first_hour, last_hour })
 }
 
-/// The hours of `first..=last` not in `held` (sorted, not overlapping).
 pub(crate) fn outside(held: &[(i32, i32)], first: i32, last: i32) -> Vec<HourSpan> {
     let mut out = Vec::new();
     let mut at = i64::from(first);
@@ -399,8 +367,6 @@ fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], k
     dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, first, last))
 }
 
-/// Every row of `params`' view over the hours asked, each stretch of the timeline read from its
-/// run, the tag's holder resolved per stretch by the one identity rule.
 fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from, to): (i32, i32), cancelled: &AtomicBool) -> io::Result<(Gathered, Vec<(i32, i32)>)> {
     let recording = query.replay.recording();
     let names = Names::new(&query.holders);
@@ -460,12 +426,10 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
     Ok((gathered, held))
 }
 
-/// The first and last hour any of `rows` names.
 fn bounds(rows: &BTreeMap<u128, Vec<(i32, i32)>>) -> (i32, i32) {
     rows.values().flatten().fold((i32::MAX, i32::MIN), |(a, b), &(first, last)| (a.min(first), b.max(last)))
 }
 
-/// Strategic regions' in-game names through the recorded content, or why each is unnamed.
 fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>, warnings: &mut Vec<String>) -> BTreeMap<u32, Result<String, String>> {
     let named = context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|error| format!("Sea region names unavailable: {error}")).and_then(|cat| {
         let content = dashboard_base::content::strategic_regions(&cat.content.layers).map_err(|error| format!("Sea region names unavailable: {error}"))?;
@@ -481,8 +445,6 @@ fn region_names(source: &Source, context: &LoadContext, regions: &BTreeSet<u32>,
     }
 }
 
-/// The recorded resources `ids` names (every one when none), with their tokens, at the timeline's
-/// last hour, by native index.
 pub(crate) fn resource_tokens(query: &Query<'_>, ids: Option<&BTreeSet<u32>>, warnings: &mut Vec<String>) -> io::Result<Vec<(u32, String)>> {
     let Some(stretch) = query.timeline.stretches.last() else { return Ok(Vec::new()) };
     let recording = query.replay.recording();

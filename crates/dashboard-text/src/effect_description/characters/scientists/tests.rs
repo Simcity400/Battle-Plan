@@ -110,7 +110,6 @@ fn caller() -> EventScopes {
     ])
 }
 
-// Specialisation experience uses the selected country's name.
 #[test]
 fn add_scientist_xp() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -125,7 +124,6 @@ fn add_scientist_xp() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Specialisation levels omit the character name.
 #[test]
 fn add_scientist_level() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -140,7 +138,6 @@ fn add_scientist_level() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Injury text uses a fresh character scope.
 #[test]
 fn injure_scientist_for_days() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -155,7 +152,6 @@ fn injure_scientist_for_days() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Trait order is preserved; starting skills are execution-only.
 #[test]
 fn generate_scientist_character() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -166,7 +162,6 @@ fn generate_scientist_character() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// A scalar trait selects its name and modifier body.
 #[test]
 fn add_scientist_trait() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -185,8 +180,6 @@ fn add_scientist_trait() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Use the full 32-bit category mask and caller scope;
-// indent every nonempty resulting line by two spaces.
 #[test]
 fn scientist_trait_uses_full_category_mask_and_caller_scope() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -240,7 +233,6 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
     });
 }
 
-// Removing the role describes the selected character.
 #[test]
 fn remove_scientist_role() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -255,7 +247,6 @@ fn remove_scientist_role() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
-// Role creation accepts authored traits and starting skills.
 #[test]
 fn add_scientist_role() {
     engine_executable::executable_tables::initialize_for_tests()

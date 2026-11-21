@@ -1,4 +1,3 @@
-//! Selected viewer/target estimates derived from game state, never UI history.
 use super::{
     intel_details::{IntelDetail, detail, diplomacy_unlock, v},
     intel_explanations,
@@ -10,7 +9,6 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-/// Inputs reached by the fuel getter, all taken from one supplying frame.
 pub(super) const FUEL_TABLES: &[TableId] = &[
     TableId::CountryLinks,
     TableId::CountryIntel,
@@ -28,7 +26,6 @@ struct Metric {
     minimum: &'static str,
     maximum: &'static str,
     spread: &'static str,
-    /// Semantic integer salt; categories add their own native discriminator.
     salt: i32,
 }
 const METRICS: &[Metric] = &[
@@ -274,8 +271,6 @@ fn same(frame: &DecodedFrame, raw: u32, target: u32) -> Result<bool, String> {
     Ok(raw == target || slot(frame, raw)? == slot(frame, target)?)
 }
 fn lanes(frame: &DecodedFrame, viewer: u32, target: u32) -> Result<[i64; 4], String> {
-    // The native getter returns four zeros for raw target zero and indices
-    // outside the retained extent. Complete sparse membership preserves zeros.
     if target == 0 {
         return Ok([0; 4]);
     }
@@ -395,7 +390,6 @@ fn truth(
             Ok(count(rows!(Ships).iter().filter(|r|held.contains(&r.task_force)).count()))
         }
         "air_wings"=>{
-            // The air ledger getter sums planes across the country's pools.
             let mut total=0_i32;
             for row in rows!(AirWings) {if matching(row.owner)? {total=total.wrapping_add(row.planes);}}
             Ok(quantity(total))
@@ -415,9 +409,6 @@ fn truth(
             Ok(quantity(total))
         }
         "fuel"=>{
-            // This frame is the fact's supplying hour, including its intel,
-            // unlock context and seed. Never mix a retained quantity with
-            // operands from a later hour.
             if frame.tables[TableId::CountryFuel.index()].sampled_at()!=Some(frame.hour) {
                 return Err("country fuel quantity not recorded at its supplying hour".into());
             }
@@ -437,8 +428,6 @@ fn truth(
             Ok(quantity(match key {"civilian_industry"=>civilian,"military_industry"=>military,"naval_industry"=>naval,_=>civilian.wrapping_add(military).wrapping_add(naval)}))
         }
         "trucks"=>{
-            // This native cache is recorded on a daily owner slice. Its
-            // retained value is exact only at that owner's supplying hour.
             let read=replay_data::sliced::read_hour(rows!(SliceReads),TableId::TrainInventory,target_slot);
             if read!=Some(frame.hour) {return Err("train inventory allocated-truck cache not freshly recorded for this hour".into());}
             let row=rows!(TrainInventory).iter().find(|r|r.country==target_slot).ok_or("train inventory lacks intel estimate target")?;
@@ -712,8 +701,6 @@ mod tests {
         .with_sampled_at(Some(hour));
         let mut current = supplied.clone();
         current.hour += 24 * 31 + 1;
-        // All other current-hour operands deliberately differ or are absent.
-        // A supplying-hour query must not use them, including the month/seed.
         *current.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
             reason: "current aliases are unrelated".into(),
         };
@@ -749,7 +736,6 @@ mod tests {
             if maximum == "0.75" {
                 assert_eq!(retained.values[0].value, "1000 \u{2013} 1000");
             }
-            // Current-hour aliases cannot fill a missing supplying operand.
             let mut missing = supplied.clone();
             *missing.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
                 reason: "supplying aliases missing".into(),
@@ -782,9 +768,6 @@ mod tests {
     #[test]
     fn range_input_cadences_keep_daily_and_sliced_freshness_explicit() {
         use replay_data::cadence::{Cadence, cadence};
-        // All other mutable truth/context inputs are acquired hourly (some
-        // with writer-certified carry). Content tokens are append-only, and
-        // native intel's daily cache is unchanged until the next daily pass.
         for table in [
             TableId::Countries,
             TableId::CountryLinks,

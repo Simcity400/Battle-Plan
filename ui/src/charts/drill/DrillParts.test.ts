@@ -59,7 +59,7 @@ test('negative and zero exact rows activate native IDs through keyboard-focusabl
   assert.deepEqual(buttons.map(button => button.props['aria-label']), ['Correction, -2', 'Zero, 0']);
   for (const button of buttons) {
     assert.equal(button.props.type, 'button');
-    assert.equal(button.props.tabIndex, 0); // native Enter/Space activation; arrow focus finds this button
+    assert.equal(button.props.tabIndex, 0);
     (button.props.onClick as () => void)();
   }
   assert.deepEqual(picked, ['negative', 'zero']);

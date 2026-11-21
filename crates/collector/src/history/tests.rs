@@ -31,7 +31,6 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
             },
         }));
         let mut encoder = FrameEncoder::new();
-        // A branch starts with a keyframe, which cannot retain truncated rows.
         for hour in [first - 1, first, first + 1] {
             let country = EventFeedCountry {
                 reference: 5000,
@@ -128,7 +127,6 @@ fn an_older_layout_recording_is_left_as_it_is_and_the_campaign_records_anew() {
     let session = session();
     let replay =
         Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
-    // A new process session can attach without needing an old session's hour to resume.
     let session = SessionStart { id: 2, ..session };
     let path = root.join(format!("{id}.battleplan"));
     let older = [b"H4RP".as_slice(), &94_u16.to_le_bytes(), id.as_bytes()].concat();
@@ -143,7 +141,6 @@ fn an_older_layout_recording_is_left_as_it_is_and_the_campaign_records_anew() {
     fs::write(&path, replay.bytes()).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     assert!(prepared.take(id, &session).unwrap().1.is_some());
-    // Left out, a campaign records without its history, even one unreadable after its header.
     drop(prepared);
     let header = &replay.bytes()[..14 + id.len()];
     fs::write(&path, [header, b"not a recording"].concat()).unwrap();
@@ -165,7 +162,6 @@ fn a_campaigns_recording_is_found_by_its_header_whatever_its_name() {
     let replay =
         Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
     let session = SessionStart { id: 2, ..session };
-    // A recording of the campaign appearing after preparation, under any name, is refused.
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     fs::write(root.join("Germany 1936.battleplan"), replay.bytes()).unwrap();
     let error = prepared.take(id, &session).err().unwrap().to_string();
@@ -173,18 +169,15 @@ fn a_campaigns_recording_is_found_by_its_header_whatever_its_name() {
         error.contains("appeared after history preparation"),
         "{error}"
     );
-    // Prepared by its header, it is the campaign's history, held while recording.
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     let (_, lease) = prepared.take(id, &session).unwrap();
     assert!(lease.is_some());
     drop((lease, prepared));
-    // With a copy beside it, neither is guessed to be the campaign's.
     fs::write(root.join("Germany 1936 - Copy.battleplan"), replay.bytes()).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     let error = prepared.take(id, &session).err().unwrap().to_string();
     assert!(error.contains("more than one recording"), "{error}");
     drop(prepared);
-    // A recording that cannot be read may be this campaign's: preparation fails.
     fs::remove_file(root.join("Germany 1936 - Copy.battleplan")).unwrap();
     fs::write(root.join("Damaged.battleplan"), b"junk").unwrap();
     assert!(PreparedCampaigns::load(&root, &session, |_| Ok(())).is_err());
@@ -215,7 +208,6 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
     let unsaved = replay::publication::unsaved_path(&root, id);
     fs::create_dir_all(unsaved.parent().unwrap()).unwrap();
     fs::write(&unsaved, replay.bytes()).unwrap();
-    // Its own unsaved recording is the history, the same file a save finds.
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     assert_eq!(prepared.history_path(id).unwrap(), Some(unsaved.clone()));
     assert_eq!(
@@ -225,7 +217,6 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
     let (_, lease) = prepared.take(id, &session).unwrap();
     assert!(lease.is_some());
     drop((lease, prepared));
-    // With a second one beside it, neither unsaved recording nor the saved one is guessed to be it.
     let copy = unsaved.with_file_name("Copy.battleplan");
     fs::write(&copy, replay.bytes()).unwrap();
     let refused = |campaign: &str| {
@@ -236,17 +227,12 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
         assert!(recording_files::unsaved_recording(&root, campaign.as_bytes()).is_err());
     };
     refused(id);
-    // Alone but not named for its campaign, it is not the one a save finds.
     fs::remove_file(&unsaved).unwrap();
     refused(id);
-    // Named for the campaign but another's by header: refused for both.
     fs::remove_file(&copy).unwrap();
     fs::write(&unsaved, recording(other).bytes()).unwrap();
     refused(id);
     refused(other);
-    // Another campaign's file short of its first revision fails nothing else: this campaign
-    // prepares from its saved recording, and that one is refused by its file, never taken as
-    // having no history.
     fs::remove_file(&unsaved).unwrap();
     let fresh = replay::publication::unsaved_path(&root, other);
     let bytes = recording(other).bytes().to_vec();
@@ -354,7 +340,6 @@ fn completion_sequence_seed_keeps_finalized_keys_across_reattach_and_branches() 
         ],
     )
     .unwrap();
-    // The most recent branch's smaller key cannot restart the shared sequence.
     assert_eq!(completion_sequence(&replay).unwrap(), 99);
     let reopened = Replay::open(replay.bytes().to_vec()).unwrap();
     assert_eq!(completion_sequence(&reopened).unwrap(), 99);
@@ -456,8 +441,6 @@ fn naval_sequence_prepares_every_retained_branch_before_resuming_same_process() 
                     BranchReason::LoadSignal
                 },
             }));
-            // The second read is empty: seeding only the retained final frame
-            // would miss the earlier published IDs in this branch.
             for hour in [*first, *first + 1] {
                 records.push(Record::Frame(Frame {
                     branch: *branch,
@@ -569,7 +552,6 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
                             },
                         }),
                     ];
-                    // Later empty reads must not erase a previously published high key.
                     for hour in [first - 1, first, first + 1] {
                         records.push(Record::Frame(Frame {
                             branch,
@@ -680,14 +662,12 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
     assert!(continued.start.is_none());
     assert_eq!(prepared.event_ledger_sequences(), seeds);
 
-    // Fresh producer instances use those exact retained-history seeds before admission.
     let losses = EventLedger::<crate::air_losses::Entry>::new();
     let bombing = EventLedger::<crate::building_bombing::Entry>::new();
     let market = EventLedger::<MarketEventRow>::new();
     market.restore_sequence(seeds[3]).unwrap();
     losses.restore_sequence(seeds[0]).unwrap();
     bombing.restore_sequence(seeds[1]).unwrap();
-    // Callbacks never allocate: storage is prepared off-thread and installed by a drain.
     market.prepare(1);
     assert!(market.drain(&mut Vec::new()).is_err());
     losses.prepare(1);
@@ -782,8 +762,6 @@ fn resident_history_lease_never_blocks_recorder_append_or_rollback() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// The load reads a campaign's history on threads of its own and joins every one before it
-/// returns, so an unload after it leaves no thread running in the unloaded image.
 #[test]
 fn the_history_load_leaves_no_thread_it_started_running() {
     use replay_data::{rows::CampaignRow, rows::TableId, rows::TableRows};
@@ -808,7 +786,6 @@ fn the_history_load_leaves_no_thread_it_started_running() {
     }
     let module = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) };
     let census = || crate::module_threads::started_in(module).unwrap();
-    // The census sees a thread of this image while it runs, and not once it is joined.
     let (started, id) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let thread = std::thread::spawn(move || {
@@ -846,7 +823,6 @@ fn the_history_load_leaves_no_thread_it_started_running() {
     )
     .unwrap();
     assert!(!replay.index.is_empty());
-    // An unsaved recording, as the campaign the crash read its history from had.
     let unsaved = replay::publication::unsaved_path(&root, campaign);
     fs::create_dir_all(unsaved.parent().unwrap()).unwrap();
     fs::write(&unsaved, replay.bytes()).unwrap();

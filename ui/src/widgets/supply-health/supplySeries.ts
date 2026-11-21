@@ -23,9 +23,6 @@ import type { SupplyAt } from './supplyHealthData';
 
 const NO_RUNS: ShareRun[] = [];
 
-/** The declared `supply-health` series of `tags`: each country's stacked shares from the three share lines' tiles,
- * which a view following the head asks one per 256 bins of travel; the counts at the hours a reader reaches (a
- * hover, a breakdown's hour), read as their states; and the keyboard's next change of any count. */
 export function useSupplySeries(client: DashboardClient, clock: PlaybackController, source: DashboardSource | undefined, branchId: string | undefined,
   tags: readonly string[], within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, active: boolean,
   reads: readonly { tag: string; hour: number }[], following = false, root: { readonly current: Element | null } = { current: null }, axisOffset = 0) {
@@ -34,17 +31,14 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const lane = (measure: string) => enabled ? { source: source!, branchId: branchId!, family: { kind: SUPPLY_FAMILY, measure }, tags, within, lastHour } : null;
-  // Following, a tile landing renders nothing: the charts read the newest lines as they draw (`liveShares`).
   const none = useTiles(client, lane(SHARE_MEASURES[0]), active, following);
   const strained = useTiles(client, lane(SHARE_MEASURES[1]), active, following);
   const held = useTiles(client, lane(SHARE_MEASURES[2]), active, following);
   const total = useTiles(client, lane(DIVISIONS), active, following);
-  // The three shares at the head, followed: each line's head bin is drawn at them.
   const store = useMemo(() => source ? followStore(client, source, clock, axisOffset) : null, [client, clock, source, axisOffset]);
   const headQuery = (measure: string) => following && active && enabled ? { product: 'series-state', params: { branchId,
     family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
-  const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags]); // eslint-disable-line react-hooks/exhaustive-deps
-  // An answer landing moves no tile: the charts hear it from the follows' painters and read its version.
+  const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags]);
   const answered = useRef(new Set<() => void>()).current;
   const told = useCallback(() => { for (const listener of [...answered]) listener(); }, [answered]);
   const followed = [useFollow(store, queries[0], root, told), useFollow(store, queries[1], root, told), useFollow(store, queries[2], root, told)];
@@ -59,25 +53,23 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
       return decimals === undefined ? null : rowAmount(entry.answer, row, decimals) ?? null;
     })) : []);
     return () => stops.forEach(stop => stop());
-  }, [entries[0], entries[1], entries[2], tags, none.head, strained.head, held.head]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entries[0], entries[1], entries[2], tags, none.head, strained.head, held.head]);
   const liveShares = useCallback((tag: string, clip: (runs: ShareRun[]) => ShareRun[]): LiveShares =>
     liveShareRuns(tag, clip, [none.live, strained.live, held.live], answers), [none.live, strained.live, held.live, answers]);
   const views = [none.onView, strained.onView, held.onView, total.onView];
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(view => {
     if (view.to < view.from) return;
     for (const onView of views) onView(view);
-  }, views); // eslint-disable-line react-hooks/exhaustive-deps
+  }, views);
   const shares = useMemo(() => new Map(tags.map(tag => [tag, shareRunsFromLines([none.lines, strained.lines, held.lines]
     .map(lines => lines?.get(tag)?.summary))])), [tags, none.lines, strained.lines, held.lines]);
   const missing = useMemo(() => new Map(tags.map(tag => [tag, none.lines?.get(tag)?.missing ?? [] as MissingSpan[]])), [tags, none.lines]);
   const drawn = none.lines !== null && strained.lines !== null && held.lines !== null && total.lines !== null;
-  // Each country's most divisions in the view's bins: zero is a known zero, none where no bin holds a count.
   const divisions = useMemo(() => new Map(tags.map(tag => [tag, mostDivisions(total.lines?.get(tag)?.summary)])), [tags, total.lines]);
   const request = (product: string, measure: string, params: Record<string, unknown>) => ({ sourceId: source!.id, revision: source!.revision,
     product, params: { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } });
   const content = useContentRevision(client);
-  const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read])).values()], [JSON.stringify(reads)]); // eslint-disable-line react-hooks/exhaustive-deps
-  // One read of the three counts at a time while the hover and the breakdown's hour move.
+  const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read])).values()], [JSON.stringify(reads)]);
   const stateRead = useViewRead<typeof asked, readonly (readonly SeriesState[])[]>(enabled && asked.length ? JSON.stringify([ownerKey, content]) : null,
     asked, JSON.stringify(asked), active, (at, signal, _publish, restart) => Promise.all(STATES.map(measure =>
       loadProduct(client, request('series-state', measure, { reads: at }), signal, validateMeasureStates, source, restart)
@@ -96,7 +88,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setFailure({ owner, error: asFailure(error) }); });
-  }, [owner, active, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owner, active, enabled]);
   const states = stateRead.data;
   const at = useCallback((tag: string, hour: number): SupplyAt => supplyAt(states, tag, Math.floor(hour)), [states]);
   const retry = () => { setFailure(undefined); none.retry(); strained.retry(); held.retry(); total.retry(); stateRead.retry(); };

@@ -1,31 +1,15 @@
-//! CCountryLeader role object, reached through CCharacter's ideology map or a political party vector.
 
 use engine_sites::Rva;
-/// Country-leader role vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_d8b0);
-/// Parent character pointer used by name effects and serialized role references.
 pub const CHARACTER: usize = 0x08;
-/// Role id, i32; loading assigns it, serialization omits -1 and nonzero
-/// requested ids are compared with it.
 pub const LEADER_ID: usize = 0x148;
-/// Trait-pointer array. Modifier rebuilds visit each trait; serialization
-/// retains tokens in occurrence order. Trait lookup compares objects.
 pub const TRAITS: usize = 0x50;
-/// Country-leader trait vtable.
 pub const TRAIT_VTABLE_RVA: Rva = Rva(0x0286_78c8);
-/// Trait lexer token, u32.
 pub const TRAIT_TOKEN: usize = 0x08;
-/// Trait database ordinal, u32, with null object at zero. Repeated names
-/// remain separate definitions with separate ordinals; name lookup returns
-/// the first while trait conditions compare exact definitions.
 pub const TRAIT_ORDINAL: usize = 0x1a0;
 
-/// Current ideology pointer; changes do not rekey the character's role map.
 pub const CURRENT_IDEOLOGY: usize = 0x140;
-/// Ideology primary vtable.
 pub const IDEOLOGY_VTABLE_RVA: Rva = Rva(0x029b_a2d8);
-/// Null-ideology vtable. The constructed null definition clears its valid
-/// byte and supplies each leader's initial ideology.
 pub const NULL_IDEOLOGY_VTABLE_RVA: Rva = Rva(0x029b_a558);
 
 pub fn current_ideology(
@@ -46,17 +30,12 @@ pub fn current_ideology(
     let null_expected =
         engine_sites::at(base, NULL_IDEOLOGY_VTABLE_RVA).ok_or("module address overflow")?;
     let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
-    // Serialization retains the null object's stored token. Do not invent an
-    // ideology or capture refusal.
     if vtable != expected as u64 && vtable != null_expected as u64 {
         return Err("country leader current ideology vtable mismatch");
     }
     Ok(Some(u32::from_le_bytes(header[8..].try_into().unwrap())))
 }
 
-/// Locate the exact leader pointer in the character role map. Ideology
-/// changes do not rekey it. Serialization visits role pointers in signed-key
-/// order.
 pub(crate) fn role_key(
     memory: &impl crate::Memory,
     character: usize,
@@ -92,16 +71,11 @@ pub(crate) fn role_key(
 pub struct Row {
     pub character: u32,
     pub country: u32,
-    /// The native signed key of CCharacter's ideology-to-role map.
     pub ideology: i32,
-    /// Outer None is a read refusal; Some(None) is the native null pointer.
     pub current_ideology: Option<Option<u32>>,
     pub current_ideology_failure: Option<&'static str>,
 }
 
-/// Reads every persistent country-leader role, including roles that are not the
-/// active ruler. Ruling-party membership is a separate political-state join.
-/// Native order is retained; sorting and row-key validation belong off-thread.
 pub fn walk(
     memory: &impl crate::Memory,
     base: usize,
@@ -137,7 +111,6 @@ pub fn walk(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// Walks one authenticated character from the current shared roster pass.
 pub fn walk_entry(
     memory: &impl crate::Memory,
     base: usize,

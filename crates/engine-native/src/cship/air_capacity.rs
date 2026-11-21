@@ -1,13 +1,7 @@
-//! The carrier capacity predicate, including its retained-cache semantics.
 use super::*;
 
-/// Retained module predicate and its engagement byte. Engagement alone does
-/// not change the predicate's result; a refit may retain an engaged value.
 pub const MODULE_PREDICATE: usize = 0x801;
 
-/// Read the subtype for an already authenticated carrier host. Mega carriers
-/// use the supplied model flags without another read. The other subtypes use
-/// every stored design, independently of the equipment quantities.
 pub fn air_capacity_kind(
     memory: &impl Memory,
     base: usize,
@@ -116,7 +110,6 @@ mod tests {
             1 | (1 << 32),
         );
         put(&mut bytes, ENTRIES, VARIANT as u64);
-        // A zero-quantity stored variant still supplies its modules.
         put(&mut bytes, VARIANT, cequipment_variant::VTABLE_RVA.0 as u64);
         put(
             &mut bytes,
@@ -180,7 +173,6 @@ mod tests {
             2 | (2 << 32),
         );
         put(&mut bytes, ENTRIES + 16, 0x3500);
-        // The first design is positive, but a later unreadable design still refuses.
         assert!(kind(&bytes, 0).is_err());
     }
 }

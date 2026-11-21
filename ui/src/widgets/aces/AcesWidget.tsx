@@ -36,11 +36,8 @@ const PORTRAITS: FactSpec<AirAcePortrait> = {
 };
 const PARAMS = {};
 const keyOf = (row: AceRow) => row.key;
-/** The roster moves only at a read: the whole reply is what renders. */
 const structure = (reply: AirAcesReply) => JSON.stringify(reply);
 
-/** Every country's aces at the hour shown. Following the playhead the roster is a pushed panel, rendered only when a
- * read changes it; pinned or hovered, it is asked for that hour. */
 export default function AcesWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const speed = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();

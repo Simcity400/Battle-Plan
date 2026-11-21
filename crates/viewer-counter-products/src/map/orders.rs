@@ -1,29 +1,3 @@
-//! The viewing country's and admitted allied battle plans: fronts, offensive and fallback lines,
-//! move, invasion and paradrop arrows, and their name labels.
-//!
-//! Walk the country's theatre roster, each theatre's army-group then army
-//! roster (recorded roster positions), each group's primary then fallback
-//! root orders, then the recorded ordinary successors in ordered depth-first
-//! order. Suppress a sole child that has another first predecessor.
-//! Virtual editing children are not walked in the deselected view.
-//!
-//! Geometry per order:
-//!
-//! * a bound front runs along its
-//!   section's province pairs over the signed inclusive span, as integer
-//!   gradient-border chains (`chain`), offset by the directed overlap counter
-//!   (army groups reserve twice) to the controller-majority side;
-//! * an offensive line preceded by a move snaps to its targets' far borders
-//!   when the pair chain covers the candidates ([`offensive`]), else it is the
-//!   centroid-and-crossing polyline; a one-province line without a snap is the
-//!   ray through its province ([`single`]);
-//! * a move is the centroid-and-crossing polyline of its thinned path,
-//!   starting at the first crossing and ending on the nearest stored control
-//!   of its first successor line.
-//!
-//! Smoothing, offsets and the extended-text limit are `NDefines.NGraphics`;
-//! arrow types, fonts, text size and offset are `gfx/maparrows/maparrows.txt`.
-//! Remaining limits are reported by `viewer_foundation::map::tables`.
 
 use std::cell::Cell;
 use viewer_foundation::map::province_geometry::ProvinceGeometry;
@@ -66,28 +40,17 @@ use {
     viewer_foundation::map::tables as table_gate,
 };
 
-// ------------------------------------------------------------------ constants
 
-/// Move orders.
 pub const TYPE_MOVE: i32 = 1;
-/// Line orders: the front, offensive and fallback tools.
 pub const TYPE_LINE: i32 = 2;
-/// Invasion orders.
 pub const TYPE_INVASION: i32 = 3;
-/// Paradrop orders.
 pub const TYPE_PARADROP: i32 = 4;
-/// Area-defense orders, the garrison area. They have no drawing branch
-/// and produce no arrow.
 pub const TYPE_AREA_DEFENSE: i32 = 5;
 
-/// Neighbour kind 4 is impassable and is skipped by the adjacency test.
 const IMPASSABLE: u8 = 4;
 
-// ------------------------------------------------------------- the province map
 
-// --------------------------------------------------------------- classification
 
-/// Classification uses the recorded binding, never path multiplicity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Classified {
     FrontLine,
@@ -100,8 +63,6 @@ pub enum Classified {
 }
 
 impl Classified {
-    /// Bound style uses the owner's style and ignores overrides.
-    /// Unbound styles use army-group styles only without an override.
     pub fn arrow_type(self, plan: &ArmyOrderPlanRow, army_group: bool) -> Option<&'static str> {
         let ag = army_group && plan.owner_override == 0;
         Some(match self {
@@ -164,11 +125,6 @@ fn classify(order: &ArmyOrderRow, plan: Option<&ArmyOrderPlanRow>) -> Classified
     }
 }
 
-/// The province chain a move's or an unsnapped line's polyline runs along.
-///
-/// A move keeps its first two and last two provinces and, for counts of at
-/// least five, every second one starting at the fourth between them.
-/// Invasions and paradrops use their own builders ([`transport`]).
 pub fn chain(order: &ArmyOrderRow, kind: Classified) -> Vec<u32> {
     match kind {
         Classified::Invasion
@@ -185,13 +141,9 @@ pub fn chain(order: &ArmyOrderRow, kind: Classified) -> Vec<u32> {
     }
 }
 
-// ------------------------------------------------------------------ the graph
 
 type OrderKey = (u64, u32);
 
-/// Walk the country's theatre roster, then each theatre's army-group roster
-/// before its regular-group roster. A group without a recorded roster position
-/// cannot be reached; a duplicated position is refused.
 fn ordered_group_roots<'a>(
     groups: &BTreeMap<u64, &OrdersGroupRow>,
     theatres: &[LandTheatreRow],
@@ -228,9 +180,6 @@ fn ordered_group_roots<'a>(
                 .or_default() += 1;
             continue;
         };
-        // Allied plans skip the country guard. Admission belongs to the owning
-        // theatre's country occurrence; the group's country may differ from that
-        // theatre's owner.
         let same_country = if group.country == 0 {
             Some(countries.first() == Some(&0))
         } else {
@@ -277,8 +226,6 @@ fn ordered_group_roots<'a>(
                 .or_default() += 1;
         }
     }
-    // Keep every admitted physical country occurrence, in order and with
-    // repetitions, while theatre ordinals stay country-local.
     countries
         .iter()
         .filter_map(|country| ordered.get(country))
@@ -286,7 +233,6 @@ fn ordered_group_roots<'a>(
         .collect()
 }
 
-/// The first linked instance of the type, in recorded pointer-vector order.
 fn first_linked<'a>(
     owner: u64,
     ids: &[u32],
@@ -298,10 +244,6 @@ fn first_linked<'a>(
         .find(|order| order.order_type == order_type)
 }
 
-/// Visit primary roots then fallback roots, walking ordinary successors depth
-/// first. Keep repeated visits: each rebuilds the graphic and advances overlap
-/// counters. Refuse a group whose graph names an absent order or a root whose
-/// walk cycles.
 fn drawing_order<'a>(
     groups: &[&OrdersGroupPlanRow],
     orders: &BTreeMap<OrderKey, &'a ArmyOrderRow>,
@@ -373,25 +315,12 @@ fn drawing_order<'a>(
     output
 }
 
-/// A bound order's span of its section.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FrontSpan {
-    /// The ordered province pairs, inclusive; empty for a start after the end.
     Pairs(Vec<[u32; 2]>),
-    /// Empty the arrow's pair list and destroy the arrow. No arrow is drawn;
-    /// this is not a refusal.
     Destroyed,
 }
 
-/// The signed inclusive span of a bound order's section. An invalid binding is
-/// never clamped onto another part of the front.
-///
-/// A negative start or end or an end past the section is
-/// [`FrontSpan::Destroyed`]. A start after the end passes that test: the arrow
-/// keeps its pairs and reserves no overlap. Its inclusive span is empty, so
-/// it emits no controls and builds no strip: the order draws nothing. `None`
-/// is a section the recorded front does not hold, which the viewer cannot
-/// place and refuses.
 fn front_pairs(plan: &ArmyOrderPlanRow, front: &FrontRow) -> Option<FrontSpan> {
     let section = front
         .section_ids
@@ -425,9 +354,6 @@ fn front_pairs(plan: &ArmyOrderPlanRow, front: &FrontRow) -> Option<FrontSpan> {
     ))
 }
 
-/// The stored control nearest the target, x normalized once by the world
-/// width and taken at its nearer wrap; fixed5 half-deltas, strict less-than,
-/// first tie kept.
 fn nearest_control(points: &[Point], target: Point, width: i64) -> Option<Point> {
     let mut best = None;
     let mut distance = 0x2540_a5d60_i128;
@@ -453,16 +379,7 @@ fn nearest_control(points: &[Point], target: Point, width: i64) -> Option<Point>
     best
 }
 
-// ---------------------------------------------------------------- the geometry
 
-/// Every table [`build`] and its [`OrderInputs::links`] read. The document
-/// keeps one hour's plan while these tables are shared through the shared table memo
-/// and builds it from a frame holding only these, so a table missing here is
-/// seen as unavailable rather than read stale, and an hour whose plan inputs
-/// are unchanged reuses the previous field, its uploaded buffers and its
-/// label generation.
-// Invasions use the full frame outside this memo: adjacency-rule triggers
-// can read any supported country-scope input (document::plan_field).
 pub const TABLES: &[TableId] = &[
     TableId::ArmyOrders,
     TableId::OrdersGroups,
@@ -475,7 +392,6 @@ pub const TABLES: &[TableId] = &[
     TableId::CountryLinks,
 ];
 
-/// Local allied admission adds dependencies only while that option is enabled.
 pub fn memo_tables(show_allied: bool) -> Vec<TableId> {
     TABLES
         .iter()
@@ -484,10 +400,6 @@ pub fn memo_tables(show_allied: bool) -> Vec<TableId> {
         .collect()
 }
 
-/// Known own-order prefixes use the same admitted group roots as the draw.
-/// Zero with unavailable inputs does not prove absence: the caller keeps table
-/// limitations and the draw's named group refusals. This needs no geometry or
-/// prepared order field, which the separate limitations job does not hold.
 pub fn own_order_count(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -518,8 +430,6 @@ pub fn own_order_count(
         .count())
 }
 
-/// Invasion triggers, active callbacks and reached paradrop labels need the full hour.
-/// This follows admitted theatre/group roots, including cross-country groups.
 pub fn requires_full_frame(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -557,45 +467,29 @@ pub fn requires_full_frame(
         }))
 }
 
-/// What [`build`] needs beyond the frame.
 pub struct OrderInputs<'a> {
     pub assets: &'a OrderAssets,
     pub transport: Option<viewer_foundation::map::air_transport_content::AirTransportContent<'a>>,
     pub reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
     pub geometry: &'a ProvinceGeometry,
-    /// The content movement map: native neighbour order, kinds and crossings.
     pub movement: Option<&'a MovementMap>,
     pub map: &'a MapData,
     pub heights: &'a HeightField<'a>,
-    /// The viewing country's canonical slot (`perspective::Vision::ours`),
-    /// whose plan is drawn.
     pub ours: u32,
-    /// Viewer-local allied-plan switch; never replayed from the client's UI.
     pub show_allied: bool,
-    /// Raw country reference to canonical slot, the `CountryLinks` join.
     pub links: &'a BTreeMap<u32, u32>,
-    /// The label font and localisation; `None` draws no labels.
     pub labels: Option<LabelInputs<'a>>,
 }
 
-/// One order's prepared geometry.
 #[derive(Clone, Debug, Default)]
 struct Prepared {
-    /// The stored fixed5 controls.
     controls: Vec<Point>,
-    /// A move's unsmoothed controls, re-curved once its end snaps.
     raw: Vec<Point>,
-    /// Teeth side, initialized to zero.
     side: i32,
     snapped: bool,
     offset: bool,
-    /// A paradrop's height callback, replacing the terrain height of every
-    /// strip sample.
     lift: Option<transport::Lift>,
-    /// A front whose span starts after it ends: the arrow exists natively but
-    /// has no controls, so it draws nothing ([`front_pairs`]).
     empty_span: bool,
-    /// The parent's final visit supplies its child graphics as well.
     children: Vec<group_sections::Prepared>,
 }
 
@@ -608,8 +502,6 @@ fn group_color(row: &OrdersGroupPlanRow) -> [f32; 4] {
     ]
 }
 
-/// Ordinary read-only colour selection: virtual orders first, then the owner
-/// group's country chooses its display group's stored colour or the allied define.
 fn callback_color(
     defines: &OrderDefines,
     virtual_order: bool,
@@ -637,7 +529,6 @@ fn owner_is_ours(group: &OrdersGroupRow, inputs: &OrderInputs<'_>) -> Option<boo
     }
 }
 
-/// Builds one hour's battle plan for the viewing country.
 pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<OrderField> {
     let at = stage("plan.tables");
     let transport_context = paradrop_counts::Context::new(frame, inputs.transport);
@@ -687,7 +578,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         inputs.show_allied,
         &mut refused,
     );
-    // Once a group is admitted, do not gate an order's country.
     let reached_groups: BTreeSet<_> = roots.iter().map(|root| root.group).collect();
     let mine: Vec<_> = orders
         .rows()
@@ -722,8 +612,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         &transport_context,
     );
     let visits = drawing_order(&roots, &indexed, &plans, &mut refused);
-    // Draw only what the roots reach; count an unreachable order (its group
-    // refused above, or a graph island) without drawing it.
     let reached: BTreeSet<OrderKey> = visits
         .iter()
         .map(|order| (order.owner_group, order.instance))
@@ -742,7 +630,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
     let geometry = inputs.geometry;
     let centroid = |province: u32| geometry.map_position(province);
     let neighbours = |province: u32| movement.neighbours(province);
-    // Require a neighbour listed by the first province that is not impassable.
     let adjacent = |a: u32, b: u32| {
         movement.neighbours(a).is_some_and(|list| list.contains(&b))
             && movement
@@ -765,14 +652,11 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         border_target: &border_target,
         raster: Some(&raster),
     };
-    // `None` when a path province has no pixel centroid: the order is refused,
-    // never drawn through the provinces that remain.
     let centroid_controls = |path: &[u32], order_type: i32| -> Option<Vec<Point>> {
         let mut out = Vec::with_capacity(path.len() * 2);
         for (index, &province) in path.iter().enumerate() {
             let c = centroid(province)?;
             let mut point = fixed::from_pixel(c);
-            // A move starts at its first adjacency crossing.
             if order_type == TYPE_MOVE
                 && index == 0
                 && path.len() > 1
@@ -791,13 +675,10 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
     };
     const NO_CENTROID: &str = "order path province without a map centroid";
 
-    // Geometry follows visit order: repeated visits advance overlap counters
-    // (reset once per frame), and the last visit's geometry wins.
     let mut overlaps: BTreeMap<(u32, u32), u8> = BTreeMap::new();
     let mut prepared: BTreeMap<OrderKey, Prepared> = BTreeMap::new();
     let mut first_visit: Vec<OrderKey> = Vec::new();
     let mut seen: BTreeSet<OrderKey> = BTreeSet::new();
-    // An order visited more than once is refused once per reason.
     let mut refused_orders: BTreeSet<(OrderKey, &'static str)> = BTreeSet::new();
     let mut invasion_routes = invasion::Routes::new(frame, inputs.reads);
     let mut refused_invasions = BTreeSet::new();
@@ -807,7 +688,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             first_visit.push(key);
         }
         let plan = plans[&key];
-        // A missing group or arrow type is counted once, at emission.
         let Some(group) = groups.get(&order.owner_group) else {
             continue;
         };
@@ -842,8 +722,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
                     prepared.insert(key, out);
                     continue;
                 }
-                // Reserve each pair once, twice for an army group, and store the first
-                // returned count.
                 let reservation = if group.is_army_group != 0 { 2 } else { 1 };
                 let pairs: Vec<chain::Pair> = pairs
                     .iter()
@@ -858,8 +736,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
                         }
                     })
                     .collect();
-                // Reserve pairs before destroying an empty-path root. Keep those overlap
-                // side effects.
                 if order.path.is_empty() {
                     out.empty_span = true;
                     prepared.insert(key, out);
@@ -982,8 +858,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
                 out.controls = controls;
             }
             Classified::Paradrop => {
-                // A source or first path target below 1 destroys the arrow. Both are signed
-                // integers, so -1 (no province) is below 1.
                 let source = order.paradrop_target;
                 let target = order.path.first().copied().unwrap_or(0);
                 if (source as i32) < 1 || (target as i32) < 1 {
@@ -1008,7 +882,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
                 );
             }
             Classified::Invasion => {
-                // An empty path destroys the arrow.
                 if order.path.is_empty() {
                     no_arrow(&mut field.report, &mut refused_orders, key);
                     continue;
@@ -1050,8 +923,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
     }
     drop(at);
     let at = stage("plan.snap_ends");
-    // A move's last control is the nearest stored control of its first successor
-    // line, when that graphic exists.
     let width = i64::from(geometry.width) * SCALE;
     let snapped_ends: Vec<(OrderKey, Point)> = prepared
         .iter()
@@ -1077,7 +948,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
 
     drop(at);
     let at = stage("plan.emit");
-    // Emission: one graphic per order, in first-visit order.
     let mut gap_total = 0u64;
     let mut gap_count = 0u64;
     let mut placed_labels = Vec::new();
@@ -1107,7 +977,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
                 .or_default() += 1;
             continue;
         };
-        // Every order without prepared geometry was refused above with its reason.
         let Some(entry) = prepared.get(&key) else {
             continue;
         };
@@ -1130,8 +999,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             owner_is_ours: owner_is_ours(group, inputs),
             kind: plan_kind(kind),
         };
-        // The display group is the override, else the owner; its colour tints
-        // the arrow and its HQ is not counted.
         let display = if plan.owner_override != 0 {
             plan.owner_override
         } else {
@@ -1181,8 +1048,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         let controls = entry.controls.len();
         let scale = arrow.global_scale(controls);
         let terrain = |x: f32, z: f32, _: usize| ribbon_height(inputs.heights, x, z);
-        // Call the height callback per stored control with its index `i` and `n`,
-        // the control count plus two when the type has a head.
         let lifted = |_: f32, _: f32, control: usize| {
             entry.lift.map_or(0.0, |lift| {
                 lift.at_control(control, controls, arrow.head_length > 0.0)
@@ -1226,7 +1091,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             continue;
         };
         let draw = &mut field.draws[draw_index];
-        // Use the unassigned mask when nothing is counted.
         draw.texture_choice = texture_choice;
         draw.culling_offset = culling_offset(arrow.culling_direction, entry.side);
         draw.execution = callback;
@@ -1261,7 +1125,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
                 gap_count += 1;
             }
         }
-        // The virtual branch never sets label text.
         let Some(label_inputs) = inputs.labels.filter(|_| !virtual_order) else {
             continue;
         };
@@ -1296,8 +1159,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             }
             result
         };
-        // Use the arrow's height callback where present (the paradrop lift),
-        // otherwise terrain height.
         let terrain = |x: f32, z: f32, _: f32| inputs.heights.native_height(x, z);
         let lifted = |_: f32, _: f32, t: f32| entry.lift.map_or(0.0, |lift| lift.at(t));
         let height: &dyn Fn(f32, f32, f32) -> f32 = if entry.lift.is_some() {
@@ -1305,8 +1166,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         } else {
             &terrain
         };
-        // Each variant is localised and checked only when the layout reaches
-        // it; one it needs and cannot draw refuses the label by its reason.
         let placement = labels::place(
             &|variant| {
                 if variant == labels::Variant::Full {
@@ -1375,9 +1234,6 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
     Ok(field)
 }
 
-/// Visit definition buckets in file order and, inside one, larger comparator
-/// widths first; equal keys keep insertion order.
-/// Counts `reason` once for the order `key`, however often the walk visits it.
 fn refuse(
     refused: &mut BTreeMap<&'static str, usize>,
     counted: &mut BTreeSet<(OrderKey, &'static str)>,
@@ -1389,8 +1245,6 @@ fn refuse(
     }
 }
 
-/// Counts an order the game draws no arrow for once, however often the walk
-/// visits it; it shares [`refuse`]'s per-order set under its own reason.
 fn no_arrow(
     report: &mut OrderReport,
     counted: &mut BTreeSet<(OrderKey, &'static str)>,
@@ -1401,11 +1255,8 @@ fn no_arrow(
     }
 }
 
-/// The per-order dedupe key of [`no_arrow`].
 const NO_ARROW: &str = "no arrow";
 
-/// Keep the selected assigned/unassigned resource index verbatim.
-/// A missing authored resource is not a request to substitute index zero.
 fn texture_choice(arrow: &ArrowType, unassigned: bool) -> Result<usize, &'static str> {
     let choice = usize::from(unassigned);
     if choice >= arrow.masks.len() || choice >= arrow.patterns.len() {
@@ -1414,8 +1265,6 @@ fn texture_choice(arrow: &ArrowType, unassigned: bool) -> Result<usize, &'static
     Ok(choice)
 }
 
-/// Virtual orders bypass assignments; other orders exclude the display
-/// group's active HQ. Missing metadata cannot prove no HQ.
 fn assigned_count(
     plan: &ArmyOrderPlanRow,
     group: Option<&OrdersGroupRow>,
@@ -1436,13 +1285,10 @@ fn assigned_count(
         .count())
 }
 
-/// Culling offset is 1 when the type declares a culling direction and the
-/// arrow's stored side is another.
 fn culling_offset(direction: i32, side: i32) -> f32 {
     f32::from(u8::from(direction != 0 && side != direction))
 }
 
-/// The family a viewer hides this order's ribbons with.
 fn plan_kind(kind: Classified) -> dashboard_core::protocol::PlanKind {
     use dashboard_core::protocol::PlanKind;
     match kind {
@@ -1454,8 +1300,6 @@ fn plan_kind(kind: Classified) -> dashboard_core::protocol::PlanKind {
     }
 }
 
-/// A stage of [`build`], charged this thread's cycles while a harness measures
-/// (`replay_frame::cpu`), so the plan's build time is reported stage by stage.
 fn stage(name: &'static str) -> replay_frame::cpu::Scope {
     replay_frame::cpu::scope(name, Some("plan"))
 }
@@ -1472,7 +1316,5 @@ fn kind_name(kind: Classified) -> &'static str {
     }
 }
 
-/// Wrap once, sample bilinear terrain at the texel centre, clamp to sea
-/// level, then add the 0.01 lift.
 #[cfg(test)]
 mod tests;

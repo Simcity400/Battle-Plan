@@ -1,0 +1,9 @@
+# Resolve map bitmap labels through the recorded font stack
+
+Use the first bitmap-font override matching the current language, or the declared family's files. Preserve family order and take the first occurrence of each codepoint. A missing family file is reported and skipped. A page the game fails to load keeps its glyph advances but supplies no drawing. Other unresolved decode or declaration failures refuse the font with a reason. Atlas UVs use the decoded, block-rounded page extent. Covered font resources are verified through the recorded content stack. Uncovered fonts are named in diagnostics, and a broken visual replacement can fall back to the recording's fonts.
+
+Map names, counter counts, and plan labels resolve their authored font or the registry's fallback. Plan labels load last and can share the pages of an already loaded font. An unavailable font withholds its text with a named warning, leaving other map icons available. Font metrics use the atlas box, pen advance, line height, and top-of-line offset. A missing glyph is skipped by both measurement and placement, and a blank glyph with advance still moves the pen. The world-name shader controls its own colour treatment, while screen-space labels use the font's own colour.
+
+The layout consumes stored colour escapes without counting them as glyphs. A dangling escape marker is consumed alone. The standalone reserved control has no visible glyph, and unsupported inline controls produce a named refusal. A measured line and the corresponding label share glyph advances and kerning. The bounded layout uses the authored width for alignment and truncation, with overlong lines beginning at the left of the box.
+
+[Font loading and layout](../../crates/viewer-foundation/src/map/text.rs) · [Counter label caller](../../crates/viewer-counters/src/map/counters/mod.rs)

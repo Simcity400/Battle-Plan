@@ -1,0 +1,17 @@
+# 0907. Measure encoding against the recorder's actual writer
+
+The offline journal encoder uses the live writer and its normal branch and revision boundaries. Its host admits every branch and saves every revision for measurement. It can pace input to an observed game rate after a chosen hour. Its crash simulation works at a commit boundary so the published revision can be compared with the next run's resume point.
+
+The encoder can read the kept journal in its normal session layout and locate its session facts file. A recorder-format facts file must name the same content identity, and its pack is supplied verbatim. A standalone pack may be used when the option does not require a session file.
+
+The compression level is a recorder CPU tradeoff. Low uses zstd level 7 so the recorder can stay near the game's full speed while still reducing file size, and High uses level 19 when smaller output warrants a slower recorder. Encoding takes place outside the game process.
+
+Global system peak counters cannot be reset for individual phases, so labelled builds sample working set and commit every 50 ms and retain each phase's sampled maxima. The phase report includes the labelled peak, its hour and contributing labels. Revision reports account for retained store, key index, summary ladders/builders, derived writer state and encoder peaks. Timing subtracts the measured cost of the clock reads from append timing.
+
+Allocation scopes label writer parts only in a memory-label build. A table's summary measurement distinguishes its on-disk ladder references, its current builder and the builder's sampled peak in the previous block. Builder peaks are sampled daily and at block close. The report measures derived-writer resume blobs separately from store, encoder and other retained parts.
+
+The measurement source can scale individual tables on read. Copy `j` of a table with factor `K` uses slot `s * K + j` and reserves the key's top byte for `j`. Copied cells still refer to the original entities. Independent journal readers delay copies by `168 * j` hours to avoid synchronized changes. A table with any incomplete status is copied in phase because its copies cannot represent separate statuses. The first stream provides the clock, records and string dictionary. A fill applies to the copy's own live slots, excluding its exceptions. An unscaled source without preroll can pass through an hour when it carries no derived section.
+
+Preroll replays preceding sections in a separate process, applies the next hour, and makes a synthetic first hour containing full inserts. The measured process reads the result one table at a time without holding the earlier replay. A kept journal can include now-retired table positions. The adapter restores their positions while decoding, discards their metadata, and refuses a section of a removed table by name. Later tables read as not recorded, and current derived writers own every derived table. An unrecognized kept-journal digest is read under the historical recorded prefix only, so a section naming a derived table is refused. Resume is limited to a source that is passed through whole, since scaled or synthetic playback carries additional state across hours.
+
+[Encoder reporting](../../crates/replay/src/encode_report.rs) · [Encoder CLI](../../crates/replay/src/bin/journal-encode.rs) · [Compression settings](../../crates/replay/src/compression.rs) · [Scaled input](../../crates/replay/src/multiplied.rs)

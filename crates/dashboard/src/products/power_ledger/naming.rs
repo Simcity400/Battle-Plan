@@ -1,8 +1,3 @@
-//! An item as a reply names it, read at its first payment's hour: what the recorded operands
-//! name there (its character, token, organisation, cost modifier), its own and target countries'
-//! names, the scripted text and icon conditions the game evaluates against that hour, and its
-//! category as the recorded content files it. Each item is named once per source and catalogue
-//! ([`Names`]); an item's identity never changes, so neither does its name.
 
 use super::SpendItem;
 use crate::products::ideas::{IdeaInfo, idea_info};
@@ -37,7 +32,6 @@ use std::{
 
 const NO_CONTENT: &str = "Names and pictures need the game folders.";
 
-/// The tables every item's naming reads whole: its countries, their names, and the tokens they spell.
 const WHOLE: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
@@ -58,35 +52,28 @@ const COUNTRY: u64 = mask::<CountryRow>(&["canonical_slot", "tag"]);
 const CHARACTER: u64 = dashboard_text::identity::CHARACTER_IDENTITY;
 const COST_MODIFIER: u64 = mask::<ModifierDefinitionRow>(&["name_key", "argument"]);
 const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
-/// The modifier index the daily cost getter reads.
 const COST_MODIFIER_INDEX: u128 = 0x26;
 
-/// An item as every reply shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct NamedItem {
     pub category: (String, String),
     pub name: Option<String>,
     pub action: String,
-    /// The key of its picture in the reply's `icons`.
     pub icon: Option<String>,
     pub character: Option<u32>,
     pub target_tag: Option<String>,
     pub target_name: Option<String>,
     pub unknown: Option<String>,
-    /// Items shown as one: equal category, operands and names.
     pub group: String,
-    /// The idea or advisor it pays for, as its tooltip shows it, with its description.
     pub idea: Option<(IdeaInfo, Option<String>)>,
 }
 
-/// What naming reads of the recorded content, or why there is none.
 pub(super) struct Context {
     content: Result<Arc<PoliticsContent>, String>,
     organisations: production::names::Context,
     names: Arc<Mutex<Names>>,
 }
 
-/// The names a source keeps, for the catalogue it named them through: by run, holder and item.
 #[derive(Default)]
 struct Names {
     catalogue: Option<Arc<Catalogue>>,
@@ -94,7 +81,6 @@ struct Names {
 }
 
 impl Context {
-    /// The politics content items are named with, or why there is none.
     pub(super) fn content(&self) -> Result<&PoliticsContent, &str> {
         self.content.as_deref().map_err(String::as_str)
     }
@@ -121,15 +107,11 @@ pub(super) fn context(source: &Source, load: &LoadContext) -> io::Result<Context
     Ok(Context { content, organisations, names })
 }
 
-/// One item to name: its run, holder, ordinal and row.
 pub(super) struct Asked<'a> {
     pub run: u32,
     pub row: &'a PowerItemRow,
 }
 
-/// Names `asked`, reading each first-payment hour not named before once, in hour order through
-/// one seeker, into `icons`; an item whose hour cannot be read is named from its operands alone,
-/// with why.
 pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, icons: &mut BTreeMap<String, String>, cancelled: &AtomicBool) -> io::Result<Vec<NamedItem>> {
     let mut out: Vec<Option<NamedItem>> = vec![None; asked.len()];
     let mut wanted: BTreeMap<(u32, i32), Vec<usize>> = BTreeMap::new();
@@ -151,8 +133,6 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
     for ((_, hour), items) in wanted {
         crate::metadata::check_cancel(cancelled)?;
         let rows: Vec<&PowerItemRow> = items.iter().map(|&at| asked[at].row).collect();
-        // Named from the hour's countries and operands first; only an item whose text or icon the
-        // scripted world decides reads that world's tables too.
         let light = readable(read_frame(&mut frames, hour, &rows, false))?;
         let mut named_here = Vec::with_capacity(items.len());
         let mut scripted_rows = Vec::new();
@@ -187,10 +167,8 @@ pub(super) fn name(query: &Query<'_>, asked: &[Asked<'_>], context: &Context, ic
     Ok(out.into_iter().map(|named| named.expect("every asked item is named")).collect())
 }
 
-/// How a name or icon that needs the scripted world says its frame was not read.
 const FRAME_UNREAD: &str = "frame is unavailable";
 
-/// A frame read, none where its hour cannot be read (the item is then named from its operands).
 fn readable(frame: io::Result<DecodedFrame>) -> io::Result<Option<DecodedFrame>> {
     match frame {
         Ok(frame) => Ok(Some(frame)),
@@ -199,8 +177,6 @@ fn readable(frame: io::Result<DecodedFrame>) -> io::Result<Option<DecodedFrame>>
     }
 }
 
-/// The tables `rows` are named from at `hour`: their countries' whole, the rows their operands
-/// name, and the scripted text's tables where one of them needs them.
 fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow], scripted: bool) -> io::Result<DecodedFrame> {
     let mut whole: BTreeSet<TableId> = WHOLE.iter().copied().collect();
     if scripted {
@@ -229,7 +205,6 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
             continue;
         }
         if table == TableId::AdvisorRoles {
-            // A character's roles: every ordinal under it, ranges of several characters read whole.
             let owners: BTreeSet<u128> = keys.iter().map(|key| key >> 32).collect();
             reads.push(match owners.iter().next() {
                 Some(&owner) if owners.len() == 1 => at_hour::Read {
@@ -245,7 +220,6 @@ fn read_frame(frames: &mut at_hour::Frames<'_>, hour: i32, rows: &[&PowerItemRow
     frames.frame(hour, &reads, "Politics spending item")
 }
 
-/// `table` of `frame` when complete, each row holding the fields `mask` names.
 fn complete<'f, T: TableSchema>(frame: &'f DecodedFrame, mask: u64) -> Option<Rowset<'f, T::Row>> {
     frame.complete_rows::<T>(mask).ok()
 }
@@ -260,7 +234,6 @@ fn lexical_token(frame: &DecodedFrame, token: u32) -> Option<String> {
     std::str::from_utf8(literal).ok().map(str::to_owned)
 }
 
-/// A country as an item's hour names it.
 #[derive(Clone, Debug)]
 struct NamedCountry {
     tag: String,
@@ -278,7 +251,6 @@ struct CharacterFact {
     portrait: RecordedPortrait,
 }
 
-/// The operands an item names at its hour.
 #[derive(Default)]
 struct Facts {
     token: Option<String>,
@@ -286,7 +258,6 @@ struct Facts {
     modifier: Option<(Vec<u8>, Vec<u8>)>,
 }
 
-/// What an item's text resolves to at its hour.
 #[derive(Default)]
 struct ItemText {
     name: Option<String>,
@@ -294,15 +265,12 @@ struct ItemText {
     unknown: Option<String>,
 }
 
-/// A decision's or focus's icon as the hour leaves it: the sprites tried in order, then the one
-/// shown when none is declared (or why the choice cannot be made).
 #[derive(Clone, Debug)]
 struct SpriteChoice {
     candidates: Vec<String>,
     otherwise: Result<Option<String>, String>,
 }
 
-/// What an item's picture is drawn from.
 enum Art {
     Idea { token: String, character: Option<String>, tag: String, naming: NamingCountry, holder: Option<(u32, RecordedPortrait)> },
     Portrait { character: u32, portrait: RecordedPortrait },
@@ -310,7 +278,6 @@ enum Art {
     Sprite(String),
 }
 
-/// The token `row` names: its key, else its lexical token's literal; none where that is empty.
 pub(super) fn token_of(frame: Option<&DecodedFrame>, row: &PowerItemRow) -> Option<String> {
     if !row.item_key.is_empty() {
         return std::str::from_utf8(&row.item_key).ok().map(str::to_owned);
@@ -326,7 +293,6 @@ fn character_fact(frame: &DecodedFrame, row: &PowerItemRow) -> Option<CharacterF
     let character = keyed(complete::<tables::Characters>(frame, CHARACTER), u128::from(id))?;
     let lexical = complete::<tables::LexicalTokens>(frame, LITERAL);
     let category = leader.as_ref().map(|leader| leader.category);
-    // Role creation reads the category mask; upgrades ask for small army or navy portraits.
     let (role, size) = match row.cause {
         PowerCause::Advisor | PowerCause::AdvisorRemoval | PowerCause::Idea => (PORTRAIT_CIVILIAN, PORTRAIT_LARGE),
         PowerCause::OfficerUpgrade => (1, 0),
@@ -378,12 +344,10 @@ fn facts(frame: Option<&DecodedFrame>, row: &PowerItemRow) -> Facts {
     Facts { token, character, modifier }
 }
 
-/// The first Countries row at canonical `slot`, in key order.
 fn first_at(frame: &DecodedFrame, slot: u32) -> Option<CountryRow> {
     complete::<tables::Countries>(frame, COUNTRY)?.iter().filter_map(Result::ok).find(|country| country.canonical_slot == slot).map(Cow::into_owned)
 }
 
-/// The country at canonical `slot` as `frame`'s hour names it.
 fn named_country(frame: &DecodedFrame, content: Option<&PoliticsContent>, slot: u32) -> Option<NamedCountry> {
     let country = first_at(frame, slot)?;
     let tag = std::str::from_utf8(&country.tag).ok()?.to_owned();
@@ -400,12 +364,10 @@ fn named_country(frame: &DecodedFrame, content: Option<&PoliticsContent>, slot: 
     })
 }
 
-/// The canonical slot raw country `raw` links to at `frame`'s hour.
 fn linked(frame: &DecodedFrame, raw: u32) -> Option<u32> {
     keyed(complete::<tables::CountryLinks>(frame, LINK), u128::from(raw)).map(|link| link.canonical_slot)
 }
 
-/// A reason without the hour or frame it names: equal reasons of different reads count as one.
 pub(super) fn undated(reason: &str) -> String {
     let mut words = reason.split_whitespace().peekable();
     let mut result = Vec::new();
@@ -429,7 +391,6 @@ fn combine(target: &mut Option<String>, reason: Option<String>) {
     }
 }
 
-/// The recorded cause's own category: capture provenance, not a content catalogue.
 pub(super) fn cause_category(cause: PowerCause) -> (&'static str, &'static str) {
     match cause {
         PowerCause::Idea => ("ideas", "Ideas"),
@@ -468,11 +429,7 @@ pub(super) fn cause_category(cause: PowerCause) -> (&'static str, &'static str) 
     }
 }
 
-/// The category an item is spent in, as the recorded content files it: a daily cost's, an idea's
-/// authored category, laws, or the recorded cause's.
 pub(super) fn category_of(row: &PowerItemRow, token: Option<&str>, content: Option<&PoliticsContent>) -> (String, String) {
-    // A daily cost of the daily gain is the day's cost modifier or an organisation's upkeep; any
-    // other is filed by its cause (a relation's upkeep under diplomacy, a blockade's under blockade).
     if row.kind == PowerItemRow::COST && row.cause == PowerCause::DailyGain {
         return match row.component.and_then(|component| PowerDailyCostKind::try_from(component as u8).ok()) {
             Some(PowerDailyCostKind::MioResearch | PowerDailyCostKind::MioProduction) => ("organisationUpkeep".into(), "Organisation upkeep".into()),
@@ -510,7 +467,6 @@ pub(super) fn category_of(row: &PowerItemRow, token: Option<&str>, content: Opti
     category
 }
 
-/// One hour's scripted-text contexts, by root country.
 struct Scripted<'a> {
     content: &'a PoliticsContent,
     frame: &'a DecodedFrame,
@@ -553,8 +509,6 @@ impl<'a> Scripted<'a> {
     }
 }
 
-/// `key` localised as the item's country `slot` reads it at the item's hour: scripted text
-/// expanded against that hour, a decision's caller scopes from its recorded target.
 fn localise_at(scripted: Option<&Scripted<'_>>, content: &PoliticsContent, key: &str, slot: Option<u32>, decision: Option<(&PowerItemRow, bool)>, unknown_seed: bool) -> Result<Option<String>, String> {
     if !content.catalogue.has_presentation_key(key) {
         return Err(format!("localisation {key} is missing; title is unavailable"));
@@ -619,8 +573,6 @@ fn localise_at(scripted: Option<&Scripted<'_>>, content: &PoliticsContent, key: 
     Ok(content.catalogue.localise_in(key, &text))
 }
 
-/// The text an item's token names at its hour: a decision's or focus's title and icon, an idea's
-/// name.
 fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>, content: &PoliticsContent, scripted: Option<&Scripted<'_>>) -> Option<ItemText> {
     let mut found = ItemText::default();
     let token = token?;
@@ -736,8 +688,6 @@ fn item_text(own: Option<&NamedCountry>, row: &PowerItemRow, token: Option<&str>
     None
 }
 
-/// `row` named at `frame`, its item's first-payment hour (none where that hour could not be
-/// read), with the image of its picture.
 fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Context, scripted: bool) -> (NamedItem, Option<String>) {
     let content = context.content.as_ref().ok().map(Arc::as_ref);
     let facts = facts(frame, row);
@@ -917,7 +867,6 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
             Err(reason) => combine(&mut item.unknown, Some(reason)),
         }
     }
-    // The net daily command power gain can be a negative operand: an identified deficit.
     if row.currency == PowerCurrency::Command && row.cause == PowerCause::DailyGain {
         item.name = Some("Daily deficit".into());
         item.unknown = None;
@@ -961,8 +910,6 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
     (item, image)
 }
 
-/// The key of the items shown as one: equal category, recorded operands (whatever the action),
-/// token, character, target and name.
 fn group_key(category: &str, row: &PowerItemRow, token: &Option<String>, item: &NamedItem) -> String {
     let operands = (
         (category, row.currency as u8, row.cause as u16, row.component, row.charged),
@@ -975,8 +922,6 @@ fn group_key(category: &str, row: &PowerItemRow, token: &Option<String>, item: &
     hash.as_bytes()[..12].iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// `art` drawn through `content`'s catalogue, keyed by what it was drawn from; none where the
-/// game shows no picture.
 fn draw(content: &PoliticsContent, art: &Art) -> Result<Option<(String, String)>, String> {
     let sprite = |name: &str| -> Result<Option<(String, String)>, String> {
         let image = content.sprite_png(name).map_err(|error| format!("sprite {name}: {error}"))?.ok_or_else(|| format!("sprite {name} is not declared"))?;
@@ -1018,7 +963,6 @@ fn draw(content: &PoliticsContent, art: &Art) -> Result<Option<(String, String)>
     }
 }
 
-/// An item as a reply lists it.
 pub(super) fn ledger_item(id: String, row: &PowerItemRow, named: NamedItem) -> SpendItem {
     SpendItem {
         id,
@@ -1039,7 +983,6 @@ pub(super) fn ledger_item(id: String, row: &PowerItemRow, named: NamedItem) -> S
     }
 }
 
-/// The pictures items name, each once.
 pub(super) fn icons(icons: BTreeMap<String, String>) -> Vec<EquipmentIcon> {
     icons.into_iter().map(|(key, image)| EquipmentIcon { key, image }).collect()
 }

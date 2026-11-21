@@ -1,8 +1,3 @@
-//! A populated world for the character inputs (CharacterRoleTraits,
-//! CharacterOperatives) and the retired records (CountryRetiredCharacters):
-//! every country holds an active character with a country-leader, advisor
-//! and scientist role (one trait each) and an operative reference the
-//! registry does not hold, and a retired character.
 
 use super::{Capacities, Captured, Demand};
 use engine_characters::cscientist;
@@ -19,8 +14,6 @@ pub(super) const STATE: usize = 0x1000;
 pub(super) const MANAGER: usize = 0x2000;
 pub(super) const TRAITS: usize = 0x3000;
 const TABLE: usize = 0x4000;
-/// Per country: its object, character object, records, two characters, their
-/// maps, roles, scientist and trait pointers.
 const BLOCK: usize = 0x1800;
 
 pub(super) struct Populated {
@@ -63,7 +56,6 @@ impl Populated {
     fn vtable(&mut self, at: usize, rva: engine_sites::Rva) {
         self.u64(at, (BASE + rva.0) as u64);
     }
-    /// A map at `character + offset`: one node, or none.
     fn map(&mut self, character: usize, offset: usize, head: usize, entry: Option<usize>) {
         self.u64(character + offset, head as u64);
         self.u64(character + offset + 8, u64::from(entry.is_some()));
@@ -151,7 +143,6 @@ impl Populated {
             m.character(retired, id + 1, 0);
             m.u64(roster + (slot - 1) * 16, active as u64);
             m.u64(roster + (slot - 1) * 16 + 8, retired as u64);
-            // The active character's roles, one trait each.
             let (leader_node, advisor_node) = (b + 0x1330, b + 0x1390);
             let (leader, advisor, scientist) = (b + 0x1440, b + 0x14a0, b + 0x1580);
             m.map(
@@ -188,7 +179,6 @@ impl Populated {
                 active + ccharacter::OPERATIVE,
                 (u64::from(id) << 32) | u64::from(cunit_leader::REFERENCE_TYPE),
             );
-            // The retired character has empty maps and no other role.
             m.map(retired, ccharacter::LEADER_MAP_HEAD, b + 0x13e0, None);
             m.map(retired, ccharacter::ADVISOR_MAP_HEAD, b + 0x1410, None);
         }
@@ -196,9 +186,6 @@ impl Populated {
     }
 }
 
-/// [`Populated`] whose every country's active character has an operative
-/// reference the registry resolves to its own operative leader object (with
-/// a name and a codename); the world and each country's leader object.
 pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
     use engine_native::{
         cname_group_member as naming, coperative_leader, reference_bucket as bucket,
@@ -255,8 +242,6 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
         );
         world.vtable(leader, coperative_leader::VTABLE_RVA);
         world.u64(leader + cunit_leader::TYPE, reference);
-        // The authenticated operative layout owns the member regardless
-        // of the independent stored category operand.
         world.u32(leader + cunit_leader::CATEGORY, 8);
         world.u32(leader + cunit_leader::OWNER, (index + 1) as u32);
         for (offset, value) in [
@@ -286,7 +271,6 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
     (world, leaders)
 }
 
-// regression: 722e92182e Capture resolved operative names and codename operands
 #[test]
 fn resolved_operatives_carry_their_names_and_codename_operands() {
     use replay_data::rows::TableRows;

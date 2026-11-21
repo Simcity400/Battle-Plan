@@ -3,7 +3,6 @@ use replay_data::rows::{
     BuildingRow, CountryAppearanceRow, RaidFacilityRow, TechnologyDefinitionRow,
 };
 
-/// The fields of each table the technology descriptions read.
 const BUILDING_STATUS: u64 = mask::<BuildingRow>(&["ordinal", "status_flags", "active"]);
 const FACILITY: u64 = mask::<RaidFacilityRow>(&["owner", "province", "active_project"]);
 const TECHNOLOGY: u64 = mask::<TechnologyDefinitionRow>(&["technology_handle", "id"]);
@@ -25,10 +24,6 @@ impl Renderer<'_, '_, '_> {
             .ok_or("technology description catalogue unavailable".into())
     }
 
-    // add breakthrough points/Progress own; readers
-    // store specialization tokens and integer/fixed5
-    // value respectively. Each row is ensured LF, then indented two spaces.
-    // Header/row keys: points, progress.
     pub(super) fn breakthrough(
         &self,
         item: &Item,
@@ -47,7 +42,6 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .filter(|entry| entry.keyword_is("specialization"))
         {
-            // The all selector inserts in manager registration order.
             if entry.value_keyword().as_deref() == Some("all") {
                 for name in catalog.specializations_in_order()? {
                     tokens.push(
@@ -139,8 +133,6 @@ impl Renderer<'_, '_, '_> {
         Ok(header)
     }
 
-    // evaluates
-    // then expands in a copied environment with its faction pointer installed.
 
     pub(super) fn faction_power_projection(
         &self,
@@ -148,8 +140,6 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let amount = self.scoped_value(scalar_operand(item)?, scopes)?;
-        // reads the scope's country, not its state owner or
-        // carried faction. Clearing state/character setters leave it zero.
         let faction = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => self
                 .context
@@ -181,8 +171,6 @@ impl Renderer<'_, '_, '_> {
         self.expanded_with_faction_environment(&text, scopes, Some(faction))
     }
 
-    // evaluates value parsing's sole operand, resolves
-    // PROJECT, then expands without appending LF.
 
     pub(super) fn project_progress(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let amount = self.scoped_value(scalar_operand(item)?, scopes)?;
@@ -201,10 +189,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // reader: project/state/scientist
-    // iteration_output/show_modifiers only; iteration_output is execution-only.
-    // A null selector keeps its original operand, without localising it.
-    // ensures LF.
     pub(super) fn complete_project(
         &mut self,
         item: &Item,
@@ -241,8 +225,6 @@ impl Renderer<'_, '_, '_> {
             scopes,
             true,
         )?;
-        // defaults to yes.
-        // reads the template output, independently of iteration_output.
         if installed_content_core::parser::read_bool_field(children(item), "show_modifiers", true)
             && let Some((owner, id)) = project
         {
@@ -263,9 +245,7 @@ impl Renderer<'_, '_, '_> {
         Ok(text)
     }
 
-    // Project name and complexity use the selected template.
 
-    // no terminal LF.
     pub(super) fn raid_project_progress(
         &self,
         item: &Item,
@@ -306,14 +286,11 @@ impl Renderer<'_, '_, '_> {
             .defines()
             .int32("NProject", "DEFAULT_COMPLEXITY")
             .map_err(|why| why.to_string())?;
-        // Constants remain unavailable without the shared script-constant accessor.
         let constants = None;
         let (min, max) = definition.complexity(constants, default)?;
         let denominator = i64::from(min.wrapping_add(max)).wrapping_mul(10_000_000_000) / 200_000;
         let operand = scalar_operand(item)?;
         let amount = self.scoped_value(operand, scopes)?;
-        // Fixed-point division retains the undefined-value sentinel for zero
-        // denominator or one of the three undefined-value sentinels.
         let ratio = if denominator != 0
             && (amount as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
         {
@@ -326,7 +303,6 @@ impl Renderer<'_, '_, '_> {
                 .wrapping_mul(ratio)
                 .wrapping_mul(100),
         ) as i32;
-        // Evaluate a second time for PROGRESS.
         let progress = self.scoped_value(operand, scopes)?;
         let name = self.project_name(project.owner, project.local_id)?;
         self.char_native_text(
@@ -341,9 +317,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // first enemy province with an active special facility,
-    // in state order, then the first native program at that province.
-    // Stop there even if its active-project optional is empty.
     fn raid_target_project(
         &self,
         scopes: Scopes,
@@ -377,10 +350,8 @@ impl Renderer<'_, '_, '_> {
             };
             let enemy = world
                 .at_war(raid.parent_slot, owner)
-                .map_err(|why| why.to_string())?; // owner getter.
-            // checks only the first specialization-bearing building.
+                .map_err(|why| why.to_string())?;
             let mut facility = false;
-            // The key is the location, then the building type.
             let low = u128::from(province.id) << 32;
             let mut active = Vec::new();
             for row in each(rows.span(low, low | u128::from(u32::MAX))) {
@@ -405,7 +376,6 @@ impl Renderer<'_, '_, '_> {
                     return Err(why.clone());
                 }
                 if !definition.specialization.is_empty() {
-                    // tests flags bit 0.
                     facility = row.status_flags & 1 != 0;
                     break;
                 }
@@ -414,7 +384,7 @@ impl Renderer<'_, '_, '_> {
                 continue;
             }
             let programs = self.complete::<tables::RaidFacilities>(FACILITY)?;
-            let mut program: Option<Cow<'_, RaidFacilityRow>> = None; // hourly native roster.
+            let mut program: Option<Cow<'_, RaidFacilityRow>> = None;
             for row in programs.keyed(|key| world.slot((key >> 32) as u32) == Some(owner)) {
                 let row = row.map_err(built)?;
                 if row.province == province.id
@@ -426,7 +396,7 @@ impl Renderer<'_, '_, '_> {
             let Some(project) =
                 program.and_then(|row| row.active_project.map(|id| (row.owner, id)))
             else {
-                return Ok(None); // never fall through to another province/program.
+                return Ok(None);
             };
             return world
                 .project(project.0, project.1)
@@ -436,8 +406,6 @@ impl Renderer<'_, '_, '_> {
         Ok(None)
     }
 
-    // named templates first; only explicit var: evaluates a native
-    // handle. The recorded database_index is not that handle.
     fn technology_template(
         &self,
         operand: &[u8],
@@ -458,8 +426,6 @@ impl Renderer<'_, '_, '_> {
         }
     }
 
-    // a defined TAG_key takes precedence;
-    // neither the name nor the eventual technology wrapper is expanded.
     fn technology_country_name(
         &self,
         key: &[u8],
@@ -467,11 +433,8 @@ impl Renderer<'_, '_, '_> {
         original: bool,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Explicit country zero uses recorded country database slot zero.
         let mut tag = self.tag(country)?.as_bytes().to_vec();
         if original && country > 0 {
-            // CountryAppearance.name_tag
-            // already applies the native dynamic-country boundary predicate.
             let world = self.context.world()?;
             let appearance = self
                 .complete::<tables::CountryAppearance>(NAME_TAG)?
@@ -498,9 +461,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // selects a sole enabled equipment name unless the template's
-    // force_use_small_tech_layout is set. Content supplies this
-    // roster from content; feature 0x21 is SimulationFeatures bit7.
     fn technology_name(
         &self,
         template: &installed_content_core::technology::Definition,
@@ -524,13 +484,11 @@ impl Renderer<'_, '_, '_> {
         self.technology_country_name(key, country, runtime, scopes)
     }
 
-    // set technology effect reader accepts popup and technology
-    // keys only. The description ignores the level byte and preserves order.
 
     pub(super) fn set_technology(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let mut target = item.clone();
         target.value = installed_content_core::parser::Value::Scalar(b"THIS".to_vec());
-        let country = self.country_target(&target, scopes)?.unwrap_or(0); // includes state owner.
+        let country = self.country_target(&target, scopes)?.unwrap_or(0);
         let mut out = String::new();
         for field in children(item)
             .iter()
@@ -552,10 +510,6 @@ impl Renderer<'_, '_, '_> {
         Ok(out)
     }
 
-    // technology list precedes
-    // deduplicated categories; separators depend on original positions.
-    // Own fields are exactly the reader's keys; name is not described.
-    // Separate wrappers describe both, ahead and ordinary bonus values.
     pub(super) fn technology_bonus(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         let technology: Vec<_> = fields
@@ -597,8 +551,6 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        // replaces the final comma-space by one space + AND +
-        // suffix. The AND localisation supplies its own trailing space.
         if let Some(index) = list.rfind(", ") {
             let and = self.char_native_text(b"AND", &[], scopes, false)?;
             list.replace_range(index..index + 2, &format!(" {and}"));
@@ -645,7 +597,6 @@ impl Renderer<'_, '_, '_> {
                 false,
             )
         } else {
-            // The both-values branch passes int32 USES, unlike either single-value branch.
             self.char_native_line(
                 b"EFFECT_ADD_TECH_BONUS",
                 &[
@@ -677,8 +628,6 @@ impl Renderer<'_, '_, '_> {
             .transpose()
     }
 
-    // null template is empty; name plain,
-    // no LF. The sub-doctrine reader owns its block fields.
 
     pub(super) fn set_doctrine(
         &self,
@@ -708,8 +657,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Shared own, daily, bonus.
-    // Reader fallback consumes all five filters before effect parsing.
 
     pub(super) fn mastery_bonus(
         &self,
@@ -721,7 +668,6 @@ impl Renderer<'_, '_, '_> {
         let amount = field(fields, if daily { "amount" } else { "bonus" })
             .map(installed_content_core::modifiers::stored)
             .unwrap_or(0);
-        // initialize days to zero.
         let days = field(fields, "days")
             .and_then(|field| field.value.scalar())
             .map(integer)
@@ -840,9 +786,6 @@ impl Renderer<'_, '_, '_> {
         Ok(out)
     }
 
-    // evaluates
-    // scoped variable as int32. Zero takes the removal branch too.
-    // Add, remove and set share the numeric operand.
     pub(super) fn research_slots(
         &self,
         item: &Item,
@@ -851,7 +794,6 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let count = (self.scoped_value(scalar_operand(item)?, scopes)? / 100_000) as i32;
         if set {
-            // no LF.
             return self.char_native_text(
                 b"EFFECT_SET_RESEARCH_SLOTS",
                 &[("COUNT", Argument::Int32(count))],
@@ -867,8 +809,6 @@ impl Renderer<'_, '_, '_> {
         self.char_native_line(key, &[("COUNT", Argument::Int32(count))], scopes, false)
     }
 
-    // country target
-    // ordinary country name. No LF.
 
     pub(super) fn inherit_technology(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let Some(country) = self
@@ -886,9 +826,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // Only the scoped value is described;
-    // caller-scope expansion followed by an unconditional LF.
-    // Add/set.
     pub(super) fn mio_research_bonus(
         &self,
         item: &Item,
@@ -908,8 +845,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // describes only
-    // instant. The technology list belongs to selected.
 
     pub(super) fn steal_technology_bonus(
         &self,
@@ -930,8 +865,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // the inner key's
-    // REASEARCH spelling is native, and is localised without expansion.
 
     pub(super) fn faction_research_unlocked(
         &self,
@@ -940,8 +873,6 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         let name = self.char_native_text(b"FACTION_ACCESS_TAB_REASEARCH", &[], scopes, false)?;
         self.char_native_text(
-            // compares the token's raw text with
-            // "yes" including NUL, independent of token kind or case folding.
             if installed_content_core::parser::c_string(scalar_operand(item)?) == b"yes" {
                 b"FACTION_ACCESS_TAB_UNLOCK"
             } else {
@@ -971,7 +902,6 @@ impl Renderer<'_, '_, '_> {
             .map_err(|why| why.to_string())
     }
 
-    // only the reached folder selector.
     pub(super) fn mastery(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
         for field in fields {
@@ -1021,11 +951,8 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // folder display, authored reduction, formatted use count.
     pub(super) fn doctrine_reduction(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         let fields = children(item);
-        // Native technology and category lists precede
-        // folders; never silently omit a technology operand.
         if let Some(technology) = field(fields, "technology") {
             return Err(format!(
                 "technology {} doctrine reduction description is unavailable",
@@ -1055,7 +982,7 @@ impl Renderer<'_, '_, '_> {
                     folders.join(", "),
                     self.context
                         .localisation
-                        .localise(b"AND") // The fallback is a literal duration label.
+                        .localise(b"AND")
                         .map_err(|why| why.to_string())?
                 )
             }

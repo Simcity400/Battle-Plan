@@ -1,5 +1,3 @@
-//! Air-base wing items: first-fit grouping and displayed aircraft counts.
-//! Membership is the base's registered country pools in their stored order.
 use replay_data::rows::AirWingRow;
 mod prepared;
 mod windows;

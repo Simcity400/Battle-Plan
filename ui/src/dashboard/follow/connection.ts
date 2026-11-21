@@ -8,7 +8,6 @@ import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate }
 import { StructureQueue } from './structureQueue.ts';
 import type { PageReading } from '../../draw/followed';
 
-/** Ids are the viewer's, shared by every store this page makes. */
 let nextId = 1;
 const ids = () => nextId++;
 
@@ -41,7 +40,6 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
       const sought = b.sequence !== s.seekSequence || (paused !== null && b.paused != null && paused !== b.paused);
       const stopping = paused !== null && b.paused === null;
       b.key = key; b.sequence = s.seekSequence; b.paused = paused;
-      // A pause can abandon a built step even without a page seek.
       if (sought || stopping) {
         structures.discard(b.ids);
         const retainThrough = (sought && s.forwardSeek) || (!sought && stopping) ? hour : undefined;
@@ -142,7 +140,6 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   };
 }
 
-/** The one store of `source` (its revision) on `client` for a track showing game hour position + `offset`. */
 export function followStore(client: DashboardClient, source: DashboardSource, widgetClock: PlaybackController, offset = 0): FollowStore {
   const clock = pageClock(widgetClock);
   let stores = clocks.get(clock);

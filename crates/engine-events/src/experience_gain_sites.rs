@@ -1,12 +1,3 @@
-//! Accepted experience adjustments immediately before bank addition, after
-//! gain modifiers and any daily rejection. Positive adjustments are income
-//! before the bank cap; negative values are spending or corrections. Balance
-//! falls cannot substitute for those observations.
-//!
-//! Each army, navy and air adjustment has one accepted-add path. Daily update
-//! adds passive modifiers directly and then clears counters; those counters
-//! clamp army and navy gain and cannot recover accepted overshoot. Construction,
-//! token loading and reset restore or clear state rather than recording income.
 
 use crate::{Memory, ccountry, ccountry_experience_status as status, read};
 use engine_sites::Rva;
@@ -17,11 +8,6 @@ pub struct Site {
     pub air_argument: bool,
 }
 
-/// RBX holds the status; RDI points to the adjusted amount, except the air
-/// path uses RSI. Relocate only the seven-byte bank load/add prefix. No return
-/// address or branch target lies inside; incoming branches enter its first
-/// instruction. Preserve all registers, flags and XMM values before addition.
-/// Daily sites leave the later floor store outside the relocated prefix.
 pub const SITES: [Site; 6] = [
     Site {
         rva: Rva(0x13363bf),
@@ -61,8 +47,6 @@ pub struct Owner {
     pub country: u32,
 }
 
-/// Authenticate the native status's owner/backlink, with no country selector. The CCountry ID and
-/// current published link distinguish dynamic reuse of the same country pointer.
 pub fn owner(
     memory: &impl Memory,
     base: usize,

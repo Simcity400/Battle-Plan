@@ -24,16 +24,12 @@ import './recorder.css';
 
 export type View = 'main' | 'settings' | 'record' | 'recordings';
 
-/** What the panel's controls do. */
 export interface PanelActions {
   view(view: View): void;
-  /** Stop pressed, or the prompt's Cancel: show or cancel the Stop prompt. */
   toggleAsk(): void;
-  /** Discard pressed on the Stop prompt: ask to confirm. */
   askDiscard(): void;
   stop(discard: boolean): void;
   record(): void;
-  /** Open Battle Plan, on a recording when given. */
   open(recording: string | null): void;
   details(): void;
   folder(): void;
@@ -41,15 +37,10 @@ export interface PanelActions {
   campaign(campaign: string, choice: { record?: boolean; next?: NextLoad }): void;
   saveFolder(): void;
   userFolder(choose: boolean): void;
-  /** Save or Discard a recording waiting to be saved. */
   waiting(recording: UnsavedRecording, discard: boolean): void;
-  /** Discard pressed on a recording waiting to be saved: ask to confirm, or with null stop asking. */
   askDiscardWaiting(recording: UnsavedRecording | null): void;
-  /** Show a saved recording selected in its folder. */
   reveal(path: string): void;
-  /** Compress a saved recording to the smaller High size in the background. */
   compress(path: string): void;
-  /** Clear the command error shown. */
   dismiss(): void;
 }
 
@@ -58,29 +49,20 @@ export interface PanelViewProps {
   settings: RecorderSettings | null;
   view: View;
   asking: boolean;
-  /** A command that just failed. */
   error: string | null;
   now: number;
   actions: PanelActions;
   root?: Ref<HTMLDivElement>;
-  /** The window is the Stop prompt alone, beside the tray icon. */
   compact?: boolean;
-  /** The recordings, once listed. */
   recordings?: Recordings | null;
-  /** The Stop prompt is Quit's: the recorder quits once it is answered. */
   quitting?: boolean;
-  /** Discard was chosen on the Stop prompt; only its confirmation is left. */
   discarding?: boolean;
-  /** The recording waiting to be saved whose Discard asks to confirm, by `waitingKey`. */
   confirmingWaiting?: string | null;
-  /** The update both apps share; absent outside the desktop app. */
   update?: PanelUpdate;
 }
 
-/** The panel's update button, its question and its settings. */
 export interface PanelUpdate {
   state: UpdateState | null;
-  /** Restarting asks first; a finished download says so. */
   ask: 'confirm' | 'downloaded' | null;
   pending: boolean;
   press(): void;
@@ -89,7 +71,6 @@ export interface PanelUpdate {
   channel(channel: UpdateChannel): void;
 }
 
-/** A recording waiting to be saved: its session and campaign. */
 const waitingKey = (row: UnsavedRecording) => `${row.session}/${row.campaign}`;
 const folderName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 const joined = (parts: readonly (string | null)[]) => parts.filter(part => part).join(' · ');
@@ -104,7 +85,6 @@ const CAPTURE_MODES: readonly { value: CaptureMode; title: string; text: string;
   { value: 'map', title: 'Map', text: 'Campaign map, counters and battle windows; no dashboards or division details.', tag: 'Smaller files' },
 ];
 
-/** The two capture modes as cards; a running session's mode is shown fixed. */
 function CaptureModeChoice({ value, fixed, onChange }: { value: CaptureMode; fixed: boolean; onChange: (mode: CaptureMode) => void }) {
   return <div className={`recorder-modes${fixed ? ' is-fixed' : ''}`} role="radiogroup" aria-label="Capture mode">
     {CAPTURE_MODES.map(mode => <label key={mode.value} className={`recorder-mode${value === mode.value ? ' is-selected' : ''}`}>
@@ -116,7 +96,6 @@ function CaptureModeChoice({ value, fixed, onChange }: { value: CaptureMode; fix
   </div>;
 }
 
-/** A switch with a one-line description under its label. */
 function Toggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return <label className="recorder-row recorder-toggle"><span className="recorder-toggle-text"><span>{label}</span><small>{description}</small></span>
     <input type="checkbox" role="switch" checked={checked} onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)} /></label>;
@@ -134,10 +113,8 @@ function ItemFlag({ flag }: { flag: FlagImage | null }) {
   return flag ? <span className="recorder-item-flag"><CountryFlag image={flag} /></span> : <span className="recorder-item-flag is-empty" aria-hidden="true" />;
 }
 
-/** Recordings waiting to be saved, besides any recording now. */
 const waitingCount = (recordings: Recordings | null | undefined) => recordings?.unsaved.filter(row => row.status !== 'recording').length ?? 0;
 
-/** The panel for one snapshot: every state of the approved design. */
 export function PanelView({ snapshot, settings, view, asking, error, now, actions, root, compact = false, recordings = null, quitting = false,
   discarding = false, confirmingWaiting = null, update }: PanelViewProps) {
   const problem = error ?? snapshot.problem?.text ?? null;
@@ -158,7 +135,6 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
   const prompt = stopPromptVisible(asking, snapshot);
   const length = sessionLength(snapshot.startedAt, now);
   const discard = <button key="discard" type="button" className="button small recorder-discard" onClick={actions.askDiscard}>Discard</button>;
-  // Keyed apart from the question's buttons, so Cancel takes focus and a double click on Discard lands on it.
   const confirm = (tooltip?: string) => <>
     <button key="cancel-discard" type="button" className="button small quiet" autoFocus onClick={actions.toggleAsk}>Cancel</button>
     <button key="confirm-discard" type="button" className="button small is-danger" data-tooltip={tooltip} onClick={() => actions.stop(true)}>Discard</button>
@@ -178,7 +154,6 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
   </div>;
 
   const waiting = waitingCount(recordings);
-  // Battle Plan opens from every view; each view adds what belongs to it.
   const footer = (more: ReactNode = null) => <footer className="recorder-foot">
     <button type="button" className="button small quiet recorder-brand" onClick={() => actions.open(null)}><BrandMark size={15} />Open Battle Plan</button>
     <span className="recorder-grow" />
@@ -214,7 +189,6 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
   if (view !== 'main' && settings) {
     if (view === 'record') {
       const fixed = captureModeFixed(snapshot);
-      // While attached, the mode the session records, not one chosen since.
       const mode = snapshot.captureMode ?? settings.captureMode;
       return <div ref={root} className="recorder">
         <div className="recorder-top" data-tauri-drag-region="deep">{back('settings')}What to record</div>
@@ -318,7 +292,6 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
   </div>;
 }
 
-/** Restart to update, asked above the footer; while the recorder records it waits, and says why. */
 function UpdateAsk({ update }: { update: PanelUpdate }) {
   const state = update.state!;
   const version = state.downloadedVersion ?? state.availableVersion ?? '';
@@ -333,7 +306,6 @@ function UpdateAsk({ update }: { update: PanelUpdate }) {
   </div>;
 }
 
-/** The panel's Updates settings: the version, its action and the channel both apps follow. */
 function UpdateSection({ update }: { update: PanelUpdate }) {
   const { state } = update;
   return <section className="recorder-section is-last">
@@ -386,7 +358,6 @@ function SavedRow({ row, settings, actions }: { row: SavedRecording; settings: R
   </div>;
 }
 
-/** The Battle Plan Recorder tray panel. */
 export default function RecorderPanel() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [settings, setSettings] = useState<RecorderSettings | null>(null);
@@ -406,9 +377,7 @@ export default function RecorderPanel() {
   const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings));
   const { state: updateState } = useUpdateState();
   const updates = useUpdateActions();
-  // The question is about one download: it no longer shows once that download is gone.
   const [updateAsk, setUpdateAsk] = useState<{ kind: 'confirm' | 'downloaded'; version: string } | null>(null);
-  // An update action that failed says why where the panel's other failures do.
   useEffect(() => { if (updates.failure) setError(`${updates.failure.title}: ${updates.failure.detail}`); }, [updates.failure]);
 
   useEffect(() => {
@@ -440,7 +409,6 @@ export default function RecorderPanel() {
     return () => { active = false; for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
   }, [queue, panel]);
 
-  // Listed only while the full panel shows, at the status's pace while their view is open.
   const listing = compact === false;
   const [changed, setChanged] = useState(0);
   useEffect(() => {
@@ -462,7 +430,6 @@ export default function RecorderPanel() {
     return () => { active = false; };
   }, [listing, phase, watching, changed, viewOpen, settings, panel]);
 
-  // The window takes the panel's height and stays on screen.
   const ready = snapshot != null && compact != null;
   useEffect(() => {
     const element = root.current;
@@ -474,7 +441,6 @@ export default function RecorderPanel() {
     return () => observer.disconnect();
   }, [ready]);
 
-  // Esc closes the panel (and with it a pending Stop prompt), after any open menu or tooltip.
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('.select-menu:popover-open')) return;
@@ -484,7 +450,6 @@ export default function RecorderPanel() {
     return () => window.removeEventListener('keydown', key);
   }, []);
 
-  // Paused games emit no new hour status, so the Stop prompt needs its own minute timer.
   const prompting = snapshot != null && stopPromptVisible(asking, snapshot);
   const startedAt = snapshot?.startedAt ?? null;
   useEffect(() => {
@@ -497,7 +462,6 @@ export default function RecorderPanel() {
     return () => clearTimeout(timer);
   }, [prompting, startedAt]);
 
-  // A prompt asks about one recording: it ends when that recording stops or another replaces it.
   const askedAbout = snapshot != null && stopPromptVisible(true, snapshot) ? `${snapshot.startedAt}/${snapshot.campaign}` : null;
   const previousAsked = useRef(askedAbout);
   useEffect(() => {
@@ -509,7 +473,6 @@ export default function RecorderPanel() {
     previousAsked.current = askedAbout;
   }, [askedAbout]);
 
-  // The pop-up beside the tray icon closes once its prompt is gone.
   useEffect(() => {
     if (compact && snapshot && !prompting) void api.closePanel();
   }, [compact, snapshot, prompting]);
@@ -522,7 +485,6 @@ export default function RecorderPanel() {
   const save = (work: () => Promise<RecorderSettings | null>) => run(() => queue.save(work));
   const actions: PanelActions = {
     view: setView,
-    // Pressing Stop again cancels the prompt, and a Quit waiting on it.
     toggleAsk: () => {
       if (!asking) { setAsking(true); setDiscarding(false); return; }
       setAsking(false);

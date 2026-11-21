@@ -1,7 +1,3 @@
-//! Faction theatres for the political map's faction-theatre pins: tens of rows
-//! an hour, sized from the live theatre demand and grown off-thread; and each
-//! faction's occupied advisor slots (FactionAdvisors), hourly, over the same
-//! faction roster.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
@@ -19,8 +15,6 @@ use replay_frame::frame::TableView;
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::FactionTheatres, TableId::FactionAdvisors];
 
-/// Starting allocations only; live hints and worker walks grow every arena
-/// from the acquired native headers before publication.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
@@ -67,8 +61,6 @@ impl Capacities {
         raise(&mut self.regions, rows(demand.required_regions, 1));
         raise(&mut self.hidden, rows(demand.required_hidden, 1));
     }
-    /// FactionAdvisors from the live occupied slot count and token bytes,
-    /// with the three-quarters growth rule's headroom. Never lowers.
     pub fn raise_for_faction_advisors(&mut self, advisors: usize, bytes: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.advisors, rows(advisors, 1));
@@ -95,7 +87,6 @@ impl Captured {
         self.advisors
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
     }
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
@@ -142,7 +133,6 @@ impl Captured {
         self.regions.grow(&mut capacity.regions);
         self.hidden.grow(&mut capacity.hidden);
         self.advisors.grow(&mut capacity.advisors);
-        // The advisor walk reports every occupied slot's token bytes.
         self.advisor_bytes.grow(&mut capacity.advisor_bytes);
     }
     pub fn capture(
@@ -361,7 +351,6 @@ mod tests {
             captured.tables()[1],
             TableView::Unavailable { .. }
         ));
-        // A failed job hides both hourly tables.
         captured.fail_capture(1, false, "job failed");
         assert_eq!(
             captured.outcomes(),
@@ -434,7 +423,6 @@ mod tests {
                     commander: Some((844 << 32) | 4713).into(),
                     countries: vec![11, 12].into(),
                 },
-                // A null commander reference is no commander, never a refusal.
                 FactionTheatreRow {
                     faction: (4 << 32) | 88,
                     ordinal: 3,
@@ -460,7 +448,6 @@ mod tests {
     }
 }
 
-/// Ignored capture-cost bench; see `bench_world` for the assumed scale.
 #[cfg(test)]
 mod l3b_bench {
     use super::*;

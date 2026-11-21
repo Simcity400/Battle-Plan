@@ -1,8 +1,6 @@
 use super::*;
 use replay_data::rows::AirMissionInputRow;
 
-/// This hour's target scans, built once and shared by every wing,
-/// with the content fractions, the DLC mask and the mine cap they meet.
 pub struct Scans<'a> {
     pub tactical: Option<TacticalTargetSources<'a>>,
     pub port: Option<PortTargetSources<'a>>,
@@ -17,7 +15,6 @@ pub struct Scans<'a> {
 }
 
 impl Scans<'_> {
-    /// Target-admission chain for a wing over its mission region.
     pub fn admission(
         &self,
         wing: &AirWingRow,
@@ -34,7 +31,6 @@ impl Scans<'_> {
         )
     }
 
-    /// Only the scans `target_admission` reads for this wing's mask run.
     pub fn predicates(
         &self,
         wing: &AirWingRow,

@@ -1,8 +1,6 @@
 use super::*;
 use crate::ccountry_resources::test_support::Fixture;
 
-/// The giver (raw 7, resources 0x6000) holds two exchanges; the other country
-/// (raw 2, resources 0x7000) holds none.
 const EXCHANGES: usize = 0x40000;
 const LIST: usize = 0x3f000;
 const POOLS: usize = 0x50000;

@@ -1,13 +1,3 @@
-//! NavalModifierTrees and its diagnostic NavalModifierTreeSamples: the naval
-//! hovers' source trees ([`engine_naval_history::naval_modifier_trees`]), read in the naval
-//! combat part right after the combat census that names their sources.
-//!
-//! Each hour enumerates the sources this hour's live combats reach (each live
-//! side's modifier sources, each escaping ship's and linked carrier's
-//! ship modifier sources) and walks each distinct accumulator once, except a
-//! country's or commander's tree whose receiver's certificate still holds
-//! ([`crate::naval_tree_changes`]): that tree is copied from the held read.
-//! Projection (per key pruning and row assembly) runs on the spool thread.
 use crate::{
     naval_tree_changes::{self, Changes, Counts, Held, Store},
     table_conversion::unavailable,
@@ -23,24 +13,19 @@ use replay_data::{rows, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
 
-/// One distinct accumulator's preorder in an arena.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Root {
     accumulator: usize,
     nodes: [usize; 2],
 }
 
-/// One hour's reached sources and trees. Every vector grows on the
-/// acquisition worker; the placeholder owns no storage.
 pub struct Trees {
     requests: Vec<Request>,
-    /// The root each (sorted) request reads.
     root_of: Vec<usize>,
     roots: Vec<Root>,
     nodes: Vec<RawNode>,
     text: Vec<u8>,
     stack: Vec<trees::Frame>,
-    /// Oracle: each root read afresh, in `roots` order.
     fresh_roots: Vec<Root>,
     fresh_nodes: Vec<RawNode>,
     fresh_text: Vec<u8>,
@@ -104,9 +89,6 @@ impl Trees {
         self.outcome
     }
 
-    /// The diagnostic samples' outcome: the trees' own under the oracle
-    /// feature; otherwise the table is recorded empty (no sample taken), so
-    /// production recordings hold no unavailable table.
     pub fn samples_outcome(&self) -> Outcome {
         if self.oracle {
             self.outcome
@@ -115,8 +97,6 @@ impl Trees {
         }
     }
 
-    /// The hour's reads, after the combat census. `None` sources mean the
-    /// census did not complete: the trees refuse with it.
     #[allow(
         clippy::too_many_arguments,
         reason = "the census slices are separately owned arenas of the naval pack"
@@ -160,7 +140,6 @@ impl Trees {
                 };
             }
             Err(reason) => {
-                // A capture that does not complete forgets the held trees.
                 naval_tree_changes::failed();
                 self.outcome = Outcome::Unavailable { reason };
             }
@@ -200,7 +179,6 @@ impl Trees {
             return Ok(());
         }
         let definitions = Definitions::read(memory, base)?;
-        // Each distinct accumulator is walked once, whatever reaches it.
         self.requests
             .sort_unstable_by_key(|request| (request.accumulator, request.kind, request.owner));
         let mut held = std::mem::take(&mut store.held);
@@ -215,7 +193,6 @@ impl Trees {
             {
                 end += 1;
             }
-            // A carried kind certifies the accumulator through its receiver.
             let carried = self.requests[at..end]
                 .iter()
                 .find(|request| Kind::from_u8(request.kind).is_some_and(Kind::carried))
@@ -231,7 +208,6 @@ impl Trees {
             match carried {
                 Some(request) => {
                     counts.receivers += 1;
-                    // The certificate precedes the read it certifies.
                     let certificate = changes.sequence(request.receiver);
                     let previous = held
                         .remove(&request.receiver)
@@ -300,12 +276,10 @@ impl Trees {
             }
             at = end;
         }
-        // Only the receivers reached this hour stay held.
         drop(held);
         Ok(())
     }
 
-    /// Appends a held tree to the hour's arena, rebasing its display spans.
     fn copy_held(&mut self, held: &Held) -> Result<(), &'static str> {
         let offset = self.text.len();
         engine_allocation::reserve(&mut self.text, held.text.len())
@@ -321,8 +295,6 @@ impl Trees {
         Ok(())
     }
 
-    /// The arena's nodes from `first` as an owned held tree with its own
-    /// display bytes; `None` without a certificate.
     fn held_copy(
         &self,
         first: usize,
@@ -355,7 +327,6 @@ impl Trees {
         Ok(Some(held))
     }
 
-    /// The spool thread's projection of both tables.
     pub fn tables(&self) -> [TableView; 2] {
         let samples = if self.oracle {
             match self.outcome {
@@ -392,8 +363,6 @@ impl Trees {
         for ((kind, owner, sub), root) in owners {
             let root = self.roots[root];
             let trees = project(range(&self.nodes, root.nodes), &self.text)?;
-            // A side's weather row marks that live naval combat side visited the region,
-            // which ensures a newline even when it prints nothing.
             if !trees.is_empty() || kind == Kind::SideWeather as u8 {
                 rows.push(rows::NavalModifierTreeRow {
                     kind,
@@ -439,10 +408,6 @@ fn range<T>(items: &[T], span: [usize; 2]) -> &[T] {
     &items[span[0]..span[0] + span[1]]
 }
 
-/// Each key's printed tree ([`rows::NavalModifierKeyTree`]): the root, every nonzero leaf with its
-/// display bytes and the interior nodes above them. A root whose native children all pruned keeps
-/// one zero child so it stays Interior  (modifier tree display prints only children once its child
-/// count is nonzero); a key whose root is zero and prints nothing is omitted.
 pub fn project(
     nodes: &[RawNode],
     text: &[u8],
@@ -450,7 +415,6 @@ pub fn project(
     project_keys(nodes, text, &KEYS)
 }
 
-/// The same preorder pruning for a narrowly demanded sorted key set.
 pub fn project_keys<const N: usize>(
     nodes: &[RawNode<N>],
     text: &[u8],
@@ -512,7 +476,6 @@ fn copy_visible<const N: usize>(
         output.truncate(start);
         return Ok(false);
     }
-    // Only an original leaf prints; interior nodes keep no display bytes.
     let name = if node.children == 0 && value != 0 {
         let span = text
             .get(node.name[0]..node.name[0] + node.name[1])
@@ -576,9 +539,6 @@ mod tests {
         out
     }
 
-    /// The root keeps its value, zero branches prune, only leaves keep
-    /// display bytes, and a key that prints nothing with a zero root is
-    /// omitted.
     #[test]
     fn projection_prunes_per_key_and_keeps_interior_roots_interior() {
         let text = b"zerokept";
@@ -599,14 +559,12 @@ mod tests {
         assert!(positioning[0].name.is_empty());
         assert_eq!(positioning[1].name, b"kept");
         assert_eq!(positioning[1].value, 900);
-        // A root whose children all prune stays interior and keeps its value.
         let nodes = [node(1, [0, 0], &[(0x24, 123)]), node(0, [0, 0], &[])];
         let trees = project(&nodes, text).unwrap();
         assert_eq!(trees.len(), 1);
         assert_eq!(trees[0].nodes[0].children, 1);
         assert_eq!(trees[0].nodes[0].value, 123);
         assert_eq!(trees[0].nodes[1], rows::ModifierBreakdownNode::default());
-        // A childless root prints itself.
         let trees = project(&[node(0, [4, 4], &[(0x5a, -5)])], text).unwrap();
         assert_eq!(trees[0].key, 0x5a);
         assert_eq!(trees[0].nodes[0].name, b"kept");
@@ -619,8 +577,6 @@ mod tests {
         }
     }
 
-    /// A held tree under an unchanged certificate is copied without a read;
-    /// a moved certificate reads it afresh.
     #[test]
     fn a_certified_country_tree_is_copied_and_a_moved_one_is_read() {
         let mut trees = Trees::default();
@@ -641,13 +597,11 @@ mod tests {
                 text: b"Ideas".to_vec(),
             },
         );
-        // The certified path needs no memory: copy the held tree.
         let roots = trees.copy_certified(&mut store, &Fixed(Some((1, 4))));
         assert_eq!(roots, Some(1));
         let projected = project(range(&trees.nodes, trees.roots[0].nodes), &trees.text).unwrap();
         assert_eq!(projected[0].nodes[0].name, b"Ideas");
         assert!(store.held.contains_key(&0x1000));
-        // A moved certificate cannot copy.
         let mut trees = Trees::default();
         trees.requests.push(Request {
             accumulator: 0x15b8,
@@ -660,8 +614,6 @@ mod tests {
     }
 
     impl Trees {
-        /// Test seam: the carried path of [`Trees::read`] for requests that
-        /// are all certified; `None` when any would need a read.
         fn copy_certified(&mut self, store: &mut Store, changes: &impl Changes) -> Option<usize> {
             let requests = self.requests.clone();
             for request in requests {

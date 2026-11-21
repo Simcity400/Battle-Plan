@@ -1,22 +1,3 @@
-//! Allocation-free notifications from the native writers of the tables read
-//! every hour and carried between hours ([`engine_mutations::world_input_mutations`]):
-//! ProvinceNames, NavalRegionAccess, the world tension tables (WorldTension,
-//! ThreatSources, ThreatCountryAggregates) and DynamicModifiers. A detour only
-//! notifies its domain, counts its site and calls the original; it never
-//! changes game behaviour. The whole-table domains register no receivers: a
-//! capture compares the token it took before its table's latest complete
-//! read with this hour's, and equal tokens prove that no observed writer ran
-//! in between ([`WatchRegistry::quiet`]). The dynamic modifier domain
-//! notifies the CCountry owning the written container, and a country's
-//! certificate joins that sequence to the naval tree family's
-//! ([`Changes::country`]).
-//!
-//! Each table's capture holds its latest complete read in a [`Held`] with the
-//! token taken before it. An hour whose token equals the held one publishes
-//! the held rows without reading the game; any other hour reads afresh and
-//! holds that read when the token stood still across it. Anything unobserved
-//! (disabled, poisoned, an epoch change, a running writer) yields no token,
-//! and the capture reads afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -34,8 +15,6 @@ static POLICY_SCORE_OBSERVED: AtomicBool = AtomicBool::new(false);
 static WATCHES: [WatchRegistry; DOMAINS] = [const { WatchRegistry::new() }; DOMAINS];
 static CALLS: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Saved-design receivers share these patches with the MIO certificate. The
-/// receiver wraps the original call so it observes the same entry/return scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Forward {
     DesignBonuses,
@@ -62,8 +41,6 @@ static DESIGN_FORWARD: AtomicUsize = AtomicUsize::new(0);
 static DESIGN_ENABLED: AtomicUsize = AtomicUsize::new(0);
 static HOOKS_ENABLED: AtomicBool = AtomicBool::new(false);
 static FOG_BUILDINGS_ENABLED: AtomicBool = AtomicBool::new(false);
-/// Attach/detach only, while callbacks are quiescent. No reverse dependency on
-/// a consuming capture crate is needed.
 pub fn forwarder(receiver: Option<Forwarder>) {
     if let Some(receiver) = receiver {
         DESIGN_FORWARD.store(receiver.call as usize, Ordering::Release);
@@ -139,18 +116,12 @@ static NAVY_RESET_ENABLED_CALLBACK: AtomicUsize = AtomicUsize::new(0);
 static NAVY_RESET_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// An additional observer of the navy reset already patched by this family.
-/// `invoke` brackets its observation around the original function pointer,
-/// preserving all four integer arguments and its return value. `enabled`
-/// revokes consumer certificates whenever this patch is absent.
 #[derive(Clone, Copy)]
 pub struct NavyResetForwarder {
     pub invoke: unsafe fn(usize, usize, usize, usize, usize) -> usize,
     pub enabled: fn(bool),
 }
 
-/// Register the sole dependent observer during attach, before patch publication;
-/// remove it only after the native callbacks have drained during detach.
 pub fn navy_reset_forwarder(forwarder: Option<NavyResetForwarder>) {
     let previous = NAVY_RESET_ENABLED_CALLBACK.load(Ordering::Acquire);
     if previous != 0 {
@@ -177,27 +148,15 @@ fn navy_reset_enabled(enabled: bool) {
         callback(enabled);
     }
 }
-/// Per domain: quiet hours and read hours.
 static READS: [[AtomicU64; 2]; DOMAINS] = [const { [const { AtomicU64::new(0) }; 2] }; DOMAINS];
 
-/// A domain's quiet token: `(epoch, revision)`.
 pub type Token = (u64, u64);
 
-/// The domains as a capture consults them; tests substitute their own, so
-/// parallel tests never share the hooks' tokens.
 pub trait Changes: Sync {
-    /// `domain`'s token while observed with no writer running.
     fn token(&self, domain: Domain) -> Option<Token>;
-    /// A CCountry's certificate of its DynamicModifiers rows, registering it:
-    /// the dynamic modifier domain's sequence (add, renew, remove and the
-    /// daily update) and the naval tree family's (`modifier recalculation`,
-    /// which rewrites every entry's enabled byte and values, and
-    /// `country appearance reset`, which clears them). `None` when either cannot
-    /// be observed.
     fn country(&self, country: usize) -> Option<[(u64, u64); 2]>;
 }
 
-/// The hooks' domains.
 pub struct Observer;
 impl Changes for Observer {
     fn token(&self, domain: Domain) -> Option<Token> {
@@ -211,7 +170,6 @@ impl Changes for Observer {
     }
 }
 
-/// One DynamicModifiers capture's countries: carried and read.
 pub fn record_countries(carried: u64, read: u64) {
     let reads = &READS[Domain::DynamicModifiers as usize];
     for (target, value) in reads.iter().zip([carried, read]) {
@@ -219,22 +177,16 @@ pub fn record_countries(carried: u64, read: u64) {
     }
 }
 
-/// Receiver counts from the existing daily MIO and variant workers.
-/// These domains do not participate in hourly boundary scans.
 pub fn record_daily(domain: Domain, carried: bool, read: bool) {
     for (target, value) in READS[domain as usize].iter().zip([carried, read]) {
         target.fetch_add(u64::from(value), Ordering::Relaxed);
     }
 }
 
-/// What a capture does this hour, decided before any read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plan {
-    /// The token taken before the hour's reads.
     token: Option<Token>,
-    /// Publish the held table without reading.
     pub carry: bool,
-    /// The token stood still across the read ([`Plan::read`]).
     steady: bool,
 }
 
@@ -245,15 +197,12 @@ impl Default for Plan {
 }
 
 impl Plan {
-    /// Read afresh and hold nothing: no store, or another capture holds it.
     pub const READ: Self = Self {
         token: None,
         carry: false,
         steady: false,
     };
 
-    /// Right after the hour's reads: whether no writer ran across them, so
-    /// that the read may be held under the token taken before it.
     pub fn read(self, domain: Domain, changes: &(impl Changes + ?Sized)) -> Self {
         Self {
             steady: self.token.is_some() && changes.token(domain) == self.token,
@@ -262,8 +211,6 @@ impl Plan {
     }
 }
 
-/// A table held whole between hours: its latest complete read and the token
-/// taken before it.
 pub struct Held<P> {
     token: Option<Token>,
     pub payload: P,
@@ -277,8 +224,6 @@ impl<P> Held<P> {
         }
     }
 
-    /// Before the hour's reads. A full hour (load, gap, recovery or a
-    /// requested refresh) always reads.
     pub fn plan(
         &self,
         domain: Domain,
@@ -294,22 +239,15 @@ impl<P> Held<P> {
         }
     }
 
-    /// Whether a carrying `plan` still finds the table it planned to carry
-    /// (a capture whose reads and publication run on different threads).
     pub fn holds(&self, plan: Plan) -> bool {
         plan.carry && self.token == plan.token
     }
 
-    /// The held table a carrying plan publishes, counting the quiet hour.
     pub fn carried(&self, domain: Domain) -> &P {
         READS[domain as usize][0].fetch_add(1, Ordering::Relaxed);
         &self.payload
     }
 
-    /// After a fresh read, with the plan [`Plan::read`] returned: `read` when
-    /// it completed. The read is held (`hold`, off the game thread, false
-    /// when its storage could not grow) when the token stood still across
-    /// it, and nothing is held otherwise.
     pub fn settle(
         &mut self,
         domain: Domain,
@@ -325,7 +263,6 @@ impl<P> Held<P> {
     }
 }
 
-/// Replace `held` with `fresh`, worker-only; false when storage could not grow.
 pub fn assign<T: Copy>(held: &mut Vec<T>, fresh: &[T]) -> bool {
     held.clear();
     if engine_allocation::reserve(held, fresh.len()).is_err() {
@@ -335,27 +272,19 @@ pub fn assign<T: Copy>(held: &mut Vec<T>, fresh: &[T]) -> bool {
     true
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.iter().map(WatchRegistry::active).sum::<usize>() + crate::doctrine_changes::active()
 }
 
-/// Shared design callbacks in flight, even when forwarding is withdrawn.
-/// Entry precedes the forwarding gate; exit follows the original and receiver's
-/// terminal work. Control-thread capability publication uses this census rather
-/// than adding another callback counter.
 pub fn design_forwarder_active() -> usize {
     WATCHES[Domain::DesignIndustrialOrganisation as usize].active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery.
 pub fn boundary(invalidate: bool) {
     if invalidate {
         WATCHES[Domain::GameFog as usize].boundary(true);
         crate::doctrine_changes::invalidate();
     }
-    // MIO certificates are prepared only by their existing daily worker.
     for watches in WATCHES
         .iter()
         .take(Domain::IndustrialOrganisationRosters as usize)
@@ -364,7 +293,6 @@ pub fn boundary(invalidate: bool) {
     }
 }
 
-/// The building family owns nudge construction and forwards that fog writer.
 pub fn fog_forwarder(enabled: bool) {
     FOG_BUILDINGS_ENABLED.store(enabled, Ordering::SeqCst);
     WATCHES[Domain::GameFog as usize].set_enabled(enabled && HOOKS_ENABLED.load(Ordering::Acquire));
@@ -373,37 +301,25 @@ pub fn fog_nudge_entered() -> Notification<'static> {
     NUDGED.store(true, Ordering::SeqCst);
     WATCHES[Domain::GameFog as usize].notify(0)
 }
-/// Nudge mode was entered during this attachment.
 static NUDGED: AtomicBool = AtomicBool::new(false);
-/// Map content (province bindings, regions, terrain) can be held for a world: the building
-/// family forwards nudge mode, whose editor rebuilds it with no hooked writer, and it was not
-/// entered during this attachment.
 pub fn map_content_stable() -> bool {
     FOG_BUILDINGS_ENABLED.load(Ordering::SeqCst) && !NUDGED.load(Ordering::SeqCst)
 }
 
-/// Off the game thread: size the dynamic modifier watches for `slots`
-/// country slots.
 pub fn presize(slots: usize) {
     WATCHES[Domain::DynamicModifiers as usize].offer(slots);
 }
 
-/// Reuse the existing boundary and watch-table provisioning; called only by
-/// the daily MIO worker from live demand, never from the hourly callback.
 pub fn prepare_mios(count: usize, invalidate: bool) {
     let watches = &WATCHES[Domain::IndustrialOrganisationRosters as usize];
     watches.offer(count);
     watches.boundary(invalidate);
     WATCHES[Domain::IndustrialOrganisationPolicies as usize].boundary(invalidate);
 }
-/// A MIO's rare rosters; reading this certificate does not drain dirty marks.
 pub fn mio_rosters(pointer: usize) -> Option<Token> {
     WATCHES[Domain::IndustrialOrganisationRosters as usize].sequence(pointer)
 }
 
-/// Certificates cover policy identity/name/context/score only. Cost and cooldown
-/// are always read in the existing daily production-country census. Reload and
-/// score refresh are the writers of the carried caches.
 pub fn mio_policy_reload() -> Notification<'static> {
     WATCHES[Domain::IndustrialOrganisationPolicies as usize].notify(0)
 }
@@ -420,7 +336,6 @@ pub fn mio_policies() -> Option<Token> {
     WATCHES[Domain::IndustrialOrganisationPolicies as usize].quiet()
 }
 
-/// Runs only in the existing daily variant-detail acquisition worker.
 pub fn prepare_design_mios(count: usize, invalidate: bool) {
     let watches = &WATCHES[Domain::DesignIndustrialOrganisation as usize];
     watches.offer(count);
@@ -430,7 +345,6 @@ pub fn design_mio(pointer: usize) -> Option<Token> {
     WATCHES[Domain::DesignIndustrialOrganisation as usize].sequence(pointer)
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     for watches in &WATCHES {
         watches.collect();
@@ -485,14 +399,14 @@ impl Hooks {
     fn world_inputs_enabled(&self, enabled: bool) -> bool {
         enabled && self.world_hooks == SITES
     }
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel leaves the family uninstalled. Existing polled
-    /// families read afresh; doctrine tables refuse without their writer coverage.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel leaves the family uninstalled. Existing polled"]
+    #[doc = " families read afresh; doctrine tables refuse without their writer coverage."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
@@ -573,10 +487,6 @@ impl Hooks {
                 watches.set_enabled(false);
             }
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|why| format!("WorldInputs native writer state change: {why}"))?
         {
@@ -621,8 +531,6 @@ impl Drop for Hooks {
         forwarder_enabled(false);
         POLICY_SCORE_OBSERVED.store(false, Ordering::SeqCst);
         navy_reset_enabled(false);
-        // SAFETY: like each Hook's relay, the domains hold no table; release
-        // only starts an epoch once the hooks were removed and drained.
         for watches in &WATCHES {
             unsafe { watches.release() };
         }
@@ -630,15 +538,11 @@ impl Drop for Hooks {
     }
 }
 
-/// Hook path: a writer of `site` ([`MUTATIONS`] index) is about to run;
-/// `first` is its first argument.
 #[inline]
 fn notify<const SITE: usize>(first: usize) -> Notification<'static> {
     CALLS[SITE].fetch_add(1, Ordering::Relaxed);
     let domain = MUTATIONS[SITE].1;
     let receiver = match domain {
-        // The container the writer is about to write names its country (a
-        // state's names none). Only its constructor writes the link.
         Domain::IndustrialOrganisationRosters | Domain::DesignIndustrialOrganisation => first,
         Domain::DynamicModifiers => unsafe {
             std::ptr::read_volatile(
@@ -651,9 +555,6 @@ fn notify<const SITE: usize>(first: usize) -> Notification<'static> {
     WATCHES[domain as usize].notify(receiver)
 }
 
-// Each site takes at most four integer or pointer arguments (RCX..R9) and
-// returns RAX unchanged from its original. The notification covers the
-// original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system-unwind" fn $name(
@@ -668,14 +569,9 @@ macro_rules! callback {
         }
     };
 }
-// Rename province (effect).
 callback!(rename_province, 0);
-// Reset province name (effect, scope).
 callback!(reset_province_name, 1);
-// Set region access modes (navy, changes).
 callback!(set_region_access_modes, 2);
-// Strategic navy reset keeps its sole patch owner and forwards any dependent
-// observation around the same original call, without changing this domain.
 unsafe extern "system" fn reset_navy(
     first: usize,
     second: usize,
@@ -708,15 +604,10 @@ unsafe fn dispatch_navy_reset(
         unsafe { original(first, second, third, fourth) }
     }
 }
-// Update threat total (manager).
 callback!(update_threat_total, 4);
-// Add dynamic modifier (container, definition, scope, days).
 callback!(add_dynamic_modifier, 5);
-// Renew dynamic modifier (container, definition, scope, days).
 callback!(renew_dynamic_modifier, 6);
-// Remove dynamic modifier (container, definition, scope).
 callback!(remove_dynamic_modifier, 7);
-// Dynamic modifier daily update (container).
 callback!(dynamic_modifier_daily_update, 8);
 
 callback!(mio_queue_append, 9);
@@ -731,7 +622,6 @@ callback!(mio_unlock_trait, 16);
 callback!(design_mio_bonuses, 17);
 callback!(design_mio_link, 18);
 callback!(design_mio_read, 21);
-// Moving consumes the source bonus store as well as replacing the destination.
 unsafe extern "system-unwind" fn design_mio_move(
     first: usize,
     second: usize,
@@ -743,7 +633,6 @@ unsafe extern "system-unwind" fn design_mio_move(
     let _source = WATCHES[Domain::DesignIndustrialOrganisation as usize].notify(second);
     timing.original(|| unsafe { invoke::<19>([first, second, third, fourth]) })
 }
-// CloneInto receives the destination in its second argument.
 unsafe extern "system-unwind" fn design_mio_clone(
     first: usize,
     second: usize,
@@ -760,7 +649,6 @@ callback!(mio_policy_score_refresh, 22);
 callback!(fog_enter_frontend, 24);
 callback!(fog_leave_nudge, 25);
 callback!(fog_toggle, 26);
-// This constructor has a fifth integer/pointer argument in its caller's stack.
 unsafe extern "system-unwind" fn fog_enter_game(
     a: usize,
     b: usize,
@@ -775,15 +663,12 @@ unsafe extern "system-unwind" fn fog_enter_game(
     timing.original(|| unsafe { original(a, b, c, d, e) })
 }
 
-/// Tests: supply a synthetic original and return the actual shared bonus
-/// refresh callback. Set only in an isolated test process with no writer active.
 #[cfg(any(test, feature = "test-support"))]
 pub fn design_bonus_refresh_for_test(original: Original) -> Original {
     ORIGINAL[17].store(original as usize, Ordering::Release);
     design_mio_bonuses
 }
 
-/// Tests: domains of one test's own.
 #[cfg(any(test, feature = "test-support"))]
 pub struct Isolated {
     pub watches: [WatchRegistry; DOMAINS],
@@ -798,7 +683,6 @@ impl Default for Isolated {
 
 #[cfg(any(test, feature = "test-support"))]
 impl Isolated {
-    /// Observed, as installed hooks would be.
     pub fn new() -> Self {
         let isolated = Self {
             watches: [const { WatchRegistry::new() }; DOMAINS],
@@ -811,12 +695,10 @@ impl Isolated {
         isolated
     }
 
-    /// A writer of `domain` runs and returns.
     pub fn write(&self, domain: Domain) {
         drop(self.watches[domain as usize].notify(0));
     }
 
-    /// A dynamic modifier writer of `country`'s container runs and returns.
     pub fn write_country(&self, country: usize) {
         drop(self.watches[Domain::DynamicModifiers as usize].notify(country));
     }
@@ -831,7 +713,6 @@ impl Changes for Isolated {
     fn token(&self, domain: Domain) -> Option<Token> {
         self.watches[domain as usize].quiet()
     }
-    /// The naval tree half is held still.
     fn country(&self, country: usize) -> Option<[(u64, u64); 2]> {
         Some([
             self.watches[Domain::DynamicModifiers as usize].sequence(country)?,
@@ -1076,9 +957,6 @@ mod tests {
         assert_eq!(forwarded_site(21), None);
     }
 
-    /// A quiet hour carries the held read; a write, a full hour or an
-    /// unobserved domain reads afresh, and a read the token did not stand
-    /// still across is not held.
     #[test]
     fn a_held_table_is_carried_only_while_its_domain_is_quiet() {
         let changes = Isolated::new();
@@ -1098,17 +976,14 @@ mod tests {
         changes.write(domain);
         let plan = held.plan(domain, &changes, false);
         assert!(!plan.carry);
-        // A writer runs during the read: the read is published, not held.
         changes.write(domain);
         read(&mut held, plan, &[3]);
         assert!(!held.plan(domain, &changes, false).carry);
         let plan = held.plan(domain, &changes, false);
         read(&mut held, plan, &[3]);
         assert!(held.plan(domain, &changes, false).carry);
-        // Another domain's writer leaves this one quiet.
         changes.write(Domain::Tension);
         assert!(held.plan(domain, &changes, false).carry);
-        // A capture whose read did not complete holds nothing.
         let plan = held.plan(domain, &changes, false);
         held.settle(domain, plan, false, |_| true);
         assert!(!held.plan(domain, &changes, false).carry);
@@ -1135,7 +1010,6 @@ mod mio_certificate_tests {
             let current = watches.sequence(0x1230).unwrap();
             drop(watches.notify(0x4560));
             assert_eq!(watches.sequence(0x1230), Some(current));
-            // A reused pointer after world invalidation cannot certify old rows.
             watches.boundary(true);
             assert_ne!(watches.sequence(0x1230), Some(current));
             watches.poison();

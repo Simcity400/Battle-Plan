@@ -1,4 +1,3 @@
-//! Native material admission, before a tree selects record zero of its LOD.
 use installed_content_core::{ResolvedLayers, mesh};
 use installed_content_image::native::Decode;
 use shader_pipeline::library::Library;
@@ -17,8 +16,6 @@ impl Materials {
     }
 
     pub fn admitted(&mut self, material: &mesh::Material, sub: &mesh::SubMesh) -> io::Result<bool> {
-        // Start with the default effect key, then replace the
-        // source for every variant only when meshsettings.shader_file is nonempty.
         let file = material
             .shader_file
             .as_deref()
@@ -38,9 +35,6 @@ impl Materials {
         if !base.is_empty() && effect.select(&name).map_err(io::Error::other)?.is_some() {
             return Ok(true);
         }
-        // The game uses the installed global fallback on a base lookup miss.
-        // Register fallback effects without material UV defines;
-        // The game stores their handles. Only a missing fallback skips the record.
         let fallback = self
             .library
             .load(b"gfx/FX/pdxmesh.lua", &[])
@@ -54,7 +48,6 @@ impl Materials {
     }
 }
 
-/// The game checks the authored key before applying any meshsettings override.
 pub fn candidate(sub: &mesh::SubMesh) -> bool {
     sub.material
         .as_ref()

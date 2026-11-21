@@ -1,6 +1,3 @@
-//! Runtime project details share the existing selected project acquisition.
-//! Variable maps are read only on first observation or a notified native write;
-//! the native census supplies identity and address, so there is no second walk.
 use super::*;
 use collector_observers::project_variable_changes;
 use std::collections::HashMap;
@@ -17,7 +14,6 @@ struct Held {
     recorded_variables: Option<std::sync::Arc<rows::ProjectVariableStore>>,
     recorded_bytes: usize,
     freeze_pending: bool,
-    // Membership survives a refused read or a same-key pointer replacement.
     queued: bool,
     pending_known: bool,
     pending: Option<u32>,
@@ -150,7 +146,6 @@ impl Runtime {
         for row in rows {
             let key = (row.owner, row.local_id);
             if !self.held.contains_key(&key) {
-                // Unheld, this row records no runtime; the rows after it still refresh.
                 if engine_allocation::reserve_map(&mut self.held, 1).is_err() {
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                     PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);
@@ -175,11 +170,8 @@ impl Runtime {
                     held.freeze_pending = false;
                     return;
                 };
-                // Registration reuses the authenticated project; no extra pool walk.
                 let stamp = project_variable_changes::register(store, row.owner, row.local_id);
                 let pending_stamp = project_variable_changes::pending_stamp(store);
-                // Daily offer generation advances the iteration counter. Commands
-                // and effects forward their existing project writer around the call.
                 if pending_stamp.is_none() {
                     held.pending_known = false;
                     PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);

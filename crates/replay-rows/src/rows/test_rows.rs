@@ -1,5 +1,3 @@
-//! Rows and values the registry's tests declare through the row codecs, which only this crate
-//! can expand.
 use super::*;
 use crate::display::Rounding;
 use crate::value::value_struct;
@@ -30,7 +28,6 @@ typed_codec!(SteppedRow, 64, |row| row.id as u128,
  |key| Self { id: key as u64, ..Default::default() },
  { 0 => (exact): I64, 1 => (level): I64 @ TENTH, 2 => (optional): OptionalI64 @ TENTH, 3 => (recorded): I64 @ WHOLE, 4 => (pair): Opaque @ TENTH, 5 => (gauges): Opaque }, |_row| Ok(()));
 
-/// [`CountedRow`]'s key-field checks so far.
 pub static COUNTED_ROW_CHECKS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct CountedRow {
@@ -45,8 +42,6 @@ typed_codec!(CountedRow, 32, |row| row.key as u128,
     Ok(())
 });
 
-/// The format-101 layout of a land combat side, before its hover-only
-/// and oracle-only parts retired.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HistoricalSide {
     pub committed: Vec<u64>,

@@ -1,4 +1,3 @@
-//! Numeric localisation's live-scope grammar and property dispatch admission.
 
 use super::*;
 use engine_executable::{
@@ -86,8 +85,6 @@ pub(super) fn admit<'a>(
     let parsed = evaluator
         .operand(operand.as_bytes())
         .map_err(|why| why.to_string())?;
-    // These grammar exits precede live-scope character selection. Nested defaults, indices,
-    // targets and prefixes parse with a default scope, not the live one.
     if parsed.literal.is_some()
         || parsed.token.is_some()
         || parsed.mtth.is_some()

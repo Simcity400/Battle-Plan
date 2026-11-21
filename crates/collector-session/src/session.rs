@@ -1,16 +1,3 @@
-//! World-tension acquisition: the CWorldThreat manager word, its ordered
-//! contribution vector and its per-country aggregate cache, read every hour.
-//! An hour whose tension domain is quiet ([`crate::world_input_changes`]:
-//! The world tension total update, which every source writer ends in, did not
-//! run since the held read) reads nothing: the acquisition worker plans the
-//! hour against the held read and the decode worker publishes it.
-//!
-//! The hourly game speed is not a table here: it is already read
-//! by the authenticated clock read in the same guarded batch as the hour, so it
-//! rides on the existing Clock row instead of paying a second read and a second
-//! availability outcome. Pause use is not recorded.
-//!
-//! Worker-owned capture growth and replay conversion allocate.
 
 use crate::world_input_changes::{self as changes, Changes, Domain, Held, Plan};
 use crate::{
@@ -67,14 +54,12 @@ impl Capacities {
         Ok(())
     }
 
-    /// ThreatCountryAggregates is the engine's dense per-country cache.
     pub fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[2], rows(slots.saturating_add(1), 1));
     }
 }
 
-/// The three tables' latest complete read and its reason bytes.
 pub struct Tension {
     manager: Vec<cworld_threat::ManagerRow>,
     sources: Vec<cthreat_source::Row>,
@@ -99,12 +84,8 @@ impl Tension {
     }
 }
 
-/// The held read. The acquisition worker plans each hour against it; the
-/// single FIFO decode worker publishes or replaces it in hour order.
 static HELD: Mutex<Held<Tension>> = Mutex::new(Held::new(Tension::new()));
 
-/// Where a job plans and publishes its hours: the hooks' domain and the held
-/// read, or a test's own.
 #[derive(Clone, Copy)]
 pub struct Observed {
     pub changes: &'static dyn Changes,
@@ -126,7 +107,6 @@ impl std::fmt::Debug for Observed {
     }
 }
 
-/// One acquisition pass: the three table outcomes plus its reason-arena use.
 struct Pass {
     tables: [Outcome; N],
     bytes_len: usize,
@@ -149,11 +129,6 @@ pub struct Captured {
     aggregates: CaptureRows<cworld_threat::AggregateRow>,
     reason_bytes: Arena<u8>,
     active: bool,
-    /// Raw-copy split gate for the scheduled session family (copy/decode split).
-    /// Set when an acquisition worker supplies a valid raw payload; `capture`
-    /// then skips the typed walks and the decode worker fills these rows
-    /// before the ready handoff. Preserved across `reset` (set per capture,
-    /// cleared by the worker after decode).
     pub raw_mode: bool,
 }
 
@@ -169,7 +144,6 @@ impl Captured {
         }
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -213,7 +187,6 @@ impl Captured {
         self.active = replay_data::cadence::should_walk(TableId::WorldTension, hour, force_full);
     }
 
-    /// Worker-owned rows and reasons grow from original headers before publication.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -239,12 +212,7 @@ impl Captured {
             self.fail_session_capture(replay_data::cadence::SKIPPED_REASON);
             return [0; N];
         }
-        // On a scheduled refresh, the acquisition worker stages raw bytes via
-        // `copy_session_refresh`; the decode worker fills the typed rows before
-        // the ready handoff.
         if self.raw_mode {
-            // Refresh payload staged: leave the reset outcomes for the decode
-            // worker, which installs identical rows, outcomes and arenas.
             return [0; N];
         }
 
@@ -259,7 +227,6 @@ impl Captured {
         [elapsed(begin), 0, 0]
     }
 
-    /// One authenticated pass over all three tables into the primary buffers.
     fn pass(
         &mut self,
         memory: &impl Memory,
@@ -270,8 +237,6 @@ impl Captured {
             Ok(reader) => reader,
             Err(reason) => return Pass::unavailable(reason),
         };
-        // World-tension aggregates use the full current country census.
-        // These are the original owned header extents.
         let grown = (|| {
             engine_native::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
             engine_native::walk::Buffer::Growing(&mut self.aggregates.rows)
@@ -307,7 +272,6 @@ impl Captured {
         ]
     }
 
-    /// Spool-thread conversion; raw operands and incomplete status survive.
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
         [
@@ -369,37 +333,16 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-// ===========================================================================
-// Scheduled session raw-copy split (WorldTension, ThreatSources,
-// ThreatCountryAggregates).
-//
-// The acquisition worker copies raw bytes only: manager pointer, manager header
-// (vtable, total, both array headers), per-source pointers with head and
-// reason strings and the aggregate cache in one span. No row is decoded during acquisition.
-// The single FIFO decode worker replays the `cworld_threat::Reader` walk against the
-// recorded spans (`crate::raw::Recorded`), so rows, ordinals, arenas,
-// truncation and failure reasons are identical by construction (see
-// `crate::raw` for the mirror rules).
-//
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: validation, precedence and error scope
-// are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless.
-// ===========================================================================
 
-/// Fault-attribution bits, one per session table in family order.
 const M_SOURCES: u32 = 0x02;
 const M_AGGREGATES: u32 = 0x04;
 const M_ALL: u32 = 0x07;
 
-/// One refresh of raw session payload. Worker acquisition grows from original
-/// requests and owned decoding grows the rows before publication.
 #[derive(Debug, Default)]
 pub struct SessionJob {
     pub log: RawLog<3>,
     pub game_state: usize,
     active: bool,
-    /// This hour against the held read: a carried hour copies nothing.
     plan: Plan,
     pub observed: Observed,
 }
@@ -415,7 +358,6 @@ impl SessionJob {
         }
     }
 
-    /// Reset lengths for reuse, keeping every capacity. No allocation.
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
@@ -427,8 +369,6 @@ impl SessionJob {
         self.log.grow_for_next()
     }
 
-    /// Fixed fixtures retain demand for their next independent observation.
-    /// Production workers grow before each original span is acquired.
     pub fn grow(&mut self) {
         self.log.grow();
     }
@@ -436,14 +376,11 @@ impl SessionJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SessionCopyReport {
-    /// Fixed fixtures can report staging overflow. Production acquisitions
-    /// retain their original source observation without a live retry.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 3],
     pub raw_bytes: [u64; 3],
 }
 
-/// Acquisition-worker copy parameters, bundled to keep dispatch small.
 #[derive(Debug, Clone, Copy)]
 pub struct SessionCopyContext {
     pub base: usize,
@@ -456,11 +393,6 @@ fn pool_u64(log: &RawLog<3>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-/// One mirrored span read. `None` addresses (arithmetic overflow) record
-/// nothing because the typed walk fails locally without reads. Bulk spans
-/// serve enclosed sub-reads (e.g., 8-byte length words inside a 32-byte
-/// string header) via `Recorded` containment, so superset headers cover the
-/// walk's scattered reads.
 fn sspan(
     log: &mut RawLog<3>,
     memory: &impl engine_native::Memory,
@@ -471,8 +403,6 @@ fn sspan(
     log.take_bulk(memory, addr?, len, mask)
 }
 
-/// Heap payload and terminator takes for one parsed reason literal. Inline
-/// strings ride in the already-copied header span.
 fn copy_reason_literal(
     log: &mut RawLog<3>,
     memory: &impl engine_native::Memory,
@@ -489,9 +419,6 @@ fn copy_reason_literal(
     let _ = sspan(log, memory, source.checked_add(len), 1, M_SOURCES);
 }
 
-/// Mirror of one threat source's read set: head plus reason string header
-/// with heap payload. Takes are unconditional; the replay validates vtables
-/// and string headers itself.
 fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native::Memory, pointer: usize) {
     use engine_native::msvc_string;
     use engine_stability::cthreat_source;
@@ -519,8 +446,6 @@ fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native::Memory, pointer
     };
     let inline = capacity == msvc_string::INLINE_CAPACITY;
     if inline {
-        // Terminator lives in the already-copied header; the replay checks
-        // it locally without extra spans.
         let _ = head;
         return;
     }
@@ -537,9 +462,6 @@ fn copy_source(log: &mut RawLog<3>, memory: &impl engine_native::Memory, pointer
     copy_reason_literal(log, memory, len, source, false);
 }
 
-/// One structural pass: manager pointer, manager header, sources with
-/// reasons and aggregates.
-/// Stops at the first typed abort point; later extras are harmless.
 fn copy_pass(
     memory: &impl engine_native::Memory,
     base: usize,
@@ -598,15 +520,12 @@ fn copy_pass(
             return;
         }
     }
-    // One span for the contiguous cache: the walk fails the whole table at
-    // any unreadable slot, as it does when this span fails.
     let len = (aggregates.count as usize).saturating_mul(cworld_threat::AGGREGATE_STRIDE);
     if len != 0 {
         let _ = sspan(log, memory, Some(aggregates.data), len, M_AGGREGATES);
     }
 }
 
-/// Acquire one refresh into its owned payload.
 pub fn copy_session_refresh(
     memory: &impl engine_native::Memory,
     ctx: SessionCopyContext,
@@ -644,7 +563,6 @@ pub fn copy_session_refresh(
 }
 
 impl Captured {
-    /// Mark an accepted acquisition failure without retrying live memory.
     pub fn fail_session_capture(&mut self, reason: &'static str) {
         let reason = if self.active {
             reason
@@ -658,10 +576,6 @@ impl Captured {
         self.raw_mode = false;
     }
 
-    /// Decode-worker interpretation of a scheduled raw payload into the pooled
-    /// typed rows. Outcomes and arena bytes match the typed walk exactly
-    /// because the identical walk runs against the recorded spans. Clears `raw_mode`
-    /// so the next capture starts clean.
     pub fn decode_session_payload(
         &mut self,
         base: usize,
@@ -696,8 +610,6 @@ impl Captured {
         self.raw_mode = false;
     }
 
-    /// A carried hour publishes the held read, when it is still the one the
-    /// worker planned against (a failed decode in between forgot it).
     fn install_held(&mut self, held: &Mutex<Held<Tension>>, plan: Plan) {
         let Some(held) = held.lock().ok().filter(|held| held.holds(plan)) else {
             self.fail_session_capture("held world tension read no longer held");
@@ -728,8 +640,6 @@ impl Captured {
         self.reason_bytes.required = tension.reasons.len();
     }
 
-    /// After a decoded read: hold it when the worker saw the token stand
-    /// still across its copy.
     fn hold(&self, observed: Observed, plan: Plan) {
         let Ok(mut held) = observed.held.lock() else {
             return;

@@ -1,4 +1,3 @@
-//! Supply simulation caches have narrower save coverage than hub settings.
 use super::*;
 
 pub fn compare(
@@ -25,14 +24,6 @@ fn equal<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actua
         report.difference(label, actual, expected);
     }
 }
-/// Node, parent and route provinces join the verified map census; a node or
-/// parent id outside it is one the game's province getter
-/// resolves as null during province lookup, which the
-/// walk records as stored and this check names as a limitation. The save's
-/// provinces block is sparse (see Save::provinces), so a province missing there
-/// is not evidence of a missing engine province. A country's nodes and
-/// inventory come from one read at its daily slice, so the census checks
-/// hold for every country's held rows, whatever its read hour.
 fn nodes(
     frame: &DecodedFrame,
     membership: &save::PartialMapMembership,
@@ -55,7 +46,6 @@ fn nodes(
         }
         provinces.insert((row.country, row.province));
         if row.is_vertex() {
-            // A vertex row carries only its province-keyed parent edge.
             if row.index != replay_data::rows::SupplyNodeRow::VERTEX | row.province
                 || (row.kind, row.flag, row.available, row.consumed) != (0, 0, 0, 0)
             {
@@ -65,9 +55,6 @@ fn nodes(
             *counts.entry(row.country).or_default() += 1;
         }
         let label = format!("SupplyNodes {}:{}", row.country, row.index);
-        // Node creators store unchecked province ids, from a copied record or the companion's
-        // node-province array; the country-local parent walk does not validate those ids against
-        // map membership.
         const NULL: &str = "a supply node or parent id the game resolves as the null province; no map province joins it";
         if !known(row.province) {
             report.limitation(NULL, format!("{label}.province {}", row.province));
@@ -88,7 +75,6 @@ fn nodes(
             ));
         }
     }
-    // The game's parent walk never leaves the country's rows.
     if rows
         .iter()
         .any(|r| r.parent > 0 && !provinces.contains(&(r.country, r.parent as u32)))
@@ -121,9 +107,6 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         .iter()
         .map(|r| (r.id, r))
         .collect();
-    // A country's allocations are compared with the saved variants only when
-    // its slice was read at the oracle hour; its census membership and
-    // captured fields hold for every country's held read.
     let current = current_slice_owners(frame, TableId::TrainInventory, report)?;
     slice_owner_limitation(frame, TableId::TrainInventory, &current, report);
     let systems = save
@@ -220,8 +203,6 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
         seen,
         countries.keys().copied().collect(),
     );
-    // The game writes a country supply block only for the owned-state count > 0.
-    // The recorded owned-state count identifies the exact saved subset.
     let tags: BTreeSet<_> = countries.values().map(|country| &country.tag).collect();
     for tag in systems.keys() {
         equal(
@@ -280,9 +261,6 @@ fn trains(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     Ok(())
 }
 
-/// The supply writer writes `temp_nodes` in array order, with mandatory
-/// signed province field and Boolean status. Ordinals preserve the game's
-/// first-match lookup when provinces repeat.
 fn floating_harbors(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let countries = country_context(frame)?;
     let slots: BTreeMap<_, _> = countries
@@ -350,7 +328,6 @@ fn floating_harbors(frame: &DecodedFrame, save: &Save, report: &mut Report) -> i
                 row.province,
                 expected.province,
             );
-            // The game spells every nonzero status byte as yes.
             equal(
                 report,
                 &format!("{label}.base"),

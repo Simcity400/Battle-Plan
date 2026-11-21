@@ -1,9 +1,3 @@
-//! Naval battles: each live battle from the recorder's NavalBattles (a combat handle read every hour
-//! at one province: its first hour, peak and sunk floors) beside its sides as NavalCombatParticipants
-//! hold them hour by hour, and each retained result whose battle ended in the window, joined to the
-//! battle its source named only through NavalResultObservations. A window reads the battles' rows
-//! and their participants' changes over its hours ([`replay::lanes::history`]); the ranking reads
-//! each battle's last state ([`replay::lanes::at_each`]) and the sides of the rows it shows.
 
 use dashboard_base::products::Country;
 use super::super::{LoadContext, Product, country_ids, groups::MembershipRun};
@@ -30,10 +24,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// NavalBattles' columns: first hour, peak ships and hour, then the sunk and convoys-sunk floors
-/// of attackers and defenders.
 const BATTLE_COLUMNS: [usize; 7] = [0, 1, 2, 3, 4, 5, 6];
-/// NavalCombatParticipants' ship, owner and state.
 const PARTICIPANT_COLUMNS: [usize; 3] = [0, 1, 2];
 const MEASURES: [&str; 3] = ["Ships sunk", "Peak ships", "Length"];
 
@@ -56,7 +47,6 @@ pub struct NavalBattlesManifestParams {
     pub branch_id: String,
 }
 
-/// Countries chosen by tag, or by membership runs; every country when neither.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -67,8 +57,6 @@ pub struct NavalBattleCountryFilter {
 }
 
 impl NavalBattleCountryFilter {
-    /// Whether a battle whose sides hold these countries at `hour` is chosen: a side not known
-    /// whole is never left out, as its countries may be.
     pub fn matches(&self, holders: &dashboard_query::identity::Holders, sides: &[BattleSide], hour: i32) -> bool {
         if self.countries.is_none() && self.membership.is_none() || sides.iter().any(|side| side.countries_unknown.is_some()) {
             return true;
@@ -101,7 +89,7 @@ pub struct NavalBattleRun {
     pub last_hour: i32,
     pub row: BattleRow,
     pub peak_hour: Option<i32>,
-    /// Ships sunk, Peak ships and Length.
+    #[doc = " Ships sunk, Peak ships and Length."]
     pub measures: Vec<BattleValue>,
 }
 
@@ -121,7 +109,7 @@ pub struct NavalBattlesReply {
     pub window: usize,
     pub interval: BattleWindow,
     pub rows: Vec<NavalBattleHistory>,
-    /// The window's hours whose live combats were read.
+    #[doc = " The window's hours whose live combats were read."]
     pub observed: Vec<(i32, i32)>,
     pub warnings: Vec<BattleWarning>,
     pub content_warnings: Vec<String>,
@@ -180,19 +168,16 @@ fn number(cell: Cell) -> Option<i64> {
     }
 }
 
-/// The cells `steps` hold at `hour`; none where the row is not shown.
 fn step_at(steps: &[Step], hour: i32) -> Option<&[Cell]> {
     let at = steps.partition_point(|step| step.hour <= hour).checked_sub(1)?;
     steps[at].cells.as_deref()
 }
 
-/// A battle row's cells at an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BattleCells {
     pub first_hour: i32,
     pub peak: Option<i64>,
     pub peak_hour: Option<i32>,
-    /// Sunk and convoys sunk, attackers then defenders.
     pub sunk: [Option<i64>; 2],
     pub convoys_sunk: [Option<i64>; 2],
 }
@@ -214,7 +199,6 @@ impl BattleCells {
     }
 }
 
-/// One side of a battle at an hour, from its participants.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SideAt {
     pub ships: i64,
@@ -223,8 +207,6 @@ pub struct SideAt {
     pub unknown: bool,
 }
 
-/// The sides `participants` (a combat's rows, keyed side above battle slot) hold at `hour`: a
-/// participant with no ship is a convoy; an owner no tag names leaves its side's countries unknown.
 pub fn sides_at<'a>(participants: impl Iterator<Item = (u128, Option<&'a [Cell]>)>, tag: &dyn Fn(u32) -> Option<String>) -> [SideAt; 2] {
     let mut sides: [SideAt; 2] = Default::default();
     for (key, cells) in participants {
@@ -249,7 +231,6 @@ pub fn sides_at<'a>(participants: impl Iterator<Item = (u128, Option<&'a [Cell]>
     sides
 }
 
-/// A live battle's run as the reply draws it.
 pub fn live_run(id: &str, cells: &BattleCells, sides: Option<&[SideAt; 2]>, first: i32, last: i32) -> NavalBattleRun {
     let reason = "Participants not recorded";
     NavalBattleRun {
@@ -283,12 +264,10 @@ pub fn live_run(id: &str, cells: &BattleCells, sides: Option<&[SideAt; 2]>, firs
     }
 }
 
-/// A battle's id: its combat handle and first hour.
 pub fn battle_id(combat: u64, first_hour: i32) -> String {
     format!("combat:{combat}:{first_hour}")
 }
 
-/// A battle id's combat handle and first hour.
 pub fn parse_id(id: &str) -> Option<(u64, i32)> {
     let mut parts = id.strip_prefix("combat:")?.split(':');
     let combat = parts.next()?.parse().ok()?;
@@ -296,7 +275,6 @@ pub fn parse_id(id: &str) -> Option<(u64, i32)> {
     parts.next().is_none().then_some((combat, first))
 }
 
-/// Raw country ids named at an hour, through the run's links and the timeline's holders.
 struct Tags<'q> {
     links: country_ids::RunLinks,
     names: country_ids::Names,
@@ -313,7 +291,6 @@ impl<'q> Tags<'q> {
     }
 }
 
-/// The battles of `first..=last` of `run`, each with its runs, by combat then first hour.
 fn live_battles(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32, cancelled: &AtomicBool) -> io::Result<Vec<NavalBattleHistory>> {
     let recording = query.replay.recording();
     let lives = crate::answer::lifetimes(source, run, TableId::NavalBattles)?;
@@ -352,7 +329,6 @@ fn live_battles(source: &Source, query: &Query<'_>, run: u32, first: i32, last: 
             });
             let next = live_run(&id, &cells, sides.as_ref(), start, end);
             match history.runs.last_mut() {
-                // A run is cut where what it shows changes; its length is read at its last hour.
                 Some(previous) if previous.last_hour + 1 == start && same(previous, &next) => {
                     let first_hour = previous.first_hour;
                     *previous = live_run(&id, &cells, sides.as_ref(), first_hour, end);
@@ -364,14 +340,11 @@ fn live_battles(source: &Source, query: &Query<'_>, run: u32, first: i32, last: 
     Ok(out.into_values().collect())
 }
 
-/// Whether two runs show the same battle state but for their hours and length.
 fn same(a: &NavalBattleRun, b: &NavalBattleRun) -> bool {
     let shown = |run: &NavalBattleRun| serde_json::to_string(&(&run.row.sides.iter().map(|side| (&side.counts, &side.losses, side.countries.iter().map(|c| &c.tag).collect::<Vec<_>>(), &side.countries_unknown)).collect::<Vec<_>>(), run.peak_hour, &run.measures[..2])).ok();
     shown(a) == shown(b)
 }
 
-/// The retained results whose battle ended within `first..=last` of `run`, each one run from its
-/// result hour.
 fn results(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<NavalBattleHistory>> {
     let recording = query.replay.recording();
     let lives = crate::answer::lifetimes(source, run, TableId::NavalResults)?;
@@ -399,9 +372,6 @@ fn results(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) 
     Ok(out)
 }
 
-/// A retained result's battle: one run from its result hour through `last`. `named` holds each
-/// side's countries as its list named them (none where the lists were not read, a tag none where
-/// no country held the id); like every run's, they are dated at the run's last hour.
 pub fn result_history(row: &NavalResultRow, observed: Option<&Observation>, named: [Option<Vec<Option<String>>>; 2], last: i32) -> NavalBattleHistory {
     let value = |cell: &Recorded<u32>| -> Option<i64> { recorded(cell).map(i64::from) };
     let start = observed.and_then(|observed| recorded(&observed.first_hour));
@@ -456,7 +426,6 @@ pub fn result_history(row: &NavalResultRow, observed: Option<&Observation>, name
     }
 }
 
-/// Runs of hours `table` was read within `first..=last`.
 fn observed(recording: &Recording, run: u32, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
     lanes::reads(recording, run, TableId::NavalCombats, first, last)
 }
@@ -550,7 +519,6 @@ impl Product for NavalBattles {
     }
 }
 
-/// A ranked battle's last state: its combat, cells, and the hour they were read.
 struct Ranked {
     combat: u64,
     cells: BattleCells,
@@ -596,7 +564,6 @@ impl Product for NavalBattlesRanking {
         for stretch in query.timeline.within(from, to) {
             crate::metadata::check_cancel(cancelled)?;
             let lives = crate::answer::lifetimes(source, stretch.run, TableId::NavalBattles)?;
-            // Each battle as it stood at its last hour within the range.
             let asks: Vec<(i32, u128)> = lives
                 .iter()
                 .filter(|&&(_, born, gone)| born <= i64::from(stretch.last) && gone >= i64::from(stretch.first))
@@ -683,7 +650,7 @@ pub struct NavalBattleNamedShip {
 pub struct NavalBattleDetail {
     pub id: String,
     pub hour: i32,
-    /// The hour its fleets are read at: the hour asked.
+    #[doc = " The hour its fleets are read at: the hour asked."]
     pub roster_hour: Option<i32>,
     pub fleets: [NavalBattleFleetNames; 2],
     pub named_ships: Vec<NavalBattleNamedShip>,
@@ -704,8 +671,6 @@ fn unknown_fleets(reason: &str) -> [NavalBattleFleetNames; 2] {
     std::array::from_fn(|_| NavalBattleFleetNames { names: Vec::new(), unknown: Some(reason.into()) })
 }
 
-/// Each side's fleets at `hour` in each of `combats` (in their order): its task forces' fleets, named as the game stored
-/// them. Battles at one hour share the three reads.
 fn fleets_at(seeker: &mut Seeker<'_>, run: u32, hour: i32, combats: &[u64], content: &sunk::Content, refused: &mut Refusals) -> io::Result<Vec<[NavalBattleFleetNames; 2]>> {
     let unknown = |reason: &str| combats.iter().map(|_| unknown_fleets(reason)).collect::<Vec<_>>();
     let Some(cat) = content.catalogue() else { return Ok(unknown("Fleet roster or content not recorded")) };
@@ -787,8 +752,6 @@ impl Product for NavalBattleDetails {
         let content = sunk::Content::load(source, context);
         let mut refused = Refusals::default();
         let mut reply = NavalBattleDetailsReply { rows: Vec::with_capacity(params.battles.len()), warnings: content.warnings() };
-        // The battles asked at each hour of each stretch (its run and first hour): what battles at one hour share (their
-        // fleets' reads, the sinking list and its names) is read once, and the sinking list's reads once a stretch.
         let mut at: BTreeMap<(u32, i32, i32), Vec<(usize, u64)>> = BTreeMap::new();
         for (index, asked) in params.battles.iter().enumerate() {
             let mut detail = NavalBattleDetail { id: asked.id.clone(), hour: asked.hour, roster_hour: None, fleets: unknown_fleets("Fleet roster not recorded"), named_ships: Vec::new(), ship_read: None, unavailable: None };
@@ -807,7 +770,6 @@ impl Product for NavalBattleDetails {
         }
         let mut stretch: Option<(u32, i32)> = None;
         let (mut reads, mut lists) = (Vec::new(), HashMap::new());
-        // The hours asked are read in order through one seeker: each table restored once a reply, not once an hour.
         let mut seeker = Seeker::new(recording)?;
         for (&(run, first, hour), battles) in &at {
             crate::metadata::check_cancel(cancelled)?;
@@ -820,7 +782,6 @@ impl Product for NavalBattleDetails {
             for (&(index, _), fleets) in battles.iter().zip(fleets_at(&mut seeker, run, hour, &combats, &content, &mut refused)?) {
                 reply.rows[index].fleets = fleets;
             }
-            // The list as its last read at or before the hour held it: a frame at a block's first hour gave none.
             let through: Vec<(i32, i32)> = reads.iter().take_while(|read| read.0 <= hour).map(|&(start, end)| (start, end.min(hour))).collect();
             let Some(&(_, read)) = through.last() else { continue };
             if !lists.contains_key(&read) {

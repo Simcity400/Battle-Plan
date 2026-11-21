@@ -1,4 +1,3 @@
-//! Shared fixed-point fuzzy unit-count law with caller-supplied salts and content operands.
 
 fn invalid_fixed(value: i64) -> bool {
     (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) > 0xffff_ffff_ffff_fffc
@@ -13,14 +12,11 @@ pub fn ratio(numerator: i64, denominator: i64) -> i64 {
 }
 
 fn fixed15(value: i64) -> i64 {
-    // Truncate the quotient and fractional remainder.
     (value / 100_000)
         .wrapping_mul(32_768)
         .wrapping_add((value % 100_000).wrapping_mul(1 << 30) / 3_276_800_000)
 }
 
-/// Apply the count law after the caller's salt. Land composition uses the
-/// subtype salt; air-base estimates use the country salt.
 pub fn count_range_seeded(
     count: i32,
     intel: i64,
@@ -49,7 +45,6 @@ pub fn count_range_seeded(
     let date = hour.wrapping_sub(43_800_000);
     let mut day = (date / 24) % 365;
     let mut month = 0_i32;
-    // Use the zero-based month and fixed month offsets.
     for length in [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] {
         if day < length {
             break;
@@ -84,7 +79,6 @@ pub fn count_range_seeded(
 }
 
 fn sqrt_fixed5(input: i64) -> i64 {
-    // Use fixed5 square root rather than floating-point square root.
     if input < 2 {
         return 0;
     }

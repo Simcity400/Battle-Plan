@@ -13,7 +13,6 @@ const traitEffects = (value: unknown): value is TraitEffects => object(value) &&
   && typeof value.known === 'boolean' && text(value.unknown) && text(value.name) && lines(value.lines)
   && groups(value.targeted) && groups(value.equipment) && strings(value.tooltips);
 
-/** Content effects consumed by the shared idea tooltip in a dated log. */
 export function ideaInfo(value: unknown): value is IdeaInfo {
   return object(value) && typeof value.token === 'string' && text(value.category) && text(value.slot)
     && typeof value.law === 'boolean' && typeof value.designer === 'boolean' && typeof value.effectsKnown === 'boolean'

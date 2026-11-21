@@ -48,11 +48,8 @@ export function validateTenures(value: unknown): OperativeTenuresReply {
   return value as unknown as OperativeTenuresReply;
 }
 
-/** One row of the table: an operative on an agency's list at the hour, or one that left it (shown muted). */
 export interface OperativeRow { key: string; operative: RosterOperative; artwork: readonly string[]; departed: DepartedOperative | null; joinedHour: number | null }
 
-/** The rows at `hour`: each asked agency's list, then (when asked) the operatives that left by then, each kept only while
- * its agency's country is among those chosen at the hour it is shown at. */
 export function rosterRows(roster: OperativesRosterReply | undefined, departed: OperativesDepartedReply | undefined, tenures: OperativeTenuresReply | undefined,
   hour: number, matches: (tag: string, hour: number) => boolean = () => true): OperativeRow[] {
   const joined = new Map<string, number>();
@@ -72,7 +69,6 @@ export function rosterRows(roster: OperativesRosterReply | undefined, departed: 
   return rows;
 }
 
-/** What renders the roster: every field but the numbers that move with the daily census (painted, `paintedOf`). */
 export function rosterStructure(reply: OperativesRosterReply): string {
   return JSON.stringify([reply.missing, reply.unheld, reply.agencyFeature, reply.artwork.map(url => url.length), reply.operatives.map(operative => {
     const { experienceRaw: _raw, experienceText: _text, experienceRatio: _ratio, assignmentDuration: _duration, assignmentProgress: _progress, ...fixed } = operative;
@@ -80,7 +76,6 @@ export function rosterStructure(reply: OperativesRosterReply): string {
   })]);
 }
 
-/** The numbers a census read moves, shown by painting. */
 export interface Painted { experience: string | null; experienceRatio: number | null; experienceRaw: number; duration: string | null; progress: number | null }
 export type PaintedField = 'experience' | 'experienceMeter' | 'duration' | 'progress';
 
@@ -89,12 +84,10 @@ export function paintedOf(operative: RosterOperative): Painted {
     duration: operative.assignmentDuration, progress: operative.assignmentProgress };
 }
 
-/** Each row's painted numbers, by row key. */
 export function paintedRows(reply: OperativesRosterReply): Map<string, Painted> {
   return new Map(reply.operatives.map(operative => [JSON.stringify([operative.roster, operative.id]), paintedOf(operative)]));
 }
 
-/** What a painted element shows: its text, or its meter's width as a share. */
 export function paintedText(painted: Painted | undefined, field: PaintedField): string {
   if (!painted) return '';
   switch (field) {
@@ -105,7 +98,6 @@ export function paintedText(painted: Painted | undefined, field: PaintedField): 
   }
 }
 
-/** Writes each painted element under `root` from `rows`: no render. */
 export function paintRoster(root: Element | null, rows: ReadonlyMap<string, Painted>) {
   if (!root) return;
   for (const element of root.querySelectorAll<HTMLElement>('[data-op-row]')) {
@@ -122,7 +114,6 @@ export function operativeName(operative: Pick<RosterOperative, 'name' | 'unnamed
   return operative.unnamed ? 'Unnamed operative' : operative.name ?? 'Name unknown';
 }
 
-/** The hour a row's countries are named at: a departed row's last, else the hour shown. */
 export const labelHour = (row: OperativeRow, shown: number) => row.departed ? row.departed.lastHour : shown;
 
 const leftWord = (reason: string) => reason === 'Left (reason not recorded)' ? 'Left' : reason;
@@ -139,7 +130,6 @@ export function operativeMoments(row: OperativeRow): OperativeMoment[] {
   return moments;
 }
 
-/** The captured column's words: whether, by whom and since when. */
 export function capturedText(operative: RosterOperative, name: (tag: string) => string): string {
   if (!operative.captured) return 'No';
   const by = operative.capturer?.tag ? name(operative.capturer.tag) : 'Yes · capturer unknown';

@@ -32,7 +32,6 @@ import { trackHourOf } from '../../dashboard/settledHour';
 
 const NO_ROWS: readonly PeaceRow[] = [];
 const NO_WARNINGS: string[] = [];
-/** Flags drawn for a side before the rest fold into its count. */
 const SIDE_FLAGS = 3;
 const chipExtraWidth = (item: PeaceChip) => 8 * 2 + 6 + (item.tag != null ? 18 + 4 : 0);
 const chipKey = (item: PeaceChip) => item.key;
@@ -47,9 +46,6 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
 useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const log = useMemo(() => data ? preparePeaceLog(data) : null, [data]);
   const filtered = useMemo(() => log ? filterPeaceLog(log, contentSet(actions).map(contentKey)) : null, [log, actions]);
-  // Following, the list renders a block at once: each conference's states through the block's end, hidden until the
-  // clock reaches them (`reveal`), and the missing-hours note as of the block's first hour. It renders again only when
-  // the clock leaves the block, never for a card revealed inside it.
   const following = active && live;
   const trackHour = useCallback((clockHour: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour) ?? clockHour),
     [widget, track, runtime.tracks]);
@@ -75,7 +71,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   const gapHint = useMemo(() => log && hour != null ? peaceGapHint(peaceGapsIn(log.gaps, hour, from)) : null, [log, hour, from]);
   const chips = useMemo(() => peaceActionChoices(log).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE })), [log]);
   const summary = useMemo(() => peaceSummary(rows), [rows]);
-  // Revealed by the clock, the counts are of the cards it shows, painted each frame: the block holds cards ahead.
   const summaryLive = useMemo<LiveTexts | null>(() => {
     if (!reveal) return null;
     let held: { hour: number; count: number; states: number; quiet: number } | null = null;
@@ -98,7 +93,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
     } };
   }, [reveal, rows]);
   const [visible, setVisible] = useState<readonly PeaceRow[]>(NO_ROWS);
-  // Revealed by the clock, every card the block draws is named with it, never as cards come into view.
   const wanted = useMemo(() => peaceWanted(reveal ? rows : visible), [reveal, rows, visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted.countries, active && !!data, Infinity);
   const stateAt = useStateNamesAt(runtime.client, track, wanted.states, active && !!data);
@@ -133,8 +127,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
     const label = labelAt(at)(tag);
     return <CountryFlagUrl key={tag} className="peace-flag" url={label.flag} detail={label.flagDetail} reason={label.flagReason} pending={label.flagPending} />;
   };
-  // One side on one line: its first flags, its first country and how many more,
-  // with every country and its flag's status in the side's tooltip.
   const side = (tags: readonly string[], at: number, captured: number | null, noun: string) => {
     const missing = captured == null ? 0 : captured - tags.length;
     if (!tags.length) return <span className="peace-muted">{missing > 0 ? `${plural(missing, noun)} not recorded` : `${noun[0].toUpperCase()}${noun.slice(1)}s not recorded`}</span>;
@@ -220,7 +212,6 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
     playhead={reveal ? hour : undefined} reveal={reveal} menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisible={reveal ? undefined : setVisible} empty={empty} /></div>;
 }
 
-/** The shown conferences' states (each state once per conference) and how many record no actions. */
 function peaceSummary(rows: readonly PeaceRow[]): { states: number; quiet: number } {
   let states = 0, quiet = 0;
   for (const { item: card } of rows) {

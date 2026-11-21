@@ -60,8 +60,6 @@ export interface LossRow {
 }
 export interface LossSnapshot { identity: string; rows: LossRow[]; total: bigint; incomplete: boolean }
 
-/** Every native lifetime counts once; missing and overlapping war membership is
- * an explicit path, never another copy of the same value. */
 export function lossesAt(reply: CasualtyBreakdownReply, hour: number): LossSnapshot | null {
   const at = Math.floor(hour), country = runAt(reply.countries, at);
   if (!runAt(reply.observed, at) || !country) return null;
@@ -79,15 +77,12 @@ export function lossesAt(reply: CasualtyBreakdownReply, hour: number): LossSnaps
       reason: run.reason,
       value: BigInt(run.value), readHour: run.hourly ? at : run.readHour, groupingHour, incomplete: country.incomplete || run.incomplete });
   }
-  // A holder with no losses read and none missing shows the empty state, as one with no lifetimes did on main.
   if (!rows.length && !country.incomplete) return null;
   return { identity: country.identity, rows, total: rows.reduce((sum, row) => sum + row.value, 0n),
     incomplete: country.incomplete || rows.some(row => row.incomplete) };
 }
 export const exactLosses = (value: bigint) => usNumber.format(value);
 export const lossText = (row: Pick<LossRow, 'value' | 'incomplete'>) => `${row.incomplete ? 'Recorded subtotal: ' : ''}${row.value < 0n ? 'Correction: ' : ''}${exactLosses(row.value)}`;
-/** A following drill at `hour` of `reply` (none where the window is not loaded or not recorded): its rows with their
- * subtotal marks (`rows`, the drill's structure), each row's losses keyed as its table paints them, and the total line. */
 export function lossDrillAt(reply: CasualtyBreakdownReply | undefined, hour: number): { rows: string; values: Map<string, bigint>; incomplete: Set<string>; total: string } {
   const now = reply ? lossesAt(reply, hour) : null;
   const values = new Map<string, bigint>(), incomplete = new Set<string>();
@@ -100,8 +95,6 @@ export function lossDrillAt(reply: CasualtyBreakdownReply | undefined, hour: num
 }
 export const warKey = (row: Pick<LossRow, 'warId'>) => row.warId ?? '\u0001unidentified';
 
-/** Positive amounts alone set geometry and percentages. Signed totals and every
- * zero/correction stay in the selectable detail view. */
 export function lossItems(now: LossSnapshot | null, end: LossSnapshot | null,
   enemyName: (tag: string, hour: number) => string): SunburstItem[] {
   if (now && end?.identity !== now.identity) end = null;
@@ -130,17 +123,11 @@ export function breakdownWindows(reply: CasualtyBreakdownReply | null | undefine
   return [index, ...(following && index + 1 < reply.windows.length ? [index + 1] : [])];
 }
 
-/** Only the time-chart viewport requests history blocks. At the default full
- * branch extent they all load; zooming releases the blocks no longer shown. */
 export const viewWindows = (windows: readonly HourSpan[], range: readonly [number, number] | null) =>
   windows.flatMap((span, index) => !range || span.firstHour <= range[1] && range[0] <= span.lastHour ? [index] : []);
-/** A drawn range replaces the held one only when it reaches other blocks, so
- * zoom and pan easing do not re-render the widget every frame. */
 export const viewChange = (windows: readonly HourSpan[], range: readonly [number, number]) => (before: readonly [number, number] | null) =>
   before && `${viewWindows(windows, before)}` === `${viewWindows(windows, range)}` ? before : range;
 
-/** The parts-over-time chart reuses the shared stack renderer. Fold only its
- * palette presentation; all signed native lifetimes remain in the detail table. */
 export function lossStack(replies: readonly CasualtyBreakdownReply[]): { model: StackModel; keys: string[] } {
   const weights = new Map<string, bigint>();
   for (const reply of replies) for (const series of reply.series) for (const run of series.runs) {

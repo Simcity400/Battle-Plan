@@ -1,5 +1,3 @@
-//! The hourly interval: its coverage, sealed on the game thread in constant
-//! time, and its row, assembled on the spool thread from the copied frames.
 use crate::{hooks, lanes};
 use replay_data::{
     rows::MapEvent, rows::MapEventBuildingDamage, rows::MapEventBuildingReason,
@@ -11,24 +9,19 @@ use replay_data::{
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
-/// Observation starts again at the next seal: attach, world reset or load.
 static START: AtomicBool = AtomicBool::new(true);
 static OUTPUT_LOST: AtomicBool = AtomicBool::new(false);
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static HOUR: AtomicI32 = AtomicI32::new(0);
 static SEALED: AtomicBool = AtomicBool::new(false);
-/// The admitted world occurrence of the last seal; zero for none.
 static WORLD: AtomicU64 = AtomicU64::new(0);
-/// Events an older world occurrence published after its last cut.
 static STALE: AtomicU64 = AtomicU64::new(0);
 
-/// Events dropped because their world occurrence ended before a cut.
 pub fn stale() -> u64 {
     STALE.load(Ordering::Relaxed)
 }
 
-/// Before installing the hooks: continue the recording's epoch and sequence.
 pub fn begin(previous_epoch: u64, previous_sequence: u64) -> Result<(), &'static str> {
     lanes::restore_sequence(previous_sequence)?;
     EPOCH.store(previous_epoch, Ordering::SeqCst);
@@ -38,17 +31,14 @@ pub fn begin(previous_epoch: u64, previous_sequence: u64) -> Result<(), &'static
     Ok(())
 }
 
-/// The world was reset or loaded: coverage starts again.
 pub fn invalidate() {
     START.store(true, Ordering::SeqCst);
 }
 
-/// An interval's events were lost before they were written.
 pub fn lost_output() {
     OUTPUT_LOST.store(true, Ordering::SeqCst);
 }
 
-/// One sealed interval's boundaries and coverage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Interval {
     pub epoch: u64,
@@ -58,14 +48,9 @@ pub struct Interval {
     pub next_sequence: u64,
     pub health: [MapEventFamilyHealth; Family::COUNT],
     pub seal: lanes::Seal,
-    /// The admitted world occurrence the interval lists events of; `None`
-    /// lists none.
     pub world: Option<u64>,
 }
 
-/// Game thread, at the hourly cut of `hour`, after the cut's world boundary
-/// admitted `world` (`world_lifetime::token`). Constant time. A new or
-/// unadmitted occurrence starts the observation again.
 pub fn seal(hour: i32, world: Option<u64>) -> Interval {
     let seal = lanes::seal();
     let changed = WORLD.swap(world.unwrap_or(0), Ordering::SeqCst) != world.unwrap_or(0);
@@ -75,8 +60,6 @@ pub fn seal(hour: i32, world: Option<u64>) -> Interval {
         hooks::reset_missed();
     }
     let lost = OUTPUT_LOST.swap(false, Ordering::SeqCst);
-    // An event left in flight is listed by a later interval, which is then
-    // incomplete as well.
     let in_flight = IN_FLIGHT.swap(!seal.complete, Ordering::SeqCst) || !seal.complete;
     let health = Family::ALL.map(|family| {
         let installed = hooks::installed(family);
@@ -151,7 +134,6 @@ impl Reader<'_> {
     }
 }
 
-/// One frame's payload, written by the family's callback.
 pub fn payload(family: u8, bytes: &[u8]) -> Result<MapEventPayload, &'static str> {
     let family = Family::from_index(family).map_err(|_| "map event frame family unknown")?;
     let mut input = Reader { bytes };
@@ -232,7 +214,6 @@ pub fn payload(family: u8, bytes: &[u8]) -> Result<MapEventPayload, &'static str
     Ok(payload)
 }
 
-/// The interval's row from its copied frames.
 pub fn row(
     interval: &Interval,
     assembled: &lanes::Assembled,
@@ -241,7 +222,6 @@ pub fn row(
     engine_allocation::reserve_exact(&mut events, assembled.frames.len())
         .map_err(|_| "map event assembly allocation failed")?;
     for frame in &assembled.frames {
-        // An event of an ended occurrence belongs to no interval of this one.
         if interval.world != Some(frame.world) {
             STALE.fetch_add(1, Ordering::Relaxed);
             continue;

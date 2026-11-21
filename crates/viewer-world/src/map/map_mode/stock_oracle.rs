@@ -24,8 +24,6 @@ pub(super) fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> 
     };
     let draw = match stock {
         Stock::Default => return Ok(ModeFill::default()),
-        // The resources mode draws no layer of its own: the countries, under its state
-        // resource icons ([`visibility`]).
         Stock::Resources => Draw::of([Country, Empty], political),
         Stock::StrategicNavy | Stock::StrategicAir => {
             let mut draw = Draw::of(
@@ -43,9 +41,6 @@ pub(super) fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> 
             ));
             draw
         }
-        // The raid mode draws no layer of its own: the countries alone. Its raid icons and
-        // what it hides are [`visibility`] rules; its source stripes belong to the raid creation
-        // window, which a replay has no use for.
         Stock::Raids => Draw::of([Country, Empty], political),
         Stock::Factions => variant(Variant::Factions, &mut warnings)?,
         Stock::Players => variant(Variant::Players, &mut warnings)?,
@@ -125,7 +120,6 @@ pub(super) fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> 
     })
 }
 
-/// Why a picker mode keeps the political country channel.
 fn unbuilt(stock: Stock) -> &'static str {
     match stock {
         Stock::Supply => {
@@ -142,7 +136,6 @@ enum Variant {
     Ideology,
 }
 
-/// The country layer's variants: the political regions in another colouring.
 fn country_variant(
     variant: Variant,
     inputs: &Inputs,
@@ -304,7 +297,6 @@ fn country_variant(
     Ok(Some(finish(region_of, styles, None, None, channel)))
 }
 
-/// Drops provinces of regions without a style, so a refused region draws nothing.
 fn finish(
     mut region_of: Vec<u32>,
     styles: BTreeMap<u32, Style>,
@@ -326,7 +318,6 @@ fn finish(
     }
 }
 
-/// Every state, coloured by its live category.
 fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
     let states = match complete::<tables::States>(inputs.frame, "states") {
@@ -404,22 +395,16 @@ fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mode
     )))
 }
 
-/// One country's relation to the selected country, as the diplomacy mode reads it.
 #[derive(Clone, Copy, Debug, Default)]
 struct Relation {
     selected: bool,
     at_war: bool,
     same_faction: bool,
-    /// The selected country holds a war goal against it or one of its subjects; `None` when
-    /// the recording cannot say.
     war_goal: Option<bool>,
-    /// Its opinion of the selected country.
     opinion: i32,
 }
 
 impl Relation {
-    /// The first relation that holds, in this order; `Ok(None)` leaves the country unfilled
-    /// and `Err` means the war-goal test was reached without its operand.
     fn color(self, defines: &ModeDefines) -> Result<Option<[f32; 4]>, ()> {
         Ok(Some(if self.selected {
             DIPLOMACY_SELF
@@ -439,12 +424,8 @@ impl Relation {
     }
 }
 
-/// Why the diplomacy mode cannot colour a country below war and faction.
 const WAR_GOALS_UNRECORDED: &str = "the selected country's owned war goals are not recorded, and the war-goal test comes before the opinions";
 
-/// The slots the selected country's owned war goals mark: each goal's recipient and its
-/// overlord, since a goal against a subject marks the overlord too. `Err` names why the
-/// recording cannot say.
 fn war_goal_slots(
     frame: &DecodedFrame,
     countries: &Countries,
@@ -583,15 +564,12 @@ fn diplomacy(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<M
     )))
 }
 
-/// The manpower mode's colour for a state of `population`: the two colours blended by the
-/// population's share of the range, clamped to it, in the game's single precision.
 fn manpower_color(defines: &ModeDefines, population: i32) -> [f32; 4] {
     let t = (population as f32 / defines.manpower_max).clamp(0.0, 1.0);
     let [from, to] = defines.manpower_colors;
     std::array::from_fn(|i| (to[i] - from[i]) * t + from[i])
 }
 
-/// Every state, coloured by its population.
 fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
     let states = match complete::<tables::States>(inputs.frame, "manpower") {
@@ -631,13 +609,9 @@ fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mo
     )))
 }
 
-/// Network strengths are fixed5 percentages.
 const NETWORK_STRENGTH_SCALE: f32 = 100_000.0;
 const NETWORK_STRENGTH_FULL: f32 = 100.0;
 
-/// The operatives mode's colour for a state's network strength: its share of 100%, clamped,
-/// times the larger of one half and itself, blends the pair; quiet subnetworks take the quiet
-/// pair. Single precision throughout, as the game computes it.
 fn network_color(defines: &ModeDefines, strength: i64, quiet: bool) -> [f32; 4] {
     let share = (strength as f32 / NETWORK_STRENGTH_SCALE / NETWORK_STRENGTH_FULL).clamp(0.0, 1.0);
     let t = (share * share.max(0.5)).clamp(0.0, 1.0);
@@ -649,8 +623,6 @@ fn network_color(defines: &ModeDefines, strength: i64, quiet: bool) -> [f32; 4] 
     std::array::from_fn(|i| (to[i] - from[i]) * t + from[i])
 }
 
-/// The selected country's intelligence networks: each state of positive strength whose
-/// controller is the network's target, coloured by that strength.
 fn operatives(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
     let Some(selected) = inputs.selected else {
@@ -684,7 +656,6 @@ fn operatives(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<
             unknown_states += 1;
             continue;
         };
-        // The network covers the state only while its target controls it.
         if controller == 0
             || countries.slot(controller).is_none()
             || countries.slot(controller) != countries.slot(row.target_country)
@@ -749,7 +720,6 @@ fn occupation(
         .iter()
         .map(|row| (row.state, row))
         .collect::<HashMap<_, _>>();
-    // The selected country's controlled states, occupied ones included.
     let owned = core::<tables::States>(frame)?
         .iter()
         .filter(|state| countries.slot(state.controller) == Some(selected))

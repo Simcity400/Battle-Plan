@@ -1,10 +1,3 @@
-//! `research-slots`: what each of a country's research slots holds at an hour, as its holder's
-//! latest research read recorded it (rows are refreshed one country slice an hour, so the rows at
-//! an hour are its last read's), with the assignment it joins, its progress, the game's days-left
-//! estimate, the bonuses and modifiers read with it and the country's grant inventory. Requested
-//! for an hour, followed as a panel at the head. The reply is the read's alone (it names no hour
-//! after it), so a panel is pushed only when a read changes it; each researching slot's progress
-//! toward its base cost is a live cell (`slot`, `progress`), painted as the head moves.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -50,15 +43,14 @@ pub struct ResearchSlotsParams {
     pub country: Country,
 }
 
-/// One slot at the hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchSlotNow {
     pub index: u32,
-    /// As read: `firstHour` and `lastHour` are the read's hour.
+    #[doc = " As read: `firstHour` and `lastHour` are the read's hour."]
     pub state: ResearchSlotState,
-    /// The joined assignment's progress at the read; none while idle.
+    #[doc = " The joined assignment's progress at the read; none while idle."]
     pub progress: Option<ResearchProgress>,
 }
 
@@ -67,9 +59,9 @@ pub struct ResearchSlotNow {
 #[serde(rename_all = "camelCase")]
 pub struct ResearchSlotsReply {
     pub tag: String,
-    /// The holder's research read the slots are from.
+    #[doc = " The holder's research read the slots are from."]
     pub read_hour: Option<i32>,
-    /// Why no slot is known at the hour, when none is.
+    #[doc = " Why no slot is known at the hour, when none is."]
     pub missing: Option<String>,
     pub slots: Vec<ResearchSlotNow>,
     pub grants: GrantInventory,
@@ -78,21 +70,17 @@ pub struct ResearchSlotsReply {
 
 dashboard_base::reply_warnings!(ResearchSlotsReply);
 
-/// The content names are localised from, or why there is none.
 pub type Content = Result<Arc<artwork::Context>, String>;
 
-/// The raw countries linked to `owner`'s slot, ascending.
 fn owners(frame: &DecodedFrame, owner: Owner) -> Option<Vec<u32>> {
     let links = frame.complete::<tables::CountryLinks>().ok()?;
     Some(links.iter().filter(|link| link.canonical_slot == owner.slot).map(|link| link.id).collect())
 }
 
-/// The keys from `low << shift` through every key of `high` above it.
 fn owned(owners: &[u32], shift: u32) -> Keys {
     Keys::Ranges(owners.iter().map(|&owner| { let low = u128::from(owner) << shift; (low, low | ((1u128 << shift) - 1)) }).collect())
 }
 
-/// The restriction tokens `rows` name: the lexical tokens a grant inventory spells.
 fn spelled(rows: &[ResearchModifierRow], owners: &[u32]) -> Vec<u128> {
     rows.iter().filter(|row| row.index == grants::INVENTORY_INDEX && owners.contains(&row.country) && grants::spells(row)).filter_map(|row| u32::try_from(row.raw).ok()).map(u128::from).collect()
 }
@@ -165,7 +153,6 @@ impl AtHour for ResearchSlots {
         let replay_frame::frame::TableView::Complete(previous) = previous.held() else { return Ok(false) };
         let previous = previous.rows::<tables::SliceReads>().unwrap();
         let Some(old_read) = data["readHour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
-        // Rebuild the structure only if the slot, bonus or grant readings stop or start joining.
         let sample = replay_data::sliced::read_hour;
         if inputs.iter().any(|r| sample(samples, table, r.country) != Some(read))
             || samples.iter().chain(previous).filter(|r| r.table == BONUSES || r.table == MODIFIERS).any(|r| {
@@ -203,8 +190,6 @@ impl AtHour for ResearchSlots {
         TABLES.to_vec()
     }
 
-    /// The links and the holder's derived rows, then its owners' research rows and read hours,
-    /// then the tokens its grants spell.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -258,8 +243,6 @@ impl AtHour for ResearchSlots {
     }
 }
 
-/// Cell (`slot`, `progress`) of `input`'s slot: its recorded progress over its base cost, the
-/// same quotient `base_cost` makes of the cost operands at the read.
 fn progress_cell(input: &ResearchInputRow, live: &Cells) {
     let (Ok(progress), Ok(cost)) = (dashboard_declare::field(TableId::ResearchInputs, "progress_raw"), dashboard_declare::field(TableId::ResearchInputs, "cost_raw")) else { return };
     let key = u128::from(input.country) << 32 | u128::from(input.index);
@@ -272,9 +255,6 @@ fn progress_cell(input: &ResearchInputRow, live: &Cells) {
     }
 }
 
-/// The holder `owner`'s slots at `hour` from `frame`: its read hour, each slot's state as read and
-/// the grant inventory, or why they are not known; each researching slot's progress named in
-/// `live`.
 pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dyn Fn(&str) -> Option<String>, live: &Cells) -> Result<(i32, Vec<ResearchSlotNow>, GrantInventory), String> {
     let unread = |table: &str, error: io::Error| format!("{table} is not recorded at this hour: {error}");
     let coverage = frame.complete::<tables::ResearchCoverage>().map_err(|error| unread("Research coverage", error))?;

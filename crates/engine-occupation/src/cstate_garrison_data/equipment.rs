@@ -1,6 +1,3 @@
-//! Displayed-strength equipment operands. Required amounts use active
-//! archetype pointer identity; allocation lookup uses the first ordered
-//! signed-ID match.
 use crate::{
     Memory, cequipment_type as ty, cequipment_variant_pool as pool, cpdx_array::Array,
     garrison_equipment_pool, read, required_equipment_row,
@@ -68,8 +65,6 @@ impl<'a> Arena<'a> {
             let active = field::<u8>(memory, archetype, ty::ACTIVE)?;
             let target = field::<i32>(memory, archetype, ty::ARCHETYPE_ID)?;
             let mut allocated = 0;
-            // Pool lookup stops at the first key greater than or equal to target,
-            // including duplicate and unordered entries. Never normalize the pool.
             for index in 0..allocations.count {
                 let address = allocations
                     .element(index, crate::allocation_equipment_row::STRIDE)
@@ -107,8 +102,6 @@ impl<'a> Arena<'a> {
     }
 }
 
-/// Equipment-archetype-pool primary vtable. Serialization emits each nonzero
-/// 16-byte token/amount entry in source order.
 pub fn required_entries(
     memory: &impl Memory,
     base: usize,
@@ -352,9 +345,9 @@ mod tests {
             ),
             Ok(Some((0, 2)))
         );
-        assert_eq!(arena.rows[1].required_lookup_raw, 0); // Same ID, different pointer.
-        assert_eq!(arena.rows[1].allocated_raw, 50_000); // Allocations compare IDs.
-        assert_eq!(arena.rows[1].weight_raw, 300_007); // Entry, not archetype.
+        assert_eq!(arena.rows[1].required_lookup_raw, 0);
+        assert_eq!(arena.rows[1].allocated_raw, 50_000);
+        assert_eq!(arena.rows[1].weight_raw, 300_007);
         put(
             &mut bytes,
             clone + ty::ARCHETYPE,

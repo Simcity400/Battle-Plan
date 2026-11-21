@@ -1,6 +1,3 @@
-//! Game-state-rooted supply layout. Province-supply records have stride
-//! 0x20 and signed count in the array header. Country-vector capacity and
-//! count remain separate. Layout alone establishes no hourly consistency.
 
 use crate::{
     Memory, ccountry, ccountry_supply_system, cgame_state, cpdx_array::Array, read,
@@ -8,24 +5,15 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// CSupplySystem primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029f_02b8);
-/// CSupplySystem secondary vtable (`SECONDARY_BASE`).
 pub const SECONDARY_VTABLE_RVA: Rva = Rva(0x029f_02e0);
-/// CSupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
-/// CSupplySystem SProvinceSupplyData array pointer.
 pub const PROVINCE_DATA: usize = 0x10;
-/// Province-supply signed count; checksum traverses entries excluding slot zero.
 pub const PROVINCE_COUNT: usize = 0x1c;
-/// Country-supply pointer array selected by canonical country-link slot.
 pub const COUNTRY_SYSTEM_DATA: usize = 0x108;
-/// CSupplySystem inline companion array pointer.
 pub const COUNTRY_COMPANION_DATA: usize = 0x120;
-/// Supply-system constructor installing primary identity.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00f3_ce90);
 
-/// Authenticates the root without allocating or calling engine functions.
 pub fn read_root(
     memory: &impl Memory,
     base: usize,
@@ -49,14 +37,12 @@ pub fn read_root(
     Ok(pointer)
 }
 
-/// Country supply objects use canonical slot rather than raw country tag.
 pub struct CountrySystem {
     pub pointer: usize,
     pub country: ccountry::Country,
     pub companion: usize,
 }
 
-/// Shares the authenticated supply/country roots across a complete table walk.
 pub struct Reader<'a, M: Memory> {
     memory: &'a M,
     countries: ccountry::Reader<'a, M>,
@@ -109,9 +95,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.countries.resolve(raw)
     }
 
-    /// The canonical country at `slot`, read from the country census alone,
-    /// so a walk of selected countries skips a slot without reading or
-    /// authenticating its supply objects ([`Self::at`] reads both).
     pub(crate) fn country(&self, slot: u32) -> Result<Option<ccountry::Country>, &'static str> {
         self.countries.at(slot)
     }

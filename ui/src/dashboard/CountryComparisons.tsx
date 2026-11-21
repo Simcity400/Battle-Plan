@@ -13,8 +13,6 @@ import { keyNameAt, useSlotTags } from './countrySlots.ts';
 import type { HourSpan } from '../generated/dashboard';
 import './countryComparisons.css';
 
-/** Independent country panels share settings and keep their exact country data.
- * No aggregate is offered for balances with country-specific denominators. */
 export type ComparisonProps = WidgetProps & { within?: readonly HourSpan[] | null };
 const NO_WARNINGS: string[] = [];
 
@@ -38,7 +36,6 @@ export default function CountryComparisons({ component: Component, ...props }: W
   const first = multiple ? Math.min(Math.max(0, countries.tags.length - 1), Math.max(0, Math.floor(view.left / panelWidth) - 1)) : 0;
   const last = multiple ? Math.min(countries.tags.length, Math.ceil((view.left + view.width) / panelWidth) + 1) : countries.tags.length;
   const shown = useMemo(() => countries.tags.slice(first, Math.max(first + 1, last)), [countries.tags, first, last]);
-  // Following, the panels' names and flags are read at the hour one of them last changed, so playing renders nothing.
   const trackHour = useCallback((clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? track.branch.lastHour : null,
     [widget, track, runtime.tracks]);
   const hour = useIdentityHour(runtime.client, track, shown, runtime.clock, active && widget.time.mode === 'follow' && !!track, trackHour) ?? 0;
@@ -49,19 +46,16 @@ export default function CountryComparisons({ component: Component, ...props }: W
     setView(before => ({ ...before, left: 0 }));
     setNotes(new Map());
   }, [track?.source.id, track?.source.revision, track?.branch.id, countries.tags]);
-  // A panel resending an equal list keeps the notes, so it cannot re-render every panel again.
   const handlers = useMemo(() => new Map(countries.tags.map(tag => [tag, (warnings: readonly string[]) => setNotes(before => {
     const held = before.get(tag) ?? NO_WARNINGS;
     if (held.length === warnings.length && held.every((note, index) => note === warnings[index])) return before;
     return new Map(before).set(tag, warnings);
   })])), [countries.tags]);
   const slots = useSlotTags(runtime.client, track, active && countries.tags.some(isSlotKey));
-  // A slot's notes are named by the tag its country goes by at the hour shown.
   const diagnostics = useMemo(() => [...(contentPending ? ['Group names are updating from the recorded content.'] : []),
     ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${keyNameAt(slots, tag, hour) ?? 'Country name unavailable'}: ${note}`)))],
   [countries.tags, notes, contentPending, slots, hour]);
   useDiagnostics(onDiagnostics, diagnostics);
-  // Each mounted panel keeps its widget while this one re-renders, so its own hooks do not re-run.
   const panels = useMemo(() => new Map(shown.map(tag => [tag, { ...widget, countries: { kind: 'tags' as const, tags: [tag] } }])), [widget, shown]);
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const refreshNotice = refreshError && <WidgetState kind="error" failure={refreshError} onRetry={retry} />;

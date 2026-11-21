@@ -1,25 +1,14 @@
-//! Character-template identity: tag, content source file and line, and generated
-//! flag. The character's optional template pointer selects these fields. Reading
-//! a definition stores its file and line; generated templates set the flag.
-//! Other writers do not alter these identity fields.
 
 use crate::{Memory, ccharacter::Literal};
 use engine_sites::Rva;
 
-/// Character-template primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a3_74d8);
-/// Template lexer token, u32, copied to the built character and saved as its template tag.
 pub const TAG: usize = 0x08;
-/// Content source-file string, set before parsing; empty after construction.
 pub const SOURCE_FILE: usize = 0x18;
-/// Content source line, i32, set before parsing; never-read templates retain -1.
 pub const SOURCE_LINE: usize = 0x38;
-/// Generated-template byte; generation sets one and construction clears it.
 pub const GENERATED: usize = 0x240;
-/// One guarded span from the vtable through the source line.
 pub const HEADER: usize = SOURCE_LINE + 4;
 
-/// The fixed identity fields, exact as stored.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
     pub tag: u32,
@@ -27,23 +16,17 @@ pub struct Identity {
     pub generated: u8,
 }
 
-/// A template identity read at an earlier hour for the same template
-/// pointer, with its file bytes.
 #[derive(Debug, Clone, Copy)]
 pub struct Known<'a> {
     pub identity: Identity,
     pub file: &'a [u8],
 }
 
-/// The authenticated fixed fields and the file string's parsed header.
 pub(crate) struct Header {
     pub(crate) identity: Identity,
     pub(crate) file: Literal,
 }
 
-/// Reads the vtable, tag, file header and line in one span and the generated
-/// byte in a second, in one guarded scatter. The file's heap terminator and
-/// bytes are the caller's (`Literal::validate`, `Literal::copy_all`).
 pub(crate) fn read(
     memory: &impl Memory,
     base: usize,

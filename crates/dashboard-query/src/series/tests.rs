@@ -12,8 +12,6 @@ fn resources_line<'q>(query: &'q Query<'static>, measure: &str) -> Line<'q, 'sta
     Line::new(query, series, series.measure(measure).unwrap()).unwrap()
 }
 
-/// `id`'s line of `resource` at `hour` as the fixture wrote it, where the timeline and the tag's
-/// holder hold the hour: its row's `produced`, or none without a row.
 fn produced(query: &Query<'_>, id: u32, resource: u32, hour: i32) -> Option<i64> {
     (held(query, tag_of(id), hour) && fixture::resources(id, hour).contains(&resource)).then(|| fixture::resource(id, resource, hour).produced)
 }
@@ -24,8 +22,6 @@ fn read(tag: &str, hour: i32, part: Option<u32>) -> SeriesRead {
 
 const HOURS: [i32; 9] = [FIRST, FIRST + 1_999, FIRST + 2_000, FIRST + 4_321, FIRST + 5_999, ITA_FROM + 3, FIRST + FIRST_HOURS - 1, SECOND + 17, LAST];
 
-/// One part's state at hours across a part coming and going, a country coming into being and the
-/// hours the timeline does not hold, against the fixture's rows.
 #[test]
 fn a_state_of_one_part_is_the_parts_row_at_the_hour() {
     let query = query();
@@ -57,8 +53,6 @@ fn a_state_of_one_part_is_the_parts_row_at_the_hour() {
     assert!(states.iter().any(|state| state.missing.as_deref() == Some(GAP_REASON)));
 }
 
-/// A read without a part reads every part the owner holds at the hour, in key order; with a top,
-/// its greatest parts first.
 #[test]
 fn a_state_of_every_part_and_of_the_top_parts_is_the_owners_rows_at_the_hour() {
     let query = query();
@@ -87,8 +81,6 @@ fn a_state_of_every_part_and_of_the_top_parts_is_the_owners_rows_at_the_hour() {
     assert!(whole.asks(&["GER".into()], &[]).is_err(), "a sum of parts is not offered");
 }
 
-/// Tiles of two parts: hourly tiles carry each part's hours as the fixture wrote them, and six-hour
-/// tiles each bin's first, last, least and greatest of them, across a part coming and going.
 #[test]
 fn tiles_of_two_parts_hold_each_parts_values() {
     let query = query();
@@ -125,7 +117,6 @@ fn tiles_of_two_parts_hold_each_parts_values() {
         for (at, &(id, resource)) in ids.iter().enumerate() {
             for bin in 0..BINS {
                 let start = reply.first_hour + 6 * bin as i32;
-                // A bin at a stretch's edge holds its whole bucket: only bins inside one are judged.
                 if query.timeline.at(start).zip(query.timeline.at(start + 5)).is_none_or(|(a, b)| a != b) {
                     continue;
                 }
@@ -142,9 +133,6 @@ fn tiles_of_two_parts_hold_each_parts_values() {
     assert!(compared > 1_000, "{compared} hours and bins compared");
 }
 
-/// A chart of a line its table holds no row of names every hour its holder holds as not recorded,
-/// never blank; one of a part that comes and goes names the hours outside its rows; one over a table
-/// never available names that. Bins of every width and a tile say the same hours.
 #[test]
 fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_available() {
     let query = query();
@@ -180,7 +168,6 @@ fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_availa
     assert_eq!(missing, [unavailable(FIRST, FIRST + FIRST_HOURS - 1), gap, unavailable(SECOND, LAST)], "a table the recording never held");
 }
 
-/// The next change of a part's line is the next hour its value moves or its row comes or goes.
 #[test]
 fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
     let query = query();
@@ -199,8 +186,6 @@ fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
         let wanted = (bounds.0..origin).rev().find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
         assert_eq!(back, wanted.or(Some(origin)), "{} part {resource} before {origin}: the origin itself when nothing changes before it, as main", ask.country);
     }
-    // Main's reached-hour fallback: a step off either edge of the bounds answers the edge, an origin past them is held
-    // within them, and a step with no origin and nothing to find is none.
     let ask = Ask { country: tag_of(9001).into(), part: 4 };
     let step = |origin: Option<i32>, key| line.navigate_lines(std::slice::from_ref(&ask), &[measure], origin, key, bounds).unwrap();
     assert_eq!(step(Some(bounds.0), NavigationKey::ArrowLeft), Some(bounds.0));
@@ -209,14 +194,10 @@ fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
     assert_eq!(step(None, NavigationKey::ArrowLeft), line.change_lines(std::slice::from_ref(&ask), &[measure], None, NavigationKey::ArrowLeft, bounds).unwrap());
 }
 
-/// A row the game lists only while nonzero reads 0 where it is absent while the table is complete
-/// and its owner's slice was read, and has no value where either is not so; its own values stay.
 #[test]
 fn an_absent_row_of_a_table_listing_only_nonzero_values_is_zero_only_where_its_owner_was_read() {
     assert!(dashboard_declare::absent_is_zero(TableId::RelationOpinions));
     assert_eq!(meet(&[(0, 9), (20, 29)], &[(5, 24), (28, 40)]), [(5, 9), (20, 24), (28, 29)]);
-    // A row from 10 to 14 (one value), absent until 10 and again from 15; the owner read from 3 to 30, the table
-    // complete throughout but 25 to 26.
     let held: read::Runs = vec![(10, 12, Some(7)), (13, 14, Some(9)), (15, 40, None)];
     let zero = meet(&[(3, 30)], &[(0, 24), (27, 50)]);
     assert_eq!(zero_absent(&held, &zero, 0, 40), [(0, 2, None), (3, 9, Some(0)), (10, 12, Some(7)), (13, 14, Some(9)), (15, 24, Some(0)), (25, 26, None), (27, 30, Some(0)), (31, 40, None)]);
@@ -224,12 +205,8 @@ fn an_absent_row_of_a_table_listing_only_nonzero_values_is_zero_only_where_its_o
     assert_eq!(zero_absent(&Vec::new(), &[], 0, 9), [(0, 9, None)], "an owner never read is not known");
 }
 
-/// The game lists a pair's opinion under any raw engine reference of its two countries: a pair's
-/// line reads its rows under every raw id linked to either country while the link holds, never
-/// only the holders' own ids (which would read the pair as never listed: zero).
 #[test]
 fn a_pair_listed_under_other_raw_ids_of_its_countries_is_its_line() {
-    // Raw 1 and 7 link to slot 10 (7 only from 20 to 60); raw 2 and 8 to slot 20; raw 9 to slot 10 from 70.
     let links: HashMap<u128, read::Runs> = HashMap::from([
         (1, vec![(0, 99, Some(10))]),
         (7, vec![(0, 19, None), (20, 60, Some(10)), (61, 99, Some(30))]),
@@ -242,8 +219,6 @@ fn a_pair_listed_under_other_raw_ids_of_its_countries_is_its_line() {
     assert_eq!(aliases.of(8, 10, 50), [(2, vec![(10, 50)]), (8, vec![(10, 50)])]);
     assert_eq!(aliases.of(5, 0, 99), [(5, vec![(0, 99)])], "an id with no link is its own alias alone");
     assert_eq!(union(vec![(5, 9), (0, 3), (4, 4), (12, 20), (15, 18)]), [(0, 9), (12, 20)]);
-    // The pair (1, 2): listed under 7:8 from 30 to 49 at 35, under 1:2 from 50 to 54 at 40; a row under
-    // 7:8 after 60 (7 is another country's then) is not the pair's.
     let alias_row: read::Runs = vec![(30, 49, Some(35)), (61, 80, Some(-90))];
     let own_row: read::Runs = vec![(50, 54, Some(40)), (55, 59, None)];
     let line = pair_rows(&[(own_row.as_slice(), &[(0, 99)][..]), (alias_row.as_slice(), &[(20, 60)][..])]);
@@ -257,8 +232,6 @@ fn a_pair_listed_under_other_raw_ids_of_its_countries_is_its_line() {
     assert_eq!(pair_rows(&[(&first[..], &[(0, 99)][..]), (&second[..], &[(0, 99)][..])]), [(0, 9, Some(1)), (10, 14, Some(2))], "two rows never overlap");
 }
 
-/// A step to the next read of a table lands on the next hour the table was read, held or not by a
-/// change of its value, across the hours the timeline does not hold, never on the origin.
 #[test]
 fn the_next_read_of_a_table_is_the_next_hour_it_was_read_across_a_gap_and_never_the_origin() {
     let query = query();
@@ -279,7 +252,6 @@ fn the_next_read_of_a_table_is_the_next_hour_it_was_read_across_a_gap_and_never_
     assert!(next_read(&query, TableId::NavalSupremacy, Some(FIRST), NavigationKey::ArrowRight, (FIRST, LAST)).unwrap().is_none(), "a table never available is never read");
 }
 
-/// The parts each owner held over a span, with the hours it held each, cut to its holders.
 #[test]
 fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
     let query = query();
@@ -305,7 +277,6 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
             assert!(owners[0].missing.iter().any(|span| span.reason == GAP_REASON));
         }
     }
-    // A table never available over the span holds no parts, and says each hour is missing, never that none were held.
     let fuel = dashboard_declare::series("fuel-consumers").unwrap();
     let line = Line::new(&query, fuel, fuel.measure("requested").unwrap()).unwrap();
     let owners = line.part_lives(&tags[..1], FIRST, FIRST + 100).unwrap();
@@ -315,7 +286,6 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
     assert!(owners[0].missing[0].reason.contains("not available"), "{}", owners[0].missing[0].reason);
 }
 
-/// CountryResources' `special_total` and `production_demand`, as the schema numbers them.
 const SPECIAL_TOTAL: usize = 4;
 const PRODUCTION_DEMAND: usize = 5;
 
@@ -323,8 +293,6 @@ fn surplus(cells: &dyn Cells, slot: u32) -> Option<i64> {
     cells.number(SPECIAL_TOTAL, slot)?.checked_add(cells.number(PRODUCTION_DEMAND, slot)?)
 }
 
-/// A computed column of a sub-keyed series no declaration summarizes: what remains of each
-/// resource after special projects less what production lines need.
 static SURPLUS: Series = Series {
     kind: "test-surplus",
     table: TableId::CountryResources,
@@ -341,7 +309,6 @@ static SURPLUS: Series = Series {
     drops: false,
 };
 
-/// A computed column of one row: the surplus of each part, at every hour asked.
 #[test]
 fn a_computed_part_state_is_its_formula_over_the_row() {
     assert_eq!(dashboard_declare::field(TableId::CountryResources, "special_total").unwrap(), SPECIAL_TOTAL);
@@ -356,7 +323,6 @@ fn a_computed_part_state_is_its_formula_over_the_row() {
     }
 }
 
-/// CountryRow's `political_power_raw` and `command_power_raw`, as the schema numbers them.
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 
@@ -380,8 +346,6 @@ static NEGATED: Series = Series {
     drops: false,
 };
 
-/// A rank at an hour of a computed column ranks the formula's value of each row read at the hour
-/// (a row whose input is not recorded is not ranked), as walked rows rank.
 #[test]
 fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
     assert_eq!(dashboard_declare::field(TableId::Countries, "political_power_raw").unwrap(), POWER);
@@ -402,9 +366,6 @@ fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
     assert!(resources_line(&query, "used").rank_at(FIRST, 2).is_err(), "a sub-keyed series ranks parts, not countries");
 }
 
-/// A series without parts asked for its top N: at an hour, the countries greatest there with their states, greatest
-/// first; over a view, lines of the members of each bin only; the keyboard steps through the changes of the
-/// countries ranking first at the cursor.
 #[test]
 fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key() {
     let query = query();
@@ -433,8 +394,6 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
             assert!(line.membership.iter().any(|span| span.first_hour <= bucket.last_hour && bucket.first_hour <= span.last_hour), "{} bin {bin} lies in its membership", line.tag);
         }
     }
-    // A view ending inside a summary bucket ends its members' last bins at its last hour, with the value held there,
-    // never one read after it, whatever the edge's hours are on any grid of their own length.
     let mut checked = 0;
     for to in (FIRST + 300..FIRST + FIRST_HOURS - 10).filter(|hour| (hour + 1).rem_euclid(6) != 0).take(24) {
         let edge: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": to, "width": 64 }))).unwrap();
@@ -450,7 +409,6 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         }
     }
     assert!(checked > 10, "{checked} views whose member holds a value at the view's last hour");
-    // A stretch's last bin, before another history's hours, ranks at its last hour and holds only its own hours' values.
     let end = FIRST + FIRST_HOURS - 1;
     let scale = 10f64.powi(i32::from(chart.decimals));
     let mut ends = 0;
@@ -479,8 +437,6 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
     assert!(next.hour.is_some_and(|hour| hour > f64::from(origin)));
 }
 
-/// A selection of 1,500 countries, as a campaign with that many may make, is answered whole: its states at an hour,
-/// a ranked chart of its top 1,500, its navigation and its drops. A tag no country holds reads as missing.
 #[test]
 fn a_request_naming_1500_countries_is_answered() {
     let query = query();
@@ -509,8 +465,6 @@ fn line_of<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
     Line::new(query, series, series.measure("politicalPower").unwrap()).unwrap()
 }
 
-/// A ranked view of stretches each shorter than a summary bucket ranks and reads every one of them exactly, drawn
-/// hourly or in bins: two five-hour stretches either side of a load are one line over all ten hours.
 #[test]
 fn a_ranked_view_of_stretches_shorter_than_a_bucket_reads_each_exactly() {
     use crate::timeline::{Join, Stretch, Timeline};
@@ -541,8 +495,6 @@ fn a_ranked_view_of_stretches_shorter_than_a_bucket_reads_each_exactly() {
     }
 }
 
-/// A short stretch's ranked bin names a key by its tag at the bin's last hour and reads only the hours that tag holds
-/// it: ITA's key held by AAA for the stretch's first three hours lends ITA none of AAA's values or membership.
 #[test]
 fn a_ranked_short_stretch_reads_its_winner_only_over_its_tags_hours() {
     use crate::identity::{Holder, HolderRun, Holders};
@@ -577,8 +529,6 @@ fn a_ranked_short_stretch_reads_its_winner_only_over_its_tags_hours() {
     assert_eq!((least, greatest), (values.iter().copied().fold(f64::INFINITY, f64::min), values.iter().copied().fold(f64::NEG_INFINITY, f64::max)));
 }
 
-/// A faction's line is its own row of the recorder's totals, named by its id (never a country's tag), and each bin's
-/// least and greatest are the faction's own: its members' exact sums at the bin's hours, not their bounds.
 #[test]
 fn a_factions_line_is_its_row_and_its_bins_hold_its_members_exact_sums() {
     let query = query();
@@ -607,8 +557,6 @@ static WORLD: Series = Series {
     drops: false,
 };
 
-/// A singleton's line is its one row (key 0) in every stretch whatever the line is named, an hour
-/// the timeline does not hold is missing with the recording's reason, and it is never ranked.
 #[test]
 fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_is_never_ranked() {
     let query = query();
@@ -624,7 +572,6 @@ fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_
     assert_eq!(states[1].missing.as_deref(), Some(query.timeline.reason(SECOND - 1).as_str()));
     assert!(line.rank_at(FIRST, 2).is_err());
     assert!(line.ranked(FIRST, LAST, 64, 2).is_err());
-    // Its tile is its one row, though no country holds the name it is asked by.
     let hour = FIRST + 3;
     let reply = crate::tile::tile(&line, "1", &[Ask::whole("World")], None, 1, i64::from(hour).div_euclid(BINS as i64), false).expect("the world's line is a tile");
     let runs = crate::tile::decode_runs(&unbase64(&reply.bins), 1, reply.first_hour, line.scale(), reply.raw_values).unwrap();
@@ -632,8 +579,6 @@ fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_
     assert_eq!(held.2, fixture::tension(hour) as f64 / 1_000.0);
 }
 
-/// A rank at an hour names the countries greatest there, greatest first (ties by key), each with
-/// its state (a ranked `series-state`); a top of none is refused.
 #[test]
 fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
     let query = query();

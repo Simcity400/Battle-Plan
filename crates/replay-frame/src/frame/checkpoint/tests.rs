@@ -172,8 +172,6 @@ fn checkpoint_preserves_large_census_and_raw_decoded_nested_steps() {
             ..Default::default()
         }]));
     let mut source = FrameDecoder::new().apply(&stored(&baseline)).unwrap();
-    // Prepared state can contain a decoded value edited by its owner. Checkpoint
-    // serialization retains it exactly instead of applying display rounding again.
     let TableView::Complete(TableRows::DivisionStatus(rows)) =
         &mut *source.tables[TableId::DivisionStatus.index()]
     else {
@@ -240,8 +238,6 @@ fn checkpoint_payload_rejects_bad_status_keys_counts_and_clock_hour() {
         }]));
     let source = FrameDecoder::new().apply(&stored(&baseline)).unwrap();
     let (_, bytes) = checkpoint(&source);
-    // The header stores identity, total/read metrics, pool bytes and dropped
-    // frames. Clock is the first table: unknown sample, complete, count, key.
     let first_table = 44 + 8 * TABLE_COUNT;
     let count = first_table + 2;
     let key = count + 4;

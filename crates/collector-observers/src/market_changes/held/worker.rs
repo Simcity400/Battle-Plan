@@ -1,5 +1,3 @@
-//! Selected acquisition and differences of native cumulative totals. Only rare
-//! reset/removal boundaries carry complete final pools through the callback.
 use super::*;
 
 fn increments(
@@ -109,9 +107,6 @@ fn agreement_totals(
     held.row.sunk = sunk.into();
     state.changed_agreements.insert(key);
 }
-/// Native purchase delivery is a difference of cumulative whole-unit manifests.
-/// Scale through Q15 before truncating to whole equipment, as its pool formatter
-/// does. The complete-cost case retains the original manifest without rescaling.
 fn contract_total(equipment: &MarketPool, progress: i64, cost: i64) -> MarketPool {
     use replay_data::fixed_point::{fixed5_to_q15, q15_to_fixed5};
     let progress = fixed5_to_q15(progress);
@@ -142,9 +137,6 @@ fn contract_total(equipment: &MarketPool, progress: i64, cost: i64) -> MarketPoo
         items,
     }
 }
-/// A loaded definition may have an invalid lazy cache. Recompute its cost
-/// read-only from the same reached equipment, quotes, price levels and live
-/// define factors, without invoking the game or changing that cache.
 pub(super) fn read_cost(
     memory: &impl Memory,
     base: usize,
@@ -294,8 +286,6 @@ fn finish_contract(
         held.delivered = next;
     }
 }
-// Any erasure without its expected final witness must name the affected amount
-// stream rather than silently discarding the mark. Only selected marks are used.
 pub(super) fn erased_marks(
     state: &mut State,
     event: &MarketEventRow,
@@ -570,8 +560,6 @@ pub(super) fn acquire_marked(
             }
             if event.occurrence >= held.cutoff {
                 if demand & READ_RUNTIME != 0 {
-                    // Share the carried pool through the scalar reader; scalar
-                    // ticks neither read nor copy the in-transit manifest.
                     let carried = held.row.runtime.route_equipment.clone();
                     held.row.runtime = read_runtime(memory, pointer, carried)?;
                 }
@@ -855,7 +843,6 @@ mod tests {
             cost, 450_000,
             "zero-progress admission lost the immutable terminal cost baseline"
         );
-        // A valid native cache needs neither quotes nor mutable global factors.
         world.u32(definition + market::DEFINITION_COST_VALID, 1);
         world.u64(definition + market::DEFINITION_TOTAL_COST, 900_000);
         struct Cached<'a> {

@@ -1,26 +1,13 @@
-//! Supply companion node, distinct from the country node-settings record.
-//! No hourly consistency lifetime is established by this layout alone.
 
 use engine_sites::Rva;
-/// Node-array stride.
 pub const STRIDE: usize = 0xe8;
-/// Node index, u32, used for weight-vector selection and initialized from
-/// constructor argument two. Identity is country plus index.
 pub const INDEX: usize = 0;
-/// Destination province of the node.
 pub const PROVINCE: usize = 4;
-/// Node kind, u32.
 pub const KIND: usize = 0x08;
-/// Node flag, u8.
 pub const FLAG: usize = 0x0c;
-/// Available supply, i64.
 pub const AVAILABLE: usize = 0x38;
-/// Consumed supply, i64.
 pub const CONSUMED: usize = 0x40;
-/// Route value, i64; the state uses its maximum over provinces and grants
-/// a supply-route resource bonus when that maximum is positive.
 pub const ROUTE_VALUE: usize = 0x78;
-/// Node constructor initializing the `KIND`.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x012a_6a60);
 
 use crate::{
@@ -28,8 +15,6 @@ use crate::{
     supply_route, walk::Outcome,
 };
 
-/// Index of a node-less parent-map vertex row: `VERTEX | province`.
-/// CPdxArray's native signed count keeps node indices below this marker.
 pub const VERTEX: u32 = 1 << 31;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +26,6 @@ pub struct Row {
     pub flag: u8,
     pub available: i64,
     pub consumed: i64,
-    /// Native province-keyed parent lookup, -1 for a missing key.
     pub parent: i32,
     pub route: supply_route::Row,
 }
@@ -49,28 +33,17 @@ pub struct Report {
     pub outcome: Outcome,
     pub paths: usize,
     pub required_paths: usize,
-    /// Province ids this walk recorded as the game's null province
-    /// ([`ProvinceCheck::is_null_province`]).
     pub null_provinces: u32,
-    /// The last of them, for diagnostics.
     pub last_null_province: Option<ProvinceObservation>,
-    /// The province check that refused the walk, when one did.
     pub refusal: Option<ProvinceObservation>,
 }
 
-/// What resolving a province id stored in the supply companion found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProvinceCheck {
-    /// The hour's province census header was unreadable.
     CensusUnavailable,
-    /// Zero or not below the census count: the game's province lookup
-    /// returns null for it.
     OutsideCensus,
-    /// The census slot could not be read.
     SlotUnreadable,
-    /// The census slot holds null, which province lookup returns as is.
     SlotEmpty,
-    /// The slot's object is not the CProvince with this id.
     IdentityMismatch,
 }
 
@@ -93,23 +66,15 @@ impl ProvinceCheck {
         }
     }
 
-    /// The game holds this id as a null province. The walk's native readers only key maps with a
-    /// node or parent province: train departure routing looks it up in the parent and route maps,
-    /// and a missing parent key ends the walk. Node creators store it unchecked, from the copied
-    /// record or in the supply companion. The walk therefore records such an id as stored.
     pub const fn is_null_province(self) -> bool {
         matches!(self, Self::OutsideCensus | Self::SlotEmpty)
     }
 }
 
-/// Where the walk met a province id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProvinceRole {
-    /// A node's own province (`PROVINCE`).
     Node,
-    /// A province-keyed parent from the companion's parent map.
     Parent,
-    /// A node-less vertex on a parent chain.
     Vertex,
 }
 
@@ -123,9 +88,6 @@ impl ProvinceRole {
     }
 }
 
-/// One province id the walk could not resolve: its country, the node index
-/// (`VERTEX | province` on a parent chain), the stored value, where it was
-/// met and what the check found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProvinceObservation {
     pub country: u32,
@@ -135,8 +97,6 @@ pub struct ProvinceObservation {
     pub check: ProvinceCheck,
 }
 
-/// A distinct refusal reason for each check that refuses, by role. A null
-/// province never refuses.
 const fn refusal_reason(role: ProvinceRole, check: ProvinceCheck) -> &'static str {
     use ProvinceCheck as C;
     use ProvinceRole as R;
@@ -154,7 +114,6 @@ const fn refusal_reason(role: ProvinceRole, check: ProvinceCheck) -> &'static st
     }
 }
 
-/// The walk's province checks and what they found.
 #[derive(Default)]
 struct Observations {
     null_provinces: u32,
@@ -163,8 +122,6 @@ struct Observations {
 }
 
 impl Observations {
-    /// Resolve `province` as `role`; a null province is recorded as stored,
-    /// any other unresolved id refuses the walk with its own reason.
     #[allow(clippy::too_many_arguments)]
     fn check(
         &mut self,
@@ -196,7 +153,6 @@ impl Observations {
         }
     }
 
-    /// A positive parent is a province id; zero and negative are roots.
     #[allow(clippy::too_many_arguments)]
     fn parent(
         &mut self,
@@ -222,7 +178,6 @@ impl Observations {
     }
 }
 
-/// Immediate parent edges, written into one shared path arena.
 struct Edges<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -234,8 +189,6 @@ struct Edges<'a, M: Memory> {
     required: &'a mut usize,
 }
 impl<M: Memory> Edges<'_, M> {
-    /// Immediate parent/province edge. `None` means the arena is too small;
-    /// `required` retains its demand.
     fn read(
         &mut self,
         parent: i32,
@@ -256,17 +209,12 @@ impl<M: Memory> Edges<'_, M> {
             if self.paths.len() - used < route.len {
                 return Ok(None);
             }
-            // Preserve a separate arena occurrence and the original capacity
-            // demand for every row, including duplicate path words.
             self.paths
                 .copy_within(route.start..route.start + route.len, used);
             route.start = used;
             *self.used += route.len;
             return Ok(Some(route));
         }
-        // The route map is a dependency only of a positive-parent edge. Empty
-        // censuses, root-only nodes and rows omitted for output capacity do
-        // not read it; earlier node/parent failures keep their precedence.
         let outer = match self.outer {
             Some(outer) => outer,
             None => {
@@ -304,12 +252,6 @@ impl<M: Memory> Edges<'_, M> {
     }
 }
 
-/// No game calls, full province scan or repeated capital-path walk. The
-/// province pointer memo grows lazily. Exactly 29 node bytes are gathered
-/// per node in 64-record batches. Parent chains follow the companion
-/// map through every vertex visited by capital search. A vertex without
-/// a node row is recorded once as a `VERTEX` row with parent and edge.
-/// Rows are grouped per country rather than in stored order.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -322,8 +264,6 @@ pub fn walk(
     walk_part(memory, base, state, 0, 1, output, paths, &mut provinces)
 }
 
-/// Advisory original node-header floor. Parent vertices and paths grow
-/// from the worker's original walk before publication.
 pub fn storage_demand(
     memory: &impl Memory,
     base: usize,
@@ -347,26 +287,17 @@ pub fn storage_demand(
     Ok(required)
 }
 
-/// Session memo of authenticated province pointers. The province census
-/// header and the play session identify it; a change clears it. Each
-/// province is authenticated once per session instead of once per node.
 #[derive(Default)]
 pub struct ProvinceMemo {
     key: Option<(usize, usize, i64, [u8; 16])>,
     provinces: Option<Array>,
     pointers: Vec<usize>,
-    /// Per-country node/vertex membership, not native data. IDs outside this
-    /// bounded bitset use the captured rows directly.
     vertices: Vec<u64>,
     worker: bool,
-    /// Complete edge and endpoint observations within one walk only.
     routes: supply_route::Memo,
 }
 
 impl ProvinceMemo {
-    /// Enable worker growth from original route dependencies and live census. A
-    /// default/vacant memo uses the exact traversal fallback; both variants
-    /// grow their province pointer storage lazily after authentication.
     pub fn with_scratch() -> std::io::Result<Self> {
         Ok(Self {
             worker: true,
@@ -375,7 +306,6 @@ impl ProvinceMemo {
         })
     }
 
-    /// Re-key for this hour; reads the census header and the session once.
     pub fn begin(&mut self, memory: &impl Memory, base: usize, state: usize) {
         let root = state
             .checked_add(crate::cgame_state::PROVINCES)
@@ -398,8 +328,6 @@ impl ProvinceMemo {
             + self.routes.allocated_bytes()
     }
 
-    /// The authenticated pointer, or what its check found. Only an
-    /// authenticated pointer is memoized; the outer error is allocation.
     fn province(
         &mut self,
         memory: &impl Memory,
@@ -429,9 +357,6 @@ impl ProvinceMemo {
     }
 }
 
-/// Share `part` of `parts` of the country slots: every `parts`-th slot, so
-/// neighbouring big networks spread across shares. The caller restores the
-/// per-country order. `provinces` must have begun this hour.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_part(
     memory: &impl Memory,
@@ -456,10 +381,6 @@ pub fn walk_part(
     )
 }
 
-/// [`walk_part`] for the countries `select` admits by native country
-/// id: an unselected slot's supply objects, nodes and routes are not read,
-/// and its rows are neither returned nor counted as unread. A selected
-/// country's rows equal the whole walk's.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_part_selected(
     memory: &impl Memory,
@@ -485,9 +406,6 @@ pub fn walk_part_selected(
     )
 }
 
-/// `select`, when present, admits countries by native id before their supply
-/// objects are read ([`walk_part_selected`]); without it every slot
-/// is read and checked.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_part_buffer(
     memory: &impl Memory,
@@ -525,7 +443,6 @@ pub fn walk_part_buffer(
         let census = Array::read(memory, state + crate::cgame_state::PROVINCES, 8)
             .ok_or("supply provinces invalid")?;
         if provinces.worker {
-            // Province-indexed vertices are reached through the live census.
             crate::allocation::resize(
                 &mut provinces.vertices,
                 (census.count as usize).div_ceil(64),
@@ -545,7 +462,6 @@ pub fn walk_part_buffer(
         };
         let mut len = 0_usize;
         let mut total = 0_usize;
-        // Vertex rows the output or path arena had no room for.
         let mut cut = 0;
         let mut bytes = [0_u8; 64 * 29];
         for slot in (1 + part as u32..systems.count()).step_by(parts) {
@@ -599,8 +515,6 @@ pub fn walk_part_buffer(
                 }
                 let mut hinted = 0;
                 for i in 0..count {
-                    // Each admitted record enters the four-node hint window
-                    // once. Pointer reads and all dependent checks stay serial.
                     while hinted < (i + 4).min(count) {
                         let next = &bytes[hinted * 29..(hinted + 1) * 29];
                         let index = u32::from_le_bytes(next[..4].try_into().unwrap());
@@ -617,16 +531,11 @@ pub fn walk_part_buffer(
                     let b = &bytes[i * 29..(i + 1) * 29];
                     let word = |n| u32::from_le_bytes(b[n..n + 4].try_into().unwrap());
                     let index = word(INDEX);
-                    // Native weight indexing followed by array[index] requires
-                    // this invariant; do not substitute a loop ordinal for it.
                     if index != first + i as u32 {
                         return Err("supply node identity differs from array index");
                     }
                     let province = word(PROVINCE);
                     let country = system.country.id;
-                    // A null province is recorded as stored
-                    // (ProvinceCheck::is_null_province); a resolved one is
-                    // authenticated.
                     observed.check(
                         provinces,
                         memory,
@@ -656,11 +565,6 @@ pub fn walk_part_buffer(
                 }
                 first += count as u32;
             }
-            // Keep the original node traversal order. Vertex membership uses
-            // a bounded bitset; append rows and sort once after the chains,
-            // instead of shifting every larger vertex row at each insertion.
-            // A country whose nodes did not all fit is already truncated; the
-            // first vertex without room ends its walk with one unread row.
             let vertices = len;
             output[start..vertices].sort_unstable_by_key(|r| r.province);
             let complete = vertices - start == nodes.count as usize;
@@ -749,8 +653,6 @@ pub fn walk_part_buffer(
     }
 }
 
-/// Province lookup returns the census slot when `0 < id < count` (signed) and
-/// null otherwise; a resolved slot must hold the CProvince with this id.
 fn validate_province(
     memory: &impl Memory,
     base: usize,
@@ -766,7 +668,6 @@ fn validate_province(
         return Err(ProvinceCheck::SlotEmpty);
     }
     let p = p as usize;
-    // A known pointer permits hints; the vtable still gates the actual ID read.
     crate::prefetch::span(p, 8);
     if let Some(id) = p.checked_add(crate::cprovince::ID) {
         crate::prefetch::span(id, 4);

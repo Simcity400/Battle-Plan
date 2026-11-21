@@ -1,4 +1,3 @@
-//! Naval counter capture: task force counter inputs and supply, carried under the naval tree observer's certificates. The host owns the ordinary task force part's dispatch, loans and table assembly.
 
 #[cfg(test)]
 use collector_certificates::watch_registry;

@@ -24,12 +24,8 @@ import type { ForceParams } from './forceRace';
 import { bindCountryParts } from './countryPartsDrillData';
 import { partsRaceDrillData, UNATTRIBUTED_PART } from './partsRaceDrill';
 
-/** What a force race shows beside one country's breakdown (the navy's standing orders). */
 export interface PartsRaceDetailProps { runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number; following: boolean; active: boolean }
 
-/** One country's parts of a force race: its history as a stack over the extent and its parts at the hour shown, read
- * from its own windows; following, the parts are painted at the head and only a change of rows or country renders.
- * The holder chosen at `originHour` is kept through a tag later passing to another country. */
 export default function ForcePartsBreakdown({ runtime, widget, track, active, options, product, request, manifest, validate, extent, playhead, tag,
   originHour, holder, hour: givenHour, following, pinned, countrySlot, saved, onPick, onFollow, picker, details: Details,
   measure, ownership, partsLabel, referenceLabel, note, formatValue }: {
@@ -73,7 +69,7 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
   const model = useMemo(() => reply ? partsRaceModel(reply) : null, [reply]);
   const binding = useMemo(() => model && reply && tag ? bindCountryParts(partsRaceDrillData(model, reply.series, () => null), tag, originHour, holder) : null,
     [model, reply, tag, originHour, holder]);
-  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const bands = useMemo(() => binding && tag ? binding.data.bands(tag, range) : null, [binding, tag, range]);
   const parts = useMemo(() => [...(reply?.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })), UNATTRIBUTED_PART], [reply]);
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
@@ -95,7 +91,6 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
   };
   const totalText = (value: ReturnType<typeof valueAt>) => value.total == null ? 'Not recorded' : formatValue(value.total);
   const referenceText = (value: ReturnType<typeof valueAt>) => value.reference == null ? 'Not known' : formatValue(value.reference);
-  // What renders the breakdown: a missing window, the country, which rows it has.
   let keyed = { hour: Number.NaN, key: '' };
   structure.current = at => {
     if (keyed.hour === at) return keyed.key;
@@ -104,7 +99,6 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
       drillRows(partsOf(value), unattributedOf(value)).map(row => row.key), value.total === null]) };
     return keyed.key;
   };
-  // The head's values, made once an hour: the rows' amounts, the legend's values, the reference and the day.
   const head = useMemo(() => {
     if (!live) return null;
     let made: { hour: number; drill: ReturnType<LiveDrillParts['read']>; texts: Map<string, string> } | null = null;
@@ -117,7 +111,7 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
       return made;
     };
     return { drill: { read: () => now(hourNow()).drill, subscribe: subscribeClock } as LiveDrillParts, texts: liveTexts(runtime.clock, hourNow, at => now(at).texts) };
-  }, [live, model, binding, colours, parts, runtime.clock, offset, subscribeClock]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [live, model, binding, colours, parts, runtime.clock, offset, subscribeClock]);
   const at = valueAt(hour);
   const actor = binding?.tagAt(hour) ?? null;
   const pending = windowsAt(hour).some(index => !history.data.has(index));

@@ -1,4 +1,3 @@
-//! Horizontal and vertical screen-space shadow blurs.
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use super::shader_sources;
@@ -7,9 +6,7 @@ use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
 use installed_content_image::native::Decode;
 use shader_pipeline::{binding, gpu, library::Effect};
 
-// The receiver owns the depth/stencil attachment.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
-// Screen targets store BGRA8 UNORM values.
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 fn refuse(reason: impl Into<String>) -> io::Error {
@@ -20,16 +17,13 @@ fn refuse(reason: impl Into<String>) -> io::Error {
 }
 
 pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Arc<Effect>> {
-    // Supply an empty caller-define array for both techniques.
     let (mut library, defines) = shader_sources::library(layers, map, decode);
     library
         .load(b"gfx/FX/shadowblur.shader", &defines)
         .map_err(refuse)
 }
 
-/// All 32 bytes are initialized, including the two trailing ones.
 pub fn constants(extent: u32, height: f32) -> [f32; 8] {
-    // Scale blur offsets by camera height, capped at one.
     let offsets = [0.0, f32::from_bits(0x3fb13b14), f32::from_bits(0x404ec4ec)];
     let fade = (height / 700.0).min(1.0);
     let offsets = offsets.map(|offset| (offset - offset * fade) / extent as f32);
@@ -45,19 +39,16 @@ pub fn constants(extent: u32, height: f32) -> [f32; 8] {
     ]
 }
 
-/// The pixel slot the native blur binds the buffer it blurs to.
 pub const SOURCE_SLOT: u32 = 0;
 
 pub struct Blur {
     pipelines: [Arc<gpu::Pipeline>; 2],
     vertices: wgpu::Buffer,
-    /// How each technique reads the buffer it blurs by texel ([`super::shadow::texel_reads`]).
     texel_reads: [Option<String>; 2],
 }
 
 impl Blur {
     pub fn new(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| Self::build(device, effect))
     }
 
@@ -72,7 +63,6 @@ impl Blur {
             texel_reads[axis] = super::shadow::texel_reads(&compiled, SOURCE_SLOT, name);
             let mut state =
                 gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])?;
-            // The native call binds only PS texture/sampler 0. Other registers retain.
             state
                 .samplers
                 .retain(|slot, _| *slot == binding(SOURCE_SLOT, Stage::Pixel));
@@ -104,12 +94,9 @@ impl Blur {
                 step: wgpu::VertexStepMode::Vertex,
                 attributes,
             }];
-            // Restore renderer raster state and retain receiver depth: clockwise fronts, back-face culling,
-            // depth writes with LESS_EQUAL, and no stencil.
             pass.primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
             pass.primitive.front_face = wgpu::FrontFace::Cw;
             pass.primitive.cull_mode = Some(wgpu::Face::Back);
-            // Horizontal scratch has no DSV. Vertical reattaches receiver depth.
             pass.depth_stencil = (axis == 1).then_some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
@@ -124,7 +111,6 @@ impl Blur {
             pipeline(1, "ShadowBlurVertical"),
         ];
         let [horizontal, vertical] = pipelines;
-        // float4 POSITION + float2 UV, stride32; Y flips each draw.
         let vertices: [[f32; 8]; 4] = [
             [-1.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
             [-1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],

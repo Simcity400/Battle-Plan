@@ -22,7 +22,6 @@ fn fuel(country: u32, award: Option<FuelAwardDay>) -> CountryFuelRow {
     }
 }
 
-/// A complete applied day ending at `hour`, observed from hour 0.
 fn award(hour: i32) -> FuelAwardDay {
     FuelAwardDay {
         continuity_start_hour: Some(0),
@@ -41,14 +40,12 @@ fn state(id: u32, owner: u32) -> StateRow {
     StateRow { id, owner, ..Default::default() }
 }
 
-/// GER (10), ITA (20) and ROM (30), each owning one state.
 fn owned() -> Edits {
     let mut edits = Edits::default();
     world(&mut edits).put(TableId::States, state(100, 10)).put(TableId::States, state(200, 20)).put(TableId::States, state(300, 30));
     edits
 }
 
-/// A read of CountryFuel listing `countries`, none with an applied day.
 fn read<'a>(edits: &'a mut Edits, countries: &[u32]) -> &'a mut Edits {
     for &country in countries {
         edits.put(TableId::CountryFuel, fuel(country, None));
@@ -56,8 +53,6 @@ fn read<'a>(edits: &'a mut Edits, countries: &[u32]) -> &'a mut Edits {
     edits
 }
 
-/// CountryFuel cells of `countries` written with no read bit and no sample hour, the fuel level
-/// `level` among them.
 fn landed<'a>(edits: &'a mut Edits, countries: &[u32], level: i64) -> &'a mut Edits {
     for &country in countries {
         edits.put(TableId::CountryFuel, CountryFuelRow { current_raw: level, ..fuel(country, None) });
@@ -65,7 +60,6 @@ fn landed<'a>(edits: &'a mut Edits, countries: &[u32], level: i64) -> &'a mut Ed
     edits.unstamped(TableId::CountryFuel)
 }
 
-/// Runs empty hours until the run's next hour is `next`.
 fn idle(run: &mut Run, hour: &mut i32, next: i32) {
     while *hour < next {
         run.hour(&Edits::default());
@@ -73,13 +67,11 @@ fn idle(run: &mut Run, hour: &mut i32, next: i32) {
     }
 }
 
-/// The next hour with `edits`.
 fn step(run: &mut Run, hour: &mut i32, edits: &Edits) {
     run.hour(edits);
     *hour += 1;
 }
 
-/// Each row as (country, read hour, left-out code, overlapped, gained).
 fn days(run: &Run) -> Vec<(u32, i32, u8, Option<i32>, Option<i64>)> {
     run.rows::<FuelDayRow>(TableId::FuelDays)
         .iter()
@@ -123,9 +115,6 @@ const UNSEEN: u8 = FuelDayRow::OWNERSHIP_NOT_RECORDED;
 const STATELESS: u8 = FuelDayRow::NOT_UPDATED;
 const OVERLAPS: u8 = FuelDayRow::OVERLAPS;
 
-/// A run's first reads hold days governed by hours it never saw; a slot read whose 24 governing
-/// hours each show the country owning a state keeps its ring day; one hour without a state leaves
-/// it out as not updated; the next slot read, 24 hours later, keeps its own.
 #[test]
 fn a_fuel_day_is_kept_only_when_every_governing_hour_shows_the_country_owning_a_state() {
     let mut run = Run::new(writers, INPUTS);
@@ -153,8 +142,6 @@ fn a_fuel_day_is_kept_only_when_every_governing_hour_shows_the_country_owning_a_
     assert_eq!(days(&run), [(10, 65, KEPT, None, Some(500)), (20, 65, KEPT, None, Some(500))], "a country the read no longer lists loses its row");
 }
 
-/// A read of CountryFuel is the hour its sample hour names, as the collector stamps every table it
-/// reads: cells written at an hour no read stamps write no day.
 #[test]
 fn fuel_cells_written_at_an_hour_no_read_stamps_write_no_day() {
     let mut run = Run::new(writers, INPUTS);
@@ -165,8 +152,6 @@ fn fuel_cells_written_at_an_hour_no_read_stamps_write_no_day() {
     assert!(days(&run).is_empty(), "no read listed a country");
 }
 
-/// An hour whose ownership tables were not complete leaves the day out as ownership not recorded,
-/// but an hour showing the country without a state outweighs it.
 #[test]
 fn an_unseen_governing_hour_leaves_the_day_out_unless_a_stateless_hour_does() {
     let mut run = Run::new(writers, INPUTS);
@@ -189,9 +174,6 @@ fn an_unseen_governing_hour_leaves_the_day_out_unless_a_stateless_hour_does() {
     assert_eq!(days(&run), [(10, 41, UNSEEN, None, None), (30, 41, STATELESS, None, None)]);
 }
 
-/// A complete applied day needs no ownership proof and supersedes the ring; a read outside the
-/// slot keeps its day until a slot read within 23 hours keeps its own, which names it; a read
-/// within 23 hours of a kept day overlaps it.
 #[test]
 fn applied_days_supersede_the_ring_and_no_two_kept_days_overlap() {
     let mut run = Run::new(writers, INPUTS);
@@ -236,8 +218,6 @@ fn applied_days_supersede_the_ring_and_no_two_kept_days_overlap() {
     assert_eq!(run.rows::<FuelDayRow>(TableId::FuelDays)[0].awards_reason, b"");
 }
 
-/// A run taken up at a commit writes, from its next hour, the table a run never stopped writes:
-/// the day's ownership samples outlive the stop.
 #[test]
 fn a_resumed_fuel_days_writer_writes_the_table_of_one_never_stopped() {
     let timeline = |run: &mut Run, hour: &mut i32, until: i32| {

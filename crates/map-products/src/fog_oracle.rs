@@ -1,4 +1,3 @@
-// Frozen d5f608caad fog/land/sharing branches; unchanged visibility kernels remain shared.
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{

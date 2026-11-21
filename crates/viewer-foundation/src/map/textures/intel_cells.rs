@@ -1,4 +1,3 @@
-//! Content-owned province multiplicities for the floor-sized fog grid.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -17,10 +16,6 @@ struct CellProvince {
     pixels: u8,
 }
 
-/// Immutable pixel composition, built once from the content's province image.
-/// Only defined land contributes dynamic bytes. Water and unknown IDs contribute
-/// 255, and the north/east remainder outside the floor-sized grid is not read.
-/// Storage follows the actual grid, land definitions and cell/province pairs.
 pub struct IntelCells(map_display_data::retained::Retained<IntelComposition>);
 impl std::ops::Deref for IntelCells {
     type Target = IntelComposition;
@@ -35,10 +30,6 @@ pub struct IntelComposition {
     province_cells: BTreeMap<u32, Vec<usize>>,
 }
 
-/// One immutable map's cell table, shared by content loading and hour jobs.
-/// Loading may prepare it early; a demand before it is ready uses the same
-/// serialized construction. Completed tables and structural refusals are retained;
-/// allocation/resource failures leave the cell empty so later demand can retry.
 pub struct IntelCellsCache {
     map: Arc<MapData>,
     cells: OnceLock<Result<IntelCells, (io::ErrorKind, String)>>,
@@ -54,8 +45,6 @@ impl IntelCellsCache {
         }
     }
 
-    /// Preparation never holds up content loading. If the thread cannot start,
-    /// or an hour arrives first, the ordinary lazy construction remains exact.
     pub fn prewarm(map: Arc<MapData>) -> Arc<Self> {
         let cache = Arc::new(Self::new(map));
         let pending = Arc::clone(&cache);
@@ -77,8 +66,6 @@ impl IntelCellsCache {
         build: impl FnOnce() -> io::Result<IntelCells>,
     ) -> io::Result<&IntelCells> {
         if self.cells.get().is_none() {
-            // Serialize preparation and demand without publishing transient resource
-            // failures as immutable content facts. A later caller can retry them.
             let _building = self.building.lock().unwrap_or_else(|p| p.into_inner());
             if self.cells.get().is_none() {
                 let result = match build() {
@@ -130,7 +117,6 @@ impl IntelCells {
             .map_err(|_| engine_native::allocation::oom())?;
         for (&province, definition) in &map.definitions {
             if definition.kind == ProvinceKind::Land {
-                // Unique u32 province keys admit at most u32::MAX + 1 entries.
                 let index = u32::try_from(land_provinces.len())
                     .map_err(|_| invalid("the intel land-province index exceeds u32"))?;
                 land_indices.insert(province, index);
@@ -184,17 +170,14 @@ impl IntelCells {
         )))
     }
 
-    /// The grid's cell count.
     pub fn cells(&self) -> usize {
         self.offsets.len() - 1
     }
 
-    /// The cells `province`'s land pixels fall in.
     pub fn province_cells(&self, province: u32) -> &[usize] {
         self.province_cells.get(&province).map_or(&[], Vec::as_slice)
     }
 
-    /// One cell's intel byte from its land pixels' province bytes.
     pub fn cell_byte(&self, cell: usize, byte: impl Fn(u32) -> u8) -> u8 {
         let mut sum = CELL_PIXELS as u32 * u32::from(u8::MAX);
         for entry in &self.entries[self.offsets[cell]..self.offsets[cell + 1]] {
@@ -306,8 +289,6 @@ impl IntelCells {
         }
     }
 
-    /// Rebuild exactly the scalar raster's sum/divide/complement, without
-    /// rereading static pixels. Missing visibility is not a recorded zero.
     pub fn try_intel_map(&self, visibility: Option<&BTreeMap<u32, u8>>) -> io::Result<IntelMap> {
         let mut fogged_texels = 0;
         let texels = map_display_data::Paged::try_from_iter(

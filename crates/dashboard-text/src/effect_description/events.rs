@@ -1,4 +1,3 @@
-//! Event and targeted-decision descriptions.
 
 use super::*;
 use crate::{
@@ -11,7 +10,6 @@ use replay_data::rows::{
     PoliticsRow, tables,
 };
 
-/// The fields of each table the decision descriptions read.
 const DECISION: u64 = mask::<DecisionRow>(&[
     "token",
     "country_target",
@@ -31,7 +29,6 @@ mod descriptions;
 #[cfg(test)]
 mod tests;
 
-/// compares both native target slots and ignores lifecycle/ignore.
 fn matching<'a>(
     rows: Rowset<'a, DecisionRow>,
     definition: &[u8],
@@ -41,7 +38,6 @@ fn matching<'a>(
     target_state: u32,
     slot: impl Fn(u32) -> Option<u32>,
 ) -> Result<Option<Cow<'a, DecisionRow>>, String> {
-    // The container is the key's bits 32 to 40.
     let container: u8 = if mission { 4 } else { 3 };
     let mut candidates = Vec::new();
     for row in rows.keyed(|key| (key >> 32) as u8 == container) {
@@ -71,7 +67,6 @@ fn matching<'a>(
     Ok(None)
 }
 
-/// skips the execution-count lookup only for fixed_random_seed.
 fn decision_seed(
     game_seed: i32,
     definition: &Decision,
@@ -91,7 +86,6 @@ fn decision_seed(
         .wrapping_add(target) as u32)
 }
 
-/// tests cosmetic/tag/base keys, each ideology rung before its base.
 fn name_key(
     base: &str,
     cosmetic: &str,
@@ -119,7 +113,6 @@ fn name_key(
         .unwrap_or_else(|| base.to_owned())
 }
 
-/// A decision's title key for `country` at `frame`'s hour, by cosmetic tag, tag and ruling ideology.
 pub fn decision_name_key_at<'f>(
     frame: impl Into<HourFrame<'f>>,
     recorded: &crate::scope::RecordedScopes<'_>,
@@ -172,8 +165,6 @@ pub fn decision_name_key_at<'f>(
 }
 
 impl Renderer<'_, '_, '_> {
-    // distinguishes authored definitions from the null sentinel
-    // it is not an active-decision timer guard.
     pub(super) fn decision_remove_days(
         &self,
         item: &Item,
@@ -192,8 +183,6 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let name = self.decision_title(definition, scopes)?;
-        // effect parsing uses integer parsing. A failed
-        // scan leaves the field unchanged. The description negates it in both branches.
         let days = fields
             .iter()
             .filter(|item| item.keyword_is("days"))
@@ -219,16 +208,12 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // selects the stored alternate/base key,
-    // then applies the country ladder. It expands in the supplied scope unchanged.
     fn decision_title(&self, definition: &Decision, scopes: Scopes) -> Result<String, String> {
         let label_key = self.decision_name_key(definition, self.current_country(scopes)?)?;
         self.localised(label_key.as_bytes(), &[], scopes, true)
     }
 
     pub(super) fn custom_tooltip(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
-        // evaluates the shared bound reader's tree
-        // with empty supplied arguments and the caller's scope localiser.
         self.bound_localisation(
             &installed_content_core::gui::native::BoundLocalization::from_value(&item.value),
             scopes,
@@ -236,7 +221,6 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    // fresh seeded title scope; FROM is the caller's ROOT.
     pub(super) fn country_event(&mut self, item: &Item, scopes: Scopes) -> Result<String, String> {
         if let Some(desc) = field(children(item), "desc")
             .and_then(|item| item.value.read_string())
@@ -270,10 +254,9 @@ impl Renderer<'_, '_, '_> {
                 parent.random_seed,
                 parent.random_counter,
             ) as u32;
-            parent.random_seed = parent.random_seed.wrapping_add(1); // Advance the copied title seed.
+            parent.random_seed = parent.random_seed.wrapping_add(1);
             title_scope.random_seed = crate::scripted_text::random::scope_seed(seed);
             title_scope.random_counter = crate::scripted_text::random::scope_counter(seed);
-            // derives title lanes; only a later selection needs them.
             title_scope.random_seed_refusal = parent.random_seed_refusal;
             let at = graph.scopes.len();
             graph.scopes.push(title_scope);
@@ -362,8 +345,6 @@ impl Renderer<'_, '_, '_> {
             let value = item.value.scalar().unwrap_or_default();
             let text = std::str::from_utf8(installed_content_core::parser::c_string(value))
                 .map_err(|_| "decision target is not UTF-8")?;
-            // scope-selector parsing's native event-target fallback includes tooltip
-            // targets, unlike a trigger country operand.
             let parsed =
                 installed_content_core::scope::parse(text, item.quoted(), self.context.world()?.recorded());
             if matches!(
@@ -398,8 +379,6 @@ impl Renderer<'_, '_, '_> {
                 return Ok((None, state));
             }
         }
-        // invalid scoped value falls back to the selected state,
-        // then selected country. A recognised missing selector stays invalid.
         Ok(match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => (Some(country), 0),
             Scope::State(state) if state != NULL_STATE => (None, state),
@@ -501,8 +480,6 @@ impl Renderer<'_, '_, '_> {
                 .tables()
                 .complete::<tables::DecisionRandomItems>(RANDOM_ITEM)
                 .map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
-            // returns the first matching definition/target; a
-            // complete roster without a match contributes stored zero.
             let mut first: Option<Cow<'_, DecisionRandomItemRow>> = None;
             for row in rows.keyed(|key| world.slot((key >> 32) as u32) == Some(owner)) {
                 let row = row.map_err(|_| DECISION_RANDOM_COUNT_GAP)?;
@@ -519,8 +496,6 @@ impl Renderer<'_, '_, '_> {
             .map_err(|_| "Decisions description_seed is unread")
     }
 
-    // seeds country and FROM from the stored clock/count. A fresh
-    // scope's FROM is itself; the second write then mixes its own seed again.
     fn seeded_decision_graph(
         &self,
         owner: u32,
@@ -539,8 +514,6 @@ impl Renderer<'_, '_, '_> {
                 from.random_counter = random::scope_counter(own.random_seed);
             }
             Err(why) => {
-                // No substitute seed is consumed: copies carry this marker to
-                // each draw site.
                 own.random_seed_refusal = Some(why);
                 from.random_seed_refusal = Some(why);
             }
@@ -581,7 +554,6 @@ impl Renderer<'_, '_, '_> {
         definition: &Decision,
         scopes: Scopes,
     ) -> Result<Option<u32>, String> {
-        // takes THIS/FROM states before any scripted candidate list.
         if let Scope::State(state) = scopes.this
             && state != NULL_STATE
             && state != 0
@@ -610,8 +582,6 @@ impl Renderer<'_, '_, '_> {
             .evaluate(&definition.target_root_trigger, root)
             .decided()?
         {
-            // maintains ascending unique state IDs, independently of
-            // authored array order, then checks is_valid_target in fresh scopes.
             for array in &definition.target_arrays {
                 for object in evaluator
                     .scoped_array_scopes(array, scopes)
@@ -680,7 +650,6 @@ impl Renderer<'_, '_, '_> {
         let scope = &graph.scopes[scopes
             .cursor
             .ok_or("decision highlight lacks scope cursor")?];
-        // draws on a copy, incrementing no caller seed word.
         let index = scope.random_draw()? as usize % candidates.len();
         Ok(candidates.into_iter().nth(index))
     }
@@ -780,7 +749,6 @@ mod politics_days {
                 "Remove \u{11}H43\u{11}! from \u{11}HMission BBB/AAA/CCC\u{11}! in CCC\n",
             ),
         ] {
-            // A decision/days block exercises the mission timer.
             let output = fixture.render(
                 &format!("add_days_remove = {{ days = {days} decision = SYN_DECISION }}"),
                 &mut scopes,

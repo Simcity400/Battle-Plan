@@ -3,9 +3,7 @@ use std::sync::Arc;
 use viewer_foundation::map::test_support::gui::{Fixture, fixture, fixture_with, windows};
 
 thread_local! {
-    /// The flag texture a test has let arrive, and the art version it arrived at; none at first.
     static ARRIVED: std::cell::Cell<(Option<native_gui::Texture>, u64)> = const { std::cell::Cell::new((None, 0)) };
-    /// How many times a bind looked a flag texture up.
     static LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -382,7 +380,6 @@ fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
             maxWidth=100 maxHeight=14 alwaystransparent=yes}}}",
     );
     let root = windows.gui_type(b"tactics_list_entry").unwrap();
-    // Bindings use relative names; hover regions retain the native tree's paths.
     let tactics_icon = root.path_named("tactics_icon").unwrap();
     let child_element = root.path_named("child").unwrap();
     let tactics_name = root.path_named("tactics_name").unwrap();
@@ -437,7 +434,6 @@ fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
             .iter()
             .any(|hit| hit.region.path == tactics_name.path)
     );
-    // A child whose own provider refused text still blocks the entry fallback.
     set_hover(&mut values, "child", None, None);
     let hovers = hover_regions(root, &prepared.layout.regions, &values);
     let child = hovers
@@ -719,7 +715,6 @@ fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
         [[1, 0], [101, 0], [201, 0], [1, 27]]
     );
     let root = windows.gui_type(b"navalcombatview").unwrap();
-    // Runtime sprite size, not the tiny authored entry, determines overflow.
     let layout = kept
         .instance
         .layout_with_regions(root, &resources, None, true)
@@ -782,8 +777,6 @@ fn combat_button_enabled_binding_draws_native_disabled_state_and_resets() {
             let native_gui::PartKind::Sprite { offsets, .. } = &part.kind else {
                 panic!("expected a button sprite");
             };
-            // disabled state 4 uses frame 4 when present, otherwise frame 1, and the Disable
-            // technique.
             assert_eq!(
                 offsets[0],
                 if disabled && frames == 4. {
@@ -1180,7 +1173,6 @@ fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
             )
             .unwrap();
         let kept = retained.entries.get_mut("rows/0").unwrap();
-        // GFX_bar is fourteen pixels high; native resize overwrites the authored 1×3.
         assert_eq!(kept.instance.content_size(entry, entry).unwrap(), [20, 24]);
         assert_eq!(
             kept.instance.control(entry, progress).unwrap().offset,
@@ -1390,7 +1382,6 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
             &mut refused,
         )
         .unwrap();
-    // Arrow input reads current zero, sets forty, then one smoothing tick reaches twenty.
     assert_eq!(drawn.layout.holders[0].origin, [0.0, -20.0]);
     assert!(retained.pending.is_empty());
     let peek = retained
@@ -1590,15 +1581,10 @@ fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_
         .unwrap()
         .rect
     };
-    // Opened, it stands at its position, off the screen's left edge.
     assert_eq!(draw(0.0, 0.0, [0.0; 2])[0], -416.0);
-    // Past the animation time it rests at its show position.
     let shown = draw(0.5, 0.5, [0.0; 2]);
     assert_eq!(shown[0], -6.0);
-    // A drag moves it from there.
     assert_eq!(draw(0.6, 0.1, [10.0, 5.0])[..2], [shown[0] + 10.0, shown[1] + 5.0]);
-    // A saved picture's window stands where its opening settles with no time passed, in every GUI
-    // made anew: the setting comes with each draw.
     for _ in 0..2 {
         let rect = Windows::default()
             .draw(&windows, &resources, &Bindings::default(), 1, Selection::State(9904), [0.0; 2], false, &mut None, [1920.0, 1080.0], false, Tick { time: 0.0, dt: 0.0 }, true, true, None)
@@ -1608,8 +1594,6 @@ fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_
     }
 }
 
-/// A named window whose only drawable is a flag still loading draws nothing; once the flag's art
-/// arrives the window draws it at the same hour, its bindings unchanged.
 #[test]
 fn a_flag_whose_art_arrives_is_drawn_at_the_same_hour() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1635,8 +1619,6 @@ fn a_flag_whose_art_arrives_is_drawn_at_the_same_hour() {
     assert!(draw(&mut gui) > 0, "the flag arrived: drawn at the same hour and generation");
 }
 
-/// The parts a view drew at generation 1 whose repeated entry repeats a row that shows a flag: the
-/// flag two rows deep.
 fn entry_flag_parts(retained: &mut Retained, windows: &NativeWindows, resources: &Fixture) -> String {
     let root = windows.gui_type(b"view").unwrap();
     let mut leaf = Values::new();
@@ -1651,9 +1633,6 @@ fn entry_flag_parts(retained: &mut Retained, windows: &NativeWindows, resources:
     format!("{:?}", prepared.items)
 }
 
-/// Art arriving rebinds the whole window at the same generation, its repeated entries with it at
-/// every depth: a cold flag two rows deep draws once its art arrives, a fallback flag gives way to
-/// its preferred variant, and with no art arriving a draw binds nothing again.
 #[test]
 fn art_arriving_rebinds_the_window_and_its_entries_at_the_same_generation() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1684,8 +1663,6 @@ fn art_arriving_rebinds_the_window_and_its_entries_at_the_same_generation() {
     assert_eq!(LOOKS.with(std::cell::Cell::get), looks, "no art moved: nothing bound again");
 }
 
-/// A window whose template the content lacks draws nothing and says so by name: a saved picture
-/// naming it is refused rather than written without it.
 #[test]
 fn a_window_whose_template_is_missing_is_refused_by_name() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1699,8 +1676,6 @@ fn a_window_whose_template_is_missing_is_refused_by_name() {
     assert!(drawn.missing().is_some_and(|why| why.contains("countrystateview")), "{:?}", drawn.missing());
 }
 
-/// The state view's close button and lower panel stand outside its root's authored size: the
-/// window takes the pointer over them, so a click there never reaches the map beneath.
 #[test]
 fn a_window_takes_the_pointer_over_every_child_it_draws_beyond_its_own_size() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1736,7 +1711,6 @@ fn a_window_takes_the_pointer_over_every_child_it_draws_beyond_its_own_size() {
     assert!(drawn.contains(close), "the close button past the root's right edge");
     assert!(drawn.contains([40.0, 70.0]), "the lower panel below the root");
     assert!(!drawn.contains([90.0, 70.0]), "beside the panel, under nothing the window draws");
-    // What the picture on screen keeps of it, for a press after the window moved or closed.
     let footprint = drawn.footprint();
     for (point, inside) in [(close, true), ([40.0, 70.0], true), ([90.0, 70.0], false)] {
         assert_eq!(footprint.contains(point), inside, "{point:?}");

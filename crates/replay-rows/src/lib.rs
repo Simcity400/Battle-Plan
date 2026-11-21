@@ -1,7 +1,3 @@
-//! Recorded rows, their codecs and the values they hold. The table registry above
-//! (`replay_data::rows::TableId`) reaches each table's rows through its descriptor
-//! ([`rows::RowOps`]), compiled by each table's owning crate.
-
 #[doc(hidden)]
 pub mod checkpoint;
 pub mod codec;
@@ -30,5 +26,4 @@ pub mod value;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-/// The recording version this build writes. Reader history lives beside TableId.
 pub const FORMAT_VERSION: u16 = rows::compatibility::CAPTURE_ADDITIONS_FORMAT;

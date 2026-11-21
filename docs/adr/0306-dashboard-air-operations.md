@@ -1,0 +1,11 @@
+# Keep air-operation rows at recorded freshness
+
+The air-ace service dates a death as the interval from the last read that saw the ace alive, exclusive, through the first subsequent read that saw it dead. No date can be assigned to an ace first seen dead, and an ace that revives can have another death. Read the recorded cell runs once per timeline and let requests reuse the history. Resolve owners and killers through the countries holding each slot at the hour. Read only the requested wing references, their aircraft in equipment order, and the linked variant definitions and type tokens. An unavailable roster stays missing.
+
+The ace name uses the plain full-name localisation with the separately held callsign. Portrait selection follows the named sprite, the country's pool, the culture sprite sequence for an empty pool, and the global pool. Stop the culture sequence at its first missing sprite and keep the game's cap. An invalid negative pool index is refused. Keep its portrait cache scoped to the catalogue and to the operands that select the image.
+
+The mission matrix supplies structure from registered regions and recorded mission bits. Counts are live cells, and a missing bit has no cell. Mission bit ordinals select the corresponding art frame in the recorded stack. A complete, empty theatre roster is known empty. Missing membership, group or wing data withholds that theatre selection. Drill down from the recorded `AirMissionWings` roster in registration order, deduplicating any repeated wing and reading only the reached wing and sortie operands. A certified empty region reads no wing payload.
+
+Air statistics display the recorded current-year channels in each region. Schema order differs from the interface order for disruption and ground-equipment losses. Use the lowest raw country ID when several aliases of the holder have a row for the same region. If links are unavailable, retain only the holder's own ID with its limitation. Read region choices from key lifetimes over the timeline, so the user can select a region with no current row. Field values stay live and distinct from absent rows.
+
+[Air aces](../../crates/dashboard/src/products/air_aces.rs) · [Air missions](../../crates/dashboard/src/products/air_missions.rs) · [Air statistics](../../crates/dashboard/src/products/air_statistics.rs)

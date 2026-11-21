@@ -9,17 +9,14 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import type { SeriesStateReply } from '../../generated/dashboard';
 
-/** The declared series of each country identity's casualty totals, and the measure its top countries rank by. */
 export const FAMILY = 'casualty-totals';
 export const RANK = 'dealtAndTaken';
 export const MEASURES = ['dealt', 'taken', 'unknown', 'partial'] as const;
 export type CasualtyMeasure = typeof MEASURES[number];
 
-/** One measure's raw value of each country it holds a row for; null where that row's value is not recorded. */
 export type Held = ReadonlyMap<string, bigint | null>;
 export type HeldMeasures = Readonly<Record<CasualtyMeasure, Held | null>>;
 
-/** A followed answer's values by tag: its named rows, or the tags asked in order. A country with no row is absent. */
 export function answerHeld(answer: FollowedAnswer | undefined, asked: readonly string[]): Held | null {
   if (!answer || answer.kind === 'notRecorded') return null;
   const out = new Map<string, bigint | null>();
@@ -33,13 +30,11 @@ export function answerHeld(answer: FollowedAnswer | undefined, asked: readonly s
   return out;
 }
 
-/** A `series-state` reply's values by tag. */
 export function stateHeld(reply: SeriesStateReply | undefined): Held | null {
   if (!reply) return null;
   return new Map(reply.states.map(state => [countryKey(state.country), state.run ? BigInt(state.run.valueRaw) : null]));
 }
 
-/** The countries a ranked answer names, in its order. */
 export function rankedTags(answer: FollowedAnswer | undefined): string[] {
   if (!answer || answer.kind === 'notRecorded') return [];
   const out: string[] = [];
@@ -50,13 +45,11 @@ export function rankedTags(answer: FollowedAnswer | undefined): string[] {
   return out;
 }
 
-/** `atLeast` marks a total whose history lost a lifetime's last hours in a gap: a subtotal, not a lower bound. */
 export interface CountryCasualties {
   tag: string; hour: number; atLeast: boolean;
   dealt: bigint | null; taken: bigint | null; knownTaken: bigint | null; unknown: bigint | null;
 }
 
-/** Each of `tags` that holds a casualty row at `hour`, its taken losses with unknown attackers' when asked. */
 export function casualtyRows(tags: readonly string[], held: HeldMeasures, hour: number, includeUnknown: boolean): CountryCasualties[] {
   const rows: CountryCasualties[] = [];
   for (const tag of tags) {
@@ -69,8 +62,6 @@ export function casualtyRows(tags: readonly string[], held: HeldMeasures, hour: 
   return rows;
 }
 
-/** Greatest dealt plus known taken first (unknown never ranks), rows not known last, ties by tag; the first `limit`.
- * `positive` (a top N): a row known to total zero is not ranked, so the top is never padded with 0/0 rows in tag order. */
 export function rankCasualties(rows: readonly CountryCasualties[], limit = Infinity, positive = false): CountryCasualties[] {
   const total = (row: CountryCasualties) => row.dealt == null || row.knownTaken == null ? null : row.dealt + row.knownTaken;
   return rows.filter(row => !positive || total(row) !== 0n).sort((a, b) => {
@@ -79,8 +70,6 @@ export function rankCasualties(rows: readonly CountryCasualties[], limit = Infin
   }).slice(0, limit);
 }
 
-/** The race of losses taken among ranked rows: ordered by known taken (unknown never ranks), drawn at taken, which holds
- * unknown attackers' losses when asked; a row whose taken is not known is not raced. */
 export function casualtyRaceEntries(rows: readonly CountryCasualties[]): CountryRaceEntry[] {
   return rows.filter(row => row.taken !== null && row.knownTaken !== null).sort((a, b) => {
     const x = a.knownTaken!, y = b.knownTaken!;
@@ -91,9 +80,7 @@ export function casualtyRaceEntries(rows: readonly CountryCasualties[]): Country
 export const formatCasualties = (value: bigint | null, incomplete = false) => value == null ? '—' : `${incomplete ? '† ' : ''}${formatFixed(value, 0, 0)}`;
 const signedCorrection = (row: CountryCasualties) => row.dealt !== null && row.dealt < 0n || row.taken !== null && row.taken < 0n;
 export const casualtyRatio = (row: CountryCasualties) => row.atLeast || signedCorrection(row) ? '—' : formatRatio(row.dealt, row.taken);
-/** Exact signed labels; bars are positive-only geometry. */
 export const casualtyBarValue = (value: bigint | null) => value === null ? null : Number(value > 0n ? value : 0n);
-/** A nonpositive read clears old positive geometry at once. */
 export const casualtyBarStretch = (row: CountryCasualties) => JSON.stringify([row.tag, row.taken !== null && row.taken > 0n, row.dealt !== null && row.dealt > 0n]);
 
 export const SUBTOTAL_NOTE = '† Incomplete total; ratio unavailable.';

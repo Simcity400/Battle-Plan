@@ -251,7 +251,6 @@ fn invalid_scale_and_wrapping_arithmetic_keep_native_sentinels() {
     assert_eq!(to_map(i64::MIN + 1, 200_000), 0xffff_ffff);
     assert_eq!(to_map(i64::MAX - 1, 200_000), -1);
     assert_eq!(to_map(i64::MAX - 2, 200_000), -1);
-    // Reject only MAX, MIN and MIN + 1 after the unsigned add.
     assert!(!finite(i64::MAX));
     assert!(!finite(i64::MIN));
     assert!(!finite(i64::MIN + 1));

@@ -1,6 +1,3 @@
-//! CAirRegionCombatData's retained regional air-combat state.
-//! Hourly writers and daily pruning finish before the sampling boundary;
-//! live consistency, save coverage and aggregate cost are separate checks.
 
 use crate::{
     Memory,
@@ -12,25 +9,15 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Regional combat-data vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029d_5288);
-/// First wing-combat-record vector.
 pub const FIRST_RECORDS: usize = 0x08;
-/// First-vector count, i32.
 #[cfg(test)]
 pub const FIRST_RECORDS_COUNT: usize = 0x14;
-/// Second wing-combat-record vector, selected by reporting country.
 pub const SECOND_RECORDS: usize = 0x20;
-/// Raw owner-country link, including zero, copied from strategic air.
 pub const OWNER: usize = 0x38;
-/// Record update accumulating flags, masks, plane high-water count and damage.
 pub const UPDATE_RECORD_RVA: Rva = Rva(0x019e_fb90);
-/// Pruning records older than the runtime timeout from both vectors.
 pub const PRUNE_RVA: Rva = Rva(0x019f_07b0);
 
-/// One non-null slot from a completely enumerated, authenticated CStrategicAir
-/// region table. The slot index is the native strategic-region id. Addresses
-/// are read context only and never become recorded identity.
 #[derive(Debug, Clone, Copy)]
 pub struct Root {
     pub country: u32,
@@ -44,7 +31,6 @@ pub struct Capture {
     pub damage: Outcome,
 }
 
-/// Region slots and roots gathered per guarded round.
 const ROOT_BATCH: usize = 64;
 const ROOT_RECORD_BYTES: usize = 44;
 const POINTER_FIELD: [RecordField; 1] = [RecordField {
@@ -54,7 +40,6 @@ const POINTER_FIELD: [RecordField; 1] = [RecordField {
 }];
 const POINTER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POINTER_FIELD, 8).expect("valid record layout");
-/// The exact identity, owner and both record-vector headers, in that order.
 const ROOT_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
@@ -80,14 +65,6 @@ const ROOT_FIELDS: [RecordField; 4] = [
 const ROOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ROOT_FIELDS, ROOT_RECORD_BYTES).expect("valid record layout");
 
-/// Reads both physical record vectors and each record's two damage vectors.
-/// The caller supplies the complete root census; an unavailable or truncated
-/// root census must not be represented by a shorter successful iterator.
-/// No allocation, sorting, retry, engine call or generation tracking occurs.
-/// Native lookup coordinates need not be unique after load. Preserve source
-/// order and duplicates in grouped rows; never overwrite by lookup key.
-/// A damage-only fault preserves the independent record table. Capacity is
-/// independent too: remaining headers supply exact omitted row counts.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -117,9 +94,6 @@ pub fn walk_buffer(
         let mut damage_len = 0_usize;
         let mut damage_omitted = 0_u32;
         let mut damage_error = None;
-        // Every root's identity, owner and two record-vector headers come from
-        // one guarded gather per batch. Roots are still decoded in order with
-        // their own copied prefix and the original overflow-check ordering.
         let mut addresses = [0_usize; ROOT_BATCH];
         let mut copied_fields = [0_usize; ROOT_BATCH];
         let mut identities = [0_u8; ROOT_BATCH * ROOT_RECORD_BYTES];
@@ -172,7 +146,6 @@ pub fn walk_buffer(
                     })
                     .flatten()
                     .ok_or("air combat record vector unreadable or invalid")?;
-                // Both record vectors grow from these acquired headers.
                 records.ensure(
                     record_len
                         .checked_add(vector.count as usize)
@@ -273,22 +246,18 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
     }
 }
 
-/// One `SDamageEntry`: its cause and signed fixed5 amount.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Damage {
     pub cause: u32,
     pub amount: i64,
 }
 
-/// One equipment-pool entry of a record: the variant's complete native
-/// reference and its signed fixed-point amount.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Equipment {
     pub variant: u64,
     pub amount_raw: i64,
 }
 
-/// Why a record's equipment pool was not read; its other fields stand.
 pub const EQUIPMENT_REFUSALS: [&str; 5] = [
     "equipment pool vtable mismatch",
     "equipment pool array invalid or unreadable",
@@ -297,8 +266,6 @@ pub const EQUIPMENT_REFUSALS: [&str; 5] = [
     "variant vtable or reference type mismatch",
 ];
 
-/// One `SAirWingCombatData`; its damage and equipment are ranges of the
-/// holder's arenas, in native order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub wing_id: u32,
@@ -309,14 +276,10 @@ pub struct Record {
     pub classification: u8,
     pub copied: u8,
     pub attributed_country: u32,
-    /// The first damage vector (causes 0, 1, 2, 6, 7) and the second (3, 4, 5, 9, 10).
     pub damage: [std::ops::Range<usize>; 2],
-    /// The equipment entries, or the [`EQUIPMENT_REFUSALS`] index of why not.
     pub equipment: Result<std::ops::Range<usize>, u8>,
 }
 
-/// One record vector of a holder: its native count, and the records from
-/// `first` to the end in native order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Side {
     pub count: u32,
@@ -324,9 +287,6 @@ pub struct Side {
     pub records: Vec<Record>,
 }
 
-/// One holder: its raw owner and both record vectors (the wings of the owner's
-/// country; the foreign vector, the others'), with the arenas their records
-/// index. Reused across reads, it keeps its capacity.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Holder {
     pub owner: u32,
@@ -360,14 +320,10 @@ impl Holder {
     }
 }
 
-/// Reusable read buffers and the variant identities met since
-/// [`Reader::forget_variants`]: within one capture, while the game is parked,
-/// a variant's address names one variant.
 #[derive(Default)]
 pub struct Reader {
     records: Vec<u8>,
     entries: Vec<u8>,
-    /// By address: the variant's reference, or the refusal index.
     variants: Vec<(usize, Result<u64, u8>)>,
 }
 
@@ -380,7 +336,6 @@ impl Reader {
         }
     }
 
-    /// A new capture: no identity read before it certifies one.
     pub fn forget_variants(&mut self) {
         self.variants.clear();
     }
@@ -415,14 +370,6 @@ impl Reader {
     }
 }
 
-/// Reads a holder whose address an authenticated census or the record updater
-/// named. `since: None` reads every record; `Some(hour)` reads only each
-/// vector's maximal suffix dated at or after `hour`, the records record
-/// lookup's reverse scan can still reach and the updater can still change: one
-/// date read per record finds the suffix, then the suffix is copied in one
-/// read, and each record's damage and equipment vectors in one read each. No
-/// allocation beyond the holder's and reader's arenas (checked growth), no
-/// retry and no engine call.
 pub fn read_holder(
     memory: &impl Memory,
     base: usize,
@@ -441,7 +388,6 @@ pub fn read_holder(
     Ok(holder)
 }
 
-/// [`read_holder`] into reused buffers.
 pub fn read_holder_into(
     memory: &impl Memory,
     base: usize,
@@ -593,8 +539,6 @@ fn read_record(
     })
 }
 
-/// The record's embedded equipment pool, its entries in one read and each
-/// distinct variant authenticated once per capture.
 fn equipment(
     memory: &impl Memory,
     base: usize,
@@ -653,8 +597,6 @@ fn equipment(
     result
 }
 
-/// Every non-null holder of every authenticated country air object, in census and region order: the
-/// region-combat table is read in pointer batches.
 pub fn visit_holders(
     memory: &impl Memory,
     base: usize,
@@ -709,10 +651,6 @@ fn holders_of(
     Ok(())
 }
 
-/// The table position of `holder` among the holders of the country air object whose raw reference
-/// (the strategic air object's country, copied to the holder's owner when the holder is created) is
-/// `owner`: the slot of the strategic air manager's country table holds at the owner's canonical
-/// slot, authenticated as [`cstrategic_air::visit`] does. `None` when no table slot holds `holder`.
 pub fn locate(
     memory: &impl Memory,
     base: usize,
@@ -806,8 +744,6 @@ mod tests {
         put(bytes, address + 12, &count.to_le_bytes());
     }
 
-    /// A root batch must report the failing root's own reason at its own
-    /// position, even though the batch already gathered the roots after it.
     #[test]
     fn a_mid_batch_root_fault_keeps_its_reason_and_leaves_later_roots_unused() {
         struct Refuse<'a> {
@@ -1071,8 +1007,6 @@ mod tests {
         capture(&bytes, &mut records, &mut damage);
         assert_eq!(records[0].key, key);
         assert_eq!((records[0].selection, records[0].copied), (1, 1));
-        // The record load path accepts a zero/default wing id. It remains a
-        // stored historical value, not a live-wing lookup failure.
         put(
             &mut bytes,
             FIRST + sair_wing_combat_data::WING_ID,
@@ -1221,9 +1155,6 @@ mod tests {
         }
     }
 
-    /// A holder read from an hour on takes each vector's suffix dated at or
-    /// after it, with the native counts; a whole read takes every record and
-    /// its damage in native order.
     #[test]
     fn a_holder_read_takes_the_dated_suffix_or_every_record() {
         let mut bytes = fixture();
@@ -1268,7 +1199,6 @@ mod tests {
             ]
         );
         assert!(whole.damage(&whole.sides[0].records[0], 1).is_empty());
-        // The fixture's records hold no authenticated equipment pool.
         assert_eq!(
             whole.equipment(&whole.sides[0].records[0]),
             Err(EQUIPMENT_REFUSALS[0])
@@ -1279,9 +1209,6 @@ mod tests {
         );
     }
 
-    /// A record's equipment is one read of its entries, each distinct variant
-    /// authenticated once per capture; an unauthenticated pool refuses only
-    /// that record's equipment.
     #[test]
     fn equipment_entries_are_read_once_and_variants_once_per_capture() {
         use engine_native::{cequipment_variant as variant, cequipment_variant_pool as pool};
@@ -1332,7 +1259,6 @@ mod tests {
         );
         assert_eq!(reader.variants.len(), 1);
         assert_eq!(holder.equipment(&records[1]), Err(EQUIPMENT_REFUSALS[0]));
-        // A reused holder holds only its last read.
         read_holder_into(&memory, IMAGE_BASE, REGION, None, &mut reader, &mut holder).unwrap();
         assert_eq!(holder.equipment.len(), 2);
         assert_eq!(
@@ -1343,8 +1269,6 @@ mod tests {
         assert!(reader.variants.is_empty());
     }
 
-    /// The census visits every non-null holder with its container and
-    /// region, and a holder is located through its owner's table only.
     #[test]
     fn holders_are_visited_and_located_through_their_owners_table() {
         let bytes = world_fixture();

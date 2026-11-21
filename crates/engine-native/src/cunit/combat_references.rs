@@ -1,11 +1,3 @@
-//! Ordered complete CUnit simulation combat-reference observations. Class projection is independent
-//! of the runtime-minted low reference word. CUnit owns its CPdxArray of combat references
-//! (`COMBAT_REFERENCE_DATA`); the existing first-combat paths establish pointer stride eight.
-//! map_combat_identity authenticates native primary/secondary vtables and the full registry
-//! reference; this helper does not broaden that class or lifetime contract. Fixed callbacks use
-//! prepared storage; workers grow from original headers. Capture is a field-local optional suffix,
-//! never a replacement for existing country-role, full combat side/member, naval country or
-//! province data.
 
 use super::*;
 
@@ -19,13 +11,6 @@ pub struct MapCombatReference {
     pub kind: u8,
 }
 
-/// Successful combat identities from one movement capture. The callback parks
-/// the game before the hourly update until every worker joins: the combat
-/// objects and the reference registry cannot be rebuilt/deleted during this
-/// pass. Link rebuilding binds the secondary object and its full reference;
-/// registry insertion files that object. Keep both witnessed identities
-/// together, keyed by module and primary pointer, only until clear. Failures
-/// are never retained, so the next occurrence still makes its read.
 #[derive(Default)]
 pub(crate) struct MapCombatIdentityMemo {
     entries: std::collections::HashMap<(usize, usize), MapCombatReference>,
@@ -58,9 +43,6 @@ impl MapCombatIdentityMemo {
             return Ok((value.combat, value.kind));
         }
         let (combat, kind) = super::map_combat_identity(memory, base, pointer, &mut self.registry)?;
-        // Storage follows the caller's complete reference arena. A fixed
-        // caller with no memo room still reads every occurrence, without
-        // inserting, allocating, or changing any acquisition failure.
         if self.entries.len() < self.entries.capacity() {
             self.entries
                 .insert(key, MapCombatReference { combat, kind });
@@ -88,7 +70,6 @@ impl<'a> CombatReferencesCapture<'a> {
         self.required = count as usize;
         self.written = 0;
         self.failure = None;
-        // Use the original combat-vector count for the action query.
         if let Err(reason) = self.entries.ensure(self.required) {
             self.refuse(reason);
         }
@@ -151,11 +132,6 @@ impl<'a> CombatReferencesCapture<'a> {
     }
 }
 
-/// Division's established movement reader already acquired the first pointer.
-/// Reuse it and the same copied header; read each unvisited tail pointer once.
-/// A nonempty vector's header must agree after its elements are read; an
-/// empty one is the header the seed copied at this boundary, with no read in
-/// between, so it is not read again.
 pub(crate) fn read_unit_combat_references(
     memory: &impl Memory,
     base: usize,

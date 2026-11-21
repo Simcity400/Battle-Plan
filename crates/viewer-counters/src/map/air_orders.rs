@@ -1,24 +1,16 @@
-//! What the game gives an observer who right-clicks with air wings selected. The orders are
-//! built and dropped unposted; their sounds and the attached-wing confirmation still come.
 use replay_data::rows::{AirWingRow, tables};
 use replay_frame::frame::DecodedFrame;
 
-/// A base right-click's sound, played before any check.
 pub const TRANSFER_SOUND: &str = "order_airwing_effect";
-/// A region order a wing accepts.
 pub const ACCEPTED_SOUND: &str = "select_aircraft";
-/// A region order a wing refuses.
 pub const INVALID_SOUND: &str = "order_invalid_effect";
-/// The confirmation the orders of wings attached to an orders group wait for.
 pub const CONFIRMATION_TITLE: &str = "AIRWING_ATTACHED_MANUAL_ORDER_TITLE";
 pub const CONFIRMATION_DESCRIPTION: &str = "AIRWING_ATTACHED_MANUAL_ORDER_DESC";
 
-/// What one right-click gives, in the game's order: sounds, then the confirmation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Response {
     pub sounds: Vec<&'static str>,
     pub confirmation: bool,
-    /// What the recording cannot decide, by name.
     pub refused: Vec<String>,
 }
 
@@ -34,7 +26,6 @@ fn selected<'a>(frame: &'a DecodedFrame, wings: &[u64]) -> Result<Vec<&'a AirWin
         .collect()
 }
 
-/// Whether a wing waits for confirmation: attached to an orders group.
 fn attached(wing: &AirWingRow) -> Result<bool, String> {
     match wing.attached_orders_group {
         Some(group) => Ok(group != 0),
@@ -42,8 +33,6 @@ fn attached(wing: &AirWingRow) -> Result<bool, String> {
     }
 }
 
-/// A right-click on an air base: its sound whatever is selected, then the confirmation when a
-/// selected wing is attached.
 pub fn base_right_click(frame: &DecodedFrame, wings: &[u64]) -> Response {
     let mut response = Response { sounds: vec![TRANSFER_SOUND], ..Response::default() };
     match selected(frame, wings).and_then(|rows| rows.into_iter().try_fold(false, |any, wing| Ok(any | attached(wing)?))) {
@@ -53,10 +42,6 @@ pub fn base_right_click(frame: &DecodedFrame, wings: &[u64]) -> Response {
     response
 }
 
-/// A right-click on the map's strategic `region` with wings selected. With the order modifier
-/// each wing already on a mission there takes an order to leave it, which always passes its
-/// check. Without it each wing's assignment is checked (`checks`, in selection order): it sounds
-/// accepted or refused, and an accepted wing attached to an orders group waits for confirmation.
 pub fn region_right_click(
     frame: &DecodedFrame,
     wings: &[u64],
@@ -122,7 +107,6 @@ mod tests {
         assert_eq!(base_right_click(&frame, &[]), Response { sounds: vec![TRANSFER_SOUND], ..Response::default() });
         assert_eq!(base_right_click(&frame, &[1]), Response { sounds: vec![TRANSFER_SOUND], ..Response::default() });
         assert_eq!(base_right_click(&frame, &[1, 2]), Response { sounds: vec![TRANSFER_SOUND], confirmation: true, refused: Vec::new() });
-        // An unknown attachment withholds the confirmation by name; the sound still plays.
         let unknown = base_right_click(&frame, &[3]);
         assert_eq!(unknown.sounds, [TRANSFER_SOUND]);
         assert!(!unknown.confirmation);
@@ -144,8 +128,6 @@ mod tests {
         let frame = frame(vec![wing(1, None, Some(9)), wing(2, None, Some(0)), wing(3, None, Some(8)), wing(4, None, None)]);
         let checks = || vec![Ok(false), Ok(true), Err("unknown".to_owned()), Ok(true)];
         let response = region_right_click(&frame, &[1, 2, 3, 4], 6, false, checks);
-        // An attached wing whose check fails is refused before confirmation; an unknown check
-        // withholds its sound by name; an accepted wing of unknown attachment withholds that.
         assert_eq!(response.sounds, [INVALID_SOUND, ACCEPTED_SOUND, ACCEPTED_SOUND]);
         assert!(!response.confirmation);
         assert_eq!(response.refused.len(), 2);

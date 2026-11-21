@@ -1,5 +1,3 @@
-//! Hourly gain snapshots contain only owned recorder observations and an
-//! authenticated native country census; no partial-day accumulator is used.
 use crate::{
     clock::qpc,
     experience_gains as producer,
@@ -84,8 +82,6 @@ mod tests {
             ..Default::default()
         };
         let mut captured = Captured::with_capacities(&3);
-        // A valid canonical-slot census can put raw country 10001 at slot 1
-        // and raw country 2 at slot 2; its order is not the codec's key order.
         captured.rows.rows[..2].clone_from_slice(&[alias.clone(), other.clone()]);
         captured.rows.outcome = Outcome::Rows { len: 2 };
         let view = captured.tables().into_iter().next().unwrap();

@@ -7,7 +7,6 @@ use installed_content_core::{
     buildings::BuildingType, crt::Scanned, crt::scan_i32, parser, parser::c_string,
 };
 
-// integer parsing retains the member on failed scans.
 fn plain_integer(items: &[Item], name: &str) -> Option<i32> {
     items
         .iter()
@@ -19,7 +18,6 @@ fn plain_integer(items: &[Item], name: &str) -> Option<i32> {
         .next_back()
 }
 
-// Parse a fixed-point literal without scoped-variable evaluation.
 fn plain_fixed5(items: &[Item], name: &str) -> i64 {
     items
         .iter()
@@ -29,7 +27,6 @@ fn plain_fixed5(items: &[Item], name: &str) -> i64 {
         .unwrap_or(0)
 }
 
-// keep plain and scoped slots independently.
 fn building_selector<'a>(items: &'a [Item], name: &str) -> (i32, Option<&'a Item>) {
     let mut plain = 0;
     let mut scoped = None;
@@ -60,7 +57,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Evaluate the amount before naming the building.
         let level = self.building_level(item, scopes, 0)?;
         let type_field = field(children(item), "type").ok_or_else(|| {
             format!(
@@ -79,7 +75,6 @@ impl Renderer<'_, '_, '_> {
         let (key, number_argument, expand): (&[u8], _, _) =
             match self.effect_class(item).map(|class| class.vtable) {
                 Some(0x1427CB748) => {
-                    // instant_build defaults to true; province blocks retain the province selector.
                     let province = plain_integer(children(item), "province").unwrap_or(0) != 0;
                     let instant = parser::read_bool_field(children(item), "instant_build", true);
                     let key: &[u8] = match (province, instant) {
@@ -123,7 +118,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // uses raw key text and retains the last provincial template.
         let buildings = self.buildings()?;
         let mut selected = None;
         for child in children(item) {
@@ -157,7 +151,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             false,
-        ) // no LF, and the authored amount is not shown.
+        )
     }
 
     pub(in crate::effect_description) fn damage_building(
@@ -165,7 +159,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // an explicit type bypasses all target/selector evaluation.
         let Some(type_field) = field(children(item), "type") else {
             let province = self.building_province(item, scopes)?;
             if province.is_none() && self.building_state(item, scopes)?.is_none() {
@@ -174,7 +167,7 @@ impl Renderer<'_, '_, '_> {
             return if has_building_tags(item) {
                 Err(self.building_tag_refusal(item))
             } else {
-                Ok(String::new()) // no type or tags finds no building.
+                Ok(String::new())
             };
         };
         let building = self.building_type(type_field)?.ok_or_else(|| {
@@ -213,7 +206,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // always resolves province first.
         let province = self.building_province(item, scopes)?;
         let kind = field(children(item), "type")
             .map(|type_field| {
@@ -224,7 +216,7 @@ impl Renderer<'_, '_, '_> {
             .transpose()?;
         if kind.is_some_and(BuildingType::provincial) {
             return if province.is_none() {
-                Ok(String::new()) // Remove descriptions retain the zero operand.
+                Ok(String::new())
             } else {
                 Err("remove_building provincial targeting: core content plumbing pending: installed_content_core::movement::MovementMap::terrain(id).flags for the province-definition land flag".into())
             };
@@ -251,13 +243,11 @@ impl Renderer<'_, '_, '_> {
             .token_of(kind.name.as_bytes())
             .map_err(|why| why.to_string())?;
         let buildings = self.complete::<tables::StateBuildings>(0)?;
-        // The key is the location, then the building type.
         if !token.is_some_and(|token| {
             buildings.contains(u128::from(state) << 32 | u128::from(token))
         }) {
-            return Ok(String::new()); // level0/inactive rows still exist.
+            return Ok(String::new());
         }
-        // Name the target's state before evaluating the amount.
         let location = self.state_name(state)?;
         let level = self.building_level(item, scopes, 0)?.to_string();
         let building = self.building_label(kind, false)?;
@@ -278,15 +268,14 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // Missing assignments leave the construction operands uninitialised.
         let building = field(children(item), "building").ok_or_else(|| {
             "modify_building missing building leaves the template pointer uninitialised".to_string()
         })?;
         if building.value.scalar().is_none() {
-            return Ok(String::new()); // invalid-field reporting skips its invalid block.
+            return Ok(String::new());
         }
         let Some(building) = self.building_type(building)? else {
-            return Ok(String::new()); // Test whether the building template is defined.
+            return Ok(String::new());
         };
         let amount = plain_integer(children(item), "amount").ok_or_else(|| {
             "modify_building missing or failed amount assignment leaves the amount uninitialised".to_string()
@@ -309,7 +298,7 @@ impl Renderer<'_, '_, '_> {
             ],
             scopes,
             true,
-        ) // FRAME is the resource database id, not icon_frame.
+        )
     }
 
     pub(in crate::effect_description) fn add_resource(
@@ -317,7 +306,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // evaluates amount, builds the icon string, then resolves state.
         let amount = match field(children(item), "amount") {
             Some(amount) => self.scoped_value(scalar_operand(amount)?, scopes)?,
             None => 0,
@@ -336,7 +324,7 @@ impl Renderer<'_, '_, '_> {
             },
         };
         if self.valid_state(state)?.is_none() {
-            return Ok(String::new()); // no days evaluation for invalid state.
+            return Ok(String::new());
         }
         let state = self.state_name(state)?;
         let days = match field(children(item), "days") {
@@ -372,7 +360,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // evaluates receiver before state, without state fallback.
         let receiver = match field(children(item), "receiver") {
             Some(receiver) => self
                 .evaluator()?
@@ -393,8 +380,6 @@ impl Renderer<'_, '_, '_> {
         let receiver = receiver.unwrap_or(0);
         let receiver = self.country_name(receiver, true)?;
         let state = self.state_name(state)?;
-        // The resource-distribution flag starts cleared.
-        // Authored resources are stored separately and keep this key.
         self.line(
             b"EFFECT_GIVE_RESOURCE_RIGHTS",
             &[
@@ -411,7 +396,6 @@ impl Renderer<'_, '_, '_> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        // resolves selector flags with default zero.
         let state = self.state_target(item, scopes)?;
         if self.valid_state(state)?.is_none() {
             return Ok(String::new());
@@ -442,7 +426,6 @@ impl Renderer<'_, '_, '_> {
         if level > maximum {
             return Ok(String::new());
         }
-        // appends repeated paths; each failed %i scan retains new zero.
         let mut path = Vec::new();
         for part in children(item).iter().filter(|item| item.keyword_is("path")) {
             let items = part.value.items().ok_or_else(|| {
@@ -460,7 +443,7 @@ impl Renderer<'_, '_, '_> {
             let start = plain_integer(children(item), "start_province").unwrap_or(0);
             if start <= 0 {
                 let Some(state) = field(children(item), "start_state") else {
-                    return Ok(String::new()); // unset start node.
+                    return Ok(String::new());
                 };
                 let state = self
                     .evaluator()?
@@ -488,7 +471,7 @@ impl Renderer<'_, '_, '_> {
                         "build_railway build_only_on_allied needs country/controller eligibility; fallback pathfinding is unavailable".into(),
                     );
                 }
-                Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => {} // country zero gives no filter.
+                Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(_) => {}
                 _ => {
                     return Err(
                         "build_railway ally filtering needs the current-scope country tag for this projected scope kind".into(),
@@ -504,7 +487,6 @@ impl Renderer<'_, '_, '_> {
                 )
             })
         };
-        // returns1 without reading intermediate provinces.
         let first = endpoint_state(path[0])?;
         let last = endpoint_state(*path.last().unwrap())?;
         if first == 0 || last == 0 {
@@ -534,7 +516,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 true,
             )
-        } // no LF.
+        }
     }
 
     pub(in crate::effect_description) fn create_railway_gun(
@@ -553,7 +535,6 @@ impl Renderer<'_, '_, '_> {
             Some(province) => Some(self.state_name(province.state)?),
             None => None,
         };
-        // names the found province's state before the country adjective.
         let country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. }
                 if country as i32 > 0 =>
@@ -584,7 +565,7 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 true,
             ),
-        } // no LF.
+        }
     }
 
     pub(in crate::effect_description) fn strategic_state_location(
@@ -615,7 +596,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn building_type(&self, item: &Item) -> Result<Option<&BuildingType>, String> {
-        // token lookup uses the value token id, not its quoted text.
         if item.value_keyword().is_none() {
             return Ok(None);
         }
@@ -629,7 +609,7 @@ impl Renderer<'_, '_, '_> {
             .key_names
             .is_some_and(|names| !names.counts.is_building(token.as_bytes()))
         {
-            return Ok(None); // Complete key names can prove a native null-template lookup.
+            return Ok(None);
         }
         self.buildings()?
             .by_token(token)
@@ -637,7 +617,6 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn building_label(&self, building: &BuildingType, plural: bool) -> Result<String, String> {
-        // localises declared spelling and the literal _plural suffix.
         let key = if plural {
             format!("{}_plural", building.name)
         } else {
@@ -666,7 +645,7 @@ impl Renderer<'_, '_, '_> {
         let province = match scoped {
             Some(scoped) => (self.scoped_value(scalar_operand(scoped)?, scopes)? / 100_000) as u32,
             None => plain as u32,
-        }; // truncates division; it does not round.
+        };
         Ok(self
             .complete::<tables::Provinces>(0)?
             .contains(u128::from(province))
@@ -685,7 +664,6 @@ impl Renderer<'_, '_, '_> {
         if self.valid_state(plain as u32)?.is_some() {
             return Ok(Some(plain as u32));
         }
-        // only the plain selector falls back to current state.
         let state = match scopes.this {
             Scope::State(state) => state,
             _ => NULL_STATE,
@@ -713,7 +691,7 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .any(|resource| resource.token.eq_ignore_ascii_case(name))
         {
-            return Ok(0); // name lookup returns the native null resource.
+            return Ok(0);
         }
         let token = self
             .context

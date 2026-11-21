@@ -9,7 +9,6 @@ import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, f
   sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergeTrade } from './tradeData.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
-/** A flow from runs of [first, last, delivered raw, factories, convoys assigned, required]. */
 const flow = (seller: number, buyer: number, id: number, runs: [number, number, string, number?, number?, number?][]): TradeFlow => ({
   seller, buyer, resource: id, sellerIdentity: JSON.stringify([seller, seller + 1]), buyerIdentity: JSON.stringify([buyer, buyer + 1]),
   sellerTags: runs.map(() => seller), buyerTags: runs.map(() => buyer),
@@ -17,8 +16,6 @@ const flow = (seller: number, buyer: number, id: number, runs: [number, number, 
   factories: runs.map(run => run[3] ?? 1), convoysAssigned: runs.map(run => run[4] ?? 0), convoysRequired: runs.map(run => run[5] ?? 0), deals: runs.map(() => 1),
 });
 
-/** GER sells ITA steel at 10/day for hours 0–47, then 20/day for 48–71; ITA sells
- * SPR oil at 5/day for 24–47; hours 72–95 are not recorded. */
 function reply(countries = ['GER', 'ITA', 'SPR']): TradeFlowsReply {
   return {
     branchId: '1', decimals: 5, resources: [resource(1, 'steel'), resource(2, 'oil')], countries,
@@ -76,10 +73,8 @@ test('the measures: the amount at an hour, the total so far and the average per 
   const [steel, oil] = decodeTrade(reply()).flows;
   assert.equal(flowValue(steel, 'current', 0, 50), 20);
   assert.equal(flowValue(oil, 'current', 0, 50), 0);
-  // 48 hours at 10 and 12 at 20: 20 + 10 delivered.
   assert.equal(flowValue(steel, 'total', 0, 59), 30);
   assert.equal(flowValue(steel, 'total', 24, 59), 20);
-  // Average over the 60 hours traded: 30 over 2.5 days.
   assert.equal(flowValue(steel, 'average', 0, 59), 12);
   assert.equal(flowValue(oil, 'average', 0, 200), 5);
   assert.equal(flowValue(oil, 'total', 0, 10), 0);
@@ -90,7 +85,6 @@ test('exact amounts and terms for tooltips', () => {
   const [steel, oil] = data.flows;
   assert.equal(measureAmount([steel], 'total', 0, 59), 3_000_000n);
   assert.equal(measureAmount([steel, oil], 'current', 0, 30), 1_500_000n);
-  // Each flow's own average, summed: steel 12 over hours 0–59 and oil 5.
   assert.equal(measureAmount([steel, oil], 'average', 0, 59), 1_700_000n);
   const current = measureRows([steel], 'current', 0, 50, 5);
   assert.deepEqual(current.map(row => [row.label, row.value]), [['Per day', '20'], ['Civilian factories paid', '2'], ['Convoys used', '3 of 4']]);
@@ -108,19 +102,15 @@ test('chosen countries show trade touching them or only between them, cut to mem
   assert.deepEqual(keys(selectFlows(data, { kind: 'all' }, new Set([2]))), ['ITA>SPR']);
   assert.deepEqual(keys(selectFlows(data, { kind: 'countries', tags: ['SPR'], membership: null, between: false }, null)), ['ITA>SPR']);
   assert.deepEqual(keys(selectFlows(data, { kind: 'countries', tags: ['ITA', 'SPR'], membership: null, between: true }, null)), ['ITA>SPR']);
-  // GER counts only for hours 0–29: its sales end there; ITA never counts.
   const membership = new Map([['GER', [{ firstHour: 0, lastHour: 29 }]]]);
   const clipped = selectFlows(data, { kind: 'countries', tags: ['GER', 'ITA'], membership, between: false }, null);
   assert.deepEqual(clipped[0].runs.map(run => [run.firstHour, run.lastHour]), [[0, 29]]);
   assert.equal(flowValue(clipped[0], 'total', 0, 100), 12.5);
   assert.equal(clipped.length, 1);
-  // Hours the group's membership was not recorded count nothing: A is human over 0–47
-  // selling 24 a day, with 24–47 unobserved, so 24 is counted, not 48.
   const item: TradeFlowsReply = { ...reply(['A', 'B']), flows: [flow(0, 1, 1, [[0, 47, '2400000']])] };
   const unobserved = [{ firstHour: 24, lastHour: 47 }];
   const counted = selectFlows(decodeTrade(item), { kind: 'countries', tags: ['A'], membership: new Map([['A', [{ firstHour: 0, lastHour: 47 }]]]), unobserved, between: false }, null);
   assert.equal(flowValue(counted[0], 'total', 0, 47), 24);
-  // Between: both must count at once.
   const both = new Map([['ITA', [{ firstHour: 30, lastHour: 40 }]], ['SPR', [{ firstHour: 35, lastHour: 60 }]]]);
   const between = selectFlows(data, { kind: 'countries', tags: ['ITA', 'SPR'], membership: both, between: true }, null);
   assert.deepEqual(between[0].runs.map(run => [run.firstHour, run.lastHour]), [[35, 40]]);
@@ -139,14 +129,11 @@ test('past the limit a side sums the rest into one node, leaving nothing out', (
   assert.deepEqual(other.members, ['[2,3]', '[3,4]']);
   assert.ok(Math.abs(other.value - 3) < 1e-9);
   assert.ok(Math.abs(diagram.total - 10) < 1e-9);
-  // One country past the limit is shown itself rather than as "1 other".
   assert.equal(buildDiagram(flows, 'current', 0, 5, 3).nodes.filter(node => node.side === 'source' && !node.tag).length, 0);
-  // Nothing trades at hour 20.
   assert.equal(buildDiagram(flows, 'current', 0, 20, 2).links.length, 0);
 });
 
 test('tags are opaque: separators, spaces and dynamic tags never blur two ribbons', () => {
-  // Joined naively, "A>t:B" selling to "C" and "A" selling to "B>t:C" could share an id.
   const item: TradeFlowsReply = { ...reply(['A', 'A>t:B', 'B>t:C', 'C', 'D01', 'It aly']), flows: [
     flow(1, 3, 1, [[0, 10, '100000']]), flow(0, 2, 1, [[0, 10, '200000']]), flow(4, 5, 1, [[0, 10, '300000']]),
   ] };
@@ -159,7 +146,6 @@ test('tags are opaque: separators, spaces and dynamic tags never blur two ribbon
 
 test('each side keeps one order for the whole time shown, largest first', () => {
   const flows = decodeTrade(reply()).flows;
-  // Over everything, GER sold 40 and ITA 5; at the end ITA sells nothing, yet the order holds.
   const ranks = sideRanks(flows, 0, 119);
   assert.deepEqual([...ranks.source], [['[0,1]', 0], ['[1,2]', 1]]);
   assert.deepEqual([...ranks.target], [['[1,2]', 0], ['[2,3]', 1]]);
@@ -171,20 +157,17 @@ test('one scale all campaign: the most traded at once, the final total, the larg
   assert.equal(campaignScale(flows, 'current', 0, 47), 15);
   assert.equal(campaignScale(flows, 'total', 0, 119), 40 + 5);
   assert.ok(campaignScale(flows, 'average', 0, 119) >= flowValue(flows[0], 'average', 0, 119) + 5 - 1e-9);
-  // 1, 100 then 1 a day: the running average peaks between reads, at 50.5 at hour 47.
   const peaked = decodeTrade({ ...reply(), flows: [flow(0, 1, 1, [[0, 23, '100000'], [24, 47, '10000000'], [48, 71, '100000']])] }).flows;
   assert.equal(flowValue(peaked[0], 'average', 0, 47), 50.5);
   assert.equal(campaignScale(peaked, 'average', 0, 71), 50.5);
 });
 
 test('a negative flow never lowers the campaign scale the positive ribbons are drawn on', () => {
-  // 10 then 5 a day beside a constant -9 a day: the diagram draws 10, then 5.
   const signed = decodeTrade({ ...reply(), flows: [flow(0, 1, 1, [[0, 23, '1000000'], [24, 47, '500000']]), flow(1, 2, 2, [[0, 47, '-900000']])] }).flows;
   assert.equal(buildDiagram(signed, 'current', 0, 0, 12).total, 10);
   assert.equal(campaignScale(signed, 'current', 0, 47), 10);
   assert.equal(campaignScale(signed, 'total', 0, 47), 15);
   assert.equal(campaignScale(signed, 'average', 0, 47), 10);
-  // A correction lowering a flow's final total keeps the peak it was drawn at.
   const corrected = decodeTrade({ ...reply(), flows: [flow(0, 1, 1, [[0, 23, '1000000'], [24, 35, '-1000000']])] }).flows;
   assert.equal(flowValue(corrected[0], 'total', 0, 47), 5);
   assert.equal(campaignScale(corrected, 'total', 0, 47), 10);
@@ -207,7 +190,6 @@ test('unknown hours are found and said, never counted as no trade', () => {
   assert.equal(knownSpanAt(known, 100), 1);
   assert.equal(unknownNote(known, 0, 71), undefined);
   assert.equal(unknownNote(known, 0, 119), 'Trade data is missing for 1 day.');
-  // Every measure says a time with nothing recorded is not recorded, never no trade.
   const gappy = [{ firstHour: 0, lastHour: 23 }, { firstHour: 48, lastHour: 71 }];
   for (const measure of ['total', 'average'] as const) assert.equal(unrecordedMessage(gappy, measure, 24, 47), 'Trade deals were not recorded in this time.');
   assert.equal(unrecordedMessage(gappy, 'total', 0, 47), null);
@@ -217,14 +199,11 @@ test('unknown hours are found and said, never counted as no trade', () => {
 
 test('an empty diagram over an incompletely recorded time never says there was no trade', () => {
   const item = reply();
-  // Hours 24–47 had deals left out: no attributed trade, for every measure.
   assert.equal(emptyMessage(item, 'current', 0, 30), 'No trade the recording could attribute at this moment.');
   for (const measure of ['total', 'average'] as const) {
     assert.equal(emptyMessage(item, measure, 24, 47), 'No trade the recording could attribute in this time.');
-    // Hours 72–95 were not recorded.
     assert.equal(emptyMessage(item, measure, 60, 100), 'No trade in the recorded part of this time.');
     assert.equal(emptyMessage(item, measure, 96, 119), 'No trade in this time.');
-    // A group counted at each hour whose membership was not recorded at all, or in part.
     assert.equal(emptyMessage(item, measure, 96, 119, [{ firstHour: 90, lastHour: 130 }]), 'This group’s members were not recorded in this time.');
     assert.equal(emptyMessage(item, measure, 96, 119, [{ firstHour: 100, lastHour: 101 }]), 'No trade in the recorded part of this time.');
   }
@@ -232,7 +211,6 @@ test('an empty diagram over an incompletely recorded time never says there was n
 });
 
 test('convoys needed now and then are said, however small their average', () => {
-  // One convoy needed and used on the first day of 24, none after.
   const item: TradeFlowsReply = { ...reply(), flows: [flow(0, 1, 1, [[0, 23, '100000', 1, 1, 1], [24, 575, '100000', 0, 0, 0]])] };
   const rows = measureRows(decodeTrade(item).flows, 'average', 0, 575, 5);
   assert.deepEqual(rows.slice(2).map(row => row.value), ['<0.1', '<0.1 of <0.1']);
@@ -284,18 +262,15 @@ test('an empty each-hour group says how much membership was unrecorded in totals
     assert.equal(selectionMessage(resolved, atMoment, measure, 300, 575, resolved.unobserved), 'This group has no members at this moment.');
     assert.equal(selectionMessage(resolved, atMoment, measure, 250, 575, resolved.unobserved),
       'Group membership is missing for 2.1 days.');
-    // A roster counted at the end does not depend on earlier missing hours.
     assert.equal(selectionMessage(resolved, atMoment, measure, 0, 575), 'This group has no members at this moment.');
   }
   assert.equal(selectionMessage(resolved, atMoment, 'current', 0, 575, resolved.unobserved), 'This group has no members at this moment.');
 });
 
 test('a ribbon rounds an exact half-tenth sum of averages once, independent of order', () => {
-  // Eighteen averages of 1/24 sum to 0.75, whose floating sum lands below the tie.
   const item: TradeFlowsReply = { ...reply(), flows: Array.from({ length: 18 }, () => flow(0, 1, 1,
     [[0, 0, '100000', 1, 1, 1], [1, 23, '100000', 0, 0, 0]])) };
   const same = decodeTrade(item).flows;
-  // Different trade durations must also sum before rounding: 1/3 + 1/15 + 1/20 = 0.45.
   const varied = decodeTrade({ ...reply(), flows: [3, 15, 20].map(hours => flow(0, 1, 1,
     [[0, 0, '100000', 1, 1, 1], [1, hours - 1, '100000', 0, 0, 0]])) }).flows;
   for (const [flows, expected] of [[same, '0.8'], [varied, '0.5'], [[...varied].reverse(), '0.5']] as const) {
@@ -324,15 +299,11 @@ test('resource colours follow the game order, never the filter, and a ninth fold
   const palette = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
   const all = resourceColours(resources, order, palette, 'other');
   assert.deepEqual([...all.values()], [...palette, 'other', 'other']);
-  // Filtered to two, each keeps its own colour.
   const two = resourceColours([resources[5], resources[2]], order, palette, 'other');
   assert.deepEqual([two.get(3), two.get(6)], ['c', 'f']);
-  // The ninth shown alone is still "Other", never the palette's first colour.
   assert.deepEqual([...resourceColours([resources[8]], order, palette, 'other').values()], ['other']);
 });
 
-/** Holder [7,11] changes X to Y; unrelated [9,31] takes X. Numeric histories remain
- * independent, with census names extending after their last trade. */
 function renamedReply(): TradeFlowsReply {
   const old = { ...flow(1, 0, 1, [[0, 23, '1000000'], [24, 47, '2000000']]), sellerIdentity: '[7,11]', buyerIdentity: '[8,21]', sellerTags: [1, 2] };
   const replacement = { ...flow(1, 0, 1, [[24, 47, '3000000']]), sellerIdentity: '[9,31]', buyerIdentity: '[8,21]' };
@@ -369,10 +340,10 @@ test('end and ever groups select dated holders before including their old aliase
   const choose = (picked: CountrySelection, roster = groups) => selectFlows(data, tradeScope(data, picked, resolveCountries(picked, [], roster, 71, Infinity), roster, 71, false), null);
   const end = choose(selection);
   assert.deepEqual(end.map(item => item.sellerIdentity), ['[7,11]']);
-  assert.equal(measureAmount(end, 'total', 0, 47), 3_000_000n); // Includes X before the end member was called Y.
+  assert.equal(measureAmount(end, 'total', 0, 47), 3_000_000n);
   const oldMembers = { ...groups, humans: [{ tag: 'X', firstHour: 0, lastHour: 23 }] };
   const ever = choose({ ...selection, membership: 'ever' }, oldMembers);
-  assert.deepEqual(ever.map(item => item.sellerIdentity), ['[7,11]']); // X's later replacement was never a member.
+  assert.deepEqual(ever.map(item => item.sellerIdentity), ['[7,11]']);
   assert.equal(measureAmount(ever, 'average', 0, 47), 1_500_000n);
   const hourly = choose({ ...selection, membership: 'hour' });
   assert.deepEqual(hourly[0].runs.map(run => [run.firstHour, run.lastHour]), [[24, 47]]);
@@ -400,7 +371,7 @@ test('identity lookup does not fill an unrecorded interval from a future rename'
   const data = decodeTrade(item);
   assert.deepEqual(identityCountryAt(data, '[7,11]', 22), { identity: '[7,11]', tag: 'X', hour: 20, firstHour: 0, lastHour: 20 });
   assert.equal(identityCountryAt(data, '[7,11]', 24)?.tag, 'Y');
-  assert.throws(() => validateTradeFlowsReply(item)); // Numeric run cannot span that missing identity evidence.
+  assert.throws(() => validateTradeFlowsReply(item));
   assert.doesNotThrow(() => validateTradeFlowsReply(renamedReply()));
 });
 
@@ -415,7 +386,6 @@ test('five thousand native holders retain distinct histories and selected end-gr
 });
 
 
-/** `whole` cut to `first..=last` as the product reads a window: each flow's runs cut to its hours, its countries only those its flows name. */
 function cut(whole: TradeFlowsReply, first: number, last: number): TradeFlowsReply {
   const spans = <T extends { firstHour: number; lastHour: number }>(items: readonly T[]) => items.flatMap(item =>
     Math.max(item.firstHour, first) > Math.min(item.lastHour, last) ? [] : [{ ...item, firstHour: Math.max(item.firstHour, first), lastHour: Math.min(item.lastHour, last) }]);

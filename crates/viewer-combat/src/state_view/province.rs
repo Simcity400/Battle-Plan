@@ -1,4 +1,3 @@
-//! The state view's victory points and province part, for the clicked province.
 use super::{loc, paths_named, withhold_named};
 use crate::binding::{self, Bindings, Flags};
 use crate::content::Content;
@@ -8,7 +7,6 @@ use replay_data::rows::{ProvinceRow, Recorded, StateRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 
-/// The province rows and links the part reads.
 pub(super) struct Facts<'a> {
     pub province: &'a ProvinceRow,
     pub state: &'a StateRow,
@@ -53,7 +51,6 @@ pub(super) fn bind(content: &Content, frame: &DecodedFrame, root: &native::Eleme
     }
 }
 
-/// The clicked province's own victory points; none hides the count and its background.
 fn victory_points(content: &Content, root: &native::Element, out: &mut Bindings, facts: &Facts<'_>) {
     let value = facts.province.victory_points;
     if value == 0 {
@@ -66,8 +63,6 @@ fn victory_points(content: &Content, root: &native::Element, out: &mut Bindings,
     bind_named(out, root, "victory_points", binding::TEXT, text);
 }
 
-/// The province's display name, red while another country controls it, with its controller's
-/// flag and its terrain.
 fn name(content: &Content, frame: &DecodedFrame, root: &native::Element, out: &mut Bindings, facts: &Facts<'_>) {
     let text = (|| {
         let id = facts.province.id;
@@ -96,8 +91,6 @@ fn name(content: &Content, frame: &DecodedFrame, root: &native::Element, out: &m
     bind_named(out, root, "province", binding::TEXT, text);
 }
 
-/// The state's dynamic modifiers that have an icon, each with its scope country's flag; whether
-/// any is shown.
 fn dynamic_modifiers(content: &Content, frame: &DecodedFrame, root: &native::Element, out: &mut Bindings, facts: &Facts<'_>) -> bool {
     const GRID: &str = "dynamic_modifiers_grid";
     let entries = (|| -> Result<Vec<crate::Values>, String> {
@@ -157,25 +150,20 @@ fn dynamic_modifiers(content: &Content, frame: &DecodedFrame, root: &native::Ele
     }
 }
 
-/// The custom icons the game tests against the province's static modifiers: the children of the
-/// first custom icon container, in its order, with their paths.
 pub(super) fn custom_icons(root: &native::Element) -> Vec<(String, &native::Element)> {
     let Some(container) = paths_named(root, "custom_icon_container").into_iter().next() else { return Vec::new() };
     let Some(element) = root.path_named(&container) else { return Vec::new() };
     element.nested().into_iter().map(|child| (format!("{container}/{}", child.name()), child)).collect()
 }
 
-/// The static modifier a custom icon stands for: its name without the `_icon` the game cuts.
 pub(super) fn icon_modifier(icon: &native::Element) -> Option<&str> {
     std::str::from_utf8(icon.name_bytes()).ok()?.strip_suffix("_icon")
 }
 
-/// Every static modifier a custom icon of the window stands for.
 pub(super) fn icon_modifier_names(root: &native::Element) -> Vec<String> {
     custom_icons(root).into_iter().filter_map(|(_, icon)| icon_modifier(icon).map(str::to_owned)).collect()
 }
 
-/// The icon names of the province's present static modifiers (`<name>_icon`), in stored order.
 fn static_modifier_icons(row: &replay_data::rows::WeatherProvinceRow) -> Result<Vec<Vec<u8>>, String> {
     match &row.static_modifiers {
         Recorded::Value(Some(modifiers)) => Ok(modifiers.entries.iter().map(|entry| [entry.name.as_slice(), b"_icon"].concat()).collect()),
@@ -191,9 +179,6 @@ fn withhold_paths(out: &mut Bindings, paths: &[(String, &native::Element)], why:
     }
 }
 
-/// The terrain picture and the weather icons, each shown icon placed at the next of the
-/// content's weather icon positions, as the game lays them out: the weather's, then each custom
-/// icon a present static modifier names, then the impassable icon.
 fn weather(content: &Content, frame: &DecodedFrame, root: &native::Element, out: &mut Bindings, facts: &Facts<'_>, dynamic: bool) {
     const ICONS: [&str; 5] = ["temperature_icons", "modifiers_weather_icons", "modifiers_mud_icon", "modifiers_snow_icons", "impassability_icon"];
     let id = facts.province.id;
@@ -209,8 +194,6 @@ fn weather(content: &Content, frame: &DecodedFrame, root: &native::Element, out:
         }
     };
     let Some(weather) = rows.binary_search_by_key(&id, |row| row.id).ok().map(|at| &rows[at]) else {
-        // The game finds no weather for the province: it hides the icons unless dynamic
-        // modifiers showed, and keeps the picture of the province shown before.
         if !dynamic {
             for name in ICONS {
                 hide_named(out, root, name);
@@ -348,7 +331,6 @@ fn weather(content: &Content, frame: &DecodedFrame, root: &native::Element, out:
     }
 }
 
-/// The state's strategic locations anchored in the clicked province, then the province's own.
 fn strategic_locations(content: &Content, frame: &DecodedFrame, root: &native::Element, out: &mut Bindings, facts: &Facts<'_>) {
     const GRID: &str = "strategic_locations_grid";
     let id = facts.province.id;

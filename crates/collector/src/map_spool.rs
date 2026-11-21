@@ -1,5 +1,3 @@
-//! Native map-table conversion on the spool thread. Arena bytes and ordered
-//! references stay exact; bad bounds or duplicate native identities fail a table.
 
 use crate::{
     map_capture::MapCaptured,
@@ -187,8 +185,6 @@ fn land_combats(
                 return unavailable("land combat members lie outside the captured reference arena")
                     .into();
             };
-            // Each native side vector keeps unique members. Cross-side or
-            // cross-combat exclusion is not established and is not imposed.
             scratch.clear();
             scratch.extend_from_slice(members);
             scratch.sort_unstable();
@@ -296,7 +292,6 @@ fn ships(
         Ok(rows) => rows,
         Err(failure) => return failure,
     };
-    // Refuse only the affected name column; numeric ship state stays usable.
     let name = |row: &cship::Row| row.name.and_then(|(start, len)| range(names, start, len));
     let naming = |row: &cship::Row| {
         let raw = row.naming?;
@@ -394,8 +389,6 @@ fn naval_participants(
         Ok(rows) => rows,
         Err(failure) => return failure,
     };
-    // Side is the selected native vector, not an arbitrary integer field. The
-    // composite key reserves exactly one bit for this authenticated selection.
     if rows.iter().any(|row| row.side > 1) {
         return unavailable("naval combat participant has an invalid side").into();
     }
@@ -431,13 +424,9 @@ fn air_wings(
         Err(failure) => return failure,
     };
     let names = names.get(..names_len);
-    // Invalid name spans refuse this field only, retaining the old columns.
     let name = |row: &cair_wing::Row| {
         names.and_then(|bytes| row.name.and_then(|(start, len)| range(bytes, start, len)))
     };
-    // The wing gather already copied every attachment pointer. The group's
-    // same-pass registry census supplies its authenticated handle without
-    // another native lookup. One contiguous index serves the whole table.
     let demanded = rows
         .iter()
         .any(|row| row.attached_orders_group.is_none() && row.attached_group_pointer != 0);
@@ -564,9 +553,6 @@ fn air_wings(
     )
 }
 
-/// Null is detached. Only a unique, same-pass authenticated identity can
-/// turn a nonnull pointer into a replay handle; partial censuses prove matches
-/// but never prove an unmatched pointer absent.
 fn attached_group(index: &[(u64, u64)], pointer: u64) -> Option<u64> {
     if pointer == 0 {
         return Some(0);
@@ -1000,8 +986,6 @@ mod tests {
                 task_force: u64::MAX - 1,
                 strength: i64::MIN,
                 organisation: i64::MAX,
-                // Stored at whole hundredths (ShipRow::EXPERIENCE_STEP),
-                // truncated toward zero.
                 experience: -123_456_789_012_000,
                 category: u32::MAX,
                 sunk_convoys: i32::MIN + 1,
@@ -1025,8 +1009,6 @@ mod tests {
                 state: u32::MAX - 1,
             }]),
             TableRows::AirWings(vec![AirWingRow {
-                // An uncertified crew is the column's refusal: the row encoder holds no
-                // not-recorded cell.
                 acquired_manpower: replay_data::rows::Recorded::Value(None),
                 exile_country: replay_data::rows::Recorded::Value(None),
 
@@ -1233,7 +1215,6 @@ mod tests {
     #[test]
     fn land_reference_uniqueness_is_per_side_and_uses_all_handle_bits() {
         let mut captured = fixture();
-        // Distinct full references with the same numeric id remain distinct.
         captured.land_participants = vec![0x100000002, 0x100000003, 0x100000002];
         assert!(matches!(
             sampled(land_combats(

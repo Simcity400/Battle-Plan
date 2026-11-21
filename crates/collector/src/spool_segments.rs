@@ -1,13 +1,3 @@
-//! A frame's larger tables encoded on the spool thread and its conversion
-//! helpers at once.
-//!
-//! The encoder borrows its baselines shared while it encodes one table's
-//! update ([`FrameEncoder::encode_segment`]), so each thread takes the next
-//! of the frame's tables with rows to compare or write, largest first, and
-//! the spool thread then assembles the frame in table order from those
-//! segments, encoding the rest itself ([`FrameEncoder::prepare_bytes_with`]).
-//! The bytes are those one thread writes. A table whose segment failed is
-//! encoded again in place, which reports its error.
 
 use crate::spool_phases::{HELPER, Phase};
 use replay_data::rows::TABLE_COUNT;
@@ -21,22 +11,17 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-/// Tables with fewer rows encode in place: a segment costs an allocation and
-/// a copy of its bytes. Tests segment every table with rows, so the small
-/// synthetic spool campaigns assemble their frames from segments too.
 #[cfg(not(test))]
 const SEGMENT_ROWS: usize = 64;
 #[cfg(test)]
 const SEGMENT_ROWS: usize = 1;
 
-/// The rows a table's input asks the encoder to compare or write.
 fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
     match input {
         TableInput::Sampled(TableView::Complete(rows) | TableView::Truncated { rows, .. }) => {
             rows.len()
         }
         TableInput::SharedComplete(rows) => {
-            // The committed allocation itself encodes as unchanged.
             if encoder
                 .shared_baseline(table)
                 .is_some_and(|baseline| std::sync::Arc::ptr_eq(baseline, rows))
@@ -53,8 +38,6 @@ fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
     }
 }
 
-/// Encode `source`'s larger tables for the frame at its branch and hour on
-/// this thread and `helpers`; the frame takes the returned segments.
 pub(crate) fn encode(
     encoder: &FrameEncoder,
     source: &FrameInput,
@@ -73,7 +56,6 @@ pub(crate) fn encode(
     }
     let order = &mut order[..count];
     if order.len() < 2 {
-        // Nothing to share: the frame encodes every table itself.
         return std::array::from_fn(|_| None);
     }
     order.sort_unstable_by(|a, b| b.cmp(a));
@@ -162,8 +144,6 @@ mod tests {
         frame
     }
 
-    /// Frames assembled from segments encoded on the helpers are those one
-    /// thread encodes, and the helpers took tables with enough rows.
     #[test]
     fn segments_encoded_on_the_helpers_assemble_the_frame_one_thread_encodes() {
         let pool = [

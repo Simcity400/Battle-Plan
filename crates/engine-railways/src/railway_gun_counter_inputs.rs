@@ -1,9 +1,3 @@
-//! Simulation inputs for class-13 railway-gun map counters.
-//!
-//! Every value is a simulation field of the gun, its province or its orders
-//! group, read the same for any viewing country or camera. The viewer rebuilds
-//! the counter's settled route point, fog admission, stack kind and every
-//! counter child from them; no CUnit map entity is read here.
 
 use crate::{
     Memory, cbuilding, ccountry, cgame_state, corders_group,
@@ -13,12 +7,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Stored unit string in the primary object, accepting arbitrary supplied bytes. Serialization uses
-/// the secondary receiver and emits its name only when the stored length is nonzero.
 pub const NAME: usize = 0x258;
 
-/// First-edge ETA operands from passive speed inputs, separate from the
-/// client counter timing cache and durations.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EtaOperands {
     pub numerator: i64,
@@ -28,37 +18,26 @@ pub struct EtaOperands {
 mod eta;
 mod fresh;
 
-/// Current-hour operands for a freshly searched route. Native transfer skips
-/// both land operands; each otherwise retains its own guarded refusal.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreshEta {
     pub sample_hour: i32,
     pub maximum_speed: Option<i64>,
     pub land_supply_factor: Option<i64>,
-    /// Genuine orders-group member link (`carmy::ORDERS_GROUP`), not the rail assignee (`crailway_gun::ASSIGNEE`).
     pub orders_group: Option<u64>,
 }
 
-/// One acquisition's attempted common getters, including failures. Prepared
-/// per admitted row and cleared before the private roots leave this walk.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreshEtaObservations {
     pub(super) maximum_speed: Option<Result<i64, &'static str>>,
     pub(super) land_supply_factor: Option<Result<i64, &'static str>>,
 }
 
-/// Caller-owned scratch for appended tooltip inputs. Pointers last only for this
-/// walk: the whole established counter census is read before these inputs.
 pub struct TooltipScratch<'a> {
     pub guns: Buffer<'a, (usize, usize)>,
     pub fresh_observations: Buffer<'a, FreshEtaObservations>,
-    /// The accepted callback's simulation hour; absent for legacy-only readers.
     pub sample_hour: Option<i32>,
     pub named: crate::railway_gun_speed::NamedBonuses<'a>,
-    /// A completed fixed-layout report is final for the attachment. An
-    /// interrupted check is not retained or repeated within this walk.
     pub layout: &'a mut Option<crate::fixed_layout::Report>,
-    /// Text scratch prepared from immutable names before capture begins.
     pub layout_buffer: &'a mut [u8],
     pub supply_origins: Buffer<'a, crate::cunit_supply_inputs::Origin>,
     pub supply_origins_len: usize,
@@ -68,89 +47,52 @@ pub struct TooltipScratch<'a> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub gun: u64,
-    /// Raw CUnit owner tags. The viewer resolves aliases through CountryLinks.
     pub roster_owner: u32,
     pub expeditionary_owner: u32,
     pub logical_owner: u32,
-    /// Authenticated location; zero for a gun its roster holds unlocated.
     pub province: u32,
-    /// A naval-transfer association exists (stack kinds 19/20, actions 7-9).
     pub naval_transfer: bool,
-    /// A nonzero transfer word selects action 9 when moving by sea.
     pub transfer_action_status: bool,
-    /// Raw exile state, which clears the location warning.
     pub exiled: bool,
     pub retreat: bool,
     pub strategic_redeployment: bool,
-    /// Stored count (`crailway_gun::REFERENCE_ENTRY_COUNT`) of its combat references, serialized as
-    /// the combat list. A positive count selects action 12 instead of idle 1 when both the ordinary
-    /// route and combat vector are empty.
     pub reference_entry_count: i32,
-    /// Authenticated full COrdersGroup handle behind `crailway_gun::ASSIGNEE`, or zero for null.
     pub assignee_group: u64,
-    /// The stat definition's lexical token; the viewer resolves its name and
-    /// counter icon from matching content.
     pub subunit_token: u32,
-    /// Raw fixed5 numerator and the per-gun rebuilt maximum of the strength bar.
     pub current_strength: i64,
     pub maximum_strength: i64,
-    /// Raw CSupplyConsumer ratio for the gun's low-supply strip.
     pub received_supply_ratio: i64,
-    /// Signed level of the railway building at the gun's province, the input
-    /// of the location warning. `None` means the rail info or its building
-    /// pointer is null, which the warning treats like a nonpositive level.
     pub railway_building_level: Option<i16>,
-    /// Authenticated movement target; zero for none.
     pub target: u32,
-    /// First combat side for the gun's logical owner: 0 without combat,
-    /// 1 attacking, 2 defending.
     pub combat_role: u8,
-    /// Province of the first combat; zero without one.
     pub combat_province: u32,
-    /// Stored count of the gun's CUnit combat vector, not the saved combat reference array behind
-    /// `reference_entry_count`.
     pub combat_count: u32,
-    /// The logical owner attacks in any of the gun's combats.
     pub attacking: bool,
     pub ordinary_start: usize,
     pub ordinary_len: usize,
     pub alternate_start: usize,
     pub alternate_len: usize,
-    /// Exact bytes in the caller's arena; absent after a field-local refusal.
     pub name: Option<(usize, usize)>,
-    /// Present for a positive ordinary route; None outside that demand or
-    /// after an isolated acquisition failure.
     pub eta: Option<EtaOperands>,
-    /// Exact shared supply-footer pack; origin failures preserve its scalars.
     pub supply: Option<crate::cunit_supply_inputs::Inputs>,
     pub supply_origins_start: usize,
     pub supply_failure: Option<crate::cunit_supply_inputs::Failure>,
-    /// Saved CUnit `withdraw` byte; read in the final optional suffix, using
-    /// this walk's private roots. Refusal preserves all established fields.
     pub withdrawal: Option<u8>,
     pub fresh: Option<FreshEta>,
     pub fresh_failure: Option<&'static str>,
-    /// Maximum-speed, supply-factor and genuine orders-group failures.
     pub fresh_failures: [Option<&'static str>; 3],
     pub combat_references: Option<(usize, usize)>,
     pub combat_references_failure: Option<&'static str>,
-    /// Full handle of the gun's [`cunit::THEATRE`] ([`engine_native::ctheatre::unit_theatre`]),
-    /// zero for none; None is a field refusal.
     pub theatre: Option<u64>,
-    /// [`cunit::QUEUED_ACTION_COUNT`]; None is a field refusal.
     pub queued_actions: Option<i32>,
 }
 
-/// Prepared full-reference output from the existing gun motion visit. Spans
-/// publish only for retained rows and complete vectors; discarded/failed spans
-/// remain reusable. Pressure includes every header this visit attempted.
 pub struct CombatReferencesArena<'a> {
     pub entries: Buffer<'a, cunit::MapCombatReference>,
     pub used: usize,
     pub required: usize,
 }
 
-/// Stored text using the native SSO/heap descriptor and caller storage mode.
 pub struct NameArena<'a> {
     pub bytes: Buffer<'a, u8>,
     pub used: usize,
@@ -199,20 +141,11 @@ pub struct NameDemand {
     pub rows: usize,
     pub bytes: usize,
     pub paths: usize,
-    /// Maximum raw named-bonus handle count of any authenticated gun variant.
-    /// Optional header faults provide no sizing hint; clocked capture retains
-    /// its independent guarded failure and exact arena growth demand.
     pub named_bonuses: usize,
-    /// Total origin entries across authenticated guns; optional header faults
-    /// provide no hint and never erase the independent name or speed demand.
     pub supply_origins: usize,
-    /// Same existing hint census; header-only, no additional vector walk.
     pub combat_references: usize,
 }
 
-/// Off-thread presizing: every canonical country's authenticated gun roster,
-/// reading string and optional named-bonus/supply-origin headers only. No
-/// simulation, route, text, bonus or origin payload is read.
 pub fn name_demand(
     memory: &impl Memory,
     base: usize,
@@ -248,7 +181,6 @@ pub fn name_demand(
                 .bytes
                 .checked_add(name.len)
                 .ok_or("railway gun name demand overflow")?;
-            // Unit serialization writes both route vectors.
             for offset in [cunit::ORDINARY_ROUTE_DATA, cunit::ALTERNATE_ROUTE_DATA] {
                 if let Some(route) = gun
                     .checked_add(offset)
@@ -288,7 +220,6 @@ pub fn name_demand(
 pub struct Walk {
     pub outcome: Outcome,
     pub paths_len: usize,
-    /// Path cells needed to publish every gun this hour, including unread ones.
     pub required_paths: usize,
 }
 
@@ -324,8 +255,6 @@ fn gun_identity(
     Ok(handle)
 }
 
-/// The rail-info table the rail manager keeps beside the province roster.
-/// Read once per walk, and only when a located gun needs it.
 fn rail_slots(
     memory: &impl Memory,
     base: usize,
@@ -349,9 +278,6 @@ fn rail_slots(
     .ok_or("railway gun rail-info table extent mismatch")
 }
 
-/// The railway building level through the province's rail information.
-/// The rail information and building must both point back at this
-/// province's own building status.
 fn railway_building_level(
     memory: &impl Memory,
     base: usize,
@@ -540,7 +466,6 @@ fn walk_impl(
             };
             let roster = Array::read(memory, at(country.pointer, ccountry::RAILWAY_UNITS)?, 8)
                 .ok_or("railway gun country roster invalid")?;
-            // Size the complete roster from this original acquired header.
             let required = len
                 .checked_add(roster.count as usize)
                 .ok_or("railway gun row demand overflow")?;
@@ -568,8 +493,6 @@ fn walk_impl(
                 if countries.resolve(roster_owner)?.canonical_slot != country.canonical_slot {
                     return Err("railway gun owner differs from country roster");
                 }
-                // A roster can hold an unlocated gun; the province's mixed
-                // occupant vector is the map source, so zero is preserved.
                 let location = pointer_at(memory, at(gun, cunit::LOCATION)?)
                     .ok_or("railway gun location unreadable")?;
                 let province = cunit::registered_province(memory, base, provinces, location)?;
@@ -684,7 +607,6 @@ fn walk_impl(
                 required_paths = required_paths
                     .checked_add(needed)
                     .ok_or("railway gun path arena overflow")?;
-                // Both original movement headers have already been acquired.
                 paths.ensure(
                     paths_len
                         .checked_add(needed)
@@ -701,12 +623,9 @@ fn walk_impl(
                     continue;
                 }
                 motion.copy_paths(memory, &mut paths[paths_len..paths_len + needed])?;
-                // Every established scalar and route copy finishes first. Name
-                // failures never change their outcome or withhold this row.
                 let name = names
                     .as_mut()
                     .and_then(|names| names.capture(memory, gun, true));
-                // Only a retained, established row commits the optional arena.
                 if let Some((start, count)) = reference_span
                     && let Some(arena) = references.as_mut()
                 {
@@ -772,8 +691,6 @@ fn walk_impl(
         })
     })();
     let outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
-    // Optional ETA reads follow every established row/route/name. Their
-    // failures preserve the complete prefix and the independent naming suffix.
     if let Some(scratch) = tooltip {
         scratch
             .fresh_observations
@@ -810,9 +727,6 @@ fn walk_impl(
                 .ok();
             }
         }
-        // The supply footer is independent of the counter prefix, stored name
-        // and ETA. Reuse the same authenticated roots after those reads finish.
-        // A refused origin vector leaves exact scalar footer lines available.
         scratch.supply_origins_len = 0;
         scratch.required_supply_origins = 0;
         for (row, &(gun, _)) in output[..outcome.len()].iter_mut().zip(scratch.guns.iter()) {
@@ -841,13 +755,9 @@ fn walk_impl(
                 Err(reason) => row.supply_failure = Some(reason),
             }
         }
-        // Withdrawal is independent of every counter, name, ETA and supply
-        // operand. Read it last, before discarding the private current roots.
         for (row, &(gun, _)) in output[..outcome.len()].iter_mut().zip(scratch.guns.iter()) {
             row.withdrawal = cunit::read_withdrawal(memory, gun);
         }
-        // Fresh route operands are independent of first-edge ETA and the
-        // supply footer. Reuse every attempted common getter, including Err.
         for (index, (row, &(gun, _))) in output[..outcome.len()]
             .iter_mut()
             .zip(scratch.guns.iter())

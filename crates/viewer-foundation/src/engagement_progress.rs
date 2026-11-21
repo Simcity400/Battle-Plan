@@ -1,8 +1,3 @@
-//! Land combat progress and side perspective, derived from recorded simulation
-//! state for any viewing country.
-//!
-//! Attacker progress is computed on demand from both sides' ordered
-//! organisation sums, reserves included. A defending viewer sees it mirrored.
 
 use super::engaged;
 use crate::map::{
@@ -13,16 +8,11 @@ use replay_data::{rows::LandCombatSideRow, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, Tables};
 use std::{collections::BTreeMap, io};
 
-/// Fixed point over 100 000.
 pub const FIXED: i64 = 100_000;
 
-/// The attacker's progress per combat, fixed point over [`FIXED`], or the
-/// first ordered member (attackers, then defenders) with no `Divisions` row.
 pub struct Progresses(BTreeMap<u64, Result<i64, u64>>);
 
 impl Progresses {
-    /// A combat whose members are not all in `Divisions` has no progress; both
-    /// tables are hourly, so no older sample joins this hour's roster.
     pub fn read(frame: &DecodedFrame) -> io::Result<Self> {
         let organisation: BTreeMap<_, _> = rows::<tables::Divisions>(frame)?
             .rows()
@@ -52,14 +42,11 @@ impl Progresses {
         self.0.get(&combat)?.ok()
     }
 
-    /// The first ordered member of `combat` with no `Divisions` row this
-    /// hour, which leaves its progress unknown.
     pub fn unrecorded(&self, combat: u64) -> Option<u64> {
         self.0.get(&combat)?.err()
     }
 }
 
-/// Wrapping 64-bit arithmetic, including its guard for extreme sums.
 pub fn attacker_progress(attacker: i64, defender: i64) -> i64 {
     let total = attacker.wrapping_add(defender);
     if total < 1 {
@@ -68,11 +55,9 @@ pub fn attacker_progress(attacker: i64, defender: i64) -> i64 {
     if (attacker as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
         return FIXED;
     }
-    // A positive divisor: the quotient cannot overflow.
     (attacker.wrapping_mul(FIXED) / total).clamp(0, FIXED)
 }
 
-/// The land marker's reason when [`defending`] cannot decide, one per cause.
 pub fn undefended(cause: SharingUnknown) -> &'static str {
     match cause {
         SharingUnknown::Reference => {
@@ -81,19 +66,12 @@ pub fn undefended(cause: SharingUnknown) -> &'static str {
         SharingUnknown::Relations(_) => {
             "defending side unknown (no defender is proven to share vision: FactionMembers, WarRelations or Subjects is unavailable, truncated or names a country CountryLinks lacks this hour)"
         }
-        // `defending` reads its row whole, so it never asks with a census gap.
         SharingUnknown::Census(_) => {
             "defending side unknown (a census the defender sets are read with is not whole)"
         }
     }
 }
 
-/// Whether the viewer sits on the defending side: the game mirrors the
-/// marker when a member of either defender set shares vision with it,
-/// evaluated each hour. `resolve` maps a raw reference to its
-/// canonical slot. A proven positive stands; otherwise an unresolved
-/// reference, or relations that cannot prove a defender does not share,
-/// leaves the answer unknown ([`Vision::sees_combat`]).
 pub fn defending(
     sets: &LandCombatSideRow,
     vision: &Vision,
@@ -102,7 +80,6 @@ pub fn defending(
     defending_of(&sets.defender_primary, &sets.defender_secondary, vision, resolve)
 }
 
-/// [`defending`] from values: the defenders' primary and secondary country lists.
 pub fn defending_of(
     primary: &[u32],
     secondary: &[u32],
@@ -111,13 +88,10 @@ pub fn defending_of(
 ) -> Result<bool, SharingUnknown> {
     vision.sees_combat(
         primary.iter().chain(secondary).map(|raw| resolve(*raw)),
-        // Both sets are read whole with their LandCombatSides row.
         None,
     )
 }
 
-/// Land combat sides for the engaged flag: side 0 attacks. The unit set is the
-/// side's ordered members, reserves included; land has no transfers.
 pub struct LandSides;
 
 impl engaged::Sides for LandSides {
@@ -141,14 +115,12 @@ impl engaged::Sides for LandSides {
     }
 }
 
-/// [`LandSides::sides`] from any source of the hour's tables.
 pub fn land_sides<F: Tables + ?Sized>(frame: &F) -> io::Result<engaged::HourSides> {
     let sides = sides(frame)?;
     let combats = crate::fold_tables::available::<tables::LandCombats, F>(frame)?;
     let mut out = engaged::HourSides {
         sides: BTreeMap::new(),
         complete: combats.is_complete(),
-        // A land unit can leave one side alone in a round retreat.
         removal: engaged::Removal::BothSidesUnlessRoundRetreat,
     };
     for combat in combats.rows() {
@@ -169,9 +141,6 @@ pub fn land_sides<F: Tables + ?Sized>(frame: &F) -> io::Result<engaged::HourSide
             units.sort_unstable();
             out.sides.insert(
                 (combat.id, side),
-                // Land lists come from the side's units alone: a join appends
-                // its owners and a removal rebuilds them from the
-                // rest, so the recorded lists are the unit lists.
                 engaged::Side {
                     units: Some(units),
                     added: engaged::Added::NoTrigger,
@@ -184,8 +153,6 @@ pub fn land_sides<F: Tables + ?Sized>(frame: &F) -> io::Result<engaged::HourSide
     Ok(out)
 }
 
-/// This hour's side operands by combat. A truncated census still holds whole
-/// rows; only an absent combat is unknown.
 pub fn sides<F: Tables + ?Sized>(frame: &F) -> io::Result<BTreeMap<u64, &LandCombatSideRow>> {
     Ok(crate::fold_tables::available::<tables::LandCombatSides, F>(frame)?
         .rows()
@@ -235,12 +202,10 @@ mod tests {
 
     #[test]
     fn progress_sums_every_member_and_a_missing_one_is_unknown() {
-        // Unit 2 is a reserve; it still counts.
         let full = frame(vec![(1, 1), (2, 2), (3, 6)]);
         assert_eq!(Progresses::read(&full).unwrap().attacker(62), Some(33_333));
         let short = frame(vec![(1, 1), (3, 6)]);
         assert_eq!(Progresses::read(&short).unwrap().attacker(62), None);
-        // The first unrecorded member in attacker-then-defender order.
         assert_eq!(Progresses::read(&short).unwrap().unrecorded(62), Some(2));
         let defender = frame(vec![(1, 1), (2, 2)]);
         assert_eq!(Progresses::read(&defender).unwrap().unrecorded(62), Some(3));
@@ -270,7 +235,6 @@ mod tests {
             defending(&sets(vec![6], vec![2]), &vision, &resolve),
             Ok(true)
         );
-        // An unresolved reference cannot prove a negative, only block it.
         assert_eq!(
             defending(&sets(vec![500], vec![]), &vision, &resolve),
             Err(SharingUnknown::Reference)

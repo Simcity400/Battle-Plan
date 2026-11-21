@@ -7,34 +7,26 @@ import type { OptionField, OptionValue } from '../../dashboard/options';
 import { object } from '../../dashboard/validation.ts';
 import type { CountryFuelReply, DayLeftOut, FuelAwardHistoryReply, FuelAwardsReply, FuelLabel, FuelReadAt } from '../../generated/dashboard';
 
-/** Fuel amounts are written in whole numbers unless the widget's settings ask for decimals. Only the writing rounds:
- * totals, shares, bars and order use the exact recorded amounts. Gains are fixed5, so 5 places reach every digit. */
 const MOST_FUEL_DECIMALS = 5;
 export const FUEL_DECIMALS_OPTION: OptionField = { key: 'fuelDecimals', section: 'options', label: 'Fuel decimals',
   hint: 'Decimal places in fuel amounts.', kind: 'number', min: 0, max: MOST_FUEL_DECIMALS, step: 1, default: 0 };
 
-/** The decimals chosen, within the option's range. */
 export function fuelDecimals(options: Readonly<Record<string, OptionValue>>): number {
   const chosen = options[FUEL_DECIMALS_OPTION.key];
   return typeof chosen === 'number' && Number.isInteger(chosen) ? Math.max(0, Math.min(MOST_FUEL_DECIMALS, chosen)) : 0;
 }
 
-/** The declared series the widget draws: the tank's level and capacity, and each day's measures (`FuelDayRow::measures`). */
 export const COUNTRY_FUEL = 'country-fuel';
 export const FUEL_DAYS = 'fuel-days';
 export const FUEL_DEMAND_TOTALS = 'fuel-demand-totals';
-/** The tank's units per fuel (/32768) and the gains' (fixed5). */
 export const QUANTITY_SCALE = 32768;
 export const GAIN_SCALE = 100000;
-/** The day measures' units per fuel: quantity times gain units, so neither loses a digit. */
 export const PART_SCALE = QUANTITY_SCALE * GAIN_SCALE;
 
-/** The parts of a day each breakdown charts, as the series `fuel-days` names them, and the reply's parts they match. */
 export const GAIN_PARTS = [['gainBase', 'gain-0'], ['gainStates', 'gain-1'], ['gainOil', 'gain-2'], ['gainNegativeCost', 'gain-3'],
   ['unidentified', 'unidentified']] as const;
 export const BURN_PARTS = [['consumerArmy', 'consumer-0'], ['consumerAir', 'consumer-1'], ['consumerNavy', 'consumer-2'],
   ['outgoing', 'outgoing'], ['flat', 'flat'], ['other', 'other'], ['conversion', 'conversion']] as const;
-/** Each family's projected demand, clamped at zero, as `fuel-demand-totals` names it. */
 export const FAMILY_MEASURES = ['positiveArmy', 'positiveAir', 'positiveNavy'] as const;
 
 const RAW = /^-?\d{1,39}$/;
@@ -63,7 +55,6 @@ function isRead(value: unknown): value is FuelReadAt {
           && awards.transfersRaw.every(isRaw) && isRaw(awards.consumedRaw) && triple(awards.receivedRaw, isRaw)));
 }
 
-/** A `country-fuel` reply: the read at an hour, or why none; never a zero for what was not recorded. */
 export function validateCountryFuel(data: unknown): CountryFuelReply {
   const reply = data as CountryFuelReply;
   const consumption = object(data) ? data.consumption : null;
@@ -100,7 +91,6 @@ export function validateFuelAwardHistory(data: unknown): FuelAwardHistoryReply {
   return reply;
 }
 
-/** Why a day is left out, as the tooltip says it: its row's value and its note. */
 export const LEFT_OUT: Readonly<Record<DayLeftOut, { value: string; note: string }>> = {
   overlaps: { value: 'Counted in another day', note: 'Included in another day.' },
   notUpdated: { value: 'Not updated', note: 'Fuel was not updated while no states were owned.' },
@@ -108,10 +98,8 @@ export const LEFT_OUT: Readonly<Record<DayLeftOut, { value: string; note: string
   notRecorded: { value: 'Not recorded', note: 'The day before this read was not recorded.' },
 };
 
-/** A recorded fuel quantity, rounded once to `digits` decimals (none when whole). */
 export const formatFuel = (raw: string | bigint, scale: number, digits: number) => formatAmount(rescale(BigInt(raw), BigInt(scale), digits), digits, digits);
 
-/** A fuel amount over `scale`, rounded once to `digits` decimals; without `digits`, the exact finite decimal. */
 export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): string {
   if (digits !== undefined) return formatAmount(rescale(raw, scale, digits), digits, digits);
   let denominator = scale, twos = 0, fives = 0;
@@ -125,8 +113,6 @@ export function formatFuelPart(raw: bigint, scale: bigint, digits?: number): str
 export const fuelPartShare = (raw: bigint, total: bigint) => total === 0n ? '—'
   : `${formatAmount(rescale(raw * (total < 0n ? -100n : 100n), total < 0n ? -total : total, 1), 1, 1)}%`;
 
-/** The day before a read in units of 10^-`digits` fuel: gained, burned and the net, each rounded once from the recorded
- * values, and whether the exact net is above zero. The net of an applied day is its converted own gain less burned. */
 export function dayAmounts(reply: Pick<CountryFuelReply, 'quantityScale' | 'gainScale'>, read: Pick<FuelReadAt, 'day'>, digits: number) {
   if (!read.day) return null;
   const [gainScale, quantityScale] = [BigInt(reply.gainScale), BigInt(reply.quantityScale)];
@@ -136,7 +122,6 @@ export function dayAmounts(reply: Pick<CountryFuelReply, 'quantityScale' | 'gain
   return { gained: rescale(gained, gainScale, digits), burned: rescale(burned, quantityScale, digits), net: rescale(net, netScale, digits), gaining: net > 0n };
 }
 
-/** How full the tank is, as a whole percent; null without a capacity. */
 export function percentFull(read: Pick<FuelReadAt, 'fuelRaw' | 'capacityRaw'>): bigint | null {
   const capacity = BigInt(read.capacityRaw);
   return capacity > 0n ? rescale(BigInt(read.fuelRaw) * 100n, capacity, 0) : null;
@@ -144,13 +129,10 @@ export function percentFull(read: Pick<FuelReadAt, 'fuelRaw' | 'capacityRaw'>): 
 
 export interface FuelPart { id: string; label: string; raw: bigint; consumer?: number; muted?: boolean; reason?: string | null }
 
-/** A fuel label with its NUM written like the amounts; the OIL count is not recorded. */
 export function fuelLabel(label: FuelLabel | undefined, raw: bigint, scale: bigint, digits?: number): string | null {
   return label?.template?.replaceAll('{NUM}', formatFuelPart(raw, scale, digits)).replaceAll('{OIL}', '?') ?? null;
 }
 
-/** A day's parts over a common denominator, so each hourly conversion's residual stays exact. Incoming lend-lease is apart
- * from own production and its shares. */
 export function fuelParts(reply: CountryFuelReply, read: FuelReadAt, measure: 'gain' | 'burn', digits?: number):
   { scale: bigint; total: bigint; parts: FuelPart[]; transfer: FuelPart | null; reason: string | null } | null {
   if (!read.day) return null;
@@ -174,7 +156,6 @@ export function fuelParts(reply: CountryFuelReply, read: FuelReadAt, measure: 'g
     transfer: null, reason: awards ? null : read.awardsReason };
 }
 
-/** Which parts a day shows and how each is named: what a breakdown renders on; their amounts are painted. */
 export function partsStructure(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn'): string {
   const read = reply?.read;
   const values = reply && read ? fuelParts(reply, read, measure) : null;
@@ -182,7 +163,6 @@ export function partsStructure(reply: CountryFuelReply | undefined, measure: 'ga
     values?.parts.map(part => [part.id, part.label, part.reason ?? null]) ?? null, values?.transfer?.label ?? null, reply?.consumerNames ?? null]);
 }
 
-/** Full and compact tooltip forms: the tank, then the day before its read, written to `digits` decimals. */
 export function fuelTooltips(reply: CountryFuelReply, title: string,
   colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number): TooltipContent[] {
   const read = reply.read;
@@ -215,14 +195,12 @@ export function fuelTooltips(reply: CountryFuelReply, title: string,
   return [{ title, rows, note }, { title, rows: [tank[0], rows.find(row => row.strong) ?? rows.at(-1)!], note }];
 }
 
-/** A summary's values over `scale`, its tiles' head left out (a breakdown is not followed at the head). */
 export function scaledSummary(summary: ChartSummary | undefined, scale: number): ChartSummary | undefined {
   return summary && { ...summary, tiles: undefined, runs: summary.runs?.map(run => ({ ...run, value: run.value / scale })),
     buckets: summary.buckets.map(bucket => bucket && ({ ...bucket, firstValue: bucket.firstValue / scale, lastValue: bucket.lastValue / scale,
       minValue: bucket.minValue / scale, maxValue: bucket.maxValue / scale })) };
 }
 
-/** A summary as runs: its exact runs, else each bucket's first, least, greatest and last points in hour order. */
 export function summaryRuns(summary: ChartSummary | undefined): Run[] {
   if (!summary) return [];
   if (summary.runs) return [...summary.runs];
@@ -235,9 +213,6 @@ export function summaryRuns(summary: ChartSummary | undefined): Run[] {
   });
 }
 
-/** The gain and burn strip from the day series' summaries: a bar a read, from `dayHours` before it to it, gained up and
- * burned down. A bin of many reads is a span bar over its hours with each half's greatest read: its summary knows only
- * the bucket that read fell in, never its day. */
 export function stripBars(gain: ChartSummary | undefined, burn: ChartSummary | undefined, dayHours: number): StripBar[] {
   const bars = new Map<number, StripBar>();
   for (const [summary, field, scale] of [[gain, 'up', GAIN_SCALE], [burn, 'down', QUANTITY_SCALE]] as const) {
@@ -253,12 +228,8 @@ export function stripBars(gain: ChartSummary | undefined, burn: ChartSummary | u
   return [...bars.values()].sort((a, b) => a.lastHour - b.lastHour);
 }
 
-/** The state of one day series' lines for the strip: `landed` once its first lines are held, `unrecorded` why none
- * holds a value in view, `failure` the message of a read that failed. */
 export interface StripLines { landed: boolean; unrecorded: string | null; failure: string | null }
 
-/** What the gain and burn strip writes where it draws no bar, so it is never a blank band: why the bars are missing
- * (the tooltip's reason), or that they are loading. Null when a bar is drawn. */
 export function stripNote(bars: number, gain: StripLines, burn: StripLines): { text: string; reason: string | null } | null {
   if (bars > 0) return null;
   const failure = gain.failure ?? burn.failure;

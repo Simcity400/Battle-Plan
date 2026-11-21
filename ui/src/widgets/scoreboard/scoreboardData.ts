@@ -15,7 +15,6 @@ import type { ScoreboardColumn, ScoreboardColumnKey, ScoreboardColumnsReply, Sco
 
 const family = (value: unknown) => value === null || (object(value) && typeof value.kind === 'string' && typeof value.measure === 'string');
 
-/** The registry: only the service names the columns, their labels and the measures they read. */
 export function validateColumnsReply(value: unknown): ScoreboardColumnsReply {
   if (!object(value) || typeof value.branchId !== 'string' || !Array.isArray(value.columns) || !Array.isArray(value.warnings)
     || !value.warnings.every(warning => typeof warning === 'string')) throw new Error('Invalid Scoreboard columns.');
@@ -33,7 +32,6 @@ export function validateColumnsReply(value: unknown): ScoreboardColumnsReply {
   return value as unknown as ScoreboardColumnsReply;
 }
 
-/** A reply at an hour: every row holds one cell per column asked, each a value or why it has none. */
 export function validateScoreboardReply(value: unknown, columns: number): ScoreboardReply {
   if (!object(value) || typeof value.branchId !== 'string' || !int(value.hour) || !(value.missing === null || typeof value.missing === 'string')
     || !Array.isArray(value.rows) || !Array.isArray(value.warnings)) throw new Error('Invalid Scoreboard reply.');
@@ -54,14 +52,12 @@ export function selectedColumns(registry: readonly ScoreboardColumn[], stored: O
   return keys.flatMap(key => { const column = registry.find(column => column.key === key); return column ? [column] : []; });
 }
 
-/** Unknown stored columns fall back honestly; unavailable columns remain sortable. */
 export function scoreboardSort(registry: readonly ScoreboardColumn[], shown: readonly ScoreboardColumn[], requested: Sort, defaultColumn: ScoreboardColumnKey | ''): Sort {
   if (requested.column === 'country' || shown.some(column => column.key === requested.column)) return requested;
   const fallback = registry.find(column => column.key === defaultColumn && shown.includes(column)) ?? shown.find(column => column.available);
   return { column: fallback?.key ?? 'country', direction: DEFAULT_SORT.direction };
 }
 
-/** The measure a top N ranks by: the sorted column when it is one, else the chosen measure, else the default. */
 export function rankingColumn(registry: readonly ScoreboardColumn[], sort: Sort, stored: OptionValue, defaultColumn: ScoreboardColumnKey | ''): ScoreboardColumn | undefined {
   const sorted = registry.find(column => column.key === sort.column && column.available);
   if (sorted) return sorted;
@@ -71,10 +67,8 @@ export function rankingColumn(registry: readonly ScoreboardColumn[], sort: Sort,
     ?? registry.find(column => column.available);
 }
 
-/** Whether a top is the greatest: the sorted column's direction when it ranks by it, else the greatest. */
 export const rankingDescending = (sort: Sort, rank: ScoreboardColumn | undefined) => !rank || sort.column !== rank.key || sort.direction === 'descending';
 
-/** The request at `hour`: the columns shown, of the chosen countries or of the top `top` by `rank`. */
 export function scoreboardParams(branchId: string, hour: number, columns: readonly ScoreboardColumn[], tags: readonly string[],
   top: number | null, rank: ScoreboardColumn | undefined, descending = true): ScoreboardParams | null {
   if (!columns.length || (top == null ? !tags.length : !rank)) return null;
@@ -83,14 +77,11 @@ export function scoreboardParams(branchId: string, hour: number, columns: readon
     : { branchId, hour, columns: keys, countries: [], top: { count: top, sort: rank!.key, descending } };
 }
 
-/** A country's value of a column: its raw amount, or why there is none. */
 export interface Cell { amount: bigint | null; missing: string | null; partial: boolean }
-/** A row is a country, keyed by its tag; its cells come from a reply, or are painted from followed values. */
 export interface BoardRow { key: string; tag: string; hour: number; cells: ReadonlyMap<string, Cell> }
 
 const NO_CELLS: ReadonlyMap<string, Cell> = new Map();
 
-/** A reply's rows, their cells by the keys asked. */
 export function replyRows(reply: ScoreboardReply, asked: readonly ScoreboardColumnKey[]): BoardRow[] {
   return reply.rows.map(row => ({ key: row.tag, tag: row.tag, hour: reply.hour,
     cells: new Map(asked.map((key, at) => {
@@ -99,10 +90,8 @@ export function replyRows(reply: ScoreboardReply, asked: readonly ScoreboardColu
     })) }));
 }
 
-/** A followed row: its values are painted, never held. */
 export const followedRow = (tag: string, hour: number): BoardRow => ({ key: tag, tag, hour, cells: NO_CELLS });
 
-/** A followed `series-state` answer's raw values by tag; a country it holds no value for is missing for its reason. */
 export function followedValues(answer: FollowedAnswer | undefined): LiveValues<bigint> {
   if (!answer) return noValues('Not read yet');
   if (answer.kind === 'notRecorded') return noValues(answer.reason);
@@ -124,7 +113,6 @@ export function followedValues(answer: FollowedAnswer | undefined): LiveValues<b
   };
 }
 
-/** The countries a ranked answer names, greatest first. */
 export function rankedTags(answer: FollowedAnswer | undefined): string[] {
   if (!answer || answer.kind === 'notRecorded') return [];
   const out: string[] = [];
@@ -135,7 +123,6 @@ export function rankedTags(answer: FollowedAnswer | undefined): string[] {
   return out;
 }
 
-/** A partial mark's value: a subtotal wherever it is known and not zero. */
 export const isPartial = (mark: bigint | undefined) => mark !== undefined && mark !== 0n;
 
 export function formatCell(column: Pick<ScoreboardColumn, 'unit' | 'decimals'>, amount: bigint | null, partial = false): string {
@@ -149,7 +136,6 @@ export function scoreboardColumnNote(column: ScoreboardColumn): string | undefin
   return column.note;
 }
 
-/** A row's tooltip: every column's value at its hour, with why a value is missing and which are partial subtotals. */
 export function scoreboardTooltip(cell: (key: ScoreboardColumnKey) => Cell, columns: readonly ScoreboardColumn[], name: string, hour: number): TooltipContent {
   return {
     title: name, subtitle: formatDateTime(hour),

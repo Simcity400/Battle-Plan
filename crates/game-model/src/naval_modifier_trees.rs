@@ -1,41 +1,23 @@
-/// The kind of a source's owner identity (`replay_data::naval_trees::Owner`).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
-    /// A raw country reference: the side's first primary country or a ship's
-    /// task-force roster owner (scope 0).
     Country = 0,
-    /// The static pride_of_the_fleet modifier (scope 1); owner zero.
     Pride = 1,
-    /// A ship handle: its experience modifier (scope 2).
     Experience = 2,
-    /// A ship handle: its medal store (scope 3).
     Medals = 3,
-    /// A task-force handle; sub is the doctrine map key (scope 4).
     Doctrine = 4,
-    /// A task-force handle; sub is the ship class (scope 5).
     Terrain = 5,
-    /// A task-force handle: its location's region weather (scope 6).
     Weather = 6,
-    /// A task-force handle: its location's night modifier (scope 7).
     Night = 7,
-    /// A task-force handle (scope 8).
     TaskForce = 8,
-    /// A leader handle (scope 9 and the side commanders).
     Commander = 9,
-    /// A leader handle; sub is the ship's subunit (scope 10).
     CommanderClass = 10,
-    /// A ship handle; sub is the critical's index (scope 11).
     Critical = 11,
-    /// An HQ influence's character reference, one per support lane
-    /// (scopes 12-15).
     Support0 = 12,
     Support1 = 13,
     Support2 = 14,
     Support3 = 15,
-    /// A combat handle: the combat province's terrain (side source).
     SideTerrain = 16,
-    /// A combat handle: the combat region's weather (side source).
     SideWeather = 17,
 }
 
@@ -69,15 +51,11 @@ impl Kind {
         }
     }
 
-    /// The kinds whose every writer is hooked (`naval_tree_mutations`), so a
-    /// held tree is carried while its receiver's certificate holds.
     pub const fn carried(self) -> bool {
         matches!(self, Self::Country | Self::Commander)
     }
 }
 
-/// The side hover sources, in its visiting order, then the opposing commander
-/// that 0x5A reads in place of the own one.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SideSource {
@@ -106,17 +84,8 @@ impl SideSource {
     }
 }
 
-/// A source's identity: kind, owner and sub-key.
 pub type Owner = (Kind, u64, u32);
 
-/// The recorded identity of one ship modifier source of a ship, from what
-/// NavalCombatShips records of it and of the ship; `None` for a scope that
-/// carries no tree. The accumulators behind each scope are those
-/// [`naval_ship_modifier_inputs::visit_sources`] reads: the task force's
-/// country, the pride static, the ship's experience and medals, the task
-/// force's doctrine entry, location terrain (for the ship's class), region
-/// weather and province night, the task force, the commander and its class
-/// selection, the ship's critical and an HQ influence's support definitions.
 #[allow(
     clippy::too_many_arguments,
     reason = "every recorded identity the join reads is a separate field"
@@ -154,8 +123,6 @@ pub fn ship_owner(
     })
 }
 
-/// The recorded identity of one side source: `None` without a primary
-/// country (the side reaches nothing) or without the commander it reads.
 pub fn side_owner(
     source: SideSource,
     combat: u64,

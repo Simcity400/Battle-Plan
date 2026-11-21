@@ -1,6 +1,3 @@
-//! A headless dump loads the document on the process's main thread, whose stack the
-//! linker fixes (1 MiB on Windows). The loader's debug frames are large, so a debug
-//! build of the dump is the check that loading stays within it.
 
 use std::{path::PathBuf, process::Command};
 
@@ -9,7 +6,6 @@ use std::{path::PathBuf, process::Command};
 fn a_debug_dump_loads_and_renders_on_the_main_thread_stack() {
     let var = |name| std::env::var_os(name).unwrap_or_else(|| panic!("{name} is unset"));
     let out = std::env::temp_dir().join(format!("viewer-dump-stack-{}.png", std::process::id()));
-    // A test built on Boat runs here, where boat.py test names the delivered viewer.
     let viewer = std::env::var_os("CARGO_BIN_EXE_viewer")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_viewer")), PathBuf::from);
     let status = Command::new(viewer)

@@ -1,4 +1,3 @@
-//! Independent off-thread live demand; hints never certify recorded rows.
 
 use super::*;
 use crate::country_scale::{raise, rows};
@@ -108,7 +107,6 @@ impl Capacities {
         let tokens = ccountry_operation_token_manager::count(memory, base, state);
         count!(11, 11, tokens.outcome);
         raise(&mut self.tokens, rows(tokens.required_tokens, 1));
-        // Retain every original nonnull native index.
         count!(
             12,
             12,

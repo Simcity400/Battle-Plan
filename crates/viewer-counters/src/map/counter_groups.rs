@@ -1,42 +1,16 @@
-//! Cross-province map-icon grouping.
-//!
-//! Above the content's camera thresholds, icons join groups at the mean of their
-//! members' world anchors. Their windows become rows in the group's `units_box` grid.
-//! the host counter renderer owns drawing; the decisions here are pure.
-//!
-//! Grouping levels use the province, state and strategic-region distance defines, read against
-//! the camera's height for the game's camera and against each icon's own distance from a free
-//! eye, so a free eye groups distant icons and keeps near ones apart; an icon joins a group only
-//! at the lowest of its own and every member's level, and only if every member still shares the
-//! group's place there.
-//! Level zero retains individual anchors. The source array retains activation order;
-//! the cursor offers a content-defined budget of sources on each frame. Groups evict
-//! ineligible members before merging sources and updating their mean positions.
-//! The first member supplies a group's kind and comparison operands. State and
-//! strategic-region size thresholds determine when geography can merge at each level.
-//! Strategic-region groups use region centres. Visible icons sort by priority and depth.
 
 use std::collections::{BTreeMap, HashMap};
 
 use installed_content_core::defines::Defines;
 use viewer_foundation::map::free_icons::{Place, Track};
 
-/// The grouping defines, `NDefines.NGraphics` of the matching content.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupDefines {
-    /// `MAP_ICONS_GROUP_CAM_DISTANCE`.
     pub province_distance: f32,
-    /// `MAP_ICONS_STATE_GROUP_CAM_DISTANCE`.
     pub state_distance: f32,
-    /// `MAP_ICONS_STRATEGIC_GROUP_CAM_DISTANCE`.
     pub strategic_distance: f32,
-    /// `MAP_ICONS_STATE_HUGE`, an integer define : a state wider or taller than
-    /// this never gathers.
     pub state_huge: f32,
-    /// `MAP_ICONS_STRATEGIC_AREA_HUGE`, an integer define.
     pub strategic_area_huge: f32,
-    /// `MAPICON_GROUP_PASSES`: the game offers this many sources a frame, times 500
-    /// after a level change. At zero or below it offers none, so nothing ever groups.
     pub passes: i32,
 }
 
@@ -58,7 +32,6 @@ impl GroupDefines {
         })
     }
 
-    /// The shipped `00_graphics.lua` values, for tests only.
     #[cfg(any(test, feature = "test-support"))]
     pub const VANILLA: Self = Self {
         province_distance: 90.0,
@@ -69,8 +42,6 @@ impl GroupDefines {
         passes: 20,
     };
 
-    /// Grouping level at the camera height, with a zero source budget retaining
-    /// individual anchors as level zero does.
     pub fn grouping(&self, height: f32) -> Level {
         if self.passes <= 0 {
             Level::None
@@ -79,7 +50,6 @@ impl GroupDefines {
         }
     }
 
-    /// The level the game reports for a camera height.
     pub fn level(&self, height: f32) -> Level {
         if height >= self.strategic_distance {
             Level::Strategic
@@ -93,10 +63,6 @@ impl GroupDefines {
     }
 }
 
-/// How far apart the engine gathers icons at the current camera height.
-///
-/// The names are the game's branches: level 1 gathers a province's
-/// icons, level 2 a state's, level 3 a strategic region's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     None,
@@ -105,48 +71,30 @@ pub enum Level {
     Strategic,
 }
 
-/// One icon offered to the grouping pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Icon {
-    /// The icon's grouping layer and sub-type.
     pub kind: u32,
-    /// The icon's owner country as a canonical slot.
     pub owner: u32,
-    /// The icon's province.
     pub province: u32,
-    /// The province's state, absent for sea and lake provinces.
     pub state: Option<u32>,
-    /// The province's strategic region.
     pub region: Option<u32>,
-    /// The icon's own world anchor before grouping.
     pub anchor: [f32; 3],
-    /// Where the stack stands over the hours this publication covers, when it is moving
-    /// ([`viewer_foundation::map::counter_move::MovementHistory::track`]); none standing still.
     pub track: Option<Track>,
 }
 
-/// The bounding extents the two `HUGE` defines are compared against:
-/// `max(width, height)` of each state's and region's provinces in map units.
 #[derive(Clone, Debug, Default)]
 pub struct Extents {
     states: BTreeMap<u32, f32>,
     regions: BTreeMap<u32, f32>,
-    /// Strategic region centres, for [`Level::Strategic`].
     centres: BTreeMap<u32, [f32; 3]>,
     state_huge: f32,
     strategic_area_huge: f32,
-    /// The map width group means wrap at.
     map_width: f32,
 }
 
-/// A province's bounding box in map units, `[min_x, min_z, max_x, max_z]`.
 pub type Bounds = [f32; 4];
 
 impl Extents {
-    /// Combines per-province bounding boxes into per-state and per-region ones.
-    ///
-    /// A province whose bounds are unknown contributes nothing; a region with
-    /// no known province is not huge, like the engine's null template.
     pub fn build(
         bounds: &BTreeMap<u32, Bounds>,
         state_of: &BTreeMap<u32, u32>,
@@ -192,7 +140,6 @@ impl Extents {
         out
     }
 
-    /// Compare every stored float bit, including the wrap width and unused extents.
     #[cfg(test)]
     pub(crate) fn assert_same_bits(&self, other: &Self) {
         let values = |map: &BTreeMap<u32, f32>| {
@@ -214,31 +161,24 @@ impl Extents {
         );
     }
 
-    /// Whether the state extent exceeds the content's huge-state threshold.
     pub fn state_is_huge(&self, state: u32) -> bool {
         self.states
             .get(&state)
             .is_some_and(|e| *e > self.state_huge)
     }
 
-    /// Whether the region extent exceeds the content's huge-region threshold.
     pub fn region_is_huge(&self, region: u32) -> bool {
         self.regions
             .get(&region)
             .is_some_and(|e| *e > self.strategic_area_huge)
     }
 
-    /// The centre the game puts a level-3 icon on.
     pub fn region_centre(&self, region: u32) -> Option<[f32; 3]> {
         self.centres.get(&region).copied()
     }
 }
 
-/// The geography branches: do the two icons share the place
-/// this level gathers by?
 fn shares_place(first: &Icon, other: &Icon, at: Level, extents: &Extents) -> bool {
-    // Two provinces that both have a state take the strategic branch only at
-    // level 3; two that both have none (sea) take it at every level.
     let strategic = match (first.state, other.state) {
         (Some(_), Some(_)) => at == Level::Strategic,
         (None, None) => true,
@@ -264,10 +204,6 @@ fn shares_place(first: &Icon, other: &Icon, at: Level, extents: &Extents) -> boo
     first.province == other.province
 }
 
-/// May `other` join the group `first` leads?
-///
-/// `friendly(a, b)` gives `b`'s relation toward `a`; it is consulted only when
-/// the owners differ, below [`Level::Strategic`] and after geography accepted.
 pub fn may_group(
     first: &Icon,
     other: &Icon,
@@ -284,31 +220,13 @@ pub fn may_group(
             || friendly(first.owner, other.owner))
 }
 
-/// One icon group: the icons it holds and where it sits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
-    /// Indices into the icon slice, in join order. An icon joins every group
-    /// whose first member accepts it.
     pub members: Vec<usize>,
-    /// The mean of the members' anchors, which is where the group draws.
     pub anchor: [f32; 3],
-    /// Where the mean of the members' anchors stands over the hours this publication covers: the
-    /// mean of the members' own places at each hour, a member standing still contributing its
-    /// anchor. None while no member moves.
     pub track: Option<Track>,
 }
 
-/// Rebuild from source cursor zero on a level change, then update group positions.
-///
-/// `levels` holds each icon's grouping level. Candidates retain creation order and must share a
-/// kind and an eligible place at the icon's level: the same province; a non-huge state at state
-/// level or in a huge region; or a non-huge region at region level or for an icon without a
-/// state. [`may_group`] still decides admission against the group's first member, at the lowest
-/// level of the icon and every member, so every member shares the first's place at the group's
-/// lowest level. A newcomer below that level joins only if every member also passes against the
-/// first at the newcomer's level. For the game's camera, every icon has one level and admission is
-/// the game's. `friendly` comes from the recorded relation cache. Icons all ungrouped return one
-/// group each.
 pub fn group(
     icons: &[Icon],
     levels: &[Level],
@@ -330,7 +248,6 @@ pub fn group(
     let mut by_state: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     let mut by_region: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     let mut candidates: Vec<usize> = Vec::new();
-    // Each group's lowest member level.
     let mut lowest: Vec<Level> = Vec::new();
     for (index, icon) in icons.iter().enumerate() {
         let at = level(index);
@@ -341,8 +258,6 @@ pub fn group(
                 .into_iter()
                 .flatten(),
         );
-        // A shared state or region is the icon's own, so its hugeness decides
-        // whether that branch can accept.
         let huge_region = icon
             .region
             .is_some_and(|region| extents.region_is_huge(region));
@@ -366,7 +281,6 @@ pub fn group(
             let first = &icons[group.members[0]];
             let admit = at.min(lowest[candidate]);
             if may_group(first, icon, admit, extents, &friendly)
-                // Lowering the group's level: its members must share the first's place there too.
                 && (admit == lowest[candidate]
                     || group.members[1..]
                         .iter()
@@ -401,11 +315,7 @@ pub fn group(
     groups
 }
 
-/// Advances the means of existing groups, retaining member and summation order. `levels` holds
-/// each icon's grouping level, as [`group`] takes it.
 pub fn update_anchors(groups: &mut [Group], icons: &[Icon], levels: &[Level], extents: &Extents) {
-    // at level 3 an icon's own position is already its
-    // strategic region's centre, so the mean below is that centre.
     let anchor = |index: usize| -> [f32; 3] {
         let icon = &icons[index];
         if levels.get(index) == Some(&Level::Strategic)
@@ -417,8 +327,6 @@ pub fn update_anchors(groups: &mut [Group], icons: &[Icon], levels: &[Level], ex
         }
         icon.anchor
     };
-    // A member's own track and where it stands. A strategic-level member stands on its region's
-    // centre, which does not move with the hours, so it carries no track there either.
     let moving = |index: usize| -> (Option<Track>, [f32; 3]) {
         let standing = anchor(index);
         let track = icons
@@ -427,17 +335,12 @@ pub fn update_anchors(groups: &mut [Group], icons: &[Icon], levels: &[Level], ex
             .filter(|_| standing == icons[index].anchor);
         (track, standing)
     };
-    // The members in their own order, not the order they joined in: a mean summed in arrival order
-    // is not the same number twice, and a stopped picture's counters then stand a pixel apart
-    // depending on which member arrived first. The buffer is kept across the groups.
     let mut ordered: Vec<usize> = Vec::new();
     for group in groups {
         let count = group.members.len() as f64;
         ordered.clear();
         ordered.extend_from_slice(&group.members);
         ordered.sort_unstable();
-        // Members astride the date line are unwrapped against the lowest-numbered member before
-        // the sum, and the mean is folded back onto the map.
         let reference = ordered.first().map_or(0.0, |first| anchor(*first)[0]);
         let mut sum = [0.0f64; 3];
         for member in &ordered {
@@ -453,18 +356,6 @@ pub fn update_anchors(groups: &mut [Group], icons: &[Icon], levels: &[Level], ex
     }
 }
 
-/// Where the mean of `members`' anchors stood at the two hours one publication brackets: the mean
-/// of their own places at each of those hours, a member that is not moving contributing its anchor
-/// at both, so the mean moves exactly as the members do.
-///
-/// A member whose track stands on other hours than the group's contributes its anchor too: an
-/// hour it has no place for is never guessed at. The places are unwrapped against the same
-/// reference the anchor's mean uses and left unwrapped in the track, which folds an interpolated
-/// place onto the map once, so a group crossing the map's seam travels across it.
-///
-/// `members` are in their own order, and the sums are in double precision, so the mean is the same
-/// number whatever order the members joined in; the two hours come from the lowest-numbered member
-/// that moves, for the same reason.
 fn mean_track(
     members: &[usize],
     moving: &dyn Fn(usize) -> (Option<Track>, [f32; 3]),
@@ -477,8 +368,6 @@ fn mean_track(
     let mut sums = vec![[0.0f64; 3]; hours.len()];
     for member in members {
         let (track, standing) = moving(*member);
-        // A member whose places stand on other hours than the group's contributes where it
-        // stands at every one of them: an hour it has no place for is never filled in.
         let mine = track.filter(|track| track.places().iter().map(|place| place.hour).eq(hours.iter().copied()));
         for (at, sum) in sums.iter_mut().enumerate() {
             let mut place = mine.as_ref().map_or(standing, |track| track.places()[at].at);
@@ -497,7 +386,6 @@ fn mean_track(
     track.moves().then_some(track)
 }
 
-/// Shifts `x` by whole map widths until it is within half a width of `reference`.
 pub fn unwrap_x(width: f32, reference: f32, x: f32) -> f32 {
     if !reference.is_finite() || !x.is_finite() {
         return x;

@@ -146,16 +146,12 @@ fn faction_store_taps_accept_indexed_values_and_immediates_but_refuse_stack_oper
         bytes[..value.len()].copy_from_slice(value);
         instruction_span(&bytes)
     };
-    // Synthetic indexed ADD and MOV of an eight-byte value, and immediate
-    // byte/dword writes. No operand depends on the inserted CALL's stack.
     assert_eq!(span(&[0x4a, 0x01, 0x4c, 0x0a, 0xf0]), Ok(5));
     assert_eq!(span(&[0x4d, 0x89, 0x4c, 0x00, 0xf0]), Ok(5));
     assert_eq!(span(&[0xc7, 0x43, 0x08, 3, 0, 0, 0]), Ok(7));
     assert_eq!(span(&[0x88, 0x88, 0x38, 0x0a, 0, 0]), Ok(6));
     assert!(span(&[0x88, 0x4c, 0x24, 8, 0x90]).is_err());
     assert_eq!(span(&[0xc6, 0x83, 0x38, 0x0a, 0, 0, 1]), Ok(7));
-    // R12 is a stable base; RSP is affected by the CALL. A SIB's absent
-    // index is valid, and a base-less address remains outside this API.
     assert_eq!(span(&[0x49, 0x89, 0x44, 0x24, 0x10]), Ok(5));
     assert!(span(&[0x48, 0x89, 0x44, 0x24, 0x10]).is_err());
     assert!(span(&[0xc7, 0x44, 0x24, 8, 3, 0, 0, 0]).is_err());
@@ -163,8 +159,6 @@ fn faction_store_taps_accept_indexed_values_and_immediates_but_refuse_stack_oper
     assert!(span(&[0x48, 0x89, 0x04, 0x25, 0, 0, 0, 0]).is_err());
     assert!(span(&[0xc7, 0x0b, 3, 0, 0, 0]).is_err());
     assert!(span(&[0xe8, 0, 0, 0, 0]).is_err());
-    // Clamp/store, store/loop and store/immediate spans retain their native
-    // flags and avoid a wider patch over a following branch or RIP load.
     assert_eq!(
         span(&[0x4d, 0x0f, 0x48, 0xc7, 0x4c, 0x89, 0x40, 0x48]),
         Ok(8)
@@ -311,7 +305,6 @@ unsafe extern "system-unwind" fn observer(registers: &Registers, tag: usize) {
     unsafe {
         RtlCaptureContext(&mut context.0);
     }
-    // First leave this real Rust callback, then unwind its generated caller.
     if !unwind(&mut context.0) || !unwind(&mut context.0) {
         failure |= 2;
     } else if context.0.Rip != native_pc
@@ -369,7 +362,6 @@ fn naval_management_adjacent_taps_publish_execute_and_restore_their_owned_spans(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
-    // Two adjacent six-byte stores followed by a known return value.
     let bytes = [
         0x89_u8, 0x91, 0x10, 0, 0, 0, 0x89, 0x91, 0x14, 0, 0, 0, 0xb8, 7, 0, 0, 0, 0xc3, 0x90,
         0x90, 0x90, 0x90,
@@ -411,10 +403,9 @@ impl Drop for NativeTable {
 fn stub(code: &TestCode, aligned: bool) -> (usize, [u8; 16]) {
     let mut bytes = Vec::<u8>::new();
     if aligned {
-        bytes.extend([0x48, 0x8d, 0x64, 0x24, 0xd8]); // LEA keeps the caller's CF.
+        bytes.extend([0x48, 0x8d, 0x64, 0x24, 0xd8]);
     }
     let site = code.0 as usize + bytes.len();
-    // Independently authored store of RCX through R9. Capture CF before arithmetic.
     bytes.extend([0x49, 0x89, 0x89, 0x80, 0, 0, 0, 0x9c, 0x41, 0x5a]);
     bytes.extend([0x4d, 0x89, 0x91, 0x88, 0, 0, 0]);
     bytes.extend([
@@ -530,7 +521,6 @@ fn virtual_unwind_covers_partial_prologue_dynamic_frame_and_every_epilogue_bound
         (copy.Rip, copy.Rsp, nonvolatile(&copy)),
         (return_pc, native_rsp as u64, saved)
     );
-    // Real instruction offsets, independent of the emitted unwind-code array.
     let pushes = [
         (1, 7),
         (2, 6),
@@ -632,8 +622,6 @@ fn refused_publication_or_unregister_retains_registered_executable_storage() {
         }
         drop(tap);
         assert!(lookup(address as usize));
-        // Deliberate invalid-owner drops are confined to synthetic code. Restore
-        // its bytes and remove the retained table before releasing either page.
         unsafe {
             ptr::copy_nonoverlapping(sentinel.as_ptr(), site as *mut u8, 16);
         }
@@ -751,11 +739,10 @@ fn native_epilogue_remains_at_the_call_return_and_moved_tail_target_matches() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
-    // Synthetic push/sub/epilogue/tail target and padding, not game bytes.
     let mut bytes = [0xcc; 80];
     bytes[..5].copy_from_slice(&[0x57, 0x48, 0x83, 0xec, 0x30]);
     bytes[5..11].copy_from_slice(&[0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9]);
-    bytes[11..15].copy_from_slice(&49_i32.to_le_bytes()); // The JMP lands 49 bytes past its own end.
+    bytes[11..15].copy_from_slice(&49_i32.to_le_bytes());
     bytes[64..70].copy_from_slice(&[0xb8, 73, 0, 0, 0, 0xc3]);
     unsafe {
         ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
@@ -809,7 +796,7 @@ fn native_epilogue_remains_at_the_call_return_and_moved_tail_target_matches() {
         (context.Rip, context.Rsp, context.Rdi),
         (0x5678, native_rsp as u64 + 64, 0x1234)
     );
-    assert!(!lookup(site + 10)); // Moved jump has the fully restored native stack.
+    assert!(!lookup(site + 10));
     let function: unsafe extern "system" fn() -> usize = unsafe { std::mem::transmute(code.0) };
     assert_eq!(unsafe { function() }, 73);
     assert!(tap.set_enabled(false).unwrap());
@@ -827,7 +814,6 @@ fn copied_load_and_add_preserve_the_native_result_and_branch_flags() {
     let code = TestCode::new();
     let mut bytes: Vec<u8> = vec![0x53, 0x57, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd7];
     let site = code.0 as usize + bytes.len();
-    // Synthetic load into RDX through RBX, then an add from [RDI], followed by a sign-dependent result.
     bytes.extend([0x48, 0x8b, 0x53, 8, 0x48, 0x03, 0x17]);
     bytes.extend([
         0x49, 0x89, 0x10, 0xb8, 0, 0, 0, 0, 0x0f, 0x98, 0xc0, 0x5f, 0x5b, 0xc3,
@@ -859,7 +845,6 @@ fn copied_clamp_and_store_preserve_native_flags_results_and_continuation() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
-    // Synthetic leaf: zero, test input, clamp negative input, store, return.
     let bytes = [
         0x31, 0xc0, 0x48, 0x85, 0xc9, 0x48, 0x0f, 0x48, 0xc8, 0x48, 0x89, 0x0a, 0x48, 0x89, 0xc8,
         0xc3, 0x90, 0x90, 0x90, 0x90, 0x90,
@@ -1014,8 +999,6 @@ fn adjacent_taps_restore_owned_spans_in_serial_and_shared_publication() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     unsafe extern "system-unwind" fn observe(_: &Registers, _: usize) {}
     let code = TestCode::new();
-    // Independently authored leaf: zero the index, then store the supplied
-    // value in two destination elements, with two untouched padding bytes.
     let mut bytes = [0x90u8; 40];
     bytes[..2].copy_from_slice(&[0x31, 0xc0]);
     bytes[2..7].copy_from_slice(&[0x48, 0x89, 0x54, 0x01, 0x08]);
@@ -1141,14 +1124,12 @@ fn script_writer_copied_lea_register_moves_zero_and_decrement_execute_with_nativ
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for mode in 0..5 {
         let code = TestCode::new();
-        // Preserve the synthetic caller's nonvolatile registers. RCX is an
-        // object pointer; RDX is the result sink.
         let mut bytes: Vec<u8> = vec![
             0x53, 0x56, 0x57, 0x41, 0x56, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd7,
         ];
         if mode == 2 {
             bytes.extend([0x48, 0x89, 0xce]);
-        } // RSI owns the fired set.
+        }
         bytes.push(0xf9);
         let site = code.0 as usize + bytes.len();
         match mode {
@@ -1158,7 +1139,6 @@ fn script_writer_copied_lea_register_moves_zero_and_decrement_execute_with_nativ
             3 => bytes.extend([0xc7, 0x43, 0x28, 0, 0, 0, 0]),
             _ => bytes.extend([0x48, 0x8b, 0xcb, 0xba, 1, 0, 0, 0]),
         }
-        // Snapshot flags before any arithmetic. Return the relocated operand.
         bytes.extend([0x9c, 0x58, 0x48, 0x89, 0x07]);
         match mode {
             0 => bytes.extend([0x48, 0x89, 0xc8]),
@@ -1240,8 +1220,6 @@ fn script_lifecycle_store_and_jump_preserve_execution_flags_and_native_unwind_co
         0x53, 0x56, 0x41, 0x54, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd6, 0x45, 0x33, 0xe4, 0xf9,
     ];
     let site = code.0 as usize + bytes.len();
-    // Independently authored member store followed by a jump over a failing
-    // return value. The observer must resume at the jump's native target.
     bytes.extend([0x44, 0x89, 0x63, 0x28, 0xe9, 5, 0, 0, 0, 0xb8, 13, 0, 0, 0]);
     let target = code.0 as usize + bytes.len();
     bytes.extend([0x8b, 0x43, 0x28, 0x89, 0x06, 0x41, 0x5c, 0x5e, 0x5b, 0xc3]);
@@ -1278,8 +1256,6 @@ fn post_effect_reactivation_bypasses_the_terminal_store_observer() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let code = TestCode::new();
-    // Synthetic effect result in EDX; only a nonzero lifecycle reaches the
-    // terminal store. This exercises the native branch, not a Rust predictor.
     let mut bytes: Vec<u8> = vec![
         0x53, 0x48, 0x89, 0xcb, 0x89, 0x53, 0x1c, 0x83, 0x7b, 0x1c, 0, 0x74, 7,
     ];
@@ -1377,7 +1353,6 @@ fn taken_membership_writer_is_observed_with_empty_and_nonempty_remove_effects() 
     ];
     let site = code.0 as usize + bytes.len();
     bytes.extend([0x48, 0x8b, 0x56, 8, 0x48, 0x83, 0xc2, 8]);
-    // The effect-list gate follows the membership writer, not its observer.
     bytes.extend([
         0x45, 0x85, 0xc0, 0x74, 2, 0x90, 0x90, 0x8b, 0x46, 0x4c, 0x5f, 0x5e, 0x5b, 0xc3,
     ]);
@@ -1439,8 +1414,6 @@ fn duration_add_operands_survive_the_tap_and_reach_the_selected_scalar_writer() 
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for cooldown in [false, true] {
         let code = TestCode::new();
-        // Independently authored leaf fixture: selected object and addend,
-        // then the production operand forms, then an unconditional scalar add.
         let mut bytes: Vec<u8> = if cooldown {
             vec![0x53, 0x48, 0x8b, 0xda, 0x48, 0x8b, 0xc1, 0xf9]
         } else {

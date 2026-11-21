@@ -1,9 +1,3 @@
-//! Current politics, complete native party roster and active idea identities.
-//!
-//! Each party's popularity and naming operands (tag, name and long-name keys,
-//! default-name flag) share one read; `cpolitical_party` owns their meaning.
-//! Synthetic fixtures cover renamed/default parties, a non-boolean flag and
-//! truncation; live capture is unverified.
 
 use crate::{
     Memory, ccharacter, ccountry, ccountry_leader, cidea, cideology_group, cpdx_array::Array,
@@ -11,45 +5,26 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Political-status primary vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_cb08);
-/// Owning-country pointer authenticated by backlink.
 pub const COUNTRY: usize = 0xc8;
-/// Political power, signed i64/100000, accumulated and clamped as a full qword.
 pub const POLITICAL_POWER: usize = 0xe0;
 
-/// Party-pointer array.
 pub const PARTIES: usize = 0x20;
-/// Live party count, signed i32.
 pub const PARTY_COUNT: usize = 0x2c;
-/// Active idea-pointer array.
 pub const IDEAS: usize = 0x50;
-/// Idea-array count, u32.
 pub const IDEA_COUNT: usize = 0x5c;
-/// Stored daily entry list; each signed counter is decremented and then
-/// swap-removed when expired.
 pub const TIMED_IDEAS: usize = 0x68;
 pub const TIMED_IDEA_STRIDE: usize = 0x18;
-/// Timed-idea primary vtable for roster entries.
 pub const TIMED_IDEA_VTABLE_RVA: Rva = Rva(0x029c_cab8);
-/// Last-election raw hour, i32, written by the election and daily update paths.
 pub const LAST_ELECTION: usize = 0xa0;
-/// Cached date needed only when an initializer last date is ambiguous.
 pub const NEXT_ELECTION_CACHE: usize = 0xb8;
-/// Clearing uses the calendar's preceding-year initializer.
 pub const RESET_LAST_ELECTION: i32 = 43_800_000 - 365 * 24;
 pub fn needs_election_cache(last: i32) -> bool {
     matches!(last, crate::cgame_date::NULL_RAW_HOUR | RESET_LAST_ELECTION)
 }
-/// Ruling-party pointer resolved from serialized party IDs.
 pub const RULING_PARTY: usize = 0xd0;
-/// Political status's signed election frequency in months; politics assignment
-/// writes it, and construction and clearing store 48.
 pub const ELECTION_FREQUENCY: usize = 0xe8;
-/// Political status's elections byte; politics assignment writes it,
-/// construction stores 1 and clearing stores 0.
 pub const ELECTIONS_ALLOWED: usize = 0xec;
-/// The ruling party pointer through the elections byte: one guarded copy.
 const RULING_SPAN: usize = ELECTIONS_ALLOWED + 1 - RULING_PARTY;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -58,18 +33,13 @@ pub struct Row {
     pub election_interval: i32,
     pub next_election_cache: Option<i32>,
     pub capital: i32,
-    /// Alternate-capital raw reference preferred unless zero.
     pub original_capital: i32,
-    /// None is the engine's null pointer, not a failed ruling-party read.
     pub ruling_party: Option<u32>,
-    /// What `has_elections` tests: the elections byte is nonzero and the
-    /// frequency is positive as a signed dword.
     pub has_elections: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IdeaRow {
-    /// Native roster position; the literal token is the definition's identity.
     pub ordinal: u32,
     pub token_start: usize,
     pub token_len: usize,
@@ -81,7 +51,6 @@ pub struct TimedIdeaRow {
     pub ordinal: u32,
     pub token_start: usize,
     pub token_len: usize,
-    /// Stored remaining days, separate from an expiry date.
     pub days: i32,
 }
 
@@ -108,8 +77,6 @@ impl TokenWalk {
     }
 }
 
-/// One authenticated country's party array, before any party is read: the
-/// country, its political status and the array's data pointer and count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parties {
     pub country: u32,
@@ -118,23 +85,14 @@ pub struct Parties {
     pub count: u32,
 }
 
-/// A caller's held PartyLeaders rows per country
-/// ([`Reader::party_leaders_carried`]).
 pub trait LeaderCarry {
-    /// Registers an authenticated party array before any party is read: a
-    /// plan token and, when its held rows may be carried, their count.
     fn plan(&mut self, parties: &Parties) -> (usize, Option<usize>);
-    /// Writes a carryable plan's held rows.
     fn carry(&mut self, token: usize, rows: &mut [cpolitical_party::LeaderRow]);
-    /// One party of a pool read afresh, before its leader vector is read.
     fn party(&mut self, token: usize, party: usize);
-    /// One leader's character, before its identity and role map are read.
     fn character(&mut self, token: usize, character: usize);
-    /// A country read afresh and whole.
     fn read(&mut self, token: usize, rows: &[cpolitical_party::LeaderRow]);
 }
 
-/// No held rows: every country is read.
 pub struct Fresh;
 impl LeaderCarry for Fresh {
     fn plan(&mut self, _: &Parties) -> (usize, Option<usize>) {
@@ -146,31 +104,17 @@ impl LeaderCarry for Fresh {
     fn read(&mut self, _: usize, _: &[cpolitical_party::LeaderRow]) {}
 }
 
-/// A caller's held PoliticalParties rows per country
-/// ([`Reader::parties_carried`]). A carried row's popularity and ruling flag
-/// are read afresh; its other fields come from the held read.
 pub trait PartyCarry {
-    /// Whether to plan at all; `false` reads every party as before.
     fn active(&self) -> bool {
         true
     }
-    /// Registers an authenticated party array before any party is read: a
-    /// plan token and, when its held rows may be carried, their row count and
-    /// text bytes.
     fn plan(&mut self, parties: &Parties) -> (usize, Option<(usize, usize)>);
-    /// Whether the held party pointers at `first..` equal `chunk`.
     fn same_parties(&mut self, token: usize, first: usize, chunk: &[usize]) -> bool;
-    /// Writes a carryable plan's held rows, whose text starts index `text`,
-    /// and their text.
     fn carry(&mut self, token: usize, rows: &mut [cpolitical_party::Row], text: &mut [u8]);
-    /// One party read afresh, before its fields are read.
     fn party(&mut self, token: usize, party: usize);
-    /// A country read afresh: its outcome and, when complete, its rows,
-    /// whose text starts index `text`.
     fn read(&mut self, token: usize, outcome: Outcome, rows: &[cpolitical_party::Row], text: &[u8]);
 }
 
-/// No held rows: every party is read.
 pub struct FreshParties;
 impl PartyCarry for FreshParties {
     fn active(&self) -> bool {
@@ -187,7 +131,6 @@ impl PartyCarry for FreshParties {
     fn read(&mut self, _: usize, _: Outcome, _: &[cpolitical_party::Row], _: &[u8]) {}
 }
 
-/// One authenticated country's active-idea array, before any idea is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ideas {
     pub country: u32,
@@ -196,31 +139,17 @@ pub struct Ideas {
     pub count: u32,
 }
 
-/// A caller's held ActiveIdeas rows per country ([`Reader::ideas_carried`]).
-/// A row is the slot's `CIdea` definition token, which the idea database
-/// fixes for the session, so an unchanged slot list has unchanged rows.
 pub trait IdeaCarry {
-    /// Whether to plan at all; `false` reads every idea as before.
     fn active(&self) -> bool {
         true
     }
-    /// Registers an authenticated idea array before any idea is read: a plan
-    /// token and, when its held rows may be carried, their row count and
-    /// text bytes.
     fn plan(&mut self, ideas: &Ideas) -> (usize, Option<(usize, usize)>);
-    /// Whether the held slot pointers at `first..` equal `chunk`.
     fn same_ideas(&mut self, token: usize, first: usize, chunk: &[usize]) -> bool;
-    /// Writes a carryable plan's held rows, whose text starts index `text`,
-    /// and their text.
     fn carry(&mut self, token: usize, rows: &mut [IdeaRow], text: &mut [u8]);
-    /// One slot read afresh: its stored pointer, before the idea is read.
     fn idea(&mut self, token: usize, slot: usize);
-    /// A country read afresh: its outcome and, when complete, its rows,
-    /// whose text starts index `text`.
     fn read(&mut self, token: usize, outcome: Outcome, rows: &[IdeaRow], text: &[u8]);
 }
 
-/// No held rows: every idea is read.
 pub struct FreshIdeas;
 impl IdeaCarry for FreshIdeas {
     fn active(&self) -> bool {
@@ -237,12 +166,8 @@ impl IdeaCarry for FreshIdeas {
     fn read(&mut self, _: usize, _: Outcome, _: &[IdeaRow], _: &[u8]) {}
 }
 
-/// Pointers read per guarded copy when a carry compares a pointer array.
 const POINTER_CHUNK: usize = 32;
 
-/// Calls `visit` with each run of up to [`POINTER_CHUNK`] pointers of
-/// `count` at `data`, until it returns `false`; `None` when a run is
-/// unreadable.
 fn visit_pointers(
     memory: &impl Memory,
     data: usize,
@@ -269,8 +194,6 @@ fn visit_pointers(
     Some(true)
 }
 
-/// Authenticates the country/status ownership once for this callback. Individual
-/// scalar, party and idea reads retain independent failures and capacities.
 pub struct Reader<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -326,7 +249,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.row_with_election_cache(true)
     }
 
-    /// Production enables the exceptional cache only under its structure certificate.
     pub fn row_with_election_cache(&self, capture_cache: bool) -> Result<Row, &'static str> {
         let last_election =
             read::<i32>(self.memory, self.at(LAST_ELECTION)?).ok_or("last election unreadable")?;
@@ -334,8 +256,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             .country
             .checked_add(ccountry::CAPITAL)
             .ok_or("current capital unreadable")?;
-        // The election fields share the ruling pointer's copy: they lie in
-        // the same constructed object, so they add no read and no failure.
         let (capitals, ruling) = read_pair::<8, RULING_SPAN>(
             self.memory,
             capital_address,
@@ -380,8 +300,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
-    /// Worker-only continuation from this capture's original party header and
-    /// each acquired string length. The preceding countries' rows stay owned.
     pub fn parties(
         &self,
         output: &mut Vec<cpolitical_party::Row>,
@@ -399,11 +317,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
-    /// [`Self::parties`] with `carry` supplying the rows of a party
-    /// array whose held read it proves current: the array header, the ruling
-    /// party, every party pointer and each party's popularity are still
-    /// read, and a carried party's identity, ideology token, tag, names and
-    /// default flag are not.
     pub fn parties_carried(
         &self,
         country: u32,
@@ -448,7 +361,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             {
                 let rows = &mut output[row_start..row_start + rows];
                 carry.carry(token, rows, &mut tokens[byte_start..byte_start + bytes]);
-                // Popularity moves daily and the ruling party any hour.
                 let mut found_ruling = ruling == 0;
                 let mut ordinal = 0;
                 let fresh = visit_pointers(self.memory, data, count, |_, chunk| {
@@ -492,7 +404,6 @@ impl<'a, M: Memory> Reader<'a, M> {
                     .ok_or("ideology token overflow")?;
                 let literal = literal(self.memory, token)?;
                 let token_len = literal.len;
-                // Tag, both name keys and the default flag are adjacent: one read.
                 let names = pointer
                     .checked_add(cpolitical_party::TAG)
                     .and_then(|p| read::<[u8; NAMES_SPAN]>(self.memory, p))
@@ -592,12 +503,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         result.unwrap_or_else(TokenWalk::unavailable)
     }
 
-    /// Every party's country leaders (PartyLeaders): the party array and each
-    /// leader vector retain source order. Authenticate each leader vtable. A null
-    /// parent character supplies `None`, matching the serialized invalid reference;
-    /// a present parent must authenticate as a character. Once a row does not fit,
-    /// count later leaders from vector headers only. Empty output reports the
-    /// country's total as `unread_rows`.
     pub fn party_leaders(
         &self,
         country: u32,
@@ -614,10 +519,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.party_leaders_carried(country, output, &mut Fresh)
     }
 
-    /// [`Self::party_leaders_buffer`] with `carry` supplying the rows of a
-    /// party array whose held read it proves current: the array header is
-    /// still read, and a carried country's parties, leaders and characters
-    /// are not.
     pub fn party_leaders_carried(
         &self,
         country: u32,
@@ -720,8 +621,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
     }
 
-    /// Captures exact active CIdea definition tokens. Laws, spirits and advisor
-    /// roles are later joins with verified content, not inferred memory fields.
     pub fn ideas(&self, output: &mut Vec<IdeaRow>, tokens: &mut Vec<u8>) -> TokenWalk {
         self.ideas_buffer(
             crate::walk::Buffer::Growing(output),
@@ -737,10 +636,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.ideas_carried(0, output, tokens, &mut FreshIdeas)
     }
 
-    /// [`Self::ideas_buffer`] with `carry` supplying the rows of an idea
-    /// array whose held read it proves current: the array header and every
-    /// slot pointer are still read, and a carried idea's vtables and token
-    /// are not.
     pub fn ideas_carried(
         &self,
         country: u32,
@@ -917,7 +812,6 @@ pub fn count_timed_ideas(memory: &impl Memory, base: usize, state: usize) -> Tok
     walk_timed_ideas_buffer(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
 }
 
-/// Exact token lengths are counted even when caller storage is short.
 pub fn walk_timed_ideas(
     memory: &impl Memory,
     base: usize,
@@ -1000,9 +894,6 @@ pub fn timed_idea_demand(
     }
 }
 
-/// Exact ordered fields with no value-dependent branch between them. If the
-/// later address overflows, retain the preceding scalar observation and its
-/// first-fault error instead of rejecting the whole pair before that read.
 #[inline(always)]
 fn read_pair<const A: usize, const B: usize>(
     memory: &impl Memory,
@@ -1038,13 +929,8 @@ fn finish(len: usize, unread_rows: u32, bytes_len: usize, required_bytes: usize)
     }
 }
 
-/// A party's tag through its default-name flag, inclusive.
 const NAMES_SPAN: usize = cpolitical_party::NAME_DEFAULT + 1 - cpolitical_party::TAG;
 
-/// Every country's party leader total, from the party and leader vector
-/// headers (`Reader::party_leaders` with no row storage), for sizing. A
-/// country whose political status does not authenticate adds nothing: the
-/// hourly walk reports it.
 pub fn party_leader_demand(
     memory: &impl Memory,
     base: usize,
@@ -1069,12 +955,9 @@ pub fn party_leader_demand(
 }
 
 fn literal(memory: &impl Memory, address: usize) -> Result<msvc_string::Descriptor, &'static str> {
-    // Inline tokens and their terminators are already in the guarded header.
-    // Heap payloads retain their separate, capacity-gated acquisition.
     msvc_string::Descriptor::read(memory, address).map_err(literal_error)
 }
 
-/// [`literal`] over a header already copied from `address`.
 fn literal_from_header(
     memory: &impl Memory,
     address: usize,

@@ -1,8 +1,6 @@
 use super::*;
 use engine_allocation::{SharedBox, owned_vec, reserve, vec};
 
-/// One refresh of raw character payload. Trait occurrences reference owned,
-/// verified definitions; all other observations retain the raw replay order.
 #[derive(Debug, Default)]
 pub(crate) struct CharactersJob {
     pub(super) leader_rows: usize,
@@ -14,9 +12,6 @@ pub(crate) struct CharactersJob {
     pub active: [bool; N],
     pub(super) traits: TraitCapture,
     pub(super) advisor_demand: AdvisorDemand,
-    // Authenticated roles whose appended fields are copied after every old
-    // field. Worker growth follows the authenticated roles; callback storage
-    // records shortage for idle growth.
     pub(super) appended_roles: Vec<AppendedRole>,
     pub(super) appended_required: usize,
     pub(super) appended_overflowed: bool,
@@ -26,58 +21,34 @@ pub(crate) struct CharactersJob {
     pub(super) census_current: bool,
     pub(super) census_matches_plan: bool,
     pub(super) source_bindings: Option<CharacterSourceBindings>,
-    // Advisor-only jobs authenticate both headers once, then acquire the two
-    // rosters sequentially with independent fresh-read programs. The child has
-    // no child of its own; neither root authentication nor values are cached.
     pub(super) advisor_roots: crate::raw::RawLog<N>,
     pub(super) advisor_dynamic: Option<Box<CharactersJob>>,
     pub(super) advisor_cache: Option<advisors::Cache>,
     pub(super) advisor_section_complete: bool,
-    /// The leader role job's held rows ([`leaders::LeaderCache`]); its
-    /// payload came from them when `leader_cached`.
     pub(super) leader_cache: Option<leaders::LeaderCache>,
     pub(super) leader_cached: bool,
     pub(super) leader_charge: crate::raw_memory::Charge,
-    /// Characters rows the roster job carries ([`carry::Carry`]).
     pub(super) carry: carry::Carry,
     pub(super) carry_charge: crate::raw_memory::Charge,
-    /// The roster job's held roster token and quiet hours ([`quiet`]).
     pub(super) roster: quiet::QuietRoster,
-    /// The Characters rows of this job's latest quiet decode.
     pub(super) published: quiet::Published,
-    /// UnitLeaders rows held between quiet roster hours.
     pub(super) unit_carry: leader_carry::UnitCarry,
     pub(super) experience: daily_experience::Store,
     pub(super) daily_training: Option<bool>,
-    /// UnitLeaderTraits rows held between the traits job's captures.
     pub(super) trait_carry: leader_carry::TraitCarry,
-    /// The role census kept between gathers.
     pub(super) census_carry: census::CensusCarry,
     pub(super) census_charge: crate::raw_memory::Charge,
-    // The roster job gathers the role census on role hours. It persists
-    // like the portrait census; the flag admits only this pass's gather.
     pub(super) role_census: Option<SharedBox<census::RoleCensus>>,
     pub(super) role_census_current: bool,
-    /// Historical roster length of the retained portrait census, or of the
-    /// loaned census this payload was acquired from.
     pub(super) census_historical: usize,
-    /// The generation of the census a role job's capture borrowed; zero for
-    /// none.
     pub(super) census_generation: u64,
-    /// A role payload acquired from a loaned census, the occurrences its
-    /// decode visits, and the demand recorded when that storage ran out.
     pub(super) census_capture: bool,
     pub(super) census_visited: Vec<census::Occurrence>,
     pub(super) census_required: usize,
-    /// Template identities this job's earlier decodes read. It survives
-    /// `clear`: the copy consults it, the decode rebuilds it.
     pub(super) templates: TemplateCache,
     pub(super) template_charge: crate::raw_memory::Charge,
 }
 
-/// Auxiliary bindings whose selecting character/unit bytes are controls in the
-/// raw read program. Only addresses and capacity demand survive a refresh;
-/// trait vectors and definitions are acquired on every refresh.
 #[derive(Debug)]
 pub(super) struct CharacterSourceBindings {
     pub(super) sources: Vec<TraitVectorCopy>,
@@ -135,11 +106,6 @@ impl CharacterSourceBindings {
     }
 }
 
-/// Successful shared skill definitions, retained only for this acquisition.
-/// Experience changes select skill definitions from the category/level
-/// database and can change the leader's selection.
-/// Collisions simply acquire again. Every use still appends its scoped raw
-/// observations so unrelated aliases and their faults keep separate cursors.
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct SkillCopy {
     pub(super) pointer: usize,
@@ -163,7 +129,6 @@ impl Memory for SkillCopy {
         addresses: [usize; M],
         outputs: &mut [&mut [u8]; M],
     ) -> usize {
-        // Owned bytes need no native-address prefetch.
         self.copy_scattered(addresses, outputs)
     }
 }
@@ -196,9 +161,6 @@ pub(super) enum AppendedRole {
 }
 
 impl CharactersJob {
-    /// Whether recycling keeps the job: a worker job's own storage, or a
-    /// leader role job's held rows, carried from the census without a raw log;
-    /// dropping it would start every later hour cold.
     pub(crate) fn has_storage(&self) -> bool {
         self.source_bindings.is_some()
             || self.advisor_cache.is_some()
@@ -206,8 +168,6 @@ impl CharactersJob {
             || self.log.spans.capacity() != 0
     }
 
-    /// A pool miss's empty job, allocation-free: its part's caches that
-    /// need no storage until a worker fills them.
     pub(crate) fn vacant(part: usize) -> Self {
         let mut job = Self {
             part,
@@ -246,8 +206,6 @@ impl CharactersJob {
             })
             .flatten();
         let role_census = (part == 0).then(|| census::RoleCensus::new(census::initial_len()));
-        // A pass visits at most every roster occurrence. Attach/cadence hints
-        // seed the list; original acquired occurrences grow worker storage.
         let census_visited = owned_vec(vec(if part == 0 { 0 } else { census::initial_len() }));
         let mut census_charge = crate::raw_memory::Charge::default();
         census_charge.set(crate::raw_memory::Capacity {
@@ -260,8 +218,6 @@ impl CharactersJob {
                 + crate::raw_memory::vector_bytes(&census_visited),
             ..Default::default()
         });
-        // Live role counts seed the suffix queue with raw-span headroom.
-        // Worker acquisition reserves new occurrences before appending.
         let appended_roles = owned_vec(vec(demand::initial_roles(part).max(spans / 8)));
         let mut appended_charge = crate::raw_memory::Charge::default();
         appended_charge.set(crate::raw_memory::Capacity {
@@ -372,7 +328,6 @@ impl CharactersJob {
             .flatten()
     }
 
-    /// This pass's role census; role jobs return the loan at their join.
     pub(crate) fn role_census(&self) -> Option<SharedBox<census::RoleCensus>> {
         self.role_census_current
             .then(|| self.role_census.clone())
@@ -420,8 +375,6 @@ impl CharactersJob {
             || self.appended_required > self.appended_roles.capacity()
     }
 
-    /// Visits the next role pass may need: its recorded demand, and every
-    /// occurrence of the live census (`live`).
     pub(super) fn visits_required(&self, live: usize) -> usize {
         if self.part == 0 {
             return 0;
@@ -445,9 +398,6 @@ impl CharactersJob {
     }
 
     fn grow_hints(&mut self) {
-        // Every portrait lease returns before recycle. The grown census was
-        // incomplete, so retire any prepared program: the next pass must
-        // rediscover the roster to publish it.
         if let Some(census) = self.portrait_census.as_mut().and_then(SharedBox::get_mut)
             && census.needs_growth()
         {
@@ -456,7 +406,6 @@ impl CharactersJob {
             }
             self.log.invalidate_read_plan();
         }
-        // Role loans also return before recycle.
         if let Some(census) = self.role_census.as_mut().and_then(SharedBox::get_mut) {
             census.grow();
         }
@@ -475,8 +424,6 @@ impl CharactersJob {
             return;
         }
         if appended_grew {
-            // A prefix-only program from a short queue has no requests for
-            // the omitted fields. Rediscover them after idle growth.
             self.log.invalidate_read_plan();
         }
         self.appended_charge.set(crate::raw_memory::Capacity {
@@ -548,27 +495,19 @@ impl CharactersJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct CharactersCopyReport {
-    /// False when the existing field prefix exceeded staging. A short
-    /// appended suffix keeps the prefix payload and refuses only that field.
     pub raw_ok: bool,
-    /// A stopped prepared pass may not fall back to another native capture.
     pub plan_failed: bool,
     pub copy_ticks: [u64; N],
 }
 
-/// Acquisition parameters, bundled to keep the refresh entry small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CharactersCopyContext {
     pub base: usize,
     pub game_state: usize,
-    /// A full hour reads every character template again.
     pub force_full: bool,
     pub active: [bool; N],
 }
 
-/// Per-batch failure flags mirroring `Batch::active`: once a typed batch
-/// fails, its later appends are skipped without reads, and so are the
-/// mirror's later sub-copies.
 #[derive(Debug, Default)]
 pub(super) struct Dead {
     pub(super) characters: bool,
@@ -578,14 +517,10 @@ pub(super) struct Dead {
     pub(super) traits: bool,
 }
 
-/// Successful view fields remain in the current capture's append-only raw
-/// arena. Each roster occurrence owns its offsets; aliases never share them.
 #[derive(Clone, Copy)]
 pub(super) struct ViewCopy {
     pub(super) starts: [u32; 8],
     pub(super) unit_id: Option<u32>,
-    /// The roster job carries this character's Characters row: its
-    /// name-token span, names and gender were not copied.
     pub(super) carried: bool,
 }
 
@@ -600,8 +535,6 @@ impl Default for ViewCopy {
 }
 
 impl ViewCopy {
-    /// Failed and inactive spans retain the old zero-field semantics. Borrow
-    /// only while parsing; later raw appends may move the arena's allocation.
     #[inline]
     pub(super) fn field<'a>(&self, job: &'a CharactersJob, index: usize) -> &'a [u8] {
         static ZERO: [u8; 64] = [0; 64];
@@ -616,9 +549,6 @@ impl ViewCopy {
     }
 }
 
-/// Mirror of `View::read`'s scatter plus single-resume sequence with no
-/// decoding. Returns `None` only when the identity span fails, which aborts
-/// the whole copy exactly like the typed cursor error.
 #[cfg(test)]
 pub(super) fn copy_view(
     job: &mut CharactersJob,
@@ -629,8 +559,6 @@ pub(super) fn copy_view(
     copy_view_carrying(job, memory, base, pointer, false)
 }
 
-/// The Characters-only spans a carried character omits: the name-token span
-/// (which holds the template pointer), both name headers and the gender.
 const CARRIED_SPANS: [usize; 3] = [2, 3, 7];
 
 pub(super) fn copy_view_carrying(
@@ -667,16 +595,12 @@ pub(super) fn copy_view_carrying(
     for index in 0..completed {
         let (start, len) = (starts[index], lengths[index]);
         if len != 0 {
-            // RawLog admits start + len <= u32::MAX; a successful nonempty
-            // field's start therefore cannot equal the absent marker.
             view.starts[index] = start as u32;
         }
     }
     if completed == 0 {
         return None;
     }
-    // Resume only later independent fields, each at most once; the failed
-    // field is never retried.
     for index in completed + 1..VIEW_OFFSETS.len() {
         if lengths[index] == 0 {
             continue;
@@ -687,8 +611,6 @@ pub(super) fn copy_view_carrying(
             view.starts[index] = start as u32;
         }
     }
-    // Local vtable and reference-type authentication, checked after the
-    // scatter exactly like the typed view.
     let expected = engine_sites::at(base, ccharacter::VTABLE_RVA)? as u64;
     let identity = view.field(job, 0);
     if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected
@@ -703,17 +625,12 @@ pub(super) fn copy_view_carrying(
     Some(view)
 }
 
-/// Parsed native string header shared by both string domains: payload length,
-/// payload source address and inline flag. `None` means the typed walk fails
-/// the enclosing row with its own header reason from the same header bytes.
 pub(super) struct Lit {
     pub(super) len: usize,
     pub(super) source: usize,
     pub(super) inline: bool,
 }
 
-/// Hint only the first line of a potential upcoming read. The guard is
-/// advisory: rejecting a hint never changes the later guarded read or error.
 #[inline]
 pub(super) fn hint_character_target(
     address: usize,
@@ -728,9 +645,6 @@ pub(super) fn hint_character_target(
     }
 }
 
-/// These pointers come only from the fresh, authenticated character view.
-/// Targets remain unauthenticated until their original reads below. Empty
-/// maps still read their sentinel; failed view fields contain only zeros.
 #[inline]
 pub(super) fn hint_character_targets(
     job: &CharactersJob,
@@ -739,9 +653,6 @@ pub(super) fn hint_character_targets(
     mut hint: impl FnMut(usize, usize),
 ) {
     if !dead.characters {
-        // The page's views are staged before its bodies. Hint heap names now,
-        // so their independent cache misses overlap the remaining view reads.
-        // Inline sources need no hint; their header address is immaterial here.
         let headers = view.field(job, 3);
         if let (Some(name), Some(token)) = (
             parse_character_literal(&headers[..32], 0),
@@ -771,9 +682,6 @@ pub(super) fn hint_character_targets(
     {
         hint_character_target(unit, 16, &mut hint);
         if !dead.units {
-            // These fixed base fields are independent of the leader subclass.
-            // Skill, XP and category occupy one small span. Do not follow
-            // the skill pointer before its ordinary validation.
             for (offset, len) in [
                 (cunit_leader::NAME, 32),
                 (cunit_leader::SKILL, 32),
@@ -788,9 +696,6 @@ pub(super) fn hint_character_targets(
     }
 }
 
-/// Called only after both local string parses succeeded. Inline bytes are
-/// already owned. Heap strings need their terminator even when empty; hint
-/// a separate payload-first line only when it differs from the terminator.
 #[inline]
 pub(super) fn hint_character_literal(literal: &Lit, mut hint: impl FnMut(usize, usize)) {
     if literal.inline {
@@ -812,7 +717,6 @@ pub(super) fn hint_character_literal(literal: &Lit, mut hint: impl FnMut(usize, 
     }
 }
 
-/// Mirror of `ccharacter::Literal::from_header` (character name and token).
 pub(super) fn parse_character_literal(header: &[u8], header_addr: usize) -> Option<Lit> {
     let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
     let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
@@ -838,9 +742,6 @@ pub(super) fn parse_character_literal(header: &[u8], header_addr: usize) -> Opti
     })
 }
 
-/// Mirror of `cunit_leader`'s string header validation: heap strings read
-/// their terminator (and payload when nonempty) from live memory, inline
-/// strings are served from the already-copied header.
 pub(super) fn copy_unit_literal(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -869,8 +770,6 @@ pub(super) fn copy_unit_literal(
     copy_heap_literal_bytes(job, memory, source, len, mask).then_some(len)
 }
 
-/// Heap payload and terminator spans for one parsed character-domain string.
-/// Inline strings need no live reads beyond the copied header.
 pub(super) fn copy_character_literal_bytes(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -883,8 +782,6 @@ pub(super) fn copy_character_literal_bytes(
     copy_heap_literal_bytes(job, memory, literal.source, literal.len, mask)
 }
 
-/// The original terminator-then-payload observations share one guard. Tight
-/// staging uses the original scalar prefix so capacity cannot hide a fault.
 pub(super) fn copy_heap_literal_bytes(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -921,9 +818,6 @@ pub(super) fn copy_heap_literal_bytes(
     true
 }
 
-/// Traversal state mirroring `msvc_tree_node::Cursor`'s read set: the mirror
-/// issues the identical sentinel, link and node reads in the identical
-/// successor order, parsing link values locally to choose branches.
 pub(super) struct TreeWalk {
     pub(super) head: usize,
     pub(super) next: usize,
@@ -931,24 +825,18 @@ pub(super) struct TreeWalk {
     pub(super) count: u32,
 }
 
-/// Abort the whole copy (`false`) or kill only this map's batch (`true`).
 pub(super) enum TreeFate {
     Abort,
     Dead,
 }
 
-/// How a map's sentinel observation is acquired.
 #[derive(Clone, Copy)]
 pub(super) enum Sentinel<'a> {
-    /// Read it now.
     Read,
-    /// A batch already gathered it; `None` is that read's failure.
     Gathered(Option<&'a [u8]>),
-    /// It lies inside the character view, which fails it without a read.
     Owned,
 }
 
-/// Mirror of `RoleTree::read`: sentinel plus size/coherence parses.
 pub(super) fn tree_read(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -979,7 +867,6 @@ pub(super) fn tree_read(
     })
 }
 
-/// `RoleTree::read`'s checks on an acquired sentinel; returns the first node.
 pub(super) fn tree_sentinel(head: usize, count: u32, sentinel: &[u8]) -> Option<usize> {
     if sentinel[msvc_tree_node::NIL] != 1 {
         return None;
@@ -1022,8 +909,6 @@ pub(super) fn tree_link(
     .ok_or(TreeFate::Dead)
 }
 
-/// Mirror of `RoleTree::next`: the identical bounded successor sequence,
-/// returning native node addresses with no decoding.
 pub(super) fn tree_next(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1104,9 +989,6 @@ pub(super) fn tree_next(
     Ok(Some(current))
 }
 
-/// One mirrored span read: `None` kills the enclosing batch. The caller maps
-/// `None` to a whole-copy abort when the job overflowed, matching the staged
-/// fallback rule.
 pub(super) fn take_or_kill(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1124,9 +1006,6 @@ pub(super) fn take_or_kill(
     }
 }
 
-/// Fixed scalar sequences with either prefix failure or independent-field
-/// continuation. Tight storage and absent checked addresses use the scalar
-/// path before any reads, preserving its exact retained prefix and growth.
 #[inline]
 pub(super) fn take_fixed_fields<const M: usize, const CONTINUE: bool>(
     job: &mut CharactersJob,
@@ -1170,8 +1049,6 @@ pub(super) fn take_fixed_fields<const M: usize, const CONTINUE: bool>(
     if completed != M {
         *dead = true;
         if CONTINUE {
-            // The failed field is already recorded. Resume only later
-            // independent fields, without retrying the failed observation.
             for index in completed + 1..M {
                 starts[index] =
                     take_or_kill(job, memory, addresses[index], lengths[index], mask, dead);
@@ -1189,9 +1066,6 @@ pub(super) fn pool_u32(job: &CharactersJob, start: usize) -> u32 {
     u32::from_le_bytes(job.log.bytes[start..start + 4].try_into().unwrap())
 }
 
-/// Mirror of `ccharacter::walk_entry`'s string reads: header parses are local
-/// (the headers ride in the view span), heap payloads and terminators are
-/// copied by length. Any failure kills only the characters batch.
 pub(super) fn copy_character_text(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1213,8 +1087,6 @@ pub(super) fn copy_character_text(
     };
     job.character_demand.add(1, name.len);
     job.character_demand.add(0, token.len);
-    // The staged view already hinted both heap strings before this page's
-    // bodies began. Repeating those hints here adds no useful read lead.
     if !copy_character_literal_bytes(job, memory, &name, MASK_CHARACTERS)
         || !copy_character_literal_bytes(job, memory, &token, MASK_CHARACTERS)
     {
@@ -1222,11 +1094,6 @@ pub(super) fn copy_character_text(
     }
 }
 
-/// Mirror of `ccharacter::walk_entry`'s template reads after both names: the
-/// pointer rides in the view's name token span; a pointer this job already
-/// holds an identity for reads nothing, exactly as the decode then supplies
-/// it. Otherwise the header and generated byte in one scatter, then the file's
-/// heap terminator and bytes. Any failure kills only the characters batch.
 pub(super) fn copy_character_template(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1294,9 +1161,6 @@ pub(super) fn copy_character_template(
     }
 }
 
-/// Mirror of `ccountry_leader::walk_entry`'s read set: the role-map traversal
-/// plus one ideology/role-header pair per node. Order, duplicate and auth
-/// checks are local parses; any failure kills only the leaders batch.
 pub(super) fn copy_leaders(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1327,7 +1191,6 @@ pub(super) fn copy_leaders(
             return true;
         }
     };
-    // Retain the full ordered leader map.
     let Some(required) = job.leader_rows.checked_add(walk.count as usize) else {
         dead.leaders = true;
         return true;
@@ -1378,8 +1241,6 @@ pub(super) fn copy_leaders(
     true
 }
 
-/// Exact advisor field prefix. Address overflow keeps the scalar mirror's
-/// earlier observations; the normal path uses one guard for the same spans.
 pub(super) fn take_advisor_fields<const M: usize>(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1415,9 +1276,6 @@ pub(super) fn take_advisor_fields<const M: usize>(
     }
 }
 
-/// Mirror of `cadvisor::walk_prefix_entry`'s read set: the role-map traversal plus
-/// node, role and key/idea/slot string spans per node. Hash order and auth
-/// checks are local parses; any failure kills only the advisors batch.
 pub(super) fn copy_advisors(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1449,9 +1307,6 @@ pub(super) fn copy_advisors(
     };
     let mut previous_hash = None;
     loop {
-        // Include the failing attempt so a short destination cannot hide its
-        // recorded successor/body failure. Do not allocate from an unvisited
-        // tree tail merely because its header advertises a large count.
         if walk.remaining != 0 {
             match job.advisor_demand.rows.checked_add(1) {
                 Some(rows) => job.advisor_demand.rows = rows,
@@ -1536,9 +1391,6 @@ pub(super) fn copy_advisors(
         for literal in [&key, &idea, &slot] {
             let first_span = job.log.spans.len();
             if !copy_character_literal_bytes(job, memory, literal, MASK_ADVISORS) {
-                // The first heap read is its terminator. These failures occur
-                // before the typed walk checks output capacity, so no byte
-                // allocation is needed to retain their original failure.
                 let terminator = literal.source.checked_add(literal.len);
                 validation_failed = terminator.is_none()
                     || job.log.spans.get(first_span).is_some_and(|span| {
@@ -1604,8 +1456,6 @@ pub(super) fn copy_advisors(
     true
 }
 
-/// Authenticate a unit leader header locally, mirroring `cunit_leader`'s
-/// identity read. Returns the kind and leader id for the copy below.
 pub(super) fn parse_unit_identity(
     job: &CharactersJob,
     base: usize,
@@ -1634,10 +1484,6 @@ pub(super) fn parse_unit_identity(
     Some((kind, pool_u32(job, start + cunit_leader::ID)))
 }
 
-/// Mirror of `read_unit_selected` plus `cunit_leader::read`/`read_text`: identity,
-/// state, skill, kind components and both text strings. The identity-fallback
-/// spans are always recorded so the trait replay finds them when the scalar
-/// read fails. Any failure kills only the units batch.
 pub(super) fn copy_unit(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1648,22 +1494,12 @@ pub(super) fn copy_unit(
     dead: &mut Dead,
 ) -> bool {
     let Some(unit) = unit else {
-        // Null role pointers are handled by the caller: no rows, no reads.
         return true;
     };
     if dead.units && dead.traits {
-        // The typed walk `continue`s without reads once both batches are
-        // dead, and so does the mirror.
         return true;
     }
-    // The replay calls the identity fallback while its traits batch is still
-    // alive at this character, which is exactly the entry state here: later
-    // kills in this function happen after the replay's call point, so they
-    // must not close this gate.
     let need_fallback = !dead.traits;
-    // Scalar and trait identities are independent native observations. The
-    // trait acquisition authenticates its own identity even after a scalar
-    // failure, provided the fallback can still resolve the parent handle.
     let source_mask = job.source_mask();
     let identity = take_or_kill(
         job,
@@ -1680,8 +1516,6 @@ pub(super) fn copy_unit(
     }
     let kind = parsed.map(|(kind, _)| kind);
     if !dead.units {
-        // State scatter in `cunit_leader::read` order: character backlink,
-        // category, skill pointer, exile country and residual experience.
         let state = take_fixed_fields::<4, false>(
             job,
             memory,
@@ -1699,8 +1533,6 @@ pub(super) fn copy_unit(
         if !job.log.overflowed
             && let [Some(backlink), Some(_category), Some(skill), Some(_exile)] = state
         {
-            // These are independent registries: a leader's id is not the
-            // id of the character whose role points to it.
             let character_id = character_id(job);
             if pool_u32(job, backlink) != ccharacter::REFERENCE_TYPE
                 || pool_u32(job, backlink + 4) != character_id
@@ -1799,10 +1631,6 @@ pub(super) fn copy_unit(
             });
         }
     }
-    // Identity-fallback spans for the trait replay. Recorded whenever the
-    // replay could still call the fallback (entry gate above); a live
-    // failure here kills only traits, exactly like the typed fallback
-    // error, and never the units outcome.
     if need_fallback {
         let mut fallback_dead = false;
         let [first, second] = take_fixed_fields::<2, false>(
@@ -1831,8 +1659,6 @@ pub(super) fn copy_unit(
     true
 }
 
-/// Mirror of the skill block in `cunit_leader::read`. Kills only the units
-/// batch; the vtable predicate is a local parse.
 pub(super) fn copy_unit_skill(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1871,7 +1697,6 @@ pub(super) fn copy_unit_skill(
                     MASK_UNITS,
                     &mut dead.units,
                 );
-                // These raw occurrences are owned copies, not native reads.
                 job.log.raw_bytes[3] = native_bytes;
                 starts
             } else {
@@ -1884,9 +1709,6 @@ pub(super) fn copy_unit_skill(
                     &mut dead.units,
                 )
             };
-            // The typed walk authenticates the vtable from the first span
-            // and the remaining fields from the later spans; a completed
-            // zero prefix still fails here with the vtable reason.
             if let Some(vtable) = vtable
                 && pool_u64(job, vtable) != skill_expected
             {
@@ -1909,7 +1731,6 @@ pub(super) fn copy_unit_skill(
     }
 }
 
-/// Mirror of the kind-component scatter in `cunit_leader::read`.
 pub(super) fn copy_unit_components(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -1942,8 +1763,6 @@ pub(super) fn copy_unit_components(
             &mut dead.units,
         );
     }
-    // Then `cunit_leader::read`'s owner and visibility scatter, with the
-    // army leader's captured byte.
     let at = |offset| unit.checked_add(offset);
     let owner = [
         at(cunit_leader::OWNER),
@@ -1965,8 +1784,6 @@ pub(super) fn copy_unit_components(
     }
 }
 
-/// Mirror of `cunit_leader::read_text`: both string headers plus heap
-/// payloads and terminators by header length.
 pub(super) fn copy_unit_text(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2001,18 +1818,12 @@ pub(super) fn copy_unit_text(
     }
 }
 
-/// Records independent appended-reader spans and their first failed read.
-/// An unavailable suffix does not kill the role's existing field batch.
 struct AppendedCopy<'a, M> {
     job: std::cell::RefCell<&'a mut CharactersJob>,
     memory: &'a M,
     mask: u32,
 }
 
-/// Appended reads cannot consume staging needed by a later existing row.
-/// A short suffix leaves the completed prefix admitted; the raw log retains
-/// its actual overflow and growth demand, and missing owned reads refuse only
-/// the corresponding appended field during decode.
 pub(super) fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory, base: usize) {
     if job.overflowed() || job.log.planned_capture_failed() {
         return;
@@ -2075,8 +1886,6 @@ impl<M: Memory> Memory for AppendedCopy<'_, M> {
 
 fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize, unit: usize) {
     use engine_native::cname_group_member as naming;
-    // Appended naming faults are replayed as a local refusal by read_unit;
-    // they do not kill the existing unit fields or the other leader rows.
     let member = unit
         .checked_add(coperative_leader::CODENAME)
         .and_then(|member| job.log.take(memory, member, naming::INPUT_SPAN, MASK_UNITS));
@@ -2158,8 +1967,6 @@ fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize
     }
 }
 
-/// Retain ordered occurrences and share successful current-pass definitions.
-/// Any native failure kills only this table; staging exhaustion aborts the job.
 pub(super) fn copy_trait_vector(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2177,10 +1984,6 @@ pub(super) fn copy_trait_vector(
     !job.traits.overflowed()
 }
 
-/// Mirror of one staged `walk_family` entry's body read set across every
-/// batch. Returns `false` only to abort the whole copy (pool overflow or a
-/// census-level fault); batch kills are recorded in `dead` and the loop
-/// continues exactly like the typed walk.
 pub(super) fn copy_character_body(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2198,8 +2001,6 @@ pub(super) fn copy_character_body(
             .unwrap(),
     );
     if view.carried && job.carry.carried_row(pointer, id).is_none() {
-        // A carried pointer names another character: read its omitted
-        // spans now and rediscover the program without it.
         job.carry.uncarry(pointer);
         job.log.invalidate_read_plan();
         view.carried = false;
@@ -2219,7 +2020,6 @@ pub(super) fn copy_character_body(
         }
     }
     if view.carried {
-        // Decode supplies the held row; its text joins this pass's demand.
         job.character_demand
             .add(1, job.carry.carried_bytes(pointer));
     } else {
@@ -2259,8 +2059,6 @@ pub(super) fn copy_character_body(
     ) {
         return false;
     }
-    // The trait vector shares the unit leader pointer resolved view-locally
-    // above; a null role skips it silently like the typed walk.
     match view_unit(job, view) {
         Some(unit) => copy_trait_vectors(job, memory, base, unit, view.unit_id.unwrap_or(id), dead),
         None => true,
@@ -2273,7 +2071,6 @@ pub(super) fn view_unit(job: &CharactersJob, view: &ViewCopy) -> Option<usize> {
         .filter(|&unit| unit != 0)
 }
 
-/// The assigned trait vector of one unit leader, as the typed walk reads it.
 pub(super) fn copy_trait_vectors(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2291,9 +2088,6 @@ pub(super) fn copy_trait_vectors(
     )
 }
 
-/// Mirror of the roster census plus the cursor's 32-entry page loop. Page and
-/// pointer parses are local; any census failure stops the copy and the replay
-/// fails identically from the same recorded spans.
 pub(super) fn copy_pass(
     memory: &impl Memory,
     context: CharactersCopyContext,
@@ -2311,8 +2105,6 @@ pub(super) fn copy_pass(
     job.census_current = false;
     job.role_census_current = false;
     job.advisor_section_complete = false;
-    // Each table owner retains its own raw program. Parts beyond the core
-    // also preserve capacity demand and freshly reacquire bound trait sources.
     let hourly = roster_part(context.active);
     let bound = !hourly && job.source_bindings.is_some();
     if bound && !job.source_bindings.as_ref().unwrap().ready {
@@ -2322,16 +2114,11 @@ pub(super) fn copy_pass(
         job.templates
             .begin(context.base, context.game_state, context.force_full);
     }
-    // A quiet roster attempt ([`quiet`]) already certified this hour's carry.
     if job.part == 0 && section.is_none() && !std::mem::take(&mut job.roster.carry_begun) {
-        // Characters rows of certified characters are carried, not read.
         job.carry.begin_hour(
             context.active[0] && !context.force_full && cfg!(feature = "character_changes"),
         );
     }
-    // Which templates and names the program reads depends on the identities
-    // this job already holds and the characters it carries, so their
-    // generations key it.
     let key = section.map_or(
         [
             context.base,
@@ -2349,8 +2136,6 @@ pub(super) fn copy_pass(
             ]
         },
     );
-    // Daily XP may be served from held bytes. Such a pass must not replay a
-    // native-only program that would reread the residual column.
     if context.active[3] && !context.active[5]
         || !(hourly || bound)
         || !job.log.begin_planned_capture(memory, key)
@@ -2363,8 +2148,6 @@ pub(super) fn copy_pass(
         if bound {
             job.source_bindings.as_mut().unwrap().begin();
         }
-        // The root returns every portrait lease before this job can be recycled.
-        // A retained lease disables sharing; never allocate or wait here.
         let mut owned = job.portrait_census.take();
         let census = owned.as_mut().and_then(SharedBox::get_mut);
         copy_roster(
@@ -2391,10 +2174,6 @@ pub(super) fn copy_pass(
             plan.advisor = job.advisor_demand;
             plan.advisor_section_complete = job.advisor_section_complete;
         }
-        // Partial diagnostic passes do not rebuild the retained raw program.
-        // They may preserve its census only when every occurrence stayed identical.
-        // Otherwise retire that program before an A -> B -> A roster change
-        // could certify B's identities using A's successful prepared reads.
         job.census_matches_plan = job.census_current
             && (hourly
                 || bound
@@ -2409,7 +2188,6 @@ pub(super) fn copy_pass(
             let plan = job.source_bindings.as_ref().unwrap();
             job.advisor_demand = plan.advisor;
             job.advisor_section_complete = plan.advisor_section_complete;
-            // A failed vector kills the table; later sources are not read.
             for &source in &plan.sources {
                 if job.traits.acquire(memory, context.base, source).is_err()
                     || job.traits.overflowed()
@@ -2418,8 +2196,6 @@ pub(super) fn copy_pass(
                 }
             }
         }
-        // The prepared program freshly checked both roster pointer pages and
-        // every identity header. It also freshly copied every country field.
         job.census_current = job.census_matches_plan
             && job
                 .portrait_census
@@ -2458,7 +2234,6 @@ pub(super) fn copy_roster(
         };
         arrays
     };
-    // Demand the whole native roster even if staging stops this pass early.
     if let Some(census) = census.as_mut() {
         census.expect(arrays[0].count as usize + arrays[1].count as usize);
         if census.grow().map_err(crate::allocation::io).is_err() {
@@ -2527,9 +2302,6 @@ pub(super) fn copy_roster_entries(
             else {
                 return;
             };
-            // Look ahead only within the already-copied roster page. These
-            // hints cover the same seven view fields; the loop below still
-            // performs every actual read and failure check in native order.
             for bytes in job.log.bytes[page_start..page_start + chunk as usize * 8].chunks_exact(8)
             {
                 let Some(pointer) = usize::try_from(u64::from_le_bytes(bytes.try_into().unwrap()))
@@ -2566,12 +2338,9 @@ pub(super) fn copy_roster_entries(
                 };
                 let carried = job.carry.carries(pointer);
                 if job.carry.active {
-                    // Registration precedes every read it certifies.
                     job.carry.visit(pointer, carried);
                 }
                 let Some(view) = copy_view_carrying(job, memory, base, pointer, carried) else {
-                    // A fatal later slot is observed now, but its predecessors'
-                    // bodies must run before the corresponding typed error.
                     terminal = true;
                     break;
                 };
@@ -2630,17 +2399,12 @@ pub(super) fn copy_roster_entries(
     }
 }
 
-/// Role jobs that take their roster from a loaned census: country-leader
-/// roles alone, or unit-leader traits alone.
 pub(super) fn census_part(active: [bool; N]) -> bool {
     let leaders = active[1] && !active[4];
     let traits = !active[1] && active[4];
     !active[0] && !active[2] && !active[3] && (leaders || traits)
 }
 
-/// On role hours the roster job gathers the role fields of its complete,
-/// freshly certified census in one guarded call. Its reads are the roster
-/// job's; a retained loan disables sharing without waiting or allocating.
 pub(super) fn gather_role_census(
     memory: &impl Memory,
     ctx: CharactersCopyContext,
@@ -2672,9 +2436,6 @@ pub(super) fn gather_role_census(
     }
 }
 
-/// A role job's acquisition from the loaned census: the independent walk's
-/// reads and failure order from each occurrence's map header or unit pointer
-/// on, without the roster, pointer pages or character views.
 pub(super) fn copy_census(
     memory: &impl Memory,
     context: CharactersCopyContext,
@@ -2707,7 +2468,6 @@ pub(super) fn copy_census(
         units: true,
         traits: !context.active[4],
     };
-    // Trait-source bindings belong to the independent walk's prepared program.
     let bindings = job.source_bindings.take();
     if context.active[1] {
         copy_census_leaders(job, memory, context.base, census, &mut dead);
@@ -2719,8 +2479,6 @@ pub(super) fn copy_census(
     job.traits.finish();
 }
 
-/// Retain one occurrence for decode. Exhausted storage records the demand of
-/// every remaining occurrence that could need one and stops the acquisition.
 pub(super) fn visit_census(
     job: &mut CharactersJob,
     census: census::Admitted<'_>,
@@ -2738,10 +2496,6 @@ pub(super) fn visit_census(
     true
 }
 
-/// Leader-map sentinels are gathered in batches ahead of their maps. An empty
-/// map whose sentinel passes produces no row and no decode read, so neither
-/// its occurrence nor its sentinel is retained; every other occurrence records
-/// exactly the independent walk's observations.
 pub(super) fn copy_census_leaders(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2758,8 +2512,6 @@ pub(super) fn copy_census_leaders(
     let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
     let mut next = 0;
     while next < census.len() && !dead.leaders {
-        // A header that fails before its sentinel read, or whose sentinel
-        // lies inside the character view, ends the batch.
         let mut staged = 0;
         while staged < SENTINEL_BATCH && next + staged < census.len() {
             let occurrence = census.occurrence(next + staged);
@@ -2818,7 +2570,6 @@ pub(super) fn copy_census_leaders(
     }
 }
 
-/// Unit leaders in roster order, from each occurrence's unit pointer on.
 pub(super) fn copy_census_units(
     job: &mut CharactersJob,
     memory: &impl Memory,
@@ -2826,7 +2577,6 @@ pub(super) fn copy_census_units(
     census: census::Admitted<'_>,
     dead: &mut Dead,
 ) {
-    /// Occurrences ahead whose leader lines are hinted.
     const LOOKAHEAD: usize = 16;
     let unit = |occurrence: census::Occurrence| {
         usize::try_from(u64::from_le_bytes(occurrence.unit()))
@@ -2834,8 +2584,6 @@ pub(super) fn copy_census_units(
             .filter(|&unit| unit != 0)
     };
     let needs = |occurrence: census::Occurrence| unit(occurrence).is_some();
-    // The traits job carries the leaders no forwarded writer touched
-    // ([`leader_carry`]); the roster job has none to carry here.
     job.trait_carry.begin_hour();
     if !dead.traits && dead.units {
         job.trait_carry
@@ -2864,7 +2612,6 @@ pub(super) fn copy_census_units(
             return;
         }
         if job.trait_carry.carries(pointer) {
-            // Decode publishes the held rows.
             continue;
         }
         let id = occurrence.id();
@@ -2877,9 +2624,6 @@ pub(super) fn copy_census_units(
     }
 }
 
-/// Both roots are observed before either body, preserving the shared census
-/// failure boundary. Only their current, validated array geometry enters the
-/// two programs; a changed dynamic header cannot retire the historical plan.
 pub(super) fn copy_advisor_sections(
     memory: &impl Memory,
     ctx: CharactersCopyContext,

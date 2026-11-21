@@ -76,7 +76,6 @@ fn land_projection_keeps_frame_bytes_without_cloning_unchanged_contributors() {
                 assert_eq!(update.rows().len(), 1);
             }
             if !force && hour == 4 {
-                // A removed division is one deleted key, not a converted census.
                 let TableInput::SliceUpdate { update, .. } = &actual else {
                     panic!("a removed division must not convert the census");
                 };

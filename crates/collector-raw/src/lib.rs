@@ -1,4 +1,3 @@
-//! Ordered owned raw-copy spans, typed decoding over those bytes, occurrence-aware lookup and prepared copy plans. Captured reads preserve exact addresses, order, duplicates, faults and table ownership. No deferred reader follows live pointers.
 
 use collector_memory::terminal as allocation;
 use collector_primitives::raw_memory;

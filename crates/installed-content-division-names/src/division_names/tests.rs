@@ -1,7 +1,6 @@
 use super::*;
 
 impl Database {
-    /// [`Database::apply`] as a result: its notes, or its refusal.
     fn applied(&mut self, bytes: &[u8]) -> io::Result<Vec<String>> {
         match self.apply(bytes, &KeyNames::default()) {
             (notes, None) => Ok(notes.into_iter().map(|(_, message)| message).collect()),
@@ -10,9 +9,6 @@ impl Database {
     }
 }
 
-/// Group, ordered-list, string-list and quoted-string reads stop at the
-/// end of the text, however deep. This records no error: the file loop
-/// reads keys to the end token and every nested loop stops there.
 #[test]
 fn name_readers_close_every_block_open_at_eof() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -46,7 +42,6 @@ fn name_readers_close_every_block_open_at_eof() {
             Some(expected)
         );
     }
-    // An empty value before `}`: the ordered loop reads nothing.
     let mut names = Database::default();
     names.applied(b"SECOND = { ordered = }").unwrap();
     assert_eq!(
@@ -284,8 +279,6 @@ fn prefix_finalization_runs_on_each_declaration_and_preserves_absent_prefix() {
     );
 }
 
-/// Group names fold ASCII case: a later spelling overrides the same
-/// group, and a recorded key in any case finds it.
 #[test]
 fn group_names_compare_without_case() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -306,8 +299,6 @@ fn group_names_compare_without_case() {
     }
 }
 
-/// Field keys are folded as the lexer folds them, so a later layer's
-/// upper-case field overrides a lower-case group's.
 #[test]
 fn field_keys_compare_without_case() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -323,7 +314,6 @@ fn field_keys_compare_without_case() {
     assert_eq!(database.resolve("G", 2, true).ok().as_deref(), Some("Two"));
 }
 
-/// Every field keyword folds ASCII case.
 #[test]
 fn every_field_keyword_compares_without_case() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -347,8 +337,6 @@ fn every_field_keyword_compares_without_case() {
     }
 }
 
-/// A quoted key is not a keyword and reaches the unknown-field branch,
-/// which reports it and skips its block.
 #[test]
 fn a_quoted_field_key_is_no_keyword() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -374,10 +362,6 @@ fn a_quoted_field_key_is_no_keyword() {
     assert_eq!(names.resolve("H", 1, true).ok().as_deref(), Some("H 1"));
 }
 
-/// Read an ordered index from the signed decimal prefix of its key.
-/// Below 1, leave the ordered loop with the list unread. The loop's
-/// closing read consumes the list's first token, and the group reads
-/// what follows as its own fields.
 #[test]
 fn ordered_indices_take_the_decimal_prefix() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -404,8 +388,6 @@ fn ordered_indices_take_the_decimal_prefix() {
     );
     assert!(notes[1].ends_with("consumes \"Negative\""), "{notes:?}");
     assert_eq!(names.resolve("G", 2, true).ok().as_deref(), Some("Two"));
-    // The entry's `}` ended the group: entry 4 and the fallback were
-    // read as groups of their own.
     assert_eq!(names.resolve("G", 4, true), Err(Unresolved::NoFallback));
     assert!(names.groups.contains_key(b"4".as_slice()));
     assert!(
@@ -417,8 +399,6 @@ fn ordered_indices_take_the_decimal_prefix() {
     );
 }
 
-/// Readers stop at the end of the file as at `}`, including when that
-/// end falls inside a comment.
 #[test]
 fn a_file_ending_inside_a_comment_keeps_its_entries() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -434,9 +414,6 @@ fn a_file_ending_inside_a_comment_keeps_its_entries() {
     }
 }
 
-/// One reader handles a file: definitions hold to its end. Bare
-/// references take their values; quoted references, names not yet defined
-/// and other spellings remain their own text.
 #[test]
 fn variables_hold_to_the_end_of_their_file_and_quoted_text_stays_literal() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -480,14 +457,10 @@ fn variables_hold_to_the_end_of_their_file_and_quoted_text_stays_literal() {
             "{group} {order}"
         );
     }
-    // The next file's reader starts with no variables.
     names.applied(br#"NEXT = { fallback_name = @n }"#).unwrap();
     assert_eq!(names.resolve("NEXT", 1, true).ok().as_deref(), Some("@n"));
 }
 
-/// Fields used only for group selection share the file's reader.
-/// Definitions in `can_use` triggers register in document order, while
-/// string lists and skipped `type` blocks define nothing.
 #[test]
 fn unread_group_fields_define_as_their_readers_do() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -501,7 +474,6 @@ fn unread_group_fields_define_as_their_readers_do() {
         )
         .unwrap();
     for (group, expected) in [
-        // Read before its definition, the reference keeps its text.
         ("G", "@n"),
         ("H", "Guard 1"),
         ("I", "@l"),
@@ -515,10 +487,6 @@ fn unread_group_fields_define_as_their_readers_do() {
     }
 }
 
-/// `can_use` reads a conjunction. A key without an operator uses the
-/// stale value slot: `OR {` reads that block as a body, while `always yes`
-/// uses the stale `{` without consuming more. Unknown key dispatch leaves
-/// the remainder of the file unsettled.
 #[test]
 fn a_can_use_key_without_an_operator_follows_the_stale_value() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -548,10 +516,6 @@ fn a_can_use_key_without_an_operator_follows_the_stale_value() {
     assert_eq!(names.resolve("I", 0, false), Err(Unresolved::GroupRefused));
 }
 
-/// A repeated definition reads nothing more: its `=` becomes the next
-/// key, consumes the value as its operator and is rejected as a group
-/// field. The first value holds. A chained variable definition takes its
-/// value without consuming it, so the token becomes a repeated definition.
 #[test]
 fn repeated_and_chained_definitions_follow_the_reader() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -600,9 +564,6 @@ fn repeated_and_chained_definitions_follow_the_reader() {
     }
 }
 
-/// A keyed unordered entry `x = { "A" "B" }` is named "A". An anonymous
-/// `{ "A" "B" }` consumes "A" as its reported key operator and is named
-/// "B"; `{ "A" }` adds no entry.
 #[test]
 fn unordered_entries_are_read_as_the_game_reads_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -625,12 +586,9 @@ fn unordered_entries_are_read_as_the_game_reads_them() {
         );
     }
     assert_eq!(names.resolve("G", 3, false), Err(Unresolved::NoFallback));
-    // The strict reader treats the reported token as an error.
     assert!(parse(source, &KeyNames::default()).is_err());
 }
 
-/// Unknown fields are reported and their blocks skipped; the group
-/// continues reading either way.
 #[test]
 fn unknown_group_fields_are_rejected_as_the_game_rejects_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -651,7 +609,6 @@ fn unknown_group_fields_are_rejected_as_the_game_rejects_them() {
         .unwrap();
     assert!(notes[0].starts_with("group H: field extra is not a division-name field"));
     assert_eq!(names.resolve("H", 1, true).ok().as_deref(), Some("F 1"));
-    // Supported fields cause no refusal, in any ASCII case.
     assert!(
         parse(
             br#"G = { NAME = "x" type = army can_use = { always = yes } division_types = { "a" }
@@ -662,8 +619,6 @@ fn unknown_group_fields_are_rejected_as_the_game_rejects_them() {
     );
 }
 
-/// String fields containing a line feed store the unreadable-string
-/// placeholder instead of their authored text.
 #[test]
 fn a_name_holding_a_line_feed_is_unreadable() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -679,11 +634,6 @@ fn a_name_holding_a_line_feed_is_unreadable() {
     );
 }
 
-/// A block the port cannot settle (under a trigger key the content's
-/// names cannot tell) leaves the rest of the file unknown. Every group the replay read is applied; the group being read
-/// and every name a token from the unsettled block on could declare are
-/// refused, earlier layers' groups of those names included, and stay
-/// refused through later files. Other groups keep their values.
 #[test]
 fn an_unsettled_file_refuses_every_group_its_rest_could_declare() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -714,8 +664,6 @@ fn an_unsettled_file_refuses_every_group_its_rest_could_declare() {
         ),
         "{refusal}"
     );
-    // The first declaration applied (prefix pass included) before the
-    // group that cannot be followed.
     assert_eq!(
         names.groups[b"ship".as_slice()].1.unordered,
         [b"HMS HMS Gallant".to_vec(), b"HMS Garland".to_vec()]
@@ -724,7 +672,6 @@ fn an_unsettled_file_refuses_every_group_its_rest_could_declare() {
         names.resolve("Ship", 0, false),
         Err(Unresolved::GroupRefused)
     );
-    // The rest names OTHER, so its earlier values may be stale.
     assert_eq!(
         names.resolve("OTHER", 0, false),
         Err(Unresolved::GroupRefused)
@@ -746,10 +693,6 @@ fn an_unsettled_file_refuses_every_group_its_rest_could_declare() {
     }
 }
 
-/// Reads that consume text out of step with its braces retain that
-/// consumption and report each place: a definition ending its block, a
-/// taken name, definitions without `=` or with block values, `@(` ending
-/// at `(`, blocks used as single values and values used as lists.
 #[test]
 fn out_of_step_forms_are_read_as_the_game_reads_them() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -810,9 +753,6 @@ fn out_of_step_forms_are_read_as_the_game_reads_them() {
     }
 }
 
-/// Quoted keys are not keywords; bare keys fold. Variables hold from
-/// their definition through the file's end. Blocks used as single text
-/// values become the group's fields, and end-of-text closes every loop.
 #[test]
 fn the_replay_classes_hold_for_name_groups() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -838,8 +778,6 @@ fn the_replay_classes_hold_for_name_groups() {
             .iter()
             .any(|note| note.contains("quoted field unique"))
     );
-    // `prefix` reads `{`; the block's fallback is the group's own, and
-    // its `}` ends the group, so `unique` is a group at the top level.
     assert_eq!(
         names.groups[b"block".as_slice()].1.prefix.as_deref(),
         Some(b"{".as_slice())
@@ -865,11 +803,6 @@ fn the_replay_classes_hold_for_name_groups() {
     assert_eq!(names.resolve("OPEN", 1, true).ok().as_deref(), Some("Open"));
 }
 
-/// Lookup searches army, ship and code-name tables, skipping railway
-/// guns. A railway-gun group and later army group of the same name are
-/// separate, leaving army ordinals unchanged. A redeclaration re-reads
-/// the first table without moving the group; ship and code-name groups
-/// remain outside the army table used by divisions.
 #[test]
 fn group_identity_follows_the_typed_tables() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -898,7 +831,6 @@ fn group_identity_follows_the_typed_tables() {
     ] {
         assert_eq!(names.resolve(group, order, false), expected, "{group}");
     }
-    // Across layers too: a later layer's army group is its own.
     names.applied(br#"R = { unique = { "Army R" } }"#).unwrap();
     assert_eq!(names.resolve("R", 0, false).as_deref(), Ok("Army R"));
     assert!(
@@ -908,8 +840,6 @@ fn group_identity_follows_the_typed_tables() {
     );
 }
 
-/// Quoted type values, numbers and blocks report an invalid name type
-/// and leave the group's existing type unchanged.
 #[test]
 fn an_unexpected_type_keeps_the_type_the_group_had() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -934,9 +864,6 @@ fn an_unexpected_type_keeps_the_type_the_group_had() {
     for (group, expected) in [("Q", "Quoted"), ("N", "Number"), ("B", "Block")] {
         assert_eq!(names.resolve(group, 0, false).as_deref(), Ok(expected));
     }
-    // When text ends with `type = ship`, advancing the last bare token
-    // fails. Its retained `ship` text has the end-token kind rather than a
-    // keyword kind, so the group stays army.
     let mut names = Database::default();
     let notes = names
         .applied(b"E = { unique = { \"End\" } type = ship")
@@ -956,7 +883,6 @@ fn an_unexpected_type_keeps_the_type_the_group_had() {
     );
 }
 
-/// Group keys and stored names both end at their first NUL.
 #[test]
 fn names_and_group_keys_end_at_their_first_nul() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -969,8 +895,6 @@ fn names_and_group_keys_end_at_their_first_nul() {
     assert_eq!(names.resolve("g", 0, false).as_deref(), Ok("Ab"));
 }
 
-/// Names are stored bytes: refuse only a lookup selecting non-UTF-8
-/// text, leaving other entries usable. The lexer ends text at byte 0xFF.
 #[test]
 fn a_name_that_is_not_utf8_refuses_only_the_lookups_that_select_it() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -986,7 +910,6 @@ fn a_name_that_is_not_utf8_refuses_only_the_lookups_that_select_it() {
         ("G", 2, true, Err(Unresolved::NotText)),
         ("G", 3, true, Ok("F 3".to_owned())),
         ("P", 0, false, Err(Unresolved::NotText)),
-        // The prefix never reaches the fallback.
         ("P", 1, false, Ok("Plain 2".to_owned())),
     ] {
         assert_eq!(
@@ -997,8 +920,6 @@ fn a_name_that_is_not_utf8_refuses_only_the_lookups_that_select_it() {
     }
 }
 
-/// The capture records an empty key for a null group; a group declared
-/// with an empty name makes that key ambiguous.
 #[test]
 fn an_empty_key_is_a_null_group_unless_one_is_declared_empty() {
     engine_executable::executable_tables::initialize_for_tests()

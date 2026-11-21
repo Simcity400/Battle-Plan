@@ -189,7 +189,6 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
         memory: world.memory(),
         address: state_list + 8,
     };
-    // The count probe reads claimed-state headers, never the state member pointers.
     assert_eq!(
         walk_buffer(
             &memory,

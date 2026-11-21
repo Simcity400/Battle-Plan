@@ -1,8 +1,3 @@
-//! `research-breakdown`: one technology's reads over the assignments it moved through, asked when
-//! its time breakdown is opened: for each assignment, the slot's state at each of the holder's
-//! research reads from its first observed hour through the hour asked (held until the next read,
-//! equal reads one state) and its progress at each read. Read from the recorded research tables'
-//! histories over that span alone, at the cost of their changes in it.
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
@@ -26,8 +21,6 @@ use ts_rs::TS;
 
 pub struct ResearchBreakdown;
 
-/// One assignment of the technology: its slot, first observed hour, the last hour asked and
-/// whether its start was witnessed (the read before saw the slot hold something else).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,7 +48,7 @@ pub struct ResearchBreakdownSlot {
     pub first_observed_hour: i32,
     pub states: Vec<ResearchSlotState>,
     pub progress: Vec<ResearchProgress>,
-    /// Why no read of it is known, when none is.
+    #[doc = " Why no read of it is known, when none is."]
     pub missing: Option<String>,
 }
 
@@ -110,7 +103,6 @@ impl Product for ResearchBreakdown {
     }
 }
 
-/// The rows of a history at `hour`: each key's cells as its last step at or before it shows them.
 fn rows_at<'h>(history: &'h History, hour: i32) -> impl Iterator<Item = (u128, &'h [Cell])> + 'h {
     history.keys.iter().filter_map(move |(key, steps)| cells_at(steps, hour).map(|cells| (*key, cells)))
 }
@@ -175,18 +167,14 @@ pub(crate) fn bonus_row(history: &History, key: u128, cells: &[Cell]) -> Option<
     })
 }
 
-/// The histories one assignment's reads come from, each read with every column of its table.
 pub(crate) struct Histories {
-    /// SliceReads of the owner's three research tables.
     pub samples: History,
     pub inputs: History,
-    /// The slot's modifier rows, then the country scope's (index `u32::MAX`), both in key order.
     pub slot_modifiers: History,
     pub shared_modifiers: History,
     pub bonuses: History,
 }
 
-/// The read hours of `owner` in `samples` from `first` through `last`, ascending.
 fn read_hours(samples: &History, owner: u32, first: i32, last: i32) -> Vec<i32> {
     let key = slice_key(INPUTS, owner);
     let mut reads: Vec<i32> = samples
@@ -202,9 +190,6 @@ fn read_hours(samples: &History, owner: u32, first: i32, last: i32) -> Vec<i32> 
     reads
 }
 
-/// The states and progress of the assignment of slot `index` of `owner` first observed at `first`,
-/// from `histories`, through `last`. A read joins it while the slot holds the technology it held
-/// at its first read, at the same level; the first read that does not ends it.
 pub(crate) fn assignment(histories: &Histories, owner: u32, index: u32, first: i32, last: i32, started: bool, localise: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<ResearchSlotState>, Vec<ResearchProgress>), String> {
     let reads = read_hours(&histories.samples, owner, first, last);
     let input_key = u128::from(owner) << 32 | u128::from(index);
@@ -231,7 +216,6 @@ pub(crate) fn assignment(histories: &Histories, owner: u32, index: u32, first: i
         }).collect();
         modifiers.sort_unstable_by_key(|row| (row.country, row.index, row.ordinal));
         let bonuses: Vec<ResearchAppliedBonusRow> = rows_at(&histories.bonuses, read).filter_map(|(key, cells)| bonus_row(&histories.bonuses, key, cells)).collect();
-        // A day's progress at the same applied days is the rate, where its modifiers are unknown.
         let daily = previous
             .as_ref()
             .filter(|(hour, before)| hour.checked_add(24) == Some(read) && before.applied_days_raw == input.applied_days_raw)
@@ -265,7 +249,6 @@ pub(crate) fn assignment(histories: &Histories, owner: u32, index: u32, first: i
     Ok((states, progress))
 }
 
-/// Part `part`'s states and progress, or why none are known.
 fn reads(source: &Source, query: &Query<'_>, tag: &Country, part: &ResearchBreakdownPart, localise: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<ResearchSlotState>, Vec<ResearchProgress>), String> {
     let first = part.first_observed_hour;
     let run = query.holders.at(tag, first).ok_or("The country is not held at the assignment's first observation")?;
@@ -281,7 +264,6 @@ fn reads(source: &Source, query: &Query<'_>, tag: &Country, part: &ResearchBreak
     let inputs: Vec<u128> = owners.iter().map(|&raw| u128::from(raw) << 32 | u128::from(part.slot)).collect();
     let samples = read(TableId::SliceReads, Keys::These(&samples))?;
     let inputs = read(TableId::ResearchInputs, Keys::These(&inputs))?;
-    // The owner whose rows hold the slot at the first observation.
     let owner = inputs.keys.iter().find(|(_, steps)| cells_at(steps, first).is_some()).map(|(key, _)| (*key >> 32) as u32).ok_or("The slot's read at the assignment's first observation is not recorded")?;
     let scope = |index: u32| (u128::from(owner) << 64 | u128::from(index) << 32, u128::from(owner) << 64 | u128::from(index) << 32 | u128::from(u32::MAX));
     let (low, high) = scope(part.slot);
@@ -293,7 +275,6 @@ fn reads(source: &Source, query: &Query<'_>, tag: &Country, part: &ResearchBreak
     assignment(&histories, owner, part.slot, first, last, part.started, localise)
 }
 
-/// Every column of `table` of run `run` from `first` through `last` for `keys`.
 fn history(query: &Query<'_>, run: u32, table: TableId, keys: Keys<'_>, first: i32, last: i32) -> Result<History, String> {
     cost::storage(|| lanes::history(query.replay.recording(), run, table, &all_columns(table), keys, first, last)).map_err(|error| error.to_string())
 }

@@ -28,7 +28,6 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
       if (!old || !same(old.deps, deps)) slots.set(index, { deps: [...deps], value: make() });
       return (slots.get(index) as { value: unknown }).value;
     },
-    // Outside a widget frame.
     useContext() { return null; },
     useEffect(run: Effect['run'], deps: readonly unknown[]) {
       const index = cursor++, old = effects.get(index);
@@ -50,8 +49,6 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
   };
   const host = globalThis as typeof globalThis & { __lineStylesFixture?: typeof fixture };
   host.__lineStylesFixture = fixture;
-  // Only React's dispatcher is synthetic. The production hook, product cache,
-  // envelopes, canonical request keys and cancellation all run unchanged.
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'line-styles-fixture', enforce: 'pre',
       transform(source, id) {
@@ -101,7 +98,6 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
       assert.equal(current.known.size, count);
       fixture.unmount();
     }
-    // A monthly step inside a gap is never asked for: the stretch after it reads its own first hour.
     const asked: number[] = [];
     const gapClient = { product: (input: ProductRequest<CountryStyleParams>) => {
       asked.push(input.params.hour);
@@ -112,7 +108,6 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
     cursor = 0; useCountryLineStyles(gapClient, gapped, ['Synthetic country'], 731, true); fixture.commit(); await settle();
     assert.deepEqual(asked, [731]);
     fixture.unmount();
-    // The dashboard's country, chosen by slot: its colour is read by the tag the slot goes by then, under its key.
     const slotAsked: string[][] = [];
     const slotClient = { product: (input: ProductRequest<CountryStyleParams>) => {
       if (input.product === 'country-identities') return Promise.resolve({ ...input, data: { countries: [
@@ -128,8 +123,6 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
     assert.deepEqual(slotAsked, [['GER']], 'asked by the tag the slot goes by, never by the raw slot key');
     assert.equal(shown.known.get(slotKey)?.name, 'Germany', 'the colour comes back under the key it was asked by');
     fixture.unmount();
-    // A slot first holding its tag after the monthly sample, the tag another country's at that sample: the colour is
-    // read inside the slot's own run, never the other holder's, and the tag-chosen line keeps the sample hour.
     const lateAsked: { hour: number; tags: string[] }[] = [];
     const lateClient = { product: (input: ProductRequest<CountryStyleParams>) => {
       if (input.product === 'country-identities') return Promise.resolve({ ...input, data: { countries: [

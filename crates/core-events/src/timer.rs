@@ -19,7 +19,6 @@ pub trait TimerStore {
         self.len() == 0
     }
     fn reserve_len(&mut self, len: usize) -> io::Result<()>;
-    // The id index must follow swaps/removals; lookup must not scan the heap.
     fn find(&mut self, id: Key<'_>) -> io::Result<Option<usize>>;
     fn set_hour(&mut self, index: usize, hour: Hour) -> io::Result<()>;
     fn read(&mut self, index: usize) -> io::Result<Timer<'_>>;
@@ -243,7 +242,6 @@ impl<S: TimerStore> TimerQueue<S> {
         };
         let last = self.len() - 1;
         self.store.swap(index, last)?;
-        // Remove the id before repairing the heap so index updates never reach a removed slot.
         self.store.truncate(last)?;
         if index < last {
             self.repair(index, last)?;

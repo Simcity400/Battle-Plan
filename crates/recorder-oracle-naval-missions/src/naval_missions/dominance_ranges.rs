@@ -1,4 +1,3 @@
-//! Saved operands of otherwise omitted siblings of registered strike fleets.
 use super::*;
 
 pub(super) fn compare(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {

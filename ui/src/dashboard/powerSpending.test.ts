@@ -13,8 +13,6 @@ const item = (id: string, category: string, recurring: boolean, name: string | n
   targetName: null, unknown: null, tooltipToken: null });
 const categories = [{ id: 'decisions', name: 'Decisions', identified: true }, { id: 'dailyCosts', name: 'Daily costs', identified: true }];
 
-/** Two chunks of GER's ledger: a decision paid in January and in March (once with a charge not recorded), and a daily cost
- * counted on 2 and 3 January (the second ending its day in the next chunk), with gains and a stretch not covered. */
 function chunks(): PowerSpendingReply[] {
   const first: PowerSpendingReply = { branchId: '1', tag: 'GER', currency: 'Political', from: day(1, 1), to: day(1, 3) - 1, decimals: 5,
     items: [item('7:0:1', 'decisions', false, 'Recorded decision'), item('7:1:1', 'dailyCosts', true, 'Advisor cost')], categories, icons: [], ideaTooltips: null, warnings: [],
@@ -124,7 +122,6 @@ test('the rows a block draws ahead are asked their names with it, and rows repor
   const target = { ...payment, payment: { ...payment.payment!, item: { ...payment.payment!.item, targetTag: 'POL' } } };
   const ahead = spendingCountryRequests([], false, [target]);
   assert.deepEqual(ahead.wanted, [{ hour: target.hour, tag: 'POL' }]);
-  // A name is asked at its row's hour: the month's country and the payment's are each named where they stand.
   assert.deepEqual([...new Set(spendingCountryRequests([month], true, [target]).wanted.map(item => item.tag))].sort(), ['GER', 'POL']);
   assert.ok(namesCovered(ahead.wanted, spendingCountryRequests([target], false).wanted), 'the names asked with a block cover its rows once mounted');
   assert.ok(!namesCovered(ahead.wanted, spendingCountryRequests([target], true).wanted), 'a country compared at its row is another name');

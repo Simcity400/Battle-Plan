@@ -1,12 +1,9 @@
-//! Held objects share direct changes; released reads also permit every ancestor change.
 use super::*;
 use std::sync::mpsc;
 
-/// The held file, the held archive and the listed folder, below the scratch root.
 const HELD_FILE: &str = "outer/layer/gfx/models/a.dds";
 const HELD_ARCHIVE: &str = "outer/layer/gfx/models/pack.zip";
 const LISTED: &str = "outer/layer/gfx/models";
-/// Every folder above the held file and archive, nearest first, to the whole outer tree.
 const ABOVE: [&str; 4] = [
     "outer/layer/gfx/models",
     "outer/layer/gfx",
@@ -14,7 +11,6 @@ const ABOVE: [&str; 4] = [
     "outer",
 ];
 
-/// Isolate every destructive matrix cell in its own synthetic content tree.
 fn scratch(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "hoi4_sharing_{name}_{}_{:?}",
@@ -46,14 +42,10 @@ fn scratch(name: &str) -> PathBuf {
     fs::canonicalize(root).unwrap()
 }
 
-/// What Steam or a mod manager does to a file or folder.
 #[derive(Clone, Copy, Debug)]
 enum Change {
-    /// Renamed beside itself.
     Rename,
-    /// Moved into `elsewhere`, out of every folder it was in.
     Move,
-    /// Deleted, with everything below it.
     Delete,
 }
 
@@ -74,10 +66,8 @@ fn apply(root: &Path, object: &str, change: Change) -> io::Result<()> {
     }
 }
 
-/// Separate startup failure from the change result and subsequent use of the held handle.
 type Held = Result<(io::Result<()>, io::Result<String>), String>;
 
-/// Report startup failure and release the holder on every exit, without timing assumptions.
 fn while_held<H>(
     hold: impl FnOnce() -> io::Result<H> + Send,
     use_held: impl FnOnce(H) -> io::Result<String> + Send,
@@ -95,7 +85,6 @@ fn while_held<H>(
                 }
             };
             let _ = ready.send(Ok(()));
-            // Released when the change is done, or when the caller stops before it.
             let _ = released.recv();
             use_held(held)
         });
@@ -131,7 +120,6 @@ fn a_failed_holder_reports_startup_failure_without_attempting_the_change() {
     assert!(!changed.get());
 }
 
-/// The first object is directly held; Windows does not promise held-ancestor renames.
 fn held_matrix<H>(
     name: &str,
     objects: &[&str],
@@ -161,7 +149,6 @@ fn held_matrix<H>(
     );
 }
 
-/// `folder_file`'s handle, the one every folder read reads and identifies through.
 #[test]
 fn a_held_folder_read_shares_direct_changes_and_ancestor_deletion() {
     let objects: Vec<&str> = std::iter::once(HELD_FILE).chain(ABOVE).collect();
@@ -178,7 +165,6 @@ fn a_held_folder_read_shares_direct_changes_and_ancestor_deletion() {
     );
 }
 
-/// An archive layer's reader, held as a lookup holds it.
 #[test]
 fn a_held_archive_read_shares_direct_changes_and_ancestor_deletion() {
     let objects: Vec<&str> = std::iter::once(HELD_ARCHIVE).chain(ABOVE).collect();
@@ -195,7 +181,6 @@ fn a_held_archive_read_shares_direct_changes_and_ancestor_deletion() {
     );
 }
 
-/// A changed listing must finish, but its remaining entries are not specified.
 #[test]
 fn a_held_listing_shares_direct_changes_and_ancestor_deletion() {
     held_matrix(
@@ -211,7 +196,6 @@ fn a_held_listing_shares_direct_changes_and_ancestor_deletion() {
     );
 }
 
-/// Successful, missing and refused reads must release handles while their stack stays alive.
 #[test]
 fn finished_reads_leave_nothing_that_blocks_a_change() {
     let objects: Vec<&str> = std::iter::once(HELD_FILE).chain(ABOVE).collect();
@@ -234,7 +218,6 @@ fn finished_reads_leave_nothing_that_blocks_a_change() {
                     .kind(),
                 io::ErrorKind::NotFound
             );
-            // A covered file changed after verification fails its read.
             fs::write(layer.join("map/covered.txt"), b"changed").unwrap();
             assert!(layers.read("map/covered.txt").is_err());
             if let Err(error) = apply(&root, object, change) {

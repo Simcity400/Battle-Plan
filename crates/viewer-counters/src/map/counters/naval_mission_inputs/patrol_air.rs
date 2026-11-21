@@ -1,4 +1,3 @@
-//! Regional aircraft contribution to Navy patrol spotting.
 use super::*;
 use air_range::Sources;
 use viewer_foundation::map::{air_detection, air_range};
@@ -6,7 +5,6 @@ use viewer_foundation::map::{air_detection, air_range};
 const ONE: i64 = 100_000;
 const INVALID: i64 = 0xffff_ffff;
 const HOUR_EPOCH: i32 = 43_800_000;
-/// The native no-home-region fallback, also used for an unresolved base.
 const NO_HOME_REGION: u32 = 170;
 
 pub(super) struct Defines {
@@ -112,8 +110,6 @@ impl<'a> Prepared<'a> {
             let wing = *wings
                 .get(&registration.wing)
                 .ok_or("Air patrol registration has no wing")?;
-            // Native regional spotting uses the viewing country's pool vector,
-            // independently of a volunteer wing's effective country.
             if hour.links.get(&wing.owner) == Some(&hour.ours) {
                 let region = wing
                     .mission_region
@@ -439,8 +435,6 @@ impl<'a> Prepared<'a> {
                         continue;
                     }
                     let key = [0x6f, 0x70][index];
-                    // The night accumulator is rebuilt with an unrestricted
-                    // category mask; category-less static entries do not enter it.
                     let definition = hour
                         .definitions
                         .as_ref()
@@ -554,8 +548,6 @@ fn required(value: Option<i64>, name: &str) -> Fact<i64> {
 
 fn night_raw(defines: &Defines, applied: Option<i64>, index: usize) -> Fact<i64> {
     let applied = required(applied, "held night accumulator application marker")?;
-    // Setup's unapplied marker certifies an empty accumulator, independently
-    // of a mod's longitude offset or the clock's local hour.
     if applied == -ONE {
         return Ok(0);
     }
@@ -879,8 +871,6 @@ mod tests {
     #[test]
     fn pool_owner_admission_is_independent_of_effective_volunteer_country() {
         let frame = input_frame();
-        // The foreign pool's registration has no input row. Its effective
-        // country being ours must never demand that row or add a contribution.
         assert_eq!(prepared_density(&frame, [2 * ONE; 2]), Ok(Some(2 * ONE)));
     }
 

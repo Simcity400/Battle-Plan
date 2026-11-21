@@ -1,16 +1,3 @@
-//! `LeaderTraitGains`: a log, each row appended the hour it was read and forgotten at the writer's
-//! next hour, of each trait a leader gained:
-//! held before the run (its first hour), gained (the leader's traits were read the hour before
-//! without it) or first observed (a leader new this hour, or every trait held when traits are read
-//! after hours they were not; the reply counts one the run saw before as no gain). A trait moving
-//! to another place in the leader's list is no gain: a leader's traits before the hour are the
-//! earlier values of the cells the hour wrote and the rows it deleted, as the store keeps them,
-//! with the rows it left alone. Each row holds the trait's spelling.
-//!
-//! `LeaderTraitDates` folds those rows per leader and trait over the run: the first row and the
-//! last gain, a trait's date through the hour; a leader's rows go with its UnitLeaders row.
-//!
-//! State: none.
 
 #[cfg(test)]
 mod tests;
@@ -41,12 +28,10 @@ const READS: &[Read] = &[
 #[derive(Default)]
 pub struct LeaderTraits;
 
-/// A UnitLeaderTraits key's leader.
 fn leader(key: u128) -> u64 {
     (key >> 32) as u64
 }
 
-/// The token of the UnitLeaderTraits row in `slot`, as the table holds it.
 fn token(view: &TableView<'_>, slot: u32) -> Option<u32> {
     view.number(TOKEN[0], slot).map(|token| token as u32)
 }
@@ -55,7 +40,6 @@ fn gain(leader: u64, hour: i32, token: u32) -> u128 {
     u128::from(leader) << 64 | u128::from(hour as u32) << 32 | u128::from(token)
 }
 
-/// The trait of the UnitLeaderTraits row in `slot` was gained at the hour, of `class`.
 fn set(hour: &Hour<'_>, out: &mut Rows, slot: u32, leader: u64, token: u32, class: u8) {
     let traits = hour.table(TableId::UnitLeaderTraits);
     let spelling = match traits.text(SPELLING[0], slot).and_then(|id| hour.text(id)) {
@@ -70,8 +54,6 @@ fn date_key(leader: u64, token: u32) -> u128 {
     u128::from(leader) << 32 | u128::from(token)
 }
 
-/// Folds a gain row of `class` at `at` into the leader's trait's date: its first row, then every
-/// gain.
 fn date(out: &mut Rows, at: i32, leader: u64, token: u32, class: u8, spelling: Value) {
     let table = TableId::LeaderTraitDates;
     let key = date_key(leader, token);
@@ -89,7 +71,6 @@ fn date(out: &mut Rows, at: i32, leader: u64, token: u32, class: u8, spelling: V
     out.set(table, key, cells);
 }
 
-/// Deletes the dates of the leaders the hour took from UnitLeaders.
 fn forget(hour: &Hour<'_>, out: &mut Rows) {
     let leaders = hour.table(TableId::UnitLeaders);
     let gone: HashSet<u64> = hour.deleted_keys(TableId::UnitLeaders).filter(|&key| leaders.slot(key).is_none()).map(|key| key as u64).collect();
@@ -120,7 +101,6 @@ impl Writer for LeaderTraits {
         READS
     }
 
-    // Hourly: its rows are forgotten at its next hour.
     fn hourly(&self) -> bool {
         true
     }

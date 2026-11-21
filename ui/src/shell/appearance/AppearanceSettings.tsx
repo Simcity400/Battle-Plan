@@ -17,7 +17,6 @@ import { Segmented } from '../../components/Segmented';
 import type { Appearance } from './useAppearance';
 import type { ThemeDraft } from './ThemeEditor';
 
-/** A titled group of settings: the title sits above one card whose rows are divided. */
 export function SettingsBlock({ id, title, description, actions, children, plain = false }: { id?: string; title: string; description?: string; actions?: ReactNode; children: ReactNode; plain?: boolean }) {
   return <section className={`settings-block${plain ? ' settings-block-plain' : ''}`} id={id} aria-label={title}>
     <div className="settings-block-heading"><div><h3>{title}</h3>{description && <p>{description}</p>}</div>{actions && <div className="settings-block-actions">{actions}</div>}</div>
@@ -104,7 +103,6 @@ function ImportTheme({ disabled, onImport }: { disabled: boolean; onImport: (tex
   </>;
 }
 
-/** The images stored on this device, shared by every backdrop that can show one. */
 function useBackdropLibrary(onRemoved: (id: string) => void) {
   const [items, setItems] = useState<BackdropImage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -125,7 +123,6 @@ function useBackdropLibrary(onRemoved: (id: string) => void) {
 function BackdropLibrary({ library: { items, error, busy, add, remove }, selected, onSelect }: {
   library: ReturnType<typeof useBackdropLibrary>; selected: string | null; onSelect: (id: string) => void;
 }) {
-  // An import selects its image only if no other choice was made while it ran, even one back to the same image.
   const choices = useRef(0);
   useLayoutEffect(() => { choices.current += 1; }, [selected]);
   const choose = (id: string) => { choices.current += 1; onSelect(id); };
@@ -154,7 +151,6 @@ function BackdropLibrary({ library: { items, error, busy, add, remove }, selecte
 const BACKDROP_KINDS: readonly { value: BackdropKind; label: string; icon: IconName }[] = [
   { value: 'ambient', label: 'Ambient', icon: 'sparkle' }, { value: 'solid', label: 'Solid', icon: 'layers' }, { value: 'image', label: 'Image', icon: 'image' }];
 
-/** One backdrop's kind, and for an image its picture, dim and blur. */
 function BackdropFields<Kind extends string>({ label, hint, kinds, value, library, onChange }: {
   label: string; hint: string; kinds: readonly { value: Kind; label: string; icon: IconName }[]; value: Backdrop<Kind>;
   library: ReturnType<typeof useBackdropLibrary>; onChange: (change: Partial<Backdrop<Kind>>) => void;
@@ -182,7 +178,6 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
   const use = (theme: ThemeDefinition, modes: ThemeMode[]) => update(previous => {
     const next = { ...previous, themes: { ...previous.themes } };
     for (const mode of modes) if (theme.variants[mode]) next.themes[mode] = theme.id;
-    // Choosing a one-sided theme also switches to the scheme that shows it.
     if (previous.scheme !== 'system' && !theme.variants[previous.scheme]) next.scheme = theme.variants.dark ? 'dark' : 'light';
     return next;
   });
@@ -211,7 +206,6 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
   const setBackdrop = (change: Partial<Settings['backdrop']>) => update(previous => ({ ...previous, backdrop: { ...previous.backdrop, ...change } }));
   const setWorkspaceBackdrop = (change: Partial<Settings['workspaceBackdrop']>) =>
     update(previous => ({ ...previous, workspaceBackdrop: { ...previous.workspaceBackdrop, ...change } }));
-  // A removed image leaves every backdrop that showed it.
   const library = useBackdropLibrary(id => update(previous => ({ ...previous,
     backdrop: previous.backdrop.imageId === id ? { ...previous.backdrop, imageId: null } : previous.backdrop,
     workspaceBackdrop: previous.workspaceBackdrop.imageId === id ? { ...previous.workspaceBackdrop, imageId: null } : previous.workspaceBackdrop })));

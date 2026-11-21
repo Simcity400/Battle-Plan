@@ -14,20 +14,14 @@ use std::sync::atomic::AtomicBool;
 
 const FIRST: i32 = 20;
 const LAST: i32 = 55;
-/// The daily tables' read hours (their slot of the day).
 const DAILY_READS: [i32; 2] = [28, 52];
-/// The hour GER's projects were last read, as SliceReads names it.
 const PROJECTS_READ: i32 = 30;
-/// No country holds GER at this hour.
 const UNHELD: i32 = 45;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
 }
 
-/// GER (raw ids 9001 and 11) with one scientist, one facility and its specialization points read
-/// daily, and one project of an unspelled definition read from `PROJECTS_READ`; a scientist of
-/// another country beside it.
 fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, None);
     if hour == UNHELD {

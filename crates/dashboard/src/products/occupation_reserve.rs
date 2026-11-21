@@ -1,11 +1,3 @@
-//! Occupation reserve (family 63): the foreign garrison manpower each country's occupation status
-//! holds in reserve, by the country that sent it. At an hour ([`OccupationReserve`], rows at an
-//! hour) the reply is the structure: each holder and its entries' sources; each entry's amount is a
-//! live cell, so the race's bars and ranks move with no reply. Every country owns one occupation
-//! status and the read of its reserve writes its OccupationSettings row, so those rows admit the
-//! holders: an admitted holder without entries holds none, a recorded zero. A country that owns no
-//! state does not exist, as the game's existence triggers read it. One holder's reserve over the
-//! branch ([`ReserveHistory`]) is a history of its keys a stretch.
 
 use crate::{
     Source,
@@ -38,7 +30,6 @@ const TABLES: [TableId; 5] = [
     IDENTITY[1],
 ];
 
-/// An entry's key: its holder's raw id over its place in the holder's list.
 const fn entry_key(holder: u32, ordinal: u32) -> u128 {
     ((holder as u128) << 32) | ordinal as u128
 }
@@ -52,8 +43,6 @@ pub struct OccupationReserveParams {
     pub branch_id: String,
 }
 
-/// One entry of a holder's reserve list: its amount is the live cell `amount` of the row
-/// `<holder id>:<ordinal>`; a negative one stays signed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -67,9 +56,9 @@ pub struct ReserveEntry {
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHolder {
     pub country: Country,
-    /// Its occupation status was read: no entry is a recorded zero.
+    #[doc = " Its occupation status was read: no entry is a recorded zero."]
     pub admitted: bool,
-    /// Its entries in list order.
+    #[doc = " Its entries in list order."]
     pub entries: Vec<ReserveEntry>,
 }
 
@@ -77,10 +66,10 @@ pub struct ReserveHolder {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationReserveReply {
-    /// By country id: the race ranks them by their entries' live amounts.
+    #[doc = " By country id: the race ranks them by their entries' live amounts."]
     pub holders: Vec<ReserveHolder>,
-    /// The reserve's read hour the rows hold; it moves with the reads, so a widget renders nothing
-    /// for it.
+    #[doc = " The reserve's read hour the rows hold; it moves with the reads, so a widget renders nothing"]
+    #[doc = " for it."]
     pub read_hour: Option<i32>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
@@ -88,9 +77,6 @@ pub struct OccupationReserveReply {
 
 dashboard_base::reply_warnings!(OccupationReserveReply);
 
-/// The holders of `admitted` (raw ids of the statuses read) and `entries`, without those `owned`
-/// (raw id to owned states, when recorded) shows own no state, by raw id; each entry's source by
-/// `country`, its amount named as a live cell in `live`.
 pub fn holders(
     admitted: &[u32],
     entries: &[CountryOccupationReserveManpowerRow],
@@ -190,11 +176,10 @@ pub struct ReserveHistory;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReserveHistoryParams {
     pub branch_id: String,
-    /// The holder's raw country id.
+    #[doc = " The holder's raw country id."]
     pub holder: u32,
 }
 
-/// One entry's amount from a source country (its raw id).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -203,21 +188,19 @@ pub struct ReserveAmount {
     pub amount: i32,
 }
 
-/// Consecutive recorded hours over which the holder's reserve held still.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveSegment {
     pub first_hour: i32,
     pub last_hour: i32,
-    /// Its occupation status was read: no entry is a recorded zero.
+    #[doc = " Its occupation status was read: no entry is a recorded zero."]
     pub admitted: bool,
-    /// Its entries in list order; none where the reserve was not known, with why.
+    #[doc = " Its entries in list order; none where the reserve was not known, with why."]
     pub entries: Option<Vec<ReserveAmount>>,
     pub unknown: Option<String>,
 }
 
-/// The tags a source's raw id held over the hours the history names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -239,16 +222,15 @@ pub struct ReserveSource {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHistoryReply {
-    /// In hour order; hours the timeline does not hold are not in it.
+    #[doc = " In hour order; hours the timeline does not hold are not in it."]
     pub segments: Vec<ReserveSegment>,
-    /// Every source the segments name, by raw id.
+    #[doc = " Every source the segments name, by raw id."]
     pub sources: Vec<ReserveSource>,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(ReserveHistoryReply);
 
-/// Why a table's hours hold no rows to read, by its status; none where they are complete.
 fn status_reason(status: Status) -> Option<String> {
     match status {
         Status::Complete => None,
@@ -265,7 +247,6 @@ fn number(cell: Read) -> Option<i64> {
     }
 }
 
-/// One key's cells at `hour` from its steps (hour order), advancing `at` (its place) as hours rise.
 fn cells_at<'a>(steps: &'a [lanes::Step], at: &mut usize, hour: i32) -> Option<&'a [Read]> {
     while *at + 1 < steps.len() && steps[*at + 1].hour <= hour {
         *at += 1;
@@ -273,9 +254,6 @@ fn cells_at<'a>(steps: &'a [lanes::Step], at: &mut usize, hour: i32) -> Option<&
     steps.get(*at).filter(|step| step.hour <= hour).and_then(|step| step.cells.as_deref())
 }
 
-/// A holder's segments over one stretch `first..=last`: from its entries' history (source and
-/// amount columns), its status row's history (any column: a row is an admission) and the
-/// reserve table's statuses, cut wherever any of them changes.
 fn stretch_segments(entries: &lanes::History, admission: &lanes::History, statuses: &[lanes::StatusRun], first: i32, last: i32) -> Vec<ReserveSegment> {
     let mut cuts: BTreeSet<i32> = BTreeSet::from([first]);
     cuts.extend(entries.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
@@ -379,7 +357,6 @@ mod tests {
         let entries = [entry(2, 1, 9, 300), entry(2, 0, 8, -50), entry(3, 0, 9, 500)];
         let held = holders(&[1, 2], &entries, None, named, &live, 1);
         assert_eq!(held.iter().map(|holder| (holder.country.id, holder.admitted)).collect::<Vec<_>>(), vec![(1, true), (2, true), (3, false)]);
-        // Entries keep list order; a negative one is kept, its sign in its live cell.
         assert_eq!(held[1].entries, vec![ReserveEntry { ordinal: 0, source: named(8) }, ReserveEntry { ordinal: 1, source: named(9) }]);
         assert!(held[0].entries.is_empty());
         let live = live.finish();
@@ -416,10 +393,8 @@ mod tests {
         assert_eq!(amounts(&segments[0]), Some(vec![(9, 100)]));
         assert_eq!(amounts(&segments[1]), Some(vec![(9, 100), (8, 70)]));
         assert_eq!(amounts(&segments[2]), Some(vec![(9, 150), (8, 70)]));
-        // The entry's row goes: it no longer holds any.
         assert_eq!(amounts(&segments[3]), Some(vec![(9, 150)]));
         assert!(segments.iter().take(4).all(|segment| segment.admitted && segment.unknown.is_none()));
-        // Not recorded: unknown, never an empty reserve.
         assert_eq!(segments[4].entries, None);
         assert!(segments[4].unknown.is_some());
     }

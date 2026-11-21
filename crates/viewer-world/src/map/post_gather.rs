@@ -1,4 +1,3 @@
-//! Luminance gather/adaptation, after the shrinking reductions.
 use std::{io, sync::Arc};
 
 use eframe::wgpu;
@@ -24,8 +23,6 @@ pub(super) struct Assets {
 }
 
 impl Assets {
-    /// The recorded effects for those a visual mod replaces, each refused for `why`; `None`
-    /// when no visual mod replaces either.
     fn recorded(&self, why: &str) -> Option<Self> {
         let (seed, luminance) = (self.seed.fall_back(why), self.luminance.fall_back(why));
         (seed.is_some() || luminance.is_some()).then(|| Self {
@@ -51,7 +48,6 @@ pub(super) struct Gather(Fullscreen);
 
 impl Gather {
     pub(super) fn new(device: &wgpu::Device, assets: &Assets) -> io::Result<Self> {
-        // A visual mod's replacement that cannot be drawn here falls back to the recording.
         Self::build(device, assets).or_else(|error| match assets.recorded(&error.to_string()) {
             Some(recorded) => Self::build(device, &recorded),
             None => Err(error),
@@ -71,8 +67,6 @@ impl Gather {
             &assets.luminance.source.techniques[selection.index],
         )
         .map_err(refuse)?;
-        // Bind the program and physical PS t0/t1+s0/s1 slots. Retain the seed blend, forced depth and
-        // renderer raster state.
         state
             .samplers
             .retain(|key, _| *key == binding(0, Stage::Pixel));
@@ -88,8 +82,6 @@ impl Gather {
         Ok(Self(pass))
     }
 
-    /// The 48-byte b2 block is bound to both stages. Offset 12 is unknown padding checked against
-    /// compiled reads at construction; bytes 40 through 47 are initialized zeros.
     pub(super) fn constants(
         gather: [u32; 2],
         backing: [u32; 2],
@@ -112,8 +104,6 @@ impl Gather {
         ]
     }
 
-    /// The adaptation's bindings for one parity of the exposure history: only the block's τ
-    /// changes a frame, and it changes in the buffer these bindings keep.
     pub(super) fn kept(
         &self,
         device: &wgpu::Device,

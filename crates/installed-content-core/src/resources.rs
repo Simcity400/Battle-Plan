@@ -1,10 +1,3 @@
-//! Strategic resources (`common/resources`): each resource token and the frame
-//! its icon takes in the interface's resource strip. The recording names
-//! resources by token (`ResourceDefinitions` through LexicalTokens) and holds
-//! their order; this only joins a token to its icon frame, so a mod's resources
-//! show with their own icons. A file whose reading stops short keeps the
-//! declarations before the stop; what it declares after it is unknown, so no
-//! later declaration has a known place in the database's order ([`Resources`]).
 
 use crate::{
     Diagnostic, DiagnosticKind, ResolvedLayers,
@@ -20,26 +13,17 @@ use std::io;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Resource {
     pub token: String,
-    /// The one-based frame of the resource strip; None when missing or not a
-    /// positive whole number.
     pub icon_frame: Option<u32>,
 }
 
-/// Every resource declaration of the content stack in load order. A repeated
-/// token is another resource: each declared key is interned and appended with a
-/// new item, without looking for an earlier declaration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Resources {
-    /// In load order; a file whose reading stops short gives those before the stop.
     pub declarations: Vec<Resource>,
-    /// How many declarations come before the first file that stops short.
     numbered: usize,
-    /// Every file that stops short, in load order.
     gaps: Vec<Gap>,
 }
 
 impl Resources {
-    /// These declarations, read from files that all read to their end.
     pub fn new(declarations: Vec<Resource>) -> Self {
         Self {
             numbered: declarations.len(),
@@ -48,8 +32,6 @@ impl Resources {
         }
     }
 
-    /// These declarations, from files the last of which stops short at `path` from `cause`,
-    /// for other modules' tests.
     #[cfg(test)]
     pub(crate) fn stopped(declarations: Vec<Resource>, path: &str, cause: &str) -> Self {
         Self {
@@ -62,21 +44,14 @@ impl Resources {
         }
     }
 
-    /// The declarations whose place in the database's order is known: every one
-    /// before the first file that stops short. Declaration `i` is database index `i + 1`.
     pub fn numbered(&self) -> &[Resource] {
         &self.declarations[..self.numbered]
     }
 
-    /// The first file that stops short: whatever it and every later file declare
-    /// has no known place in the database's order.
     pub fn gap(&self) -> Option<&Gap> {
         self.gaps.first()
     }
 
-    /// The `ordinal`th (one-based) declaration of `token`: None when the content
-    /// has no such declaration, the gap when a file that stops short could hold it
-    /// or one before it.
     pub fn declaration(&self, token: &str, ordinal: u32) -> Result<Option<&Resource>, &Gap> {
         let found = ordinal.checked_sub(1).and_then(|index| {
             self.numbered()
@@ -99,8 +74,6 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<Resource>> {
     }
 }
 
-/// One file's declarations up to where its reading stops, its notes, and the
-/// stop's kind and cause.
 type FileRead = (
     Vec<Resource>,
     Vec<Diagnostic>,
@@ -117,12 +90,7 @@ fn parse_file(input: &[u8]) -> FileRead {
     }
     let mut undecided = Vec::new();
     let mut started = 0_usize;
-    // The declaration whose reading the port cannot follow: it and every later one are unknown.
     let mut stop: Option<(usize, DiagnosticKind, String)> = None;
-    // Both database loops read without an opening-brace check. Resource
-    // fields consume icon_frame, cic and convoys, and report/skip unknown
-    // fields. The modifier branch forwards the same field to modifier
-    // dispatch rather than opening a separate persistent-reader block.
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -191,8 +159,6 @@ fn parse_file(input: &[u8]) -> FileRead {
                 break;
             }
         };
-        // The frame starts at zero. Each signed integer scan retains
-        // its previous value on failure.
         let mut icon_frame = 0;
         for field in item.value.items().unwrap_or_default() {
             if field.keyword_is("icon_frame") {
@@ -222,7 +188,6 @@ fn parse_file(input: &[u8]) -> FileRead {
     (resources, warnings, stop.map(|(_, kind, why)| (kind, why)))
 }
 
-/// Every resource declaration in load order, and the files whose reading stops short.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Resources, Vec<Diagnostic>)> {
     layers.recorded_product("strategic resources", 1, &[], read_resources).map(|resources| resources.as_ref().clone())
 }
@@ -285,8 +250,6 @@ mod tests {
                 icon_frame: Some(16)
             }]
         );
-        // A scalar reader consumes only `{`; the enclosing reader then
-        // reads icon_frame=7 and the close ends that resource.
         let resources = parse(b"resources={ore={cic={icon_frame=7}}}").unwrap();
         assert_eq!(resources[0].icon_frame, Some(7));
         assert!(
@@ -307,7 +270,6 @@ mod tests {
               broken = { icon_frame = 0 } scripted = { icon_frame = @frame } bare = { } }",
         )
         .unwrap();
-        // A repeated token is another declaration, kept in order as the game keeps it.
         let repeated =
             parse(b"resources = { oil = { icon_frame = 1 } oil = { icon_frame = 8 } }").unwrap();
         assert_eq!(
@@ -330,13 +292,10 @@ mod tests {
         );
     }
 
-    /// A file that stops short keeps the declarations before the declaration it
-    /// stops in; neither that one nor any later one, in it or a later file, is numbered.
     #[test]
     fn a_file_that_stops_short_leaves_every_later_declaration_unnumbered() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // The resource reader hands `modifier` itself to the modifier dispatch.
         let (kept, _, stop) = parse_file(
             b"resources = { oil = { icon_frame = 2 } oil = { icon_frame = 5 modifier = { x = 1 } } steel = { icon_frame = 3 } }",
         );
@@ -354,7 +313,6 @@ mod tests {
             token: token.into(),
             icon_frame: Some(icon_frame),
         };
-        // Three files: the middle one repeats oil, then stops.
         let mut resources = Resources::new(vec![declared("oil", 1), declared("steel", 4)]);
         resources.declarations.push(declared("oil", 2));
         resources.numbered = resources.declarations.len();
@@ -372,7 +330,6 @@ mod tests {
             resources.declaration("oil", 2).unwrap().unwrap().icon_frame,
             Some(2)
         );
-        // The third file's oil is read, but the stopped file could declare more oil before it.
         for (token, ordinal) in [("oil", 3), ("steel", 2), ("absent", 1)] {
             assert_eq!(
                 resources.declaration(token, ordinal).unwrap_err().path,

@@ -9,7 +9,6 @@ pub(super) fn fixture() -> (Fixture, Folder) {
     fixture_with(&[])
 }
 
-/// [`fixture`] with `extra` content files.
 pub(super) fn fixture_with(extra: &[(&str, &str)]) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
     let mut files = vec![
@@ -460,8 +459,6 @@ fn change_tag_from_state_keeps_the_source_name_refusal_counted() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
-    // resolves THIS to the state's owner, but own
-    // names scope.country, which remains zero for a state scope.
     let output = fixture.render(
         "change_tag_from=THIS change_tag_from=THIS",
         &mut state_from_root(),
@@ -553,7 +550,6 @@ fn empty_agency_own_text_uses_core_projection_and_child_walk() {
                 ..Default::default()
             },
         ]));
-    // keeps name/icon as own fields and forwards the effect child.
     let output = fixture.render(
         "create_intelligence_agency={name=SYN_NAME icon=SYN_ICON army_experience=2}",
         &mut fresh(),
@@ -598,7 +594,6 @@ fn country_targets_resolve_a_late_synthetic_country() {
     }
 }
 
-// Each unavailable dependency remains an effect-specific, counted refusal.
 macro_rules! refused {
     ($name:ident, $body:expr, $why:expr) => {
         #[test]
@@ -689,7 +684,6 @@ fn contested_owner_evaluates_scoped_operands() {
                 scope_id: 2,
                 entries: vec![ScriptVariableEntry {
                     name: b"chosen_country".to_vec(),
-                    // The encoded country tag, not a numeric state.
                     value_raw: i64::from(u32::from_le_bytes(*b"BBB\0") | 0x4000_0000),
                 }],
             },
@@ -715,7 +709,6 @@ fn absent_ideology_uses_null_object_without_evaluating_an_operand() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
-    // An absent specifier is not numeric zero, even if that ID names a group.
     if let TableView::Complete(TableRows::PoliticalParties(parties)) =
         &mut *fixture.frame.tables[TableId::PoliticalParties.index()]
     {

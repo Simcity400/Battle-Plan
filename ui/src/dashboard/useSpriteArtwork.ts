@@ -8,8 +8,6 @@ import { spriteFrames, spriteIcons, spriteId } from './spriteArtwork';
 import type { SpriteFrame } from './spriteArtwork';
 import { PerClient } from './prepare.ts';
 
-/** The images each client holds for one recording and content revision, by frame: a frame is asked once, and a widget
- * naming another set asks only the frames it adds. */
 const held = new PerClient<{ scope: string; icons: Map<string, string | null> }>();
 
 function heldIcons(client: DashboardClient, scope: string): Map<string, string | null> {
@@ -20,10 +18,6 @@ function heldIcons(client: DashboardClient, scope: string): Map<string, string |
   return icons;
 }
 
-/** Images for the exact sprite frames a product returned (doctrine icons, mission icons), loaded
- * on demand through the shared sprite route. The returned lookup takes a frame and gives its
- * image, null when it has no drawable art, or undefined while loading, so the widget draws its
- * text without a picture meanwhile. Frames already held are drawn at once and never asked again. */
 export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | undefined, sprites: Iterable<SpriteFrame | null | undefined>,
   active: boolean, paint?: (icons: ReadonlyMap<string, string | null>) => void): (sprite: SpriteFrame | null | undefined) => string | null {
   const revision = useContentRevision(runtime.client);
@@ -43,11 +37,8 @@ export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | und
       if (paint) paint(icons);
       else setLanded(count => count + 1);
     }).catch(() => {
-      // Art is decoration: a refused request leaves the names without pictures until the frames asked change.
     });
     return () => controller.abort();
-    // The key holds the source, the frames and the content revision.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key, active, paint]);
   return sprite => (sprite && icons.get(spriteId(sprite))) ?? null;
 }

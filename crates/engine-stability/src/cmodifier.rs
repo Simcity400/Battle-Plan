@@ -1,11 +1,7 @@
-//! CModifier wrapper embedded in CState and CResistance; its accumulator has a separate native layout.
 
 use engine_sites::Rva;
-/// CModifier vtable.
 pub const VTABLE_RVA: Rva = Rva(0x0279_65d8);
-/// CModifier embedded accumulator.
 pub const ACCUMULATOR: usize = 0x10;
-/// CModifier display-name std::string.
 pub const DISPLAY_NAME: usize = 0x58;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -14,16 +10,12 @@ pub struct Entry {
     pub raw: i64,
 }
 
-/// Stored modifier operands and their literal display name. This is distinct
-/// from a recalculated modifier or a tooltip over the current content.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub name: Vec<u8>,
     pub entries: Vec<Entry>,
 }
 
-/// Worker-only acquisition of a demanded, owner-selected embedded modifier.
-/// The caller retains storage and supplies its writer certificate.
 pub fn read_into(
     memory: &impl crate::Memory,
     base: usize,

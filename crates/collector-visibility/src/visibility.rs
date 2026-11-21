@@ -1,15 +1,3 @@
-//! Stored simulation inputs of the viewer's fog and unit visibility: the DLC
-//! mask, country and occupied-state modifiers, and the relation slots. The
-//! relation pass also records each country's enemy list for the raid gate,
-//! and each country's strategic navy supplies its region access modes, read
-//! every hour: an hour whose region access domain is quiet
-//! ([`crate::world_input_changes`]: neither the access setter nor the navy
-//! reset ran since the held read) publishes the held read without reading
-//! any navy. Each input fails alone, except that one diplomacy pass produces
-//! both RelationLinks and CountryWars; the viewer derives fog per country.
-//! CountryVisibility carries only an unmarked country's raw modifier entry
-//! under the country input set's held epoch and census identity; effective
-//! definition metadata is read hourly.
 mod carry;
 use crate::{
     clock::qpc,
@@ -31,18 +19,14 @@ use std::sync::{
     atomic::{AtomicU64, Ordering::Relaxed},
 };
 
-/// The latest complete NavalRegionAccess read, between the Slow job's
-/// captures (one runs at a time).
 static HELD_ACCESS: Mutex<Held<Vec<cstrategic_navy::AccessRow>>> =
     Mutex::new(Held::new(Vec::new()));
 
-/// Raw country visibility inputs between the Slow job's worker captures.
 static HELD_VISIBILITY: Mutex<carry::Store> = Mutex::new(carry::Store::new());
 
 static RUNTIME_SCALAR_REFUSALS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 static MOVEMENT_DEFINE_REFUSALS: [AtomicU64; engine_land_inputs::movement_defines::DEFINES.len()] =
     [const { AtomicU64::new(0) }; engine_land_inputs::movement_defines::DEFINES.len()];
-/// Refused reads of each recorded movement define.
 pub fn movement_defines_data() -> impl serde::Serialize {
     crate::status::map(
         engine_land_inputs::movement_defines::DEFINES
@@ -94,7 +78,6 @@ pub struct Capacities {
     states: usize,
     links: usize,
     wars: usize,
-    /// Enemy links of every war row.
     war_links: usize,
     naval_access: usize,
 }
@@ -108,7 +91,6 @@ collector_primitives::capacity_max!(Capacities {
     naval_access
 });
 impl Capacities {
-    /// Advisory live demand at attach and the input-demand cadence.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -143,9 +125,6 @@ impl Capacities {
         failure.map_or(Ok(()), Err)
     }
 
-    /// At most one modifier or war row per country slot; relation links and
-    /// war links start at the same size and grow from observed demand. Never
-    /// lowers a capacity.
     pub fn raise_for_countries(&mut self, slots: usize) {
         self.countries = self.countries.max(slots);
         self.links = self.links.max(slots);
@@ -166,8 +145,6 @@ struct FeatureInputs {
     movement_defines: replay_data::rows::MovementDefines,
 }
 
-/// The recorded defines from one read of each live global; a refused leaf is `None`
-/// and counted.
 fn movement_defines(memory: &impl Memory, base: usize) -> replay_data::rows::MovementDefines {
     let values = engine_land_inputs::movement_defines::capture(memory, base);
     for (index, value) in values.iter().enumerate() {
@@ -206,19 +183,15 @@ fn movement_defines(memory: &impl Memory, base: usize) -> replay_data::rows::Mov
 pub struct Captured {
     dlc_mask: CaptureRows<FeatureInputs>,
     local_player: CaptureRows<[u32; 2]>,
-    /// The LandUnitOrder row's list length in `land_units`; None is a refused read.
     land_order: CaptureRows<Option<usize>>,
     land_units: Vec<u64>,
     countries: CaptureRows<native::CountryRow>,
     states: CaptureRows<native::StateRow>,
     links: CaptureRows<crelation_status::LinkRow>,
-    /// Country authentication cache, grown on workers from the original
-    /// country/link headers before the sparse pass.
     resolver: crelation_status::Resolver,
     wars: CaptureRows<crelation_status::WarRow>,
     war_links: Arena<u32>,
     naval_access: CaptureRows<cstrategic_navy::AccessRow>,
-    /// Live country slots seen by the last walk.
     slots: usize,
     weather_suspend_failure: Option<&'static str>,
 }
@@ -246,7 +219,6 @@ impl Captured {
             .fail(super::failed_capture(TABLES[7], hour, force_full, reason));
     }
 
-    /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self {
             dlc_mask: CaptureRows::new(0),
@@ -324,7 +296,6 @@ impl Captured {
         self.naval_access.grow(&mut capacity.naval_access);
     }
 
-    /// Worker-owned rows and arenas grow from original headers before publication.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -336,8 +307,6 @@ impl Captured {
         self.capture_storage(memory, base, game_state, hour, force_full)
     }
 
-    /// NavalRegionAccess: the held read on a quiet hour, otherwise every
-    /// navy's access modes.
     #[allow(clippy::too_many_arguments)]
     fn capture_naval_access(
         &mut self,
@@ -421,8 +390,6 @@ impl Captured {
                 }
                 continue;
             }
-            // The RelationLinks pass already produced CountryWars; share its
-            // outcome instead of walking the diplomacy statuses twice.
             if index == 4 && should_walk(TABLES[3], hour, force_full) {
                 continue;
             }

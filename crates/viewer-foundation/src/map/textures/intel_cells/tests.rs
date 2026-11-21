@@ -37,7 +37,6 @@ fn map(width: u32, height: u32, province: impl Fn(u32, u32) -> u32) -> MapData {
     }
 }
 
-// An independent scalar oracle resolves each source pixel through the definitions.
 fn scalar(map: &MapData, visibility: Option<&BTreeMap<u32, u8>>) -> (Vec<u8>, bool) {
     let mut texels = Vec::new();
     for z in 0..map.height / FOW_BLOCK {
@@ -120,8 +119,6 @@ fn intel_cells_preserve_fixed_mixed_coast_bytes_and_floor_edges() {
     assert_eq!(built.texels, [160, 0, 128, 0]);
     assert_eq!(built.fogged_texels(), 2);
     assert_eq!(cells.offsets.len(), 5);
-    // Only two land provinces in the first cell, one in the second, two in
-    // the third and no land in the last. Edge pixels add no extra entries.
     assert_eq!(cells.entries.len(), 5);
 }
 
@@ -311,7 +308,6 @@ fn intel_cells_allocation_failure_is_retryable_but_structural_refusal_is_retaine
     let cache = IntelCellsCache::new(Arc::new(map(6, 6, |_, _| 1)));
     let error = cache
         .get_or_init_with(|| {
-            // Deterministic reservation failure, without changing the process allocator.
             let mut storage = Vec::<u8>::new();
             engine_native::allocation::reserve_exact(&mut storage, usize::MAX)?;
             unreachable!("an unaddressable reservation cannot succeed")

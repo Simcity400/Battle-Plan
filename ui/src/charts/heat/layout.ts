@@ -1,16 +1,12 @@
 import { mix } from '../../shell/appearance/color.ts';
 
 export interface HeatPart { id: string; label: string; color: string; share: number }
-/** `approximate`: the cell stands for only some of its period's hours. */
 export interface HeatCell { parts: readonly HeatPart[]; unknown?: boolean; filtered?: boolean; approximate?: boolean }
-/** `exact: false`: a period summarising several reads, whose hours the pointer keeps. */
 export interface HeatPeriod { firstHour: number; lastHour: number; readHour: number | null; exact?: boolean }
 export interface HeatRow { id: string; label: string; cells: readonly HeatCell[] }
-/** An appended period with one cell per row; row cells beyond the history periods are ignored. */
 export interface HeatTail { period: HeatPeriod; cells: readonly HeatCell[] }
 export type HeatLook = 'margin' | 'split';
 
-/** Logical scroll rows, with two rows of drawing margin on either side. */
 export function heatWindow(count: number, scrollTop: number, height: number, minimumRow: number, top: number, bottom: number) {
   const rowHeight = Math.max(minimumRow, (height - top - bottom) / Math.max(1, count));
   const total = Math.max(height, top + count * rowHeight + bottom);
@@ -31,8 +27,6 @@ export function joinedCellPeriod(before: HeatPeriod, period: HeatPeriod, previou
     ? { ...before, lastHour: period.lastHour, readHour: period.readHour } : null;
 }
 
-/** Join only identical adjacent cells. Their tooltips still describe separate
- * reads; this avoids redrawing thousands of equal stripes across a long history. */
 export function cellRuns(row: HeatRow, periods: readonly HeatPeriod[], until: number | null): { period: HeatPeriod; cell: HeatCell }[] {
   const result: { period: HeatPeriod; cell: HeatCell }[] = [];
   periods.forEach((period, column) => {
@@ -45,8 +39,6 @@ export function cellRuns(row: HeatRow, periods: readonly HeatPeriod[], until: nu
   return result;
 }
 
-/** Colour ramp: ties are grey, a 50-point lead
- * reaches the side's full colour. Single-side cells have a zero runner-up. */
 export function marginColor(parts: readonly HeatPart[], grey: string): string | null {
   let first: HeatPart | undefined, second = 0;
   for (const part of parts) {
@@ -59,7 +51,6 @@ export function marginColor(parts: readonly HeatPart[], grey: string): string | 
   return mix(grey, first.color, Math.max(0, Math.min(1, (first.share - second) / 0.5)));
 }
 
-/** Split cells have horizontal stripes, sized by share, in stable side order. */
 export function splitStripes(parts: readonly HeatPart[], top: number, height: number): { color: string; top: number; height: number }[] {
   const sum = parts.reduce((total, part) => total + Math.max(0, part.share), 0);
   if (!sum) return [];
@@ -77,7 +68,6 @@ export function periodAt(periods: readonly HeatPeriod[], hour: number): number |
   return index >= 0 && hour <= periods[index].lastHour ? index : null;
 }
 
-/** The props wired into TimeChart: both keys and pointer snapping use reads. */
 export function heatNavigation(periods: readonly HeatPeriod[]) {
   return {
     keyHours: periods.flatMap(period => period.readHour == null ? [] : [period.readHour]),
@@ -88,7 +78,6 @@ export function heatNavigation(periods: readonly HeatPeriod[]) {
   };
 }
 
-/** Exact rectangles: never round across a missing period or use a future read. */
 export function cellRect(period: HeatPeriod, row: number, count: number, frame: { plotTop: number; plotHeight: number; plotLeft: number; plotWidth: number; toX: (hour: number) => number },
   from: number, to: number, until: number | null) {
   if (period.readHour != null && period.readHour > (until ?? Infinity) || period.lastHour < from || period.firstHour > to || !count) return null;

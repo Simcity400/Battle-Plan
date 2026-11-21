@@ -1,7 +1,3 @@
-//! The province order cursor: the game's rule over the first selected unit and the province under
-//! the pointer, read at the playback head once each time either, Shift, the viewer or the hour
-//! changes. Where the rule does not decide it the arrow stands, its reason counted with the
-//! selection's refusals.
 
 use crate::document::Document;
 use viewer_foundation::{
@@ -20,7 +16,6 @@ struct Key {
     shift: bool,
 }
 
-/// The order cursor last chosen, with what it was chosen for.
 #[derive(Default)]
 pub(crate) struct Held(Option<(Key, MapCursor)>);
 
@@ -37,8 +32,6 @@ fn shown(cursor: OrderCursor) -> MapCursor {
 }
 
 impl super::Viewer {
-    /// The order cursor over the province at `point` (interface pixels). In the Strategic Air and
-    /// Navy modes the game's picker answers a strategic region, which takes the arrow.
     pub(super) fn ground_cursor(&mut self, document: &Document, point: [f32; 2], shift: bool) -> MapCursor {
         use viewer_world::map::map_mode::{MapMode, Stock};
         if matches!(self.shown_mode(), MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy)) {

@@ -1,7 +1,6 @@
 use super::*;
 use crate::map::camera::{MapDefines, MapSize, Pose};
 
-/// A flat map below the lowest height: the floor is `CAMERA_MIN_HEIGHT`.
 fn flat(_: f32, _: f32) -> f32 {
     9.5
 }
@@ -31,7 +30,6 @@ fn close(a: f32, b: f32, tolerance: f32) -> bool {
     (a - b).abs() <= tolerance
 }
 
-/// The step one notch takes at `height`, by the law's own formula.
 fn step(law: &CameraLaw, height: f32, frame: f32) -> f32 {
     let t = (height - 50.0) / (3000.0 - 50.0);
     let base = frame * law.zoom_speed * law.speed;
@@ -70,13 +68,11 @@ fn a_notch_moves_the_target_along_the_cursor_ray_by_the_height_law() {
     let law = CameraLaw::test();
     let shown = camera(1000.0);
     let eye = shown.eye();
-    // The ground straight ahead of the eye.
     let ground = [eye[0], 9.5, eye[2] + 400.0];
     let frame = 1.0 / 60.0;
     let mut motion = Motion::default();
     motion.wheel(&shown, &law, frame, &[1], Some(ground), &flat);
     let target = motion.target().unwrap();
-    // The ray's forward part is shortened by 2048 * 0.015 * (1 - t) before normalising.
     let t: f32 = (1000.0 - 50.0) / 2950.0;
     let forward = 400.0 - 2048.0 * 0.015 * (1.0 - t);
     let down: f32 = 9.5 - 1000.0;
@@ -91,7 +87,6 @@ fn a_notch_moves_the_target_along_the_cursor_ray_by_the_height_law() {
         "{target:?}"
     );
     assert_eq!(target.center[0], 3000.0);
-    // Zooming out is the same move backwards, and two notches go twice as far.
     let mut out = Motion::default();
     out.wheel(&shown, &law, frame, &[-1, -1], Some(ground), &flat);
     assert!(close(
@@ -99,14 +94,12 @@ fn a_notch_moves_the_target_along_the_cursor_ray_by_the_height_law() {
         1000.0 - 2.0 * down / length * s,
         1e-2
     ));
-    // The shown camera has not moved: it eases there.
     assert_eq!(shown.height, 1000.0);
 }
 
 #[test]
 fn the_step_grows_towards_the_top_and_reads_the_frame_time() {
     let law = CameraLaw::test();
-    // At the floor a notch is the base step; at the top it is 1 + 6 times larger.
     assert!(close(step(&law, 50.0, 0.5), 0.5 * 50.0 * 50.0, 1e-2));
     assert!(close(
         step(&law, 3000.0, 0.5),
@@ -121,7 +114,6 @@ fn the_step_grows_towards_the_top_and_reads_the_frame_time() {
         1500.0 - motion.target().unwrap().height
     };
     assert!(close(moved(1.0 / 30.0), 2.0 * moved(1.0 / 60.0), 1e-3));
-    // A long frame reads 0.7 seconds at most.
     assert_eq!(moved(5.0), moved(0.7));
 }
 
@@ -147,7 +139,6 @@ fn a_frame_reaching_below_the_floor_is_held_there_and_damps_its_sideways_move() 
     motion.wheel(&shown, &law, 0.7, &[1], Some(ground), &flat);
     let target = motion.target().unwrap();
     assert!(close(target.height, 50.0, 1e-3), "{target:?}");
-    // The undamped move would be most of the step sideways; damped it is scaled by t + 0.1.
     let t: f32 = 10.0 / 2950.0;
     let correction = 2048.0 * 0.015 * (1.0 - t);
     let toward = normalize([30.0, 9.5 - 60.0, 30.0 - correction]);
@@ -163,13 +154,10 @@ fn a_zoom_key_sets_the_target_height_from_the_shown_height() {
     let law = CameraLaw::test();
     let mut shown = camera(1000.0);
     let mut motion = Motion::default();
-    // 50 * 50 * 0.02 units per press; Page Down zooms out.
     motion.key(&mut shown, &law, false, &flat);
     assert_eq!(motion.target().unwrap().height, 1050.0);
-    // A second press while easing starts again from the shown height.
     motion.key(&mut shown, &law, true, &flat);
     assert_eq!(motion.target().unwrap().height, 950.0);
-    // A press the limits cut below one unit is dropped.
     let mut top = camera(2999.5);
     let mut held = Motion::default();
     held.key(&mut top, &law, false, &flat);
@@ -182,17 +170,14 @@ fn the_shown_camera_eases_towards_the_target_until_it_settles() {
     let mut shown = camera(1000.0);
     let mut motion = Motion::default();
     motion.key(&mut shown, &law, false, &flat);
-    // (100 - 50) * 0.19 * 0.05 of the way.
     assert!(motion.ease(&mut shown, &law, 0.05, VIEWPORT, &flat));
     assert!(
         close(shown.height, 1000.0 + 50.0 * 0.475, 1e-3),
         "{shown:?}"
     );
-    // A rate above one arrives in one frame.
     assert!(motion.ease(&mut shown, &law, 0.7, VIEWPORT, &flat));
     assert_eq!(shown.height, 1050.0);
     assert!(!motion.ease(&mut shown, &law, 0.05, VIEWPORT, &flat));
-    // The target stays, so a later notch moves on from it.
     assert_eq!(motion.target().unwrap().height, 1050.0);
 }
 
@@ -212,11 +197,8 @@ fn heights_stay_within_the_floor_and_the_truncated_highest_height() {
     motion.ease(&mut shown, &law, 0.7, VIEWPORT, &flat);
     assert_eq!(shown.height, 2000.0);
     assert_eq!(motion.target().unwrap().height, 2000.0);
-    // The look-at point's z stays within the map, and the visible-ground boundary then pulls the
-    // camera back inside: the target's z follows it rather than being chased.
     assert!(shown.center[1] > 0.0, "{shown:?}");
     assert_eq!(motion.target().unwrap().center[1], shown.center[1]);
-    // A terrain floor above the lowest height lifts both.
     let high = |_: f32, _: f32| 1500.0;
     let mut low = Motion {
         target: Some(Placement {
@@ -258,8 +240,6 @@ fn a_target_beyond_the_boundary_is_reset_to_the_camera() {
         }),
         lines: 0.0,
     };
-    // The first frame reaches the boundary and moves the target there; easing then settles
-    // instead of fighting the boundary every frame.
     motion.ease(&mut shown, &law, 0.7, VIEWPORT, &flat);
     let held = shown.center[1];
     assert_eq!(motion.target().unwrap().center[1], held);
@@ -270,7 +250,6 @@ fn a_target_beyond_the_boundary_is_reset_to_the_camera() {
 #[test]
 fn wheel_events_turn_into_notches_in_order() {
     let mut motion = Motion::default();
-    // In then out in one frame stays two notches, not a zero sum.
     assert_eq!(motion.wheel_events([1.0, -1.0]), [1, -1]);
     assert_eq!(motion.wheel_events([0.5, 0.5, 2.0]), [1, 1, 1]);
     assert_eq!(motion.wheel_events([-0.25, -0.75]), [-1]);
@@ -282,7 +261,6 @@ fn a_blocked_notch_does_not_cancel_the_next_one() {
     let shown = camera(50.0);
     let ground = [shown.eye()[0], 9.5, shown.eye()[2] + 200.0];
     let mut motion = Motion::default();
-    // At the floor the inward notch is dropped and the outward one zooms out.
     motion.wheel(&shown, &law, 0.1, &[1, -1], Some(ground), &flat);
     assert!(motion.target().unwrap().height > 50.0);
     let top = camera(3000.0);
@@ -310,7 +288,6 @@ fn an_arrow_key_pans_towards_its_edge_by_the_height_and_frame() {
     };
     motion.step(&shown, &law, 0.1, VIEWPORT, &held(right), &flat);
     let target = motion.target().unwrap();
-    // 0.1 s * scroll_speed 22 * 0.1 * height 1000 along the direction to the right edge's middle.
     let direction = shown.pan_direction([2048.0, 576.0], VIEWPORT);
     let pan = 0.1 * 22.0 * (0.1 * 1000.0);
     assert!(
@@ -319,7 +296,6 @@ fn an_arrow_key_pans_towards_its_edge_by_the_height_and_frame() {
     );
     assert!(target.center[0] > 3000.0);
     assert_eq!(target.height, 1000.0);
-    // Twice the height pans twice as far; the frame time is capped at 0.7 s.
     let mut high = Motion::default();
     high.step(&camera(2000.0), &law, 0.1, VIEWPORT, &held(right), &flat);
     let far = high.target().unwrap().center[0] - 3000.0;
@@ -380,14 +356,12 @@ fn edge_scrolling_reads_the_two_pixel_band_and_the_setting() {
         motion.step(&shown, law, 0.1, VIEWPORT, &input, &flat);
         motion.target()
     };
-    // Inside the band the target pans towards the cursor; a pixel further in it does not.
     let left = edge(&law, [1.9, 576.0]).unwrap();
     assert!(left.center[0] < 3000.0, "{left:?}");
     assert_eq!(edge(&law, [2.0, 576.0]), None);
     let bottom = edge(&law, [1024.0, 1150.0]).unwrap();
     assert!(bottom.center[1] < 1500.0, "{bottom:?}");
     assert_eq!(edge(&law, [1024.0, 1149.0]), None);
-    // With corner_scrolling off nothing moves.
     let off = CameraLaw {
         edge_scrolling: false,
         ..law
@@ -400,7 +374,6 @@ fn a_frame_without_motion_leaves_the_camera_fitted() {
     let law = CameraLaw::test();
     let shown = camera(1000.0);
     let mut motion = Motion::default();
-    // A cursor away from the edges, or edge scrolling switched off, is no move.
     let inside = Input {
         cursor: Some([1024.0, 576.0]),
         ..Input::default()
@@ -429,7 +402,6 @@ fn placing_keeps_the_height_and_a_zero_height_lands_on_the_floor() {
     assert_eq!(target.height, 800.0);
     motion.place(&mut camera, [100.0, 200.0], Some(0.0), &flat);
     assert_eq!(motion.target().unwrap().height, 50.0);
-    // The look-at point stays within the map's rows.
     motion.place(&mut camera, [100.0, -40.0], None, &flat);
     assert_eq!(motion.target().unwrap().center[1], 0.0);
 }
@@ -446,7 +418,6 @@ fn a_minimap_zoom_step_halves_in_and_grows_by_three_quarters_out() {
     let mut near = self::camera(60.0);
     low.zoom_step(&mut near, true, &flat);
     assert_eq!(low.target().unwrap().height, 50.0);
-    // A step the floor shortens below one unit is dropped.
     let mut floor = Motion::default();
     let mut grounded = self::camera(50.5);
     floor.zoom_step(&mut grounded, true, &flat);

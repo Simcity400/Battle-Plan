@@ -39,7 +39,6 @@ use replay_data::{
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
-/// Recorded colours: `0.75, 0.5, 0.25` truncate to these bytes.
 const GER: [u8; 3] = [191, 127, 63];
 const SOV: [u8; 3] = [127, 0, 63];
 
@@ -54,7 +53,6 @@ fn appearance(country: u32, rgb: [f32; 3]) -> CountryAppearanceRow {
     }
 }
 
-/// The strategic regions of the fixture map: the one sea province is region 4.
 fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
     BTreeMap::from([(
         4,
@@ -92,7 +90,6 @@ fn naval_control_attributes_use_the_same_nonzero_keys_as_the_region_field() {
     );
 }
 
-/// Layer 1 for the fixture map, which no hour changes.
 fn strategic() -> LayerPlane {
     {
         let map = map();
@@ -118,7 +115,6 @@ fn strategic() -> LayerPlane {
     }
 }
 
-/// Four land provinces in two states plus one sea province, in a 6 x 2 image.
 fn map() -> MapData {
     let kinds = [
         (0, ProvinceKind::Land),
@@ -195,7 +191,6 @@ fn frame(rows: Vec<ProvinceRow>) -> DecodedFrame {
             appearance(100, [0.75, 0.5, 0.25]),
             appearance(200, [0.5, 0.0, 0.25]),
         ]));
-    // No subject and no autonomy status: every country takes its own colour.
     tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
     tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(Vec::new()));
     DecodedFrame {
@@ -206,7 +201,6 @@ fn frame(rows: Vec<ProvinceRow>) -> DecodedFrame {
     }
 }
 
-/// Germany owns everything; the Soviets control province 3 in state 11.
 fn occupied() -> DecodedFrame {
     frame(vec![
         province(1, 10, 100, 100),
@@ -222,7 +216,6 @@ fn political_fill_uses_controller_and_borders_use_owner() {
     let map = map();
     let frame = occupied();
     let control = regions(&map, &frame).unwrap();
-    // Slot plus one: Germany is 1 and the Soviet Union 2.
     assert_eq!(control.country_of[1], 1);
     assert_eq!(control.country_of[3], 2);
     assert_ne!(control.country_of[1], control.country_of[3]);
@@ -231,13 +224,10 @@ fn political_fill_uses_controller_and_borders_use_owner() {
         super::super::border_pass::land_class(&control, 1, 3),
         super::super::borders::BorderClass::State
     );
-    // The fill leaves the sea alone.
     assert_eq!(control.country_of[5], NO_REGION);
     assert_eq!(control.state_of[5], NO_REGION);
     assert!(control.warnings.is_empty());
 
-    // An owned lake keeps exactly the same region as a land province;
-    // an unassigned lake remains outside, without a missing-owner warning.
     let mut lakes = map;
     lakes.definitions.get_mut(&3).unwrap().kind = ProvinceKind::Lake;
     lakes.definitions.get_mut(&5).unwrap().kind = ProvinceKind::Lake;
@@ -311,15 +301,11 @@ fn an_unresolved_reference_is_named_and_takes_no_fill() {
     ]);
     let regions = regions(&map(), &frame).unwrap();
     assert_eq!(regions.country_of[1], NO_REGION);
-    // The state key survives: layer 2 does not depend on ownership.
     assert_eq!(regions.state_of[1], 10);
     assert!(regions.warnings[0].contains("zero controller"));
     assert!(regions.warnings[0].contains("province ids 1"));
 }
 
-/// A hour the collector had not finished filling still has a political map:
-/// the fill is a function of the three core tables alone, and every other
-/// table's gap is stated rather than refused.
 #[test]
 fn a_truncated_non_core_table_still_renders_the_political_layer_and_is_stated() {
     let mut frame = occupied();
@@ -327,8 +313,6 @@ fn a_truncated_non_core_table_still_renders_the_political_layer_and_is_stated() 
         rows: TableRows::ProvinceBuildings(Vec::new()),
         missing: 1174,
     };
-    // The layer is built, and it is the same one the complete hour builds:
-    // no non-core table reaches the fill at all.
     let degraded = build_oracle(&map(), &frame, &strategic(), &FieldDefines::TEST).unwrap();
     let whole = build_oracle(&map(), &occupied(), &strategic(), &FieldDefines::TEST).unwrap();
     assert_eq!(degraded.textures.channel1, whole.textures.channel1);
@@ -364,8 +348,6 @@ fn an_unavailable_core_table_is_a_named_error() {
         error.contains("Provinces, CountryLinks and Countries"),
         "{error}"
     );
-    // A core gap is a frame error, never one of the render's limitations (whose
-    // lines name their table first; other tables' names can contain "Countries").
     assert!(
         !tables_limitations(&frame)
             .lines()
@@ -451,7 +433,6 @@ fn subject_colour_switch_preserves_regions_and_invalidates_the_cache() {
     subject.state = b"union".to_vec();
     frame.hour += 1;
     set(&mut frame, &subject);
-    // The relation retains its seed while the current status changes.
     if let TableView::Complete(TableRows::Subjects(rows)) =
         &mut *frame.tables[TableId::Subjects.index()]
     {
@@ -530,7 +511,6 @@ fn inheritance_chains_use_the_final_source_and_reject_cycles() {
         state: b"union".to_vec(),
         ..Default::default()
     };
-    // The intermediate country has no recorded colour: the getter never reads it.
     *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(vec![
         relation(200, 300),
         relation(300, 100),
@@ -549,9 +529,6 @@ fn inheritance_chains_use_the_final_source_and_reject_cycles() {
     );
 }
 
-/// Current autonomy definitions select inherited overlord colours. Missing status, definition or
-/// overlord operands leave the source undecided with a named reason. A missing row in a complete
-/// table is a null status.
 #[test]
 fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
     let mut map = map();
@@ -575,7 +552,6 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
         super::inheritance(&map, &frame, &links).unwrap()
     };
     let complete_subjects = || TableView::Complete(TableRows::Subjects(vec![relation.clone()]));
-    // Complete inputs: the union subject takes its overlord's colours; no row is no status.
     let union = with(
         TableView::Complete(TableRows::Autonomy(vec![status(b"union")])),
         complete_subjects(),
@@ -587,13 +563,11 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
         complete_subjects(),
     );
     assert_eq!(puppet.source(2), Ok(2));
-    // A definition the content does not define.
     let modded = with(
         TableView::Complete(TableRows::Autonomy(vec![status(b"dominion")])),
         complete_subjects(),
     );
     assert!(modded.source(2).unwrap_err().contains("dominion"));
-    // A truncated Autonomy census: a country without a row may hold a status.
     let truncated = with(
         TableView::Truncated {
             rows: TableRows::Autonomy(Vec::new()),
@@ -606,7 +580,6 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
         why.contains("current autonomy status") && why.contains("Autonomy is truncated"),
         "{why}"
     );
-    // An inheriting status whose overlord no Subjects row names.
     let unavailable = with(
         TableView::Complete(TableRows::Autonomy(vec![status(b"union")])),
         TableView::Unavailable {
@@ -624,7 +597,6 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
         TableView::Complete(TableRows::Subjects(Vec::new())),
     );
     assert!(orphan.source(2).unwrap_err().contains("overlord"));
-    // The political fill names them and withholds their colour.
     let mut frame = occupied();
     *frame.tables[TableId::Autonomy.index()] =
         TableView::Complete(TableRows::Autonomy(vec![status(b"dominion")]));
@@ -666,38 +638,25 @@ fn the_built_textures_paint_the_country_layer_second_and_the_strategic_one_first
     assert_eq!(textures.width, 3);
     assert_eq!(textures.layer_rows(), 1);
     assert_eq!(textures.height, 4);
-    // Layer 2 paints the two controllers, which is where the game puts the country field.
     assert!(
         (0..textures.width)
             .filter_map(|x| textures.channel1_texel(1, x, 0))
             .any(|texel| texel[3] > 0 && texel[..3] != [0, 0, 0])
     );
-    // Layer 1 is the strategic regions over the one sea province, at the navy colour, and its
-    // opacity is zero, so it draws nothing however wide its field is.
-    // The texel covers map columns 4 and 5, land and sea. Layer 1 is the navy colour over
-    // both, because that is its colour where it has no region too, and the alpha is the box
-    // average of the land's no-region 255 and the sea boundary's 247.
     let sea = textures.channel1_texel(0, 2, 0).unwrap();
     assert_eq!(sea, [51, 63, 89, 251]);
     for x in 0..textures.width {
         assert_eq!(textures.channel2_texel(0, x, 0).unwrap()[1], 0);
     }
-    // Land is in no region of layer 1 and sea is in no region of layer 2; both hold the alpha
-    // the shader draws nothing at, with no colour and no opacity.
     assert_eq!(
         textures.channel1_texel(0, 0, 0),
         Some([51, 63, 89, gradient::NO_REGION_ALPHA]),
         "land is in no region of layer 1 and still carries its colour"
     );
-    // The same texel in layer 2 is the country field at map column 4 boxed with the sea's
-    // no-region alpha at column 5: (247 + 247 + 255 + 255) / 4. Its one-pixel
-    // coast extension keeps the neighbouring country's colour and opacity.
     assert_eq!(textures.channel1_texel(1, 2, 0), Some([191, 127, 63, 251]));
     assert_eq!(textures.channel2_texel(1, 2, 0), Some([0, 255, 0, 0]));
-    // The state keys the border classifier reads survive; no layer is built from them.
     assert_eq!(layers.regions.state_of[1], 10);
     assert_eq!(layers.regions.state_of[3], 11);
-    // Channel 2's green is the region opacity wherever layer 2 has a member.
     for x in 0..textures.width {
         let member = textures.channel1_texel(1, x, 0).unwrap()[3] != gradient::NO_REGION_ALPHA;
         let green = textures.channel2_texel(1, x, 0).unwrap()[1];
@@ -914,9 +873,6 @@ fn territory_refusal_uses_first_province_before_missing_map_rows() {
     assert_eq!(actual.to_string(), expected.to_string());
 }
 
-/// A colour source the hour cannot decide is not guessed as the country's own colour: the
-/// political fill withholds it, incrementally as the independent oracle does, and takes the
-/// decided colour back once the inputs decide it.
 #[test]
 fn undecided_colour_sources_are_withheld_not_guessed() {
     use replay_frame::frame::{FrameDecoder, FrameEncoder};
@@ -943,17 +899,14 @@ fn undecided_colour_sources_are_withheld_not_guessed() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new().with_change_facts();
     let mut fold = TerritoryFold::default();
-    // Germany is key 1 and the Soviet Union, controlling province 3, key 2.
     let steps: [(TableView, [u8; 3], [u8; 3], Option<&str>); 5] = [
         (status(b"union"), GER, GER, None),
-        // A definition the content does not define: its flag is unknown.
         (
             status(b"dominion"),
             GER,
             UNAVAILABLE_COLOR,
             Some("dominion"),
         ),
-        // A country without a row may hold a status the incomplete table lacks.
         (
             TableView::Unavailable {
                 reason: "walk failed".into(),
@@ -1096,7 +1049,6 @@ fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle
         ) {
             (Ok(actual), Ok(expected)) => {
                 assert_eq!(*actual.paint, expected, "step {step}");
-                // No hour moves a province, so each delta keeps the last folded planes.
                 if let Some(previous) = &previous {
                     for (old, new) in [
                         (&previous.country_of, &actual.paint.country_of),
@@ -1159,7 +1111,6 @@ fn batched_territory_indexes_keep_repeated_links_counts_and_sorted_planes_exact(
         let actual = fold.read_shared(&map, frame).unwrap();
         assert_eq!(*actual.paint, super::oracle::regions(&map, frame).unwrap());
         assert_eq!(actual.provinces.0.len(), core::<tables::Provinces>(frame).unwrap().len());
-        // A delta keeps every plane whose values none of the edited rows changed.
         if let Some(previous) = &previous {
             assert_eq!(
                 [

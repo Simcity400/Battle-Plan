@@ -10,15 +10,12 @@ fn writers() -> Writers {
     writers
 }
 
-/// A participant: combat, side, battle slot, ship (zero a convoy), sunk.
 type Member = (u64, u8, u32, u64, bool);
 
-/// A source: id, game hour, result, combat.
 type Linked = (u64, i32, u64, u64);
 
 #[derive(Default)]
 struct Input {
-    /// Combat and province.
     combats: Vec<(u64, u32)>,
     members: Vec<Member>,
     results: Vec<u64>,
@@ -61,7 +58,6 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32, first: bool, input: 
     store.end_hour(&mut Discard).unwrap();
 }
 
-/// Each row's key and numeric cells.
 fn numbers(store: &Store, table: TableId) -> Vec<(u64, Vec<Option<i64>>)> {
     let view = store.view(table.index());
     let mut rows: Vec<_> = view.rows().map(|slot| (view.key(slot).unwrap() as u64, (0..view.kinds().len()).map(|column| view.number(column, slot)).collect())).collect();
@@ -73,8 +69,6 @@ fn battle(combat: u64, first: i64, peak: (i64, i64), sunk: [i64; 2]) -> (u64, Ve
     (combat, vec![Some(first), Some(peak.0), Some(peak.1), Some(sunk[0]), Some(sunk[1]), Some(0), Some(0)])
 }
 
-/// An observation: refusal, combat, then for an observed one province, first, last, peak and
-/// hour, and each side's ships, convoys, sunk and convoys sunk.
 fn observation(result: u64, refusal: u8, combat: u64, observed: Option<[i64; 13]>) -> (u64, Vec<Option<i64>>) {
     let mut cells = vec![Some(i64::from(refusal)), Some(combat as i64)];
     match observed {
@@ -103,8 +97,6 @@ fn script(hour: i32) -> Input {
     }
 }
 
-/// Two sources naming one result in one hour leave its row as the later's, a duplicate refused,
-/// as a source naming it in a later hour does; the writer is not failed for it.
 #[test]
 fn a_result_two_sources_name_in_one_hour_holds_the_later_ones_refusal() {
     let (mut store, mut writers) = (testing::store(), writers());

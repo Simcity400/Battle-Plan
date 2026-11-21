@@ -1,4 +1,3 @@
-//! Events since the previous boundary; unavailable intervals stay unknown.
 use crate::{
     land_events::Drain,
     table_capture::{grow_capacity, grow_vec},
@@ -72,10 +71,6 @@ impl Captured {
             }
         }
     }
-    /// Framing-only counts: pairing, verdict and timestamp refusals are checked
-    /// by tables() and its LandEventCoverage row. These counts certify no data.
-    /// Spool-thread metadata only. The callback drains owned words without
-    /// parsing even the private framing or counting individual event kinds.
     pub fn outcomes(&self) -> [Outcome; N] {
         let coverage = if self.drained.is_some() {
             Outcome::Rows { len: 1 }
@@ -118,8 +113,6 @@ impl Captured {
         };
         let result = if d.complete {
             decode(&self.words[..d.words], d.first).and_then(|(results, destroyed)| {
-                // A command the batch runs ahead of the hourly update still carries the
-                // previous sample's hour.
                 if results
                     .iter()
                     .any(|r| r.end_hour < d.from_hour || r.end_hour > d.to_hour)
@@ -421,8 +414,6 @@ fn decode(
                 }
             }
             6 => {
-                // Destruction can repeat before deferred deletion. The hook's
-                // reserved entry identifies this invocation, including nesting.
                 let entry = reader.word()?;
                 let killer = reader.word()?;
                 let index = destructions
@@ -611,7 +602,7 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.drain(10, true);
         captured.drain(11, false);
-        let payload = vec![0; (1 << 20) + 17]; // Regression fixture, no production cap.
+        let payload = vec![0; (1 << 20) + 17];
         let lost = test_support::thread_lost();
         test_support::append_record(&payload);
         captured.drain(12, false);
@@ -663,8 +654,6 @@ mod tests {
         decoder
             .advance(&encode_land(&mut encoder, 10, first, false))
             .unwrap();
-        // Refresh changes full-read/encoder recovery, while the hook log and
-        // hourly boundary remain continuous. Use the owning pack's real drain.
         test_support::append_record(&[7, 11, 17, 4999, 1500, 9, 10, 41, 2, 42, 42]);
         captured.reset();
         captured.drain(11, false);
@@ -748,8 +737,6 @@ mod tests {
         decoder
             .advance(&encode_land(&mut encoder, 11, captured.tables(), false))
             .unwrap();
-        // This completed native drain never reaches the spool/encoder. Its
-        // event must not become a carried event or widen hour 13's coverage.
         test_support::append_record(&[7, 12, 17, 1, 2, 9, 10, 41, 0]);
         captured.drain(12, false);
         assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 1 });
@@ -804,7 +791,7 @@ mod tests {
         let mut words = result(0, false, false);
         let start = words.len();
         let mut history = history(41, [0, 0]);
-        history.truncate(9); // Supply our explicit terminal amounts below.
+        history.truncate(9);
         words.extend(history);
         words.extend([9, 8, 41, 83, 1, 7 << 32 | 70, 125_001, 91, 0]);
         words.extend(terminal_observers(41));
@@ -821,8 +808,6 @@ mod tests {
             decode(&words[..words.len() - 11], 0).is_err(),
             "a missing terminal side must refuse"
         );
-        // No hourly presence is required: even a combat born and ended in
-        // one interval retains both final counters, never the last hourly read.
         assert!(
             decode(&words[..start + 9], 0).is_err(),
             "missing terminal payload is unknown"
@@ -839,7 +824,6 @@ mod tests {
         let mut c = Captured::with_capacities(&Capacities { words: 32 });
         c.drain(10, true);
         c.drain(11, false);
-        // Complete terminal side pair, larger than this synthetic log.
         let terminal = [
             8,
             41,
@@ -861,8 +845,6 @@ mod tests {
         assert_eq!(c.words[0], terminal.len() as u64 + 1);
         assert_eq!(c.words[1..drained.words], terminal);
         assert_eq!(test_support::thread_lost(), lost);
-        // Only storage that cannot be allocated loses the interval, by name,
-        // and never publishes partial casualties.
         crate::test_support::with_allocations_denied(|| test_support::append_record(&terminal));
         c.drain(13, false);
         assert_eq!(
@@ -1060,8 +1042,6 @@ mod tests {
     }
     #[test]
     fn repeated_and_nested_destruction_observations_preserve_each_killer_and_sibling_table() {
-        // The destruction hook observes each invocation before deferred
-        // deletion. Reentrant effects may complete an inner entry first.
         let first = 77;
         let division = 0x8000_0001_0000_1269;
         let mut words = result(0, false, true);
@@ -1201,8 +1181,6 @@ mod tests {
         plan.copy(&m, 0, |word| words.push(word)).unwrap();
         let entry_len = words.len();
         assert!(decode(&words, 77).is_err());
-        // A script may have changed the victim/controller since entry. The
-        // paired killer return must not replace the captured country/owner.
         m.d(0x2000 + cunit::LOGICAL_OWNER, 0);
         m.d(0x4000 + cprovince::CONTROLLER, 0);
         words.extend([4, 6, 77, 0]);

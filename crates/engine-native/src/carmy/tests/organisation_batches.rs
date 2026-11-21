@@ -1,4 +1,3 @@
-//! Reference scalar organisation walk, retained only for exact pass-local reuse comparisons.
 use super::super::*;
 use super::*;
 use crate::{
@@ -64,7 +63,6 @@ fn capture_serial(
                         .and_then(|province| land_province(memory, base, province))
                 }),
             );
-            // Keep a proven pair available while counting independent route faults.
             refused += route_refused.saturating_sub(u64::from(ordinary.is_err()));
             if !ordinary? {
                 return Ok(None);
@@ -200,8 +198,6 @@ fn compare(
     let new_counts = ReadCounts::take_current();
     assert_eq!(actual, expected, "fault {fault:?}");
     assert_eq!(projected(&batched), projected(&serial), "fault {fault:?}");
-    // Every observed field belongs to the old path; suffixes remain
-    // independently fallible and never decide an earlier branch.
     if fault.is_none() {
         let previous = old.0.reads.borrow();
         assert!(new.0.reads.borrow().iter().all(|at| previous.contains(at)));
@@ -213,8 +209,6 @@ fn compare(
 #[test]
 fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() {
     let (mut source, mut seeds) = fixture(3);
-    // Demand an actual exact pair, not just known absence: the final
-    // destination is controlled by an enemy of the logical owner.
     use crate::{cdiplomacy_status as diplomacy, crelation_status as relation};
     const DIPLOMACY: usize = 0x2d000;
     const RELATIONS: usize = 0x2d200;
@@ -265,8 +259,6 @@ fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() 
     for fault in addresses {
         compare(&source, &seeds, Some(fault));
     }
-    // Earlier bad positions remain diagnostic refusals when a later edge
-    // supplies the land proof. Sea and lake branches retain their gates.
     for flags in [
         0,
         crate::province_definition::LAND_FLAG,
@@ -304,8 +296,6 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
     ] {
         let old = source.bytes[at..at + 8].to_vec();
         p64(&mut source.bytes, at, value);
-        // An unreadable suffix must not replace an earlier identity mismatch
-        // or suppress a readable later route position.
         compare(
             &source,
             &seeds,
@@ -313,7 +303,6 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
         );
         source.bytes[at..at + 8].copy_from_slice(&old);
     }
-    // A wrong roster slot must refuse before the selected flags are consumed.
     p64(&mut source.bytes, PROVINCES + 2 * 8, P1 as u64);
     compare(
         &source,
@@ -322,8 +311,6 @@ fn division_status_organisation_batches_keep_identity_and_suffix_failures_indepe
     );
 }
 
-/// Translate the owned synthetic address space to real readable allocations,
-/// so the timing includes the actual guarded scalar and scattered helpers.
 struct Native<'a> {
     source: &'a PresentationMemory,
     live: crate::memory::LiveMemory,
@@ -368,7 +355,6 @@ fn bench_division_status_organisation_guarded_reads() {
     use std::{hint::black_box, time::Instant};
     const DIVISIONS: usize = 5_000;
     let (source, seeds) = fixture(DIVISIONS);
-    // SAFETY: every translated range is owned by source for the whole test.
     let memory = CountedMemory::new(Native {
         source: &source,
         live: unsafe { crate::memory::LiveMemory::new() },
@@ -409,7 +395,6 @@ fn bench_division_status_organisation_guarded_reads() {
     assert_eq!(rows[0], rows[2]);
 
     let words = vec![7_u64; DIVISIONS];
-    // SAFETY: all word addresses stay inside this owned, immutable allocation.
     let live = CountedMemory::new(unsafe { crate::memory::LiveMemory::new() });
     let mut samples = Vec::new();
     for run in 0..28 {
@@ -526,7 +511,6 @@ fn division_status_organisation_optional_storage_failure_is_nonterminal() {
     crate::allocation::set_hooks(None, Some(failed));
     assert!(organisation_movement::OrganisationMemo::new(usize::MAX).is_err());
     assert!(!FAILED.load(Relaxed));
-    // The optional failure must not remove the ordinary terminal hook either.
     drop(crate::allocation::oom());
     assert!(FAILED.load(Relaxed));
 }

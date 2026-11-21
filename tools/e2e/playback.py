@@ -34,7 +34,6 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 LOCK_WAIT_SECONDS = 600
-# A viewer run holds about 3 to 4 GB; it starts only with this much physical memory free.
 MEMORY_TO_START = 8 << 30
 FLOOR_FRAMES = 600
 FLOOR_PAN = 8
@@ -225,7 +224,6 @@ def harness_run(viewer, arguments, folder, *, cores=0, minutes=30, stop_after=No
         waited += seconds
         held += wait_for_memory()
         before = machine_load()
-        # The lock may be taken while the load is sampled; a run starts only once it is free at the spawn.
         if still or not before["lock"]:
             break
     result = spawn(command, environment, folder, cores, minutes, stop_after)
@@ -248,11 +246,9 @@ def phase_runs(args, recording, page):
     paced = ["--playback-cost", str(recording), *span, "--paced", str(args.speed)]
     floor = ["--playback-cost", str(recording), "--from-hour", str(args.from_hour), "--hours", str(FLOOR_FRAMES),
              "--refresh-hz", str(args.refresh_hz), "--paced", str(args.speed), "--paused", "--pan", str(FLOOR_PAN)]
-    # The floor holds the hour: its paused runs fail the harness's CPU reconciliation.
     runs = [("floor", floor), ("layers", paced)]
     missing = []
     frames = args.hours / args.speed * args.refresh_hz
-    # The harness spreads the seeks over the frames the run would take, at least SEEK_FRAMES apart.
     seeks = min(args.seeks, int(frames / SEEK_FRAMES) - 1)
     if seeks > 0:
         runs.append(("layers-seeks", [*paced, "--seeks", str(seeks)]))

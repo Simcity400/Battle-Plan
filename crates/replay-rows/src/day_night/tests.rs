@@ -77,7 +77,6 @@ fn longitude_is_native_centroid_fixed_arithmetic() {
 fn every_record_uses_the_hour_index_and_the_dates_season() {
     let defines = defines();
     let record = ProvinceClock::new([30, 5], [80, 40], &defines);
-    // The same hour index on another day reads the same vector but that day's season.
     let summer = HourOperands::new(EPOCH + 172 * 24 + 3, &defines).unwrap();
     let winter = HourOperands::new(EPOCH + 355 * 24 + 3, &defines).unwrap();
     assert_eq!(summer.index, winter.index);

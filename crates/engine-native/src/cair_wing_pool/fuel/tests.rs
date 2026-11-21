@@ -152,7 +152,6 @@ fn fixture() -> Synthetic {
     memory.i32(WING + cair_wing::COUNTRY_OVERRIDE, 0);
     memory.put(WING + cair_wing::MISSION + air_mission::CONTEXT_MODE, &[2]);
     memory.u64(WING + cair_wing::MISSION + air_mission::REGION, 0);
-    // The saved active field deliberately unmapped: current fuel never reads it.
     memory.array(MODULE + defines::MISSION_COSTS_RVA.0, COSTS, 19);
     for index in 0..19 {
         memory.i64(COSTS + index * 8, 100000);
@@ -405,7 +404,6 @@ fn complete_region_forecasts_preserve_repeated_provinces_and_cache_within_pass()
     assert_eq!(capture(&memory, &[WING, WING]).current, Some(200000));
     assert_eq!(memory.times(CLOCK, FORECAST_VECTOR_BYTES), 2);
     assert_eq!(memory.times(WEATHER + FORECAST_COEFFICIENTS, 24), 1);
-    // A new pass reads changed simulation operands; no forecast crosses hours.
     for hour in 0..24 {
         memory.i64(CLOCK + hour * 24, 50000);
     }
@@ -461,7 +459,6 @@ fn active_training_gate_uses_base_capacity_and_authenticates_mission_backlink() 
 fn dirty_host(memory: &mut Synthetic) {
     memory.put(HOST + cship::FORMATION_FLAGS, &[0]);
     memory.put(HOST + SHIP_CARRIER_CACHE + 1, &[0]);
-    //801 is deliberately missing: a dirty query must never consume it.
     memory.object(
         HOST + cship::EQUIPMENT_POOL,
         cequipment_variant_pool::VTABLE_RVA.0,
@@ -496,11 +493,9 @@ fn dirty_noncarrier_host_queries_modules_without_cache_writes_or_amount_filter()
     let mut memory = fixture();
     training(&mut memory);
     dirty_host(&mut memory);
-    // No equipment amounts are mapped; the authentic getter ignores them.
     assert_eq!(capture(&memory, &[WING]).current, Some(300000));
     assert_eq!(memory.times(HOST + SHIP_CARRIER_CACHE, 1), 0);
     assert_eq!(memory.times(0x651000, 16), 1);
-    // A positive first variant does not skip a broken later variant.
     memory.bytes.remove(&0x651000);
     let packet = capture(&memory, &[WING]);
     assert_eq!(packet.current, None);
@@ -551,7 +546,6 @@ fn effective_ace_uses_fresh_assigned_count_and_ace_owner_effectiveness() {
         }
     );
     assert_eq!(memory.times(ASSIGNED + cair_wing::PLANE_COUNT, 4), 1);
-    // Assigned count0 follows the native unscaled fallback, not a division.
     memory.i32(ASSIGNED + cair_wing::PLANE_COUNT, 0);
     memory.bytes.remove(&(MODULE + defines::ACE_COUNT_RVA.0));
     assert_eq!(capture(&memory, &[WING]).maximum, Some(690000));

@@ -2,14 +2,8 @@ import type { HTMLAttributes } from 'react';
 import { meterValue } from './meterValue';
 import './meter.css';
 
-/** A milestone along a meter: its place as a ratio of the meter's whole, whether
- * the value has reached it, and an optional short label drawn beside it. */
 export interface MeterMark { id: string; at: number; reached: boolean; label?: string }
 
-/** Recorded ratio: native negative progress fills no pixels; null is unknown.
- * `orientation` vertical fills top to bottom and takes its parent's height.
- * `marks` place milestones along the meter; `markProps` lets a caller attach
- * its own tooltip or focus handling to each mark. */
 export default function ProgressMeter({ value, state, label, sweep = false, orientation = 'horizontal', marks, markProps }: {
   value: number | null; state: 'live' | 'done' | 'idle'; label?: string; sweep?: boolean;
   orientation?: 'horizontal' | 'vertical'; marks?: readonly MeterMark[];

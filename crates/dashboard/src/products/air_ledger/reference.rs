@@ -1,9 +1,6 @@
-//! The whole-branch reply the windows replaced, kept to prove that the windows, joined as the
-//! widget joins them, equal it; and that join.
 
 use super::*;
 
-/// The whole-branch reply: every hour of the timeline from the first a widget asks, its holders ranked.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Whole {
@@ -20,8 +17,6 @@ pub(super) struct Whole {
     pub warnings: Vec<String>,
 }
 
-/// The whole-branch reply of `params` from `first`, ranked by its top: the timeline's first hour, or
-/// in a range the first of the window holding its first hour, as a range asks no hour before it.
 pub(super) fn whole(source: &Source, query: &Query<'_>, params: &MilitaryAirParams, first: i32, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Whole> {
     let fold = scan(source, query, params.family, (first, query.timeline.last), cancelled)?;
     let countries = countries(query, &fold.observed);
@@ -33,7 +28,6 @@ pub(super) fn whole(source: &Source, query: &Query<'_>, params: &MilitaryAirPara
     Ok(reply)
 }
 
-/// `params`' whole reply from `fold`, on a timeline over `first..=last` whose holders are `countries`.
 pub(super) fn whole_reply(fold: &Fold, (first, last): (i32, i32), countries: &BTreeMap<Named, Vec<HourSpan>>, params: &MilitaryAirParams, warnings: Vec<String>, cancelled: &AtomicBool) -> io::Result<Whole> {
     let leaves = selected(fold, params)?;
     let from = params.from_hour.unwrap_or_else(|| fold.observed.first().map_or(first, |span| span.first_hour));
@@ -55,8 +49,6 @@ pub(super) fn whole_reply(fold: &Fold, (first, last): (i32, i32), countries: &BT
     })
 }
 
-/// `span` after `spans`: joined to the last where it meets or overlaps it, as a window's hours that
-/// reach back to where they began overlap the windows before.
 fn push_joined(spans: &mut Vec<HourSpan>, span: &HourSpan) {
     match spans.last_mut() {
         Some(last) if span.first_hour <= last.last_hour.saturating_add(1) => {
@@ -67,11 +59,6 @@ fn push_joined(spans: &mut Vec<HourSpan>, span: &HourSpan) {
     }
 }
 
-/// `windows`, ascending and together covering their hours from the first counted, joined as the
-/// widget joins them (`ui/src/dashboard/militaryAirJoin.ts`): spans and memberships laid end to
-/// end (a span reaching back joined to the one it overlaps), each part's totals carried on from the
-/// windows before it, names and notes once each. The first window opens nothing, as it starts the
-/// count.
 pub(super) fn join(windows: &[MilitaryAirReply]) -> io::Result<Whole> {
     let (Some(head), Some(tail)) = (windows.first(), windows.last()) else { return Err(dashboard_core::invalid("no window to join")) };
     if !head.openings.is_empty() {
@@ -140,7 +127,6 @@ pub(super) fn join(windows: &[MilitaryAirReply]) -> io::Result<Whole> {
     })
 }
 
-/// Each part's total over `windows`' points, as openings: what the window after them opens with.
 pub(super) fn carried(windows: &[MilitaryAirReply]) -> io::Result<Openings> {
     let mut out = Openings::new();
     for window in windows {

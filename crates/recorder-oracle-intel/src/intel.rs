@@ -1,4 +1,3 @@
-//! Save comparisons for the intel pack's proved serialized fields.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,11 +19,9 @@ pub struct ScopeKinds {
     pub global: u8,
     pub country: u8,
     pub state: u8,
-    /// A character's own flags and script variables, keyed by its id.
     pub character: u8,
 }
 
-// Keep independently available save and content inputs explicit at this boundary.
 #[allow(clippy::too_many_arguments)]
 pub fn compare(
     frame: &DecodedFrame,
@@ -128,8 +125,6 @@ pub fn compare(
     }
 }
 
-/// UI membership, bucket order and freshness have no save counterpart. A
-/// reference naming a saved instance does have a save-verifiable target state.
 pub fn compare_operation_buffers(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -222,7 +217,6 @@ pub fn compare_operation_buffers(
     Ok(())
 }
 
-/// The save writes captured references in native roster order.
 fn compare_captured_operatives(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -284,9 +278,6 @@ fn completion_event_limitation(report: &mut Report) {
     );
 }
 
-/// The game serializes each strategic object under its country-array
-/// index. The game omits the mission roster, and the effective
-/// country/operative/static modifier totals are rebuilt after load.
 fn compare_raid_intel(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -326,16 +317,6 @@ fn compare_raid_intel(
     Ok(())
 }
 
-/// The per-country incoming diplomatic-action queue.
-///
-/// The writer walks the queue's pointer span for its signed
-/// count, skips null slots without renumbering and keys every surviving
-/// wrapper by its decimal native index, so the recorded ordinal is directly
-/// comparable. Each wrapper writes only its own `id`; its status byte
-/// has no serialized form. The body is written under its definition name, which
-/// is the only place its kind appears. The action writer emits the low
-/// byte of the historical `action_type` dword as `initiator_matters`;
-/// saved `type` is an independent, uncaptured signed integer.
 fn compare_incoming_actions(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -367,8 +348,6 @@ fn compare_incoming_actions(
             actual.len(),
             expected.len(),
         );
-        // Both sides carry the writer's own native index, so align on it: one
-        // removed slot must not shift every later row into a difference.
         let mut recorded = BTreeMap::new();
         for row in &actual {
             if recorded.insert(row.ordinal, *row).is_some() {
@@ -404,8 +383,6 @@ fn compare_incoming_actions(
                     &expected.original_recipient,
                 ),
             ] {
-                // The game resolves these raw references only while they
-                // are positive; a nonpositive one has no tag to compare.
                 match super::country_tag(captured, countries)? {
                     Some(tag) => equal(report, &format!("{label}.{name}"), tag, saved.as_slice()),
                     None => {
@@ -454,17 +431,6 @@ fn compare_incoming_actions(
     Ok(())
 }
 
-/// Active and recruitment operative memberships.
-///
-/// Operative saves contain nationalities, capturer
-/// references, the unmatched operative field, action presence,
-/// operation references and the assignment enum;
-/// loading preserves the same fields and omission rules.
-/// Agency loading reads the operative-reference roster.
-/// Join is by full handle (low-u32 type 4713), agency
-/// owner tag to roster country, kind 0 to operative blocks and kinds 1/2/3 to
-/// the identified recruitment lists (POOL_A save spelling unproved). Literal names resolve via
-/// LexicalTokens where exact, else presence/counts with limitation-printed names.
 fn compare_operative_memberships(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -477,8 +443,6 @@ fn compare_operative_memberships(
     let mut saved_active = SavedActive::new();
     let mut saved_recruit: BTreeMap<(u64, Vec<u8>, u8), Vec<&saved::OperativeEntry>> =
         BTreeMap::new();
-    // Recruitment writes its fields under token 0x4B44.
-    // Resolve its saved name from this recording, never a guessed spelling.
     let pool_a_key = token(tokens, 0x4b44).filter(|name| !name.contains(&0));
     let mut operation_targets = BTreeMap::new();
     for (owner, country) in report.canonical_countries(&save.countries) {
@@ -501,10 +465,7 @@ fn compare_operative_memberships(
         let Some(agency) = &country.agency else {
             continue;
         };
-        // The operative-reference roster is written directly in vector order.
         for (ordinal, entry) in agency.operatives.iter().enumerate() {
-            // Handles are (id<<32)|type with native IDENTITY type 4713.
-            // Repeated memberships are preserved; each block is one entry.
             if (entry.id & 0xffff_ffff) != u64::from(HANDLE_TYPE) {
                 return Err(invalid("saved operative handle has an unexpected type"));
             }
@@ -637,7 +598,6 @@ fn compare_operative_memberships(
         );
     }
     report.compared("OperativeMemberships", matched);
-    // Recruitment saves the two fields under 0x4B45 and 0x4B54.
     for (id, spelling) in [
         (0x4b45_u32, b"recruitable_operatives".as_slice()),
         (
@@ -701,9 +661,6 @@ fn compare_operative_row(
     countries: &BTreeMap<u32, &CountryRow>,
     literals: OperativeLiterals<'_>,
 ) -> io::Result<()> {
-    // Native nationality vector width is unproved and unrecorded; the saved
-    // count is retained by the parser and the literal key is proved only when
-    // the lexical entry is exact (checked by the caller).
     let _ = (literals.nationalities_key, expected.nationalities.len());
     equal(
         report,
@@ -718,8 +675,6 @@ fn compare_operative_row(
             Some(actual.experience_raw),
             Some(decimal),
         ),
-        // Live recruitment blocks omit experience while native holds zero;
-        // the writer's omission rule is unproved, so omission compares as zero.
         None => equal(
             report,
             &format!("{label}.experience"),
@@ -784,8 +739,6 @@ fn compare_operative_row(
             expected,
         )?;
     }
-    // The game writes mission iff the game sees a nonzero
-    // action discriminator; its separate operation handle is not that action.
     let saved_action = expected.mission_present;
     equal(
         report,
@@ -805,8 +758,6 @@ fn compare_operative_placement(
     countries: &BTreeMap<u32, &CountryRow>,
     literals: &OperativeLiterals<'_>,
 ) -> io::Result<()> {
-    // The game writes the own reference regardless of outer assignment;
-    // The stored name is written, including literal renames.
     if let Some(variant) = actual.action_variant {
         let id = variant
             .checked_sub(1)
@@ -838,8 +789,6 @@ fn compare_operative_placement(
         );
     }
     if token(literals.tokens, 0x1b) == Some(b"name".as_slice()) {
-        // The unit leader save writer writes token 0x1B only for a
-        // nonzero stored length: its omission proves an empty name.
         if let Some(name) = report.recorded(&actual.name, "OperativeMemberships.name", label) {
             equal(
                 report,
@@ -883,8 +832,6 @@ fn compare_operative_placement(
                 return Ok(());
             };
             let Some(target) = literals.operation_targets.get(&reference) else {
-                // Operation hover null-checks the operation-instance lookup;
-                // one stale assignment must not abort the census.
                 report.difference(
                     format!("{label}.active_operation {reference}"),
                     "absent from running operations",
@@ -908,8 +855,6 @@ fn compare_operative_placement(
     Ok(())
 }
 
-/// The saved assignment literal of each assignment value, through the
-/// recorded LexicalTokens; `None` unless all six are exact.
 fn assignment_literals<'a>(tokens: &TokenNames<'a>) -> Option<BTreeMap<u32, &'a [u8]>> {
     use engine_native::coperative_leader as leader;
     let names: BTreeMap<u32, &[u8]> = [
@@ -926,8 +871,6 @@ fn assignment_literals<'a>(tokens: &TokenNames<'a>) -> Option<BTreeMap<u32, &'a 
     (names.len() == 6 && !names.values().any(|name| name.contains(&0))).then_some(names)
 }
 
-/// The recorded assignment against the saved `state` literal, when the
-/// literals and their key are exact; presence is verified by the census.
 fn compare_assignment(
     report: &mut Report,
     label: &str,
@@ -949,8 +892,6 @@ fn compare_assignment(
     }
 }
 
-/// A cooldown assignment's recorded operands against the saved cooldown
-/// reason and dates.
 fn compare_cooldown(
     report: &mut Report,
     label: &str,
@@ -961,8 +902,6 @@ fn compare_cooldown(
         report.limitation("cooldown operands were not recorded in this layout", label);
         return Ok(());
     };
-    // Saved cooldown status spellings. The inherited
-    // writer emits reason/start/end only for nonzero kind.
     let reason: &[u8] = match kind {
         1 => b"reassigned",
         2 => b"harmed",
@@ -996,13 +935,6 @@ fn compare_cooldown(
     Ok(())
 }
 
-/// OperativeMissions against each country's saved active roster, joined by
-/// handle: membership and roster order, assignment and cooldown as
-/// OperativeMemberships compares them, and the active mission's presence,
-/// definition, target country, target state and ideology. The save writes the
-/// mission block only for a nonzero variant, `target` only for a positive
-/// country reference, `state` only for a state-targeted mission's nonnull
-/// state and `ideology` only for a boost-ideology mission's nonnull ideology.
 fn compare_operative_missions(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -1017,7 +949,6 @@ fn compare_operative_missions(
         let Some(agency) = &country.agency else {
             continue;
         };
-        // The operative-reference roster is written directly in vector order.
         for (ordinal, entry) in agency.operatives.iter().enumerate() {
             if (entry.id & 0xffff_ffff) != handle_type {
                 return Err(invalid("saved operative handle has an unexpected type"));
@@ -1056,8 +987,6 @@ fn compare_operative_missions(
             continue;
         };
         matched += 1;
-        // The walk refuses a handle repeated in one active roster, so a
-        // complete table holds each once.
         if entries.len() != 1 {
             report.difference(format!("{label}.occurrences"), 1, entries.len());
         }
@@ -1089,7 +1018,6 @@ fn compare_operative_missions(
             actual.variant.is_some(),
             expected.mission_present,
         );
-        // The leader writer saves a nonempty portrait as `gfx` and omits an empty one.
         equal(
             report,
             &format!("{label}.gfx"),
@@ -1116,7 +1044,6 @@ fn compare_operative_missions(
             ),
         }
         if target_key {
-            // The country writer omits a nonpositive reference.
             let target = actual
                 .target_country
                 .filter(|&raw| (raw as i32) > 0)
@@ -1176,14 +1103,6 @@ fn compare_operative_missions(
     Ok(())
 }
 
-/// Cryptology targets.
-///
-/// Cryptology saves the 0x3D75 list iff its count is nonzero, with
-/// stride 0x38 plus the 0x4B34 source; loading mirrors them.
-/// Each entry saves target (0x6B), decrypting (0x32F2),
-/// amount (0x1A1), bonus_active (0x2C7E), bonus_days (0x296D) and date (0x284A);
-/// loading mirrors them plus 0x2A7. Join is by owner and
-/// target tags; amount compares as i64/100000 and decrypting as yes/no.
 fn compare_cryptology(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -1273,8 +1192,6 @@ fn compare_cryptology(
             "absent from the save",
         );
     }
-    // Empty-omitted census: a country with no targets key must have no rows.
-    // (Verified by the leftover-recorded pass above; no separate loop needed.)
     report.compared("Cryptology", matched);
     report.limitation(
         "cryptology flag (token 0x2A7) has no recorded field and no proved save key; retained natively but not verified",
@@ -1287,8 +1204,6 @@ fn compare_cryptology(
     Ok(())
 }
 
-/// One network state's compared values, saved or recorded. Subnetwork values
-/// are `None` for a negative selector; quiet bytes compare as flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NetworkState {
     state: i32,
@@ -1327,15 +1242,6 @@ impl NetworkState {
     }
 }
 
-/// Intel subnetworks by target with positional state join.
-///
-/// The writer saves target (0x6B), local net (0x3D1D), subnetworks
-/// (0x4B6D, when their count is nonzero), records (0x4C00, when their
-/// count is nonzero), static source (0x4B34), coverage (0x30B5) and strength
-/// sums; loading mirrors them. Rows join positionally on state_id lists with
-/// strength None iff selector negative (strength 0 / sub_network_id -1).
-/// The game keys strategic operatives by the same country-array slot
-/// authenticated by the native walker; owners must remain separate.
 fn compare_intel_networks(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -1344,7 +1250,6 @@ fn compare_intel_networks(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut saved = BTreeMap::<(u32, Vec<u8>), Vec<NetworkState>>::new();
-    // Built once: a per-network scan of every link is quadratic in countries.
     let slots: BTreeSet<u32> = countries.values().map(|row| row.canonical_slot).collect();
     if let Some(operatives) = &save.strategic_operatives {
         for operative in operatives.values() {
@@ -1368,7 +1273,6 @@ fn compare_intel_networks(
                             invalid("saved intel subnetwork selector outside array")
                         })?)
                     };
-                    // A selector outside the saved quiet list is not quiet.
                     let local_quiet = usize::try_from(*selector)
                         .ok()
                         .and_then(|selector| network.local_quiet.get(selector))
@@ -1470,8 +1374,6 @@ fn compare_intel_networks(
                 actual.local_quiet,
                 expected.local_quiet,
             );
-            // Negative selectors carry no subnetwork: the save writes strength
-            // 0 with sub_network_id -1, and the row holds none of its values.
             for (name, actual, expected) in [
                 ("strength", actual.strength, expected.strength),
                 ("gain_factor", actual.gain_factor, expected.gain_factor),
@@ -1530,7 +1432,6 @@ fn compare_intel_networks(
     Ok(())
 }
 
-/// Independent native network caches, joined by manager owner slot and target.
 fn compare_network_summaries(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -1626,8 +1527,6 @@ fn compare_network_summaries(
     Ok(())
 }
 
-/// Every actual saved manager slot, including the reserved and unused-country
-/// objects. The ordered logical history and weekly cache are independent.
 fn compare_propaganda(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -1740,7 +1639,6 @@ fn compare_strategic_operatives(
             return Err(invalid("duplicate recorded strategic operative slot"));
         }
     }
-    // Built once: a per-entry scan of every link is quadratic in countries.
     let slots: BTreeSet<u32> = countries.values().map(|row| row.canonical_slot).collect();
     let mut matched = 0;
     let mut countryless = 0_usize;
@@ -1833,10 +1731,6 @@ fn compare_strategic_operatives(
     Ok(())
 }
 
-/// Compare the country-rooted current autonomy serializer, not the
-/// historically stored subject-relation definition in active_relations.
-/// The game emits score, current/adjacent names and the date's
-/// persistent base, independently of its current hour.
 fn compare_autonomy(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -1975,7 +1869,6 @@ fn compare_agencies(
             Some(actual.upgrade_progress_raw),
             Some(&expected.upgrade_progress),
         );
-        // The game writes is_created=yes exactly when the byte is nonzero.
         equal(
             report,
             &format!("{subject}.is_created"),
@@ -1983,8 +1876,6 @@ fn compare_agencies(
             expected.created,
         );
         if let Some(name) = &expected.name {
-            // The agency save writer emits its name
-            // unconditionally in ordinary text mode, including empty text.
             let label = format!("{subject}.name");
             let text = super::serialized_text(report, &label, &actual.name);
             equal(report, &label, text, name.as_slice());
@@ -2050,8 +1941,6 @@ fn compare_agency_upgrade_levels(
     }
     let mut recorded = BTreeMap::<&[u8], BTreeMap<u32, _>>::new();
     let mut refused = Vec::new();
-    // Refused rows survive a truncated read. Name them before refusing the
-    // table's coverage, without comparing partial rows against a full save.
     let acquired = match &*frame.tables[replay_data::rows::TableId::AgencyUpgradeLevels.index()] {
         replay_frame::frame::TableView::Complete(
             replay_data::rows::TableRows::AgencyUpgradeLevels(rows),
@@ -2255,8 +2144,6 @@ fn compare_agency_upgrade_identities(
                     "{label} {upgrade} has no global native registry definition"
                 ))
             })?;
-        // Loading selects the first global token pointer.
-        // Exact saved token/level agreement cannot waive a different live branch.
         if !branch.eq_ignore_ascii_case(&global.branch) {
             report.difference(
                 format!("{label}.save_reload_branch"),
@@ -2431,7 +2318,6 @@ fn compare_capitulation(
                         .iter()
                         .map(|&raw| required_country_tag(raw, countries).map(<[u8]>::to_vec))
                         .collect::<io::Result<Vec<_>>>()?;
-                    // The saved owned roster, each reference through its goal object.
                     let saved = rosters
                         .owned_goals
                         .get(tag)
@@ -2477,7 +2363,6 @@ fn compare_flags(
     let mut country_counts = BTreeMap::<&[u8], usize>::new();
     for actual in complete::<tables::ScriptFlags>(frame)? {
         if actual.scope_kind == character_scope_kind {
-            // `compare_character_flags` joins them with the characters.
             continue;
         }
         if actual.scope_kind != country_scope_kind {
@@ -2557,8 +2442,6 @@ fn compare_flags(
     Ok(())
 }
 
-/// One scope's recorded flags of one literal name against its saved flags of
-/// that name. Returns the joined occurrences.
 fn compare_flag_values(
     report: &mut Report,
     label: &str,
@@ -2609,10 +2492,6 @@ fn compare_flag_values(
     Ok(actual.len().min(expected.len()))
 }
 
-/// Character flags (ScriptFlags' character scope) against each saved
-/// character's own `flags`. The character writer writes that
-/// block from the character's flag store exactly when its count is
-/// positive, so a character without it has no flags.
 fn compare_character_flags(
     frame: &DecodedFrame,
     manager: Option<&saved_characters::Manager>,
@@ -2719,7 +2598,6 @@ enum VariableScope<'a> {
     Global,
     Country(&'a [u8]),
     State(u32),
-    /// A character's store, by its full reference (`id << 32 | 73`).
     Character(u64),
 }
 
@@ -2734,11 +2612,6 @@ impl VariableScope<'_> {
     }
 }
 
-/// ScriptVariables against the save's `variables` blocks: the game state's,
-/// each country's, each state's and each saved character's. The character
-/// writer omits the block only for a store with no entry
-/// and an untouched random state, so a saved character
-/// without it has no variables.
 fn compare_variables(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -2859,8 +2732,6 @@ fn compare_variables(
         let mut values = BTreeMap::<&[u8], Vec<i64>>::new();
         let mut unresolved_literal = false;
         for (index, entry) in actual.entries.iter().enumerate() {
-            // The variable writer passes a C-string pointer. The concrete stream target is
-            // not proved, so do not infer a prefix projection from that ABI.
             if entry.name.contains(&0) {
                 unresolved_literal = true;
                 report.limitation(
@@ -3021,8 +2892,6 @@ fn compare_operation_tokens(
     let mut matched = 0;
     for (owner, country) in report.canonical_countries(&save.countries) {
         if let Some(manager) = &country.operation_tokens {
-            // The asset writer emits operation_assets for a nonempty target map;
-            // its callback omits each empty token vector independently.
             equal(
                 report,
                 &format!("{}.operation_assets presence", text(owner)),
@@ -3091,17 +2960,6 @@ fn compare_operation_tokens(
     Ok(())
 }
 
-/// Persistent espionage-operation instances.
-///
-/// The operation save writer always emits the target. Start date and duration
-/// are emitted only for nonzero duration, and the start-date sentinel is omitted.
-/// Assigned slots and phases are emitted only for nonzero signed counts; the
-/// province reference is emitted only when nonzero. Loading restores the same
-/// fields. The manager writer always emits finished and priority lists, and
-/// emits the running list only when its count is nonzero. The preparation's
-/// current and required words are saved as `civilian_factories` and `total`,
-/// each omitted when zero; the selected phases, the requirement records
-/// (`resources`) and the inline equipment pool (`equipment`) in native order.
 fn compare_operations(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -3131,9 +2989,6 @@ fn compare_operations(
             );
         }
         let Some(running) = &operations.running else {
-            // The manager writer omits running iff its count is zero. Report
-            // one count difference and consume those rows so the leftover
-            // pass below does not double-count the same extra rows.
             let ids: Vec<u64> = recorded
                 .iter()
                 .filter(|(_, (tag, _))| *tag == owner.as_slice())
@@ -3224,7 +3079,6 @@ fn compare_operations(
                 u32::try_from(expected.operative_slots.as_ref().map(Vec::len).unwrap_or(0))
                     .map_err(|_| invalid("saved operation slot count exceeds u32"))?,
             );
-            // The operation writer omits each boolean only when its byte is zero.
             equal(
                 report,
                 &format!("{field}.completed"),
@@ -3264,7 +3118,6 @@ fn compare_operations(
                     "{field}.looted is present on a nonterminal saved operation"
                 )));
             }
-            // The writer omits each preparation word only when it is zero.
             equal(
                 report,
                 &format!("{field}.civilian_factories"),
@@ -3316,11 +3169,8 @@ fn compare_operations(
     Ok(())
 }
 
-/// Fixed5 units per whole civilian factory in a factory requirement.
 const FACTORY_SCALE: i64 = 100_000;
 
-/// The recorded phase tokens' spellings, through the recorded LexicalTokens,
-/// against the saved `phases` in order with repeats.
 fn compare_operation_phases(
     report: &mut Report,
     field: &str,
@@ -3349,10 +3199,6 @@ fn compare_operation_phases(
     equal(report, &format!("{field}.phases"), names, saved);
 }
 
-/// The recorded requirement records against the saved `resources` in order
-/// with repeats: an equipment requirement as its archetype's spelling and
-/// fixed5 amount, the civilian-factory requirement as its whole factories
-/// (the fixed5 amount truncated toward zero) and days.
 fn compare_operation_resources(
     report: &mut Report,
     field: &str,
@@ -3412,9 +3258,6 @@ fn compare_operation_resources(
     }
 }
 
-/// The recorded pool against the saved `equipment` block: its allow-zero
-/// flag and its variant entries in order, the zero amounts the writer omits
-/// without `allow_zero_entries` left out.
 fn compare_operation_equipment(
     report: &mut Report,
     field: &str,
@@ -3460,9 +3303,6 @@ fn compare_operation_equipment(
 }
 
 fn saved_effect_description(raw: &[u8]) -> Vec<u8> {
-    // Description serialization removes CR and replaces LF with literal
-    // backslash-n. The text writer emits its C-string prefix;
-    // save parser decodes the writer's quote/backslash escapes afterwards.
     let mut saved = Vec::new();
     for &byte in raw {
         match byte {
@@ -3475,15 +3315,6 @@ fn saved_effect_description(raw: &[u8]) -> Vec<u8> {
     saved
 }
 
-/// Assigned-operative slots, joined positionally by (operation, ordinal).
-///
-/// Assigned-slot writer omits the 0x3D13 ref for a both-zero
-/// handle but retains the slot, omits 0x4C11 for zero selection, and
-/// omits 0x2CBA for a null optional. Both sides carry the writer's own
-/// positional ordinal (copy of the incoming-action ordinal pattern in
-/// compare_incoming_actions:135-142), so one removed slot must not shift later
-/// rows into differences. Selection-vs-mission semantics are unproved, so only
-/// presence, ordinal and handle are compared.
 fn compare_operation_assignments(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -3498,9 +3329,6 @@ fn compare_operation_assignments(
             return Err(invalid("duplicate recorded operation assignment identity"));
         }
     }
-    // No dense-ordinal refusal here: like incoming actions, the ordinal is
-    // identity, so a moved row joins as missing plus extra differences rather
-    // than an error. Duplicates above are still refused.
     let mut matched = 0;
     for (owner, country) in report.canonical_countries(&save.countries) {
         let Some(operations) = &country.operations else {
@@ -3534,14 +3362,8 @@ fn compare_operation_assignments(
                     None => equal(report, &format!("{label}.operative"), actual.operative, 0),
                 }
             }
-            // A recorded assignment for this operation beyond the saved list
-            // length is reported with the leftovers below; nothing more to do
-            // here besides the per-ordinal join above.
         }
     }
-    // Validate that every recorded assignment's operation id exists in the save
-    // census (and that its owner link resolves), so stray rows are differences,
-    // not silent passes.
     let mut saved_ids = BTreeSet::new();
     for (_, country) in report.canonical_countries(&save.countries) {
         if let Some(operations) = &country.operations
@@ -3698,9 +3520,6 @@ mod tests {
         );
     }
 
-    /// Each country's owned war goals' recipients, resolved to tags, compare
-    /// in saved order with its `diplomacy.available_wargoals`; the old row
-    /// held none, so a saved goal against it differs.
     #[test]
     fn owned_war_goal_recipients_compare_with_saved_goals() {
         let rows = [(7, b"AAA"), (8, b"BBB")].map(|(id, tag)| CountryRow {
@@ -3709,7 +3528,6 @@ mod tests {
             ..Default::default()
         });
         let countries = BTreeMap::from([(7, &rows[0]), (8, &rows[1])]);
-        // Goal 4 is in use in a war: saved, but no longer in the owned vector.
         let input: &[u8] = br#"countries={AAA={diplomacy={wargoals={take_state={id={id=3 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=BBB type=take_state} puppet={id={id=4 type=4713} wargoaldata_actor=AAA wargoaldata_recipient=AAA type=puppet}} available_wargoals={wargoal={id=3 type=4713}}}} BBB={diplomacy={}}}"#;
         let save = parsed(input);
         let rosters = installed_content_save::country_rosters::parse(
@@ -4009,7 +3827,6 @@ mod tests {
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["IncomingDiplomaticActions"], 1);
 
-        // The native index is identity, not payload: changing it moves the row.
         let mut row = incoming_row();
         row.ordinal = 1;
         let mut report = Report::default();
@@ -4022,7 +3839,6 @@ mod tests {
         .unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 
-        // A changed handle, tag or date is its own single difference.
         for mutate in [
             (|row: &mut replay_data::rows::IncomingDiplomaticActionRow| row.handle = 1)
                 as fn(&mut _),
@@ -4044,8 +3860,6 @@ mod tests {
             assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         }
 
-        // One removed slot must not shift the rows after it: the second action
-        // still aligns on its own native index.
         let mut second = incoming_row();
         second.ordinal = 4;
         second.handle = 7;
@@ -4071,8 +3885,6 @@ mod tests {
         .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
 
-        // A recorded action for a country whose queue block is empty is a
-        // difference, not a silently accepted extra row.
         let mut row = incoming_row();
         row.country = 2;
         let mut report = Report::default();
@@ -4099,11 +3911,6 @@ mod tests {
         }
     }
 
-    /// Character flags join each saved character's own `flags` by id and
-    /// literal name; a character without the block has none, and the country
-    /// comparison neither counts nor limits them.
-    /// Each saved character's `variables` block, and no block for an
-    /// empty store.
     #[test]
     fn character_variables_compare_with_each_saved_character() {
         let items = installed_content_core::parser::parse(
@@ -4150,7 +3957,6 @@ mod tests {
         ]);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables.get("ScriptVariables"), Some(&3));
-        // A recorded key the save lacks, and a missing store, differ.
         let report = run(vec![
             global,
             row(44, &[(b"score", 150_000)]),
@@ -4209,7 +4015,6 @@ mod tests {
             Some(&1)
         );
         assert!(!report.compared_tables.contains_key("ScriptFlags"));
-        // A different countdown, a flag the save lacks, a missing flag.
         assert_eq!(run(vec![row(44, 600, 179)]).differences.len(), 1);
         assert_eq!(
             run(vec![row(44, 600, 180), row(45, 601, 0)])
@@ -4218,7 +4023,6 @@ mod tests {
             2
         );
         assert_eq!(run(vec![]).differences.len(), 2);
-        // The country comparison leaves character rows to this one.
         let mut report = Report::default();
         compare_flags(
             &frame(
@@ -4331,7 +4135,7 @@ mod tests {
             .enumerate()
             .map(
                 |(ordinal, level)| replay_data::rows::AgencyUpgradeLevelRow {
-                    country: 102, // authenticated alias of the same current country
+                    country: 102,
                     ordinal: ordinal as u32,
                     definition_pointer: 0x1000 + ordinal as u64 * 0x100,
                     branch_pointer: 0x2000,
@@ -4580,7 +4384,6 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("multiple native branch-owned"))
         );
-        // The fixture has a unique task-owned absolute path outside source.
         assert!(root.starts_with(&scratch));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -5508,8 +5311,6 @@ mod tests {
                 );
             }
         }
-        // The UI may retain unsaved references and repeated/out-of-order membership.
-        // That cannot exempt a saved instance's independently verifiable target.
         let report = run(AgencyOperationBuffersRow {
             running: vec![AgencyBufferedOperation {
                 operation: 0,
@@ -5609,12 +5410,10 @@ mod tests {
             .as_mut()
             .unwrap()[0]
             .target_province = None;
-        // The saved positive capital is outside the state roster, so the getter returns no state.
         assert!(run(&pack, Some(0), &membership).1.differences.is_empty());
         assert_eq!(run(&pack, Some(219), &membership).1.differences.len(), 1);
     }
 
-    /// Phase and archetype spellings of [`operation_row`]'s tokens.
     fn operation_tokens() -> TokenNames<'static> {
         [
             (7_u32, b"operation_rescue_operative".as_slice()),
@@ -5771,11 +5570,6 @@ mod tests {
         assert!(report.differences.is_empty());
     }
 
-    /// Gated operation emission: present values compare exactly, omitted
-    /// values prove sentinel/zero/empty, and any mismatch is a real
-    /// difference rather than a printed limitation (except the proved
-    /// limitation groups: definition-token mapping, manager history/priority,
-    /// plus the unproved prep/flag literals).
     #[test]
     fn operations_present_and_omitted_compare_with_gated_emission() {
         let (_, _, countries) = operation_links();
@@ -5794,8 +5588,6 @@ mod tests {
         .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["Operations"], 1);
-        // Unrecorded manager history/priority, prep/flag and definition-token
-        // limitations are always printed.
         for text in [
             "operation-manager priority",
             "no proved save literal",
@@ -5820,7 +5612,6 @@ mod tests {
             report.limitations
         );
 
-        // Every exactly-compared field can differ on its own.
         type Change = fn(&mut replay_data::rows::OperationRow);
         let mutate: [(&str, Change); 8] = [
             ("owner", |row| row.owner = 102),
@@ -5834,8 +5625,6 @@ mod tests {
         ];
         for (name, change) in mutate {
             let mut row = operation_row();
-            // A definition token with no lexical entry is a limitation, not a
-            // definition difference; give it an entry so the change is visible.
             let tokens = if name == "definition" {
                 [(8_u32, b"other_operation".as_slice())]
                     .into_iter()
@@ -5862,7 +5651,6 @@ mod tests {
             assert!(report.differences[0].contains(name));
         }
 
-        // Omitted saved date/duration/phases/slots prove sentinel/zero.
         let omitted = parsed(
             br#"countries={GER={operations={ running={
                 operation_rescue_operative={ id={ id=69023 type=4713 } target="SOV" equipment={ allow_zero_entries=no } }
@@ -5886,8 +5674,6 @@ mod tests {
         .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
 
-        // A recorded start/duration/count against an omitted saved field is a
-        // real difference, not a waived omission.
         let mut row = operation_row();
         row.start_hour = 0x29c77f8;
         row.duration_days = 0;
@@ -5908,8 +5694,6 @@ mod tests {
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("start_hour"));
 
-        // GER shape (no running key) with a recorded row for that owner is a
-        // difference; with no recorded rows it matches.
         let mut report = Report::default();
         compare_operations(
             &operation_frame(vec![]),
@@ -5932,8 +5716,6 @@ mod tests {
             &mut report,
         )
         .unwrap();
-        // One missing (saved id absent from recorded) plus one extra
-        // (recorded id absent from save).
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     }
 
@@ -5959,7 +5741,6 @@ mod tests {
                 .keys()
                 .any(|reason| reason.contains("lexical dictionary"))
         );
-        // A changed scalar still fails even when the definition is unverified.
         let mut row = operation_row();
         row.duration_days += 1;
         let mut report = Report::default();
@@ -5985,9 +5766,6 @@ mod tests {
         SOV={}
     }"#;
 
-    /// The row [`PREPARED_SAVE`] certifies, with runtime-only totals, an
-    /// equipment requirement's days, uses-time bytes and an omitted zero
-    /// pool entry.
     fn prepared_row() -> replay_data::rows::OperationRow {
         replay_data::rows::OperationRow {
             start_hour: 0x29c77f8,
@@ -6004,7 +5782,6 @@ mod tests {
                     equipment: 1,
                     uses_time: 1,
                 },
-                // Truncated toward zero to two whole factories.
                 replay_data::rows::OperationRequirement {
                     amount: 299_999,
                     days: 30,
@@ -6107,7 +5884,6 @@ mod tests {
                 report.differences
             );
         }
-        // Runtime-only operands never differ.
         let mut unsaved = prepared_row();
         unsaved.requirements[0].days = 0;
         unsaved.requirements[0].uses_time = 0;
@@ -6119,7 +5895,6 @@ mod tests {
                 .differences
                 .is_empty()
         );
-        // An omitted pool is a difference, never an empty pool.
         let save = std::str::from_utf8(PREPARED_SAVE).unwrap().replace(
             "equipment={ allow_zero_entries=no equipment={ id={ id=12 type=70 } amount=100 } }",
             "",
@@ -6127,7 +5902,6 @@ mod tests {
         let report = compare_prepared(prepared_row(), save.as_bytes());
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with(&format!("{prefix}.equipment:")));
-        // Omitted preparation words are zero.
         let save = std::str::from_utf8(PREPARED_SAVE)
             .unwrap()
             .replace("civilian_factories=1.5 total=12", "");
@@ -6139,7 +5913,6 @@ mod tests {
                 .differences
                 .is_empty()
         );
-        // A phase token without a recorded spelling is a limitation.
         let mut row = prepared_row();
         row.phases[0] = 99;
         let report = compare_prepared(row, PREPARED_SAVE);
@@ -6219,7 +5992,6 @@ mod tests {
         let report = compare_strategic(strategic_rows(), STRATEGIC_SAVE).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["StrategicOperatives"], 2);
-        // Slot 0 has no live country and no recorded row.
         assert!(
             report.limitations.values().flatten().any(|subject| subject
                 == "StrategicOperatives: 1 saved slots without a recorded country"),
@@ -6270,7 +6042,6 @@ mod tests {
                 report.differences
             );
         }
-        // A recorded empty map matches an omitted one; a saved entry it lacks differs.
         let report = compare_strategic(
             strategic_rows(),
             &STRATEGIC_SAVE.replace(
@@ -6287,13 +6058,11 @@ mod tests {
 
     #[test]
     fn strategic_operatives_keep_membership_and_always_saved_activity() {
-        // A saved slot of a live country without a row.
         let mut rows = strategic_rows();
         rows.pop();
         let report = compare_strategic(rows, STRATEGIC_SAVE).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("strategic_operative.8:"));
-        // A row without a saved slot.
         let report = compare_strategic(
             strategic_rows(),
             &STRATEGIC_SAVE.replace(
@@ -6305,7 +6074,6 @@ mod tests {
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].starts_with("SOV.strategic_operative:"));
         assert!(report.differences[0].contains("absent from the save"));
-        // The writer always saves both activity levels.
         let report = compare_strategic(
             strategic_rows(),
             &STRATEGIC_SAVE.replace("8={ subversive_activity_level={ value=0 } ", "8={ "),
@@ -6315,8 +6083,6 @@ mod tests {
         assert!(
             report.differences[0].starts_with("SOV.strategic_operative.subversive_activity_level:")
         );
-        // A row whose owner is not its slot's country, or a repeated slot,
-        // is no comparison.
         let mut rows = strategic_rows();
         rows[1].slot = 9;
         assert!(compare_strategic(rows, STRATEGIC_SAVE).is_err());
@@ -6361,9 +6127,6 @@ mod tests {
         } }}
     }"#;
 
-    /// Positional slot join: the ordinal is identity (like incoming actions),
-    /// so one removed slot must not shift later rows. Only presence, ordinal
-    /// and handle compare exactly; selection-vs-mission is limitation-printed.
     #[test]
     fn operation_assignments_join_positionally_and_keep_empty_slots() {
         let pack = parsed(ASSIGNMENT_SAVE);
@@ -6379,7 +6142,6 @@ mod tests {
                 .any(|reason| reason.contains("selection-vs-mission"))
         );
 
-        // A changed handle is its own single difference.
         let mut rows = assignment_rows();
         rows[0].operative = 1;
         let mut report = Report::default();
@@ -6387,23 +6149,18 @@ mod tests {
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].contains("operative"));
 
-        // The native ordinal is identity, not payload: changing it moves the row.
         let mut rows = assignment_rows();
         rows[0].ordinal = 5;
         let mut report = Report::default();
         compare_operation_assignments(&assignment_frame(rows), &pack, &mut report).unwrap();
-        // Saved slot 0 is now absent and recorded (op,5) is extra.
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 
-        // An omitted saved operative (both-zero slot retained) requires a zero
-        // recorded handle; a present saved operative requires that handle.
         let mut rows = assignment_rows();
         rows[1].operative = (111 << 32) | 4713;
         let mut report = Report::default();
         compare_operation_assignments(&assignment_frame(rows), &pack, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
-        // A recorded assignment beyond the saved list length is a difference.
         let mut rows = assignment_rows();
         rows.push(replay_data::rows::OperationAssignmentRow {
             operation: (69023 << 32) | 4713,
@@ -6415,9 +6172,6 @@ mod tests {
         compare_operation_assignments(&assignment_frame(rows), &pack, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
-        // One removed slot must not shift later rows: with saved slots [0,1]
-        // and recorded rows [(op,0),(op,2)], slot 1 is missing and (op,2) is
-        // extra, while slot 0 still aligns on its own ordinal.
         let mut rows = assignment_rows();
         rows[1].ordinal = 2;
         let mut report = Report::default();
@@ -6515,8 +6269,6 @@ mod tests {
         ]
     }
 
-    /// Present values compare exactly, omitted saved entries prove absence, and
-    /// unproved literals stay limitation-printed with exact mapping names.
     #[test]
     fn operative_memberships_join_by_handle_roster_and_kind_group() {
         let (_, _, countries) = operative_links();
@@ -6527,8 +6279,6 @@ mod tests {
         let table = TableId::OperativeMemberships;
         let frame = |rows| frame(table, TableRows::OperativeMemberships(rows));
         let mut report = Report::default();
-        // An operation handle and an on_mission assignment do not imply
-        // a mission action discriminator. Both fixtures correctly have None.
         let rows = operative_rows();
         compare_operative_memberships(&frame(rows.clone()), &pack, &owned, &tokens, &mut report)
             .unwrap();
@@ -6544,7 +6294,6 @@ mod tests {
             report.limitations.keys()
         );
 
-        // Every exactly-compared field can differ on its own.
         let mut row = rows[0].clone();
         row.skill = Some(3);
         let mut report = Report::default();
@@ -6572,7 +6321,6 @@ mod tests {
         .unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
-        // Omitted saved entry is a difference; extra recorded row is a difference.
         let mut report = Report::default();
         compare_operative_memberships(&frame(vec![]), &pack, &owned, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
@@ -6587,14 +6335,12 @@ mod tests {
         compare_operative_memberships(&frame(rows), &pack, &owned, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
-        // POOL_A cannot impersonate a saved recruitable membership.
         let mut rows = operative_rows();
         rows[1].roster_kind = 1;
         let mut report = Report::default();
         compare_operative_memberships(&frame(rows), &pack, &owned, &tokens, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2);
 
-        // Duplicate recorded identity is refused; unavailable tables error.
         let mut rows = operative_rows();
         rows.push(rows[0].clone());
         assert!(
@@ -6684,7 +6430,6 @@ mod tests {
                     report.differences
                 );
             }
-            // Native country-tag serialization omits a null target.
             let absent = parsed(source.replace("target=ENG", "").as_bytes());
             let mut no_target = row.clone();
             no_target.target_country = Recorded::Value(None);
@@ -6698,7 +6443,6 @@ mod tests {
             )
             .unwrap();
             assert!(report.differences.is_empty(), "{:?}", report.differences);
-            // A different concrete definition must not pass on presence alone.
             row.action_variant = Some((index as u32 + 1) % 8 + 1);
             let mut report = Report::default();
             compare_operative_memberships(&make_frame(row), &pack, &owned, &tokens, &mut report)
@@ -6746,7 +6490,6 @@ mod tests {
         tokens
     }
 
-    /// The rows the save above certifies, with an unsaved pending mission on the first.
     fn mission_rows(pack: &saved::Pack) -> Vec<replay_data::rows::OperativeMissionRow> {
         let saved = &pack.countries[b"GER".as_slice()]
             .agency
@@ -6821,7 +6564,6 @@ mod tests {
         );
         type Change = fn(&mut [replay_data::rows::OperativeMissionRow]);
         let changes: [(usize, &str, Change); 13] = [
-            // A changed portrait, and a missionless operative whose save omits gfx.
             (0, "gfx", |rows| rows[0].portrait = b"GFX_other".to_vec()),
             (1, "gfx", |rows| rows[1].portrait = b"GFX_other".to_vec()),
             (0, "ordinal", |rows| rows[0].ordinal = 1),
@@ -6865,7 +6607,6 @@ mod tests {
                 report.differences
             );
         }
-        // The unsaved pending mission never differs.
         let mut unsaved = rows.clone();
         unsaved[0].pending_variant = None;
         unsaved[0].pending_state = Some(8);
@@ -6912,7 +6653,6 @@ mod tests {
     #[test]
     fn operative_missions_keep_save_omissions_and_roster_membership() {
         let source = MISSION_SAVE;
-        // A nonpositive country, a null state and no ideology are omitted.
         let omitted = parsed(
             source
                 .replace("target=ENG state=219 ideology=fascism", "")
@@ -6935,7 +6675,6 @@ mod tests {
                 .differences
                 .is_empty()
         );
-        // A country-targeted mission saves its target without a state.
         let country = parsed(
             source
                 .replace(
@@ -6960,7 +6699,6 @@ mod tests {
         assert!(report.differences[0].contains(".mission_state"));
 
         let pack = parsed(source.as_bytes());
-        // A saved roster entry without a row, and a row without a saved entry.
         let mut rows = mission_rows(&pack);
         rows.pop();
         let report = compare_missions(rows, &pack).unwrap();
@@ -6981,7 +6719,6 @@ mod tests {
         let report = compare_missions(rows, &pack).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
         assert!(report.differences[0].contains("absent from the save"));
-        // A recorded identity twice, or an unavailable table, is no comparison.
         let mut rows = mission_rows(&pack);
         rows.push(rows[0].clone());
         assert!(compare_missions(rows, &pack).is_err());
@@ -7134,7 +6871,6 @@ mod tests {
                     .iter()
                     .any(|difference| difference.contains(".active_operation"))
             );
-            // Continue through later operative rows after a stale assignment.
             assert!(
                 report
                     .differences
@@ -7287,8 +7023,6 @@ mod tests {
         (eng, map)
     }
 
-    /// Present targets compare amount and decryption exactly; omitted GER
-    /// targets prove empty; bonus/date shapes stay limitation-printed.
     #[test]
     fn cryptology_targets_join_by_owner_and_target_with_gated_scalars() {
         let (_, map) = cryptology_links();
@@ -7323,7 +7057,6 @@ mod tests {
         compare_cryptology(&frame(rows), &pack, &owned, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 
-        // Omitted saved target is a difference; GER empty omission matches.
         let mut report = Report::default();
         compare_cryptology(&frame(vec![]), &pack, &owned, &mut report).unwrap();
         assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
@@ -7411,7 +7144,6 @@ mod tests {
         ]
     }
 
-    /// Every recorded network value is compared against the save on its own.
     #[test]
     fn intel_networks_compare_gains_quiet_bytes_and_subnetwork_targets() {
         let map = network_links();
@@ -7470,7 +7202,6 @@ mod tests {
         }
     }
 
-    /// Positional state join within each canonical owner's target network.
     #[test]
     fn intel_networks_join_positionally_with_negative_selector_normalization() {
         let map = network_links();
@@ -7499,7 +7230,6 @@ mod tests {
 
         let mut report = Report::default();
         compare_intel_networks(&frame(vec![]), &pack, &owned, &tokens, &mut report).unwrap();
-        // One count difference plus one absent difference per saved state.
         assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
 
         let mut bad = frame(network_rows());
@@ -7561,7 +7291,6 @@ mod tests {
         AST={diplomacy={active_relations={} autonomy_state={ progress=4312.86618 current_state="autonomy_colony" prev_state="autonomy_puppet" next_state="autonomy_dominion" last_modified_autonomy_date="1943.4.9.5" }}}
     }"#;
 
-    /// Current autonomy can differ from the old puppet-relation definition.
     #[test]
     fn autonomy_compares_its_country_root_and_all_saved_recorded_fields() {
         let eng = CountryRow {

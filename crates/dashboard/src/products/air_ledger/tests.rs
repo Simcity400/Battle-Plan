@@ -12,7 +12,6 @@ fn params(family: MilitaryAirFamily) -> MilitaryAirParams {
     MilitaryAirParams { branch_id: "1".into(), family, regions: Vec::new(), causes: Vec::new(), from_hour: None, window: 0, top: None }
 }
 
-/// `params`' reply of `fold` over `10..=13`, nothing carried into it.
 fn reply_of(fold: &Fold, params: &MilitaryAirParams) -> MilitaryAirReply {
     reply(fold, (10, 13), &countries(), params, &Openings::new(), Vec::new(), &AtomicBool::new(false)).unwrap()
 }
@@ -21,7 +20,6 @@ fn air(id: u64, game_hour: i32, country: u32, credited_enemy: bool, amount: i64,
     Event::Air { id, game_hour, country, region: 5, cause: 1, credited_enemy, amount, opponent }
 }
 
-/// One hour: unread without events, else observed with the events its drain read.
 fn hour(hour: i32, events: Option<Vec<Event>>) -> (Span, Vec<(i32, Vec<Event>)>) {
     match events {
         None => (Span { first: hour, last: hour, held: Held::Unread }, Vec::new()),
@@ -48,8 +46,6 @@ fn air_losses_are_named_at_the_read_and_a_range_starts_at_the_events_own_hour() 
     assert_eq!(fold.observed, vec![HourSpan { first_hour: 11, last_hour: 13 }], "an unread hour certifies nothing, an empty read certifies none");
     let reply = reply_of(&fold, &params(MilitaryAirFamily::AirLosses));
     let ger: Vec<_> = reply.parts.iter().filter(|part| part.tag.as_deref() == Some("GER")).collect();
-    // A link id resolving to the holder's slot is the holder's; an opponent recorded and one not
-    // recorded are kept apart.
     assert_eq!(ger.len(), 2);
     let known = ger.iter().find(|part| part.opponent_known == Some(true)).unwrap();
     assert_eq!(known.points, vec![(11, 11, "300000".to_owned())]);
@@ -89,9 +85,6 @@ fn a_restart_after_an_unread_interval_is_new_events_only_when_dated_within_it() 
     assert!(fold(MilitaryAirFamily::AirLosses, &backwards).is_err());
 }
 
-/// An hour is observed only when the event table and the links are both available (complete or
-/// read in part); an unavailable event table is an unread interval whatever the links; an hour no
-/// status run covers was not recorded.
 #[test]
 fn observed_hours_are_those_both_tables_were_available() {
     let run = |first, last, status| StatusRun { first, last, status };
@@ -113,9 +106,6 @@ fn observed_hours_are_those_both_tables_were_available() {
     );
 }
 
-/// A top N ranks a holder only while its total is above zero: one with no loss is never a member,
-/// so the race is not padded with zeros in tag order. A window ranks each holder by its total since
-/// the first hour counted: what its openings carry in, then its own points.
 #[test]
 fn a_top_ranks_only_holders_above_zero_by_their_totals_since_the_first_hour() {
     let hours = [hour(11, Some(vec![air(1, 11, 1, false, 300_000, None)])), hour(12, Some(vec![])), hour(13, Some(vec![air(2, 13, 2, false, 100_000, None)]))];
@@ -147,7 +137,6 @@ mod windows {
 
     const FIRST: i32 = 1_000;
     const LAST: i32 = 1_420;
-    /// The event table was not read here: an unread interval splits the observed hours.
     const UNREAD: std::ops::RangeInclusive<i32> = 1_200..=1_209;
 
     fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
@@ -163,10 +152,6 @@ mod windows {
         BuildingBombingDamageRow { id, game_hour, attacker, victim: 9002, state, province: None, building_type, native_cause: 0, cause, amount_raw, credited_raw: amount_raw }
     }
 
-    /// GER (9001 and link 11, slot 7) and ITA (9002, slot 8) fight from 1,000 to 1,420. Losses each five hours on both
-    /// sides in two regions, a correction each 35, a loss read thirty hours after it happened each seven, one whose
-    /// country no link names each eleven, a cause with no meaning each 50; bombing each six hours of two buildings
-    /// (one the lexicon spells), by a wing and by no wing, a land combat caller each twelve and an unknown one each 40.
     fn recording() -> Source {
         let frames = (FIRST..=LAST)
             .map(|hour| {
@@ -229,8 +214,6 @@ mod windows {
         MilitaryAirParams { branch_id: "1".into(), family, regions: regions.to_vec(), causes: causes.to_vec(), from_hour, window: 0, top }
     }
 
-    /// The cases the windows are proved on: both families, every measure ranked, regions and causes chosen, and
-    /// ranges starting mid-window (1,103 within thirty hours of losses read thirty hours late).
     fn cases() -> Vec<MilitaryAirParams> {
         vec![
             asked(MilitaryAirFamily::AirLosses, &[], &[], None, None),
@@ -243,8 +226,6 @@ mod windows {
         ]
     }
 
-    /// `params`' windows of 70 hours on the timeline's grid, from the one holding the first hour counted through the
-    /// timeline's last, as the widget asks a range: no window before the range's.
     fn windows_of(source: &Source, query: &Query<'_>, params: &MilitaryAirParams) -> Vec<MilitaryAirReply> {
         let (context, running) = (LoadContext { content: None }, AtomicBool::new(false));
         let mut windows = Vec::new();
@@ -257,12 +238,6 @@ mod windows {
         windows
     }
 
-    /// The windowed replies, joined as the widget joins them, equal the whole-branch reply they replaced from the
-    /// first hour asked (a range's window, which starts mid-campaign): every part's points and totals carried across
-    /// window edges (a loss read in one window and dated in the one before), the observed and incomplete hours (each
-    /// window's reaching back over the ones before), the holders and their hours in a top N of each measure (each
-    /// window ranking its own hours by the totals it carries in), the names and the notes; and every window says the
-    /// hour the whole counts from.
     #[test]
     fn windows_joined_equal_the_whole_branch_reply() {
         let source = recording();
@@ -280,9 +255,6 @@ mod windows {
         }
     }
 
-    /// A window's openings, read from the recorder's running totals, are each part's total over every window before
-    /// it from the first counted, and what folding the events before it gives: across the unread interval, for
-    /// losses read thirty hours after they happened across a range's first hour, regions and causes chosen.
     #[test]
     fn a_windows_openings_are_the_totals_of_the_windows_before_it() {
         let source = recording();
@@ -303,10 +275,6 @@ mod windows {
         }
     }
 
-    /// A window late in the campaign says on its own whether every total since the first hour counted is complete, as
-    /// the whole reply says at its hours: its observed hours that run on from before it reach back to where that
-    /// observation began (no further than the first counted; never across the unread interval), its holders' hours
-    /// with them, and of bombing the latest read in that reach holding a caller of unknown membership beside its own.
     #[test]
     fn a_windows_hours_reach_back_to_where_they_began_since_the_first_hour_counted() {
         let source = recording();
@@ -351,10 +319,6 @@ mod windows {
         assert!(bombing.iter().any(|window| window.incomplete.first().is_some_and(|span| span.first_hour < window.first_hour)), "a read before a window holding an unknown caller is carried");
     }
 
-    /// The open keeps each run's observed stretches of both families on the source, so a late window's reach back (and
-    /// the first hour counted) is a lookup instead of reading status runs back to the campaign's start: the stretches
-    /// kept are the hours both tables were available, split by the unread interval for losses alone, and every window
-    /// of every case is what a source that kept nothing at open answers.
     #[test]
     fn the_observed_stretches_kept_at_open_answer_every_window_as_reading_them_does() {
         let (warmed, cold) = (recording(), recording());
@@ -374,8 +338,6 @@ mod windows {
         assert!(kept_observed(&warmed).is_empty(), "forgotten with the recording's index");
     }
 
-    /// A window's points are only its own: its totals run from its first hour, and the events read in it, whenever they
-    /// happened, are its own; its observed hours reach back to where the observation began.
     #[test]
     fn a_window_counts_from_its_own_first_hour() {
         let source = recording();

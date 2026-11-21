@@ -77,8 +77,6 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
         owned: BTreeSet::new(),
         report: ModelReport::default(),
     };
-    // The history's targets are the figure and the hull; the raid unit
-    // is placed beside them, at the hour's start, and its mesh uploaded.
     let unstaged = prepared.field(&assets);
     prepared.stage_field(&assets);
     let staged_instances = prepared
@@ -139,7 +137,6 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
         (2, hour.position)
     );
     assert_eq!(seeds(&field.models.instances), [1, 2, 7].into());
-    // Playback places it again by the fraction.
     let moved = prepared.raid_units(&assets, Some((&heights, 0.5)));
     assert_eq!(
         moved[0].1.position,
@@ -180,7 +177,6 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
         route_offset: 0.5,
         cutoff: 120.0,
     };
-    // An hour without lines has no convoys to sail.
     prepared.add_convoys(Vec::new(), defines);
     assert!(!prepared.has_convoys());
     prepared.add_convoys(
@@ -194,7 +190,6 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
         defines,
     );
     assert!(prepared.has_convoys());
-    // An unchanged hour inherits already-created presentation instead of re-randomizing it.
     let (lines, defines, fleet) = prepared.convoys.as_mut().unwrap();
     *fleet.get_mut().unwrap() = Some(crate::map::trade_routes::ConvoyFleet::new(
         lines,
@@ -231,7 +226,6 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
     let hidden = prepared.convoy_units(&assets, 1.0, &|_, _| 0.0, |_| false, &mut refused);
     assert!(hidden.is_empty());
     assert!(refused.is_empty());
-    // Shown, both sailing convoys reach the entity, which these assets do not register.
     let shown = prepared.convoy_units(&assets, 1.0, &|_, _| 0.0, |_| true, &mut refused);
     assert!(shown.is_empty());
     assert_eq!(
@@ -327,7 +321,6 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
     assert!(Arc::ptr_eq(&next, &reused));
     reused.reset_convoys();
     assert!(next.convoys.as_ref().unwrap().2.lock().unwrap().is_none());
-    // Mesh upload must also leave a new fleet uninitialized.
     let mut fresh = make();
     fresh.field(&assets);
     assert!(fresh.convoys.as_ref().unwrap().2.lock().unwrap().is_none());
@@ -374,7 +367,6 @@ fn recorded_stack_and_combat_roles_select_native_states() {
         animation_state(None, Some(DEFEND), Some(false)),
         Some(DEFEND)
     );
-    // An unknown exercise predicate decides only a standing state.
     assert_eq!(animation_state(Some(&route), None, None), Some(SUPPORT));
     assert_eq!(animation_state(None, Some(DEFEND), None), Some(DEFEND));
     assert_eq!(animation_state(Some(&Route::default()), None, None), None);
@@ -456,7 +448,6 @@ fn ship_and_unit_gates_are_strict_below_their_cutoffs() {
     assert!(!GATES.units(120.0));
 }
 
-/// Synthetic, distinct unit and ship cutoffs.
 const GATES: Gates = Gates {
     units: 120.0,
     ships: 240.0,
@@ -471,8 +462,6 @@ const GATES: Gates = Gates {
 
 #[test]
 fn the_ladder_is_key_outermost_and_prefix_innermost() {
-    // Each key tries the prefix ladder once, so every prefix of
-    // the first key is tried before the second key is built at all.
     assert_eq!(
         names(candidates(
             Some("GER_cosmetic"),
@@ -492,7 +481,6 @@ fn the_ladder_is_key_outermost_and_prefix_innermost() {
             "infantry_entity",
         ]
     );
-    // An empty cosmetic tag is still prefixed with its underscore.
     assert_eq!(
         names(candidates(
             Some(""),
@@ -513,7 +501,6 @@ fn the_ladder_is_key_outermost_and_prefix_innermost() {
 #[test]
 fn a_sub_unit_whose_sprite_is_its_own_name_contributes_one_key() {
     assert_eq!(entity_keys("infantry", Some("infantry")), ["infantry"]);
-    // A key with no sub-unit row at all still reaches the bare name.
     assert_eq!(entity_keys("transport", None), ["transport"]);
 }
 
@@ -567,8 +554,6 @@ fn division(id: u64, province: u32, template: u64) -> replay_data::rows::Divisio
     }
 }
 
-/// A division whose recorded camouflage is the `cold` category (token 1),
-/// or whose camouflage was unreadable this hour.
 fn status(division: u64, readable: bool) -> replay_data::rows::DivisionStatusRow {
     replay_data::rows::DivisionStatusRow {
         division,
@@ -579,8 +564,6 @@ fn status(division: u64, readable: bool) -> replay_data::rows::DivisionStatusRow
     }
 }
 
-/// One German hour on provinces `1..=provinces`, all snowy, whose
-/// template 50 names a designer model.
 fn hour_frame(
     divisions: Vec<replay_data::rows::DivisionRow>,
     statuses: Vec<replay_data::rows::DivisionStatusRow>,
@@ -670,8 +653,6 @@ fn hour_frame(
     }
 }
 
-/// Three stacks: a designer model on snow, a division with no recorded
-/// template, and one whose camouflage is unreadable.
 fn prepare_frame() -> DecodedFrame {
     hour_frame(
         vec![division(1, 9, 50), division(2, 8, 51), division(3, 7, 50)],
@@ -680,10 +661,6 @@ fn prepare_frame() -> DecodedFrame {
     )
 }
 
-/// The raid unit's aircraft model end to end:
-/// Designer entity selection (`raid_arrows::designer_entity`)
-/// uses `aircraft_variant_model` and the
-/// conventional bridge, from a minimal content fixture and hour.
 mod aircraft_designer;
 
 mod model_witness;
@@ -704,8 +681,6 @@ fn camouflaged_assets() -> UnitModelAssets {
     }
 }
 
-/// Unit models hand their painted, even-rounded province boxes to the shared history.
-/// Check the frame's actual creations, including a hull and a land figure at the edges.
 #[test]
 fn unit_models_use_native_camera_admission_at_the_edges() {
     use {
@@ -779,8 +754,6 @@ fn prepare(assets: &UnitModelAssets, frame: &DecodedFrame) -> ModelReport {
 fn an_hour_selects_the_designer_model_and_its_snow_camouflage_per_stack() {
     let report = prepare(&camouflaged_assets(), &prepare_frame());
     assert_eq!((report.stacks, report.untemplated), (3, 1));
-    // The camouflaged designer model is the chosen entity; this test's
-    // library bakes nothing, so it is counted by name.
     assert_eq!(
         report.selection_errors,
         BTreeMap::from([
@@ -793,8 +766,6 @@ fn an_hour_selects_the_designer_model_and_its_snow_camouflage_per_stack() {
     );
 }
 
-/// Every stack of an hour, chosen alone in a session of its own on assets that kept nothing,
-/// takes what the whole hour's maker takes for it: the same entity, or the same reason it has none.
 #[test]
 fn a_stack_chosen_alone_takes_what_the_whole_hour_takes() {
     let divisions = vec![
@@ -803,7 +774,6 @@ fn a_stack_chosen_alone_takes_what_the_whole_hour_takes() {
         division(3, 7, 50),
         division(4, 6, 50),
     ];
-    // A designer model on snow, an unrecorded template, an unreadable camouflage and no status.
     let frame = hour_frame(
         divisions.clone(),
         vec![status(1, true), status(3, false)],
@@ -862,16 +832,12 @@ fn a_stack_chosen_alone_takes_what_the_whole_hour_takes() {
     );
 }
 
-/// One session's stacks: what it made, whether each stack's kept model stood before it was asked,
-/// and each stack's model.
 struct Session {
     made: Made,
     stood: Vec<bool>,
     chosen: Vec<Result<String, String>>,
 }
 
-/// Stacks `(province, oldest, template)` of roster owner 100 chosen over hours, one session an hour
-/// on the same assets and kept answers.
 fn sessions(
     assets: &UnitModelAssets,
     frames: &[DecodedFrame],
@@ -884,7 +850,6 @@ fn sessions(
     told_sessions(assets, &told, stacks)
 }
 
-/// [`sessions`], each hour told the rows made anew since the hour before.
 fn told_sessions(
     assets: &UnitModelAssets,
     frames: &[(DecodedFrame, Told)],
@@ -947,9 +912,6 @@ fn told_sessions(
         .collect()
 }
 
-/// The kept selections are indexed by the rows they read: a template row one stack's selection
-/// read changing makes that selection again and no other, and the stack it did not reach keeps
-/// its model unasked.
 #[test]
 fn a_row_a_kept_selection_read_drops_that_selection_and_no_other() {
     use replay_data::rows::{TableId, TableRows};
@@ -1009,15 +971,10 @@ fn a_row_a_kept_selection_read_drops_that_selection_and_no_other() {
     assert_eq!(hours[2].chosen, [snow.clone(), snow]);
 }
 
-/// A stack's camouflage is its own: a province's weather changing makes again the camouflage of
-/// the stack that read that province's snow and no other, a status changing only its division's,
-/// and each made again is what a session that kept nothing makes.
 #[test]
 fn a_weather_or_status_change_makes_again_the_camouflage_that_read_it_and_no_other() {
     use replay_data::rows::{ProvinceRow, TableId, TableRows, WeatherProvinceRow};
     use replay_frame::frame::TableView;
-    // Provinces 1 to 3 are state 1, 4 to 6 state 2, 7 to 9 no state; all snowy but province 4,
-    // whose stack takes its snow from its state's share (5 and 6 of 4 to 6).
     let weather = |dry: &[u32]| {
         TableView::Complete(TableRows::WeatherProvinces(
             (0..=9)
@@ -1046,10 +1003,8 @@ fn a_weather_or_status_change_makes_again_the_camouflage_that_read_it_and_no_oth
     ))
     .into();
     first.tables[TableId::WeatherProvinces.index()] = weather(&[4]);
-    // Province 6 dries: state 2's share falls to one of three.
     let mut second = first.clone();
     second.tables[TableId::WeatherProvinces.index()] = weather(&[4, 6]);
-    // Division 5's camouflage becomes unreadable.
     let mut third = second.clone();
     third.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![
@@ -1099,12 +1054,6 @@ fn a_weather_or_status_change_makes_again_the_camouflage_that_read_it_and_no_oth
     );
 }
 
-/// A session told which rows were made anew since its answers' frame takes them and compares no
-/// table: a template row told changed makes again the selection that read it though it reads the
-/// same, and the other stands. Told from a frame it did not keep its answers at, it compares the
-/// tables and finds the row that did change. Its country context stands while the views it was
-/// read from are the frame's and is read again once one is made anew, its answers standing while
-/// the countries read the same. Each hour's models are what a session that kept nothing makes.
 #[test]
 fn a_session_told_the_rows_made_anew_takes_them_and_compares_no_table() {
     use replay_data::rows::{CountryRow, TableId, TableRows};
@@ -1131,7 +1080,6 @@ fn a_session_told_the_rows_made_anew_takes_them_and_compares_no_table() {
         9,
     );
     first.tables[at] = templates(b"GER_other_entity");
-    // The same rows made anew, template 50's told changed.
     let mut second = first.clone();
     second.tables[at] = templates(b"GER_other_entity");
     let told_second = Told::new(vec![(
@@ -1139,7 +1087,6 @@ fn a_session_told_the_rows_made_anew_takes_them_and_compares_no_table() {
         first.tables[at].clone(),
         vec![(50, u64::MAX)],
     )]);
-    // Template 52's model changes, told from the first hour's view: compared instead.
     let mut third = second.clone();
     third.tables[at] = templates(b"GER_custom_entity");
     let told_third = Told::new(vec![(
@@ -1147,7 +1094,6 @@ fn a_session_told_the_rows_made_anew_takes_them_and_compares_no_table() {
         first.tables[at].clone(),
         Vec::new(),
     )]);
-    // The countries made anew with the same rows.
     let mut fourth = third.clone();
     fourth.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(vec![CountryRow {
@@ -1217,8 +1163,6 @@ fn a_content_failure_turns_off_only_the_model_layer_and_says_so() {
     assert!(report.disabled.unwrap().contains("acclimatation.txt"));
 }
 
-/// A unit distance cutoff a visual mod's scripts set to a string loads the layer with the
-/// recorded defines, named; it never turns the recorded unit models off.
 #[test]
 fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
     let defines = |cutoff: &str| {
@@ -1264,17 +1208,12 @@ fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
             && refusal.contains("UNITS_DISTANCE_CUTOFF"),
         "{refusal}"
     );
-    // Without visual mods' defines the layer is off, as before, and named for the map's
-    // fallback.
     let assets =
         UnitModelAssets::load_with(&layers, &shown, None, false, &mut warnings, |_| {}, load);
     assert!(assets.disabled.is_some());
     assert!(layers.refused().contains(LAYER_OFF));
 }
 
-/// Content of the visual mods that the unit model layer cannot load (their naval combat
-/// formations, a formation mesh) loads the layer from the recorded layers below them, named;
-/// the recorded unit models are drawn and nothing reaches the map's fallback.
 #[test]
 fn a_unit_model_layer_the_mods_break_loads_from_the_recording() {
     let defines = installed_content_core::defines::Defines::new().unwrap();
@@ -1327,7 +1266,6 @@ fn an_unreadable_template_leaves_its_stacks_unmodelled_and_counted() {
         replay_frame::frame::TableView::Complete(TableRows::DivisionTemplateIcons(vec![
             DivisionTemplateIconRow {
                 template: 50,
-                // A registered designer model would otherwise win at level 1.
                 model_entity: b"GER_custom_entity".to_vec(),
                 model_unreadable: 1,
                 ..Default::default()
@@ -1364,9 +1302,6 @@ fn a_division_in_both_equipment_tables_takes_the_hourly_rows_once() {
     assert_eq!(equipment.of(2).unwrap().len(), 1);
 }
 
-/// Each keyed lookup the selection makes (a division's equipment and status, a template, a
-/// variant) takes the rows the whole-table join it replaces took for that key, absent keys
-/// included.
 #[test]
 fn a_keyed_lookup_takes_what_the_whole_join_took() {
     use replay_data::rows::{DivisionEquipmentRow, DivisionModelInputRow, TableId, TableRows};
@@ -1376,7 +1311,6 @@ fn a_keyed_lookup_takes_what_the_whole_join_took() {
         amount_raw,
         ..Default::default()
     };
-    // Ascending by division, then ordinal, as a frame holds them.
     let daily = [
         equipment(1, 0, 10),
         equipment(1, 1, 11),
@@ -1385,7 +1319,6 @@ fn a_keyed_lookup_takes_what_the_whole_join_took() {
         equipment(4, 1, 41),
     ];
     let new = [equipment(1, 0, 99), equipment(3, 0, 30), equipment(3, 1, 31)];
-    // The join the hour made of every division before.
     let mut joined: BTreeMap<u64, Vec<&DivisionEquipmentRow>> = BTreeMap::new();
     for row in &new {
         joined.entry(row.division).or_default().push(row);
@@ -1498,7 +1431,6 @@ fn the_signed_model_number_is_tried_first_and_a_miss_continues_the_ladder() {
         graphical_culture: None,
         ..country()
     };
-    // Without the culture, only the first key's cosmetic and tag can be tried.
     assert_eq!(
         resolve_model_numbered(&unknown, "infantry", None, 2, lookup),
         None
@@ -1528,8 +1460,6 @@ fn transport_uses_the_original_country_and_its_culture() {
 
 #[test]
 fn the_heading_is_the_spline_tangent_and_zero_points_east() {
-    // The engine's heading is atan2(tangent.z, tangent.x), so a route
-    // running along +x is zero and one running along +z is a quarter turn.
     let east = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]];
     let (at, facing) = along(&east).expect("a two-province route moves");
     assert!((at[0] - counter_move::SETTLED_ARC).abs() < 1e-3, "{at:?}");
@@ -1540,15 +1470,11 @@ fn the_heading_is_the_spline_tangent_and_zero_points_east() {
         (facing - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
         "{facing}"
     );
-    // A one-province route leaves the caller on its province.
     assert_eq!(along(&[[0.0, 0.0, 0.0]]), None);
 }
 
 #[test]
 fn the_offset_points_the_mesh_s_own_forward_axis_along_the_route() {
-    // `world_transform` turns local -Z to `(sin r, 0, -cos r)`, and a unit mesh
-    // is authored facing local -Z, so the drawn direction of a stack whose
-    // rotation is `heading + MESH_FORWARD_OFFSET` has to be the heading's.
     let forward = |rotation: f32| [rotation.sin(), -rotation.cos()];
     for (route, expect) in [
         ([[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]], [1.0, 0.0]),
@@ -1565,8 +1491,6 @@ fn the_offset_points_the_mesh_s_own_forward_axis_along_the_route() {
     }
 }
 
-/// One hour with GER in canonical slot 1, whose appearance row carries
-/// `cosmetic` and `culture`.
 fn appearance_frame(cosmetic: &[u8], culture: &[u8]) -> DecodedFrame {
     use replay_data::{
         rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
@@ -1613,8 +1537,6 @@ fn appearance_frame(cosmetic: &[u8], culture: &[u8]) -> DecodedFrame {
     }
 }
 
-/// Assets registering `registered`, with `sub_units` read through the content's equipment
-/// load (which needs `BATTLE_PLAN_GAME_DIR`), or none.
 fn walker_assets(registered: &[&str], sub_units: Option<&[u8]>) -> UnitModelAssets {
     UnitModelAssets {
         sub_units: sub_units.map_or_else(model_selection::Content::default, |text| {
@@ -1628,8 +1550,6 @@ fn walker_assets(registered: &[&str], sub_units: Option<&[u8]>) -> UnitModelAsse
 
 #[test]
 fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
-    // Without the sub-unit, or with one whose sprite is its own name, the infantry key alone
-    // is tried.
     let frame = appearance_frame(b"", b"western_european_gfx");
     let entity = |registered: &[&str]| walker_assets(registered, None).infantry_entity(&frame, 1);
     let every = [
@@ -1638,7 +1558,6 @@ fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
         "infantry_entity",
         PLACEHOLDER_ENTITY,
     ];
-    // Tag, then graphical culture, then the bare name, then the placeholder.
     for (skip, level) in [
         (0, Level::Tag),
         (1, Level::Culture),
@@ -1649,15 +1568,12 @@ fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
     }
     let missing = entity(&[]).unwrap_err();
     assert!(missing.contains(PLACEHOLDER_ENTITY), "{missing}");
-    // A cosmetic tag comes first.
     let cosmetic = appearance_frame(b"GER_kaiser", b"western_european_gfx");
     assert_eq!(
         walker_assets(&["GER_kaiser_infantry_entity", "GER_infantry_entity"], None)
             .infantry_entity(&cosmetic, 1),
         Ok((Level::Cosmetic, "GER_kaiser_infantry_entity".to_owned()))
     );
-    // A culture that does not read cannot prove the later names: the tag still resolves,
-    // anything after it refuses by name.
     let unreadable = appearance_frame(b"", &[0xff]);
     assert_eq!(
         walker_assets(&["GER_infantry_entity"], None).infantry_entity(&unreadable, 1),
@@ -1667,7 +1583,6 @@ fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
         .infantry_entity(&unreadable, 1)
         .unwrap_err();
     assert!(refused.contains("graphical culture"), "{refused}");
-    // A country the hour does not record has no figure, and a layer that is off says why.
     assert!(
         walker_assets(&every, None)
             .infantry_entity(&frame, 2)
@@ -1681,7 +1596,6 @@ fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
 
 #[test]
 fn the_walker_s_sprite_key_follows_its_own() {
-    // A mod whose infantry draws a sprite of another name tries that key after its own.
     let frame = appearance_frame(b"", b"western_european_gfx");
     let rifleman: Option<&[u8]> = Some(br"sub_units = { infantry = { sprite = rifleman } }");
     let assets = walker_assets(
@@ -1705,9 +1619,6 @@ fn the_walker_s_sprite_key_follows_its_own() {
     );
 }
 
-/// An entity a visual mod's unreadable descriptor leaves undecided, though the recording's own
-/// descriptors declare it readably, is drawn from the recording, named; one only the mod's
-/// unreadable descriptor may declare is refused and recorded by name for the map's fallback.
 #[test]
 fn an_entity_a_mods_unreadable_descriptor_leaves_undecided_is_drawn_from_the_recording() {
     use crate::map::models::tests::{MESHES_GFX, PLANE_ASSET, triangle_mesh, visual_stack};
@@ -1719,7 +1630,6 @@ fn an_entity_a_mods_unreadable_descriptor_leaves_undecided_is_drawn_from_the_rec
             ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
             (
                 "art/gfx/entities/broken.asset",
-                // Does not parse even when its blocks are closed.
                 br#"entity = { name = "plane" zeppelin } }{ = ="#,
             ),
         ],
@@ -1768,7 +1678,6 @@ fn warm_unit_bakes_do_not_lock_the_cold_registry_or_other_names() {
     let (root, assets) = lazy_bake_assets("warm_bakes");
     assets.ensure(&["first".into()]);
     assert!(assets.library().slot("first").is_some());
-    // A warm lookup must finish even with the registry held by its caller.
     {
         let _registry = assets.bakes.lock().unwrap();
         assets.ensure(&["first".into()]);
@@ -1780,7 +1689,6 @@ fn warm_unit_bakes_do_not_lock_the_cold_registry_or_other_names() {
         .unwrap()
         .insert("missing".into(), Arc::clone(&cold));
     let _loading = cold.lock().unwrap();
-    // A different cold name can complete while that name is still loading.
     assets.ensure(&["second".into(), "first".into()]);
     assert!(assets.library().slot("second").is_some());
     std::fs::remove_dir_all(root).unwrap();
@@ -1821,7 +1729,6 @@ fn unsuccessful_unit_bakes_are_not_retried() {
     assets.ensure(&["missing".into()]);
     assert!(assets.library().slot("missing").is_none());
     assert!(*assets.bakes.lock().unwrap()["missing"].lock().unwrap());
-    // Even a new readable definition does not retry a remembered failure.
     let readable = assets.roster.descriptors.entities["first"].clone();
     Arc::make_mut(&mut assets.roster)
         .descriptors
@@ -1852,7 +1759,6 @@ fn lazy_bakes_keep_named_attachment_refusals_for_the_layer_report() {
     assets.layers = layers;
     assets.ensure(&["armed".into()]);
     assets.ensure(&["armed".into()]);
-    // The figure bakes without its attachment and names it, once.
     assert!(assets.library().slot("armed").is_some());
     let warnings = assets.bake_warnings();
     assert_eq!(
@@ -1968,7 +1874,6 @@ fn concurrent_demand_schedules_keep_stable_groups_events_and_sound_creation_orde
     }
 }
 
-/// The hour's models with ships, or without them for the ships layer: the land is the same.
 fn prepared(assets: &UnitModelAssets, frame: &DecodedFrame, naval: bool) -> PreparedModels {
     equipment_graphics::test_support::with_world(frame, &[], |limits| {
         let places = ShipPlaces {
@@ -2041,9 +1946,6 @@ fn models_made_without_ships_say_so_and_take_the_ships_layers_beside_their_own_l
     assert!(without.ships().candidates.is_empty() && !without.naval(), "the models it was joined from are unchanged");
 }
 
-/// Rows at the head by key hold the equipment of the divisions asked alone: a division asked reads
-/// its rows, one not asked is refused by name and never read as having no equipment; over whole
-/// tables a division in neither holds none, as today.
 #[test]
 fn equipment_of_a_division_not_asked_is_refused_by_name_never_read_as_none() {
     let rows = [replay_data::rows::DivisionEquipmentRow { division: 5, ordinal: 0, ..Default::default() }];

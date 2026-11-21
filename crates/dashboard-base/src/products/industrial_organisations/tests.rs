@@ -5,13 +5,10 @@ use replay_frame::frame::{Metrics, TableView};
 
 #[test]
 fn attach_quote_sums_before_scaling_and_rounds_half_away_from_zero() {
-    // A total factor of 0.90 on 25 is 22.5, which rounds up.
     assert_eq!(attach_quote(25, -4_000, -6_000), 23);
-    // A total factor of -0.02 on 25 is -0.5, which rounds away from zero; no clamp.
     assert_eq!(attach_quote(25, -52_000, -50_000), -1);
     assert_eq!(attach_quote(25, 0, 0), 25);
     assert_eq!(attach_quote(0, 70_000, 30_000), 0);
-    // Per-source terms are not rounded to whole political power first.
     assert_eq!(attach_quote(3, 16_000, 17_000), 4);
     assert_eq!(attach_quote(-7, 0, 50_000), -11);
 }
@@ -41,8 +38,6 @@ fn attach_quote_keeps_every_native_narrowing_under_overflow() {
             "{base} {local} {country}"
         );
     }
-    // The rescales do not cancel: an overflowing factor wraps before it scales,
-    // so the quote is not the exact product.
     let exact = (25 * (i128::from(ONE) + (1 << 62)) + 50_000) / i128::from(ONE);
     assert_ne!(i128::from(attach_quote(25, 1 << 62, 0)), exact);
 }
@@ -61,7 +56,6 @@ fn affordability_compares_the_exact_pool_with_the_rescaled_quote() {
 
 const ORGANISATION: u64 = (7 << 32) | 79;
 const HOLDER: u32 = 4_999;
-/// The organisation's raw owner reference: an alias of the country [`OWNER`].
 const OWNER_ALIAS: u32 = 5_000;
 const OWNER: u32 = 6_000;
 
@@ -109,7 +103,6 @@ fn frame(flags: u32, owner_modifier: Option<i64>) -> DecodedFrame {
         cost,
         ..Default::default()
     };
-    // The holding country's roster differs: the owner's supplies every term.
     *frame.tables[TableId::IndustrialOrganisationPolicies.index()] =
         TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
             rows::IndustrialOrganisationPoliciesRow {
@@ -122,7 +115,6 @@ fn frame(flags: u32, owner_modifier: Option<i64>) -> DecodedFrame {
                 policies: vec![policy(300, 50), policy(301, 25)],
                 cost_modifier_raw: owner_modifier.into(),
             },
-            // A roster keyed by the raw alias itself is not the owner's.
             rows::IndustrialOrganisationPoliciesRow {
                 country: OWNER_ALIAS,
                 policies: Vec::new(),
@@ -261,19 +253,14 @@ fn quote(
 #[test]
 fn policy_quote_joins_gated_traits_initial_trait_attached_policy_and_owner_modifier() {
     let content = Content::read("yes");
-    // Completed trait, initial trait and the attached (not the candidate) policy;
-    // the unresolved completed trait adds nothing. 25 * (1 - 0.35 - 0.2) = 11.25.
     let frame = frame(0, Some(-20_000));
     assert_eq!(quote(&content, &frame, 300, 25), Ok((-35_000, 11)));
-    // With no attached policy only the traits remain: 25 * (1 - 0.25 - 0.2) = 13.75.
     assert_eq!(quote(&content, &frame, 0x4c17, 25), Ok((-25_000, 14)));
-    // Each source's entry is clamped to [0, ONE] when its definition says so.
     let clamped = self::frame(
         engine_native::modifier_definition::CLAMP_MAXIMUM,
         Some(-20_000),
     );
     assert_eq!(quote(&content, &clamped, 300, 25), Ok((5_000, 21)));
-    // The owner's modifier is unknown, never zero: the quote is refused by name.
     let unknown = self::frame(0, None);
     let refusal = quote(&content, &unknown, 300, 25).unwrap_err();
     assert!(
@@ -286,20 +273,16 @@ fn policy_quote_joins_gated_traits_initial_trait_attached_policy_and_owner_modif
 fn completed_traits_need_the_organisation_available_and_the_initial_trait_does_not() {
     let content = Content::read("no");
     let frame = frame(0, Some(0));
-    // Initial trait and attached policy only: 20 * (1 + 0.05 - 0.1) = 19.
     assert_eq!(quote(&content, &frame, 300, 20), Ok((-5_000, 19)));
 }
 
 #[test]
 fn organisation_conditions_read_the_owner_through_from() {
-    // A visible body that reads FROM reads the owner: the completed trait counts.
     let content = Content::with_visible("FROM={always=yes}", "yes");
     let frame = frame(0, Some(-20_000));
     assert_eq!(quote(&content, &frame, 300, 25), Ok((-35_000, 11)));
-    // ROOT and PREV are the organisation itself.
     let content = Content::with_visible("ROOT={PREV={always=yes}}", "yes");
     assert_eq!(quote(&content, &frame, 300, 25), Ok((-35_000, 11)));
-    // An owner the links cannot resolve leaves FROM unknown: undecided, not false.
     let content = Content::with_visible("FROM={always=yes}", "yes");
     let mut unlinked = frame;
     *unlinked.tables[TableId::CountryLinks.index()] =
@@ -323,8 +306,6 @@ fn a_false_organisation_condition_decides_whatever_the_other() {
 
 #[test]
 fn an_undecided_visible_condition_with_a_false_available_one_excludes_the_traits() {
-    // The visible body reads unrecorded flags; when available fails, the
-    // gate is decided. With available holding it stays undecided: a refusal, not zero.
     let content = Content::with_visible("has_mio_flag=synthetic_flag", "yes");
     assert!(quote(&content, &frame(0, Some(0)), 300, 20).is_err());
     let content = Content::with_visible("has_mio_flag=synthetic_flag", "no");

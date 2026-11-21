@@ -17,7 +17,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import warm_target as wt  # noqa: E402
+import warm_target as wt
 
 HASH = "0123456789abcdef"
 OTHER = "fedcba9876543210"
@@ -76,7 +76,6 @@ class Paths(unittest.TestCase):
         self.assertEqual(wt.render(worktree, ("\\", "exact", "utf-8")), "C:\\Seed\\åbcd".encode("utf-8"))
         utf8 = wt.STYLES.index(("\\", "exact", "utf-8"))
         wide = wt.STYLES.index(("\\", "exact", "utf-16-le"))
-        # Same characters, more UTF-8 bytes: only the wide spelling can be patched in place.
         self.assertFalse(wt.patchable([(0, 0, utf8)], [seed], [worktree]))
         self.assertTrue(wt.patchable([(0, 0, wide)], [seed], [worktree]))
 
@@ -102,7 +101,7 @@ class Paths(unittest.TestCase):
         self.assertEqual(wt.owning_units("debug\\deps\\liba-%s.rmeta" % HASH, units), [f"a-{HASH}"])
         self.assertEqual(wt.owning_units("debug\\build\\a-%s\\out\\x.lib" % HASH, units), [f"a-{HASH}"])
         self.assertEqual(wt.owning_units("debug\\deps\\my_tool.pdb", units), [f"tool-{OTHER}"])
-        self.assertEqual(wt.owning_units("debug\\deps\\a.dll", units), [f"a-{HASH}"])  # a cdylib
+        self.assertEqual(wt.owning_units("debug\\deps\\a.dll", units), [f"a-{HASH}"])
         self.assertEqual(wt.owning_units("debug\\deps\\other.exe", units), [])
         self.assertEqual(wt.owning_units("debug\\viewer.exe", units), [])
 
@@ -116,7 +115,7 @@ class Translate(unittest.TestCase):
         self.root = os.path.join(base, "seed")
         self.checkout = os.path.join(self.root, "checkout_")
         self.seed_target = os.path.join(self.checkout, ".cargo-target")
-        self.worktree = os.path.join(base, "wtre", "t3-abcdef")  # same length as the checkout
+        self.worktree = os.path.join(base, "wtre", "t3-abcdef")
         self.assertEqual(len(self.worktree), len(self.checkout))
         self.target = os.path.join(self.worktree, ".cargo-target")
         self.old = [self.seed_target, self.checkout]
@@ -138,10 +137,8 @@ class Translate(unittest.TestCase):
               f"cargo:rustc-link-search=native={self.seed_target}\\debug\\build\\c-{OTHER}\\out\n",
               self.mtime)
         write(os.path.join(profile, ".fingerprint", f"c-{OTHER}", "run-build-script-build"), "5678")
-        # A name the scan does not recognise as a whole path: its unit must be rebuilt.
         write(os.path.join(profile, "build", f"c-{OTHER}", "out", "blob.bin"),
               b"..\\checkout_\\thing", self.mtime)
-        # A linker resolving `..` against the checkout reaches the seed's own directory.
         write(os.path.join(profile, ".fingerprint", f"d-{THIRD}", "lib-d"), "9abc")
         write(os.path.join(profile, "deps", f"libd-{THIRD}.rlib"),
               (self.root + "\\third_party\\x.h").encode(), self.mtime)
@@ -276,7 +273,7 @@ class Backdate(unittest.TestCase):
             write(os.path.join(base, "seed_outside.txt"), "outside", old)
             started = time.time_ns()
             time.sleep(0.01)
-            write(os.path.join(mine, "a", "late.rs"), "fn c() {}")  # a rebase during the warm
+            write(os.path.join(mine, "a", "late.rs"), "fn c() {}")
             late = os.stat(os.path.join(mine, "a", "late.rs")).st_mtime_ns
             before = time.time_ns()
             inputs = {"a\\same.rs", "a\\changed.rs", "a\\dir", "a\\dir2", "a\\missing.rs",
@@ -344,10 +341,9 @@ class UpdateLock(unittest.TestCase):
     def test_only_a_live_holder_keeps_the_seed_and_a_killed_one_leaves_nothing_to_take_over(self):
         with tempfile.TemporaryDirectory() as root:
             lock = wt.take_update_lock(root)
-            with self.assertRaises(wt.SeedBusy):  # another claim, even from this process
+            with self.assertRaises(wt.SeedBusy):
                 wt.take_update_lock(root)
             self.assertTrue(wt.update_running(root))
-            # Older tools see a live holder of their own lock.
             self.assertEqual(read(os.path.join(root, wt.LEGACY_LOCK, "pid")).decode(), str(os.getpid()))
             lock.release()
             self.assertFalse(wt.update_running(root))
@@ -365,8 +361,6 @@ class UpdateLock(unittest.TestCase):
                 holder.wait()
                 holder.stdin.close()
                 holder.stdout.close()
-            # Two updates that saw the killed holder: one claims the seed, the other is refused
-            # rather than deleting the first one's claim.
             first = wt.take_update_lock(root)
             with self.assertRaises(wt.SeedBusy):
                 wt.take_update_lock(root)
@@ -377,28 +371,27 @@ class UpdateLock(unittest.TestCase):
     def test_an_older_tools_live_update_keeps_the_seed_and_a_killed_ones_does_not(self):
         with tempfile.TemporaryDirectory() as root:
             legacy = os.path.join(root, wt.LEGACY_LOCK)
-            write(os.path.join(legacy, "pid"), str(os.getpid()))  # a live older updater
+            write(os.path.join(legacy, "pid"), str(os.getpid()))
             self.assertTrue(wt.update_running(root))
             with self.assertRaises(wt.SeedBusy):
                 wt.take_update_lock(root)
             self.assertEqual(read(os.path.join(legacy, "pid")).decode(), str(os.getpid()))
-            write(os.path.join(legacy, "pid"), "")  # one writing its pid
+            write(os.path.join(legacy, "pid"), "")
             self.assertTrue(wt.update_running(root))
             with self.assertRaises(wt.SeedBusy):
                 wt.take_update_lock(root)
-            os.remove(os.path.join(legacy, "pid"))  # one that has not opened it yet
+            os.remove(os.path.join(legacy, "pid"))
             with self.assertRaises(wt.SeedBusy):
                 wt.take_update_lock(root)
             old = time.time() - 120
-            os.utime(legacy, (old, old))  # killed before writing it
+            os.utime(legacy, (old, old))
             self.assertFalse(wt.update_running(root))
-            # A claim a killed update left before renaming it into place is cleared too.
             write(os.path.join(root, f"{wt.LEGACY_LOCK}.1", "pid"), "1")
             wt.take_update_lock(root).release()
             self.assertEqual(os.listdir(root), [wt.UPDATE_LOCK])
             exited = subprocess.Popen([sys.executable, "-c", "pass"])
             exited.wait()
-            write(os.path.join(legacy, "pid"), str(exited.pid))  # killed after writing it
+            write(os.path.join(legacy, "pid"), str(exited.pid))
             self.assertFalse(wt.update_running(root))
             lock = wt.take_update_lock(root)
             self.assertEqual(read(os.path.join(legacy, "pid")).decode(), str(os.getpid()))
@@ -447,7 +440,7 @@ class External(unittest.TestCase):
             junction = os.path.join(base, "worktree", ".cargo-target", "debug")
             os.makedirs(os.path.dirname(junction))
             _winapi.CreateJunction(os.path.join(names["owned"], "debug"), junction)
-            for name in ("owned", "moved", "filling"):  # moved: the junction points elsewhere
+            for name in ("owned", "moved", "filling"):
                 write(os.path.join(names[name], wt.OWNER_FILE), junction)
             write(os.path.join(names["gone"], wt.OWNER_FILE), os.path.join(base, "removed", "debug"))
             write(os.path.join(names["foreign"], wt.OWNER_FILE), os.path.join(base, "removed", "debug"))
@@ -463,7 +456,6 @@ class External(unittest.TestCase):
         b = wt.external_profile_dir("G:\\dev", "C:\\two\\t3-1234")
         self.assertNotEqual(a, b)
         self.assertTrue(a.startswith("G:\\dev\\t3-1234-") and a.endswith(wt.EXTERNAL_SUFFIX))
-        # A concurrent warm of the same worktree never shares, so never deletes, this one's.
         other = subprocess.run(
             [sys.executable, "-c", "import sys, warm_target as wt; "
              "print(wt.external_profile_dir(sys.argv[1], sys.argv[2]))", "G:\\dev", "C:\\one\\t3-1234"],
@@ -522,7 +514,6 @@ class Slots(unittest.TestCase):
                 wt.warm_into(root, seed, os.path.join(root, "worktree"), target, None, "copy", 1)
             self.assertEqual(held, [[os.getpid()]])
             self.assertEqual(wt.slot_readers(root, "a"), [])
-            # A cargo starting the moment the copy is installed already sees which sources differ.
             self.assertEqual(steps, ["backdate", "install"])
 
 
@@ -547,7 +538,7 @@ class BackgroundRefresh(unittest.TestCase):
             subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
             launcher = os.path.join(root, wt.LAUNCHER)
             write(launcher, self.REPORT)
-            pid = wt.start_refresh(root, repo)  # no seed yet: behind
+            pid = wt.start_refresh(root, repo)
             for name in ("parent", "child"):
                 path = f"{launcher}.{name}.txt"
                 for _ in range(300):
@@ -561,11 +552,11 @@ class BackgroundRefresh(unittest.TestCase):
             head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
                                   text=True, check=True).stdout.strip()
             write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": head}))
-            self.assertIsNone(wt.start_refresh(root, repo))  # current
+            self.assertIsNone(wt.start_refresh(root, repo))
             write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": "0" * 40,
                                                                "checkout": base}))
             lock = wt.take_update_lock(root)
-            self.assertIsNone(wt.start_refresh(root, repo))  # another update runs
+            self.assertIsNone(wt.start_refresh(root, repo))
             lock.release()
             time.sleep(1)
             self.assertFalse(os.path.exists(f"{launcher}.parent.txt"))
@@ -577,7 +568,6 @@ class Garbage(unittest.TestCase):
             live_lib = os.path.join(profile, "deps", f"liba-{HASH}.rlib")
             write(live_lib, "lib")
             write(os.path.join(profile, "deps", "viewer.exe"), "exe")
-            # Two units of one bin share deps\viewer.exe; the one that linked it last owns it.
             write(os.path.join(profile, ".fingerprint", f"viewer-{THIRD}", "bin-viewer"), "bin")
             write(os.path.join(profile, ".fingerprint", f"viewer-{THIRD}", "dep-bin-viewer"), "", 2_000)
             write(os.path.join(profile, ".fingerprint", f"viewer-{OTHER}", "bin-viewer"), "bin")
@@ -664,8 +654,6 @@ class EndToEnd(unittest.TestCase):
         self.tmp.cleanup()
 
     def git(self, cwd, *args):
-        # Checkouts use the user's own settings, as the tool's do: seed and worktree must
-        # agree on line endings for their files to compare equal.
         subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
     def commit(self, message):
@@ -717,13 +705,9 @@ class EndToEnd(unittest.TestCase):
         append = os.path.join(self.repo, "crates", "b", "src", "lib.rs")
         write(append, read(append) + b"// main moved\n")
         self.commit("moved")
-        # A refresh killed while it made slot b's checkout left a directory git does not know.
         write(os.path.join(wt.slot_checkout(self.root, "b"), "half-made"), "")
-        # Refreshes name a branch, as `origin/main` is: without --repo they resolve it in a
-        # slot's checkout, whose own HEAD is the slot's commit.
         branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.repo,
                                 capture_output=True, text=True, check=True).stdout.strip()
-        # While slot b builds, warms keep using slot a.
         during = []
         collect = wt.collect_garbage
 
@@ -744,20 +728,18 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(wt.command_seed(refresh), 0)
         finally:
             wt.collect_garbage = collect
-        self.assertEqual(during, [{"b", "c"}])  # the worktree is at the new commit, slot a the old
+        self.assertEqual(during, [{"b", "c"}])
         second = wt.read_seed(self.root)
         self.assertEqual((second["slot"], second["checkout"][:-1]), ("b", first["checkout"][:-1]))
         self.assertNotEqual(second["commit"], first["commit"])
         self.warm()
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), set())
         self.assertEqual(self.rebuilt("test", "--workspace", "--no-run"), set())
-        # A scheduled refresh runs the launcher beside the seed, without naming the repository.
         launcher = [os.path.join(self.root, wt.LAUNCHER), "seed", "--root", self.root, "--no-fetch",
                     "--commit", branch, "--if-moved"]
         result = subprocess.run([sys.executable, *launcher], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("already at", result.stdout)
-        # One already running is skipped, and so is a root with no seed.
         lock = wt.take_update_lock(self.root)
         try:
             self.assertIn("skipped", self.tool("seed", "--root", self.root, "--no-fetch",
@@ -767,8 +749,6 @@ class EndToEnd(unittest.TestCase):
         empty = os.path.join(self.tmp.name, "no-seed")
         self.assertIn("skipped", self.tool("seed", "--root", empty, "--if-moved", "--no-fetch"))
 
-        # Thread creation: `warm --refresh-behind` returns at once and a detached refresh
-        # brings the seed to origin/main.
         write(append, read(append) + b"// main moved again\n")
         self.commit("moved again")
         self.git(self.repo, "remote", "add", "origin", self.repo)
@@ -777,7 +757,6 @@ class EndToEnd(unittest.TestCase):
         before = wt.read_seed(self.root)
         out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
         self.assertIn("refreshing it in the background", out)
-        # Killed once it is rebuilding slot a, it leaves slot b in use and warms working.
         pid = int(re.search(r"process (\d+)", out).group(1))
         while os.path.exists(os.path.join(wt.slot_dir(self.root, "a"), wt.SEED_FILE)):
             self.assertTrue(wt.process_alive(pid), read(os.path.join(self.root, wt.REFRESH_LOG)))
@@ -797,7 +776,7 @@ class EndToEnd(unittest.TestCase):
             time.sleep(2)
         self.assertEqual(wt.read_seed(self.root)["slot"], "a")
         out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
-        self.assertNotIn("background", out)  # current now
+        self.assertNotIn("background", out)
 
     def test_unchanged_worktree_rebuilds_nothing_and_runs_with_its_own_paths(self):
         self.warm()
@@ -820,23 +799,18 @@ class EndToEnd(unittest.TestCase):
             path = os.path.join(self.worktree, "crates", "b", "src", "lib.rs")
             original = read(path)
             write(path, original + b"// edit\n")
-            write(path, original)  # same bytes, new mtime
+            write(path, original)
         self.warm(revert)
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), set())
 
-        # `b`'s build script watches every file of its package, so a file leaving or joining
-        # it reruns the script and rebuilds `b`.
         self.warm(lambda: os.remove(os.path.join(self.worktree, "crates", "b", "notes.txt")))
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), {"b", "c"})
         self.warm(lambda: write(os.path.join(self.worktree, "crates", "b", "new.txt"), "untracked"))
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), {"b", "c"})
-        # Nothing a worktree builds reaches the seed.
         self.assertEqual(self.rebuilt("test", "--workspace", "--no-run"), {"b", "c"})
         self.assertEqual(wt.target_files(seed_target)[1], seed_files)
 
     def test_cargo_building_during_the_warm_keeps_its_own_build(self):
-        # The worktree starts at the base commit, where `a` differs from the seed. Cargo builds
-        # it while the copy is made, then a rebase makes `a` equal the seed's.
         self.fresh_worktree("HEAD~1")
         seed_a = read(os.path.join(self.repo, "crates", "a", "src", "lib.rs"))
         translate = wt.translate
@@ -869,7 +843,6 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(any(os.path.normcase(external).startswith(os.path.normcase(r)) for r in roots))
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), set())
         self.tool("check", "--root", self.root, "--target-dir", os.path.join(self.worktree, ".cargo-target"))
-        # A junction whose directory is gone is replaced; one that resolves is kept.
         out = self.tool("warm", "--root", self.root, "--target-roots", joined, cwd=self.worktree)
         self.assertIn("already holds a build", out)
         shutil.rmtree(os.path.dirname(external))
@@ -877,7 +850,6 @@ class EndToEnd(unittest.TestCase):
                         cwd=self.worktree)
         self.assertIn("seeded from", out)
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), set())
-        # Removing the worktree leaves its profile directory for the next warm to sweep.
         external = os.path.dirname(wt.junction_target(profile))
         self.fresh_worktree()
         os.utime(external, (0, 0))

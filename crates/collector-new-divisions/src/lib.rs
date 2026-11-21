@@ -1,4 +1,3 @@
-//! New division capture: the hourly equipment of divisions minted since the daily DivisionEquipment walk, found from the unit and reference id counters. The host owns dispatch, loans and table assembly.
 
 use collector_memory::read_accounting;
 use collector_primitives::clock;

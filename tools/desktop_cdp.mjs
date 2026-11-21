@@ -1,4 +1,3 @@
-// Control the actual Tauri WebView2 in a desktop_ui.py session; no browser preview.
 import { writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 if (process.argv.length < 4) throw new Error('Usage: node tools/desktop_cdp.mjs <session-directory> inspect|screenshot|click|click-selector|key|eval|file [arguments]');

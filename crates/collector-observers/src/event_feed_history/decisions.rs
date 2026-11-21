@@ -1,4 +1,3 @@
-//! Prepared pointer certificates and demanded owner baselines; no quiet-member callback.
 #![allow(clippy::too_many_arguments)]
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,16 +23,12 @@ struct Owner {
     pointer: usize,
     identity: CountryIdentity,
     epoch: u64,
-    /// The revocation count its completed baseline belongs to.
     certified: Option<u64>,
-    /// Its refusal marker is published: a later refusal emits nothing until
-    /// a certificate, a native status reset or a loss re-arms it.
     refused: bool,
     head: usize,
     power: Option<i64>,
     power_epoch: u64,
 }
-/// A census visit's work for one owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Recovery {
     Certified,
@@ -43,14 +38,8 @@ pub(crate) enum Recovery {
 pub(crate) struct Index {
     slots: Vec<Slot>,
     owners: Vec<Owner>,
-    /// The world these labels belong to. An observation loss keeps it, so a
-    /// later decision of the same world never reuses an earlier one's label.
     generation: Option<u64>,
-    /// An observation loss: every certificate and slot waits for the
-    /// worker's next reset, since a missed writer can have reused an address.
     invalidated: bool,
-    /// Revocations: no writer was missed, so slots keep their attribution
-    /// and only owner certificates retire, in constant time.
     revoked: u64,
     next: u64,
     live: usize,
@@ -78,8 +67,6 @@ impl Index {
     pub fn capacity(&self) -> usize {
         self.slots.len() / 2
     }
-    /// Whether one more member, under a possibly new owner, would find a
-    /// table full; `prepare` must grow first.
     fn needs_room(&self) -> bool {
         self.live >= self.capacity() || self.owner_count >= self.owners.len() / 2
     }
@@ -140,12 +127,10 @@ impl Index {
         spare.demand = self.demand;
         std::mem::swap(self, spare);
     }
-    /// An observation loss; constant work on any thread.
     pub fn invalidate(&mut self) {
         self.invalidated = true;
         super::recovery_needed();
     }
-    /// Retire every owner certificate in constant work; slots and labels stay.
     pub fn revoke(&mut self) {
         self.revoked = self.revoked.wrapping_add(1);
         super::recovery_needed();
@@ -153,9 +138,6 @@ impl Index {
     pub fn matches(&self, generation: u64) -> bool {
         self.generation == Some(generation) && !self.invalidated
     }
-    /// Worker acquisition only: rebuilding prepared certificates never scans
-    /// or clears them on a native writer callback. Only a new world restarts
-    /// the labels.
     pub fn reset(&mut self, generation: u64) {
         let world = self.generation != Some(generation);
         if world || self.invalidated {
@@ -207,8 +189,6 @@ impl Index {
         owner.refused = false;
         Ok(())
     }
-    /// Withdraw the owner and record its refusal. `None`: it is already
-    /// refused, a repeat. Otherwise whether the next census baselines it.
     fn refuse(&mut self, pointer: usize) -> Option<bool> {
         let Ok(at) = Self::locate(&self.owners, pointer, |s| s.pointer) else {
             return Some(true);
@@ -261,14 +241,11 @@ impl Index {
         self.owners[at].identity = identity;
         Ok(&mut self.owners[at])
     }
-    /// A member of a certified owner, in its owner's current epoch.
     pub fn find(&self, pointer: usize) -> Option<Slot> {
         let slot = self.slot(pointer)?;
         let owner = &self.owners[Self::locate(&self.owners, slot.owner, |s| s.pointer).ok()?];
         (owner.epoch == slot.epoch && self.is_certified(owner)).then_some(slot)
     }
-    /// The exact pointer attribution, whether or not its owner is certified.
-    /// Nothing is trusted after an observation loss.
     pub fn slot(&self, pointer: usize) -> Option<Slot> {
         if self.generation.is_none() || self.invalidated {
             return None;
@@ -276,10 +253,6 @@ impl Index {
         let at = Self::locate(&self.slots, pointer, |s| s.pointer).ok()?;
         Some(self.slots[at])
     }
-    /// An exact attribution to an owner without a certificate. A certified
-    /// owner missing this member is a real inconsistency instead, and a
-    /// member from before a native status reset, which bumped its owner's
-    /// epoch, is not attributable.
     pub fn uncertified(&self, pointer: usize) -> Option<Slot> {
         let slot = self.slot(pointer)?;
         let owner = &self.owners[Self::locate(&self.owners, slot.owner, |s| s.pointer).ok()?];
@@ -365,11 +338,6 @@ impl Index {
         self.live -= 1;
         Some(old)
     }
-    /// A native status reset: the owner's next census visit reads a new
-    /// baseline, including after a failed attempt on its old state. Every
-    /// reset ends its members' lifetime, whatever the owner's certificate,
-    /// refusal or attempt state, so no erased member stays attributable.
-    /// `true`: it was certified, so its Invalidate marker is due.
     fn mark(&mut self, pointer: usize, identity: CountryIdentity) -> Result<bool, &'static str> {
         let revoked = self.revoked;
         let owner = self.owner(pointer, identity)?;
@@ -399,9 +367,6 @@ impl Index {
         }
         Ok(())
     }
-    /// Tracked whether or not the owner is certified: a revocation keeps the
-    /// owner's balance and its epoch, so ignoring this write would let the
-    /// next baseline publish the stale balance without reading it again.
     pub fn power_update(
         &mut self,
         pointer: usize,
@@ -588,9 +553,6 @@ impl Store {
         };
         if change.operation == Operation::Store && !new && change.container != 0 {
             if slot.container != change.container {
-                // More exact: an uncertified owner's member follows its
-                // transfer too, so its owner-local result reads the record
-                // in the container it is now in.
                 if old.is_some() {
                     change.flags |= replay_data::event_feed_rows::decisions::MOVED;
                 }
@@ -621,9 +583,6 @@ impl Store {
         )?;
         self.script_known(memory, base, generation, world.hour()?, value)
     }
-    /// A native result store. A certified owner carries the retained delta;
-    /// an uncertified owner's exact member keeps its occurrence and refuses
-    /// only that owner. `Ok(false)`: no trustworthy attribution.
     pub(crate) fn decision_result<M: Memory>(
         &mut self,
         world: &World<'_, M>,
@@ -657,7 +616,6 @@ impl Store {
         let owner = world.country_object(slot.owner)?;
         let hour = world.hour()?;
         let row = native::record(memory, base, pointer, slot.container)?;
-        // The index is untouched: only the owner's next baseline certifies it.
         let value = record_fact(
             world,
             memory,
@@ -675,9 +633,6 @@ impl Store {
         self.script_known(memory, base, generation, hour, value)?;
         Ok(true)
     }
-    /// Refuse one owner's retained decision state: its marker carries the
-    /// reason, and every other owner, registry and the interval keep their
-    /// certificates. Once per owner and loss epoch: a repeat is only counted.
     pub(crate) fn refuse_decision_owner(
         &mut self,
         memory: &impl Memory,
@@ -706,8 +661,6 @@ impl Store {
         );
         self.script_text(memory, base, generation, hour, marker, reason)
     }
-    /// The census visit's decision half: a certified owner reads only its
-    /// scalar political balance; uncertified owners retry their baseline.
     pub(crate) fn recover_decisions(
         &mut self,
         memory: &impl Memory,
@@ -762,13 +715,11 @@ impl Store {
                     !refusal.counted,
                 );
             }
-            // A refusal must name its owner.
             Err(_) => {
                 self.reject(refusal.reason);
             }
         }
         if refusal.retry {
-            // Even a repeated refusal keeps the next walk coming.
             super::recovery_needed();
         }
     }
@@ -783,8 +734,6 @@ impl Store {
         visited: bool,
     ) -> Result<(), &'static str> {
         let Some(slot) = self.decisions.find(pointer) else {
-            // An uncertified owner's exact member retires too, without an
-            // event: a reused address must not inherit its label or results.
             if self.decisions.uncertified(pointer).is_some() {
                 self.decisions.remove(pointer);
             }
@@ -866,8 +815,6 @@ impl Store {
             self.watch();
             return self.decisions.power_baseline(memory, base, country.pointer);
         }
-        // Every native read the certificate rests on follows this writer
-        // cut, the world, hour and identity reads included.
         let cut = self.sample()?;
         let world = World::new(memory, base)?;
         if world.state_pointer() != state || world.hour() != Ok(hour) {
@@ -877,8 +824,6 @@ impl Store {
         self.decisions.owner(country.pointer, identity)?;
         self.decisions
             .power_baseline(memory, base, country.pointer)?;
-        // Only a marked owner's retained certificates are rebuilt, on this
-        // existing worker acquisition. No native periodic traversal is added.
         self.decisions.clear_owner(country.pointer, identity)?;
         let status = country
             .pointer
@@ -902,8 +847,6 @@ impl Store {
                 None,
             ),
         )?;
-        // Publication Ready follows all
-        // native reads and header checks. A failure never certifies this owner.
         for container in 0..6 {
             let array = native::array(memory, status, container)?;
             for ordinal in 0..array.count {
@@ -1075,7 +1018,6 @@ impl Store {
         pointer: usize,
         identity: CountryIdentity,
     ) -> bool {
-        // Establish the same named attempt as the original worker reader.
         let Ok(owner) = self.decisions.owner(pointer, identity) else {
             return false;
         };
@@ -1200,8 +1142,6 @@ impl Store {
 
 #[cfg(test)]
 impl Index {
-    /// A certified owner whose political balance is current: its census
-    /// visit has nothing to read.
     pub(super) fn certify_quiet(&mut self, pointer: usize, identity: CountryIdentity) {
         self.certify(pointer, identity).unwrap();
         let at = Self::locate(&self.owners, pointer, |s| s.pointer).unwrap();
@@ -1274,15 +1214,15 @@ mod tests {
         let owner = index.owner(100, identity(1)).unwrap();
         owner.power = Some(100 * 100_000);
         owner.power_epoch = 7;
-        index.power_update(999, 9, 1, 0, 1, 7); // Unrequested owner creates nothing.
+        index.power_update(999, 9, 1, 0, 1, 7);
         assert_eq!(index.owner_count, 1);
-        index.power_update(100, 2, 1, 100 * 100_000, 0, 7); // A reused country has a different link.
+        index.power_update(100, 2, 1, 100 * 100_000, 0, 7);
         assert_eq!(index.power(100, 7), Some(100 * 100_000));
         index.power_update(100, 1, 1, 100 * 100_000, 90 * 100_000, 7);
         assert_eq!(index.power(100, 7), Some(90 * 100_000));
-        assert_eq!(index.power(100, 8), None); // Observer loss withdraws carry.
+        assert_eq!(index.power(100, 8), None);
         index.power_update(100, 1, 1, 80 * 100_000, 70 * 100_000, 7);
-        assert_eq!(index.power(100, 7), None); // Missing writer refuses, never guesses.
+        assert_eq!(index.power(100, 7), None);
         assert_eq!(
             index
                 .owners
@@ -1310,10 +1250,7 @@ mod tests {
         owner.power_epoch = 7;
         index.revoke();
         assert_eq!(index.power(100, 7), None);
-        // No writer is missed while revoked.
         index.power_update(100, 1, 1, 100 * 100_000, 90 * 100_000, 7);
-        // The re-baseline keeps a current balance without reading it, so it
-        // must be the written one, not the balance from before revocation.
         index.certify(100, identity(1)).unwrap();
         assert_eq!(index.power(100, 7), Some(90 * 100_000));
     }
@@ -1328,8 +1265,6 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(index.put(0x100, 0x1000, identity(1), 3).unwrap().0.id, 1);
             index.certify(0x1000, identity(1)).unwrap();
-            // An observation loss: nothing is trusted until the worker resets,
-            // and the prepared handoff keeps that distinction.
             index.invalidate();
             assert!(!index.matches(7));
             assert!(index.slot(0x100).is_none());
@@ -1338,8 +1273,6 @@ mod tests {
             assert!(index.matches(7));
             assert!(index.slot(0x100).is_none());
             assert!(!index.certified(0x1000));
-            // The game may free the first decision unobserved and reuse its
-            // address: it must get a new label.
             assert_eq!(index.put(0x100, 0x1000, identity(1), 3).unwrap().0.id, 2);
             index.reset(8);
             assert_eq!(index.put(0x100, 0x1000, identity(1), 3).unwrap().0.id, 1);
@@ -1358,8 +1291,6 @@ mod tests {
         assert_eq!(index.recovery(0x1000), Recovery::Certified);
         assert_eq!(index.recovery(0x2000), Recovery::Baseline);
         crate::test_support::with_allocations_denied(|| index.revoke());
-        // No writer was missed: the member's attribution stays exact while
-        // its owner waits for a baseline. Every refused owner can retry.
         assert!(index.find(0x100).is_none());
         assert_eq!(index.uncertified(0x100).unwrap().id, member.id);
         assert_eq!(index.recovery(0x1000), Recovery::Baseline);
@@ -1377,15 +1308,11 @@ mod tests {
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
-        // A refused owner: its exact member is attributable until a reset
-        // erases it, after which a result for it is a global refusal.
         index.put(0x100, 0x1000, identity(1), 3).unwrap();
         assert_eq!(index.refuse(0x1000), Some(true));
         assert!(index.uncertified(0x100).is_some());
         assert!(!index.mark(0x1000, identity(1)).unwrap());
         assert!(index.uncertified(0x100).is_none());
-        // Two resets before recovery: a member stored between them is erased
-        // by the second.
         index.certify(0x2000, identity(2)).unwrap();
         assert!(index.mark(0x2000, identity(2)).unwrap());
         index.put(0x200, 0x2000, identity(2), 3).unwrap();
@@ -1400,8 +1327,6 @@ mod tests {
         index.prepare(8).unwrap();
         index.reset(7);
         index.put(0x100, 0x1000, identity(1), 3).unwrap();
-        // The owner's identity changed and a new baseline certified it
-        // without this member: the stale member is a real inconsistency.
         index.owner(0x1000, identity(9)).unwrap();
         index.certify(0x1000, identity(9)).unwrap();
         assert!(index.find(0x100).is_none());

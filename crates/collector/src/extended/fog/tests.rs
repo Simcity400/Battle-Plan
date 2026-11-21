@@ -35,9 +35,6 @@ fn array(bytes: &mut [u8], address: usize, data: usize, count: u32) {
     put(bytes, address + 12, &count.to_le_bytes());
 }
 
-/// One country with one radar group, one volunteer host, one volunteer
-/// theatre holding one area and one stationed unit, one division with two
-/// viewer entries, one task force with none, and one registered air base.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x8000];
     array(&mut bytes, BASE + cgame_state::COUNTRIES, 0x10800, 2);
@@ -423,9 +420,7 @@ fn short_arenas_grow_to_the_full_census_in_one_capture() {
 fn torn_sources_stay_unavailable_and_never_become_empty_tables() {
     let (_, mut captured) = small();
     let mut bytes = fixture();
-    // A null inside the counted stationed-unit vector is a torn read.
     put(&mut bytes, 0x10e00, &0_u64.to_le_bytes());
-    // A radar group whose parent record moved cannot be this country's.
     put(
         &mut bytes,
         RADAR_GROUP + radar_group::PARENT,
@@ -600,8 +595,6 @@ fn accepted_fog_failures_are_terminal_and_leave_other_tables_independent() {
     ));
 }
 
-/// TheatreAreas is hourly: every hour's one theatre traversal reads the
-/// controller areas with the stationed units.
 #[test]
 fn areas_and_stationed_units_share_one_traversal_every_hour() {
     struct Counted<'a> {
@@ -687,9 +680,6 @@ fn radar_split_copy_matches_direct_walk() {
     );
     let anchor = TableId::RadarCoverage;
     let mut expected = read_accounting::ZERO;
-    // 144 scalar bytes include both country authentications, each one
-    // scattered read of the vtable and id; the pool and group each gather
-    // three spans, adding 60 bytes.
     expected[anchor.index()] = ReadCounts {
         copy_calls: 17,
         scattered_calls: 4,
@@ -703,9 +693,6 @@ fn radar_split_copy_matches_direct_walk() {
 
 #[test]
 fn radar_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
     use super::radar_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
@@ -769,8 +756,6 @@ fn intel_split_copy_matches_direct_walk() {
     let (split, report, _) = kit::split(&memory);
     assert!(report.raw_ok);
     kit::assert_matches_direct(&split, &direct);
-    // Two viewer entries on the division; the task force contributes
-    // none. Both unit paths decode from the same shared spans.
     assert_eq!(split.outcome, Outcome::Rows { len: 2 });
     assert_eq!((split.rows[0].viewer, split.rows[0].level), (1, 3));
     assert_eq!((split.rows[1].viewer, split.rows[1].level), (2, -1));
@@ -779,9 +764,6 @@ fn intel_split_copy_matches_direct_walk() {
 
 #[test]
 fn intel_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit(2)/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
     use super::intel_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);

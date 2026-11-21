@@ -1,7 +1,3 @@
-//! Network state rows and independently retained national caches. The daily
-//! network update creates/rebuilds networks; dynamic country reuse destroys
-//! them, while console growth changes state strengths without rebuilding the
-//! national caches. Loading establishes independent saved cache values.
 
 use engine_sites::Rva;
 use crate::{
@@ -10,75 +6,46 @@ use crate::{
     intel_network_graph_vertex, memory::Raw, read, read_slice, walk::Outcome,
 };
 
-/// Intel-network vtable.
 pub const VTABLE_RVA: Rva = Rva(0x2a1_dcd8);
-/// Target country id, read as i32.
 pub const TARGET: usize = 0x08;
-/// Constructor initializing the vtable and embedded objects.
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x125_ccf0);
-/// Embedded local network.
 pub const LOCAL_NETWORK: usize = 0x10;
-/// Subnetwork array data.
 pub const SUBNETWORKS_DATA: usize = 0x78;
-/// Subnetwork count, i32.
 #[cfg(test)]
 pub const SUBNETWORKS_COUNT: usize = 0x84;
-/// Embedded static-intel-source reference.
 pub const STATIC_SOURCE_REFERENCE: usize = 0xa8;
-/// Covered core-state count, signed i32 as serialized.
 pub const COVERED_CORE_STATES: usize = 0xc0;
-/// Covered controlled-state count, signed i32 as serialized.
 #[cfg(test)]
 pub const COVERED_CONTROLLED_STATES: usize = 0xc4;
-/// Covered state worth, signed i32 as serialized.
 #[cfg(test)]
 pub const COVERED_WORTH: usize = 0xc8;
-/// Controlled-state strength sum, signed i64.
 pub const CONTROLLED_STRENGTH_SUM: usize = 0xd0;
-/// Core-state strength sum, signed i64.
 #[cfg(test)]
 pub const CORE_STRENGTH_SUM: usize = 0xd8;
-/// Cached maximum state strength, signed i64, saved independently of the sums.
 pub const MAX_STATE_STRENGTH: usize = 0xe0;
-/// Network serializer.
 #[cfg(test)]
 pub const SAVE_RVA: usize = 0x0126_4170;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Already-acquired graph position, shared with auxiliary capture only.
     pub native_ordinal: u32,
-    /// Raw country references, including authenticated aliases.
     pub owner_country: u32,
     pub target_country: u32,
     pub state_id: i32,
-    /// Subnetwork strength qword; negative selectors have no strength value.
     pub strength_raw: Option<i64>,
-    /// Signed graph-row selector retained exactly, including unassigned values.
     pub subnetwork_selector: i32,
-    /// Graph-row state strength, which raid target intel and the map mode's
-    /// network layer read; independent of selector.
     pub local_strength_raw: i64,
-    /// Graph-row daily gain and its parts from operatives and from adjacent states.
     pub gain_raw: i64,
     pub gain_from_operatives_raw: i64,
     pub gain_from_adjacency_raw: i64,
-    /// The local network's quiet byte for the selector, which the map mode's
-    /// network layer reads; zero for a selector outside its list.
     pub local_quiet: u8,
-    /// The selected subnetwork's gain factor, strength target and the
-    /// target's parts from operatives and from counterintelligence, which the
-    /// state tooltip reads; none for a negative selector.
     pub gain_factor_raw: Option<i64>,
     pub strength_target_raw: Option<i64>,
     pub target_from_operatives_raw: Option<i64>,
     pub target_from_counterintelligence_raw: Option<i64>,
-    /// The selected subnetwork's own quiet byte, which the state tooltip
-    /// reads; zero for a negative selector, which selects no subnetwork.
     pub subnetwork_quiet: u8,
 }
 
-/// The selected subnetwork's copied values.
 #[derive(Clone, Copy)]
 struct Subnetwork {
     strength_raw: i64,
@@ -89,15 +56,11 @@ struct Subnetwork {
     quiet: u8,
 }
 
-/// Independently retained national caches, acquired once per actual network
-/// during the existing network census, including networks with no vertices.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
-    /// Worker cache identity only; never recorded.
     pub native_pointer: usize,
     pub owner_country: u32,
     pub target_country: u32,
-    /// Current position in the owner's native network vector, acquired for free.
     pub ordinal: u32,
     pub covered_core_states: i32,
     pub covered_controlled_states: i32,
@@ -113,12 +76,6 @@ pub struct NetworkWalk {
     pub summaries: Outcome,
 }
 
-/// Shared worker storage. The daily rebuild is the only writer of the retained
-/// aggregate values after construction/load. Outside it, a country reset can
-/// destroy networks and console growth changes state strengths alone. Reuse
-/// requires the caller's reset/growth certificate and the census's authenticated
-/// network identity; attachment/load/gap/forced refresh revokes it. The census
-/// selects current membership even when an aggregate is carried.
 #[derive(Default)]
 pub struct SummaryCache {
     rows: Vec<Summary>,
@@ -136,8 +93,6 @@ impl SummaryCache {
     }
 }
 
-/// Worker acquisition shares the established roster and network authentication.
-/// Summary read failures withhold only summaries, never the existing state rows.
 #[cfg(test)]
 pub fn walk_with_summaries(
     memory: &impl Memory,
@@ -207,9 +162,6 @@ pub fn walk_with_cached_summaries(
         cache.rows.copy_from_slice(captured);
         cache.rows.sort_unstable_by_key(|row| row.native_pointer);
     } else if refresh {
-        // A failed refresh revokes the previous day's values. An intervening
-        // membership failure publishes no new cache and cannot revoke payload
-        // certificates the caller still proves; retain those for its retry.
         cache.rows.clear();
     }
     NetworkWalk { states, summaries }
@@ -253,7 +205,6 @@ impl SummaryCapture<'_> {
                 Summary { ordinal, ..held }
             } else {
                 self.fresh = true;
-                // Read only serializer operands, not the coverage padding.
                 let coverage = field::<[u8; 12]>(memory, network, COVERED_CORE_STATES)?;
                 let strengths = field::<[u8; 24]>(memory, network, CONTROLLED_STRENGTH_SUM)?;
                 let count = |index: usize| {
@@ -286,9 +237,6 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
 }
 
-/// Reads the country-rooted network roster and its state-to-subnetwork mapping.
-/// A network has no single stored national strength; each row retains the native
-/// strength of the subnetwork selected by that state's graph vertex.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -322,7 +270,6 @@ fn walk_inner(
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let manager = pointer(memory, game_state, cgame_state::STRATEGIC_OPERATIVE_MANAGER)?;
-        // The constructor leaves this root null when La Resistance is disabled.
         if manager == 0 {
             return Ok(Outcome::Rows { len: 0 });
         }
@@ -344,7 +291,6 @@ fn walk_inner(
                 .and_then(|address| read::<u64>(memory, address))
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .ok_or("intel strategic operative slot unreadable or outside the vector")?;
-            // A null slot has no operative and no networks; the game null-checks its lookups.
             if operative == 0 {
                 continue;
             }
@@ -363,9 +309,6 @@ fn walk_inner(
                 if target_country.pointer == country.pointer {
                     return Err("intel network target equals its owner");
                 }
-                // Networks are not sorted: the native removal path swaps the
-                // last pointer into the removed slot. Reject duplicate targets
-                // by canonical slot in O(1); the exact fallback rereads.
                 if seen.insert(target_country.canonical_slot, || {
                     for previous in 0..network_slot {
                         let earlier = element_pointer(memory, networks, previous)?;
@@ -465,7 +408,6 @@ fn walk_inner(
                             })
                             .ok_or("intel graph row address overflow")?;
                     }
-                    // One copy per row spans the selector through the state id.
                     const ROW_END: usize = intel_network_graph_row::STATE_ID + 4
                         - intel_network_graph_row::SUBNETWORK_SELECTOR;
                     let row_field = |bytes: &[u8], offset: usize| {
@@ -495,13 +437,10 @@ fn walk_inner(
                             return Err("intel graph row state differs from its vertex");
                         }
                         let selector = i32::from_le_bytes(bytes[..4].try_into().unwrap());
-                        // Only nonnegative selectors reach a subnetwork. Negative vertices remain
-                        // present without its values.
                         if selector >= 0 {
                             strength_addresses[index] = subnetworks
                                 .element(selector as u32, csub_intel_network::STRIDE)
                                 .ok_or("intel subnetwork selector outside array")?;
-                            // A selector outside the quiet list is not quiet.
                             if (selector as u32) < quiet.count {
                                 quiet_addresses[index] = quiet
                                     .element(selector as u32, 1)
@@ -509,7 +448,6 @@ fn walk_inner(
                             }
                         }
                     }
-                    // Copy each selected subnetwork from its vtable through its quiet flag.
                     const SUBNETWORK_END: usize = csub_intel_network::QUIET + 1;
                     let subnetwork_field = |bytes: &[u8], offset: usize| {
                         i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
@@ -751,8 +689,6 @@ mod tests {
                 .copy(address, output)
             }
         }
-        // The already-authenticated object's values carry without touching its
-        // aggregate payload. A failed forced read cannot turn into a carry.
         let denied = DenyPayload(&bytes);
         let read = walk_with_cached_summaries(
             &denied,
@@ -922,8 +858,6 @@ mod tests {
             world.u64(operative, cstrategic_operative::VTABLE_RVA.0 as u64);
             world.u32(operative + cstrategic_operative::OWNER, slot as u32);
         }
-        // Country 1 runs a network against every other country; the shared
-        // graph has no rows or vertices, so each network yields no rows.
         let owner = operative_objects + 0x20;
         world.array(
             owner + cstrategic_operative::NETWORKS_DATA,
@@ -959,7 +893,6 @@ mod tests {
         );
         assert_eq!(summaries[COUNT as usize - 2].target_country, COUNT);
         assert_eq!(summaries[COUNT as usize - 2].ordinal, COUNT - 2);
-        // The last network repeats the first target.
         world.u32(networks + (COUNT as usize - 2) * 0x100 + TARGET, 2);
         assert_eq!(
             run(&world),
@@ -1016,7 +949,6 @@ mod tests {
                 graph as u64,
             );
         }
-        // Live country 3, a target of country 1, has no operative object.
         world.u64(operatives + 3 * 8, 0);
         let mut states = Vec::new();
         let mut summaries = Vec::new();
@@ -1039,7 +971,6 @@ mod tests {
         let unavailable = Outcome::Unavailable {
             reason: "intel strategic operative slot unreadable or outside the vector",
         };
-        // A vector without the last live country's slot is not an absence.
         world.u32(
             manager + cstrategic_operative_manager::OPERATIVES_DATA + 12,
             COUNT,
@@ -1049,7 +980,6 @@ mod tests {
             walk_with_summaries(&world.memory(), 0, gs, &mut states, &mut summaries);
         assert_eq!(captured.states, unavailable);
         assert!(matches!(captured.summaries, Outcome::Unavailable { .. }));
-        // Nor is a slot that cannot be read.
         world.array(
             manager + cstrategic_operative_manager::OPERATIVES_DATA,
             0x4000_0000,
@@ -1198,8 +1128,6 @@ mod tests {
             }
             bytes[subnetwork + csub_intel_network::QUIET] = index as u8;
         }
-        // The local list makes subnetwork 1 quiet and is one byte too short
-        // to cover a selector of 2.
         header(
             &mut bytes,
             NETWORK + LOCAL_NETWORK + clocal_intel_network::QUIET_DATA,
@@ -1283,7 +1211,6 @@ mod tests {
         assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
         assert_eq!(output[1].local_quiet, 0);
         assert_eq!(output[1].subnetwork_quiet, 1);
-        // With the full list the same selector reads its quiet byte.
         header(
             &mut bytes,
             NETWORK + LOCAL_NETWORK + clocal_intel_network::QUIET_DATA,
@@ -1391,7 +1318,6 @@ mod tests {
             assert_eq!(row.strength_raw, (index % 2 == 0).then_some(i64::MAX));
             assert_eq!(row.subnetwork_selector, if index % 2 == 0 { 1 } else { -2 });
         }
-        // Reading a bad row fails the table.
         p32(
             &mut bytes,
             begin + intel_network_graph_row::SUBNETWORK_SELECTOR,

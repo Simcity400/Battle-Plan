@@ -11,7 +11,6 @@ import { validateMeasureDrops } from './measureSeriesData';
 import { loadTransientProduct } from '../../dashboard/products';
 import { netSpend } from './measureData';
 
-/** An I/O page, never a cap on a cluster or campaign's reachable events. */
 export const DROP_LIST_PAGE = 32n;
 export function dropListRange(first: bigint, total: bigint, end: bigint | null): { last: bigint; count: number } {
   const limit = end === null || end > total ? total : end;
@@ -37,7 +36,6 @@ export default function BalanceChanges({ client, source, branchId, measure, tags
     void loadTransientProduct<unknown>(client, { sourceId: source.id, revision: source.revision, product: 'events-page',
       params: { branchId, family: { kind: 'country-measure', measure }, countries: ([tag]).map(countryFromKey), cursor: first.toString(), pageSize: count, to: Math.floor(visibleThrough) } }, controller.signal)
       .then(value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
-      // Only this page's own earlier reply is kept beside its failure, never another page's rows.
       .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: asFailure(error) } : { owner, error: asFailure(error) }); });
     return () => controller.abort();
   }, [client, owner, attempt]);

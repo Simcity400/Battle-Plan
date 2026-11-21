@@ -4,10 +4,8 @@ import WidgetState from '../components/WidgetState';
 import { perfLog } from '../shell/perf';
 import { MeasuredWidget } from './widgetPerf';
 
-interface Props { children: ReactNode; /** A new value (the widget's spec) draws it again. */ reset: unknown }
+interface Props { children: ReactNode;   reset: unknown }
 
-/** A widget that fails to render shows its own error with Retry; the rest of the
- * dashboard keeps working instead of the whole app unmounting. */
 export default class WidgetBoundary extends Component<Props, { error: Error | null }> {
   static contextType = MeasuredWidget;
   declare context: string | null;

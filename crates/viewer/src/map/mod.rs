@@ -1,4 +1,3 @@
-//! Host map composition and producers that combine multiple feature outputs.
 
 #[cfg(test)]
 mod offline_scene;

@@ -1,31 +1,19 @@
-//! CFEXAir active naval air slot.
 use engine_sites::Rva;
 use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
 
 pub const VTABLE_RVA: Rva = Rva(0x02a9_a568);
 
-// The two localisation caches are derived. Capture only the wing vectors' subunit indices for
-// viewer localisation. The damage multiplier is saved; update recomputes five weighted wing values
-// after it. The naval aircraft display consumes none of these six values, so the recorder excludes
-// them.
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// Subunit database indices for the all-wing handles; the presentation cache derives its
-    /// localised list from these wings.
     pub wing_types: [usize; 2],
-    /// Ordered source: 0 active group, 1 retained group, 2 independent side.
     pub source: u8,
-    /// Side forward-group ordinal; MAX means opponent-paired-only group. Independent side planes
-    /// (source 2) use zero without a group traversal.
     pub group_index: u32,
     pub index: u32,
     pub carrier_slot: i32,
-    /// Raw shared link topology: CFEXAir's link points to a combat member.
     pub carrier_member_present: u8,
     pub carrier_state: u32,
     pub air_base: u64,
-    /// Growable vectors, not inline arrays.
     pub wings: [[usize; 2]; 2],
     pub initial_planes: i32,
     pub current_planes: i32,
@@ -41,8 +29,6 @@ pub struct Row {
     pub efficiency: crate::naval_air_efficiency_inputs::Row,
 }
 
-/// Retained naval damage and aircraft losses remain three independent arrays through loading and
-/// teardown.
 pub(crate) fn read_hits(
     memory: &impl Memory,
     base: usize,
@@ -111,7 +97,7 @@ pub(crate) fn read_hits(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // Two caller-owned spans, each with its length and demand.
+#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn read(
     memory: &impl Memory,
@@ -139,7 +125,7 @@ pub(crate) fn read(
     )
 }
 
-#[allow(clippy::too_many_arguments)] // Two caller-owned spans, each with its length and demand.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_buffer(
     memory: &impl Memory,
     base: usize,
@@ -242,8 +228,6 @@ pub(crate) fn read_buffer(
         *slot = match crate::creference_registry::resolve(memory, base, handle)? {
             None => u32::MAX,
             Some(secondary) => {
-                // Resolve the air-wing reference base, then recover the primary object
-                // before reading its pool.
                 let wing = secondary
                     .checked_sub(crate::cair_wing::SECONDARY)
                     .ok_or("naval air wing primary address underflow")?;

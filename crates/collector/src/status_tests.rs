@@ -1,4 +1,3 @@
-//! Whole-capture allocation-denial checks for borrowed status values.
 
 use crate::status::{DebugValue, DisplayValue, status};
 use serde::Serialize;

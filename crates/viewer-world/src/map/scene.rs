@@ -1,8 +1,3 @@
-//! The map scene: GPU resources, the render targets and the pass order.
-//!
-//! One scene is built per document and reused for every frame, so the game
-//! textures are uploaded once. Per-hour data arrives through the `set_*` hooks,
-//! which rewrite the data textures in place and rebind the passes.
 
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use crate::map::scene_content::MapAssets;
@@ -61,24 +56,19 @@ use {
     viewer_foundation::map::textures::Bound, viewer_foundation::map::textures::ColorSpace,
     viewer_foundation::map::textures::data_texture, viewer_foundation::map::textures::upload,
 };
-// names
 use {
     crate::map::name_pass::NamePass, crate::map::post::PostPass,
     viewer_foundation::map::name_draw::Placements, viewer_foundation::map::sprites::Batch,
     viewer_foundation::map::sprites::IconTextures, viewer_foundation::map::sprites::SpritePass,
 };
-// rivers
 use {
     crate::map::rivers::RiverAssets, crate::map::rivers::RiverMesh, crate::map::rivers::RiverPass,
 };
-// the map's table frame
 use crate::map::mapframe::FrameAssets;
-// trees
 use {
     crate::map::trees::TreeAssets, crate::map::trees::TreeField, crate::map::trees::TreeFrame,
     crate::map::trees::TreeGeometry, crate::map::trees::TreePass,
 };
-// close zoom: the shared static-mesh pass and the layers built on it
 use crate::map::railways::RailFade;
 use {
     crate::map::map_buildings::BUILDING_TILE, crate::map::map_buildings::BuildingHistory,
@@ -92,7 +82,6 @@ use {
     crate::map::railways::Bridges, crate::map::railways::RailAssets,
     crate::map::railways::RailMesh, crate::map::railways::RailPass,
 };
-// orders: the recorded player's battle plan
 use crate::map::order_pass::{OrderPass, PlanSubmissions};
 use crate::map::sprawl::Sprawl;
 use viewer_foundation::map::ribbon_content::Mode as ArrowMode;
@@ -102,7 +91,6 @@ use {
     viewer_foundation::map::model_admission::Gates as UnitGates,
 };
 
-// Expand field borrows so rendering can also mutate the pass diagnostics.
 macro_rules! model_passes {
     ($scene:expr) => {
         [
@@ -124,25 +112,20 @@ mod proof;
 #[cfg(any(test, feature = "test-support"))]
 pub use proof::SceneProof;
 
-/// CPU frame inputs; each compiled adapter uploads its native buffer layout.
 struct FrameInputs {
     frame: FrameConstants,
     shadow_matrix: [[f32; 4]; 4],
     light_grid: [f32; 4],
 }
 
-/// CPU border plans prepared on a builder for one faction-pin province union.
 pub struct FactionHighlight {
     classes: crate::map::border_pass::ClassPlan,
     zone: crate::map::demilitarized::ZonePlan,
     hover: crate::map::demilitarized::ZonePlan,
-    /// The ground selection's outline and its palette colour.
     selection: Option<(crate::map::demilitarized::ZonePlan, [f32; 4])>,
 }
 
 impl FactionHighlight {
-    /// Select adjacencies leaving the union; partitions
-    /// ordinary and secondary buckets, including custom material-0xff strips.
     pub fn new(
         meshes: &BorderMeshes,
         regions: &Regions,
@@ -152,9 +135,6 @@ impl FactionHighlight {
         Self::with_selection(meshes, regions, zone, provinces, None)
     }
 
-    /// [`Self::new`] with the ground selection's provinces outlined in their palette colour: an
-    /// edge leaving the selection, unless the custom highlight claims it first, as the game ranks
-    /// a custom highlight above the selection and the selection above the demilitarised zone.
     pub fn with_selection(
         meshes: &BorderMeshes,
         regions: &Regions,
@@ -183,9 +163,6 @@ impl FactionHighlight {
     }
 }
 
-/// The uploaded game textures, the data textures and the two passes.
-/// One hour's layers that install into disjoint parts of the scene ([`Scene::set_hour_layers`]);
-/// each is installed only when given.
 #[derive(Default)]
 pub struct HourLayers<'a> {
     pub buildings: Option<(
@@ -201,7 +178,6 @@ pub struct HourLayers<'a> {
     pub snow_mud: Option<(&'a Arc<crate::map::weather::SnowMud>, Continuity)>,
     pub fog: Option<(&'a map_display_data::Paged<u8>, bool)>,
     pub unit_models: Option<(&'a UnitModelAssets, crate::map::unit_history::Field, bool)>,
-    /// The hour's railway strips (prepared, or prepared here from the mesh) and its bridges.
     pub rails: Option<(
         &'a RailAssets,
         &'a RailMesh,
@@ -209,9 +185,7 @@ pub struct HourLayers<'a> {
         &'a Bridges,
         ModelField,
     )>,
-    /// The hour's country names, whose glyph buffers are built before any frame draws them.
     pub names: Option<&'a Placements>,
-    /// The hour's plan with its air orders appended under these highlighted bases.
     pub orders: Option<(
         &'a OrderAssets,
         &'a OrderField,
@@ -220,7 +194,6 @@ pub struct HourLayers<'a> {
     )>,
 }
 
-/// The scene state a plan install writes.
 struct OrderParts<'a> {
     orders: &'a mut Option<OrderPass>,
     labels: &'a mut Placements,
@@ -237,9 +210,7 @@ pub struct Scene {
     #[cfg(any(test, feature = "test-support"))]
     pub test_faults: failure_tests::Faults,
     graphics: dashboard_core::protocol::MapGraphics,
-    /// The provinces bitmap's size, which mesh shader globals are defined with.
     map_size: [u32; 2],
-    /// The light depth map, screen-space receiver and blur targets.
     shadow: ShadowPass,
     atlas: Arc<Bound>,
     atlas_normal: Arc<Bound>,
@@ -254,21 +225,14 @@ pub struct Scene {
     lean2: Arc<Bound>,
     water_specular: Arc<Bound>,
     naval_dominance: Arc<Bound>,
-    // fog of war
     intel_map: Bound,
     intel_installed: Option<map_display_data::Paged<u8>>,
-    /// The changed intel pages' texels, expanded to the texture's RGBA.
     intel_scratch: Vec<u8>,
-    /// See [`Scene::settle_builds`].
     settled_builds: bool,
-    /// See [`Scene::settle_poses`].
     settled_poses: bool,
     retained_scene: RefCell<crate::map::shader_scene::State>,
     fow_noise: Arc<Bound>,
-    /// Whether this hour has a fog-of-war input at all; see
-    /// [`Scene::set_fog_of_war`].
     fog: bool,
-    /// What the view's map mode shows of the map's layers; see [`Scene::set_visibility`].
     visibility: viewer_foundation::map::mode_visibility::Visibility,
     point_light_maps: crate::map::pointlights::PointLightMaps,
     point_light_tiles: crate::map::pointlights::Tiles,
@@ -279,17 +243,12 @@ pub struct Scene {
     heightmap: Arc<Bound>,
     terrain_ids: Arc<Bound>,
     snow_mud: Bound,
-    /// One texel per snow/mud cell, set where [`crate::map::weather::Presentation::unknown`]
-    /// hatches it.
     snow_unknown: Bound,
-    /// The terrain's vertex heights for the hatch, when [`Self::heightmap`] is not them.
     hatch_heights: Option<Arc<Bound>>,
-    /// Built on the first hour with an unknown cell for the targets' sample count, or why not.
     unknown_hatch: Option<(u32, Result<crate::map::weather::UnknownHatch, String>)>,
     snow_presentation: crate::map::weather::Presentation,
     snow_render_delta: crate::map::weather::RenderDelta,
     political: Option<crate::map::political_gpu::View>,
-    /// The shown map mode's camera override and outline cutoff per channel.
     mode_channels: [Option<[f32; 2]>; 2],
     gradient1: Bound,
     gradient2: Bound,
@@ -302,106 +261,53 @@ pub struct Scene {
     tree_effect: Arc<shader_pipeline::library::Effect>,
     sky_effect: Arc<shader_pipeline::library::Effect>,
     sky: Option<Result<crate::map::sky_shader::Sky, String>>,
-    /// Constants and repacked vertex streams of the frame being encoded.
     arena: shader_pipeline::gpu::Arena,
-    // colour
     pub post: PostPass,
     pub last_animation_time: Option<f32>,
-    /// What the actors showed the frame before, for the first gate's count
-    /// ([`crate::map::actor_motion`]).
     actor_motion: crate::map::actor_motion::Motion,
-    /// The poses' worker, and the tick its last batch was asked for
-    /// ([`crate::map::poses`]). A frame whose tick differs plays the actors on and asks for
-    /// their poses; every other frame draws the limbs of the set standing.
     poses: crate::map::poses::Worker,
-    /// The batch a frame fills for the worker, kept between frames so a pose costs no
-    /// allocation.
     pose_jobs: crate::map::poses::Jobs,
     posed_tick: Option<i64>,
-    /// The last rendered frame's entity events that name a sound effect.
     pub sound_events: Vec<crate::map::sound_events::SoundEvent>,
-    /// This frame's sounds refused by name, with the actors refused.
     pub sound_refusals: BTreeMap<String, usize>,
     sound_names: crate::map::sound_events::Names,
-    /// The railway manager's camera fade, stepped on the animation clock.
     rail_fade: RailFade,
-    /// Milliseconds the last [`Scene::render`] spent animating, uploading the
-    /// overlay, encoding and submitting, under `BATTLE_PLAN_VIEWER_PROFILE`.
     render_laps: [f64; 4],
-    /// Per-pass GPU timestamps under `BATTLE_PLAN_VIEWER_GPU_PASSES`.
     pass_timer: Option<PassTimer>,
-    /// Each window frame's GPU time under the perf map log, read back frames later.
     frame_timer: Option<viewer_foundation::map::gpu_frame_time::FrameTimer>,
-    /// Cut updates remain recoverable until the frame reaches its province walk.
     province_frame: Option<(ProvinceFrame, FrameRestore)>,
     pub pass_diagnostics: passes::Diagnostics,
-    /// CPU laps inside animation and overlay preparation, under `BATTLE_PLAN_VIEWER_PROFILE`.
     detail_laps: CpuLaps,
-    /// Coarse caller-side pass/finish/submit laps, independent of GPU queries.
     pass_cpu_laps: CpuLaps,
     pub targets: Option<Targets>,
-    /// The terrain blocks the frame draws, chosen by the camera's distance, and the camera and
-    /// view they were chosen for: a frame that moves neither chooses none.
     cover: crate::map::terrain::Cover,
     cover_for: Option<(Camera, [u32; 2])>,
-    /// The camera the frame's model lists, their shadow casters and their groups are gathered
-    /// against, held while the real camera pans or turns inside its slack, so nothing retained for
-    /// a view is gathered again frame by frame. Every frame draws what its own camera sees.
     admitted_against: viewer_foundation::map::camera::Hold,
     generation: u64,
-    // borders
-    /// Kept so the border pass can be built after the scene, once the document has traced it.
     borders: Option<BorderPass>,
-    /// The engine's secondary bucket bank, built beside the border pass; see `crate::map::demilitarized`.
     demilitarized: Option<DemilitarizedPass>,
-    /// The rendered pin currently owning a local pointer highlight.
     faction_highlight_regions: Vec<u32>,
-    /// Whether the installed highlight plan outlines the ground selection.
     selection_outlined: bool,
-    // names
     icon_textures: Arc<IconTextures>,
-    /// The game textures this scene draws, shared with every scene of its content.
     _shared: Arc<SceneTextures>,
     name_pass: NamePass,
-    /// The names written close in ([`Placements::near`]), fading in as the country layer fades
-    /// out.
     near_name_pass: NamePass,
-    /// The battle-plan labels: the same `mapname` effect, drawn right after
-    /// the plan's ribbons.
     order_label_pass: [NamePass; 3],
-    /// Every arrow mode's label pass reads the one plan's labels.
     order_labels: Placements,
     sprite_pass: SpritePass,
     empty_batch: Batch,
     empty_placements: Placements,
-    // rivers
-    /// Built once the document has traced the river bitmap; see [`Scene::set_rivers`].
     rivers: Option<RiverPass>,
-    // the map's table frame
-    /// Built once the document has read the frame's ambient objects; see [`Scene::set_map_frame`].
     pub native_map_frame: Option<ModelPass>,
     ambient: Option<crate::map::mapframe::Presentation>,
-    /// Province effect slots drawn through the map-frame pass; see [`Scene::set_nuclear_impacts`].
     strikes: crate::map::strike_effects::Presentation,
-    /// The aircraft clock up to which missile scenarios have started their
-    /// explosions.
     missile_clock: Option<f32>,
-    // trees
-    /// Built once the document has generated the tree lattice; see [`Scene::set_trees`].
     trees: Option<TreePass>,
-    // close zoom
-    /// Built once the document has generated the sprawl; see [`Scene::set_sprawl`].
     sprawl: Option<ModelPass>,
     city_presentation: Option<crate::map::sprawl::Presentation>,
-    /// Built once the document has read the building slots; the history
-    /// applies each hour to the camera. See [`Scene::set_map_buildings`].
     map_buildings: Option<ModelPass>,
     building_history: BuildingHistory,
-    /// The content's per-frame model creation allowance
-    /// ([`crate::map::mesh_budget`]), shared by buildings, hulls and land figures.
     mesh_limit: i32,
-    /// Built once the document has traced the rail network; see
-    /// [`Scene::set_railways`].
     railways: Option<RailPass>,
     aircraft: Option<(
         ModelPass,
@@ -413,7 +319,6 @@ pub struct Scene {
         Arc<crate::map::trains::TrainAssets>,
         crate::map::trains::TrainPlan,
     )>,
-    // orders: the recorded player's battle plan; see [`Scene::set_orders`].
     orders: Option<OrderPass>,
     radar: Option<crate::map::radar_symbols::Pass>,
     radar_refusal: Option<String>,
@@ -422,94 +327,47 @@ pub struct Scene {
     air_transfers: Option<crate::map::radar_symbols::Pass>,
     air_transfers_refusal: Option<String>,
     pub movement_arrows: crate::map::movement_arrows::Player,
-    /// The floating map text of the recorded map events; see
-    /// [`Scene::install_animated_text`] and [`Scene::present_hours`].
     animated_text: Option<crate::map::animated_map_text::Player>,
     map_text_events: crate::map::animated_map_text::events::Presenter,
     map_text_refusals: viewer_foundation::table_access::Refusals,
     weather_effects: Option<crate::map::weather_effects::Pass>,
-    /// Finishes the frame's leading command buffer while the frame records the rest, then its
-    /// trailing one while the frame flushes its uploads.
     encode_lane: crate::map::lane::Lane<wgpu::CommandBuffer>,
-    /// Finishes the models' command buffer while the frame records the rest.
     models_lane: crate::map::lane::Lane<wgpu::CommandBuffer>,
-    /// Steps the aircraft and the city sprawl while the frame walks the rest
-    /// ([`step::Beside`]).
     beside_lane: crate::map::lane::Lane<step::Beside>,
-    /// The railway bridges, which are meshes rather than strip; see
-    /// [`Scene::set_bridges`].
     bridges: Option<ModelPass>,
-    /// Built once the document has resolved the infantry entities; its
-    /// instances are rewritten every frame from the unit history, which
-    /// stands the raid units at every height. See [`Scene::set_unit_models`].
     unit_models: Option<ModelPass>,
-    /// The content's unit and ship camera cutoffs, set with the pass.
     unit_gates: Option<UnitGates>,
     pub unit_history: crate::map::unit_history::History,
-    /// The model a free camera mode's user steers; see [`Scene::set_player`].
     player: Option<player::Player>,
 }
 
-/// One frame's worth of arguments to [`Scene::render`].
 #[derive(Clone, Copy)]
 pub struct Request<'a> {
-    /// Render target size in device pixels.
     pub size: [u32; 2],
     pub camera: Camera,
     pub day_night: DayNight,
-    /// `vGlobalTime`, and `FoWTime` beside it: the fog-of-war noise drifts on it.
     pub animation_time: f32,
-    /// Map presentation clock for selection pulses, river flow and waves, separate from vGlobalTime
-    /// and animation_time.
     pub map_time: f32,
-    // colour
-    /// Whether the `post` stage grades the frame. See [`Scene::render`].
     pub postfx: bool,
-    /// Verification aid, `--dump --no-water` only: skip the water plane to
-    /// expose lit terrain, as the game's `debug_water` toggle does. The
-    /// separate underwater refraction target is then unused by the scene.
     pub no_water: bool,
-    // Dump-only no-shadows omits the cast-shadow chain. Lit passes sample its clear value and
-    // receive fully lit shadow terms.
     pub no_shadows: bool,
-    // names
     pub overlay: Overlay<'a>,
-    // Tree season operands for this hour. Dump-only no-trees omits canopy and tree shadow casters,
-    // exposing bare lit terrain.
     pub no_trees: bool,
 }
 
-// names
-/// What the two overlay passes draw on top of the world passes this frame.
-///
-/// Both are built by the caller, which owns the camera the labels were
-/// projected with, so the overlay and the frame it is drawn into always agree.
 #[derive(Clone, Copy)]
 pub struct Overlay<'a> {
-    /// The placed country names, in world space.
     pub names: Option<&'a Placements>,
-    /// The integrated country-name fade.
     pub layer_alpha: f32,
     pub strategic_names: super::name_pass::StrategicNames,
-    /// Screen-space icon quads, in the order the caller pushed them, in
-    /// interface pixels.
     pub sprites: Option<&'a Batch>,
-    /// Device pixels per interface pixel of `sprites`; see
-    /// [`super::ui_scale`]. The world-space names do not take it.
     pub ui_scale: f32,
-    /// Whether the map's interface that stands in the world draws: borders, demilitarised zones
-    /// and strait crossings, battle plans with their labels and raid paths, the selected units'
-    /// movement arrows and floating map text. Off, as the fly and walk modes leave it by default,
-    /// they still step and keep their state; only their drawing stops.
     pub interface: bool,
-    /// Whether the country names draw: with the interface, and in the fly mode on their own.
     pub country_names: bool,
-    /// What a free eye's floating map text stands on, for its sight test; `None` tests nothing.
     pub ground: Option<viewer_foundation::map::free_icons::Ground<'a>>,
 }
 
 impl Default for Overlay<'_> {
-    /// Nothing to draw, at the unscaled interface size.
     fn default() -> Self {
         Self {
             names: None,
@@ -524,8 +382,6 @@ impl Default for Overlay<'_> {
     }
 }
 
-/// The game textures a map uploads once and only reads: every scene of the same content on
-/// one device draws from one set, so another view of it adds only its own targets and hour data.
 #[derive(Clone)]
 pub struct SceneTextures {
     atlas: Arc<Bound>,
@@ -554,7 +410,6 @@ pub struct SceneTextures {
 }
 
 impl SceneTextures {
-    /// Uploads the game textures of `assets` and the icon pages of `icon_images`.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -569,8 +424,6 @@ impl SceneTextures {
             &assets.fow_noise,
             ColorSpace::Linear,
         )?);
-        // `FOWHeight` and the water's `SpecularMap` are the same file, which is
-        // what its name says: `fow_rgb_waterspec_a`.
         let water_specular = Arc::new(upload(
             device,
             queue,
@@ -743,13 +596,10 @@ impl SceneTextures {
     }
 }
 
-/// One content's [`SceneTextures`] on each device. The weak entry releases them with the last
-/// scene drawing them; scenes built meanwhile, a dashboard's views among them, share one upload.
 #[derive(Default)]
 pub struct TextureCache(std::sync::Mutex<Vec<(wgpu::Device, std::sync::Weak<SceneTextures>)>>);
 
 impl TextureCache {
-    /// The textures of `assets` and `icon_images` on `device`: those a scene holds, else uploaded.
     pub fn warm(
         &self,
         device: &wgpu::Device,
@@ -757,7 +607,6 @@ impl TextureCache {
         assets: &MapAssets,
         icon_images: &[installed_content_image::dds::Texture],
     ) -> io::Result<Arc<SceneTextures>> {
-        // Held through an upload, so scenes built at once upload these textures once.
         let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
         entries.retain(|(_, textures)| textures.strong_count() != 0);
         if let Some(shared) = entries
@@ -774,7 +623,6 @@ impl TextureCache {
     }
 }
 
-/// Whether `device` can hold the game's textures: the political pass's needs and BC formats.
 fn check_textures(device: &wgpu::Device) -> io::Result<()> {
     crate::map::political_gpu::check_device(device)?;
     if !device
@@ -789,7 +637,6 @@ fn check_textures(device: &wgpu::Device) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether `device` can draw the map at `samples`: its textures, anti-aliasing and bindings.
 fn check_device(device: &wgpu::Device, samples: u32) -> io::Result<()> {
     check_textures(device)?;
     match dashboard_core::map_settings::sample_counts() {
@@ -825,8 +672,6 @@ impl Scene {
             .unwrap_or_default()
     }
 
-    /// Uploads every game texture and builds both pipelines.
-    // Resources are shared by the name and icon layers.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -848,8 +693,6 @@ impl Scene {
         )
     }
 
-    /// [`Scene::new`] drawing `textures`, uploaded from these `assets` and their icon images, its
-    /// load split with the builders `workers` lends while they are free.
     pub fn with_textures(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -861,18 +704,12 @@ impl Scene {
     ) -> io::Result<Self> {
         check_device(device, graphics.samples)?;
         let samples = graphics.samples;
-        // fog of war: the intel map is rewritten in place every hour, so it is
-        // allocated at its final size here and the bind groups below outlive
-        // every one of its contents. An all-zero grid is "no fog anywhere",
-        // which is what an hour with no recorded visibility draws.
         let fow = fow_size(assets.map);
         let intel_map = data_texture(
             device,
             queue,
             "IntelMap",
             fow,
-            // Native exposes A8_UNORM. RGBA preserves its (0,0,0,a)
-            // samples for both compiled content and the remaining port consumers.
             wgpu::TextureFormat::Rgba8Unorm,
             &vec![0u8; (fow[0] * fow[1] * 4) as usize],
         )?;
@@ -907,13 +744,8 @@ impl Scene {
                 &vec![0u8; (gradient_size[0] * gradient_size[1] * 4) as usize],
             )
         };
-        // An all-zero channel 2 makes `TranspA`, `TranspB` and `FX_Alpha.g` zero,
-        // so `gradient_border_apply` leaves the colour alone and reports a bloom
-        // alpha of 1: no political fill until the border worker supplies fields.
         let gradient1 = gradient("GradientBorderChannel1")?;
         let gradient2 = gradient("GradientBorderChannel2")?;
-        // One transparent texel: `secondary_color_mask` multiplies the stripe by
-        // the mask alpha, so a zero alpha is the whole map having no occupation.
         let secondary = data_texture(
             device,
             queue,
@@ -923,7 +755,6 @@ impl Scene {
             &[0, 0, 0, 0],
         )?;
 
-        // names
         let _shared = Arc::clone(&textures);
         let SceneTextures {
             atlas,
@@ -1000,7 +831,6 @@ impl Scene {
             lean2,
             water_specular,
             naval_dominance,
-            // fog of war
             intel_map,
             intel_installed: None,
             intel_scratch: Vec::new(),
@@ -1045,7 +875,6 @@ impl Scene {
                 samples,
                 SCENE_FORMAT,
             ),
-            // colour
             post: PostPass::new(device, queue, &assets.post, OUTPUT_FORMAT)?,
             sky_effect: assets.sky_shader.clone(),
             arrow_effect: assets.arrow_shader.clone(),
@@ -1073,12 +902,10 @@ impl Scene {
             cover_for: None,
             admitted_against: Default::default(),
             generation: 0,
-            // borders
             borders: None,
             demilitarized: None,
             faction_highlight_regions: Vec::new(),
             selection_outlined: false,
-            // names
             icon_textures,
             _shared,
             name_pass,
@@ -1088,16 +915,12 @@ impl Scene {
             sprite_pass,
             empty_batch: Batch::default(),
             empty_placements: Placements::default(),
-            // rivers
             rivers: None,
-            // the map's table frame
             native_map_frame: None,
             ambient: None,
             strikes: Default::default(),
             missile_clock: None,
-            // trees
             trees: None,
-            // close zoom
             sprawl: None,
             city_presentation: None,
             map_buildings: None,
@@ -1156,8 +979,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Install this hour's empty particle runtimes, prepared on a builder thread by
-    /// [`crate::map::weather_effects::prepare`]. Return retired runtimes for disposal off the frame path.
     pub fn set_prepared_weather_effects(
         &mut self,
         device: &wgpu::Device,
@@ -1181,12 +1002,6 @@ impl Scene {
             .set_prepared(prepared, continuity))
     }
 
-    /// Creates the per-hour GPU passes before the first hour arrives, so the
-    /// first map frame pays only data uploads.
-    ///
-    /// The loader compiles pipelines and uploads static libraries and textures while builders
-    /// prepare the first hour. Hourly data arrives through the matching `set_*` methods. Existing
-    /// passes are retained, keeping this work off the frame path.
     pub fn warm_trains(
         &mut self,
         device: &wgpu::Device,
@@ -1205,7 +1020,6 @@ impl Scene {
         Ok(())
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_aircraft(
         &mut self,
         device: &wgpu::Device,
@@ -1224,13 +1038,10 @@ impl Scene {
         Ok(())
     }
 
-    /// The content's unit camera cutoffs the scene admits unit models by;
-    /// `None` before the unit pass exists.
     pub fn unit_gates(&self) -> Option<UnitGates> {
         self.unit_gates
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_unit_models(
         &mut self,
         device: &wgpu::Device,
@@ -1244,13 +1055,10 @@ impl Scene {
             drop(library);
             self.unit_models = Some(pass);
         }
-        // The content's camera cutoffs come with the pass, however it was
-        // created: a window warms it at load, before any hour's field.
         self.unit_gates = Some(assets.gates);
         Ok(())
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_map_buildings(
         &mut self,
         device: &wgpu::Device,
@@ -1265,7 +1073,6 @@ impl Scene {
         Ok(())
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_bridges(
         &mut self,
         device: &wgpu::Device,
@@ -1280,8 +1087,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Compiles every pipeline the scene's graphics draw with that a pass would otherwise compile
-    /// on its first frame, after the passes it warms exist.
     pub fn warm_pipelines(&mut self, device: &wgpu::Device) {
         use crate::map::terrain_shader::Mode;
         let high = self.graphics.high_gfx_shaders;
@@ -1329,7 +1134,6 @@ impl Scene {
         }
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_railways(
         &mut self,
         device: &wgpu::Device,
@@ -1348,7 +1152,6 @@ impl Scene {
         Ok(())
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_orders(
         &mut self,
         device: &wgpu::Device,
@@ -1436,7 +1239,6 @@ impl Scene {
         }
     }
 
-    /// See [`Scene::warm_trains`].
     pub fn warm_weather(
         &mut self,
         device: &wgpu::Device,
@@ -1454,9 +1256,6 @@ impl Scene {
         Ok(())
     }
 
-    // trees
-    // the map's table frame
-    /// Uploads content-resolved ambient mesh actors through the shared mesh adapter.
     pub fn set_map_frame(
         &mut self,
         device: &wgpu::Device,
@@ -1464,7 +1263,6 @@ impl Scene {
         assets: &FrameAssets,
     ) -> io::Result<()> {
         let mut pass = ModelPass::new(&assets.library, "map frame");
-        // Every frame mesh is resident: province effects are placed later.
         pass.upload_library(device, queue, &assets.library)?;
         pass.upload(device, queue, &assets.library, assets.field.clone())?;
         self.native_map_frame = Some(pass);
@@ -1473,11 +1271,6 @@ impl Scene {
         Ok(())
     }
 
-    // trees
-    /// Builds the tree pass, uploads the canopy meshes and the instance lattice.
-    ///
-    /// Called once per document: `map/trees.bmp`, `map/heightmap.bmp` and the canopy meshes are all
-    /// static content, so nothing about an instance changes with the hour.
     pub fn set_trees(
         &mut self,
         device: &wgpu::Device,
@@ -1499,19 +1292,9 @@ impl Scene {
         Ok(())
     }
 
-    // close zoom
 
-    // close zoom
 
-    // close zoom
 
-    // close zoom
-    /// Builds the unit-model pass and uploads the hour's placed figures.
-    ///
-    /// The entity library is static content, so the pass is built once; the
-    /// figures come from `Divisions` and are rewritten whenever the hour
-    /// changes. The unit history decides each frame which of them stand
-    /// ([`crate::map::unit_history`]); `steady` settles it for an offline frame.
     pub fn set_unit_models(
         &mut self,
         device: &wgpu::Device,
@@ -1550,16 +1333,13 @@ impl Scene {
         history.set_raids(field.raids);
         pass.upload(device, queue, &assets.library(), field.models)?;
         history.field_replaced();
-        // Entities the hour baked into the library draw whole from its first frame.
         pass.warm_added(device, map, samples)
     }
 
-    /// Offline exports settle models even when the unit layer is omitted.
     pub fn settle_models(&mut self) {
         self.unit_history.settle();
     }
 
-    /// Diagnostic frame sequences exercise the same history as the window.
     pub fn restart_live_models(&mut self) {
         self.movement_arrows.reset();
         if let Some(text) = &mut self.animated_text {
@@ -1577,8 +1357,6 @@ impl Scene {
         }
     }
 
-    /// Runs the unit entities on `schedule`, the view's counters' own
-    /// ([`super::province_schedule`]).
     pub fn share_province_schedule(&mut self, schedule: &Shared) {
         self.unit_history.share_schedule(schedule);
         if let Some(text) = &mut self.animated_text {
@@ -1586,8 +1364,6 @@ impl Scene {
         }
     }
 
-    /// Builds the floating map text player from the content's text types and
-    /// the GUI resources that loaded their fonts onto this scene's icon pages.
     pub fn install_animated_text(
         &mut self,
         assets: &crate::map::animated_map_text::Assets,
@@ -1601,8 +1377,6 @@ impl Scene {
         ));
     }
 
-    /// Starts impacts that arrive without map events: an offline scene's synthetic ones, and
-    /// the strikes layer's. A reset clears every province's effect slot first.
     pub fn set_nuclear_impacts<'a>(
         &mut self,
         hours: impl IntoIterator<Item = &'a crate::map::strike_effects::Impacts>,
@@ -1615,14 +1389,7 @@ impl Scene {
         );
     }
 
-    /// Presents the hours shown since the last call, oldest first: each
-    /// hour's nuclear impacts start their province effects, then its map
-    /// events, interpreted for the viewing country on the hour builders,
-    /// queue their floating text and start their critical bombardment
-    /// explosions, each recorded event once. A discontinuity clears the
-    /// effect slots and starts the queues again; coverage and refusals of the
-    /// last hour stay visible.
-    #[allow(clippy::too_many_arguments)] // The hour, its events and where its text stands.
+    #[allow(clippy::too_many_arguments)]
     pub fn present_hours<'a>(
         &mut self,
         at: (replay_data::BranchId, i32),
@@ -1658,10 +1425,6 @@ impl Scene {
         }
     }
 
-    /// A presented hour at `at` that failed has no coherent fog
-    /// reconstruction; its queues start again and the reason is shown.
-    /// Consumed events are forgotten only where a built hour would forget
-    /// them, so retrying the same hour presents nothing twice.
     pub fn missing_map_text_events(
         &mut self,
         at: (replay_data::BranchId, i32),
@@ -1679,36 +1442,25 @@ impl Scene {
         viewer_foundation::table_access::refuse(&mut self.map_text_refusals, reason);
     }
 
-    /// Advances the view's province schedule for the frame about to be
-    /// presented at this camera, before its map icons read it; the frame's
-    /// render takes the advance ([`crate::map::unit_history::History::advance_schedule`]).
     pub fn advance_provinces(&mut self, camera: Camera, size: [u32; 2]) {
         self.unit_history.advance_schedule(camera, size);
     }
 
-    /// Cut after the final selection change; an unwalked frame returns its force counts.
     pub fn cut_province_frame(&mut self, animation_time: f32) {
         self.restore_province_frame();
         self.province_frame = self.unit_history.take_province_frame(animation_time);
     }
 
-    /// Gives back a cut that no walk read.
     fn restore_province_frame(&mut self) {
         if let Some((_, restore)) = self.province_frame.take() {
             self.unit_history.untake_province_frame(restore);
         }
     }
 
-    /// Places the raid units again, as a playing window does every frame by
-    /// its playback fraction ([`crate::map::unit_models::PreparedModels::raid_units`]).
     pub fn set_raid_units(&mut self, raids: Vec<(usize, crate::map::models::ModelInstance)>) {
         self.unit_history.set_raids(raids);
     }
 
-    /// Places the model a free camera mode's user steers, or takes it away.
-    /// It draws lit and casts shadows wherever it stands, whatever the unit
-    /// layer's cutoffs and display switches, and plays its entity's states on
-    /// the render clock. A new label builds its pass afresh.
     pub fn set_player(
         &mut self,
         device: &wgpu::Device,
@@ -1720,7 +1472,6 @@ impl Scene {
             return Ok(());
         };
         player::Player::place(&mut self.player, device, queue, model)?;
-        // A newly placed entity draws whole from its first frame.
         if let Some(player) = &self.player {
             player
                 .pass
@@ -1729,33 +1480,24 @@ impl Scene {
         Ok(())
     }
 
-    /// The unit models' pass, which poses the land figures the unit history places.
     pub fn unit_pass(&self) -> Option<&ModelPass> {
         self.unit_models.as_ref()
     }
 
-    /// The player's instances the last frame drew, for reporting.
     pub fn player_drawn(&self) -> u32 {
         self.player.as_ref().map_or(0, |player| player.pass.drawn())
     }
 
-    /// What the player's entity keyed `(mesh, seed, identity)` has played, as
-    /// the last frame left it
-    /// ([`crate::map::models::ModelPass::root_play_position`]); `None` without
-    /// a player.
     pub fn player_play_position(&self, key: (usize, u32, u32)) -> Option<Option<(f32, f32)>> {
         self.player.as_ref()?.pass.root_play_position(key)
     }
 
-    // close zoom
-    /// Keeps aircraft assets on the GPU and replaces the scenario plan each hour.
     pub fn set_aircraft(
         &mut self,
         assets: Arc<crate::map::aircraft::AircraftAssets>,
         mut plan: crate::map::aircraft::AircraftPlan,
         continuity: Continuity,
     ) -> io::Result<Option<crate::map::aircraft::AircraftPlan>> {
-        // Hand back the old plan so its flights can be freed off the frame path.
         if let Some((pass, _, current)) = &mut self.aircraft {
             plan.carry_presentation(current, continuity)?;
             viewer_foundation::view_record::add("flights", "installs", 1);
@@ -1771,8 +1513,6 @@ impl Scene {
         }
     }
 
-    /// Takes the aircraft the hour's plan baked into the library and makes their builds, so their
-    /// first frame draws them whole.
     pub fn warm_added_aircraft(&mut self, device: &wgpu::Device) -> io::Result<()> {
         if let Some((pass, assets, _)) = &mut self.aircraft {
             pass.sync_library(&assets.library());
@@ -1787,8 +1527,6 @@ impl Scene {
         mut plan: crate::map::trains::TrainPlan,
         continuity: Continuity,
     ) -> io::Result<Option<crate::map::trains::TrainPlan>> {
-        // The replaced plan holds every route's sampled curve; it is handed
-        // back so the caller frees it off the frame path.
         if let Some((_, _, current)) = &mut self.trains {
             let mut previous = std::mem::take(current);
             plan.carry_presentation(&mut previous, continuity);
@@ -1804,9 +1542,6 @@ impl Scene {
         }
     }
 
-    // close zoom
-    /// Builds the bridge pass once, then uploads this hour's placements
-    /// ([`Bridges::field`] of the hour's rail mesh).
     pub fn set_bridges(
         &mut self,
         device: &wgpu::Device,
@@ -1827,11 +1562,6 @@ impl Scene {
             .upload(device, queue, &bridges.library, field)
     }
 
-    /// Builds the battle-plan pass and uploads this hour's ribbons.
-    ///
-    /// The arrow types and their pages are static content, so the pass is built
-    /// once; the ribbons come from `ArmyOrders` and are rewritten whenever the
-    /// hour or the perspective changes.
     pub fn set_orders(
         &mut self,
         device: &wgpu::Device,
@@ -1843,9 +1573,6 @@ impl Scene {
             .map(drop)
     }
 
-    /// The order field by its producers' parts ([`crate::map::order_pass::ORDER_PARTS`]): only
-    /// the vertices that changed are written, the draw list made again only when a part's ribbons
-    /// or place moved, and the labels (the plan's) prepared again only when they changed.
     pub fn set_order_parts(
         &mut self,
         device: &wgpu::Device,
@@ -1910,8 +1637,6 @@ impl Scene {
         Ok(done)
     }
 
-    // close zoom
-    /// Prepares a bank for a direct render, then uses the same adoption as a built hour.
     pub fn set_railways(
         &mut self,
         device: &wgpu::Device,
@@ -1924,8 +1649,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Adopts worker-uploaded railway strips while retaining this pass's
-    /// textures, shaders and all scene presentation clocks.
     pub fn set_prepared_railways(
         &mut self,
         device: &wgpu::Device,
@@ -1958,19 +1681,12 @@ impl Scene {
             .adopt_geometry(geometry))
     }
 
-    // close zoom
-    /// Applies earlier camera views to the building history, as a session that
-    /// visited them before this frame would have, at a zero frame time.
     pub fn visit_map_buildings(&mut self, cameras: &[Camera], size: [u32; 2]) {
         for camera in cameras {
             self.building_history.visit(*camera, size);
         }
     }
 
-    /// Installs the hour's building targets in this scene's history; the
-    /// camera applies them when the scene renders. `passed` holds the hours
-    /// playback skipped since the hour on screen, oldest first; `None` is a
-    /// seek, which starts the history cold.
     pub fn set_map_buildings(
         &mut self,
         device: &wgpu::Device,
@@ -2027,9 +1743,6 @@ impl Scene {
         Ok(())
     }
 
-    // close zoom
-    /// Builds the city-sprawl pass. Called once per document: the sprawl is
-    /// generated from static content and does not change with the hour.
     pub fn set_sprawl(
         &mut self,
         device: &wgpu::Device,
@@ -2077,11 +1790,6 @@ impl Scene {
         }
     }
 
-    // rivers
-    /// Builds the river pass and uploads the traced ribbons.
-    ///
-    /// Called once per document: `map/rivers.bmp` and `map/heightmap.bmp` are both static content,
-    /// so nothing about a river changes with the hour.
     pub fn set_rivers(
         &mut self,
         device: &wgpu::Device,
@@ -2095,8 +1803,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Adopts a builder-owned snow grid and its post factors. The graphics
-    /// clock still decides when pending bytes replace the currently shown planes.
     pub fn set_snow_mud(
         &mut self,
         device: &wgpu::Device,
@@ -2117,32 +1823,22 @@ impl Scene {
         )
     }
 
-    /// The city sprawl's damaged and burning thresholds: the only reading it makes of a
-    /// province's city damage besides whether it has an entry; none without a sprawl.
     pub fn city_damage_thresholds(&self) -> Option<(i64, i64)> {
         self.city_presentation.as_ref().map(crate::map::sprawl::Presentation::thresholds)
     }
 
-    /// Whether the country names' glyph buffers hold `placements`: a new scene, or another install,
-    /// holds none of the placements given before.
     pub fn holds_country_names(&self, placements: &viewer_foundation::map::name_draw::Placements) -> bool {
         self.name_pass.holds_placements(placements)
     }
 
-    /// The generation of the country names held by key ([`Self::set_country_names`]); none while
-    /// whole placements are held.
     pub fn country_names_keyed(&self) -> Option<u64> {
         self.name_pass.keyed_generation()
     }
 
-    /// Drops the country names held: they are then held by key, none yet, as placements of
-    /// `generation`.
     pub fn begin_country_names(&mut self, generation: u64) {
         self.name_pass.begin_keyed(generation);
     }
 
-    /// `key`'s country names written alone (none: dropped), drawn in key order among the others;
-    /// placements of `generation`, which hold no names of their own, then draw them.
     pub fn set_country_names(
         &mut self,
         device: &wgpu::Device,
@@ -2154,7 +1850,6 @@ impl Scene {
         self.name_pass.set_keyed(device, queue, generation, key, names)
     }
 
-    /// Whether `snow` can be taken a rectangle at a time as [`Self::set_snow_mud`] takes it whole.
     pub fn snow_mud_takes_parts(
         &self,
         snow: &crate::map::weather::SnowMud,
@@ -2165,8 +1860,6 @@ impl Scene {
             && self.snow_presentation.takes_parts(snow, continuity)
     }
 
-    /// Starts taking `snow` a rectangle at a time ([`Self::write_snow_mud_rect`], then
-    /// [`Self::finish_snow_mud_parts`]); only when [`Self::snow_mud_takes_parts`].
     pub fn begin_snow_mud_parts(
         &mut self,
         snow: &crate::map::weather::SnowMud,
@@ -2175,7 +1868,6 @@ impl Scene {
         self.snow_presentation.begin_parts(snow, continuity)
     }
 
-    /// Writes `snow`'s cells of `rows` and `columns` to the snow texture.
     pub fn write_snow_mud_rect(
         &mut self,
         queue: &wgpu::Queue,
@@ -2218,7 +1910,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Ends taking `snow` in rectangles: the scene then holds it as [`Self::set_snow_mud`] would.
     pub fn finish_snow_mud_parts(
         &mut self,
         device: &wgpu::Device,
@@ -2273,8 +1964,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Writes the hatch flags the presentation owes the mask: the cells a fold turned, or every
-    /// byte where it could not say which. A grid taken in rectangles writes its own.
     fn update_hatch(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -2346,16 +2035,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Replaces the hour's `IntelMap` and says whether this frame draws fog.
-    ///
-    /// `texels` is `viewer_foundation::map::textures::intel_map`'s grid, one byte a texel, and
-    /// `fog` is whether it came from a recorded visibility rather than being
-    /// the all-clear stand-in. The two travel together because `FOWFadeFactor`
-    /// gates on the second and the shaders read the first.
-    ///
-    /// The texture is never reallocated: its size is fixed by the province
-    /// image, so this is a write into the one the scene already built and no
-    /// bind group has to be rebuilt.
     pub fn set_fog_of_war(
         &mut self,
         queue: &wgpu::Queue,
@@ -2404,7 +2083,6 @@ impl Scene {
             || (0..texels.pages().len()).collect(),
             |old| texels.changed_pages(old),
         );
-        // Consecutive changed pages are one contiguous texel range and go up in one write.
         let mut at = 0;
         while at < pages.len() {
             let first = pages[at];
@@ -2431,8 +2109,6 @@ impl Scene {
         Ok(())
     }
 
-    /// What the view's map mode shows: the fog of war only where the mode draws it, and the
-    /// province borders only where the mode keeps them.
     pub fn set_visibility(
         &mut self,
         visibility: viewer_foundation::map::mode_visibility::Visibility,
@@ -2440,8 +2116,6 @@ impl Scene {
         self.visibility = visibility;
     }
 
-    /// Compile, upload and fill static content on the loader, shared by all compatible views, and
-    /// allocate this view's first fill state. Nothing is bound until the view's own first fill.
     pub fn warm_political(
         &mut self,
         device: &wgpu::Device,
@@ -2469,14 +2143,12 @@ impl Scene {
             },
         )?;
         let colors = super::political_gpu::ProvinceColors::new(device, &base)?;
-        // One texture, one content: a stripe fill records the write once, for both handles.
         self.secondary = colors.bound.share();
         self.province_colors = Some(colors);
         self.political = Some(crate::map::political_gpu::View::new(base, device, queue)?);
         Ok(())
     }
 
-    /// Current secondary province colours. Changed tiles fill before terrain.
     pub fn set_air_assignment(
         &mut self,
         queue: &wgpu::Queue,
@@ -2488,8 +2160,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Apply this view's local Navy selection without copying province or
-    /// strategic-region membership from the prepared hour.
     pub fn set_strategic_styles(
         &mut self,
         device: &wgpu::Device,
@@ -2511,10 +2181,6 @@ impl Scene {
         Ok(())
     }
 
-    /// The sea regions' naval attributes updated for the regions of `keys` (region id plus one);
-    /// `false` when the scene cannot take it in place: show a whole fill instead.
-    /// The political country fill updated for what changed (see `political_gpu::View::show_changed`);
-    /// `false` when the caller must show the tables whole.
     pub fn update_political(
         &mut self,
         device: &wgpu::Device,
@@ -2543,7 +2209,6 @@ impl Scene {
         }
     }
 
-    /// Show one hour's political tables; the fill is computed with the next render.
     pub fn set_political(
         &mut self,
         device: &wgpu::Device,
@@ -2588,11 +2253,6 @@ impl Scene {
         Ok(())
     }
 
-    // borders
-    /// Builds the border pass and uploads the traced meshes and strait ribbons.
-    ///
-    /// Called once per document: the geometry depends only on content, and only the class of a land
-    /// edge changes with the hour ([`Scene::set_land_classes`]).
     pub fn set_borders(
         &mut self,
         device: &wgpu::Device,
@@ -2616,11 +2276,6 @@ impl Scene {
         Ok(())
     }
 
-    // borders
-    /// Re-buckets every border edge for one hour's political regions and demilitarised zone.
-    ///
-    /// The two passes are set together because they partition the same edges: an edge the zone
-    /// splits leaves the ordinary buckets and enters the secondary bank (`crate::map::demilitarized`).
     pub fn set_classes(
         &mut self,
         device: &wgpu::Device,
@@ -2641,8 +2296,6 @@ impl Scene {
         Ok(())
     }
 
-    /// [`Scene::set_classes`] with the edges already bucketed on a builder
-    /// thread ([`crate::map::border_pass::ClassPlan`], [`crate::map::demilitarized::ZonePlan`]).
     pub fn set_border_plans(
         &mut self,
         device: &wgpu::Device,
@@ -2688,9 +2341,6 @@ impl Scene {
         Ok(())
     }
 
-    /// Installs an hour's layers. Each writes only its own part of the scene, so the order they
-    /// run in changes nothing; the first refusal in the order of [`HourLayers`]' fields is
-    /// returned.
     pub fn set_hour_layers(
         &mut self,
         device: &wgpu::Device,
@@ -2773,7 +2423,6 @@ impl Scene {
                 let geometry = crate::map::railways::PreparedRailGeometry::for_install(
                     device, mesh, prepared,
                 )?;
-                // The replaced strips are let go here, off the window thread.
                 drop(Self::install_railways(
                     railways, gpu, samples, assets, geometry,
                 )?);
@@ -2824,8 +2473,6 @@ impl Scene {
                 Self::install_unit_models(parts, gpu, assets, (field, steady), target)
             }));
         }
-        // Every install runs, failing or not, as it did when they ran at once; the first
-        // refusal in the order of [`HourLayers`]' fields is returned.
         let mut refused = Ok(());
         for job in jobs {
             let result = job();
@@ -2840,13 +2487,10 @@ impl Scene {
         &self.faction_highlight_regions
     }
 
-    /// Whether a highlight plan is installed: a faction or adjacency highlight, or the ground
-    /// selection's outline.
     pub fn highlight_installed(&self) -> bool {
         !self.faction_highlight_regions.is_empty() || self.selection_outlined
     }
 
-    /// Uploads the worker's prepared faction highlight without rebuilding edges.
     pub fn set_faction_highlight(
         &mut self,
         device: &wgpu::Device,
@@ -2869,39 +2513,25 @@ impl Scene {
         Ok(())
     }
 
-    /// Province boundaries the demilitarised-zone pass drew at the last hour set.
     pub fn demilitarized_edges(&self) -> usize {
         self.demilitarized
             .as_ref()
             .map_or(0, DemilitarizedPass::edge_count)
     }
 
-    /// Draws the sea-bed refraction target, terrain, the water plane and
-    /// the border meshes, and after them the two overlay layers of [`Overlay`].
     pub fn samples(&self) -> u32 {
         self.graphics.samples
     }
 
-    /// Builds every model and GUI shader and pipeline a frame needs before drawing it, as a
-    /// capture must, instead of drawing without a part or GUI draw until its background build
-    /// finishes.
     pub fn settle_builds(&mut self, settled: bool) {
         self.settled_builds = settled;
         self.sprite_pass.defer_builds(!settled);
     }
 
-    /// Whether every figure is posed on the frame that draws it, from exactly the samples it
-    /// draws: a stopped picture (a saved frame, a picture the hours have stopped on) is exact,
-    /// and the pose worker's set is of the frame that asked for it, one frame behind
-    /// ([`crate::map::poses`]). Playing, the frame takes the worker's newest set by a swap and
-    /// never waits for it.
     pub fn settle_poses(&mut self, settled: bool) {
         self.settled_poses = settled;
     }
 
-    /// Whether name passes build their glyph buffers when they draw, for renders that install no
-    /// hours. Otherwise the hour's install prepares them and a frame that finds them unprepared
-    /// refuses its names by name.
     pub fn build_names_in_upload(&mut self, builds: bool) {
         for pass in [&mut self.name_pass, &mut self.near_name_pass]
             .into_iter()
@@ -2911,7 +2541,6 @@ impl Scene {
         }
     }
 
-    /// Compiles the GUI `effects` and builds the pipelines their draws make, so no frame does.
     pub fn warm_gui(
         &mut self,
         device: &wgpu::Device,
@@ -2921,7 +2550,6 @@ impl Scene {
     }
 
     pub fn set_graphics(&mut self, graphics: dashboard_core::protocol::MapGraphics) {
-        // Pipeline sample counts only change when the scene is rebuilt.
         self.graphics = dashboard_core::protocol::MapGraphics {
             samples: self.graphics.samples,
             ..graphics
@@ -2935,10 +2563,7 @@ impl Scene {
         request: Request<'_>,
     ) -> io::Result<()> {
         let _cost = replay_frame::cpu::scope("viewer", Some("render-submit"));
-        // This thread draws the frames: it waits for no other thread's pipeline build.
         shader_pipeline::gpu::stats::mark_window_thread();
-        // Lent to the frame and back on every way out; a frame that fails drops its marks with
-        // its encoder.
         let mut timer = self.pass_timer.take();
         if timer.is_none() && viewer_foundation::map::gpu_passes::recorded() {
             PassTimer::unavailable();
@@ -2950,8 +2575,6 @@ impl Scene {
             &mut timer,
         );
         if rendered.is_err() {
-            // A text bake this frame made is rendered once: its commands go out though the
-            // frame's own do not.
             let bakes = self.sprite_pass.bake_buffers();
             if !bakes.is_empty() {
                 queue.submit(bakes);
@@ -2965,12 +2588,10 @@ impl Scene {
             self.shadow.abandon();
         }
         self.pass_timer = timer;
-        // A frame that failed before its walk leaves the schedule as if it was never cut.
         self.restore_province_frame();
         rendered
     }
 
-    /// Takes back what the frame started on its own threads, on whatever way it ended.
     fn join_lanes(&mut self) {
         drop(self.encode_lane.take());
         drop(self.models_lane.take());
@@ -2982,7 +2603,6 @@ impl Scene {
         }
     }
 
-    /// Puts back what a [`step::Beside`] step was lent.
     fn take_back(
         beside: step::Beside,
         aircraft: &mut Option<(
@@ -2999,10 +2619,6 @@ impl Scene {
         viewer_foundation::profiling::adopt_thread_records(beside.records);
     }
 
-    /// Counts what the actors show this frame against the frame before
-    /// ([`crate::map::actor_motion`]). `ground` is this frame's own camera's visible
-    /// ground, so an actor counts as in view by the camera the watcher has, not by the padded
-    /// view the lists are admitted against.
     fn count_shown_actors(
         motion: &mut crate::map::actor_motion::Motion,
         passes: [(&'static str, Option<&ModelPass>); 6],
@@ -3044,13 +2660,10 @@ impl Scene {
             day_night,
             animation_time,
             map_time,
-            // colour
             postfx,
             no_water,
-            // shadows
             no_shadows,
             overlay,
-            // trees
             no_trees,
         } = request;
         let no_trees = no_trees || !self.graphics.trees;
@@ -3073,8 +2686,6 @@ impl Scene {
         for model in model_passes!(self).into_iter().flatten() {
             model.settle_builds(self.settled_builds);
         }
-        // The terrain's modes that read the shadow screen buffer, built here, where the scene's
-        // fields can be borrowed apart; `shadow_screen_wanted` builds the others.
         self.compiled_terrain.warm(
             device,
             &crate::map::shadow::terrain_readers(self.graphics.high_gfx_shaders),
@@ -3093,8 +2704,6 @@ impl Scene {
         validate_size(size, device.limits().max_texture_dimension_2d)?;
         let world_size = world_size(size, self.graphics.full_resolution);
         validate_size(world_size, device.limits().max_texture_dimension_2d)?;
-        // Do not clamp a zero downsample size. Refuse a viewport
-        // too small for that chain instead of creating a different native path.
         validate_size(
             world_size.map(|side| side / 2),
             device.limits().max_texture_dimension_2d,
@@ -3112,15 +2721,10 @@ impl Scene {
         let generation_changed = self.targets.as_ref().is_none_or(|t| {
             t.size() != size || t.world_size() != world_size || t.sea_bed() != sea_bed
         });
-        // Receiver and blur follow the backbuffer, at half its size unless a reader reads it by
-        // texel, whatever the scene's resolution. Camera projection/culling and GUI also retain
-        // size.
         if generation_changed
             || !self.shadow.sized(size, shadow_screen)
             || !self.post.prepared(size, world_size)
         {
-            // Everything sized to this view is made in this one step, so a device that cannot
-            // make it fails this view alone: no later pass of the frame allocates for its size.
             let made = viewer_foundation::map::gpu_contract::scoped(
                 device,
                 || {
@@ -3146,7 +2750,6 @@ impl Scene {
             let made = match made {
                 Ok(made) => made,
                 Err(error) => {
-                    // Field by field: the frame's arena and pass records borrow the scene.
                     self.targets = None;
                     self.shadow.release();
                     self.post.release_chain();
@@ -3161,7 +2764,6 @@ impl Scene {
             }
         }
         let samples = self.targets.as_ref().map_or(1, Targets::samples);
-        // A square of the map holding an unknown cell draws the hatch.
         if self
             .snow_presentation
             .coverage()
@@ -3180,9 +2782,6 @@ impl Scene {
             self.cover_for = Some((camera, size));
             self.cover = crate::map::terrain::cover_for(camera, size);
         }
-        // The game culls every figure by its own test; the casters are the same figures. A list
-        // gathers against a camera held while the real one pans or turns inside its slack, and
-        // draws exactly what this frame's own camera culls in.
         let (candidates, slack) = self.admitted_against.at(camera, size);
         let cull = Some(crate::map::models::GameCull::padded(&candidates, size, slack.pad));
         let seen = Some(crate::map::models::GameCull::of(&camera, size));
@@ -3201,17 +2800,12 @@ impl Scene {
         {
             pass.set_cull(cull, seen);
         }
-        // The ground the lists and the shadow casters' groups gather in, from the same camera,
-        // and the ground this frame's own camera reaches, which they draw in.
         let visible = candidates.held_ground(size, MARGIN, slack);
         let seen_ground = camera.visible_ground(size, MARGIN);
         self.detail_laps.lap("targets_shadow_resize");
-        // Only a frame that stands in a new pose tick plays the actors on, emits their events
-        // and asks the pose worker for their poses ([`crate::map::poses`]).
         let posing = crate::map::poses::tick(self.arena.frame());
         let pose_tick = posing != self.posed_tick;
         viewer_foundation::view_record::add("poses", "ticks", u64::from(pose_tick));
-        // The walk consumes the host's cut even when display switches hide its actors.
         let province_frame = self.province_frame.take();
         let beside = step::Beside {
             graphics: self.graphics,
@@ -3255,7 +2849,6 @@ impl Scene {
                 plan.missile_explosions(from, animation_time)
             })
         });
-        // The regions' weather producers run from the list the walk just took.
         if let Some(weather) = &mut self.weather_effects {
             let schedule = self.unit_history.schedule().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             weather.produce(camera.height, &schedule, self.graphics.weather);
@@ -3284,19 +2877,13 @@ impl Scene {
         if pose_tick {
             self.posed_tick = posing;
         }
-        // What one display frame of the presentation clock is, for the poses' bound judge.
         let frame_interval = self
             .last_animation_time
             .map_or(0.0, |last| (animation_time - last).max(0.0));
         let made = self.poses.take(&mut self.pose_jobs);
         let (refused, free) = (self.poses.refusal().is_some(), self.poses.free());
-        // A stopped picture is exact, so its figures are posed on the frame that draws them.
         let stopped = self.settled_poses;
         let jobs = &mut self.pose_jobs;
-        // The limbs a frame asks for are the limbs it can draw: the ground it draws its figures
-        // in, on every wrap copy of the view, and nothing at all for a layer this
-        // camera and these switches draw none of (the lit and caster draws below carry the same
-        // gates). The map frame's actors are admitted against no rectangle, as its draw is.
         let pose_offsets = crate::map::border_pass::wrap_offsets(seen_ground, camera.map.x());
         let posed_layers = [
             (self.unit_models.as_mut(), self.graphics.unit_figures(), seen_ground),
@@ -3320,10 +2907,6 @@ impl Scene {
             let Some(pass) = pass else {
                 continue;
             };
-            // The worker's set is of the frame that asked for it, and of the animation history
-            // those samples came from; a pass it holds none for had no actor with a play in that
-            // batch, or has started a new history since. Either way the pass's standing figures
-            // take the set once, and a figure it does not hold is posed where it is read.
             pass.pose_on_the_frame(stopped);
             if let Some(made) = &made {
                 pass.take_poses(made);
@@ -3343,7 +2926,6 @@ impl Scene {
         );
         self.poses.give(animation_time, &mut self.pose_jobs);
         self.detail_laps.lap("poses");
-        // Only a layer that draws needs its meshes uploaded.
         if let Some((pass, assets, _)) = &mut self.aircraft
             && self.graphics.aircraft()
         {
@@ -3356,7 +2938,6 @@ impl Scene {
         }
         self.detail_laps.lap("aircraft_trains_resident");
         let targets = self.targets.as_ref().expect("created above");
-        // Every event reaches the simulations; the display only marks what is not submitted.
         let events_copy_span = viewer_foundation::profiling::span("frame_events");
         let events = step::frame_events(
             step::EventSources {
@@ -3374,7 +2955,6 @@ impl Scene {
             rails_shown,
         );
         drop(events_copy_span);
-        // Map-frame events lead; the rest are actors' own.
         let frame_events = if animation_time > 0.0 {
             self.native_map_frame
                 .as_ref()
@@ -3403,7 +2983,6 @@ impl Scene {
                     .map(|(why, count)| (why.clone(), *count)),
             );
         }
-        // Held weather pairs sound whatever the switch says; their producers release them.
         if let Some(weather) = &mut self.weather_effects {
             weather.sound_events(
                 camera,
@@ -3413,7 +2992,6 @@ impl Scene {
                 &mut self.sound_events,
             );
         }
-        // The pairs' particles advance on their own thread while the frame draws up to them.
         let actor_views = views(camera, size);
         if let Some(weather) = &mut self.weather_effects {
             weather.begin_frame(camera, size, &actor_views, animation_time);
@@ -3437,7 +3015,6 @@ impl Scene {
         let lights = match self.weather_effects.as_mut() {
             Some(pass) => pass.set_events(events)?,
             None => {
-                // Without particle runtimes no kept particle lives.
                 for kept in events.iter().filter_map(|event| event.kept.as_ref()) {
                     kept.finish();
                 }
@@ -3475,20 +3052,14 @@ impl Scene {
             shadow_matrix: [[0.0; 4]; 4],
             light_grid: self.point_light_tiles.grid,
         };
-        // Prepare the light even when only fog receivers are admitted.
         let [shadow_casters, shadow_receivers] = crate::map::shadow::stages(&camera, !no_shadows);
         let shadow_prepared = self.shadow.prepare(&globals.frame, camera, size);
         let shadow_matrix = shadow_prepared.map(|prepared| prepared.texture_matrix);
         globals.shadow_matrix = shadow_matrix.unwrap_or([[0.0; 4]; 4]);
-        // The world-wrap copies the view reaches. Every layer cut at the x seam
-        // takes the same list: the rivers and border meshes below, and the name
-        // layer, which needs it before the encoder starts.
         let offsets = crate::map::terrain::wrap_copies(camera, size);
         let native_frames = offsets
             .iter()
             .map(|offset| {
-                // Upload each world-wrap camera's scene block;
-                // the native vertex stays at its original world position.
                 let mut wrapped = camera;
                 wrapped.center[0] -= offset;
                 FrameConstants::try_new(
@@ -3530,8 +3101,6 @@ impl Scene {
         };
         self.detail_laps.lap("globals_shadow_prepare");
         let animated = clock.map(|clock| clock.elapsed());
-        // Rebuild glyph buffers when placements change, then admit this frame's names. The near
-        // names cross-fade with the far ones.
         let names = overlay.names.unwrap_or(&self.empty_placements);
         self.name_pass.set_strategic_names(overlay.strategic_names);
         self.near_name_pass
@@ -3547,11 +3116,8 @@ impl Scene {
             &offsets,
         );
         self.detail_laps.lap("names_upload");
-        // Plan labels have no camera cutoff: each label's own alpha is its
-        // arrow colour's, so the layer factor is 1.
         if let Some(orders) = &mut self.orders {
             let graphics = self.graphics;
-            // Trade-route lines share the arrow manager; the map mode shows them.
             let trade_routes = self.visibility.trade_routes;
             orders.prepare(camera, size, &offsets, |draw| {
                 if draw.air_mode {
@@ -3575,8 +3141,6 @@ impl Scene {
         }
         self.detail_laps.lap("orders_upload");
         self.sprite_pass.sync(device, queue);
-        // The sweeps turn by the presentation time this frame covers, so their speed is the
-        // game's whatever rate the display runs at ([`crate::map::radar_symbols::turn`]).
         if let Some(radar) = &mut self.radar {
             radar.advance(frame_interval);
         }
@@ -3600,11 +3164,7 @@ impl Scene {
         self.detail_laps.lap("sprite_upload");
         let prepared = clock.map(|clock| clock.elapsed());
         self.pass_cpu_laps.start(clock.map(|_| Instant::now()));
-        // Both callbacks execute only on the caller. The shared recorder also lets
-        // CPU-only boundaries leave the existing GPU query stream unchanged.
         let pass_cpu_laps = RefCell::new(&mut self.pass_cpu_laps);
-        // A measurement's record of each lap's wall time against the frame thread's own CPU in it,
-        // so time the thread spends off its CPU inside the frame is placed by lap.
         let lap_clock = std::cell::Cell::new(viewer_foundation::view_record::on().then(|| {
             (std::time::Instant::now(), viewer_foundation::profiling::current_thread_cpu_time())
         }));
@@ -3659,7 +3219,6 @@ impl Scene {
         {
             command_buffers.push(ModelPass::finished_buffer(start));
         }
-        // The text bakes this frame made, ahead of every draw that samples them.
         command_buffers.extend(
             self.sprite_pass
                 .bake_buffers()
@@ -3679,8 +3238,6 @@ impl Scene {
         };
 
         mark(&mut encoder, "start");
-        // Recorded fills stay pending until the encoder is submitted: one this frame drops on a
-        // failure is recorded again by the next.
         let political = {
             let _cost = replay_frame::cpu::scope("political.fill.encode", Some("political"));
             self.political
@@ -3692,11 +3249,6 @@ impl Scene {
             .as_mut()
             .is_some_and(|colors| colors.encode(&mut encoder));
         mark(&mut encoder, "political_compute");
-        // Invoke underwater in pre-frame, before the scene's
-        // shadow-screen clear and receiver passes. It reads the previous
-        // shadow frame, including across camera and shadow-cutoff changes.
-        // Its target holds what it last drew, so the pass is drawn only while something its
-        // compiled programs read has changed ([`terrain_shader::Terrain::prepare_kept`]).
         {
             let null = self.terrain_null.sampled();
             let bound = [
@@ -3748,7 +3300,6 @@ impl Scene {
                     });
                     self.compiled_terrain.draw(&mut pass, &prepared);
                 }
-                // The target still holds the picture this pass drew.
                 Some(None) => {}
                 None => self
                     .compiled_terrain
@@ -3756,10 +3307,6 @@ impl Scene {
             }
         }
         mark(&mut encoder, "terrain_refraction");
-        // Whole-frame paths validate materials/wraps/buckets/packets and shadow/post stages after
-        // earlier draws. An errored encoder is never submitted. Shadow casters precede screen-space
-        // receivers and both blurs before lit terrain samples them. Receivers sample the depth
-        // map without casters too, so it is clear whenever casters do not draw.
         let casting = shadow_casters && shadow_prepared.is_some() && visible.is_some();
         if !casting {
             self.shadow.ready_depth_map(&mut encoder, None);
@@ -3767,7 +3314,6 @@ impl Scene {
         match (shadow_prepared, visible) {
             (Some(shadow_prepared), Some(visible)) => {
                 if shadow_casters {
-                    // The game's casters are the figures its main camera culled in: none off screen.
                     let casters = Some(visible);
                     let caster_frame = |alpha| ModelFrame {
                         camera,
@@ -3776,7 +3322,6 @@ impl Scene {
                         seen: seen_ground,
                         alpha,
                     };
-                    // Fill normal map scene constants, then replaces VP only.
                     let caster_scenes: Vec<_> = native_frame_bytes
                         .iter()
                         .zip(&offsets)
@@ -3834,20 +3379,16 @@ impl Scene {
                     {
                         meshes.push((bridges, caster_frame(1.0)));
                     }
-                    // The player casts as every caster does: on the canonical and each seam
-                    // view, with the light matrix translated for each, inside the light.
                     if let Some(player) = &self.player {
                         meshes.push((&player.pass, caster_frame(1.0)));
                     }
                     let trees = self.trees.as_ref().filter(|_| !no_trees);
-                    // Plans cast shadows exactly while they draw.
                     let plans = PlanSubmissions::new(
                         self.orders.as_ref(),
                         &self.graphics,
                         &overlay,
                         self.visibility.trade_routes || self.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
                     );
-                    // Every caster is readied, so each knows whether it draws what it drew before.
                     let mut repeated = true;
                     let mut casters = Vec::with_capacity(meshes.len() + 1);
                     for &(pass, frame) in &meshes {
@@ -3855,7 +3396,6 @@ impl Scene {
                         casters.push(pass.caster_id());
                     }
                     casters.extend(trees.map(TreePass::caster_id));
-                    // Arrows animate in their shadows, so a map they cast into is drawn again.
                     let arrows = plans.casts_shadows();
                     repeated &= !arrows;
                     let key = crate::map::shadow::CasterKey::new(
@@ -3937,8 +3477,6 @@ impl Scene {
                     }
                     mark(&mut encoder, "shadow_arrow_casters");
                 }
-                // The receivers clear the screen target themselves; without them it is
-                // cleared all the same, for the next frame's sea bed.
                 if shadow_receivers {
                     if let Some(mut pass) = self
                         .shadow
@@ -4015,7 +3553,6 @@ impl Scene {
                     if let Some(mut pass) =
                         self.shadow.prepass_pass(&mut encoder, wgpu::LoadOp::Load)
                     {
-                        // Submit tree receivers before terrain.
                         self.compiled_terrain.draw(&mut pass, &terrain_receiver);
                     }
                     mark(&mut encoder, "shadow_receivers");
@@ -4023,7 +3560,6 @@ impl Scene {
                 } else {
                     self.shadow.clear_stand_in(&mut encoder);
                 }
-                // Blur only when the native caster gate is enabled.
                 if shadow_casters {
                     self.shadow
                         .blur(arena, &mut encoder, camera.height, &mut mark)?;
@@ -4053,7 +3589,6 @@ impl Scene {
                 })
             };
         }
-        // Unknown snow and mud lie on the surface just drawn, under everything drawn after it.
         let hatch_coverage = self
             .snow_presentation
             .coverage()
@@ -4065,8 +3600,6 @@ impl Scene {
         if let Some((_, Ok(hatch))) = unknown_hatch {
             hatch.begin_frame();
         }
-        // `standing` is the terrain's blocks in this wrap by the heights each draws from, so the
-        // hatch stands where the terrain does.
         let draw_hatch = |encoder: &mut wgpu::CommandEncoder,
                           view: usize,
                           surface: crate::map::weather::Surface,
@@ -4109,8 +3642,6 @@ impl Scene {
         };
         self.compiled_terrain.keep_views(&offsets);
         let coarse_lines = crate::map::line_lod::coarse(&camera, targets.world_size());
-        // Complete each admitted wrap before starting the next. Its
-        // PS b2 light-grid upload is replaced by the land-border call in that wrap.
         for view in 0..offsets.len() {
             crate::map::shader_constants::WorldPixelConstants::LightGrid(globals.light_grid)
                 .retain(&mut retained_scene.borrow_mut());
@@ -4147,10 +3678,6 @@ impl Scene {
                         ],
                     },
             ));
-            // Each world layer draws the scene and depth with the same load, so one pass could
-            // hold them all. It does not: on this machine's integrated Radeon one merged pass a
-            // wrap measured 8.7 ms a frame slower than a pass a layer at 2560x1440, and cost the
-            // frame thread the commands that hand each layer the state a pass start gives it.
             if let Some(prepared) = prepared {
                 let mut pass = world_pass(&mut encoder, targets, "map world");
                 self.compiled_terrain.draw(&mut pass, &prepared);
@@ -4168,8 +3695,6 @@ impl Scene {
                     )
                 });
             }
-            // Land borders, rivers, rails, trees, water and sea highlights share scene depth. The unlit shadow
-            // pre-pass uses its own depth buffer.
             let border_inputs = || crate::map::border_shader::Inputs {
                 retained: Some(retained_scene),
                 frames: view_frames,
@@ -4180,7 +3705,6 @@ impl Scene {
             };
             let mut pixel_b2 =
                 crate::map::shader_constants::WorldPixelConstants::LightGrid(globals.light_grid);
-            // borders
             if let Some(borders) = &self.borders
                 && let Some(value) = draw_world!(LandBorders => borders.draw(
                     arena,
@@ -4346,7 +3870,6 @@ impl Scene {
                 ));
             }
             mark(&mut encoder, "water");
-            // Water whose technique reads the snow/mud texture can show it, as the shipped ice does.
             if hatch_coverage.is_some()
                 && !no_water
                 && self.graphics.water
@@ -4364,7 +3887,6 @@ impl Scene {
                 });
             }
             mark(&mut encoder, "unknown_snow_mud");
-            // borders
             if let Some(borders) = &self.borders {
                 draw_world!(SeaBorders => borders.draw(
                     arena,
@@ -4382,7 +3904,6 @@ impl Scene {
                 ));
             }
             mark(&mut encoder, "borders_sea");
-            // Draw the secondary border bank in the final border batch.
             if let Some(demilitarized) = &self.demilitarized {
                 let edges = if !overlay.interface {
                     crate::map::demilitarized::ZoneEdges::Hidden
@@ -4407,7 +3928,6 @@ impl Scene {
                 ));
             }
             mark(&mut encoder, "demilitarized");
-            // Submit strait ribbons through their own compiled program and states.
             if let Some(borders) = &self.borders {
                 draw_world!(Straits => borders.compiled_straits.draw(
                     arena,
@@ -4459,8 +3979,6 @@ impl Scene {
                         view,
                         animation_time,
                     )?;
-                    // Draw the collected text buffers after the ribbons,
-                    // with the `arrowText` effect (`mapname`).
                     if !self.graphics.plan_labels() {
                         continue;
                     }
@@ -4476,7 +3994,6 @@ impl Scene {
                 Ok(())
             })
         };
-        //main arrows precede both entity queues.
         draw_orders(&mut encoder, ArrowMode::Main, 0)?;
         #[cfg(any(test, feature = "test-support"))]
         faults.after(failure_tests::Point::Arrows)?;
@@ -4521,12 +4038,7 @@ impl Scene {
             }
         }
         cpu_mark("radar_ranges");
-        // Presentation clocks and births advance once. All Alternate seam envelopes submit the same
-        // immutable canonical particle packets. Entity envelopes retain footprint flags and carrier
-        // order independently of the uniform terrain's raster list.
         let actor_camera = actor_views[0];
-        // The admitted camera moved onto the copy the actors are walked on, so the groups a
-        // list holds are the ones its cull was made for.
         let mut admitted_actor = candidates;
         admitted_actor.center[0] += actor_camera.center[0] - camera.center[0];
         let actor_visible = admitted_actor.held_ground(size, MARGIN, slack);
@@ -4556,8 +4068,6 @@ impl Scene {
             })
             .collect::<io::Result<Vec<_>>>()?;
         let actor_frame_bytes: Vec<_> = actor_frames.iter().map(bytemuck::bytes_of).collect();
-        // The player's own map copies, however high it stands above the band the map's objects
-        // are admitted in, and each copy's scene constants.
         if let Some(player) = &mut self.player {
             player::copies(&actor_camera, size, player.sphere, &mut player.offsets);
             player.frames.clear();
@@ -4584,15 +4094,11 @@ impl Scene {
             viewer_foundation::view_record::add("weather packets", "packets", packets.count() as u64);
         }
         cpu_mark("weather_packets");
-        // What is recorded so far is finished on its own thread while the frame records the rest;
-        // the two are submitted in this order, as the one buffer was.
         let leading = std::mem::replace(
             &mut encoder,
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
         );
         self.encode_lane.start(move || leading.finish());
-        // Submit all regular materials before all alternate materials across layer boundaries. Preserve
-        // enqueue order before the library's mesh/tile grouping.
         let [
             map_frame,
             sprawl,
@@ -4690,8 +4196,6 @@ impl Scene {
                         }
                         Ok(())
                     })();
-                    // A later layer's failure returns the lists the earlier ones borrowed,
-                    // which their retained metadata still names.
                     if let Err(error) = prepared {
                         for (model, draws) in model_draws {
                             model.recycle_kept(draws);
@@ -4706,7 +4210,6 @@ impl Scene {
                 for (model, draws) in model_draws {
                     model.recycle_kept(draws);
                 }
-                // The lit opaque and blended queues are timed apart.
                 mark(
                     &mut encoder,
                     if native_queue == crate::map::models::NativeQueue::Regular {
@@ -4716,8 +4219,6 @@ impl Scene {
                     },
                 );
                 if native_queue == crate::map::models::NativeQueue::Alternate {
-                    // In each admitted view the native order is meshes, then
-                    // animated world text, then particles.
                     let graphics = self.graphics;
                     if let Some(text) = &mut self.animated_text
                         && text.draw(
@@ -4758,8 +4259,6 @@ impl Scene {
                         ) {
                             return Err(error);
                         }
-                        //Particle b1 replaces PS's mesh allocation even when
-                        //this view has no particles.
                         object.forget_pixel_snapshot();
                         #[cfg(any(test, feature = "test-support"))]
                         faults.after(failure_tests::Point::Weather)?;
@@ -4767,8 +4266,6 @@ impl Scene {
                     mark(&mut encoder, "weather");
                 }
             }
-            // The player on each map copy its own bounds reach in view, not culled to the ground
-            // the map's objects stand on.
             if let Some(player) = player {
                 object.begin();
                 for (offset, frame) in player.offsets.iter().zip(&player.frames) {
@@ -4799,13 +4296,10 @@ impl Scene {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
         );
         self.models_lane.start(move || models.finish());
-        //alternate entities/particles precede modes3 and1.
         draw_orders(&mut encoder, ArrowMode::Seethrough, 1)?;
         mark(&mut encoder, "orders_seethrough");
         draw_orders(&mut encoder, ArrowMode::Late, 2)?;
         mark(&mut encoder, "orders_late");
-        // Draw world names into the floating-point scene after weather and before post restore. NamePass
-        // uses an UNORM atlas and SrcAlpha/InvSrcAlpha blending.
         self.name_pass.validate_draw(&native_frame_bytes, None)?;
         self.near_name_pass
             .validate_draw(&native_frame_bytes, None)?;
@@ -4829,7 +4323,6 @@ impl Scene {
                 .draw(arena, &native_frame_bytes, &mut encoder, targets)
         });
         mark(&mut encoder, "names");
-        // Draw sky once with the original camera, after map text.
         if self.graphics.sky {
             passes.run(passes::Pass::Sky, || {
                     #[cfg(any(test, feature = "test-support"))]
@@ -4847,16 +4340,8 @@ impl Scene {
             });
         }
         mark(&mut encoder, "sky");
-        // Every world pass has drawn into the multisampled scene; its one resolve
-        // stands here, immediately before the grade, the only reader of the
-        // resolved scene.
         targets.resolve_scene(&mut encoder);
         mark(&mut encoder, "scene_resolve");
-        // The post chain grades world-space names with the scene. Screen-space
-        // VP text, counters and other icons are composited on the output.
-        //
-        // Either branch is what moves the float scene into the 8-bit output the
-        // overlays, egui and the readback share, so one of them always runs.
         if postfx {
             let delta = self
                 .last_animation_time
@@ -4878,7 +4363,6 @@ impl Scene {
         }
         mark(&mut encoder, "post");
         self.last_animation_time = Some(animation_time);
-        // Screen-space icons and their text are last ( 5.5).
         self.sprite_pass.draw(&mut encoder, targets);
         #[cfg(any(test, feature = "test-support"))]
         faults.draw_sentinel(device, &mut encoder, targets);
@@ -4893,8 +4377,6 @@ impl Scene {
         if let Some(leading) = self.encode_lane.take() {
             command_buffers.push(ModelPass::finished_buffer(leading));
         }
-        // The trailing buffer finishes on the lane while the staged writes are copied in a buffer
-        // of their own, submitted first, as the queue's own writes would be.
         self.encode_lane.start(move || encoder.finish());
         let mut uploads =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map uploads") });
@@ -4912,13 +4394,11 @@ impl Scene {
         cpu_mark("encoder_finish");
         command_buffers.push(ModelPass::finished_buffer(trailing));
         cpu_mark("encoder_join");
-        // Joining here preserves native buffer order without earlier encoder waits.
         queue.submit(ModelPass::submitted_buffers(command_buffers));
         if let Some(frame_timer) = &mut self.frame_timer {
             frame_timer.submitted();
         }
         cpu_mark("queue_submit");
-        // Every kept pass's target now holds what this frame drew into it.
         self.compiled_terrain.submitted();
         if let Some(political) = political {
             political.submitted();
@@ -4946,20 +4426,16 @@ impl Scene {
         Ok(())
     }
 
-    /// Milliseconds the last frame spent animating, uploading the overlay,
-    /// encoding and submitting, under `BATTLE_PLAN_VIEWER_PROFILE`.
     pub fn render_laps(&self) -> [f64; 4] {
         self.render_laps
     }
 
-    /// Numbers the next frame for its GPU time under the perf map log.
     pub fn time_frame(&mut self, frame: u64) {
         if let Some(frame_timer) = &mut self.frame_timer {
             frame_timer.label(frame);
         }
     }
 
-    /// Every frame whose GPU time is not yet reported, as the scene closes; never waits.
     pub fn retire_gpu_frame_times(
         &mut self,
     ) -> Vec<viewer_foundation::map::gpu_frame_time::FrameTime> {
@@ -4968,7 +4444,6 @@ impl Scene {
             .map_or_else(Vec::new, |frame_timer| frame_timer.retire())
     }
 
-    /// The frames whose GPU time settled since the last call, oldest first; never waits.
     pub fn gpu_frame_times(
         &mut self,
         device: &wgpu::Device,
@@ -4978,16 +4453,12 @@ impl Scene {
             .map_or_else(Vec::new, |frame_timer| frame_timer.take(device))
     }
 
-    /// Numbers the next frame's `PROFILE gpu_passes` line.
     pub fn label_frame(&mut self, frame: u64) {
         if let Some(timer) = &mut self.pass_timer {
             timer.label(frame);
         }
     }
 
-    /// The last frame's CPU laps, under `BATTLE_PLAN_VIEWER_PROFILE`. `pass_` fields
-    /// partition caller-side encoding and submission, summing repeated views.
-    /// The final encoder finish, queue submit and report belong to scene_submit.
     pub fn detail_laps(&self) -> String {
         format!(
             "{} {}",
@@ -4996,27 +4467,22 @@ impl Scene {
         )
     }
 
-    /// The post grade of the last frame, for reporting.
     pub fn grading(&self) -> Option<String> {
         self.post.last_grading().map(|grading| grading.describe())
     }
 
-    /// Whether the last frame ran the cast-shadow chain, for reporting.
     pub fn shadows(&self) -> bool {
         self.shadow.drawn()
     }
 
-    /// How large the shadow screen buffer is made, once it is.
     pub fn shadow_screen(&self) -> Option<crate::map::shadow::Screen> {
         self.shadow.screen()
     }
 
-    /// The terrain blocks and quads the last frame drew, for reporting.
     pub fn terrain_drawn(&self) -> (usize, u64) {
         (self.cover.blocks(), self.cover.quads())
     }
 
-    /// Egui must update its native texture registration when this changes.
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -5029,17 +4495,12 @@ impl Scene {
         self.targets.as_ref().map(Targets::output_view)
     }
 
-    /// Lets go of everything sized to the view: its targets, the shadow receivers and the post
-    /// chain. The game textures, hour data and exposure history stay, so the next frame makes
-    /// the targets again and draws as if the view had never been hidden.
     pub fn release_viewport(&mut self) {
         self.targets = None;
         self.shadow.release();
         self.post.release_chain();
     }
 
-    // names
-    /// Name-layer vertices and icon quads the last frame drew, for reporting.
     pub fn overlay_counts(&self) -> (u32, u32) {
         (
             self.name_pass.vertex_count() + self.near_name_pass.vertex_count(),
@@ -5047,10 +4508,6 @@ impl Scene {
         )
     }
 
-    /// The screen buffer's size for the programs these settings draw: full while any of them
-    /// reads it by texel. Builds those programs first, as their frames would, so the buffer is
-    /// made for them before it is drawn; built programs are only looked up. The terrain's are
-    /// built by the caller.
     fn shadow_screen_wanted(&self, device: &wgpu::Device) -> crate::map::shadow::Screen {
         let high = self.graphics.high_gfx_shaders;
         if self.graphics.water {
@@ -5074,8 +4531,6 @@ impl Scene {
         }
     }
 
-    /// Every built program these settings draw that reads the shadow screen buffer by texel, by
-    /// its shader's name and how it reads ([`crate::map::shadow::texel_reads`]).
     fn shadow_texel_reads(&self, visit: &mut dyn FnMut(&str, &str)) {
         let high = self.graphics.high_gfx_shaders;
         if self.graphics.shadows {
@@ -5186,13 +4641,8 @@ impl Scene {
         warnings
     }
 
-    /// Every refusal this scene has made, by a name stable across loads: world passes that
-    /// refused, and every refused native, model and GUI shader draw not already drawn another
-    /// way (a visual mod entity drawn from its recorded counterpart). A map showing visual mods
-    /// compares these with the refusals it makes without them.
     pub fn draw_refusals(&self) -> std::collections::BTreeSet<String> {
         let mut refusals = self.arena.refusals();
-        // By the pass refused, not its message, which can differ between loads.
         refusals.extend(
             self.pass_diagnostics
                 .keys()
@@ -5201,41 +4651,30 @@ impl Scene {
         refusals
     }
 
-    /// Named/counting failures of the most recently submitted GUI shader draws.
     pub fn shader_refusals(&self) -> &BTreeMap<String, u64> {
         &self.sprite_pass.native_refusals
     }
 
-    /// Icon pages uploaded once per scene, for reporting.
     pub fn icon_page_count(&self) -> usize {
         self.icon_textures.page_count()
     }
 
-    // trees
-    /// Canopy instances the last frame drew, for reporting.
     pub fn tree_instances(&self) -> u32 {
         self.trees.as_ref().map_or(0, TreePass::drawn)
     }
 
-    /// Canopy draw calls the last frame submitted: one per visible tile.
     pub fn tree_draw_calls(&self) -> u32 {
         self.trees.as_ref().map_or(0, TreePass::drawn_buckets)
     }
 
-    // close zoom
-    /// Sprawl houses the last frame drew, for reporting.
     pub fn sprawl_drawn(&self) -> u32 {
         self.sprawl.as_ref().map_or(0, ModelPass::drawn)
     }
 
-    // close zoom
-    /// Map buildings the last frame drew, for reporting.
     pub fn map_buildings_drawn(&self) -> u32 {
         self.map_buildings.as_ref().map_or(0, ModelPass::drawn)
     }
 
-    // close zoom
-    /// Aircraft models submitted in the last frame, for reporting.
     pub fn aircraft_drawn(&self) -> u32 {
         self.aircraft
             .as_ref()
@@ -5294,10 +4733,6 @@ fn write_range(
     }
 }
 
-/// Rewrites a data texture in place, or rebuilds it when its size changed.
-///
-/// Returns whether the texture object was replaced, which is the only case
-/// where the bind groups that reference its view have to be rebuilt.
 fn replace(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -5324,7 +4759,6 @@ fn replace(
     Ok(true)
 }
 
-/// A pass over the scene and its depth, loading both: what every world layer draws into.
 pub(crate) fn world_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     targets: &Targets,
@@ -5340,10 +4774,6 @@ pub(crate) fn world_pass<'a>(
     })
 }
 
-/// With full-resolution rendering disabled, halve the renderer's positive signed dimensions with
-/// truncation. Full-size cameras and interface pixels retain their dimensions, and shadow
-/// receivers keep half of them or all ([`crate::map::shadow::Screen`]). [`validate_size`] refuses
-/// a zero result.
 pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {
     if full_resolution {
         size
@@ -5361,7 +4791,6 @@ fn sky_pipeline(
         .map_err(|error| error.to_string())
 }
 
-/// The display kind a recorded map event family's floating text is hidden with.
 fn map_text_kind(
     family: replay_data::rows::MapEventFamily,
 ) -> Option<dashboard_core::protocol::MapTextKind> {
@@ -5379,9 +4808,6 @@ fn map_text_kind(
     })
 }
 
-/// The map-frame actors that stay placed, keeping their admission, clocks, events' timing and
-/// retirement, but do not draw: the map table and each impact whose switch is off. An impact
-/// with no recorded effect is never hidden.
 fn hidden_map_frame_actors(
     graphics: &dashboard_core::protocol::MapGraphics,
     table: impl IntoIterator<Item = (usize, u32, u32)>,
@@ -5471,7 +4897,6 @@ mod tests {
             }),
             BTreeSet::from([(4, 6, 6)])
         );
-        // An impact with no recorded effect always draws.
         assert_eq!(
             hidden(dashboard_core::protocol::MapGraphics {
                 map_table: false,

@@ -19,7 +19,6 @@ const reply: AircraftCatalogueReply = {
   warnings: ['1 descriptor files do not parse even when closed'],
 };
 
-/** The list's props as the picker handed them over, through a stand-in list module. */
 type ListProps = { items: readonly number[]; isInteractive?: (item: number, index: number) => boolean };
 
 async function picker() {
@@ -64,7 +63,6 @@ test('the status line follows the chosen aircraft only, and a picker without a c
   const { vite, module } = await picker();
   try {
     const { statusText } = module;
-    // There is no default aircraft, and the panel says so plainly.
     assert.deepEqual(statusText(null, { aircraft: null, state: { kind: 'ready' } }), { text: module.NO_AIRCRAFT, alert: false });
     assert.match(module.NO_AIRCRAFT, /No aircraft is chosen/);
     assert.equal(statusText('a', { aircraft: 'b', state: { kind: 'ready' } }), null, 'another choice is still being answered');
@@ -106,7 +104,6 @@ test('the docked aircraft list is no popover, so the map stays shown while plane
   const { vite, module } = await picker();
   try {
     const markup = renderToStaticMarkup(createElement(module.AircraftPanel, { id: 'panel', onClose: () => {}, children: 'list' }));
-    // The map-overlay guard hides the native map behind any open element with a popover attribute.
     assert.doesNotMatch(markup, /\spopover(target)?=/);
     assert.match(markup, /^<section id="panel" class="aircraft-picker" aria-label="Aircraft">/);
     assert.match(markup, /aria-label="Close the aircraft list"/);

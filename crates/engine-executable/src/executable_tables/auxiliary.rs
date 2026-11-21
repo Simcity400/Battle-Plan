@@ -1,4 +1,3 @@
-//! Rule, equipment, AI and air-view metadata; each part is located by content and verified on its own.
 
 use super::{
     keywords::KeywordTables,
@@ -17,7 +16,6 @@ use std::{
     io,
 };
 
-/// Text each locator starts from: an error or label the located code references.
 const CATEGORY_ERROR: Anchor = Anchor {
     what: "the category lookup error",
     text: Hashed {
@@ -100,7 +98,6 @@ const TEXT_ANCHORS: [Anchor; 10] = [
     AIR_CHANNEL_LABEL,
     AIR_DETECTION_LABEL,
 ];
-/// RTTI types whose vtables anchor the front-control reader, the air view and rule rows.
 const FRONT_CONTROL_TYPE: Anchor = Anchor {
     what: "the front control strategy type",
     text: Hashed {
@@ -139,23 +136,17 @@ const AIR_GRAPH_COLORS: &str = "air graph colours";
 const AIR_GRAPH_SCALE: &str = "air graph scale";
 const AIR_DETECTION_PREFIX: &str = "air detection override prefix";
 
-/// Displays in the air view's history graph.
 pub const AIR_GRAPH_DISPLAYS: usize = 24;
-/// MSVC's allocator hands blocks of this size or more back through an aligned header.
 const BIG_ALLOCATION: u64 = 0x1000;
-/// Caller stack slots of a rule row's fulfilled and default flags (fifth and seventh arguments).
 const RULE_FULFILLED_ARGUMENT: u64 = 0x20;
 const RULE_DEFAULT_ARGUMENT: u64 = 0x30;
-/// Caller stack slot of a colour's alpha (fifth argument).
 const COLOR_ALPHA_ARGUMENT: u64 = 0x20;
 const OUTPUT: u64 = 0x1000;
 const STACK: u64 = 0x10_0000;
 const FRAME: u64 = STACK + 0x100;
 const HEAP: u64 = 0x30_0000;
-/// An MSVC string object: inline storage or pointer, then length and capacity.
 const STRING_OBJECT: u64 = 32;
 
-/// Consumers hard-code these parts' masks, ids and positions, so their content is pinned.
 const CATEGORY_NAMES_DIGEST: &str =
     "eb08b560f635730feefc5db7504ea9a866155d79e83636d3fef519a157b19163";
 const STAT_METADATA_DIGEST: &str =
@@ -185,7 +176,6 @@ pub struct AuxiliaryTables {
 }
 
 impl AuxiliaryTables {
-    /// SHA-256 of the build-independent content of every part that verified.
     pub fn content_digest(&self) -> [u8; 32] {
         let mut digest = Sha256::new();
         for (part, text) in self.canonical() {
@@ -199,7 +189,6 @@ impl AuxiliaryTables {
         digest.finalize().into()
     }
 
-    /// Every part that failed its own check.
     pub fn withheld(&self) -> impl Iterator<Item = &Withheld> {
         [
             self.equipment_categories.as_ref().err(),
@@ -255,7 +244,6 @@ impl AuxiliaryTables {
                 AI_EXECUTION_TYPES,
                 text(&self.execution_types, |rows| enum_text(rows)),
             ),
-            // Order types are keyword tokens, which each build numbers itself.
             (
                 AI_ORDER_TYPES,
                 text(&self.order_types, |rows| {
@@ -352,7 +340,6 @@ impl AuxiliaryTables {
     }
 }
 
-/// A part's result; a panic on an unexpected image withholds only that part.
 fn part<T>(name: &'static str, decode: impl FnOnce() -> io::Result<T>) -> Verified<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) {
         Ok(result) => result.map_err(|error| Withheld::new(name, error)),
@@ -363,7 +350,6 @@ fn part<T>(name: &'static str, decode: impl FnOnce() -> io::Result<T>) -> Verifi
     }
 }
 
-/// Every anchor and the code that references it, found in one pass over the code.
 struct Anchors<'a> {
     image: &'a PeImage,
     texts: Vec<(Anchor, Vec<u32>)>,
@@ -433,7 +419,6 @@ impl<'a> Anchors<'a> {
         Ok(references)
     }
 
-    /// Each distinct function holding one of `references`.
     fn holders(&self, references: &[u32]) -> io::Result<Vec<(u32, u32)>> {
         let mut holders = BTreeSet::new();
         for &reference in references {
@@ -466,7 +451,6 @@ impl<'a> Anchors<'a> {
     }
 }
 
-/// The vtable of `name`'s complete object.
 fn primary_vtable(image: &PeImage, name: Anchor) -> io::Result<u32> {
     let vtables: Vec<u32> = image
         .classes_named(name.text)
@@ -476,7 +460,6 @@ fn primary_vtable(image: &PeImage, name: Anchor) -> io::Result<u32> {
     sole(vtables, &format!("vtable of {}", name.what))
 }
 
-/// The one candidate a locator found.
 fn sole<T>(candidates: impl IntoIterator<Item = T>, what: &str) -> io::Result<T> {
     let mut candidates = candidates.into_iter();
     match (candidates.next(), candidates.next()) {
@@ -486,7 +469,6 @@ fn sole<T>(candidates: impl IntoIterator<Item = T>, what: &str) -> io::Result<T>
     }
 }
 
-/// Decodes `extent` up to its first undecodable byte, where embedded data begins.
 fn code(image: &PeImage, (start, end): (u32, u32)) -> io::Result<Vec<Instruction>> {
     let bytes = image.bytes(start, (end - start) as usize)?;
     let mut decoder = Decoder::with_ip(
@@ -522,7 +504,6 @@ fn is_immediate(i: &Instruction, operand: u32) -> bool {
     operand < i.op_count() && immediate(i, operand).is_ok()
 }
 
-/// Direct calls whose result is an optional value, its validity byte four bytes past it.
 fn optional_calls(image: &PeImage, code: &[Instruction]) -> Vec<(u64, u32)> {
     let mut found = Vec::new();
     for (index, i) in code.iter().enumerate() {
@@ -543,7 +524,6 @@ fn optional_calls(image: &PeImage, code: &[Instruction]) -> Vec<(u64, u32)> {
         {
             continue;
         }
-        // The value is where the call returns it, or where the caller asked for it.
         let value = if test.memory_base() == Register::RAX {
             Some(0)
         } else {
@@ -569,7 +549,6 @@ fn optional_calls(image: &PeImage, code: &[Instruction]) -> Vec<(u64, u32)> {
     found
 }
 
-/// Consecutive executable pointers from `vtable` on.
 fn slots(image: &PeImage, vtable: u32) -> Vec<u32> {
     let mut slots = Vec::new();
     let mut at = vtable;
@@ -586,7 +565,6 @@ fn slots(image: &PeImage, vtable: u32) -> Vec<u32> {
     slots
 }
 
-/// The code of each slot that starts an exception-directory function.
 fn slot_functions(image: &PeImage, vtable: u32) -> io::Result<Vec<Vec<Instruction>>> {
     let mut functions = Vec::new();
     for slot in slots(image, vtable) {
@@ -606,7 +584,6 @@ fn first_call(image: &PeImage, extent: (u32, u32)) -> io::Result<u32> {
         .ok_or_else(|| invalid("the anchored function calls nothing"))
 }
 
-/// The type-category reader's first call maps a keyword to its category bit.
 fn categories(
     image: &PeImage,
     anchors: &Anchors,
@@ -641,7 +618,6 @@ fn categories(
     Ok((rows, names))
 }
 
-/// The stat reader's first call maps a keyword to its index, and any other token to the count.
 fn stats(
     image: &PeImage,
     anchors: &Anchors,
@@ -687,7 +663,6 @@ fn stats(
     Ok(rows)
 }
 
-/// The modifier label writer loads a stat's label pointer from a table indexed by stat.
 fn stat_labels(image: &PeImage, anchors: &Anchors) -> io::Result<u32> {
     let writer = code(image, anchors.function(STAT_MODIFIER_LABEL)?)?;
     let tables: BTreeSet<u32> = writer
@@ -706,7 +681,6 @@ fn stat_labels(image: &PeImage, anchors: &Anchors) -> io::Result<u32> {
     sole(tables, "stat label table")
 }
 
-/// The designer tooltip calls a leaf that reads a stat's polarity byte from a table.
 fn stat_polarity(image: &PeImage, anchors: &Anchors) -> io::Result<u32> {
     let tooltip = code(image, anchors.function(STAT_DESIGNER_LABEL)?)?;
     let callees: BTreeSet<u32> = tooltip
@@ -748,7 +722,6 @@ fn stat_polarity(image: &PeImage, anchors: &Anchors) -> io::Result<u32> {
     sole(tables, "stat polarity table")
 }
 
-/// The strategy reader's optional-enum lookups; the one the mission error follows is missions.
 fn ai_dispatchers(image: &PeImage, anchors: &Anchors) -> io::Result<(u32, u32)> {
     let extent = anchors.function(STRATEGY_MISSION_ERROR)?;
     let reader = code(image, extent)?;
@@ -778,7 +751,6 @@ fn ai_dispatchers(image: &PeImage, anchors: &Anchors) -> io::Result<(u32, u32)> 
     Ok((strategy, missions))
 }
 
-/// The front-control reader tests order types in a keyword run and looks up execution types.
 fn front_control(image: &PeImage, anchors: &Anchors) -> io::Result<(Vec<Instruction>, u32)> {
     let (vtable, _) = anchors.vtable(FRONT_CONTROL_TYPE)?;
     let mut found = Vec::new();
@@ -798,7 +770,6 @@ fn front_control(image: &PeImage, anchors: &Anchors) -> io::Result<(Vec<Instruct
     Ok((run, execution))
 }
 
-/// Runs of at least two `sub`/`cmp ecx, imm` tests that all branch to one place on equality.
 fn keyword_runs(code: &[Instruction]) -> Vec<Vec<Instruction>> {
     let mut runs = Vec::new();
     let mut index = 0;
@@ -854,7 +825,6 @@ fn order_projection(
     Ok(rows)
 }
 
-/// The event-target reader whose selector chain sets one distinct bit per keyword.
 fn selectors(
     image: &PeImage,
     anchors: &Anchors,
@@ -875,7 +845,6 @@ fn selectors(
     sole(found, "selector chain")
 }
 
-/// The run of `cmp eax, imm; jne next` tests from the first such test.
 fn selector_chain(code: &[Instruction]) -> Option<&[Instruction]> {
     let is_test = |at: usize| {
         matches!(&code[at..], [test, branch, ..]
@@ -944,7 +913,6 @@ fn selector_projection(
     Ok(rows)
 }
 
-/// The equipment reader's mission chain, cut by a synthetic return at the join its cases share.
 fn equipment_missions(
     image: &PeImage,
     anchors: &Anchors,
@@ -997,7 +965,6 @@ fn equipment_missions(
     Ok(rows)
 }
 
-/// The air view's channel lookup reads a display's channel from a table of ids.
 fn air_graph_channels(image: &PeImage, anchors: &Anchors) -> io::Result<[u32; AIR_GRAPH_DISPLAYS]> {
     let (vtable, _) = anchors.vtable(AIR_VIEW_TYPE)?;
     let mut tables = BTreeSet::new();
@@ -1029,7 +996,6 @@ fn air_graph_channels(image: &PeImage, anchors: &Anchors) -> io::Result<[u32; AI
     Ok(channels)
 }
 
-/// The air view's constructor builds each display's colour through one colour constructor.
 fn air_graph_colors(
     image: &PeImage,
     anchors: &Anchors,
@@ -1052,8 +1018,6 @@ fn air_graph_colors(
     Ok(colors)
 }
 
-/// Whether `i` may change the colour alpha argument other than by its recognised store: it
-/// moves the stack pointer, or writes memory that is not a stack slot clear of the argument.
 fn may_write_alpha(info: &mut InstructionInfoFactory, i: &Instruction) -> bool {
     let written = |access: OpAccess| {
         matches!(
@@ -1061,7 +1025,6 @@ fn may_write_alpha(info: &mut InstructionInfoFactory, i: &Instruction) -> bool {
             OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite
         )
     };
-    // A call's own push is its return address; what the callee may write is handled at the call.
     if i.flow_control() == FlowControl::Call {
         return false;
     }
@@ -1083,7 +1046,6 @@ fn may_write_alpha(info: &mut InstructionInfoFactory, i: &Instruction) -> bool {
         }))
 }
 
-/// Colours built from XMM scalar constants and copied into one array of displays.
 fn display_colors(
     image: &PeImage,
     code: &[Instruction],
@@ -1156,7 +1118,6 @@ fn display_colors(
                 for volatile in &mut values[..6] {
                     *volatile = None;
                 }
-                // Any other callee may overwrite its stack arguments; the constructor's body is checked.
                 if constructor.is_none() {
                     alpha = None;
                 }
@@ -1192,9 +1153,6 @@ fn display_colors(
     }
 }
 
-/// Where `callee` keeps RGBA, if all it does is set the object's vtable, store its float
-/// arguments and alpha as consecutive floats and return the object: anything else could
-/// change what it builds.
 fn color_constructor(image: &PeImage, callee: u32) -> Option<u64> {
     let bytes = image.bytes(callee, 64).ok()?;
     let mut decoder = Decoder::with_ip(
@@ -1207,7 +1165,6 @@ fn color_constructor(image: &PeImage, callee: u32) -> Option<u64> {
     let mut alpha = None;
     let mut stores = BTreeMap::new();
     let mut vtable_loaded = false;
-    // The caller reads the colour back through the returned pointer, which must be the object.
     let mut returns_object = false;
     let mut pointer_stores = Vec::new();
     for _ in 0..12 {
@@ -1229,7 +1186,6 @@ fn color_constructor(image: &PeImage, callee: u32) -> Option<u64> {
                     && clear)
                     .then_some(offset);
             }
-            // At entry the return address sits below the caller's argument slots.
             Mnemonic::Movss
                 if register_operand(0)
                     && alpha.is_none()
@@ -1284,7 +1240,6 @@ fn color_constructor(image: &PeImage, callee: u32) -> Option<u64> {
     None
 }
 
-/// The channel label writer scales the graph by the one float constant it loads.
 fn air_graph_scale(image: &PeImage, anchors: &Anchors) -> io::Result<f32> {
     let writer = code(image, anchors.function(AIR_CHANNEL_LABEL)?)?;
     let constants: BTreeSet<u32> = writer
@@ -1299,7 +1254,6 @@ fn air_graph_scale(image: &PeImage, anchors: &Anchors) -> io::Result<f32> {
     Ok(scale)
 }
 
-/// The region detail writer copies the override prefix with its length as an immediate.
 fn air_detection_prefix(image: &PeImage, anchors: &Anchors) -> io::Result<&'static str> {
     let writer = code(image, anchors.function(AIR_DETECTION_LABEL)?)?;
     let mut found = BTreeSet::new();
@@ -1375,7 +1329,6 @@ fn channel_text(ids: &[u32]) -> String {
     ids.iter().map(|id| format!("{id}\n")).collect()
 }
 
-/// A selector's optional result: the value at the output, its validity byte four past it.
 fn enum_projection(
     image: &PeImage,
     keywords: &KeywordTables,
@@ -1400,21 +1353,17 @@ fn enum_projection(
     Ok(rows)
 }
 
-/// A selector's return value, its stores, and whether it took an equality branch.
 struct Outcome {
     result: u64,
     writes: BTreeMap<u64, u64>,
     matched: bool,
 }
 
-/// Decodes only the finite arithmetic and branch representation used by selectors.
 struct Dispatch<'a> {
     image: &'a PeImage,
     entry: u64,
-    /// The code a selector may run: its exception-directory function, or the gap a leaf occupies.
     start: u64,
     bytes: &'a [u8],
-    /// Decoded on first visit, in increasing address order.
     code: Vec<Instruction>,
 }
 
@@ -1453,7 +1402,6 @@ impl<'a> Dispatch<'a> {
         }
     }
 
-    /// Puts `instruction` at `address`, in place of what would be decoded there.
     fn put(&mut self, address: u64, mut instruction: Instruction) {
         instruction.set_ip(address);
         match self.code.binary_search_by_key(&address, Instruction::ip) {
@@ -1473,7 +1421,6 @@ impl<'a> Dispatch<'a> {
         let mut matched = false;
         let mut pc = self.entry;
         let mut flags = (false, false, false);
-        // A selector visits few instructions, so a list finds a revisit fastest.
         let mut visited = Vec::new();
         loop {
             if visited.contains(&pc) {
@@ -1586,7 +1533,6 @@ impl<'a> Dispatch<'a> {
     }
 }
 
-/// A leaf function has no exception-directory entry; it runs up to the next function.
 fn leaf_extent(image: &PeImage, entry: u32) -> io::Result<(u32, u32)> {
     let (_, section_end) = *image
         .executable_ranges()
@@ -1674,9 +1620,6 @@ fn compare(a: u64, b: u64, width: usize) -> (bool, bool, bool) {
     (a == b, a < b, signed(a, width) < signed(b, width))
 }
 
-/// Known values by full register. An emulation holds a handful at a time,
-/// so a list is faster to search and update than a tree.
-/// Each entry is a full register, its value and the mask of its bits that are known.
 #[derive(Default)]
 struct Registers(Vec<(Register, u64, u64)>);
 
@@ -1690,7 +1633,6 @@ impl Registers {
         )
     }
 
-    /// `register`'s value when every bit of it is known.
     fn value(&self, register: Register) -> Option<u64> {
         let (shift, width) = placement(register);
         let bits = mask(width) << shift;
@@ -1701,7 +1643,6 @@ impl Registers {
             .map(|&(_, value, _)| (value >> shift) & mask(width))
     }
 
-    /// Writes `register`; 32- and 64-bit writes define the whole register.
     fn set(&mut self, register: Register, value: u64) {
         let (shift, width) = placement(register);
         let full = register.full_register();
@@ -1728,7 +1669,6 @@ impl Registers {
     }
 }
 
-/// The bit offset and byte width of `register` within its full register.
 fn placement(register: Register) -> (u32, usize) {
     let shift = if matches!(
         register,
@@ -1774,7 +1714,6 @@ fn memory_address(regs: &Registers, i: &Instruction) -> io::Result<u64> {
         .wrapping_add(i.memory_displacement64()))
 }
 
-/// Where the rule list builder keeps its rows and which functions it calls to build them.
 #[derive(Clone, Copy, Default)]
 struct RuleLayout {
     construct: u32,
@@ -1782,7 +1721,6 @@ struct RuleLayout {
     assign: u32,
     allocate: u32,
     release: u32,
-    /// Frame offset of row 0 and the row size.
     base: u64,
     stride: u64,
     label: u64,
@@ -1792,8 +1730,6 @@ struct RuleLayout {
     default: u64,
 }
 
-/// The rule list builder fills a local array of rule rows, the first few inline and the rest
-/// through the row constructor, which takes the row index as an immediate.
 fn rule_layout(image: &PeImage, anchors: &Anchors) -> io::Result<(RuleLayout, Vec<Instruction>)> {
     let (_, references) = anchors.vtable(RULE_TYPE)?;
     let functions = anchors.holders(references)?;
@@ -1908,7 +1844,6 @@ fn rule_layout(image: &PeImage, anchors: &Anchors) -> io::Result<(RuleLayout, Ve
     Ok((layout, builder))
 }
 
-/// Where a rule row keeps what the row constructor receives, from the constructor's stores.
 fn row_layout(image: &PeImage, construct: u32) -> io::Result<RuleLayout> {
     #[derive(Clone, Copy, PartialEq)]
     enum Origin {
@@ -1974,7 +1909,6 @@ fn row_layout(image: &PeImage, construct: u32) -> io::Result<RuleLayout> {
                     && i.memory_base() == Register::RSP
                     && i.memory_index() == Register::None =>
             {
-                // The caller's slot, past the return address and what this frame reserved.
                 let value = i
                     .memory_displacement64()
                     .checked_sub(depth + 8)
@@ -2047,7 +1981,6 @@ struct RuleConstruction<'a> {
     strings: BTreeMap<u64, String>,
     rows: BTreeMap<u32, (u32, String, bool, bool)>,
     next_heap: u64,
-    /// The frame model fixes the stack pointer, so it may move only before the first call.
     called: bool,
 }
 
@@ -2223,7 +2156,6 @@ impl<'a> RuleConstruction<'a> {
             }
             let text = String::from_utf8(bytes)
                 .map_err(|_| invalid("rules: assigned label is not UTF-8"))?;
-            // The object's earlier bytes no longer describe it.
             self.forget(object, STRING_OBJECT as usize)?;
             self.strings.insert(object, text);
         } else if target == layout.copy {
@@ -2261,14 +2193,12 @@ impl<'a> RuleConstruction<'a> {
         Ok(())
     }
 
-    /// A write over a string object drops its emulated text, which no longer describes it.
     fn overwrite_strings(&mut self, address: u64, length: usize) {
         let end = address.saturating_add(length as u64);
         self.strings
             .retain(|&object, _| object.saturating_add(STRING_OBJECT) <= address || end <= object);
     }
 
-    /// Unknown bytes at `address`, which a store of an unknown value leaves behind.
     fn forget(&mut self, address: u64, length: usize) -> io::Result<()> {
         if address >= self.image.base {
             return Err(invalid("rules: construction writes image storage"));
@@ -2280,7 +2210,6 @@ impl<'a> RuleConstruction<'a> {
         Ok(())
     }
 
-    /// `add`, `sub` and `inc`, computed when every operand is known and unknown otherwise.
     fn arithmetic(&mut self, i: &Instruction) -> io::Result<()> {
         if i.op0_kind() == OpKind::Register && i.op0_register() == Register::RSP {
             if self.called {
@@ -2335,7 +2264,6 @@ impl<'a> RuleConstruction<'a> {
     fn instruction(&mut self, i: &Instruction) -> io::Result<()> {
         match i.mnemonic() {
             Mnemonic::Mov | Mnemonic::Movzx | Mnemonic::Movups | Mnemonic::Movsd => {
-                // Cleanup operands outside a constructed label do not supply metadata.
                 let value = self.source_bytes(i);
                 match i.op0_kind() {
                     OpKind::Register if i.op0_register().size() > 8 => {
@@ -2411,10 +2339,6 @@ impl<'a> RuleConstruction<'a> {
     }
 }
 
-/// The builder runs in a line, so each conditional branch must jump forward within it and
-/// skip only code that writes no memory and calls nothing but `release`, or leave it for code
-/// that builds nothing. Registers the skipped code writes are unknown where
-/// the paths join, by join index.
 fn branch_merges(
     image: &PeImage,
     builder: &[Instruction],
@@ -2458,8 +2382,6 @@ fn branch_merges(
     Ok(merges)
 }
 
-/// Whether the code at `va` builds nothing: an epilogue that only restores registers and
-/// returns, or a call to a function that never returns.
 fn builds_nothing(image: &PeImage, va: u64) -> io::Result<bool> {
     let start = image.va_to_rva(va)?;
     let bytes = image.bytes(start, 64)?;
@@ -2479,7 +2401,6 @@ fn builds_nothing(image: &PeImage, va: u64) -> io::Result<bool> {
     Ok(false)
 }
 
-/// Whether the function at `rva` has no way out: no return, and no jump out of its extent.
 fn never_returns(image: &PeImage, rva: u32) -> io::Result<bool> {
     let (start, end) = image.function(rva)?;
     if start != rva {
@@ -2633,7 +2554,6 @@ mod tests {
 
     #[test]
     fn selector_refuses_a_branch_out_of_its_function() {
-        // A short jump of 0x10 bytes, past the end of the function.
         let image = image(&[0xeb, 0x10, 0xc3]);
         assert!(
             Dispatch::new(&image, 0x1000)

@@ -32,13 +32,11 @@ fn make() -> Vec<Box<dyn Writer>> {
     vec![Box::new(Stockpile::default()), Box::new(DivisionEquipment::default())]
 }
 
-/// Sub-unit tokens 1 and 2, archetype tokens 50 and 51.
 const INFANTRY: u32 = 1;
 const ENGINEER: u32 = 2;
 const RIFLES: u32 = 50;
 const SUPPORT: u32 = 51;
 const TEMPLATE: u64 = 7;
-/// Fixed5 units.
 const UNIT: i64 = 100_000;
 
 fn handle(id: u32) -> u64 {
@@ -90,8 +88,6 @@ fn hp(id: u64, hit_points: i64) -> replay_data::rows::DivisionRow {
     replay_data::rows::DivisionRow { hit_points, ..division(id, 10, 10, 0, TEMPLATE) }
 }
 
-/// GER (slot 1) with two divisions of a template of two infantry and one engineer, their pools
-/// read, two designs defined and GER's stockpile.
 fn begin(edits: &mut Edits) -> &mut Edits {
     world(edits)
         .put(TableId::LexicalTokens, token(INFANTRY, "infantry"))
@@ -129,14 +125,11 @@ fn counts(run: &Run) -> Vec<(u32, u8, [Option<i64>; 3], Option<i32>, Option<i32>
         .collect()
 }
 
-/// A slot's counts of unknown divisions by cause: pool not read, a design unclassified, and the
-/// attribution's divisions no link resolves.
 fn causes(run: &Run, slot: u32, side: u8) -> (Option<i64>, Option<i64>, i64) {
     let row = run.rows::<DivisionEquipmentCountRow>(TableId::DivisionEquipmentCounts).into_iter().find(|row| (row.slot, row.side) == (slot, side)).unwrap();
     (value(&row.unpooled), value(&row.unclassified), row.unresolved)
 }
 
-/// A slot's template's divisions lacking manpower and lacking maximum hit points.
 fn lacking(run: &Run, slot: u32, side: u8) -> Vec<(Option<i64>, Option<i64>)> {
     run.rows::<DivisionEquipmentTemplateRow>(TableId::DivisionEquipmentByTemplate)
         .into_iter()
@@ -172,7 +165,6 @@ fn templates(run: &Run, slot: u32, side: u8) -> Vec<(u64, [Option<i64>; 9], Stri
         .collect()
 }
 
-/// Every row of the four tables, to compare two runs.
 fn tables(run: &Run) -> String {
     format!(
         "{:?} {:?} {:?} {:?}",
@@ -183,10 +175,6 @@ fn tables(run: &Run) -> String {
     )
 }
 
-/// The template needs 200 rifles and 1 more for the engineer (201), and 10 support. Division
-/// 100 holds 250 rifles and 5 support, 101 holds 100 rifles and 20 support: each is capped at
-/// its own need before the slot sums, so 101's surplus support never fills 100's shortfall.
-/// A country-local clone the complete CountryLocalSubunits names needs what it names.
 #[test]
 fn each_division_is_capped_at_its_own_need_before_the_slot_sums_and_its_designs_and_stock_are_kept() {
     let mut run = Run::new(make, INPUTS);
@@ -212,7 +200,6 @@ fn each_division_is_capped_at_its_own_need_before_the_slot_sums_and_its_designs_
     assert!(types(&run, 2, owner).is_empty() && counts(&run).iter().any(|row| row.0 == 3), "a country with no division has its counts");
     assert_eq!(causes(&run, 1, owner), (Some(0), Some(0), 0));
     assert_eq!(lacking(&run, 1, owner), [(Some(0), Some(0))]);
-    // The engineer becomes a local clone of GER needing 4 rifles alone.
     let mut edits = Edits::default();
     edits
         .put(TableId::DivisionTemplateIcons, template(TEMPLATE, vec![unit(INFANTRY, 0, 2), unit(ENGINEER, 1, 1)]))
@@ -223,10 +210,6 @@ fn each_division_is_capped_at_its_own_need_before_the_slot_sums_and_its_designs_
     assert_eq!(types(&run, 1, owner)[1].1[1..4], [Some(0), Some(0), Some(0)], "support is held, no longer needed");
 }
 
-/// Without the sub-unit needs definition the comparison is not known: held stays, needed,
-/// filled and missing are not recorded, every division is unknown and the template names why;
-/// the definition held makes the next hour compare. A daily pool read more than a day old is no
-/// longer read, and neither is a design no definition classifies.
 #[test]
 fn without_the_needs_definition_the_comparison_is_not_recorded_by_name_and_held_stays_known() {
     let mut run = Run::new(make, INPUTS);
@@ -244,7 +227,6 @@ fn without_the_needs_definition_the_comparison_is_not_recorded_by_name_and_held_
     run.hour(&edits);
     assert_eq!(counts(&run)[0].2, [Some(2), Some(2), Some(0)]);
     assert_eq!(templates(&run, 1, owner)[0].1[5], Some(1_650_000), "hit points moved alone");
-    // Division 101 comes to hold a design no definition classifies.
     let mut edits = Edits::default();
     edits.put(TableId::DivisionEquipment, entry(101, 4, 3, UNIT));
     run.hour(&edits);
@@ -268,9 +250,6 @@ fn without_the_needs_definition_the_comparison_is_not_recorded_by_name_and_held_
     assert_eq!(causes(&run, 1, owner), (Some(2), Some(0), 0));
 }
 
-/// A division whose owner no link resolves makes every cell of the owner side unknown, its host
-/// side still known; a division destroyed leaves the sums; a resume writes what the unbroken run
-/// writes.
 #[test]
 fn an_owner_no_link_resolves_makes_its_side_unknown_and_a_resume_writes_what_an_unbroken_run_writes() {
     let mut run = Run::new(make, INPUTS);
@@ -302,8 +281,6 @@ fn an_owner_no_link_resolves_makes_its_side_unknown_and_a_resume_writes_what_an_
     assert_eq!(tables(&run), tables(&resumed));
 }
 
-/// A daily read is the hour its table's sample hour names: it stands for a day after, through hours
-/// that do not read the table, and a resume keeps it.
 #[test]
 fn daily_reads_stand_for_a_day_from_their_sample_hours_and_outlive_a_resume() {
     let mut run = Run::new(make, INPUTS);
@@ -342,11 +319,8 @@ fn noted() -> Vec<Box<dyn Writer>> {
     vec![Box::new(Stockpile::default()), Box::new(Noting(DivisionEquipment::default()))]
 }
 
-/// Template 8, two infantry.
 const OTHER: u64 = 8;
 
-/// `count` more divisions of GER from 1000 on, of TEMPLATE, and as many of ITA (slot 2) from
-/// 100,000 on, of template 8, each holding rifles.
 fn crowd(edits: &mut Edits, count: u64) -> &mut Edits {
     edits.put(TableId::DivisionTemplateIcons, template(OTHER, vec![unit(INFANTRY, 0, 2)]));
     for at in 0..count {
@@ -360,7 +334,6 @@ fn crowd(edits: &mut Edits, count: u64) -> &mut Edits {
     edits
 }
 
-/// The slot a derived row's key names.
 fn slot_of(table: TableId, key: u128) -> u32 {
     let shift = match table {
         TableId::DivisionEquipmentCounts => 8,
@@ -371,9 +344,6 @@ fn slot_of(table: TableId, key: u128) -> u32 {
     (key >> shift) as u32
 }
 
-/// Among many divisions, an hour moving one division's hit points sets its template's two rows
-/// and nothing else, and one moving one division's pool sets rows of its slot alone (and the
-/// counts, whose pool hour moved); an hour moving nothing sets nothing.
 #[test]
 fn one_changed_division_among_many_sets_only_the_rows_it_touches() {
     let mut run = Run::new(noted, INPUTS);
@@ -405,10 +375,6 @@ fn one_changed_division_among_many_sets_only_the_rows_it_touches() {
     assert_eq!(noting::take(), [Noted::new()]);
 }
 
-/// A token, a design definition or a country-local clone the hour adds, changes or deletes moves
-/// only the templates and divisions reading it: one nothing reads sets nothing, and after each
-/// the tables equal those a run taken up at the hour before rebuilds, which itself sets only the
-/// rows that differ from those held.
 #[test]
 fn tokens_definitions_and_clones_move_only_what_reads_them_as_a_rebuild_would() {
     let mut run = Run::new(noted, INPUTS);
@@ -466,9 +432,6 @@ mod labelled {
     use super::*;
     use engine_allocation::labels;
 
-    /// Among 20,000 divisions, an hour moving one division's hit points, defining a design no
-    /// division holds and adding a clone no template reads allocates for what it moved: the
-    /// writer's label stays under 256 KiB in its hour, where a rebuild held every division again.
     #[test]
     fn an_hour_among_many_divisions_allocates_for_what_it_moved() {
         let mut run = Run::new(make, INPUTS);
@@ -491,7 +454,6 @@ mod labelled {
             let phase = phases.iter().find(|phase| phase.name == name).expect("the test's phase");
             phase.labels.iter().filter(|charge| charge.owner == "writer: DivisionEquipment").map(read).max().unwrap_or(0)
         };
-        // A peak includes what the label held as the hour began: every division's part.
         let held = writer("g3: division equipment built", |charge| charge.end);
         let grown = writer("g3: division equipment hour", |charge| charge.peak) - held;
         assert!(grown < 256 << 10, "the writer's label grew {grown} bytes in its hour over the {held} it held");

@@ -4,7 +4,6 @@ import type { WidgetRenderer } from '../dashboard/definitions';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 type Slot = 'render' | 'headerControls' | 'countryChip';
 const nothing = () => null;
-/** Components keep their chrome slots while code is fetched independently. */
 export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer {
   const renderer: WidgetRenderer = {};
   for (const slot of slots) {

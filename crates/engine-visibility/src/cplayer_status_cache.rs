@@ -1,8 +1,3 @@
-//! Local-player raid cache supplying allowed raid types for raid offers.
-//! The embedded raid-system cache initializes its country to zero and sets
-//! the dirty byte. Rebuilding occurs only while dirty: it selects the player
-//! and appends allowed raid database indices as u16 values. Updating sets
-//! the dirty byte only when the cached country is no longer the player.
 
 use crate::{
     Memory, ccountry_raid_status::TypeTokens, cgame_state, cpdx_array::Array, craid_system,
@@ -10,18 +5,12 @@ use crate::{
 };
 use engine_sites::Rva;
 
-/// Embedded raid-system player-status cache.
 pub const CACHE: usize = 0xf0;
-/// Primary cache vtable.
 pub const VTABLE_RVA: Rva = Rva(0x02a5_d9f8);
-/// Raw country reference this cache was built for; zero before first rebuild.
 pub const COUNTRY: usize = 0x08;
-/// Allowed raid database indices, u16, with capacity and count.
 pub const ALLOWED_TYPES: usize = 0x10;
-/// One allowed index.
 pub const INDEX_STRIDE: usize = 2;
 
-/// The cache: its country and where its tokens start in the caller's arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
@@ -33,15 +22,9 @@ pub struct Row {
 pub struct Walk {
     pub outcome: Outcome,
     pub tokens_len: usize,
-    /// Arena demand, including tokens that did not fit.
     pub required_tokens: usize,
 }
 
-/// Reads the cache into `rows[0]` and its allowed types, as raid type lexer
-/// tokens in native order, into `tokens`. A list longer than `tokens` is a
-/// truncation whose demand the caller grows off the walk. No allocation.
-/// The player cache's token demand, its allowed list's count: [`walk`]
-/// with no storage, which reads only the cache header.
 pub fn required_tokens(
     memory: &impl Memory,
     base: usize,
@@ -200,7 +183,6 @@ mod tests {
         bytes[address..address + value.len()].copy_from_slice(value);
     }
 
-    /// A cache built for country 7 allowing database indices 2 then 0.
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0_u8; raid_database::SINGLETON_RVA.0 + 16];
         put(

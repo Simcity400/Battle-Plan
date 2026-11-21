@@ -1,4 +1,3 @@
-//! Modifier value and cached breakdown text.
 use installed_content_core::{fixed5::fixed5_percent, fixed5::fixed5_to_string};
 use replay_data::{rows::ModifierBreakdownNode, rows::ModifierDefinitionRow, rows::check_tree};
 
@@ -9,7 +8,6 @@ pub const NO_PLUS: u32 = 1 << 3;
 pub const BOOLEAN: u32 = 1 << 5;
 pub const PERCENT: u32 = 1 << 7;
 
-/// The callback distinguishes executable keys from content tokens.
 pub fn value_text(
     row: &ModifierDefinitionRow,
     value: i64,
@@ -64,9 +62,6 @@ pub struct Breakdown<'a> {
     pub suffix: &'a str,
 }
 
-/// No aggregate at nonzero depth; zero leaves vanish. Child
-/// text is trimmed, then gets a newline, the caller's prefix and suffix.
-/// Recursion clears prefix/suffix; an explicit stack has no depth cap.
 pub fn breakdown(
     nodes: &[ModifierBreakdownNode],
     options: Breakdown<'_>,
@@ -101,7 +96,6 @@ pub fn breakdown(
         let Some(parent) = stack.last_mut() else {
             return Ok(text);
         };
-        // Trim only newline, tab, carriage return and space.
         let text = text.trim_matches(['\n', '\t', '\r', ' ']);
         if !text.is_empty() {
             if top {

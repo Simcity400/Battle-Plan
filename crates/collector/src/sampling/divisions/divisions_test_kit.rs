@@ -46,7 +46,6 @@ fn variant(bytes: &mut [u8], at: usize, id: u32) {
 
 pub(crate) fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x68000];
-    // Slots 1..2 hold countries; slot 3 aliases the first object.
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
     for (index, pointer) in [0u64, C0 as u64, C1 as u64, C0 as u64]
         .into_iter()
@@ -79,8 +78,6 @@ pub(crate) fn fixture() -> Vec<u8> {
     }
     p64(&mut bytes, P1, cprovince::VTABLE_RVA.0 as u64);
     p32(&mut bytes, P1 + cprovince::ID, 1);
-    // A1 is complete; A2 has null location and orders; A3 has a null
-    // template.
     for (army, handle, owner, location, template, orders, hp, org) in [
         (
             A1,
@@ -145,7 +142,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         0x41008,
         ((57u64) << 32) | corders_group::REFERENCE_TYPE as u64,
     );
-    // Equipment pools: two signed entries, one entry, and empty.
     variant(&mut bytes, 0x50000, 11);
     variant(&mut bytes, 0x51000, 12);
     for (army, items, entries) in [
@@ -174,8 +170,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             p64(&mut bytes, items + index * 16 + 8, amount as u64);
         }
     }
-    // Upgrade groups: live group with one request and one delivery,
-    // empty group, and a group with a request but no deliveries.
     for (army, group, priority, requests, deliveries) in [
         (
             A1,
@@ -236,7 +230,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             p64(&mut bytes, group + 0x300 + index * 8, delivery as u64);
         }
     }
-    // The one live delivery: progress-available status with a produced row.
     p64(&mut bytes, 0x64000, cupgrade_delivery::VTABLE_RVA.0 as u64);
     p32(&mut bytes, 0x64000 + cupgrade_delivery::STATUS, 1);
     p64(&mut bytes, 0x64000 + cupgrade_delivery::PROGRESS, 300);
@@ -277,8 +270,6 @@ pub(crate) struct Split {
     pub produced: Vec<cupgrade_delivery::ProducedRow>,
 }
 
-/// Reference typed walks with identical pooled buffers, mirroring the
-/// production acquire's equipment/upgrade sections exactly.
 pub(crate) fn direct(memory: &impl Memory, lens: [usize; 6]) -> Split {
     let mut divisions = vec![carmy::Row::default(); lens[0]];
     let mut visited = Vec::new();
@@ -329,7 +320,6 @@ pub(crate) fn direct(memory: &impl Memory, lens: [usize; 6]) -> Split {
     }
 }
 
-/// One owned acquisition installed into a pooled frame with equal capacities.
 pub(crate) fn split(
     memory: &impl Memory,
     lens: [usize; 6],
@@ -350,7 +340,6 @@ pub(crate) fn split(
     let mut ticks = [0u64; 6];
     super::decode_divisions_payload(&mut frame, BASE, &mut first, &mut ticks);
     let detail = frame.extended.test_division_detail();
-    // The worker clears the raw-mode gate it consumed.
     assert!(!detail.divisions_raw_mode);
     (
         Split {
@@ -373,8 +362,6 @@ pub(crate) fn split(
 }
 
 pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
-    // Owned transfers retain different storage headroom; outcomes certify
-    // the rows to compare, including every retained truncation prefix.
     assert_eq!(
         split.divisions_outcome, direct.divisions_outcome,
         "divisions outcome"

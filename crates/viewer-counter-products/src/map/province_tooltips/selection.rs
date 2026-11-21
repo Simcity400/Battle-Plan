@@ -1,5 +1,3 @@
-//! Selected-unit text. Selection and target stay viewer-local. Prospective
-//! queries need their own operands, never a captured UI cache.
 mod movement;
 mod travel;
 
@@ -47,7 +45,6 @@ pub(super) fn refuse(out: &mut Tooltip, name: &str, reason: String) {
         .or_default() += 1;
 }
 
-/// Indent once before append, including empty or multiline values.
 pub(super) fn line(out: &mut Tooltip, name: &str, indent: usize, value: Result<String, String>) {
     match value {
         Ok(value) => {
@@ -134,7 +131,6 @@ fn border(out: &mut Tooltip, frame: &DecodedFrame, members: &[u64], loc: &Locali
         Err(reason) => refuse(out, "border-war count", reason.clone()),
         Ok(_) => {}
     }
-    // The description has no NUM; one known positive proves its separate gate.
     if positive {
         line(
             out,
@@ -256,7 +252,6 @@ fn preview_gaps(
         .any(|source| source.as_ref().is_ok_and(|source| *source == target));
     let positive = travel.hours.as_ref().is_ok_and(|hours| *hours > 0);
     if !at_target && !positive {
-        // A known route also suppresses no-time/no-railway, independently of hours.
         if !travel.route.as_ref().is_ok_and(|route| !route.is_empty()) {
             let notice = match class {
                 Class::Army => "no-time notice",
@@ -283,8 +278,6 @@ struct RailwaySecondGate<'a> {
     rejection: &'a Result<bool, String>,
 }
 
-/// Reach the second railway check only after known empty rejection,
-/// nonpositive duration, empty prospective route and no selected gun at target.
 fn railway_second(
     out: &mut Tooltip,
     members: &[u64],
@@ -421,12 +414,9 @@ pub(super) fn build(context: &Context<'_>, selected: &[Unit], nato: bool) -> Too
     statuses_then_attack(&mut out, context.frame, class, &members, loc, |out| {
         super::selected_attack::append(out, context, &members, &travel.route, &queries);
     });
-    // The native click/control and strategic-keyboard hints describe unavailable actions.
     out
 }
 
-/// Append retreat/withdrawal after rejection and before either attack-preview
-/// modifiers or the blocked-strait notice.
 fn statuses_then_attack(
     out: &mut Tooltip,
     frame: &DecodedFrame,
@@ -445,13 +435,11 @@ pub(super) fn append(out: &mut Tooltip, selected: Tooltip, loc: &Localisation) {
     for (name, count) in selected.refused {
         *out.refused.entry(name).or_default() += count;
     }
-    // Both main-after-location and selected byte lengths must be nonzero.
     if out.title.is_empty() || selected.title.is_empty() {
         return;
     }
     match localise(loc, "SEPARATION_LINE", &[]) {
         Ok(separator) => {
-            // Skip ASCII spaces only; the separator adds no imposed LF.
             if !out.title.trim_end_matches(' ').ends_with('\n') {
                 out.title.push('\n');
             }

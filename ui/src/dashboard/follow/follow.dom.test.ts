@@ -38,7 +38,6 @@ test('followed values are painted without a render, rows render, off-screen widg
     t.diagnostic(`passes: ${passes.map(pass => pass.toFixed(1)).join(' ')}`);
     const sorted = [...passes].sort((a, b) => a - b), median = sorted[sorted.length >> 1]!;
     t.diagnostic(`500 entries, one ${bytes}-byte message: ${passes.length} paint passes, median ${median.toFixed(1)} ms, worst ${sorted.at(-1)!.toFixed(1)} ms`);
-    // The median: a single pass may carry a collection of the page's garbage.
     assert.ok(median < 1, `a paint pass of 500 entries took ${median.toFixed(1)} ms at the median`);
     const table = await act<{ passes: number[]; last: string; bytes: number }>('paintTable(439, 30)');
     assert.equal(table.last.replace(/\D/g, ''), String(438 * 7 + 29), 'the last row painted the last message');

@@ -1,65 +1,25 @@
-//! Playback of the retained regional air-combat records
-//! ([`crate::rows::AirRegionCombatRow`]): the daily pruning the collector does
-//! not observe, and the totals the game's strategic air view draws from them.
-//!
-//! A row holds a holder's records as the collector last read them. The daily air pass
-//! prunes every holder of the countries it visits. The hourly update advances the clock
-//! first and enters the daily update when the day changes, so the pass of the tick before
-//! a sample with `hour % 24 == 0` prunes with that hour (raw hour 0, 43800000, is a
-//! multiple of 24). Its cutoff is the clock minus `NGame.AIR_LOG_TIMEOUT_HOURS`, read as
-//! a signed integer without a clamp; each vector loses the leading run of records dated
-//! before it and keeps its order.
-//!
-//! The updater dates a record with the clock that creates it, so a row read before a pass
-//! holds only records dated before the pass's hour, and one read after it starts with a
-//! record the pass kept or created since, dated at or after the pass's hour or its cutoff.
-//! Applying the latest pass's cutoff, capped at the pass's hour ([`pruning_cutoff`]), to a
-//! row is therefore exact however old the row is: it removes what the pass removed from a
-//! row read before it and nothing from one read after it. The cap matters for a negative
-//! timeout, whose cutoff lies after the pass and would reach records created since. The
-//! pass visits only the
-//! countries in the game's daily simulation roster (those owning a state); a country
-//! outside it keeps its records unpruned, which [`retained`] cannot know, so a caller that
-//! has not established the country was in the roster refuses such a container by name
-//! ([`UNPRUNED_CONTAINER`]).
-//!
-//! The hourly AirDailyRoster records that roster. [`visiting_pass`] finds the latest pass
-//! that visited a container country and [`retained_through`] applies it alone: passes
-//! before it are subsumed by its later cutoff, and passes after it did not touch the
-//! country, so the result is exact for any country, with or without an owned state.
 
 use crate::Hour;
 use crate::rows::{AirCombatRecord, AirRegionCombatRow, Recorded};
 
-/// Hours between daily passes.
 pub const DAY: Hour = 24;
 
-/// The record updater dispatches causes 0 through 10; the view's aggregate holds one
-/// entry per cause.
 pub const CAUSES: usize = 11;
 
-/// Why a container country's derived state is refused.
 pub const UNPRUNED_CONTAINER: &str = "the daily pass does not prune a country without an owned state, so its retained air-combat records are unknown";
 
-/// Latest daily pass; None when its midnight precedes the earliest representable hour.
 pub fn last_pass(hour: Hour) -> Option<Hour> {
     hour.checked_sub(hour.rem_euclid(DAY))
 }
 
-/// Pruning cutoff for a pass at `pass`: subtract the timeout from the clock with signed
-/// 32-bit wrap.
 pub fn cutoff(pass: Hour, timeout: i32) -> i32 {
     pass.wrapping_sub(timeout)
 }
 
-/// The cutoff a row read at any time since `pass` can be pruned with to hold what the game
-/// holds after it ([`cutoff`] capped at the pass's hour).
 pub fn pruning_cutoff(pass: Hour, timeout: i32) -> i32 {
     cutoff(pass, timeout).min(pass)
 }
 
-/// One pruned vector: the leading records dated before `cutoff` removed, the rest in
-/// order.
 pub fn pruned(records: &[AirCombatRecord], cutoff: i32) -> &[AirCombatRecord] {
     let start = records
         .iter()
@@ -68,13 +28,9 @@ pub fn pruned(records: &[AirCombatRecord], cutoff: i32) -> &[AirCombatRecord] {
     &records[start..]
 }
 
-/// What the game holds at `hour` in a holder of a country the daily pass
-/// visits, from its row read at or before `hour`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Retained<'a> {
-    /// The own-records vector: the owner's own wings.
     pub own: &'a [AirCombatRecord],
-    /// The foreign-records vector: other countries' wings.
     pub foreign: &'a [AirCombatRecord],
 }
 
@@ -82,11 +38,6 @@ pub fn retained(row: &AirRegionCombatRow, hour: Hour, timeout: i32) -> Retained<
     retained_through(row, last_pass(hour), timeout)
 }
 
-/// The latest daily pass at or before `hour` that visited a container country, searching
-/// back over the branch's passes after its first sample `first` (a row read at or after
-/// that sample already holds any earlier pass). `visited` answers one pass's roster from
-/// the samples on either side of its tick; its refusal is the result's. None when no pass
-/// of the branch visited the country.
 pub fn visiting_pass(
     hour: Hour,
     first: Hour,
@@ -102,9 +53,6 @@ pub fn visiting_pass(
     Ok(None)
 }
 
-/// Whether the pass in the tick before sample `pass` visited a country, from its roster
-/// eligibility at the samples before and after that tick: the pass reads the roster inside
-/// the tick, so samples that disagree leave it unknown.
 pub fn pass_visited(pass: Hour, before: bool, after: bool) -> Result<bool, String> {
     if before != after {
         return Err(format!(
@@ -114,8 +62,6 @@ pub fn pass_visited(pass: Hour, before: bool, after: bool) -> Result<bool, Strin
     Ok(after)
 }
 
-/// What the game holds in a holder whose container country the pass at `pass` visited
-/// last ([`visiting_pass`]); with no visiting pass, the row as read.
 pub fn retained_through(
     row: &AirRegionCombatRow,
     pass: Option<Hour>,
@@ -124,7 +70,6 @@ pub fn retained_through(
     retained_of(Retained { own: &row.own, foreign: &row.foreign }, pass, timeout)
 }
 
-/// [`retained_through`] from a holder's two record vectors as read.
 pub fn retained_of(read: Retained<'_>, pass: Option<Hour>, timeout: i32) -> Retained<'_> {
     match pass {
         Some(pass) => {
@@ -138,15 +83,11 @@ pub fn retained_of(read: Retained<'_>, pass: Option<Hour>, timeout: i32) -> Reta
     }
 }
 
-/// The view's aggregate: one signed fixed5 amount per cause, the entry for cause 3
-/// replaced by a ratio when records with planes match.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Received {
     pub amounts: [i64; CAUSES],
 }
 
-/// What one aggregation reads: the mission bits a record must share, the window in hours and the
-/// classification byte it must equal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Filter {
     pub missions: u32,
@@ -154,16 +95,9 @@ pub struct Filter {
     pub classification: u8,
 }
 
-/// The native refusal of a damage cause outside the aggregate.
 pub const CAUSE_OUTSIDE: &str =
     "an air-combat damage cause lies outside the strategic air view's eleven entries";
 
-/// Scan `records` from the newest while their date is at least `now - window` (an `i32`
-/// subtraction); each record whose mission mask shares a bit with `missions` and whose
-/// classification equals the filter's adds every entry of the selected damage vector to
-/// its cause (`i64` wrapping) and its plane high-water mark to an `i32` sum. A positive
-/// sum then replaces cause 3 with its fixed5 ratio to the plane count, or the native
-/// `0xFFFFFFFF` for the three sentinel words.
 fn add_vector(
     received: &mut Received,
     records: &[AirCombatRecord],
@@ -208,10 +142,6 @@ fn add_vector(
     Ok(())
 }
 
-/// For the viewing side `enemy` (the view's mission side, 0 for our missions), the first scan reads
-/// the side's own vector (the own records for ours, the foreign ones for the enemy's) with its
-/// first damage vector, the second the other vector with its second damage vector, into one
-/// aggregate in that order.
 pub fn received(
     retained: Retained<'_>,
     now: Hour,
@@ -229,19 +159,14 @@ pub fn received(
     Ok(received)
 }
 
-/// The air-combat window's initial mission filter, the ground-mission bits.
 pub const DEFAULT_MISSIONS: u32 = 0x1f7fa;
 
-/// The window used by the air and ground grids: the last day.
 pub const LAST_DAY: i32 = 24;
 
-/// One received-damage grid line in the strategic air view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Item {
     pub cause: u32,
     pub amount: i64,
-    /// The item's colour and tooltip side: 1 and 3 read as ours (green, `_BY_US`), others
-    /// as the enemy's (red, `_BY_ENEMY`).
     pub flag: u32,
 }
 
@@ -251,9 +176,6 @@ impl Item {
     }
 }
 
-/// Each listed cause's amount (cause 4 adds cause 9's), kept when nonzero, not cause 9
-/// and allowed by the view's mission filter: causes 0 and 7 need bit 3, 1 any of 0x3190,
-/// 2 bit 1 and 6 bit 9; 3, 4, 5, 10 always.
 fn items(
     received: &Received,
     causes: &[u32],
@@ -286,10 +208,6 @@ fn items(
     }
 }
 
-/// The two grids of the default strategic air view (view mode zero and the initial filter): the air
-/// grid uses mission bits 5 over unclassified records, causes 4, 5 and 9, for one side. The ground
-/// grid uses the filter over classified records, causes 4, 5, 3, 9 and 10, for our missions; for
-/// the enemy's it uses bits 5 then the filter, causes 4, 5 and 9 then 2, 0, 1, 6, 7 and 9.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grids {
     pub air: Vec<Item>,
@@ -473,8 +391,6 @@ mod tests {
         assert_eq!(last_pass(pass), Some(pass));
         assert_eq!(last_pass(pass - 1), Some(pass - 24));
         let kept = cutoff(pass, 24);
-        // An out-of-order record after the first kept one stays, as the
-        // native forward scan stops at the first record it keeps.
         let row = AirRegionCombatRow {
             own: std::sync::Arc::new(vec![
                 record(kept - 2, 1, 0, 1),
@@ -492,7 +408,6 @@ mod tests {
             [kept, kept - 9, HOUR]
         );
         assert!(state.foreign.is_empty());
-        // A mod's longer timeout keeps more; the cutoff wraps as native i32.
         assert_eq!(retained(&row, HOUR, 48).own.len(), 5);
         assert_eq!(cutoff(i32::MIN, 1), i32::MAX);
     }
@@ -500,23 +415,18 @@ mod tests {
     #[test]
     fn a_negative_timeout_keeps_records_created_since_the_pass() {
         let pass = last_pass(HOUR).unwrap();
-        // The pass removed everything older; combat an hour later created a record the
-        // game keeps until the next pass, although the pass's own cutoff lies after it.
         assert_eq!(cutoff(pass, -12), pass + 12);
         let fresh = AirRegionCombatRow {
             own: std::sync::Arc::new(vec![record(pass + 1, 1, 0, 1)]),
             ..Default::default()
         };
         assert_eq!(retained(&fresh, pass + 2, -12).own.len(), 1);
-        // A row read before the pass loses every record to it.
         let stale = AirRegionCombatRow {
             own: std::sync::Arc::new(vec![record(pass - 3, 1, 0, 1), record(pass - 1, 1, 0, 1)]),
             ..Default::default()
         };
         assert!(retained(&stale, pass + 2, -12).own.is_empty());
-        // The next pass removes the fresh record.
         assert!(retained(&fresh, pass + DAY, -12).own.is_empty());
-        // A cutoff that wraps below the pass prunes as the game's does.
         assert_eq!(pruning_cutoff(pass, i32::MIN), pass.wrapping_sub(i32::MIN));
     }
 
@@ -525,14 +435,12 @@ mod tests {
         let pass = last_pass(HOUR).unwrap();
         let first = pass - 24 * 5;
         let mut asked = Vec::new();
-        // Only the pass two days back visited the country.
         let found = visiting_pass(HOUR, first, |at| {
             asked.push(at);
             Ok(at == pass - 48)
         });
         assert_eq!(found, Ok(Some(pass - 48)));
         assert_eq!(asked, [pass, pass - 24, pass - 48]);
-        // No visit since the branch's first sample: the pass at that sample is not asked.
         let mut asked = Vec::new();
         assert_eq!(
             visiting_pass(HOUR, first, |at| {
@@ -542,7 +450,6 @@ mod tests {
             Ok(None)
         );
         assert_eq!(asked.last(), Some(&(first + 24)));
-        // An unknown roster before any visit is the refusal.
         assert_eq!(
             visiting_pass(HOUR, first, |at| if at == pass {
                 Ok(false)
@@ -567,7 +474,6 @@ mod tests {
             [older]
         );
         assert!(state.foreign.is_empty());
-        // The latest pass's cutoff would have removed both.
         assert!(retained(&row, HOUR, 24).own.is_empty());
         let whole = retained_through(&row, None, 24);
         assert_eq!((whole.own.len(), whole.foreign.len()), (2, 1));
@@ -607,8 +513,6 @@ mod tests {
         old.second_damage = vec![damage(4, 900_000)];
         let mut other_class = record(HOUR, 0b101, 1, 9);
         other_class.second_damage = vec![damage(4, 900_000)];
-        // The reverse scan stops at the first record older than the window,
-        // so `old` and anything before it never count.
         let own = vec![old, ours, other_class];
         let mut enemy = record(HOUR - 1, 0b100, 0, 0);
         enemy.first_damage = vec![damage(2, 50_000)];
@@ -625,15 +529,11 @@ mod tests {
         };
         let total = received(state, HOUR, false, filter).unwrap();
         assert_eq!(total.amounts[4], 100_000);
-        // 2 disrupted over 4 planes; the foreign scan has no planes, so the
-        // ratio is not divided again.
         assert_eq!(total.amounts[3], 50_000);
         assert_eq!(total.amounts[2], 50_000);
-        // From the enemy's side the vectors and damage channels swap.
         let enemy_total = received(state, HOUR, true, filter).unwrap();
         assert_eq!(enemy_total.amounts[4], 7);
         assert_eq!(enemy_total.amounts[2], 0);
-        // A cause outside the aggregate is refused rather than indexed.
         let mut bad = record(HOUR, 1, 0, 1);
         bad.second_damage = vec![damage(11, 1)];
         let bad = vec![bad];
@@ -669,7 +569,6 @@ mod tests {
             received(state, HOUR, false, filter).unwrap().amounts[3],
             0xffff_ffff
         );
-        // The second scan divides the first scan's ratio by its own planes.
         let mut first = record(HOUR, 1, 0, 2);
         first.second_damage = vec![damage(3, 400_000)];
         let own = vec![first];
@@ -699,8 +598,6 @@ mod tests {
             foreign: &foreign,
         };
         let ours = grids(state, HOUR, false).unwrap();
-        // Cause 4 carries cause 9's amount; 9 itself and zero amounts are
-        // never items.
         assert_eq!(
             ours.air,
             [Item {
@@ -709,8 +606,6 @@ mod tests {
                 flag: 2
             }]
         );
-        // The bombers' one disrupted plane over five, divided again by the enemy scan's
-        // two planes (cause 3 is replaced per scan).
         assert_eq!(
             ours.ground,
             [
@@ -735,8 +630,6 @@ mod tests {
                 }
                 .ours()
         );
-        // Our bombers' records are the enemy's foreign vector: the enemy
-        // ground grid reads their first damage channel, causes 0 then 1.
         let theirs = grids(
             Retained {
                 own: &foreign,

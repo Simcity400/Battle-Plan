@@ -4,7 +4,6 @@ use replay_columnar::{manifest::Status, store::Store, unit::Discard};
 use replay_data::rows::{CountryLinkRow, CountryRow};
 use std::collections::HashMap;
 
-/// Joins of fixed rows.
 #[derive(Default)]
 struct Fixed {
     registrations: HashMap<u128, Vec<u64>>,
@@ -38,10 +37,8 @@ fn input(country: u32, sites: Vec<GameScoreAirSite>) -> CountryGameScoreInputRow
     }
 }
 
-/// Every multiplier one, the total's a half.
 const ONES: [Option<i64>; 6] = [Some(Q), Some(Q), Some(Q), Some(Q), Some(Q), Some(Q / 2)];
 
-/// Naval 2.5, civilian 10.9, military 7.0 factories, one civilian given away.
 const FACTORIES: [i64; 7] = [250_000, 1_090_000, 700_000, 1, 0, 0, 0];
 
 fn joins() -> Fixed {
@@ -97,8 +94,6 @@ fn what_cannot_be_read_is_not_recorded_by_name_never_zero() {
 
 const TEXTS: &[&[u8]] = &[b"", b"not read"];
 
-/// The world of the store tests: countries 1 (slot 10, one air base reached) and 2 (slot 20, no
-/// air), every multiplier one.
 fn world(store: &mut Store, hour: i32) {
     for table in [
         TableId::Countries,
@@ -145,7 +140,6 @@ fn begin(store: &mut Store, hour: i32) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
 }
 
-/// The hours of the store tests, as each edits the world before the writers run.
 fn edit(store: &mut Store, hour: i32) {
     match hour {
         0 => world(store, hour),
@@ -174,7 +168,6 @@ fn writers() -> Writers {
     writers
 }
 
-/// Country `id`'s air score and its reason.
 fn air_of(store: &Store, id: u128) -> (Option<i64>, Option<i64>) {
     let view = store.view(TableId::CountryGameScores.index());
     let slot = view.slot(id).expect("a row");
@@ -220,8 +213,6 @@ fn an_hour_recomputes_only_the_countries_its_changes_reach() {
     assert_eq!(keys, [vec![1, 2], vec![1]], "wing 101 is reached by country 1 alone");
 }
 
-/// A wing whose watched cells change without moving its country's score recomputes the country,
-/// writes no row and keeps the country's reach indexed as it was.
 #[test]
 fn a_wing_change_that_moves_no_score_sets_no_row() {
     let edit = |store: &mut Store, at: i32| {

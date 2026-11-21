@@ -1,8 +1,3 @@
-//! The Resistance and Compliance modes' state marks: per state its controller and, from its
-//! StateResistance cells, whether its percentage shows, its values and its badges in each mode,
-//! as today's hour builds them ([`viewer_world::map::occupation_icons::hour_marks`]), kept from
-//! change sets. The window lays them out for its camera and viewing country
-//! ([`viewer_world::map::occupation_icons::lay_out`]). It declares nothing in any other mode.
 
 pub mod proof;
 #[cfg(test)]
@@ -28,9 +23,7 @@ use viewer_world::map::occupation_icons::{self as icons, HourMarks, Mark, Marks}
 
 const TABLES: [TableId; 4] = [TableId::States, TableId::CountryLinks, TableId::Countries, TableId::StateResistance];
 
-/// What the layer reads of the recording's content.
 pub trait Source: Send + Sync {
-    /// None when the content's occupation icons failed to load: nothing is drawn, as today.
     fn occupation(&self) -> Option<&icons::Content>;
 }
 
@@ -60,15 +53,12 @@ pub struct OccupationMarks {
     whole: Result<(), String>,
     resistance: Option<String>,
     states: Dirty,
-    /// Every state again (a link, a status), and the viewers' raw ids again (Countries).
     everything: bool,
     reviewers: bool,
     statuses: HashMap<TableId, Option<Status>>,
-    /// Why it declares nothing at the last view: it holds, marks and carries nothing then.
     hidden: Option<&'static str>,
     frame: u64,
     marked: u64,
-    /// Moves when what [`Self::marks`] answers may have changed: the window lays them out again.
     version: u64,
 }
 
@@ -81,17 +71,14 @@ impl OccupationMarks {
         Self { content, columns: None, marks: BTreeMap::new(), viewers: BTreeMap::new(), whole: Err(String::new()), resistance: None, states: Dirty::default(), everything: true, reviewers: true, statuses: HashMap::new(), hidden: None, frame: 0, marked: 0, version: 0 }
     }
 
-    /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         Self { columns: self.columns, hidden: self.hidden, ..Self::new(Arc::clone(&self.content)) }
     }
 
-    /// Why the layer declares nothing at the view; none when it draws.
     pub fn hidden(&self) -> Option<&'static str> {
         self.hidden
     }
 
-    /// Everything it holds dropped, as a layer made anew holds it; its view and counters kept.
     fn release(&mut self) {
         let empty = Self::new(Arc::clone(&self.content));
         let kept = std::mem::replace(self, empty);
@@ -106,7 +93,6 @@ impl OccupationMarks {
         self.version
     }
 
-    /// The marks the window lays out, or why none is drawn: what today's hour gives the layout.
     pub fn marks(&self) -> Marks {
         if let Some(why) = self.hidden {
             return Err(why.to_owned());
@@ -172,8 +158,6 @@ impl OccupationMarks {
     }
 }
 
-/// The layer while the window draws its marks: declared, composed, not refused, and shown by its
-/// view.
 pub fn drawn(side: &MapSide) -> Option<&OccupationMarks> {
     if !side.draws(NAME) {
         return None;
@@ -182,7 +166,6 @@ pub fn drawn(side: &MapSide) -> Option<&OccupationMarks> {
     layer.hidden.is_none().then_some(layer)
 }
 
-/// One StateResistance row's mark values, its map cell decoded as today's row codec does.
 fn occupation_of(content: &icons::Content, mirror: &Mirror, columns: Columns, slot: u32) -> Result<Option<icons::Occupation>, String> {
     let number = |column: Num<i64>| mirror.number(column, slot).value().unwrap_or(0);
     let map = match mirror.list(columns.map, slot).value() {

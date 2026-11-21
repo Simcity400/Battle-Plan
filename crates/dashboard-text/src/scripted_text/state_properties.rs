@@ -1,4 +1,3 @@
-//! State properties and promotion used by scripted map hovers.
 use super::*;
 use replay_data::rows::TableId;
 
@@ -48,7 +47,6 @@ impl ScriptedText<'_> {
                 .slot(row.controller)
                 .ok_or("GetContinent: controller is unresolved")?
         };
-        // Country localisation prefers the controller's original tag, then the generic key.
         crate::triggers::inputs::table(self.frame, TableId::CountryAppearance);
         crate::triggers::inputs::table(self.frame, TableId::ReservedCountryNaming);
         let tag = installed_content_country_names::country_names::original_or_own_tag_in(
@@ -64,8 +62,6 @@ impl ScriptedText<'_> {
     }
 
     pub(super) fn state_capital_victory_point_name(&self, id: u32) -> Result<String, String> {
-        // The country's capital province uses this same cached state choice. The native first
-        // attempt therefore selects the same province; an empty result repeats it, then the name.
         let row = keyed(&recorded::<tables::States>(self.frame, STATE)?, u128::from(id))?
             .ok_or_else(|| format!("GetCapitalVictoryPointName: States lacks state {id}"))?;
         let index = row

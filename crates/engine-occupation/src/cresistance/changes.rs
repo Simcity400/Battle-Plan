@@ -1,18 +1,3 @@
-//! Runtime occupation hover writers. Resistance methods name their embedded state;
-//! legitimacy methods name the exile diplomacy; relation rebuild names its relation.
-//! Country modifier rebuild/reset, state resource-accumulator rebuild, state lifetime and
-//! exile relationship/reset writers are observed through existing patch owners.
-//! Save member loading and world construction are covered by the load boundary.
-//!
-//! Level integration and expiry run in occupation updates. Effects and script setters can
-//! change them between those updates. Spread reset/addition and speed rebuilding run in
-//! the garrison refresh. Local modifier rebuilding writes the stored law scaling ratio.
-//! Added targets have one appender, one explicit remover, reset and daily expiry.
-//! Daily diplomacy expires war goals and updates exile legitimacy; this family
-//! owns that shared update and forwards it to the goal observer.
-//! Exile legitimacy has daily, script, convoy and setter writers; country inputs own
-//! the script/convoy/setter and exile entry/return patches and forward their receivers. Relation accumulator clear/copy
-//! rebuilding is enclosed by its rebuild method; relation reset is forwarded by opinions.
 
 use engine_sites::Rva;
 #[derive(Clone, Copy)]

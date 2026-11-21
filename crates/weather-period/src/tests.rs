@@ -10,9 +10,7 @@ fn period_bounds_follow_the_native_date_setters() {
     assert_eq!(normalize_to_year_one(year_one), year_one);
     assert_eq!(apply_bound(year_one, 0, 0), Ok(year_one));
     assert_eq!(apply_bound(year_one, 30, 11), Ok(year_one + 364 * 24));
-    // The zero-based day setter does not clamp: 30 February is 3 March.
     assert_eq!(apply_bound(year_one, 30, 1), Ok(year_one + 61 * 24));
-    // A bound already set moves within year one; the month keeps the day offset.
     let june = apply_bound(year_one, 14, 5).unwrap();
     assert_eq!(june, year_one + (151 + 14) * 24);
     assert_eq!(set_month_zero_based(june, 0), Ok(year_one + 14 * 24));
@@ -44,7 +42,6 @@ fn the_period_date_is_the_day_of_year_in_year_one() {
             maximum: 4,
         },
     ];
-    // Inclusive bounds; the first period in template order wins.
     assert_eq!(find_period(&periods, date(1936, 30, 6)).unwrap().minimum, 1);
     assert_eq!(find_period(&periods, date(1936, 31, 0)).unwrap().minimum, 3);
     assert!(find_period(&periods[..1], date(1936, 31, 0)).is_none());

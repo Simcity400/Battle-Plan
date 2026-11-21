@@ -4,11 +4,8 @@ import { battleFlagCount } from './battleRows';
 import type { BattleCountryLabel, BattleRow, BattleSideSummary } from './battleRows';
 import type { BattleSide } from '../../generated/dashboard';
 
-/** Whether `element` is laid out: a row's state not shown, or a row held ahead, has no box and is not measured. */
 const laidOut = (element: HTMLElement) => element.getClientRects().length > 0;
 
-/** Measures `element` as it is laid out and as it resizes (a state shown, a row revealed, the widget resized), painting
- * what fits without a render: a state held hidden in a log is measured when it shows, never committing as it does. */
 function useFitPainter(element: React.RefObject<HTMLElement | null>, paint: () => void, inputs: readonly unknown[]) {
   const latest = useRef(paint);
   latest.current = paint;
@@ -19,7 +16,6 @@ function useFitPainter(element: React.RefObject<HTMLElement | null>, paint: () =
     observer.observe(host);
     return () => observer.disconnect();
   }, [element]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- what is drawn changed: paint it again
   useLayoutEffect(() => { if (element.current && laidOut(element.current)) latest.current(); }, inputs);
 }
 
@@ -45,7 +41,6 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
   }, [count, side, country]);
   const names = side.countries.map(part => country(part.tag, part.hour).name);
   const title = [side.label, ...names, side.countriesUnknown ? 'Countries unknown' : null].filter(Boolean).join(' · ');
-  // Every flag is drawn and those that do not fit are painted out (`useFitPainter`), so a measure is never a render.
   return <span ref={host} className="battle-flags" title={title} aria-label={title}>
     <span className="battle-probe" aria-hidden="true"><i ref={probe} className="battle-flag-missing" /><span ref={probeMore}>+{count}</span></span>
     {side.countries.map(part => {
@@ -58,7 +53,6 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
   </span>;
 }
 
-/** A measured flag/count pair; labels and unit wording are supplied by the caller. */
 export default function BattleSides({ row, country, summary, compact }: {
   row: BattleRow; country: BattleCountryLabel; summary: BattleSideSummary; compact: boolean;
 }) {

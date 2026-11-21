@@ -1,10 +1,3 @@
-//! Prepared exact reads with ordered comparisons of recorder-owned controls.
-//!
-//! A comparison runs after its stated number of logical reads, before the next
-//! read. Its builder must prove that those bytes include every dependency used
-//! to select later source addresses. Bounds validation alone does not establish
-//! that proof, an object lifetime, or a coherent game-state snapshot. In
-//! particular, controls at zero reads inspect the caller's initial destination.
 
 use crate::{Memory, allocation, memory::is_canonical_range};
 use std::io;
@@ -26,8 +19,6 @@ pub struct Control {
     pub expected_offset: usize,
 }
 
-/// An advisory source hint whose selecting dependencies have been compared at
-/// this boundary. Hints acquire no bytes and never authorize skipping a read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Hint {
@@ -36,9 +27,6 @@ pub struct Hint {
     pub len: usize,
 }
 
-// The native executor streams these compact descriptors. Public geometry uses
-// usize; narrowing is checked once during off-thread preparation, never while
-// acquiring memory. Oversized plans retain the ordinary ordered executor.
 #[derive(Debug)]
 #[repr(C)]
 pub(crate) struct NativeRead {
@@ -117,8 +105,6 @@ impl NativePlan {
     }
 }
 
-/// Immutable geometry and owned expected controls. Preparation may allocate;
-/// execution never allocates and never reads a source beyond the stopped prefix.
 #[derive(Debug)]
 pub struct PreparedPlan {
     reads: Box<[Read]>,
@@ -137,8 +123,6 @@ pub enum Outcome {
     ControlChanged {
         completed_reads: usize,
     },
-    /// The next read was attempted and may have copied an unknown partial span.
-    /// No later read or comparison has run.
     ReadFailed {
         completed_reads: usize,
     },
@@ -266,8 +250,6 @@ impl PreparedPlan {
         self.destination_len
     }
 
-    /// Requested nonempty source spans/bytes up to an execution boundary. The
-    /// usual complete-plan path uses totals prepared with existing validation.
     pub(crate) fn requested_work(&self, count: usize) -> (u64, u64) {
         if count >= self.reads.len() {
             return (self.requested_spans, self.requested_bytes);
@@ -282,7 +264,6 @@ impl PreparedPlan {
             })
     }
 
-    /// Owned descriptor/control buffers; the containing plan is charged by its owner.
     pub fn capacity_bytes(&self) -> usize {
         std::mem::size_of_val(self.reads())
             .saturating_add(std::mem::size_of_val(self.controls()))
@@ -472,7 +453,6 @@ mod tests {
     fn native_compact_controls_keep_every_byte_and_fixed_width_boundary() {
         let bytes = [7_u8; 128];
         let address = bytes.as_ptr() as usize;
-        // SAFETY: immutable owned source remains alive for every execution.
         let memory = unsafe { crate::memory::LiveMemory::new() };
         for width in [1, 2, 3, 4, 8, 12, 16, 24, 26, 32, 48, 64] {
             for changed in (0..width).map(Some).chain([None]) {
@@ -644,8 +624,6 @@ mod tests {
 
         let source = [7_u8, 11, 12];
         let address = source.as_ptr() as usize;
-        // SAFETY: source is immutable owned memory throughout execution. The
-        // deliberately unreadable null-page address is accessed only by SEH.
         let memory = unsafe { LiveMemory::new() };
         let plan = PreparedPlan::new(
             vec![read(address, 0, 1), read(1, 1, 1), read(address + 1, 2, 1)],

@@ -1,7 +1,3 @@
-//! Trade-line province searches, crossing controls and shared province displacement.
-//! Searches keep native neighbour/heap order, strictly lower predecessor updates and closed
-//! nodes. Naval paths admit the recorded regions plus endpoint regions, with authored port
-//! links. Restricted crossings whose runtime permission cannot be proved are refused.
 
 use super::{LAND_ROUTE, NAVAL_ROUTE, NO_ROUTE, RouteFields};
 use dashboard_core::protocol::PlanKind;
@@ -29,15 +25,12 @@ pub struct RouteContent<'a> {
     pub state_of: &'a BTreeMap<u32, u32>,
     pub ports: &'a BTreeMap<u32, u32>,
     pub pixels: &'a dyn Fn(u32) -> Option<u32>,
-    /// Slot 19 for a port land province, slot 0 otherwise, including terrain height.
     pub position: &'a dyn Fn(u32) -> Option<[f32; 3]>,
-    /// Raw neighbour crossing, including points movement arrows suppress.
     pub crossing: &'a dyn Fn(u32, u32) -> Option<[i32; 2]>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stops {
     pub provinces: Vec<u32>,
-    /// Each province's strategic region, including the destination; empty for land routes.
     pub regions: Vec<u32>,
 }
 
@@ -213,7 +206,6 @@ pub fn directed_stops(
     Ok(None)
 }
 
-/// A province-use byte is shared by every route and layer, and wraps as the manager's does.
 pub fn province_uses(stops: &Stops, uses: &mut BTreeMap<u32, u8>) -> Vec<u8> {
     stops
         .provinces
@@ -235,8 +227,6 @@ pub fn overlap_offset(index: u32, max_lines: u32, line_offset: f32) -> f32 {
     }) * line_offset
 }
 
-/// Insert the raw crossing after every province except the destination. Displace before
-/// smoothing, preserving the first anchor and all port anchors; crossings use their owner's count.
 pub fn points(
     stops: &Stops,
     c: &RouteContent<'_>,
@@ -279,14 +269,12 @@ pub fn points(
     Ok(out.into_iter().map(|p| [p[0], p[2]]).collect())
 }
 
-/// A line's shaped controls and each control's texture variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shaped {
     pub controls: Vec<Point>,
     pub variants: Vec<u8>,
 }
 
-/// Insert a midpoint after each point but the last, taking the maximum adjacent variant.
 fn subdivide(controls: &mut Vec<Point>, variants: &mut Vec<u8>) {
     if controls.len() < 2 {
         return;
@@ -302,7 +290,6 @@ fn subdivide(controls: &mut Vec<Point>, variants: &mut Vec<u8>) {
     *variants = out;
 }
 
-/// Reverse and smooth the already displaced controls, carrying their texture variants.
 pub fn shape(points: &[[f32; 2]], variants: &[u8], reverse: bool, smoothing: Smoothing) -> Shaped {
     assert_eq!(points.len(), variants.len());
     let mut controls: Vec<Point> = points.iter().map(|&[x, z]| to_fixed([x, 0.0, z])).collect();
@@ -319,7 +306,6 @@ pub fn shape(points: &[[f32; 2]], variants: &[u8], reverse: bool, smoothing: Smo
     Shaped { controls, variants }
 }
 
-/// The unit normal at a point: the perpendicular of its averaged neighbouring directions.
 pub fn normal(points: &[[f32; 2]], index: usize) -> (f32, f32) {
     let p = points[index];
     let previous = points[index.saturating_sub(1)];
@@ -343,8 +329,6 @@ pub fn normal(points: &[[f32; 2]], index: usize) -> (f32, f32) {
     }
 }
 
-/// Emits one line into `field` with the arrow type's strip, returning the drawn centre line;
-/// `None` when it has fewer than two controls or no length.
 pub fn emit(
     field: &mut OrderField,
     arrow: &ArrowType,
@@ -370,7 +354,6 @@ pub fn emit(
     if total <= 0.0 {
         return None;
     }
-    // A nonzero texture loop replaces the total-length divisor.
     let uv_to_length = if arrow.texture_loop != 0.0 {
         arrow.texture_loop
     } else {
@@ -390,7 +373,6 @@ pub fn emit(
         };
         let reach = half * uv_scale;
         let (nx, nz) = normal(&points, index);
-        // The positive perpendicular edge carries v=0; the opposite edge v=1.
         for (side, v) in [(1.0f32, 0.0f32), (-1.0, 1.0)] {
             let x = point[0] + nx * reach * side;
             let z = point[1] + nz * reach * side;
@@ -416,14 +398,12 @@ pub fn emit(
         color,
         total_length: total,
         uv_to_length,
-        // The line's teeth side stays at its initial zero.
         culling_offset: f32::from(u8::from(arrow.culling_direction != 0)),
         declaration_index: arrow.declaration_index,
         width: arrow.body_width[0].max(arrow.body_width[1]),
         label: None,
         native_strips,
         bounds,
-        // The second texture variant draws in the secondary colour.
         secondary_color: hotspot,
         outer_color: [1.0, 1.0, 1.0, color[3]],
         execution: ExecutionState::default(),

@@ -1,4 +1,3 @@
-//! The post triangle and retained raster state.
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -20,8 +19,6 @@ pub(super) fn select(effect: &Arc<Effect>, name: &str) -> Result<Selection, Stri
 pub(super) struct Fullscreen {
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
-    /// Whether a blend of this program reads the pass's blend constant, which a pass start
-    /// resets: one that reads none is drawn without setting it.
     blend_constant: bool,
 }
 
@@ -34,8 +31,6 @@ impl Fullscreen {
     ) -> Result<Self, String> {
         let compiled = selection.effect.compiled(selection.index)?;
         let mut pass = gpu::Pass::packed(&compiled, state, format, 1);
-        // Post uses solid fill, clockwise fronts, back-face culling, zero bias and disabled scissoring.
-        // Depth is forced off by the post pass.
         pass.primitive.front_face = wgpu::FrontFace::Cw;
         pass.primitive.cull_mode = Some(wgpu::Face::Back);
         Self::from_pass(device, selection, state, pass)
@@ -65,7 +60,6 @@ impl Fullscreen {
                 shader_location: input.location,
             });
         }
-        // POSITION0 uses four signed 16-bit components.
         pass.vertices = vec![gpu::VertexLayout {
             stride: 8,
             step: wgpu::VertexStepMode::Vertex,
@@ -84,7 +78,6 @@ impl Fullscreen {
             })
         });
         let pipeline = gpu::Cache::default().get_pass(device, selection, state, &pass)?;
-        // Initialize all 24 bytes of triangle vertices.
         let vertices: [[i16; 4]; 3] = [[3, -1, 0, 0], [-1, -1, 1, 0], [-1, 3, 2, 0]];
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native post triangle"),
@@ -98,8 +91,6 @@ impl Fullscreen {
         })
     }
 
-    /// Bindings over a block the caller keeps at `offset` in `buffer`, made once for as long as
-    /// the block's operands and `sources` stand: the pass then records its draw and nothing else.
     pub(super) fn kept(
         &self,
         device: &wgpu::Device,
@@ -191,8 +182,6 @@ impl Fullscreen {
         self.render(&mut pass, bindings);
     }
 
-    /// The bindings set the effective pipeline, which a shader-filtered view may vary, so the
-    /// pass's own commands are the blend constant a blend of this program reads and the triangle.
     pub(super) fn render(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &gpu::Bindings) {
         if self.blend_constant {
             shader_pipeline::gpu::stats::state();

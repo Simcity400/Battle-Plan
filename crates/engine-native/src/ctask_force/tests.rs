@@ -31,8 +31,6 @@ fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     put(bytes, at + 12, &count.to_le_bytes());
 }
 
-/// A task force of country 1 at sea moving to province 2 through 3
-/// (alternate route 4), attacking in a naval combat.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
     array(&mut bytes, STATE + cgame_state::COUNTRIES, COUNTRIES, 2);
@@ -68,7 +66,6 @@ fn fixture() -> Vec<u8> {
     put64(&mut bytes, COMBAT + cnaval_combat::PROVINCE, TARGET as u64);
     put64(&mut bytes, SIDE, cnaval_combatant::VTABLE_RVA.0 as u64);
     put64(&mut bytes, SIDE + cnaval_combatant::COMBAT, COMBAT as u64);
-    // The naval side keeps the shared combatant country set; it holds tag 1.
     put64(
         &mut bytes,
         SIDE + cland_combatant::COUNTRIES,
@@ -120,22 +117,18 @@ fn motion_rows_carry_routes_and_the_naval_combat_role() {
             fresh_owner: None,
         }
     );
-    // An owner outside the attacking side's set defends.
     let mut defender = bytes.clone();
     put(&mut defender, SIDE_COUNTRY, &0_u32.to_le_bytes());
     assert_eq!(collect(&defender, 1, 3).1[0].combat_role, 2);
-    // A short arena grows to the demand.
     let (walk, _, _) = collect(&bytes, 1, 2);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(walk.required_paths, 3);
-    // A first combat that is no combat object refuses the census.
     let mut foreign = bytes.clone();
     put64(&mut foreign, COMBAT, 1);
     assert!(matches!(
         collect(&foreign, 1, 3).0.outcome,
         Outcome::Unavailable { .. }
     ));
-    // Without routes or combats the row stands with role zero.
     let mut idle = bytes;
     array(&mut idle, TASK + cunit::ORDINARY_ROUTE_DATA, ROUTES, 0);
     array(&mut idle, TASK + cunit::ALTERNATE_ROUTE_DATA, ROUTES, 0);
@@ -173,8 +166,6 @@ fn growing_motion_keeps_the_first_full_routes_beyond_previous_capacity() {
     assert_eq!(rows[count - 1].combat_role, 1);
 }
 
-/// The registry resolves complete combat identities to their secondary base.
-/// Its sparse overlay keeps module roots outside the small unit fixture.
 struct CombatLinksMemory {
     bytes: Vec<u8>,
     registry: crate::creference_registry::test_support::Fixture,
@@ -208,14 +199,12 @@ impl Memory for CombatLinksMemory {
 fn combat_links_fixture() -> (CombatLinksMemory, [u64; 2]) {
     use crate::{cland_combat, creference_registry::test_support::Fixture};
     const NAVAL: usize = 0x3500;
-    // A runtime reference type unrelated to the observed native value 4713.
     let first = (u64::from(u32::MAX) << 32) | 0xfedc_ba98;
     let naval = (0x8000_0000_u64 << 32) | 0xfedc_ba98;
     assert_ne!(Fixture::index(first), Fixture::index(naval));
     let mut bytes = fixture();
     array(&mut bytes, TASK + cunit::COMBAT_REFERENCE_DATA, COMBATS, 3);
     put64(&mut bytes, COMBATS + 8, NAVAL as u64);
-    // The suffix must stop at the first naval combat, without touching this tail.
     put64(&mut bytes, COMBATS + 16, u64::MAX);
     put64(&mut bytes, COMBAT, cland_combat::VTABLE_RVA.0 as u64);
     put64(
@@ -271,7 +260,6 @@ fn combat_links_authenticate_full_identities_and_stop_at_first_native_naval_type
     assert_eq!(rows[0].combat_links, Some(links));
     assert_eq!((rows[0].target, rows[0].combat_role), (2, 1));
     assert_eq!(memory.header_reads.get(), 2);
-    // Proven nonempty with no type-2 member retains the first identity and zero.
     array(
         &mut memory.bytes,
         TASK + cunit::COMBAT_REFERENCE_DATA,
@@ -282,7 +270,6 @@ fn combat_links_authenticate_full_identities_and_stop_at_first_native_naval_type
         collect_combat_links(&memory, false).1[0].combat_links,
         Some([links[0], 0])
     );
-    // Border wars have native type 1 as well, authenticated by their own bases.
     put64(
         &mut memory.bytes,
         COMBAT,
@@ -318,7 +305,7 @@ fn combat_link_suffix_faults_and_changed_headers_preserve_later_motion_prefixes(
             0,
         );
         match failure {
-            0 => memory.fault = Some(COMBAT), // Identity read, after old side reads.
+            0 => memory.fault = Some(COMBAT),
             1 => memory.fault = Some(COMBATS + 8),
             2 => put64(&mut memory.bytes, 0x3500 + 0x10, 1),
             3 => memory
@@ -423,7 +410,6 @@ const REGION_ONE: usize = 0x3500;
 const REGION_TWO: usize = 0x3600;
 const ACCESSIBLE: usize = 0x3700;
 
-/// A mission of country 42 patrolling region 2, with accessible regions 2, 1, 2.
 fn mission_fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
     array(
@@ -532,19 +518,16 @@ fn mission_rows_keep_accessible_regions_in_order_with_repeats() {
             regions_len: 3,
         }
     );
-    // A short arena grows to the demand.
     let (walk, _, arena) = collect_missions(&bytes, 1, 2);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(walk.required_regions, 3);
     assert_eq!(arena[..3], [2, 1, 2]);
-    // A region that is not the one registered at its id refuses the census.
     let mut stray = bytes.clone();
     put(&mut stray, REGIONS + 8, &(REGION_TWO as u64).to_le_bytes());
     assert!(matches!(
         collect_missions(&stray, 1, 3).0.outcome,
         Outcome::Unavailable { .. }
     ));
-    // A mission with no current and no accessible region has no row.
     let mut idle = bytes.clone();
     put(
         &mut idle,
@@ -561,9 +544,6 @@ fn mission_rows_keep_accessible_regions_in_order_with_repeats() {
         collect_missions(&idle, 1, 3).0.outcome,
         Outcome::Rows { len: 0 }
     );
-    // A foreign mission vtable or task-force back-pointer refuses the census whether or not
-    // a row is kept: with room, with the row buffer exhausted, and for a mission with no
-    // region.
     for (at, value) in [
         (TASK + NAVAL_MISSION, 1),
         (TASK + NAVAL_MISSION + crate::cnaval_mission::TASK_FORCE, 0),

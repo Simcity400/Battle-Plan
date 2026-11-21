@@ -1,5 +1,3 @@
-//! Strategic-region colours. The Air layer includes land and water; the Navy
-//! layer includes sea provinces and retains the ordinary naval-control FX.
 use std::{collections::BTreeMap, io};
 
 use super::{Inputs, Stock, color4, style};
@@ -68,8 +66,6 @@ impl Content {
     }
 }
 
-/// The native fixed5 comparison, including the inclusive contested interval
-/// and zero-weight active-mission fallback. Division overflow remains a refusal.
 fn air_color(row: &RaidAirScoreRow, friendly_missions: u16) -> Result<usize, String> {
     if row.friendly == 0 && row.enemy == 0 {
         return Ok(if friendly_missions == 0 && row.enemy_missions == 0 {

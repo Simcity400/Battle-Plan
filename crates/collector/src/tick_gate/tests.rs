@@ -1,9 +1,7 @@
 use super::*;
 
-/// Long enough that only the tick's end releases a waiter.
 const LONG: Duration = Duration::from_secs(600);
 
-/// Ends the gate's tick however the test leaves.
 struct Leave<'a>(&'a Gate);
 
 impl Drop for Leave<'_> {
@@ -12,7 +10,6 @@ impl Drop for Leave<'_> {
     }
 }
 
-/// A pipeline thread waits until the tick returns; the ticking thread and a quiet gate never wait.
 #[test]
 fn pipeline_threads_wait_out_the_tick_and_the_ticking_thread_never_waits() {
     let gate = Gate::new();

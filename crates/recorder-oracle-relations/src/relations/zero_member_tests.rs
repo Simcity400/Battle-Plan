@@ -52,7 +52,6 @@ fn fixture() -> (DecodedFrame, Save) {
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
             ReservedCountryNamingRow {
                 tag: vec![b'R', 0, 0xff],
-                // The saved membership does not certify this separate scalar.
                 faction: Recorded::Value(None),
                 ..Default::default()
             },

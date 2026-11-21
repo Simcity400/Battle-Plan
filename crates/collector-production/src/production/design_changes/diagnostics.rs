@@ -1,5 +1,3 @@
-//! Static call sites, not a bounded callback map. Recording a refusal allocates
-//! nothing; status walks the once-linked sites outside the native writer path.
 use super::*;
 use std::sync::atomic::AtomicPtr;
 
@@ -40,7 +38,6 @@ impl Site {
 }
 fn sites(mut visit: impl FnMut(&Site)) {
     let mut next = HEAD.load(Ordering::Acquire);
-    // Linked nodes are process-static and never removed or freed.
     while let Some(site) = unsafe { next.as_ref() } {
         visit(site);
         next = site.next.load(Ordering::Acquire);
@@ -58,8 +55,6 @@ pub(super) fn refused() {
         }
     });
 }
-// Only the boundary worker records these named reasons; no hook touches the
-// map or waits for its serializer. Per-site hook evidence stays static above.
 static REASONS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
 pub(super) fn refusal(reason: &'static str) {
     let mut reasons = REASONS

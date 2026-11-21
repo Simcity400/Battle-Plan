@@ -1,15 +1,9 @@
-//! Selected-unit ribbons.
-//!
-//! The caller supplies the flat, unwrapped movement controls. The sharp-turn
-//! smoother is shared with raid arrows; the Catmull-Rom evaluator is shared
-//! with the movement animator. Output is a triangle strip with 32-byte vertices.
 
 use {
     viewer_foundation::map::province_map::HeightField,
     viewer_foundation::map::ribbon_geometry::smooth_sharp_turns,
 };
 
-/// Position at byte 0, lateral/arc UV at 12, forward tangent at 20.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -21,18 +15,12 @@ pub struct Vertex {
 #[derive(Clone, Debug, Default)]
 pub struct Strip {
     pub vertices: Vec<Vertex>,
-    /// Bounds of the smoothed controls, before height sampling or ribbon width.
     pub bounds: [[f32; 3]; 2],
-    /// The terminal vertex's arc UV.
     pub length: f32,
 }
 
-/// Samples per spline interval for the supported executable.
 const SUBDIVISIONS: usize = 20;
 
-/// Smooth at the authored `size`, then use twice that size as the ribbon's
-/// half-width. Add no terrain lift: the height callback uses the sea-clamped
-/// terrain sample.
 pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Result<Strip, String> {
     if controls.len() < 4 {
         return Ok(Strip::default());
@@ -87,12 +75,8 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
             };
             let (a, b) = (point(a), point(b));
             let delta = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            // The native chord-length summation is y*y + x*x + z*z.
             let chord = (delta[1] * delta[1] + delta[0] * delta[0] + delta[2] * delta[2]).sqrt();
             let raw_side = normalize([-delta[2], 0.0, delta[0]]);
-            // Test the control interval, not the sample number: every sample after the
-            // first interval averages the previous raw normal with this one, then
-            // normalizes that average.
             let side = if segment == 0 {
                 raw_side
             } else {
@@ -106,7 +90,6 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
             let tangent = normalize(delta);
             let advance = 2.0 * chord / width;
             let center = if last {
-                // The final backward chord contributes to the final vertex before emission.
                 arc += advance;
                 b
             } else {
@@ -122,7 +105,6 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
                 center[1] + side[1] * width,
                 center[2] + side[2] * width,
             ];
-            // Both vertices share the higher terrain height.
             let height = heights
                 .native_height(plus[0], plus[2])
                 .max(heights.native_height(minus[0], minus[2]));
@@ -159,7 +141,6 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
     })
 }
 
-/// Leave a zero-length vector unchanged.
 fn normalize(vector: [f32; 3]) -> [f32; 3] {
     let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
     if length != 0.0 {
@@ -187,8 +168,6 @@ mod tests {
 
     #[test]
     fn straight_strip_uses_native_width_uv_order_and_terminal_chord() {
-        // There are 2*(4-3)*20+2 vertices. The terminal backward chord is added
-        // again, reaching (10+0.5)*2/2.
         let strip = build(
             &[
                 [-10.0, 0.0, 0.0],
@@ -218,8 +197,6 @@ mod tests {
     fn sharp_turn_preserves_inserted_corner_controls_and_uv_continuity() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // Insert each corner a quarter-segment in and push sideways 3*size.
-        // This 180-degree turn therefore inserts (7.5,+/-3).
         let strip = build(
             &[
                 [-10.0, 0.0, 0.0],
@@ -244,9 +221,6 @@ mod tests {
         assert_eq!(center(40), [10.0, 0.0]);
         assert_eq!(center(60), [7.5, -3.0]);
         assert_eq!(center(80), [0.0, 0.0]);
-        // Sample 20 averages across intervals; sample 21 proves that averaging
-        // continues within the second interval, using raw normals.
-        // Preserve the exact floating-point reference values above.
         #[allow(clippy::excessive_precision)]
         let samples = [
             (20, [7.5101194, 1.0000256], [7.4898806, 4.9999743]),
@@ -279,8 +253,6 @@ mod tests {
 
     #[test]
     fn both_edges_use_the_higher_sampled_terrain_height() {
-        // Both callback results contribute their maximum to both vertices.
-        // The lower edge is not allowed to pierce terrain.
         let heights = HeightField {
             width: 4,
             height: 4,

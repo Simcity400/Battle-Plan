@@ -1,6 +1,3 @@
-//! A faction goal as the game shows it at an hour: its name, description, term and artwork and the
-//! bands of its progress, read from the recorded content stack. Scripted names expand in the hour's
-//! selected country, as the game's goal view expands them.
 
 use super::Art;
 use crate::{
@@ -18,8 +15,6 @@ use replay_data::rows::TableId;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// A progress section the game activates while the goal's progress lies in its range, as
-/// fractions of that progress, named when the content localises its key.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -33,22 +28,20 @@ pub struct FactionProgressBand {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionGoalDefinition {
-    /// The goal's token as the content names it; none when the recording names none.
+    #[doc = " The goal's token as the content names it; none when the recording names none."]
     pub token: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
     pub icon: Option<String>,
-    /// The native term token (`short_term`, ...), a group's identity.
+    #[doc = " The native term token (`short_term`, ...), a group's identity."]
     pub category: Option<String>,
-    /// The term's name as the game's interface names it; none when the content does not.
+    #[doc = " The term's name as the game's interface names it; none when the content does not."]
     pub category_name: Option<String>,
     pub bands: Vec<FactionProgressBand>,
-    /// Why any of the texts or the artwork is unavailable.
+    #[doc = " Why any of the texts or the artwork is unavailable."]
     pub reason: Option<String>,
 }
 
-/// The hour's goal texts: the content, and the two scripted texts goals expand in, each built
-/// once for the hour and shared by every goal.
 pub(super) struct Texts<'a> {
     frame: &'a DecodedFrame,
     faction: u64,
@@ -60,8 +53,6 @@ pub(super) struct Texts<'a> {
     viewer_text: OnceCell<Result<ScriptedText<'a>, String>>,
 }
 
-/// The selected country's canonical slot, which goal names and descriptions expand in: the
-/// view's chosen country, else the recording client's playing or observer country.
 pub(super) fn viewer(frame: &DecodedFrame, viewpoint: Option<&dashboard_base::products::Country>) -> Result<u32, String> {
     if let Some(dashboard_base::products::Country::Slot(slot)) = viewpoint {
         let countries = frame.complete::<tables::Countries>().map_err(|why| why.to_string())?;
@@ -100,7 +91,6 @@ impl<'a> Texts<'a> {
         }
     }
 
-    /// The content's own refusals of its goal definitions.
     pub(super) fn warnings(&self) -> Vec<String> {
         match &self.definitions {
             Ok(definitions) => definitions.warnings.clone(),
@@ -117,17 +107,14 @@ impl<'a> Texts<'a> {
             .map_err(Clone::clone)
     }
 
-    /// The recorded localisation's text of `key`.
     pub(super) fn localise(&self, key: &str) -> Result<String, String> {
         self.cat.localisation.localise(key.as_bytes()).map_err(|why| why.to_string())
     }
 
-    /// `text` with its scripted parts expanded in the selected country's scope.
     pub(super) fn expand(&self, text: &str) -> Result<String, String> {
         self.scripted(viewer(self.frame, self.viewpoint), &self.viewer_text)?.expand_faction(text, self.faction)
     }
 
-    /// The goal `token` names, as the game shows it at the frame's hour.
     pub(super) fn definition(&self, token: Option<u32>) -> FactionGoalDefinition {
         let mut shown = blank();
         let Some(token) = token else { return shown };
@@ -192,7 +179,6 @@ fn blank() -> FactionGoalDefinition {
     }
 }
 
-/// The goal `token` names without the recorded content: its token, and why nothing else is known.
 pub(super) fn unnamed(frame: &DecodedFrame, token: Option<u32>, why: &str) -> FactionGoalDefinition {
     let mut shown = blank();
     let Some(token) = token else { return shown };
@@ -207,16 +193,12 @@ pub(super) fn unnamed(frame: &DecodedFrame, token: Option<u32>, why: &str) -> Fa
     shown
 }
 
-/// A goal term's name as the interface shows it: the native terms' names are keyed by the term
-/// in capitals. None when the content leaves it undefined or empty.
 pub(super) fn term_name(localisation: &installed_content_localisation::localisation::Localisation, category: &str) -> Option<String> {
     let key = category.to_ascii_uppercase();
     localisation.get(&key)?;
     catalogue::localised(localisation, &key, catalogue::View::Plain).ok().filter(|name| !name.is_empty())
 }
 
-/// Each progress section's band, as fractions of the goal's progress, named where the content
-/// localises its key.
 fn bands(definition: &Definition, localisation: &installed_content_localisation::localisation::Localisation) -> Vec<FactionProgressBand> {
     definition
         .progress_sections
@@ -247,7 +229,6 @@ fn bands(definition: &Definition, localisation: &installed_content_localisation:
         .collect()
 }
 
-/// Every reason a reply's goals give, counted once per goal: the warnings it carries.
 pub(super) fn counted(definitions: &[FactionGoalDefinition]) -> Vec<String> {
     let mut reasons = BTreeMap::<&str, usize>::new();
     for definition in definitions {
@@ -258,8 +239,6 @@ pub(super) fn counted(definitions: &[FactionGoalDefinition]) -> Vec<String> {
     reasons.into_iter().map(|(reason, count)| format!("{count} faction goal texts: {reason}")).collect()
 }
 
-/// Whether a goal or doctrine name `faction` shows at `frame`'s hour expands scripted text: only then does a reply read
-/// the tables scripted text reads. `frame` holds the faction's goal and doctrine rows and the lexer's tokens.
 pub(super) fn scripted(frame: &DecodedFrame, faction: u64, cat: &Catalogue) -> bool {
     let Ok(definitions) = installed_content_core::faction_goals::cached(&cat.content.layers) else { return false };
     let lexical = faction_names::LexicalNames::from_source(frame);
@@ -296,7 +275,6 @@ pub(super) fn scripted(frame: &DecodedFrame, faction: u64, cat: &Catalogue) -> b
     })
 }
 
-/// The tables a scripted name reads.
 pub(super) fn text_tables() -> impl Iterator<Item = TableId> {
     crate::scripted_text::TABLES.iter().copied()
 }

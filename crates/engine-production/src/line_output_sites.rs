@@ -1,31 +1,3 @@
-//! Production output observation sites. The game keeps no count of the units
-//! a production line has completed; observing CREDIT and DELIVERY supplies it
-//! to collector `line_output`. Rocket spending has a separate entry reader.
-//!
-//! Production runs in a serial daily country pass after parallel work finishes.
-//! Each equipment line stays alive through refresh and production, then may be
-//! removed when its remaining amount is zero.
-//!
-//! Military, naval, railway-gun and refit lines credit the tick's signed count.
-//! Delivery precedes credit when equipment is delivered, with the amount scaled
-//! by [`UNIT_SCALE`]. A naval line blocked by manpower still credits its count
-//! and sets progress to cost. Military and railway-gun ticks without completion
-//! can credit zero or a negative count; a blocked railway gun credits zero.
-//! A zero cost supplies 42949 units. Conversion can deliver and credit zero;
-//! refit credits one exactly when it delivers a ship.
-//!
-//! CREDIT receives the signed progress input after resource penalties, including
-//! ticks without delivery. Blocked naval deployment discards that progress;
-//! a blocked railway gun keeps it. Instant construction replaces the input
-//! with the signed maximum of speed and cost. Instant training applies the same
-//! replacement to the viewing country's naval and railway lines. These are
-//! instant progress, separate from factory output. Country-reference comparison
-//! selects the viewing country; commands cannot interleave with the serial pass.
-//!
-//! Rocket lines deliver without CREDIT. Their signed stored progress input is
-//! replaced by the signed maximum of speed and variant cost for instant
-//! construction. A null variant skips spending. The entry reader does not refresh
-//! factory output or require a line handle or registration.
 
 use crate::{
     Memory, ccountry, cequipment_production_line, cequipment_variant, cgame_state,
@@ -37,25 +9,15 @@ use engine_sites::Rva;
 pub struct HookSite {
     pub name: &'static str,
     pub rva: Rva,
-    /// The return address (RVA) of each equipment-production call, by
-    /// [`PRODUCERS`] index: the same index pairs a delivery with its credit.
     pub callers: [Rva; 4],
 }
 
-/// An entry observation site that needs no caller classification.
 pub struct EntrySite {
     pub rva: Rva,
 }
 
-/// Equipment-production implementations, in the order of [`HookSite::callers`].
 pub const PRODUCERS: [&str; 4] = ["military", "naval", "railway gun", "ship refit"];
 
-/// Credit entry: RCX is the line, RDX the signed progress input and R8D the
-/// completed count. A set, resolving organisation handle selects the variant's
-/// history increment. The call itself does not write the line, but crediting
-/// the organisation can unlock its automatic design upgrade, which reassigns
-/// factories and refreshes the producer's lines before it returns: read the
-/// line at entry. Its entry instruction spills RBX to the stack.
 pub const CREDIT: HookSite = HookSite {
     name: "credit",
     rva: Rva(0x019b_ece0),
@@ -67,10 +29,7 @@ pub const CREDIT: HookSite = HookSite {
     ],
 };
 
-/// Delivery entry: RCX is the country's logistics status, RDX the variant
-/// pointer and R8 the signed i64 amount. Equipment production calls it on
-/// delivery with units times [`UNIT_SCALE`]. Its entry instruction spills R8
-/// to the stack.
+
 pub const DELIVERY: HookSite = HookSite {
     name: "delivery",
     rva: Rva(0x0140_ab50),
@@ -82,34 +41,20 @@ pub const DELIVERY: HookSite = HookSite {
     ],
 };
 
-/// Rocket production entry; RCX is the line. Its six-byte entry prefix has
-/// no relative operands. The daily caller ignores RAX, which observers preserve.
 pub const ROCKET_ADVANCE: EntrySite = EntrySite {
     rva: Rva(0x00ff_5980),
 };
 
-/// DELIVERY's rocket-production caller.
 pub const ROCKET_DELIVERY_RETURN: Rva = Rva(0x00ff_5a7a);
-/// Rocket primary vtable.
 pub const ROCKET_VTABLE: Rva = Rva(0x029f_8a98);
-/// Rocket's owning production status.
 pub const ROCKET_STATUS: usize = 0x38;
-/// Rocket's bound variant pointer, passed to DELIVERY.
 pub const ROCKET_VARIANT: usize = 0x40;
-/// Stored signed progress input added during rocket production.
 pub const ROCKET_SPEED: usize = 0x60;
 
-/// [`DELIVERY`]'s fixed-point amount scale. Callers widen the signed unit
-/// count to i64 before multiplying by this value; refit delivers one ship.
 pub const UNIT_SCALE: i64 = 100_000;
 
-/// Production status's separate rocket pointer roster, with a signed count.
-/// This header supplies sizing only; it acquires no rocket census or payload.
 pub const ROCKET_LINES: usize = 0x88;
 
-/// One daily pass can append one equipment tick and at most two events per
-/// rocket: spending and delivery. Header hints allocate off-thread without
-/// visiting a producer pointer, refreshing it or calling a game function.
 pub fn output_events_per_pass(
     memory: &impl Memory,
     base: usize,
@@ -151,27 +96,12 @@ pub fn output_events_per_pass(
     }
     Ok(events)
 }
-/// The line's own CID (u32 type, u32 id), `ProductionLines.handle`.
 pub const LINE_HANDLE: usize = cproduction_line::REFERENCE_TYPE;
-/// The produced variant's pointer, passed to both observation calls.
 pub const LINE_VARIANT: usize = cequipment_production_line::EQUIPMENT_VARIANT;
-/// The organisation CID [`CREDIT`] resolves, zero for none.
 pub const LINE_ORGANISATION: usize = cequipment_production_line::INDUSTRIAL_ORGANISATION_CID;
-/// The variant's CID, the key of the organisation's history slot.
 pub const VARIANT_HANDLE: usize = cequipment_variant::TYPE;
-/// The line's conversion control, which only military production reads.
 pub const LINE_CONVERSION: usize = cequipment_production_line::CONVERSION;
 
-/// Whether a military production call converts stockpiled equipment into
-/// `line`'s design: its conversion control is set and the design is a
-/// conversion target ([`crate::production_modifiers::conversion_target`]).
-/// The call takes its conversion branch on exactly these operands, so read
-/// them at CREDIT entry: CREDIT can refresh the producer's lines before it
-/// returns (an organisation's automatic design upgrade reassigns factories),
-/// which may clear the control or replace the design. Such a call's whole
-/// input is conversion progress, including ticks that complete nothing; it
-/// does not prove a source unit was removed. Naval, railway-gun and refit
-/// production have no conversion branch. No game function is called.
 pub fn converting(memory: &impl Memory, line: usize) -> Result<bool, &'static str> {
     let control = line
         .checked_add(LINE_CONVERSION)
@@ -188,12 +118,8 @@ pub fn converting(memory: &impl Memory, line: usize) -> Result<bool, &'static st
     crate::production_modifiers::conversion_target(memory, variant)
 }
 
-/// Console flag tested by naval and railway-gun production.
 pub const INSTANT_ARMY_TRAINING: Rva = Rva(0x033d_da9b);
 
-/// Classifies the already-applied CREDIT RDX input. Owner and producer must be
-/// authenticated first. A refusal affects both spending fields, not the
-/// independently paired delivery or MIO count. No game function is invoked.
 pub fn applied_spending(
     memory: &impl Memory,
     base: usize,
@@ -222,7 +148,6 @@ pub fn applied_spending(
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .filter(|&pointer| pointer != 0)
                 .ok_or("production output instant viewing state unreadable or null")?;
-            // Read the observer only when the playing reference is not signed-positive.
             let playing = state
                 .checked_add(cgame_state::LOCAL_PLAYER_COUNTRY)
                 .and_then(|address| read::<u32>(memory, address))
@@ -238,8 +163,6 @@ pub fn applied_spending(
             let applies = if country == viewing {
                 true
             } else {
-                // Compare raw country-link entries, including zero, without resolving
-                // country objects or reading their array.
                 let links = state
                     .checked_add(cgame_state::COUNTRY_LINKS)
                     .and_then(|address| Array::read(memory, address, 4))
@@ -262,8 +185,6 @@ pub fn applied_spending(
     Ok((speed, 0))
 }
 
-/// Failures retain their independently authenticated country/design scope.
-/// Zero country or variant marks an unavailable scope, never a bound identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RocketFailure {
@@ -309,9 +230,6 @@ pub struct RocketTick {
     pub failure: RocketFailure,
 }
 
-/// Copies the exact rocket-production input at entry without a line handle or
-/// census. A null variant bypasses spending and records nothing. Independent
-/// scope reads survive another operand's failure; no game function is invoked.
 pub fn read_rocket_spending(
     memory: &impl Memory,
     base: usize,
@@ -374,13 +292,6 @@ pub fn read_rocket_spending(
     Some(tick)
 }
 
-/// The producing country's raw reference, also for credit without delivery.
-/// The line selects its production status, which selects the country whose
-/// logistics status receives [`DELIVERY`]. No game function is called.
-///
-/// `line` stays alive until its production call returns. The line's, status's
-/// and country's vtables, the line's handle, the country's nonzero id and its
-/// status backlink are checked, as in the census readers.
 pub fn producing_country(
     memory: &impl Memory,
     base: usize,
@@ -399,9 +310,6 @@ pub fn producing_country(
     )
 }
 
-/// The raw reference of the country whose production status owns `line`, as [`producing_country`]
-/// reads it, for a line whose vtable is one of `vtables` (RVAs): any production line keeps its
-/// CProductionStatus (`cproduction_line::PRODUCTION_STATUS`), construction lines included.
 pub fn owning_country(
     memory: &impl Memory,
     base: usize,

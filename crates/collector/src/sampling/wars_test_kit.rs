@@ -50,8 +50,6 @@ fn entries32(bytes: &mut [u8], data: usize, values: &[u32]) {
     }
 }
 
-/// One relation status with empty ownership vectors. The live pair
-/// statuses below overwrite the war link and vectors afterwards.
 fn status_init(bytes: &mut [u8], owner: usize, target: usize, raw_target: u32) {
     let at = status(owner, target);
     p64(bytes, at, crelation_status::VTABLE_RVA.0 as u64);
@@ -78,8 +76,6 @@ fn status_init(bytes: &mut [u8], owner: usize, target: usize, raw_target: u32) {
 
 pub(crate) fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x80000];
-    // Slots 1..3 hold countries; slot 4 aliases the first object. Raw 4
-    // resolves to slot 1 everywhere, like the engine fixture.
     header(&mut bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 5);
     entries64(
         &mut bytes,
@@ -111,8 +107,6 @@ pub(crate) fn fixture() -> Vec<u8> {
         );
         entries64(&mut bytes, M[owner], &slots);
         for target in 0..5 {
-            // Matrix slot one of the first diplomacy deliberately uses
-            // alias raw 4 as its target, mirroring the engine fixture.
             let raw = if (owner, target) == (0, 1) {
                 4
             } else {
@@ -121,8 +115,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             status_init(&mut bytes, owner, target, raw);
         }
     }
-    // Owned vectors: every relation kind lives here, but only wars pay
-    // the deep dive.
     header(
         &mut bytes,
         D[0] + cdiplomacy_status::OWNED_RELATIONS,
@@ -144,9 +136,7 @@ pub(crate) fn fixture() -> Vec<u8> {
         1,
     );
     entries64(&mut bytes, O[2], &[WAR2 as u64]);
-    // Foreign-type entry: skipped right after the type gather.
     p32(&mut bytes, OTHER + crelation::TYPE_ID, 0x28da);
-    // Retired war: authenticated but inactive, skipped without rows.
     p64(&mut bytes, RETIRED, cwar_relation::VTABLE_RVA.0 as u64);
     p32(
         &mut bytes,
@@ -156,8 +146,6 @@ pub(crate) fn fixture() -> Vec<u8> {
     bytes[RETIRED + crelation::RETIRED] = 1;
     p32(&mut bytes, RETIRED + crelation::FIRST_COUNTRY, 1);
     p32(&mut bytes, RETIRED + crelation::SECOND_COUNTRY, 2);
-    // WAR1 (countries 0, 1) carries signed-extreme rows; WAR2 (countries
-    // 2, 0) small distinct values.
     for (war, second, start, end, cancel, cas, unk, instigator) in [
         (
             WAR1,
@@ -201,7 +189,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             unk[1] as u64,
         );
     }
-    // Live pair statuses with war links and ownership vectors.
     for (owner, target, war) in [(0, 2, WAR1), (1, 1, WAR1), (2, 1, WAR2), (0, 3, WAR2)] {
         let at = status(owner, target);
         p64(&mut bytes, at + crelation_status::WAR_RELATION, war as u64);
@@ -236,7 +223,6 @@ pub(crate) struct Capture {
     pub owned: Vec<cwar_relation::Row>,
 }
 
-/// Reference primary walk with identical pooled buffers.
 pub(crate) fn direct(memory: &impl Memory, len: usize) -> Capture {
     let mut owned = vec![cwar_relation::Row::default(); len];
     let owned_outcome = cwar_relation::walk(memory, BASE, GAME_STATE, &mut owned);

@@ -1,8 +1,3 @@
-//! Opt-in window frame timings, one file per map: `<BATTLE_PLAN_PERF_MAP_LOG>.<map>.jsonl`, each map of
-//! the process numbered from 1 as it first records. A log also turns the thread CPU accounting on,
-//! so each map's record of a window of frames ([`SCOPE_FRAMES`]) carries the frame thread's own
-//! labels, the same ones the playback harness writes per frame.
-
 use job_priority::SpawnCarried as _;
 use std::{
     cell::{Cell, RefCell},
@@ -18,9 +13,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-/// Lines waiting for the writer; a full queue drops new lines rather than hold a frame.
 const QUEUE_LINES: usize = 1024;
-/// How long the writer waits on an empty queue before marking it idle.
 const IDLE: Duration = Duration::from_millis(500);
 
 enum Message {
@@ -28,7 +21,6 @@ enum Message {
     Finish,
 }
 
-/// Lines dropped since the last loss record.
 #[derive(Default)]
 struct Loss {
     count: u64,
@@ -38,7 +30,6 @@ struct Loss {
 }
 
 struct Log {
-    /// This map's number in the process, which its records carry.
     map: u64,
     queue: SyncSender<Message>,
     writer: Mutex<Option<JoinHandle<()>>>,
@@ -47,13 +38,10 @@ struct Log {
 }
 
 thread_local! {
-    /// This map thread's log, opened at its first record.
     static LOG: std::cell::OnceCell<Option<&'static Log>> = const { std::cell::OnceCell::new() };
-    /// The host's name for this thread's map ([`enter`]).
     static ROLE: Cell<&'static str> = const { Cell::new("main") };
 }
 
-/// Every map's log, which [`finish`] closes.
 static OPENED: Mutex<Vec<&'static Log>> = Mutex::new(Vec::new());
 static MAPS: AtomicU64 = AtomicU64::new(1);
 
@@ -135,8 +123,6 @@ fn requested() -> bool {
     })
 }
 
-/// Charges every thread's CPU to its labels, which the maps' scope records are made of. On for the
-/// process from the moment a log is asked for, so a frame's labels are whole from its first frame.
 fn account() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(replay_frame::cpu::enable);
@@ -262,7 +248,6 @@ fn log() -> Option<&'static Log> {
     Some(log)
 }
 
-/// Where the maps' files go: the host's log beside its own, else `BATTLE_PLAN_PERF_MAP_LOG`.
 static PREFIX: OnceLock<std::ffi::OsString> = OnceLock::new();
 
 pub fn log_to(prefix: &std::path::Path) {
@@ -271,12 +256,10 @@ pub fn log_to(prefix: &std::path::Path) {
     account();
 }
 
-/// Names the map this thread runs, before it records.
 pub fn enter(role: &'static str) {
     ROLE.with(|named| named.set(role));
 }
 
-/// Milliseconds since the Unix epoch, the clock the host and the page measure with too.
 pub fn epoch_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -318,7 +301,6 @@ fn open() -> Option<Log> {
             loop {
                 let first = match lines.recv_timeout(IDLE) {
                     Ok(first) => first,
-                    // An idle mark tells the host this queue held nothing older.
                     Err(RecvTimeoutError::Timeout) => {
                         owed_loss(&mut out, map);
                         let _ = writeln!(out, r#"{{"t":"map_idle","at":{:.3},"map":{map}}}"#, epoch_ms());
@@ -340,7 +322,6 @@ fn open() -> Option<Log> {
                     owed_loss(&mut out, map);
                     let _ = writeln!(out, r#"{{"t":"map_close","at":{:.3},"map":{map}}}"#, epoch_ms());
                 }
-                // The host may end after any frame.
                 let _ = out.flush();
                 if finished {
                     break;
@@ -380,7 +361,6 @@ impl Loss {
 }
 
 impl Log {
-    /// Queues `line` without waiting, after the loss record any earlier drop owes.
     fn send(&self, line: String, at: f64) {
         if self.lost.load(Ordering::Acquire) {
             let mut loss = self.loss.lock().unwrap_or_else(|error| error.into_inner());
@@ -404,7 +384,6 @@ impl Log {
     }
 }
 
-/// Writes the loss record a full queue still owes, so no idle or close mark claims a drained queue.
 fn owed_loss(out: &mut impl Write, map: u64) {
     let opened = OPENED.lock().unwrap_or_else(|error| error.into_inner());
     let Some(log) = opened.iter().find(|log| log.map == map) else {
@@ -420,14 +399,12 @@ fn owed_loss(out: &mut impl Write, map: u64) {
     }
 }
 
-/// Whether the map device can time its frames, set once it exists ([`gpu_timer`]).
 static GPU_TIMER: OnceLock<Result<(), String>> = OnceLock::new();
 
 fn json_string(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_| "null".to_owned())
 }
 
-/// Records whether the map device can time its frames, before the log opens.
 pub fn gpu_timer(support: Result<(), String>) {
     let _ = GPU_TIMER.set(support);
 }
@@ -449,41 +426,26 @@ pub fn since(name: &str, started: Instant) {
     );
 }
 
-/// Frames one scope record covers. The thread's labels are read once a window, not once a frame,
-/// so a frame pays nothing for them; short enough that a window falls inside one measured item.
 const SCOPE_FRAMES: u64 = 30;
 
-/// A window of frames whose labels one scope record reports.
 struct Scopes {
-    /// Every label as it stood when the window began.
     before: std::collections::HashMap<String, [Option<u64>; 3]>,
-    /// Cycle reads the frame thread had made then, so the accounting's own cost is measured.
     reads: u64,
     frames: u64,
-    /// The epoch milliseconds of the first frame in the window, and its work.
     from: f64,
     work_ms: f64,
 }
 
 thread_local! {
-    /// The camera the last frame drew with, which its window's record names: whether the eye is
-    /// free (the fly and walk cameras) and its height over the map.
     static VIEW: Cell<Option<(bool, f32)>> = const { Cell::new(None) };
-    /// This map's open scope window, begun at its first recorded frame.
     static SCOPES: RefCell<Option<Scopes>> = const { RefCell::new(None) };
-    /// The number the next `map` record carries.
     static FRAME: Cell<u64> = const { Cell::new(0) };
-    /// Frames' GPU milliseconds, or why they have none, not yet written, oldest first.
     static GPU: RefCell<VecDeque<(u64, Result<f64, String>)>> = const { RefCell::new(VecDeque::new()) };
     static STARTED: Cell<Option<Instant>> = const { Cell::new(None) };
     static PREVIOUS: Cell<Option<Instant>> = const { Cell::new(None) };
-    /// The last paint's milliseconds, whole and waiting for a swapchain image, and the epoch
-    /// milliseconds it ended.
     static PAINTED: Cell<Option<(f64, f64, f64)>> = const { Cell::new(None) };
 }
 
-/// eframe painted and presented a frame after its `ui` pass, in `elapsed`, `acquire_secs` of it
-/// waiting for a swapchain image.
 pub fn frame_painted(elapsed: Duration, acquire_secs: f32) {
     if log().is_some() {
         PAINTED.with(|painted| {
@@ -496,14 +458,12 @@ pub fn frame_painted(elapsed: Duration, acquire_secs: f32) {
     }
 }
 
-/// A window frame begins: eframe's `logic` pass.
 pub fn frame_start() {
     if log().is_some() {
         STARTED.with(|started| started.set(Some(Instant::now())));
     }
 }
 
-/// A frame's `ui` pass, which begins the frame when no `logic` pass did.
 pub fn frame_ui() {
     if log().is_some() {
         STARTED.with(|started| {
@@ -514,14 +474,11 @@ pub fn frame_ui() {
     }
 }
 
-/// The number of the window frame under way, for timing its GPU work; none when no frame is
-/// under way or the log is off.
 pub fn frame_id() -> Option<u64> {
     log()?;
     STARTED.with(Cell::get).map(|_| FRAME.with(Cell::get))
 }
 
-/// The rendered frame's opt-in profile, keyed with its window and GPU records.
 pub fn profile_frame(line: &str) {
     let Some(frame) = frame_id() else {
         return;
@@ -538,7 +495,6 @@ pub fn profile_frame(line: &str) {
     );
 }
 
-/// A named moment on this map's thread, with `fields` (a JSON object) as its detail.
 pub fn mark(name: &str, fields: serde_json::Value) {
     let Some(log) = log() else {
         return;
@@ -547,25 +503,18 @@ pub fn mark(name: &str, fields: serde_json::Value) {
     log.send(format!(r#"{{"t":"map_mark","at":{at:.3},"map":{},"name":{},"fields":{fields}}}"#, log.map, json_string(name)), at);
 }
 
-/// The camera this frame drew with: a free eye (the fly and walk cameras) or the map's own, and
-/// its height. A free eye's world layers draw every map copy its far plane reaches, so a frame's
-/// cost cannot be read without knowing which camera drew it.
 pub fn frame_view(free: bool, height: f32) {
     if log().is_some() {
         VIEW.with(|view| view.set(Some((free, height))));
     }
 }
 
-/// Frames' GPU milliseconds just settled; each later `map` record carries one.
 pub fn gpu_times(times: Vec<(u64, Result<f64, String>)>) {
     if !times.is_empty() && log().is_some() {
         GPU.with(|gpu| gpu.borrow_mut().extend(times));
     }
 }
 
-/// Egui's output, tessellation, paint and present fall outside `work_ms`, inside the interval
-/// only; the record carries the paint that ended the previous frame (`paint_ms`, `acquire_ms`,
-/// and `painted_at`, when it was presented), null when none did.
 pub fn frame_end() {
     let Some(log) = log() else {
         return;
@@ -596,7 +545,6 @@ pub fn frame_end() {
         },
     );
     let frame = FRAME.with(|frame| frame.replace(frame.get() + 1));
-    // The GPU time of an earlier frame, read back since; `gpu_frame` names it.
     let (gpu_frame, gpu_ms, gpu_error) = match GPU.with(|gpu| gpu.borrow_mut().pop_front()) {
         None => ("null".to_owned(), "null".to_owned(), "null".to_owned()),
         Some((frame, Ok(ms))) => (frame.to_string(), format!("{ms:.3}"), "null".to_owned()),
@@ -613,11 +561,6 @@ pub fn frame_end() {
     scope_window(log, work, at);
 }
 
-/// A frame joins the open scope window; a full window is written and the next begun. Each label's
-/// CPU, wall time and entries over the window are the window's own difference, keyed as the
-/// playback harness's `scopes_us` keys them, and `work_ms` is the window's frames' work, so a
-/// label's share of a frame is read off one record. A label's wall over its CPU is time the frame
-/// thread spent off a core inside it.
 fn scope_window(log: &Log, work: f64, at: f64) {
     SCOPES.with(|held| {
         let mut held = held.borrow_mut();
@@ -633,7 +576,6 @@ fn scope_window(log: &Log, work: f64, at: f64) {
         if window.frames < SCOPE_FRAMES {
             return;
         }
-        // This record's own cost is a label of the window that follows it.
         let _own = replay_frame::cpu::scope("frame.perf-log", Some("other"));
         let after = replay_frame::cpu::own_totals();
         let mut scopes = String::from("{");
@@ -682,7 +624,6 @@ fn scope_window(log: &Log, work: f64, at: f64) {
     });
 }
 
-/// One `"label":value` member of a scope record's object.
 fn append(out: &mut String, label: &str, value: u64) {
     if out.len() > 1 {
         out.push(',');
@@ -692,12 +633,10 @@ fn append(out: &mut String, label: &str, value: u64) {
     out.push_str(&value.to_string());
 }
 
-/// Whether this map records its timings.
 pub fn enabled() -> bool {
     log().is_some()
 }
 
-/// Writes every queued line and any loss still owed, then waits for the writer to end.
 pub fn finish() {
     let opened = OPENED.lock().unwrap_or_else(|error| error.into_inner()).clone();
     for log in opened {

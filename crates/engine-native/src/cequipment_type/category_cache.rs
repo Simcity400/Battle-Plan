@@ -1,5 +1,3 @@
-//! Inherited category predicates carried only under equipment-reload and world certificates.
-//! The caller owns the before/after certificate validation for its native observation.
 use crate::{Memory, allocation, cequipment_type as equipment, read};
 
 #[derive(Default)]

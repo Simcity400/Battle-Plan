@@ -1,4 +1,3 @@
-//! A single directed relation lookup shared with the fresh speed/risk graph.
 use crate::{
     Memory, ccountry, cdiplomacy_status,
     cpdx_array::Array,
@@ -40,7 +39,6 @@ fn slot<M: Memory>(countries: &ccountry::Reader<'_, M>, raw: u32) -> Result<u32,
     }
 }
 
-/// Consume the mission census's original location selector; never reacquire it.
 pub fn read<M: Memory>(
     memory: &M,
     base: usize,
@@ -59,7 +57,6 @@ pub fn read<M: Memory>(
     )
 }
 
-/// Original controller observation may be shared by other source readers.
 pub fn raw<M: Memory>(
     memory: &M,
     base: usize,

@@ -45,7 +45,6 @@ const steady = (tag: string, slot: number): Identity => ({ tag, identities: [{ f
 const humans = (membership: 'hour' | 'end' | 'ever') => ({ kind: 'group' as const, group: { type: 'humans' as const }, membership, aggregate: false });
 
 test('a group chosen by its members at each hour counts a country only while it is a member', () => {
-  // B joins at 10 and leaves at 20; its links before and after are not the group's forces.
   const groups = groupsReply([{ tag: 'B', firstHour: 10, lastHour: 19 }], [steady('A', 1), steady('B', 2), steady('C', 3)]);
   const keep = linkFilter(countryMatch(humans('hour'), [], groups, 200).matches, false);
   const hosted = { tallies: [], unobserved: [], warnings: [], links: [
@@ -70,7 +69,6 @@ test('group membership not recorded at an hour is not an empty roster', () => {
 });
 
 test('a group at the end or ever follows native holders through a reused tag and a rename', () => {
-  // X carries R until 23 and Q after; Y takes R from 24. H hosts everyone.
   const identities: Identity[] = [
     { tag: 'R', identities: [{ firstHour: 0, lastHour: 23, slot: 1, countryId: 10 }, { firstHour: 24, lastHour: 200, slot: 2, countryId: 20 }] },
     { tag: 'Q', identities: [{ firstHour: 24, lastHour: 200, slot: 1, countryId: 10 }] }, steady('H', 9)];
@@ -78,11 +76,9 @@ test('a group at the end or ever follows native holders through a reused tag and
     link('xq', 'Q', 'H', [run(24, 99, 3)], 1, 9), link('yr', 'R', 'H', [run(24, 99, 4)], 2, 9)] } as unknown as VolunteersReply;
   const keys = (groups: CountryGroupReply, membership: 'end' | 'ever', hour: number) =>
     linksAt(aid, hour, linkFilter(countryMatch(humans(membership), [], groups, 200).matches, false)).links.map(item => item.key);
-  // At the end, Q (X) is human: X's earlier links as R count, Y's as R never do.
   const atEnd = groupsReply([{ tag: 'Q', firstHour: 24, lastHour: 200 }], identities);
   assert.deepEqual([keys(atEnd, 'end', 10), keys(atEnd, 'end', 30)], [['xr'], ['xq']], 'the member under its earlier tag, and not the later holder of that tag');
   assert.deepEqual(requestTags(false, countryMatchFilter(humans('end'), [], atEnd, 200, undefined, 0).membership), ['Q', 'R'], 'the request names every tag the member carried');
-  // Ever, only Y (R from 24) was human: X's links as R before 24 are not the group's.
   const ever = groupsReply([{ tag: 'R', firstHour: 24, lastHour: 200 }], identities);
   assert.deepEqual([keys(ever, 'ever', 10), keys(ever, 'ever', 30)], [[], ['yr']]);
   assert.deepEqual(requestTags(false, countryMatchFilter(humans('ever'), [], ever, 200, undefined, 0).membership), ['R']);

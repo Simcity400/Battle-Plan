@@ -1,14 +1,7 @@
-//! Viewer-owned animation history, independent of hour-builder cadence.
-//!
-//! A forward playback skip keeps the live runtimes, including when a paused
-//! playhead's final hour finishes building. Seeks are explicit: hour distance
-//! cannot distinguish a seek from playback that outran the builders. Keep this
-//! contract when supply trains become entirely viewer-side animation.
 
 use replay_data::BranchId;
 use replay_frame::branches::Gap;
 
-/// Whether the animation runtimes on screen carry into the next hour shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Continuity {
     Reset,
@@ -16,16 +9,11 @@ pub enum Continuity {
 }
 
 impl Continuity {
-    /// Whether a layer may hand the runtimes it built for `previous` to
-    /// `next`: only forward on one branch, and only when the viewer continues.
     pub fn keeps(self, previous: (BranchId, i32), next: (BranchId, i32)) -> bool {
         self == Self::Continue && previous.0 == next.0 && previous.1 <= next.1
     }
 }
 
-/// A host clock target. Dashboard and full-map targets carry the clock's seek
-/// counter through coalesced updates. Pinned targets have no running clock, so
-/// moving them is always a seek.
 #[derive(Clone, Copy)]
 pub struct Target {
     pub branch: BranchId,
@@ -42,25 +30,13 @@ impl Target {
     }
 }
 
-/// Which unit entities a new hour recreates, and so which animation
-/// histories (`ModelPass` players) start again: the game's, not the
-/// presentation cycle's. [`continuity`] still decides the raid cycle, the
-/// trains and the weather.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UnitRestart {
-    /// Playback, a step forward, a skip over built hours and a recorded
-    /// gap: the running game destroys no unit entity for them, so each
-    /// keeps its history and a changed state blends as usual.
     Keep,
-    /// A viewing-country change recreates unit entities only in the new country's owned provinces.
-    /// Entities elsewhere retain animation histories.
     ViewingCountry,
-    /// Initial load, seeks, step backs and branch switches clear all province unit slots and recreate
-    /// entities.
     All,
 }
 
-/// [`UnitRestart`] from the same inputs as [`continuity`].
 pub fn unit_restart(
     previous: Option<(BranchId, i32, Option<&str>)>,
     next: (BranchId, i32, Option<&str>),
@@ -78,15 +54,11 @@ pub fn unit_restart(
     }
 }
 
-/// Whether the recording misses an hour between `from` and `to` on `branch`.
-/// Recorded hours are never inside a gap, so the ends need no care.
 pub fn crosses_gap(gaps: &[Gap], branch: BranchId, from: i32, to: i32) -> bool {
     gaps.iter()
         .any(|gap| gap.branch == branch && gap.last_hour > from && gap.first_hour < to)
 }
 
-/// The history from the hour on screen to `next`. The resolved viewing
-/// country, not the fog switch, belongs to the history.
 pub fn continuity(
     previous: Option<(BranchId, i32, Option<&str>)>,
     next: (BranchId, i32, Option<&str>),
@@ -128,7 +100,6 @@ mod tests {
         };
         use Continuity::{Continue, Reset};
         use UnitRestart::{All, Keep, ViewingCountry};
-        // Load-equivalent: every entity is created afresh.
         assert_eq!(case((1, 40, Some("GER")), true), (All, Reset), "seek");
         assert_eq!(
             case((1, 10, Some("GER")), true),
@@ -146,7 +117,6 @@ mod tests {
             (All, Reset),
             "first hour"
         );
-        // A tag switch recreates the new country's provinces' units only.
         assert_eq!(
             case((1, 10, Some("ENG")), false),
             (ViewingCountry, Reset),
@@ -157,8 +127,6 @@ mod tests {
             (ViewingCountry, Reset),
             "no country"
         );
-        // The game kept running through a gap: nothing is recreated, though
-        // the presentation cycle still starts again.
         assert_eq!(case((1, 40, Some("GER")), false), (Keep, Reset), "gap");
         assert_eq!(
             case((1, 10, Some("GER")), false),
@@ -181,7 +149,7 @@ mod tests {
             ..previous
         };
         assert!(!skipped.seeks_from(previous));
-        assert!(!skipped.seeks_from(skipped)); // Pause/camera/fog updates.
+        assert!(!skipped.seeks_from(skipped));
         for next in [
             Target {
                 seek_sequence: Some(8),
@@ -220,7 +188,6 @@ mod tests {
                 continuity(previous, (1, hour, Some("AAA")), false, &[]),
                 Continuity::Continue
             );
-            // A same-hour or adjacent seek is still a seek.
             assert_eq!(
                 continuity(previous, (1, hour, Some("AAA")), true, &[]),
                 Continuity::Reset

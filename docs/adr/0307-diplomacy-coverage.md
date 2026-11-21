@@ -1,0 +1,7 @@
+# Separate diplomacy absence from unknown coverage
+
+Opinion reads are sliced by country. A country is known if the opinion table records its rows or a slice stamp proves the table was read. A stamp from another table proves nothing. A missing pair means exact zero only for a known owner. Attach values and read hours to live cells and read pair histories by their individual table keys because no summary contains every pair. Resolve raw aliases through complete country links, falling back to each holder's own id when links are incomplete. Rows under any of the associated raw references still belong to the same pair.
+
+Index relation runs by the endpoints and dates stored in the recorded rows, joining consecutive equal values. A pact belongs to the selected raw country when it is owner or target during the selected tag holding. Resolve endpoint names at the pact's last held hour. A pact with the same kind, endpoint identities and start is one record across duplicate endpoint rows, holder changes and loads into recorded time. A row counts as gone only if a complete read proves its absence. Missing, truncated or broken coverage can leave the end unknown, and a pact present at the last hour keeps that status. Use the recording's content and the relation type token to title each kind, keeping the id and a named warning if content is unavailable.
+
+[Diplomacy product](../../crates/dashboard/src/products/diplomacy.rs) · [Diplomacy coverage tests](../../crates/dashboard/src/products/diplomacy/tests.rs)

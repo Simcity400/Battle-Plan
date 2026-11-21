@@ -1,17 +1,3 @@
-//! AirBaseRegistrations rows decoded from a held segment, kept across hours
-//! on the decode worker.
-//!
-//! The acquisition reports each state base whose subtree in the hour's log is
-//! a held segment ([`super::RegistrationStore`], [`super::HeldSegment`]): its
-//! spliced bytes, or the fresh read the segment was taken from. The walk's
-//! output for such a base depends only on those bytes and on the country
-//! tables, which the walk checks again ([`engine_native::cair_base::RegistrationReuse`]),
-//! so the output a walk of the segment produced is appended in later hours
-//! that report the same segment, without walking its containers, pools or
-//! wings. A base whose segment changed, or that reports none, is walked.
-//!
-//! The cache keeps only bases its latest pass visited. Allocation is advisory:
-//! an output that cannot be kept is walked again.
 use engine_allocation as allocation;
 use engine_native::{
     cair_base::DenseEntry, cair_base::HeldBase, cair_base::RegistrationReuse,
@@ -28,7 +14,6 @@ struct Kept {
     slots: u32,
     sought_plan: bool,
     plan: Option<Vec<DenseEntry>>,
-    /// Each `wings_start` counts from the base's first wing.
     rows: Vec<RegistrationRow>,
     wings: Vec<u64>,
     countries: Vec<u32>,
@@ -37,7 +22,6 @@ struct Kept {
     pass: u64,
 }
 
-/// Cumulative counts of state bases appended and walked while reported.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DecodedCounts {
     pub reused: u64,
@@ -47,9 +31,7 @@ pub(crate) struct DecodedCounts {
 #[derive(Debug, Default)]
 pub(crate) struct DecodedRegistrations {
     kept: HashMap<u64, Kept>,
-    /// This pass's reported segments by handle.
     segments: HashMap<u64, (usize, u64)>,
-    /// The base being walked and its accepted containers' countries.
     walking: Option<(u64, usize, u64)>,
     countries: Vec<u32>,
     pass: u64,
@@ -57,8 +39,6 @@ pub(crate) struct DecodedRegistrations {
 }
 
 impl DecodedRegistrations {
-    /// Starts a pass over a log that reports `segments`. False when they
-    /// cannot be indexed; the pass then walks every base.
     pub(crate) fn begin(&mut self, segments: &[HeldSegment]) -> bool {
         self.pass += 1;
         self.walking = None;
@@ -78,7 +58,6 @@ impl DecodedRegistrations {
         true
     }
 
-    /// Ends the pass: keeps the bases it visited.
     pub(crate) fn finish(&mut self) {
         let pass = self.pass;
         self.kept.retain(|_, kept| kept.pass == pass);

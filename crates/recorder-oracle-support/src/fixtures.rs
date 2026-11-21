@@ -1,4 +1,3 @@
-//! Shared synthetic save-comparison fixtures.
 use installed_content_save::{self as save, Decimal, Save};
 use replay_data::{
     rows::CampaignRow, rows::ClockRow, rows::CountryLinkRow, rows::CountryRow, rows::DivisionRow,
@@ -7,7 +6,6 @@ use replay_data::{
 use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
 use std::{collections::BTreeMap, io};
 
-/// The lexical token of the fixture state's category, spelled `town`.
 pub const FIXTURE_CATEGORY_TOKEN: u32 = 0x5a1;
 
 pub fn fixture() -> (
@@ -31,7 +29,6 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             let mut tables = std::array::from_fn(|index| {
                 TableView::Complete(TableRows::empty(TableId::ALL[index]))
             });
-            // An alias reference: the save names the linked country's tag.
             tables[TableId::LocalPlayer.index()] =
                 TableView::Complete(TableRows::LocalPlayer(vec![
                     replay_data::rows::LocalPlayerRow {
@@ -42,8 +39,6 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             tables[TableId::ReservedCountryNaming.index()] =
                 TableView::Complete(TableRows::ReservedCountryNaming(vec![
                     replay_data::rows::ReservedCountryNamingRow {
-                        // This shared prefix fixture has no physical country census
-                        // or launch-source packet; its save has no admitted emission ledger.
                         country_array: Recorded::NotRecorded,
                         launch_sources: Recorded::NotRecorded,
                         ..Default::default()
@@ -174,8 +169,6 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         ..Default::default()
                     },
                 ]));
-            // A current recording decodes the tables its format no longer
-            // records as named absences, never as complete empty tables.
             for table in TableId::ALL {
                 if let Some(reason) =
                     replay_data::format::FormatVersion::CURRENT.table_refusal(table)
@@ -291,8 +284,6 @@ pub fn division_fixture() -> (
             expeditionary_owner: 301,
             province: 1,
             template,
-            // As a recording stores them, in tenths (replay_data::display); the
-            // save keeps the exact 90071992547.40993 and 53.45454.
             hit_points: 9_007_199_254_740_000,
             organisation: 5_340_000,
             orders_group: 0,

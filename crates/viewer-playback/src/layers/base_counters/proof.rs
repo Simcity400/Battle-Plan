@@ -1,6 +1,3 @@
-//! The base counters layer's line of the proof tool (`playback_cost::proof`): its parts against
-//! today's base tables of the same hour (`HourTables::base_values`) and against itself composed
-//! anew.
 
 use super::{BaseCounters, BaseCountersFed};
 use crate::{document::Document, layers::{Layer, Upstream}, comparison::Compared, playhead_host::mirror::Mirrors};
@@ -8,7 +5,6 @@ use serde_json::json;
 use std::io;
 use viewer_counters::map::counters::BaseValues;
 
-/// The window's layer: the counters made on their worker.
 pub fn make(_document: &Document) -> Box<dyn Layer> {
     Box::new(BaseCountersFed::new(BaseCounters::new()))
 }
@@ -26,7 +22,6 @@ fn note(compared: &mut Compared, what: String) {
     compared.first.get_or_insert(what);
 }
 
-/// Each part of `a` against `b`'s, by entry, the first difference described.
 fn compare(compared: &mut Compared, a: &BaseValues, b: &BaseValues, what: &str) {
     compared.entries += (a.wings.len() + a.controlled.len() + a.site_bases.len() + a.radar.len() + 5) as u64;
     for (key, count) in a.wings.iter() {
@@ -68,7 +63,6 @@ pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let Some((choice, _)) = layer.perspective() else {
         return Err(io::Error::other("the base counters layer was given no perspective"));
     };
-    // Today places no base icon with the base icons switched off: neither draws here.
     if layer.hidden() {
         compared.entries = 1;
         if layer.values().is_some() {

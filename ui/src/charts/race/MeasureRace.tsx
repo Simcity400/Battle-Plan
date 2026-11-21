@@ -58,29 +58,21 @@ import type { MeasureParts, PartValues } from './measureParts';
 import { PartFollows, PartsHead, usePartStates } from './PartFollows';
 import PartsBreakdown from './PartsBreakdown';
 
-/** Whether a line holds more than none in any bin it draws: a top N of what only some countries hold (bombs) draws
- * none of the others. */
 const holds = (summary: ChartSummary) => summary.buckets.some(bucket => bucket !== null && bucket.maxValue > 0);
 
-/** The rows of a followed answer holding a value, by name, whatever their order. */
 function valuedRows(answer: FollowedRows): string[] {
   const names: string[] = [];
   for (let row = 0; row < answer.rows; row++) if (cellState(answer, row * answer.columns) === CELL.value) names.push(rowName(answer, row) ?? String(row));
   return names;
 }
 
-/** What renders a followed answer: which rows hold a value, whatever their order (a row came or went). */
 function followedRows(answer: FollowedAnswer | undefined): string {
   if (!answer || answer.kind === 'notRecorded') return answer?.kind ?? '';
   return valuedRows(answer).sort().join(',');
 }
 
-/** A followed top's structure: every country it has ranked since its query was asked (`stickyMembers`), so a country
- * entering the top it held before, or the top reordering, renders nothing and asks no part or look again. */
 const TOP_ROWS = '=';
 
-/** A read of a chart's view, one at a time: a view that moves while a read runs is read once that one lands, and the
- * newest landed reply stays shown meanwhile. */
 function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string, active: boolean, read: (view: V, signal: AbortSignal) => Promise<T>) {
   const [state, setState] = useState<{ lane: string; viewKey: string; data?: T; error?: Failure; errorKey?: string }>();
   const [landed, setLanded] = useState(0), [attempt, setAttempt] = useState(0);
@@ -104,8 +96,6 @@ function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string
       flight.current = null;
       if (!controller.signal.aborted) setLanded(count => count + 1);
     });
-    // The view's key is its identity; the view object is made again each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lane, viewKey, active, landed, attempt]);
   useEffect(() => () => { if (flight.current?.lane === lane) { flight.current.controller.abort(); flight.current = null; } }, [lane, active]);
   const current = state?.lane === lane ? state : undefined;
@@ -114,53 +104,33 @@ function useViewReply<V, T>(lane: string | null, view: V | null, viewKey: string
 }
 
 export interface MeasureRaceProps extends Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot'> {
-  /** The declared, ranked measure every country is raced by. */
   measure: RankedMeasure;
-  /** Its raw values' fixed-point decimals, as declared. */
   decimals: number;
-  /** `mix` is one country's parts over time with `parts`, else one country's lines by alias (`mix`). */
   view: RaceView;
   options: Readonly<Record<string, OptionValue>>;
   label: string; icon: IconName;
   arsenal?: HeadProduct<NuclearArsenalReply>;
-  /** A raw value as the widget writes it. */
   format: (raw: string, decimals: number) => string;
   formatValue: (value: number) => string;
-  /** Opened from a bar or a line at an hour, where the measure has no parts to break it down. */
   onPick?: (hour: number, tag?: string) => void;
-  /** Shown beside the chart (a breakdown of what was picked). */
   children?: ReactNode;
-  /** Reports the warnings of what it read. */
   onWarnings?: (warnings: readonly string[]) => void;
-  /** A note every tooltip ends with. */
   note?: string;
-  /** What the measure is made of: race bars split by them (`split`), one country's mix, and a breakdown a bar or line
-   * opens (and that `show: breakdown` pins). */
   parts?: MeasureParts;
   split?: boolean;
-  /** Shown under one country's breakdown: what the widget adds for the country at the hour shown, and whether that
-   * hour follows the head. */
   details?: (tag: string, hour: number, following: boolean) => ReactNode;
-  /** A top N races only countries holding more than none (chosen countries are shown whatever they hold). */
   positiveOnly?: boolean;
-  /** Whether a pick opens a country's breakdown of its parts (it does by default where there are parts). */
   breakdown?: boolean;
-  /** A second measure of the same series, drawn dashed beside each line. */
   second?: RankedMeasure;
-  /** The `mix` view without parts: one country's lines, each alias over its spans. */
   mix?: { tag: string; spans: ReadonlyMap<string, readonly { firstHour: number; lastHour: number }[]> } | null;
-  /** Replaces a country's tooltip; null shows none. */
   tooltip?: (tag: string, hour: number, name: string, labelAt: LabelAt) => TooltipContent[] | null;
   lineTooltip?: (hour: number, tags: readonly string[], labelAt: LabelAt, country: (tag: string) => string) => Iterable<TooltipContent>;
-  /** The hour the reader points at on the lines; null when it leaves. */
   onHover?: (hour: number | null) => void;
   beforeChart?: ReactNode;
 }
 
-/** A line of the second measure: its id beside the first's tag. */
 export const secondLineId = (tag: string, measure: RankedMeasure) => JSON.stringify([tag, measure.measure]);
 
-/** The chart's newest summaries, read as it draws: the first measure's by tag, the second's by `secondLineId`. */
 function joinedSummaries(first: Live<ReadonlyMap<string, TiledLine> | null> | null, second: Live<ReadonlyMap<string, TiledLine> | null> | null,
   measure: RankedMeasure | undefined): Live<ReadonlyMap<string, ChartSummary> | null> {
   let held: { a: unknown; b: unknown; out: ReadonlyMap<string, ChartSummary> | null } | null = null;
@@ -175,13 +145,6 @@ function joinedSummaries(first: Live<ReadonlyMap<string, TiledLine> | null> | nu
   };
 }
 
-/** A race and country lines of one declared series' ranked measure. Following playback, the race is a followed top N
- * (or the chosen countries) at the head, painted as it moves; pinned, on a range or not followed, it is asked at its
- * hour (a ranked `series-state`, or the chosen countries' states). Lines are tiles for chosen countries, followed at the head,
- * and for a top N the view's ranked chart (`series-summary`), each bin's members from the summaries' ranks. With parts,
- * the bars split by them (each part followed for the race's countries), one country's mix stacks them over time, and a
- * pick opens that country's breakdown. Without parts, `mix` draws one country's lines by alias, and a `second` measure
- * draws dashed beside each line. */
 export default function MeasureRace({ arsenal, widget, runtime, active, countrySlot = null, measure, decimals, view, options, label, icon, format, formatValue, onPick, children, onWarnings, note,
   parts, split = false, details, positiveOnly = false, breakdown = true, second: secondMeasure, mix, tooltip: ownTooltip, lineTooltip, onHover, beforeChart }: MeasureRaceProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -200,17 +163,15 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
   const pinnedParts = !!parts && options.show === 'breakdown';
-  // Parts shown alone (pinned, or the parts mix) draw no race; the lines mix is drawn as lines.
   const raceView = pinnedParts || (view === 'mix' && !!parts) ? null : view === 'race' ? 'race' : 'lines';
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const asked = top == null && tags.length > 0;
-  // The race is followed for the mix's country too: its first is the mix's.
   const racing = raceView === 'race' || (!!parts && raceView === null && top != null);
   const followQuery = useMemo(() => !arsenal && active && following && track && (top != null || asked) && (racing || asked)
     ? { product: 'series-state', params: { branchId: track.branch.id, family: measure, ...(top != null && racing ? { top } : { reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) }) } } : null,
-  [active, following, track?.branch.id, measure, top, asked, tags, racing, !!arsenal]); // eslint-disable-line react-hooks/exhaustive-deps
+  [active, following, track?.branch.id, measure, top, asked, tags, racing, !!arsenal]);
   const live = useRef<ReturnType<typeof liveRace> | null>(null);
   const sticky = useRef<StickyMembers | null>(null);
   const followKey = followQuery ? canonical(followQuery) : '';
@@ -234,18 +195,16 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
   useShownEachFrame(runtime.clock, widget.kind === 'nuclear-arsenal' && raceView === 'race' ? null : () => track ? following ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : moment : null);
 
-  // The race's parts: followed for the race's countries at the head; elsewhere asked with the race's hour.
   const partsKey = parts ? JSON.stringify(parts.kind === 'keyed' ? [parts.family, parts.partBits] : parts.items.map(item => [item.id, item.measure])) : '';
-  const raceHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const raceHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);
   const splitting = !!parts && split && raceView === 'race';
-  // Hatch parts (damaged factories inside the built ones) are followed for the race's bars whether split or not.
   const hatches = useMemo(() => parts?.kind === 'measures' ? hatchesOf(parts.items) : new Map<string, string>(), [parts]);
   const hatching = hatches.size > 0 && raceView === 'race';
   const partsRead = splitting || hatching;
   const entry = racing && followedHead ? followed.entry : null;
   const followedTags = useMemo(() => !entry ? [] : followed.structure.startsWith(TOP_ROWS)
     ? followed.structure.slice(TOP_ROWS.length).split(',').filter(Boolean) : followedRowTags(entry.answer, top == null ? tags : null),
-  [entry, followed.structure, top, tags]); // eslint-disable-line react-hooks/exhaustive-deps
+  [entry, followed.structure, top, tags]);
   const proportional = parts?.kind === 'measures' && parts.proportional === true;
   const partIds = useCallback((values: ReadonlyMap<string, PartValues>) => !parts ? [] : parts.kind === 'measures' ? drawnItems(parts.items).map(item => item.id) : keyedIds(values.values()),
     [parts]);
@@ -279,7 +238,6 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const entries = useMemo(() => arsenal?.data ? arsenalRows(arsenal.data, arsenal.at ?? moment, selection) : decorate(unsplit, askedParts.values),
     [arsenal?.data, arsenal?.at, moment, selection, decorate, unsplit, askedParts.values]);
 
-  // Lines: chosen countries from tiles (their last bin at the followed value), a top N from the view's ranked chart.
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const onReach = useCallback((hour: number | null) => { setHoverHour(hour); onHover?.(hour); }, [onHover]);
   const series = useMeasureSeries(runtime.client, track?.source, track?.branch.id, measure.kind, measure.measure, raceView === 'lines' && asked ? tags : [],
@@ -302,17 +260,15 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     if (top == null) { series.onSummaryView(next); return; }
     setChartView(before => before?.key === rankedKey && before.from === next.from && before.to === next.to && before.width === next.width ? before
       : { key: rankedKey ?? '', from: next.from, to: next.to, width: next.width });
-  }, [top, rankedKey, series.onSummaryView]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [top, rankedKey, series.onSummaryView]);
   const lineTags = useMemo(() => top == null ? tags : (rankedLines.data?.lines ?? []).filter(line => !positiveOnly || holds(line.summary)).map(line => line.tag),
     [top, tags, rankedLines.data, positiveOnly]);
-  // The second measure's lines are tiles of the same countries over the same spans.
   const seconds = useMeasureSeries(runtime.client, track?.source, track?.branch.id, secondMeasure?.kind ?? measure.kind, secondMeasure?.measure ?? measure.measure,
     raceView === 'lines' && secondMeasure ? lineTags : [], null, null, active && raceView === 'lines' && !!secondMeasure, false,
     top == null ? membership ?? undefined : undefined, lastHour, following);
-  // The second measure's head, followed like the first's: its last bin is painted from the followed value.
   const secondQuery = useMemo(() => active && following && track && secondMeasure && raceView === 'lines' && asked
     ? { product: 'series-state', params: { branchId: track.branch.id, family: secondMeasure, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
-  [active, following, track?.branch.id, secondMeasure, raceView, asked, tags]); // eslint-disable-line react-hooks/exhaustive-deps
+  [active, following, track?.branch.id, secondMeasure, raceView, asked, tags]);
   const secondFollowed = useFollow(store, secondQuery, root, () => {}, followedRows);
   const secondEntry = secondMeasure && followsHead(secondFollowed) && secondFollowed.entry !== null ? secondFollowed.entry : null;
   useEffect(() => {
@@ -327,7 +283,6 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     if (secondMeasure) for (const [tag, line] of seconds.held ?? []) out.set(secondLineId(tag, secondMeasure), line.summary);
     return out;
   }, [top, series.held, rankedLines.data, positiveOnly, secondMeasure, seconds.held]);
-  // Tiles are read as the chart draws, so a tile landing while following renders nothing.
   const seriesLive = series.live, secondLive = seconds.live;
   const lineData = useMemo(() => following && (top == null || secondMeasure) ? joinedSummaries(top == null ? seriesLive : null, secondMeasure ? secondLive : null, secondMeasure)
     : undefined, [top, following, seriesLive, secondLive, secondMeasure]);
@@ -337,7 +292,6 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const lines = useMemo<CountryRaceLine[]>(() => lineTags.flatMap(tag => [{ tag, runs: [] },
     ...(secondMeasure ? [{ tag, id: secondLineId(tag, secondMeasure), runs: [], dash: SECONDARY_DASH }] : [])]), [lineTags, secondMeasure]);
 
-  // One country's breakdown: the mix view's, a pinned breakdown's, or the one a pick opens.
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, measure, partsKey, widget.countries]);
   const [drillState, setDrill] = useState<{ key: string; drill: DrillState }>({ key: resetKey, drill: CLOSED });
   const drill = drillState.key === resetKey ? drillState.drill : CLOSED;
@@ -348,14 +302,12 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   const breakdownFollows = following && (drill.breakdown == null || drill.follow);
   const breakdownHour = Math.floor(drill.breakdown != null ? drillHour(drill, moment) ?? moment : moment);
   const breakdownTags = useMemo(() => breakdownTag ? [breakdownTag] : [], [breakdownTag]);
-  const breakdownHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const breakdownHead = useMemo(() => parts ? new PartsHead(parts) : null, [partsKey]);
   const breakdownOn = active && !!breakdownTag && breakdownFollows;
   const breakdownAsked = usePartStates(runtime.client, track?.source, track?.branch.id, parts, breakdownTags, breakdownHour, active && !!breakdownTag && !breakdownFollows);
-  // A slot is named by the tag its country goes by at the hour its breakdown shows.
   const [breakdownName] = useKeyTagsAt(runtime, track, breakdownTags, clockHour => breakdownFollows && track
     ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? breakdownHour : breakdownHour, breakdownFollows, active && !!breakdownTag);
   const anchor = useRef<HTMLDivElement | null>(null);
-  // A pinned breakdown names its country in the widget's header, dated at the hour shown (painted while following).
   const headerWanted = useMemo(() => pinnedParts && countrySlot && breakdownTag ? [{ tag: breakdownTag, hour: breakdownHour }] : [],
     [pinnedParts, countrySlot, breakdownTag, breakdownHour]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && pinnedParts && !!countrySlot);

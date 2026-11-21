@@ -1,27 +1,3 @@
-//! CountryLeaderRoles rows held between hours ([`crate::character_changes`]).
-//!
-//! The leader role job walks the roster job's admitted census. A character's rows are carried,
-//! without reading its map, roles or ideologies, only when its census pointer, id and
-//! country-leader map header (head node and size) equal the held read's and no hooked writer
-//! touched the character since that read registered it; the country comes from this hour's census.
-//! The map, its roles' parent links and current ideologies (`ccountry::LEADER_IDEOLOGY`) are
-//! written only at hooked sites ([`engine_mutations::character_role_mutations`],
-//! [`engine_mutations::advisor_mutations`]); set_country_leader_ideology names no character and revokes every
-//! certificate, and a `CIdeology` token is a database value. Without an admitted census the job
-//! walks the roster and the cache forgets its rows.
-//!
-//! A fresh empty map is checked from its batch-gathered sentinel, as the
-//! census acquisition checks it; every other fresh character is read by
-//! `ccountry_leader::walk_entry` through the census view.
-//!
-//! A quiet hour carries the whole table without a lookup: when the last
-//! complete capture held every occurrence, the character domain's quiet
-//! token ([`Changes::quiet`]) equals the one taken before that capture's
-//! first registration, and the census has that capture's generation
-//! ([`census::Admitted::generation`]), no observed writer ran and every
-//! occurrence, identity, country and map header is the one read then, so
-//! each held certificate still matches and the held rows are what a fresh
-//! read returns.
 use super::*;
 use crate::character_changes::{Changes, Counts, Table};
 use std::ops::Range;
@@ -45,7 +21,6 @@ struct Entry {
 
 #[derive(Debug, Default)]
 struct Held {
-    /// Sorted by character pointer once the capture finishes.
     entries: Vec<Entry>,
     rows: Vec<ccountry_leader::Row>,
 }
@@ -62,8 +37,6 @@ impl Held {
             .ok()
     }
 
-    /// `false` when storage could not grow, which only withholds the
-    /// certificate.
     fn hold(&mut self, certificate: Certificate, rows: &[ccountry_leader::Row]) -> bool {
         let stored = engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut self.entries, 1)?;
@@ -91,15 +64,10 @@ impl Held {
 pub(crate) struct LeaderCache {
     current: Held,
     previous: Held,
-    /// This capture's rows in roster order.
     rows: Vec<ccountry_leader::Row>,
     pub(super) outcome: Outcome,
     scope: (usize, usize),
-    /// The last capture finished; otherwise nothing it held certifies.
     finished: bool,
-    /// What lets a quiet hour carry `rows` whole: the domain's quiet token
-    /// before the last complete capture and its census generation, when it
-    /// held every occurrence.
     quiet: Option<((u64, u64), u64)>,
     pub(super) counts: Counts,
 }
@@ -119,8 +87,6 @@ impl Default for LeaderCache {
     }
 }
 
-/// A view that serves the one map sentinel this callback already gathered;
-/// every other read goes to `inner`.
 struct Gathered<'a, M: Memory> {
     inner: &'a M,
     sentinel: Option<(usize, [u8; census::SENTINEL])>,
@@ -145,7 +111,6 @@ struct Plan {
 }
 
 impl LeaderCache {
-    /// Nothing held certifies anything: the next capture reads afresh.
     pub(super) fn forget(&mut self) {
         self.finished = false;
         self.quiet = None;
@@ -157,10 +122,6 @@ impl LeaderCache {
             + crate::raw_memory::vector_bytes(&self.rows)
     }
 
-    /// One occurrence's rows read afresh into `rows[start..]`, as the walk
-    /// reads them: an empty map from its gathered sentinel, any other through
-    /// the census view, which serves the gathered sentinel. With `room` its
-    /// map's size in rows is reserved for it. `Err` is an allocation failure.
     #[allow(clippy::too_many_arguments)]
     fn read_fresh(
         memory: &impl Memory,
@@ -193,8 +154,6 @@ impl LeaderCache {
         )
         .and_then(|view| {
             let entry = view.entry()?;
-            // The walk's own sentinel read is served from the batch that
-            // already copied it.
             let memory = Gathered {
                 inner: &view,
                 sentinel: gathered.zip(head).map(|(bytes, (head, _))| (head, bytes)),
@@ -210,7 +169,6 @@ impl LeaderCache {
     }
 
     fn plan(&self, changes: &dyn Changes, occurrence: &census::Occurrence) -> Plan {
-        // Registration precedes every read it certifies.
         let certificate = changes
             .sequence(occurrence.pointer)
             .map(|(epoch, sequence)| Certificate {
@@ -227,8 +185,6 @@ impl LeaderCache {
         Plan { certificate, held }
     }
 
-    /// One hour's rows from the admitted census, carrying each certified
-    /// character's held rows with its census country.
     pub(super) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -239,7 +195,6 @@ impl LeaderCache {
     ) {
         use census::{SENTINEL, SENTINEL_BATCH};
         let scope = (base, game_state);
-        // Taken before any registration or read this capture certifies.
         let token = changes.quiet();
         if self.finished
             && self.scope == scope
@@ -267,7 +222,6 @@ impl LeaderCache {
         self.finished = false;
         let mut failure = None;
         let mut unread = 0_u32;
-        // Every occurrence so far holds a certificate.
         let mut held_all = true;
         let mut plans = [Plan::default(); SENTINEL_BATCH];
         let mut slots = [usize::MAX; SENTINEL_BATCH];
@@ -376,8 +330,6 @@ impl LeaderCache {
                 |entry| entry.certificate.pointer,
             );
             self.finished = true;
-            // Carried whole only when every occurrence holds a certificate;
-            // a duplicated pointer dropped its entries and is read afresh.
             self.quiet = token
                 .filter(|_| {
                     held_all
@@ -392,7 +344,6 @@ impl LeaderCache {
         crate::character_changes::record(Table::CountryLeaderRoles, &self.counts);
     }
 
-    /// Decode worker: this capture's rows into the pooled table.
     pub(super) fn decode(&self, captured: &mut Captured) {
         let len = self.outcome.len();
         let rows = &mut captured.leaders.rows.rows;

@@ -1,4 +1,3 @@
-# Build output
 /.cargo-target/
 /target/
 /.pnpm-store/
@@ -19,7 +18,6 @@ node_modules/
 *.dxil
 *.cso
 
-# Local configuration and captures
 /collector.json
 /viewer.json
 /ui/.env.local
@@ -30,7 +28,10 @@ node_modules/
 /.mcp.json
 /.claude/
 /.codex/
-/.agents/
+/.agents/*
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/delete-comment/
 /.aws/
 /.ssh/
 /captures/
@@ -51,15 +52,12 @@ node_modules/
 *.h4s
 *.hoi4
 
-# Editor and operating-system files
 Thumbs.db
 desktop.ini
 .DS_Store
 *.swp
 
-# Local probe examples
 /crates/viewer/examples/map_shader_probe.rs
 /crates/viewer/examples/map_shader_probe/
 
-# Python bytecode
 __pycache__/

@@ -1,5 +1,3 @@
-//! Owned native-layout unit populations. Counts and topology are test inputs,
-//! not content assumptions. Pointers are relocated only after allocation ends.
 use engine_deployment::carmy_upgrades_requests as upgrades;
 use engine_native::{
     cair_base, cair_wing, cair_wing_pool, carmy, ccountry, cequipment_variant as variant,
@@ -83,13 +81,9 @@ pub fn build(shape: Shape) -> World {
     build_with_activity(shape, false)
 }
 
-/// `active` sends every fourth division on a two-province route and puts a
-/// tenth of the divisions into two-division land battles.
 pub fn build_with_activity(shape: Shape, active: bool) -> World {
     assert!(shape.countries > 0 && shape.countries < u16::MAX as usize);
     assert!(shape.wings > 0 && shape.planes.is_multiple_of(shape.wings));
-    // The zeroed prefix stands in for the module image: vtable and global RVAs
-    // resolve against the heap base and lie below the first allocation.
     let mut h = Heap {
         bytes: vec![0; 0x0350_0000],
         pointers: Vec::new(),
@@ -258,7 +252,6 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
             (slot as u64) << 32 | cship::HANDLE_TYPE as u64,
         );
         h.u32(base + cair_base::CAPACITY, wings.len() as u32 * 10);
-        // One occupied container in the native country-slot-sized base array.
         let container = h.alloc(engine_native::ccountry_air_container::SIZE);
         h.ptr(container, engine_native::ccountry_air_container::VTABLE_RVA.0);
         h.u32(
@@ -312,7 +305,6 @@ pub fn build_with_activity(shape: Shape, active: bool) -> World {
     if active {
         use engine_native::{cland_combat as combat, cland_combatant as side};
         let mut combats = Vec::new();
-        // Ten percent fighting, one distinct attacker and defender per battle.
         for pair in armies[..(shape.divisions / 20) * 2].chunks_exact(2) {
             let battle = h.alloc(0x100);
             h.ptr(battle, combat::VTABLE_RVA.0);
@@ -380,7 +372,6 @@ fn share(total: usize, countries: usize, slot: usize) -> std::ops::Range<usize> 
 
 impl World {
     pub fn live(&self) -> CountedMemory<LiveMemory> {
-        // SAFETY: this immutable fixture owns every pointee through each walk.
         CountedMemory::new(unsafe { LiveMemory::new() })
     }
 }

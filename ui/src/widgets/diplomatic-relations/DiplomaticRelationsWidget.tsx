@@ -50,14 +50,10 @@ const NO_WARNINGS: string[] = [];
 const OPINIONS = { kind: 'relation-opinions', measure: 'opinion' } as const;
 const NO_DOMAIN: OpinionDomain = { low: 0, high: 0, settled: false };
 
-/** One pair's opinions of each other over the campaign: the first country's of the second in
- * its colour, the reverse dashed; unrecorded stretches are gaps. Each is a `(owner, target)` line
- * of the declared `relation-opinions` series, drawn from its tiles. */
 function PairHistory({ runtime, track, pair: chosen, hour, active, following }: Pick<WidgetProps, 'runtime' | 'active'> & {
   track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>; pair: ChosenPair; hour: number; following: boolean;
 }) {
   const clock = runtime.clock, axisOffset = track.axisOffset;
-  // Following, the cursor moves with the clock each frame, between renders.
   const liveHead = useMemo(() => following ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => clock.subscribeFrame(changed) }
     : undefined, [following, clock, axisOffset]);
   const root = useRef<HTMLDivElement>(null);
@@ -65,8 +61,6 @@ function PairHistory({ runtime, track, pair: chosen, hour, active, following }: 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const series = useKeyedSeries(runtime.client, runtime.clock, { source: track.source, branchId: track.branch.id, family: OPINIONS, keys, partBits: 32, lastHour: track.branch.lastHour, axisOffset: track.axisOffset },
     hour, hoverHour, false, active, root);
-  // Names and colours belong to the holders the tags named when the pair was chosen, read
-  // at that hour itself, so a later holder of either tag never lends its look.
   const looks = useHolderLooks(runtime.client, track, useMemo(() => pairHolders(chosen), [chosen]), active, useChartTokens());
   const label = (index: number) => looks.name(index ? 'second' : 'first');
   const colour = (index: number) => looks.colour(index ? 'second' : 'first');
@@ -95,9 +89,6 @@ function PairHistory({ runtime, track, pair: chosen, hour, active, following }: 
   </div>;
 }
 
-/** Every chosen country's opinion of every other at the hour shown: rows at an hour (`diplomatic-relations`), pushed at
- * the head while following and rendered only when its countries or which of them were read change; every opinion is a
- * live pair cell painted each frame. */
 export default function DiplomaticRelationsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -112,7 +103,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const [rankRoot, setRankRoot] = useState<HTMLDivElement | null>(null);
   const ranked = useTopCountries({ widget, runtime, active }, track, top, options.topMeasure, useMemo(() => ({ current: rankRoot }), [rankRoot]));
   const members = useMemo(() => (resolved?.tags ?? []).filter(tag => !resolved?.membership || resolved.membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)),
-    [resolved?.tags.join(','), resolved?.membership, hour]); // eslint-disable-line react-hooks/exhaustive-deps
+    [resolved?.tags.join(','), resolved?.membership, hour]);
   const tags = top === null ? members : ranked.tags ?? NO_TAGS;
   const opinions = useHeadProduct(runtime, widget, 'diplomatic-relations', track && (top === null || ranked.tags) && tags.length > 1 ? { countries: tags.map(countryFromKey) } : null,
     { active, validate: validateRelations, structure: relationsStructure });
@@ -121,8 +112,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const live = opinions.live;
   useShownEachFrame(clock, () => data ? opinions.shownAt() : null, opinions.live);
   const [visibleTags, setVisibleTags] = useChangedState<readonly string[]>([]);
-  // A pair names its countries by tag and hour in one recording's branch: another one drops it.
-  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
   const [choice, setChoice] = useState<{ scope: object; pair: ChosenPair } | null>(null);
   const picked = choice?.scope === scope ? choice.pair : null;
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => [...tags.map(tag => ({ hour: shown, tag })),
@@ -134,8 +124,6 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
     id => { const faction = groups.data?.factions.find(item => item.id === id); return faction ? factionNameAt(faction, shown, displayNames[id]).name ?? id : id; }), [tags, options.order, label, groups.data, shown, displayNames]);
   const axis = useMemo<MatrixAxisItem[]>(() => ordered.map(tag => { const country = flags.labelAt(shown)(tag); const named = label(tag);
     return { id: tag, label: named.name, countryFlag: { ...(named.nameFailure ? { nameFailure: named.nameFailure } : {}), flag: country.flag, flagReason: country.flagReason, ...(country.flagDetail !== undefined ? { flagDetail: country.flagDetail } : {}), flagPending: country.flagPending } }; }), [ordered, flags, label, shown]);
-  // The colour domain and the legend's extremes are the recorded values' once the matrix's countries' cells first answer,
-  // held until those countries change, so they do not move each frame; a value past them is drawn at the extreme's colour.
   const domainOf = useMemo(() => {
     let held: OpinionDomain | null = null;
     return () => data ? held = opinionDomain(data, live.read(), held) : NO_DOMAIN;

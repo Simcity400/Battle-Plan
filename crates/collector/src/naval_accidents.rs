@@ -1,5 +1,3 @@
-//! Worker-only first/change retained naval accident acquisition.
-//! The shared navy writer owner supplies a complete per-navy certificate.
 use engine_native::Memory;
 use engine_naval_history::cnaval_accident_report as native;
 use replay_data::rows::NavalAccidentReportRow;
@@ -42,8 +40,6 @@ struct Cache {
     charge: crate::raw_memory::Charge,
 }
 impl Cache {
-    /// Called on the existing navy worker, never in the capture itself.
-    /// A world-occurrence change revokes all held identities before reuse.
     pub(crate) fn prepare(
         &mut self,
         lifetime: Option<u64>,
@@ -60,8 +56,6 @@ impl Cache {
             .map_err(|_| "naval accident cache allocation failed")?;
         Ok(())
     }
-    /// Certificates must be from the same pass and checked again by the caller
-    /// before publication. An uncertified observer never falls back to polling.
     pub(crate) fn country(
         &mut self,
         memory: &impl Memory,
@@ -114,7 +108,6 @@ impl Cache {
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
-/// Frame buffers share the same certified worker-held observations.
 #[derive(Default)]
 pub(crate) struct Captured;
 impl Captured {

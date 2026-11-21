@@ -1,18 +1,6 @@
-//! Flags resolved for native GUI text and masked shields.
-//!
-//! [`FlagSource`] binds recorded countries and resolved artwork for [`text_flag`]
-//! and [`shield_flag`]. Inline text flags need at least three tag bytes. Database
-//! lookup and canonical slots preserve their out-of-range fallback to entry zero.
-//! A valid loaded small-atlas record draws a ten-by-seven flag.
-//!
-//! Masked shields choose the requested atlas and compare their index signed against
-//! its count, falling back to record zero beyond it. A valid record with a loaded
-//! page draws at its stored coordinates. The overlay draws independently.
-//! Atlas slots contain each country's current flag from the recording and content.
 
 use super::native_gui::Texture;
 
-/// Small atlas keys may fall back to the plain three-byte tag.
 pub fn resolved_flag_cell(
     atlas: &super::lazy_icons::LazyFlags,
     key: &str,
@@ -33,7 +21,6 @@ pub fn resolved_flag_cell(
     })
 }
 
-/// A producer-resolved key keeps its selected art; the game uses 10x7.
 pub fn resolved_text_flag(
     atlas: &super::lazy_icons::LazyFlags,
     key: &[u8],
@@ -46,35 +33,22 @@ pub fn resolved_text_flag(
     }))
 }
 
-/// One atlas record as the draw reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FlagRecord {
-    /// The record is invalid: nothing is drawn.
     Invalid,
-    /// A valid record's `[x, y, w, h]` page coordinates and loaded page.
-    /// `None` for a null page pointer, which draws nothing.
     Cell {
         coords: [f32; 4],
         page: Option<Texture>,
     },
 }
 
-/// What a flag draw reads that the caller binds from the recording and the content. Each `Err`
-/// names the operand the recording or the content lacks, which the window is refused by.
 pub trait FlagSource {
-    /// Resolve `tag` to its country's canonical slot using the database's byte
-    /// hashing and comparison rules. `Ok(None)` when the database does not hold it.
     fn tag_slot(&self, tag: &[u8]) -> Result<Option<u32>, String>;
-    /// Unknown tag indices fall back to the database's first tag and canonical slot.
     fn first_tag_slot(&self) -> Result<u32, String>;
-    /// The atlas's record count; `small` selects the small atlas, otherwise the ordinary atlas.
     fn atlas_len(&self, small: bool) -> Result<i32, String>;
-    /// Record `index` of the atlas, `0 <= index < atlas_len`.
     fn atlas_record(&self, small: bool, index: i32) -> Result<FlagRecord, String>;
 }
 
-/// Use atlas record `index` when it is below the signed count, else record 0.
-/// A negative index is below every count and reads before the records.
 fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord, String> {
     let len = source.atlas_len(small)?;
     if index < 0 {
@@ -86,11 +60,8 @@ fn record(source: &dyn FlagSource, small: bool, index: i32) -> Result<FlagRecord
     source.atlas_record(small, if index < len { index } else { 0 })
 }
 
-/// A text's inline flag for `tag` ([`super::native_gui::Resources::text_flag`]): the small
-/// atlas's cell as a [`Texture`] of 10 by 7, or `Ok(None)` when nothing is drawn.
 pub fn text_flag(source: &dyn FlagSource, tag: &str) -> Result<Option<Texture>, String> {
     let tag = tag.as_bytes();
-    // `inline flag drawing` measures the tag as a C string: a NUL ends it.
     let tag = installed_content_core::parser::c_string(tag);
     if tag.len() <= 2 {
         return Ok(None);
@@ -112,8 +83,6 @@ pub fn text_flag(source: &dyn FlagSource, tag: &str) -> Result<Option<Texture>, 
     })
 }
 
-/// A masked shield's flag at `index` ([`super::native_gui::Resources::shield_flag`]): its page
-/// and its record's `FlagCoords`, or `Ok(None)` when only the overlay draws.
 pub fn shield_flag(
     source: &dyn FlagSource,
     small: bool,
@@ -220,8 +189,6 @@ mod tests {
         );
     }
 
-    /// Two countries in the database, `GER` in slot 3 and `ITA` in slot 9; a small atlas of
-    /// five records whose record 2 is invalid and record 4 has no page.
     struct Recorded;
 
     fn page(texture: usize) -> Texture {
@@ -269,13 +236,9 @@ mod tests {
         assert_eq!(cell.texture, 1);
         assert_eq!(cell.size, [10, 7]);
         assert!((cell.uv[0] - 0.3).abs() < 1e-6 && (cell.uv[2] - 0.4).abs() < 1e-6);
-        // Past the atlas: record 0.
         assert_eq!(flag("ITA").unwrap().unwrap().uv[0], 0.0);
-        // An unknown tag draws the database's first tag's slot.
         assert!((flag("XXX").unwrap().unwrap().uv[0] - 0.1).abs() < 1e-6);
-        // Fewer than three bytes: nothing.
         assert_eq!(flag("GE"), Ok(None));
-        // What the recording lacks is named.
         assert!(flag("ENG").unwrap_err().contains("ENG"));
     }
 
@@ -285,7 +248,6 @@ mod tests {
         assert_eq!(shield_flag(&Recorded, true, 4), Ok(None));
         let (page, coords) = shield_flag(&Recorded, false, 1).unwrap().unwrap();
         assert_eq!((page.texture, coords[0]), (0, 0.1));
-        // The large atlas holds two: index 7 reads record 0.
         assert_eq!(shield_flag(&Recorded, false, 7).unwrap().unwrap().1[0], 0.0);
         assert!(
             shield_flag(&Recorded, true, -1)

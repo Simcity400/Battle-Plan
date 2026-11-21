@@ -1,8 +1,3 @@
-//! Reference-registry lookups for the air bases used by the flying-aircraft
-//! map. Pool and transfer bases resolve through the registry. Transfer admission
-//! rejects a transfer only when its handle resolves. A stateless base's controller
-//! comes from its host ship and task force's roster owner; a null task force is
-//! retained as such.
 
 use crate::{
     Memory, cair_base, cgame_state,
@@ -15,15 +10,9 @@ use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct BaseReference {
-    /// The resolved CAirBase, acquisition context only.
     pub object: usize,
-    /// Raw CState ID, the authored air-base slot key; None for a stateless base.
     pub state: Option<u32>,
-    /// A state base's cached province, otherwise the first province in the
-    /// manager's state/kind list.
     pub province: Option<u32>,
-    /// Complete raw host handle. State bases also retain the invalid reference;
-    /// every nonzero full handle is resolved independently of state.
     pub host: u64,
     pub kind: i32,
 }
@@ -54,8 +43,6 @@ fn authenticate(
     Ok(())
 }
 
-/// `None` is a registry miss, even if the manager roster holds the handle.
-/// A stateless base ignores its cached province, as the carrier controller does.
 pub fn read_base(
     memory: &impl Memory,
     base: usize,
@@ -65,7 +52,6 @@ pub fn read_base(
     Pass::new(base).read_base(memory, game_state, handle)
 }
 
-/// Bases one [`Pass::read_bases`] gathers.
 pub const BASE_BATCH: usize = 64;
 
 const BUCKET_FIELDS: [RecordField; 1] = packed_fields([(0, 24)]);
@@ -73,7 +59,6 @@ const BUCKET_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&BUCKET_FIE
     Some(layout) => layout,
     None => panic!("air reference bucket layout"),
 };
-/// [`Pass::read_base`]'s six base fields, in its order.
 const BASE_SPANS: [(usize, usize); 6] = [
     (0, 8),
     (cair_base::HANDLE, 8),
@@ -88,7 +73,6 @@ const BASE_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&BASE_FIELDS,
     Some(layout) => layout,
     None => panic!("air reference base layout"),
 };
-/// An identified object's vtable and u32 ID, as `read_base` reads them.
 const STATE_FIELDS: [RecordField; 2] = packed_fields([(0, 8), (cstate::ID, 4)]);
 const PROVINCE_FIELDS: [RecordField; 2] = packed_fields([(0, 8), (cprovince::ID, 4)]);
 const IDENTITY_ROW: usize = 12;
@@ -102,7 +86,6 @@ const PROVINCE_LAYOUT: RecordLayout<'static> =
         None => panic!("air reference province layout"),
     };
 
-/// The pointers one gathered copy reads from, and the rows it completed.
 struct Gather {
     pointers: [usize; BASE_BATCH],
     len: usize,
@@ -118,7 +101,6 @@ impl Gather {
         }
     }
 
-    /// Queues `pointer`; its row's index.
     fn push(&mut self, pointer: usize) -> usize {
         self.pointers[self.len] = pointer;
         self.len += 1;
@@ -135,8 +117,6 @@ impl Gather {
     }
 }
 
-/// One gathered identity record's ID when its vtable is `rva`'s; `None`
-/// when its copy did not complete or it is another object.
 fn identified(rows: &[u8], row: usize, gathered: usize, base: usize, rva: Rva) -> Option<u32> {
     if row >= gathered {
         return None;
@@ -147,12 +127,6 @@ fn identified(rows: &[u8], row: usize, gathered: usize, base: usize, rva: Rva) -
         .then(|| u32::from_le_bytes(record[8..].try_into().unwrap()))
 }
 
-/// One quiescent pass's lookups of many bases and hosts. Each registry's
-/// header is read once ([`creference_registry::ScopedResolver`]), and for
-/// state bases without a cached province the authenticated air manager, its
-/// state province lists by kind and the province roster are read once too;
-/// those are held only once read whole, so a failed read is read again. Every
-/// other read keeps its place: a held object is only not read again.
 pub struct Pass {
     base: usize,
     resolver: creference_registry::ScopedResolver,
@@ -172,7 +146,6 @@ impl Pass {
         }
     }
 
-    /// [`read_base`] within this pass.
     pub fn read_base(
         &mut self,
         memory: &impl Memory,
@@ -238,20 +211,6 @@ impl Pass {
         Ok(Some(reference))
     }
 
-    /// [`Self::read_base`] of up to [`BASE_BATCH`] `handles`, gathered:
-    /// their first registry buckets in one copy, their bases' six fields in
-    /// one, and their states' and cached provinces' identities in one each.
-    /// A later probe bucket and the manager's first-province lists are read
-    /// as `read_base` reads them. A value is used only after `read_base`'s
-    /// checks pass, in its order.
-    ///
-    /// Returns how many leading handles it read, each one's `read_base`
-    /// result in `output`. It stops at the first handle a gathered copy did
-    /// not complete for, or a read or check refused, and counts that
-    /// fallback (`batch_fallback`). The caller reads that
-    /// handle and the rest with `read_base`, so a persistent fault refuses
-    /// where it always did and a fault the gather met once refuses nothing
-    /// more.
     pub fn read_bases(
         &mut self,
         memory: &impl Memory,
@@ -263,7 +222,6 @@ impl Pass {
         let base = self.base;
         let count = handles.len().min(output.len()).min(BASE_BATCH);
         let mut limit = count;
-        // The first registry buckets, under the headers `resolve` reads.
         let mut headers = [None; BASE_BATCH];
         let mut bucket = [NONE; BASE_BATCH];
         let mut buckets = Gather::new();
@@ -282,7 +240,6 @@ impl Pass {
         }
         let mut bucket_rows = [0_u8; BASE_BATCH * 24];
         buckets.copy(memory, &BUCKET_LAYOUT, &mut bucket_rows);
-        // The resolved bases' fields.
         let mut object = [NONE; BASE_BATCH];
         let mut objects = Gather::new();
         for index in 0..limit {
@@ -309,7 +266,6 @@ impl Pass {
         }
         let mut field_rows = [0_u8; BASE_BATCH * BASE_ROW];
         objects.copy(memory, &BASE_LAYOUT, &mut field_rows);
-        // The states and cached provinces they name.
         let mut fields = [(0_u64, 0_u64, 0_u64, 0_i32); BASE_BATCH];
         let (mut state, mut province) = ([NONE; BASE_BATCH], [NONE; BASE_BATCH]);
         let (mut states, mut provinces) = (Gather::new(), Gather::new());
@@ -401,8 +357,6 @@ impl Pass {
         limit
     }
 
-    /// Air-base province-list lookup picks the manager's state-indexed province
-    /// lists by kind; province lookup takes the first ID.
     fn first_province(
         &mut self,
         memory: &impl Memory,
@@ -465,7 +419,6 @@ impl Pass {
         Ok(Some(id))
     }
 
-    /// [`read_host_owner`] within this pass.
     pub fn read_host_owner(
         &mut self,
         memory: &impl Memory,
@@ -492,21 +445,13 @@ impl Pass {
     }
 }
 
-/// A stateless base's host used to select its controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Host {
-    /// The ship handle does not resolve: the native null controller.
     Unresolved,
-    /// The ship's task force is null. Sortie efficiency handles this explicitly;
-    /// task-force owner selection requires a nonnull task force.
     NoTaskForce,
-    /// The task force's roster owner (`cunit::ROSTER_OWNER`).
     Owner(u32),
 }
 
-/// State bases also test the full host independently of state. A valid live
-/// host adds three ship reads (24 bytes), two task-force identities (16 bytes)
-/// and its owner (4 bytes) to the bounded registry lookup.
 pub fn read_host_owner(
     memory: &impl Memory,
     base: usize,
@@ -560,7 +505,6 @@ mod tests {
                 0,
             );
         }
-        /// A mask-7 table: capacity 8, overflow distance 5, sentinel cell 13.
         fn register(&mut self, handle: u64, object: usize) {
             let kind = handle as u32 as usize;
             let table = 0x4000 + kind * 0x100;
@@ -593,7 +537,6 @@ mod tests {
             self.u64(BASE + cair_base::PROVINCE, province as u64);
             self.u32(BASE + cair_base::KIND, kind as u32);
         }
-        /// State 7's kind-2 list holds province 23 first.
         fn manager(&mut self) {
             self.u64(GAME + cgame_state::STRATEGIC_AIR_MANAGER, MANAGER as u64);
             self.u64(MANAGER, cstrategic_air_manager::VTABLE_RVA.0 as u64);
@@ -702,7 +645,6 @@ mod tests {
         );
         memory.u64(TASK_FORCE + ctask_force::SECONDARY_BASE, 0);
         assert!(read_host_owner(&memory, 0, SHIP_HANDLE).is_err());
-        // A resolved ship whose task force is null is state, not a failure.
         memory.u64(SHIP + cship::TASK_FORCE, 0);
         assert_eq!(
             read_host_owner(&memory, 0, SHIP_HANDLE),
@@ -715,17 +657,12 @@ mod tests {
         );
     }
 
-    /// A world of `bases` registered air bases in one robin-hood registry,
-    /// plus `misses` handles it lacks: a state on four in five, a cached
-    /// province on every other, the manager's first province otherwise.
     struct Scale {
         bytes: Vec<u8>,
         handles: Vec<u64>,
     }
 
     impl Scale {
-        /// The world's first address; the module sits so its low roots fall
-        /// inside the world.
         const WORLD: usize = 0x1000_0000;
         const MODULE: usize = Self::WORLD + 0x100 - creference_registry::LOW_ROOTS_RVA.0;
         const TABLE: usize = 0x1000;
@@ -770,7 +707,6 @@ mod tests {
             };
             let module = Self::MODULE;
             let vtable = |rva: Rva| ((module + rva.0) as u64).to_le_bytes();
-            // The registry: capacity 2^14, overflow 16, sentinel after it.
             let capacity = 1_usize << Self::EXPONENT;
             let overflow = Self::EXPONENT as usize + 2;
             world.pointer(0x100 + cair_base::TYPE as usize * 8, Self::TABLE);
@@ -791,7 +727,6 @@ mod tests {
                 Self::ENTRIES + (capacity + overflow) * bucket::STRIDE + bucket::DISTANCE,
                 &[255],
             );
-            // State lists by kind: state s's first province is s + 1.
             world.pointer(
                 Self::GAME + cgame_state::STRATEGIC_AIR_MANAGER,
                 Self::MANAGER,
@@ -859,7 +794,6 @@ mod tests {
             world
         }
 
-        /// Robin-hood insertion, so every probe the registry reads is valid.
         fn insert(&mut self, handle: u64, object: usize, capacity: usize) {
             let hash = handle
                 .rotate_left(32)
@@ -903,10 +837,8 @@ mod tests {
         }
     }
 
-    /// The references read before the first refusal, and that refusal.
     type Witnesses = (Vec<Option<BaseReference>>, Result<(), &'static str>);
 
-    /// The per-object reads of every handle, as the witness capture made them.
     fn serial(memory: &impl Memory, handles: &[u64]) -> Witnesses {
         let mut pass = Pass::new(Scale::MODULE);
         let game = Scale::address(Scale::GAME);
@@ -920,8 +852,6 @@ mod tests {
         (references, Ok(()))
     }
 
-    /// The gathered capture: each chunk's gathered prefix, then its rest
-    /// read per object; with the chunks that fell back.
     fn gathered(memory: &impl Memory, handles: &[u64]) -> (Witnesses, usize) {
         use crate::batch_fallback::{Batch, count};
         let counted = count(Batch::BaseWitnesses);
@@ -945,8 +875,6 @@ mod tests {
         ((references, result), fallbacks)
     }
 
-    /// Healthy, the gathered witnesses of 150 bases and 20 misses are the
-    /// per-object reads', in about four fewer guarded copies a base.
     #[test]
     fn gathered_bases_equal_the_per_object_reads() {
         let world = Scale::new(150, 20);
@@ -954,7 +882,6 @@ mod tests {
         let expected = serial(&memory, &world.handles);
         assert_eq!(expected.1, Ok(()));
         assert_eq!(expected.0.iter().flatten().count(), 150);
-        // Some provinces come from the manager's lists, not the base.
         let cached = |base: &BaseReference| {
             let at = base.object - Scale::WORLD + cair_base::PROVINCE;
             u64::from_le_bytes(world.bytes[at..at + 8].try_into().unwrap()) != 0
@@ -988,7 +915,6 @@ mod tests {
         );
     }
 
-    /// Fails copies that touch `fault`: every one, or only the first.
     struct Faulted<'a> {
         inner: crate::memory::SliceMemory<'a>,
         fault: usize,
@@ -1006,8 +932,6 @@ mod tests {
         }
     }
 
-    /// A persistent fault gives the per-object result; one that clears after
-    /// its first touch gives the healthy result or the per-object reads' own.
     #[test]
     fn gathered_base_faults_refuse_no_more_than_the_per_object_reads() {
         let world = Scale::new(150, 20);
@@ -1056,7 +980,6 @@ mod tests {
             );
             assert!(once == healthy || once == reference, "{fault:x}: {once:?}");
         }
-        // A fault the gather meets once is read again per object, and counted.
         let faulted = Faulted {
             inner: world.memory(),
             fault: Scale::address(base(70)),

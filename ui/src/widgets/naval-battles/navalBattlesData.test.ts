@@ -49,7 +49,6 @@ test('naval playback retains settled rows and preserves ongoing reads, range adm
   const data = deepFreeze(reply()), windows = deepFreeze(new Map([[0, data]])), matches = () => true;
   const at = (hour: number, from: number | null = null) => navalBattleRows(windows, hour, matches, true, from);
   for (const hour of [99, 100, 105, 109, 110, 120, 105]) assert.deepEqual(at(hour), rows(data, hour));
-  // One battle read alone is the row the whole read lists: listed, gone once its run ends unended, admitted by the range.
   for (const from of [null, 105]) for (let hour = 98; hour <= 112; hour++) for (const id of ['combat:900:100', 'result:800']) {
     assert.deepEqual(navalBattleRow(windows, id, hour, matches, true, from), at(hour, from).find(row => row.id === id) ?? null, `${id} at ${hour}`);
   }

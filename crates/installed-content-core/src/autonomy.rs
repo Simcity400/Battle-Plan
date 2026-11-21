@@ -1,11 +1,3 @@
-//! Autonomy states (`common/autonomous_states`): the subject levels a recording
-//! names by id (`Autonomy.state`, `Subjects.state`). Each state's order is its
-//! authored `min_freedom_level` (the engine's fixed5 conversion, so equal texts
-//! compare equal), then load order; the dashboard names and colours subject
-//! types in that order, so a mod's states work without a list of vanilla ids.
-//! A level that is missing or not a plain number is left unknown, never
-//! assumed, and its state sorts after every state with a known level. So is a
-//! level a file whose reading stops short could redefine ([`crate::coverage`]).
 
 use crate::{
     Diagnostic, DiagnosticKind, ResolvedLayers,
@@ -24,35 +16,24 @@ use std::io;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutonomyState {
-    /// The state's id, as the recording names it.
     pub id: String,
-    /// `min_freedom_level` in fixed5 (five decimals); None when it is missing or
-    /// not a plain number.
     pub min_freedom_level: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AutonomyStates {
-    /// In load order; a state defined again replaces the earlier one in place.
     pub states: Vec<AutonomyState>,
-    /// The file that last defined each state, which decides its level.
     levels: Coverage,
-    /// The file that first defined each state, which decides its load-order place.
     places: Coverage,
 }
 
-/// [`AutonomyStates::ordered`]: the states whose place in the level order is known, and the rest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Order<'a> {
-    /// From the least free to the freest: by `min_freedom_level`, then load order.
     pub placed: Vec<&'a AutonomyState>,
-    /// In load order: a level that is unknown, that a file stopping short could
-    /// redefine, or whose place among equal levels such a file could change.
     pub unplaced: Vec<&'a AutonomyState>,
 }
 
 impl AutonomyStates {
-    /// These states, read from files that all read to their end.
     pub fn new(states: Vec<AutonomyState>) -> Self {
         Self {
             states,
@@ -60,8 +41,6 @@ impl AutonomyStates {
         }
     }
 
-    /// A state by id: None when no file defines it, the gap when a file that
-    /// stops short could define or redefine it.
     pub fn get(&self, id: &str) -> Result<Option<&AutonomyState>, &Gap> {
         match self.levels.unknown(id) {
             Some(gap) => Err(gap),
@@ -69,13 +48,10 @@ impl AutonomyStates {
         }
     }
 
-    /// The last file that stops short, whose unread rest could define more states.
     pub fn gap(&self) -> Option<&Gap> {
         self.levels.any_gap()
     }
 
-    /// Every state read: placed from the least free to the freest where its
-    /// place is known, the rest in load order.
     pub fn ordered(&self) -> Order<'_> {
         let mut placed: Vec<(usize, &AutonomyState, i64)> = Vec::new();
         let mut unplaced = vec![false; self.states.len()];
@@ -88,8 +64,6 @@ impl AutonomyStates {
             }
         }
         placed.sort_by_key(|&(index, _, level)| (level, index));
-        // Equal levels keep load order. A gap before the first file of one of them
-        // could define a later one ahead of it, so from there their order is unknown.
         for group in placed.chunk_by(|a, b| a.2 == b.2) {
             if let Some(from) = group
                 .iter()
@@ -117,10 +91,6 @@ impl AutonomyStates {
     }
 }
 
-/// The definitions of one autonomy file, as the database reads it: both
-/// top-level spellings by keyword, variables replayed and every field
-/// consumed by its reader. A read that cannot be settled stops the file at
-/// the state it was reading: the definitions before it, and why the rest is unknown.
 pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> (Vec<Item>, Option<String>) {
     #[derive(Clone, Copy)]
     enum Node {
@@ -201,7 +171,6 @@ pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> (Vec<Item>, Op
     (definitions, stop.map(|(_, cause)| cause))
 }
 
-/// The last field that is the keyword `key`.
 fn last<'a>(items: &'a [Item], key: &str) -> Option<&'a Value> {
     items
         .iter()
@@ -210,8 +179,6 @@ fn last<'a>(items: &'a [Item], key: &str) -> Option<&'a Value> {
         .map(|item| &item.value)
 }
 
-/// Require a complete decimal, so a numeric prefix of unsupported content is
-/// never mistaken for a known level. Conversion still uses the engine's fixed5.
 fn plain_number(bytes: &[u8]) -> bool {
     let digits = bytes
         .strip_prefix(b"-")
@@ -279,8 +246,6 @@ fn from_definitions(
     states
 }
 
-/// Every autonomy state in load order, with notes about files and states left
-/// out or unordered. A state defined again replaces the earlier one in place.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<Diagnostic>)> {
     let names = layers.key_names()?;
     let mut reading = Reading::default();
@@ -290,7 +255,6 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<Diagnost
     Ok((reading.result, reading.warnings))
 }
 
-/// The states and notes of the files read so far, in load order.
 #[derive(Default)]
 struct Reading {
     result: AutonomyStates,
@@ -298,7 +262,6 @@ struct Reading {
 }
 
 impl Reading {
-    /// The next file: its definitions up to where its reading stops.
     fn file(&mut self, path: &str, input: &[u8], names: &KeyNames) {
         let (definitions, stop) = read_definitions(input, names);
         for state in from_definitions(&definitions, path, &mut self.warnings) {
@@ -342,7 +305,6 @@ impl Reading {
     }
 }
 
-/// The definitions of `input` as [`read`] keeps them, or why its reading stops.
 pub(crate) fn settled_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec<Item>> {
     match read_definitions(input, names) {
         (definitions, None) => Ok(definitions),
@@ -366,8 +328,6 @@ mod tests {
         order.placed.iter().map(|state| state.id.as_str()).collect()
     }
 
-    /// Both top-level spellings and every keyword in any ASCII case are read,
-    /// as the map's colour rule reads them; quoted keys are no keywords.
     #[test]
     fn states_are_read_through_the_database_keyword_dispatch() {
         let (read, warnings) = states(&[(
@@ -412,7 +372,6 @@ mod tests {
             ),
         ]);
         assert!(warnings.is_empty(), "{warnings:?}");
-        // Equal levels (0.2 and 0.20) keep load order.
         let order = read.ordered();
         assert_eq!(placed(&order), ["tight", "also_tight", "middle", "loose"]);
         assert!(order.unplaced.is_empty());
@@ -458,8 +417,6 @@ mod tests {
                  autonomy_state = { id = signed min_freedom_level = +0.60 } \
                  autonomy_state = { id = negative min_freedom_level = -1.234567 }",
             ),
-            // The level reader takes `{` as its value: the block's contents join the
-            // state, whose own `}` then ends the file's loop.
             (
                 "z.txt",
                 "autonomy_state = { id = block min_freedom_level = { value = 0.2 } } \
@@ -492,14 +449,10 @@ mod tests {
         assert_eq!(read.states.len(), 2);
         assert_eq!(read.states[0].id, "first");
         assert_eq!(read.states[0].min_freedom_level, Some(10_000));
-        // Equal levels: the replaced state keeps its first place in load order.
         assert_eq!(placed(&read.ordered()), ["first", "second"]);
         assert_eq!(warnings.len(), 1);
     }
 
-    /// A file that stops short keeps the states it read before the stop, but none of
-    /// its levels is known: its unread rest could redefine any of them, or an earlier
-    /// file's. A later file that reads to its end decides its own states again.
     #[test]
     fn a_file_that_stops_short_leaves_every_level_it_could_redefine_unknown() {
         let (read, warnings) = states(&[
@@ -520,7 +473,6 @@ mod tests {
                 "autonomy_state = { id = kept min_freedom_level = 0.6 }",
             ),
         ]);
-        // The replacement before the stop is settled and kept, but not served as known.
         assert_eq!(read.states[0].min_freedom_level, Some(80_000));
         for id in ["early", "untouched", "stops", "after"] {
             assert_eq!(read.get(id).unwrap_err().path, "b.txt", "{id}");
@@ -549,8 +501,6 @@ mod tests {
         );
     }
 
-    /// Equal levels keep load order only where no file that stops short before the
-    /// earlier one's first file could have defined the later one ahead of it.
     #[test]
     fn a_gap_before_equal_levels_leaves_their_order_unknown() {
         let gap = "autonomy_state = { id = gap modifier = { unknown_modifier = { x = 1 } } }";

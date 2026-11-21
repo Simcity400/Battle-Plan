@@ -1,16 +1,3 @@
-//! Allocation-free notifications from the native writers of the unit leader
-//! fields UnitLeaders records ([`engine_mutations::unit_leader_mutations`]). A detour
-//! only notifies the shared watch registry ([`WatchRegistry`]) for the
-//! `CUnitLeader` its first argument names, or revokes every certificate for
-//! the two exile sites that name none, counts the call and calls the
-//! original; it never changes game behaviour. The leader constructors and
-//! destructor are [`crate::naval_tree_changes`]'s patches, which forward each
-//! call ([`forwarded`]), so a reused address never keeps a freed leader's
-//! certificate. Receivers are the leaders a quiet roster hour registered.
-//! The domain observes only while this family's patches and the forwarder
-//! are enabled; anything unobserved (disabled, poisoned, a refused
-//! registration, an epoch change, a running writer) makes the capture read
-//! that leader afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -28,17 +15,12 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// This family's patches are enabled.
 static PATCHED: AtomicBool = AtomicBool::new(false);
-/// The naval tree family's leader lifetime patches are enabled.
 static FORWARDED: AtomicBool = AtomicBool::new(false);
-/// Reused and read leaders, and quiet hours.
 static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-/// Leaders the latest quiet hour visited, for off-thread sizing.
 static LEADERS: AtomicUsize = AtomicUsize::new(0);
 static OPERATIVE_EFFECTS: AtomicUsize = AtomicUsize::new(0);
 
-/// The leader lifetime sites [`crate::naval_tree_changes`] patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lifetime {
     Construct,
@@ -47,7 +29,6 @@ pub enum Lifetime {
 }
 const LIFETIMES: [&str; 3] = ["construct", "copy_construct", "destroy"];
 
-/// One observation domain: the watched leaders and each site's calls.
 pub struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
@@ -69,9 +50,6 @@ impl Watches {
         }
     }
 
-    /// Hook path: the writer of `site` ([`MUTATIONS`] index) is about to
-    /// change `leader`; the exile sites name none and revoke every
-    /// certificate. Dropping the guard notifies its return.
     pub fn notify(&self, leader: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         if site == EXILE_GENERATION || site == EXILE_REMOVAL {
@@ -81,13 +59,11 @@ impl Watches {
         }
     }
 
-    /// Hook path: a forwarded lifetime site is about to build or free `leader`.
     pub fn lifetime(&self, leader: usize, site: Lifetime) -> Notification<'_> {
         self.lifetimes[site as usize].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(leader)
     }
 
-    /// An enabled domain with a table for `leaders` receivers installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enable(&self, leaders: usize) {
         self.registry.offer(leaders);
@@ -101,14 +77,8 @@ impl Watches {
     }
 }
 
-/// What a capture sees of the notifications.
 pub trait Changes: Sync {
-    /// `(epoch, revision)` while observing with no writer running; equal
-    /// values prove that no observed writer ran in between.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// `(epoch, sequence)` of one leader, registering it; `None` when it
-    /// cannot be observed. Equal values across hours prove that no observed
-    /// writer touched it.
     fn sequence(&self, leader: usize) -> Option<(u64, u64)>;
 }
 
@@ -121,7 +91,6 @@ impl Changes for Watches {
     }
 }
 
-/// The hooks' domain.
 pub struct Observer;
 impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
@@ -132,20 +101,14 @@ impl Changes for Observer {
     }
 }
 
-/// Notifications running now.
 pub fn active() -> usize {
     WATCHES.registry.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
-/// after a load, gap or recovery: nothing observed before it certifies
-/// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the leaders the latest quiet
-/// hour visited.
 pub fn presize() {
     let leaders = LEADERS
         .load(Ordering::Relaxed)
@@ -155,7 +118,6 @@ pub fn presize() {
     }
 }
 
-/// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
 }
@@ -164,15 +126,12 @@ pub fn operative_effects(receivers: usize) {
     OPERATIVE_EFFECTS.fetch_max(receivers, Ordering::Relaxed);
 }
 
-/// One quiet hour's leaders.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
 }
 
-/// The decode worker publishes one quiet hour's counts and the leaders it
-/// visited.
 pub fn record(counts: &Counts, leaders: usize) {
     for (target, value) in READS.iter().zip([counts.reused, counts.read, 1]) {
         target.fetch_add(value, Ordering::Relaxed);
@@ -181,8 +140,6 @@ pub fn record(counts: &Counts, leaders: usize) {
 }
 
 
-/// Observe while this family's patches and the forwarder's are enabled.
-/// Enabling starts a new epoch, so nothing held from before a gap certifies.
 fn observe() {
     WATCHES.registry.set_enabled(
         cfg!(feature = "unit_leader_changes")
@@ -191,22 +148,15 @@ fn observe() {
     );
 }
 
-/// The naval tree family enabled or disabled its leader lifetime patches;
-/// outside attach and detach only. It disables before its patches go and
-/// enables after they are in place.
 pub fn forwarder(enabled: bool) {
     FORWARDED.store(enabled, Ordering::SeqCst);
     observe();
 }
 
-/// Hook path, allocation-free: a forwarded lifetime site is about to build or
-/// free `leader`. Hold the result over the native call.
 pub fn forwarded(leader: usize, site: Lifetime) -> Notification<'static> {
     WATCHES.lifetime(leader, site)
 }
 
-// Only a failed attach/detach allocates this diagnostic, retained for the runtime's
-// static failure interface. Publication is atomic across the listed sites.
 fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str {
     let sites = site.map_or_else(
         || {
@@ -235,13 +185,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    /// The runtime's build gate admitted this family before construction.
-    /// A differing sentinel refuses installation with the owning family and site.
-    ///
-    /// # Safety
-    /// The memory source and base must identify the authenticated executable in
-    /// this process. The caller owns this family exclusively and must restore
-    /// its hooks and quiesce native calls before releasing code or unloading.
+    #[doc = " The runtime's build gate admitted this family before construction."]
+    #[doc = " A differing sentinel refuses installation with the owning family and site."]
+    #[doc = ""]
+    #[doc = " # Safety"]
+    #[doc = " The memory source and base must identify the authenticated executable in"]
+    #[doc = " this process. The caller owns this family exclusively and must restore"]
+    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "unit_leader_changes") {
@@ -296,10 +246,6 @@ impl Hooks {
             PATCHED.store(false, Ordering::SeqCst);
             observe();
         }
-        // One census and suspension for the whole family, shared with the
-        // other families in a runtime round (`hook::shared`): a thread at any
-        // of its sites, or in a tap, holds every site back until the next
-        // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|reason| hook_failure(None, "publication", &reason))?
         {
@@ -315,18 +261,10 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
-        // SAFETY: like each Hook's relay, the watch tables are dropped only
-        // once these hooks and the forwarding naval tree hooks (dropped
-        // before these) were never enabled, or were removed and drained after
-        // the last capture.
         unsafe { WATCHES.registry.release() };
     }
 }
 
-// Every site takes its leader (or, for the exile sites, an unrelated first
-// argument) in RCX and at most three more integer or pointer arguments; the
-// detour forwards RCX..R9 and returns RAX. The notification covers the
-// original in flight.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
         unsafe extern "system" fn $name(
@@ -403,9 +341,6 @@ mod tests {
         assert!(error.contains("byte verification failed"));
     }
 
-    /// A writer moves only the leader it names, a forwarded lifetime site
-    /// too, and an exile site every leader; each counts its calls; a running
-    /// writer certifies nothing.
     #[test]
     fn writers_move_their_leaders_certificates() {
         let watches = Watches::new();

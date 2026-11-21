@@ -1,5 +1,3 @@
-//! Unit composition with estimated count ranges.
-//! Optional selected-unit/detail outputs are absent.
 
 use std::{cmp::Reverse, collections::BTreeMap, io};
 use viewer_foundation::map::count_math::{count_range_seeded, ratio};
@@ -67,8 +65,6 @@ impl Content {
         self.subunits.warnings()
     }
 
-    /// Authenticated sub-unit database identity. Zero is a producer-proved null
-    /// singleton, distinct from a failed token lookup.
     pub(crate) fn subunit(&self, index: u32) -> Result<(&str, u64), String> {
         if index == 0 {
             return Ok(("", 0));
@@ -94,8 +90,6 @@ pub(crate) struct PreparedMembers {
     pub groups: Vec<(u64, i32)>,
 }
 
-/// Pure text from a recorded hour. CountryIntel keeps its actual daily sample;
-/// no hourly freshness is asserted by reading that carried table.
 pub fn summary(
     content: &Content,
     frame: &DecodedFrame,
@@ -115,7 +109,6 @@ pub fn summary(
     let divisions = frame
         .complete::<tables::Divisions>()
         .map_err(|e| e.to_string())?;
-    // Maintain the land array in the mixed array's order.
     let land: Vec<_> = order
         .mixed
         .iter()
@@ -201,7 +194,6 @@ pub(crate) fn summary_prepared(
     format_entries(&entries, loc, nato)
 }
 
-/// Template headers and composition use the same first input and ordered groups.
 pub(crate) fn prepare_members(
     frame: &DecodedFrame,
     members: &[u64],
@@ -223,7 +215,6 @@ pub(crate) fn prepare_members(
     let first = division(first)?;
     let canonical =
         |raw| links(raw).ok_or_else(|| format!("country {raw} has no CountryLinks row"));
-    // Test the first input's roster owner before sorting, even if hidden.
     let disclosed = vision
         .shares_vision_proven(canonical(first.roster_owner)?)
         .map_err(|e| e.describe())?;
@@ -270,9 +261,6 @@ pub(crate) fn prepare_members(
 }
 
 fn group_templates(mut units: Vec<Unit>, disclosed: bool, fallback: u64) -> PreparedMembers {
-    // Sort by descending rank, slot and template numeric ID. Equal keys have
-    // the same actual template, so tie permutations cannot change grouped
-    // template order or multiplicity.
     units.sort_by_key(|unit| Reverse((unit.rank, unit.owner, (unit.template >> 32) as u32)));
     let mut prepared = PreparedMembers {
         disclosed,
@@ -297,8 +285,6 @@ struct Entry {
     bounds: [i32; 2],
 }
 
-// Index plus canonical clone scope identifies native pointers. Local clones
-// retain their global database index; a matching glyph is not an identity.
 type Identity = (u32, Option<u32>);
 
 #[allow(clippy::too_many_arguments)]
@@ -314,7 +300,6 @@ fn aggregate(
     entries: &mut Vec<Entry>,
     indices: &mut BTreeMap<Identity, usize>,
 ) -> Result<(), String> {
-    // Aggregate globally in grouped-template/sub-unit first order.
     for subunit in &template.subunits {
         let (index, name, category) = if subunit.token == 0 {
             (0, "", 0)
@@ -383,7 +368,6 @@ fn format_entries(entries: &[Entry], loc: &Localisation, nato: bool) -> Result<S
     Ok(text)
 }
 
-/// Category mask/prefix and viewer-local NATO frame.
 pub(crate) fn subunit_icon(name: &str, category: u64, nato: bool) -> String {
     let prefix = if category & 0x80004003C1 != 0 {
         "ship_"

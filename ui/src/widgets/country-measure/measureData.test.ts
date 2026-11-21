@@ -48,7 +48,6 @@ test('group members draw only while they belong', () => {
   const atEnd = resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'end', aggregate: false }, [], groups, 200);
   assert.deepEqual([atEnd.tags, atEnd.membership], [['GER'], null]);
   assert.equal(resolveCountries({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'ever', aggregate: false }, [], groups, 200).reason, 'This group is unavailable in this campaign.');
-  // Membership not recorded at the branch end is unknown, not an empty group; other histories' gaps do not count.
   const gapAtEnd = { ...groups, unobserved: { humans: [], factions: [{ firstHour: 190, lastHour: 200 }], wars: [] } };
   const unknown = resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'end', aggregate: false }, [], gapAtEnd, 200);
   assert.deepEqual([unknown.tags, unknown.unobserved], [[], [{ firstHour: 190, lastHour: 200 }]]);
@@ -76,8 +75,6 @@ test('membership limits which hours a group member shows', () => {
 });
 
 test('the balance changes a list opens on end at the last the head has reached, never past it', () => {
-  // Tiles hold clusters past the head: the head at hour 270 has passed the first, is inside the second (its bins
-  // to 220 and 260 passed, 300 not), and has not reached the third.
   const marks = { from: 0, to: 600, width: 600, tiles: true as const, clusters: [
     { firstHour: 0, lastHour: 100, firstOrdinal: '0', count: '3' },
     { firstHour: 200, lastHour: 300, firstOrdinal: '3', count: '4', bins: [[220, 1], [260, 2], [300, 1]] as const },

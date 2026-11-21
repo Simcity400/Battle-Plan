@@ -1,12 +1,4 @@
-//! libjpeg 9a's scaled inverse DCTs (`jidctint.c`): `jpeg_idct_NxN` for a SmartScale block
-//! size, and the square and 2:1 sizes `jpeg_calc_output_dimensions` scales a subsampled
-//! component to when the block size is 4 or less. Each is translated statement by statement
-//! (every `INT32` and `int` temporary 32-bit two's complement, as the Windows build keeps them;
-//! `FIX(x)` folded to `(INT32) (x * 8192 + 0.5)`); the decoded images match FreeImage 3.17's bit
-//! for bit.
 
-// The statements keep the C source's shape (its parentheses, its `8*k` offsets and dead
-// stores), so they can be read against `jidctint.c` line by line.
 #![allow(unused_parens, unused_assignments, unused_variables, unused_mut)]
 #![allow(clippy::all)]
 
@@ -17,14 +9,11 @@ use super::libjpeg::idct_limit;
 const CB: usize = 13;
 const P1: usize = 2;
 
-/// `jpeg_idct_1x1`: `DESCALE(dequantized DC, 3)`.
 fn idct_1x1(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], _stride: usize) {
     let dc = i32::from(block[0]).wrapping_mul(table[0]);
     out[0] = idct_limit(dc.wrapping_add(4) >> 3);
 }
 
-/// The transform `jddctmgr.c` selects for a `width` by `height` output block (never 8 by 8,
-/// which is `jpeg_idct_ifast`); `None` for a size it has no method for (`JERR_BAD_DCTSIZE`).
 pub(super) fn idct(
     width: usize,
     height: usize,
@@ -62,7 +51,6 @@ pub(super) fn idct(
     Some(())
 }
 
-/// `jpeg_idct_2x2` (`jidctint.c`), translated statement by statement.
 fn idct_2x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 1];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -90,7 +78,6 @@ fn idct_2x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_3x3` (`jidctint.c`), translated statement by statement.
 fn idct_3x3(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 9];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -136,7 +123,6 @@ fn idct_3x3(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_4x4` (`jidctint.c`), translated statement by statement.
 fn idct_4x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 16];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -189,7 +175,6 @@ fn idct_4x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_5x5` (`jidctint.c`), translated statement by statement.
 fn idct_5x5(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 25];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -257,7 +242,6 @@ fn idct_5x5(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_6x6` (`jidctint.c`), translated statement by statement.
 fn idct_6x6(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 36];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -332,7 +316,6 @@ fn idct_6x6(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_7x7` (`jidctint.c`), translated statement by statement.
 fn idct_7x7(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 49];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -428,7 +411,6 @@ fn idct_7x7(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_9x9` (`jidctint.c`), translated statement by statement.
 fn idct_9x9(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 72];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -537,7 +519,6 @@ fn idct_9x9(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_10x10` (`jidctint.c`), translated statement by statement.
 fn idct_10x10(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 80];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -660,7 +641,6 @@ fn idct_10x10(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_11x11` (`jidctint.c`), translated statement by statement.
 fn idct_11x11(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 88];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -787,7 +767,6 @@ fn idct_11x11(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_12x12` (`jidctint.c`), translated statement by statement.
 fn idct_12x12(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 96];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -925,7 +904,6 @@ fn idct_12x12(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_13x13` (`jidctint.c`), translated statement by statement.
 fn idct_13x13(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 104];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1074,7 +1052,6 @@ fn idct_13x13(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_14x14` (`jidctint.c`), translated statement by statement.
 fn idct_14x14(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 112];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1227,7 +1204,6 @@ fn idct_14x14(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_15x15` (`jidctint.c`), translated statement by statement.
 fn idct_15x15(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 120];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1390,7 +1366,6 @@ fn idct_15x15(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_16x16` (`jidctint.c`), translated statement by statement.
 fn idct_16x16(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 128];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1578,7 +1553,6 @@ fn idct_16x16(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usiz
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_2x1` (`jidctint.c`), translated statement by statement.
 fn idct_2x1(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 1];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1593,7 +1567,6 @@ fn idct_2x1(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_1x2` (`jidctint.c`), translated statement by statement.
 fn idct_1x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 1];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1607,7 +1580,6 @@ fn idct_1x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_4x2` (`jidctint.c`), translated statement by statement.
 fn idct_4x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 8];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1650,7 +1622,6 @@ fn idct_4x2(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_2x4` (`jidctint.c`), translated statement by statement.
 fn idct_2x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 8];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1693,7 +1664,6 @@ fn idct_2x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_6x3` (`jidctint.c`), translated statement by statement.
 fn idct_6x3(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 18];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1756,7 +1726,6 @@ fn idct_6x3(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_3x6` (`jidctint.c`), translated statement by statement.
 fn idct_3x6(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 18];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1819,7 +1788,6 @@ fn idct_3x6(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_8x4` (`jidctint.c`), translated statement by statement.
 fn idct_8x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 32];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);
@@ -1905,7 +1873,6 @@ fn idct_8x4(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize)
     let _ = (ip, qp, wp, op);
 }
 
-/// `jpeg_idct_4x8` (`jidctint.c`), translated statement by statement.
 fn idct_4x8(block: &[i16; 64], table: &[i32; 64], out: &mut [u8], stride: usize) {
     let mut ws = [0_i32; 32];
     let (mut ip, mut qp, mut wp, mut op) = (0_usize, 0_usize, 0_usize, 0_usize);

@@ -1,5 +1,3 @@
-//! Exact serialized intel and diplomatic inputs. Missing payloads retain their
-//! presence; native fields without a proved save mapping are not synthesized.
 
 use std::{collections::BTreeMap, io};
 
@@ -17,11 +15,7 @@ pub mod sources;
 pub struct Pack {
     pub countries: BTreeMap<Vec<u8>, Country>,
     pub global_variables: Option<Variables>,
-    /// Preserve an absent states root separately from a present empty root,
-    /// and each state's absent variables payload separately from an empty one.
     pub state_variables: Option<BTreeMap<u32, Option<Variables>>>,
-    /// Global strategic-operative roster; absent root stays None, present root
-    /// maps each numeric index (the manager's country slot) to its object.
     pub strategic_operatives: Option<BTreeMap<u32, StrategicOperative>>,
 }
 
@@ -35,30 +29,16 @@ pub struct Country {
     pub flags: Option<Vec<Flag>>,
     pub variables: Option<Variables>,
     pub operation_tokens: Option<OperationTokenManager>,
-    /// Absent root and present-but-empty queue are distinct: the writer
-    /// emits the block whenever the queue object exists.
     pub incoming_actions: Option<Vec<IncomingAction>>,
-    /// The manager writer always saves finished/priority and omits
-    /// running when its signed count is zero. An absent manager stays distinct.
     pub operations: Option<Operations>,
 }
 
-/// One queued incoming diplomatic action.
-///
-/// The queue writer keys each non-null slot by its decimal vector index and
-/// skips null slots without renumbering, so `ordinal` is stored state. The
-/// wrapper writes only its `id`; its status byte has no serialized form.
-/// The action body is written under its own definition name, which is the only
-/// place the action's kind appears.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncomingAction {
     pub ordinal: u32,
     pub id: u64,
-    /// Definition token of the action, used as the body block's key.
     pub kind: Vec<u8>,
     pub action_type: i32,
-    /// The action writer always saves this Boolean independently of the
-    /// signed `type`. Missing input is not false.
     pub initiator_matters: Option<bool>,
     pub actor: Vec<u8>,
     pub original_actor: Vec<u8>,
@@ -70,33 +50,20 @@ pub struct IncomingAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Agency {
-    /// Ordinary saves always write this, including an empty name.
     pub name: Option<Vec<u8>>,
-    /// The writer emits `is_created=yes` only when the created byte is
-    /// nonzero, so absence is not created.
     pub created: bool,
     pub upgrade_progress: Decimal,
-    /// The agency writer emits every upgrade entry in order, using its definition token
-    /// and its signed level. Omitted `upgrades` proves empty, even uncreated.
     pub upgrades: Vec<AgencyUpgradeLevel>,
     pub defense: Decimal,
     pub active_count: i32,
-    /// Saved as max_operative_count; its gameplay meaning is unresolved.
     pub unknown_f0: u32,
     pub admission_ceiling: i32,
-    /// Active operative={} blocks in save order.
     pub operatives: Vec<OperativeEntry>,
-    /// The agency writer saves the captured roster in order, omitting an empty one.
     pub captured: Vec<CapturedOperativeReference>,
-    /// Recruitment holding vectors, including lists whose token spelling needs
-    /// the recorded LexicalTokens dictionary.
     pub recruitment: Option<Recruitment>,
-    /// Cryptology container; None when the cryptology block is absent entirely.
     pub cryptology: Option<Cryptology>,
 }
 
-/// The writer saves the reference's country and full operative reference.
-/// Its country is not the resolved operative owner's country.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedOperativeReference {
     pub country: Option<Vec<u8>>,
@@ -122,8 +89,6 @@ pub struct Diplomacy {
     pub exile_army_leaders: Option<i32>,
 }
 
-/// Current autonomy status saved inside diplomacy.autonomy_state, separate
-/// from the active_relations puppet definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Autonomy {
     pub progress: Decimal,
@@ -151,21 +116,13 @@ pub struct Flag {
     pub name: Vec<u8>,
     pub value: i16,
     pub date: GameDate,
-    /// The flag writer saves only positive durations. None does not imply -1 or 0.
     pub remaining_days: Option<i16>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Variables {
-    /// Retain every repeated emitted name and value. The save representation
-    /// does not itself establish the corresponding full native key identities.
     pub entries: Vec<Variable>,
-    /// The variables writer emits random state only when the seed differs
-    /// from one. The `random` inline block writes its companion word first
-    /// and the seed second.
     pub seed: Option<u32>,
-    /// The `random` key is reserved for variables random-state metadata. Its values
-    /// are not ordinary variable entries; scalar literal-key collisions are limited.
     pub reserved_entries: usize,
 }
 
@@ -183,43 +140,16 @@ pub struct OperationTokenManager {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationTokens {
     pub target: Vec<u8>,
-    /// Retain serialized order and multiplicity. Native order is compared only
-    /// as a multiset because the engine sorts a copy before writing this list.
     pub names: Vec<Vec<u8>>,
 }
 
-/// One country's operation-manager container as saved.
-///
-/// The manager stores finished, priority and running; instance records
-/// store the running fields.
-/// `running` is None when its key is absent; a present empty list is refused
-/// because the native writer omits the list when its signed count is zero.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Operations {
     pub priority: Option<i32>,
-    /// The manager writer always saves the finished-operation history.
-    /// Keep its authored keys and payloads; these are history, not instances
-    /// with handles that can satisfy an operative's active operation reference.
     pub finished: Option<Vec<Item>>,
     pub running: Option<Vec<OperationInstance>>,
 }
 
-/// One running operation instance as saved under its authored definition name.
-///
-/// The `running` key is the authored definition name (e.g.
-/// operation_rescue_operative); the native definition token is resolved
-/// separately through LexicalTokens with the existing authored-name limitation.
-/// Repeated definition names are distinct instances, not duplicate keys: the
-/// instance serializer emits each instance's own id and target.
-/// `id` is the full native handle via the running entry's `id` block. `target`
-/// is always emitted. `target_province` is the target province's id, saved
-/// as `target_provinces` only when the operation holds a target province.
-/// `date`/`duration` are None when omitted (unset start date / zero duration).
-/// `phases`/`operative_slots`
-/// are None when omitted (signed count 0); a present-but-empty list is refused.
-/// `civilian_factories` and `total` are the preparation's current and
-/// required values, each omitted when zero. `resources` holds the requirement
-/// records in order with repeats, and `equipment` the inline equipment pool.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationInstance {
     pub definition: Vec<u8>,
@@ -232,60 +162,35 @@ pub struct OperationInstance {
     pub operative_slots: Option<Vec<OperationSlot>>,
     pub civilian_factories: Option<Decimal>,
     pub total: Option<Decimal>,
-    /// None when the `resources` block is omitted.
     pub resources: Option<Vec<OperationResource>>,
-    /// The pool writer's entries (zero amounts only with
-    /// `allow_zero_entries`); None when the `equipment` block is omitted.
     pub equipment: Option<super::air::EquipmentPool>,
-    /// The instance writer emits each of these flags only when nonzero.
     pub terminal: bool,
     pub bonus: bool,
     pub detected: bool,
-    /// Ordinary terminal saves serialize the effect description; checksum
-    /// mode omits it. Keep missing separate from the written empty string.
     pub effect_description: Option<Vec<u8>>,
 }
 
-/// One saved requirement record, in `resources` order with repeats.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OperationResource {
-    /// `<archetype>=<fixed5 amount>`.
     Equipment { archetype: Vec<u8>, amount: Decimal },
-    /// `civilian_factories={ amount=<whole factories> days=<days> }`.
     Factories { amount: i32, days: i32 },
 }
 
-/// One assigned-operative slot in serialized order; ordinal is positional.
-///
-/// The assigned-slot writer omits the operative reference for a both-zero
-/// handle but retains the slot, omits selection for zero, and omits the
-/// mission for a null optional. `operative` is None when the
-/// `operative` ref is omitted (native both-zero, slot retained).
-/// `mission_present` records whether a `mission` block is present; its contents
-/// are not retained because selection-vs-mission semantics are unproved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationSlot {
     pub operative: Option<u64>,
     pub mission_present: bool,
 }
 
-/// One operative as saved under intelligence_agency or recruitment lists.
-///
-/// The element writer saves nationalities, the capturer pair only when
-/// captured, action presence and assignment enum; the loader mirrors them.
-/// The agency roster retains operative references. Literal names resolve
-/// via LexicalTokens.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperativeEntry {
     pub id: u64,
-    /// The inherited leader writer saves the operative's name bytes.
     pub name: Option<Vec<u8>>,
     pub skill: Option<i32>,
     pub experience: Option<Decimal>,
     pub nationalities: Vec<Vec<u8>>,
     pub captured: Option<Vec<u8>>,
     pub capture_date: Option<GameDate>,
-    /// The leader writer emits cooldown fields only for a nonzero reason token.
     pub cooldown_reason: Option<Vec<u8>>,
     pub cooldown_start_date: Option<GameDate>,
     pub cooldown_end_date: Option<GameDate>,
@@ -293,27 +198,13 @@ pub struct OperativeEntry {
     pub operation: Option<u64>,
     pub mission_present: bool,
     pub mission_name: Option<Vec<u8>>,
-    /// State- and country-targeted missions emit `target` inside the concrete
-    /// mission definition block. The country writer omits non-positive
-    /// references.
     pub mission_target: Option<Vec<u8>>,
-    /// The state-targeted missions (build and quiet network, root out
-    /// resistance, boost ideology, propaganda) emit their nonnull target
-    /// state's id as `state` in the same block.
     pub mission_state: Option<i32>,
-    /// The boost-ideology mission emits its nonnull ideology as `ideology` in
-    /// the same block.
     pub mission_ideology: Option<Vec<u8>>,
-    /// The inherited leader writer saves the leader's own portrait sprite as
-    /// `gfx`, only when it is nonempty.
     pub gfx: Option<Vec<u8>>,
-    /// The operative writer always delegates the codename to the division-name
-    /// writer. Its group key and the leader's separate inherited name are not serialized.
     pub codename: Option<super::units::DivisionName>,
 }
 
-/// Three recruitment holding vectors. The first list's spelling is
-/// resolved by consumers from the recorded LexicalTokens dictionary.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Recruitment {
     pub recruitable: Vec<OperativeEntry>,
@@ -321,17 +212,12 @@ pub struct Recruitment {
     pub other_rosters: Vec<(Vec<u8>, Vec<OperativeEntry>)>,
 }
 
-/// Cryptology container; targets None means the key is absent (empty omitted).
-///
-/// The container writer emits the targets list only for a nonzero count
-/// and saves its source country; each target gates its optional scalar fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cryptology {
     pub targets: Option<Vec<CryptologyTarget>>,
     pub intel_source_country: Option<Vec<u8>>,
 }
 
-/// One cryptology target; bonus literals have no established saved-field mapping.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CryptologyTarget {
     pub target: Vec<u8>,
@@ -340,33 +226,21 @@ pub struct CryptologyTarget {
     pub decryption: Option<bool>,
 }
 
-/// One country intel network; parallel arrays share one length positionally.
-///
-/// The network writer saves target, subnetworks and coverage; the loader
-/// mirrors them. Ownership through the strategic index remains unresolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntelNetworkEntry {
     pub auxiliary: network_auxiliary::Network,
     pub target: Vec<u8>,
     pub source: Option<sources::Reference>,
-    /// Independently saved coverage and aggregate caches; absence is retained
-    /// for partial save projections and fails a requested summary comparison.
     pub coverage: Option<NetworkCoverage>,
     pub strength_sum: Option<Decimal>,
     pub strength_sum_over_cores: Option<Decimal>,
     pub state_strength_max: Option<Decimal>,
     pub state_ids: Vec<i32>,
     pub strengths: Vec<Decimal>,
-    /// Each state's daily gain (`gain`) and its parts from operatives and from
-    /// adjacent states (`gain_breakdown`), parallel to `state_ids`.
     pub gains: Vec<Decimal>,
     pub gains_from_operatives: Vec<Decimal>,
     pub gains_from_adjacency: Vec<Decimal>,
-    /// The local `sub_network_is_quiet` list, one entry per subnetwork. Any
-    /// subnetwork past its end is not quiet, so an absent list reads empty.
     pub local_quiet: Vec<bool>,
-    /// Subnetworks, selected by sub_network_id; their strength is distinct
-    /// from the local graph's per-state strength array above.
     pub subnetworks: Vec<SavedSubnetwork>,
     pub selectors: Vec<i32>,
 }
@@ -378,48 +252,30 @@ pub struct NetworkCoverage {
     pub owned_worth: i32,
 }
 
-/// One saved subnetwork (`sub_intel_networks` entry).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedSubnetwork {
     pub strength: Decimal,
-    /// `modifiers` `intel_network_gain_factor`.
     pub gain_factor: Decimal,
-    /// `sub_network_strength_target` and its parts `_from_operatives` and
-    /// `_from_counterintelligence`.
     pub strength_target: Decimal,
     pub target_from_operatives: Decimal,
     pub target_from_counterintelligence: Decimal,
-    /// `sub_network_is_quiet`; the subnetwork is not quiet without it.
     pub quiet: bool,
 }
 
-/// One strategic-operative index with its networks, activity and influence
-/// maps. The index is the country slot the manager's vector keys it by.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StrategicOperative {
     pub index: u32,
     pub networks: Vec<IntelNetworkEntry>,
-    /// `subversive_activity_level.value`: the mission activity.
     pub mission_activity: Option<Decimal>,
-    /// `danger_level.value`: the operation activity.
     pub operation_activity: Option<Decimal>,
-    /// `trade_influence_modifier_of_buyers`, `(country, amount)` in saved
-    /// order; None when the writer omitted the empty map.
     pub trade_influence: Option<Vec<(Vec<u8>, Decimal)>>,
-    /// `diplomatic_pressure_from_countries` in saved order; None when the
-    /// writer omitted the empty map.
     pub diplomatic_pressure: Option<Vec<SavedPressure>>,
-    /// Logical begin-to-end history, omitted when empty. Values are the two
-    /// independently serialized Q15 channels, recovered exactly from the
-    /// shared five-decimal save formatter's output.
     pub recent_propaganda_effort: Vec<PropagandaEffort>,
-    /// The independently saved weekly cache; the writer omits a zero pair.
     pub propaganda_weekly_drift: PropagandaEffort,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PropagandaEffort {
-    /// Native signed Q15 words, not the save decimal numerator.
     pub stability: i64,
     pub war_support: i64,
 }
@@ -434,8 +290,6 @@ fn parse_propaganda_effort(value: &Value) -> io::Result<PropagandaEffort> {
     })
 }
 
-/// One saved diplomatic-pressure entry: the pressuring country and the raw
-/// Q15 `opinion` (acceptance) and `tension` integers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedPressure {
     pub country: Vec<u8>,
@@ -450,9 +304,6 @@ fn date(items: &[Item], key: &[u8]) -> io::Result<Option<GameDate>> {
 }
 
 fn parse_agency(items: &[Item]) -> io::Result<Agency> {
-    // The agency writer omits upgrade progress only when its qword is zero;
-    // defense, maximum count and usable slots are emitted unconditionally.
-    // Every active pointer produces one operative block, including repeated memberships.
     let mut operatives = Vec::new();
     for item in items
         .iter()
@@ -468,7 +319,6 @@ fn parse_agency(items: &[Item]) -> io::Result<Agency> {
     let cryptology = field(items, b"cryptology")?
         .map(|value| parse_cryptology(block(value)?))
         .transpose()?;
-    // The captured roster preserves its saved references and order.
     let captured = field(items, b"captured")?
         .map(|value| {
             let entries = block(value)?;
@@ -519,9 +369,6 @@ fn parse_agency(items: &[Item]) -> io::Result<Agency> {
 }
 
 fn parse_agency_upgrades(value: &Value) -> io::Result<Vec<AgencyUpgradeLevel>> {
-    // Loading merges entries resolving to one definition pointer by signed
-    // addition. A fresh save writes the actual array instead:
-    // retain duplicate tokens/levels and order, never apply reload semantics.
     let mut entries = Vec::new();
     for entry in block(value)? {
         let token = entry
@@ -551,9 +398,6 @@ fn parse_agency_upgrades(value: &Value) -> io::Result<Vec<AgencyUpgradeLevel>> {
 }
 
 fn parse_operative_entry(items: &[Item]) -> io::Result<OperativeEntry> {
-    // The operative writer gates nationalities/capturer/action/assignment;
-    // the loader mirrors it. Unlisted keys (name, traits, in_progress,
-    // script_id, legacy_id) have no established Row mapping.
     let id = super::object_id(items)?;
     let nationalities = field(items, b"nationalities")?
         .map(|value| {
@@ -660,9 +504,6 @@ fn parse_recruitment_list(value: &Value) -> io::Result<Vec<OperativeEntry>> {
 }
 
 fn parse_recruitment(items: &[Item]) -> io::Result<Recruitment> {
-    // The recruitment writer saves only the three roster lists, each
-    // nonempty list as anonymous polymorphic elements. Retain unknown names
-    // so the recorded dictionary can identify them without guessed spellings.
     let mut other_rosters = Vec::new();
     for item in items {
         let key = item
@@ -687,8 +528,6 @@ fn parse_recruitment(items: &[Item]) -> io::Result<Recruitment> {
 }
 
 fn parse_cryptology(items: &[Item]) -> io::Result<Cryptology> {
-    // The cryptology writer emits targets only for a nonzero count; a present
-    // empty list is refused. The target writer gates each scalar.
     let targets = field(items, b"targets")?
         .map(|value| {
             let mut result = Vec::new();
@@ -735,8 +574,6 @@ fn parse_cryptology(items: &[Item]) -> io::Result<Cryptology> {
 }
 
 fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
-    // The network writer saves target/parallel arrays; the loader mirrors
-    // them. Parallel state_id/strength/sub_network_id share one length.
     let target = required_bytes(items, b"target")?;
     let inner = required_block(items, b"intel_network")?;
     let has_states = field(inner, b"state_id")?.is_some();
@@ -974,7 +811,6 @@ fn parse_strategic_operatives(items: &[Item]) -> io::Result<BTreeMap<u32, Strate
     Ok(result)
 }
 
-/// One anonymous influence entry: the country scalar and its payload.
 fn influence_entry<'a>(entry: &'a Item, map: &str) -> io::Result<(Vec<u8>, &'a Value)> {
     let refuse = || invalid(format!("{map} entry must hold a country and its value"));
     if entry.key.is_some() {
@@ -994,7 +830,6 @@ fn influence_entry<'a>(entry: &'a Item, map: &str) -> io::Result<(Vec<u8>, &'a V
     Ok((country, &payload.value))
 }
 
-/// The writer omits an empty map, keeping zero entries.
 fn parse_trade_influence(value: &Value) -> io::Result<Vec<(Vec<u8>, Decimal)>> {
     const MAP: &str = "trade_influence_modifier_of_buyers";
     let mut entries = Vec::new();
@@ -1008,7 +843,6 @@ fn parse_trade_influence(value: &Value) -> io::Result<Vec<(Vec<u8>, Decimal)>> {
     Ok(entries)
 }
 
-/// The writer omits an empty map, keeping zero entries.
 fn parse_diplomatic_pressure(value: &Value) -> io::Result<Vec<SavedPressure>> {
     const MAP: &str = "diplomatic_pressure_from_countries";
     let mut entries = Vec::new();
@@ -1028,8 +862,6 @@ fn parse_diplomatic_pressure(value: &Value) -> io::Result<Vec<SavedPressure>> {
 }
 
 fn parse_subject(owner: &[u8], target: &[u8], items: &[Item]) -> io::Result<Subject> {
-    // The subject writer saves stored definition and freedom, then the same base
-    // date envelope used by war relations. Dynamic current autonomy is separate.
     let cancel = field(items, b"cancel")?.map(boolean).transpose()?;
     if cancel == Some(false) {
         return Err(invalid(
@@ -1063,7 +895,6 @@ fn parse_subject(owner: &[u8], target: &[u8], items: &[Item]) -> io::Result<Subj
 }
 
 fn parse_diplomacy(owner: &[u8], items: &[Item]) -> io::Result<Diplomacy> {
-    // The diplomacy writer emits both capitulation fields only for a nonzero byte.
     let capitulated = field(items, b"capitulated")?.map(boolean).transpose()?;
     let capitulated_date = date(items, b"capitulated_date")?;
     if capitulated == Some(false) || capitulated.is_some() != capitulated_date.is_some() {
@@ -1118,8 +949,6 @@ fn parse_diplomacy(owner: &[u8], items: &[Item]) -> io::Result<Diplomacy> {
 }
 
 pub(super) fn parse_flags(items: &[Item]) -> io::Result<Vec<Flag>> {
-    // The flag writer saves the resolved lexer name as the key, then the
-    // signed word value, date, and positive-only remaining-days word.
     let mut result = Vec::new();
     for item in items {
         let name = item
@@ -1213,9 +1042,6 @@ fn parse_operation_slots(value: &Value) -> io::Result<Vec<OperationSlot>> {
     Ok(slots)
 }
 
-/// The requirement records in saved order: an equipment requirement is its
-/// archetype name with a fixed5 amount, the civilian-factory requirement a
-/// block of whole factories and days.
 fn parse_operation_resources(value: &Value) -> io::Result<Vec<OperationResource>> {
     let mut resources = Vec::new();
     for entry in block(value)? {
@@ -1245,7 +1071,6 @@ fn parse_operation_resources(value: &Value) -> io::Result<Vec<OperationResource>
     Ok(resources)
 }
 
-/// The inline equipment pool: its allow-zero flag and variant entries.
 fn parse_operation_equipment(value: &Value) -> io::Result<super::air::EquipmentPool> {
     let fields = block(value)?;
     let allow_zero = boolean(
@@ -1279,10 +1104,6 @@ fn parse_operation_equipment(value: &Value) -> io::Result<super::air::EquipmentP
 }
 
 fn parse_operation_instance(definition: &[u8], items: &[Item]) -> io::Result<OperationInstance> {
-    // The instance writer emits target always, date with duration only when
-    // duration is nonzero, slots and phases only for nonzero signed counts,
-    // and target_provinces only for a non-null target province. Zero duration and the unset
-    // start-date sentinel are omitted.
     Ok(OperationInstance {
         definition: definition.to_vec(),
         id: super::object_id(items)?,
@@ -1327,9 +1148,6 @@ fn parse_operation_instance(definition: &[u8], items: &[Item]) -> io::Result<Ope
 }
 
 fn parse_operations(items: &[Item]) -> io::Result<Operations> {
-    // The operation manager writes finished history and priority both with
-    // and without running entries. A present-but-empty `running` list is
-    // refused because the writer omits it when its count is zero.
     let finished = field(items, b"finished")?
         .map(|value| block(value).map(<[Item]>::to_vec))
         .transpose()?;
@@ -1365,8 +1183,6 @@ fn parse_operations(items: &[Item]) -> io::Result<Operations> {
 }
 
 pub(super) fn parse_variables(items: &[Item]) -> io::Result<Variables> {
-    // The variables writer emits occupied-node values with exact fixed-five
-    // precision. The loader treats random-state metadata specially.
     let mut variables = Variables::default();
     for item in items {
         let name = item
@@ -1398,8 +1214,6 @@ pub(super) fn parse_variables(items: &[Item]) -> io::Result<Variables> {
     Ok(variables)
 }
 
-/// The queue writer emits one keyed block per surviving slot; every block holds
-/// the wrapper `id` and exactly one action body under the action's own name.
 fn parse_incoming_actions(items: &[Item]) -> io::Result<Vec<IncomingAction>> {
     let mut actions = Vec::new();
     for entry in items {
@@ -1460,8 +1274,6 @@ pub(super) fn parse_with_countries(
     items: &[Item],
     countries: super::CountriesView<'_>,
 ) -> io::Result<Pack> {
-    // State, global and country variables share the same saved key
-    // and variables writer.
     let global_variables = field(items, b"variables")?
         .map(|value| parse_variables(block(value)?))
         .transpose()?;
@@ -1779,11 +1591,9 @@ mod tests {
             actions[0].last_command_date.engine_hour().unwrap(),
             actions[0].date.engine_hour().unwrap() + 1
         );
-        // A null native slot leaves a gap in the writer's decimal keys.
         assert_eq!(actions[1].ordinal, 2);
         assert_eq!(actions[1].kind, b"join_faction");
         assert_eq!(actions[1].action_type, -1);
-        // An empty queue block is not the same as an absent queue object.
         assert_eq!(
             pack.countries[b"SOV".as_slice()].incoming_actions,
             Some(Vec::new())
@@ -1823,12 +1633,10 @@ mod tests {
             text.replace("actor=\"BUL\"", ""),
             text.replace("type=0 ", ""),
             text.replace("date=\"1942.9.21.2\"", ""),
-            // Two bodies in one wrapper cannot name a single action.
             text.replace(
                 "versus={ \"ENG\" \"FRA\" }\n            }",
                 "versus={ \"ENG\" }\n            } join_faction={ type=0 }",
             ),
-            // Keys must stay strictly increasing native indices.
             text.replace("2={", "0={"),
         ] {
             assert!(parsed(broken.as_bytes()).is_err());
@@ -2167,7 +1975,6 @@ mod tests {
     #[test]
     fn operations_keep_container_shapes_running_census_and_slot_presence() {
         let pack = parsed(OPERATIONS).unwrap();
-        // GER shape: present block with no running key means no running instances.
         let ger = pack.countries[b"GER".as_slice()]
             .operations
             .as_ref()
@@ -2175,7 +1982,6 @@ mod tests {
         assert_eq!(ger.priority, Some(1));
         assert_eq!(ger.finished, Some(Vec::new()));
         assert_eq!(ger.running, None);
-        // ENG shape: one running instance with all proved optional payloads present.
         let eng = pack.countries[b"ENG".as_slice()]
             .operations
             .as_ref()
@@ -2207,7 +2013,6 @@ mod tests {
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].operative, Some((9831 << 32) | 4713));
         assert!(slots[0].mission_present);
-        // Absent operations block stays distinct from a present block.
         assert!(pack.countries[b"SOV".as_slice()].operations.is_none());
     }
 
@@ -2250,7 +2055,6 @@ mod tests {
         assert_eq!(running[0].phases, None);
         assert_eq!(running[0].operative_slots, None);
         assert_eq!(running[0].target_province, None);
-        // A both-zero handle omits the ref but retains the slot.
         let pack = parsed(
             br#"countries={GER={operations={
                 running={ operation_x={
@@ -2313,14 +2117,10 @@ mod tests {
 
     #[test]
     fn malformed_operation_blocks_are_refused_rather_than_partly_read() {
-        // Present-but-empty lists were omitted by the native writer (signed
-        // count==0), so they are malformed when present.
         for broken in [
             "countries={GER={operations={ running={} }}}",
             "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" phases={} } } }}}",
             "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" operative_slots={} } } }}}",
-            // Duplicate ids, missing id/target, keyed
-            // phase/slot entries, and a null typed handle are all malformed.
             "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } target=\"FRA\" } operation_y={ id={ id=1 type=4713 } target=\"FRA\" } } }}}",
             "countries={GER={operations={ running={ operation_x={ target=\"FRA\" } } }}}",
             "countries={GER={operations={ running={ operation_x={ id={ id=1 type=4713 } } } }}}",
@@ -2413,7 +2213,6 @@ mod tests {
             recruitment.not_to_spy_master[0].mission_target.as_deref(),
             Some(b"ITA".as_slice())
         );
-        // Omitted recruitment and cryptology stay distinct from present-empty.
         let fra = pack.countries[b"FRA".as_slice()].agency.as_ref().unwrap();
         assert!(fra.operatives.is_empty());
         assert!(fra.recruitment.is_none());
@@ -2427,8 +2226,6 @@ mod tests {
             crypto.intel_source_country.as_deref(),
             Some(b"GER".as_slice())
         );
-        // Capturer without a date, duplicated cryptology targets and empty
-        // target lists are refused rather than partly read.
         for broken in [
             "countries={GER={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 operative={ id={ id=1 type=4713 } captured=\"SOV\" } }}}",
             "countries={GER={intelligence_agency={ defense=0 max_operative_count=0 usable_operative_slots=0 cryptology={ targets={ { target=\"SOV\" } { target=\"SOV\" } } } }}}",
@@ -2504,7 +2301,6 @@ mod tests {
         assert_eq!(row.mission_state, Some(-4));
         assert_eq!(row.mission_ideology.as_deref(), Some(b"fascism".as_slice()));
         assert_eq!(row.gfx, None);
-        // The leader writer saves a nonempty portrait as gfx and never an empty one.
         let pack = parsed(format!("{prefix}gfx=\"GFX_spy\"{suffix}").as_bytes()).unwrap();
         let row = &pack.countries[b"X".as_slice()]
             .agency
@@ -2513,7 +2309,6 @@ mod tests {
             .operatives[0];
         assert_eq!(row.gfx.as_deref(), Some(b"GFX_spy".as_slice()));
         assert!(parsed(format!("{prefix}gfx=\"\"{suffix}").as_bytes()).is_err());
-        // The country-reference writer omits the tag for a null reference.
         let pack =
             parsed(format!("{prefix}mission={{custom_mission={{}}}}{suffix}").as_bytes()).unwrap();
         let row = &pack.countries[b"X".as_slice()]
@@ -2583,13 +2378,9 @@ mod tests {
                 quiet: true,
             }]
         );
-        // Without its quiet entries a network and its subnetwork are not quiet.
         assert!(networks[1].local_quiet.is_empty());
         assert!(!networks[1].subnetworks[0].quiet);
         assert_eq!(networks[1].subnetworks[0].gain_factor, decimal("0.5"));
-        // Mismatched parallel lengths, duplicate states/targets, empty state
-        // lists and subnetworks without their targets are refused rather
-        // than partly read.
         for broken in [
             "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 2 } gain={ 0 0 } gain_breakdown={ { operatives=0 adjacencies=0 } { operatives=0 adjacencies=0 } } strength={ 1 } sub_network_id={ 0 0 } } } } }}",
             "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 1 } gain={ 0 0 } gain_breakdown={ { operatives=0 adjacencies=0 } { operatives=0 adjacencies=0 } } strength={ 1 1 } sub_network_id={ 0 0 } } } } }}",
@@ -2672,7 +2463,6 @@ mod tests {
                 .as_slice()
             )
         );
-        // An empty map's block is omitted, distinct from an empty one.
         let second = &operatives[&4];
         assert_eq!(
             (&second.trade_influence, &second.diplomatic_pressure),
@@ -2682,7 +2472,6 @@ mod tests {
             second.mission_activity.as_ref().map(|value| value.raw),
             Some(0)
         );
-        // Activity absent from a synthetic block stays absent.
         let bare =
             parsed(b"countries={} strategic_operatives={ strategic_operative={ 0={} } }").unwrap();
         let bare = &bare.strategic_operatives.as_ref().unwrap()[&0];
@@ -2773,7 +2562,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [((12 << 32) | 70, 10_000_000), ((13 << 32) | 70, 0)]
         );
-        // Omitted preparation, resources and pool stay absent.
         let omitted = parsed(
             br#"countries={ENG={operations={ priority=1 running={ operation_x={
                 id={ id=1 type=4713 } target="SOV" } } }} SOV={}}"#,

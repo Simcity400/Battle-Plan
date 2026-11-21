@@ -1,4 +1,3 @@
-//! Shared recorded rows, cadence, exact values and their codecs.
 
 pub mod cadence;
 #[doc(hidden)]
@@ -11,7 +10,6 @@ pub mod intel_estimates;
 #[doc(hidden)]
 pub mod measurement;
 pub mod military_aid;
-/// Each table's descriptor ([`rows::RowOps`]), named as its table.
 #[doc(hidden)]
 pub mod ops {
     pub use replay_tables_economy::*;

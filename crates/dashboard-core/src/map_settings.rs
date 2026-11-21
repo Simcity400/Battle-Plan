@@ -1,4 +1,3 @@
-//! Global, campaign and widget preferences: read once at service startup, written on the data loader.
 use crate::protocol::{
     CampaignMapSettings, MapAudio, MapGraphics, MapGraphicsOverrides, ResolvedMapSettings,
 };
@@ -6,12 +5,8 @@ use serde::Serialize;
 use std::{collections::BTreeMap, fs, io, path::PathBuf, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
-/// The map renderer's anti-aliasing sample counts as a mask of 1, 2, 4 and 8; zero until a
-/// renderer has said. The renderer's process records them when it opens its device; a host
-/// learns them from the renderer it runs ([`crate::protocol::NativeEvent::Ready`]).
 static SAMPLE_COUNTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// Records the counts the map renderer's adapter supports; any other count is not a map choice.
 pub fn set_sample_counts(counts: impl IntoIterator<Item = u32>) {
     let mask = counts
         .into_iter()
@@ -20,7 +15,6 @@ pub fn set_sample_counts(counts: impl IntoIterator<Item = u32>) {
     SAMPLE_COUNTS.store(mask, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The renderer's sample counts, ascending; `None` while no renderer has said.
 pub fn sample_counts() -> Option<Vec<u32>> {
     let mask = SAMPLE_COUNTS.load(std::sync::atomic::Ordering::Relaxed);
     (mask != 0).then(|| {
@@ -43,7 +37,6 @@ pub fn try_campaign_key(replay: &replay::campaign::Replay) -> io::Result<String>
         key.push(HEX[(byte >> 4) as usize]);
         key.push(HEX[(byte & 15) as usize]);
     }
-    // The alphabet above is ASCII, so this moves the allocation without copying.
     Ok(String::from_utf8(key).expect("hexadecimal is ASCII"))
 }
 
@@ -53,17 +46,13 @@ pub struct Store {
     error: Option<String>,
     game: Game,
     game_error: Option<String>,
-    /// Advances whenever any resolved choice may have changed, so a map rendering every frame
-    /// resolves its settings again only then.
     generation: u64,
 }
 
-/// The scope key of a campaign's widget.
 pub fn widget_key(campaign: &str, id: &str) -> String {
     format!("{campaign}/widget/{id}")
 }
 
-/// The the game level of every choice: the game's own value where it has one, else the default.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Game {
     pub graphics: MapGraphics,
@@ -93,8 +82,6 @@ impl Store {
     fn load() -> io::Result<Self> {
         Self::load_from(&path()?)
     }
-    /// Read the preferences another process saved (the desktop host saves them; the map
-    /// viewer reads them again when told), keeping this process's game graphics.
     pub fn reload(&mut self) {
         self.reload_from(path());
     }
@@ -130,7 +117,6 @@ impl Store {
     pub fn configure_game(&mut self, user: &std::path::Path) {
         self.set_game(read_game(user));
     }
-    /// Installs the game's settings as [`read_game`] read them.
     pub fn set_game(&mut self, game: io::Result<Game>) {
         self.generation += 1;
         match game {
@@ -143,19 +129,15 @@ impl Store {
             }
         }
     }
-    /// The game's values; `None` when its settings could not be read.
     pub fn game(&self) -> Option<Game> {
         self.game_error.is_none().then_some(self.game)
     }
-    /// Changes whenever a resolved choice may have; see [`Store::get`].
     pub fn generation(&self) -> u64 {
         self.generation
     }
     pub fn game_error(&self) -> Option<String> {
         self.game_error.clone()
     }
-    /// What `key` inherits: the game for the global scope, global for a campaign and the
-    /// campaign for its widgets.
     pub fn inherited(&self, key: &str) -> ResolvedMapSettings {
         if key == "$global" {
             ResolvedMapSettings {
@@ -169,24 +151,17 @@ impl Store {
             self.get("$global")
         }
     }
-    /// The choices `key` stores itself, with inheritance markers preserved.
     pub fn preferences(&self, key: &str) -> CampaignMapSettings {
         self.entries.get(key).cloned().unwrap_or_default()
     }
-    /// Every choice of `key` after inheritance.
     pub fn get(&self, key: &str) -> ResolvedMapSettings {
         let mut settings = self.inherited(key).child(&self.preferences(key));
-        // The engine decides mount order, so what renders is the set of chosen mods: no choice
-        // and an empty one, or one in another order, load the same map once.
         let mut mods = settings.visual_mods.take().unwrap_or_default();
         mods.sort_by(|a, b| a.id.cmp(&b.id));
         mods.dedup_by(|a, b| a.id == b.id);
         settings.visual_mods = Some(mods);
         settings
     }
-    /// `key`'s stored choices with `setting` flipped: the opposite of its value now, its own or
-    /// the one it inherits; every other choice stays as stored. Run under the store's lock, so
-    /// it flips the value an edit or reset made before it, never an older one.
     pub fn flipped(
         &self,
         key: &str,
@@ -224,7 +199,6 @@ impl Store {
         self.update_at(&path()?, key, choose)
     }
 
-    /// Lock the read-modify-replace transaction across windows to preserve other scopes' saves.
     fn update_at(
         &mut self,
         path: &std::path::Path,
@@ -267,7 +241,6 @@ impl Store {
     }
 }
 
-/// A mod the recording was made with, by the id the recording names it and its display name.
 #[derive(Clone, Debug, Serialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordedMod {
@@ -281,31 +254,31 @@ pub struct RecordedMod {
 pub struct Reply {
     pub source_id: String,
     pub revision: String,
-    /// The choices this scope stores; everything else inherits.
+    #[doc = " The choices this scope stores; everything else inherits."]
     pub settings: CampaignMapSettings,
-    /// What this scope's unset choices take.
+    #[doc = " What this scope's unset choices take."]
     pub inherited_settings: ResolvedMapSettings,
-    /// Every installed mod; any can be shown. `problem` says why one cannot be mounted.
+    #[doc = " Every installed mod; any can be shown. `problem` says why one cannot be mounted."]
     #[ts(
         type = "{ id: string, name: string, recordedId: string, source: string, problem: string | null }[]"
     )]
     pub mods: Vec<installed_content_core::content::visual::InstalledMod>,
-    /// The mods the recording was made with, which every scope shows beneath visual mods.
+    #[doc = " The mods the recording was made with, which every scope shows beneath visual mods."]
     pub recorded_mods: Vec<RecordedMod>,
-    /// The resolved selection's mods in the engine's mount order, lowest precedence first.
+    #[doc = " The resolved selection's mods in the engine's mount order, lowest precedence first."]
     #[ts(type = "{ id: string, name: string }[]")]
     pub applied_mods: Vec<installed_content_core::content::visual::Choice>,
-    /// Selected mods that are not shown, and why.
+    #[doc = " Selected mods that are not shown, and why."]
     pub applied_notes: Vec<String>,
-    /// The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when
-    /// every count is a choice and the renderer refuses one its adapter lacks.
+    #[doc = " The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when"]
+    #[doc = " every count is a choice and the renderer refuses one its adapter lacks."]
     pub sample_counts: Option<Vec<u32>>,
-    /// The game's own graphics choices, which a scope's "use the game's settings" reverts to.
+    #[doc = r#" The game's own graphics choices, which a scope's "use the game's settings" reverts to."#]
     pub game_graphics: Option<MapGraphics>,
-    /// Why the game's settings (graphics and volumes) could not be read.
+    #[doc = " Why the game's settings (graphics and volumes) could not be read."]
     pub game_settings_error: Option<String>,
-    /// The service's presentation generation once this job checked every open source's visual
-    /// mods: a later one than a client has seen means widget artwork changed.
+    #[doc = " The service's presentation generation once this job checked every open source's visual"]
+    #[doc = " mods: a later one than a client has seen means widget artwork changed."]
     #[ts(type = "number")]
     pub presentation_generation: u64,
 }
@@ -317,9 +290,6 @@ pub fn catalogue(
     installed_content_core::content::visual::installed(options, cancel)
 }
 
-/// The game's sound volumes from `settings.txt`'s keys. The game's volume sliders store 0-100 as
-/// decimals; the value is kept exactly, and only a value the slider cannot store is brought into
-/// its range. A missing or unreadable value keeps the game's default.
 pub fn game_audio(keys: &installed_content_settings::settings::SettingsKeys) -> MapAudio {
     let volume = |key: &str, fallback: f32| {
         keys.f32_at(&[key])
@@ -338,16 +308,12 @@ pub fn game_audio(keys: &installed_content_settings::settings::SettingsKeys) -> 
     }
 }
 
-/// The game's second master factor, `dev_master_volume`, as a fraction; the
-/// game multiplies it into its master volume. It is not a user choice, so it
-/// is read from `settings.txt` and never inherited.
 pub fn game_dev_master(keys: &installed_content_settings::settings::SettingsKeys) -> f32 {
     keys.f32_at(&["dev_master_volume"])
         .filter(|value| value.is_finite())
         .map_or(0.5, |value| value.clamp(0.0, 100.0) / 100.0)
 }
 
-/// Read the user's existing game preferences; never writes to settings.txt.
 pub fn read_game(user: &std::path::Path) -> io::Result<Game> {
     parse_game_keys(&installed_content_settings::settings::read_keys(user)?)
 }
@@ -359,13 +325,7 @@ fn parse_game(bytes: &[u8]) -> io::Result<Game> {
 fn parse_game_graphics(bytes: &[u8]) -> io::Result<MapGraphics> {
     parse_game(bytes).map(|game| game.graphics)
 }
-/// The preferences from `settings.txt`'s keys as the game reads them
-/// ([`installed_content_settings::settings::SettingsKeys`]: any case, the last stored value of each field; a
-/// conversion that stores nothing keeps the field). Choices the file does not store keep
-/// their default.
 fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) -> io::Result<Game> {
-    // Without the file the game reads nothing: each choice keeps the default it keeps when a
-    // present file leaves it out.
     if keys.is_absent() {
         return Ok(Game {
             graphics: MapGraphics {
@@ -388,22 +348,16 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
             .unwrap_or(fallback)
     };
     let mut result = MapGraphics::default();
-    // The map options the game saves; a line it cannot read keeps the game's value and is named
-    // in the map's limitations, which read the same file.
     let (options, _) = installed_content_settings::settings::MapOptions::read(keys);
     result.day_night = options.day_night;
     result.show_allied_plans = options.allied_plans;
     result.nato_counters = Some(options.nato_counters);
     result.full_resolution = map("draw_map_full_res", result.full_resolution);
     result.trees = map("draw_trees", result.trees);
-    // Map shadows use the map-rendering option; the graphics shadows
-    // setting only reaches the device support check.
     result.shadows = map("draw_shadows", result.shadows);
     result.rivers = map("draw_rivers", result.rivers);
-    // High-quality map shaders use the map-rendering option.
     result.high_gfx_shaders = map("high_gfx_shaders", result.high_gfx_shaders);
     result.water_reflections = map("draw_water_reflections", result.water_reflections);
-    // Sky rendering uses the map-rendering option.
     result.sky = map("draw_sky", result.sky);
     result.buildings = map("draw_buildings", result.buildings);
     result.units = map("draw_units", result.units);
@@ -442,8 +396,6 @@ mod tests {
     use super::*;
     use crate::protocol::{CounterFilter, MapAudioOverrides};
 
-    /// No counts are assumed before a renderer reports its own; what it reports is kept as
-    /// map choices only.
     #[test]
     fn sample_counts_are_unknown_until_the_renderer_reports_them() {
         assert_eq!(sample_counts(), None);
@@ -477,7 +429,6 @@ mod tests {
             voice: Some(40.0),
             ..Default::default()
         };
-        // The widget overrides borders and day/night, and keeps its own audio and mods.
         store.entries.insert(
             widget.clone(),
             CampaignMapSettings {
@@ -491,7 +442,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        // A picker flip is queued; before it runs, a reset clears the graphics overrides.
         store.entries.insert(
             widget.clone(),
             CampaignMapSettings {
@@ -500,14 +450,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        // The flip runs on the value after the reset (inherited on), not the one it was
-        // clicked over, and leaves the reset borders and the other choices as they are.
         let flipped = store.flipped(&widget, MapSetting::DayNight).unwrap();
         assert_eq!(flipped.graphics.day_night, Some(false));
         assert_eq!(flipped.graphics.borders, None);
         assert_eq!(flipped.audio, audio);
         assert_eq!(flipped.visual_mods, Some(Vec::new()));
-        // Two flips run in order give the value they started from.
         store.entries.insert(widget.clone(), flipped);
         let back = store.flipped(&widget, MapSetting::DayNight).unwrap();
         assert_eq!(back.graphics.day_night, Some(true));
@@ -543,13 +490,11 @@ mod tests {
         );
         let widget = store.get("campaign/widget/map-a");
         assert!(!widget.graphics.trees && !widget.graphics.day_night);
-        // Global overriding trees leaves rivers on the game's value.
         assert!(!widget.graphics.rivers);
         assert_eq!(
             store.get("other").visual_mods,
             Some(vec![choice("mod/global.mod")])
         );
-        // A campaign overriding only samples keeps global's trees and day/night choices.
         store.entries.insert(
             "campaign".into(),
             CampaignMapSettings {
@@ -585,7 +530,6 @@ mod tests {
         assert!(!store.get("campaign/widget/map-b").graphics.trees);
         assert_eq!(store.get("campaign/widget/map-b").graphics.samples, 2);
         assert_eq!(store.get("other/widget/map-a").graphics.samples, 4);
-        // Clearing a widget returns every choice to the campaign's.
         store
             .entries
             .insert(key.into(), CampaignMapSettings::default());
@@ -619,7 +563,6 @@ mod tests {
         assert!(campaign.graphics.show_allied_plans);
         store.game.graphics.sky = true;
         assert!(store.get("campaign").graphics.sky);
-        // The stored form keeps its inheritance markers.
         assert_eq!(store.preferences("campaign").graphics.sky, None);
     }
 
@@ -681,7 +624,6 @@ mod tests {
         store.entries.insert("campaign-a".into(), changed.clone());
         assert_eq!(store.preferences("campaign-a"), changed);
         assert_eq!(store.get("campaign-a").visual_mods, changed.visual_mods);
-        // Without a choice anywhere, a campaign shows no visual mods.
         assert_eq!(store.get("campaign-b").visual_mods, Some(vec![]));
         assert_eq!(
             store.get("campaign-b").graphics,
@@ -709,7 +651,6 @@ mod tests {
         assert!(
             parse_game_graphics(b"graphics={} mapRenderingOptions={texture_quality=9}").is_err()
         );
-        // A map option line the game cannot read keeps the game's value and refuses nothing.
         let unread = parse_game_graphics(
             b"template_counter=invalid counter_color_mode=yes hide_daynight_cycle=maybe graphics={} mapRenderingOptions={}",
         )
@@ -751,7 +692,6 @@ mod tests {
             ],
             [80.0, 50.4, 25.0, 25.0, 0.0, 49.6]
         );
-        // The game's second master factor is read apart and never inherited.
         let keys = installed_content_settings::settings::SettingsKeys::read(b"dev_master_volume=25.000000");
         assert_eq!(game_dev_master(&keys), 0.25);
         assert_eq!(
@@ -763,7 +703,6 @@ mod tests {
         )
         .unwrap();
         assert!(shown.graphics.day_night && shown.graphics.show_allied_plans);
-        // Unstored choices keep the game's defaults.
         let unstored = parse_game(b"graphics={} mapRenderingOptions={}").unwrap();
         assert_eq!(
             (unstored.graphics.day_night, unstored.graphics.show_allied_plans),
@@ -775,9 +714,6 @@ mod tests {
         assert_eq!(unstored.audio, MapAudio::default());
     }
 
-    /// The values a fresh install writes on first launch (synthetic, the imported keys only).
-    /// It stores neither map-mode choice, so both keep the game's defaults: the cycle on and
-    /// allied plans off; the game stores `show_allied_plans` only once its button is used.
     #[test]
     fn a_fresh_install_imports_as_the_defaults() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -845,7 +781,6 @@ mod tests {
         );
         assert_eq!(store.get("none"), store.get("empty"));
         assert_eq!(store.get("ab"), store.get("ba"));
-        // The form keeps what was chosen, in the order it was chosen.
         assert_eq!(
             store.preferences("ba").visual_mods.unwrap()[0],
             choice("workshop/b")

@@ -88,8 +88,6 @@ regions={0={region=0 temperature=-90071992547.40993
         report.compared_tables["WeatherProvinces static modifiers"],
         1
     );
-    // Unread rebuild content leaves every recorded accumulator uncompared: one failed
-    // comparison, so coverage is incomplete and the run fails.
     assert_eq!(
         report.failed_comparisons,
         BTreeMap::from([(
@@ -112,15 +110,12 @@ regions={0={region=0 temperature=-90071992547.40993
     assert!(report.limitations.contains_key(
         "the weather manager writer omits the stored day/night array; held clocks require a matched native read witness, and updated clocks are the hour's derivation from content (`recorder derived` compares it with recorded clocks)"
     ));
-    // The rest of this fixture holds no accumulator; the modifier test covers it.
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *frame.tables[TableId::WeatherProvinces.index()]
     {
         rows[0].modifiers = replay_data::rows::Recorded::NotRecorded;
     }
 
-    // The static modifier list compares name and days in list order; a refused read is
-    // uncompared and an older recording's list is not recorded, never a match.
     for (list, differences, failed, not_recorded) in [
         (static_list(&[("mud", -1), ("mud", 6)]), 1, false, false),
         (static_list(&[("mud", 7), ("mud", -1)]), 1, false, false),
@@ -168,8 +163,6 @@ regions={0={region=0 temperature=-90071992547.40993
         frame.tables[TableId::WeatherProvinces.index()] = original;
     }
 
-    // Missing fields withhold temperature/mud comparisons and identify
-    // the missing stored clock without inventing a save counterpart.
     let original = frame.tables[TableId::WeatherProvinces.index()].clone();
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *frame.tables[TableId::WeatherProvinces.index()]
@@ -189,7 +182,7 @@ regions={0={region=0 temperature=-90071992547.40993
     )
     .unwrap();
     assert!(old.differences.is_empty());
-    assert_eq!(old.scalar_checks, 2); // snow and the static modifier list remain compared
+    assert_eq!(old.scalar_checks, 2);
     assert_eq!(
         old.limitations["WeatherProvinces.temperature not recorded"].len(),
         1
@@ -238,7 +231,6 @@ regions={0={region=0 temperature=-90071992547.40993
         assert_eq!(report.scalar_checks, scalar_checks);
         assert_eq!(report.failed_comparisons.len(), 1);
         assert!(report.failed_comparisons.contains_key(name));
-        // A complete province table also counts its modifier rebuilds (here none).
         assert_eq!(
             report.compared_tables.len(),
             if table == TableId::WeatherProvinces {
@@ -448,7 +440,6 @@ regions={0={region=0}}
                 temperature: replay_data::rows::ProvinceTemperature::anchored(state),
                 raw_mud: replay_data::rows::Recorded::Value(0),
                 temperature_pass: replay_data::rows::Recorded::Value(pass),
-                // The modifier test covers the accumulator, the first test the list.
                 modifiers: replay_data::rows::Recorded::NotRecorded,
                 static_modifiers: replay_data::rows::Recorded::NotRecorded,
                 ..Default::default()
@@ -483,8 +474,6 @@ regions={0={region=0}}
         report.failed_comparisons
     );
     assert_eq!(report.scalar_checks, 2);
-    // A refused derivation compares no saved temperature: one failed comparison, so
-    // coverage is incomplete and the run fails.
     let mut report = Report::default();
     compare(
         &frame(Some(pass(witness ^ 1))),
@@ -568,9 +557,6 @@ fn entries(values: &[(u32, i64)]) -> replay_data::rows::Recorded<Option<Province
 fn province_modifier_accumulators_compare_with_their_rebuild_from_the_save() {
     use replay_data::{rows::LexicalTokenRow, rows::ModifierDefinitionRow};
 
-    // Province 0: mud, a temperature both cold intervals hold and a list naming
-    // flood twice. Province 1: snow both ground snow intervals hold once the
-    // permanent snow is added. Province 2: medium snow alone.
     let saved = installed_content_save::parse(
         br#"HOI4txt
 date=1936.1.1.1 game_unique_id=campaign game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 version=build
@@ -586,7 +572,6 @@ regions={}
     )
     .unwrap();
     let (speed, attrition, cold, supply) = (1, 2, 3, 4);
-    // `uncategorised` has no category, so the game never adds it to an accumulator.
     let names: [(u32, &[u8]); 5] = [
         (speed, b"speed".as_slice()),
         (attrition, b"Attrition".as_slice()),
@@ -638,12 +623,10 @@ regions={}
         raw_mud: replay_data::rows::Recorded::Value(mud),
         temperature: replay_data::rows::ProvinceTemperature::NOT_RECORDED,
         modifiers,
-        // The first test covers the static modifier list.
         static_modifiers: replay_data::rows::Recorded::NotRecorded,
         ..Default::default()
     };
     let rows = vec![
-        // Mud and the first cold interval; each list entry adds its values.
         row(
             0,
             0,
@@ -656,7 +639,6 @@ regions={}
                 (supply, -50_000),
             ]),
         ),
-        // High ground snow wins over medium.
         row(
             1,
             600_000,
@@ -722,16 +704,12 @@ regions={}
             .any(|reason| reason.contains("does not hold permanent snow"))
     );
 
-    // The mud, thermal and ground snow part is runtime-only: province 2 kept very cold and
-    // no ground snow from an earlier rebuild while the save selects medium snow alone.
     let mut held = rows.clone();
     held[2].modifiers = entries(&[(cold, 20_000)]);
     let report = run(&mut frame, &held, Ok(&content));
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(report.limitations.values().flatten().any(|subject| subject
         == "WeatherProvinces.modifiers mud, thermal and ground snow part: runtime-only; no text-save equality claim"));
-    // It hides no mismatch in the save-backed part: an extra key, a list entry the save
-    // does not hold, or a wrong static term all differ.
     held[2].modifiers = entries(&[(cold, 20_000), (supply, 1)]);
     let report = run(&mut frame, &held, Ok(&content));
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
@@ -753,8 +731,6 @@ regions={}
         report.differences
     );
 
-    // A state the content's intervals cannot select explains nothing: with empty ground
-    // snow intervals, medium snow's -10000 speed cannot stand in for a wrong list total.
     let mut collided = rows.clone();
     collided[0].modifiers = entries(&[
         (speed, -50_000),
@@ -775,10 +751,6 @@ regions={}
         "{:?}",
         report.differences
     );
-    // Two distinct states that both fit leave the list's part uncertified: high snow
-    // adding a zero supply entry fits province 0, whose list already holds supply, as
-    // well as no ground snow does. With every other province consistent, the province is
-    // uncovered and the comparison incomplete, never passed.
     let mut twin = content.clone();
     twin.statics.insert(
         "weather_ground_snow_high".into(),
@@ -799,9 +771,6 @@ regions={}
     assert!(report.coverage_line().contains(": incomplete;"));
     assert!(report.outcome().is_err());
 
-    // A static value adds as the game scales it at multiplier one: an accepted script
-    // value of 1000000000, stored as fixed5, wraps in the multiply and adds the wrapped
-    // quotient. The unscaled value differs.
     let mut huge = content.clone();
     huge.statics.insert(
         "flood".into(),
@@ -846,8 +815,6 @@ regions={}
         ]
     );
 
-    // A changed value, a missing key and an extra key each differ, by name
-    // when a static modifier holds the key and by definition otherwise.
     let mut changed = rows.clone();
     changed[0].modifiers = entries(&[
         (speed, -40_000),
@@ -875,7 +842,6 @@ regions={}
         );
     }
 
-    // An entry the save's list no longer names differs; it is never waived.
     let mut expired = saved.clone();
     expired.weather.provinces.as_mut().unwrap()[0].custom_modifiers =
         Some(vec![("flood".into(), 3)]);
@@ -892,8 +858,6 @@ regions={}
     .unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
 
-    // A refused row leaves that province's accumulator uncompared, and unread content
-    // every one: each is a failed comparison, so coverage is incomplete and the run fails.
     let mut refused = rows.clone();
     refused[2].modifiers = replay_data::rows::Recorded::Value(None);
     let report = run(&mut frame, &refused, Ok(&content));
@@ -938,14 +902,11 @@ regions={}
                 .to_owned(),
         )])
     );
-    // A name without a definition was dropped at load: the medium snow modifier holding
-    // only one is empty and adds nothing.
     assert_eq!(
         report.differences,
         ["weather province 2.modifiers.speed (definition 1): replay -10000, save \"absent\""]
     );
 
-    // Without the recorded definitions nothing is compared, by name.
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "tokens unread".into(),
     };
@@ -962,9 +923,6 @@ regions={}
     assert!(report.outcome().is_err());
 }
 
-/// A static modifier adds only its own categorised entries, zeros included; an
-/// `added_modifier` child adds nothing, and a modifier whose every entry is gated off
-/// with no tooltip or child is empty.
 #[test]
 fn a_static_modifier_adds_its_own_categorised_entries() {
     use replay_data::{rows::LexicalTokenRow, rows::ModifierDefinitionRow};
@@ -994,7 +952,6 @@ fn a_static_modifier_adds_its_own_categorised_entries() {
             token,
             literal: literal.to_vec(),
         });
-    // The hour's features leave the gated definition off.
     let registry = Registry::new(&definitions, &tokens, Some(1)).unwrap();
     let mut names = BTreeMap::new();
     let mut parent = statics(&[("open", 0), ("gate", 5), ("none", 3)]);
@@ -1016,13 +973,9 @@ fn a_static_modifier_adds_its_own_categorised_entries() {
     );
 }
 
-/// The accumulator adds a static value as the game scales it at multiplier one: a
-/// wrapping multiply by one, then a signed division, so a modded value whose product
-/// wraps adds the wrapped quotient.
 #[test]
 fn a_static_value_scales_with_the_native_wrapping_multiply() {
     assert_eq!(scaled(25_000), 25_000);
     assert_eq!(scaled(-25_000), -25_000);
-    // An accepted script value of 1000000000, stored as fixed5.
     assert_eq!(scaled(100_000_000_000_000), -84_467_440_737_095);
 }

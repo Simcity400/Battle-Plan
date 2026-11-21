@@ -1,44 +1,15 @@
-//! Unit leader rows held between hours: UnitLeaders on quiet roster hours
-//! ([`crate::unit_leader_changes`]) and UnitLeaderTraits in the traits job
-//! ([`crate::unit_leader_trait_changes`]).
-//!
-//! A capture takes the certificate of each leader its role census names
-//! before reading anything ([`LeaderCarry::certify`]). A leader is carried,
-//! without reading it, when the job holds a read of it at the census's unit
-//! pointer for the census's character under an equal certificate; the
-//! capture reads only its other leaders and the decode publishes the held
-//! rows. When the domain's quiet token and the census generation are those
-//! taken before the certification whose rows the job last held, no observed
-//! writer ran since and every occurrence is the one certified then, so each
-//! held certificate still matches without a lookup, and the occurrences with
-//! a unit leader are the ones it visited, so the hour reuses that
-//! certification's visits and costs one pass over its leaders. A fresh read
-//! equal to its held rows only renews the entry's certificate
-//! ([`LeaderCarry::rebuild`]); the held rows are rebuilt only when a
-//! leader's rows changed or a leader appeared or left the census. A
-//! row follows from its leader's fields alone: UnitLeaders' skill block is
-//! the shared definition and a trait row's definition fields are the
-//! content's, which only a load replaces. Captures that do not certify carry
-//! and hold nothing.
 use super::*;
 use crate::unit_leader_changes::{Changes, Counts};
 use std::ops::Range;
 
-/// A held row type: its text spans, relative to its leader's held text.
 pub(super) trait Held: Copy + PartialEq + std::fmt::Debug {
-    /// Appends this fresh row's text from the table's `bytes` to `text` and
-    /// returns the row with spans from `start`, or `None` for an invalid span.
     fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Option<Self>;
-    /// The row's text bytes.
     fn text_len(&self) -> usize;
-    /// A refused appended value must refresh only this leader, without
-    /// discarding unrelated leaders' certified rows.
     fn can_hold(&self) -> bool {
         true
     }
 }
 
-/// Appends `bytes[at..at + len]` to `text`; the span from `start`.
 fn take(
     bytes: &[u8],
     (at, len): (usize, usize),
@@ -99,7 +70,6 @@ impl Held for cunit_leader::TraitRow {
     }
 }
 
-/// One held read.
 #[derive(Debug, Clone)]
 struct Entry {
     pointer: usize,
@@ -108,57 +78,39 @@ struct Entry {
     certificate: (u64, u64),
     rows: Range<usize>,
     text: Range<usize>,
-    /// Carried this hour.
     carried: bool,
-    /// The census named it this hour.
     seen: bool,
 }
 
-/// One census occurrence with a unit leader, in census order.
 #[derive(Clone, Copy, Debug)]
 struct Visit {
-    /// The occurrence's census index.
     index: usize,
     pointer: usize,
     character: u32,
-    /// Taken before any read of the hour; `None` when unobserved.
     certificate: Option<(u64, u64)>,
-    /// The held entry at its pointer.
     entry: Option<usize>,
-    /// That entry's certificate and character still match.
     carryable: bool,
 }
 
-/// The family a carry reports to.
 #[derive(Clone, Copy)]
 pub(super) struct Family {
-    /// Publishes one capture's counts and the leaders it visited.
     pub record: fn(&Counts, usize),
 }
 
 pub(crate) struct LeaderCarry<R> {
     changes: &'static dyn Changes,
     family: Family,
-    /// Sorted by pointer.
     entries: Vec<Entry>,
     rows: Vec<R>,
     text: Vec<u8>,
     visits: Vec<Visit>,
-    /// Fresh reads that replace or add an entry, with their rows and text.
     added: Vec<Entry>,
     added_rows: Vec<R>,
     added_text: Vec<u8>,
-    /// The quiet token and census generation taken before the certification
-    /// whose rows the job holds; every held certificate was current then.
     token: Option<((u64, u64), u64)>,
-    /// Those of this hour's certification, until its rows are held.
     pending: Option<((u64, u64), u64)>,
-    /// A capture certified this payload's leaders.
     active: bool,
-    /// Names the held entries and their order: a fresh value whenever they
-    /// are rebuilt or forgotten.
     layout: u64,
-    /// Rows and text bytes this hour's carried leaders publish.
     carried: (usize, usize),
     counts: Counts,
 }
@@ -176,12 +128,10 @@ impl<R> std::fmt::Debug for LeaderCarry<R> {
     }
 }
 
-/// UnitLeaders on quiet roster hours.
 pub(super) const UNITS: Family = Family {
     record: crate::unit_leader_changes::record,
 };
 
-/// UnitLeaderTraits in the traits job.
 pub(super) const TRAITS: Family = Family {
     record: crate::unit_leader_trait_changes::record,
 };
@@ -235,17 +185,12 @@ impl<R: Held> LeaderCarry<R> {
         self.counts
     }
 
-    /// Each capture, before anything else: nothing is certified yet.
     pub(super) fn begin_hour(&mut self) {
         self.active = false;
         self.carried = (0, 0);
         self.counts = Counts::default();
     }
 
-    /// Copy side, before any leader read: certify the `(census index, unit
-    /// pointer, character id)` occurrences with a unit leader, at most
-    /// `bound`, of the census with `generation`, in order. Returns whether
-    /// any leader is carried.
     pub(super) fn certify<I: Iterator<Item = (usize, usize, u32)>>(
         &mut self,
         generation: u64,
@@ -254,8 +199,6 @@ impl<R: Held> LeaderCarry<R> {
     ) -> bool {
         let token = self.changes.quiet().map(|quiet| (quiet, generation));
         let unchanged = generation != 0 && token.is_some() && token == self.token;
-        // Until this hour's rows are held, a held certificate may be one this
-        // hour's lookups found stale.
         self.token = None;
         self.pending = token;
         if !unchanged {
@@ -282,8 +225,6 @@ impl<R: Held> LeaderCarry<R> {
                 });
             }
         }
-        // Unchanged, the visits are the held certification's: each held
-        // entry's certificate is the one its read was held under.
         let mut carrying = false;
         for visit in &self.visits {
             let Some(at) = visit.entry else {
@@ -301,18 +242,14 @@ impl<R: Held> LeaderCarry<R> {
         carrying
     }
 
-    /// Whether a capture certified this payload's leaders.
     pub(super) fn certified(&self) -> bool {
         self.active
     }
 
-    /// Copy side: this hour's visits, in census order.
     pub(super) fn visit_count(&self) -> usize {
         self.visits.len()
     }
 
-    /// Copy side: the unit pointer and character id of visit `at` when this
-    /// hour reads its leader.
     pub(super) fn fresh_visit(&self, at: usize) -> Option<(usize, u32)> {
         let visit = self.visits.get(at)?;
         visit
@@ -321,8 +258,6 @@ impl<R: Held> LeaderCarry<R> {
             .then_some((visit.pointer, visit.character))
     }
 
-    /// Decode: the census indices of this payload's certified leaders, in
-    /// census order; `None` when no capture certified them.
     pub(super) fn visited(&self) -> Option<impl Iterator<Item = usize> + '_> {
         self.active
             .then(|| self.visits.iter().map(|visit| visit.index))
@@ -339,17 +274,14 @@ impl<R: Held> LeaderCarry<R> {
         (self.active && entry.carried).then_some(entry)
     }
 
-    /// Copy side: whether `pointer`'s leader is carried this hour.
     pub(super) fn carries(&self, pointer: usize) -> bool {
         self.carried_entry(pointer).is_some()
     }
 
-    /// Copy side: the rows and text bytes this hour's carried leaders publish.
     pub(super) fn carried_demand(&self) -> (usize, usize) {
         self.carried
     }
 
-    /// Decode: a carried leader's held rows and their text, spans from zero.
     pub(super) fn carried_rows(&self, pointer: usize) -> Option<(&[R], &[u8])> {
         self.carried_entry(pointer).map(|entry| {
             (
@@ -359,17 +291,11 @@ impl<R: Held> LeaderCarry<R> {
         })
     }
 
-    /// The key of the table the held entries make for the census with
-    /// `generation`: every visit's held rows in visit order. The layout names
-    /// the entries, so equal keys name equal tables. `None` when a visit
-    /// holds none.
     pub(super) fn table_key(&self, generation: u64) -> Option<(u64, u64)> {
         (generation != 0 && self.visits.iter().all(|visit| visit.entry.is_some()))
             .then_some((generation, self.layout))
     }
 
-    /// Decode: whether visit `at`'s fresh rows, with spans into `bytes`,
-    /// equal its held rows.
     pub(super) fn held_equals(&self, at: usize, rows: &[R], bytes: &[u8]) -> bool {
         let Some(entry) = self.visits.get(at).and_then(|visit| visit.entry) else {
             return false;
@@ -397,10 +323,6 @@ impl<R: Held> LeaderCarry<R> {
         self.token = None;
     }
 
-    /// Decode worker, after the payload's rows: renew or hold every fresh
-    /// read the census named and drop the leaders it no longer names. `fresh` gives each fresh visit's
-    /// row count and leader id from the rows that remain, in visit order;
-    /// carried visits publish their held rows.
     pub(super) fn rebuild(
         &mut self,
         outcome: Outcome,
@@ -423,7 +345,6 @@ impl<R: Held> LeaderCarry<R> {
         (self.family.record)(&self.counts, self.visits.len());
     }
 
-    /// Storage is advisory: an error forgets every held read.
     fn hold(
         &mut self,
         rows: &[R],
@@ -458,7 +379,6 @@ impl<R: Held> LeaderCarry<R> {
                 continue;
             }
             let held = visit.entry.map(|index| &self.entries[index]);
-            // The fresh read's rows and text, appended to the added buffers.
             let (rows_start, text_start) = (self.added_rows.len(), self.added_text.len());
             engine_allocation::advisory(|| {
                 engine_allocation::reserve(&mut self.added_rows, len)?;
@@ -480,16 +400,12 @@ impl<R: Held> LeaderCarry<R> {
                     && self.text[entry.text.clone()] == self.added_text[text_start..]
             });
             let Some(certificate) = visit.certificate else {
-                // Unobserved: the census names it, but nothing certifies a
-                // held read.
                 self.added_rows.truncate(rows_start);
                 self.added_text.truncate(text_start);
                 continue;
             };
             if same {
-                // Renewed in place.
                 let entry = &mut self.entries[visit.entry.unwrap()];
-                // The next unchanged hour's visit is carryable again.
                 visit.carryable = true;
                 entry.certificate = certificate;
                 entry.character = visit.character;
@@ -501,7 +417,6 @@ impl<R: Held> LeaderCarry<R> {
             engine_allocation::advisory(|| engine_allocation::reserve(&mut self.added, 1))
                 .map_err(|_| ())?;
             if let Some(index) = visit.entry {
-                // Replaced by the fresh read.
                 self.entries[index].seen = false;
             }
             self.added.push(Entry {
@@ -524,7 +439,6 @@ impl<R: Held> LeaderCarry<R> {
         self.restructure().map_err(|_| ())
     }
 
-    /// Rebuilds the held buffers from the seen entries and the added reads.
     fn restructure(&mut self) -> std::io::Result<()> {
         let kept = self.entries.iter().filter(|entry| entry.seen);
         let (entries, rows, text) = kept.clone().fold((0, 0, 0), |(e, r, t), entry| {
@@ -562,8 +476,6 @@ impl<R: Held> LeaderCarry<R> {
         self.rows = next_rows;
         self.text = next_text;
         self.layout = fresh_layout();
-        // The visits name the rebuilt entries, and a held read's visit is
-        // carryable under the certificate it was held with.
         for visit in &mut self.visits {
             visit.entry = self
                 .entries
@@ -575,15 +487,11 @@ impl<R: Held> LeaderCarry<R> {
     }
 }
 
-/// A layout no other carry has held.
 fn fresh_layout() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Appends one carried leader's held rows, whose spans start at zero, and
-/// their text as a walk stores them.
-/// [`held_rows`] into growing storage at `at` and `from`.
 pub(super) fn held_rows_into<R: Copy + Default>(
     held: &[R],
     text: &[u8],

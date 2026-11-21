@@ -1,9 +1,3 @@
-//! Ability descriptions and sprites from the recorded content stack.
-//!
-//! The default sprite starts from `GFX_ability_<token>`; `icon` replaces
-//! that base, and finalization appends `_animated`. Each active-ability
-//! map-counter child uses that sprite. Recordings hold only the ability
-//! token; the sprite is resolved here from the content stack.
 
 use crate::key_names::KeyNames;
 use std::{collections::BTreeMap, io};
@@ -17,33 +11,21 @@ use crate::{
     scope::ScopeKind,
 };
 
-/// The default adjuster token identifies `none`.
 const DEFAULT_TOKEN_KEY: &[u8] = b"none";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AbilitySprites {
-    /// Ability token to the `GFX_...` sprite its map-counter child shows.
     pub by_token: BTreeMap<Vec<u8>, String>,
-    /// The first exact-name definition in the database roster.
     pub definitions: BTreeMap<Vec<u8>, Definition>,
-    /// Native reading notes and counted deferred effect warnings, with
-    /// file/line context when loaded through the recorded stack.
     pub warnings: Vec<crate::Diagnostic>,
 }
 
-/// The authored operands used to build an ability description.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Definition {
-    /// String fields whose defaults are the declaration's token and that token
-    /// followed by `_desc`.
     pub name: Vec<u8>,
     pub description: Vec<u8>,
-    /// Country, leader and unit modifier accumulators, in native display order.
     pub modifiers: [Modifiers; 3],
-    /// Adjusters in first encounter order.
     pub adjusters: Vec<crate::unit_leader::Adjuster>,
-    /// One-time, hourly and daily effect arrays. Repeated blocks append with
-    /// the current type's scope mask.
     pub effects: [Vec<Item>; 3],
 }
 
@@ -52,12 +34,10 @@ impl AbilitySprites {
         self.by_token.get(token).map(String::as_str)
     }
 
-    /// The base sprite before finalization appends `_animated`.
     pub fn static_sprite(&self, token: &[u8]) -> Option<&str> {
         self.sprite(token)?.strip_suffix("_animated")
     }
 
-    /// The display name defaults to the declaration token and is replaced by `name`.
     pub fn name_key(&self, token: &[u8]) -> Option<&str> {
         std::str::from_utf8(&self.definition(token)?.name).ok()
     }
@@ -73,8 +53,6 @@ fn apply_with_terrain(
     terrains: &BTreeMap<Vec<u8>, Vec<u8>>,
     names: &KeyNames,
 ) -> io::Result<Vec<crate::Diagnostic>> {
-    /// Each declaration is a new ability; its adjusters are shared by all its
-    /// `unit_modifiers` blocks.
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -87,12 +65,8 @@ fn apply_with_terrain(
     }
     let mut undecided = Vec::new();
     let mut declared = 0;
-    // Constructor defaults and type dispatch.
     let mut ability_scopes = Vec::new();
     let mut adjusters: BTreeMap<usize, Vec<Vec<u8>>> = BTreeMap::new();
-    // Each file uses a mode-0 lexer. Unknown fields are ignored without skipping;
-    // invalid type values report an error and skip. Effects read by key, while
-    // `allowed` reads a trigger body.
     let document = native::read(
         input,
         native::Mode::KeepMark,
@@ -103,7 +77,6 @@ fn apply_with_terrain(
             Node::File => Shape::Skip,
             Node::Abilities => {
                 declared += 1;
-                // Abilities start in country scope.
                 ability_scopes.push(ScopeKind::Country.bit());
                 Shape::Object(Node::Ability(declared))
             }
@@ -111,7 +84,6 @@ fn apply_with_terrain(
                 Some(b"allowed") => Shape::Trigger,
                 Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                 Some(b"one_time_effect" | b"hourly_effect" | b"daily_effect" | b"end_effect") => {
-                    // Effects use the current ability scope.
                     Shape::EffectIn(ability_scopes[ability - 1])
                 }
                 Some(b"country_modifiers" | b"leader_modifiers") => {
@@ -123,7 +95,6 @@ fn apply_with_terrain(
                         kind @ (b"army_leader" | b"navy_leader" | b"target" | b"state" | b"country"
                         | b"air_zone" | b"naval_zone"),
                     ) => {
-                        // Each type field updates the current ability scope.
                         ability_scopes[ability - 1] = match kind {
                             b"army_leader" | b"navy_leader" => ScopeKind::Character.bit(),
                             b"state" => ScopeKind::State.bit(),
@@ -137,9 +108,6 @@ fn apply_with_terrain(
                 _ => Shape::One,
             },
             Node::Mtth => native::mean_time_to_happen(field),
-            // Find the ability's adjuster by the key's token, or create and read one
-            // for a built-in token or registered terrain. It is then read again only
-            // while its token is the default `none`.
             Node::UnitModifiers(ability)
                 if field.keyword().is_some_and(|key| {
                     matches!(
@@ -188,8 +156,6 @@ fn apply_with_terrain(
         .filter(|item| item.keyword_is("ability"))
     {
         for item in block(&root.value, "ability")? {
-            // The declaration name uses the current key's text up to its first NUL,
-            // independently of its quoted token kind.
             let token = crate::parser::c_string(
                 item.key
                     .as_deref()
@@ -286,8 +252,6 @@ fn apply_with_terrain(
                         .extend(field.value.items().unwrap_or_default().iter().cloned());
                 }
             }
-            // Every duplicate is parsed, but lookup stops at the
-            // first exact-length/byte match rather than replacing its object.
             sprites
                 .by_token
                 .entry(token.to_vec())
@@ -305,10 +269,6 @@ fn apply_with_terrain(
         .collect())
 }
 
-/// Every effective `common/abilities/*.txt` in the order the database loader
-/// enumerates them, by file name (the same folder scan as `common/buildings`); a later
-/// definition remains in the native roster, whose lookup keeps the first exact
-/// name. Later definitions are still parsed and retain their diagnostics.
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
     let paths = installed_content_core::script_files::database_paths(layers, "common/abilities/")?;
     let terrains = crate::terrain::read_definitions(layers)?
@@ -431,14 +391,10 @@ mod tests {
             apply_with_terrain(text, &mut sprites, &terrains, &KeyNames::default()).unwrap();
             sprites.sprite(b"a").map(str::to_owned)
         };
-        // A repeated `night` with a nondefault token reads its value token alone:
-        // the block's `}` ends unit_modifiers, the next ends the ability, so
-        // `icon` is no field of `a`.
         assert_eq!(
             sprite(b"ability={a={unit_modifiers={night={} night={}} icon=custom}}").as_deref(),
             Some("GFX_ability_a_animated")
         );
-        // Across blocks too: the adjusters are the ability's.
         assert_eq!(
             sprite(
                 b"ability={a={unit_modifiers={plains={}} unit_modifiers={plains={}} icon=custom}}"
@@ -446,15 +402,11 @@ mod tests {
             .as_deref(),
             Some("GFX_ability_a_animated")
         );
-        // A new declaration has new adjusters.
         assert_eq!(
             sprite(b"ability={a={unit_modifiers={night={}}} a={unit_modifiers={night={}} icon=custom}}")
                 .as_deref(),
             Some("GFX_ability_a_animated")
         );
-        // A new terrain named `none` is read twice, and again when repeated:
-        // the second read takes the tokens after its block, so `icon` is read
-        // inside it.
         assert_eq!(
             sprite(b"ability={a={unit_modifiers={none={} icon=custom}}}").as_deref(),
             Some("GFX_ability_a_animated")

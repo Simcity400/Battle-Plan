@@ -16,7 +16,6 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
   const id = useId();
   const menu = usePopover();
   const { trigger, open } = menu;
-  // A widget on screen has loaded its renderer, so its settings show at once.
   const loaded = loadedWidgetRenderer(widget.kind) !== undefined;
   return <>
     <button ref={trigger} className="dash-icon-button" type="button" data-widget-settings aria-label={`Configure ${widget.title}`} data-tooltip="Widget settings"

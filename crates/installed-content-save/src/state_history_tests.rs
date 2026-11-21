@@ -308,7 +308,6 @@ countries={AAA={}} states={1={owner=AAA} 2={owner=AAA}} provinces={1={controller
             .to_string()
             .contains("state 1 lacks its owner")
     );
-    // An excluded state's owner is irrelevant to the known provinces.
     assert!(saved.province_control(&membership).is_ok());
     saved.states.get_mut(&1).unwrap().owner = Some(b"AAA".to_vec());
     saved.states.get_mut(&2).unwrap().owner = None;

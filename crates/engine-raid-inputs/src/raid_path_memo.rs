@@ -1,13 +1,3 @@
-//! Separate raid-system land and naval session path-distance memos.
-//! Each key contains source and target province IDs; failures are cached too.
-//! Neither memo is saved. Buckets retain hash, occupancy/probe distance,
-//! province IDs and distance/success fields.
-//!
-//! Game writers hold a spin lock across lookup, insertion and rehash. Capture
-//! does not take that lock: it snapshots header and lock before and after copying,
-//! accepting only unchanged headers with a free lock at both ends. Insertions change
-//! element count and rehash changes geometry, so overlapping work makes the copy
-//! torn and this hour's table unavailable. A failed check is counted without retry.
 
 use crate::{Memory, cgame_state, craid_system, memory::read_slice, read, walk::Outcome};
 
@@ -31,9 +21,7 @@ const BUCKETS: usize = 0x08;
 const COUNT: usize = 0x10;
 const MASK: usize = 0x14;
 const MAX_PROBE: usize = 0x18;
-/// Spin lock acquired by compare-exchanging zero to one.
 const LOCK: usize = 0x20;
-/// The header span a read snapshots: buckets through the lock word.
 const HEADER: usize = LOCK + 4 - BUCKETS;
 const BUCKET: usize = 0x20;
 const PROBE: usize = 0x04;
@@ -48,14 +36,10 @@ const BATCH: usize = 256;
 pub struct Row {
     pub source: u32,
     pub target: u32,
-    /// Fixed5 map units; meaningful only when `ok`.
     pub distance: i64,
     pub ok: u8,
 }
 
-/// Header-only sizing hint; no value here is recorded. Rehash allocates the
-/// bucket and probe-tail extent plus a separate sentinel. Inserts keep that
-/// geometry, bounding output even if count grows before the next sizing poll.
 pub fn required_rows(
     memory: &impl Memory,
     base: usize,
@@ -66,9 +50,6 @@ pub fn required_rows(
     table_slots(&read_header(memory, memo).ok()?).ok()
 }
 
-/// Every memo entry, ordered by (source, target). Capacity shortfalls
-/// truncate and count the unread entries. `torn` counts copies rejected
-/// because a writer overlapped them (see the module documentation).
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -118,7 +99,6 @@ fn walk_rows(
         *torn += 1;
         return Err("raid path memo was written during the read");
     }
-    // A quiet table that fails validation is malformed, not torn.
     copied
 }
 
@@ -158,13 +138,11 @@ fn table_slots(header: &[u8; HEADER]) -> Result<usize, &'static str> {
         .checked_add(1)
         .filter(|slots| slots.is_power_of_two())
         .ok_or("raid path memo mask is not a power of two less one")?;
-    // The probe tail precedes the separate end sentinel.
     (slots as usize)
         .checked_add(usize::from(header[MAX_PROBE - BUCKETS]))
         .ok_or("raid path memo slot count overflow")
 }
 
-/// Copy and validate the buckets the header snapshot describes.
 fn copy_table(
     memory: &impl Memory,
     header: &[u8; HEADER],
@@ -259,7 +237,6 @@ mod tests {
 
     type Bucket = (usize, u8, u32, u32, i64, u8);
 
-    /// Module base zero, so the vtable is its RVA.
     fn fixture(buckets: &[Bucket], mask: u32, probe: u8, count: u32) -> Vec<u8> {
         let mut bytes = vec![0; 0x2000];
         put(
@@ -371,7 +348,6 @@ mod tests {
         let cases = [(0, 0, 0, 1), (7, 1, 0, 9), (7, 4, 1, 12), (7, 4, 4, 12)];
         for (mask, probe, count, required) in cases {
             let bytes = fixture(&[], mask, probe, count);
-            // The buckets are deliberately outside readable memory.
             assert_eq!(size(&bytes[..TABLE]), Some(required));
         }
         let mut bytes = fixture(&[], 7, 4, 0);
@@ -402,7 +378,6 @@ mod tests {
             Dispatcher::Naval,
         )
         .unwrap();
-        // Inserts grow COUNT without changing the mask or the probe limit.
         let filled = fixture(
             &[(7, 1, 1, 2, 3, 1), (8, 2, 2, 3, 4, 0), (10, 4, 3, 4, 5, 1)],
             7,
@@ -417,7 +392,6 @@ mod tests {
     fn a_held_lock_or_a_moving_header_is_a_counted_torn_read() {
         let buckets = [(3, 1, 7, 9, 500_000, 1)];
         let mut rows = vec![Row::default(); 4];
-        // Held by a writer: this hour's table is not published.
         let mut locked = fixture(&buckets, 7, 1, 1);
         put(
             &mut locked,
@@ -438,8 +412,6 @@ mod tests {
         );
         assert!(matches!(outcome, Outcome::Unavailable { .. }));
         assert_eq!(torn, 1);
-        // An insert lands during the copy: counted and unavailable, not
-        // read again.
         let quiet = fixture(&buckets, 7, 1, 1);
         let memory = Inserting {
             bytes: std::cell::RefCell::new(quiet),
@@ -455,8 +427,6 @@ mod tests {
         assert_eq!(torn, 1);
     }
 
-    /// Bumps the element count after the first header read, as a writer that
-    /// finishes an insert while the buckets are copied.
     struct Inserting {
         bytes: std::cell::RefCell<Vec<u8>>,
         reads: std::cell::Cell<u32>,
@@ -474,8 +444,6 @@ mod tests {
                 let reads = self.reads.get() + 1;
                 self.reads.set(reads);
                 if reads == 1 {
-                    // The first snapshot saw one entry; the writer then adds
-                    // a second and the count moves before the second snapshot.
                     let mut bytes = self.bytes.borrow_mut();
                     put(&mut bytes, TABLE + 5 * BUCKET + PROBE, &[1]);
                     put(
@@ -546,7 +514,6 @@ mod tests {
         assert_eq!(run(&empty, &mut rows), Outcome::Rows { len: 0 });
     }
 
-    /// `entries` pairs in a table at most seven-eighths full, one per slot.
     fn scaled(entries: usize) -> Vec<u8> {
         let slots = (entries * 8 / 7).next_power_of_two().max(2);
         let table = 0x1000;

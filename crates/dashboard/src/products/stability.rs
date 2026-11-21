@@ -1,6 +1,3 @@
-//! Stability and war support beyond their declared series: the breakdown behind a country's
-//! values at an hour (formula terms, modifier tree lines), and the names of the parts of the
-//! declared `stability-parts` series.
 
 use dashboard_base::products::{Country, validate_country};
 use super::at_hour::{At, AtHour, Keys, Owner, Read};
@@ -27,7 +24,6 @@ mod tests;
 
 use naming::{RecordedCharacter, line_group, line_name};
 
-/// One additive term of a displayed value; none when an input it needs was not recorded.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -40,10 +36,10 @@ pub struct FormulaTerm {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FormulaBreakdown {
-    /// The displayed value, fixed5.
+    #[doc = " The displayed value, fixed5."]
     pub value_raw: Option<String>,
     pub terms: Vec<FormulaTerm>,
-    /// Displayed minus the unclamped sum: the clamp's contribution.
+    #[doc = " Displayed minus the unclamped sum: the clamp's contribution."]
     pub clamp_raw: Option<String>,
 }
 
@@ -51,25 +47,25 @@ pub struct FormulaBreakdown {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownLine {
-    /// The child's position in the modifier tree (the tooltip's order); 0 for a part's line.
+    #[doc = " The child's position in the modifier tree (the tooltip's order); 0 for a part's line."]
     pub line: u32,
-    /// `unpaired`, `idea`, `countryLeader`, `ideology`, `advisor`, `static`, `staticScaled`,
-    /// `dynamicModifier` or `dynamicModifierValues`.
+    #[doc = " `unpaired`, `idea`, `countryLeader`, `ideology`, `advisor`, `static`, `staticScaled`,"]
+    #[doc = " `dynamicModifier` or `dynamicModifierValues`."]
     pub kind: String,
-    /// Script identity; empty for a leader or an unpaired line.
+    #[doc = " Script identity; empty for a leader or an unpaired line."]
     pub identity: String,
-    /// Character id or dynamic modifier scope country; zero otherwise.
+    #[doc = " Character id or dynamic modifier scope country; zero otherwise."]
     pub identity_id: u32,
-    /// Dynamic modifier scope state; zero otherwise.
+    #[doc = " Dynamic modifier scope state; zero otherwise."]
     pub secondary_raw: String,
     pub value_raw: String,
-    /// An unpaired line's recorded display text, as plain text.
+    #[doc = " An unpaired line's recorded display text, as plain text."]
     pub text: Option<String>,
-    /// A paired line's name in the viewer's language; none when content does not name it.
+    #[doc = " A paired line's name in the viewer's language; none when content does not name it."]
     pub label: Option<String>,
-    /// An idea slot's or advisor role's name in the viewer's language.
+    #[doc = " An idea slot's or advisor role's name in the viewer's language."]
     pub group: Option<String>,
-    /// For an idea in a category rather than a slot, the category's content type.
+    #[doc = " For an idea in a category rather than a slot, the category's content type."]
     pub group_kind: Option<String>,
 }
 
@@ -77,16 +73,16 @@ pub struct BreakdownLine {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ModifierBreakdown {
-    /// The modifier's script name.
+    #[doc = " The modifier's script name."]
     pub key: String,
-    /// The recorded key index; none when the game registers no such key.
+    #[doc = " The recorded key index; none when the game registers no such key."]
     pub index: Option<u32>,
-    /// ModifierDefinitions' `good` flag: only for good keys does every line equal its
-    /// contribution to the total.
+    #[doc = " ModifierDefinitions' `good` flag: only for good keys does every line equal its"]
+    #[doc = " contribution to the total."]
     pub good: Option<bool>,
     pub total_raw: Option<String>,
     pub lines: Vec<BreakdownLine>,
-    /// Total minus the lines, when it is not zero.
+    #[doc = " Total minus the lines, when it is not zero."]
     pub remainder_raw: Option<String>,
 }
 
@@ -95,14 +91,14 @@ pub struct ModifierBreakdown {
 #[serde(rename_all = "camelCase")]
 pub struct StabilityBreakdown {
     pub hour: i32,
-    /// The hour the inputs were read at.
+    #[doc = " The hour the inputs were read at."]
     pub read_hour: i32,
-    /// The game language of unpaired lines' text.
+    #[doc = " The game language of unpaired lines' text."]
     pub language: String,
     pub stability: FormulaBreakdown,
     pub war_support: FormulaBreakdown,
     pub max_command_power: FormulaBreakdown,
-    /// False when the lines were not recorded by the same read.
+    #[doc = " False when the lines were not recorded by the same read."]
     pub lines_available: bool,
     pub modifiers: Vec<ModifierBreakdown>,
 }
@@ -121,7 +117,7 @@ pub struct StabilityBreakdownParams {
 pub struct StabilityBreakdownReply {
     pub tag: String,
     pub hour: i32,
-    /// None where the hour holds no breakdown; `missing` says why.
+    #[doc = " None where the hour holds no breakdown; `missing` says why."]
     pub breakdown: Option<StabilityBreakdown>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
@@ -133,31 +129,30 @@ pub struct StabilityBreakdownReply {
 pub struct StabilityPartNamesParams {
     pub branch_id: String,
     pub country: Country,
-    /// Parts of the `stability-parts` series, as `series-parts` names them: measure and handle.
+    #[doc = " Parts of the `stability-parts` series, as `series-parts` names them: measure and handle."]
     pub parts: Vec<String>,
 }
 
-/// One part of a country's stability or war support, named.
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityPartName {
-    /// The part as asked.
+    #[doc = " The part as asked."]
     pub part: String,
-    /// `stability` or `warSupport`.
+    #[doc = " `stability` or `warSupport`."]
     pub measure: String,
-    /// `term`, `line`, `remainder`, `clamp` or `total` (the displayed value: hours it is recorded
-    /// are the hours the parts are known).
+    #[doc = " `term`, `line`, `remainder`, `clamp` or `total` (the displayed value: hours it is recorded"]
+    #[doc = " are the hours the parts are known)."]
     pub kind: String,
-    /// Its source, the same for the same source whatever its handle: `term:<term>`,
-    /// `line:<kind>:<identity>:<id>:<secondary>[:<script>:<saved>]`, `unpaired:<text>`,
-    /// `unpaired-refused:<escaped label>`, `remainder`, `clamp` or `total`.
+    #[doc = " Its source, the same for the same source whatever its handle: `term:<term>`,"]
+    #[doc = " `line:<kind>:<identity>:<id>:<secondary>[:<script>:<saved>]`, `unpaired:<text>`,"]
+    #[doc = " `unpaired-refused:<escaped label>`, `remainder`, `clamp` or `total`."]
     pub id: Option<String>,
-    /// The formula term of a term part.
+    #[doc = " The formula term of a term part."]
     pub term: Option<String>,
-    /// A line part's line, named; its tree position and value are not a part's.
+    #[doc = " A line part's line, named; its tree position and value are not a part's."]
     pub line: Option<BreakdownLine>,
-    /// Why it is not named.
+    #[doc = " Why it is not named."]
     pub missing: Option<String>,
 }
 
@@ -173,14 +168,12 @@ pub struct StabilityPartNamesReply {
 
 dashboard_base::reply_warnings!(StabilityBreakdownReply, StabilityPartNamesReply);
 
-/// The recorded content names are read from, or none and why.
 pub struct Naming {
     content: Option<Arc<PoliticsContent>>,
     warnings: Vec<String>,
 }
 
 fn naming(source: &Source, load: &LoadContext) -> io::Result<Naming> {
-    // Without content, lines keep their identities and recorded text.
     let Some(options) = load.content.as_ref() else {
         return Ok(Naming { content: None, warnings: Vec::new() });
     };
@@ -200,10 +193,8 @@ impl Naming {
 }
 
 const GOOD_FLAG: u32 = 0x2;
-/// The modifier key whose lines make up each measure's modifier term.
 pub const LINES_OF: [(&str, &str); 2] = [("stabilityFactor", "stability_factor"), ("warSupportFactor", "war_support_factor")];
 
-/// The tables a dynamic country's civil war is read from, for its idea names.
 const CIVIL_WAR: [TableId; 6] = [
     TableId::Countries,
     TableId::CountryLinks,
@@ -217,13 +208,11 @@ fn sliced(table: TableId, owner: u32) -> u128 {
     u128::from(table.index() as u32) << 32 | u128::from(owner)
 }
 
-/// Whether the owner's appearance names a dynamic country, whose idea names need its civil war.
 fn dynamic(held: &DecodedFrame, owner: Owner) -> bool {
     held.complete::<tables::CountryAppearance>()
         .is_ok_and(|rows| rows.iter().any(|row| row.country == owner.id && !row.name_tag.is_empty()))
 }
 
-/// The owner's naming country at the frame's hour: its tag, slot and look.
 fn look(frame: &DecodedFrame, owner: Owner) -> Option<Look> {
     let countries = frame.complete::<tables::Countries>().ok()?;
     let row = countries.iter().find(|row| row.id == owner.id)?;
@@ -252,8 +241,6 @@ fn breakdown(terms: formula::Terms) -> FormulaBreakdown {
     }
 }
 
-/// One key's lines of a read: `name` and `index` its script name and recorded index (`u32::MAX`
-/// where the game registers none), `total` its total, `lines` the country's lines of the read.
 fn modifier(
     (name, index): (&[u8], u32),
     total: Option<i64>,
@@ -298,15 +285,11 @@ fn modifier(
     }
 }
 
-/// The breakdown of `row` (the owner's inputs, read at `read`) at the frame's hour: formula terms
-/// and each recorded key's lines, unnamed. `lines` is none when the read recorded no lines with
-/// its inputs.
 pub fn breakdown_of(frame: &DecodedFrame, row: &CountryStabilityInputRow, slot: u32, read: i32, lines: Option<&[CountryStabilityLineRow]>, tag: &str, warnings: &mut Vec<String>) -> StabilityBreakdown {
     let definitions = frame.complete::<tables::ModifierDefinitions>().ok();
     let good = |index: u32| definitions.and_then(|rows| rows.binary_search_by_key(&index, |row| row.index).ok().map(|at| rows[at].flags & GOOD_FLAG != 0));
     let command = formula::command_power(frame, slot);
     let stability = row.totals();
-    // The last two keys' totals are CountryCommandPower's, their one record.
     let totals: [Option<i64>; 10] = std::array::from_fn(|index| match index {
         8 => command.and_then(|command| command.max_command_power),
         9 => command.and_then(|command| command.max_command_power_factor),
@@ -332,7 +315,6 @@ pub fn breakdown_of(frame: &DecodedFrame, row: &CountryStabilityInputRow, slot: 
     }
 }
 
-/// A character line's recorded character at the frame's hour.
 fn frame_character<'a>(line: &BreakdownLine, characters: Option<&'a [CharacterRow]>, lexical: Option<&'a [replay_data::rows::LexicalTokenRow]>) -> Option<RecordedCharacter<'a>> {
     let rows = characters?;
     let row = &rows[rows.binary_search_by_key(&line.identity_id, |row| row.id).ok()?];
@@ -347,7 +329,6 @@ fn is_character(kind: u8) -> bool {
     kind == CountryStabilityLineRow::ADVISOR || kind == CountryStabilityLineRow::COUNTRY_LEADER
 }
 
-/// The owner's stability lines of the frame (its key range), when the frame holds them.
 fn owner_lines(frame: &DecodedFrame) -> Option<&[CountryStabilityLineRow]> {
     frame.complete::<tables::CountryStabilityLines>().ok()
 }
@@ -401,8 +382,6 @@ impl AtHour for CountryStabilityBreakdown {
         tables
     }
 
-    /// The owner's inputs, lines, read hours and command power, the key definitions and its
-    /// appearance; then its lines' characters (and a dynamic country's civil war); then their tokens.
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let id = u128::from(owner.id);
@@ -463,15 +442,12 @@ impl AtHour for CountryStabilityBreakdown {
     }
 }
 
-/// The owner's breakdown at the frame's hour, its lines named where content is held; why not
-/// where the hour holds none.
 fn breakdown_at(frame: &DecodedFrame, owner: Owner, tag: &str, content: &Option<Arc<PoliticsContent>>, warnings: &mut Vec<String>) -> Result<StabilityBreakdown, String> {
     let inputs = frame.complete::<tables::CountryStabilityInputs>().map_err(|_| "The stability inputs are not recorded at this hour.".to_owned())?;
     let row = inputs.iter().find(|row| row.country == owner.id).ok_or_else(|| "No stability inputs were recorded for this country at this hour.".to_owned())?;
     let reads = frame.complete::<tables::SliceReads>().map_err(|_| "The read behind this hour's values is not recorded.".to_owned())?;
     let read = replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, owner.id)
         .ok_or_else(|| "The read behind this hour's values is not recorded.".to_owned())?;
-    // SliceReads names an owner only while it has rows: a read that found no lines has none.
     let lines_read = replay_data::sliced::read_hour(reads, TableId::CountryStabilityLines, owner.id);
     let lines = owner_lines(frame).filter(|_| lines_read.is_none_or(|lines_read| lines_read == read));
     if lines.is_none() {
@@ -494,7 +470,6 @@ fn breakdown_at(frame: &DecodedFrame, owner: Owner, tag: &str, content: &Option<
 
 pub struct StabilityPartNames;
 
-/// A part as asked: its measure and handle, from the low 40 bits of its row key.
 fn part_of(text: &str) -> Option<(u8, u32)> {
     let part: u64 = text.parse().ok()?;
     let measure = u8::try_from(part >> 32).ok()?;
@@ -534,7 +509,6 @@ impl AtHour for StabilityPartNames {
         tables
     }
 
-    /// The asked parts' dictionary rows and the owner's appearance; then a dynamic country's civil war.
     fn reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -600,7 +574,6 @@ fn recorded<T>(value: &Recorded<T>) -> Option<&T> {
     }
 }
 
-/// A dictionary row's character: none when neither its script nor saved name was recorded.
 fn part_character(row: &StabilityPartKeyRow) -> Option<RecordedCharacter<'_>> {
     let script = recorded(&row.script).and_then(|bytes| std::str::from_utf8(bytes).ok());
     let saved = recorded(&row.saved).map(|bytes| std::str::from_utf8(bytes).ok().unwrap_or_default());
@@ -615,7 +588,6 @@ fn part_character(row: &StabilityPartKeyRow) -> Option<RecordedCharacter<'_>> {
     Some(RecordedCharacter { script, saved: saved.unwrap_or_default(), template })
 }
 
-/// A part's identity and names from its dictionary row, the ids main's parts carried.
 pub fn named_part(part: &str, measure: u8, row: &StabilityPartKeyRow, content: Option<&PoliticsContent>, country: IdeaCountry<'_>) -> StabilityPartName {
     let identity = String::from_utf8_lossy(&row.identity).into_owned();
     let plain = |kind: &str, id: String, term: Option<String>| StabilityPartName {

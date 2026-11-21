@@ -5,7 +5,6 @@ import { withNativePage } from '../../../tools/native-page.ts';
 type Act = <T>(expression: string) => Promise<T>;
 type Commits = Record<string, number>;
 
-/** Commits of `chart` since `before`. */
 const since = async (act: Act, chart: string, before: Commits) => ((await act<Commits>('commits()'))[chart] ?? 0) - (before[chart] ?? 0);
 const scores = (times: number, skip?: string) => JSON.stringify(Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`r${i}`, i * 10 * times])
   .filter(([key]) => key !== skip)));
@@ -36,7 +35,6 @@ test('the shared charts paint live values without a commit, draw a value the sou
       assert.deepEqual((await act<{ text: string }[]>('tableRows(3)')).map(row => row.text), ['0', '1', '2'], 'without a source the column renders its value');
       assert.equal(await since(act, 'table', plain), 0);
 
-      // Sorted by the live column: the first push that changes the order commits once, at once.
       await act(`pushTable(${scores(1)})`);
       await act('mountTable(true, "score")');
       assert.deepEqual((await act<{ key: string }[]>('tableRows(2)')).map(row => row.key), ['r199', 'r198']);
@@ -103,7 +101,6 @@ test('the shared charts paint live values without a commit, draw a value the sou
       await act('pushSunburst({ items: [], unavailableReason: "Not recorded at this hour" })');
       assert.ok((await act<{ canvas: string[] }>('sunburst()')).canvas.includes('Not recorded'), 'a whole the source cannot tell is not recorded, never zero');
 
-      // A fresh chart whose live values match what it renders: the first new part is one commit, at once.
       await act('pushSunburst({ items: window.liveCharts.items(10, 20) })');
       await act('mountSunburst(true)');
       const fresh = await act<Commits>('commits()');

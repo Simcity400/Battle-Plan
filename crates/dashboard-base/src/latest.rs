@@ -1,11 +1,9 @@
-//! A source's per-branch memo of its latest read.
 
 use std::{
     collections::HashMap,
     sync::{Arc, Weak},
 };
 
-/// Each branch's latest value by key; an earlier one lives only while a request holds it.
 pub struct BranchLatest<K, V> {
     latest: HashMap<u64, (K, Arc<V>)>,
     earlier: Vec<(u64, K, Weak<V>)>,
@@ -44,7 +42,6 @@ impl<K: PartialEq, V> BranchLatest<K, V> {
         }
     }
 
-    /// The values still alive: each branch's latest, and earlier ones a request holds.
     pub fn held(&self) -> usize {
         self.latest.len()
             + self

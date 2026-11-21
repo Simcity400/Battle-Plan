@@ -1,4 +1,3 @@
-//! Fixture-only independent-owner resource comparisons. No renderer code calls this module.
 use super::*;
 
 #[derive(Default)]
@@ -62,7 +61,6 @@ impl Resources {
     }
 
     pub fn check(&self) {
-        // Kept across all queues and frames, stronger than one map per record/frame.
         bijective(&self.buffers);
         bijective(&self.textures);
         bijective(&self.views);
@@ -132,7 +130,6 @@ impl Resources {
         }
         assert_eq!(a.residents.len(), b.residents.len());
         for (a, b) in a.residents.iter().zip(&b.residents) {
-            // Compare immutable shader/program operands raw, not their unrelated owner ids.
             for (a, b) in [
                 (a.retained.selection(), b.retained.selection()),
                 (&a.pipeline.selection, &b.pipeline.selection),

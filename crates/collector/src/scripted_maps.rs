@@ -1,4 +1,3 @@
-//! Immutable content demand, prepared by the recorder before attachment.
 use std::sync::OnceLock;
 
 #[derive(Clone, Default, serde::Deserialize)]

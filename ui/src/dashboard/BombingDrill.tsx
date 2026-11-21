@@ -23,13 +23,9 @@ import { BOMBING_GAP_NOTE, ledgerCountryAt, ledgerFormat, ledgerLabel, ledgerRun
 import type { MilitaryAirPart } from '../generated/dashboard';
 import type { MilitaryAirLedger } from './militaryAirLedger';
 
-/** The approved parts-and-history drill, from a reply breaking the holder's damage down by building and state. */
-/** With `headAt` (following the playhead) the parts, the total and the history's head are read at the head each frame:
- * it renders only when its caller's structure does. */
 export default function BombingDrill({ data, runtime, track, tag, identity, from, hour, end, dealt, active, onPick, pickOwner, headAt }: {
   data: MilitaryAirLedger; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
   dealt: boolean; active: boolean; onPick: (hour: number) => void; pickOwner: unknown;
-  /** The track hour at a clock position while following the playhead; null outside the recording. */
   headAt?: ((position: number) => number | null) | null;
 }) {
   const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
@@ -62,8 +58,6 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
   const shown = useMemo(() => selectedId == null ? model : model.filter(part => part.key === selectedId), [model, selectedId]);
   const stack = useMemo(() => buildStack(shown.map(part => part.runs.map(run => ({ ...run, value: Math.max(0, run.value) })))), [shown]);
   const live = useMemo(() => headAt ? liveAt(runtime.clock, position => headAt(position) ?? hour, at => at) : null,
-    // The head's hour is read each frame; `hour` is only where it starts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [headAt, runtime.clock]);
   const reach = useRef(() => hour);
   reach.current = () => Math.min(live?.hour() ?? hour, end);
@@ -77,7 +71,6 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
     extent: range => stackExtent(stack, range[0], Math.min(range[1], reach.current())),
   }], [shown, stack, until]);
   const historyOwner = useMemo(() => ({ selectionOwner, selectedId }), [selectionOwner, selectedId]);
-  // The parts and their total at an hour: what a render shows, and what the head paints.
   const partsAt = (at: number) => {
     const held = at >= from && at <= end ? ledgerCountryAt(index, tag, from, at, identity) : null;
     const sum = held ? dealt ? held.dealt : held.taken : null;

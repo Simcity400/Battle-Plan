@@ -8,18 +8,13 @@ use std::collections::BTreeMap;
 pub(super) const META_BINDING: u32 = super::CONSTANT_BINDINGS as u32;
 pub(super) const META_WORDS: usize = 4 + super::TEXTURE_BINDINGS + super::CONSTANT_BINDINGS;
 
-/// The rows block an instanced program reads: one row index a constant binding and one for the
-/// stream the draw reads per instance, four to a vector so the block is a uniform the draw
-/// selects with a dynamic offset.
 pub(super) const STREAM_ROW: usize = super::CONSTANT_BINDINGS;
 pub(super) const ROW_VECTORS: usize = (STREAM_ROW + 1).div_ceil(4);
 pub(super) const ROWS_BYTES: usize = ROW_VECTORS * 16;
 
-/// The instanced stream's own words, and each instance's first vertex in them.
 pub(super) const STREAM_BINDING: u32 = META_BINDING + 1;
 pub(super) const STREAM_BASE_BINDING: u32 = META_BINDING + 2;
 
-/// A vertex stream the draw reads one slab of per instance, as the pass declares it.
 #[derive(Clone)]
 pub(super) struct Stream {
     pub slot: usize,
@@ -27,9 +22,6 @@ pub(super) struct Stream {
     pub attributes: Vec<wgpu::VertexAttribute>,
 }
 
-/// A stream format this rewrite can read from storage: its scalar kind, components and the
-/// bytes each component pair occupies. Packed and normalised formats are refused by name: a
-/// conversion of our own would not give the fetch's own bits.
 fn stream_format(format: wgpu::VertexFormat) -> Option<(naga::ScalarKind, u32, u32)> {
     use naga::ScalarKind::{Float, Sint, Uint};
     use wgpu::VertexFormat as F;
@@ -54,8 +46,6 @@ fn stream_format(format: wgpu::VertexFormat) -> Option<(naga::ScalarKind, u32, u
     })
 }
 
-/// Component `at` of `format`, read from the stream words at `base` plus the attribute's own
-/// `offset` in the slab's vertex.
 fn stream_component(format: wgpu::VertexFormat, offset: u64, at: u32) -> Result<String, String> {
     let (kind, _, width) = stream_format(format).ok_or("stream format")?;
     if !offset.is_multiple_of(4) {
@@ -84,15 +74,9 @@ pub(super) struct Program {
     pub position: Option<super::batch_position::Plan>,
 }
 
-/// How a rewritten stage finds the row of a constant buffer it reads.
 #[derive(Clone, Copy)]
 enum Rows {
-    /// Every constant buffer is a storage row the metadata of the batch's own vertex attribute
-    /// selects; textures become array layers and the fragment stage scissors itself.
     Batch,
-    /// The bindings of the mask are storage arrays the draw's instance index selects, from the
-    /// base row the draw's rows block gives. Every other binding, the textures and the pixels
-    /// stay as the program has them. `carry` passes the index on to the fragment stage.
     Instanced { mask: u32, carry: bool },
 }
 
@@ -101,7 +85,6 @@ impl Rows {
         matches!(self, Self::Batch)
     }
 
-    /// Whether the binding's reads become rows of a storage array.
     fn takes(self, binding: u32) -> bool {
         match self {
             Self::Batch => true,
@@ -687,24 +670,14 @@ impl Program {
     }
 }
 
-/// A program whose per-instance constant buffers are storage arrays the draw's instance index
-/// selects, from the base row its own rows block gives. Nothing else of the program moves: its
-/// other constant buffers, its textures and its pixels are the program's own.
 pub(super) struct Instanced {
     pub vertex: String,
-    /// The rewritten fragment stage; none when the fragment stage reads nothing per instance and
-    /// is left exactly as the program has it.
     pub pixel: Option<String>,
-    /// Each binding read per instance, ascending, and its storage row stride.
     pub rows: Vec<(u32, u32)>,
-    /// The location the instance index is carried on, when the fragment stage reads one.
     pub varying: u32,
-    /// The vertex stream the draw reads one slab of per instance, read from storage instead.
     pub stream: Option<Stream>,
 }
 
-/// Whether a stage's own interface reads the instance index of its draw, which instancing would
-/// change under it.
 fn reads_instance_index(parsed: &Module) -> bool {
     let instance = |binding: &Option<Binding>| {
         matches!(binding, Some(Binding::BuiltIn(BuiltIn::InstanceIndex)))
@@ -720,8 +693,6 @@ fn reads_instance_index(parsed: &Module) -> bool {
 }
 
 impl Instanced {
-    /// The program with the constant bindings of `mask` read per instance and the last vertex
-    /// stream read from storage, or why it cannot be.
     pub fn new(compiled: &Compiled, mask: u32, pass: &super::Pass) -> Result<Self, String> {
         let taken = |shader: &Shader| {
             shader

@@ -6,8 +6,6 @@ import type { DivisionEquipmentReply, DivisionPoolType, EquipmentDivision, Equip
 
 export type { DivisionEquipmentReply, DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType };
 
-/** A type's key: its archetype, or the unclassified bucket. Tagged, so a mod archetype
- * named like the bucket is still its own type. */
 export const typeKey = (row: { archetype: string | null }) => JSON.stringify([row.archetype]);
 
 const isArray = Array.isArray;
@@ -20,18 +18,13 @@ export function validateDivisionEquipment(value: unknown): DivisionEquipmentRepl
   return reply;
 }
 
-/** What a followed reply renders on: everything it shows (its numbers move at most daily, but for a template's
- * manpower and strength). */
 export const equipmentStructure = (reply: DivisionEquipmentReply) => JSON.stringify(reply);
 
-/** A count, or that it is not recorded. */
 export const counted = (value: number | null) => value === null ? 'Not recorded' : usNumber.format(value);
 
-/** Whole items from a fixed-point amount, grouped. */
 export const items = (raw: string | null) => raw === null ? null : formatFixed(raw, 5, 0);
 const big = (raw: string | null) => raw === null ? null : BigInt(raw);
 
-/** Held as a share of need, never above one; null when the need is unknown or none. */
 export function fill(held: string | null, needed: string | null): number | null {
   const have = big(held), need = big(needed);
   if (have === null || need === null || need <= 0n) return null;
@@ -39,11 +32,8 @@ export function fill(held: string | null, needed: string | null): number | null 
   return Number(capped * 1_000_000n / need) / 1_000_000;
 }
 
-/** A type's fill: each known division's holding capped at its own need, summed, as a
- * share of the summed need, so one division's surplus never fills another's shortfall. */
 export const typeFill = (row: EquipmentType) => fill(row.filledRaw, row.neededRaw);
 
-/** A current/maximum pair as a share; null when either is unknown or the maximum is not positive. */
 export function share(current: string | null, maximum: string | null): number | null {
   const value = big(current), top = big(maximum);
   if (value === null || top === null || top <= 0n) return null;

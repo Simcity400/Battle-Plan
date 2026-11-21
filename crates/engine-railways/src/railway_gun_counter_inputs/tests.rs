@@ -85,7 +85,6 @@ fn registry(bytes: &mut [u8], table: usize, buckets: usize, entries: &[(u64, usi
     }
 }
 
-/// One moving, transferring, exiled gun in combat, on a damaged railway.
 fn fixture() -> Vec<u8> {
     let mut bytes = vec![0; 0x12000];
     array(&mut bytes, STATE + cgame_state::COUNTRIES, COUNTRIES, 2);
@@ -233,8 +232,6 @@ fn fixture() -> Vec<u8> {
     put(&mut bytes, ALTERNATE, &1_u32.to_le_bytes());
     array(&mut bytes, GUN + cunit::COMBAT_REFERENCE_DATA, COMBATS, 2);
     put64(&mut bytes, COMBATS, COMBAT as u64);
-    // The gun attacks in its first combat, so the native walk stops there; a garbage
-    // second reference is never touched.
     put64(&mut bytes, COMBATS + 8, u64::MAX);
     put64(&mut bytes, COMBAT, cland_combat::VTABLE_RVA.0 as u64);
     put64(&mut bytes, COMBAT + cland_combat::ATTACKER, SIDE as u64);
@@ -246,7 +243,6 @@ fn fixture() -> Vec<u8> {
         SIDE + cland_combatant::COUNTRIES,
         SIDE_COUNTRY as u64,
     );
-    // The attacking side's country set holds the gun's logical owner, tag 1.
     put(&mut bytes, SIDE_COUNTRY, &1_u32.to_le_bytes());
 
     registry(
@@ -268,13 +264,10 @@ fn fixture() -> Vec<u8> {
         GROUP_BUCKETS,
         &[(GROUP_HANDLE, GROUP)],
     );
-    // A constructed empty std::string has inline capacity 15. Zeroed storage
-    // alone is not a valid name descriptor for the header-only sizing pass.
     stored_name(&mut bytes, GUN, b"", 0);
     bytes
 }
 
-/// The same gun standing still, with no transfer, combat or assignment.
 fn standing() -> Vec<u8> {
     let mut bytes = fixture();
     put64(&mut bytes, GUN + cunit::MOVEMENT_TARGET, 0);
@@ -361,7 +354,6 @@ impl Memory for EtaFixture {
             output.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
-        // Live native defines, independent from content's static movement map.
         if address == 0x033d_fbe8 && output.len() == 4 {
             output.copy_from_slice(&5_i32.to_le_bytes());
             return true;
@@ -611,8 +603,6 @@ fn idle_ordinary_route_keeps_fresh_railway_domains_without_first_edge_reads() {
                 required_paths: 0,
             }
         );
-        // The same native scalar/motion prefix survives the independent
-        // optional name, supply, withdrawal and current-profile suffixes.
         assert_eq!(
             prefix[0],
             Row {
@@ -657,8 +647,6 @@ fn fresh_genuine_orders_group_is_independent_of_the_railway_assignee() {
 fn stored_first_sea_edge_does_not_withhold_fresh_land_operands() {
     let mut image = eta_fixture();
     image.memory.bytes[DEFINITION + province_definition::TERRAIN_FLAGS] = 0;
-    // Its unavailable transport context withholds the stored edge only; a
-    // fresh route can still need land speed after that edge.
     let row = fresh_capture(&image, Some(15));
     assert!(row.eta.is_none());
     let fresh = row.fresh.unwrap();
@@ -736,7 +724,6 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
     let mut image = eta_fixture();
     let second = image.memory.bytes[GUN..GUN + 0x450].to_vec();
     put(&mut image.memory.bytes, SECOND_GUN, &second);
-    // The tiny registry helper uses undisplaced buckets; keep these distinct.
     let second_handle = (7 << 32) | 4713;
     put64(
         &mut image.memory.bytes,
@@ -1141,7 +1128,6 @@ fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
     assert_eq!(paths, [2, 1, 1]);
 }
 
-/// A theatre outside the roster country's theatres refuses only that field.
 #[test]
 fn theatre_and_queued_orders_are_field_local() {
     let mut bytes = fixture();
@@ -1157,10 +1143,6 @@ fn theatre_and_queued_orders_are_field_local() {
     assert_eq!((rows[0].theatre, rows[0].queued_actions), (None, Some(3)));
 }
 
-/// Guarded read calls of the hourly walk, with `guns` copies of the fixture's gun in its
-/// roster: the fixed hour cost and, as the difference a second gun makes, the cost of each
-/// further gun. A second copy shares the first's combat, as guns in one battle do, so its
-/// first-combat answer comes from the capture memo.
 fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
     use crate::read_counts::{CountedMemory, ReadCounts};
     array(
@@ -1181,8 +1163,6 @@ fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
     reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls
 }
 
-/// Pins the walk's read calls so a change in its per-gun cost is a reviewed decision. The
-/// walk runs in the Ordinary pool job, off the game thread, once an hour.
 #[test]
 fn read_calls_per_hour_and_per_gun_are_pinned() {
     let cost = |bytes: fn() -> Vec<u8>| {
@@ -1369,7 +1349,6 @@ fn bad_routes_never_become_stationary() {
             reason: "unit route invalid or longer than the province roster",
         },
     );
-    // Three provinces in the roster: a four-hop route cannot be a pathfinder route.
     let mut bytes = fixture();
     array(&mut bytes, GUN + cunit::ORDINARY_ROUTE_DATA, ORDINARY, 4);
     assert_eq!(
@@ -1383,7 +1362,6 @@ fn bad_routes_never_become_stationary() {
 #[test]
 fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
     let mut bytes = fixture();
-    // Another country on the attacking side of its only combat: the gun defends.
     put(&mut bytes, SIDE_COUNTRY, &0_u32.to_le_bytes());
     put(
         &mut bytes,
@@ -1397,8 +1375,6 @@ fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (2, 2));
     assert_eq!((rows[0].combat_count, rows[0].attacking), (1, false));
-    // Defending in the first combat but attacking in the second: the action code's
-    // walk finds the second, while the stack kind keeps the first combat's side.
     put(
         &mut bytes,
         GUN + cunit::COMBAT_REFERENCE_COUNT,
@@ -1430,14 +1406,12 @@ fn first_combat_side_follows_attacker_membership_and_needs_both_identities() {
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (2, 2));
     assert_eq!((rows[0].combat_count, rows[0].attacking), (2, true));
-    // A later combat's province is never read: an unregistered one does not fail the gun.
     put64(&mut bytes, COMBAT_TWO + cland_combat::PROVINCE, 0x10);
     assert_eq!(
         capture(bytes.clone(), None, &mut rows, &mut vec![0; 3]).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_province, rows[0].attacking), (2, true));
-    // A later combat that cannot be read fails the gun rather than reading as defence.
     put64(&mut bytes, COMBAT_TWO, 0x10);
     assert_eq!(
         capture(bytes, None, &mut rows, &mut vec![0; 3]).outcome,
@@ -1478,8 +1452,6 @@ fn the_first_combat_answer_is_shared_through_the_capture_memo() {
     let walk = walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(memo.entries.len(), 1);
-    // A second unit of the same owner in the same combat is answered from the memo, even
-    // with the combat's side no longer readable.
     let mut bytes = fixture();
     put64(&mut bytes, SIDE, 0);
     let memory = MemoryFixture { bytes, fault: None };
@@ -1488,7 +1460,6 @@ fn the_first_combat_answer_is_shared_through_the_capture_memo() {
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (1, 2));
-    // A failed answer is never memoised.
     let mut fresh = cunit::FirstCombatMemo::new(4);
     assert!(matches!(
         super::walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut fresh, None, None, None).outcome,

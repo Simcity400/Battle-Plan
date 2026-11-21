@@ -1,7 +1,3 @@
-//! Equipment localisation links projected from the native technology reader.
-//! An equipment-unlocking technology can use its equipment's name and description;
-//! consumers share admission while retaining the distinct native display gates. [`read_enablers`] also
-//! projects its id and parent for the production icon's technology fallback.
 use crate::key_names::KeyNames;
 use crate::{
     ResolvedLayers,
@@ -22,27 +18,20 @@ pub(crate) mod units;
 pub use descriptions::{Catalog, Definition};
 pub(crate) use units::{StatKey, equipment_pool_roster, equipment_pool_shape, stat_key};
 
-/// Name lookup finds only the first technology definition's equipment link.
 pub type EquipmentLinks = BTreeMap<String, Option<String>>;
 type ParsedPresentation = (Vec<Template>, Vec<crate::Diagnostic>);
-/// A stopped reader may leave technology keys it never encountered.
 type ParseError = (crate::DiagnosticKind, io::Error, bool);
 
-/// The game keeps repeated names as separate templates, selected by recorded index.
 #[derive(Debug)]
 pub struct Template {
     pub token: String,
-    /// One-based load-order index; unread preceding files make it unknown.
     pub database_index: Option<u32>,
     pub presentation: Result<PresentationName, String>,
-    /// The last `parent` value, or why it cannot be held.
     pub parent: Result<Option<String>, String>,
     pub equipment: Option<String>,
-    /// Folders retain authored order; a folder block's last `name` wins.
     pub folders: Vec<String>,
 }
 
-/// The game finds the first ASCII-folded name, but the map retains its authored spelling.
 fn equipment_links(definitions: &[Template]) -> EquipmentLinks {
     let mut links = EquipmentLinks::new();
     let mut seen = BTreeSet::new();
@@ -70,7 +59,6 @@ enum Node {
     Modifier(modifiers::Node),
 }
 
-/// Its triggers are read against `names`.
 pub fn parse_equipment(
     input: &[u8],
     names: &KeyNames,
@@ -88,7 +76,6 @@ fn parse_with_registry(
     parse_with_tokens(input, registry, names, &mut Vec::new())
 }
 
-/// Partial files yield no definitions, but `tokens` still receives encountered technology keys.
 fn parse_with_tokens(
     input: &[u8],
     registry: &units::Registry,
@@ -127,7 +114,6 @@ fn parse_with_tokens(
                     false,
                 )
             })?;
-            // A technology template's parent overrides its display-name key.
             let parent = technology
                 .value
                 .items()
@@ -145,8 +131,6 @@ fn parse_with_tokens(
             let mut unlocks: Vec<String> = Vec::new();
             let mut conditional = false;
             let mut candidates = Vec::new();
-            // The research folders (tabs) the technology is placed in, in authored
-            // order; a folder block's last `name` names it.
             let mut placed: Vec<String> = Vec::new();
             for field in technology.value.items().unwrap_or_default() {
                 if field.keyword_is("folder") {
@@ -177,8 +161,6 @@ fn parse_with_tokens(
                         .filter(|i| i.keyword_is("position"))
                     {
                         let values = position.value.items().unwrap_or_default();
-                        // Fixed-length recovery, not a list. These are the two forms for
-                        // which List is identical.
                         let valid = values.len() == 2 && values.iter().all(Item::number)
                             || values.len() == 6
                                 && values[0].value_keyword().as_deref() == Some("x")
@@ -208,8 +190,6 @@ fn parse_with_tokens(
                         limits.push(equipment.value.items().unwrap_or_default().to_vec());
                         continue;
                     }
-                    // This raw loop has a special, evaluated `limit` branch.
-                    // Its conditional early exit is not a list.
                     if equipment.value_keyword().as_deref() == Some("limit")
                         || matches!(equipment.kind, native::Kind::Open | native::Kind::Equals)
                     {
@@ -236,7 +216,6 @@ fn parse_with_tokens(
                 }
             }
             let fields = technology.value.items().unwrap_or_default();
-            // A failed boolean value keeps the preceding assignment.
             let force_small = parser::read_bool_field(fields, "force_use_small_tech_layout", false);
             let presentation = parent.clone().map(|parent| {
                 let template_key = parent.unwrap_or_else(|| token.into());
@@ -272,7 +251,6 @@ fn parse_with_tokens(
     ))
 }
 
-/// Native full-name roots for a recorded technology owner.
 #[derive(Debug, PartialEq)]
 pub struct PresentationName {
     pub template: String,
@@ -280,7 +258,6 @@ pub struct PresentationName {
     pub force_small: bool,
 }
 
-/// One authored child, with its load-time admission condition when present.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EquipmentName {
     pub name: String,
@@ -288,7 +265,6 @@ pub struct EquipmentName {
 }
 
 impl EquipmentName {
-    /// The game checks limits in a fresh empty scope; false skips the rest of that field.
     pub fn admitted(
         &self,
         evaluate: &mut impl FnMut(&[Item]) -> Result<bool, String>,
@@ -308,11 +284,6 @@ impl EquipmentName {
 }
 
 impl PresentationName {
-    /// The full localized name uses one admitted child unless the small-layout
-    /// flag forces the template key. Limits are checked at content load in a
-    /// fresh empty scope, then accepted names are stored. Runtime resolution
-    /// applies the validity/category/DLC gate before filling the instance.
-    /// Classifier propagation does not recheck these limits.
     pub fn name(
         &self,
         evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -326,9 +297,6 @@ impl PresentationName {
         })
     }
 
-    /// Admission is shared by names and descriptions. Descriptions count
-    /// non-duplicate children separately, then select the first child.
-    /// The game dedupes folded authored names before resolving aliases.
     pub fn children(
         &self,
         mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -337,7 +305,6 @@ impl PresentationName {
         if self.force_small {
             return Ok(Vec::new());
         }
-        // Equal limits share one decision because all are checked in the same empty scope.
         let mut decided: Vec<(&[Item], Result<bool, usize>)> = Vec::new();
         let mut undecided: Vec<String> = Vec::new();
         let mut entries: Vec<(String, &str, BTreeSet<usize>)> = Vec::new();
@@ -359,7 +326,6 @@ impl PresentationName {
                     }
                 };
                 match outcome {
-                    // A false limit exits the whole field; later checks cannot restore admission.
                     Ok(false) => continue 'entries,
                     Ok(true) => {}
                     Err(variable) => {
@@ -386,7 +352,6 @@ impl PresentationName {
                 .min()
                 .map_or_else(String::new, |variable| undecided[variable].clone())
         };
-        // An entry can be first only if no earlier entry is guaranteed by its required limits.
         let first: Vec<Vec<usize>> = names
             .iter()
             .map(|(_, places)| {
@@ -406,7 +371,6 @@ impl PresentationName {
             .iter()
             .map(|(_, places)| places.iter().all(|&at| !entries[at].2.is_empty()))
             .collect();
-        // `later` can precede `first` only if it can be admitted without an earlier `first` entry.
         let can_precede = |later: &[usize], first: &[usize]| {
             later.iter().any(|&at| {
                 first
@@ -431,11 +395,9 @@ impl PresentationName {
                         .iter()
                         .all(|&at| entries[at].1 == entries[first[name][0]].1)
             });
-        // The game keeps distinct authored aliases as two children even if they resolve alike.
         let mut child: Vec<Option<String>> = Vec::with_capacity(names.len());
         if !settled {
             let mut resolved: BTreeMap<&str, Option<String>> = BTreeMap::new();
-            // Compare one limit's outcomes whole: alias swaps can preserve the children.
             let variables: BTreeSet<usize> = entries
                 .iter()
                 .flat_map(|(_, _, waits)| waits.iter().copied())
@@ -523,23 +485,18 @@ impl PresentationName {
     }
 }
 
-/// One preparation read supplies both native equipment links and the inventory.
 #[derive(Debug)]
 pub struct Database {
-    /// Complete-file definitions in load order; repeated names remain separate templates.
     pub definitions: Vec<Template>,
     pub tokens: Vec<String>,
     pub equipment_warnings: Vec<crate::Diagnostic>,
     pub inventory_warnings: Vec<crate::Diagnostic>,
-    /// An unread file contributes no definitions and makes all later template indices unknown.
     pub unread: Vec<UnreadFile>,
 }
 
 #[derive(Debug)]
 pub struct UnreadFile {
-    /// Includes the file path as well as the read failure.
     pub why: String,
-    /// ASCII-folded keys encountered; `None` means the reader stopped and may have missed any key.
     pub tokens: Option<BTreeSet<String>>,
 }
 
@@ -552,9 +509,7 @@ impl Database {
         let mut equipment_warnings = Vec::new();
         let mut inventory_warnings = Vec::new();
         let mut unread = Vec::new();
-        // An unread file makes every later template's load-order index unknown.
         let mut placed = true;
-        // Enumerate this directory without recursion.
         for path in layers.directory_files("common/technologies", ".txt")? {
             let before = tokens.len();
             match parse_with_tokens(&path.read(layers)?, &registry, &names, &mut tokens) {
@@ -614,26 +569,18 @@ impl Database {
     }
 }
 
-/// A research folder (a tab of the technology screen), in content order.
 #[derive(Clone, Debug)]
 pub struct FolderDefinition {
     pub key: String,
-    /// The tab's `available` trigger, read in country scope; none means the
-    /// tab is always available. A folder's last `available` is kept.
     pub available: Option<Vec<Item>>,
 }
 
-/// Every research folder `common/technology_tags` defines, in file order, and
-/// the notes from reading them.
 #[derive(Clone, Debug, Default)]
 pub struct Folders {
     pub folders: Vec<FolderDefinition>,
     pub warnings: Vec<crate::Diagnostic>,
 }
 
-/// Reads `technology_folders` from every `common/technology_tags` file, in
-/// directory order. A folder defined again keeps its first definition and the
-/// repeat is refused by name. A file that cannot be read whole adds nothing.
 pub fn read_folders(layers: &ResolvedLayers) -> io::Result<Folders> {
     let names = layers.key_names()?;
     let mut read = Folders::default();
@@ -668,7 +615,6 @@ pub fn read_folders(layers: &ResolvedLayers) -> io::Result<Folders> {
     Ok(read)
 }
 
-/// One `common/technology_tags` file's research folders, in authored order.
 pub fn parse_folders(
     input: &[u8],
     names: &KeyNames,
@@ -771,9 +717,6 @@ fn read_templates_with_tokens(
     let mut refused = Vec::new();
     let mut leading_limit = true;
     let modifier_registry = &|key: &[u8]| modifiers::registered(key, Some(names));
-    // Read the database to EOF. All dynamic content names come from layers.
-    // Each file constructs its lexer in mode 0. Technology fields pass
-    // country scope to their trigger and effect readers.
     let read = native::read_in_effect_scope(
         input,
         native::Mode::KeepMark,
@@ -828,8 +771,6 @@ fn read_templates_with_tokens(
                     Shape::Statements(Uniform)
                 }
                 (Technology, Some(b"enable_subunits")) => Shape::One,
-                // Accept limit until the first anonymous statement; other
-                // assignments use only the value.
                 (Uniform, Some(b"limit")) if leading_limit => Shape::Trigger,
                 (Uniform, _) => {
                     if field.key.text.is_empty() {
@@ -844,8 +785,6 @@ fn read_templates_with_tokens(
                         Shape::Skip
                     }
                 }
-                // Peek for a leading on_research_complete limit, then read the
-                // effect body only when the value slot is `{`.
                 (Technology, Some(b"on_research_complete")) => Shape::LimitedBody(Effect),
                 (Effect, _) => crate::effect_keys::shape(Some(names), field).map(|()| Effect),
                 (Technology, Some(b"parent" | b"enable_tactic")) => Shape::Current,
@@ -871,7 +810,6 @@ fn read_templates_with_tokens(
                         | b"xp_boost_cost",
                     ),
                 ) => Shape::One,
-                // Check subunits, then categories, before modifiers.
                 (Technology, Some(key))
                     if registry.units.contains(key) || registry.categories.contains(key) =>
                 {
@@ -888,10 +826,9 @@ fn read_templates_with_tokens(
                     Shape::One
                 }
                 (Folder, Some(b"name")) => Shape::One,
-                // The lexer's tokens, the value slot unchanged.
                 (Folder, Some(b"position")) if field.opens() => Shape::RawList,
                 (Folder | Path, _) => Shape::Skip,
-                (Scalars | Building, _) => Shape::One, // Scalar fields read one value.
+                (Scalars | Building, _) => Shape::One,
                 (Mtth, _) => native::mean_time_to_happen(field),
                 (Modifier(node), _) => {
                     modifiers::shape(node, field, modifier_registry, &mut undecided).map(Modifier)
@@ -905,27 +842,18 @@ fn read_templates_with_tokens(
     (read, undecided, refused)
 }
 
-/// A technology that enables equipment: its id and its `parent`, the
-/// alternate name read from the scalar `parent` and used instead of the
-/// id for names and equipment icons. An `Err` parent is one whose text
-/// cannot be held, unknown only to a lookup that reaches it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enabler {
     pub id: String,
     pub parent: Result<Option<String>, String>,
 }
 
-/// A technology's `enable_equipments` and `parent` as one definition declares them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enables {
-    /// The id as written.
     pub id: String,
-    /// The types its plain entries name.
     pub equipment: Vec<String>,
     pub parent: Result<Option<String>, String>,
-    /// Scripted or unresolved entries leave the equipment they may enable unknown.
     pub scripted: Option<Scripted>,
-    /// The game checks preceding limits at content load before admitting these entries.
     pub limited: Vec<EquipmentName>,
 }
 
@@ -948,19 +876,14 @@ impl Enables {
     }
 }
 
-/// What a refused entry could enable: the names it mentions, or any type at all.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scripted {
     pub names: Vec<String>,
-    /// It holds an `@variable` this reader does not resolve, so it could name any type.
     pub any: bool,
 }
 
-/// Authored order includes repeated IDs as separate templates.
 pub type EnabledBy = Vec<Enables>;
 
-/// Every name a scripted entry mentions (keys and scalars), and whether it holds an
-/// unresolved `@variable`.
 fn mentioned(item: &parser::Item, scripted: &mut Scripted) {
     let mut note = |bytes: &[u8]| {
         if bytes.starts_with(b"@") {
@@ -982,11 +905,9 @@ fn mentioned(item: &parser::Item, scripted: &mut Scripted) {
     }
 }
 
-/// Unsupported entries leave only the equipment they might enable unknown.
 pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
     let document = parser::parse(input)?;
     let mut result = Vec::new();
-    // Keywords are lexer tokens: bare keys in any ASCII case, never quoted ones.
     for root in document
         .items
         .iter()
@@ -1038,23 +959,15 @@ pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
     Ok(result)
 }
 
-/// Which technologies enable each equipment type, as the icon fallback asks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Enablers {
-    /// Folded equipment keys in load order, counting repeated technology IDs separately.
     pub plain: BTreeMap<String, Vec<Enabler>>,
-    /// Types (folded) a scripted entry mentions, with those technologies' ids.
     pub uncertain: BTreeMap<String, BTreeSet<String>>,
-    /// Arbitrary-type entries cannot add equipment already enabled for certain by their definition.
     pub any: Vec<(String, BTreeSet<String>)>,
-    /// Every technology with a scripted entry, as `<path>: <id>`, for a warning.
     pub refused: Vec<String>,
 }
 
 impl Enablers {
-    /// The one technology that enables `key`: none when no or several plain
-    /// entries name it; `Err` when a scripted entry may add one, so how many
-    /// enable it is not known.
     pub fn single(&self, key: &str) -> Result<Option<&Enabler>, String> {
         let key = fold_token(key);
         let plain = self.plain.get(&key).map(Vec::as_slice).unwrap_or_default();
@@ -1083,7 +996,6 @@ impl Enablers {
         Ok(plain.first())
     }
 
-    /// The game dedupes folded equipment names within a template, not across definitions.
     fn add(
         &mut self,
         source: &str,
@@ -1097,7 +1009,6 @@ impl Enablers {
             mut scripted,
             limited,
         } = enables;
-        // An undecidable limit leaves guarded equipment unknown; false enables nothing.
         for candidate in &limited {
             match candidate.admitted(&mut *evaluate) {
                 Ok(true) => equipment.push(candidate.name.clone()),
@@ -1139,13 +1050,11 @@ impl Enablers {
     }
 }
 
-/// The game uses technology icon fallback only when exactly one template enables the type.
 pub fn read_enablers(
     layers: &ResolvedLayers,
     mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
 ) -> io::Result<Enablers> {
     let paths = layers.directory_files("common/technologies", ".txt")?;
-    // Without native rosters, retain conservative parse_enablers uncertainty.
     let native = units::Registry::read(layers)
         .ok()
         .zip(layers.key_names().ok());
@@ -1187,7 +1096,6 @@ mod tests {
     #[cfg(feature = "test-support")]
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    /// Game name lookup returns the first definition, unlike recorded template-index lookup.
     fn parse_with_registry(
         input: &[u8],
         registry: &units::Registry,
@@ -1517,8 +1425,6 @@ mod tests {
         assert!(refusal.contains("not UTF-8"));
         assert_eq!(parse_equipment(input, &KeyNames::default()).unwrap(), links);
 
-        // Shape::Current stores `{`; its nested fields are technology fields
-        // and their `}` closes the technology.
         let block = b"technologies={\
             before={enable_equipments={before_equipment}} \
             after={parent=after_name enable_equipments={after_equipment}} \
@@ -1673,7 +1579,6 @@ mod tests {
             "{refused:?}"
         );
         assert!(children(vec![entry("a", false), entry("c", true)]).is_err());
-        // Distinct authored aliases remain two children even when they resolve to the same pointer.
         let aliased = |equipment: Vec<EquipmentName>, alias: bool| {
             PresentationName {
                 template: "template".into(),
@@ -1703,7 +1608,6 @@ mod tests {
             ),
             Ok(vec!["a".to_owned()])
         );
-        // Correlated limits preserve [a, b, a]; independent limits can reorder it to [a, a, b].
         let limit = |flag: &str| {
             crate::parser::parse(format!("has_global_flag={flag}").as_bytes())
                 .unwrap()
@@ -1790,9 +1694,6 @@ mod tests {
     fn effect_bodies_follow_the_brace_guard_and_leading_limit() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        // Peek for a leading limit and read it as a trigger; then read the
-        // body only when the value slot, as that left it, is `{`. The one
-        // technology's unlock, by case:
         let link = |body: &str| {
             let text = format!("technologies={{t={{{body}}}}}");
             parse_equipment(text.as_bytes(), &KeyNames::default())
@@ -1800,21 +1701,15 @@ mod tests {
                 .remove("t")
                 .flatten()
         };
-        // A scalar body reads nothing: the unlock after it is the technology's.
         assert_eq!(
             link("on_research_complete=no enable_equipments={one}").as_deref(),
             Some("one")
         );
-        // An empty leading limit leaves its `{`: the body is read, and a later
-        // `limit` in it is an effect.
         assert_eq!(
             link("on_research_complete={limit={} add_ideas=x limit=y} enable_equipments={two}")
                 .as_deref(),
             Some("two")
         );
-        // `limit = no`, or a limit whose last value is `yes`, leaves that value
-        // in the slot: trigger and effect body readers report it and the fields
-        // after it are the technology's.
         assert_eq!(
             link("on_research_complete={limit=no enable_equipments={custom_equipment}}").as_deref(),
             Some("custom_equipment")
@@ -1823,13 +1718,10 @@ mod tests {
             link("on_research_complete={limit={always=yes} enable_equipments={three}}").as_deref(),
             Some("three")
         );
-        // A scalar body and then a limit block: that `{` opens the body over
-        // the technology's remaining fields, the unlock among them.
         assert_eq!(
             link("on_research_complete=no limit={} enable_equipments={lost}"),
             None
         );
-        // Forms whose token recovery is not followed are refused by name.
         for body in [
             "on_research_complete=no {ignored=1 enable_equipments={one}}",
             "enable_equipments={limit=no one}",
@@ -1984,7 +1876,6 @@ mod tests {
         );
         assert_eq!(parsed[2], plain("other", &[], None));
         assert_eq!(parsed[3], plain("Other", &["TANK_3"], None));
-        // A script keeps the plain entries and names what it mentions; a variable could be anything.
         assert_eq!(parsed[4].id, "scripted");
         assert_eq!(parsed[4].equipment, ["gun_1"]);
         let scripted = parsed[4].scripted.as_ref().unwrap();
@@ -1992,7 +1883,6 @@ mod tests {
         assert_eq!(parsed[5].id, "variable");
         assert!(parsed[5].scripted.as_ref().unwrap().any);
         assert_eq!(parsed.len(), 6);
-        // Keywords are lexer tokens too: in any ASCII case they are read, not ignored.
         let shouted =
             parse_enablers(b"TECHNOLOGIES = { tank_tech = { ENABLE_EQUIPMENTS = { tank_1 } } }")
                 .unwrap();
@@ -2007,8 +1897,6 @@ mod tests {
         );
     }
 
-    /// `parent` and `technologies` dispatch as keywords: a quoted key is neither,
-    /// and a parent whose text cannot be held is unknown rather than absent.
     #[test]
     fn a_quoted_parent_key_does_not_rename_the_enabler() {
         let parsed = parse_enablers(
@@ -2046,8 +1934,6 @@ mod tests {
         );
     }
 
-    /// A scripted entry leaves unknown only whether one technology enables the types
-    /// it mentions; every other type keeps its single enabler.
     #[test]
     fn a_scripted_unlock_leaves_only_the_types_it_mentions_unknown() {
         let enablers = |text: &[u8]| {
@@ -2067,7 +1953,6 @@ mod tests {
         assert_eq!(found.single("rifle_1").unwrap().unwrap().id, "rifles");
         let unknown = found.single("gun_1").unwrap_err();
         assert!(unknown.contains("guns"), "{unknown}");
-        // Two plain enablers already rule the technology step out, script or not.
         assert_eq!(found.single("tank_1"), Ok(None));
         assert_eq!(found.single("nothing"), Ok(None));
         let any = enablers(b"technologies = { rifles = { enable_equipments = { rifle_1 } } modded = { enable_equipments = { @unknown } } }");
@@ -2160,8 +2045,6 @@ mod tests {
         )
         .unwrap();
         let _ = std::fs::remove_dir_all(&root);
-        // The mod's file replaces the vanilla file of the same path; a mod
-        // technology in another file would be a separate template.
         assert!(!enablers.plain.contains_key("tank_1"));
         assert!(enablers.refused.is_empty());
         assert_eq!(

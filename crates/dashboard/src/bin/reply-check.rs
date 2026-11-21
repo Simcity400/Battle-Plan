@@ -1,24 +1,3 @@
-//! Asks this build every request of reference transcripts that the query layer answers, and
-//! compares the replies with the kept ones ([`dashboard::reply_check`]); every other request is
-//! counted as skipped. Times each reply, the recording opened and indexed once. A chart this build
-//! serves as tiles is answered from the tiles covering its view, assembled as the UI does, and
-//! timed as the sum of those tile requests (`--cold`: the first tile cold, the rest after it, as a
-//! chart's tiles are asked together).
-//! `reply-check --recording R --transcripts DIR --report DIR [--families F,...] [--ignore PATH]... [--replies] [--cold]`
-//! `--cold` opens the recording afresh before every request, builds its index (timed apart, as the
-//! open's cost, `indexMilliseconds`), then drops the file's cached pages, so the request's reads
-//! and decodes are cold and the index is present. `--no-index` forgets only the index before each
-//! request, the file cache warm. With game content, the recording's content catalogue is kept in
-//! the cache folder once, before the first request, as opening a recording in the app does (timed
-//! apart, `catalogueMilliseconds`): a cold request loads it from there, never from memory.
-//! `--replies` also keeps every exchange, both replies and the time, as `DIR/{family}.replies.zst`;
-//! a tiled chart's exchange also names its tiles and each one's time (`tiles`).
-//! A path is dotted from the reply's root, `*` for any member or element. Always passed over:
-//! `digest` and the preparation states (`gate`, `holes`, `data.coverage`, `data.pending`,
-//! `data.approximate`, `data.preparing`). Game content: none (the recording's own facts), unless
-//! `--game G --user U --cache C` name the game's and the user's folders (read only) and a cache, for
-//! products that read localisation.
-//! Exits 1 on a difference, 2 on a setup error.
 
 use dashboard::{answer, reply_check};
 use dashboard_core::config::LoadContext;
@@ -144,7 +123,6 @@ fn run() -> io::Result<bool> {
                 source.in_scope(|| answer::answer(&source, product, params, &context, &cancelled))
             }));
             match answered {
-                // The reply as the service sends it: serialised.
                 Ok(Ok(data)) => match serde_json::to_string(&data) {
                     Ok(_) => reply_check::Reply::Answered(json!({ "data": data })),
                     Err(error) => reply_check::Reply::Refused(error.to_string()),
@@ -192,7 +170,6 @@ fn run() -> io::Result<bool> {
     Ok(same)
 }
 
-/// Drops the pages Windows caches of `path`: opening it unbuffered does.
 fn purge(path: &std::path::Path) {
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;

@@ -6,7 +6,6 @@ import { researchAt, researchFolderList, researchFolderLooks } from './researchD
 import { completedTooltip, coverageAt, recordedResearchLanes, researchDateRange, researchItemDate, researchLanes, researchLanesAt, researchRows } from './researchLayout.ts';
 import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
-// Noon on 1 Jan 1944, so day arithmetic never crosses the calendar's 24:00 display hour.
 const base = HOUR_EPOCH + 1944 * 8760 + 12;
 const day = (n: number) => base + n * 24;
 const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = 'completed', startedAfter: number | null = first - 24): ResearchEntry => ({
@@ -63,7 +62,6 @@ test('each slot lists only its completions, packed, and a slot that opened later
   assert.deepEqual(lanes.map(lane => lane.offset), [0, 0, 1], 'slot 3 starts below the most any slot had finished when it opened');
   assert.deepEqual(kinds(history, day(200)), [['completed'], ['completed', 'completed'], ['opened', 'completed']]);
   assert.equal(researchItemDate(lanes[2].items[0] as Extract<typeof lanes[2]['items'][number], { kind: 'opened' }>), 'Opened by 11 May 1944');
-  // Rewound before slot 3 opened, it is not there yet.
   assert.deepEqual(lanesAt(history, day(100)).map(lane => lane.slot.index), [0, 1]);
 });
 
@@ -82,13 +80,10 @@ test('a recording gap appears only in the slots whose sequence spans it, and clo
   assert.equal(opened.kind === 'opened' && researchItemDate(opened), 'Recorded from 1 May 1944');
   const closed = lanes[1].items[1];
   assert.equal(closed.kind === 'closed' && researchItemDate(closed), 'Closed by 2 Mar 1944');
-  // List rows keep the gap once, in time order.
   assert.deepEqual(researchRows(lanes, researchAt(history, day(200)), coverageAt(history.coverage, day(200))).map(row => row.kind),
     ['completed', 'completed', 'gap', 'completed']);
 });
 
-/** A completion of `T` that started in slot 1 with `progress` already read at its
- * first assignment, which credited no saved days, and finished in slot 2. */
 function movedHistory(progress: string): ResearchHistory {
   const opening = read('T', day(10), day(40) - 1, day(10));
   return { coverage: [{ firstHour: day(0), lastHour: day(200) }], slots: [
@@ -114,8 +109,6 @@ test('a completion takes its start and time from its first assignment, including
 });
 
 test('resumed research with earlier progress claims no start and no time taken', () => {
-  // Assigned after the read before saw it unassigned, but already 30 days in:
-  // it was researched before, so the assignment is not its start.
   const t = completedRows(movedHistory('3000000')).find(row => row.kind === 'completed' && row.token === 'T');
   assert.ok(t?.kind === 'completed');
   assert.deepEqual([t.started, t.startSlot, t.tookHours], [{ hour: day(10), known: false }, 0, null]);

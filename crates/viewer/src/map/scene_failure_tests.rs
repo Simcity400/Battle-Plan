@@ -1,6 +1,3 @@
-//! Controlled faults in the production Scene, never a runtime fault switch.
-//! Covers depth/stencil allocation and shadow clearing/blur.
-//! These tests prove viewer refusal/recovery, not native exception policy or depth precision.
 use eframe::wgpu;
 use std::io;
 use std::sync::MutexGuard;
@@ -22,9 +19,6 @@ use viewer_world::map::scene::passes;
 use viewer_world::map::scene::*;
 use viewer_world::map::scene_faults::{Point, Probe};
 
-/// Supply an external JSON via BATTLE_PLAN_SCENE_FAILURE_INPUT: replay, game, user, cache, output, branch,
-/// hour and camera ([x,z,height]). Use a decided hour and an admitted-mesh camera below the shadow
-/// cutoff. Each ignored check creates a new child directory under `output`.
 #[derive(serde::Deserialize)]
 pub(crate) struct Input {
     replay: PathBuf,
@@ -78,7 +72,6 @@ impl Fixture {
                 surface_config: eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY,
             })
         })?;
-        // Same covered-content check and recorded DLC/mod order as --dump. No override.
         let document = crate::document::Document::load(
             &input.replay,
             &installed_content_core::ResolveOptions {
@@ -150,7 +143,6 @@ impl Fixture {
             },
             &Default::default(),
         )?;
-        // These scenes draw names they install no hour for.
         scene.build_names_in_upload(true);
         let perspective = Choice::default();
         let political = viewer_world::map::political::build(&d.map, d.frame()?)?;
@@ -235,9 +227,6 @@ const ISOLATED: [passes::Pass; 11] = [
     passes::Pass::Sky,
 ];
 
-/// A window's scene warms the unit pass at load, before any hour's field
-/// arrives, and still admits unit models by the content's camera cutoffs:
-/// without them no unit model was ever drawn in a window.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> {
@@ -359,8 +348,6 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
     .into_iter()
     .enumerate()
     {
-        // Fresh target/post bindings, with the same CPU and committed shadow
-        // history. Following the same resize bug in both scenes is no oracle.
         control.targets = None;
         control.post.invalidate();
         for current in [&mut scene, &mut control] {
@@ -515,8 +502,6 @@ fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
             scene.pass_diagnostics.is_empty(),
             "fatal error became an isolated refusal"
         );
-        // Post recovery must also work without a resize. The control keeps the
-        // same committed shadow history but starts a fresh post cache.
         scene.test_faults.fatal = None;
         control.targets = None;
         control.post.invalidate();
@@ -542,8 +527,6 @@ fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
     Ok(())
 }
 
-/// The near names cross-fade with the far ones: drawn while the country layer is faded out,
-/// gone once it is in.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
@@ -575,12 +558,6 @@ fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
     Ok(())
 }
 
-/// A window's scene, whose names only an install prepares, takes the names layer's install, then
-/// draws frames handed no names (the layer away composing: the factions flight with the layers
-/// only), then the frame the layer hands its names again: the installed names are still prepared,
-/// and drawn. Before, a frame handed no names prepared that empty set over the installed ones, and
-/// the frame that handed them back was refused: "country names reached their frame without their
-/// glyph buffers prepared".
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn installed_names_handed_nothing_for_frames_are_drawn_when_handed_again() -> io::Result<()> {

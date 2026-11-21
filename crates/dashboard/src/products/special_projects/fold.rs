@@ -1,16 +1,9 @@
-//! A country's project episodes from its rows over a span of hours, one observation per stretch
-//! of hours its rows hold unchanged: the game's state predicate, the visibility rule, the history's
-//! completion date and iteration count, and the episode rule (a project that ends and starts
-//! again, or whose iterations fall, is a new episode). A run is a stretch of equal observed
-//! values; an hour not observed ends it; an episode survives such hours while its holder stays.
 
 use super::{ProjectDate, ProjectEpisode, ProjectState, SpecialProjectRun};
 use std::collections::{BTreeMap, HashMap};
 
-/// A history entry whose reward and option are both this handle marks the completion.
 pub const COMPLETION_MARKER: u32 = 0x4c17;
 
-/// One project row of the country as the hour holds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub local: u32,
@@ -22,7 +15,6 @@ pub struct Row {
     pub prototype_progress: i32,
 }
 
-/// One entry of a project's history: its ordinal, whether it marks the completion, its date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub ordinal: u32,
@@ -30,17 +22,13 @@ pub struct Entry {
     pub date: i32,
 }
 
-/// Who a project's program names as its scientist.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Person {
     Unassigned,
-    /// The reference cannot be followed, with why.
     Unknown(String),
     Character(u32),
 }
 
-/// What a run shows beside its numbers: the definition and the scientist, with the hour the
-/// scientist was last assigned where a completed project keeps its last one.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Look {
     pub definition: u32,
@@ -48,14 +36,10 @@ pub struct Look {
     pub as_of: Option<i32>,
 }
 
-/// Completion follows the state predicate: the saved completed byte is cleared on its own when a
-/// project moves and does not establish it.
 pub fn completed(row: &Row) -> bool {
     row.not_completed == 0 && row.offset == 0xe8
 }
 
-/// The machine's state offsets. A scripted cancel invalidates the program reference and clears
-/// started only without history, leaving the machine at its first state: running needs both.
 pub fn state(row: &Row) -> ProjectState {
     match row.offset {
         0x18 if row.started && row.program != 0 => ProjectState::Running,
@@ -71,13 +55,10 @@ fn visible(row: &Row, open: bool) -> bool {
     row.started || completed(row) || open || (state(row) == ProjectState::Cancelled && row.offset != 0x18)
 }
 
-/// Prototype progress as a percent clamped to the meter; a completed project's meter is full.
 fn progress(row: &Row) -> i32 {
     if completed(row) { 100 } else { row.prototype_progress.clamp(-100, 100) }
 }
 
-/// The completion date the history gives at `observed`: its latest completion entry dated within
-/// the campaign by then, exact; none without one.
 pub fn completion_date(history: &[Entry], observed: i32, campaign_start: i32) -> Option<ProjectDate> {
     history
         .iter()
@@ -86,8 +67,6 @@ pub fn completion_date(history: &[Entry], observed: i32, campaign_start: i32) ->
         .map(|entry| ProjectDate { hour: entry.date, exact: true })
 }
 
-/// One project as observed from `first` through `last`: its row, its history (none when the
-/// history was not recorded), and who its program names.
 pub struct Observed<'a> {
     pub row: &'a Row,
     pub history: Option<&'a [Entry]>,
@@ -103,7 +82,6 @@ pub struct Fold {
     open: BTreeMap<(u32, u32), usize>,
     holder: Option<(u32, u32)>,
     last_iterations: HashMap<usize, i32>,
-    /// Rows in a state the rule does not know, by reason, counted per observation.
     pub warnings: BTreeMap<String, usize>,
 }
 
@@ -132,8 +110,6 @@ impl Fold {
         id
     }
 
-    /// `holder`'s projects observed unchanged from `first` through `last`. Another holder than the
-    /// last observed closes every open episode.
     pub fn observe(&mut self, holder: (u32, u32), first: i32, last: i32, projects: &[Observed<'_>]) {
         if self.holder.is_some_and(|held| held != holder) {
             self.open.clear();
@@ -162,7 +138,6 @@ impl Fold {
             let index = match self.open.get(&key) {
                 Some(&index) => index,
                 None => {
-                    // The game records no start: the first observation bounds it.
                     let index = self.episodes.len();
                     self.episodes.push(ProjectEpisode { id: format!("{}:{first}:{index}", row.local), start: ProjectDate { hour: first, exact: false }, runs: Vec::new() });
                     index
@@ -179,7 +154,6 @@ impl Fold {
             });
             let cancellation = (state == ProjectState::Cancelled).then(|| previous.as_ref().and_then(|run| run.cancellation.clone()).unwrap_or(ProjectDate { hour: first, exact: false }));
             let mut look = Look { definition: row.definition, person: observed.person.clone(), as_of: None };
-            // A completed project loses its program: it keeps the scientist of the hours before.
             if done && let Some(before) = previous.as_ref().filter(|run| run.last_hour.checked_add(1) == Some(first)) {
                 let held = &self.looks[before.presentation as usize];
                 if matches!(held.person, Person::Character(_)) {
@@ -205,7 +179,6 @@ impl Fold {
     }
 }
 
-/// Whether two runs show the same values, whatever their hours.
 pub fn same(a: &SpecialProjectRun, b: &SpecialProjectRun) -> bool {
     (a.presentation, a.progress, a.state, &a.completion, &a.cancellation, a.iterations) == (b.presentation, b.progress, b.state, &b.completion, &b.cancellation, b.iterations)
 }

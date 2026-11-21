@@ -1,4 +1,3 @@
-//! Complete doctrine save projection, including status slots without a country.
 use super::*;
 
 fn token(tokens: &TokenNames<'_>, id: u32) -> io::Result<Vec<u8>> {
@@ -177,7 +176,6 @@ pub(super) fn compare_doctrines(
                 row.folder,
                 row.track,
                 row.ordinal,
-                // Native references pack type below ID; saved pairs are (id, type).
                 ((row.leader >> 32) as u32, row.leader as u32),
                 row.mastery,
             )
@@ -387,7 +385,6 @@ mod tests {
         compare_doctrines(&frame, &pack, &BTreeMap::new(), &tokens, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
 
-        // Either word changing must still produce an exact reference difference.
         for changed_word in [1u64, 1u64 << 32] {
             if let TableView::Complete(TableRows::DoctrineLeaderMastery(rows)) =
                 &mut *frame.tables[TableId::DoctrineLeaderMastery.index()]

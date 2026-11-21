@@ -1,9 +1,3 @@
-//! The pop-out map's borderless top-level window. It holds nothing but the viewer's child
-//! window: no title bar, menus or controls. The desktop app places and closes it.
-//!
-//! The window fills one monitor's work area in physical pixels, so monitors left of or above
-//! the primary one (negative positions) work as any other. It follows that monitor's DPI and
-//! work-area changes, and moves to the nearest remaining monitor when its own is removed.
 use std::{
     sync::{
         Arc,
@@ -22,25 +16,18 @@ use windows_sys::Win32::{
     UI::{Input::KeyboardAndMouse::SetFocus, WindowsAndMessaging::*},
 };
 
-/// What the window tells its owner, on the window's own thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The client area's new physical size.
     Resized { width: u32, height: u32 },
-    /// Alt+F4 or the system asked the window to close. It stays until its owner drops it, once
-    /// the viewer drawing in its child window has let go of its surface.
     CloseRequested,
-    /// The window is gone.
     Closed,
 }
 
 type Callback = Arc<dyn Fn(Event) + Send + Sync>;
 
 const NEXT_MONITOR: u32 = WM_APP + 1;
-/// Destroys the window, on its own thread: its owner is done with it.
 const RETIRE: u32 = WM_APP + 2;
 const CLASS: &str = "HOI4ReplayPopOutMap";
-/// The resource id the desktop build gives the app icon.
 const APP_ICON: u16 = 32512;
 
 pub struct Shell {
@@ -49,7 +36,6 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// Opens the window on a monitor other than `beside`'s when there is one.
     pub fn open(beside: usize, callback: Callback) -> Result<Self, String> {
         let hwnd = Arc::new(AtomicUsize::new(0));
         let (ready, started) = mpsc::channel();
@@ -74,19 +60,16 @@ impl Shell {
         }
     }
 
-    /// The window's handle, or 0 once it is gone.
     pub fn hwnd(&self) -> usize {
         self.hwnd.load(Ordering::Acquire)
     }
 
-    /// The client area's physical size.
     pub fn client_size(&self) -> Option<(u32, u32)> {
         let hwnd = self.hwnd();
         if hwnd == 0 {
             return None;
         }
         let mut rect = RECT::default();
-        // SAFETY: GetClientRect validates the handle; a destroyed window fails.
         (unsafe { GetClientRect(hwnd as HWND, &mut rect) } != 0).then(|| {
             (
                 (rect.right - rect.left).max(1) as u32,
@@ -98,25 +81,20 @@ impl Shell {
     pub fn next_monitor(&self) {
         let hwnd = self.hwnd();
         if hwnd != 0 {
-            // SAFETY: posting to a destroyed window only fails.
             unsafe { PostMessageW(hwnd as HWND, NEXT_MONITOR, 0, 0) };
         }
     }
 
-    /// Hides the window without waiting for its thread.
     pub fn hide(&self) {
         let hwnd = self.hwnd();
         if hwnd != 0 {
-            // SAFETY: as above.
             unsafe { ShowWindowAsync(hwnd as HWND, SW_HIDE) };
         }
     }
 
-    /// Brings the window to the front of the desktop.
     pub fn raise(&self) {
         let hwnd = self.hwnd();
         if hwnd != 0 {
-            // SAFETY: as above; a closed window ignores both calls.
             unsafe {
                 ShowWindow(hwnd as HWND, SW_SHOW);
                 SetForegroundWindow(hwnd as HWND);
@@ -126,11 +104,9 @@ impl Shell {
 }
 
 impl Drop for Shell {
-    /// Destroys the window and waits for its thread.
     fn drop(&mut self) {
         let hwnd = self.hwnd();
         if hwnd != 0 {
-            // SAFETY: as above.
             unsafe { PostMessageW(hwnd as HWND, RETIRE, 0, 0) };
         }
         if let Some(thread) = self.thread.take() {
@@ -142,14 +118,10 @@ impl Drop for Shell {
 struct State {
     callback: Callback,
     hwnd: Arc<AtomicUsize>,
-    /// Set once the window has taken this box (WM_NCCREATE), so WM_NCDESTROY frees it and a
-    /// failed creation does not free it again.
     adopted: Arc<AtomicBool>,
-    /// The monitor the window was last fitted to, so a move to another monitor refits it.
     fitted: AtomicIsize,
 }
 
-/// A rectangle in physical desktop pixels, as monitor work areas report them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Area {
     pub left: i32,
@@ -169,14 +141,12 @@ impl From<RECT> for Area {
     }
 }
 
-/// The order the monitors are stepped through: left to right, then top to bottom.
 pub fn monitor_order(areas: &[Area]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..areas.len()).collect();
     order.sort_by_key(|&index| (areas[index].left, areas[index].top));
     order
 }
 
-/// The first monitor in that order other than the main window's, else the main window's.
 pub fn initial_choice(areas: &[Area], main: usize) -> usize {
     monitor_order(areas)
         .into_iter()
@@ -184,7 +154,6 @@ pub fn initial_choice(areas: &[Area], main: usize) -> usize {
         .unwrap_or(main)
 }
 
-/// The monitor after `current` in that order, wrapping around; `None` without monitors.
 pub fn next_choice(areas: &[Area], current: Option<usize>) -> Option<usize> {
     let order = monitor_order(areas);
     if order.is_empty() {
@@ -196,7 +165,6 @@ pub fn next_choice(areas: &[Area], current: Option<usize>) -> Option<usize> {
     Some(order[position % order.len()])
 }
 
-/// The window's position and size filling `area`, or `None` for an empty work area.
 pub fn fitted(area: Area) -> Option<(i32, i32, i32, i32)> {
     let width = area.right.checked_sub(area.left)?;
     let height = area.bottom.checked_sub(area.top)?;
@@ -215,8 +183,6 @@ fn run(
 ) {
     let class = wide(CLASS);
     let title = wide("Battle Plan map");
-    // SAFETY: every Win32 call below runs on this thread, which owns the window and its
-    // message loop; the state box lives until WM_NCDESTROY takes it back.
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let mut description: WNDCLASSEXW = std::mem::zeroed();
@@ -226,7 +192,6 @@ fn run(
         description.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
         description.hbrBackground = GetStockObject(BLACK_BRUSH);
         description.lpszClassName = class.as_ptr();
-        // The app's own icon, which the desktop build embeds as its first icon resource.
         let icon = LoadImageW(
             instance,
             APP_ICON as usize as *const u16,
@@ -237,7 +202,6 @@ fn run(
         );
         description.hIcon = icon;
         description.hIconSm = icon;
-        // A class registered by an earlier pop-out is reused.
         RegisterClassExW(&description);
         let adopted = Arc::new(AtomicBool::new(false));
         let state = Box::into_raw(Box::new(State {
@@ -262,7 +226,6 @@ fn run(
         );
         if hwnd.is_null() {
             let error = std::io::Error::last_os_error();
-            // A window that took the box freed it as it was destroyed.
             if !adopted.load(Ordering::Acquire) {
                 drop(Box::from_raw(state));
             }
@@ -284,15 +247,12 @@ fn run(
     }
 }
 
-/// Every monitor, in enumeration order.
 fn monitors() -> Vec<HMONITOR> {
     unsafe extern "system" fn each(monitor: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> i32 {
-        // SAFETY: `data` is the vector passed below, alive for the enumeration.
         unsafe { (*(data as *mut Vec<HMONITOR>)).push(monitor) };
         1
     }
     let mut found: Vec<HMONITOR> = Vec::new();
-    // SAFETY: the callback only pushes into `found`.
     unsafe {
         EnumDisplayMonitors(
             std::ptr::null_mut(),
@@ -307,14 +267,11 @@ fn monitors() -> Vec<HMONITOR> {
 fn work_area(monitor: HMONITOR) -> Area {
     let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<MONITORINFO>() as u32;
-    // SAFETY: a stale monitor handle only fails, leaving the zeroed rectangle.
     unsafe { GetMonitorInfoW(monitor, &mut info) };
     info.rcWork.into()
 }
 
-/// A monitor other than the main window's, else its own.
 fn initial_monitor(beside: HWND) -> HMONITOR {
-    // SAFETY: MonitorFromWindow accepts any handle and falls back to the nearest monitor.
     let main = unsafe { MonitorFromWindow(beside, MONITOR_DEFAULTTONEAREST) };
     let all = monitors();
     let areas: Vec<Area> = all.iter().map(|&monitor| work_area(monitor)).collect();
@@ -328,7 +285,6 @@ fn fill(hwnd: HWND, monitor: HMONITOR) {
     let Some((x, y, width, height)) = fitted(work_area(monitor)) else {
         return;
     };
-    // SAFETY: this thread owns `hwnd`; the state pointer is the window's own box.
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const State;
         if !state.is_null() {
@@ -347,7 +303,6 @@ fn fill(hwnd: HWND, monitor: HMONITOR) {
 }
 
 fn current_monitor(hwnd: HWND) -> HMONITOR {
-    // SAFETY: as above.
     unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }
 }
 
@@ -357,7 +312,6 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: WM_NCCREATE stores the state box CreateWindowExW passed; WM_NCDESTROY frees it.
     unsafe {
         if message == WM_NCCREATE {
             let create = &*(lparam as *const CREATESTRUCTW);
@@ -378,7 +332,6 @@ unsafe extern "system" fn window_proc(
                 }
                 0
             }
-            // The window always fills its monitor; a new DPI or monitor layout refits it.
             WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
                 fill(hwnd, current_monitor(hwnd));
                 DefWindowProcW(hwnd, message, wparam, lparam)
@@ -393,7 +346,6 @@ unsafe extern "system" fn window_proc(
                 }
                 0
             }
-            // A move to another monitor at the same DPI (Win+Shift+Arrow) sends no DPI change.
             WM_WINDOWPOSCHANGED if !state.is_null() => {
                 let here = current_monitor(hwnd);
                 if (*state).fitted.load(Ordering::Acquire) != here as isize {
@@ -401,7 +353,6 @@ unsafe extern "system" fn window_proc(
                 }
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
-            // Map input belongs to the viewer's child window.
             WM_SETFOCUS => {
                 let child = GetWindow(hwnd, GW_CHILD);
                 if !child.is_null() {
@@ -409,7 +360,6 @@ unsafe extern "system" fn window_proc(
                 }
                 0
             }
-            // Destroying the window destroys the viewer's child window, on which its surface is made.
             WM_CLOSE if !state.is_null() => {
                 ((*state).callback)(Event::CloseRequested);
                 0
@@ -451,7 +401,6 @@ mod tests {
         }
     }
 
-    // A monitor left of the primary (negative origin), the primary, and one above it.
     fn three() -> Vec<Area> {
         vec![
             area(0, 0, 2560, 1400),
@@ -467,10 +416,8 @@ mod tests {
 
     #[test]
     fn the_pop_out_opens_beside_the_main_window() {
-        // The main window is on the primary; the first other monitor in order is chosen.
         assert_eq!(initial_choice(&three(), 0), 1);
         assert_eq!(initial_choice(&three(), 1), 2);
-        // A single monitor is shared.
         assert_eq!(initial_choice(&[area(0, 0, 100, 100)], 0), 0);
     }
 
@@ -480,7 +427,6 @@ mod tests {
         assert_eq!(next_choice(&areas, Some(1)), Some(2));
         assert_eq!(next_choice(&areas, Some(2)), Some(0));
         assert_eq!(next_choice(&areas, Some(0)), Some(1));
-        // A removed monitor no longer in the list starts again from the first.
         assert_eq!(next_choice(&areas, None), Some(1));
         assert_eq!(next_choice(&areas[..1], Some(0)), Some(0));
         assert_eq!(next_choice(&[], None), None);
